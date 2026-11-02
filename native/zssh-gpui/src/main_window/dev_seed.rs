@@ -4,6 +4,8 @@
 //! - `ZSSH_SEED_TEST_HOST=<名字>`：按 `ZSSH_TEST_HOST / PORT / USER / KEY_PATH`（以及可选的
 //!   `ZSSH_TEST_SOCKS5`）建一台连测试服务器的主机，起这个名字（截图里叫 `web-1`）。已存在同名主机就跳过。
 //!   地址只在环境变量和库文件里，不进代码、不进日志。
+//! - `ZSSH_SEED_PROTOCOLS=1`：再建一台 Telnet 主机、一台串口主机（地址 / 设备名都是占位的）和一台开了
+//!   X11 的 SSH 主机，主机页的协议标识、SSH-only 置灰、X11 提示的截图用；
 //! - `ZSSH_SEED_PLACEHOLDERS=1`：建几组演示用的主机，地址一律是文档保留段（RFC 5737），
 //!   不会真的连出去；主机页截图用它，画面里不会出现真实地址。
 
@@ -22,7 +24,8 @@ fn env(name: &str) -> Option<String> {
 pub fn seed_from_env() -> Result<(), String> {
     let test_host = env("ZSSH_SEED_TEST_HOST");
     let placeholders = env("ZSSH_SEED_PLACEHOLDERS").is_some();
-    if test_host.is_none() && !placeholders {
+    let protocols = env("ZSSH_SEED_PROTOCOLS").is_some();
+    if test_host.is_none() && !placeholders && !protocols {
         return Ok(());
     }
     let db = crate::hosts_demo::open_database().map_err(|err| err.to_string())?;
@@ -32,7 +35,48 @@ pub fn seed_from_env() -> Result<(), String> {
     if placeholders {
         seed_placeholders(&db)?;
     }
+    if protocols {
+        seed_protocol_hosts(&db)?;
+    }
     Ok(())
+}
+
+/// Telnet / 串口 / 开了 X11 的 SSH 主机各一台。已有同名主机就跳过（重复启动不叠加）。
+fn seed_protocol_hosts(db: &Database) -> Result<(), String> {
+    use zssh_core::model::{Protocol, ProtocolSettings};
+    let existing = db.host_list().map_err(|err| err.to_string())?;
+    let add = |name: &str, mut draft: HostDraft, settings: ProtocolSettings| {
+        if existing.iter().any(|host| host.name == name) {
+            return Ok(());
+        }
+        draft.protocol = Some(settings);
+        db.host_save(&draft)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    };
+    let mut telnet = host_draft("switch-1", "192.0.2.50", 23, "admin", None);
+    telnet.proxy_mode = ProxyMode::None;
+    add("switch-1", telnet, ProtocolSettings::new(Protocol::Telnet))?;
+
+    let mut serial_settings = ProtocolSettings::new(Protocol::Serial);
+    if let Some(options) = serial_settings.serial.as_mut() {
+        options.device = "COM3".to_owned();
+        options.baud_rate = 9600;
+    }
+    let mut serial = host_draft("console-1", "", 0, "", None);
+    serial.proxy_mode = ProxyMode::None;
+    add("console-1", serial, serial_settings)?;
+
+    let mut x11 = host_draft("gui-box", "192.0.2.60", 22, "ops", None);
+    x11.proxy_mode = ProxyMode::None;
+    add(
+        "gui-box",
+        x11,
+        ProtocolSettings {
+            x11_forwarding: true,
+            ..ProtocolSettings::default()
+        },
+    )
 }
 
 fn host_draft(name: &str, address: &str, port: u16, user: &str, group: Option<i64>) -> HostDraft {

@@ -19,6 +19,8 @@ mod backup_demo;
 mod brand;
 mod dev_hooks;
 mod editor_demo;
+#[cfg(debug_assertions)]
+mod fake_telnet;
 mod file_window;
 mod fonts;
 mod forward_runtime;
@@ -225,6 +227,9 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
             }
         }
     }
+    // 窗口级场景用：ZSSH_FAKE_TELNET_PORT 起一个回环上的假 Telnet 设备。
+    #[cfg(debug_assertions)]
+    fake_telnet::spawn_from_env();
     // 手动验证用：按 ZSSH_OPEN_TELNET / ZSSH_OPEN_SERIAL 建一台 Telnet / 串口主机并在主窗口里打开
     // （说明见 `protocol_backend::dev_hook_hosts`）。
     for host_id in protocol_backend::dev_hook_hosts() {

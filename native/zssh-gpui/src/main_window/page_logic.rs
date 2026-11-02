@@ -7,7 +7,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use zssh_core::model::{AuthMethod, Group, Host, Identity, IdentityKind, Proxy, ProxyMode};
+use zssh_core::model::{
+    AuthMethod, Group, Host, Identity, IdentityKind, Protocol, Proxy, ProxyMode,
+};
 
 use super::GroupSel;
 use super::host_store::normalize_address;
@@ -510,6 +512,33 @@ pub struct InfoRow {
 /// 单击主机在树底部展开的只读属性：名称、地址、用户名、协议、端口，有跳板机 / 指定代理时再加一行；
 /// 不显示任何凭据，跟随默认代理的看不出具体是谁，也不显示（同 `hostInfoRows`）。
 pub fn host_info_rows(host: &Host, hosts: &[Host], proxies: &[Proxy]) -> Vec<InfoRow> {
+    let protocol = InfoRow {
+        key: "protocol",
+        label: "协议",
+        value: super::protocol_form::protocol_tag(host.protocol.protocol).to_owned(),
+    };
+    // 串口没有地址、端口、用户名、代理、跳板机：显示设备和波特率。
+    if host.protocol.protocol == Protocol::Serial {
+        let options = host.protocol.serial.clone().unwrap_or_default();
+        return vec![
+            InfoRow {
+                key: "name",
+                label: "名称",
+                value: host.name.clone(),
+            },
+            protocol,
+            InfoRow {
+                key: "device",
+                label: "设备",
+                value: options.device,
+            },
+            InfoRow {
+                key: "baud",
+                label: "波特率",
+                value: options.baud_rate.to_string(),
+            },
+        ];
+    }
     let mut rows = vec![
         InfoRow {
             key: "name",
@@ -526,11 +555,7 @@ pub fn host_info_rows(host: &Host, hosts: &[Host], proxies: &[Proxy]) -> Vec<Inf
             label: "用户名",
             value: host.username.clone(),
         },
-        InfoRow {
-            key: "protocol",
-            label: "协议",
-            value: "SSH".to_owned(),
-        },
+        protocol,
         InfoRow {
             key: "port",
             label: "端口",

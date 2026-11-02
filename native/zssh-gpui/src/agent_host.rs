@@ -887,6 +887,9 @@ pub struct HostTarget {
     pub current: bool,
     /// 用户 `@` 进来的（或焦点切走时自动保留下来的）主机，不是单靠「当前」带进来的。
     pub pinned: bool,
+    /// 这台主机不能当 AI 的执行目标时的原因（Telnet / 串口主机，来自 `ProtocolSettings::ai_exec_refusal`，
+    /// 和工具桥 `target_refusal` 同一句话）。界面上列出来但置灰并写明原因，不会被同步给桥。
+    pub refusal: Option<String>,
 }
 
 impl HostTarget {
@@ -898,6 +901,7 @@ impl HostTarget {
             username: username.into(),
             current: false,
             pinned: true,
+            refusal: None,
         }
     }
 }

@@ -1748,6 +1748,28 @@ impl TerminalWorkspace {
 
     /// 断开一个标签里所有还连着的窗格（标签右键「断开连接」，分屏的每个窗格都断）；标签本身留着，
     /// 状态变成已断开，可以「重新连接」。返回断开了几个窗格。
+    /// 给这个标签聚焦的窗格发 Break（串口）。窗格已经断开返回 `false`。
+    pub(crate) fn send_break_tab(&mut self, index: usize) -> bool {
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return false;
+        };
+        let pane = tab.active_mut();
+        let live = pane.state == PaneState::Live;
+        pane.send_break();
+        live
+    }
+
+    /// 活动标签聚焦的窗格发 Break。
+    pub(crate) fn send_break_active(&mut self) -> bool {
+        let Some(tab) = self.tabs.active_mut() else {
+            return false;
+        };
+        let pane = tab.active_mut();
+        let live = pane.state == PaneState::Live;
+        pane.send_break();
+        live
+    }
+
     pub(crate) fn disconnect_tab(&mut self, index: usize, cx: &mut Context<Self>) -> usize {
         let Some(tab) = self.tabs.get_mut(index) else {
             return 0;

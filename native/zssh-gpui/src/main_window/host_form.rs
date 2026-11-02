@@ -5,10 +5,13 @@
 //! 不依赖 GPUI：单测直接盯这些规则。
 
 use zssh_core::model::{
-    AuthMethod, Host, HostDraft, Identity, IdentityDraft, IdentityKind, ProxyMode,
+    AuthMethod, Host, HostDraft, Identity, IdentityDraft, IdentityKind, LocalEcho, Protocol,
+    ProtocolSettings, ProxyMode, SerialDataBits, SerialFlowControl, SerialNewline, SerialOptions,
+    SerialParity, SerialStopBits, TelnetNewline, TelnetOptions, TextEncoding,
 };
 
 use super::host_store::normalize_address;
+use super::protocol_form::{FieldError, FormField, parse_baud, parse_patterns};
 
 /// 这种凭据能不能配这种认证方式（同 `identityFitsAuth`，和后端 `check_identity_matches` 一致）。
 ///
@@ -48,6 +51,121 @@ pub struct FormInput<'a> {
     /// 没有选凭据时，把密码存成一条新凭据。
     pub remember: bool,
     pub legacy: bool,
+    pub protocol: Protocol,
+    /// X11 转发（只对 SSH 有意义，别的协议保存时忽略）。
+    pub x11: bool,
+    pub telnet: TelnetInput<'a>,
+    pub serial: SerialInput<'a>,
+}
+
+/// Telnet 高级设置里的值（文字框已经读成字符串）。
+#[derive(Clone, Debug)]
+pub struct TelnetInput<'a> {
+    pub newline: TelnetNewline,
+    pub local_echo: LocalEcho,
+    pub naws: bool,
+    pub terminal_type: &'a str,
+    pub encoding: TextEncoding,
+    pub auto_login: bool,
+    /// 用户名 / 密码提示词，逗号分隔。
+    pub username_prompts: &'a str,
+    pub password_prompts: &'a str,
+    pub raw_tcp: bool,
+}
+
+/// 串口设置里的值。
+#[derive(Clone, Debug)]
+pub struct SerialInput<'a> {
+    pub device: &'a str,
+    pub baud: &'a str,
+    pub data_bits: SerialDataBits,
+    pub parity: SerialParity,
+    pub stop_bits: SerialStopBits,
+    pub flow_control: SerialFlowControl,
+    pub newline: SerialNewline,
+    pub local_echo: bool,
+    pub encoding: TextEncoding,
+}
+
+impl TelnetInput<'static> {
+    /// 没有任何自定义的默认值（测试和新建用）。
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn defaults() -> Self {
+        let options = TelnetOptions::default();
+        Self {
+            newline: options.newline,
+            local_echo: options.local_echo,
+            naws: options.naws,
+            terminal_type: "xterm-256color",
+            encoding: options.encoding,
+            auto_login: false,
+            username_prompts: "login:, username:, user name:, user:",
+            password_prompts: "password:, passwd:, passcode:",
+            raw_tcp: false,
+        }
+    }
+}
+
+impl SerialInput<'static> {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn defaults() -> Self {
+        let options = SerialOptions::default();
+        Self {
+            device: "",
+            baud: "115200",
+            data_bits: options.data_bits,
+            parity: options.parity,
+            stop_bits: options.stop_bits,
+            flow_control: options.flow_control,
+            newline: options.newline,
+            local_echo: options.local_echo,
+            encoding: options.encoding,
+        }
+    }
+}
+
+impl FormInput<'_> {
+    /// 按表单里的值拼出协议设置（不校验，校验交给核心库）。
+    fn protocol_settings(&self) -> Result<ProtocolSettings, FieldError> {
+        let mut settings = ProtocolSettings::new(self.protocol);
+        settings.x11_forwarding = self.protocol.supports_x11() && self.x11;
+        match self.protocol {
+            Protocol::Ssh => {}
+            Protocol::Telnet => {
+                let input = &self.telnet;
+                let mut options = TelnetOptions {
+                    newline: input.newline,
+                    local_echo: input.local_echo,
+                    naws: input.naws,
+                    terminal_type: input.terminal_type.trim().to_owned(),
+                    encoding: input.encoding,
+                    raw_tcp: input.raw_tcp,
+                    ..TelnetOptions::default()
+                };
+                options.auto_login.enabled = input.auto_login;
+                options.auto_login.username_patterns = parse_patterns(input.username_prompts);
+                options.auto_login.password_patterns = parse_patterns(input.password_prompts);
+                settings.telnet = Some(options);
+            }
+            Protocol::Serial => {
+                let input = &self.serial;
+                let baud_rate = parse_baud(input.baud)
+                    .map_err(|message| FieldError::new(FormField::Baud, message))?;
+                settings.serial = Some(SerialOptions {
+                    device: input.device.trim().to_owned(),
+                    baud_rate,
+                    data_bits: input.data_bits,
+                    parity: input.parity,
+                    stop_bits: input.stop_bits,
+                    flow_control: input.flow_control,
+                    newline: input.newline,
+                    local_echo: input.local_echo,
+                    encoding: input.encoding,
+                });
+            }
+        }
+        Ok(settings)
+    }
 }
 
 /// 保存前要对凭据库做的事。
@@ -100,38 +218,80 @@ pub struct SavePlan {
 
 /// 检查表单、决定怎么处理密码，拼出保存草稿。
 ///
-/// - 名称、地址、用户名不能为空；端口 1–65535；
+/// - 名称不能为空；SSH / Telnet 还要地址、端口 1–65535，SSH 还要用户名（Telnet 可以不填）；
+///   串口要设备名和波特率，不看地址 / 端口 / 用户名；
 /// - 只在认证方式是密码、并且填了「真的改过」的密码时才动凭据库：只是点小眼睛看了一下已存的密码、
 ///   没改（`revealed` 里取回来的值和框里一样），不算改密码，不重写保险库；
 /// - 选了凭据就覆盖它的密码；没选凭据且 `remember` 打开就新建一条「<名称> 的密码」；
-/// - 地址整理成裸地址（IPv6 去方括号）；已有主机的 `tags` / `sort` 取库里的原值（F3 X1）。
+/// - 地址整理成裸地址（IPv6 去方括号）；已有主机的 `tags` / `sort` 取库里的原值（F3 X1）；
+/// - 不适用于当前协议的字段（已填的值还在表单里）保存时按协议忽略：Telnet 只用密码认证，
+///   串口不带凭据 / 代理 / 跳板机，X11 只给 SSH；
+/// - 协议设置和库里一样就不带（`None`），免得把这一版不认识的选项键洗掉。
+///
+/// 错误带着该显示在哪个字段旁边。
 pub fn plan_save(
     input: &FormInput<'_>,
     existing: Option<&Host>,
     identities: &[Identity],
     revealed: Option<(i64, &str)>,
-) -> Result<SavePlan, String> {
+) -> Result<SavePlan, FieldError> {
+    let protocol = input.protocol;
     let name = input.name.trim();
     let username = input.username.trim();
-    if name.is_empty() || input.address.trim().is_empty() || username.is_empty() {
-        return Err("名称、地址、用户名都不能为空".to_owned());
+    let serial = protocol == Protocol::Serial;
+    let required = match protocol {
+        Protocol::Ssh => "名称、地址、用户名都不能为空",
+        Protocol::Telnet => "名称、地址都不能为空",
+        Protocol::Serial => "名称不能为空",
+    };
+    if name.is_empty() {
+        return Err(FieldError::new(FormField::Name, required));
     }
-    let port = input
-        .port
-        .trim()
-        .parse::<u32>()
-        .ok()
-        .filter(|port| (1..=65535).contains(port))
-        .ok_or_else(|| "端口要在 1-65535 之间".to_owned())? as u16;
+    if !serial && input.address.trim().is_empty() {
+        return Err(FieldError::new(FormField::Address, required));
+    }
+    if protocol == Protocol::Ssh && username.is_empty() {
+        return Err(FieldError::new(FormField::Username, required));
+    }
+    let port = if serial {
+        0
+    } else {
+        input
+            .port
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|port| (1..=65535).contains(port))
+            .ok_or_else(|| FieldError::new(FormField::Port, "端口要在 1-65535 之间"))?
+            as u16
+    };
+    if serial && input.serial.device.trim().is_empty() {
+        return Err(FieldError::new(FormField::Device, "请选择或填写串口设备"));
+    }
+    let settings = input.protocol_settings()?;
 
-    let mut identity_id = input.identity;
+    // Telnet 只有密码认证；串口没有认证。表单里残留的私钥 / agent 选择在这里按协议忽略。
+    let auth = if protocol == Protocol::Ssh {
+        input.auth
+    } else {
+        AuthMethod::Password
+    };
+    let mut identity_id = if serial { None } else { input.identity };
+    if protocol == Protocol::Telnet
+        && let Some(id) = identity_id
+        && !identities
+            .iter()
+            .any(|item| item.id == id && item.kind == IdentityKind::Password)
+    {
+        identity_id = None;
+    }
     let mut action = IdentityAction::None;
     let unchanged_reveal = matches!(
         (revealed, input.identity),
         (Some((id, value)), Some(current)) if id == current && value == input.password
     );
     let password_changed = !input.password.is_empty() && !unchanged_reveal;
-    if password_changed && input.auth == AuthMethod::Password {
+    if password_changed && auth == AuthMethod::Password && !serial {
         if let Some(id) = identity_id {
             let name = identities
                 .iter()
@@ -153,28 +313,43 @@ pub fn plan_save(
             };
         }
     }
-    // 密码存成新凭据之后，调用方把新建出来的凭据 id 回填进草稿；这里先放着原来选的。
-    let _ = &mut identity_id;
 
+    let protocol_change = match existing {
+        Some(host) if host.protocol == settings => None,
+        None if settings.is_plain_ssh() => None,
+        _ => Some(settings),
+    };
     Ok(SavePlan {
         identity: action,
         draft: HostDraft {
-            protocol: None,
             id: existing.map(|host| host.id),
             group_id: input.group,
             name: name.to_owned(),
-            host: normalize_address(input.address),
+            host: if serial {
+                String::new()
+            } else {
+                normalize_address(input.address)
+            },
             port,
-            username: username.to_owned(),
-            auth_method: input.auth,
+            username: if serial {
+                String::new()
+            } else {
+                username.to_owned()
+            },
+            auth_method: auth,
             identity_id,
-            proxy_id: input.proxy,
-            jump_host_id: input.jump,
-            proxy_mode: input.proxy_mode,
+            proxy_id: if serial { None } else { input.proxy },
+            jump_host_id: if serial { None } else { input.jump },
+            proxy_mode: if serial {
+                ProxyMode::None
+            } else {
+                input.proxy_mode
+            },
             // 标签、排序这张表单不编辑：已有主机保持库里的原值，新建用默认值。
             tags: existing.map(|host| host.tags.clone()).unwrap_or_default(),
             sort: existing.map_or(0, |host| host.sort),
-            legacy_algorithms: input.legacy,
+            legacy_algorithms: protocol == Protocol::Ssh && input.legacy,
+            protocol: protocol_change,
         },
     })
 }
@@ -251,6 +426,10 @@ mod tests {
             jump: None,
             remember: true,
             legacy: false,
+            protocol: Protocol::Ssh,
+            x11: false,
+            telnet: TelnetInput::defaults(),
+            serial: SerialInput::defaults(),
         }
     }
 
@@ -568,5 +747,231 @@ mod tests {
                 .as_str(),
             "changed"
         );
+    }
+
+    // ---- V2-N4：多协议 ----
+
+    fn telnet_input<'a>() -> FormInput<'a> {
+        let mut form = input();
+        form.protocol = Protocol::Telnet;
+        form.port = "23";
+        form.username = "";
+        form
+    }
+
+    fn serial_input<'a>() -> FormInput<'a> {
+        let mut form = input();
+        form.protocol = Protocol::Serial;
+        form.address = "";
+        form.port = "";
+        form.username = "";
+        form.serial.device = "COM3";
+        form
+    }
+
+    #[test]
+    fn a_new_plain_ssh_host_carries_no_protocol_change() {
+        let plan = plan_save(&input(), None, &[], None).expect("合法");
+        assert_eq!(plan.draft.protocol, None);
+        assert!(!plan.draft.legacy_algorithms);
+    }
+
+    #[test]
+    fn ssh_x11_switch_is_stored_only_for_ssh() {
+        let mut form = input();
+        form.x11 = true;
+        let plan = plan_save(&form, None, &[], None).expect("合法");
+        assert!(plan.draft.protocol.expect("要写").x11_forwarding);
+
+        // 切到 Telnet 之后 X11 开关还留在表单里：保存时忽略。
+        let mut telnet = telnet_input();
+        telnet.x11 = true;
+        let plan = plan_save(&telnet, None, &[], None).expect("合法");
+        assert!(!plan.draft.protocol.expect("Telnet 要写").x11_forwarding);
+    }
+
+    #[test]
+    fn an_unchanged_existing_host_does_not_rewrite_its_protocol_columns() {
+        let existing = host(9);
+        let mut form = input();
+        form.legacy = true;
+        let plan = plan_save(&form, Some(&existing), &[], None).expect("合法");
+        assert_eq!(
+            plan.draft.protocol, None,
+            "没动协议设置就不带，免得洗掉不认识的选项键"
+        );
+        form.x11 = true;
+        let plan = plan_save(&form, Some(&existing), &[], None).expect("合法");
+        assert!(plan.draft.protocol.expect("开了 X11 要写").x11_forwarding);
+    }
+
+    #[test]
+    fn telnet_needs_a_name_and_an_address_but_not_a_user() {
+        let plan = plan_save(&telnet_input(), None, &[], None).expect("没填用户名也合法");
+        assert_eq!(plan.draft.username, "");
+        let settings = plan.draft.protocol.expect("Telnet 要写");
+        assert_eq!(settings.protocol, Protocol::Telnet);
+        assert!(settings.telnet.is_some());
+
+        let mut form = telnet_input();
+        form.address = " ";
+        let err = plan_save(&form, None, &[], None).unwrap_err();
+        assert_eq!(
+            (err.field, err.message.as_str()),
+            (FormField::Address, "名称、地址都不能为空")
+        );
+        let mut form = telnet_input();
+        form.port = "99999";
+        assert_eq!(
+            plan_save(&form, None, &[], None).unwrap_err().field,
+            FormField::Port
+        );
+    }
+
+    #[test]
+    fn telnet_ignores_a_leftover_key_login_and_a_key_identity() {
+        let key = identity(5, "私钥", IdentityKind::KeyFile, false);
+        let password = identity(6, "密码", IdentityKind::Password, true);
+        let mut form = telnet_input();
+        form.auth = AuthMethod::Key;
+        form.identity = Some(key.id);
+        let plan = plan_save(&form, None, &[key.clone(), password.clone()], None).expect("合法");
+        assert_eq!(plan.draft.auth_method, AuthMethod::Password);
+        assert_eq!(
+            plan.draft.identity_id, None,
+            "私钥凭据对 Telnet 没有意义，保存时丢掉"
+        );
+
+        form.identity = Some(password.id);
+        let plan = plan_save(&form, None, &[key, password.clone()], None).expect("合法");
+        assert_eq!(plan.draft.identity_id, Some(password.id));
+    }
+
+    #[test]
+    fn telnet_options_come_from_the_advanced_inputs() {
+        let mut form = telnet_input();
+        form.telnet.newline = TelnetNewline::Lf;
+        form.telnet.local_echo = LocalEcho::On;
+        form.telnet.naws = false;
+        form.telnet.terminal_type = " vt100 ";
+        form.telnet.encoding = TextEncoding::Gbk;
+        form.telnet.auto_login = true;
+        form.telnet.username_prompts = "login:，用户名:";
+        form.telnet.raw_tcp = true;
+        let options = plan_save(&form, None, &[], None)
+            .expect("合法")
+            .draft
+            .protocol
+            .and_then(|settings| settings.telnet)
+            .expect("Telnet 选项");
+        assert_eq!(options.newline, TelnetNewline::Lf);
+        assert_eq!(options.local_echo, LocalEcho::On);
+        assert!(!options.naws && options.raw_tcp);
+        assert_eq!(options.terminal_type, "vt100");
+        assert_eq!(options.encoding, TextEncoding::Gbk);
+        assert!(options.auto_login.enabled);
+        assert_eq!(
+            options.auto_login.username_patterns,
+            vec!["login:", "用户名:"]
+        );
+    }
+
+    #[test]
+    fn serial_needs_only_a_name_and_a_device_and_drops_the_network_fields() {
+        let mut form = serial_input();
+        form.address = "ignored";
+        form.port = "2222";
+        form.username = "ops";
+        form.proxy_mode = ProxyMode::Custom;
+        form.proxy = Some(3);
+        form.jump = Some(4);
+        form.identity = Some(7);
+        form.password = "typed";
+        let plan = plan_save(&form, None, &[], None).expect("合法");
+        let draft = plan.draft;
+        assert_eq!(
+            (draft.host.as_str(), draft.port, draft.username.as_str()),
+            ("", 0, "")
+        );
+        assert_eq!(draft.proxy_mode, ProxyMode::None);
+        assert_eq!(
+            (draft.proxy_id, draft.jump_host_id, draft.identity_id),
+            (None, None, None)
+        );
+        assert_eq!(
+            plan.identity,
+            IdentityAction::None,
+            "串口没有密码，不动保险库"
+        );
+        let serial = draft.protocol.and_then(|p| p.serial).expect("串口选项");
+        assert_eq!(
+            (serial.device.as_str(), serial.baud_rate),
+            ("COM3", 115_200)
+        );
+    }
+
+    #[test]
+    fn serial_errors_land_on_the_device_and_the_baud_rate() {
+        let mut form = serial_input();
+        form.serial.device = "  ";
+        assert_eq!(
+            plan_save(&form, None, &[], None).unwrap_err().field,
+            FormField::Device
+        );
+        let mut form = serial_input();
+        form.serial.baud = "fast";
+        let err = plan_save(&form, None, &[], None).unwrap_err();
+        assert_eq!(err.field, FormField::Baud);
+        form.name = "";
+        assert_eq!(
+            plan_save(&form, None, &[], None).unwrap_err().field,
+            FormField::Name
+        );
+    }
+
+    /// 经过真实的库保存：三种协议都能落库再读回来，核心库的校验错误能落到字段上。
+    #[test]
+    fn saving_each_protocol_through_the_real_database_round_trips() {
+        use super::super::protocol_form::locate_error;
+        let db = zssh_core::store::Database::open_in_memory().expect("内存库");
+
+        let mut telnet = telnet_input();
+        telnet.name = "sw";
+        telnet.telnet.auto_login = true;
+        telnet.username = "admin";
+        let saved = db
+            .host_save(&plan_save(&telnet, None, &[], None).unwrap().draft)
+            .expect("Telnet");
+        assert_eq!(saved.protocol.protocol, Protocol::Telnet);
+        assert!(saved.protocol.telnet.expect("选项").auto_login.enabled);
+
+        let mut serial = serial_input();
+        serial.name = "console";
+        serial.serial.baud = "9600";
+        let saved_serial = db
+            .host_save(&plan_save(&serial, None, &[], None).unwrap().draft)
+            .expect("串口");
+        assert_eq!(saved_serial.protocol.serial.expect("选项").baud_rate, 9600);
+        assert_eq!(saved_serial.host, "");
+
+        // 核心库的校验：自动登录开了但没填用户名 → 落在自动登录上。
+        let mut bad = telnet_input();
+        bad.name = "sw2";
+        bad.telnet.auto_login = true;
+        let draft = plan_save(&bad, None, &[], None).unwrap().draft;
+        let err = db.host_save(&draft).unwrap_err().to_string();
+        assert_eq!(locate_error(&err), FormField::AutoLogin, "{err}");
+
+        // 编辑已有的 Telnet 主机改成 SSH：允许；改成串口：核心库拒绝。
+        let existing = db.host_get(saved.id).unwrap();
+        let mut back = input();
+        back.name = "sw";
+        let plan = plan_save(&back, Some(&existing), &[], None).unwrap();
+        let ssh = db.host_save(&plan.draft).expect("改回 SSH");
+        assert!(ssh.protocol.is_plain_ssh());
+        let mut to_serial = serial_input();
+        to_serial.name = "sw";
+        let plan = plan_save(&to_serial, Some(&ssh), &[], None).unwrap();
+        assert!(db.host_save(&plan.draft).is_err());
     }
 }

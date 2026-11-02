@@ -11,6 +11,8 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use zssh_core::model::Protocol;
+
 use crate::app_theme::Tokens;
 
 /// 字段：上面一行小标签（可带灰色的补充说明），下面是控件。
@@ -37,6 +39,91 @@ pub fn field(label: &str, hint: Option<String>, control: impl IntoElement, token
                 })),
         )
         .child(control)
+}
+
+/// 同 [`field`]，控件下面多一行红色的错误提示（保存校验的结果落在对应字段旁）。
+pub fn field_with_error(
+    label: &str,
+    hint: Option<String>,
+    control: impl IntoElement,
+    error: Option<&str>,
+    tokens: &Tokens,
+) -> Div {
+    let body = v_flex()
+        .w_full()
+        .min_w_0()
+        .gap_1p5()
+        .child(control)
+        .children(error.map(|text| error_note(text.to_owned(), tokens.danger)));
+    field(label, hint, body, tokens)
+}
+
+/// 分段按钮：一排互斥的选项，选中的高亮（协议选择、执行模式这类三五个选项的开关）。
+/// `options` 里每项是（文字，是否选中，不可选时的悬停说明——`None` 表示可选）。
+pub fn segmented(
+    id: &'static str,
+    options: Vec<(String, bool, Option<&'static str>)>,
+    on_pick: impl Fn(usize, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let on_pick = std::rc::Rc::new(on_pick);
+    h_flex()
+        .w_full()
+        .gap_1()
+        .children(
+            options
+                .into_iter()
+                .enumerate()
+                .map(|(index, (label, selected, locked))| {
+                    let on_pick = on_pick.clone();
+                    let button = Button::new((id, index))
+                        .label(label)
+                        .compact()
+                        .flex_1()
+                        .when(selected, |b| b.primary())
+                        .when(!selected, |b| b.outline())
+                        .disabled(locked.is_some());
+                    let button = match locked {
+                        Some(reason) => button.tooltip(reason),
+                        None => button,
+                    };
+                    button.on_click(move |_, window, cx| on_pick(index, window, cx))
+                }),
+        )
+}
+
+/// 可折叠区块的标题行：小箭头 + 文字，整行可点。
+pub fn collapse_header(
+    id: impl Into<SharedString>,
+    title: &str,
+    open: bool,
+    on_toggle: impl Fn(&mut Window, &mut App) + 'static,
+    tokens: &Tokens,
+) -> ::gpui::Stateful<Div> {
+    let hover = tokens.hover;
+    div()
+        .id(id.into())
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .w_full()
+        .px_1()
+        .py_1p5()
+        .rounded_md()
+        .cursor_pointer()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(tokens.text_muted)
+        .hover(move |style| style.bg(hover))
+        .child(
+            Icon::new(if open {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            })
+            .size_3p5(),
+        )
+        .child(SharedString::from(title.to_owned()))
+        .on_click(move |_, window, cx| on_toggle(window, cx))
 }
 
 /// 面板里的一组字段：全大写风格的小标题 + 内容。
@@ -150,6 +237,15 @@ pub fn switch_row(
                 .checked(checked)
                 .on_click(move |_, window, cx| on_toggle(window, cx)),
         )
+}
+
+/// 协议的图标：SSH 是方框终端，Telnet 是命令行，串口是线缆。
+pub fn protocol_icon(protocol: Protocol) -> Icon {
+    match protocol {
+        Protocol::Ssh => Icon::new(IconName::SquareTerminal),
+        Protocol::Telnet => Icon::new(crate::icons::Ico::Terminal),
+        Protocol::Serial => Icon::new(crate::icons::Ico::Cable),
+    }
 }
 
 /// 小徽标。

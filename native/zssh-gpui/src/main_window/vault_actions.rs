@@ -124,6 +124,10 @@ impl MainWindow {
 
     /// 打开这台主机的文件视图：主窗口里的 SFTP 标签（0.2.14 同样是主视图标签）。
     pub(crate) fn open_sftp(&mut self, host_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.caps_of(host_id).sftp {
+            self.ssh_only_notice(Some(host_id), "文件（SFTP）", window, cx);
+            return;
+        }
         let factory = self
             .workspace
             .read(cx)
@@ -144,6 +148,10 @@ impl MainWindow {
     ) {
         let origin = self.workspace.read(cx).tab_origin(index);
         if let Some((host_id, factory)) = origin {
+            if !self.caps_of(host_id).sftp {
+                self.ssh_only_notice(Some(host_id), "文件（SFTP）", window, cx);
+                return;
+            }
             self.open_sftp_tab(host_id, factory, window, cx);
         }
     }

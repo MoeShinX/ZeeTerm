@@ -284,6 +284,7 @@ impl Rig {
             username: "root".to_owned(),
             current,
             pinned: !current,
+            refusal: None,
         }];
         for existing in self.tools.scope().targets() {
             if let Some(id) = zssh_core::ai::protocol::parse_host_target_id(&existing.id)
@@ -295,6 +296,7 @@ impl Rig {
                     username: existing.username.clone(),
                     current: existing.current,
                     pinned: existing.pinned,
+                    refusal: None,
                 });
             }
         }

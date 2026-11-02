@@ -83,8 +83,7 @@ impl MainWindow {
             let host_id = *id;
             let open = entity.clone();
             let name: SharedString = host.name.clone().into();
-            let detail: SharedString =
-                format!("{}@{}:{}", host.username, host.host, host.port).into();
+            let detail: SharedString = super::protocol_form::host_detail(host).into();
             Some(
                 h_flex()
                     .id(("launcher-row", at))
@@ -97,7 +96,7 @@ impl MainWindow {
                     .when(at == cursor, |d| d.bg(tokens.accent_soft))
                     .when(at != cursor, |d| d.hover(move |style| style.bg(hover)))
                     .child(
-                        Icon::new(IconName::SquareTerminal)
+                        super::widgets::protocol_icon(host.protocol.protocol)
                             .size_4()
                             .text_color(tokens.accent),
                     )

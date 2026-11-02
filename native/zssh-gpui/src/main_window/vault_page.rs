@@ -12,14 +12,15 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use zssh_core::model::Host;
+use zssh_core::model::{Host, Protocol};
 
 use super::drag::{DragHost, DragItem, DropHint, Scope};
 use super::page_logic::{
     Density, OrderState, PageOptions, SortMode, ViewMode, page_hosts, ungrouped_label,
 };
+use super::protocol_form;
 use super::vault_menus::{HostMenuSpec, host_menu};
-use super::widgets::{BadgeKind, act, badge};
+use super::widgets::{BadgeKind, act, badge, protocol_icon};
 use super::{GroupSel, MainWindow};
 use crate::app_theme::Tokens;
 
@@ -544,17 +545,26 @@ impl MainWindow {
             .group_id
             .and_then(|gid| self.store.groups().iter().find(|g| g.id == gid))
             .map(|g| g.name.clone());
-        let has_badges = group_name.is_some() || !host.tags.is_empty() || host.legacy_algorithms;
+        // 紧凑卡片没有别的徽标时只靠图标分辨 SSH；Telnet / 串口主机一定带一个协议标签。
+        let has_badges = group_name.is_some()
+            || !host.tags.is_empty()
+            || host.legacy_algorithms
+            || host.protocol.protocol != Protocol::Ssh;
         let hover = tokens.subtle;
         let spec = HostMenuSpec::new(self, id, order);
         let menu_entity = entity.clone();
-        let detail: SharedString = format!("{}@{}:{}", host.username, host.host, host.port).into();
+        let detail: SharedString = protocol_form::host_detail(host).into();
         let badges = h_flex()
             .flex_1()
             .min_w_0()
             .flex_wrap()
             .gap_1()
             .items_center()
+            .child(badge(
+                protocol_form::protocol_tag(host.protocol.protocol),
+                BadgeKind::Outline,
+                tokens,
+            ))
             .children(group_name.map(|name| badge(name, BadgeKind::Neutral, tokens)))
             .children(
                 host.tags
@@ -564,54 +574,53 @@ impl MainWindow {
             .when(host.legacy_algorithms, |d| {
                 d.child(badge("旧算法", BadgeKind::Outline, tokens))
             });
-        let top =
-            h_flex()
-                .gap_2p5()
-                .items_center()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(if compact { 28.0 } else { 36.0 }))
-                        .flex_none()
-                        .rounded_md()
-                        .bg(if selected {
-                            tokens.accent_soft
+        let top = h_flex()
+            .gap_2p5()
+            .items_center()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(if compact { 28.0 } else { 36.0 }))
+                    .flex_none()
+                    .rounded_md()
+                    .bg(if selected {
+                        tokens.accent_soft
+                    } else {
+                        tokens.subtle
+                    })
+                    .child(protocol_icon(host.protocol.protocol).size_4().text_color(
+                        if selected {
+                            tokens.accent
                         } else {
-                            tokens.subtle
-                        })
-                        .child(Icon::new(IconName::SquareTerminal).size_4().text_color(
-                            if selected {
-                                tokens.accent
-                            } else {
-                                tokens.text_muted
-                            },
-                        )),
-                )
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .truncate()
-                                .text_sm()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(SharedString::from(host.name.clone())),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .text_xs()
-                                .font_family("Consolas")
-                                .text_color(tokens.text_muted)
-                                .child(detail),
-                        ),
-                )
-                .when(compact && !has_badges, |d| {
-                    d.child(self.card_buttons(host, compact, false, cx))
-                });
+                            tokens.text_muted
+                        },
+                    )),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(SharedString::from(host.name.clone())),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .font_family("Consolas")
+                            .text_color(tokens.text_muted)
+                            .child(detail),
+                    ),
+            )
+            .when(compact && !has_badges, |d| {
+                d.child(self.card_buttons(host, compact, false, cx))
+            });
         let el = v_flex()
             .id(("host-card", id as usize))
             .relative()
@@ -731,7 +740,7 @@ impl MainWindow {
             }))
             .children(self.insert_line(id, false, tokens))
             .child(
-                Icon::new(IconName::SquareTerminal)
+                protocol_icon(host.protocol.protocol)
                     .size_4()
                     .text_color(if selected {
                         tokens.accent
@@ -755,11 +764,13 @@ impl MainWindow {
                     .text_xs()
                     .font_family("Consolas")
                     .text_color(tokens.text_muted)
-                    .child(SharedString::from(format!(
-                        "{}@{}:{}",
-                        host.username, host.host, host.port
-                    ))),
+                    .child(SharedString::from(protocol_form::host_detail(host))),
             )
+            .child(div().w(px(56.0)).flex_none().child(badge(
+                protocol_form::protocol_tag(host.protocol.protocol),
+                BadgeKind::Outline,
+                tokens,
+            )))
             .when(!narrow, |d| {
                 d.child(
                     div()

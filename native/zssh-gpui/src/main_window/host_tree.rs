@@ -93,7 +93,9 @@ pub fn host_matches(host: &Host, text: &str) -> bool {
         return true;
     }
     host.name.to_lowercase().contains(&query)
-        || host.host.to_lowercase().contains(&query)
+        || super::protocol_form::host_search_address(host)
+            .to_lowercase()
+            .contains(&query)
         || host.username.to_lowercase().contains(&query)
         || host
             .tags

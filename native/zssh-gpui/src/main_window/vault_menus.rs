@@ -5,10 +5,12 @@
 
 use ::gpui::ClickEvent;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
 use gpui_kit::*;
 
 use super::page_logic::{OrderState, flatten_groups, ungrouped_move_label};
+use super::protocol_form::{Caps, SSH_ONLY_HINT};
 use super::{CopyField, MainWindow};
 
 /// 「移动到分组」子菜单里的一项。
@@ -20,10 +22,40 @@ pub struct MoveTarget {
     pub current: bool,
 }
 
+/// 只有 SSH 主机能用的菜单项：Telnet / 串口主机上置灰，悬停说明「仅 SSH 主机可用」。
+pub fn ssh_only_item(
+    label: &'static str,
+    icon: Option<crate::icons::Ico>,
+    enabled: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> PopupMenuItem {
+    if enabled {
+        let item = PopupMenuItem::new(label).on_click(on_click);
+        return match icon {
+            Some(icon) => item.icon(icon),
+            None => item,
+        };
+    }
+    let item = PopupMenuItem::element(move |_window, _cx| {
+        div()
+            .id(label)
+            .w_full()
+            .tooltip(|window, cx| Tooltip::new(SSH_ONLY_HINT).build(window, cx))
+            .child(label)
+    })
+    .disabled(true);
+    match icon {
+        Some(icon) => item.icon(icon),
+        None => item,
+    }
+}
+
 /// 一台主机的右键菜单要用的状态。
 #[derive(Clone)]
 pub struct HostMenuSpec {
     pub host_id: i64,
+    /// 这台主机的协议决定哪些项能用（SFTP / 端口转发 / 安装公钥只有 SSH）。
+    pub caps: Caps,
     pub can_copy_password: bool,
     pub targets: Vec<MoveTarget>,
     /// 上移 / 下移：`(能上移, 能下移)`。
@@ -56,6 +88,7 @@ impl HostMenuSpec {
         }
         Self {
             host_id,
+            caps: host.map_or(Caps::ALL, |h| Caps::of(h.protocol.protocol)),
             can_copy_password: host
                 .is_some_and(|h| super::page_logic::can_copy_password(h, store.identities())),
             targets,
@@ -106,13 +139,14 @@ pub fn host_menu(
                 this.open_host_in_new_tab(id, window, cx);
             })),
         )
-        .item(
-            PopupMenuItem::new("打开 SFTP")
-                .icon(crate::icons::Ico::FolderTree)
-                .on_click(run(entity, move |this, window, cx| {
-                    this.open_sftp(id, window, cx)
-                })),
-        )
+        .item(ssh_only_item(
+            "打开 SFTP",
+            Some(crate::icons::Ico::FolderTree),
+            spec.caps.sftp,
+            run(entity, move |this, window, cx| {
+                this.open_sftp(id, window, cx)
+            }),
+        ))
         .item(
             PopupMenuItem::new("编辑")
                 .icon(crate::icons::Ico::Pencil)
@@ -143,20 +177,22 @@ pub fn host_menu(
                 this.copy_host_info(id, window, cx)
             })),
         )
-        .item(
-            PopupMenuItem::new("安装公钥…")
-                .icon(crate::icons::Ico::KeyRound)
-                .on_click(run(entity, move |this, window, cx| {
-                    this.open_install_key_dialog(id, window, cx);
-                })),
-        )
-        .item(
-            PopupMenuItem::new("端口转发…")
-                .icon(crate::icons::Ico::ArrowLeftRight)
-                .on_click(run(entity, move |this, _window, cx| {
-                    this.open_forwards(Some(id), cx)
-                })),
-        );
+        .item(ssh_only_item(
+            "安装公钥…",
+            Some(crate::icons::Ico::KeyRound),
+            spec.caps.ssh,
+            run(entity, move |this, window, cx| {
+                this.open_install_key_dialog(id, window, cx);
+            }),
+        ))
+        .item(ssh_only_item(
+            "端口转发…",
+            Some(crate::icons::Ico::ArrowLeftRight),
+            spec.caps.port_forward,
+            run(entity, move |this, _window, cx| {
+                this.open_forwards(Some(id), cx)
+            }),
+        ));
     let targets = spec.targets.clone();
     let move_entity = entity.clone();
     menu = menu.submenu("移动到分组", window, cx, move |sub, _window, _cx| {

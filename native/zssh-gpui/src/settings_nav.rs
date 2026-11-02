@@ -222,7 +222,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         keys: "Ctrl+Shift+F",
-        what: "开关文件（SFTP）面板",
+        what: "开关文件（SFTP）面板（仅 SSH 主机）",
+    },
+    Shortcut {
+        keys: "Ctrl+Shift+K",
+        what: "发送 Break（串口标签；右键标签也有）",
     },
     Shortcut {
         keys: "Ctrl+= / Ctrl+- / Ctrl+0",
@@ -422,6 +426,7 @@ mod tests {
             "Ctrl+Shift+E",
             "Ctrl+Tab / Ctrl+Shift+Tab",
             "Ctrl+,",
+            "Ctrl+Shift+K",
         ] {
             assert!(keys.contains(&needed), "缺 {needed}");
         }

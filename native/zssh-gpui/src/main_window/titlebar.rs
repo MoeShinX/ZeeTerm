@@ -303,12 +303,18 @@ impl MainWindow {
         };
         let files = {
             let entity = entity.clone();
+            // Telnet / 串口标签没有 SFTP：按钮变灰、悬停说明，点了也只提示一句。
+            let sftp_ok = self.active_caps(cx).sftp;
             icon_button(
                 "files-button",
                 crate::icons::Ico::FolderOpen,
-                "文件 (Ctrl+Shift+F)",
+                if sftp_ok {
+                    "文件 (Ctrl+Shift+F)"
+                } else {
+                    "文件（仅 SSH 主机可用）"
+                },
                 self.docks.sftp_open && self.nav.view == MainView::Terminal,
-                true,
+                sftp_ok,
                 tokens,
             )
             .on_click(move |_, window, cx| {
@@ -521,6 +527,9 @@ impl MainWindow {
         let can_reconnect = info.can_reconnect;
         let can_disconnect = info.can_disconnect;
         let has_host = info.host_id.is_some();
+        let caps = info
+            .host_id
+            .map_or(super::protocol_form::Caps::ALL, |id| self.caps_of(id));
         let select = entity.clone();
         let middle = entity.clone();
         let close = entity.clone();
@@ -631,7 +640,8 @@ impl MainWindow {
                 drag_entity.update(cx, |this, _cx| this.press_terminal_tab(tab_id, title, pos));
             })
             .context_menu(move |menu, _window, _cx| {
-                let (reconnect, disconnect, duplicate, copy, sftp) = (
+                let (reconnect, disconnect, duplicate, copy, sftp, send_break) = (
+                    menu_entity.clone(),
                     menu_entity.clone(),
                     menu_entity.clone(),
                     menu_entity.clone(),
@@ -660,7 +670,13 @@ impl MainWindow {
                         }),
                 )
                 .item(
-                    PopupMenuItem::new("复制标签页").on_click(move |_, window, cx| {
+                    PopupMenuItem::new(if caps.send_break {
+                        "复制标签页（串口只能开一个）"
+                    } else {
+                        "复制标签页"
+                    })
+                    .disabled(caps.send_break)
+                    .on_click(move |_, window, cx| {
                         duplicate.update(cx, |this, cx| this.duplicate_tab(index, window, cx));
                     }),
                 )
@@ -669,13 +685,26 @@ impl MainWindow {
                         copy.update(cx, |this, cx| this.copy_tab_address(index, window, cx));
                     },
                 ))
-                .item(
+                .item(if has_host && !caps.sftp {
+                    // Telnet / 串口标签：置灰并说明原因。
+                    super::vault_menus::ssh_only_item("打开 SFTP", None, false, |_, _, _| {})
+                } else {
                     PopupMenuItem::new("打开 SFTP")
                         .disabled(!has_host)
                         .on_click(move |_, window, cx| {
                             sftp.update(cx, |this, cx| this.open_sftp_from_tab(index, window, cx));
-                        }),
-                )
+                        })
+                })
+                .when(caps.send_break, |menu| {
+                    menu.item(
+                        PopupMenuItem::new("发送 Break")
+                            .disabled(!can_disconnect)
+                            .on_click(move |_, window, cx| {
+                                send_break
+                                    .update(cx, |this, cx| this.send_break_tab(index, window, cx));
+                            }),
+                    )
+                })
                 .item(PopupMenuItem::separator())
                 .item(PopupMenuItem::new("关闭").on_click(move |_, window, cx| {
                     close.update(cx, |this, cx| this.close_tab(index, window, cx));

@@ -19,8 +19,9 @@ use zssh_core::model::Host;
 use super::drag::{DragChip, DragGroup, DragHost, DragItem, DropHint, Scope};
 use super::host_tree::{self, TreeRow};
 use super::page_logic::host_info_rows;
+use super::protocol_form;
 use super::vault_menus::{GroupMenuSpec, HostMenuSpec, group_menu, host_menu, ungrouped_menu};
-use super::widgets::{act, icon_button};
+use super::widgets::{act, icon_button, protocol_icon};
 use super::{GroupSel, MainWindow};
 use crate::app_theme::Tokens;
 
@@ -58,8 +59,9 @@ pub fn match_hint(host: &Host, term: &str) -> Option<String> {
     if host.name.to_lowercase().contains(term) {
         return None;
     }
-    if host.host.to_lowercase().contains(term) {
-        return Some(host.host.clone());
+    let address = protocol_form::host_search_address(host);
+    if address.to_lowercase().contains(term) {
+        return Some(address);
     }
     if host.username.to_lowercase().contains(term) {
         return Some(host.username.clone());
@@ -681,7 +683,7 @@ impl MainWindow {
                 .children(self.tree_insert_line(host_id, tokens))
                 .child(div().w(px(16.0)).flex_none())
                 .child(
-                    Icon::new(IconName::SquareTerminal)
+                    protocol_icon(host.protocol.protocol)
                         .size_3p5()
                         .text_color(tokens.accent),
                 )
@@ -703,6 +705,18 @@ impl MainWindow {
                         .text_color(tokens.text_muted)
                         .child(SharedString::from(hint))
                 }))
+                .when(
+                    host.protocol.protocol != zssh_core::model::Protocol::Ssh,
+                    |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .text_xs()
+                                .text_color(tokens.text_muted)
+                                .child(protocol_form::protocol_tag(host.protocol.protocol)),
+                        )
+                    },
+                )
                 .on_click(move |event, window, cx| {
                     if event.click_count() >= 2 {
                         // 双击会先后来两次单击：先取消待执行的「再点收起」，免得属性面板来回闪。

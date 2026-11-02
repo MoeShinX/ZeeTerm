@@ -127,6 +127,19 @@ pub struct ForwardUi {
 impl MainWindow {
     /// 打开转发面板；`host` 为空看全部。
     pub(crate) fn open_forwards(&mut self, host: Option<i64>, cx: &mut Context<Self>) {
+        // Telnet / 串口主机没有端口转发：不打开（规则只能建在 SSH 主机上）。
+        if let Some(id) = host
+            && !self.caps_of(id).port_forward
+        {
+            let (name, label) = self
+                .store
+                .host(id)
+                .map(|h| (h.name.clone(), h.protocol.protocol.label()))
+                .unwrap_or_default();
+            // 入口（右键菜单）上这一项已经置灰，走到这里的是调试驱动之类的间接调用。
+            tracing::info!(host = %name, protocol = label, "端口转发只有 SSH 主机能用，没有打开");
+            return;
+        }
         self.forward_ui.host_filter = host;
         self.forward_ui.draft = None;
         self.panels.open_side(FORWARDS);
@@ -134,11 +147,13 @@ impl MainWindow {
     }
 
     pub(super) fn forward_new(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(host_id) = self
-            .forward_ui
-            .host_filter
-            .or_else(|| self.store.hosts().first().map(|h| h.id))
-        else {
+        let Some(host_id) = self.forward_ui.host_filter.or_else(|| {
+            self.store
+                .hosts()
+                .iter()
+                .find(|h| h.protocol.supports_port_forward())
+                .map(|h| h.id)
+        }) else {
             return;
         };
         let draft = self.make_forward_draft(
@@ -355,7 +370,12 @@ impl MainWindow {
             None => "端口转发".to_owned(),
             Some(id) => format!("端口转发 · {}", host_name(id)),
         };
-        let can_create = ui.host_filter.is_some() || !hosts.is_empty();
+        // 端口转发只能建在 SSH 主机上：Telnet / 串口主机不出现在选择里。
+        let ssh_hosts: Vec<&zssh_core::model::Host> = hosts
+            .iter()
+            .filter(|h| h.protocol.supports_port_forward())
+            .collect();
+        let can_create = ui.host_filter.is_some() || !ssh_hosts.is_empty();
 
         let rows: Vec<AnyElement> = visible
             .iter()
@@ -498,8 +518,8 @@ impl MainWindow {
                 ForwardKind::Remote => "远程转发（-R）：服务器端口 → 本机这边",
             };
             let bind_text = draft.bind_host.read(cx).value().to_string();
-            let host_ids: Vec<i64> = hosts.iter().map(|h| h.id).collect();
-            let host_choices: Vec<Choice> = hosts
+            let host_ids: Vec<i64> = ssh_hosts.iter().map(|h| h.id).collect();
+            let host_choices: Vec<Choice> = ssh_hosts
                 .iter()
                 .map(|h| Choice::new(h.name.clone(), h.id == draft.host_id))
                 .collect();

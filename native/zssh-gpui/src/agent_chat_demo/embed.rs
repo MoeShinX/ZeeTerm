@@ -172,7 +172,14 @@ impl AgentChatDemo {
         let ids: Vec<i64> = scope_targets::build(current, &embed.pins, &embed.ctx.open_hosts)
             .into_iter()
             .map(|target| target.host_id)
-            .filter(|id| embed.ctx.hosts.iter().any(|host| host.id == *id))
+            // Telnet / 串口主机在目标栏里显示（置灰写原因），但不能当执行目标：不给桥。
+            .filter(|id| {
+                embed
+                    .ctx
+                    .hosts
+                    .iter()
+                    .any(|host| host.id == *id && host.refusal.is_none())
+            })
             .collect();
         let changed = ids != self.selected_hosts;
         self.selected_hosts = ids;
@@ -210,6 +217,15 @@ impl AgentChatDemo {
             return;
         };
         let name = host.name.clone();
+        if let Some(reason) = host.refusal.clone() {
+            embed.picker_open = false;
+            self.link_notice = Some(super::Notice {
+                text: format!("「{name}」不能加进目标：{reason}"),
+                error: true,
+            });
+            cx.notify();
+            return;
+        }
         let (pins, already) = scope_targets::pin_host(
             &embed.pins,
             host_id,
@@ -978,14 +994,28 @@ impl AgentChatDemo {
 
         // ---- 第二行：目标主机标签 ----
         let targets = self.embed_targets();
+        // 不能当执行目标的主机（Telnet / 串口）：目标栏里仍然列出来，置灰并写原因。
+        let refusal_of = |host_id: i64| -> Option<String> {
+            embed.and_then(|e| {
+                e.ctx
+                    .hosts
+                    .iter()
+                    .find(|host| host.id == host_id)
+                    .and_then(|host| host.refusal.clone())
+            })
+        };
+        let refused_reason: Option<String> =
+            targets.iter().find_map(|target| refusal_of(target.host_id));
         let target_chips = targets.iter().enumerate().map(|(index, target)| {
             let entity = entity.clone();
             let host_id = target.host_id;
             let removable = target.pinned;
-            let label: SharedString = if target.current {
-                format!("{}（当前）", target.name).into()
-            } else {
-                target.name.clone().into()
+            let refusal = refusal_of(host_id);
+            let label: SharedString = match (target.current, refusal.is_some()) {
+                (true, true) => format!("{}（当前，不可用）", target.name).into(),
+                (true, false) => format!("{}（当前）", target.name).into(),
+                (false, true) => format!("{}（不可用）", target.name).into(),
+                (false, false) => target.name.clone().into(),
             };
             h_flex()
                 .id(("ai-target", index))
@@ -996,7 +1026,11 @@ impl AgentChatDemo {
                 .rounded_md()
                 .border_1()
                 .border_color(tokens.border)
-                .bg(tokens.accent_soft)
+                .when(refusal.is_none(), |d| d.bg(tokens.accent_soft))
+                .when(refusal.is_some(), |d| d.text_color(muted))
+                .when_some(refusal.clone(), |d, reason| {
+                    d.tooltip(move |window, cx| Tooltip::new(reason.clone()).build(window, cx))
+                })
                 .text_xs()
                 .child(div().truncate().max_w(px(160.0)).child(label))
                 .when(removable && !target.current, |d| {
@@ -1064,7 +1098,13 @@ impl AgentChatDemo {
                         .text_color(tokens.dot_connecting)
                         .child(NO_HOST_HINT),
                 )
-            });
+            })
+            .children(refused_reason.map(|reason| {
+                div()
+                    .text_xs()
+                    .text_color(tokens.dot_connecting)
+                    .child(SharedString::from(reason))
+            }));
 
         // ---- @ 选主机的列表 ----
         let input_text = self.input.read(cx).value().to_string();
@@ -1110,6 +1150,7 @@ impl AgentChatDemo {
                     let entity = entity.clone();
                     let host_id = *id;
                     let strip = mention.is_some();
+                    let refusal = refusal_of(host_id);
                     div()
                         .id(("ai-mention", index))
                         .px_2()
@@ -1117,8 +1158,18 @@ impl AgentChatDemo {
                         .rounded_md()
                         .text_sm()
                         .cursor_pointer()
-                        .hover(move |style| style.bg(hover))
-                        .child(SharedString::from(name.clone()))
+                        .when(refusal.is_none(), |d| d.hover(move |style| style.bg(hover)))
+                        .when(refusal.is_some(), |d| d.text_color(muted))
+                        .when_some(refusal.clone(), |d, reason| {
+                            d.tooltip(move |window, cx| {
+                                Tooltip::new(reason.clone()).build(window, cx)
+                            })
+                        })
+                        .child(SharedString::from(if refusal.is_some() {
+                            format!("{name}（仅 SSH 主机可用）")
+                        } else {
+                            name.clone()
+                        }))
                         .on_click(move |_, window, cx| {
                             entity.update(cx, |this, cx| {
                                 if strip {

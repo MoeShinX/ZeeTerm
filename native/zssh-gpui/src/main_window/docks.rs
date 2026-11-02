@@ -178,6 +178,12 @@ impl MainWindow {
             self.notice("文件面板只在终端标签下可用", window, cx);
             return;
         }
+        // Telnet / 串口主机没有 SFTP：打开面板之前拦下来说明（已经开着的面板随时可以关）。
+        if !self.docks.sftp_open && !self.active_caps(cx).sftp {
+            let host = self.workspace.read(cx).active_host_id();
+            self.ssh_only_notice(host, "文件面板", window, cx);
+            return;
+        }
         self.docks.sftp_open = !self.docks.sftp_open;
         if self.docks.sftp_open {
             self.sync_docks(window, cx);
@@ -308,7 +314,13 @@ impl MainWindow {
         self.store
             .hosts()
             .iter()
-            .map(|host| HostTarget::plain(host.id, host.name.clone(), host.username.clone()))
+            .map(|host| {
+                let mut target =
+                    HostTarget::plain(host.id, host.name.clone(), host.username.clone());
+                // Telnet / 串口主机：列在对话里但不能当目标，原因和工具桥给的是同一句。
+                target.refusal = host.protocol.ai_exec_refusal();
+                target
+            })
             .collect()
     }
 
@@ -392,6 +404,7 @@ impl MainWindow {
         // 又没有未结束传输的视图回收掉（连接回到池里）。
         if self.docks.sftp_open
             && let Some((host_id, factory)) = active_origin
+            && self.caps_of(host_id).sftp
             && !self.docks.sftp.contains_key(&host_id)
         {
             let hidden = self.store.bars().sftp_local_hidden;
@@ -841,7 +854,20 @@ impl MainWindow {
                 .into_any_element(),
             );
         }
+        let non_ssh = host_id
+            .and_then(|id| self.store.host(id))
+            .filter(|host| !host.protocol.supports_sftp())
+            .map(|host| host.protocol.protocol.label());
         let body: AnyElement = match (host_id, view) {
+            _ if non_ssh.is_some() => div()
+                .p_4()
+                .text_sm()
+                .text_color(tokens.text_muted)
+                .child(SharedString::from(format!(
+                    "这是一台 {} 主机，文件面板仅 SSH 主机可用。",
+                    non_ssh.unwrap_or_default()
+                )))
+                .into_any_element(),
             (None, _) => div()
                 .p_4()
                 .text_sm()

@@ -16,6 +16,7 @@ icon_assets!(
         ArrowLeftRight,
         ArrowUpDown,
         ArrowUpRight,
+        Cable,
         Command,
         FolderOpen,
         FolderPlus,
@@ -42,6 +43,7 @@ icon_assets!(
         SendHorizontal,
         Server,
         SquarePen,
+        Terminal,
         Trash
     ]
 );

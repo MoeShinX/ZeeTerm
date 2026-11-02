@@ -24,6 +24,7 @@ mod dev_acts_about;
 mod dev_acts_agent;
 mod dev_acts_dock;
 mod dev_acts_edit;
+mod dev_acts_n4;
 mod dev_acts_pane;
 mod dev_acts_sync;
 mod dev_acts_tcp;
@@ -52,6 +53,8 @@ pub mod page_logic;
 mod pages;
 pub mod panel_width;
 mod privacy;
+mod protocol_caps;
+pub mod protocol_form;
 mod proxy_panel;
 pub mod quick_commands;
 mod quick_panel;
@@ -516,6 +519,8 @@ impl MainWindow {
                 && ws.active_pane_is_live())
             .then(|| ws.active_host_id())
             .flatten()
+            // 服务器状态是在 SSH 连接上跑命令采的：Telnet / 串口标签不订阅，状态栏也不画。
+            .filter(|id| self.caps_of(*id).server_status)
         };
         let mut changed = false;
         if wanted != self.status_host {
@@ -711,6 +716,11 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 串口同一时间只能被一个标签打开：复制出来的标签只会报「被别的程序占用」。
+        if self.tab_caps(index, cx).send_break {
+            self.notice("串口同一时间只能开一个标签，不能复制", window, cx);
+            return;
+        }
         let done = self
             .workspace
             .update(cx, |ws, cx| ws.duplicate_tab(index, cx));
@@ -745,6 +755,39 @@ impl MainWindow {
     ) {
         self.workspace
             .update(cx, |ws, cx| ws.disconnect_tab(index, cx));
+    }
+
+    /// 右键「发送 Break」（串口标签）：给这个标签聚焦的窗格发一个 Break 信号。
+    pub(crate) fn send_break_tab(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let sent = self.workspace.update(cx, |ws, _| ws.send_break_tab(index));
+        if sent {
+            self.notice("已发送 Break", window, cx);
+        } else {
+            self.notice("这个标签没有连着，不能发送 Break", window, cx);
+        }
+    }
+
+    /// Ctrl+Shift+K：给活动的串口标签发 Break；别的标签不处理（返回 `false`，按键照常交给终端）。
+    fn send_break_active(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.nav.view != MainView::Terminal || !self.active_caps(cx).send_break {
+            return false;
+        }
+        let sent = self.workspace.update(cx, |ws, _| ws.send_break_active());
+        self.notice(
+            if sent {
+                "已发送 Break"
+            } else {
+                "这个标签没有连着，不能发送 Break"
+            },
+            window,
+            cx,
+        );
+        true
     }
 
     /// 右键「复制地址」：复制这个标签连的那台主机的地址。
@@ -1081,6 +1124,8 @@ impl MainWindow {
                     self.toggle_ai_panel(window, cx);
                     true
                 }
+                // 串口标签：发送 Break。别的标签上这个组合键不拦，照常交给终端。
+                "k" => self.send_break_active(window, cx),
                 // Ctrl+Shift+F 是文件（SFTP）面板（同 0.2.14）；先拦下来，不然会被终端当成 Ctrl+F 发给远端。
                 "f" => {
                     self.toggle_sftp_dock(window, cx);
@@ -1203,12 +1248,7 @@ impl MainWindow {
         texts.extend(self.store.groups().iter().map(|group| group.name.clone()));
         // 主机页的卡片会显示「用户@地址:端口」，只在主机页上才算画面里的文字。
         if self.nav.view == MainView::Vault {
-            texts.extend(
-                self.store
-                    .hosts()
-                    .iter()
-                    .map(|host| format!("{}@{}:{}", host.username, host.host, host.port)),
-            );
+            texts.extend(self.store.hosts().iter().map(protocol_form::host_detail));
         }
         // 调用方给的禁用片段（地址、用户名）+ 内置规则（公网 IP、Last login、用户目录）。
         // 命中只返回类别或序号，不返回原文：原文正是不能出现的东西。
