@@ -78,6 +78,9 @@ pub trait SessionBackend: Send {
     fn terminal_id(&self) -> Option<String> {
         None
     }
+
+    /// 发送 Break 信号（串口会话的按钮 / 快捷键用）。其他会话没有这个概念，什么都不做。
+    fn send_break(&mut self) {}
 }
 
 /// 最简单的写端：命令进通道，由会话线程消费。

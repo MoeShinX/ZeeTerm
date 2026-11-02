@@ -1556,3 +1556,192 @@ async fn manual_host_and_group_order_syncs_to_the_other_computer() {
     assert_eq!(layer_names(&db_a, Some(alpha)), ["h3", "h1", "h2"]);
     assert_eq!(layer_names(&db_b, Some(b_alpha)), ["h3", "h1", "h2"]);
 }
+
+// ---------- 协议字段（Telnet / 串口 / X11）----------
+
+fn package_version(storage: &MemoryStorage) -> u64 {
+    let bytes = storage.bytes().expect("云端有包");
+    let plaintext = crate::sync::crypto::open(&bytes, PASSWORD).expect("解开");
+    let value: serde_json::Value = serde_json::from_slice(&plaintext).expect("JSON");
+    value["schema_version"].as_u64().expect("有版本号")
+}
+
+fn protocol_draft(name: &str) -> HostDraft {
+    HostDraft {
+        id: None,
+        group_id: None,
+        name: name.to_owned(),
+        host: format!("{name}.example.internal"),
+        port: 23,
+        username: "root".to_owned(),
+        auth_method: AuthMethod::Password,
+        identity_id: None,
+        proxy_id: None,
+        jump_host_id: None,
+        proxy_mode: ProxyMode::None,
+        tags: Vec::new(),
+        sort: 0,
+        legacy_algorithms: false,
+    }
+}
+
+#[tokio::test]
+async fn protocol_hosts_sync_between_computers_and_the_package_version_follows_the_content() {
+    use crate::model::{Protocol, ProtocolSettings};
+
+    let dir_a = temp_dir("proto-a");
+    let dir_b = temp_dir("proto-b");
+    let db_a = Database::open_in_memory().expect("A 库");
+    let db_b = Database::open_in_memory().expect("B 库");
+    let sealer_a = TestSealer(1);
+    let sealer_b = TestSealer(2);
+    let storage = MemoryStorage::new();
+    let engine_a = SyncEngine::new(&db_a, &sealer_a, "dev-a", &dir_a, None, None);
+    let engine_b = SyncEngine::new(&db_b, &sealer_b, "dev-b", &dir_b, None, None);
+
+    // 只有普通 SSH 主机：仍写旧格式，Z-SSH 0.2.14 照常能同步。
+    for name in ["web-1", "web-2", "web-3", "web-4"] {
+        add_host(&db_a, name);
+    }
+    engine_a
+        .sync(&storage, PASSWORD, None)
+        .await
+        .expect("A 同步");
+    assert_eq!(package_version(&storage), 1);
+
+    // 加 Telnet 主机、串口主机，再给一台 SSH 主机开 X11：包升到 2。
+    let mut telnet = ProtocolSettings::new(Protocol::Telnet);
+    telnet.telnet.as_mut().unwrap().auto_login.enabled = true;
+    let (telnet_host, _) = db_a
+        .host_save_with_protocol(&protocol_draft("switch-1"), &telnet)
+        .expect("Telnet 主机");
+    let mut serial = ProtocolSettings::new(Protocol::Serial);
+    serial.serial.as_mut().unwrap().device = "COM3".to_owned();
+    serial.serial.as_mut().unwrap().baud_rate = 9600;
+    let (serial_host, _) = db_a
+        .host_save_with_protocol(&protocol_draft("console-1"), &serial)
+        .expect("串口主机");
+    let web1 = db_a
+        .host_list()
+        .unwrap()
+        .into_iter()
+        .find(|h| h.name == "web-1")
+        .unwrap();
+    let x11 = ProtocolSettings {
+        x11_forwarding: true,
+        ..ProtocolSettings::default()
+    };
+    db_a.host_protocol_set(web1.id, &x11).expect("开 X11");
+
+    engine_a
+        .sync(&storage, PASSWORD, None)
+        .await
+        .expect("A 再同步");
+    assert_eq!(
+        package_version(&storage),
+        2,
+        "有新字段就用新版本，旧客户端会拒绝"
+    );
+
+    // B 拿到的协议设置一个字段不少。
+    engine_b
+        .sync(&storage, PASSWORD, None)
+        .await
+        .expect("B 同步");
+    let by_name = |db: &Database, name: &str| {
+        db.host_list()
+            .unwrap()
+            .into_iter()
+            .find(|h| h.name == name)
+            .unwrap_or_else(|| panic!("缺主机 {name}"))
+    };
+    let b_telnet = by_name(&db_b, "switch-1");
+    assert_eq!(db_b.host_protocol_get(b_telnet.id).unwrap(), telnet);
+    assert_eq!(b_telnet.port, 23);
+    let b_serial = by_name(&db_b, "console-1");
+    assert_eq!(db_b.host_protocol_get(b_serial.id).unwrap(), serial);
+    assert_eq!(
+        (
+            b_serial.host.as_str(),
+            b_serial.port,
+            b_serial.username.as_str()
+        ),
+        ("", 0, "")
+    );
+    assert!(db_b
+        .host_protocol_get(by_name(&db_b, "web-1").id)
+        .unwrap()
+        .x11_enabled());
+    assert!(db_b
+        .host_protocol_get(by_name(&db_b, "web-2").id)
+        .unwrap()
+        .is_plain_ssh());
+
+    // 把新字段都去掉（删主机、关 X11）：包回到旧格式，Z-SSH 0.2.14 又能同步了。
+    db_a.host_delete(telnet_host.id).unwrap();
+    db_a.host_delete(serial_host.id).unwrap();
+    db_a.host_protocol_set(web1.id, &ProtocolSettings::default())
+        .unwrap();
+    engine_a
+        .sync(&storage, PASSWORD, None)
+        .await
+        .expect("A 第三次同步");
+    assert_eq!(package_version(&storage), 1);
+}
+
+#[tokio::test]
+async fn a_package_from_the_legacy_client_does_not_touch_local_protocol_settings() {
+    use crate::model::{Protocol, ProtocolSettings};
+
+    // 云端是旧客户端写的（没有协议字段）；本机有 Telnet 主机 + 同一批 SSH 主机。
+    let dir_old = temp_dir("legacy-old");
+    let dir_new = temp_dir("legacy-new");
+    let db_old = Database::open_in_memory().expect("旧库");
+    let db_new = Database::open_in_memory().expect("新库");
+    let sealer_old = TestSealer(1);
+    let sealer_new = TestSealer(2);
+    let storage = MemoryStorage::new();
+    add_host(&db_old, "web-1");
+    SyncEngine::new(&db_old, &sealer_old, "old", &dir_old, None, None)
+        .sync(&storage, PASSWORD, None)
+        .await
+        .expect("旧客户端上传");
+    assert_eq!(package_version(&storage), 1);
+
+    let engine_new = SyncEngine::new(&db_new, &sealer_new, "new", &dir_new, None, None);
+    engine_new
+        .sync(&storage, PASSWORD, None)
+        .await
+        .expect("新客户端读老包");
+    let web = db_new.host_list().unwrap().remove(0);
+    assert!(db_new.host_protocol_get(web.id).unwrap().is_plain_ssh());
+
+    db_new
+        .host_save_with_protocol(
+            &protocol_draft("switch-1"),
+            &ProtocolSettings::new(Protocol::Telnet),
+        )
+        .unwrap();
+    engine_new
+        .sync(&storage, PASSWORD, None)
+        .await
+        .expect("新客户端上传");
+    assert_eq!(package_version(&storage), 2);
+
+    // 旧客户端（这里的 0.2.14 逻辑见 package::compat_tests）读到它会被拒绝；
+    // 新客户端自己再同步一次不会把 Telnet 主机变回 SSH。
+    engine_new
+        .sync(&storage, PASSWORD, None)
+        .await
+        .expect("再同步");
+    let switch = db_new
+        .host_list()
+        .unwrap()
+        .into_iter()
+        .find(|h| h.name == "switch-1")
+        .unwrap();
+    assert_eq!(
+        db_new.host_protocol_get(switch.id).unwrap().protocol,
+        Protocol::Telnet
+    );
+}

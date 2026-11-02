@@ -14,8 +14,21 @@ use zeroize::Zeroize;
 
 use super::error::SyncError;
 
-/// 明文格式版本。包头的 `version` 是加密信封的版本，这个是明文数据结构的版本。
+/// 基础明文格式版本。包头的 `version` 是加密信封的版本，这个是明文数据结构的版本。
+///
+/// Z-SSH 0.2.14 只认这一版：它解析时丢掉不认识的字段、再原样写回云端，所以任何带新字段的
+/// 数据都不能用这个版本号写出去（见 [`SNAPSHOT_VERSION_PROTOCOLS`]）。
 pub const SNAPSHOT_VERSION: u32 = 1;
+
+/// 带协议字段（Telnet / 串口 / X11）的明文格式版本。
+///
+/// 只有包里确实有非 SSH 主机、X11 转发或协议选项时才用它写（[`SyncSnapshot::required_version`]），
+/// 其余数据仍写 [`SNAPSHOT_VERSION`]，旧版本继续能同步。旧版本读到它会返回
+/// `FormatTooNew`、不改云端也不改本地，而不是静默丢字段。
+pub const SNAPSHOT_VERSION_PROTOCOLS: u32 = 2;
+
+/// 这个版本能读的最高明文格式版本。
+pub const MAX_SNAPSHOT_VERSION: u32 = SNAPSHOT_VERSION_PROTOCOLS;
 
 /// 墓碑保留 90 天。
 pub const TOMBSTONE_RETENTION_SECS: i64 = 90 * 24 * 60 * 60;
@@ -27,7 +40,10 @@ pub const ENTITY_PROXY: &str = "proxy";
 pub const ENTITY_KNOWN_HOST: &str = "known_host";
 
 /// 一个同步快照（云端的“当前版本”或本机的“上次同步基线”都是它）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `Serialize` 手写：写出去的 `schema_version` 永远按内容算（[`SyncSnapshot::required_version`]），
+/// 不信内存里那个字段——合并 / 导入出来的快照字段是 1，但里面可能已经有新字段的主机。
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SyncSnapshot {
     pub schema_version: u32,
     /// 导出这份快照的设备。
@@ -94,6 +110,26 @@ pub struct HostRecord {
     pub updated_at: i64,
     #[serde(default)]
     pub device_id: String,
+    /// 连接协议（`ssh` / `telnet` / `serial`）。SSH 不写出来：老格式的主机记录就是这个样子。
+    #[serde(
+        default = "default_protocol",
+        skip_serializing_if = "is_default_protocol"
+    )]
+    pub protocol: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub x11_forwarding: bool,
+    /// Telnet / 串口选项（`{"telnet": ...}` 或 `{"serial": ...}`）。原样保留，包括这个版本
+    /// 不认识的键。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_options: Option<Value>,
+}
+
+fn default_protocol() -> String {
+    "ssh".to_owned()
+}
+
+fn is_default_protocol(protocol: &String) -> bool {
+    protocol == "ssh"
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -259,6 +295,14 @@ impl HostRecord {
             && self.sort == other.sort
             && self.legacy_algorithms == other.legacy_algorithms
             && self.created_at == other.created_at
+            && self.protocol == other.protocol
+            && self.x11_forwarding == other.x11_forwarding
+            && self.protocol_options == other.protocol_options
+    }
+
+    /// 这条记录带了老版本（Z-SSH 0.2.14）不认识的字段，包必须用 [`SNAPSHOT_VERSION_PROTOCOLS`] 写。
+    pub fn needs_protocol_format(&self) -> bool {
+        self.protocol != "ssh" || self.x11_forwarding || self.protocol_options.is_some()
     }
 }
 
@@ -284,6 +328,38 @@ impl ProxyRecord {
     }
 }
 
+impl Serialize for SyncSnapshot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // 借用的镜像结构：字段顺序和名字与 `SyncSnapshot` 一致，只有版本号是现算的。
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            schema_version: u32,
+            device_id: &'a str,
+            created_at: i64,
+            groups: &'a [GroupRecord],
+            hosts: &'a [HostRecord],
+            identities: &'a [IdentityRecord],
+            proxies: &'a [ProxyRecord],
+            settings: &'a BTreeMap<String, Value>,
+            known_hosts: &'a [KnownHostRecord],
+            tombstones: &'a [Tombstone],
+        }
+        Wire {
+            schema_version: self.required_version(),
+            device_id: &self.device_id,
+            created_at: self.created_at,
+            groups: &self.groups,
+            hosts: &self.hosts,
+            identities: &self.identities,
+            proxies: &self.proxies,
+            settings: &self.settings,
+            known_hosts: &self.known_hosts,
+            tombstones: &self.tombstones,
+        }
+        .serialize(serializer)
+    }
+}
+
 impl SyncSnapshot {
     pub fn empty(device_id: impl Into<String>, created_at: i64) -> Self {
         Self {
@@ -304,10 +380,10 @@ impl SyncSnapshot {
     pub fn parse(bytes: &[u8]) -> Result<Self, SyncError> {
         let snapshot: Self = serde_json::from_slice(bytes)
             .map_err(|err| SyncError::Format(format!("明文 JSON 解析失败：{err}")))?;
-        if snapshot.schema_version > SNAPSHOT_VERSION {
+        if snapshot.schema_version > MAX_SNAPSHOT_VERSION {
             return Err(SyncError::FormatTooNew {
                 found: snapshot.schema_version,
-                supported: SNAPSHOT_VERSION,
+                supported: MAX_SNAPSHOT_VERSION,
             });
         }
         if snapshot.schema_version < SNAPSHOT_VERSION {
@@ -318,6 +394,16 @@ impl SyncSnapshot {
         Ok(snapshot)
     }
 
+    /// 按内容算出写这份快照该用的明文格式版本：有任何带新字段的主机才用
+    /// [`SNAPSHOT_VERSION_PROTOCOLS`]，否则用 [`SNAPSHOT_VERSION`]（旧版本照常能读）。
+    pub fn required_version(&self) -> u32 {
+        if self.hosts.iter().any(HostRecord::needs_protocol_format) {
+            SNAPSHOT_VERSION_PROTOCOLS
+        } else {
+            SNAPSHOT_VERSION
+        }
+    }
+
     pub fn to_json(&self) -> Result<Vec<u8>, SyncError> {
         serde_json::to_vec(self)
             .map_err(|err| SyncError::Internal(format!("同步包序列化失败：{err}")))
@@ -325,6 +411,8 @@ impl SyncSnapshot {
 
     /// 排序成规范顺序，保证同样的数据序列化出来一样（平局规则、测试都靠它）。
     pub fn sort_canonical(&mut self) {
+        // 内存里的版本号跟着内容走，这样"解析出来的"和"刚合并出来的"才能比较相等。
+        self.schema_version = self.required_version();
         self.groups.sort_by(|a, b| a.uid.cmp(&b.uid));
         self.hosts.sort_by(|a, b| a.uid.cmp(&b.uid));
         self.identities.sort_by(|a, b| a.uid.cmp(&b.uid));
@@ -378,3 +466,6 @@ impl SyncSnapshot {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod compat_tests;

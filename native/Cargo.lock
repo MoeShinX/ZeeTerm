@@ -10569,6 +10569,7 @@ dependencies = [
  "zssh-core",
  "zssh-editor",
  "zssh-platform-windows",
+ "zssh-protocols",
  "zssh-regex",
  "zssh-session",
  "zssh-terminal",
@@ -10582,6 +10583,20 @@ dependencies = [
  "tracing",
  "windows 0.62.2",
  "zeroize",
+]
+
+[[package]]
+name = "zssh-protocols"
+version = "0.0.0"
+dependencies = [
+ "encoding_rs",
+ "tokio",
+ "tracing",
+ "windows 0.62.2",
+ "zeroize",
+ "zssh-core",
+ "zssh-session",
+ "zssh-terminal",
 ]
 
 [[package]]

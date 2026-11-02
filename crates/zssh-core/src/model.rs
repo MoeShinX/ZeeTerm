@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ZsshError;
 
+mod protocol;
+pub use protocol::*;
+
 /// SSH 默认端口。
 pub const DEFAULT_SSH_PORT: u16 = 22;
 

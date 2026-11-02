@@ -27,6 +27,7 @@ zssh-app-runtime = { path = "../../crates/zssh-app-runtime" }
 zssh-core = { path = "../../crates/zssh-core" }
 zssh-editor = { path = "../zssh-editor" }
 zssh-platform-windows = { path = "../../crates/zssh-platform-windows" }
+zssh-protocols = { path = "../zssh-protocols" }
 zssh-regex = { path = "../zssh-regex" }
 zssh-session = { path = "../zssh-session" }
 zssh-terminal = { path = "../zssh-terminal" }
