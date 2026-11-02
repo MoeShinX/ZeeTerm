@@ -1090,6 +1090,9 @@ impl MainWindow {
                     .text_color(muted)
                     .hover(move |style| style.bg(hover))
             })
+            .when(active, |d| {
+                d.child(super::titlebar::active_tab_indicator(tokens))
+            })
             .tooltip({
                 let title = title.clone();
                 move |window, cx| Tooltip::new(title.clone()).build(window, cx)

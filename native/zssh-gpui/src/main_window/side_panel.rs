@@ -221,7 +221,7 @@ impl MainWindow {
             .h_full()
             .w(px(width))
             .track_focus(&self.panel_focus)
-            .bg(tokens.background)
+            .bg(tokens.surface)
             .border_l_1()
             .border_color(tokens.border)
             .child(handle)

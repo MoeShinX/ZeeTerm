@@ -25,6 +25,18 @@ const TAB_HEIGHT: f32 = 32.0;
 /// 窗口按钮宽度。
 const CONTROL_WIDTH: f32 = 42.0;
 
+/// 不同类型的标签使用同一条主题色标记，避免只靠背景色区分当前标签。
+pub(super) fn active_tab_indicator(tokens: &Tokens) -> Div {
+    div()
+        .absolute()
+        .top_0()
+        .left(px(10.0))
+        .right(px(10.0))
+        .h(px(2.0))
+        .rounded_full()
+        .bg(tokens.accent)
+}
+
 fn status_color(status: TabStatus, tokens: &Tokens) -> Hsla {
     match status {
         TabStatus::Connecting => tokens.dot_connecting,
@@ -134,13 +146,16 @@ impl MainWindow {
                 entity.update(cx, |this, cx| this.toggle_tree(cx));
             })
         };
-        // 品牌 Logo（透明底 PNG，深浅主题通用），尺寸沿用原来的 18px 标志位。
-        let logo = ::gpui::img(crate::brand::logo()).size(px(18.0)).flex_none();
+        // 在 36px 标题栏中留出呼吸空间，同时让小尺寸的终端标志更容易辨认。
+        let logo = ::gpui::img(crate::brand::logo()).size(px(26.0)).flex_none();
         let vault_active = view == MainView::Vault;
         let vault_button = {
             let entity = entity.clone();
             let hover = tokens.hover;
             let text = tokens.text;
+            // 半透明主题色与标题栏叠合，模拟轻柔的磨砂层。
+            let mut glass = tokens.accent;
+            glass.a = if tokens.dark { 0.16 } else { 0.10 };
             div()
                 .id("host-page-button")
                 .occlude()
@@ -149,26 +164,25 @@ impl MainWindow {
                 .justify_center()
                 .gap_1p5()
                 .h(px(24.0))
-                .px_3()
+                .px_2()
                 .min_w_0()
                 .rounded_md()
                 .border_1()
                 .text_sm()
                 .cursor_pointer()
-                .when(aligned_tree_width.is_some(), |d| d.flex_1())
                 .when(vault_active, |d| {
                     d.border_color(Hsla::transparent_black())
-                        .bg(tokens.accent_soft)
+                        .bg(glass)
                         .text_color(text)
                 })
                 .when(!vault_active, |d| {
-                    d.border_color(tokens.border)
+                    d.border_color(Hsla::transparent_black())
                         .text_color(tokens.text_muted)
                         .hover(move |style| style.bg(hover).text_color(text))
                 })
-                .tooltip(|window, cx| Tooltip::new("主机").build(window, cx))
+                .tooltip(|window, cx| Tooltip::new("会话").build(window, cx))
                 .child(Icon::new(IconName::LayoutDashboard).size_3p5())
-                .child("主机")
+                .child("会话")
                 .on_click(move |_, window, cx| {
                     entity.update(cx, |this, cx| this.show_view(MainView::Vault, window, cx));
                 })
@@ -546,6 +560,7 @@ impl MainWindow {
                     .text_color(muted)
                     .hover(move |style| style.bg(hover))
             })
+            .when(active, |d| d.child(active_tab_indicator(tokens)))
             .tooltip({
                 let title = title.clone();
                 move |window, cx| Tooltip::new(title.clone()).build(window, cx)

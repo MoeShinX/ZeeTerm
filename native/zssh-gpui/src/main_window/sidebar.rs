@@ -10,7 +10,7 @@ use ::gpui::{
 };
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
-use gpui_kit::component::menu::ContextMenuExt as _;
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -26,7 +26,7 @@ use crate::app_theme::Tokens;
 
 /// 缩进：每层 14px，再加行内左边距。
 const INDENT: f32 = 14.0;
-const ROW_HEIGHT: f32 = 28.0;
+const ROW_HEIGHT: f32 = 23.0;
 /// 属性面板固定高度（放得下 7 行：基本 5 行 + 跳板机 + 代理），切换主机时树不会跟着跳。
 const INFO_HEIGHT: f32 = 184.0;
 
@@ -132,31 +132,48 @@ impl MainWindow {
         let top = h_flex()
             .gap_1()
             .items_center()
-            .p_3()
-            .pb_2()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(tokens.border)
             .child(
-                div().flex_1().child(
-                    Button::new("tree-new-host")
-                        .outline()
-                        .label("新建主机")
-                        .icon(IconName::Plus)
-                        .compact()
-                        .w_full()
-                        .on_click(act(&entity, |this, window, cx| this.new_host(window, cx))),
-                ),
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("会话管理器"),
             )
-            .child(icon_button(
-                "tree-collapse",
-                IconName::PanelLeftClose,
-                "收起侧边栏",
-                act(&entity, |this, _window, cx| this.toggle_tree(cx)),
-            ));
+            .child({
+                let entity = entity.clone();
+                Button::new("tree-new-host")
+                    .ghost()
+                    .compact()
+                    .icon(IconName::Plus)
+                    .label("新建")
+                    .dropdown_caret(true)
+                    .tooltip("新建会话或分组")
+                    .dropdown_menu(move |menu, _window, _cx| {
+                        let session = entity.clone();
+                        let group = entity.clone();
+                        menu.item(
+                            PopupMenuItem::new("新建会话").on_click(move |_, window, cx| {
+                                session.update(cx, |this, cx| this.new_host(window, cx));
+                            }),
+                        )
+                        .item(
+                            PopupMenuItem::new("新建分组").on_click(move |_, window, cx| {
+                                group.update(cx, |this, cx| this.new_group(None, window, cx));
+                            }),
+                        )
+                    })
+            });
 
         let list = v_flex()
             .w_full()
-            .px_2()
+            .px_1()
             .pb_2()
-            .gap_0p5()
             .children(rows.iter().enumerate().map(|(at, row)| {
                 self.render_tree_row(at, row, cursor, term.as_deref(), searching, tokens, cx)
             }));
@@ -205,7 +222,7 @@ impl MainWindow {
                 .child(
                     self.store
                         .error()
-                        .unwrap_or("主机库里还没有主机，点上面的「新建主机」添加")
+                        .unwrap_or("还没有会话，点上面的「新建」添加")
                         .to_owned(),
                 )
                 .into_any_element()
@@ -224,13 +241,14 @@ impl MainWindow {
             .w(px(width))
             .h_full()
             .flex_none()
-            .bg(tokens.background)
+            .bg(tokens.surface)
             .border_r_1()
             .border_color(tokens.border)
             .child(top)
             .child(
                 div()
-                    .px_3()
+                    .px_2()
+                    .pt_2()
                     .pb_2()
                     .child(Input::new(&self.tree_query).cleanable(true)),
             )
@@ -250,24 +268,6 @@ impl MainWindow {
                         this.drop_host_on_tree_blank(dragged, window, cx);
                     }))
                     .child(scroll_body),
-            )
-            .child(
-                h_flex()
-                    .flex_none()
-                    .p_2()
-                    .border_t_1()
-                    .border_color(tokens.border)
-                    .child(
-                        Button::new("tree-new-group")
-                            .ghost()
-                            .compact()
-                            .w_full()
-                            .icon(crate::icons::Ico::FolderPlus)
-                            .label("新分组")
-                            .on_click(act(&entity, |this, window, cx| {
-                                this.new_group(None, window, cx)
-                            })),
-                    ),
             )
             .children(info)
             .child(resize)
@@ -782,13 +782,13 @@ fn tree_line(
         .flex()
         .flex_row()
         .items_center()
-        .gap_1p5()
+        .gap_1()
         .h(px(ROW_HEIGHT))
         .w_full()
         .pl(px(6.0 + indent))
         .pr_2()
-        .rounded_md()
-        .text_sm()
+        .rounded_sm()
+        .text_xs()
         .cursor_pointer()
         .when(active, |d| d.bg(tokens.accent_soft))
         .when(!active, |d| d.hover(move |style| style.bg(hover)))
