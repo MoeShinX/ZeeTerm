@@ -199,21 +199,24 @@ fn the_build_script_stages_the_same_files_and_rebuilds_the_mcp_bridge() {
         .join("icon.ico");
     let icon_bytes = std::fs::read(&icon).unwrap_or_else(|err| panic!("读不了安装图标：{err}"));
     assert!(icon_bytes.starts_with(&[0, 0, 1, 0]), "应是 .ico 文件");
-    // 带着 Tauri 版的仓库里，它必须和 0.2.14 Tauri 包用的是同一个图标；独立仓库里没有就跳过。
-    let tauri_icon = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("src-tauri")
-        .join("icons")
-        .join("zssh-z-neon")
-        .join("icon.ico");
-    match std::fs::read(&tauri_icon) {
-        Ok(tauri_bytes) => assert_eq!(icon_bytes, tauri_bytes, "安装图标应与 Tauri 版相同"),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            println!("跳过与 Tauri 版图标的比对：没有 src-tauri/（独立导出的原生版仓库）");
-        }
-        Err(err) => panic!("读 {} 失败：{err}", tauri_icon.display()),
-    }
+    // 安装包图标和 exe 里编进去的是同一份 Logo：只维护 assets/brand/zeeterm.ico 一个源头。
+    let brand_icon = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("assets")
+        .join("brand")
+        .join("zeeterm.ico");
+    let brand_bytes =
+        std::fs::read(&brand_icon).unwrap_or_else(|err| panic!("读不了品牌图标：{err}"));
+    assert_eq!(icon_bytes, brand_bytes, "安装图标应与 exe 内嵌的 Logo 相同");
+    // 多尺寸齐全：小尺寸给托盘 / 标题栏，大尺寸给资源管理器和安装向导。
+    let count = u16::from_le_bytes([icon_bytes[4], icon_bytes[5]]) as usize;
+    let mut sizes: Vec<u32> = (0..count)
+        .map(|i| match icon_bytes[6 + i * 16] {
+            0 => 256,
+            n => u32::from(n),
+        })
+        .collect();
+    sizes.sort_unstable();
+    assert_eq!(sizes, vec![16, 24, 32, 48, 64, 128, 256]);
 }
 
 /// 原生版的 CI 工作流：带着 Tauri 版的仓库里是 `native.yml`；导出的独立仓库里只有 `ci.yml`。
