@@ -1,0 +1,18 @@
+[package]
+name = "zssh-update"
+description = "ZeeTerm 更新：manifest 选择、minisign 验签、签名版本绑定"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64 = "0.22"
+minisign-verify = "=0.3.0"
+semver = "1"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+minisign = "0.10"

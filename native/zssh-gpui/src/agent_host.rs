@@ -1,0 +1,2645 @@
+//! 原生窗口的智能体对话宿主（G07 起的共享运行时 / 桥接层，G10a 扩成 opencode / Codex / Claude Code 三种）。
+//!
+//! 一个真实对话由这几样东西拼起来：
+//! - [`NativeBridgeHost`]：`zssh-mcp` 调进来的工具在用户的终端里执行 / 读终端 / 走 SFTP / 读写主机记忆，
+//!   没有终端时走主机库的 SSH 连接上的 exec 通道；
+//! - [`NativeApprover`]：需要确认的命令按 scope 送给各自对话的窗口（`std::sync::mpsc`），答案用 oneshot 回填；
+//! - [`NativeMode`] / [`NativeAudit`]：执行模式和审计都读同一个数据目录里的库；
+//! - [`AgentHub`] / [`AgentSession`]：全进程一个工具桥 + opencode / codex 各一个共用进程，一个对话 =
+//!   一个 scope（Claude Code 另有自己的进程）。三种驱动的进程管理和协议全是 core 的，这里只拼装。
+//!
+//! 工具桥这一侧（桥、审批、scope、等确认的队列）收在 [`ToolChannel`] 里，不依赖智能体进程，
+//! 所以「停止」「目标增减」这些行为可以直接用真实的桥测。
+//!
+//! 执行宿主 [`NativeBridgeHost`] 和 Tauri 版的 `AppBridgeHost` 同一套语义（V2-G10b）：命令优先在用户的
+//! 焦点终端里执行、`read_terminal` 读终端缓冲、停止时向终端发 Ctrl+C、文件工具走 SFTP、长期记忆读写
+//! 主机库；没有打开的终端时命令走 `host-<id>` 的后台 exec 通道。终端本身的登记见 [`crate::ai_terminals`]。
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use tokio::sync::{mpsc, oneshot};
+
+use zssh_core::ai::agent::claude::{self, StartOptions};
+use zssh_core::ai::agent::codex::{
+    self, CodexRuntime, DEFAULT_IDLE_TIMEOUT as CODEX_IDLE_TIMEOUT,
+    DEFAULT_STARTUP_TIMEOUT as CODEX_STARTUP_TIMEOUT,
+};
+use zssh_core::ai::agent::config::{McpServerSpec, build_config_content, read_user_model_config};
+use zssh_core::ai::agent::discovery::AgentInstall;
+use zssh_core::ai::agent::opencode::{
+    AgentRuntime, DEFAULT_IDLE_TIMEOUT as OPENCODE_IDLE_TIMEOUT,
+    DEFAULT_STARTUP_TIMEOUT as OPENCODE_STARTUP_TIMEOUT, StartOptions as OpenCodeStartOptions,
+    default_config_home,
+};
+use zssh_core::ai::agent::{AgentConversation, AgentEvent, AgentModelCatalog};
+use zssh_core::ai::bridge::terminal_write::deliver_ai_write;
+use zssh_core::ai::bridge::{
+    ApprovalDecision, ApprovalRequest, Approver, AuditEntry, AuditLog, Bridge, BridgeHost,
+    ExecGate, ExecMode, ExecModeProvider, ExecPlacement, ExecTargetReport, ScopeHandle,
+    TerminalExecCapture, TerminalExecRequest,
+};
+use zssh_core::ai::files::{RemoteFs, SftpRemoteFs};
+use zssh_core::ai::protocol::{host_target_id, parse_host_target_id};
+use zssh_core::ai::shell_kind::ShellKind;
+use zssh_core::sftp::SftpChannel;
+use zssh_core::ssh::connection::ExecGuard;
+use zssh_core::ssh::{BoxFuture, ExecCapture};
+use zssh_core::store::Database;
+use zssh_session::SessionCommand;
+
+use crate::agent_setup::{AgentKind, fake};
+use crate::ai_terminals::{TermCommand, TermEntry, terminals};
+
+/// Claude Code 对话的空闲关闭时间：10 分钟（和驱动默认值一致）。
+const CLAUDE_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+// ---------------------------------------------------------------------------
+// 执行宿主
+// ---------------------------------------------------------------------------
+
+/// 工具桥的执行位置回报（`ExecTargetReport`）按 scope 分路送到各自对话的窗口。
+///
+/// 桥只有一个、宿主只有一个，但对话有很多（每个终端标签一个）：回报带着 scope id，按
+/// [`Self::attach`] 登记的出口送；对话结束（[`Self::detach`]）之后迟到的回报直接丢掉，
+/// 不会落进别的对话，也不会落进同一个标签后来开的新对话。
+#[derive(Default)]
+pub struct ReportRoutes {
+    routes: Mutex<HashMap<String, Sender<ExecTargetReport>>>,
+}
+
+impl ReportRoutes {
+    fn routes(&self) -> std::sync::MutexGuard<'_, HashMap<String, Sender<ExecTargetReport>>> {
+        self.routes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn attach(&self, scope_id: &str, reports: Sender<ExecTargetReport>) {
+        self.routes().insert(scope_id.to_owned(), reports);
+    }
+
+    pub fn detach(&self, scope_id: &str) {
+        self.routes().remove(scope_id);
+    }
+
+    /// 送出一份回报；对话已经没了（出口摘掉 / 窗口关了）就丢掉。
+    pub fn send(&self, report: ExecTargetReport) {
+        let route = self.routes().get(&report.scope).cloned();
+        if let Some(route) = route {
+            let _ = route.send(report);
+        }
+    }
+}
+
+/// 工具桥的执行宿主：`host-<id>` 目标 + 用户已经打开的终端（`term-<n>`）。
+///
+/// 和 0.2.14 的 `AppBridgeHost` 同一套语义：
+/// - 目标是 `host-<id>` 时先找这台主机**焦点终端**（[`crate::ai_terminals::Terminals::for_host`]）：
+///   有，命令在用户的终端里执行（空闲 + 已确认的 POSIX shell），`read_terminal` 读它的缓冲，Ctrl+C
+///   发给它；终端忙 / 不是 POSIX shell / 开着全屏程序时降级到后台 exec 通道并写明原因；
+/// - 这台主机没有任何打开的终端：命令走后台 exec 通道（拿主机的已认证连接，池里没有就重新握手），
+///   `read_terminal` 报「没有打开的终端」；
+/// - 文件工具开一条 SFTP 通道（终端所在的那条连接，没有终端就用主机的池连接）；
+/// - 长期记忆读写主机库里的 `host_memory`。
+///
+/// 和 0.2.14 的差别（报告里有清单）：未连上的主机不会自动新开一个终端标签。
+pub struct NativeBridgeHost {
+    reports: Arc<ReportRoutes>,
+    data_dir: PathBuf,
+    /// 测试里代替 SFTP 通道的内存文件系统（离线验证文件工具接线用）。
+    #[cfg(test)]
+    test_fs: Mutex<Option<Arc<dyn RemoteFs>>>,
+}
+
+impl NativeBridgeHost {
+    pub fn new() -> Self {
+        Self::with(
+            Arc::new(ReportRoutes::default()),
+            crate::settings::data_dir(),
+        )
+    }
+
+    /// 指定回报出口表和数据目录（产品里的 [`AgentHub`] 用；测试用临时目录）。
+    pub fn with(reports: Arc<ReportRoutes>, data_dir: PathBuf) -> Self {
+        Self {
+            reports,
+            data_dir,
+            #[cfg(test)]
+            test_fs: Mutex::new(None),
+        }
+    }
+
+    /// 测试用：文件工具改走这个内存文件系统，不开 SFTP 通道。
+    #[cfg(test)]
+    pub fn set_test_fs(&self, fs: Arc<dyn RemoteFs>) {
+        *self.test_fs.lock().unwrap_or_else(|p| p.into_inner()) = Some(fs);
+    }
+
+    fn open_db(&self) -> Result<Database, String> {
+        Database::open(&self.data_dir.join("zssh.db"))
+            .map_err(|err| format!("打开主机库失败：{err}"))
+    }
+
+    /// 目标对应主机库里的哪台主机：`host-<id>` 直接解析；终端编号看终端登记的主机。
+    fn host_id_of(target_id: &str) -> Option<i64> {
+        parse_host_target_id(target_id)
+            .or_else(|| terminals().get(target_id).and_then(|entry| entry.host_id()))
+    }
+}
+
+impl Default for NativeBridgeHost {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// 目标不是 `host-<id>` 时给模型 / 界面的原因。
+fn host_target_error(target_id: &str) -> String {
+    format!("原生窗口只支持主机库里的主机（host-<id>）作为执行目标：{target_id}")
+}
+
+/// 解析 `host-<id>`；别的目标返回中文原因（不 panic，也不去连任何东西）。
+fn parse_host_target(target_id: &str) -> Result<i64, String> {
+    parse_host_target_id(target_id).ok_or_else(|| host_target_error(target_id))
+}
+
+/// 执行位置对应的终端：目标本身就是终端编号，或者是主机、取这台主机的焦点终端。
+fn terminal_for(target_id: &str) -> Option<Arc<TermEntry>> {
+    terminals().get(target_id).or_else(|| {
+        parse_host_target_id(target_id).and_then(|host_id| terminals().for_host(host_id))
+    })
+}
+
+/// 这个目标上用来开 exec / SFTP 通道的已认证连接：有终端就用终端那条，否则主机库里的池连接。
+async fn connection_for(target_id: &str) -> Result<Arc<zssh_core::ssh::Connection>, String> {
+    if let Some(entry) = terminals().get(target_id) {
+        return entry.connection();
+    }
+    let host_id = parse_host_target(target_id)?;
+    Ok(crate::ssh_backend::factory_for_host(host_id)
+        .await?
+        .connection())
+}
+
+const NO_TERMINAL: &str = "这台主机现在没有打开的终端标签";
+
+impl BridgeHost for NativeBridgeHost {
+    /// 界面绑定的会话优先，其次目标本身就是终端，最后是这台主机的焦点终端；都没有返回 `None`，
+    /// 由执行层把 `host-<id>` 原样交给下面的 `exec` / `exec_cancellable`（走后台通道）。
+    fn execution_session<'a>(
+        &'a self,
+        target_id: &'a str,
+        bound: Option<&'a str>,
+    ) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async move {
+            if let Some(bound) = bound
+                && terminals().get(bound).is_some()
+            {
+                return Some(bound.to_owned());
+            }
+            terminal_for(target_id).map(|entry| entry.id.clone())
+        })
+    }
+
+    fn report_target(&self, report: ExecTargetReport) {
+        self.reports.send(report);
+    }
+
+    fn exec<'a>(
+        &'a self,
+        target_id: &'a str,
+        command: &'a str,
+        wait: Duration,
+        max_stream_bytes: usize,
+    ) -> BoxFuture<'a, Result<ExecCapture, String>> {
+        let target_id = target_id.to_owned();
+        let command = command.to_owned();
+        Box::pin(async move {
+            // 先判目标类型：不是主机也不是终端的不去连任何东西。
+            if terminals().get(&target_id).is_none() {
+                parse_host_target(&target_id)?;
+            }
+            let connection = connection_for(&target_id).await?;
+            connection
+                .exec_capture(&command, wait, max_stream_bytes)
+                .await
+                .map_err(|err| err.to_string())
+        })
+    }
+
+    fn exec_cancellable<'a>(
+        &'a self,
+        target_id: &'a str,
+        command: &'a str,
+        wait: Duration,
+        max_stream_bytes: usize,
+        gate: &'a ExecGate,
+    ) -> BoxFuture<'a, Result<ExecCapture, String>> {
+        let target_id = target_id.to_owned();
+        let command = command.to_owned();
+        Box::pin(async move {
+            gate.check()?;
+            if terminals().get(&target_id).is_none() {
+                parse_host_target(&target_id)?;
+            }
+            let connection = connection_for(&target_id).await?;
+            // 自动连接可能等了很久：这期间点了停止 / 目标被移出，就不再发命令。
+            gate.check()?;
+            // gate 一直带到发 exec 的边界（开通道期间失效就不再等，通道开好之后
+            // 发命令之前再核对一次；发出去之后只有停止才关闭执行通道）。
+            connection
+                .exec_capture_guarded(&command, wait, max_stream_bytes, gate)
+                .await
+        })
+    }
+
+    fn read_terminal<'a>(
+        &'a self,
+        target_id: &'a str,
+        max_lines: usize,
+    ) -> BoxFuture<'a, Result<Vec<String>, String>> {
+        Box::pin(async move {
+            let entry = terminal_for(target_id).ok_or_else(|| NO_TERMINAL.to_owned())?;
+            let lines = entry
+                .ring
+                .lock()
+                .map_err(|_| "终端缓冲锁不可用".to_owned())?
+                .recent_lines(max_lines);
+            Ok(lines)
+        })
+    }
+
+    fn remote_fs<'a>(
+        &'a self,
+        target_id: &'a str,
+    ) -> BoxFuture<'a, Result<Arc<dyn RemoteFs>, String>> {
+        Box::pin(async move {
+            #[cfg(test)]
+            if let Some(fs) = self
+                .test_fs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+            {
+                return Ok(fs);
+            }
+            let connection = connection_for(
+                &terminal_for(target_id)
+                    .map_or_else(|| target_id.to_owned(), |entry| entry.id.clone()),
+            )
+            .await?;
+            let channel = SftpChannel::open(&connection)
+                .await
+                .map_err(|err| format!("打开 SFTP 通道失败：{err}"))?;
+            let fs: Arc<dyn RemoteFs> = Arc::new(SftpRemoteFs::new(Arc::new(channel)));
+            Ok(fs)
+        })
+    }
+
+    fn exec_placement<'a>(&'a self, target_id: &'a str) -> BoxFuture<'a, ExecPlacement> {
+        Box::pin(async move {
+            let Some(entry) = terminal_for(target_id) else {
+                return ExecPlacement::Background {
+                    reason: "这台主机还没有打开的终端，先走后台通道".to_string(),
+                };
+            };
+            // 第一次需要在终端里执行之前，用后台 exec 通道静默探测一次远端登录 shell 的类型
+            // （没探测过绝不就地执行）。
+            if entry.state.shell_kind() == ShellKind::Unknown {
+                let kind = probe_remote_shell_kind(&entry).await;
+                tracing::debug!(?kind, "远端 shell 探测结果");
+                entry.state.set_shell_kind(kind);
+            }
+            match entry.state.try_acquire() {
+                Ok(()) => ExecPlacement::Terminal,
+                Err(reason) => ExecPlacement::Background { reason },
+            }
+        })
+    }
+
+    fn run_in_terminal<'a>(
+        &'a self,
+        request: TerminalExecRequest,
+    ) -> BoxFuture<'a, Result<TerminalExecCapture, String>> {
+        Box::pin(async move { run_in_terminal_on(request).await })
+    }
+
+    fn release_terminal<'a>(&'a self, target_id: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if let Some(entry) = terminal_for(target_id) {
+                entry.state.release();
+            }
+        })
+    }
+
+    fn interrupt_terminal<'a>(&'a self, scope_id: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            // 只有这个对话**确实**有一条 AI 命令在终端里跑才发 Ctrl+C：
+            // 没有记录就什么都不做——用户可能正在那个终端里跑自己的东西。
+            let Some(run) = terminals().runs().running(scope_id) else {
+                return;
+            };
+            let Some(entry) = terminals().get(&run.session_id) else {
+                return;
+            };
+            // Ctrl+C（ETX）。会话已经断开时发送端已关，忽略即可。
+            let _ = entry
+                .commands
+                .send(TermCommand::Session(SessionCommand::Write(vec![0x03])))
+                .await;
+        })
+    }
+
+    fn read_memory<'a>(
+        &'a self,
+        target_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, String>> {
+        Box::pin(async move {
+            let Some(host_id) = Self::host_id_of(target_id) else {
+                return Ok(None);
+            };
+            let db = self.open_db()?;
+            Ok(db
+                .host_memory_get(host_id)
+                .map_err(|err| err.to_string())?
+                .map(|memory| memory.content))
+        })
+    }
+
+    fn write_memory<'a>(
+        &'a self,
+        target_id: &'a str,
+        notes: &'a str,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let host_id = Self::host_id_of(target_id)
+                .ok_or_else(|| "这个目标不在主机库里（快速连接），不能保存记忆".to_string())?;
+            self.open_db()?
+                .host_memory_set(host_id, notes)
+                .map_err(|err| err.to_string())?;
+            // 主机详情里开着的记忆框要刷新（0.2.14 的 `host-memory-changed` 事件）。
+            crate::host_activity::memory_changed(host_id);
+            Ok(())
+        })
+    }
+
+    fn write_backup_keep(&self) -> usize {
+        // 每次写入时重新读设置：用户在设置页改了份数，下一笔就生效。
+        self.open_db()
+            .ok()
+            .and_then(|db| db.ai_write_backup_keep().ok())
+            .unwrap_or(zssh_core::store::settings::AI_WRITE_BACKUP_KEEP_DEFAULT)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 在用户的终端里执行
+// ---------------------------------------------------------------------------
+
+/// 在用户的终端里执行 AI 命令：把包装脚本交给会话任务写进终端，等结束标记，取回输出和退出码。
+///
+/// 超时**不中断**命令：把当前截到的输出返回，`timed_out = true`。
+///
+/// 终端占位由 [`NativeBridgeHost::exec_placement`] 里的 `try_acquire` 抢下；这里在命令结束（拿到标记 /
+/// 超时 / 会话断开）后**无论成败都**释放。执行期间在 [`TerminalRuns`](zssh_core::ai::runs::TerminalRuns)
+/// 登记一条记录：停止按钮据此知道「这个对话有条命令正在这个终端里跑」，然后才发 Ctrl+C。
+async fn run_in_terminal_on(request: TerminalExecRequest) -> Result<TerminalExecCapture, String> {
+    let Some(entry) = terminal_for(&request.target_id) else {
+        return Err(format!("会话不存在或者还没连上：{}", request.target_id));
+    };
+    let runs = terminals().runs();
+    runs.register(&request.scope_id, &entry.id, &request.marker);
+    // 先登记再核对：停止按钮先作废请求、再按登记表发 Ctrl+C。在这之前按的停止，这里能看到；
+    // 在这之后按的，登记表里已经有这条，Ctrl+C 能找到它。
+    if let Err(reason) = request.gate.check() {
+        runs.clear(&request.scope_id, &request.marker);
+        entry.state.release();
+        return Err(reason);
+    }
+    let started = Instant::now();
+    // 包装脚本（含前置清输入），末尾自己带回车。走 `TermCommand::AiWrite`：会话任务让显示过滤器
+    // 记住它，包装脚本的回显和标记行不会显示给用户，显示的是「提示符 + 命令原文」的合成回显。
+    // gate 跟着这条消息进会话的命令队列，会话任务真正写之前再核对（审计 C04）。
+    let guard: Arc<dyn ExecGuard> = Arc::new(request.gate.clone());
+    let payload = format!("{}\r", request.payload).into_bytes();
+    let marker = request.marker.clone();
+    let command = request.command.clone();
+    let written = deliver_ai_write(&entry.commands, guard, |slot| TermCommand::AiWrite {
+        payload,
+        marker,
+        command,
+        slot,
+    })
+    .await;
+    if let Err(reason) = written {
+        runs.clear(&request.scope_id, &request.marker);
+        entry.state.release();
+        return Err(reason);
+    }
+
+    // 等结束标记：从环形缓冲的原始文本里找。
+    let result = wait_for_marker(&entry, &request.marker, request.wait).await;
+    entry.state.release();
+
+    match &result {
+        MarkerOutcome::Done { .. } | MarkerOutcome::Gone => {
+            runs.clear(&request.scope_id, &request.marker);
+        }
+        MarkerOutcome::Timeout { .. } => {
+            // 告诉会话任务的显示过滤器「这条命令超时了」：退出完整过滤（不再压用户之后的输入），
+            // 只留轻量过滤丢迟到的那一行结束标记。
+            let _ = entry
+                .commands
+                .send(TermCommand::AiTimedOut {
+                    marker: request.marker.clone(),
+                })
+                .await;
+            // 命令还在跑：留着记录（停止按钮还要用它发 Ctrl+C），起一个观察任务等它自己结束
+            // （迟到的结束标记）或会话断开再清。
+            watch_late_finish(
+                Arc::clone(&entry),
+                request.scope_id.clone(),
+                request.marker.clone(),
+            );
+        }
+    }
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+    match result {
+        MarkerOutcome::Done { output, exit_code } => Ok(TerminalExecCapture {
+            output,
+            exit_code: Some(exit_code),
+            duration_ms,
+            timed_out: false,
+        }),
+        MarkerOutcome::Timeout { output } => Ok(TerminalExecCapture {
+            output,
+            exit_code: None,
+            duration_ms,
+            timed_out: true,
+        }),
+        MarkerOutcome::Gone => Err("会话在命令结束前断开了".to_string()),
+    }
+}
+
+/// 超时返回之后命令还在跑：盯住环形缓冲，等它的结束标记出现（或会话断开）就把
+/// 登记表里的记录清掉，免得停止按钮把 Ctrl+C 发给一条早就结束的命令（那会打断用户自己跑的东西）。
+///
+/// 上限半小时：真跑这么久的命令会让记录一直留着，停止按钮继续对它有效，到点之后不再观察。
+fn watch_late_finish(entry: Arc<TermEntry>, scope_id: String, marker: String) {
+    tokio::spawn(async move {
+        let deadline = Instant::now() + Duration::from_secs(30 * 60);
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let runs = terminals().runs();
+            // 记录已经被别人清掉（新命令覆盖 / 会话断开）就不用看了。
+            if runs.running(&scope_id).map(|run| run.marker) != Some(marker.clone()) {
+                return;
+            }
+            if terminals().get(&entry.id).is_none() {
+                runs.clear(&scope_id, &marker);
+                return;
+            }
+            let raw = entry.ring.lock().map(|r| r.raw_text()).unwrap_or_default();
+            if zssh_core::ai::pty::find_end_marker(&raw, &marker).is_some()
+                || Instant::now() >= deadline
+            {
+                runs.clear(&scope_id, &marker);
+                return;
+            }
+        }
+    });
+}
+
+/// 探测远端登录 shell 的类型（移植自 Netcatty 的 `sessionShellKind.cjs`）：在后台 exec 通道里跑一小段
+/// POSIX 脚本，拿回登录 shell 路径再分类。探测失败 / 超时 / 认不出一律 `Other`（走后台通道）。
+async fn probe_remote_shell_kind(entry: &TermEntry) -> ShellKind {
+    use zssh_core::ai::shell_kind::{
+        SHELL_PROBE_TIMEOUT, build_shell_probe_command, parse_shell_probe_output,
+    };
+    let Ok(connection) = entry.connection() else {
+        return ShellKind::Other;
+    };
+    let command = build_shell_probe_command();
+    // exec_capture 自己带 wait 超时；外面再包一层，防止通道卡住不返回。
+    let capture = match tokio::time::timeout(
+        SHELL_PROBE_TIMEOUT + Duration::from_secs(2),
+        connection.exec_capture(&command, SHELL_PROBE_TIMEOUT, 64 * 1024),
+    )
+    .await
+    {
+        Ok(Ok(capture)) => capture,
+        Ok(Err(err)) => {
+            tracing::debug!(error = %err, "远端 shell 探测失败，走后台通道");
+            return ShellKind::Other;
+        }
+        Err(_) => {
+            tracing::debug!("远端 shell 探测超时，走后台通道");
+            return ShellKind::Other;
+        }
+    };
+    parse_shell_probe_output(&capture.stdout).unwrap_or(ShellKind::Other)
+}
+
+/// 在环形缓冲里等结束标记的结果。
+enum MarkerOutcome {
+    Done { output: String, exit_code: i32 },
+    Timeout { output: String },
+    Gone,
+}
+
+/// 轮询终端的原始输出，直到出现结束标记（或超时 / 会话断开）。
+async fn wait_for_marker(entry: &TermEntry, marker: &str, wait: Duration) -> MarkerOutcome {
+    use zssh_core::ai::pty::{extract_output, find_end_marker};
+    let deadline = Instant::now() + wait;
+    loop {
+        let raw = entry.ring.lock().map(|r| r.raw_text()).unwrap_or_default();
+        if let Some(found) = find_end_marker(&raw, marker) {
+            return MarkerOutcome::Done {
+                output: extract_output(&raw, marker),
+                exit_code: found.exit_code,
+            };
+        }
+        if terminals().get(&entry.id).is_none() {
+            return MarkerOutcome::Gone;
+        }
+        if Instant::now() >= deadline {
+            // 超时：命令不中断，把当前截到的输出带上。
+            return MarkerOutcome::Timeout {
+                output: strip_marker_noise(&raw, marker),
+            };
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// 超时时把已经打出来的输出尽量整理一下（去掉包装脚本本身那几行）。
+fn strip_marker_noise(raw: &str, marker: &str) -> String {
+    use zssh_core::ai::pty::strip_ansi;
+    let start_pattern = format!("{marker}_S");
+    let body = match raw.rfind(&start_pattern) {
+        Some(pos) => raw[pos..]
+            .split_once('\n')
+            .map(|(_, rest)| rest)
+            .unwrap_or(""),
+        None => raw,
+    };
+    strip_ansi(body).trim().to_string()
+}
+
+// ---------------------------------------------------------------------------
+// 审批
+// ---------------------------------------------------------------------------
+
+/// 送给窗口的一条审批请求（窗口据此弹确认卡片）。
+#[derive(Debug, Clone)]
+pub struct ApprovalPrompt {
+    pub id: u64,
+    pub request: ApprovalRequest,
+}
+
+/// 待确认请求表：请求 ID → （属于哪个对话的 scope，等答案的一端）。
+#[derive(Default)]
+struct PendingApprovals {
+    next_id: AtomicU64,
+    pending: Mutex<HashMap<u64, (String, oneshot::Sender<ApprovalDecision>)>>,
+}
+
+impl PendingApprovals {
+    fn pending(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<u64, (String, oneshot::Sender<ApprovalDecision>)>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 登记一个待确认的请求，返回请求 ID 和等答案的一端。
+    fn register(&self, scope: &str) -> (u64, oneshot::Receiver<ApprovalDecision>) {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+        let (sender, receiver) = oneshot::channel();
+        self.pending().insert(id, (scope.to_owned(), sender));
+        (id, receiver)
+    }
+
+    fn take(&self, id: u64) -> Option<oneshot::Sender<ApprovalDecision>> {
+        self.pending().remove(&id).map(|(_, sender)| sender)
+    }
+
+    fn cancel(&self, id: u64) {
+        let _ = self.take(id);
+    }
+}
+
+/// 审批 future 一结束（回答、超时、scope 销毁）就把请求摘掉：界面再点也不会送到
+/// 已经没人等的请求上，`resolve` 也能据此回答"没有这个请求"。
+struct PendingGuard {
+    pending: Arc<PendingApprovals>,
+    id: u64,
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        self.pending.cancel(self.id);
+    }
+}
+
+/// 工具桥的审批实现：请求走 `std::sync::mpsc` 给窗口，答案走 oneshot 回来。
+///
+/// 一个桥服务多个对话（每个标签一个对话，三种智能体共用同一个桥，和 Tauri 版一致）：请求带着
+/// 自己的 scope id，按 [`Self::attach_scope`] 登记的出口送到对应对话的窗口；没有登记的 scope
+/// 走默认出口（单对话的桥、测试），再没有就按拒绝处理。
+pub struct NativeApprover {
+    /// 没登记分路的 scope 的出口。
+    default_route: Option<Sender<ApprovalPrompt>>,
+    routes: Mutex<HashMap<String, Sender<ApprovalPrompt>>>,
+    pending: Arc<PendingApprovals>,
+}
+
+impl NativeApprover {
+    /// 所有请求都送到同一个出口的审批（单对话的桥；测试用）。
+    #[cfg(test)]
+    pub fn new(prompts: Sender<ApprovalPrompt>) -> Self {
+        Self {
+            default_route: Some(prompts),
+            routes: Mutex::new(HashMap::new()),
+            pending: Arc::new(PendingApprovals::default()),
+        }
+    }
+
+    /// 只按 scope 分路、没有默认出口的审批（共用桥用）。
+    pub fn routed() -> Self {
+        Self {
+            default_route: None,
+            routes: Mutex::new(HashMap::new()),
+            pending: Arc::new(PendingApprovals::default()),
+        }
+    }
+
+    fn routes(&self) -> std::sync::MutexGuard<'_, HashMap<String, Sender<ApprovalPrompt>>> {
+        self.routes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 这个 scope 的确认请求送到 `prompts`。
+    pub fn attach_scope(&self, scope_id: &str, prompts: Sender<ApprovalPrompt>) {
+        self.routes().insert(scope_id.to_owned(), prompts);
+    }
+
+    /// 对话结束：摘掉出口，这个 scope 挂着的确认按拒绝结束，之后再来的请求也直接拒绝。
+    pub fn detach_scope(&self, scope_id: &str) {
+        self.routes().remove(scope_id);
+        self.deny_scope(scope_id);
+    }
+
+    /// 这条请求还有人在等吗（没被回答，也没因超时、停止或 scope 销毁被摘掉）。
+    pub fn is_live(&self, id: u64) -> bool {
+        self.pending.pending().contains_key(&id)
+    }
+
+    /// 把所有挂着的确认按拒绝结束，返回结束了几条（测试用；产品里停止只结束自己 scope 的）。
+    #[cfg(test)]
+    pub fn deny_all(&self) -> usize {
+        let senders: Vec<_> = self
+            .pending
+            .pending()
+            .drain()
+            .map(|(_, (_, sender))| sender)
+            .collect();
+        let count = senders.len();
+        for sender in senders {
+            let _ = sender.send(ApprovalDecision::Denied);
+        }
+        count
+    }
+
+    /// 停止某个对话：只把**它的** scope 挂着的确认按拒绝结束，别的对话（别的标签）不受影响。
+    pub fn deny_scope(&self, scope_id: &str) -> usize {
+        let senders: Vec<_> = {
+            let mut pending = self.pending.pending();
+            let ids: Vec<u64> = pending
+                .iter()
+                .filter(|(_, (scope, _))| scope == scope_id)
+                .map(|(id, _)| *id)
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| pending.remove(&id))
+                .map(|(_, sender)| sender)
+                .collect()
+        };
+        let count = senders.len();
+        for sender in senders {
+            let _ = sender.send(ApprovalDecision::Denied);
+        }
+        count
+    }
+
+    /// 界面答了一条确认请求：把答案送给等着的审批。
+    ///
+    /// 返回这个请求是否存在（可能已经超时 / 被 scope 销毁）。
+    pub fn resolve(&self, id: u64, allowed: bool) -> bool {
+        match self.pending.take(id) {
+            Some(sender) => {
+                // 等的一端可能已经走了（超时 / 取消），答案没人收也无所谓。
+                let _ = sender.send(if allowed {
+                    ApprovalDecision::Allowed
+                } else {
+                    ApprovalDecision::Denied
+                });
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 这条请求该送到哪个窗口。
+    fn route_of(&self, scope: &str) -> Option<Sender<ApprovalPrompt>> {
+        self.routes()
+            .get(scope)
+            .cloned()
+            .or_else(|| self.default_route.clone())
+    }
+}
+
+impl Approver for NativeApprover {
+    fn approve<'a>(&'a self, request: ApprovalRequest) -> BoxFuture<'a, ApprovalDecision> {
+        Box::pin(async move {
+            // 对话已经结束（出口摘掉了）：别让命令挂住，也别弹到别的对话里。
+            let Some(route) = self.route_of(&request.scope) else {
+                return ApprovalDecision::Denied;
+            };
+            let (id, reply) = self.pending.register(&request.scope);
+            let _guard = PendingGuard {
+                pending: Arc::clone(&self.pending),
+                id,
+            };
+            if route.send(ApprovalPrompt { id, request }).is_err() {
+                // 窗口还没起来（或者已经关了）：按拒绝处理，别让命令挂住。
+                return ApprovalDecision::Denied;
+            }
+            // 等的一端没了（界面直接丢了请求）也按拒绝，不无限等。
+            reply.await.unwrap_or(ApprovalDecision::Denied)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 执行模式 / 审计
+// ---------------------------------------------------------------------------
+
+/// 执行模式来源：每次命令都重新读设置库（用户改完马上生效）。
+pub struct NativeMode {
+    db_path: PathBuf,
+}
+
+impl NativeMode {
+    /// `data_dir` 是数据目录，库文件固定叫 `zssh.db`（和 Tauri 版同一个库）。
+    pub fn new(data_dir: &Path) -> Self {
+        Self {
+            db_path: data_dir.join("zssh.db"),
+        }
+    }
+
+    /// 从已经打开的库读模式；读不到按手动（往安全的方向退）。
+    fn from_db(db: &Database) -> ExecMode {
+        match db.ai_exec_mode() {
+            Ok(raw) => ExecMode::from_setting(Some(&raw)),
+            Err(err) => {
+                tracing::warn!(error = %err, "读 AI 执行模式失败，按手动处理");
+                ExecMode::Manual
+            }
+        }
+    }
+}
+
+impl ExecModeProvider for NativeMode {
+    fn mode(&self) -> ExecMode {
+        match Database::open(&self.db_path) {
+            Ok(db) => Self::from_db(&db),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    path = %self.db_path.display(),
+                    "打开设置库失败，AI 执行模式按手动处理"
+                );
+                ExecMode::Manual
+            }
+        }
+    }
+}
+
+/// 审计落盘：每次写一条时打开库；写失败只记日志，不影响命令执行。
+pub struct NativeAudit {
+    db_path: PathBuf,
+}
+
+impl NativeAudit {
+    pub fn new(data_dir: &Path) -> Self {
+        Self {
+            db_path: data_dir.join("zssh.db"),
+        }
+    }
+}
+
+impl AuditLog for NativeAudit {
+    fn record(&self, entry: AuditEntry) {
+        match Database::open(&self.db_path) {
+            // `Database` 自己实现了 `AuditLog`，写失败会在里面记日志。
+            Ok(db) => <Database as AuditLog>::record(&db, entry),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    path = %self.db_path.display(),
+                    "AI 审计打不开数据库"
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 工具桥（不依赖 claude 进程）
+// ---------------------------------------------------------------------------
+
+/// 对话里的一台目标主机：界面选中的、允许 AI 使用的主机。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostTarget {
+    pub id: i64,
+    pub name: String,
+    pub username: String,
+    /// 当前聚焦窗格所在的主机：没写 `target_id` 的工具调用落在它身上（0.2.14 的 `current`）。
+    pub current: bool,
+    /// 用户 `@` 进来的（或焦点切走时自动保留下来的）主机，不是单靠「当前」带进来的。
+    pub pinned: bool,
+}
+
+impl HostTarget {
+    /// 普通的被选中主机：不是「当前」，按固定目标处理（独立的 AI 窗口、主机库的主机列表用）。
+    pub fn plain(id: i64, name: impl Into<String>, username: impl Into<String>) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            username: username.into(),
+            current: false,
+            pinned: true,
+        }
+    }
+}
+
+/// 一个对话的工具桥一侧：桥、审批、scope 和等用户确认的队列。
+///
+/// 和智能体进程无关，窗口的「停止」「目标增减」都落在这里，测试也能直接拿真的桥驱动。
+/// 桥可以是这个对话自己的（[`ToolChannel::new`]，测试用），也可以是全进程共用的
+/// （[`AgentHub`] 里的那一个，三种智能体的对话都挂在上面）。
+pub struct ToolChannel {
+    bridge: Arc<Bridge>,
+    approver: Arc<NativeApprover>,
+    reports: Arc<ReportRoutes>,
+    scope: ScopeHandle,
+    /// 等用户确认的命令（窗口逐个取出弹卡片）。
+    approvals: Receiver<ApprovalPrompt>,
+    /// 执行层回报的实际执行位置（窗口据此在卡片上标主机、给「查看终端」）。
+    target_reports: Receiver<ExecTargetReport>,
+}
+
+impl ToolChannel {
+    /// 用给定的宿主、审计和模式来源建一个**自己的**桥，并建好这个对话的 scope（测试用；
+    /// 产品里的对话都挂在 [`AgentHub`] 的共用桥上）。
+    #[cfg(test)]
+    pub fn new(
+        host: Arc<dyn BridgeHost>,
+        audit: Arc<dyn AuditLog>,
+        mode: Arc<dyn ExecModeProvider>,
+    ) -> Self {
+        Self::new_with_host(
+            |_| host,
+            audit,
+            mode,
+            zssh_core::ai::bridge::DEFAULT_APPROVAL_WAIT,
+        )
+    }
+
+    /// 同 [`Self::new`]，宿主要用这个对话的执行位置回报出口表建（`NativeBridgeHost::with`）。
+    #[cfg(test)]
+    pub fn new_with_host(
+        make_host: impl FnOnce(Arc<ReportRoutes>) -> Arc<dyn BridgeHost>,
+        audit: Arc<dyn AuditLog>,
+        mode: Arc<dyn ExecModeProvider>,
+        approval_wait: Duration,
+    ) -> Self {
+        let reports = Arc::new(ReportRoutes::default());
+        let host = make_host(Arc::clone(&reports));
+        let (prompts, approvals) = std::sync::mpsc::channel();
+        let approver = Arc::new(NativeApprover::new(prompts));
+        let bridge = Arc::new(
+            Bridge::new(
+                host,
+                audit,
+                Arc::clone(&approver) as Arc<dyn Approver>,
+                mode,
+            )
+            .with_approval_wait(approval_wait),
+        );
+        let scope = bridge.create_scope();
+        let (report_tx, target_reports) = std::sync::mpsc::channel();
+        reports.attach(scope.scope_id(), report_tx);
+        Self {
+            bridge,
+            approver,
+            reports,
+            scope,
+            approvals,
+            target_reports,
+        }
+    }
+
+    /// 挂到共用的桥上：开一个新 scope，这个 scope 的确认请求只送到这个对话的队列。
+    fn attach(
+        bridge: &Arc<Bridge>,
+        approver: &Arc<NativeApprover>,
+        reports: &Arc<ReportRoutes>,
+    ) -> Self {
+        let (prompts, approvals) = std::sync::mpsc::channel();
+        let (report_tx, target_reports) = std::sync::mpsc::channel();
+        let scope = bridge.create_scope();
+        approver.attach_scope(scope.scope_id(), prompts);
+        reports.attach(scope.scope_id(), report_tx);
+        Self {
+            bridge: Arc::clone(bridge),
+            approver: Arc::clone(approver),
+            reports: Arc::clone(reports),
+            scope,
+            approvals,
+            target_reports,
+        }
+    }
+
+    /// 取下一份执行位置回报（不阻塞）。
+    pub fn next_report(&self) -> Option<ExecTargetReport> {
+        self.target_reports.try_recv().ok()
+    }
+
+    pub fn bridge(&self) -> &Arc<Bridge> {
+        &self.bridge
+    }
+
+    pub fn scope(&self) -> &ScopeHandle {
+        &self.scope
+    }
+
+    /// 「停止」：作废这个对话此刻之前开始的所有工具请求。
+    ///
+    /// 和 Tauri 版 `ai_agent_abort` 走同一条路径（`Bridge::stop_scope`）：等审批的按拒绝
+    /// 结束、已经发出命令的后台通道关掉、还没开始写的文件不再写。另外把窗口这边已经排队、
+    /// 还没取走的确认全部丢掉：停止之前发起的请求不能在停止之后重新冒出一张可点的卡片。
+    /// 返回丢掉了几条排队的确认。
+    pub fn stop(&self) -> usize {
+        self.bridge.stop_scope(self.scope.scope_id());
+        // 只结束这个对话的确认：共用桥上别的标签的对话照常等它们的用户。
+        self.approver.deny_scope(self.scope.scope_id());
+        let mut dropped = 0;
+        while self.approvals.try_recv().is_ok() {
+            dropped += 1;
+        }
+        dropped
+    }
+
+    /// 取下一条还有效的确认。已经被摘掉的（停止、超时、销毁）直接跳过，不给界面。
+    pub fn next_prompt(&self) -> Option<ApprovalPrompt> {
+        while let Ok(prompt) = self.approvals.try_recv() {
+            if self.approver.is_live(prompt.id) {
+                return Some(prompt);
+            }
+            tracing::debug!(id = prompt.id, "跳过已经失效的确认请求");
+        }
+        None
+    }
+
+    /// 界面回答了一条确认请求；请求已经失效时返回 `false`。
+    pub fn resolve_approval(&self, id: u64, allowed: bool) -> bool {
+        self.approver.resolve(id, allowed)
+    }
+
+    /// 这条确认还在等人回答吗。
+    pub fn approval_is_live(&self, id: u64) -> bool {
+        self.approver.is_live(id)
+    }
+
+    /// 让 scope 里的主机目标和界面选中的一致：多出来的摘掉，选中的加上（已有的只更新）。
+    ///
+    /// 只管 `host-<id>` 目标；摘掉目标会让只对旧目标批准过的在途请求失效（桥的 R-9 F11）。
+    /// 只是"允许 AI 用这些主机"，不等于已经连上：第一次执行时由 [`NativeBridgeHost`] 自动连接。
+    pub fn sync_hosts(&self, wanted: &[HostTarget]) {
+        let wanted_ids: HashSet<String> = wanted.iter().map(|h| host_target_id(h.id)).collect();
+        for target in self.scope.targets() {
+            if parse_host_target_id(&target.id).is_some() && !wanted_ids.contains(&target.id) {
+                self.scope.remove_target(&target.id);
+            }
+        }
+        for host in wanted {
+            // 同一个 ID 再加是更新（焦点、「当前」随标签变化时不算「移出再加回」，在途请求不受影响）。
+            // 状态：这台主机现在有打开的终端就是 connected，否则只是被 @ 进来（pinned）。
+            let status = if terminals().has_host(host.id) {
+                "connected"
+            } else {
+                "pinned"
+            };
+            self.scope.add_target(
+                host_target_id(host.id),
+                host.name.clone(),
+                host.username.clone(),
+                status,
+                host.current,
+                host.pinned,
+            );
+        }
+    }
+}
+
+impl ToolChannel {
+    /// 对话结束：作废在途请求，摘掉这个 scope 在共用桥上的出口，销毁 scope（能力密钥立即失效）。
+    pub fn close(&self) {
+        self.stop();
+        self.approver.detach_scope(self.scope.scope_id());
+        self.reports.detach(self.scope.scope_id());
+        self.scope.destroy();
+    }
+}
+
+impl Drop for ToolChannel {
+    fn drop(&mut self) {
+        // 没走 shutdown 就丢了句柄：至少别把出口和 scope 留在共用的桥上。
+        self.approver.detach_scope(self.scope.scope_id());
+        self.reports.detach(self.scope.scope_id());
+        self.scope.destroy();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 对话
+// ---------------------------------------------------------------------------
+
+/// 一个真实的智能体对话（opencode / codex / Claude Code 三种共用）：驱动句柄、工具桥一侧、事件出口。
+///
+/// Claude Code 的进程是懒启动的（`ClaudeConversation::create` 只探测 `--help`），第一条消息由
+/// 调用方发；opencode / codex 的对话开在共用进程里（进程第一次用到时由 [`AgentHub`] 拉起）。
+pub struct AgentSession {
+    pub kind: AgentKind,
+    /// 驱动句柄。
+    pub conversation: Arc<dyn AgentConversation>,
+    /// 工具桥一侧：scope、审批队列、停止。
+    pub tools: ToolChannel,
+    /// 驱动事件（正文 / 工具 / 回合结束）。
+    pub events: mpsc::UnboundedReceiver<AgentEvent>,
+    /// 要求续接历史会话时：是不是真的接上了智能体自己的会话。false = 作为新会话继续
+    /// （界面提示"之前的上下文没有带给 AI"）。Claude Code 要到第一次发消息才知道，这里先按
+    /// true，续不上时驱动另发 `ResumeFailed` 事件。
+    pub resumed: bool,
+}
+
+impl AgentSession {
+    /// 界面回答了一条确认请求；请求已经超时 / 不存在时返回 `false`。
+    pub fn resolve_approval(&self, id: u64, allowed: bool) -> bool {
+        self.tools.resolve_approval(id, allowed)
+    }
+
+    /// 让 AI 能用的主机和界面选中的一致。
+    pub fn sync_hosts(&self, wanted: &[HostTarget]) {
+        self.tools.sync_hosts(wanted);
+    }
+
+    /// 这个对话的能力密钥（存历史时要从正文里抹掉）。
+    pub fn capability(&self) -> &str {
+        self.tools.scope().capability()
+    }
+
+    /// 取下一条还有效的确认请求。
+    pub fn next_prompt(&self) -> Option<ApprovalPrompt> {
+        self.tools.next_prompt()
+    }
+
+    /// 取下一份执行位置回报。
+    pub fn next_report(&self) -> Option<ExecTargetReport> {
+        self.tools.next_report()
+    }
+
+    /// 「停止」时对终端里的 AI 命令发 Ctrl+C 要用的句柄：桥 + scope id。拿出来再 `await`，不占着会话。
+    /// 只有这个对话**确实**有命令在某个终端里跑才会发（用户自己的程序不会被误打断）。
+    pub fn interrupt_handle(&self) -> (Arc<Bridge>, String) {
+        (
+            Arc::clone(self.tools.bridge()),
+            self.tools.scope().scope_id().to_owned(),
+        )
+    }
+
+    /// 停止当前回合的工具请求（桥一侧）；驱动一侧另由 `conversation.stop()` 通知。
+    pub fn stop_tools(&self) -> usize {
+        self.tools.stop()
+    }
+
+    /// 结束对话：先作废在途工具请求，再停驱动、销毁作用范围。共用进程留给别的对话继续用
+    /// （空闲后由 core 自己关）。
+    pub async fn shutdown(&mut self) {
+        self.tools.stop();
+        self.conversation.shutdown().await;
+        self.tools.close();
+    }
+}
+
+/// 发第一条消息：启动期间用户点了停止 / 新对话（`cancel` 置位）就不发，
+/// 返回 `Ok(false)`。会话随后会被窗口关掉，模型根本没收到这条消息。
+pub async fn send_unless_cancelled(
+    conversation: &dyn AgentConversation,
+    cancel: &AtomicBool,
+    text: &str,
+    model: Option<&str>,
+) -> Result<bool, String> {
+    if cancel.load(Ordering::SeqCst) {
+        return Ok(false);
+    }
+    conversation
+        .send(text, model)
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(true)
+}
+
+/// `zssh-mcp.exe` 应该在的位置：和主程序放在同一个目录。
+fn mcp_binary_location() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|err| format!("拿不到主程序路径：{err}"))?;
+    let dir = exe.parent().ok_or_else(|| "主程序没有父目录".to_string())?;
+    Ok(dir.join("zssh-mcp.exe"))
+}
+
+/// `zssh-mcp.exe` 的路径；不在原位就报错并说清它应该在哪。
+fn mcp_binary_path() -> Result<PathBuf, String> {
+    let path = mcp_binary_location()?;
+    if !path.is_file() {
+        return Err(format!(
+            "没有找到 zssh-mcp.exe（应当和主程序放在同一个目录：{}）",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+/// 驱动的启动参数。
+///
+/// 单独拿出来是为了能测「续接 id 有没有原样交给驱动」：真的启动会探测 `claude --help`
+/// 并起工具桥，测试里不能跑。`extra_env` 产品里恒为空（用用户自己的配置，和 Tauri 版一致）；
+/// 只有自动化测试会借它给 claude 指一个独立的 `CLAUDE_CONFIG_DIR`。
+fn start_options(
+    install: AgentInstall,
+    data_dir: &Path,
+    mcp: McpServerSpec,
+    capability: String,
+    events: mpsc::UnboundedSender<AgentEvent>,
+    resume_session_id: Option<String>,
+    extra_env: Vec<(String, String)>,
+) -> StartOptions {
+    StartOptions {
+        install,
+        workspace: data_dir.join("agent-workspace"),
+        mcp,
+        capability,
+        events,
+        extra_env,
+        resume_session_id,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 共用的桥和进程
+// ---------------------------------------------------------------------------
+
+/// 启动一个对话（或共用进程）时可以覆盖的东西。**产品里全是默认值**（用用户自己的智能体配置，
+/// 和 Tauri 版一致）；自动化测试借它把用户真实的 `~/.claude`、`~/.codex`、opencode 配置挡在外面。
+/// 共用进程只在第一次用到时启动，覆盖项也只在那一次起作用。
+#[derive(Default, Clone)]
+pub struct StartOverrides {
+    /// claude 的额外环境变量（`CLAUDE_CONFIG_DIR` 等）。
+    pub extra_env: Vec<(String, String)>,
+    /// opencode 注入的"用户模型配置"。`None` = 读用户自己的 opencode 配置里的模型相关键
+    /// （产品行为）；`Some` = 用给定的，不去读用户的配置。
+    pub opencode_user_config: Option<serde_json::Value>,
+    /// codex 的配置目录（`CODEX_HOME`）。`None` = 用户自己的。
+    pub codex_home: Option<PathBuf>,
+}
+
+/// 一个共用的智能体进程（opencode / codex 各一个槽位；Claude Code 一个对话一个进程）。
+#[derive(Clone)]
+enum SharedRuntime {
+    OpenCode(Arc<AgentRuntime>),
+    Codex(Arc<CodexRuntime>),
+}
+
+impl SharedRuntime {
+    fn is_closed(&self) -> bool {
+        match self {
+            SharedRuntime::OpenCode(runtime) => runtime.is_closed(),
+            SharedRuntime::Codex(runtime) => runtime.is_closed(),
+        }
+    }
+
+    async fn shutdown(&self) {
+        match self {
+            SharedRuntime::OpenCode(runtime) => runtime.shutdown().await,
+            SharedRuntime::Codex(runtime) => runtime.shutdown().await,
+        }
+    }
+
+    async fn models(&self) -> Result<AgentModelCatalog, String> {
+        match self {
+            SharedRuntime::OpenCode(runtime) => runtime.models().await,
+            SharedRuntime::Codex(runtime) => runtime.models().await,
+        }
+        .map_err(|err| err.to_string())
+    }
+}
+
+/// 全进程共用的智能体宿主：**一个**工具桥（一个监听端口、一个连接令牌）、一个按 scope 分路的审批，
+/// 加 opencode / codex 各一个懒启动的共用进程。每个对话（每个终端标签一个）在桥上有自己的 scope
+/// 和能力密钥，确认请求只送到自己的窗口。
+///
+/// 对应 Tauri 版的 `ToolBridge` + `AgentRegistry`：opencode / codex 的 MCP 配置在进程启动时
+/// 就写死了桥的端口和令牌，所以桥必须比任何一个对话都活得久。
+pub struct AgentHub {
+    bridge: Arc<Bridge>,
+    approver: Arc<NativeApprover>,
+    reports: Arc<ReportRoutes>,
+    port: u16,
+    data_dir: PathBuf,
+    mcp_binary: PathBuf,
+    runtimes: Mutex<HashMap<AgentKind, SharedRuntime>>,
+    /// 启动共用进程时串行：面板一打开就预取模型目录，可能和用户发第一条消息同时到，
+    /// 不串行的话两边都看到"没有进程"，会各起一个。
+    start_lock: tokio::sync::Mutex<()>,
+    serve: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for AgentHub {
+    fn drop(&mut self) {
+        self.serve.abort();
+    }
+}
+
+impl AgentHub {
+    /// 用给定的宿主、审计和模式来源建桥并开始监听（测试里用桩；产品走 [`Self::production`]）。
+    #[cfg(test)]
+    pub async fn with_parts(
+        host: Arc<dyn BridgeHost>,
+        audit: Arc<dyn AuditLog>,
+        mode: Arc<dyn ExecModeProvider>,
+        data_dir: PathBuf,
+        mcp_binary: PathBuf,
+    ) -> Result<Arc<Self>, String> {
+        Self::with_reports(
+            host,
+            audit,
+            mode,
+            data_dir,
+            mcp_binary,
+            Arc::new(ReportRoutes::default()),
+        )
+        .await
+    }
+
+    /// 同 [`Self::with_parts`]，宿主和中心共用同一张执行位置回报出口表（宿主 `report_target` 往里送，
+    /// 各对话的 [`ToolChannel`] 在里面登记自己的出口）。
+    pub async fn with_reports(
+        host: Arc<dyn BridgeHost>,
+        audit: Arc<dyn AuditLog>,
+        mode: Arc<dyn ExecModeProvider>,
+        data_dir: PathBuf,
+        mcp_binary: PathBuf,
+        reports: Arc<ReportRoutes>,
+    ) -> Result<Arc<Self>, String> {
+        // 先同步绑定拿端口（和 Tauri 版一致），异步运行时只负责 accept。
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|err| format!("工具桥监听失败：{err}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|err| format!("工具桥监听设置非阻塞失败：{err}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|err| format!("工具桥取端口失败：{err}"))?
+            .port();
+        let approver = Arc::new(NativeApprover::routed());
+        let bridge = Arc::new(Bridge::new(
+            host,
+            audit,
+            Arc::clone(&approver) as Arc<dyn Approver>,
+            mode,
+        ));
+        let serve_bridge = Arc::clone(&bridge);
+        let serve = tokio::spawn(async move {
+            match tokio::net::TcpListener::from_std(listener) {
+                Ok(listener) => serve_bridge.serve(listener).await,
+                Err(err) => tracing::warn!(error = %err, "工具桥监听失败"),
+            }
+        });
+        Ok(Arc::new(Self {
+            bridge,
+            approver,
+            reports,
+            port,
+            data_dir,
+            mcp_binary,
+            runtimes: Mutex::new(HashMap::new()),
+            start_lock: tokio::sync::Mutex::new(()),
+            serve,
+        }))
+    }
+
+    /// 产品里的宿主：执行走主机库的 SSH 连接，模式和审计读同一个数据目录里的库。
+    async fn production(data_dir: PathBuf, mcp_binary: PathBuf) -> Result<Arc<Self>, String> {
+        let reports = Arc::new(ReportRoutes::default());
+        Self::with_reports(
+            Arc::new(NativeBridgeHost::with(
+                Arc::clone(&reports),
+                data_dir.clone(),
+            )),
+            Arc::new(NativeAudit::new(&data_dir)),
+            Arc::new(NativeMode::new(&data_dir)),
+            data_dir,
+            mcp_binary,
+            reports,
+        )
+        .await
+    }
+
+    fn mcp_spec(&self) -> McpServerSpec {
+        McpServerSpec::zssh(&self.mcp_binary, self.port, self.bridge.connection_token())
+    }
+
+    fn runtimes(&self) -> std::sync::MutexGuard<'_, HashMap<AgentKind, SharedRuntime>> {
+        self.runtimes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 某种智能体还活着的共用进程。
+    fn live_runtime(&self, kind: AgentKind) -> Option<SharedRuntime> {
+        self.runtimes()
+            .get(&kind)
+            .filter(|runtime| !runtime.is_closed())
+            .cloned()
+    }
+
+    /// 取用某种智能体的现成共用进程；没有或已关停就重新启动一个。
+    async fn runtime_for(
+        &self,
+        kind: AgentKind,
+        install: AgentInstall,
+        overrides: &StartOverrides,
+    ) -> Result<SharedRuntime, String> {
+        let _starting = self.start_lock.lock().await;
+        if let Some(runtime) = self.live_runtime(kind) {
+            return Ok(runtime);
+        }
+        let workspace = self.data_dir.join("agent-workspace");
+        let spec = self.mcp_spec();
+        let runtime = match kind {
+            // claude 不用共用进程（一个对话一个进程），走不到这儿。
+            AgentKind::Claude => return Err("claude 不使用共用进程".to_string()),
+            AgentKind::OpenCode => {
+                // 只带上用户配置里的模型相关键（自建服务商照常可用），其余一律不带。
+                let user_config = overrides
+                    .opencode_user_config
+                    .clone()
+                    .unwrap_or_else(read_user_model_config);
+                let options = OpenCodeStartOptions {
+                    install,
+                    config_home: default_config_home(&workspace),
+                    workspace,
+                    config_content: build_config_content(&spec, &[], &user_config),
+                    startup_timeout: OPENCODE_STARTUP_TIMEOUT,
+                };
+                SharedRuntime::OpenCode(
+                    AgentRuntime::start(options, idle_timeout(OPENCODE_IDLE_TIMEOUT))
+                        .await
+                        .map_err(|err| err.to_string())?,
+                )
+            }
+            AgentKind::Codex => {
+                let probes = codex::startup::command_probes_with_home(
+                    &install.path,
+                    overrides.codex_home.clone(),
+                );
+                let options = codex::StartOptions {
+                    install,
+                    workspace,
+                    mcp: spec,
+                    probes,
+                    codex_home: overrides.codex_home.clone(),
+                    startup_timeout: CODEX_STARTUP_TIMEOUT,
+                };
+                SharedRuntime::Codex(
+                    CodexRuntime::start(options, idle_timeout(CODEX_IDLE_TIMEOUT))
+                        .await
+                        .map_err(|err| err.to_string())?,
+                )
+            }
+        };
+        self.runtimes().insert(kind, runtime.clone());
+        Ok(runtime)
+    }
+
+    /// 启动一个对话：Claude Code 建一个（懒启动的）进程对话；opencode / codex 复用或拉起共用进程，
+    /// 在里面开一个会话（有历史标识就先试着接上）。**不发消息**，第一条消息由调用方发。
+    ///
+    /// 建好之后：`events` 里是驱动的流式事件；`next_prompt()` 取等确认的命令；`sync_hosts` 把选中的
+    /// 主机放进 scope，模型才看得到这些主机。失败时 scope 和出口已经收回，不留残余。
+    pub async fn start_session(
+        self: &Arc<Self>,
+        kind: AgentKind,
+        install: AgentInstall,
+        resume: Option<String>,
+        overrides: StartOverrides,
+    ) -> Result<AgentSession, String> {
+        let tools = ToolChannel::attach(&self.bridge, &self.approver, &self.reports);
+        let (events_tx, events) = mpsc::unbounded_channel();
+        // 假世界（调试版自动化）：不拉任何真实进程。
+        if let Some(world) = fake::world() {
+            let bridge = fake::FakeBridge {
+                port: self.port,
+                token: self.bridge.connection_token().to_owned(),
+                capability: tools.scope().capability().to_owned(),
+            };
+            let (conversation, resumed) =
+                world.start(kind, events_tx, resume.as_deref(), Some(bridge))?;
+            return Ok(AgentSession {
+                kind,
+                conversation,
+                tools,
+                events,
+                resumed,
+            });
+        }
+        let capability = tools.scope().capability().to_string();
+        let (conversation, resumed): (Arc<dyn AgentConversation>, bool) = match kind {
+            // claude：一个对话一个进程（懒启动：第一次发消息才拉；空闲 10 分钟关，
+            // 下次发消息 `--resume` 恢复上下文）。
+            AgentKind::Claude => {
+                let options = start_options(
+                    install,
+                    &self.data_dir,
+                    self.mcp_spec(),
+                    capability,
+                    events_tx,
+                    resume.clone(),
+                    overrides.extra_env.clone(),
+                );
+                let conversation = claude::ClaudeConversation::create(options, CLAUDE_IDLE_TIMEOUT)
+                    .await
+                    .map_err(|err| err.to_string())?;
+                (conversation as Arc<dyn AgentConversation>, resume.is_some())
+            }
+            AgentKind::OpenCode => {
+                let SharedRuntime::OpenCode(runtime) =
+                    self.runtime_for(kind, install, &overrides).await?
+                else {
+                    return Err("opencode 的共用进程类型不对".to_string());
+                };
+                let (conversation, resumed) = runtime
+                    .open_conversation_resuming(capability, events_tx, resume.as_deref())
+                    .await
+                    .map_err(|err| err.to_string())?;
+                conversation
+                    .bind_tool_scope(tools.scope().clone())
+                    .map_err(|err| err.to_string())?;
+                (conversation as Arc<dyn AgentConversation>, resumed)
+            }
+            AgentKind::Codex => {
+                let SharedRuntime::Codex(runtime) =
+                    self.runtime_for(kind, install, &overrides).await?
+                else {
+                    return Err("codex 的共用进程类型不对".to_string());
+                };
+                let (conversation, resumed) = runtime
+                    .open_conversation_resuming(capability, events_tx, resume.as_deref())
+                    .await
+                    .map_err(|err| err.to_string())?;
+                (conversation as Arc<dyn AgentConversation>, resumed)
+            }
+        };
+        Ok(AgentSession {
+            kind,
+            conversation,
+            tools,
+            events,
+            resumed,
+        })
+    }
+
+    /// 不开对话直接查某个智能体的模型目录（面板一打开 / 切换智能体时显示默认模型用）。
+    ///
+    /// opencode / codex 要用共用进程：没在跑就照常启动一个，之后没人用会按空闲超时自己关掉，
+    /// 不常驻。Claude Code 不拉对话进程，只跑一次 `--help` 探测参数。
+    pub async fn catalog(
+        &self,
+        kind: AgentKind,
+        install: AgentInstall,
+        overrides: &StartOverrides,
+    ) -> Result<AgentModelCatalog, String> {
+        if kind == AgentKind::Claude {
+            return Ok(claude::catalog_for_install(&install.path).await);
+        }
+        self.runtime_for(kind, install, overrides)
+            .await?
+            .models()
+            .await
+    }
+
+    /// 关掉所有共用进程（应用退出时）。对话各自的收尾由持有它们的窗口做。
+    pub async fn shutdown_all(&self) {
+        let runtimes: Vec<SharedRuntime> = self.runtimes().drain().map(|(_, rt)| rt).collect();
+        for runtime in runtimes {
+            runtime.shutdown().await;
+        }
+    }
+}
+
+static HUB: tokio::sync::OnceCell<Arc<AgentHub>> = tokio::sync::OnceCell::const_new();
+
+/// 全进程那一个宿主，第一次用到时建。
+async fn global_hub() -> Result<Arc<AgentHub>, String> {
+    HUB.get_or_try_init(|| async {
+        // 假世界里没有真实进程要连桥，`zssh-mcp.exe` 在不在无所谓。
+        let mcp = if fake::world().is_some() {
+            mcp_binary_location()?
+        } else {
+            mcp_binary_path()?
+        };
+        AgentHub::production(crate::settings::data_dir(), mcp).await
+    })
+    .await
+    .cloned()
+}
+
+/// 启动一个对话（产品入口）。
+pub async fn start_agent(
+    kind: AgentKind,
+    install: AgentInstall,
+    resume: Option<String>,
+) -> Result<AgentSession, String> {
+    global_hub()
+        .await?
+        .start_session(kind, install, resume, StartOverrides::default())
+        .await
+}
+
+/// 取某个安装的模型目录（产品入口）。
+pub async fn fetch_catalog(
+    kind: AgentKind,
+    install: AgentInstall,
+) -> Result<AgentModelCatalog, String> {
+    if let Some(world) = fake::world() {
+        return world.catalog(kind);
+    }
+    // Claude Code 不需要桥，没必要为了取目录建桥。
+    if kind == AgentKind::Claude {
+        return Ok(claude::catalog_for_install(&install.path).await);
+    }
+    global_hub()
+        .await?
+        .catalog(kind, install, &StartOverrides::default())
+        .await
+}
+
+/// codex 共用进程还活着时直接问它登没登录（最权威）；没有活着的返回 `None`，交给别的办法判断。
+pub async fn live_codex_logged_in() -> Option<Result<bool, String>> {
+    let hub = HUB.get()?;
+    let SharedRuntime::Codex(runtime) = hub.live_runtime(AgentKind::Codex)? else {
+        return None;
+    };
+    Some(
+        runtime
+            .account_logged_in()
+            .await
+            .map_err(|err| err.to_string()),
+    )
+}
+
+/// 应用退出：把共用进程收掉（子进程另外绑在 ZeeTerm 的作业上，崩溃也不会残留）。
+pub fn shutdown_global() {
+    let Some(hub) = HUB.get() else {
+        return;
+    };
+    let Ok(runtime) = crate::ssh_backend::runtime() else {
+        return;
+    };
+    runtime.block_on(async {
+        let _ = tokio::time::timeout(Duration::from_secs(5), hub.shutdown_all()).await;
+    });
+}
+
+/// 空闲关闭时间。产品里是 core 的默认值（10 分钟）；调试版可以用 `ZSSH_AGENT_IDLE_SECS` 调小。
+fn idle_timeout(fallback: Duration) -> Duration {
+    crate::dev_hooks::var("ZSSH_AGENT_IDLE_SECS")
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .filter(|duration| !duration.is_zero())
+        .unwrap_or(fallback)
+}
+
+// ---------------------------------------------------------------------------
+// 测试
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zssh_core::ai::safety::DangerLevel;
+
+    fn sample_request() -> ApprovalRequest {
+        ApprovalRequest {
+            scope: "0123456789abcdef".to_string(),
+            exec_id: "3f2a1b-1".to_string(),
+            target_id: "host-1".to_string(),
+            session_id: None,
+            host_label: "web-1".to_string(),
+            command: "uptime".to_string(),
+            danger: DangerLevel::Safe,
+            reasons: Vec::new(),
+            file: None,
+        }
+    }
+
+    fn ask(approver: &Arc<NativeApprover>) -> std::thread::JoinHandle<ApprovalDecision> {
+        let approver = Arc::clone(approver);
+        std::thread::spawn(move || futures::executor::block_on(approver.approve(sample_request())))
+    }
+
+    #[test]
+    fn host_target_parsing_accepts_only_host_ids() {
+        assert_eq!(parse_host_target("host-12").ok(), Some(12));
+        for bad in ["ses_x", "host-", "host-abc", ""] {
+            assert!(parse_host_target(bad).is_err(), "{bad} 不该被当成主机目标");
+        }
+    }
+
+    fn sample_install() -> AgentInstall {
+        AgentInstall {
+            path: "claude.exe".to_string(),
+            version: "2.0.0".to_string(),
+            source: zssh_core::ai::agent::discovery::DiscoverySource::Path,
+            needs_shell: false,
+            auto: true,
+            too_old: false,
+            skipped_older: None,
+        }
+    }
+
+    #[test]
+    fn start_options_forward_the_resume_session_id() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let (events, _events_rx) = mpsc::unbounded_channel();
+        let options = start_options(
+            sample_install(),
+            Path::new("data"),
+            McpServerSpec::zssh(Path::new("zssh-mcp.exe"), 1234, "token"),
+            "capability".to_string(),
+            events,
+            Some(session_id.to_string()),
+            Vec::new(),
+        );
+        assert_eq!(
+            options.resume_session_id.as_deref(),
+            Some(session_id),
+            "续接 id 要原样交给驱动"
+        );
+        assert_eq!(
+            options.workspace,
+            Path::new("data").join("agent-workspace"),
+            "工作目录仍然在数据目录下面"
+        );
+
+        // 没有历史会话时保持 None，不能凭空续接。
+        let (events, _events_rx) = mpsc::unbounded_channel();
+        let options = start_options(
+            sample_install(),
+            Path::new("data"),
+            McpServerSpec::zssh(Path::new("zssh-mcp.exe"), 1234, "token"),
+            "capability".to_string(),
+            events,
+            None,
+            Vec::new(),
+        );
+        assert!(options.resume_session_id.is_none());
+    }
+
+    #[test]
+    fn exec_rejects_non_host_target_without_connecting() {
+        let host = NativeBridgeHost::new();
+        let result =
+            futures::executor::block_on(host.exec("ses_x", "uptime", Duration::from_secs(5), 1024));
+        let err = result.expect_err("非主机目标要报错");
+        assert!(err.contains("host-<id>"), "错误要说清只支持主机目标：{err}");
+        assert!(err.contains("ses_x"), "错误要带上原始目标：{err}");
+    }
+
+    #[test]
+    fn approver_resolves_allow_and_deny() {
+        let (prompts, prompts_rx) = std::sync::mpsc::channel::<ApprovalPrompt>();
+        let approver = Arc::new(NativeApprover::new(prompts));
+
+        let asker = ask(&approver);
+        let prompt = prompts_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("窗口要收到审批请求");
+        assert_eq!(prompt.request.command, "uptime");
+        assert!(approver.resolve(prompt.id, true));
+        assert_eq!(
+            asker.join().expect("审批线程"),
+            ApprovalDecision::Allowed,
+            "点允许之后审批要通过"
+        );
+        // 同一个 id 不能答第二次；没登记过的 id 也不认。
+        assert!(!approver.resolve(prompt.id, false));
+        assert!(!approver.resolve(9_999, true));
+
+        let asker = ask(&approver);
+        let prompt = prompts_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("窗口要收到审批请求");
+        assert!(approver.resolve(prompt.id, false));
+        assert_eq!(
+            asker.join().expect("审批线程"),
+            ApprovalDecision::Denied,
+            "点拒绝之后审批要拒绝"
+        );
+    }
+
+    #[test]
+    fn approver_denies_when_window_is_gone() {
+        let (prompts, prompts_rx) = std::sync::mpsc::channel::<ApprovalPrompt>();
+        // 窗口已经关了：请求送不出去，必须马上按拒绝结束，不能挂住。
+        drop(prompts_rx);
+        let approver = NativeApprover::new(prompts);
+        let decision = futures::executor::block_on(approver.approve(sample_request()));
+        assert_eq!(decision, ApprovalDecision::Denied);
+    }
+
+    #[test]
+    fn mode_reads_settings_each_time() {
+        let db = Database::open_in_memory().expect("内存库");
+        assert_eq!(NativeMode::from_db(&db), ExecMode::Manual, "默认是手动");
+
+        db.set_ai_exec_mode("manual").expect("设置 manual");
+        assert_eq!(NativeMode::from_db(&db), ExecMode::Manual);
+
+        db.set_ai_exec_mode("readonly").expect("设置 readonly");
+        assert_eq!(NativeMode::from_db(&db), ExecMode::ReadOnly);
+
+        db.set_ai_exec_mode("auto").expect("设置 auto");
+        assert_eq!(NativeMode::from_db(&db), ExecMode::Auto);
+
+        // 库里的值不认识（旧版本 / 手改）：按手动处理。
+        db.setting_set(zssh_core::store::settings::AI_EXEC_MODE_KEY, "42")
+            .expect("写个坏值");
+        assert_eq!(NativeMode::from_db(&db), ExecMode::Manual);
+    }
+
+    #[test]
+    fn mode_falls_back_to_manual_when_db_is_unavailable() {
+        let dir = std::env::temp_dir().join(format!("zssh-agent-host-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        // 拿一个普通文件当"数据目录"：它下面拼出来的 zssh.db 一定打不开。
+        let blocker = dir.join("not-a-dir");
+        std::fs::write(&blocker, b"x").expect("写占位文件");
+        let mode = NativeMode::new(&blocker);
+        assert_eq!(mode.mode(), ExecMode::Manual);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // 工具桥一侧：停止、目标增减、启动期取消
+    // -----------------------------------------------------------------------
+
+    use std::sync::atomic::AtomicUsize;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    /// 记下"真的执行了几次"的宿主：停止之后这个数必须还是 0。
+    #[derive(Default)]
+    struct CountingHost {
+        execs: AtomicUsize,
+    }
+
+    fn captured() -> ExecCapture {
+        ExecCapture {
+            stdout: "ok\n".into(),
+            stderr: String::new(),
+            stdout_truncated_bytes: 0,
+            stderr_truncated_bytes: 0,
+            exit_code: Some(0),
+            timed_out: false,
+            cancelled: false,
+            duration_ms: 1,
+        }
+    }
+
+    impl BridgeHost for CountingHost {
+        fn exec<'a>(
+            &'a self,
+            _target_id: &'a str,
+            _command: &'a str,
+            _wait: Duration,
+            _max_stream_bytes: usize,
+        ) -> BoxFuture<'a, Result<ExecCapture, String>> {
+            self.execs.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(captured()) })
+        }
+
+        fn exec_cancellable<'a>(
+            &'a self,
+            _target_id: &'a str,
+            _command: &'a str,
+            _wait: Duration,
+            _max_stream_bytes: usize,
+            _gate: &'a ExecGate,
+        ) -> BoxFuture<'a, Result<ExecCapture, String>> {
+            self.execs.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(captured()) })
+        }
+
+        fn read_terminal<'a>(
+            &'a self,
+            _session_id: &'a str,
+            _max_lines: usize,
+        ) -> BoxFuture<'a, Result<Vec<String>, String>> {
+            Box::pin(async { Err("不支持".to_string()) })
+        }
+
+        fn remote_fs<'a>(
+            &'a self,
+            _target_id: &'a str,
+        ) -> BoxFuture<'a, Result<Arc<dyn RemoteFs>, String>> {
+            Box::pin(async { Err("不支持".to_string()) })
+        }
+    }
+
+    struct NoAudit;
+    impl AuditLog for NoAudit {
+        fn record(&self, _entry: AuditEntry) {}
+    }
+
+    struct FixedMode(ExecMode);
+    impl ExecModeProvider for FixedMode {
+        fn mode(&self) -> ExecMode {
+            self.0
+        }
+    }
+
+    fn web_host(id: i64) -> HostTarget {
+        HostTarget::plain(id, format!("web-{id}"), "root")
+    }
+
+    fn manual_channel(host: Arc<CountingHost>) -> ToolChannel {
+        ToolChannel::new(
+            host,
+            Arc::new(NoAudit),
+            Arc::new(FixedMode(ExecMode::Manual)),
+        )
+    }
+
+    /// 等到有一条还有效的确认被取出来。
+    async fn wait_for_prompt(tools: &ToolChannel) -> ApprovalPrompt {
+        for _ in 0..250 {
+            if let Some(prompt) = tools.next_prompt() {
+                return prompt;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("5 秒内没有等到确认请求");
+    }
+
+    /// 连上桥、发一条 `run_command`，返回读响应的一端（写端留着，免得桥以为连接断了）。
+    async fn send_run_command(
+        tools: &ToolChannel,
+        command: &str,
+    ) -> (
+        tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
+        tokio::net::tcp::OwnedWriteHalf,
+    ) {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("绑定端口");
+        let port = listener.local_addr().expect("端口").port();
+        tokio::spawn(Arc::clone(tools.bridge()).serve(listener));
+        let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("连上桥");
+        let (reader, mut writer) = stream.into_split();
+        let hello = serde_json::json!({ "token": tools.bridge().connection_token() });
+        let request = serde_json::json!({
+            "id": 1,
+            "method": "run_command",
+            "params": { "command": command, "target_id": "host-1" },
+            "capability": tools.scope().capability(),
+        });
+        let payload = format!("{hello}\n{request}\n");
+        writer.write_all(payload.as_bytes()).await.expect("写请求");
+        writer.flush().await.expect("flush");
+        (tokio::io::BufReader::new(reader), writer)
+    }
+
+    #[tokio::test]
+    async fn stop_cancels_a_pending_request_through_the_bridge_and_nothing_runs() {
+        // 审查 H1：旧窗口只改界面状态，bridge 的 stop_scope 从没被调用过。
+        let host = Arc::new(CountingHost::default());
+        let tools = manual_channel(Arc::clone(&host));
+        tools.sync_hosts(&[web_host(1)]);
+        let (mut reader, _writer) = send_run_command(&tools, "uptime").await;
+
+        let prompt = wait_for_prompt(&tools).await;
+        assert_eq!(prompt.request.command, "uptime");
+        assert!(tools.approval_is_live(prompt.id));
+
+        tools.stop();
+
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line))
+            .await
+            .expect("停止后工具请求要马上结束，不能等审批超时")
+            .expect("读响应");
+        assert!(
+            line.contains("停止") || line.contains("拒绝"),
+            "要告诉模型这次被拒绝/停止了：{line}"
+        );
+        assert_eq!(
+            host.execs.load(Ordering::SeqCst),
+            0,
+            "停止之后不能再执行命令"
+        );
+        assert!(
+            !tools.approval_is_live(prompt.id),
+            "挂着的确认要被摘掉，不能再点"
+        );
+        assert!(
+            !tools.resolve_approval(prompt.id, true),
+            "停止之后再点允许也不会放行"
+        );
+    }
+
+    #[tokio::test]
+    async fn prompts_queued_before_a_stop_never_come_back_as_cards() {
+        let host = Arc::new(CountingHost::default());
+        let tools = manual_channel(host);
+        // 两条确认已经进了窗口的队列，但界面还没取走。
+        let mut waiters = Vec::new();
+        for _ in 0..2 {
+            let approver = Arc::clone(&tools.approver);
+            // 请求带着真实桥发的 scope id：停止只结束这个对话自己的。
+            let mut request = sample_request();
+            request.scope = tools.scope().scope_id().to_owned();
+            waiters.push(tokio::spawn(async move { approver.approve(request).await }));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let dropped = tools.stop();
+        assert_eq!(dropped, 2, "排队的两条要被丢掉");
+        assert!(tools.next_prompt().is_none(), "停止之后不能再冒出卡片");
+        for waiter in waiters {
+            let decision = tokio::time::timeout(Duration::from_secs(5), waiter)
+                .await
+                .expect("等的一端要马上结束")
+                .expect("任务不 panic");
+            assert_eq!(decision, ApprovalDecision::Denied);
+        }
+    }
+
+    #[tokio::test]
+    async fn next_prompt_skips_requests_that_are_no_longer_live() {
+        let host = Arc::new(CountingHost::default());
+        let tools = manual_channel(host);
+        let approver = Arc::clone(&tools.approver);
+        let first = tokio::spawn(async move { approver.approve(sample_request()).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // 模拟超时 / scope 销毁：等的一端被摘掉，队列里的提示还在。
+        tools.approver.deny_all();
+        first.await.expect("任务不 panic");
+        assert!(tools.next_prompt().is_none(), "已失效的请求不给界面");
+
+        let approver = Arc::clone(&tools.approver);
+        let second = tokio::spawn(async move { approver.approve(sample_request()).await });
+        let prompt = wait_for_prompt(&tools).await;
+        assert!(tools.resolve_approval(prompt.id, true));
+        assert_eq!(
+            second.await.expect("任务不 panic"),
+            ApprovalDecision::Allowed
+        );
+    }
+
+    #[test]
+    fn sync_hosts_adds_and_removes_only_host_targets() {
+        let tools = manual_channel(Arc::new(CountingHost::default()));
+        // 一个不是 host-<id> 的目标（比如以后绑定的终端会话）不归主机选择管。
+        tools
+            .scope()
+            .add_target("ses_x", "term", "root", "connected", true, false);
+
+        let ids = |tools: &ToolChannel| {
+            let mut ids: Vec<String> = tools.scope().targets().into_iter().map(|t| t.id).collect();
+            ids.sort();
+            ids
+        };
+
+        tools.sync_hosts(&[]);
+        assert_eq!(ids(&tools), vec!["ses_x"], "默认不带任何主机");
+
+        tools.sync_hosts(&[web_host(1), web_host(2)]);
+        assert_eq!(ids(&tools), vec!["host-1", "host-2", "ses_x"]);
+
+        tools.sync_hosts(&[web_host(2)]);
+        assert_eq!(ids(&tools), vec!["host-2", "ses_x"], "取消选择要真的摘掉");
+
+        tools.sync_hosts(&[]);
+        assert_eq!(ids(&tools), vec!["ses_x"]);
+    }
+
+    #[tokio::test]
+    async fn removing_a_host_target_invalidates_its_pending_approval() {
+        let host = Arc::new(CountingHost::default());
+        let tools = manual_channel(Arc::clone(&host));
+        tools.sync_hosts(&[web_host(1)]);
+        let (mut reader, _writer) = send_run_command(&tools, "uptime").await;
+        let _prompt = wait_for_prompt(&tools).await;
+
+        tools.sync_hosts(&[]);
+
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line))
+            .await
+            .expect("目标被取消选择后，等审批的请求要结束")
+            .expect("读响应");
+        assert!(line.contains("移出") || line.contains("取消"), "{line}");
+        assert_eq!(host.execs.load(Ordering::SeqCst), 0);
+    }
+
+    /// 只记发送次数的驱动。
+    #[derive(Default)]
+    struct CountingConversation {
+        sent: AtomicUsize,
+        shutdowns: AtomicUsize,
+    }
+
+    type AgentResult<T> = Result<T, zssh_core::ai::agent::AgentError>;
+
+    impl AgentConversation for CountingConversation {
+        fn session_id(&self) -> &str {
+            "test-session"
+        }
+
+        fn models<'a>(
+            &'a self,
+        ) -> BoxFuture<'a, AgentResult<zssh_core::ai::agent::AgentModelCatalog>> {
+            Box::pin(async { Ok(zssh_core::ai::agent::AgentModelCatalog::default()) })
+        }
+
+        fn send<'a>(
+            &'a self,
+            _text: &'a str,
+            _model: Option<&'a str>,
+        ) -> BoxFuture<'a, AgentResult<()>> {
+            self.sent.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn stop<'a>(&'a self) -> BoxFuture<'a, AgentResult<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn shutdown<'a>(&'a self) -> BoxFuture<'a, ()> {
+            self.shutdowns.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {})
+        }
+    }
+
+    #[tokio::test]
+    async fn first_message_is_not_sent_after_a_stop_during_startup() {
+        // 审查 M4：启动中点停止，旧实现照样把第一条消息发给模型。
+        let conversation = CountingConversation::default();
+        let cancel = AtomicBool::new(false);
+        assert_eq!(
+            send_unless_cancelled(&conversation, &cancel, "hi", None).await,
+            Ok(true)
+        );
+        assert_eq!(conversation.sent.load(Ordering::SeqCst), 1);
+
+        cancel.store(true, Ordering::SeqCst);
+        assert_eq!(
+            send_unless_cancelled(&conversation, &cancel, "hi", None).await,
+            Ok(false)
+        );
+        assert_eq!(
+            conversation.sent.load(Ordering::SeqCst),
+            1,
+            "取消之后不能再发"
+        );
+    }
+
+    // ---- 共用桥：一个桥、多个对话，确认请求按 scope 分路 ----
+
+    async fn test_hub(host: Arc<CountingHost>) -> Arc<AgentHub> {
+        AgentHub::with_parts(
+            host,
+            Arc::new(NoAudit),
+            Arc::new(FixedMode(ExecMode::Manual)),
+            std::env::temp_dir(),
+            PathBuf::from("zssh-mcp.exe"),
+        )
+        .await
+        .expect("建共用桥")
+    }
+
+    /// 连上共用桥、用 `capability` 发一条 `run_command`。
+    async fn ask_through(
+        hub: &AgentHub,
+        tools: &ToolChannel,
+        command: &str,
+    ) -> (
+        tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
+        tokio::net::tcp::OwnedWriteHalf,
+    ) {
+        let stream = tokio::net::TcpStream::connect(("127.0.0.1", hub.port))
+            .await
+            .expect("连上桥");
+        let (reader, mut writer) = stream.into_split();
+        let hello = serde_json::json!({ "token": hub.bridge.connection_token() });
+        let request = serde_json::json!({
+            "id": 1,
+            "method": "run_command",
+            "params": { "command": command, "target_id": "host-1" },
+            "capability": tools.scope().capability(),
+        });
+        let payload = format!("{hello}\n{request}\n");
+        writer.write_all(payload.as_bytes()).await.expect("写请求");
+        writer.flush().await.expect("flush");
+        (tokio::io::BufReader::new(reader), writer)
+    }
+
+    #[tokio::test]
+    async fn one_bridge_routes_each_prompt_to_the_conversation_that_asked() {
+        let host = Arc::new(CountingHost::default());
+        let hub = test_hub(Arc::clone(&host)).await;
+        let a = ToolChannel::attach(&hub.bridge, &hub.approver, &hub.reports);
+        let b = ToolChannel::attach(&hub.bridge, &hub.approver, &hub.reports);
+        a.sync_hosts(&[web_host(1)]);
+        b.sync_hosts(&[web_host(1)]);
+        assert_ne!(a.scope().scope_id(), b.scope().scope_id());
+
+        let (mut reader_a, _writer_a) = ask_through(&hub, &a, "uptime").await;
+        let prompt = wait_for_prompt(&a).await;
+        assert_eq!(prompt.request.scope, a.scope().scope_id());
+        assert!(b.next_prompt().is_none(), "别的对话不该收到这条确认");
+
+        // B 点了停止：只结束 B 自己的，A 还在等它的用户。
+        b.stop();
+        assert!(a.approval_is_live(prompt.id), "B 的停止不能动 A 的确认");
+
+        // A 允许：命令在共用的桥上跑起来。
+        assert!(a.resolve_approval(prompt.id, true));
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(5), reader_a.read_line(&mut line))
+            .await
+            .expect("等响应")
+            .expect("读响应");
+        assert!(line.contains("ok"), "{line}");
+        assert_eq!(host.execs.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn stopping_one_conversation_leaves_the_others_prompt_waiting() {
+        let host = Arc::new(CountingHost::default());
+        let hub = test_hub(Arc::clone(&host)).await;
+        let a = ToolChannel::attach(&hub.bridge, &hub.approver, &hub.reports);
+        let b = ToolChannel::attach(&hub.bridge, &hub.approver, &hub.reports);
+        a.sync_hosts(&[web_host(1)]);
+        b.sync_hosts(&[web_host(1)]);
+        let (_ra, _wa) = ask_through(&hub, &a, "uptime").await;
+        let (mut reader_b, _wb) = ask_through(&hub, &b, "df -h").await;
+        let prompt_a = wait_for_prompt(&a).await;
+        let prompt_b = wait_for_prompt(&b).await;
+
+        a.stop();
+        assert!(!a.approval_is_live(prompt_a.id), "A 停止后它的确认失效");
+        assert!(b.approval_is_live(prompt_b.id), "B 的确认不受影响");
+        assert!(b.resolve_approval(prompt_b.id, false));
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(5), reader_b.read_line(&mut line))
+            .await
+            .expect("等响应")
+            .expect("读响应");
+        assert!(line.contains("拒绝") || line.contains("deny"), "{line}");
+        assert_eq!(host.execs.load(Ordering::SeqCst), 0, "两条都没有执行");
+    }
+
+    #[tokio::test]
+    async fn a_closed_conversation_has_no_route_and_asks_are_denied() {
+        let hub = test_hub(Arc::new(CountingHost::default())).await;
+        let a = ToolChannel::attach(&hub.bridge, &hub.approver, &hub.reports);
+        let scope_id = a.scope().scope_id().to_owned();
+        a.close();
+        let mut request = sample_request();
+        request.scope = scope_id;
+        let decision = hub.approver.approve(request).await;
+        assert_eq!(
+            decision,
+            ApprovalDecision::Denied,
+            "出口摘掉后再来的请求直接拒绝"
+        );
+        // 从来没登记过的 scope 同样拒绝（共用桥没有默认出口）。
+        assert_eq!(
+            hub.approver.approve(sample_request()).await,
+            ApprovalDecision::Denied
+        );
+    }
+
+    #[test]
+    fn deny_scope_only_ends_the_requests_of_that_scope() {
+        let approver = Arc::new(NativeApprover::routed());
+        let (tx_a, rx_a) = std::sync::mpsc::channel::<ApprovalPrompt>();
+        let (tx_b, rx_b) = std::sync::mpsc::channel::<ApprovalPrompt>();
+        approver.attach_scope("scope-a", tx_a);
+        approver.attach_scope("scope-b", tx_b);
+        let ask_in = |scope: &str| {
+            let approver = Arc::clone(&approver);
+            let mut request = sample_request();
+            request.scope = scope.to_owned();
+            std::thread::spawn(move || futures::executor::block_on(approver.approve(request)))
+        };
+        let asker_a = ask_in("scope-a");
+        let asker_b = ask_in("scope-b");
+        let prompt_a = rx_a.recv_timeout(Duration::from_secs(5)).expect("A 收到");
+        let prompt_b = rx_b.recv_timeout(Duration::from_secs(5)).expect("B 收到");
+        assert_eq!(prompt_a.request.scope, "scope-a");
+        assert_eq!(prompt_b.request.scope, "scope-b");
+
+        assert_eq!(approver.deny_scope("scope-a"), 1);
+        assert_eq!(asker_a.join().expect("A 线程"), ApprovalDecision::Denied);
+        assert!(approver.is_live(prompt_b.id), "B 还在等");
+        assert!(approver.resolve(prompt_b.id, true));
+        assert_eq!(asker_b.join().expect("B 线程"), ApprovalDecision::Allowed);
+    }
+
+    #[tokio::test]
+    async fn shutdown_ends_tool_requests_then_the_driver_and_the_route() {
+        // 审查 M3：窗口关闭要走显式 shutdown（先作废在途工具请求，再关驱动、摘掉分路），
+        // 不能只靠 Drop。
+        let conversation = Arc::new(CountingConversation::default());
+        let host = Arc::new(CountingHost::default());
+        let hub = test_hub(Arc::clone(&host)).await;
+        let tools = ToolChannel::attach(&hub.bridge, &hub.approver, &hub.reports);
+        tools.sync_hosts(&[web_host(1)]);
+        let scope_id = tools.scope().scope_id().to_owned();
+        let (mut reader, _writer) = ask_through(&hub, &tools, "uptime").await;
+        let _prompt = wait_for_prompt(&tools).await;
+
+        let (_events_tx, events) = mpsc::unbounded_channel();
+        let mut session = AgentSession {
+            kind: AgentKind::Codex,
+            conversation: Arc::clone(&conversation) as Arc<dyn AgentConversation>,
+            tools,
+            events,
+            resumed: false,
+        };
+        session.shutdown().await;
+
+        assert_eq!(conversation.shutdowns.load(Ordering::SeqCst), 1);
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line))
+            .await
+            .expect("关会话时挂着的工具请求要立刻结束")
+            .expect("读响应");
+        assert!(line.contains("停止") || line.contains("拒绝"), "{line}");
+        assert_eq!(host.execs.load(Ordering::SeqCst), 0);
+        assert!(
+            hub.approver.route_of(&scope_id).is_none(),
+            "关掉之后桥上不再有这个对话的出口"
+        );
+    }
+
+    // ---- 真实智能体（显式 ZSSH_AGENT_E2E=1 才拉起；每种都用独立配置，不碰用户真实的配置）----
+
+    fn e2e_data_dir(test: &str) -> Option<PathBuf> {
+        if std::env::var("ZSSH_AGENT_E2E").ok().as_deref() != Some("1") {
+            println!("跳过 {test}：设置 ZSSH_AGENT_E2E=1 才跑（会拉起真实智能体并调用模型）");
+            return None;
+        }
+        let Some(dir) = std::env::var_os("ZSSH_DATA_DIR").map(PathBuf::from) else {
+            println!("跳过 {test}：需要 ZSSH_DATA_DIR 指向独立数据目录");
+            return None;
+        };
+        Some(dir)
+    }
+
+    /// 找一个能用的 `zssh-mcp.exe`（工具桥那一头；纯对话不会调用它，但智能体启动时要能拉起）。
+    fn find_zssh_mcp() -> Option<PathBuf> {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        [
+            manifest.join("../target/debug/zssh-mcp.exe"),
+            manifest.join("../../target/debug/zssh-mcp.exe"),
+            manifest.join("../target/release/zssh-mcp.exe"),
+        ]
+        .into_iter()
+        .find(|path| path.is_file())
+    }
+
+    /// 登录文件里的访问令牌还有 30 分钟以上才算新鲜。只读 `expiresAt`（毫秒时间戳），不碰令牌本身。
+    fn claude_access_token_is_fresh(credentials: &[u8]) -> bool {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(credentials) else {
+            return false;
+        };
+        let Some(expires_at) = value["claudeAiOauth"]["expiresAt"].as_u64() else {
+            return false;
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as u64)
+            .unwrap_or(u64::MAX);
+        expires_at > now.saturating_add(30 * 60 * 1000)
+    }
+
+    #[test]
+    fn a_login_file_is_only_copied_for_tests_while_its_access_token_is_fresh() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as u64)
+            .unwrap_or(0);
+        let file = |expires_at: u64| {
+            serde_json::json!({"claudeAiOauth": {"accessToken": "x", "expiresAt": expires_at}})
+                .to_string()
+                .into_bytes()
+        };
+        assert!(claude_access_token_is_fresh(&file(now + 4 * 3600 * 1000)));
+        assert!(!claude_access_token_is_fresh(&file(now + 10 * 60 * 1000)));
+        assert!(!claude_access_token_is_fresh(&file(
+            now.saturating_sub(1000)
+        )));
+        assert!(!claude_access_token_is_fresh(b"not json"));
+        assert!(!claude_access_token_is_fresh(b"{}"));
+    }
+
+    /// 发一句纯对话，读到回合结束；返回回复文字。`Err("条件缺失…")` 表示环境不满足（跳过，不算失败）。
+    async fn chat_once(session: &mut AgentSession, model: Option<&str>) -> Result<String, String> {
+        let cancel = AtomicBool::new(false);
+        let sent = send_unless_cancelled(
+            session.conversation.as_ref(),
+            &cancel,
+            "Reply with the single word OK. Do not use any tools.",
+            model,
+        )
+        .await;
+        match sent {
+            Ok(true) => {}
+            Ok(false) => return Err("不该被取消".to_owned()),
+            Err(err) => return Err(format!("条件缺失：发送失败：{err}")),
+        }
+        let mut text = String::new();
+        let mut ended = false;
+        let mut error = None;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_secs(5), session.events.recv()).await {
+                Ok(Some(AgentEvent::TextDelta { text: delta })) => text.push_str(&delta),
+                Ok(Some(AgentEvent::TurnEnd)) => {
+                    ended = true;
+                    break;
+                }
+                Ok(Some(AgentEvent::Error { message })) => error = Some(message),
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => {}
+            }
+        }
+        match (ended, error) {
+            (true, None) => Ok(text),
+            (_, Some(message)) => Err(format!("条件缺失：登录态不可用或模型报错：{message}")),
+            (false, None) => Err("回合没有在 150 秒内结束".to_owned()),
+        }
+    }
+
+    fn report(name: &str, outcome: Result<String, String>) {
+        match outcome {
+            Ok(text) => {
+                println!("{name}：收到回复 {} 个字符", text.chars().count());
+                assert!(!text.trim().is_empty(), "回合结束了却没有任何正文");
+            }
+            Err(message) if message.starts_with("条件缺失") => println!("{message}"),
+            Err(message) => panic!("{message}"),
+        }
+    }
+
+    /// 真实 Claude Code 的端到端：给它一个独立的 `CLAUDE_CONFIG_DIR`（只按字节复制登录文件进去，
+    /// 用完删），不碰用户真实的 `~/.claude`。没装 claude / 没有登录文件 / 登录不可用都打印
+    /// "条件缺失"后跳过，不算失败。
+    #[test]
+    fn real_claude_round_trip_with_an_isolated_config_dir() {
+        use zssh_core::ai::agent::discovery::{self, CLAUDE};
+
+        let Some(data_dir) = e2e_data_dir("real_claude_round_trip") else {
+            return;
+        };
+        let Some(real_home) = std::env::var_os("USERPROFILE").map(PathBuf::from) else {
+            println!("条件缺失：没有 USERPROFILE，找不到登录文件");
+            return;
+        };
+        let credentials = real_home.join(".claude").join(".credentials.json");
+        let Ok(bytes) = std::fs::read(&credentials) else {
+            println!("条件缺失：没有可复制的 .credentials.json，跳过真实对话");
+            return;
+        };
+        // 访问令牌已过期（或读不出过期时间）就不跑：副本里的 claude 会拿刷新令牌去换新令牌，服务器
+        // 换发后原件里的刷新令牌就作废了（刷新令牌只能用一次），用户真实的登录会因为这次测试掉线。
+        if !claude_access_token_is_fresh(&bytes) {
+            println!(
+                "条件缺失：登录凭据的访问令牌已过期或读不出过期时间，跳过真实对话\
+                 （复制后刷新会让原件里的刷新令牌失效）"
+            );
+            return;
+        }
+        let config_dir = data_dir.join("e2e-claude-config");
+        let _ = std::fs::remove_dir_all(&config_dir);
+        std::fs::create_dir_all(&config_dir).expect("建独立配置目录");
+        std::fs::write(config_dir.join(".credentials.json"), &bytes).expect("按字节复制登录文件");
+
+        let runtime = crate::ssh_backend::runtime().expect("运行时");
+        let outcome = runtime.block_on(async {
+            let install = match discovery::discover(&CLAUDE, None, &data_dir).await {
+                Ok(Some(install)) => install,
+                _ => return Err("条件缺失：本机没有可用的 claude".to_owned()),
+            };
+            // 不测工具调用：mcp 路径指向一个不存在的文件，claude 会忽略这个 MCP 服务。
+            let hub = AgentHub::with_parts(
+                Arc::new(CountingHost::default()),
+                Arc::new(NoAudit),
+                Arc::new(FixedMode(ExecMode::Manual)),
+                data_dir.clone(),
+                data_dir.join("no-such-zssh-mcp.exe"),
+            )
+            .await?;
+            let overrides = StartOverrides {
+                extra_env: vec![(
+                    "CLAUDE_CONFIG_DIR".to_owned(),
+                    config_dir.to_string_lossy().into_owned(),
+                )],
+                ..StartOverrides::default()
+            };
+            let mut session = hub
+                .start_session(AgentKind::Claude, install, None, overrides)
+                .await?;
+            let result = chat_once(&mut session, None).await;
+            session.shutdown().await;
+            result
+        });
+        // 无论成败都删掉复制进去的登录文件。
+        let _ = std::fs::remove_dir_all(&config_dir);
+        report("real_claude_round_trip", outcome);
+    }
+
+    /// 真实 opencode 的端到端：不读用户的 opencode 配置（注入空的模型配置），并把它的数据 /
+    /// 状态 / 缓存目录指到数据目录下的独立文件夹，不碰用户真实的 opencode 数据。没有登录也能用的
+    /// 免费模型才跑得通：回合报错就记"条件缺失"。
+    #[test]
+    fn real_opencode_round_trip_with_isolated_data() {
+        use zssh_core::ai::agent::discovery::{self, OPENCODE};
+
+        let Some(data_dir) = e2e_data_dir("real_opencode_round_trip") else {
+            return;
+        };
+        let isolated = data_dir.join("e2e-opencode-xdg");
+        let _ = std::fs::remove_dir_all(&isolated);
+        for sub in ["data", "state", "cache"] {
+            std::fs::create_dir_all(isolated.join(sub)).expect("建独立目录");
+        }
+        // SAFETY: 只有这个用例设这三个变量，且在拉起 opencode 之前同步完成（子进程继承）。
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", isolated.join("data"));
+            std::env::set_var("XDG_STATE_HOME", isolated.join("state"));
+            std::env::set_var("XDG_CACHE_HOME", isolated.join("cache"));
+        }
+        let runtime = crate::ssh_backend::runtime().expect("运行时");
+        let outcome = runtime.block_on(async {
+            let install = match discovery::discover(&OPENCODE, None, &data_dir).await {
+                Ok(Some(install)) if !install.too_old => install,
+                _ => return Err("条件缺失：本机没有可用的 opencode".to_owned()),
+            };
+            let Some(mcp) = find_zssh_mcp() else {
+                return Err(
+                    "条件缺失：找不到 zssh-mcp.exe（先 cargo build -p zssh-mcp）".to_owned(),
+                );
+            };
+            let hub = AgentHub::with_parts(
+                Arc::new(CountingHost::default()),
+                Arc::new(NoAudit),
+                Arc::new(FixedMode(ExecMode::Manual)),
+                data_dir.clone(),
+                mcp,
+            )
+            .await?;
+            let overrides = StartOverrides {
+                opencode_user_config: Some(serde_json::json!({})),
+                ..StartOverrides::default()
+            };
+            let mut session = match hub
+                .start_session(AgentKind::OpenCode, install, None, overrides)
+                .await
+            {
+                Ok(session) => session,
+                Err(err) => return Err(format!("条件缺失：opencode 没起来：{err}")),
+            };
+            // 模型目录走同一个共用进程（没有登录 / 没有配置时可能只有免费模型）。
+            let catalog = session.conversation.models().await;
+            println!(
+                "real_opencode_round_trip：目录里 {} 个模型",
+                catalog.as_ref().map(|c| c.models.len()).unwrap_or(0)
+            );
+            let free = catalog.ok().and_then(|catalog| {
+                catalog
+                    .models
+                    .iter()
+                    .find(|model| model.id.starts_with("opencode/") && model.id.contains("free"))
+                    .map(|model| model.id.clone())
+            });
+            let result = chat_once(&mut session, free.as_deref()).await;
+            session.shutdown().await;
+            hub.shutdown_all().await;
+            result
+        });
+        let _ = std::fs::remove_dir_all(&isolated);
+        report("real_opencode_round_trip", outcome);
+    }
+
+    /// 真实 codex 的端到端：独立的 `CODEX_HOME`，只按字节复制 `auth.json` 进去，用完删。
+    /// 没装 codex / 没有 `auth.json`（比如用的是自建服务商配置，复制一个文件无法复现）就记"条件缺失"。
+    #[test]
+    fn real_codex_round_trip_with_an_isolated_codex_home() {
+        use zssh_core::ai::agent::discovery::{self, CODEX};
+
+        let Some(data_dir) = e2e_data_dir("real_codex_round_trip") else {
+            return;
+        };
+        let runtime = crate::ssh_backend::runtime().expect("运行时");
+        let home = data_dir.join("e2e-codex-home");
+        let outcome = runtime.block_on(async {
+            let install = match discovery::discover(&CODEX, None, &data_dir).await {
+                Ok(Some(install)) if !install.too_old => install,
+                _ => return Err("条件缺失：本机没有可用的 codex".to_owned()),
+            };
+            let Some(real_home) = std::env::var_os("USERPROFILE").map(PathBuf::from) else {
+                return Err("条件缺失：没有 USERPROFILE，找不到登录文件".to_owned());
+            };
+            let source = std::env::var_os("CODEX_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| real_home.join(".codex"))
+                .join("auth.json");
+            let Ok(bytes) = std::fs::read(&source) else {
+                return Err("条件缺失：没有可复制的 auth.json，跳过真实 codex 对话".to_owned());
+            };
+            let _ = std::fs::remove_dir_all(&home);
+            std::fs::create_dir_all(&home)
+                .map_err(|err| format!("建独立 CODEX_HOME 失败：{err}"))?;
+            std::fs::write(home.join("auth.json"), &bytes)
+                .map_err(|err| format!("复制登录文件失败：{err}"))?;
+            let Some(mcp) = find_zssh_mcp() else {
+                return Err(
+                    "条件缺失：找不到 zssh-mcp.exe（先 cargo build -p zssh-mcp）".to_owned(),
+                );
+            };
+            let hub = AgentHub::with_parts(
+                Arc::new(CountingHost::default()),
+                Arc::new(NoAudit),
+                Arc::new(FixedMode(ExecMode::Manual)),
+                data_dir.clone(),
+                mcp,
+            )
+            .await?;
+            let overrides = StartOverrides {
+                codex_home: Some(home.clone()),
+                ..StartOverrides::default()
+            };
+            let mut session = match hub
+                .start_session(AgentKind::Codex, install, None, overrides)
+                .await
+            {
+                Ok(session) => session,
+                Err(err) => return Err(format!("条件缺失：codex 没起来：{err}")),
+            };
+            let result = chat_once(&mut session, None).await;
+            session.shutdown().await;
+            hub.shutdown_all().await;
+            result
+        });
+        // 无论成败都删掉复制进去的登录文件。
+        let _ = std::fs::remove_dir_all(&home);
+        report("real_codex_round_trip", outcome);
+    }
+}

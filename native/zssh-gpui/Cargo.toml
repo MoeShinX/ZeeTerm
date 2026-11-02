@@ -1,0 +1,49 @@
+﻿[package]
+name = "zssh-gpui"
+description = "ZeeTerm (the native GPUI app of Z-SSH) entry (prototype, no production data)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+futures = "0.3"
+gpui-kit = { version = "=0.8.1", features = ["syntect"] }
+gpui = { package = "gpui-pre", version = "=0.3.10" }
+raw-window-handle = "0.6"
+reqwest = { version = "0.12", default-features = false, features = [
+    "default-tls",
+    "json",
+    "stream",
+    "socks",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tray-icon = "=0.25.1"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "net", "io-util", "fs", "macros"] }
+zssh-app-runtime = { path = "../../crates/zssh-app-runtime" }
+zssh-core = { path = "../../crates/zssh-core" }
+zssh-editor = { path = "../zssh-editor" }
+zssh-platform-windows = { path = "../../crates/zssh-platform-windows" }
+zssh-regex = { path = "../zssh-regex" }
+zssh-session = { path = "../zssh-session" }
+zssh-terminal = { path = "../zssh-terminal" }
+zssh-update = { path = "../zssh-update" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Time",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+base64 = "0.22"
+minisign = "0.10"
+rand = "0.10"
+russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }

@@ -1,0 +1,9 @@
+[package]
+name = "zssh-editor"
+description = "ZeeTerm 编辑器的文件契约：版本、冲突、原子保存（本地实现）"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]

@@ -1,0 +1,12 @@
+[package]
+name = "zssh-app-runtime"
+description = "Z-SSH 应用运行层：任务登记/取消、类型化事件、会话与审批标识"
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+futures = "0.3"
+tokio.workspace = true
+tracing.workspace = true

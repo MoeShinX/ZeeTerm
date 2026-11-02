@@ -1,0 +1,52 @@
+ZeeTerm 额外使用的第三方组件，与仓库根 NOTICE 合起来是 ZeeTerm 的完整声明。
+(Third-party components used only by ZeeTerm, the native GPUI interface under
+native/. Together with the NOTICE file in the repository root this is the
+complete notice for ZeeTerm.)
+
+GPUI, gpui-component and gpui-kit (native interface, native/)
+  https://github.com/zed-industries/zed (gpui)
+  https://github.com/longbridge/gpui-component (gpui-component)
+  https://crates.io/crates/gpui-kit (gpui-kit, gpui-base, gpui-kit-assets)
+  Copyright (C) Zed Industries, the gpui-component authors and the gpui-kit authors
+  License: Apache-2.0 (gpui-pre 0.3.10 and its gpui-pre-* family, gpui-kit
+  0.8.1, gpui-component 0.8.1, gpui-base 0.8.1, gpui-kit-assets 0.8.1)
+
+  Used unmodified as Cargo dependencies. Apache-2.0 is compatible with
+  distribution under GPL-3.0-or-later.
+
+Lucide icons (native interface: the icons built into gpui-component and the
+subset listed in native/zssh-gpui/src/icons.rs)
+  https://lucide.dev/
+  Copyright (c) Lucide Icons and Contributors
+  License: ISC. The icons that Lucide derived from the Feather project
+  (Copyright (c) 2013-present Cole Bemis) are MIT; the complete list and both
+  license texts are in LICENSE-LUCIDE inside the gpui-kit-assets 0.8.1 crate,
+  which ships the SVG files (the crate's own code is Apache-2.0). Z-SSH compiles
+  only the icons it uses into the executable (icon_assets!, no change to the
+  artwork).
+
+Syntax highlighting of the native editor (via gpui-kit's "syntect" feature;
+the language map in native/zssh-gpui/src/remote_editor_demo/language.rs only
+chooses which grammar to use)
+  syntect 5.3.0 - MIT (https://github.com/trishume/syntect)
+  two-face 0.4.5 - MIT OR Apache-2.0 (https://github.com/CosmicHorrorDev/two-face),
+  which bundles the Sublime syntax definitions curated by the bat project
+  (https://github.com/sharkdp/bat); they are compiled into the executable.
+  Used unmodified as Cargo dependencies and already part of the whole-tree
+  license check below. No editor dependency was added for the editor tab,
+  recovery or external edit work (the crates' own licenses are MIT/Apache-2.0;
+  the individual licenses of the bundled bat grammars were not audited one by
+  one).
+
+Other direct dependencies of the native interface (native/Cargo.toml and its
+Cargo.lock), all used unmodified from crates.io:
+  alacritty_terminal 0.26.0 (terminal emulation core) - Apache-2.0
+  fancy-regex 0.20.0, minisign 0.10.0, minisign-verify 0.3.0 (update signature
+  check) - MIT; tray-icon 0.25.1, windows 0.62, reqwest 0.12, russh 0.64 (tests
+  only), tokio, serde, regex, sha2, futures, semver - MIT or Apache-2.0 (russh:
+  Apache-2.0). The whole resolved tree of native/Cargo.lock was checked: besides
+  the project's own GPL-3.0-or-later crates it is MIT, Apache-2.0, BSD-2/3-Clause,
+  ISC, Zlib, Unicode-3.0, Unlicense, CC0-1.0, 0BSD and, for the single crate
+  option-ext 0.2.0, MPL-2.0 (file-level copyleft, compatible with
+  GPL-3.0-or-later); none is incompatible with distribution under
+  GPL-3.0-or-later.

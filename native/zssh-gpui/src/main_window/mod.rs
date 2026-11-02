@@ -1,0 +1,1286 @@
+//! 主窗口：无边框窗口 + 自绘标题栏（主机页标签、会话标签）+ 可折叠主机树 + 主区
+//! （主机页 / 终端 / 设置）+ 底部状态栏。
+//!
+//! 行为规范是 0.2.14 前端（`ui/src/App.tsx`、`components/titlebar/TopTabs.tsx`）。终端本身
+//! 是 [`TerminalWorkspace`]（和调试窗口共用）；这里只做外壳：标签条、主机树、页面切换、
+//! 快捷键、窗口状态。AI 面板、SFTP 停靠、快捷命令栏、撰写栏在 G07c。
+//!
+//! 文件分工：`nav`（页面切换规则）、`host_tree` / `page_logic`（主机树和主机页的纯逻辑）、
+//! `host_store`（读写主机库）、`titlebar`、`sidebar`（主机树）、`vault_page`（主机页）、
+//! `vault_actions` / `vault_menus` / `drag`（主机页和树上的动作、右键菜单、拖放）、
+//! `side_panel`（右侧面板框架）和它上面的 `host_panel` / `keychain_panel` / `proxy_panel` /
+//! `forward_panel`、`modal`（对话框）、`pages`（终端页、设置页、空白标签的选主机）、
+//! `status_bar`（底部状态栏）。
+
+pub mod bar_height;
+pub mod bar_settings;
+mod bars;
+pub(crate) mod bridge;
+mod close_guard;
+pub mod collation;
+pub mod compose_history;
+mod dev_acts;
+mod dev_acts_about;
+mod dev_acts_agent;
+mod dev_acts_dock;
+mod dev_acts_edit;
+mod dev_acts_pane;
+mod dev_acts_sync;
+mod dev_acts_tcp;
+mod dev_acts_u1;
+pub mod dev_script;
+pub mod dev_seed;
+pub mod dock_layout;
+mod docks;
+mod drag;
+pub(crate) mod editor_tabs;
+mod forward_panel;
+mod host_delete;
+mod host_form;
+mod host_panel;
+pub mod host_store;
+pub mod host_tree;
+mod identity_form;
+mod key_dialogs;
+mod keychain_panel;
+mod modal;
+pub mod model_picker;
+pub mod nav;
+mod overview;
+pub mod page_logic;
+mod pages;
+pub mod panel_width;
+mod privacy;
+mod proxy_panel;
+pub mod quick_commands;
+mod quick_panel;
+mod recovery_ui;
+pub mod scope_targets;
+mod side_panel;
+mod sidebar;
+mod status_bar;
+mod sync_bar;
+mod tab_move;
+pub(crate) mod tab_strip;
+pub(crate) mod titlebar;
+mod vault_actions;
+mod vault_keys;
+mod vault_menus;
+mod vault_page;
+pub(crate) mod widgets;
+
+use std::collections::BTreeSet;
+use std::time::Duration;
+
+use ::gpui::{
+    Entity, FocusHandle, KeyDownEvent, MouseButton, MouseMoveEvent, MouseUpEvent, Subscription,
+    Window,
+};
+use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::component::*;
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+
+use crate::app_theme::Tokens;
+use crate::split_tree::Axis;
+use crate::terminal_workspace::TerminalWorkspace;
+use crate::window_state::{self, MainLayout, WindowState};
+use drag::DropHint;
+use forward_panel::ForwardUi;
+use host_panel::HostForm;
+use host_store::HostStore;
+use host_tree::UNGROUPED_KEY;
+use keychain_panel::KeychainUi;
+use modal::Modal;
+use nav::{MainView, ViewNav};
+use panel_width::DragStart;
+use proxy_panel::ProxyUi;
+use side_panel::PanelState;
+
+/// 主机树当前选中的分组（主机页据此过滤卡片）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupSel {
+    All,
+    Ungrouped,
+    Group(i64),
+}
+
+/// 主机树的界面状态。
+pub struct TreeState {
+    pub width: f32,
+    pub collapsed: bool,
+    pub expanded: BTreeSet<String>,
+    pub selected_group: GroupSel,
+    /// 单击选中的主机（高亮）。
+    pub selected_host: Option<i64>,
+    /// 搜索时键盘移动到的那一台（回车连它；没动过连第一台）。
+    pub cursor_host: Option<i64>,
+    /// 正在拖动宽度：按下时指针到右边缘的偏移，拖动中用它换算。
+    pub resizing: bool,
+}
+
+/// 「关闭标签」的几种范围。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseScope {
+    Others,
+    Right,
+    All,
+}
+
+pub struct MainWindow {
+    pub(super) workspace: Entity<TerminalWorkspace>,
+    /// 根元素的焦点：没有输入框或终端有焦点时，快捷键靠它也能收到。
+    pub(super) focus: FocusHandle,
+    pub(super) nav: ViewNav,
+    pub(super) store: HostStore,
+    pub(super) tree: TreeState,
+    pub(super) tree_query: Entity<InputState>,
+    pub(super) vault_query: Entity<InputState>,
+    pub(super) launcher_query: Entity<InputState>,
+    /// 空白标签里选主机的光标位置。
+    pub(super) launcher_cursor: usize,
+    /// 设置页 AI 一节（智能体检测 / 路径 / 下载）：第一次打开设置页时才建。
+    pub(super) agent_settings: Option<Entity<crate::agents_demo::AgentsDemo>>,
+    /// 设置页同步一节（连接存储 / 主密码 / 同步 / 冲突）和备份一节：第一次打开设置页时建。
+    pub(super) sync_settings: Option<Entity<crate::sync_demo::SyncDemo>>,
+    pub(super) backup_settings: Option<Entity<crate::backup_demo::BackupDemo>>,
+    /// 设置页「关于」一节（版本 / 检查更新 / 数据目录 / 开源许可）：第一次打开设置页时建。
+    pub(super) about_settings: Option<Entity<crate::about_view::AboutView>>,
+    /// 底部同步状态条现在画的内容（版本号用来判断要不要重绘）。
+    pub(super) sync_bar: (u64, crate::sync_demo::SyncBarModel),
+    /// 设置页的滚动位置（驱动脚本要把 AI 一节滚到可见处截图）。
+    pub(super) settings_scroll: ::gpui::ScrollHandle,
+    /// 右侧面板内容区的滚动句柄（调试驱动把它滚到底，看面板下半部分用）。
+    pub(super) panel_scroll: ::gpui::ScrollHandle,
+    /// AI 改主机记忆的账本我看到哪一条了（主机详情里开着的记忆框要跟着刷新）。
+    pub(super) memory_seen: u64,
+    /// 标签上 AI 活动点上次画出来的样子（变了才通知重画）。
+    pub(super) ai_dots: Vec<(u64, bool)>,
+    /// 状态栏正在订阅哪台主机的采集。
+    pub(super) status_host: Option<i64>,
+    pub(super) status: Option<crate::status_demo::HostStatus>,
+    pub(super) window_width: f32,
+    pub(super) window_height: f32,
+    tick_count: u64,
+    /// 启动时的恢复提示扫过没有（只扫一次）。
+    recovery_scanned: bool,
+    // ---- 右侧面板、对话框、主机页的界面状态 ----
+    pub(super) panels: PanelState,
+    /// 右侧面板的宽度（拖动、双击恢复、记在设置表里）。
+    pub(super) aside_width: f32,
+    pub(super) panel_drag: Option<DragStart>,
+    /// 面板外壳的焦点：焦点在面板里时 Esc 才收起面板（终端里的 Esc 要留给远端）。
+    pub(super) panel_focus: FocusHandle,
+    pub(super) host_form: Option<HostForm>,
+    pub(super) keychain: KeychainUi,
+    pub(super) proxy_ui: ProxyUi,
+    pub(super) forward_ui: ForwardUi,
+    pub(super) bars: bars::BarUi,
+    pub(super) docks: docks::DockState,
+    /// 标题栏标签条的溢出 / 滚动状态（V2-U1）。
+    pub(super) tab_strip: tab_strip::TabStrip,
+    /// 标签拖出窗口 / 拖到别的窗口的状态机（V2-U1 第 7 条，见 `tab_drag`）。
+    pub(super) tab_dragger: crate::tab_drag::Dragger,
+    /// 主机页每张卡片 / 每一行的键盘焦点句柄，和当前显示的次序（V2-U1：Tab、方向键、Enter、F2）。
+    pub(super) host_focus: std::collections::HashMap<i64, FocusHandle>,
+    pub(super) vault_nav: vault_keys::VaultNav,
+    pub(super) quick_ui: quick_panel::QuickUi,
+    /// 撰写栏翻历史时要填进输入框的内容（按键处理里拿不到 `Window`，渲染前再写）。
+    pub(super) pending_compose_text: Option<String>,
+    pub(super) modal: Option<Modal>,
+    /// 树底部属性面板现在显示哪台主机。
+    pub(super) info_host: Option<i64>,
+    /// 再点一次「收起」的待执行任务编号：双击连接时让它作废。
+    pub(super) info_collapse_gen: u64,
+    pub(super) drop_hint: Option<DropHint>,
+    /// 「切换到手动排序后才能拖动」已经提示过一次。
+    pub(super) mode_hint_shown: bool,
+    /// 已经自动开启过转发的标签（标签 id）：同一次连接只开一次。
+    autostarted_tabs: std::collections::HashSet<u64>,
+    forward_seen: u64,
+    _subs: Vec<Subscription>,
+}
+
+impl MainWindow {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let workspace = cx.new(|cx| TerminalWorkspace::new(window, cx, "main".to_owned()));
+        let layout: MainLayout = WindowState::load().layout;
+        let tree_query = cx.new(|cx| InputState::new(window, cx).placeholder("搜索主机"));
+        let vault_query = cx.new(|cx| InputState::new(window, cx).placeholder("搜索主机"));
+        let launcher_query = cx
+            .new(|cx| InputState::new(window, cx).placeholder("搜索主机名、地址、标签，回车连接"));
+        let saved_view = layout.view.as_deref().and_then(MainView::parse);
+
+        let mut subs = Vec::new();
+        // 终端工作区变了（标签、状态点、标题）标题栏跟着重画。
+        subs.push(cx.observe(&workspace, |_this, _ws, cx| cx.notify()));
+        // 输入框是 MainWindow 自己画出来的元素：它的状态（文字、光标、焦点）一变，主窗口要跟着重画。
+        for input in [&tree_query, &vault_query, &launcher_query] {
+            subs.push(cx.observe(input, |_this, _input, cx| cx.notify()));
+        }
+        // 输入框里的文字一变，搜索结果就变，键盘选中的那一项作废、回到第一项。只认文字变化：
+        // 光标闪烁、移动也会让输入框通知界面，那些不能重置选中的项。
+        subs.push(cx.subscribe_in(
+            &tree_query,
+            window,
+            |this, _input, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } => this.connect_from_tree_search(window, cx),
+                InputEvent::Change => {
+                    this.tree.cursor_host = None;
+                    cx.notify();
+                }
+                _ => {}
+            },
+        ));
+        subs.push(cx.subscribe_in(
+            &vault_query,
+            window,
+            |this, _input, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } => this.search_enter(window, cx),
+                InputEvent::Change => cx.notify(),
+                _ => {}
+            },
+        ));
+        subs.push(cx.subscribe_in(
+            &launcher_query,
+            window,
+            |this, _input, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } => this.connect_from_launcher(window, cx),
+                InputEvent::Change => {
+                    this.launcher_cursor = 0;
+                    cx.notify();
+                }
+                _ => {}
+            },
+        ));
+
+        // 输入框自己绑定了 ↑ ↓（单行输入框里就是移光标），键盘事件里的动作比 `capture_key_down`
+        // 先处理，所以搜索框里的 ↑ ↓ 要在按键分发之前拦下来。只管主窗口自己的按键。
+        let entity = cx.entity().downgrade();
+        let handle = window.window_handle();
+        subs.push(cx.intercept_keystrokes(move |event, window, cx| {
+            if window.window_handle() != handle {
+                return;
+            }
+            let _ = entity.update(cx, |this, cx| this.intercept_arrow(event, window, cx));
+        }));
+
+        let width_now = f32::from(window.viewport_size().width);
+        let store = HostStore::open();
+        let aside_width = panel_width::sanitize_stored(
+            store
+                .db()
+                .ok()
+                .and_then(|db| {
+                    db.setting_get(panel_width::PanelKind::Aside.setting_key())
+                        .ok()
+                        .flatten()
+                })
+                .and_then(|raw| panel_width::parse_stored(Some(&raw))),
+            panel_width::ASIDE_DEFAULT,
+        );
+        let keychain = KeychainUi::new(window, cx);
+        let proxy_ui = ProxyUi::new(window, cx);
+        let bars = bars::BarUi::new(window, cx);
+        let quick_ui = quick_panel::QuickUi::new(window, cx);
+        subs.push(cx.subscribe_in(
+            &bars.compose,
+            window,
+            |this, _input, event: &InputEvent, window, cx| {
+                bars::on_compose_event(this, event, window, cx)
+            },
+        ));
+        subs.push(cx.observe(&bars.compose, |_this, _input, cx| cx.notify()));
+        subs.push(cx.observe(&quick_ui.command, |_this, _input, cx| cx.notify()));
+        for input in quick_ui.input_entities() {
+            subs.push(cx.observe(&input, |_this, _input, cx| cx.notify()));
+        }
+        let this = Self {
+            workspace,
+            focus: cx.focus_handle(),
+            nav: ViewNav::restored(saved_view),
+            store,
+            tree: TreeState {
+                width: window_state::clamp_tree_width(layout.tree_width, width_now),
+                collapsed: layout.tree_collapsed,
+                expanded: host_tree::parse_expanded(&layout.tree_expanded),
+                selected_group: GroupSel::All,
+                selected_host: None,
+                cursor_host: None,
+                resizing: false,
+            },
+            tree_query,
+            vault_query,
+            launcher_query,
+            launcher_cursor: 0,
+            agent_settings: None,
+            sync_settings: None,
+            backup_settings: None,
+            about_settings: None,
+            sync_bar: crate::sync_demo::bar_model(),
+            settings_scroll: ::gpui::ScrollHandle::new(),
+            panel_scroll: ::gpui::ScrollHandle::new(),
+            memory_seen: crate::host_activity::memory_version(),
+            ai_dots: Vec::new(),
+            status_host: None,
+            status: None,
+            window_width: width_now,
+            window_height: f32::from(window.viewport_size().height),
+            tick_count: 0,
+            recovery_scanned: false,
+            panels: PanelState::default(),
+            aside_width,
+            panel_drag: None,
+            panel_focus: cx.focus_handle(),
+            host_form: None,
+            keychain,
+            proxy_ui,
+            forward_ui: ForwardUi::default(),
+            bars,
+            docks: docks::DockState::default(),
+            tab_strip: tab_strip::TabStrip::default(),
+            tab_dragger: crate::tab_drag::Dragger::default(),
+            host_focus: std::collections::HashMap::new(),
+            vault_nav: vault_keys::VaultNav::default(),
+            quick_ui,
+            pending_compose_text: None,
+            modal: None,
+            info_host: None,
+            info_collapse_gen: 0,
+            drop_hint: None,
+            mode_hint_shown: false,
+            autostarted_tabs: std::collections::HashSet::new(),
+            forward_seen: crate::forward_runtime::manager().version(),
+            _subs: subs,
+        };
+
+        // 后台节拍：重读主机库（别的窗口改了主机这里能看到）、跟着活动标签换状态栏订阅、
+        // 取状态栏数据。窗口没了 `update_in` 会报错，任务自己退出。
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
+                if this
+                    .update_in(cx, |this, window, cx| this.tick(window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+        this
+    }
+
+    pub fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
+    }
+
+    // ---- 节拍 ----
+
+    fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.tick_count += 1;
+        let mut changed = false;
+        // 主机库每 2 秒重读一次（500ms × 4）。
+        if self.tick_count.is_multiple_of(4) && self.store.reload() {
+            self.drop_stale_state();
+            changed = true;
+        }
+        changed |= self.sync_status(cx);
+        changed |= self.sync_sync_bar();
+        changed |= self.sync_forwards(cx);
+        self.sync_docks(window, cx);
+        self.progress_unsaved_ask(window, cx);
+        if self.tick_count >= 2 {
+            self.scan_recovery_once(window, cx);
+        }
+        self.record_net_history();
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// 转发状态：运行层的版本号变了就重绘；转发面板开着且有转发在跑时每个节拍刷新计数。
+    /// 另外，标签连上一台主机后，把这台主机上勾了「自动开启」的转发开起来（同一个标签只开一次）。
+    fn sync_forwards(&mut self, cx: &mut Context<Self>) -> bool {
+        let mut changed = false;
+        let version = crate::forward_runtime::manager().version();
+        if version != self.forward_seen {
+            self.forward_seen = version;
+            changed = true;
+        }
+        if self.panels.visible() == Some(side_panel::FORWARDS)
+            && crate::forward_runtime::manager()
+                .statuses()
+                .iter()
+                .any(|status| status.active())
+        {
+            changed = true;
+        }
+        let connected: Vec<(u64, i64)> = self
+            .workspace
+            .read(cx)
+            .tab_infos()
+            .into_iter()
+            .filter(|info| info.status == crate::terminal_workspace::TabStatus::Connected)
+            .filter_map(|info| info.host_id.map(|host| (info.id, host)))
+            .collect();
+        let live: std::collections::HashSet<u64> = connected.iter().map(|(id, _)| *id).collect();
+        // 标签断了 / 关了：下次再连上要重新开。
+        self.autostarted_tabs.retain(|id| live.contains(id));
+        for (tab_id, host_id) in connected {
+            if self.autostarted_tabs.insert(tab_id) {
+                crate::forward_runtime::auto_start_for_host(host_id, self.store.forwards());
+            }
+        }
+        changed
+    }
+
+    /// 库里的东西被别处改了 / 删了（调试窗口、同步、恢复备份）：界面上还指着它们的状态要作废——
+    /// 编辑到一半的主机没了、选中的凭据 / 代理没了、对应规则没了的转发还在跑。
+    fn drop_stale_state(&mut self) {
+        if let Some(form) = &self.host_form
+            && let Some(id) = form.host_id
+            && self.store.host(id).is_none()
+        {
+            self.panels.close_host_details();
+            self.host_form = None;
+        }
+        if self
+            .tree
+            .selected_host
+            .is_some_and(|id| self.store.host(id).is_none())
+        {
+            self.tree.selected_host = None;
+        }
+        if self
+            .info_host
+            .is_some_and(|id| self.store.host(id).is_none())
+        {
+            self.info_host = None;
+        }
+        if self
+            .keychain
+            .selected
+            .is_some_and(|id| !self.store.identities().iter().any(|item| item.id == id))
+        {
+            self.keychain.selected = None;
+            self.keychain.creating = false;
+        }
+        if self
+            .proxy_ui
+            .selected
+            .is_some_and(|id| !self.store.proxies().iter().any(|item| item.id == id))
+        {
+            self.proxy_ui.selected = None;
+            self.proxy_ui.creating = false;
+        }
+        let existing = self.store.forwards().iter().map(|rule| rule.id).collect();
+        crate::forward_runtime::reconcile(&existing);
+    }
+
+    /// 状态栏订阅跟着「终端页的活动会话」走；返回要不要重绘。
+    fn sync_status(&mut self, cx: &mut Context<Self>) -> bool {
+        let wanted = {
+            let ws = self.workspace.read(cx);
+            (self.nav.view == MainView::Terminal && ws.active_pane_is_live())
+                .then(|| ws.active_host_id())
+                .flatten()
+        };
+        let mut changed = false;
+        if wanted != self.status_host {
+            if let Some(old) = self.status_host.take() {
+                crate::status_demo::unsubscribe_host(old);
+            }
+            if let Some(new) = wanted {
+                crate::status_demo::subscribe_host(new);
+            }
+            self.status_host = wanted;
+            self.status = None;
+            changed = true;
+        }
+        if let Some(host_id) = self.status_host {
+            let latest = crate::status_demo::host_status(host_id);
+            if latest != self.status {
+                self.status = latest;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    // ---- 布局持久化 ----
+
+    pub(super) fn layout_snapshot(&self) -> MainLayout {
+        MainLayout {
+            view: Some(self.nav.view.as_str().to_owned()),
+            tree_width: self.tree.width,
+            tree_collapsed: self.tree.collapsed,
+            tree_expanded: self.tree.expanded.iter().cloned().collect(),
+        }
+    }
+
+    pub(super) fn save_layout(&self) {
+        let mut state = WindowState::load();
+        state.layout = self.layout_snapshot();
+        state.save();
+    }
+
+    /// 记下窗口位置和布局（关到托盘时也要记）。
+    pub(crate) fn save_state(&self, window: &Window) {
+        let mut state = WindowState::load();
+        state.main = Some(WindowState::capture(window));
+        state.layout = self.layout_snapshot();
+        state.save();
+    }
+
+    /// 窗口真正关闭（退出）：结束所有会话，释放状态栏订阅，记下窗口位置和布局。
+    pub(crate) fn on_close(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.workspace.update(cx, |ws, _cx| ws.close_all());
+        // 开着的端口转发跟着退出一起停（监听和隧道不留在进程里）。
+        self.shutdown_docks(cx);
+        self.shutdown_editors(cx);
+        crate::forward_runtime::shutdown();
+        if let Some(old) = self.status_host.take() {
+            crate::status_demo::unsubscribe_host(old);
+        }
+        self.save_state(window);
+    }
+
+    // ---- 页面 ----
+
+    pub(crate) fn show_view(
+        &mut self,
+        view: MainView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // 切到终端 / 主机页 / 设置都不再停在 SFTP 标签上（点 SFTP 标签才进去）。
+        self.docks.active_sftp = None;
+        self.docks.active_editor = None;
+        self.nav = self.nav.show(view);
+        self.after_view_change(window, cx);
+    }
+
+    pub(crate) fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let has_tab = self.workspace.read(cx).tab_count() > 0;
+        self.nav = self.nav.toggle_settings(has_tab);
+        self.after_view_change(window, cx);
+    }
+
+    pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let has_tab = self.workspace.read(cx).tab_count() > 0;
+        self.nav = self.nav.close_settings(has_tab);
+        self.after_view_change(window, cx);
+    }
+
+    fn after_view_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_layout();
+        self.focus_content(window, cx);
+        cx.notify();
+    }
+
+    /// 把键盘焦点交给当前页里该拿的那一个：终端页给终端（空白标签给选主机的输入框），
+    /// 其他页给根元素。
+    pub(super) fn focus_content(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.nav.view == MainView::Terminal {
+            let ws = self.workspace.read(cx);
+            if ws.tab_count() > 0 {
+                if ws.active_tab_is_blank() {
+                    let handle = self.launcher_query.read(cx).focus_handle(cx);
+                    window.focus(&handle, cx);
+                } else {
+                    let handle = ws.focus_handle();
+                    window.focus(&handle, cx);
+                }
+                return;
+            }
+        }
+        window.focus(&self.focus, cx);
+    }
+
+    // ---- 标签 ----
+
+    pub(crate) fn select_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace.update(cx, |ws, cx| ws.select_tab(index, cx));
+        self.show_view(MainView::Terminal, window, cx);
+    }
+
+    /// 「+」和 Ctrl+Shift+T：开一个空白标签，等用户选主机。
+    pub(crate) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace.update(cx, |ws, cx| ws.new_empty_tab(cx));
+        self.launcher_cursor = 0;
+        self.launcher_query
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.show_view(MainView::Terminal, window, cx);
+    }
+
+    pub(crate) fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let closed = self.workspace.update(cx, |ws, cx| ws.close_tab(index, cx));
+        if closed {
+            self.after_tabs_closed(window, cx);
+        }
+    }
+
+    pub(crate) fn close_tabs(
+        &mut self,
+        index: usize,
+        scope: CloseScope,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.workspace.update(cx, |ws, cx| match scope {
+            CloseScope::Others => ws.close_other_tabs(index, cx),
+            CloseScope::Right => ws.close_tabs_right(index, cx),
+            CloseScope::All => ws.close_all_tabs(cx),
+        });
+        if count > 0 {
+            self.after_tabs_closed(window, cx);
+        }
+    }
+
+    /// 标签关完了终端页就没东西可看，回主机页；否则焦点跟着活动标签。
+    fn after_tabs_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workspace.read(cx).tab_count() == 0 {
+            // 还有 SFTP / 编辑器标签开着：终端页不是空的，停在其中一个上。
+            if !self.docks.sftp_tabs.is_empty() || !self.docks.editor_tabs.is_empty() {
+                self.fall_back_after_extra_tab(window, cx);
+                return;
+            }
+            self.nav = self.nav.tabs_emptied();
+        }
+        self.after_view_change(window, cx);
+    }
+
+    /// Ctrl+Shift+W：分屏时关聚焦窗格，否则关标签。
+    pub(crate) fn close_focused_pane_or_tab(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.nav.view != MainView::Terminal {
+            return;
+        }
+        let acted = self
+            .workspace
+            .update(cx, |ws, cx| ws.close_focused_pane_or_tab(cx));
+        if acted {
+            self.after_tabs_closed(window, cx);
+        }
+    }
+
+    /// 复制标签（双击标签和右键「复制标签页」是同一个动作）。
+    pub(crate) fn duplicate_tab(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let done = self
+            .workspace
+            .update(cx, |ws, cx| ws.duplicate_tab(index, cx));
+        if done {
+            self.show_view(MainView::Terminal, window, cx);
+        } else {
+            self.notice("这个标签还没连主机，没有可复制的", window, cx);
+        }
+    }
+
+    pub(crate) fn reconnect_tab(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self
+            .workspace
+            .update(cx, |ws, cx| ws.reconnect_tab(index, cx));
+        if count > 0 {
+            self.show_view(MainView::Terminal, window, cx);
+        }
+    }
+
+    /// 右键「断开连接」：断开这个标签（分屏的每个窗格）的会话，标签留着显示已断开，
+    /// 之后可以「重新连接」。同一条 SSH 连接上别的标签 / SFTP 不受影响（只放掉自己那一份）。
+    pub(crate) fn disconnect_tab(
+        &mut self,
+        index: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace
+            .update(cx, |ws, cx| ws.disconnect_tab(index, cx));
+    }
+
+    /// 右键「复制地址」：复制这个标签连的那台主机的地址。
+    pub(crate) fn copy_tab_address(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ws = self.workspace.read(cx);
+        let address = ws
+            .tab_host_id(index)
+            .and_then(|id| self.store.address_of(id))
+            .or_else(|| {
+                ws.tab_quick_target(index)
+                    .and_then(|target| page_logic::quick_target_address(&target))
+            });
+        match address {
+            Some(address) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(address.clone()));
+                self.notice(&format!("已复制：{address}"), window, cx);
+            }
+            None => self.notice("这个标签没有可复制的地址", window, cx),
+        }
+    }
+
+    pub(crate) fn cycle_tab(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let moved = self.workspace.update(cx, |ws, cx| ws.cycle_tab(step, cx));
+        if moved || self.nav.view != MainView::Terminal {
+            self.show_view(MainView::Terminal, window, cx);
+        }
+    }
+
+    // ---- 连接 ----
+
+    /// 打开一台主机（双击、回车）：当前终端页上是个空白标签就在它里面连，否则开新标签。
+    pub(crate) fn open_host(&mut self, host_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(title) = self.store.host(host_id).map(|host| host.name.clone()) else {
+            return;
+        };
+        let reuse_blank =
+            self.nav.view == MainView::Terminal && self.workspace.read(cx).active_tab_is_blank();
+        if reuse_blank {
+            self.workspace
+                .update(cx, |ws, cx| ws.connect_active_empty(host_id, title, cx));
+        } else {
+            self.workspace
+                .update(cx, |ws, cx| ws.open_host_tab(host_id, title, cx));
+        }
+        self.tree.selected_host = Some(host_id);
+        self.store.record_recent(host_id);
+        self.show_view(MainView::Terminal, window, cx);
+    }
+
+    /// 右键「在新标签连接」：不管当前是不是空白标签，都另开一个。
+    pub(crate) fn open_host_in_new_tab(
+        &mut self,
+        host_id: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(title) = self.store.host(host_id).map(|host| host.name.clone()) else {
+            return;
+        };
+        self.workspace
+            .update(cx, |ws, cx| ws.open_host_tab(host_id, title, cx));
+        self.tree.selected_host = Some(host_id);
+        self.store.record_recent(host_id);
+        self.show_view(MainView::Terminal, window, cx);
+    }
+
+    pub(crate) fn copy_host_field(
+        &mut self,
+        host_id: i64,
+        what: CopyField,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = match what {
+            CopyField::Name => self.store.host(host_id).map(|host| host.name.clone()),
+            CopyField::Address => self.store.address_of(host_id),
+        };
+        if let Some(text) = text {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            self.notice(&format!("已复制：{text}"), window, cx);
+        }
+    }
+
+    pub(crate) fn notice(&mut self, message: &str, window: &mut Window, cx: &mut Context<Self>) {
+        window.push_notification(message.to_owned(), cx);
+    }
+
+    // ---- 主机树 ----
+
+    pub(crate) fn toggle_tree(&mut self, cx: &mut Context<Self>) {
+        self.tree.collapsed = !self.tree.collapsed;
+        self.save_layout();
+        cx.notify();
+    }
+
+    pub(super) fn toggle_group(&mut self, key: String, cx: &mut Context<Self>) {
+        if !self.tree.expanded.remove(&key) {
+            self.tree.expanded.insert(key);
+        }
+        self.save_layout();
+        cx.notify();
+    }
+
+    /// 单击分组行：选中这个分组（主机页按它过滤），同时展开 / 收起。
+    pub(super) fn click_group(&mut self, sel: GroupSel, cx: &mut Context<Self>) {
+        self.tree.selected_group = sel;
+        match sel {
+            GroupSel::Group(id) => self.toggle_group(host_tree::group_key(Some(id)), cx),
+            GroupSel::Ungrouped => self.toggle_group(UNGROUPED_KEY.to_owned(), cx),
+            GroupSel::All => cx.notify(),
+        }
+    }
+
+    pub(super) fn reset_tree_width(&mut self, cx: &mut Context<Self>) {
+        self.tree.width = window_state::TREE_DEFAULT_WIDTH;
+        self.save_layout();
+        cx.notify();
+    }
+
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.bars_mouse_move(event, cx) {
+            return;
+        }
+        if self.docks_mouse_move(event, cx) {
+            return;
+        }
+        if let Some(start) = self.panel_drag {
+            if event.pressed_button != Some(MouseButton::Left) {
+                self.panel_drag = None;
+                self.save_panel_width();
+                return;
+            }
+            let width_now = f32::from(window.viewport_size().width);
+            self.aside_width = panel_width::dragged_width(
+                self.panel_kind(),
+                start,
+                f32::from(event.position.x),
+                width_now,
+                0.0,
+            );
+            cx.notify();
+            return;
+        }
+        if !self.tree.resizing {
+            return;
+        }
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.tree.resizing = false;
+            self.save_layout();
+            return;
+        }
+        let width_now = f32::from(window.viewport_size().width);
+        self.tree.width = window_state::clamp_tree_width(f32::from(event.position.x), width_now);
+        cx.notify();
+    }
+
+    fn on_mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.bars_mouse_up(cx);
+        self.docks_mouse_up(cx);
+        if self.panel_drag.take().is_some() {
+            self.save_panel_width();
+            cx.notify();
+        }
+        if self.tree.resizing {
+            self.tree.resizing = false;
+            self.save_layout();
+            cx.notify();
+        }
+    }
+
+    /// 搜索框回车：连选中的那台，没选就连第一台。
+    fn connect_from_tree_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.tree_query.read(cx).value().to_string();
+        let target = self.first_match(&query, self.tree.cursor_host);
+        if let Some(id) = target {
+            self.open_host(id, window, cx);
+        }
+    }
+
+    pub(super) fn connect_from_vault_search(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let query = self.vault_query.read(cx).value().to_string();
+        if let Some(id) = self.first_match(&query, None) {
+            self.open_host(id, window, cx);
+        }
+    }
+
+    fn connect_from_launcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.launcher_query.read(cx).value().to_string();
+        let shown = pages::launcher_hosts(self.store.hosts(), &query);
+        let at = self.launcher_cursor.min(shown.len().saturating_sub(1));
+        if let Some(id) = shown.get(at).copied() {
+            self.open_host(id, window, cx);
+        }
+    }
+
+    /// 搜索结果里要连的那台：键盘选过的（还在结果里）优先，否则第一台。
+    fn first_match(&self, query: &str, cursor: Option<i64>) -> Option<i64> {
+        let filter = host_tree::tree_filter(
+            self.store.groups(),
+            self.store.hosts(),
+            query,
+            self.store.flat(),
+        )?;
+        let order = host_tree::filtered_host_order(
+            self.store.groups(),
+            self.store.hosts(),
+            &filter,
+            self.store.flat(),
+        );
+        cursor
+            .filter(|id| order.contains(id))
+            .or_else(|| order.first().copied())
+    }
+
+    /// 搜索框有焦点时 ↑ ↓ 在结果里移动。
+    fn move_search_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let query = self.tree_query.read(cx).value().to_string();
+        let Some(filter) = host_tree::tree_filter(
+            self.store.groups(),
+            self.store.hosts(),
+            &query,
+            self.store.flat(),
+        ) else {
+            return;
+        };
+        let order = host_tree::filtered_host_order(
+            self.store.groups(),
+            self.store.hosts(),
+            &filter,
+            self.store.flat(),
+        );
+        self.tree.cursor_host = host_tree::step_cursor(&order, self.tree.cursor_host, delta);
+        cx.notify();
+    }
+
+    fn move_launcher_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let query = self.launcher_query.read(cx).value().to_string();
+        let count = pages::launcher_hosts(self.store.hosts(), &query).len();
+        if count == 0 {
+            return;
+        }
+        self.launcher_cursor =
+            (self.launcher_cursor as isize + delta).clamp(0, count as isize - 1) as usize;
+        cx.notify();
+    }
+
+    // ---- 快捷键 ----
+
+    /// 窗口级快捷键（0.2.14：捕获阶段处理，先于终端，也不会发给远端）：
+    /// Ctrl+Shift+T 新标签、+W 关窗格/标签、+D/+E 分屏、+B 广播、+A AI、+F 文件（后两个先给提示）；Ctrl+, 设置；
+    /// Ctrl+Tab 切标签；设置页里 Esc 关设置。
+    fn on_capture_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let keystroke = &event.keystroke;
+        let key = keystroke.key.to_ascii_lowercase();
+        let mods = keystroke.modifiers;
+
+        // 正在拖标签：Esc 取消（V2-U1，见 `tab_move`）。
+        if self.tab_dragger.pending() && key == "escape" {
+            self.cancel_tab_drag(cx);
+            cx.stop_propagation();
+            return;
+        }
+
+        // 标签溢出菜单开着：Esc 收起它，别的按键照常走。
+        if self.tab_strip.menu_open && key == "escape" && !mods.modified() {
+            self.close_tab_menu(cx);
+            cx.stop_propagation();
+            return;
+        }
+
+        // 对话框开着：Esc 取消、Enter 确认，别的按键照常给输入框；其余窗口级快捷键先不响应。
+        if self.modal.is_some() {
+            if !mods.modified() {
+                match key.as_str() {
+                    "escape" => {
+                        self.close_modal(window, cx);
+                        cx.stop_propagation();
+                    }
+                    "enter" => {
+                        self.confirm_modal(window, cx);
+                        cx.stop_propagation();
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+
+        if mods.control && mods.shift && !mods.alt {
+            let handled = match key.as_str() {
+                "t" => {
+                    self.new_tab(window, cx);
+                    true
+                }
+                "w" => {
+                    self.close_focused_pane_or_tab(window, cx);
+                    true
+                }
+                // 0.2.14：Ctrl+Shift+D 左右分屏，Ctrl+Shift+E 上下分屏；拆的是聚焦的窗格，可以接着拆。
+                "d" | "e" => {
+                    if self.nav.view == MainView::Terminal {
+                        let axis = if key == "d" { Axis::X } else { Axis::Y };
+                        self.workspace
+                            .update(cx, |ws, cx| ws.split_active(axis, cx));
+                    }
+                    true
+                }
+                "b" => {
+                    if self.nav.view == MainView::Terminal {
+                        self.workspace.update(cx, |ws, cx| ws.toggle_broadcast(cx));
+                    }
+                    true
+                }
+                "a" => {
+                    self.toggle_ai_panel(window, cx);
+                    true
+                }
+                // Ctrl+Shift+F 是文件（SFTP）面板（同 0.2.14）；先拦下来，不然会被终端当成 Ctrl+F 发给远端。
+                "f" => {
+                    self.toggle_sftp_dock(window, cx);
+                    true
+                }
+                _ => false,
+            };
+            if handled {
+                cx.stop_propagation();
+                return;
+            }
+        }
+        if mods.control && !mods.shift && !mods.alt && key == "," {
+            self.toggle_settings(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if mods.control && !mods.alt && key == "tab" {
+            self.cycle_tab(if mods.shift { -1 } else { 1 }, window, cx);
+            cx.stop_propagation();
+            return;
+        }
+
+        if mods.modified() {
+            return;
+        }
+        // 设置页里 Esc 关设置；输入框有焦点时 Esc 先留给输入框（清空搜索）。
+        if key == "escape" && self.nav.view == MainView::Settings {
+            self.close_settings(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        // 撰写栏里按 Esc：把键盘还给当前终端。
+        if key == "escape" && self.compose_bar_open() && self.compose_has_focus(window, cx) {
+            self.focus_content(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        // 面板开着：焦点在面板里（或在主机页，那里没有终端要用 Esc）时 Esc 收起它。
+        if key == "escape"
+            && self.panels_on_page()
+            && self.panels.visible().is_some()
+            && (self.nav.view == MainView::Vault || self.panel_focus.contains_focused(window, cx))
+        {
+            self.close_panel(window, cx);
+            cx.stop_propagation();
+        }
+    }
+
+    /// 搜索框 / 选主机输入框有焦点时，↑ ↓ 在结果里移动（没有修饰键）。
+    fn intercept_arrow(
+        &mut self,
+        event: &::gpui::KeystrokeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let keystroke = &event.keystroke;
+        if keystroke.modifiers.modified() {
+            return;
+        }
+        let delta = match keystroke.key.as_str() {
+            "down" => 1,
+            "up" => -1,
+            _ => return,
+        };
+        if self.tree_query.read(cx).focus_handle(cx).is_focused(window) {
+            self.move_search_cursor(delta, cx);
+            cx.stop_propagation();
+        } else if self
+            .launcher_query
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+        {
+            self.move_launcher_cursor(delta, cx);
+            cx.stop_propagation();
+        } else if self.compose_bar_open()
+            && self.compose_has_focus(window, cx)
+            && self.compose_history_key(delta < 0, cx)
+        {
+            // 撰写栏：光标在第一行 / 最后一行时 ↑ ↓ 翻发送历史。
+            cx.stop_propagation();
+        }
+    }
+
+    // ---- 调试钩子（只在 debug 构建里从 main.rs 调） ----
+
+    /// 主机树现在画了几行（搜索后的结果也算）：驱动脚本断言搜索过滤用。
+    pub(crate) fn tree_row_count(&self, cx: &App) -> usize {
+        let query = self.tree_query.read(cx).value().to_string();
+        let filter = host_tree::tree_filter(
+            self.store.groups(),
+            self.store.hosts(),
+            &query,
+            self.store.flat(),
+        );
+        host_tree::visible_rows(
+            self.store.groups(),
+            self.store.hosts(),
+            filter.as_ref(),
+            &self.tree.expanded,
+            self.store.flat(),
+        )
+        .len()
+    }
+
+    /// 截图前的隐私检查：收集窗口上会出现的文字（标签标题、主机树和主机页的名字、终端屏幕），
+    /// 命中任何一个禁用片段就返回它。片段只来自环境变量，不写进代码。
+    pub(crate) fn privacy_hits(&self, forbidden: &[String], cx: &App) -> Vec<String> {
+        let ws = self.workspace.read(cx);
+        let mut texts: Vec<String> = Vec::new();
+        texts.extend(ws.tab_infos().into_iter().map(|info| info.title));
+        texts.extend(ws.visible_text());
+        texts.extend(self.store.hosts().iter().map(|host| host.name.clone()));
+        texts.extend(self.store.groups().iter().map(|group| group.name.clone()));
+        // 主机页的卡片会显示「用户@地址:端口」，只在主机页上才算画面里的文字。
+        if self.nav.view == MainView::Vault {
+            texts.extend(
+                self.store
+                    .hosts()
+                    .iter()
+                    .map(|host| format!("{}@{}:{}", host.username, host.host, host.port)),
+            );
+        }
+        // 调用方给的禁用片段（地址、用户名）+ 内置规则（公网 IP、Last login、用户目录）。
+        // 命中只返回类别或序号，不返回原文：原文正是不能出现的东西。
+        let mut hits = Vec::new();
+        for (number, needle) in forbidden
+            .iter()
+            .filter(|needle| !needle.is_empty())
+            .enumerate()
+        {
+            if texts
+                .iter()
+                .any(|text| text.to_lowercase().contains(&needle.to_lowercase()))
+            {
+                hits.push(format!("禁用片段 #{number}"));
+            }
+        }
+        for text in &texts {
+            for category in privacy::builtin_hits(text) {
+                let hit = format!("内置规则：{category}");
+                if !hits.contains(&hit) {
+                    hits.push(hit);
+                }
+            }
+        }
+        hits
+    }
+}
+
+/// 右键菜单里「复制主机名 / 复制地址」。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyField {
+    Name,
+    Address,
+}
+
+impl Render for MainWindow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tokens = Tokens::current(cx);
+        self.window_width = f32::from(window.viewport_size().width);
+        self.window_height = f32::from(window.viewport_size().height);
+        self.apply_pending_compose_text(window, cx);
+        let view = self.nav.view;
+        let tree_on_page = matches!(view, MainView::Vault | MainView::Terminal);
+        let tree_visible = !self.tree.collapsed && tree_on_page;
+        let tree_width = window_state::clamp_tree_width(self.tree.width, self.window_width);
+        let panel_visible = self.panels_on_page() && self.panels.visible().is_some();
+        let panel_width = if panel_visible {
+            self.panel_width_now(self.window_width)
+        } else {
+            0.0
+        };
+        let page_width = self.window_width
+            - if tree_visible { tree_width } else { 0.0 }
+            - if tree_on_page && self.tree.collapsed && view == MainView::Vault {
+                44.0
+            } else {
+                0.0
+            }
+            - panel_width;
+
+        let content = match view {
+            MainView::Vault => self
+                .render_vault(&tokens, page_width, window, cx)
+                .into_any_element(),
+            MainView::Terminal => self.render_terminal(&tokens, window, cx).into_any_element(),
+            MainView::Settings => self.render_settings(&tokens, window, cx).into_any_element(),
+        };
+        let docks = self.render_docks(&tokens, cx);
+        let panel = self.render_side_panel(&tokens, window, cx);
+        let modal = self.render_modal(&tokens, window, cx);
+        let tab_menu = self.render_tab_menu(&tokens, cx);
+        let me_entity = cx.entity();
+        let drag_sensor = crate::tab_drag::sensor(
+            &me_entity,
+            self.tab_dragger.pending(),
+            |this, event, window, cx| this.on_tab_drag_move(event, window, cx),
+            |this, event, window, cx| this.on_tab_drag_up(event, window, cx),
+        );
+        let drag_ghost = crate::tab_drag::ghost_chip(window, cx, &tokens);
+
+        v_flex()
+            .id("main-window")
+            .relative()
+            .size_full()
+            .track_focus(&self.focus)
+            .capture_key_down(cx.listener(Self::on_capture_key))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .bg(tokens.background)
+            .text_color(tokens.text)
+            .child(drag_sensor)
+            .child(self.render_title_bar(&tokens, tree_visible.then_some(tree_width), window, cx))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .when(tree_visible, |d| {
+                        d.child(self.render_tree(&tokens, tree_width, window, cx))
+                    })
+                    .when(self.tree.collapsed && view == MainView::Vault, |d| {
+                        d.child(self.render_tree_collapsed(&tokens, cx))
+                    })
+                    .child(div().flex_1().min_w_0().h_full().child(content))
+                    .children(docks)
+                    .children(panel),
+            )
+            .children(self.render_status_bar(&tokens, cx))
+            .children(self.render_sync_bar(&tokens, cx))
+            .children(modal)
+            .children(tab_menu)
+            .children(drag_ghost)
+    }
+}

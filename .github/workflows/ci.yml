@@ -1,0 +1,122 @@
+# ZeeTerm CI：在 windows-latest 上跑全部检查，并打一个安装包作为这次运行的 artifact。
+#
+# 只构建、只检查：不发布 Release、不签名、不使用任何密钥。依赖测试服务器 / 真实智能体的用例在没设环境变量时
+# 会跳过并打印原因（见 AGENTS.md 的"可移植性"），所以这里跑到的都是纯本地能过的用例。
+#
+# 两个任务各自带缓存、并行跑：
+#   crates  ：根工作区（共用核心库）的 fmt / clippy / test
+#   native  ：原生应用工作区的 fmt / clippy / test / release 构建，再打安装包上传
+# 不设 path 过滤：共享库或 Cargo.lock 变化必须同时触发两个任务。
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  crates:
+    name: 核心库（windows-latest）
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # 版本由 rust-toolchain.toml 固定；无参数的 rustup toolchain install 就是按那个文件安装。
+      - name: 装 Rust（按 rust-toolchain.toml，MSVC）
+        shell: pwsh
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo clippy --version
+
+      - name: 缓存 cargo 的编译产物
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: crates
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: "核心库 1/3 cargo fmt --check"
+        run: cargo fmt --all -- --check
+
+      - name: "核心库 2/3 cargo clippy"
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: "核心库 3/3 cargo test"
+        run: cargo test --workspace --locked
+
+  native:
+    name: 原生应用（windows-latest，GPUI）
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 取代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: 装 Rust（按 rust-toolchain.toml，MSVC）
+        shell: pwsh
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo clippy --version
+
+      # 只缓存 native 的 target；核心库任务的缓存键不受影响。
+      - name: 缓存 cargo 的编译产物
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: native -> target
+          key: native
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: "原生 1/5 cargo fmt --check"
+        run: cargo fmt --manifest-path native/Cargo.toml --all -- --check
+
+      - name: "原生 2/5 cargo clippy"
+        run: cargo clippy --manifest-path native/Cargo.toml --workspace --all-targets --locked -- -D warnings
+
+      - name: "原生 3/5 cargo test"
+        run: cargo test --manifest-path native/Cargo.toml --workspace --locked
+
+      - name: "原生 4/5 cargo build --release"
+        run: cargo build --manifest-path native/Cargo.toml --workspace --release --locked
+
+      # 打安装包：只构建、只作为这次运行的 artifact 保存给人下载试装。
+      - name: 装 NSIS（runner 镜像里没有时才装）
+        shell: pwsh
+        run: |
+          $known = @(
+            "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+            "$env:ProgramFiles\NSIS\makensis.exe"
+          )
+          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue) -and
+              -not ($known | Where-Object { Test-Path -LiteralPath $_ })) {
+            choco install nsis -y --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: "原生 5/5 打安装包（只构建，不发布，不签名）"
+        shell: pwsh
+        run: ./native/installer/build.ps1
+
+      - name: 上传安装包（构建产物，不是 Release）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zeeterm-setup
+          path: native/installer/out/ZeeTerm-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 14

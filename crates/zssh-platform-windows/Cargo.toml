@@ -1,0 +1,22 @@
+[package]
+name = "zssh-platform-windows"
+description = "Z-SSH 的 Windows 平台能力：不依赖 Tauri / GPUI"
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+tracing.workspace = true
+zeroize = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Input_Ime",
+    "Win32_UI_WindowsAndMessaging",
+] }
