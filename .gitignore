@@ -16,3 +16,6 @@ src-tauri/icons/zssh-*/
 
 # 原生窗口级场景的运行日志（只留在本地，不进仓库）
 docs/reports/**/scenarios/*.log
+
+# 本地内部资料（计划、任务卡、验收报告、审查记录）：只留在本机，不推到 GitHub
+/docs/internal/
