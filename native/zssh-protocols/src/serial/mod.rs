@@ -1,1 +1,109 @@
+//! 本机串口会话后端（Windows）。
+//!
+//! - [`params`]：设备名整理、`SerialOptions` → DCB 的映射、错误分类（纯函数，可完整单测）。
+//! - `os`：Win32 重叠 I/O、打开 / 配置、设备枚举。
+//! - `session`：读线程 + 写线程，接到 `SessionBackend` / `SessionEvent` / `FlowGate`。
+//!
+//! 依赖选择见 `os.rs` 顶部：直接用 Win32，不引入 `serialport` crate。
+
 pub mod params;
+
+#[cfg(windows)]
+mod os;
+#[cfg(windows)]
+mod session;
+
+pub use params::SerialError;
+
+/// 本机的一个串口，给界面的下拉列表用。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SerialPortEntry {
+    /// 设备名，存进主机设置的就是它，如 `COM3`。
+    pub device: String,
+    /// 给人看的名字，如 `USB-SERIAL CH340 (COM3)`；取不到友好名时就是设备名。
+    pub display_name: String,
+}
+
+/// COM 口按编号排（COM2 在 COM10 前面）。
+fn sort_ports(entries: &mut [SerialPortEntry]) {
+    fn number(device: &str) -> (u64, String) {
+        let digits: String = device
+            .chars()
+            .skip(3)
+            .take_while(char::is_ascii_digit)
+            .collect();
+        (digits.parse().unwrap_or(u64::MAX), device.to_owned())
+    }
+    entries.sort_by_key(|entry| number(&entry.device));
+}
+
+/// 列出本机当前存在的串口。本机没有串口时返回空列表，不算错误。
+#[cfg(windows)]
+pub fn list_ports() -> Result<Vec<SerialPortEntry>, SerialError> {
+    let mut entries = os::list_ports()?;
+    sort_ports(&mut entries);
+    entries.dedup_by(|a, b| a.device.eq_ignore_ascii_case(&b.device));
+    Ok(entries)
+}
+
+#[cfg(windows)]
+pub use session::open_serial;
+
+/// 非 Windows 平台没有实现（ZeeTerm 只面向 Windows）；保留签名让 crate 在别处也能编译。
+#[cfg(not(windows))]
+pub fn list_ports() -> Result<Vec<SerialPortEntry>, SerialError> {
+    Ok(Vec::new())
+}
+
+#[cfg(not(windows))]
+pub fn open_serial(
+    options: &zssh_core::model::SerialOptions,
+    _generation: u64,
+    _runtime: tokio::runtime::Handle,
+) -> Result<
+    (
+        crate::StreamBackend,
+        std::sync::mpsc::Receiver<zssh_session::SessionEvent>,
+        std::sync::Arc<zssh_core::ssh::FlowGate>,
+    ),
+    SerialError,
+> {
+    Err(SerialError::Os {
+        device: options.device.clone(),
+        code: 0,
+        what: "串口只在 Windows 上支持".to_owned(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ports_sort_by_number_not_by_text() {
+        let mut ports: Vec<SerialPortEntry> = ["COM10", "COM2", "COM1", "COM11"]
+            .into_iter()
+            .map(|name| SerialPortEntry {
+                device: name.to_owned(),
+                display_name: name.to_owned(),
+            })
+            .collect();
+        sort_ports(&mut ports);
+        let order: Vec<_> = ports.iter().map(|port| port.device.as_str()).collect();
+        assert_eq!(order, ["COM1", "COM2", "COM10", "COM11"]);
+    }
+
+    /// 本机有没有串口都不算失败：能列出就列出，没有就是空列表。
+    #[test]
+    fn listing_ports_works_with_or_without_hardware() {
+        let ports = list_ports().expect("枚举不该失败");
+        eprintln!("本机串口数：{}", ports.len());
+        for port in &ports {
+            assert!(
+                port.device.to_ascii_uppercase().starts_with("COM"),
+                "{port:?}"
+            );
+            assert!(port.display_name.contains(&port.device), "{port:?}");
+        }
+    }
+}
