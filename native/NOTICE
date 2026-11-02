@@ -43,10 +43,18 @@ Cargo.lock), all used unmodified from crates.io:
   alacritty_terminal 0.26.0 (terminal emulation core) - Apache-2.0
   fancy-regex 0.20.0, minisign 0.10.0, minisign-verify 0.3.0 (update signature
   check) - MIT; tray-icon 0.25.1, windows 0.62, reqwest 0.12, russh 0.64 (tests
-  only), tokio, serde, regex, sha2, futures, semver - MIT or Apache-2.0 (russh:
+  only), tokio, serde, regex, sha2, futures, semver, image 0.25.10 (decodes the
+  built-in tray fallback PNG; PNG feature only) - MIT or Apache-2.0 (russh:
   Apache-2.0). The whole resolved tree of native/Cargo.lock was checked: besides
   the project's own GPL-3.0-or-later crates it is MIT, Apache-2.0, BSD-2/3-Clause,
   ISC, Zlib, Unicode-3.0, Unlicense, CC0-1.0, 0BSD and, for the single crate
   option-ext 0.2.0, MPL-2.0 (file-level copyleft, compatible with
   GPL-3.0-or-later); none is incompatible with distribution under
   GPL-3.0-or-later.
+
+Build-time only: embed-resource 3.0.12 (MIT, https://crates.io/crates/embed-resource)
+  compiles the application icon (native/zssh-gpui/assets/brand/zeeterm.ico)
+  into zeeterm.exe with the Windows SDK resource compiler (rc.exe); no part of
+  it ships in the executable. The ZeeTerm logo files under
+  native/zssh-gpui/assets/brand/ are ZeeTerm project artwork, not third-party
+  material.

@@ -1,0 +1,4 @@
+// Application icon. Resource ID 1 is the one gpui-pre-windows 0.3.10 passes to LoadImageW
+// (platform.rs load_icon: PCWSTR(1 as _), IMAGE_ICON) for the window class icon, so the
+// title-bar corner, taskbar and Alt+Tab pick this up; Explorer shows the lowest-ID icon group.
+1 ICON "brand/zeeterm.ico"

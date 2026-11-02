@@ -10549,9 +10549,11 @@ name = "zssh-gpui"
 version = "0.2.14"
 dependencies = [
  "base64 0.22.1",
+ "embed-resource",
  "futures",
  "gpui-kit",
  "gpui-pre",
+ "image",
  "minisign",
  "rand 0.10.3",
  "raw-window-handle",
