@@ -369,6 +369,9 @@ impl MainWindow {
         let text = |value: bool| if value { "on" } else { "off" }.to_owned();
         Ok(match key {
             "keepalive" => prefs.keepalive_secs.to_string(),
+            // 连接代码真正在用的保活间隔（进程里的那个值），不是库里的。
+            "keepalive_live" => zssh_core::ssh::keepalive_interval()
+                .map_or_else(|| "0".to_owned(), |d| d.as_secs().to_string()),
             "pool_idle" => prefs.pool_idle_secs.to_string(),
             "stats_refresh" => prefs.stats_refresh_secs.to_string(),
             "sftp_concurrency" => prefs.sftp_concurrency.to_string(),
