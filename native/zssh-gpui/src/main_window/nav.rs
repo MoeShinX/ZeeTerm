@@ -167,13 +167,15 @@ impl ViewNav {
         }
     }
 
-    /// 重启后恢复：欢迎页、主机页和设置页原样回来（设置页关掉回欢迎页）；终端页恢复不了——
-    /// 会话不跨进程，重启后没有标签，退回欢迎页。
+    /// 重启后恢复：设置页原样回来（关掉回欢迎页）；其余一律从欢迎页开始。主机页不恢复：
+    /// V2-U3 之前的默认页就是主机页，老用户的窗口状态几乎都存着 `vault`，原样恢复的话
+    /// 他们永远看不到欢迎页。终端页本来就恢复不了——会话不跨进程，重启后没有标签。
     pub fn restored(saved: Option<MainView>) -> Self {
         match saved {
             Some(MainView::Settings) => Self::default().open_settings(),
-            Some(MainView::Vault) => Self::on(MainView::Vault),
-            Some(MainView::Welcome) | Some(MainView::Terminal) | None => Self::default(),
+            Some(MainView::Vault) | Some(MainView::Welcome) | Some(MainView::Terminal) | None => {
+                Self::default()
+            }
         }
     }
 }
@@ -322,9 +324,10 @@ mod tests {
 
     #[test]
     fn restart_restores_what_can_exist_and_falls_back_for_the_rest() {
+        // 升级前存的是主机页（老默认），重启也从欢迎页开始。
         assert_eq!(
             ViewNav::restored(Some(MainView::Vault)).view,
-            MainView::Vault
+            MainView::Welcome
         );
         assert_eq!(
             ViewNav::restored(Some(MainView::Welcome)).view,
