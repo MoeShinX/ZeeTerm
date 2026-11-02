@@ -11,6 +11,9 @@ use std::thread;
 use zssh_regex::{CompiledRule, DEFAULT_MATCH_LIMIT, Engine, MatchError, compile};
 use zssh_terminal::RowSnapshot;
 
+/// 规则最多这么多条（和配置同步的校验一致，对方的包超过就不收）。
+pub const MAX_RULES: usize = zssh_core::sync::settings::HIGHLIGHT_RULES_MAX;
+
 /// 新规则默认的颜色轮换。
 pub const PALETTE: [u32; 6] = [0xef4444, 0xf59e0b, 0x22c55e, 0x3b82f6, 0xa855f7, 0x06b6d4];
 
@@ -19,6 +22,8 @@ pub const PALETTE: [u32; 6] = [0xef4444, 0xf59e0b, 0x22c55e, 0x3b82f6, 0xa855f7,
 pub struct HighlightRule {
     pub id: u64,
     pub pattern: String,
+    /// 把规则当正则；关掉就是按字面匹配的关键词（0.2.14 规则里的 `regex`）。
+    pub regex: bool,
     pub case_sensitive: bool,
     pub foreground: u32,
     pub background: Option<u32>,
@@ -30,6 +35,7 @@ impl Default for HighlightRule {
         Self {
             id: 0,
             pattern: String::new(),
+            regex: true,
             case_sensitive: false,
             foreground: PALETTE[0],
             background: None,
@@ -44,10 +50,53 @@ impl HighlightRule {
         Self {
             id,
             pattern: pattern.into(),
+            regex: true,
             case_sensitive,
             foreground,
             background: None,
             enabled: true,
+        }
+    }
+
+    /// 交给编译器的正则：关键词规则把特殊字符转义成字面。
+    pub fn effective_pattern(&self) -> std::borrow::Cow<'_, str> {
+        if self.regex {
+            return std::borrow::Cow::Borrowed(&self.pattern);
+        }
+        let mut out = String::with_capacity(self.pattern.len() + 4);
+        for ch in self.pattern.chars() {
+            if r"\.+*?()|[]{}^$".contains(ch) {
+                out.push('\\');
+            }
+            out.push(ch);
+        }
+        std::borrow::Cow::Owned(out)
+    }
+
+    /// 界面上这条规则的颜色：涂背景的规则看背景色，否则看文字色。
+    pub fn color(&self) -> u32 {
+        self.background.unwrap_or(self.foreground)
+    }
+
+    /// 换颜色。涂背景的规则换背景色，文字改成和它反差大的黑 / 白，保证读得清。
+    pub fn set_color(&mut self, color: u32) {
+        if self.background.is_some() {
+            self.background = Some(color);
+            self.foreground = contrast_text(color);
+        } else {
+            self.foreground = color;
+        }
+    }
+
+    /// 打开 / 关闭「涂背景」：开 = 当前颜色改涂背景、文字换成反差色；关 = 回到只改文字颜色。
+    pub fn set_background(&mut self, on: bool) {
+        let color = self.color();
+        if on {
+            self.background = Some(color);
+            self.foreground = contrast_text(color);
+        } else {
+            self.background = None;
+            self.foreground = color;
         }
     }
 
@@ -58,6 +107,37 @@ impl HighlightRule {
         }
         label
     }
+}
+
+/// 设置页规则编辑器里的颜色（同 0.2.14 的 `HIGHLIGHT_COLORS`）。
+pub const HIGHLIGHT_COLORS: [(u32, &str); 7] = [
+    (0xef4444, "红"),
+    (0xf59e0b, "橙"),
+    (0xeab308, "黄"),
+    (0x22c55e, "绿"),
+    (0x06b6d4, "青"),
+    (0x3b82f6, "蓝"),
+    (0xa855f7, "紫"),
+];
+
+/// 颜色的名字；不在预设里（旧规则、同步来的）显示「自定义」。
+pub fn color_label(color: u32) -> &'static str {
+    HIGHLIGHT_COLORS
+        .iter()
+        .find(|(value, _)| *value == color)
+        .map_or("自定义", |(_, label)| label)
+}
+
+/// 涂背景时文字用黑还是白：按背景亮度挑反差大的。
+pub fn contrast_text(background: u32) -> u32 {
+    let (r, g, b) = (
+        (background >> 16) & 0xff,
+        (background >> 8) & 0xff,
+        background & 0xff,
+    );
+    // 感知亮度（Rec. 601），0～255。
+    let luma = (299 * r + 587 * g + 114 * b) / 1000;
+    if luma > 150 { 0x111111 } else { 0xffffff }
 }
 
 /// 和旧前端 `ui/src/terminal/highlightSamples.ts` 的默认规则保持一致。
@@ -83,6 +163,15 @@ pub fn default_rules() -> Vec<HighlightRule> {
         rule
     })
     .collect()
+}
+
+/// 默认规则里 `rules` 还没有的那些（按模式对比：用户改过颜色、开关的不算缺）。
+/// 给「添加常用规则」用；返回的规则编号是占位，由调用方重新分配。
+pub fn missing_samples(rules: &[HighlightRule]) -> Vec<HighlightRule> {
+    default_rules()
+        .into_iter()
+        .filter(|sample| !rules.iter().any(|rule| rule.pattern == sample.pattern))
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -238,7 +327,7 @@ impl EngineHandle {
                             .map(|rule| {
                                 (
                                     rule.clone(),
-                                    compile(&rule.pattern, rule.case_sensitive)
+                                    compile(&rule.effective_pattern(), rule.case_sensitive)
                                         .map_err(|error| error.to_string()),
                                 )
                             })
@@ -299,7 +388,8 @@ mod tests {
             .map(|rule| {
                 (
                     rule.clone(),
-                    compile(&rule.pattern, rule.case_sensitive).map_err(|e| e.to_string()),
+                    compile(&rule.effective_pattern(), rule.case_sensitive)
+                        .map_err(|e| e.to_string()),
                 )
             })
             .collect()
@@ -327,6 +417,56 @@ mod tests {
         let rows: HashSet<usize> = outcome.spans.iter().map(|span| span.row).collect();
         assert_eq!(rows, HashSet::from([0, 1, 2, 3]));
         assert!(outcome.notices.is_empty());
+    }
+
+    #[test]
+    fn keyword_rules_match_literally_and_regex_rules_do_not() {
+        let mut keyword = HighlightRule::new(1, "a.c(", false);
+        keyword.regex = false;
+        let regex = HighlightRule::new(2, "a.c", false);
+        let compiled = compile_all(&[keyword, regex]);
+        let mut suspended = HashSet::new();
+        let outcome = scan(1, &compiled, &lines(&["abc a.c("]), &mut suspended);
+        // 关键词 `a.c(` 只命中字面的那一处；正则 `a.c` 命中 abc 和 a.c 两处。
+        assert!(outcome.statuses.iter().all(|status| status.error.is_none()));
+        assert_eq!(outcome.spans.len(), 3);
+    }
+
+    #[test]
+    fn old_saved_rules_without_the_regex_field_stay_regex_rules() {
+        let rule: HighlightRule =
+            serde_json::from_str(r#"{"id":3,"pattern":"err(or)?"}"#).expect("旧规则照常读");
+        assert!(rule.regex, "旧规则一直是正则");
+        assert_eq!(rule.effective_pattern(), "err(or)?");
+    }
+
+    #[test]
+    fn background_rules_swap_to_a_readable_text_color_and_back() {
+        let mut rule = HighlightRule::new(1, "x", false);
+        rule.set_color(0xef4444);
+        assert_eq!((rule.foreground, rule.background), (0xef4444, None));
+        rule.set_background(true);
+        assert_eq!(rule.background, Some(0xef4444));
+        assert_ne!(rule.foreground, 0xef4444, "文字不能和背景同色");
+        // 涂背景时换颜色换的是背景。
+        rule.set_color(0xeab308);
+        assert_eq!(rule.background, Some(0xeab308));
+        assert_eq!(rule.foreground, 0x111111, "亮色背景配深色字");
+        assert_eq!(rule.color(), 0xeab308);
+        rule.set_background(false);
+        assert_eq!((rule.foreground, rule.background), (0xeab308, None));
+        assert_eq!(contrast_text(0x1e293b), 0xffffff);
+    }
+
+    #[test]
+    fn samples_are_only_offered_when_missing() {
+        assert!(missing_samples(&default_rules()).is_empty());
+        assert_eq!(missing_samples(&[]).len(), default_rules().len());
+        let mut some = default_rules();
+        some.remove(0);
+        assert_eq!(missing_samples(&some).len(), 1);
+        assert_eq!(color_label(0xef4444), "红");
+        assert_eq!(color_label(0x123456), "自定义");
     }
 
     #[test]

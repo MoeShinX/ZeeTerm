@@ -32,7 +32,7 @@ use zssh_session::{
 };
 use zssh_terminal::{MouseMode, NamedColor, Size, Snapshot, TerminalColor};
 
-use crate::highlight::{EngineHandle, HighlightRule, Span};
+use crate::highlight::{EngineHandle, HighlightRule, MAX_RULES as MAX_HIGHLIGHT_RULES, Span};
 use crate::settings::{
     CursorShape, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MAX_LINE_HEIGHT, MAX_SCROLLBACK, MIN_FONT_SIZE,
     MIN_LINE_HEIGHT, MIN_SCROLLBACK, UiSettings,
@@ -279,6 +279,21 @@ impl Pane {
         pane
     }
 
+    /// 会话日志文件名里用的名字：主机库里的主机用它的名字，快速连接用它的标签。
+    fn log_label(&self) -> String {
+        if let Some(spec) = &self.quick {
+            return spec.label.clone();
+        }
+        self.host_id
+            .and_then(|id| {
+                zssh_core::store::Database::open(&crate::settings::data_dir().join("zssh.db"))
+                    .ok()
+                    .and_then(|db| db.host_get(id).ok())
+            })
+            .map(|host| host.name)
+            .unwrap_or_else(|| "session".to_owned())
+    }
+
     /// 这个窗格是不是一个会话（主机库里的主机，或者快速连接）。
     fn is_session(&self) -> bool {
         self.host_id.is_some() || self.quick.is_some()
@@ -298,6 +313,12 @@ impl Pane {
             SessionPump::new(size, self.history, gate, CoreFilter::new(), self.generation);
         if let Some(log) = log {
             pump.set_log(log);
+        }
+        // 设置里开了会话日志：这个会话一个文件（每次连上 / 重连各一个）。
+        if self.is_session()
+            && let Some(plain) = crate::app_prefs::open_session_log(&self.log_label())
+        {
+            pump.set_plain_log(plain);
         }
         self.driver = SessionDriver::new(pump, events);
         // 告诉 AI 终端登记表：这个 shell 属于哪台主机（快速连接没有主机记录，登记表里就没有主机）。
@@ -718,6 +739,10 @@ pub struct TerminalWorkspace {
     layout_area: Option<Bounds<Pixels>>,
     /// 新开的标签用的初始尺寸（最近一次排版算出来的整宽窗格）。
     default_size: Size,
+    /// 输入法状态机里本窗口的名字（关掉「自动切英文」时要把输入法还回去）。
+    ime_key: String,
+    /// 光标闪烁的相位时钟。
+    cursor_blink: BlinkClock,
     _ime_focus: Subscription,
     _ime_blur: Subscription,
 }
@@ -741,14 +766,18 @@ impl TerminalWorkspace {
             status: None,
             engine: EngineHandle::start(),
         };
+        // 「终端里自动切到英文输入」关着时不碰输入法（离开时 `apply(false)` 对没进过英文区的窗口是空操作）。
         let _ime_focus = cx.on_focus(&focus, window, {
             let key = ime_key.clone();
-            move |_this, _window, _cx| {
-                crate::ime::apply(&key, true);
+            move |this, _window, _cx| {
+                if this.settings.ime_english {
+                    crate::ime::apply(&key, true);
+                }
             }
         });
+        let ime_blur_key = ime_key.clone();
         let _ime_blur = cx.on_blur(&focus, window, move |_this, _window, _cx| {
-            crate::ime::apply(&ime_key, false);
+            crate::ime::apply(&ime_blur_key, false);
         });
         // 设置页的两个控件：自定义字体的输入框、回滚行数的滑块。状态归工作区，这样设置页每次
         // 重绘拿到的是同一个实体。
@@ -817,6 +846,8 @@ impl TerminalWorkspace {
             area: Rc::new(Cell::new(None)),
             layout_area: None,
             default_size: DEFAULT_SIZE,
+            ime_key,
+            cursor_blink: BlinkClock::new(),
             _ime_focus,
             _ime_blur,
         };
@@ -827,10 +858,14 @@ impl TerminalWorkspace {
                 cx.background_executor()
                     .timer(Duration::from_millis(60))
                     .await;
-                let alive = this.update_in(cx, |this, _window, cx| {
+                let alive = this.update_in(cx, |this, window, cx| {
                     let sessions = this.poll_sessions();
                     let relayout = this.area.get() != this.layout_area;
-                    if this.poll_highlight() || sessions || relayout {
+                    // 光标闪烁只在终端有焦点时重画（没焦点光标画成静止，不必每半秒重画）。
+                    let blink = this.settings.cursor_blink
+                        && this.focus.is_focused(window)
+                        && this.cursor_blink.changed();
+                    if this.poll_highlight() || sessions || relayout || blink {
                         cx.notify();
                     }
                 });
@@ -1870,6 +1905,89 @@ impl TerminalWorkspace {
         }
     }
 
+    /// 改一条规则（设置页的规则编辑器共用）：改完规则集的修订号加一，后台线程重新编译，并存盘。
+    fn edit_highlight_rule(
+        &mut self,
+        id: u64,
+        edit: impl FnOnce(&mut HighlightRule),
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(rule) = self.highlight.rules.iter_mut().find(|rule| rule.id == id) {
+            edit(rule);
+            self.highlight.bump();
+            self.persist_highlight_rules();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_highlight_pattern(
+        &mut self,
+        id: u64,
+        pattern: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_highlight_rule(id, |rule| rule.pattern = pattern, cx);
+    }
+
+    pub(crate) fn set_highlight_color(&mut self, id: u64, color: u32, cx: &mut Context<Self>) {
+        self.edit_highlight_rule(id, |rule| rule.set_color(color), cx);
+    }
+
+    pub(crate) fn set_highlight_regex(&mut self, id: u64, regex: bool, cx: &mut Context<Self>) {
+        self.edit_highlight_rule(id, |rule| rule.regex = regex, cx);
+    }
+
+    pub(crate) fn set_highlight_case(
+        &mut self,
+        id: u64,
+        case_sensitive: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_highlight_rule(id, |rule| rule.case_sensitive = case_sensitive, cx);
+    }
+
+    pub(crate) fn set_highlight_background(&mut self, id: u64, on: bool, cx: &mut Context<Self>) {
+        self.edit_highlight_rule(id, |rule| rule.set_background(on), cx);
+    }
+
+    /// 添加一条空规则（颜色按现有条数轮换）；返回新规则的编号，设置页据此建它的输入框。
+    /// 规则数到上限（和同步校验一致）不再加。空模式的规则不生效，也不报错，等用户填。
+    pub(crate) fn add_blank_highlight_rule(&mut self, cx: &mut Context<Self>) -> Option<u64> {
+        if self.highlight.rules.len() >= MAX_HIGHLIGHT_RULES {
+            return None;
+        }
+        let id = self.highlight.next_id;
+        self.highlight.next_id += 1;
+        let mut rule = HighlightRule::new(id, String::new(), false);
+        rule.foreground = crate::highlight::HIGHLIGHT_COLORS
+            [self.highlight.rules.len() % crate::highlight::HIGHLIGHT_COLORS.len()]
+        .0;
+        self.highlight.rules.push(rule);
+        self.highlight.bump();
+        self.persist_highlight_rules();
+        cx.notify();
+        Some(id)
+    }
+
+    /// 补上还没有的常用规则（按模式对比，已有的不重复加）；返回补了几条。
+    pub(crate) fn add_sample_highlight_rules(&mut self, cx: &mut Context<Self>) -> usize {
+        let missing = crate::highlight::missing_samples(&self.highlight.rules);
+        let room = MAX_HIGHLIGHT_RULES.saturating_sub(self.highlight.rules.len());
+        let mut added = 0;
+        for mut rule in missing.into_iter().take(room) {
+            rule.id = self.highlight.next_id;
+            self.highlight.next_id += 1;
+            self.highlight.rules.push(rule);
+            added += 1;
+        }
+        if added > 0 {
+            self.highlight.bump();
+            self.persist_highlight_rules();
+            cx.notify();
+        }
+        added
+    }
+
     pub(crate) fn remove_highlight_rule(&mut self, id: u64, cx: &mut Context<Self>) {
         self.highlight.rules.retain(|rule| rule.id != id);
         self.highlight.bump();
@@ -2061,6 +2179,24 @@ impl TerminalWorkspace {
         cx.notify();
     }
 
+    pub(crate) fn toggle_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.settings.cursor_blink = !self.settings.cursor_blink;
+        // 刚改完光标要看得见：闪烁相位回到「亮」。
+        self.cursor_blink = BlinkClock::new();
+        self.settings.save();
+        cx.notify();
+    }
+
+    /// 「终端里自动切到英文输入」：关掉时焦点进终端不再动输入法；已经在英文区的话马上还回去。
+    pub(crate) fn toggle_ime_english(&mut self, cx: &mut Context<Self>) {
+        self.settings.ime_english = !self.settings.ime_english;
+        if !self.settings.ime_english {
+            crate::ime::apply(&self.ime_key, false);
+        }
+        self.settings.save();
+        cx.notify();
+    }
+
     pub(crate) fn toggle_copy_on_select(&mut self, cx: &mut Context<Self>) {
         self.settings.copy_on_select = !self.settings.copy_on_select;
         self.settings.save();
@@ -2084,6 +2220,9 @@ impl TerminalWorkspace {
         if !self.settings.highlight_enabled {
             self.highlight.spans.clear();
             self.highlight.key = None;
+        } else if self.highlight.rules.is_empty() {
+            // 打开时一条规则都没有（用户全删了）：补上常用规则，同 0.2.14，免得开了开关什么也不标。
+            self.add_sample_highlight_rules(cx);
         }
         self.settings.save();
         cx.notify();
@@ -2138,6 +2277,8 @@ impl TerminalWorkspace {
         let ctrl = keystroke.modifiers.control;
         let shift = keystroke.modifiers.shift;
         let key = keystroke.key.as_str();
+        // 打字时光标先亮着，停下来才闪（和常见终端一致）。
+        self.cursor_blink.reset();
 
         // Ctrl+Shift+R 重连当前 SSH 窗格；离线标签只提示。
         if ctrl && shift && key.eq_ignore_ascii_case("r") {
@@ -2848,6 +2989,47 @@ fn start_log(pane: &mut Pane) -> String {
     }
 }
 
+/// 光标闪烁的相位：每次按键 / 改设置后从「亮」重新计时，之后每半个周期翻一次
+/// （530 ms，xterm 的节奏）。相位由时间算出来，不需要定时器翻转状态；窗口的 60 ms 节拍
+/// 只负责在相位变了的时候通知重画。
+pub(crate) struct BlinkClock {
+    since: std::time::Instant,
+    /// 上一次通知重画时的相位。
+    drawn: bool,
+}
+
+const BLINK_HALF_PERIOD: Duration = Duration::from_millis(530);
+
+impl BlinkClock {
+    pub(crate) fn new() -> Self {
+        Self {
+            since: std::time::Instant::now(),
+            drawn: true,
+        }
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.since = std::time::Instant::now();
+    }
+
+    fn phase_at(elapsed: Duration) -> bool {
+        (elapsed.as_millis() / BLINK_HALF_PERIOD.as_millis()).is_multiple_of(2)
+    }
+
+    /// 现在光标是亮的吗。
+    pub(crate) fn visible(&self) -> bool {
+        Self::phase_at(self.since.elapsed())
+    }
+
+    /// 相位和上次画的不一样了（该重画）；顺手记下。
+    fn changed(&mut self) -> bool {
+        let now = self.visible();
+        let changed = now != self.drawn;
+        self.drawn = now;
+        changed
+    }
+}
+
 impl Render for TerminalWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mono = self.mono_family(cx);
@@ -3058,6 +3240,7 @@ impl Render for TerminalWorkspace {
                                 self.settings.font_size,
                                 self.settings.line_height,
                                 self.settings.cursor,
+                                !self.settings.cursor_blink || self.cursor_blink.visible(),
                                 foreground,
                                 background,
                                 selection_color,
@@ -3187,6 +3370,7 @@ fn pane_grid(
     font_size: f32,
     line_height: f32,
     cursor_shape: CursorShape,
+    cursor_lit: bool,
     foreground: Hsla,
     background: Hsla,
     selection_color: Hsla,
@@ -3194,7 +3378,7 @@ fn pane_grid(
     ansi: &[u32; 16],
 ) -> impl IntoElement {
     let mono_size = ::gpui::px(font_size);
-    let cursor = if focused {
+    let cursor = if focused && cursor_lit {
         pane.pump().cursor_visible()
     } else {
         None
@@ -3221,6 +3405,7 @@ fn pane_grid(
                 .map(|run| {
                     let block = run.cursor && cursor_shape == CursorShape::Block;
                     let underline = run.cursor && cursor_shape == CursorShape::Underline;
+                    let bar = run.cursor && cursor_shape == CursorShape::Bar;
                     let bg = if block {
                         Some(cursor_color)
                     } else if run.selected {
@@ -3240,6 +3425,18 @@ fn pane_grid(
                         .when(run.bold, |d| d.font_weight(FontWeight::BOLD))
                         .when(run.italic, |d| d.italic())
                         .child(run.text)
+                        // 竖线光标：压在格子左边的 2 px 细条，不占宽度，后面的字不会被挤开。
+                        .when(bar, |d| {
+                            d.relative().child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .left_0()
+                                    .w(::gpui::px(2.0))
+                                    .bg(cursor_color),
+                            )
+                        })
                 }),
             )
         }))

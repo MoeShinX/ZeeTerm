@@ -23,6 +23,7 @@ mod file_window;
 mod fonts;
 mod forward_runtime;
 mod highlight;
+mod highlight_editor;
 mod host_activity;
 mod hosts_demo;
 mod icons;

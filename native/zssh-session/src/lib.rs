@@ -173,6 +173,8 @@ pub struct SessionPump<F: ByteFilter> {
     generation: u64,
     ledger: Ledger,
     log: Option<crate::log::SessionLog>,
+    /// 设置里开了「会话日志」时的纯文本日志（去掉控制序列，写文件在自己的线程里，不拖终端）。
+    plain_log: Option<zssh_core::ssh::session_log::SessionLog>,
 }
 
 impl<F: ByteFilter> SessionPump<F> {
@@ -190,12 +192,37 @@ impl<F: ByteFilter> SessionPump<F> {
             generation,
             ledger: Ledger::default(),
             log: None,
+            plain_log: None,
         }
     }
 
     /// 挂上一个会话日志；只记录显示过滤之后、交给终端的字节。
     pub fn set_log(&mut self, log: crate::log::SessionLog) {
         self.log = Some(log);
+    }
+
+    /// 挂上设置里的纯文本会话日志；同样只记显示过滤之后的字节。
+    pub fn set_plain_log(&mut self, log: zssh_core::ssh::session_log::SessionLog) {
+        self.plain_log = Some(log);
+    }
+
+    pub fn has_plain_log(&self) -> bool {
+        self.plain_log.is_some()
+    }
+
+    /// 取回纯文本日志（丢掉它就会把剩下的写完、关文件）。
+    pub fn take_plain_log(&mut self) -> Option<zssh_core::ssh::session_log::SessionLog> {
+        self.plain_log.take()
+    }
+
+    /// 两种日志都记同一份显示字节。
+    fn log_write(&mut self, data: &[u8]) {
+        if let Some(log) = &mut self.log {
+            log.write(data);
+        }
+        if let Some(log) = &self.plain_log {
+            log.write(data);
+        }
     }
 
     /// 当前是否在记录；重连后据此继续记录。
@@ -239,9 +266,7 @@ impl<F: ByteFilter> SessionPump<F> {
             self.ledger.filtered += filtered.suppressed;
             self.ledger.acked += filtered.suppressed;
         }
-        if let Some(log) = &mut self.log {
-            log.write(&filtered.data);
-        }
+        self.log_write(&filtered.data);
 
         let consumed = self.model.feed(&filtered.data);
         if consumed > 0 {
@@ -285,9 +310,7 @@ impl<F: ByteFilter> SessionPump<F> {
             self.ledger.filtered += filtered.suppressed;
             self.ledger.acked += filtered.suppressed;
         }
-        if let Some(log) = &mut self.log {
-            log.write(&filtered.data);
-        }
+        self.log_write(&filtered.data);
         let consumed = self.model.feed(&filtered.data);
         if consumed > 0 {
             self.gate.on_ack(consumed);
@@ -304,9 +327,7 @@ impl<F: ByteFilter> SessionPump<F> {
             self.ledger.filtered += filtered.suppressed;
             self.ledger.acked += filtered.suppressed;
         }
-        if let Some(log) = &mut self.log {
-            log.write(&filtered.data);
-        }
+        self.log_write(&filtered.data);
         let consumed = self.model.feed(&filtered.data);
         if consumed > 0 {
             self.gate.on_ack(consumed);
@@ -572,6 +593,25 @@ mod tests {
 
         pump.on_data(7, b"\x1b[?1002l\x1b[?1006l");
         assert!(!pump.mouse_mode().reports_buttons());
+    }
+
+    #[test]
+    fn plain_log_gets_the_display_bytes_as_text_without_colors_or_hidden_bytes() {
+        let dir = std::env::temp_dir().join(format!("zssh-pump-plain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut pump = pump(DropHidden);
+        let log = zssh_core::ssh::session_log::SessionLog::create(&dir, "web-1", "t").unwrap();
+        let path = log.path().to_path_buf();
+        pump.set_plain_log(log);
+        assert!(pump.has_plain_log());
+        pump.on_data(7, b"HIDDEN secret bytes");
+        pump.on_data(7, b"\x1b[31mred\x1b[0m line\r\n");
+        // 丢掉日志 = 把剩下的写完、关文件。
+        drop(pump.take_plain_log().expect("日志应还在"));
+        assert!(!pump.has_plain_log());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "red line\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

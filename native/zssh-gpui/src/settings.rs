@@ -35,6 +35,8 @@ pub enum CursorShape {
     #[default]
     Block,
     Underline,
+    /// 竖线（0.2.14 的 `bar`）。
+    Bar,
 }
 
 /// 括号粘贴：自动跟随远端终端模式，或强制开/关。
@@ -93,6 +95,10 @@ pub struct UiSettings {
     /// 回滚行数（新开的和已开的窗格都用它）。
     pub scrollback: usize,
     pub cursor: CursorShape,
+    /// 光标闪烁（0.2.14 `terminal_cursor_blink`，默认开）。
+    pub cursor_blink: bool,
+    /// 焦点进终端时自动切到英文输入（0.2.14 `terminal_ime_english`，默认开）。
+    pub ime_english: bool,
     /// 选中即复制。
     pub copy_on_select: bool,
     /// 右键粘贴。
@@ -122,6 +128,8 @@ impl Default for UiSettings {
             line_height: DEFAULT_LINE_HEIGHT,
             scrollback: DEFAULT_SCROLLBACK,
             cursor: CursorShape::Block,
+            cursor_blink: true,
+            ime_english: true,
             copy_on_select: false,
             right_click_paste: true,
             confirm_multiline: true,
@@ -289,7 +297,9 @@ mod tests {
             font_size: 17.0,
             line_height: 1.5,
             scrollback: 25_000,
-            cursor: CursorShape::Underline,
+            cursor: CursorShape::Bar,
+            cursor_blink: false,
+            ime_english: false,
             copy_on_select: true,
             right_click_paste: false,
             confirm_multiline: false,
@@ -300,6 +310,29 @@ mod tests {
         };
         settings.save_to(&path).unwrap();
         assert_eq!(UiSettings::load_from(&path), Some(settings));
+    }
+
+    #[test]
+    fn an_old_file_without_the_new_fields_gets_the_0_2_14_defaults() {
+        let dir = temp_dir("old-terminal");
+        let path = dir.join("ui-settings.json");
+        std::fs::write(&path, br#"{"font_size": 15.0, "cursor": "underline"}"#).unwrap();
+        let loaded = UiSettings::load_from(&path)
+            .expect("旧文件照常读")
+            .sanitized();
+        assert!(loaded.cursor_blink, "光标闪烁默认开");
+        assert!(loaded.ime_english, "自动英文输入默认开");
+        assert_eq!(loaded.cursor, CursorShape::Underline);
+    }
+
+    #[test]
+    fn the_bar_cursor_round_trips_as_bar() {
+        let json = serde_json::to_string(&CursorShape::Bar).unwrap();
+        assert_eq!(json, "\"bar\"");
+        assert_eq!(
+            serde_json::from_str::<CursorShape>(&json).unwrap(),
+            CursorShape::Bar
+        );
     }
 
     #[test]
