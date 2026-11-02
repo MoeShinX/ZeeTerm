@@ -59,15 +59,35 @@ pub struct GroupDialog {
     pub error: Option<String>,
 }
 
+/// 快速连接输入的检查：要写成 `user@host[:port]`，解析规则同主机页搜索框里回车（`parse_quick_target`）。
+pub fn quick_target_check(text: &str) -> Result<(), String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("请输入 用户名@主机地址".to_owned());
+    }
+    if !text.contains('@') {
+        return Err("要写成 用户名@主机地址，比如 user@host:22".to_owned());
+    }
+    zssh_core::model::parse_quick_target(text)
+        .map(|_| ())
+        .map_err(|err| err.to_string())
+}
+
 pub struct QuickDialog {
     pub target: String,
     pub password: Entity<InputState>,
+}
+
+/// 欢迎页的「快速连接」：先问 `user@host[:port]`，填对了再走原来的密码对话框。
+pub struct QuickTargetDialog {
+    pub error: Option<String>,
 }
 
 pub enum Modal {
     Confirm(Confirm),
     Group(GroupDialog),
     Quick(QuickDialog),
+    QuickTarget(QuickTargetDialog),
     GenerateKey(GenerateKeyDialog),
     InstallKey(InstallKeyDialog),
     /// 编辑器有未保存修改：保存 / 不保存 / 取消。
@@ -202,6 +222,15 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// 欢迎页的「快速连接」：弹出输入 `user@host[:port]` 的小对话框（输入框是主窗口的 `quick_target`）。
+    pub(crate) fn open_quick_target_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.quick_target.clone();
+        input.update(cx, |state, cx| state.set_value("", window, cx));
+        window.focus(&input.read(cx).focus_handle(cx), cx);
+        self.modal = Some(Modal::QuickTarget(QuickTargetDialog { error: None }));
+        cx.notify();
+    }
+
     pub(crate) fn open_quick_dialog(
         &mut self,
         target: String,
@@ -232,6 +261,7 @@ impl MainWindow {
             Some(Modal::Confirm(_)) => self.run_confirm(window, cx),
             Some(Modal::Group(_)) => self.submit_group_dialog(window, cx),
             Some(Modal::Quick(_)) => self.submit_quick_dialog(window, cx),
+            Some(Modal::QuickTarget(_)) => self.submit_quick_target(window, cx),
             Some(Modal::GenerateKey(_)) => self.submit_generate_key(window, cx),
             Some(Modal::InstallKey(_)) => self.submit_install_key(window, cx),
             Some(Modal::Unsaved(_)) => self.answer_unsaved(true, window, cx),
@@ -328,6 +358,24 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// 欢迎页快速连接第一步：检查写法（同主机页搜索框里回车的解析），对了才进密码对话框，
+    /// 不对就把原因留在对话框里。
+    fn submit_quick_target(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.quick_target.read(cx).value().trim().to_owned();
+        match quick_target_check(&text) {
+            Ok(()) => {
+                self.modal = None;
+                self.open_quick_dialog(text, window, cx);
+            }
+            Err(message) => {
+                if let Some(Modal::QuickTarget(dialog)) = &mut self.modal {
+                    dialog.error = Some(message);
+                }
+                cx.notify();
+            }
+        }
+    }
+
     fn submit_quick_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Modal::Quick(dialog)) = self.modal.take() else {
             return;
@@ -350,6 +398,7 @@ impl MainWindow {
             Modal::Confirm(confirm) => (420.0, self.confirm_body(confirm, tokens, cx)),
             Modal::Group(dialog) => (400.0, self.group_body(dialog, tokens, cx)),
             Modal::Quick(dialog) => (440.0, self.quick_body(dialog, tokens, cx)),
+            Modal::QuickTarget(dialog) => (440.0, self.quick_target_body(dialog, tokens, cx)),
             Modal::GenerateKey(dialog) => (480.0, self.generate_key_body(dialog, tokens, cx)),
             Modal::InstallKey(dialog) => (480.0, self.install_key_body(dialog, tokens, cx)),
             Modal::Unsaved(ask) => (440.0, self.unsaved_body(ask, tokens, cx)),
@@ -561,6 +610,66 @@ impl MainWindow {
             .into_any_element()
     }
 
+    fn quick_target_body(
+        &self,
+        dialog: &QuickTargetDialog,
+        tokens: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let cancel = cx.entity();
+        let next = cancel.clone();
+        v_flex()
+            .gap_4()
+            .child(
+                v_flex()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("快速连接"),
+                    )
+                    .child(note(
+                        "输入 用户名@主机地址（可以带 :端口），直接连，不会保存到主机库。",
+                        tokens,
+                    )),
+            )
+            .child(field(
+                "连接到",
+                None,
+                Input::new(&self.quick_target),
+                tokens,
+            ))
+            .children(
+                dialog
+                    .error
+                    .clone()
+                    .map(|error| error_note(error, tokens.danger)),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .child(text_button(
+                        "modal-cancel",
+                        "取消",
+                        ButtonLook::Outline,
+                        move |_, window, cx| {
+                            cancel.update(cx, |this, cx| this.close_modal(window, cx));
+                        },
+                    ))
+                    .child(text_button(
+                        "modal-ok",
+                        "下一步",
+                        ButtonLook::Primary,
+                        move |_, window, cx| {
+                            next.update(cx, |this, cx| this.confirm_modal(window, cx));
+                        },
+                    )),
+            )
+            .into_any_element()
+    }
+
     fn quick_body(
         &self,
         dialog: &QuickDialog,
@@ -608,5 +717,29 @@ impl MainWindow {
                     )),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
+    use super::quick_target_check;
+
+    #[test]
+    fn the_welcome_quick_connect_accepts_what_the_search_box_accepts() {
+        assert!(quick_target_check("ops@192.0.2.10").is_ok());
+        assert!(quick_target_check("  ops@192.0.2.10:2222 ").is_ok());
+        assert!(quick_target_check("ops@[2001:db8::1]:22").is_ok());
+    }
+
+    #[test]
+    fn the_welcome_quick_connect_explains_what_is_wrong() {
+        assert!(quick_target_check("").is_err());
+        let missing_user = quick_target_check("192.0.2.10").unwrap_err();
+        assert!(missing_user.contains("用户名@主机地址"));
+        assert!(quick_target_check("@192.0.2.10").is_err(), "没有用户名");
+        assert!(quick_target_check("ops@").is_err(), "没有地址");
+        assert!(quick_target_check("ops@host:99999").is_err(), "端口越界");
+        assert!(quick_target_check("ops @host").is_err(), "有空白");
     }
 }

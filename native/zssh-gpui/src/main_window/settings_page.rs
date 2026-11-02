@@ -1,8 +1,14 @@
-//! 设置页：左侧分类导航 + 右侧只显示当前分类（对齐 0.2.14 的 `SettingsPage.tsx`）。
+//! 「管理 + 设置」统一页：左侧导航（顶部「← 返回应用」、「管理」组、「偏好」组）+ 右侧只显示当前分类
+//! （偏好 8 类对齐 0.2.14 的 `SettingsPage.tsx`；管理 4 类是 V2-U3 把标题栏 / 主机页 / 侧面板里的
+//! 管理入口收进来的）。
 //!
 //! 分类、顺序、图标、默认值和「记住上次的分类」的规则在 `settings_nav`（纯数据，有状态测试）；
 //! 这里负责画导航栏、把各张设置卡放进对应分类，以及「连接」「SFTP」和外观里「主机树」「窗口」
 //! 这几张读写数据库设置的卡（键名和取值范围见 `app_prefs`）。
+//!
+//! 管理组不重写业务：凭据 / 快捷命令 / 代理 / 端口转发各自仍由 `keychain_panel` / `quick_panel` /
+//! `proxy_panel` / `forward_panel` 交出一份 [`PanelContent`]（标题、右上角按钮、列表 + 表单、底部按钮），
+//! 这里把它画成整页：大标题、右上一排描边小按钮、筛选 + 搜索、列表、空状态。
 //!
 //! 外观 / 终端的卡由工作区驱动（`settings_view`），AI / 同步 / 备份 / 关于是各自的实体，
 //! 这里只决定它们摆在哪个分类里。
@@ -16,8 +22,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::MainWindow;
-use super::side_panel::PROXIES;
-use super::widgets::{Choice, select};
+use super::nav::MainView;
+use super::widgets::{Choice, pick, select};
 use crate::app_prefs::{
     self, AppPrefs, CloseChoice, FileWindowChoice, KEEPALIVE_RANGE, KEEPALIVE_STEP,
     POOL_IDLE_RANGE, POOL_IDLE_STEP, SFTP_CONCURRENCY_RANGE, STATS_REFRESH_RANGE,
@@ -31,8 +37,57 @@ use zssh_core::sync::app_proxy::{APP_NETWORK_PROXY_KEY, AppProxyMode, SystemProx
 #[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub const BACKUP_ITEM: usize = 1;
 
-/// 左侧导航栏宽度（0.2.14 的 `w-44`）。
-const NAV_WIDTH: f32 = 176.0;
+/// 左侧导航栏宽度（比 0.2.14 的 `w-44` 宽一点，放得下「← 返回应用」和 12 个分类名）。
+const NAV_WIDTH: f32 = 208.0;
+/// 管理组内容区的限宽（列表 + 表单的阅读宽度）。
+const MANAGE_WIDTH: f32 = 880.0;
+
+/// 页面右侧最上面一行：大标题（可带灰色的数量）+ 靠右的一排按钮；宽度和下面的内容对齐。
+fn page_header(
+    title: &str,
+    subtitle: Option<SharedString>,
+    actions: Vec<::gpui::AnyElement>,
+    max_width: f32,
+    tokens: &Tokens,
+) -> impl IntoElement {
+    div().w_full().flex_none().child(
+        h_flex()
+            .w_full()
+            .max_w(px(max_width))
+            .mx_auto()
+            .px_6()
+            .pt_6()
+            .pb_4()
+            .gap_3()
+            .items_center()
+            .justify_between()
+            .child(
+                h_flex()
+                    .min_w_0()
+                    .gap_3()
+                    .items_baseline()
+                    .child(
+                        div()
+                            .text_2xl()
+                            .font_weight(FontWeight::BOLD)
+                            .child(SharedString::from(title.to_owned())),
+                    )
+                    .children(
+                        subtitle
+                            .map(|text| div().text_sm().text_color(tokens.text_muted).child(text)),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .flex_shrink(1.0)
+                    .min_w_0()
+                    .flex_wrap()
+                    .justify_end()
+                    .gap_2()
+                    .children(actions),
+            ),
+    )
+}
 
 /// 设置页里的一块：限宽居中，上下留白（0.2.14 的 `max-w-3xl` + `space-y-4`）。
 fn settings_block(content: impl IntoElement, first: bool) -> impl IntoElement {
@@ -283,9 +338,20 @@ impl MainWindow {
             self.settings_section = section;
             self.settings_scroll
                 .set_offset(::gpui::point(px(0.0), px(0.0)));
+            // 换分类不带着上一页的搜索词；清空输入框要用 `Window`，画页面时再做。
+            self.manage_search_reset = true;
             self.save_layout();
         }
         cx.notify();
+    }
+
+    /// 管理页顶部搜索框里的词；不在管理页时是空串（同一批列表也在别处用，不能被搜索词悄悄过滤）。
+    pub(super) fn manage_query(&self, cx: &App) -> String {
+        if self.nav.view == MainView::Settings && self.settings_section.is_manage() {
+            self.manage_search.read(cx).value().trim().to_owned()
+        } else {
+            String::new()
+        }
     }
 
     // ---- 调试驱动（只在 debug 构建里编进去，见 `dev_acts_u2`） ----
@@ -408,7 +474,6 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let entity = cx.entity();
         // AI / 同步 / 备份 / 关于各是自己的实体：第一次打开设置页时建，之后一直留着
         // （输入到一半的内容切分类不丢）。
         let agents = match &self.agent_settings {
@@ -443,89 +508,330 @@ impl MainWindow {
                 about
             }
         };
-        let back = Button::new("settings-back")
-            .ghost()
-            .icon(IconName::ArrowLeft)
-            .label("返回")
-            .on_click({
-                let entity = entity.clone();
-                move |_, window, cx| {
-                    entity.update(cx, |this, cx| this.close_settings(window, cx));
-                }
-            });
+        // 换了分类：清空管理页的搜索框。
+        if std::mem::take(&mut self.manage_search_reset) {
+            let search = self.manage_search.clone();
+            search.update(cx, |input, cx| input.set_value("", window, cx));
+        }
 
         let section = self.settings_section;
-        let blocks: Vec<::gpui::AnyElement> = match section {
-            SettingsSection::Appearance => self.appearance_blocks(tokens, cx),
-            SettingsSection::Terminal => self.terminal_blocks(tokens, cx),
-            SettingsSection::Connection => {
-                self.x11_ensure_loaded(window, cx);
-                vec![
-                    self.connection_card(tokens, window, cx),
-                    self.x11_card(tokens, cx),
-                ]
-            }
-            SettingsSection::Sftp => vec![self.sftp_card(tokens, cx)],
-            SettingsSection::Ai => vec![agents.into_any_element()],
-            SettingsSection::Sync => vec![sync.into_any_element(), backup.into_any_element()],
-            SettingsSection::Shortcuts => vec![shortcuts_card(tokens)],
-            SettingsSection::About => vec![about.into_any_element()],
+        let content: ::gpui::AnyElement = if section.is_manage() {
+            self.manage_section(section, tokens, window, cx)
+        } else {
+            let blocks: Vec<::gpui::AnyElement> = match section {
+                SettingsSection::Appearance => self.appearance_blocks(tokens, cx),
+                SettingsSection::Terminal => self.terminal_blocks(tokens, cx),
+                SettingsSection::Connection => {
+                    self.x11_ensure_loaded(window, cx);
+                    vec![
+                        self.connection_card(tokens, window, cx),
+                        self.x11_card(tokens, cx),
+                    ]
+                }
+                SettingsSection::Sftp => vec![self.sftp_card(tokens, cx)],
+                SettingsSection::Ai => vec![agents.into_any_element()],
+                SettingsSection::Sync => {
+                    vec![sync.into_any_element(), backup.into_any_element()]
+                }
+                SettingsSection::Shortcuts => vec![shortcuts_card(tokens)],
+                SettingsSection::About => vec![about.into_any_element()],
+                _ => Vec::new(),
+            };
+            v_flex()
+                .size_full()
+                .child(page_header(
+                    section.label(),
+                    None,
+                    Vec::new(),
+                    768.0,
+                    tokens,
+                ))
+                .child(
+                    div()
+                        .id("settings-scroll")
+                        .track_scroll(&self.settings_scroll)
+                        .flex_1()
+                        .w_full()
+                        .min_w_0()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .overflow_y_scroll()
+                        // 每一块是滚动容器的直接子元素：驱动脚本按下标滚到「备份」那一块。
+                        .children(
+                            blocks
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, block)| settings_block(block, index == 0)),
+                        ),
+                )
+                .into_any_element()
         };
 
-        v_flex()
+        h_flex()
             .id("settings-page")
             .size_full()
-            .child(
-                h_flex()
-                    .h(px(48.0))
-                    .px_4()
-                    .gap_3()
-                    .items_center()
-                    .flex_none()
-                    .border_b_1()
-                    .border_color(tokens.border)
-                    .child(back)
-                    .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("设置"),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .child(self.settings_nav(tokens, cx))
-                    .child(
-                        div()
-                            .id("settings-scroll")
-                            .track_scroll(&self.settings_scroll)
-                            .flex_1()
-                            .h_full()
-                            .min_w_0()
-                            .min_h_0()
-                            .flex()
-                            .flex_col()
-                            .overflow_y_scroll()
-                            // 每一块是滚动容器的直接子元素：驱动脚本按下标滚到「备份」那一块。
-                            .children(
-                                blocks
-                                    .into_iter()
-                                    .enumerate()
-                                    .map(|(index, block)| settings_block(block, index == 0)),
-                            ),
-                    ),
-            )
+            .child(self.settings_nav(tokens, cx))
+            .child(div().flex_1().h_full().min_w_0().child(content))
     }
 
-    /// 左侧分类导航：宽 176，图标 + 名字，选中的有底色和加粗（0.2.14 的 `aside`）。
+    /// 管理组的一页：大标题 + 右上角按钮、筛选 + 搜索、列表 / 表单、底部按钮。内容是原来侧面板的
+    /// [`PanelContent`]，业务和表单一份都没改。
+    fn manage_section(
+        &mut self,
+        section: SettingsSection,
+        tokens: &Tokens,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ::gpui::AnyElement {
+        let content = match section {
+            SettingsSection::Credentials => self.keychain_panel_content(tokens, window, cx),
+            SettingsSection::QuickCommands => self.quick_panel_content(tokens, window, cx),
+            SettingsSection::Proxies => self.proxy_panel_content(tokens, window, cx),
+            SettingsSection::Forwards => self.forward_panel_content(tokens, window, cx),
+            _ => return div().into_any_element(),
+        };
+        let filter = self.manage_filter_bar(section, tokens, cx);
+        v_flex()
+            .size_full()
+            .child(page_header(
+                section.label(),
+                content.subtitle,
+                content.actions,
+                MANAGE_WIDTH,
+                tokens,
+            ))
+            .children(filter)
+            .child(
+                div()
+                    .id("manage-scroll")
+                    .track_scroll(&self.settings_scroll)
+                    .flex_1()
+                    .w_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .max_w(px(MANAGE_WIDTH))
+                            .mx_auto()
+                            .px_6()
+                            .pb_8()
+                            .gap_4()
+                            .child(content.body)
+                            .children(content.footer.map(|footer| {
+                                div()
+                                    .w_full()
+                                    .pt_3()
+                                    .border_t_1()
+                                    .border_color(tokens.border)
+                                    .child(footer)
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// 标题下面的一行：筛选下拉（有意义的页才有）+ 搜索框。列表是空的时候不画（那时是空状态）。
+    fn manage_filter_bar(
+        &self,
+        section: SettingsSection,
+        tokens: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> Option<::gpui::AnyElement> {
+        let entity = cx.entity();
+        let (has_items, filter, search): (bool, Option<::gpui::AnyElement>, _) = match section {
+            SettingsSection::Credentials => {
+                let current = self.keychain.kind_filter;
+                let kinds = super::identity_form::KINDS;
+                let mut choices = vec![Choice::new("全部类型", current.is_none())];
+                choices.extend(
+                    kinds
+                        .iter()
+                        .map(|(kind, label)| Choice::new(*label, current == Some(*kind))),
+                );
+                let label = current.map_or("全部类型", super::identity_form::kind_label);
+                (
+                    !self.store.identities().is_empty(),
+                    Some(
+                        div()
+                            .w(px(176.0))
+                            .flex_none()
+                            .child(select(
+                                "manage-filter-kind",
+                                label,
+                                choices,
+                                pick(&entity, move |this, index, _window, cx| {
+                                    this.keychain.kind_filter =
+                                        index.checked_sub(1).and_then(|at| {
+                                            super::identity_form::KINDS
+                                                .get(at)
+                                                .map(|(kind, _)| *kind)
+                                        });
+                                    cx.notify();
+                                }),
+                            ))
+                            .into_any_element(),
+                    ),
+                    self.manage_search.clone(),
+                )
+            }
+            SettingsSection::Forwards => {
+                let current = self.forward_ui.host_filter;
+                let ssh_hosts: Vec<&zssh_core::model::Host> = self
+                    .store
+                    .hosts()
+                    .iter()
+                    .filter(|host| host.protocol.supports_port_forward())
+                    .collect();
+                let mut choices = vec![Choice::new("全部主机", current.is_none())];
+                choices.extend(
+                    ssh_hosts
+                        .iter()
+                        .map(|host| Choice::new(host.name.clone(), current == Some(host.id))),
+                );
+                let ids: Vec<i64> = ssh_hosts.iter().map(|host| host.id).collect();
+                let label = current
+                    .and_then(|id| self.store.host(id))
+                    .map_or_else(|| "全部主机".to_owned(), |host| host.name.clone());
+                (
+                    !self.store.forwards().is_empty(),
+                    Some(
+                        div()
+                            .w(px(176.0))
+                            .flex_none()
+                            .child(select(
+                                "manage-filter-host",
+                                label,
+                                choices,
+                                pick(&entity, move |this, index, _window, cx| {
+                                    let host =
+                                        index.checked_sub(1).and_then(|at| ids.get(at).copied());
+                                    this.set_forward_host_filter(host, cx);
+                                }),
+                            ))
+                            .into_any_element(),
+                    ),
+                    self.manage_search.clone(),
+                )
+            }
+            SettingsSection::Proxies => (
+                !self.store.proxies().is_empty(),
+                None,
+                self.manage_search.clone(),
+            ),
+            SettingsSection::QuickCommands => (
+                !self.bar_settings().commands.is_empty(),
+                None,
+                self.quick_ui.search.clone(),
+            ),
+            _ => return None,
+        };
+        if !has_items {
+            return None;
+        }
+        Some(
+            div()
+                .w_full()
+                .flex_none()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .max_w(px(MANAGE_WIDTH))
+                        .mx_auto()
+                        .px_6()
+                        .pb_3()
+                        .gap_2()
+                        .items_center()
+                        .children(filter)
+                        .child(
+                            div().flex_1().min_w_0().child(
+                                gpui_kit::component::input::Input::new(&search)
+                                    .prefix(
+                                        Icon::new(IconName::Search)
+                                            .size_4()
+                                            .text_color(tokens.text_muted),
+                                    )
+                                    .cleanable(true),
+                            ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// 左侧导航：顶部「← 返回应用」，「管理」组 4 项，「偏好」组 8 项；选中的有底色和加粗。
     fn settings_nav(&self, tokens: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let current = self.settings_section;
         let (hover, selected_bg, text, muted) =
             (tokens.hover, tokens.subtle, tokens.text, tokens.text_muted);
+        let item = {
+            let entity = entity.clone();
+            move |index: usize, section: SettingsSection| {
+                let entity = entity.clone();
+                let is_current = section == current;
+                h_flex()
+                    .id(("settings-nav-item", index))
+                    .w_full()
+                    .gap_2()
+                    .items_center()
+                    .px_2()
+                    .py(px(6.0))
+                    .rounded_md()
+                    .text_sm()
+                    .cursor_pointer()
+                    .text_color(text)
+                    .when(is_current, |d| {
+                        d.bg(selected_bg).font_weight(FontWeight::MEDIUM)
+                    })
+                    .when(!is_current, |d| d.hover(move |style| style.bg(hover)))
+                    .child(
+                        Icon::new(section.icon())
+                            .size_4()
+                            .text_color(if is_current { text } else { muted }),
+                    )
+                    .child(section.label())
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| this.set_settings_section(section, cx));
+                    })
+            }
+        };
+        let group_label = |title: &'static str| {
+            div()
+                .px_2()
+                .pt_3()
+                .pb_1()
+                .text_xs()
+                .text_color(muted)
+                .child(title)
+        };
+        let back = {
+            let entity = entity.clone();
+            h_flex()
+                .id("settings-back")
+                .w_full()
+                .gap_2()
+                .items_center()
+                .px_2()
+                .py(px(7.0))
+                .rounded_md()
+                .bg(tokens.subtle)
+                .text_sm()
+                .cursor_pointer()
+                .text_color(text)
+                .hover(move |style| style.bg(hover))
+                .tooltip(|window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new("返回应用 (Esc)").build(window, cx)
+                })
+                .child(Icon::new(IconName::ArrowLeft).size_4())
+                .child("返回应用")
+                .on_click(move |_, window, cx| {
+                    entity.update(cx, |this, cx| this.close_settings(window, cx));
+                })
+        };
+        let manage_count = SettingsSection::MANAGE.len();
         v_flex()
             .id("settings-nav")
             .w(px(NAV_WIDTH))
@@ -533,50 +839,24 @@ impl MainWindow {
             .flex_none()
             .p_3()
             .gap_0p5()
+            .bg(tokens.surface)
             .border_r_1()
             .border_color(tokens.border)
-            .child(
-                div()
-                    .px_2()
-                    .pb_2()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(muted)
-                    .child("设置"),
-            )
+            .overflow_y_scroll()
+            .child(back)
+            .child(group_label("管理"))
             .children(
-                SettingsSection::ALL
+                SettingsSection::MANAGE
                     .into_iter()
                     .enumerate()
-                    .map(move |(index, section)| {
-                        let entity = entity.clone();
-                        let is_current = section == current;
-                        h_flex()
-                            .id(("settings-nav-item", index))
-                            .w_full()
-                            .gap_2()
-                            .items_center()
-                            .px_2()
-                            .py(px(6.0))
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .text_color(text)
-                            .when(is_current, |d| {
-                                d.bg(selected_bg).font_weight(FontWeight::MEDIUM)
-                            })
-                            .when(!is_current, |d| d.hover(move |style| style.bg(hover)))
-                            .child(
-                                Icon::new(section.icon())
-                                    .size_4()
-                                    .text_color(if is_current { text } else { muted }),
-                            )
-                            .child(section.label())
-                            .on_click(move |_, _, cx| {
-                                entity
-                                    .update(cx, |this, cx| this.set_settings_section(section, cx));
-                            })
-                    }),
+                    .map(|(index, section)| item(index, section)),
+            )
+            .child(group_label("偏好"))
+            .children(
+                SettingsSection::PREFERENCES
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(index, section)| item(manage_count + index, section)),
             )
     }
 
@@ -929,8 +1209,7 @@ impl MainWindow {
                 .w_full()
                 .on_click(move |_, _, cx| {
                     manage_entity.update(cx, |this, cx| {
-                        this.panels.open_side(PROXIES);
-                        cx.notify();
+                        this.set_settings_section(SettingsSection::Proxies, cx);
                     });
                 }),
         );

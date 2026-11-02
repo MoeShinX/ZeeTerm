@@ -11,10 +11,11 @@ use zssh_core::model::{Proxy, ProxyDraft, ProxyKind};
 
 use super::MainWindow;
 use super::modal::{Confirm, ConfirmAction, Modal};
+use super::nav::MainView;
 use super::side_panel::PanelContent;
 use super::widgets::{
-    BadgeKind, ButtonLook, Choice, act, badge, field, icon_button, note, pick, section, select,
-    text_button,
+    BadgeKind, ButtonLook, Choice, act, badge, empty_state, field, icon_button, note, pick,
+    section, select, text_button,
 };
 use crate::app_theme::Tokens;
 
@@ -60,6 +61,17 @@ pub fn build_proxy_draft(
         username: (!username.is_empty()).then(|| username.to_owned()),
         secret: (!input.secret.is_empty()).then(|| input.secret.to_owned()),
     })
+}
+
+/// 页面上的搜索：名称 / 地址 / 类型名里含搜索词（不分大小写）。
+pub fn proxy_matches(proxy: &Proxy, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || proxy.name.to_lowercase().contains(&query)
+        || proxy.host.to_lowercase().contains(&query)
+        || crate::proxies_demo::kind_label(proxy.kind)
+            .to_lowercase()
+            .contains(&query)
 }
 
 /// 删除确认的话：是默认代理就多说一句。
@@ -207,7 +219,8 @@ impl MainWindow {
             Ok(proxy) => {
                 self.proxy_reset(window, cx);
                 // 从主机详情进来新建的：主机详情自动选中它，回到主机详情。
-                if created && self.proxy_ui.from_host_form {
+                // 「管理 + 设置」页里的代理管理没有主机详情可回：只有侧面板那条路才回填。
+                if created && self.proxy_ui.from_host_form && self.nav.view != MainView::Settings {
                     self.host_form_adopt_proxy(proxy.id);
                     self.back_to_host_details(cx);
                 }
@@ -377,6 +390,8 @@ impl MainWindow {
     ) -> PanelContent {
         let entity = cx.entity();
         let proxies = self.store.proxies();
+        let on_page = self.nav.view == MainView::Settings;
+        let query = self.manage_query(cx);
         let ui = &self.proxy_ui;
         let default_id = self
             .store
@@ -433,6 +448,7 @@ impl MainWindow {
 
         let rows: Vec<AnyElement> = proxies
             .iter()
+            .filter(|proxy| proxy_matches(proxy, &query))
             .map(|proxy| {
                 let id = proxy.id;
                 let is_selected = ui.selected == Some(id);
@@ -526,8 +542,27 @@ impl MainWindow {
             .collect();
         let list = section(
             "代理列表",
-            if rows.is_empty() {
-                vec![note("还没有代理，点右上角「新建代理」添加。", tokens).into_any_element()]
+            if rows.is_empty() && proxies.is_empty() {
+                vec![
+                    empty_state(
+                        "暂无代理",
+                        None,
+                        Some(
+                            text_button(
+                                "proxy-empty-new",
+                                "新建代理",
+                                ButtonLook::Primary,
+                                act(&entity, |this, window, cx| this.proxy_new(window, cx)),
+                            )
+                            .icon(IconName::Plus)
+                            .into_any_element(),
+                        ),
+                        tokens,
+                    )
+                    .into_any_element(),
+                ]
+            } else if rows.is_empty() {
+                vec![note("没有匹配的代理。", tokens).into_any_element()]
             } else {
                 rows
             },
@@ -648,7 +683,7 @@ impl MainWindow {
                 .into_any_element()
         });
 
-        let back = ui.from_host_form.then(|| {
+        let back = (ui.from_host_form && !on_page).then(|| {
             icon_button(
                 "proxy-back",
                 IconName::ArrowLeft,
@@ -687,8 +722,26 @@ impl MainWindow {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{ProxyInput, build_proxy_draft, delete_message};
-    use zssh_core::model::ProxyKind;
+    use super::{ProxyInput, build_proxy_draft, delete_message, proxy_matches};
+    use zssh_core::model::{Proxy, ProxyKind};
+
+    #[test]
+    fn the_page_search_matches_name_address_and_kind() {
+        let proxy = Proxy {
+            id: 1,
+            name: "Office".to_owned(),
+            kind: ProxyKind::Socks5,
+            host: "proxy.example.test".to_owned(),
+            port: 1080,
+            username: None,
+            has_secret: false,
+        };
+        assert!(proxy_matches(&proxy, ""));
+        assert!(proxy_matches(&proxy, "office"));
+        assert!(proxy_matches(&proxy, "example.test"));
+        assert!(proxy_matches(&proxy, "socks"));
+        assert!(!proxy_matches(&proxy, "http connect"));
+    }
 
     fn input<'a>() -> ProxyInput<'a> {
         ProxyInput {

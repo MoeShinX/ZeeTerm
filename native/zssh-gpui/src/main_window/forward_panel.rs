@@ -1,5 +1,7 @@
-//! 右侧的端口转发面板（0.2.14 `PortForwardPanel.tsx`）：按主机列出规则，开 / 停、看状态，
+//! 端口转发（0.2.14 `PortForwardPanel.tsx`）：按主机列出规则，开 / 停、看状态，
 //! 新建和修改。规则只存本机；打开时可以只看某一台主机（从主机右键菜单进来），也可以看全部。
+//! V2-U3 起它是「管理 + 设置」页的「端口转发」分类（不再是右侧面板）：同样交出 [`PanelContent`]，
+//! 由 `settings_page` 画在整页里，页面上方的下拉选主机、搜索框过滤规则。
 //!
 //! 运行时是 [`crate::forward_runtime`]（和 Tauri 入口 V2-F6 修好的重启语义一致）：保存规则后，
 //! 正开着的转发按库里最新的规则重开；删除规则 / 删除主机会先停掉对应的转发。
@@ -13,10 +15,10 @@ use zssh_core::store::forwards::{ForwardKind, PortForward, PortForwardDraft};
 
 use super::MainWindow;
 use super::modal::{Confirm, ConfirmAction, Modal};
-use super::side_panel::{FORWARDS, PanelContent};
+use super::side_panel::PanelContent;
 use super::widgets::{
-    BadgeKind, ButtonLook, Choice, act, badge, error_note, field, icon_button, note, pick, select,
-    switch_row, text_button,
+    BadgeKind, ButtonLook, Choice, act, badge, empty_state, error_note, field, icon_button, note,
+    pick, select, switch_row, text_button,
 };
 use crate::app_theme::Tokens;
 use crate::forward_runtime::{self, ForwardStatus, Phase};
@@ -105,6 +107,17 @@ pub fn counters_line(status: &ForwardStatus, bind_port: u16) -> String {
     )
 }
 
+/// 页面上的搜索：规则名 / 主机名 / 描述（`本地 :端口 → 目标` 那一行）里含搜索词（不分大小写）。
+pub fn forward_matches(rule: &PortForward, host_name: &str, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || rule_title(rule).to_lowercase().contains(&query)
+        || host_name.to_lowercase().contains(&query)
+        || forward_runtime::describe(rule)
+            .to_lowercase()
+            .contains(&query)
+}
+
 pub struct ForwardDraftUi {
     pub id: Option<i64>,
     pub host_id: i64,
@@ -125,8 +138,13 @@ pub struct ForwardUi {
 }
 
 impl MainWindow {
-    /// 打开转发面板；`host` 为空看全部。
-    pub(crate) fn open_forwards(&mut self, host: Option<i64>, cx: &mut Context<Self>) {
+    /// 打开「管理 + 设置」页的端口转发；`host` 为空看全部。
+    pub(crate) fn open_forwards(
+        &mut self,
+        host: Option<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Telnet / 串口主机没有端口转发：不打开（规则只能建在 SSH 主机上）。
         if let Some(id) = host
             && !self.caps_of(id).port_forward
@@ -142,7 +160,13 @@ impl MainWindow {
         }
         self.forward_ui.host_filter = host;
         self.forward_ui.draft = None;
-        self.panels.open_side(FORWARDS);
+        self.open_settings_section(crate::settings_nav::SettingsSection::Forwards, window, cx);
+    }
+
+    /// 页面上的主机下拉：只看这台（`None` = 全部）；换主机时编辑到一半的草稿作废。
+    pub(crate) fn set_forward_host_filter(&mut self, host: Option<i64>, cx: &mut Context<Self>) {
+        self.forward_ui.host_filter = host;
+        self.forward_ui.draft = None;
         cx.notify();
     }
 
@@ -350,7 +374,6 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) -> PanelContent {
         let entity = cx.entity();
-        let ui = &self.forward_ui;
         let hosts = self.store.hosts();
         let host_name = |id: i64| {
             hosts
@@ -360,11 +383,18 @@ impl MainWindow {
                 .unwrap_or_default()
         };
         let statuses = forward_runtime::manager().statuses();
-        let visible: Vec<&PortForward> = self
+        let query = self.manage_query(cx);
+        let ui = &self.forward_ui;
+        let in_scope: Vec<&PortForward> = self
             .store
             .forwards()
             .iter()
             .filter(|rule| ui.host_filter.is_none_or(|id| rule.host_id == id))
+            .collect();
+        let visible: Vec<&PortForward> = in_scope
+            .iter()
+            .copied()
+            .filter(|rule| forward_matches(rule, &host_name(rule.host_id), &query))
             .collect();
         let title = match ui.host_filter {
             None => "端口转发".to_owned(),
@@ -493,11 +523,27 @@ impl MainWindow {
         let list = v_flex()
             .w_full()
             .gap_1()
-            .when(rows.is_empty(), |d| {
-                d.child(note(
-                    "还没有转发规则。本地转发把服务器那边的端口（比如数据库）映射到本机；远程转发反过来，让服务器能连到本机这边。",
+            .when(in_scope.is_empty() && ui.draft.is_none(), |d| {
+                d.child(empty_state(
+                    "暂无端口转发规则",
+                    Some(
+                        "本地转发把服务器那边的端口（比如数据库）映射到本机；远程转发反过来，让服务器能连到本机这边。",
+                    ),
+                    can_create.then(|| {
+                        text_button(
+                            "forward-empty-new",
+                            "新建转发",
+                            ButtonLook::Primary,
+                            act(&entity, |this, window, cx| this.forward_new(window, cx)),
+                        )
+                        .icon(IconName::Plus)
+                        .into_any_element()
+                    }),
                     tokens,
                 ))
+            })
+            .when(!in_scope.is_empty() && rows.is_empty(), |d| {
+                d.child(note("没有匹配的转发规则。", tokens))
             })
             .children(rows);
 
@@ -687,10 +733,11 @@ impl MainWindow {
                 .then(|| {
                     text_button(
                         "forward-new",
-                        "新建",
-                        ButtonLook::Ghost,
+                        "新建转发",
+                        ButtonLook::Outline,
                         act(&entity, |this, window, cx| this.forward_new(window, cx)),
                     )
+                    .icon(IconName::Plus)
                     .into_any_element()
                 })
                 .into_iter()
@@ -709,7 +756,9 @@ impl MainWindow {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{ForwardInput, build_forward_draft, counters_line, is_loopback, rule_title};
+    use super::{
+        ForwardInput, build_forward_draft, counters_line, forward_matches, is_loopback, rule_title,
+    };
     use crate::forward_runtime::{ForwardStatus, Phase};
     use zssh_core::ssh::forward::ForwardCounters;
     use zssh_core::store::forwards::{ForwardKind, PortForward};
@@ -726,6 +775,16 @@ mod tests {
             dest_port: "5432",
             auto_start: false,
         }
+    }
+
+    #[test]
+    fn the_page_search_matches_title_host_and_description() {
+        let named = rule("db", ForwardKind::Local);
+        assert!(forward_matches(&named, "web-1", ""));
+        assert!(forward_matches(&named, "web-1", "DB"));
+        assert!(forward_matches(&named, "web-1", "web"), "主机名");
+        assert!(forward_matches(&named, "web-1", "8080"), "端口在描述里");
+        assert!(!forward_matches(&named, "web-1", "nothing"));
     }
 
     #[test]

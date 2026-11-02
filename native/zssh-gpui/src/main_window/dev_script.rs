@@ -8,7 +8,7 @@
 //! - `type:<文字>` 往活动窗格打字（`\r` 是回车）；`expect:<文字>` 等屏幕上出现这段文字；
 //!   `expect_count:<n>:<文字>` 等活动标签（含分屏）的屏幕上至少有 n 行带这段文字；
 //! - `split[:x|y]`（Ctrl+Shift+D / E）、`duplicate:<下标>`、`close:<下标>`、`select:<下标>`、`cycle`、`reconnect:<下标>`；
-//! - `view:vault|terminal|settings`、`settings`（齿轮开关）；
+//! - `view:welcome|vault|terminal|settings`、`settings`（齿轮开关）；
 //! - `key:<按键>` 走真实的按键分发路径（如 `key:ctrl-shift-t`、`key:escape`）；
 //!   `click:<x>,<y>[,<次数>[,l|m|r]]` 走真实的鼠标分发路径（先移动再按下抬起，坐标是窗口内逻辑像素）；
 //! - `assert_view:<页>`、`assert_tabs:<个数>`、`assert_status:<标签下标>:<connected|disconnected|connecting|empty>`
@@ -185,7 +185,7 @@ pub fn parse_script(raw: &str) -> Result<Vec<Step>, String> {
             "cycle" => Step::Cycle,
             "reconnect" => Step::Reconnect(number("标签下标")?),
             "view" => Step::View(MainView::parse(need("页面名")?.trim()).ok_or_else(|| {
-                "步骤 view 的页面名只能是 vault / terminal / settings".to_owned()
+                "步骤 view 的页面名只能是 welcome / vault / terminal / settings".to_owned()
             })?),
             "settings" => Step::Settings,
             "dump" => Step::Dump,
@@ -288,7 +288,8 @@ pub fn parse_script(raw: &str) -> Result<Vec<Step>, String> {
             }
             "assert_view" => {
                 Step::AssertView(MainView::parse(need("页面名")?.trim()).ok_or_else(|| {
-                    "步骤 assert_view 的页面名只能是 vault / terminal / settings".to_owned()
+                    "步骤 assert_view 的页面名只能是 welcome / vault / terminal / settings"
+                        .to_owned()
                 })?)
             }
             "assert_tabs" => Step::AssertTabs(number("标签个数")?),

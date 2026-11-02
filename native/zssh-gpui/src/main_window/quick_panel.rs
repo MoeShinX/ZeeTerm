@@ -12,9 +12,10 @@ use gpui_kit::*;
 
 use super::MainWindow;
 use super::modal::{Confirm, ConfirmAction, Modal};
+use super::nav::MainView;
 use super::quick_commands::{self, COMMANDS_MAX, QuickCommand};
 use super::side_panel::{PanelContent, QUICK_COMMANDS};
-use super::widgets::{ButtonLook, act, field, note, switch_row, text_button};
+use super::widgets::{ButtonLook, act, empty_state, field, note, switch_row, text_button};
 use crate::app_theme::Tokens;
 
 type RowAction = Box<dyn Fn(&mut Window, &mut App)>;
@@ -96,7 +97,10 @@ impl MainWindow {
     }
 
     pub(crate) fn open_quick_panel_new(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.panels.open_side(QUICK_COMMANDS);
+        // 在「管理 + 设置」页里就地新建；别处（终端命令栏）开右侧面板。
+        if self.nav.view != MainView::Settings {
+            self.panels.open_side(QUICK_COMMANDS);
+        }
         self.quick_begin_new(window, cx);
         cx.notify();
     }
@@ -107,7 +111,9 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.panels.open_side(QUICK_COMMANDS);
+        if self.nav.view != MainView::Settings {
+            self.panels.open_side(QUICK_COMMANDS);
+        }
         if let Some(command) = self
             .bar_settings()
             .commands
@@ -264,6 +270,8 @@ impl MainWindow {
     ) -> PanelContent {
         let entity = cx.entity();
         let commands = self.bar_settings().commands.clone();
+        // 「管理 + 设置」页的搜索框在页面顶部（同一个输入框），列表里不再画第二个。
+        let on_page = self.nav.view == MainView::Settings;
         let query = self.quick_ui.search.read(cx).value().to_string();
         let searching = !query.trim().is_empty();
         let found = quick_commands::search(&commands, &query);
@@ -503,12 +511,25 @@ impl MainWindow {
                  单击发到当前窗格，Ctrl+单击发到这个标签的所有分屏。",
                 tokens,
             ))
-            .when(!commands.is_empty(), |d| {
+            .when(!commands.is_empty() && !on_page, |d| {
                 d.child(div().mt_1().child(Input::new(&self.quick_ui.search)))
             })
-            .when(commands.is_empty(), |d| {
-                d.child(note(
-                    "还没有快捷命令，点右上角「新建命令」添加。",
+            .when(commands.is_empty() && draft.is_none(), |d| {
+                d.child(empty_state(
+                    "暂无快捷命令",
+                    None,
+                    Some(
+                        text_button(
+                            "quick-empty-new",
+                            "新建命令",
+                            ButtonLook::Primary,
+                            act(&entity, |this, window, cx| {
+                                this.open_quick_panel_new(window, cx);
+                            }),
+                        )
+                        .icon(IconName::Plus)
+                        .into_any_element(),
+                    ),
                     tokens,
                 ))
             })
@@ -694,6 +715,7 @@ impl MainWindow {
                         this.open_quick_panel_new(window, cx);
                     }),
                 )
+                .icon(IconName::Plus)
                 .into_any_element(),
             ],
             body: v_flex()

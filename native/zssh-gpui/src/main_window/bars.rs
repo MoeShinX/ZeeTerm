@@ -151,9 +151,13 @@ impl MainWindow {
     }
 
     pub(crate) fn toggle_quick_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 主机页没有终端、看不到底部的命令栏：这个按钮改成开关右侧的管理面板（同 0.2.14）。
-        if self.nav.view == MainView::Vault {
-            self.toggle_quick_panel(window, cx);
+        // 欢迎页 / 主机页没有终端、看不到底部的命令栏：这个按钮改成打开「管理 + 设置」页的「快捷命令」。
+        if matches!(self.nav.view, MainView::Vault | MainView::Welcome) {
+            self.open_settings_section(
+                crate::settings_nav::SettingsSection::QuickCommands,
+                window,
+                cx,
+            );
             return;
         }
         let next = !self.quick_bar_open();

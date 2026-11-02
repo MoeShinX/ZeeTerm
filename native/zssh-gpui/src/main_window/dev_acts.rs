@@ -15,7 +15,7 @@ use super::dev_script::Outcome;
 use super::drag::DropHint;
 use super::modal::{ConfirmAction, Modal};
 use super::page_logic::{PageOptions, ViewMode, page_hosts};
-use super::side_panel::{FORWARDS, HOST_DETAILS, KEYCHAIN, PROXIES};
+use super::side_panel::{HOST_DETAILS, PROXIES};
 
 const KNOWN: &[&str] = &[
     "new_host",
@@ -156,11 +156,21 @@ fn group_ref(this: &MainWindow, raw: &str) -> Result<Option<i64>, String> {
 }
 
 fn state_name(this: &MainWindow) -> &'static str {
+    use crate::settings_nav::SettingsSection;
+    // 凭据 / 代理 / 端口转发 / 快捷命令现在是「管理 + 设置」页的分类：页面上显示着就算「开着」，
+    // 旧脚本里的 `assert_panel:keychain` 之类断言仍然有意义。
+    if this.nav.view == super::nav::MainView::Settings {
+        match this.settings_section {
+            SettingsSection::Credentials => return "keychain",
+            SettingsSection::Proxies => return "proxies",
+            SettingsSection::Forwards => return "forwards",
+            SettingsSection::QuickCommands => return "quick",
+            _ => {}
+        }
+    }
     match this.panels.visible() {
         Some(HOST_DETAILS) => "host_details",
-        Some(KEYCHAIN) => "keychain",
         Some(PROXIES) => "proxies",
-        Some(FORWARDS) => "forwards",
         Some(_) => "other",
         None => "none",
     }
@@ -172,6 +182,7 @@ pub(super) fn modal_name(this: &MainWindow) -> &'static str {
         Some(Modal::Confirm(_)) => "confirm",
         Some(Modal::Group(_)) => "group",
         Some(Modal::Quick(_)) => "quick",
+        Some(Modal::QuickTarget(_)) => "quick_target",
         Some(Modal::GenerateKey(_)) => "generate",
         Some(Modal::InstallKey(_)) => "install",
         Some(Modal::Unsaved(_)) => "unsaved",
@@ -271,17 +282,23 @@ fn run_inner(
             this.edit_host(id, window, cx);
         }
         "panel" => match a {
-            "keychain" => this.panels.open_side(KEYCHAIN),
-            "proxies" => {
-                this.open_proxies_panel(window, cx);
-            }
+            "keychain" => this.open_settings_section(
+                crate::settings_nav::SettingsSection::Credentials,
+                window,
+                cx,
+            ),
+            "proxies" => this.open_settings_section(
+                crate::settings_nav::SettingsSection::Proxies,
+                window,
+                cx,
+            ),
             "forwards" => {
                 let host = if b.is_empty() || b == "all" {
                     None
                 } else {
                     Some(host_ref(this, b)?)
                 };
-                this.open_forwards(host, cx);
+                this.open_forwards(host, window, cx);
             }
             _ => return fail("面板只能是 keychain / proxies / forwards"),
         },
@@ -321,6 +338,8 @@ fn run_inner(
                     Some(Modal::Group(dialog)) => Some(dialog.name.clone()),
                     _ => None,
                 },
+                ("quick_target", "text") => Some(this.quick_target.clone()),
+                ("manage", "search") => Some(this.manage_search.clone()),
                 ("quick", "password") => match &this.modal {
                     Some(Modal::Quick(dialog)) => Some(dialog.password.clone()),
                     _ => None,

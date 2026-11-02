@@ -15,7 +15,6 @@ use super::page_logic::{
     OrderState, can_step_group, can_step_host, group_layer_ids, host_layer_ids,
     looks_like_quick_target, order_state, step_in_layer,
 };
-use super::side_panel::PROXIES;
 use super::{CopyField, GroupSel};
 
 /// 系统的双击间隔 + 一点余量：单击已经展开着的主机属性要「再点一下收起」，但双击（连接）的
@@ -392,16 +391,6 @@ impl MainWindow {
         if let Err(err) = self.store.set_sort_mode(next) {
             self.notice_error(&err, window, cx);
         }
-        cx.notify();
-    }
-
-    // ---- 面板入口 ----
-
-    /// 顶部的「代理」按钮。
-    pub(crate) fn open_proxies_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.proxy_ui.from_host_form = false;
-        self.panels.open_side(PROXIES);
-        self.proxy_start_creating_if(false, window, cx);
         cx.notify();
     }
 

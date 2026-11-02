@@ -150,6 +150,28 @@ pub fn note(text: impl Into<SharedString>, tokens: &Tokens) -> Div {
         .child(text.into())
 }
 
+/// 管理页列表为空时的空状态：居中一句话（可带一行灰色补充）+ 一个主按钮。
+pub fn empty_state(
+    text: &str,
+    hint: Option<&str>,
+    button: Option<AnyElement>,
+    tokens: &Tokens,
+) -> Div {
+    v_flex()
+        .w_full()
+        .py_10()
+        .gap_3()
+        .items_center()
+        .child(
+            div()
+                .text_sm()
+                .text_color(tokens.text_muted)
+                .child(SharedString::from(text.to_owned())),
+        )
+        .children(hint.map(|hint| note(SharedString::from(hint.to_owned()), tokens)))
+        .children(button)
+}
+
 /// 红色的错误 / 警告小字。
 pub fn error_note(text: impl Into<SharedString>, color: Hsla) -> Div {
     div().text_xs().text_color(color).child(text.into())

@@ -1,5 +1,6 @@
-//! 自绘标题栏：最左 logo、主机树开关、固定的「主机」标签；后面是会话标签（状态点、标题、
-//! 关闭、中键关闭、双击复制、右键菜单）和「+」；右边 AI（先禁用）、凭据、主题、设置和窗口按钮。
+//! 自绘标题栏：最左是侧栏开关和「主机」图标（纯图标，没有 logo 和带字按钮）；后面是会话标签（状态点、
+//! 标题、关闭、中键关闭、双击复制、右键菜单）和「+」；右边 AI、文件、快捷命令、撰写栏、主题和窗口按钮，
+//! 侧栏折叠时再补一个设置齿轮（凭据和设置的入口在侧栏左下角和「管理 + 设置」页里）。
 //!
 //! 结构照 0.2.14 的 `components/titlebar/TopTabs.tsx`。窗口拖动和最大化靠
 //! `WindowControlArea::Drag`：条本身是拖动区，所有可点的东西都 `occlude()` 一下，把拖动区
@@ -53,6 +54,16 @@ fn status_title(status: TabStatus) -> &'static str {
         TabStatus::Disconnected => "已断开",
         TabStatus::Empty => "空标签",
     }
+}
+
+/// 撰写栏的开关只在有终端的页面上出现（欢迎页、主机页没有终端）。
+pub(super) fn compose_in_title_bar(view: MainView) -> bool {
+    !matches!(view, MainView::Vault | MainView::Welcome)
+}
+
+/// 侧栏折叠时，标题栏右侧补一个设置与管理的齿轮（侧栏展开时入口在它左下角）。
+pub(super) fn gear_in_title_bar(sidebar_collapsed: bool) -> bool {
+    sidebar_collapsed
 }
 
 /// 标题栏上的小图标按钮：`occlude` 把拖动区挖掉；`enabled == false` 时只显示灰的和提示。
@@ -122,7 +133,7 @@ impl MainWindow {
         });
         let drag_hint = crate::tab_drag::hint_chip(window, cx, tokens);
 
-        // ---- 左侧块：logo、主机树开关、「主机」 ----
+        // ---- 左侧块：侧栏开关、「主机」图标 ----
         let toggle = {
             let entity = entity.clone();
             let collapsed = self.tree.collapsed;
@@ -146,46 +157,20 @@ impl MainWindow {
                 entity.update(cx, |this, cx| this.toggle_tree(cx));
             })
         };
-        // 在 36px 标题栏中留出呼吸空间，同时让小尺寸的终端标志更容易辨认。
-        let logo = ::gpui::img(crate::brand::logo()).size(px(26.0)).flex_none();
-        let vault_active = view == MainView::Vault;
-        let vault_button = {
+        // 主机卡片页的入口（原来带字的「会话」按钮）：在主机页上再点一次回到进来之前的页面。
+        let host_page_button = {
             let entity = entity.clone();
-            let hover = tokens.hover;
-            let text = tokens.text;
-            // 半透明主题色与标题栏叠合，模拟轻柔的磨砂层。
-            let mut glass = tokens.accent;
-            glass.a = if tokens.dark { 0.16 } else { 0.10 };
-            div()
-                .id("host-page-button")
-                .occlude()
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap_1p5()
-                .h(px(24.0))
-                .px_2()
-                .min_w_0()
-                .rounded_md()
-                .border_1()
-                .text_sm()
-                .cursor_pointer()
-                .when(vault_active, |d| {
-                    d.border_color(Hsla::transparent_black())
-                        .bg(glass)
-                        .text_color(text)
-                })
-                .when(!vault_active, |d| {
-                    d.border_color(Hsla::transparent_black())
-                        .text_color(tokens.text_muted)
-                        .hover(move |style| style.bg(hover).text_color(text))
-                })
-                .tooltip(|window, cx| Tooltip::new("会话").build(window, cx))
-                .child(Icon::new(IconName::LayoutDashboard).size_3p5())
-                .child("会话")
-                .on_click(move |_, window, cx| {
-                    entity.update(cx, |this, cx| this.show_view(MainView::Vault, window, cx));
-                })
+            icon_button(
+                "host-page-button",
+                IconName::LayoutDashboard,
+                "主机",
+                view == MainView::Vault,
+                true,
+                tokens,
+            )
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |this, cx| this.toggle_vault_page(window, cx));
+            })
         };
         let left = h_flex()
             .h_full()
@@ -198,9 +183,8 @@ impl MainWindow {
                 // 主机树展开时左侧块就是树的「抬头」：宽度一样，右边那条线和树的分隔线连起来。
                 d.w(px(width)).border_r_1().border_color(tokens.border)
             })
-            .child(logo)
             .child(toggle)
-            .child(vault_button);
+            .child(host_page_button);
 
         // ---- 会话标签 ----
         // 标签条：标签放不下先等比缩窄到最小宽度，再放不下就横向滚动（右边出现溢出按钮）。
@@ -321,34 +305,21 @@ impl MainWindow {
                 entity.update(cx, |this, cx| this.toggle_sftp_dock(window, cx));
             })
         };
-        // 凭据面板的开关（同 0.2.14 标题栏上的钥匙按钮）：开着就关，没开就开。
-        let keychain = {
-            let entity = entity.clone();
-            icon_button(
-                "keychain-button",
-                crate::icons::Ico::KeyRound,
-                "凭据",
-                self.panels.visible() == Some(super::side_panel::KEYCHAIN),
-                true,
-                tokens,
-            )
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |this, cx| this.open_panel_keychain_toggle(cx));
-            })
-        };
-        // 快捷命令栏的开关（0.2.14 的 ⌘ 按钮）；主机页上它开关的是右侧的管理面板。
+        // 快捷命令栏的开关（0.2.14 的 ⌘ 按钮）；欢迎页 / 主机页没有终端、看不到命令栏，
+        // 这里改成打开「管理 + 设置」页的「快捷命令」。
         let quick = {
             let entity = entity.clone();
-            let active = if view == MainView::Vault {
-                self.panels.visible() == Some(super::side_panel::QUICK_COMMANDS)
+            let manage_here = matches!(view, MainView::Vault | MainView::Welcome);
+            let active = if manage_here {
+                false
             } else {
                 self.quick_bar_open()
             };
             icon_button(
                 "quick-button",
                 crate::icons::Ico::Command,
-                if view == MainView::Vault {
-                    "快捷命令"
+                if manage_here {
+                    "快捷命令（管理）"
                 } else {
                     "快捷命令栏"
                 },
@@ -361,7 +332,7 @@ impl MainWindow {
             })
         };
         // 撰写栏的开关；主机页没有终端，不显示。
-        let compose = (view != MainView::Vault).then(|| {
+        let compose = compose_in_title_bar(view).then(|| {
             let entity = entity.clone();
             icon_button(
                 "compose-button",
@@ -439,12 +410,13 @@ impl MainWindow {
                     }),
             )
         };
-        let settings = {
+        // 侧栏折叠时左下角的入口跟着看不见：在这里补一个设置与管理的齿轮，保证总有入口。
+        let gear = gear_in_title_bar(self.tree.collapsed).then(|| {
             let entity = entity.clone();
             icon_button(
                 "settings-button",
                 IconName::Settings,
-                "设置 (Ctrl+,)",
+                "设置与管理 (Ctrl+,)",
                 view == MainView::Settings,
                 true,
                 tokens,
@@ -452,7 +424,7 @@ impl MainWindow {
             .on_click(move |_, window, cx| {
                 entity.update(cx, |this, cx| this.toggle_settings(window, cx));
             })
-        };
+        });
         let right = h_flex()
             .h_full()
             .flex_none()
@@ -461,11 +433,10 @@ impl MainWindow {
             .pr_1()
             .child(ai)
             .child(files)
-            .child(keychain)
             .child(quick)
             .children(compose)
             .child(theme)
-            .child(settings);
+            .children(gear);
 
         div()
             .id("title-bar")
@@ -790,4 +761,24 @@ pub(crate) fn window_controls(tokens: &Tokens, maximized: bool) -> impl IntoElem
             IconName::WindowClose,
             true,
         ))
+}
+
+#[cfg(test)]
+mod tests {
+    // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
+    use super::{compose_in_title_bar, gear_in_title_bar};
+    use crate::main_window::nav::MainView;
+
+    #[test]
+    fn the_gear_only_shows_up_in_the_title_bar_when_the_sidebar_is_collapsed() {
+        assert!(!gear_in_title_bar(false), "侧栏展开时入口在左下角");
+        assert!(gear_in_title_bar(true), "折叠后左下角看不见，标题栏补一个");
+    }
+
+    #[test]
+    fn the_compose_button_needs_a_terminal() {
+        assert!(!compose_in_title_bar(MainView::Welcome));
+        assert!(!compose_in_title_bar(MainView::Vault));
+        assert!(compose_in_title_bar(MainView::Terminal));
+    }
 }

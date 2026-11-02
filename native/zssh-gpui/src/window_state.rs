@@ -327,6 +327,30 @@ mod tests {
     }
 
     #[test]
+    fn old_view_values_and_the_new_welcome_and_manage_ids_all_read_back() {
+        let dir = temp_dir("u3-ids");
+        let path = dir.join("window-state.json");
+        for (view, section) in [
+            ("vault", "appearance"),
+            ("terminal", "about"),
+            ("settings", "sync"),
+            ("welcome", "credentials"),
+            ("settings", "quick-commands"),
+            ("settings", "proxies"),
+            ("settings", "forwards"),
+        ] {
+            std::fs::write(
+                &path,
+                format!(r#"{{"layout":{{"view":"{view}","settings_section":"{section}"}}}}"#),
+            )
+            .unwrap();
+            let layout = WindowState::load_from(&path).unwrap().layout;
+            assert_eq!(layout.view.as_deref(), Some(view));
+            assert_eq!(layout.settings_section.as_deref(), Some(section));
+        }
+    }
+
+    #[test]
     fn a_bad_layout_field_only_loses_that_field() {
         let dir = temp_dir("badlayout");
         let path = dir.join("window-state.json");

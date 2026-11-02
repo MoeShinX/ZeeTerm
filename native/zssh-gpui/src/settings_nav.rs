@@ -1,14 +1,23 @@
-//! 设置页的分类导航：8 个分类的顺序、名称、图标，默认进哪一类、记住上次的分类，
-//! 以及每个分类里有哪些设置项（清单，测试对照 0.2.14 用）和快捷键表。
+//! 「管理 + 设置」统一页的分类导航：「管理」组 4 个（凭据、快捷命令、代理、端口转发）和
+//! 「偏好」组 8 个（外观 / 终端 / 连接 / SFTP / AI / 同步 / 快捷键 / 关于），默认进哪一类、
+//! 记住上次的分类，以及每个偏好分类里有哪些设置项（清单，测试对照 0.2.14 用）和快捷键表。
 //!
-//! 分类和顺序取自 0.2.14 的 `SettingsPage.tsx`（外观 / 终端 / 连接 / SFTP / AI / 同步 / 快捷键 / 关于）。
-//! 这里只放纯数据和规则，不碰界面框架，状态测试不用起窗口。
+//! 偏好 8 类的顺序取自 0.2.14 的 `SettingsPage.tsx`；「管理」组是 V2-U3 把原来散在标题栏 / 主机页 /
+//! 侧面板里的管理入口收进来的，只搬现有功能。这里只放纯数据和规则，不碰界面框架，状态测试不用起窗口。
 
 use crate::icons::Ico;
 
-/// 设置页的分类。
+/// 统一页的分类。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum SettingsSection {
+    /// 管理：凭据（密码 / 私钥 / 身份）。
+    Credentials,
+    /// 管理：快捷命令。
+    QuickCommands,
+    /// 管理：代理。
+    Proxies,
+    /// 管理：端口转发。
+    Forwards,
     /// 外观：主题、皮肤、终端配色、主机树、窗口。
     #[default]
     Appearance,
@@ -22,8 +31,16 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    /// 导航栏里的顺序（同 0.2.14 的 `SECTIONS`）。
-    pub const ALL: [Self; 8] = [
+    /// 「管理」组（导航里排在前面）。
+    pub const MANAGE: [Self; 4] = [
+        Self::Credentials,
+        Self::QuickCommands,
+        Self::Proxies,
+        Self::Forwards,
+    ];
+
+    /// 「偏好」组（同 0.2.14 的 `SECTIONS`，顺序不变）。
+    pub const PREFERENCES: [Self; 8] = [
         Self::Appearance,
         Self::Terminal,
         Self::Connection,
@@ -34,9 +51,34 @@ impl SettingsSection {
         Self::About,
     ];
 
-    /// 窗口状态文件里的写法（和 0.2.14 的 `SectionId` 一致）。
+    /// 导航栏里从上到下的全部分类。
+    pub const ALL: [Self; 12] = [
+        Self::Credentials,
+        Self::QuickCommands,
+        Self::Proxies,
+        Self::Forwards,
+        Self::Appearance,
+        Self::Terminal,
+        Self::Connection,
+        Self::Sftp,
+        Self::Ai,
+        Self::Sync,
+        Self::Shortcuts,
+        Self::About,
+    ];
+
+    /// 属于「管理」组。
+    pub fn is_manage(self) -> bool {
+        Self::MANAGE.contains(&self)
+    }
+
+    /// 窗口状态文件里的写法（偏好 8 类和 0.2.14 的 `SectionId` 一致；管理 4 类是新增的稳定 id）。
     pub fn id(self) -> &'static str {
         match self {
+            Self::Credentials => "credentials",
+            Self::QuickCommands => "quick-commands",
+            Self::Proxies => "proxies",
+            Self::Forwards => "forwards",
             Self::Appearance => "appearance",
             Self::Terminal => "terminal",
             Self::Connection => "connection",
@@ -56,6 +98,10 @@ impl SettingsSection {
     /// 导航栏上的名字。
     pub fn label(self) -> &'static str {
         match self {
+            Self::Credentials => "凭据",
+            Self::QuickCommands => "快捷命令",
+            Self::Proxies => "代理",
+            Self::Forwards => "端口转发",
             Self::Appearance => "外观",
             Self::Terminal => "终端",
             Self::Connection => "连接",
@@ -67,10 +113,15 @@ impl SettingsSection {
         }
     }
 
-    /// 导航栏图标：0.2.14 用的 Lucide 图标（MonitorCog / SquareTerminal / Link2 / FolderOpen /
-    /// Bot / CloudUpload / Keyboard / Info）。
+    /// 导航栏图标：偏好 8 类是 0.2.14 用的 Lucide 图标（MonitorCog / SquareTerminal / Link2 /
+    /// FolderOpen / Bot / CloudUpload / Keyboard / Info）；管理 4 类沿用原来入口上的图标
+    /// （钥匙、命令、网络、左右箭头）。
     pub fn icon(self) -> Ico {
         match self {
+            Self::Credentials => Ico::KeyRound,
+            Self::QuickCommands => Ico::Command,
+            Self::Proxies => Ico::Network,
+            Self::Forwards => Ico::ArrowLeftRight,
             Self::Appearance => Ico::MonitorCog,
             Self::Terminal => Ico::SquareTerminal,
             Self::Connection => Ico::Link2,
@@ -99,6 +150,8 @@ impl SettingsSection {
     #[cfg(test)]
     pub fn setting_ids(self) -> &'static [&'static str] {
         match self {
+            // 管理组放的是列表和表单，不是一项项设置：没有设置项清单。
+            Self::Credentials | Self::QuickCommands | Self::Proxies | Self::Forwards => &[],
             Self::Appearance => &[
                 "theme-mode",
                 "skin-light",
@@ -206,7 +259,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         keys: "Ctrl+,",
-        what: "打开 / 关闭设置",
+        what: "打开 / 关闭设置与管理页",
     },
     Shortcut {
         keys: "Ctrl+Shift+R",
@@ -242,7 +295,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         keys: "Esc",
-        what: "关闭设置页",
+        what: "关闭设置与管理页，回到原来的页面",
     },
 ];
 
@@ -251,8 +304,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn eight_sections_in_the_0_2_14_order_with_the_same_names() {
-        let names: Vec<_> = SettingsSection::ALL.iter().map(|s| s.label()).collect();
+    fn eight_preferences_in_the_0_2_14_order_with_the_same_names() {
+        let names: Vec<_> = SettingsSection::PREFERENCES
+            .iter()
+            .map(|s| s.label())
+            .collect();
         assert_eq!(
             names,
             [
@@ -266,7 +322,10 @@ mod tests {
                 "关于"
             ]
         );
-        let ids: Vec<_> = SettingsSection::ALL.iter().map(|s| s.id()).collect();
+        let ids: Vec<_> = SettingsSection::PREFERENCES
+            .iter()
+            .map(|s| s.id())
+            .collect();
         assert_eq!(
             ids,
             [
@@ -283,6 +342,34 @@ mod tests {
     }
 
     #[test]
+    fn the_manage_group_has_four_entries_in_front_of_the_eight_preferences() {
+        let manage: Vec<_> = SettingsSection::MANAGE.iter().map(|s| s.label()).collect();
+        assert_eq!(manage, ["凭据", "快捷命令", "代理", "端口转发"]);
+        let ids: Vec<_> = SettingsSection::MANAGE.iter().map(|s| s.id()).collect();
+        assert_eq!(
+            ids,
+            ["credentials", "quick-commands", "proxies", "forwards"]
+        );
+        assert_eq!(SettingsSection::ALL.len(), 12);
+        assert_eq!(
+            SettingsSection::ALL[..4],
+            SettingsSection::MANAGE[..],
+            "管理组在前"
+        );
+        assert_eq!(
+            SettingsSection::ALL[4..],
+            SettingsSection::PREFERENCES[..],
+            "偏好组在后，顺序不变"
+        );
+        for section in SettingsSection::MANAGE {
+            assert!(section.is_manage());
+        }
+        for section in SettingsSection::PREFERENCES {
+            assert!(!section.is_manage());
+        }
+    }
+
+    #[test]
     fn ids_round_trip_and_garbage_is_ignored() {
         for section in SettingsSection::ALL {
             assert_eq!(SettingsSection::parse(section.id()), Some(section));
@@ -290,6 +377,12 @@ mod tests {
         assert_eq!(SettingsSection::parse(""), None);
         assert_eq!(SettingsSection::parse("Appearance"), None);
         assert_eq!(SettingsSection::parse("nope"), None);
+        // 管理组的 id 也认得，大小写 / 旧写法不认。
+        assert_eq!(
+            SettingsSection::parse("quick-commands"),
+            Some(SettingsSection::QuickCommands)
+        );
+        assert_eq!(SettingsSection::parse("quick_commands"), None);
     }
 
     #[test]
@@ -321,6 +414,11 @@ mod tests {
     /// `SessionLogSection.tsx`、`sync/` 和 `AboutSection`）。ZeeTerm 的分类清单必须全包含。
     fn expected_0_2_14(section: SettingsSection) -> &'static [&'static str] {
         match section {
+            // 管理组不是 0.2.14 设置页的分类。
+            SettingsSection::Credentials
+            | SettingsSection::QuickCommands
+            | SettingsSection::Proxies
+            | SettingsSection::Forwards => &[],
             SettingsSection::Appearance => &[
                 "theme-mode",
                 "skin-light",
@@ -384,7 +482,7 @@ mod tests {
 
     #[test]
     fn every_section_has_all_the_settings_the_0_2_14_one_has() {
-        for section in SettingsSection::ALL {
+        for section in SettingsSection::PREFERENCES {
             let have = section.setting_ids();
             for id in expected_0_2_14(section) {
                 assert!(
@@ -399,7 +497,7 @@ mod tests {
     #[test]
     fn extras_are_listed_and_ids_are_not_duplicated_across_sections() {
         let mut seen = std::collections::HashSet::new();
-        for section in SettingsSection::ALL {
+        for section in SettingsSection::PREFERENCES {
             for id in section.setting_ids() {
                 assert!(seen.insert(*id), "设置项 {id} 出现在两个分类里");
             }

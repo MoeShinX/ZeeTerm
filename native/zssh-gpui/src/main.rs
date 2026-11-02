@@ -16,7 +16,6 @@ mod ai_terminals;
 mod app_prefs;
 mod app_theme;
 mod backup_demo;
-mod brand;
 mod dev_hooks;
 mod editor_demo;
 #[cfg(debug_assertions)]

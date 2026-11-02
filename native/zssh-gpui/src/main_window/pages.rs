@@ -1,4 +1,5 @@
-//! 主区的终端页和设置页，以及空白标签里的「连接到主机」。主机页在 `vault_page`。
+//! 主区的终端页，以及空白标签里的「连接到主机」。欢迎页在 `welcome`，主机页在 `vault_page`，
+//! 设置与管理页在 `settings_page`。
 
 use ::gpui::{MouseButton, SharedString, px};
 use gpui_kit::component::input::Input;
@@ -48,7 +49,7 @@ impl MainWindow {
                 .justify_center()
                 .text_sm()
                 .text_color(tokens.text_muted)
-                .child("没有打开的标签。按 Ctrl+Shift+T 新建，或者去主机页双击一台主机。")
+                .child("没有打开的标签。按 Ctrl+Shift+T 新建，或者在左侧双击一台主机。")
                 .into_any_element();
         }
         let blank = self.workspace.read(cx).active_tab_is_blank();
@@ -151,7 +152,7 @@ impl MainWindow {
                             .text_center()
                             .text_sm()
                             .text_color(tokens.text_muted)
-                            .child("主机库里还没有主机，到「主机」页新建一台。")
+                            .child("主机库里还没有主机，点侧栏上方的 + 新建一台。")
                             .into_any_element()
                     } else if shown.is_empty() {
                         div()

@@ -1,6 +1,9 @@
-//! 右侧的凭据面板（0.2.14 `KeychainPanel.tsx`）：列表（新建的在最上面）+ 选中后展开的编辑表单；
+//! 凭据（0.2.14 `KeychainPanel.tsx`）：列表（新建的在最上面）+ 选中后展开的编辑表单；
 //! 类型有密码、私钥文件、导入的私钥、ssh-agent；私钥文件路径可以从文件管理器选；可以生成密钥、
 //! 复制公钥、删除（V2-F3：还有主机在用就不给删、清除已存秘密要确认）。
+//!
+//! V2-U3 起它是「管理 + 设置」页的「凭据」分类（不再是右侧面板）：同样交出 [`PanelContent`]，
+//! 由 `settings_page` 画在整页里，页面上方有类型筛选和搜索框（只过滤列表，不动数据）。
 
 use ::gpui::{ClipboardItem, Entity, PathPromptOptions, SharedString};
 use gpui_kit::component::button::Button;
@@ -17,8 +20,8 @@ use super::identity_form::{
 use super::modal::{Confirm, ConfirmAction, Modal};
 use super::side_panel::PanelContent;
 use super::widgets::{
-    BadgeKind, ButtonLook, Choice, act, badge, field, note, pick, section, select, switch_row,
-    text_button,
+    BadgeKind, ButtonLook, Choice, act, badge, empty_state, field, note, pick, section, select,
+    switch_row, text_button,
 };
 use crate::app_theme::Tokens;
 
@@ -36,6 +39,8 @@ pub struct KeychainUi {
     pub inline_key: Entity<TextareaState>,
     pub clear_passphrase: bool,
     pub error: Option<String>,
+    /// 列表只看这一种类型；`None` 看全部（页面上的筛选下拉）。
+    pub kind_filter: Option<IdentityKind>,
 }
 
 impl KeychainUi {
@@ -55,12 +60,30 @@ impl KeychainUi {
             }),
             clear_passphrase: false,
             error: None,
+            kind_filter: None,
         }
     }
 
     pub fn editing(&self) -> bool {
         self.creating || self.selected.is_some()
     }
+}
+
+/// 页面上的筛选 + 搜索：类型对得上，并且名称 / 类型名 / 私钥路径里含搜索词（不分大小写）。
+pub fn identity_matches(identity: &Identity, kind: Option<IdentityKind>, query: &str) -> bool {
+    if kind.is_some_and(|wanted| wanted != identity.kind) {
+        return false;
+    }
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    identity.name.to_lowercase().contains(&query)
+        || kind_label(identity.kind).to_lowercase().contains(&query)
+        || identity
+            .key_path
+            .as_deref()
+            .is_some_and(|path| path.to_lowercase().contains(&query))
 }
 
 impl MainWindow {
@@ -89,7 +112,18 @@ impl MainWindow {
 
     /// 「新建」：空表单，并且显示出来。
     pub(crate) fn keychain_new(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.keychain_new_kind(IdentityKind::Password, window, cx);
+    }
+
+    /// 页面右上角的「新建密码 / 私钥文件 / 导入私钥」：空表单，类型先选好。
+    pub(crate) fn keychain_new_kind(
+        &mut self,
+        kind: IdentityKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.keychain_reset(window, cx);
+        self.keychain.kind = kind;
         self.keychain.creating = true;
         let focus = self.keychain.name.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
@@ -117,7 +151,7 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// 生成完密钥后在列表里选中它（并让凭据面板显示出来）。
+    /// 生成完密钥后在列表里选中它（并让「管理 + 设置」页停在「凭据」）。
     pub(crate) fn keychain_select(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         self.store.reload();
         if let Some(identity) = self
@@ -127,7 +161,11 @@ impl MainWindow {
             .find(|item| item.id == id)
             .cloned()
         {
-            self.panels.open_side(super::side_panel::KEYCHAIN);
+            self.open_settings_section(
+                crate::settings_nav::SettingsSection::Credentials,
+                window,
+                cx,
+            );
             self.keychain_pick(&identity, window, cx);
         }
     }
@@ -362,6 +400,10 @@ impl MainWindow {
         let mut identities: Vec<&Identity> = self.store.identities().iter().collect();
         identities.sort_by_key(|item| std::cmp::Reverse(item.id));
         let count = identities.len();
+        // 页面上的类型筛选和搜索框：只缩小列表，不影响「共 n 条」。
+        let query = self.manage_query(cx);
+        identities.retain(|item| identity_matches(item, self.keychain.kind_filter, &query));
+        let shown = identities.len();
         let ui = &self.keychain;
         let selected_identity = ui
             .selected
@@ -441,11 +483,25 @@ impl MainWindow {
         let list = v_flex()
             .w_full()
             .gap_1()
-            .when(count == 0, |d| {
-                d.child(note(
-                    "还没有凭据。新建一条，或者在主机详情里填密码时勾选「存成凭据」。",
+            .when(count == 0 && !ui.editing(), |d| {
+                d.child(empty_state(
+                    "暂无凭据",
+                    Some("在主机详情里填密码时勾选「存成凭据」，也会出现在这里。"),
+                    Some(
+                        text_button(
+                            "identity-empty-new",
+                            "新建密码",
+                            ButtonLook::Primary,
+                            act(&entity, |this, window, cx| this.keychain_new(window, cx)),
+                        )
+                        .icon(IconName::Plus)
+                        .into_any_element(),
+                    ),
                     tokens,
                 ))
+            })
+            .when(count > 0 && shown == 0, |d| {
+                d.child(note("没有匹配的凭据。", tokens))
             })
             .children(rows);
 
@@ -626,20 +682,42 @@ impl MainWindow {
             back: None,
             actions: vec![
                 text_button(
+                    "identity-new",
+                    "新建密码",
+                    ButtonLook::Outline,
+                    act(&entity, |this, window, cx| this.keychain_new(window, cx)),
+                )
+                .icon(IconName::Plus)
+                .into_any_element(),
+                text_button(
+                    "identity-new-keyfile",
+                    "私钥文件",
+                    ButtonLook::Outline,
+                    act(&entity, |this, window, cx| {
+                        this.keychain_new_kind(IdentityKind::KeyFile, window, cx)
+                    }),
+                )
+                .icon(crate::icons::Ico::KeyRound)
+                .into_any_element(),
+                text_button(
+                    "identity-new-inline",
+                    "导入私钥",
+                    ButtonLook::Outline,
+                    act(&entity, |this, window, cx| {
+                        this.keychain_new_kind(IdentityKind::KeyInline, window, cx)
+                    }),
+                )
+                .icon(IconName::Plus)
+                .into_any_element(),
+                text_button(
                     "identity-generate",
                     "生成密钥",
-                    ButtonLook::Ghost,
+                    ButtonLook::Outline,
                     act(&entity, |this, window, cx| {
                         this.open_generate_key_dialog(window, cx)
                     }),
                 )
-                .into_any_element(),
-                text_button(
-                    "identity-new",
-                    "新建",
-                    ButtonLook::Ghost,
-                    act(&entity, |this, window, cx| this.keychain_new(window, cx)),
-                )
+                .icon(crate::icons::Ico::KeyRound)
                 .into_any_element(),
             ],
             body: v_flex()
@@ -650,5 +728,43 @@ impl MainWindow {
                 .into_any_element(),
             footer,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
+    use super::identity_matches;
+    use zssh_core::model::{Identity, IdentityKind};
+
+    fn identity(name: &str, kind: IdentityKind, path: Option<&str>) -> Identity {
+        Identity {
+            id: 1,
+            name: name.to_owned(),
+            kind,
+            key_path: path.map(str::to_owned),
+            has_secret: false,
+        }
+    }
+
+    #[test]
+    fn the_page_filter_and_search_only_narrow_the_list() {
+        let pw = identity("Deploy", IdentityKind::Password, None);
+        let key = identity("laptop", IdentityKind::KeyFile, Some("keys/id_demo"));
+        assert!(identity_matches(&pw, None, ""), "没筛选没搜索：全显示");
+        assert!(identity_matches(&pw, Some(IdentityKind::Password), ""));
+        assert!(!identity_matches(&pw, Some(IdentityKind::KeyFile), ""));
+        assert!(
+            identity_matches(&pw, None, " deploy "),
+            "不分大小写、去空白"
+        );
+        assert!(identity_matches(&key, None, "id_demo"), "路径也能搜");
+        assert!(identity_matches(&key, None, "私钥"), "类型名也能搜");
+        assert!(!identity_matches(&key, None, "nothing"));
+        assert!(!identity_matches(
+            &key,
+            Some(IdentityKind::Password),
+            "laptop"
+        ));
     }
 }

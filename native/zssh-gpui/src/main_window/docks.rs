@@ -204,7 +204,7 @@ impl MainWindow {
 
     /// 主机树展开时占的宽度：算终端最少保留宽度时要先扣掉。
     fn tree_reserved(&self) -> f32 {
-        if self.tree.collapsed || !matches!(self.nav.view, MainView::Vault | MainView::Terminal) {
+        if self.tree.collapsed || !self.nav.view.has_sidebar() {
             0.0
         } else {
             crate::window_state::clamp_tree_width(self.tree.width, self.window_width)

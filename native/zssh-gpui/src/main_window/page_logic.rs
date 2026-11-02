@@ -113,6 +113,11 @@ impl SortMode {
         }
     }
 
+    /// 主机页上纯图标的排序按钮的悬停提示：当前方式写在里面。
+    pub fn tooltip(self) -> String {
+        format!("排序：{}（点击切换：手动 / 最近打开 / 名称）", self.label())
+    }
+
     /// 排序按钮点一下：手动 → 最近打开 → 名称 → 手动。
     pub fn next(self) -> Self {
         match self {
@@ -696,6 +701,13 @@ mod tests {
         assert_eq!(Density::parse(None), Density::Compact, "没存过默认紧凑");
         assert_eq!(SortMode::parse(Some("name")), SortMode::Name);
         assert_eq!(SortMode::parse(Some("bogus")), SortMode::Manual);
+        // 纯图标的排序按钮：当前方式写在悬停提示里。
+        for mode in [SortMode::Manual, SortMode::Recent, SortMode::Name] {
+            assert!(
+                mode.tooltip()
+                    .starts_with(&format!("排序：{}", mode.label()))
+            );
+        }
         assert_eq!(setting_text(Some("\"list\"")).as_deref(), Some("list"));
         assert_eq!(
             setting_text(Some("list")).as_deref(),

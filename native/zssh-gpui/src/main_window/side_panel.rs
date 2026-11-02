@@ -2,12 +2,13 @@
 //! 右上角 ✕ 收起；焦点在面板里（或在主机页）时 Esc 也收起。
 //!
 //! 接口按通用写：面板只交出 [`PanelContent`]（标题、副标题、返回键、右上角按钮、正文、底部按钮），
-//! 外壳（宽度、拖动把手、边框、标题栏、滚动）都在这里。G07c 的 AI / 快捷命令 / 文件面板加一个
-//! [`PanelId`] 常量、在 `MainWindow::panel_content` 里多一支就能用。
+//! 外壳（宽度、拖动把手、边框、标题栏、滚动）都在这里。V2-U3 起「管理 + 设置」页（`settings_page`）
+//! 拿同一份 [`PanelContent`] 画在整页里（凭据、快捷命令、代理、端口转发），所以这些面板的列表 / 表单
+//! 只有一份实现。
 //!
-//! 谁盖谁（同 0.2.14 的 `hostPanel` + `sidePanel` 两层）：主机详情单独一层；凭据 / 代理 / 转发这类
-//! 侧栏另一层，开着侧栏时主机详情只是被藏到下面（里面没保存的编辑还在），关掉侧栏回来；
-//! 打开主机详情会先把侧栏收掉。
+//! 谁盖谁（同 0.2.14 的 `hostPanel` + `sidePanel` 两层）：主机详情单独一层；代理（从主机详情进来管理）/
+//! 快捷命令（终端命令栏的「管理」「新建」「编辑」）这类侧栏另一层，开着侧栏时主机详情只是被藏到下面
+//! （里面没保存的编辑还在），关掉侧栏回来；打开主机详情会先把侧栏收掉。
 
 use ::gpui::{MouseButton, SharedString, px};
 use gpui_kit::component::*;
@@ -24,9 +25,7 @@ use crate::app_theme::Tokens;
 pub struct PanelId(pub &'static str);
 
 pub const HOST_DETAILS: PanelId = PanelId("host-details");
-pub const KEYCHAIN: PanelId = PanelId("keychain");
 pub const PROXIES: PanelId = PanelId("proxies");
-pub const FORWARDS: PanelId = PanelId("forwards");
 pub const QUICK_COMMANDS: PanelId = PanelId("quick-commands");
 
 /// 哪些面板开着。
@@ -62,15 +61,6 @@ impl PanelState {
     /// 打开某个侧栏；已经开着别的就换成它。
     pub fn open_side(&mut self, id: PanelId) {
         self.side = Some(id);
-    }
-
-    /// 标题栏上的开关：开着就关，没开就开（同 0.2.14 的凭据按钮）。
-    pub fn toggle_side(&mut self, id: PanelId) {
-        self.side = if self.side == Some(id) {
-            None
-        } else {
-            Some(id)
-        };
     }
 
     pub fn close_side(&mut self) {
@@ -112,18 +102,13 @@ impl MainWindow {
         panel_width::clamp(self.panel_kind(), self.aside_width, window_width, 0.0)
     }
 
-    /// 要不要在这一页显示右侧面板。设置页占满整个区域，只有「连接」里的「新建 / 管理代理」打开的
-    /// 代理面板例外：它要开在设置页旁边（0.2.14 也是这样），别的面板在设置页里不显示。
+    /// 要不要在这一页显示右侧面板。设置与管理页占满整个区域：管理组的列表和表单直接画在页面里
+    /// （`settings_page`），不再开侧面板。
     pub(super) fn panels_on_page(&self) -> bool {
         match self.nav.view {
-            MainView::Vault | MainView::Terminal => true,
-            MainView::Settings => self.panels.visible() == Some(PROXIES),
+            MainView::Welcome | MainView::Vault | MainView::Terminal => true,
+            MainView::Settings => false,
         }
-    }
-
-    pub(super) fn open_panel_keychain_toggle(&mut self, cx: &mut Context<Self>) {
-        self.panels.toggle_side(KEYCHAIN);
-        cx.notify();
     }
 
     /// 关掉屏幕上的面板（✕、Esc）。
@@ -155,9 +140,7 @@ impl MainWindow {
         let id = self.panels.visible()?;
         let content = match id {
             HOST_DETAILS => self.host_panel_content(tokens, window, cx),
-            KEYCHAIN => self.keychain_panel_content(tokens, window, cx),
             PROXIES => self.proxy_panel_content(tokens, window, cx),
-            FORWARDS => self.forward_panel_content(tokens, window, cx),
             QUICK_COMMANDS => self.quick_panel_content(tokens, window, cx),
             _ => return None,
         };
@@ -318,7 +301,7 @@ impl MainWindow {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{FORWARDS, HOST_DETAILS, KEYCHAIN, PROXIES, PanelState};
+    use super::{HOST_DETAILS, PROXIES, PanelState, QUICK_COMMANDS};
 
     #[test]
     fn nothing_is_open_at_first_and_opening_host_details_shows_it() {
@@ -333,10 +316,10 @@ mod tests {
     fn a_side_panel_covers_the_host_details_without_closing_them() {
         let mut state = PanelState::default();
         state.open_host_details();
-        state.open_side(KEYCHAIN);
-        assert_eq!(state.visible(), Some(KEYCHAIN), "侧栏盖在上面");
+        state.open_side(QUICK_COMMANDS);
+        assert_eq!(state.visible(), Some(QUICK_COMMANDS), "侧栏盖在上面");
         assert!(state.host_details_open(), "主机详情只是藏在下面，没丢");
-        assert_eq!(state.close_visible(), Some(KEYCHAIN));
+        assert_eq!(state.close_visible(), Some(QUICK_COMMANDS));
         assert_eq!(
             state.visible(),
             Some(HOST_DETAILS),
@@ -350,27 +333,15 @@ mod tests {
     #[test]
     fn opening_host_details_closes_any_side_panel_first() {
         let mut state = PanelState::default();
-        state.open_side(FORWARDS);
+        state.open_side(QUICK_COMMANDS);
         state.open_host_details();
         assert_eq!(state.visible(), Some(HOST_DETAILS));
         state.open_side(PROXIES);
-        state.open_side(FORWARDS);
+        state.open_side(QUICK_COMMANDS);
         assert_eq!(
             state.visible(),
-            Some(FORWARDS),
+            Some(QUICK_COMMANDS),
             "同一时间只有一个侧栏，后开的换掉先开的"
         );
-    }
-
-    #[test]
-    fn the_titlebar_toggle_opens_then_closes_and_switches_between_panels() {
-        let mut state = PanelState::default();
-        state.toggle_side(KEYCHAIN);
-        assert_eq!(state.visible(), Some(KEYCHAIN));
-        state.toggle_side(KEYCHAIN);
-        assert_eq!(state.visible(), None);
-        state.toggle_side(KEYCHAIN);
-        state.toggle_side(PROXIES);
-        assert_eq!(state.visible(), Some(PROXIES), "开着别的侧栏时点它是换过去");
     }
 }

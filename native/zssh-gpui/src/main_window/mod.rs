@@ -1,5 +1,5 @@
-//! 主窗口：无边框窗口 + 自绘标题栏（主机页标签、会话标签）+ 可折叠主机树 + 主区
-//! （主机页 / 终端 / 设置）+ 底部状态栏。
+//! 主窗口：无边框窗口 + 自绘标题栏（会话标签）+ 可折叠主机树 + 主区
+//! （欢迎页 / 主机页 / 终端 / 设置与管理）+ 底部状态栏。
 //!
 //! 行为规范是 0.2.14 前端（`ui/src/App.tsx`、`components/titlebar/TopTabs.tsx`）。终端本身
 //! 是 [`TerminalWorkspace`]（和调试窗口共用）；这里只做外壳：标签条、主机树、页面切换、
@@ -8,8 +8,10 @@
 //! 文件分工：`nav`（页面切换规则）、`host_tree` / `page_logic`（主机树和主机页的纯逻辑）、
 //! `host_store`（读写主机库）、`titlebar`、`sidebar`（主机树）、`vault_page`（主机页）、
 //! `vault_actions` / `vault_menus` / `drag`（主机页和树上的动作、右键菜单、拖放）、
-//! `side_panel`（右侧面板框架）和它上面的 `host_panel` / `keychain_panel` / `proxy_panel` /
-//! `forward_panel`、`modal`（对话框）、`pages`（终端页、设置页、空白标签的选主机）、
+//! `side_panel`（右侧面板框架）和它上面的 `host_panel` / `proxy_panel` / `quick_panel`、
+//! `modal`（对话框）、`pages`（终端页、空白标签的选主机）、`welcome`（欢迎页）、
+//! `settings_page`（「管理 + 设置」统一页，管理组里的凭据 / 快捷命令 / 代理 / 端口转发复用
+//! `keychain_panel` / `quick_panel` / `proxy_panel` / `forward_panel` 的列表和表单）、
 //! `status_bar`（底部状态栏）。
 
 pub mod bar_height;
@@ -72,6 +74,7 @@ mod vault_actions;
 mod vault_keys;
 mod vault_menus;
 mod vault_page;
+mod welcome;
 pub(crate) mod widgets;
 mod x11_ui;
 
@@ -143,6 +146,12 @@ pub struct MainWindow {
     pub(super) tree_query: Entity<InputState>,
     pub(super) vault_query: Entity<InputState>,
     pub(super) launcher_query: Entity<InputState>,
+    /// 「管理 + 设置」页里凭据 / 代理 / 端口转发列表上方的搜索框（换分类时清空）。
+    pub(super) manage_search: Entity<InputState>,
+    /// 换了分类：下次画页面时清空搜索框（清空要用到 `Window`，所以先记着）。
+    pub(super) manage_search_reset: bool,
+    /// 欢迎页「快速连接」弹窗里的 `user@host[:port]` 输入框。
+    pub(super) quick_target: Entity<InputState>,
     /// 空白标签里选主机的光标位置。
     pub(super) launcher_cursor: usize,
     /// 设置页 AI 一节（智能体检测 / 路径 / 下载）：第一次打开设置页时才建。
@@ -225,13 +234,23 @@ impl MainWindow {
         let vault_query = cx.new(|cx| InputState::new(window, cx).placeholder("搜索主机"));
         let launcher_query = cx
             .new(|cx| InputState::new(window, cx).placeholder("搜索主机名、地址、标签，回车连接"));
+        let manage_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("按名称、地址搜索"));
+        let quick_target =
+            cx.new(|cx| InputState::new(window, cx).placeholder("user@host 或 user@host:端口"));
         let saved_view = layout.view.as_deref().and_then(MainView::parse);
 
         let mut subs = Vec::new();
         // 终端工作区变了（标签、状态点、标题）标题栏跟着重画。
         subs.push(cx.observe(&workspace, |_this, _ws, cx| cx.notify()));
         // 输入框是 MainWindow 自己画出来的元素：它的状态（文字、光标、焦点）一变，主窗口要跟着重画。
-        for input in [&tree_query, &vault_query, &launcher_query] {
+        for input in [
+            &tree_query,
+            &vault_query,
+            &launcher_query,
+            &manage_search,
+            &quick_target,
+        ] {
             subs.push(cx.observe(input, |_this, _input, cx| cx.notify()));
         }
         // 输入框里的文字一变，搜索结果就变，键盘选中的那一项作废、回到第一项。只认文字变化：
@@ -333,6 +352,9 @@ impl MainWindow {
             tree_query,
             vault_query,
             launcher_query,
+            manage_search,
+            manage_search_reset: false,
+            quick_target,
             launcher_cursor: 0,
             agent_settings: None,
             sync_settings: None,
@@ -444,7 +466,8 @@ impl MainWindow {
             self.forward_seen = version;
             changed = true;
         }
-        if self.panels.visible() == Some(side_panel::FORWARDS)
+        if self.nav.view == MainView::Settings
+            && self.settings_section == crate::settings_nav::SettingsSection::Forwards
             && crate::forward_runtime::manager()
                 .statuses()
                 .iter()
@@ -609,6 +632,34 @@ impl MainWindow {
         self.after_view_change(window, cx);
     }
 
+    /// 有没有标签（终端、文件、编辑器）：关掉设置 / 主机页时回终端页还有东西可看。
+    fn has_any_tab(&self, cx: &App) -> bool {
+        self.workspace.read(cx).tab_count() > 0
+            || !self.docks.sftp_tabs.is_empty()
+            || !self.docks.editor_tabs.is_empty()
+    }
+
+    /// 标题栏的「主机」图标：进主机页；在主机页上再点一次回到进来之前的地方。
+    pub(crate) fn toggle_vault_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.docks.active_sftp = None;
+        self.docks.active_editor = None;
+        let has_tab = self.has_any_tab(cx);
+        self.nav = self.nav.toggle_vault(has_tab);
+        self.after_view_change(window, cx);
+    }
+
+    /// 打开「管理 + 设置」页并定位到某个分类（主机右键「端口转发」、设置页里的「管理代理」、
+    /// 欢迎页 / 主机页的快捷命令图标、生成密钥之后看凭据……）。
+    pub(crate) fn open_settings_section(
+        &mut self,
+        section: crate::settings_nav::SettingsSection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_view(MainView::Settings, window, cx);
+        self.set_settings_section(section, cx);
+    }
+
     pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let has_tab = self.workspace.read(cx).tab_count() > 0;
         self.nav = self.nav.close_settings(has_tab);
@@ -684,7 +735,7 @@ impl MainWindow {
         }
     }
 
-    /// 标签关完了终端页就没东西可看，回主机页；否则焦点跟着活动标签。
+    /// 标签关完了终端页就没东西可看，回欢迎页；否则焦点跟着活动标签。
     fn after_tabs_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.workspace.read(cx).tab_count() == 0 {
             // 还有 SFTP / 编辑器标签开着：终端页不是空的，停在其中一个上。
@@ -1182,14 +1233,9 @@ impl MainWindow {
         if mods.modified() {
             return;
         }
-        // 设置页里 Esc 关设置；输入框有焦点时 Esc 先留给输入框（清空搜索）。
+        // 设置与管理页里 Esc 回到原来的页面；输入框有焦点时 Esc 先留给输入框（清空搜索）。
         if key == "escape" && self.nav.view == MainView::Settings {
-            // 设置页旁边开着代理面板时，Esc 先收面板。
-            if self.panels_on_page() && self.panels.visible().is_some() {
-                self.close_panel(window, cx);
-            } else {
-                self.close_settings(window, cx);
-            }
+            self.close_settings(window, cx);
             cx.stop_propagation();
             return;
         }
@@ -1203,7 +1249,8 @@ impl MainWindow {
         if key == "escape"
             && self.panels_on_page()
             && self.panels.visible().is_some()
-            && (self.nav.view == MainView::Vault || self.panel_focus.contains_focused(window, cx))
+            && (matches!(self.nav.view, MainView::Vault | MainView::Welcome)
+                || self.panel_focus.contains_focused(window, cx))
         {
             self.close_panel(window, cx);
             cx.stop_propagation();
@@ -1321,7 +1368,7 @@ impl Render for MainWindow {
         self.window_height = f32::from(window.viewport_size().height);
         self.apply_pending_compose_text(window, cx);
         let view = self.nav.view;
-        let tree_on_page = matches!(view, MainView::Vault | MainView::Terminal);
+        let tree_on_page = view.has_sidebar();
         let tree_visible = !self.tree.collapsed && tree_on_page;
         let tree_width = window_state::clamp_tree_width(self.tree.width, self.window_width);
         let panel_visible = self.panels_on_page() && self.panels.visible().is_some();
@@ -1340,6 +1387,7 @@ impl Render for MainWindow {
             - panel_width;
 
         let content = match view {
+            MainView::Welcome => self.render_welcome(&tokens, cx).into_any_element(),
             MainView::Vault => self
                 .render_vault(&tokens, page_width, window, cx)
                 .into_any_element(),

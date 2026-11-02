@@ -189,8 +189,8 @@ pub fn host_menu(
             "端口转发…",
             Some(crate::icons::Ico::ArrowLeftRight),
             spec.caps.port_forward,
-            run(entity, move |this, _window, cx| {
-                this.open_forwards(Some(id), cx)
+            run(entity, move |this, window, cx| {
+                this.open_forwards(Some(id), window, cx)
             }),
         ));
     let targets = spec.targets.clone();

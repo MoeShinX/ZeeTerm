@@ -1,4 +1,4 @@
-//! 主机页（0.2.14 `VaultView.tsx` 的右半边）：顶部搜索 / 视图 / 疏密 / 排序 / 代理 / 转发，下面是
+//! 主机页（0.2.14 `VaultView.tsx` 的右半边）：顶部搜索 + 一排纯图标（视图 / 疏密 / 排序），下面是
 //! 主机卡片（网格）或列表；搜索框里写 `user@host:port` 回车直接连；空库有引导页。
 //!
 //! 单击选中（左边的树跟着高亮并展开属性面板），双击连接，右键出菜单，悬停显示「编辑」「连接」；
@@ -160,18 +160,17 @@ impl MainWindow {
                 }))
                 .into_any_element()
         };
-        let sort_button = Button::new("vault-sort")
-            .outline()
-            .compact()
-            .icon(crate::icons::Ico::ArrowUpDown)
-            .label(layout.sort_mode.label())
-            .tooltip(format!(
-                "排序方式：{}（点击切换：手动 / 最近打开 / 名称）",
-                layout.sort_mode.label()
-            ))
-            .on_click(act(&entity, |this, window, cx| {
-                this.cycle_sort_mode(window, cx)
-            }));
+        // 排序：纯图标，当前方式写在悬停提示里（点一下按 手动 / 最近打开 / 名称 轮换）。
+        let sort_button = icon_only_button(
+            "vault-sort",
+            Icon::new(crate::icons::Ico::ArrowUpDown),
+            layout.sort_mode.tooltip(),
+            false,
+            tokens,
+        )
+        .on_click(act_click(&entity, |this, window, cx| {
+            this.cycle_sort_mode(window, cx)
+        }));
 
         let header = h_flex()
             .flex_none()
@@ -226,26 +225,13 @@ impl MainWindow {
                             .border_color(tokens.border)
                             .child(density_button),
                     )
-                    .child(sort_button)
                     .child(
-                        Button::new("vault-proxies")
-                            .outline()
-                            .compact()
-                            .icon(IconName::Network)
-                            .label("代理")
-                            .on_click(act(&entity, |this, window, cx| {
-                                this.open_proxies_panel(window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("vault-forwards")
-                            .outline()
-                            .compact()
-                            .icon(crate::icons::Ico::ArrowLeftRight)
-                            .label("转发")
-                            .on_click(act(&entity, |this, _window, cx| {
-                                this.open_forwards(None, cx)
-                            })),
+                        h_flex()
+                            .p_0p5()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(tokens.border)
+                            .child(sort_button),
                     ),
             );
 
@@ -797,6 +783,33 @@ impl MainWindow {
         el.context_menu(move |menu, window, cx| host_menu(menu, &spec, &menu_entity, window, cx))
             .into_any_element()
     }
+}
+
+/// 主机页右上角一排图标里的一个：28px 方块，悬停有中文提示（带当前状态的提示由调用方拼好）。
+fn icon_only_button(
+    id: &'static str,
+    icon: Icon,
+    tooltip: String,
+    active: bool,
+    tokens: &Tokens,
+) -> ::gpui::Stateful<Div> {
+    let tooltip: SharedString = tooltip.into();
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(28.0))
+        .rounded_md()
+        .cursor_pointer()
+        .text_color(if active {
+            tokens.text
+        } else {
+            tokens.text_muted
+        })
+        .when(active, |d| d.bg(tokens.accent_soft))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .child(icon.size_4())
 }
 
 /// 点击回调（不带 `&mut Context` 的外壳，给 `div().on_click` 用）。

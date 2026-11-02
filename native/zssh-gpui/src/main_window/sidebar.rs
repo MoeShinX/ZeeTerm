@@ -1,4 +1,5 @@
-//! 左侧主机树：新建主机、搜索框、「全部主机 / 分组 / 主机 / 未分组」、新分组、属性面板、拖动调宽。
+//! 左侧主机树（侧栏）：抬头一行小图标（新建主机、新建分组）、搜索框、「全部主机 / 分组 / 主机 / 未分组」、
+//! 属性面板、底部固定的入口区（设置与管理、凭据）、拖动调宽。
 //!
 //! 主机页和终端页共用同一棵树（0.2.14 也是）。单击主机选中并展开底部的只读属性，双击连接，右键菜单
 //! 同主机页；分组行单击是选中、箭头才展开（双击行也展开 / 收起）；主机 / 分组可以拖动换分组、调顺序。
@@ -8,9 +9,8 @@ use std::ops::Range;
 use ::gpui::{
     DragMoveEvent, HighlightStyle, MouseButton, SharedString, StyledText, WeakEntity, px,
 };
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
-use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -30,6 +30,80 @@ const INDENT: f32 = 14.0;
 const ROW_HEIGHT: f32 = 23.0;
 /// 属性面板固定高度（放得下 7 行：基本 5 行 + 跳板机 + 代理），切换主机时树不会跟着跳。
 const INFO_HEIGHT: f32 = 184.0;
+
+/// 侧栏空了的时候的提示（对应抬头的 + 图标）。
+pub const EMPTY_HINT: &str = "还没有主机，点上方 + 添加";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeaderKind {
+    NewHost,
+    NewGroup,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FooterKind {
+    Settings,
+    Credentials,
+}
+
+/// 抬头上的一个图标按钮：稳定 id、悬停提示、点了做什么。
+struct HeaderAction {
+    id: &'static str,
+    tooltip: &'static str,
+    kind: HeaderKind,
+}
+
+impl HeaderAction {
+    fn icon(&self) -> Icon {
+        match self.kind {
+            HeaderKind::NewHost => Icon::new(IconName::Plus),
+            HeaderKind::NewGroup => Icon::new(crate::icons::Ico::FolderPlus),
+        }
+    }
+}
+
+/// 侧栏抬头：只有这两个图标（靠右），都有悬停提示。
+const HEADER_ACTIONS: [HeaderAction; 2] = [
+    HeaderAction {
+        id: "tree-new-host",
+        tooltip: "新建主机",
+        kind: HeaderKind::NewHost,
+    },
+    HeaderAction {
+        id: "tree-new-group",
+        tooltip: "新建分组",
+        kind: HeaderKind::NewGroup,
+    },
+];
+
+struct FooterAction {
+    id: &'static str,
+    tooltip: &'static str,
+    kind: FooterKind,
+}
+
+impl FooterAction {
+    fn icon(&self) -> Icon {
+        match self.kind {
+            FooterKind::Settings => Icon::new(IconName::Settings),
+            FooterKind::Credentials => Icon::new(crate::icons::Ico::KeyRound),
+        }
+    }
+}
+
+/// 侧栏底部左下角：设置与管理、凭据直达。
+const FOOTER_ACTIONS: [FooterAction; 2] = [
+    FooterAction {
+        id: "sidebar-settings",
+        tooltip: "设置与管理 (Ctrl+,)",
+        kind: FooterKind::Settings,
+    },
+    FooterAction {
+        id: "sidebar-credentials",
+        tooltip: "凭据",
+        kind: FooterKind::Credentials,
+    },
+];
 
 /// 名字里搜索词（小写）出现的位置（字节范围）；转小写后长度变了的少数字符就不标，宁可不标也别标错。
 pub fn match_ranges(text: &str, term: &str) -> Vec<Range<usize>> {
@@ -131,46 +205,28 @@ impl MainWindow {
             })
         });
 
+        // 抬头：只有靠右的两个小图标（新建主机、新建分组），没有标题文字和带字按钮。
         let top = h_flex()
-            .gap_1()
+            .gap_0p5()
             .items_center()
+            .justify_end()
             .px_2()
-            .py_1()
-            .border_b_1()
-            .border_color(tokens.border)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("会话管理器"),
-            )
-            .child({
+            .pt_2()
+            .children(HEADER_ACTIONS.iter().map(|action| {
                 let entity = entity.clone();
-                Button::new("tree-new-host")
-                    .ghost()
-                    .compact()
-                    .icon(IconName::Plus)
-                    .label("新建")
-                    .dropdown_caret(true)
-                    .tooltip("新建会话或分组")
-                    .dropdown_menu(move |menu, _window, _cx| {
-                        let session = entity.clone();
-                        let group = entity.clone();
-                        menu.item(
-                            PopupMenuItem::new("新建会话").on_click(move |_, window, cx| {
-                                session.update(cx, |this, cx| this.new_host(window, cx));
-                            }),
-                        )
-                        .item(
-                            PopupMenuItem::new("新建分组").on_click(move |_, window, cx| {
-                                group.update(cx, |this, cx| this.new_group(None, window, cx));
-                            }),
-                        )
-                    })
-            });
+                let kind = action.kind;
+                icon_button(
+                    action.id,
+                    action.icon(),
+                    action.tooltip,
+                    move |_, window, cx| {
+                        entity.update(cx, |this, cx| match kind {
+                            HeaderKind::NewHost => this.new_host(window, cx),
+                            HeaderKind::NewGroup => this.new_group(None, window, cx),
+                        });
+                    },
+                )
+            }));
 
         let list = v_flex()
             .w_full()
@@ -221,12 +277,7 @@ impl MainWindow {
                 .text_center()
                 .text_sm()
                 .text_color(tokens.text_muted)
-                .child(
-                    self.store
-                        .error()
-                        .unwrap_or("还没有会话，点上面的「新建」添加")
-                        .to_owned(),
-                )
+                .child(self.store.error().unwrap_or(EMPTY_HINT).to_owned())
                 .into_any_element()
         } else {
             list.into_any_element()
@@ -248,11 +299,15 @@ impl MainWindow {
             .border_color(tokens.border)
             .child(top)
             .child(
-                div()
-                    .px_2()
-                    .pt_2()
-                    .pb_2()
-                    .child(Input::new(&self.tree_query).cleanable(true)),
+                div().px_2().pt_1p5().pb_2().child(
+                    Input::new(&self.tree_query)
+                        .prefix(
+                            Icon::new(IconName::Search)
+                                .size_4()
+                                .text_color(tokens.text_muted),
+                        )
+                        .cleanable(true),
+                ),
             )
             .child(
                 div()
@@ -272,7 +327,42 @@ impl MainWindow {
                     .child(scroll_body),
             )
             .children(info)
+            .child(self.render_sidebar_footer(tokens, cx))
             .child(resize)
+    }
+
+    /// 侧栏底部固定的入口区：设置与管理（齿轮）、凭据（钥匙）。侧栏折叠时这里看不见，
+    /// 标题栏会补一个齿轮（见 `titlebar`）。
+    fn render_sidebar_footer(&self, tokens: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        h_flex()
+            .id("sidebar-footer")
+            .flex_none()
+            .gap_0p5()
+            .items_center()
+            .px_2()
+            .py_1p5()
+            .border_t_1()
+            .border_color(tokens.border)
+            .children(FOOTER_ACTIONS.iter().map(|action| {
+                let entity = entity.clone();
+                let kind = action.kind;
+                icon_button(
+                    action.id,
+                    action.icon(),
+                    action.tooltip,
+                    move |_, window, cx| {
+                        entity.update(cx, |this, cx| match kind {
+                            FooterKind::Settings => this.toggle_settings(window, cx),
+                            FooterKind::Credentials => this.open_settings_section(
+                                crate::settings_nav::SettingsSection::Credentials,
+                                window,
+                                cx,
+                            ),
+                        });
+                    },
+                )
+            }))
     }
 
     /// 树收起后在主机页上留下的一列图标（终端页直接不占地方）。
@@ -308,7 +398,7 @@ impl MainWindow {
             .child(icon_button(
                 "tree-collapsed-new-group",
                 crate::icons::Ico::FolderPlus,
-                "新分组",
+                "新建分组",
                 act(&entity, |this, window, cx| this.new_group(None, window, cx)),
             ))
     }
@@ -819,7 +909,7 @@ fn count_label(count: usize, tokens: &Tokens) -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{match_hint, match_ranges};
+    use super::{EMPTY_HINT, FOOTER_ACTIONS, HEADER_ACTIONS, match_hint, match_ranges};
     use std::ops::Range;
     use zssh_core::model::{AuthMethod, Host, ProxyMode};
 
@@ -843,6 +933,33 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    #[test]
+    fn the_sidebar_header_is_two_icons_and_each_has_a_chinese_tooltip() {
+        let tips: Vec<_> = HEADER_ACTIONS.iter().map(|a| a.tooltip).collect();
+        assert_eq!(
+            tips,
+            ["新建主机", "新建分组"],
+            "抬头只有 + 和新建分组两个图标"
+        );
+        let ids: std::collections::HashSet<_> = HEADER_ACTIONS.iter().map(|a| a.id).collect();
+        assert_eq!(ids.len(), HEADER_ACTIONS.len(), "按钮 id 不重复");
+        for action in HEADER_ACTIONS.iter() {
+            assert!(!action.tooltip.is_empty());
+        }
+    }
+
+    #[test]
+    fn the_sidebar_footer_has_settings_and_credentials_with_tooltips() {
+        let tips: Vec<_> = FOOTER_ACTIONS.iter().map(|a| a.tooltip).collect();
+        assert_eq!(tips, ["设置与管理 (Ctrl+,)", "凭据"]);
+    }
+
+    #[test]
+    fn the_empty_hint_points_at_the_plus_icon() {
+        assert!(EMPTY_HINT.contains('+'));
+        assert!(!EMPTY_HINT.contains("新建」"), "旧的「新建」下拉已经没有了");
     }
 
     #[test]
