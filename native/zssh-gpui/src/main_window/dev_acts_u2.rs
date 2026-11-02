@@ -8,6 +8,7 @@
 //!   键见 `settings_page::dev_set_pref`；
 //! - `ui_set:<项>:<值>`、`ui_assert:<项>:<值>`：外观 / 终端这些 `ui-settings.json` 里的设置
 //!   （`cursor` `cursor_blink` `ime_english` `highlight` `copy_on_select` `start_hidden`）；
+//! - `offline_tab`：开一个离线演示标签（本地回显）并切到终端页，截光标样式用；
 //! - `hl_type:<第几条>:<文字>`（在规则输入框里打字并提交）、`hl_op:<操作>`（`add` `samples` `remove:<i>`
 //!   `toggle:<i>` `regex:<i>:on|off` `case:<i>:on|off` `bg:<i>:on|off` `color:<i>:<十六进制>`）、
 //!   `hl_assert:count:<n>` / `hl_assert:pattern:<i>:<文字>` / `hl_assert:flag:<i>:<enabled|regex|case|bg>:<on|off>` /
@@ -33,6 +34,7 @@ mod real {
         "hl_type",
         "hl_op",
         "hl_assert",
+        "offline_tab",
     ];
 
     pub fn is_known(name: &str) -> bool {
@@ -90,6 +92,11 @@ mod real {
                 let section = SettingsSection::parse(a).ok_or_else(|| format!("没有分类 {a}"))?;
                 this.show_view(super::super::nav::MainView::Settings, window, cx);
                 this.set_settings_section(section, cx);
+                Ok(Outcome::Done)
+            }
+            "offline_tab" => {
+                this.workspace.update(cx, |ws, cx| ws.dev_offline_tab(cx));
+                this.show_view(super::super::nav::MainView::Terminal, window, cx);
                 Ok(Outcome::Done)
             }
             "settings_assert" => match a {

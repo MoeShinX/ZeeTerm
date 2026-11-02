@@ -1372,6 +1372,14 @@ impl TerminalWorkspace {
         index
     }
 
+    /// 调试驱动用：开一个离线演示标签（本地回显，不连任何主机），用来截光标样式这类外观。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_offline_tab(&mut self, cx: &mut Context<Self>) {
+        let size = self.default_size;
+        self.push_offline_tab("离线演示", size);
+        cx.notify();
+    }
+
     /// 活动窗格的 shell 在它那条连接上排第几个、这条连接上现在有几个 shell（跟随终端目录用，见
     /// `zssh_core::ssh::cwd`）。没连上、不是 SSH 会话都是 `None`。
     pub(crate) fn active_shell_position(
@@ -4587,5 +4595,28 @@ mod live_tests {
         std::thread::sleep(Duration::from_millis(500));
         pane.poll_events();
         assert_eq!(pane.state, PaneState::Disconnected);
+    }
+}
+
+#[cfg(test)]
+mod blink_tests {
+    use super::{BLINK_HALF_PERIOD, BlinkClock};
+    use std::time::Duration;
+
+    #[test]
+    fn the_cursor_is_lit_for_half_a_period_then_dark_and_repeats() {
+        let half = BLINK_HALF_PERIOD;
+        assert!(BlinkClock::phase_at(Duration::ZERO), "刚打字：亮着");
+        assert!(BlinkClock::phase_at(half - Duration::from_millis(1)));
+        assert!(!BlinkClock::phase_at(half), "半个周期后灭");
+        assert!(!BlinkClock::phase_at(half * 2 - Duration::from_millis(1)));
+        assert!(BlinkClock::phase_at(half * 2), "一个周期后又亮");
+    }
+
+    #[test]
+    fn a_fresh_clock_starts_lit_and_reports_no_flip() {
+        let mut clock = BlinkClock::new();
+        assert!(clock.visible());
+        assert!(!clock.changed(), "相位没变就不用重画");
     }
 }
