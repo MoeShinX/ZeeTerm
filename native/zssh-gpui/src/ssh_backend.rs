@@ -22,8 +22,8 @@ use zssh_core::ai::pty::TerminalState;
 use zssh_core::ai::terminal::TerminalRing;
 use zssh_core::model::{Host, ProxyKind, ProxyMode};
 use zssh_core::ssh::{
-    BoxFuture, ChainHop, Connection, DEFAULT_BUFFER_LIMIT, FlowGate, KeySource, KnownHosts,
-    ProxyConfig, ShellEvent, ShellEventStream, ShellWriter,
+    BoxFuture, ChainHop, Connection, FlowGate, KeySource, KnownHosts, ProxyConfig, ShellEvent,
+    ShellEventStream, ShellWriter,
 };
 use zssh_core::store::Database;
 use zssh_session::{SessionBackend, SessionCommand, SessionEvent, map_core_event};
@@ -379,15 +379,32 @@ impl SshSessionFactory {
         size: Size,
         generation: u64,
     ) -> Result<(SshBackend, Receiver<SessionEvent>, Arc<FlowGate>), String> {
+        self.open_async_with(size, generation, None).await
+    }
+
+    /// 同 [`Self::open_async`]；`x11` 给了就请求 X11 转发（失败不致命，终端里有提示）。
+    pub async fn open_async_with(
+        &self,
+        size: Size,
+        generation: u64,
+        x11: Option<crate::x11_glue::X11Attempt>,
+    ) -> Result<(SshBackend, Receiver<SessionEvent>, Arc<FlowGate>), String> {
         // 核心转发路径往环形缓冲里旁路复制最近输出：AI 的 `read_terminal` 和结束标记解析读它。
         let ring = TerminalRing::shared();
+        // X11 被拒后要再开一条普通通道，两次各最多等一轮回复。
+        let open_timeout = if x11.is_some() {
+            OPEN_SHELL_TIMEOUT * 3
+        } else {
+            OPEN_SHELL_TIMEOUT
+        };
         let shell = tokio::time::timeout(
-            OPEN_SHELL_TIMEOUT,
-            self.connection.open_shell_with_buffer_limit(
+            open_timeout,
+            crate::x11_glue::open_shell(
+                &self.connection,
                 size.cols as u16,
                 size.rows as u16,
-                DEFAULT_BUFFER_LIMIT,
                 Some(Arc::clone(&ring)),
+                x11,
             ),
         )
         .await
@@ -491,8 +508,11 @@ async fn dial(key: String, hops: Vec<ChainHop>) -> Result<Arc<SshSessionFactory>
 /// 连接一台已保存的主机并开一个终端会话（池里有同配置的活连接就复用）。
 async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult {
     let (key, hops) = prepare(host_id)?;
+    // 这台主机开了 X11 转发时，连上之后、开 shell 之前才准备本机 X 服务器（连不上就不白拉起）。
+    let x11_wanted = crate::x11_glue::wanted(host_id);
     if let Some(factory) = pooled(&key) {
-        match factory.open_async(size, generation).await {
+        let x11 = crate::x11_glue::attempt(x11_wanted).await;
+        match factory.open_async_with(size, generation, x11).await {
             Ok((backend, events, gate)) => {
                 return Ok(Opened {
                     factory: Some(factory),
@@ -506,7 +526,8 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
         }
     }
     let factory = dial(key, hops).await?;
-    let (backend, events, gate) = factory.open_async(size, generation).await?;
+    let x11 = crate::x11_glue::attempt(x11_wanted).await;
+    let (backend, events, gate) = factory.open_async_with(size, generation, x11).await?;
     Ok(Opened {
         factory: Some(factory),
         backend: Box::new(backend),

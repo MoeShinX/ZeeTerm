@@ -11,6 +11,7 @@ use tokio::time::{timeout, timeout_at, Instant};
 use crate::ai::terminal::SharedTerminalRing;
 use crate::error::ZsshError;
 use crate::ssh::flow::FlowGate;
+use crate::x11::{X11Failure, X11Registration, MIT_MAGIC_COOKIE};
 
 /// 请求的终端类型，M1 固定用这个。
 pub const TERM: &str = "xterm-256color";
@@ -62,6 +63,10 @@ const PTY_DENIED_NOTICE: &str =
 ///
 /// `data_limit` 是等回复期间允许累计的数据字节数（和正常缓冲同一个值）：russh 收到数据
 /// 就自动放宽窗口，不等这里处理，不设上限的话服务器一直发内存就一直涨。
+///
+/// `x11` 给了（假 cookie 的十六进制, 屏幕号）就在 PTY 之前先请求 X11 转发，并**单独等它的
+/// 应答**（和 OpenSSH 的顺序一致；几个请求共用一条通道时应答必须各自消费，不然后面的会错位）。
+/// 被拒或没应答返回 [`ZsshError::X11`]，由调用方丢掉这条通道、换一条普通通道。
 async fn request_pty_and_shell(
     write_half: &ChannelWriteHalf<Msg>,
     read_half: &mut ChannelReadHalf,
@@ -69,9 +74,32 @@ async fn request_pty_and_shell(
     rows: u16,
     reply_timeout: Duration,
     data_limit: usize,
+    x11: Option<(&str, u32)>,
 ) -> Result<Vec<Item>, ZsshError> {
     // 有的服务器回复之前就先发数据，这些一个字节都不能丢。
     let mut pending = Pending::default();
+
+    if let Some((cookie_hex, screen)) = x11 {
+        write_half
+            .request_x11(true, false, MIT_MAGIC_COOKIE, cookie_hex, screen)
+            .await
+            .map_err(|err| {
+                ZsshError::X11(X11Failure::ServerNoReply {
+                    detail: format!("发送请求失败：{err}"),
+                })
+            })?;
+        match wait_reply(read_half, "X11", reply_timeout, &mut pending, data_limit).await {
+            Ok(true) => {}
+            Ok(false) => return Err(ZsshError::X11(X11Failure::ServerRefused)),
+            Err(err) => {
+                let detail = match err {
+                    ZsshError::Shell(message) => message,
+                    other => other.to_string(),
+                };
+                return Err(ZsshError::X11(X11Failure::ServerNoReply { detail }));
+            }
+        }
+    }
 
     write_half
         .request_pty(true, TERM, u32::from(cols), u32::from(rows), 0, 0, &[])
@@ -240,6 +268,13 @@ impl Drop for CloseOnDrop {
     }
 }
 
+/// 打开 shell 时的附加项（X11 转发、前置提示）。
+#[derive(Default)]
+pub(crate) struct OpenExtras {
+    pub(crate) x11: Option<X11Registration>,
+    pub(crate) lead_notice: Option<String>,
+}
+
 /// 一个已打开的 shell 通道。
 ///
 /// 需要一边等事件一边写的时候用 [`ShellSession::split`] 把读写两半拆开，这样两个
@@ -280,10 +315,36 @@ impl ShellSession {
         ring: Option<SharedTerminalRing>,
         reply_timeout: Duration,
     ) -> Result<Self, ZsshError> {
+        Self::open_inner(
+            channel,
+            cols,
+            rows,
+            buffer_limit,
+            ring,
+            reply_timeout,
+            OpenExtras::default(),
+        )
+        .await
+    }
+
+    /// 带 X11 转发 / 前置提示的打开。`extras.x11` 给了就先请求 X11，被拒返回 [`ZsshError::X11`]
+    /// （登记随之撤销，通道已关）；`lead_notice` 排在所有输出最前面（X11 没开起来时的原因）。
+    pub(crate) async fn open_inner(
+        channel: Channel<Msg>,
+        cols: u16,
+        rows: u16,
+        buffer_limit: usize,
+        ring: Option<SharedTerminalRing>,
+        reply_timeout: Duration,
+        extras: OpenExtras,
+    ) -> Result<Self, ZsshError> {
+        let OpenExtras { x11, lead_notice } = extras;
         // 先拆开：读半边用来等回复，写半边放进守卫。不管后面是失败、超时还是外层直接把
         // 这个 future 丢掉（用户关窗格），没交给 ShellSession 的通道都会被关掉。
         let (mut read_half, write_half) = channel.split();
         let guard = CloseOnDrop::new(write_half);
+        let cookie_hex = x11.as_ref().map(X11Registration::cookie_hex);
+        let screen = x11.as_ref().map_or(0, X11Registration::screen);
         let pending = match request_pty_and_shell(
             guard.write_half()?,
             &mut read_half,
@@ -291,6 +352,7 @@ impl ShellSession {
             rows,
             reply_timeout,
             buffer_limit.max(1),
+            cookie_hex.as_deref().map(|hex| (hex, screen)),
         )
         .await
         {
@@ -306,9 +368,19 @@ impl ShellSession {
         let (events_tx, events) = mpsc::channel(EVENT_BUFFER);
         let gate = Arc::new(FlowGate::new());
         let buffer = Arc::new(SessionBuffer::new(buffer_limit));
+        if let Some(notice) = lead_notice {
+            buffer.push_item(Item::Data(notice.into_bytes()));
+        }
         // 等回复期间先到的数据（以及 PTY 被拒的提示）排在读任务读到的数据前面。
         for item in pending {
             buffer.push_item(item);
+        }
+        if let Some(registration) = &x11 {
+            // 转发过程中的失败（本机没有 X 服务器等）在这个终端里提示一句。
+            let sink_buffer = Arc::clone(&buffer);
+            registration.set_terminal_sink(Arc::new(move |failure| {
+                sink_buffer.push_item(Item::Data(failure.terminal_notice().into_bytes()));
+            }));
         }
 
         // 两级缓冲（设计文档 4.1）：读任务只管把 russh 读进本地缓冲，转发任务把
@@ -333,6 +405,7 @@ impl ShellSession {
                 forwarder,
                 gate,
                 buffer,
+                _x11: x11,
             },
         })
     }
@@ -448,6 +521,8 @@ pub struct ShellEventStream {
     forwarder: JoinHandle<()>,
     gate: Arc<FlowGate>,
     buffer: Arc<SessionBuffer>,
+    /// 这个终端的 X11 登记：随事件流一起丢弃时撤销（终端关闭 = 转发清理）。
+    _x11: Option<X11Registration>,
 }
 
 impl ShellEventStream {

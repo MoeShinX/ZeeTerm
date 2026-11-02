@@ -85,3 +85,30 @@ Telnet and serial backend dependencies (native/zssh-protocols/)
   already part of the resolved tree of native/Cargo.lock and are used
   unmodified from crates.io. The serial backend calls the Win32 API directly;
   the serialport crate (MPL-2.0) is deliberately not used.
+
+nyaterm (X11 forwarding)
+  https://github.com/nyakang/nyaterm
+  Copyright 2026 Kang and contributors
+  License: Apache-2.0 (compatible with distribution under GPL-3.0-or-later)
+
+  The X11 connection-setup packet handling in
+  crates/zssh-core/src/x11/cookie.rs (packet length, byte-order aware field
+  reads, MIT-MAGIC-COOKIE replacement, hex helpers) was adapted from
+  crates/nyaterm-transport/src/x11.rs (X11AuthRewriter, setup_packet_len,
+  rewrite_x11_auth_setup_packet). Changes: the fake cookie is looked up in a
+  per-connection distribution table before it is replaced, parsing is
+  bounds-checked, and the fake cookie comes from the OS random source. The
+  file keeps an "Adapted from nyaterm" header comment. The per-connection
+  routing, limits and failure handling are written independently.
+
+VcXsrv (optional local X server, not distributed with ZeeTerm)
+  https://github.com/marchaesen/vcxsrv
+  License: GPL-3.0 (VcXsrv's own code; the bundled X.Org components are under
+  MIT/X11-style licenses)
+
+  ZeeTerm does not ship any VcXsrv file. If the user asks for it, ZeeTerm
+  downloads the official installer (the release pinned in
+  crates/zssh-core/src/x11/local/install.rs) from the project's
+  GitHub release page onto the user's machine, verifies its SHA-256, and runs
+  it with the user's UAC confirmation. VcXsrv is then started as a separate
+  program.

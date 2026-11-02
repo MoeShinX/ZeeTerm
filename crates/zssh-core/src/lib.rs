@@ -15,6 +15,7 @@ pub mod sync;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod updater;
+pub mod x11;
 
 pub use error::ZsshError;
 pub use model::{

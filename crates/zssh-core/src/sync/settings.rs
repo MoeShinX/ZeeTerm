@@ -129,6 +129,11 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     ("update_auto_check", SyncMode::LocalOnly),
     ("update_last_check", SyncMode::LocalOnly),
     ("update_skipped_version", SyncMode::LocalOnly),
+    // X11 转发的本机 X 服务器（跟这台电脑装了什么相关）：显示来源、指定的显示、退出时是否关闭
+    // 自己拉起的 X 服务器，都不同步
+    ("x11_display_mode", SyncMode::LocalOnly),
+    ("x11_display_custom", SyncMode::LocalOnly),
+    ("x11_close_owned_on_exit", SyncMode::LocalOnly),
 ];
 
 /// 0.1.4 及以前的界面主题 id（旧版本同步过来的值照样收）。
