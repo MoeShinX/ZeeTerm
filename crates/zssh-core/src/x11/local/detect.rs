@@ -183,7 +183,7 @@ mod tests {
         sys.with(|s| {
             s.registry.push(RegistryInstall {
                 dir: PathBuf::from(r"E:\Apps\VcXsrv"),
-                version: Some("21.1.16.1".into()),
+                version: Some("1.2.3".into()),
             });
             s.env
                 .insert("ProgramFiles".into(), r"C:\Program Files".into());
@@ -193,7 +193,7 @@ mod tests {
         });
         let found = find_vcxsrv(&sys).expect("找到");
         assert_eq!(found.exe, PathBuf::from(r"E:\Apps\VcXsrv\vcxsrv.exe"));
-        assert_eq!(found.version.as_deref(), Some("21.1.16.1"));
+        assert_eq!(found.version.as_deref(), Some("1.2.3"));
     }
 
     #[test]

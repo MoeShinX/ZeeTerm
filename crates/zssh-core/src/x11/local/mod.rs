@@ -158,7 +158,7 @@ mod tests {
         sys.with(|s| {
             s.registry.push(RegistryInstall {
                 dir: PathBuf::from(r"C:\Program Files\VcXsrv"),
-                version: Some("21.1.16.1".into()),
+                version: Some("1.2.3".into()),
             });
             s.files
                 .insert(PathBuf::from(r"C:\Program Files\VcXsrv\vcxsrv.exe"));

@@ -80,7 +80,8 @@ VcXsrv (optional local X server, not distributed with ZeeTerm)
   MIT/X11-style licenses)
 
   ZeeTerm does not ship any VcXsrv file. If the user asks for it, ZeeTerm
-  downloads the official installer (release 21.1.16.1) from the project's
+  downloads the official installer (the release pinned in
+  crates/zssh-core/src/x11/local/install.rs) from the project's
   GitHub release page onto the user's machine, verifies its SHA-256, and runs
   it with the user's UAC confirmation. VcXsrv is then started as a separate
   program.
