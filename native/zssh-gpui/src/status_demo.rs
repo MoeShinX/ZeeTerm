@@ -32,6 +32,27 @@ use crate::ssh_backend::{SshSessionFactory, factory_for_host, runtime};
 /// 轮询间隔。
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
+/// 设置页「状态栏刷新间隔」（秒）；0 = 没设置，用 [`POLL_INTERVAL`]。
+static REFRESH_SECS: AtomicU64 = AtomicU64::new(0);
+
+/// 改采集间隔：正在跑的轮询器下一轮就按新值走。只影响生产节奏（测试用的缩短节奏不受它影响）。
+pub(crate) fn set_refresh_secs(secs: u64) {
+    REFRESH_SECS.store(secs, Ordering::SeqCst);
+}
+
+/// 生产节奏下套上设置里的间隔；别的节奏（测试缩短过的）原样返回。
+fn with_refresh_override(timing: Timing) -> Timing {
+    let secs = REFRESH_SECS.load(Ordering::SeqCst);
+    if secs > 0 && timing.interval == POLL_INTERVAL {
+        Timing {
+            interval: Duration::from_secs(secs),
+            ..timing
+        }
+    } else {
+        timing
+    }
+}
+
 /// 失败后的最长等待：连续失败时间隔翻倍，到这里封顶。
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
@@ -651,7 +672,8 @@ async fn poll_loop<L: StatusLink>(
         retry.record(result.is_ok());
         report(host_id, result);
         drop(busy);
-        if wait_next(&stop, &mut wakes, retry.delay(&timing), timing.check).await {
+        let live = with_refresh_override(timing);
+        if wait_next(&stop, &mut wakes, retry.delay(&live), live.check).await {
             break;
         }
     }

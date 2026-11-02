@@ -12,7 +12,7 @@ use zssh_core::sftp::path::file_name;
 use zssh_core::sftp::transfer::backend::{SftpChannelProvider, SftpEndpoints};
 use zssh_core::sftp::transfer::{
     ConflictAction, ConflictResolver, Direction, ProgressReport, TransferEngine, TransferId,
-    TransferJob, TransferOptions, TransferState,
+    TransferJob, TransferState,
 };
 
 use super::engine::{
@@ -82,7 +82,8 @@ impl SftpDemo {
         let (engine, mut events) = TransferEngine::new(
             endpoints.clone(),
             decision_maker,
-            TransferOptions::default(),
+            // 设置页「SFTP」里的同时传输数、保留修改时间 / 权限（打开这个 SFTP 标签时读一次）。
+            crate::app_prefs::AppPrefs::load_default_db().transfer_options(),
         );
         match runtime() {
             Ok(runtime) => {

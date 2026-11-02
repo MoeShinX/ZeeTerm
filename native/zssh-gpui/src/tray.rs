@@ -33,11 +33,16 @@ pub enum CloseAction {
 }
 
 pub fn close_action() -> CloseAction {
-    close_action_for(READY.load(std::sync::atomic::Ordering::Acquire))
+    // 每次点 × 读一次设置：用户在设置页改了「关闭主窗口时」马上生效，不用重启。
+    close_action_for(
+        READY.load(std::sync::atomic::Ordering::Acquire),
+        crate::app_prefs::AppPrefs::load_default_db().close_action,
+    )
 }
 
-fn close_action_for(tray_ready: bool) -> CloseAction {
-    if tray_ready {
+/// 托盘没建起来时没有入口能叫回窗口，不管设置怎么选都必须退出；托盘在，才按设置走。
+fn close_action_for(tray_ready: bool, choice: crate::app_prefs::CloseChoice) -> CloseAction {
+    if tray_ready && choice == crate::app_prefs::CloseChoice::Tray {
         CloseAction::HideToTray
     } else {
         CloseAction::Quit
@@ -297,8 +302,12 @@ mod tests {
 
     #[test]
     fn close_hides_only_when_the_tray_exists() {
-        assert_eq!(close_action_for(true), CloseAction::HideToTray);
-        assert_eq!(close_action_for(false), CloseAction::Quit);
+        use crate::app_prefs::CloseChoice::{Quit, Tray};
+        assert_eq!(close_action_for(true, Tray), CloseAction::HideToTray);
+        assert_eq!(close_action_for(false, Tray), CloseAction::Quit);
+        // 设置选了「退出程序」：托盘在也直接退出。
+        assert_eq!(close_action_for(true, Quit), CloseAction::Quit);
+        assert_eq!(close_action_for(false, Quit), CloseAction::Quit);
     }
 
     fn labels(entries: &[TrayEntry]) -> Vec<Option<String>> {

@@ -13,6 +13,7 @@ mod agent_text;
 mod agent_tools;
 mod agents_demo;
 mod ai_terminals;
+mod app_prefs;
 mod app_theme;
 mod backup_demo;
 mod brand;
