@@ -11,12 +11,19 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIconBuilder, TrayIconEvent};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, MSG, SW_HIDE, SW_SHOW, ShowWindowAsync, TranslateMessage,
+    DispatchMessageW, GetMessageW, GetSystemMetrics, MSG, SM_CXSMICON, SM_CYSMICON, SW_HIDE,
+    SW_SHOW, ShowWindowAsync, TranslateMessage,
 };
 
 /// 托盘图标是否已经建好。没建好时"关闭"不能只把窗口藏起来：
 /// 那样没有任何入口能把窗口叫回来，进程和 SSH 会话只能靠任务管理器结束。
 static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// build.rs 把 assets/brand/zeeterm.ico 编成资源 ID 1；GPUI 窗口类图标用的是同一个 ID。
+const APP_ICON_RESOURCE_ID: u16 = 1;
+
+/// 资源加载失败时的后备图标（32px，透明底）。
+const FALLBACK_PNG: &[u8] = include_bytes!("../assets/brand/zeeterm-logo-32.png");
 
 /// 主窗口点关闭按钮时该做什么。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,7 +177,7 @@ pub fn spawn(
                 }
             }
 
-            let icon = match Icon::from_rgba(solid_icon(), 32, 32) {
+            let icon = match load_icon() {
                 Ok(icon) => icon,
                 Err(err) => {
                     tracing::warn!("tray icon could not be created: {err}");
@@ -242,25 +249,51 @@ pub fn spawn(
         .ok();
 }
 
-/// 32×32 纯色图标，先证明托盘通路；正式图标在 P3/G07 换。
-fn solid_icon() -> Vec<u8> {
-    let mut rgba = Vec::with_capacity(32 * 32 * 4);
-    for y in 0..32u8 {
-        for x in 0..32u8 {
-            let edge = x < 2 || y < 2 || x > 29 || y > 29;
-            if edge {
-                rgba.extend_from_slice(&[0x0f, 0x17, 0x2a, 0xff]);
-            } else {
-                rgba.extend_from_slice(&[0x3b, 0x82, 0xf6, 0xff]);
-            }
+/// 托盘图标：优先用 exe 里嵌入的图标资源（`build.rs` 编进去的 ID 1，系统会按托盘需要的尺寸
+/// 从多尺寸 .ico 里挑最接近的，高 DPI 下不会把 16px 拉糊）；资源不在时（例如从没带资源的
+/// 测试 / 自定义构建里启动）退回内置的 32px PNG，托盘总有个像样的图标。
+fn load_icon() -> Result<Icon, String> {
+    // SAFETY: GetSystemMetrics 只读系统参数，没有前置条件。
+    let (width, height) = unsafe { (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)) };
+    let size = (width > 0 && height > 0).then_some((width as u32, height as u32));
+    match Icon::from_resource(APP_ICON_RESOURCE_ID, size) {
+        Ok(icon) => Ok(icon),
+        Err(err) => {
+            tracing::warn!("tray icon resource not found, using the built-in PNG: {err}");
+            fallback_icon()
         }
     }
-    rgba
+}
+
+/// 内置 PNG 解码成 RGBA。独立成函数是为了不起托盘也能测。
+fn fallback_icon() -> Result<Icon, String> {
+    let (rgba, width, height) = decode_fallback_png()?;
+    Icon::from_rgba(rgba, width, height).map_err(|err| err.to_string())
+}
+
+fn decode_fallback_png() -> Result<(Vec<u8>, u32, u32), String> {
+    let image = image::load_from_memory_with_format(FALLBACK_PNG, image::ImageFormat::Png)
+        .map_err(|err| err.to_string())?
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    Ok((image.into_raw(), width, height))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_fallback_icon_is_the_32px_logo_with_a_transparent_background() {
+        let (rgba, width, height) = decode_fallback_png().expect("内置 PNG 应能解码");
+        assert_eq!((width, height), (32, 32));
+        assert_eq!(rgba.len(), 32 * 32 * 4);
+        // 透明底（左上角）加不透明的 Logo 本体（中心），说明不是以前那块纯色方块。
+        assert_eq!(rgba[3], 0, "左上角应该透明");
+        let center = (16 * 32 + 16) * 4;
+        assert_eq!(rgba[center + 3], 255, "中心应该不透明");
+        assert!(fallback_icon().is_ok());
+    }
 
     #[test]
     fn close_hides_only_when_the_tray_exists() {
