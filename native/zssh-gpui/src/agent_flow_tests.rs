@@ -808,6 +808,7 @@ async fn late_reports_never_reach_a_conversation_that_replaced_the_old_one() {
 
 fn sample_host(name: &str, address: &str) -> zssh_core::model::HostDraft {
     zssh_core::model::HostDraft {
+        protocol: None,
         id: None,
         group_id: None,
         name: name.to_owned(),

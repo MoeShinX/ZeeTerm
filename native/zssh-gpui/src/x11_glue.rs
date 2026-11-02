@@ -132,6 +132,7 @@ mod tests {
 
     fn host(db: &Database, x11: bool) -> i64 {
         let draft = HostDraft {
+            protocol: None,
             id: None,
             group_id: None,
             name: "gui".to_owned(),

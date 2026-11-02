@@ -13,6 +13,7 @@ fn temp_dir(name: &str) -> crate::test_util::TestDir {
 
 fn draft(id: Option<i64>, name: &str, host: &str) -> HostDraft {
     HostDraft {
+        protocol: None,
         id,
         group_id: None,
         name: name.to_owned(),

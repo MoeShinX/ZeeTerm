@@ -37,6 +37,7 @@ pub fn seed_from_env() -> Result<(), String> {
 
 fn host_draft(name: &str, address: &str, port: u16, user: &str, group: Option<i64>) -> HostDraft {
     HostDraft {
+        protocol: None,
         id: None,
         group_id: group,
         name: name.to_owned(),

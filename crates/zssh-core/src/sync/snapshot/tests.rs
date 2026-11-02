@@ -64,6 +64,7 @@ fn snapshot_uses_uids_for_every_reference_and_includes_secrets() {
     db.set_default_proxy_id(Some(proxy.id)).expect("默认代理");
 
     let mut draft = HostDraft {
+        protocol: None,
         id: None,
         group_id: Some(child.id),
         name: "web-1".to_owned(),

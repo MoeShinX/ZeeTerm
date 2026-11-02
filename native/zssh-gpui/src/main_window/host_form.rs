@@ -159,6 +159,7 @@ pub fn plan_save(
     Ok(SavePlan {
         identity: action,
         draft: HostDraft {
+            protocol: None,
             id: existing.map(|host| host.id),
             group_id: input.group,
             name: name.to_owned(),
@@ -205,6 +206,7 @@ mod tests {
 
     fn host(id: i64) -> Host {
         Host {
+            protocol: zssh_core::model::ProtocolSettings::default(),
             id,
             group_id: Some(3),
             name: "web".to_owned(),
@@ -500,6 +502,7 @@ mod tests {
             .expect("新建");
         // 给它一个标签和排序（表单不编辑它们）。
         let mut tagged = zssh_core::model::HostDraft {
+            protocol: None,
             id: Some(created.id),
             group_id: created.group_id,
             name: created.name.clone(),

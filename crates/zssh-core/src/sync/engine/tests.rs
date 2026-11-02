@@ -15,6 +15,7 @@ fn temp_dir(name: &str) -> crate::test_util::TestDir {
 
 fn add_host(db: &Database, name: &str) {
     db.host_save(&HostDraft {
+        protocol: None,
         id: None,
         group_id: None,
         name: name.to_owned(),
@@ -103,6 +104,7 @@ async fn two_computers_edit_and_converge_with_a_conflict() {
     let mut host = db_a.host_list().unwrap()[0].clone();
     host.name = "from-a".to_owned();
     db_a.host_save(&HostDraft {
+        protocol: None,
         id: Some(host.id),
         group_id: None,
         name: host.name.clone(),
@@ -129,6 +131,7 @@ async fn two_computers_edit_and_converge_with_a_conflict() {
     let mut host = db_b.host_list().unwrap()[0].clone();
     host.name = "from-b".to_owned();
     db_b.host_save(&HostDraft {
+        protocol: None,
         id: Some(host.id),
         group_id: None,
         name: host.name.clone(),
@@ -212,6 +215,7 @@ async fn half_written_upload_fails_and_does_not_update_the_baseline() {
 
     let host = db.host_list().unwrap()[0].clone();
     db.host_save(&HostDraft {
+        protocol: None,
         id: Some(host.id),
         group_id: None,
         name: "after".to_owned(),
@@ -1121,6 +1125,7 @@ fn rename_host(db: &Database, from: &str, to: &str) {
         .find(|host| host.name == from)
         .expect("要改的主机");
     db.host_save(&HostDraft {
+        protocol: None,
         id: Some(host.id),
         group_id: None,
         name: to.to_owned(),
@@ -1252,6 +1257,7 @@ fn import_package_also_refuses_when_local_changed_in_between() {
 fn rename_only_host(db: &Database, name: &str) {
     let host = db.host_list().unwrap()[0].clone();
     db.host_save(&HostDraft {
+        protocol: None,
         id: Some(host.id),
         group_id: host.group_id,
         name: name.to_owned(),
@@ -1464,6 +1470,7 @@ async fn manual_host_and_group_order_syncs_to_the_other_computer() {
     let mut ids = Vec::new();
     for name in ["h1", "h2", "h3"] {
         let draft = HostDraft {
+            protocol: None,
             id: None,
             group_id: Some(alpha),
             name: name.to_owned(),
@@ -1568,6 +1575,7 @@ fn package_version(storage: &MemoryStorage) -> u64 {
 
 fn protocol_draft(name: &str) -> HostDraft {
     HostDraft {
+        protocol: None,
         id: None,
         group_id: None,
         name: name.to_owned(),

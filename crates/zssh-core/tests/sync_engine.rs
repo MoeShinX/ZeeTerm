@@ -33,6 +33,7 @@ fn open_db(dir: &Path) -> Database {
 
 fn add_host(db: &Database, name: &str, group: Option<i64>, identity: Option<i64>) {
     db.host_save(&HostDraft {
+        protocol: None,
         id: None,
         group_id: group,
         name: name.to_owned(),
@@ -231,6 +232,7 @@ abc
                 db_b.host_delete(victim.id).expect("B 删主机");
             } else {
                 db_b.host_save(&HostDraft {
+                    protocol: None,
                     id: Some(victim.id),
                     group_id: None,
                     name: format!("b-edited-{round}"),

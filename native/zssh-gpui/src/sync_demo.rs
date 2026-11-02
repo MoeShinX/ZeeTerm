@@ -4890,6 +4890,7 @@ mod protection_tests {
 
     fn host(name: &str) -> HostDraft {
         HostDraft {
+            protocol: None,
             id: None,
             group_id: None,
             name: name.to_owned(),

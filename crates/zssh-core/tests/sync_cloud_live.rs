@@ -78,6 +78,7 @@ impl Machine {
     fn add_host(&self, name: &str) {
         self.db
             .host_save(&HostDraft {
+                protocol: None,
                 id: None,
                 group_id: None,
                 name: name.to_owned(),

@@ -42,6 +42,7 @@ pub struct VaultLayout {
 /// 把库里的主机变成保存草稿（原样带过去，改的字段由调用方覆盖）。
 pub fn draft_of_host(host: &Host) -> HostDraft {
     HostDraft {
+        protocol: None,
         id: Some(host.id),
         group_id: host.group_id,
         name: host.name.clone(),
@@ -403,6 +404,7 @@ mod tests {
 
     fn host(id: i64, name: &str, address: &str) -> Host {
         Host {
+            protocol: zssh_core::model::ProtocolSettings::default(),
             id,
             group_id: None,
             name: name.to_owned(),
@@ -454,6 +456,7 @@ mod tests {
         assert!(!store.reload(), "空库第一次读不算变化");
         let db = store.db.as_ref().expect("库");
         db.host_save(&zssh_core::model::HostDraft {
+            protocol: None,
             id: None,
             group_id: None,
             name: "web-1".to_owned(),
@@ -495,6 +498,7 @@ mod tests {
 
     fn draft(name: &str, group: Option<i64>) -> HostDraft {
         HostDraft {
+            protocol: None,
             id: None,
             group_id: group,
             name: name.to_owned(),

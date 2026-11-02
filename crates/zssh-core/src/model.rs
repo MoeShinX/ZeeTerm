@@ -269,6 +269,9 @@ pub struct Host {
     pub legacy_algorithms: bool,
     pub created_at: i64,
     pub updated_at: i64,
+    /// 连接协议和各协议的选项、X11 开关；老数据就是普通 SSH。
+    #[serde(default)]
+    pub protocol: ProtocolSettings,
 }
 
 /// 主机的新建 / 修改请求。`id` 为 `None` 表示新建。
@@ -290,6 +293,10 @@ pub struct HostDraft {
     pub sort: i64,
     /// 打开之后允许 SHA1 的 ssh-rsa、老的 KEX 和 CBC 加密（只给老服务器用）
     pub legacy_algorithms: bool,
+    /// 协议设置。`None` = 不动：新建是普通 SSH，修改已有主机保持库里的（按新的认证 / 代理 /
+    /// 跳板机重新校验组合，库里的选项原样不重写）；`Some` = 按它写入（一个事务，组合不合法整体不落库）。
+    #[serde(default)]
+    pub protocol: Option<ProtocolSettings>,
 }
 
 /// 凭据。**不返回密文**，只告诉界面有没有存。

@@ -169,6 +169,7 @@ mod tests {
         proxy_id: Option<i64>,
     ) -> i64 {
         db.host_save(&HostDraft {
+            protocol: None,
             id: None,
             group_id: None,
             name: name.to_owned(),

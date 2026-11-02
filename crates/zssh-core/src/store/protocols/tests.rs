@@ -10,6 +10,7 @@ fn memory_db() -> Database {
 
 fn draft(name: &str) -> HostDraft {
     HostDraft {
+        protocol: None,
         id: None,
         group_id: None,
         name: name.to_owned(),
@@ -525,4 +526,56 @@ fn ai_exec_refusal_only_for_non_ssh_hosts() {
         .unwrap()
         .unwrap()
         .contains("Telnet"));
+}
+
+#[test]
+fn the_draft_carries_the_protocol_and_host_reads_it_back() {
+    let db = memory_db();
+    let mut request = draft("sw-draft");
+    request.protocol = Some(ProtocolSettings::new(Protocol::Telnet));
+    let saved = db.host_save(&request).unwrap();
+    assert_eq!(saved.protocol.protocol, Protocol::Telnet);
+    assert_eq!(db.host_get(saved.id).unwrap().protocol, saved.protocol);
+    assert_eq!(
+        db.host_list().unwrap()[0].protocol.protocol,
+        Protocol::Telnet
+    );
+
+    // 不带协议（None）再存：库里的不变。
+    let mut rename = draft("sw-draft-2");
+    rename.id = Some(saved.id);
+    let renamed = db.host_save(&rename).unwrap();
+    assert_eq!(renamed.protocol, saved.protocol);
+
+    // 带协议改成 SSH：写入。
+    rename.protocol = Some(ProtocolSettings::default());
+    let back = db.host_save(&rename).unwrap();
+    assert!(back.protocol.is_plain_ssh());
+}
+
+#[test]
+fn saving_cannot_convert_between_serial_and_network_hosts() {
+    let db = memory_db();
+    let ssh = db.host_save(&draft("web")).unwrap();
+    let mut to_serial = draft("web");
+    to_serial.id = Some(ssh.id);
+    to_serial.protocol = Some(serial_settings("COM3"));
+    let text = err_text(db.host_save(&to_serial));
+    assert!(text.contains("不能互相转换"), "{text}");
+    assert_eq!(db.host_get(ssh.id).unwrap().host, "example.internal");
+
+    let console = db
+        .host_save_with_protocol(&draft("console"), &serial_settings("COM4"))
+        .unwrap()
+        .0;
+    let mut to_telnet = draft("console");
+    to_telnet.id = Some(console.id);
+    to_telnet.protocol = Some(ProtocolSettings::new(Protocol::Telnet));
+    assert!(err_text(db.host_save(&to_telnet)).contains("不能互相转换"));
+    // 串口改串口选项是允许的。
+    let mut again = draft("console");
+    again.id = Some(console.id);
+    again.protocol = Some(serial_settings("COM5"));
+    let saved = db.host_save(&again).unwrap();
+    assert_eq!(saved.protocol.serial.unwrap().device, "COM5");
 }

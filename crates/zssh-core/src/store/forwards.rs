@@ -238,6 +238,7 @@ mod tests {
 
     fn host(db: &Database) -> i64 {
         db.host_save(&HostDraft {
+            protocol: None,
             id: None,
             group_id: None,
             name: "测试机".to_owned(),

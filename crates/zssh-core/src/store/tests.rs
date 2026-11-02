@@ -183,6 +183,7 @@ fn group_delete_moves_hosts_and_children_to_root() {
         .unwrap();
     let host = db
         .host_save(&HostDraft {
+            protocol: None,
             id: None,
             group_id: Some(parent.id),
             name: "某台机器".to_owned(),
@@ -249,6 +250,7 @@ fn group_cannot_move_under_its_own_child() {
 
 pub(crate) fn sample_host(group_id: Option<i64>, identity_id: Option<i64>) -> HostDraft {
     HostDraft {
+        protocol: None,
         id: None,
         group_id,
         name: "测试机".to_owned(),
@@ -671,6 +673,7 @@ fn host_login_reads_an_inline_key_with_passphrase() {
 
     let host = db
         .host_save(&HostDraft {
+            protocol: None,
             id: None,
             group_id: None,
             name: "导入私钥的主机".to_owned(),
@@ -1333,6 +1336,7 @@ fn change_listener_fires_for_synced_data_only() {
     assert_eq!(count(), 1, "新建分组");
     let host = db
         .host_save(&HostDraft {
+            protocol: None,
             id: None,
             group_id: Some(group.id),
             name: "h".to_owned(),

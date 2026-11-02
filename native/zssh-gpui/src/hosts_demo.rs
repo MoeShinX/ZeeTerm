@@ -335,6 +335,7 @@ fn draft_from(values: &FormValues, id: Option<i64>, extras: HostExtras) -> HostD
         port.parse::<u16>().unwrap_or(0)
     };
     HostDraft {
+        protocol: None,
         id,
         group_id: extras.group_id,
         name: values.name.trim().to_owned(),
@@ -1762,6 +1763,7 @@ mod tests {
     #[test]
     fn jump_cycles_other_hosts() {
         let make = |id: i64, name: &str| Host {
+            protocol: zssh_core::model::ProtocolSettings::default(),
             id,
             group_id: None,
             name: name.to_owned(),
@@ -1839,6 +1841,7 @@ mod tests {
     #[test]
     fn search_matches_name_address_user_and_port() {
         let host = Host {
+            protocol: zssh_core::model::ProtocolSettings::default(),
             id: 1,
             group_id: None,
             name: "web-1".to_owned(),
@@ -1866,6 +1869,7 @@ mod tests {
 
     fn sample_host_draft() -> HostDraft {
         HostDraft {
+            protocol: None,
             id: None,
             group_id: None,
             name: "web-1".to_owned(),
@@ -1976,6 +1980,7 @@ mod tests {
 
     fn sample_host(id: i64, name: &str, jump: Option<i64>) -> Host {
         Host {
+            protocol: zssh_core::model::ProtocolSettings::default(),
             id,
             group_id: None,
             name: name.to_owned(),
@@ -2001,6 +2006,7 @@ mod tests {
         let db = Database::open_in_memory().expect("内存库");
         let created = db
             .host_save(&HostDraft {
+                protocol: None,
                 id: None,
                 group_id: None,
                 name: "router".to_owned(),

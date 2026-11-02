@@ -1057,6 +1057,7 @@ mod tests {
 
     fn host_draft_named(name: &str, host: &str) -> HostDraft {
         HostDraft {
+            protocol: None,
             id: None,
             group_id: None,
             name: name.to_owned(),

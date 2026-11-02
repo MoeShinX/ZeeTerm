@@ -811,6 +811,7 @@ mod tests {
 
     fn host(name: &str, address: &str, user: &str, tags: &[&str]) -> Host {
         Host {
+            protocol: zssh_core::model::ProtocolSettings::default(),
             id: 1,
             group_id: None,
             name: name.to_owned(),

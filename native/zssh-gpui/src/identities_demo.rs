@@ -690,6 +690,7 @@ mod tests {
 
     fn host_using(id: i64, name: &str, identity_id: Option<i64>) -> Host {
         Host {
+            protocol: zssh_core::model::ProtocolSettings::default(),
             id,
             group_id: None,
             name: name.to_owned(),

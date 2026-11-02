@@ -108,6 +108,7 @@ impl Machine {
 
 pub fn host_draft(id: Option<i64>, name: &str) -> HostDraft {
     HostDraft {
+        protocol: None,
         id,
         group_id: None,
         name: name.to_owned(),

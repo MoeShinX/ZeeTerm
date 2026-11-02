@@ -32,7 +32,7 @@ impl Database {
             let mut statement = conn.prepare(
                 "SELECT id, group_id, name, host, port, username, auth_method, identity_id, \
                  proxy_id, jump_host_id, proxy_mode, tags, sort, created_at, updated_at, \
-                 legacy_algorithms FROM hosts ORDER BY sort, name COLLATE NOCASE",
+                 legacy_algorithms, protocol, x11_forwarding, protocol_options FROM hosts ORDER BY sort, name COLLATE NOCASE",
             )?;
             let rows = statement.query_map([], row_to_host)?;
             let mut hosts = Vec::new();
@@ -49,11 +49,12 @@ impl Database {
 
     /// 新建或修改一台主机，返回落库之后的结果。
     ///
-    /// 协议设置不在 [`HostDraft`] 里：新建的主机是普通 SSH；修改已有主机时协议设置**保持
-    /// 库里的不变**，但要按新的认证 / 代理 / 跳板机重新校验一遍组合（不能借这个入口把一台
-    /// Telnet 主机改成带私钥认证）。要改协议用 [`Database::host_save_with_protocol`]。
+    /// 协议设置看 [`HostDraft::protocol`]：`None` 时新建的主机是普通 SSH，修改已有主机时协议设置
+    /// **保持库里的不变**，但要按新的认证 / 代理 / 跳板机重新校验一遍组合（不能借这个入口把一台
+    /// Telnet 主机改成带私钥认证）；`Some` 时按它写入。
     pub fn host_save(&self, draft: &HostDraft) -> Result<Host, ZsshError> {
-        self.host_save_inner(draft, None).map(|(host, _)| host)
+        self.host_save_inner(draft, draft.protocol.as_ref())
+            .map(|(host, _)| host)
     }
 
     /// 同 [`Database::host_save`]，同时写入协议设置（一个事务，组合不合法整体不落库）。
@@ -125,6 +126,16 @@ impl Database {
                             users.join("、")
                         )));
                     }
+                }
+            }
+            // 串口主机的 host / port / username 是占位值，网络主机的是真实值：互相转换会把真实值
+            // 悄悄冲成占位值（或反过来留下不合法的另一半），要换类型请新建主机。
+            if let (Some(id), Some(_)) = (draft.id, requested) {
+                let current = crate::store::protocols::protocol_get(conn, id)?.protocol;
+                if (current == Protocol::Serial) != (settings.protocol == Protocol::Serial) {
+                    return Err(ZsshError::InvalidInput(
+                        "串口主机和网络主机（SSH / Telnet）不能互相转换，请新建一台主机".to_owned(),
+                    ));
                 }
             }
             let settings = settings.clone().validated(&HostFacts {
@@ -394,7 +405,7 @@ pub(crate) fn host_get(conn: &Connection, id: i64) -> Result<Host, ZsshError> {
     conn.query_row(
         "SELECT id, group_id, name, host, port, username, auth_method, identity_id, \
          proxy_id, jump_host_id, proxy_mode, tags, sort, created_at, updated_at, \
-         legacy_algorithms FROM hosts WHERE id = ?1",
+         legacy_algorithms, protocol, x11_forwarding, protocol_options FROM hosts WHERE id = ?1",
         [id],
         row_to_host,
     )
@@ -489,6 +500,14 @@ fn row_to_host(row: &Row<'_>) -> rusqlite::Result<Host> {
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
         legacy_algorithms: row.get::<_, i64>(15)? != 0,
+        protocol: {
+            let kind: String = row.get(16)?;
+            let x11: i64 = row.get(17)?;
+            let options: Option<String> = row.get(18)?;
+            crate::store::parse_column(&kind, |kind| {
+                ProtocolSettings::from_columns(kind, x11 != 0, options.as_deref())
+            })?
+        },
     })
 }
 

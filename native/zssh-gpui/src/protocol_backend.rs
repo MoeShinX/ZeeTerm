@@ -258,6 +258,7 @@ fn dev_host_from_spec(
         .filter(|part| !part.is_empty())
         .ok_or("缺少地址 / 设备名")?;
     let mut draft = HostDraft {
+        protocol: None,
         id: None,
         group_id: None,
         name: String::new(),
@@ -319,6 +320,7 @@ mod tests {
 
     fn draft(name: &str) -> HostDraft {
         HostDraft {
+            protocol: None,
             id: None,
             group_id: None,
             name: name.to_owned(),

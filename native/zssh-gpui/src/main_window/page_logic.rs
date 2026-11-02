@@ -596,6 +596,7 @@ mod tests {
 
     fn host(id: i64, group: Option<i64>, name: &str, sort: i64) -> Host {
         Host {
+            protocol: zssh_core::model::ProtocolSettings::default(),
             id,
             group_id: group,
             name: name.to_owned(),

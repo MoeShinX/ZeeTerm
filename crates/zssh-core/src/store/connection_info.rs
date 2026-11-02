@@ -263,6 +263,7 @@ mod tests {
 
     fn host(auth_method: AuthMethod, identity_id: Option<i64>) -> Host {
         Host {
+            protocol: crate::model::ProtocolSettings::default(),
             id: 1,
             group_id: None,
             name: "web-1".to_owned(),
@@ -532,6 +533,7 @@ mod db_tests {
 
     fn draft(name: &str, auth_method: AuthMethod, identity_id: Option<i64>) -> HostDraft {
         HostDraft {
+            protocol: None,
             id: None,
             group_id: None,
             name: name.to_owned(),

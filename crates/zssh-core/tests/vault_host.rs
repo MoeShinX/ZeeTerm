@@ -68,6 +68,7 @@ async fn connects_to_a_host_stored_in_the_vault() {
     // 主机记录指向测试服务器
     let host = db
         .host_save(&HostDraft {
+            protocol: None,
             id: None,
             group_id: None,
             name: "集成测试主机".to_owned(),
@@ -157,6 +158,7 @@ async fn connects_to_a_host_stored_in_the_vault() {
         })
         .expect("保存凭据");
     let mut draft = HostDraft {
+        protocol: None,
         id: Some(host.id),
         group_id: None,
         name: host.name.clone(),

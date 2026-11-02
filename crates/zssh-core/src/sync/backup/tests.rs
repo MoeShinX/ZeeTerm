@@ -227,6 +227,7 @@ fn any_kind_of_record_makes_the_library_worth_backing_up() {
             "主机",
             Box::new(|db| {
                 db.host_save(&HostDraft {
+                    protocol: None,
                     id: None,
                     group_id: None,
                     name: "h".to_owned(),

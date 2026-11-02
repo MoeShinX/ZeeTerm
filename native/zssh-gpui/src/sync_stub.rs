@@ -840,6 +840,7 @@ pub(crate) fn peer_dir() -> PathBuf {
 
 fn draft(name: &str, id: Option<i64>) -> HostDraft {
     HostDraft {
+        protocol: None,
         id,
         group_id: None,
         name: name.to_owned(),

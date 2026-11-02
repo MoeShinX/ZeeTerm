@@ -193,6 +193,7 @@ mod tests {
 
     fn host(name: &str, identity_id: Option<i64>) -> HostDraft {
         HostDraft {
+            protocol: None,
             id: None,
             group_id: None,
             name: name.to_owned(),

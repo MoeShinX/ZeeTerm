@@ -1697,6 +1697,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let db = Database::open(&dir.join("zssh.db")).unwrap();
         let draft = |name: &str| HostDraft {
+            protocol: None,
             id: None,
             group_id: None,
             name: name.to_owned(),
