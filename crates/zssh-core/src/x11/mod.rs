@@ -12,6 +12,7 @@
 pub mod cookie;
 pub mod display;
 pub mod failure;
+pub mod local;
 pub mod registry;
 pub(crate) mod relay;
 
