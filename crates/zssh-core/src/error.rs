@@ -69,6 +69,11 @@ pub enum ZsshError {
     #[error("打开 shell 失败：{0}")]
     Shell(String),
 
+    /// 开 shell 时 X11 转发没成功（服务器拒绝或没回复）。只在核心库内部用来触发"换一条
+    /// 普通通道继续"，不会作为开终端失败交给界面。
+    #[error("X11 转发没有开起来：{0}")]
+    X11(#[from] crate::x11::X11Failure),
+
     /// 服务器没有开启 SFTP 子系统（`Subsystem sftp` 被注释掉、或者精简系统里根本没有）。
     #[error(
         "这台服务器没有开启 SFTP：sys 子系统请求被拒。请确认服务器装了 sftp 子系统（OpenSSH 的 /usr/lib/openssh/sftp-server，配置里 `Subsystem sftp` 没有被注释掉）"

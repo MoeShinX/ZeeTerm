@@ -17,8 +17,9 @@ use crate::ssh::dialer::{self, BoxedStream, ProxyConfig, HOP_TIMEOUT};
 use crate::ssh::interact::{BoxFuture, HopProgress};
 use crate::ssh::interact::{HostKeyDecision, HostKeyInfo, HostKeyStatus, Interactor};
 use crate::ssh::known_hosts::{HostKeyLookup, KnownHosts, StoredIn};
-use crate::ssh::shell::{ShellSession, DEFAULT_BUFFER_LIMIT};
+use crate::ssh::shell::{OpenExtras, ShellSession, DEFAULT_BUFFER_LIMIT, OPEN_REPLY_TIMEOUT};
 use crate::ssh::stream::{ChannelByteStream, PrefixedStream};
+use crate::x11::{X11Failure, X11Hub, X11Outcome, X11Request};
 
 /// 建立连接（DNS + TCP）的总超时。
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -151,6 +152,8 @@ pub struct Connection {
     handle: Handle<ClientHandler>,
     /// 远程转发（ssh -R）：服务器监听的端口 → 把连进来的通道交给谁处理。
     remote_forwards: RemoteForwardTable,
+    /// X11 转发的分发表：服务器开的 X11 通道按握手包里的假 cookie 找到对应的终端。
+    x11: X11Hub,
     server_key: ServerKey,
     auth_outcome: AuthOutcome,
     /// 拨号链上的中间跳（跳板机）。目标会话结束、这个结构被丢掉时一起关，不会泄漏。
@@ -304,9 +307,11 @@ impl Connection {
         let server_key_slot = Arc::new(OnceLock::new());
         let config = Arc::new(client_config(legacy_algorithms));
         let remote_forwards = RemoteForwardTable::default();
+        let x11 = X11Hub::default();
 
         let handler = ClientHandler {
             remote_forwards: Arc::clone(&remote_forwards),
+            x11: x11.clone(),
             host: host.to_owned(),
             port,
             known_hosts,
@@ -355,6 +360,7 @@ impl Connection {
         Ok(Self {
             handle,
             remote_forwards,
+            x11,
             server_key,
             auth_outcome,
             jumps: Vec::new(),
@@ -523,6 +529,112 @@ impl Connection {
     ) -> Result<ShellSession, ZsshError> {
         let channel = self.open_session_channel().await?;
         ShellSession::open_with_buffer_limit(channel, cols, rows, buffer_limit, ring).await
+    }
+
+    /// 这条连接的 X11 分发表（测试和诊断用）。
+    pub fn x11_hub(&self) -> &X11Hub {
+        &self.x11
+    }
+
+    /// 开 shell，并按 `x11` 要求请求 X11 转发。X11 失败从来不是致命的：
+    ///
+    /// - `x11` 是 `Err(失败)`（比如本机没有 X 服务器，调用方在连接前就知道了）：直接开普通
+    ///   终端，把原因写在终端最前面；
+    /// - 服务器拒绝或不回复 X11 请求：丢掉这条通道（避免迟到的应答错位），**重新开一条**
+    ///   普通通道继续，终端里写原因；
+    /// - 成功：登记假 cookie，随返回的终端存活，终端关闭即撤销。
+    ///
+    /// 返回的 [`X11Outcome`] 给界面显示用。
+    pub async fn open_shell_x11(
+        &self,
+        cols: u16,
+        rows: u16,
+        buffer_limit: usize,
+        ring: Option<SharedTerminalRing>,
+        x11: Result<X11Request, X11Failure>,
+    ) -> Result<(ShellSession, X11Outcome), ZsshError> {
+        self.open_shell_x11_with_timeout(cols, rows, buffer_limit, ring, x11, OPEN_REPLY_TIMEOUT)
+            .await
+    }
+
+    /// 同 [`Connection::open_shell_x11`]，等回复的超时可调（测试用，不用真等 20 秒）。
+    #[doc(hidden)]
+    pub async fn open_shell_x11_with_timeout(
+        &self,
+        cols: u16,
+        rows: u16,
+        buffer_limit: usize,
+        ring: Option<SharedTerminalRing>,
+        x11: Result<X11Request, X11Failure>,
+        reply_timeout: Duration,
+    ) -> Result<(ShellSession, X11Outcome), ZsshError> {
+        let plain = |lead: Option<String>, ring: Option<SharedTerminalRing>| async move {
+            let channel = self.open_session_channel().await?;
+            ShellSession::open_inner(
+                channel,
+                cols,
+                rows,
+                buffer_limit,
+                ring,
+                reply_timeout,
+                OpenExtras {
+                    x11: None,
+                    lead_notice: lead,
+                },
+            )
+            .await
+        };
+
+        let request = match x11 {
+            Ok(request) => request,
+            Err(failure) => {
+                let shell = plain(Some(failure.terminal_notice()), ring).await?;
+                return Ok((shell, X11Outcome::Skipped(failure)));
+            }
+        };
+
+        let observer = request.on_failure.clone();
+        let registration = match self.x11.register(request.route) {
+            Ok(registration) => registration,
+            Err(failure) => {
+                if let Some(observer) = &observer {
+                    observer(&failure);
+                }
+                let shell = plain(Some(failure.terminal_notice()), ring).await?;
+                return Ok((shell, X11Outcome::Skipped(failure)));
+            }
+        };
+        if let Some(observer) = &observer {
+            registration.set_observer(Arc::clone(observer));
+        }
+        let display = registration.display();
+
+        let channel = self.open_session_channel().await?;
+        match ShellSession::open_inner(
+            channel,
+            cols,
+            rows,
+            buffer_limit,
+            ring.clone(),
+            reply_timeout,
+            OpenExtras {
+                x11: Some(registration),
+                lead_notice: None,
+            },
+        )
+        .await
+        {
+            Ok(shell) => Ok((shell, X11Outcome::Active { display })),
+            Err(ZsshError::X11(failure)) => {
+                // 登记已随失败的打开撤销。界面回调也要知道一声。
+                if let Some(observer) = &observer {
+                    observer(&failure);
+                }
+                let shell = plain(Some(failure.terminal_notice()), ring).await?;
+                Ok((shell, X11Outcome::Skipped(failure)))
+            }
+            Err(other) => Err(other),
+        }
     }
 
     /// 开一个会话通道，并把"服务器拒绝"翻译成能分辨的错误。
@@ -1027,6 +1139,7 @@ fn lock_table(
 
 pub(crate) struct ClientHandler {
     remote_forwards: RemoteForwardTable,
+    x11: X11Hub,
     host: String,
     port: u16,
     known_hosts: KnownHosts,
@@ -1070,6 +1183,37 @@ impl client::Handler for ClientHandler {
             None => {
                 forwarded
                     .reply
+                    .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
+    /// 服务器开了一条 X11 通道（远端有程序要显示窗口）。
+    ///
+    /// 和远程转发一样不能在消息循环里等：没有任何终端登记 X11、或者通道总数到上限就直接
+    /// 拒绝，否则立刻接受并把通道交给转发任务（它读握手包、按 cookie 找终端、连本机 X 服务器）。
+    /// 接受之后才能读到 cookie，所以"这条通道属于谁"只能在转发任务里判断，认不出来就关掉。
+    async fn server_channel_open_x11(
+        &mut self,
+        channel: Channel<client::Msg>,
+        originator_address: &str,
+        originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        match self.x11.admit() {
+            Some(permit) => {
+                debug!(
+                    originator = %format!("{originator_address}:{originator_port}"),
+                    "接受 X11 通道"
+                );
+                reply.accept().await;
+                tokio::spawn(crate::x11::relay::serve(self.x11.clone(), channel, permit));
+            }
+            None => {
+                reply
                     .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
                     .await;
             }
