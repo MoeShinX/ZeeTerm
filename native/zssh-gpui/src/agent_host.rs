@@ -189,6 +189,16 @@ async fn connection_for(target_id: &str) -> Result<Arc<zssh_core::ssh::Connectio
 const NO_TERMINAL: &str = "这台主机现在没有打开的终端标签";
 
 impl BridgeHost for NativeBridgeHost {
+    /// Telnet / 串口主机不能让 AI 执行命令：按主机库里的协议判断。不在主机库里的目标
+    /// （快速连接）一定是 SSH；库读不了时放行——后面真正连接时还有各自的检查。
+    fn target_refusal<'a>(&'a self, target_id: &'a str) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async move {
+            let host_id = Self::host_id_of(target_id)?;
+            let db = self.open_db().ok()?;
+            db.host_ai_exec_refusal(host_id).ok().flatten()
+        })
+    }
+
     /// 界面绑定的会话优先，其次目标本身就是终端，最后是这台主机的焦点终端；都没有返回 `None`，
     /// 由执行层把 `host-<id>` 原样交给下面的 `exec` / `exec_cancellable`（走后台通道）。
     fn execution_session<'a>(
@@ -1675,6 +1685,56 @@ mod tests {
     fn ask(approver: &Arc<NativeApprover>) -> std::thread::JoinHandle<ApprovalDecision> {
         let approver = Arc::clone(approver);
         std::thread::spawn(move || futures::executor::block_on(approver.approve(sample_request())))
+    }
+
+    #[test]
+    fn telnet_and_serial_hosts_are_refused_as_ai_targets_but_ssh_hosts_are_not() {
+        use zssh_core::model::{AuthMethod, HostDraft, Protocol, ProtocolSettings, ProxyMode};
+
+        let dir =
+            std::env::temp_dir().join(format!("zssh-agent-host-refusal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::open(&dir.join("zssh.db")).unwrap();
+        let draft = |name: &str| HostDraft {
+            id: None,
+            group_id: None,
+            name: name.to_owned(),
+            host: "example.internal".to_owned(),
+            port: 22,
+            username: "root".to_owned(),
+            auth_method: AuthMethod::Password,
+            identity_id: None,
+            proxy_id: None,
+            jump_host_id: None,
+            proxy_mode: ProxyMode::None,
+            tags: Vec::new(),
+            sort: 0,
+            legacy_algorithms: false,
+        };
+        let ssh = db.host_save(&draft("web-1")).unwrap();
+        let (telnet, _) = db
+            .host_save_with_protocol(&draft("switch-1"), &ProtocolSettings::new(Protocol::Telnet))
+            .unwrap();
+        let mut serial_settings = ProtocolSettings::new(Protocol::Serial);
+        serial_settings.serial.as_mut().unwrap().device = "COM3".to_owned();
+        let (serial, _) = db
+            .host_save_with_protocol(&draft("console-1"), &serial_settings)
+            .unwrap();
+        drop(db);
+
+        let host = NativeBridgeHost::with(Arc::new(ReportRoutes::default()), dir.clone());
+        let refusal =
+            |id: i64| futures::executor::block_on(host.target_refusal(&host_target_id(id)));
+        assert_eq!(refusal(ssh.id), None);
+        assert!(refusal(telnet.id).unwrap().contains("Telnet"));
+        assert!(refusal(serial.id).unwrap().contains("串口"));
+        // 不在主机库里的目标（快速连接的会话编号）放行。
+        assert_eq!(
+            futures::executor::block_on(host.target_refusal("sess-1")),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

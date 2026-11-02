@@ -234,6 +234,16 @@ pub trait BridgeHost: Send + Sync {
         Box::pin(async move { session })
     }
 
+    /// 这个目标不能当 AI 的执行目标时，返回给模型看的原因（Telnet / 串口主机没有 SSH 的 exec
+    /// 通道和终端 shell 约定，AI 不能往上面跑命令、读写文件）。默认都能。
+    ///
+    /// 宿主应该用主机库里的协议判断（`ProtocolSettings::ai_exec_refusal`）；快速连接这类
+    /// 不在主机库里的目标一定是 SSH，返回 `None`。
+    fn target_refusal<'a>(&'a self, target_id: &'a str) -> BoxFuture<'a, Option<String>> {
+        let _ = target_id;
+        Box::pin(async { None })
+    }
+
     /// 执行层解析出目标之后、真正开始之前回报给界面（AI-SCOPE-2 第 2 节）。默认空操作。
     fn report_target(&self, report: ExecTargetReport) {
         let _ = report;
@@ -1174,7 +1184,18 @@ impl Bridge {
     async fn list_targets(&self, scope: &Arc<Scope>) -> Result<serde_json::Value, String> {
         let with_memory = self.mode.mode() != ExecMode::Auto;
         let mut targets = Vec::new();
+        let mut unavailable = Vec::new();
         for target in scope.target_list() {
+            // 不能执行命令的目标（Telnet / 串口）不列成可操作目标，单独说明原因，
+            // 免得模型反复尝试。
+            if let Some(reason) = self.host.target_refusal(&target.id).await {
+                unavailable.push(serde_json::json!({
+                    "id": target.id,
+                    "host_label": target.host_label,
+                    "reason": reason,
+                }));
+                continue;
+            }
             let mut entry = serde_json::to_value(&target).map_err(|err| err.to_string())?;
             if with_memory {
                 if let Ok(Some(memory)) = self.host.read_memory(&target.id).await {
@@ -1187,6 +1208,9 @@ impl Bridge {
             targets.push(entry);
         }
         let mut result = serde_json::json!({ "targets": targets });
+        if !unavailable.is_empty() {
+            result["unavailable"] = serde_json::json!(unavailable);
+        }
         if !with_memory {
             result["memory_note"] =
                 serde_json::json!("Host notes are not shown in full-access mode.");
@@ -1622,6 +1646,10 @@ impl Bridge {
         let summary = scope
             .summary(&target_id)
             .ok_or_else(|| SCOPE_TARGET_ERROR.to_string())?;
+        // 非 SSH 主机（Telnet / 串口）：在找会话、自动连接、审批之前就拒绝，说清楚原因。
+        if let Some(reason) = self.host.target_refusal(&target_id).await {
+            return Err(reason);
+        }
         // 票据必须在任何 await 之前记下：找会话 / 等连接期间用户点了停止，或者把目标移出又
         // 加回来，这条请求都要作废；先解析再记票据会把这些取消状态漏掉。
         let ticket = scope.ticket(&target_id);
@@ -1724,6 +1752,8 @@ mod tests {
         last_terminal: Mutex<Option<TerminalExecRequest>>,
         interrupted: Mutex<Vec<String>>,
         memory: Mutex<std::collections::HashMap<String, String>>,
+        /// 目标 ID -> 拒绝原因（模拟非 SSH 主机）。
+        refusals: Mutex<std::collections::HashMap<String, String>>,
     }
 
     impl MockHost {
@@ -1733,6 +1763,7 @@ mod tests {
                 last_exec: Mutex::new(None),
                 terminal_lines: Mutex::new(vec!["one".into(), "two".into()]),
                 memory: Mutex::new(std::collections::HashMap::new()),
+                refusals: Mutex::new(std::collections::HashMap::new()),
                 last_max_lines: Mutex::new(None),
                 placement: Mutex::new(ExecPlacement::Background {
                     reason: "测试默认走后台".to_string(),
@@ -1773,6 +1804,11 @@ mod tests {
     }
 
     impl BridgeHost for MockHost {
+        fn target_refusal<'a>(&'a self, target_id: &'a str) -> BoxFuture<'a, Option<String>> {
+            let reason = self.refusals.lock().unwrap().get(target_id).cloned();
+            Box::pin(async move { reason })
+        }
+
         fn read_memory<'a>(
             &'a self,
             target_id: &'a str,
@@ -2101,6 +2137,69 @@ mod tests {
         assert_eq!(sessions[0]["id"], "s1");
         assert_eq!(sessions[0]["current"], true);
         assert_eq!(sessions[0]["pinned"], false);
+    }
+
+    #[tokio::test]
+    async fn non_ssh_targets_are_listed_as_unavailable_and_refused_by_every_executing_tool() {
+        let h = harness(ExecMode::Auto, ApproverBehavior::Allow, short_wait()).await;
+        h.host.refusals.lock().unwrap().insert(
+            "host-9".to_string(),
+            "这是一台 串口 主机，AI 助手只能在 SSH 主机上执行命令，不能操作它".to_string(),
+        );
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", false, false);
+        scope.add_target("host-9", "console-1", "", "pinned", true, true);
+        let mut client =
+            Client::authenticated(h.port, h.bridge.connection_token(), scope.capability()).await;
+
+        // 列表：串口那台不在 targets 里，单独在 unavailable 里带原因。
+        let response = client.request(1, METHOD_LIST_TARGETS, json!({})).await;
+        let result = result_of(&response);
+        let ids: Vec<&str> = result["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["s1"]);
+        assert_eq!(result["unavailable"][0]["id"], "host-9");
+        assert!(result["unavailable"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("串口"));
+
+        // 执行 / 读终端 / 文件工具：点名它或者它是当前焦点（没写 target_id），都在做任何事之前拒绝。
+        for (id, method, params) in [
+            (
+                2,
+                METHOD_RUN_COMMAND,
+                json!({"target_id": "host-9", "command": "ls"}),
+            ),
+            (3, METHOD_RUN_COMMAND, json!({"command": "ls"})),
+            (4, METHOD_READ_TERMINAL, json!({"target_id": "host-9"})),
+            (
+                5,
+                METHOD_LIST_DIR,
+                json!({"target_id": "host-9", "path": "/"}),
+            ),
+        ] {
+            let response = client.request(id, method, params).await;
+            assert!(
+                error_of(&response).contains("只能在 SSH 主机上执行命令"),
+                "{method}: {response}"
+            );
+        }
+        assert!(h.host.last_exec().is_none(), "一条命令都不能发出去");
+
+        // SSH 那台照常。
+        let response = client
+            .request(
+                6,
+                METHOD_RUN_COMMAND,
+                json!({"target_id": "s1", "command": "ls"}),
+            )
+            .await;
+        assert_eq!(result_of(&response)["exit_code"], 0);
     }
 
     #[tokio::test]
