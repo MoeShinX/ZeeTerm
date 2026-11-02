@@ -25,6 +25,7 @@ use crate::icons::Ico;
 use crate::main_window::titlebar::window_controls;
 use crate::tab_drag::{self, DragKey, Dragger, Drop, Hover};
 use crate::terminal_workspace::{Tab, TabStatus, TerminalWorkspace};
+use crate::typography::UiFontStyled as _;
 
 /// 标题栏高度（和文件窗口一样）。
 pub const STRIP_HEIGHT: f32 = 40.0;
@@ -467,6 +468,7 @@ impl Render for TermWindow {
             )
             .bg(tokens.background)
             .text_color(tokens.text)
+            .ui_font_fallbacks(cx)
             .child(sensor)
             .child(
                 h_flex()

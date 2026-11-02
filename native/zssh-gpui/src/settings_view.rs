@@ -6,7 +6,7 @@
 //! 这里只负责画和接线。
 
 use ::gpui::{App, Entity, Hsla, SharedString};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::slider::Slider;
 use gpui_kit::component::switch::Switch;
@@ -15,12 +15,15 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app_theme::Tokens;
+use crate::icons::Ico;
 use crate::main_window::widgets::{Choice, select};
 use crate::settings::{CursorShape, UiSettings};
 use crate::terminal_workspace::TerminalWorkspace;
+use crate::typography::{Role, Typo as _};
 
-/// 设置页里带说明的一张卡（同步 / 备份这些大块用）：标题、一句说明，下面是若干行。
-/// `id` 用来在驱动脚本里定位，也让每张卡有稳定的元素 ID。
+/// 设置页里的一组（V2-U4 版式）：分组标题（可带一句说明）在卡片**外面**上方，卡片里一行一项，
+/// 行与行之间一条细分隔线。每个 `rows` 元素占一行（通常是 [`row`] 做出来的「名称 + 说明 | 控件」）。
+/// `id` 用来在驱动脚本里定位，也让每组有稳定的元素 ID。
 pub(crate) fn card(
     id: &'static str,
     title: &'static str,
@@ -31,28 +34,32 @@ pub(crate) fn card(
     v_flex()
         .id(id)
         .w_full()
-        .gap_2()
-        .p_4()
-        .rounded_lg()
-        .border_1()
-        .border_color(tokens.border)
-        .bg(tokens.surface)
+        .gap_2p5()
         .child(
             v_flex()
-                .pb_1()
-                .gap_0p5()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(tokens.text)
-                        .child(title),
-                )
+                .px_1()
+                .gap_1()
+                .child(div().typo(Role::GroupTitle, tokens).child(title))
                 .when_some(description, |d, text| {
-                    d.child(div().text_xs().text_color(tokens.text_muted).child(text))
+                    d.child(div().typo(Role::Caption, tokens).child(text))
                 }),
         )
-        .children(rows)
+        .child(
+            v_flex()
+                .w_full()
+                .rounded_lg()
+                .border_1()
+                .border_color(tokens.border)
+                .bg(tokens.background)
+                .children(rows.into_iter().enumerate().map(|(index, content)| {
+                    div()
+                        .w_full()
+                        .px_4()
+                        .py_3()
+                        .when(index > 0, |d| d.border_t_1().border_color(tokens.border))
+                        .child(content)
+                })),
+        )
         .into_any_element()
 }
 
@@ -80,9 +87,8 @@ pub(crate) fn row_with(
 ) -> AnyElement {
     h_flex()
         .w_full()
-        .min_h(::gpui::px(40.0))
-        .py_1()
-        .gap_4()
+        .min_h(::gpui::px(28.0))
+        .gap_6()
         .items_center()
         .justify_between()
         // 左边说明占剩下的宽度、写不下就换行；右边的控件不被它挤走。
@@ -91,9 +97,9 @@ pub(crate) fn row_with(
                 .flex_1()
                 .min_w_0()
                 .gap_0p5()
-                .child(div().text_sm().text_color(tokens.text).child(title))
+                .child(div().typo(Role::ItemName, tokens).child(title))
                 .when_some(description, |d, text| {
-                    d.child(div().text_xs().text_color(tokens.text_muted).child(text))
+                    d.child(div().typo(Role::Caption, tokens).child(text))
                 }),
         )
         .child(h_flex().flex_none().gap_1().items_center().child(control))
@@ -122,6 +128,61 @@ pub(crate) fn switch_row(
             }),
         tokens,
     )
+}
+
+/// 分段选择里的一项。
+pub(crate) struct Segment {
+    pub id: SharedString,
+    pub label: &'static str,
+    pub icon: Option<Icon>,
+    pub selected: bool,
+}
+
+/// 一排互斥的选项（主题：浅色 / 深色 / 跟随系统；光标样式）：带小图标，选中项浅底加粗，
+/// 不用整块高饱和主色。`on_pick` 收到被点的是第几项。
+pub(crate) fn choice_group(
+    segments: Vec<Segment>,
+    tokens: &Tokens,
+    on_pick: impl Fn(usize, &mut ::gpui::Window, &mut App) + 'static,
+) -> AnyElement {
+    let on_pick = std::rc::Rc::new(on_pick);
+    let (hover, selected_bg, text, muted) =
+        (tokens.hover, tokens.subtle, tokens.text, tokens.text_muted);
+    h_flex()
+        .gap_1()
+        .children(segments.into_iter().enumerate().map(|(index, segment)| {
+            let on_pick = on_pick.clone();
+            let selected = segment.selected;
+            h_flex()
+                .id(segment.id)
+                .gap_1p5()
+                .items_center()
+                .px_3()
+                .py_1p5()
+                .rounded_md()
+                .cursor_pointer()
+                .text_size(::gpui::px(14.0))
+                .line_height(::gpui::relative(1.4))
+                .when(selected, |d| {
+                    d.bg(selected_bg)
+                        .text_color(text)
+                        .font_weight(FontWeight::SEMIBOLD)
+                })
+                .when(!selected, |d| {
+                    d.text_color(muted)
+                        .font_weight(FontWeight::NORMAL)
+                        .hover(move |style| style.bg(hover))
+                })
+                .when_some(segment.icon, |d, icon| {
+                    d.child(
+                        icon.size_4()
+                            .text_color(if selected { text } else { muted }),
+                    )
+                })
+                .child(segment.label)
+                .on_click(move |_, window, cx| on_pick(index, window, cx))
+        }))
+        .into_any_element()
 }
 
 pub(crate) fn stepper(
@@ -196,7 +257,7 @@ fn theme_card(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -
     card(
         "settings-theme",
         "主题",
-        Some("跟随系统时，Windows 切换浅色 / 深色模式，界面跟着变。"),
+        None,
         tokens,
         vec![theme_row(ws, s, tokens)],
     )
@@ -233,39 +294,37 @@ fn terminal_theme_card(
 
 #[inline(never)]
 fn theme_row(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
-    let (auto, dark, light) = (ws.clone(), ws.clone(), ws.clone());
+    let ws = ws.clone();
+    let segments = vec![
+        Segment {
+            id: "theme-light".into(),
+            label: "浅色",
+            icon: Some(Icon::new(IconName::Sun)),
+            selected: !s.follow_system && !s.dark,
+        },
+        Segment {
+            id: "theme-dark".into(),
+            label: "深色",
+            icon: Some(Icon::new(IconName::Moon)),
+            selected: !s.follow_system && s.dark,
+        },
+        Segment {
+            id: "theme-auto".into(),
+            label: "跟随系统",
+            icon: Some(Icon::new(Ico::Monitor)),
+            selected: s.follow_system,
+        },
+    ];
     row(
-        "主题",
-        Some("「系统」跟随 Windows 的深色 / 浅色设置"),
-        h_flex()
-            .gap_1()
-            .child(
-                Button::new("theme-auto")
-                    .label("系统")
-                    .compact()
-                    .when(s.follow_system, |b| b.primary())
-                    .on_click(move |_, _, cx| {
-                        auto.update(cx, |this, cx| this.set_theme_auto(cx));
-                    }),
-            )
-            .child(
-                Button::new("theme-light")
-                    .label("浅色")
-                    .compact()
-                    .when(!s.follow_system && !s.dark, |b| b.primary())
-                    .on_click(move |_, _, cx| {
-                        light.update(cx, |this, cx| this.set_theme(false, cx));
-                    }),
-            )
-            .child(
-                Button::new("theme-dark")
-                    .label("深色")
-                    .compact()
-                    .when(!s.follow_system && s.dark, |b| b.primary())
-                    .on_click(move |_, _, cx| {
-                        dark.update(cx, |this, cx| this.set_theme(true, cx));
-                    }),
-            ),
+        "应用外观",
+        Some("选「跟随系统」时，Windows 切换浅色 / 深色模式，界面跟着变。"),
+        choice_group(segments, tokens, move |index, _, cx| {
+            ws.update(cx, |this, cx| match index {
+                0 => this.set_theme(false, cx),
+                1 => this.set_theme(true, cx),
+                _ => this.set_theme_auto(cx),
+            });
+        }),
         tokens,
     )
 }
@@ -286,13 +345,7 @@ fn skin_group(
         .w_full()
         .gap_1p5()
         .py_1()
-        .child(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(tokens.text_muted)
-                .child(title),
-        )
+        .child(div().typo(Role::ItemName, tokens).child(title))
         .child(
             h_flex().flex_wrap().gap_2().children(
                 crate::app_theme::skins_of(dark)
@@ -379,7 +432,7 @@ fn skin_card(
             h_flex()
                 .px_0p5()
                 .justify_between()
-                .text_xs()
+                .typo(Role::Caption, tokens)
                 .text_color(tokens.text)
                 .child(skin.name)
                 .when(selected, |d| {
@@ -429,7 +482,7 @@ fn terminal_theme_row(
     };
     let ws = ws.clone();
     row(
-        "终端配色",
+        "配色方案",
         Some("跟随皮肤时，换皮肤终端也跟着换"),
         div().w(::gpui::px(260.0)).child(select(
             "terminal-theme",
@@ -491,12 +544,28 @@ fn terminal_mismatch_hint(
 pub(crate) fn terminal_cards(ws: &Entity<TerminalWorkspace>, cx: &App) -> Vec<AnyElement> {
     let tokens = Tokens::current(cx);
     let s: UiSettings = ws.read(cx).settings().clone();
-    vec![terminal_section(ws, &s, &tokens, cx)]
+    terminal_sections(ws, &s, &tokens, cx)
 }
 
-/// 终端：字体、字号、行高、回滚行数、光标、输入法、复制 / 粘贴。已经打开的终端也会立刻跟着变。
+/// 终端分类的三组：字体与显示（字体、字号、行高、回滚行数）、光标、输入与剪贴板。
+/// 已经打开的终端也会立刻跟着变。
 #[inline(never)]
-fn terminal_section(
+fn terminal_sections(
+    ws: &Entity<TerminalWorkspace>,
+    s: &UiSettings,
+    tokens: &Tokens,
+    cx: &App,
+) -> Vec<AnyElement> {
+    vec![
+        display_section(ws, s, tokens, cx),
+        cursor_section(ws, s, tokens),
+        input_section(ws, s, tokens),
+    ]
+}
+
+/// 字体与显示：字体、字号、行高、回滚行数。
+#[inline(never)]
+fn display_section(
     ws: &Entity<TerminalWorkspace>,
     s: &UiSettings,
     tokens: &Tokens,
@@ -525,16 +594,43 @@ fn terminal_section(
         font_row(ws, s, tokens),
         line_height_row(ws, s, tokens),
         scrollback_row(ws, s, tokens, cx),
-        cursor_row(ws, s, tokens),
-        switch_row(
-            "cursor-blink",
-            "光标闪烁",
-            "终端有焦点时光标一闪一闪；打字时先亮着。",
-            s.cursor_blink,
-            |this, cx| this.toggle_cursor_blink(cx),
-            ws,
-            tokens,
-        ),
+    ]);
+    card(
+        "settings-terminal",
+        "字体与显示",
+        Some("已经打开的终端也会立刻跟着变。"),
+        tokens,
+        rows,
+    )
+}
+
+/// 光标：样式、闪烁。
+#[inline(never)]
+fn cursor_section(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
+    card(
+        "settings-terminal-cursor",
+        "光标",
+        None,
+        tokens,
+        vec![
+            cursor_row(ws, s, tokens),
+            switch_row(
+                "cursor-blink",
+                "光标闪烁",
+                "终端有焦点时光标一闪一闪；打字时先亮着。",
+                s.cursor_blink,
+                |this, cx| this.toggle_cursor_blink(cx),
+                ws,
+                tokens,
+            ),
+        ],
+    )
+}
+
+/// 输入与剪贴板：输入法、选中即复制、右键粘贴、多行粘贴确认、括号粘贴。
+#[inline(never)]
+fn input_section(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
+    let rows = vec![
         switch_row(
             "ime-english",
             "终端里自动切到英文输入",
@@ -572,11 +668,11 @@ fn terminal_section(
             tokens,
         ),
         bracketed_paste_row(ws, s, tokens),
-    ]);
+    ];
     card(
-        "settings-terminal",
-        "终端",
-        Some("已经打开的终端也会立刻跟着变。"),
+        "settings-terminal-input",
+        "输入与剪贴板",
+        None,
         tokens,
         rows,
     )
@@ -708,24 +804,29 @@ fn scrollback_row(
 
 #[inline(never)]
 fn cursor_row(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
-    let button = |id: &'static str, label: &'static str, shape: CursorShape| {
-        let ws = ws.clone();
-        Button::new(id)
-            .label(label)
-            .compact()
-            .when(s.cursor == shape, |b| b.primary())
-            .on_click(move |_, _, cx| {
-                ws.update(cx, |this, cx| this.set_cursor_shape(shape, cx));
-            })
-    };
+    const SHAPES: [(&str, &str, CursorShape); 3] = [
+        ("cursor-block", "方块", CursorShape::Block),
+        ("cursor-underline", "下划线", CursorShape::Underline),
+        ("cursor-bar", "竖线", CursorShape::Bar),
+    ];
+    let segments = SHAPES
+        .iter()
+        .map(|(id, label, shape)| Segment {
+            id: (*id).into(),
+            label,
+            icon: None,
+            selected: s.cursor == *shape,
+        })
+        .collect();
+    let ws = ws.clone();
     row(
         "光标样式",
         None,
-        h_flex()
-            .gap_1()
-            .child(button("cursor-block", "方块", CursorShape::Block))
-            .child(button("cursor-underline", "下划线", CursorShape::Underline))
-            .child(button("cursor-bar", "竖线", CursorShape::Bar)),
+        choice_group(segments, tokens, move |index, _, cx| {
+            if let Some((_, _, shape)) = SHAPES.get(index) {
+                ws.update(cx, |this, cx| this.set_cursor_shape(*shape, cx));
+            }
+        }),
         tokens,
     )
 }

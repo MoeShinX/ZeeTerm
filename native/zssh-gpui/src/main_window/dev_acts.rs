@@ -107,6 +107,7 @@ pub fn validate(spec: &str) -> Result<(), String> {
         || super::dev_acts_pane::is_known(name)
         || super::dev_acts_u1::is_known(name)
         || super::dev_acts_u2::is_known(name)
+        || super::dev_acts_u4::is_known(name)
         || super::dev_acts_n4::is_known(name)
         || super::dev_acts_sync::is_known(name)
         || KNOWN.contains(&name)
@@ -232,6 +233,10 @@ fn run_inner(
     }
     // 设置页分类导航、连接 / SFTP / 窗口 / 高亮 / 会话日志设置的动作在 `dev_acts_u2`。
     if let Some(result) = super::dev_acts_u2::run(this, spec, window, cx) {
+        return result;
+    }
+    // V2-U4（字体与排版）的动作在 `dev_acts_u4`。
+    if let Some(result) = super::dev_acts_u4::run(this, spec, window, cx) {
         return result;
     }
     // V2-N4（主机协议的界面、X11）的动作在 `dev_acts_n4`。

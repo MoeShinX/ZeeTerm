@@ -18,6 +18,7 @@ use super::widgets::{
     section, select, text_button,
 };
 use crate::app_theme::Tokens;
+use crate::typography::{Role, Typo as _};
 
 pub const PROXY_KINDS: [(ProxyKind, &str); 2] = [
     (ProxyKind::Socks5, "SOCKS5"),
@@ -486,15 +487,14 @@ impl MainWindow {
                                     .child(
                                         div()
                                             .truncate()
-                                            .text_sm()
+                                            .typo(Role::ItemName, tokens)
                                             .child(SharedString::from(proxy.name.clone())),
                                     )
                                     .child(
                                         div()
                                             .truncate()
-                                            .text_xs()
+                                            .typo(Role::Caption, tokens)
                                             .font_family("Consolas")
-                                            .text_color(tokens.text_muted)
                                             .child(SharedString::from(format!(
                                                 "{}:{}",
                                                 proxy.host, proxy.port

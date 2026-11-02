@@ -24,6 +24,7 @@ use super::widgets::{
     switch_row, text_button,
 };
 use crate::app_theme::Tokens;
+use crate::typography::{Role, Typo as _};
 
 /// 凭据面板的界面状态。
 pub struct KeychainUi {
@@ -447,14 +448,13 @@ impl MainWindow {
                         .child(
                             div()
                                 .truncate()
-                                .text_sm()
+                                .typo(Role::ItemName, tokens)
                                 .child(SharedString::from(identity.name.clone())),
                         )
                         .child(
                             div()
                                 .truncate()
-                                .text_xs()
-                                .text_color(tokens.text_muted)
+                                .typo(Role::Caption, tokens)
                                 .child(SharedString::from(detail)),
                         ),
                 )

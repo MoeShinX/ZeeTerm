@@ -34,6 +34,7 @@ use crate::agent_setup::{self, AgentKind, InstallState};
 use crate::agent_text::redact_paths;
 use crate::app_theme::Tokens;
 use crate::ssh_backend::runtime;
+use crate::typography::{Role, Typo as _};
 
 /// 后台结果轮询间隔。
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -784,8 +785,7 @@ fn setting_row(
 ) -> AnyElement {
     h_flex()
         .w_full()
-        .min_h(::gpui::px(40.0))
-        .py_1()
+        .min_h(::gpui::px(28.0))
         .gap_4()
         .items_center()
         .justify_between()
@@ -793,9 +793,9 @@ fn setting_row(
             v_flex()
                 .gap_0p5()
                 .min_w_0()
-                .child(div().text_sm().text_color(tokens.text).child(title))
+                .child(div().typo(Role::ItemName, tokens).child(title))
                 .when_some(description, |d, text| {
-                    d.child(div().text_xs().text_color(tokens.text_muted).child(text))
+                    d.child(div().typo(Role::Caption, tokens).child(text))
                 }),
         )
         .child(h_flex().flex_none().gap_1().items_center().child(control))
@@ -805,20 +805,24 @@ fn setting_row(
 impl AgentsDemo {
     /// 默认智能体：三个按钮里高亮当前的（0.2.14 是下拉，这里和主题 / 光标行一样用分段按钮）。
     fn default_agent_row(&self, entity: &Entity<Self>, tokens: &Tokens) -> AnyElement {
-        let buttons = AgentKind::ALL.map(|kind| {
-            let entity = entity.clone();
-            Button::new(("ai-default-agent", kind.index()))
-                .label(kind.label())
-                .compact()
-                .when(self.default_agent == kind, |b| b.primary())
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |this, cx| this.set_default_agent(kind, cx));
-                })
-        });
+        let segments = AgentKind::ALL
+            .iter()
+            .map(|kind| crate::settings_view::Segment {
+                id: format!("ai-default-agent-{}", kind.index()).into(),
+                label: kind.label(),
+                icon: None,
+                selected: self.default_agent == *kind,
+            })
+            .collect();
+        let entity = entity.clone();
         setting_row(
             "默认智能体",
             Some("打开 AI 面板时默认用哪一个（面板顶部还能按对话切换）。".to_owned()),
-            h_flex().gap_1().children(buttons),
+            crate::settings_view::choice_group(segments, tokens, move |index, _, cx| {
+                if let Some(kind) = AgentKind::ALL.get(index).copied() {
+                    entity.update(cx, |this, cx| this.set_default_agent(kind, cx));
+                }
+            }),
             tokens,
         )
     }
@@ -828,16 +832,16 @@ impl AgentsDemo {
             .iter()
             .find(|(value, _, _)| *value == self.exec_mode)
             .map_or("manual", |(value, _, _)| *value);
-        let buttons = EXEC_MODES.map(|(value, label, _)| {
-            let entity = entity.clone();
-            Button::new(format!("ai-exec-mode-{value}"))
-                .label(label)
-                .compact()
-                .when(current == value, |b| b.primary())
-                .on_click(move |_, _, cx| {
-                    entity.update(cx, |this, cx| this.set_exec_mode(value, cx));
-                })
-        });
+        let segments = EXEC_MODES
+            .iter()
+            .map(|(value, label, _)| crate::settings_view::Segment {
+                id: format!("ai-exec-mode-{value}").into(),
+                label,
+                icon: None,
+                selected: current == *value,
+            })
+            .collect();
+        let entity = entity.clone();
         let description = EXEC_MODES
             .iter()
             .map(|(_, label, hint)| format!("{label}：{hint}"))
@@ -846,7 +850,11 @@ impl AgentsDemo {
         setting_row(
             "执行模式",
             Some(description),
-            h_flex().gap_1().children(buttons),
+            crate::settings_view::choice_group(segments, tokens, move |index, _, cx| {
+                if let Some((value, _, _)) = EXEC_MODES.get(index).copied() {
+                    entity.update(cx, |this, cx| this.set_exec_mode(value, cx));
+                }
+            }),
             tokens,
         )
     }
@@ -1097,19 +1105,10 @@ impl AgentsDemo {
             .id(("agent-block", kind.index()))
             .w_full()
             .gap_1()
-            .py_2()
-            .border_t_1()
-            .border_color(tokens.border)
             .child(
                 v_flex()
                     .gap_0p5()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(tokens.text)
-                            .child(kind.label()),
-                    )
+                    .child(div().typo(Role::ItemName, tokens).child(kind.label()))
                     .child(
                         div()
                             .text_xs()
@@ -1161,8 +1160,7 @@ impl AgentsDemo {
             DownloadUi::Idle => {}
             DownloadUi::Fetching => out.push(
                 div()
-                    .text_xs()
-                    .text_color(tokens.text_muted)
+                    .typo(Role::Caption, tokens)
                     .child("正在查询最新版本…")
                     .into_any_element(),
             ),
@@ -1189,17 +1187,11 @@ impl AgentsDemo {
                                 .font_weight(FontWeight::MEDIUM)
                                 .child("下载 opencode"),
                         )
+                        .child(div().typo(Role::Caption, tokens).child("来源："))
                         .child(
                             div()
-                                .text_xs()
-                                .text_color(tokens.text_muted)
-                                .child("来源："),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
+                                .typo(Role::Caption, tokens)
                                 .font_family("Consolas")
-                                .text_color(tokens.text_muted)
                                 .child(source),
                         )
                         .child(
@@ -1248,8 +1240,7 @@ impl AgentsDemo {
                         .mt_1()
                         .child(
                             div()
-                                .text_xs()
-                                .text_color(tokens.text_muted)
+                                .typo(Role::Caption, tokens)
                                 .child(format!("下载进度 {pct}%")),
                         )
                         .child(
@@ -1329,35 +1320,13 @@ impl AgentsDemo {
                     .into_any_element(),
             );
         }
-        v_flex()
-            .id("ai-settings")
-            .w_full()
-            .gap_1()
-            .p_4()
-            .rounded_lg()
-            .border_1()
-            .border_color(tokens.border)
-            .bg(tokens.surface)
-            .child(
-                v_flex()
-                    .pb_1()
-                    .gap_0p5()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(tokens.text)
-                            .child("AI"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(tokens.text_muted)
-                            .child("AI 助手通过外部智能体在服务器上执行命令，遵守下面的执行模式。"),
-                    ),
-            )
-            .children(rows)
-            .into_any_element()
+        crate::settings_view::card(
+            "ai-settings",
+            "智能体与执行模式",
+            Some("AI 助手通过外部智能体在服务器上执行命令，遵守下面的执行模式。"),
+            &tokens,
+            rows,
+        )
     }
 }
 

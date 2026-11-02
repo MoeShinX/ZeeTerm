@@ -578,6 +578,56 @@ pub fn on_accent(skin: &Skin) -> u32 {
     }
 }
 
+/// 主文字色比皮肤表里的正文色更靠近纯黑（浅色皮肤）/ 纯白（深色皮肤）的比例：标题、名称要「黑」，
+/// 但保留皮肤自己的色调（Solarized 偏青、Rosé Pine 偏紫），不一刀切成 #000 / #FFF。
+pub const INK_PUSH_LIGHT: f32 = 0.55;
+pub const INK_PUSH_DARK: f32 = 0.55;
+/// 次要色（说明文字）对界面底色 / 卡片底色的对比度下限：比 WCAG AA 正文 4.5 : 1 也不放宽。
+pub const MUTED_MIN_CONTRAST: f32 = 4.5;
+/// 第三级色（导航分组名、占位提示）的对比度下限：只给不承载关键信息的小标签用。
+pub const FAINT_MIN_CONTRAST: f32 = 3.0;
+
+/// 界面的三级文字色：主（标题、名称）/ 次（说明）/ 淡（分组名、提示）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ink {
+    pub primary: u32,
+    pub secondary: u32,
+    pub faint: u32,
+    /// 未选中的导航项：介于主色和次色之间（比说明文字深，比选中的浅）。
+    pub nav: u32,
+}
+
+/// 由皮肤的界面色板算出三级文字色。主色把皮肤正文色朝黑 / 白推一段；次色取皮肤自己的说明色，
+/// 但在底色或卡片色上低于 [`MUTED_MIN_CONTRAST`] 时朝主色拉近，直到够；淡色从次色朝底色淡出，
+/// 淡到对比度刚好守住 [`FAINT_MIN_CONTRAST`] 为止。三个值都是不透明的 RGB。
+pub fn ink_for(skin: &Skin) -> Ink {
+    let p = skin.ui;
+    let (extreme, push) = if skin.dark {
+        (0xFFFFFF, INK_PUSH_DARK)
+    } else {
+        (0x000000, INK_PUSH_LIGHT)
+    };
+    let primary = mix(extreme, p.text, push);
+    let readable = |hex: u32, floor: f32| {
+        contrast(hex, p.background) >= floor && contrast(hex, p.surface) >= floor
+    };
+    let secondary = (0..=20)
+        .map(|step| mix(primary, p.text_muted, step as f32 * 0.05))
+        .find(|hex| readable(*hex, MUTED_MIN_CONTRAST))
+        .unwrap_or(primary);
+    // 淡出的比例从 0.35 起往回收，直到对比度守住下限；收到 0 就是次色本身，一定满足。
+    let faint = (0..=7)
+        .map(|step| mix(p.background, secondary, 0.35 - step as f32 * 0.05))
+        .find(|hex| readable(*hex, FAINT_MIN_CONTRAST))
+        .unwrap_or(secondary);
+    Ink {
+        primary,
+        secondary,
+        faint,
+        nav: mix(secondary, primary, 0.35),
+    }
+}
+
 /// 一套解析好的颜色，主窗口各部件直接取用。
 #[derive(Clone, Copy, Debug)]
 pub struct Tokens {
@@ -586,8 +636,14 @@ pub struct Tokens {
     pub surface: Hsla,
     pub subtle: Hsla,
     pub border: Hsla,
+    /// 主文字色（标题、名称）：比皮肤表里的正文色更黑 / 更白，见 [`ink_for`]。
     pub text: Hsla,
+    /// 次要文字色（说明）。
     pub text_muted: Hsla,
+    /// 第三级文字色（导航分组名、占位提示）。
+    pub text_faint: Hsla,
+    /// 未选中的导航项的文字色。
+    pub text_nav: Hsla,
     pub accent: Hsla,
     pub on_accent: Hsla,
     /// 选中项 / 悬停的浅底色：强调色淡淡地叠在背景上。
@@ -622,14 +678,17 @@ impl Tokens {
         let soft = mix(p.accent, p.background, if dark { 0.22 } else { 0.12 });
         let mut hover = rgb(p.text);
         hover.a = if dark { 0.08 } else { 0.06 };
+        let ink = ink_for(skin);
         Self {
             dark,
             background: rgb(p.background),
             surface: rgb(p.surface),
             subtle: rgb(p.subtle),
             border: rgb(p.border),
-            text: rgb(p.text),
-            text_muted: rgb(p.text_muted),
+            text: rgb(ink.primary),
+            text_muted: rgb(ink.secondary),
+            text_faint: rgb(ink.faint),
+            text_nav: rgb(ink.nav),
             accent: rgb(p.accent),
             on_accent: rgb(on_accent(skin)),
             accent_soft: rgb(soft),
@@ -734,6 +793,7 @@ fn apply(dark: bool, cx: &mut App) {
     let t = Tokens::for_skin(skin);
     let p = skin.ui;
     let hover_amount = if dark { 0.10 } else { 0.07 };
+    let ui_font = crate::fonts::ui_font(cx);
     let subtle_hover = rgb(mix(p.text, p.subtle, hover_amount));
     let subtle_active = rgb(mix(p.text, p.subtle, hover_amount * 2.0));
     let accent_hover = rgb(mix(p.text, p.accent, hover_amount));
@@ -741,6 +801,9 @@ fn apply(dark: bool, cx: &mut App) {
     let danger_hover = rgb(mix(p.text, p.danger, hover_amount));
     let danger_active = rgb(mix(p.text, p.danger, hover_amount * 2.0));
     Theme::update(cx, |theme| {
+        // 界面字体：显式的字体栈代替 `.SystemUIFont`（见 `fonts::resolve_ui_font`）。中文后备在各窗口的
+        // 顶层元素上设（`typography::UiFontStyled`），主题只有主字体一个槽。
+        theme.font_family = ui_font.family.clone().into();
         let c = &mut theme.colors;
         c.background = t.background;
         c.foreground = t.text;
@@ -940,6 +1003,129 @@ mod tests {
             // 明暗要名副其实：深色皮肤背景比黑更接近黑。
             let dark_bg = contrast(ui.background, 0x000000) < contrast(ui.background, 0xFFFFFF);
             assert_eq!(dark_bg, skin.dark, "{} 明暗", skin.id);
+        }
+    }
+
+    /// 每个皮肤的三级文字色（V2-U4）。
+    fn inks() -> Vec<(&'static Skin, Ink)> {
+        SKINS.iter().map(|skin| (skin, ink_for(skin))).collect()
+    }
+
+    #[test]
+    fn the_primary_ink_is_much_darker_or_lighter_than_the_skin_text() {
+        // 浅色接近 #1a1a1a、深色接近 #f2f2f2 的方向：比皮肤表里的正文色更靠近纯黑 / 纯白，
+        // 对比度至少到 9.5 : 1（WCAG AAA 是 7 : 1；标题、名称要「黑」）。
+        for (skin, ink) in inks() {
+            let extreme = if skin.dark { 0xFFFFFF } else { 0x000000 };
+            assert!(
+                contrast(ink.primary, extreme) < contrast(skin.ui.text, extreme),
+                "{} 主文字色没有比正文色更极端",
+                skin.id
+            );
+            assert!(
+                contrast(ink.primary, skin.ui.background) >= 9.5,
+                "{} 主文字色对底色 {:.1}",
+                skin.id,
+                contrast(ink.primary, skin.ui.background)
+            );
+            assert!(contrast(ink.primary, skin.ui.surface) >= 9.5, "{}", skin.id);
+        }
+        // 默认两个皮肤的具体取值：纸白 #1b1b1b，Dracula #fcfcf9。
+        assert_eq!(ink_for(&light()).primary, 0x1B1B1B);
+        assert_eq!(ink_for(&dark()).primary, 0xFCFCF9);
+    }
+
+    #[test]
+    fn secondary_and_faint_inks_stay_readable_on_every_skin() {
+        for (skin, ink) in inks() {
+            let ui = skin.ui;
+            for (name, bg) in [("底色", ui.background), ("卡片色", ui.surface)] {
+                assert!(
+                    contrast(ink.secondary, bg) >= MUTED_MIN_CONTRAST,
+                    "{} 次要色在{name}上 {:.2}",
+                    skin.id,
+                    contrast(ink.secondary, bg)
+                );
+                assert!(
+                    contrast(ink.faint, bg) >= FAINT_MIN_CONTRAST,
+                    "{} 第三级色在{name}上 {:.2}",
+                    skin.id,
+                    contrast(ink.faint, bg)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_three_inks_step_down_clearly_on_every_skin() {
+        for (skin, ink) in inks() {
+            let bg = skin.ui.background;
+            let (p, s, f) = (
+                contrast(ink.primary, bg),
+                contrast(ink.secondary, bg),
+                contrast(ink.faint, bg),
+            );
+            // 主 > 次 > 淡，而且每一级之间至少拉开 1 : 1 的对比度，说明文字才「明显更淡」。
+            assert!(p - s >= 1.0, "{} 主 {p:.1} 与次 {s:.1} 太近", skin.id);
+            assert!(s > f, "{} 次 {s:.1} 不比淡 {f:.1} 更清楚", skin.id);
+            // 未选中的导航项落在主色和次色之间。
+            let n = contrast(ink.nav, bg);
+            assert!(
+                n < p && n > s,
+                "{} 导航色 {n:.1} 不在 {s:.1}～{p:.1} 之间",
+                skin.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_skin_whose_own_muted_text_is_already_readable_keeps_it() {
+        // 皮肤表里的说明色够清楚（纸白、GitHub）就原样用，不被改动。
+        for id in ["paper", "github-light", "graphite", "dracula"] {
+            let skin = skin(id).expect("内置皮肤");
+            assert_eq!(ink_for(skin).secondary, skin.ui.text_muted, "{id}");
+        }
+        // 说明色在卡片色上不够 4.5 的皮肤（Solarized 浅色）会被拉深到够。
+        let solarized = skin("solarized-light").expect("内置皮肤");
+        assert!(contrast(solarized.ui.text_muted, solarized.ui.surface) < MUTED_MIN_CONTRAST);
+        assert_ne!(ink_for(solarized).secondary, solarized.ui.text_muted);
+    }
+
+    #[test]
+    fn tokens_carry_the_new_inks() {
+        for skin in SKINS {
+            let t = Tokens::for_skin(skin);
+            let ink = ink_for(skin);
+            assert_eq!(t.text, rgb(ink.primary));
+            assert_eq!(t.text_muted, rgb(ink.secondary));
+            assert_eq!(t.text_faint, rgb(ink.faint));
+            assert_eq!(t.text_nav, rgb(ink.nav));
+        }
+    }
+
+    /// 把全部皮肤的三级文字色和对比度打印出来（写报告用）：
+    /// `cargo test -p zssh-gpui print_ink_table -- --ignored --nocapture`
+    #[test]
+    #[ignore = "只用来打印对比度表"]
+    fn print_ink_table() {
+        for (skin, ink) in inks() {
+            let ui = skin.ui;
+            println!(
+                "{:<18} 主 {:06X} {:>5.1} | 次 {:06X} {:>4.1}（原 {:06X} {:>4.1}） | 淡 {:06X} {:>4.1} | 导航 {:06X} {:>4.1} | 卡片上 次 {:>4.1} 淡 {:>4.1}",
+                skin.id,
+                ink.primary,
+                contrast(ink.primary, ui.background),
+                ink.secondary,
+                contrast(ink.secondary, ui.background),
+                ui.text_muted,
+                contrast(ui.text_muted, ui.background),
+                ink.faint,
+                contrast(ink.faint, ui.background),
+                ink.nav,
+                contrast(ink.nav, ui.background),
+                contrast(ink.secondary, ui.surface),
+                contrast(ink.faint, ui.surface),
+            );
         }
     }
 

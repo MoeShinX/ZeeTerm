@@ -14,6 +14,7 @@ use gpui_kit::*;
 use zssh_core::model::Protocol;
 
 use crate::app_theme::Tokens;
+use crate::typography::{Role, Typo as _};
 
 /// 字段：上面一行小标签（可带灰色的补充说明），下面是控件。
 pub fn field(label: &str, hint: Option<String>, control: impl IntoElement, tokens: &Tokens) -> Div {
@@ -27,14 +28,12 @@ pub fn field(label: &str, hint: Option<String>, control: impl IntoElement, token
                 .items_baseline()
                 .child(
                     div()
-                        .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
+                        .typo(Role::FieldLabel, tokens)
                         .child(SharedString::from(label.to_owned())),
                 )
                 .children(hint.map(|hint| {
                     div()
-                        .text_xs()
-                        .text_color(tokens.text_muted)
+                        .typo(Role::Caption, tokens)
                         .child(SharedString::from(hint))
                 })),
         )
@@ -134,9 +133,7 @@ pub fn section(title: &str, children: Vec<AnyElement>, tokens: &Tokens) -> Div {
         .gap_2()
         .child(
             div()
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(tokens.text_muted)
+                .typo(Role::GroupTitle, tokens)
                 .child(SharedString::from(title.to_owned())),
         )
         .children(children)
@@ -144,10 +141,7 @@ pub fn section(title: &str, children: Vec<AnyElement>, tokens: &Tokens) -> Div {
 
 /// 灰色的小字说明。
 pub fn note(text: impl Into<SharedString>, tokens: &Tokens) -> Div {
-    div()
-        .text_xs()
-        .text_color(tokens.text_muted)
-        .child(text.into())
+    div().typo(Role::Caption, tokens).child(text.into())
 }
 
 /// 管理页列表为空时的空状态：居中一句话（可带一行灰色补充）+ 一个主按钮。
@@ -164,7 +158,7 @@ pub fn empty_state(
         .items_center()
         .child(
             div()
-                .text_sm()
+                .typo(Role::Body, tokens)
                 .text_color(tokens.text_muted)
                 .child(SharedString::from(text.to_owned())),
         )
@@ -251,7 +245,11 @@ pub fn switch_row(
             v_flex()
                 .min_w_0()
                 .gap_0p5()
-                .child(div().text_sm().child(SharedString::from(title.to_owned())))
+                .child(
+                    div()
+                        .typo(Role::FieldLabel, tokens)
+                        .child(SharedString::from(title.to_owned())),
+                )
                 .children(hint.map(|hint| note(hint, tokens))),
         )
         .child(

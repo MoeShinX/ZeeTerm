@@ -17,6 +17,7 @@ use super::quick_commands::{self, COMMANDS_MAX, QuickCommand};
 use super::side_panel::{PanelContent, QUICK_COMMANDS};
 use super::widgets::{ButtonLook, act, empty_state, field, note, switch_row, text_button};
 use crate::app_theme::Tokens;
+use crate::typography::{Role, Typo as _};
 
 type RowAction = Box<dyn Fn(&mut Window, &mut App)>;
 
@@ -366,13 +367,12 @@ impl MainWindow {
                         .child(
                             v_flex()
                                 .min_w_0()
-                                .child(div().truncate().text_sm().child(name))
+                                .child(div().truncate().typo(Role::ItemName, tokens).child(name))
                                 .child(
                                     div()
                                         .truncate()
-                                        .text_xs()
+                                        .typo(Role::Caption, tokens)
                                         .font_family("Consolas")
-                                        .text_color(tokens.text_muted)
                                         .child(first_line),
                                 ),
                         )
@@ -465,8 +465,7 @@ impl MainWindow {
                     .px_1()
                     .py_1()
                     .rounded_md()
-                    .text_xs()
-                    .text_color(tokens.text_muted)
+                    .typo(Role::Caption, tokens)
                     .when(!searching, |d| {
                         d.cursor_pointer().hover(move |style| style.bg(hover))
                     })
@@ -602,8 +601,7 @@ impl MainWindow {
                             .rounded_md()
                             .border_1()
                             .border_color(tokens.border)
-                            .text_xs()
-                            .text_color(tokens.text_muted)
+                            .typo(Role::Caption, tokens)
                             .cursor_pointer()
                             .hover(move |style| style.bg(hover))
                             .child(SharedString::from(name.clone()))

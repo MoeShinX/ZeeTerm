@@ -19,6 +19,7 @@ use super::widgets::{
     ButtonLook, Choice, error_note, field, note, select, switch_row, text_button,
 };
 use crate::app_theme::Tokens;
+use crate::typography::{Role, Typo as _};
 
 /// 算法下拉里的三项：算法、名字、一句话说明。
 pub const ALGORITHMS: [(KeyAlgorithm, &str, &str); 3] = [
@@ -287,8 +288,7 @@ impl MainWindow {
                     .gap_1p5()
                     .child(
                         div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .typo(Role::GroupTitle, tokens)
                             .child(if done { "密钥已生成" } else { "生成 SSH 密钥" }),
                     )
                     .child(note(
@@ -429,8 +429,7 @@ impl MainWindow {
                         div()
                             .min_w_0()
                             .truncate()
-                            .text_xs()
-                            .text_color(tokens.text_muted)
+                            .typo(Role::Caption, tokens)
                             .child(SharedString::from(fingerprint.to_owned())),
                     )
                     .child(text_button(
@@ -658,8 +657,7 @@ impl MainWindow {
                     .gap_1p5()
                     .child(
                         div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .typo(Role::GroupTitle, tokens)
                             .child(SharedString::from(format!("把公钥装到「{}」", dialog.host_name))),
                     )
                     .child(note(

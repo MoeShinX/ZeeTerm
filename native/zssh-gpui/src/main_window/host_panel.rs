@@ -37,6 +37,7 @@ use super::widgets::{
     section, segmented, select, switch_row, text_button,
 };
 use crate::app_theme::Tokens;
+use crate::typography::{Role, Typo as _};
 
 /// AI 记忆小节的状态。
 pub struct MemoryForm {
@@ -1920,8 +1921,7 @@ impl MainWindow {
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_xs()
-                                    .text_color(tokens.text_muted)
+                                    .typo(Role::Caption, tokens)
                                     .child(SharedString::from(format!(
                                         "{stamp}{}",
                                         if length > 0 {

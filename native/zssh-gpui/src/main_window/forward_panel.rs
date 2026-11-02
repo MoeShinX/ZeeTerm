@@ -22,6 +22,7 @@ use super::widgets::{
 };
 use crate::app_theme::Tokens;
 use crate::forward_runtime::{self, ForwardStatus, Phase};
+use crate::typography::{Role, Typo as _};
 
 /// 监听地址是不是回环（不是的话要提醒：同一网络里的其他机器也能连上）。
 pub fn is_loopback(host: &str) -> bool {
@@ -449,15 +450,14 @@ impl MainWindow {
                                             .child(
                                                 div()
                                                     .truncate()
-                                                    .text_sm()
+                                                    .typo(Role::ItemName, tokens)
                                                     .child(SharedString::from(rule_title(rule))),
                                             )
                                             .when(ui.host_filter.is_none(), |d| {
                                                 d.child(
                                                     div()
                                                         .truncate()
-                                                        .text_xs()
-                                                        .text_color(tokens.text_muted)
+                                                        .typo(Role::Caption, tokens)
                                                         .child(SharedString::from(host_name(
                                                             rule.host_id,
                                                         ))),
@@ -467,9 +467,8 @@ impl MainWindow {
                                     .child(
                                         div()
                                             .truncate()
-                                            .text_xs()
+                                            .typo(Role::Caption, tokens)
                                             .font_family("Consolas")
-                                            .text_color(tokens.text_muted)
                                             .child(SharedString::from(forward_runtime::describe(
                                                 rule,
                                             ))),
@@ -574,9 +573,7 @@ impl MainWindow {
                 .gap_3()
                 .child(
                     div()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(tokens.text_muted)
+                        .typo(Role::GroupTitle, tokens)
                         .child(if draft.id.is_none() {
                             "新建转发"
                         } else {

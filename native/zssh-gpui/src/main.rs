@@ -61,6 +61,7 @@ mod terminal_workspace;
 #[cfg(test)]
 mod test_ssh_server;
 mod tray;
+mod typography;
 mod update_demo;
 mod window_state;
 mod x11_glue;

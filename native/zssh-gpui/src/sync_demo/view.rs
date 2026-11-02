@@ -25,6 +25,7 @@ use super::{
 };
 use crate::app_theme::Tokens;
 use crate::settings_view::card;
+use crate::typography::{Role, Typo as _};
 
 /// 表单里标签的宽度。
 const LABEL_WIDTH: f32 = 112.0;
@@ -104,8 +105,7 @@ pub(super) fn is_plain_http(url: &str) -> bool {
 
 fn muted(text: impl Into<SharedString>, tokens: &Tokens) -> AnyElement {
     div()
-        .text_xs()
-        .text_color(tokens.text_muted)
+        .typo(Role::Caption, tokens)
         .child(text.into())
         .into_any_element()
 }
@@ -188,8 +188,7 @@ fn setting(
 ) -> AnyElement {
     h_flex()
         .w_full()
-        .min_h(px(40.0))
-        .py_1()
+        .min_h(px(28.0))
         .gap_4()
         .items_center()
         .justify_between()
@@ -197,7 +196,7 @@ fn setting(
             v_flex()
                 .min_w_0()
                 .gap_0p5()
-                .child(div().text_sm().text_color(tokens.text).child(title))
+                .child(div().typo(Role::ItemName, tokens).child(title))
                 .child(muted(description, tokens)),
         )
         .child(h_flex().flex_none().gap_1().items_center().child(control))

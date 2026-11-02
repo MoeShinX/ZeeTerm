@@ -19,6 +19,7 @@ use super::nav::MainView;
 use super::panel_width::{self, DragStart, PanelKind};
 use super::widgets::icon_button;
 use crate::app_theme::Tokens;
+use crate::typography::{Role, Typo as _};
 
 /// 面板编号。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -230,16 +231,11 @@ impl MainWindow {
                                     .child(
                                         div()
                                             .truncate()
-                                            .text_sm()
-                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .typo(Role::GroupTitle, tokens)
                                             .child(content.title),
                                     )
                                     .children(content.subtitle.map(|text| {
-                                        div()
-                                            .truncate()
-                                            .text_xs()
-                                            .text_color(tokens.text_muted)
-                                            .child(text)
+                                        div().truncate().typo(Role::Caption, tokens).child(text)
                                     })),
                             ),
                     )

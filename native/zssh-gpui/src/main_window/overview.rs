@@ -16,6 +16,7 @@ use crate::icons::Ico;
 use crate::status_demo::{
     Level, StatusSummary, level_of, mib_gb_label, net_speed_label, traffic_label, uptime_label,
 };
+use crate::typography::{Role, Typo as _};
 
 /// 网速曲线最多记这么多个点（3 秒一次 ≈ 6 分钟）。
 pub const NET_HISTORY_MAX: usize = 120;
@@ -120,8 +121,7 @@ fn ring(
             div()
                 .max_w(px(80.0))
                 .truncate()
-                .text_xs()
-                .text_color(tokens.text_muted)
+                .typo(Role::Caption, tokens)
                 .child(::gpui::SharedString::from(sub)),
         )
 }
@@ -133,8 +133,7 @@ fn net_chart(history: &VecDeque<(f64, f64)>, tokens: &Tokens) -> AnyElement {
             .h(px(56.0))
             .flex()
             .items_center()
-            .text_xs()
-            .text_color(tokens.text_muted)
+            .typo(Role::Caption, tokens)
             .child("正在积累数据…")
             .into_any_element();
     }
@@ -240,8 +239,7 @@ fn section(
         .child(
             h_flex()
                 .justify_between()
-                .text_xs()
-                .text_color(tokens.text_muted)
+                .typo(Role::Caption, tokens)
                 .child(title)
                 .children(extra.map(::gpui::SharedString::from)),
         )

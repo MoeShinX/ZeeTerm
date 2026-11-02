@@ -22,6 +22,7 @@ use crate::icons::Ico;
 use crate::main_window::widgets::{Choice, icon_button, select};
 use crate::settings_view::card;
 use crate::terminal_workspace::TerminalWorkspace;
+use crate::typography::{Role, Typo as _};
 
 /// 一条规则的输入框。
 struct RuleInput {
@@ -170,12 +171,11 @@ impl Render for HighlightEditor {
         let mut rows: Vec<AnyElement> = vec![
             h_flex()
                 .w_full()
-                .min_h(px(40.0))
-                .py_1()
+                .min_h(px(28.0))
                 .gap_4()
                 .items_center()
                 .justify_between()
-                .child(div().text_sm().text_color(tokens.text).child("开启高亮"))
+                .child(div().typo(Role::ItemName, &tokens).child("开启高亮"))
                 .child(
                     Switch::new("highlight-enabled")
                         .checked(enabled)
@@ -373,8 +373,7 @@ impl HighlightEditor {
             .when(full, |d| {
                 d.child(
                     div()
-                        .text_xs()
-                        .text_color(tokens.text_muted)
+                        .typo(Role::Caption, tokens)
                         .child(format!("最多 {MAX_RULES} 条规则")),
                 )
             })

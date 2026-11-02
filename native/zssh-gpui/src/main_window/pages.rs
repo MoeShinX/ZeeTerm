@@ -11,6 +11,7 @@ use zssh_core::model::Host;
 use super::MainWindow;
 use super::host_tree::{compare_names, host_matches};
 use crate::app_theme::Tokens;
+use crate::typography::{Role, Typo as _};
 
 /// 空白标签里「连接到主机」要列出的主机：按名字排序，搜索框里的字匹配名称 / 地址 /
 /// 用户名 / 标签（同 0.2.14 的 `filterHosts`）。
@@ -104,14 +105,8 @@ impl MainWindow {
                     .child(
                         v_flex()
                             .min_w_0()
-                            .child(div().truncate().text_sm().child(name))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_xs()
-                                    .text_color(tokens.text_muted)
-                                    .child(detail),
-                            ),
+                            .child(div().truncate().typo(Role::ItemName, tokens).child(name))
+                            .child(div().truncate().typo(Role::Caption, tokens).child(detail)),
                     )
                     .on_click(move |_, window, cx| {
                         open.update(cx, |this, cx| this.open_host(host_id, window, cx));
@@ -133,16 +128,10 @@ impl MainWindow {
                     .max_w(px(448.0))
                     .px_4()
                     .gap_2()
+                    .child(div().typo(Role::GroupTitle, tokens).child("快速连接"))
                     .child(
                         div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("快速连接"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(tokens.text_muted)
+                            .typo(Role::Caption, tokens)
                             .child("搜索已保存的会话，回车即可连接"),
                     )
                     .child(Input::new(&self.launcher_query))
@@ -150,16 +139,16 @@ impl MainWindow {
                         div()
                             .py_6()
                             .text_center()
-                            .text_sm()
-                            .text_color(tokens.text_muted)
+                            .typo(Role::Caption, tokens)
+                            .text_size(px(14.0))
                             .child("主机库里还没有主机，点侧栏上方的 + 新建一台。")
                             .into_any_element()
                     } else if shown.is_empty() {
                         div()
                             .py_6()
                             .text_center()
-                            .text_sm()
-                            .text_color(tokens.text_muted)
+                            .typo(Role::Caption, tokens)
+                            .text_size(px(14.0))
                             .child("没有匹配的主机")
                             .into_any_element()
                     } else {

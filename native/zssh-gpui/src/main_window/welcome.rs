@@ -12,6 +12,7 @@ use gpui_kit::*;
 use super::MainWindow;
 use super::widgets::{ButtonLook, act, text_button};
 use crate::app_theme::Tokens;
+use crate::typography::{Role, Typo as _};
 
 /// 副标题（自己的话，不照搬别的软件）。
 pub const WELCOME_SUBTITLE: &str = "简洁的 SSH / Telnet / 串口终端";
@@ -43,7 +44,7 @@ impl MainWindow {
             )
             .child(
                 div()
-                    .text_sm()
+                    .typo(Role::Body, tokens)
                     .text_color(tokens.text_muted)
                     .child(WELCOME_SUBTITLE),
             )
@@ -76,8 +77,7 @@ impl MainWindow {
                 div()
                     .mt_1()
                     .max_w(px(480.0))
-                    .text_xs()
-                    .text_color(tokens.text_muted)
+                    .typo(Role::Caption, tokens)
                     .opacity(0.8)
                     .child(WELCOME_HINT),
             )

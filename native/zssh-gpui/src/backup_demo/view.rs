@@ -20,6 +20,7 @@ use super::{BackupDemo, CONFIRM_WARNING, format_size, write_keep};
 use crate::app_theme::Tokens;
 use crate::settings_view::card;
 use crate::sync_demo::format_stamp;
+use crate::typography::{Role, Typo as _};
 
 /// 保留份数的可选值（核心接受 1～200，同 0.2.14）。
 pub(super) const KEEP_CHOICES: [usize; 6] = [5, 10, 20, 50, 100, 200];
@@ -63,8 +64,7 @@ pub(super) fn row_texts(detail: &BackupDetail) -> (String, String) {
 
 fn muted(text: impl Into<SharedString>, tokens: &Tokens) -> AnyElement {
     div()
-        .text_xs()
-        .text_color(tokens.text_muted)
+        .typo(Role::Caption, tokens)
         .child(text.into())
         .into_any_element()
 }
@@ -212,8 +212,7 @@ impl BackupDemo {
         }
         h_flex()
             .w_full()
-            .min_h(px(40.0))
-            .py_1()
+            .min_h(px(28.0))
             .gap_4()
             .items_center()
             .justify_between()
@@ -221,7 +220,7 @@ impl BackupDemo {
                 v_flex()
                     .min_w_0()
                     .gap_0p5()
-                    .child(div().text_sm().child("最多保留份数"))
+                    .child(div().typo(Role::ItemName, tokens).child("最多保留份数"))
                     .child(muted(
                         "超过的最早的备份会被清理。调小之后，多出来的旧备份在下一次备份时才删，改这个设置\
                          本身不会删任何东西。",

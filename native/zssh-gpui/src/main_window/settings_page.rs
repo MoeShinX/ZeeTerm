@@ -31,6 +31,7 @@ use crate::app_prefs::{
 use crate::app_theme::Tokens;
 use crate::settings_nav::{SHORTCUTS, SettingsSection};
 use crate::settings_view::{card, row, row_with};
+use crate::typography::{Role, Typo as _};
 use zssh_core::sync::app_proxy::{APP_NETWORK_PROXY_KEY, AppProxyMode, SystemProxy};
 
 /// 备份那一块在「同步」分类滚动容器里的下标（驱动脚本滚到备份一节用）。
@@ -68,14 +69,10 @@ fn page_header(
                     .items_baseline()
                     .child(
                         div()
-                            .text_2xl()
-                            .font_weight(FontWeight::BOLD)
+                            .typo(Role::PageTitle, tokens)
                             .child(SharedString::from(title.to_owned())),
                     )
-                    .children(
-                        subtitle
-                            .map(|text| div().text_sm().text_color(tokens.text_muted).child(text)),
-                    ),
+                    .children(subtitle.map(|text| div().typo(Role::Caption, tokens).child(text))),
             )
             .child(
                 h_flex()
@@ -97,8 +94,8 @@ fn settings_block(content: impl IntoElement, first: bool) -> impl IntoElement {
         .max_w(px(768.0))
         .mx_auto()
         .px_6()
-        .pb_4()
-        .when(first, |d| d.pt_6())
+        .pb_6()
+        .when(first, |d| d.pt_2())
         .child(content)
 }
 
@@ -523,10 +520,9 @@ impl MainWindow {
                 SettingsSection::Terminal => self.terminal_blocks(tokens, cx),
                 SettingsSection::Connection => {
                     self.x11_ensure_loaded(window, cx);
-                    vec![
-                        self.connection_card(tokens, window, cx),
-                        self.x11_card(tokens, cx),
-                    ]
+                    let mut blocks = self.connection_cards(tokens, window, cx);
+                    blocks.push(self.x11_card(tokens, cx));
+                    blocks
                 }
                 SettingsSection::Sftp => vec![self.sftp_card(tokens, cx)],
                 SettingsSection::Ai => vec![agents.into_any_element()],
@@ -769,6 +765,7 @@ impl MainWindow {
             (tokens.hover, tokens.subtle, tokens.text, tokens.text_muted);
         let item = {
             let entity = entity.clone();
+            let tokens = *tokens;
             move |index: usize, section: SettingsSection| {
                 let entity = entity.clone();
                 let is_current = section == current;
@@ -780,12 +777,16 @@ impl MainWindow {
                     .px_2()
                     .py(px(6.0))
                     .rounded_md()
-                    .text_sm()
                     .cursor_pointer()
-                    .text_color(text)
-                    .when(is_current, |d| {
-                        d.bg(selected_bg).font_weight(FontWeight::MEDIUM)
-                    })
+                    .typo(
+                        if is_current {
+                            Role::NavSelected
+                        } else {
+                            Role::Nav
+                        },
+                        &tokens,
+                    )
+                    .when(is_current, |d| d.bg(selected_bg))
                     .when(!is_current, |d| d.hover(move |style| style.bg(hover)))
                     .child(
                         Icon::new(section.icon())
@@ -803,8 +804,7 @@ impl MainWindow {
                 .px_2()
                 .pt_3()
                 .pb_1()
-                .text_xs()
-                .text_color(muted)
+                .typo(Role::NavGroup, tokens)
                 .child(title)
         };
         let back = {
@@ -818,9 +818,9 @@ impl MainWindow {
                 .py(px(7.0))
                 .rounded_md()
                 .bg(tokens.subtle)
-                .text_sm()
-                .cursor_pointer()
+                .typo(Role::Nav, tokens)
                 .text_color(text)
+                .cursor_pointer()
                 .hover(move |style| style.bg(hover))
                 .tooltip(|window, cx| {
                     gpui_kit::component::tooltip::Tooltip::new("返回应用 (Esc)").build(window, cx)
@@ -1142,12 +1142,13 @@ impl MainWindow {
 
     // ---- 连接 ----
 
-    fn connection_card(
+    /// 连接分类的三组：代理、连接保持（空闲断开、保活）、服务器状态栏。
+    fn connection_cards(
         &self,
         tokens: &Tokens,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> ::gpui::AnyElement {
+    ) -> Vec<::gpui::AnyElement> {
         let entity = cx.entity();
         let proxies = self.store.proxies();
         let db = self.store.db().ok();
@@ -1195,8 +1196,7 @@ impl MainWindow {
             default_control = default_control.child(
                 div()
                     .w_full()
-                    .text_xs()
-                    .text_color(tokens.text_muted)
+                    .typo(Role::Caption, tokens)
                     .child("还没有代理，点下面的「新建 / 管理代理」添加一个。"),
             );
         }
@@ -1254,8 +1254,7 @@ impl MainWindow {
             app_control = app_control.child(
                 div()
                     .id("system-proxy-text")
-                    .text_xs()
-                    .text_color(tokens.text_muted)
+                    .typo(Role::Caption, tokens)
                     .child(system_proxy_text(
                         &zssh_core::sync::app_proxy::read_system_proxy(),
                     )),
@@ -1263,24 +1262,35 @@ impl MainWindow {
         }
 
         let stats_entity = entity.clone();
-        card(
-            "settings-connection",
-            "连接",
-            None,
-            tokens,
-            vec![
-                row(
-                    "SSH 默认代理",
-                    Some("只管 SSH 连接：「跟随默认代理」的主机和快速连接走这一个。"),
-                    default_control,
-                    tokens,
-                ),
-                row(
-                    "软件网络",
-                    Some("检查和下载更新、配置同步、下载 opencode 走这里，和 SSH 的代理分开。"),
-                    app_control,
-                    tokens,
-                ),
+        vec![
+            card(
+                "settings-connection",
+                "代理",
+                None,
+                tokens,
+                vec![
+                    row(
+                        "SSH 默认代理",
+                        Some("只管 SSH 连接：「跟随默认代理」的主机和快速连接走这一个。"),
+                        default_control,
+                        tokens,
+                    ),
+                    row(
+                        "软件网络",
+                        Some(
+                            "检查和下载更新、配置同步、下载 opencode 走这里，和 SSH 的代理分开。",
+                        ),
+                        app_control,
+                        tokens,
+                    ),
+                ],
+            ),
+            card(
+                "settings-connection-keep",
+                "连接保持",
+                None,
+                tokens,
+                vec![
                 self.number_row(
                     PrefNumber::PoolIdle,
                     "连接空闲断开",
@@ -1297,6 +1307,14 @@ impl MainWindow {
                     tokens,
                     cx,
                 ),
+                ],
+            ),
+            card(
+                "settings-connection-stats",
+                "服务器状态栏",
+                None,
+                tokens,
+                vec![
                 pref_switch(
                     "stats-show",
                     "显示服务器状态栏",
@@ -1317,8 +1335,9 @@ impl MainWindow {
                     tokens,
                     cx,
                 ),
-            ],
-        )
+                ],
+            ),
+        ]
     }
 
     // ---- SFTP ----
@@ -1344,7 +1363,7 @@ impl MainWindow {
         };
         card(
             "settings-sftp",
-            "SFTP",
+            "传输",
             Some("传输参数对之后打开的 SFTP 标签生效（正在传的任务不受影响）。"),
             tokens,
             vec![
@@ -1472,8 +1491,7 @@ fn shortcuts_card(tokens: &Tokens) -> ::gpui::AnyElement {
             h_flex()
                 .id(("shortcut-row", index))
                 .w_full()
-                .min_h(px(40.0))
-                .py_1()
+                .min_h(px(28.0))
                 .gap_6()
                 .items_center()
                 .justify_between()
@@ -1504,7 +1522,7 @@ fn shortcuts_card(tokens: &Tokens) -> ::gpui::AnyElement {
         .collect();
     card(
         "settings-shortcuts",
-        "快捷键",
+        "按键一览",
         Some("暂不支持自定义。"),
         tokens,
         rows,

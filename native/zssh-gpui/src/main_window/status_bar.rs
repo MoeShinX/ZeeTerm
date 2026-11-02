@@ -15,6 +15,7 @@ use crate::icons::Ico;
 use crate::status_demo::{
     Level, StatusSummary, level_of, mib_gb_label, net_speed_label, uptime_label,
 };
+use crate::typography::{Role, Typo as _};
 
 /// 数值颜色：80% 黄、95% 红，其余用次级文字色（同 0.2.14 的 `usageClass`）。
 fn level_color(percent: Option<u8>, tokens: &Tokens) -> Hsla {
@@ -92,8 +93,7 @@ impl MainWindow {
             } else {
                 tokens.surface
             })
-            .text_xs()
-            .text_color(tokens.text_muted)
+            .typo(Role::Caption, tokens)
             // 点状态栏打开 / 关上服务器概览（同 0.2.14）。
             .cursor_pointer()
             .on_click({

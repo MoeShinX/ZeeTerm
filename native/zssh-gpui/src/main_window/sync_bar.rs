@@ -11,6 +11,7 @@ use super::MainWindow;
 use super::nav::MainView;
 use crate::app_theme::Tokens;
 use crate::sync_demo::SyncTone;
+use crate::typography::{Role, Typo as _};
 
 fn dot_color(tone: SyncTone, tokens: &Tokens) -> Hsla {
     match tone {
@@ -57,8 +58,7 @@ impl MainWindow {
                 .border_t_1()
                 .border_color(tokens.border)
                 .bg(tokens.background)
-                .text_xs()
-                .text_color(tokens.text_muted)
+                .typo(Role::Caption, tokens)
                 .cursor_pointer()
                 .hover(move |style| style.bg(hover))
                 .child(

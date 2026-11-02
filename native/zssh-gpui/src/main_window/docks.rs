@@ -33,6 +33,7 @@ use crate::app_theme::Tokens;
 use crate::icons::Ico;
 use crate::sftp_demo::SftpDemo;
 use crate::ssh_backend::SshSessionFactory;
+use crate::typography::{Role, Typo as _};
 
 /// 主视图里的一个 SFTP 标签。
 pub struct SftpTab {
@@ -1045,8 +1046,7 @@ impl MainWindow {
                                 div()
                                     .min_w_0()
                                     .truncate()
-                                    .text_xs()
-                                    .text_color(tokens.text_muted)
+                                    .typo(Role::Caption, tokens)
                                     .child(text)
                             })),
                     )

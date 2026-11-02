@@ -32,6 +32,7 @@ mod dev_acts_sync;
 mod dev_acts_tcp;
 mod dev_acts_u1;
 mod dev_acts_u2;
+mod dev_acts_u4;
 pub mod dev_script;
 pub mod dev_seed;
 pub mod dock_layout;
@@ -93,6 +94,7 @@ use gpui_kit::*;
 use crate::app_theme::Tokens;
 use crate::split_tree::Axis;
 use crate::terminal_workspace::TerminalWorkspace;
+use crate::typography::UiFontStyled as _;
 use crate::window_state::{self, MainLayout, WindowState};
 use drag::DropHint;
 use forward_panel::ForwardUi;
@@ -1417,6 +1419,7 @@ impl Render for MainWindow {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .bg(tokens.background)
             .text_color(tokens.text)
+            .ui_font_fallbacks(cx)
             .child(drag_sensor)
             .child(self.render_title_bar(&tokens, tree_visible.then_some(tree_width), window, cx))
             .child(

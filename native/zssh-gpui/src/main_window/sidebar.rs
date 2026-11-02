@@ -24,6 +24,7 @@ use super::vault_menus::{GroupMenuSpec, HostMenuSpec, group_menu, host_menu, ung
 use super::widgets::{act, icon_button, protocol_icon};
 use super::{GroupSel, MainWindow};
 use crate::app_theme::Tokens;
+use crate::typography::{Role, Typo as _};
 
 /// 缩进：每层 14px，再加行内左边距。
 const INDENT: f32 = 14.0;
@@ -266,7 +267,7 @@ impl MainWindow {
                 .px_2()
                 .py_6()
                 .text_center()
-                .text_sm()
+                .typo(Role::Body, tokens)
                 .text_color(tokens.text_muted)
                 .child("没有匹配的主机")
                 .into_any_element()
@@ -275,7 +276,7 @@ impl MainWindow {
                 .px_2()
                 .py_6()
                 .text_center()
-                .text_sm()
+                .typo(Role::Body, tokens)
                 .text_color(tokens.text_muted)
                 .child(self.store.error().unwrap_or(EMPTY_HINT).to_owned())
                 .into_any_element()
@@ -419,7 +420,7 @@ impl MainWindow {
             .h(px(INFO_HEIGHT))
             .border_t_1()
             .border_color(tokens.border)
-            .text_xs()
+            .text_size(px(12.0))
             .child(
                 h_flex()
                     .h(px(24.0))
@@ -791,8 +792,7 @@ impl MainWindow {
                         .max_w(px(96.0))
                         .flex_none()
                         .truncate()
-                        .text_xs()
-                        .text_color(tokens.text_muted)
+                        .typo(Role::Caption, tokens)
                         .child(SharedString::from(hint))
                 }))
                 .when(
@@ -801,8 +801,7 @@ impl MainWindow {
                         d.child(
                             div()
                                 .flex_none()
-                                .text_xs()
-                                .text_color(tokens.text_muted)
+                                .typo(Role::Caption, tokens)
                                 .child(protocol_form::protocol_tag(host.protocol.protocol)),
                         )
                     },
@@ -892,17 +891,18 @@ fn tree_line(
         .pl(px(6.0 + indent))
         .pr_2()
         .rounded_sm()
-        .text_xs()
+        .typo(Role::Tree, tokens)
         .cursor_pointer()
-        .when(active, |d| d.bg(tokens.accent_soft))
+        .when(active, |d| {
+            d.bg(tokens.accent_soft).font_weight(FontWeight::MEDIUM)
+        })
         .when(!active, |d| d.hover(move |style| style.bg(hover)))
 }
 
 fn count_label(count: usize, tokens: &Tokens) -> impl IntoElement {
     div()
         .flex_none()
-        .text_xs()
-        .text_color(tokens.text_muted)
+        .typo(Role::Caption, tokens)
         .child(count.to_string())
 }
 

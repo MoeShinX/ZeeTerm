@@ -1,4 +1,5 @@
-//! 终端字体：字体栈的解析、本机已装字体的筛选，以及「加载失败就回退」的规则（V2-G06x）。
+//! 字体：终端字体栈的解析、本机已装字体的筛选、「加载失败就回退」的规则（V2-G06x），
+//! 以及界面（非终端）字体的选择（V2-U4）。
 //!
 //! 0.2.14 的设置存一整条 CSS 字体栈（`JetBrains Mono, Cascadia Mono, Consolas, monospace`），
 //! 浏览器按顺序找、找不到的跳过。GPUI 一次只认一个字体名，而且名字查不到时会退到界面字体
@@ -102,6 +103,50 @@ pub fn fallback_note(stack: &str, installed: &[String], fallback: &str) -> Optio
     Some(format!("本机没有「{wanted}」，现在用的是「{used}」。"))
 }
 
+/// 界面西文字体的候选，按好看程度排：Windows 11 自带的 `Segoe UI Variable Text`（为正文大小调过的可变字体），
+/// 没有（Windows 10）就用 `Segoe UI`。
+pub const UI_LATIN_FONTS: &[&str] = &["Segoe UI Variable Text", "Segoe UI"];
+/// 界面中文字体的候选：`Microsoft YaHei UI`（UI 版行距更紧、字形和 Segoe UI 搭得更齐），没有就用普通的雅黑。
+pub const UI_CJK_FONTS: &[&str] = &["Microsoft YaHei UI", "Microsoft YaHei"];
+/// GPUI 的虚拟族名：映射到系统当前的界面字体（`SPI_GETICONTITLELOGFONT`，中文版 Windows 上是雅黑 UI）。
+pub const SYSTEM_UI_FONT: &str = ".SystemUIFont";
+
+/// 界面实际用的字体：主字体 + 主字体没有的字（中文）才去找的后备字体。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiFont {
+    /// 主字体族名；候选一个都没装时是 [`SYSTEM_UI_FONT`]，交给系统决定。
+    pub family: String,
+    /// 后备字体族名（空 = 不指定，由 DirectWrite 按系统的字体回退表选）。
+    pub fallbacks: Vec<String>,
+}
+
+/// 按本机已装字体选界面字体：西文取 [`UI_LATIN_FONTS`] 里第一个装了的，中文取 [`UI_CJK_FONTS`] 里第一个装了的
+/// 放进后备。字体存不存在只看传进来的名单，所以 Windows 10（没有 Segoe UI Variable）、
+/// 没装雅黑的系统都落到各自能用的组合上，不会出现方框；一个候选都没有就是「全交给系统」。
+pub fn resolve_ui_font(installed: &[String]) -> UiFont {
+    let pick = |candidates: &[&str]| {
+        candidates
+            .iter()
+            .find_map(|name| installed_match(name, installed).cloned())
+    };
+    let family = pick(UI_LATIN_FONTS).unwrap_or_else(|| SYSTEM_UI_FONT.to_owned());
+    let fallbacks = pick(UI_CJK_FONTS)
+        .filter(|cjk| !cjk.eq_ignore_ascii_case(&family))
+        .into_iter()
+        .collect();
+    UiFont { family, fallbacks }
+}
+
+/// 本机的界面字体，整个进程里只算一次。
+pub fn ui_font(cx: &::gpui::App) -> &'static UiFont {
+    static FONT: std::sync::OnceLock<UiFont> = std::sync::OnceLock::new();
+    FONT.get_or_init(|| {
+        let font = resolve_ui_font(installed_fonts(cx));
+        tracing::info!("界面字体：{}，后备 {:?}", font.family, font.fallbacks);
+        font
+    })
+}
+
 /// 本机已装字体名，整个进程里只列一次（枚举要花几十毫秒，运行期间系统字体不会变）。
 pub fn installed_fonts(cx: &::gpui::App) -> &'static [String] {
     static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
@@ -193,6 +238,70 @@ mod tests {
         assert!(is_common("jetbrains mono"));
         assert!(!is_common("Iosevka, monospace"));
         assert!(!is_common(""));
+    }
+
+    #[test]
+    fn the_ui_font_prefers_segoe_ui_variable_text_with_yahei_ui_for_chinese() {
+        let fonts = installed(&[
+            "Segoe UI",
+            "Segoe UI Variable Text",
+            "Microsoft YaHei",
+            "Microsoft YaHei UI",
+        ]);
+        assert_eq!(
+            resolve_ui_font(&fonts),
+            UiFont {
+                family: "Segoe UI Variable Text".to_owned(),
+                fallbacks: vec!["Microsoft YaHei UI".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn windows_10_without_segoe_ui_variable_falls_back_to_segoe_ui() {
+        let fonts = installed(&["Segoe UI", "Microsoft YaHei UI", "Arial"]);
+        let font = resolve_ui_font(&fonts);
+        assert_eq!(font.family, "Segoe UI");
+        assert_eq!(font.fallbacks, vec!["Microsoft YaHei UI"]);
+    }
+
+    #[test]
+    fn without_yahei_ui_the_plain_yahei_is_the_chinese_fallback() {
+        let fonts = installed(&["Segoe UI Variable Text", "Microsoft YaHei"]);
+        assert_eq!(
+            resolve_ui_font(&fonts).fallbacks,
+            vec!["Microsoft YaHei".to_owned()]
+        );
+    }
+
+    #[test]
+    fn without_any_candidate_the_system_decides_and_no_fallback_is_forced() {
+        let fonts = installed(&["Arial", "SimSun"]);
+        assert_eq!(
+            resolve_ui_font(&fonts),
+            UiFont {
+                family: SYSTEM_UI_FONT.to_owned(),
+                fallbacks: Vec::new(),
+            }
+        );
+        assert_eq!(resolve_ui_font(&[]).family, SYSTEM_UI_FONT);
+    }
+
+    #[test]
+    fn the_ui_font_matches_names_ignoring_case_and_uses_the_system_spelling() {
+        let fonts = installed(&["segoe ui variable text", "MICROSOFT YAHEI UI"]);
+        let font = resolve_ui_font(&fonts);
+        assert_eq!(font.family, "segoe ui variable text");
+        assert_eq!(font.fallbacks, vec!["MICROSOFT YAHEI UI"]);
+    }
+
+    #[test]
+    fn a_chinese_font_never_doubles_as_its_own_fallback() {
+        // 极端情况：只装了雅黑 UI。它当不了「西文候选」，主字体交给系统，中文后备仍是它。
+        let fonts = installed(&["Microsoft YaHei UI"]);
+        let font = resolve_ui_font(&fonts);
+        assert_eq!(font.family, SYSTEM_UI_FONT);
+        assert_eq!(font.fallbacks, vec!["Microsoft YaHei UI"]);
     }
 
     #[test]

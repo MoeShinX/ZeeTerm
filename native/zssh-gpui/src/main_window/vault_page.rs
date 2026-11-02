@@ -23,6 +23,7 @@ use super::vault_menus::{HostMenuSpec, host_menu};
 use super::widgets::{BadgeKind, act, badge, protocol_icon};
 use super::{GroupSel, MainWindow};
 use crate::app_theme::Tokens;
+use crate::typography::{Role, Typo as _};
 
 /// 网格里一张卡片的最小宽度和间距（紧凑 / 舒适，同 0.2.14 的 `minmax(210px | 240px, 1fr)`）。
 fn grid_metrics(density: Density) -> (f32, f32) {
@@ -309,15 +310,12 @@ impl MainWindow {
                                     .gap_2()
                                     .child(
                                         div()
-                                            .text_sm()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(tokens.text)
+                                            .typo(Role::GroupTitle, tokens)
                                             .child(SharedString::from(title)),
                                     )
                                     .child(
                                         div()
-                                            .text_xs()
-                                            .text_color(tokens.text_muted)
+                                            .typo(Role::Caption, tokens)
                                             .child(SharedString::from(format!("{count} 台"))),
                                     ),
                             )
@@ -353,7 +351,8 @@ impl MainWindow {
                 .child(Icon::new(IconName::Search).size_8())
                 .child(
                     div()
-                        .text_sm()
+                        .typo(Role::Body, tokens)
+                        .text_color(tokens.text_muted)
                         .child(SharedString::from(format!("没有匹配「{query}」的主机"))),
                 )
                 .into_any_element();
@@ -384,15 +383,10 @@ impl MainWindow {
                         v_flex()
                             .items_center()
                             .gap_1()
+                            .child(div().typo(Role::GroupTitle, tokens).child("还没有主机"))
                             .child(
                                 div()
-                                    .text_base()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("还没有主机"),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
+                                    .typo(Role::Body, tokens)
                                     .text_color(tokens.text_muted)
                                     .child("添加一台主机，之后双击就能连接。"),
                             ),
@@ -591,16 +585,14 @@ impl MainWindow {
                     .child(
                         div()
                             .truncate()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .typo(Role::ItemName, tokens)
                             .child(SharedString::from(host.name.clone())),
                     )
                     .child(
                         div()
                             .truncate()
-                            .text_xs()
+                            .typo(Role::Caption, tokens)
                             .font_family("Consolas")
-                            .text_color(tokens.text_muted)
                             .child(detail),
                     ),
             )
@@ -739,7 +731,7 @@ impl MainWindow {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .font_weight(FontWeight::MEDIUM)
+                    .typo(Role::ItemName, tokens)
                     .child(SharedString::from(host.name.clone())),
             )
             .child(
@@ -747,9 +739,8 @@ impl MainWindow {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_xs()
+                    .typo(Role::Caption, tokens)
                     .font_family("Consolas")
-                    .text_color(tokens.text_muted)
                     .child(SharedString::from(protocol_form::host_detail(host))),
             )
             .child(div().w(px(56.0)).flex_none().child(badge(
@@ -763,8 +754,7 @@ impl MainWindow {
                         .w(px(120.0))
                         .flex_none()
                         .truncate()
-                        .text_xs()
-                        .text_color(tokens.text_muted)
+                        .typo(Role::Caption, tokens)
                         .child(SharedString::from(group_label)),
                 )
             })

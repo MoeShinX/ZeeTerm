@@ -17,6 +17,7 @@ use super::key_dialogs::{GenerateKeyDialog, InstallKeyDialog};
 use super::page_logic::{delete_group_message, flatten_groups, forbidden_parents};
 use super::widgets::{ButtonLook, Choice, error_note, field, note, select, text_button};
 use crate::app_theme::Tokens;
+use crate::typography::{Role, Typo as _};
 
 /// 确认之后要做的事。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -461,8 +462,7 @@ impl MainWindow {
                     .gap_2()
                     .child(
                         div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .typo(Role::GroupTitle, tokens)
                             .child(SharedString::from(confirm.title.clone())),
                     )
                     .child(
@@ -560,8 +560,7 @@ impl MainWindow {
             .gap_4()
             .child(
                 div()
-                    .text_base()
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .typo(Role::GroupTitle, tokens)
                     .child(title),
             )
             .when(dialog.adopt_ungrouped, |d| {
@@ -623,12 +622,7 @@ impl MainWindow {
             .child(
                 v_flex()
                     .gap_1p5()
-                    .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("快速连接"),
-                    )
+                    .child(div().typo(Role::GroupTitle, tokens).child("快速连接"))
                     .child(note(
                         "输入 用户名@主机地址（可以带 :端口），直接连，不会保存到主机库。",
                         tokens,
@@ -683,12 +677,7 @@ impl MainWindow {
             .child(
                 v_flex()
                     .gap_1p5()
-                    .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("快速连接"),
-                    )
+                    .child(div().typo(Role::GroupTitle, tokens).child("快速连接"))
                     .child(note(
                         format!("直接连 {}，不会保存到主机库。", dialog.target),
                         tokens,

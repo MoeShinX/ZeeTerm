@@ -30,6 +30,7 @@ use crate::main_window::MainWindow;
 use crate::main_window::titlebar::window_controls;
 use crate::settings::data_dir;
 use crate::sftp_demo::SftpDemo;
+use crate::typography::UiFontStyled as _;
 use zssh_core::store::Database;
 
 /// 窗口标题：产品名 + 「文件」。0.2.14 的窗口叫 `Z-SFTP`（品牌缩写 + SFTP，写死在 `FileWindowApp.tsx`），
@@ -632,6 +633,7 @@ impl Render for FileWindow {
             )
             .bg(tokens.background)
             .text_color(tokens.text)
+            .ui_font_fallbacks(cx)
             .child(sensor)
             // 自绘标题栏（V2-U1 第 6 条）：背景是主题的面板色，空白处可以拖动窗口、双击最大化，
             // 右边是和主窗口一样的最小化 / 最大化 / 关闭；标签和按钮 `occlude` 把拖动区挖掉。

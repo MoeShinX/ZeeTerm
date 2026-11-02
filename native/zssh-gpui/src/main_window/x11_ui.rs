@@ -22,10 +22,11 @@ use zssh_core::x11::local::{DisplayMode, LocalXStatus, X11Prefs, prefs};
 use super::MainWindow;
 use super::modal::Modal;
 use super::nav::MainView;
-use super::widgets::{ButtonLook, error_note, note, segmented, text_button};
+use super::widgets::{ButtonLook, error_note, note, text_button};
 use crate::app_theme::Tokens;
 use crate::settings_nav::SettingsSection;
-use crate::settings_view::{card, row, row_with};
+use crate::settings_view::{Segment, card, choice_group, row, row_with};
+use crate::typography::{Role, Typo as _};
 
 // ---- 纯逻辑 ----
 
@@ -423,8 +424,7 @@ impl MainWindow {
                     .gap_2()
                     .child(
                         div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .typo(Role::GroupTitle, tokens)
                             .child("需要 X 显示程序"),
                     )
                     .child(
@@ -502,22 +502,36 @@ impl MainWindow {
 
         // ---- X 显示来源 ----
         let source_entity = entity.clone();
-        let mut source = v_flex().w(px(280.0)).gap_1p5().child(segmented(
-            "x11-source",
-            vec![
-                ("自动".to_owned(), !custom, None),
-                ("指定显示".to_owned(), custom, None),
-            ],
-            move |index, window, cx| {
-                source_entity.update(cx, |this, cx| {
-                    if index == 0 {
-                        this.x11_set_auto(cx);
-                    } else {
-                        this.x11_set_custom(window, cx);
-                    }
-                });
-            },
-        ));
+        let mut source = v_flex()
+            .w(px(280.0))
+            .gap_1p5()
+            .items_end()
+            .child(choice_group(
+                vec![
+                    Segment {
+                        id: "x11-source-auto".into(),
+                        label: "自动",
+                        icon: None,
+                        selected: !custom,
+                    },
+                    Segment {
+                        id: "x11-source-custom".into(),
+                        label: "指定显示",
+                        icon: None,
+                        selected: custom,
+                    },
+                ],
+                tokens,
+                move |index, window, cx| {
+                    source_entity.update(cx, |this, cx| {
+                        if index == 0 {
+                            this.x11_set_auto(cx);
+                        } else {
+                            this.x11_set_custom(window, cx);
+                        }
+                    });
+                },
+            ));
         if custom {
             let save_entity = entity.clone();
             source = source
