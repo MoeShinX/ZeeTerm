@@ -10569,6 +10569,7 @@ dependencies = [
  "zssh-core",
  "zssh-editor",
  "zssh-platform-windows",
+ "zssh-protocols",
  "zssh-regex",
  "zssh-session",
  "zssh-terminal",

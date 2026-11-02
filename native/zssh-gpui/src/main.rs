@@ -35,6 +35,7 @@ mod links;
 mod live_support;
 mod main_window;
 mod product;
+mod protocol_backend;
 mod proxies_demo;
 mod remote_editor_demo;
 mod selection;
@@ -217,6 +218,14 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
                 });
             }
         }
+    }
+    // 手动验证用：按 ZSSH_OPEN_TELNET / ZSSH_OPEN_SERIAL 建一台 Telnet / 串口主机并在主窗口里打开
+    // （说明见 `protocol_backend::dev_hook_hosts`）。
+    for host_id in protocol_backend::dev_hook_hosts() {
+        let view = view.clone();
+        let _ = handle.update(cx, |_, window, cx| {
+            view.update(cx, |this, cx| this.open_host(host_id, window, cx));
+        });
     }
     // 手动/截图验证用：启动时直接切到某一页（vault / terminal / settings）。
     if let Some(name) = dev_hooks::var("ZSSH_MAIN_VIEW")

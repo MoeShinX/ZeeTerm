@@ -163,3 +163,68 @@ pub async fn spawn() -> SocketAddr {
     });
     addr
 }
+
+/// 只做 `direct-tcpip` 转发的迷你跳板机：把通道接到目标地址的 TCP 连接上（验证 Telnet 经 SSH 跳板）。
+struct Forwarder;
+
+impl server::Handler for Forwarder {
+    type Error = russh::Error;
+
+    async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
+        Ok(Auth::Reject {
+            proceed_with_methods: Some(MethodSet::from(&[MethodKind::Password][..])),
+            partial_success: false,
+        })
+    }
+
+    async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
+        Ok(Auth::Accept)
+    }
+
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: server::ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let target = format!("{host_to_connect}:{port_to_connect}");
+        match tokio::net::TcpStream::connect(&target).await {
+            Ok(mut upstream) => {
+                reply.accept().await;
+                tokio::spawn(async move {
+                    let mut stream = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
+                });
+            }
+            Err(_) => reply.reject(russh::ChannelOpenFailure::ConnectFailed).await,
+        }
+        Ok(())
+    }
+}
+
+/// 起一个只转发的 SSH 跳板机（接一个连接），返回监听地址。
+pub async fn spawn_forwarding() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("绑定本机端口");
+    let addr = listener.local_addr().expect("取端口");
+    let config = Arc::new(server::Config {
+        inactivity_timeout: None,
+        auth_rejection_time: Duration::from_millis(1),
+        keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("生成主机密钥")],
+        ..Default::default()
+    });
+    tokio::spawn(async move {
+        let Ok((socket, _)) = listener.accept().await else {
+            return;
+        };
+        if let Ok(running) = server::run_stream(config, socket, Forwarder).await {
+            let _ = running.await;
+        }
+    });
+    addr
+}

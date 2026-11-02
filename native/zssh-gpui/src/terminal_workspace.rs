@@ -368,12 +368,7 @@ impl Pane {
         };
         self.pending = None;
         match result {
-            Ok(opened) => self.attach(
-                Box::new(opened.backend),
-                opened.events,
-                opened.gate,
-                Some(opened.factory),
-            ),
+            Ok(opened) => self.attach(opened.backend, opened.events, opened.gate, opened.factory),
             Err(err) => self.disconnect(&failure_notice(&err)),
         }
         true
@@ -411,6 +406,14 @@ impl Pane {
         }
         self.backend.send(SessionCommand::Write(bytes.to_vec()));
         self.poll_events();
+    }
+
+    /// 发送 Break 信号（串口会话的按钮 / 快捷键用，后续界面卡接上；其他协议的会话忽略）。
+    #[allow(dead_code)]
+    pub(crate) fn send_break(&mut self) {
+        if self.state == PaneState::Live {
+            self.backend.send_break();
+        }
     }
 
     /// 本地重排后把新尺寸也发给远端（回环后端忽略）。
@@ -4390,5 +4393,140 @@ mod live_tests {
         std::thread::sleep(Duration::from_millis(500));
         pane.poll_events();
         assert_eq!(pane.state, PaneState::Disconnected);
+    }
+}
+
+#[cfg(test)]
+mod protocol_session_tests {
+    use super::{Pane, PaneState, Size};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use zssh_core::ssh::flow::FlowGate;
+    use zssh_session::{CoreFilter, SessionBackend, SessionCommand, SessionPump};
+
+    /// 记录 Break 次数的写端。
+    struct BreakCounter(Arc<AtomicUsize>);
+
+    impl SessionBackend for BreakCounter {
+        fn send(&mut self, _command: SessionCommand) {}
+
+        fn send_break(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn pane_with(counter: Arc<AtomicUsize>) -> Pane {
+        let pump = SessionPump::new(
+            Size { rows: 5, cols: 20 },
+            100,
+            Arc::new(FlowGate::new()),
+            CoreFilter::new(),
+            1,
+        );
+        let (_, events) = std::sync::mpsc::channel();
+        Pane::with_parts(pump, Box::new(BreakCounter(counter)), events, Some(1), None)
+    }
+
+    /// 窗格的 Break 命令只在会话活着时送到写端；断开之后不再发。
+    #[test]
+    fn send_break_reaches_the_backend_only_while_the_session_is_live() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut pane = pane_with(Arc::clone(&counter));
+        pane.send_break();
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        pane.state = PaneState::Disconnected;
+        pane.send_break();
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    /// 终端窗格接上一个没有 SSH 工厂的会话（Telnet）：横幅显示在屏幕上，键入送到服务器，
+    /// 对端关闭之后窗格显示已断开。走的就是 SSH 会话同一条 `attach` 路径。
+    #[test]
+    fn a_telnet_session_attaches_to_a_pane_without_an_ssh_factory() {
+        use std::time::{Duration, Instant};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let runtime = crate::ssh_backend::runtime().expect("runtime");
+        let (opened, mut server_rx) = runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let _ = socket.write_all(b"PANE_OK\r\n").await;
+                let mut buffer = [0u8; 256];
+                loop {
+                    match socket.read(&mut buffer).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            let chunk = buffer[..read].to_vec();
+                            if chunk.windows(4).any(|w| w == b"quit") {
+                                let _ = tx.send(chunk);
+                                let _ = socket.shutdown().await;
+                                break;
+                            }
+                            let _ = tx.send(chunk);
+                        }
+                    }
+                }
+            });
+            let socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let opened = crate::protocol_backend::start_telnet(
+                Box::new(socket),
+                Box::new(()),
+                zssh_core::model::TelnetOptions::default(),
+                String::new(),
+                None,
+                Size { rows: 5, cols: 40 },
+                1,
+            );
+            (opened, rx)
+        });
+        let pending = crate::ssh_backend::ready(Ok(opened));
+        let mut pane = Pane::connecting(Size { rows: 5, cols: 40 }, 100, 1, Some(1), pending);
+        assert_eq!(pane.state, PaneState::Connecting);
+
+        let screen = |pane: &Pane| -> String {
+            pane.snapshot
+                .rows
+                .iter()
+                .map(|row| row.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !screen(&pane).contains("PANE_OK") {
+            pane.poll_events();
+            assert!(Instant::now() < deadline, "横幅没有出现：{}", screen(&pane));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(pane.state, PaneState::Live);
+        assert!(pane.factory.is_none());
+        assert!(screen(&pane).contains("Telnet 不加密"));
+
+        pane.write(b"quit\r");
+        let seen = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let mut all = Vec::new();
+                while let Some(chunk) = server_rx.recv().await {
+                    all.extend_from_slice(&chunk);
+                    if all.windows(4).any(|w| w == b"quit") {
+                        break;
+                    }
+                }
+                all
+            })
+            .await
+        });
+        assert!(seen.is_ok(), "服务器没有收到键入");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while pane.state != PaneState::Disconnected {
+            pane.poll_events();
+            assert!(Instant::now() < deadline, "对端关闭后窗格应当显示已断开");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }

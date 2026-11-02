@@ -18,7 +18,8 @@ use zssh_session::{SessionCommand, SessionEvent};
 
 use super::os::{CommHandle, IoEvent, ReadOutcome, WriteOutcome};
 use super::params::{
-    OpenStage, SerialError, classify_open_error, io_error_means_disconnected, normalize_device,
+    OpenStage, SerialError, classify_open_error, describe_framing, io_error_means_disconnected,
+    normalize_device,
 };
 use crate::backend::{BackendCommand, BackendEnds, COMMAND_QUEUE, EventOut, StreamBackend};
 use crate::input::{InputFilter, serial_enter_bytes};
@@ -69,6 +70,11 @@ pub(super) fn start(
         generation,
         gate: Arc::clone(&gate),
     };
+    out.notice(&format!(
+        "[90m[已打开 {label}：{}][0m
+",
+        describe_framing(options)
+    ));
     // 用户主动关闭 / 对端消失：读线程据此知道要不要报错。
     let closed = Arc::new(AtomicBool::new(false));
     let (done_tx, done_rx) = watch::channel(false);

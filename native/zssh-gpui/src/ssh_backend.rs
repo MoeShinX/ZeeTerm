@@ -197,8 +197,9 @@ pub struct SshSessionFactory {
 ///
 /// `SessionPump` 必须用这个门：它的 ack 才会传回 SSH 读任务。
 pub struct Opened {
-    pub factory: Arc<SshSessionFactory>,
-    pub backend: SshBackend,
+    /// SSH 会话才有：复制标签、SFTP 复用同一条已认证连接。Telnet / 串口会话没有。
+    pub factory: Option<Arc<SshSessionFactory>>,
+    pub backend: Box<dyn SessionBackend>,
     pub events: Receiver<SessionEvent>,
     pub gate: Arc<FlowGate>,
 }
@@ -268,8 +269,8 @@ pub fn begin_open(factory: Arc<SshSessionFactory>, size: Size, generation: u64) 
     spawn_open(async move {
         let (backend, events, gate) = factory.open_async(size, generation).await?;
         Ok(Opened {
-            factory,
-            backend,
+            factory: Some(factory),
+            backend: Box::new(backend),
             events,
             gate,
         })
@@ -292,8 +293,8 @@ pub fn begin_connect_quick(
         };
         let (backend, events, gate) = factory.open_async(size, generation).await?;
         Ok(Opened {
-            factory,
-            backend,
+            factory: Some(factory),
+            backend: Box::new(backend),
             events,
             gate,
         })
@@ -345,9 +346,17 @@ fn quick_hops(
     (pool_key(0, &hops), hops)
 }
 
-/// 后台连接一台已保存的主机并开一个终端会话。
+/// 后台连接一台已保存的主机并开一个终端会话。按主机的协议分流：SSH 走原来的认证连接，
+/// Telnet / 串口走 [`crate::protocol_backend`]。新标签、重连、复制标签都从这里进，所以三种协议自动通用。
 pub fn begin_connect(host_id: i64, size: Size, generation: u64) -> PendingOpen {
-    spawn_open(connect_async(host_id, size, generation))
+    use crate::protocol_backend::{HostPlan, open_serial_host, open_telnet, plan_for_host};
+    spawn_open(async move {
+        match plan_for_host(host_id)? {
+            HostPlan::Ssh => connect_async(host_id, size, generation).await,
+            HostPlan::Telnet(plan) => open_telnet(*plan, size, generation).await,
+            HostPlan::Serial(options) => open_serial_host(options, size, generation).await,
+        }
+    })
 }
 
 impl SshSessionFactory {
@@ -417,7 +426,22 @@ impl SshSessionFactory {
 fn prepare(host_id: i64) -> Result<(String, Vec<ChainHop>), String> {
     let db = Database::open(&data_dir().join("zssh.db"))
         .map_err(|err| format!("打开主机库失败：{err}"))?;
-    let hops = build_chain(&db, host_id)?;
+    prepare_from_db(&db, host_id)
+}
+
+pub(crate) fn prepare_from_db(
+    db: &Database,
+    host_id: i64,
+) -> Result<(String, Vec<ChainHop>), String> {
+    // SFTP 之类直接要 SSH 连接的入口也走这里：Telnet / 串口主机没有 SSH 连接可拿。
+    let protocol = db
+        .host_protocol_get(host_id)
+        .map_err(|err| err.to_string())?
+        .protocol;
+    if protocol != zssh_core::model::Protocol::Ssh {
+        return Err(format!("这是一台 {} 主机，没有 SSH 连接", protocol.label()));
+    }
+    let hops = build_chain(db, host_id)?;
     Ok((pool_key(host_id, &hops), hops))
 }
 
@@ -471,8 +495,8 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
         match factory.open_async(size, generation).await {
             Ok((backend, events, gate)) => {
                 return Ok(Opened {
-                    factory,
-                    backend,
+                    factory: Some(factory),
+                    backend: Box::new(backend),
                     events,
                     gate,
                 });
@@ -484,8 +508,8 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
     let factory = dial(key, hops).await?;
     let (backend, events, gate) = factory.open_async(size, generation).await?;
     Ok(Opened {
-        factory,
-        backend,
+        factory: Some(factory),
+        backend: Box::new(backend),
         events,
         gate,
     })
@@ -730,7 +754,7 @@ fn build_chain(db: &Database, host_id: i64) -> Result<Vec<ChainHop>, String> {
     Ok(hops)
 }
 
-fn resolve_proxy(
+pub(crate) fn resolve_proxy(
     db: &Database,
     host: &Host,
     default_proxy_id: Option<i64>,

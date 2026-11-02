@@ -479,3 +479,53 @@ mod tests {
         assert!(!io_error_means_disconnected(ERROR_INVALID_PARAMETER));
     }
 }
+
+/// 打开成功后在终端里提示的一句：`115200 8N1，无流控`。
+pub fn describe_framing(options: &SerialOptions) -> String {
+    let bits = match options.data_bits {
+        SerialDataBits::Five => '5',
+        SerialDataBits::Six => '6',
+        SerialDataBits::Seven => '7',
+        SerialDataBits::Eight => '8',
+    };
+    let parity = match options.parity {
+        SerialParity::None => 'N',
+        SerialParity::Odd => 'O',
+        SerialParity::Even => 'E',
+        SerialParity::Mark => 'M',
+        SerialParity::Space => 'S',
+    };
+    let stop = match options.stop_bits {
+        SerialStopBits::One => "1",
+        SerialStopBits::OnePointFive => "1.5",
+        SerialStopBits::Two => "2",
+    };
+    let flow = match options.flow_control {
+        SerialFlowControl::None => "无流控",
+        SerialFlowControl::Software => "XON/XOFF 流控",
+        SerialFlowControl::Hardware => "RTS/CTS 流控",
+    };
+    format!("{} {bits}{parity}{stop}，{flow}", options.baud_rate)
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::*;
+
+    #[test]
+    fn framing_is_described_in_the_usual_notation() {
+        assert_eq!(
+            describe_framing(&SerialOptions::default()),
+            "115200 8N1，无流控"
+        );
+        let options = SerialOptions {
+            baud_rate: 9600,
+            data_bits: SerialDataBits::Seven,
+            parity: SerialParity::Even,
+            stop_bits: SerialStopBits::Two,
+            flow_control: SerialFlowControl::Hardware,
+            ..Default::default()
+        };
+        assert_eq!(describe_framing(&options), "9600 7E2，RTS/CTS 流控");
+    }
+}
