@@ -51,7 +51,7 @@ impl Database {
     ///
     /// 协议设置不在 [`HostDraft`] 里：新建的主机是普通 SSH；修改已有主机时协议设置**保持
     /// 库里的不变**，但要按新的认证 / 代理 / 跳板机重新校验一遍组合（不能借这个入口把一台
-    /// RDP 主机改成带私钥认证）。要改协议用 [`Database::host_save_with_protocol`]。
+    /// Telnet 主机改成带私钥认证）。要改协议用 [`Database::host_save_with_protocol`]。
     pub fn host_save(&self, draft: &HostDraft) -> Result<Host, ZsshError> {
         self.host_save_inner(draft, None).map(|(host, _)| host)
     }
@@ -79,6 +79,20 @@ impl Database {
             };
             let settings = requested.unwrap_or(&stored);
             validate_host(draft, settings.protocol)?;
+            // 串口主机没有地址 / 端口 / 用户名：这几列存固定的占位值，界面带来的默认值不算数。
+            // 凭据 / 代理 / 跳板机是用户明确选的东西，选了就报错（见 check_serial_refs）。
+            let serial_draft;
+            let draft = if settings.protocol == Protocol::Serial {
+                crate::model::check_serial_refs(
+                    draft.identity_id.is_some(),
+                    draft.proxy_id.is_some(),
+                    draft.jump_host_id.is_some(),
+                )?;
+                serial_draft = serial_placeholder_draft(draft);
+                &serial_draft
+            } else {
+                draft
+            };
 
             if let Some(group_id) = draft.group_id {
                 crate::store::groups::ensure_group_exists(conn, group_id)?;
@@ -271,6 +285,11 @@ impl Database {
     pub fn host_login(&self, id: i64) -> Result<HostLogin, ZsshError> {
         self.with_conn(|conn| {
             let host = host_get(conn, id)?;
+            if crate::store::protocols::protocol_get(conn, id)?.protocol == Protocol::Serial {
+                return Err(ZsshError::InvalidInput(
+                    "串口主机没有网络登录信息".to_owned(),
+                ));
+            }
 
             let auth = match host.auth_method {
                 AuthMethod::Password => match host.identity_id {
@@ -417,17 +436,34 @@ fn validate_host(draft: &HostDraft, protocol: Protocol) -> Result<(), ZsshError>
     if draft.name.trim().is_empty() {
         return Err(ZsshError::InvalidInput("主机名不能为空".to_owned()));
     }
+    if protocol == Protocol::Serial {
+        return Ok(());
+    }
     // 地址会原样写进 known_hosts：`*`、逗号、空格之类会让那一行匹配到别的主机。
     crate::ssh::known_hosts::check_host_address(draft.host.trim())
         .map_err(ZsshError::InvalidInput)?;
     if draft.port == 0 {
         return Err(ZsshError::InvalidInput("端口要在 1-65535 之间".to_owned()));
     }
-    // Telnet 可以不自动登录、RDP 可以交给 mstsc 问，这两种允许不填用户名；SSH 一直要填。
+    // Telnet 可以不自动登录，允许不填用户名；SSH 一直要填。
     if protocol == Protocol::Ssh && draft.username.trim().is_empty() {
         return Err(ZsshError::InvalidInput("用户名不能为空".to_owned()));
     }
     Ok(())
+}
+
+/// 串口主机落库用的占位值：host / username 空、端口 0、密码认证（列是 NOT NULL，认证方式有
+/// CHECK）、不用代理。
+fn serial_placeholder_draft(draft: &HostDraft) -> HostDraft {
+    HostDraft {
+        host: String::new(),
+        port: 0,
+        username: String::new(),
+        auth_method: AuthMethod::Password,
+        proxy_mode: ProxyMode::None,
+        legacy_algorithms: false,
+        ..draft.clone()
+    }
 }
 
 fn row_to_host(row: &Row<'_>) -> rusqlite::Result<Host> {

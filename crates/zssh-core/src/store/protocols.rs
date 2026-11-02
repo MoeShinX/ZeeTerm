@@ -51,6 +51,14 @@ impl Database {
     ) -> Result<ProtocolSettings, ZsshError> {
         self.with_conn_write(|conn| {
             let host = host_get(conn, host_id)?;
+            // 串口主机的 host / port / username 是占位值，网络主机的是真实值：互相转换会留下
+            // 不合法的另一半，要换类型请新建主机。
+            let current = protocol_get(conn, host_id)?.protocol;
+            if (current == Protocol::Serial) != (settings.protocol == Protocol::Serial) {
+                return Err(ZsshError::InvalidInput(
+                    "串口主机和网络主机（SSH / Telnet）不能互相转换，请新建一台主机".to_owned(),
+                ));
+            }
             let identity = match host.identity_id {
                 Some(id) => Some(crate::store::identities::identity_get(conn, id)?),
                 None => None,

@@ -1,6 +1,6 @@
 use crate::model::{
     AuthMethod, HostDraft, IdentityDraft, IdentityKind, Protocol, ProtocolSettings, ProxyDraft,
-    ProxyKind, ProxyMode, RdpResolution, TelnetNewline,
+    ProxyKind, ProxyMode, SerialParity, TelnetNewline,
 };
 use crate::store::Database;
 
@@ -173,32 +173,141 @@ fn telnet_host_roundtrips_with_its_options() {
 }
 
 #[test]
-fn rdp_host_roundtrips_and_allows_a_blank_username() {
+fn telnet_allows_a_blank_username_but_ssh_does_not() {
     let db = memory_db();
-    let mut settings = ProtocolSettings::new(Protocol::Rdp);
-    {
-        let options = settings.rdp.as_mut().unwrap();
-        options.domain = Some("corp".to_owned());
-        options.resolution = RdpResolution::Fixed {
-            width: 1280,
-            height: 720,
-        };
-        options.admin_session = true;
-    }
-    let mut request = draft("win-1");
-    request.port = 3389;
+    let mut request = draft("switch-2");
     request.username = String::new();
-    let (host, _) = db.host_save_with_protocol(&request, &settings).unwrap();
+    let (host, _) = db
+        .host_save_with_protocol(&request, &ProtocolSettings::new(Protocol::Telnet))
+        .unwrap();
     assert_eq!(host.username, "");
-    assert_eq!(db.host_protocol_get(host.id).unwrap(), settings);
 
-    // SSH 的用户名仍然必填。
     let mut ssh = draft("web-1");
     ssh.username = " ".to_owned();
     assert!(err_text(db.host_save(&ssh)).contains("用户名"));
     assert!(
         err_text(db.host_save_with_protocol(&ssh, &ProtocolSettings::default())).contains("用户名")
     );
+}
+
+fn serial_settings(device: &str) -> ProtocolSettings {
+    let mut settings = ProtocolSettings::new(Protocol::Serial);
+    settings.serial.as_mut().unwrap().device = device.to_owned();
+    settings
+}
+
+#[test]
+fn serial_host_roundtrips_and_stores_placeholders_for_the_network_columns() {
+    let db = memory_db();
+    let mut settings = serial_settings("COM3");
+    {
+        let options = settings.serial.as_mut().unwrap();
+        options.baud_rate = 9600;
+        options.parity = SerialParity::Even;
+        options.local_echo = true;
+    }
+    // 界面带来的默认值（地址 / 端口 / 用户名 / 默认代理策略）不算数，落库的是占位值。
+    let mut request = draft("console-1");
+    request.host = "ignored.example.internal".to_owned();
+    request.port = 22;
+    request.proxy_mode = ProxyMode::Default;
+    let (host, saved) = db.host_save_with_protocol(&request, &settings).unwrap();
+    assert_eq!(saved, settings);
+    assert_eq!(
+        (host.host.as_str(), host.port, host.username.as_str()),
+        ("", 0, "")
+    );
+    assert_eq!(host.proxy_mode, ProxyMode::None);
+    assert_eq!(host.auth_method, AuthMethod::Password);
+    assert_eq!(db.host_protocol_get(host.id).unwrap(), settings);
+    let options = row_columns(&db, host.id).2.expect("有选项");
+    assert!(
+        options.contains("\"serial\"") && options.contains("\"COM3\""),
+        "{options}"
+    );
+
+    // 老入口再存（界面不知道串口，带着一堆默认值）：协议设置不变，占位值不被冲掉。
+    let mut edit = draft("console-1-renamed");
+    edit.id = Some(host.id);
+    let renamed = db.host_save(&edit).unwrap();
+    assert_eq!(renamed.name, "console-1-renamed");
+    assert_eq!((renamed.host.as_str(), renamed.port), ("", 0));
+    assert_eq!(db.host_protocol_get(host.id).unwrap(), settings);
+}
+
+#[test]
+fn serial_host_rejects_identity_proxy_jump_host_and_bad_options() {
+    let db = memory_db();
+    let pw = password_identity(&db);
+    let proxy = db
+        .proxy_save(&ProxyDraft {
+            id: None,
+            name: "p".to_owned(),
+            kind: ProxyKind::Socks5,
+            host: "127.0.0.1".to_owned(),
+            port: 1080,
+            username: None,
+            secret: None,
+        })
+        .unwrap();
+    let bastion = db.host_save(&draft("bastion")).unwrap();
+    let settings = serial_settings("COM3");
+    let before = db.host_list().unwrap().len();
+
+    let mut request = draft("c");
+    request.identity_id = Some(pw);
+    assert!(err_text(db.host_save_with_protocol(&request, &settings)).contains("凭据"));
+    let mut request = draft("c");
+    request.proxy_mode = ProxyMode::Custom;
+    request.proxy_id = Some(proxy.id);
+    assert!(err_text(db.host_save_with_protocol(&request, &settings)).contains("代理"));
+    let mut request = draft("c");
+    request.jump_host_id = Some(bastion.id);
+    assert!(err_text(db.host_save_with_protocol(&request, &settings)).contains("跳板机"));
+
+    // 没填设备名 / 选项不合法。
+    assert!(err_text(
+        db.host_save_with_protocol(&draft("c"), &ProtocolSettings::new(Protocol::Serial))
+    )
+    .contains("设备名"));
+    let mut bad = serial_settings("COM3");
+    bad.serial.as_mut().unwrap().baud_rate = 0;
+    assert!(err_text(db.host_save_with_protocol(&draft("c"), &bad)).contains("波特率"));
+    assert_eq!(db.host_list().unwrap().len(), before, "全部整条不落库");
+}
+
+#[test]
+fn serial_and_network_hosts_cannot_be_converted_into_each_other() {
+    let db = memory_db();
+    let ssh = db.host_save(&draft("web")).unwrap();
+    let (serial, _) = db
+        .host_save_with_protocol(&draft("console"), &serial_settings("COM3"))
+        .unwrap();
+    assert!(
+        err_text(db.host_protocol_set(ssh.id, &serial_settings("COM4"))).contains("不能互相转换")
+    );
+    assert!(
+        err_text(db.host_protocol_set(serial.id, &ProtocolSettings::new(Protocol::Telnet)))
+            .contains("不能互相转换")
+    );
+    // 串口改串口选项可以。
+    let mut other = serial_settings("COM9");
+    other.serial.as_mut().unwrap().baud_rate = 57_600;
+    db.host_protocol_set(serial.id, &other).unwrap();
+    assert_eq!(db.host_protocol_get(serial.id).unwrap(), other);
+    // 串口主机没有网络登录信息。
+    assert!(err_text(db.host_login(serial.id)).contains("串口"));
+}
+
+#[test]
+fn a_serial_host_cannot_be_a_jump_host() {
+    let db = memory_db();
+    let (serial, _) = db
+        .host_save_with_protocol(&draft("console"), &serial_settings("COM3"))
+        .unwrap();
+    let mut request = draft("inner");
+    request.jump_host_id = Some(serial.id);
+    assert!(err_text(db.host_save(&request)).contains("跳板机必须是 SSH"));
 }
 
 #[test]
@@ -233,7 +342,7 @@ fn invalid_combination_saves_nothing() {
     request.identity_id = Some(key);
     let before = db.host_list().unwrap().len();
     let text =
-        err_text(db.host_save_with_protocol(&request, &ProtocolSettings::new(Protocol::Rdp)));
+        err_text(db.host_save_with_protocol(&request, &ProtocolSettings::new(Protocol::Telnet)));
     assert!(text.contains("密码认证"), "{text}");
     assert_eq!(
         db.host_list().unwrap().len(),
@@ -245,41 +354,21 @@ fn invalid_combination_saves_nothing() {
 #[test]
 fn plain_save_keeps_the_stored_protocol_but_rechecks_the_combination() {
     let db = memory_db();
-    let rdp = ProtocolSettings::new(Protocol::Rdp);
-    let (host, _) = db.host_save_with_protocol(&draft("win-1"), &rdp).unwrap();
+    let telnet = ProtocolSettings::new(Protocol::Telnet);
+    let (host, _) = db.host_save_with_protocol(&draft("sw-1"), &telnet).unwrap();
 
     // 只改名字：协议设置原样。
-    let mut edit = draft("win-1-renamed");
+    let mut edit = draft("sw-1-renamed");
     edit.id = Some(host.id);
     db.host_save(&edit).expect("改名");
-    assert_eq!(db.host_protocol_get(host.id).unwrap(), rdp);
+    assert_eq!(db.host_protocol_get(host.id).unwrap(), telnet);
 
-    // 借旧入口把 RDP 主机改成私钥认证 / 跟随默认代理 / 指定代理：必须被拒。
+    // 借旧入口把 Telnet 主机改成私钥认证：必须被拒。
     let key = key_identity(&db);
-    let mut bad = edit.clone();
+    let mut bad = edit;
     bad.auth_method = AuthMethod::Key;
     bad.identity_id = Some(key);
     assert!(err_text(db.host_save(&bad)).contains("密码"));
-
-    let mut bad = edit.clone();
-    bad.proxy_mode = ProxyMode::Default;
-    assert!(err_text(db.host_save(&bad)).contains("代理"));
-
-    let proxy = db
-        .proxy_save(&ProxyDraft {
-            id: None,
-            name: "p".to_owned(),
-            kind: ProxyKind::Socks5,
-            host: "127.0.0.1".to_owned(),
-            port: 1080,
-            username: None,
-            secret: None,
-        })
-        .unwrap();
-    let mut bad = edit;
-    bad.proxy_mode = ProxyMode::Custom;
-    bad.proxy_id = Some(proxy.id);
-    assert!(err_text(db.host_save(&bad)).contains("代理"));
 }
 
 #[test]
@@ -302,7 +391,7 @@ fn saving_does_not_rewrite_options_when_the_protocol_is_untouched() {
 }
 
 #[test]
-fn telnet_and_rdp_hosts_can_jump_through_ssh_hosts_only() {
+fn telnet_hosts_can_jump_through_ssh_hosts_only() {
     let db = memory_db();
     let bastion = db.host_save(&draft("bastion")).unwrap();
     let telnet_host = db
@@ -313,10 +402,9 @@ fn telnet_and_rdp_hosts_can_jump_through_ssh_hosts_only() {
         .unwrap()
         .0;
 
-    // 经 SSH 跳板机：Telnet / RDP / SSH 都行。
+    // 经 SSH 跳板机：Telnet / SSH 都行。
     for (name, settings) in [
         ("t-via", ProtocolSettings::new(Protocol::Telnet)),
-        ("r-via", ProtocolSettings::new(Protocol::Rdp)),
         ("s-via", ProtocolSettings::default()),
     ] {
         let mut request = draft(name);
@@ -331,10 +419,10 @@ fn telnet_and_rdp_hosts_can_jump_through_ssh_hosts_only() {
     let mut request = draft("via-telnet");
     request.jump_host_id = Some(telnet_host.id);
     assert!(err_text(db.host_save(&request)).contains("跳板机必须是 SSH"));
-    assert!(
-        err_text(db.host_save_with_protocol(&request, &ProtocolSettings::new(Protocol::Rdp)))
-            .contains("跳板机必须是 SSH")
-    );
+    assert!(err_text(
+        db.host_save_with_protocol(&request, &ProtocolSettings::new(Protocol::Telnet))
+    )
+    .contains("跳板机必须是 SSH"));
 }
 
 #[test]
@@ -349,7 +437,7 @@ fn a_host_used_as_jump_host_cannot_stop_being_ssh() {
     assert!(text.contains("inner") && text.contains("跳板机"), "{text}");
     let mut edit = draft("bastion");
     edit.id = Some(bastion.id);
-    let text = err_text(db.host_save_with_protocol(&edit, &ProtocolSettings::new(Protocol::Rdp)));
+    let text = err_text(db.host_save_with_protocol(&edit, &serial_settings("COM1")));
     assert!(text.contains("跳板机"), "{text}");
     assert!(db.host_protocol_get(bastion.id).unwrap().is_plain_ssh());
 }
@@ -380,16 +468,20 @@ fn protocol_set_validates_against_the_stored_host_and_bumps_updated_at() {
         [host.id],
     );
 
-    // 这台主机是跟随默认代理：改成 RDP 要被拒。
+    // 这台主机是跟随默认代理。
     exec(
         &db,
         "UPDATE hosts SET proxy_mode = 'default' WHERE id = ?1",
         [host.id],
     );
-    assert!(
-        err_text(db.host_protocol_set(host.id, &ProtocolSettings::new(Protocol::Rdp)))
-            .contains("代理")
-    );
+    assert!(err_text(db.host_protocol_set(
+        host.id,
+        &ProtocolSettings {
+            x11_forwarding: true,
+            ..ProtocolSettings::new(Protocol::Telnet)
+        }
+    ))
+    .contains("X11"));
     assert_eq!(
         db.host_get(host.id).unwrap().updated_at,
         5,
@@ -414,8 +506,8 @@ fn protocol_set_validates_against_the_stored_host_and_bumps_updated_at() {
 fn ai_exec_refusal_only_for_non_ssh_hosts() {
     let db = memory_db();
     let ssh = db.host_save(&draft("web")).unwrap();
-    let rdp = db
-        .host_save_with_protocol(&draft("win"), &ProtocolSettings::new(Protocol::Rdp))
+    let serial = db
+        .host_save_with_protocol(&draft("console"), &serial_settings("COM3"))
         .unwrap()
         .0;
     let telnet = db
@@ -424,10 +516,10 @@ fn ai_exec_refusal_only_for_non_ssh_hosts() {
         .0;
     assert_eq!(db.host_ai_exec_refusal(ssh.id).unwrap(), None);
     assert!(db
-        .host_ai_exec_refusal(rdp.id)
+        .host_ai_exec_refusal(serial.id)
         .unwrap()
         .unwrap()
-        .contains("RDP"));
+        .contains("串口"));
     assert!(db
         .host_ai_exec_refusal(telnet.id)
         .unwrap()

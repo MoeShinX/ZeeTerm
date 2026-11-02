@@ -1,4 +1,4 @@
-//! 主机协议（SSH / Telnet / RDP）和各协议的选项，以及"协议 + 其他字段"组合的校验。
+//! 主机协议（SSH / Telnet / 串口）和各协议的选项，以及"协议 + 其他字段"组合的校验。
 //!
 //! 协议字段**不放在 [`super::Host`] / [`super::HostDraft`] 里**：这两个结构体在界面代码里到处
 //! 用字面量构造，加字段会让界面一起改。协议设置单独成 [`ProtocolSettings`]，按主机 id 存在
@@ -12,8 +12,6 @@ use crate::error::ZsshError;
 
 /// Telnet 默认端口。
 pub const DEFAULT_TELNET_PORT: u16 = 23;
-/// RDP 默认端口。
-pub const DEFAULT_RDP_PORT: u16 = 3389;
 
 /// 终端类型（TTYPE）的默认值。
 pub const DEFAULT_TELNET_TERMINAL_TYPE: &str = "xterm-256color";
@@ -21,12 +19,14 @@ pub const DEFAULT_TELNET_TERMINAL_TYPE: &str = "xterm-256color";
 /// 自动登录的模式条数、单条长度上限：这些规则会在每一行输出上匹配，不能无限多。
 const MAX_PATTERNS: usize = 8;
 const MAX_PATTERN_CHARS: usize = 64;
-/// 域 / 终端类型的长度上限。
-const MAX_DOMAIN_CHARS: usize = 255;
 const MAX_TERMINAL_TYPE_CHARS: usize = 64;
-/// 固定分辨率的范围（mstsc 接受的范围）。
-const MIN_RDP_DIMENSION: u32 = 200;
-const MAX_RDP_DIMENSION: u32 = 8192;
+/// 串口设备名长度上限。
+const MAX_SERIAL_DEVICE_CHARS: usize = 256;
+/// 波特率的合理范围（自定义值也要在里面）。
+const MIN_SERIAL_BAUD_RATE: u32 = 50;
+const MAX_SERIAL_BAUD_RATE: u32 = 4_000_000;
+/// 串口波特率默认值。
+pub const DEFAULT_SERIAL_BAUD_RATE: u32 = 115_200;
 
 /// 主机的连接协议。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -35,7 +35,8 @@ pub enum Protocol {
     #[default]
     Ssh,
     Telnet,
-    Rdp,
+    /// 本机串口。没有地址 / 端口 / 用户名 / 凭据 / 代理 / 跳板机，设备名在 [`SerialOptions`] 里。
+    Serial,
 }
 
 impl Protocol {
@@ -43,7 +44,7 @@ impl Protocol {
         match self {
             Self::Ssh => "ssh",
             Self::Telnet => "telnet",
-            Self::Rdp => "rdp",
+            Self::Serial => "serial",
         }
     }
 
@@ -51,7 +52,7 @@ impl Protocol {
         match raw {
             "ssh" => Ok(Self::Ssh),
             "telnet" => Ok(Self::Telnet),
-            "rdp" => Ok(Self::Rdp),
+            "serial" => Ok(Self::Serial),
             other => Err(ZsshError::InvalidInput(format!("未知的连接协议：{other}"))),
         }
     }
@@ -61,16 +62,17 @@ impl Protocol {
         match self {
             Self::Ssh => "SSH",
             Self::Telnet => "Telnet",
-            Self::Rdp => "RDP",
+            Self::Serial => "串口",
         }
     }
 
     /// 新建主机时按协议填的默认端口（已有主机不动）。
-    pub fn default_port(self) -> u16 {
+    /// 串口没有端口，返回 `None`。
+    pub fn default_port(self) -> Option<u16> {
         match self {
-            Self::Ssh => DEFAULT_SSH_PORT,
-            Self::Telnet => DEFAULT_TELNET_PORT,
-            Self::Rdp => DEFAULT_RDP_PORT,
+            Self::Ssh => Some(DEFAULT_SSH_PORT),
+            Self::Telnet => Some(DEFAULT_TELNET_PORT),
+            Self::Serial => None,
         }
     }
 
@@ -122,10 +124,10 @@ pub enum LocalEcho {
     Off,
 }
 
-/// Telnet 字节流的字符编码。
+/// Telnet / 串口字节流的字符编码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TelnetEncoding {
+pub enum TextEncoding {
     #[default]
     Utf8,
     Gbk,
@@ -171,7 +173,7 @@ pub struct TelnetOptions {
     pub naws: bool,
     /// 回应 TTYPE 协商用的终端类型
     pub terminal_type: String,
-    pub encoding: TelnetEncoding,
+    pub encoding: TextEncoding,
     pub auto_login: TelnetAutoLogin,
     /// 纯 TCP：不做任何 Telnet 协商（连的是裸 TCP 服务时用）
     pub raw_tcp: bool,
@@ -184,77 +186,104 @@ impl Default for TelnetOptions {
             local_echo: LocalEcho::default(),
             naws: true,
             terminal_type: DEFAULT_TELNET_TERMINAL_TYPE.to_owned(),
-            encoding: TelnetEncoding::default(),
+            encoding: TextEncoding::default(),
             auto_login: TelnetAutoLogin::default(),
             raw_tcp: false,
         }
     }
 }
 
-/// RDP 的分辨率模式。
+/// 串口数据位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-pub enum RdpResolution {
-    /// 跟随窗口大小
+pub enum SerialDataBits {
+    #[serde(rename = "5")]
+    Five,
+    #[serde(rename = "6")]
+    Six,
+    #[serde(rename = "7")]
+    Seven,
     #[default]
-    FitWindow,
-    Fullscreen,
-    Fixed {
-        width: u32,
-        height: u32,
-    },
+    #[serde(rename = "8")]
+    Eight,
 }
 
-/// RDP 音频。
+/// 串口校验位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum RdpAudio {
-    /// 在本机播放
+pub enum SerialParity {
     #[default]
-    Local,
-    /// 不播放
     None,
+    Odd,
+    Even,
+    Mark,
+    Space,
 }
 
-/// RDP 证书策略。现在只有一种：交给 mstsc 自己弹窗处理；留成枚举是为以后自带 RDP 引擎时
-/// 能加"记住指纹"之类的策略而不用改存储格式。
+/// 串口停止位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SerialStopBits {
+    #[default]
+    #[serde(rename = "1")]
+    One,
+    #[serde(rename = "1.5")]
+    OnePointFive,
+    #[serde(rename = "2")]
+    Two,
+}
+
+/// 串口流控。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum RdpCertificatePolicy {
+pub enum SerialFlowControl {
     #[default]
-    Mstsc,
+    None,
+    /// XON/XOFF
+    Software,
+    /// RTS/CTS
+    Hardware,
 }
 
-/// RDP 选项。
+/// 串口回车键发送什么。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SerialNewline {
+    /// 串口控制台（路由器 / 交换机 / 单片机）几乎都认回车 CR
+    #[default]
+    Cr,
+    Lf,
+    CrLf,
+}
+
+/// 串口选项。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct RdpOptions {
-    pub domain: Option<String>,
-    pub resolution: RdpResolution,
-    pub multi_monitor: bool,
-    pub clipboard: bool,
-    /// 驱动器重定向（把本机磁盘挂给远端），默认关
-    pub drives: bool,
-    pub audio: RdpAudio,
-    /// 连管理员会话（mstsc 的 /admin）
-    pub admin_session: bool,
-    /// 网络级别身份验证（NLA）
-    pub nla: bool,
-    pub certificate_policy: RdpCertificatePolicy,
+pub struct SerialOptions {
+    /// 设备名，原样存字符串：`COM3`、`\.\COM12`、`/dev/ttyUSB0`……插拔会变，不存枚举。
+    pub device: String,
+    /// 波特率，允许任意自定义数值
+    pub baud_rate: u32,
+    pub data_bits: SerialDataBits,
+    pub parity: SerialParity,
+    pub stop_bits: SerialStopBits,
+    pub flow_control: SerialFlowControl,
+    pub newline: SerialNewline,
+    /// 本地回显，默认关（设备一般自己回显）
+    pub local_echo: bool,
+    pub encoding: TextEncoding,
 }
 
-impl Default for RdpOptions {
+impl Default for SerialOptions {
     fn default() -> Self {
         Self {
-            domain: None,
-            resolution: RdpResolution::default(),
-            multi_monitor: false,
-            clipboard: true,
-            drives: false,
-            audio: RdpAudio::default(),
-            admin_session: false,
-            nla: true,
-            certificate_policy: RdpCertificatePolicy::default(),
+            device: String::new(),
+            baud_rate: DEFAULT_SERIAL_BAUD_RATE,
+            data_bits: SerialDataBits::default(),
+            parity: SerialParity::default(),
+            stop_bits: SerialStopBits::default(),
+            flow_control: SerialFlowControl::default(),
+            newline: SerialNewline::default(),
+            local_echo: false,
+            encoding: TextEncoding::default(),
         }
     }
 }
@@ -268,8 +297,8 @@ pub struct ProtocolSettings {
     pub x11_forwarding: bool,
     /// 只有 `protocol == Telnet` 时才有
     pub telnet: Option<TelnetOptions>,
-    /// 只有 `protocol == Rdp` 时才有
-    pub rdp: Option<RdpOptions>,
+    /// 只有 `protocol == Serial` 时才有
+    pub serial: Option<SerialOptions>,
 }
 
 /// 校验"协议 + 主机其他字段"组合时要看的主机信息。
@@ -292,7 +321,7 @@ impl ProtocolSettings {
             protocol,
             x11_forwarding: false,
             telnet: (protocol == Protocol::Telnet).then(TelnetOptions::default),
-            rdp: (protocol == Protocol::Rdp).then(RdpOptions::default),
+            serial: (protocol == Protocol::Serial).then(SerialOptions::default),
         }
     }
 
@@ -301,7 +330,7 @@ impl ProtocolSettings {
         self.protocol == Protocol::Ssh
             && !self.x11_forwarding
             && self.telnet.is_none()
-            && self.rdp.is_none()
+            && self.serial.is_none()
     }
 
     pub fn supports_sftp(&self) -> bool {
@@ -357,13 +386,14 @@ impl ProtocolSettings {
                 protocol.label()
             )));
         }
-        if protocol != Protocol::Rdp && self.rdp.is_some() {
-            return Err(invalid(format!("{} 主机不能带 RDP 选项", protocol.label())));
+        if protocol != Protocol::Serial && self.serial.is_some() {
+            return Err(invalid(format!("{} 主机不能带串口选项", protocol.label())));
         }
 
         match protocol {
             Protocol::Ssh => {}
-            Protocol::Telnet | Protocol::Rdp => check_password_only(protocol, facts)?,
+            Protocol::Telnet => check_password_only(protocol, facts)?,
+            Protocol::Serial => check_serial_has_no_network_refs(facts)?,
         }
         if let Some(jump) = facts.jump_host_protocol {
             if jump != Protocol::Ssh {
@@ -381,17 +411,10 @@ impl ProtocolSettings {
                 validate_telnet(&mut options, facts)?;
                 self.telnet = Some(options);
             }
-            Protocol::Rdp => {
-                // mstsc 不会经我们的代理出去；"跟随默认代理"也会被悄悄忽略，所以只接受"不用"。
-                if facts.proxy_mode != ProxyMode::None || facts.proxy_id.is_some() {
-                    return Err(invalid(
-                        "RDP 暂不支持经代理连接，请把代理设为「不使用」（需要穿透时用跳板机）"
-                            .to_owned(),
-                    ));
-                }
-                let mut options = self.rdp.take().unwrap_or_default();
-                validate_rdp(&mut options)?;
-                self.rdp = Some(options);
+            Protocol::Serial => {
+                let mut options = self.serial.take().unwrap_or_default();
+                validate_serial(&mut options)?;
+                self.serial = Some(options);
             }
         }
         Ok(self)
@@ -399,12 +422,12 @@ impl ProtocolSettings {
 
     /// 存进 `hosts.protocol_options` 的 JSON；没有任何协议选项是 `None`。
     pub fn options_json(&self) -> Result<Option<String>, ZsshError> {
-        if self.telnet.is_none() && self.rdp.is_none() {
+        if self.telnet.is_none() && self.serial.is_none() {
             return Ok(None);
         }
         let stored = StoredOptions {
             telnet: self.telnet.clone(),
-            rdp: self.rdp.clone(),
+            serial: self.serial.clone(),
         };
         serde_json::to_string(&stored)
             .map(Some)
@@ -433,7 +456,7 @@ impl ProtocolSettings {
             protocol,
             x11_forwarding,
             telnet: (protocol == Protocol::Telnet).then(|| stored.telnet.unwrap_or_default()),
-            rdp: (protocol == Protocol::Rdp).then(|| stored.rdp.unwrap_or_default()),
+            serial: (protocol == Protocol::Serial).then(|| stored.serial.unwrap_or_default()),
         })
     }
 }
@@ -444,14 +467,39 @@ struct StoredOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     telnet: Option<TelnetOptions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    rdp: Option<RdpOptions>,
+    serial: Option<SerialOptions>,
 }
 
 fn invalid(message: String) -> ZsshError {
     ZsshError::InvalidInput(message)
 }
 
-/// Telnet / RDP 的认证：不能用私钥 / agent，凭据只能是密码类。
+/// 串口主机不连网络：凭据、代理、跳板机都没有意义，选了就报错（而不是悄悄忽略——
+/// 用户以为经跳板机连，其实什么都没发生）。主机地址 / 端口 / 用户名 / 认证方式 / 代理策略
+/// 是界面默认会带着的值，由存储层统一整理成固定的占位值（见 `store::hosts`）。
+fn check_serial_has_no_network_refs(facts: &HostFacts<'_>) -> Result<(), ZsshError> {
+    check_serial_refs(
+        facts.identity.is_some(),
+        facts.proxy_id.is_some(),
+        facts.jump_host_protocol.is_some(),
+    )
+}
+
+/// 串口主机不能选凭据 / 代理 / 跳板机（存储层在查库之前先用它拦，错误信息比"凭据类型不对"清楚）。
+pub fn check_serial_refs(identity: bool, proxy: bool, jump_host: bool) -> Result<(), ZsshError> {
+    if identity {
+        return Err(invalid("串口主机不能选凭据".to_owned()));
+    }
+    if proxy {
+        return Err(invalid("串口主机不能选代理".to_owned()));
+    }
+    if jump_host {
+        return Err(invalid("串口主机不能选跳板机".to_owned()));
+    }
+    Ok(())
+}
+
+/// Telnet 的认证：不能用私钥 / agent，凭据只能是密码类。
 fn check_password_only(protocol: Protocol, facts: &HostFacts<'_>) -> Result<(), ZsshError> {
     if facts.auth_method != AuthMethod::Password {
         return Err(invalid(format!(
@@ -499,6 +547,36 @@ fn validate_telnet(options: &mut TelnetOptions, facts: &HostFacts<'_>) -> Result
     Ok(())
 }
 
+fn validate_serial(options: &mut SerialOptions) -> Result<(), ZsshError> {
+    let device = options.device.trim().to_owned();
+    if device.is_empty() {
+        return Err(invalid("请填串口设备名（例如 COM3）".to_owned()));
+    }
+    if device.chars().count() > MAX_SERIAL_DEVICE_CHARS || device.chars().any(char::is_control) {
+        return Err(invalid(format!(
+            "串口设备名最多 {MAX_SERIAL_DEVICE_CHARS} 个字符，不能含控制字符"
+        )));
+    }
+    options.device = device;
+
+    if !(MIN_SERIAL_BAUD_RATE..=MAX_SERIAL_BAUD_RATE).contains(&options.baud_rate) {
+        return Err(invalid(format!(
+            "波特率要在 {MIN_SERIAL_BAUD_RATE}-{MAX_SERIAL_BAUD_RATE} 之间"
+        )));
+    }
+    // Win32 的 DCB：1.5 个停止位只配 5 位数据位，5 位数据位也不能配 2 个停止位。
+    match (options.data_bits, options.stop_bits) {
+        (SerialDataBits::Five, SerialStopBits::Two) => {
+            return Err(invalid("5 位数据位不能配 2 个停止位".to_owned()));
+        }
+        (bits, SerialStopBits::OnePointFive) if bits != SerialDataBits::Five => {
+            return Err(invalid("1.5 个停止位只能配 5 位数据位".to_owned()));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn clean_patterns(what: &str, patterns: &[String]) -> Result<Vec<String>, ZsshError> {
     if patterns.len() > MAX_PATTERNS {
         return Err(invalid(format!("{what}最多 {MAX_PATTERNS} 条")));
@@ -517,28 +595,6 @@ fn clean_patterns(what: &str, patterns: &[String]) -> Result<Vec<String>, ZsshEr
         cleaned.push(pattern.to_owned());
     }
     Ok(cleaned)
-}
-
-fn validate_rdp(options: &mut RdpOptions) -> Result<(), ZsshError> {
-    if let Some(domain) = options.domain.take() {
-        let domain = domain.trim().to_owned();
-        if domain.chars().count() > MAX_DOMAIN_CHARS || domain.chars().any(char::is_control) {
-            return Err(invalid(format!(
-                "域最多 {MAX_DOMAIN_CHARS} 个字符，不能含控制字符或换行"
-            )));
-        }
-        // 空串当"没填"：写进 .rdp 文件的 domain 行不能是空值。
-        options.domain = (!domain.is_empty()).then_some(domain);
-    }
-    if let RdpResolution::Fixed { width, height } = options.resolution {
-        let range = MIN_RDP_DIMENSION..=MAX_RDP_DIMENSION;
-        if !range.contains(&width) || !range.contains(&height) {
-            return Err(invalid(format!(
-                "固定分辨率的宽和高都要在 {MIN_RDP_DIMENSION}-{MAX_RDP_DIMENSION} 之间"
-            )));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
