@@ -185,7 +185,7 @@ pub(crate) fn snapshot_from_conn(
             let mut statement = conn.prepare(
                 "SELECT id, uid, group_id, name, host, port, username, auth_method, identity_id, \
                  proxy_id, jump_host_id, proxy_mode, tags, sort, legacy_algorithms, created_at, \
-                 updated_at FROM hosts ORDER BY id",
+                 updated_at, protocol, x11_forwarding, protocol_options FROM hosts ORDER BY id",
             )?;
             let query_rows = statement.query_map([], |row| {
                 Ok((
@@ -206,6 +206,9 @@ pub(crate) fn snapshot_from_conn(
                     row.get::<_, i64>(14)?,
                     row.get::<_, i64>(15)?,
                     row.get::<_, i64>(16)?,
+                    row.get::<_, String>(17)?,
+                    row.get::<_, i64>(18)?,
+                    row.get::<_, Option<String>>(19)?,
                 ))
             })?;
             let mut rows = Vec::new();
@@ -233,6 +236,9 @@ pub(crate) fn snapshot_from_conn(
                 legacy_algorithms,
                 created_at,
                 updated_at,
+                protocol,
+                x11_forwarding,
+                protocol_options,
             ) in rows
             {
                 snapshot.hosts.push(HostRecord {
@@ -254,6 +260,9 @@ pub(crate) fn snapshot_from_conn(
                     legacy_algorithms: legacy_algorithms != 0,
                     created_at,
                     updated_at,
+                    protocol,
+                    x11_forwarding: x11_forwarding != 0,
+                    protocol_options: protocol_options.as_deref().and_then(parse_options),
                     device_id: device_id.to_owned(),
                 });
             }
@@ -300,6 +309,13 @@ pub(crate) fn snapshot_from_conn(
     snapshot.tombstones = load_tombstones_conn(conn, now)?;
     snapshot.sort_canonical();
     Ok(snapshot)
+}
+
+/// 选项列里的 JSON；读不出来就当没有（不能因为一台主机的选项坏了让整次同步失败）。
+fn parse_options(raw: &str) -> Option<Value> {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .filter(Value::is_object)
 }
 
 fn decrypt_secret(

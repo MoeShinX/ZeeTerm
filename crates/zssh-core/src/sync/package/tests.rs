@@ -18,14 +18,21 @@ fn package_roundtrips_and_rejects_newer_schema_version() {
     let bytes = snapshot.to_json().expect("序列化");
     assert_eq!(SyncSnapshot::parse(&bytes).expect("解析"), snapshot);
 
-    let mut newer = snapshot.clone();
-    newer.schema_version = SNAPSHOT_VERSION + 1;
-    let err = SyncSnapshot::parse(&newer.to_json().unwrap()).expect_err("版本太新要拒绝");
-    assert!(matches!(err, SyncError::FormatTooNew { .. }), "{err}");
+    // 写出去的版本号按内容算，所以用改 JSON 的办法造"别的版本"的包。
+    let with_version = |version: u32| {
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        value["schema_version"] = serde_json::json!(version);
+        serde_json::to_vec(&value).unwrap()
+    };
+    let err =
+        SyncSnapshot::parse(&with_version(MAX_SNAPSHOT_VERSION + 1)).expect_err("版本太新要拒绝");
+    assert!(
+        matches!(err, SyncError::FormatTooNew { found, supported } if found == MAX_SNAPSHOT_VERSION + 1 && supported == MAX_SNAPSHOT_VERSION),
+        "{err}"
+    );
+    SyncSnapshot::parse(&with_version(SNAPSHOT_VERSION_PROTOCOLS)).expect("v2 本版本能读");
 
-    let mut older = snapshot;
-    older.schema_version = 0;
-    let err = SyncSnapshot::parse(&older.to_json().unwrap()).expect_err("版本太旧要拒绝");
+    let err = SyncSnapshot::parse(&with_version(0)).expect_err("版本太旧要拒绝");
     assert!(matches!(err, SyncError::FormatTooOld { found: 0 }), "{err}");
 }
 
@@ -78,6 +85,9 @@ fn canonical_order_does_not_depend_on_insertion_order() {
         tags: Vec::new(),
         sort: 0,
         legacy_algorithms: false,
+        protocol: "ssh".to_owned(),
+        x11_forwarding: false,
+        protocol_options: None,
         created_at: 1,
         updated_at: 1,
         device_id: "dev-a".to_owned(),

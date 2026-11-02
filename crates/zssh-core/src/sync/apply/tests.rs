@@ -70,6 +70,9 @@ fn sample(device: &str) -> SyncSnapshot {
         tags: vec!["web".to_owned()],
         sort: 0,
         legacy_algorithms: false,
+        protocol: "ssh".to_owned(),
+        x11_forwarding: false,
+        protocol_options: None,
         created_at: 1,
         updated_at: 10,
         device_id: device.to_owned(),
@@ -315,4 +318,56 @@ fn applying_skips_invalid_setting_values_and_keeps_the_local_ones() {
     assert_eq!(get("ai_exec_mode").as_deref(), Some("\"manual\""));
     assert_eq!(get("terminal_scrollback"), None);
     assert_eq!(get("terminal_cursor_style").as_deref(), Some("\"bar\""));
+}
+
+#[test]
+fn protocol_fields_are_written_and_read_back_with_unknown_option_keys_intact() {
+    let db = Database::open_in_memory().expect("内存库");
+    let sealer = FakeSealer(3);
+    let mut snapshot = sample("dev-a");
+    {
+        let host = &mut snapshot.hosts[0];
+        host.protocol = "telnet".to_owned();
+        host.x11_forwarding = false;
+        host.protocol_options =
+            Some(serde_json::json!({ "telnet": { "newline": "lf", "future_key": [1, 2] } }));
+    }
+    snapshot.sort_canonical();
+    apply_snapshot(&db, &snapshot, &sealer, None, &[], 1).expect("导入");
+
+    let id = db.host_list().unwrap()[0].id;
+    let settings = db.host_protocol_get(id).unwrap();
+    assert_eq!(settings.protocol, crate::model::Protocol::Telnet);
+    assert_eq!(
+        settings.telnet.unwrap().newline,
+        crate::model::TelnetNewline::Lf
+    );
+
+    // 再导出：选项原样（包括这个版本不认识的键），版本号是 2。
+    let exported = crate::sync::snapshot::snapshot_local(&db, &sealer, "dev-a", None, 2).unwrap();
+    assert_eq!(exported.hosts[0].protocol, "telnet");
+    assert_eq!(
+        exported.hosts[0].protocol_options,
+        snapshot.hosts[0].protocol_options
+    );
+    assert_eq!(exported.schema_version, 2);
+}
+
+#[test]
+fn a_protocol_this_version_does_not_know_is_refused_before_anything_is_written() {
+    let db = Database::open_in_memory().expect("内存库");
+    let sealer = FakeSealer(3);
+    let mut snapshot = sample("dev-a");
+    snapshot.hosts[0].protocol = "vnc".to_owned();
+    let err = apply_snapshot(&db, &snapshot, &sealer, None, &[], 1).expect_err("应该拒绝");
+    assert!(err.to_string().contains("vnc"), "{err}");
+    assert_eq!(db.host_list().unwrap().len(), 0);
+    assert_eq!(db.group_list().unwrap().len(), 0, "整次导入不落库");
+
+    let mut snapshot = sample("dev-a");
+    snapshot.hosts[0].protocol = "telnet".to_owned();
+    snapshot.hosts[0].protocol_options = Some(serde_json::json!("not an object"));
+    let err = apply_snapshot(&db, &snapshot, &sealer, None, &[], 1).expect_err("应该拒绝");
+    assert!(err.to_string().contains("协议选项"), "{err}");
+    assert_eq!(db.host_list().unwrap().len(), 0);
 }

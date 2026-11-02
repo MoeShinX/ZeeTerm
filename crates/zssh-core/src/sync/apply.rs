@@ -72,6 +72,39 @@ fn require_uid(entity: &str, uid: &str) -> Result<(), SyncError> {
     Ok(())
 }
 
+/// 主机记录里的协议字段能不能落库：协议名要认得，选项要是 JSON 对象。
+///
+/// 认不得的协议（更新版本才有的）整次导入拒绝而不是写进去：写进去之后读协议设置会报错，
+/// 这台主机就连不上、也没法编辑了。
+fn check_host_protocol(host: &super::package::HostRecord) -> Result<(), SyncError> {
+    crate::model::Protocol::parse(&host.protocol).map_err(|_| {
+        SyncError::InvalidData(format!(
+            "主机「{}」用了这个版本不认识的协议「{}」，请先升级 ZeeTerm",
+            host.name, host.protocol
+        ))
+    })?;
+    if let Some(options) = &host.protocol_options {
+        if !options.is_object() {
+            return Err(SyncError::InvalidData(format!(
+                "主机「{}」的协议选项格式不对",
+                host.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// 写进 `protocol_options` 列的文本（原样保留同步包里的 JSON，包括这个版本不认识的键）。
+fn host_options_text(host: &super::package::HostRecord) -> Result<Option<String>, SyncError> {
+    host.protocol_options
+        .as_ref()
+        .map(|options| {
+            serde_json::to_string(options)
+                .map_err(|err| SyncError::InvalidData(format!("协议选项序列化失败：{err}")))
+        })
+        .transpose()
+}
+
 /// 合并时用的那份本地状态。写入前在同一个事务里重读本地，不一致就不写。
 pub struct LocalGuard<'a> {
     pub expected: &'a SyncSnapshot,
@@ -146,6 +179,7 @@ pub fn apply_snapshot_guarded_with(
         }
         for host in &snapshot.hosts {
             require_uid("主机", &host.uid)?;
+            check_host_protocol(host)?;
         }
         for identity in &snapshot.identities {
             require_uid("凭据", &identity.uid)?;
@@ -320,13 +354,16 @@ pub fn apply_snapshot_guarded_with(
                 .and_then(|uid| proxy_ids.get(uid).copied());
             let tags = serde_json::to_string(&host.tags)
                 .map_err(|err| SyncError::InvalidData(format!("标签序列化失败：{err}")))?;
+            let options = host_options_text(host)?;
             match host_ids.get(&host.uid) {
                 Some(id) => {
                     tx.execute(
                         "UPDATE hosts SET group_id = ?1, name = ?2, host = ?3, port = ?4, \
                          username = ?5, auth_method = ?6, identity_id = ?7, proxy_id = ?8, \
                          jump_host_id = NULL, proxy_mode = ?9, tags = ?10, sort = ?11, \
-                         legacy_algorithms = ?12, created_at = ?13, updated_at = ?14 WHERE id = ?15",
+                         legacy_algorithms = ?12, created_at = ?13, updated_at = ?14, \
+                         protocol = ?15, x11_forwarding = ?16, protocol_options = ?17 \
+                         WHERE id = ?18",
                         params![
                             group_id,
                             host.name,
@@ -342,6 +379,9 @@ pub fn apply_snapshot_guarded_with(
                             host.legacy_algorithms,
                             host.created_at,
                             host.updated_at,
+                            host.protocol,
+                            host.x11_forwarding,
+                            options,
                             id
                         ],
                     )?;
@@ -351,8 +391,10 @@ pub fn apply_snapshot_guarded_with(
                     tx.execute(
                         "INSERT INTO hosts (uid, group_id, name, host, port, username, \
                          auth_method, identity_id, proxy_id, jump_host_id, proxy_mode, tags, \
-                         sort, legacy_algorithms, created_at, updated_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12, ?13, ?14, ?15)",
+                         sort, legacy_algorithms, created_at, updated_at, protocol, \
+                         x11_forwarding, protocol_options) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12, ?13, ?14, ?15, \
+                         ?16, ?17, ?18)",
                         params![
                             host.uid,
                             group_id,
@@ -368,7 +410,10 @@ pub fn apply_snapshot_guarded_with(
                             host.sort,
                             host.legacy_algorithms,
                             host.created_at,
-                            host.updated_at
+                            host.updated_at,
+                            host.protocol,
+                            host.x11_forwarding,
+                            options
                         ],
                     )?;
                     host_ids.insert(host.uid.clone(), tx.last_insert_rowid());
