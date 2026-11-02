@@ -1,0 +1,6 @@
+# 所有文本文件在任何平台都按 LF 检出：有测试按换行切分编译期嵌入的源码，
+# CI 的 Windows 运行环境默认会转成 CRLF，导致这类测试只在 CI 上失败。
+* text=auto eol=lf
+*.ico binary
+*.png binary
+*.db binary
