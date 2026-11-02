@@ -10585,6 +10585,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "zssh-protocols"
+version = "0.0.0"
+dependencies = [
+ "encoding_rs",
+ "tokio",
+ "tracing",
+ "windows 0.62.2",
+ "zeroize",
+ "zssh-core",
+ "zssh-session",
+ "zssh-terminal",
+]
+
+[[package]]
 name = "zssh-regex"
 version = "0.0.0"
 dependencies = [

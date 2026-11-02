@@ -58,3 +58,21 @@ Build-time only: embed-resource 3.0.12 (MIT, https://crates.io/crates/embed-reso
   it ships in the executable. The ZeeTerm logo files under
   native/zssh-gpui/assets/brand/ are ZeeTerm project artwork, not third-party
   material.
+
+nyaterm (Telnet session backend, native/zssh-protocols/)
+  https://github.com/nyakang/nyaterm
+  Copyright 2026 Kang and contributors
+  License: Apache-2.0
+
+  Adapted from nyaterm's crates/nyaterm-transport: telnet_codec.rs (Telnet
+  command/option constants, NAWS frame layout, IAC escaping of application
+  data), telnet_input.rs (Enter normalization, local-echo rules and the
+  escape-sequence tracker) and telnet_prompts.rs plus the auto-login state in
+  lib.rs (control-sequence stripping, prompt tail window, "Last login" guard,
+  failure phrases). The files carry a header comment naming their source.
+  The IAC parser was rewritten as a state machine that keeps its state across
+  reads, option negotiation was extended (TTYPE, BINARY, per-option state),
+  and the local line editor was not ported; everything else was changed to fit
+  ZeeTerm's session abstractions. Apache-2.0 is compatible with distribution
+  under GPL-3.0-or-later. Only nyaterm's design and code under Apache-2.0 were
+  used; nothing was taken from projects under GPL-3.0-only.

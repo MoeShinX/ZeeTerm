@@ -1,5 +1,5 @@
 ﻿[workspace]
-members = ["zssh-gpui", "zssh-regex", "zssh-session", "zssh-terminal", "zssh-update", "zssh-editor"]
+members = ["zssh-gpui", "zssh-protocols", "zssh-regex", "zssh-session", "zssh-terminal", "zssh-update", "zssh-editor"]
 resolver = "2"
 
 [workspace.package]
