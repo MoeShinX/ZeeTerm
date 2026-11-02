@@ -15,6 +15,7 @@ mod agents_demo;
 mod ai_terminals;
 mod app_theme;
 mod backup_demo;
+mod brand;
 mod dev_hooks;
 mod editor_demo;
 mod file_window;

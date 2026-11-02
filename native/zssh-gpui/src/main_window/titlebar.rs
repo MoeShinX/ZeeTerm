@@ -134,18 +134,8 @@ impl MainWindow {
                 entity.update(cx, |this, cx| this.toggle_tree(cx));
             })
         };
-        let logo = div()
-            .flex()
-            .items_center()
-            .justify_center()
-            .size(px(18.0))
-            .flex_none()
-            .rounded_sm()
-            .bg(tokens.accent)
-            .text_color(tokens.on_accent)
-            .text_xs()
-            .font_weight(FontWeight::BOLD)
-            .child("Z");
+        // 品牌 Logo（透明底 PNG，深浅主题通用），尺寸沿用原来的 18px 标志位。
+        let logo = ::gpui::img(crate::brand::logo()).size(px(18.0)).flex_none();
         let vault_active = view == MainView::Vault;
         let vault_button = {
             let entity = entity.clone();
