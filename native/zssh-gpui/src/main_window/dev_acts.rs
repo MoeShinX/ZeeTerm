@@ -106,6 +106,7 @@ pub fn validate(spec: &str) -> Result<(), String> {
         || super::dev_acts_about::is_known(name)
         || super::dev_acts_pane::is_known(name)
         || super::dev_acts_u1::is_known(name)
+        || super::dev_acts_u2::is_known(name)
         || super::dev_acts_sync::is_known(name)
         || KNOWN.contains(&name)
     {
@@ -214,6 +215,10 @@ fn run_inner(
     }
     // AI 智能体（面板里换智能体 / 模型 / 强度，设置页的路径和下载）的动作在 `dev_acts_agent`。
     if let Some(result) = super::dev_acts_agent::run(this, spec, window, cx) {
+        return result;
+    }
+    // 设置页分类导航、连接 / SFTP / 窗口 / 高亮 / 会话日志设置的动作在 `dev_acts_u2`。
+    if let Some(result) = super::dev_acts_u2::run(this, spec, window, cx) {
         return result;
     }
     // 设置页「关于」一节的动作在 `dev_acts_about`。

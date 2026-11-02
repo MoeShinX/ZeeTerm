@@ -163,8 +163,9 @@ fn run_inner(
         }
         "backup_open" => {
             this.show_view(super::super::nav::MainView::Settings, window, cx);
+            this.set_settings_section(crate::settings_nav::SettingsSection::Sync, cx);
             this.settings_scroll
-                .scroll_to_top_of_item(super::super::pages::BACKUP_SECTION);
+                .scroll_to_top_of_item(super::super::settings_page::BACKUP_ITEM);
             cx.notify();
         }
         "sync_set" => {

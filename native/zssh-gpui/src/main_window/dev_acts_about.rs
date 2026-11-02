@@ -48,9 +48,7 @@ mod real {
     ) -> Result<Outcome, String> {
         if name == "about_open" {
             this.show_view(super::super::nav::MainView::Settings, window, cx);
-            this.settings_scroll
-                .scroll_to_top_of_item(super::super::pages::ABOUT_SECTION);
-            cx.notify();
+            this.set_settings_section(crate::settings_nav::SettingsSection::About, cx);
             return Ok(Outcome::Done);
         }
         // 关于一节第一次画出来之后才有实体：还没有就等下一拍。

@@ -9,7 +9,6 @@ use gpui_kit::*;
 
 use super::MainWindow;
 use super::nav::MainView;
-use super::pages::SYNC_SECTION;
 use crate::app_theme::Tokens;
 use crate::sync_demo::SyncTone;
 
@@ -76,10 +75,10 @@ impl MainWindow {
         )
     }
 
-    /// 打开设置页并滚到「同步」那一节（状态条点击的去向）。
+    /// 打开设置页并切到「同步」分类（状态条点击的去向，同 0.2.14 的 `wantSettingsSection`）。
     pub(crate) fn open_sync_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.show_view(MainView::Settings, window, cx);
-        self.settings_scroll.scroll_to_top_of_item(SYNC_SECTION);
-        cx.notify();
+        let section = crate::settings_nav::SettingsSection::on_open(self.settings_section, true);
+        self.set_settings_section(section, cx);
     }
 }

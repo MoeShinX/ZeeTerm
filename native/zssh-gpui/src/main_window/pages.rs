@@ -1,7 +1,6 @@
 //! 主区的终端页和设置页，以及空白标签里的「连接到主机」。主机页在 `vault_page`。
 
 use ::gpui::{MouseButton, SharedString, px};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -11,28 +10,6 @@ use zssh_core::model::Host;
 use super::MainWindow;
 use super::host_tree::{compare_names, host_matches};
 use crate::app_theme::Tokens;
-
-/// 设置页滚动容器里每一节的下标（`open_sync_settings` 按它滚动）。
-pub const SYNC_SECTION: usize = 2;
-/// 备份那一节的下标（驱动脚本滚到备份一节用）。
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
-pub const BACKUP_SECTION: usize = 3;
-/// 关于那一节的下标（驱动脚本滚到关于一节用）。
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
-pub const ABOUT_SECTION: usize = 4;
-
-/// 设置页里的一节：限宽居中，上下留白。
-fn settings_block(content: impl IntoElement, first: bool) -> impl IntoElement {
-    div()
-        .w_full()
-        .flex_none()
-        .max_w(px(720.0))
-        .mx_auto()
-        .px_6()
-        .pb_3()
-        .when(first, |d| d.pt_6())
-        .child(content)
-}
 
 /// 空白标签里「连接到主机」要列出的主机：按名字排序，搜索框里的字匹配名称 / 地址 /
 /// 用户名 / 标签（同 0.2.14 的 `filterHosts`）。
@@ -188,96 +165,6 @@ impl MainWindow {
                             .children(rows)
                             .into_any_element()
                     }),
-            )
-    }
-
-    // ---- 设置页 ----
-
-    pub(super) fn render_settings(
-        &mut self,
-        tokens: &Tokens,
-        window: &mut ::gpui::Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let entity = cx.entity();
-        // AI 一节（智能体检测 / 路径 / 下载）是自己的实体：第一次打开设置页时建。
-        let agents = match &self.agent_settings {
-            Some(agents) => agents.clone(),
-            None => {
-                let agents = cx.new(|cx| crate::agents_demo::AgentsDemo::new_embedded(window, cx));
-                self.agent_settings = Some(agents.clone());
-                agents
-            }
-        };
-        // 同步（连接存储 / 主密码 / 同步 / 冲突）和备份（本地备份 / 离线备份文件）也是各自的实体：
-        // 第一次打开设置页时建，之后一直留着（输入到一半的内容切页不丢）。
-        let sync = match &self.sync_settings {
-            Some(sync) => sync.clone(),
-            None => {
-                let sync = cx.new(|cx| crate::sync_demo::SyncDemo::new_embedded(window, cx));
-                self.sync_settings = Some(sync.clone());
-                sync
-            }
-        };
-        let backup = match &self.backup_settings {
-            Some(backup) => backup.clone(),
-            None => {
-                let backup = cx.new(|cx| crate::backup_demo::BackupDemo::new_embedded(window, cx));
-                self.backup_settings = Some(backup.clone());
-                backup
-            }
-        };
-        let about = match &self.about_settings {
-            Some(about) => about.clone(),
-            None => {
-                let about = cx.new(|_cx| crate::about_view::AboutView::new());
-                self.about_settings = Some(about.clone());
-                about
-            }
-        };
-        let back = Button::new("settings-back")
-            .ghost()
-            .icon(IconName::ArrowLeft)
-            .label("返回")
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |this, cx| this.close_settings(window, cx));
-            });
-        let body = crate::settings_view::settings_body(&self.workspace, cx);
-        v_flex()
-            .id("settings-page")
-            .size_full()
-            .child(
-                h_flex()
-                    .h(px(48.0))
-                    .px_4()
-                    .gap_3()
-                    .items_center()
-                    .flex_none()
-                    .border_b_1()
-                    .border_color(tokens.border)
-                    .child(back)
-                    .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("设置"),
-                    ),
-            )
-            .child(
-                div()
-                    .id("settings-scroll")
-                    .track_scroll(&self.settings_scroll)
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .overflow_y_scroll()
-                    // 每一节是滚动容器的直接子元素：状态栏点进来时按下标滚到「同步」那一节。
-                    .child(settings_block(body, true))
-                    .child(settings_block(agents, false))
-                    .child(settings_block(sync, false))
-                    .child(settings_block(backup, false))
-                    .child(settings_block(about, false)),
             )
     }
 }

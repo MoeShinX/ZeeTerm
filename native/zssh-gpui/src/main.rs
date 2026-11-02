@@ -41,6 +41,7 @@ mod proxies_demo;
 mod remote_editor_demo;
 mod selection;
 mod settings;
+mod settings_nav;
 mod settings_view;
 mod sftp_demo;
 mod split_tree;

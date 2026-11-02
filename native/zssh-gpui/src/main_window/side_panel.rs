@@ -112,9 +112,13 @@ impl MainWindow {
         panel_width::clamp(self.panel_kind(), self.aside_width, window_width, 0.0)
     }
 
-    /// 要不要在这一页显示右侧面板（设置页占满整个区域，不显示）。
+    /// 要不要在这一页显示右侧面板。设置页占满整个区域，只有「连接」里的「新建 / 管理代理」打开的
+    /// 代理面板例外：它要开在设置页旁边（0.2.14 也是这样），别的面板在设置页里不显示。
     pub(super) fn panels_on_page(&self) -> bool {
-        matches!(self.nav.view, MainView::Vault | MainView::Terminal)
+        match self.nav.view {
+            MainView::Vault | MainView::Terminal => true,
+            MainView::Settings => self.panels.visible() == Some(PROXIES),
+        }
     }
 
     pub(super) fn open_panel_keychain_toggle(&mut self, cx: &mut Context<Self>) {

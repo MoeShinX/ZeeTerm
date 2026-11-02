@@ -28,6 +28,7 @@ mod dev_acts_pane;
 mod dev_acts_sync;
 mod dev_acts_tcp;
 mod dev_acts_u1;
+mod dev_acts_u2;
 pub mod dev_script;
 pub mod dev_seed;
 pub mod dock_layout;
@@ -56,6 +57,7 @@ pub mod quick_commands;
 mod quick_panel;
 mod recovery_ui;
 pub mod scope_targets;
+mod settings_page;
 mod side_panel;
 mod sidebar;
 mod status_bar;
@@ -148,8 +150,16 @@ pub struct MainWindow {
     pub(super) about_settings: Option<Entity<crate::about_view::AboutView>>,
     /// 底部同步状态条现在画的内容（版本号用来判断要不要重绘）。
     pub(super) sync_bar: (u64, crate::sync_demo::SyncBarModel),
-    /// 设置页的滚动位置（驱动脚本要把 AI 一节滚到可见处截图）。
+    /// 设置页的滚动位置（驱动脚本要把某一块滚到可见处截图）。
     pub(super) settings_scroll: ::gpui::ScrollHandle,
+    /// 设置页现在显示哪个分类（记在窗口状态里，重启后恢复）。
+    pub(super) settings_section: crate::settings_nav::SettingsSection,
+    /// 数据库里的连接 / SFTP / 窗口设置（`app_prefs`）：进设置页时重读，改的时候同步更新。
+    pub(super) prefs: crate::app_prefs::AppPrefs,
+    /// 数值设置的滑块。
+    pub(super) pref_sliders: settings_page::PrefSliders,
+    /// 设置页「终端 → 关键词高亮」的规则编辑器：第一次进「终端」分类时才建。
+    pub(super) highlight_editor: Option<Entity<crate::highlight_editor::HighlightEditor>>,
     /// 右侧面板内容区的滚动句柄（调试驱动把它滚到底，看面板下半部分用）。
     pub(super) panel_scroll: ::gpui::ScrollHandle,
     /// AI 改主机记忆的账本我看到哪一条了（主机详情里开着的记忆框要跟着刷新）。
@@ -279,6 +289,11 @@ impl MainWindow {
                 .and_then(|raw| panel_width::parse_stored(Some(&raw))),
             panel_width::ASIDE_DEFAULT,
         );
+        let prefs = store
+            .db()
+            .map(crate::app_prefs::AppPrefs::load)
+            .unwrap_or_default();
+        let pref_sliders = settings_page::PrefSliders::new(&prefs, cx);
         let keychain = KeychainUi::new(window, cx);
         let proxy_ui = ProxyUi::new(window, cx);
         let bars = bars::BarUi::new(window, cx);
@@ -319,6 +334,12 @@ impl MainWindow {
             about_settings: None,
             sync_bar: crate::sync_demo::bar_model(),
             settings_scroll: ::gpui::ScrollHandle::new(),
+            settings_section: crate::settings_nav::SettingsSection::restored(
+                layout.settings_section.as_deref(),
+            ),
+            prefs,
+            pref_sliders,
+            highlight_editor: None,
             panel_scroll: ::gpui::ScrollHandle::new(),
             memory_seen: crate::host_activity::memory_version(),
             ai_dots: Vec::new(),
@@ -353,6 +374,11 @@ impl MainWindow {
             forward_seen: crate::forward_runtime::manager().version(),
             _subs: subs,
         };
+        // 滑块松手写库；保活间隔、状态栏间隔这两个全局行为也在这里套上。
+        let slider_subs = this.subscribe_pref_sliders(window, cx);
+        this.apply_prefs();
+        let mut this = this;
+        this._subs.extend(slider_subs);
 
         // 后台节拍：重读主机库（别的窗口改了主机这里能看到）、跟着活动标签换状态栏订阅、
         // 取状态栏数据。窗口没了 `update_in` 会报错，任务自己退出。
@@ -484,9 +510,12 @@ impl MainWindow {
     fn sync_status(&mut self, cx: &mut Context<Self>) -> bool {
         let wanted = {
             let ws = self.workspace.read(cx);
-            (self.nav.view == MainView::Terminal && ws.active_pane_is_live())
-                .then(|| ws.active_host_id())
-                .flatten()
+            // 设置里关掉「显示服务器状态栏」：不订阅采集，状态栏也不画。
+            (self.prefs.stats_show
+                && self.nav.view == MainView::Terminal
+                && ws.active_pane_is_live())
+            .then(|| ws.active_host_id())
+            .flatten()
         };
         let mut changed = false;
         if wanted != self.status_host {
@@ -515,6 +544,7 @@ impl MainWindow {
     pub(super) fn layout_snapshot(&self) -> MainLayout {
         MainLayout {
             view: Some(self.nav.view.as_str().to_owned()),
+            settings_section: Some(self.settings_section.id().to_owned()),
             tree_width: self.tree.width,
             tree_collapsed: self.tree.collapsed,
             tree_expanded: self.tree.expanded.iter().cloned().collect(),
@@ -576,6 +606,10 @@ impl MainWindow {
     }
 
     fn after_view_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.nav.view == MainView::Settings {
+            // 别处（比如配置同步）可能改过这几项，进设置页时重读一遍。
+            self.reload_prefs();
+        }
         self.save_layout();
         self.focus_content(window, cx);
         cx.notify();
@@ -1075,7 +1109,12 @@ impl MainWindow {
         }
         // 设置页里 Esc 关设置；输入框有焦点时 Esc 先留给输入框（清空搜索）。
         if key == "escape" && self.nav.view == MainView::Settings {
-            self.close_settings(window, cx);
+            // 设置页旁边开着代理面板时，Esc 先收面板。
+            if self.panels_on_page() && self.panels.visible().is_some() {
+                self.close_panel(window, cx);
+            } else {
+                self.close_settings(window, cx);
+            }
             cx.stop_propagation();
             return;
         }

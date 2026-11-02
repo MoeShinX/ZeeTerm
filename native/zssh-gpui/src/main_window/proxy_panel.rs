@@ -351,7 +351,12 @@ impl MainWindow {
         }
     }
 
-    fn set_default_proxy(&mut self, id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn set_default_proxy(
+        &mut self,
+        id: Option<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let result = self
             .store
             .db()

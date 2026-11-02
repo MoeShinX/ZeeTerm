@@ -19,27 +19,6 @@ use crate::main_window::widgets::{Choice, select};
 use crate::settings::{CursorShape, UiSettings};
 use crate::terminal_workspace::TerminalWorkspace;
 
-/// 一组设置：标题 + 若干行。
-fn section(title: &'static str, tokens: &Tokens, rows: Vec<AnyElement>) -> impl IntoElement {
-    v_flex()
-        .w_full()
-        .gap_1()
-        .p_4()
-        .rounded_lg()
-        .border_1()
-        .border_color(tokens.border)
-        .bg(tokens.surface)
-        .child(
-            div()
-                .pb_1()
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(tokens.text)
-                .child(title),
-        )
-        .children(rows)
-}
-
 /// 设置页里带说明的一张卡（同步 / 备份这些大块用）：标题、一句说明，下面是若干行。
 /// `id` 用来在驱动脚本里定位，也让每张卡有稳定的元素 ID。
 pub(crate) fn card(
@@ -78,9 +57,24 @@ pub(crate) fn card(
 }
 
 /// 一行设置：左边名字和说明，右边是控件。
-fn row(
+pub(crate) fn row(
     title: &'static str,
     description: Option<&'static str>,
+    control: impl IntoElement,
+    tokens: &Tokens,
+) -> AnyElement {
+    row_with(
+        title,
+        description.map(SharedString::new_static),
+        control,
+        tokens,
+    )
+}
+
+/// 同 [`row`]，说明是运行时算出来的文字（比如当前目录）。
+pub(crate) fn row_with(
+    title: &'static str,
+    description: Option<SharedString>,
     control: impl IntoElement,
     tokens: &Tokens,
 ) -> AnyElement {
@@ -107,7 +101,7 @@ fn row(
 }
 
 /// 带开关的一行。
-fn switch_row(
+pub(crate) fn switch_row(
     id: &'static str,
     title: &'static str,
     description: &'static str,
@@ -130,7 +124,7 @@ fn switch_row(
     )
 }
 
-fn stepper(
+pub(crate) fn stepper(
     id: &'static str,
     value: String,
     on_minus: impl Fn(&mut App) + 'static,
@@ -162,51 +156,79 @@ fn stepper(
         )
 }
 
-/// 设置页内容。`ws` 是被设置的工作区；读的是它当前的设置，改完它会自己保存并重绘。
+/// 「外观」分类里由工作区驱动的几张卡：主题、应用皮肤、终端配色（同 0.2.14 的三张卡）。
+/// 主机树、窗口两张卡读写数据库设置，在 `main_window::settings_page` 里。
 ///
 /// 每一行、每一组都拆成单独的函数（`inline(never)`）：debug 构建里一个函数的栈帧会把所有临时
 /// 元素都留着，写成一大坨时单个栈帧能到几百 KB，再叠上窗口绘制的调用链就把 1MB 的主线程栈
 /// 撑爆了（调试窗口启动即展开设置面板时就这样溢出过）。拆开以后同一时刻只有一个小栈帧。
-pub(crate) fn settings_body(ws: &Entity<TerminalWorkspace>, cx: &App) -> impl IntoElement {
+pub(crate) fn appearance_cards(ws: &Entity<TerminalWorkspace>, cx: &App) -> Vec<AnyElement> {
     let tokens = Tokens::current(cx);
     let s: UiSettings = ws.read(cx).settings().clone();
-    let reset = ws.clone();
-    v_flex()
-        .w_full()
-        .gap_3()
-        .child(appearance_section(ws, &s, &tokens))
-        .child(terminal_section(ws, &s, &tokens, cx))
-        .child(behaviour_section(ws, &s, &tokens))
-        .child(window_section(ws, &s, &tokens))
-        .child(
-            h_flex().justify_end().child(
-                Button::new("settings-reset")
-                    .label("恢复默认")
-                    .compact()
-                    .on_click(move |_, window, cx| {
-                        reset.update(cx, |this, cx| this.reset_settings(window, cx));
-                    }),
-            ),
-        )
+    vec![
+        theme_card(ws, &s, &tokens),
+        skin_card_group(ws, &s, &tokens),
+        terminal_theme_card(ws, &s, &tokens),
+    ]
 }
 
-/// 外观：主题模式、浅色 / 深色皮肤、终端配色（同 0.2.14 的「主题」「应用皮肤」「终端配色」三张卡）。
+/// 「恢复默认」：把外观和终端的设置（`ui-settings.json` 里那一份）全部还原。0.2.14 没有这个按钮。
+pub(crate) fn reset_row(ws: &Entity<TerminalWorkspace>) -> AnyElement {
+    let reset = ws.clone();
+    h_flex()
+        .id("settings-reset-row")
+        .w_full()
+        .justify_end()
+        .child(
+            Button::new("settings-reset")
+                .label("恢复默认")
+                .compact()
+                .on_click(move |_, window, cx| {
+                    reset.update(cx, |this, cx| this.reset_settings(window, cx));
+                }),
+        )
+        .into_any_element()
+}
+
+/// 主题：系统 / 浅色 / 深色。
 #[inline(never)]
-fn appearance_section(
+fn theme_card(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
+    card(
+        "settings-theme",
+        "主题",
+        Some("跟随系统时，Windows 切换浅色 / 深色模式，界面跟着变。"),
+        tokens,
+        vec![theme_row(ws, s, tokens)],
+    )
+}
+
+/// 应用皮肤：浅色、深色各一排。
+#[inline(never)]
+fn skin_card_group(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
+    card(
+        "settings-skins",
+        "应用皮肤",
+        Some("浅色和深色皮肤分别保存，随明暗模式生效。"),
+        tokens,
+        vec![
+            skin_group("浅色皮肤", false, ws, s, tokens),
+            skin_group("深色皮肤", true, ws, s, tokens),
+        ],
+    )
+}
+
+/// 终端配色：跟随皮肤或固定成某一套，固定成和界面明暗相反时给提示。
+#[inline(never)]
+fn terminal_theme_card(
     ws: &Entity<TerminalWorkspace>,
     s: &UiSettings,
     tokens: &Tokens,
 ) -> AnyElement {
-    let mut rows = vec![
-        theme_row(ws, s, tokens),
-        skin_group("浅色皮肤", false, ws, s, tokens),
-        skin_group("深色皮肤", true, ws, s, tokens),
-        terminal_theme_row(ws, s, tokens),
-    ];
+    let mut rows = vec![terminal_theme_row(ws, s, tokens)];
     if let Some(hint) = terminal_mismatch_hint(ws, s, tokens) {
         rows.push(hint);
     }
-    section("外观", tokens, rows).into_any_element()
+    card("settings-terminal-theme", "终端配色", None, tokens, rows)
 }
 
 #[inline(never)]
@@ -464,7 +486,15 @@ fn terminal_mismatch_hint(
     )
 }
 
-/// 终端：字体、字号、行高、回滚行数、光标。已经打开的终端也会立刻跟着变。
+/// 「终端」分类的卡：终端（字体 / 光标 / 输入法 / 复制粘贴）、关键词高亮、会话日志。
+/// 后两张卡带自己的输入框，是各自的实体（`highlight_editor`、`session_log_card`），由设置页放进来。
+pub(crate) fn terminal_cards(ws: &Entity<TerminalWorkspace>, cx: &App) -> Vec<AnyElement> {
+    let tokens = Tokens::current(cx);
+    let s: UiSettings = ws.read(cx).settings().clone();
+    vec![terminal_section(ws, &s, &tokens, cx)]
+}
+
+/// 终端：字体、字号、行高、回滚行数、光标、输入法、复制 / 粘贴。已经打开的终端也会立刻跟着变。
 #[inline(never)]
 fn terminal_section(
     ws: &Entity<TerminalWorkspace>,
@@ -496,8 +526,60 @@ fn terminal_section(
         line_height_row(ws, s, tokens),
         scrollback_row(ws, s, tokens, cx),
         cursor_row(ws, s, tokens),
+        switch_row(
+            "cursor-blink",
+            "光标闪烁",
+            "终端有焦点时光标一闪一闪；打字时先亮着。",
+            s.cursor_blink,
+            |this, cx| this.toggle_cursor_blink(cx),
+            ws,
+            tokens,
+        ),
+        switch_row(
+            "ime-english",
+            "终端里自动切到英文输入",
+            "焦点进终端时关闭输入法（直接打英文），离开终端回到其他输入框（AI 对话框、搜索框、编辑器等）时重新打开；要在终端里打中文，按 Ctrl+空格 或点输入法图标打开。",
+            s.ime_english,
+            |this, cx| this.toggle_ime_english(cx),
+            ws,
+            tokens,
+        ),
+        switch_row(
+            "copy-on-select",
+            "选中即复制",
+            "选中文字之后自动复制到剪贴板。",
+            s.copy_on_select,
+            |this, cx| this.toggle_copy_on_select(cx),
+            ws,
+            tokens,
+        ),
+        switch_row(
+            "right-click-paste",
+            "右键粘贴",
+            "在终端里点右键直接粘贴剪贴板内容。",
+            s.right_click_paste,
+            |this, cx| this.toggle_right_click_paste(cx),
+            ws,
+            tokens,
+        ),
+        switch_row(
+            "confirm-multiline",
+            "多行粘贴前确认",
+            "粘贴的内容带换行时先问一下：对方 shell 没开括号粘贴模式时，换行会让命令直接执行。",
+            s.confirm_multiline,
+            |this, cx| this.toggle_confirm_multiline(cx),
+            ws,
+            tokens,
+        ),
+        bracketed_paste_row(ws, s, tokens),
     ]);
-    section("终端", tokens, rows).into_any_element()
+    card(
+        "settings-terminal",
+        "终端",
+        Some("已经打开的终端也会立刻跟着变。"),
+        tokens,
+        rows,
+    )
 }
 
 /// 字体：只列本机装了的常见等宽字体，另有「自定义…」写一整条字体栈。
@@ -626,89 +708,26 @@ fn scrollback_row(
 
 #[inline(never)]
 fn cursor_row(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
-    let (block, underline) = (ws.clone(), ws.clone());
+    let button = |id: &'static str, label: &'static str, shape: CursorShape| {
+        let ws = ws.clone();
+        Button::new(id)
+            .label(label)
+            .compact()
+            .when(s.cursor == shape, |b| b.primary())
+            .on_click(move |_, _, cx| {
+                ws.update(cx, |this, cx| this.set_cursor_shape(shape, cx));
+            })
+    };
     row(
-        "光标",
+        "光标样式",
         None,
         h_flex()
             .gap_1()
-            .child(
-                Button::new("cursor-block")
-                    .label("方块")
-                    .compact()
-                    .when(s.cursor == CursorShape::Block, |b| b.primary())
-                    .on_click(move |_, _, cx| {
-                        block.update(cx, |this, cx| {
-                            this.set_cursor_shape(CursorShape::Block, cx);
-                        });
-                    }),
-            )
-            .child(
-                Button::new("cursor-underline")
-                    .label("下划线")
-                    .compact()
-                    .when(s.cursor == CursorShape::Underline, |b| b.primary())
-                    .on_click(move |_, _, cx| {
-                        underline.update(cx, |this, cx| {
-                            this.set_cursor_shape(CursorShape::Underline, cx);
-                        });
-                    }),
-            ),
+            .child(button("cursor-block", "方块", CursorShape::Block))
+            .child(button("cursor-underline", "下划线", CursorShape::Underline))
+            .child(button("cursor-bar", "竖线", CursorShape::Bar)),
         tokens,
     )
-}
-
-/// 终端行为：复制 / 粘贴 / 高亮。
-#[inline(never)]
-fn behaviour_section(
-    ws: &Entity<TerminalWorkspace>,
-    s: &UiSettings,
-    tokens: &Tokens,
-) -> AnyElement {
-    section(
-        "终端行为",
-        tokens,
-        vec![
-            switch_row(
-                "copy-on-select",
-                "选中即复制",
-                "鼠标选中文字后立刻写入剪贴板",
-                s.copy_on_select,
-                |this, cx| this.toggle_copy_on_select(cx),
-                ws,
-                tokens,
-            ),
-            switch_row(
-                "right-click-paste",
-                "右键粘贴",
-                "在终端里按右键粘贴剪贴板内容",
-                s.right_click_paste,
-                |this, cx| this.toggle_right_click_paste(cx),
-                ws,
-                tokens,
-            ),
-            switch_row(
-                "confirm-multiline",
-                "多行粘贴先确认",
-                "远端没开括号粘贴时，多行内容会被 shell 直接执行",
-                s.confirm_multiline,
-                |this, cx| this.toggle_confirm_multiline(cx),
-                ws,
-                tokens,
-            ),
-            bracketed_paste_row(ws, s, tokens),
-            switch_row(
-                "highlight-enabled",
-                "关键词高亮",
-                "按规则给输出里的错误、警告、链接等上色",
-                s.highlight_enabled,
-                |this, cx| this.toggle_highlight_enabled(cx),
-                ws,
-                tokens,
-            ),
-        ],
-    )
-    .into_any_element()
 }
 
 #[inline(never)]
@@ -731,20 +750,10 @@ fn bracketed_paste_row(
     )
 }
 
-#[inline(never)]
-fn window_section(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
-    section(
-        "窗口",
-        tokens,
-        vec![switch_row(
-            "start-hidden",
-            "启动时隐藏到托盘",
-            "下次启动不显示主窗口，从托盘图标打开",
-            s.start_hidden,
-            |this, cx| this.toggle_start_hidden(cx),
-            ws,
-            tokens,
-        )],
-    )
-    .into_any_element()
+/// 调试窗口把外观和终端的卡摞在一起显示的页面体（产品里它们分在设置页的两个分类里）。
+pub(crate) fn settings_body(ws: &Entity<TerminalWorkspace>, cx: &App) -> impl IntoElement {
+    let mut cards = appearance_cards(ws, cx);
+    cards.extend(terminal_cards(ws, cx));
+    cards.push(reset_row(ws));
+    v_flex().w_full().gap_3().children(cards)
 }

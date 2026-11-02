@@ -72,6 +72,8 @@ pub fn clamp_tree_width(width: f32, window_width: f32) -> f32 {
 pub struct MainLayout {
     /// 上次退出时在哪一页（`vault` / `terminal` / `settings`）；不认识的值读成 `None`。
     pub view: Option<String>,
+    /// 设置页上次停在哪个分类（`appearance` / `terminal` / ...）；不认识的值读成 `None`（回默认的外观）。
+    pub settings_section: Option<String>,
     pub tree_width: f32,
     pub tree_collapsed: bool,
     /// 展开的分组键（`g<id>` / `ungrouped`）。
@@ -82,6 +84,7 @@ impl Default for MainLayout {
     fn default() -> Self {
         Self {
             view: None,
+            settings_section: None,
             tree_width: TREE_DEFAULT_WIDTH,
             tree_collapsed: false,
             tree_expanded: Vec::new(),
@@ -100,6 +103,11 @@ impl MainLayout {
             && crate::main_window::nav::MainView::parse(view).is_some()
         {
             layout.view = Some(view.to_owned());
+        }
+        if let Some(section) = map.get("settings_section").and_then(Value::as_str)
+            && crate::settings_nav::SettingsSection::parse(section).is_some()
+        {
+            layout.settings_section = Some(section.to_owned());
         }
         if let Some(width) = map.get("tree_width").and_then(Value::as_f64) {
             let width = width as f32;
@@ -264,6 +272,7 @@ mod tests {
             hosts: None,
             layout: MainLayout {
                 view: Some("settings".to_owned()),
+                settings_section: Some("sync".to_owned()),
                 tree_width: 300.0,
                 tree_collapsed: true,
                 tree_expanded: vec!["g1".to_owned(), "ungrouped".to_owned()],
@@ -288,6 +297,36 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_section_is_kept_only_when_it_is_a_known_one() {
+        let dir = temp_dir("sections");
+        let path = dir.join("window-state.json");
+        std::fs::write(&path, br#"{"layout":{"settings_section":"shortcuts"}}"#).unwrap();
+        assert_eq!(
+            WindowState::load_from(&path)
+                .unwrap()
+                .layout
+                .settings_section
+                .as_deref(),
+            Some("shortcuts")
+        );
+        for bad in [r#""nowhere""#, "7", "null"] {
+            std::fs::write(
+                &path,
+                format!(r#"{{"layout":{{"settings_section":{bad}}}}}"#),
+            )
+            .unwrap();
+            assert_eq!(
+                WindowState::load_from(&path)
+                    .unwrap()
+                    .layout
+                    .settings_section,
+                None,
+                "{bad} 不该被当成分类"
+            );
+        }
+    }
+
+    #[test]
     fn a_bad_layout_field_only_loses_that_field() {
         let dir = temp_dir("badlayout");
         let path = dir.join("window-state.json");
@@ -301,6 +340,7 @@ mod tests {
         let state = WindowState::load_from(&path).unwrap();
         assert!(state.main.is_some(), "窗口尺寸不能被布局里的坏字段连累");
         assert_eq!(state.layout.view, None);
+        assert_eq!(state.layout.settings_section, None);
         assert_eq!(state.layout.tree_width, TREE_DEFAULT_WIDTH);
         assert!(state.layout.tree_collapsed);
         assert_eq!(state.layout.tree_expanded, ["g3", "ungrouped"]);
