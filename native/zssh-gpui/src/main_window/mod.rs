@@ -73,6 +73,7 @@ mod vault_keys;
 mod vault_menus;
 mod vault_page;
 pub(crate) mod widgets;
+mod x11_ui;
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -185,6 +186,8 @@ pub struct MainWindow {
     /// 面板外壳的焦点：焦点在面板里时 Esc 才收起面板（终端里的 Esc 要留给远端）。
     pub(super) panel_focus: FocusHandle,
     pub(super) host_form: Option<HostForm>,
+    /// X11：设置页那一节和「需要 X 显示程序」提示的状态（一键安装的进度也在这里）。
+    pub(super) x11_ui: x11_ui::X11Ui,
     pub(super) keychain: KeychainUi,
     pub(super) proxy_ui: ProxyUi,
     pub(super) forward_ui: ForwardUi,
@@ -357,6 +360,7 @@ impl MainWindow {
             panel_drag: None,
             panel_focus: cx.focus_handle(),
             host_form: None,
+            x11_ui: x11_ui::X11Ui::new(window, cx),
             keychain,
             proxy_ui,
             forward_ui: ForwardUi::default(),
@@ -419,6 +423,7 @@ impl MainWindow {
         changed |= self.sync_status(cx);
         changed |= self.sync_sync_bar();
         changed |= self.sync_forwards(cx);
+        changed |= self.x11_poll(window, cx);
         self.sync_docks(window, cx);
         self.progress_unsaved_ask(window, cx);
         if self.tick_count >= 2 {
@@ -824,7 +829,20 @@ impl MainWindow {
     // ---- 连接 ----
 
     /// 打开一台主机（双击、回车）：当前终端页上是个空白标签就在它里面连，否则开新标签。
+    /// 开了 X11 而本机没有可用的 X 服务器时先弹「需要 X 显示程序」（`x11_gate`），由用户决定。
     pub(crate) fn open_host(&mut self, host_id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.x11_gate(host_id, false, window, cx) {
+            return;
+        }
+        self.open_host_now(host_id, window, cx);
+    }
+
+    pub(super) fn open_host_now(
+        &mut self,
+        host_id: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(title) = self.store.host(host_id).map(|host| host.name.clone()) else {
             return;
         };
@@ -844,6 +862,18 @@ impl MainWindow {
 
     /// 右键「在新标签连接」：不管当前是不是空白标签，都另开一个。
     pub(crate) fn open_host_in_new_tab(
+        &mut self,
+        host_id: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.x11_gate(host_id, true, window, cx) {
+            return;
+        }
+        self.open_host_in_new_tab_now(host_id, window, cx);
+    }
+
+    pub(super) fn open_host_in_new_tab_now(
         &mut self,
         host_id: i64,
         window: &mut Window,

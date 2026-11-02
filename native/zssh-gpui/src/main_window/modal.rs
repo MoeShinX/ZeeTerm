@@ -74,6 +74,8 @@ pub enum Modal {
     Unsaved(super::editor_tabs::UnsavedAsk),
     /// 启动时的恢复提示：上次没处理完的修改。
     Recovery(super::recovery_ui::RecoveryUi),
+    /// 连开了 X11 的主机而本机没有可用的 X 服务器：一键安装 / 去设置 / 这次不用 X11 继续连接。
+    X11Needed(super::x11_ui::X11Prompt),
 }
 
 impl Modal {
@@ -235,6 +237,8 @@ impl MainWindow {
             Some(Modal::Unsaved(_)) => self.answer_unsaved(true, window, cx),
             // 恢复提示每一项有自己的按钮，回车不替用户选。
             Some(Modal::Recovery(_)) => {}
+            // 三个选项各有按钮：回车不替用户选（尤其不能一回车就开始安装）。
+            Some(Modal::X11Needed(_)) => {}
             None => {}
         }
     }
@@ -350,6 +354,7 @@ impl MainWindow {
             Modal::InstallKey(dialog) => (480.0, self.install_key_body(dialog, tokens, cx)),
             Modal::Unsaved(ask) => (440.0, self.unsaved_body(ask, tokens, cx)),
             Modal::Recovery(ui) => (600.0, self.recovery_body(ui, tokens, cx)),
+            Modal::X11Needed(prompt) => (460.0, self.x11_prompt_body(prompt, tokens, cx)),
         };
         let _ = window;
         let scrim = {

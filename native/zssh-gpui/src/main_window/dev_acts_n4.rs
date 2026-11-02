@@ -10,6 +10,11 @@
 //! - `host_ports:refresh`、`host_ports:pick:<设备名>`；
 //! - `assert_host_form:<项>:<值>`：`protocol` `port` `username` `advanced` `device` `error.<字段>`（值是
 //!   错误里应有的文字，`none` = 没有错误）；
+//! - `x11_choose:<settings|skip>`：点「需要 X 显示程序」提示里的选项（**没有 install**：自动化不碰真实安装）；
+//! - `x11_fake:<idle|downloading|installing|failed|cancelled>`：把安装进度摆成这个样子（只改界面状态，
+//!   不下载、不安装）；`x11_source:<auto|custom>`、`x11_close_owned:<on|off>`；
+//! - `assert_x11:<项>:<值>`：`modal`（现在的对话框名）`mode`（`auto` / `custom`）`close_owned`
+//!   `custom_error`（`none` / `some`）`status`（状态那一行的文字）`tabs`（标签个数）；
 //! - `assert_n4:<项>:<值>`：`status_host`（`none` / `some`，状态栏订阅的主机）`active_caps`
 //!   （活动标签的 `ssh`/`serial`/`other`）；
 //! - `assert_stored:<@主机>:<项>:<值>`：从库里**重新读**主机检查（`protocol` `detail` `x11` `device`
@@ -27,6 +32,7 @@ mod real {
     use super::super::MainWindow;
     use super::super::dev_script::Outcome;
     use super::super::protocol_form::{self, FormField};
+    use super::super::x11_ui::{InstallPhase, X11Choice};
 
     const KNOWN: &[&str] = &[
         "host_protocol",
@@ -38,6 +44,11 @@ mod real {
         "host_ports",
         "assert_host_form",
         "assert_stored",
+        "x11_choose",
+        "x11_fake",
+        "x11_source",
+        "x11_close_owned",
+        "assert_x11",
         "assert_n4",
     ];
 
@@ -248,6 +259,88 @@ mod real {
                 "pick" => this.host_pick_port(b, window, cx),
                 _ => return Err("host_ports 只能是 refresh / pick:<设备>".to_owned()),
             },
+            "x11_choose" => {
+                let choice = match a {
+                    "settings" => X11Choice::Settings,
+                    "skip" => X11Choice::SkipOnce,
+                    _ => {
+                        return Err(
+                            "x11_choose 只能是 settings / skip（不能自动点安装）".to_owned()
+                        );
+                    }
+                };
+                this.x11_choose(choice, window, cx);
+            }
+            "x11_fake" => {
+                let phase = match a {
+                    "idle" => InstallPhase::Idle,
+                    "downloading" => InstallPhase::Downloading {
+                        done: 12 * 1_048_576,
+                        total: 41 * 1_048_576,
+                    },
+                    "installing" => InstallPhase::Installing,
+                    "failed" => InstallPhase::Failed("下载中断：网络连接被重置".to_owned()),
+                    "cancelled" => InstallPhase::Cancelled,
+                    _ => {
+                        return Err(
+                            "x11_fake 写 idle / downloading / installing / failed / cancelled"
+                                .to_owned(),
+                        );
+                    }
+                };
+                *this
+                    .x11_ui
+                    .phase
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = phase;
+                cx.notify();
+            }
+            "x11_source" => match a {
+                "auto" => this.x11_set_auto(cx),
+                "custom" => {
+                    if !b.is_empty() {
+                        let text = b.to_owned();
+                        let input = this.x11_ui.custom.clone();
+                        input.update(cx, |input, cx| input.set_value(text, window, cx));
+                    }
+                    this.x11_set_custom(window, cx);
+                }
+                _ => return Err("x11_source 写 auto / custom[:显示]".to_owned()),
+            },
+            "x11_close_owned" => this.x11_set_close_owned(on_off(a)?, cx),
+            "assert_x11" => {
+                if a == "status" {
+                    this.x11_reload(window, cx);
+                }
+                let got = match a {
+                    "modal" => super::super::dev_acts::modal_name(this).to_owned(),
+                    "mode" => match this.x11_ui.prefs.mode {
+                        zssh_core::x11::local::DisplayMode::Auto => "auto".to_owned(),
+                        zssh_core::x11::local::DisplayMode::Custom(_) => "custom".to_owned(),
+                    },
+                    "close_owned" => (if this.x11_ui.prefs.close_owned_on_exit {
+                        "on"
+                    } else {
+                        "off"
+                    })
+                    .to_owned(),
+                    "custom_error" => (if this.x11_ui.custom_error.is_some() {
+                        "some"
+                    } else {
+                        "none"
+                    })
+                    .to_owned(),
+                    "status" => this
+                        .x11_ui
+                        .status
+                        .as_ref()
+                        .map(super::super::x11_ui::status_headline)
+                        .unwrap_or_default(),
+                    "tabs" => this.workspace.read(cx).tab_count().to_string(),
+                    _ => return Err("不认识的 X11 项".to_owned()),
+                };
+                return check(got == b, &format!("X11 {a}（现在是 {got}）"));
+            }
             "assert_n4" => {
                 let got = match a {
                     "status_host" => (if this.status_host.is_some() {

@@ -6,8 +6,8 @@
 //!   都不行就带着原因继续，终端里会有提示（X11 失败从不阻止终端打开）；
 //! - 退出时按设置关掉自己拉起的 X 服务器（`shutdown_owned`）。
 //!
-//! 一键安装 VcXsrv 和检测状态的入口（`install_vcxsrv`、`local_status`）已经备好，
-//! 界面按钮在后续界面卡里接。
+//! 一键安装 VcXsrv 和检测状态的入口（`install_vcxsrv`、`local_status`）给设置页和"需要 X 显示程序"
+//! 的连接提示用（见 `main_window::x11_ui`）。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,8 +33,33 @@ fn open_db() -> Option<Database> {
 }
 
 /// 这台主机开了 X11 转发吗。读不了主机库按"没开"。
+/// 连接提示里选了「这次不用 X11 继续连接」的主机，这一次返回 `false`（用掉就作废，下次连接照常）。
 pub fn wanted(host_id: i64) -> bool {
+    if take_skip(host_id) {
+        return false;
+    }
     open_db().is_some_and(|db| wanted_in(&db, host_id))
+}
+
+fn skipped() -> &'static std::sync::Mutex<std::collections::HashSet<i64>> {
+    static SKIPPED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<i64>>> =
+        std::sync::OnceLock::new();
+    SKIPPED.get_or_init(Default::default)
+}
+
+/// 下一次连这台主机不开 X11（只管一次）。
+pub fn skip_once(host_id: i64) {
+    skipped()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(host_id);
+}
+
+fn take_skip(host_id: i64) -> bool {
+    skipped()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&host_id)
 }
 
 fn wanted_in(db: &Database, host_id: i64) -> bool {
@@ -96,14 +121,43 @@ pub fn shutdown_owned() {
 }
 
 /// 界面用：本机 X 服务器的状态（已装的 VcXsrv、正在运行的、ZeeTerm 自己拉起的）。
-#[allow(dead_code)] // 界面入口在后续界面卡
+///
+/// 调试构建可以用 `ZSSH_FAKE_X11_STATUS` 伪造（`none` / `installed[:版本]` / `running[:显示号]`），
+/// 截图和自动化不依赖这台电脑上装没装 VcXsrv。
 pub fn local_status() -> local::LocalXStatus {
+    #[cfg(debug_assertions)]
+    if let Some(raw) = crate::dev_hooks::var("ZSSH_FAKE_X11_STATUS") {
+        return fake_status(&raw);
+    }
     local::status(&local::RealSystem, local::OwnedRegistry::global())
+}
+
+#[cfg(debug_assertions)]
+fn fake_status(raw: &str) -> local::LocalXStatus {
+    let (kind, arg) = raw.split_once(':').unwrap_or((raw, ""));
+    let installed = || local::VcXsrvInstall {
+        exe: PathBuf::from("vcxsrv.exe"),
+        version: (!arg.is_empty()).then(|| arg.to_owned()),
+    };
+    let mut status = local::LocalXStatus {
+        vcxsrv: None,
+        running_displays: Vec::new(),
+        owned_display: None,
+        can_install: true,
+    };
+    match kind {
+        "installed" => status.vcxsrv = Some(installed()),
+        "running" => {
+            status.vcxsrv = Some(installed());
+            status.running_displays = vec![arg.parse().unwrap_or(0)];
+        }
+        _ => {}
+    }
+    status
 }
 
 /// 界面用：一键安装 VcXsrv。下载走软件网络代理，校验固定的 SHA-256，静默安装由系统 UAC 确认。
 /// `on_progress(已下载, 总量)`；`cancel` 置位即中断。
-#[allow(dead_code)] // 界面入口在后续界面卡
 pub async fn install_vcxsrv(
     on_progress: impl FnMut(u64, u64) + Send,
     cancel: &std::sync::atomic::AtomicBool,
@@ -166,6 +220,14 @@ mod tests {
         assert!(wanted_in(&db, with));
         assert!(!wanted_in(&db, without));
         assert!(!wanted_in(&db, 9999), "不存在的主机按没开");
+    }
+
+    #[test]
+    fn a_skipped_host_connects_without_x11_exactly_once() {
+        skip_once(424_242);
+        assert!(take_skip(424_242), "选了「这次不用 X11」：这一次不开");
+        assert!(!take_skip(424_242), "用掉就作废，下次连接照常");
+        assert!(!take_skip(1), "没选过的主机不受影响");
     }
 
     #[tokio::test]

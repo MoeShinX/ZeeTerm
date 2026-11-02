@@ -458,7 +458,13 @@ impl MainWindow {
         let blocks: Vec<::gpui::AnyElement> = match section {
             SettingsSection::Appearance => self.appearance_blocks(tokens, cx),
             SettingsSection::Terminal => self.terminal_blocks(tokens, cx),
-            SettingsSection::Connection => vec![self.connection_card(tokens, window, cx)],
+            SettingsSection::Connection => {
+                self.x11_ensure_loaded(window, cx);
+                vec![
+                    self.connection_card(tokens, window, cx),
+                    self.x11_card(tokens, cx),
+                ]
+            }
             SettingsSection::Sftp => vec![self.sftp_card(tokens, cx)],
             SettingsSection::Ai => vec![agents.into_any_element()],
             SettingsSection::Sync => vec![sync.into_any_element(), backup.into_any_element()],
