@@ -58,6 +58,7 @@ mod test_ssh_server;
 mod tray;
 mod update_demo;
 mod window_state;
+mod x11_glue;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
@@ -122,6 +123,8 @@ fn main() {
         // 进程退出时本来也不需要再回收这点内存。
         std::mem::forget(cx.on_app_quit(|_| async {
             update_demo::run_pending_install();
+            // 设置要求时，一并关掉本次运行拉起的 X 服务器（用户自己开的不动）。
+            x11_glue::shutdown_owned();
         }));
 
         // 自动同步的调度器：一个进程一个，和同步设置窗口的开关无关。
