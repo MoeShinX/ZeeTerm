@@ -155,12 +155,18 @@ impl MainWindow {
                     .w_full()
                     .max_w(px(448.0))
                     .px_4()
-                    .gap_3()
+                    .gap_2()
                     .child(
                         div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("连接到主机"),
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("快速连接"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(tokens.text_muted)
+                            .child("搜索已保存的会话，回车即可连接"),
                     )
                     .child(Input::new(&self.launcher_query))
                     .child(if self.store.hosts().is_empty() {

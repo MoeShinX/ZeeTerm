@@ -514,6 +514,9 @@ impl MainWindow {
                     .text_color(muted)
                     .hover(move |style| style.bg(hover))
             })
+            .when(active, |d| {
+                d.child(super::titlebar::active_tab_indicator(tokens))
+            })
             .tooltip({
                 let tip = tip.clone();
                 move |window, cx| Tooltip::new(tip.clone()).build(window, cx)

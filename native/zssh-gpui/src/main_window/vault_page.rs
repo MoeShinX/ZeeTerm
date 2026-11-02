@@ -174,14 +174,16 @@ impl MainWindow {
 
         let header = h_flex()
             .flex_none()
-            .gap_3()
+            .flex_wrap()
+            .gap_2()
             .items_center()
             .px_4()
-            .py_3()
+            .py_2()
+            .bg(tokens.surface)
             .border_b_1()
             .border_color(tokens.border)
             .child(
-                div().flex_1().max_w(px(448.0)).child(
+                div().flex_1().min_w(px(160.0)).max_w(px(448.0)).child(
                     Input::new(&self.vault_query)
                         .prefix(
                             Icon::new(IconName::Search)
@@ -194,7 +196,9 @@ impl MainWindow {
             .child(
                 h_flex()
                     .ml_auto()
-                    .flex_none()
+                    .min_w_0()
+                    .flex_shrink(1.0)
+                    .flex_wrap()
                     .gap_1p5()
                     .items_center()
                     .child(toggle_group(
@@ -280,14 +284,22 @@ impl MainWindow {
                         .border_1()
                         .border_color(tokens.border)
                         .children(shown.iter().enumerate().map(|(at, host)| {
-                            self.host_row(host, at == last, layout.density, order, tokens, cx)
+                            self.host_row(
+                                host,
+                                at == last,
+                                (layout.density, page_width < 640.0),
+                                order,
+                                tokens,
+                                cx,
+                            )
                         }))
                         .into_any_element()
                 }
             }
         };
 
-        let _ = (title, SortMode::Manual);
+        let count = shown.len();
+        let _ = SortMode::Manual;
         v_flex()
             .id("vault-page")
             .size_full()
@@ -300,7 +312,30 @@ impl MainWindow {
                     .min_h_0()
                     .overflow_y_scroll()
                     .p_4()
-                    .child(body),
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .gap_3()
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(tokens.text)
+                                            .child(SharedString::from(title)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(tokens.text_muted)
+                                            .child(SharedString::from(format!("{count} 台"))),
+                                    ),
+                            )
+                            .child(body),
+                    ),
             )
     }
 
@@ -354,8 +389,8 @@ impl MainWindow {
                         div()
                             .p_4()
                             .rounded_full()
-                            .bg(tokens.hover)
-                            .text_color(tokens.text_muted)
+                            .bg(tokens.accent_soft)
+                            .text_color(tokens.accent)
                             .child(Icon::new(crate::icons::Ico::Server).size_8()),
                     )
                     .child(
@@ -410,7 +445,7 @@ impl MainWindow {
             .child(
                 Button::new(("host-edit", id as usize))
                     .compact()
-                    .secondary()
+                    .ghost()
                     .icon(crate::icons::Ico::Pencil)
                     .tooltip("编辑")
                     .on_click({
@@ -510,7 +545,7 @@ impl MainWindow {
             .and_then(|gid| self.store.groups().iter().find(|g| g.id == gid))
             .map(|g| g.name.clone());
         let has_badges = group_name.is_some() || !host.tags.is_empty() || host.legacy_algorithms;
-        let hover = tokens.hover;
+        let hover = tokens.subtle;
         let spec = HostMenuSpec::new(self, id, order);
         let menu_entity = entity.clone();
         let detail: SharedString = format!("{}@{}:{}", host.username, host.host, host.port).into();
@@ -529,47 +564,54 @@ impl MainWindow {
             .when(host.legacy_algorithms, |d| {
                 d.child(badge("旧算法", BadgeKind::Outline, tokens))
             });
-        let top = h_flex()
-            .gap_2p5()
-            .items_center()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size(px(if compact { 28.0 } else { 36.0 }))
-                    .flex_none()
-                    .rounded_md()
-                    .bg(tokens.accent_soft)
-                    .child(
-                        Icon::new(IconName::SquareTerminal)
-                            .size_4()
-                            .text_color(tokens.accent),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(SharedString::from(host.name.clone())),
-                    )
-                    .child(
-                        div()
-                            .truncate()
-                            .text_xs()
-                            .font_family("Consolas")
-                            .text_color(tokens.text_muted)
-                            .child(detail),
-                    ),
-            )
-            .when(compact && !has_badges, |d| {
-                d.child(self.card_buttons(host, compact, false, cx))
-            });
+        let top =
+            h_flex()
+                .gap_2p5()
+                .items_center()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(if compact { 28.0 } else { 36.0 }))
+                        .flex_none()
+                        .rounded_md()
+                        .bg(if selected {
+                            tokens.accent_soft
+                        } else {
+                            tokens.subtle
+                        })
+                        .child(Icon::new(IconName::SquareTerminal).size_4().text_color(
+                            if selected {
+                                tokens.accent
+                            } else {
+                                tokens.text_muted
+                            },
+                        )),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(SharedString::from(host.name.clone())),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .text_xs()
+                                .font_family("Consolas")
+                                .text_color(tokens.text_muted)
+                                .child(detail),
+                        ),
+                )
+                .when(compact && !has_badges, |d| {
+                    d.child(self.card_buttons(host, compact, false, cx))
+                });
         let el = v_flex()
             .id(("host-card", id as usize))
             .relative()
@@ -584,13 +626,9 @@ impl MainWindow {
             } else {
                 tokens.border
             })
-            .bg(if selected {
-                tokens.accent_soft
-            } else {
-                tokens.surface
-            })
+            .bg(tokens.surface)
             .cursor_pointer()
-            .hover(move |style| style.bg(hover))
+            .when(!selected, |d| d.hover(move |style| style.bg(hover)))
             // 键盘：Tab / 方向键聚焦，聚焦时有焦点框；Enter 连接、F2 编辑（见 `vault_keys`）。
             .when_some(self.host_focus_handle(id), |d, handle| {
                 d.track_focus(&handle)
@@ -602,6 +640,18 @@ impl MainWindow {
                 }
             }))
             .children(self.insert_line(id, true, tokens))
+            .when(selected, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top(px(12.0))
+                        .bottom(px(12.0))
+                        .w(px(2.0))
+                        .rounded_full()
+                        .bg(tokens.accent),
+                )
+            })
             .child(top)
             .when(!compact || has_badges, |d| {
                 d.child(
@@ -632,13 +682,14 @@ impl MainWindow {
         &self,
         host: &Host,
         last: bool,
-        density: Density,
+        layout: (Density, bool),
         order: OrderState,
         tokens: &Tokens,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let entity = cx.entity();
         let id = host.id;
+        let (density, narrow) = layout;
         let compact = density == Density::Compact;
         let selected = self.tree.selected_host == Some(id);
         let group_label = host
@@ -680,6 +731,15 @@ impl MainWindow {
             }))
             .children(self.insert_line(id, false, tokens))
             .child(
+                Icon::new(IconName::SquareTerminal)
+                    .size_4()
+                    .text_color(if selected {
+                        tokens.accent
+                    } else {
+                        tokens.text_muted
+                    }),
+            )
+            .child(
                 div()
                     .flex_1()
                     .min_w_0()
@@ -700,16 +760,18 @@ impl MainWindow {
                         host.username, host.host, host.port
                     ))),
             )
-            .child(
-                div()
-                    .w(px(120.0))
-                    .flex_none()
-                    .truncate()
-                    .text_xs()
-                    .text_color(tokens.text_muted)
-                    .child(SharedString::from(group_label)),
-            )
-            .child(self.card_buttons(host, compact, true, cx))
+            .when(!narrow, |d| {
+                d.child(
+                    div()
+                        .w(px(120.0))
+                        .flex_none()
+                        .truncate()
+                        .text_xs()
+                        .text_color(tokens.text_muted)
+                        .child(SharedString::from(group_label)),
+                )
+            })
+            .child(self.card_buttons(host, compact, !narrow, cx))
             .on_click({
                 let entity = entity.clone();
                 move |event, window, cx| {

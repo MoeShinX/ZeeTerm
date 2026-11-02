@@ -21,17 +21,17 @@ use super::host_tree::{
 /// 卡片 / 列表。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ViewMode {
-    #[default]
     Grid,
+    #[default]
     List,
 }
 
 impl ViewMode {
     pub fn parse(raw: Option<&str>) -> Self {
-        if raw == Some("list") {
-            Self::List
-        } else {
+        if raw == Some("grid") {
             Self::Grid
+        } else {
+            Self::List
         }
     }
 
@@ -664,7 +664,7 @@ mod tests {
     fn settings_parse_leniently_and_round_trip() {
         assert_eq!(ViewMode::parse(Some("list")), ViewMode::List);
         assert_eq!(ViewMode::parse(Some("grid")), ViewMode::Grid);
-        assert_eq!(ViewMode::parse(None), ViewMode::Grid);
+        assert_eq!(ViewMode::parse(None), ViewMode::List);
         assert_eq!(Density::parse(Some("comfortable")), Density::Comfortable);
         assert_eq!(Density::parse(Some("whatever")), Density::Compact);
         assert_eq!(Density::parse(None), Density::Compact, "没存过默认紧凑");
