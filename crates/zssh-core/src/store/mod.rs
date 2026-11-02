@@ -10,6 +10,7 @@ pub mod host_os;
 pub mod hosts;
 pub mod identities;
 pub mod order;
+pub mod protocols;
 pub mod proxies;
 pub mod secrets;
 pub mod settings;

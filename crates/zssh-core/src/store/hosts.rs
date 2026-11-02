@@ -3,7 +3,10 @@
 use rusqlite::{params, Connection, Row};
 
 use crate::error::ZsshError;
-use crate::model::{AuthMethod, Host, HostDraft, Identity, IdentityKind, ProxyMode};
+use crate::model::{
+    AuthMethod, Host, HostDraft, HostFacts, Identity, IdentityKind, Protocol, ProtocolSettings,
+    ProxyMode,
+};
 use crate::ssh::auth::{AuthConfig, KeySource};
 use crate::store::db::Database;
 
@@ -45,34 +48,86 @@ impl Database {
     }
 
     /// 新建或修改一台主机，返回落库之后的结果。
+    ///
+    /// 协议设置不在 [`HostDraft`] 里：新建的主机是普通 SSH；修改已有主机时协议设置**保持
+    /// 库里的不变**，但要按新的认证 / 代理 / 跳板机重新校验一遍组合（不能借这个入口把一台
+    /// RDP 主机改成带私钥认证）。要改协议用 [`Database::host_save_with_protocol`]。
     pub fn host_save(&self, draft: &HostDraft) -> Result<Host, ZsshError> {
-        validate_host(draft)?;
+        self.host_save_inner(draft, None).map(|(host, _)| host)
+    }
 
+    /// 同 [`Database::host_save`]，同时写入协议设置（一个事务，组合不合法整体不落库）。
+    /// 返回落库之后的主机和整理过的协议设置。
+    pub fn host_save_with_protocol(
+        &self,
+        draft: &HostDraft,
+        settings: &ProtocolSettings,
+    ) -> Result<(Host, ProtocolSettings), ZsshError> {
+        self.host_save_inner(draft, Some(settings))
+    }
+
+    fn host_save_inner(
+        &self,
+        draft: &HostDraft,
+        requested: Option<&ProtocolSettings>,
+    ) -> Result<(Host, ProtocolSettings), ZsshError> {
         self.with_conn_write(|conn| {
+            // 没指定协议设置：沿用库里的（新建就是普通 SSH）。
+            let stored = match (requested, draft.id) {
+                (None, Some(id)) => crate::store::protocols::protocol_get(conn, id)?,
+                _ => ProtocolSettings::default(),
+            };
+            let settings = requested.unwrap_or(&stored);
+            validate_host(draft, settings.protocol)?;
+
             if let Some(group_id) = draft.group_id {
                 crate::store::groups::ensure_group_exists(conn, group_id)?;
             }
+            let mut identity = None;
             if let Some(identity_id) = draft.identity_id {
                 crate::store::identities::ensure_identity_exists(conn, identity_id)?;
-                let identity = crate::store::identities::identity_get(conn, identity_id)?;
-                check_identity_matches(draft.auth_method, &identity)?;
+                let found = crate::store::identities::identity_get(conn, identity_id)?;
+                check_identity_matches(draft.auth_method, &found)?;
+                identity = Some(found);
             }
             if let Some(proxy_id) = draft.proxy_id {
                 crate::store::proxies::ensure_proxy_exists(conn, proxy_id)?;
             }
+            let mut jump_host_protocol = None;
             if let Some(jump_host_id) = draft.jump_host_id {
                 if Some(jump_host_id) == draft.id {
                     return Err(ZsshError::InvalidInput("跳板机不能是主机自己".to_owned()));
                 }
                 host_get(conn, jump_host_id)?;
+                jump_host_protocol =
+                    Some(crate::store::protocols::protocol_get(conn, jump_host_id)?.protocol);
             }
+            if let Some(id) = draft.id {
+                if settings.protocol != Protocol::Ssh {
+                    let users = hosts_referencing(conn, "jump_host_id", id)?;
+                    if !users.is_empty() {
+                        return Err(ZsshError::InvalidInput(format!(
+                            "这台主机正被 {} 用作跳板机，只有 SSH 主机能当跳板机",
+                            users.join("、")
+                        )));
+                    }
+                }
+            }
+            let settings = settings.clone().validated(&HostFacts {
+                username: &draft.username,
+                auth_method: draft.auth_method,
+                identity: identity.as_ref(),
+                proxy_mode: draft.proxy_mode,
+                proxy_id: draft.proxy_id,
+                jump_host_protocol,
+            })?;
 
             let tags = serde_json::to_string(&draft.tags)
                 .map_err(|err| ZsshError::InvalidInput(format!("标签序列化失败：{err}")))?;
             let legacy = i64::from(draft.legacy_algorithms);
             let now = now_unix();
 
-            match draft.id {
+            let saved_id = match draft.id {
                 Some(id) => {
                     // 顺序（`sort`）不由「保存主机」决定：前端传来的 `draft.sort` 只是打开面板时
                     // 那一刻的旧值，用它会把之后在树里调好的顺序冲掉（UI-9）。已有的主机
@@ -119,7 +174,7 @@ impl Database {
                             entity: "主机", id
                         });
                     }
-                    host_get(conn, id)
+                    id
                 }
                 None => {
                     conn.execute(
@@ -145,9 +200,15 @@ impl Database {
                             legacy,
                         ],
                     )?;
-                    host_get(conn, conn.last_insert_rowid())
+                    conn.last_insert_rowid()
                 }
+            };
+            // 没指定协议设置时列保持原样（新建的主机靠列默认值就是普通 SSH）：
+            // 不把库里的选项经"读成结构体再写回"洗一遍，免得丢掉这一版不认识的键。
+            if requested.is_some() {
+                crate::store::protocols::write_protocol(conn, saved_id, &settings)?;
             }
+            Ok((host_get(conn, saved_id)?, settings))
         })
     }
 
@@ -180,7 +241,17 @@ impl Database {
                         "跳板机配置成环了：主机 id {jump_id} 重复出现"
                     )));
                 }
-                upwards.push(host_get(conn, jump_id)?);
+                let jump = host_get(conn, jump_id)?;
+                // 保存时已经拦了非 SSH 跳板机；这里再兜一道，防旧数据 / 同步来的数据绕过。
+                let protocol = crate::store::protocols::protocol_get(conn, jump_id)?.protocol;
+                if protocol != Protocol::Ssh {
+                    return Err(ZsshError::InvalidInput(format!(
+                        "跳板机「{}」是 {} 主机，跳板机必须是 SSH 主机",
+                        jump.name,
+                        protocol.label()
+                    )));
+                }
+                upwards.push(jump);
                 if upwards.len() > MAX_CHAIN_HOPS {
                     return Err(ZsshError::InvalidInput(format!(
                         "跳板机最多 {MAX_CHAIN_HOPS} 级，这台主机配得太深了"
@@ -342,7 +413,7 @@ pub(crate) fn check_identity_matches(
     }))
 }
 
-fn validate_host(draft: &HostDraft) -> Result<(), ZsshError> {
+fn validate_host(draft: &HostDraft, protocol: Protocol) -> Result<(), ZsshError> {
     if draft.name.trim().is_empty() {
         return Err(ZsshError::InvalidInput("主机名不能为空".to_owned()));
     }
@@ -352,7 +423,8 @@ fn validate_host(draft: &HostDraft) -> Result<(), ZsshError> {
     if draft.port == 0 {
         return Err(ZsshError::InvalidInput("端口要在 1-65535 之间".to_owned()));
     }
-    if draft.username.trim().is_empty() {
+    // Telnet 可以不自动登录、RDP 可以交给 mstsc 问，这两种允许不填用户名；SSH 一直要填。
+    if protocol == Protocol::Ssh && draft.username.trim().is_empty() {
         return Err(ZsshError::InvalidInput("用户名不能为空".to_owned()));
     }
     Ok(())
