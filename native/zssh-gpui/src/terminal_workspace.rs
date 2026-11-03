@@ -1790,6 +1790,7 @@ impl TerminalWorkspace {
     }
 
     /// 聚焦活动标签的第 `index` 个窗格（验证钩子用；鼠标点窗格走 `focus_pane`）。
+    #[cfg(debug_assertions)]
     pub(crate) fn focus_pane_index(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
         let Some(tab) = self.tabs.active() else {
             return false;
@@ -1970,6 +1971,7 @@ impl TerminalWorkspace {
         })
     }
 
+    #[cfg(debug_assertions)]
     pub(crate) fn dev_right_click_paste(&mut self, on: bool, cx: &mut Context<Self>) {
         if self.settings.right_click_paste != on {
             self.toggle_right_click_paste(cx);
@@ -2166,6 +2168,7 @@ impl TerminalWorkspace {
     }
 
     /// 聚焦窗格的下标（活动标签）。
+    #[cfg(debug_assertions)]
     pub(crate) fn focused_pane_index(&self) -> Option<usize> {
         self.tabs
             .active()
@@ -2173,6 +2176,7 @@ impl TerminalWorkspace {
     }
 
     /// 所有标签所有窗格现在存着多少行回滚。
+    #[cfg(debug_assertions)]
     pub(crate) fn history_sizes(&self) -> Vec<usize> {
         self.tabs
             .items()
@@ -2182,11 +2186,13 @@ impl TerminalWorkspace {
     }
 
     /// 终端实际用的字体名（验证钩子核对「栈里没装的字体会回退」）。
+    #[cfg(debug_assertions)]
     pub(crate) fn resolved_font(&mut self, cx: &App) -> String {
         self.mono_family(cx).to_string()
     }
 
     /// 所有标签所有窗格现在的回滚上限（验证钩子核对「已开的窗格也用了新设置」）。
+    #[cfg(debug_assertions)]
     pub(crate) fn history_limits(&self) -> Vec<usize> {
         self.tabs
             .items()
@@ -2196,6 +2202,7 @@ impl TerminalWorkspace {
     }
 
     /// 活动标签所有分割点的 (编号, 方向, 比例)。
+    #[cfg(debug_assertions)]
     pub(crate) fn split_ratios(&self) -> Vec<(u64, Axis, f32)> {
         self.tabs
             .active()
@@ -2205,6 +2212,7 @@ impl TerminalWorkspace {
 
     /// 活动标签上一帧的窗格布局，一个窗格一行：下标、是否聚焦、矩形、行列数；再加分隔条。
     /// 只写数字，不写屏幕内容（验证钩子写进日志用）。
+    #[cfg(debug_assertions)]
     pub(crate) fn pane_report(&self) -> Vec<String> {
         let Some(tab) = self.tabs.active() else {
             return Vec::new();
@@ -2244,6 +2252,7 @@ impl TerminalWorkspace {
     }
 
     /// 终端区域（窗口坐标）的左上角和大小：验证钩子按它算要点的坐标。
+    #[cfg(debug_assertions)]
     pub(crate) fn area_rect(&self) -> Option<(f32, f32, f32, f32)> {
         self.area.get().map(|bounds| {
             (
@@ -2257,6 +2266,7 @@ impl TerminalWorkspace {
 
     /// 核对活动标签的布局铺满终端区域、没有重叠，且每个窗格的终端尺寸和它的矩形一致
     /// （窗口里真的重排过，不是只改了数字）。
+    #[cfg(debug_assertions)]
     pub(crate) fn check_layout(&self) -> Result<(), String> {
         let Some(bounds) = self.area.get() else {
             return Err("还没有量到终端区域".to_owned());

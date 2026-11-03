@@ -161,12 +161,14 @@ impl Node {
     }
 
     /// 所有分割点的 (编号, 方向, 比例)，按视觉顺序（先序）。验证钩子和测试读。
+    #[cfg(any(debug_assertions, test))]
     pub fn splits(&self) -> Vec<(u64, Axis, f32)> {
         let mut out = Vec::new();
         self.collect_splits(&mut out);
         out
     }
 
+    #[cfg(any(debug_assertions, test))]
     fn collect_splits(&self, out: &mut Vec<(u64, Axis, f32)>) {
         if let Node::Split(split) = self {
             out.push((split.id, split.axis, split.ratio));
@@ -393,6 +395,7 @@ pub fn ratio_from_pointer(divider: &Divider, pointer: f32) -> f32 {
 
 /// 核对一份布局把 `width × height` 的区域铺满、没有重叠：窗格和分隔条的面积加起来等于总面积
 /// （浮点误差内），窗格两两不相交，都在区域里。验证钩子拿它核对真实窗口里的布局。
+#[cfg(any(debug_assertions, test))]
 pub fn check_tiling(layout: &Layout, width: f32, height: f32) -> Result<(), String> {
     let eps = 0.5;
     let inside = |rect: &Rect| {

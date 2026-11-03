@@ -32,14 +32,12 @@ pub enum KillPlan {
     Failed,
 }
 
-/// 假的进程管理数据（debug 构建有内容，release 是空的）。
+/// 假的进程管理数据（只在 debug 构建里存在，release 里连类型都没有）。
+#[cfg(debug_assertions)]
 #[derive(Default)]
 pub struct FakeProcs {
-    #[cfg(debug_assertions)]
     pub output: Option<String>,
-    #[cfg(debug_assertions)]
     pub error: Option<ProcessesError>,
-    #[cfg(debug_assertions)]
     pub kill: KillPlan,
 }
 
