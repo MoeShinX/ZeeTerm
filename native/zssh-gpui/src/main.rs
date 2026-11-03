@@ -59,6 +59,8 @@ mod sftp_demo;
 mod split_tree;
 mod ssh_backend;
 mod ssh_interact;
+mod ssh_prompt;
+mod ssh_prompt_ui;
 mod status_demo;
 mod sync_demo;
 #[cfg(debug_assertions)]

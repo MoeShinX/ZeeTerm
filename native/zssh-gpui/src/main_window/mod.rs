@@ -49,6 +49,7 @@ mod dev_acts_u20;
 mod dev_acts_u21;
 mod dev_acts_u25;
 mod dev_acts_u26;
+mod dev_acts_u29;
 mod dev_acts_u4;
 mod dev_acts_u6;
 mod dev_acts_u7;
@@ -167,6 +168,8 @@ pub enum CloseScope {
 
 pub struct MainWindow {
     pub(super) workspace: Entity<TerminalWorkspace>,
+    /// SSH 提问（指纹确认、密码输入）的应用内对话框层（V2-U29）：盖在窗口最上面。
+    pub(super) ssh_prompt: Entity<crate::ssh_prompt_ui::SshPromptLayer>,
     /// 根元素的焦点：没有输入框或终端有焦点时，快捷键靠它也能收到。
     pub(super) focus: FocusHandle,
     pub(super) nav: ViewNav,
@@ -276,6 +279,7 @@ pub struct MainWindow {
 impl MainWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let workspace = cx.new(|cx| TerminalWorkspace::new(window, cx, "main".to_owned()));
+        let ssh_prompt = cx.new(|cx| crate::ssh_prompt_ui::SshPromptLayer::new(window, cx, true));
         let layout: MainLayout = WindowState::load().layout;
         let tree_query = cx.new(|cx| InputState::new(window, cx).placeholder("搜索主机"));
         let vault_query = cx.new(|cx| InputState::new(window, cx).placeholder("搜索主机"));
@@ -419,6 +423,7 @@ impl MainWindow {
         }
         let this = Self {
             workspace,
+            ssh_prompt,
             focus: cx.focus_handle(),
             nav: ViewNav::restored(saved_view),
             store,
@@ -1295,6 +1300,10 @@ impl MainWindow {
         if crate::app_lock::is_locked() {
             return;
         }
+        // SSH 提问对话框开着：按键都归它（Esc / Enter 在它自己的卡片上处理），窗口级快捷键先不响应（V2-U29）。
+        if self.ssh_prompt.read(cx).is_open() {
+            return;
+        }
         let keystroke = &event.keystroke;
         let key = keystroke.key.to_ascii_lowercase();
         let mods = keystroke.modifiers;
@@ -1505,6 +1514,8 @@ impl MainWindow {
         let mut texts: Vec<String> = Vec::new();
         texts.extend(ws.tab_infos().into_iter().map(|info| info.title));
         texts.extend(ws.visible_text());
+        // SSH 提问对话框上的主机、指纹、问题（V2-U29）。
+        texts.extend(self.ssh_prompt.read(cx).privacy_texts());
         texts.extend(self.store.hosts().iter().map(|host| host.name.clone()));
         texts.extend(self.store.groups().iter().map(|group| group.name.clone()));
         // 主机页的卡片会显示「用户@地址:端口」，只在主机页上才算画面里的文字。
@@ -1643,5 +1654,6 @@ impl MainWindow {
             .children(modal)
             .children(tab_menu)
             .children(drag_ghost)
+            .child(self.ssh_prompt.clone())
     }
 }

@@ -131,6 +131,8 @@ pub struct TermWindow {
     dragger: Dragger,
     /// 锁屏页（V2-U26）：锁着时整个窗口只画它。
     lock_screen: Option<Entity<crate::app_lock::LockScreen>>,
+    /// SSH 提问（指纹确认、密码输入）的应用内对话框层（V2-U29）。
+    ssh_prompt: Entity<crate::ssh_prompt_ui::SshPromptLayer>,
     _observe: Subscription,
 }
 
@@ -142,12 +144,14 @@ impl TermWindow {
         }
         let focus = workspace.read(cx).focus_handle();
         let _observe = cx.observe(&workspace, |_this, _ws, cx| cx.notify());
+        let ssh_prompt = cx.new(|cx| crate::ssh_prompt_ui::SshPromptLayer::new(window, cx, false));
         Self {
             workspace,
             focus,
             ime_key,
             dragger: Dragger::default(),
             lock_screen: None,
+            ssh_prompt,
             _observe,
         }
     }
@@ -497,6 +501,7 @@ impl TermWindow {
         });
         v_flex()
             .id("term-window")
+            .relative()
             .size_full()
             .track_focus(&self.focus)
             .capture_key_down(
@@ -571,6 +576,7 @@ impl TermWindow {
             )
             .child(div().flex_1().min_h_0().child(self.workspace.clone()))
             .children(ghost)
+            .child(self.ssh_prompt.clone())
     }
 }
 
