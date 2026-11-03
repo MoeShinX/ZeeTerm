@@ -894,7 +894,7 @@ impl MainWindow {
                     let hover = tokens.hover;
                     move |style| style.bg(hover)
                 })
-                .child(Icon::new(IconName::Close).size_3p5())
+                .child(Icon::new(IconName::Close).size_4())
                 .on_click(move |_, _window, cx| {
                     entity.update(cx, |this, cx| this.toggle_overview(cx));
                 })

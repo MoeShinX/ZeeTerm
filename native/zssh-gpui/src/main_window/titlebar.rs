@@ -596,7 +596,7 @@ impl MainWindow {
                     })
                     .hover(move |style| style.bg(hover).text_color(text).opacity(1.0))
                     .tooltip(|window, cx| Tooltip::new("关闭标签").build(window, cx))
-                    .child(Icon::new(IconName::Close).size_3())
+                    .child(Icon::new(IconName::Close).size_3p5())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(move |_, window, cx| {
                         cx.stop_propagation();

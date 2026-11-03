@@ -174,7 +174,7 @@ fn dock_icon_button(
         .flex()
         .items_center()
         .justify_center()
-        .size(px(26.0))
+        .size(px(28.0))
         .flex_none()
         .rounded_md()
         .cursor_pointer()

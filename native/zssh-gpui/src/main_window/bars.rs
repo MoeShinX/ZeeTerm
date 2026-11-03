@@ -555,7 +555,7 @@ impl MainWindow {
                 .when(managing, |d| d.bg(hover))
                 .hover(move |style| style.bg(hover).text_color(text))
                 .tooltip(|window, cx| Tooltip::new("管理快捷命令").build(window, cx))
-                .child(Icon::new(Ico::ListChecks).size_3p5())
+                .child(Icon::new(Ico::ListChecks).size_4())
                 .on_click(move |_, window, cx| {
                     entity.update(cx, |this, cx| this.toggle_quick_panel(window, cx));
                 })
@@ -575,7 +575,7 @@ impl MainWindow {
                 .text_color(muted)
                 .hover(move |style| style.bg(hover).text_color(text))
                 .tooltip(|window, cx| Tooltip::new("新建快捷命令").build(window, cx))
-                .child(Icon::new(IconName::Plus).size_3p5())
+                .child(Icon::new(IconName::Plus).size_4())
                 .on_click(move |_, window, cx| {
                     entity.update(cx, |this, cx| this.open_quick_new(window, cx));
                 })
@@ -691,7 +691,7 @@ impl MainWindow {
                     })
                     .build(window, cx)
                 })
-                .child(Icon::new(Ico::Radio).size_3())
+                .child(Icon::new(Ico::Radio).size_3p5())
                 .child(if broadcast { "广播中" } else { "广播" })
                 .on_click(move |_, _window, cx| {
                     if !disabled {
@@ -944,7 +944,7 @@ impl MainWindow {
                     })
                     .build(window, cx)
                 })
-                .child(Icon::new(Ico::SendHorizontal).size_3p5())
+                .child(Icon::new(Ico::SendHorizontal).size_4())
                 .on_click(move |_, window, cx| {
                     entity.update(cx, |this, cx| this.compose_submit(false, window, cx));
                 })

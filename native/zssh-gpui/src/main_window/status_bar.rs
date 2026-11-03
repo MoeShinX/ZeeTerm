@@ -97,7 +97,7 @@ fn switch_button(
         .flex()
         .items_center()
         .justify_center()
-        .size(px(22.0))
+        .size(px(24.0))
         .flex_none()
         .rounded_md()
         .cursor_pointer()
@@ -105,7 +105,7 @@ fn switch_button(
         .when(on, |d| d.bg(tokens.accent_soft))
         .hover(move |style| style.bg(hover).text_color(text))
         .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
-        .child(Icon::new(icon).size_3p5())
+        .child(Icon::new(icon).size_4())
 }
 
 impl MainWindow {

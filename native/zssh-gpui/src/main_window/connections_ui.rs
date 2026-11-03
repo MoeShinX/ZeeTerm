@@ -297,7 +297,7 @@ impl MainWindow {
                         let hover = tokens.hover;
                         move |style| style.bg(hover)
                     })
-                    .child(Icon::new(IconName::Close).size_3p5())
+                    .child(Icon::new(IconName::Close).size_4())
                     .on_click(move |_, window, cx| {
                         close.update(cx, |this, cx| this.close_modal(window, cx));
                     })
