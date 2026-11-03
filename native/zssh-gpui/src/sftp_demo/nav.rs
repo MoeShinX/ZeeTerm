@@ -74,6 +74,10 @@ impl SftpDemo {
         notice: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        if self.fixture {
+            self.fixture_navigate(path, mode, cx);
+            return;
+        }
         let Some(channel) = self.channel.clone() else {
             self.warn("还没连上，稍等一下");
             cx.notify();

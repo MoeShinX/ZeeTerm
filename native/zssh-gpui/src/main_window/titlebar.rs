@@ -32,7 +32,7 @@ const LEFT_PAD_LEFT: f32 = 12.0;
 const LEFT_PAD_RIGHT: f32 = 8.0;
 
 /// 不同类型的标签使用同一条主题色标记，避免只靠背景色区分当前标签。
-pub(super) fn active_tab_indicator(tokens: &Tokens) -> Div {
+pub(crate) fn active_tab_indicator(tokens: &Tokens) -> Div {
     div()
         .absolute()
         .top_0()

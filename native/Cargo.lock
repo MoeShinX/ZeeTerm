@@ -10560,6 +10560,7 @@ dependencies = [
  "raw-window-handle",
  "reqwest",
  "russh",
+ "russh-sftp",
  "serde",
  "serde_json",
  "tokio",
