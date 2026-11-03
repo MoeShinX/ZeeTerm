@@ -47,6 +47,28 @@ pub(super) fn filter_width(dock: bool, pane_width: f32) -> f32 {
     }
 }
 
+/// 窄栏（独立文件窗口两栏各不到 400）里过滤框收成一个放大镜按钮，把地方让给路径栏，点开才是输入框。
+/// 停靠面板的工具栏一直是固定窄版，不收。宽度还没量到（0）按宽版。
+pub(super) fn filter_compact(dock: bool, pane_width: f32) -> bool {
+    !dock && pane_width > 0.0 && pane_width < 400.0
+}
+
+/// 这一栏的过滤框现在画成输入框还是放大镜按钮：窄栏里没点开、也没在过滤时才收起。
+fn filter_collapsed(dock: bool, pane_width: f32, open: bool, text: &str) -> bool {
+    filter_compact(dock, pane_width) && !open && text.is_empty()
+}
+
+/// 工具栏里过滤那一格占多宽：收起时是一个按钮（约 30），展开的窄栏给 120 好打字。
+fn filter_slot(dock: bool, pane_width: f32, collapsed: bool) -> f32 {
+    if collapsed {
+        30.0
+    } else if filter_compact(dock, pane_width) {
+        120.0
+    } else {
+        filter_width(dock, pane_width)
+    }
+}
+
 /// 列表一行的高度（0.2.14 是 26，V2-U14 起 14px 文字配 34px 行，不挤）。
 const ROW_HEIGHT: f32 = 34.0;
 
@@ -390,17 +412,20 @@ impl SftpDemo {
                         e_back.update(cx, |this, cx| this.step_history(side, -1, cx));
                     }),
                 )
-                .child(
-                    tool_button(
-                        SharedString::from(format!("sftp-forward-{id_suffix}")),
-                        IconName::ArrowRight,
-                        "前进 (Alt+→)",
-                        !can_forward,
+                // 窄栏里不放「前进」（Alt+→ 照样能用），把地方让给路径栏。
+                .when(!filter_compact(dock, used), |bar| {
+                    bar.child(
+                        tool_button(
+                            SharedString::from(format!("sftp-forward-{id_suffix}")),
+                            IconName::ArrowRight,
+                            "前进 (Alt+→)",
+                            !can_forward,
+                        )
+                        .on_click(move |_, _, cx| {
+                            e_fwd.update(cx, |this, cx| this.step_history(side, 1, cx));
+                        }),
                     )
-                    .on_click(move |_, _, cx| {
-                        e_fwd.update(cx, |this, cx| this.step_history(side, 1, cx));
-                    }),
-                )
+                })
                 .child(
                     tool_button(
                         SharedString::from(format!("sftp-up-{id_suffix}")),
@@ -444,15 +469,43 @@ impl SftpDemo {
                         e_hidden.update(cx, |this, cx| this.toggle_hidden(side, cx));
                     }),
                 )
-                .child(
-                    div().w(px(filter_width(dock, used))).flex_none().child(
-                        Input::new(&pane.filter_input).prefix(
-                            Icon::new(IconName::Search)
-                                .size_3()
-                                .text_color(tokens.text_muted),
-                        ),
-                    ),
-                )
+                .map(|bar| {
+                    let collapsed =
+                        filter_collapsed(dock, used, pane.filter_open, &pane.filter.text);
+                    if collapsed {
+                        let e_filter = entity.clone();
+                        let input = pane.filter_input.clone();
+                        bar.child(
+                            tool_button(
+                                SharedString::from(format!("sftp-filter-open-{id_suffix}")),
+                                IconName::Search,
+                                "过滤",
+                                false,
+                            )
+                            .on_click(move |_, window, cx| {
+                                e_filter.update(cx, |this, cx| {
+                                    this.pane_mut(side).filter_open = true;
+                                    cx.notify();
+                                });
+                                let focus = input.read(cx).focus_handle(cx);
+                                window.focus(&focus, cx);
+                            }),
+                        )
+                    } else {
+                        bar.child(
+                            div()
+                                .w(px(filter_slot(dock, used, false)))
+                                .flex_none()
+                                .child(
+                                    Input::new(&pane.filter_input).prefix(
+                                        Icon::new(IconName::Search)
+                                            .size_3()
+                                            .text_color(tokens.text_muted),
+                                    ),
+                                ),
+                        )
+                    }
+                })
                 .when(dock && !is_remote, |bar| {
                     bar.child(
                         tool_button(
@@ -705,7 +758,18 @@ impl SftpDemo {
         // 量到了栏宽但剩得很少（窄栏）也要折叠成「… › 最后一级」，不能当成"还没量到"整串显示：
         // 那样溢出部分被裁掉，只剩第一级（C:、srv），反而是最没用的那段。
         let available = if pane_width > 0.0 {
-            (pane_width - if self.dock { 300.0 } else { 320.0 }).max(1.0)
+            // 按钮（后退 前进 上级 刷新 隐藏，停靠面板多一个关闭）约 200，再减过滤那一格的实际宽度。
+            let collapsed =
+                filter_collapsed(self.dock, pane_width, pane.filter_open, &pane.filter.text);
+            let buttons = if self.dock {
+                216.0
+            } else if filter_compact(self.dock, pane_width) {
+                // 窄栏不放「前进」。
+                168.0
+            } else {
+                200.0
+            };
+            (pane_width - buttons - filter_slot(self.dock, pane_width, collapsed)).max(1.0)
         } else {
             0.0
         };
@@ -1633,6 +1697,16 @@ mod list_size_tests {
         assert_eq!(super::filter_width(false, 540.0), 120.0);
         assert_eq!(super::filter_width(false, 450.0), 96.0);
         assert_eq!(super::filter_width(false, 316.0), 72.0);
+        // 窄栏（独立文件窗口最窄时两栏各约 316）：过滤框收成按钮，点开或有文字时才是输入框。
+        assert!(super::filter_compact(false, 316.0));
+        assert!(!super::filter_compact(false, 450.0));
+        assert!(!super::filter_compact(true, 316.0), "停靠面板不收");
+        assert!(!super::filter_compact(false, 0.0), "还没量到按宽版");
+        assert!(super::filter_collapsed(false, 316.0, false, ""));
+        assert!(!super::filter_collapsed(false, 316.0, true, ""));
+        assert!(!super::filter_collapsed(false, 316.0, false, "log"));
+        assert_eq!(super::filter_slot(false, 316.0, true), 30.0);
+        assert_eq!(super::filter_slot(false, 316.0, false), 120.0);
     }
 
     #[test]

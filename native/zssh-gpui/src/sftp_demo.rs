@@ -658,6 +658,15 @@ impl SftpDemo {
                     }
                 }
             }));
+            // 窄栏里点开的过滤框：失去焦点、又没输入文字，就收回成放大镜按钮。
+            let handle = input.read(cx).focus_handle(cx);
+            subscriptions.push(cx.on_blur(&handle, window, move |this, _window, cx| {
+                let pane = this.pane_mut(side);
+                if pane.filter_open && pane.filter.text.is_empty() {
+                    pane.filter_open = false;
+                    cx.notify();
+                }
+            }));
         }
         subscriptions
     }

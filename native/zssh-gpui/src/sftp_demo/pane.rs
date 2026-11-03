@@ -26,6 +26,8 @@ pub(super) struct Pane {
     pub(super) order: SortOrder,
     pub(super) filter: Filter,
     pub(super) filter_input: Entity<InputState>,
+    /// 窄栏里过滤框收成放大镜按钮；点开后这里是 `true`，失焦且没输入文字时收回去。
+    pub(super) filter_open: bool,
     pub(super) selection: Selection,
     pub(super) history: NavHistory,
     /// 正在读目录。
@@ -62,6 +64,7 @@ impl Pane {
                 show_hidden,
             },
             filter_input,
+            filter_open: false,
             selection: Selection::default(),
             history: NavHistory::default(),
             loading: false,
