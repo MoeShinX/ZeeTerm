@@ -33,12 +33,13 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::{Value, json};
+use zssh_core::ai::agent::usage::ContextUsage;
 use zssh_core::ai::agent::{AgentEvent, AgentModelCatalog};
 use zssh_core::ai::bridge::{ApprovalRequest, ExecMode, ExecTargetReport, FileApproval};
 use zssh_core::ai::files::make_diff;
 use zssh_core::ai::history::{
-    HistoryDraft, HistoryMessage, HistoryRecord, HistoryStore, HistorySummary, is_secret_key,
-    now_ms,
+    HistoryAnchor, HistoryDraft, HistoryMessage, HistoryRecord, HistoryStore, HistorySummary,
+    is_secret_key, now_ms,
 };
 use zssh_core::ai::safety::DangerLevel;
 use zssh_core::store::Database;
@@ -94,6 +95,11 @@ const HISTORY_EMPTY: &str = "还没有历史会话";
 const HISTORY_RESUMABLE: &str = "可续接";
 const HISTORY_CONFIRM_DELETE: &str = "再次点击「确认删除」";
 const HISTORY_RESUME_SELECTED: &str = "已打开历史会话，发送消息后继续；目标主机需要重新选择";
+/// 面板形态：这条历史记着它当初绑定的主机，续上之后目标回到那台。
+const HISTORY_RESUME_ANCHORED: &str = "已打开历史会话，发送消息后继续；目标仍是它当初绑定的主机";
+/// 面板形态：旧历史没有记绑定的主机，发第一条消息时按当时的标签重新绑定。
+const HISTORY_RESUME_UNANCHORED: &str =
+    "已打开历史会话，发送消息后继续；目标主机按当前标签重新确定";
 const HISTORY_NO_SESSION: &str = "这条历史会话不能续接：没有智能体会话标识。";
 const HISTORY_NO_MESSAGES: &str = "这条历史会话没有消息。";
 /// 一轮对话写进历史之后底部的提示。
@@ -658,7 +664,7 @@ enum HistoryPanel {
     /// 当前智能体的历史列表。
     List,
     /// 只读查看一条历史会话。
-    Detail(HistoryRecord),
+    Detail(Box<HistoryRecord>),
 }
 
 /// 脚本每一步发出的事件；界面只认这些事件，不直接读脚本内部状态。
@@ -863,6 +869,8 @@ struct ChatState {
     last_item: Option<LastKind>,
     /// 回合进行中用户补充的消息（V2-U1：三种驱动在回合里都回 Busy，所以先排队）。
     queue: queue::PendingQueue,
+    /// 最近一轮的上下文用量（面板标题栏的指示器，V2-U15）；新对话清掉，切到历史对话时是它存下的那一次。
+    usage: Option<ContextUsage>,
 }
 
 /// 回合里最后一次动静。
@@ -1126,7 +1134,10 @@ impl ChatState {
     /// 把宿主事件写进对话。正文和工具只落在还在跑的回合里；提示总是可见。
     fn apply_agent_event(&mut self, event: AgentEvent) {
         // 重试成功（又出字 / 出思考 / 跑工具）或这一轮结束 / 出错：重试提示消失。
-        if !matches!(event, AgentEvent::Retrying { .. }) {
+        if !matches!(
+            event,
+            AgentEvent::Retrying { .. } | AgentEvent::Usage { .. }
+        ) {
             self.retry = None;
         }
         match event {
@@ -1240,6 +1251,8 @@ impl ChatState {
                     next_in_secs,
                 });
             }
+            // 只改指示器，不碰回合状态。
+            AgentEvent::Usage { usage } => self.usage = Some(usage),
             AgentEvent::ResumeFailed => self.push_notice(
                 "续接之前的会话失败，已经改成新会话继续：之前的上下文没有带给 AI。",
                 false,
@@ -1496,6 +1509,7 @@ impl ChatState {
         self.turn_started = None;
         self.last_item = None;
         self.queue.clear();
+        self.usage = None;
     }
 
     fn toggle_reasoning(&mut self, index: usize) -> bool {
@@ -1677,7 +1691,12 @@ impl ChatState {
     ///
     /// 只存对话本身：提示（重试 / 错误）和思考是界面状态，不进历史。助手正文为空
     /// （只有工具调用）时不写一条空消息。
-    fn history_draft(&self, id: &str, host_label: Option<&str>) -> HistoryDraft {
+    fn history_draft(
+        &self,
+        id: &str,
+        host_label: Option<&str>,
+        anchor: Option<HistoryAnchor>,
+    ) -> HistoryDraft {
         let mut messages = Vec::new();
         for message in &self.messages {
             match message {
@@ -1704,6 +1723,8 @@ impl ChatState {
         HistoryDraft {
             id: id.to_owned(),
             host_label: host_label.map(str::to_owned),
+            anchor,
+            usage: self.usage.clone(),
             messages,
         }
     }
@@ -1919,6 +1940,8 @@ fn continue_conversation(
 ) -> Result<(), String> {
     let resume = resume_session_id(record)?;
     chat.load_history(&record.messages);
+    // 切到这条历史：指示器显示它最后一次的用量（旧历史没有就是「—」）。
+    chat.usage = record.usage.clone();
     *history_id = Some(record.id.clone());
     *pending_resume = Some(resume);
     Ok(())
@@ -1937,6 +1960,13 @@ fn format_history_time(updated_at: u64, now: u64) -> String {
             zssh_core::ai::files::display_timestamp((updated_at / 1000) as i64)
         ),
     }
+}
+
+/// 历史里显示的主机名：优先对话锚定的那台（V2-U15），旧历史没有锚定就用当时存的主机显示名。
+fn history_host(anchor: Option<&HistoryAnchor>, host_label: Option<&str>) -> Option<String> {
+    anchor
+        .map(|anchor| anchor.name.clone())
+        .or_else(|| host_label.map(str::to_owned))
 }
 
 /// 一行历史摘要：更新时间 · 主机显示名 · 消息数。
@@ -1983,6 +2013,7 @@ mod composer;
 mod embed;
 mod queue;
 mod queue_view;
+mod usage_view;
 pub use embed::EmbedContext;
 
 type HostChoice = HostTarget;
@@ -2525,6 +2556,10 @@ impl AgentChatDemo {
                     target.pinned = *pinned;
                 }
             }
+            // 锚定在快速连接终端上：目标是那个终端本身，排在最前（它是「当前」）。
+            if let Some(terminal) = self.terminal_target() {
+                targets.insert(0, terminal);
+            }
         }
         targets
     }
@@ -2547,7 +2582,11 @@ impl AgentChatDemo {
     /// 登记的就是 AI 此刻能用的那几台（选中的主机）；回合结束或离线演示时全部撤销。
     fn sync_host_activity(&mut self) {
         let wanted: Vec<i64> = if self.real && self.chat.real_running {
-            self.selected_targets().iter().map(|host| host.id).collect()
+            self.selected_targets()
+                .iter()
+                .filter(|host| host.terminal.is_none())
+                .map(|host| host.id)
+                .collect()
         } else {
             Vec::new()
         };
@@ -2618,6 +2657,12 @@ impl AgentChatDemo {
                 cx.notify();
                 return;
             }
+            // 第一条消息发出时锚定；绑定的主机已经没有打开的终端就不发（V2-U15）。
+            if let Some(reason) = self.anchor_gate() {
+                self.footer_error = Some(reason);
+                cx.notify();
+                return;
+            }
             self.send_real(text, window, cx);
             return;
         }
@@ -2659,6 +2704,7 @@ impl AgentChatDemo {
         self.footer_error = None;
         self.resume_notice = None;
         self.link_notice = None;
+        self.show_anchor_notice();
         self.scroll.scroll_to_bottom();
         cx.notify();
 
@@ -2918,7 +2964,7 @@ impl AgentChatDemo {
             || self
                 .embed
                 .as_ref()
-                .is_none_or(|embed| embed.current_host().is_none());
+                .is_none_or(|embed| !embed.has_current_target());
         while let Some(report) = session.next_report() {
             self.chat.apply_report(report, multi);
             changed = true;
@@ -2967,7 +3013,9 @@ impl AgentChatDemo {
             return;
         };
         let host_label = host_names_label(&self.selected_targets());
-        let draft = self.chat.history_draft(&id, host_label.as_deref());
+        let draft = self
+            .chat
+            .history_draft(&id, host_label.as_deref(), self.history_anchor());
         // 会话可能还没起来（起进程失败 / 起进程期间点了停止）：没有会话标识和能力密钥，
         // 按只能回看的会话保存，别把这条对话丢了。
         let agent = self
@@ -3239,7 +3287,7 @@ impl AgentChatDemo {
         if self.history != HistoryPanel::Closed {
             self.close_history();
         }
-        if let Some(reason) = self.blocked_reason() {
+        if let Some(reason) = self.blocked_reason().or_else(|| self.anchor_gate()) {
             self.chat.queue.put_back(&text);
             self.footer_error = Some(reason);
             return true;
@@ -3262,6 +3310,8 @@ impl AgentChatDemo {
         self.close_history();
         self.queue_edit = None;
         self.chat.new_conversation();
+        // 新对话回到未锁定：目标栏重新跟着当前聚焦窗格，`@` 的主机清空。
+        self.reset_anchor();
         self.sync_ai_turn_count();
         self.sync_host_activity();
         self.footer_error = None;
@@ -3319,7 +3369,7 @@ impl AgentChatDemo {
         self.history_armed = None;
         match load_history_record(self.agent, id) {
             Ok(record) => {
-                self.history = HistoryPanel::Detail(record);
+                self.history = HistoryPanel::Detail(Box::new(record));
                 self.history_error = None;
                 self.history_shown = MESSAGES_PER_PAGE;
                 self.history_full.clear();
@@ -3403,12 +3453,21 @@ impl AgentChatDemo {
         self.history_save = None;
         self.link_notice = None;
         self.shown_messages = MESSAGES_PER_PAGE;
+        // 回到它当初锚定的主机（旧历史没有锚定就保持未锁定）。
+        self.restore_anchor(record.anchor.as_ref());
         self.sync_ai_turn_count();
         self.sync_host_activity();
         self.real = true;
         self.close_history();
         self.footer_error = None;
-        self.resume_notice = Some(HISTORY_RESUME_SELECTED.to_owned());
+        self.resume_notice = Some(
+            match (self.embed.is_some(), record.anchor.is_some()) {
+                (false, _) => HISTORY_RESUME_SELECTED,
+                (true, true) => HISTORY_RESUME_ANCHORED,
+                (true, false) => HISTORY_RESUME_UNANCHORED,
+            }
+            .to_owned(),
+        );
         self.scroll.scroll_to_bottom();
         cx.notify();
     }
@@ -4298,7 +4357,7 @@ impl AgentChatDemo {
         match &self.history {
             HistoryPanel::Closed => div().into_any_element(),
             HistoryPanel::List => self.history_list(cx),
-            HistoryPanel::Detail(record) => self.history_detail(record, cx),
+            HistoryPanel::Detail(record) => self.history_detail(record.as_ref(), cx),
         }
     }
 
@@ -4399,12 +4458,11 @@ impl AgentChatDemo {
         let delete_id = summary.id.clone();
         let button_suffix = summary.id.clone();
         let title = history_title(&summary.title).to_owned();
-        let meta = history_meta(
-            summary.updated_at,
-            summary.host_label.as_deref(),
-            summary.message_count,
-            now,
-        );
+        // 锚定的主机单独成一个小标签（一眼看出这条对话是在哪台主机上聊的），其余是时间和消息数。
+        let host = history_host(summary.anchor.as_ref(), summary.host_label.as_deref())
+            .map(|host| host.trim().to_owned())
+            .filter(|host| !host.is_empty());
+        let meta = history_meta(summary.updated_at, None, summary.message_count, now);
         v_flex()
             .gap_1()
             .p_2()
@@ -4496,9 +4554,23 @@ impl AgentChatDemo {
                     }),
             )
             .child(
-                div()
+                h_flex()
+                    .gap_2()
+                    .items_center()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
+                    .children(host.map(|host| {
+                        div()
+                            .id(SharedString::from(format!("history-host-{button_suffix}")))
+                            .max_w(px(140.0))
+                            .truncate()
+                            .px_1p5()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .text_color(cx.theme().foreground)
+                            .child(host)
+                    }))
                     .child(meta),
             )
             .into_any_element()
@@ -4510,7 +4582,7 @@ impl AgentChatDemo {
         let now = now_ms();
         let meta = history_meta(
             record.updated_at,
-            record.host_label.as_deref(),
+            history_host(record.anchor.as_ref(), record.host_label.as_deref()).as_deref(),
             record.messages.len(),
             now,
         );
@@ -5376,15 +5448,16 @@ mod tests {
     // `#[test]` 属性宏，展开时直接撞递归上限。
     use super::{
         ApprovalDetail, ApprovalState, AssistantMessage, BodyMode, ChatMessage, ChatState,
-        DemoInput, DemoTool, ExecMode, HISTORY_RESUMABLE, HistoryMessage, HistoryRecord,
-        HistoryStore, HostChoice, MARKDOWN_SAMPLE, ModelChoice, RAW_NO_BODY, ToolCard, ToolInput,
-        ToolStatus, body_markdown, body_mode, clipped_body, code_block_copy_text, content_preview,
-        continue_conversation, demo_toggle_available, format_history_time, history_id_for_turn,
-        history_meta, history_title, history_tool_status, host_names_label, link_click_notice,
-        load_exec_mode, mode_label, mode_setting, model_choices, model_label, new_history_id,
-        next_mode, next_mode_plan, next_model_index, raw_markdown_block, redact_tool_input,
-        requires_approval, resume_session_id, save_exec_mode, selected_targets, start_in_real_mode,
-        table_tsv, toggle_host_selection, tool_history_status,
+        DemoInput, DemoTool, ExecMode, HISTORY_RESUMABLE, HistoryAnchor, HistoryMessage,
+        HistoryRecord, HistoryStore, HostChoice, MARKDOWN_SAMPLE, ModelChoice, RAW_NO_BODY,
+        ToolCard, ToolInput, ToolStatus, body_markdown, body_mode, clipped_body,
+        code_block_copy_text, content_preview, continue_conversation, demo_toggle_available,
+        format_history_time, history_host, history_id_for_turn, history_meta, history_title,
+        history_tool_status, host_names_label, link_click_notice, load_exec_mode, mode_label,
+        mode_setting, model_choices, model_label, new_history_id, next_mode, next_mode_plan,
+        next_model_index, raw_markdown_block, redact_tool_input, requires_approval,
+        resume_session_id, save_exec_mode, selected_targets, start_in_real_mode, table_tsv,
+        toggle_host_selection, tool_history_status,
     };
     use crate::agent_text::{BODY_PREVIEW_CHARS, DIFF_FOLD_LIMIT, fold_diff};
     use crate::agent_tools::{self, ToolRow};
@@ -6722,6 +6795,8 @@ mod tests {
             created_at: 1_700_000_000_000,
             updated_at: 1_700_000_100_000,
             host_label: Some("web-1".to_owned()),
+            anchor: None,
+            usage: None,
             agent_session_id: agent_session_id.map(str::to_owned),
             messages: Vec::new(),
         }
@@ -6738,6 +6813,86 @@ mod tests {
         assert!(format_history_time(0, now).ends_with(" UTC"));
         // 时钟回拨（更新时间比现在还晚）不能显示成负数。
         assert_eq!(format_history_time(now + 60_000, now), "刚刚");
+    }
+
+    fn sample_usage(used: u64) -> zssh_core::ai::agent::usage::ContextUsage {
+        zssh_core::ai::agent::usage::ContextUsage {
+            used,
+            window: Some(200_000),
+            model: Some("claude-opus-5-5".to_owned()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn usage_events_update_the_meter_without_touching_the_turn() {
+        let mut state = ChatState::default();
+        assert_eq!(state.usage, None, "新对话还没有用量");
+        state.start_real_turn("看一下");
+        state.apply_agent_event(AgentEvent::Retrying {
+            attempt: 1,
+            reason: "服务繁忙".into(),
+            next_in_secs: None,
+        });
+        state.apply_agent_event(AgentEvent::Usage {
+            usage: sample_usage(4_511),
+        });
+        assert_eq!(state.usage.as_ref().map(|u| u.used), Some(4_511));
+        assert!(state.retry.is_some(), "用量事件不清掉重试提示");
+        assert!(state.is_running(), "也不结束回合");
+        state.apply_agent_event(AgentEvent::Usage {
+            usage: sample_usage(9_000),
+        });
+        assert_eq!(
+            state.usage.as_ref().map(|u| u.used),
+            Some(9_000),
+            "以最新一次为准"
+        );
+        state.new_conversation();
+        assert_eq!(state.usage, None, "新对话清掉");
+    }
+
+    #[test]
+    fn usage_is_saved_with_the_history_and_restored_when_continuing() {
+        let mut state = ChatState::default();
+        state.start_real_turn("看一下");
+        state.apply_agent_event(AgentEvent::TextDelta { text: "好".into() });
+        state.apply_agent_event(AgentEvent::Usage {
+            usage: sample_usage(4_511),
+        });
+        state.apply_agent_event(AgentEvent::TurnEnd);
+        let draft = state.history_draft("ai-1-0", None, None);
+        assert_eq!(draft.usage.as_ref().map(|u| u.used), Some(4_511));
+
+        // 继续这条历史：指示器是它存下的那一次；继续一条没有用量的旧历史：回到「—」。
+        let mut record = sample_record(Some("11111111-1111-1111-1111-111111111111"));
+        record.usage = draft.usage;
+        let mut chat = ChatState::default();
+        let (mut history_id, mut pending) = (None, None);
+        continue_conversation(&mut chat, &mut history_id, &mut pending, &record).expect("可以续接");
+        assert_eq!(chat.usage.as_ref().map(|u| u.used), Some(4_511));
+        record.usage = None;
+        continue_conversation(&mut chat, &mut history_id, &mut pending, &record).expect("可以续接");
+        assert_eq!(chat.usage, None, "旧历史没有用量字段：不沿用上一个对话的");
+    }
+
+    #[test]
+    fn history_shows_the_anchored_host_and_falls_back_to_the_old_label() {
+        let anchor = HistoryAnchor {
+            host_id: Some(3),
+            name: "db-1".to_owned(),
+        };
+        assert_eq!(
+            history_host(Some(&anchor), Some("web-1、db-1")).as_deref(),
+            Some("db-1"),
+            "有锚定就显示锚定的那台，不是当时选过的所有主机"
+        );
+        assert_eq!(
+            history_host(None, Some("web-1")).as_deref(),
+            Some("web-1"),
+            "旧历史没有锚定字段：照旧显示当时存的主机名"
+        );
+        assert_eq!(history_host(None, None), None);
     }
 
     #[test]
@@ -6827,7 +6982,7 @@ mod tests {
         let mut state = ChatState::default();
         real_turn_with_a_tool(&mut state);
 
-        let draft = state.history_draft("ai-1-0", Some("web-1"));
+        let draft = state.history_draft("ai-1-0", Some("web-1"), None);
         assert_eq!(draft.id, "ai-1-0");
         assert_eq!(draft.host_label.as_deref(), Some("web-1"));
         assert_eq!(
@@ -6868,7 +7023,7 @@ mod tests {
         assert!(state.resolve_real_approval("approval-9", false, true));
         state.apply_agent_event(AgentEvent::TurnEnd);
 
-        let draft = state.history_draft("ai-1-1", None);
+        let draft = state.history_draft("ai-1-1", None, None);
         assert_eq!(draft.messages.len(), 3, "没有正文，只有两张工具卡片");
         let HistoryMessage::Tool {
             status,
@@ -6907,7 +7062,7 @@ mod tests {
         });
         assert!(state.stop());
 
-        let draft = state.history_draft("ai-1-2", None);
+        let draft = state.history_draft("ai-1-2", None, None);
         let HistoryMessage::Tool { status, output, .. } = &draft.messages[1] else {
             panic!("第二条应该是工具卡片");
         };
@@ -6967,7 +7122,7 @@ mod tests {
         real_turn_with_a_tool(&mut state);
         let id = new_history_id(1_700_000_000_000, 0);
         let session_id = "11111111-2222-3333-4444-555555555555";
-        let draft = state.history_draft(&id, Some("web-1"));
+        let draft = state.history_draft(&id, Some("web-1"), None);
         let summary = store
             .save(
                 CLAUDE.command,
@@ -6989,7 +7144,7 @@ mod tests {
         // 第二轮写回同一个 id：还是一个文件，创建时间不变，消息接着追加。
         assert!(state.start_real_turn("再看内存"));
         state.apply_agent_event(AgentEvent::TurnEnd);
-        let draft = state.history_draft(&id, Some("web-1"));
+        let draft = state.history_draft(&id, Some("web-1"), None);
         store
             .save(
                 CLAUDE.command,
@@ -7062,11 +7217,11 @@ mod tests {
         assert!(original.approval_prompt(9, &approval_request("reboot")));
         assert!(original.resolve_real_approval("approval-9", false, true));
         original.apply_agent_event(AgentEvent::TurnEnd);
-        let draft = original.history_draft("ai-1-0", Some("web-1"));
+        let draft = original.history_draft("ai-1-0", Some("web-1"), None);
 
         let mut restored = ChatState::default();
         restored.load_history(&draft.messages);
-        let again = restored.history_draft("ai-1-0", Some("web-1"));
+        let again = restored.history_draft("ai-1-0", Some("web-1"), None);
         assert_eq!(
             again.messages, draft.messages,
             "历史放回对话区再导出要一模一样"
@@ -7100,7 +7255,7 @@ mod tests {
         real_turn_with_a_tool(&mut chat);
         let mut history_id = Some("ai-1-0".to_owned());
         let mut pending_resume: Option<String> = None;
-        let draft_a = chat.history_draft("ai-1-0", Some("web-1"));
+        let draft_a = chat.history_draft("ai-1-0", Some("web-1"), None);
         store
             .save(
                 CLAUDE.command,
@@ -7121,7 +7276,7 @@ mod tests {
         store
             .save(
                 CLAUDE.command,
-                b_state.history_draft("ai-2-0", None),
+                b_state.history_draft("ai-2-0", None, None),
                 Some(session_b.to_owned()),
                 &[],
                 1_700_000_050_000,
@@ -7139,7 +7294,7 @@ mod tests {
         // 接着发一条消息、存一次——写回的是 B 的文件。
         assert!(chat.start_real_turn("B 的新问题"));
         chat.apply_agent_event(AgentEvent::TurnEnd);
-        let draft = chat.history_draft(history_id.as_deref().expect("id"), None);
+        let draft = chat.history_draft(history_id.as_deref().expect("id"), None, None);
         store
             .save(
                 CLAUDE.command,

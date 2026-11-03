@@ -64,7 +64,7 @@ const CLAUDE_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// 工具桥的执行位置回报（`ExecTargetReport`）按 scope 分路送到各自对话的窗口。
 ///
-/// 桥只有一个、宿主只有一个，但对话有很多（每个终端标签一个）：回报带着 scope id，按
+/// 桥只有一个、宿主只有一个，但对话可能有好几个（每个窗口一个，独立的 AI 窗口也各有自己的）：回报带着 scope id，按
 /// [`Self::attach`] 登记的出口送；对话结束（[`Self::detach`]）之后迟到的回报直接丢掉，
 /// 不会落进别的对话，也不会落进同一个标签后来开的新对话。
 #[derive(Default)]
@@ -661,7 +661,7 @@ impl Drop for PendingGuard {
 
 /// 工具桥的审批实现：请求走 `std::sync::mpsc` 给窗口，答案走 oneshot 回来。
 ///
-/// 一个桥服务多个对话（每个标签一个对话，三种智能体共用同一个桥，和 Tauri 版一致）：请求带着
+/// 一个桥服务多个对话（每个窗口一个对话，三种智能体共用同一个桥，和 Tauri 版一致）：请求带着
 /// 自己的 scope id，按 [`Self::attach_scope`] 登记的出口送到对应对话的窗口；没有登记的 scope
 /// 走默认出口（单对话的桥、测试），再没有就按拒绝处理。
 pub struct NativeApprover {
@@ -890,9 +890,18 @@ pub struct HostTarget {
     /// 这台主机不能当 AI 的执行目标时的原因（Telnet / 串口主机，来自 `ProtocolSettings::ai_exec_refusal`，
     /// 和工具桥 `target_refusal` 同一句话）。界面上列出来但置灰并写明原因，不会被同步给桥。
     pub refusal: Option<String>,
+    /// 目标是快速连接的这个终端本身（`term-<n>`，没有主机记录；对话锚定在终端上）：`id` 不用。
+    pub terminal: Option<String>,
 }
 
 impl HostTarget {
+    /// 在桥的 scope 里的目标编号：主机是 `host-<id>`，快速连接的终端是它自己的终端编号。
+    pub fn scope_id(&self) -> String {
+        self.terminal
+            .clone()
+            .unwrap_or_else(|| host_target_id(self.id))
+    }
+
     /// 普通的被选中主机：不是「当前」，按固定目标处理（独立的 AI 窗口、主机库的主机列表用）。
     pub fn plain(id: i64, name: impl Into<String>, username: impl Into<String>) -> Self {
         Self {
@@ -902,6 +911,7 @@ impl HostTarget {
             current: false,
             pinned: true,
             refusal: None,
+            terminal: None,
         }
     }
 }
@@ -1050,22 +1060,24 @@ impl ToolChannel {
     /// 只管 `host-<id>` 目标；摘掉目标会让只对旧目标批准过的在途请求失效（桥的 R-9 F11）。
     /// 只是"允许 AI 用这些主机"，不等于已经连上：第一次执行时由 [`NativeBridgeHost`] 自动连接。
     pub fn sync_hosts(&self, wanted: &[HostTarget]) {
-        let wanted_ids: HashSet<String> = wanted.iter().map(|h| host_target_id(h.id)).collect();
+        let wanted_ids: HashSet<String> = wanted.iter().map(HostTarget::scope_id).collect();
         for target in self.scope.targets() {
-            if parse_host_target_id(&target.id).is_some() && !wanted_ids.contains(&target.id) {
+            let ours = parse_host_target_id(&target.id).is_some()
+                || target.id.starts_with(crate::ai_terminals::TERMINAL_PREFIX);
+            if ours && !wanted_ids.contains(&target.id) {
                 self.scope.remove_target(&target.id);
             }
         }
         for host in wanted {
             // 同一个 ID 再加是更新（焦点、「当前」随标签变化时不算「移出再加回」，在途请求不受影响）。
-            // 状态：这台主机现在有打开的终端就是 connected，否则只是被 @ 进来（pinned）。
-            let status = if terminals().has_host(host.id) {
-                "connected"
-            } else {
-                "pinned"
+            // 状态：这台主机 / 这个终端现在有打开的终端就是 connected，否则只是被 @ 进来（pinned）。
+            let connected = match host.terminal.as_deref() {
+                Some(terminal) => terminals().get(terminal).is_some(),
+                None => terminals().has_host(host.id),
             };
+            let status = if connected { "connected" } else { "pinned" };
             self.scope.add_target(
-                host_target_id(host.id),
+                host.scope_id(),
                 host.name.clone(),
                 host.username.clone(),
                 status,
@@ -1278,7 +1290,7 @@ impl SharedRuntime {
 }
 
 /// 全进程共用的智能体宿主：**一个**工具桥（一个监听端口、一个连接令牌）、一个按 scope 分路的审批，
-/// 加 opencode / codex 各一个懒启动的共用进程。每个对话（每个终端标签一个）在桥上有自己的 scope
+/// 加 opencode / codex 各一个懒启动的共用进程。每个对话（每个窗口一个）在桥上有自己的 scope
 /// 和能力密钥，确认请求只送到自己的窗口。
 ///
 /// 对应 Tauri 版的 `ToolBridge` + `AgentRegistry`：opencode / codex 的 MCP 配置在进程启动时
@@ -2128,6 +2140,40 @@ mod tests {
 
         tools.sync_hosts(&[]);
         assert_eq!(ids(&tools), vec!["ses_x"]);
+    }
+
+    #[test]
+    fn a_quick_connect_terminal_can_be_the_conversation_target() {
+        // V2-U15：快速连接没有主机记录，对话锚定在终端本身（`term-<n>`）。
+        let tools = manual_channel(Arc::new(CountingHost::default()));
+        let ids = |tools: &ToolChannel| {
+            let mut ids: Vec<String> = tools.scope().targets().into_iter().map(|t| t.id).collect();
+            ids.sort();
+            ids
+        };
+        let quick = HostTarget {
+            id: 0,
+            name: "ops@quick".to_owned(),
+            username: String::new(),
+            current: true,
+            pinned: false,
+            refusal: None,
+            terminal: Some("term-7".to_owned()),
+        };
+        assert_eq!(quick.scope_id(), "term-7");
+        assert_eq!(web_host(3).scope_id(), "host-3");
+        tools.sync_hosts(&[quick.clone(), web_host(2)]);
+        assert_eq!(ids(&tools), vec!["host-2", "term-7"]);
+        let summary = tools
+            .scope()
+            .targets()
+            .into_iter()
+            .find(|target| target.id == "term-7")
+            .expect("终端目标在 scope 里");
+        assert!(summary.current && summary.host_label == "ops@quick");
+        // 终端关了（不再被选）：摘掉；主机目标不受影响。
+        tools.sync_hosts(&[web_host(2)]);
+        assert_eq!(ids(&tools), vec!["host-2"]);
     }
 
     #[tokio::test]

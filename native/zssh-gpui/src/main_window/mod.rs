@@ -14,6 +14,7 @@
 //! `keychain_panel` / `quick_panel` / `proxy_panel` / `forward_panel` 的列表和表单）、
 //! `status_bar`（底部状态栏）。
 
+pub mod anchor;
 pub mod bar_height;
 pub mod bar_settings;
 mod bars;

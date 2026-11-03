@@ -952,6 +952,23 @@ impl TerminalWorkspace {
             .collect()
     }
 
+    /// 这个窗口里所有标签、所有分屏窗格的主机 id（含没聚焦的、已经断开的：标签还在就还能重连）。
+    /// AI 对话锚定的主机「还有没有标签」按它算；只看各标签的聚焦窗格会把分屏里的主机漏掉。
+    pub(crate) fn pane_host_ids(&self) -> std::collections::HashSet<i64> {
+        self.tabs
+            .items()
+            .iter()
+            .flat_map(|tab| tab.panes.iter().filter_map(|pane| pane.host_id))
+            .collect()
+    }
+
+    /// 活动标签聚焦窗格是快速连接时：（它的终端编号，连上了才有；显示名）。AI 对话锚定快速连接时认终端本身。
+    pub(crate) fn active_quick(&self) -> Option<(Option<String>, String)> {
+        let pane = self.pane()?;
+        let spec = pane.quick.as_ref()?;
+        Some((self.active_terminal_id(), spec.label.clone()))
+    }
+
     /// 这个标签聚焦窗格是快速连接时的 `user@host:port`。
     pub(crate) fn tab_quick_target(&self, index: usize) -> Option<String> {
         self.tabs

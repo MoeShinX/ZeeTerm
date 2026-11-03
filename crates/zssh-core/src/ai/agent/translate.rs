@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 use super::retry::friendly_retry_reason;
+use super::usage::from_opencode;
 use super::AgentEvent;
 
 /// part 的类型（只关心这几种）。
@@ -54,7 +55,10 @@ pub fn translate_event(event: &Value, state: &mut TranslateState) -> Vec<AgentEv
             if let (Some(id), Some(role)) = (info["id"].as_str(), info["role"].as_str()) {
                 state.message_roles.insert(id.to_string(), role.to_string());
             }
-            Vec::new()
+            // 上下文用量：assistant 消息跑完才有 tokens（只读解析）。
+            from_opencode(info)
+                .map(|usage| vec![AgentEvent::Usage { usage }])
+                .unwrap_or_default()
         }
         "message.removed" => {
             if let Some(id) = props["messageID"].as_str() {
@@ -336,6 +340,7 @@ mod tests {
         finished: Vec<(String, String, bool)>,
         turn_ends: usize,
         errors: Vec<String>,
+        usage: Vec<crate::ai::agent::usage::ContextUsage>,
     }
 
     fn digest(events: &[Value]) -> Digest {
@@ -357,12 +362,29 @@ mod tests {
                     } => d.finished.push((call_id.clone(), tool.clone(), *error)),
                     AgentEvent::TurnEnd => d.turn_ends += 1,
                     AgentEvent::Error { message } => d.errors.push(message.clone()),
+                    AgentEvent::Usage { usage } => d.usage.push(usage.clone()),
                     AgentEvent::ResumeFailed | AgentEvent::Retrying { .. } => {}
                 }
                 d.events.push(out);
             }
         }
         d
+    }
+
+    #[test]
+    fn sample_turn_reports_the_context_usage_of_the_finished_assistant_message() {
+        let d = digest(&sample_events());
+        let last = d
+            .usage
+            .last()
+            .expect("样本里 assistant 消息跑完后带 tokens");
+        assert_eq!(last.used, 16346, "最后一步的用量");
+        assert_eq!(last.model.as_deref(), Some("deepseek/deepseek-v4-pro"));
+        // 还没跑完的（tokens 全是 0）和用户消息都不报，用量只会往上走。
+        assert!(d.usage.iter().all(|usage| usage.used > 0));
+        // 翻译用量不能影响回合：照样只有一个 TurnEnd、没有错误。
+        assert_eq!(d.turn_ends, 1);
+        assert!(d.errors.is_empty());
     }
 
     #[test]

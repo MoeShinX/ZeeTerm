@@ -2,8 +2,8 @@
 //! 终端右侧的 AI 面板、文件（SFTP）停靠面板，以及 SFTP 主视图标签（0.2.14 `App.tsx` 的 `DockRow`、
 //! `SftpDockPanel.tsx`、`SftpTabView.tsx`）。
 //!
-//! - AI 面板：一个终端标签一个对话（`Entity<AgentChatDemo>`，嵌在面板里的紧凑形态），目标主机
-//!   跟着各自标签的主机走；切标签不丢对话，标签关了对话跟着结束。
+//! - AI 面板：每个窗口一个对话（`Entity<AgentChatDemo>`，嵌在面板里的紧凑形态），在第一条消息发出时
+//!   锚定到当时聚焦窗格的主机，切标签 / 切分屏焦点都不换对话、不改目标（规则在 `anchor`）；之前的对话在历史里。
 //! - 文件面板：跟随当前终端标签的主机，一台主机一个文件视图（`Entity<SftpDemo>`，停靠布局：远端在上、
 //!   本地在下）；开的时候复用终端那条已认证连接。「在新标签中打开」把同一个视图挪到主视图标签里
 //!   （连接和两栏目录原样带过去）。
@@ -21,6 +21,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::MainWindow;
+use super::anchor::Focus;
 use super::bar_settings;
 use super::close_guard;
 use super::dock_layout::{self, DockLayout};
@@ -54,8 +55,9 @@ pub struct DockState {
     /// 开着文件面板的终端标签（标签 id）。开关按标签记：在 A 开了，新开的标签 B 默认不开，
     /// 切回 A 还在。AI 面板的 `ai_open` 仍是全窗口一个值，不在这里。
     sftp_dock_tabs: HashSet<u64>,
-    /// 每个终端标签一个对话（标签 id → 面板里的对话）。
-    pub ai: HashMap<u64, Entity<AgentChatDemo>>,
+    /// 面板里的对话：每个窗口一个，不随标签切换换对话（对话在第一条消息发出时锚定到当时的主机，
+    /// 见 `anchor`）。第一次开面板时建，之后一直留着（面板关了、标签全关了对话也还在）。
+    pub ai: Option<Entity<AgentChatDemo>>,
     /// 每台主机一个停靠用的文件视图（主机 id → 视图）。
     pub sftp: HashMap<i64, Entity<SftpDemo>>,
     pub sftp_tabs: Vec<SftpTab>,
@@ -91,7 +93,7 @@ impl Default for DockState {
         Self {
             ai_open: false,
             sftp_dock_tabs: HashSet::new(),
-            ai: HashMap::new(),
+            ai: None,
             sftp: HashMap::new(),
             sftp_tabs: Vec::new(),
             active_sftp: None,
@@ -377,6 +379,31 @@ impl MainWindow {
             .collect()
     }
 
+    /// 每个节拍送给 AI 面板的上下文：当前标签聚焦窗格、还开着终端的主机和终端。主机按「这个窗口里还有
+    /// 标签（含分屏里没聚焦的、已断开的）」加「全进程的终端登记表里有」（别的窗口里的标签）算。
+    fn ai_context(&self, hosts: Vec<HostTarget>, cx: &App) -> EmbedContext {
+        let ws = self.workspace.read(cx);
+        let registry = crate::ai_terminals::terminals();
+        let mut open_hosts = ws.pane_host_ids();
+        open_hosts.extend(registry.open_host_ids());
+        let focus = match ws.active_host_id() {
+            Some(id) => self.store.host(id).map(|host| Focus::Host {
+                id: host.id,
+                name: host.name.clone(),
+                refusal: host.protocol.ai_exec_refusal(),
+            }),
+            None => ws
+                .active_quick()
+                .map(|(terminal, label)| Focus::Quick { terminal, label }),
+        };
+        EmbedContext {
+            focus,
+            open_hosts,
+            open_terminals: registry.open_terminal_ids(),
+            hosts,
+        }
+    }
+
     pub(super) fn sync_docks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // AI 终端登记表：聚焦窗格每个节拍标一次（幂等），AI 把「这台主机的焦点终端」认成它。
         if let Some(id) = self.workspace.read(cx).active_terminal_id() {
@@ -395,6 +422,10 @@ impl MainWindow {
                     ws.select_host_tab(host_id, cx);
                 }
             });
+        }
+        // AI 面板里点了「重新连接 <主机>」：为绑定的主机开一个标签。
+        if let Some(host_id) = crate::agent_setup::take_open_host_request() {
+            self.open_host_in_new_tab(host_id, window, cx);
         }
         // 标签上的 AI 活动点：AI 在哪个终端里执行命令，那个标签亮一个点。
         let dots: Vec<(u64, bool)> = self
@@ -426,30 +457,18 @@ impl MainWindow {
             self.show_view(MainView::Settings, window, cx);
         }
 
-        // AI：标签关了对话跟着结束（实体 Drop 会收尾会话）；开着面板时当前标签补一个。
         let live: HashSet<u64> = tab_hosts.iter().map(|(id, _)| *id).collect();
-        self.docks.ai.retain(|id, _| live.contains(id));
-        if self.docks.ai_open
-            && let Some(id) = active_tab
-            && !self.docks.ai.contains_key(&id)
-        {
+        // AI：整个窗口一个对话，开着面板时补一个；不随标签切换、标签关了也留着（对话锚定在主机上，
+        // 绑定的主机没有打开的终端时对话失效，由用户决定，见 `anchor`）。
+        if self.docks.ai_open && self.docks.ai.is_none() {
             let height = self.store.bars().ai_input_height;
             let chat = cx.new(|cx| AgentChatDemo::new_embedded(window, cx, height));
-            self.docks.ai.insert(id, chat);
-            // 新标签的面板实体是节拍里补的：不通知主窗口重画，它就一直是空白，直到别的什么触发重绘。
+            self.docks.ai = Some(chat);
+            // 面板实体是节拍里补的：不通知主窗口重画，它就一直是空白，直到别的什么触发重绘。
             cx.notify();
         }
-        for (tab_id, host_id) in &tab_hosts {
-            let Some(chat) = self.docks.ai.get(tab_id).cloned() else {
-                continue;
-            };
-            let current =
-                host_id.and_then(|id| self.store.host(id).map(|host| (host.id, host.name.clone())));
-            let ctx = EmbedContext {
-                current,
-                open_hosts: open_hosts.clone(),
-                hosts: hosts.clone(),
-            };
+        if let Some(chat) = self.docks.ai.clone() {
+            let ctx = self.ai_context(hosts.clone(), cx);
             chat.update(cx, |chat, cx| chat.set_context(ctx, cx));
         }
 
@@ -812,7 +831,7 @@ impl MainWindow {
 
     /// 窗口真正关闭：AI 会话、文件视图的连接都收尾。
     pub(super) fn shutdown_docks(&mut self, cx: &mut Context<Self>) {
-        self.docks.ai.clear();
+        self.docks.ai = None;
         for (_, view) in self.docks.sftp.drain() {
             view.update(cx, |view, _| view.shutdown_embedded());
         }
@@ -836,12 +855,13 @@ impl MainWindow {
         let layout = self.dock_layout_now(cx);
         if self.docks.ai_open && layout.ai_width > 0.0 {
             let close = cx.entity();
-            // 刚切到一个还没有对话的标签：下一个节拍会补上，这半秒里先把壳子（宽度）留着，布局不跳。
-            let chat = self
-                .workspace
-                .read(cx)
-                .active_tab_id()
-                .and_then(|id| self.docks.ai.get(&id).cloned());
+            // 刚打开面板、对话实体还没建：下一个节拍会补上，这半秒里先把壳子（宽度）留着，布局不跳。
+            let chat = self.docks.ai.clone();
+            // 标题栏右侧（关闭按钮左边）：上下文用量指示器（V2-U15）。
+            let actions: Vec<AnyElement> = chat
+                .as_ref()
+                .map(|chat| vec![chat.read(cx).usage_meter(chat.clone(), tokens)])
+                .unwrap_or_default();
             let body = match chat {
                 Some(chat) => chat.into_any_element(),
                 None => div().into_any_element(),
@@ -851,7 +871,7 @@ impl MainWindow {
                 layout.ai_width,
                 "AI 助手".into(),
                 None,
-                Vec::new(),
+                actions,
                 body,
                 move |window, cx| {
                     close.update(cx, |this, cx| this.toggle_ai_panel(window, cx));
