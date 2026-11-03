@@ -1979,6 +1979,7 @@ fn history_tool_status(status: &str) -> String {
 
 /// 「目标主机」里的一台主机；只留执行需要的字段。
 mod agent_ui;
+mod composer;
 mod embed;
 mod queue;
 mod queue_view;

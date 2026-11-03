@@ -3,7 +3,8 @@
 //!
 //! - 目标主机：当前标签的主机 + 用户 `@` 的主机 + 切焦点时自动保留的主机（规则在
 //!   `main_window::scope_targets`），显示成可以 × 掉的标签；
-//! - 顶部的「模型」「强度」两个下拉（规则在 `main_window::model_picker`）、执行模式下拉、历史、新对话、停止；
+//! - 顶部一行：智能体、历史、新对话；执行模式、模型、思考强度三个下拉在输入框卡片底部一行
+//!   （版面规则在 `composer`，选择规则在 `main_window::model_picker`），右边是发送 / 停止；
 //! - 输入框上沿的拖动条调输入框高度（双击恢复）；消息区不在底部时出现「回到底部」；
 //! - 紧凑版布局：标题和关闭由面板外壳画。
 //!
@@ -25,6 +26,7 @@ use gpui_kit::*;
 use zssh_core::ai::agent::AgentModelCatalog;
 use zssh_core::ai::bridge::ExecMode;
 
+use super::composer::{self, ActionKind, ComposerItem, EffortStyle, ModeTone};
 use super::{
     AgentChatDemo, ApprovalDetail, ApprovalState, ChatMessage, HistoryPanel, HostChoice,
     NO_HOST_HINT, ToolCard, ToolStatus, card_detail_lines, card_status_text, mode_label,
@@ -826,23 +828,41 @@ impl AgentChatDemo {
         let current_effort = selected.as_ref().and_then(|(_, effort)| effort.clone());
         let current_group = selected.as_ref().map(|(index, _)| *index);
 
+        let has_effort = efforts.len() > 1 || (efforts.len() == 1 && current_effort.is_some());
+        let mode_text = mode_label(self.current_mode());
+        let panel_width = embed
+            .and_then(|e| e.panel_bounds.get())
+            .map(|bounds| f32::from(bounds.size.width));
+        let items =
+            composer::composer_items(has_effort, running, panel_width, mode_text, &effort_label);
+        let effort_style = items.iter().find_map(|item| match item {
+            ComposerItem::Effort(style) => Some(*style),
+            _ => None,
+        });
+        let model_max = composer::model_max_width(
+            panel_width,
+            mode_text,
+            effort_style.map(|style| (style, effort_label.as_ref())),
+        );
         let model_button = {
             let entity = entity.clone();
             let groups = picker.groups.clone();
             Button::new("ai-model")
                 .ghost()
                 .compact()
-                .label(model_label)
+                .label(model_label.clone())
                 .dropdown_caret(has_catalog)
+                // 模型名先省略（Button 的标签自带省略号），悬停显示全名。
+                .max_w(px(model_max))
                 .tooltip(if has_catalog {
-                    "模型"
+                    format!("模型：{model_label}")
                 } else if blocked {
-                    "这个智能体现在不能用"
+                    "这个智能体现在不能用".to_owned()
                 } else {
-                    "正在读取模型目录"
+                    "正在读取模型目录".to_owned()
                 })
                 .disabled(!has_catalog || blocked)
-                .dropdown_menu(move |menu, _window, _cx| {
+                .dropdown_menu_with_anchor(::gpui::Anchor::BottomLeft, move |menu, _window, _cx| {
                     let mut menu = menu.min_w(px(200.0)).max_h(px(320.0)).scrollable(true);
                     for (index, group) in groups.iter().enumerate() {
                         let entity = entity.clone();
@@ -861,43 +881,65 @@ impl AgentChatDemo {
                     menu
                 })
         };
-        let effort_button = (efforts.len() > 1 || (efforts.len() == 1 && current_effort.is_some()))
-            .then(|| {
-                let entity = entity.clone();
-                let current = current_effort.clone();
-                Button::new("ai-effort")
-                    .ghost()
-                    .compact()
-                    .label(effort_label)
+        let effort_button = effort_style.map(|style| {
+            let entity = entity.clone();
+            let current = current_effort.clone();
+            let button = Button::new("ai-effort").ghost().compact().flex_none();
+            let button = match style {
+                EffortStyle::Full => button
+                    .label(effort_label.clone())
                     .dropdown_caret(true)
-                    .tooltip("思考强度")
-                    .dropdown_menu(move |menu, _window, _cx| {
-                        let mut menu = menu.min_w(px(140.0));
-                        for choice in &efforts {
-                            let entity = entity.clone();
-                            let picked = choice.clone();
-                            menu = menu.item(
-                                PopupMenuItem::new(model_picker::effort_label(choice.as_deref()))
-                                    .checked(&current == choice)
-                                    .on_click(move |_: &ClickEvent, _window, cx| {
-                                        let picked = picked.clone();
-                                        entity.update(cx, |this, cx| this.pick_effort(picked, cx));
-                                    }),
-                            );
-                        }
-                        menu
-                    })
-            });
+                    .tooltip("思考强度"),
+                // 窄面板：只剩图标，悬停显示当前值。
+                EffortStyle::IconOnly => button
+                    .icon(Ico::Brain)
+                    .tooltip(format!("思考强度：{effort_label}")),
+            };
+            button.dropdown_menu_with_anchor(
+                ::gpui::Anchor::BottomLeft,
+                move |menu, _window, _cx| {
+                    let mut menu = menu.min_w(px(140.0));
+                    for choice in &efforts {
+                        let entity = entity.clone();
+                        let picked = choice.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(model_picker::effort_label(choice.as_deref()))
+                                .checked(&current == choice)
+                                .on_click(move |_: &ClickEvent, _window, cx| {
+                                    let picked = picked.clone();
+                                    entity.update(cx, |this, cx| this.pick_effort(picked, cx));
+                                }),
+                        );
+                    }
+                    menu
+                },
+            )
+        });
         let mode_button = {
             let entity = entity.clone();
             let current = self.current_mode();
+            let tone = composer::mode_tone(current);
+            // 「全部放行」用警示色（浅色底上用深一点的琥珀色保证读得清），其余是普通文字色。
+            let caution = if tokens.dark {
+                tokens.dot_connecting
+            } else {
+                ::gpui::rgb(0xB45309).into()
+            };
+            let icon = match current {
+                ExecMode::Manual => Ico::ShieldCheck,
+                ExecMode::ReadOnly => Ico::Eye,
+                ExecMode::Auto => Ico::ShieldAlert,
+            };
             Button::new("ai-mode")
                 .ghost()
                 .compact()
-                .label(mode_label(current))
+                .flex_none()
+                .icon(icon)
+                .label(mode_text)
                 .dropdown_caret(true)
+                .when(tone == ModeTone::Caution, |b| b.text_color(caution))
                 .tooltip("执行模式")
-                .dropdown_menu(move |menu, _window, _cx| {
+                .dropdown_menu_with_anchor(::gpui::Anchor::BottomLeft, move |menu, _window, _cx| {
                     let mut menu = menu.min_w(px(200.0));
                     for (mode, hint) in [
                         (ExecMode::Manual, "每条命令都要你点确认"),
@@ -958,39 +1000,22 @@ impl AgentChatDemo {
                 entity.update(cx, |this, cx| this.new_conversation(cx));
             })
         };
-        // 两行：智能体、执行模式、历史、新对话一行；模型、强度另起一行（模型名可以很长，
-        // 挤在一行里会把后面的按钮顶出面板）。
-        let toolbar = v_flex()
+        // 一行：智能体、历史、新对话（执行模式、模型、思考强度在输入框底部一行里）。
+        let toolbar = h_flex()
             .flex_none()
             .w_full()
+            .px_2()
+            .py_1p5()
+            .gap_0p5()
+            // 面板很窄时按钮折到下一行，不被面板边缘截掉（V2-U1）。
+            .flex_wrap()
+            .items_center()
             .border_b_1()
             .border_color(tokens.border)
-            .child(
-                h_flex()
-                    .w_full()
-                    .px_2()
-                    .py_1p5()
-                    .gap_0p5()
-                    // 面板很窄时按钮折到下一行，不被面板边缘截掉（V2-U1）。
-                    .flex_wrap()
-                    .items_center()
-                    .children(agent_button)
-                    .child(div().flex_1())
-                    .child(mode_button)
-                    .child(history_button)
-                    .child(clear_button),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .px_2()
-                    .pb_1p5()
-                    .gap_0p5()
-                    .flex_wrap()
-                    .items_center()
-                    .child(model_button)
-                    .children(effort_button),
-            );
+            .children(agent_button)
+            .child(div().flex_1())
+            .child(history_button)
+            .child(clear_button);
 
         // ---- 第二行：目标主机标签 ----
         let targets = self.embed_targets();
@@ -1219,13 +1244,22 @@ impl AgentChatDemo {
         );
         let send_button = {
             let entity = entity.clone();
-            let label = if running { "停止" } else { "发送" };
+            let action = items.iter().find_map(|item| match item {
+                ComposerItem::Action(kind) => Some(*kind),
+                _ => None,
+            });
+            let stopping = action == Some(ActionKind::Stop);
             Button::new("ai-send")
                 .compact()
-                .when(running, |b| b.outline())
-                .when(!running, |b| b.primary())
-                .disabled(blocked && !running)
-                .label(label)
+                .flex_none()
+                .when(stopping, |b| b.outline().icon(Ico::Square))
+                .when(!stopping, |b| b.primary().icon(IconName::ArrowUp))
+                .tooltip(if stopping {
+                    "停止"
+                } else {
+                    "发送（Enter）"
+                })
+                .disabled(blocked && !stopping)
                 .on_click(move |_, window, cx| {
                     entity.update(cx, |this, cx| {
                         if this.chat.is_running() {
@@ -1236,7 +1270,70 @@ impl AgentChatDemo {
                     });
                 })
         };
-        let input_row = h_flex()
+        // 输入框和工具行在同一个圆角边框里（聚焦时整个卡片高亮边框）。
+        let focused = self
+            .input
+            .read(cx)
+            .focus_handle(cx)
+            .contains_focused(window, cx);
+        let composer_card = v_flex()
+            .id("ai-composer")
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
+            .rounded_lg()
+            .border_1()
+            .border_color(if focused {
+                tokens.accent
+            } else {
+                tokens.border
+            })
+            .bg(tokens.background)
+            // 回合进行中输入框也能用：Enter 把话放进待发送队列（V2-U1）。
+            .child(
+                Textarea::new(&self.input)
+                    .w_full()
+                    .h(px(input_height))
+                    .appearance(false)
+                    .bordered(false)
+                    .disabled(blocked),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .px_1p5()
+                    .pb_1p5()
+                    .gap_1()
+                    .items_center()
+                    // 左边这组：模型名先省略、强度再收成图标；极窄的面板里仍放不下就折到下一行，
+                    // 右边的发送按钮那层不缩，面板再窄按钮也完整留在面板里。
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .flex_wrap()
+                            .gap_0p5()
+                            .items_center()
+                            .child(mode_button)
+                            .child(model_button)
+                            .children(effort_button),
+                    )
+                    .child(
+                        div()
+                            .relative()
+                            .flex_none()
+                            .child(
+                                canvas(
+                                    move |bounds, _, _| send_cell.set(Some(bounds)),
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .size_full(),
+                            )
+                            .child(send_button),
+                    ),
+            );
+        let input_row = v_flex()
             .id("ai-input-row")
             .relative()
             .flex_none()
@@ -1244,8 +1341,6 @@ impl AgentChatDemo {
             .min_w_0()
             .px_2()
             .py_2()
-            .gap_2()
-            .items_end()
             .border_t_1()
             .border_color(tokens.border)
             .on_mouse_move({
@@ -1282,35 +1377,7 @@ impl AgentChatDemo {
                 }
             })
             .child(handle)
-            // 输入框和按钮各包一层：输入框这层可以缩到 0 宽（`min_w_0` + 裁掉溢出），按钮这层不缩，
-            // 面板再窄按钮也完整留在面板里，不会被输入框的内容顶出去。
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    // 回合进行中输入框也能用：Enter 把话放进待发送队列（V2-U1）。
-                    .child(
-                        Textarea::new(&self.input)
-                            .w_full()
-                            .h(px(input_height))
-                            .disabled(blocked),
-                    ),
-            )
-            .child(
-                div()
-                    .relative()
-                    .flex_none()
-                    .child(
-                        canvas(
-                            move |bounds, _, _| send_cell.set(Some(bounds)),
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .size_full(),
-                    )
-                    .child(send_button),
-            );
+            .child(composer_card);
 
         // ---- 底部提示 ----
         let notice = |text: String, error: bool| {
