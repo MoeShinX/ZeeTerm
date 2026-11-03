@@ -700,7 +700,7 @@ pub(super) fn full_columns(is_remote: bool) -> Vec<Column> {
 }
 
 /// 标签页里的两栏在窗口窄时也要看得清名字：按这一栏的像素宽度从右往左依次藏掉
-/// 所有者、权限、类型、修改时间，直到名称至少有 150px（0.2.14 固定显示全部列，窄窗口里名称会被挤没）。
+/// 所有者、权限、类型、修改时间，直到名称至少有 180px（文件名 14px 之后比以前宽）（0.2.14 固定显示全部列，窄窗口里名称会被挤没）。
 /// 宽度还没量到（0）时给完整列。
 pub(super) fn adaptive_columns(is_remote: bool, pane_width: f32) -> Vec<Column> {
     let mut columns = full_columns(is_remote);
@@ -717,7 +717,7 @@ pub(super) fn adaptive_columns(is_remote: bool, pane_width: f32) -> Vec<Column> 
         pane_width - 16.0 - 16.0 - 8.0 - fixed
     };
     for hide in [Column::Owner, Column::Perms, Column::Kind, Column::Mtime] {
-        if name_room(&columns) >= 150.0 {
+        if name_room(&columns) >= 180.0 {
             break;
         }
         columns.retain(|c| *c != hide);
@@ -725,9 +725,9 @@ pub(super) fn adaptive_columns(is_remote: bool, pane_width: f32) -> Vec<Column> 
     columns
 }
 
-/// 停靠面板里的窄版：按这一栏的像素宽度给出要显示哪些列（名称至少留 120px）。
+/// 停靠面板里的窄版：按这一栏的像素宽度给出要显示哪些列（名称至少留 150px）。
 pub(super) fn compact_columns(pane_width: f32) -> Vec<Column> {
-    if pane_width >= 120.0 + 64.0 + 128.0 + 40.0 {
+    if pane_width >= 150.0 + 64.0 + 128.0 + 40.0 {
         vec![Column::Name, Column::Size, Column::Mtime]
     } else {
         vec![Column::Name, Column::Size]
@@ -1297,8 +1297,8 @@ mod tests {
         assert_eq!(adaptive_columns(true, 1200.0), full_columns(true));
         // 量不到：全部列（不凭空藏）。
         assert_eq!(adaptive_columns(true, 0.0), full_columns(true));
-        // 480 宽的远端栏：藏掉所有者、权限，留下类型。
-        let mid = adaptive_columns(true, 480.0);
+        // 520 宽的远端栏：藏掉所有者、权限，留下类型（名称至少留 180px）。
+        let mid = adaptive_columns(true, 520.0);
         assert_eq!(
             mid,
             [Column::Name, Column::Size, Column::Mtime, Column::Kind]
@@ -1308,7 +1308,7 @@ mod tests {
         assert_eq!(narrow, [Column::Name, Column::Size]);
         // 本地栏本来就没有权限和所有者。
         assert_eq!(
-            adaptive_columns(false, 480.0),
+            adaptive_columns(false, 520.0),
             [Column::Name, Column::Size, Column::Mtime, Column::Kind]
         );
         // 名称一直在。
