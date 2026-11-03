@@ -534,7 +534,7 @@ pub(super) fn run_dock(
                 && crate::agent_setup::fake::world().is_none()
                 && !(crate::agent_setup::builtin_fake::transport().is_some()
                     && chat.read_with(cx, |chat, _| chat.agent_is_builtin()))
-                && std::env::var("ZSSH_AGENT_E2E").ok().as_deref() != Some("1")
+                && crate::dev_hooks::var("ZSSH_AGENT_E2E").as_deref() != Some("1")
             {
                 return fail("真实对话要设置 ZSSH_AGENT_E2E=1 才会发送（会拉起真实智能体）");
             }

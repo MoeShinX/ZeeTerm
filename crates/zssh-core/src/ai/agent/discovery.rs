@@ -382,8 +382,18 @@ fn auto_candidates(spec: &AgentSpec, data_dir: &Path, env: &EnvView) -> Vec<Cand
 }
 
 /// 截图脚本用的开关：跳过本机 PATH 和常见安装位置。
+///
+/// 测试钩子只在 debug 构建里读；发行版里一个环境变量就能让「找不到智能体」，不该留这条路。
 fn hide_local() -> bool {
-    std::env::var_os("ZSSH_AGENT_HIDE_LOCAL").is_some()
+    hide_local_with(cfg!(debug_assertions), |name| {
+        std::env::var_os(name).is_some()
+    })
+}
+
+/// 把「钩子是否生效」和「真正去读环境变量」拆开：`enabled` 为假时不会调用 `is_set`，
+/// 这样 release 配置下的行为在 debug 构建的测试里也能直接断言。
+fn hide_local_with(enabled: bool, is_set: impl FnOnce(&str) -> bool) -> bool {
+    enabled && is_set("ZSSH_AGENT_HIDE_LOCAL")
 }
 
 /// 一个目录里，按扩展名优先级给出候选文件名。
@@ -905,6 +915,20 @@ fn first_meaningful_line(text: &str) -> Option<String> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn hide_local_hook_is_inert_when_disabled() {
+        // release 配置：开关关着时，哪怕环境变量「已设置」也不生效，连读取闭包都不调用。
+        let mut asked = false;
+        assert!(!hide_local_with(false, |_| {
+            asked = true;
+            true
+        }));
+        assert!(!asked, "关闭时不应该去读环境变量");
+        // debug 配置：按变量是否设置。
+        assert!(hide_local_with(true, |name| name == "ZSSH_AGENT_HIDE_LOCAL"));
+        assert!(!hide_local_with(true, |_| false));
+    }
 
     /// 造一个假安装布局用的根目录。
     ///
