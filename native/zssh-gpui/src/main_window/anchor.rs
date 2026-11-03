@@ -212,7 +212,7 @@ pub fn banner(binding: &Binding, focus: Option<&Focus>, open: &Open) -> Option<B
         });
     }
     let focus = focus?;
-    if focus.key().as_ref() == Some(&anchor.key) {
+    if same_target(anchor, focus) {
         return None;
     }
     Some(Banner::Mismatch {
@@ -220,6 +220,18 @@ pub fn banner(binding: &Binding, focus: Option<&Focus>, open: &Open) -> Option<B
         current_name: focus.name().to_owned(),
         can_rebind: focus.anchor().is_ok(),
     })
+}
+
+/// 当前窗格就是绑定的那个目标。快速连接的分屏窗格各是一个终端（编号不同）但连的是同一处，显示名
+/// 一样：当成同一个，免得分屏切一下焦点就提示「绑定在 a@x，当前标签是 a@x」。
+fn same_target(anchor: &Anchor, focus: &Focus) -> bool {
+    if focus.key().as_ref() == Some(&anchor.key) {
+        return true;
+    }
+    matches!(
+        (&anchor.key, focus),
+        (Key::Terminal(_), Focus::Quick { label, .. }) if *label == anchor.name
+    )
 }
 
 /// 目标栏里的一个标签。
@@ -624,6 +636,35 @@ mod tests {
             lock_on_send(&Binding::Unlocked, Some(&quick(None, "a@x"))),
             LockOutcome::Skipped(Unanchorable::NotConnected { name: "a@x".into() })
         );
+    }
+
+    #[test]
+    fn split_panes_of_one_quick_connection_do_not_trigger_the_mismatch_hint() {
+        let h = hosts(&[]);
+        let t = terms(&["term-4", "term-5"]);
+        let open = Open {
+            hosts: &h,
+            terminals: &t,
+        };
+        let binding = locked(&quick(Some("term-4"), "ops@192.0.2.9"));
+        // 分屏出来的第二个终端：编号不同、连的是同一处。
+        assert_eq!(
+            banner(
+                &binding,
+                Some(&quick(Some("term-5"), "ops@192.0.2.9")),
+                &open
+            ),
+            None
+        );
+        // 连的是别处的快速连接：照常提示。
+        assert!(matches!(
+            banner(
+                &binding,
+                Some(&quick(Some("term-6"), "ops@192.0.2.10")),
+                &open
+            ),
+            Some(Banner::Mismatch { .. })
+        ));
     }
 
     #[test]
