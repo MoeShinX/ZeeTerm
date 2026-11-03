@@ -875,6 +875,16 @@ pub struct Bridge {
     exec_counter: AtomicU64,
 }
 
+/// [`Bridge::call_tool`] 的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOutcome {
+    /// 给模型看的文本（成功时是排版好的结果，失败时是桥给的原因；都带执行编号标记）。
+    pub text: String,
+    pub is_error: bool,
+    /// 这次调用的执行编号（带目标的工具才有）。
+    pub exec_id: Option<String>,
+}
+
 /// 审批等待的结果（比 [`ApprovalDecision`] 多区分"超时"和"scope 销毁"）。
 enum WaitOutcome {
     Decision(ApprovalDecision),
@@ -1064,28 +1074,9 @@ impl Bridge {
             tokio::spawn(async move {
                 let _permit = permit;
                 let _global_permit = global_permit;
-                let id = request.id;
-                // 需要解析目标的工具，每个请求一个执行编号：成功时放进结果对象，失败时放进错误体，
-                // zssh-mcp 再把它写成结果文本末尾的一行标记（AI-SCOPE-3）。
-                let exec_id =
-                    method_carries_exec_id(&request.method).then(|| bridge.next_exec_id());
-                let response = match bridge.dispatch_call(&request, exec_id.as_deref()).await {
-                    Ok(mut result) => {
-                        if let (Some(exec_id), Some(object)) = (&exec_id, result.as_object_mut()) {
-                            object.insert(EXEC_ID_FIELD.into(), serde_json::json!(exec_id));
-                        }
-                        ResponseEnvelope {
-                            id,
-                            result: Some(result),
-                            error: None,
-                        }
-                    }
-                    Err(message) => ResponseEnvelope {
-                        id,
-                        result: None,
-                        error: Some(ErrorBody { message, exec_id }),
-                    },
-                };
+                // 和内置助手的进程内调用走同一个入口（handle_request），安全确认、执行模式、
+                // 只读、目标校验都只有这一份。
+                let response = bridge.handle_request(request).await;
                 let Ok(mut payload) = serde_json::to_string(&response) else {
                     return;
                 };
@@ -1093,6 +1084,90 @@ impl Bridge {
                 // 接收端已经没了说明连接断了；这条响应不用再写。
                 let _ = write_tx.send(payload).await;
             });
+        }
+    }
+
+    /// 处理一条请求，得到响应封装。**外部智能体（经 `zssh-mcp` 的 IPC 连接）和内置助手
+    /// （[`Bridge::call_tool`]，进程内）都从这里进**：执行编号、能力密钥校验、目标校验、审批 /
+    /// 执行模式 / 只读、审计全在 [`Bridge::dispatch_call`] 里，只有这一份，谁也绕不过去。
+    pub(crate) async fn handle_request(&self, request: RequestEnvelope) -> ResponseEnvelope {
+        let id = request.id;
+        // 需要解析目标的工具，每个请求一个执行编号：成功时放进结果对象，失败时放进错误体，
+        // 调用方再把它写成结果文本末尾的一行标记（AI-SCOPE-3）。
+        let exec_id = method_carries_exec_id(&request.method).then(|| self.next_exec_id());
+        match self.dispatch_call(&request, exec_id.as_deref()).await {
+            Ok(mut result) => {
+                if let (Some(exec_id), Some(object)) = (&exec_id, result.as_object_mut()) {
+                    object.insert(EXEC_ID_FIELD.into(), serde_json::json!(exec_id));
+                }
+                ResponseEnvelope {
+                    id,
+                    result: Some(result),
+                    error: None,
+                }
+            }
+            Err(message) => ResponseEnvelope {
+                id,
+                result: None,
+                error: Some(ErrorBody { message, exec_id }),
+            },
+        }
+    }
+
+    /// 内置助手的进程内工具调用：不起 `zssh-mcp`、不走本机 TCP，直接进 [`Bridge::handle_request`]，
+    /// 和外部智能体经 IPC 来的请求是同一条处理路径（同样的能力密钥校验、目标校验、安全确认、
+    /// 执行模式、只读判断、终端 / 后台执行、审计）。
+    ///
+    /// 返回的文本和 `zssh-mcp` 给外部智能体的完全一致（同一份排版代码，结果末尾带执行编号标记）；
+    /// 失败（被拒绝、审批超时、参数不对……）时 `is_error` 为真，文本是桥给的原因。
+    ///
+    /// 调用方想让请求在被取消时也走完收尾（终端占位、临时文件）：把这个调用 `tokio::spawn`
+    /// 出去再等结果，别直接丢掉 future——和 IPC 那边"连接断了请求照常跑完"一样。
+    pub async fn call_tool(
+        &self,
+        capability: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> ToolOutcome {
+        // 和 IPC 一样占全局名额；满了直接回"忙"，不排队。
+        let Ok(_global_permit) = Arc::clone(&self.in_flight).try_acquire_owned() else {
+            return ToolOutcome {
+                text: "Z-SSH 工具桥正在处理的请求太多，请稍后再试".into(),
+                is_error: true,
+                exec_id: None,
+            };
+        };
+        let response = self
+            .handle_request(RequestEnvelope {
+                id: 0,
+                method: method.to_owned(),
+                capability: capability.to_owned(),
+                params,
+            })
+            .await;
+        match response.error {
+            // 失败也带编号：被拒绝 / 超时 / 作用范围销毁的调用，界面一样要对回正确的卡片。
+            Some(error) => ToolOutcome {
+                text: match error.exec_id.as_deref() {
+                    Some(exec_id) if !exec_id.is_empty() => {
+                        crate::ai::protocol::with_exec_marker(&error.message, exec_id)
+                    }
+                    _ => error.message.clone(),
+                },
+                is_error: true,
+                exec_id: error.exec_id,
+            },
+            None => {
+                let result = response.result.unwrap_or(serde_json::Value::Null);
+                ToolOutcome {
+                    text: crate::ai::tool_text::format_tool_result(method, &result),
+                    is_error: false,
+                    exec_id: result
+                        .get(EXEC_ID_FIELD)
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                }
+            }
         }
     }
 
@@ -4586,5 +4661,258 @@ root password: hunter2" }),
             vec!["sess-2".to_owned()]
         );
         assert_eq!(reports.len(), 1);
+    }
+
+    // ---------- 进程内调用（内置助手，V2-A3）----------
+    //
+    // 内置助手不起 zssh-mcp，直接 `Bridge::call_tool`。它和 IPC 路径共用 `handle_request`，
+    // 下面的测试证明：同样的输入得到同样的文本，审批 / 执行模式 / 只读 / 目标校验 / 审计一个
+    // 不少，被拒绝时不会执行。
+
+    fn strip_marker(text: &str) -> String {
+        text.lines()
+            .filter(|line| !line.starts_with("[zssh exec "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test]
+    async fn in_process_call_gives_the_same_text_as_the_mcp_path_for_every_tool() {
+        let h = harness(ExecMode::Auto, ApproverBehavior::Allow, short_wait()).await;
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", true, false);
+        let mut client =
+            Client::authenticated(h.port, h.bridge.connection_token(), scope.capability()).await;
+        for (index, (method, params)) in [
+            (METHOD_LIST_TARGETS, json!({})),
+            (METHOD_RUN_COMMAND, json!({ "command": "echo hi" })),
+            (METHOD_READ_TERMINAL, json!({ "max_lines": 5 })),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let response = client
+                .request(index as u64 + 1, method, params.clone())
+                .await;
+            let via_ipc = crate::ai::tool_text::format_tool_result(method, result_of(&response));
+            let in_process = h.bridge.call_tool(scope.capability(), method, params).await;
+            assert!(!in_process.is_error, "{method}：{}", in_process.text);
+            assert_eq!(
+                strip_marker(&in_process.text),
+                strip_marker(&via_ipc),
+                "{method}"
+            );
+            assert_eq!(
+                in_process.exec_id.is_some(),
+                method_carries_exec_id(method),
+                "{method}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn in_process_manual_mode_asks_and_a_denial_never_executes() {
+        let h = harness(ExecMode::Manual, ApproverBehavior::Deny, short_wait()).await;
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", true, false);
+        let outcome = h
+            .bridge
+            .call_tool(
+                scope.capability(),
+                METHOD_RUN_COMMAND,
+                json!({ "command": "rm -rf /tmp/x" }),
+            )
+            .await;
+        assert!(outcome.is_error);
+        assert!(outcome.text.contains("用户拒绝"), "{}", outcome.text);
+        assert!(
+            outcome.text.contains("[zssh exec "),
+            "失败也带编号：{}",
+            outcome.text
+        );
+        assert_eq!(h.approver.calls(), 1, "手动模式必须问");
+        assert!(h.host.last_exec().is_none(), "拒绝后不能执行");
+        let audit = h.audit.entries();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].decision, ExecDecision::Denied);
+        assert_eq!(audit[0].command, "rm -rf /tmp/x");
+    }
+
+    #[tokio::test]
+    async fn in_process_manual_mode_runs_after_approval_and_audits() {
+        let h = harness(ExecMode::Manual, ApproverBehavior::Allow, short_wait()).await;
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", true, false);
+        let outcome = h
+            .bridge
+            .call_tool(
+                scope.capability(),
+                METHOD_RUN_COMMAND,
+                json!({ "command": "ls" }),
+            )
+            .await;
+        assert!(!outcome.is_error, "{}", outcome.text);
+        assert!(outcome.text.contains("exit_code: 0"), "{}", outcome.text);
+        assert_eq!(h.approver.calls(), 1);
+        assert_eq!(h.host.last_exec().map(|e| e.1), Some("ls".to_owned()));
+        assert_eq!(h.audit.entries()[0].decision, ExecDecision::Allowed);
+    }
+
+    #[tokio::test]
+    async fn in_process_readonly_mode_only_auto_allows_read_only_commands() {
+        let h = harness(ExecMode::ReadOnly, ApproverBehavior::Deny, short_wait()).await;
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", true, false);
+        let read = h
+            .bridge
+            .call_tool(
+                scope.capability(),
+                METHOD_RUN_COMMAND,
+                json!({ "command": "ls -la" }),
+            )
+            .await;
+        assert!(!read.is_error, "只读命令自动放行：{}", read.text);
+        assert_eq!(h.approver.calls(), 0);
+        // 写命令仍要问（这里被拒）。
+        let write = h
+            .bridge
+            .call_tool(
+                scope.capability(),
+                METHOD_RUN_COMMAND,
+                json!({ "command": "touch /tmp/x" }),
+            )
+            .await;
+        assert!(
+            write.is_error && write.text.contains("用户拒绝"),
+            "{}",
+            write.text
+        );
+        assert_eq!(h.approver.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn in_process_calls_are_checked_against_capability_scope_and_refusals() {
+        let h = harness(ExecMode::Auto, ApproverBehavior::Allow, short_wait()).await;
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", true, false);
+        scope.add_target("s9", "serial-1", "", "connected", false, false);
+        h.host
+            .refusals
+            .lock()
+            .unwrap()
+            .insert("s9".to_owned(), "这是一台串口主机".to_owned());
+
+        let bad_key = h
+            .bridge
+            .call_tool("deadbeef", METHOD_LIST_TARGETS, json!({}))
+            .await;
+        assert!(
+            bad_key.is_error && bad_key.text.contains("能力密钥无效"),
+            "{}",
+            bad_key.text
+        );
+        let missing = h.bridge.call_tool("", METHOD_LIST_TARGETS, json!({})).await;
+        assert!(
+            missing.text.contains("缺少对话能力密钥"),
+            "{}",
+            missing.text
+        );
+
+        let outside = h
+            .bridge
+            .call_tool(
+                scope.capability(),
+                METHOD_RUN_COMMAND,
+                json!({ "command": "ls", "target_id": "not-mine" }),
+            )
+            .await;
+        assert!(
+            outside.is_error && outside.text.contains("不属于本次对话"),
+            "{}",
+            outside.text
+        );
+        let refused = h
+            .bridge
+            .call_tool(
+                scope.capability(),
+                METHOD_RUN_COMMAND,
+                json!({ "command": "ls", "target_id": "s9" }),
+            )
+            .await;
+        assert!(
+            refused.is_error && refused.text.contains("串口"),
+            "{}",
+            refused.text
+        );
+        let control = h
+            .bridge
+            .call_tool(
+                scope.capability(),
+                METHOD_RUN_COMMAND,
+                json!({ "command": "ls\u{15}rm" }),
+            )
+            .await;
+        assert!(control.is_error, "控制字符照样拒绝：{}", control.text);
+        assert!(h.host.last_exec().is_none(), "这些调用一个都不能执行");
+
+        let unknown = h
+            .bridge
+            .call_tool(scope.capability(), "format_disk", json!({}))
+            .await;
+        assert!(
+            unknown.is_error && unknown.text.contains("未知方法"),
+            "{}",
+            unknown.text
+        );
+
+        // 作用范围销毁之后，进程内调用同样失效。
+        scope.destroy();
+        let dead = h
+            .bridge
+            .call_tool(scope.capability(), METHOD_LIST_TARGETS, json!({}))
+            .await;
+        assert!(dead.is_error, "{}", dead.text);
+    }
+
+    #[tokio::test]
+    async fn in_process_stop_ends_a_pending_approval_as_a_denial() {
+        let h = harness(
+            ExecMode::Manual,
+            ApproverBehavior::Never,
+            Duration::from_secs(30),
+        )
+        .await;
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", true, false);
+        let bridge = Arc::clone(&h.bridge);
+        let capability = scope.capability().to_owned();
+        let call = tokio::spawn(async move {
+            bridge
+                .call_tool(
+                    &capability,
+                    METHOD_RUN_COMMAND,
+                    json!({ "command": "sleep 5" }),
+                )
+                .await
+        });
+        // 等它停在审批上。
+        for _ in 0..100 {
+            if h.approver.calls() > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(h.approver.calls(), 1);
+        h.bridge.stop_scope(scope.scope_id());
+        let outcome = tokio::time::timeout(Duration::from_secs(5), call)
+            .await
+            .expect("停止后应很快结束")
+            .unwrap();
+        assert!(
+            outcome.is_error && outcome.text.contains("停止"),
+            "{}",
+            outcome.text
+        );
+        assert!(h.host.last_exec().is_none());
     }
 }

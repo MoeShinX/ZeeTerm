@@ -18,3 +18,4 @@ pub mod runs;
 pub mod safety;
 pub mod shell_kind;
 pub mod terminal;
+pub mod tool_text;
