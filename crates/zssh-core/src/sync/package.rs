@@ -27,8 +27,15 @@ pub const SNAPSHOT_VERSION: u32 = 1;
 /// `FormatTooNew`、不改云端也不改本地，而不是静默丢字段。
 pub const SNAPSHOT_VERSION_PROTOCOLS: u32 = 2;
 
+/// 带内置助手接口（`ai_endpoints`、默认接口设置、`builtin` 默认智能体）的明文格式版本。
+///
+/// 只有包里确实有这些内容时才用它写（[`SyncSnapshot::required_version`]）。只认到 v2 的
+/// ZeeTerm 和 Z-SSH 0.2.14 读到它都会返回 `FormatTooNew`、不改云端也不改本地，而不是把接口配置
+/// 和 Key 静默丢掉。
+pub const SNAPSHOT_VERSION_BUILTIN_AI: u32 = 3;
+
 /// 这个版本能读的最高明文格式版本。
-pub const MAX_SNAPSHOT_VERSION: u32 = SNAPSHOT_VERSION_PROTOCOLS;
+pub const MAX_SNAPSHOT_VERSION: u32 = SNAPSHOT_VERSION_BUILTIN_AI;
 
 /// 墓碑保留 90 天。
 pub const TOMBSTONE_RETENTION_SECS: i64 = 90 * 24 * 60 * 60;
@@ -38,6 +45,10 @@ pub const ENTITY_HOST: &str = "host";
 pub const ENTITY_IDENTITY: &str = "identity";
 pub const ENTITY_PROXY: &str = "proxy";
 pub const ENTITY_KNOWN_HOST: &str = "known_host";
+pub const ENTITY_AI_ENDPOINT: &str = "ai_endpoint";
+
+/// 内置助手默认接口设置的键（和 `store::settings::AI_BUILTIN_DEFAULT_KEY` 一致）。
+const BUILTIN_DEFAULT_SETTING: &str = crate::store::settings::AI_BUILTIN_DEFAULT_KEY;
 
 /// 一个同步快照（云端的“当前版本”或本机的“上次同步基线”都是它）。
 ///
@@ -64,6 +75,10 @@ pub struct SyncSnapshot {
     pub known_hosts: Vec<KnownHostRecord>,
     #[serde(default)]
     pub tombstones: Vec<Tombstone>,
+    /// 内置助手的接口（V2-A3）。Key 不在这里：它是 `identities` 里的一条密码类凭据，
+    /// 随凭据一起加密同步，这里只引用它的 uid。老格式的包没有这个字段。
+    #[serde(default)]
+    pub ai_endpoints: Vec<AiEndpointRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -199,6 +214,58 @@ impl std::fmt::Debug for ProxyRecord {
             .field("updated_at", &self.updated_at)
             .field("device_id", &self.device_id)
             .finish()
+    }
+}
+
+/// 内置助手接口（V2-A3）。
+///
+/// Key 不在记录里：接口的 Key 是 `identities` 里的一条密码类凭据，随凭据记录一起走同一套
+/// 加密，这里只引用它的 uid（`key_identity_uid`），合并时凭据被删就像主机引用的凭据被删一样
+/// 置空引用。`overrides` / `openai_options` 在包里是 JSON 值，原样保留（含这个版本不认识的键）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AiEndpointRecord {
+    pub uid: String,
+    pub name: String,
+    /// `openai_chat` / `anthropic`。
+    pub kind: String,
+    pub base_url: String,
+    #[serde(default)]
+    pub key_identity_uid: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default = "empty_object")]
+    pub overrides: Value,
+    #[serde(default = "empty_object")]
+    pub openai_options: Value,
+    #[serde(default)]
+    pub preset_id: Option<String>,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+    #[serde(default)]
+    pub device_id: String,
+}
+
+fn empty_object() -> Value {
+    Value::Object(Default::default())
+}
+
+impl AiEndpointRecord {
+    pub fn same_content(&self, other: &Self) -> bool {
+        self.uid == other.uid
+            && self.name == other.name
+            && self.kind == other.kind
+            && self.base_url == other.base_url
+            && self.key_identity_uid == other.key_identity_uid
+            && self.default_model == other.default_model
+            && self.models == other.models
+            && self.overrides == other.overrides
+            && self.openai_options == other.openai_options
+            && self.preset_id == other.preset_id
+            && self.created_at == other.created_at
     }
 }
 
@@ -348,6 +415,9 @@ impl Serialize for SyncSnapshot {
             settings: &'a BTreeMap<String, Value>,
             known_hosts: &'a [KnownHostRecord],
             tombstones: &'a [Tombstone],
+            // 没有接口时不写这个键：和老格式的包字节一致。
+            #[serde(skip_serializing_if = "<[AiEndpointRecord]>::is_empty")]
+            ai_endpoints: &'a [AiEndpointRecord],
         }
         Wire {
             schema_version: self.required_version(),
@@ -360,6 +430,7 @@ impl Serialize for SyncSnapshot {
             settings: &self.settings,
             known_hosts: &self.known_hosts,
             tombstones: &self.tombstones,
+            ai_endpoints: &self.ai_endpoints,
         }
         .serialize(serializer)
     }
@@ -378,6 +449,7 @@ impl SyncSnapshot {
             settings: BTreeMap::new(),
             known_hosts: Vec::new(),
             tombstones: Vec::new(),
+            ai_endpoints: Vec::new(),
         }
     }
 
@@ -399,10 +471,25 @@ impl SyncSnapshot {
         Ok(snapshot)
     }
 
-    /// 按内容算出写这份快照该用的明文格式版本：有任何带新字段的主机才用
-    /// [`SNAPSHOT_VERSION_PROTOCOLS`]，否则用 [`SNAPSHOT_VERSION`]（旧版本照常能读）。
+    /// 这份快照带了内置助手的内容（接口、默认接口设置、`builtin` 默认智能体）：写它必须用
+    /// [`SNAPSHOT_VERSION_BUILTIN_AI`]，老客户端才会拒绝合并而不是丢数据。
+    pub fn needs_builtin_ai_format(&self) -> bool {
+        !self.ai_endpoints.is_empty()
+            || self.settings.contains_key(BUILTIN_DEFAULT_SETTING)
+            || self
+                .settings
+                .get("ai_default_agent")
+                .and_then(Value::as_str)
+                == Some("builtin")
+    }
+
+    /// 按内容算出写这份快照该用的明文格式版本：带内置助手内容用 [`SNAPSHOT_VERSION_BUILTIN_AI`]，
+    /// 其次有任何带新字段的主机用 [`SNAPSHOT_VERSION_PROTOCOLS`]，否则用 [`SNAPSHOT_VERSION`]
+    /// （旧版本照常能读）。
     pub fn required_version(&self) -> u32 {
-        if self.hosts.iter().any(HostRecord::needs_protocol_format) {
+        if self.needs_builtin_ai_format() {
+            SNAPSHOT_VERSION_BUILTIN_AI
+        } else if self.hosts.iter().any(HostRecord::needs_protocol_format) {
             SNAPSHOT_VERSION_PROTOCOLS
         } else {
             SNAPSHOT_VERSION
@@ -422,6 +509,7 @@ impl SyncSnapshot {
         self.hosts.sort_by(|a, b| a.uid.cmp(&b.uid));
         self.identities.sort_by(|a, b| a.uid.cmp(&b.uid));
         self.proxies.sort_by(|a, b| a.uid.cmp(&b.uid));
+        self.ai_endpoints.sort_by(|a, b| a.uid.cmp(&b.uid));
         self.known_hosts.sort_by_key(|record| record.key());
         self.tombstones.sort_by(|a, b| {
             (a.entity.as_str(), a.key.as_str()).cmp(&(b.entity.as_str(), b.key.as_str()))
@@ -437,11 +525,16 @@ impl SyncSnapshot {
             && self.settings == other.settings
             && self.known_hosts == other.known_hosts
             && self.tombstones == other.tombstones
+            && self.ai_endpoints == other.ai_endpoints
     }
 
     /// 记录总数（防误删的阈值用）。
     pub fn record_count(&self) -> usize {
-        self.groups.len() + self.hosts.len() + self.identities.len() + self.proxies.len()
+        self.groups.len()
+            + self.hosts.len()
+            + self.identities.len()
+            + self.proxies.len()
+            + self.ai_endpoints.len()
     }
 
     /// 序列化后用主密码加密成同步包（明文立即清零）。
@@ -464,6 +557,7 @@ impl SyncSnapshot {
             ENTITY_IDENTITY => self.identities.iter().map(|r| r.uid.clone()).collect(),
             ENTITY_PROXY => self.proxies.iter().map(|r| r.uid.clone()).collect(),
             ENTITY_KNOWN_HOST => self.known_hosts.iter().map(KnownHostRecord::key).collect(),
+            ENTITY_AI_ENDPOINT => self.ai_endpoints.iter().map(|r| r.uid.clone()).collect(),
             _ => BTreeSet::new(),
         }
     }

@@ -328,3 +328,110 @@ fn protocol_fields_take_part_in_the_merge_comparison() {
     assert!(!plain.same_content(&changed));
     assert!(plain.same_content(&plain.clone()));
 }
+
+// ---------- 内置助手接口（V2-A3）----------
+
+fn endpoint_record() -> AiEndpointRecord {
+    AiEndpointRecord {
+        uid: "e1".to_owned(),
+        name: "主力".to_owned(),
+        kind: "openai_chat".to_owned(),
+        base_url: "https://api.example.com/v1".to_owned(),
+        key_identity_uid: None,
+        default_model: None,
+        models: Vec::new(),
+        overrides: json!({}),
+        openai_options: json!({}),
+        preset_id: None,
+        created_at: 1,
+        updated_at: 10,
+        device_id: "dev-a".to_owned(),
+    }
+}
+
+#[test]
+fn legacy_client_refuses_a_package_with_builtin_assistant_content() {
+    // 接口、默认接口设置、builtin 默认智能体：三种内容都让包升到 3，0.2.14 一律拒绝。
+    let mut with_endpoint = snapshot_with(vec![host("h1", "web-1")]);
+    with_endpoint.ai_endpoints.push(endpoint_record());
+    let mut with_default = snapshot_with(vec![host("h1", "web-1")]);
+    with_default.settings.insert(
+        "ai_builtin_default".to_owned(),
+        json!({"endpoint_uid": "e1", "model": null}),
+    );
+    let mut with_agent = snapshot_with(vec![host("h1", "web-1")]);
+    with_agent
+        .settings
+        .insert("ai_default_agent".to_owned(), json!("builtin"));
+    for (label, mut snapshot) in [
+        ("接口", with_endpoint),
+        ("默认接口", with_default),
+        ("默认智能体", with_agent),
+    ] {
+        snapshot.sort_canonical();
+        let bytes = snapshot.to_json().unwrap();
+        assert_eq!(json_of(&snapshot)["schema_version"], 3, "{label}");
+        assert_eq!(
+            legacy_0214::parse(&bytes),
+            Err(legacy_0214::ParseError::TooNew {
+                found: 3,
+                supported: 1
+            }),
+            "{label}：0.2.14 必须拒绝，而不是丢数据"
+        );
+        // 只认到 v2 的 ZeeTerm（有协议字段、没有内置助手）同样拒绝。
+        assert!(
+            snapshot.required_version() > SNAPSHOT_VERSION_PROTOCOLS,
+            "{label}：v2 客户端读到更高的版本号会拒绝"
+        );
+        assert_eq!(
+            SyncSnapshot::parse(&bytes).expect("新版能读"),
+            snapshot,
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn without_the_version_bump_the_legacy_client_would_drop_the_endpoints() {
+    // "为什么必须升版本"的证据：版本号改回 1，0.2.14 放行，再写回去接口就没了。
+    let mut snapshot = snapshot_with(vec![host("h1", "web-1")]);
+    snapshot.ai_endpoints.push(endpoint_record());
+    let mut value = json_of(&snapshot);
+    value["schema_version"] = json!(1);
+    let legacy =
+        legacy_0214::parse(&serde_json::to_vec(&value).unwrap()).expect("版本号是 1 就被放行");
+    let rewritten = serde_json::to_value(&legacy).unwrap();
+    assert!(rewritten.get("ai_endpoints").is_none(), "接口被静默丢掉了");
+}
+
+#[test]
+fn plain_packages_stay_byte_identical_to_the_old_format() {
+    let snapshot = snapshot_with(vec![host("h1", "web-1")]);
+    let value = json_of(&snapshot);
+    assert_eq!(value["schema_version"], 1);
+    assert!(value.get("ai_endpoints").is_none());
+    let legacy = legacy_0214::parse(&snapshot.to_json().unwrap()).expect("0.2.14 照常能读");
+    assert_eq!(serde_json::to_value(&legacy).unwrap(), value);
+}
+
+#[test]
+fn builtin_content_roundtrips_and_keeps_unknown_option_keys() {
+    let mut snapshot = snapshot_with(vec![host("h1", "web-1"), telnet_host()]);
+    let mut endpoint = endpoint_record();
+    endpoint.openai_options = json!({"max_completion_tokens": "on", "future": [1, 2]});
+    snapshot.ai_endpoints.push(endpoint);
+    snapshot.sort_canonical();
+    assert_eq!(
+        snapshot.schema_version, 3,
+        "内置助手 + 协议字段同时有，取更高的版本"
+    );
+    let bytes = snapshot.to_json().unwrap();
+    let parsed = SyncSnapshot::parse(&bytes).unwrap();
+    assert_eq!(parsed, snapshot);
+    assert_eq!(
+        parsed.ai_endpoints[0].openai_options["future"],
+        json!([1, 2])
+    );
+    assert_eq!(parsed.to_json().unwrap(), bytes);
+}

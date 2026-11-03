@@ -19,8 +19,9 @@ use serde_json::Value;
 
 use super::error::SyncError;
 use super::package::{
-    GroupRecord, HostRecord, IdentityRecord, KnownHostRecord, ProxyRecord, SyncSnapshot, Tombstone,
-    ENTITY_GROUP, ENTITY_HOST, ENTITY_IDENTITY, ENTITY_KNOWN_HOST, ENTITY_PROXY,
+    AiEndpointRecord, GroupRecord, HostRecord, IdentityRecord, KnownHostRecord, ProxyRecord,
+    SyncSnapshot, Tombstone, ENTITY_AI_ENDPOINT, ENTITY_GROUP, ENTITY_HOST, ENTITY_IDENTITY,
+    ENTITY_KNOWN_HOST, ENTITY_PROXY,
 };
 use super::settings::{limit_unknown, prepare_for_merge, RejectedSetting, SettingsPolicy};
 
@@ -116,6 +117,21 @@ impl MergeRecord for ProxyRecord {
     }
     fn same_content(&self, other: &Self) -> bool {
         ProxyRecord::same_content(self, other)
+    }
+}
+
+impl MergeRecord for AiEndpointRecord {
+    fn key(&self) -> String {
+        self.uid.clone()
+    }
+    fn updated_at(&self) -> i64 {
+        self.updated_at
+    }
+    fn device_id(&self) -> &str {
+        &self.device_id
+    }
+    fn same_content(&self, other: &Self) -> bool {
+        AiEndpointRecord::same_content(self, other)
     }
 }
 
@@ -613,6 +629,39 @@ pub fn null_missing_references(snapshot: &mut SyncSnapshot) -> Vec<String> {
         }
     }
 
+    let endpoint_uids: BTreeSet<String> = snapshot
+        .ai_endpoints
+        .iter()
+        .map(|endpoint| endpoint.uid.clone())
+        .collect();
+    for endpoint in &mut snapshot.ai_endpoints {
+        if let Some(key) = endpoint.key_identity_uid.clone() {
+            if !identity_uids.contains(&key) {
+                notes.push(format!(
+                    "内置助手接口「{}」的 API Key 凭据已不存在，已改为没设置 Key",
+                    endpoint.name
+                ));
+                endpoint.key_identity_uid = None;
+            }
+        }
+    }
+    // 默认接口指着已经不存在的接口：整项去掉（本机回到"没设置默认接口"），不留悬空引用。
+    let dangling_default = snapshot
+        .settings
+        .get(crate::store::settings::AI_BUILTIN_DEFAULT_KEY)
+        .is_some_and(|value| {
+            value
+                .get("endpoint_uid")
+                .and_then(Value::as_str)
+                .is_none_or(|uid| !endpoint_uids.contains(uid))
+        });
+    if dangling_default {
+        notes.push("内置助手的默认接口已不存在，已清除默认接口设置".to_owned());
+        snapshot
+            .settings
+            .remove(crate::store::settings::AI_BUILTIN_DEFAULT_KEY);
+    }
+
     if let Some(value) = snapshot
         .settings
         .get_mut(crate::store::settings::DEFAULT_PROXY_KEY)
@@ -702,6 +751,17 @@ pub fn merge_with(
         &index(&base.proxies),
         &index(&local.proxies),
         &index(&remote.proxies),
+        local,
+        remote,
+        &tombstones,
+        &mut tombstones_out,
+        &mut conflicts,
+    );
+    snapshot.ai_endpoints = merge_records(
+        ENTITY_AI_ENDPOINT,
+        &index(&base.ai_endpoints),
+        &index(&local.ai_endpoints),
+        &index(&remote.ai_endpoints),
         local,
         remote,
         &tombstones,

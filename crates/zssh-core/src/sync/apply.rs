@@ -12,7 +12,10 @@ use rusqlite::{params, Connection};
 use super::conflicts::{purge_expired, store_conflict};
 use super::error::SyncError;
 use super::merge::Conflict;
-use super::package::{SyncSnapshot, ENTITY_GROUP, ENTITY_HOST, ENTITY_IDENTITY, ENTITY_PROXY};
+use super::package::{
+    AiEndpointRecord, SyncSnapshot, ENTITY_AI_ENDPOINT, ENTITY_GROUP, ENTITY_HOST, ENTITY_IDENTITY,
+    ENTITY_PROXY,
+};
 use super::sealer::SecretSealer;
 use super::settings::{KeyClass, SettingsPolicy};
 use super::snapshot::{record_tombstones, snapshot_from_conn};
@@ -105,6 +108,34 @@ fn host_options_text(host: &super::package::HostRecord) -> Result<Option<String>
         .transpose()
 }
 
+/// 内置助手接口记录能不能落库：类型要认得，两个 JSON 选项要是对象。
+///
+/// 认不得的类型（更新版本才有的）整次导入拒绝而不是写进去：表里有 CHECK，写不进去会让整个
+/// 导入报一个看不懂的数据库错误。
+fn check_ai_endpoint(endpoint: &AiEndpointRecord) -> Result<(), SyncError> {
+    crate::ai::agent::builtin::config::EndpointKind::parse(&endpoint.kind).map_err(|_| {
+        SyncError::InvalidData(format!(
+            "内置助手接口「{}」用了这个版本不认识的类型「{}」，请先升级 ZeeTerm",
+            endpoint.name, endpoint.kind
+        ))
+    })?;
+    if !endpoint.overrides.is_object() || !endpoint.openai_options.is_object() {
+        return Err(SyncError::InvalidData(format!(
+            "内置助手接口「{}」的选项格式不对",
+            endpoint.name
+        )));
+    }
+    if endpoint.name.trim().is_empty()
+        || !crate::ai::agent::builtin::config::valid_base_url(&endpoint.base_url)
+    {
+        return Err(SyncError::InvalidData(format!(
+            "内置助手接口「{}」的名字或地址不合格",
+            endpoint.name
+        )));
+    }
+    Ok(())
+}
+
 /// 合并时用的那份本地状态。写入前在同一个事务里重读本地，不一致就不写。
 pub struct LocalGuard<'a> {
     pub expected: &'a SyncSnapshot,
@@ -187,6 +218,10 @@ pub fn apply_snapshot_guarded_with(
         for proxy in &snapshot.proxies {
             require_uid("代理", &proxy.uid)?;
         }
+        for endpoint in &snapshot.ai_endpoints {
+            require_uid("内置助手接口", &endpoint.uid)?;
+            check_ai_endpoint(endpoint)?;
+        }
 
         // 先把本机主机的引用全部释放，才能删除被引用的凭据 / 代理（外键 RESTRICT）。
         tx.execute(
@@ -216,6 +251,12 @@ pub fn apply_snapshot_guarded_with(
         report.groups.deleted = delete_missing(&tx, "groups", &group_wanted)?;
         report.identities.deleted = delete_missing(&tx, "identities", &identity_wanted)?;
         report.proxies.deleted = delete_missing(&tx, "proxies", &proxy_wanted)?;
+        let endpoint_wanted: BTreeSet<&str> = snapshot
+            .ai_endpoints
+            .iter()
+            .map(|r| r.uid.as_str())
+            .collect();
+        delete_missing(&tx, "ai_endpoints", &endpoint_wanted)?;
 
         // 分组：先写自己，再按 uid 连父子（父分组可能后插入）。
         let mut group_ids = uid_ids(&tx, "groups")?;
@@ -333,6 +374,65 @@ pub fn apply_snapshot_guarded_with(
                     )?;
                     proxy_ids.insert(proxy.uid.clone(), tx.last_insert_rowid());
                     report.proxies.inserted += 1;
+                }
+            }
+        }
+
+        // 内置助手接口：Key 凭据已经写好了，这里按 uid 连上去（凭据被删时上面的外键已经置空）。
+        let mut endpoint_ids = uid_ids(&tx, "ai_endpoints")?;
+        for endpoint in &snapshot.ai_endpoints {
+            let key_id = endpoint
+                .key_identity_uid
+                .as_ref()
+                .and_then(|uid| identity_ids.get(uid).copied());
+            let models = serde_json::to_string(&endpoint.models)
+                .map_err(|err| SyncError::InvalidData(format!("模型清单序列化失败：{err}")))?;
+            let overrides = endpoint.overrides.to_string();
+            let options = endpoint.openai_options.to_string();
+            match endpoint_ids.get(&endpoint.uid) {
+                Some(id) => {
+                    tx.execute(
+                        "UPDATE ai_endpoints SET name = ?1, kind = ?2, base_url = ?3, \
+                         key_identity_id = ?4, default_model = ?5, models = ?6, overrides = ?7, \
+                         openai_options = ?8, preset_id = ?9, created_at = ?10, updated_at = ?11 \
+                         WHERE id = ?12",
+                        params![
+                            endpoint.name,
+                            endpoint.kind,
+                            endpoint.base_url,
+                            key_id,
+                            endpoint.default_model,
+                            models,
+                            overrides,
+                            options,
+                            endpoint.preset_id,
+                            endpoint.created_at,
+                            endpoint.updated_at,
+                            id
+                        ],
+                    )?;
+                }
+                None => {
+                    tx.execute(
+                        "INSERT INTO ai_endpoints (uid, name, kind, base_url, key_identity_id, \
+                         default_model, models, overrides, openai_options, preset_id, created_at, \
+                         updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                        params![
+                            endpoint.uid,
+                            endpoint.name,
+                            endpoint.kind,
+                            endpoint.base_url,
+                            key_id,
+                            endpoint.default_model,
+                            models,
+                            overrides,
+                            options,
+                            endpoint.preset_id,
+                            endpoint.created_at,
+                            endpoint.updated_at
+                        ],
+                    )?;
+                    endpoint_ids.insert(endpoint.uid.clone(), tx.last_insert_rowid());
                 }
             }
         }
@@ -517,6 +617,7 @@ pub fn local_counts(
             ("hosts", ENTITY_HOST),
             ("identities", ENTITY_IDENTITY),
             ("proxies", ENTITY_PROXY),
+            ("ai_endpoints", ENTITY_AI_ENDPOINT),
         ] {
             let count: i64 =
                 conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {

@@ -35,3 +35,6 @@ pub use error::SyncError;
 pub use package::{
     GroupRecord, HostRecord, IdentityRecord, KnownHostRecord, ProxyRecord, SyncSnapshot, Tombstone,
 };
+
+#[cfg(test)]
+mod builtin_ai_tests;

@@ -16,8 +16,9 @@ use serde_json::Value;
 use super::apply::{apply_snapshot_guarded, LocalGuard};
 use super::error::SyncError;
 use super::package::{
-    GroupRecord, HostRecord, IdentityRecord, ProxyRecord, ENTITY_GROUP, ENTITY_HOST,
-    ENTITY_IDENTITY, ENTITY_KNOWN_HOST, ENTITY_PROXY, TOMBSTONE_RETENTION_SECS,
+    AiEndpointRecord, GroupRecord, HostRecord, IdentityRecord, ProxyRecord, ENTITY_AI_ENDPOINT,
+    ENTITY_GROUP, ENTITY_HOST, ENTITY_IDENTITY, ENTITY_KNOWN_HOST, ENTITY_PROXY,
+    TOMBSTONE_RETENTION_SECS,
 };
 use super::sealer::SecretSealer;
 use super::snapshot::snapshot_local;
@@ -156,6 +157,16 @@ fn summarize(entity: &str, key: &str, json: &str) -> Summary {
                 text_of("kind"),
                 text_of("host"),
                 port_of("port")
+            ),
+            device,
+        },
+        ENTITY_AI_ENDPOINT => Summary {
+            name: text_of("name"),
+            text: format!(
+                "内置助手接口「{}」（{} {}）",
+                text_of("name"),
+                text_of("kind"),
+                text_of("base_url")
             ),
             device,
         },
@@ -396,6 +407,32 @@ pub fn use_other(
                     .find(|p| p.uid == row.key)
                     .ok_or_else(|| SyncError::InvalidData("这个代理已经不存在了".to_owned()))?;
                 record.uid = slot.uid.clone();
+                *slot = record;
+            }
+        }
+        ENTITY_AI_ENDPOINT => {
+            let mut record: AiEndpointRecord = serde_json::from_str(&other).map_err(parse_err)?;
+            record.updated_at = now;
+            record.device_id = device_id.to_owned();
+            if deletion {
+                record.uid = uuid::Uuid::new_v4().to_string();
+                let identities: Vec<String> =
+                    target.identities.iter().map(|i| i.uid.clone()).collect();
+                record.key_identity_uid = known_uid(&record.key_identity_uid, |u| {
+                    identities.iter().any(|g| g == u)
+                });
+                target.ai_endpoints.push(record);
+            } else {
+                let slot = target
+                    .ai_endpoints
+                    .iter_mut()
+                    .find(|e| e.uid == row.key)
+                    .ok_or_else(|| {
+                        SyncError::InvalidData("这个内置助手接口已经不存在了".to_owned())
+                    })?;
+                // Key 凭据以现在的为准：另一份里引用的凭据可能已经被删了。
+                record.uid = slot.uid.clone();
+                record.key_identity_uid = slot.key_identity_uid.clone();
                 *slot = record;
             }
         }

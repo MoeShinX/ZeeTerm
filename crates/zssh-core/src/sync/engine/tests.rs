@@ -1030,6 +1030,20 @@ fn logs_never_contain_passwords_keys_or_package_plaintext() {
         passphrase: Some("KEY-PASSPHRASE-MARKER".to_owned()),
     })
     .expect("凭据");
+    // 内置助手接口的 API Key 也不能进日志（V2-A3）。
+    db_a.ai_endpoint_save(&crate::ai::agent::builtin::config::AiEndpointDraft {
+        id: None,
+        name: "ENDPOINT-NAME-MARKER".to_owned(),
+        kind: crate::ai::agent::builtin::config::EndpointKind::OpenAiChat,
+        base_url: "https://api.example.com/v1".to_owned(),
+        api_key: Some("ENDPOINT-API-KEY-MARKER".to_owned()),
+        default_model: None,
+        models: Vec::new(),
+        overrides: Default::default(),
+        openai_options: Default::default(),
+        preset_id: None,
+    })
+    .expect("内置助手接口");
 
     let engine_a = SyncEngine::new(&db_a, &sealer_a, "dev-a", &dir_a, None, None);
     let engine_b = SyncEngine::new(&db_b, &sealer_b, "dev-b", &dir_b, None, None);
@@ -1080,6 +1094,7 @@ fn logs_never_contain_passwords_keys_or_package_plaintext() {
         "PRIVATE-KEY-MARKER",
         "KEY-PASSPHRASE-MARKER",
         "PLAINTEXT-HOST-MARKER",
+        "ENDPOINT-API-KEY-MARKER",
     ] {
         assert!(!logs.contains(secret), "日志里出现了 {secret}：\n{logs}");
     }

@@ -5,7 +5,9 @@
 
 use std::collections::BTreeSet;
 
-use super::package::{SyncSnapshot, ENTITY_GROUP, ENTITY_HOST, ENTITY_IDENTITY, ENTITY_PROXY};
+use super::package::{
+    SyncSnapshot, ENTITY_AI_ENDPOINT, ENTITY_GROUP, ENTITY_HOST, ENTITY_IDENTITY, ENTITY_PROXY,
+};
 
 pub const MAX_DELETED_HOSTS: usize = 10;
 
@@ -77,6 +79,12 @@ fn sample_names(entity: &str, local: &SyncSnapshot, target_keys: &BTreeSet<Strin
             .filter(|r| !target_keys.contains(&r.uid))
             .map(|r| r.name.clone())
             .collect(),
+        ENTITY_AI_ENDPOINT => local
+            .ai_endpoints
+            .iter()
+            .filter(|r| !target_keys.contains(&r.uid))
+            .map(|r| r.name.clone())
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -84,7 +92,13 @@ fn sample_names(entity: &str, local: &SyncSnapshot, target_keys: &BTreeSet<Strin
 /// 本地当前 → 合并结果（或云端版本）会删掉多少。
 pub fn deletion_plan(local: &SyncSnapshot, target: &SyncSnapshot) -> DeletionPlan {
     let mut plan = DeletionPlan::default();
-    for entity in [ENTITY_HOST, ENTITY_GROUP, ENTITY_IDENTITY, ENTITY_PROXY] {
+    for entity in [
+        ENTITY_HOST,
+        ENTITY_GROUP,
+        ENTITY_IDENTITY,
+        ENTITY_PROXY,
+        ENTITY_AI_ENDPOINT,
+    ] {
         let (local_count, deleted) = deleted_keys(entity, local, target);
         let target_keys = target.keys_of(entity);
         for name in sample_names(entity, local, &target_keys) {

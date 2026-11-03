@@ -13,8 +13,9 @@ use serde_json::Value;
 use super::error::SyncError;
 use super::known_hosts;
 use super::package::{
-    GroupRecord, HostRecord, IdentityRecord, ProxyRecord, SyncSnapshot, Tombstone, ENTITY_GROUP,
-    ENTITY_HOST, ENTITY_IDENTITY, ENTITY_KNOWN_HOST, ENTITY_PROXY,
+    AiEndpointRecord, GroupRecord, HostRecord, IdentityRecord, ProxyRecord, SyncSnapshot,
+    Tombstone, ENTITY_AI_ENDPOINT, ENTITY_GROUP, ENTITY_HOST, ENTITY_IDENTITY, ENTITY_KNOWN_HOST,
+    ENTITY_PROXY,
 };
 use super::sealer::SecretSealer;
 use super::settings::SettingsPolicy;
@@ -268,6 +269,68 @@ pub(crate) fn snapshot_from_conn(
             }
         }
 
+        // 内置助手的接口：Key 在凭据里，这里只带引用（uid）。
+        {
+            let mut statement = conn.prepare(
+                "SELECT uid, name, kind, base_url, key_identity_id, default_model, models, \
+                 overrides, openai_options, preset_id, created_at, updated_at \
+                 FROM ai_endpoints ORDER BY id",
+            )?;
+            let query_rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
+                ))
+            })?;
+            let mut rows = Vec::new();
+            for row in query_rows {
+                rows.push(row?);
+            }
+            for (
+                uid,
+                name,
+                kind,
+                base_url,
+                key_identity_id,
+                default_model,
+                models,
+                overrides,
+                openai_options,
+                preset_id,
+                created_at,
+                updated_at,
+            ) in rows
+            {
+                snapshot.ai_endpoints.push(AiEndpointRecord {
+                    uid,
+                    name,
+                    kind,
+                    base_url,
+                    key_identity_uid: key_identity_id.and_then(|id| identity_ids.get(&id).cloned()),
+                    default_model,
+                    models: serde_json::from_str::<Vec<String>>(&models).unwrap_or_default(),
+                    overrides: parse_options(&overrides)
+                        .unwrap_or_else(|| Value::Object(Default::default())),
+                    openai_options: parse_options(&openai_options)
+                        .unwrap_or_else(|| Value::Object(Default::default())),
+                    preset_id,
+                    created_at,
+                    updated_at,
+                    device_id: device_id.to_owned(),
+                });
+            }
+        }
+
         let mut statement = conn.prepare("SELECT key, value FROM settings ORDER BY key")?;
         let rows = statement.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -393,13 +456,14 @@ pub(crate) fn record_tombstones(
 }
 
 /// 实体名（日志和冲突列表用）。
-pub fn entities() -> [&'static str; 5] {
+pub fn entities() -> [&'static str; 6] {
     [
         ENTITY_GROUP,
         ENTITY_HOST,
         ENTITY_IDENTITY,
         ENTITY_PROXY,
         ENTITY_KNOWN_HOST,
+        ENTITY_AI_ENDPOINT,
     ]
 }
 

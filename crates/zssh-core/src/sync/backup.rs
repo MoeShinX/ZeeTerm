@@ -12,7 +12,8 @@ use super::apply::{apply_snapshot_guarded, ApplyReport, LocalGuard};
 use super::error::SyncError;
 use super::local_extras::{ExtrasRestored, LocalExtras};
 use super::package::{
-    SyncSnapshot, Tombstone, ENTITY_GROUP, ENTITY_HOST, ENTITY_IDENTITY, ENTITY_PROXY,
+    SyncSnapshot, Tombstone, ENTITY_AI_ENDPOINT, ENTITY_GROUP, ENTITY_HOST, ENTITY_IDENTITY,
+    ENTITY_PROXY,
 };
 use super::sealer::SecretSealer;
 use super::snapshot::snapshot_local;
@@ -434,6 +435,10 @@ pub(crate) fn renew_deleted_uids(
         .proxies
         .iter()
         .for_each(|r| plan(ENTITY_PROXY, &r.uid));
+    snapshot
+        .ai_endpoints
+        .iter()
+        .for_each(|r| plan(ENTITY_AI_ENDPOINT, &r.uid));
     if renamed.is_empty() {
         return renamed;
     }
@@ -461,6 +466,10 @@ pub(crate) fn renew_deleted_uids(
         swap_opt(&mut host.proxy_uid);
         swap_opt(&mut host.jump_host_uid);
     }
+    for endpoint in &mut snapshot.ai_endpoints {
+        swap(&mut endpoint.uid);
+        swap_opt(&mut endpoint.key_identity_uid);
+    }
     for identity in &mut snapshot.identities {
         swap(&mut identity.uid);
     }
@@ -470,6 +479,13 @@ pub(crate) fn renew_deleted_uids(
     if let Some(serde_json::Value::String(uid)) = snapshot
         .settings
         .get_mut(crate::store::settings::DEFAULT_PROXY_KEY)
+    {
+        swap(uid);
+    }
+    if let Some(serde_json::Value::String(uid)) = snapshot
+        .settings
+        .get_mut(crate::store::settings::AI_BUILTIN_DEFAULT_KEY)
+        .and_then(|value| value.get_mut("endpoint_uid"))
     {
         swap(uid);
     }
