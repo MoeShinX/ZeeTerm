@@ -81,6 +81,10 @@ pub struct OpenAiOptionsConfig {
     pub thinking_toggle: Tri,
     /// 发 `stream_options.include_usage`。
     pub include_usage: bool,
+    /// 这个接口不需要 Key（Ollama、vLLM、本机网关等）：请求不带 `Authorization` 头。
+    /// 放在这组选项里是因为只有 OpenAI 兼容接口允许没有 Key（Anthropic 仍必填），
+    /// 这样接口表和同步格式都不用加字段。
+    pub no_key: bool,
 }
 
 impl Default for OpenAiOptionsConfig {
@@ -90,6 +94,7 @@ impl Default for OpenAiOptionsConfig {
             echo_reasoning_content: Tri::Auto,
             thinking_toggle: Tri::Auto,
             include_usage: true,
+            no_key: false,
         }
     }
 }
@@ -132,6 +137,16 @@ pub struct AiEndpoint {
 }
 
 impl AiEndpoint {
+    /// 明确设为"不需要 Key"（只有 OpenAI 兼容接口可以）。
+    pub fn key_not_needed(&self) -> bool {
+        self.kind == EndpointKind::OpenAiChat && self.openai_options.no_key
+    }
+
+    /// 配好了、能用来对话：有 Base URL，并且（有 Key，或 Key 被明确设为不需要）。
+    pub fn is_ready(&self) -> bool {
+        !self.base_url.trim().is_empty() && (self.has_key || self.key_not_needed())
+    }
+
     /// 拼 provider 层的连接配置。`api_key` 由调用方从保险库取（[`crate::store::Database::ai_endpoint_api_key`]）。
     pub fn provider_config(&self, api_key: ApiKey) -> ProviderConfig {
         let mut config = ProviderConfig::new(self.kind.provider_kind(), &self.base_url, api_key);
@@ -267,6 +282,13 @@ pub fn normalize_draft(draft: &AiEndpointDraft) -> Result<AiEndpointDraft, ZsshE
     if draft.overrides.keys().any(|m| !plain(m, MODEL_MAX_CHARS)) {
         return Err(invalid("手动能力覆盖里有不合法的模型名"));
     }
+    if out.openai_options.no_key {
+        if out.kind != EndpointKind::OpenAiChat {
+            return Err(invalid("只有 OpenAI 兼容接口可以不填 API Key"));
+        }
+        // 明确说了不需要 Key：已经存着的 Key 一起清掉，免得留一把没人用的密钥。
+        out.api_key = Some(String::new());
+    }
     out.preset_id = draft
         .preset_id
         .as_deref()
@@ -345,6 +367,60 @@ mod tests {
         assert!(parsed.include_usage);
         let options = OpenAiOptions::from(&parsed);
         assert_eq!(options.max_completion_tokens, Switch::On);
+    }
+
+    fn endpoint(kind: EndpointKind, has_key: bool, no_key: bool, url: &str) -> AiEndpoint {
+        AiEndpoint {
+            id: 1,
+            uid: "u".into(),
+            name: "x".into(),
+            kind,
+            base_url: url.into(),
+            key_identity_id: has_key.then_some(7),
+            has_key,
+            default_model: None,
+            models: Vec::new(),
+            overrides: BTreeMap::new(),
+            openai_options: OpenAiOptionsConfig {
+                no_key,
+                ..OpenAiOptionsConfig::default()
+            },
+            preset_id: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn ready_means_a_base_url_and_either_a_key_or_an_explicit_no_key() {
+        let openai = EndpointKind::OpenAiChat;
+        assert!(endpoint(openai, true, false, "http://h/v1").is_ready());
+        assert!(endpoint(openai, false, true, "http://h/v1").is_ready());
+        assert!(!endpoint(openai, false, false, "http://h/v1").is_ready());
+        assert!(
+            !endpoint(openai, true, false, "  ").is_ready(),
+            "没有地址不算配好"
+        );
+        // Anthropic 不能靠"不需要 Key"过关。
+        assert!(!endpoint(EndpointKind::Anthropic, false, true, "http://h").is_ready());
+        assert!(endpoint(EndpointKind::Anthropic, true, false, "http://h").is_ready());
+    }
+
+    #[test]
+    fn no_key_is_only_for_openai_compatible_and_clears_a_typed_key() {
+        let mut d = draft();
+        d.openai_options.no_key = true;
+        let out = normalize_draft(&d).unwrap();
+        assert_eq!(out.api_key.as_deref(), Some(""), "存着的 Key 一起清掉");
+        d.kind = EndpointKind::Anthropic;
+        assert!(normalize_draft(&d).is_err());
+    }
+
+    #[test]
+    fn old_options_without_no_key_still_load() {
+        let parsed: OpenAiOptionsConfig =
+            serde_json::from_str(r#"{"include_usage":false}"#).unwrap();
+        assert!(!parsed.no_key);
     }
 
     #[test]
