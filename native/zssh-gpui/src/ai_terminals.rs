@@ -36,6 +36,9 @@ pub const TERMINAL_PREFIX: &str = "term-";
 /// 凭证，不适合塞进界面共用的 `SessionCommand`（它要 `Clone + PartialEq`）。
 pub enum TermCommand {
     Session(SessionCommand),
+    /// 终端对远端查询的协议回复（DSR / DA 等）：会话任务照原样写给远端，和键盘输入走同一个有序的写出口，
+    /// 但不是用户输入——丢了不提示"已丢弃按键"。
+    Reply(Vec<u8>),
     /// AI 命令的整行包装脚本：会话任务在写之前先认领凭证（排队期间停止 / 移出目标就不写，审计 C04），
     /// 再通知显示过滤器记住这条命令。
     AiWrite {
@@ -62,6 +65,7 @@ impl std::fmt::Debug for TermCommand {
                 write!(f, "Session::Resize({}x{})", size.cols, size.rows)
             }
             TermCommand::Session(SessionCommand::Close) => write!(f, "Session::Close"),
+            TermCommand::Reply(bytes) => write!(f, "Reply({} 字节)", bytes.len()),
             TermCommand::AiWrite { marker, .. } => write!(f, "AiWrite({marker})"),
             TermCommand::AiTimedOut { marker } => write!(f, "AiTimedOut({marker})"),
         }
@@ -419,7 +423,7 @@ pub mod testing {
                             .unwrap_or_else(|p| p.into_inner())
                             .push(format!("key:{bytes:?}"));
                     }
-                    TermCommand::Session(_) => {}
+                    TermCommand::Session(_) | TermCommand::Reply(_) => {}
                     TermCommand::AiTimedOut { marker } => {
                         log.lock()
                             .unwrap_or_else(|p| p.into_inner())

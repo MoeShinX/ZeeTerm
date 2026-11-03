@@ -159,6 +159,14 @@ impl Ledger {
     }
 }
 
+/// 终端对远端查询的协议回复：要原样写回产生查询的那个会话。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalReplies {
+    /// 产生这些回复的连接代次。
+    pub generation: u64,
+    pub bytes: Vec<u8>,
+}
+
 pub struct PumpOutcome {
     /// 代次是否匹配；`false` 表示这批数据被丢弃。
     pub accepted: bool,
@@ -237,6 +245,8 @@ impl<F: ByteFilter> SessionPump<F> {
 
     /// 切换到新代次；旧代次的迟到数据随后会被丢弃。
     pub fn set_generation(&mut self, generation: u64) {
+        // 还没取走的回复是上一个代次的查询产生的，不能带着新代次发出去。
+        let _ = self.model.take_replies();
         self.generation = generation;
     }
 
@@ -344,7 +354,28 @@ impl<F: ByteFilter> SessionPump<F> {
     /// 界面自己要显示的文字（"正在连接…"、断线提示）：直接进终端，
     /// 不经过滤、不记日志、不进字节账本，也不碰流控门。
     pub fn feed_local(&mut self, bytes: &[u8]) {
-        self.model.feed(bytes);
+        // 本地文字不是远端的输出，里面的查询序列不产生协议回复。
+        self.model.feed_local(bytes);
+    }
+
+    /// 取走终端对远端查询（DSR / DA 等）产生的协议回复，连同它们所属的连接代次。
+    ///
+    /// 不依赖界面重绘：每次喂完输出（包括隐藏标签、非活动窗格）调用方都该取一次，写回这个会话。
+    /// 回复属于产生它的会话，调用方必须用同一个代次交给写端，写端会丢掉代次不符的。
+    pub fn take_replies(&mut self) -> Option<TerminalReplies> {
+        let bytes = self.model.take_replies();
+        if bytes.is_empty() {
+            return None;
+        }
+        Some(TerminalReplies {
+            generation: self.generation,
+            bytes,
+        })
+    }
+
+    /// 队列满而丢掉的回复条数（诊断用）。
+    pub fn dropped_replies(&self) -> u64 {
+        self.model.dropped_replies()
     }
 
     pub fn resize(&mut self, size: Size) {
@@ -564,6 +595,50 @@ mod tests {
         assert_eq!(pump.snapshot().rows[0].text, "hello");
         assert!(pump.ledger().is_balanced());
         assert_eq!(pump.gate().unacked(), 0);
+    }
+
+    #[test]
+    fn terminal_queries_become_replies_tagged_with_the_generation() {
+        let mut pump = pump(PassThrough);
+        assert_eq!(pump.take_replies(), None);
+
+        pump.on_data(7, b"hi\x1b[6n\x1b[5n");
+        let replies = pump.take_replies().expect("有两条回复");
+        assert_eq!(replies.generation, 7);
+        assert_eq!(replies.bytes, b"\x1b[1;3R\x1b[0n");
+        assert_eq!(pump.take_replies(), None, "取走之后没有了");
+        // 回复不影响字节账本。
+        assert!(pump.ledger().is_balanced());
+    }
+
+    #[test]
+    fn stale_data_and_old_generation_replies_never_leave_the_pump() {
+        let mut pump = pump(PassThrough);
+        // 旧代次的迟到数据整批丢弃，里面的查询没有人回答。
+        pump.set_generation(8);
+        pump.on_data(7, b"\x1b[5n");
+        assert_eq!(pump.take_replies(), None);
+
+        // 还没取走的回复遇到换代次：作废，不能顶着新代次发出去。
+        pump.on_data(8, b"\x1b[5n");
+        pump.set_generation(9);
+        assert_eq!(pump.take_replies(), None);
+        pump.on_data(9, b"\x1b[5n");
+        assert_eq!(pump.take_replies().map(|r| r.generation), Some(9));
+    }
+
+    #[test]
+    fn local_notices_do_not_ask_the_remote() {
+        let mut pump = pump(PassThrough);
+        pump.feed_local(b"\x1b[6n notice");
+        assert_eq!(pump.take_replies(), None);
+    }
+
+    #[test]
+    fn display_filtered_bytes_do_not_reach_the_terminal_so_they_get_no_reply() {
+        let mut pump = pump(DropHidden);
+        pump.on_data(7, b"HIDDEN \x1b[5n");
+        assert_eq!(pump.take_replies(), None);
     }
 
     #[test]

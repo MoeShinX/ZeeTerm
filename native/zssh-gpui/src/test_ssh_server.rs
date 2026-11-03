@@ -5,7 +5,10 @@
 //! - `flood`：发出 [`FLOOD_BYTES`] 字节再发 `FLOOD_DONE`（远超流控高水位，验证不会卡死）；
 //! - `bye`：退出码 3，然后关闭通道；
 //! - `drop`：不发退出码，直接断开整条 TCP 连接；
-//! - 其他：回 `ECHO:<行>`；收到 0x03 回 `GOT_CTRL_C`。
+//! - `cpr`：清屏、把光标挪到第 5 行第 12 列，再发一条光标位置查询（`ESC[6n`）；
+//! - `da`：发一条主设备属性查询（`ESC[c`）；
+//! - 其他：回 `ECHO:<行>`；收到 0x03 回 `GOT_CTRL_C`；
+//! - 收到一段以 ESC 开头的控制序列（终端对查询的回复）：回 `GOT_REPLY:<序列，ESC 写成 ^[>`。
 //!
 //! `exec` 请求默认被拒绝；用 [`spawn_answering_exec`] 起的服务器对任何 `exec` 回一段固定输出再退出码 0
 //! （系统探测命令的端到端测试用）。
@@ -24,6 +27,8 @@ pub const FLOOD_BYTES: usize = 6 * 1024 * 1024;
 
 struct MiniShell {
     line: Vec<u8>,
+    /// 正在收的一段以 ESC 开头的控制序列（客户端终端对查询的回复）。
+    reply: Option<Vec<u8>>,
     /// `Some`：只接受这个密码（测认证失败用）；`None`：任何密码都收。
     password: Option<String>,
     /// `Some`：对 `exec` 请求回这段输出（退出码 0）；`None`：拒绝 `exec`。
@@ -118,6 +123,20 @@ impl server::Handler for MiniShell {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         for &byte in data {
+            if let Some(reply) = &mut self.reply {
+                reply.push(byte);
+                // `ESC [ ... <终止字节>`：终止字节在 0x40..=0x7e（参数和中间字节都比它小）。
+                if reply.len() >= 3 && (0x40..=0x7e).contains(&byte) {
+                    let text = String::from_utf8_lossy(reply).replace('\x1b', "^[");
+                    self.reply = None;
+                    session.data(channel, format!("GOT_REPLY:{text}\r\n").into_bytes())?;
+                }
+                continue;
+            }
+            if byte == 0x1b {
+                self.reply = Some(vec![byte]);
+                continue;
+            }
             match byte {
                 0x03 => session.data(channel, b"GOT_CTRL_C\r\n".to_vec())?,
                 b'\r' => {
@@ -164,6 +183,8 @@ impl MiniShell {
                 session.close(channel)
             }
             "drop" => Err(russh::Error::Disconnect),
+            "cpr" => session.data(channel, b"\x1b[H\x1b[2J\x1b[5;12H\x1b[6n".to_vec()),
+            "da" => session.data(channel, b"\x1b[c".to_vec()),
             other => session.data(channel, format!("ECHO:{other}\r\n").into_bytes()),
         }
     }
@@ -203,6 +224,7 @@ async fn spawn_with(password: Option<String>, exec_output: Option<String>) -> So
         };
         let handler = MiniShell {
             line: Vec::new(),
+            reply: None,
             password,
             exec_output,
         };

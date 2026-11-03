@@ -186,6 +186,16 @@ impl SessionBackend for SshBackend {
     fn terminal_id(&self) -> Option<String> {
         self.terminal_id.clone()
     }
+
+    fn send_reply(&mut self, generation: u64, bytes: Vec<u8>) {
+        if generation != self.generation {
+            return;
+        }
+        // 满了就丢：协议回复不是用户输入，不弹"已丢弃按键"，也不能卡住界面线程。
+        if self.commands.try_send(TermCommand::Reply(bytes)).is_err() {
+            tracing::debug!("终端协议回复没有送出去：命令队列已满或会话已结束");
+        }
+    }
 }
 
 /// 一台已认证的连接：复制标签时在同一个 SSH 连接上再开一个 shell。
@@ -701,7 +711,8 @@ async fn session_loop<W: ShellIo, S: ShellSource>(
             }
             command = commands.recv(), if in_flight.is_none() => {
                 match command {
-                    Some(TermCommand::Session(SessionCommand::Write(bytes))) => {
+                    Some(TermCommand::Session(SessionCommand::Write(bytes)))
+                    | Some(TermCommand::Reply(bytes)) => {
                         in_flight = Some(writer.write(bytes));
                     }
                     Some(TermCommand::Session(SessionCommand::Resize(size))) => {
@@ -1174,6 +1185,61 @@ mod tests {
                 code: Some(3),
             })
         );
+    }
+
+    #[test]
+    fn protocol_replies_are_written_in_order_with_input_and_old_generations_are_dropped() {
+        let Harness {
+            mut backend,
+            io,
+            mut source,
+            mut commands,
+            mut closing,
+            events_tx,
+            events_rx,
+            shell_tx,
+        } = harness(WriteMode::Ok, 8);
+        backend.send(SessionCommand::Write(b"a".to_vec()));
+        backend.send_reply(1, b"\x1b[0n".to_vec());
+        // 重连前旧会话的迟到回复：代次不符，不能写进这条连接。
+        backend.send_reply(0, b"stale".to_vec());
+        backend.send(SessionCommand::Write(b"b".to_vec()));
+        test_runtime().block_on(async {
+            let run = session_loop(
+                &io,
+                &mut source,
+                &mut commands,
+                &mut closing,
+                &events_tx,
+                1,
+                None,
+            );
+            tokio::pin!(run);
+            let _ = tokio::time::timeout(Duration::from_millis(100), &mut run).await;
+            shell_tx.send(ShellEvent::Exit(None)).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), &mut run)
+                .await
+                .expect("远端退出后会话应结束");
+        });
+        assert_eq!(
+            *io.written.lock().unwrap(),
+            vec![b"a".to_vec(), b"\x1b[0n".to_vec(), b"b".to_vec()]
+        );
+        drop(events_rx);
+    }
+
+    #[test]
+    fn a_full_queue_drops_protocol_replies_without_the_dropped_keys_notice() {
+        let mut h = harness(WriteMode::Ok, 2);
+        for _ in 0..6 {
+            h.backend.send_reply(1, b"\x1b[0n".to_vec());
+        }
+        assert!(h.events_rx.try_recv().is_err(), "回复丢了不提示");
+        let mut queued = 0;
+        while h.commands.try_recv().is_ok() {
+            queued += 1;
+        }
+        assert_eq!(queued, 2);
     }
 
     #[test]

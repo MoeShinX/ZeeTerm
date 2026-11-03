@@ -212,6 +212,21 @@ fn write_loop(
                     }
                 }
             }
+            // 协议应答：照原样编码写出，不经输入过滤（不转换回车）、不回显。写不出去（超时 / 停止）就丢，
+            // 不提示：用户输入那条路径已经会提示。
+            Some(BackendCommand::Reply(bytes)) => {
+                let wire = encoder.encode(&bytes);
+                match comm.write_all(&event, &wire) {
+                    Ok(WriteOutcome::Written | WriteOutcome::TimedOut) => {}
+                    Ok(WriteOutcome::Stopped) => break,
+                    Err(error) => {
+                        if !closed.load(Ordering::Acquire) {
+                            out.error(io_failure_message(label, &error, "写入"));
+                        }
+                        break;
+                    }
+                }
+            }
             Some(BackendCommand::Break) => {
                 if let Err(error) = comm.send_break(BREAK_HOLD) {
                     out.notice(&format!(

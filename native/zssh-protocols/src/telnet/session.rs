@@ -189,6 +189,8 @@ impl Session {
                     self.negotiator.resize(cols, rows, &mut self.outbox);
                 }
             }
+            // 协议应答照原样发给远端：不是用户输入（不动自动登录、不转换回车、不本地回显）。
+            BackendCommand::Reply(bytes) => self.queue_text(&bytes),
             // Write 在循环里单独处理（它可能让界面那头断掉），Close 走关闭信号，Break 对 Telnet 无意义。
             BackendCommand::Session(_) | BackendCommand::Break => {}
         }

@@ -17,6 +17,9 @@ pub enum BackendCommand {
     Session(SessionCommand),
     /// 发送 Break 信号。只有串口会话有意义，Telnet 会话忽略。
     Break,
+    /// 终端对远端查询的协议回复（DSR / DA 等）：照原样写给远端，不当成用户输入——
+    /// 不触发自动登录的"用户已输入"、不做回车换行转换、不本地回显。
+    Reply(Vec<u8>),
 }
 
 /// 往界面送事件：数据先记进流控门再发。会话任务 / 线程各持一份。
@@ -136,6 +139,14 @@ impl SessionBackend for StreamBackend {
     fn send_break(&mut self) {
         self.enqueue(BackendCommand::Break);
     }
+
+    fn send_reply(&mut self, generation: u64, bytes: Vec<u8>) {
+        if generation != self.generation {
+            return;
+        }
+        // 满了就丢：协议回复不弹"已丢弃按键"（那是给用户输入看的），也不能卡住界面线程。
+        let _ = self.commands.try_send(BackendCommand::Reply(bytes));
+    }
 }
 
 impl Drop for StreamBackend {
@@ -190,6 +201,35 @@ mod tests {
         for _ in 0..3 {
             backend.send(SessionCommand::Write(b"x".to_vec()));
         }
+        assert_eq!(rx.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn replies_reach_the_session_only_with_the_current_generation() {
+        let (mut backend, mut ends, rx) = parts();
+        backend.send_reply(3, b"[0n".to_vec());
+        backend.send_reply(2, b"stale".to_vec());
+        assert_eq!(
+            ends.commands.try_recv().unwrap(),
+            BackendCommand::Reply(b"[0n".to_vec())
+        );
+        assert!(ends.commands.try_recv().is_err(), "旧代次的回复被丢掉");
+        assert_eq!(rx.try_iter().count(), 0);
+    }
+
+    #[test]
+    fn a_full_queue_drops_replies_silently_and_never_blocks() {
+        let (mut backend, _ends, rx) = parts();
+        for _ in 0..5 {
+            backend.send_reply(3, b"x".to_vec());
+        }
+        assert_eq!(
+            rx.try_iter().count(),
+            0,
+            "回复丢了不提示，也不影响 warned 状态"
+        );
+        // 用户输入这时满了照常提示一次。
+        backend.send(SessionCommand::Write(b"k".to_vec()));
         assert_eq!(rx.try_iter().count(), 1);
     }
 
