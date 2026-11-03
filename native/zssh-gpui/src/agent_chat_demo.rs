@@ -23,11 +23,12 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use ::gpui::{
-    App, ClickEvent, ClipboardItem, FocusHandle, ImageSource, MouseButton, Resource, ScrollHandle,
-    Subscription, Task, Window, WindowBounds, WindowOptions,
+    App, ClickEvent, ClipboardItem, EventEmitter, FocusHandle, ImageSource, MouseButton, Resource,
+    ScrollHandle, Subscription, Task, Window, WindowBounds, WindowOptions, anchored, deferred,
 };
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::text::{SelectionFormat, TextView};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -61,8 +62,10 @@ use crate::agent_tools::{
     self, CallView, ExecInfo, LastItem, Location, Phase, RetryNotice, ToolRow, Tracked,
 };
 use crate::ai_terminals::terminals;
+use crate::app_theme::Tokens;
 use crate::host_activity;
 use crate::install_state;
+use crate::menu_kit;
 use crate::ssh_backend::runtime;
 
 /// 下一个对话的编号。
@@ -171,18 +174,68 @@ fn mode_label(mode: ExecMode) -> &'static str {
     }
 }
 
-fn next_mode(mode: ExecMode) -> ExecMode {
-    match mode {
-        ExecMode::Manual => ExecMode::ReadOnly,
-        ExecMode::ReadOnly => ExecMode::Auto,
-        ExecMode::Auto => ExecMode::Manual,
+/// 要不要把模式写进设置库。
+/// 只有真实模式才写：设置库里的值是真实的审批策略，离线演示改的只是内存里的演示模式。
+fn mode_is_persisted(real: bool) -> bool {
+    real
+}
+
+/// 选了一个执行模式之后该怎么办。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModeSwitch {
+    /// 直接改。
+    Apply,
+    /// 先问一句再改：从别的模式切到「全部放行」。
+    Ask,
+}
+
+/// 「全部放行」是安全关键档位（AI 之后的任何命令都不再问用户，并且持久化），
+/// 所以只要是从别的模式切过去就要先确认；切到另外两种、或者本来就是它，不问。
+fn plan_mode_switch(current: ExecMode, target: ExecMode) -> ModeSwitch {
+    if target == ExecMode::Auto && current != ExecMode::Auto {
+        ModeSwitch::Ask
+    } else {
+        ModeSwitch::Apply
     }
 }
 
-/// 点「执行模式」之后的结果：下一个模式，以及要不要写设置库。
-/// 只有真实模式才写：设置库里的值是真实的审批策略，离线演示改的只是内存里的演示模式。
-fn next_mode_plan(real: bool, current: ExecMode) -> (ExecMode, bool) {
-    (next_mode(current), real)
+/// 「全部放行」确认框的标题和正文，主窗口的确认框和独立窗口的确认框共用。
+pub(crate) const ALLOW_ALL_TITLE: &str = "切换到「全部放行」";
+pub(crate) const ALLOW_ALL_MESSAGE: &str =
+    "全部放行后，AI 在服务器上执行任何命令都不再问你。确定吗？";
+
+/// 独立窗口里的确认状态：问了还没答。答「取消」什么都不改，答「确定」才返回要写的模式。
+#[derive(Debug, Default)]
+struct AllowAllGate {
+    asking: bool,
+}
+
+impl AllowAllGate {
+    fn request(&mut self, current: ExecMode, target: ExecMode) -> ModeSwitch {
+        let plan = plan_mode_switch(current, target);
+        self.asking = plan == ModeSwitch::Ask;
+        plan
+    }
+
+    fn asking(&self) -> bool {
+        self.asking
+    }
+
+    fn cancel(&mut self) {
+        self.asking = false;
+    }
+
+    /// 用户确认了：返回要应用的模式；没在问（比如重复点击）返回 `None`。
+    fn confirm(&mut self) -> Option<ExecMode> {
+        std::mem::take(&mut self.asking).then_some(ExecMode::Auto)
+    }
+}
+
+/// 嵌入式面板告诉主窗口的事。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentChatEvent {
+    /// 用户在下拉里选了「全部放行」：请主窗口弹确认框，确认后再调 `set_mode_explicit`。
+    ConfirmAllowAll,
 }
 
 /// 递归复制 JSON，把凭据类键的值换成占位；原值仍留给历史存储（由 core 再抹一次）。
@@ -2326,9 +2379,13 @@ pub struct AgentChatDemo {
     embed: Option<embed::Embed>,
     /// 内置助手（V2-A4）：选中的接口、能力合成要的配置（见 `builtin_ui`）。
     builtin: builtin_ui::BuiltinPanel,
+    /// 独立窗口里「全部放行」的确认状态（嵌入面板的确认由主窗口弹，见 [`AgentChatEvent`]）。
+    allow_all_gate: AllowAllGate,
     _input_events: Subscription,
     _tick: Task<()>,
 }
+
+impl EventEmitter<AgentChatEvent> for AgentChatDemo {}
 
 impl AgentChatDemo {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -2412,6 +2469,7 @@ impl AgentChatDemo {
             focus,
             embed: None,
             builtin: builtin_ui::BuiltinPanel::default(),
+            allow_all_gate: AllowAllGate::default(),
             _input_events,
             _tick: Task::ready(()),
         };
@@ -3601,22 +3659,30 @@ impl AgentChatDemo {
             .and_then(|model| model.id.clone())
     }
 
-    /// 「执行模式」：按逐条确认 → 只读自动 → 全部放行循环。
+    /// 「执行模式」下拉里选了一项。
     ///
     /// 真实模式写回设置库（工具桥每次执行前读它）；离线演示只改内存里的 `demo_mode`，
-    /// 不碰设置库。
-    fn cycle_mode(&mut self, cx: &mut Context<Self>) {
-        let (next, persist) = next_mode_plan(self.real, self.current_mode());
-        if persist {
-            match self.write_mode(next) {
-                Ok(()) => self.settings_error = None,
-                Err(err) => self.settings_error = Some(err),
+    /// 不碰设置库。切到「全部放行」要先确认：嵌入面板请主窗口弹框，独立窗口自己弹。
+    fn request_mode(&mut self, mode: ExecMode, cx: &mut Context<Self>) {
+        match self.allow_all_gate.request(self.current_mode(), mode) {
+            ModeSwitch::Apply => self.set_mode_explicit(mode, cx),
+            ModeSwitch::Ask if self.embed.is_some() => {
+                self.allow_all_gate.cancel();
+                cx.emit(AgentChatEvent::ConfirmAllowAll);
             }
-            // 保存失败也先让本窗口按新模式显示，底部会说明没有保存成功。
-            self.mode = next;
-        } else {
-            self.demo_mode = next;
+            ModeSwitch::Ask => cx.notify(),
         }
+    }
+
+    fn confirm_allow_all(&mut self, cx: &mut Context<Self>) {
+        if let Some(mode) = self.allow_all_gate.confirm() {
+            self.set_mode_explicit(mode, cx);
+        }
+        cx.notify();
+    }
+
+    fn cancel_allow_all(&mut self, cx: &mut Context<Self>) {
+        self.allow_all_gate.cancel();
         cx.notify();
     }
 
@@ -5275,8 +5341,75 @@ impl Render for AgentChatDemo {
         if self.embed.is_some() {
             return self.render_embedded(window, cx);
         }
-        self.render_window(cx).into_any_element()
+        let asking = self.allow_all_gate.asking();
+        let window_view = self.render_window(cx).into_any_element();
+        let dialog = asking.then(|| allow_all_dialog(&cx.entity(), window, cx));
+        div()
+            .size_full()
+            .relative()
+            .child(window_view)
+            .children(dialog)
+            .into_any_element()
     }
+}
+
+/// 独立窗口里「全部放行」的确认框：外壳和主窗口的确认框同一套（遮罩 + 居中卡片）。
+fn allow_all_dialog(entity: &Entity<AgentChatDemo>, window: &Window, cx: &App) -> AnyElement {
+    use crate::main_window::widgets::{ButtonLook, modal_card, modal_scrim, text_button};
+    use crate::typography::{Role, Typo as _};
+
+    let tokens = Tokens::current(cx);
+    let viewport = window.viewport_size();
+    let scrim_cancel = entity.clone();
+    let cancel = entity.clone();
+    let confirm = entity.clone();
+    let dialog = modal_scrim("allow-all-scrim", false, move |_, cx| {
+        scrim_cancel.update(cx, |this, cx| this.cancel_allow_all(cx));
+    })
+    .child(
+        modal_card("allow-all-card", 420.0, false, &tokens)
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(div().typo(Role::GroupTitle, &tokens).child(ALLOW_ALL_TITLE))
+                    .child(div().typo(Role::Body, &tokens).child(ALLOW_ALL_MESSAGE)),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .child(text_button(
+                        "allow-all-cancel",
+                        "取消",
+                        ButtonLook::Outline,
+                        move |_, _, cx| {
+                            cancel.update(cx, |this, cx| this.cancel_allow_all(cx));
+                        },
+                    ))
+                    .child(text_button(
+                        "allow-all-ok",
+                        "全部放行",
+                        ButtonLook::Danger,
+                        move |_, _, cx| {
+                            confirm.update(cx, |this, cx| this.confirm_allow_all(cx));
+                        },
+                    )),
+            ),
+    );
+    deferred(
+        anchored()
+            .position(::gpui::point(::gpui::px(0.0), ::gpui::px(0.0)))
+            .anchor(::gpui::Anchor::TopLeft)
+            .child(
+                div()
+                    .relative()
+                    .w(viewport.width)
+                    .h(viewport.height)
+                    .child(dialog),
+            ),
+    )
+    .with_priority(gpui_kit::base::POPUP_PRIORITY)
+    .into_any_element()
 }
 
 impl AgentChatDemo {
@@ -5378,14 +5511,38 @@ impl AgentChatDemo {
                         )
                     })
                     .child(div().flex_1())
-                    .child(
+                    .child({
+                        let current = self.current_mode();
                         Button::new("agent-chat-mode")
-                            .label(format!("执行模式：{}", mode_label(self.current_mode())))
+                            .label(format!("执行模式：{}", mode_label(current)))
                             .compact()
-                            .on_click(move |_, _, cx| {
-                                mode_entity.update(cx, |this, cx| this.cycle_mode(cx));
-                            }),
-                    )
+                            .dropdown_caret(true)
+                            .dropdown_menu_with_anchor(
+                                ::gpui::Anchor::BottomRight,
+                                move |menu, _window, _cx| {
+                                    let mut menu = menu.min_w(px(200.0));
+                                    for mode in
+                                        [ExecMode::Manual, ExecMode::ReadOnly, ExecMode::Auto]
+                                    {
+                                        let entity = mode_entity.clone();
+                                        menu = menu.item(
+                                            menu_kit::choice(
+                                                mode_label(mode),
+                                                current == mode,
+                                            )
+                                            .on_click(
+                                                move |_: &ClickEvent, _window, cx| {
+                                                    entity.update(cx, |this, cx| {
+                                                        this.request_mode(mode, cx);
+                                                    });
+                                                },
+                                            ),
+                                        );
+                                    }
+                                    menu
+                                },
+                            )
+                    })
                     .child(
                         Button::new("agent-chat-new")
                             .label("新对话")
@@ -5617,8 +5774,8 @@ mod tests {
         ToolCard, ToolInput, ToolStatus, body_markdown, body_mode, clipped_body,
         code_block_copy_text, content_preview, continue_conversation, demo_toggle_available,
         format_history_time, history_host, history_id_for_turn, history_meta, history_title,
-        history_tool_status, host_names_label, link_click_notice, load_exec_mode, mode_label,
-        mode_setting, model_choices, model_label, new_history_id, next_mode, next_mode_plan,
+        history_tool_status, host_names_label, link_click_notice, load_exec_mode,
+        mode_is_persisted, mode_label, mode_setting, model_choices, model_label, new_history_id,
         next_model_index, raw_markdown_block, redact_tool_input, requires_approval,
         resume_session_id, save_exec_mode, selected_targets, start_in_real_mode, table_tsv,
         toggle_host_selection, tool_history_status,
@@ -5985,10 +6142,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_mode_cycles_and_round_trips_through_the_database() {
-        assert_eq!(next_mode(ExecMode::Manual), ExecMode::ReadOnly);
-        assert_eq!(next_mode(ExecMode::ReadOnly), ExecMode::Auto);
-        assert_eq!(next_mode(ExecMode::Auto), ExecMode::Manual);
+    fn exec_mode_round_trips_through_the_database() {
         // 解析用的是 core 的 `ExecMode::from_setting`，没有第二份。
         assert_eq!(ExecMode::from_setting(Some("unknown")), ExecMode::Manual);
         assert_eq!(ExecMode::from_setting(None), ExecMode::Manual);
@@ -6007,20 +6161,82 @@ mod tests {
 
     #[test]
     fn demo_mode_changes_are_never_persisted() {
-        // 审查 M2：离线演示里点「执行模式」只改内存里的演示模式，不能写设置库——
+        // 审查 M2：离线演示里改「执行模式」只改内存里的演示模式，不能写设置库——
         // 设置库里的值是真实审批策略（工具桥每次执行前读它）。
+        assert!(!mode_is_persisted(false));
+        assert!(mode_is_persisted(true));
+    }
+
+    #[test]
+    fn only_switching_into_allow_all_asks_first() {
+        use super::{ModeSwitch, plan_mode_switch};
+        for current in [ExecMode::Manual, ExecMode::ReadOnly] {
+            assert_eq!(plan_mode_switch(current, ExecMode::Auto), ModeSwitch::Ask);
+        }
+        // 切到另外两种不问；已经是「全部放行」再选它也不问。
+        for current in [ExecMode::Manual, ExecMode::ReadOnly, ExecMode::Auto] {
+            assert_eq!(
+                plan_mode_switch(current, ExecMode::Manual),
+                ModeSwitch::Apply
+            );
+            assert_eq!(
+                plan_mode_switch(current, ExecMode::ReadOnly),
+                ModeSwitch::Apply
+            );
+        }
         assert_eq!(
-            next_mode_plan(false, ExecMode::Manual),
-            (ExecMode::ReadOnly, false)
+            plan_mode_switch(ExecMode::Auto, ExecMode::Auto),
+            ModeSwitch::Apply
+        );
+    }
+
+    #[test]
+    fn cancelling_the_allow_all_question_leaves_the_setting_alone() {
+        use super::{AllowAllGate, ModeSwitch};
+        let db = Database::open_in_memory().expect("内存库");
+        save_exec_mode(&db, ExecMode::ReadOnly).expect("先设成只读自动");
+
+        let mut gate = AllowAllGate::default();
+        assert_eq!(
+            gate.request(load_exec_mode(&db).0, ExecMode::Auto),
+            ModeSwitch::Ask
+        );
+        assert!(gate.asking(), "问着的时候没有写任何东西");
+        assert_eq!(db.ai_exec_mode().expect("读回"), "readonly");
+
+        gate.cancel();
+        assert!(!gate.asking());
+        assert_eq!(gate.confirm(), None, "取消后迟到的确认不算数");
+        assert_eq!(db.ai_exec_mode().expect("读回"), "readonly");
+    }
+
+    #[test]
+    fn confirming_allow_all_is_the_only_way_it_gets_saved() {
+        use super::{AllowAllGate, ModeSwitch};
+        let db = Database::open_in_memory().expect("内存库");
+        let mut gate = AllowAllGate::default();
+        assert_eq!(
+            gate.request(ExecMode::Manual, ExecMode::Auto),
+            ModeSwitch::Ask
+        );
+        assert_eq!(db.ai_exec_mode().expect("读回"), "manual", "确认前不写");
+
+        let mode = gate.confirm().expect("确认后给出要写的模式");
+        assert_eq!(mode, ExecMode::Auto);
+        save_exec_mode(&db, mode).expect("保存");
+        assert_eq!(db.ai_exec_mode().expect("读回"), "auto");
+        assert_eq!(gate.confirm(), None, "一次确认只能用一次");
+
+        // 选另一个模式会清掉上一次没答完的问题。
+        assert_eq!(
+            gate.request(ExecMode::Manual, ExecMode::Auto),
+            ModeSwitch::Ask
         );
         assert_eq!(
-            next_mode_plan(false, ExecMode::ReadOnly),
-            (ExecMode::Auto, false)
+            gate.request(ExecMode::Manual, ExecMode::ReadOnly),
+            ModeSwitch::Apply
         );
-        assert_eq!(
-            next_mode_plan(true, ExecMode::Manual),
-            (ExecMode::ReadOnly, true)
-        );
+        assert_eq!(gate.confirm(), None);
     }
 
     // ---------------------------------------------------------------------
