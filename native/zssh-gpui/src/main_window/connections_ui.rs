@@ -603,7 +603,8 @@ impl MainWindow {
                         .id(("conn-row", at))
                         .h(px(ROW_HEIGHT))
                         .items_center()
-                        .typo(Role::Caption, tokens).text_color(tokens.text)
+                        .typo(Role::Caption, tokens)
+                        .text_color(tokens.text)
                         .hover(move |style| style.bg(hover))
                         .child(cell(
                             "conn-c-proto",
