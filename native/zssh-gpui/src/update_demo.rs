@@ -90,6 +90,8 @@ pub struct UpdateDemo {
     events: Receiver<DownloadEvent>,
     sender: Sender<DownloadEvent>,
     focus: FocusHandle,
+    /// 锁屏页（V2-U26）：锁着时整个窗口只画它。
+    lock_screen: Option<Entity<crate::app_lock::LockScreen>>,
     _ime_focus: Subscription,
     _ime_blur: Subscription,
     _tick: Task<()>,
@@ -128,6 +130,7 @@ impl UpdateDemo {
             events,
             sender,
             focus,
+            lock_screen: None,
             _ime_focus,
             _ime_blur,
             _tick: Task::ready(()),
@@ -346,7 +349,17 @@ impl UpdateDemo {
 }
 
 impl Render for UpdateDemo {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 锁屏（V2-U26）：锁着时整个窗口只画锁屏页（这个窗口用系统标题栏，页里不再画窗口按钮）。
+        if let Some(cover) = crate::app_lock::cover(&mut self.lock_screen, false, window, cx) {
+            return cover;
+        }
+        self.render_unlocked(cx).into_any_element()
+    }
+}
+
+impl UpdateDemo {
+    fn render_unlocked(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let tokens = crate::app_theme::Tokens::current(cx);
         let lines: Vec<String> = self.status.lines().map(str::to_owned).collect();

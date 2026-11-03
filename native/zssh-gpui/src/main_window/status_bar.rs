@@ -6,12 +6,14 @@
 //! 网速由 hub 用前后两次 `/proc/net/dev` 的累计流量算出来，刚连上还没有第二个样本时显示「—」。
 
 use ::gpui::{Hsla, Stateful, px};
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::MainWindow;
+use super::app_lock_ui::{LOCK_TOOLTIP, build_lock_menu};
 use super::nav::MainView;
 use crate::app_theme::Tokens;
 use crate::icons::Ico;
@@ -168,6 +170,9 @@ impl MainWindow {
         };
         let switches = switches_on.then(|| {
             let (quick_entity, compose_entity) = (entity.clone(), entity.clone());
+            let (lock_entity, lock_menu_entity) = (entity.clone(), entity.clone());
+            let lock_enabled = self.lock_enabled();
+            let menu_tokens = *tokens;
             h_flex()
                 .flex_none()
                 .gap_0p5()
@@ -195,6 +200,17 @@ impl MainWindow {
                     .on_click(move |_, window, cx| {
                         compose_entity.update(cx, |this, cx| this.toggle_compose_bar(window, cx));
                     }),
+                )
+                // 锁屏（V2-U26）：左键锁定（没启用时去设置里设密码），右键菜单。锁着的时候这条栏本身不画，
+                // 所以这个按钮恒为不高亮。
+                .child(
+                    switch_button("lock-switch", Ico::Lock, LOCK_TOOLTIP, false, tokens)
+                        .on_click(move |_, window, cx| {
+                            lock_entity.update(cx, |this, cx| this.lock_button_clicked(window, cx));
+                        })
+                        .context_menu(move |menu, _window, _cx| {
+                            build_lock_menu(menu, lock_enabled, &lock_menu_entity, &menu_tokens)
+                        }),
                 )
         });
         Some(bar.child(stats_area).children(switches))

@@ -116,6 +116,7 @@ pub fn validate(spec: &str) -> Result<(), String> {
         || super::dev_acts_u18::is_known(name)
         || super::dev_acts_u19::is_known(name)
         || super::dev_acts_u20::is_known(name)
+        || super::dev_acts_u26::is_known(name)
         || super::dev_acts_n4::is_known(name)
         || super::dev_acts_sync::is_known(name)
         || KNOWN.contains(&name)
@@ -202,6 +203,7 @@ pub(super) fn modal_name(this: &MainWindow) -> &'static str {
         Some(Modal::AiEndpoint(_)) => "ai_endpoint",
         Some(Modal::AiPresets) => "ai_presets",
         Some(Modal::Tokenway(_)) => "tokenway",
+        Some(Modal::AppLock(_)) => "app_lock",
     }
 }
 
@@ -266,6 +268,10 @@ fn run_inner(
     }
     // V2-U19（从 Z-SSH 迁移）的动作在 `dev_acts_u19`。
     if let Some(result) = super::dev_acts_u19::run(this, spec, window, cx) {
+        return result;
+    }
+    // V2-U26（锁屏）的动作在 `dev_acts_u26`。
+    if let Some(result) = super::dev_acts_u26::run(this, spec, window, cx) {
         return result;
     }
     // V2-U20（主机的系统图标、主机树连接线）的动作在 `dev_acts_u20`。
