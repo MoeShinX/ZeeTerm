@@ -1,14 +1,14 @@
-//! 自绘标题栏：最左是侧栏开关和「主机」图标（纯图标，没有 logo 和带字按钮）；后面是会话标签（状态点、
-//! 标题、关闭、中键关闭、双击复制、右键菜单）和「+」；右边 AI、文件、快捷命令、撰写栏、主题和窗口按钮，
-//! 侧栏折叠时再补一个设置齿轮（凭据和设置的入口在侧栏左下角和「管理 + 设置」页里）。
+//! 自绘标题栏：最左是图标块（侧栏开关、「主机」、AI、文件，侧栏折叠时末尾再补一个设置齿轮；纯图标，
+//! 没有 logo 和带字按钮）；后面是会话标签（状态点、标题、关闭、中键关闭、双击复制、右键菜单）和「+」；
+//! 右边只剩窗口按钮。快捷命令栏、撰写栏的开关在终端底部状态栏（`status_bar`），主题只在「设置 → 外观」里改，
+//! 凭据和设置的入口在侧栏左下角和「管理 + 设置」页里。
 //!
 //! 结构照 0.2.14 的 `components/titlebar/TopTabs.tsx`。窗口拖动和最大化靠
 //! `WindowControlArea::Drag`：条本身是拖动区，所有可点的东西都 `occlude()` 一下，把拖动区
 //! 在它们身上挖掉，这样点击不会被系统当成拖标题栏；双击空白处最大化也由系统处理。
 
 use ::gpui::{AnyElement, Hsla, MouseButton, SharedString, Stateful, WindowControlArea, px};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -25,6 +25,11 @@ pub const BAR_HEIGHT: f32 = 36.0;
 const TAB_HEIGHT: f32 = 32.0;
 /// 窗口按钮宽度。
 const CONTROL_WIDTH: f32 = 42.0;
+/// 标题栏图标按钮的边长、图标间距（Tailwind `gap_1` = 4）、左侧块的左右内边距（`pl_3` / `pr_2`）。
+const ICON_SIZE: f32 = 28.0;
+const ICON_GAP: f32 = 4.0;
+const LEFT_PAD_LEFT: f32 = 12.0;
+const LEFT_PAD_RIGHT: f32 = 8.0;
 
 /// 不同类型的标签使用同一条主题色标记，避免只靠背景色区分当前标签。
 pub(super) fn active_tab_indicator(tokens: &Tokens) -> Div {
@@ -56,14 +61,38 @@ fn status_title(status: TabStatus) -> &'static str {
     }
 }
 
-/// 撰写栏的开关只在有终端的页面上出现（欢迎页、主机页没有终端）。
-pub(super) fn compose_in_title_bar(view: MainView) -> bool {
-    !matches!(view, MainView::Vault | MainView::Welcome)
+/// 标题栏左侧图标块里的一项。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LeftIcon {
+    Sidebar,
+    HostPage,
+    Ai,
+    Files,
+    Settings,
 }
 
-/// 侧栏折叠时，标题栏右侧补一个设置与管理的齿轮（侧栏展开时入口在它左下角）。
-pub(super) fn gear_in_title_bar(sidebar_collapsed: bool) -> bool {
-    sidebar_collapsed
+/// 左侧块从左到右的图标：侧栏开关、主机页、AI、文件；侧栏折叠时左下角的入口跟着看不见，
+/// 末尾补一个设置与管理的齿轮，保证总有入口。
+pub(super) fn left_icons(sidebar_collapsed: bool) -> Vec<LeftIcon> {
+    let mut icons = vec![
+        LeftIcon::Sidebar,
+        LeftIcon::HostPage,
+        LeftIcon::Ai,
+        LeftIcon::Files,
+    ];
+    if sidebar_collapsed {
+        icons.push(LeftIcon::Settings);
+    }
+    icons
+}
+
+/// 左侧块的内容宽度：左右内边距加图标和间距。侧栏展开时块和侧栏同宽（最窄 `TREE_MIN_WIDTH`），
+/// 必须放得下，否则图标会溢出或被挤变形。
+pub(super) fn left_block_width(count: usize) -> f32 {
+    LEFT_PAD_LEFT
+        + LEFT_PAD_RIGHT
+        + ICON_SIZE * count as f32
+        + ICON_GAP * count.saturating_sub(1) as f32
 }
 
 /// 标题栏上的小图标按钮：`occlude` 把拖动区挖掉；`enabled == false` 时只显示灰的和提示。
@@ -87,7 +116,7 @@ fn icon_button(
         .flex()
         .items_center()
         .justify_center()
-        .size(px(28.0))
+        .size(px(ICON_SIZE))
         .flex_none()
         .rounded_md()
         .text_color(if active { text } else { muted })
@@ -113,7 +142,6 @@ impl MainWindow {
         let infos: Vec<TabInfo> = self.workspace.read(cx).tab_infos();
         let active = self.workspace.read(cx).active_index();
         let tab_count = infos.len();
-        let dark = tokens.dark;
         // 标签条的溢出处理：当前标签变了滚到可见；数一下有几个没露全（上一帧量到的位置）。
         let entries = self.tab_entries(&infos, cx);
         let active_entry = self.active_entry(&entries, &infos, active);
@@ -133,7 +161,7 @@ impl MainWindow {
         });
         let drag_hint = crate::tab_drag::hint_chip(window, cx, tokens);
 
-        // ---- 左侧块：侧栏开关、「主机」图标 ----
+        // ---- 左侧块：侧栏开关、「主机」、AI、文件（折叠时再加设置齿轮） ----
         let toggle = {
             let entity = entity.clone();
             let collapsed = self.tree.collapsed;
@@ -172,19 +200,89 @@ impl MainWindow {
                 entity.update(cx, |this, cx| this.toggle_vault_page(window, cx));
             })
         };
+        // AI 助手和文件（SFTP）：原来在标题栏右侧，现在和侧栏开关、主机页并排在左侧块里。
+        let ai = {
+            let entity = entity.clone();
+            icon_button(
+                "ai-button",
+                IconName::Bot,
+                "AI 助手 (Ctrl+Shift+A)",
+                self.docks.ai_open && self.nav.view == MainView::Terminal,
+                true,
+                tokens,
+            )
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |this, cx| this.toggle_ai_panel(window, cx));
+            })
+        };
+        let files = {
+            let entity = entity.clone();
+            // Telnet / 串口标签没有 SFTP：按钮变灰、悬停说明，点了也只提示一句。
+            let sftp_ok = self.active_caps(cx).sftp;
+            icon_button(
+                "files-button",
+                crate::icons::Ico::FolderOpen,
+                if sftp_ok {
+                    "文件 (Ctrl+Shift+F)"
+                } else {
+                    "文件（仅 SSH 主机可用）"
+                },
+                self.docks.sftp_open && self.nav.view == MainView::Terminal,
+                sftp_ok,
+                tokens,
+            )
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |this, cx| this.toggle_sftp_dock(window, cx));
+            })
+        };
+        // 侧栏折叠时左下角的入口跟着看不见：在这里补一个设置与管理的齿轮，保证总有入口。
+        let gear = {
+            let entity = entity.clone();
+            icon_button(
+                "settings-button",
+                IconName::Settings,
+                "设置与管理 (Ctrl+,)",
+                view == MainView::Settings,
+                true,
+                tokens,
+            )
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |this, cx| this.toggle_settings(window, cx));
+            })
+        };
+        let icons: Vec<AnyElement> = {
+            let mut toggle = Some(toggle);
+            let mut host_page_button = Some(host_page_button);
+            let mut ai = Some(ai);
+            let mut files = Some(files);
+            let mut gear = Some(gear);
+            left_icons(self.tree.collapsed)
+                .into_iter()
+                .filter_map(|icon| match icon {
+                    LeftIcon::Sidebar => toggle.take().map(IntoElement::into_any_element),
+                    LeftIcon::HostPage => {
+                        host_page_button.take().map(IntoElement::into_any_element)
+                    }
+                    LeftIcon::Ai => ai.take().map(IntoElement::into_any_element),
+                    LeftIcon::Files => files.take().map(IntoElement::into_any_element),
+                    LeftIcon::Settings => gear.take().map(IntoElement::into_any_element),
+                })
+                .collect()
+        };
         let left = h_flex()
             .h_full()
             .flex_none()
+            // 再窄的侧栏也不能把图标挤变形：块不比内容窄。
+            .min_w(px(left_block_width(icons.len())))
             .items_center()
-            .gap_1()
-            .pl_3()
-            .pr_2()
+            .gap(px(ICON_GAP))
+            .pl(px(LEFT_PAD_LEFT))
+            .pr(px(LEFT_PAD_RIGHT))
             .when_some(aligned_tree_width, |d, width| {
                 // 主机树展开时左侧块就是树的「抬头」：宽度一样，右边那条线和树的分隔线连起来。
                 d.w(px(width)).border_r_1().border_color(tokens.border)
             })
-            .child(toggle)
-            .child(host_page_button);
+            .children(icons);
 
         // ---- 会话标签 ----
         // 标签条：标签放不下先等比缩窄到最小宽度，再放不下就横向滚动（右边出现溢出按钮）。
@@ -270,174 +368,6 @@ impl MainWindow {
             .children(overflow_button)
             .child(new_tab_button);
 
-        // ---- 右侧：AI（先禁用）、主题、设置、窗口按钮 ----
-        let ai = {
-            let entity = entity.clone();
-            icon_button(
-                "ai-button",
-                IconName::Bot,
-                "AI 助手 (Ctrl+Shift+A)",
-                self.docks.ai_open && self.nav.view == MainView::Terminal,
-                true,
-                tokens,
-            )
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |this, cx| this.toggle_ai_panel(window, cx));
-            })
-        };
-        let files = {
-            let entity = entity.clone();
-            // Telnet / 串口标签没有 SFTP：按钮变灰、悬停说明，点了也只提示一句。
-            let sftp_ok = self.active_caps(cx).sftp;
-            icon_button(
-                "files-button",
-                crate::icons::Ico::FolderOpen,
-                if sftp_ok {
-                    "文件 (Ctrl+Shift+F)"
-                } else {
-                    "文件（仅 SSH 主机可用）"
-                },
-                self.docks.sftp_open && self.nav.view == MainView::Terminal,
-                sftp_ok,
-                tokens,
-            )
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |this, cx| this.toggle_sftp_dock(window, cx));
-            })
-        };
-        // 快捷命令栏的开关（0.2.14 的 ⌘ 按钮）；欢迎页 / 主机页没有终端、看不到命令栏，
-        // 这里改成打开「管理 + 设置」页的「快捷命令」。
-        let quick = {
-            let entity = entity.clone();
-            let manage_here = matches!(view, MainView::Vault | MainView::Welcome);
-            let active = if manage_here {
-                false
-            } else {
-                self.quick_bar_open()
-            };
-            icon_button(
-                "quick-button",
-                crate::icons::Ico::Command,
-                if manage_here {
-                    "快捷命令（管理）"
-                } else {
-                    "快捷命令栏"
-                },
-                active,
-                true,
-                tokens,
-            )
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |this, cx| this.toggle_quick_bar(window, cx));
-            })
-        };
-        // 撰写栏的开关；主机页没有终端，不显示。
-        let compose = compose_in_title_bar(view).then(|| {
-            let entity = entity.clone();
-            icon_button(
-                "compose-button",
-                crate::icons::Ico::SquarePen,
-                "撰写栏",
-                self.compose_bar_open(),
-                true,
-                tokens,
-            )
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |this, cx| this.toggle_compose_bar(window, cx));
-            })
-        });
-        // 主题入口：模式（系统 / 浅色 / 深色）+ 当前明暗下的皮肤，选完立刻生效（同 0.2.14 的 `ThemeSwitcher`）。
-        let theme = {
-            let ws = self.workspace.clone();
-            let settings = self.workspace.read(cx).settings().clone();
-            let follow = settings.follow_system;
-            let chosen_skin = crate::app_theme::skin_for(
-                dark,
-                if dark {
-                    &settings.skin_dark
-                } else {
-                    &settings.skin_light
-                },
-            )
-            .id;
-            let icon = if dark { IconName::Moon } else { IconName::Sun };
-            div().occlude().child(
-                Button::new("theme-button")
-                    .ghost()
-                    .compact()
-                    .icon(icon)
-                    .tooltip("主题")
-                    .dropdown_menu(move |menu, _window, _cx| {
-                        let (auto, light, darker) = (ws.clone(), ws.clone(), ws.clone());
-                        let mut menu = menu
-                            .item(PopupMenuItem::new("系统").checked(follow).on_click(
-                                move |_, _, cx| {
-                                    auto.update(cx, |this, cx| this.set_theme_auto(cx));
-                                },
-                            ))
-                            .item(
-                                PopupMenuItem::new("浅色")
-                                    .checked(!follow && !dark)
-                                    .on_click(move |_, _, cx| {
-                                        light.update(cx, |this, cx| this.set_theme(false, cx));
-                                    }),
-                            )
-                            .item(
-                                PopupMenuItem::new("深色")
-                                    .checked(!follow && dark)
-                                    .on_click(move |_, _, cx| {
-                                        darker.update(cx, |this, cx| this.set_theme(true, cx));
-                                    }),
-                            )
-                            .item(PopupMenuItem::separator())
-                            .item(PopupMenuItem::label(if dark {
-                                "深色皮肤"
-                            } else {
-                                "浅色皮肤"
-                            }));
-                        for skin in crate::app_theme::skins_of(dark) {
-                            let ws = ws.clone();
-                            let id = skin.id;
-                            menu = menu.item(
-                                PopupMenuItem::new(skin.name)
-                                    .checked(skin.id == chosen_skin)
-                                    .on_click(move |_, _, cx| {
-                                        ws.update(cx, |this, cx| this.set_skin(dark, id, cx));
-                                    }),
-                            );
-                        }
-                        menu
-                    }),
-            )
-        };
-        // 侧栏折叠时左下角的入口跟着看不见：在这里补一个设置与管理的齿轮，保证总有入口。
-        let gear = gear_in_title_bar(self.tree.collapsed).then(|| {
-            let entity = entity.clone();
-            icon_button(
-                "settings-button",
-                IconName::Settings,
-                "设置与管理 (Ctrl+,)",
-                view == MainView::Settings,
-                true,
-                tokens,
-            )
-            .on_click(move |_, window, cx| {
-                entity.update(cx, |this, cx| this.toggle_settings(window, cx));
-            })
-        });
-        let right = h_flex()
-            .h_full()
-            .flex_none()
-            .items_center()
-            .gap_0p5()
-            .pr_1()
-            .child(ai)
-            .child(files)
-            .child(quick)
-            .children(compose)
-            .child(theme)
-            .children(gear);
-
         div()
             .id("title-bar")
             .relative()
@@ -472,8 +402,7 @@ impl MainWindow {
                     .window_control_area(WindowControlArea::Drag)
                     .child(left.items_end())
                     .child(tabs)
-                    .children(drag_hint)
-                    .child(right),
+                    .children(drag_hint),
             )
             .child(window_controls(tokens, window.is_maximized()))
     }
@@ -766,19 +695,47 @@ pub(crate) fn window_controls(tokens: &Tokens, maximized: bool) -> impl IntoElem
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{compose_in_title_bar, gear_in_title_bar};
-    use crate::main_window::nav::MainView;
+    use super::{LeftIcon, left_block_width, left_icons};
+    use crate::window_state::TREE_MIN_WIDTH;
 
     #[test]
-    fn the_gear_only_shows_up_in_the_title_bar_when_the_sidebar_is_collapsed() {
-        assert!(!gear_in_title_bar(false), "侧栏展开时入口在左下角");
-        assert!(gear_in_title_bar(true), "折叠后左下角看不见，标题栏补一个");
+    fn the_left_block_holds_sidebar_hosts_ai_and_files_in_that_order() {
+        assert_eq!(
+            left_icons(false),
+            [
+                LeftIcon::Sidebar,
+                LeftIcon::HostPage,
+                LeftIcon::Ai,
+                LeftIcon::Files
+            ]
+        );
     }
 
     #[test]
-    fn the_compose_button_needs_a_terminal() {
-        assert!(!compose_in_title_bar(MainView::Welcome));
-        assert!(!compose_in_title_bar(MainView::Vault));
-        assert!(compose_in_title_bar(MainView::Terminal));
+    fn the_gear_joins_the_end_of_the_left_block_only_when_the_sidebar_is_collapsed() {
+        assert!(
+            !left_icons(false).contains(&LeftIcon::Settings),
+            "侧栏展开时入口在左下角"
+        );
+        let collapsed = left_icons(true);
+        assert_eq!(collapsed.last(), Some(&LeftIcon::Settings));
+        assert_eq!(collapsed.len(), left_icons(false).len() + 1);
+        assert_eq!(
+            collapsed[..4],
+            left_icons(false)[..],
+            "齿轮只是追加，前四个图标的位置不变"
+        );
+    }
+
+    #[test]
+    fn the_icons_fit_in_the_narrowest_sidebar_header() {
+        // 侧栏展开时左侧块和侧栏同宽（最窄 TREE_MIN_WIDTH），图标不能溢出或被挤变形。
+        assert!(
+            left_block_width(left_icons(false).len()) <= TREE_MIN_WIDTH,
+            "{} > {TREE_MIN_WIDTH}",
+            left_block_width(left_icons(false).len())
+        );
+        // 折叠时块按内容定宽（不和侧栏对齐），多一个齿轮也不能比最窄的侧栏还宽。
+        assert!(left_block_width(left_icons(true).len()) <= TREE_MIN_WIDTH);
     }
 }

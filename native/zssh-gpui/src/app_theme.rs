@@ -896,6 +896,21 @@ mod tests {
     }
 
     #[test]
+    fn the_appearance_page_offers_every_skin_the_old_title_bar_menu_did() {
+        // 标题栏的主题菜单（V2-U6 删掉）列的是 `skins_of(dark)`；「设置 → 外观」里浅色 / 深色两排皮肤
+        // 卡片用的是同一个函数，所以每一套皮肤在外观页都能选，不会因为菜单没了就少一个。
+        let mut offered: Vec<&str> = skins_of(false)
+            .chain(skins_of(true))
+            .map(|s| s.id)
+            .collect();
+        let mut all: Vec<&str> = SKINS.iter().map(|s| s.id).collect();
+        offered.sort_unstable();
+        all.sort_unstable();
+        assert_eq!(offered, all);
+        assert!(skins_of(false).all(|s| !s.dark));
+        assert!(skins_of(true).all(|s| s.dark));
+    }
+    #[test]
     fn mixing_matches_the_frontend_formula() {
         // 全部取一端、取另一端，和 skins.ts 的 mixHex 一致。
         assert_eq!(mix(0x102030, 0xFFFFFF, 1.0), 0x102030);

@@ -111,7 +111,8 @@ impl MainWindow {
 
     /// 终端区域的大概高度（窗口高度扣掉标题栏和状态栏）：栏高的上限按它算。
     fn area_height(&self) -> f32 {
-        (self.window_height - super::titlebar::BAR_HEIGHT - 26.0).max(0.0)
+        (self.window_height - super::titlebar::BAR_HEIGHT - super::status_bar::STATUS_BAR_HEIGHT)
+            .max(0.0)
     }
 
     pub(super) fn quick_height_now(&self) -> f32 {
@@ -151,15 +152,6 @@ impl MainWindow {
     }
 
     pub(crate) fn toggle_quick_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 欢迎页 / 主机页没有终端、看不到底部的命令栏：这个按钮改成打开「管理 + 设置」页的「快捷命令」。
-        if matches!(self.nav.view, MainView::Vault | MainView::Welcome) {
-            self.open_settings_section(
-                crate::settings_nav::SettingsSection::QuickCommands,
-                window,
-                cx,
-            );
-            return;
-        }
         let next = !self.quick_bar_open();
         self.write_setting(
             |db| bar_settings::write_bool(db, bar_settings::QUICK_BAR, next),

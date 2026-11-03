@@ -33,6 +33,7 @@ mod dev_acts_tcp;
 mod dev_acts_u1;
 mod dev_acts_u2;
 mod dev_acts_u4;
+mod dev_acts_u6;
 pub mod dev_script;
 pub mod dev_seed;
 pub mod dock_layout;
