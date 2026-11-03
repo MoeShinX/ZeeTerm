@@ -52,6 +52,19 @@ fn status_color(status: TabStatus, tokens: &Tokens) -> Hsla {
     }
 }
 
+/// 标签序号：从 1 开始的位置（拖动排序、关闭之后跟着重排，超过 9 个就是两位数）。
+fn badge_label(index: usize) -> SharedString {
+    (index + 1).to_string().into()
+}
+
+/// 序号的字色：琥珀色（连接中）底色偏亮，用深色字；其余状态底色偏深，用白字。
+fn badge_ink(status: TabStatus) -> Hsla {
+    match status {
+        TabStatus::Connecting => ::gpui::rgb(0x1F2937).into(),
+        _ => ::gpui::white(),
+    }
+}
+
 fn status_title(status: TabStatus) -> &'static str {
     match status {
         TabStatus::Connecting => "连接中",
@@ -485,12 +498,23 @@ impl MainWindow {
                 move |window, cx| Tooltip::new(title.clone()).build(window, cx)
             })
             .child(
+                // 序号小方块：数字是标签从左到右的位置，底色是连接状态（原来的状态小圆点换成它）。
                 div()
-                    .id(("tab-dot", index))
-                    .size(px(6.0))
+                    .id(("tab-badge", index))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .h(px(16.0))
+                    .min_w(px(16.0))
+                    .px_1()
                     .flex_none()
-                    .rounded_full()
+                    .rounded_sm()
                     .bg(dot)
+                    .text_color(badge_ink(info.status))
+                    .text_size(px(11.0))
+                    .font_weight(::gpui::FontWeight::BOLD)
+                    .line_height(px(16.0))
+                    .child(badge_label(index))
                     .tooltip(move |window, cx| Tooltip::new(dot_title).build(window, cx)),
             )
             .child(div().flex_1().min_w_0().truncate().child(title))
@@ -612,7 +636,9 @@ pub(crate) fn window_controls(tokens: &Tokens, maximized: bool) -> impl IntoElem
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{LeftIcon, left_block_width, left_icons};
+    use super::{LeftIcon, badge_ink, badge_label, left_block_width, left_icons, status_color};
+    use crate::app_theme::Tokens;
+    use crate::terminal_workspace::TabStatus;
     use crate::window_state::TREE_MIN_WIDTH;
 
     #[test]
@@ -654,5 +680,45 @@ mod tests {
         );
         // 折叠时块按内容定宽（不和侧栏对齐），多一个齿轮也不能比最窄的侧栏还宽。
         assert!(left_block_width(left_icons(true).len()) <= TREE_MIN_WIDTH);
+    }
+
+    #[test]
+    fn the_badge_number_is_the_position_counted_from_one() {
+        let labels: Vec<_> = (0..11).map(|i| badge_label(i).to_string()).collect();
+        assert_eq!(labels[0], "1");
+        assert_eq!(labels[8], "9");
+        assert_eq!(labels[9], "10", "两位数照样显示");
+        assert_eq!(labels[10], "11");
+    }
+
+    #[test]
+    fn the_badge_colour_follows_the_status_and_stays_readable() {
+        let tokens = Tokens::for_mode(false);
+        let colours: Vec<_> = [
+            TabStatus::Connected,
+            TabStatus::Connecting,
+            TabStatus::Disconnected,
+            TabStatus::Empty,
+        ]
+        .map(|status| status_color(status, &tokens))
+        .into();
+        for (at, a) in colours.iter().enumerate() {
+            for b in &colours[at + 1..] {
+                assert_ne!(a, b, "四种状态的颜色各不相同");
+            }
+        }
+        assert_eq!(
+            status_color(TabStatus::Connected, &tokens),
+            tokens.dot_connected
+        );
+        // 亮底（连接中）配深字，其余配白字。
+        assert_ne!(
+            badge_ink(TabStatus::Connecting),
+            badge_ink(TabStatus::Connected)
+        );
+        assert_eq!(
+            badge_ink(TabStatus::Connected),
+            badge_ink(TabStatus::Disconnected)
+        );
     }
 }
