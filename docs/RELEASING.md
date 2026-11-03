@@ -21,7 +21,7 @@ powershell -File scripts/updater-keygen.ps1 -WriteUpdaterJson  # 同时把公钥
 
 ## 发版步骤
 
-前提：在 `main` 分支、已跟踪的文件没有未提交改动、`CHANGELOG.md` 里有 `## [<版本>]` 一节（写给用户看的更新说明；也可以用 `-NotesFile` 单独指定）。
+前提：在 `main` 分支、已跟踪的文件没有未提交改动、更新说明已经写好（见下面"更新说明"一节：`docs/release-notes/<版本>.md`，没有就取 `CHANGELOG.md` 里的 `## [<版本>]` 一节，也可以用 `-NotesFile` 单独指定）。
 
 ```powershell
 powershell -File scripts/release.ps1 -Version 1.0.0
@@ -61,6 +61,18 @@ powershell -File scripts/release.ps1 -Version 9.9.9 -DryRun -KeyPath <测试私�
 ```
 
 演练用测试密钥和一个充数的文件走完整个流程：版本号改完立即还原（`git status` 看不到变化），不检查分支和工作区，不编译安装包。产物不能发布。测试密钥只放在临时目录，不要用正式密钥演练。
+
+## 更新说明
+
+更新说明会原样显示在用户的更新窗口里（窗口会把它渲染成带标题、列表、粗体的版式），也是 GitHub Release 页的正文。**写给普通用户看**：一句话概述加几条要点，每条一行说清"能做什么 / 有什么变化"；不要写脚本名、内部实现和开发者才关心的细节（那些留在 `CHANGELOG.md`）。
+
+`release.ps1` 按下面的优先级取说明，取到哪份会在输出里打印出来：
+
+1. `-NotesFile <文件>`（临时指定，优先级最高）；
+2. `docs/release-notes/<版本>.md`（推荐：每个版本一份面向用户的说明，格式见 `docs/release-notes/README.md`；文件存在但是空的会直接报错）；
+3. `CHANGELOG.md` 里的 `## [<版本>]` 一节（没有 `docs/release-notes/<版本>.md` 时的退路，内容偏技术，不推荐直接给用户看）。
+
+更新窗口只渲染安全的 Markdown：HTML 不执行、图片不加载（显示替代文字）、只有 `https://` 链接能点开（用系统浏览器打开），所以说明里别靠图片和 HTML 传达信息。
 
 ## 版本号的来源
 
