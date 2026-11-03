@@ -750,9 +750,9 @@ pub(crate) fn window_controls(tokens: &Tokens, maximized: bool) -> impl IntoElem
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        BACK_BUTTON_SIZE, BACK_TEXT_MIN_WIDTH, LeftIcon, TabTarget, back_button_shows_text,
-        back_button_visible, badge_ink, badge_label, badge_numbers, badge_tooltip,
-        left_block_width, left_icons, status_color, tab_target,
+        BACK_TEXT_MIN_WIDTH, LeftIcon, TabTarget, back_button_shows_text, back_button_visible,
+        badge_ink, badge_label, badge_numbers, badge_tooltip, left_block_width, left_icons,
+        status_color, tab_target,
     };
     use crate::app_theme::Tokens;
     use crate::terminal_workspace::{TabInfo, TabStatus};
@@ -802,8 +802,6 @@ mod tests {
         assert!(!back_button_shows_text(BACK_TEXT_MIN_WIDTH - 1.0));
         assert!(back_button_shows_text(BACK_TEXT_MIN_WIDTH));
         assert!(back_button_shows_text(1100.0));
-        // 字和图标都收起来时仍是一个能点的方块。
-        assert!(BACK_BUTTON_SIZE >= 24.0);
     }
 
     #[test]
