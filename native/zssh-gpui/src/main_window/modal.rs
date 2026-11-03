@@ -112,6 +112,8 @@ pub enum Modal {
     Recovery(super::recovery_ui::RecoveryUi),
     /// 连开了 X11 的主机而本机没有可用的 X 服务器：一键安装 / 去设置 / 这次不用 X11 继续连接。
     X11Needed(super::x11_ui::X11Prompt),
+    /// 概览面板「网卡」一节的「所有连接」：只读的大对话框（V2-U12）；状态较大，装箱。
+    Connections(Box<super::connections_ui::ConnectionsDialog>),
 }
 
 impl Modal {
@@ -139,12 +141,16 @@ impl Modal {
 
     /// 填了半天的表单（有多行框的、主机属性）：卡片占满窗口高度、内部自己滚动。
     pub fn tall(&self) -> bool {
-        matches!(self, Self::QuickEdit(_) | Self::HostProps(_))
+        matches!(
+            self,
+            Self::QuickEdit(_) | Self::HostProps(_) | Self::Connections(_)
+        )
     }
 
     /// 点遮罩算不算取消。填了半天的表单不能被一次误点丢掉，只能用取消按钮或 Esc 关。
     pub fn closes_on_scrim(&self) -> bool {
-        !self.tall()
+        // 连接列表是只读的，点遮罩可以关；填了半天的表单才不行。
+        !self.tall() || matches!(self, Self::Connections(_))
     }
 }
 
@@ -334,6 +340,8 @@ impl MainWindow {
             Some(Modal::Recovery(_)) => {}
             // 三个选项各有按钮：回车不替用户选（尤其不能一回车就开始安装）。
             Some(Modal::X11Needed(_)) => {}
+            // 只读对话框：Enter 留给搜索框，没有要确认的东西。
+            Some(Modal::Connections(_)) => {}
             None => {}
         }
     }
@@ -474,6 +482,10 @@ impl MainWindow {
             Modal::Unsaved(ask) => (440.0, self.unsaved_body(ask, tokens, cx)),
             Modal::Recovery(ui) => (600.0, self.recovery_body(ui, tokens, cx)),
             Modal::X11Needed(prompt) => (460.0, self.x11_prompt_body(prompt, tokens, cx)),
+            Modal::Connections(dialog) => (
+                super::connections_ui::DIALOG_WIDTH,
+                self.connections_body(dialog, tokens, cx),
+            ),
         };
         let closes_on_scrim = modal.closes_on_scrim();
         let tall = modal.tall();

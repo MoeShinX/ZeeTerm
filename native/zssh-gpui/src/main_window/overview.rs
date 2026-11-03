@@ -6,11 +6,13 @@
 
 use std::collections::VecDeque;
 
-use ::gpui::{PathBuilder, Pixels, canvas, point, px};
+use ::gpui::{MouseButton, PathBuilder, Pixels, canvas, point, px};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
 use gpui_kit::*;
 
 use super::MainWindow;
+use super::panel_width::{self, DragStart, PanelKind};
 use crate::app_theme::Tokens;
 use crate::icons::Ico;
 use crate::status_demo::{
@@ -20,8 +22,44 @@ use crate::typography::{Role, Typo as _};
 
 /// 网速曲线最多记这么多个点（3 秒一次 ≈ 6 分钟）。
 pub const NET_HISTORY_MAX: usize = 120;
-/// 概览面板的宽度（0.2.14 默认 360）。
-pub const OVERVIEW_WIDTH: f32 = 360.0;
+
+/// 面板宽度决定的版式（V2-U12）：任何宽度下内容都放得下、不被切掉。
+///
+/// - 四个圆环一行：每格至少 [`RING_CELL_MIN`] 宽才放得下「0.3GB/3.8GB」这行小字，放不下就换成 2x2；
+/// - 「系统」一节的两列：每列至少 [`SYSTEM_CELL_MIN`] 宽，窄了变一列。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverviewLayout {
+    pub ring_columns: usize,
+    /// 圆环下面小字的最大宽度（格宽）。
+    pub ring_cell: f32,
+    pub system_columns: usize,
+}
+
+/// 圆环区左右各 12 的内边距、格间距 4。
+const RING_PAD: f32 = 24.0;
+const RING_GAP: f32 = 4.0;
+const RING_CELL_MIN: f32 = 76.0;
+/// 其他各节左右各 16 的内边距、两列之间 12 的间距。
+const SECTION_PAD: f32 = 32.0;
+const SYSTEM_GAP: f32 = 12.0;
+const SYSTEM_CELL_MIN: f32 = 150.0;
+
+/// `width` 是面板整体宽度（含左边那 1 像素边框）。
+pub fn layout_for(width: f32) -> OverviewLayout {
+    let inner = width - 1.0;
+    let cell4 = (inner - RING_PAD - RING_GAP * 3.0) / 4.0;
+    let (ring_columns, ring_cell) = if cell4 >= RING_CELL_MIN {
+        (4, cell4)
+    } else {
+        (2, (inner - RING_PAD - RING_GAP) / 2.0)
+    };
+    let cell2 = (inner - SECTION_PAD - SYSTEM_GAP) / 2.0;
+    OverviewLayout {
+        ring_columns,
+        ring_cell: ring_cell.floor().max(40.0),
+        system_columns: if cell2 >= SYSTEM_CELL_MIN { 2 } else { 1 },
+    }
+}
 
 /// 追加一个点，超过上限丢最旧的。
 pub fn push_net_point(history: &mut VecDeque<(f64, f64)>, point: (f64, f64)) {
@@ -46,6 +84,7 @@ fn ring(
     label: &'static str,
     percent: Option<u8>,
     sub: String,
+    cell: f32,
     tokens: &Tokens,
 ) -> impl IntoElement {
     let color = ring_color(percent, tokens);
@@ -54,6 +93,7 @@ fn ring(
     let value = percent.map_or_else(|| "--".to_owned(), |p| format!("{p}%"));
     v_flex()
         .items_center()
+        .min_w_0()
         .gap_1()
         .child(
             div()
@@ -119,9 +159,16 @@ fn ring(
         )
         .child(
             div()
-                .max_w(px(80.0))
+                .id(::gpui::SharedString::from(format!(
+                    "overview-ring-sub-{label}"
+                )))
+                .max_w(px(cell))
                 .truncate()
                 .typo(Role::Caption, tokens)
+                .tooltip({
+                    let full = sub.clone();
+                    move |window, cx| Tooltip::new(full.clone()).build(window, cx)
+                })
                 .child(::gpui::SharedString::from(sub)),
         )
 }
@@ -212,14 +259,20 @@ fn net_chart(history: &VecDeque<(f64, f64)>, tokens: &Tokens) -> AnyElement {
     .into_any_element()
 }
 
+/// 「系统」一节的一格：长内容（CPU 型号、内核版本）省略号截断，悬停看全文。
 fn field(label: &'static str, value: String, tokens: &Tokens) -> impl IntoElement {
+    let full = value.clone();
     v_flex()
         .min_w_0()
         .child(div().text_xs().text_color(tokens.text_muted).child(label))
         .child(
             div()
+                .id(::gpui::SharedString::from(format!(
+                    "overview-field-{label}"
+                )))
                 .truncate()
                 .text_sm()
+                .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
                 .child(::gpui::SharedString::from(value)),
         )
 }
@@ -227,6 +280,7 @@ fn field(label: &'static str, value: String, tokens: &Tokens) -> impl IntoElemen
 fn section(
     title: &'static str,
     extra: Option<String>,
+    action: Option<AnyElement>,
     body: AnyElement,
     tokens: &Tokens,
 ) -> impl IntoElement {
@@ -238,10 +292,24 @@ fn section(
         .border_color(tokens.border)
         .child(
             h_flex()
+                .gap_2()
+                .items_center()
                 .justify_between()
                 .typo(Role::Caption, tokens)
-                .child(title)
-                .children(extra.map(::gpui::SharedString::from)),
+                .child(div().flex_none().child(title))
+                .child(
+                    h_flex()
+                        .min_w_0()
+                        .gap_2()
+                        .items_center()
+                        .children(extra.map(|text| {
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .child(::gpui::SharedString::from(text))
+                        }))
+                        .children(action),
+                ),
         )
         .child(body)
 }
@@ -306,89 +374,120 @@ fn cores_section(cores: &[Option<u8>], tokens: &Tokens) -> AnyElement {
 fn mounts_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
     v_flex()
         .gap_2p5()
-        .children(summary.stats.mounts.iter().map(|mount| {
-            v_flex()
-                .gap_1()
-                .child(
-                    h_flex()
-                        .justify_between()
-                        .gap_2()
-                        .text_xs()
+        .children(
+            summary
+                .stats
+                .mounts
+                .iter()
+                .enumerate()
+                .map(|(index, mount)| {
+                    let mount_name = mount.mount.clone();
+                    let detail = format!("{} · {}", mount.fs_type, mount.source);
+                    let detail_tip = detail.clone();
+                    v_flex()
+                        .gap_1()
                         .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(::gpui::SharedString::from(mount.mount.clone())),
+                            h_flex()
+                                .justify_between()
+                                .gap_2()
+                                .text_xs()
+                                .child(
+                                    div()
+                                        .id(("overview-mount", index))
+                                        .min_w_0()
+                                        .truncate()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(mount_name.clone()).build(window, cx)
+                                        })
+                                        .child(::gpui::SharedString::from(mount.mount.clone())),
+                                )
+                                .child(div().flex_none().child(format!("{}%", mount.percent))),
                         )
-                        .child(div().flex_none().child(format!("{}%", mount.percent))),
-                )
-                .child(bar(mount.percent, tokens))
-                .child(
-                    h_flex()
-                        .justify_between()
-                        .gap_2()
-                        .text_color(tokens.text_muted)
-                        .child(div().min_w_0().truncate().text_size(px(10.0)).child(
-                            ::gpui::SharedString::from(format!(
-                                "{} · {}",
-                                mount.fs_type, mount.source
-                            )),
-                        ))
-                        .child(div().flex_none().text_size(px(10.0)).child(format!(
-                            "{} / {}",
-                            mib_gb_label(Some(mount.used_mib), 1),
-                            mib_gb_label(Some(mount.total_mib), 1)
-                        ))),
-                )
-        }))
+                        .child(bar(mount.percent, tokens))
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .gap_2()
+                                .text_color(tokens.text_muted)
+                                .child(
+                                    div()
+                                        .id(("overview-mount-src", index))
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(px(10.0))
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(detail_tip.clone()).build(window, cx)
+                                        })
+                                        .child(::gpui::SharedString::from(detail)),
+                                )
+                                .child(div().flex_none().text_size(px(10.0)).child(format!(
+                                    "{} / {}",
+                                    mib_gb_label(Some(mount.used_mib), 1),
+                                    mib_gb_label(Some(mount.total_mib), 1)
+                                ))),
+                        )
+                }),
+        )
         .into_any_element()
 }
 
 fn interfaces_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
     v_flex()
         .gap_1()
-        .children(summary.stats.net_interfaces.iter().map(|iface| {
-            v_flex()
-                .gap_0p5()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .text_xs()
-                        .child(div().size(px(6.0)).rounded_full().bg(tokens.dot_connected))
+        .children(
+            summary
+                .stats
+                .net_interfaces
+                .iter()
+                .enumerate()
+                .map(|(index, iface)| {
+                    let name = iface.name.clone();
+                    v_flex()
+                        .gap_0p5()
                         .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(::gpui::SharedString::from(iface.name.clone())),
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .text_xs()
+                                .child(div().size(px(6.0)).rounded_full().bg(tokens.dot_connected))
+                                .child(
+                                    div()
+                                        .id(("overview-iface", index))
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(name.clone()).build(window, cx)
+                                        })
+                                        .child(::gpui::SharedString::from(iface.name.clone())),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(tokens.dot_connected)
+                                        .child(format!("↓ {}", net_speed_label(iface.rx_speed))),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(tokens.accent)
+                                        .child(format!("↑ {}", net_speed_label(iface.tx_speed))),
+                                ),
                         )
                         .child(
-                            div()
-                                .text_color(tokens.dot_connected)
-                                .child(format!("↓ {}", net_speed_label(iface.rx_speed))),
+                            h_flex()
+                                .justify_between()
+                                .pl(px(14.0))
+                                .text_size(px(10.0))
+                                .text_color(tokens.text_muted)
+                                .child("开机以来")
+                                .child(format!(
+                                    "↓ {} · ↑ {}",
+                                    traffic_label(iface.rx_total),
+                                    traffic_label(iface.tx_total)
+                                )),
                         )
-                        .child(
-                            div()
-                                .text_color(tokens.accent)
-                                .child(format!("↑ {}", net_speed_label(iface.tx_speed))),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .justify_between()
-                        .pl(px(14.0))
-                        .text_size(px(10.0))
-                        .text_color(tokens.text_muted)
-                        .child("开机以来")
-                        .child(format!(
-                            "↓ {} · ↑ {}",
-                            traffic_label(iface.rx_total),
-                            traffic_label(iface.tx_total)
-                        )),
-                )
-        }))
+                }),
+        )
         .into_any_element()
 }
 
@@ -403,64 +502,76 @@ fn processes_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
         .child(div().w(px(64.0)).flex_none().text_right().child("内存"));
     v_flex()
         .child(head)
-        .children(summary.stats.top_processes.iter().map(|proc| {
-            let fraction = (proc.mem_percent as f32 / 100.0).clamp(0.0, 1.0);
-            h_flex()
-                .py_1()
-                .gap_2()
-                .items_center()
-                .border_t_1()
-                .border_color(tokens.border)
-                .text_size(px(11.0))
-                .child(
-                    div()
-                        .w(px(56.0))
-                        .text_color(tokens.text_muted)
-                        .child(::gpui::SharedString::from(proc.pid.clone())),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .child(::gpui::SharedString::from(proc.command.clone())),
-                )
-                .child(
-                    div()
-                        .relative()
-                        .w(px(64.0))
-                        .h(px(16.0))
-                        .flex_none()
-                        .rounded_sm()
-                        .overflow_hidden()
-                        .bg(tokens.subtle)
+        .children(
+            summary
+                .stats
+                .top_processes
+                .iter()
+                .enumerate()
+                .map(|(index, proc)| {
+                    let command = proc.command.clone();
+                    let fraction = (proc.mem_percent as f32 / 100.0).clamp(0.0, 1.0);
+                    h_flex()
+                        .py_1()
+                        .gap_2()
+                        .items_center()
+                        .border_t_1()
+                        .border_color(tokens.border)
+                        .text_size(px(11.0))
                         .child(
                             div()
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .left_0()
-                                .w(::gpui::relative(fraction))
-                                .bg(tokens.accent_soft),
+                                .w(px(56.0))
+                                .text_color(tokens.text_muted)
+                                .child(::gpui::SharedString::from(proc.pid.clone())),
                         )
                         .child(
                             div()
-                                .absolute()
-                                .inset_0()
-                                .pr_1()
-                                .flex()
-                                .items_center()
-                                .justify_end()
-                                .text_size(px(10.0))
-                                .child(format!("{:.1}%", proc.mem_percent)),
-                        ),
-                )
-        }))
+                                .id(("overview-proc", index))
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(command.clone()).build(window, cx)
+                                })
+                                .child(::gpui::SharedString::from(proc.command.clone())),
+                        )
+                        .child(
+                            div()
+                                .relative()
+                                .w(px(64.0))
+                                .h(px(16.0))
+                                .flex_none()
+                                .rounded_sm()
+                                .overflow_hidden()
+                                .bg(tokens.subtle)
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .left_0()
+                                        .w(::gpui::relative(fraction))
+                                        .bg(tokens.accent_soft),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .inset_0()
+                                        .pr_1()
+                                        .flex()
+                                        .items_center()
+                                        .justify_end()
+                                        .text_size(px(10.0))
+                                        .child(format!("{:.1}%", proc.mem_percent)),
+                                ),
+                        )
+                }),
+        )
         .into_any_element()
 }
 
 /// 「系统」一节的格子：系统 / 内核 / 运行时间 / 负载 / 交换空间 / CPU 型号。
-fn system_section(s: &StatusSummary, tokens: &Tokens) -> AnyElement {
+fn system_section(s: &StatusSummary, layout: OverviewLayout, tokens: &Tokens) -> AnyElement {
     let stats = &s.stats;
     let load = |value: Option<f64>| value.map_or_else(|| "--".to_owned(), |v| format!("{v:.2}"));
     let dash = |text: &str| {
@@ -478,7 +589,7 @@ fn system_section(s: &StatusSummary, tokens: &Tokens) -> AnyElement {
     };
     let mut grid = div()
         .grid()
-        .grid_cols(2)
+        .grid_cols(layout.system_columns as u16)
         .gap_x_3()
         .gap_y_2()
         .child(field("系统", dash(&stats.os_name), tokens))
@@ -513,12 +624,13 @@ fn system_section(s: &StatusSummary, tokens: &Tokens) -> AnyElement {
 }
 
 /// 四个圆环。
-fn rings_section(s: &StatusSummary, tokens: &Tokens) -> AnyElement {
+fn rings_section(s: &StatusSummary, layout: OverviewLayout, tokens: &Tokens) -> AnyElement {
     let stats = &s.stats;
     div()
         .grid()
-        .grid_cols(4)
+        .grid_cols(layout.ring_columns as u16)
         .gap_1()
+        .gap_y_3()
         .px_3()
         .py_4()
         .child(ring(
@@ -527,6 +639,7 @@ fn rings_section(s: &StatusSummary, tokens: &Tokens) -> AnyElement {
             stats
                 .cpu_cores
                 .map_or_else(String::new, |cores| format!("{cores} 核")),
+            layout.ring_cell,
             tokens,
         ))
         .child(ring(
@@ -537,12 +650,14 @@ fn rings_section(s: &StatusSummary, tokens: &Tokens) -> AnyElement {
                 stats.mem_total_mib.map(|v| v as f64),
                 1,
             ),
+            layout.ring_cell,
             tokens,
         ))
         .child(ring(
             "磁盘",
             stats.disk_percent,
             usage_text(stats.disk_used_mib, stats.disk_total_mib, 0),
+            layout.ring_cell,
             tokens,
         ))
         .child(ring(
@@ -551,8 +666,34 @@ fn rings_section(s: &StatusSummary, tokens: &Tokens) -> AnyElement {
             stats
                 .load_1m
                 .map_or_else(String::new, |load| format!("{load:.2}")),
+            layout.ring_cell,
             tokens,
         ))
+        .into_any_element()
+}
+
+/// 「所有连接」小按钮（网卡一节标题右侧）。
+fn connections_button(entity: Entity<MainWindow>, tokens: &Tokens) -> AnyElement {
+    let hover = tokens.hover;
+    div()
+        .id("overview-all-connections")
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .px_1p5()
+        .py_0p5()
+        .rounded_md()
+        .cursor_pointer()
+        .text_xs()
+        .text_color(tokens.accent)
+        .hover(move |style| style.bg(hover))
+        .tooltip(|window, cx| Tooltip::new("查看所有网络连接").build(window, cx))
+        .child(Icon::new(IconName::Network).size_3p5())
+        .child("所有连接")
+        .on_click(move |_, window, cx| {
+            entity.update(cx, |this, cx| this.open_connections_dialog(window, cx));
+        })
         .into_any_element()
 }
 
@@ -561,6 +702,8 @@ fn overview_body(
     s: &StatusSummary,
     history: &VecDeque<(f64, f64)>,
     scroll: &::gpui::ScrollHandle,
+    layout: OverviewLayout,
+    entity: &Entity<MainWindow>,
     tokens: &Tokens,
 ) -> AnyElement {
     let stats = &s.stats;
@@ -573,10 +716,11 @@ fn overview_body(
         .min_h_0()
         .overflow_y_scroll()
         .track_scroll(scroll)
-        .child(rings_section(s, tokens))
+        .child(rings_section(s, layout, tokens))
         .child(section(
             "网络",
             net_extra,
+            None,
             net_chart(history, tokens),
             tokens,
         ));
@@ -584,25 +728,47 @@ fn overview_body(
         body = body.child(section(
             "核心",
             Some(stats.per_core_percent.len().to_string()),
+            None,
             cores_section(&stats.per_core_percent, tokens),
             tokens,
         ));
     }
-    body = body.child(section("系统", None, system_section(s, tokens), tokens));
+    body = body.child(section(
+        "系统",
+        None,
+        None,
+        system_section(s, layout, tokens),
+        tokens,
+    ));
     if !stats.mounts.is_empty() {
         body = body.child(section(
             "存储",
             Some(stats.mounts.len().to_string()),
+            None,
             mounts_section(s, tokens),
             tokens,
         ));
     }
-    if !stats.net_interfaces.is_empty() {
-        body = body.child(section("网卡", None, interfaces_section(s, tokens), tokens));
-    }
+    // 网卡一节永远画：「所有连接」按钮在它的标题上，没有网卡读数时也要能点。
+    let nics = if stats.net_interfaces.is_empty() {
+        div()
+            .typo(Role::Caption, tokens)
+            .child("没有读到网卡数据")
+            .into_any_element()
+    } else {
+        interfaces_section(s, tokens)
+    };
+    body = body.child(section(
+        "网卡",
+        None,
+        Some(connections_button(entity.clone(), tokens)),
+        nics,
+        tokens,
+    ));
     if !stats.top_processes.is_empty() {
         body = body.child(section(
             "内存占用进程",
+            None,
             None,
             processes_section(s, tokens),
             tokens,
@@ -617,6 +783,78 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// 现在画出来的宽度：设置表里存的（拖动中用临时值）夹进窗口允许的范围。
+    pub(super) fn overview_width_now(&self, cx: &App) -> f32 {
+        let desired = self
+            .docks
+            .overview_live
+            .unwrap_or(self.store.bars().overview_width);
+        panel_width::clamp(
+            PanelKind::Overview,
+            desired,
+            self.window_width,
+            self.overview_reserved(cx),
+        )
+    }
+
+    /// 左边缘拖动中：宽度 = 起始宽度 - 指针移动量。返回 `true` 表示这个鼠标移动事件被它用掉了。
+    pub(super) fn overview_mouse_move(
+        &mut self,
+        event: &::gpui::MouseMoveEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(start) = self.docks.overview_drag else {
+            return false;
+        };
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.commit_overview_width(cx);
+            return true;
+        }
+        let width = panel_width::dragged_width(
+            PanelKind::Overview,
+            start,
+            f32::from(event.position.x),
+            self.window_width,
+            self.overview_reserved(cx),
+        );
+        self.docks.overview_live = Some(width);
+        cx.notify();
+        true
+    }
+
+    pub(super) fn overview_mouse_up(&mut self, cx: &mut Context<Self>) {
+        if self.docks.overview_drag.is_some() {
+            self.commit_overview_width(cx);
+        }
+    }
+
+    /// 松手：把拖出来的宽度写进设置表（本机设置，不同步）。
+    fn commit_overview_width(&mut self, cx: &mut Context<Self>) {
+        self.docks.overview_drag = None;
+        let key = PanelKind::Overview.setting_key();
+        if let Some(width) = self.docks.overview_live.take()
+            && let Err(err) = self
+                .store
+                .write_bar_setting(|db| super::bar_settings::write_number(db, key, width))
+        {
+            tracing::warn!(%err, "保存概览面板宽度失败");
+        }
+        cx.notify();
+    }
+
+    /// 双击把手：恢复默认宽度。
+    fn reset_overview_width(&mut self, cx: &mut Context<Self>) {
+        let key = PanelKind::Overview.setting_key();
+        let width = PanelKind::Overview.default_width();
+        if let Err(err) = self
+            .store
+            .write_bar_setting(|db| super::bar_settings::write_number(db, key, width))
+        {
+            tracing::warn!(%err, "保存概览面板宽度失败");
+        }
+        cx.notify();
+    }
+
     /// 概览面板（没有活动会话或没开就是 `None`）。盖在终端区域右边，底部让出两条栏。
     pub(super) fn render_overview(
         &mut self,
@@ -627,6 +865,8 @@ impl MainWindow {
             return None;
         }
         let host_id = self.status_host?;
+        let width = self.overview_width_now(cx);
+        let layout = layout_for(width);
         let title = self
             .store
             .host(host_id)
@@ -697,7 +937,43 @@ impl MainWindow {
                     None => "状态采集等待中…".to_owned(),
                 })
                 .into_any_element(),
-            Some(s) => overview_body(s, &self.docks.net, &self.docks.overview_scroll, tokens),
+            Some(s) => overview_body(
+                s,
+                &self.docks.net,
+                &self.docks.overview_scroll,
+                layout,
+                &entity,
+                tokens,
+            ),
+        };
+
+        // 左边缘的拖动把手（同 AI / 文件面板）：光标变左右箭头，双击恢复默认宽度。
+        let handle = {
+            let down = entity.clone();
+            div()
+                .id("overview-resize")
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(-3.0))
+                .w(px(6.0))
+                .cursor_col_resize()
+                .on_mouse_down(MouseButton::Left, move |event, _window, cx| {
+                    cx.stop_propagation();
+                    let double = event.click_count >= 2;
+                    let start = DragStart {
+                        pointer_x: f32::from(event.position.x),
+                        width,
+                    };
+                    down.update(cx, |this, cx| {
+                        if double {
+                            this.reset_overview_width(cx);
+                        } else {
+                            this.docks.overview_drag = Some(start);
+                            cx.notify();
+                        }
+                    });
+                })
         };
 
         Some(
@@ -707,13 +983,14 @@ impl MainWindow {
                 .top_0()
                 .right_0()
                 .bottom_0()
-                .w(px(OVERVIEW_WIDTH))
+                .w(px(width))
                 .border_l_1()
                 .border_color(tokens.border)
                 .bg(tokens.surface)
                 .shadow_lg()
                 .child(header)
                 .child(body)
+                .child(handle)
                 .into_any_element(),
         )
     }
@@ -722,7 +999,8 @@ impl MainWindow {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{NET_HISTORY_MAX, push_net_point};
+    use super::{NET_HISTORY_MAX, layout_for, push_net_point};
+    use crate::main_window::panel_width::{OVERVIEW_DEFAULT, PANEL_MIN};
     use std::collections::VecDeque;
 
     #[test]
@@ -737,5 +1015,45 @@ mod tests {
             history.back().map(|p| p.0),
             Some((NET_HISTORY_MAX + 4) as f64)
         );
+    }
+
+    #[test]
+    fn the_default_width_fits_all_four_rings_on_one_row_and_two_system_columns() {
+        let layout = layout_for(OVERVIEW_DEFAULT);
+        assert_eq!(layout.ring_columns, 4);
+        assert_eq!(layout.system_columns, 2);
+        // 圆环下面那行小字（「0.3GB/3.8GB」）至少有 76 像素。
+        assert!(layout.ring_cell >= 76.0, "{layout:?}");
+    }
+
+    #[test]
+    fn narrow_widths_wrap_the_rings_and_stack_the_system_fields() {
+        let narrow = layout_for(PANEL_MIN);
+        assert_eq!(narrow.ring_columns, 2, "320 宽放不下四格");
+        assert_eq!(narrow.system_columns, 1);
+        assert!(narrow.ring_cell >= 76.0, "两列时每格更宽：{narrow:?}");
+        // 临界值：一行放四个圆环要 341，两列系统信息要 345。
+        assert_eq!(layout_for(340.0).ring_columns, 2);
+        assert_eq!(layout_for(341.0).ring_columns, 4);
+        assert_eq!(layout_for(344.0).system_columns, 1);
+        assert_eq!(layout_for(345.0).system_columns, 2);
+    }
+
+    #[test]
+    fn the_layout_never_gets_worse_as_the_panel_gets_wider() {
+        let mut last = layout_for(PANEL_MIN);
+        for width in 321..1200 {
+            let now = layout_for(width as f32);
+            assert!(now.ring_columns >= last.ring_columns, "{width}");
+            assert!(now.system_columns >= last.system_columns, "{width}");
+            // 同一种列数下，格子随宽度变大。
+            if now.ring_columns == last.ring_columns {
+                assert!(now.ring_cell >= last.ring_cell, "{width}");
+            }
+            last = now;
+        }
+        // 再宽也不会超过四个圆环 / 两列。
+        assert_eq!(layout_for(1000.0).ring_columns, 4);
+        assert_eq!(layout_for(1000.0).system_columns, 2);
     }
 }

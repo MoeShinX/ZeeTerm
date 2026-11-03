@@ -21,6 +21,7 @@ pub(crate) mod bridge;
 mod close_guard;
 pub mod collation;
 pub mod compose_history;
+mod connections_ui;
 mod dev_acts;
 mod dev_acts_about;
 mod dev_acts_agent;
@@ -31,6 +32,7 @@ mod dev_acts_pane;
 mod dev_acts_sync;
 mod dev_acts_tcp;
 mod dev_acts_u1;
+mod dev_acts_u12;
 mod dev_acts_u2;
 mod dev_acts_u4;
 mod dev_acts_u6;
@@ -160,6 +162,11 @@ pub struct MainWindow {
     pub(super) manage_search_reset: bool,
     /// 欢迎页「快速连接」弹窗里的 `user@host[:port]` 输入框。
     pub(super) quick_target: Entity<InputState>,
+    /// 「所有网络连接」对话框的搜索框，和给迟到结果对号的采集编号（V2-U12）。
+    pub(super) conn_query: Entity<InputState>,
+    pub(super) conn_generation: u64,
+    /// 调试驱动喂的假数据（概览面板 / 连接列表），release 里是空结构。
+    pub(super) dev_fake: dev_acts_u12::DevFake,
     /// 空白标签里选主机的光标位置。
     pub(super) launcher_cursor: usize,
     /// 设置页 AI 一节（智能体检测 / 路径 / 下载）：第一次打开设置页时才建。
@@ -246,6 +253,8 @@ impl MainWindow {
             cx.new(|cx| InputState::new(window, cx).placeholder("按名称、地址搜索"));
         let quick_target =
             cx.new(|cx| InputState::new(window, cx).placeholder("user@host 或 user@host:端口"));
+        let conn_query =
+            cx.new(|cx| InputState::new(window, cx).placeholder("按地址、端口、进程名搜索"));
         let saved_view = layout.view.as_deref().and_then(MainView::parse);
 
         let mut subs = Vec::new();
@@ -258,6 +267,7 @@ impl MainWindow {
             &launcher_query,
             &manage_search,
             &quick_target,
+            &conn_query,
         ] {
             subs.push(cx.observe(input, |_this, _input, cx| cx.notify()));
         }
@@ -282,6 +292,16 @@ impl MainWindow {
                 InputEvent::PressEnter { .. } => this.search_enter(window, cx),
                 InputEvent::Change => cx.notify(),
                 _ => {}
+            },
+        ));
+        // 连接列表的搜索框：文字一变就重算要显示的行（光标闪烁这类通知不算）。
+        subs.push(cx.subscribe_in(
+            &conn_query,
+            window,
+            |this, _input, event: &InputEvent, _window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.connections_refilter(cx);
+                }
             },
         ));
         subs.push(cx.subscribe_in(
@@ -363,6 +383,9 @@ impl MainWindow {
             manage_search,
             manage_search_reset: false,
             quick_target,
+            conn_query,
+            conn_generation: 0,
+            dev_fake: Default::default(),
             launcher_cursor: 0,
             agent_settings: None,
             sync_settings: None,
@@ -451,6 +474,7 @@ impl MainWindow {
             changed = true;
         }
         changed |= self.sync_status(cx);
+        self.connections_tick(window, cx);
         changed |= self.sync_sync_bar();
         changed |= self.sync_forwards(cx);
         changed |= self.x11_poll(window, cx);
@@ -557,6 +581,23 @@ impl MainWindow {
             // 服务器状态是在 SSH 连接上跑命令采的：Telnet / 串口标签不订阅，状态栏也不画。
             .filter(|id| self.caps_of(*id).server_status)
         };
+        // 调试驱动塞了假状态：不订阅真实采集，概览面板 / 状态栏直接用它。
+        #[cfg(debug_assertions)]
+        if let Some((host, status)) = self.dev_fake.status.clone() {
+            let mut changed = false;
+            if self.status_host != Some(host) {
+                if let Some(old) = self.status_host.take() {
+                    crate::status_demo::unsubscribe_host(old);
+                }
+                self.status_host = Some(host);
+                changed = true;
+            }
+            if self.status.as_ref() != Some(&status) {
+                self.status = Some(status);
+                changed = true;
+            }
+            return changed;
+        }
         let mut changed = false;
         if wanted != self.status_host {
             if let Some(old) = self.status_host.take() {

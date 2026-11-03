@@ -6,7 +6,7 @@
 //! | `quick_commands_bar` / `compose_bar` | 命令栏 / 撰写栏开着没有 | 本机 |
 //! | `quick_commands_group` | 命令栏当前分组 | 本机 |
 //! | `layout.quick_bar_height` / `layout.compose_bar_height` | 栏高（撰写栏 0 = 自动） | 本机 |
-//! | `layout.ai_panel_width` / `layout.sftp_panel_width` / `layout.ai_input_height` | 面板宽度、AI 输入框高度 | 本机 |
+//! | `layout.ai_panel_width` / `layout.sftp_panel_width` / `layout.overview_width` / `layout.ai_input_height` | 面板宽度、AI 输入框高度 | 本机 |
 //! | `layout.sftp_dock_local_hidden` | 文件停靠面板里本地栏收起了 | 本机 |
 //!
 //! 读不懂的值回到默认，不崩；写失败把原因交给调用方显示。
@@ -39,6 +39,8 @@ pub struct BarSettings {
     pub ai_input_height: f32,
     pub ai_width: f32,
     pub sftp_width: f32,
+    /// 服务器概览面板的宽度。
+    pub overview_width: f32,
     pub sftp_local_hidden: bool,
 }
 
@@ -54,6 +56,7 @@ impl Default for BarSettings {
             ai_input_height: bar_height::AI_INPUT_DEFAULT,
             ai_width: panel_width::AI_DEFAULT,
             sftp_width: panel_width::SFTP_DEFAULT,
+            overview_width: panel_width::OVERVIEW_DEFAULT,
             sftp_local_hidden: false,
         }
     }
@@ -92,6 +95,10 @@ impl BarSettings {
             sftp_width: panel_width::sanitize_stored(
                 number(PanelKind::Sftp.setting_key()),
                 panel_width::SFTP_DEFAULT,
+            ),
+            overview_width: panel_width::sanitize_stored(
+                number(PanelKind::Overview.setting_key()),
+                panel_width::OVERVIEW_DEFAULT,
             ),
             sftp_local_hidden: parse_bool(read(db, SFTP_LOCAL_HIDDEN).as_deref(), false),
         }
@@ -152,6 +159,7 @@ mod tests {
         write_number(&db, QUICK_HEIGHT, 76.0).expect("写高度");
         write_number(&db, COMPOSE_HEIGHT, 120.4).expect("写高度");
         write_number(&db, PanelKind::Ai.setting_key(), 512.0).expect("写宽度");
+        write_number(&db, PanelKind::Overview.setting_key(), 433.0).expect("写宽度");
 
         // 设置表里是 0.2.14 能读的写法：命令是「JSON 字符串里装着 JSON 数组」，布尔和数字是裸 JSON。
         assert_eq!(read(&db, QUICK_BAR).as_deref(), Some("true"));
@@ -167,6 +175,7 @@ mod tests {
         assert_eq!(loaded.quick_height, 76.0);
         assert_eq!(loaded.compose_height, 120.0);
         assert_eq!(loaded.ai_width, 512.0);
+        assert_eq!(loaded.overview_width, 433.0);
     }
 
     #[test]

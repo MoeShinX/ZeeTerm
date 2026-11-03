@@ -109,6 +109,7 @@ pub fn validate(spec: &str) -> Result<(), String> {
         || super::dev_acts_u4::is_known(name)
         || super::dev_acts_u6::is_known(name)
         || super::dev_acts_u7::is_known(name)
+        || super::dev_acts_u12::is_known(name)
         || super::dev_acts_n4::is_known(name)
         || super::dev_acts_sync::is_known(name)
         || KNOWN.contains(&name)
@@ -190,6 +191,7 @@ pub(super) fn modal_name(this: &MainWindow) -> &'static str {
         Some(Modal::Unsaved(_)) => "unsaved",
         Some(Modal::Recovery(_)) => "recovery",
         Some(Modal::X11Needed(_)) => "x11",
+        Some(Modal::Connections(_)) => "connections",
     }
 }
 
@@ -242,6 +244,10 @@ fn run_inner(
     }
     // V2-U6（标题栏精简）的动作在 `dev_acts_u6`。
     if let Some(result) = super::dev_acts_u6::run(this, spec, window, cx) {
+        return result;
+    }
+    // V2-U12（概览面板调宽、所有连接对话框）的动作在 `dev_acts_u12`。
+    if let Some(result) = super::dev_acts_u12::run(this, spec, window, cx) {
         return result;
     }
     // V2-U7（主机属性对话框）的动作在 `dev_acts_u7`。

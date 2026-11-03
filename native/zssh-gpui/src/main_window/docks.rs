@@ -70,6 +70,9 @@ pub struct DockState {
     pub ai_live: Option<f32>,
     pub sftp_live: Option<f32>,
     pub overview_open: bool,
+    /// 概览面板左边缘正在被拖：按下时的指针和宽度，以及拖动过程中的临时宽度（松手才写设置表）。
+    pub overview_drag: Option<DragStart>,
+    pub overview_live: Option<f32>,
     /// 概览面板内容区的滚动位置（驱动脚本截图时把下面的几节滚进视野）。
     pub overview_scroll: ::gpui::ScrollHandle,
     pub net: VecDeque<(f64, f64)>,
@@ -99,6 +102,8 @@ impl Default for DockState {
             ai_live: None,
             sftp_live: None,
             overview_open: false,
+            overview_drag: None,
+            overview_live: None,
             overview_scroll: ::gpui::ScrollHandle::new(),
             net: VecDeque::new(),
             net_host: None,
@@ -234,7 +239,7 @@ impl MainWindow {
     }
 
     /// 主机树展开时占的宽度：算终端最少保留宽度时要先扣掉。
-    fn tree_reserved(&self) -> f32 {
+    pub(super) fn tree_reserved(&self) -> f32 {
         if self.tree.collapsed || !self.nav.view.has_sidebar() {
             0.0
         } else {
@@ -270,11 +275,25 @@ impl MainWindow {
         }
     }
 
+    /// 概览面板盖在终端上，但它的宽度上限仍要给终端留出至少 360：已占着的树、侧栏、AI / 文件面板都算在内。
+    pub(super) fn overview_reserved(&self, cx: &App) -> f32 {
+        let layout = self.dock_layout_now(cx);
+        let aside = if self.panels_on_page() && self.panels.visible().is_some() {
+            self.panel_width_now(self.window_width)
+        } else {
+            0.0
+        };
+        self.tree_reserved() + aside + layout.ai_width + layout.sftp_width
+    }
+
     pub(super) fn docks_mouse_move(
         &mut self,
         event: &::gpui::MouseMoveEvent,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.overview_mouse_move(event, cx) {
+            return true;
+        }
         let Some((kind, start)) = self.docks.drag else {
             return false;
         };
@@ -303,6 +322,7 @@ impl MainWindow {
     }
 
     pub(super) fn docks_mouse_up(&mut self, cx: &mut Context<Self>) {
+        self.overview_mouse_up(cx);
         if let Some((kind, _)) = self.docks.drag {
             self.commit_dock_width(kind, cx);
         }
@@ -527,6 +547,14 @@ impl MainWindow {
                 zssh_core::ssh::pick_shell(&shells, ordinal, live).map(|shell| shell.cwd.clone());
             let _ = tx.send((host, cwd));
         });
+    }
+
+    /// 调试驱动：直接塞一段网速历史（假状态没有真实的轮询来攒曲线），并让「换了主机就清空」认得它。
+    #[cfg(debug_assertions)]
+    pub(super) fn dev_seed_net(&mut self, host: i64, revision: u64, points: Vec<(f64, f64)>) {
+        self.docks.net = points.into();
+        self.docks.net_host = Some(host);
+        self.docks.net_revision = revision;
     }
 
     /// 状态栏的网速历史（概览面板的曲线）：换了主机就重新记。
