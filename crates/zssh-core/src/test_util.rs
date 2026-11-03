@@ -72,3 +72,49 @@ impl AsRef<std::ffi::OsStr> for TestDir {
         self.0.as_path().as_os_str()
     }
 }
+
+/// 在当前线程里抓 `tracing` 输出（含 TRACE 级别），返回闭包的结果和抓到的全部日志文字。
+///
+/// 用线程局部订阅者：异步用例要用单线程运行时（`#[tokio::test]` 默认就是），任务才会
+/// 在当前线程上跑。别的用例先触发过的 callsite 会缓存“没人订阅”，所以要重建一次缓存。
+pub(crate) fn capture_logs<R>(f: impl FnOnce() -> R) -> (R, String) {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+    struct SinkWriter(Arc<Mutex<Vec<u8>>>);
+    impl Write for SinkWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if let Ok(mut inner) = self.0.lock() {
+                inner.extend_from_slice(buf);
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Sink {
+        type Writer = SinkWriter;
+        fn make_writer(&'a self) -> SinkWriter {
+            SinkWriter(self.0.clone())
+        }
+    }
+
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
+        .with_writer(Sink(buffer.clone()))
+        .finish();
+    let result = tracing::subscriber::with_default(subscriber, || {
+        tracing::callsite::rebuild_interest_cache();
+        f()
+    });
+    let logs = buffer
+        .lock()
+        .map(|inner| String::from_utf8_lossy(&inner).into_owned())
+        .unwrap_or_default();
+    (result, logs)
+}

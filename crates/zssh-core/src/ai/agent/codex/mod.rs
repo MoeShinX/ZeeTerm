@@ -367,7 +367,7 @@ impl Shared {
             Ok(Ok(Ok(value))) => Ok(value),
             Ok(Ok(Err(error))) => Err(AgentError::Transport(format!(
                 "{method_name} 失败：{}",
-                error.message
+                super::scrub::scrub_and_clip(&error.message)
             ))),
             // 发送端没了（进程退出）。
             Ok(Err(_)) => Err(AgentError::Transport("codex app-server 连接断开".into())),
@@ -1214,7 +1214,8 @@ async fn read_loop(shared: Arc<Shared>, stdout: tokio::process::ChildStdout) {
                 handle_notification(&shared, &method, &params).await;
             }
             Err(err) => {
-                tracing::debug!(%err, line = %line.chars().take(200).collect::<String>(), "codex 输出了解析不了的行");
+                // 行内容可能带着智能体读到的秘密：只记长度和解析错误。
+                tracing::debug!(%err, len = line.len(), "codex 输出了解析不了的行");
             }
         }
     }
