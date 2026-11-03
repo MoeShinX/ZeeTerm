@@ -15,6 +15,7 @@ use zssh_core::model::{Group, GroupDraft};
 use super::MainWindow;
 use super::key_dialogs::{GenerateKeyDialog, InstallKeyDialog};
 use super::page_logic::{delete_group_message, flatten_groups, forbidden_parents};
+use super::quick_commands::Field as QuickField;
 use super::widgets::{ButtonLook, Choice, error_note, field, note, select, text_button};
 use crate::app_theme::Tokens;
 use crate::typography::{Role, Typo as _};
@@ -79,6 +80,16 @@ pub struct QuickDialog {
     pub password: Entity<InputState>,
 }
 
+/// 新建 / 编辑快捷命令的对话框。输入框（名称、分组、命令）是主窗口 `quick_ui` 里的，这里是其余字段和
+/// 保存失败的提示；取消 = 直接关掉，列表和存储一个字都不动。
+pub struct QuickEditDialog {
+    /// `None` = 新建。
+    pub id: Option<String>,
+    pub color: Option<String>,
+    pub enter: bool,
+    pub error: Option<(QuickField, String)>,
+}
+
 /// 欢迎页的「快速连接」：先问 `user@host[:port]`，填对了再走原来的密码对话框。
 pub struct QuickTargetDialog {
     pub error: Option<String>,
@@ -89,6 +100,8 @@ pub enum Modal {
     Group(GroupDialog),
     Quick(QuickDialog),
     QuickTarget(QuickTargetDialog),
+    /// 新建 / 编辑快捷命令（所有入口共用）。
+    QuickEdit(QuickEditDialog),
     GenerateKey(GenerateKeyDialog),
     InstallKey(InstallKeyDialog),
     /// 编辑器有未保存修改：保存 / 不保存 / 取消。
@@ -108,6 +121,36 @@ impl Modal {
             Self::Unsaved(ask) => ask.busy,
             _ => false,
         }
+    }
+
+    /// 里面有多行输入框：回车是换行，要 Ctrl+Enter 才确认。
+    pub fn multiline_form(&self) -> bool {
+        matches!(self, Self::QuickEdit(_))
+    }
+
+    /// 点遮罩算不算取消。填了半天的表单不能被一次误点丢掉，只能用取消按钮或 Esc 关。
+    pub fn closes_on_scrim(&self) -> bool {
+        !self.multiline_form()
+    }
+}
+
+/// 对话框开着时一次按键的去向（`on_capture_key` 用）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModalKey {
+    Cancel,
+    Confirm,
+    /// 不拦，交给输入框。
+    Pass,
+}
+
+/// `plain`：没按任何修饰键；`ctrl_only`：只按着 Ctrl。普通对话框 Esc 取消、Enter 确认；
+/// 带多行输入框的对话框里普通 Enter 是换行（交给输入框），Ctrl+Enter 才确认。
+pub fn modal_key(key: &str, plain: bool, ctrl_only: bool, multiline_form: bool) -> ModalKey {
+    match key {
+        "escape" if plain => ModalKey::Cancel,
+        "enter" if plain && !multiline_form => ModalKey::Confirm,
+        "enter" if ctrl_only && multiline_form => ModalKey::Confirm,
+        _ => ModalKey::Pass,
     }
 }
 
@@ -263,6 +306,7 @@ impl MainWindow {
             Some(Modal::Group(_)) => self.submit_group_dialog(window, cx),
             Some(Modal::Quick(_)) => self.submit_quick_dialog(window, cx),
             Some(Modal::QuickTarget(_)) => self.submit_quick_target(window, cx),
+            Some(Modal::QuickEdit(_)) => self.quick_save(window, cx),
             Some(Modal::GenerateKey(_)) => self.submit_generate_key(window, cx),
             Some(Modal::InstallKey(_)) => self.submit_install_key(window, cx),
             Some(Modal::Unsaved(_)) => self.answer_unsaved(true, window, cx),
@@ -400,25 +444,31 @@ impl MainWindow {
             Modal::Group(dialog) => (400.0, self.group_body(dialog, tokens, cx)),
             Modal::Quick(dialog) => (440.0, self.quick_body(dialog, tokens, cx)),
             Modal::QuickTarget(dialog) => (440.0, self.quick_target_body(dialog, tokens, cx)),
+            Modal::QuickEdit(dialog) => (560.0, self.quick_edit_body(dialog, tokens, window, cx)),
             Modal::GenerateKey(dialog) => (480.0, self.generate_key_body(dialog, tokens, cx)),
             Modal::InstallKey(dialog) => (480.0, self.install_key_body(dialog, tokens, cx)),
             Modal::Unsaved(ask) => (440.0, self.unsaved_body(ask, tokens, cx)),
             Modal::Recovery(ui) => (600.0, self.recovery_body(ui, tokens, cx)),
             Modal::X11Needed(prompt) => (460.0, self.x11_prompt_body(prompt, tokens, cx)),
         };
-        let _ = window;
+        let closes_on_scrim = modal.closes_on_scrim();
+        let tall = modal.multiline_form();
         let scrim = {
             let entity = entity.clone();
             div()
                 .id("modal-scrim")
+                .occlude()
                 .absolute()
                 .inset_0()
                 .flex()
                 .items_center()
                 .justify_center()
                 .bg(hsla(0.0, 0.0, 0.0, 0.45))
+                .when(tall, |d| d.py_6())
                 .on_mouse_down(::gpui::MouseButton::Left, move |_, window, cx| {
-                    entity.update(cx, |this, cx| this.close_modal(window, cx));
+                    if closes_on_scrim {
+                        entity.update(cx, |this, cx| this.close_modal(window, cx));
+                    }
                 })
         };
         Some(
@@ -427,7 +477,8 @@ impl MainWindow {
                     v_flex()
                         .id("modal-card")
                         .w(px(width))
-                        .max_h(px(640.0))
+                        .when(!tall, |d| d.max_h(px(640.0)))
+                        .when(tall, |d| d.max_h_full())
                         .p_5()
                         .gap_4()
                         .rounded_lg()
@@ -712,7 +763,7 @@ impl MainWindow {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::quick_target_check;
+    use super::{ModalKey, modal_key, quick_target_check};
 
     #[test]
     fn the_welcome_quick_connect_accepts_what_the_search_box_accepts() {
@@ -730,5 +781,34 @@ mod tests {
         assert!(quick_target_check("ops@").is_err(), "没有地址");
         assert!(quick_target_check("ops@host:99999").is_err(), "端口越界");
         assert!(quick_target_check("ops @host").is_err(), "有空白");
+    }
+
+    #[test]
+    fn plain_dialogs_confirm_on_enter_and_cancel_on_escape() {
+        assert_eq!(modal_key("enter", true, false, false), ModalKey::Confirm);
+        assert_eq!(modal_key("escape", true, false, false), ModalKey::Cancel);
+        assert_eq!(modal_key("a", true, false, false), ModalKey::Pass);
+        assert_eq!(
+            modal_key("enter", false, true, false),
+            ModalKey::Pass,
+            "带修饰键的 Enter 在普通对话框里不确认（和以前一致）"
+        );
+    }
+
+    #[test]
+    fn the_command_dialog_saves_on_ctrl_enter_and_leaves_plain_enter_to_the_text_box() {
+        assert_eq!(modal_key("enter", false, true, true), ModalKey::Confirm);
+        assert_eq!(
+            modal_key("enter", true, false, true),
+            ModalKey::Pass,
+            "普通回车是换行，不能保存"
+        );
+        assert_eq!(
+            modal_key("enter", false, false, true),
+            ModalKey::Pass,
+            "Shift+Enter / Alt+Enter 也只是换行"
+        );
+        assert_eq!(modal_key("escape", true, false, true), ModalKey::Cancel);
+        assert_eq!(modal_key("escape", false, true, true), ModalKey::Pass);
     }
 }

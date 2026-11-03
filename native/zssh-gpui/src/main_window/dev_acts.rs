@@ -184,6 +184,7 @@ pub(super) fn modal_name(this: &MainWindow) -> &'static str {
         Some(Modal::Group(_)) => "group",
         Some(Modal::Quick(_)) => "quick",
         Some(Modal::QuickTarget(_)) => "quick_target",
+        Some(Modal::QuickEdit(_)) => "quick_edit",
         Some(Modal::GenerateKey(_)) => "generate",
         Some(Modal::InstallKey(_)) => "install",
         Some(Modal::Unsaved(_)) => "unsaved",

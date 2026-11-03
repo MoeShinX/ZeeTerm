@@ -133,34 +133,141 @@ fn has_bad_control(text: &str) -> bool {
         .any(|ch| (ch < ' ' || ch == '\u{7f}') && !matches!(ch, '\n' | '\r' | '\t'))
 }
 
-/// 编辑框的内容能不能存；能存返回 `None`，不能存返回原因。
-pub fn validate(name: &str, command: &str, group: &str) -> Option<String> {
+/// 编辑对话框里出错的字段：错误提示画在这个字段下面；`Form` 是不属于某个字段的（比如条数到顶），
+/// 画在对话框底部。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    Name,
+    Group,
+    Command,
+    Form,
+}
+
+/// 编辑框的内容能不能存；能存返回 `None`，不能存返回出错的字段和原因。
+pub fn validate_field(name: &str, command: &str, group: &str) -> Option<(Field, String)> {
     let name = name.trim();
     if name.is_empty() {
-        return Some("名称不能为空".into());
+        return Some((Field::Name, "名称不能为空".into()));
     }
     if name.chars().count() > NAME_MAX {
-        return Some(format!("名称不能超过 {NAME_MAX} 个字"));
+        return Some((Field::Name, format!("名称不能超过 {NAME_MAX} 个字")));
     }
     if has_bad_control(name) {
-        return Some("名称里不能有控制字符".into());
+        return Some((Field::Name, "名称里不能有控制字符".into()));
     }
     if command.trim().is_empty() {
-        return Some("命令不能为空".into());
+        return Some((Field::Command, "命令不能为空".into()));
     }
     if command.chars().count() > COMMAND_MAX {
-        return Some(format!("命令不能超过 {COMMAND_MAX} 个字"));
+        return Some((Field::Command, format!("命令不能超过 {COMMAND_MAX} 个字")));
     }
     if has_bad_control(command) {
-        return Some("命令里只能有换行和 Tab 这两种控制字符".into());
+        return Some((
+            Field::Command,
+            "命令里只能有换行和 Tab 这两种控制字符".into(),
+        ));
     }
     if group.trim().chars().count() > GROUP_MAX {
-        return Some(format!("分组名不能超过 {GROUP_MAX} 个字"));
+        return Some((Field::Group, format!("分组名不能超过 {GROUP_MAX} 个字")));
     }
     if has_bad_control(group) {
-        return Some("分组名里不能有控制字符".into());
+        return Some((Field::Group, "分组名里不能有控制字符".into()));
     }
     None
+}
+
+/// 编辑对话框打开时各字段的初值（新建 = 空白，编辑 = 这一条现在的样子）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Seed {
+    /// `None` = 新建。
+    pub id: Option<String>,
+    pub name: String,
+    pub group: String,
+    pub command: String,
+    pub color: Option<String>,
+    pub enter: bool,
+}
+
+/// 对话框打开时光标放哪：新建先填名称，编辑多半是改命令内容。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Focus {
+    Name,
+    Command,
+}
+
+impl Seed {
+    pub fn blank() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            group: String::new(),
+            command: String::new(),
+            color: None,
+            enter: false,
+        }
+    }
+
+    pub fn of(command: &QuickCommand) -> Self {
+        Self {
+            id: Some(command.id.clone()),
+            name: command.name.clone(),
+            group: command.group.clone().unwrap_or_default(),
+            command: command.command.clone(),
+            color: command.color.clone(),
+            enter: command.enter,
+        }
+    }
+
+    pub fn focus(&self) -> Focus {
+        if self.id.is_some() {
+            Focus::Command
+        } else {
+            Focus::Name
+        }
+    }
+}
+
+/// 对话框标题。
+pub fn dialog_title(editing: bool) -> &'static str {
+    if editing {
+        "编辑命令"
+    } else {
+        "新建命令"
+    }
+}
+
+/// 对话框里现在填的内容（输入框的文字 + 颜色 / 开关）。
+pub struct Filled<'a> {
+    pub id: Option<&'a str>,
+    pub name: &'a str,
+    pub group: &'a str,
+    pub command: &'a str,
+    pub color: Option<&'a str>,
+    pub enter: bool,
+}
+
+/// 保存：检查内容和条数上限，通过就做出要写进列表的那一条（名称、分组去首尾空白，命令原样，
+/// 新建时才调用 `make_id`）。不通过返回出错字段和原因，列表不动。
+pub fn build_item(
+    filled: &Filled<'_>,
+    existing: &[QuickCommand],
+    make_id: impl FnOnce() -> String,
+) -> Result<QuickCommand, (Field, String)> {
+    if let Some(problem) = validate_field(filled.name, filled.command, filled.group) {
+        return Err(problem);
+    }
+    if filled.id.is_none() && existing.len() >= COMMANDS_MAX {
+        return Err((Field::Form, format!("快捷命令最多 {COMMANDS_MAX} 条")));
+    }
+    let group = filled.group.trim();
+    Ok(QuickCommand {
+        id: filled.id.map_or_else(make_id, str::to_owned),
+        name: filled.name.trim().to_owned(),
+        command: filled.command.to_owned(),
+        group: (!group.is_empty()).then(|| group.to_owned()),
+        enter: filled.enter,
+        color: filled.color.map(str::to_owned),
+    })
 }
 
 /// 发进终端的内容：换行统一成回车（和在终端里按回车一样），要执行的末尾再补一个回车。
@@ -289,6 +396,10 @@ pub fn sections<'a>(list: &[&'a QuickCommand]) -> Vec<Section<'a>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn validate(name: &str, command: &str, group: &str) -> Option<String> {
+        validate_field(name, command, group).map(|(_, reason)| reason)
+    }
 
     fn cmd(id: &str, name: &str, command: &str, group: Option<&str>) -> QuickCommand {
         QuickCommand {
@@ -431,5 +542,109 @@ mod tests {
     #[test]
     fn ids_do_not_collide_within_a_millisecond() {
         assert_ne!(new_id(5, 1), new_id(5, 2));
+    }
+
+    #[test]
+    fn the_dialog_opens_blank_for_new_and_prefilled_for_edit() {
+        let blank = Seed::blank();
+        assert_eq!(blank.id, None);
+        assert_eq!(blank.focus(), Focus::Name, "新建先填名称");
+        assert!(blank.name.is_empty() && blank.group.is_empty() && blank.command.is_empty());
+        assert!(!blank.enter && blank.color.is_none());
+
+        let mut item = cmd("7", "端口", "ss -tlnp\nuptime", Some("排查"));
+        item.enter = false;
+        item.color = Some("blue".into());
+        let seed = Seed::of(&item);
+        assert_eq!(seed.id.as_deref(), Some("7"));
+        assert_eq!(dialog_title(false), "新建命令");
+        assert_eq!(dialog_title(seed.id.is_some()), "编辑命令");
+        assert_eq!(seed.focus(), Focus::Command, "编辑直接落在命令框");
+        assert_eq!(seed.name, "端口");
+        assert_eq!(seed.group, "排查");
+        assert_eq!(seed.command, "ss -tlnp\nuptime");
+        assert_eq!(seed.color.as_deref(), Some("blue"));
+        assert!(!seed.enter);
+        assert_eq!(
+            Seed::of(&cmd("8", "x", "y", None)).group,
+            "",
+            "没分组 = 空串"
+        );
+    }
+
+    fn filled<'a>(
+        id: Option<&'a str>,
+        name: &'a str,
+        command: &'a str,
+        group: &'a str,
+    ) -> Filled<'a> {
+        Filled {
+            id,
+            name,
+            group,
+            command,
+            color: None,
+            enter: true,
+        }
+    }
+
+    #[test]
+    fn saving_a_new_command_trims_name_and_group_and_keeps_the_command_as_typed() {
+        let item = build_item(
+            &filled(None, "  端口 ", "ss -tlnp\n", " 排查 "),
+            &[],
+            || "qc-new".into(),
+        )
+        .unwrap();
+        assert_eq!(item.id, "qc-new");
+        assert_eq!(item.name, "端口");
+        assert_eq!(item.group.as_deref(), Some("排查"));
+        assert_eq!(item.command, "ss -tlnp\n", "命令里的换行原样保留");
+        let none = build_item(&filled(None, "a", "ls", "   "), &[], || "i".into()).unwrap();
+        assert_eq!(none.group, None, "全空白的分组 = 不分组");
+    }
+
+    #[test]
+    fn saving_an_edit_keeps_the_id_and_never_asks_for_a_new_one() {
+        let list = vec![cmd("1", "a", "a", None)];
+        let item = build_item(&filled(Some("1"), "b", "ls", ""), &list, || {
+            panic!("编辑不该生成新 id")
+        })
+        .unwrap();
+        assert_eq!(item.id, "1");
+        let next = upsert(&list, item);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].name, "b");
+    }
+
+    #[test]
+    fn validation_errors_point_at_the_field_that_is_wrong() {
+        let err = |name: &str, command: &str, group: &str| {
+            build_item(&filled(None, name, command, group), &[], || "i".into())
+                .unwrap_err()
+                .0
+        };
+        assert_eq!(err("", "ls", ""), Field::Name);
+        assert_eq!(err("n", "  ", ""), Field::Command);
+        assert_eq!(err("n", "ls\u{1b}[2J", ""), Field::Command);
+        assert_eq!(err("n", "ls", &"g".repeat(51)), Field::Group);
+        // 名称和命令都不对时先报名称（和字段从上到下的顺序一致）。
+        assert_eq!(err("", "", ""), Field::Name);
+        assert_eq!(validate("", "ls", ""), Some("名称不能为空".into()));
+    }
+
+    #[test]
+    fn the_command_limit_applies_to_new_commands_only() {
+        let full: Vec<QuickCommand> = (0..COMMANDS_MAX)
+            .map(|i| cmd(&i.to_string(), "n", "ls", None))
+            .collect();
+        let (field, reason) =
+            build_item(&filled(None, "n", "ls", ""), &full, || "x".into()).unwrap_err();
+        assert_eq!(field, Field::Form);
+        assert!(reason.contains("500"));
+        assert!(
+            build_item(&filled(Some("3"), "n2", "ls", ""), &full, || "x".into()).is_ok(),
+            "满了也能改已有的"
+        );
     }
 }

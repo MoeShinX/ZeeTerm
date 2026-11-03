@@ -1160,20 +1160,22 @@ impl MainWindow {
             return;
         }
 
-        // 对话框开着：Esc 取消、Enter 确认，别的按键照常给输入框；其余窗口级快捷键先不响应。
-        if self.modal.is_some() {
-            if !mods.modified() {
-                match key.as_str() {
-                    "escape" => {
-                        self.close_modal(window, cx);
-                        cx.stop_propagation();
-                    }
-                    "enter" => {
-                        self.confirm_modal(window, cx);
-                        cx.stop_propagation();
-                    }
-                    _ => {}
+        // 对话框开着：Esc 取消、Enter 确认（带多行输入框的对话框里是 Ctrl+Enter，普通 Enter 留给输入框
+        // 换行），别的按键照常给输入框；其余窗口级快捷键先不响应。
+        let ctrl_only = mods.control && !mods.shift && !mods.alt && !mods.platform;
+        if let Some(action) = self.modal.as_ref().map(|modal| {
+            modal::modal_key(&key, !mods.modified(), ctrl_only, modal.multiline_form())
+        }) {
+            match action {
+                modal::ModalKey::Cancel => {
+                    self.close_modal(window, cx);
+                    cx.stop_propagation();
                 }
+                modal::ModalKey::Confirm => {
+                    self.confirm_modal(window, cx);
+                    cx.stop_propagation();
+                }
+                modal::ModalKey::Pass => {}
             }
             return;
         }
@@ -1267,6 +1269,18 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         let keystroke = &event.keystroke;
+        // 带多行输入框的对话框（新建 / 编辑快捷命令）：命令框自己绑了 Ctrl+Enter（插一个换行），
+        // 动作比 `capture_key_down` 先跑，所以这里先把它拦下来；真正的「保存」由随后的
+        // `on_capture_key` 做（拦下来之后按键事件还会走到它）。
+        let mods = keystroke.modifiers;
+        let ctrl_only = mods.control && !mods.shift && !mods.alt && !mods.platform;
+        if self.modal.as_ref().is_some_and(|modal| {
+            modal::modal_key(&keystroke.key, false, ctrl_only, modal.multiline_form())
+                == modal::ModalKey::Confirm
+        }) {
+            cx.stop_propagation();
+            return;
+        }
         if keystroke.modifiers.modified() {
             return;
         }

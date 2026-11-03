@@ -6,7 +6,8 @@ use gpui_kit::*;
 
 use super::MainWindow;
 use super::dev_script::Outcome;
-use super::quick_commands::QuickCommand;
+use super::modal::Modal;
+use super::quick_commands::{Field as QuickField, QuickCommand};
 
 pub const KNOWN: &[&str] = &[
     "bar_quick",
@@ -18,6 +19,10 @@ pub const KNOWN: &[&str] = &[
     "qc_form",
     "qc_ask_delete",
     "assert_qc_error",
+    "qc_dialog",
+    "assert_qc_form",
+    "assert_qc_flash",
+    "assert_qc_selected",
     "qc_move",
     "assert_qc_order",
     "compose_set",
@@ -124,17 +129,20 @@ fn run_inner(
         }
         "qc_panel" => match a {
             "toggle" => this.toggle_quick_panel(window, cx),
-            "new" => this.open_quick_panel_new(window, cx),
+            "new" => this.open_quick_new(window, cx),
             "edit" => {
                 let id = find_command(this, b)
                     .map(|command| command.id.clone())
                     .ok_or("没有这个名字的快捷命令")?;
-                this.open_quick_panel_edit(&id, window, cx);
+                this.open_quick_edit(&id, window, cx);
             }
             _ => return fail("qc_panel 的参数是 toggle / new / edit:<名称>"),
         },
-        // qc_form:<名称>:<命令>:<分组>：在已经打开的编辑表单里填字段，再按「保存」同一个方法保存。
+        // qc_form:<名称>:<命令>:<分组>[:nosave]：在已经打开的新建 / 编辑对话框里填字段，再按「保存」同一个方法保存。
         "qc_form" => {
+            if !matches!(this.modal, Some(Modal::QuickEdit(_))) {
+                return fail("新建 / 编辑对话框现在没开着");
+            }
             let (name, command, group) = (a.to_owned(), b.replace("\\n", "\n"), c.to_owned());
             let ui = &this.quick_ui;
             let (name_input, group_input, command_input) =
@@ -142,7 +150,10 @@ fn run_inner(
             name_input.update(cx, |input, cx| input.set_value(name, window, cx));
             group_input.update(cx, |input, cx| input.set_value(group, window, cx));
             command_input.update(cx, |input, cx| input.set_value(command, window, cx));
-            this.quick_save(window, cx);
+            // 第四段写 nosave：只填字段不保存（再用真实按键 Ctrl+Enter / Esc 去存或取消）。
+            if d != "nosave" {
+                this.quick_save(window, cx);
+            }
         }
         "qc_ask_delete" => {
             let id = find_command(this, a)
@@ -170,11 +181,105 @@ fn run_inner(
                 return fail("快捷命令的顺序和预期不同");
             }
         }
-        // assert_qc_error:<文字>：保存被拒时表单里显示的原因包含这段文字。
+        // assert_qc_error:<文字>[:<字段>]：保存被拒时对话框里显示的原因包含这段文字（可选再指定
+        // 出错的字段 name / group / command / form）。
         "assert_qc_error" => {
-            let shown = this.quick_ui.error.clone().unwrap_or_default();
+            let Some(Modal::QuickEdit(dialog)) = &this.modal else {
+                return fail("新建 / 编辑对话框现在没开着");
+            };
+            let Some((field, shown)) = &dialog.error else {
+                return fail("对话框里没有错误提示");
+            };
             if !shown.contains(a) {
-                return fail("表单里没有预期的错误提示");
+                return fail("对话框里没有预期的错误提示");
+            }
+            let at = match field {
+                QuickField::Name => "name",
+                QuickField::Group => "group",
+                QuickField::Command => "command",
+                QuickField::Form => "form",
+            };
+            if !b.is_empty() && at != b {
+                return fail(format!("错误挂在 {at} 上，不是 {b}"));
+            }
+        }
+        // qc_dialog:color:<颜色 id 或空>  /  qc_dialog:enter:on|off：改对话框里的颜色 / 开关
+        // （和点色点、拨开关同一份状态）。
+        "qc_dialog" => {
+            let Some(Modal::QuickEdit(dialog)) = &mut this.modal else {
+                return fail("新建 / 编辑对话框现在没开着");
+            };
+            match a {
+                "color" => dialog.color = (!b.is_empty()).then(|| b.to_owned()),
+                "enter" => dialog.enter = on_off(b)?,
+                _ => return fail("qc_dialog 的参数是 color:<色> / enter:on|off"),
+            }
+            cx.notify();
+        }
+        // assert_qc_form:<字段>:<值>：对话框里这个字段现在的值。字段 = title / name / group /
+        // command / color / enter / editing（正在编辑哪一条的名称，新建是空）/ focus（name / command）。
+        "assert_qc_form" => {
+            let Some(Modal::QuickEdit(dialog)) = &this.modal else {
+                return fail("新建 / 编辑对话框现在没开着");
+            };
+            let want = b.replace("\\n", "\n");
+            let have = match a {
+                "title" => super::quick_commands::dialog_title(dialog.id.is_some()).to_owned(),
+                "name" => this.quick_ui.name.read(cx).value().to_string(),
+                "group" => this.quick_ui.group.read(cx).value().to_string(),
+                "command" => this.quick_ui.command.read(cx).value().to_string(),
+                "color" => dialog.color.clone().unwrap_or_default(),
+                "enter" => (if dialog.enter { "on" } else { "off" }).to_owned(),
+                "editing" => dialog
+                    .id
+                    .as_deref()
+                    .and_then(|id| this.store.bars().commands.iter().find(|c| c.id == id))
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default(),
+                "focus" => {
+                    let name = this.quick_ui.name.read(cx).focus_handle(cx);
+                    let command = this.quick_ui.command.read(cx).focus_handle(cx);
+                    if name.is_focused(window) {
+                        "name"
+                    } else if command.is_focused(window) {
+                        "command"
+                    } else {
+                        "other"
+                    }
+                    .to_owned()
+                }
+                _ => {
+                    return fail(
+                        "字段是 title / name / group / command / color / enter / editing / focus",
+                    );
+                }
+            };
+            if have != want {
+                return fail(format!("对话框里 {a} 是 {have:?}，不是 {want:?}"));
+            }
+        }
+        // assert_qc_flash:<名称 或 none>：保存后正在高亮的是哪一条。
+        "assert_qc_flash" => {
+            let now = this
+                .quick_ui
+                .flash
+                .as_deref()
+                .and_then(|id| this.store.bars().commands.iter().find(|c| c.id == id))
+                .map_or("none", |c| c.name.as_str());
+            if now != a {
+                return fail(format!("现在高亮的是 {now}，不是 {a}"));
+            }
+        }
+        // assert_qc_selected:<名称 或 none>：列表里单击选中的是哪一条。
+        "assert_qc_selected" => {
+            let now = this
+                .quick_ui
+                .selected
+                .as_deref()
+                .and_then(|id| this.store.bars().commands.iter().find(|c| c.id == id))
+                .map_or("none", |c| c.name.as_str());
+            if now != a {
+                return fail(format!("现在选中的是 {now}，不是 {a}"));
             }
         }
         "compose_set" => {

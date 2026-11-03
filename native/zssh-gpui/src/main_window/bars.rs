@@ -584,7 +584,7 @@ impl MainWindow {
                 .tooltip(|window, cx| Tooltip::new("新建快捷命令").build(window, cx))
                 .child(Icon::new(IconName::Plus).size_3p5())
                 .on_click(move |_, window, cx| {
-                    entity.update(cx, |this, cx| this.open_quick_panel_new(window, cx));
+                    entity.update(cx, |this, cx| this.open_quick_new(window, cx));
                 })
         };
         let group_picker = (!groups.is_empty()).then(|| {
@@ -641,7 +641,7 @@ impl MainWindow {
                 .hover(move |style| style.bg(hover).text_color(text))
                 .child("还没有快捷命令，点这里添加常用命令（例如查看端口、系统更新）")
                 .on_click(move |_, window, cx| {
-                    entity.update(cx, |this, cx| this.open_quick_panel_new(window, cx));
+                    entity.update(cx, |this, cx| this.open_quick_new(window, cx));
                 })
         });
         let list = {
@@ -659,7 +659,7 @@ impl MainWindow {
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     // 双击按钮之间 / 后面的空白处：新建一条（按钮自己拦掉了点击）。
                     if event.click_count >= 2 {
-                        entity.update(cx, |this, cx| this.open_quick_panel_new(window, cx));
+                        entity.update(cx, |this, cx| this.open_quick_new(window, cx));
                     }
                 })
                 .children(buttons)
@@ -829,7 +829,7 @@ impl MainWindow {
                 .item(PopupMenuItem::separator())
                 .item(PopupMenuItem::new("编辑").on_click(move |_, window, cx| {
                     let id = c.clone();
-                    edit.update(cx, |this, cx| this.open_quick_panel_edit(&id, window, cx));
+                    edit.update(cx, |this, cx| this.open_quick_edit(&id, window, cx));
                 }))
                 .item(PopupMenuItem::new("删除").on_click(move |_, _window, cx| {
                     let id = d.clone();
