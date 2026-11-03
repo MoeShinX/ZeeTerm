@@ -554,8 +554,18 @@ fn importing_twice_in_merge_mode_does_not_duplicate_anything() {
     let machine = TestDir::new("zi-twice-machine");
     let db = Database::open_in_memory().unwrap();
     let engine = SyncEngine::new(&db, &zeeterm, "dev-zeeterm", &*machine, None, None);
-    for _ in 0..2 {
+    for round in 0..2 {
         let read = read_zssh(&source, &zssh_sealer, &scratch).unwrap();
+        if round == 1 {
+            let preview = engine
+                .preview_import(&read.snapshot, OfflineImportMode::Merge)
+                .unwrap();
+            assert_eq!(
+                (preview.hosts.inserted, preview.hosts.updated),
+                (0, 0),
+                "再导一次不该有变化"
+            );
+        }
         engine
             .import_snapshot(read.snapshot, OfflineImportMode::Merge)
             .unwrap();
