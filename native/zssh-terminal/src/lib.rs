@@ -95,6 +95,11 @@ pub struct Snapshot {
     pub cursor_row: usize,
     pub cursor_col: usize,
     pub history_size: usize,
+    /// 可见内容的修订号：喂了输出 / 本地文字、改了尺寸或回滚上限、滚动，都会让它变大。同一个终端里
+    /// 修订号相同就代表可见内容一样（异步高亮用它认出"扫描的是不是眼前这一屏"）。
+    pub revision: u64,
+    /// 快照取的时候滚回历史的行数。
+    pub display_offset: usize,
 }
 
 /// 协议回复队列的条数上限。DSR / DA 这类应答都只有几个字节，远端正常使用时一批输出里
@@ -182,6 +187,8 @@ pub struct TerminalModel {
     processor: Processor,
     history_limit: usize,
     replies: Arc<Mutex<ReplyQueue>>,
+    /// 见 [`Snapshot::revision`]。
+    revision: u64,
 }
 
 impl TerminalModel {
@@ -195,6 +202,7 @@ impl TerminalModel {
             processor: Processor::new(),
             history_limit: history,
             replies,
+            revision: 0,
         }
     }
 
@@ -225,6 +233,7 @@ impl TerminalModel {
             std::mem::take(&mut queue.items)
         };
         self.processor.advance(&mut self.term, bytes);
+        self.revision += 1;
         let mut queue = self
             .replies
             .lock()
@@ -235,11 +244,15 @@ impl TerminalModel {
     /// 消费一批字节，返回实际交给状态机的字节数（供 ACK 账本使用）。
     pub fn feed(&mut self, bytes: &[u8]) -> usize {
         self.processor.advance(&mut self.term, bytes);
+        if !bytes.is_empty() {
+            self.revision += 1;
+        }
         bytes.len()
     }
 
     pub fn resize(&mut self, size: Size) {
         self.term.resize(size);
+        self.revision += 1;
     }
 
     /// 改回滚上限，对已经在用的终端立刻生效（0.2.14 里改设置会同步给已开的 xterm）：
@@ -247,6 +260,7 @@ impl TerminalModel {
     pub fn set_history(&mut self, history: usize) {
         self.term.set_options(model_config(history));
         self.history_limit = history;
+        self.revision += 1;
     }
 
     /// 当前的回滚上限。
@@ -258,14 +272,22 @@ impl TerminalModel {
     /// 正数向上翻历史，负数向下回当前。
     pub fn scroll(&mut self, delta: i32) {
         self.term.scroll_display(Scroll::Delta(delta));
+        self.revision += 1;
     }
 
     pub fn scroll_to_top(&mut self) {
         self.term.scroll_display(Scroll::Top);
+        self.revision += 1;
     }
 
     pub fn scroll_to_bottom(&mut self) {
         self.term.scroll_display(Scroll::Bottom);
+        self.revision += 1;
+    }
+
+    /// 可见内容的修订号，见 [`Snapshot::revision`]。
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn display_offset(&self) -> usize {
@@ -372,6 +394,8 @@ impl TerminalModel {
             cursor_row: grid.cursor.point.line.0.max(0) as usize,
             cursor_col: grid.cursor.point.column.0,
             history_size: grid.history_size(),
+            revision: self.revision,
+            display_offset: grid.display_offset(),
         }
     }
 
@@ -457,6 +481,53 @@ mod tests {
         assert_eq!(snap.rows[0].text, "hello");
         assert_eq!(snap.rows[1].text, "world");
         assert_eq!((snap.cursor_row, snap.cursor_col), (1, 5));
+    }
+
+    /// 异步高亮靠修订号认出"扫描的是不是眼前这一屏"：任何会改变可见内容的操作都要让它变，
+    /// 没改变内容的读取不能让它变。
+    #[test]
+    fn the_revision_moves_whenever_the_visible_screen_can_change() {
+        let mut term = model(4, 20, 100);
+        fn changed(term: &TerminalModel, last: &mut u64, what: &str) {
+            let now = term.snapshot().revision;
+            assert_ne!(now, *last, "{what} 之后修订号应该变");
+            *last = now;
+        }
+        let mut last = term.snapshot().revision;
+
+        term.feed(
+            b"hello
+",
+        );
+        changed(&term, &mut last, "喂输出");
+        term.feed_local(b"local");
+        changed(&term, &mut last, "喂本地文字");
+        term.resize(Size { rows: 5, cols: 30 });
+        changed(&term, &mut last, "改尺寸");
+        for i in 0..20 {
+            term.feed(
+                format!(
+                    "line {i}
+"
+                )
+                .as_bytes(),
+            );
+        }
+        last = term.snapshot().revision;
+        term.scroll(3);
+        changed(&term, &mut last, "滚动");
+        assert_eq!(term.snapshot().display_offset, 3);
+        term.scroll_to_bottom();
+        changed(&term, &mut last, "回到底部");
+        term.set_history(50);
+        changed(&term, &mut last, "改回滚上限");
+
+        // 取快照、取回复、喂空数据都不改变内容，修订号不动。
+        let before = term.snapshot().revision;
+        let _ = term.snapshot();
+        let _ = term.take_replies();
+        term.feed(b"");
+        assert_eq!(term.snapshot().revision, before);
     }
 
     #[test]

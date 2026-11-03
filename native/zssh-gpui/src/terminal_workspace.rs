@@ -34,7 +34,10 @@ use zssh_session::{
 };
 use zssh_terminal::{MouseMode, NamedColor, Size, Snapshot, TerminalColor};
 
-use crate::highlight::{EngineHandle, HighlightRule, MAX_RULES as MAX_HIGHLIGHT_RULES, Span};
+use crate::highlight::{
+    EngineHandle, HighlightRule, HighlightScheduler, MAX_RULES as MAX_HIGHLIGHT_RULES, ScanKey,
+    Span,
+};
 use crate::settings::{
     CursorShape, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MAX_LINE_HEIGHT, MAX_SCROLLBACK, MIN_FONT_SIZE,
     MIN_LINE_HEIGHT, MIN_SCROLLBACK, UiSettings,
@@ -552,6 +555,19 @@ impl Pane {
         }
     }
 
+    /// 扫描高亮时用的"这是哪一屏"：窗格、连接代次、屏幕内容修订号、规则版本、视口。
+    fn scan_key(&self, rules_revision: u64) -> ScanKey {
+        ScanKey {
+            pane: self.id,
+            generation: self.generation,
+            content: self.snapshot.revision,
+            rules: rules_revision,
+            rows: self.snapshot.size.rows,
+            cols: self.snapshot.size.cols,
+            offset: self.snapshot.display_offset,
+        }
+    }
+
     /// 本地重排后把新尺寸也交给后端（回环后端忽略）。后端不会因为输入队列满而丢它，所以这里
     /// 不需要靠"下一次还会再发"来补。
     fn resize(&mut self, size: Size) {
@@ -875,20 +891,19 @@ const PASTE_CANCELLED: &str = "会话已变化，已取消粘贴，请重新粘�
 /// 高亮状态：规则、修订号、最近扫描结果都在这里（面板的输入框等界面状态归外壳）。
 struct HighlightUi {
     rules: Vec<HighlightRule>,
+    /// 规则集修订号：规则一变就加一，进扫描请求的 `ScanKey`，旧规则的结果因此对不上。
     revision: u64,
     next_id: u64,
-    /// 每行的命中区间，覆盖当前聚焦窗格。
-    spans: Vec<Vec<Span>>,
-    /// 上次请求的 (标签 id, 窗格, 修订, 原始字节, 滚动偏移, 行数)。
-    key: Option<(u64, usize, u64, usize, usize, usize)>,
+    /// 提交、收取后台扫描，并认定哪份结果能显示。
+    scheduler: HighlightScheduler,
+    /// 聚焦窗格这一帧的视图（窗格、连接代次、规则、视口）：画命中区间时按它取，换了视图就取不到旧结果。
+    current_view: Option<ScanKey>,
     status: Option<String>,
-    engine: EngineHandle,
 }
 
 impl HighlightUi {
     fn bump(&mut self) {
         self.revision += 1;
-        self.key = None;
     }
 }
 
@@ -1023,10 +1038,9 @@ impl TerminalWorkspace {
             rules,
             revision: 1,
             next_id,
-            spans: Vec::new(),
-            key: None,
+            scheduler: HighlightScheduler::new(Box::new(EngineHandle::start)),
+            current_view: None,
             status: None,
-            engine: EngineHandle::start(),
         };
         // 「终端里自动切到英文输入」关着时不碰输入法（离开时 `apply(false)` 对没进过英文区的窗口是空操作）。
         let _ime_focus = cx.on_focus(&focus, window, {
@@ -1342,7 +1356,6 @@ impl TerminalWorkspace {
         self.mouse_pressed = false;
         self.last_mouse_cell = None;
         self.dragging_split = None;
-        self.highlight.key = None;
         self.context_menu = None;
     }
 
@@ -2297,22 +2310,16 @@ impl TerminalWorkspace {
 
     // ---- 高亮 ----
 
-    /// 取后台扫描结果；返回是否有新结果。
+    /// 取后台扫描结果；返回是否有新结果。只有和最近一次请求完全对上的结果才会收下
+    /// （窗格、连接代次、屏幕内容、规则、视口），迟到的旧结果由调度器丢掉。
     fn poll_highlight(&mut self) -> bool {
-        let Some(outcome) = self.highlight.engine.poll() else {
+        let Some(outcome) = self.highlight.scheduler.poll() else {
             return false;
         };
         if !self.settings.highlight_enabled {
+            self.highlight.scheduler.forget();
             return false;
         }
-        let mut spans: Vec<Vec<Span>> = Vec::new();
-        for span in &outcome.spans {
-            if spans.len() <= span.row {
-                spans.resize(span.row + 1, Vec::new());
-            }
-            spans[span.row].push(*span);
-        }
-        self.highlight.spans = spans;
         let notice = outcome.notices.first().cloned();
         let error = outcome
             .statuses
@@ -2323,46 +2330,33 @@ impl TerminalWorkspace {
         true
     }
 
-    /// 发一次扫描；只有可见行或规则变了才发。
-    fn request_highlight_scan(&mut self, rows: usize) {
+    /// 每帧：看一眼聚焦窗格现在是哪一屏，没请求过就交给后台扫描。
+    /// 同一屏（窗格、连接代次、内容修订号、规则、视口都没变）不重复提交。
+    fn request_highlight_scan(&mut self) {
+        self.highlight.current_view = None;
         if !self.settings.highlight_enabled {
-            self.highlight.spans.clear();
+            self.highlight.scheduler.forget();
             return;
         }
         if self.highlight.rules.is_empty() {
             return;
         }
         let Some(tab) = self.tabs.active() else {
-            self.highlight.spans.clear();
             return;
         };
-        let revision = self.highlight.revision;
-        let tab_id = tab.id;
-        let active_pane = tab.active_pane;
-        if self.highlight.key.map(|key| (key.0, key.1)) != Some((tab_id, active_pane)) {
-            self.highlight.spans.clear();
-        }
         let pane = tab.active();
-        let key = (
-            tab_id,
-            active_pane,
-            revision,
-            pane.pump().ledger().raw,
-            pane.pump().display_offset(),
-            rows,
-        );
-        if self.highlight.key == Some(key) {
-            return;
-        }
-        let lines = pane
-            .snapshot
-            .rows
-            .iter()
-            .map(crate::highlight::line_text)
-            .collect();
-        let HighlightUi { engine, rules, .. } = &mut self.highlight;
-        engine.request(revision, rules, lines);
-        self.highlight.key = Some(key);
+        let key = pane.scan_key(self.highlight.revision);
+        self.highlight.current_view = Some(key);
+        let HighlightUi {
+            scheduler, rules, ..
+        } = &mut self.highlight;
+        scheduler.want(key, rules, || {
+            pane.snapshot
+                .rows
+                .iter()
+                .map(crate::highlight::line_text)
+                .collect()
+        });
     }
 
     /// 直接加一条规则；高亮面板的输入框和验证钩子共用。
@@ -2716,8 +2710,7 @@ impl TerminalWorkspace {
     pub(crate) fn toggle_highlight_enabled(&mut self, cx: &mut Context<Self>) {
         self.settings.highlight_enabled = !self.settings.highlight_enabled;
         if !self.settings.highlight_enabled {
-            self.highlight.spans.clear();
-            self.highlight.key = None;
+            self.highlight.scheduler.forget();
         } else if self.highlight.rules.is_empty() {
             // 打开时一条规则都没有（用户全删了）：补上常用规则，同 0.2.14，免得开了开关什么也不标。
             self.add_sample_highlight_rules(cx);
@@ -3860,15 +3853,14 @@ impl Render for TerminalWorkspace {
         self.pane_geom = geoms;
         self.layout = layout.clone();
 
-        let Some(active) = self.tabs.active() else {
+        if self.tabs.active().is_none() {
             return v_flex()
                 .size_full()
                 .track_focus(&self.focus)
                 .bg(background)
                 .into_any_element();
-        };
-        let highlight_rows = active.active().snapshot.size.rows;
-        self.request_highlight_scan(highlight_rows);
+        }
+        self.request_highlight_scan();
 
         let Some(active) = self.tabs.active() else {
             return v_flex()
@@ -3915,7 +3907,10 @@ impl Render for TerminalWorkspace {
             });
             let focused = index == active_pane;
             let pane_selection = if focused { selection } else { None };
-            let pane_highlights: &[Vec<Span>] = if focused { &self.highlight.spans } else { &[] };
+            let pane_highlights: &[Vec<Span>] = match (&self.highlight.current_view, focused) {
+                (Some(view), true) => self.highlight.scheduler.spans(view),
+                _ => &[],
+            };
             let accepts_drop = pane.state == PaneState::Live;
             let drop_border = tokens.accent;
             children.push(
@@ -4575,6 +4570,65 @@ mod pane_tests {
             None,
         );
         (pane, tx, sent)
+    }
+
+    /// R04：高亮请求靠"这是哪一屏"认结果。窗格、连接代次、屏幕内容（含本地提示文字）、规则版本、
+    /// 视口里的任何一项变了，键就必须变；只有内容变时仍算同一个视图（滚动输出时上一屏的结果慢一拍可画）。
+    #[test]
+    fn the_scan_key_tells_apart_pane_connection_content_rules_and_viewport() {
+        let (mut pane, tx, _sent) = remote_pane();
+        let first = pane.scan_key(1);
+
+        // 内容：远端输出和界面自己写的提示文字都算。
+        tx.send(SessionEvent::Data {
+            generation: 1,
+            bytes: b"error
+"
+            .to_vec(),
+        })
+        .unwrap();
+        assert!(pane.poll_events());
+        let after_output = pane.scan_key(1);
+        assert_ne!(after_output, first);
+        assert!(after_output.same_view(&first), "只有内容变，仍是同一个视图");
+        pane.pump_mut().feed_local(b"local notice");
+        pane.refresh();
+        let after_local = pane.scan_key(1);
+        assert_ne!(after_local.content, after_output.content);
+        assert!(after_local.same_view(&first));
+
+        // 规则版本、视口（大小、滚动）：换视图。
+        assert!(!pane.scan_key(2).same_view(&after_local));
+        pane.resize(Size { rows: 12, cols: 70 });
+        let resized = pane.scan_key(1);
+        assert_eq!((resized.rows, resized.cols), (12, 70));
+        assert!(!resized.same_view(&after_local));
+        for i in 0..40 {
+            pane.pump_mut().feed_local(
+                format!(
+                    "line {i}
+"
+                )
+                .as_bytes(),
+            );
+        }
+        pane.pump_mut().scroll(3);
+        pane.refresh();
+        let scrolled = pane.scan_key(1);
+        assert_eq!(scrolled.offset, 3);
+        assert!(!scrolled.same_view(&resized));
+
+        // 另一个窗格（哪怕内容一样）和同一窗格的新连接（重连沿用窗格编号、换代次）：换视图。
+        let (other, _tx, _sent) = remote_pane();
+        assert!(!other.scan_key(1).same_view(&first));
+        let mut reconnected = Pane::new(SIZE, 100, pane.generation + 1000);
+        reconnected.id = pane.id;
+        assert_eq!(reconnected.id, pane.id);
+        assert!(
+            !reconnected
+                .scan_key(1)
+                .same_view(&Pane::new(SIZE, 100, pane.generation).scan_key(1))
+        );
     }
 
     #[test]
