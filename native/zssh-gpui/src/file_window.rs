@@ -177,6 +177,8 @@ pub struct FileWindow {
     focus: FocusHandle,
     /// 标签拖到主窗口的标签栏上 = 合并回主窗口（V2-U1 第 7 条，见 `tab_drag`）。
     dragger: crate::tab_drag::Dragger,
+    /// 锁屏页（V2-U26）：锁着时整个窗口只画它。
+    lock_screen: Option<Entity<crate::app_lock::LockScreen>>,
     /// 窗口大小 / 位置变了就记下来（见 [`Self::watch_bounds`]）。
     _bounds_watch: Option<::gpui::Subscription>,
     /// 等拖动停下来再写盘的任务；又变了就换掉（旧的取消）。
@@ -249,6 +251,7 @@ impl FileWindow {
             confirm: None,
             focus: cx.focus_handle(),
             dragger: crate::tab_drag::Dragger::default(),
+            lock_screen: None,
             _bounds_watch: None,
             save_task: None,
         }
@@ -734,6 +737,16 @@ impl FileWindow {
 
 impl Render for FileWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 锁屏（V2-U26）：锁着时整个窗口只画锁屏页，里面的内容这一帧不进元素树。
+        if let Some(cover) = crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
+            return cover;
+        }
+        self.render_unlocked(window, cx).into_any_element()
+    }
+}
+
+impl FileWindow {
+    fn render_unlocked(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = Tokens::current(cx);
         let tabs: Vec<AnyElement> = self
             .tabs

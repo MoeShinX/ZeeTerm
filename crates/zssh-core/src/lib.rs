@@ -4,6 +4,7 @@
 //! React）只负责转接，不放业务逻辑。
 
 pub mod ai;
+pub mod app_lock;
 pub mod error;
 pub mod external_url;
 pub mod model;

@@ -16,6 +16,7 @@ mod agent_text;
 mod agent_tools;
 mod agents_demo;
 mod ai_terminals;
+mod app_lock;
 mod app_prefs;
 mod app_theme;
 mod backup_demo;
@@ -117,6 +118,11 @@ fn main() {
             app_theme::init_mode(dark, cx);
         }
 
+        // 空闲自动锁定要知道“ZeeTerm 窗口里最近一次键盘 / 鼠标操作”（V2-U26）：给界面线程装消息钩子。
+        if !zssh_platform_windows::activity::install_on_current_thread() {
+            tracing::warn!("没能安装输入活动钩子，空闲自动锁定不会生效");
+        }
+
         // 单实例：已有实例就把它的主窗口带到前台，然后退出自己。
         // 调试构建里自动化可以用 `ZSSH_INSTANCE_NAME` 换一个互斥体名：用户自己开着的 ZeeTerm
         // 占着默认名时，自动化起的程序不然会把用户的窗口拉到前台再退出（release 里读不到这个变量）。
@@ -186,7 +192,11 @@ fn main() {
             let close_view = view.clone();
             window.on_window_should_close(cx, move |window, cx| match tray::close_action() {
                 tray::CloseAction::HideToTray => {
-                    close_view.update(cx, |this, _cx| this.save_state(window));
+                    close_view.update(cx, |this, cx| {
+                        this.save_state(window);
+                        // 设置里选了“关到托盘时锁定”：从托盘再打开时先看到锁屏页。
+                        this.lock_for_tray(cx);
+                    });
                     tray::hide(window);
                     false
                 }
