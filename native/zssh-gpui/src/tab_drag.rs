@@ -190,20 +190,18 @@ impl Dragger {
         window: &Window,
         cx: &mut App,
     ) -> bool {
-        let Some(press) = self.press.as_mut() else {
+        match self.step(local, left_down) {
+            Step::Idle | Step::Hold => return false,
+            Step::Cancel => {
+                // 没收到抬起事件（比如鼠标在别处被抬起）：当作取消。
+                self.cancel(cx);
+                return true;
+            }
+            Step::Drag => {}
+        }
+        let Some(press) = self.press.as_ref() else {
             return false;
         };
-        if !left_down {
-            // 没收到抬起事件（比如鼠标在别处被抬起）：当作取消。
-            self.cancel(cx);
-            return true;
-        }
-        if !press.began {
-            if !exceeds(press.start, local) {
-                return false;
-            }
-            press.began = true;
-        }
         let source = id_of(window);
         let hover = hover_of(window, local, cx);
         let view = DragView {
@@ -217,6 +215,24 @@ impl Dragger {
             set(cx, Some(view));
         }
         true
+    }
+
+    /// 一次指针移动对按下状态的影响（纯状态，不碰窗口）：没按下 / 左键已松开 / 还没离开起点够远 / 在拖。
+    /// 双击标签（按下、抬起、再按下、再抬起，指针不动）里每一次移动都落在 `Hold`，永远不会进入拖动。
+    fn step(&mut self, local: (f32, f32), left_down: bool) -> Step {
+        let Some(press) = self.press.as_mut() else {
+            return Step::Idle;
+        };
+        if !left_down {
+            return Step::Cancel;
+        }
+        if !press.began {
+            if !exceeds(press.start, local) {
+                return Step::Hold;
+            }
+            press.began = true;
+        }
+        Step::Drag
     }
 
     /// 松手：返回要做什么（以及被拖的标签）；没拖起来返回 `None`。状态清掉。
@@ -239,6 +255,15 @@ impl Dragger {
             set(cx, None);
         }
     }
+}
+
+/// [`Dragger::step`] 的结果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    Idle,
+    Cancel,
+    Hold,
+    Drag,
 }
 
 /// 指针在哪：本窗口里、别的窗口的标签栏上、窗口外的空地。
@@ -418,7 +443,9 @@ pub fn id_of(window: &Window) -> WindowId {
 mod tests {
     use ::gpui::WindowId;
 
-    use super::{Drop, Hover, WinRect, classify, decide, exceeds, inside, strip_hit};
+    use super::{
+        DragKey, Dragger, Drop, Hover, Step, WinRect, classify, decide, exceeds, inside, strip_hit,
+    };
 
     fn id(n: u64) -> WindowId {
         WindowId::from(n)
@@ -439,6 +466,32 @@ mod tests {
         assert!(!exceeds((100.0, 20.0), (100.0, 26.0)), "正好 6 像素还不算");
         assert!(exceeds((100.0, 20.0), (100.0, 27.0)));
         assert!(exceeds((100.0, 20.0), (80.0, 20.0)), "往左也算");
+    }
+
+    #[test]
+    fn a_double_click_on_a_tab_never_turns_into_a_drag() {
+        // 按下、（手抖）小幅移动、抬起，再来一遍：全程在 6 像素以内，不会开始拖，标签不会被"拖走"。
+        let mut dragger = Dragger::default();
+        for _ in 0..2 {
+            dragger.press(DragKey::Sftp(3), "web-1".into(), (100.0, 20.0));
+            assert!(dragger.pending());
+            assert_eq!(dragger.step((102.0, 21.0), true), Step::Hold);
+            assert_eq!(dragger.step((100.0, 26.0), true), Step::Hold);
+            assert_eq!(dragger.key(), None, "没开始拖就不该有被拖的标签");
+            // 抬起：没拖起来，什么也不做。
+            let press = dragger.press.take().expect("按下过");
+            assert!(!press.began);
+        }
+    }
+
+    #[test]
+    fn moving_past_the_threshold_starts_the_drag_and_a_lost_button_cancels_it() {
+        let mut dragger = Dragger::default();
+        dragger.press(DragKey::Sftp(3), "web-1".into(), (100.0, 20.0));
+        assert_eq!(dragger.step((100.0, 40.0), true), Step::Drag);
+        assert_eq!(dragger.key(), Some(DragKey::Sftp(3)));
+        assert_eq!(dragger.step((100.0, 45.0), false), Step::Cancel);
+        assert_eq!(Dragger::default().step((1.0, 1.0), true), Step::Idle);
     }
 
     #[test]

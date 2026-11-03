@@ -129,6 +129,14 @@ impl MainLayout {
     }
 }
 
+/// 独立文件窗口的位置：读不懂就当没存过，不能让它连累整个文件（主窗口的位置也在里面）。
+fn lenient_bounds<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<SavedBounds>, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
+}
+
 fn lenient_layout<'de, D: Deserializer<'de>>(deserializer: D) -> Result<MainLayout, D::Error> {
     let value = Value::deserialize(deserializer)?;
     Ok(MainLayout::from_value(&value))
@@ -139,6 +147,11 @@ fn lenient_layout<'de, D: Deserializer<'de>>(deserializer: D) -> Result<MainLayo
 pub struct WindowState {
     pub main: Option<SavedBounds>,
     pub hosts: Option<SavedBounds>,
+    /// 独立「ZeeTerm 文件」窗口上次的大小和位置（用户手动调整的；最大化时是还原后的大小）。
+    #[serde(deserialize_with = "lenient_bounds")]
+    pub files: Option<SavedBounds>,
+    /// 独立文件窗口上次是不是最大化着。
+    pub files_maximized: bool,
     #[serde(deserialize_with = "lenient_layout")]
     pub layout: MainLayout,
 }
@@ -196,6 +209,76 @@ impl WindowState {
             size: size(px(bounds.width), px(bounds.height)),
         }))
     }
+}
+
+/// 保存的位置要落在现有的某个显示器上才算数：标题栏那一条（窗口顶部 `STRIP` 高）和某个显示器
+/// 至少重叠 `MIN_GRAB_WIDTH` x `MIN_GRAB_HEIGHT`，用户才抓得到它来拖。拔了副屏、换了分辨率之后
+/// 上次的位置可能已经在屏幕外，那样就不能照着开（会开到看不见的地方）。
+pub const TITLE_STRIP: f32 = 40.0;
+const MIN_GRAB_WIDTH: f32 = 120.0;
+const MIN_GRAB_HEIGHT: f32 = 24.0;
+
+/// 窗口标题条在不在某个显示器上。`displays` 是各显示器的矩形（全局逻辑像素）。
+pub fn on_a_display(bounds: SavedBounds, displays: &[SavedBounds]) -> bool {
+    displays.iter().any(|display| {
+        let left = bounds.x.max(display.x);
+        let right = (bounds.x + bounds.width).min(display.x + display.width);
+        let top = bounds.y.max(display.y);
+        let bottom = (bounds.y + TITLE_STRIP.min(bounds.height)).min(display.y + display.height);
+        right - left >= MIN_GRAB_WIDTH && bottom - top >= MIN_GRAB_HEIGHT
+    })
+}
+
+/// 文件窗口开窗参数：用上次的大小位置（尺寸不低于窗口的最小尺寸）；没存过、值不合理、位置已经不在
+/// 任何显示器上时返回 `None`，由调用方退回居中的默认大小。上次是最大化的就还是最大化（还原大小保留）。
+pub fn restore_on_displays(
+    bounds: Option<SavedBounds>,
+    maximized: bool,
+    displays: &[SavedBounds],
+    min: (f32, f32),
+) -> Option<WindowBounds> {
+    let bounds = bounds?.sane()?;
+    let bounds = SavedBounds {
+        width: bounds.width.max(min.0),
+        height: bounds.height.max(min.1),
+        ..bounds
+    };
+    if !on_a_display(bounds, displays) {
+        return None;
+    }
+    let rect = Bounds {
+        origin: point(px(bounds.x), px(bounds.y)),
+        size: size(px(bounds.width), px(bounds.height)),
+    };
+    Some(if maximized {
+        WindowBounds::Maximized(rect)
+    } else {
+        WindowBounds::Windowed(rect)
+    })
+}
+
+/// 现在所有显示器的矩形。
+pub fn display_rects(cx: &::gpui::App) -> Vec<SavedBounds> {
+    cx.displays()
+        .iter()
+        .map(|display| {
+            let bounds = display.bounds();
+            SavedBounds {
+                x: f32::from(bounds.origin.x),
+                y: f32::from(bounds.origin.y),
+                width: f32::from(bounds.size.width),
+                height: f32::from(bounds.size.height),
+            }
+        })
+        .collect()
+}
+
+/// 记下独立文件窗口现在的大小位置和是否最大化。
+pub fn save_files_window(window: &Window) {
+    let mut state = WindowState::load();
+    state.files = Some(WindowState::capture(window));
+    state.files_maximized = window.is_maximized();
+    state.save();
 }
 
 fn state_path() -> PathBuf {
@@ -270,6 +353,13 @@ mod tests {
                 height: 768.0,
             }),
             hosts: None,
+            files: Some(SavedBounds {
+                x: -1500.0,
+                y: 30.0,
+                width: 900.0,
+                height: 600.0,
+            }),
+            files_maximized: true,
             layout: MainLayout {
                 view: Some("settings".to_owned()),
                 settings_section: Some("sync".to_owned()),
@@ -392,6 +482,131 @@ mod tests {
         assert_eq!(clamp_tree_width(400.0, 800.0), 320.0);
         assert_eq!(clamp_tree_width(400.0, 300.0), TREE_MIN_WIDTH);
         assert_eq!(clamp_tree_width(250.0, 1200.0), 250.0);
+    }
+
+    fn display(x: f32, y: f32, w: f32, h: f32) -> SavedBounds {
+        SavedBounds {
+            x,
+            y,
+            width: w,
+            height: h,
+        }
+    }
+
+    const FILES_MIN: (f32, f32) = (640.0, 420.0);
+
+    #[test]
+    fn the_files_window_remembers_its_size_and_whether_it_was_maximized() {
+        let dir = temp_dir("files-roundtrip");
+        let path = dir.join("window-state.json");
+        let mut state = WindowState::default();
+        assert_eq!(state.files, None);
+        assert!(!state.files_maximized);
+        state.files = Some(display(200.0, 100.0, 900.0, 600.0));
+        state.files_maximized = true;
+        state.save_to(&path).unwrap();
+        let back = WindowState::load_from(&path).unwrap();
+        assert_eq!(back.files, Some(display(200.0, 100.0, 900.0, 600.0)));
+        assert!(back.files_maximized);
+        // 老文件里没有这两项：读成没存过。
+        std::fs::write(
+            &path,
+            br#"{"main":{"x":1.0,"y":2.0,"width":900.0,"height":700.0}}"#,
+        )
+        .unwrap();
+        let old = WindowState::load_from(&path).unwrap();
+        assert_eq!(old.files, None);
+        assert!(!old.files_maximized);
+    }
+
+    #[test]
+    fn a_garbled_files_entry_does_not_take_the_main_window_down_with_it() {
+        let dir = temp_dir("files-garbled");
+        let path = dir.join("window-state.json");
+        std::fs::write(
+            &path,
+            br#"{"main":{"x":1.0,"y":2.0,"width":900.0,"height":700.0},"files":"big"}"#,
+        )
+        .unwrap();
+        let state = WindowState::load_from(&path).unwrap();
+        assert!(state.main.is_some());
+        assert_eq!(state.files, None);
+    }
+
+    #[test]
+    fn a_saved_files_window_on_a_connected_screen_is_restored_as_it_was() {
+        let screens = [display(0.0, 0.0, 1920.0, 1080.0)];
+        let saved = display(300.0, 120.0, 900.0, 600.0);
+        let WindowBounds::Windowed(rect) =
+            restore_on_displays(Some(saved), false, &screens, FILES_MIN).unwrap()
+        else {
+            panic!("没最大化就该是普通窗口");
+        };
+        assert_eq!(f32::from(rect.origin.x), 300.0);
+        assert_eq!(f32::from(rect.size.width), 900.0);
+        assert_eq!(f32::from(rect.size.height), 600.0);
+        // 最大化着关的：还是最大化，还原大小保留。
+        assert!(matches!(
+            restore_on_displays(Some(saved), true, &screens, FILES_MIN),
+            Some(WindowBounds::Maximized(_))
+        ));
+    }
+
+    #[test]
+    fn a_window_saved_on_an_unplugged_screen_falls_back_to_the_default() {
+        // 上次在左边的副屏（x 为负）上；现在只剩主屏。
+        let only_main = [display(0.0, 0.0, 1920.0, 1080.0)];
+        let on_second = display(-1500.0, 100.0, 900.0, 600.0);
+        assert!(restore_on_displays(Some(on_second), false, &only_main, FILES_MIN).is_none());
+        // 副屏还在就照旧。
+        let both = [only_main[0], display(-1920.0, 0.0, 1920.0, 1080.0)];
+        assert!(restore_on_displays(Some(on_second), false, &both, FILES_MIN).is_some());
+        // 分辨率变小：窗口整个落在新屏幕外。
+        let shrunk = [display(0.0, 0.0, 1280.0, 720.0)];
+        let low = display(1500.0, 900.0, 900.0, 600.0);
+        assert!(restore_on_displays(Some(low), false, &shrunk, FILES_MIN).is_none());
+        // 没有任何显示器信息（取不到）：不敢照着开。
+        assert!(restore_on_displays(Some(on_second), false, &[], FILES_MIN).is_none());
+    }
+
+    #[test]
+    fn only_a_sliver_on_screen_is_not_enough_to_grab_the_title_bar() {
+        let screen = [display(0.0, 0.0, 1920.0, 1080.0)];
+        // 标题条只露出 30 像素宽。
+        assert!(!on_a_display(display(1890.0, 100.0, 900.0, 600.0), &screen));
+        // 露出 200 像素够抓。
+        assert!(on_a_display(display(1720.0, 100.0, 900.0, 600.0), &screen));
+        // 标题条在屏幕上方外面（y 为负很多）。
+        assert!(!on_a_display(display(100.0, -500.0, 900.0, 600.0), &screen));
+        // 窗口大半在屏幕下方外面但标题条在屏幕里：能抓，算数。
+        assert!(on_a_display(display(100.0, 1000.0, 900.0, 600.0), &screen));
+    }
+
+    #[test]
+    fn a_saved_size_below_the_window_minimum_is_raised_to_it() {
+        let screens = [display(0.0, 0.0, 1920.0, 1080.0)];
+        let WindowBounds::Windowed(rect) = restore_on_displays(
+            Some(display(100.0, 100.0, 500.0, 330.0)),
+            false,
+            &screens,
+            FILES_MIN,
+        )
+        .unwrap() else {
+            panic!("应当是普通窗口");
+        };
+        assert_eq!(f32::from(rect.size.width), 640.0);
+        assert_eq!(f32::from(rect.size.height), 420.0);
+        // 明显坏的值（NaN、超大）直接丢。
+        assert!(
+            restore_on_displays(
+                Some(display(f32::NAN, 0.0, 900.0, 600.0)),
+                false,
+                &screens,
+                FILES_MIN
+            )
+            .is_none()
+        );
+        assert!(restore_on_displays(None, false, &screens, FILES_MIN).is_none());
     }
 
     #[test]
