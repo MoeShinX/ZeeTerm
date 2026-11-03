@@ -19,7 +19,6 @@ use zssh_terminal::{Size, Snapshot, TerminalModel};
 
 pub mod driver;
 pub mod keys;
-pub mod log;
 pub mod schedule;
 
 pub use driver::{
@@ -29,7 +28,6 @@ pub use driver::{
 pub use keys::{
     KeyInput, MouseAction, MouseButton, MouseInput, encode_key, encode_mouse, encode_paste,
 };
-pub use log::SessionLog;
 pub use schedule::{FRAME_BYTE_BUDGET, FrameScheduler, PollOutcome};
 
 /// 过滤结果：`data` 给终端，`suppressed` 是被吞掉、需要由过滤侧 ack 的字节数。
@@ -195,8 +193,8 @@ pub struct SessionPump<F: ByteFilter> {
     filter: F,
     generation: u64,
     ledger: Ledger,
-    log: Option<crate::log::SessionLog>,
-    /// 设置里开了「会话日志」时的纯文本日志（去掉控制序列，写文件在自己的线程里，不拖终端）。
+    /// 会话日志（纯文本，去掉控制序列）：只有这一套，写文件在日志自己的线程里，不拖终端。
+    /// 设置里开了「记录会话日志」时自动挂上，手动「开始记录」也是同一个对象、同一个目录。
     plain_log: Option<zssh_core::ssh::session_log::SessionLog>,
 }
 
@@ -214,17 +212,11 @@ impl<F: ByteFilter> SessionPump<F> {
             filter,
             generation,
             ledger: Ledger::default(),
-            log: None,
             plain_log: None,
         }
     }
 
-    /// 挂上一个会话日志；只记录显示过滤之后、交给终端的字节。
-    pub fn set_log(&mut self, log: crate::log::SessionLog) {
-        self.log = Some(log);
-    }
-
-    /// 挂上设置里的纯文本会话日志；同样只记显示过滤之后的字节。
+    /// 挂上会话日志；只记录显示过滤之后、交给终端的字节。
     pub fn set_plain_log(&mut self, log: zssh_core::ssh::session_log::SessionLog) {
         self.plain_log = Some(log);
     }
@@ -238,24 +230,10 @@ impl<F: ByteFilter> SessionPump<F> {
         self.plain_log.take()
     }
 
-    /// 两种日志都记同一份显示字节。
     fn log_write(&mut self, data: &[u8]) {
-        if let Some(log) = &mut self.log {
-            log.write(data);
-        }
         if let Some(log) = &self.plain_log {
             log.write(data);
         }
-    }
-
-    /// 当前是否在记录；重连后据此继续记录。
-    pub fn has_log(&self) -> bool {
-        self.log.is_some()
-    }
-
-    /// 取回日志并停止记录；调用方负责 `finish` 刷盘。
-    pub fn take_log(&mut self) -> Option<crate::log::SessionLog> {
-        self.log.take()
     }
 
     /// 切换到新代次；旧代次的迟到数据随后会被丢弃。
@@ -698,21 +676,6 @@ mod tests {
         assert!(!pump.has_plain_log());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "red line\n");
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn pump_logs_only_display_bytes() {
-        let path = std::env::temp_dir().join(format!("zssh-pump-log-{}.log", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-
-        let mut pump = pump(DropHidden);
-        pump.set_log(crate::log::SessionLog::create(&path, 1024).unwrap());
-        pump.on_data(7, b"HIDDEN secret bytes");
-        pump.on_data(7, b"ok\r\n");
-        let log = pump.take_log().expect("日志应还在");
-        assert_eq!(log.finish(), 4);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "ok\r\n");
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

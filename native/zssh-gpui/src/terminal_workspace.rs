@@ -30,7 +30,7 @@ use zssh_core::ssh::latency::{self, LatencyMonitor, LatencySnapshot, LatencyView
 use zssh_session::{
     CoreFilter, FRAME_BYTE_BUDGET, FrameScheduler, KeyInput, LoopbackBackend, MouseAction,
     MouseButton as TerminalMouseButton, MouseInput, PollOutcome, SessionBackend, SessionCommand,
-    SessionDriver, SessionLog, SessionPump, encode_key, encode_mouse,
+    SessionDriver, SessionPump, encode_key, encode_mouse,
 };
 use zssh_terminal::{MouseMode, NamedColor, Size, Snapshot, TerminalColor};
 
@@ -151,6 +151,54 @@ pub(crate) struct Pane {
     terminal_id: Option<String>,
     /// 右上角延迟徽标的数据来源；串口、经跳板机的 Telnet、没连上的窗格没有。
     latency: Option<PaneLatency>,
+    /// 这个窗格的会话日志是怎么来的（日志本身挂在泵上）。
+    log_mode: LogMode,
+}
+
+/// 窗格会话日志的来源。写入位置只有一个——设置里的会话日志目录；区别只在谁开的：
+/// 设置里的开关对所有会话自动开（`Auto`），还是用户对这个窗格手动开的（`Manual`）。
+/// 自动开着时不会再另开第二份。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum LogMode {
+    #[default]
+    Off,
+    Auto,
+    Manual,
+}
+
+/// 点「记录」的结果。
+#[derive(Debug)]
+enum LogOutcome {
+    Started {
+        dir: std::path::PathBuf,
+    },
+    /// `path` 是 `None` 说明日志线程还没来得及建出文件（或建不出来，原因在设置页的会话日志一栏）。
+    Stopped {
+        path: Option<std::path::PathBuf>,
+    },
+    /// 设置里已经对所有会话自动记录：不另开一份，也不在这里停（要停就去设置里关）。
+    Auto {
+        dir: std::path::PathBuf,
+    },
+    Failed(String),
+}
+
+impl LogOutcome {
+    /// 状态栏上的一句话；路径过 `redact_paths`，用户目录显示成占位。
+    fn status_text(&self) -> String {
+        use crate::agent_text::redact_paths;
+        let shown = |path: &std::path::Path| redact_paths(&path.display().to_string());
+        match self {
+            Self::Started { dir } => format!("开始记录，日志保存在 {}", shown(dir)),
+            Self::Stopped { path: Some(path) } => format!("日志已停止：{}", shown(path)),
+            Self::Stopped { path: None } => "日志已停止".to_owned(),
+            Self::Auto { dir } => format!(
+                "正在记录（自动）：日志保存在 {}；要停止请在设置里关闭「记录会话日志」",
+                shown(dir)
+            ),
+            Self::Failed(err) => format!("无法开始记录：{}", redact_paths(err)),
+        }
+    }
 }
 
 /// 窗格对延迟监视器的登记：`viewer` 报告这个窗格现在看不看得见（都看不见时后台测量暂停），
@@ -220,6 +268,7 @@ impl Pane {
             shell_seq: next_shell_seq(),
             terminal_id: None,
             latency: None,
+            log_mode: LogMode::Off,
         }
     }
 
@@ -333,17 +382,18 @@ impl Pane {
         factory: Option<Arc<crate::ssh_backend::SshSessionFactory>>,
     ) {
         let size = self.snapshot.size;
-        let log = self.pump_mut().take_log();
+        let log = self.pump_mut().take_plain_log();
         let mut pump =
             SessionPump::new(size, self.history, gate, CoreFilter::new(), self.generation);
         if let Some(log) = log {
-            pump.set_log(log);
-        }
-        // 设置里开了会话日志：这个会话一个文件（每次连上 / 重连各一个）。
-        if self.is_session()
+            // 连接期间手动开的日志接着用，不再另开。
+            pump.set_plain_log(log);
+        } else if self.is_session()
             && let Some(plain) = crate::app_prefs::open_session_log(&self.log_label())
         {
+            // 设置里开了会话日志：这个会话一个文件（每次连上 / 重连各一个）。
             pump.set_plain_log(plain);
+            self.log_mode = LogMode::Auto;
         }
         self.driver = SessionDriver::new(pump, events);
         // 告诉 AI 终端登记表：这个 shell 属于哪台主机（快速连接没有主机记录，登记表里就没有主机）。
@@ -590,11 +640,38 @@ impl Pane {
         self.refresh();
     }
 
-    /// 关闭窗格：先刷日志，再通知后端；还在连接的任务随 `pending` 一起取消。
-    fn close(&mut self) {
-        if let Some(log) = self.pump_mut().take_log() {
-            log.finish();
+    /// 点「记录」：没在记就手动开始，手动开着就停，设置里自动开着的不另开也不在这里停。
+    /// 日志的写与收尾都在日志自己的线程里，不阻塞界面线程；`prefs` 由调用方给（测试用）。
+    fn toggle_log_with(&mut self, prefs: &crate::app_prefs::AppPrefs) -> LogOutcome {
+        match self.log_mode {
+            LogMode::Auto => LogOutcome::Auto {
+                dir: prefs.session_log_dir_path(),
+            },
+            LogMode::Manual => {
+                self.log_mode = LogMode::Off;
+                // 丢掉日志只是通知写线程收尾（不等磁盘）；路径要在丢之前取。
+                let path = self
+                    .pump_mut()
+                    .take_plain_log()
+                    .and_then(|log| log.path().map(std::path::Path::to_path_buf));
+                LogOutcome::Stopped { path }
+            }
+            LogMode::Off => match crate::app_prefs::start_session_log(prefs, &self.log_label()) {
+                Ok(log) => {
+                    self.pump_mut().set_plain_log(log);
+                    self.log_mode = LogMode::Manual;
+                    LogOutcome::Started {
+                        dir: prefs.session_log_dir_path(),
+                    }
+                }
+                Err(err) => LogOutcome::Failed(err.to_string()),
+            },
         }
+    }
+
+    /// 关闭窗格：通知后端；还在连接的任务随 `pending` 一起取消。日志随泵一起丢掉，
+    /// 写线程自己把排着的写完（程序退出时另有有限等待）。
+    fn close(&mut self) {
         self.pending = None;
         self.backend.send(SessionCommand::Close);
     }
@@ -2352,7 +2429,8 @@ impl TerminalWorkspace {
         }
         let (host_id, quick) = (pane.host_id, pane.quick.clone());
         let size = pane.snapshot.size;
-        let logging = pane.pump().has_log();
+        // 手动开的日志重连后接着记；设置里自动开的，新连接上时会按设置重新开。
+        let logging = pane.log_mode == LogMode::Manual;
         // 分屏树的叶子认窗格编号：换掉整个窗格时沿用旧编号，位置和比例都不变。
         let id = pane.id;
         pane.close();
@@ -2363,7 +2441,8 @@ impl TerminalWorkspace {
         pane.id = id;
         pane.refresh();
         if logging {
-            self.status_text = start_log(pane);
+            let prefs = crate::app_prefs::AppPrefs::load_default_db();
+            self.status_text = pane.toggle_log_with(&prefs).status_text();
         }
     }
 
@@ -3556,17 +3635,20 @@ impl TerminalWorkspace {
         self.copy_selection(cx);
     }
 
+    /// 「记录」：控制当前窗格要不要写会话日志（写到设置里的会话日志目录）。设置里已经对所有
+    /// 会话自动记录时，显示「正在记录（自动）」并打开日志文件夹，不再另开一份。
     pub(crate) fn toggle_log(&mut self, cx: &mut Context<Self>) {
+        let prefs = crate::app_prefs::AppPrefs::load_default_db();
         let Some(pane) = self.pane_mut() else {
             return;
         };
-        self.status_text = match pane.pump_mut().take_log() {
-            Some(log) => {
-                let written = log.finish();
-                format!("日志已停止：{written} 字节")
-            }
-            None => start_log(pane),
-        };
+        let outcome = pane.toggle_log_with(&prefs);
+        if let LogOutcome::Auto { dir } = &outcome {
+            // 还没写过任何会话时目录可能不存在：先建出来，资源管理器才打得开。
+            let _ = std::fs::create_dir_all(dir);
+            cx.reveal_path(dir);
+        }
+        self.status_text = outcome.status_text();
         cx.notify();
     }
 
@@ -3793,23 +3875,6 @@ impl TerminalWorkspace {
     pub(crate) fn feed_more(&mut self) {
         self.feed_batch(20);
         self.refresh_all();
-    }
-}
-
-/// 开始记录一个窗格的会话，返回要显示的状态文字。
-fn start_log(pane: &mut Pane) -> String {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default();
-    let path =
-        std::env::temp_dir().join(format!("zssh-session-{}-{stamp}.log", std::process::id()));
-    match SessionLog::create(&path, 16 * 1024 * 1024) {
-        Ok(log) => {
-            pane.pump_mut().set_log(log);
-            format!("记录到 {}", path.display())
-        }
-        Err(err) => format!("无法开始记录：{err}"),
     }
 }
 
@@ -4638,10 +4703,11 @@ fn indexed_color(index: u8, ansi: &[u32; 16]) -> Hsla {
 mod pane_tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        CoreFilter, FlowGate, Pane, PaneState, SessionBackend, SessionCommand, SessionLog,
+        CoreFilter, FlowGate, LogMode, LogOutcome, Pane, PaneState, SessionBackend, SessionCommand,
         SessionPump, Size, disconnect_notice, failure_notice,
     };
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use zssh_session::{SessionEvent, SessionExit};
 
     const SIZE: Size = Size { rows: 12, cols: 60 };
@@ -4835,17 +4901,51 @@ mod pane_tests {
         assert!(!text.contains("\x1b[2J"));
     }
 
+    /// 临时的会话日志目录 + 指向它的设置；每个用例一个目录。
+    fn log_prefs(name: &str) -> (std::path::PathBuf, crate::app_prefs::AppPrefs) {
+        let dir = std::env::temp_dir().join(format!("zssh-pane-log-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let prefs = crate::app_prefs::AppPrefs {
+            session_log_dir: dir.display().to_string(),
+            ..Default::default()
+        };
+        (dir, prefs)
+    }
+
+    /// 日志在自己的线程里写：等文件出现并带上期望的内容（最多 10 秒），返回目录里所有 `.log`。
+    fn wait_for_log(dir: &std::path::Path, expected: &str) -> Vec<std::path::PathBuf> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let files: Vec<_> = std::fs::read_dir(dir)
+                .map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path())
+                        .filter(|path| path.extension().is_some_and(|ext| ext == "log"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let done = files
+                .iter()
+                .any(|path| std::fs::read_to_string(path).is_ok_and(|text| text == expected));
+            if done || std::time::Instant::now() > deadline {
+                return files;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     #[test]
     fn attach_keeps_the_log_and_syncs_a_resized_window() {
         let pending = crate::ssh_backend::ready(Err("never read".to_owned()));
         let mut pane = Pane::connecting(SIZE, 100, 1, Some(7), pending);
         // 连接期间窗口变小了，也在记录日志。
         pane.resize(Size { rows: 8, cols: 40 });
-        let path =
-            std::env::temp_dir().join(format!("zssh-pane-attach-{}.log", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        pane.pump_mut()
-            .set_log(SessionLog::create(&path, 1024).unwrap());
+        let (dir, prefs) = log_prefs("attach");
+        assert!(matches!(
+            pane.toggle_log_with(&prefs),
+            LogOutcome::Started { .. }
+        ));
 
         let (tx, rx) = std::sync::mpsc::channel();
         let sent = Arc::new(Mutex::new(Vec::new()));
@@ -4856,7 +4956,12 @@ mod pane_tests {
             None,
         );
         assert_eq!(pane.state, PaneState::Live);
-        assert!(pane.pump().has_log(), "重连/连上后日志要继续记");
+        assert!(pane.pump().has_plain_log(), "重连/连上后日志要继续记");
+        assert_eq!(
+            pane.log_mode,
+            LogMode::Manual,
+            "手动开的日志不会被当成自动的"
+        );
         assert_eq!(
             *sent.lock().unwrap(),
             vec![SessionCommand::Resize(Size { rows: 8, cols: 40 })]
@@ -4864,15 +4969,122 @@ mod pane_tests {
 
         tx.send(SessionEvent::Data {
             generation: 1,
-            bytes: b"hello\r\n".to_vec(),
+            bytes: b"hello
+"
+            .to_vec(),
         })
         .unwrap();
         assert!(pane.poll_events());
         assert!(screen(&pane).contains("hello"));
         assert_eq!(pane.snapshot.size, Size { rows: 8, cols: 40 });
         pane.close();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello\r\n");
-        let _ = std::fs::remove_file(&path);
+        // 关窗格不等磁盘，日志在自己的线程里收尾；只有设置里的会话日志目录里这一份。
+        let files = wait_for_log(
+            &dir, "hello
+",
+        );
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert_eq!(
+            std::fs::read_to_string(&files[0]).unwrap(),
+            "hello
+"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_logging_writes_one_file_into_the_settings_directory_and_stop_reports_its_path() {
+        let (dir, prefs) = log_prefs("manual");
+        let (mut pane, _tx, _sent) = remote_pane();
+
+        let started = pane.toggle_log_with(&prefs);
+        let LogOutcome::Started { dir: shown } = &started else {
+            panic!("应该开始记录：{started:?}");
+        };
+        assert_eq!(shown, &dir, "写到设置里的会话日志目录");
+        assert!(pane.pump().has_plain_log());
+        pane.pump_mut().on_data(
+            1, b"one
+",
+        );
+
+        let stopped = pane.toggle_log_with(&prefs);
+        assert!(!pane.pump().has_plain_log(), "停止后窗格不再记录");
+        assert_eq!(pane.log_mode, LogMode::Off);
+        let LogOutcome::Stopped { path } = &stopped else {
+            panic!("应该是停止：{stopped:?}");
+        };
+        let files = wait_for_log(
+            &dir, "one
+",
+        );
+        assert_eq!(files.len(), 1, "{files:?}");
+        if let Some(path) = path {
+            assert_eq!(path, &files[0], "停止时报的是实际的日志文件");
+        }
+
+        // 停止以后收到的输出不再进日志。
+        pane.pump_mut().on_data(
+            1, b"two
+",
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            std::fs::read_to_string(&files[0]).unwrap(),
+            "one
+"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn when_the_setting_already_records_everything_the_pane_does_not_open_a_second_log() {
+        let (dir, prefs) = log_prefs("auto");
+        let (mut pane, _tx, _sent) = remote_pane();
+        // 设置里自动开着：连上时挂上的那份。
+        let auto = crate::app_prefs::start_session_log(&prefs, "web-1").expect("起日志线程");
+        pane.pump_mut().set_plain_log(auto);
+        pane.log_mode = LogMode::Auto;
+
+        for _ in 0..2 {
+            let outcome = pane.toggle_log_with(&prefs);
+            assert!(matches!(outcome, LogOutcome::Auto { .. }), "{outcome:?}");
+            assert!(
+                outcome.status_text().contains("正在记录（自动）"),
+                "{}",
+                outcome.status_text()
+            );
+        }
+        assert_eq!(pane.log_mode, LogMode::Auto, "这里不能停自动记录");
+        assert!(pane.pump().has_plain_log());
+        pane.pump_mut().on_data(
+            1, b"once
+",
+        );
+        pane.close();
+        let files = wait_for_log(
+            &dir, "once
+",
+        );
+        assert_eq!(files.len(), 1, "同一份字节只写一处：{files:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_status_line_never_shows_the_user_directory() {
+        let Ok(home) = std::env::var("USERPROFILE") else {
+            eprintln!("跳过：没有 USERPROFILE");
+            return;
+        };
+        let path = std::path::Path::new(&home).join("logs").join("web-1.log");
+        let text = LogOutcome::Stopped { path: Some(path) }.status_text();
+        assert!(!text.contains(&home), "{text}");
+        assert!(text.contains("日志已停止："), "{text}");
+        let text = LogOutcome::Started {
+            dir: std::path::Path::new(&home).join("logs"),
+        }
+        .status_text();
+        assert!(!text.contains(&home), "{text}");
     }
 }
 
