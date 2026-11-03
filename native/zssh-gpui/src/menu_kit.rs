@@ -363,6 +363,7 @@ mod tests {
             ("main_window/titlebar.rs", 1),
             ("main_window/host_dialog.rs", 1),
             ("main_window/modal.rs", 1),
+            ("main_window/processes_ui.rs", 1),
             ("main_window/bars.rs", 2),
             ("sftp_demo/view.rs", 4),
             ("sftp_demo/view_dialogs.rs", 1),

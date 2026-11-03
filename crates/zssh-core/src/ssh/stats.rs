@@ -1328,6 +1328,17 @@ mod tests {
         );
         assert_eq!(sample.top_processes.len(), 1, "内存档原样保留");
 
+        // BusyBox 那一段靠 `sort -t ';' -k1,1rn`：PATH 里排在前面的是 Windows 自带的 sort.exe（不认这些选项）时跳过，
+        // 服务器上都是 GNU / BusyBox 的 sort。
+        let sort_ok = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("printf '2;b\\n10;a\\n' | sort -t ';' -k1,1rn | head -1")
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "10;a");
+        if !sort_ok {
+            println!("跳过 BusyBox 部分：本机 PATH 里的 sort 不是 GNU / BusyBox 的");
+            return;
+        }
         let busybox = r#"ps() { return 1; }
 top() { printf 'Mem: 900K used, 100K free\nCPU:  1%% usr\n  PID  PPID USER     STAT   VSZ %%VSZ %%CPU COMMAND\n  812     1 app      S     120m  1.2  55.5 app-worker\n    7     1 root     S       1m  0.0   0.3 sshd\n 9999   100 root     R       1m  0.0  99.0 top\n'; }"#;
         let sample = run(busybox).expect("sh 在");
