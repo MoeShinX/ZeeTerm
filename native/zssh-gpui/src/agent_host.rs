@@ -2812,6 +2812,127 @@ mod tests {
         session.shutdown().await;
     }
 
+    #[tokio::test]
+    async fn the_whole_builtin_flow_works_without_a_window_add_test_choose_chat_tool_usage_new() {
+        use crate::agent_setup::builtin::{self, picker_catalog};
+        use crate::agent_setup::builtin_fake::FakeTransport;
+        use crate::main_window::ai_endpoint_dialog::{FormValues, build_draft, describe_probe};
+        use zssh_core::ai::agent::builtin::config::{EndpointKind, OpenAiOptionsConfig};
+        use zssh_core::ai::agent::builtin::probe::test_endpoint;
+
+        // 1 添加接口：表单值 → 校验过的草稿 → 存库（Key 进保险库）。
+        let db = Database::open_in_memory().expect("内存库");
+        assert_eq!(
+            crate::agent_setup::default_agent(Some(&db)),
+            AgentKind::OpenCode
+        );
+        let draft = build_draft(&FormValues {
+            id: None,
+            preset_id: None,
+            kind: EndpointKind::OpenAiChat,
+            name: "我的网关",
+            base_url: "https://api.example.com/v1/",
+            api_key: "sk-test-flow0001",
+            has_stored_key: false,
+            default_model: "gpt-5.5",
+            extra_models: "my-chat-model",
+            options: OpenAiOptionsConfig::default(),
+            overrides: Default::default(),
+        })
+        .expect("表单合法");
+        // 2 测试：用还没保存的表单值，对假接口拉模型清单并发极短请求。
+        let fake = Arc::new(FakeTransport::default());
+        let config = draft.provider_config(ApiKey::new("sk-test-flow0001"));
+        let probe = test_endpoint(fake.as_ref(), &config, "gpt-5.5").await;
+        assert!(probe.ok(), "{:?}", probe.reply);
+        let caps = zssh_core::ai::agent::builtin::catalog::resolve(
+            "gpt-5.5",
+            None,
+            probe.remote_caps().get("gpt-5.5").cloned(),
+            &Catalog::builtin(),
+        );
+        let described = describe_probe(&probe, "gpt-5.5", &caps);
+        assert!(described.ok && described.lines[0].starts_with("测试通过"));
+        assert_eq!(
+            probe.model_ids(),
+            ["gpt-5.5", "deepseek-v4-flash", "my-chat-model"]
+        );
+        let saved = db.ai_endpoint_save(&draft).expect("保存");
+        assert!(saved.has_key);
+        assert_eq!(
+            db.ai_endpoint_api_key(saved.id).expect("读").as_deref(),
+            Some("sk-test-flow0001")
+        );
+
+        // 3 配好之后默认智能体是内置助手；面板的模型下拉有接口的模型和思考强度变体。
+        assert_eq!(
+            crate::agent_setup::default_agent(Some(&db)),
+            AgentKind::Builtin
+        );
+        let remote = builtin::RemoteModels::from_list(probe.models.clone().unwrap_or_default());
+        let picker = picker_catalog(&saved, Some(&remote), &Catalog::builtin(), Some("gpt-5.5"));
+        let ids: Vec<&str> = picker.models.iter().map(|m| m.id.as_str()).collect();
+        assert!(
+            ids.contains(&"gpt-5.5/high") && ids.contains(&"deepseek-v4-flash"),
+            "{ids:?}"
+        );
+
+        // 4 发消息：模型调工具（假主机），结果回填，用量上报；5 新对话互不影响。
+        let dir = std::env::temp_dir().join(format!("zssh-builtin-flow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let hub = AgentHub::with_parts(
+            Arc::new(CountingHost::default()),
+            Arc::new(NoAudit),
+            Arc::new(FixedMode(ExecMode::Manual)),
+            dir.clone(),
+            PathBuf::from("zssh-mcp.exe"),
+        )
+        .await
+        .expect("建共用桥");
+        let start = |resume: Option<String>| BuiltinStart {
+            endpoint: saved.clone(),
+            api_key: ApiKey::new("sk-test-flow0001"),
+            transport: Arc::clone(&fake) as Arc<dyn Transport>,
+            catalog: Arc::new(Catalog::builtin()),
+            resume,
+            tuning: fast_tuning(),
+        };
+        let mut first = hub.start_builtin(start(None)).await.expect("启动");
+        first.sync_hosts(&[web_host(1)]);
+        first
+            .conversation
+            .send("tool see the servers", Some("gpt-5.5/high"))
+            .await
+            .expect("发送");
+        let (events, signals) = collect_turn(&mut first).await;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolEnd { error: false, .. }))
+        );
+        let usage = signals.iter().find_map(|s| match s {
+            BuiltinSignal::Usage(u) => Some(u.clone()),
+            _ => None,
+        });
+        let usage = crate::agent_setup::builtin::usage_from_turn(&usage.expect("有用量"));
+        assert!(
+            usage.window.is_some_and(|w| w >= 128_000),
+            "分母是模型窗口：{usage:?}"
+        );
+        let old_id = first.conversation.resume_id().expect("有记录");
+        first.shutdown().await;
+        let mut second = hub.start_builtin(start(None)).await.expect("新对话");
+        assert_ne!(
+            second.conversation.resume_id(),
+            Some(old_id),
+            "新对话是另一个会话"
+        );
+        assert_eq!(second.conversation.resume_id(), None, "还没有消息");
+        second.shutdown().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ---- 真实智能体（显式 ZSSH_AGENT_E2E=1 才拉起；每种都用独立配置，不碰用户真实的配置）----
 
     fn e2e_data_dir(test: &str) -> Option<PathBuf> {

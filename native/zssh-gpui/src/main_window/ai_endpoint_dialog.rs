@@ -806,7 +806,7 @@ impl MainWindow {
         cx.notify();
     }
 
-    fn ai_dialog_model_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn ai_dialog_model_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Modal::AiEndpoint(mut dialog)) = self.modal.take() else {
             return;
         };
@@ -876,6 +876,8 @@ impl MainWindow {
         };
         let input = dialog.default_model.clone();
         input.update(cx, |input, cx| input.set_value(model, window, cx));
+        // 程序里改输入框内容不一定发"变了"事件：覆盖项、测试结果要跟着新模型换。
+        self.ai_dialog_model_changed(window, cx);
     }
 
     /// 保存。
@@ -1158,7 +1160,15 @@ impl MainWindow {
                 v_flex()
                     .gap_1p5()
                     .child(labelled(
-                        required_label("API Key", tokens),
+                        // 编辑时库里已经有 Key、留空表示不改：不标必填。
+                        if dialog.id.is_some() && dialog.has_stored_key {
+                            div()
+                                .typo(Role::FieldLabel, tokens)
+                                .child("API Key")
+                                .into_any_element()
+                        } else {
+                            required_label("API Key", tokens).into_any_element()
+                        },
                         h_flex()
                             .w_full()
                             .gap_1()
@@ -2048,6 +2058,58 @@ mod tests {
             result.lines[0].contains("模型没有输出文字"),
             "{}",
             result.lines[0]
+        );
+    }
+
+    #[test]
+    fn a_saved_form_comes_back_from_the_database_with_its_overrides_and_switches() {
+        use zssh_core::store::Database;
+        let mut overrides = BTreeMap::new();
+        store_override(
+            &mut overrides,
+            "gpt-5.5",
+            override_from_fields(&OverrideFields {
+                context: "64K".into(),
+                tools: Force::No,
+                thinking: Some(ReasoningSupport::Toggle),
+                pick: Some("openai/gpt-5.4".into()),
+                ..Default::default()
+            })
+            .expect("合法"),
+        );
+        let options = OpenAiOptionsConfig {
+            max_completion_tokens: zssh_core::ai::agent::builtin::config::Tri::On,
+            include_usage: false,
+            ..Default::default()
+        };
+        let mut form = values();
+        form.overrides = overrides;
+        form.options = options.clone();
+        let db = Database::open_in_memory().expect("内存库");
+        let saved = db
+            .ai_endpoint_save(&build_draft(&form).expect("合法"))
+            .expect("保存");
+        let back = db.ai_endpoint_get(saved.id).expect("读");
+        assert_eq!(back.openai_options, options);
+        let item = &back.overrides["gpt-5.5"];
+        assert_eq!(item.context_window, Some(64_000));
+        assert_eq!(item.tool_call, Some(false));
+        assert_eq!(item.reasoning, Some(ReasoningSupport::Toggle));
+        assert_eq!(item.pick.as_deref(), Some("openai/gpt-5.4"));
+        // 编辑再存、Key 留空：覆盖和 Key 都保留。
+        let mut edit = values();
+        edit.id = Some(saved.id);
+        edit.api_key = "";
+        edit.has_stored_key = true;
+        edit.overrides = back.overrides.clone();
+        let again = db
+            .ai_endpoint_save(&build_draft(&edit).expect("合法"))
+            .expect("保存");
+        assert_eq!(again.overrides, back.overrides);
+        assert!(again.has_key);
+        assert_eq!(
+            db.ai_endpoint_api_key(again.id).expect("读").as_deref(),
+            Some("sk-test-0001")
         );
     }
 

@@ -200,6 +200,10 @@ mod real {
                         .update(cx, |i, cx| i.set_value(text, window, cx)),
                     _ => return fail("aib_fill 的字段不认识"),
                 }
+                // 和手敲一样：默认模型换了，覆盖项、测试结果跟着新模型换（程序里 set_value 不发"变了"事件）。
+                if a == "model" {
+                    this.ai_dialog_model_changed(window, cx);
+                }
                 cx.notify();
                 Ok(Outcome::Done)
             }

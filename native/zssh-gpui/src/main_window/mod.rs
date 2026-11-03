@@ -15,7 +15,7 @@
 //! `status_bar`（底部状态栏）。
 
 mod ai_builtin;
-mod ai_endpoint_dialog;
+pub(crate) mod ai_endpoint_dialog;
 pub mod anchor;
 pub mod bar_height;
 pub mod bar_settings;
