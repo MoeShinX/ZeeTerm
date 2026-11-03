@@ -30,7 +30,7 @@ use crate::main_window::MainWindow;
 use crate::main_window::titlebar::window_controls;
 use crate::settings::data_dir;
 use crate::sftp_demo::SftpDemo;
-use crate::typography::UiFontStyled as _;
+use crate::typography::{Role, Typo as _, UiFontStyled as _};
 use zssh_core::store::Database;
 
 /// 窗口标题：产品名 + 「文件」。0.2.14 的窗口叫 `Z-SFTP`（品牌缩写 + SFTP，写死在 `FileWindowApp.tsx`），
@@ -103,6 +103,28 @@ pub fn adopt(cx: &mut App, host_id: i64, title: String, view: Entity<SftpDemo>) 
     open_window(cx, host_id, title, view);
 }
 
+/// 窗口的最小尺寸；记住的大小也不会低于它。
+const MIN_SIZE: (f32, f32) = (640.0, 420.0);
+/// 没有记住的大小时的默认大小。
+const DEFAULT_SIZE: (f32, f32) = (1100.0, 760.0);
+
+fn initial_bounds(cx: &mut App) -> WindowBounds {
+    use crate::window_state::{WindowState, display_rects, restore_on_displays};
+    let saved = WindowState::load();
+    restore_on_displays(
+        saved.files,
+        saved.files_maximized,
+        &display_rects(cx),
+        MIN_SIZE,
+    )
+    .unwrap_or_else(|| {
+        WindowBounds::centered(
+            size(::gpui::px(DEFAULT_SIZE.0), ::gpui::px(DEFAULT_SIZE.1)),
+            cx,
+        )
+    })
+}
+
 fn open_window(cx: &mut App, host_id: i64, title: String, view: Entity<SftpDemo>) {
     // 标题栏自己画（和主窗口一样跟着深 / 浅主题）：系统不画标题栏，系统标题只留给任务栏和 Alt+Tab。
     let options = WindowOptions {
@@ -110,11 +132,9 @@ fn open_window(cx: &mut App, host_id: i64, title: String, view: Entity<SftpDemo>
             title: Some(window_title().into()),
             ..TitleBar::title_bar_options()
         }),
-        window_bounds: Some(WindowBounds::centered(
-            size(::gpui::px(1100.), ::gpui::px(760.)),
-            cx,
-        )),
-        window_min_size: Some(size(::gpui::px(640.), ::gpui::px(420.))),
+        // 上次用户手动调的大小位置（最大化也记）；位置已经不在任何显示器上就退回居中的默认大小。
+        window_bounds: Some(initial_bounds(cx)),
+        window_min_size: Some(size(::gpui::px(MIN_SIZE.0), ::gpui::px(MIN_SIZE.1))),
         ..Default::default()
     };
     let opened = cx.open_window(options, move |window, cx| {
@@ -122,6 +142,7 @@ fn open_window(cx: &mut App, host_id: i64, title: String, view: Entity<SftpDemo>
         let file_window = cx.new(FileWindow::new);
         file_window.update(cx, |this, cx| {
             this.add_tab(host_id, title, view, window, cx);
+            this.watch_bounds(window, cx);
         });
         let close_view = file_window.clone();
         // 有传输时这里返回 false，窗口里出现确认条；确认之后由按钮自己关窗口。
@@ -158,6 +179,10 @@ pub struct FileWindow {
     dragger: crate::tab_drag::Dragger,
     /// 锁屏页（V2-U26）：锁着时整个窗口只画它。
     lock_screen: Option<Entity<crate::app_lock::LockScreen>>,
+    /// 窗口大小 / 位置变了就记下来（见 [`Self::watch_bounds`]）。
+    _bounds_watch: Option<::gpui::Subscription>,
+    /// 等拖动停下来再写盘的任务；又变了就换掉（旧的取消）。
+    save_task: Option<::gpui::Task<()>>,
 }
 
 /// 标签上只显示主机名：文件窗口里全是 SFTP，"(SFTP)" 后缀是多余的（同 0.2.14 `fileTabLabel`）。
@@ -166,6 +191,16 @@ pub(crate) fn tab_label(title: &str) -> String {
         .trim_end()
         .strip_suffix("(SFTP)")
         .map_or_else(|| title.to_owned(), |rest| rest.trim_end().to_owned())
+}
+
+/// 复制出来的标签放在原标签的右边一格。
+pub(crate) fn insert_after(index: usize) -> usize {
+    index + 1
+}
+
+/// 标签上的一次点击该做什么：单击选中，双击（含更多下）复制标签。
+pub(crate) fn is_duplicate_click(click_count: usize) -> bool {
+    click_count >= 2
 }
 
 /// 关掉一个标签后选中哪个：关的不是当前的就不变；是当前的就选左边那个，没有就右边那个。
@@ -217,7 +252,24 @@ impl FileWindow {
             focus: cx.focus_handle(),
             dragger: crate::tab_drag::Dragger::default(),
             lock_screen: None,
+            _bounds_watch: None,
+            save_task: None,
         }
+    }
+
+    /// 用户拖边框改大小、拖标题栏挪位置、最大化 / 还原：停下来半秒后把大小位置记到窗口状态里，
+    /// 下次打开按这个来。拖动过程中每一帧都在变，所以等停下来再写盘。关窗口时另外再记一次。
+    fn watch_bounds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self._bounds_watch = Some(cx.observe_window_bounds(window, |this, window, cx| {
+            this.save_task = Some(cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(500))
+                    .await;
+                let _ = this.update_in(cx, |_, window, _| {
+                    crate::window_state::save_files_window(window);
+                });
+            }));
+        }));
     }
 
     /// 放进来一个标签并选中它。视图在这个窗口里重建和窗口绑着的东西。
@@ -229,21 +281,60 @@ impl FileWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let id = self.next_id;
-        self.next_id += 1;
         view.update(cx, |view, cx| {
             view.set_dock_layout(false, cx);
             view.rebind_window(window, cx);
         });
-        self.tabs.push(FileTab {
-            id,
-            host_id,
-            title,
-            view,
-        });
+        self.insert_tab(self.tabs.len(), host_id, title, view, cx);
+    }
+
+    /// 在 `index` 位置插入一个标签并选中它（视图已经是这个窗口里建的，不用再换窗口）。
+    fn insert_tab(
+        &mut self,
+        index: usize,
+        host_id: i64,
+        title: String,
+        view: Entity<SftpDemo>,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.next_id;
+        self.next_id += 1;
+        let index = index.min(self.tabs.len());
+        self.tabs.insert(
+            index,
+            FileTab {
+                id,
+                host_id,
+                title,
+                view,
+            },
+        );
         self.active = Some(id);
         self.confirm = None;
         cx.notify();
+    }
+
+    /// 复制标签（双击和右键「复制标签」是同一个动作）：对同一台主机再开一个视图，紧挨在原标签右边、
+    /// 自动选中，两栏落在原标签当前的目录，复用原标签已认证的连接。原标签的连接已断开 / 还没连上时
+    /// 不开新标签，在原标签的状态栏上说明原因。
+    pub fn duplicate_tab(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return;
+        };
+        let (host_id, title, view) = {
+            let tab = &self.tabs[index];
+            (tab.host_id, tab.title.clone(), tab.view.clone())
+        };
+        match view.read(cx).clone_spec() {
+            Ok(spec) => {
+                let copy = cx.new(|cx| SftpDemo::new_clone(window, cx, spec));
+                copy.update(cx, |copy, cx| copy.set_dock_layout(false, cx));
+                self.insert_tab(insert_after(index), host_id, title, copy, cx);
+            }
+            Err(refusal) => {
+                view.update(cx, |view, cx| view.show_warning(refusal.message(), cx));
+            }
+        }
     }
 
     fn unfinished_of(&self, id: u64, cx: &App) -> usize {
@@ -288,6 +379,31 @@ impl FileWindow {
         self.active
     }
 
+    /// 现在显示的标签是第几个（从 0 数；驱动脚本用）。
+    pub fn active_index(&self) -> Option<usize> {
+        let id = self.active?;
+        self.tabs.iter().position(|tab| tab.id == id)
+    }
+
+    /// 第 `index` 个标签的编号（驱动脚本用）。
+    pub fn id_at(&self, index: usize) -> Option<u64> {
+        self.tabs.get(index).map(|tab| tab.id)
+    }
+
+    /// 每个标签现在的远端目录，按标签顺序（驱动脚本用）。
+    pub fn tab_remote_dirs(&self, cx: &App) -> Vec<String> {
+        self.tabs
+            .iter()
+            .map(|tab| tab.view.read(cx).remote_cwd().to_owned())
+            .collect()
+    }
+
+    /// 现在显示的标签状态栏上的话（驱动脚本用）。
+    pub fn active_status(&self, cx: &App) -> Option<String> {
+        self.active_view()
+            .map(|view| view.read(cx).status_text().to_owned())
+    }
+
     pub fn select(&mut self, id: u64, cx: &mut Context<Self>) {
         if self.tabs.iter().any(|tab| tab.id == id) {
             self.active = Some(id);
@@ -319,6 +435,7 @@ impl FileWindow {
             tab.view.update(cx, |view, _| view.shutdown_embedded());
         }
         if self.tabs.is_empty() {
+            crate::window_state::save_files_window(window);
             window.remove_window();
         }
         cx.notify();
@@ -355,6 +472,7 @@ impl FileWindow {
             return;
         }
         if self.tabs.is_empty() {
+            crate::window_state::save_files_window(window);
             window.remove_window();
         }
         cx.notify();
@@ -382,6 +500,7 @@ impl FileWindow {
             cx.notify();
             return false;
         }
+        crate::window_state::save_files_window(window);
         self.shutdown_all(cx);
         true
     }
@@ -396,6 +515,7 @@ impl FileWindow {
     fn confirmed_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.confirm = None;
         self.shutdown_all(cx);
+        crate::window_state::save_files_window(window);
         window.remove_window();
     }
 
@@ -410,26 +530,30 @@ impl FileWindow {
         let close = entity.clone();
         let menu_back = entity.clone();
         let menu_close = entity.clone();
+        let menu_copy = entity.clone();
+        let copy = entity.clone();
         let label: SharedString = tab_label(&tab.title).into();
         let press = entity.clone();
         let press_title = tab_label(&tab.title);
         let dragging = self.dragger.key() == Some(crate::tab_drag::DragKey::Sftp(id));
+        // 尺寸、字号档位、图标、间距和主窗口标题栏上的 SFTP 标签（`docks::render_sftp_tab`）一致。
         div()
             .id(("file-tab", id))
             .occlude()
+            .relative()
             .flex()
             .items_center()
             .gap_2()
             .h(px(32.0))
             .min_w(px(112.0))
-            .max_w(px(220.0))
+            .max_w(px(200.0))
             .pl_3()
             .pr_1p5()
             .flex_none()
             .rounded_t_md()
             .border_x_1()
             .border_t_1()
-            .text_sm()
+            .typo(Role::Body, tokens)
             .cursor_pointer()
             .when(dragging, |d| d.opacity(0.4))
             .when(active, |d| {
@@ -441,6 +565,9 @@ impl FileWindow {
                 d.border_color(::gpui::Hsla::transparent_black())
                     .text_color(muted)
                     .hover(move |style| style.bg(hover))
+            })
+            .when(active, |d| {
+                d.child(crate::main_window::titlebar::active_tab_indicator(tokens))
             })
             .child(
                 Icon::new(Ico::FolderTree)
@@ -474,14 +601,28 @@ impl FileWindow {
                         .press(crate::tab_drag::DragKey::Sftp(id), title, pos);
                 });
             })
-            .on_click(move |_, _, cx| {
-                select.update(cx, |this, cx| this.select(id, cx));
+            // 单击切换、双击复制标签。拖动要指针离开按下的位置 6 像素才开始（`tab_drag::START_DISTANCE`），
+            // 所以不动的双击不会被当成拖。
+            .on_click(move |event, window, cx| {
+                if is_duplicate_click(event.click_count()) {
+                    copy.update(cx, |this, cx| this.duplicate_tab(id, window, cx));
+                } else {
+                    select.update(cx, |this, cx| this.select(id, cx));
+                }
             })
             .context_menu(move |menu, _window, cx| {
                 let tokens = Tokens::current(cx);
                 let back = menu_back.clone();
                 let close = menu_close.clone();
+                let copy = menu_copy.clone();
                 menu.item(
+                    crate::menu_kit::row(&tokens, "复制标签", Ico::Copy).on_click(
+                        move |_, window, cx| {
+                            copy.update(cx, |this, cx| this.duplicate_tab(id, window, cx));
+                        },
+                    ),
+                )
+                .item(
                     crate::menu_kit::row(&tokens, "移回主窗口", Ico::SquareArrowDownLeft).on_click(
                         move |_, window, cx| {
                             back.update(cx, |this, cx| this.move_to_main(id, window, cx));
@@ -564,7 +705,7 @@ impl FileWindow {
                 .child(
                     div()
                         .flex_1()
-                        .text_sm()
+                        .typo(Role::Body, tokens)
                         .child(format!("还有 {busy} 个传输在进行，{message}")),
                 )
                 .child(
@@ -619,7 +760,7 @@ impl FileWindow {
                 .size_full()
                 .items_center()
                 .justify_center()
-                .text_sm()
+                .typo(Role::Body, &tokens)
                 .text_color(tokens.text_muted)
                 .child("正在打开…")
                 .into_any_element(),
@@ -650,7 +791,8 @@ impl FileWindow {
                 }),
             )
             .bg(tokens.background)
-            .text_color(tokens.text)
+            // 基础排版和主窗口一致：窗口里没单独指定的文字都是 Body（14px、主文字色）。
+            .typo(Role::Body, &tokens)
             .ui_font_fallbacks(cx)
             .child(sensor)
             // 自绘标题栏（V2-U1 第 6 条）：背景是主题的面板色，空白处可以拖动窗口、双击最大化，
@@ -687,8 +829,7 @@ impl FileWindow {
                                     .flex_none()
                                     .gap_1p5()
                                     .items_center()
-                                    .text_xs()
-                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .typo(Role::FieldLabel, &tokens)
                                     .text_color(tokens.text_muted)
                                     .child(
                                         Icon::new(Ico::FolderTree)
@@ -725,7 +866,9 @@ pub fn window_handle(cx: &App) -> Option<WindowHandle<FileWindow>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{active_after_close, should_merge_on_close, tab_label};
+    use super::{
+        active_after_close, insert_after, is_duplicate_click, should_merge_on_close, tab_label,
+    };
 
     #[test]
     fn tab_label_drops_the_sftp_suffix() {
@@ -746,6 +889,27 @@ mod tests {
         assert_eq!(active_after_close(&ids, 1, Some(1)), Some(2));
         // 最后一个：没有了。
         assert_eq!(active_after_close(&[7], 7, Some(7)), None);
+    }
+
+    #[test]
+    fn a_copy_lands_right_after_its_original() {
+        // 原标签在第 0 / 1 / 末位：副本总是紧挨在右边。
+        assert_eq!(insert_after(0), 1);
+        assert_eq!(insert_after(1), 2);
+        let mut ids = vec![10, 20, 30];
+        ids.insert(insert_after(1), 99);
+        assert_eq!(ids, [10, 20, 99, 30]);
+        let mut last = vec![10, 20];
+        last.insert(insert_after(1), 99);
+        assert_eq!(last, [10, 20, 99]);
+    }
+
+    #[test]
+    fn only_a_double_click_duplicates() {
+        assert!(!is_duplicate_click(1));
+        assert!(is_duplicate_click(2));
+        assert!(is_duplicate_click(3));
+        assert!(!is_duplicate_click(0));
     }
 
     #[test]

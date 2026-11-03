@@ -3,11 +3,11 @@
 //! 行为对照 0.2.14 的 `ui/src/components/sftp/`：文件列表（列、点表头排序、单选 / Ctrl / Shift /
 //! Ctrl+A 多选、键盘上下 / 回车 / Backspace / F2 / F5 / Delete / Alt+Enter、面包屑和可编辑路径栏、
 //! 过滤、隐藏文件开关、后退前进）、右键菜单（文件、文件夹、空白处、多选各一套，带子菜单“新建”）、
-//! 对话框（新建 / 重命名、删除确认、修改权限、属性、下载到…、解压同名文件、远端改名覆盖确认）、
+//! 对话框（新建 / 重命名、删除确认、修改权限、属性、下载到…、移动到…、解压同名文件、远端改名覆盖确认）、
 //! 远端压缩 / 解压、传输队列。
 //!
 //! 代码分层：
-//! - `model` / `menu` / `props` / `queue` / `archive_ui` / `dialogs` / `chmod` / `local_ops`：
+//! - `model` / `menu` / `props` / `queue` / `archive_ui` / `dialogs` / `chmod` / `local_ops` / `move_to`：
 //!   没有界面的规则和操作，每条都有单测；
 //! - `engine`：同名文件提问者、递归删除、路径和名字规则、自动化钩子的环境变量解析；
 //! - `pane` 保存一栏的状态，本文件和 `nav` / `ops` / `transfer` 是 [`SftpDemo`] 的状态与动作，
@@ -60,11 +60,16 @@ mod clip;
 mod copy;
 mod dialogs;
 mod drag;
+mod dup;
 mod engine;
+mod fixture;
 mod follow;
+mod header;
 mod local_ops;
 mod menu;
 mod model;
+mod move_flow;
+mod move_to;
 mod nav;
 mod ops;
 mod pane;
@@ -75,6 +80,7 @@ mod script;
 mod transfer;
 mod view;
 mod view_dialogs;
+mod view_move;
 
 pub(crate) use model::civil_from_days;
 pub(crate) use view::local_utc_offset;
@@ -99,6 +105,13 @@ enum Phase {
     Connecting,
     Ready,
     Failed,
+}
+
+/// 新视图一开始要落在哪（复制标签时用原视图当前的两个目录）：远端读不出来就退回家目录，
+/// 本地不是目录就退回默认的临时目录。
+pub(crate) struct StartDirs {
+    pub(crate) remote: String,
+    pub(crate) local: String,
 }
 
 /// 后台任务 → 界面的单向事件（`std::sync::mpsc`，由 100ms tick 取走）。
@@ -182,6 +195,23 @@ enum SftpEvent {
     PasteDone {
         op: u64,
         result: Result<(clip::Outcome, Vec<paste::PastedJob>), String>,
+    },
+    /// 「移动到…」对话框里读回来一个目录的子文件夹（`request` 是发起时的序号）。
+    MoveBrowsed {
+        request: u64,
+        dir: String,
+        result: Result<Vec<model::Entry>, String>,
+    },
+    /// 「移动到…」对话框里新建文件夹的结果。
+    MoveFolderMade {
+        dir: String,
+        path: String,
+        result: Result<(), String>,
+    },
+    /// 「移动到…」里一项移动完了（成功、同名或失败）。
+    MoveStep {
+        job: u64,
+        result: move_to::StepResult,
     },
     /// 解压结束（`Ok(None)` = 被取消）。
     ExtractDone {
@@ -340,6 +370,8 @@ pub struct SftpDemo {
     /// 主机库 id：编辑器的草稿按它区分主机。
     host_id: i64,
     host_label: String,
+    /// 调试夹具视图（`ZSSH_SFTP_FAKE`）：没有连接，远端栏是假数据，见 `fixture`。
+    fixture: bool,
     phase: Phase,
     status: String,
     /// 状态栏这句话是不是出错 / 警告（用警示色）。
@@ -421,6 +453,11 @@ pub struct SftpDemo {
     /// 递归改权限的取消开关（关窗口时用）。
     chmod_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     archive_caps: ArchiveCapsState,
+    /// 正在进行的「移动到…」（同一时间一个）。
+    moving: Option<move_to::MoveJob>,
+    next_move: u64,
+    /// 「移动到…」对话框里目录读取的序号。
+    move_browse_seq: u64,
     next_op: u64,
     /// 属性对话框里“计算大小”的编号（事件带着它回来认领）。
     next_calc: u64,
@@ -446,8 +483,13 @@ impl SftpDemo {
         host_id: i64,
         ime_key: String,
         factory: Option<Arc<SshSessionFactory>>,
+        start: Option<StartDirs>,
     ) -> Self {
         let (sender, events) = std::sync::mpsc::channel();
+        let (start_remote, start_local) = match start {
+            Some(dirs) => (Some(dirs.remote), Some(dirs.local)),
+            None => (None, None),
+        };
         let host_label = host_label(host_id);
         let show_hidden = default_show_hidden();
 
@@ -458,7 +500,10 @@ impl SftpDemo {
         let remote = Pane::new(show_hidden, remote_filter, cx.focus_handle());
         let mut local = Pane::new(show_hidden, local_filter, cx.focus_handle());
         // 本地栏先落地：初始目录必须是临时区，读不出来就空着，绝不回退到家目录。
-        let local_start = absolute_local(&initial_local_dir()).display().to_string();
+        // 复制标签带来的目录必须还是个目录才用，否则按默认处理。
+        let local_start = start_local
+            .filter(|dir| !dir.is_empty() && Path::new(dir).is_dir())
+            .unwrap_or_else(|| absolute_local(&initial_local_dir()).display().to_string());
         let mut local_status = String::new();
         match local_ops::list_dir(&local_start) {
             Ok(entries) => {
@@ -475,21 +520,29 @@ impl SftpDemo {
         let (conflict_automation, conflict_automation_error) = conflict_automation();
         let focus = cx.focus_handle();
 
-        let (phase, status) = match runtime() {
-            Ok(runtime) => {
-                let sender = sender.clone();
-                runtime.spawn(async move {
-                    let _ = sender.send(load_first(host_id, factory).await);
-                });
-                (Phase::Connecting, format!("正在连接 {host_label}"))
+        let fixture_dir = fixture::start_dir().map(|dir| start_remote.clone().unwrap_or(dir));
+        let fixture = fixture_dir.is_some();
+        let (phase, status) = if fixture {
+            // 夹具：不连服务器，下面直接铺上假目录。
+            (Phase::Ready, String::new())
+        } else {
+            match runtime() {
+                Ok(runtime) => {
+                    let sender = sender.clone();
+                    runtime.spawn(async move {
+                        let _ = sender.send(load_first(host_id, factory, start_remote).await);
+                    });
+                    (Phase::Connecting, format!("正在连接 {host_label}"))
+                }
+                Err(err) => (Phase::Failed, format!("连接失败：{err}")),
             }
-            Err(err) => (Phase::Failed, format!("连接失败：{err}")),
         };
 
         let mut this = Self {
             view_id: NEXT_VIEW.fetch_add(1, Ordering::Relaxed),
             host_id,
             host_label,
+            fixture,
             phase,
             status,
             status_is_error: false,
@@ -535,6 +588,9 @@ impl SftpDemo {
             orphan_reports: std::collections::HashMap::new(),
             chmod_cancel: None,
             archive_caps: ArchiveCapsState::Idle,
+            moving: None,
+            next_move: 1,
+            move_browse_seq: 0,
             next_op: 1,
             next_calc: 1,
             focus,
@@ -551,6 +607,10 @@ impl SftpDemo {
             this.status = format!("{} · {message}", this.status);
         }
         this._tick = this.spawn_tick(window, cx);
+        if let Some(dir) = fixture_dir {
+            let rows = fixture::entries(&dir);
+            this.set_remote_listing(dir, rows, NavMode::Visit, None);
+        }
         this
     }
 
@@ -636,6 +696,10 @@ impl SftpDemo {
         self.conflict_name_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("新名字（留空 = 自动起名）"));
         self.prefill_conflict_name(window, cx);
+        // 换了窗口，旧窗口里的同名询问没了：停在询问上的移动不会再有人回答，放弃它。
+        if matches!(self.dialog, Some(Dialog::MoveConflict(_))) {
+            self.moving = None;
+        }
         self.dialog = None;
         self._subscriptions = self.build_subscriptions(window, cx);
         self._tick = self.spawn_tick(window, cx);
@@ -690,6 +754,7 @@ impl SftpDemo {
         self.cancel_property_calcs();
         self.close_prompt = false;
         self.dialog = None;
+        self.moving = None;
         // 输入法登记跟着窗口走；真正关窗口才注销（用户在确认条上选"继续传输"时不会走到这里）。
         crate::ime::window_destroyed(&self.ime_key);
         if let Some(engine) = &self.engine {
@@ -941,6 +1006,15 @@ impl SftpDemo {
             }
             SftpEvent::PasteDone { op, result } => self.finish_paste(op, result, cx),
             SftpEvent::ExtractDone { op, ask, result } => self.finish_extract(op, ask, result, cx),
+            SftpEvent::MoveBrowsed {
+                request,
+                dir,
+                result,
+            } => self.apply_move_browsed(request, dir, result, window, cx),
+            SftpEvent::MoveFolderMade { dir, path, result } => {
+                self.apply_move_folder_made(dir, path, result, cx)
+            }
+            SftpEvent::MoveStep { job, result } => self.apply_move_step(job, result, window, cx),
         }
         cx.notify();
     }
@@ -989,7 +1063,11 @@ impl Drop for SftpDemo {
 }
 
 /// 首屏：连接（或复用池里的连接）→ 开 SFTP 通道 → 真实家目录 → 列目录。
-async fn load_first(host_id: i64, factory: Option<Arc<SshSessionFactory>>) -> SftpEvent {
+async fn load_first(
+    host_id: i64,
+    factory: Option<Arc<SshSessionFactory>>,
+    start_remote: Option<String>,
+) -> SftpEvent {
     let result = async {
         let factory = match factory {
             Some(factory) => factory,
@@ -999,14 +1077,7 @@ async fn load_first(host_id: i64, factory: Option<Arc<SshSessionFactory>>) -> Sf
         let channel = SftpChannel::open(&connection)
             .await
             .map_err(|err| err.to_string())?;
-        let cwd = channel
-            .realpath(".")
-            .await
-            .unwrap_or_else(|_| "/".to_owned());
-        let entries = channel
-            .read_dir(&cwd)
-            .await
-            .map_err(|err| err.to_string())?;
+        let (cwd, entries) = first_listing(&channel, start_remote.as_deref()).await?;
         Ok::<_, String>((factory, channel, cwd, entries))
     }
     .await;
@@ -1019,6 +1090,28 @@ async fn load_first(host_id: i64, factory: Option<Arc<SshSessionFactory>>) -> Sf
         },
         Err(message) => SftpEvent::ConnectFailed(message),
     }
+}
+
+/// 第一屏的目录：指定了起始目录（复制标签）并且读得出来就用它，否则是登录后的家目录。
+/// 目录在复制之后被删 / 改了权限也不该让新标签整个失败，所以读不出来就退回家目录。
+async fn first_listing(
+    channel: &SftpChannel,
+    wanted: Option<&str>,
+) -> Result<(String, Vec<DirEntry>), String> {
+    if let Some(dir) = wanted.filter(|dir| !dir.trim().is_empty())
+        && let Ok(entries) = channel.read_dir(dir).await
+    {
+        return Ok((dir.to_owned(), entries));
+    }
+    let cwd = channel
+        .realpath(".")
+        .await
+        .unwrap_or_else(|_| "/".to_owned());
+    let entries = channel
+        .read_dir(&cwd)
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok((cwd, entries))
 }
 
 /// 从主机库或环境变量打开一个 SFTP 浏览窗口。
@@ -1042,7 +1135,7 @@ pub fn open_sftp_window_with_factory(
         ..Default::default()
     };
     let _ = cx.open_window(options, move |window, cx| {
-        let view = cx.new(|cx| SftpDemo::new(window, cx, host_id, ime_key, factory));
+        let view = cx.new(|cx| SftpDemo::new(window, cx, host_id, ime_key, factory, None));
         window.set_window_title(&format!("SFTP #{host_id}"));
         let close_view = view.clone();
         // 有未完成的传输 / 删除时这里返回 false，窗口里出现确认条；确认之后由按钮自己关窗口。
@@ -1067,7 +1160,14 @@ impl SftpDemo {
         local_hidden: bool,
     ) -> Self {
         let n = NEXT_SFTP.fetch_add(1, Ordering::Relaxed);
-        let mut this = Self::new(window, cx, host_id, format!("sftp-embedded-{n}"), factory);
+        let mut this = Self::new(
+            window,
+            cx,
+            host_id,
+            format!("sftp-embedded-{n}"),
+            factory,
+            None,
+        );
         this.dock = dock;
         this.local_hidden = local_hidden;
         this
@@ -1158,6 +1258,8 @@ impl SftpDemo {
     }
 }
 
+#[cfg(test)]
+mod move_e2e_tests;
 #[cfg(test)]
 mod paste_tests;
 #[cfg(test)]

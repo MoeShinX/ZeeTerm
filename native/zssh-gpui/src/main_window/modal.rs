@@ -141,6 +141,8 @@ impl Modal {
             Self::Processes(dialog) => dialog.busy(),
             // 密码在后台算哈希：算完之前不能关，免得结果落在已经没有的对话框上。
             Self::AppLock(dialog) => dialog.busy(),
+            // 断开连接 / 结束进程同理。
+            Self::Connections(dialog) => dialog.busy(),
             _ => false,
         }
     }
@@ -173,11 +175,11 @@ impl Modal {
 
     /// 点遮罩算不算取消。填了半天的表单不能被一次误点丢掉，只能用取消按钮或 Esc 关。
     pub fn closes_on_scrim(&self) -> bool {
-        // 连接列表是只读的，点遮罩可以关；填了半天的表单才不行。
+        // 连接列表点遮罩可以关；确认框开着时不行（同进程管理）。填了半天的表单才不行。
         // 连接 Tokenway 的对话框里有进行中的授权，不能被一次误点取消。
         // 锁屏密码对话框里是刚敲的密码，不能被一次误点遮罩丢掉。
         (!self.tall() && !matches!(self, Self::Tokenway(_) | Self::AppLock(_)))
-            || matches!(self, Self::Connections(_))
+            || matches!(self, Self::Connections(dialog) if dialog.ask.is_none())
             // 进程列表点遮罩可以关；确认框开着时不行（免得一次误点把正要确认的结束请求丢掉）。
             || matches!(self, Self::Processes(dialog) if dialog.ask.is_none())
     }
@@ -356,6 +358,14 @@ impl MainWindow {
             cx.notify();
             return;
         }
+        // 所有网络连接：确认框开着时同理（断开连接、结束进程都只在点了确认框里的按钮后才执行）。
+        if let Some(Modal::Connections(dialog)) = &mut self.modal
+            && dialog.ask.is_some()
+        {
+            dialog.ask = None;
+            cx.notify();
+            return;
+        }
         // 主机属性：先收小浮层；有没保存的修改先问是否放弃。
         if matches!(self.modal, Some(Modal::HostProps(_))) {
             self.host_props_cancel(window, cx);
@@ -387,7 +397,7 @@ impl MainWindow {
             Some(Modal::Recovery(_)) => {}
             // 三个选项各有按钮：回车不替用户选（尤其不能一回车就开始安装）。
             Some(Modal::X11Needed(_)) => {}
-            // 只读对话框：Enter 留给搜索框，没有要确认的东西。
+            // Enter 留给搜索框；断开连接 / 结束进程只能点确认框里的按钮，Enter 不替用户确认。
             Some(Modal::Connections(_)) => {}
             // 结束进程只能点确认框里的按钮：Enter 不替用户确认（尤其不能一回车就结束进程）。
             Some(Modal::Processes(_)) => {}

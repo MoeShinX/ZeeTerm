@@ -10,11 +10,13 @@
 //! 网格在窗口里的位置由 `canvas` 量出来（上一帧的结果），不再写死窗口坐标。
 
 use ::gpui::{
-    Bounds, ClipboardItem, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, ScrollDelta, ScrollEvent, Subscription, Task, Window, canvas,
+    Anchor, Bounds, ClipboardItem, DismissEvent, FocusHandle, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollDelta, ScrollEvent, Subscription,
+    Task, Window, anchored, canvas, deferred,
 };
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::slider::{SliderEvent, SliderState};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -823,6 +825,8 @@ pub struct TerminalWorkspace {
     /// 设置页回滚行数的滑块；松手才应用（拖的过程中只是预览，免得途经小值时丢掉历史）。
     scrollback_slider: Entity<SliderState>,
     _settings_subs: Vec<Subscription>,
+    /// 弹着的终端右键菜单（V2-U25）；关掉（点外面、Esc、点了某项）时清空。
+    context_menu: Option<ContextMenu>,
     /// 远端已接管本次左/中/右键按下，松开时要补一条上报。
     mouse_pressed: bool,
     /// 上一次上报的格子；移动事件只在跨格时发。
@@ -844,6 +848,18 @@ pub struct TerminalWorkspace {
     latency_stamp: u64,
     _ime_focus: Subscription,
     _ime_blur: Subscription,
+}
+
+/// 弹着的右键菜单：菜单实体、弹出的位置（窗口坐标）、弹出时的条目（调试断言读它）。
+struct ContextMenu {
+    menu: Entity<PopupMenu>,
+    position: ::gpui::Point<Pixels>,
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    entries: Vec<crate::terminal_menu::Entry>,
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    link: Option<Arc<str>>,
+    /// 订阅随菜单一起放着：丢掉菜单，订阅也就没了。
+    _dismiss: Subscription,
 }
 
 /// 窗口现在是不是真的摆在用户面前：可见且没有最小化（收进托盘的窗口不可见）。
@@ -969,6 +985,7 @@ impl TerminalWorkspace {
             font_custom: false,
             scrollback_slider,
             _settings_subs: settings_subs,
+            context_menu: None,
             mouse_pressed: false,
             last_mouse_cell: None,
             highlight,
@@ -1207,6 +1224,7 @@ impl TerminalWorkspace {
         self.last_mouse_cell = None;
         self.dragging_split = None;
         self.highlight.key = None;
+        self.context_menu = None;
     }
 
     fn refresh(&mut self) {
@@ -1566,6 +1584,92 @@ impl TerminalWorkspace {
         let size = self.default_size;
         self.push_offline_tab("离线演示", size);
         cx.notify();
+    }
+
+    /// 调试驱动用：直接设选区（可见区坐标）。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_select(
+        &mut self,
+        anchor: (usize, usize),
+        head: (usize, usize),
+        cx: &mut Context<Self>,
+    ) {
+        self.selection = Some((anchor, head));
+        cx.notify();
+    }
+
+    /// 调试驱动用：现在有没有非空的选区文字。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_selected_text(&self) -> String {
+        self.selected_text()
+    }
+
+    /// 调试驱动用：这段文字在聚焦窗格里第一次出现的位置，返回它中间那一格的中心（窗口逻辑像素）。
+    /// 按字符算列，所以只对前面没有宽字符的行准。
+    pub(crate) fn dev_text_center(&self, text: &str) -> Option<(f32, f32)> {
+        let tab = self.tabs.active()?;
+        let geom = self.pane_geom.get(tab.active_pane)?;
+        for (row, line) in tab.active().snapshot.rows.iter().enumerate() {
+            if let Some(byte) = line.text.find(text) {
+                let col = line.text[..byte].chars().count() + text.chars().count() / 2;
+                return Some((
+                    geom.left + (col as f32 + 0.5) * self.cell_width,
+                    geom.top + (row as f32 + 0.5) * self.cell_height,
+                ));
+            }
+        }
+        None
+    }
+
+    /// 调试驱动用：弹着的右键菜单的条目（没弹是 `None`）。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_menu_entries(&self) -> Option<Vec<crate::terminal_menu::Entry>> {
+        self.context_menu.as_ref().map(|open| open.entries.clone())
+    }
+
+    /// 调试驱动用：选菜单里的一项（和点它走同一个 `run_menu_item`）；置灰的项选不了。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_menu_pick(
+        &mut self,
+        label: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let Some(open) = self.context_menu.as_ref() else {
+            return Err("菜单没有弹出".to_owned());
+        };
+        let Some(entry) = open.entries.iter().find(|entry| entry.label == label) else {
+            return Err("菜单里没有这一项".to_owned());
+        };
+        if !entry.enabled {
+            return Err("这一项是置灰的".to_owned());
+        }
+        let (item, link) = (entry.item, open.link.clone());
+        self.context_menu = None;
+        self.run_menu_item(item, link.as_deref(), window, cx);
+        Ok(())
+    }
+
+    /// 调试驱动用：关掉右键菜单（不选任何项），焦点回终端。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_menu_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.context_menu = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// 调试驱动用：「右键粘贴」设成指定值（走设置页开关同一个方法）。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_right_click_paste(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.settings.right_click_paste != on {
+            self.toggle_right_click_paste(cx);
+        }
+    }
+
+    /// 调试驱动用：键盘焦点现在在终端上吗。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_terminal_focused(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
     }
 
     /// 调试驱动用：给活动标签的窗格摆延迟值（`pane` 为空就是所有窗格；`sample` 为空是清掉）。
@@ -2760,12 +2864,11 @@ impl TerminalWorkspace {
 
     /// 远端接管鼠标时返回它的上报模式；按住 Shift 强制走本地选择（xterm 惯例）。
     fn mouse_report_mode(&self, shift: bool) -> MouseMode {
-        if shift {
-            return MouseMode::default();
-        }
-        self.pane()
+        let remote = self
+            .pane()
             .map(|pane| pane.pump().mouse_mode())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        crate::terminal_menu::effective_mouse_mode(remote, shift)
     }
 
     /// 上报坐标按聚焦窗格的网格换算；超出范围钳到边缘，避免窗口边距丢掉事件。
@@ -2862,8 +2965,18 @@ impl TerminalWorkspace {
         }
 
         if event.button == MouseButton::Right {
-            if self.settings.right_click_paste {
-                self.request_paste(cx);
+            // 上面的上报分支已经把远端接管的情形（没按 Shift）处理掉了，这里只剩粘贴和弹菜单。
+            let link = self.link_at(event.position);
+            match crate::terminal_menu::right_click_route(
+                mode,
+                self.settings.right_click_paste,
+                link.is_some(),
+            ) {
+                crate::terminal_menu::RightClick::Paste => self.request_paste(cx),
+                crate::terminal_menu::RightClick::Menu => {
+                    self.open_context_menu(event.position, link, window, cx)
+                }
+                crate::terminal_menu::RightClick::Remote => {}
             }
             return;
         }
@@ -2875,9 +2988,7 @@ impl TerminalWorkspace {
         if event.click_count >= 2
             && let Some(link) = self.link_at(event.position)
         {
-            if let Err(err) = zssh_core::external_url::open_external_url(&link) {
-                tracing::warn!(%err, "打开链接失败");
-            }
+            self.open_link(&link);
             return;
         }
         // 三击选行、双击选词（链接优先）。
@@ -3059,6 +3170,131 @@ impl TerminalWorkspace {
             return;
         }
         cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    /// 用系统默认浏览器打开链接（先过 http/https 校验）。失败只记日志，和双击链接一贯的做法一样。
+    fn open_link(&self, link: &str) {
+        let opened = crate::terminal_menu::open_link(link, |url| {
+            zssh_core::external_url::open_external_url(url)
+        });
+        if let Err(err) = opened {
+            tracing::warn!(%err, "打开链接失败");
+        }
+    }
+
+    /// 在 `position`（窗口坐标）弹出终端右键菜单。`link` 是鼠标下的链接。点在已有选区之外也不清选区，
+    /// 这样「先选中再右键复制」能用。
+    fn open_context_menu(
+        &mut self,
+        position: ::gpui::Point<Pixels>,
+        link: Option<Arc<str>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = crate::terminal_menu::MenuState {
+            link: link.as_deref().map(str::to_owned),
+            has_selection: !self.selected_text().is_empty(),
+            clipboard_has_text: cx
+                .read_from_clipboard()
+                .and_then(|item| item.text())
+                .is_some_and(|text| !text.is_empty()),
+        };
+        let entries = crate::terminal_menu::menu_entries(&state);
+        let tokens = crate::app_theme::Tokens::current(cx);
+        let entity = cx.entity();
+        let dispatch: crate::terminal_menu::Dispatch = {
+            let link = link.clone();
+            Rc::new(move |item, window, cx| {
+                entity.update(cx, |this, cx| {
+                    this.run_menu_item(item, link.as_deref(), window, cx)
+                });
+            })
+        };
+        let shown = entries.clone();
+        // `action_context` 让菜单关闭后把焦点还给终端（点了某项、点外面、Esc 都一样）。
+        let focus = self.focus.clone();
+        let menu = PopupMenu::build(window, cx, move |menu, _window, _cx| {
+            crate::terminal_menu::build_menu(menu.action_context(focus), &shown, &tokens, dispatch)
+        });
+        let dismiss = cx.subscribe_in(
+            &menu,
+            window,
+            |this, menu, _event: &DismissEvent, _window, cx| {
+                // 在别处再右键一次时，旧菜单的「点外面关闭」可能晚于新菜单的创建才送到：只清自己那一个。
+                if this
+                    .context_menu
+                    .as_ref()
+                    .is_some_and(|open| open.menu.entity_id() == menu.entity_id())
+                {
+                    this.context_menu = None;
+                }
+                cx.notify();
+            },
+        );
+        // 焦点要等这次按下分发完再给菜单：终端根元素跟踪了焦点，按下冒泡到它时会把焦点抢回去，
+        // 这里同步抢的话菜单拿不到 Esc / 方向键（组件库自己的右键菜单也是下一拍才聚焦）。
+        let menu_focus = menu.clone();
+        window.defer(cx, move |window, cx| {
+            menu_focus.focus_handle(cx).focus(window, cx);
+        });
+        self.context_menu = Some(ContextMenu {
+            menu,
+            position,
+            entries,
+            link,
+            _dismiss: dismiss,
+        });
+        cx.notify();
+    }
+
+    /// 菜单里选了一项（和对应的快捷键走同一批方法）。
+    fn run_menu_item(
+        &mut self,
+        item: crate::terminal_menu::MenuItem,
+        link: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::terminal_menu::MenuItem;
+        match item {
+            MenuItem::OpenLink => {
+                if let Some(link) = link {
+                    self.open_link(link);
+                }
+            }
+            MenuItem::CopyLink => {
+                if let Some(link) = link {
+                    cx.write_to_clipboard(ClipboardItem::new_string(link.to_owned()));
+                }
+            }
+            MenuItem::Copy => {
+                // 和 Ctrl+Shift+C 一样：复制后清掉选区。
+                self.copy_selection(cx);
+                self.selection = None;
+            }
+            MenuItem::Paste => self.request_paste(cx),
+            MenuItem::SelectAll => self.select_all(cx),
+            MenuItem::SplitRight => {
+                self.split_active(Axis::X, cx);
+            }
+            MenuItem::SplitDown => {
+                self.split_active(Axis::Y, cx);
+            }
+            MenuItem::Separator => {}
+        }
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// 全选：聚焦窗格当前屏幕上的所有格子（不含回滚缓冲）。「选中即复制」开着时同样会写剪贴板。
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        let Some(size) = self.pane().map(|pane| pane.snapshot.size) else {
+            return;
+        };
+        self.selection = crate::terminal_menu::select_all_range(size.rows, size.cols);
+        self.selecting = false;
+        self.drag_anchor = None;
+        self.copy_on_select(cx);
     }
 
     /// 选中即复制：开关打开时，选区一变化就写剪贴板。
@@ -3570,6 +3806,22 @@ impl Render for TerminalWorkspace {
             );
         }
 
+        // 右键菜单：画在最上层（deferred），位置是弹出时的窗口坐标；菜单上滚轮不要滚到后面的终端。
+        let context_menu = self.context_menu.as_ref().map(|open| {
+            deferred(
+                anchored()
+                    .position(open.position)
+                    .anchor(Anchor::TopLeft)
+                    .snap_to_window_with_margin(::gpui::px(8.0))
+                    .child(
+                        div()
+                            .on_scroll(|_, _, cx| cx.stop_propagation())
+                            .child(open.menu.clone()),
+                    ),
+            )
+            .with_priority(gpui_kit::base::POPUP_PRIORITY)
+        });
+
         v_flex()
             .size_full()
             .track_focus(&self.focus)
@@ -3578,6 +3830,7 @@ impl Render for TerminalWorkspace {
             .bg(background)
             .when(self.hover_link.is_some(), |d| d.cursor_pointer())
             .children(pending_bar)
+            .children(context_menu)
             .child(
                 div()
                     .relative()

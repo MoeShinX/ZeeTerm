@@ -152,7 +152,7 @@ mod real {
 
     /// 一台 root 登录的服务器（procps 的 `ps`）。4242 是采集脚本的 shell，挂在承载这条 SSH 连接的 sshd 下面
     /// （3100 → 3090 → 800）。
-    const FULL: &str = "\
+    pub(super) const FULL: &str = "\
 @@ZSSH uid 0
 @@ZSSH user root
 @@ZSSH self 4242
@@ -555,6 +555,12 @@ PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
             ),
         }
     }
+}
+
+/// 进程管理的假进程表（root 登录的 procps 输出），"所有网络连接"的夹具在它上面补几行。
+#[cfg(debug_assertions)]
+pub(in crate::main_window) fn full_listing() -> &'static str {
+    real::FULL
 }
 
 #[cfg(debug_assertions)]

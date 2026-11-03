@@ -8,7 +8,7 @@
 //! 只读：不结束进程、不断开连接。命令里强制 `LC_ALL=C`，这样状态名、表头不会被翻译。
 
 use std::cmp::Ordering;
-use std::net::Ipv6Addr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 
 use super::connection::Connection;
@@ -28,6 +28,7 @@ pub const CONNECTIONS_MAX_ROWS: usize = 20_000;
 const SCRIPT: &str = r#"LC_ALL=C
 export LC_ALL
 echo "@@ZSSH uid $(id -u 2>/dev/null)"
+echo "@@ZSSH ssh_connection $SSH_CONNECTION"
 rc=127
 if command -v ss >/dev/null 2>&1; then
   echo "@@ZSSH source ss"
@@ -252,6 +253,29 @@ impl NetConn {
             || (self.proto == NetProto::Udp && self.state == ConnState::Unconn)
     }
 
+    /// 占着这条连接的进程，同一个 PID 只留一项（`ss` 对每个文件描述符各给一项）。
+    pub fn unique_processes(&self) -> Vec<ProcRef> {
+        let mut seen: Vec<ProcRef> = Vec::new();
+        for proc in &self.processes {
+            if !seen.iter().any(|known| known.pid == proc.pid) {
+                seen.push(proc.clone());
+            }
+        }
+        seen
+    }
+
+    /// 「复制整行」：协议、本地、远端、状态、进程，制表符分隔（和表格上看到的一样）。
+    pub fn tsv_line(&self) -> String {
+        [
+            self.proto_label().to_owned(),
+            self.local.display(),
+            self.remote.display(),
+            self.state.label(),
+            self.process_label(),
+        ]
+        .join("	")
+    }
+
     /// 「进程」一列的文字：`nginx (123, 124)`；多个不同的进程用顿号隔开；没有是 `—`。
     pub fn process_label(&self) -> String {
         if self.processes.is_empty() {
@@ -288,6 +312,55 @@ pub struct ConnectionsReport {
     pub truncated: bool,
     /// 服务器上当前用户的 uid；`0` = root。
     pub uid: Option<u32>,
+    /// 采集用的这条 SSH 连接自己（服务器 sshd 设置的 `$SSH_CONNECTION`）：ZeeTerm 正在用的那条连接，
+    /// 不能被断开（V2-U21）。没有这个环境变量（非 OpenSSH、被登录 shell 清掉）时是 `None`。
+    pub ssh_connection: Option<SshConnection>,
+}
+
+/// `$SSH_CONNECTION`：`客户端 IP 客户端端口 服务端 IP 服务端端口`，端点都是 sshd 看到的样子。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SshConnection {
+    pub client: Endpoint,
+    pub server: Endpoint,
+}
+
+/// 解析 `$SSH_CONNECTION` 的值。格式不对（不是四段、地址不是 IP、端口不是 1..=65535 的数字）一律是 `None`：
+/// 认不出就不上锁，但也绝不把半截数据当成"自己的连接"去匹配别的行。
+pub fn parse_ssh_connection(value: &str) -> Option<SshConnection> {
+    let mut words = value.split_whitespace();
+    let (client_ip, client_port, server_ip, server_port) =
+        (words.next()?, words.next()?, words.next()?, words.next()?);
+    if words.next().is_some() {
+        return None;
+    }
+    let endpoint = |ip: &str, port: &str| -> Option<Endpoint> {
+        let ip: IpAddr = ip.parse().ok()?;
+        let port: u16 = port.parse().ok().filter(|p| *p != 0)?;
+        Some(Endpoint {
+            host: ip.to_string(),
+            port: port.to_string(),
+        })
+    };
+    Some(SshConnection {
+        client: endpoint(client_ip, client_port)?,
+        server: endpoint(server_ip, server_port)?,
+    })
+}
+
+/// 两个端点是不是同一个：端口相同；地址去掉 `%网卡`、按 IP 比（IPv4-mapped IPv6 当 IPv4），不是 IP 时按字面比。
+pub fn same_endpoint(a: &Endpoint, b: &Endpoint) -> bool {
+    fn canon(host: &str) -> String {
+        let bare = host.split_once('%').map_or(host, |(addr, _)| addr);
+        match bare.parse::<IpAddr>() {
+            Ok(IpAddr::V6(v6)) => match v6.to_ipv4_mapped() {
+                Some(v4) => v4.to_string(),
+                None => v6.to_string(),
+            },
+            Ok(ip) => ip.to_string(),
+            Err(_) => bare.to_ascii_lowercase(),
+        }
+    }
+    a.port == b.port && canon(&a.host) == canon(&b.host)
 }
 
 /// 进程列为什么大面积是 `—`（界面在表格上方给一行淡色提示）。
@@ -300,6 +373,16 @@ pub enum ProcessHint {
 }
 
 impl ConnectionsReport {
+    /// 这一行是不是 ZeeTerm 正在使用的那条 SSH 连接（TCP，本地 = sshd 的地址，对端 = 客户端）。
+    pub fn is_own_connection(&self, row: &NetConn) -> bool {
+        let Some(own) = &self.ssh_connection else {
+            return false;
+        };
+        row.proto == NetProto::Tcp
+            && same_endpoint(&row.local, &own.server)
+            && same_endpoint(&row.remote, &own.client)
+    }
+
     pub fn process_hint(&self) -> Option<ProcessHint> {
         if self.source == ConnSource::Proc {
             return Some(ProcessHint::NoProcessSource);
@@ -329,6 +412,7 @@ pub enum ConnectionsError {
 /// 输出里 `@@ZSSH source X` 开一个来源段，失败退到下一个来源时会再来一段，**取最后一段**。
 pub fn parse_connections(output: &str) -> Result<ConnectionsReport, ConnectionsError> {
     let mut uid: Option<u32> = None;
+    let mut ssh_connection: Option<SshConnection> = None;
     let mut source: Option<ConnSource> = None;
     let mut file: Option<(NetProto, bool)> = None;
     let mut rows: Vec<NetConn> = Vec::new();
@@ -342,6 +426,10 @@ pub fn parse_connections(output: &str) -> Result<ConnectionsReport, ConnectionsE
             let mut words = directive.split_whitespace();
             match (words.next(), words.next()) {
                 (Some("uid"), value) => uid = value.and_then(|v| v.parse().ok()),
+                (Some("ssh_connection"), _) => {
+                    let value = directive.trim_start_matches("ssh_connection");
+                    ssh_connection = parse_ssh_connection(value);
+                }
                 (Some("source"), Some(name)) => {
                     source = match name {
                         "ss" => Some(ConnSource::Ss),
@@ -395,11 +483,12 @@ pub fn parse_connections(output: &str) -> Result<ConnectionsReport, ConnectionsE
         rows,
         truncated,
         uid,
+        ssh_connection,
     })
 }
 
 /// 解析 `host:port`、`[v6]:port`、`[fe80::1]%eth0:546`、`127.0.0.53%lo:53`、`*:*`、`:::80`。
-fn parse_endpoint(text: &str) -> Option<Endpoint> {
+pub(crate) fn parse_endpoint(text: &str) -> Option<Endpoint> {
     let text = text.trim();
     if text.is_empty() {
         return None;
@@ -1058,6 +1147,129 @@ udp        0      0 192.0.2.10:123          203.0.113.1:123         ESTABLISHED 
     }
 
     #[test]
+    fn ssh_connection_parses_four_fields_and_rejects_anything_odd() {
+        let own = parse_ssh_connection("198.51.100.7 51234 192.0.2.10 22").expect("解析");
+        assert_eq!(own.client.display(), "198.51.100.7:51234");
+        assert_eq!(own.server.display(), "192.0.2.10:22");
+        let v6 = parse_ssh_connection(
+            "2001:db8::77 40000 2001:db8::10 22
+",
+        )
+        .expect("IPv6");
+        assert_eq!(v6.client.display(), "[2001:db8::77]:40000");
+        // 没有 / 空 / 三段 / 五段 / 不是 IP / 端口越界或不是数字：都不认。
+        for odd in [
+            "",
+            "   ",
+            "198.51.100.7 51234 192.0.2.10",
+            "198.51.100.7 51234 192.0.2.10 22 extra",
+            "not-an-ip 51234 192.0.2.10 22",
+            "198.51.100.7 0 192.0.2.10 22",
+            "198.51.100.7 65536 192.0.2.10 22",
+            "198.51.100.7 http 192.0.2.10 22",
+            "198.51.100.7 -1 192.0.2.10 22",
+        ] {
+            assert_eq!(parse_ssh_connection(odd), None, "{odd:?}");
+        }
+    }
+
+    #[test]
+    fn the_report_carries_ssh_connection_and_flags_only_the_matching_row_as_own() {
+        let out = "@@ZSSH uid 0
+@@ZSSH ssh_connection 198.51.100.7 51234 192.0.2.10 22
+@@ZSSH source ss
+tcp   ESTAB  0 0 192.0.2.10:22     198.51.100.7:51234 users:((\"sshd\",pid=1200,fd=4))
+tcp   ESTAB  0 0 192.0.2.10:22     198.51.100.8:51234 users:((\"sshd\",pid=1300,fd=4))
+tcp   ESTAB  0 0 192.0.2.10:22     198.51.100.7:51235 users:((\"sshd\",pid=1400,fd=4))
+tcp   ESTAB  0 0 192.0.2.10:2222   198.51.100.7:51234
+tcp   LISTEN 0 0 0.0.0.0:22       0.0.0.0:*
+";
+        let report = parse_connections(out).expect("解析");
+        assert!(report.ssh_connection.is_some());
+        let own: Vec<bool> = report
+            .rows
+            .iter()
+            .map(|row| report.is_own_connection(row))
+            .collect();
+        // 只有四元组完全相同的那一行；别的客户端 / 别的端口 / 别的服务端口 / 监听都不是。
+        assert_eq!(own, [true, false, false, false, false]);
+    }
+
+    #[test]
+    fn own_connection_matching_ignores_scope_and_v4_mapped_forms_but_never_matches_without_the_variable(
+    ) {
+        let out = "@@ZSSH uid 0
+@@ZSSH ssh_connection 198.51.100.7 51234 192.0.2.10 22
+@@ZSSH source ss
+tcp   ESTAB  0 0 [::ffff:192.0.2.10]:22   [::ffff:198.51.100.7]:51234
+";
+        let report = parse_connections(out).expect("解析");
+        assert!(
+            report.is_own_connection(&report.rows[0]),
+            "IPv4-mapped 写法"
+        );
+        let v6 = "@@ZSSH uid 0
+@@ZSSH ssh_connection 2001:db8::77 40000 2001:db8::10 22
+@@ZSSH source ss
+tcp   ESTAB  0 0 [2001:db8::10]%eth0:22   [2001:db8::77]:40000
+";
+        let report = parse_connections(v6).expect("解析");
+        assert!(
+            report.is_own_connection(&report.rows[0]),
+            "scope 后缀不影响"
+        );
+        // 没有变量 / 格式怪：没有任何一行算自己的。
+        for header in [
+            "",
+            "@@ZSSH ssh_connection 
+",
+            "@@ZSSH ssh_connection a b c d
+",
+        ] {
+            let out = format!(
+                "@@ZSSH uid 0
+{header}@@ZSSH source ss
+tcp ESTAB 0 0 192.0.2.10:22 198.51.100.7:51234
+"
+            );
+            let report = parse_connections(&out).expect("解析");
+            assert_eq!(report.ssh_connection, None);
+            assert!(!report.is_own_connection(&report.rows[0]));
+        }
+    }
+
+    #[test]
+    fn unique_processes_and_the_copied_line_follow_the_table() {
+        let report = parse_connections(SS_SAMPLE).expect("解析");
+        let est = report
+            .rows
+            .iter()
+            .find(|row| row.local.display() == "192.0.2.10:22")
+            .expect("行");
+        let pids: Vec<u32> = est.unique_processes().iter().map(|p| p.pid).collect();
+        assert_eq!(pids, [1200, 1180]);
+        assert_eq!(
+            est.tsv_line(),
+            "TCP	192.0.2.10:22	198.51.100.7:51234	ESTABLISHED	sshd (1200, 1180)"
+        );
+        // 同一个 PID 出现在多个文件描述符里只算一项。
+        let dup = NetConn {
+            processes: vec![
+                ProcRef {
+                    pid: 7,
+                    name: "a".into(),
+                },
+                ProcRef {
+                    pid: 7,
+                    name: "a".into(),
+                },
+            ],
+            ..est.clone()
+        };
+        assert_eq!(dup.unique_processes().len(), 1);
+    }
+
+    #[test]
     fn the_command_is_one_read_only_exec_with_balanced_quotes_and_c_locale() {
         let command = connections_command();
         assert!(command.starts_with("exec sh -c '"));
@@ -1067,6 +1279,7 @@ udp        0      0 192.0.2.10:123          203.0.113.1:123         ESTABLISHED 
         assert!(SCRIPT.contains("ss -tunapH"));
         assert!(SCRIPT.contains("netstat -tunap"));
         assert!(SCRIPT.contains("/proc/net/$f"));
+        assert!(SCRIPT.contains("@@ZSSH ssh_connection $SSH_CONNECTION"));
         // 只读：不出现任何会改东西的命令。
         for forbidden in [
             "kill", "ss -K", "rm ", "iptables", "tee ", " > /", "ip link",

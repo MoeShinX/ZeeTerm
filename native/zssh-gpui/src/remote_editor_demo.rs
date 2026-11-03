@@ -30,6 +30,7 @@ mod language;
 mod lines;
 #[cfg(test)]
 mod live_tests;
+pub(crate) mod open_files;
 pub(crate) mod recovery;
 mod remote;
 mod view;
@@ -293,6 +294,8 @@ pub struct RemoteEditor {
     font_size: f32,
     /// 登记到进程级的「未保存修改」计数：退出 / 安装前检查用。
     unsaved_registration: Registration,
+    /// 登记「这个远端文件正开在编辑器里」：文件视图的「移动到…」据此跳过它（V2-U23）。
+    open_file: open_files::OpenFile,
     /// `ZSSH_EDIT_SAVE=<text>`：文件读完后替换成这段文本并保存一次（自动化测试用）。
     automation_save: Option<String>,
     /// `ZSSH_EDIT_SAVE_AS=<path>`：保存之后再另存一份（自动化测试用）。
@@ -345,6 +348,7 @@ impl RemoteEditor {
         // 数据目录只取一次：草稿路径和写线程用的是同一份，运行中改环境变量不会拆开它们。
         let data_dir = crate::settings::data_dir();
         let draft_path = draft_file_in(&data_dir, host_id, &path);
+        let open_file = open_files::OpenFile::register(host_id, &path);
 
         let mut subs = Vec::new();
         // 用户改了文字：修订号 +1。程序化替换（加载、放弃修改、恢复草稿）不发这个事件，那几处自己加。
@@ -434,6 +438,7 @@ impl RemoteEditor {
             close_confirmed: false,
             font_size: ui.font_size,
             unsaved_registration: Registration::new(WorkKind::UnsavedEdits),
+            open_file,
             automation_save: var("ZSSH_EDIT_SAVE"),
             automation_save_as: var("ZSSH_EDIT_SAVE_AS"),
             automation_draft: var("ZSSH_EDIT_DRAFT"),
@@ -850,6 +855,7 @@ impl RemoteEditor {
                 // 旧路径的草稿不再属于这个编辑器。
                 self.drafts.send(DraftJob::Delete(self.draft_path.clone()));
                 self.path = path;
+                self.open_file.relocate(&self.path);
                 self.draft_path = draft_file_in(&self.data_dir, self.host_id, &self.path);
                 self.version = Some(version);
                 self.baseline = text;

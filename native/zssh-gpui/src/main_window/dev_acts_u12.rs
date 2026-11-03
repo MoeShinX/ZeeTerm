@@ -22,6 +22,9 @@ pub struct DevFake {
     pub connections: Option<Result<String, ConnectionsError>>,
     /// 进程管理（V2-U18）的假数据，见 `dev_acts_u18`。
     pub procs: super::dev_acts_u18::FakeProcs,
+    /// 断开连接（V2-U21）的假结果，见 `dev_acts_u21`。
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    pub disconnect: super::dev_acts_u21::FakeDisconnect,
 }
 
 #[cfg(debug_assertions)]
@@ -390,7 +393,7 @@ udp6       0      0 fe80::1:546             :::*                                
     ) -> Result<Outcome, String> {
         match what {
             "open" => {
-                let have = this.docks.overview_open && this.status_host.is_some();
+                let have = this.overview_open(cx) && this.status_host.is_some();
                 check(have == (want == "on"), format!("概览面板开着 = {have}"))
             }
             "width" => {

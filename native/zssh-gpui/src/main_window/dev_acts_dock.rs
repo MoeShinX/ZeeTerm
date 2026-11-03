@@ -444,11 +444,14 @@ const DOCK_KNOWN: &[&str] = &[
     "sftp_cd",
     "sftp_local",
     "sftp_hide_local",
+    "sftp_layout",
     "sftp_follow",
     "sftp_ui",
     "files_move",
     "file_window_setting",
     "files_assert",
+    "files_dup",
+    "files_resize",
     "files_back",
     "files_close_tab",
     "files_ui",
@@ -513,7 +516,7 @@ pub(super) fn run_dock(
             }
         }
         "overview" => {
-            if on_off(a)? != this.docks.overview_open {
+            if on_off(a)? != this.overview_open(cx) {
                 this.toggle_overview(cx);
             }
         }
@@ -849,7 +852,40 @@ pub(super) fn run_dock(
             let id = this.docks.active_sftp.ok_or("当前没有显示 SFTP 标签")?;
             this.move_sftp_tab_to_file_window(id, window, cx);
         }
-        // files_assert:open|closed / tabs:<n> / unfinished:<n>
+        // files_dup[:<标签下标>]：复制文件窗口里的标签（和标签右键「复制标签」同一个方法）；不写下标就复制当前标签
+        "files_dup" => {
+            let handle = crate::file_window::window_handle(cx).ok_or("文件窗口没有开")?;
+            let index: Option<usize> = if a.is_empty() {
+                None
+            } else {
+                Some(a.parse().map_err(|_| "下标不是数字")?)
+            };
+            let found = handle
+                .update(cx, |files, window, cx| {
+                    let id = match index {
+                        Some(index) => files.id_at(index),
+                        None => files.active_id(),
+                    };
+                    id.map(|id| files.duplicate_tab(id, window, cx)).is_some()
+                })
+                .map_err(|_| "文件窗口已经关闭")?;
+            if !found {
+                return fail("没有这个标签");
+            }
+        }
+        // files_resize:<宽>:<高>：把文件窗口调成这个大小（和用户拖边框同一条路径：窗口大小变了 -> 记住）
+        "files_resize" => {
+            let handle = crate::file_window::window_handle(cx).ok_or("文件窗口没有开")?;
+            let width: f32 = a.parse().map_err(|_| "宽不是数字")?;
+            let height: f32 = b.parse().map_err(|_| "高不是数字")?;
+            handle
+                .update(cx, |_, window, _| {
+                    window.resize(::gpui::size(::gpui::px(width), ::gpui::px(height)));
+                })
+                .map_err(|_| "文件窗口已经关闭")?;
+        }
+        // files_assert:open|closed / tabs:<n> / unfinished:<n> / active:<下标> / cwds:<路径,路径…>（每个标签的远端目录，按标签顺序）
+        // / status:<文字>（当前标签状态栏里有这段话）
         "files_assert" => {
             let handle = crate::file_window::window_handle(cx);
             match (a, handle) {
@@ -862,6 +898,46 @@ pub(super) fn run_dock(
                         .read_with(cx, |files, cx| files.tab_summary(cx).len())
                         .map_err(|_| "文件窗口已经关闭")?;
                     if have != want {
+                        return Ok(Outcome::Pending);
+                    }
+                }
+                // size:<宽>:<高>：文件窗口现在的大小（容差 2 像素）
+                ("size", Some(handle)) => {
+                    let width: f32 = b.parse().map_err(|_| "宽不是数字")?;
+                    let height: f32 = c.parse().map_err(|_| "高不是数字")?;
+                    let have = handle
+                        .update(cx, |_, window, _| {
+                            let bounds = window.bounds();
+                            (f32::from(bounds.size.width), f32::from(bounds.size.height))
+                        })
+                        .map_err(|_| "文件窗口已经关闭")?;
+                    if (have.0 - width).abs() > 2.0 || (have.1 - height).abs() > 2.0 {
+                        return Ok(Outcome::Pending);
+                    }
+                }
+                ("active", Some(handle)) => {
+                    let want: usize = b.parse().map_err(|_| "下标不是数字")?;
+                    let have = handle
+                        .read_with(cx, |files, _| files.active_index())
+                        .map_err(|_| "文件窗口已经关闭")?;
+                    if have != Some(want) {
+                        return Ok(Outcome::Pending);
+                    }
+                }
+                ("cwds", Some(handle)) => {
+                    let have = handle
+                        .read_with(cx, |files, cx| files.tab_remote_dirs(cx))
+                        .map_err(|_| "文件窗口已经关闭")?;
+                    let want: Vec<&str> = b.split(',').collect();
+                    if have.iter().map(String::as_str).collect::<Vec<_>>() != want {
+                        return Ok(Outcome::Pending);
+                    }
+                }
+                ("status", Some(handle)) => {
+                    let have = handle
+                        .read_with(cx, |files, cx| files.active_status(cx))
+                        .map_err(|_| "文件窗口已经关闭")?;
+                    if !have.is_some_and(|text| text.contains(b)) {
                         return Ok(Outcome::Pending);
                     }
                 }
@@ -927,6 +1003,16 @@ pub(super) fn run_dock(
             if !done {
                 return Ok(Outcome::Pending);
             }
+        }
+        // sftp_layout:dock|tab：把当前文件视图换成停靠面板 / 标签的布局（没有真实终端连接时用来看停靠面板的排版）
+        "sftp_layout" => {
+            let view = active_sftp(this, cx).ok_or("没有文件视图")?;
+            let dock = match a {
+                "dock" => true,
+                "tab" => false,
+                _ => return fail("只能是 dock 或 tab"),
+            };
+            view.update(cx, |view, cx| view.set_dock_layout(dock, cx));
         }
         "sftp_hide_local" => {
             let view = active_sftp(this, cx).ok_or("没有文件视图")?;

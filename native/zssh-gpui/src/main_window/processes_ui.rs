@@ -11,6 +11,7 @@
 //!   这个动作没有接进 AI 工具桥。
 
 use std::ops::Range;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use ::gpui::{MouseButton, SharedString, UniformListScrollHandle, Window, hsla, px, uniform_list};
@@ -73,6 +74,8 @@ pub enum Warn {
     Danger,
     /// 可能做不成 / 没有效果：琥珀色。
     Caution,
+    /// 补充说明（不是警告）：淡色。
+    Note,
 }
 
 /// 确认框的文案。`uid` / `login_user` 是当前登录用户（来自采集）。
@@ -279,6 +282,8 @@ pub struct ProcessesDialog {
     pub verify: Option<Verify>,
     /// 下个节拍要刷新一次（列表过时了：PID 变了、进程已经不在）。
     pub want_refresh: bool,
+    /// 从"所有网络连接"的右键菜单「在进程管理中查看」打开：第一次采到进程后选中它并滚到可见处。
+    pub pending_focus: Option<u32>,
 }
 
 impl ProcessesDialog {
@@ -302,6 +307,7 @@ impl ProcessesDialog {
             notice: None,
             verify: None,
             want_refresh: false,
+            pending_focus: None,
         }
     }
 
@@ -311,6 +317,26 @@ impl ProcessesDialog {
             None => Vec::new(),
         };
         self.scroll.scroll_to_item(0, ::gpui::ScrollStrategy::Top);
+    }
+
+    /// 要定位的 PID（见 `pending_focus`）：在表里就选中它并滚到中间，不在（已经退出）就算了。只做一次。
+    pub fn apply_pending_focus(&mut self) {
+        let Some(pid) = self.pending_focus.take() else {
+            return;
+        };
+        let Some(report) = &self.report else {
+            return;
+        };
+        let Some(at) = self
+            .shown
+            .iter()
+            .position(|index| report.rows.get(*index).is_some_and(|row| row.pid == pid))
+        else {
+            return;
+        };
+        self.selected = Some(pid);
+        self.scroll
+            .scroll_to_item(at, ::gpui::ScrollStrategy::Center);
     }
 
     /// 选中的进程受不受保护（受保护的不能结束，按钮置灰）。
@@ -399,9 +425,171 @@ pub fn report_hint(report: &ProcessReport) -> Option<&'static str> {
     }
 }
 
+/// 确认框里的点击处理。
+pub(super) type ConfirmHandler = Rc<dyn Fn(&mut Window, &mut ::gpui::App)>;
+/// 确认框左边多出来的一个按钮（标签 + 处理）。
+pub(super) type AltButton = (&'static str, ConfirmHandler);
+
+/// 确认框（结束进程、断开连接共用）：盖在对话框上、遮住后面的表格；"取消"和确认按钮在右下，Enter 不确认
+/// （`confirm_modal` 对这两个对话框都是空操作），执行中两个按钮都置灰。`danger` 决定盾牌图标的颜色。
+pub(super) fn confirm_overlay(
+    tokens: &Tokens,
+    text: AskText,
+    danger: bool,
+    busy: bool,
+    on_cancel: impl Fn(&mut Window, &mut ::gpui::App) + 'static,
+    on_ok: impl Fn(&mut Window, &mut ::gpui::App) + 'static,
+    alt: Option<AltButton>,
+) -> AnyElement {
+    let card = v_flex()
+        .id("proc-confirm")
+        .w(px(560.0))
+        .max_w_full()
+        .p_5()
+        .gap_3()
+        .rounded_lg()
+        .bg(tokens.background)
+        .border_1()
+        .border_color(tokens.border)
+        .shadow_lg()
+        .child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(Icon::new(Ico::ShieldAlert).size_4().text_color(if danger {
+                    tokens.danger
+                } else {
+                    tokens.caution
+                }))
+                .child(div().typo(Role::GroupTitle, tokens).child(text.title)),
+        )
+        .child(
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .id("proc-confirm-who")
+                        .typo(Role::Body, tokens)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(SharedString::from(text.who)),
+                )
+                .child(
+                    div()
+                        .id("proc-confirm-command")
+                        .max_h(px(76.0))
+                        .overflow_hidden()
+                        .p_2()
+                        .rounded_md()
+                        .bg(tokens.subtle)
+                        .border_1()
+                        .border_color(tokens.border)
+                        .typo(Role::Caption, tokens)
+                        .text_color(tokens.text)
+                        .child(SharedString::from(text.command)),
+                ),
+        )
+        .child(
+            div()
+                .id("proc-confirm-effect")
+                .typo(Role::Body, tokens)
+                .child(SharedString::from(text.effect)),
+        )
+        .children(
+            text.warnings
+                .into_iter()
+                .enumerate()
+                .map(|(i, (warn, line))| {
+                    div()
+                        .id(("proc-confirm-warn", i))
+                        .typo(Role::Body, tokens)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(match warn {
+                            Warn::Danger => tokens.danger,
+                            Warn::Caution => tokens.caution,
+                            Warn::Note => tokens.text_muted,
+                        })
+                        .child(SharedString::from(line))
+                }),
+        )
+        .child(
+            h_flex()
+                .gap_2()
+                .justify_end()
+                .child(
+                    text_button(
+                        "proc-confirm-cancel",
+                        "取消",
+                        ButtonLook::Outline,
+                        move |_, window, cx| on_cancel(window, cx),
+                    )
+                    .disabled(busy),
+                )
+                .children(alt.map(|(label, on_alt)| {
+                    text_button(
+                        "proc-confirm-alt",
+                        label,
+                        ButtonLook::Outline,
+                        move |_, window, cx| on_alt(window, cx),
+                    )
+                    .disabled(busy)
+                }))
+                .child(
+                    text_button(
+                        "proc-confirm-ok",
+                        if busy {
+                            "正在结束…"
+                        } else {
+                            text.confirm_label
+                        },
+                        ButtonLook::Danger,
+                        move |_, window, cx| on_ok(window, cx),
+                    )
+                    .disabled(busy),
+                ),
+        );
+    div()
+        .id("proc-confirm-scrim")
+        .occlude()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_lg()
+        .bg(hsla(0.0, 0.0, 0.0, 0.40))
+        .child(card)
+        .into_any_element()
+}
+
+/// 结束 / 断开之后表格上方的一行结果（颜色按级别）。
+pub(super) fn notice_line(notice: &KillNotice, tokens: &Tokens) -> Stateful<Div> {
+    let color = match notice.level {
+        NoticeLevel::Info => tokens.text_muted,
+        NoticeLevel::Success => tokens.dot_connected,
+        NoticeLevel::Warn => tokens.caution,
+        NoticeLevel::Error => tokens.danger,
+    };
+    div()
+        .id("proc-notice")
+        .typo(Role::Caption, tokens)
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(color)
+        .child(SharedString::from(notice.text.clone()))
+}
+
 impl MainWindow {
     /// 概览面板「进程管理」：开对话框并立刻采一次。
     pub(crate) fn open_processes_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_processes_dialog_at(None, window, cx);
+    }
+
+    /// 开进程管理；`focus` 不空时，采到进程后选中这个 PID 并滚到它那一行（"所有网络连接"右键菜单用）。
+    pub(crate) fn open_processes_dialog_at(
+        &mut self,
+        focus: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(host_id) = self.status_host else {
             return;
         };
@@ -416,9 +604,9 @@ impl MainWindow {
         query.update(cx, |input, cx| input.set_value("", window, cx));
         window.focus(&query.read(cx).focus_handle(cx), cx);
         let mode = self.docks.overview_procs;
-        self.modal = Some(Modal::Processes(Box::new(ProcessesDialog::new(
-            host_id, host_name, generation, mode,
-        ))));
+        let mut dialog = ProcessesDialog::new(host_id, host_name, generation, mode);
+        dialog.pending_focus = focus;
+        self.modal = Some(Modal::Processes(Box::new(dialog)));
         self.refresh_processes(window, cx);
         cx.notify();
     }
@@ -504,6 +692,7 @@ impl MainWindow {
                 dialog.error = None;
                 dialog.fetched = Some(clock_now());
                 dialog.refilter(&query);
+                dialog.apply_pending_focus();
             }
             Err(err) => {
                 if verifying && let Some(verify) = dialog.verify.take() {
@@ -889,20 +1078,12 @@ impl MainWindow {
                             .child(SharedString::from(format!("刷新失败：{error}")))
                     }),
             )
-            .children(dialog.notice.as_ref().map(|notice| {
-                let color = match notice.level {
-                    NoticeLevel::Info => tokens.text_muted,
-                    NoticeLevel::Success => tokens.dot_connected,
-                    NoticeLevel::Warn => tokens.caution,
-                    NoticeLevel::Error => tokens.danger,
-                };
-                div()
-                    .id("proc-notice")
-                    .typo(Role::Caption, tokens)
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(color)
-                    .child(SharedString::from(notice.text.clone()))
-            }));
+            .children(
+                dialog
+                    .notice
+                    .as_ref()
+                    .map(|notice| notice_line(notice, tokens)),
+            );
 
         // 表头：点列名排序。
         let header = {
@@ -1166,7 +1347,7 @@ impl MainWindow {
             .into_any_element()
     }
 
-    /// 结束进程的确认框：盖在对话框上，遮住后面的表格。
+    /// 结束进程的确认框：盖在对话框上，遮住后面的表格。版式在 [`confirm_overlay`]（"所有网络连接"的确认框共用）。
     fn kill_confirm(
         &self,
         dialog: &ProcessesDialog,
@@ -1184,127 +1365,20 @@ impl MainWindow {
             report.and_then(|r| r.uid),
         );
         let danger_ask = ask.risk != ProcRisk::Normal || ask.signal == KillSignal::Kill;
-        let busy = ask.busy;
-        let card = v_flex()
-            .id("proc-confirm")
-            .w(px(560.0))
-            .max_w_full()
-            .p_5()
-            .gap_3()
-            .rounded_lg()
-            .bg(tokens.background)
-            .border_1()
-            .border_color(tokens.border)
-            .shadow_lg()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        Icon::new(Ico::ShieldAlert)
-                            .size_4()
-                            .text_color(if danger_ask {
-                                tokens.danger
-                            } else {
-                                tokens.caution
-                            }),
-                    )
-                    .child(div().typo(Role::GroupTitle, tokens).child(text.title)),
-            )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .id("proc-confirm-who")
-                            .typo(Role::Body, tokens)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(SharedString::from(text.who)),
-                    )
-                    .child(
-                        div()
-                            .id("proc-confirm-command")
-                            .max_h(px(76.0))
-                            .overflow_hidden()
-                            .p_2()
-                            .rounded_md()
-                            .bg(tokens.subtle)
-                            .border_1()
-                            .border_color(tokens.border)
-                            .typo(Role::Caption, tokens)
-                            .text_color(tokens.text)
-                            .child(SharedString::from(text.command)),
-                    ),
-            )
-            .child(
-                div()
-                    .id("proc-confirm-effect")
-                    .typo(Role::Body, tokens)
-                    .child(SharedString::from(text.effect)),
-            )
-            .children(
-                text.warnings
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (warn, line))| {
-                        div()
-                            .id(("proc-confirm-warn", i))
-                            .typo(Role::Body, tokens)
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(match warn {
-                                Warn::Danger => tokens.danger,
-                                Warn::Caution => tokens.caution,
-                            })
-                            .child(SharedString::from(line))
-                    }),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .justify_end()
-                    .child({
-                        let entity = entity.clone();
-                        text_button(
-                            "proc-confirm-cancel",
-                            "取消",
-                            ButtonLook::Outline,
-                            move |_, _window, cx| {
-                                entity.update(cx, |this, cx| this.processes_cancel_ask(cx));
-                            },
-                        )
-                        .disabled(busy)
-                    })
-                    .child({
-                        let entity = entity.clone();
-                        text_button(
-                            "proc-confirm-ok",
-                            if busy {
-                                "正在结束…"
-                            } else {
-                                text.confirm_label
-                            },
-                            ButtonLook::Danger,
-                            move |_, window, cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.processes_confirm_kill(window, cx);
-                                });
-                            },
-                        )
-                        .disabled(busy)
-                    }),
-            );
-        div()
-            .id("proc-confirm-scrim")
-            .occlude()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_lg()
-            .bg(hsla(0.0, 0.0, 0.0, 0.40))
-            .child(card)
-            .into_any_element()
+        let cancel = entity.clone();
+        confirm_overlay(
+            tokens,
+            text,
+            danger_ask,
+            ask.busy,
+            move |_window, cx| {
+                cancel.update(cx, |this, cx| this.processes_cancel_ask(cx));
+            },
+            move |window, cx| {
+                entity.update(cx, |this, cx| this.processes_confirm_kill(window, cx));
+            },
+            None,
+        )
     }
 
     /// 虚拟列表要画的这一段行。
