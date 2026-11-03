@@ -66,6 +66,8 @@ mod term_window;
 mod terminal_demo;
 mod terminal_workspace;
 #[cfg(test)]
+mod test_sftp_server;
+#[cfg(test)]
 mod test_ssh_server;
 mod tray;
 mod typography;

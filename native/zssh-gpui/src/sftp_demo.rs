@@ -1201,6 +1201,8 @@ impl SftpDemo {
 }
 
 #[cfg(test)]
+mod move_e2e_tests;
+#[cfg(test)]
 mod paste_tests;
 #[cfg(test)]
 mod tests;
