@@ -28,6 +28,7 @@ pub const MIGRATIONS: &[(i64, &str)] = &[
     (10, include_str!("migrations/0010_host_memory.sql")),
     (11, include_str!("migrations/0011_host_os.sql")),
     (12, include_str!("migrations/0012_host_protocol.sql")),
+    (13, include_str!("migrations/0013_ai_endpoints.sql")),
 ];
 
 /// 一条 SQLite 连接，加锁后用。

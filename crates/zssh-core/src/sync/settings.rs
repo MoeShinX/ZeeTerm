@@ -46,6 +46,8 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     // 默认代理、默认智能体：跨电脑有意义
     ("default_proxy_id", SyncMode::Synced),
     ("ai_default_agent", SyncMode::Synced),
+    // 内置助手的默认接口和模型（V2-A3）：引用的是接口 uid，接口本身随同步包走
+    ("ai_builtin_default", SyncMode::Synced),
     // AI 执行模式是**权限**设置（手动审批 / 自动执行）：只能在本机改，
     // 不能让另一台电脑通过同步把这台电脑提升成"自动执行"。
     ("ai_exec_mode", SyncMode::LocalOnly),
@@ -202,7 +204,7 @@ pub const TERMINAL_THEME_IDS: &[&str] = &[
 ];
 
 const CURSOR_STYLES: &[&str] = &["block", "underline", "bar"];
-const AGENT_IDS: &[&str] = &["opencode", "codex", "claude"];
+const AGENT_IDS: &[&str] = &["opencode", "codex", "claude", "builtin"];
 
 /// 一个同步键允许的取值。范围取设置页能调出来的范围，对方的包不能超出。
 enum Rule {
@@ -224,6 +226,8 @@ enum Rule {
     QuickCommands,
     /// 终端高亮规则：JSON 数组序列化成的字符串，见 [`check_highlight_rules`]。
     HighlightRules,
+    /// 内置助手的默认接口 + 模型：`{"endpoint_uid": 非空字符串, "model": null 或字符串}`。
+    BuiltinDefault,
 }
 
 fn rule_for(key: &str) -> Option<Rule> {
@@ -253,6 +257,7 @@ fn rule_for(key: &str) -> Option<Rule> {
         "terminal_cursor_style" => Rule::OneOf(CURSOR_STYLES),
         "default_proxy_id" => Rule::ProxyUid,
         "ai_default_agent" => Rule::OneOf(AGENT_IDS),
+        "ai_builtin_default" => Rule::BuiltinDefault,
         "sftp_concurrency" => Rule::Int { min: 1, max: 8 },
         "ai_write_backup_keep" => Rule::Int { min: 1, max: 20 },
         "quick_commands" => Rule::QuickCommands,
@@ -346,6 +351,24 @@ fn check_highlight_rules(value: &Value) -> bool {
         })
 }
 
+/// 内置助手默认接口：对象，`endpoint_uid` 是非空短字符串，`model`（可省）是 null 或不含控制字符的字符串。
+fn check_builtin_default(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object
+        .get("endpoint_uid")
+        .and_then(Value::as_str)
+        .is_some_and(|uid| is_plain_text(uid, 128))
+        && match object.get("model") {
+            None | Some(Value::Null) => true,
+            Some(Value::String(model)) => {
+                model.chars().count() <= 200 && !model.chars().any(char::is_control)
+            }
+            Some(_) => false,
+        }
+}
+
 fn is_plain_text(text: &str, max_chars: usize) -> bool {
     !text.trim().is_empty()
         && text.chars().count() <= max_chars
@@ -381,6 +404,7 @@ pub fn validate_value(key: &str, value: &serde_json::Value) -> Result<(), String
         }
         Rule::QuickCommands => check_quick_commands(value),
         Rule::HighlightRules => check_highlight_rules(value),
+        Rule::BuiltinDefault => check_builtin_default(value),
     };
     if ok {
         return Ok(());
@@ -398,6 +422,7 @@ pub fn validate_value(key: &str, value: &serde_json::Value) -> Result<(), String
         Rule::HighlightRules => {
             format!("要是不超过 {HIGHLIGHT_RULES_MAX} 条的高亮规则列表（颜色是 #RRGGBB）")
         }
+        Rule::BuiltinDefault => "要是 {endpoint_uid, model} 对象".to_owned(),
     })
 }
 

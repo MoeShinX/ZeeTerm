@@ -34,7 +34,11 @@ pub const TITLE_CHARS: usize = 40;
 /// 主机显示名的上限（防止异常长的名字撑大列表）。
 const HOST_LABEL_CHARS: usize = 100;
 /// 认得的智能体（目录名就是它们，别的一律拒绝，防止拼出奇怪的路径）。
-pub const AGENTS: [&str; 3] = ["opencode", "codex", "claude"];
+pub const AGENTS: [&str; 4] = ["opencode", "codex", "claude", "builtin"];
+/// 对话记录文件的后缀（内置助手，见 [`HistoryStore::transcript_save`]）。
+const TRANSCRIPT_SUFFIX: &str = ".transcript.json";
+/// 对话记录文件的上限（超过的由写的一方先丢最早的回合）。
+pub const MAX_TRANSCRIPT_BYTES: usize = 8 * 1024 * 1024;
 /// 文件格式版本。
 const FORMAT_VERSION: u32 = 1;
 /// 被截断的内容末尾加的标记。
@@ -295,6 +299,8 @@ impl HistoryStore {
     /// 删一个会话（不存在也算成功）。
     pub fn delete(&self, agent: &str, id: &str) -> Result<(), HistoryError> {
         let path = self.file_of(agent, id)?;
+        // 内置助手的完整对话记录（含思考块签名）和这条历史一起走。
+        self.drop_transcript_of(&path);
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -314,13 +320,88 @@ impl HistoryStore {
             };
             for entry in entries.flatten() {
                 let path = entry.path();
-                let ours = history_file_id(&path).is_some() || is_temp_file(&path);
-                if ours && std::fs::remove_file(&path).is_ok() && !is_temp_file(&path) {
+                let transcript = is_transcript_file(&path);
+                let ours = history_file_id(&path).is_some() || is_temp_file(&path) || transcript;
+                if ours
+                    && std::fs::remove_file(&path).is_ok()
+                    && !is_temp_file(&path)
+                    && !transcript
+                {
                     removed += 1;
                 }
             }
         }
         Ok(removed)
+    }
+
+    /// 保存智能体自己的完整对话记录（内置助手：含思考块签名、工具调用与结果，续接时原样
+    /// 载回）。和历史会话文件并排存，文件名 `<智能体会话标识>.transcript.json`；`list` 不认它
+    /// （名字里有点），`delete` / `clear` / 超出上限的清理会带上它。
+    pub fn transcript_save(
+        &self,
+        agent: &str,
+        session_id: &str,
+        bytes: &[u8],
+    ) -> Result<(), HistoryError> {
+        let path = self.transcript_file_of(agent, session_id)?;
+        let dir = self.agent_dir(agent)?;
+        std::fs::create_dir_all(&dir).map_err(|e| HistoryError::Io(e.to_string()))?;
+        write_atomically(&dir, &path, bytes)
+    }
+
+    /// 读 [`HistoryStore::transcript_save`] 存的记录；没有就是 `None`。
+    pub fn transcript_load(
+        &self,
+        agent: &str,
+        session_id: &str,
+    ) -> Result<Option<Vec<u8>>, HistoryError> {
+        let path = self.transcript_file_of(agent, session_id)?;
+        let meta = match std::fs::metadata(&path) {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(HistoryError::Io(err.to_string())),
+        };
+        if meta.len() > MAX_TRANSCRIPT_BYTES as u64 * 2 {
+            return Err(HistoryError::Corrupt("对话记录超过上限".to_string()));
+        }
+        std::fs::read(&path)
+            .map(Some)
+            .map_err(|e| HistoryError::Io(e.to_string()))
+    }
+
+    /// 删对话记录（不存在也算成功）。
+    pub fn transcript_delete(&self, agent: &str, session_id: &str) -> Result<(), HistoryError> {
+        let path = self.transcript_file_of(agent, session_id)?;
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(HistoryError::Io(err.to_string())),
+        }
+    }
+
+    fn transcript_file_of(&self, agent: &str, session_id: &str) -> Result<PathBuf, HistoryError> {
+        if !valid_agent_session_id(session_id) {
+            return Err(HistoryError::InvalidId);
+        }
+        Ok(self
+            .agent_dir(agent)?
+            .join(format!("{session_id}{TRANSCRIPT_SUFFIX}")))
+    }
+
+    /// 历史会话文件对应的对话记录一起删（读不出来就算了）。
+    fn drop_transcript_of(&self, history_file: &Path) {
+        let Ok(record) = read_record(history_file) else {
+            return;
+        };
+        let Some(session) = record
+            .agent_session_id
+            .filter(|s| valid_agent_session_id(s))
+        else {
+            return;
+        };
+        if let Err(err) = self.transcript_delete(&record.agent, &session) {
+            tracing::warn!(error = %err, "删除对话记录失败");
+        }
     }
 
     /// 超出 50 个时按修改时间删最旧的（刚写的那个不删）。
@@ -345,6 +426,7 @@ impl HistoryStore {
         files.sort_by_key(|(modified, _)| *modified);
         let excess = files.len() - MAX_SESSIONS_PER_AGENT;
         for (_, path) in files.into_iter().filter(|(_, p)| p != keep).take(excess) {
+            self.drop_transcript_of(&path);
             if let Err(err) = std::fs::remove_file(&path) {
                 tracing::warn!(error = %err, "删除超出上限的历史会话失败");
             }
@@ -376,6 +458,12 @@ fn history_file_id(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     let id = name.strip_suffix(".json")?;
     valid_id(id).then(|| id.to_string())
+}
+
+fn is_transcript_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.ends_with(TRANSCRIPT_SUFFIX))
 }
 
 fn is_temp_file(path: &Path) -> bool {

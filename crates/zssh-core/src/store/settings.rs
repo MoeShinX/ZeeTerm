@@ -29,6 +29,10 @@ pub const AI_CLAUDE_PATH_KEY: &str = "ai_claude_path";
 /// 默认智能体的 key（AI-3）。值是 JSON 字符串：`"opencode"` / `"codex"` / `"claude"`。
 pub const AI_DEFAULT_AGENT_KEY: &str = "ai_default_agent";
 
+/// 内置助手的"默认接口 + 默认模型"（V2-A3）。值是 JSON 对象 `{"endpoint_uid": "...", "model": "..."|null}`，
+/// 引用的是接口的 uid（同步包里的引用也是 uid，不用换算）。
+pub const AI_BUILTIN_DEFAULT_KEY: &str = "ai_builtin_default";
+
 /// `write_file` 覆盖时每个文件保留几份 `.zssh-bak-*` 备份（M3-4 第 0 节）。
 pub const AI_WRITE_BACKUP_KEEP_KEY: &str = "ai_write_backup_keep";
 
@@ -160,11 +164,11 @@ impl Database {
         }
     }
 
-    /// 默认智能体（`"opencode"` / `"codex"` / `"claude"`）；没设置或值不认识按 `"opencode"`。
+    /// 默认智能体（`"opencode"` / `"codex"` / `"claude"` / `"builtin"`）；没设置或值不认识按 `"opencode"`。
     pub fn ai_default_agent(&self) -> Result<String, ZsshError> {
         match self.setting_get(AI_DEFAULT_AGENT_KEY)? {
             Some(raw) => match serde_json::from_str::<String>(&raw) {
-                Ok(agent) if matches!(agent.as_str(), "codex" | "claude") => Ok(agent),
+                Ok(agent) if matches!(agent.as_str(), "codex" | "claude" | "builtin") => Ok(agent),
                 _ => Ok("opencode".into()),
             },
             None => Ok("opencode".into()),

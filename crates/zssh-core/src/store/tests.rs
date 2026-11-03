@@ -853,7 +853,7 @@ fn upgrading_from_version_two_keeps_data_and_defaults_proxy_mode() {
         latest,
         "应该升到最新"
     );
-    assert_eq!(latest, 12);
+    assert_eq!(latest, 13);
 
     let hosts = db.host_list().expect("列主机");
     assert_eq!(hosts.len(), 1, "旧数据要留着");
@@ -897,8 +897,8 @@ fn upgrading_a_version_six_database_backfills_unique_uids_and_keeps_references()
     let db = temp.open();
     assert_eq!(
         db.schema_version().expect("读版本号"),
-        12,
-        "老库应该升到 12"
+        13,
+        "老库应该升到 13"
     );
 
     // 四张表、每条老记录都有合法的 UUID v4，而且互不相同。
@@ -1104,7 +1104,7 @@ fn upgrading_from_version_three_creates_ai_audit() {
     }
 
     let db = temp.open();
-    assert_eq!(db.schema_version().expect("读版本号"), 12);
+    assert_eq!(db.schema_version().expect("读版本号"), 13);
     db.ai_audit_insert(audit::NewAiAudit {
         at: 1,
         scope: "scope-a",

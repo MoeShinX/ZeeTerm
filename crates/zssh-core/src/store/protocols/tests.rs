@@ -91,7 +91,7 @@ fn existing_hosts_become_plain_ssh_after_the_migration() {
     std::fs::copy(&fixture, &path).expect("复制老库");
 
     let db = Database::open(&path).expect("老库升级");
-    assert_eq!(db.schema_version().unwrap(), 12);
+    assert_eq!(db.schema_version().unwrap(), 13);
     let hosts = db.host_list().unwrap();
     assert!(!hosts.is_empty(), "老数据要留着");
     let map = db.host_protocol_map().unwrap();
@@ -132,7 +132,7 @@ fn upgrading_a_version_eleven_database_keeps_hosts_and_adds_the_columns() {
         .expect("老主机");
     }
     let db = Database::open(&path).expect("升级");
-    assert_eq!(db.schema_version().unwrap(), 12);
+    assert_eq!(db.schema_version().unwrap(), 13);
     let host = &db.host_list().unwrap()[0];
     assert_eq!(host.name, "old");
     assert!(db.host_protocol_get(host.id).unwrap().is_plain_ssh());
