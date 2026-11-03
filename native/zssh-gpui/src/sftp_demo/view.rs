@@ -702,8 +702,10 @@ impl SftpDemo {
             local_crumbs(&pane.path)
         };
         // 面包屑放得下的宽度 ≈ 栏宽减去其它按钮（后退 前进 上级 刷新 隐藏 过滤）占的位置。
+        // 量到了栏宽但剩得很少（窄栏）也要折叠成「… › 最后一级」，不能当成"还没量到"整串显示：
+        // 那样溢出部分被裁掉，只剩第一级（C:、srv），反而是最没用的那段。
         let available = if pane_width > 0.0 {
-            pane_width - if self.dock { 300.0 } else { 320.0 }
+            (pane_width - if self.dock { 300.0 } else { 320.0 }).max(1.0)
         } else {
             0.0
         };
@@ -785,8 +787,12 @@ impl SftpDemo {
                 crumb.path.clone(),
                 entity.clone(),
             );
-            // 每一级都不压缩：放不下的由前面的折叠成“…”。
-            bar = bar.child(button.flex_none());
+            // 前面几级不压缩，放不下的由前面的折叠成“…”；最后一级（当前目录）名字太长时自己截断。
+            bar = if index + 1 == shown.len() {
+                bar.child(button.min_w_0().flex_shrink_1())
+            } else {
+                bar.child(button.flex_none())
+            };
         }
         bar.into_any_element()
     }
