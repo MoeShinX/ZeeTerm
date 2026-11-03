@@ -56,6 +56,9 @@ pub const TERMINAL_FOLLOW_SKIN: &str = "skin";
 /// 终端配色的默认值：跟随皮肤（V2-U17 起；之前是固定 Tokyo Night）。只影响没改过这项设置的人。
 pub const DEFAULT_TERMINAL_THEME: &str = TERMINAL_FOLLOW_SKIN;
 
+/// 聚焦控件外面的光晕圈：关（只留 1px 强调色边框）。见 `apply`。
+pub const FOCUS_HALO: bool = false;
+
 /// 全部皮肤，顺序和 0.2.14 `skins.ts` 的 `SKINS` 一样（先浅色后深色）。
 /// 色值由脚本从 `skins.ts` 抽出，不手写；`skin_ids_match_the_sync_whitelist` 核对 id 与同步白名单一致。
 pub const SKINS: &[Skin] = &[
@@ -863,6 +866,9 @@ fn apply(dark: bool, cx: &mut App) {
         // 界面字体：显式的字体栈代替 `.SystemUIFont`（见 `fonts::resolve_ui_font`）。中文后备在各窗口的
         // 顶层元素上设（`typography::UiFontStyled`），主题只有主字体一个槽。
         theme.font_family = ui_font.family.clone().into();
+        // 输入框聚焦只把 1px 边框换成强调色（`ring` = 强调色）：组件库默认还会在外面再画一圈半透明光晕，
+        // 和边框叠成「粗蓝双框」（V2-U17）。关掉这个开关，组件库就退回到只染边框的样式，按钮的键盘焦点也是这样。
+        theme.focus_ring = FOCUS_HALO;
         let c = &mut theme.colors;
         c.background = t.background;
         c.foreground = t.text;
@@ -1008,6 +1014,18 @@ mod tests {
         assert_eq!(mix(0x102030, 0xFFFFFF, 1.0), 0x102030);
         assert_eq!(mix(0x102030, 0xFFFFFF, 0.0), 0xFFFFFF);
         assert_eq!(mix(0x000000, 0xFFFFFF, 0.5), 0x808080);
+    }
+
+    #[test]
+    fn focus_is_a_thin_accent_border_without_the_outer_halo() {
+        // 聚焦输入框 = 1px 强调色边框；外圈光晕关着（组件库在光晕关闭时只染边框）。
+        const { assert!(!FOCUS_HALO) };
+        let source = include_str!("app_theme.rs");
+        assert!(
+            source.contains("theme.focus_ring = FOCUS_HALO;"),
+            "apply 要把它写进主题"
+        );
+        assert!(source.contains("c.ring = t.accent;"), "边框色取强调色");
     }
 
     #[test]
