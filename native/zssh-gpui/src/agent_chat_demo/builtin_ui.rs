@@ -436,7 +436,7 @@ impl ChatState {
                         notice.error && notice.text.contains(builtin::REQUIRES_TOPUP_CODE)
                     })
                 }
-                ChatMessage::User(_) => None,
+                ChatMessage::User(_) | ChatMessage::System(_) => None,
             })
             .map(|notice| notice.text = builtin::REQUIRES_TOPUP_TEXT.to_owned())
             .is_some();

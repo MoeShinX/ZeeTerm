@@ -321,6 +321,8 @@ mod tests {
         let allowed = [
             "agent_chat_demo/agent_ui.rs",
             "agent_chat_demo/embed.rs",
+            // 接口对话框里「选择模型」的下拉：只有模型名，是单选列表不是动作菜单。
+            "main_window/ai_endpoint_dialog.rs",
             "main_window/bars.rs",
             "main_window/vault_menus.rs",
             "main_window/widgets.rs",
