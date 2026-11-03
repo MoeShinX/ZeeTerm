@@ -92,6 +92,57 @@ impl FooterAction {
     }
 }
 
+/// 侧栏底部右侧的主题三按钮：浅色 / 深色 / 跟随系统（和「设置 → 外观」是同一个设置项）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeChoice {
+    Light,
+    Dark,
+    FollowSystem,
+}
+
+pub const THEME_CHOICES: [ThemeChoice; 3] = [
+    ThemeChoice::Light,
+    ThemeChoice::Dark,
+    ThemeChoice::FollowSystem,
+];
+
+impl ThemeChoice {
+    pub fn tooltip(self) -> &'static str {
+        match self {
+            Self::Light => "浅色",
+            Self::Dark => "深色",
+            Self::FollowSystem => "跟随系统",
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::Light => "sidebar-theme-light",
+            Self::Dark => "sidebar-theme-dark",
+            Self::FollowSystem => "sidebar-theme-auto",
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Self::Light => Icon::new(IconName::Sun),
+            Self::Dark => Icon::new(IconName::Moon),
+            Self::FollowSystem => Icon::new(crate::icons::Ico::Monitor),
+        }
+    }
+
+    /// 当前设置对应哪一项高亮（跟随系统时只亮「跟随系统」，不管系统现在是浅还是深）。
+    pub fn current(follow_system: bool, dark: bool) -> Self {
+        if follow_system {
+            Self::FollowSystem
+        } else if dark {
+            Self::Dark
+        } else {
+            Self::Light
+        }
+    }
+}
+
 /// 侧栏底部左下角：设置与管理、凭据直达。
 const FOOTER_ACTIONS: [FooterAction; 2] = [
     FooterAction {
@@ -363,6 +414,49 @@ impl MainWindow {
                         });
                     },
                 )
+            }))
+            .child(self.render_theme_buttons(tokens, cx))
+    }
+
+    /// 底部右侧的主题三按钮：当前项浅底高亮，悬停提示，点了立即切换并保存。
+    fn render_theme_buttons(&self, tokens: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+        let settings = self.workspace.read(cx).settings().clone();
+        let current = ThemeChoice::current(settings.follow_system, settings.dark);
+        let (hover, text, muted) = (tokens.hover, tokens.text, tokens.text_muted);
+        h_flex()
+            .id("sidebar-theme")
+            .ml_auto()
+            .flex_none()
+            .gap_0p5()
+            .items_center()
+            .children(THEME_CHOICES.iter().map(|choice| {
+                let choice = *choice;
+                let ws = self.workspace.clone();
+                let active = choice == current;
+                div()
+                    .id(choice.id())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(26.0))
+                    .flex_none()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .text_color(if active { text } else { muted })
+                    .when(active, |d| d.bg(hover))
+                    .hover(move |style| style.bg(hover).text_color(text))
+                    .tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(choice.tooltip())
+                            .build(window, cx)
+                    })
+                    .child(choice.icon().size_4())
+                    .on_click(move |_, _window, cx| {
+                        ws.update(cx, |this, cx| match choice {
+                            ThemeChoice::Light => this.set_theme(false, cx),
+                            ThemeChoice::Dark => this.set_theme(true, cx),
+                            ThemeChoice::FollowSystem => this.set_theme_auto(cx),
+                        });
+                    })
             }))
     }
 
@@ -909,9 +1003,30 @@ fn count_label(count: usize, tokens: &Tokens) -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{EMPTY_HINT, FOOTER_ACTIONS, HEADER_ACTIONS, match_hint, match_ranges};
+    use super::{
+        EMPTY_HINT, FOOTER_ACTIONS, HEADER_ACTIONS, THEME_CHOICES, ThemeChoice, match_hint,
+        match_ranges,
+    };
     use std::ops::Range;
     use zssh_core::model::{AuthMethod, Host, ProxyMode};
+
+    #[test]
+    fn the_footer_theme_buttons_are_light_dark_and_follow_system_with_tips() {
+        let tips: Vec<&str> = THEME_CHOICES.iter().map(|c| c.tooltip()).collect();
+        assert_eq!(tips, ["浅色", "深色", "跟随系统"]);
+    }
+
+    #[test]
+    fn the_highlighted_theme_button_follows_the_setting() {
+        assert_eq!(ThemeChoice::current(false, false), ThemeChoice::Light);
+        assert_eq!(ThemeChoice::current(false, true), ThemeChoice::Dark);
+        assert_eq!(
+            ThemeChoice::current(true, true),
+            ThemeChoice::FollowSystem,
+            "跟随系统时只亮它，不管系统现在是浅是深"
+        );
+        assert_eq!(ThemeChoice::current(true, false), ThemeChoice::FollowSystem);
+    }
 
     fn host(name: &str, address: &str, user: &str, tags: &[&str]) -> Host {
         Host {
