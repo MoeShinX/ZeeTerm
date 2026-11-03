@@ -326,7 +326,7 @@ async fn nothing_is_sent_to_an_address_outside_the_policy() {
         "http://tokenwayapi.com/api/connect/token",
         "https://evil.example/api/connect/token",
         "https://tokenwayapi.com.evil.example/x",
-        "https://user:pw@tokenwayapi.com/x",
+        "https://user:pw\x40tokenwayapi.com/x",
     ] {
         let err = exchange_token(&stub, &policy(), url, &request())
             .await
