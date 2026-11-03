@@ -7,7 +7,9 @@
 //! `WindowControlArea::Drag`：条本身是拖动区，所有可点的东西都 `occlude()` 一下，把拖动区
 //! 在它们身上挖掉，这样点击不会被系统当成拖标题栏；双击空白处最大化也由系统处理。
 
-use ::gpui::{AnyElement, Hsla, MouseButton, SharedString, Stateful, WindowControlArea, px};
+use ::gpui::{
+    AnyElement, App, Hsla, MouseButton, SharedString, Stateful, Window, WindowControlArea, px,
+};
 use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
@@ -18,6 +20,7 @@ use super::MainWindow;
 use super::nav::MainView;
 use crate::app_theme::Tokens;
 use crate::terminal_workspace::{TabInfo, TabStatus};
+use crate::typography::{Role, Typo as _};
 
 /// 标题栏高度（0.2.14 的 `h-9`）。
 pub const BAR_HEIGHT: f32 = 36.0;
@@ -635,6 +638,61 @@ impl MainWindow {
     }
 }
 
+/// 独立窗口（文件窗口、终端窗口）窗口宽度低于这个值时，「移回主窗口」只剩图标：文件窗口最窄 640，
+/// 带字的按钮要多占约 70 像素，会把标签挤没；720 以上标签、窗口名、按钮、窗口按钮能同时放下。
+pub(crate) const BACK_TEXT_MIN_WIDTH: f32 = 720.0;
+/// 按钮边长（只剩图标时）/ 高度。
+const BACK_BUTTON_SIZE: f32 = 28.0;
+const BACK_LABEL: &str = "移回主窗口";
+const BACK_TIP: &str = "把当前标签移回主窗口（连接和传输不中断）";
+
+/// 独立窗口里至少有一个标签时才显示「移回主窗口」（没有标签就没有可移的东西）。
+pub(crate) fn back_button_visible(tab_count: usize) -> bool {
+    tab_count > 0
+}
+
+/// 窗口够宽才显示按钮上的字；窄了只剩图标（悬停提示照旧）。
+pub(crate) fn back_button_shows_text(window_width: f32) -> bool {
+    window_width >= BACK_TEXT_MIN_WIDTH
+}
+
+/// 独立窗口标题栏右侧、最小化按钮左边的「移回主窗口」按钮：幽灵样式，悬停底色和窗口按钮一样。
+/// 点击对当前选中的标签做和标签右键「移回主窗口」同一件事（由调用方传进来同一个移回函数）。
+/// 整块 `occlude`：不属于标题栏的拖动区，双击它不会触发最大化。
+pub(crate) fn back_button(
+    tokens: &Tokens,
+    show_text: bool,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let hover = tokens.hover;
+    let text = tokens.text;
+    h_flex().h_full().flex_none().items_center().px_1().child(
+        div()
+            .id("back-to-main")
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap_1p5()
+            .h(px(BACK_BUTTON_SIZE))
+            .when(show_text, |d| d.px_2p5())
+            .when(!show_text, |d| d.w(px(BACK_BUTTON_SIZE)))
+            .flex_none()
+            .rounded_md()
+            .typo(Role::FieldLabel, tokens)
+            .text_color(text)
+            .cursor_pointer()
+            .hover(move |style| style.bg(hover))
+            .tooltip(|window, cx| Tooltip::new(BACK_TIP).build(window, cx))
+            .child(Icon::new(IconName::PanelLeft).size_3p5())
+            .when(show_text, |d| d.child(BACK_LABEL))
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                on_click(window, cx);
+            }),
+    )
+}
+
 /// 最小化 / 最大化（还原）/ 关闭：点击由系统按 `WindowControlArea` 处理，关闭走窗口的
 /// `on_window_should_close`（关到托盘或退出，见 `main.rs`）。
 pub(crate) fn window_controls(tokens: &Tokens, maximized: bool) -> impl IntoElement {
@@ -692,7 +750,8 @@ pub(crate) fn window_controls(tokens: &Tokens, maximized: bool) -> impl IntoElem
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        LeftIcon, TabTarget, badge_ink, badge_label, badge_numbers, badge_tooltip,
+        BACK_BUTTON_SIZE, BACK_TEXT_MIN_WIDTH, LeftIcon, TabTarget, back_button_shows_text,
+        back_button_visible, badge_ink, badge_label, badge_numbers, badge_tooltip,
         left_block_width, left_icons, status_color, tab_target,
     };
     use crate::app_theme::Tokens;
@@ -726,6 +785,25 @@ mod tests {
             left_icons(false)[..],
             "齿轮只是追加，前四个图标的位置不变"
         );
+    }
+
+    #[test]
+    fn the_back_button_shows_only_while_the_window_has_a_tab() {
+        assert!(!back_button_visible(0));
+        assert!(back_button_visible(1));
+        assert!(back_button_visible(5));
+    }
+
+    #[test]
+    fn the_back_button_drops_its_text_below_the_threshold() {
+        // 文件窗口最窄 640、终端窗口最窄 480：都只剩图标；阈值上下一像素各一边。
+        assert!(!back_button_shows_text(480.0));
+        assert!(!back_button_shows_text(640.0));
+        assert!(!back_button_shows_text(BACK_TEXT_MIN_WIDTH - 1.0));
+        assert!(back_button_shows_text(BACK_TEXT_MIN_WIDTH));
+        assert!(back_button_shows_text(1100.0));
+        // 字和图标都收起来时仍是一个能点的方块。
+        assert!(BACK_BUTTON_SIZE >= 24.0);
     }
 
     #[test]

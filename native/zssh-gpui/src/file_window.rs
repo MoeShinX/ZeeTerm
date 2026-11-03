@@ -27,7 +27,9 @@ use gpui_kit::*;
 use crate::app_theme::Tokens;
 use crate::icons::Ico;
 use crate::main_window::MainWindow;
-use crate::main_window::titlebar::window_controls;
+use crate::main_window::titlebar::{
+    back_button, back_button_shows_text, back_button_visible, window_controls,
+};
 use crate::settings::data_dir;
 use crate::sftp_demo::SftpDemo;
 use crate::typography::{Role, Typo as _, UiFontStyled as _};
@@ -475,6 +477,13 @@ impl FileWindow {
         cx.notify();
     }
 
+    /// 标题栏上的「移回主窗口」按钮：对当前选中的标签，和标签右键「移回主窗口」是同一个 `move_to_main`。
+    pub fn move_active_to_main(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.active {
+            self.move_to_main(id, window, cx);
+        }
+    }
+
     /// 交不出去的标签放回原处。
     fn restore_tab(&mut self, tab: FileTab, cx: &mut Context<Self>) {
         self.active = Some(tab.id);
@@ -764,6 +773,14 @@ impl Render for FileWindow {
             drag.hover == crate::tab_drag::Hover::Over(me) && drag.source != me
         });
         let hint = crate::tab_drag::hint_chip(window, cx, &tokens);
+        let back = back_button_visible(self.tabs.len()).then(|| {
+            let me = cx.entity();
+            back_button(
+                &tokens,
+                back_button_shows_text(f32::from(window.viewport_size().width)),
+                move |window, cx| me.update(cx, |this, cx| this.move_active_to_main(window, cx)),
+            )
+        });
         v_flex()
             .id("file-window")
             .size_full()
@@ -828,6 +845,8 @@ impl Render for FileWindow {
                             .children(tabs)
                             .children(hint),
                     )
+                    // 最小化按钮左边：把当前标签移回主窗口（没有标签时不画）。
+                    .children(back)
                     .child(
                         div()
                             .h_full()
@@ -889,6 +908,23 @@ mod tests {
         let mut last = vec![10, 20];
         last.insert(insert_after(1), 99);
         assert_eq!(last, [10, 20, 99]);
+    }
+
+    #[test]
+    fn the_titlebar_button_and_the_tab_menu_share_one_move_back_function() {
+        // 点击走的是同一个 `move_to_main`：右键菜单直接调它，标题栏按钮经 `move_active_to_main`
+        // 对当前选中的标签调它；不能各写一份移回的逻辑。
+        let code = include_str!("file_window.rs");
+        let code = code.split("#[cfg(test)]").next().unwrap_or(code);
+        assert_eq!(code.matches("this.move_to_main(id, window, cx)").count(), 1);
+        assert!(code.contains("self.move_to_main(id, window, cx)"));
+        assert!(code.contains("this.move_active_to_main(window, cx)"));
+        let body = code
+            .split("pub fn move_active_to_main")
+            .nth(1)
+            .and_then(|rest| rest.split("fn restore_tab").next())
+            .unwrap_or("");
+        assert!(body.contains("self.active") && body.contains("self.move_to_main("));
     }
 
     #[test]
