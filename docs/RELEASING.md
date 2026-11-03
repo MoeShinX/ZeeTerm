@@ -36,16 +36,17 @@ powershell -File scripts/release.ps1 -Version 1.0.0
 5. 现编安装包：`native/installer/build.ps1`，产物 `ZeeTerm-Setup-<版本>.exe`。
 6. 用私钥签名：签名的 trusted comment 里带 `version:<版本>`，程序验签时要求它与清单公告的版本一致；签完立即用 `updater.json` 的公钥自检。
 7. 生成 `latest.json`（`version`、`notes`、`pub_date`、`platforms.windows-x86_64` 的 `url` 和 `signature`），再按程序里的验签逻辑把成品验一遍。
-8. 产物写到 `dist\<版本>\`（`dist/` 已在 `.gitignore`）：安装包、`.sig`、`latest.json`、`RELEASE_NOTES.md`，并打印安装包的 SHA-256。该目录已经有内容时脚本一开始就报错退出，不会盖掉上一次的产物；确认可以丢弃时加 `-Force`，脚本会在门禁通过后、打包前清空该目录再继续。
+8. 算出安装包的 SHA-256：写进 `dist\<版本>\SHA256SUMS.txt`（每行 `<hash>  <文件名>`，和 `sha256sum` 同格式），并在 `RELEASE_NOTES.md`（也就是 GitHub Release 的正文）末尾追加一行“安装包 SHA-256：`<hash>`”，方便下载的人核对。`latest.json` 里的更新说明不带这一行，格式也不变。
+9. 产物写到 `dist\<版本>\`（`dist/` 已在 `.gitignore`）：安装包、`.sig`、`latest.json`、`RELEASE_NOTES.md`、`SHA256SUMS.txt`，并打印安装包的 SHA-256。该目录已经有内容时脚本一开始就报错退出，不会盖掉上一次的产物；确认可以丢弃时加 `-Force`，脚本会在门禁通过后、打包前清空该目录再继续。
 
-脚本**不推送、不打 tag、不创建 Release**。最后打印下一步命令，确认产物没问题后手动执行：
+脚本**不推送、不打 tag、不创建 Release**。最后打印下一步命令（`git add` 里会带上 `docs/release-notes/<版本>.md`，有这份文件时），确认产物没问题后手动执行：
 
 ```powershell
-git add Cargo.toml Cargo.lock native/Cargo.toml native/Cargo.lock CHANGELOG.md
+git add Cargo.toml Cargo.lock native/Cargo.toml native/Cargo.lock CHANGELOG.md docs/release-notes/1.0.0.md
 git commit -m "chore(release): v1.0.0"
 git tag v1.0.0
 git push origin main v1.0.0
-gh release create v1.0.0 dist/1.0.0/ZeeTerm-Setup-1.0.0.exe dist/1.0.0/latest.json `
+gh release create v1.0.0 dist/1.0.0/ZeeTerm-Setup-1.0.0.exe dist/1.0.0/latest.json dist/1.0.0/SHA256SUMS.txt `
     --repo MoeShinX/ZeeTerm --title "ZeeTerm 1.0.0" --notes-file dist/1.0.0/RELEASE_NOTES.md
 ```
 
