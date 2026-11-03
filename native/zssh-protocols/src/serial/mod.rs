@@ -49,6 +49,26 @@ pub fn list_ports() -> Result<Vec<SerialPortEntry>, SerialError> {
 #[cfg(windows)]
 pub use session::open_serial;
 
+/// 「测试连接」：按参数打开串口再立刻关闭，不起读写线程、不发送任何数据。
+/// 打开可能卡在有毛病的驱动上，调用方要放进阻塞线程里。失败是分类好的中文原因
+/// （被占用 / 不存在 / 已断开 / 参数不被接受 ……）。
+#[cfg(windows)]
+pub fn probe_serial(options: &zssh_core::model::SerialOptions) -> Result<(), SerialError> {
+    let (path, label) = params::normalize_device(&options.device)?;
+    // `CommHandle` 离开作用域就关句柄，端口马上还给别的程序。
+    let _comm = os::CommHandle::open_comm(&path, &label, options)?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn probe_serial(options: &zssh_core::model::SerialOptions) -> Result<(), SerialError> {
+    Err(SerialError::Os {
+        device: options.device.clone(),
+        code: 0,
+        what: "串口只在 Windows 上支持".to_owned(),
+    })
+}
+
 /// 非 Windows 平台没有实现（ZeeTerm 只面向 Windows）；保留签名让 crate 在别处也能编译。
 #[cfg(not(windows))]
 pub fn list_ports() -> Result<Vec<SerialPortEntry>, SerialError> {
