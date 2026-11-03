@@ -404,8 +404,7 @@ impl MainWindow {
             .gap_1p5()
             .child(
                 div()
-                    .text_sm()
-                    .font_weight(FontWeight::MEDIUM)
+                    .typo(Role::FieldLabel, tokens)
                     .child("公钥"),
             )
             .child(

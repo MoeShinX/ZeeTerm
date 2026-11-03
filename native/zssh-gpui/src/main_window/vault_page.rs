@@ -337,7 +337,7 @@ impl MainWindow {
             return div()
                 .py_10()
                 .text_center()
-                .text_sm()
+                .typo(Role::Body, tokens)
                 .text_color(tokens.danger)
                 .child(SharedString::from(error.to_owned()))
                 .into_any_element();
@@ -697,7 +697,7 @@ impl MainWindow {
             .items_center()
             .px_4()
             .py(px(if compact { 4.0 } else { 10.0 }))
-            .text_sm()
+            .typo(Role::Body, tokens)
             .cursor_pointer()
             .when(selected, |d| d.bg(tokens.accent_soft))
             .when(!selected, |d| d.hover(move |style| style.bg(hover)))
