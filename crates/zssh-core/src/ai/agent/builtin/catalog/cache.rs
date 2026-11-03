@@ -188,6 +188,18 @@ pub async fn refresh_if_stale(
     }
 }
 
+/// 不看缓存新不新鲜，马上拉一次（设置页"立即更新"）。联网更新被关掉时用户主动点也照做：
+/// 开关管的是后台自动更新，不是手动。
+pub async fn refresh_now(cache_dir: &Path, http: &dyn HttpFetch, now: u64) -> RefreshOutcome {
+    match fetch_and_store(cache_dir, http, now).await {
+        Ok(entries) => RefreshOutcome::Updated { entries },
+        Err(e) => {
+            tracing::info!("models.dev 缓存更新失败：{e}");
+            RefreshOutcome::Failed(e.to_string())
+        }
+    }
+}
+
 async fn fetch_and_store(
     cache_dir: &Path,
     http: &dyn HttpFetch,
@@ -330,6 +342,32 @@ mod tests {
     }
 
     const DAY: u64 = 86_400;
+
+    #[tokio::test]
+    async fn refresh_now_fetches_even_when_the_cache_is_fresh_and_even_when_auto_update_is_off() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let now = date_to_unix("2030-01-01").expect("date");
+        write_cache(dir.path(), &file(None, Some(now - 60), 111_000));
+        let http = Stub::ok(fake_api(30, 222_000));
+        // 自动更新那条路径：缓存很新，什么都不做。
+        let fresh = refresh_if_stale(dir.path(), &http, now, true).await;
+        assert_eq!(fresh, RefreshOutcome::Fresh);
+        assert_eq!(http.calls(), 0);
+        // 手动"立即更新"：不看新鲜度，照拉。
+        let outcome = refresh_now(dir.path(), &http, now).await;
+        assert!(
+            matches!(outcome, RefreshOutcome::Updated { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(http.calls(), 1);
+        let loaded = Catalog::load(dir.path());
+        assert_eq!(loaded.timestamp(), Some(now));
+        // 失败只是失败，旧缓存不动。
+        let bad = Stub::err("连不上");
+        let failed = refresh_now(dir.path(), &bad, now + 10).await;
+        assert!(matches!(failed, RefreshOutcome::Failed(_)));
+        assert_eq!(Catalog::load(dir.path()).timestamp(), Some(now));
+    }
 
     #[test]
     fn builtin_snapshot_loads_and_is_small() {

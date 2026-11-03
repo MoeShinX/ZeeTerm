@@ -101,6 +101,7 @@ impl Database {
             let mut identity = None;
             if let Some(identity_id) = draft.identity_id {
                 crate::store::identities::ensure_identity_exists(conn, identity_id)?;
+                check_not_ai_key(conn, draft.id, identity_id)?;
                 let found = crate::store::identities::identity_get(conn, identity_id)?;
                 check_identity_matches(draft.auth_method, &found)?;
                 identity = Some(found);
@@ -319,6 +320,43 @@ impl Database {
 ///
 /// `label` 只用在报错里（「主机「xx」选了私钥认证但没选凭据」）。缺的密码 / 口令不在这里报错，
 /// 留给连接时问用户。
+/// AI 接口的 API Key 凭据（被 `ai_endpoints.key_identity_id` 引用的）不能给主机当密码 / 密钥：
+/// 它的生命周期跟着接口走，删接口时凭据一起删。主机原来就在用它的（接口删除时因被引用而保留的）
+/// 不受影响，只拦新选。
+fn check_not_ai_key(
+    conn: &rusqlite::Connection,
+    host_id: Option<i64>,
+    identity_id: i64,
+) -> Result<(), ZsshError> {
+    use rusqlite::OptionalExtension;
+    let is_key: bool = conn
+        .query_row(
+            "SELECT 1 FROM ai_endpoints WHERE key_identity_id = ?1 LIMIT 1",
+            [identity_id],
+            |_| Ok(true),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if !is_key {
+        return Ok(());
+    }
+    if let Some(host_id) = host_id {
+        let current: Option<Option<i64>> = conn
+            .query_row(
+                "SELECT identity_id FROM hosts WHERE id = ?1",
+                [host_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if current.flatten() == Some(identity_id) {
+            return Ok(());
+        }
+    }
+    Err(ZsshError::InvalidInput(
+        "这条凭据是内置助手接口的 API Key，不能给主机用。".to_owned(),
+    ))
+}
+
 fn resolve_auth(
     conn: &Connection,
     method: AuthMethod,

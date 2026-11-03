@@ -191,6 +191,21 @@ impl Database {
         })
     }
 
+    /// 被接口当作 API Key 引用的凭据 id：凭据页不显示、主机表单不能选它们。
+    pub fn ai_endpoint_key_identity_ids(&self) -> Result<Vec<i64>, ZsshError> {
+        self.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT key_identity_id FROM ai_endpoints WHERE key_identity_id IS NOT NULL",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, i64>(0))?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
+
     /// 取这个接口的明文 Key（连接用）。没填 Key、凭据被删了都是 `None`。
     pub fn ai_endpoint_api_key(&self, id: i64) -> Result<Option<String>, ZsshError> {
         self.with_conn(|conn| {

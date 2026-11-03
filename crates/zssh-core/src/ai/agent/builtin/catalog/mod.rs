@@ -18,8 +18,8 @@ mod resolve;
 mod types;
 
 pub use cache::{
-    refresh_if_stale, unix_now, HttpFetch, RefreshOutcome, ReqwestFetch, CACHE_FILE_NAME,
-    MODELS_DEV_API_URL, STALE_AFTER_SECS,
+    refresh_if_stale, refresh_now, unix_now, HttpFetch, RefreshOutcome, ReqwestFetch,
+    CACHE_FILE_NAME, MODELS_DEV_API_URL, STALE_AFTER_SECS,
 };
 pub use data::{
     build_snapshot_json, date_to_unix, trim_api_json, unix_to_date, CatalogEntry, CatalogError,

@@ -176,8 +176,18 @@ fn deleting_the_endpoint_deletes_its_key_unless_a_host_uses_it() {
         .ai_endpoint_save(&draft("乙", Some("sk-b-0001")))
         .unwrap();
     let key_id = b.key_identity_id.unwrap();
-    db.host_save(&crate::store::tests::sample_host(None, Some(key_id)))
+    // 主机保存时不让选 Key 凭据（见下面的测试）；这里模拟"同步来的 / 旧数据里主机已经在用它"。
+    let host = db
+        .host_save(&crate::store::tests::sample_host(None, None))
         .unwrap();
+    db.with_conn_write(|conn| {
+        conn.execute(
+            "UPDATE hosts SET identity_id = ?1 WHERE id = ?2",
+            rusqlite::params![key_id, host.id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
     db.ai_endpoint_delete(b.id).unwrap();
     assert_eq!(
         db.identity_list().unwrap().len(),
@@ -337,4 +347,95 @@ fn upgrading_from_version_twelve_adds_the_table_without_touching_other_data() {
     assert_eq!(db.schema_version().unwrap(), 13);
     assert_eq!(db.identity_list().unwrap().len(), 1);
     assert!(db.ai_endpoint_list().unwrap().is_empty());
+}
+
+fn host_draft_with(
+    identity_id: Option<i64>,
+    auth: crate::model::AuthMethod,
+) -> crate::model::HostDraft {
+    crate::model::HostDraft {
+        protocol: None,
+        id: None,
+        group_id: None,
+        name: "web-1".to_owned(),
+        host: "host.example".to_owned(),
+        port: 22,
+        username: "deploy".to_owned(),
+        auth_method: auth,
+        identity_id,
+        proxy_id: None,
+        jump_host_id: None,
+        proxy_mode: crate::model::ProxyMode::Default,
+        tags: Vec::new(),
+        sort: 0,
+        legacy_algorithms: false,
+    }
+}
+
+#[test]
+fn the_key_identities_are_listed_and_hosts_cannot_pick_them() {
+    let db = db();
+    assert!(db.ai_endpoint_key_identity_ids().unwrap().is_empty());
+    let saved = db
+        .ai_endpoint_save(&draft("主力", Some("sk-test-0001")))
+        .unwrap();
+    let no_key = db.ai_endpoint_save(&draft("无 Key", None)).unwrap();
+    assert!(!no_key.has_key);
+    let key_id = saved.key_identity_id.unwrap();
+    assert_eq!(db.ai_endpoint_key_identity_ids().unwrap(), vec![key_id]);
+
+    // 主机把它选成密码：被拒，说明是 API Key。
+    let err = db
+        .host_save(&host_draft_with(
+            Some(key_id),
+            crate::model::AuthMethod::Password,
+        ))
+        .expect_err("不能选");
+    assert!(err.to_string().contains("API Key"), "{err}");
+    assert!(db.host_list().unwrap().is_empty());
+
+    // 普通凭据照常能选。
+    let normal = db
+        .identity_save(&crate::model::IdentityDraft {
+            id: None,
+            name: "普通".to_owned(),
+            kind: IdentityKind::Password,
+            key_path: None,
+            secret: Some("pw".to_owned()),
+            passphrase: None,
+        })
+        .unwrap();
+    db.host_save(&host_draft_with(
+        Some(normal.id),
+        crate::model::AuthMethod::Password,
+    ))
+    .unwrap();
+
+    // 删接口：Key 凭据一起删，不留孤儿。
+    db.ai_endpoint_delete(saved.id).unwrap();
+    assert!(db.ai_endpoint_key_identity_ids().unwrap().is_empty());
+    assert!(!identity_names(&db).iter().any(|n| n.contains("API Key")));
+}
+
+#[test]
+fn the_models_auto_update_switch_defaults_on_and_is_a_local_setting() {
+    let db = db();
+    assert!(db.ai_models_auto_update().unwrap());
+    db.set_ai_models_auto_update(false).unwrap();
+    assert!(!db.ai_models_auto_update().unwrap());
+    db.set_ai_models_auto_update(true).unwrap();
+    assert!(db.ai_models_auto_update().unwrap());
+    // 读不懂的值按开。
+    db.setting_set(crate::store::settings::AI_MODELS_AUTO_UPDATE_KEY, "\"x\"")
+        .unwrap();
+    assert!(db.ai_models_auto_update().unwrap());
+    assert!(
+        crate::sync::settings::SETTINGS_SYNC_CLASS
+            .iter()
+            .any(|(key, mode)| {
+                *key == "ai_models_auto_update"
+                    && *mode == crate::sync::settings::SyncMode::LocalOnly
+            }),
+        "自动更新开关是本机设置，不进同步包"
+    );
 }

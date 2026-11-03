@@ -31,9 +31,9 @@ use super::context::{self, TOOL_RESULT_LIMIT};
 use super::mapping;
 use super::prompt;
 use super::provider::{
-    bridge_tool_specs, build_models_request, stream_chat, ApiKey, AssembledToolCall, AssistantTurn,
-    ChatRequest, ErrorKind, Message, ProviderConfig, ProviderError, ReasoningParam, StopReason,
-    StreamEvent, ToolSpec, Transport,
+    bridge_tool_specs, stream_chat, ApiKey, AssembledToolCall, AssistantTurn, ChatRequest,
+    ErrorKind, Message, ProviderConfig, ProviderError, ReasoningParam, StopReason, StreamEvent,
+    ToolSpec, Transport,
 };
 use super::transcript;
 use crate::ai::agent::retry;
@@ -510,29 +510,12 @@ impl Inner {
     /// 拉接口的模型清单；任何失败（连不上、鉴权、不是 JSON、没有条目）都是 `None`，
     /// 调用方退回手填的。
     async fn fetch_remote_models(&self) -> Option<Vec<(String, PartialCaps)>> {
-        let request = build_models_request(&self.config);
-        let fetch = async {
-            let mut response = self.transport.get(request).await.ok()?;
-            if !(200..300).contains(&response.status) {
-                return None;
-            }
-            let mut body = Vec::new();
-            // 模型清单再大也不会过几 MB。
-            while body.len() < 4 * 1024 * 1024 {
-                match response.body.next_chunk().await {
-                    Ok(Some(chunk)) => body.extend_from_slice(&chunk),
-                    Ok(None) => break,
-                    Err(_) => return None,
-                }
-            }
-            let text = String::from_utf8_lossy(&body).into_owned();
-            let parsed = super::catalog::parse_models_endpoint(&text);
-            (!parsed.is_empty()).then_some(parsed)
-        };
-        tokio::time::timeout(self.tuning.models_timeout, fetch)
-            .await
-            .ok()
-            .flatten()
+        super::probe::fetch_models(
+            self.transport.as_ref(),
+            &self.config,
+            self.tuning.models_timeout,
+        )
+        .await
     }
 }
 

@@ -5,6 +5,7 @@
 //! - [`config`]（A3）：接口配置的数据类型；
 //! - [`BuiltinConversation`]（A3）：对话循环，实现 [`crate::ai::agent::AgentConversation`]，
 //!   工具调用进程内走工具桥（[`crate::ai::bridge::Bridge::call_tool`]）；
+//! - [`probe`]（A4）：设置页"测试"按钮要的接口探测（拉模型清单 + 一个极短请求）；
 //! - [`mapping`] / [`context`] / [`prompt`] / [`transcript`]（A3）：能力到请求参数的映射、上下文预算
 //!   与压缩、系统提示词、完整对话记录（续接用）。
 
@@ -13,6 +14,7 @@ pub mod config;
 pub mod context;
 pub mod conversation;
 pub mod mapping;
+pub mod probe;
 pub mod prompt;
 pub mod provider;
 pub mod transcript;

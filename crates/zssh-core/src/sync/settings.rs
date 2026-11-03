@@ -51,6 +51,8 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     // AI 执行模式是**权限**设置（手动审批 / 自动执行）：只能在本机改，
     // 不能让另一台电脑通过同步把这台电脑提升成"自动执行"。
     ("ai_exec_mode", SyncMode::LocalOnly),
+    // 模型资料库（models.dev）要不要在后台每 7 天联网更新：这台电脑的网络环境决定，不同步
+    ("ai_models_auto_update", SyncMode::LocalOnly),
     // SFTP 传输参数和写文件备份份数
     ("sftp_concurrency", SyncMode::Synced),
     ("sftp_preserve_mtime", SyncMode::Synced),

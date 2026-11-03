@@ -156,6 +156,20 @@ pub struct AiEndpointDraft {
     pub preset_id: Option<String>,
 }
 
+impl AiEndpointDraft {
+    /// 拼 provider 层的连接配置（"测试"按钮用表单里还没保存的值）。`api_key` 由调用方决定
+    /// 用表单里新填的还是库里已存的。
+    pub fn provider_config(&self, api_key: ApiKey) -> ProviderConfig {
+        let mut config = ProviderConfig::new(
+            self.kind.provider_kind(),
+            self.base_url.trim().trim_end_matches('/'),
+            api_key,
+        );
+        config.openai = OpenAiOptions::from(&self.openai_options);
+        config
+    }
+}
+
 /// `Debug` 手写：`api_key` 是明文，不能进日志。
 impl fmt::Debug for AiEndpointDraft {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

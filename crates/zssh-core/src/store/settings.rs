@@ -33,6 +33,9 @@ pub const AI_DEFAULT_AGENT_KEY: &str = "ai_default_agent";
 /// 引用的是接口的 uid（同步包里的引用也是 uid，不用换算）。
 pub const AI_BUILTIN_DEFAULT_KEY: &str = "ai_builtin_default";
 
+/// 模型资料库（models.dev）是否在后台每 7 天联网更新（V2-A4）。值是 JSON 布尔，默认开；本机设置，不同步。
+pub const AI_MODELS_AUTO_UPDATE_KEY: &str = "ai_models_auto_update";
+
 /// `write_file` 覆盖时每个文件保留几份 `.zssh-bak-*` 备份（M3-4 第 0 节）。
 pub const AI_WRITE_BACKUP_KEEP_KEY: &str = "ai_write_backup_keep";
 
@@ -180,6 +183,21 @@ impl Database {
         let value = serde_json::to_string(agent)
             .map_err(|err| ZsshError::InvalidInput(format!("默认智能体序列化失败：{err}")))?;
         self.setting_set(AI_DEFAULT_AGENT_KEY, &value)
+    }
+
+    /// 模型资料库要不要后台自动更新；没设置或值不认识按"开"。
+    pub fn ai_models_auto_update(&self) -> Result<bool, ZsshError> {
+        Ok(match self.setting_get(AI_MODELS_AUTO_UPDATE_KEY)? {
+            Some(raw) => serde_json::from_str::<bool>(&raw).unwrap_or(true),
+            None => true,
+        })
+    }
+
+    pub fn set_ai_models_auto_update(&self, enabled: bool) -> Result<(), ZsshError> {
+        self.setting_set(
+            AI_MODELS_AUTO_UPDATE_KEY,
+            if enabled { "true" } else { "false" },
+        )
     }
 
     /// `write_file` 每个文件保留几份备份；没设置或值不合法用默认值。
