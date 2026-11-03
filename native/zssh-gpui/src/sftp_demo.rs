@@ -3,11 +3,11 @@
 //! 行为对照 0.2.14 的 `ui/src/components/sftp/`：文件列表（列、点表头排序、单选 / Ctrl / Shift /
 //! Ctrl+A 多选、键盘上下 / 回车 / Backspace / F2 / F5 / Delete / Alt+Enter、面包屑和可编辑路径栏、
 //! 过滤、隐藏文件开关、后退前进）、右键菜单（文件、文件夹、空白处、多选各一套，带子菜单“新建”）、
-//! 对话框（新建 / 重命名、删除确认、修改权限、属性、下载到…、解压同名文件、远端改名覆盖确认）、
+//! 对话框（新建 / 重命名、删除确认、修改权限、属性、下载到…、移动到…、解压同名文件、远端改名覆盖确认）、
 //! 远端压缩 / 解压、传输队列。
 //!
 //! 代码分层：
-//! - `model` / `menu` / `props` / `queue` / `archive_ui` / `dialogs` / `chmod` / `local_ops`：
+//! - `model` / `menu` / `props` / `queue` / `archive_ui` / `dialogs` / `chmod` / `local_ops` / `move_to`：
 //!   没有界面的规则和操作，每条都有单测；
 //! - `engine`：同名文件提问者、递归删除、路径和名字规则、自动化钩子的环境变量解析；
 //! - `pane` 保存一栏的状态，本文件和 `nav` / `ops` / `transfer` 是 [`SftpDemo`] 的状态与动作，

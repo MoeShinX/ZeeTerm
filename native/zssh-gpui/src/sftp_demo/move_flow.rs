@@ -124,6 +124,7 @@ impl SftpDemo {
             d.browse.loading = true;
             d.browse.pending_select = select;
             d.confirming = confirming;
+            d.error = None;
             d.side
         };
         let sender = self.sender.clone();
