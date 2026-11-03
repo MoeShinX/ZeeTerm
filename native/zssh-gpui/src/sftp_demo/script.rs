@@ -11,6 +11,7 @@ use zssh_core::sftp::archive::ConflictPolicy;
 use super::dialogs::{Dialog, NameKind};
 use super::menu::{MenuAction, MenuNode, Side, build_menu};
 use super::model::SortKey;
+use super::move_to::Choice;
 use super::props::{CalcPhase, PermBit, aggregate};
 use super::{SftpDemo, props};
 
@@ -32,6 +33,7 @@ fn action_of(raw: &str) -> Result<MenuAction, String> {
         "paste" => MenuAction::Paste,
         "copy_path" => MenuAction::CopyPath,
         "rename" => MenuAction::Rename,
+        "move" => MenuAction::MoveTo,
         "delete" => MenuAction::Delete,
         "mkdir" => MenuAction::Mkdir,
         "create" => MenuAction::Create,
@@ -87,6 +89,9 @@ impl SftpDemo {
             Some(Dialog::DownloadTo(_)) => "download",
             Some(Dialog::ExtractConflict(_)) => "extract",
             Some(Dialog::OverwriteRename(_)) => "overwrite",
+            Some(Dialog::MoveTo(_)) => "move",
+            Some(Dialog::MoveConflict(_)) => "move_conflict",
+            Some(Dialog::MoveSummary(_)) => "move_summary",
         }
     }
 
@@ -319,6 +324,7 @@ impl SftpDemo {
                     Some(Dialog::Name(d)) => d.input.clone(),
                     Some(Dialog::Permissions(d)) => d.octal.clone(),
                     Some(Dialog::DownloadTo(d)) => d.input.clone(),
+                    Some(Dialog::MoveTo(d)) => d.input.clone(),
                     _ => return Err("当前对话框没有输入框".to_owned()),
                 };
                 input.update(cx, |state, cx| state.set_value(text, window, cx));
@@ -326,10 +332,131 @@ impl SftpDemo {
             "dialog_ok" => match &self.dialog {
                 Some(Dialog::Delete(_)) => self.confirm_delete(window, cx),
                 Some(Dialog::OverwriteRename(_)) => self.confirm_overwrite_rename(window, cx),
+                Some(Dialog::MoveTo(_)) => self.confirm_move_to(window, cx),
+                Some(Dialog::MoveConflict(_)) => {
+                    return Err("同名询问用 move_choice 回答".to_owned());
+                }
                 Some(_) => self.dialog_enter(window, cx),
                 None => return Err("没有对话框".to_owned()),
             },
             "dialog_cancel" => self.close_dialog(window, cx),
+            // ---- 「移动到…」对话框（V2-U23）----
+            // move_browse:<路径>：浏览到这个文件夹（输入框跟着变）
+            "move_browse" => self.move_browse_to(rest(0), window, cx),
+            "move_up" => self.move_up(window, cx),
+            // move_select:<名字> / move_open:<名字>：单击 / 双击浏览列表里的子文件夹（列表还没读回来返回“还没到”）
+            "move_select" | "move_open" => {
+                let Some(Dialog::MoveTo(d)) = &self.dialog else {
+                    return Err("当前不是「移动到」对话框".to_owned());
+                };
+                let name = rest(0);
+                let Some(path) = d
+                    .browse
+                    .folders
+                    .iter()
+                    .find(|f| f.name == name)
+                    .map(|f| f.path.clone())
+                else {
+                    return Ok(false);
+                };
+                if command == "move_select" {
+                    self.move_select_folder(path, window, cx);
+                } else {
+                    self.move_browse_to(path, window, cx);
+                }
+            }
+            // move_enter：在目标输入框里按 Enter
+            "move_enter" => self.move_enter(window, cx),
+            // move_new_folder_open：展开「新建文件夹」的名字行；move_new_folder:<名字>：填名字并创建
+            "move_new_folder_open" => {
+                if matches!(&self.dialog, Some(Dialog::MoveTo(d)) if d.new_folder.is_none()) {
+                    self.toggle_new_folder(window, cx);
+                }
+            }
+            "move_new_folder" => {
+                if matches!(&self.dialog, Some(Dialog::MoveTo(d)) if d.new_folder.is_none()) {
+                    self.toggle_new_folder(window, cx);
+                }
+                let Some(Dialog::MoveTo(d)) = &self.dialog else {
+                    return Err("当前不是「移动到」对话框".to_owned());
+                };
+                let input = d.new_folder.clone().ok_or("新建文件夹的名字行没展开")?;
+                let name = rest(0);
+                input.update(cx, |state, cx| state.set_value(name, window, cx));
+                self.confirm_new_folder(window, cx);
+            }
+            // assert_move_dir:<路径>：浏览列表现在显示的是这个文件夹（读完了）
+            "assert_move_dir" => {
+                let Some(Dialog::MoveTo(d)) = &self.dialog else {
+                    return Err("当前不是「移动到」对话框".to_owned());
+                };
+                if d.browse.loading || d.browse.dir != rest(0) {
+                    return Ok(false);
+                }
+            }
+            // assert_move_folders:<名字,名字>：浏览列表里的子文件夹（按显示顺序，必须完全一致）
+            "assert_move_folders" => {
+                let Some(Dialog::MoveTo(d)) = &self.dialog else {
+                    return Err("当前不是「移动到」对话框".to_owned());
+                };
+                if d.browse.loading {
+                    return Ok(false);
+                }
+                let have: Vec<&str> = d.browse.folders.iter().map(|f| f.name.as_str()).collect();
+                let joined = rest(0);
+                let want = names(&joined);
+                if have != want {
+                    return Err(format!("浏览列表里是 {have:?}，预期 {want:?}"));
+                }
+            }
+            // assert_move_check:<ok|same|self|invalid>：按钮置灰的原因 / 可以移动
+            "assert_move_check" => {
+                use super::move_to::{DestCheck, check_destination};
+                let Some(Dialog::MoveTo(d)) = &self.dialog else {
+                    return Err("当前不是「移动到」对话框".to_owned());
+                };
+                let text = d.input.read(cx).value().to_string();
+                let state = match check_destination(d.side, &d.entries, &text) {
+                    DestCheck::Ok(_) => "ok",
+                    DestCheck::SameFolder => "same",
+                    DestCheck::IntoSelf => "self",
+                    DestCheck::Invalid(_) => "invalid",
+                };
+                if state != arg(0) {
+                    return Err(format!("目标检查结果是 {state}，预期 {}", arg(0)));
+                }
+            }
+            // assert_move_input:<路径>
+            "assert_move_input" => {
+                let Some(Dialog::MoveTo(d)) = &self.dialog else {
+                    return Err("当前不是「移动到」对话框".to_owned());
+                };
+                let text = d.input.read(cx).value().to_string();
+                if text != rest(0) {
+                    return Err(format!("输入框里是 {text:?}"));
+                }
+            }
+            // move_choice:<replace|skip|abort>[:all]：回答同名询问
+            "move_choice" => {
+                if !matches!(self.dialog, Some(Dialog::MoveConflict(_))) {
+                    return Ok(false);
+                }
+                if arg(1) == "all" {
+                    self.set_move_apply_rest(true, cx);
+                }
+                match arg(0) {
+                    "replace" => self.answer_move_conflict(Choice::Replace, window, cx),
+                    "skip" => self.answer_move_conflict(Choice::Skip, window, cx),
+                    "abort" => self.abort_move(window, cx),
+                    other => return Err(format!("不认识的选择 {other:?}")),
+                }
+            }
+            // assert_moving:none|some
+            "assert_moving" => {
+                if self.moving.is_some() != (arg(0) == "some") {
+                    return Ok(false);
+                }
+            }
             // assert_name_error:<yes|no>
             "assert_name_ok" => {
                 let Some(Dialog::Name(d)) = &self.dialog else {
