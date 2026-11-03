@@ -315,6 +315,13 @@ impl MainWindow {
         cx.notify();
     }
 
+    fn set_tree_guides(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(err) = self.store.set_tree_guides(on) {
+            self.notice_error(&err, window, cx);
+        }
+        cx.notify();
+    }
+
     fn set_app_network_proxy(&mut self, raw: &str, window: &mut Window, cx: &mut Context<Self>) {
         let result = self
             .store
@@ -880,21 +887,35 @@ impl MainWindow {
     /// 主机树：不显示「未分组」文件夹（0.2.14 的 `HostTreeCard`，写同步键 `vault_ungrouped_flat`）。
     fn host_tree_card(&self, tokens: &Tokens, cx: &mut Context<Self>) -> ::gpui::AnyElement {
         let entity = cx.entity();
+        let guides_entity = entity.clone();
         card(
             "settings-host-tree",
             "主机树",
             None,
             tokens,
-            vec![pref_switch(
-                "ungrouped-flat",
-                "主机树里不显示「未分组」文件夹，不分组的主机直接放在最下面",
-                "打开后，没有分组的主机排在所有分组下面，中间用一条线隔开。",
-                self.store.flat(),
-                tokens,
-                move |checked, window, cx| {
-                    entity.update(cx, |this, cx| this.set_ungrouped_flat(checked, window, cx));
-                },
-            )],
+            vec![
+                pref_switch(
+                    "ungrouped-flat",
+                    "主机树里不显示「未分组」文件夹，不分组的主机直接放在最下面",
+                    "打开后，没有分组的主机排在所有分组下面，中间用一条线隔开。",
+                    self.store.flat(),
+                    tokens,
+                    move |checked, window, cx| {
+                        entity.update(cx, |this, cx| this.set_ungrouped_flat(checked, window, cx));
+                    },
+                ),
+                pref_switch(
+                    "host-tree-guides",
+                    "主机树显示连接线",
+                    "每一层子项左边画一条竖向的小虚线，横向连到子项，看得出谁属于哪个分组。只影响这台电脑。",
+                    self.store.tree_guides(),
+                    tokens,
+                    move |checked, window, cx| {
+                        guides_entity
+                            .update(cx, |this, cx| this.set_tree_guides(checked, window, cx));
+                    },
+                ),
+            ],
         )
     }
 

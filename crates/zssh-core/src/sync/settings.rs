@@ -111,6 +111,8 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     // 主机树「不分组的主机平铺」的本机默认（UI-18）：首次启动按「是不是新用户」判断一次，只存本机，
     // 不能进同步包（不然几台电脑各判各的、合并时被当成冲突）；用户的明确选择在同步键 vault_ungrouped_flat
     ("layout.vault_flat_default", SyncMode::LocalOnly),
+    // 主机树要不要画虚线连接线（V2-U20）：本机的显示偏好，不同步
+    ("layout.vault_tree_guides", SyncMode::LocalOnly),
     // 主机页卡片按最近打开排：每台电脑用的不一样
     ("layout.recent_hosts", SyncMode::LocalOnly),
     ("layout.overview_width", SyncMode::LocalOnly),

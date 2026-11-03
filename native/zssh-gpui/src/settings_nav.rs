@@ -161,6 +161,7 @@ impl SettingsSection {
                 "close-action",
                 "file-window-close",
                 "start-hidden",
+                "host-tree-guides",
             ],
             Self::Terminal => &[
                 "font-family",
@@ -221,7 +222,8 @@ impl SettingsSection {
         match self {
             // 括号粘贴：0.2.14 没有这一项（xterm 自动跟随远端）；启动时隐藏到托盘：0.2.14 没有。
             Self::Terminal => &["bracketed-paste"],
-            Self::Appearance => &["start-hidden"],
+            // 主机树的虚线连接线开关：0.2.14 的树一直画线，没有开关。
+            Self::Appearance => &["start-hidden", "host-tree-guides"],
             _ => &[],
         }
     }

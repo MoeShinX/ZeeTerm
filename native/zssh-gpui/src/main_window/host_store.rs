@@ -30,6 +30,8 @@ pub const VIEW_MODE_KEY: &str = "layout.vault_view_mode";
 pub const DENSITY_KEY: &str = "layout.vault_density";
 pub const SORT_MODE_KEY: &str = "layout.vault_sort_mode";
 pub const RECENT_KEY: &str = "layout.recent_hosts";
+/// 主机树要不要画虚线连接线（本机设置，不同步，默认开）。
+pub const TREE_GUIDES_KEY: &str = "layout.vault_tree_guides";
 
 /// 主机页右边卡片 / 列表的显示选项（本机布局，不同步）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -74,6 +76,8 @@ pub struct HostStore {
     flat: bool,
     /// 主机 id → 连上之后探测出的系统 id（`zssh_core::ssh::os_probe`），主机图标用；只在本机。
     host_os: BTreeMap<i64, String>,
+    /// 主机树的虚线连接线开着没有。
+    tree_guides: bool,
     /// 打不开库或读失败的原因（界面原样显示，不崩）。
     error: Option<String>,
 }
@@ -101,6 +105,7 @@ impl HostStore {
             bars: BarSettings::default(),
             flat: false,
             host_os: BTreeMap::new(),
+            tree_guides: true,
             error,
         }
     }
@@ -152,6 +157,10 @@ impl HostStore {
         let proxies = read(&mut error, "代理", db.proxy_list());
         let forwards = read(&mut error, "端口转发", db.forward_list());
         let host_os = read(&mut error, "主机系统", db.host_os_list());
+        let tree_guides = super::bar_settings::parse_bool(
+            db.setting_get(TREE_GUIDES_KEY).ok().flatten().as_deref(),
+            true,
+        );
         let flag = db.setting_get(FLAT_FLAG_KEY).ok().flatten();
         let local = db.setting_get(FLAT_DEFAULT_KEY).ok().flatten();
         let flat = effective_flat(flag.as_deref(), local.as_deref());
@@ -190,6 +199,7 @@ impl HostStore {
         replace(&mut self.bars, Some(BarSettings::load(db)), &mut changed);
         replace(&mut self.flat, Some(flat), &mut changed);
         replace(&mut self.host_os, host_os, &mut changed);
+        replace(&mut self.tree_guides, Some(tree_guides), &mut changed);
         changed
     }
 
@@ -399,8 +409,20 @@ impl HostStore {
             .filter(|os| crate::os_icons::is_known(os))
     }
 
+    /// 主机树画不画虚线连接线（设置 → 外观，默认开）。
+    pub fn tree_guides(&self) -> bool {
+        self.tree_guides
+    }
+
+    pub fn set_tree_guides(&mut self, on: bool) -> Result<(), String> {
+        let result = self
+            .db()?
+            .setting_set(TREE_GUIDES_KEY, if on { "true" } else { "false" });
+        self.after_write(result)
+    }
+
     /// 造一条探测记录（测试 / 调试驱动用：真实路径是连上之后由 `host_os` 写库）。
-    #[cfg(test)]
+    #[cfg(any(test, debug_assertions))]
     pub fn set_host_os(&mut self, host_id: i64, os: &str) -> Result<(), String> {
         let result = self.db()?.host_os_set(host_id, os).map(|_| ());
         self.after_write(result)
@@ -797,5 +819,42 @@ mod tests {
                 .expect("读")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn tree_guides_are_on_by_default_and_the_switch_is_remembered_locally() {
+        let mut store = HostStore::in_memory();
+        assert!(store.tree_guides());
+        store.set_tree_guides(false).expect("关");
+        assert!(!store.tree_guides());
+        assert_eq!(
+            store
+                .db()
+                .expect("库")
+                .setting_get(TREE_GUIDES_KEY)
+                .expect("读")
+                .as_deref(),
+            Some("false")
+        );
+        store.set_tree_guides(true).expect("开");
+        assert!(store.tree_guides());
+        // 读不懂的值回到默认（开）。
+        store
+            .db()
+            .expect("库")
+            .setting_set(TREE_GUIDES_KEY, "\"maybe\"")
+            .expect("写");
+        store.reload();
+        assert!(store.tree_guides());
+    }
+
+    #[test]
+    fn the_tree_guides_key_is_a_local_only_setting() {
+        use zssh_core::sync::settings::{SETTINGS_SYNC_CLASS, SyncMode};
+        let class = SETTINGS_SYNC_CLASS
+            .iter()
+            .find(|(key, _)| *key == TREE_GUIDES_KEY)
+            .map(|(_, mode)| *mode);
+        assert_eq!(class, Some(SyncMode::LocalOnly));
     }
 }
