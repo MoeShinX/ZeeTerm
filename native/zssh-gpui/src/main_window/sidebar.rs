@@ -27,8 +27,11 @@ use crate::app_theme::Tokens;
 use crate::typography::{Role, Typo as _};
 
 /// 缩进：每层 14px，再加行内左边距。
-const INDENT: f32 = 14.0;
-const ROW_HEIGHT: f32 = 23.0;
+const INDENT: f32 = 16.0;
+/// 树里一行的高度（V2-U14：13px 字配 23px 行太挤，改成 14px 字配 30px 行）。
+const ROW_HEIGHT: f32 = 30.0;
+/// 侧栏底部按钮的热区高度。
+const FOOTER_BUTTON: f32 = 28.0;
 /// 属性面板固定高度（放得下 7 行：基本 5 行 + 跳板机 + 代理），切换主机时树不会跟着跳。
 const INFO_HEIGHT: f32 = 184.0;
 
@@ -80,6 +83,8 @@ const HEADER_ACTIONS: [HeaderAction; 2] = [
 struct FooterAction {
     id: &'static str,
     tooltip: &'static str,
+    /// 图标旁边的字（设置按钮是「图标 + 设置」，钥匙只有图标）。
+    label: Option<&'static str>,
     kind: FooterKind,
 }
 
@@ -148,11 +153,13 @@ const FOOTER_ACTIONS: [FooterAction; 2] = [
     FooterAction {
         id: "sidebar-settings",
         tooltip: "设置与管理 (Ctrl+,)",
+        label: Some("设置"),
         kind: FooterKind::Settings,
     },
     FooterAction {
         id: "sidebar-credentials",
         tooltip: "凭据",
+        label: None,
         kind: FooterKind::Credentials,
     },
 ];
@@ -282,8 +289,9 @@ impl MainWindow {
 
         let list = v_flex()
             .w_full()
-            .px_1()
+            .px_2()
             .pb_2()
+            .gap_px()
             .children(rows.iter().enumerate().map(|(at, row)| {
                 self.render_tree_row(at, row, cursor, term.as_deref(), searching, tokens, cx)
             }));
@@ -351,7 +359,7 @@ impl MainWindow {
             .border_color(tokens.border)
             .child(top)
             .child(
-                div().px_2().pt_1p5().pb_2().child(
+                div().px_2().pt_2().pb_3().child(
                     Input::new(&self.tree_query)
                         .prefix(
                             Icon::new(IconName::Search)
@@ -399,21 +407,16 @@ impl MainWindow {
             .children(FOOTER_ACTIONS.iter().map(|action| {
                 let entity = entity.clone();
                 let kind = action.kind;
-                icon_button(
-                    action.id,
-                    action.icon(),
-                    action.tooltip,
-                    move |_, window, cx| {
-                        entity.update(cx, |this, cx| match kind {
-                            FooterKind::Settings => this.toggle_settings(window, cx),
-                            FooterKind::Credentials => this.open_settings_section(
-                                crate::settings_nav::SettingsSection::Credentials,
-                                window,
-                                cx,
-                            ),
-                        });
-                    },
-                )
+                footer_button(action, tokens, move |_, window, cx| {
+                    entity.update(cx, |this, cx| match kind {
+                        FooterKind::Settings => this.toggle_settings(window, cx),
+                        FooterKind::Credentials => this.open_settings_section(
+                            crate::settings_nav::SettingsSection::Credentials,
+                            window,
+                            cx,
+                        ),
+                    });
+                })
             }))
             .child(self.render_theme_buttons(tokens, cx))
     }
@@ -438,7 +441,7 @@ impl MainWindow {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .size(px(26.0))
+                    .size(px(28.0))
                     .flex_none()
                     .rounded_md()
                     .cursor_pointer()
@@ -686,7 +689,7 @@ impl MainWindow {
                                     } else {
                                         IconName::ChevronRight
                                     })
-                                    .size_3p5(),
+                                    .size_4(),
                                 )
                             }),
                     )
@@ -696,7 +699,7 @@ impl MainWindow {
                         } else {
                             IconName::Folder
                         })
-                        .size_3p5()
+                        .size_4()
                         .text_color(tokens.text_muted),
                     )
                     .child(match term {
@@ -793,7 +796,7 @@ impl MainWindow {
                                     } else {
                                         IconName::ChevronRight
                                     })
-                                    .size_3p5(),
+                                    .size_4(),
                                 )
                             }),
                     )
@@ -803,7 +806,7 @@ impl MainWindow {
                         } else {
                             IconName::Folder
                         })
-                        .size_3p5()
+                        .size_4()
                         .text_color(tokens.text_muted),
                     )
                     .child(match term {
@@ -873,7 +876,7 @@ impl MainWindow {
                 .child(div().w(px(16.0)).flex_none())
                 .child(
                     protocol_icon(host.protocol.protocol)
-                        .size_3p5()
+                        .size_4()
                         .text_color(tokens.accent),
                 )
                 .child(
@@ -958,6 +961,43 @@ impl MainWindow {
     }
 }
 
+/// 侧栏底部左边的一个入口：16px 图标，有 `label` 时图标右边跟一个字（设置按钮），热区高 28px，
+/// 悬停有底色。
+fn footer_button(
+    action: &FooterAction,
+    tokens: &Tokens,
+    on_click: impl Fn(&::gpui::ClickEvent, &mut ::gpui::Window, &mut ::gpui::App) + 'static,
+) -> impl IntoElement {
+    let (hover, text, muted) = (tokens.hover, tokens.text, tokens.text_muted);
+    let tip = action.tooltip;
+    div()
+        .id(action.id)
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .gap_2()
+        .h(px(FOOTER_BUTTON))
+        .min_w(px(FOOTER_BUTTON))
+        .when(action.label.is_some(), |d| d.px_2p5())
+        .flex_none()
+        .rounded_md()
+        .cursor_pointer()
+        .text_color(muted)
+        .hover(move |style| style.bg(hover).text_color(text))
+        .tooltip(move |window, cx| {
+            gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
+        })
+        .child(action.icon().size_4())
+        .children(action.label.map(|label| {
+            div()
+                .typo(Role::Body, tokens)
+                .text_color(muted)
+                .child(label)
+        }))
+        .on_click(on_click)
+}
+
 /// 一条细的水平插入线，画在带 `relative` 的行里面。
 fn line(after: bool, tokens: &Tokens) -> AnyElement {
     let line = div()
@@ -983,12 +1023,12 @@ fn tree_line(
         .flex()
         .flex_row()
         .items_center()
-        .gap_1()
+        .gap_1p5()
         .h(px(ROW_HEIGHT))
         .w_full()
-        .pl(px(6.0 + indent))
-        .pr_2()
-        .rounded_sm()
+        .pl(px(8.0 + indent))
+        .pr_2p5()
+        .rounded_md()
         .typo(Role::Tree, tokens)
         .cursor_pointer()
         .when(active, |d| {
@@ -1073,6 +1113,23 @@ mod tests {
     fn the_sidebar_footer_has_settings_and_credentials_with_tooltips() {
         let tips: Vec<_> = FOOTER_ACTIONS.iter().map(|a| a.tooltip).collect();
         assert_eq!(tips, ["设置与管理 (Ctrl+,)", "凭据"]);
+        let labels: Vec<_> = FOOTER_ACTIONS.iter().map(|a| a.label).collect();
+        assert_eq!(
+            labels,
+            [Some("设置"), None],
+            "设置是图标加文字，钥匙只有图标"
+        );
+    }
+
+    #[test]
+    fn tree_rows_are_14px_text_on_30_to_32px_rows_with_a_28px_footer_hit_area() {
+        use crate::typography::Role;
+        assert_eq!(Role::Tree.spec().size, 14.0);
+        let height = super::ROW_HEIGHT;
+        assert!((30.0..=32.0).contains(&height), "行高 {height}");
+        assert!(height >= Role::Tree.spec().size * Role::Tree.spec().leading);
+        assert!(super::FOOTER_BUTTON >= 28.0);
+        assert!(super::INDENT >= 16.0);
     }
 
     #[test]

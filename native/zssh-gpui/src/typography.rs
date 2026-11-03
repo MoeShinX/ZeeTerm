@@ -25,7 +25,7 @@ pub enum Role {
     Caption,
     /// 一般正文（对话框里的句子、表单里的输入内容）。
     Body,
-    /// 侧栏主机树里的行（分组名、主机名）：行高固定得很紧，字号比导航项小一号。
+    /// 侧栏主机树里的行（分组名、主机名）：14px（V2-U14 起和导航项同号），行高固定 30px，见 `sidebar::ROW_HEIGHT`。
     Tree,
     /// 导航项（未选中）。
     Nav,
@@ -78,7 +78,7 @@ impl Role {
             Role::FieldLabel => (13.0, FontWeight::MEDIUM, Tone::Primary, 1.45),
             Role::Caption => (12.0, FontWeight::NORMAL, Tone::Secondary, 1.5),
             Role::Body => (14.0, FontWeight::NORMAL, Tone::Primary, 1.5),
-            Role::Tree => (13.0, FontWeight::NORMAL, Tone::Primary, 1.3),
+            Role::Tree => (14.0, FontWeight::NORMAL, Tone::Primary, 1.3),
             Role::Nav => (14.0, FontWeight::NORMAL, Tone::Nav, 1.4),
             Role::NavSelected => (14.0, FontWeight::MEDIUM, Tone::Primary, 1.4),
             Role::NavGroup => (12.0, FontWeight::NORMAL, Tone::Faint, 1.4),
