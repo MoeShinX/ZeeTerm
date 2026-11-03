@@ -2890,16 +2890,243 @@ mod tests {
             })
             .collect();
         assert!(text.contains("收到"), "没有 Key 也聊得起来：{text}");
-        let seen = recorder.seen.lock().expect("锁");
-        assert!(!seen.is_empty());
-        assert!(
-            seen.iter()
-                .flatten()
-                .all(|(name, _)| !name.eq_ignore_ascii_case("authorization")),
-            "不需要 Key 的接口不能发 Authorization 头：{seen:?}"
-        );
-        drop(seen);
+        {
+            let seen = recorder.seen.lock().expect("锁");
+            assert!(!seen.is_empty());
+            assert!(
+                seen.iter()
+                    .flatten()
+                    .all(|(name, _)| !name.eq_ignore_ascii_case("authorization")),
+                "不需要 Key 的接口不能发 Authorization 头：{seen:?}"
+            );
+        }
         session.shutdown().await;
+    }
+
+    /// 端到端（本机假 Tokenway，不联网）：连接 → 存保险库 → 对话 → 余额显示 → 需充值 → 授权失效 → 重新连接 → 断开。
+    /// 界面上这些提示卡 / 按钮的状态测试在 `agent_chat_demo::builtin_ui`，窗口版见截图场景。
+    #[tokio::test]
+    async fn the_whole_tokenway_flow_works_without_a_window_connect_chat_balance_topup_revoke_disconnect()
+     {
+        use crate::agent_setup::tokenway::{
+            BalanceBook, BalanceProblem, ConnectDeps, finish_connect, run_connect,
+        };
+        use std::time::Instant;
+        use tokio::sync::Notify;
+        use zssh_core::ai::agent::builtin::provider::ReqwestTransport;
+        use zssh_core::ai::agent::builtin::tokenway::api::{
+            ChatFailureAction, classify_chat_failure, fetch_status,
+        };
+        use zssh_core::ai::agent::builtin::tokenway::endpoint::disconnect;
+        use zssh_core::ai::agent::builtin::tokenway::fake::{FakeBrowser, FakeTokenway};
+        use zssh_core::ai::agent::builtin::tokenway::{ApiErrorKind, UrlPolicy};
+
+        let fake = FakeTokenway::start().await.expect("假 Tokenway");
+        let preset = fake.preset();
+        let policy = UrlPolicy::with_http_loopback_for_tests();
+        let transport = Arc::new(ReqwestTransport::build(None).expect("传输层"));
+        let db = Database::open_in_memory().expect("内存库");
+        let connect = || async {
+            run_connect(
+                &ConnectDeps {
+                    preset: &preset,
+                    policy: &policy,
+                    transport: transport.as_ref(),
+                    opener: &FakeBrowser::new(),
+                    device: "测试 设备",
+                    timeout: Duration::from_secs(20),
+                },
+                &Notify::new(),
+                &|_| {},
+            )
+            .await
+            .expect("授权")
+        };
+
+        // 1 连接：授权页自动点"授权" → 换令牌 → 存进保险库 → 默认接口，内置助手可用。
+        let connected = connect().await;
+        let endpoint = finish_connect(&db, &preset, &connected, &policy).expect("保存");
+        assert!(crate::agent_setup::builtin::usable_in(&db));
+        assert_eq!(
+            db.ai_endpoint_api_key(endpoint.id).unwrap(),
+            fake.last_key()
+        );
+        let (endpoint, key) = load_endpoint_from(&db, endpoint.id).expect("读接口和 Key");
+        assert_eq!(endpoint.preset_id.as_deref(), Some("tokenway"));
+
+        // 2 对话：用保险库里的 Key，经真实的 HTTP。
+        let hub = test_hub(Arc::new(CountingHost::default())).await;
+        let mut session = hub
+            .start_builtin(BuiltinStart {
+                endpoint: endpoint.clone(),
+                api_key: key.clone(),
+                transport: Arc::clone(&transport) as Arc<dyn Transport>,
+                catalog: Arc::new(Catalog::builtin()),
+                resume: None,
+                tuning: fast_tuning(),
+            })
+            .await
+            .expect("启动");
+        session
+            .conversation
+            .send("你好", Some("fake-chat-pro"))
+            .await
+            .expect("发送");
+        let (events, signals) = collect_turn(&mut session).await;
+        let text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(text.contains("收到：你好"), "{text}");
+        assert!(
+            !signals
+                .iter()
+                .any(|s| matches!(s, BuiltinSignal::Failure(_))),
+            "{signals:?}"
+        );
+
+        // 3 余额显示：打开面板取一次，最多每 60 秒一次。
+        let mut book = BalanceBook::default();
+        let t0 = Instant::now();
+        let status_url = preset.status_url.clone().unwrap();
+        assert!(book.poll(endpoint.id, t0));
+        book.finish(
+            endpoint.id,
+            fetch_status(transport.as_ref(), &policy, &status_url, &key).await,
+        );
+        assert_eq!(book.view(endpoint.id).unwrap().label, "余额 ¥12.34");
+        book.mark_all_dirty();
+        assert!(!book.poll(endpoint.id, t0 + Duration::from_secs(20)));
+
+        // 4 需充值：状态变"需充值"；对话回 402，旁路信号带错误码，界面据此给"去充值"。
+        fake.set_needs_topup(true);
+        assert!(book.poll(endpoint.id, t0 + Duration::from_secs(61)));
+        book.finish(
+            endpoint.id,
+            fetch_status(transport.as_ref(), &policy, &status_url, &key).await,
+        );
+        let view = book.view(endpoint.id).unwrap();
+        assert_eq!((view.label.as_str(), view.needs_topup), ("需充值", true));
+        session
+            .conversation
+            .send("再来一句", Some("fake-chat-pro"))
+            .await
+            .expect("发送");
+        let (_events, signals) = collect_turn(&mut session).await;
+        let failure = signals
+            .iter()
+            .find_map(|s| match s {
+                BuiltinSignal::Failure(f) => Some(f.clone()),
+                _ => None,
+            })
+            .expect("402 的失败信号");
+        assert_eq!(failure.code.as_deref(), Some("zeeterm_requires_topup"));
+        assert_eq!(
+            classify_chat_failure(&failure),
+            Some(ChatFailureAction::RequiresTopup)
+        );
+        fake.set_needs_topup(false);
+
+        // 5 授权失效（用户在网站改密码）：对话 401、余额 401 → "授权已失效"，本地配置还在。
+        fake.revoke_all();
+        session
+            .conversation
+            .send("还在吗", Some("fake-chat-pro"))
+            .await
+            .expect("发送");
+        let (_events, signals) = collect_turn(&mut session).await;
+        let failure = signals
+            .iter()
+            .find_map(|s| match s {
+                BuiltinSignal::Failure(f) => Some(f.clone()),
+                _ => None,
+            })
+            .expect("401 的失败信号");
+        assert_eq!(
+            classify_chat_failure(&failure),
+            Some(ChatFailureAction::AuthorizationInvalid)
+        );
+        book.mark_all_dirty();
+        assert!(book.poll(endpoint.id, t0 + Duration::from_secs(130)));
+        let result = fetch_status(transport.as_ref(), &policy, &status_url, &key).await;
+        assert_eq!(
+            result.as_ref().unwrap_err().kind,
+            ApiErrorKind::InvalidToken
+        );
+        book.finish(endpoint.id, result);
+        assert_eq!(
+            book.view(endpoint.id).unwrap().problem,
+            Some(BalanceProblem::AuthorizationInvalid)
+        );
+        assert_eq!(db.ai_endpoint_list().unwrap().len(), 1, "不自动删本地配置");
+        session.shutdown().await;
+
+        // 6 重新连接：原地换 Key，名字和设置保留，又能聊了。
+        let connected = connect().await;
+        let again = finish_connect(&db, &preset, &connected, &policy).expect("保存");
+        assert_eq!(again.id, endpoint.id);
+        assert_eq!(db.ai_endpoint_list().unwrap().len(), 1);
+        let (endpoint, key) = load_endpoint_from(&db, again.id).expect("读");
+        let mut session = hub
+            .start_builtin(BuiltinStart {
+                endpoint,
+                api_key: key.clone(),
+                transport: Arc::clone(&transport) as Arc<dyn Transport>,
+                catalog: Arc::new(Catalog::builtin()),
+                resume: None,
+                tuning: fast_tuning(),
+            })
+            .await
+            .expect("启动");
+        session
+            .conversation
+            .send("回来了", Some("fake-chat-pro"))
+            .await
+            .expect("发送");
+        let (events, _signals) = collect_turn(&mut session).await;
+        assert!(events.iter().any(|e| matches!(
+            e,
+            AgentEvent::TextDelta { text } if text.contains("收到：回来了")
+        )));
+        session.shutdown().await;
+
+        // 7 断开：服务端停用、保险库里的 Key 和接口配置都删了。
+        let report = disconnect(
+            &db,
+            transport.as_ref(),
+            preset.revoke_url.as_deref(),
+            &policy,
+            again.id,
+        )
+        .await
+        .expect("断开");
+        assert!(report.revoked.is_ok());
+        assert_eq!(
+            fake.key_is_revoked(key.expose()),
+            Some(true),
+            "服务端已停用这枚令牌"
+        );
+        assert!(db.ai_endpoint_list().unwrap().is_empty());
+        assert!(
+            db.identity_list().unwrap().is_empty(),
+            "保险库里的 Key 也删了"
+        );
+
+        // 整个流程只请求过约定的路径：没有任何使用统计。
+        let known = [
+            "GET /connect/zeeterm",
+            "POST /api/connect/token",
+            "GET /api/connect/status",
+            "POST /api/connect/revoke",
+            "GET /v1/models",
+            "POST /v1/chat/completions",
+        ];
+        for request in fake.requests() {
+            assert!(known.contains(&request.as_str()), "多余的请求：{request}");
+        }
     }
     #[tokio::test]
     async fn a_topup_error_code_reaches_the_ui_as_a_structured_signal() {

@@ -103,6 +103,7 @@ pub fn validate(spec: &str) -> Result<(), String> {
         || super::dev_acts_edit::is_known(name)
         || super::dev_acts_agent::is_known(name)
         || super::dev_acts_a4::is_known(name)
+        || super::dev_acts_a5::is_known(name)
         || super::dev_acts_about::is_known(name)
         || super::dev_acts_pane::is_known(name)
         || super::dev_acts_u1::is_known(name)
@@ -195,6 +196,8 @@ pub(super) fn modal_name(this: &MainWindow) -> &'static str {
         Some(Modal::X11Needed(_)) => "x11",
         Some(Modal::Connections(_)) => "connections",
         Some(Modal::AiEndpoint(_)) => "ai_endpoint",
+        Some(Modal::AiPresets) => "ai_presets",
+        Some(Modal::Tokenway(_)) => "tokenway",
     }
 }
 
@@ -239,6 +242,10 @@ fn run_inner(
     }
     // V2-A4（设置页内置助手接口管理、添加 / 编辑接口对话框）的动作在 `dev_acts_a4`。
     if let Some(result) = super::dev_acts_a4::run(this, spec, window, cx) {
+        return result;
+    }
+    // V2-A5（Tokenway 一键连接：预设列表、连接对话框、假 Tokenway）的动作在 `dev_acts_a5`。
+    if let Some(result) = super::dev_acts_a5::run(this, spec, window, cx) {
         return result;
     }
     // 设置页分类导航、连接 / SFTP / 窗口 / 高亮 / 会话日志设置的动作在 `dev_acts_u2`。

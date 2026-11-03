@@ -54,6 +54,24 @@ pub fn pick_default_model(models: &[String]) -> Option<String> {
         .cloned()
 }
 
+/// 新令牌要连的接入地址：服务端给的（已过白名单）优先，否则用预设里的；最后再过一遍白名单。
+/// 拿这把 Key 发任何请求之前都要先过这一步，免得 Key 被送到清单之外的地方。
+pub fn resolve_base_url(
+    preset: &Preset,
+    authorized: &Authorized,
+    policy: &UrlPolicy,
+) -> Result<String, ZsshError> {
+    let base_url = authorized
+        .openai_base
+        .clone()
+        .or_else(|| preset.openai_base.clone())
+        .ok_or_else(|| ZsshError::InvalidInput("预设里没有接入地址".to_owned()))?;
+    policy
+        .check(&base_url)
+        .map_err(|why| ZsshError::InvalidInput(format!("接入地址不合格：{why}")))?;
+    Ok(base_url)
+}
+
 /// 把授权结果存成接口。已经有一条浏览器授权的 Tokenway 接口（重新连接）就原地换 Key、更新地址，
 /// 名字、默认模型、手动覆盖都保留；没有就新建。没有"默认接口"时把它设为默认。
 ///
@@ -65,14 +83,7 @@ pub fn save_authorized(
     models: Option<&[String]>,
     policy: &UrlPolicy,
 ) -> Result<AiEndpoint, ZsshError> {
-    let base_url = authorized
-        .openai_base
-        .clone()
-        .or_else(|| preset.openai_base.clone())
-        .ok_or_else(|| ZsshError::InvalidInput("预设里没有接入地址".to_owned()))?;
-    policy
-        .check(&base_url)
-        .map_err(|why| ZsshError::InvalidInput(format!("接入地址不合格：{why}")))?;
+    let base_url = resolve_base_url(preset, authorized, policy)?;
     let existing = db
         .ai_endpoint_list()?
         .into_iter()

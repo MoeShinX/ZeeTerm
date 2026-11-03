@@ -16,6 +16,7 @@
 
 mod ai_builtin;
 pub(crate) mod ai_endpoint_dialog;
+pub(crate) mod ai_presets;
 pub mod anchor;
 pub mod bar_height;
 pub mod bar_settings;
@@ -27,6 +28,7 @@ pub mod compose_history;
 mod connections_ui;
 mod dev_acts;
 mod dev_acts_a4;
+mod dev_acts_a5;
 mod dev_acts_about;
 mod dev_acts_agent;
 mod dev_acts_dock;
@@ -206,6 +208,8 @@ pub struct MainWindow {
     pub(super) window_width: f32,
     pub(super) window_height: f32,
     tick_count: u64,
+    /// 读过的 Tokenway 余额版本号：变了主窗口就重画（标题栏上的余额、设置页的余额）。
+    tokenway_seen: u64,
     /// 启动时的恢复提示扫过没有（只扫一次）。
     recovery_scanned: bool,
     // ---- 右侧面板、对话框、主机页的界面状态 ----
@@ -415,6 +419,7 @@ impl MainWindow {
             window_width: width_now,
             window_height: f32::from(window.viewport_size().height),
             tick_count: 0,
+            tokenway_seen: 0,
             recovery_scanned: false,
             panels: PanelState::default(),
             aside_width,
@@ -452,6 +457,8 @@ impl MainWindow {
         static MODELS_REFRESH: std::sync::Once = std::sync::Once::new();
         MODELS_REFRESH.call_once(|| {
             crate::agent_setup::builtin::spawn_background_refresh(Duration::from_secs(30));
+            // Tokenway 的预设清单：每 24 小时拉一次并验签（公钥还是占位时什么都不拉，只用内置清单）。
+            crate::agent_setup::tokenway::spawn_background_refresh(Duration::from_secs(45));
         });
 
         // 后台节拍：重读主机库（别的窗口改了主机这里能看到）、跟着活动标签换状态栏订阅、
@@ -494,6 +501,7 @@ impl MainWindow {
             crate::agent_setup::builtin::reload_with(db);
         }
         changed |= self.sync_status(cx);
+        changed |= self.tokenway_tick(window, cx);
         self.connections_tick(window, cx);
         changed |= self.sync_sync_bar();
         changed |= self.sync_forwards(cx);

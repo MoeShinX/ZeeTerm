@@ -39,6 +39,8 @@ pub struct EndpointInfo {
     pub kind: EndpointKind,
     /// 配好了（有 Key，或明确设成不需要 Key；接口表只记有没有，Key 在保险库里）。
     pub ready: bool,
+    /// 来自哪个预设（`tokenway` = 浏览器授权的令牌，`tokenway_key` = 自己粘贴的 Key）。
+    pub preset_id: Option<String>,
     pub default_model: Option<String>,
     /// 改了就变：模型目录、远端模型清单的缓存键用它。
     pub updated_at: i64,
@@ -123,6 +125,7 @@ fn read_info(db: &Database) -> BuiltinInfo {
             .into_iter()
             .map(|endpoint| EndpointInfo {
                 ready: endpoint.is_ready(),
+                preset_id: endpoint.preset_id,
                 id: endpoint.id,
                 uid: endpoint.uid,
                 name: endpoint.name,
@@ -185,6 +188,11 @@ pub fn version() -> u64 {
 /// 设置页保存 / 删除接口、改默认之后调：重读设置库，内容变了才加版本号。
 pub fn reload() {
     apply(load_from_disk());
+}
+
+/// 状态本身没变但界面要重读（预设清单换了、余额变了之类）：只加版本号。
+pub fn bump_version() {
+    state().version += 1;
 }
 
 /// 同 [`reload`]，用已经打开的库（主窗口节拍里定时调：同步、别的窗口改了接口也能跟上，不用每次重新开库）。
@@ -270,6 +278,11 @@ pub fn describe_catalog(catalog: &Catalog) -> String {
 pub fn make_transport() -> Result<Arc<dyn Transport>, String> {
     if let Some(fake) = super::builtin_fake::transport() {
         return Ok(fake);
+    }
+    // 调试版的本机假 Tokenway：直连本机回环，不走系统代理。
+    if super::tokenway::fake_active() {
+        let transport = ReqwestTransport::build(None).map_err(|err| err.to_string())?;
+        return Ok(Arc::new(transport));
     }
     let db = crate::hosts_demo::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
     let proxy = zssh_core::sync::app_proxy::app_proxy(&db)
@@ -513,9 +526,13 @@ pub fn preview_usage(caps: &ModelCaps, model: &str) -> ContextUsage {
 /// 服务端要求充值时的错误码（Tokenway 网关给 ZeeTerm 专用令牌的）。
 pub const REQUIRES_TOPUP_CODE: &str = "zeeterm_requires_topup";
 
-/// 余额不足的提示文字（按钮留给 A5，这里只有文字）。
+/// 需要充值的提示卡文字（卡上的「去充值」按钮打开清单里的充值页）。
 pub const REQUIRES_TOPUP_TEXT: &str =
-    "需要充值：这个接口的账户余额不足，充值后才能继续使用（充值入口稍后提供）。";
+    "ZeeTerm 内置助手需要充值后使用，赠送额度可在网页和其他客户端试用";
+
+/// Tokenway 令牌被服务端停用（改密码、停用授权、封号）时的提示卡文字（卡上的「重新连接」按钮重新授权）。
+pub const AUTHORIZATION_INVALID_TEXT: &str =
+    "Tokenway 授权已失效（可能在网站上改过密码或停用了授权），请重新连接";
 
 /// 提示的类别在对话里显示成什么样：压缩 / 历史修复是中性提示；不支持工具、输出被截断带警示。
 pub fn notice_is_warning(kind: NoticeKind) -> bool {
@@ -595,6 +612,7 @@ mod tests {
             name: name.to_owned(),
             kind: EndpointKind::OpenAiChat,
             ready: has_key,
+            preset_id: None,
             default_model: Some(format!("model-{id}")),
             updated_at: 1,
         }

@@ -828,6 +828,17 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_ai_endpoint_dialog_with(existing, None, window, cx);
+    }
+
+    /// 同上；`prefill` 是从某个预设来的表单起点（名称 / 类型 / 地址 / 是否不需要 Key / 预设标识）。
+    pub(crate) fn open_ai_endpoint_dialog_with(
+        &mut self,
+        existing: Option<i64>,
+        prefill: Option<super::ai_presets::Prefill>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let endpoint = existing.and_then(|id| {
             crate::hosts_demo::open_database()
                 .ok()
@@ -838,6 +849,19 @@ impl MainWindow {
             return;
         }
         let mut dialog = AiEndpointDialog::new(window, cx, endpoint.as_ref());
+        if let Some(prefill) = prefill.filter(|_| endpoint.is_none()) {
+            dialog.preset_id = prefill.preset_id;
+            dialog.kind = prefill.kind;
+            dialog.options.no_key = prefill.no_key && prefill.kind == EndpointKind::OpenAiChat;
+            let kind = dialog.kind;
+            dialog
+                .name
+                .update(cx, |input, cx| input.set_value(prefill.name, window, cx));
+            dialog.base_url.update(cx, |input, cx| {
+                input.set_value(prefill.base_url, window, cx);
+                input.set_placeholder(example_url(kind), window, cx);
+            });
+        }
         // 默认模型一变，覆盖表单项要换成新模型的；其余输入框变了只需要重画（识别结果是实时算的）。
         dialog._subs.push(cx.subscribe_in(
             &dialog.default_model.clone(),
