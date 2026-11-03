@@ -15,6 +15,7 @@ pub mod known_hosts;
 pub mod latency;
 pub mod os_probe;
 pub mod pool;
+pub mod processes;
 pub mod session_log;
 pub mod shell;
 pub mod stats;
@@ -39,10 +40,16 @@ pub use interact::{
 };
 pub use known_hosts::KnownHosts;
 pub use pool::{ConnectionGuard, ConnectionPool, PoolConfig, Pooled};
+pub use processes::{
+    classify_kill_failure, collect_processes, elapsed_label, kill_command, kill_verdict,
+    parse_processes, processes_command, same_process, terminate_process, validate_pid, KillError,
+    KillSignal, KillVerdict, ProcMode, ProcRisk, ProcRow, ProcSort, ProcSortKey, ProcSource,
+    ProcessReport, ProcessesError, Protection, CRITICAL_SERVICES, PROCESSES_MAX_ROWS,
+};
 pub use shell::{
     SessionBuffer, ShellEvent, ShellEventStream, ShellSession, ShellWriter, DEFAULT_BUFFER_LIMIT,
 };
 pub use stats::{
-    CpuCounters, NetCounters, NetInterfaceSpeed, PreviousSample, ProcessInfo, ServerStats,
-    StatsCollector, StatsSample, COLLECT_TIMEOUT,
+    CpuCounters, CpuProcessInfo, NetCounters, NetInterfaceSpeed, PreviousSample, ProcessInfo,
+    ServerStats, StatsCollector, StatsSample, COLLECT_TIMEOUT,
 };

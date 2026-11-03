@@ -72,6 +72,8 @@ pub struct DockState {
     pub ai_live: Option<f32>,
     pub sftp_live: Option<f32>,
     pub overview_open: bool,
+    /// 概览面板「进程」一节现在看哪一档（CPU / 内存）；进程管理对话框打开时用它当默认分段。
+    pub overview_procs: zssh_core::ssh::ProcMode,
     /// 概览面板左边缘正在被拖：按下时的指针和宽度，以及拖动过程中的临时宽度（松手才写设置表）。
     pub overview_drag: Option<DragStart>,
     pub overview_live: Option<f32>,
@@ -104,6 +106,7 @@ impl Default for DockState {
             ai_live: None,
             sftp_live: None,
             overview_open: false,
+            overview_procs: zssh_core::ssh::ProcMode::Cpu,
             overview_drag: None,
             overview_live: None,
             overview_scroll: ::gpui::ScrollHandle::new(),
