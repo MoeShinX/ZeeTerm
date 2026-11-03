@@ -1,0 +1,16 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-test-0001","object":"chat.completion.chunk","created":1760000000,"model":"vendor/test-model","provider":"TestProvider","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"先想一下"},"finish_reason":null,"native_finish_reason":null,"logprobs":null}]}
+
+data: {"id":"gen-test-0001","object":"chat.completion.chunk","created":1760000000,"model":"vendor/test-model","provider":"TestProvider","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"，再回答。"},"finish_reason":null,"native_finish_reason":null,"logprobs":null}]}
+
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-test-0001","object":"chat.completion.chunk","created":1760000000,"model":"vendor/test-model","provider":"TestProvider","choices":[{"index":0,"delta":{"role":"assistant","content":"答案是 42。"},"finish_reason":null,"native_finish_reason":null,"logprobs":null}]}
+
+data: {"id":"gen-test-0001","object":"chat.completion.chunk","created":1760000000,"model":"vendor/test-model","provider":"TestProvider","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop","native_finish_reason":"stop","logprobs":null}]}
+
+data: {"id":"gen-test-0001","object":"chat.completion.chunk","created":1760000000,"model":"vendor/test-model","provider":"TestProvider","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":20,"total_tokens":32,"prompt_tokens_details":{"cached_tokens":0}}}
+
+data: [DONE]
+

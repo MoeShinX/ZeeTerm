@@ -1,0 +1,14 @@
+data: {"id":"test-ds-0001","object":"chat.completion.chunk","created":1760000000,"model":"deepseek-test","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"test-ds-0001","object":"chat.completion.chunk","created":1760000000,"model":"deepseek-test","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"用户问磁盘，"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"test-ds-0001","object":"chat.completion.chunk","created":1760000000,"model":"deepseek-test","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"先看 df。"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"test-ds-0001","object":"chat.completion.chunk","created":1760000000,"model":"deepseek-test","choices":[{"index":0,"delta":{"content":"根分区","reasoning_content":null},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"test-ds-0001","object":"chat.completion.chunk","created":1760000000,"model":"deepseek-test","choices":[{"index":0,"delta":{"content":"用了 40%。","reasoning_content":null},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"test-ds-0001","object":"chat.completion.chunk","created":1760000000,"model":"deepseek-test","choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":30,"total_tokens":130,"prompt_tokens_details":{"cached_tokens":64},"completion_tokens_details":{"reasoning_tokens":18},"prompt_cache_hit_tokens":64,"prompt_cache_miss_tokens":36}}
+
+data: [DONE]
+

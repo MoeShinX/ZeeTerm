@@ -1,0 +1,12 @@
+: connected
+
+data: {"id":"chatcmpl-test0004","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"第一段"},"finish_reason":null}]}
+
+
+: heartbeat
+
+data: {"id":"chatcmpl-test0004","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"第二段"},"finish_reason":null}]}
+
+data: not json at all, some gateways do this
+
+data: {"id":"chatcmpl-test0004","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":4096}}

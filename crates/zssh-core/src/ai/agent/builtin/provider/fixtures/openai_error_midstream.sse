@@ -1,0 +1,4 @@
+data: {"id":"chatcmpl-test0005","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"处理到一半"},"finish_reason":null}]}
+
+data: {"error":{"message":"The server had an error while processing your request","type":"server_error","code":null}}
+
