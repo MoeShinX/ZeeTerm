@@ -1141,8 +1141,8 @@ mod tests {
         let height = super::ROW_HEIGHT;
         assert!((30.0..=32.0).contains(&height), "行高 {height}");
         assert!(height >= Role::Tree.spec().size * Role::Tree.spec().leading);
-        assert!(super::FOOTER_BUTTON >= 28.0);
-        assert!(super::INDENT >= 16.0);
+        const { assert!(super::FOOTER_BUTTON >= 28.0) };
+        const { assert!(super::INDENT >= 16.0) };
     }
 
     #[test]

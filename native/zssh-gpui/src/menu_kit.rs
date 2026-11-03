@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn the_icon_box_is_sixteen_pixels_with_a_gap_to_the_text() {
         assert_eq!(ICON_SIZE, 16.0);
-        assert!(ICON_GAP >= 4.0);
+        const { assert!(ICON_GAP >= 4.0) };
     }
 
     /// 递归读 `src` 下所有 .rs（调试驱动 `dev_acts*` 除外）。
