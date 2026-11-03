@@ -26,6 +26,8 @@ pub enum SettingsSection {
     Sftp,
     Ai,
     Sync,
+    /// 锁屏（V2-U26）：启用 / 密码 / 自动锁定 / 忘记密码。
+    Lock,
     Shortcuts,
     About,
 }
@@ -39,20 +41,21 @@ impl SettingsSection {
         Self::Forwards,
     ];
 
-    /// 「偏好」组（同 0.2.14 的 `SECTIONS`，顺序不变）。
-    pub const PREFERENCES: [Self; 8] = [
+    /// 「偏好」组（同 0.2.14 的 `SECTIONS`，顺序不变；V2-U26 在「同步」后面加了「锁屏」）。
+    pub const PREFERENCES: [Self; 9] = [
         Self::Appearance,
         Self::Terminal,
         Self::Connection,
         Self::Sftp,
         Self::Ai,
         Self::Sync,
+        Self::Lock,
         Self::Shortcuts,
         Self::About,
     ];
 
     /// 导航栏里从上到下的全部分类。
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Credentials,
         Self::QuickCommands,
         Self::Proxies,
@@ -63,6 +66,7 @@ impl SettingsSection {
         Self::Sftp,
         Self::Ai,
         Self::Sync,
+        Self::Lock,
         Self::Shortcuts,
         Self::About,
     ];
@@ -85,6 +89,7 @@ impl SettingsSection {
             Self::Sftp => "sftp",
             Self::Ai => "ai",
             Self::Sync => "sync",
+            Self::Lock => "lock",
             Self::Shortcuts => "shortcuts",
             Self::About => "about",
         }
@@ -108,6 +113,7 @@ impl SettingsSection {
             Self::Sftp => "SFTP",
             Self::Ai => "AI",
             Self::Sync => "同步",
+            Self::Lock => "锁屏",
             Self::Shortcuts => "快捷键",
             Self::About => "关于",
         }
@@ -128,6 +134,7 @@ impl SettingsSection {
             Self::Sftp => Ico::FolderOpen,
             Self::Ai => Ico::Bot,
             Self::Sync => Ico::CloudUpload,
+            Self::Lock => Ico::Lock,
             Self::Shortcuts => Ico::Keyboard,
             Self::About => Ico::Info,
         }
@@ -205,6 +212,13 @@ impl SettingsSection {
                 "ai-agent-claude",
             ],
             Self::Sync => &["sync-connection", "sync-backups", "sync-offline-backup"],
+            Self::Lock => &[
+                "lock-enabled",
+                "lock-password",
+                "lock-idle",
+                "lock-on-tray",
+                "lock-forgot",
+            ],
             Self::Shortcuts => &["shortcuts-list"],
             Self::About => &[
                 "about-version",
@@ -225,6 +239,14 @@ impl SettingsSection {
             Self::Terminal => &["bracketed-paste"],
             // 主机树的虚线连接线开关：0.2.14 的树一直画线，没有开关。
             Self::Appearance => &["start-hidden", "host-info-panel", "host-tree-guides"],
+            // 整个「锁屏」分类都是 ZeeTerm 新增的（0.2.14 没有）。
+            Self::Lock => &[
+                "lock-enabled",
+                "lock-password",
+                "lock-idle",
+                "lock-on-tray",
+                "lock-forgot",
+            ],
             _ => &[],
         }
     }
@@ -300,6 +322,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
         keys: "Esc",
         what: "关闭设置与管理页，回到原来的页面",
     },
+    // 放在表尾：快捷键分组（`settings_page::SHORTCUT_GROUPS`）按下标引用这张表。
+    Shortcut {
+        keys: "Ctrl+Alt+L",
+        what: "锁定 ZeeTerm（要先在 设置 → 锁屏 里启用并设密码）",
+    },
 ];
 
 #[cfg(test)]
@@ -307,13 +334,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn eight_preferences_in_the_0_2_14_order_with_the_same_names() {
+    fn the_preferences_keep_the_0_2_14_order_and_names_with_lock_screen_added() {
         let names: Vec<_> = SettingsSection::PREFERENCES
             .iter()
             .map(|s| s.label())
             .collect();
         assert_eq!(
             names,
+            [
+                "外观",
+                "终端",
+                "连接",
+                "SFTP",
+                "AI",
+                "同步",
+                "锁屏",
+                "快捷键",
+                "关于"
+            ]
+        );
+        // 去掉 ZeeTerm 新增的「锁屏」，剩下的就是 0.2.14 的八类，顺序不变。
+        let original: Vec<_> = SettingsSection::PREFERENCES
+            .iter()
+            .filter(|s| **s != SettingsSection::Lock)
+            .map(|s| s.label())
+            .collect();
+        assert_eq!(
+            original,
             [
                 "外观",
                 "终端",
@@ -338,6 +385,7 @@ mod tests {
                 "sftp",
                 "ai",
                 "sync",
+                "lock",
                 "shortcuts",
                 "about"
             ]
@@ -353,7 +401,7 @@ mod tests {
             ids,
             ["credentials", "quick-commands", "proxies", "forwards"]
         );
-        assert_eq!(SettingsSection::ALL.len(), 12);
+        assert_eq!(SettingsSection::ALL.len(), 13);
         assert_eq!(
             SettingsSection::ALL[..4],
             SettingsSection::MANAGE[..],
@@ -471,6 +519,8 @@ mod tests {
                 "ai-agent-claude",
             ],
             SettingsSection::Sync => &["sync-connection", "sync-backups", "sync-offline-backup"],
+            // 0.2.14 没有锁屏。
+            SettingsSection::Lock => &[],
             SettingsSection::Shortcuts => &["shortcuts-list"],
             SettingsSection::About => &[
                 "about-version",

@@ -8,9 +8,9 @@
 
 // 不写 `use super::*`：父模块 glob 进来的 `gpui_kit::test` 会盖掉内置的 `#[test]` 属性宏。
 use super::{
-    DownloadContext, DownloadEvent, DownloadFailure, InstallState, ManifestSource,
-    SIGNING_UNCONFIGURED, advance_install, build_install_plan, check_with, download_with,
-    launch_if_unchanged, proxy_from_settings, update_client_builder,
+    CheckKind, Checked, DownloadContext, DownloadEvent, DownloadFailure, InstallState,
+    ManifestSource, SIGNING_UNCONFIGURED, advance_install, build_install_plan, check_with,
+    download_with, launch_if_unchanged, proxy_from_settings, update_client_builder,
 };
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -229,9 +229,14 @@ fn publish(
     (fixture, path)
 }
 
-fn check(fixture: &Fixture, current: &str, pubkey: &str) -> (String, Option<Package>) {
+fn check_full(fixture: &Fixture, current: &str, pubkey: &str) -> Checked {
     let sources = [ManifestSource::Url(fixture.url("/latest.json"))];
     block_on(check_with(current, &sources, &client(), true, Ok(pubkey)))
+}
+
+fn check(fixture: &Fixture, current: &str, pubkey: &str) -> (String, Option<Package>) {
+    let checked = check_full(fixture, current, pubkey);
+    (checked.status, checked.package)
 }
 
 type DownloadResult = Result<(PathBuf, u64, String), DownloadFailure>;
@@ -535,21 +540,23 @@ fn a_placeholder_key_refuses_before_any_request_and_before_any_download() {
     let sources = [ManifestSource::Url(fixture.url("/latest.json"))];
 
     // 占位公钥：检查更新直接说"更新签名未配置"，夹具一个请求都没收到。
-    let (status, package) = block_on(check_with(
+    let unconfigured = block_on(check_with(
         "1.3.0",
         &sources,
         &client(),
         true,
         Ok("PLACEHOLDER-run-the-keygen-script"),
     ));
-    assert_eq!(status, SIGNING_UNCONFIGURED);
-    assert!(status.contains("更新签名未配置"));
-    assert!(package.is_none());
+    assert_eq!(unconfigured.status, SIGNING_UNCONFIGURED);
+    assert!(unconfigured.status.contains("更新签名未配置"));
+    assert!(unconfigured.package.is_none());
+    assert_eq!(unconfigured.kind, CheckKind::Failed);
     // 公钥拿不到（配置坏了）同理：原样给出原因，不联网。
     let reason = "内置的更新公钥不可用，无法校验更新包：坏了".to_owned();
-    let (status, package) = block_on(check_with("1.3.0", &sources, &client(), true, Err(&reason)));
-    assert_eq!(status, reason);
-    assert!(package.is_none());
+    let broken = block_on(check_with("1.3.0", &sources, &client(), true, Err(&reason)));
+    assert_eq!(broken.status, reason);
+    assert!(broken.package.is_none());
+    assert_eq!(broken.kind, CheckKind::Failed);
     assert_eq!(fixture.hits(), 0, "没配公钥时不能向更新源发任何请求");
 
     // 即使有人绕过检查、直接拿着一个包来下载：下载这一层也拒绝，同样不发请求、不落盘。

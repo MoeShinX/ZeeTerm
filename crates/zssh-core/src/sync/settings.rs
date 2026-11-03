@@ -144,6 +144,11 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     ("x11_display_mode", SyncMode::LocalOnly),
     ("x11_display_custom", SyncMode::LocalOnly),
     ("x11_close_owned_on_exit", SyncMode::LocalOnly),
+    // 锁屏（V2-U26）：密码哈希、空闲自动锁定、关到托盘时锁定。密码只属于这台电脑，
+    // 绝不能随同步包 / 离线备份带到别处（也不能让另一台电脑把这台的锁关掉）。
+    ("app_lock_hash", SyncMode::LocalOnly),
+    ("app_lock_idle_minutes", SyncMode::LocalOnly),
+    ("app_lock_on_tray", SyncMode::LocalOnly),
 ];
 
 /// 0.1.4 及以前的界面主题 id（旧版本同步过来的值照样收）。
@@ -1269,6 +1274,10 @@ mod tests {
             "close_action",
             "tray_hint_shown",
             "file_window_close",
+            // V2-U26：锁屏的密码哈希和两个选项只在这台电脑上
+            "app_lock_hash",
+            "app_lock_idle_minutes",
+            "app_lock_on_tray",
         ] {
             assert_eq!(sync_mode(key), Some(SyncMode::LocalOnly), "{key}");
             assert!(!is_synced(key), "{key} 不能同步");

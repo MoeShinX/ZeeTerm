@@ -49,7 +49,16 @@ fn close_action_for(tray_ready: bool, choice: crate::app_prefs::CloseChoice) -> 
     }
 }
 
+/// 锁屏启用了没有（V2-U26）：主窗口每次重读设置时写，托盘线程的定时器读，据此显示 / 隐藏菜单里的「锁定」。
+static LOCK_AVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 主窗口告诉托盘：锁屏现在启用了没有（没启用时菜单里没有「锁定」）。
+pub fn set_lock_menu(enabled: bool) {
+    LOCK_AVAILABLE.store(enabled, std::sync::atomic::Ordering::Release);
+}
+
 const SHOW_ID: &str = "tray-show";
+const LOCK_ID: &str = "tray-lock";
 const CHECK_ID: &str = "tray-check-update";
 const UPDATE_ID: &str = "tray-update";
 const QUIT_ID: &str = "tray-quit";
@@ -58,6 +67,8 @@ const QUIT_ID: &str = "tray-quit";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayEntry {
     Show,
+    /// 立即锁定（只在启用了锁屏时才有这一项）。
+    Lock,
     /// 检查更新：和「设置 → 关于」里的「检查更新」同一个入口（`MainWindow::check_for_updates`）。
     CheckUpdate,
     /// 后台已经下好了更新：`version` 不带前缀 `v`。
@@ -72,6 +83,7 @@ impl TrayEntry {
     pub fn label(&self) -> Option<String> {
         match self {
             Self::Show => Some(format!("显示 {}", crate::product::NAME)),
+            Self::Lock => Some("锁定".to_owned()),
             Self::CheckUpdate => Some("检查更新".to_owned()),
             Self::RestartInstall { version } => Some(format!("重启安装 v{version}")),
             Self::Separator => None,
@@ -82,6 +94,7 @@ impl TrayEntry {
     fn id(&self) -> Option<&'static str> {
         match self {
             Self::Show => Some(SHOW_ID),
+            Self::Lock => Some(LOCK_ID),
             Self::CheckUpdate => Some(CHECK_ID),
             Self::RestartInstall { .. } => Some(UPDATE_ID),
             Self::Separator => None,
@@ -92,8 +105,17 @@ impl TrayEntry {
 
 /// 托盘菜单该有哪些项。「显示」下面是「检查更新」（和关于页同一个入口，打开更新窗口）；
 /// 只有"在线更新开着、并且有一个已验签、排队等安装的更新"才再多一项「重启安装 vX」。
-pub fn menu_entries(auto_update: bool, ready_version: Option<&str>) -> Vec<TrayEntry> {
-    let mut entries = vec![TrayEntry::Show, TrayEntry::CheckUpdate];
+///「锁定」跟在「显示」后面，只有启用了锁屏才有。
+pub fn menu_entries(
+    auto_update: bool,
+    ready_version: Option<&str>,
+    lock_enabled: bool,
+) -> Vec<TrayEntry> {
+    let mut entries = vec![TrayEntry::Show];
+    if lock_enabled {
+        entries.push(TrayEntry::Lock);
+    }
+    entries.push(TrayEntry::CheckUpdate);
     if let (true, Some(version)) = (auto_update, ready_version) {
         entries.push(TrayEntry::RestartInstall {
             version: version.trim_start_matches('v').to_owned(),
@@ -106,6 +128,8 @@ pub fn menu_entries(auto_update: bool, ready_version: Option<&str>) -> Vec<TrayE
 
 enum Command {
     Show,
+    /// 托盘「锁定」：立即锁定（没启用锁屏时主窗口什么都不做）。
+    Lock,
     CheckUpdate,
     /// 托盘「重启安装 vX」：把排队的更新计划补上"装完重启"，然后和「退出」走同一条退出路径。
     RestartInstall,
@@ -149,6 +173,12 @@ pub fn spawn(
                 Command::Show => {
                     let _ = window.update(cx, |_, window, _| set_visible(window, true));
                 }
+                Command::Lock => {
+                    let main = main.clone();
+                    let _ = window.update(cx, move |_, _window, cx| {
+                        main.update(cx, |this, cx| this.lock_now(cx));
+                    });
+                }
                 Command::CheckUpdate => {
                     // 和关于页同一个入口：弹出更新窗口。
                     let main = main.clone();
@@ -187,7 +217,11 @@ pub fn spawn(
         .name("zssh-tray".to_owned())
         .spawn(move || {
             let menu = Menu::new();
-            for entry in menu_entries(crate::product::AUTO_UPDATE_ENABLED, None) {
+            for entry in menu_entries(
+                crate::product::AUTO_UPDATE_ENABLED,
+                None,
+                LOCK_AVAILABLE.load(std::sync::atomic::Ordering::Acquire),
+            ) {
                 let appended = match (entry.id(), entry.label()) {
                     (Some(id), Some(label)) => {
                         menu.append(&MenuItem::with_id(id, label, true, None))
@@ -231,6 +265,9 @@ pub fn spawn(
                             SHOW_ID => {
                                 let _ = menu_tx.unbounded_send(Command::Show);
                             }
+                            LOCK_ID => {
+                                let _ = menu_tx.unbounded_send(Command::Lock);
+                            }
                             CHECK_ID => {
                                 let _ = menu_tx.unbounded_send(Command::CheckUpdate);
                             }
@@ -265,7 +302,17 @@ pub fn spawn(
 
             // 线程定时器：每秒看一眼有没有排队等安装的更新，有就在菜单里加一项「重启安装 vX」。
             // 菜单对象只能在创建它的这个线程里改，所以放在消息循环里做。
-            let mut restart_item = RestartItem::default();
+            let mut restart_item = RestartItem {
+                // 启动时菜单里已经按当时的状态放好了「锁定」（上面的 `menu_entries`）。
+                lock_on: LOCK_AVAILABLE.load(std::sync::atomic::Ordering::Acquire),
+                ..RestartItem::default()
+            };
+            restart_item.lock_item = menu.items().iter().find_map(|kind| match kind {
+                tray_icon::menu::MenuItemKind::MenuItem(item) if item.id().0 == LOCK_ID => {
+                    Some(item.clone())
+                }
+                _ => None,
+            });
             // SAFETY: 线程定时器没有窗口句柄，WM_TIMER 直接进本线程的消息队列。
             unsafe {
                 SetTimer(None, 0, RESTART_POLL_MS, None);
@@ -275,10 +322,12 @@ pub fn spawn(
                 let mut msg = MSG::default();
                 while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                     if msg.message == WM_TIMER && msg.hwnd.is_invalid() {
-                        sync_restart_item(
+                        let lock_now = LOCK_AVAILABLE.load(std::sync::atomic::Ordering::Acquire);
+                        sync_dynamic_items(
                             &menu,
                             &mut restart_item,
                             crate::update_demo::pending_install_version(),
+                            lock_now,
                         );
                         continue;
                     }
@@ -296,39 +345,55 @@ pub fn spawn(
 /// 查「有没有排队等安装的更新」的间隔（毫秒）。
 const RESTART_POLL_MS: u32 = 1000;
 
-/// 菜单里「重启安装」这一项当前的状态：是否在菜单里、对应哪个版本。
+/// 菜单里会随状态出现 / 消失的两项当前的样子：「重启安装」（对应哪个版本）和「锁定」（在不在）。
 #[derive(Default)]
 struct RestartItem {
     item: Option<MenuItem>,
     version: Option<String>,
+    lock_item: Option<MenuItem>,
+    lock_on: bool,
 }
 
 /// 让菜单里的「重启安装」和排队的更新一致：版本没变不动，变了就先删旧的再按 [`menu_entries`] 的顺序
-///（显示、检查更新、重启安装、分隔线、退出）插在第 3 位。
+///（显示、检查更新、重启安装、分隔线、退出）插在第 3 位。不管「锁定」项（保持它现在的样子）。
+#[cfg(test)]
 fn sync_restart_item(menu: &Menu, state: &mut RestartItem, ready: Option<String>) {
-    if state.version == ready {
+    let lock_on = state.lock_on;
+    sync_dynamic_items(menu, state, ready, lock_on);
+}
+
+/// 同 [`sync_restart_item`]，同时让「锁定」项和锁屏是否启用一致。两项都要按 [`menu_entries`] 的次序插，
+/// 所以任何一个变了就把两个动态项都删掉重插。
+fn sync_dynamic_items(menu: &Menu, state: &mut RestartItem, ready: Option<String>, lock_on: bool) {
+    if state.version == ready && state.lock_on == lock_on {
         return;
     }
     if let Some(old) = state.item.take() {
         let _ = menu.remove(&old);
     }
+    if let Some(old) = state.lock_item.take() {
+        let _ = menu.remove(&old);
+    }
     state.version = ready.clone();
-    let Some(version) = ready else {
-        return;
-    };
-    let entries = menu_entries(crate::product::AUTO_UPDATE_ENABLED, Some(&version));
-    let Some(index) = entries
-        .iter()
-        .position(|entry| matches!(entry, TrayEntry::RestartInstall { .. }))
-    else {
-        return;
-    };
-    let Some(label) = entries[index].label() else {
-        return;
-    };
-    let item = MenuItem::with_id(UPDATE_ID, label, true, None);
-    if menu.insert(&item, index).is_ok() {
-        state.item = Some(item);
+    state.lock_on = lock_on;
+    let entries = menu_entries(
+        crate::product::AUTO_UPDATE_ENABLED,
+        ready.as_deref(),
+        lock_on,
+    );
+    for (index, entry) in entries.iter().enumerate() {
+        let slot = match entry {
+            TrayEntry::RestartInstall { .. } => &mut state.item,
+            TrayEntry::Lock => &mut state.lock_item,
+            _ => continue,
+        };
+        let (Some(id), Some(label)) = (entry.id(), entry.label()) else {
+            continue;
+        };
+        let item = MenuItem::with_id(id, label, true, None);
+        if menu.insert(&item, index).is_ok() {
+            *slot = Some(item);
+        }
     }
 }
 
@@ -394,7 +459,7 @@ mod tests {
 
     #[test]
     fn the_official_menu_has_the_restart_item_only_when_an_update_is_queued() {
-        let idle = menu_entries(crate::product::AUTO_UPDATE_ENABLED, None);
+        let idle = menu_entries(crate::product::AUTO_UPDATE_ENABLED, None, false);
         assert_eq!(
             labels(&idle),
             vec![
@@ -404,7 +469,7 @@ mod tests {
                 Some("退出".to_owned())
             ]
         );
-        let queued = menu_entries(crate::product::AUTO_UPDATE_ENABLED, Some("9.9.9"));
+        let queued = menu_entries(crate::product::AUTO_UPDATE_ENABLED, Some("9.9.9"), false);
         assert_eq!(
             labels(&queued),
             vec![
@@ -419,7 +484,7 @@ mod tests {
 
     #[test]
     fn restart_install_appears_only_with_auto_update_and_a_ready_package() {
-        let ready = menu_entries(true, Some("v1.2.3"));
+        let ready = menu_entries(true, Some("v1.2.3"), false);
         assert_eq!(
             labels(&ready),
             vec![
@@ -430,8 +495,8 @@ mod tests {
                 Some("退出".to_owned())
             ]
         );
-        assert_eq!(menu_entries(true, None).len(), 4);
-        assert_eq!(menu_entries(false, Some("1.2.3")).len(), 4);
+        assert_eq!(menu_entries(true, None, false).len(), 4);
+        assert_eq!(menu_entries(false, Some("1.2.3"), false).len(), 4);
     }
 
     /// 菜单里现在每一项的文字（分隔线记为空串）。
@@ -449,7 +514,7 @@ mod tests {
     #[test]
     fn the_live_menu_gains_and_loses_the_restart_item_with_the_queued_update() {
         let menu = Menu::new();
-        for entry in menu_entries(crate::product::AUTO_UPDATE_ENABLED, None) {
+        for entry in menu_entries(crate::product::AUTO_UPDATE_ENABLED, None, false) {
             let appended = match (entry.id(), entry.label()) {
                 (Some(id), Some(label)) => menu.append(&MenuItem::with_id(id, label, true, None)),
                 _ => menu.append(&PredefinedMenuItem::separator()),
@@ -481,10 +546,91 @@ mod tests {
     }
 
     #[test]
+    fn the_lock_item_exists_only_when_the_lock_screen_is_enabled_and_sits_under_show() {
+        let off = menu_entries(crate::product::AUTO_UPDATE_ENABLED, None, false);
+        assert!(
+            !off.contains(&TrayEntry::Lock),
+            "没启用锁屏时菜单里没有「锁定」"
+        );
+        let on = menu_entries(crate::product::AUTO_UPDATE_ENABLED, None, true);
+        assert_eq!(on[0], TrayEntry::Show);
+        assert_eq!(on[1], TrayEntry::Lock, "「锁定」紧跟在「显示」后面");
+        assert_eq!(on[2], TrayEntry::CheckUpdate);
+        assert_eq!(on.last(), Some(&TrayEntry::Quit));
+        assert_eq!(TrayEntry::Lock.label().as_deref(), Some("锁定"));
+        // 加上排队的更新：三个都在，次序是 显示、锁定、检查更新、重启安装、分隔线、退出。
+        let all = menu_entries(true, Some("2.0.0"), true);
+        assert_eq!(
+            labels(&all),
+            vec![
+                Some("显示 ZeeTerm".to_owned()),
+                Some("锁定".to_owned()),
+                Some("检查更新".to_owned()),
+                Some("重启安装 v2.0.0".to_owned()),
+                None,
+                Some("退出".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn the_live_menu_gains_and_loses_the_lock_item_with_the_setting() {
+        let menu = Menu::new();
+        for entry in menu_entries(crate::product::AUTO_UPDATE_ENABLED, None, false) {
+            let appended = match (entry.id(), entry.label()) {
+                (Some(id), Some(label)) => menu.append(&MenuItem::with_id(id, label, true, None)),
+                _ => menu.append(&PredefinedMenuItem::separator()),
+            };
+            appended.expect("加菜单项");
+        }
+        let mut state = RestartItem::default();
+        let idle = menu_texts(&menu);
+        assert_eq!(idle, ["显示 ZeeTerm", "检查更新", "", "退出"]);
+
+        sync_dynamic_items(&menu, &mut state, None, true);
+        assert_eq!(
+            menu_texts(&menu),
+            ["显示 ZeeTerm", "锁定", "检查更新", "", "退出"]
+        );
+        // 同样的状态再同步：不重复加。
+        sync_dynamic_items(&menu, &mut state, None, true);
+        assert_eq!(menu_texts(&menu).len(), 5);
+        // 又来了排队的更新：两个动态项都在，次序仍按 `menu_entries`。
+        sync_dynamic_items(&menu, &mut state, Some("1.2.3".to_owned()), true);
+        assert_eq!(
+            menu_texts(&menu),
+            [
+                "显示 ZeeTerm",
+                "锁定",
+                "检查更新",
+                "重启安装 v1.2.3",
+                "",
+                "退出"
+            ]
+        );
+        // 关掉锁屏：「锁定」没了，「重启安装」留着。
+        sync_dynamic_items(&menu, &mut state, Some("1.2.3".to_owned()), false);
+        assert_eq!(
+            menu_texts(&menu),
+            ["显示 ZeeTerm", "检查更新", "重启安装 v1.2.3", "", "退出"]
+        );
+        sync_dynamic_items(&menu, &mut state, None, false);
+        assert_eq!(menu_texts(&menu), idle);
+    }
+
+    #[test]
+    fn the_main_window_tells_the_tray_whether_the_lock_is_on() {
+        set_lock_menu(true);
+        assert!(LOCK_AVAILABLE.load(std::sync::atomic::Ordering::Acquire));
+        set_lock_menu(false);
+        assert!(!LOCK_AVAILABLE.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
     fn check_update_sits_right_under_show_with_or_without_a_ready_package() {
         for ready in [None, Some("1.2.3")] {
             for auto in [false, true] {
-                let entries = menu_entries(auto, ready);
+                let entries = menu_entries(auto, ready, false);
                 assert_eq!(entries[0], TrayEntry::Show);
                 assert_eq!(
                     entries[1],
@@ -495,7 +641,7 @@ mod tests {
             }
         }
         // 每个有字的项都有自己的 id，互不相同（点了才分得清）。
-        let ids: Vec<_> = menu_entries(true, Some("1.2.3"))
+        let ids: Vec<_> = menu_entries(true, Some("1.2.3"), false)
             .iter()
             .filter_map(TrayEntry::id)
             .collect();

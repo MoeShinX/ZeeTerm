@@ -516,7 +516,7 @@ pub(super) fn run_dock(
             }
         }
         "overview" => {
-            if on_off(a)? != this.docks.overview_open {
+            if on_off(a)? != this.overview_open(cx) {
                 this.toggle_overview(cx);
             }
         }

@@ -13,7 +13,8 @@
 #   -KeyPath            更新私钥，默认 %USERPROFILE%\.zeeterm\updater.key（由 scripts/updater-keygen.ps1 生成）。
 #                       私钥有口令时脚本会提示输入。
 #   -OutRoot            产物根目录，默认仓库下的 dist\（已加入 .gitignore）。
-#   -NotesFile          更新说明（Markdown）。不给就取 CHANGELOG.md 里 "## [<版本>]" 一节。
+#   -NotesFile          更新说明（Markdown），优先级最高。不给就先找 docs/release-notes/<版本>.md（面向用户的简短说明，
+#                       会显示在用户的更新窗口里），再退回 CHANGELOG.md 里 "## [<版本>]" 一节。
 #   -Repo               GitHub 仓库，默认 MoeShinX/ZeeTerm；下载地址 = https://github.com/<Repo>/releases/download/v<版本>/<安装包>。
 #   -SkipGates          不跑 scripts/gates.ps1。
 #   -DryRun             演练：版本号只在改完后还原（git 看不到任何变化）；不检查分支 / 工作区；公钥与私钥对不上只警告；
@@ -237,10 +238,22 @@ try {
     # ---------- 7. latest.json ----------
     Step '生成 latest.json'
     $notesOut = Join-Path $outDir 'RELEASE_NOTES.md'
+    $releaseNotesFile = Join-Path $repoRoot "docs\release-notes\$Version.md"
+    # 更新说明的来源，优先级：-NotesFile > docs/release-notes/<版本>.md > CHANGELOG.md 的 "## [<版本>]" 一节。
     if ($NotesFile) {
         if (-not (Test-Path -LiteralPath $NotesFile -PathType Leaf)) { Stop-WithError "找不到更新说明文件：$NotesFile" }
         Copy-Item -LiteralPath $NotesFile -Destination $notesOut
+        Write-Host "更新说明：取自 -NotesFile $NotesFile"
+    } elseif (Test-Path -LiteralPath $releaseNotesFile -PathType Leaf) {
+        # 面向用户的更新说明（几条要点）优先于 CHANGELOG：CHANGELOG 是写给开发者的，里面有脚本名和内部实现。
+        $userNotes = (Read-Text $releaseNotesFile).Text -replace "`r`n", "`n"
+        if ($userNotes.Trim() -eq '') {
+            Stop-WithError "docs/release-notes/$Version.md 是空的。写上给用户看的更新说明，或删掉这个文件改用 CHANGELOG.md 里的一节。"
+        }
+        Write-Text $notesOut ($userNotes.Trim() + "`n") $false
+        Write-Host "更新说明：取自 docs/release-notes/$Version.md"
     } else {
+        Write-Host '更新说明：取自 CHANGELOG.md（没有 docs/release-notes/<版本>.md；那是面向用户的简短说明，建议写一份）。'
         $changelog = (Read-Text (Join-Path $repoRoot 'CHANGELOG.md')).Text -replace "`r`n", "`n"
         $section = [regex]::Match($changelog, '(?ms)^## \[' + [regex]::Escape($Version) + '\][^\n]*\n(.*?)(?=^## \[|\z)')
         if (-not $section.Success -and $DryRun) {

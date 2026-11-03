@@ -10537,6 +10537,7 @@ dependencies = [
  "tracing",
  "uuid",
  "windows 0.62.2",
+ "windows-future 0.3.2",
  "zeroize",
  "zip",
 ]
@@ -10555,6 +10556,7 @@ dependencies = [
  "gpui-kit",
  "gpui-pre",
  "image",
+ "markdown",
  "minisign",
  "rand 0.10.3",
  "raw-window-handle",

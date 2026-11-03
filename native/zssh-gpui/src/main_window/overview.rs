@@ -875,8 +875,18 @@ fn overview_body(
 }
 
 impl MainWindow {
+    /// 当前终端标签的概览面板开着没有（按标签记，见 `DockState::overview_open_for`）。
+    pub(crate) fn overview_open(&self, cx: &App) -> bool {
+        self.docks
+            .overview_open_for(self.workspace.read(cx).active_tab_id())
+    }
+
     pub(crate) fn toggle_overview(&mut self, cx: &mut Context<Self>) {
-        self.docks.overview_open = !self.docks.overview_open;
+        let Some(tab) = self.workspace.read(cx).active_tab_id() else {
+            return;
+        };
+        let open = self.docks.overview_open_for(Some(tab));
+        self.docks.set_overview_open_for(tab, !open);
         cx.notify();
     }
 
@@ -958,7 +968,7 @@ impl MainWindow {
         tokens: &Tokens,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !self.docks.overview_open {
+        if !self.overview_open(cx) {
             return None;
         }
         let host_id = self.status_host?;

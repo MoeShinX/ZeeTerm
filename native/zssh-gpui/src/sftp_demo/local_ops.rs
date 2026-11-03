@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use zssh_core::pathnorm::simplify_verbatim;
 use zssh_core::sftp::local::{
-    create_new_file, is_reparse_point, logical_drives, long_path, move_no_replace,
+    create_new_file, is_reparse_point, logical_drives, long_path, move_no_replace, replace_file,
 };
 
 use super::model::{Entry, EntryKind};
@@ -178,6 +178,40 @@ pub(super) fn rename(from: &str, to: &str) -> Result<(), String> {
     })
 }
 
+/// 「移动到…」用的本地移动（V2-U23）：`overwrite` 为假时目标存在就报 `Exists`，绝不替换（由系统在改名那
+/// 一刻判断）；为真时只用于“文件替换文件”（调用方保证目标不是文件夹）。跨磁盘不做复制，只说清楚。
+pub(super) fn move_item(from: &Path, to: &Path, overwrite: bool) -> super::move_to::StepResult {
+    use super::move_to::{CROSS_DEVICE_NOTE, StepResult};
+    if from.as_os_str().is_empty() || to.as_os_str().is_empty() {
+        return StepResult::Failed("路径不能为空".to_owned());
+    }
+    let (long_from, long_to) = (long_path(from), long_path(to));
+    let result = if overwrite {
+        replace_file(&long_from, &long_to)
+    } else {
+        move_no_replace(&long_from, &long_to)
+    };
+    match result {
+        Ok(()) => StepResult::Moved,
+        Err(err) if !overwrite && err.kind() == std::io::ErrorKind::AlreadyExists => {
+            StepResult::Exists {
+                target_is_dir: std::fs::symlink_metadata(&long_to).is_ok_and(|meta| meta.is_dir()),
+            }
+        }
+        Err(err) if is_cross_device(&err) => StepResult::Failed(CROSS_DEVICE_NOTE.to_owned()),
+        Err(err) => StepResult::Failed(err.to_string()),
+    }
+}
+
+/// 改名跨了磁盘（Windows `ERROR_NOT_SAME_DEVICE` = 17，POSIX `EXDEV` = 18）。
+fn is_cross_device(err: &std::io::Error) -> bool {
+    if cfg!(windows) {
+        err.raw_os_error() == Some(17)
+    } else {
+        err.raw_os_error() == Some(18)
+    }
+}
+
 /// 删除本地条目（可以一次多个；目录递归；链接只删链接）。返回每个的成败。
 pub(super) fn delete(paths: &[String]) -> Vec<(String, Option<String>)> {
     paths
@@ -203,7 +237,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::super::model::EntryKind;
-    use super::{create_file, delete, list_dir, mkdir, rename};
+    use super::{create_file, delete, list_dir, mkdir, move_item, rename};
 
     /// 测试用的临时目录：Drop 时整个删掉，断言失败也不留垃圾。
     struct Scratch(PathBuf);
@@ -307,6 +341,118 @@ mod tests {
         assert!(!Path::new(&a).exists());
         assert_eq!(std::fs::read(&c).expect("c"), b"A");
         assert_eq!(rename("", &c).err().as_deref(), Some("路径不能为空"));
+    }
+
+    #[test]
+    fn move_item_moves_files_and_whole_folders_with_awkward_names() {
+        use super::super::move_to::StepResult;
+        let dir = Scratch::new("move");
+        let dest = dir.child("目标 文件夹");
+        std::fs::create_dir(&dest).expect("建目标");
+        // 空格、中文、引号、美元符、分号：都按原样当文件名。
+        let odd = dir.child("报告 最终 'v2' $x;.txt");
+        std::fs::write(&odd, b"body").expect("写文件");
+        let to = Path::new(&dest).join("报告 最终 'v2' $x;.txt");
+        assert_eq!(move_item(Path::new(&odd), &to, false), StepResult::Moved);
+        assert!(!Path::new(&odd).exists());
+        assert_eq!(std::fs::read(&to).expect("读回来"), b"body");
+
+        let tree = dir.child("tree");
+        std::fs::create_dir_all(Path::new(&tree).join("inner/deeper")).expect("建树");
+        std::fs::write(Path::new(&tree).join("inner/deeper/x.txt"), b"x").expect("树里的文件");
+        let tree_to = Path::new(&dest).join("tree");
+        assert_eq!(
+            move_item(Path::new(&tree), &tree_to, false),
+            StepResult::Moved
+        );
+        assert!(!Path::new(&tree).exists());
+        assert_eq!(
+            std::fs::read(tree_to.join("inner/deeper/x.txt")).expect("整棵树都在"),
+            b"x"
+        );
+    }
+
+    #[test]
+    fn move_item_reports_a_clash_with_the_kind_and_never_replaces_without_consent() {
+        use super::super::move_to::StepResult;
+        let dir = Scratch::new("move-clash");
+        let dest = dir.child("dest");
+        std::fs::create_dir(&dest).expect("建目标");
+        std::fs::write(Path::new(&dest).join("a.txt"), b"old").expect("目标里的同名文件");
+        std::fs::create_dir(Path::new(&dest).join("folder")).expect("目标里的同名文件夹");
+        let a = dir.child("a.txt");
+        std::fs::write(&a, b"new").expect("源文件");
+        let folder = dir.child("folder");
+        std::fs::create_dir(&folder).expect("源文件夹");
+
+        assert_eq!(
+            move_item(Path::new(&a), &Path::new(&dest).join("a.txt"), false),
+            StepResult::Exists {
+                target_is_dir: false
+            }
+        );
+        assert_eq!(
+            move_item(Path::new(&folder), &Path::new(&dest).join("folder"), false),
+            StepResult::Exists {
+                target_is_dir: true
+            }
+        );
+        // 两个源都没被动过，目标里的旧内容也在。
+        assert_eq!(std::fs::read(&a).expect("源还在"), b"new");
+        assert!(Path::new(&folder).is_dir());
+        assert_eq!(
+            std::fs::read(Path::new(&dest).join("a.txt")).expect("旧内容还在"),
+            b"old"
+        );
+
+        // 同意替换之后：文件替换文件。
+        assert_eq!(
+            move_item(Path::new(&a), &Path::new(&dest).join("a.txt"), true),
+            StepResult::Moved
+        );
+        assert!(!Path::new(&a).exists());
+        assert_eq!(
+            std::fs::read(Path::new(&dest).join("a.txt")).expect("新内容"),
+            b"new"
+        );
+    }
+
+    #[test]
+    fn move_item_failures_say_why_and_leave_things_alone() {
+        use super::super::move_to::StepResult;
+        let dir = Scratch::new("move-fail");
+        let missing = dir.child("nope.txt");
+        let to = dir.child("x.txt");
+        let StepResult::Failed(reason) = move_item(Path::new(&missing), Path::new(&to), false)
+        else {
+            panic!("源不存在应该失败");
+        };
+        assert!(!reason.is_empty());
+        assert!(!Path::new(&to).exists());
+        // 目标文件夹不存在也是失败，不会替用户建。
+        let src = dir.child("s.txt");
+        std::fs::write(&src, b"s").expect("写源");
+        let nowhere = Path::new(&dir.child("no-such-dir")).join("s.txt");
+        assert!(matches!(
+            move_item(Path::new(&src), &nowhere, false),
+            StepResult::Failed(_)
+        ));
+        assert!(Path::new(&src).exists());
+        assert_eq!(
+            move_item(Path::new(""), Path::new(&to), false),
+            StepResult::Failed("路径不能为空".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_cross_device_error_is_recognised_per_platform() {
+        let code = if cfg!(windows) { 17 } else { 18 };
+        assert!(super::is_cross_device(&std::io::Error::from_raw_os_error(
+            code
+        )));
+        assert!(!super::is_cross_device(&std::io::Error::from_raw_os_error(
+            2
+        )));
     }
 
     /// V2-U1 第 9 条：本地的链接（符号链接、目录联接）列表里仍是跟随之后的类型，同时带上目标路径，

@@ -1868,7 +1868,7 @@ fn link_click_notice(raw: &str) -> (Notice, Option<String>) {
 }
 
 /// 只有左键/中键（以及键盘触发）才打开链接；右键和长按不打开，和 TextView 默认行为一致。
-fn link_click_opens(event: &ClickEvent) -> bool {
+pub(crate) fn link_click_opens(event: &ClickEvent) -> bool {
     match event {
         ClickEvent::Mouse(click) => {
             matches!(click.up.button, MouseButton::Left | MouseButton::Middle)
