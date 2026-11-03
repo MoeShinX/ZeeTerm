@@ -569,17 +569,10 @@ mod tests {
         assert!(trusted_comment("1.2.3", "a\nb.exe", 0).is_err());
     }
 
-    /// 在同时带着 Tauri 版的仓库里，两份更新配置必须一致；独立导出的原生版仓库里没有
-    /// `src-tauri/tauri.conf.json`，此时跳过（不是失败）。
+    /// 发行版只许 https：配置里混进 http 更新源就是事故。
     #[test]
-    fn embedded_config_matches_tauri_conf_json_when_present() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("src-tauri")
-            .join("tauri.conf.json");
+    fn embedded_config_only_has_https_endpoints() {
         let config = embedded_config().expect("内嵌的更新配置应能解析");
-        // 发行版只许 https：配置里混进 http 更新源就是事故（不依赖 Tauri 版文件，始终检查）。
         assert!(
             config
                 .endpoints
@@ -587,33 +580,6 @@ mod tests {
                 .all(|url| url.starts_with("https://")),
             "{:?}",
             config.endpoints
-        );
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                println!(
-                    "跳过与 tauri.conf.json 的一致性比对：没有 src-tauri/（独立导出的原生版仓库）"
-                );
-                return;
-            }
-            Err(err) => panic!("读 {} 失败：{err}", path.display()),
-        };
-        let root: serde_json::Value = serde_json::from_str(&text).expect("读取 tauri.conf.json");
-        let updater = &root["plugins"]["updater"];
-        assert_eq!(Some(config.pubkey.as_str()), updater["pubkey"].as_str());
-        let endpoints: Vec<&str> = updater["endpoints"]
-            .as_array()
-            .expect("配置里应有更新源")
-            .iter()
-            .filter_map(|value| value.as_str())
-            .collect();
-        assert_eq!(
-            config
-                .endpoints
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            endpoints
         );
     }
 

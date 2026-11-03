@@ -3,7 +3,7 @@ members = ["zssh-gpui", "zssh-protocols", "zssh-regex", "zssh-session", "zssh-te
 resolver = "2"
 
 [workspace.package]
-# 与根 workspace 的版本、src-tauri/tauri.conf.json 保持一致（有测试比对）：
+# 与根 workspace 的版本保持一致（有测试比对）：
 # 更新器用它判断「公告版本是否更新」，写成 0.0.0 会让任何旧包都显得可更新。
 version = "0.3.1"
 edition = "2024"

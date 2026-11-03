@@ -2362,8 +2362,8 @@ mod tests {
 
     // ---- 版本、公钥、更新源 ----
 
-    /// 读仓库根的文件（相对路径）。独立导出的原生版仓库里没有 `src-tauri/`，此时返回 `None`，
-    /// 对应的比对跳过；读失败（不是"不存在"）照样 panic，不当成"没有"。
+    /// 读仓库根的文件（相对路径）。文件不存在时返回 `None`，对应的比对跳过；
+    /// 读失败（不是"不存在"）照样 panic，不当成"没有"。
     fn repo_root_file(relative: &str) -> Option<String> {
         let path: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "..", relative]
             .iter()
@@ -2394,20 +2394,10 @@ mod tests {
     #[test]
     fn compiled_version_matches_the_stable_release_line() {
         assert_ne!(env!("CARGO_PKG_VERSION"), "0.0.0");
-        // 版本号以 native 工作区为准；根 Cargo.toml、Tauri 版配置存在时才比对（文件不存在就跳过）。
+        // 版本号以 native 工作区为准；根 Cargo.toml 存在时才比对（文件不存在就跳过）。
         match repo_root_file("Cargo.toml") {
             Some(root) => assert_eq!(env!("CARGO_PKG_VERSION"), workspace_version(&root)),
             None => println!("跳过与根 Cargo.toml 的版本比对：文件不存在"),
-        }
-        match repo_root_file("src-tauri/tauri.conf.json") {
-            Some(text) => {
-                let conf: serde_json::Value =
-                    serde_json::from_str(&text).expect("读取 tauri.conf.json");
-                assert_eq!(Some(env!("CARGO_PKG_VERSION")), conf["version"].as_str());
-            }
-            None => println!(
-                "跳过与 tauri.conf.json 的版本比对：没有 src-tauri/（独立导出的原生版仓库）"
-            ),
         }
     }
 

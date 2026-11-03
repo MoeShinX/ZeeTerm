@@ -62,9 +62,6 @@ reqwest = { version = "0.12", default-features = false, features = [
 # 一键下载 opencode 后解压 zip（只要 deflate，不拉 lzma/zstd 一堆多余依赖）。
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
-# tray-icon：主窗口缩到托盘（UI-4）。图标直接用打包进程序的应用图标。
-tauri = { version = "2.12", features = ["tray-icon"] }
-tauri-build = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 调 Windows 原生接口用（M1-02 压测量内存，M1-03 用 DPAPI），特性按用到的加。
