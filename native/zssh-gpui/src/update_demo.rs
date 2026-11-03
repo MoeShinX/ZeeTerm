@@ -388,10 +388,10 @@ impl Render for UpdateDemo {
             .size_full()
             .p_3()
             .gap_2()
-            // 窗口跟着应用的皮肤走：底色和文字色都取皮肤的色板（不写文字色时深色皮肤下是黑字）。
-            .bg(tokens.background)
-            .text_color(tokens.text)
+            .track_focus(&self.focus)
             .bg(cx.theme().background)
+            // 文字色取皮肤的色板（不写的话深色皮肤下是黑字）。
+            .text_color(tokens.text)
             .child(
                 h_flex()
                     .gap_2()
