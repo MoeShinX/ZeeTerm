@@ -661,7 +661,7 @@ impl MainWindow {
         let broadcast_button = {
             let entity = entity.clone();
             let disabled = pane_count < 2 && !broadcast;
-            let warn = tokens.dot_connecting;
+            let warn = tokens.caution;
             div()
                 .id("quick-broadcast")
                 .occlude()
@@ -867,7 +867,7 @@ impl MainWindow {
         let hover = tokens.hover;
         let text = tokens.text;
         let muted = tokens.text_muted;
-        let warn = tokens.dot_connecting;
+        let warn = tokens.caution;
         let toggle_disabled = pane_count < 2 && !effective_all;
 
         let handle = {

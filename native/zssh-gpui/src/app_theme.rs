@@ -482,6 +482,8 @@ const DOT_CONNECTED: u32 = 0x2FA16B;
 const DOT_CONNECTING: u32 = 0xFBBF24;
 const DOT_DISCONNECTED: u32 = 0xF43F5E;
 const DOT_IDLE: u32 = 0x475569;
+/// 浅色底上的警示琥珀色。
+const CAUTION_ON_LIGHT: u32 = 0xB45309;
 
 pub fn skin(id: &str) -> Option<&'static Skin> {
     SKINS.iter().find(|skin| skin.id == id)
@@ -657,6 +659,8 @@ pub struct Tokens {
     pub selection: Hsla,
     pub dot_connected: Hsla,
     pub dot_connecting: Hsla,
+    /// 警示文字色（「全部放行」「广播中」）：深色底上用琥珀黄，浅色底上用深一点的琥珀色保证读得清。
+    pub caution: Hsla,
     pub dot_disconnected: Hsla,
     pub dot_idle: Hsla,
 }
@@ -701,6 +705,11 @@ impl Tokens {
             selection: rgb(skin.terminal.selection),
             dot_connected: rgb(DOT_CONNECTED),
             dot_connecting: rgb(DOT_CONNECTING),
+            caution: rgb(if dark {
+                DOT_CONNECTING
+            } else {
+                CAUTION_ON_LIGHT
+            }),
             dot_disconnected: rgb(DOT_DISCONNECTED),
             dot_idle: rgb(DOT_IDLE),
         }
@@ -809,6 +818,10 @@ fn apply(dark: bool, cx: &mut App) {
     let accent_active = rgb(mix(p.text, p.accent, hover_amount * 2.0));
     let danger_hover = rgb(mix(p.text, p.danger, hover_amount));
     let danger_active = rgb(mix(p.text, p.danger, hover_amount * 2.0));
+    // 状态色（成功 / 提示 / 警告）的悬停、按下：和上面按钮同一个公式，免得落到组件库自带的蓝绿色。
+    let tint = |base: u32, k: f32| rgb(mix(p.text, base, hover_amount * k));
+    // 开关关着时的轨道：边框色和说明色之间，浅深皮肤上都看得出来。
+    let switch_off = rgb(mix(p.text_muted, p.border, 0.45));
     Theme::update(cx, |theme| {
         // 界面字体：显式的字体栈代替 `.SystemUIFont`（见 `fonts::resolve_ui_font`）。中文后备在各窗口的
         // 顶层元素上设（`typography::UiFontStyled`），主题只有主字体一个槽。
@@ -843,6 +856,39 @@ fn apply(dark: bool, cx: &mut App) {
         c.danger_active = danger_active;
         c.success = t.dot_connected;
         c.warning = t.dot_connecting;
+        // 下面这些以前没写，会露出组件库默认的蓝 / 绿 / 灰：滑块、开关、进度条、链接、拖放提示、骨架屏、状态色变体。
+        c.success_hover = tint(DOT_CONNECTED, 1.0);
+        c.success_active = tint(DOT_CONNECTED, 2.0);
+        c.success_foreground = rgb(0xFFFFFF);
+        c.info = t.accent;
+        c.info_hover = accent_hover;
+        c.info_active = accent_active;
+        c.info_foreground = t.on_accent;
+        c.button_success = t.dot_connected;
+        c.button_success_hover = tint(DOT_CONNECTED, 1.0);
+        c.button_success_active = tint(DOT_CONNECTED, 2.0);
+        c.button_success_foreground = rgb(0xFFFFFF);
+        c.button_warning = t.dot_connecting;
+        c.button_warning_hover = tint(DOT_CONNECTING, 1.0);
+        c.button_warning_active = tint(DOT_CONNECTING, 2.0);
+        c.button_warning_foreground = rgb(0x1F2937);
+        c.button_info = t.accent;
+        c.button_info_hover = accent_hover;
+        c.button_info_active = accent_active;
+        c.button_info_foreground = t.on_accent;
+        c.switch = switch_off;
+        c.slider_bar = t.accent;
+        c.slider_thumb = t.on_accent;
+        c.progress_bar = t.accent;
+        c.link = t.accent;
+        c.link_hover = accent_hover;
+        c.link_active = accent_active;
+        c.drop_target = t.accent_soft;
+        c.drag_border = t.accent;
+        c.skeleton = t.subtle;
+        c.accordion = t.background;
+        c.description_list_label = t.subtle;
+        c.description_list_label_foreground = t.text_muted;
         c.button = t.subtle;
         c.button_hover = subtle_hover;
         c.button_active = subtle_active;

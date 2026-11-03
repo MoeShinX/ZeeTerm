@@ -335,4 +335,50 @@ mod tests {
             }
         }
     }
+
+    /// 一个文件（测试模块之前的部分）里写死颜色字面量的次数。
+    fn hardcoded_colours(text: &str) -> usize {
+        let body = text.split("#[cfg(test)]").next().unwrap_or(text);
+        let mut count = 0;
+        for needle in ["rgb(0x", "rgba(0x", "hsla(", "tint(0x"] {
+            for (at, _) in body.match_indices(needle) {
+                // `color_to_hsla(` 这类函数名不算：前一个字符是字母 / 数字 / 下划线就跳过。
+                let before = body[..at].chars().next_back();
+                if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                    continue;
+                }
+                count += 1;
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn colours_come_from_the_skin_tokens_except_a_short_reviewed_list() {
+        // 皮肤色板只在 app_theme.rs；其余文件写死颜色要记在这里，新增的会让测试失败。
+        // 都是不随皮肤变的语义色：遮罩黑、状态徽标上的深色字、传输 / 同步里的状态标记、快捷命令广播的琥珀底。
+        let allowed: &[(&str, usize)] = &[
+            ("main_window/titlebar.rs", 1),
+            ("main_window/host_dialog.rs", 1),
+            ("main_window/modal.rs", 1),
+            ("main_window/bars.rs", 2),
+            ("sftp_demo/view.rs", 4),
+            ("sftp_demo/view_dialogs.rs", 1),
+            ("sync_demo/view.rs", 4),
+        ];
+        for (name, text) in source_files() {
+            if name.ends_with("app_theme.rs") || name.contains("/dev_") {
+                continue;
+            }
+            let found = hardcoded_colours(&text);
+            let ok = allowed
+                .iter()
+                .find(|(suffix, _)| name.ends_with(suffix))
+                .map_or(0, |(_, n)| *n);
+            assert!(
+                found <= ok,
+                "{name} 里有 {found} 处写死的颜色（允许 {ok}）：请改用 Tokens，确实需要就记进名单"
+            );
+        }
+    }
 }

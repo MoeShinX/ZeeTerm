@@ -1271,11 +1271,7 @@ impl AgentChatDemo {
             let current = self.current_mode();
             let tone = composer::mode_tone(current);
             // 「全部放行」用警示色（浅色底上用深一点的琥珀色保证读得清），其余是普通文字色。
-            let caution = if tokens.dark {
-                tokens.dot_connecting
-            } else {
-                ::gpui::rgb(0xB45309).into()
-            };
+            let caution = tokens.caution;
             let icon = match current {
                 ExecMode::Manual => Ico::ShieldCheck,
                 ExecMode::ReadOnly => Ico::Eye,
@@ -1461,11 +1457,7 @@ impl AgentChatDemo {
                 .child(SharedString::from(label))
         };
         // 警示色：浅色底上用深一点的琥珀色保证读得清（和「全部放行」同一个）。
-        let warn = if tokens.dark {
-            tokens.dot_connecting
-        } else {
-            ::gpui::rgb(0xB45309).into()
-        };
+        let warn = tokens.caution;
         let banner_row = banner.map(|banner| {
             let new_convo = {
                 let entity = entity.clone();
