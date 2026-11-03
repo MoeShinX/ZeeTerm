@@ -296,7 +296,7 @@ impl MainWindow {
             let entity = entity.clone();
             icon_button(
                 "settings-button",
-                crate::icons::gear_icon(),
+                crate::icons::gear_icon().text_color(super::welcome::brand_icon_color(cx)),
                 "设置与管理 (Ctrl+,)",
                 view == MainView::Settings,
                 true,
