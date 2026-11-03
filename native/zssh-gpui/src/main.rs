@@ -145,6 +145,9 @@ fn main() {
         // 退出回调里。订阅一被丢弃就会注销，所以这里 forget 让它活到进程结束；
         // 进程退出时本来也不需要再回收这点内存。
         std::mem::forget(cx.on_app_quit(|_| async {
+            // 会话日志的写线程各自在收尾；这里有限等一下（最多 2 秒）让排着的写完，超时 / 写失败
+            // 记进设置，下次打开设置里的会话日志时看得到。
+            app_prefs::finish_session_logs_at_exit();
             update_demo::run_pending_install();
             // 设置要求时，一并关掉本次运行拉起的 X 服务器（用户自己开的不动）。
             x11_glue::shutdown_owned();
