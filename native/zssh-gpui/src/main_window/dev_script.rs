@@ -69,6 +69,15 @@ pub enum Step {
         ctrl: bool,
         shift: bool,
     },
+    /// `click_text:<文字>[|次数[|l|m|r[|ctrl+shift]]]`：点聚焦窗格里第一次出现这段文字的中间（文字还没出现就等）。
+    /// 走和 `click` 同一条鼠标分发路径，所以右键它就是真实的右键。
+    ClickText {
+        text: String,
+        count: usize,
+        button: char,
+        ctrl: bool,
+        shift: bool,
+    },
     /// 资源管理器拖文件进窗口：走 gpui 的 `FileDrop`（进入 → 移动 → 松手）。多个路径用 `|` 隔开。
     FileDrop {
         x: f32,
@@ -235,6 +244,50 @@ pub fn parse_script(raw: &str) -> Result<Vec<Step>, String> {
                     shift,
                 }
             }
+            "click_text" => {
+                let raw = unescape(need("文字")?);
+                let mut parts = raw.split('|');
+                let text = parts.next().unwrap_or("").to_owned();
+                if text.is_empty() {
+                    return Err("步骤 click_text 需要文字".to_owned());
+                }
+                let count = match parts.next() {
+                    Some(raw) => raw
+                        .trim()
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|n| (1..=3).contains(n))
+                        .ok_or_else(|| "步骤 click_text 的次数只能是 1 到 3".to_owned())?,
+                    None => 1,
+                };
+                let button = match parts.next().map(str::trim) {
+                    None | Some("l") => 'l',
+                    Some("m") => 'm',
+                    Some("r") => 'r',
+                    Some(_) => return Err("步骤 click_text 的按键只能是 l / m / r".to_owned()),
+                };
+                let (mut ctrl, mut shift) = (false, false);
+                if let Some(raw) = parts.next() {
+                    for part in raw.split('+') {
+                        match part.trim() {
+                            "ctrl" => ctrl = true,
+                            "shift" => shift = true,
+                            _ => {
+                                return Err(
+                                    "步骤 click_text 的修饰键只能是 ctrl / shift".to_owned()
+                                );
+                            }
+                        }
+                    }
+                }
+                Step::ClickText {
+                    text,
+                    count,
+                    button,
+                    ctrl,
+                    shift,
+                }
+            }
             "filedrop" | "filedrop_cancel" => {
                 let raw = need("坐标和路径")?;
                 let mut parts = raw.splitn(3, ',');
@@ -345,7 +398,7 @@ pub fn parse_script(raw: &str) -> Result<Vec<Step>, String> {
     Ok(steps)
 }
 
-/// `\r`、`\n`、`\t`、`\\` 转义；别的反斜杠原样保留。
+/// `\r`、`\n`、`\t`、`\e`（ESC）、`\s`（空格）、`\\` 转义；别的反斜杠原样保留。
 fn unescape(raw: &str) -> String {
     let mut out = String::new();
     let mut chars = raw.chars();
@@ -358,6 +411,8 @@ fn unescape(raw: &str) -> String {
             Some('r') => out.push('\r'),
             Some('n') => out.push('\n'),
             Some('t') => out.push('\t'),
+            // ESC：往终端打转义序列（比如 `\e[?1002h` 打开鼠标上报）用。
+            Some('e') => out.push('\x1b'),
             // 步骤两头的空格会被去掉：结尾要留空格时写成 `\s`。
             Some('s') => out.push(' '),
             Some('\\') => out.push('\\'),
@@ -494,6 +549,22 @@ pub fn spawn_from_env(view: Entity<MainWindow>, handle: AnyWindowHandle, cx: &mu
                     } => {
                         click(window, cx, *x, *y, *count, *button, *ctrl, *shift);
                         Outcome::Done
+                    }
+                    Step::ClickText {
+                        text,
+                        count,
+                        button,
+                        ctrl,
+                        shift,
+                    } => {
+                        let center = view.read(cx).workspace.read(cx).dev_text_center(text);
+                        match center {
+                            Some((x, y)) => {
+                                click(window, cx, x, y, *count, *button, *ctrl, *shift);
+                                Outcome::Done
+                            }
+                            None => Outcome::Pending,
+                        }
                     }
                     Step::FileDrop {
                         x,
@@ -714,6 +785,7 @@ fn run_step(
         // 按键、点击、鼠标分步在外层处理（见 `spawn_from_env`），不会走到这里。
         Step::Key(_)
         | Step::Click { .. }
+        | Step::ClickText { .. }
         | Step::Mouse { .. }
         | Step::FileDrop { .. }
         | Step::Files(_)
@@ -1086,6 +1158,40 @@ mod tests {
     }
 
     #[test]
+    fn click_text_takes_text_count_button_and_modifiers() {
+        assert_eq!(
+            parse_script("click_text:https://example.com/docs|1|r|shift").expect("合法脚本"),
+            vec![Step::ClickText {
+                text: "https://example.com/docs".to_owned(),
+                count: 1,
+                button: 'r',
+                ctrl: false,
+                shift: true,
+            }]
+        );
+        // 只写文字时是单击左键。
+        assert_eq!(
+            parse_script("click_text:hello").expect("合法脚本"),
+            vec![Step::ClickText {
+                text: "hello".to_owned(),
+                count: 1,
+                button: 'l',
+                ctrl: false,
+                shift: false,
+            }]
+        );
+        for bad in [
+            "click_text",
+            "click_text:",
+            "click_text:a|4",
+            "click_text:a|1|x",
+            "click_text:a|1|r|alt",
+        ] {
+            assert!(parse_script(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn bad_steps_reject_the_whole_script() {
         for bad in [
             "open",
@@ -1106,5 +1212,6 @@ mod tests {
     fn escapes_only_cover_the_known_ones() {
         assert_eq!(unescape(r"a\rb\nc\\d\xe"), "a\rb\nc\\d\\xe");
         assert_eq!(unescape("tail\\"), "tail\\");
+        assert_eq!(unescape(r"\e[?1002h"), "\x1b[?1002h");
     }
 }

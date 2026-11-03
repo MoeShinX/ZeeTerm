@@ -31,6 +31,22 @@ use crate::app_theme::Tokens;
 use crate::icons::Ico;
 use crate::typography::{Role, Typo as _};
 
+/// 顶部信息行的高度：和标签条、列头同高（32），不比它们高。
+const HEADER_HEIGHT: f32 = 32.0;
+
+/// 工具栏里过滤框的宽度：栏宽够就 120，窗口收窄时先让过滤框让位，免得它把路径栏挤没、
+/// 还伸出栏外（独立文件窗口最窄 640，两栏各约 316）。停靠面板里一直是窄版。宽度还没量到（0）按宽版。
+pub(super) fn filter_width(dock: bool, pane_width: f32) -> f32 {
+    if dock {
+        return 84.0;
+    }
+    match pane_width {
+        w if w <= 0.0 || w >= 520.0 => 120.0,
+        w if w >= 400.0 => 96.0,
+        _ => 72.0,
+    }
+}
+
 /// 列表一行的高度（0.2.14 是 26，V2-U14 起 14px 文字配 34px 行，不挤）。
 const ROW_HEIGHT: f32 = 34.0;
 
@@ -128,21 +144,45 @@ impl Render for SftpDemo {
         let entity = cx.entity();
         let dock = self.dock;
 
-        let phase = match self.phase {
-            Phase::Connecting => "连接中…",
-            Phase::Ready => "已连接",
-            Phase::Failed => "连接失败",
-        };
+        // 顶部信息行：主机显示名 · 状态小点 + 状态。不再写"SFTP"：窗口 / 标签本身已经说明这是文件视图，
+        // 大号字只会和主窗口的排版对不上（V2-U24）。字号字重一律走 `Role`。
         let header = h_flex()
-            .h(px(36.0))
+            .h(px(HEADER_HEIGHT))
+            .flex_none()
             .px_3()
             .gap_2()
             .items_center()
             .border_b_1()
             .border_color(tokens.border)
-            .child(div().text_lg().child("SFTP"))
-            .child(div().text_sm().child(self.host_label.clone()))
-            .child(div().text_xs().text_color(tokens.text_muted).child(phase));
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .typo(Role::ItemName, &tokens)
+                    .child(self.host_label.clone()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .typo(Role::Caption, &tokens)
+                    .text_color(tokens.text_faint)
+                    .child("·"),
+            )
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap_1p5()
+                    .items_center()
+                    .typo(Role::Caption, &tokens)
+                    .child(
+                        div()
+                            .size(px(8.0))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(super::header::phase_color(self.phase, &tokens)),
+                    )
+                    .child(super::header::phase_label(self.phase)),
+            );
 
         let remote_pane = self.render_pane(Side::Remote, &tokens, cx);
         let local_pane = self.render_pane(Side::Local, &tokens, cx);
@@ -188,7 +228,7 @@ impl Render for SftpDemo {
                 .items_center()
                 .border_t_1()
                 .border_color(tokens.border)
-                .child(div().flex_1().text_sm().child(format!(
+                .child(div().flex_1().typo(Role::Body, &tokens).child(format!(
                     "还有 {} 项传输 / 删除没完成，关闭窗口会取消它们",
                     self.unfinished_work()
                 )))
@@ -248,7 +288,7 @@ impl Render for SftpDemo {
             .relative()
             .track_focus(&self.focus)
             .bg(tokens.background)
-            .text_color(tokens.text)
+            .typo(Role::Body, &tokens)
             .when(!dock, |root| root.child(header))
             .children(follow_bar)
             .child(body)
@@ -270,7 +310,7 @@ impl Render for SftpDemo {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_xs()
+                            .typo(Role::Caption, &tokens)
                             .text_color(if self.status_is_error {
                                 tokens.danger
                             } else {
@@ -405,16 +445,13 @@ impl SftpDemo {
                     }),
                 )
                 .child(
-                    div()
-                        .w(px(if dock { 84.0 } else { 120.0 }))
-                        .flex_none()
-                        .child(
-                            Input::new(&pane.filter_input).prefix(
-                                Icon::new(IconName::Search)
-                                    .size_3()
-                                    .text_color(tokens.text_muted),
-                            ),
+                    div().w(px(filter_width(dock, used))).flex_none().child(
+                        Input::new(&pane.filter_input).prefix(
+                            Icon::new(IconName::Search)
+                                .size_3()
+                                .text_color(tokens.text_muted),
                         ),
+                    ),
                 )
                 .when(dock && !is_remote, |bar| {
                     bar.child(
@@ -546,7 +583,7 @@ impl SftpDemo {
             .child(match empty_text {
                 Some(text) => div()
                     .p_4()
-                    .text_sm()
+                    .typo(Role::Body, tokens)
                     .text_color(tokens.text_muted)
                     .child(text)
                     .into_any_element(),
@@ -565,8 +602,7 @@ impl SftpDemo {
             .items_center()
             .border_t_1()
             .border_color(tokens.border)
-            .text_xs()
-            .text_color(tokens.text_muted)
+            .typo(Role::Caption, tokens)
             .child(format!("{count} 项"))
             .when(selected_count > 0, |bar| {
                 bar.child(format!("选中 {selected_count} 项"))
@@ -666,8 +702,10 @@ impl SftpDemo {
             local_crumbs(&pane.path)
         };
         // 面包屑放得下的宽度 ≈ 栏宽减去其它按钮（后退 前进 上级 刷新 隐藏 过滤）占的位置。
+        // 量到了栏宽但剩得很少（窄栏）也要折叠成「… › 最后一级」，不能当成"还没量到"整串显示：
+        // 那样溢出部分被裁掉，只剩第一级（C:、srv），反而是最没用的那段。
         let available = if pane_width > 0.0 {
-            pane_width - if self.dock { 300.0 } else { 320.0 }
+            (pane_width - if self.dock { 300.0 } else { 320.0 }).max(1.0)
         } else {
             0.0
         };
@@ -749,8 +787,12 @@ impl SftpDemo {
                 crumb.path.clone(),
                 entity.clone(),
             );
-            // 每一级都不压缩：放不下的由前面的折叠成“…”。
-            bar = bar.child(button.flex_none());
+            // 前面几级不压缩，放不下的由前面的折叠成“…”；最后一级（当前目录）名字太长时自己截断。
+            bar = if index + 1 == shown.len() {
+                bar.child(button.min_w_0().flex_shrink_1())
+            } else {
+                bar.child(button.flex_none())
+            };
         }
         bar.into_any_element()
     }
@@ -821,8 +863,7 @@ impl SftpDemo {
                     .children((!operable).then(|| {
                         div()
                             .flex_none()
-                            .text_xs()
-                            .text_color(tokens.text_muted)
+                            .typo(Role::Caption, tokens)
                             .child("非 UTF-8 名字")
                     }));
                 let cells = columns
@@ -960,7 +1001,13 @@ impl SftpDemo {
                 .items_center()
                 .border_t_1()
                 .border_color(tokens.border)
-                .child(div().flex_1().truncate().text_sm().child(text))
+                .child(
+                    div()
+                        .flex_1()
+                        .truncate()
+                        .typo(Role::Body, tokens)
+                        .child(text),
+                )
                 .when(cancellable, |bar| {
                     bar.child(
                         Button::new("sftp-busy-cancel")
@@ -1002,7 +1049,7 @@ impl SftpDemo {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_sm()
+                        .typo(Role::Body, tokens)
                         .text_color(tokens.danger)
                         .child(retry.text.clone()),
                 )
@@ -1038,21 +1085,27 @@ impl SftpDemo {
                 .items_center()
                 .border_t_1()
                 .border_color(tokens.border)
-                .child(div().flex_1().truncate().text_sm().child(format!(
-                    "{} {}：已删 {} 项{}",
-                    if job.cancelling {
-                        "正在取消删除"
-                    } else {
-                        "正在删除"
-                    },
-                    job.name,
-                    job.deleted,
-                    if job.current.is_empty() {
-                        String::new()
-                    } else {
-                        format!("（{}）", file_name(&job.current))
-                    }
-                )))
+                .child(
+                    div()
+                        .flex_1()
+                        .truncate()
+                        .typo(Role::Body, tokens)
+                        .child(format!(
+                            "{} {}：已删 {} 项{}",
+                            if job.cancelling {
+                                "正在取消删除"
+                            } else {
+                                "正在删除"
+                            },
+                            job.name,
+                            job.deleted,
+                            if job.current.is_empty() {
+                                String::new()
+                            } else {
+                                format!("（{}）", file_name(&job.current))
+                            }
+                        )),
+                )
                 .child(
                     Button::new("sftp-delete-cancel")
                         .label("取消删除")
@@ -1105,12 +1158,15 @@ impl SftpDemo {
                         .px_2()
                         .gap_2()
                         .items_center()
-                        .child(div().text_sm().child(format!("同名文件：{target_name}")))
+                        .child(
+                            div()
+                                .typo(Role::ItemName, tokens)
+                                .child(format!("同名文件：{target_name}")),
+                        )
                         .when(waiting > 0, |line| {
                             line.child(
                                 div()
-                                    .text_xs()
-                                    .text_color(tokens.text_muted)
+                                    .typo(Role::Caption, tokens)
                                     .child(format!("另有 {waiting} 个在等")),
                             )
                         })
@@ -1118,16 +1174,14 @@ impl SftpDemo {
                             div()
                                 .flex_1()
                                 .truncate()
-                                .text_xs()
-                                .text_color(tokens.text_muted)
+                                .typo(Role::Caption, tokens)
                                 .child(format!("源 {source}")),
                         )
                         .child(
                             div()
                                 .flex_1()
                                 .truncate()
-                                .text_xs()
-                                .text_color(tokens.text_muted)
+                                .typo(Role::Caption, tokens)
                                 .child(format!("目标 {target}")),
                         ),
                 )
@@ -1137,14 +1191,23 @@ impl SftpDemo {
                         .pb_1()
                         .gap_3()
                         .items_center()
-                        .child(div().text_xs().child(source_line))
-                        .child(div().text_xs().child(target_line))
+                        .child(
+                            div()
+                                .typo(Role::Caption, tokens)
+                                .text_color(tokens.text)
+                                .child(source_line),
+                        )
+                        .child(
+                            div()
+                                .typo(Role::Caption, tokens)
+                                .text_color(tokens.text)
+                                .child(target_line),
+                        )
                         .child(
                             div()
                                 .flex_1()
                                 .truncate()
-                                .text_xs()
-                                .text_color(tokens.text_muted)
+                                .typo(Role::Caption, tokens)
                                 .child(hint_line),
                         ),
                 )
@@ -1224,7 +1287,7 @@ impl SftpDemo {
             .rounded_md()
             .border_1()
             .border_color(tokens.border)
-            .text_size(px(13.0))
+            .typo(Role::FieldLabel, tokens)
             .cursor_pointer()
             .hover(move |style| style.bg(hover))
             .child(Icon::new(Ico::FolderTree).size_3p5())
@@ -1234,8 +1297,8 @@ impl SftpDemo {
                     .px_1p5()
                     .rounded_full()
                     .bg(tokens.accent)
+                    .typo(Role::Caption, tokens)
                     .text_color(tokens.on_accent)
-                    .text_xs()
                     .child(if dock {
                         text.clone()
                     } else {
@@ -1243,16 +1306,11 @@ impl SftpDemo {
                     })
             }))
             .child(div().flex_1())
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(tokens.text_muted)
-                    .child(if self.queue_open {
-                        "收起".to_owned()
-                    } else {
-                        format!("共 {total} 个任务")
-                    }),
-            )
+            .child(div().typo(Role::Caption, tokens).child(if self.queue_open {
+                "收起".to_owned()
+            } else {
+                format!("共 {total} 个任务")
+            }))
             .on_click(move |_, _, cx| {
                 toggle_entity.update(cx, |this, cx| {
                     this.queue_open = !this.queue_open;
@@ -1278,7 +1336,7 @@ impl SftpDemo {
                     div()
                         .px_3()
                         .py_3()
-                        .text_sm()
+                        .typo(Role::Body, tokens)
                         .text_color(tokens.text_muted)
                         .child(
                             "还没有传输任务。右键选“上传到远端 / 下载到本地”，或者把文件拖进来。",
@@ -1432,7 +1490,7 @@ impl SftpDemo {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .text_size(px(13.0))
+                    .typo(Role::Body, tokens)
                     .child(icon)
                     .child(
                         h_flex()
@@ -1445,8 +1503,7 @@ impl SftpDemo {
                             .children(is_dir.then(|| {
                                 div()
                                     .flex_none()
-                                    .text_xs()
-                                    .text_color(tokens.text_muted)
+                                    .typo(Role::Caption, tokens)
                                     .child(format!("（{}/{}）", row.done_files, row.total_files))
                             })),
                     )
@@ -1456,8 +1513,7 @@ impl SftpDemo {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_xs()
-                                .text_color(tokens.text_muted)
+                                .typo(Role::Caption, tokens)
                                 .child(format!("{} → {}", row.source, row.target)),
                         )
                     })
@@ -1466,7 +1522,8 @@ impl SftpDemo {
                             .when(compact, |d| d.ml_auto())
                             .when(!compact, |d| d.w(px(128.0)))
                             .flex_none()
-                            .text_xs()
+                            .typo(Role::Caption, tokens)
+                            .text_color(tokens.text)
                             .text_right()
                             .child(sizes),
                     )
@@ -1475,9 +1532,8 @@ impl SftpDemo {
                             div()
                                 .w(px(80.0))
                                 .flex_none()
-                                .text_xs()
+                                .typo(Role::Caption, tokens)
                                 .text_right()
-                                .text_color(tokens.text_muted)
                                 .child(if live {
                                     queue::speed_text(row.speed_bps)
                                 } else {
@@ -1488,9 +1544,8 @@ impl SftpDemo {
                             div()
                                 .w(px(80.0))
                                 .flex_none()
-                                .text_xs()
+                                .typo(Role::Caption, tokens)
                                 .text_right()
-                                .text_color(tokens.text_muted)
                                 .child(if state == TransferState::Running {
                                     queue::eta_text(row.eta_secs)
                                 } else {
@@ -1503,7 +1558,7 @@ impl SftpDemo {
                             .w(px(if compact { 84.0 } else { 108.0 }))
                             .flex_none()
                             .truncate()
-                            .text_xs()
+                            .typo(Role::Caption, tokens)
                             .text_right()
                             .text_color(state_color)
                             .child(state_text),
@@ -1529,16 +1584,15 @@ impl SftpDemo {
                         div()
                             .w(px(40.0))
                             .flex_none()
-                            .text_xs()
+                            .typo(Role::Caption, tokens)
                             .text_right()
-                            .text_color(tokens.text_muted)
                             .child(format!("{percent:.0}%")),
                     ),
             )
             .children(match &state {
                 TransferState::Failed(reason) => Some(
                     div()
-                        .text_xs()
+                        .typo(Role::Caption, tokens)
                         .text_color(tokens.danger)
                         .child(reason.clone()),
                 ),
@@ -1546,7 +1600,7 @@ impl SftpDemo {
             })
             .children(reconcile.map(|text| {
                 div()
-                    .text_xs()
+                    .typo(Role::Caption, tokens)
                     .text_color(if mismatch {
                         tokens.danger
                     } else {
@@ -1555,12 +1609,11 @@ impl SftpDemo {
                     .child(text)
             }))
             .children((!row.notes.is_empty()).then(|| {
-                v_flex().children(row.notes.iter().map(|note| {
-                    div()
-                        .text_xs()
-                        .text_color(tokens.text_muted)
-                        .child(format!("· {note}"))
-                }))
+                v_flex().children(
+                    row.notes
+                        .iter()
+                        .map(|note| div().typo(Role::Caption, tokens).child(format!("· {note}"))),
+                )
             }))
             .context_menu(move |menu, window, cx| {
                 super::view_dialogs::transfer_menu(menu, &menu_state, id, &menu_entity, window, cx)
@@ -1572,6 +1625,15 @@ impl SftpDemo {
 #[cfg(test)]
 mod list_size_tests {
     use crate::typography::Role;
+
+    #[test]
+    fn the_filter_box_gives_way_in_narrow_panes() {
+        assert_eq!(super::filter_width(true, 600.0), 84.0);
+        assert_eq!(super::filter_width(false, 0.0), 120.0);
+        assert_eq!(super::filter_width(false, 540.0), 120.0);
+        assert_eq!(super::filter_width(false, 450.0), 96.0);
+        assert_eq!(super::filter_width(false, 316.0), 72.0);
+    }
 
     #[test]
     fn file_rows_are_roomy_enough_for_14px_names() {

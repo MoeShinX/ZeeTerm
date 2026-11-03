@@ -144,17 +144,25 @@ impl Render for RemoteEditor {
                 .child(text_button(
                     "remote-editor-search",
                     "查找",
-                    ButtonLook::Ghost,
+                    if self.search_button_active(false, cx) {
+                        ButtonLook::Outline
+                    } else {
+                        ButtonLook::Ghost
+                    },
                     act(&entity, |this, window, cx| {
-                        this.open_search(false, window, cx)
+                        this.toggle_search(false, window, cx)
                     }),
                 ))
                 .child(text_button(
                     "remote-editor-replace",
                     "替换",
-                    ButtonLook::Ghost,
+                    if self.search_button_active(true, cx) {
+                        ButtonLook::Outline
+                    } else {
+                        ButtonLook::Ghost
+                    },
                     act(&entity, |this, window, cx| {
-                        this.open_search(true, window, cx)
+                        this.toggle_search(true, window, cx)
                     }),
                 ))
                 .child(text_button(
