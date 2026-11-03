@@ -469,30 +469,12 @@ impl BalanceBook {
     }
 }
 
-static BOOK: Mutex<Option<BalanceBook>> = Mutex::new(None);
+static BOOK: std::sync::LazyLock<Mutex<BalanceBook>> =
+    std::sync::LazyLock::new(|| Mutex::new(BalanceBook::default()));
 static BALANCE_VERSION: AtomicU64 = AtomicU64::new(0);
 
-struct BookGuard(MutexGuard<'static, Option<BalanceBook>>);
-
-impl std::ops::Deref for BookGuard {
-    type Target = BalanceBook;
-    fn deref(&self) -> &BalanceBook {
-        self.0.as_ref().expect("book 已初始化")
-    }
-}
-
-impl std::ops::DerefMut for BookGuard {
-    fn deref_mut(&mut self) -> &mut BalanceBook {
-        self.0.as_mut().expect("book 已初始化")
-    }
-}
-
-fn book() -> BookGuard {
-    let mut guard = BOOK.lock().unwrap_or_else(|p| p.into_inner());
-    if guard.is_none() {
-        *guard = Some(BalanceBook::default());
-    }
-    BookGuard(guard)
+fn book() -> MutexGuard<'static, BalanceBook> {
+    BOOK.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 /// 余额显示变了就加一：面板每个节拍比一下，变了才重画。
