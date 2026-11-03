@@ -37,6 +37,7 @@ mod links;
 #[cfg(test)]
 mod live_support;
 mod main_window;
+mod menu_kit;
 mod product;
 mod protocol_backend;
 mod proxies_demo;

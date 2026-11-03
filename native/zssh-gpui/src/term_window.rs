@@ -14,7 +14,7 @@ use ::gpui::{
     WindowBounds, WindowControlArea, WindowHandle, WindowOptions, point, px,
 };
 use gpui_kit::component::TitleBar;
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -404,17 +404,22 @@ impl TermWindow {
             .on_click(move |_, window, cx| {
                 select.update(cx, |this, cx| this.select(index, window, cx));
             })
-            .context_menu(move |menu, _window, _cx| {
+            .context_menu(move |menu, _window, cx| {
+                let tokens = Tokens::current(cx);
                 let back = menu_back.clone();
                 let close = menu_close.clone();
                 menu.item(
-                    PopupMenuItem::new("移回主窗口").on_click(move |_, window, cx| {
-                        back.update(cx, |this, cx| this.move_to_main(id, window, cx));
-                    }),
+                    crate::menu_kit::row(&tokens, "移回主窗口", Ico::SquareArrowDownLeft).on_click(
+                        move |_, window, cx| {
+                            back.update(cx, |this, cx| this.move_to_main(id, window, cx));
+                        },
+                    ),
                 )
-                .item(PopupMenuItem::new("关闭").on_click(move |_, window, cx| {
-                    close.update(cx, |this, cx| this.close_tab(index, window, cx));
-                }))
+                .item(crate::menu_kit::row(&tokens, "关闭", Ico::X).on_click(
+                    move |_, window, cx| {
+                        close.update(cx, |this, cx| this.close_tab(index, window, cx));
+                    },
+                ))
             })
             .into_any_element()
     }

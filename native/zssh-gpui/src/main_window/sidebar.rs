@@ -747,8 +747,10 @@ impl MainWindow {
                             this.drop_group_on_group(dragged, group_id, window, cx);
                         },
                     ));
-                el.context_menu(move |menu, _window, _cx| group_menu(menu, &spec, &menu_entity))
-                    .into_any_element()
+                el.context_menu(move |menu, _window, cx| {
+                    group_menu(menu, &spec, &menu_entity, &Tokens::current(cx))
+                })
+                .into_any_element()
             }
             TreeRow::Ungrouped { expanded, count } => {
                 let sel = GroupSel::Ungrouped;
@@ -825,8 +827,10 @@ impl MainWindow {
                         cx.stop_propagation();
                         this.drop_host_on_group(dragged, None, window, cx);
                     }));
-                el.context_menu(move |menu, _window, _cx| ungrouped_menu(menu, &menu_entity))
-                    .into_any_element()
+                el.context_menu(move |menu, _window, cx| {
+                    ungrouped_menu(menu, &menu_entity, &Tokens::current(cx))
+                })
+                .into_any_element()
             }
             TreeRow::Divider => div()
                 .mx_1p5()

@@ -25,6 +25,7 @@ use super::nav::MainView;
 use super::quick_commands::{self, QuickCommand};
 use crate::app_theme::Tokens;
 use crate::icons::Ico;
+use crate::menu_kit;
 
 /// 拖动栏上沿时记下的起点。
 #[derive(Clone, Copy, Debug)]
@@ -791,7 +792,8 @@ impl MainWindow {
                 let id = run_id.clone();
                 run.update(cx, |this, cx| this.run_quick_command(&id, ctrl, window, cx));
             })
-            .context_menu(move |menu, _window, _cx| {
+            .context_menu(move |menu, _window, cx| {
+                let tokens = Tokens::current(cx);
                 let (send, send_all, edit, delete) = (
                     menu_entity.clone(),
                     menu_entity.clone(),
@@ -804,29 +806,41 @@ impl MainWindow {
                     menu_id.clone(),
                     menu_id.clone(),
                 );
-                menu.item(PopupMenuItem::new("发送").on_click(move |_, window, cx| {
-                    let id = a.clone();
-                    send.update(cx, |this, cx| {
-                        this.run_quick_command(&id, false, window, cx);
-                    });
-                }))
-                .item(PopupMenuItem::new("发到这个标签的所有分屏").on_click(
-                    move |_, window, cx| {
-                        let id = b.clone();
-                        send_all.update(cx, |this, cx| {
-                            this.run_quick_command(&id, true, window, cx);
-                        });
-                    },
-                ))
+                menu.item(
+                    menu_kit::row(&tokens, "发送", Ico::SendHorizontal).on_click(
+                        move |_, window, cx| {
+                            let id = a.clone();
+                            send.update(cx, |this, cx| {
+                                this.run_quick_command(&id, false, window, cx);
+                            });
+                        },
+                    ),
+                )
+                .item(
+                    menu_kit::row(&tokens, "发到这个标签的所有分屏", Ico::Columns2).on_click(
+                        move |_, window, cx| {
+                            let id = b.clone();
+                            send_all.update(cx, |this, cx| {
+                                this.run_quick_command(&id, true, window, cx);
+                            });
+                        },
+                    ),
+                )
                 .item(PopupMenuItem::separator())
-                .item(PopupMenuItem::new("编辑").on_click(move |_, window, cx| {
-                    let id = c.clone();
-                    edit.update(cx, |this, cx| this.open_quick_edit(&id, window, cx));
-                }))
-                .item(PopupMenuItem::new("删除").on_click(move |_, _window, cx| {
-                    let id = d.clone();
-                    delete.update(cx, |this, cx| this.ask_delete_quick_command(&id, cx));
-                }))
+                .item(
+                    menu_kit::row(&tokens, "编辑", Ico::Pencil).on_click(move |_, window, cx| {
+                        let id = c.clone();
+                        edit.update(cx, |this, cx| this.open_quick_edit(&id, window, cx));
+                    }),
+                )
+                .item(
+                    menu_kit::row(&tokens, "删除", Ico::Trash)
+                        .danger()
+                        .on_click(move |_, _window, cx| {
+                            let id = d.clone();
+                            delete.update(cx, |this, cx| this.ask_delete_quick_command(&id, cx));
+                        }),
+                )
             })
             .into_any_element()
     }

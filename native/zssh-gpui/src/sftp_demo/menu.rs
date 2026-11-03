@@ -45,6 +45,47 @@ pub(super) enum MenuAction {
     TransferCancel,
 }
 
+impl MenuAction {
+    /// 菜单项的图标（V2-U14：每一项都有）；上传 / 下载按在哪一栏区分。
+    pub(super) fn icon(self, side: Side) -> gpui_kit::component::Icon {
+        use crate::icons::Ico;
+        use gpui_kit::component::IconName;
+        match self {
+            Self::Open => Ico::FolderOpen.into(),
+            Self::EditBuiltin => Ico::SquarePen.into(),
+            Self::Transfer => match side {
+                Side::Remote => Ico::Download.into(),
+                Side::Local => Ico::Upload.into(),
+            },
+            Self::DownloadTo => Ico::Download.into(),
+            Self::Copy | Self::CopyPath => IconName::Copy.into(),
+            Self::Paste => Ico::ClipboardPaste.into(),
+            Self::Rename => Ico::Pencil.into(),
+            Self::Delete => Ico::Trash.into(),
+            Self::Mkdir => Ico::FolderPlus.into(),
+            Self::Create => Ico::FilePlus.into(),
+            Self::Permissions => Ico::ShieldCheck.into(),
+            Self::Refresh => IconName::RefreshCw.into(),
+            Self::Properties => IconName::Info.into(),
+            Self::CompressTarGz | Self::CompressZip => Ico::FileArchive.into(),
+            Self::ExtractFolder | Self::ExtractHere => Ico::PackageOpen.into(),
+            Self::TransferRetry => Ico::RotateCcw.into(),
+            Self::TransferPause => IconName::Pause.into(),
+            Self::TransferResume => IconName::Play.into(),
+            Self::TransferCancel => IconName::CircleX.into(),
+        }
+    }
+}
+
+/// 子菜单行的图标（按名字，子菜单只有「新建」和「压缩为」两个）。
+pub(super) fn submenu_icon(label: &str) -> gpui_kit::component::Icon {
+    use crate::icons::Ico;
+    match label {
+        "压缩为" => Ico::FileArchive.into(),
+        _ => gpui_kit::component::IconName::Plus.into(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum MenuNode {
     Item {
@@ -913,5 +954,45 @@ mod tests {
             let have: Vec<&str> = nodes.iter().map(MenuNode::label).collect();
             assert_eq!(have, want, "{state:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use super::{MenuAction, Side, submenu_icon};
+
+    #[test]
+    fn every_menu_action_and_submenu_has_an_icon_on_both_sides() {
+        use MenuAction::*;
+        for action in [
+            Open,
+            EditBuiltin,
+            Transfer,
+            DownloadTo,
+            Copy,
+            Paste,
+            CopyPath,
+            Rename,
+            Delete,
+            Mkdir,
+            Create,
+            Permissions,
+            Refresh,
+            Properties,
+            CompressTarGz,
+            CompressZip,
+            ExtractFolder,
+            ExtractHere,
+            TransferRetry,
+            TransferPause,
+            TransferResume,
+            TransferCancel,
+        ] {
+            // `icon` 是穷尽的 match，新加的动作不给图标编译不过；这里确认两栏都能取到。
+            let _ = action.icon(Side::Local);
+            let _ = action.icon(Side::Remote);
+        }
+        let _ = submenu_icon("新建");
+        let _ = submenu_icon("压缩为");
     }
 }

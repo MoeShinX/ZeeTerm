@@ -500,7 +500,7 @@ impl MainWindow {
             can_disconnect: info.can_disconnect,
             caps,
         };
-        let danger = tokens.danger;
+        let menu_tokens = *tokens;
         let select = entity.clone();
         let middle = entity.clone();
         let close = entity.clone();
@@ -622,7 +622,7 @@ impl MainWindow {
                 drag_entity.update(cx, |this, _cx| this.press_terminal_tab(tab_id, title, pos));
             })
             .context_menu(move |menu, _window, _cx| {
-                super::tab_menu::build_tab_menu(menu, &menu_spec, &menu_entity, danger)
+                super::tab_menu::build_tab_menu(menu, &menu_spec, &menu_entity, &menu_tokens)
             });
         tab.into_any_element()
     }

@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use ::gpui::{Entity, MouseButton, SharedString, Window, px};
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -1257,19 +1257,23 @@ impl MainWindow {
                 let title = drag_title.clone();
                 drag_entity.update(cx, |this, _cx| this.press_sftp_tab(id, title, pos));
             })
-            .context_menu(move |menu, _window, _cx| {
+            .context_menu(move |menu, _window, cx| {
+                let tokens = Tokens::current(cx);
                 let to_files = menu_move.clone();
                 let close = menu_close.clone();
                 menu.item(
-                    PopupMenuItem::new("移到文件窗口").on_click(move |_, window, cx| {
-                        to_files.update(cx, |this, cx| {
-                            this.move_sftp_tab_to_file_window(id, window, cx);
-                        });
-                    }),
+                    crate::menu_kit::row(&tokens, "移到文件窗口", Ico::SquareArrowOutUpRight)
+                        .on_click(move |_, window, cx| {
+                            to_files.update(cx, |this, cx| {
+                                this.move_sftp_tab_to_file_window(id, window, cx);
+                            });
+                        }),
                 )
-                .item(PopupMenuItem::new("关闭").on_click(move |_, window, cx| {
-                    close.update(cx, |this, cx| this.close_sftp_tab(id, window, cx));
-                }))
+                .item(crate::menu_kit::row(&tokens, "关闭", Ico::X).on_click(
+                    move |_, window, cx| {
+                        close.update(cx, |this, cx| this.close_sftp_tab(id, window, cx));
+                    },
+                ))
             })
             .into_any_element()
     }
