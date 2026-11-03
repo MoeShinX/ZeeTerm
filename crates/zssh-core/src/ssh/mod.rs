@@ -44,7 +44,7 @@ pub use processes::{
     classify_kill_failure, collect_processes, elapsed_label, kill_command, kill_verdict,
     parse_processes, processes_command, same_process, terminate_process, validate_pid, KillError,
     KillSignal, KillVerdict, ProcMode, ProcRisk, ProcRow, ProcSort, ProcSortKey, ProcSource,
-    ProcessReport, ProcessesError, PROCESSES_MAX_ROWS,
+    ProcessReport, ProcessesError, Protection, CRITICAL_SERVICES, PROCESSES_MAX_ROWS,
 };
 pub use shell::{
     SessionBuffer, ShellEvent, ShellEventStream, ShellSession, ShellWriter, DEFAULT_BUFFER_LIMIT,

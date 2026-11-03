@@ -170,7 +170,114 @@ pub enum ProcRisk {
     SshSession,
 }
 
+/// 为什么一个进程不能结束（界面在行上画锁、悬停写原因，按钮置灰）。**没有解锁途径**：受保护的进程一律不能在
+/// 界面上结束（用户定的），`terminate_process` 在核心里也再拦一次。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Protection {
+    /// PID 1（init / systemd）。
+    Init,
+    /// 内核线程：不是真正的用户进程，结束没有意义。
+    KernelThread,
+    /// 承载本次 SSH 会话的进程链（sshd 会话进程、它的 shell、采集用的进程）：结束它们就是把自己踢下线。
+    SshSession,
+    /// sshd 主进程：结束它会断开所有 SSH 连接、之后没法再登录。
+    SshDaemon,
+    /// 关键系统服务（见 [`CRITICAL_SERVICES`]）。
+    CriticalService,
+}
+
+impl Protection {
+    /// 悬停说明里的原因。
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Init => "系统初始化进程",
+            Self::KernelThread => "内核线程",
+            Self::SshSession => "当前 SSH 会话",
+            Self::SshDaemon => "结束会断开所有 SSH 连接",
+            Self::CriticalService => "关键系统服务",
+        }
+    }
+}
+
+/// 关键系统服务：按**进程名精确匹配**（命令行第一个词去掉目录和结尾的冒号，大小写敏感）。
+///
+/// 理由：这些进程一旦结束，服务器要么整体不可用、要么失去登录 / 日志 / 网络 / 容器：
+/// - `systemd` / `init` / `udevd` / `systemd-udevd`：初始化与设备管理；
+/// - `systemd-journald` / `rsyslogd` / `auditd`：日志与审计（丢日志、审计被绕过）；
+/// - `systemd-logind` / `agetty` / `polkitd`：登录会话、控制台登录、授权；
+/// - `systemd-networkd` / `systemd-resolved` / `NetworkManager`：网络与 DNS，结束后可能连 SSH 都断；
+/// - `dbus-daemon` / `dbus-broker`：系统总线，很多服务依赖它；
+/// - `cron` / `crond`：定时任务；
+/// - `containerd` / `dockerd`：结束会停掉所有容器；`kubelet`：结束会让节点上的 Pod 失控。
+pub const CRITICAL_SERVICES: &[&str] = &[
+    "systemd",
+    "systemd-journald",
+    "systemd-logind",
+    "systemd-udevd",
+    "systemd-networkd",
+    "systemd-resolved",
+    "dbus-daemon",
+    "dbus-broker",
+    "init",
+    "udevd",
+    "containerd",
+    "dockerd",
+    "kubelet",
+    "NetworkManager",
+    "polkitd",
+    "agetty",
+    "cron",
+    "crond",
+    "rsyslogd",
+    "auditd",
+];
+
+/// 命令行第一个词的进程名：去掉目录和结尾的 `:`（`sshd: user@pts/0` → `sshd`，`/usr/sbin/cron` → `cron`）。
+fn command_name(command: &str) -> &str {
+    let first = command.split_whitespace().next().unwrap_or("");
+    let base = first.rsplit('/').next().unwrap_or(first);
+    base.trim_end_matches(':')
+}
+
+fn is_sshd(row: &ProcRow) -> bool {
+    let name = command_name(&row.command);
+    name == "sshd" || name.starts_with("sshd-") || name == "dropbear"
+}
+
+/// 内核线程：PID 2、父进程是 2、命令是 ps 的 `[名字]` 写法、或者命令行是空的（`/proc/<pid>/cmdline` 为空）。
+fn is_kernel_thread(row: &ProcRow) -> bool {
+    let command = row.command.trim();
+    row.pid == 2
+        || row.ppid == Some(2)
+        || command.is_empty()
+        || (command.starts_with('[') && command.ends_with(']'))
+}
+
 impl ProcessReport {
+    /// 这个进程受不受保护、为什么。判定顺序：PID 1 → 内核线程 → 当前会话链 → sshd → 关键服务。
+    ///
+    /// 会话链识别不出来（旧输出没有 `self`）时退一步：所有 sshd / dropbear 进程都按"当前会话"保护，宁可多锁。
+    pub fn protection(&self, pid: u32) -> Option<Protection> {
+        let row = self.row(pid)?;
+        if row.pid == 1 {
+            return Some(Protection::Init);
+        }
+        if is_kernel_thread(row) {
+            return Some(Protection::KernelThread);
+        }
+        let sshd = is_sshd(row);
+        if self.session_chain().contains(&pid) || (sshd && self.self_parent_pid.is_none()) {
+            return Some(Protection::SshSession);
+        }
+        // sshd 主进程（监听者）：父进程是 PID 1，或者名字里带 `[listener]`。别的用户的会话进程不在此列。
+        if sshd && (row.ppid == Some(1) || row.command.contains("[listener]")) {
+            return Some(Protection::SshDaemon);
+        }
+        CRITICAL_SERVICES
+            .contains(&command_name(&row.command))
+            .then_some(Protection::CriticalService)
+    }
+
     pub fn cpu_available(&self) -> bool {
         self.rows.iter().any(|row| row.cpu.is_some())
     }
@@ -677,6 +784,8 @@ pub enum KillError {
     NoSuchProcess,
     #[error("这个 PID 现在对应的已经不是你选中的那个进程，列表已刷新，请重新选择。")]
     Changed,
+    #[error("这是受保护的系统进程（{}），不能结束。", .0.reason())]
+    Protected(Protection),
     #[error("等了 5 秒没有结果。")]
     Timeout,
     #[error("结束失败：{0}")]
@@ -780,7 +889,8 @@ pub fn kill_verdict(report: &ProcessReport, target: &ProcRow) -> KillVerdict {
 /// 结束一个进程（写操作，只在用户确认之后调用）。成功只表示信号发出去了，是否真的结束看
 /// [`kill_verdict`]。
 ///
-/// 先重新采一次核对 PID 还是用户选中的那个进程；没权限返回 [`KillError::NoPermission`]，不会换 sudo 重试。
+/// 先重新采一次核对 PID 还是用户选中的那个进程，再按**这次新采的**列表判断它受不受保护（受保护的一律拒绝，
+/// 没有解锁途径）——界面已经置灰，这里是最后一道关；没权限返回 [`KillError::NoPermission`]，不会换 sudo 重试。
 pub async fn terminate_process(
     connection: &Connection,
     target: &ProcRow,
@@ -794,6 +904,9 @@ pub async fn terminate_process(
         None => return Err(KillError::NoSuchProcess),
         Some(now) if !same_process(target, now) => return Err(KillError::Changed),
         Some(_) => {}
+    }
+    if let Some(protection) = fresh.protection(target.pid) {
+        return Err(KillError::Protected(protection));
     }
     let capture = connection
         .exec_capture(&command, KILL_TIMEOUT, 64 * 1024)
@@ -1453,5 +1566,152 @@ this line is not a process
         let odd = report.row(7).unwrap_or_else(|| panic!("{text}"));
         assert_eq!(odd.command, "we (ird)");
         assert_eq!(odd.user, "root");
+    }
+
+    const PROTECTION_SAMPLE: &str = "\
+@@ZSSH uid 0
+@@ZSSH user root
+@@ZSSH self 4242
+@@ZSSH source procps
+PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
+1 0 root 0.0 0.3 4800 Ss 1000 /sbin/init splash
+2 0 root 0.0 0.0 0 S 1000 [kthreadd]
+14 2 root 0.0 0.0 0 I 1000 [rcu_sched]
+15 1 root 0.0 0.0 0 S 1000 [odd-bracket-name]
+77 1 root 0.0 0.0 0 S 1000
+330 1 root 0.0 0.2 3000 Ss 1000 /lib/systemd/systemd-journald
+331 1 root 0.0 0.2 3000 Ss 1000 /lib/systemd/systemd-logind
+332 1 root 0.0 0.2 3000 Ss 1000 systemd-networkd
+333 1 root 0.0 0.2 3000 Ss 1000 /usr/bin/dbus-daemon --system --address=systemd:
+334 1 root 0.0 0.2 3000 Ss 1000 /usr/sbin/NetworkManager --no-daemon
+335 1 root 0.0 0.2 3000 Ss 1000 /sbin/agetty -o -p -- \\u --noclear tty1 linux
+336 1 root 0.0 0.2 3000 Ss 1000 /usr/sbin/crond -n
+337 1 root 0.0 0.2 3000 Ss 1000 /usr/bin/dockerd -H fd://
+338 1 root 0.0 0.2 3000 Ss 1000 /usr/bin/containerd
+339 1 root 0.0 0.2 3000 Ss 1000 /usr/bin/kubelet --config /etc/k.yaml
+340 1 root 0.0 0.2 3000 Ss 1000 /usr/sbin/rsyslogd -n
+341 1 root 0.0 0.2 3000 Ss 1000 /sbin/auditd
+342 1 root 0.0 0.2 3000 Ss 1000 /usr/lib/polkit-1/polkitd --no-debug
+343 1 root 0.0 0.2 3000 Ss 1000 /lib/systemd/systemd-udevd
+344 1 root 0.0 0.2 3000 Ss 1000 /lib/systemd/systemd-resolved
+345 1 root 0.0 0.2 3000 Ss 1000 /usr/bin/dbus-broker --log 4 --controller 9
+800 1 root 0.0 0.1 9000 Ss 1000 sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
+3090 800 root 0.0 0.1 9000 Ss 100 sshd: root [priv]
+3100 3090 root 0.0 0.1 9000 S 100 sshd: root@notty
+4242 3100 root 0.0 0.0 3000 Ss 0 sh -c exec
+5500 800 alice 0.0 0.1 9000 S 100 sshd: alice@pts/1
+5501 5500 alice 0.0 0.1 3000 Ss 100 -bash
+900 1 root 0.0 0.1 9000 Ss 1000 sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
+901 1 root 0.0 0.1 9000 Ss 1000 /usr/sbin/dropbear -F -p 2222
+812 1 app 5.0 1.0 9000 S 100 /usr/bin/app-worker --queue=high
+813 812 app 0.0 0.0 0 Z 100 [worker] <defunct>
+820 1 app 0.0 0.0 9000 S 100 /usr/local/bin/cron-like-job --every 5m
+821 1 app 0.0 0.0 9000 S 100 /opt/app/mydockerd-proxy
+";
+
+    #[test]
+    fn protection_covers_every_class() {
+        use Protection::*;
+        let report = parse_processes(PROTECTION_SAMPLE).expect("解析");
+        let check = |pid: u32, want: Option<Protection>| {
+            assert_eq!(report.protection(pid), want, "PID {pid}");
+        };
+        // 系统初始化进程。
+        check(1, Some(Init));
+        // 内核线程：PID 2、父进程是 2、`[名字]` 写法、命令行为空。
+        for pid in [2, 14, 15, 77] {
+            check(pid, Some(KernelThread));
+        }
+        // 当前 SSH 会话的进程链：会话进程、[priv] 监控进程（采集 shell 往上数的祖先，不含 PID 1）。
+        check(3100, Some(SshSession));
+        check(3090, Some(SshSession));
+        // 本次会话的监听者是链上的祖先，按会话保护；别的 sshd / dropbear 主进程（父进程是 PID 1）是主进程保护。
+        check(800, Some(SshSession));
+        check(900, Some(SshDaemon));
+        check(901, Some(SshDaemon));
+        // 关键系统服务：名称精确匹配，带目录、带参数、带冒号都认。
+        for pid in 330..=345 {
+            check(pid, Some(CriticalService));
+        }
+        // 别的用户的 sshd 会话进程 / shell：不受保护（结束它只会踢掉那个用户）。
+        check(5500, None);
+        check(5501, None);
+        // 普通进程、僵尸（`[x] <defunct>` 不是内核线程）、名字只是像：不受保护。
+        for pid in [812, 813, 820, 821] {
+            check(pid, None);
+        }
+        // 不存在的 PID。
+        check(999_999, None);
+    }
+
+    #[test]
+    fn the_session_chain_is_checked_by_pid_not_by_name() {
+        // 链上的进程名叫什么都保护（比如换了 sshd 实现 / 被改名）。
+        let renamed = PROTECTION_SAMPLE.replace("sshd: root@notty", "my-session-helper");
+        let report = parse_processes(&renamed).expect("解析");
+        assert_eq!(report.protection(3100), Some(Protection::SshSession));
+    }
+
+    #[test]
+    fn without_the_session_chain_every_sshd_is_protected_as_the_current_session() {
+        let blind =
+            parse_processes(&PROTECTION_SAMPLE.replace("@@ZSSH self 4242\n", "")).expect("解析");
+        // 识别不出本次会话是哪一条：所有 sshd 一律按"当前会话"保护（包括别人的会话和主进程）。
+        for pid in [800, 900, 901, 3090, 3100, 5500] {
+            assert_eq!(blind.protection(pid), Some(Protection::SshSession), "{pid}");
+        }
+        // 其他类别不受影响。
+        assert_eq!(blind.protection(1), Some(Protection::Init));
+        assert_eq!(blind.protection(14), Some(Protection::KernelThread));
+        assert_eq!(blind.protection(330), Some(Protection::CriticalService));
+        assert_eq!(blind.protection(812), None);
+        assert_eq!(blind.protection(5501), None);
+    }
+
+    #[test]
+    fn every_protection_has_a_reason_for_the_lock_tooltip() {
+        for (protection, reason) in [
+            (Protection::Init, "系统初始化进程"),
+            (Protection::KernelThread, "内核线程"),
+            (Protection::SshSession, "当前 SSH 会话"),
+            (Protection::SshDaemon, "结束会断开所有 SSH 连接"),
+            (Protection::CriticalService, "关键系统服务"),
+        ] {
+            assert_eq!(protection.reason(), reason);
+            // 没有解锁途径：提示里只说不能结束，不提任何开关。
+            let text = KillError::Protected(protection).describe("root", None);
+            assert!(text.contains(reason) && text.contains("不能结束"), "{text}");
+            assert!(!text.contains("允许"), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_critical_service_list_is_exactly_the_documented_one() {
+        let mut have: Vec<&str> = CRITICAL_SERVICES.to_vec();
+        have.sort_unstable();
+        let mut want = vec![
+            "NetworkManager",
+            "agetty",
+            "auditd",
+            "containerd",
+            "cron",
+            "crond",
+            "dbus-broker",
+            "dbus-daemon",
+            "dockerd",
+            "init",
+            "kubelet",
+            "polkitd",
+            "rsyslogd",
+            "systemd",
+            "systemd-journald",
+            "systemd-logind",
+            "systemd-networkd",
+            "systemd-resolved",
+            "systemd-udevd",
+            "udevd",
+        ];
+        want.sort_unstable();
+        assert_eq!(have, want);
     }
 }

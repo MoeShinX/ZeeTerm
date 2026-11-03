@@ -433,3 +433,29 @@ async fn an_invalid_pid_sends_nothing_at_all() {
     // 只有开头那一次采集，之后一条命令都没有发。
     assert_eq!(commands(&harness), vec![processes_command()]);
 }
+
+#[tokio::test]
+async fn protected_processes_are_refused_before_any_kill_is_sent() {
+    use zssh_core::ssh::Protection;
+    let harness = start().await;
+    let report = collect_processes(&harness.connection).await.expect("采集");
+    for (pid, want) in [
+        (1, Protection::Init),
+        (3100, Protection::SshSession),
+        (3090, Protection::SshSession),
+        (800, Protection::SshSession),
+    ] {
+        let target = report.row(pid).expect("进程").clone();
+        for signal in [KillSignal::Term, KillSignal::Kill] {
+            let error = terminate_process(&harness.connection, &target, signal)
+                .await
+                .expect_err("受保护");
+            assert_eq!(error, KillError::Protected(want), "{pid}");
+        }
+    }
+    assert!(
+        kill_commands(&harness).is_empty(),
+        "受保护的进程一条 kill 都不能发：{:?}",
+        commands(&harness)
+    );
+}
