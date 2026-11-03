@@ -33,6 +33,9 @@ pub enum Role {
     NavSelected,
     /// 导航分组名（「管理」「偏好」）。
     NavGroup,
+    /// 右键 / 下拉菜单里一行的文字（V2-U17）：比正文小一号（13px），菜单更紧凑；颜色不在这里定，
+    /// 菜单行要跟着悬停高亮变色，由行自己决定（见 `menu_kit`）。
+    Menu,
 }
 
 /// 三级文字色（和 `Tokens` 里的 `text` / `text_muted` / `text_faint` 对应），导航项的「略淡」单独一档。
@@ -56,7 +59,7 @@ pub struct Spec {
 
 impl Role {
     #[cfg(test)]
-    pub const ALL: [Role; 10] = [
+    pub const ALL: [Role; 11] = [
         Role::PageTitle,
         Role::GroupTitle,
         Role::ItemName,
@@ -67,6 +70,7 @@ impl Role {
         Role::Nav,
         Role::NavSelected,
         Role::NavGroup,
+        Role::Menu,
     ];
 
     /// 这个角色的排版取值。改这里就是改整个界面的字号字重。
@@ -82,6 +86,7 @@ impl Role {
             Role::Nav => (14.0, FontWeight::NORMAL, Tone::Nav, 1.4),
             Role::NavSelected => (14.0, FontWeight::MEDIUM, Tone::Primary, 1.4),
             Role::NavGroup => (12.0, FontWeight::NORMAL, Tone::Faint, 1.4),
+            Role::Menu => (13.0, FontWeight::NORMAL, Tone::Primary, 1.4),
         };
         Spec {
             size,
@@ -155,6 +160,8 @@ mod tests {
         assert_eq!(spec(Role::Nav).weight, FontWeight::NORMAL);
         assert_eq!(spec(Role::NavSelected).weight, FontWeight::MEDIUM);
         assert_eq!(spec(Role::NavGroup).size, 12.0);
+        assert_eq!(spec(Role::Menu).size, 13.0);
+        assert_eq!(spec(Role::Menu).weight, FontWeight::NORMAL);
     }
 
     #[test]

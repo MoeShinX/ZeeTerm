@@ -19,7 +19,7 @@ use std::rc::Rc;
 use ::gpui::{Bounds, ClickEvent, MouseButton, Pixels, canvas, px};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Textarea;
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -46,6 +46,7 @@ use crate::main_window::bar_height;
 use crate::main_window::bar_settings;
 use crate::main_window::model_picker::{self, ModelPicker};
 use crate::main_window::scope_targets;
+use crate::menu_kit;
 
 /// 主窗口每个节拍告诉面板的上下文：当前标签聚焦窗格、还开着终端的主机和终端、主机库里的主机。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1238,11 +1239,11 @@ impl AgentChatDemo {
                             label.push_str("（不可用）");
                         }
                         menu = menu.item(
-                            PopupMenuItem::new(label)
-                                .checked(current_group == Some(index))
-                                .on_click(move |_: &ClickEvent, _window, cx| {
+                            menu_kit::choice(label, current_group == Some(index)).on_click(
+                                move |_: &ClickEvent, _window, cx| {
                                     entity.update(cx, |this, cx| this.pick_model(index, cx));
-                                }),
+                                },
+                            ),
                         );
                     }
                     menu
@@ -1270,12 +1271,16 @@ impl AgentChatDemo {
                         let entity = entity.clone();
                         let picked = choice.clone();
                         menu = menu.item(
-                            PopupMenuItem::new(model_picker::effort_label(choice.as_deref()))
-                                .checked(&current == choice)
-                                .on_click(move |_: &ClickEvent, _window, cx| {
+                            menu_kit::choice(
+                                model_picker::effort_label(choice.as_deref()),
+                                &current == choice,
+                            )
+                            .on_click(
+                                move |_: &ClickEvent, _window, cx| {
                                     let picked = picked.clone();
                                     entity.update(cx, |this, cx| this.pick_effort(picked, cx));
-                                }),
+                                },
+                            ),
                         );
                     }
                     menu
@@ -1311,13 +1316,17 @@ impl AgentChatDemo {
                     ] {
                         let entity = entity.clone();
                         menu = menu.item(
-                            PopupMenuItem::new(format!("{}  ·  {hint}", mode_label(mode)))
-                                .checked(current == mode)
-                                .on_click(move |_: &ClickEvent, _window, cx| {
+                            menu_kit::choice(
+                                format!("{}  ·  {hint}", mode_label(mode)),
+                                current == mode,
+                            )
+                            .on_click(
+                                move |_: &ClickEvent, _window, cx| {
                                     entity.update(cx, |this, cx| {
                                         this.set_mode_explicit(mode, cx);
                                     });
-                                }),
+                                },
+                            ),
                         );
                     }
                     menu

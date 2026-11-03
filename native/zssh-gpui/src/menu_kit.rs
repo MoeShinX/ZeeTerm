@@ -9,11 +9,15 @@
 //!   自己画文字，颜色取皮肤的 token；
 //! - 子菜单行走组件库的 `Submenu`，图标同样的样式，箭头在最右边。
 //!
-//! 单选下拉（只有名字和勾选的列表）不走这里，用组件库自带的 `checked`，勾选标记在最左一列。
+//! 文字 13px（`Role::Menu`，V2-U17 起比正文小一号）：组件库给 `Item` / `Submenu` 的文字写死了 14px（`text_sm`），
+//! 外面改不了，所以所有行（含勾选列表）都做成 `ElementItem`、自己画 13px 的文字；只有子菜单行的名字（组件库只收
+//! 一段字符串）仍是 14px。
+//!
+//! 勾选 / 单选下拉（只有名字和勾选的列表）用 [`choice`]，勾选标记在最左一列。
 
 use std::rc::Rc;
 
-use ::gpui::{App, ClickEvent, Hsla, SharedString, Window, px};
+use ::gpui::{App, ClickEvent, Div, Hsla, SharedString, Window, px, relative};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
@@ -22,10 +26,10 @@ use gpui_kit::*;
 use crate::app_theme::Tokens;
 use crate::typography::{Role, Typo as _};
 
-/// 菜单图标边长（逻辑像素）。
-pub const ICON_SIZE: f32 = 16.0;
+/// 菜单图标边长（逻辑像素）：配 13px 的文字，16px 显得大，取 15。
+pub const ICON_SIZE: f32 = 15.0;
 /// 图标右边到文字的空隙（组件库另外还有 4px 的列间距）。
-pub const ICON_GAP: f32 = 6.0;
+pub const ICON_GAP: f32 = 4.0;
 
 /// 一行的状态：决定文字和图标用哪个颜色。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,14 +158,6 @@ impl MenuRow {
 
     fn build(self, handler: Option<Handler>) -> PopupMenuItem {
         let disabled = self.state == RowState::Disabled;
-        // 普通行直接用组件库的 Item：键盘导航、读屏标签都是现成的。
-        if self.state == RowState::Normal && self.right.is_none() && self.tooltip.is_none() {
-            let item = PopupMenuItem::new(self.label).icon(menu_icon(self.icon, None));
-            return match handler {
-                Some(handler) => item.on_click(move |event, window, cx| handler(event, window, cx)),
-                None => item,
-            };
-        }
         let Self {
             tokens,
             label,
@@ -172,11 +168,10 @@ impl MenuRow {
         } = self;
         let id = label.clone();
         let colors = row_colors(state, &tokens);
+        // 普通行不写文字色：悬停 / 键盘选中时组件库给整行换高亮色，文字要跟着变，写死了就压住它。
+        let colour = (state != RowState::Normal).then_some(colors.text);
         let item = PopupMenuItem::element(move |_window, _cx| {
-            let text = div()
-                .typo(Role::Body, &tokens)
-                .text_color(colors.text)
-                .child(label.clone());
+            let text = menu_text(colour).child(label.clone());
             let content = h_flex()
                 .id(id.clone())
                 .w_full()
@@ -197,7 +192,10 @@ impl MenuRow {
                 None => content.into_any_element(),
             }
         })
-        .icon(menu_icon(icon, Some(colors.icon)))
+        .icon(menu_icon(
+            icon,
+            (state != RowState::Normal).then_some(colors.icon),
+        ))
         .disabled(disabled);
         match handler {
             Some(handler) if !disabled => {
@@ -206,6 +204,27 @@ impl MenuRow {
             _ => item,
         }
     }
+}
+
+/// 菜单里的一段文字：13px（`Role::Menu`）。`colour` 为空时继承（跟着悬停高亮变色）。
+fn menu_text(colour: Option<Hsla>) -> Div {
+    let spec = Role::Menu.spec();
+    let text = div()
+        .text_size(px(spec.size))
+        .font_weight(spec.weight)
+        .line_height(relative(spec.leading));
+    match colour {
+        Some(colour) => text.text_color(colour),
+        None => text,
+    }
+}
+
+/// 勾选 / 单选列表里的一项（没有图标，勾在最左一列）：文字同样 13px。
+/// 要置灰、点击处理，接着在返回值上链 `.disabled(..)` / `.on_click(..)`。
+pub fn choice(label: impl Into<SharedString>, checked: bool) -> PopupMenuItem {
+    let label: SharedString = label.into();
+    PopupMenuItem::element(move |_window, _cx| menu_text(None).child(label.clone()))
+        .checked(checked)
 }
 
 /// 子菜单行：图标和文字的位置与普通行一致，箭头在最右边。
@@ -226,6 +245,7 @@ mod tests {
     use super::{ICON_GAP, ICON_SIZE, RowState, row, row_colors};
     use crate::app_theme::{SKINS, Tokens};
     use crate::icons::Ico;
+    use crate::typography::Role;
 
     #[test]
     fn a_row_starts_normal_and_danger_or_disabled_change_the_state() {
@@ -283,9 +303,19 @@ mod tests {
     }
 
     #[test]
-    fn the_icon_box_is_sixteen_pixels_with_a_gap_to_the_text() {
-        assert_eq!(ICON_SIZE, 16.0);
+    fn the_icon_box_fits_the_thirteen_pixel_menu_text() {
+        // 文字 13px，图标 15px（比文字略大一点才协调，不超过 16）；图标到文字的空隙不能小于 4px。
+        assert_eq!(ICON_SIZE, 15.0);
         const { assert!(ICON_GAP >= 4.0) };
+        assert!(ICON_SIZE > Role::Menu.spec().size && ICON_SIZE <= 16.0);
+    }
+
+    #[test]
+    fn menu_text_is_one_step_smaller_than_body_and_not_smaller_than_captions() {
+        let menu = Role::Menu.spec();
+        assert_eq!(menu.size, 13.0);
+        assert!(menu.size < Role::Body.spec().size);
+        assert!(menu.size > Role::Caption.spec().size);
     }
 
     /// 递归读 `src` 下所有 .rs（调试驱动 `dev_acts*` 除外）。
@@ -316,23 +346,14 @@ mod tests {
 
     #[test]
     fn action_menus_are_built_with_the_shared_row_not_by_hand() {
-        // 只有「单选下拉 / 勾选列表」（没有图标，只有名字和勾）可以直接用 `PopupMenuItem::new`；
-        // 动作菜单一律走 `menu_kit::row`，保证图标必有、颜色统一。
-        let allowed = [
-            "agent_chat_demo/agent_ui.rs",
-            "agent_chat_demo/embed.rs",
-            // 接口对话框里「选择模型」的下拉：只有模型名，是单选列表不是动作菜单。
-            "main_window/ai_endpoint_dialog.rs",
-            "main_window/bars.rs",
-            "main_window/vault_menus.rs",
-            "main_window/widgets.rs",
-            "menu_kit.rs",
-        ];
+        // 动作菜单走 `menu_kit::row`、勾选 / 单选列表走 `menu_kit::choice`：组件库的 `Item` 文字写死 14px，
+        // 手写 `PopupMenuItem::new` 会让这一行比别的行大一号（V2-U17）。
+        let allowed = ["menu_kit.rs"];
         for (name, text) in source_files() {
             if text.contains("PopupMenuItem::new(") {
                 assert!(
                     allowed.iter().any(|a| name.ends_with(a)),
-                    "{name} 里手写了 PopupMenuItem::new，动作菜单请用 menu_kit::row"
+                    "{name} 里手写了 PopupMenuItem::new，请用 menu_kit::row（动作）或 menu_kit::choice（勾选列表）"
                 );
             }
         }

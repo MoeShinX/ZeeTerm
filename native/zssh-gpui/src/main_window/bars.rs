@@ -593,8 +593,7 @@ impl MainWindow {
                     let mut menu = menu.min_w(px(140.0)).max_h(px(280.0)).scrollable(true);
                     let all = entity.clone();
                     menu = menu.item(
-                        PopupMenuItem::new("全部")
-                            .checked(current.is_empty() || !groups.contains(&current))
+                        menu_kit::choice("全部", current.is_empty() || !groups.contains(&current))
                             .on_click(move |_: &ClickEvent, window, cx| {
                                 all.update(cx, |this, cx| this.set_quick_group("", window, cx));
                             }),
@@ -602,16 +601,15 @@ impl MainWindow {
                     for name in &groups {
                         let target = entity.clone();
                         let picked = name.clone();
-                        menu = menu.item(
-                            PopupMenuItem::new(name.clone())
-                                .checked(&current == name)
-                                .on_click(move |_: &ClickEvent, window, cx| {
+                        menu =
+                            menu.item(menu_kit::choice(name.clone(), &current == name).on_click(
+                                move |_: &ClickEvent, window, cx| {
                                     let picked = picked.clone();
                                     target.update(cx, |this, cx| {
                                         this.set_quick_group(&picked, window, cx);
                                     });
-                                }),
-                        );
+                                },
+                            ));
                     }
                     menu
                 })

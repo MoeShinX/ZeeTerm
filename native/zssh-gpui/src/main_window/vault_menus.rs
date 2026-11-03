@@ -271,8 +271,7 @@ pub fn host_menu(
                             let group = target.group;
                             let label = format!("{}{}", "　".repeat(target.depth), target.label);
                             sub = sub.item(
-                                PopupMenuItem::new(label)
-                                    .checked(target.current)
+                                menu_kit::choice(label, target.current)
                                     .disabled(target.current)
                                     .on_click(run(&move_entity, move |this, window, cx| {
                                         this.move_host_ui(id, group, window, cx);
