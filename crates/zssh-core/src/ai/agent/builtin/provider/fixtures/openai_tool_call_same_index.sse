@@ -1,0 +1,6 @@
+data: {"id":"test-gem-0001","object":"chat.completion.chunk","model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_g1","type":"function","function":{"name":"stat","arguments":"{\"path\":\"/tmp\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"test-gem-0001","object":"chat.completion.chunk","model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_g2","type":"function","function":{"name":"list_dir","arguments":"{\"path\":\"/var\"}"}}]},"finish_reason":"stop"}]}
+
+data: [DONE]
+

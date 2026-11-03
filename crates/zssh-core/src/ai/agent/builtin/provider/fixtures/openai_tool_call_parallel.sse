@@ -1,0 +1,20 @@
+data: {"id":"chatcmpl-test0003","object":"chat.completion.chunk","created":1760000000,"model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","content":"我同时查两项。"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0003","object":"chat.completion.chunk","created":1760000000,"model":"test-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_test_a","type":"function","function":{"name":"run_command","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0003","object":"chat.completion.chunk","created":1760000000,"model":"test-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"command\":"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0003","object":"chat.completion.chunk","created":1760000000,"model":"test-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_test_b","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0003","object":"chat.completion.chunk","created":1760000000,"model":"test-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" \"uptime\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0003","object":"chat.completion.chunk","created":1760000000,"model":"test-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"path\": \"/etc/os-release\""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0003","object":"chat.completion.chunk","created":1760000000,"model":"test-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":", \"max_bytes\": 2048}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0003","object":"chat.completion.chunk","created":1760000000,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: {"id":"chatcmpl-test0003","object":"chat.completion.chunk","created":1760000000,"model":"test-model","choices":[],"usage":{"prompt_tokens":200,"completion_tokens":60,"total_tokens":260}}
+
+data: [DONE]
+
