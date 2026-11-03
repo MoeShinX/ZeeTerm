@@ -113,6 +113,7 @@ pub fn validate(spec: &str) -> Result<(), String> {
         || super::dev_acts_u7::is_known(name)
         || super::dev_acts_u12::is_known(name)
         || super::dev_acts_u13::is_known(name)
+        || super::dev_acts_u19::is_known(name)
         || super::dev_acts_n4::is_known(name)
         || super::dev_acts_sync::is_known(name)
         || KNOWN.contains(&name)
@@ -258,6 +259,10 @@ fn run_inner(
     }
     // V2-U6（标题栏精简）的动作在 `dev_acts_u6`。
     if let Some(result) = super::dev_acts_u6::run(this, spec, window, cx) {
+        return result;
+    }
+    // V2-U19（从 Z-SSH 迁移）的动作在 `dev_acts_u19`。
+    if let Some(result) = super::dev_acts_u19::run(this, spec, window, cx) {
         return result;
     }
     // V2-U13（主机属性单栏表单、测试连接）的动作在 `dev_acts_u13`。

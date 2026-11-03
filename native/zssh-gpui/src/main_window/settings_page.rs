@@ -34,9 +34,9 @@ use crate::settings_view::{card, row, row_with};
 use crate::typography::{Role, Typo as _};
 use zssh_core::sync::app_proxy::{APP_NETWORK_PROXY_KEY, AppProxyMode, SystemProxy};
 
-/// 备份那一块在「同步」分类滚动容器里的下标（驱动脚本滚到备份一节用）。
+/// 备份那一块在「同步」分类滚动容器里的下标（驱动脚本滚到备份一节用）：最上面是「从 Z-SSH 迁移」，然后是同步、备份。
 #[cfg_attr(not(debug_assertions), allow(dead_code))]
-pub const BACKUP_ITEM: usize = 1;
+pub const BACKUP_ITEM: usize = 2;
 
 /// 左侧导航栏宽度（比 0.2.14 的 `w-44` 宽一点，放得下「← 返回应用」和 12 个分类名）。
 const NAV_WIDTH: f32 = 208.0;
@@ -498,6 +498,7 @@ impl MainWindow {
                 backup
             }
         };
+        let migrate = self.ensure_migrate(window, cx);
         let about = match &self.about_settings {
             Some(about) => about.clone(),
             None => {
@@ -531,7 +532,11 @@ impl MainWindow {
                     agents.into_any_element(),
                 ],
                 SettingsSection::Sync => {
-                    vec![sync.into_any_element(), backup.into_any_element()]
+                    vec![
+                        migrate.into_any_element(),
+                        sync.into_any_element(),
+                        backup.into_any_element(),
+                    ]
                 }
                 SettingsSection::Shortcuts => shortcuts_cards(tokens),
                 SettingsSection::About => vec![about.into_any_element()],
