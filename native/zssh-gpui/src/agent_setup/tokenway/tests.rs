@@ -94,7 +94,7 @@ fn a_revoked_token_shows_authorization_invalid_while_other_failures_keep_the_las
     assert!(book.poll(1, t0 + Duration::from_secs(130)));
     book.finish(1, Err(failed(ApiErrorKind::InvalidToken, "x")));
     let view = book.view(1).unwrap();
-    assert_eq!(view.label, "授权已失效");
+    assert_eq!(view.label, "授权失效");
     assert_eq!(view.problem, Some(BalanceProblem::AuthorizationInvalid));
     assert!(view.detail.contains("重新连接"));
     // 重新连接换了令牌（forget）：立刻可以再取，状态清空。

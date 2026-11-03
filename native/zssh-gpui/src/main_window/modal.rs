@@ -506,7 +506,7 @@ impl MainWindow {
                 self.ai_endpoint_body(dialog, tokens, cx),
             ),
             Modal::AiPresets => (520.0, self.ai_presets_body(tokens, cx)),
-            Modal::Tokenway(dialog) => (520.0, self.tokenway_body(dialog, tokens, cx)),
+            Modal::Tokenway(dialog) => (540.0, self.tokenway_body(dialog, tokens, cx)),
             Modal::GenerateKey(dialog) => (480.0, self.generate_key_body(dialog, tokens, cx)),
             Modal::InstallKey(dialog) => (480.0, self.install_key_body(dialog, tokens, cx)),
             Modal::Unsaved(ask) => (440.0, self.unsaved_body(ask, tokens, cx)),

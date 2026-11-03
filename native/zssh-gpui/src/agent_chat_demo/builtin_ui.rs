@@ -172,7 +172,12 @@ impl AgentChatDemo {
             .text_color(color)
             .child(SharedString::from(view.label.clone()))
             .tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx));
-        let mut chip = h_flex().flex_none().items_center().gap_1().child(label);
+        let mut chip = h_flex()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .ml_2()
+            .child(label);
         if invalid {
             chip = chip.child(
                 Button::new("ai-balance-reconnect")

@@ -52,6 +52,13 @@ Cargo.lock), all used unmodified from crates.io:
   GPL-3.0-or-later); none is incompatible with distribution under
   GPL-3.0-or-later.
 
+Tokenway preset verification (built-in assistant, crates/zssh-core/src/ai/agent/builtin/tokenway/)
+  The ed25519 signature check on the downloaded preset list uses ring 0.17
+  (https://github.com/briansmith/ring), which core now depends on directly; it
+  was already part of the resolved tree through russh's ring backend, so the
+  whole-tree license check above covers it (the crate's own license file lists
+  ISC and Apache-2.0 terms). No code was copied from it.
+
 models.dev model database (built-in assistant, crates/zssh-core/src/ai/agent/builtin/catalog/)
   https://models.dev/ (https://github.com/sst/models.dev)
   Copyright (C) the models.dev contributors (sst)

@@ -382,6 +382,14 @@ struct Entry {
     gate: RefreshGate,
 }
 
+/// 余额刷新的最小间隔：产品固定 60 秒；调试版的窗口场景可以用 `ZSSH_TOKENWAY_BALANCE_SECS` 缩短（不然截图要干等一分钟）。
+fn balance_interval() -> Duration {
+    crate::dev_hooks::var("ZSSH_TOKENWAY_BALANCE_SECS")
+        .and_then(|text| text.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(BALANCE_MIN_INTERVAL)
+}
+
 impl Entry {
     fn new() -> Self {
         Self {
@@ -389,7 +397,7 @@ impl Entry {
             problem: None,
             dirty: true,
             in_flight: false,
-            gate: RefreshGate::new(BALANCE_MIN_INTERVAL),
+            gate: RefreshGate::new(balance_interval()),
         }
     }
 }
@@ -444,7 +452,7 @@ impl BalanceBook {
         let entry = self.entries.get(&endpoint_id)?;
         match (&entry.balance, &entry.problem) {
             (_, Some(BalanceProblem::AuthorizationInvalid)) => Some(BalanceView {
-                label: "授权已失效".to_owned(),
+                label: "授权失效".to_owned(),
                 detail: "Tokenway 授权已失效（可能在网站上改过密码或停用了授权），请重新连接"
                     .to_owned(),
                 needs_topup: false,

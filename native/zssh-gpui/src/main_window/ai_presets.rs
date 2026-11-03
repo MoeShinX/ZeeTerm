@@ -667,17 +667,18 @@ impl MainWindow {
             } else {
                 "用 Tokenway 连接"
             };
-            h_flex()
+            // 注册链接单独一行放在左边（和按钮挤在一行宽度不够）。
+            let register_row = h_flex().justify_start().child(text_button(
+                "tokenway-register",
+                "还没有账号？注册 Tokenway",
+                ButtonLook::Ghost,
+                move |_, window, cx| {
+                    register.update(cx, |this, cx| this.tokenway_register(window, cx));
+                },
+            ));
+            let buttons = h_flex()
                 .gap_2()
                 .justify_end()
-                .child(text_button(
-                    "tokenway-register",
-                    "还没有账号？注册 Tokenway",
-                    ButtonLook::Ghost,
-                    move |_, window, cx| {
-                        register.update(cx, |this, cx| this.tokenway_register(window, cx));
-                    },
-                ))
                 .child(text_button(
                     "tokenway-paste",
                     "我已有 Key，直接粘贴",
@@ -701,7 +702,8 @@ impl MainWindow {
                     move |_, window, cx| {
                         connect.update(cx, |this, cx| this.tokenway_connect(window, cx));
                     },
-                ))
+                ));
+            v_flex().gap_2().child(register_row).child(buttons)
         };
         body.child(actions).into_any_element()
     }

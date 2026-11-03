@@ -49,6 +49,7 @@ mod real {
         "aib_option",
         "aib_pick",
         "aib_pick_model",
+        "aib_override",
         "aib_test",
         "aib_wait_test",
         "aib_save",
@@ -279,6 +280,12 @@ mod real {
                 this.ai_dialog_pick_model(a.to_owned(), window, cx);
                 Ok(Outcome::Done)
             }
+            // aib_override:<模型>：在高级里的「要覆盖的模型」下拉里选一个（V2-A5）。
+            "aib_override" => {
+                dialog(this)?;
+                this.ai_dialog_pick_override_model(a.to_owned(), window, cx);
+                Ok(Outcome::Done)
+            }
             "aib_test" => {
                 dialog(this)?;
                 this.ai_endpoint_test(window, cx);
@@ -486,6 +493,21 @@ mod real {
                     if row.is_default { "默认接口" } else { "" }
                 );
                 check(detail.contains(text), format!("接口行没有包含「{text}」"))
+            }
+            // override_target:<模型>：手动覆盖现在对应哪个模型；override_ctx:<模型>|<n>：那个模型的手动上下文窗口。
+            "override_target" => {
+                let d = dialog(this)?;
+                check(
+                    d.override_model == value,
+                    format!("覆盖目标是「{}」", d.override_model),
+                )
+            }
+            "override_ctx" => {
+                let (model, n) = value.split_once('|').ok_or("override_ctx:<模型>|<n>")?;
+                let want: u32 = n.parse().map_err(|_| "窗口不是数字")?;
+                let d = dialog(this)?;
+                let have = d.manual_for(model, cx).and_then(|item| item.context_window);
+                check(have == Some(want), format!("{model} 的手动窗口是 {have:?}"))
             }
             "default" => {
                 let row = this
