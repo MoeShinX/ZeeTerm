@@ -56,6 +56,18 @@ pub fn take_view_terminal_request() -> Option<(String, Option<String>)> {
         .take()
 }
 
+/// AI 面板里点了「重新连接 <主机>」（对话绑定的主机已经没有打开的终端）：主窗口下一个节拍为它开一个标签。
+static OPEN_HOST: std::sync::Mutex<Option<i64>> = std::sync::Mutex::new(None);
+
+pub fn request_open_host(host_id: i64) {
+    *OPEN_HOST.lock().unwrap_or_else(|p| p.into_inner()) = Some(host_id);
+}
+
+/// 取走「重新连接」的请求（取一次就清掉）。
+pub fn take_open_host_request() -> Option<i64> {
+    OPEN_HOST.lock().unwrap_or_else(|p| p.into_inner()).take()
+}
+
 /// 重新检测一个智能体（设置页「重新检测」、改了路径、下载完）。
 pub fn refresh(kind: AgentKind) {
     status::store().refresh(kind, &crate::settings::data_dir());

@@ -285,6 +285,7 @@ impl Rig {
             current,
             pinned: !current,
             refusal: None,
+            terminal: None,
         }];
         for existing in self.tools.scope().targets() {
             if let Some(id) = zssh_core::ai::protocol::parse_host_target_id(&existing.id)
@@ -297,6 +298,7 @@ impl Rig {
                     current: existing.current,
                     pinned: existing.pinned,
                     refusal: None,
+                    terminal: None,
                 });
             }
         }

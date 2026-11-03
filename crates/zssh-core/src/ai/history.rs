@@ -78,6 +78,23 @@ pub enum HistoryMessage {
     },
 }
 
+/// 对话锚定的目标（V2-U15）：第一条消息发出时定下来的那台主机。只存主机库里的 id 和显示名，
+/// 不存地址 / 用户名；快速连接（没有主机记录）的终端 `host_id` 为空，名字是个中性的占位。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryAnchor {
+    #[serde(default)]
+    pub host_id: Option<i64>,
+    pub name: String,
+}
+
+impl HistoryAnchor {
+    /// 名字截到上限（防止异常长的名字撑大列表），空名字当没有锚定。
+    fn cleaned(self) -> Option<Self> {
+        let name: String = self.name.trim().chars().take(HOST_LABEL_CHARS).collect();
+        (!name.is_empty()).then_some(Self { name, ..self })
+    }
+}
+
 /// 一个会话文件的完整内容。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HistoryRecord {
@@ -91,6 +108,9 @@ pub struct HistoryRecord {
     /// 目标主机的显示名（主机库里的名字；不是地址）。
     #[serde(default)]
     pub host_label: Option<String>,
+    /// 对话锚定的主机；旧文件没有这个字段，按"没有锚定"处理。
+    #[serde(default)]
+    pub anchor: Option<HistoryAnchor>,
     /// 智能体自己的会话标识（opencode 的 session id、codex 的 thread id、Claude Code
     /// 的 session id），续接用；没有就只能回看。
     #[serde(default)]
@@ -108,6 +128,7 @@ pub struct HistorySummary {
     pub created_at: u64,
     pub updated_at: u64,
     pub host_label: Option<String>,
+    pub anchor: Option<HistoryAnchor>,
     pub message_count: usize,
     /// 有智能体的会话标识（可以尝试续接）。
     pub resumable: bool,
@@ -119,6 +140,8 @@ pub struct HistoryDraft {
     pub id: String,
     #[serde(default)]
     pub host_label: Option<String>,
+    #[serde(default)]
+    pub anchor: Option<HistoryAnchor>,
     #[serde(default)]
     pub messages: Vec<HistoryMessage>,
 }
@@ -136,6 +159,8 @@ struct SummaryOnly {
     updated_at: u64,
     #[serde(default)]
     host_label: Option<String>,
+    #[serde(default)]
+    anchor: Option<HistoryAnchor>,
     #[serde(default)]
     agent_session_id: Option<String>,
     #[serde(default)]
@@ -222,6 +247,7 @@ impl HistoryStore {
                 .host_label
                 .map(|h| h.trim().chars().take(HOST_LABEL_CHARS).collect::<String>())
                 .filter(|h| !h.is_empty()),
+            anchor: draft.anchor.and_then(HistoryAnchor::cleaned),
             agent_session_id: agent_session_id
                 .filter(|s| !s.trim().is_empty())
                 .or_else(|| previous.and_then(|p| p.agent_session_id)),
@@ -239,6 +265,7 @@ impl HistoryStore {
             created_at: record.created_at,
             updated_at: record.updated_at,
             host_label: record.host_label,
+            anchor: record.anchor,
             message_count,
             resumable: record.agent_session_id.is_some(),
         }))
@@ -415,6 +442,7 @@ fn read_summary(path: &Path) -> Result<HistorySummary, HistoryError> {
         created_at: raw.created_at,
         updated_at: raw.updated_at,
         host_label: raw.host_label,
+        anchor: raw.anchor,
         message_count: raw.messages.len(),
         resumable: raw.agent_session_id.is_some(),
     })
@@ -595,6 +623,7 @@ mod tests {
         HistoryDraft {
             id: id.to_string(),
             host_label: Some("web-1".to_string()),
+            anchor: None,
             messages,
         }
     }
@@ -964,6 +993,65 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec!["a.json".to_string()]);
+    }
+
+    #[test]
+    fn anchor_round_trips_and_old_files_without_it_still_load() {
+        let (dir, store) = store();
+        let mut d = draft("a1", vec![user("看看磁盘"), assistant("好的")]);
+        d.anchor = Some(HistoryAnchor {
+            host_id: Some(7),
+            name: "  web-1 ".into(),
+        });
+        let summary = store.save("claude", d, None, &[], 1000).unwrap().unwrap();
+        let expected = HistoryAnchor {
+            host_id: Some(7),
+            name: "web-1".into(),
+        };
+        assert_eq!(summary.anchor.as_ref(), Some(&expected));
+        assert_eq!(
+            store.list("claude").unwrap()[0].anchor,
+            Some(expected.clone())
+        );
+        assert_eq!(store.load("claude", "a1").unwrap().anchor, Some(expected));
+
+        // 快速连接：没有主机 id，只有中性的占位名。
+        let mut quick = draft("a2", vec![user("x")]);
+        quick.anchor = Some(HistoryAnchor {
+            host_id: None,
+            name: "快速连接".into(),
+        });
+        store.save("claude", quick, None, &[], 2000).unwrap();
+        assert_eq!(
+            store.load("claude", "a2").unwrap().anchor.unwrap().host_id,
+            None
+        );
+
+        // 空名字 = 没有锚定。
+        let mut blank = draft("a3", vec![user("x")]);
+        blank.anchor = Some(HistoryAnchor {
+            host_id: Some(1),
+            name: "   ".into(),
+        });
+        assert_eq!(
+            store
+                .save("claude", blank, None, &[], 3000)
+                .unwrap()
+                .unwrap()
+                .anchor,
+            None
+        );
+
+        // 旧文件（没有 anchor 字段）：照常读，按"没有锚定"处理。
+        let old = r#"{"version":1,"id":"old1","agent":"claude","title":"旧的","created_at":5,
+            "updated_at":6,"host_label":"web-1","messages":[{"kind":"user","text":"旧的"}]}"#;
+        std::fs::write(dir.join("ai-history").join("claude").join("old1.json"), old).unwrap();
+        let record = store.load("claude", "old1").unwrap();
+        assert_eq!(record.anchor, None);
+        assert_eq!(record.host_label.as_deref(), Some("web-1"));
+        let listed = store.list("claude").unwrap();
+        let old_row = listed.iter().find(|row| row.id == "old1").unwrap();
+        assert_eq!(old_row.anchor, None);
     }
 
     #[test]
