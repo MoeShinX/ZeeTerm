@@ -173,9 +173,11 @@ mod real {
     }
 
     fn term_window_act(
+        this: &mut MainWindow,
         sub: &str,
         b: &str,
         c: &str,
+        window: &mut Window,
         cx: &mut Context<MainWindow>,
     ) -> Result<Outcome, String> {
         let handles = crate::term_window::handles(cx);
@@ -187,6 +189,29 @@ mod real {
             }
         };
         match sub {
+            // pop：把主窗口当前标签弹出成独立终端窗口（和拖出标签同一条路，会话不断）。
+            "pop" => {
+                let Some(tab_id) =
+                    this.workspace.read(cx).active_index().and_then(|index| {
+                        this.workspace.read(cx).tab_infos().get(index).map(|i| i.id)
+                    })
+                else {
+                    return Err("主窗口没有终端标签可以弹出".to_owned());
+                };
+                let Some((index, tab)) = this
+                    .workspace
+                    .update(cx, |ws, cx| ws.take_tab_by_id(tab_id, cx))
+                else {
+                    return Err("取不出这个标签".to_owned());
+                };
+                match crate::term_window::open(cx, tab, None) {
+                    Ok(_) => this.after_tabs_closed(window, cx),
+                    Err(tab) => this
+                        .workspace
+                        .update(cx, |ws, cx| ws.restore_tab(index, tab, cx)),
+                }
+                Ok(Outcome::Done)
+            }
             "count" => {
                 let want: usize = number(b, "个数")?;
                 pending(handles.len() == want)
@@ -210,7 +235,12 @@ mod real {
                 Ok(Outcome::Done)
             }
             _ => {
-                let Some(handle) = handles.first().copied() else {
+                // 子命令前面加 `last_` 就对最后一个独立窗口操作（默认是第一个）。
+                let (sub, handle) = match sub.strip_prefix("last_") {
+                    Some(rest) => (rest, handles.last().copied()),
+                    None => (sub, handles.first().copied()),
+                };
+                let Some(handle) = handle else {
                     return Ok(Outcome::Pending);
                 };
                 match sub {
@@ -231,6 +261,50 @@ mod real {
                             })
                             .map_err(|_| "窗口已经关闭".to_owned())?;
                         Ok(Outcome::Done)
+                    }
+                    // set:theme:dark|light|auto / set:font:<增量> / set:rule:<模式> / set:highlight:on|off：
+                    //   在这个独立窗口的工作区里改设置（和它设置页的按钮同一批方法）。
+                    "set" => {
+                        let value = c;
+                        let workspace = handle
+                            .read_with(cx, |view, _| view.dev_workspace())
+                            .map_err(|_| "窗口已经关闭".to_owned())?;
+                        match b {
+                            "theme" => workspace.update(cx, |ws, cx| match value {
+                                "dark" => ws.set_theme(true, cx),
+                                "light" => ws.set_theme(false, cx),
+                                _ => ws.set_theme_auto(cx),
+                            }),
+                            "font" => {
+                                let delta: f32 = number(value, "增量")?;
+                                workspace.update(cx, |ws, cx| ws.adjust_font(delta, cx));
+                            }
+                            "rule" => {
+                                let pattern = value.to_owned();
+                                workspace
+                                    .update(cx, |ws, cx| ws.add_highlight_rule(pattern, false, cx));
+                            }
+                            "highlight" => {
+                                let want = value == "on";
+                                workspace.update(cx, |ws, cx| {
+                                    if ws.settings().highlight_enabled != want {
+                                        ws.toggle_highlight_enabled(cx);
+                                    }
+                                });
+                            }
+                            _ => {
+                                return Err("set 只能是 theme / font / rule / highlight".to_owned());
+                            }
+                        }
+                        Ok(Outcome::Done)
+                    }
+                    // mem:<字段>:<值>：这个窗口手里的设置读缓存（不读盘）是不是这个值；还没到就等下一帧。
+                    "mem" => {
+                        let workspace = handle
+                            .read_with(cx, |view, _| view.dev_workspace())
+                            .map_err(|_| "窗口已经关闭".to_owned())?;
+                        let have = workspace.read(cx).dev_settings_text(b, cx)?;
+                        pending(have == c)
                     }
                     "type" => {
                         let text = b.replace(r"\r", "\r");
@@ -371,7 +445,7 @@ mod real {
             }
             // term_window:count:<n> 独立终端窗口个数 / tabs:<n> 第一个窗口里的标签数 / type:<文字> 往它当前标签打字 /
             //   expect:<文字> 它当前标签屏幕上有这段话 / status:<标签下标>:<connected|disconnected> / bounds 写进日志。
-            "term_window" => return term_window_act(a, _b, _c, cx),
+            "term_window" => return term_window_act(this, a, _b, _c, window, cx),
             // tab_drag:idle 没有拖动在进行 / tab_drag:active 有。
             "tab_drag" => {
                 let active = crate::tab_drag::current(cx).is_some();

@@ -615,6 +615,7 @@ pub fn spawn_from_env(view: Entity<MainWindow>, handle: AnyWindowHandle, cx: &mu
                     let _ = handle.update(cx, |_, window, cx| {
                         view.update(cx, |this, cx| this.on_close(window, cx))
                     });
+                    crate::settings_store::flush_to_disk();
                     std::process::exit(2);
                 }
             }
@@ -880,6 +881,7 @@ fn run_step(
         }
         Step::Quit => {
             this.on_close(window, cx);
+            crate::settings_store::flush_to_disk();
             std::process::exit(0);
         }
     }

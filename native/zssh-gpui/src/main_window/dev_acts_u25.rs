@@ -148,7 +148,8 @@ mod real {
             }
             "assert_term_paste_switch" => {
                 let want = on_off(arg)?;
-                // 从磁盘重读，不看内存里的值。
+                // 从磁盘重读，不看内存里的值（先等后台把待写的写完）。
+                crate::settings_store::flush_to_disk();
                 let have = crate::settings::UiSettings::load().right_click_paste;
                 check(have == want, format!("磁盘上是 {have}"))
             }

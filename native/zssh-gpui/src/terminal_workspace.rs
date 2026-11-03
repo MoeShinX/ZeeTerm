@@ -42,6 +42,7 @@ use crate::settings::{
     CursorShape, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MAX_LINE_HEIGHT, MAX_SCROLLBACK, MIN_FONT_SIZE,
     MIN_LINE_HEIGHT, MIN_SCROLLBACK, UiSettings,
 };
+use crate::settings_store::AppSettings;
 use crate::sftp_demo::{SftpDrag, terminal_insert_text};
 use crate::split_tree::{self, Axis, Layout, Node, PaneId};
 use crate::tab_set::TabSet;
@@ -931,8 +932,13 @@ pub struct TerminalWorkspace {
     cell_height: f32,
     pending_paste: Option<PendingPaste>,
     hover_link: Option<Arc<str>>,
-    /// 持久化的界面设置（字号、行高、光标、主题）。
+    /// 应用级设置实体（全进程一份，所有窗口共用）；改设置走它，不在窗口里存盘。
+    settings_store: Entity<AppSettings>,
+    /// 界面设置的读缓存（字号、行高、光标、主题……）和它对应的修订号：别处改了会通过订阅更新。
     settings: UiSettings,
+    settings_rev: u64,
+    /// 已经提示过的写盘失败次数：同一次失败只提示一回。
+    settings_error_seen: u64,
     /// 一行状态文字（日志路径、「正在重新连接…」、不能执行的原因）。
     status_text: String,
     /// 高亮规则与最近一次扫描结果。
@@ -1028,7 +1034,11 @@ impl TerminalWorkspace {
     /// 空的工作区：一个标签也没有。外壳自己决定什么时候开第一个。
     pub fn new(window: &mut Window, cx: &mut Context<Self>, ime_key: String) -> Self {
         let focus = cx.focus_handle();
-        let settings = UiSettings::load();
+        let settings_store = AppSettings::global(cx);
+        let (settings, settings_rev) = {
+            let model = settings_store.read(cx);
+            (model.settings().clone(), model.revision())
+        };
         let rules = settings
             .highlight_rules
             .clone()
@@ -1094,6 +1104,12 @@ impl TerminalWorkspace {
                 }
             },
         ));
+        // 别的窗口（主窗口、独立终端窗口）改了设置：更新读缓存，处理这个窗口里受影响的东西。
+        settings_subs.push(
+            cx.observe_in(&settings_store, window, |this, _store, window, cx| {
+                this.sync_settings(Some(window), cx)
+            }),
+        );
         let mut this = Self {
             tabs: TabSet::new(),
             focus,
@@ -1104,7 +1120,10 @@ impl TerminalWorkspace {
             cell_height: 18.0,
             pending_paste: None,
             hover_link: None,
+            settings_store,
             settings,
+            settings_rev,
+            settings_error_seen: 0,
             status_text: String::new(),
             dragging_split: None,
             pane_geom: Vec::new(),
@@ -1145,7 +1164,14 @@ impl TerminalWorkspace {
                         && this.focus.is_focused(window)
                         && this.cursor_blink.changed();
                     let latency = this.sync_latency(window);
-                    if this.poll_highlight() || sessions || relayout || blink || latency {
+                    let save_failed = this.note_settings_save_failure(cx);
+                    if this.poll_highlight()
+                        || sessions
+                        || relayout
+                        || blink
+                        || latency
+                        || save_failed
+                    {
                         cx.notify();
                     }
                 });
@@ -1154,22 +1180,25 @@ impl TerminalWorkspace {
                 }
             }
         });
-        // 跟随系统主题：每 2 秒对齐一次，只有「自动」模式会真正切换。
-        cx.spawn_in(window, async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_secs(2)).await;
-                let alive = this.update_in(cx, |this, _window, cx| this.sync_system_theme(cx));
-                if alive.is_err() {
-                    break;
-                }
-            }
-        })
-        .detach();
         this
     }
 
     pub fn focus_handle(&self) -> FocusHandle {
         self.focus.clone()
+    }
+
+    /// 设置写盘失败要让用户看得见（状态栏一行字）；同一次失败只提示一回，后台会自动重试。
+    fn note_settings_save_failure(&mut self, cx: &App) -> bool {
+        let (error, seq) = self.settings_store.read(cx).save_error();
+        if seq == self.settings_error_seen {
+            return false;
+        }
+        self.settings_error_seen = seq;
+        let Some(error) = error else {
+            return false;
+        };
+        self.status_text = format!("设置没能保存（会自动重试）：{error}");
+        true
     }
 
     /// 外壳告诉工作区：终端内容现在有没有摆在窗口里（影响延迟测量的暂停 / 恢复）。
@@ -1812,6 +1841,39 @@ impl TerminalWorkspace {
 
     /// 调试驱动用：「右键粘贴」设成指定值（走设置页开关同一个方法）。
     #[cfg(debug_assertions)]
+    /// 调试钩子：这个窗口的设置读缓存里某一项的文字（跨窗口一致性断言用，不读盘）。
+    pub(crate) fn dev_settings_text(&self, field: &str, cx: &App) -> Result<String, String> {
+        Ok(match field {
+            "font_size" => format!("{}", self.settings.font_size),
+            "dark" => (if crate::app_theme::is_dark(cx) {
+                "yes"
+            } else {
+                "no"
+            })
+            .to_owned(),
+            "follow_system" => (if self.settings.follow_system {
+                "on"
+            } else {
+                "off"
+            })
+            .to_owned(),
+            "highlight" => (if self.settings.highlight_enabled {
+                "on"
+            } else {
+                "off"
+            })
+            .to_owned(),
+            "rules" => self.highlight.rules.len().to_string(),
+            "revision" => self.settings_rev.to_string(),
+            _ => {
+                return Err(
+                    "字段只能是 font_size / dark / follow_system / highlight / rules / revision"
+                        .to_owned(),
+                );
+            }
+        })
+    }
+
     pub(crate) fn dev_right_click_paste(&mut self, on: bool, cx: &mut Context<Self>) {
         if self.settings.right_click_paste != on {
             self.toggle_right_click_paste(cx);
@@ -2372,20 +2434,21 @@ impl TerminalWorkspace {
             .rules
             .push(HighlightRule::new(id, pattern, case_sensitive));
         self.highlight.bump();
-        self.persist_highlight_rules();
+        self.persist_highlight_rules(cx);
         cx.notify();
     }
 
-    fn persist_highlight_rules(&mut self) {
-        self.settings.highlight_rules = Some(self.highlight.rules.clone());
-        self.settings.save();
+    /// 把这个窗口里改过的规则集写进应用级设置（其他窗口通过订阅换成同一份）。
+    fn persist_highlight_rules(&mut self, cx: &mut Context<Self>) {
+        let rules = self.highlight.rules.clone();
+        self.update_settings(cx, move |s| s.highlight_rules = Some(rules));
     }
 
     pub(crate) fn toggle_highlight_rule(&mut self, id: u64, cx: &mut Context<Self>) {
         if let Some(rule) = self.highlight.rules.iter_mut().find(|rule| rule.id == id) {
             rule.enabled = !rule.enabled;
             self.highlight.bump();
-            self.persist_highlight_rules();
+            self.persist_highlight_rules(cx);
             cx.notify();
         }
     }
@@ -2400,7 +2463,7 @@ impl TerminalWorkspace {
         if let Some(rule) = self.highlight.rules.iter_mut().find(|rule| rule.id == id) {
             edit(rule);
             self.highlight.bump();
-            self.persist_highlight_rules();
+            self.persist_highlight_rules(cx);
             cx.notify();
         }
     }
@@ -2449,7 +2512,7 @@ impl TerminalWorkspace {
         .0;
         self.highlight.rules.push(rule);
         self.highlight.bump();
-        self.persist_highlight_rules();
+        self.persist_highlight_rules(cx);
         cx.notify();
         Some(id)
     }
@@ -2467,7 +2530,7 @@ impl TerminalWorkspace {
         }
         if added > 0 {
             self.highlight.bump();
-            self.persist_highlight_rules();
+            self.persist_highlight_rules(cx);
             cx.notify();
         }
         added
@@ -2476,7 +2539,7 @@ impl TerminalWorkspace {
     pub(crate) fn remove_highlight_rule(&mut self, id: u64, cx: &mut Context<Self>) {
         self.highlight.rules.retain(|rule| rule.id != id);
         self.highlight.bump();
-        self.persist_highlight_rules();
+        self.persist_highlight_rules(cx);
         cx.notify();
     }
 
@@ -2484,11 +2547,91 @@ impl TerminalWorkspace {
         self.highlight.rules = crate::highlight::default_rules();
         self.highlight.next_id = 8;
         self.highlight.bump();
-        self.persist_highlight_rules();
+        self.persist_highlight_rules(cx);
         cx.notify();
     }
 
     // ---- 主题与设置（外壳的设置页和调试窗口共用） ----
+    //
+    // 设置是应用级的，只有一份（`settings_store::AppSettings`）：这里的 `self.settings` 只是读缓存，
+    // 改设置一律走 `update_settings`（按字段改、不整份回写），别的窗口改了会通过订阅更新这份缓存。
+    // 主题的应用、跟随系统的轮询、落盘都不在窗口里做。
+
+    /// 按字段改应用级设置；自己的读缓存马上跟上，字段变化带来的窗口内副作用一并处理。
+    /// 返回设置是否真的变了。
+    fn update_settings(
+        &mut self,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&mut UiSettings),
+    ) -> bool {
+        let store = self.settings_store.clone();
+        let changed = store.update(cx, |model, mcx| model.update_with(mcx, edit));
+        self.sync_settings(None, cx);
+        changed
+    }
+
+    /// 应用级设置变了（自己改的，或别的窗口改的）：更新读缓存，处理这个窗口里受影响的东西。
+    /// `window` 只有订阅回调里有；拿得到才去同步设置页上的输入框和滑块。
+    fn sync_settings(&mut self, window: Option<&mut Window>, cx: &mut Context<Self>) {
+        let (latest, revision) = {
+            let model = self.settings_store.read(cx);
+            (model.settings().clone(), model.revision())
+        };
+        if revision == self.settings_rev {
+            return;
+        }
+        let before = std::mem::replace(&mut self.settings, latest);
+        self.settings_rev = revision;
+        self.apply_settings_change(&before, window, cx);
+    }
+
+    fn apply_settings_change(
+        &mut self,
+        before: &UiSettings,
+        mut window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        let effects =
+            crate::settings_store::window_effects(before, &self.settings, &self.highlight.rules);
+        if effects.font_family {
+            self.font_cache = None;
+            if let Some(window) = window.as_deref_mut() {
+                let stack = self.settings.font_family.clone();
+                // 输入框里已经是这个值（本来就是它触发的修改）就不再设，免得来回触发。
+                if self.font_input.read(cx).value().as_ref() != stack.as_str() {
+                    self.font_input
+                        .update(cx, |state, cx| state.set_value(stack, window, cx));
+                }
+            }
+        }
+        if let Some(lines) = effects.scrollback {
+            for tab in self.tabs.items_mut() {
+                for pane in &mut tab.panes {
+                    pane.set_history(lines);
+                }
+            }
+            if let Some(window) = window {
+                self.scrollback_slider
+                    .update(cx, |state, cx| state.set_value(lines as f32, window, cx));
+            }
+        }
+        // 高亮规则也是应用级的：别的窗口改了，这里换成同一份并重新扫描。自己改的规则
+        // 已经先写进 `self.highlight.rules` 了，两边一致就什么都不用做。
+        if let Some(incoming) = effects.adopt_rules {
+            let top = incoming.iter().map(|rule| rule.id).max().unwrap_or(0) + 1;
+            self.highlight.next_id = self.highlight.next_id.max(top);
+            self.highlight.rules = incoming;
+            self.highlight.bump();
+        }
+        if effects.release_ime {
+            crate::ime::apply(&self.ime_key, false);
+        }
+        if effects.reset_blink {
+            // 刚改完光标要看得见：闪烁相位回到「亮」。
+            self.cursor_blink = BlinkClock::new();
+        }
+        cx.notify();
+    }
 
     pub(crate) fn toggle_theme(&mut self, cx: &mut Context<Self>) {
         let dark = !crate::app_theme::is_dark(cx);
@@ -2496,47 +2639,20 @@ impl TerminalWorkspace {
     }
 
     pub(crate) fn set_theme(&mut self, dark: bool, cx: &mut Context<Self>) {
-        self.settings.follow_system = false;
-        self.settings.dark = dark;
-        crate::app_theme::set_mode(dark, cx);
-        self.settings.save();
+        self.update_settings(cx, |s| {
+            s.follow_system = false;
+            s.dark = dark;
+        });
         cx.notify();
     }
 
     pub(crate) fn set_theme_auto(&mut self, cx: &mut Context<Self>) {
-        self.settings.follow_system = true;
-        let dark = crate::settings::resolve_dark(
-            true,
-            self.settings.dark,
-            zssh_platform_windows::theme::apps_use_light_theme(),
-        );
-        self.settings.dark = dark;
-        crate::app_theme::set_mode(dark, cx);
-        self.settings.save();
+        let system_light = zssh_platform_windows::theme::apps_use_light_theme();
+        self.update_settings(cx, |s| {
+            s.follow_system = true;
+            s.dark = crate::settings::resolve_dark(true, s.dark, system_light);
+        });
         cx.notify();
-    }
-
-    /// 「自动」模式下周期性对齐系统主题；系统值没变时什么都不做。
-    fn sync_system_theme(&mut self, cx: &mut Context<Self>) {
-        if !self.settings.follow_system {
-            return;
-        }
-        let Some(dark) = zssh_platform_windows::theme::apps_use_light_theme().map(|light| !light)
-        else {
-            return;
-        };
-        if dark == crate::app_theme::is_dark(cx) {
-            return;
-        }
-        self.settings.dark = dark;
-        crate::app_theme::set_mode(dark, cx);
-        self.settings.save();
-        cx.notify();
-    }
-
-    /// 把设置里的皮肤 / 终端配色写进全局主题（界面和终端一起变）。
-    fn apply_look(&self, cx: &mut Context<Self>) {
-        crate::app_theme::set_look(self.settings.look(), cx);
     }
 
     /// 换皮肤：`dark` 选的是深色那一栏还是浅色那一栏；明暗对不上的 id 不收。
@@ -2545,17 +2661,15 @@ impl TerminalWorkspace {
         if crate::app_theme::skin(id).is_none_or(|skin| skin.dark != dark) {
             return;
         }
-        let slot = if dark {
-            &mut self.settings.skin_dark
-        } else {
-            &mut self.settings.skin_light
-        };
-        if slot == id {
-            return;
-        }
-        *slot = id.to_owned();
-        self.apply_look(cx);
-        self.settings.save();
+        let id = id.to_owned();
+        self.update_settings(cx, move |s| {
+            let slot = if dark {
+                &mut s.skin_dark
+            } else {
+                &mut s.skin_light
+            };
+            *slot = id;
+        });
         cx.notify();
     }
 
@@ -2566,9 +2680,8 @@ impl TerminalWorkspace {
         {
             return;
         }
-        self.settings.terminal_theme = id.to_owned();
-        self.apply_look(cx);
-        self.settings.save();
+        let id = id.to_owned();
+        self.update_settings(cx, move |s| s.terminal_theme = id);
         cx.notify();
     }
 
@@ -2578,9 +2691,7 @@ impl TerminalWorkspace {
         if stack == self.settings.font_family {
             return;
         }
-        self.settings.font_family = stack;
-        self.font_cache = None;
-        self.settings.save();
+        self.update_settings(cx, move |s| s.font_family = stack);
         cx.notify();
     }
 
@@ -2629,127 +2740,106 @@ impl TerminalWorkspace {
 
     /// 回滚行数（1000～100000）：所有标签里已经开着的窗格立刻按新上限（调小会丢掉最旧的行，
     /// 调大只是以后能攒更多，同 xterm 的 `scrollback` 选项），之后新开的窗格也用它。
+    /// 已开窗格的调整在 `apply_settings_change` 里做，所有窗口都一样。
     pub(crate) fn set_scrollback(&mut self, lines: usize, cx: &mut Context<Self>) {
         let lines = lines.clamp(MIN_SCROLLBACK, MAX_SCROLLBACK);
         if lines == self.settings.scrollback {
             return;
         }
-        self.settings.scrollback = lines;
-        for tab in self.tabs.items_mut() {
-            for pane in &mut tab.panes {
-                pane.set_history(lines);
-            }
-        }
-        self.settings.save();
+        self.update_settings(cx, move |s| s.scrollback = lines);
         cx.notify();
     }
 
     pub(crate) fn adjust_font(&mut self, delta: f32, cx: &mut Context<Self>) {
-        self.settings.font_size =
-            (self.settings.font_size + delta).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
-        self.settings.save();
+        self.update_settings(cx, move |s| {
+            s.font_size = (s.font_size + delta).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+        });
         cx.notify();
     }
 
     pub(crate) fn adjust_line_height(&mut self, delta: f32, cx: &mut Context<Self>) {
-        let next = ((self.settings.line_height + delta) * 100.0).round() / 100.0;
-        self.settings.line_height = next.clamp(MIN_LINE_HEIGHT, MAX_LINE_HEIGHT);
-        self.settings.save();
+        self.update_settings(cx, move |s| {
+            let next = ((s.line_height + delta) * 100.0).round() / 100.0;
+            s.line_height = next.clamp(MIN_LINE_HEIGHT, MAX_LINE_HEIGHT);
+        });
         cx.notify();
     }
 
     pub(crate) fn set_cursor_shape(&mut self, shape: CursorShape, cx: &mut Context<Self>) {
-        self.settings.cursor = shape;
-        self.settings.save();
+        self.update_settings(cx, move |s| s.cursor = shape);
         cx.notify();
     }
 
     pub(crate) fn toggle_cursor_blink(&mut self, cx: &mut Context<Self>) {
-        self.settings.cursor_blink = !self.settings.cursor_blink;
-        // 刚改完光标要看得见：闪烁相位回到「亮」。
-        self.cursor_blink = BlinkClock::new();
-        self.settings.save();
+        self.update_settings(cx, |s| s.cursor_blink = !s.cursor_blink);
         cx.notify();
     }
 
-    /// 「终端里自动切到英文输入」：关掉时焦点进终端不再动输入法；已经在英文区的话马上还回去。
     /// 「在终端右上角显示延迟」：关着时窗格也不再登记成看得见，后台测量随之暂停。
     pub(crate) fn toggle_show_latency(&mut self, cx: &mut Context<Self>) {
-        self.settings.show_latency = !self.settings.show_latency;
-        self.settings.save();
+        self.update_settings(cx, |s| s.show_latency = !s.show_latency);
         cx.notify();
     }
 
+    /// 「终端里自动切到英文输入」：关掉时焦点进终端不再动输入法；已经在英文区的话马上还回去
+    /// （在 `apply_settings_change` 里做）。
     pub(crate) fn toggle_ime_english(&mut self, cx: &mut Context<Self>) {
-        self.settings.ime_english = !self.settings.ime_english;
-        if !self.settings.ime_english {
-            crate::ime::apply(&self.ime_key, false);
-        }
-        self.settings.save();
+        self.update_settings(cx, |s| s.ime_english = !s.ime_english);
         cx.notify();
     }
 
     pub(crate) fn toggle_copy_on_select(&mut self, cx: &mut Context<Self>) {
-        self.settings.copy_on_select = !self.settings.copy_on_select;
-        self.settings.save();
+        self.update_settings(cx, |s| s.copy_on_select = !s.copy_on_select);
         cx.notify();
     }
 
     pub(crate) fn toggle_right_click_paste(&mut self, cx: &mut Context<Self>) {
-        self.settings.right_click_paste = !self.settings.right_click_paste;
-        self.settings.save();
+        self.update_settings(cx, |s| s.right_click_paste = !s.right_click_paste);
         cx.notify();
     }
 
     pub(crate) fn toggle_confirm_multiline(&mut self, cx: &mut Context<Self>) {
-        self.settings.confirm_multiline = !self.settings.confirm_multiline;
-        self.settings.save();
+        self.update_settings(cx, |s| s.confirm_multiline = !s.confirm_multiline);
         cx.notify();
     }
 
     pub(crate) fn toggle_highlight_enabled(&mut self, cx: &mut Context<Self>) {
-        self.settings.highlight_enabled = !self.settings.highlight_enabled;
-        if !self.settings.highlight_enabled {
+        let enable = !self.settings.highlight_enabled;
+        self.update_settings(cx, move |s| s.highlight_enabled = enable);
+        if !enable {
             self.highlight.scheduler.forget();
         } else if self.highlight.rules.is_empty() {
             // 打开时一条规则都没有（用户全删了）：补上常用规则，同 0.2.14，免得开了开关什么也不标。
             self.add_sample_highlight_rules(cx);
         }
-        self.settings.save();
         cx.notify();
     }
 
     pub(crate) fn cycle_bracketed_paste(&mut self, cx: &mut Context<Self>) {
-        self.settings.bracketed_paste = self.settings.bracketed_paste.next();
-        self.settings.save();
+        self.update_settings(cx, |s| s.bracketed_paste = s.bracketed_paste.next());
         cx.notify();
     }
 
     pub(crate) fn toggle_start_hidden(&mut self, cx: &mut Context<Self>) {
-        self.settings.start_hidden = !self.settings.start_hidden;
-        self.settings.save();
+        self.update_settings(cx, |s| s.start_hidden = !s.start_hidden);
         cx.notify();
     }
 
     pub(crate) fn reset_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings = UiSettings::default();
-        self.settings.highlight_rules = Some(self.highlight.rules.clone());
-        let lines = self.settings.scrollback;
-        for tab in self.tabs.items_mut() {
-            for pane in &mut tab.panes {
-                pane.set_history(lines);
-            }
-        }
+        // 高亮规则是用户自己的数据，恢复默认设置不动它。
+        let rules = self.highlight.rules.clone();
+        self.update_settings(cx, move |s| {
+            *s = UiSettings::default();
+            s.highlight_rules = Some(rules);
+        });
         self.font_cache = None;
         self.font_custom = false;
         let stack = self.settings.font_family.clone();
+        let lines = self.settings.scrollback;
         self.font_input
             .update(cx, |state, cx| state.set_value(stack, window, cx));
         self.scrollback_slider
             .update(cx, |state, cx| state.set_value(lines as f32, window, cx));
-        self.apply_look(cx);
-        crate::app_theme::set_mode(self.settings.dark, cx);
-        self.settings.save();
         cx.notify();
     }
 
@@ -2790,20 +2880,21 @@ impl TerminalWorkspace {
         if ctrl {
             match key {
                 "=" | "+" => {
-                    self.settings.font_size = (self.settings.font_size + 1.0).min(MAX_FONT_SIZE);
-                    self.settings.save();
+                    self.update_settings(cx, |s| {
+                        s.font_size = (s.font_size + 1.0).min(MAX_FONT_SIZE)
+                    });
                     cx.notify();
                     return;
                 }
                 "-" => {
-                    self.settings.font_size = (self.settings.font_size - 1.0).max(MIN_FONT_SIZE);
-                    self.settings.save();
+                    self.update_settings(cx, |s| {
+                        s.font_size = (s.font_size - 1.0).max(MIN_FONT_SIZE)
+                    });
                     cx.notify();
                     return;
                 }
                 "0" => {
-                    self.settings.font_size = DEFAULT_FONT_SIZE;
-                    self.settings.save();
+                    self.update_settings(cx, |s| s.font_size = DEFAULT_FONT_SIZE);
                     cx.notify();
                     return;
                 }

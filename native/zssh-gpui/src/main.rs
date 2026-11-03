@@ -52,6 +52,7 @@ mod remote_editor_demo;
 mod selection;
 mod settings;
 mod settings_nav;
+mod settings_store;
 mod settings_view;
 mod sftp_demo;
 mod split_tree;
@@ -104,19 +105,10 @@ fn main() {
         // 编辑器的快捷键要在组件的键位之后注册，同深度的绑定后注册的优先。
         remote_editor_demo::init_commands(cx);
 
-        // 主题要在开任何窗口之前定下来：`Theme::change` 会把颜色重置成组件库默认值，
-        // 之后统一由 `app_theme` 写入自己的色板。
-        {
-            let settings = settings::UiSettings::load();
-            let dark = settings::resolve_dark(
-                settings.follow_system,
-                settings.dark,
-                zssh_platform_windows::theme::apps_use_light_theme(),
-            );
-            // 皮肤和终端配色的选择先记下，`init_mode` 写主题时才取得到。
-            cx.set_global(settings.look());
-            app_theme::init_mode(dark, cx);
-        }
+        // 应用级设置：全进程一份，开任何窗口之前建好（主题在这里定下来：`Theme::change` 会把颜色
+        // 重置成组件库默认值，之后统一由 `app_theme` 写入自己的色板）。主窗口、独立终端窗口都共用它，
+        // 落盘和"跟随系统主题"的轮询也都归它。
+        settings_store::AppSettings::init(cx);
 
         // 空闲自动锁定要知道“ZeeTerm 窗口里最近一次键盘 / 鼠标操作”（V2-U26）：给界面线程装消息钩子。
         if !zssh_platform_windows::activity::install_on_current_thread() {
@@ -220,7 +212,7 @@ fn main() {
         tray::spawn(cx, handle, view.clone());
 
         // 启动隐藏：等窗口真正显示后再收进托盘，否则会被平台的首次显示覆盖。
-        if settings::UiSettings::load().start_hidden {
+        if settings_store::snapshot(cx).start_hidden {
             cx.spawn(async move |cx| {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(250))

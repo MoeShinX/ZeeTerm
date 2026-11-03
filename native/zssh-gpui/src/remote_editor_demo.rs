@@ -326,7 +326,7 @@ impl RemoteEditor {
         } = spec;
         let (sender, events) = std::sync::mpsc::channel();
         let lang = language::language_for(&path);
-        let ui = crate::settings::UiSettings::load();
+        let ui = crate::settings_store::snapshot(cx);
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .line_number(true)

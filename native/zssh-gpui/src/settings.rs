@@ -191,12 +191,6 @@ impl UiSettings {
         serde_json::from_str(&text).ok()
     }
 
-    pub fn save(&self) {
-        if let Err(err) = self.save_to(&settings_path()) {
-            tracing::warn!(%err, "保存界面设置失败");
-        }
-    }
-
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;

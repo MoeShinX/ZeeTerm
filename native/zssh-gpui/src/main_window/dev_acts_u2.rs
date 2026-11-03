@@ -33,6 +33,7 @@ mod real {
         "pref_assert",
         "ui_set",
         "ui_assert",
+        "settings_mem",
         "hl_type",
         "hl_op",
         "hl_assert",
@@ -225,8 +226,18 @@ mod real {
                 }
                 Ok(Outcome::Done)
             }
+            // settings_mem:<字段>:<值>：主窗口手里的设置读缓存（不读盘）是不是这个值；还没到就等下一帧。
+            "settings_mem" => {
+                let have = this.workspace.read(cx).dev_settings_text(a, cx)?;
+                Ok(if have == b {
+                    Outcome::Done
+                } else {
+                    Outcome::Pending
+                })
+            }
             "ui_assert" => {
-                // 断言落盘的值：重新读 ui-settings.json。
+                // 断言落盘的值：先等后台把待写的写完，再重新读 ui-settings.json。
+                crate::settings_store::flush_to_disk();
                 let saved = crate::settings::UiSettings::load();
                 let actual = match a {
                     "cursor" => match saved.cursor {
@@ -241,6 +252,17 @@ mod real {
                     "show_latency" => on_off_text(saved.show_latency),
                     "copy_on_select" => on_off_text(saved.copy_on_select),
                     "start_hidden" => on_off_text(saved.start_hidden),
+                    "follow_system" => on_off_text(saved.follow_system),
+                    // 落盘的明暗（手动选的；跟随系统时只是读不到系统值时的回退）。
+                    "dark" => (if saved.dark { "yes" } else { "no" }).to_owned(),
+                    "font_size" => format!("{}", saved.font_size),
+                    "rules" => saved
+                        .highlight_rules
+                        .map_or_else(
+                            || crate::highlight::default_rules().len(),
+                            |rules| rules.len(),
+                        )
+                        .to_string(),
                     _ => return Err(format!("不认识的外观 / 终端设置 {a}")),
                 };
                 check(actual == b, &format!("{a} 落盘的是 {actual}，要 {b}"))
@@ -308,7 +330,8 @@ mod real {
                 Ok(Outcome::Done)
             }
             "hl_assert" => {
-                // 断言落盘的规则：重新读 ui-settings.json。
+                // 断言落盘的规则：先等后台把待写的写完，再重新读 ui-settings.json。
+                crate::settings_store::flush_to_disk();
                 let saved = crate::settings::UiSettings::load();
                 let rules = saved
                     .highlight_rules

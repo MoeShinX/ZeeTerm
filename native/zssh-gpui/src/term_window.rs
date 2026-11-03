@@ -171,6 +171,11 @@ impl TermWindow {
         self.workspace.read(cx).tab_count()
     }
 
+    /// 这个窗口的工作区（驱动脚本改设置、读设置用）。
+    pub fn dev_workspace(&self) -> Entity<TerminalWorkspace> {
+        self.workspace.clone()
+    }
+
     /// 往当前标签打字（驱动脚本用，和主窗口的 `type:` 步骤同一个方法）。
     pub fn dev_type(&mut self, text: &str, cx: &mut Context<Self>) {
         self.workspace.update(cx, |ws, cx| ws.type_text(text, cx));
