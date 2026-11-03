@@ -12,13 +12,15 @@ use crate::model::ProxyKind;
 use crate::store::Database;
 
 /// 设置键。值是 JSON 字符串：`"ssh_default"`、`"system"`、`"none"` 或 `"proxy:<id>"`。
+/// 设置页选中「使用 SSH 默认代理」时就写 `"ssh_default"`（一直是这样存的），所以「没有值」
+/// = 用户从没选过，和「明确选了 SSH 默认代理」是能区分的。
 pub const APP_NETWORK_PROXY_KEY: &str = "app_network_proxy";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppProxyMode {
-    /// 跟 SSH 的默认代理走（升级上来的默认行为：很多人靠它访问 GitHub）。
+    /// 跟 SSH 的默认代理走（只有用户明确选了才是这个，存成 `"ssh_default"`）。
     SshDefault,
-    /// 读 Windows 的系统代理。
+    /// 读 Windows 的系统代理（没设置过时的默认）。
     System,
     /// 直连，也不读系统代理和环境变量。
     Direct,
@@ -27,19 +29,31 @@ pub enum AppProxyMode {
 }
 
 impl AppProxyMode {
-    /// 设置里的值 → 模式。没设置、读不懂都按 `SshDefault`，保持升级前的行为。
+    /// 设置里的值 → 模式。没设置、读不懂都按 `System`（跟随系统代理）；用户明确选过的值
+    /// （`ssh_default` / `system` / `none` / `proxy:<id>`）原样保留。
     pub fn parse(raw: Option<&str>) -> Self {
         let text = raw
             .and_then(|raw| serde_json::from_str::<String>(raw).ok())
             .unwrap_or_default();
         match text.as_str() {
+            "ssh_default" => Self::SshDefault,
             "system" => Self::System,
             "none" => Self::Direct,
             other => other
                 .strip_prefix("proxy:")
                 .and_then(|id| id.parse().ok())
                 .map(Self::Proxy)
-                .unwrap_or(Self::SshDefault),
+                .unwrap_or(Self::System),
+        }
+    }
+
+    /// 模式 → 要写进设置的值（`parse` 的反函数；设置页下拉选中时存的就是它）。
+    pub fn setting_value(&self) -> String {
+        match self {
+            Self::SshDefault => "ssh_default".to_owned(),
+            Self::System => "system".to_owned(),
+            Self::Direct => "none".to_owned(),
+            Self::Proxy(id) => format!("proxy:{id}"),
         }
     }
 }
@@ -247,11 +261,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mode_parses_and_falls_back_to_the_ssh_default() {
-        assert_eq!(AppProxyMode::parse(None), AppProxyMode::SshDefault);
+    fn unset_or_unreadable_follows_the_system_proxy() {
+        assert_eq!(AppProxyMode::parse(None), AppProxyMode::System);
+        for raw in [
+            "garbage",
+            "\"\"",
+            "\"proxy:x\"",
+            "\"proxy:\"",
+            "\"nonsense\"",
+            "7",
+            "null",
+        ] {
+            assert_eq!(
+                AppProxyMode::parse(Some(raw)),
+                AppProxyMode::System,
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_choices_are_kept() {
         assert_eq!(
             AppProxyMode::parse(Some("\"ssh_default\"")),
-            AppProxyMode::SshDefault
+            AppProxyMode::SshDefault,
+            "明确选了 SSH 默认代理的不能被改成系统代理"
         );
         assert_eq!(
             AppProxyMode::parse(Some("\"system\"")),
@@ -262,14 +296,32 @@ mod tests {
             AppProxyMode::parse(Some("\"proxy:7\"")),
             AppProxyMode::Proxy(7)
         );
-        assert_eq!(
-            AppProxyMode::parse(Some("\"proxy:x\"")),
-            AppProxyMode::SshDefault
-        );
-        assert_eq!(
-            AppProxyMode::parse(Some("garbage")),
-            AppProxyMode::SshDefault
-        );
+    }
+
+    #[test]
+    fn every_mode_round_trips_through_its_stored_value() {
+        for mode in [
+            AppProxyMode::SshDefault,
+            AppProxyMode::System,
+            AppProxyMode::Direct,
+            AppProxyMode::Proxy(42),
+        ] {
+            let stored = serde_json::to_string(&mode.setting_value()).unwrap();
+            assert_eq!(AppProxyMode::parse(Some(&stored)), mode, "{stored}");
+        }
+        assert_eq!(AppProxyMode::SshDefault.setting_value(), "ssh_default");
+    }
+
+    #[test]
+    fn the_database_default_is_the_system_proxy_and_an_explicit_ssh_default_survives() {
+        let db = Database::open_in_memory().expect("内存库");
+        let read = |db: &Database| {
+            AppProxyMode::parse(db.setting_get(APP_NETWORK_PROXY_KEY).unwrap().as_deref())
+        };
+        assert_eq!(read(&db), AppProxyMode::System, "从没设置过");
+        let stored = serde_json::to_string(&AppProxyMode::SshDefault.setting_value()).unwrap();
+        db.setting_set(APP_NETWORK_PROXY_KEY, &stored).unwrap();
+        assert_eq!(read(&db), AppProxyMode::SshDefault);
     }
 
     fn manual(scheme: &str, host: &str, port: u16) -> SystemProxy {
@@ -347,10 +399,17 @@ mod tests {
         db.set_default_proxy_id(Some(ssh.id)).unwrap();
 
         let port = |db: &Database| app_proxy(db).unwrap().map(|proxy| proxy.port);
+        // 没设置时是「跟随系统代理」：那会去读真实注册表，这里不跑，只看解析出的模式。
+        assert_eq!(
+            AppProxyMode::parse(db.setting_get(APP_NETWORK_PROXY_KEY).unwrap().as_deref()),
+            AppProxyMode::System
+        );
+        db.setting_set(APP_NETWORK_PROXY_KEY, "\"ssh_default\"")
+            .unwrap();
         assert_eq!(
             port(&db),
             Some(1080),
-            "没设置时和 SSH 默认代理一样（升级前的行为）"
+            "明确选了 SSH 默认代理就和 SSH 默认代理一样"
         );
         db.setting_set(APP_NETWORK_PROXY_KEY, &format!("\"proxy:{}\"", app.id))
             .unwrap();

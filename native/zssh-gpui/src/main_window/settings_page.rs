@@ -1220,14 +1220,22 @@ impl MainWindow {
             Choice::new("跟随系统代理", app_mode == AppProxyMode::System),
             Choice::new("不使用代理", app_mode == AppProxyMode::Direct),
         ];
-        let mut app_values: Vec<String> =
-            vec!["ssh_default".into(), "system".into(), "none".into()];
+        // 存的值和 `AppProxyMode::parse` 读的是同一套：选「使用 SSH 默认代理」就明确存 `ssh_default`，
+        // 没有值才是从没选过（读作「跟随系统代理」）。
+        let mut app_values: Vec<String> = [
+            AppProxyMode::SshDefault,
+            AppProxyMode::System,
+            AppProxyMode::Direct,
+        ]
+        .iter()
+        .map(AppProxyMode::setting_value)
+        .collect();
         for proxy in proxies {
             app_choices.push(Choice::new(
                 proxy_label(proxy),
                 app_mode == AppProxyMode::Proxy(proxy.id),
             ));
-            app_values.push(format!("proxy:{}", proxy.id));
+            app_values.push(AppProxyMode::Proxy(proxy.id).setting_value());
         }
         // 选中的代理被删了：先显示成「使用 SSH 默认代理」，免得下拉框是空的（同 0.2.14 的 `appProxyChoice`）。
         let app_label = match &app_mode {
@@ -1255,9 +1263,7 @@ impl MainWindow {
                 div()
                     .id("system-proxy-text")
                     .typo(Role::Caption, tokens)
-                    .child(system_proxy_text(
-                        &zssh_core::sync::app_proxy::read_system_proxy(),
-                    )),
+                    .child(system_proxy_text(&system_proxy_now())),
             );
         }
 
@@ -1469,6 +1475,16 @@ fn pref_switch(
 }
 
 /// 「跟随系统代理」时显示读到的系统代理（同 0.2.14 的 `systemProxyText`）。
+/// 设置页显示的「现在的系统代理」。调试钩子 `ZSSH_FAKE_SYSTEM_PROXY`（`none` 或 `host:port`）可以代替
+/// 真实注册表，截图不会拍到开发机自己的代理地址；release 里钩子不存在。
+fn system_proxy_now() -> SystemProxy {
+    match crate::dev_hooks::var("ZSSH_FAKE_SYSTEM_PROXY").as_deref() {
+        Some("none") => SystemProxy::None,
+        Some(server) => zssh_core::sync::app_proxy::parse_system_proxy(true, Some(server), None),
+        None => zssh_core::sync::app_proxy::read_system_proxy(),
+    }
+}
+
 fn system_proxy_text(proxy: &SystemProxy) -> String {
     match proxy {
         SystemProxy::Manual { scheme, host, port } => format!(

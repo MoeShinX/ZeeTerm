@@ -637,6 +637,14 @@ async fn saved_settings_drive_a_sync_through_the_default_proxy_and_secrets_stay_
             })
             .unwrap();
         machine.db.set_default_proxy_id(Some(proxy.id)).unwrap();
+        // 软件联网默认跟随系统代理（会去读本机注册表）：这个用例要的是「走 SSH 默认代理」，明确选它。
+        machine
+            .db
+            .setting_set(
+                zssh_core::sync::app_proxy::APP_NETWORK_PROXY_KEY,
+                "\"ssh_default\"",
+            )
+            .unwrap();
     }
     // 设置表里看不到任何明文密码 / 地址。
     let dump = raw_settings_dump(&a);
