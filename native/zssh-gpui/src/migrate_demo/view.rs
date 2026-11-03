@@ -101,10 +101,17 @@ pub(super) fn preview_rows(preview: &ImportPreview) -> Vec<(&'static str, String
         ),
         (
             "已信任的主机指纹",
-            format!(
-                "{} 条：新增 {}",
-                source.known_hosts, preview.known_hosts_added
-            ),
+            if preview.known_hosts_skipped > 0 {
+                format!(
+                    "{} 条：新增 {}，跳过 {} 条可疑记录",
+                    source.known_hosts, preview.known_hosts_added, preview.known_hosts_skipped
+                )
+            } else {
+                format!(
+                    "{} 条：新增 {}",
+                    source.known_hosts, preview.known_hosts_added
+                )
+            },
         ),
         (
             "快捷命令",
@@ -201,7 +208,14 @@ pub(super) fn done_rows(
         ),
         (
             "已信任的主机指纹".to_owned(),
-            format!("新增 {} 条", applied.known_hosts_added),
+            if applied.known_hosts_skipped > 0 {
+                format!(
+                    "新增 {} 条，跳过 {} 条可疑主机密钥记录",
+                    applied.known_hosts_added, applied.known_hosts_skipped
+                )
+            } else {
+                format!("新增 {} 条", applied.known_hosts_added)
+            },
         ),
         (
             "设置".to_owned(),

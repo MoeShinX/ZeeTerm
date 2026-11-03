@@ -5,6 +5,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use super::scrub;
+
 /// 最近若干行输出（出错时一起报出去）。
 pub type TailBuf = Arc<Mutex<Vec<String>>>;
 
@@ -14,9 +16,20 @@ pub fn tail_buf() -> TailBuf {
 }
 
 /// 把一行塞进尾巴缓冲（超出上限丢最老的）。
+///
+/// 进缓冲之前先脱敏、限长：缓冲里的文字之后会原样进错误提示和日志，智能体刚读到的
+/// 私钥 / 令牌不能在那里露出来。私钥块跨很多行，是否还在块里靠“上一条是不是以
+/// [`scrub::KEY_BLOCK_OPEN`] 结尾”判断，块内的行直接不记。
 pub fn push_tail(tail: &TailBuf, line: &str, keep: usize) {
     if let Ok(mut buf) = tail.lock() {
-        buf.push(line.to_string());
+        let in_block = buf
+            .last()
+            .is_some_and(|last| last.ends_with(scrub::KEY_BLOCK_OPEN));
+        let scrubbed = scrub::scrub_stream_line(line, in_block);
+        let Some(text) = scrubbed.text else {
+            return;
+        };
+        buf.push(scrub::clip(&text, scrub::MAX_LINE_CHARS));
         if buf.len() > keep {
             let overflow = buf.len() - keep;
             buf.drain(..overflow);
@@ -24,20 +37,32 @@ pub fn push_tail(tail: &TailBuf, line: &str, keep: usize) {
     }
 }
 
-/// 把 stdout / stderr 的尾巴拼成一段可读文本。
+/// 尾巴整段文字最多留这么多字符（留最后的，那里才是出错前最后一刻的输出）。
+const MAX_TAIL_TEXT_CHARS: usize = 1500;
+
+/// 把 stdout / stderr 的尾巴拼成一段可读文本，给错误提示和日志用：已脱敏、限长。
 pub fn tail_text(stdout: &TailBuf, stderr: &TailBuf) -> String {
     let mut parts = Vec::new();
-    if let Ok(tail) = stdout.lock() {
-        if !tail.is_empty() {
-            parts.push(format!("，stdout 尾部：{}", tail.join(" | ")));
-        }
-    }
-    if let Ok(tail) = stderr.lock() {
-        if !tail.is_empty() {
-            parts.push(format!("，stderr 尾部：{}", tail.join(" | ")));
+    for (label, buf) in [("stdout", stdout), ("stderr", stderr)] {
+        if let Ok(tail) = buf.lock() {
+            if !tail.is_empty() {
+                // 缓冲里的行进来时已经脱敏过；这里再过一遍是兜底（有调用方直接改过缓冲）。
+                let joined = scrub::scrub_line(&tail.join(" | "));
+                parts.push(format!("，{label} 尾部：{}", clip_tail(&joined)));
+            }
         }
     }
     parts.concat()
+}
+
+/// 只留最后 [`MAX_TAIL_TEXT_CHARS`] 个字符。
+fn clip_tail(text: &str) -> String {
+    let total = text.chars().count();
+    if total <= MAX_TAIL_TEXT_CHARS {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().skip(total - MAX_TAIL_TEXT_CHARS).collect();
+    format!("…{kept}")
 }
 
 /// 杀掉整个进程树（智能体底下挂着 zssh-mcp 等子进程）。
@@ -183,7 +208,8 @@ pub fn process_is_alive(pid: u32) -> Option<bool> {
 
 /// 起一个任务把 reader 逐行读空、塞进尾巴缓冲。
 ///
-/// `tag` 只进 trace 日志。返回的任务句柄丢着不管即可（进程退出时自然结束）。
+/// `tag` 只进 trace 日志。trace 里只记每行的长度，不记内容：智能体的输出可能带着它
+/// 刚读到的私钥 / 令牌（M-2）。返回的任务句柄丢着不管即可（进程退出时自然结束）。
 pub fn drain_tail_lines<R>(
     reader: R,
     tail: TailBuf,
@@ -197,7 +223,7 @@ where
     tokio::spawn(async move {
         let mut lines = tokio::io::BufReader::new(reader).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            tracing::trace!(target: "agent", "{tag}: {line}");
+            tracing::trace!(target: "agent", len = line.len(), "{tag}: 一行输出");
             push_tail(&tail, &line, keep);
         }
     })
@@ -224,6 +250,72 @@ mod tests {
         let text = tail_text(&tail_buf(), &tail);
         assert!(text.contains("line-7") && text.contains("line-9"));
         assert!(!text.contains("line-6"), "超过上限的丢最老的：{text}");
+    }
+
+    // 假秘密拼出来：源码里不放完整的令牌 / 私钥头样式。
+    fn fake_sk() -> String {
+        format!("{}{}", "sk-", "Zq81xLmN0pQ4rStUvWx9YzAb")
+    }
+
+    /// 智能体 stderr 里先吐一段私钥块再吐令牌：错误提示用的尾巴和 trace 日志里都不能有原文。
+    #[test]
+    fn agent_output_secrets_reach_neither_the_tail_text_nor_the_trace_log() {
+        use tokio::io::AsyncWriteExt;
+
+        let body = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW";
+        let begin = format!("{}{}", "-----BEGIN OPENSSH ", "PRIVATE KEY-----");
+        let end = format!("{}{}", "-----END OPENSSH ", "PRIVATE KEY-----");
+        let sk = fake_sk();
+        let script = format!(
+            "starting
+{begin}
+{body}
+{body}
+{end}
+using {sk} now
+password=hunter2hunter2
+last words
+"
+        );
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("运行时");
+        let (text, logs) = crate::test_util::capture_logs(|| {
+            runtime.block_on(async {
+                let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+                let tail = tail_buf();
+                let drain = drain_tail_lines(reader, Arc::clone(&tail), "测试 stderr", TAIL_LINES);
+                writer.write_all(script.as_bytes()).await.expect("写");
+                drop(writer);
+                drain.await.expect("排水结束");
+                tail_text(&tail_buf(), &tail)
+            })
+        });
+
+        for secret in [body, sk.as_str(), "hunter2hunter2", "PRIVATE KEY"] {
+            assert!(!text.contains(secret), "错误提示里出现了 {secret}：{text}");
+            assert!(!logs.contains(secret), "日志里出现了 {secret}：{logs}");
+        }
+        assert!(
+            text.contains("starting") && text.contains("last words"),
+            "{text}"
+        );
+        assert!(
+            logs.contains("测试 stderr"),
+            "trace 日志没抓到（抓取失效）：{logs}"
+        );
+    }
+
+    #[test]
+    fn tail_text_is_clipped_to_a_bounded_length() {
+        let tail = tail_buf();
+        for _ in 0..40 {
+            push_tail(&tail, &"x".repeat(1000), 40);
+        }
+        let text = tail_text(&tail_buf(), &tail);
+        assert!(text.chars().count() < 1700, "{}", text.chars().count());
     }
 
     /// K06：作业句柄一关（相当于 Z-SSH 进程结束），里面的进程树要被系统结束，

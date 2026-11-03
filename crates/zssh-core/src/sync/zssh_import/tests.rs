@@ -646,3 +646,44 @@ fn a_zssh_0214_backup_file_imports_directly_and_previews_first() {
     assert!(matches!(err, SyncError::WrongPassword), "{err}");
     assert_eq!(host_names(&db), vec!["old-web"]);
 }
+
+#[test]
+fn preview_and_import_both_skip_match_everything_fingerprints() {
+    let machine = TestDir::new("zi-import-wildcard");
+    let db = Database::open_in_memory().unwrap();
+    let known_hosts = machine.join("known_hosts");
+    let engine = SyncEngine::new(
+        &db,
+        &TestSealer(9),
+        "dev-zeeterm",
+        &*machine,
+        Some(known_hosts.clone()),
+        None,
+    );
+    let record = |host: &str| crate::sync::package::KnownHostRecord {
+        host: host.to_owned(),
+        port: 22,
+        key_type: "ssh-ed25519".to_owned(),
+        key: "AAAAC3NzaC1lZDI1NTE5AAAAInew".to_owned(),
+        marker: None,
+        updated_at: 1,
+        device_id: "dev-a".to_owned(),
+    };
+    let mut snapshot = crate::sync::package::SyncSnapshot::empty("dev-a", 1_760_000_000);
+    snapshot.known_hosts = vec![record("*"), record("web-1.example.invalid")];
+
+    let preview = engine
+        .preview_import(&snapshot, OfflineImportMode::Merge)
+        .unwrap();
+    assert_eq!(
+        (preview.known_hosts_added, preview.known_hosts_skipped),
+        (1, 1)
+    );
+    let report = engine
+        .import_snapshot(snapshot, OfflineImportMode::Merge)
+        .unwrap();
+    assert_eq!(report.applied.known_hosts_added, 1);
+    assert_eq!(report.applied.known_hosts_skipped, 1);
+    let content = std::fs::read_to_string(&known_hosts).unwrap();
+    assert_eq!(content.lines().count(), 1, "{content}");
+}

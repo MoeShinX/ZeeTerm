@@ -752,7 +752,7 @@ fn import_summary(report: &OfflineImportReport) -> String {
 }
 
 fn applied_text(applied: &ApplyReport) -> String {
-    format!(
+    let mut text = format!(
         "应用：主机 新增{}/更新{}/删除{}；凭据 新增{}/更新{}/删除{}；\
          分组 新增{}/更新{}/删除{}；代理 新增{}/更新{}/删除{}；\
          设置 {} 项；known_hosts {} 条；冲突 {} 条",
@@ -771,7 +771,14 @@ fn applied_text(applied: &ApplyReport) -> String {
         applied.settings_written,
         applied.known_hosts_added,
         applied.conflicts_stored
-    )
+    );
+    if applied.known_hosts_skipped > 0 {
+        text.push_str(&format!(
+            "；跳过 {} 条可疑主机密钥记录",
+            applied.known_hosts_skipped
+        ));
+    }
+    text
 }
 
 /// 人类可读的文件大小；1024 进制，保留一位小数。
@@ -792,7 +799,7 @@ fn format_size(bytes: u64) -> String {
 /// 恢复结果：各类记录的新增/更新/删除数、设置和 known_hosts 条数，以及安全备份名。
 fn restore_summary(report: &RestoreReport) -> String {
     let applied = &report.applied;
-    format!(
+    let mut text = format!(
         "恢复完成：主机 新增{}/更新{}/删除{}；凭据 新增{}/更新{}/删除{}；\
          分组 新增{}/更新{}/删除{}；代理 新增{}/更新{}/删除{}；\
          设置 {} 项；known_hosts {} 条；冲突 {} 条；\
@@ -815,7 +822,16 @@ fn restore_summary(report: &RestoreReport) -> String {
         report.extras.host_memory,
         report.extras.forwards,
         report.safety_backup.name
-    )
+    );
+    if applied.known_hosts_skipped > 0 {
+        // 放在安全备份提示之前的同一行末尾不好找，单独起一行。
+        text.push_str(&format!(
+            "
+跳过 {} 条可疑主机密钥记录",
+            applied.known_hosts_skipped
+        ));
+    }
+    text
 }
 
 /// 本地备份最多保留几份（设置项 `sync_backup_keep`，1–200）；读不出来用 [`FALLBACK_KEEP`]。
@@ -1087,6 +1103,7 @@ mod tests {
             proxies: ChangeCounts::default(),
             settings_written: 3,
             known_hosts_added: 4,
+            known_hosts_skipped: 0,
             conflicts_stored: 1,
         }
     }

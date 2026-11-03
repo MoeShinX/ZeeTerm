@@ -12,6 +12,7 @@ pub mod download;
 pub mod opencode;
 pub mod process;
 pub mod retry;
+pub mod scrub;
 pub mod text;
 pub mod translate;
 pub mod usage;

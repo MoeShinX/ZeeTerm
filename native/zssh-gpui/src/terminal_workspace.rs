@@ -600,7 +600,8 @@ impl Pane {
             return;
         }
         // 锁屏（V2-U26）：键盘、粘贴、快捷命令、撰写栏、广播都从这里出去，锁着时一律丢掉。
-        // AI 助手的终端另有自己的通道（`ai_terminals`），不受影响，锁定期间照常跑。
+        // AI 助手往终端写命令不走这里（走 `ai_terminals`），它在工具桥那一层拦：锁着时 AI 的
+        // 任何执行请求都要先经用户确认（`agent_host::set_ai_locked`），所以锁定期间不会有新命令进来。
         if crate::app_lock::is_locked() {
             return;
         }

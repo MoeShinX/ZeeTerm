@@ -445,6 +445,9 @@ pub async fn reupload<B: EditBackend>(
         meta.remote_path.clone(),
         leftover.local_path.clone(),
         meta.base(),
+        // 元数据里的 clean_sha256 就是最近一次确认“本地 = 远端”的内容；记录不全（空串）时
+        // 第一次比对必然不一致，按冲突处理，让用户看过再决定。
+        meta.clean_sha256.clone(),
     );
     let outcome = if overwrite {
         session.resolve(backend, Resolution::Overwrite).await
