@@ -56,7 +56,7 @@ impl MainWindow {
                 .gap_2()
                 .items_center()
                 .border_t_1()
-                .border_color(tokens.border)
+                .border_color(tokens.divider)
                 .bg(tokens.background)
                 .typo(Role::Caption, tokens)
                 .cursor_pointer()

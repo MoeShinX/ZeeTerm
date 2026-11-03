@@ -11,7 +11,7 @@
 //! 编辑器本身在 `remote_editor_demo`。
 
 use ::gpui::{App, MouseButton, SharedString, Subscription, Window, px};
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -553,11 +553,14 @@ impl MainWindow {
             .on_mouse_down(MouseButton::Middle, move |_, window, cx| {
                 middle.update(cx, |this, cx| this.close_editor_tab(id, window, cx));
             })
-            .context_menu(move |menu, _window, _cx| {
+            .context_menu(move |menu, _window, cx| {
+                let tokens = Tokens::current(cx);
                 let close = menu_close.clone();
-                menu.item(PopupMenuItem::new("关闭").on_click(move |_, window, cx| {
-                    close.update(cx, |this, cx| this.close_editor_tab(id, window, cx));
-                }))
+                menu.item(crate::menu_kit::row(&tokens, "关闭", Ico::X).on_click(
+                    move |_, window, cx| {
+                        close.update(cx, |this, cx| this.close_editor_tab(id, window, cx));
+                    },
+                ))
             })
             .into_any_element()
     }

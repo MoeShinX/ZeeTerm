@@ -539,7 +539,7 @@ impl AgentChatDemo {
                 let name = anchor.name.clone();
                 embed.binding = Binding::Locked(anchor);
                 // 对话里留一条记录：之后的命令跑在哪台主机上，翻回去看得明白。
-                self.chat.push_notice(format!("已改绑到 {name}"), false);
+                self.chat.push_system_line(format!("已改绑到 {name}"));
                 self.link_notice = None;
                 self.recompute_targets();
                 // 历史里的锚定跟着改（对话已经存过的话）。
@@ -667,7 +667,7 @@ impl AgentChatDemo {
             .rev()
             .find_map(|message| match message {
                 super::ChatMessage::Assistant(message) => Some(message.text.clone()),
-                super::ChatMessage::User(_) => None,
+                super::ChatMessage::User(_) | ChatMessage::System(_) => None,
             })
     }
 
@@ -1066,7 +1066,7 @@ impl AgentChatDemo {
             .iter()
             .filter_map(|message| match message {
                 ChatMessage::Assistant(message) => Some(message),
-                ChatMessage::User(_) => None,
+                ChatMessage::User(_) | ChatMessage::System(_) => None,
             })
             .flat_map(|message| message.tools.iter())
             .find_map(|card| card.exec.clone())
@@ -1287,11 +1287,7 @@ impl AgentChatDemo {
             let current = self.current_mode();
             let tone = composer::mode_tone(current);
             // 「全部放行」用警示色（浅色底上用深一点的琥珀色保证读得清），其余是普通文字色。
-            let caution = if tokens.dark {
-                tokens.dot_connecting
-            } else {
-                ::gpui::rgb(0xB45309).into()
-            };
+            let caution = tokens.caution;
             let icon = match current {
                 ExecMode::Manual => Ico::ShieldCheck,
                 ExecMode::ReadOnly => Ico::Eye,
@@ -1477,11 +1473,7 @@ impl AgentChatDemo {
                 .child(SharedString::from(label))
         };
         // 警示色：浅色底上用深一点的琥珀色保证读得清（和「全部放行」同一个）。
-        let warn = if tokens.dark {
-            tokens.dot_connecting
-        } else {
-            ::gpui::rgb(0xB45309).into()
-        };
+        let warn = tokens.caution;
         let banner_row = banner.map(|banner| {
             let new_convo = {
                 let entity = entity.clone();
@@ -1568,14 +1560,14 @@ impl AgentChatDemo {
                 d.child(
                     div()
                         .text_xs()
-                        .text_color(tokens.dot_connecting)
+                        .text_color(tokens.caution)
                         .child(NO_HOST_HINT),
                 )
             })
             .children(refused_reason.map(|reason| {
                 div()
                     .text_xs()
-                    .text_color(tokens.dot_connecting)
+                    .text_color(tokens.caution)
                     .child(SharedString::from(reason))
             }))
             .children(banner_row);

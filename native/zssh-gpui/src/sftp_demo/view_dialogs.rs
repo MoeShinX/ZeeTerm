@@ -10,7 +10,7 @@ use std::rc::Rc;
 use ::gpui::{MouseButton, SharedString, Window, hsla, px};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::Input;
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::*;
 use gpui_kit::*;
 use zssh_core::sftp::archive::ConflictPolicy;
@@ -21,7 +21,7 @@ use super::dialogs::{
     OverwriteAsk, PermDialog, PropDialog, delete_description, delete_names, delete_title,
     name_taken, validate_local_dir, validate_name,
 };
-use super::menu::{MenuNode, Side, build_menu, build_transfer_menu};
+use super::menu::{MenuNode, Side, build_menu, build_transfer_menu, submenu_icon};
 use super::model::{Entry, EntryKind};
 use super::props::{
     CalcPhase, PermBit, aggregate, bytes_text, calc_text, can_calculate, info_rows,
@@ -29,39 +29,11 @@ use super::props::{
 use super::{SftpDemo, props};
 use crate::app_theme::Tokens;
 use crate::main_window::widgets::{ButtonLook, error_note, note, text_button};
+use crate::menu_kit;
 
 // ---------------------------------------------------------------------------
 // 右键菜单
 // ---------------------------------------------------------------------------
-
-/// 一个菜单项：左边名字，右边快捷键；置灰时右边写原因。
-fn menu_row(
-    label: String,
-    shortcut: Option<&'static str>,
-    reason: Option<String>,
-    tokens: Tokens,
-) -> PopupMenuItem {
-    let disabled = reason.is_some();
-    PopupMenuItem::element(move |_, _| {
-        let right = reason.clone().or_else(|| shortcut.map(str::to_owned));
-        h_flex()
-            .w_full()
-            .gap_6()
-            .items_center()
-            .justify_between()
-            .child(
-                div()
-                    .text_color(if disabled {
-                        tokens.text_muted
-                    } else {
-                        tokens.text
-                    })
-                    .child(label.clone()),
-            )
-            .children(right.map(|text| div().text_xs().text_color(tokens.text_muted).child(text)))
-    })
-    .disabled(disabled)
-}
 
 #[allow(clippy::too_many_arguments)]
 fn append_nodes(
@@ -88,14 +60,15 @@ fn append_nodes(
                 let entries = Rc::clone(entries);
                 let entity = entity.clone();
                 menu = menu.item(
-                    menu_row(label.clone(), *shortcut, reason.clone(), tokens).on_click(
-                        move |_, window, cx| {
+                    menu_kit::row(&tokens, label.clone(), action.icon(side))
+                        .disabled(reason.is_some())
+                        .right(reason.clone().or_else(|| shortcut.map(str::to_owned)))
+                        .on_click(move |_, window, cx| {
                             let entries = entries.to_vec();
                             entity.update(cx, |this, cx| {
                                 this.run_menu_action(side, action, entries, blank, window, cx)
                             });
-                        },
-                    ),
+                        }),
                 );
             }
             MenuNode::Submenu {
@@ -105,24 +78,36 @@ fn append_nodes(
             } => {
                 if reason.is_some() {
                     // 置灰的子菜单不展开：写成一个置灰的项，原因在右边。
-                    menu = menu.item(menu_row((*label).to_owned(), None, reason.clone(), tokens));
+                    menu = menu.item(
+                        menu_kit::row(&tokens, *label, submenu_icon(label))
+                            .disabled(true)
+                            .right(reason.clone())
+                            .inert(),
+                    );
                 } else {
                     let children = children.clone();
                     let entries = Rc::clone(entries);
                     let entity = entity.clone();
-                    menu = menu.submenu(*label, window, cx, move |sub, window, cx| {
-                        append_nodes(
-                            sub.min_w(px(160.0)),
-                            &children,
-                            side,
-                            &entries,
-                            blank,
-                            &entity,
-                            tokens,
-                            window,
-                            cx,
-                        )
-                    });
+                    menu = menu_kit::submenu(
+                        menu,
+                        *label,
+                        submenu_icon(label),
+                        window,
+                        cx,
+                        move |sub, window, cx| {
+                            append_nodes(
+                                sub.min_w(px(160.0)),
+                                &children,
+                                side,
+                                &entries,
+                                blank,
+                                &entity,
+                                tokens,
+                                window,
+                                cx,
+                            )
+                        },
+                    );
                 }
             }
         }
@@ -170,9 +155,11 @@ pub(super) fn transfer_menu(
         if let MenuNode::Item { action, label, .. } = node {
             let entity = entity.clone();
             menu = menu.item(
-                menu_row(label, None, None, tokens).on_click(move |_, _, cx| {
-                    entity.update(cx, |this, cx| this.run_transfer_menu(action, id, cx));
-                }),
+                menu_kit::row(&tokens, label, action.icon(Side::Local)).on_click(
+                    move |_, _, cx| {
+                        entity.update(cx, |this, cx| this.run_transfer_menu(action, id, cx));
+                    },
+                ),
             );
         }
     }
@@ -322,7 +309,7 @@ impl SftpDemo {
                     } else {
                         "已经有同名的条目，确定会失败"
                     },
-                    tokens.dot_connecting,
+                    tokens.caution,
                 )
             }))
             .child(buttons(vec![

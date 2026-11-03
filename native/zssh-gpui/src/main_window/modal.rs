@@ -572,8 +572,7 @@ impl MainWindow {
                     )
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(tokens.text_muted)
+                            .typo(Role::Body, tokens)
                             .child(SharedString::from(confirm.message.clone())),
                     ),
             )

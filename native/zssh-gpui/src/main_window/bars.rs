@@ -25,6 +25,7 @@ use super::nav::MainView;
 use super::quick_commands::{self, QuickCommand};
 use crate::app_theme::Tokens;
 use crate::icons::Ico;
+use crate::menu_kit;
 
 /// 拖动栏上沿时记下的起点。
 #[derive(Clone, Copy, Debug)]
@@ -554,7 +555,7 @@ impl MainWindow {
                 .when(managing, |d| d.bg(hover))
                 .hover(move |style| style.bg(hover).text_color(text))
                 .tooltip(|window, cx| Tooltip::new("管理快捷命令").build(window, cx))
-                .child(Icon::new(Ico::ListChecks).size_3p5())
+                .child(Icon::new(Ico::ListChecks).size_4())
                 .on_click(move |_, window, cx| {
                     entity.update(cx, |this, cx| this.toggle_quick_panel(window, cx));
                 })
@@ -574,7 +575,7 @@ impl MainWindow {
                 .text_color(muted)
                 .hover(move |style| style.bg(hover).text_color(text))
                 .tooltip(|window, cx| Tooltip::new("新建快捷命令").build(window, cx))
-                .child(Icon::new(IconName::Plus).size_3p5())
+                .child(Icon::new(IconName::Plus).size_4())
                 .on_click(move |_, window, cx| {
                     entity.update(cx, |this, cx| this.open_quick_new(window, cx));
                 })
@@ -660,7 +661,7 @@ impl MainWindow {
         let broadcast_button = {
             let entity = entity.clone();
             let disabled = pane_count < 2 && !broadcast;
-            let warn = tokens.dot_connecting;
+            let warn = tokens.caution;
             div()
                 .id("quick-broadcast")
                 .occlude()
@@ -690,7 +691,7 @@ impl MainWindow {
                     })
                     .build(window, cx)
                 })
-                .child(Icon::new(Ico::Radio).size_3())
+                .child(Icon::new(Ico::Radio).size_3p5())
                 .child(if broadcast { "广播中" } else { "广播" })
                 .on_click(move |_, _window, cx| {
                     if !disabled {
@@ -712,7 +713,7 @@ impl MainWindow {
             .gap_1()
             .text_xs()
             .border_t_1()
-            .border_color(tokens.border)
+            .border_color(tokens.divider)
             .bg(tokens.background)
             .when(tall, |d| d.items_start().pt_0p5())
             .when(!tall, |d| d.items_center())
@@ -791,7 +792,8 @@ impl MainWindow {
                 let id = run_id.clone();
                 run.update(cx, |this, cx| this.run_quick_command(&id, ctrl, window, cx));
             })
-            .context_menu(move |menu, _window, _cx| {
+            .context_menu(move |menu, _window, cx| {
+                let tokens = Tokens::current(cx);
                 let (send, send_all, edit, delete) = (
                     menu_entity.clone(),
                     menu_entity.clone(),
@@ -804,29 +806,41 @@ impl MainWindow {
                     menu_id.clone(),
                     menu_id.clone(),
                 );
-                menu.item(PopupMenuItem::new("发送").on_click(move |_, window, cx| {
-                    let id = a.clone();
-                    send.update(cx, |this, cx| {
-                        this.run_quick_command(&id, false, window, cx);
-                    });
-                }))
-                .item(PopupMenuItem::new("发到这个标签的所有分屏").on_click(
-                    move |_, window, cx| {
-                        let id = b.clone();
-                        send_all.update(cx, |this, cx| {
-                            this.run_quick_command(&id, true, window, cx);
-                        });
-                    },
-                ))
+                menu.item(
+                    menu_kit::row(&tokens, "发送", Ico::SendHorizontal).on_click(
+                        move |_, window, cx| {
+                            let id = a.clone();
+                            send.update(cx, |this, cx| {
+                                this.run_quick_command(&id, false, window, cx);
+                            });
+                        },
+                    ),
+                )
+                .item(
+                    menu_kit::row(&tokens, "发到这个标签的所有分屏", Ico::Columns2).on_click(
+                        move |_, window, cx| {
+                            let id = b.clone();
+                            send_all.update(cx, |this, cx| {
+                                this.run_quick_command(&id, true, window, cx);
+                            });
+                        },
+                    ),
+                )
                 .item(PopupMenuItem::separator())
-                .item(PopupMenuItem::new("编辑").on_click(move |_, window, cx| {
-                    let id = c.clone();
-                    edit.update(cx, |this, cx| this.open_quick_edit(&id, window, cx));
-                }))
-                .item(PopupMenuItem::new("删除").on_click(move |_, _window, cx| {
-                    let id = d.clone();
-                    delete.update(cx, |this, cx| this.ask_delete_quick_command(&id, cx));
-                }))
+                .item(
+                    menu_kit::row(&tokens, "编辑", Ico::Pencil).on_click(move |_, window, cx| {
+                        let id = c.clone();
+                        edit.update(cx, |this, cx| this.open_quick_edit(&id, window, cx));
+                    }),
+                )
+                .item(
+                    menu_kit::row(&tokens, "删除", Ico::Trash)
+                        .danger()
+                        .on_click(move |_, _window, cx| {
+                            let id = d.clone();
+                            delete.update(cx, |this, cx| this.ask_delete_quick_command(&id, cx));
+                        }),
+                )
             })
             .into_any_element()
     }
@@ -853,7 +867,7 @@ impl MainWindow {
         let hover = tokens.hover;
         let text = tokens.text;
         let muted = tokens.text_muted;
-        let warn = tokens.dot_connecting;
+        let warn = tokens.caution;
         let toggle_disabled = pane_count < 2 && !effective_all;
 
         let handle = {
@@ -930,7 +944,7 @@ impl MainWindow {
                     })
                     .build(window, cx)
                 })
-                .child(Icon::new(Ico::SendHorizontal).size_3p5())
+                .child(Icon::new(Ico::SendHorizontal).size_4())
                 .on_click(move |_, window, cx| {
                     entity.update(cx, |this, cx| this.compose_submit(false, window, cx));
                 })
@@ -951,7 +965,7 @@ impl MainWindow {
             .items_end()
             .text_xs()
             .border_t_1()
-            .border_color(tokens.border)
+            .border_color(tokens.divider)
             .bg(tokens.background)
             .when(fixed, |d| d.h(px(height)))
             .child(handle)

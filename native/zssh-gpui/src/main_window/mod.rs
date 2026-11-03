@@ -728,6 +728,23 @@ impl MainWindow {
         self.set_settings_section(section, cx);
     }
 
+    /// 托盘菜单和「设置 → 关于」共用的「检查更新」入口：自动更新开着时打开更新窗口；试用版只显示说明，
+    /// 说明在关于页里，所以切到那一页。
+    pub(crate) fn check_for_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let about = match &self.about_settings {
+            Some(about) => about.clone(),
+            None => {
+                let about = cx.new(|_cx| crate::about_view::AboutView::new());
+                self.about_settings = Some(about.clone());
+                about
+            }
+        };
+        about.update(cx, |about, cx| about.check_update(cx));
+        if !crate::product::AUTO_UPDATE_ENABLED {
+            self.open_settings_section(crate::settings_nav::SettingsSection::About, window, cx);
+        }
+    }
+
     pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let has_tab = self.workspace.read(cx).tab_count() > 0;
         self.nav = self.nav.close_settings(has_tab);

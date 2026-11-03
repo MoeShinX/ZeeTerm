@@ -1,13 +1,13 @@
 //! 顶部终端标签的右键菜单：有哪些项、什么次序、什么时候置灰（数据驱动，和主机右键菜单
 //! `vault_menus::host_menu_items` 同一个做法），画的时候只按 [`tab_menu`] 返回的表走。
 
-use ::gpui::{ClickEvent, Hsla};
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-use gpui_kit::component::*;
+use ::gpui::ClickEvent;
+use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::*;
 
 use super::protocol_form::{Caps, SSH_ONLY_HINT};
 use super::{CloseScope, MainWindow};
+use crate::app_theme::Tokens;
 use crate::icons::Ico;
 
 /// 菜单里的一项（从上到下的次序就是 [`tab_menu`] 返回的次序）。
@@ -118,7 +118,7 @@ pub fn tab_menu(spec: &TabMenuSpec) -> Vec<TabMenuEntry> {
 }
 
 /// 每项的图标（同侧栏主机右键菜单，用现有图标集里语义最接近的）。
-fn icon_of(item: TabMenuItem) -> Option<Ico> {
+pub fn icon_of(item: TabMenuItem) -> Option<Ico> {
     Some(match item {
         TabMenuItem::DuplicateSession | TabMenuItem::CopyHostName | TabMenuItem::CopyAddress => {
             Ico::Copy
@@ -150,7 +150,7 @@ pub fn build_tab_menu(
     mut menu: PopupMenu,
     spec: &TabMenuSpec,
     entity: &Entity<MainWindow>,
-    danger: Hsla,
+    tokens: &Tokens,
 ) -> PopupMenu {
     let index = spec.index;
     for entry in tab_menu(spec) {
@@ -202,27 +202,20 @@ pub fn build_tab_menu(
             })),
             TabMenuItem::Separator => continue,
         };
-        menu = menu.item(match (entry.hint, item) {
-            // 置灰并说明原因：悬停提示和主机右键菜单里的 SFTP 同一个做法。
-            (Some(_), _) => super::vault_menus::ssh_only_item(label, icon, false, |_, _, _| {}),
-            // 断开连接用危险色（可点时；置灰时跟别的置灰项一样灰）。
-            (None, TabMenuItem::Disconnect) if enabled => {
-                let item = PopupMenuItem::element(move |_window, _cx| {
-                    div().text_color(danger).child(label)
-                })
-                .on_click(click);
-                match icon {
-                    Some(icon) => item.icon(Icon::new(icon).text_color(danger)),
-                    None => item,
-                }
-            }
-            (None, _) => {
-                let item = PopupMenuItem::new(label).disabled(!enabled).on_click(click);
-                match icon {
-                    Some(icon) => item.icon(icon),
-                    None => item,
-                }
-            }
+        let Some(icon) = icon else { continue };
+        let line = crate::menu_kit::row(tokens, label, icon)
+            .disabled(!enabled)
+            .tooltip(entry.hint);
+        // 置灰并说明原因：悬停提示和主机右键菜单里的 SFTP 同一个做法；断开连接可点时用危险色。
+        let line = if item == TabMenuItem::Disconnect {
+            line.danger()
+        } else {
+            line
+        };
+        menu = menu.item(if enabled {
+            line.on_click(click)
+        } else {
+            line.inert()
         });
     }
     menu
@@ -387,5 +380,22 @@ mod tests {
         assert_eq!(seps, [1, 7]);
         assert_eq!(items[0], TabMenuItem::DuplicateSession);
         assert_eq!(items[items.len() - 1], TabMenuItem::CloseAll);
+    }
+
+    #[test]
+    fn every_tab_menu_item_has_an_icon_except_the_separator() {
+        use super::icon_of;
+        let mut serial = ssh(1, 3);
+        serial.caps = Caps::of(Protocol::Serial);
+        for spec in [ssh(1, 3), serial] {
+            for entry in tab_menu(&spec) {
+                assert_eq!(
+                    icon_of(entry.item).is_none(),
+                    entry.item == TabMenuItem::Separator,
+                    "{:?}",
+                    entry.item
+                );
+            }
+        }
     }
 }

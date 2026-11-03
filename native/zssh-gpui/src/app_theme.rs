@@ -482,6 +482,8 @@ const DOT_CONNECTED: u32 = 0x2FA16B;
 const DOT_CONNECTING: u32 = 0xFBBF24;
 const DOT_DISCONNECTED: u32 = 0xF43F5E;
 const DOT_IDLE: u32 = 0x475569;
+/// 浅色底上的警示琥珀色。
+const CAUTION_ON_LIGHT: u32 = 0xB45309;
 
 pub fn skin(id: &str) -> Option<&'static Skin> {
     SKINS.iter().find(|skin| skin.id == id)
@@ -636,6 +638,9 @@ pub struct Tokens {
     pub surface: Hsla,
     pub subtle: Hsla,
     pub border: Hsla,
+    /// 区域之间的分隔线（侧栏右边、标题栏下边、状态栏上边）：1px，取边框色和底色的中间，只起分界作用，
+    /// 不抢眼；卡片、输入框、菜单仍用 `border`。
+    pub divider: Hsla,
     /// 主文字色（标题、名称）：比皮肤表里的正文色更黑 / 更白，见 [`ink_for`]。
     pub text: Hsla,
     /// 次要文字色（说明）。
@@ -654,6 +659,8 @@ pub struct Tokens {
     pub selection: Hsla,
     pub dot_connected: Hsla,
     pub dot_connecting: Hsla,
+    /// 警示文字色（「全部放行」「广播中」）：深色底上用琥珀黄，浅色底上用深一点的琥珀色保证读得清。
+    pub caution: Hsla,
     pub dot_disconnected: Hsla,
     pub dot_idle: Hsla,
 }
@@ -685,6 +692,7 @@ impl Tokens {
             surface: rgb(p.surface),
             subtle: rgb(p.subtle),
             border: rgb(p.border),
+            divider: rgb(divider_hex(skin)),
             text: rgb(ink.primary),
             text_muted: rgb(ink.secondary),
             text_faint: rgb(ink.faint),
@@ -697,6 +705,11 @@ impl Tokens {
             selection: rgb(skin.terminal.selection),
             dot_connected: rgb(DOT_CONNECTED),
             dot_connecting: rgb(DOT_CONNECTING),
+            caution: rgb(if dark {
+                DOT_CONNECTING
+            } else {
+                CAUTION_ON_LIGHT
+            }),
             dot_disconnected: rgb(DOT_DISCONNECTED),
             dot_idle: rgb(DOT_IDLE),
         }
@@ -746,6 +759,11 @@ fn rgb(hex: u32) -> Hsla {
         a: 1.0,
     }
     .into()
+}
+
+/// 区域分隔线的颜色：边框色和底色各一半（见 [`Tokens::divider`]）。
+pub fn divider_hex(skin: &Skin) -> u32 {
+    mix(skin.ui.border, skin.ui.background, 0.5)
 }
 
 fn channels(hex: u32) -> [f32; 3] {
@@ -800,6 +818,10 @@ fn apply(dark: bool, cx: &mut App) {
     let accent_active = rgb(mix(p.text, p.accent, hover_amount * 2.0));
     let danger_hover = rgb(mix(p.text, p.danger, hover_amount));
     let danger_active = rgb(mix(p.text, p.danger, hover_amount * 2.0));
+    // 状态色（成功 / 提示 / 警告）的悬停、按下：和上面按钮同一个公式，免得落到组件库自带的蓝绿色。
+    let tint = |base: u32, k: f32| rgb(mix(p.text, base, hover_amount * k));
+    // 开关关着时的轨道：边框色和说明色之间，浅深皮肤上都看得出来。
+    let switch_off = rgb(mix(p.text_muted, p.border, 0.45));
     Theme::update(cx, |theme| {
         // 界面字体：显式的字体栈代替 `.SystemUIFont`（见 `fonts::resolve_ui_font`）。中文后备在各窗口的
         // 顶层元素上设（`typography::UiFontStyled`），主题只有主字体一个槽。
@@ -834,6 +856,39 @@ fn apply(dark: bool, cx: &mut App) {
         c.danger_active = danger_active;
         c.success = t.dot_connected;
         c.warning = t.dot_connecting;
+        // 下面这些以前没写，会露出组件库默认的蓝 / 绿 / 灰：滑块、开关、进度条、链接、拖放提示、骨架屏、状态色变体。
+        c.success_hover = tint(DOT_CONNECTED, 1.0);
+        c.success_active = tint(DOT_CONNECTED, 2.0);
+        c.success_foreground = rgb(0xFFFFFF);
+        c.info = t.accent;
+        c.info_hover = accent_hover;
+        c.info_active = accent_active;
+        c.info_foreground = t.on_accent;
+        c.button_success = t.dot_connected;
+        c.button_success_hover = tint(DOT_CONNECTED, 1.0);
+        c.button_success_active = tint(DOT_CONNECTED, 2.0);
+        c.button_success_foreground = rgb(0xFFFFFF);
+        c.button_warning = t.dot_connecting;
+        c.button_warning_hover = tint(DOT_CONNECTING, 1.0);
+        c.button_warning_active = tint(DOT_CONNECTING, 2.0);
+        c.button_warning_foreground = rgb(0x1F2937);
+        c.button_info = t.accent;
+        c.button_info_hover = accent_hover;
+        c.button_info_active = accent_active;
+        c.button_info_foreground = t.on_accent;
+        c.switch = switch_off;
+        c.slider_bar = t.accent;
+        c.slider_thumb = t.on_accent;
+        c.progress_bar = t.accent;
+        c.link = t.accent;
+        c.link_hover = accent_hover;
+        c.link_active = accent_active;
+        c.drop_target = t.accent_soft;
+        c.drag_border = t.accent;
+        c.skeleton = t.subtle;
+        c.accordion = t.background;
+        c.description_list_label = t.subtle;
+        c.description_list_label_foreground = t.text_muted;
         c.button = t.subtle;
         c.button_hover = subtle_hover;
         c.button_active = subtle_active;
@@ -856,22 +911,22 @@ fn apply(dark: bool, cx: &mut App) {
         c.list_active = t.accent_soft;
         c.list_active_border = t.accent;
         c.list_head = t.surface;
-        c.sidebar = t.surface;
+        c.sidebar = t.background;
         c.sidebar_foreground = t.text;
-        c.sidebar_border = t.border;
+        c.sidebar_border = t.divider;
         c.sidebar_accent = t.accent_soft;
         c.sidebar_accent_foreground = t.text;
         c.sidebar_primary = t.accent;
         c.sidebar_primary_foreground = t.on_accent;
-        c.tab_bar = t.surface;
-        c.tab = t.surface;
+        c.tab_bar = t.background;
+        c.tab = t.background;
         c.tab_active = t.background;
         c.tab_foreground = t.text_muted;
         c.tab_active_foreground = t.text;
-        c.title_bar = t.surface;
-        c.title_bar_border = t.border;
-        c.status_bar = t.surface;
-        c.status_bar_border = t.border;
+        c.title_bar = t.background;
+        c.title_bar_border = t.divider;
+        c.status_bar = t.background;
+        c.status_bar_border = t.divider;
         c.scrollbar = t.background;
         c.scrollbar_thumb = t.border;
         c.scrollbar_thumb_hover = t.text_muted;
@@ -989,6 +1044,28 @@ mod tests {
         assert_eq!(normalize_terminal_theme("skin"), "skin");
     }
 
+    #[test]
+    fn the_region_divider_sits_between_the_background_and_the_border_on_every_skin() {
+        // 侧栏、标题栏、状态栏和主区同一个底色，只靠一根很淡的线分界：线比卡片边框更接近底色，但仍看得出来。
+        for skin in SKINS {
+            let ui = skin.ui;
+            let divider = divider_hex(skin);
+            let to_bg = contrast(divider, ui.background);
+            let border_to_bg = contrast(ui.border, ui.background);
+            assert!(
+                to_bg < border_to_bg,
+                "{} 分隔线({to_bg:.3})要比边框({border_to_bg:.3})更接近底色",
+                skin.id
+            );
+            assert!(to_bg > 1.0, "{} 分隔线不能和底色一样", skin.id);
+            assert_eq!(
+                Tokens::for_skin(skin).divider,
+                rgb(divider),
+                "{} token 取的就是这个值",
+                skin.id
+            );
+        }
+    }
     #[test]
     fn every_skin_is_readable() {
         // 对应 skins.test.ts 的「文字都看得清」。

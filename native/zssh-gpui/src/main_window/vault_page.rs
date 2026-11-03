@@ -180,9 +180,9 @@ impl MainWindow {
             .items_center()
             .px_4()
             .py_2()
-            .bg(tokens.surface)
+            .bg(tokens.background)
             .border_b_1()
-            .border_color(tokens.border)
+            .border_color(tokens.divider)
             .child(
                 div().flex_1().min_w(px(160.0)).max_w(px(448.0)).child(
                     Input::new(&self.vault_query)
@@ -337,7 +337,7 @@ impl MainWindow {
             return div()
                 .py_10()
                 .text_center()
-                .text_sm()
+                .typo(Role::Body, tokens)
                 .text_color(tokens.danger)
                 .child(SharedString::from(error.to_owned()))
                 .into_any_element();
@@ -697,7 +697,7 @@ impl MainWindow {
             .items_center()
             .px_4()
             .py(px(if compact { 4.0 } else { 10.0 }))
-            .text_sm()
+            .typo(Role::Body, tokens)
             .cursor_pointer()
             .when(selected, |d| d.bg(tokens.accent_soft))
             .when(!selected, |d| d.hover(move |style| style.bg(hover)))

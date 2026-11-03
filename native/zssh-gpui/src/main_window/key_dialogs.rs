@@ -402,12 +402,7 @@ impl MainWindow {
         let entity = cx.entity();
         v_flex()
             .gap_1p5()
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("公钥"),
-            )
+            .child(div().typo(Role::FieldLabel, tokens).child("公钥"))
             .child(
                 div()
                     .w_full()

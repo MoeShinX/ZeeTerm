@@ -29,9 +29,10 @@ use super::model::{
 use super::{Phase, SftpDemo, queue};
 use crate::app_theme::Tokens;
 use crate::icons::Ico;
+use crate::typography::{Role, Typo as _};
 
-/// 列表一行的高度（和 0.2.14 的 `ROW_HEIGHT` 一致）。
-const ROW_HEIGHT: f32 = 26.0;
+/// 列表一行的高度（0.2.14 是 26，V2-U14 起 14px 文字配 34px 行，不挤）。
+const ROW_HEIGHT: f32 = 34.0;
 
 /// 文件夹图标的颜色（0.2.14 的 `text-sky-400`）和符号链接（`text-emerald-500`）。
 const FOLDER_COLOR: u32 = 0x38BDF8;
@@ -42,10 +43,10 @@ const LINK_COLOR: u32 = 0x10B981;
 fn link_icon(info: &LinkInfo, tokens: &Tokens) -> impl IntoElement {
     let base = match info.base {
         LinkBase::Folder => Icon::new(IconName::Folder)
-            .size_3p5()
+            .size_4()
             .text_color(rgb(FOLDER_COLOR)),
         LinkBase::File => Icon::new(IconName::File)
-            .size_3p5()
+            .size_4()
             .text_color(tokens.text_muted),
     };
     // 角标：白底 + 蓝箭头；断链是琥珀底 + 深色箭头。颜色固定（深浅主题里都清楚）。
@@ -224,7 +225,8 @@ impl Render for SftpDemo {
             let follow_entity = entity.clone();
             h_flex()
                 .px_3()
-                .py_1p5()
+                .py_2()
+                .typo(Role::Body, &tokens)
                 .border_b_1()
                 .border_color(tokens.border)
                 .child(
@@ -434,14 +436,14 @@ impl SftpDemo {
         let header = {
             let order = pane.order;
             h_flex()
-                .h(px(28.0))
+                .h(px(32.0))
                 .flex_none()
                 .px_2()
                 .gap_2()
                 .items_center()
                 .border_b_1()
                 .border_color(tokens.border)
-                .text_xs()
+                .typo(Role::FieldLabel, tokens)
                 .text_color(tokens.text_muted)
                 .child(div().w(px(16.0)).flex_none())
                 .children(columns.iter().copied().map(|column| {
@@ -464,7 +466,7 @@ impl SftpDemo {
                         .when(column.right_aligned(), |d| d.justify_end())
                         .when(active, |d| d.text_color(tokens.text))
                         .child(div().truncate().child(column.label()))
-                        .children(arrow.map(|icon| Icon::new(icon).size_2p5()));
+                        .children(arrow.map(|icon| Icon::new(icon).size_3()));
                     let cell = match column.width() {
                         Some(width) => cell.w(px(width)).flex_none(),
                         None => cell.flex_1().min_w_0(),
@@ -677,7 +679,7 @@ impl SftpDemo {
             .id(SharedString::from(format!("sftp-crumbs-{id_suffix}")))
             .flex_1()
             .min_w_0()
-            .h(px(26.0))
+            .h(px(30.0))
             .px_0p5()
             .gap_0p5()
             .items_center()
@@ -689,6 +691,7 @@ impl SftpDemo {
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 start_entity.update(cx, |this, cx| this.begin_path_edit(side, window, cx));
             });
+        let crumb_tokens = *tokens;
         let crumb_button =
             |id: SharedString, label: String, target: String, entity: Entity<SftpDemo>| {
                 div()
@@ -697,7 +700,7 @@ impl SftpDemo {
                     .py_0p5()
                     .rounded_sm()
                     .truncate()
-                    .text_size(px(13.0))
+                    .typo(Role::Body, &crumb_tokens)
                     .cursor_pointer()
                     .hover(move |style| style.bg(hover))
                     .child(label)
@@ -793,15 +796,15 @@ impl SftpDemo {
                 let icon = match (&link, entry.kind) {
                     (Some(info), _) => link_icon(info, tokens).into_any_element(),
                     (None, EntryKind::Dir) => Icon::new(IconName::Folder)
-                        .size_3p5()
+                        .size_4()
                         .text_color(rgb(FOLDER_COLOR))
                         .into_any_element(),
                     (None, EntryKind::Drive) => Icon::new(IconName::HardDrive)
-                        .size_3p5()
+                        .size_4()
                         .text_color(rgb(FOLDER_COLOR))
                         .into_any_element(),
                     _ => Icon::new(IconName::File)
-                        .size_3p5()
+                        .size_4()
                         .text_color(tokens.text_muted)
                         .into_any_element(),
                 };
@@ -833,8 +836,7 @@ impl SftpDemo {
                             .w(px(column.width().unwrap_or(64.0)))
                             .flex_none()
                             .truncate()
-                            .text_xs()
-                            .text_color(tokens.text_muted)
+                            .typo(Role::Caption, tokens)
                             .when(column.right_aligned(), |d| d.text_right())
                             .child(cell_text(column, &entry, now_year, offset))
                             .into_any_element()
@@ -858,7 +860,7 @@ impl SftpDemo {
                     .px_2()
                     .gap_2()
                     .items_center()
-                    .text_size(px(13.0))
+                    .typo(Role::Body, tokens)
                     .cursor_default()
                     .when(selected, |d| d.bg(tokens.accent_soft))
                     .when(!selected, |d| d.hover(move |style| style.bg(hover)))
@@ -1353,14 +1355,14 @@ impl SftpDemo {
         let percent = queue::row_percent(&state, row.done_bytes, row.total_bytes);
         let icon = match row.direction {
             Direction::Upload => Icon::new(IconName::ArrowUp)
-                .size_3p5()
+                .size_4()
                 .text_color(rgb(FOLDER_COLOR)),
             Direction::Download => Icon::new(IconName::ArrowDown)
                 .size_3p5()
                 .text_color(rgb(LINK_COLOR)),
             _ => Icon::new(IconName::Copy)
                 .size_3p5()
-                .text_color(tokens.dot_connecting),
+                .text_color(tokens.caution),
         };
         let button = |suffix: &'static str, icon: Icon, tip: &'static str| {
             Button::new((suffix, index))
@@ -1566,5 +1568,19 @@ impl SftpDemo {
                 super::view_dialogs::transfer_menu(menu, &menu_state, id, &menu_entity, window, cx)
             })
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod list_size_tests {
+    use crate::typography::Role;
+
+    #[test]
+    fn file_rows_are_roomy_enough_for_14px_names() {
+        // V2-U14：文件名走 Body（14px 主文字色），行高 32–34px，次要列走 Caption 但不低于 12px。
+        assert!((32.0..=34.0).contains(&super::ROW_HEIGHT));
+        assert_eq!(Role::Body.spec().size, 14.0);
+        assert!(Role::Caption.spec().size >= 12.0);
+        assert!(super::ROW_HEIGHT >= Role::Body.spec().size * Role::Body.spec().leading);
     }
 }

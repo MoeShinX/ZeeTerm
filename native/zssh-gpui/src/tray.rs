@@ -50,6 +50,7 @@ fn close_action_for(tray_ready: bool, choice: crate::app_prefs::CloseChoice) -> 
 }
 
 const SHOW_ID: &str = "tray-show";
+const CHECK_ID: &str = "tray-check-update";
 const UPDATE_ID: &str = "tray-update";
 const QUIT_ID: &str = "tray-quit";
 
@@ -57,6 +58,8 @@ const QUIT_ID: &str = "tray-quit";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayEntry {
     Show,
+    /// 检查更新：和「设置 → 关于」里的「检查更新」同一个入口（`MainWindow::check_for_updates`）。
+    CheckUpdate,
     /// 后台已经下好了更新：`version` 不带前缀 `v`。
     RestartInstall {
         version: String,
@@ -69,6 +72,7 @@ impl TrayEntry {
     pub fn label(&self) -> Option<String> {
         match self {
             Self::Show => Some(format!("显示 {}", crate::product::NAME)),
+            Self::CheckUpdate => Some("检查更新".to_owned()),
             Self::RestartInstall { version } => Some(format!("重启安装 v{version}")),
             Self::Separator => None,
             Self::Quit => Some("退出".to_owned()),
@@ -78,6 +82,7 @@ impl TrayEntry {
     fn id(&self) -> Option<&'static str> {
         match self {
             Self::Show => Some(SHOW_ID),
+            Self::CheckUpdate => Some(CHECK_ID),
             Self::RestartInstall { .. } => Some(UPDATE_ID),
             Self::Separator => None,
             Self::Quit => Some(QUIT_ID),
@@ -85,10 +90,10 @@ impl TrayEntry {
     }
 }
 
-/// 托盘菜单该有哪些项。只有"自动更新开着、并且已经下载好一个更新"才多一项「重启安装」；
-/// 试用版（`AUTO_UPDATE_ENABLED` 为 false）永远只有「显示」和「退出」。
+/// 托盘菜单该有哪些项。「显示」下面是「检查更新」（试用版也有：点了和关于页一样，只显示说明）；
+/// 只有"自动更新开着、并且已经下载好一个更新"才再多一项「重启安装」。
 pub fn menu_entries(auto_update: bool, ready_version: Option<&str>) -> Vec<TrayEntry> {
-    let mut entries = vec![TrayEntry::Show];
+    let mut entries = vec![TrayEntry::Show, TrayEntry::CheckUpdate];
     if let (true, Some(version)) = (auto_update, ready_version) {
         entries.push(TrayEntry::RestartInstall {
             version: version.trim_start_matches('v').to_owned(),
@@ -101,6 +106,7 @@ pub fn menu_entries(auto_update: bool, ready_version: Option<&str>) -> Vec<TrayE
 
 enum Command {
     Show,
+    CheckUpdate,
     Quit,
 }
 
@@ -140,6 +146,17 @@ pub fn spawn(
             match command {
                 Command::Show => {
                     let _ = window.update(cx, |_, window, _| set_visible(window, true));
+                }
+                Command::CheckUpdate => {
+                    // 和关于页同一个入口：自动更新开着时直接弹更新窗口；试用版只有一段说明，
+                    // 它写在设置的「关于」里，所以先把主窗口叫出来。
+                    let main = main.clone();
+                    let _ = window.update(cx, move |_, window, cx| {
+                        if !crate::product::AUTO_UPDATE_ENABLED {
+                            set_visible(window, true);
+                        }
+                        main.update(cx, |this, cx| this.check_for_updates(window, cx));
+                    });
                 }
                 Command::Quit => {
                     // 有进行中的传输 / AI 回合：先把主窗口叫出来问一下，确认后由主窗口自己退出。
@@ -212,6 +229,9 @@ pub fn spawn(
                         match event.id.0.as_str() {
                             SHOW_ID => {
                                 let _ = menu_tx.unbounded_send(Command::Show);
+                            }
+                            CHECK_ID => {
+                                let _ = menu_tx.unbounded_send(Command::CheckUpdate);
                             }
                             QUIT_ID => {
                                 let _ = menu_tx.unbounded_send(Command::Quit);
@@ -322,6 +342,7 @@ mod tests {
             labels(&entries),
             vec![
                 Some("显示 ZeeTerm".to_owned()),
+                Some("检查更新".to_owned()),
                 None,
                 Some("退出".to_owned())
             ]
@@ -335,12 +356,38 @@ mod tests {
             labels(&ready),
             vec![
                 Some("显示 ZeeTerm".to_owned()),
+                Some("检查更新".to_owned()),
                 Some("重启安装 v1.2.3".to_owned()),
                 None,
                 Some("退出".to_owned())
             ]
         );
-        assert_eq!(menu_entries(true, None).len(), 3);
-        assert_eq!(menu_entries(false, Some("1.2.3")).len(), 3);
+        assert_eq!(menu_entries(true, None).len(), 4);
+        assert_eq!(menu_entries(false, Some("1.2.3")).len(), 4);
+    }
+
+    #[test]
+    fn check_update_sits_right_under_show_with_or_without_a_ready_package() {
+        for ready in [None, Some("1.2.3")] {
+            for auto in [false, true] {
+                let entries = menu_entries(auto, ready);
+                assert_eq!(entries[0], TrayEntry::Show);
+                assert_eq!(
+                    entries[1],
+                    TrayEntry::CheckUpdate,
+                    "auto={auto} ready={ready:?}"
+                );
+                assert_eq!(entries.last(), Some(&TrayEntry::Quit));
+            }
+        }
+        // 每个有字的项都有自己的 id，互不相同（点了才分得清）。
+        let ids: Vec<_> = menu_entries(true, Some("1.2.3"))
+            .iter()
+            .filter_map(TrayEntry::id)
+            .collect();
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(ids.len(), unique.len());
     }
 }

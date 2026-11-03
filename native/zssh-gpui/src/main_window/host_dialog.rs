@@ -420,7 +420,7 @@ impl MainWindow {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .text_sm()
+                                    .typo(Role::Body, tokens)
                                     .text_color(color)
                                     .child(SharedString::from(outcome.headline.clone())),
                             )

@@ -297,7 +297,7 @@ impl MainWindow {
                         let hover = tokens.hover;
                         move |style| style.bg(hover)
                     })
-                    .child(Icon::new(IconName::Close).size_3p5())
+                    .child(Icon::new(IconName::Close).size_4())
                     .on_click(move |_, window, cx| {
                         close.update(cx, |this, cx| this.close_modal(window, cx));
                     })
@@ -399,8 +399,8 @@ impl MainWindow {
             )
             .children(dialog.report.as_ref().filter(|r| r.truncated).map(|_| {
                 div()
-                    .text_xs()
-                    .text_color(tokens.dot_connecting)
+                    .typo(Role::Caption, tokens)
+                    .text_color(tokens.caution)
                     .child(format!(
                         "连接太多，只显示前 {} 条。",
                         zssh_core::ssh::CONNECTIONS_MAX_ROWS
@@ -413,7 +413,7 @@ impl MainWindow {
                     .filter(|_| dialog.report.is_some())
                     .map(|error| {
                         div()
-                            .text_xs()
+                            .typo(Role::Caption, tokens)
                             .text_color(tokens.danger)
                             .child(SharedString::from(format!("刷新失败：{error}")))
                     }),
@@ -455,7 +455,7 @@ impl MainWindow {
                 .items_center()
                 .border_b_1()
                 .border_color(tokens.border)
-                .text_xs()
+                .typo(Role::Caption, tokens)
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(tokens.text_muted)
                 .child(cell(
@@ -493,7 +493,7 @@ impl MainWindow {
                 .items_center()
                 .justify_center()
                 .p_6()
-                .text_sm()
+                .typo(Role::Body, tokens)
                 .text_color(color)
                 .child(SharedString::from(text))
                 .into_any_element()
@@ -507,7 +507,7 @@ impl MainWindow {
                 .p_6()
                 .child(
                     div()
-                        .text_sm()
+                        .typo(Role::Body, tokens)
                         .text_color(tokens.danger)
                         .child(SharedString::from(error.clone())),
                 )
@@ -603,7 +603,8 @@ impl MainWindow {
                         .id(("conn-row", at))
                         .h(px(ROW_HEIGHT))
                         .items_center()
-                        .text_xs()
+                        .typo(Role::Caption, tokens)
+                        .text_color(tokens.text)
                         .hover(move |style| style.bg(hover))
                         .child(cell(
                             "conn-c-proto",

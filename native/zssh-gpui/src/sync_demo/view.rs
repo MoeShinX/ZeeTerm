@@ -424,7 +424,7 @@ impl SyncDemo {
                 vec![
                     div()
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(tokens.dot_connecting)
+                        .text_color(tokens.caution)
                         .child("地址是 http://，密码会以明文发送")
                         .into_any_element(),
                     div()
@@ -523,7 +523,7 @@ impl SyncDemo {
                 vec![
                     div()
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(tokens.dot_connecting)
+                        .text_color(tokens.caution)
                         .child("接口地址是 http://，令牌会以明文发送")
                         .into_any_element(),
                     Checkbox::new("sync-github-allow-http")
@@ -1024,7 +1024,7 @@ impl SyncDemo {
         let mut body: Vec<AnyElement> = vec![
             div()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(tokens.dot_connecting)
+                .text_color(tokens.caution)
                 .child("这次同步会删除很多记录")
                 .into_any_element(),
             div().child("还没有改动任何数据。").into_any_element(),
