@@ -70,7 +70,7 @@ pub fn probe_command() -> String {
 }
 
 /// POSIX 单引号转义：`'` → `'\''`。
-fn shell_quote(text: &str) -> String {
+pub(crate) fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
