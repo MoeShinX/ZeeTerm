@@ -1,10 +1,11 @@
-//! 主机「属性」对话框（V2-U7）：在当前页面上居中弹出，左边是类别、右边是这个类别的字段，底部
-//! 「确定 / 连接 / 取消」。交互形态借自 Xshell 的会话属性对话框，字段全是 ZeeTerm 原来的主机表单里的
-//! （名称、协议、地址、端口、分组、认证、代理、跳板机、X11、Telnet / 串口选项、指纹、AI 记忆），
-//! 一个没加；原来折叠的「高级设置」拆进了对应的类别，不再折叠。
+//! 主机「属性」对话框（V2-U13 起是单栏表单）：在当前页面上居中弹出，一个可滚动的单栏表单从上到下一屏看完——
+//! 名称、协议（分段按钮）、地址 + 端口、认证方式（分段按钮）、用户名 + 密码、分组、连接方式（分段按钮：
+//! 直接连接 / SSH 跳板 / 代理访问）、可折叠的「高级设置」、可折叠的「AI 记忆」；底部固定：左边「测试连接」，
+//! 右边「取消 / 连接 / 确定」。版式借自别家软件的主机表单，字段全是 ZeeTerm 原来表单里的，一个没加。
 //!
-//! 外壳（遮罩、卡片）在 `modal::render_modal`；表单状态、保存、类别切换在 `host_panel`，类别列表和错误落点
-//! 在 `host_props`（纯函数有测试）。这里只管画，以及对话框自己的两层小浮层：
+//! 外壳（遮罩、卡片）在 `modal::render_modal`；表单状态、保存、滚动在 `host_panel`，有哪些行、错误落在哪一行
+//! 在 `host_props`（纯函数有测试），连接方式三段和保存规则在 `host_form`，测试连接在 `host_test`。这里只管画，
+//! 以及对话框自己的两层小浮层：
 //! - 「新建代理…」：在属性对话框上再叠一层代理新建对话框，保存后回填到主机表单，主机表单里没保存的编辑原样留着；
 //! - 有未保存修改时取消 / Esc：先问一句是否放弃。
 
@@ -19,11 +20,11 @@ use zssh_core::model::{AuthMethod, Host, IdentityKind, Protocol, ProxyKind, Prox
 
 use super::MainWindow;
 use super::host_form::{
-    AuthField, auth_fields, auth_label, can_reveal, password_hint, password_identity,
+    AuthField, ConnMode, auth_fields, auth_label, can_reveal, password_hint, password_identity,
     pickable_identities,
 };
 use super::host_panel::HostForm;
-use super::host_props::{self, Category};
+use super::host_props::{self, AdvRow, Row};
 use super::page_logic::{flatten_groups, ungrouped_option_label};
 use super::protocol_form::{
     self, COMMON_BAUD_RATES, DATA_BITS, ENCODINGS, FLOW_CONTROLS, FormField, LOCAL_ECHOES,
@@ -31,16 +32,14 @@ use super::protocol_form::{
 };
 use super::proxy_panel::{PROXY_KINDS, ProxyInput, build_proxy_draft};
 use super::widgets::{
-    ButtonLook, Choice, act, error_note, field, field_with_error, note, pick, segmented, select,
-    switch_row, text_button,
+    ButtonLook, Choice, act, check_card, error_note, field, field_with_error, note, pick,
+    required_label, segmented_bar, select, text_button,
 };
 use crate::app_theme::Tokens;
 use crate::typography::{Role, Typo as _};
 
-/// 对话框卡片的宽度。
-pub const DIALOG_WIDTH: f32 = 780.0;
-/// 左侧类别列表的宽度。
-const NAV_WIDTH: f32 = 160.0;
+/// 对话框卡片的宽度（单栏表单：约 560–600）。
+pub const DIALOG_WIDTH: f32 = 580.0;
 
 /// 「新建代理…」小对话框的表单状态（自己的输入框，不和「设置 → 管理 → 代理」页共用，
 /// 免得互相冲掉没保存的内容）。
@@ -64,7 +63,6 @@ pub enum Overlay {
 
 /// 属性对话框的状态（表单本身在 `MainWindow::host_form` 里）。
 pub struct HostPropsDialog {
-    pub category: Category,
     /// 刚打开时表单的快照：现在的快照和它不一样就是有没保存的修改。
     pub initial: String,
     pub overlay: Overlay,
@@ -73,7 +71,6 @@ pub struct HostPropsDialog {
 impl HostPropsDialog {
     pub fn new(initial: String) -> Self {
         Self {
-            category: Category::General,
             initial,
             overlay: Overlay::None,
         }
@@ -88,7 +85,7 @@ fn proxy_mode_label(mode: ProxyMode) -> &'static str {
     }
 }
 
-/// 一个"枚举值下拉"：按钮上写当前值，菜单里列全部，选中后交给 `set` 改表单。
+/// 「枚举值下拉」：按钮上写当前值，菜单里列全部，选中后交给 `set` 改表单。
 fn enum_select<T: Copy + PartialEq + 'static>(
     id: &'static str,
     entity: &Entity<MainWindow>,
@@ -113,8 +110,8 @@ fn enum_select<T: Copy + PartialEq + 'static>(
     )
 }
 
-/// 「标题 + 说明 + 开关」一行，开关改表单里的一个布尔值。
-fn toggle_row(
+/// 开关卡片：勾选框 + 标题 + 一行说明，勾选改表单里的一个布尔值。
+fn toggle_card(
     entity: &Entity<MainWindow>,
     id: &'static str,
     title: &'static str,
@@ -124,19 +121,80 @@ fn toggle_row(
     tokens: &Tokens,
 ) -> AnyElement {
     let entity = entity.clone();
-    switch_row(
+    check_card(
         id,
         title,
-        hint.map(str::to_owned),
+        hint,
         checked,
-        move |_window, cx| {
+        tokens,
+        move |value, _window, cx| {
             entity.update(cx, |this, cx| {
-                this.with_form(cx, |form| set(form, !checked));
+                this.with_form(cx, |form| set(form, value));
             });
         },
-        tokens,
     )
     .into_any_element()
+}
+
+/// 带标签的一行字段：标签（必填的带红星）+ 控件 + 控件下面的红字错误。
+fn labelled(
+    label: impl IntoElement,
+    control: impl IntoElement,
+    error: Option<&str>,
+    tokens: &Tokens,
+) -> AnyElement {
+    v_flex()
+        .w_full()
+        .min_w_0()
+        .gap_1p5()
+        .child(label)
+        .child(control)
+        .children(error.map(|text| error_note(text.to_owned(), tokens.danger)))
+        .into_any_element()
+}
+
+/// 可折叠区的标题行：箭头 + 文字，整行可点。
+fn fold_header(
+    id: &'static str,
+    title: &str,
+    detail: Option<String>,
+    open: bool,
+    tokens: &Tokens,
+    on_toggle: impl Fn(&mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let hover = tokens.hover;
+    h_flex()
+        .id(id)
+        .w_full()
+        .gap_2()
+        .items_center()
+        .py_1()
+        .cursor_pointer()
+        .rounded_md()
+        .hover(move |style| style.bg(hover))
+        .child(
+            Icon::new(if open {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            })
+            .size_4()
+            .text_color(tokens.text_muted),
+        )
+        .child(
+            div()
+                .typo(Role::FieldLabel, tokens)
+                .child(SharedString::from(title.to_owned())),
+        )
+        .children(detail.map(|text| {
+            div()
+                .min_w_0()
+                .truncate()
+                .typo(Role::Caption, tokens)
+                .child(SharedString::from(text))
+        }))
+        .on_click(move |_, window, cx| on_toggle(window, cx))
+        .into_any_element()
 }
 
 impl MainWindow {
@@ -287,11 +345,11 @@ impl MainWindow {
 
     // ---- 画：整个对话框 ----
 
-    /// 对话框卡片里的内容（标题、左侧类别、右侧字段、底部按钮）。高度固定（不因类别不同而跳），
-    /// 右侧字段多时自己滚动。
+    /// 对话框卡片里的内容：标题、可滚动的单栏表单、底部按钮栏（固定）。高度固定（不因协议不同而跳），
+    /// 表单字段多时自己滚动。
     pub(super) fn host_props_body(
         &self,
-        dialog: &HostPropsDialog,
+        _dialog: &HostPropsDialog,
         tokens: &Tokens,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -300,107 +358,141 @@ impl MainWindow {
         };
         let entity = cx.entity();
         let title = host_props::dialog_title(form.existing.as_ref().map(|host| host.name.as_str()));
-        let categories = form.categories();
-        let category = host_props::fit(dialog.category, form.protocol, form.has_memory());
         let body_h = Self::host_props_height(self.window_height);
-
-        let nav = v_flex()
-            .w(px(NAV_WIDTH))
-            .flex_none()
-            .h_full()
-            .gap_0p5()
-            .pr_3()
-            .border_r_1()
-            .border_color(tokens.border)
-            .children(categories.iter().enumerate().map(|(index, item)| {
-                let item = *item;
-                let selected = item == category;
-                let has_error = form
-                    .errors
-                    .keys()
-                    .any(|field| host_props::category_of(*field) == Some(item));
-                let pick = entity.clone();
-                div()
-                    .id(("host-category", index))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .px_3()
-                    .py_1p5()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .typo(
-                        if selected {
-                            Role::NavSelected
-                        } else {
-                            Role::Nav
-                        },
-                        tokens,
-                    )
-                    .when(selected, |d| d.bg(tokens.accent_soft))
-                    .when(!selected, |d| {
-                        let hover = tokens.hover;
-                        d.hover(move |style| style.bg(hover))
-                    })
-                    .child(div().truncate().child(item.label(form.protocol)))
-                    .when(has_error, |d| {
-                        d.child(
-                            div()
-                                .id(("host-category-error", index))
-                                .size(px(7.0))
-                                .flex_none()
-                                .rounded_full()
-                                .bg(tokens.danger),
-                        )
-                    })
-                    .on_click(move |_, window, cx| {
-                        pick.update(cx, |this, cx| {
-                            this.host_select_category(item, window, cx);
-                        });
-                    })
-            }));
-
-        let rows = self.host_category_rows(form, category, &entity, tokens, cx);
-        let content = v_flex()
+        let rows: Vec<AnyElement> = host_props::rows(form.layout_state())
+            .into_iter()
+            .map(|row| self.form_row(row, form, &entity, tokens, cx))
+            .collect();
+        // 表单滚动区：行就是它的直接子元素，出错时按行下标滚过去。
+        let scroll = div()
             .flex_1()
-            .min_w_0()
-            .h_full()
-            .gap_3()
+            .min_h_0()
+            .w_full()
+            .border_t_1()
+            .border_color(tokens.border)
             .child(
-                div()
-                    .flex_none()
-                    .typo(Role::GroupTitle, tokens)
-                    .child(category.label(form.protocol)),
-            )
-            .child(
-                div()
-                    .id((
-                        "host-props-scroll",
-                        categories.iter().position(|c| *c == category).unwrap_or(0),
-                    ))
-                    .flex_1()
-                    .min_h_0()
+                v_flex()
+                    .id("host-props-scroll")
+                    .size_full()
+                    .gap_3()
+                    .pt_3()
+                    .pr_3()
+                    .pb_2()
                     .overflow_y_scroll()
-                    .child(v_flex().w_full().gap_3().pr_3().pb_2().children(rows)),
+                    .track_scroll(&form.scroll)
+                    .children(rows),
             );
 
-        let general_error = form
-            .error_of(FormField::General)
-            .map(|text| error_note(text.to_owned(), tokens.danger));
-        let (cancel, connect, ok) = (entity.clone(), entity.clone(), entity.clone());
+        // 结果栏：测试结果（绿 / 红，可复制详情）；找不到字段的保存错误也显示在这里。
+        let result: Option<AnyElement> =
+            match (&form.test.result, form.error_of(FormField::General)) {
+                (Some(outcome), _) => {
+                    let color = if outcome.ok {
+                        tokens.dot_connected
+                    } else if outcome.stage.is_some() {
+                        tokens.danger
+                    } else {
+                        tokens.text_muted
+                    };
+                    let copy = entity.clone();
+                    Some(
+                        h_flex()
+                            .id("host-test-result")
+                            .w_full()
+                            .flex_none()
+                            .gap_2()
+                            .items_start()
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(color)
+                            .child(
+                                Icon::new(if outcome.ok {
+                                    IconName::CircleCheck
+                                } else {
+                                    IconName::CircleX
+                                })
+                                .size_4()
+                                .text_color(color),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .text_color(color)
+                                    .child(SharedString::from(outcome.headline.clone())),
+                            )
+                            .child(text_button(
+                                "host-test-copy",
+                                "复制详情",
+                                ButtonLook::Ghost,
+                                move |_, window, cx| {
+                                    copy.update(cx, |this, cx| this.host_test_copy(window, cx));
+                                },
+                            ))
+                            .into_any_element(),
+                    )
+                }
+                (None, Some(text)) => {
+                    Some(error_note(text.to_owned(), tokens.danger).into_any_element())
+                }
+                (None, None) => None,
+            };
+
+        let (cancel, connect, ok, test, stop) = (
+            entity.clone(),
+            entity.clone(),
+            entity.clone(),
+            entity.clone(),
+            entity.clone(),
+        );
+        let running = form.test.is_running();
+        // 右边留出和表单滚动区一样的 12 像素（那里给滚动条），按钮栏才和输入框的右边缘对齐。
         let footer = h_flex()
             .w_full()
             .flex_none()
             .gap_2()
             .items_center()
-            .child(div().flex_1().min_w_0().children(general_error))
+            .pr_3()
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        text_button(
+                            "host-test",
+                            if running {
+                                "测试中…"
+                            } else {
+                                "测试连接"
+                            },
+                            ButtonLook::Outline,
+                            move |_, window, cx| {
+                                test.update(cx, |this, cx| this.host_test_connection(window, cx));
+                            },
+                        )
+                        .disabled(running),
+                    )
+                    .when(running, |d| {
+                        d.child(text_button(
+                            "host-test-cancel",
+                            "取消",
+                            ButtonLook::Ghost,
+                            move |_, _window, cx| {
+                                stop.update(cx, |this, cx| this.host_test_cancel(cx));
+                            },
+                        ))
+                    }),
+            )
+            .child(div().flex_1())
             .child(text_button(
-                "host-ok",
-                "确定",
-                ButtonLook::Primary,
+                "host-cancel",
+                "取消",
+                ButtonLook::Outline,
                 move |_, window, cx| {
-                    ok.update(cx, |this, cx| this.host_form_commit(false, window, cx));
+                    cancel.update(cx, |this, cx| this.host_props_cancel(window, cx));
                 },
             ))
             .child(text_button(
@@ -412,11 +504,11 @@ impl MainWindow {
                 },
             ))
             .child(text_button(
-                "host-cancel",
-                "取消",
-                ButtonLook::Outline,
+                "host-ok",
+                "确定",
+                ButtonLook::Primary,
                 move |_, window, cx| {
-                    cancel.update(cx, |this, cx| this.host_props_cancel(window, cx));
+                    ok.update(cx, |this, cx| this.host_form_commit(false, window, cx));
                 },
             ));
 
@@ -432,22 +524,15 @@ impl MainWindow {
                     .truncate()
                     .child(SharedString::from(title)),
             )
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .gap_4()
-                    .child(nav)
-                    .child(content),
-            )
+            .child(scroll)
+            .children(result.map(|row| div().pr_3().child(row)))
             .child(footer)
             .into_any_element()
     }
 
-    /// 对话框内容区的高度：最高 520，窗口矮时跟着缩（卡片的内边距和上下留白一并扣掉）。
+    /// 对话框内容区的高度：最高 680，窗口矮时跟着缩（卡片的内边距和上下留白一并扣掉）。
     pub(crate) fn host_props_height(window_height: f32) -> f32 {
-        (window_height - 48.0 - 40.0).clamp(260.0, 520.0)
+        (window_height - 48.0 - 40.0).clamp(300.0, 680.0)
     }
 
     /// 对话框上面叠的小浮层（新建代理 / 放弃修改的确认）；没有就是 `None`。
@@ -631,36 +716,94 @@ impl MainWindow {
         }
     }
 
-    // ---- 画：各类别的字段 ----
+    // ---- 画：表单的各行 ----
 
-    fn host_category_rows(
+    fn form_row(
         &self,
+        row: Row,
         form: &HostForm,
-        category: Category,
         entity: &Entity<MainWindow>,
         tokens: &Tokens,
         cx: &App,
-    ) -> Vec<AnyElement> {
-        match category {
-            Category::General => self.rows_general(form, entity, tokens, cx),
-            Category::Auth => self.rows_auth(form, entity, tokens, cx),
-            Category::Connection => self.rows_connection(form, entity, tokens),
-            Category::Terminal => self.rows_terminal(form, entity, tokens),
-            Category::SerialParams => self.rows_serial_params(form, entity, tokens),
-            Category::Security => self.rows_security(form, entity, tokens),
-            Category::Memory => self.rows_memory(form, entity, tokens, cx),
+    ) -> AnyElement {
+        match row {
+            Row::Name => labelled(
+                required_label("名称", tokens),
+                Input::new(&form.name),
+                form.error_of(FormField::Name),
+                tokens,
+            ),
+            Row::Protocol => self.protocol_row(form, entity, tokens),
+            Row::Endpoint => self.endpoint_row(form, entity, tokens, cx),
+            Row::AuthMethod => self.auth_method_row(form, entity, tokens),
+            Row::Credentials => self.credentials_row(form, entity, tokens, cx),
+            Row::AutoLogin => self.auto_login_row(form, entity, tokens),
+            Row::AutoLoginPrompts => h_flex()
+                .w_full()
+                .gap_3()
+                .items_start()
+                .child(div().flex_1().min_w_0().child(field(
+                    "用户名提示",
+                    Some("逗号分隔，不区分大小写".to_owned()),
+                    Input::new(&form.telnet.username_prompts),
+                    tokens,
+                )))
+                .child(div().flex_1().min_w_0().child(field(
+                    "密码提示",
+                    Some("逗号分隔，不区分大小写".to_owned()),
+                    Input::new(&form.telnet.password_prompts),
+                    tokens,
+                )))
+                .into_any_element(),
+            Row::Group => self.group_row(form, entity, tokens),
+            Row::Routing => self.routing_row(form, entity, tokens),
+            Row::RoutingDetail => self.routing_detail_row(form, entity, tokens),
+            Row::AdvancedHeader => {
+                let toggle = entity.clone();
+                fold_header(
+                    "host-advanced-toggle",
+                    "高级设置",
+                    None,
+                    form.advanced_open,
+                    tokens,
+                    move |_window, cx| {
+                        toggle.update(cx, |this, cx| this.host_toggle_advanced(cx));
+                    },
+                )
+            }
+            Row::Advanced(item) => self.advanced_row(item, form, entity, tokens),
+            Row::MemoryHeader => {
+                let toggle = entity.clone();
+                let length = form
+                    .memory
+                    .as_ref()
+                    .map_or(0, |memory| memory.input.read(cx).value().chars().count());
+                fold_header(
+                    "host-memory-toggle",
+                    "AI 记忆",
+                    (length > 0).then(|| format!("{length} 字")),
+                    form.memory_open,
+                    tokens,
+                    move |_window, cx| {
+                        toggle.update(cx, |this, cx| this.host_toggle_memory(cx));
+                    },
+                )
+            }
+            Row::MemoryBody => self
+                .rows_memory(form, entity, tokens, cx)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| div().into_any_element()),
         }
     }
 
-    /// 常规：名称、协议、地址 + 端口（串口是设备 + 波特率）、分组。
-    fn rows_general(
+    /// 协议：整行等分的分段按钮（串口主机和网络主机不能互相转换，对应的段置灰）。
+    fn protocol_row(
         &self,
         form: &HostForm,
         entity: &Entity<MainWindow>,
         tokens: &Tokens,
-        cx: &App,
-    ) -> Vec<AnyElement> {
-        let vis = protocol_form::visible(form.protocol);
+    ) -> AnyElement {
         let editing = form.existing.as_ref().map(|host| host.protocol.protocol);
         let options: Vec<(String, bool, Option<&'static str>)> = PROTOCOLS
             .iter()
@@ -673,59 +816,63 @@ impl MainWindow {
                 )
             })
             .collect();
-        let mut rows: Vec<AnyElement> = vec![
-            field_with_error(
-                "名称",
-                None,
-                Input::new(&form.name),
-                form.error_of(FormField::Name),
+        field(
+            "协议",
+            None,
+            segmented_bar(
+                "host-protocol",
+                options,
                 tokens,
-            )
-            .into_any_element(),
-            field(
-                "协议",
-                None,
-                div().w(px(320.0)).child(segmented(
-                    "host-protocol",
-                    options,
-                    pick(entity, move |this, index, window, cx| {
-                        if let Some(protocol) = PROTOCOLS.get(index).copied() {
-                            this.host_set_protocol(protocol, window, cx);
-                        }
-                    }),
-                )),
+                pick(entity, move |this, index, window, cx| {
+                    if let Some(protocol) = PROTOCOLS.get(index).copied() {
+                        this.host_set_protocol(protocol, window, cx);
+                    }
+                }),
+            ),
+            tokens,
+        )
+        .into_any_element()
+    }
+
+    /// 地址 + 端口（同一行，地址占大头）；串口是设备（含刷新）+ 波特率。
+    fn endpoint_row(
+        &self,
+        form: &HostForm,
+        entity: &Entity<MainWindow>,
+        tokens: &Tokens,
+        cx: &App,
+    ) -> AnyElement {
+        if form.protocol == Protocol::Serial {
+            let mut parts = self
+                .serial_device_rows(form, entity, tokens, cx)
+                .into_iter();
+            let (device, baud) = (parts.next(), parts.next());
+            return h_flex()
+                .w_full()
+                .gap_3()
+                .items_start()
+                .child(div().flex_1().min_w_0().children(device))
+                .child(div().w(px(210.0)).flex_none().children(baud))
+                .into_any_element();
+        }
+        h_flex()
+            .w_full()
+            .gap_3()
+            .items_start()
+            .child(div().flex_1().min_w_0().child(labelled(
+                required_label("地址", tokens),
+                Input::new(&form.address),
+                form.error_of(FormField::Address),
                 tokens,
-            )
-            .into_any_element(),
-        ];
-        if vis.address {
-            rows.push(
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .items_start()
-                    .child(div().flex_1().min_w_0().child(field_with_error(
-                        "地址",
-                        None,
-                        Input::new(&form.address),
-                        form.error_of(FormField::Address),
-                        tokens,
-                    )))
-                    .child(div().w(px(110.0)).flex_none().child(field_with_error(
-                        "端口",
-                        None,
-                        Input::new(&form.port),
-                        form.error_of(FormField::Port),
-                        tokens,
-                    )))
-                    .into_any_element(),
-            );
-        }
-        if vis.serial {
-            rows.extend(self.serial_device_rows(form, entity, tokens, cx));
-        }
-        rows.push(self.group_row(form, entity, tokens));
-        rows
+            )))
+            .child(div().w(px(110.0)).flex_none().child(field_with_error(
+                "端口",
+                None,
+                Input::new(&form.port),
+                form.error_of(FormField::Port),
+                tokens,
+            )))
+            .into_any_element()
     }
 
     /// 分组下拉。
@@ -773,67 +920,27 @@ impl MainWindow {
         .into_any_element()
     }
 
-    /// 认证：用户名、认证方式（SSH）、按方式出现的字段；Telnet 还有自动登录。
-    ///
-    /// 密码归主机（V2-U11）：密码认证只有「密码」一个框，没有「选凭据」；私钥认证才从凭据库选密钥。
-    /// 字段顺序由 `host_form::auth_fields` 定（有单测，窗口级断言 `assert_host_form:auth_fields`）。
-    fn rows_auth(
-        &self,
-        form: &HostForm,
-        entity: &Entity<MainWindow>,
-        tokens: &Tokens,
-        cx: &App,
-    ) -> Vec<AnyElement> {
-        let telnet = form.protocol == Protocol::Telnet;
-        let effective = form.effective_auth();
-        let mut rows: Vec<AnyElement> = Vec::new();
-        for item in auth_fields(form.protocol, form.auth) {
-            match item {
-                AuthField::Username => rows.push(
-                    field_with_error(
-                        "用户名",
-                        telnet.then(|| "可以不填".to_owned()),
-                        Input::new(&form.username),
-                        form.error_of(FormField::Username),
-                        tokens,
-                    )
-                    .into_any_element(),
-                ),
-                AuthField::Method => rows.push(self.auth_method_row(form, entity, tokens)),
-                AuthField::Password => {
-                    rows.push(self.password_row(form, entity, tokens, cx, telnet, effective))
-                }
-                AuthField::KeyPicker | AuthField::AgentPicker => {
-                    rows.push(self.identity_picker_row(form, entity, tokens, effective))
-                }
-                AuthField::AutoLogin => {
-                    rows.extend(self.telnet_auto_login_rows(form, entity, tokens))
-                }
-            }
-        }
-        rows
-    }
-
+    /// 认证方式（SSH）：整行等分的分段按钮 密码 / 私钥 / ssh-agent。
     fn auth_method_row(
         &self,
         form: &HostForm,
         entity: &Entity<MainWindow>,
         tokens: &Tokens,
     ) -> AnyElement {
-        let auth_methods = [AuthMethod::Password, AuthMethod::Key, AuthMethod::Agent];
-        let auth_choices: Vec<Choice> = auth_methods
+        let methods = [AuthMethod::Password, AuthMethod::Key, AuthMethod::Agent];
+        let options: Vec<(String, bool, Option<&'static str>)> = methods
             .iter()
-            .map(|m| Choice::new(auth_label(*m), *m == form.auth))
+            .map(|method| (auth_label(*method).to_owned(), *method == form.auth, None))
             .collect();
         field(
             "认证方式",
             None,
-            select(
+            segmented_bar(
                 "host-auth",
-                auth_label(form.auth),
-                auth_choices,
+                options,
+                tokens,
                 pick(entity, move |this, index, window, cx| {
-                    if let Some(method) = auth_methods.get(index).copied() {
+                    if let Some(method) = methods.get(index).copied() {
                         this.host_set_auth(method, window, cx);
                     }
                 }),
@@ -843,14 +950,56 @@ impl MainWindow {
         .into_any_element()
     }
 
-    /// 密码框（带小眼睛）：存的是这台主机自己的密码，留空表示不改。
-    fn password_row(
+    /// 用户名 + 密码（并排）；私钥认证是用户名 + 密钥下拉，ssh-agent 是用户名 + 可选的 agent 凭据。
+    /// 字段由 `host_form::auth_fields` 定（V2-U11 的语义不变：密码归主机，密钥从凭据库选）。
+    fn credentials_row(
         &self,
         form: &HostForm,
         entity: &Entity<MainWindow>,
         tokens: &Tokens,
         cx: &App,
-        telnet: bool,
+    ) -> AnyElement {
+        let telnet = form.protocol == Protocol::Telnet;
+        let effective = form.effective_auth();
+        let second = auth_fields(form.protocol, form.auth)
+            .into_iter()
+            .find(|item| {
+                matches!(
+                    item,
+                    AuthField::Password | AuthField::KeyPicker | AuthField::AgentPicker
+                )
+            });
+        let right = match second {
+            Some(AuthField::Password) => {
+                Some(self.password_cell(form, entity, tokens, cx, effective))
+            }
+            Some(AuthField::KeyPicker | AuthField::AgentPicker) => {
+                Some(self.identity_picker_cell(form, entity, tokens, effective))
+            }
+            _ => None,
+        };
+        h_flex()
+            .w_full()
+            .gap_3()
+            .items_start()
+            .child(div().flex_1().min_w_0().child(field_with_error(
+                "用户名",
+                telnet.then(|| "可以不填".to_owned()),
+                Input::new(&form.username),
+                form.error_of(FormField::Username),
+                tokens,
+            )))
+            .child(div().flex_1().min_w_0().children(right))
+            .into_any_element()
+    }
+
+    /// 密码框（带小眼睛）：存的是这台主机自己的密码，留空表示不改。
+    fn password_cell(
+        &self,
+        form: &HostForm,
+        entity: &Entity<MainWindow>,
+        tokens: &Tokens,
+        cx: &App,
         effective: AuthMethod,
     ) -> AnyElement {
         let identity = password_identity(form.existing.as_ref(), self.store.identities());
@@ -882,11 +1031,7 @@ impl MainWindow {
             .gap_1p5()
             .child(field_with_error(
                 "密码",
-                Some(if telnet {
-                    format!("{hint}；开了自动登录才会用到")
-                } else {
-                    hint.to_owned()
-                }),
+                None,
                 h_flex()
                     .w_full()
                     .gap_1()
@@ -896,6 +1041,7 @@ impl MainWindow {
                 form.error_of(FormField::Password),
                 tokens,
             ))
+            .child(note(hint, tokens))
             // 核心库报的凭据错误（密码认证下没有下拉可挂）显示在密码框下面。
             .children(
                 form.error_of(FormField::Identity)
@@ -905,7 +1051,7 @@ impl MainWindow {
     }
 
     /// 私钥认证：从凭据库选密钥（只列密钥类）；ssh-agent 认证：可选的 agent 凭据。
-    fn identity_picker_row(
+    fn identity_picker_cell(
         &self,
         form: &HostForm,
         entity: &Entity<MainWindow>,
@@ -943,7 +1089,7 @@ impl MainWindow {
             .gap_1p5()
             .child(field_with_error(
                 if key { "密钥" } else { "ssh-agent 凭据" },
-                hint,
+                None,
                 select(
                     "host-identity",
                     label,
@@ -957,6 +1103,7 @@ impl MainWindow {
                 form.error_of(FormField::Identity),
                 tokens,
             ))
+            .children(hint.map(|text| note(text, tokens)))
             .children(
                 form.mismatch_note
                     .clone()
@@ -965,60 +1112,130 @@ impl MainWindow {
             .into_any_element()
     }
 
-    /// Telnet 的自动登录：开关、用户名 / 密码提示词、错误。
-    fn telnet_auto_login_rows(
+    /// Telnet 的自动登录开关卡片（开着时下面一行是用户名 / 密码提示词）。
+    fn auto_login_row(
         &self,
         form: &HostForm,
         entity: &Entity<MainWindow>,
         tokens: &Tokens,
-    ) -> Vec<AnyElement> {
-        let telnet = &form.telnet;
-        let mut rows: Vec<AnyElement> = vec![toggle_row(
-            entity,
-            "telnet-auto-login",
-            "自动登录",
-            Some(
-                "看到用户名 / 密码提示就自动发送；用户名取上面的「用户名」，密码取上面的「密码」。",
-            ),
-            telnet.auto_login,
-            |form, value| form.telnet.auto_login = value,
-            tokens,
-        )];
-        // 错误紧跟在开关下面（提示词那两个框可能把它挤出可见区域）。
-        if let Some(text) = form.error_of(FormField::AutoLogin) {
-            rows.push(error_note(text.to_owned(), tokens.danger).into_any_element());
-        }
-        if telnet.auto_login {
-            rows.push(
-                v_flex()
-                    .gap_3()
-                    .child(field(
-                        "用户名提示",
-                        Some("逗号分隔，不区分大小写".to_owned()),
-                        Input::new(&telnet.username_prompts),
-                        tokens,
-                    ))
-                    .child(field(
-                        "密码提示",
-                        Some("逗号分隔，不区分大小写".to_owned()),
-                        Input::new(&telnet.password_prompts),
-                        tokens,
-                    ))
-                    .into_any_element(),
-            );
-        }
-        rows
+    ) -> AnyElement {
+        v_flex()
+            .w_full()
+            .gap_1p5()
+            .child(toggle_card(
+                entity,
+                "telnet-auto-login",
+                "自动登录",
+                Some("看到用户名 / 密码提示就自动发送，用上面填的用户名和密码"),
+                form.telnet.auto_login,
+                |form, value| form.telnet.auto_login = value,
+                tokens,
+            ))
+            .children(
+                form.error_of(FormField::AutoLogin)
+                    .map(|text| error_note(text.to_owned(), tokens.danger)),
+            )
+            .into_any_element()
     }
 
-    /// 连接：代理、跳板机；SSH 还有 X11 转发。
-    fn rows_connection(
+    /// 连接方式：直接连接 / SSH 跳板 / 代理访问（映射规则见 `host_form::ConnMode`）。
+    fn routing_row(
         &self,
         form: &HostForm,
         entity: &Entity<MainWindow>,
         tokens: &Tokens,
-    ) -> Vec<AnyElement> {
+    ) -> AnyElement {
+        let options: Vec<(String, bool, Option<&'static str>)> = ConnMode::ALL
+            .iter()
+            .map(|mode| (mode.label().to_owned(), *mode == form.conn_mode, None))
+            .collect();
+        field(
+            "连接方式",
+            None,
+            segmented_bar(
+                "host-routing",
+                options,
+                tokens,
+                pick(entity, move |this, index, _window, cx| {
+                    if let Some(mode) = ConnMode::ALL.get(index).copied() {
+                        this.host_set_conn_mode(mode, cx);
+                    }
+                }),
+            ),
+            tokens,
+        )
+        .into_any_element()
+    }
+
+    /// 连接方式下面的细节：代理访问 = 跟随默认 / 指定代理 + 选择 + 新建代理…；SSH 跳板 = 选跳板机
+    /// （旧数据里同时有代理的，下面也显示代理设置）。
+    fn routing_detail_row(
+        &self,
+        form: &HostForm,
+        entity: &Entity<MainWindow>,
+        tokens: &Tokens,
+    ) -> AnyElement {
+        match form.conn_mode {
+            ConnMode::Direct => div().into_any_element(),
+            ConnMode::Proxy => self.proxy_block(form, entity, tokens),
+            ConnMode::Jump => {
+                let others: Vec<&Host> = self
+                    .store
+                    .hosts()
+                    .iter()
+                    .filter(|item| {
+                        Some(item.id) != form.host_id && item.protocol.protocol == Protocol::Ssh
+                    })
+                    .collect();
+                let mut jump_choices = vec![Choice::new("（请选择）", form.jump.is_none())];
+                let mut jump_targets: Vec<Option<i64>> = vec![None];
+                for item in &others {
+                    jump_choices.push(Choice::new(item.name.clone(), form.jump == Some(item.id)));
+                    jump_targets.push(Some(item.id));
+                }
+                let jump_label = form
+                    .jump
+                    .and_then(|id| others.iter().find(|h| h.id == id))
+                    .map_or_else(|| "（请选择）".to_owned(), |h| h.name.clone());
+                v_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(field_with_error(
+                        "跳板机",
+                        Some("只能选 SSH 主机".to_owned()),
+                        select(
+                            "host-jump",
+                            jump_label,
+                            jump_choices,
+                            pick(entity, move |this, index, _window, cx| {
+                                if let Some(target) = jump_targets.get(index).copied() {
+                                    this.with_form(cx, |form| form.jump = target);
+                                }
+                            }),
+                        ),
+                        form.error_of(FormField::Jump),
+                        tokens,
+                    ))
+                    .when(form.jump_keeps_proxy, |d| {
+                        d.child(self.proxy_block(form, entity, tokens)).child(note(
+                            "这台主机原来同时设了代理，保存时照旧保留；经跳板机连接时只有第一跳（跳板机自己）的代理生效。",
+                            tokens,
+                        ))
+                    })
+                    .into_any_element()
+            }
+        }
+    }
+
+    /// 代理设置：跟随默认代理 / 指定代理，指定时再选哪个并可以新建。
+    fn proxy_block(
+        &self,
+        form: &HostForm,
+        entity: &Entity<MainWindow>,
+        tokens: &Tokens,
+    ) -> AnyElement {
         let proxies = self.store.proxies();
-        let modes = [ProxyMode::Default, ProxyMode::None, ProxyMode::Custom];
+        let modes = [ProxyMode::Default, ProxyMode::Custom];
         let mode_choices: Vec<Choice> = modes
             .iter()
             .map(|m| Choice::new(proxy_mode_label(*m), *m == form.proxy_mode))
@@ -1043,185 +1260,190 @@ impl MainWindow {
                 || "（请选择）".to_owned(),
                 |p| format!("{}（{}）", p.name, crate::proxies_demo::kind_label(p.kind)),
             );
-        // 跳板机只能是 SSH 主机（Telnet / 串口主机不能当跳板）。
-        let others: Vec<&Host> = self
+        // 「跟随默认代理」下面说清现在到底走不走代理。
+        let default_id = self
             .store
-            .hosts()
-            .iter()
-            .filter(|item| Some(item.id) != form.host_id && item.protocol.protocol == Protocol::Ssh)
-            .collect();
-        let mut jump_choices = vec![Choice::new("不使用", form.jump.is_none())];
-        let mut jump_targets: Vec<Option<i64>> = vec![None];
-        for item in &others {
-            jump_choices.push(Choice::new(item.name.clone(), form.jump == Some(item.id)));
-            jump_targets.push(Some(item.id));
-        }
-        let jump_label = form
-            .jump
-            .and_then(|id| others.iter().find(|h| h.id == id))
-            .map_or_else(|| "不使用".to_owned(), |h| h.name.clone());
-
-        let mut rows: Vec<AnyElement> = vec![
-            field_with_error(
-                "代理",
-                None,
-                select(
-                    "host-proxy-mode",
-                    proxy_mode_label(form.proxy_mode),
-                    mode_choices,
-                    pick(entity, move |this, index, _window, cx| {
-                        if let Some(mode) = modes.get(index).copied() {
-                            this.with_form(cx, |form| form.proxy_mode = mode);
-                        }
-                    }),
-                ),
-                form.error_of(FormField::Proxy),
-                tokens,
-            )
-            .into_any_element(),
-        ];
-        if form.proxy_mode == ProxyMode::Custom {
-            rows.push(
-                v_flex()
-                    .gap_1p5()
-                    .child(field(
-                        "用哪个代理",
-                        None,
-                        select(
-                            "host-proxy",
-                            proxy_label,
-                            proxy_choices,
-                            pick(entity, move |this, index, _window, cx| {
-                                if let Some(target) = proxy_targets.get(index).copied() {
-                                    this.with_form(cx, |form| form.proxy = target);
-                                }
-                            }),
-                        ),
-                        tokens,
-                    ))
-                    .when(proxies.is_empty(), |d| {
-                        d.child(note("还没有代理，点下面的「新建代理…」添加一个。", tokens))
-                    })
-                    .child(
-                        div().flex().child(
-                            Button::new("host-new-proxy")
-                                .outline()
-                                .compact()
-                                .icon(IconName::Plus)
-                                .label("新建代理…")
-                                .on_click(act(entity, |this, window, cx| {
-                                    this.host_open_new_proxy(window, cx);
-                                })),
-                        ),
-                    )
-                    .into_any_element(),
-            );
-        }
-        rows.push(
-            field_with_error(
-                "跳板机",
-                Some("只能选 SSH 主机".to_owned()),
-                select(
-                    "host-jump",
-                    jump_label,
-                    jump_choices,
-                    pick(entity, move |this, index, _window, cx| {
-                        if let Some(target) = jump_targets.get(index).copied() {
-                            this.with_form(cx, |form| form.jump = target);
-                        }
-                    }),
-                ),
-                form.error_of(FormField::Jump),
-                tokens,
-            )
-            .into_any_element(),
-        );
-        if protocol_form::visible(form.protocol).x11 {
-            rows.push(toggle_row(
-                entity,
-                "host-x11",
-                "X11 转发",
-                Some("把远程图形程序显示在本机的 X 服务器上（如 VcXsrv）；本机没有时连接会提示安装。"),
-                form.x11,
-                |form, value| form.x11 = value,
-                tokens,
-            ));
-            if let Some(text) = form.error_of(FormField::X11) {
-                rows.push(error_note(text.to_owned(), tokens.danger).into_any_element());
+            .db()
+            .ok()
+            .and_then(|db| db.default_proxy_id().ok().flatten());
+        let default_note = match default_id.and_then(|id| proxies.iter().find(|p| p.id == id)) {
+            Some(proxy) => format!(
+                "现在的默认代理：{}（在「管理 → 代理」里设置）。",
+                proxy.name
+            ),
+            None => {
+                "现在还没有设置默认代理，连接时等于直接连接（在「管理 → 代理」里设置）。".to_owned()
             }
+        };
+        let mut block = v_flex().w_full().gap_3().child(field_with_error(
+            "代理",
+            None,
+            select(
+                "host-proxy-mode",
+                proxy_mode_label(if form.proxy_mode == ProxyMode::Custom {
+                    ProxyMode::Custom
+                } else {
+                    ProxyMode::Default
+                }),
+                mode_choices,
+                pick(entity, move |this, index, _window, cx| {
+                    if let Some(mode) = modes.get(index).copied() {
+                        this.with_form(cx, |form| form.proxy_mode = mode);
+                    }
+                }),
+            ),
+            form.error_of(FormField::Proxy),
+            tokens,
+        ));
+        if form.proxy_mode == ProxyMode::Custom {
+            block = block
+                .child(field(
+                    "用哪个代理",
+                    None,
+                    select(
+                        "host-proxy",
+                        proxy_label,
+                        proxy_choices,
+                        pick(entity, move |this, index, _window, cx| {
+                            if let Some(target) = proxy_targets.get(index).copied() {
+                                this.with_form(cx, |form| form.proxy = target);
+                            }
+                        }),
+                    ),
+                    tokens,
+                ))
+                .when(proxies.is_empty(), |d| {
+                    d.child(note("还没有代理，点下面的「新建代理…」添加一个。", tokens))
+                })
+                .child(
+                    div().flex().child(
+                        Button::new("host-new-proxy")
+                            .outline()
+                            .compact()
+                            .icon(IconName::Plus)
+                            .label("新建代理…")
+                            .on_click(act(entity, |this, window, cx| {
+                                this.host_open_new_proxy(window, cx);
+                            })),
+                    ),
+                );
+        } else {
+            block = block.child(note(default_note, tokens));
         }
-        rows
+        block.into_any_element()
     }
 
-    /// Telnet 终端：回车模式、本地回显、NAWS、终端类型、编码、纯 TCP。
-    fn rows_terminal(
+    /// 高级设置里的一行（按协议）。
+    fn advanced_row(
         &self,
+        item: AdvRow,
         form: &HostForm,
         entity: &Entity<MainWindow>,
         tokens: &Tokens,
-    ) -> Vec<AnyElement> {
+    ) -> AnyElement {
         let telnet = &form.telnet;
-        vec![
-            field(
-                "回车模式",
-                Some("按回车键时发送什么".to_owned()),
-                enum_select(
-                    "telnet-newline",
+        let serial = &form.serial;
+        let two = |left: AnyElement, right: AnyElement| {
+            h_flex()
+                .w_full()
+                .gap_3()
+                .items_start()
+                .child(div().flex_1().min_w_0().child(left))
+                .child(div().flex_1().min_w_0().child(right))
+                .into_any_element()
+        };
+        match item {
+            AdvRow::X11 => v_flex()
+                .w_full()
+                .gap_1p5()
+                .child(toggle_card(
                     entity,
-                    telnet.newline,
-                    &TELNET_NEWLINES,
-                    protocol_form::telnet_newline_label,
-                    |form, value| form.telnet.newline = value,
-                ),
+                    "host-x11",
+                    "X11 转发",
+                    Some("把远程图形程序显示在本机的 X 服务器上（如 VcXsrv）；本机没有时连接会提示安装。"),
+                    form.x11,
+                    |form, value| form.x11 = value,
+                    tokens,
+                ))
+                .children(
+                    form.error_of(FormField::X11)
+                        .map(|text| error_note(text.to_owned(), tokens.danger)),
+                )
+                .into_any_element(),
+            AdvRow::Legacy => toggle_card(
+                entity,
+                "host-legacy",
+                "旧算法兼容",
+                Some("仅用于老服务器：允许 SHA1 的 ssh-rsa、老的密钥交换和 CBC 加密。安全性较低，只在这台机器连不上、并且确认对方是老系统时才打开。"),
+                form.legacy,
+                |form, value| form.legacy = value,
                 tokens,
-            )
-            .into_any_element(),
-            field(
-                "本地回显",
-                None,
-                enum_select(
-                    "telnet-echo",
-                    entity,
-                    telnet.local_echo,
-                    &LOCAL_ECHOES,
-                    protocol_form::local_echo_label,
-                    |form, value| form.telnet.local_echo = value,
-                ),
-                tokens,
-            )
-            .into_any_element(),
-            toggle_row(
+            ),
+            AdvRow::Fingerprint => self.fingerprint_box(form, entity, tokens),
+            AdvRow::TelnetKeys => two(
+                field(
+                    "回车模式",
+                    None,
+                    enum_select(
+                        "telnet-newline",
+                        entity,
+                        telnet.newline,
+                        &TELNET_NEWLINES,
+                        protocol_form::telnet_newline_label,
+                        |form, value| form.telnet.newline = value,
+                    ),
+                    tokens,
+                )
+                .into_any_element(),
+                field(
+                    "本地回显",
+                    None,
+                    enum_select(
+                        "telnet-echo",
+                        entity,
+                        telnet.local_echo,
+                        &LOCAL_ECHOES,
+                        protocol_form::local_echo_label,
+                        |form, value| form.telnet.local_echo = value,
+                    ),
+                    tokens,
+                )
+                .into_any_element(),
+            ),
+            AdvRow::TelnetTerm => two(
+                field_with_error(
+                    "终端类型",
+                    None,
+                    Input::new(&telnet.terminal_type),
+                    form.error_of(FormField::TerminalType),
+                    tokens,
+                )
+                .into_any_element(),
+                field(
+                    "编码",
+                    None,
+                    enum_select(
+                        "telnet-encoding",
+                        entity,
+                        telnet.encoding,
+                        &ENCODINGS,
+                        protocol_form::encoding_label,
+                        |form, value| form.telnet.encoding = value,
+                    ),
+                    tokens,
+                )
+                .into_any_element(),
+            ),
+            AdvRow::TelnetNaws => toggle_card(
                 entity,
                 "telnet-naws",
-                "NAWS（把窗口大小告诉服务器）",
-                None,
+                "NAWS",
+                Some("把窗口大小告诉服务器"),
                 telnet.naws,
                 |form, value| form.telnet.naws = value,
                 tokens,
             ),
-            field_with_error(
-                "终端类型",
-                Some("回应服务器的 TTYPE 协商".to_owned()),
-                Input::new(&telnet.terminal_type),
-                form.error_of(FormField::TerminalType),
-                tokens,
-            )
-            .into_any_element(),
-            field(
-                "编码",
-                None,
-                enum_select(
-                    "telnet-encoding",
-                    entity,
-                    telnet.encoding,
-                    &ENCODINGS,
-                    protocol_form::encoding_label,
-                    |form, value| form.telnet.encoding = value,
-                ),
-                tokens,
-            )
-            .into_any_element(),
-            toggle_row(
+            AdvRow::TelnetRaw => toggle_card(
                 entity,
                 "telnet-raw-tcp",
                 "纯 TCP 模式",
@@ -1230,7 +1452,113 @@ impl MainWindow {
                 |form, value| form.telnet.raw_tcp = value,
                 tokens,
             ),
-        ]
+            AdvRow::SerialFraming => v_flex()
+                .w_full()
+                .gap_1p5()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_start()
+                        .child(div().flex_1().min_w_0().child(field(
+                            "数据位",
+                            None,
+                            enum_select(
+                                "serial-data-bits",
+                                entity,
+                                serial.data_bits,
+                                &DATA_BITS,
+                                protocol_form::data_bits_label,
+                                |form, value| form.serial.data_bits = value,
+                            ),
+                            tokens,
+                        )))
+                        .child(div().flex_1().min_w_0().child(field(
+                            "校验位",
+                            None,
+                            enum_select(
+                                "serial-parity",
+                                entity,
+                                serial.parity,
+                                &PARITIES,
+                                protocol_form::parity_label,
+                                |form, value| form.serial.parity = value,
+                            ),
+                            tokens,
+                        )))
+                        .child(div().flex_1().min_w_0().child(field(
+                            "停止位",
+                            None,
+                            enum_select(
+                                "serial-stop-bits",
+                                entity,
+                                serial.stop_bits,
+                                &STOP_BITS,
+                                protocol_form::stop_bits_label,
+                                |form, value| form.serial.stop_bits = value,
+                            ),
+                            tokens,
+                        ))),
+                )
+                .children(
+                    form.error_of(FormField::Framing)
+                        .map(|text| error_note(text.to_owned(), tokens.danger)),
+                )
+                .into_any_element(),
+            AdvRow::SerialFlow => two(
+                field(
+                    "流控",
+                    None,
+                    enum_select(
+                        "serial-flow",
+                        entity,
+                        serial.flow_control,
+                        &FLOW_CONTROLS,
+                        protocol_form::flow_control_label,
+                        |form, value| form.serial.flow_control = value,
+                    ),
+                    tokens,
+                )
+                .into_any_element(),
+                field(
+                    "换行发送模式",
+                    None,
+                    enum_select(
+                        "serial-newline",
+                        entity,
+                        serial.newline,
+                        &SERIAL_NEWLINES,
+                        protocol_form::serial_newline_label,
+                        |form, value| form.serial.newline = value,
+                    ),
+                    tokens,
+                )
+                .into_any_element(),
+            ),
+            AdvRow::SerialEncoding => field(
+                "编码",
+                None,
+                enum_select(
+                    "serial-encoding",
+                    entity,
+                    serial.encoding,
+                    &ENCODINGS,
+                    protocol_form::encoding_label,
+                    |form, value| form.serial.encoding = value,
+                ),
+                tokens,
+            )
+            .into_any_element(),
+            AdvRow::SerialEcho => toggle_card(
+                entity,
+                "serial-echo",
+                "本地回显",
+                Some("设备自己不回显键入的字符时打开"),
+                serial.local_echo,
+                |form, value| form.serial.local_echo = value,
+                tokens,
+            ),
+        }
     }
 
     /// 串口的设备（本机列表 + 刷新 / 手填）和波特率：放在「常规」里。
@@ -1338,159 +1666,12 @@ impl MainWindow {
             .into_any_element(),
             field_with_error(
                 "波特率",
-                Some("可以直接填别的数值".to_owned()),
+                None,
                 baud_control,
                 form.error_of(FormField::Baud),
                 tokens,
             )
             .into_any_element(),
-        ]
-    }
-
-    /// 串口参数：数据位 / 校验位 / 停止位、流控、换行、本地回显、编码。
-    fn rows_serial_params(
-        &self,
-        form: &HostForm,
-        entity: &Entity<MainWindow>,
-        tokens: &Tokens,
-    ) -> Vec<AnyElement> {
-        let serial = &form.serial;
-        let framing = h_flex()
-            .w_full()
-            .gap_2()
-            .items_start()
-            .child(div().flex_1().min_w_0().child(field(
-                "数据位",
-                None,
-                enum_select(
-                    "serial-data-bits",
-                    entity,
-                    serial.data_bits,
-                    &DATA_BITS,
-                    protocol_form::data_bits_label,
-                    |form, value| form.serial.data_bits = value,
-                ),
-                tokens,
-            )))
-            .child(div().flex_1().min_w_0().child(field(
-                "校验位",
-                None,
-                enum_select(
-                    "serial-parity",
-                    entity,
-                    serial.parity,
-                    &PARITIES,
-                    protocol_form::parity_label,
-                    |form, value| form.serial.parity = value,
-                ),
-                tokens,
-            )))
-            .child(div().flex_1().min_w_0().child(field(
-                "停止位",
-                None,
-                enum_select(
-                    "serial-stop-bits",
-                    entity,
-                    serial.stop_bits,
-                    &STOP_BITS,
-                    protocol_form::stop_bits_label,
-                    |form, value| form.serial.stop_bits = value,
-                ),
-                tokens,
-            )));
-        vec![
-            v_flex()
-                .gap_1p5()
-                .child(framing)
-                .children(
-                    form.error_of(FormField::Framing)
-                        .map(|text| error_note(text.to_owned(), tokens.danger)),
-                )
-                .into_any_element(),
-            field(
-                "流控",
-                None,
-                enum_select(
-                    "serial-flow",
-                    entity,
-                    serial.flow_control,
-                    &FLOW_CONTROLS,
-                    protocol_form::flow_control_label,
-                    |form, value| form.serial.flow_control = value,
-                ),
-                tokens,
-            )
-            .into_any_element(),
-            field(
-                "换行发送模式",
-                Some("按回车键时发送什么".to_owned()),
-                enum_select(
-                    "serial-newline",
-                    entity,
-                    serial.newline,
-                    &SERIAL_NEWLINES,
-                    protocol_form::serial_newline_label,
-                    |form, value| form.serial.newline = value,
-                ),
-                tokens,
-            )
-            .into_any_element(),
-            toggle_row(
-                entity,
-                "serial-echo",
-                "本地回显",
-                Some("设备自己不回显键入的字符时打开"),
-                serial.local_echo,
-                |form, value| form.serial.local_echo = value,
-                tokens,
-            ),
-            field(
-                "编码",
-                None,
-                enum_select(
-                    "serial-encoding",
-                    entity,
-                    serial.encoding,
-                    &ENCODINGS,
-                    protocol_form::encoding_label,
-                    |form, value| form.serial.encoding = value,
-                ),
-                tokens,
-            )
-            .into_any_element(),
-        ]
-    }
-
-    /// 安全（SSH）：旧算法兼容、已保存的主机指纹。
-    fn rows_security(
-        &self,
-        form: &HostForm,
-        entity: &Entity<MainWindow>,
-        tokens: &Tokens,
-    ) -> Vec<AnyElement> {
-        vec![
-            v_flex()
-                .w_full()
-                .gap_2()
-                .p_3()
-                .rounded_md()
-                .border_1()
-                .border_color(tokens.border)
-                .child(toggle_row(
-                    entity,
-                    "host-legacy",
-                    "旧算法兼容",
-                    None,
-                    form.legacy,
-                    |form, value| form.legacy = value,
-                    tokens,
-                ))
-                .child(error_note(
-                    "仅用于老服务器：允许 SHA1 签名的 ssh-rsa、老的密钥交换和 CBC 加密。安全性较低，只在这台机器连不上、并且确认对方是老系统时才打开。",
-                    tokens.danger,
-                ))
-                .into_any_element(),
-            self.fingerprint_box(form, entity, tokens),
         ]
     }
 
@@ -1587,14 +1768,20 @@ impl MainWindow {
                             div()
                                 .flex_1()
                                 .typo(Role::Caption, tokens)
-                                .child(SharedString::from(format!(
-                                    "{stamp}{}",
-                                    if length > 0 {
-                                        format!(" · {length}/{MAX_MEMORY_CHARS}")
-                                    } else {
-                                        String::new()
-                                    }
-                                ))),
+                                .child(SharedString::from(
+                                    [
+                                        stamp.clone(),
+                                        if length > 0 {
+                                            format!("{length}/{MAX_MEMORY_CHARS}")
+                                        } else {
+                                            String::new()
+                                        },
+                                    ]
+                                    .into_iter()
+                                    .filter(|part| !part.is_empty())
+                                    .collect::<Vec<_>>()
+                                    .join(" · "),
+                                )),
                         )
                         .when(!memory.saved.is_empty(), |d| {
                             d.child(text_button(
@@ -1626,20 +1813,19 @@ impl MainWindow {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{Category, HostPropsDialog, MainWindow, Overlay};
+    use super::{HostPropsDialog, MainWindow, Overlay};
 
     #[test]
     fn the_dialog_is_never_taller_than_the_window_allows() {
-        // 窗口高 1000：最高 520；窗口矮：跟着缩，但不低于 260（再矮就靠内容区滚动）。
-        assert_eq!(MainWindow::host_props_height(1000.0), 520.0);
-        assert_eq!(MainWindow::host_props_height(520.0), 432.0);
-        assert_eq!(MainWindow::host_props_height(300.0), 260.0);
+        // 窗口高 1000：最高 680；窗口矮：跟着缩，但不低于 300（再矮就靠表单区滚动）。
+        assert_eq!(MainWindow::host_props_height(1000.0), 680.0);
+        assert_eq!(MainWindow::host_props_height(600.0), 512.0);
+        assert_eq!(MainWindow::host_props_height(300.0), 300.0);
     }
 
     #[test]
-    fn a_new_dialog_starts_on_general_with_no_overlay() {
+    fn a_new_dialog_starts_with_no_overlay_and_remembers_its_snapshot() {
         let dialog = HostPropsDialog::new("snap".to_owned());
-        assert_eq!(dialog.category, Category::General);
         assert!(matches!(dialog.overlay, Overlay::None));
         assert_eq!(dialog.initial, "snap");
     }

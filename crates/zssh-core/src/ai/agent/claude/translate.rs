@@ -22,6 +22,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use super::super::retry::friendly_agent_retry_reason;
+use super::super::usage::from_claude;
 use super::super::AgentEvent;
 
 /// 翻译状态（一个对话一份）。
@@ -185,6 +186,10 @@ fn assistant_events(
     turn: &mut TurnStats,
 ) -> Vec<AgentEvent> {
     let mut out = Vec::new();
+    // 上下文用量：每条 assistant 消息都带这一次模型调用的 usage（只读解析）。
+    if let Some(usage) = from_claude(&message["message"]) {
+        out.push(AgentEvent::Usage { usage });
+    }
     let Some(blocks) = message["message"]["content"].as_array() else {
         return out;
     };
@@ -371,6 +376,18 @@ mod tests {
             "正常结束 + 用户中断，都不该出 Error"
         );
         assert!(turn.content, "回合里有内容");
+
+        // 上下文用量：每条带 usage 的 assistant 消息一个，只读解析，不改变上面的任何结果。
+        let usages: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Usage { usage } => Some(usage),
+                _ => None,
+            })
+            .collect();
+        assert!(!usages.is_empty(), "样本里的 assistant 消息带 usage");
+        assert_eq!(usages[0].used, 2 + 790 + 3719);
+        assert_eq!(usages[0].model.as_deref(), Some("claude-opus-5-5"));
     }
 
     #[test]

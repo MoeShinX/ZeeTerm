@@ -13,6 +13,8 @@ pub const ASIDE_DEFAULT: f32 = 380.0;
 pub const AI_DEFAULT: f32 = 400.0;
 /// SFTP 停靠面板的默认宽度。
 pub const SFTP_DEFAULT: f32 = 420.0;
+/// 服务器概览面板的默认宽度：四个圆环一行（每格 80 宽）放得下的最小整数档位。
+pub const OVERVIEW_DEFAULT: f32 = 360.0;
 /// 面板的最小宽度。
 pub const PANEL_MIN: f32 = 320.0;
 /// 终端区域至少保留的宽度。
@@ -20,14 +22,17 @@ pub const TERMINAL_MIN: f32 = 360.0;
 const ASIDE_MAX_RATIO: f32 = 0.5;
 const AI_MAX_RATIO: f32 = 0.6;
 const SFTP_MAX_RATIO: f32 = 0.6;
+const OVERVIEW_MAX_RATIO: f32 = 0.6;
 
-/// 可调宽的右侧面板种类。`Ai` / `Sftp` 是 G07c 的 AI 面板和文件停靠面板用的，这一卡只有 `Aside`。
+/// 可调宽的右侧面板种类。`Ai` / `Sftp` 是 G07c 的 AI 面板和文件停靠面板用的；`Overview` 是盖在终端上的
+/// 服务器概览（V2-U12）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum PanelKind {
     Aside,
     Ai,
     Sftp,
+    Overview,
 }
 
 impl PanelKind {
@@ -36,6 +41,7 @@ impl PanelKind {
             Self::Aside => ASIDE_DEFAULT,
             Self::Ai => AI_DEFAULT,
             Self::Sftp => SFTP_DEFAULT,
+            Self::Overview => OVERVIEW_DEFAULT,
         }
     }
 
@@ -44,6 +50,7 @@ impl PanelKind {
             Self::Aside => ASIDE_MAX_RATIO,
             Self::Ai => AI_MAX_RATIO,
             Self::Sftp => SFTP_MAX_RATIO,
+            Self::Overview => OVERVIEW_MAX_RATIO,
         }
     }
 
@@ -53,6 +60,7 @@ impl PanelKind {
             Self::Aside => "layout.aside_panel_width",
             Self::Ai => "layout.ai_panel_width",
             Self::Sftp => "layout.sftp_panel_width",
+            Self::Overview => "layout.overview_width",
         }
     }
 }
@@ -206,7 +214,37 @@ mod tests {
         assert_eq!(PanelKind::Aside.default_width(), 380.0);
         assert_eq!(PanelKind::Ai.default_width(), 400.0);
         assert_eq!(PanelKind::Sftp.default_width(), 420.0);
+        assert_eq!(PanelKind::Overview.default_width(), OVERVIEW_DEFAULT);
+        // 概览沿用 0.2.14 就有的本机设置键，不新增键。
+        assert_eq!(PanelKind::Overview.setting_key(), "layout.overview_width");
         assert_eq!(PanelKind::Aside.setting_key(), "layout.aside_panel_width");
         assert_ne!(PanelKind::Ai.setting_key(), PanelKind::Sftp.setting_key());
+    }
+
+    #[test]
+    fn the_overview_may_take_sixty_percent_but_never_below_the_minimum_or_over_the_terminal() {
+        assert_eq!(bounds(PanelKind::Overview, 1500.0, 0.0).max, 900.0);
+        assert_eq!(bounds(PanelKind::Overview, 1500.0, 0.0).min, PANEL_MIN);
+        // 树 + 别的面板占了 600：可用 = 1500 - 360 - 600 = 540。
+        assert_eq!(bounds(PanelKind::Overview, 1500.0, 600.0).max, 540.0);
+        assert_eq!(clamp(PanelKind::Overview, 100.0, 1500.0, 0.0), PANEL_MIN);
+        assert_eq!(clamp(PanelKind::Overview, 5000.0, 1500.0, 0.0), 900.0);
+    }
+
+    #[test]
+    fn dragging_the_overview_clamps_to_its_own_range() {
+        let start = DragStart {
+            pointer_x: 1000.0,
+            width: OVERVIEW_DEFAULT,
+        };
+        assert_eq!(
+            dragged_width(PanelKind::Overview, start, 1200.0, 1500.0, 0.0),
+            PANEL_MIN,
+            "往右拖到最窄"
+        );
+        assert_eq!(
+            dragged_width(PanelKind::Overview, start, 900.0, 1500.0, 0.0),
+            460.0
+        );
     }
 }

@@ -65,16 +65,11 @@ fn active_ai(
     this: &MainWindow,
     cx: &::gpui::App,
 ) -> Result<Entity<crate::agent_chat_demo::AgentChatDemo>, String> {
-    let id = this
-        .workspace
-        .read(cx)
-        .active_tab_id()
-        .ok_or("没有终端标签")?;
+    let _ = cx;
     this.docks
         .ai
-        .get(&id)
-        .cloned()
-        .ok_or_else(|| "这个标签没有 AI 面板".to_owned())
+        .clone()
+        .ok_or_else(|| "AI 面板还没打开过".to_owned())
 }
 
 fn agents_view(this: &MainWindow) -> Result<Entity<AgentsDemo>, String> {

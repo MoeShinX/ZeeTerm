@@ -1,8 +1,9 @@
 // Adapted from Netcatty components/AIChatSidePanel.tsx (via ui/src/components/ai/AIChatPanel.tsx)
 //! AI 对话嵌在主窗口右侧面板里时多出来的东西（0.2.14 `AIChatPanel.tsx` 的面板形态）：
 //!
-//! - 目标主机：当前标签的主机 + 用户 `@` 的主机 + 切焦点时自动保留的主机（规则在
-//!   `main_window::scope_targets`），显示成可以 × 掉的标签；
+//! - 目标主机：对话在第一条消息发出时锚定到当时聚焦窗格的主机，之后不跟标签 / 分屏焦点走；没发第一条
+//!   之前显示当前聚焦窗格的主机（预览）。再加用户 `@` 的主机，显示成可以 × 掉的标签（规则在
+//!   `main_window::anchor`）；锚定的主机和当前标签不一致、或者已经没有打开的终端时，目标栏下面有一行提示；
 //! - 顶部一行：智能体、历史、新对话；执行模式、模型、思考强度三个下拉在输入框卡片底部一行
 //!   （版面规则在 `composer`，选择规则在 `main_window::model_picker`），右边是发送 / 停止；
 //! - 输入框上沿的拖动条调输入框高度（双击恢复）；消息区不在底部时出现「回到底部」；
@@ -24,33 +25,47 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use zssh_core::ai::agent::AgentModelCatalog;
+use zssh_core::ai::agent::usage::UsageLevel;
 use zssh_core::ai::bridge::ExecMode;
 
 use super::composer::{self, ActionKind, ComposerItem, EffortStyle, ModeTone};
+use super::usage_view::{self, MeterView};
 use super::{
     AgentChatDemo, ApprovalDetail, ApprovalState, ChatMessage, HistoryPanel, HostChoice,
     NO_HOST_HINT, ToolCard, ToolStatus, card_detail_lines, card_status_text, mode_label,
     redact_paths,
 };
+use crate::agent_host::HostTarget;
 use crate::agent_tools::{self, ToolRow};
 use crate::app_theme::Tokens;
 use crate::icons::Ico;
+use crate::main_window::anchor::{
+    self, Banner, Binding, Focus, Key, LockOutcome, Open, Pin, Target,
+};
 use crate::main_window::bar_height;
 use crate::main_window::bar_settings;
 use crate::main_window::model_picker::{self, ModelPicker};
-use crate::main_window::scope_targets::{self, Pin};
+use crate::main_window::scope_targets;
 
-/// 主窗口每个节拍告诉面板的上下文：当前标签的主机、还开着标签的主机、主机库里的主机。
+/// 主窗口每个节拍告诉面板的上下文：当前标签聚焦窗格、还开着终端的主机和终端、主机库里的主机。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EmbedContext {
-    pub current: Option<(i64, String)>,
+    pub focus: Option<Focus>,
     pub open_hosts: HashSet<i64>,
+    pub open_terminals: HashSet<String>,
     pub hosts: Vec<HostChoice>,
 }
 
 pub(super) struct Embed {
     ctx: EmbedContext,
+    /// 对话锁定了没有：没发第一条消息之前目标栏是当前窗格的预览，发出第一条就锚定。
+    binding: Binding,
+    /// 用户 `@` 进来的主机（和对话一起，新对话清空）。
     pins: Vec<Pin>,
+    /// 这次发送没能锚定时（Telnet / 串口 / 快速连接没连上）要告诉用户的话；发送流程清掉旧提示之后再显示。
+    pending_notice: Option<String>,
+    /// 标题栏的「上下文」下拉开着没有（明细卡片）。
+    usage_open: bool,
     /// 点了「@ 主机」按钮：打开主机列表（输入框里打 `@词` 也会出这个列表）。
     picker_open: bool,
     picker: ModelPicker,
@@ -68,7 +83,10 @@ impl Embed {
     pub(super) fn new(input_height: f32) -> Self {
         Self {
             ctx: EmbedContext::default(),
+            binding: Binding::Unlocked,
             pins: Vec::new(),
+            pending_notice: None,
+            usage_open: false,
             picker_open: false,
             picker: ModelPicker::default(),
             selection: String::new(),
@@ -78,6 +96,86 @@ impl Embed {
             panel_bounds: Rc::new(Cell::new(None)),
             send_bounds: Rc::new(Cell::new(None)),
         }
+    }
+
+    fn open(&self) -> Open<'_> {
+        Open {
+            hosts: &self.ctx.open_hosts,
+            terminals: &self.ctx.open_terminals,
+        }
+    }
+
+    /// 目标栏现在的标签（绑定的 / 预览的 + @ 的）。
+    fn targets(&self) -> Vec<Target> {
+        anchor::build(
+            &self.binding,
+            self.ctx.focus.as_ref(),
+            &self.pins,
+            &self.open(),
+        )
+    }
+
+    /// 能交给桥的主机：没失效、库里还有、不是 Telnet / 串口。
+    fn bridge_hosts(&self) -> Vec<i64> {
+        self.targets()
+            .iter()
+            .filter(|target| !target.dangling)
+            .filter_map(Target::host_id)
+            .filter(|id| {
+                self.ctx
+                    .hosts
+                    .iter()
+                    .any(|host| host.id == *id && host.refusal.is_none())
+            })
+            .collect()
+    }
+
+    /// 锚定在快速连接终端上时，交给桥的那个终端目标（没失效才给）。
+    fn bridge_terminal(&self) -> Option<HostTarget> {
+        self.targets()
+            .into_iter()
+            .find_map(|target| match target.key {
+                Key::Terminal(id) if !target.dangling && !id.is_empty() => Some(HostTarget {
+                    id: 0,
+                    name: target.name,
+                    username: String::new(),
+                    current: true,
+                    pinned: false,
+                    refusal: None,
+                    terminal: Some(id),
+                }),
+                _ => None,
+            })
+    }
+
+    /// 有没有「当前」目标（绑定的或预览的）：没有的话工具卡片上要标出主机名。
+    pub(super) fn has_current_target(&self) -> bool {
+        self.binding.anchor().is_some()
+            || self.ctx.focus.as_ref().is_some_and(|f| f.key().is_some())
+    }
+
+    /// 这台主机不能当执行目标的原因（Telnet / 串口）。
+    fn refusal_of(&self, host_id: i64) -> Option<String> {
+        self.ctx
+            .hosts
+            .iter()
+            .find(|host| host.id == host_id)
+            .and_then(|host| host.refusal.clone())
+    }
+
+    /// 绑定的目标（没锁定时是预览）的身份：`@` 它时不再另加一份固定目标。
+    fn bound_key(&self) -> Option<Key> {
+        self.binding
+            .anchor()
+            .map(|anchor| anchor.key.clone())
+            .or_else(|| self.ctx.focus.as_ref().and_then(Focus::key))
+    }
+
+    /// 新对话：回到未锁定，`@` 的主机一并清掉（它们是上一个对话的范围）。
+    pub(super) fn reset_scope(&mut self) {
+        self.binding = Binding::Unlocked;
+        self.pins.clear();
+        self.pending_notice = None;
     }
 
     /// 发送时带的模型；还没有目录（第一条消息发出前）就不带，智能体用自己的默认。
@@ -100,11 +198,6 @@ impl Embed {
         self.selection.clear();
     }
 
-    /// 当前聚焦标签的主机。
-    pub(super) fn current_host(&self) -> Option<i64> {
-        self.ctx.current.as_ref().map(|(id, _)| *id)
-    }
-
     fn selected(&self) -> Option<(usize, Option<String>)> {
         model_picker::split_selection(&self.selection, &self.picker.groups)
     }
@@ -112,6 +205,21 @@ impl Embed {
     #[cfg(test)]
     pub(super) fn selection(&self) -> &str {
         &self.selection
+    }
+}
+
+/// 目标栏里一个标签的文字：绑定的写「已绑定」，没锁定的预览写「当前」，失效写「未连接」。
+fn chip_label(target: &Target, refused: bool) -> String {
+    let name = &target.name;
+    if target.dangling {
+        return format!("{name}（未连接）");
+    }
+    match (target.current, target.locked, refused) {
+        (true, _, true) => format!("{name}（当前，不可用）"),
+        (true, true, false) => format!("{name}（已绑定）"),
+        (true, false, false) => format!("{name}（当前）"),
+        (false, _, true) => format!("{name}（不可用）"),
+        (false, _, false) => name.clone(),
     }
 }
 
@@ -123,30 +231,15 @@ impl AgentChatDemo {
         this
     }
 
-    /// 主窗口每个节拍调一次：标签 / 主机库变了才有动作。
+    /// 主窗口每个节拍调一次：标签 / 焦点 / 主机库变了才有动作。对话锁定之后焦点变了只影响「当前标签」提示，
+    /// 不改目标；没锁定时预览跟着焦点走。
     pub fn set_context(&mut self, ctx: EmbedContext, cx: &mut Context<Self>) {
-        let conversation_active = !self.chat.messages.is_empty() || self.chat.is_running();
         let Some(embed) = self.embed.as_mut() else {
             return;
         };
         if embed.ctx == ctx {
             return;
         }
-        // 对话进行中焦点切到别的主机：原来那台留在对话范围里（在途请求不会因此失效）。
-        if conversation_active && embed.ctx.current != ctx.current {
-            let previous = embed
-                .ctx
-                .current
-                .as_ref()
-                .map(|(id, name)| (*id, name.as_str()));
-            embed.pins = scope_targets::retain_previous(
-                &embed.pins,
-                previous,
-                ctx.current.as_ref().map(|(id, _)| *id),
-                &ctx.open_hosts,
-            );
-        }
-        embed.pins = scope_targets::prune_retained(&embed.pins, &ctx.open_hosts);
         self.hosts = ctx.hosts.clone();
         embed.ctx = ctx;
         self.recompute_targets();
@@ -157,32 +250,18 @@ impl AgentChatDemo {
     pub(super) fn target_flags(&self) -> std::collections::HashMap<i64, (bool, bool)> {
         self.embed_targets()
             .into_iter()
-            .map(|target| (target.host_id, (target.current, target.pinned)))
+            .filter_map(|target| Some((target.host_id()?, (target.current, target.pinned))))
             .collect()
     }
 
     /// 目标列表变了：`selected_hosts` 跟着变，已有会话马上同步给桥，「AI 使用中」标记也跟着。
-    fn recompute_targets(&mut self) {
+    pub(super) fn recompute_targets(&mut self) {
         let Some(embed) = self.embed.as_ref() else {
             return;
         };
-        let current = embed
-            .ctx
-            .current
-            .as_ref()
-            .map(|(id, name)| (*id, name.as_str()));
-        let ids: Vec<i64> = scope_targets::build(current, &embed.pins, &embed.ctx.open_hosts)
-            .into_iter()
-            .map(|target| target.host_id)
-            // Telnet / 串口主机在目标栏里显示（置灰写原因），但不能当执行目标：不给桥。
-            .filter(|id| {
-                embed
-                    .ctx
-                    .hosts
-                    .iter()
-                    .any(|host| host.id == *id && host.refusal.is_none())
-            })
-            .collect();
+        // Telnet / 串口主机在目标栏里显示（置灰写原因），失效（没有打开的终端）的绑定目标也不给桥：
+        // 都不能当执行目标。
+        let ids = embed.bridge_hosts();
         let changed = ids != self.selected_hosts;
         self.selected_hosts = ids;
         // 「当前」「固定」和有没有打开的终端会随标签、焦点变：每次上下文变了都对桥再同步一遍
@@ -196,19 +275,26 @@ impl AgentChatDemo {
     }
 
     /// 目标栏当前显示的标签。
-    fn embed_targets(&self) -> Vec<scope_targets::Target> {
+    pub(super) fn embed_targets(&self) -> Vec<Target> {
         let Some(embed) = self.embed.as_ref() else {
             return Vec::new();
         };
-        let current = embed
-            .ctx
-            .current
-            .as_ref()
-            .map(|(id, name)| (*id, name.as_str()));
-        scope_targets::build(current, &embed.pins, &embed.ctx.open_hosts)
+        embed
+            .targets()
             .into_iter()
-            .filter(|target| embed.ctx.hosts.iter().any(|host| host.id == target.host_id))
+            // 库里已经删掉的主机：`@` 进来的不再显示；绑定的那台仍显示（灰掉，对话失效）。
+            .filter(|target| {
+                target.current
+                    || target
+                        .host_id()
+                        .is_none_or(|id| embed.ctx.hosts.iter().any(|host| host.id == id))
+            })
             .collect()
+    }
+
+    /// 快速连接终端当目标时交给桥的那一项。
+    pub(super) fn terminal_target(&self) -> Option<HostTarget> {
+        self.embed.as_ref().and_then(Embed::bridge_terminal)
     }
 
     pub fn pin_host(&mut self, host_id: i64, cx: &mut Context<Self>) {
@@ -228,12 +314,8 @@ impl AgentChatDemo {
             cx.notify();
             return;
         }
-        let (pins, already) = scope_targets::pin_host(
-            &embed.pins,
-            host_id,
-            &name,
-            embed.ctx.current.as_ref().map(|(id, _)| *id),
-        );
+        let (pins, already) =
+            anchor::pin_host(&embed.pins, host_id, &name, embed.bound_key().as_ref());
         embed.pins = pins;
         embed.picker_open = false;
         if already {
@@ -248,10 +330,279 @@ impl AgentChatDemo {
 
     pub fn unpin_host(&mut self, host_id: i64, cx: &mut Context<Self>) {
         if let Some(embed) = self.embed.as_mut() {
-            embed.pins = scope_targets::unpin(&embed.pins, host_id);
+            embed.pins = anchor::unpin(&embed.pins, host_id);
         }
         self.recompute_targets();
         cx.notify();
+    }
+
+    // ---- 上下文用量（V2-U15） ----
+
+    /// 面板标题栏右侧的「上下文 ▬ 12% ∨」：主窗口画标题栏时放进去，点一下开 / 关明细卡片。
+    /// 没有用量数据时写「上下文 —」，不能点开。
+    pub fn usage_meter(&self, entity: Entity<Self>, tokens: &Tokens) -> AnyElement {
+        let view = usage_view::meter(self.chat.usage.as_ref());
+        let open = self.embed.as_ref().is_some_and(|embed| embed.usage_open);
+        let (muted, text, hover) = (tokens.text_muted, tokens.text, tokens.hover);
+        let fill = |level: UsageLevel| match level {
+            UsageLevel::Normal => tokens.accent,
+            UsageLevel::Warning => tokens.dot_connecting,
+            UsageLevel::Danger => tokens.danger,
+        };
+        let caret = || Icon::new(IconName::ChevronDown).size_3();
+        let base = h_flex()
+            .id("ai-usage-meter")
+            .flex_none()
+            .items_center()
+            .gap_1p5()
+            .px_1p5()
+            .py_0p5()
+            .rounded_md()
+            .text_xs()
+            .text_color(muted)
+            .when(open, |d| d.bg(hover))
+            .child("上下文");
+        let clickable = view != MeterView::Empty;
+        let body = match view {
+            MeterView::Empty => base.child("—"),
+            MeterView::Tokens { text: tokens_text } => base
+                .child(
+                    div()
+                        .text_color(text)
+                        .child(SharedString::from(tokens_text)),
+                )
+                .child(caret()),
+            MeterView::Bar {
+                fraction,
+                percent_text,
+                level,
+            } => base
+                .child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .w(px(44.0))
+                        .h(px(4.0))
+                        .rounded_full()
+                        .bg(muted.opacity(0.3))
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .h_full()
+                                .w(::gpui::relative(fraction.max(0.03)))
+                                .rounded_full()
+                                .bg(fill(level)),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_color(text)
+                        .child(SharedString::from(percent_text)),
+                )
+                .child(caret()),
+        };
+        body.when(clickable, |d| {
+            d.cursor_pointer()
+                .hover(move |style| style.bg(hover).text_color(text))
+                .tooltip(|window, cx| {
+                    Tooltip::new("最近一轮的上下文用量（已用 / 模型上下文窗口）").build(window, cx)
+                })
+                .on_click(move |_, _window, cx| {
+                    entity.update(cx, |this, cx| {
+                        if let Some(embed) = this.embed.as_mut() {
+                            embed.usage_open = !embed.usage_open;
+                        }
+                        cx.notify();
+                    });
+                })
+        })
+        .into_any_element()
+    }
+
+    /// 标题栏指示器上现在写的字（脚本断言用）：`上下文 —` / `上下文 12.3k` / `上下文 3%`。
+    pub fn usage_text(&self) -> String {
+        match usage_view::meter(self.chat.usage.as_ref()) {
+            MeterView::Empty => "上下文 —".to_owned(),
+            MeterView::Tokens { text } => format!("上下文 {text}"),
+            MeterView::Bar { percent_text, .. } => format!("上下文 {percent_text}"),
+        }
+    }
+
+    /// 指示器的颜色档（脚本断言用）：`normal` / `warning` / `danger`，没有数据是 `none`。
+    pub fn usage_level_name(&self) -> &'static str {
+        match self.chat.usage.as_ref() {
+            None => "none",
+            Some(usage) => match usage.level() {
+                UsageLevel::Normal => "normal",
+                UsageLevel::Warning => "warning",
+                UsageLevel::Danger => "danger",
+            },
+        }
+    }
+
+    /// 开 / 关明细卡片（脚本用，和点指示器同一个方法）。
+    pub fn set_usage_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if let Some(embed) = self.embed.as_mut() {
+            embed.usage_open = open;
+        }
+        cx.notify();
+    }
+
+    // ---- 锚定（V2-U15） ----
+
+    /// 发送之前：没锁定就按当前聚焦窗格锁定；锁定的目标已经没有打开的终端就拦住这次发送（返回原因，
+    /// 不自动改绑）。当前窗格不能锚定（Telnet / 串口 / 快速连接没连上）时保持未锁定，原因在
+    /// [`Self::show_anchor_notice`] 里提示。
+    pub(super) fn anchor_gate(&mut self) -> Option<String> {
+        let embed = self.embed.as_mut()?;
+        match anchor::lock_on_send(&embed.binding, embed.ctx.focus.as_ref()) {
+            LockOutcome::Already | LockOutcome::NoFocus => {}
+            LockOutcome::Locked(anchor) => embed.binding = Binding::Locked(anchor),
+            LockOutcome::Skipped(why) => embed.pending_notice = Some(why.message()),
+        }
+        let reason = match &embed.binding {
+            Binding::Locked(anchor) if !anchor::is_alive(anchor, &embed.open()) => Some(format!(
+                "「{}」没有打开的终端，先重新连接或改用当前主机",
+                anchor.name
+            )),
+            _ => None,
+        };
+        self.recompute_targets();
+        reason
+    }
+
+    /// 发送流程清掉旧提示之后，把「没能锚定」的原因放到底部提示里。
+    pub(super) fn show_anchor_notice(&mut self) {
+        if let Some(text) = self.embed.as_mut().and_then(|e| e.pending_notice.take()) {
+            self.link_notice = Some(super::Notice { text, error: false });
+        }
+    }
+
+    /// 「新对话」：回到未锁定（目标栏重新跟着当前窗格），`@` 的主机清空。
+    pub(super) fn reset_anchor(&mut self) {
+        if let Some(embed) = self.embed.as_mut() {
+            embed.reset_scope();
+        }
+        self.recompute_targets();
+    }
+
+    /// 「继续」历史会话：回到它当初锚定的主机；旧历史没有锚定就保持未锁定。
+    pub(super) fn restore_anchor(&mut self, saved: Option<&zssh_core::ai::history::HistoryAnchor>) {
+        let Some(embed) = self.embed.as_mut() else {
+            return;
+        };
+        embed.reset_scope();
+        if let Some(saved) = saved {
+            let hosts = &embed.ctx.hosts;
+            embed.binding =
+                Binding::Locked(anchor::from_history(saved.host_id, &saved.name, |id| {
+                    hosts
+                        .iter()
+                        .find(|host| host.id == id)
+                        .map(|host| host.name.clone())
+                }));
+        }
+        self.recompute_targets();
+    }
+
+    /// 存历史用的锚定（快速连接只存占位名）。
+    pub(super) fn history_anchor(&self) -> Option<zssh_core::ai::history::HistoryAnchor> {
+        let anchor = self.embed.as_ref()?.binding.anchor()?;
+        let (host_id, name) = anchor::to_history(anchor);
+        Some(zssh_core::ai::history::HistoryAnchor { host_id, name })
+    }
+
+    /// 「改用 <当前>」（对应 Netcatty 的 /rebind）：之后的命令跑在当前聚焦窗格的主机上，对话里插一条系统提示。
+    pub fn rebind_to_current(&mut self, cx: &mut Context<Self>) {
+        if self.chat.is_running() {
+            self.link_notice = Some(super::Notice {
+                text: "AI 正在回答，等这一轮结束再改用当前主机".to_owned(),
+                error: false,
+            });
+            cx.notify();
+            return;
+        }
+        let Some(embed) = self.embed.as_mut() else {
+            return;
+        };
+        match anchor::rebind(embed.ctx.focus.as_ref()) {
+            None => return,
+            Some(Err(why)) => {
+                self.link_notice = Some(super::Notice {
+                    text: why.message(),
+                    error: true,
+                });
+            }
+            Some(Ok(anchor)) => {
+                let name = anchor.name.clone();
+                embed.binding = Binding::Locked(anchor);
+                // 对话里留一条记录：之后的命令跑在哪台主机上，翻回去看得明白。
+                self.chat.push_notice(format!("已改绑到 {name}"), false);
+                self.link_notice = None;
+                self.recompute_targets();
+                // 历史里的锚定跟着改（对话已经存过的话）。
+                self.save_history();
+            }
+        }
+        cx.notify();
+    }
+
+    /// 「重新连接 <X>」：打开绑定主机的标签（主窗口下一个节拍处理）。快速连接的终端回不来，没有这个按钮。
+    pub fn reopen_anchor_host(&mut self, cx: &mut Context<Self>) {
+        let host = self
+            .embed
+            .as_ref()
+            .and_then(|embed| embed.binding.anchor())
+            .and_then(|anchor| match anchor.key {
+                Key::Host(id) => Some(id),
+                Key::Terminal(_) => None,
+            });
+        if let Some(host) = host {
+            crate::agent_setup::request_open_host(host);
+        }
+        cx.notify();
+    }
+
+    /// 目标栏下面那一行提示的内容（脚本断言用）。
+    pub fn banner_text(&self) -> Option<String> {
+        let embed = self.embed.as_ref()?;
+        anchor::banner(&embed.binding, embed.ctx.focus.as_ref(), &embed.open()).map(|banner| {
+            match banner {
+                Banner::Mismatch {
+                    anchor_name,
+                    current_name,
+                    ..
+                } => format!("对话绑定在 {anchor_name}；当前标签是 {current_name}"),
+                Banner::Dangling { anchor_name, .. } => format!("{anchor_name} 没有打开的终端"),
+            }
+        })
+    }
+
+    /// 绑定的主机名（没锁定是 `None`）。
+    pub fn anchor_name(&self) -> Option<String> {
+        self.embed
+            .as_ref()
+            .and_then(|embed| embed.binding.anchor())
+            .map(|anchor| anchor.name.clone())
+    }
+
+    /// 目标栏每个标签的文字（脚本断言用）。
+    pub fn target_chip_texts(&self) -> Vec<String> {
+        let Some(embed) = self.embed.as_ref() else {
+            return Vec::new();
+        };
+        self.embed_targets()
+            .iter()
+            .map(|target| {
+                let refused = target
+                    .host_id()
+                    .and_then(|id| embed.refusal_of(id))
+                    .is_some();
+                chip_label(target, refused)
+            })
+            .collect()
     }
 
     /// 现在对话的目标主机 id（按目标栏的顺序）。
@@ -1020,28 +1371,22 @@ impl AgentChatDemo {
         // ---- 第二行：目标主机标签 ----
         let targets = self.embed_targets();
         // 不能当执行目标的主机（Telnet / 串口）：目标栏里仍然列出来，置灰并写原因。
-        let refusal_of = |host_id: i64| -> Option<String> {
-            embed.and_then(|e| {
-                e.ctx
-                    .hosts
-                    .iter()
-                    .find(|host| host.id == host_id)
-                    .and_then(|host| host.refusal.clone())
-            })
-        };
-        let refused_reason: Option<String> =
-            targets.iter().find_map(|target| refusal_of(target.host_id));
+        let refusal_of =
+            |host_id: i64| -> Option<String> { embed.and_then(|e| e.refusal_of(host_id)) };
+        let refused_reason: Option<String> = targets
+            .iter()
+            .find_map(|target| target.host_id().and_then(refusal_of));
         let target_chips = targets.iter().enumerate().map(|(index, target)| {
             let entity = entity.clone();
-            let host_id = target.host_id;
-            let removable = target.pinned;
-            let refusal = refusal_of(host_id);
-            let label: SharedString = match (target.current, refusal.is_some()) {
-                (true, true) => format!("{}（当前，不可用）", target.name).into(),
-                (true, false) => format!("{}（当前）", target.name).into(),
-                (false, true) => format!("{}（不可用）", target.name).into(),
-                (false, false) => target.name.clone().into(),
-            };
+            let host_id = target.host_id();
+            let removable = target.pinned && !target.current;
+            let refusal = host_id.and_then(refusal_of);
+            let dangling = target.dangling;
+            let grayed = refusal.is_some() || dangling;
+            let label: SharedString = chip_label(target, refusal.is_some()).into();
+            let tip: Option<String> = refusal
+                .clone()
+                .or_else(|| dangling.then(|| format!("{} 没有打开的终端", target.name)));
             h_flex()
                 .id(("ai-target", index))
                 .items_center()
@@ -1051,14 +1396,14 @@ impl AgentChatDemo {
                 .rounded_md()
                 .border_1()
                 .border_color(tokens.border)
-                .when(refusal.is_none(), |d| d.bg(tokens.accent_soft))
-                .when(refusal.is_some(), |d| d.text_color(muted))
-                .when_some(refusal.clone(), |d, reason| {
+                .when(!grayed, |d| d.bg(tokens.accent_soft))
+                .when(grayed, |d| d.text_color(muted))
+                .when_some(tip, |d, reason| {
                     d.tooltip(move |window, cx| Tooltip::new(reason.clone()).build(window, cx))
                 })
                 .text_xs()
                 .child(div().truncate().max_w(px(160.0)).child(label))
-                .when(removable && !target.current, |d| {
+                .when_some(host_id.filter(|_| removable), |d, host_id| {
                     d.child(
                         div()
                             .id(("ai-target-x", index))
@@ -1099,6 +1444,93 @@ impl AgentChatDemo {
                     });
                 })
         };
+        // 目标栏下面一行：对话绑定的主机和当前标签不一致（淡色提示）/ 绑定的主机已经没有打开的终端（警示色）。
+        let banner =
+            embed.and_then(|e| anchor::banner(&e.binding, e.ctx.focus.as_ref(), &e.open()));
+        let small_button = |id: &'static str, label: String| {
+            div()
+                .id(id)
+                .px_1p5()
+                .py_0p5()
+                .rounded_md()
+                .border_1()
+                .border_color(tokens.border)
+                .cursor_pointer()
+                .text_color(text)
+                .hover(move |style| style.bg(hover))
+                .child(SharedString::from(label))
+        };
+        // 警示色：浅色底上用深一点的琥珀色保证读得清（和「全部放行」同一个）。
+        let warn = if tokens.dark {
+            tokens.dot_connecting
+        } else {
+            ::gpui::rgb(0xB45309).into()
+        };
+        let banner_row = banner.map(|banner| {
+            let new_convo = {
+                let entity = entity.clone();
+                small_button("ai-banner-new", "新对话".to_owned()).on_click(move |_, _w, cx| {
+                    entity.update(cx, |this, cx| this.new_conversation(cx));
+                })
+            };
+            let row = h_flex()
+                .id("ai-anchor-banner")
+                .gap_1()
+                .flex_wrap()
+                .items_center()
+                .text_xs();
+            match banner {
+                Banner::Mismatch {
+                    anchor_name,
+                    current_name,
+                    can_rebind,
+                } => row
+                    .text_color(muted)
+                    .child(SharedString::from(format!(
+                        "对话绑定在 {anchor_name}；当前标签是 {current_name}"
+                    )))
+                    .when(can_rebind, |d| {
+                        let entity = entity.clone();
+                        d.child(
+                            small_button("ai-rebind", format!("改用 {current_name}")).on_click(
+                                move |_, _w, cx| {
+                                    entity.update(cx, |this, cx| this.rebind_to_current(cx));
+                                },
+                            ),
+                        )
+                    })
+                    .child(new_convo),
+                Banner::Dangling {
+                    anchor_name,
+                    can_reconnect,
+                    can_use_current,
+                } => row
+                    .text_color(warn)
+                    .child(SharedString::from(format!(
+                        "{anchor_name} 没有打开的终端，对话先停在这里"
+                    )))
+                    .when(can_reconnect, |d| {
+                        let entity = entity.clone();
+                        d.child(
+                            small_button("ai-reconnect", format!("重新连接 {anchor_name}"))
+                                .on_click(move |_, _w, cx| {
+                                    entity.update(cx, |this, cx| this.reopen_anchor_host(cx));
+                                }),
+                        )
+                    })
+                    .when(can_use_current, |d| {
+                        let entity = entity.clone();
+                        d.child(
+                            small_button("ai-use-current", "改用当前主机".to_owned()).on_click(
+                                move |_, _w, cx| {
+                                    entity.update(cx, |this, cx| this.rebind_to_current(cx));
+                                },
+                            ),
+                        )
+                    })
+                    .child(new_convo),
+            }
+        });
         let target_row = v_flex()
             .flex_none()
             .w_full()
@@ -1129,7 +1561,8 @@ impl AgentChatDemo {
                     .text_xs()
                     .text_color(tokens.dot_connecting)
                     .child(SharedString::from(reason))
-            }));
+            }))
+            .children(banner_row);
 
         // ---- @ 选主机的列表 ----
         let input_text = self.input.read(cx).value().to_string();
@@ -1454,8 +1887,72 @@ impl AgentChatDemo {
                 })
         });
 
+        // 「上下文」明细卡片：点标题栏的指示器打开，点卡片外面关上。只展示，没有任何操作。
+        let usage_card = embed
+            .filter(|e| e.usage_open)
+            .and(self.chat.usage.as_ref())
+            .map(|usage| {
+                let fallback =
+                    (model_label.as_ref() != "默认模型").then(|| model_label.to_string());
+                let lines = usage_view::detail_lines(usage, fallback.as_deref());
+                let close = entity.clone();
+                let mut card = v_flex()
+                    .id("ai-usage-card")
+                    .absolute()
+                    .top(px(6.0))
+                    .right(px(8.0))
+                    .w(px(272.0))
+                    .max_w_full()
+                    .p_3()
+                    .gap_1p5()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(tokens.border)
+                    .bg(tokens.surface)
+                    .shadow_md()
+                    .occlude()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("上下文用量"),
+                    );
+                for (index, (name, value)) in lines.into_iter().enumerate() {
+                    // 「已用 / 窗口」是总览，下面几行是本轮的明细：中间留一条小标题。
+                    if index == 1 {
+                        card = card.child(div().pt_1().text_xs().text_color(muted).child("本轮"));
+                    }
+                    let stacked = name == "已用 / 窗口" || name == "模型";
+                    card = card.child(if stacked {
+                        v_flex()
+                            .gap_0p5()
+                            .text_xs()
+                            .child(div().text_color(muted).child(name))
+                            .child(div().text_color(text).child(SharedString::from(value)))
+                            .into_any_element()
+                    } else {
+                        h_flex()
+                            .justify_between()
+                            .gap_2()
+                            .text_xs()
+                            .child(div().text_color(muted).child(name))
+                            .child(div().text_color(text).child(SharedString::from(value)))
+                            .into_any_element()
+                    });
+                }
+                div()
+                    .id("ai-usage-layer")
+                    .absolute()
+                    .size_full()
+                    .on_mouse_down(MouseButton::Left, move |_, _window, cx| {
+                        close.update(cx, |this, cx| this.set_usage_open(false, cx));
+                    })
+                    .child(card)
+            });
+
         v_flex()
             .id("ai-panel-body")
+            .relative()
             .size_full()
             .min_h_0()
             .track_focus(&self.focus)
@@ -1484,6 +1981,7 @@ impl AgentChatDemo {
             .children(mention_list)
             .child(input_row)
             .children(footer)
+            .children(usage_card)
             .into_any_element()
     }
 }
@@ -1491,8 +1989,168 @@ impl AgentChatDemo {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{AgentModelCatalog, Embed, model_picker};
+    use std::collections::HashSet;
+
+    use super::{
+        AgentModelCatalog, Binding, Embed, EmbedContext, Focus, HostChoice, LockOutcome, Pin,
+        chip_label, model_picker,
+    };
+    use crate::main_window::anchor;
     use zssh_core::ai::agent::AgentModel;
+
+    fn hosts() -> Vec<HostChoice> {
+        let mut telnet = HostChoice::plain(5, "switch-1", "admin");
+        telnet.refusal = Some("Telnet 主机不能让 AI 执行命令".to_owned());
+        vec![
+            HostChoice::plain(1, "web-1", "root"),
+            HostChoice::plain(2, "db-1", "root"),
+            HostChoice::plain(3, "cache-1", "root"),
+            telnet,
+        ]
+    }
+
+    fn on_host(id: i64, name: &str) -> Focus {
+        Focus::Host {
+            id,
+            name: name.to_owned(),
+            refusal: None,
+        }
+    }
+
+    fn embed_with(focus: Option<Focus>, open: &[i64]) -> Embed {
+        let mut embed = Embed::new(75.0);
+        embed.ctx = EmbedContext {
+            focus,
+            open_hosts: open.iter().copied().collect(),
+            open_terminals: HashSet::new(),
+            hosts: hosts(),
+        };
+        embed
+    }
+
+    /// 和 `AgentChatDemo::anchor_gate` 里锁定那一步一样的规则。
+    fn lock(embed: &mut Embed) {
+        if let LockOutcome::Locked(anchor) =
+            anchor::lock_on_send(&embed.binding, embed.ctx.focus.as_ref())
+        {
+            embed.binding = Binding::Locked(anchor);
+        }
+    }
+
+    #[test]
+    fn the_bridge_follows_the_preview_until_the_first_message_then_stays_on_the_anchor() {
+        let mut embed = embed_with(Some(on_host(1, "web-1")), &[1, 2]);
+        assert_eq!(embed.bridge_hosts(), vec![1]);
+        embed.ctx.focus = Some(on_host(2, "db-1"));
+        assert_eq!(embed.bridge_hosts(), vec![2], "没发消息：预览跟着焦点走");
+        lock(&mut embed);
+        for focus in [on_host(1, "web-1"), on_host(3, "cache-1")] {
+            embed.ctx.focus = Some(focus);
+            assert_eq!(
+                embed.bridge_hosts(),
+                vec![2],
+                "锁定后切标签 / 切分屏焦点不变"
+            );
+        }
+        embed.ctx.focus = None;
+        assert_eq!(embed.bridge_hosts(), vec![2]);
+        // @ 一台加进来、再去掉；绑定的那台不受影响。
+        embed.pins = vec![Pin {
+            host_id: 3,
+            name: "cache-1".to_owned(),
+        }];
+        assert_eq!(embed.bridge_hosts(), vec![2, 3]);
+        embed.pins.clear();
+        assert_eq!(embed.bridge_hosts(), vec![2]);
+        embed.reset_scope();
+        assert_eq!(embed.binding, Binding::Unlocked);
+    }
+
+    #[test]
+    fn a_dangling_anchor_is_withdrawn_from_the_bridge_but_pins_stay() {
+        let mut embed = embed_with(Some(on_host(1, "web-1")), &[1, 2]);
+        lock(&mut embed);
+        embed.pins = vec![Pin {
+            host_id: 3,
+            name: "cache-1".to_owned(),
+        }];
+        assert_eq!(embed.bridge_hosts(), vec![1, 3]);
+        // web-1 的标签全关了：不再是执行目标；@ 的主机（不需要标签）照旧。
+        embed.ctx.open_hosts = [2].into_iter().collect();
+        assert_eq!(embed.bridge_hosts(), vec![3]);
+        let targets = embed.targets();
+        assert!(targets[0].dangling && targets[0].current);
+        assert_eq!(chip_label(&targets[0], false), "web-1（未连接）");
+        // 重新连上（又有标签了）：自动回来，不用改绑。
+        embed.ctx.open_hosts = [1, 2].into_iter().collect();
+        assert_eq!(embed.bridge_hosts(), vec![1, 3]);
+    }
+
+    #[test]
+    fn telnet_and_serial_panes_neither_lock_nor_reach_the_bridge() {
+        let telnet = Focus::Host {
+            id: 5,
+            name: "switch-1".to_owned(),
+            refusal: Some("Telnet 主机不能让 AI 执行命令".to_owned()),
+        };
+        let mut embed = embed_with(Some(telnet), &[5]);
+        assert!(embed.bridge_hosts().is_empty(), "目标栏显示、但不给桥");
+        lock(&mut embed);
+        assert_eq!(embed.binding, Binding::Unlocked, "不锚定，保持未锁定");
+        assert_eq!(
+            chip_label(&embed.targets()[0], embed.refusal_of(5).is_some()),
+            "switch-1（当前，不可用）"
+        );
+        // 焦点回到 SSH 窗格后，下一次发送再锁定。
+        embed.ctx.focus = Some(on_host(1, "web-1"));
+        lock(&mut embed);
+        assert_eq!(
+            embed.binding.anchor().map(|a| a.name.as_str()),
+            Some("web-1")
+        );
+    }
+
+    #[test]
+    fn a_quick_connect_terminal_is_the_bridge_target() {
+        let mut embed = embed_with(
+            Some(Focus::Quick {
+                terminal: Some("term-4".to_owned()),
+                label: "ops@192.0.2.9".to_owned(),
+            }),
+            &[],
+        );
+        embed.ctx.open_terminals = ["term-4".to_owned()].into_iter().collect();
+        assert!(embed.bridge_hosts().is_empty(), "不是主机库里的主机");
+        let preview = embed.bridge_terminal().expect("预览也给桥（同一个规则）");
+        assert_eq!(preview.scope_id(), "term-4");
+        lock(&mut embed);
+        embed.ctx.focus = Some(on_host(2, "db-1"));
+        let bound = embed.bridge_terminal().expect("锁定后切到别的标签不变");
+        assert_eq!(bound.scope_id(), "term-4");
+        assert!(bound.current);
+        assert_eq!(
+            chip_label(&embed.targets()[0], false),
+            "ops@192.0.2.9（已绑定）"
+        );
+        // 终端关了：失效，不再给桥。
+        embed.ctx.open_terminals.clear();
+        assert!(embed.bridge_terminal().is_none());
+        assert!(embed.targets()[0].dangling);
+    }
+
+    #[test]
+    fn restoring_from_history_goes_back_to_the_saved_host() {
+        let mut embed = embed_with(Some(on_host(2, "db-1")), &[1, 2]);
+        let saved = anchor::from_history(Some(1), "web-1", |_| Some("web-1".to_owned()));
+        embed.binding = Binding::Locked(saved);
+        assert_eq!(
+            embed.bridge_hosts(),
+            vec![1],
+            "回到当初锚定的主机，不是当前标签"
+        );
+        let (host_id, name) = anchor::to_history(embed.binding.anchor().expect("锁定"));
+        assert_eq!((host_id, name.as_str()), (Some(1), "web-1"));
+    }
 
     #[test]
     fn the_sent_model_follows_the_catalog_and_stays_empty_before_it() {

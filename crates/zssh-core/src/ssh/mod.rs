@@ -2,10 +2,13 @@
 
 pub mod auth;
 pub mod connection;
+pub mod connection_test;
+pub mod connections;
 pub mod cwd;
 pub mod dialer;
 pub mod flow;
 pub mod forward;
+mod id_tap;
 pub mod interact;
 pub mod keygen;
 pub mod known_hosts;
@@ -20,6 +23,11 @@ pub use auth::{AuthConfig, KeySource, RememberedSecret};
 pub use connection::{
     keepalive_interval, set_keepalive_interval, ChainHop, ConnectParams, Connection, ExecCapture,
     ServerKey, EXEC_MAX_STREAM_BYTES,
+};
+pub use connections::{
+    collect_connections, connections_command, matches_query, parse_connections, view_indices,
+    ConnFilter, ConnSource, ConnState, ConnectionsError, ConnectionsReport, Endpoint, NetConn,
+    NetProto, ProcRef, ProcessHint, SortKey, SortSpec, CONNECTIONS_MAX_ROWS,
 };
 pub use cwd::{parse_probe_output, pick_shell, probe_command, probe_shell_cwds, ShellCwd};
 pub use dialer::{connect_direct, BoxedStream, ByteStream, ProxyConfig, HOP_TIMEOUT};

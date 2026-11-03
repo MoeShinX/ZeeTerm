@@ -1,10 +1,7 @@
 //! 调试驱动里 V2-U7（主机属性对话框）要用的 `act:` 动作。只在 debug 构建里编进去；release 里只剩两个空函数。
 //!
-//! - `assert_u7:categories:<id,id,...>`：左侧现在列的类别（`general` `auth` `connection` `terminal` `serial`
-//!   `security` `memory`，从上到下）就是这一串；
 //! - `assert_u7:title:<文字>`：对话框标题；
 //! - `assert_u7:overlay:none|new_proxy|discard`：对话框上叠着哪个小浮层；
-//! - `assert_u7:error_dot:<类别>:on|off`：左侧这个类别有没有标红点（里面有字段挂着校验错误）；
 //! - `host_new_proxy:open`、`host_new_proxy:set:<name|host|port|username|secret>:<值>`、`host_new_proxy:save`：
 //!   叠在对话框上的「新建代理」小对话框（按钮用真点击，这里只负责填字）。
 
@@ -16,7 +13,7 @@ mod real {
     use super::super::MainWindow;
     use super::super::dev_script::Outcome;
     use super::super::host_dialog::Overlay;
-    use super::super::host_props::{self, Category};
+    use super::super::host_props;
     use super::super::modal::Modal;
 
     const KNOWN: &[&str] = &["assert_u7", "host_new_proxy"];
@@ -62,13 +59,6 @@ mod real {
         };
         let form = this.host_form.as_ref().ok_or("主机属性没开着")?;
         match a {
-            "categories" => {
-                let have: Vec<&str> = form.categories().into_iter().map(Category::id).collect();
-                check(
-                    have.join(",") == rest,
-                    format!("类别是 {}，不是 {rest}", have.join(",")),
-                )
-            }
             "title" => {
                 let title =
                     host_props::dialog_title(form.existing.as_ref().map(|host| host.name.as_str()));
@@ -85,18 +75,7 @@ mod real {
                 };
                 check(have == rest, format!("小浮层是 {have}，不是 {rest}"))
             }
-            "error_dot" => {
-                let category = Category::parse(b).ok_or("不认识的类别")?;
-                let on = form
-                    .errors
-                    .keys()
-                    .any(|field| host_props::category_of(*field) == Some(category));
-                check(
-                    on == (c == "on"),
-                    format!("类别 {b} 的红点是 {on}，不是 {c}"),
-                )
-            }
-            _ => Err("assert_u7:categories|title|overlay|error_dot:<值>".to_owned()),
+            _ => Err("assert_u7:title|overlay:<值>".to_owned()),
         }
     }
 

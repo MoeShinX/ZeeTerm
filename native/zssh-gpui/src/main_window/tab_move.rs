@@ -106,20 +106,6 @@ impl MainWindow {
         {
             return;
         }
-        // AI 正在这个标签里跑：对话跟着标签，拖走会中断它。
-        let ai_busy = self
-            .docks
-            .ai
-            .get(&tab_id)
-            .is_some_and(|chat| chat.read(cx).is_turn_running());
-        if ai_busy {
-            self.notice_error(
-                "AI 正在这个终端里工作，先停止它或等它结束，再把标签拖出窗口",
-                window,
-                cx,
-            );
-            return;
-        }
         let Some((index, tab)) = self
             .workspace
             .update(cx, |ws, cx| ws.take_tab_by_id(tab_id, cx))

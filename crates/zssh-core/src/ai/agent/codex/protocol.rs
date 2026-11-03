@@ -268,6 +268,41 @@ mod tests {
         }
     }
 
+    /// 上下文用量（V2-U15）：我们读的通知和字段都在导出的 schema 里，样本文件的键也是 schema 的属性。
+    #[test]
+    fn token_usage_notification_matches_the_exported_schema() {
+        let notifications = method_names(SERVER_NOTIFICATION);
+        assert!(
+            notifications.contains("thread/tokenUsage/updated"),
+            "schema 里没有 thread/tokenUsage/updated"
+        );
+        let v2 = schema_value(V2_SCHEMA);
+        let notification = properties_of(&v2, "ThreadTokenUsageUpdatedNotification");
+        let usage = properties_of(&v2, "ThreadTokenUsage");
+        let breakdown = properties_of(&v2, "TokenUsageBreakdown");
+        for key in ["threadId", "turnId", "tokenUsage"] {
+            assert!(notification.contains(key), "通知里没有 {key}");
+        }
+        for key in ["last", "modelContextWindow"] {
+            assert!(usage.contains(key), "ThreadTokenUsage 里没有 {key}");
+        }
+        for key in [
+            "totalTokens",
+            "inputTokens",
+            "cachedInputTokens",
+            "outputTokens",
+            "cacheWriteInputTokens",
+        ] {
+            assert!(breakdown.contains(key), "TokenUsageBreakdown 里没有 {key}");
+        }
+        let sample: Value =
+            serde_json::from_str(include_str!("../fixtures/codex/token_usage_updated.json"))
+                .expect("样本是合法 JSON");
+        assert_keys_belong(&sample, &notification, "样本通知");
+        assert_keys_belong(&sample["tokenUsage"], &usage, "样本 tokenUsage");
+        assert_keys_belong(&sample["tokenUsage"]["last"], &breakdown, "样本 last");
+    }
+
     #[test]
     fn every_method_we_send_exists_in_the_exported_schema() {
         let client = method_names(CLIENT_REQUEST);

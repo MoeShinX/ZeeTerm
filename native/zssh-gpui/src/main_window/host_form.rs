@@ -131,7 +131,7 @@ impl SerialInput<'static> {
 
 impl FormInput<'_> {
     /// 按表单里的值拼出协议设置（不校验，校验交给核心库）。
-    fn protocol_settings(&self) -> Result<ProtocolSettings, FieldError> {
+    pub fn protocol_settings(&self) -> Result<ProtocolSettings, FieldError> {
         let mut settings = ProtocolSettings::new(self.protocol);
         settings.x11_forwarding = self.protocol.supports_x11() && self.x11;
         match self.protocol {
@@ -543,6 +543,112 @@ pub fn apply_save(db: &Database, plan: SavePlan) -> Result<Host, String> {
 /// 串口主机不用代理由保存时的规则保证（`plan_save` 对串口一律写「不用代理」），这里不特殊处理。
 pub fn initial_proxy_mode(existing: Option<&Host>) -> ProxyMode {
     existing.map_or(ProxyMode::Default, |host| host.proxy_mode)
+}
+
+/// 表单里「连接方式」三段（V2-U13）：直接连接 / SSH 跳板 / 代理访问。
+///
+/// 数据模型没有变：一台主机仍然是 `proxy_mode`（跟随默认 / 不用 / 指定）+ `proxy` + `jump_host_id` 三个字段。
+/// 三段只是它们的一种看法，映射规则（打开表单时 [`initial_conn_mode`]，保存时 [`effective_routing`]）：
+///
+/// | 打开时的数据 | 显示的段 |
+/// |---|---|
+/// | 设了跳板机（不管代理怎么设） | SSH 跳板；有代理设置（不是「不用代理」）时下面同时显示它，保存不丢 |
+/// | 没跳板机，代理方式「不用代理」 | 直接连接 |
+/// | 没跳板机，代理方式「跟随默认代理」或「指定代理」 | 代理访问（新建主机默认就是这个 + 跟随默认代理） |
+///
+/// 运行时的真实语义：设了跳板机时，只有第一跳（跳板机自己）的代理生效，目标主机自己的代理设置不参与连接。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnMode {
+    Direct,
+    Jump,
+    Proxy,
+}
+
+impl ConnMode {
+    /// 分段按钮从左到右的顺序。
+    pub const ALL: [ConnMode; 3] = [Self::Direct, Self::Jump, Self::Proxy];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Direct => "直接连接",
+            Self::Jump => "SSH 跳板",
+            Self::Proxy => "代理访问",
+        }
+    }
+
+    /// 调试脚本里用的短名字。
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Jump => "jump",
+            Self::Proxy => "proxy",
+        }
+    }
+}
+
+/// 打开表单时显示哪一段：新建主机是「代理访问 + 跟随默认代理」（V2-U8 的默认）。
+pub fn initial_conn_mode(existing: Option<&Host>) -> ConnMode {
+    match existing {
+        None => ConnMode::Proxy,
+        Some(host) if host.jump_host_id.is_some() => ConnMode::Jump,
+        Some(host) => match host.proxy_mode {
+            ProxyMode::None => ConnMode::Direct,
+            ProxyMode::Default | ProxyMode::Custom => ConnMode::Proxy,
+        },
+    }
+}
+
+/// 一台既有跳板机又有代理设置的旧主机：「SSH 跳板」段下面要把代理设置也显示出来，保存时带着。
+pub fn jump_keeps_proxy(existing: Option<&Host>) -> bool {
+    existing.is_some_and(|host| host.jump_host_id.is_some() && host.proxy_mode != ProxyMode::None)
+}
+
+/// 保存时真正写进库里的三个字段。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Routing {
+    pub proxy_mode: ProxyMode,
+    pub proxy: Option<i64>,
+    pub jump: Option<i64>,
+}
+
+/// 按选中的段和表单里的值算出要保存的代理 / 跳板机：
+/// - 直接连接：不用代理、不用跳板机（也不留指向某个代理的引用，免得它挡住那个代理的删除）；
+/// - SSH 跳板：写选的跳板机；代理设置只有旧数据里本来就两个都有（`keeps_proxy`）时才带着，
+///   否则清掉（跳板链里只有跳板机自己的代理生效，目标的代理没有用）；
+/// - 代理访问：不用跳板机；代理方式取表单里的（跟随默认 / 指定），原来是「不用代理」就落成跟随默认。
+pub fn effective_routing(
+    mode: ConnMode,
+    proxy_mode: ProxyMode,
+    proxy: Option<i64>,
+    jump: Option<i64>,
+    keeps_proxy: bool,
+) -> Routing {
+    match mode {
+        ConnMode::Direct => Routing {
+            proxy_mode: ProxyMode::None,
+            proxy: None,
+            jump: None,
+        },
+        ConnMode::Jump if keeps_proxy => Routing {
+            proxy_mode,
+            proxy,
+            jump,
+        },
+        ConnMode::Jump => Routing {
+            proxy_mode: ProxyMode::None,
+            proxy: None,
+            jump,
+        },
+        ConnMode::Proxy => Routing {
+            proxy_mode: if proxy_mode == ProxyMode::None {
+                ProxyMode::Default
+            } else {
+                proxy_mode
+            },
+            proxy,
+            jump: None,
+        },
+    }
 }
 
 /// 原来存的组合就不配套（旧数据或同步来的）：返回要取消选择的原因。
@@ -1632,5 +1738,140 @@ mod tests {
         to_serial.name = "sw";
         let plan = plan_save(&to_serial, Some(&ssh), &[], None).unwrap();
         assert!(db.host_save(&plan.draft).is_err());
+    }
+
+    // ---- V2-U13：连接方式三段 ----
+
+    fn routed(jump: Option<i64>, mode: ProxyMode, proxy: Option<i64>) -> Host {
+        let mut h = host(9);
+        h.jump_host_id = jump;
+        h.proxy_mode = mode;
+        h.proxy_id = proxy;
+        h
+    }
+
+    #[test]
+    fn a_new_host_starts_on_the_proxy_segment_following_the_default_proxy() {
+        assert_eq!(initial_conn_mode(None), ConnMode::Proxy);
+        assert_eq!(initial_proxy_mode(None), ProxyMode::Default);
+    }
+
+    #[test]
+    fn stored_data_maps_onto_the_three_segments() {
+        use ProxyMode::{Custom, Default, None as NoProxy};
+        let mode = |h: &Host| initial_conn_mode(Some(h));
+        assert_eq!(mode(&routed(None, NoProxy, None)), ConnMode::Direct);
+        assert_eq!(mode(&routed(None, Default, None)), ConnMode::Proxy);
+        assert_eq!(mode(&routed(None, Custom, Some(3))), ConnMode::Proxy);
+        // 设了跳板机：不管代理怎么设都是「SSH 跳板」。
+        assert_eq!(mode(&routed(Some(5), NoProxy, None)), ConnMode::Jump);
+        assert_eq!(mode(&routed(Some(5), Custom, Some(3))), ConnMode::Jump);
+        assert_eq!(mode(&routed(Some(5), Default, None)), ConnMode::Jump);
+    }
+
+    #[test]
+    fn only_old_hosts_with_both_a_jump_and_a_proxy_keep_the_proxy_under_the_jump_segment() {
+        use ProxyMode::{Custom, Default, None as NoProxy};
+        assert!(!jump_keeps_proxy(None));
+        assert!(!jump_keeps_proxy(Some(&routed(Some(5), NoProxy, None))));
+        assert!(!jump_keeps_proxy(Some(&routed(None, Custom, Some(3)))));
+        assert!(jump_keeps_proxy(Some(&routed(Some(5), Custom, Some(3)))));
+        assert!(jump_keeps_proxy(Some(&routed(Some(5), Default, None))));
+    }
+
+    #[test]
+    fn saving_writes_the_fields_each_segment_means_and_never_loses_a_legacy_proxy() {
+        use ProxyMode::{Custom, Default, None as NoProxy};
+        // 直接连接：全清（也不留指向代理的引用）。
+        assert_eq!(
+            effective_routing(ConnMode::Direct, Custom, Some(3), Some(5), true),
+            Routing {
+                proxy_mode: NoProxy,
+                proxy: None,
+                jump: None
+            }
+        );
+        // 代理访问：不用跳板机；跟随默认 / 指定代理原样；原来是「不用代理」落成跟随默认。
+        assert_eq!(
+            effective_routing(ConnMode::Proxy, Default, None, Some(5), false),
+            Routing {
+                proxy_mode: Default,
+                proxy: None,
+                jump: None
+            }
+        );
+        assert_eq!(
+            effective_routing(ConnMode::Proxy, Custom, Some(3), Some(5), false),
+            Routing {
+                proxy_mode: Custom,
+                proxy: Some(3),
+                jump: None
+            }
+        );
+        assert_eq!(
+            effective_routing(ConnMode::Proxy, NoProxy, None, None, false).proxy_mode,
+            Default
+        );
+        // SSH 跳板：新选的跳板不带代理（跳板链里只有跳板机自己的代理生效）……
+        assert_eq!(
+            effective_routing(ConnMode::Jump, Default, None, Some(5), false),
+            Routing {
+                proxy_mode: NoProxy,
+                proxy: None,
+                jump: Some(5)
+            }
+        );
+        // ……旧数据里两个都有的，打开再原样保存，一个字段都不丢。
+        let both = routed(Some(5), Custom, Some(3));
+        assert_eq!(
+            effective_routing(
+                initial_conn_mode(Some(&both)),
+                both.proxy_mode,
+                both.proxy_id,
+                both.jump_host_id,
+                jump_keeps_proxy(Some(&both)),
+            ),
+            Routing {
+                proxy_mode: Custom,
+                proxy: Some(3),
+                jump: Some(5)
+            }
+        );
+    }
+
+    #[test]
+    fn an_untouched_form_saves_every_kind_of_stored_routing_unchanged() {
+        use ProxyMode::{Custom, Default, None as NoProxy};
+        for h in [
+            routed(None, NoProxy, None),
+            routed(None, Default, None),
+            routed(None, Custom, Some(3)),
+            routed(Some(5), NoProxy, None),
+            routed(Some(5), Custom, Some(3)),
+        ] {
+            let saved = effective_routing(
+                initial_conn_mode(Some(&h)),
+                h.proxy_mode,
+                h.proxy_id,
+                h.jump_host_id,
+                jump_keeps_proxy(Some(&h)),
+            );
+            assert_eq!(
+                saved,
+                Routing {
+                    proxy_mode: h.proxy_mode,
+                    proxy: h.proxy_id,
+                    jump: h.jump_host_id
+                },
+                "{:?}",
+                (h.proxy_mode, h.proxy_id, h.jump_host_id)
+            );
+        }
+    }
+
+    #[test]
+    fn segment_labels_and_order_follow_the_reference_form() {
+        let labels: Vec<&str> = ConnMode::ALL.iter().map(|m| m.label()).collect();
+        assert_eq!(labels, ["直接连接", "SSH 跳板", "代理访问"]);
     }
 }

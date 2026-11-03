@@ -28,6 +28,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use super::super::retry::friendly_agent_retry_reason;
+use super::super::usage::from_codex;
 use super::super::AgentEvent;
 
 /// 翻译状态：同一个 thread 共用一个实例。
@@ -144,8 +145,11 @@ pub fn translate(
                 message: message.to_string(),
             }]
         }
-        // warning / thread/tokenUsage/updated / item/commandExecution/outputDelta
-        // 之类不产生统一事件（用量在统一事件里没有对应项，先不发）。
+        // 上下文用量（只读解析，不影响回合状态）。
+        "thread/tokenUsage/updated" => from_codex(params)
+            .map(|usage| vec![AgentEvent::Usage { usage }])
+            .unwrap_or_default(),
+        // warning / item/commandExecution/outputDelta 之类不产生统一事件。
         _ => Vec::new(),
     }
 }
@@ -621,6 +625,35 @@ mod tests {
         );
         assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
         assert!(turn.content && !turn.failed && !turn.aborted);
+    }
+
+    #[test]
+    fn token_usage_notification_becomes_a_usage_event_and_leaves_the_turn_alone() {
+        let params: Value =
+            serde_json::from_str(include_str!("../fixtures/codex/token_usage_updated.json"))
+                .expect("样本是合法 JSON");
+        let mut state = TranslateState::default();
+        let mut turn = TurnStats::default();
+        let events = translate("thread/tokenUsage/updated", &params, &mut state, &mut turn);
+        match events.as_slice() {
+            [AgentEvent::Usage { usage }] => {
+                assert_eq!(usage.used, 23_000);
+                assert_eq!(usage.window, Some(258_400));
+            }
+            other => panic!("该是一个 Usage，得到 {other:?}"),
+        }
+        assert!(
+            !turn.content && !turn.failed && !turn.aborted,
+            "不影响回合状态"
+        );
+        // 数字缺失的通知不产生事件。
+        assert!(translate(
+            "thread/tokenUsage/updated",
+            &serde_json::json!({"tokenUsage": {}}),
+            &mut state,
+            &mut turn
+        )
+        .is_empty());
     }
 
     fn only_retrying(events: &[AgentEvent]) -> (u32, String, Option<u64>) {

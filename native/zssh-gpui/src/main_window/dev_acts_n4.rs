@@ -37,7 +37,6 @@ mod real {
 
     const KNOWN: &[&str] = &[
         "host_protocol",
-        "host_category",
         "host_x11",
         "host_input",
         "host_telnet",
@@ -147,12 +146,6 @@ mod real {
     ) -> Result<Outcome, String> {
         match name {
             "host_protocol" => this.host_set_protocol(protocol_of(a)?, window, cx),
-            "host_category" => {
-                let category = super::super::host_props::Category::parse(a).ok_or(
-                    "类别写 general / auth / connection / terminal / serial / security / memory",
-                )?;
-                this.host_select_category(category, window, cx);
-            }
             "host_x11" => {
                 let on = on_off(a)?;
                 let form = this.host_form.as_mut().ok_or("主机表单没开着")?;
@@ -401,12 +394,6 @@ mod real {
                     "protocol" => form.protocol.as_str().to_owned(),
                     "port" => form.port.read(cx).value().to_string(),
                     "username" => form.username.read(cx).value().to_string(),
-                    "category" => match &this.modal {
-                        Some(super::super::modal::Modal::HostProps(dialog)) => {
-                            dialog.category.id().to_owned()
-                        }
-                        _ => String::new(),
-                    },
                     "dirty" => this.host_props_dirty(cx).to_string(),
                     // 认证类别现在显示哪些字段（V2-U11：密码认证没有「保存的凭据」）。
                     "auth_fields" => super::super::host_form::auth_fields(form.protocol, form.auth)

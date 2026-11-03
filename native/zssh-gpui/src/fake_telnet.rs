@@ -43,7 +43,7 @@ enum Stage {
     Shell,
 }
 
-fn serve(mut stream: TcpStream) -> std::io::Result<()> {
+pub(crate) fn serve(mut stream: TcpStream) -> std::io::Result<()> {
     stream.write_all(&[IAC, WILL, ECHO, IAC, WILL, SGA])?;
     stream.write_all("ZeeTerm 假 Telnet 设备（调试用）\r\nlogin: ".as_bytes())?;
     let mut stage = Stage::User;

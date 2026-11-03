@@ -21,6 +21,8 @@ pub const FLOOD_BYTES: usize = 6 * 1024 * 1024;
 
 struct MiniShell {
     line: Vec<u8>,
+    /// `Some`：只接受这个密码（测认证失败用）；`None`：任何密码都收。
+    password: Option<String>,
 }
 
 impl server::Handler for MiniShell {
@@ -33,8 +35,14 @@ impl server::Handler for MiniShell {
         })
     }
 
-    async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
-        Ok(Auth::Accept)
+    async fn auth_password(&mut self, _user: &str, password: &str) -> Result<Auth, Self::Error> {
+        match &self.password {
+            Some(expected) if expected != password => Ok(Auth::Reject {
+                proceed_with_methods: Some(MethodSet::from(&[MethodKind::Password][..])),
+                partial_success: false,
+            }),
+            _ => Ok(Auth::Accept),
+        }
     }
 
     async fn channel_open_session(
@@ -142,6 +150,16 @@ impl MiniShell {
 
 /// 起服务器（接一个连接），返回监听地址。
 pub async fn spawn() -> SocketAddr {
+    spawn_with(None).await
+}
+
+/// 只接受 `password` 的服务器（别的密码认证失败）。
+#[allow(dead_code)]
+pub async fn spawn_requiring_password(password: &str) -> SocketAddr {
+    spawn_with(Some(password.to_owned())).await
+}
+
+async fn spawn_with(password: Option<String>) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("绑定本机端口");
@@ -156,7 +174,10 @@ pub async fn spawn() -> SocketAddr {
         let Ok((socket, _)) = listener.accept().await else {
             return;
         };
-        let handler = MiniShell { line: Vec::new() };
+        let handler = MiniShell {
+            line: Vec::new(),
+            password,
+        };
         if let Ok(running) = server::run_stream(config, socket, handler).await {
             let _ = running.await;
         }

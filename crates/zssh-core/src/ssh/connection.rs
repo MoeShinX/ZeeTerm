@@ -14,6 +14,7 @@ use crate::ai::terminal::SharedTerminalRing;
 use crate::error::{HostKeyMismatch, ZsshError};
 use crate::ssh::auth::{self, AuthConfig, AuthOutcome, RememberedSecret};
 use crate::ssh::dialer::{self, BoxedStream, ProxyConfig, HOP_TIMEOUT};
+use crate::ssh::id_tap::IdTap;
 use crate::ssh::interact::{BoxFuture, HopProgress};
 use crate::ssh::interact::{HostKeyDecision, HostKeyInfo, HostKeyStatus, Interactor};
 use crate::ssh::known_hosts::{HostKeyLookup, KnownHosts, StoredIn};
@@ -165,6 +166,8 @@ pub struct Connection {
     /// 这条连接**实际连到的**服务器：用户名@主机:端口（见 [`server_identity`]）。
     /// 主机、用户名是空的（不应该发生）时是 `None`。
     identity: Option<String>,
+    /// 服务器握手时发来的版本行（`SSH-2.0-OpenSSH_9.6`）；没抓到是 `None`。只给「测试连接」显示。
+    server_version: Option<String>,
 }
 
 /// 服务器身份：`用户名@主机:端口`，主机名不分大小写、去掉结尾的点。
@@ -294,7 +297,7 @@ impl Connection {
 
     /// SSH 握手 + 指纹校验 + 认证。直连和拨号链的每一跳都走这里。
     #[allow(clippy::too_many_arguments)]
-    async fn handshake_and_authenticate(
+    pub(crate) async fn handshake_and_authenticate(
         stream: BoxedStream,
         host: &str,
         port: u16,
@@ -304,6 +307,9 @@ impl Connection {
         legacy_algorithms: bool,
         interactor: &Arc<dyn Interactor>,
     ) -> Result<Self, ZsshError> {
+        // 在字节流外面记一下服务器的版本行（字节原样透传，见 `id_tap`）。
+        let version_slot = Arc::new(OnceLock::new());
+        let stream: BoxedStream = Box::new(IdTap::new(stream, Arc::clone(&version_slot)));
         let server_key_slot = Arc::new(OnceLock::new());
         let config = Arc::new(client_config(legacy_algorithms));
         let remote_forwards = RemoteForwardTable::default();
@@ -366,13 +372,18 @@ impl Connection {
             jumps: Vec::new(),
             channels_opened: AtomicUsize::new(0),
             identity,
+            server_version: version_slot.get().cloned(),
         })
     }
 
     /// 在这条连接上开一个 `direct-tcpip` 通道连到 `host:port`，拿它当下一跳的字节流。
     ///
     /// 服务器关了 TCP 转发时这里会失败（`administratively prohibited`），错误会带上去。
-    async fn open_direct_tcpip(&self, host: &str, port: u16) -> Result<BoxedStream, ZsshError> {
+    pub(crate) async fn open_direct_tcpip(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<BoxedStream, ZsshError> {
         let open = self
             .handle
             .channel_open_direct_tcpip(host, u32::from(port), "127.0.0.1", 0);
@@ -492,6 +503,11 @@ impl Connection {
     /// 这条连接实际连到的服务器身份（用户名@主机:端口）；主机或用户名是空的时是 `None`。
     pub fn identity(&self) -> Option<&str> {
         self.identity.as_deref()
+    }
+
+    /// 服务器握手时发来的版本行（`SSH-2.0-OpenSSH_9.6`）；没抓到是 `None`。
+    pub fn server_version(&self) -> Option<&str> {
+        self.server_version.as_deref()
     }
 
     /// 服务器的主机密钥信息。

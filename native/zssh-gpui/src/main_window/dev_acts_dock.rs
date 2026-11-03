@@ -431,6 +431,9 @@ const DOCK_KNOWN: &[&str] = &[
     "ai_unpin",
     "ai_mode",
     "ai_clear",
+    "ai_rebind",
+    "ai_reopen",
+    "ai_usage",
     "sftp_open_tab",
     "sftp_undock",
     "sftp_close_tab",
@@ -466,10 +469,9 @@ pub fn is_known(name: &str) -> bool {
 
 fn active_ai(
     this: &MainWindow,
-    cx: &App,
+    _cx: &App,
 ) -> Option<::gpui::Entity<crate::agent_chat_demo::AgentChatDemo>> {
-    let id = this.workspace.read(cx).active_tab_id()?;
-    this.docks.ai.get(&id).cloned()
+    this.docks.ai.clone()
 }
 
 /// 文件视图：先看当前显示的 SFTP 标签，再看当前终端标签主机的停靠视图。
@@ -516,12 +518,12 @@ pub(super) fn run_dock(
             }
         }
         "ai_text" => {
-            let chat = active_ai(this, cx).ok_or("这个标签没有 AI 面板")?;
+            let chat = active_ai(this, cx).ok_or("AI 面板还没打开过")?;
             let text = a.replace("\\n", "\n");
             chat.update(cx, |chat, cx| chat.set_input_text(&text, window, cx));
         }
         "ai_send" => {
-            let chat = active_ai(this, cx).ok_or("这个标签没有 AI 面板")?;
+            let chat = active_ai(this, cx).ok_or("AI 面板还没打开过")?;
             // 真实模式会拉起真实智能体并调用模型：只在显式 ZSSH_AGENT_E2E=1 的自动化里发；
             // 设了假世界（ZSSH_AGENT_FAKE）时拉起的是假驱动，不受这个限制。
             if chat.read_with(cx, |chat, _| chat.is_real())
@@ -534,7 +536,7 @@ pub(super) fn run_dock(
         }
         // ai_wait_reply[:最少消息数]：回合结束且有助手回复；失败提示出现就报错。
         "ai_wait_reply" => {
-            let chat = active_ai(this, cx).ok_or("这个标签没有 AI 面板")?;
+            let chat = active_ai(this, cx).ok_or("AI 面板还没打开过")?;
             let need: usize = a.parse().unwrap_or(2);
             let (running, count, error) = chat.read_with(cx, |chat, _| {
                 (
@@ -552,7 +554,7 @@ pub(super) fn run_dock(
         }
         // ai_assert:targets:<名字,名字> / reply_has:<文字> / mode:<manual|readonly|auto> / input:<文字> / messages:<n>
         "ai_assert" => {
-            let chat = active_ai(this, cx).ok_or("这个标签没有 AI 面板")?;
+            let chat = active_ai(this, cx).ok_or("AI 面板还没打开过")?;
             match a {
                 "targets" => {
                     let ids = chat.read_with(cx, |chat, _| chat.target_ids());
@@ -594,6 +596,51 @@ pub(super) fn run_dock(
                         return fail("AI 输入框里的内容和预期不同");
                     }
                 }
+                // anchor:<主机名|none>：对话绑定的主机（none = 还没锁定）。
+                "anchor" => {
+                    let have = chat.read_with(cx, |chat, _| chat.anchor_name());
+                    let want = (b != "none").then(|| b.to_owned());
+                    if have != want {
+                        return fail("对话绑定的主机和预期不同");
+                    }
+                }
+                // banner:<文字|none>：目标栏下面那一行提示（none = 不显示）。
+                "banner" => {
+                    let have = chat.read_with(cx, |chat, _| chat.banner_text());
+                    let want = (b != "none").then(|| b.to_owned());
+                    if have != want {
+                        return fail(format!(
+                            "目标栏下面的提示和预期不同：{}",
+                            have.unwrap_or_else(|| "（没有）".to_owned())
+                        ));
+                    }
+                }
+                // usage:<文字>：标题栏「上下文」指示器上的字，如 `上下文 3%` / `上下文 —`。
+                "usage" => {
+                    let have = chat.read_with(cx, |chat, _| chat.usage_text());
+                    if have != b {
+                        return fail(format!("上下文指示器是「{have}」，和预期不同"));
+                    }
+                }
+                // usage_level:<none|normal|warning|danger>：进度条的颜色档。
+                "usage_level" => {
+                    let have = chat.read_with(cx, |chat, _| chat.usage_level_name());
+                    if have != b {
+                        return fail(format!("上下文进度条颜色档是 {have}，不是 {b}"));
+                    }
+                }
+                // chips:<文字|文字>：目标栏每个标签的文字，按顺序（空 = 没有目标）。
+                "chips" => {
+                    let have = chat.read_with(cx, |chat, _| chat.target_chip_texts());
+                    let want: Vec<String> = b
+                        .split('|')
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect();
+                    if have != want {
+                        return fail(format!("目标栏标签是 {}，和预期不同", have.join("|")));
+                    }
+                }
                 "messages" => {
                     let want: usize = b.parse().map_err(|_| "个数不是数字")?;
                     let have = chat.read_with(cx, |chat, _| chat.message_count());
@@ -605,17 +652,17 @@ pub(super) fn run_dock(
             }
         }
         "ai_pin" => {
-            let chat = active_ai(this, cx).ok_or("这个标签没有 AI 面板")?;
+            let chat = active_ai(this, cx).ok_or("AI 面板还没打开过")?;
             let id = host_by_name(this, a)?;
             chat.update(cx, |chat, cx| chat.pin_host(id, cx));
         }
         "ai_unpin" => {
-            let chat = active_ai(this, cx).ok_or("这个标签没有 AI 面板")?;
+            let chat = active_ai(this, cx).ok_or("AI 面板还没打开过")?;
             let id = host_by_name(this, a)?;
             chat.update(cx, |chat, cx| chat.unpin_host(id, cx));
         }
         "ai_mode" => {
-            let chat = active_ai(this, cx).ok_or("这个标签没有 AI 面板")?;
+            let chat = active_ai(this, cx).ok_or("AI 面板还没打开过")?;
             let mode = match a {
                 "manual" => zssh_core::ai::bridge::ExecMode::Manual,
                 "readonly" => zssh_core::ai::bridge::ExecMode::ReadOnly,
@@ -624,8 +671,28 @@ pub(super) fn run_dock(
             };
             chat.update(cx, |chat, cx| chat.set_mode_explicit(mode, cx));
         }
+        // 点目标栏下面的「改用 <当前>」/「改用当前主机」。
+        "ai_rebind" => {
+            let chat = active_ai(this, cx).ok_or("AI 面板还没打开过")?;
+            chat.update(cx, |chat, cx| chat.rebind_to_current(cx));
+        }
+        // ai_usage:open|close：开 / 关标题栏「上下文」的明细卡片。
+        "ai_usage" => {
+            let chat = active_ai(this, cx).ok_or("AI 面板还没打开过")?;
+            let open = match a {
+                "open" => true,
+                "close" => false,
+                _ => return fail("ai_usage 只能是 open / close"),
+            };
+            chat.update(cx, |chat, cx| chat.set_usage_open(open, cx));
+        }
+        // 点「重新连接 <主机>」。
+        "ai_reopen" => {
+            let chat = active_ai(this, cx).ok_or("AI 面板还没打开过")?;
+            chat.update(cx, |chat, cx| chat.reopen_anchor_host(cx));
+        }
         "ai_clear" => {
-            let chat = active_ai(this, cx).ok_or("这个标签没有 AI 面板")?;
+            let chat = active_ai(this, cx).ok_or("AI 面板还没打开过")?;
             chat.update(cx, |chat, cx| chat.clear_conversation(cx));
         }
         // sftp_open_tab[:@主机]：不写主机就用当前终端标签（复用它的连接）。

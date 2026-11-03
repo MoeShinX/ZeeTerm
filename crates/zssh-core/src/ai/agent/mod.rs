@@ -14,6 +14,7 @@ pub mod process;
 pub mod retry;
 pub mod text;
 pub mod translate;
+pub mod usage;
 
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +65,10 @@ pub enum AgentEvent {
     /// 续接历史会话失败（智能体那边的会话已经不在），已经退成新会话继续：界面提示
     /// "之前的上下文没有带给 AI，只供回看"。
     ResumeFailed,
+    /// 最近一轮的上下文用量（codex 的 `thread/tokenUsage/updated`、Claude Code 的 assistant `usage`、
+    /// opencode 的 assistant `tokens`）。界面只显示在面板标题栏，不影响回合状态；数据来源和口径见
+    /// [`usage`]。
+    Usage { usage: usage::ContextUsage },
 }
 
 /// 一个可选模型。

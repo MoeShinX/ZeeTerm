@@ -186,6 +186,19 @@ impl Terminals {
             .any(|entry| entry.host_id() == Some(host_id))
     }
 
+    /// 全进程现在有终端开着的主机（别的窗口里的标签也算）：AI 对话锚定的主机还在不在，界面据此判断。
+    pub fn open_host_ids(&self) -> HashSet<i64> {
+        self.entries()
+            .values()
+            .filter_map(|entry| entry.host_id())
+            .collect()
+    }
+
+    /// 全进程现在开着的终端编号（快速连接的对话锚定在终端上，终端关了对话就失效）。
+    pub fn open_terminal_ids(&self) -> HashSet<String> {
+        self.entries().keys().cloned().collect()
+    }
+
     /// 某个对话（`owner`）此刻正在这些终端里执行；空集合 = 它没有在执行了。
     pub fn set_ai_active(&self, owner: u64, terminals: HashSet<String>) {
         let mut active = self.ai_active.lock().unwrap_or_else(|p| p.into_inner());
@@ -289,6 +302,21 @@ mod tests {
         assert!(table.for_host(1).is_none());
         assert!(!table.has_host(1));
         assert!(table.has_host(2));
+    }
+
+    #[test]
+    fn open_ids_follow_the_registry() {
+        let table = Terminals::default();
+        let first = entry(&table, 1);
+        let second = entry(&table, 2);
+        assert_eq!(table.open_host_ids(), HashSet::from([1, 2]));
+        assert_eq!(
+            table.open_terminal_ids(),
+            HashSet::from([first.id.clone(), second.id.clone()])
+        );
+        table.remove(&first.id);
+        assert_eq!(table.open_host_ids(), HashSet::from([2]));
+        assert!(!table.open_terminal_ids().contains(&first.id));
     }
 
     #[test]
