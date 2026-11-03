@@ -653,6 +653,8 @@ fn body_markdown(message: &AssistantMessage, mode: BodyMode) -> Option<String> {
 enum ChatMessage {
     User(String),
     Assistant(AssistantMessage),
+    /// 独立的系统提示行（比如「已改绑到 X」）：居中、淡色、没有「助手 / 原文」行头；不进历史，也不算对话内容。
+    System(String),
 }
 
 /// 历史面板当前显示什么；关着时消息区照常显示。
@@ -1546,7 +1548,7 @@ impl ChatState {
     fn card_at(&mut self, message_index: usize, tool_index: usize) -> Option<&mut ToolCard> {
         match self.messages.get_mut(message_index)? {
             ChatMessage::Assistant(message) => message.tools.get_mut(tool_index),
-            ChatMessage::User(_) => None,
+            ChatMessage::User(_) | ChatMessage::System(_) => None,
         }
     }
 
@@ -1649,7 +1651,7 @@ impl ChatState {
         let index = self.active?;
         match self.messages.get_mut(index)? {
             ChatMessage::Assistant(message) => Some(message),
-            ChatMessage::User(_) => None,
+            ChatMessage::User(_) | ChatMessage::System(_) => None,
         }
     }
 
@@ -1674,8 +1676,13 @@ impl ChatState {
                     .iter_mut()
                     .rev()
                     .find(|card| card.call_id == call_id),
-                ChatMessage::User(_) => None,
+                ChatMessage::User(_) | ChatMessage::System(_) => None,
             })
+    }
+
+    /// 独立的系统提示行（不挂在助手消息下面，不带「助手 / 原文」行头）。
+    fn push_system_line(&mut self, text: impl Into<String>) {
+        self.messages.push(ChatMessage::System(text.into()));
     }
 
     fn push_notice(&mut self, text: impl Into<String>, error: bool) {
@@ -1718,6 +1725,8 @@ impl ChatState {
                         });
                     }
                 }
+                // 系统提示行是界面状态，不进历史。
+                ChatMessage::System(_) => {}
             }
         }
         HistoryDraft {
@@ -4899,6 +4908,17 @@ impl AgentChatDemo {
                             .child(text.clone()),
                     )
                     .into_any_element(),
+                // 独立的系统提示行：居中、淡色，没有行头和按钮（V2-U14）。
+                ChatMessage::System(text) => div()
+                    .id(("agent-chat-system", index))
+                    .w_full()
+                    .min_w_0()
+                    .py_1()
+                    .text_center()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(redact_paths(text))
+                    .into_any_element(),
                 ChatMessage::Assistant(message) => {
                     let toggle_entity = entity.clone();
                     let raw_entity = entity.clone();
@@ -5481,7 +5501,7 @@ mod tests {
             .iter()
             .find_map(|message| match message {
                 ChatMessage::Assistant(message) => Some(message),
-                ChatMessage::User(_) => None,
+                ChatMessage::User(_) | ChatMessage::System(_) => None,
             })
             .expect("应该有一条助手消息")
     }
@@ -6310,6 +6330,34 @@ mod tests {
         assert!(notices[0].error);
         assert!(notices[0].text.contains("连接失败"));
         assert!(notices[1].text.contains("续接"));
+    }
+
+    #[test]
+    fn a_system_line_is_its_own_message_not_a_header_under_the_last_assistant_reply() {
+        let mut state = real_started();
+        state.apply_agent_event(AgentEvent::TextDelta {
+            text: "好".to_owned(),
+        });
+        state.apply_agent_event(AgentEvent::TurnEnd);
+        let before = state.messages.len();
+        state.push_system_line("已改绑到 db-1");
+        // 单独一条，不往助手消息里塞提示，也不为它新建一条空的助手消息。
+        assert_eq!(state.messages.len(), before + 1);
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::System(text)) if text == "已改绑到 db-1"
+        ));
+        assert!(assistant(&state).notices.is_empty());
+        // 提示行是界面状态：不进历史。
+        let draft = state.history_draft("t", None, None);
+        assert!(
+            draft
+                .messages
+                .iter()
+                .all(|m| !format!("{m:?}").contains("改绑")),
+            "{:?}",
+            draft.messages
+        );
     }
 
     #[test]
@@ -7192,7 +7240,7 @@ mod tests {
             .iter()
             .filter_map(|message| match message {
                 ChatMessage::User(text) => Some(text.clone()),
-                ChatMessage::Assistant(_) => None,
+                ChatMessage::Assistant(_) | ChatMessage::System(_) => None,
             })
             .collect()
     }
@@ -7390,7 +7438,7 @@ mod tests {
             }));
         let message = match &state.messages[0] {
             ChatMessage::Assistant(message) => message.clone(),
-            ChatMessage::User(_) => unreachable!("刚放进去的是助手消息"),
+            ChatMessage::User(_) | ChatMessage::System(_) => unreachable!("刚放进去的是助手消息"),
         };
         let source = body_markdown(&message, BodyMode::Rendered).expect("有正文");
         assert_eq!(
@@ -7401,7 +7449,7 @@ mod tests {
         assert!(state.toggle_body_expanded(0));
         let message = match &state.messages[0] {
             ChatMessage::Assistant(message) => message.clone(),
-            ChatMessage::User(_) => unreachable!("刚放进去的是助手消息"),
+            ChatMessage::User(_) | ChatMessage::System(_) => unreachable!("刚放进去的是助手消息"),
         };
         assert_eq!(
             body_markdown(&message, BodyMode::Rendered).expect("有正文"),

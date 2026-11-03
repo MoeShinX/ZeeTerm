@@ -539,7 +539,7 @@ impl AgentChatDemo {
                 let name = anchor.name.clone();
                 embed.binding = Binding::Locked(anchor);
                 // 对话里留一条记录：之后的命令跑在哪台主机上，翻回去看得明白。
-                self.chat.push_notice(format!("已改绑到 {name}"), false);
+                self.chat.push_system_line(format!("已改绑到 {name}"));
                 self.link_notice = None;
                 self.recompute_targets();
                 // 历史里的锚定跟着改（对话已经存过的话）。
@@ -667,7 +667,7 @@ impl AgentChatDemo {
             .rev()
             .find_map(|message| match message {
                 super::ChatMessage::Assistant(message) => Some(message.text.clone()),
-                super::ChatMessage::User(_) => None,
+                super::ChatMessage::User(_) | ChatMessage::System(_) => None,
             })
     }
 
@@ -1050,7 +1050,7 @@ impl AgentChatDemo {
             .iter()
             .filter_map(|message| match message {
                 ChatMessage::Assistant(message) => Some(message),
-                ChatMessage::User(_) => None,
+                ChatMessage::User(_) | ChatMessage::System(_) => None,
             })
             .flat_map(|message| message.tools.iter())
             .find_map(|card| card.exec.clone())
