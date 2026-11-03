@@ -56,9 +56,13 @@ mod tests {
         assert!(notice.contains("Copyright (C) 2026 ZeeTerm contributors"));
         assert!(notice.contains("Netcatty"), "第三方署名不动");
         assert!(notice.contains("Apache-2.0"));
-        // 来历只在一句话里提到 Z-SSH，不再满篇都是旧名字。
-        let derived = notice.lines().filter(|line| line.contains("Z-SSH")).count();
-        assert_eq!(derived, 1, "Z-SSH 只应出现在说明来源的那一句里");
+        // Z-SSH 只出现在说明来历的地方（产品的来源、移植素材的经手路径），不再拿它当产品名。
+        for line in notice.lines().filter(|line| line.contains("Z-SSH")) {
+            assert!(
+                line.contains("derived from Z-SSH") || line.contains("through Z-SSH's"),
+                "Z-SSH 只应出现在说明来历的句子里：{line}"
+            );
+        }
         assert!(notice.contains("derived from Z-SSH"));
     }
 
