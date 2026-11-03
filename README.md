@@ -1,8 +1,8 @@
 # ZeeTerm
 
-ZeeTerm 是 Z-SSH 的 GPUI 原生版：面向 Windows 10/11（x64）的 SSH 客户端，集终端、SFTP 文件管理、远端编辑器和 AI 运维助手于一体。界面和终端完全用 Rust 原生实现（[GPUI](https://github.com/zed-industries/zed) + Alacritty 终端状态机），不依赖 Electron、WebView 或 Node.js 运行时。
+ZeeTerm 是面向 Windows 10/11（x64）的 SSH 客户端，集终端、SFTP 文件管理、远端编辑器和 AI 运维助手于一体。界面和终端完全用 Rust 原生实现（[GPUI](https://github.com/zed-industries/zed) + Alacritty 终端状态机），不依赖 Electron、WebView 或 Node.js 运行时。
 
-它与 Z-SSH（Tauri + React 版）共用同一套核心库（SSH、SFTP、同步、AI 智能体驱动、本地存储），但是**独立的产品**：产品名、安装目录、卸载键、主程序名、默认数据目录都与 Z-SSH 不同，两者可以并存。
+ZeeTerm 源自 [Z-SSH](https://github.com/MoeShinX/Z-SSH)（Tauri + React 版），沿用其核心库（SSH、SFTP、同步、AI 智能体驱动、本地存储），但是**独立的产品**：产品名、安装目录、卸载键、主程序名、默认数据目录都与 Z-SSH 不同，两者可以并存。
 
 ## 功能概览
 
@@ -15,13 +15,17 @@ ZeeTerm 是 Z-SSH 的 GPUI 原生版：面向 Windows 10/11（x64）的 SSH 客�
 - **AI 运维助手**：接入你自己安装并登录的 opencode、Codex、Claude Code；命令在你的终端里执行，可逐条确认、只读自动或全部放行；能读写远端文件；主机长期记忆与历史会话保存在本机。
 - **同步与备份**：主机库、凭据、代理、快捷命令和设置端到端加密后同步到 WebDAV、S3 兼容存储、GitHub Gist 或 OneDrive；本地自动加密快照与离线备份文件。
 - **服务器概览**：连上后显示 CPU、内存、磁盘、网络等状态。
-- **打包**：按用户安装的 NSIS 安装包，不需要管理员权限，不带 WebView2。
+- **打包与更新**：按用户安装的 NSIS 安装包，不需要管理员权限，不带 WebView2；在线更新先验签再安装。
 
 ### 隐私
 
-没有账号、没有统计、没有崩溃上报；数据默认存在 `%APPDATA%\ZeeTerm`（可用环境变量 `ZSSH_DATA_DIR` 改到别处）。密码、私钥口令和同步令牌用 Windows 数据保护接口（DPAPI）加密。程序只连接你自己添加的服务器、你配置的代理和同步存储，以及你启用的智能体需要的地址。
+没有账号、没有统计、没有崩溃上报；数据默认存在 `%APPDATA%\ZeeTerm`（可用环境变量 `ZSSH_DATA_DIR` 改到别处）。密码、私钥口令和同步令牌用 Windows 数据保护接口（DPAPI）加密。程序只连接你自己添加的服务器、你配置的代理和同步存储、你启用的智能体需要的地址、检查更新用的 GitHub Release 地址，以及（可在设置里关掉的）模型资料库自动更新用的 models.dev。
 
-当前是试用阶段：**自动更新是关着的**（编译期开关），新版本请重新下载安装包覆盖安装，数据不受影响。
+## 安装与更新
+
+从 [Releases](https://github.com/MoeShinX/ZeeTerm/releases) 下载 `ZeeTerm-Setup-<版本>.exe` 运行即可：按当前用户安装，不需要管理员权限，数据在 `%APPDATA%ZeeTerm`，覆盖安装不影响数据。
+
+程序会在启动时（之后每 6 小时）检查是否有新版本，也可以在「设置 → 关于」里手动检查；这个自动检查可以在同一处关掉。发现新版本后更新窗口会列出更新说明，下载完成后**先校验发布者的签名（minisign）和签名里的版本号**，确认后才退出程序并运行安装包。联网走「设置 → 连接 → 软件网络」里的代理设置。发版与签名的做法见 [docs/RELEASING.md](docs/RELEASING.md)。
 
 ## 构建
 
@@ -56,9 +60,9 @@ pwsh native/installer/build.ps1
 | `crates/zssh-platform-windows` | Windows 平台能力：剪贴板、输入法、单实例、系统主题 |
 | `crates/zssh-mcp` | AI 工具桥的 MCP 进程，随安装包一起分发 |
 | `native/zssh-gpui` | ZeeTerm 应用本体（GPUI 界面） |
-| `native/zssh-terminal`、`zssh-session`、`zssh-editor`、`zssh-regex`、`zssh-update` | 终端模型、会话泵、编辑器文件契约、高亮正则引擎、更新验签 |
+| `native/zssh-terminal`、`zssh-session`、`zssh-editor`、`zssh-regex`、`zssh-update` | 终端模型、会话泵、编辑器文件契约、高亮正则引擎、更新清单与验签（含发版用的 `release_tool` 示例） |
 | `native/installer` | NSIS 安装脚本、打包脚本和静默安装测试脚本 |
-| `scripts` | `gates.ps1`（全部检查）、`privacy-scan.ps1` 与它的放行清单 `privacy-allow.txt`（公开前的隐私扫描） |
+| `scripts` | `gates.ps1`（全部检查）、`privacy-scan.ps1` 与它的放行清单 `privacy-allow.txt`（公开前的隐私扫描）、`updater-keygen.ps1`（生成更新签名密钥）、`release.ps1`（发版）；说明见 `docs/RELEASING.md` |
 
 `crates/` 是一个 Cargo 工作区，`native/` 是另一个（它用路径依赖引用 `crates/` 里的库），各有自己的 `Cargo.lock`。
 
