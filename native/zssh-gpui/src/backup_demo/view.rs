@@ -25,11 +25,12 @@ use crate::typography::{Role, Typo as _};
 /// 保留份数的可选值（核心接受 1～200，同 0.2.14）。
 pub(super) const KEEP_CHOICES: [usize; 6] = [5, 10, 20, 50, 100, 200];
 
-/// 离线备份的默认文件名（同 0.2.14：`zssh-日期.zsshbak`）。
+/// 离线备份的默认文件名（`zeeterm-日期.zsshbak`）：扩展名和 Z-SSH 0.2.14 一样，两边的备份文件互相能导入；
+/// 文件名改成产品名，免得和 Z-SSH 导出的混在一起分不清。
 pub(super) fn default_file_name() -> String {
     let stamp = format_stamp(super::now_secs());
     let date: String = stamp.chars().take(10).filter(|c| *c != '-').collect();
-    format!("zssh-{date}.zsshbak")
+    format!("zeeterm-{date}.zsshbak")
 }
 
 /// 保留份数下拉里要列出的值：固定几档，当前值不在里面就加进去排好。
@@ -571,9 +572,9 @@ mod tests {
     fn the_default_file_name_is_dated_and_has_the_old_extension() {
         let name = default_file_name();
         assert!(
-            name.starts_with("zssh-") && name.ends_with(".zsshbak"),
+            name.starts_with("zeeterm-") && name.ends_with(".zsshbak"),
             "{name}"
         );
-        assert_eq!(name.len(), "zssh-20260101.zsshbak".len(), "{name}");
+        assert_eq!(name.len(), "zeeterm-20260101.zsshbak".len(), "{name}");
     }
 }

@@ -14,6 +14,7 @@ pub mod engine;
 pub mod error;
 pub mod github;
 pub mod guard;
+pub mod import_preview;
 pub mod known_hosts;
 pub mod local_extras;
 pub mod merge;
@@ -30,6 +31,7 @@ pub mod sigv4;
 pub mod snapshot;
 pub mod storage;
 pub mod webdav;
+pub mod zssh_import;
 
 pub use error::SyncError;
 pub use package::{

@@ -96,8 +96,63 @@ impl SyncEngine<'_> {
         password: &str,
         mode: OfflineImportMode,
     ) -> Result<OfflineImportReport, SyncError> {
+        let incoming = SyncSnapshot::open(bytes, password)?;
+        self.import_snapshot(incoming, mode)
+    }
+
+    /// 把一份已经解开的快照按 `mode` 导入。离线备份文件和"直接读 Z-SSH 的库"两条路径共用它，
+    /// 所以不管数据从哪来：导入前都会自动做一份本地备份、墓碑不带进来、不动同步基线。
+    pub fn import_snapshot(
+        &self,
+        incoming: SyncSnapshot,
+        mode: OfflineImportMode,
+    ) -> Result<OfflineImportReport, SyncError> {
         let now = Self::now();
-        let mut incoming = SyncSnapshot::open(bytes, password)?;
+        let plan = self.plan_import(incoming, mode, now)?;
+        let ImportPlan {
+            current,
+            target,
+            conflicts,
+            nulled_references,
+        } = plan;
+
+        let keep = self.db.sync_backup_keep().map_err(SyncError::from)?;
+        let safety_backup = self.backup_store().create(
+            &current,
+            &super::local_extras::LocalExtras::read(self.db)?,
+            now,
+            keep,
+            self.app_version.as_deref(),
+        )?;
+        let applied = apply_snapshot_guarded_with(
+            self.db,
+            &target,
+            self.sealer,
+            self.known_hosts_path.as_deref(),
+            &conflicts,
+            now,
+            Some(LocalGuard {
+                expected: &current,
+                device_id: &self.device_id,
+            }),
+            &self.policy,
+        )?;
+        Ok(OfflineImportReport {
+            safety_backup,
+            applied,
+            conflicts: conflicts.len(),
+            nulled_references,
+        })
+    }
+
+    /// 算出导入后本机会变成什么样，不写任何东西。预览和真正导入走同一份计划，
+    /// 所以预览里的数字就是导入的结果。
+    pub(crate) fn plan_import(
+        &self,
+        mut incoming: SyncSnapshot,
+        mode: OfflineImportMode,
+        now: i64,
+    ) -> Result<ImportPlan, SyncError> {
         incoming.tombstones.clear();
 
         let current = snapshot_local_with(
@@ -142,35 +197,21 @@ impl SyncEngine<'_> {
             }
         };
         target.sort_canonical();
-
-        let keep = self.db.sync_backup_keep().map_err(SyncError::from)?;
-        let safety_backup = self.backup_store().create(
-            &current,
-            &super::local_extras::LocalExtras::read(self.db)?,
-            now,
-            keep,
-            self.app_version.as_deref(),
-        )?;
-        let applied = apply_snapshot_guarded_with(
-            self.db,
-            &target,
-            self.sealer,
-            self.known_hosts_path.as_deref(),
-            &conflicts,
-            now,
-            Some(LocalGuard {
-                expected: &current,
-                device_id: &self.device_id,
-            }),
-            &self.policy,
-        )?;
-        Ok(OfflineImportReport {
-            safety_backup,
-            applied,
-            conflicts: conflicts.len(),
+        Ok(ImportPlan {
+            current,
+            target,
+            conflicts,
             nulled_references,
         })
     }
+}
+
+/// 一次导入的计划：本机现在的样子、导入后的样子，以及合并时的冲突。
+pub(crate) struct ImportPlan {
+    pub current: SyncSnapshot,
+    pub target: SyncSnapshot,
+    pub conflicts: Vec<super::merge::Conflict>,
+    pub nulled_references: Vec<String>,
 }
 
 #[cfg(test)]

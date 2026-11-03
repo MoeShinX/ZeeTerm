@@ -41,6 +41,7 @@ mod links;
 mod live_support;
 mod main_window;
 mod menu_kit;
+mod migrate_demo;
 mod product;
 mod protocol_backend;
 mod proxies_demo;

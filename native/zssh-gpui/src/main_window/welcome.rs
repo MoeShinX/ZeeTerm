@@ -93,13 +93,19 @@ impl MainWindow {
         let entity = cx.entity();
         // 标题的颜色要对着当前皮肤的底色校一次对比度（深色皮肤上最深的紫会发暗）。
         let skin_background = crate::app_theme::active_skin(cx).ui.background;
+        // 本机有 Z-SSH 的数据、主机库还是空的：顶上多一条提示卡（V2-U19）。
+        let tip = self
+            .zssh_tip_visible()
+            .then(|| self.render_zssh_tip(tokens, cx));
         v_flex()
             .id("welcome-page")
+            .relative()
             .size_full()
             .items_center()
             .justify_center()
             .gap_3()
             .bg(tokens.background)
+            .children(tip)
             .child(
                 div()
                     .text_3xl()
@@ -137,6 +143,7 @@ impl MainWindow {
                         .icon(IconName::Plus),
                     ),
             )
+            .child(self.render_zssh_link(tokens, cx))
             .child(
                 div()
                     .mt_1()
