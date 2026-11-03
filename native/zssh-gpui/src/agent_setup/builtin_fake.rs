@@ -7,8 +7,8 @@
 //! - Key 以 `sk-test-bad` 开头：认证失败（401）；`sk-test-topup`：余额不足（402，错误码
 //!   `zeeterm_requires_topup`）；`sk-test-nomodel`：模型不存在（404）；别的都能用；
 //! - `GET …/models` 返回几个常见模型（OpenAI 兼容）或 Claude 系列（Anthropic）；
-//! - 最后一条用户消息是"回复 OK"（测试按钮）→ 回 `OK`；以 `tool:` 开头 → 先调一次 `list_targets`，
-//!   工具结果回来后再给结论；以 `flaky:` 开头 → 第一次请求说到一半断开（触发重试），第二次说完；
+//! - 最后一条用户消息是"回复 OK"（测试按钮）→ 回 `OK`；以 `tool:` 或 `tool ` 开头 → 先调一次 `list_targets`，
+//!   工具结果回来后再给结论；以 `flaky:` 或 `flaky ` 开头 → 第一次请求说到一半断开（触发重试），第二次说完；
 //!   以 `usage <数字>` 开头 → 把请求的输入 token 报成这个数（演示用量警示色）；
 //!   其余原样回一句 `收到：…`。
 
@@ -205,6 +205,12 @@ struct Reply {
     break_after_text: bool,
 }
 
+/// 以 `词:` 或 `词 ` 开头（驱动脚本的 `ai_text` 只认第一个冒号前面的部分，所以也支持空格写法）。
+fn is_command(text: &str, word: &str) -> bool {
+    text.strip_prefix(word)
+        .is_some_and(|rest| rest.starts_with(':') || rest.starts_with(' '))
+}
+
 fn plan(text: &str, tool_after: bool, first_flaky: bool, messages: usize) -> Reply {
     let base_input = 900 + 60 * messages as u64;
     let mut reply = Reply {
@@ -226,10 +232,10 @@ fn plan(text: &str, tool_after: bool, first_flaky: bool, messages: usize) -> Rep
     } else if trimmed == "回复 OK" {
         reply.text_parts = vec!["OK".into()];
         reply.output_tokens = 2;
-    } else if trimmed.starts_with("tool:") {
+    } else if is_command(trimmed, "tool") {
         reply.text_parts = vec!["我先看一下有哪些目标。".into()];
         reply.tool = Some(("list_targets", json!({})));
-    } else if trimmed.starts_with("flaky:") {
+    } else if is_command(trimmed, "flaky") {
         if first_flaky {
             reply.text_parts = vec!["我先看一下，".into(), "这一段会被撤回。".into()];
             reply.break_after_text = true;
@@ -353,7 +359,7 @@ impl Transport for FakeTransport {
             let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
             let (text, tool_after) = last_user_and_tool_state(&body);
             let messages = body["messages"].as_array().map_or(0, Vec::len);
-            let first_flaky = text.trim().starts_with("flaky:")
+            let first_flaky = is_command(text.trim(), "flaky")
                 && self.flaky_posts.fetch_add(1, Ordering::SeqCst) == 0;
             let reply = plan(&text, tool_after, first_flaky, messages);
             let (chunks, then_error) = if is_anthropic(&request) {

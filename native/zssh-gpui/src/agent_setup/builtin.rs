@@ -184,7 +184,15 @@ pub fn version() -> u64 {
 
 /// 设置页保存 / 删除接口、改默认之后调：重读设置库，内容变了才加版本号。
 pub fn reload() {
-    let fresh = load_from_disk();
+    apply(load_from_disk());
+}
+
+/// 同 [`reload`]，用已经打开的库（主窗口节拍里定时调：同步、别的窗口改了接口也能跟上，不用每次重新开库）。
+pub fn reload_with(db: &Database) {
+    apply(read_info(db));
+}
+
+fn apply(fresh: BuiltinInfo) {
     let mut state = state();
     if state.info.as_ref() != Some(&fresh) {
         state.info = Some(fresh);

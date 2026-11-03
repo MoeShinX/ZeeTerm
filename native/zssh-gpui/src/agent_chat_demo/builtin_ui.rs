@@ -281,6 +281,32 @@ impl AgentChatDemo {
         Some(builtin::preview_usage(&caps, &model))
     }
 
+    // ---- 驱动脚本用的读口（调试版自动化；读的和界面显示的是同一份）----
+
+    /// 智能体按钮上现在写的名字。
+    pub fn dev_agent_label(&self) -> String {
+        self.agent_label_now()
+    }
+
+    /// 智能体下拉里内置助手那几项的文字（带 `*` 前缀的是当前选中的）。
+    pub fn dev_builtin_menu(&self) -> Vec<String> {
+        self.builtin_menu_items()
+            .into_iter()
+            .map(|(_, label, selected)| if selected { format!("*{label}") } else { label })
+            .collect()
+    }
+
+    /// 输入框上方的"不支持工具调用"提示显示着吗。
+    pub fn dev_no_tools_hint(&self) -> bool {
+        self.no_tools_hint().is_some()
+    }
+
+    /// 指示器现在用的窗口（token）和是不是估计的。
+    pub fn dev_usage_window(&self) -> Option<(u64, bool)> {
+        let usage = self.display_usage()?;
+        Some((usage.window?, usage.window_estimated))
+    }
+
     /// 输入框上方的淡色提示：当前模型不支持工具调用。
     pub(super) fn no_tools_hint(&self) -> Option<&'static str> {
         if !self.is_builtin() {
