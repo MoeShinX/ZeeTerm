@@ -5,6 +5,8 @@
 //! S3 认不认条件写入（或者像某些兼容服务那样直接回 501）。
 //! S3 这边**独立校验 SigV4 签名**（用文档向量验证过的实现重算，签名不对回 403）。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

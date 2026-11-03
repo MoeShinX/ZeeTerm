@@ -9,6 +9,9 @@
 //! `#[ignore]` 的吞吐/批量用例，由 `scripts/perf-tests.ps1` 跑（AGENTS.md：受网速
 //! 影响的测试不进五门禁）。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::sync::Arc;

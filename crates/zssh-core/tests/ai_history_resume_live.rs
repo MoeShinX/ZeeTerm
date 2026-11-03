@@ -8,6 +8,9 @@
 //! 2. 方案 B：拿一个不存在的会话 id 续接，驱动发 `ResumeFailed` 并用新会话把消息发出去
 //!    （模型照常回复，不报错）。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::path::PathBuf;

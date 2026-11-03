@@ -173,7 +173,7 @@ fn main() {
             ..Default::default()
         };
 
-        let (handle, view) = gpui_kit::open_window(window_options, cx, |window, cx| {
+        let opened = gpui_kit::open_window(window_options, cx, |window, cx| {
             // 无边框窗口的系统标题默认是空的：任务栏、Alt+Tab 里看不到名字，这里设成产品名。
             window.set_window_title(product::NAME);
             let view = cx.new(|cx| MainWindow::new(window, cx));
@@ -207,8 +207,16 @@ fn main() {
                 }
             });
             view
-        })
-        .expect("打开主窗口");
+        });
+        let (handle, view) = match opened {
+            Ok(pair) => pair,
+            Err(err) => {
+                // 没有主窗口就没有任何入口，留着进程也没用；记一条日志后退出。
+                tracing::error!(%err, "打开主窗口失败");
+                cx.quit();
+                return;
+            }
+        };
 
         // 文件窗口把标签交回主窗口时要找到它。
         file_window::register_main(cx, handle, view.downgrade());

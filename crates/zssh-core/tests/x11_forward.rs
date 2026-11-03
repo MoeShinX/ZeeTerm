@@ -5,6 +5,9 @@
 //! 验证：cookie 被换成真值、数据双向转发、两个 shell 各自路由、未知 cookie 被拒、
 //! 被拒后换普通通道、关闭后清理、各种失败的分类和终端提示。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::collections::VecDeque;

@@ -60,7 +60,10 @@ impl TerminalRing {
                 self.segments.pop_front();
                 self.len -= front_len;
             } else {
-                let front = self.segments.front_mut().unwrap();
+                // 走到这里说明队首比溢出量长，队首一定存在；真没有就退出循环，免得原地空转。
+                let Some(front) = self.segments.front_mut() else {
+                    break;
+                };
                 front.drain(..overflow);
                 self.len -= overflow;
             }

@@ -6,6 +6,9 @@
 //!
 //! 环境变量 `ZSSH_TEST_*` 不全时跳过并打印原因。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::time::{Duration, Instant};

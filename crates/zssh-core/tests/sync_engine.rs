@@ -5,6 +5,9 @@
 //! 每一轮比较**完整的同步内容**（`snapshot_local` 解开凭据后的全部字段），
 //! 不只是主机名。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::Path;
 
 mod common;

@@ -13,6 +13,9 @@
 //! 环境变量 `ZSSH_TEST_*` 不全时跳过并打印原因；找不到 `zssh-mcp.exe` 也跳过。
 //! 输出里不出现地址和用户名（打印前一律过 `redact`）。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::path::{Path, PathBuf};

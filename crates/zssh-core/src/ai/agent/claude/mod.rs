@@ -290,6 +290,9 @@ fn remove_stale_mcp_configs_with(
 
 fn random_hex(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
+    // 系统随机数（BCryptGenRandom）在 Windows 10/11 上不会失败；真失败了也不能退回可预测的
+    // 令牌，宁可 panic。
+    #[allow(clippy::expect_used)]
     getrandom::fill(&mut buf).expect("系统随机数不可用");
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }

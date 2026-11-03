@@ -14,6 +14,9 @@
 //! 凭据只从 `ZSSH_TEST_*` 环境变量读（和线测试同一套规矩）；缺了就退出。
 //! **只碰 `zssh-sftp-live-` 前缀的目录，别的什么都不动。**
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::Arc;
 use std::time::SystemTime;
 

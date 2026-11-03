@@ -2,6 +2,9 @@
 //!
 //! 不下载、不启动安装器；用测试密钥和内存里的包字节证明整条判定链一致。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::fs;
 use std::path::PathBuf;
 

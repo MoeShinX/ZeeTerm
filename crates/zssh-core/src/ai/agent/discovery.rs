@@ -279,8 +279,8 @@ async fn package_manager_dirs() -> &'static Vec<PathBuf> {
             }
         }
     }
-    let _ = DIRS.set(found);
-    DIRS.get().expect("刚设过")
+    // 并发时可能别人先填好了：用先到的那份，两份内容本来就一样。
+    DIRS.get_or_init(|| found)
 }
 
 /// 跑一条命令问一个目录；输出取最后一行非空文本。

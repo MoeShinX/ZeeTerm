@@ -11,6 +11,9 @@
 //! 变量，跑完关掉、删数据。测试只在自己的随机子目录 / 前缀下读写，结束时删干净。
 //! 测试内容里的主机名、密码都是虚构的。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::path::PathBuf;

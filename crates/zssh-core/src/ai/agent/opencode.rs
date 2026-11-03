@@ -732,8 +732,13 @@ async fn spawn_serve(
         .map_err(|e| AgentError::StartFailed(format!("启动进程失败：{e}")))?;
     // 崩溃时也要带走整棵子进程树（K06）
     super::process::bind_to_app_lifetime(&child);
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        // 上面明明设了 piped，走到这里说明平台没给管道；别留一个拿不到输出的孤儿进程。
+        let _ = child.start_kill();
+        return Err(AgentError::StartFailed(
+            "子进程的输出管道没建起来".to_owned(),
+        ));
+    };
 
     let stdout_tail: TailBuf = tail_buf();
     let stderr_tail: TailBuf = tail_buf();
@@ -885,6 +890,9 @@ fn free_port() -> Result<u16, String> {
 
 fn random_hex(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
+    // 系统随机数（BCryptGenRandom）在 Windows 10/11 上不会失败；真失败了也不能退回可预测的
+    // 令牌，宁可 panic。
+    #[allow(clippy::expect_used)]
     getrandom::fill(&mut buf).expect("系统随机数不可用");
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }

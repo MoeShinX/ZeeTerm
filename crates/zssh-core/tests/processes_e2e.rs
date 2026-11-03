@@ -7,6 +7,9 @@
 //!
 //! 要点：每条命令都被记下来，断言"没权限时不会再试 sudo"、"PID 变了就根本不发 kill"、"非法 PID 一条命令都不发"。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::sync::{Arc, Mutex};

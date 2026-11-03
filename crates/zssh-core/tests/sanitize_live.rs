@@ -4,6 +4,9 @@
 //! 都要换掉地址。最后一条故意连测试服务器的一个错误端口，断言真实输出里没有
 //! `ZSSH_TEST_HOST` 的值（没设环境变量就跳过）。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use common::{TempKnownHosts, TestServer};

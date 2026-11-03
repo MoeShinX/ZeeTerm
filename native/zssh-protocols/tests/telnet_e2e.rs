@@ -1,5 +1,8 @@
 //! Telnet 端到端：本机回环上的假 Telnet 服务器 ↔ 真实的会话任务 ↔ 事件流 / 流控门 / 终端泵。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

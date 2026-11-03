@@ -6,6 +6,9 @@
 //!
 //! 前置条件：先编译出 `zssh-mcp.exe`（`cargo build -p zssh-mcp`），找不到就跳过。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

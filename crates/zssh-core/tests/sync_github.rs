@@ -3,6 +3,9 @@
 //! 不碰真实的 GitHub。两个数据目录模拟两台电脑，每一轮比较完整的同步内容；
 //! 请求全部走 `net::build_client`（默认代理设置），经 SOCKS5 和 HTTP 代理各测一次。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 #[path = "common/harness.rs"]
 mod harness;
 #[path = "common/mock_cloud.rs"]

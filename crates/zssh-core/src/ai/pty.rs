@@ -44,6 +44,9 @@ fn truncate_front(text: &mut String, max: usize) {
 /// 生成的结束标记：`__ZSSH_<随机十六进制>__`。
 pub fn new_marker() -> String {
     let mut buf = [0u8; 12];
+    // 系统随机数（BCryptGenRandom）在 Windows 10/11 上不会失败；真失败了也不能退回可预测的
+    // 标记（它是防伪造的），宁可 panic。
+    #[allow(clippy::expect_used)]
     getrandom::fill(&mut buf).expect("系统随机数不可用");
     let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
     format!("__ZSSH_{hex}__")

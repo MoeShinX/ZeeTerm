@@ -148,9 +148,11 @@ pub fn parse_config_toml_mcp_names(text: &str) -> Vec<String> {
     for raw in text.lines() {
         let line = strip_comment(raw).trim();
         if let Some(left) = inline_left.take() {
-            inline_left = Some(format!("{left} {line}"));
-            if !left.is_empty() && bracket_balance(&inline_left.clone().unwrap()) == 0 {
-                out.extend(inline_table_keys(&inline_left.take().unwrap()));
+            let joined = format!("{left} {line}");
+            if !left.is_empty() && bracket_balance(&joined) == 0 {
+                out.extend(inline_table_keys(&joined));
+            } else {
+                inline_left = Some(joined);
             }
         }
         if let Some(rest) = line.strip_prefix("[mcp_servers.") {

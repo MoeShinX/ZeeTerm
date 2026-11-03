@@ -17,9 +17,12 @@ fn main() {
 #[cfg(windows)]
 fn embed_icon() {
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
-        embed_resource::compile("assets/zeeterm.rc", embed_resource::NONE)
-            .manifest_required()
-            .expect("embedding assets/zeeterm.rc failed");
+        // 构建脚本失败就是让构建失败（见上面的注释），所以直接 panic，不是返回错误。
+        if let Err(err) =
+            embed_resource::compile("assets/zeeterm.rc", embed_resource::NONE).manifest_required()
+        {
+            panic!("embedding assets/zeeterm.rc failed: {err}");
+        }
     }
     println!("cargo:rerun-if-changed=assets/zeeterm.rc");
     println!("cargo:rerun-if-changed=assets/brand/zeeterm.ico");

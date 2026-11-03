@@ -5,6 +5,9 @@
 //! known_hosts、墓碑）。请求全部走 `net::build_client`，即和正式使用同一套代理设置；
 //! SOCKS5 的用例经过测试里自己起的本地代理。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 #[path = "common/harness.rs"]
 mod harness;
 #[path = "common/mock_cloud.rs"]

@@ -8,6 +8,9 @@
 //! 要点：每条命令都被记下来，断言"没权限时不会再试 sudo"、"自己的连接 / UDP / 监听 / 不合法的地址一条 `ss -K` 都不发"、
 //! "菜单里的结束进程走的就是 U18 的 `terminate_process`"（同样的 `kill -TERM <pid>` 命令、同样的受保护判定）。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::sync::{Arc, Mutex};

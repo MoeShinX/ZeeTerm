@@ -33,3 +33,6 @@ windows = { version = "0.62", features = [
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "macros", "sync"] }
+
+[lints]
+workspace = true

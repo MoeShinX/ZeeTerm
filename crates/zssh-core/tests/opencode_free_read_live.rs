@@ -32,6 +32,9 @@
 //! 免费模型、网络通、模型在当前地区可用。输出里不打印任何文件内容，也不打印 opencode 的
 //! 错误全文（里面可能带本机路径），只打印「有没有出现标记」和调用计数。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::path::{Path, PathBuf};

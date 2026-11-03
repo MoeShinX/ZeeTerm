@@ -10,6 +10,12 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
 
+# 库代码不 unwrap / expect（AGENTS.md）。门禁是 clippy -D warnings，所以 warn 也会挡住提交；
+# 测试代码放行见 clippy.toml。
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+
 # Argon2id 的参数很重（同步包解一次要上百 MiB 内存）。debug 构建里它比 release 慢十几倍，
 # 同步 / 备份的测试每次都要派生密钥；只把这两个依赖提到 opt-level 3（和根 workspace 一样），
 # 自己的代码照旧是 debug。

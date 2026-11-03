@@ -14,6 +14,9 @@
 //! - 失败时打印现场：未确认字节、缓冲占用、写入完成次数、各阶段耗时
 //! - 跟链路速度有关的等待全部改成条件等待（等到某个状态或者超时），不用固定 sleep
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::sync::atomic::{AtomicUsize, Ordering};

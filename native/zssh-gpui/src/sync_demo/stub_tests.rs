@@ -5,6 +5,9 @@
 //! `probe_connection_with`（测试连接）、`run_sync_with`（立即同步）、`change_password_with`（修改主密码）、
 //! `service::onedrive_sign_in`（OneDrive 登录）。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::PathBuf;
 use std::time::Duration;
 

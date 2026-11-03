@@ -9,3 +9,6 @@ publish.workspace = true
 [dependencies]
 fancy-regex = "=0.20.0"
 regex = "=1.13.1"
+
+[lints]
+workspace = true

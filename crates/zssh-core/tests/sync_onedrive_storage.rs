@@ -5,6 +5,9 @@
 //! `Authorization`、`/content` 302 到另一个主机名、限流、507 等。两台电脑 = 两个数据目录。
 //! 不连任何真实的微软服务。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 #[path = "common/fake_browser.rs"]
 mod fake_browser;
 #[path = "common/harness.rs"]

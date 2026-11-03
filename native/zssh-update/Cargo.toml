@@ -16,3 +16,6 @@ serde_json = "1"
 
 [dev-dependencies]
 minisign = "0.10"
+
+[lints]
+workspace = true

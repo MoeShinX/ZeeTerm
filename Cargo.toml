@@ -8,6 +8,12 @@ edition = "2021"
 # 允许移植 Netcatty（GPL-3.0-or-later）的代码，整个项目随同一许可证发布。
 license = "GPL-3.0-or-later"
 
+# 库代码不 unwrap / expect（AGENTS.md）。门禁是 clippy -D warnings，所以 warn 也会挡住提交；
+# 测试代码放行见 clippy.toml。
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+
 [workspace.dependencies]
 zssh-core = { path = "crates/zssh-core" }
 zssh-app-runtime = { path = "crates/zssh-app-runtime" }

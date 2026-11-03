@@ -13,6 +13,9 @@
 //!
 //! 启动后打印一行 `READY http://127.0.0.1:<端口>`，之后每收到一个请求打印一行 `REQ <路径>`（用来核对"没配公钥时不发请求"这类事），随后一直运行，直到进程被结束。只供本机调试。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};

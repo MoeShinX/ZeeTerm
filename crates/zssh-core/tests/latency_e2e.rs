@@ -4,6 +4,9 @@
 //! 自己定的（每个方向加多少毫秒），断言才有意义：测到的值要 > 0、不小于人为加的延迟、可重复；
 //! 中继停止转发时是"超时"而不是假数字；连接断开后后台测量任务自己停下。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -10,3 +10,6 @@ publish = false
 futures = "0.3"
 tokio.workspace = true
 tracing.workspace = true
+
+[lints]
+workspace = true

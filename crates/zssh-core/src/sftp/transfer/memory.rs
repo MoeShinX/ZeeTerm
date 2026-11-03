@@ -3,6 +3,10 @@
 //! 传输引擎的边界情况（断线、短读、部分写、目标已有临时文件）在真实链路上很难稳定
 //! 复现，这里用一个可控的内存实现把它们造出来：单测因此不需要服务器、也不靠运气。
 
+// 整个文件都是测试替身（模块虽然是 `pub`，只有单测在用）：锁中毒说明别的测试线程已经 panic，
+// 这里再 panic 让测试失败正合适；不把测试辅助当生产代码去包装成错误返回。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

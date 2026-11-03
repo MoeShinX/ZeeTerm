@@ -526,6 +526,9 @@ mod tests {
 
 #[cfg(all(test, windows))]
 mod db_tests {
+    // clippy 只把 `cfg(test)` 认作测试代码，认不出 `cfg(all(test, windows))`，所以这里显式放行。
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use crate::model::{
         AuthMethod, HostDraft, IdentityDraft, IdentityKind, ProxyDraft, ProxyKind, ProxyMode,
     };

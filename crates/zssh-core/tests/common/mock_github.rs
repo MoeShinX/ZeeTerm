@@ -14,6 +14,8 @@
 //!
 //! Gist ID 故意做成 `mock` 开头、不是 32 位十六进制，截图里就不会和真实的 Gist ID 混淆。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, VecDeque};

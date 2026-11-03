@@ -3,6 +3,9 @@
 //! 模拟服务器真实执行：刷新令牌每次换发新的（严格模式下旧的立刻作废，所以没存下新令牌的实现
 //! 第二次刷新就会失败）、访问令牌过期、`If-Match` / 上传会话 / 限流等。不连任何真实的微软服务。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 #[path = "common/mock_cloud.rs"]
 mod mock_cloud;
 #[path = "common/mock_microsoft.rs"]

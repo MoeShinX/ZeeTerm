@@ -2,6 +2,8 @@
 //!
 //! 每个测试二进制都会编译这个模块，用不到的辅助函数在这里统一放宽 dead_code。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(dead_code)]
 
 use std::collections::VecDeque;

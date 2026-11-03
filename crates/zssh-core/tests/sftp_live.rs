@@ -6,6 +6,9 @@
 //! 规矩（M3-1 第 4 节）：**所有远端操作都在一个专用的临时目录里**
 //! （`/tmp/zssh-sftp-live-<随机串>`），测试结束删掉，**不碰服务器上的其它任何文件**。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::sync::Arc;

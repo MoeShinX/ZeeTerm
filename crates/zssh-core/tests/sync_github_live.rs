@@ -12,6 +12,9 @@
 //! 再确认一次 404）。令牌所属账号里的其他 Gist 一个都不读、不列、不改（全程不调用列表接口）。
 //! 测试数据（主机名、密码）都是虚构的。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 #[path = "common/harness.rs"]

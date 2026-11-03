@@ -1,6 +1,8 @@
 //! 同步集成测试共用的夹具：两个数据目录模拟两台电脑、种子数据、完整内容比较、
 //! 对任意存储跑的完整场景。WebDAV / S3 / GitHub 的集成测试都用它。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(dead_code)]
 
 use std::path::PathBuf;

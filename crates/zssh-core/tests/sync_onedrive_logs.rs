@@ -2,6 +2,9 @@
 //! PKCE verifier / state、账号名。单独一个测试二进制、一个用例：用全局订阅者抓日志，
 //! 不会被别的用例已经缓存的 callsite 干扰。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 #[path = "common/fake_browser.rs"]
 mod fake_browser;
 #[path = "common/harness.rs"]

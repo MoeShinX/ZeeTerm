@@ -8,3 +8,6 @@ publish.workspace = true
 
 [dependencies]
 alacritty_terminal = "=0.26.0"
+
+[lints]
+workspace = true

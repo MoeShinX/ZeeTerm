@@ -34,6 +34,9 @@ impl EditorDemo {
             .ok();
         }
 
+        // 演示窗口（只由调试钩子 / 旧演示窗口打开）：文件就是上面刚写的，读不出来说明临时目录
+        // 坏了，没有可展示的内容也造不出假的版本号，直接 panic。
+        #[allow(clippy::expect_used)]
         let snapshot = read(&path).expect("读取示例文件");
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)

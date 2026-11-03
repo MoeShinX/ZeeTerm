@@ -8,6 +8,9 @@
 //! 并核对确认请求里带着差异）→ 备份 → 临时文件加改名。模型被要求只用 `read_file` /
 //! `write_file`，不用 `run_command`。核对用测试自己的 SFTP 通道读回文件。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::path::PathBuf;

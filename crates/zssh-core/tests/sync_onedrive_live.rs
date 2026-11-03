@@ -14,6 +14,9 @@
 //! 已经不存在）。真正的同步包 `zssh-sync.json` 一次都不碰。
 //! 这个文件里的“清理逻辑”测试对着模拟服务，不需要任何环境变量，门禁里就会跑。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 #[path = "common/mock_microsoft.rs"]
 mod mock_microsoft;

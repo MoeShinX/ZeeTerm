@@ -9,6 +9,8 @@
 //! 这个文件不依赖应用的别的模块：测试用 `#[path]` 以外的普通 `mod` 引入，示例程序
 //! `examples/fake_sftp_server.rs` 用 `#[path]` 引同一份，给截图场景起一个独立进程。
 
+// 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};

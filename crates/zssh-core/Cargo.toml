@@ -88,3 +88,6 @@ rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 # test-util：延迟监视器的暂停 / 恢复测试用暂停的时钟，不用真等 5 秒的间隔。
 tokio = { workspace = true, features = ["process", "test-util"] }# 测试临时目录守卫：任何退出路径（含 panic）都会清理。
 tempfile = { workspace = true }
+
+[lints]
+workspace = true

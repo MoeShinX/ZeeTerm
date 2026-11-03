@@ -14,3 +14,6 @@ serde_json = { workspace = true }
 rmcp = { workspace = true, features = ["server", "transport-io", "macros"] }
 # 工具参数的结构图（rmcp 宏生成的代码按 `schemars::` 路径引用它）
 schemars = "1"
+
+[lints]
+workspace = true
