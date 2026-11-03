@@ -807,7 +807,20 @@ impl MainWindow {
     /// 真正退出前先看一眼进行中的工作；有就弹确认（返回 `false` 先别退），没有返回 `true`。
     pub(crate) fn request_quit(&mut self, cx: &mut Context<Self>) -> bool {
         let work = crate::install_state::snapshot();
-        let others = close_guard::quit_prompt(work);
+        let sessions = self
+            .workspace
+            .read(cx)
+            .tab_infos()
+            .iter()
+            .filter(|info| {
+                matches!(
+                    info.status,
+                    crate::terminal_workspace::TabStatus::Connected
+                        | crate::terminal_workspace::TabStatus::Connecting
+                )
+            })
+            .count();
+        let others = close_guard::quit_prompt_with_sessions(work, sessions);
         // 有编辑器没保存：先问保存还是丢掉；传输、AI 回合这些别的后果写进同一个框（0.2.14 的合并确认）。
         if self.ask_unsaved_before_quit(others.as_ref().map(|(_, message)| message.clone()), cx) {
             return false;
