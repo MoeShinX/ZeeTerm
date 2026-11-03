@@ -33,6 +33,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::{Value, json};
+use zssh_core::ai::agent::usage::ContextUsage;
 use zssh_core::ai::agent::{AgentEvent, AgentModelCatalog};
 use zssh_core::ai::bridge::{ApprovalRequest, ExecMode, ExecTargetReport, FileApproval};
 use zssh_core::ai::files::make_diff;
@@ -863,6 +864,8 @@ struct ChatState {
     last_item: Option<LastKind>,
     /// 回合进行中用户补充的消息（V2-U1：三种驱动在回合里都回 Busy，所以先排队）。
     queue: queue::PendingQueue,
+    /// 最近一轮的上下文用量（面板标题栏的指示器，V2-U15）；新对话清掉，切到历史对话时是它存下的那一次。
+    usage: Option<ContextUsage>,
 }
 
 /// 回合里最后一次动静。
@@ -1126,7 +1129,10 @@ impl ChatState {
     /// 把宿主事件写进对话。正文和工具只落在还在跑的回合里；提示总是可见。
     fn apply_agent_event(&mut self, event: AgentEvent) {
         // 重试成功（又出字 / 出思考 / 跑工具）或这一轮结束 / 出错：重试提示消失。
-        if !matches!(event, AgentEvent::Retrying { .. }) {
+        if !matches!(
+            event,
+            AgentEvent::Retrying { .. } | AgentEvent::Usage { .. }
+        ) {
             self.retry = None;
         }
         match event {
@@ -1240,6 +1246,8 @@ impl ChatState {
                     next_in_secs,
                 });
             }
+            // 只改指示器，不碰回合状态。
+            AgentEvent::Usage { usage } => self.usage = Some(usage),
             AgentEvent::ResumeFailed => self.push_notice(
                 "续接之前的会话失败，已经改成新会话继续：之前的上下文没有带给 AI。",
                 false,
@@ -1496,6 +1504,7 @@ impl ChatState {
         self.turn_started = None;
         self.last_item = None;
         self.queue.clear();
+        self.usage = None;
     }
 
     fn toggle_reasoning(&mut self, index: usize) -> bool {
@@ -1710,6 +1719,7 @@ impl ChatState {
             id: id.to_owned(),
             host_label: host_label.map(str::to_owned),
             anchor,
+            usage: self.usage.clone(),
             messages,
         }
     }
@@ -1925,6 +1935,8 @@ fn continue_conversation(
 ) -> Result<(), String> {
     let resume = resume_session_id(record)?;
     chat.load_history(&record.messages);
+    // 切到这条历史：指示器显示它最后一次的用量（旧历史没有就是「—」）。
+    chat.usage = record.usage.clone();
     *history_id = Some(record.id.clone());
     *pending_resume = Some(resume);
     Ok(())
@@ -1996,6 +2008,7 @@ mod composer;
 mod embed;
 mod queue;
 mod queue_view;
+mod usage_view;
 pub use embed::EmbedContext;
 
 type HostChoice = HostTarget;
@@ -6771,6 +6784,7 @@ mod tests {
             updated_at: 1_700_000_100_000,
             host_label: Some("web-1".to_owned()),
             anchor: None,
+            usage: None,
             agent_session_id: agent_session_id.map(str::to_owned),
             messages: Vec::new(),
         }
@@ -6787,6 +6801,67 @@ mod tests {
         assert!(format_history_time(0, now).ends_with(" UTC"));
         // 时钟回拨（更新时间比现在还晚）不能显示成负数。
         assert_eq!(format_history_time(now + 60_000, now), "刚刚");
+    }
+
+    fn sample_usage(used: u64) -> zssh_core::ai::agent::usage::ContextUsage {
+        zssh_core::ai::agent::usage::ContextUsage {
+            used,
+            window: Some(200_000),
+            model: Some("claude-opus-5-5".to_owned()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn usage_events_update_the_meter_without_touching_the_turn() {
+        let mut state = ChatState::default();
+        assert_eq!(state.usage, None, "新对话还没有用量");
+        state.start_real_turn("看一下");
+        state.apply_agent_event(AgentEvent::Retrying {
+            attempt: 1,
+            reason: "服务繁忙".into(),
+            next_in_secs: None,
+        });
+        state.apply_agent_event(AgentEvent::Usage {
+            usage: sample_usage(4_511),
+        });
+        assert_eq!(state.usage.as_ref().map(|u| u.used), Some(4_511));
+        assert!(state.retry.is_some(), "用量事件不清掉重试提示");
+        assert!(state.is_running(), "也不结束回合");
+        state.apply_agent_event(AgentEvent::Usage {
+            usage: sample_usage(9_000),
+        });
+        assert_eq!(
+            state.usage.as_ref().map(|u| u.used),
+            Some(9_000),
+            "以最新一次为准"
+        );
+        state.new_conversation();
+        assert_eq!(state.usage, None, "新对话清掉");
+    }
+
+    #[test]
+    fn usage_is_saved_with_the_history_and_restored_when_continuing() {
+        let mut state = ChatState::default();
+        state.start_real_turn("看一下");
+        state.apply_agent_event(AgentEvent::TextDelta { text: "好".into() });
+        state.apply_agent_event(AgentEvent::Usage {
+            usage: sample_usage(4_511),
+        });
+        state.apply_agent_event(AgentEvent::TurnEnd);
+        let draft = state.history_draft("ai-1-0", None, None);
+        assert_eq!(draft.usage.as_ref().map(|u| u.used), Some(4_511));
+
+        // 继续这条历史：指示器是它存下的那一次；继续一条没有用量的旧历史：回到「—」。
+        let mut record = sample_record(Some("11111111-1111-1111-1111-111111111111"));
+        record.usage = draft.usage;
+        let mut chat = ChatState::default();
+        let (mut history_id, mut pending) = (None, None);
+        continue_conversation(&mut chat, &mut history_id, &mut pending, &record).expect("可以续接");
+        assert_eq!(chat.usage.as_ref().map(|u| u.used), Some(4_511));
+        record.usage = None;
+        continue_conversation(&mut chat, &mut history_id, &mut pending, &record).expect("可以续接");
+        assert_eq!(chat.usage, None, "旧历史没有用量字段：不沿用上一个对话的");
     }
 
     #[test]

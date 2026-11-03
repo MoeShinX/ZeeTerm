@@ -445,6 +445,11 @@ impl AgentConversation for FakeConversation {
                         _ => {}
                     }
                 }
+                // `usage <已用>/<窗口>[/est] <正文>`：回复前先报一次上下文用量（`est` = 窗口是估计的），
+                // 明细按比例造；用来截标题栏「上下文」指示器的各种状态。
+                if let Some(usage) = fake_usage(&text, &model) {
+                    let _ = events.send(AgentEvent::Usage { usage });
+                }
                 // `think <秒>`：先沉默这么久（窗口里能看到「思考中」）。`retry <秒>`：先报一次重试，再沉默这么久。
                 let quiet = |prefix: &str| {
                     text.strip_prefix(prefix)
@@ -503,9 +508,44 @@ impl AgentConversation for FakeConversation {
     }
 }
 
+/// 假对话的 `usage <已用>/<窗口>[/est] ...` 消息 → 一条用量事件；别的消息返回 `None`。
+fn fake_usage(text: &str, model: &str) -> Option<zssh_core::ai::agent::usage::ContextUsage> {
+    let spec = text.strip_prefix("usage ")?.split_whitespace().next()?;
+    let mut parts = spec.split('/');
+    let used: u64 = parts.next()?.parse().ok()?;
+    let window: u64 = parts.next()?.parse().ok()?;
+    let estimated = parts.next() == Some("est");
+    let input = used / 50;
+    let cache_read = used * 9 / 10;
+    Some(zssh_core::ai::agent::usage::ContextUsage {
+        used,
+        window: Some(window),
+        window_estimated: estimated,
+        input: Some(input),
+        output: Some(800),
+        cache_read: Some(cache_read),
+        cache_write: Some(used.saturating_sub(input + cache_read)),
+        model: Some(model.to_owned()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fake_usage_messages_become_usage_events() {
+        let usage = fake_usage("usage 12000/200000/est 你好", "opus/high").expect("有用量");
+        assert_eq!(
+            (usage.used, usage.window, usage.window_estimated),
+            (12_000, Some(200_000), true)
+        );
+        assert_eq!(usage.cache_read, Some(10_800));
+        assert_eq!(usage.model.as_deref(), Some("opus/high"));
+        assert!(fake_usage("usage 5/10 hi", "m").is_some_and(|u| !u.window_estimated));
+        assert_eq!(fake_usage("hello", "m"), None);
+        assert_eq!(fake_usage("usage abc/10", "m"), None);
+    }
 
     fn doc() -> Doc {
         serde_json::from_str(

@@ -64,7 +64,7 @@ const CLAUDE_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// 工具桥的执行位置回报（`ExecTargetReport`）按 scope 分路送到各自对话的窗口。
 ///
-/// 桥只有一个、宿主只有一个，但对话有很多（每个终端标签一个）：回报带着 scope id，按
+/// 桥只有一个、宿主只有一个，但对话可能有好几个（每个窗口一个，独立的 AI 窗口也各有自己的）：回报带着 scope id，按
 /// [`Self::attach`] 登记的出口送；对话结束（[`Self::detach`]）之后迟到的回报直接丢掉，
 /// 不会落进别的对话，也不会落进同一个标签后来开的新对话。
 #[derive(Default)]
@@ -661,7 +661,7 @@ impl Drop for PendingGuard {
 
 /// 工具桥的审批实现：请求走 `std::sync::mpsc` 给窗口，答案走 oneshot 回来。
 ///
-/// 一个桥服务多个对话（每个标签一个对话，三种智能体共用同一个桥，和 Tauri 版一致）：请求带着
+/// 一个桥服务多个对话（每个窗口一个对话，三种智能体共用同一个桥，和 Tauri 版一致）：请求带着
 /// 自己的 scope id，按 [`Self::attach_scope`] 登记的出口送到对应对话的窗口；没有登记的 scope
 /// 走默认出口（单对话的桥、测试），再没有就按拒绝处理。
 pub struct NativeApprover {
@@ -1290,7 +1290,7 @@ impl SharedRuntime {
 }
 
 /// 全进程共用的智能体宿主：**一个**工具桥（一个监听端口、一个连接令牌）、一个按 scope 分路的审批，
-/// 加 opencode / codex 各一个懒启动的共用进程。每个对话（每个终端标签一个）在桥上有自己的 scope
+/// 加 opencode / codex 各一个懒启动的共用进程。每个对话（每个窗口一个）在桥上有自己的 scope
 /// 和能力密钥，确认请求只送到自己的窗口。
 ///
 /// 对应 Tauri 版的 `ToolBridge` + `AgentRegistry`：opencode / codex 的 MCP 配置在进程启动时

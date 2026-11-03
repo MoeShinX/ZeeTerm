@@ -829,6 +829,11 @@ impl MainWindow {
             let close = cx.entity();
             // 刚打开面板、对话实体还没建：下一个节拍会补上，这半秒里先把壳子（宽度）留着，布局不跳。
             let chat = self.docks.ai.clone();
+            // 标题栏右侧（关闭按钮左边）：上下文用量指示器（V2-U15）。
+            let actions: Vec<AnyElement> = chat
+                .as_ref()
+                .map(|chat| vec![chat.read(cx).usage_meter(chat.clone(), tokens)])
+                .unwrap_or_default();
             let body = match chat {
                 Some(chat) => chat.into_any_element(),
                 None => div().into_any_element(),
@@ -838,7 +843,7 @@ impl MainWindow {
                 layout.ai_width,
                 "AI 助手".into(),
                 None,
-                Vec::new(),
+                actions,
                 body,
                 move |window, cx| {
                     close.update(cx, |this, cx| this.toggle_ai_panel(window, cx));

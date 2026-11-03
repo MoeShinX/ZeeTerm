@@ -23,3 +23,7 @@ codex app-server generate-json-schema --out crates/zssh-core/src/ai/agent/fixtur
 驱动支持的最低 codex 版本是 **0.144.0**（依据：
 0.144.0 的导出 schema 覆盖我们用到的全部方法与字段，且 `--disable` / `features list` /
 `mcp list --json` / `app-server --stdio` 都在该版本上实测可用）。
+- `token_usage_updated.json`：`thread/tokenUsage/updated` 通知的样本（V2-U15，上下文用量）。**不是录制的**：
+  `codex_turn_events.json` 那次录制里没有这条通知，所以这份是照导出的 schema
+  （`ThreadTokenUsageUpdatedNotification`）手写的，数字是随手写的占位；`codex::protocol` 的 schema 单测核对
+  方法名在 `ServerNotification` 里、样本和解析用到的字段名都在 schema 的属性里。

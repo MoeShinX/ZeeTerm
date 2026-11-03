@@ -21,6 +21,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::agent::usage::ContextUsage;
+
 /// 每种智能体最多保留的会话数。
 pub const MAX_SESSIONS_PER_AGENT: usize = 50;
 /// 单个会话文件的上限。
@@ -111,6 +113,9 @@ pub struct HistoryRecord {
     /// 对话锚定的主机；旧文件没有这个字段，按"没有锚定"处理。
     #[serde(default)]
     pub anchor: Option<HistoryAnchor>,
+    /// 这个对话最后一次的上下文用量（V2-U15）；旧文件没有，切到这条历史时指示器显示「—」。
+    #[serde(default)]
+    pub usage: Option<ContextUsage>,
     /// 智能体自己的会话标识（opencode 的 session id、codex 的 thread id、Claude Code
     /// 的 session id），续接用；没有就只能回看。
     #[serde(default)]
@@ -142,6 +147,8 @@ pub struct HistoryDraft {
     pub host_label: Option<String>,
     #[serde(default)]
     pub anchor: Option<HistoryAnchor>,
+    #[serde(default)]
+    pub usage: Option<ContextUsage>,
     #[serde(default)]
     pub messages: Vec<HistoryMessage>,
 }
@@ -248,6 +255,7 @@ impl HistoryStore {
                 .map(|h| h.trim().chars().take(HOST_LABEL_CHARS).collect::<String>())
                 .filter(|h| !h.is_empty()),
             anchor: draft.anchor.and_then(HistoryAnchor::cleaned),
+            usage: draft.usage,
             agent_session_id: agent_session_id
                 .filter(|s| !s.trim().is_empty())
                 .or_else(|| previous.and_then(|p| p.agent_session_id)),
@@ -624,6 +632,7 @@ mod tests {
             id: id.to_string(),
             host_label: Some("web-1".to_string()),
             anchor: None,
+            usage: None,
             messages,
         }
     }
@@ -1052,6 +1061,36 @@ mod tests {
         let listed = store.list("claude").unwrap();
         let old_row = listed.iter().find(|row| row.id == "old1").unwrap();
         assert_eq!(old_row.anchor, None);
+    }
+
+    #[test]
+    fn usage_round_trips_and_old_files_without_it_still_load() {
+        let (dir, store) = store();
+        let usage = ContextUsage {
+            used: 4_511,
+            window: Some(200_000),
+            window_estimated: true,
+            input: Some(2),
+            output: Some(5),
+            cache_read: Some(3_719),
+            cache_write: Some(790),
+            model: Some("claude-opus-5-5".into()),
+        };
+        let mut d = draft("u1", vec![user("看看磁盘"), assistant("好的")]);
+        d.usage = Some(usage.clone());
+        store.save("claude", d, None, &[], 1000).unwrap();
+        assert_eq!(store.load("claude", "u1").unwrap().usage, Some(usage));
+        // 没有用量的对话：存成没有。
+        store
+            .save("claude", draft("u2", vec![user("x")]), None, &[], 2000)
+            .unwrap();
+        assert_eq!(store.load("claude", "u2").unwrap().usage, None);
+        // 旧文件：没有 usage 字段，照常读；用量里缺的可选项也能读（向后兼容）。
+        let old = r#"{"version":1,"id":"old2","agent":"claude","title":"旧的","created_at":5,
+            "updated_at":6,"messages":[{"kind":"user","text":"旧的"}],"usage":{"used":9}}"#;
+        std::fs::write(dir.join("ai-history").join("claude").join("old2.json"), old).unwrap();
+        let loaded = store.load("claude", "old2").unwrap().usage.unwrap();
+        assert_eq!((loaded.used, loaded.window, loaded.model), (9, None, None));
     }
 
     #[test]

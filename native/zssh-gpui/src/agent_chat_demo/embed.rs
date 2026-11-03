@@ -25,9 +25,11 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use zssh_core::ai::agent::AgentModelCatalog;
+use zssh_core::ai::agent::usage::UsageLevel;
 use zssh_core::ai::bridge::ExecMode;
 
 use super::composer::{self, ActionKind, ComposerItem, EffortStyle, ModeTone};
+use super::usage_view::{self, MeterView};
 use super::{
     AgentChatDemo, ApprovalDetail, ApprovalState, ChatMessage, HistoryPanel, HostChoice,
     NO_HOST_HINT, ToolCard, ToolStatus, card_detail_lines, card_status_text, mode_label,
@@ -62,6 +64,8 @@ pub(super) struct Embed {
     pins: Vec<Pin>,
     /// 这次发送没能锚定时（Telnet / 串口 / 快速连接没连上）要告诉用户的话；发送流程清掉旧提示之后再显示。
     pending_notice: Option<String>,
+    /// 标题栏的「上下文」下拉开着没有（明细卡片）。
+    usage_open: bool,
     /// 点了「@ 主机」按钮：打开主机列表（输入框里打 `@词` 也会出这个列表）。
     picker_open: bool,
     picker: ModelPicker,
@@ -82,6 +86,7 @@ impl Embed {
             binding: Binding::Unlocked,
             pins: Vec::new(),
             pending_notice: None,
+            usage_open: false,
             picker_open: false,
             picker: ModelPicker::default(),
             selection: String::new(),
@@ -328,6 +333,120 @@ impl AgentChatDemo {
             embed.pins = anchor::unpin(&embed.pins, host_id);
         }
         self.recompute_targets();
+        cx.notify();
+    }
+
+    // ---- 上下文用量（V2-U15） ----
+
+    /// 面板标题栏右侧的「上下文 ▬ 12% ∨」：主窗口画标题栏时放进去，点一下开 / 关明细卡片。
+    /// 没有用量数据时写「上下文 —」，不能点开。
+    pub fn usage_meter(&self, entity: Entity<Self>, tokens: &Tokens) -> AnyElement {
+        let view = usage_view::meter(self.chat.usage.as_ref());
+        let open = self.embed.as_ref().is_some_and(|embed| embed.usage_open);
+        let (muted, text, hover) = (tokens.text_muted, tokens.text, tokens.hover);
+        let fill = |level: UsageLevel| match level {
+            UsageLevel::Normal => tokens.accent,
+            UsageLevel::Warning => tokens.dot_connecting,
+            UsageLevel::Danger => tokens.danger,
+        };
+        let caret = || Icon::new(IconName::ChevronDown).size_3();
+        let base = h_flex()
+            .id("ai-usage-meter")
+            .flex_none()
+            .items_center()
+            .gap_1p5()
+            .px_1p5()
+            .py_0p5()
+            .rounded_md()
+            .text_xs()
+            .text_color(muted)
+            .when(open, |d| d.bg(hover))
+            .child("上下文");
+        let clickable = view != MeterView::Empty;
+        let body = match view {
+            MeterView::Empty => base.child("—"),
+            MeterView::Tokens { text: tokens_text } => base
+                .child(
+                    div()
+                        .text_color(text)
+                        .child(SharedString::from(tokens_text)),
+                )
+                .child(caret()),
+            MeterView::Bar {
+                fraction,
+                percent_text,
+                level,
+            } => base
+                .child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .w(px(44.0))
+                        .h(px(4.0))
+                        .rounded_full()
+                        .bg(muted.opacity(0.3))
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .h_full()
+                                .w(::gpui::relative(fraction.max(0.03)))
+                                .rounded_full()
+                                .bg(fill(level)),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_color(text)
+                        .child(SharedString::from(percent_text)),
+                )
+                .child(caret()),
+        };
+        body.when(clickable, |d| {
+            d.cursor_pointer()
+                .hover(move |style| style.bg(hover).text_color(text))
+                .tooltip(|window, cx| {
+                    Tooltip::new("最近一轮的上下文用量（已用 / 模型上下文窗口）").build(window, cx)
+                })
+                .on_click(move |_, _window, cx| {
+                    entity.update(cx, |this, cx| {
+                        if let Some(embed) = this.embed.as_mut() {
+                            embed.usage_open = !embed.usage_open;
+                        }
+                        cx.notify();
+                    });
+                })
+        })
+        .into_any_element()
+    }
+
+    /// 标题栏指示器上现在写的字（脚本断言用）：`上下文 —` / `上下文 12.3k` / `上下文 3%`。
+    pub fn usage_text(&self) -> String {
+        match usage_view::meter(self.chat.usage.as_ref()) {
+            MeterView::Empty => "上下文 —".to_owned(),
+            MeterView::Tokens { text } => format!("上下文 {text}"),
+            MeterView::Bar { percent_text, .. } => format!("上下文 {percent_text}"),
+        }
+    }
+
+    /// 指示器的颜色档（脚本断言用）：`normal` / `warning` / `danger`，没有数据是 `none`。
+    pub fn usage_level_name(&self) -> &'static str {
+        match self.chat.usage.as_ref() {
+            None => "none",
+            Some(usage) => match usage.level() {
+                UsageLevel::Normal => "normal",
+                UsageLevel::Warning => "warning",
+                UsageLevel::Danger => "danger",
+            },
+        }
+    }
+
+    /// 开 / 关明细卡片（脚本用，和点指示器同一个方法）。
+    pub fn set_usage_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if let Some(embed) = self.embed.as_mut() {
+            embed.usage_open = open;
+        }
         cx.notify();
     }
 
@@ -1768,8 +1887,72 @@ impl AgentChatDemo {
                 })
         });
 
+        // 「上下文」明细卡片：点标题栏的指示器打开，点卡片外面关上。只展示，没有任何操作。
+        let usage_card = embed
+            .filter(|e| e.usage_open)
+            .and(self.chat.usage.as_ref())
+            .map(|usage| {
+                let fallback =
+                    (model_label.as_ref() != "默认模型").then(|| model_label.to_string());
+                let lines = usage_view::detail_lines(usage, fallback.as_deref());
+                let close = entity.clone();
+                let mut card = v_flex()
+                    .id("ai-usage-card")
+                    .absolute()
+                    .top(px(6.0))
+                    .right(px(8.0))
+                    .w(px(272.0))
+                    .max_w_full()
+                    .p_3()
+                    .gap_1p5()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(tokens.border)
+                    .bg(tokens.surface)
+                    .shadow_md()
+                    .occlude()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("上下文用量"),
+                    );
+                for (index, (name, value)) in lines.into_iter().enumerate() {
+                    // 「已用 / 窗口」是总览，下面几行是本轮的明细：中间留一条小标题。
+                    if index == 1 {
+                        card = card.child(div().pt_1().text_xs().text_color(muted).child("本轮"));
+                    }
+                    let stacked = name == "已用 / 窗口" || name == "模型";
+                    card = card.child(if stacked {
+                        v_flex()
+                            .gap_0p5()
+                            .text_xs()
+                            .child(div().text_color(muted).child(name))
+                            .child(div().text_color(text).child(SharedString::from(value)))
+                            .into_any_element()
+                    } else {
+                        h_flex()
+                            .justify_between()
+                            .gap_2()
+                            .text_xs()
+                            .child(div().text_color(muted).child(name))
+                            .child(div().text_color(text).child(SharedString::from(value)))
+                            .into_any_element()
+                    });
+                }
+                div()
+                    .id("ai-usage-layer")
+                    .absolute()
+                    .size_full()
+                    .on_mouse_down(MouseButton::Left, move |_, _window, cx| {
+                        close.update(cx, |this, cx| this.set_usage_open(false, cx));
+                    })
+                    .child(card)
+            });
+
         v_flex()
             .id("ai-panel-body")
+            .relative()
             .size_full()
             .min_h_0()
             .track_focus(&self.focus)
@@ -1798,6 +1981,7 @@ impl AgentChatDemo {
             .children(mention_list)
             .child(input_row)
             .children(footer)
+            .children(usage_card)
             .into_any_element()
     }
 }

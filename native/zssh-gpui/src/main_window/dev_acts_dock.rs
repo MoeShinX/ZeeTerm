@@ -433,6 +433,7 @@ const DOCK_KNOWN: &[&str] = &[
     "ai_clear",
     "ai_rebind",
     "ai_reopen",
+    "ai_usage",
     "sftp_open_tab",
     "sftp_undock",
     "sftp_close_tab",
@@ -614,6 +615,20 @@ pub(super) fn run_dock(
                         ));
                     }
                 }
+                // usage:<文字>：标题栏「上下文」指示器上的字，如 `上下文 3%` / `上下文 —`。
+                "usage" => {
+                    let have = chat.read_with(cx, |chat, _| chat.usage_text());
+                    if have != b {
+                        return fail(format!("上下文指示器是「{have}」，和预期不同"));
+                    }
+                }
+                // usage_level:<none|normal|warning|danger>：进度条的颜色档。
+                "usage_level" => {
+                    let have = chat.read_with(cx, |chat, _| chat.usage_level_name());
+                    if have != b {
+                        return fail(format!("上下文进度条颜色档是 {have}，不是 {b}"));
+                    }
+                }
                 // chips:<文字|文字>：目标栏每个标签的文字，按顺序（空 = 没有目标）。
                 "chips" => {
                     let have = chat.read_with(cx, |chat, _| chat.target_chip_texts());
@@ -660,6 +675,16 @@ pub(super) fn run_dock(
         "ai_rebind" => {
             let chat = active_ai(this, cx).ok_or("AI 面板还没打开过")?;
             chat.update(cx, |chat, cx| chat.rebind_to_current(cx));
+        }
+        // ai_usage:open|close：开 / 关标题栏「上下文」的明细卡片。
+        "ai_usage" => {
+            let chat = active_ai(this, cx).ok_or("AI 面板还没打开过")?;
+            let open = match a {
+                "open" => true,
+                "close" => false,
+                _ => return fail("ai_usage 只能是 open / close"),
+            };
+            chat.update(cx, |chat, cx| chat.set_usage_open(open, cx));
         }
         // 点「重新连接 <主机>」。
         "ai_reopen" => {

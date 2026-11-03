@@ -1,0 +1,23 @@
+{
+  "threadId": "00000000-0000-4000-8000-000000000001",
+  "turnId": "00000000-0000-4000-8000-000000000002",
+  "tokenUsage": {
+    "last": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 20000,
+      "inputTokens": 22000,
+      "outputTokens": 1000,
+      "reasoningOutputTokens": 300,
+      "totalTokens": 23000
+    },
+    "modelContextWindow": 258400,
+    "total": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 41000,
+      "inputTokens": 45000,
+      "outputTokens": 2100,
+      "reasoningOutputTokens": 600,
+      "totalTokens": 47100
+    }
+  }
+}
