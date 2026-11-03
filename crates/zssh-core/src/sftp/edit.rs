@@ -7,8 +7,10 @@
 //! 生产实现是 [`SftpChannel`]，测试用内存里的假远端。Tauri 层（`commands/sftp_edit.rs`）负责
 //! 恢复目录、事件和关闭时的清理；内置编辑器（`commands/sftp_edit/editor.rs`）负责文本编码和草稿。
 //!
-//! 冲突判定沿用设计文档说的办法：打开时记下远端的大小和修改时间，上传前再看一次，
-//! 不一样（或者文件没了）就**不上传**，交给用户选 覆盖 / 放弃 / 另存为。
+//! 冲突判定：打开时记下远端的大小、修改时间和**内容的 SHA-256**，上传前再看一次，
+//! 大小或时间不一样（或者文件没了）就**不上传**，交给用户选 覆盖 / 放弃 / 另存为。
+//! 大小和时间都一样时还要把远端内容读回来比哈希：mtime 只有秒级精度（有的服务器
+//! 干脆不给），别人在同一秒里写进同样长度的内容，只看属性是发现不了的。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -428,6 +430,9 @@ pub struct EditSession {
     pub remote_path: String,
     pub local_path: PathBuf,
     base: RemoteSnapshot,
+    /// 基线对应的远端内容的 SHA-256：打开时读到的内容、或最近一次成功保存 / 放弃 /
+    /// 另存为之后远端的内容。上传前用它核对远端内容没被别人改过。
+    base_sha256: String,
     /// 远端变了、等用户决定。
     conflicted: bool,
     /// 上一次上传失败了、等重试。
@@ -440,11 +445,19 @@ pub struct EditSession {
 }
 
 impl EditSession {
-    pub fn new(remote_path: String, local_path: PathBuf, base: RemoteSnapshot) -> Self {
+    /// `base_sha256` 是打开时读到的远端内容的摘要（[`recovery::sha256_hex`]）。传一个
+    /// 对不上的值只会让第一次保存被当成冲突，不会覆盖掉别人的修改。
+    pub fn new(
+        remote_path: String,
+        local_path: PathBuf,
+        base: RemoteSnapshot,
+        base_sha256: impl Into<String>,
+    ) -> Self {
         Self {
             remote_path,
             local_path,
             base,
+            base_sha256: base_sha256.into(),
             conflicted: false,
             failed: false,
             synced_sha256: None,
@@ -480,22 +493,54 @@ impl EditSession {
                 return EditOutcome::Failed(format!("读不了本地临时文件：{err}"));
             }
         };
-        match backend.stat(&self.remote_path).await {
-            Ok((now, _)) if now == self.base => {}
+        if let Some(outcome) = self.check_remote_unchanged(backend).await {
+            return outcome;
+        }
+        self.upload(backend, &data, OwnerMode::Require).await
+    }
+
+    /// 上传前核对远端没变：属性和基线一致，且内容的哈希也和基线一致。
+    /// 返回 `None` = 没变，可以上传；`Some` = 不能传（冲突或出错，状态已记好）。
+    ///
+    /// 属性不一样直接算冲突，不用多读一遍内容；属性一样才读回内容比哈希（`mtime` 是
+    /// `None` 时属性本来就几乎没有区分度，同样走这条）。读回失败不能当成“没变”：
+    /// 超过编辑器上限 / 文件没了按冲突，其他错误按失败，都不上传。
+    async fn check_remote_unchanged<B: EditBackend + ?Sized>(
+        &mut self,
+        backend: &B,
+    ) -> Option<EditOutcome> {
+        let now = match backend.stat(&self.remote_path).await {
+            Ok((now, _)) if now == self.base => now,
             Ok((now, _)) => {
                 self.conflicted = true;
-                return EditOutcome::Conflict { remote: Some(now) };
+                return Some(EditOutcome::Conflict { remote: Some(now) });
             }
             Err(SftpError::NotFound { .. }) => {
                 self.conflicted = true;
-                return EditOutcome::Conflict { remote: None };
+                return Some(EditOutcome::Conflict { remote: None });
             }
             Err(err) => {
                 self.failed = true;
-                return EditOutcome::Failed(err.to_string());
+                return Some(EditOutcome::Failed(err.to_string()));
+            }
+        };
+        match backend.read_all(&self.remote_path, MAX_EDIT_BYTES).await {
+            Ok(current) if recovery::sha256_hex(&current) == self.base_sha256 => None,
+            Ok(_) | Err(SftpError::TooLarge { .. }) => {
+                self.conflicted = true;
+                Some(EditOutcome::Conflict { remote: Some(now) })
+            }
+            Err(SftpError::NotFound { .. }) => {
+                self.conflicted = true;
+                Some(EditOutcome::Conflict { remote: None })
+            }
+            Err(err) => {
+                self.failed = true;
+                Some(EditOutcome::Failed(format!(
+                    "读不回远端当前内容，没有保存（避免覆盖别人的修改）：{err}"
+                )))
             }
         }
-        self.upload(backend, &data, OwnerMode::Require).await
     }
 
     async fn upload<B: EditBackend + ?Sized>(
@@ -528,7 +573,9 @@ impl EditSession {
         }
         self.conflicted = false;
         self.failed = false;
-        self.synced_sha256 = Some(recovery::sha256_hex(data));
+        let sha = recovery::sha256_hex(data);
+        self.base_sha256.clone_from(&sha);
+        self.synced_sha256 = Some(sha);
         EditOutcome::Uploaded {
             size: data.len() as u64,
         }
@@ -550,17 +597,8 @@ impl EditSession {
             }
             Resolution::KeepNewOwner | Resolution::InPlace => {
                 // 用户看到"属主会改变"以后做的选择。这期间远端可能又被改了：先对一遍。
-                match backend.stat(&self.remote_path).await {
-                    Ok((now, _)) if now == self.base => {}
-                    Ok((now, _)) => {
-                        self.conflicted = true;
-                        return EditOutcome::Conflict { remote: Some(now) };
-                    }
-                    Err(SftpError::NotFound { .. }) => {
-                        self.conflicted = true;
-                        return EditOutcome::Conflict { remote: None };
-                    }
-                    Err(err) => return EditOutcome::Failed(err.to_string()),
+                if let Some(outcome) = self.check_remote_unchanged(backend).await {
+                    return outcome;
                 }
                 let data = match tokio::fs::read(&self.local_path).await {
                     Ok(data) => data,
@@ -595,7 +633,9 @@ impl EditSession {
                 }
                 self.conflicted = false;
                 self.failed = false;
-                self.synced_sha256 = Some(recovery::sha256_hex(&data));
+                let sha = recovery::sha256_hex(&data);
+                self.base_sha256.clone_from(&sha);
+                self.synced_sha256 = Some(sha);
                 EditOutcome::Discarded
             }
             Resolution::SaveAs(name) => {
@@ -619,7 +659,9 @@ impl EditSession {
                         self.base = after;
                         self.conflicted = false;
                         self.failed = false;
-                        self.synced_sha256 = Some(recovery::sha256_hex(&data));
+                        let sha = recovery::sha256_hex(&data);
+                        self.base_sha256.clone_from(&sha);
+                        self.synced_sha256 = Some(sha);
                         EditOutcome::Uploaded {
                             size: data.len() as u64,
                         }
