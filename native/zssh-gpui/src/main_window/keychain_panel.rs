@@ -430,7 +430,7 @@ impl MainWindow {
                 .gap_2()
                 .items_center()
                 .px_3()
-                .py_2()
+                .py_3()
                 .rounded_md()
                 .border_1()
                 .border_color(if selected {
@@ -482,7 +482,7 @@ impl MainWindow {
         });
         let list = v_flex()
             .w_full()
-            .gap_1()
+            .gap_2()
             .when(count == 0 && !ui.editing(), |d| {
                 d.child(empty_state(
                     "暂无凭据",

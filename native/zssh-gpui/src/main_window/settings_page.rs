@@ -54,6 +54,7 @@ fn page_header(
     div().w_full().flex_none().child(
         h_flex()
             .w_full()
+            .flex_wrap()
             .max_w(px(max_width))
             .mx_auto()
             .px_6()
@@ -86,12 +87,12 @@ fn page_header(
     )
 }
 
-/// 设置页里的一块：限宽居中，上下留白（0.2.14 的 `max-w-3xl` + `space-y-4`）。
+/// 设置页里的一块：与管理页保持相同阅读宽度和对齐方式。
 fn settings_block(content: impl IntoElement, first: bool) -> impl IntoElement {
     div()
         .w_full()
         .flex_none()
-        .max_w(px(768.0))
+        .max_w(px(MANAGE_WIDTH))
         .mx_auto()
         .px_6()
         .pb_6()
@@ -529,7 +530,7 @@ impl MainWindow {
                 SettingsSection::Sync => {
                     vec![sync.into_any_element(), backup.into_any_element()]
                 }
-                SettingsSection::Shortcuts => vec![shortcuts_card(tokens)],
+                SettingsSection::Shortcuts => shortcuts_cards(tokens),
                 SettingsSection::About => vec![about.into_any_element()],
                 _ => Vec::new(),
             };
@@ -539,7 +540,7 @@ impl MainWindow {
                     section.label(),
                     None,
                     Vec::new(),
-                    768.0,
+                    MANAGE_WIDTH,
                     tokens,
                 ))
                 .child(
@@ -817,9 +818,8 @@ impl MainWindow {
                 .px_2()
                 .py(px(7.0))
                 .rounded_md()
-                .bg(tokens.subtle)
                 .typo(Role::Nav, tokens)
-                .text_color(text)
+                .text_color(muted)
                 .cursor_pointer()
                 .hover(move |style| style.bg(hover))
                 .tooltip(|window, cx| {
@@ -1498,57 +1498,87 @@ fn system_proxy_text(proxy: &SystemProxy) -> String {
     }
 }
 
-/// 快捷键：只读说明表（0.2.14 也不支持自定义）。
-fn shortcuts_card(tokens: &Tokens) -> ::gpui::AnyElement {
-    let rows: Vec<::gpui::AnyElement> = SHORTCUTS
+/// 按用途展示原有只读快捷键，索引仍指向唯一的数据清单。
+const SHORTCUT_GROUPS: &[(&str, &[usize])] = &[
+    ("标签与窗口", &[0, 1, 4, 5, 14]),
+    ("终端与分屏", &[2, 3, 6, 7, 10]),
+    ("终端显示与操作", &[11, 12, 13]),
+    ("面板", &[8, 9]),
+];
+
+fn shortcuts_cards(tokens: &Tokens) -> Vec<::gpui::AnyElement> {
+    SHORTCUT_GROUPS
         .iter()
         .enumerate()
-        .map(|(index, shortcut)| {
-            h_flex()
-                .id(("shortcut-row", index))
-                .w_full()
-                .min_h(px(28.0))
-                .gap_6()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_sm()
-                        .text_color(tokens.text)
-                        .child(shortcut.what),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .px_2()
-                        .py_0p5()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(tokens.border)
-                        .bg(tokens.subtle)
-                        .text_xs()
-                        .font_family("Cascadia Mono")
-                        .text_color(tokens.text)
-                        .child(shortcut.keys),
-                )
-                .into_any_element()
+        .map(|(group_index, (title, indices))| {
+            let rows = indices
+                .iter()
+                .map(|&index| {
+                    let shortcut = &SHORTCUTS[index];
+                    h_flex()
+                        .id(("shortcut-row", index))
+                        .w_full()
+                        .min_h(px(28.0))
+                        .flex_wrap()
+                        .gap_3()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(140.0))
+                                .typo(Role::Body, tokens)
+                                .child(shortcut.what),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .px_2()
+                                .py_0p5()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(tokens.border)
+                                .bg(tokens.background)
+                                .text_xs()
+                                .font_family("Cascadia Mono")
+                                .text_color(tokens.text)
+                                .child(shortcut.keys),
+                        )
+                        .into_any_element()
+                })
+                .collect();
+            let id = match group_index {
+                0 => "settings-shortcuts",
+                1 => "settings-shortcuts-terminal",
+                2 => "settings-shortcuts-editing",
+                _ => "settings-shortcuts-panels",
+            };
+            card(
+                id,
+                title,
+                (group_index == 0).then_some("当前快捷键不可自定义。"),
+                tokens,
+                rows,
+            )
         })
-        .collect();
-    card(
-        "settings-shortcuts",
-        "按键一览",
-        Some("暂不支持自定义。"),
-        tokens,
-        rows,
-    )
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{SystemProxy, app_prefs, system_proxy_text};
+    use super::{SHORTCUT_GROUPS, SystemProxy, app_prefs, system_proxy_text};
+    use crate::settings_nav::SHORTCUTS;
+
+    #[test]
+    fn shortcut_groups_include_each_existing_shortcut_once() {
+        let mut indices: Vec<usize> = SHORTCUT_GROUPS
+            .iter()
+            .flat_map(|(_, items)| items.iter().copied())
+            .collect();
+        indices.sort_unstable();
+        assert_eq!(indices, (0..SHORTCUTS.len()).collect::<Vec<_>>());
+    }
 
     #[test]
     fn system_proxy_text_matches_0_2_14() {

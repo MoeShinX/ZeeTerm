@@ -2,7 +2,7 @@
 //! `text_sm().font_weight(..)`（V2-U4）。
 //!
 //! 层级靠三样东西拉开：字重（标题 Bold / Semibold，名称 Medium，说明 Regular）、颜色（主 / 次 / 淡三级，
-//! 取值见 `app_theme::ink_for`）、字号（22 / 15 / 14 / 12）。终端、代码、地址这些等宽字体不在这里管。
+//! 取值见 `app_theme::ink_for`）、字号（24 / 15 / 14 / 12）。终端、代码、地址这些等宽字体不在这里管。
 //!
 //! 用法：`div().typo(Role::ItemName, &tokens).child("名称")`。
 
@@ -72,9 +72,9 @@ impl Role {
     /// 这个角色的排版取值。改这里就是改整个界面的字号字重。
     pub const fn spec(self) -> Spec {
         let (size, weight, tone, leading) = match self {
-            Role::PageTitle => (22.0, FontWeight::BOLD, Tone::Primary, 1.3),
+            Role::PageTitle => (24.0, FontWeight::BOLD, Tone::Primary, 1.3),
             Role::GroupTitle => (15.0, FontWeight::SEMIBOLD, Tone::Primary, 1.4),
-            Role::ItemName => (14.0, FontWeight::SEMIBOLD, Tone::Primary, 1.45),
+            Role::ItemName => (14.0, FontWeight::MEDIUM, Tone::Primary, 1.45),
             Role::FieldLabel => (13.0, FontWeight::MEDIUM, Tone::Primary, 1.45),
             Role::Caption => (12.0, FontWeight::NORMAL, Tone::Secondary, 1.5),
             Role::Body => (14.0, FontWeight::NORMAL, Tone::Primary, 1.5),
@@ -143,12 +143,12 @@ mod tests {
     #[test]
     fn the_scale_is_what_the_card_asked_for() {
         let spec = |role: Role| role.spec();
-        assert_eq!(spec(Role::PageTitle).size, 22.0);
+        assert_eq!(spec(Role::PageTitle).size, 24.0);
         assert_eq!(spec(Role::PageTitle).weight, FontWeight::BOLD);
         assert_eq!(spec(Role::GroupTitle).size, 15.0);
         assert_eq!(spec(Role::GroupTitle).weight, FontWeight::SEMIBOLD);
         assert_eq!(spec(Role::ItemName).size, 14.0);
-        assert_eq!(spec(Role::ItemName).weight, FontWeight::SEMIBOLD);
+        assert_eq!(spec(Role::ItemName).weight, FontWeight::MEDIUM);
         assert_eq!(spec(Role::Caption).size, 12.0);
         assert_eq!(spec(Role::Caption).weight, FontWeight::NORMAL);
         assert_eq!(spec(Role::Nav).size, 14.0);

@@ -87,15 +87,16 @@ pub(crate) fn row_with(
 ) -> AnyElement {
     h_flex()
         .w_full()
+        .flex_wrap()
         .min_h(::gpui::px(28.0))
-        .gap_6()
+        .gap_3()
         .items_center()
         .justify_between()
         // 左边说明占剩下的宽度、写不下就换行；右边的控件不被它挤走。
         .child(
             v_flex()
                 .flex_1()
-                .min_w_0()
+                .min_w(::gpui::px(160.0))
                 .gap_0p5()
                 .child(div().typo(Role::ItemName, tokens).child(title))
                 .when_some(description, |d, text| {
