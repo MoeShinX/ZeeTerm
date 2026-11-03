@@ -20,6 +20,8 @@ pub struct DevFake {
     /// 下一次采集要拿到的：`Ok(脚本输出)` 或一个失败原因。
     #[cfg(debug_assertions)]
     pub connections: Option<Result<String, ConnectionsError>>,
+    /// 进程管理（V2-U18）的假数据，见 `dev_acts_u18`。
+    pub procs: super::dev_acts_u18::FakeProcs,
 }
 
 #[cfg(debug_assertions)]

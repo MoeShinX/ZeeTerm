@@ -2,14 +2,17 @@
 //!
 //! 数据就是状态栏那条采集（和状态窗口共用同一个轮询器，core 的 `StatsCollector`），不额外开连接、
 //! 不额外跑命令；面板关着不渲染。内容同 0.2.14：CPU / 内存 / 磁盘 / 负载四个圆环、网速曲线、
-//! 每个核心、系统信息、全部分区、网卡、占内存最多的进程。
+//! 每个核心、系统信息、全部分区、网卡、占 CPU / 内存最多的进程（可进「进程管理」）。
 
 use std::collections::VecDeque;
 
 use ::gpui::{MouseButton, PathBuilder, Pixels, canvas, point, px};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+
+use zssh_core::ssh::ProcMode;
 
 use super::MainWindow;
 use super::panel_width::{self, DragStart, PanelKind};
@@ -491,7 +494,36 @@ fn interfaces_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
         .into_any_element()
 }
 
-fn processes_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
+/// 「进程」一节：CPU / 内存两档，各取前 10（PID、命令、占比 + 细条形）。
+fn processes_section(summary: &StatusSummary, mode: ProcMode, tokens: &Tokens) -> AnyElement {
+    let stats = &summary.stats;
+    let (label, items): (&str, Vec<(String, String, f64)>) = match mode {
+        ProcMode::Mem => (
+            "内存",
+            stats
+                .top_processes
+                .iter()
+                .map(|p| (p.pid.clone(), p.command.clone(), p.mem_percent))
+                .collect(),
+        ),
+        ProcMode::Cpu => (
+            "CPU",
+            stats
+                .top_cpu_processes
+                .iter()
+                .map(|p| (p.pid.clone(), p.command.clone(), p.cpu_percent))
+                .collect(),
+        ),
+    };
+    if items.is_empty() {
+        return div()
+            .typo(Role::Caption, tokens)
+            .child(match mode {
+                ProcMode::Cpu => "这台服务器的 ps 不提供 CPU 占用排行",
+                ProcMode::Mem => "没有读到内存占用排行",
+            })
+            .into_any_element();
+    }
     let head = h_flex()
         .py_1()
         .gap_2()
@@ -499,18 +531,16 @@ fn processes_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
         .text_color(tokens.text_muted)
         .child(div().w(px(56.0)).child("PID"))
         .child(div().flex_1().child("命令"))
-        .child(div().w(px(64.0)).flex_none().text_right().child("内存"));
+        .child(div().w(px(64.0)).flex_none().text_right().child(label));
     v_flex()
         .child(head)
         .children(
-            summary
-                .stats
-                .top_processes
-                .iter()
+            items
+                .into_iter()
                 .enumerate()
-                .map(|(index, proc)| {
-                    let command = proc.command.clone();
-                    let fraction = (proc.mem_percent as f32 / 100.0).clamp(0.0, 1.0);
+                .map(|(index, (pid, command, percent))| {
+                    let tip = command.clone();
+                    let fraction = (percent as f32 / 100.0).clamp(0.0, 1.0);
                     h_flex()
                         .py_1()
                         .gap_2()
@@ -522,7 +552,7 @@ fn processes_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
                             div()
                                 .w(px(56.0))
                                 .text_color(tokens.text_muted)
-                                .child(::gpui::SharedString::from(proc.pid.clone())),
+                                .child(::gpui::SharedString::from(pid)),
                         )
                         .child(
                             div()
@@ -531,9 +561,9 @@ fn processes_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
                                 .min_w_0()
                                 .truncate()
                                 .tooltip(move |window, cx| {
-                                    Tooltip::new(command.clone()).build(window, cx)
+                                    Tooltip::new(tip.clone()).build(window, cx)
                                 })
-                                .child(::gpui::SharedString::from(proc.command.clone())),
+                                .child(::gpui::SharedString::from(command)),
                         )
                         .child(
                             div()
@@ -562,11 +592,70 @@ fn processes_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
                                         .items_center()
                                         .justify_end()
                                         .text_size(px(10.0))
-                                        .child(format!("{:.1}%", proc.mem_percent)),
+                                        .child(format!("{percent:.1}%")),
                                 ),
                         )
                 }),
         )
+        .into_any_element()
+}
+
+/// 「进程」一节标题右侧的小分段：CPU / 内存。
+fn proc_mode_switch(entity: &Entity<MainWindow>, mode: ProcMode, tokens: &Tokens) -> AnyElement {
+    let (accent, on_accent, hover) = (tokens.accent, tokens.on_accent, tokens.hover);
+    h_flex()
+        .flex_none()
+        .p_0p5()
+        .gap_0p5()
+        .rounded_md()
+        .border_1()
+        .border_color(tokens.border)
+        .bg(tokens.subtle)
+        .children(ProcMode::ALL.iter().enumerate().map(|(index, option)| {
+            let option = *option;
+            let entity = entity.clone();
+            let selected = option == mode;
+            div()
+                .id(("overview-proc-mode", index))
+                .px_1p5()
+                .rounded_sm()
+                .text_xs()
+                .cursor_pointer()
+                .when(selected, move |d| d.bg(accent).text_color(on_accent))
+                .when(!selected, move |d| d.hover(move |style| style.bg(hover)))
+                .child(option.label())
+                .on_click(move |_, _window, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.docks.overview_procs = option;
+                        cx.notify();
+                    });
+                })
+        }))
+        .into_any_element()
+}
+
+/// 「进程管理」小按钮（同「所有连接」）。
+fn process_manager_button(entity: Entity<MainWindow>, tokens: &Tokens) -> AnyElement {
+    let hover = tokens.hover;
+    div()
+        .id("overview-process-manager")
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .px_1p5()
+        .py_0p5()
+        .rounded_md()
+        .cursor_pointer()
+        .text_xs()
+        .text_color(tokens.accent)
+        .hover(move |style| style.bg(hover))
+        .tooltip(|window, cx| Tooltip::new("查看全部进程，可以结束进程").build(window, cx))
+        .child(Icon::new(Ico::ListChecks).size_3p5())
+        .child("进程管理")
+        .on_click(move |_, window, cx| {
+            entity.update(cx, |this, cx| this.open_processes_dialog(window, cx));
+        })
         .into_any_element()
 }
 
@@ -703,6 +792,7 @@ fn overview_body(
     history: &VecDeque<(f64, f64)>,
     scroll: &::gpui::ScrollHandle,
     layout: OverviewLayout,
+    proc_mode: ProcMode,
     entity: &Entity<MainWindow>,
     tokens: &Tokens,
 ) -> AnyElement {
@@ -765,12 +855,19 @@ fn overview_body(
         nics,
         tokens,
     ));
-    if !stats.top_processes.is_empty() {
+    if !stats.top_processes.is_empty() || !stats.top_cpu_processes.is_empty() {
         body = body.child(section(
-            "内存占用进程",
+            "进程",
             None,
-            None,
-            processes_section(s, tokens),
+            Some(
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .child(proc_mode_switch(entity, proc_mode, tokens))
+                    .child(process_manager_button(entity.clone(), tokens))
+                    .into_any_element(),
+            ),
+            processes_section(s, proc_mode, tokens),
             tokens,
         ));
     }
@@ -942,6 +1039,7 @@ impl MainWindow {
                 &self.docks.net,
                 &self.docks.overview_scroll,
                 layout,
+                self.docks.overview_procs,
                 &entity,
                 tokens,
             ),

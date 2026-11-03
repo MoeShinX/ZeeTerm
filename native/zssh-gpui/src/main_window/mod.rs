@@ -40,6 +40,7 @@ mod dev_acts_tcp;
 mod dev_acts_u1;
 mod dev_acts_u12;
 mod dev_acts_u13;
+mod dev_acts_u18;
 mod dev_acts_u2;
 mod dev_acts_u4;
 mod dev_acts_u6;
@@ -70,6 +71,7 @@ pub mod page_logic;
 mod pages;
 pub mod panel_width;
 mod privacy;
+mod processes_ui;
 mod protocol_caps;
 pub mod protocol_form;
 mod proxy_panel;
@@ -173,6 +175,9 @@ pub struct MainWindow {
     /// 「所有网络连接」对话框的搜索框，和给迟到结果对号的采集编号（V2-U12）。
     pub(super) conn_query: Entity<InputState>,
     pub(super) conn_generation: u64,
+    /// 「进程管理」对话框的搜索框和打开计数（V2-U18）。
+    pub(super) proc_query: Entity<InputState>,
+    pub(super) proc_generation: u64,
     /// 调试驱动喂的假数据（概览面板 / 连接列表），release 里是空结构。
     pub(super) dev_fake: dev_acts_u12::DevFake,
     /// 空白标签里选主机的光标位置。
@@ -267,6 +272,8 @@ impl MainWindow {
             cx.new(|cx| InputState::new(window, cx).placeholder("user@host 或 user@host:端口"));
         let conn_query =
             cx.new(|cx| InputState::new(window, cx).placeholder("按地址、端口、进程名搜索"));
+        let proc_query =
+            cx.new(|cx| InputState::new(window, cx).placeholder("按 PID、用户、命令搜索"));
         let saved_view = layout.view.as_deref().and_then(MainView::parse);
 
         let mut subs = Vec::new();
@@ -280,6 +287,7 @@ impl MainWindow {
             &manage_search,
             &quick_target,
             &conn_query,
+            &proc_query,
         ] {
             subs.push(cx.observe(input, |_this, _input, cx| cx.notify()));
         }
@@ -313,6 +321,15 @@ impl MainWindow {
             |this, _input, event: &InputEvent, _window, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.connections_refilter(cx);
+                }
+            },
+        ));
+        subs.push(cx.subscribe_in(
+            &proc_query,
+            window,
+            |this, _input, event: &InputEvent, _window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.processes_refilter(cx);
                 }
             },
         ));
@@ -397,6 +414,8 @@ impl MainWindow {
             quick_target,
             conn_query,
             conn_generation: 0,
+            proc_query,
+            proc_generation: 0,
             dev_fake: Default::default(),
             launcher_cursor: 0,
             agent_settings: None,
@@ -503,6 +522,7 @@ impl MainWindow {
         changed |= self.sync_status(cx);
         changed |= self.tokenway_tick(window, cx);
         self.connections_tick(window, cx);
+        self.processes_tick(window, cx);
         changed |= self.sync_sync_bar();
         changed |= self.sync_forwards(cx);
         changed |= self.x11_poll(window, cx);

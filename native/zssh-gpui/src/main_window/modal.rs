@@ -124,6 +124,8 @@ pub enum Modal {
     X11Needed(super::x11_ui::X11Prompt),
     /// 概览面板「网卡」一节的「所有连接」：只读的大对话框（V2-U12）；状态较大，装箱。
     Connections(Box<super::connections_ui::ConnectionsDialog>),
+    /// 概览面板「进程」一节的「进程管理」：进程列表 + 结束进程（带确认，V2-U18）；状态较大，装箱。
+    Processes(Box<super::processes_ui::ProcessesDialog>),
 }
 
 impl Modal {
@@ -133,6 +135,8 @@ impl Modal {
             Self::GenerateKey(dialog) => dialog.busy(),
             Self::InstallKey(dialog) => dialog.busy(),
             Self::Unsaved(ask) => ask.busy,
+            // 点了确认、结束进程的命令还在跑：等结果回来再关。
+            Self::Processes(dialog) => dialog.busy(),
             _ => false,
         }
     }
@@ -155,7 +159,11 @@ impl Modal {
     pub fn tall(&self) -> bool {
         matches!(
             self,
-            Self::QuickEdit(_) | Self::HostProps(_) | Self::AiEndpoint(_) | Self::Connections(_)
+            Self::QuickEdit(_)
+                | Self::HostProps(_)
+                | Self::AiEndpoint(_)
+                | Self::Connections(_)
+                | Self::Processes(_)
         )
     }
 
@@ -163,7 +171,10 @@ impl Modal {
     pub fn closes_on_scrim(&self) -> bool {
         // 连接列表是只读的，点遮罩可以关；填了半天的表单才不行。
         // 连接 Tokenway 的对话框里有进行中的授权，不能被一次误点取消。
-        (!self.tall() && !matches!(self, Self::Tokenway(_))) || matches!(self, Self::Connections(_))
+        (!self.tall() && !matches!(self, Self::Tokenway(_)))
+            || matches!(self, Self::Connections(_))
+            // 进程列表点遮罩可以关；确认框开着时不行（免得一次误点把正要确认的结束请求丢掉）。
+            || matches!(self, Self::Processes(dialog) if dialog.ask.is_none())
     }
 }
 
@@ -332,6 +343,14 @@ impl MainWindow {
             self.tokenway_close(window, cx);
             return;
         }
+        // 进程管理：确认框开着时，Esc / 关闭先收确认框（不结束任何进程），再按一次才关对话框。
+        if let Some(Modal::Processes(dialog)) = &mut self.modal
+            && dialog.ask.is_some()
+        {
+            dialog.ask = None;
+            cx.notify();
+            return;
+        }
         // 主机属性：先收小浮层；有没保存的修改先问是否放弃。
         if matches!(self.modal, Some(Modal::HostProps(_))) {
             self.host_props_cancel(window, cx);
@@ -364,6 +383,8 @@ impl MainWindow {
             Some(Modal::X11Needed(_)) => {}
             // 只读对话框：Enter 留给搜索框，没有要确认的东西。
             Some(Modal::Connections(_)) => {}
+            // 结束进程只能点确认框里的按钮：Enter 不替用户确认（尤其不能一回车就结束进程）。
+            Some(Modal::Processes(_)) => {}
             None => {}
         }
     }
@@ -515,6 +536,10 @@ impl MainWindow {
             Modal::Connections(dialog) => (
                 super::connections_ui::DIALOG_WIDTH,
                 self.connections_body(dialog, tokens, cx),
+            ),
+            Modal::Processes(dialog) => (
+                super::processes_ui::DIALOG_WIDTH,
+                self.processes_body(dialog, tokens, cx),
             ),
         };
         let closes_on_scrim = modal.closes_on_scrim();
