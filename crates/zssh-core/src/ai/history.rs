@@ -1086,4 +1086,123 @@ mod tests {
         }
         assert!(!valid_agent_session_id(&"a".repeat(129)));
     }
+
+    // ---------- 内置助手的完整对话记录（V2-A3）----------
+
+    fn seeded(store: &HistoryStore, id: &str, session: &str) {
+        store
+            .save(
+                "builtin",
+                draft(id, vec![user("看看磁盘"), assistant("好的")]),
+                Some(session.to_string()),
+                &[],
+                1_000,
+            )
+            .expect("存历史")
+            .expect("有用户消息");
+        store
+            .transcript_save("builtin", session, br#"{"version":1}"#)
+            .expect("存对话记录");
+    }
+
+    #[test]
+    fn builtin_transcripts_round_trip_and_stay_out_of_the_session_list() {
+        let (_dir, store) = store();
+        assert_eq!(store.transcript_load("builtin", "bi_one").unwrap(), None);
+        store
+            .transcript_save("builtin", "bi_one", b"payload-1")
+            .unwrap();
+        store
+            .transcript_save("builtin", "bi_one", b"payload-2")
+            .unwrap();
+        assert_eq!(
+            store
+                .transcript_load("builtin", "bi_one")
+                .unwrap()
+                .as_deref(),
+            Some(&b"payload-2"[..])
+        );
+        // 对话记录不是历史会话：列表里没有它，也不算会话数。
+        assert!(store.list("builtin").unwrap().is_empty());
+        store.transcript_delete("builtin", "bi_one").unwrap();
+        store.transcript_delete("builtin", "bi_one").unwrap();
+        assert_eq!(store.transcript_load("builtin", "bi_one").unwrap(), None);
+    }
+
+    #[test]
+    fn transcript_ids_are_validated_like_agent_session_ids() {
+        let (_dir, store) = store();
+        for bad in ["", "../x", "a/b", "-flag", "a.b", &"x".repeat(129)] {
+            assert!(
+                matches!(
+                    store.transcript_save("builtin", bad, b"x"),
+                    Err(HistoryError::InvalidId)
+                ),
+                "{bad}"
+            );
+            assert!(store.transcript_load("builtin", bad).is_err(), "{bad}");
+        }
+        assert!(matches!(
+            store.transcript_save("nope", "bi_ok", b"x"),
+            Err(HistoryError::InvalidAgent(_))
+        ));
+    }
+
+    #[test]
+    fn deleting_a_history_session_deletes_its_transcript() {
+        let (_dir, store) = store();
+        seeded(&store, "h1", "bi_a");
+        seeded(&store, "h2", "bi_b");
+        store.delete("builtin", "h1").unwrap();
+        assert_eq!(store.transcript_load("builtin", "bi_a").unwrap(), None);
+        assert!(store.transcript_load("builtin", "bi_b").unwrap().is_some());
+        assert_eq!(store.list("builtin").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn clearing_the_history_clears_transcripts_without_counting_them() {
+        let (_dir, store) = store();
+        seeded(&store, "h1", "bi_a");
+        seeded(&store, "h2", "bi_b");
+        store.transcript_save("builtin", "bi_orphan", b"x").unwrap();
+        assert_eq!(store.clear().unwrap(), 2, "只数历史会话");
+        for session in ["bi_a", "bi_b", "bi_orphan"] {
+            assert_eq!(store.transcript_load("builtin", session).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn pruning_old_sessions_takes_their_transcripts_with_them() {
+        let (_dir, store) = store();
+        for i in 0..(MAX_SESSIONS_PER_AGENT + 3) {
+            seeded(&store, &format!("h{i:03}"), &format!("bi_{i:03}"));
+            // 修改时间要有先后，最旧的先被清掉。
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        let kept = store.list("builtin").unwrap();
+        assert_eq!(kept.len(), MAX_SESSIONS_PER_AGENT);
+        for i in 0..3 {
+            assert_eq!(
+                store
+                    .transcript_load("builtin", &format!("bi_{i:03}"))
+                    .unwrap(),
+                None,
+                "最旧的 {i} 号会话被清掉，它的对话记录也该走"
+            );
+        }
+        assert!(store
+            .transcript_load("builtin", &format!("bi_{:03}", MAX_SESSIONS_PER_AGENT + 2))
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn a_broken_history_file_does_not_stop_the_transcript_cleanup_of_others() {
+        let (_dir, store) = store();
+        seeded(&store, "h1", "bi_a");
+        std::fs::write(store.root().join("builtin").join("h2.json"), b"{ broken").unwrap();
+        store.delete("builtin", "h2").unwrap();
+        store.delete("builtin", "h1").unwrap();
+        assert_eq!(store.transcript_load("builtin", "bi_a").unwrap(), None);
+    }
 }
