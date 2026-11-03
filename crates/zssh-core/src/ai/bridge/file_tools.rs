@@ -275,9 +275,44 @@ impl Bridge {
         call_id: &str,
         started: std::time::Instant,
     ) -> Result<ExecDecision, String> {
-        if self.mode.mode() != super::ExecMode::ReadOnly {
-            return Ok(ExecDecision::Auto);
+        // 敏感文件只在「只读自动」里额外问（全部放行是用户明确接受的，逐条确认下这些读取
+        // 本来就不问）；锁屏时不论哪种模式都问，由 `confirm_query` 统一处理。
+        let mut reasons = Vec::new();
+        if self.mode.mode() == super::ExecMode::ReadOnly {
+            if let Some(hit) = self.sensitive_hit(fs, path).await {
+                reasons.push(hit.reason());
+            }
         }
+        match self
+            .confirm_query(
+                scope, ticket, summary, session_id, tool, path, call_id, reasons,
+            )
+            .await
+        {
+            Ok(decision) => Ok(decision),
+            Err((decision, message)) => {
+                self.read_audit(
+                    scope,
+                    &summary.host_label,
+                    tool,
+                    None,
+                    path,
+                    None,
+                    false,
+                    started,
+                    decision,
+                );
+                Err(format!("{message}，文件没有读取"))
+            }
+        }
+    }
+
+    /// 路径（按原样、展开后、符号链接解析后）是不是敏感文件。
+    async fn sensitive_hit(
+        &self,
+        fs: &dyn RemoteFs,
+        path: &str,
+    ) -> Option<crate::ai::sensitive::SensitiveHit> {
         let mut hit = crate::ai::sensitive::sensitive_file_path(path);
         if hit.is_none() {
             // 相对路径、`~`、`..` 先按登录目录展开成工具真正会读的那个路径，再看符号链接指向哪。
@@ -292,42 +327,7 @@ impl Bridge {
                 }
             }
         }
-        let Some(hit) = hit else {
-            return Ok(ExecDecision::Auto);
-        };
-        let (decision, refusal) = self
-            .decide_with(
-                scope,
-                ticket,
-                ApprovalRequest {
-                    scope: scope.id.clone(),
-                    exec_id: call_id.to_owned(),
-                    target_id: summary.id.clone(),
-                    session_id: session_id.map(str::to_owned),
-                    host_label: summary.host_label.clone(),
-                    command: format!("{tool} {path}"),
-                    danger: DangerLevel::Safe,
-                    reasons: vec![hit.reason()],
-                    file: None,
-                },
-                true,
-            )
-            .await;
-        if let Some(message) = refusal {
-            self.read_audit(
-                scope,
-                &summary.host_label,
-                tool,
-                None,
-                path,
-                None,
-                false,
-                started,
-                decision,
-            );
-            return Err(format!("{message}，文件没有读取"));
-        }
-        Ok(decision)
+        hit
     }
 
     /// 只读工具的有效性核对：目标被移出对话（哪怕又被加回来）、用户点了停止、作用范围销毁，

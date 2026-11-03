@@ -370,7 +370,21 @@ pub trait BridgeHost: Send + Sync {
 /// 执行模式来源（每次命令都重新读设置）。
 pub trait ExecModeProvider: Send + Sync {
     fn mode(&self) -> ExecMode;
+
+    /// 界面要求“不论哪种模式，AI 在服务器上做的事都要先问人”（应用锁屏时为真）。
+    /// 为真时：执行命令、写文件、读目录 / 读文件 / 看终端等所有碰服务器的请求都变成
+    /// “要确认”，确认卡在锁屏下看不到，解锁后用户才看得到并决定；锁着的时候等超时按拒绝
+    /// 处理。每次请求都重新问一遍，解锁后立即恢复原来的模式行为。默认不强制。
+    fn force_confirm(&self) -> bool {
+        false
+    }
 }
+
+/// 锁屏时确认卡上写的原因。
+pub const LOCKED_REASON: &str = "应用已锁屏：AI 要在服务器上做的事需要解锁后由你确认";
+
+/// 锁屏期间等审批超时的拒绝原因。
+const LOCKED_TIMEOUT_MESSAGE: &str = "锁屏期间超时，已按拒绝处理";
 
 /// 一条待写审计。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1230,6 +1244,22 @@ impl Bridge {
                     )
                     .await?;
                 let max_lines = clamp_max_lines(params.max_lines);
+                // 锁屏时连看终端也要先确认（平时不问）。
+                if let Err((_, message)) = self
+                    .confirm_query(
+                        &scope,
+                        &resolved.ticket,
+                        &resolved.summary,
+                        resolved.session_id.as_deref(),
+                        "read_terminal",
+                        "",
+                        call_id,
+                        Vec::new(),
+                    )
+                    .await
+                {
+                    return Err(format!("{message}，没有读取"));
+                }
                 let lines = self
                     .host
                     .read_terminal(&resolved.exec_id, max_lines)
@@ -1530,7 +1560,13 @@ impl Bridge {
         force_confirm: bool,
     ) -> (ExecDecision, Option<String>) {
         let mode = self.mode.mode();
+        // 锁屏：任何模式（含全部放行）都要确认，原因写在卡片上。
+        let locked = self.mode.force_confirm();
+        if locked {
+            request.reasons.push(LOCKED_REASON.to_owned());
+        }
         let auto = !force_confirm
+            && !locked
             && match mode {
                 ExecMode::Auto => true,
                 ExecMode::ReadOnly => {
@@ -1569,7 +1605,11 @@ impl Bridge {
                     WaitOutcome::Decision(ApprovalDecision::Timeout)
                     | WaitOutcome::ApprovalTimeout => (
                         ExecDecision::Timeout,
-                        Some("审批超时，已按拒绝处理".to_string()),
+                        Some(if self.mode.force_confirm() {
+                            LOCKED_TIMEOUT_MESSAGE.to_string()
+                        } else {
+                            "审批超时，已按拒绝处理".to_string()
+                        }),
                     ),
                     WaitOutcome::Invalidated(reason) => {
                         (ExecDecision::Denied, Some(reason.to_string()))
@@ -1583,6 +1623,54 @@ impl Bridge {
             }
         }
         (decision, refusal)
+    }
+
+    /// 只读类请求（读目录、读文件、看终端）的前置确认。平时这些不问；两种情况要问：
+    /// 应用锁屏（[`ExecModeProvider::force_confirm`]），或者调用方给了原因（读敏感文件）。
+    /// 返回处置：不用问是 `Auto`，用户批准是 `Allowed`；被拒 / 超时 / 请求失效返回
+    /// （处置，原因），调用方负责记审计和报错。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn confirm_query(
+        &self,
+        scope: &Arc<Scope>,
+        ticket: &RequestTicket,
+        summary: &TargetSummary,
+        session_id: Option<&str>,
+        tool: &str,
+        key: &str,
+        call_id: &str,
+        reasons: Vec<String>,
+    ) -> Result<ExecDecision, (ExecDecision, String)> {
+        if reasons.is_empty() && !self.mode.force_confirm() {
+            return Ok(ExecDecision::Auto);
+        }
+        let command = if key.is_empty() {
+            tool.to_owned()
+        } else {
+            format!("{tool} {key}")
+        };
+        let (decision, refusal) = self
+            .decide_with(
+                scope,
+                ticket,
+                ApprovalRequest {
+                    scope: scope.id.clone(),
+                    exec_id: call_id.to_owned(),
+                    target_id: summary.id.clone(),
+                    session_id: session_id.map(str::to_owned),
+                    host_label: summary.host_label.clone(),
+                    command,
+                    danger: DangerLevel::Safe,
+                    reasons,
+                    file: None,
+                },
+                true,
+            )
+            .await;
+        match refusal {
+            Some(message) => Err((decision, message)),
+            None => Ok(decision),
+        }
     }
 
     /// 后台 exec 通道执行（AI-1 的老路径）。
@@ -2052,17 +2140,49 @@ mod tests {
         behavior: ApproverBehavior,
         approval_wait: Duration,
     ) -> Harness {
+        harness_with(Arc::new(FixedMode(mode)), behavior, approval_wait).await
+    }
+
+    /// 能随时锁定 / 解锁的模式来源（模拟界面的锁屏状态）。
+    struct LockableMode {
+        mode: ExecMode,
+        locked: std::sync::atomic::AtomicBool,
+    }
+
+    impl LockableMode {
+        fn new(mode: ExecMode) -> Arc<LockableMode> {
+            Arc::new(LockableMode {
+                mode,
+                locked: std::sync::atomic::AtomicBool::new(false),
+            })
+        }
+
+        fn set_locked(&self, locked: bool) {
+            self.locked.store(locked, Ordering::SeqCst);
+        }
+    }
+
+    impl ExecModeProvider for LockableMode {
+        fn mode(&self) -> ExecMode {
+            self.mode
+        }
+
+        fn force_confirm(&self) -> bool {
+            self.locked.load(Ordering::SeqCst)
+        }
+    }
+
+    async fn harness_with(
+        mode: Arc<dyn ExecModeProvider>,
+        behavior: ApproverBehavior,
+        approval_wait: Duration,
+    ) -> Harness {
         let host = Arc::new(MockHost::new());
         let approver = Arc::new(MockApprover::new(behavior));
         let audit = Arc::new(MockAudit::default());
         let bridge = Arc::new(
-            Bridge::new(
-                host.clone(),
-                audit.clone(),
-                approver.clone(),
-                Arc::new(FixedMode(mode)),
-            )
-            .with_approval_wait(approval_wait),
+            Bridge::new(host.clone(), audit.clone(), approver.clone(), mode)
+                .with_approval_wait(approval_wait),
         );
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("绑定端口");
         let port = listener.local_addr().unwrap().port();
@@ -2702,6 +2822,133 @@ root password: hunter2" }),
             .await;
         assert_eq!(result_of(&response)["exit_code"], 0);
         assert_eq!(h.approver.calls(), 0);
+    }
+
+    /// 锁屏时 AI 不能在服务器上产生副作用：不论哪种模式（含全部放行）、不论命令是否只读，
+    /// 都要确认；解锁后立即恢复原模式的行为。
+    #[tokio::test]
+    async fn while_locked_every_mode_asks_and_unlocking_restores_the_mode() {
+        for (mode, command) in [
+            (ExecMode::Auto, "systemctl restart nginx"),
+            (ExecMode::Auto, "cat /etc/hosts"),
+            (ExecMode::ReadOnly, "cat /etc/hosts"),
+            (ExecMode::Manual, "cat /etc/hosts"),
+        ] {
+            let provider = LockableMode::new(mode);
+            let h = harness_with(provider.clone(), ApproverBehavior::Allow, short_wait()).await;
+            let scope = h.bridge.create_scope();
+            scope.add_target("s1", "web-1", "root", "connected", true, false);
+            let mut client =
+                Client::authenticated(h.port, h.bridge.connection_token(), scope.capability())
+                    .await;
+
+            provider.set_locked(true);
+            let response = client
+                .request(
+                    1,
+                    METHOD_RUN_COMMAND,
+                    json!({ "target_id": "s1", "command": command }),
+                )
+                .await;
+            assert_eq!(result_of(&response)["exit_code"], 0, "批准后照常执行");
+            assert_eq!(h.approver.calls(), 1, "{mode:?} 锁屏时要问：{command}");
+            let asked = h.approver.last().expect("审批请求");
+            assert!(
+                asked.reasons.iter().any(|r| r == LOCKED_REASON),
+                "卡片上写明锁屏：{:?}",
+                asked.reasons
+            );
+            assert_eq!(h.audit.entries()[0].decision, ExecDecision::Allowed);
+
+            // 解锁：恢复原模式。全部放行 / 只读命令不再问；手动模式照旧问。
+            provider.set_locked(false);
+            let before = h.approver.calls();
+            client
+                .request(
+                    2,
+                    METHOD_RUN_COMMAND,
+                    json!({ "target_id": "s1", "command": command }),
+                )
+                .await;
+            let expect_ask = match mode {
+                ExecMode::Manual => true,
+                ExecMode::Auto => false,
+                ExecMode::ReadOnly => !crate::ai::readonly::is_read_only(command),
+            };
+            assert_eq!(
+                h.approver.calls() - before,
+                usize::from(expect_ask),
+                "{mode:?} 解锁后恢复：{command}"
+            );
+        }
+    }
+
+    /// 锁着的时候审批超时按拒绝处理，原因写明“锁屏期间超时”；没锁时仍是普通的审批超时。
+    #[tokio::test]
+    async fn approval_timeout_while_locked_says_so_and_never_executes() {
+        let provider = LockableMode::new(ExecMode::Auto);
+        let h = harness_with(provider.clone(), ApproverBehavior::Never, short_wait()).await;
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", true, false);
+        let mut client =
+            Client::authenticated(h.port, h.bridge.connection_token(), scope.capability()).await;
+
+        provider.set_locked(true);
+        let response = client
+            .request(
+                1,
+                METHOD_RUN_COMMAND,
+                json!({ "target_id": "s1", "command": "touch /tmp/x" }),
+            )
+            .await;
+        assert!(error_of(&response).contains("锁屏期间超时"), "{response}");
+        assert!(h.host.last_exec().is_none(), "超时按拒绝：没有执行");
+        assert_eq!(h.audit.entries()[0].decision, ExecDecision::Timeout);
+
+        // 没锁屏时的超时文案没变（手动模式会问，所以换一个手动模式的桥验证）。
+        let h = harness(ExecMode::Manual, ApproverBehavior::Never, short_wait()).await;
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", true, false);
+        let mut client =
+            Client::authenticated(h.port, h.bridge.connection_token(), scope.capability()).await;
+        let response = client
+            .request(
+                1,
+                METHOD_RUN_COMMAND,
+                json!({ "target_id": "s1", "command": "touch /tmp/x" }),
+            )
+            .await;
+        assert!(error_of(&response).contains("审批超时"), "{response}");
+    }
+
+    /// 看终端内容也算：锁屏时要确认；没锁屏时不问。
+    #[tokio::test]
+    async fn reading_the_terminal_needs_confirmation_only_while_locked() {
+        let provider = LockableMode::new(ExecMode::Auto);
+        let h = harness_with(provider.clone(), ApproverBehavior::Deny, short_wait()).await;
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", true, false);
+        let mut client =
+            Client::authenticated(h.port, h.bridge.connection_token(), scope.capability()).await;
+
+        let response = client
+            .request(1, METHOD_READ_TERMINAL, json!({ "target_id": "s1" }))
+            .await;
+        assert!(response["error"].is_null(), "{response}");
+        assert_eq!(h.approver.calls(), 0);
+
+        provider.set_locked(true);
+        let response = client
+            .request(2, METHOD_READ_TERMINAL, json!({ "target_id": "s1" }))
+            .await;
+        assert!(error_of(&response).contains("用户拒绝"), "{response}");
+        assert_eq!(h.approver.calls(), 1);
+
+        provider.set_locked(false);
+        client
+            .request(3, METHOD_READ_TERMINAL, json!({ "target_id": "s1" }))
+            .await;
+        assert_eq!(h.approver.calls(), 1, "解锁后恢复");
     }
 
     /// AUDIT-2 A01：完整执行链。ReadOnly 模式 + 一律拒绝的审批替身：写操作的写法
