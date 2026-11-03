@@ -3,6 +3,7 @@
 //!
 //! 进程启动、SSE 翻译、配置注入、发现和下载都在这层做，`src-tauri` 只做转接。
 
+pub mod builtin;
 pub mod claude;
 pub mod codex;
 pub mod config;
