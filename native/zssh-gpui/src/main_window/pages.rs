@@ -98,9 +98,15 @@ impl MainWindow {
                     .when(at == cursor, |d| d.bg(tokens.accent_soft))
                     .when(at != cursor, |d| d.hover(move |style| style.bg(hover)))
                     .child(
-                        super::widgets::protocol_icon(host.protocol.protocol)
-                            .size_4()
-                            .text_color(tokens.accent),
+                        match self.store.os_icon_of(host).and_then(|os| {
+                            crate::os_icons::badge(os, crate::os_icons::OsIconSize::Row)
+                        }) {
+                            Some(badge) => badge,
+                            None => super::widgets::protocol_icon(host.protocol.protocol)
+                                .size_4()
+                                .text_color(tokens.accent)
+                                .into_any_element(),
+                        },
                     )
                     .child(
                         v_flex()

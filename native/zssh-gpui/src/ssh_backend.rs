@@ -293,7 +293,7 @@ pub fn begin_connect_quick(
         let (key, hops) = prepare_quick(&target, password)?;
         let factory = match pooled(&key) {
             Some(factory) => factory,
-            None => dial(key, hops).await?,
+            None => dial(key, hops, None).await?,
         };
         let (backend, events, gate) = factory.open_async(size, generation).await?;
         Ok(Opened {
@@ -501,7 +501,13 @@ fn remember(key: String, factory: &Arc<SshSessionFactory>) {
     pool.insert(key, Arc::downgrade(factory));
 }
 
-async fn dial(key: String, hops: Vec<ChainHop>) -> Result<Arc<SshSessionFactory>, String> {
+/// 新建一条已认证的连接并放进连接池。`host_id` 是库里的主机（快速连接没有）：给了就在后台探一次
+/// 远端系统，主机树里的图标据此换成发行版标志（见 [`crate::host_os`]）；池里复用的连接不再探。
+async fn dial(
+    key: String,
+    hops: Vec<ChainHop>,
+    host_id: Option<i64>,
+) -> Result<Arc<SshSessionFactory>, String> {
     let connection = Connection::connect_chain(hops, crate::ssh_interact::interactor())
         .await
         .map_err(|err| format!("连接失败：{err}"))?;
@@ -509,6 +515,9 @@ async fn dial(key: String, hops: Vec<ChainHop>) -> Result<Arc<SshSessionFactory>
         connection: Arc::new(connection),
     });
     remember(key, &factory);
+    if let Some(host_id) = host_id {
+        crate::host_os::spawn_probe(host_id, Arc::clone(&factory.connection));
+    }
     Ok(factory)
 }
 
@@ -533,7 +542,7 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
             Err(_) => forget(&key),
         }
     }
-    let factory = dial(key, hops).await?;
+    let factory = dial(key, hops, Some(host_id)).await?;
     let x11 = crate::x11_glue::attempt(x11_wanted).await;
     let (backend, events, gate) = factory.open_async_with(size, generation, x11).await?;
     Ok(Opened {
@@ -553,7 +562,7 @@ pub async fn factory_for_host(host_id: i64) -> Result<Arc<SshSessionFactory>, St
     if let Some(factory) = pooled(&key) {
         return Ok(factory);
     }
-    dial(key, hops).await
+    dial(key, hops, Some(host_id)).await
 }
 
 /// 会话里对 shell 写半边的抽象；真实实现是 [`ShellWriter`]，测试里换成假的。

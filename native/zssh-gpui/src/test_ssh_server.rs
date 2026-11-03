@@ -6,6 +6,9 @@
 //! - `bye`：退出码 3，然后关闭通道；
 //! - `drop`：不发退出码，直接断开整条 TCP 连接；
 //! - 其他：回 `ECHO:<行>`；收到 0x03 回 `GOT_CTRL_C`。
+//!
+//! `exec` 请求默认被拒绝；用 [`spawn_answering_exec`] 起的服务器对任何 `exec` 回一段固定输出再退出码 0
+//! （系统探测命令的端到端测试用）。
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -23,6 +26,8 @@ struct MiniShell {
     line: Vec<u8>,
     /// `Some`：只接受这个密码（测认证失败用）；`None`：任何密码都收。
     password: Option<String>,
+    /// `Some`：对 `exec` 请求回这段输出（退出码 0）；`None`：拒绝 `exec`。
+    exec_output: Option<String>,
 }
 
 impl server::Handler for MiniShell {
@@ -76,6 +81,22 @@ impl server::Handler for MiniShell {
     ) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
         session.data(channel, b"MINI_READY\r\n".to_vec())
+    }
+
+    async fn exec_request(
+        &mut self,
+        channel: ChannelId,
+        _data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let Some(output) = self.exec_output.clone() else {
+            return session.channel_failure(channel);
+        };
+        session.channel_success(channel)?;
+        session.data(channel, output.into_bytes())?;
+        session.exit_status_request(channel, 0)?;
+        session.eof(channel)?;
+        session.close(channel)
     }
 
     async fn window_change_request(
@@ -150,16 +171,22 @@ impl MiniShell {
 
 /// 起服务器（接一个连接），返回监听地址。
 pub async fn spawn() -> SocketAddr {
-    spawn_with(None).await
+    spawn_with(None, None).await
+}
+
+/// 同 [`spawn`]，但对任何 `exec` 请求回 `output` 再以退出码 0 结束。
+#[allow(dead_code)]
+pub async fn spawn_answering_exec(output: &str) -> SocketAddr {
+    spawn_with(None, Some(output.to_owned())).await
 }
 
 /// 只接受 `password` 的服务器（别的密码认证失败）。
 #[allow(dead_code)]
 pub async fn spawn_requiring_password(password: &str) -> SocketAddr {
-    spawn_with(Some(password.to_owned())).await
+    spawn_with(Some(password.to_owned()), None).await
 }
 
-async fn spawn_with(password: Option<String>) -> SocketAddr {
+async fn spawn_with(password: Option<String>, exec_output: Option<String>) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("绑定本机端口");
@@ -177,6 +204,7 @@ async fn spawn_with(password: Option<String>) -> SocketAddr {
         let handler = MiniShell {
             line: Vec::new(),
             password,
+            exec_output,
         };
         if let Ok(running) = server::run_stream(config, socket, handler).await {
             let _ = running.await;
@@ -248,4 +276,39 @@ pub async fn spawn_forwarding() -> SocketAddr {
         }
     });
     addr
+}
+
+/// 连上 [`spawn`] 系列起的服务器（任何密码都收，主机密钥首次信任）；`dir` 放临时的 known_hosts。
+#[allow(dead_code)]
+pub async fn connect_trusting(
+    addr: SocketAddr,
+    dir: &std::path::Path,
+) -> zssh_core::ssh::connection::Connection {
+    use zssh_core::ssh::{
+        BoxFuture, ChainHop, HostKeyDecision, HostKeyInfo, Interactor, KnownHosts, PromptAnswers,
+        PromptRequest,
+    };
+
+    struct TrustOnce;
+    impl Interactor for TrustOnce {
+        fn confirm_host_key(&self, _info: HostKeyInfo) -> BoxFuture<'_, HostKeyDecision> {
+            Box::pin(async { HostKeyDecision::TrustOnce })
+        }
+        fn prompt(&self, _request: PromptRequest) -> BoxFuture<'_, Option<PromptAnswers>> {
+            Box::pin(async { None })
+        }
+    }
+    let hops = vec![ChainHop {
+        label: "测试服务器".to_owned(),
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        username: "tester".to_owned(),
+        proxy: None,
+        auth: zssh_core::ssh::AuthConfig::password(Some("pw".to_owned())),
+        known_hosts: KnownHosts::new(dir.join(format!("kh-{}", addr.port()))),
+        legacy_algorithms: false,
+    }];
+    zssh_core::ssh::connection::Connection::connect_chain(hops, Arc::new(TrustOnce))
+        .await
+        .expect("连上本机测试服务器")
 }

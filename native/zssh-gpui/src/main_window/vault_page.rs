@@ -23,6 +23,7 @@ use super::vault_menus::{HostMenuSpec, host_menu};
 use super::widgets::{BadgeKind, act, badge, protocol_icon};
 use super::{GroupSel, MainWindow};
 use crate::app_theme::Tokens;
+use crate::os_icons::{self, OsIconSize};
 use crate::typography::{Role, Typo as _};
 
 /// 网格里一张卡片的最小宽度和间距（紧凑 / 舒适，同 0.2.14 的 `minmax(210px | 240px, 1fr)`）。
@@ -558,25 +559,34 @@ impl MainWindow {
             .gap_2p5()
             .items_center()
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size(px(if compact { 28.0 } else { 36.0 }))
-                    .flex_none()
-                    .rounded_md()
-                    .bg(if selected {
-                        tokens.accent_soft
-                    } else {
-                        tokens.subtle
-                    })
-                    .child(protocol_icon(host.protocol.protocol).size_4().text_color(
-                        if selected {
-                            tokens.accent
+                // 连上过、探测出系统的 SSH 主机：发行版图标；否则是协议图标。
+                match self
+                    .store
+                    .os_icon_of(host)
+                    .and_then(|os| os_icons::badge(os, card_icon_size(compact)))
+                {
+                    Some(badge) => badge,
+                    None => div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(if compact { 28.0 } else { 36.0 }))
+                        .flex_none()
+                        .rounded_md()
+                        .bg(if selected {
+                            tokens.accent_soft
                         } else {
-                            tokens.text_muted
-                        },
-                    )),
+                            tokens.subtle
+                        })
+                        .child(protocol_icon(host.protocol.protocol).size_4().text_color(
+                            if selected {
+                                tokens.accent
+                            } else {
+                                tokens.text_muted
+                            },
+                        ))
+                        .into_any_element(),
+                },
             )
             .child(
                 v_flex()
@@ -718,13 +728,21 @@ impl MainWindow {
             }))
             .children(self.insert_line(id, false, tokens))
             .child(
-                protocol_icon(host.protocol.protocol)
-                    .size_4()
-                    .text_color(if selected {
-                        tokens.accent
-                    } else {
-                        tokens.text_muted
-                    }),
+                match self
+                    .store
+                    .os_icon_of(host)
+                    .and_then(|os| os_icons::badge(os, OsIconSize::Row))
+                {
+                    Some(badge) => badge,
+                    None => protocol_icon(host.protocol.protocol)
+                        .size_4()
+                        .text_color(if selected {
+                            tokens.accent
+                        } else {
+                            tokens.text_muted
+                        })
+                        .into_any_element(),
+                },
             )
             .child(
                 div()
@@ -810,6 +828,15 @@ fn act_click(
     let entity = entity.clone();
     move |_, window, cx| {
         entity.update(cx, |this, cx| f(this, window, cx));
+    }
+}
+
+/// 主机页卡片上发行版图标的尺寸：和卡片左上角那个 36px（紧凑 28px）的图标位一样大。
+fn card_icon_size(compact: bool) -> OsIconSize {
+    if compact {
+        OsIconSize::CardCompact
+    } else {
+        OsIconSize::Card
     }
 }
 
