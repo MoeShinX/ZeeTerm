@@ -95,6 +95,11 @@ const HISTORY_EMPTY: &str = "还没有历史会话";
 const HISTORY_RESUMABLE: &str = "可续接";
 const HISTORY_CONFIRM_DELETE: &str = "再次点击「确认删除」";
 const HISTORY_RESUME_SELECTED: &str = "已打开历史会话，发送消息后继续；目标主机需要重新选择";
+/// 面板形态：这条历史记着它当初绑定的主机，续上之后目标回到那台。
+const HISTORY_RESUME_ANCHORED: &str = "已打开历史会话，发送消息后继续；目标仍是它当初绑定的主机";
+/// 面板形态：旧历史没有记绑定的主机，发第一条消息时按当时的标签重新绑定。
+const HISTORY_RESUME_UNANCHORED: &str =
+    "已打开历史会话，发送消息后继续；目标主机按当前标签重新确定";
 const HISTORY_NO_SESSION: &str = "这条历史会话不能续接：没有智能体会话标识。";
 const HISTORY_NO_MESSAGES: &str = "这条历史会话没有消息。";
 /// 一轮对话写进历史之后底部的提示。
@@ -3455,7 +3460,14 @@ impl AgentChatDemo {
         self.real = true;
         self.close_history();
         self.footer_error = None;
-        self.resume_notice = Some(HISTORY_RESUME_SELECTED.to_owned());
+        self.resume_notice = Some(
+            match (self.embed.is_some(), record.anchor.is_some()) {
+                (false, _) => HISTORY_RESUME_SELECTED,
+                (true, true) => HISTORY_RESUME_ANCHORED,
+                (true, false) => HISTORY_RESUME_UNANCHORED,
+            }
+            .to_owned(),
+        );
         self.scroll.scroll_to_bottom();
         cx.notify();
     }
