@@ -34,7 +34,7 @@ public static class W32 {
 }
 '@
 
-# 找进程 $procId 的主窗口（可见、够大）。$wantTitle 不空时只认这个标题的窗口（独立文件窗口叫 ZeeTerm 文件，
+# 找进程 $procId 的主窗口（可见、够大）。$wantTitle 不空时只认这个标题的窗口（独立文件窗口叫 ZeeTerm 文件、更新窗口叫 检查更新，
 # 截图名以 files- 开头的就截它）；空的时候跳过文件窗口，免得它盖住主窗口。
 function Find-Window([uint32]$procId, [string]$wantTitle = '') {
   $script:found = [IntPtr]::Zero
@@ -45,7 +45,7 @@ function Find-Window([uint32]$procId, [string]$wantTitle = '') {
     $sb = New-Object System.Text.StringBuilder 256
     [void][W32]::GetWindowText($h, $sb, 256)
     $title = $sb.ToString()
-    $titleOk = if ($wantTitle -ne '') { $title -eq $wantTitle } else { $title -ne 'ZeeTerm 文件' -and $title -ne 'ZeeTerm 终端' }
+    $titleOk = if ($wantTitle -ne '') { $title -eq $wantTitle } else { $title -ne 'ZeeTerm 文件' -and $title -ne 'ZeeTerm 终端' -and $title -ne '检查更新' }
     if ($p -eq $procId -and $titleOk -and [W32]::IsWindowVisible($h)) {
       $r = New-Object W32+RECT
       [void][W32]::GetWindowRect($h, [ref]$r)
@@ -93,7 +93,7 @@ while ((Get-Date) -lt $deadline -and -not $proc.HasExited) {
   foreach ($f in Get-ChildItem $ShotDir -Filter '*.ready' -ErrorAction SilentlyContinue) {
     $name = [IO.Path]::GetFileNameWithoutExtension($f.Name)
     if ($handled.ContainsKey($name)) { continue }
-    $wantTitle = if ($name -like 'files-*' -or $name -like 'wmclose-files*') { 'ZeeTerm 文件' } elseif ($name -like 'termwin-*') { 'ZeeTerm 终端' } else { '' }
+    $wantTitle = if ($name -like 'files-*' -or $name -like 'wmclose-files*') { 'ZeeTerm 文件' } elseif ($name -like 'termwin-*') { 'ZeeTerm 终端' } elseif ($name -like 'update-*') { '检查更新' } else { '' }
     $h = Find-Window ([uint32]$proc.Id) $wantTitle
     if ($h -eq [IntPtr]::Zero) { continue }
     # kill-*：模拟程序异常退出（崩溃 / 被结束进程）：直接结束自己启动的那个进程，不给它任何收尾机会
