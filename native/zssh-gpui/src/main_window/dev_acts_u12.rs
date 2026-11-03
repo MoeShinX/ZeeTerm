@@ -390,7 +390,7 @@ udp6       0      0 fe80::1:546             :::*                                
     ) -> Result<Outcome, String> {
         match what {
             "open" => {
-                let have = this.docks.overview_open && this.status_host.is_some();
+                let have = this.overview_open(cx) && this.status_host.is_some();
                 check(have == (want == "on"), format!("概览面板开着 = {have}"))
             }
             "width" => {

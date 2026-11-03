@@ -128,7 +128,7 @@ impl MainWindow {
         if self.status_host.is_none() && !switches_on {
             return None;
         }
-        let overview_open = self.docks.overview_open && self.status_host.is_some();
+        let overview_open = self.overview_open(cx) && self.status_host.is_some();
         let entity = cx.entity();
         let bar = h_flex()
             .id("status-bar")

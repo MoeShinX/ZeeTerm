@@ -71,7 +71,8 @@ pub struct DockState {
     pub drag: Option<(DockKind, DragStart)>,
     pub ai_live: Option<f32>,
     pub sftp_live: Option<f32>,
-    pub overview_open: bool,
+    /// 开着概览面板的终端标签：和文件面板一样按标签记，切到别的标签默认是关的（11-03 用户要求）。
+    overview_tabs: HashSet<u64>,
     /// 概览面板「进程」一节现在看哪一档（CPU / 内存）；进程管理对话框打开时用它当默认分段。
     pub overview_procs: zssh_core::ssh::ProcMode,
     /// 概览面板左边缘正在被拖：按下时的指针和宽度，以及拖动过程中的临时宽度（松手才写设置表）。
@@ -105,7 +106,7 @@ impl Default for DockState {
             drag: None,
             ai_live: None,
             sftp_live: None,
-            overview_open: false,
+            overview_tabs: HashSet::new(),
             overview_procs: zssh_core::ssh::ProcMode::Cpu,
             overview_drag: None,
             overview_live: None,
@@ -145,10 +146,24 @@ impl DockState {
         }
     }
 
-    /// 标签关了 / 搬去别的窗口了：只留还活着的标签的记录。
+    /// 这个终端标签的概览面板开着没有；没有标签（`None`）就是没开。
+    pub fn overview_open_for(&self, tab: Option<u64>) -> bool {
+        tab.is_some_and(|id| self.overview_tabs.contains(&id))
+    }
+
+    pub fn set_overview_open_for(&mut self, tab: u64, open: bool) {
+        if open {
+            self.overview_tabs.insert(tab);
+        } else {
+            self.overview_tabs.remove(&tab);
+        }
+    }
+
+    /// 标签关了 / 搬去别的窗口了：只留还活着的标签的记录（文件面板和概览面板都是）。
     /// 搬走的标签回来时记录已经没了，按「不开」处理（别的窗口没有停靠面板，开关带不过去）。
     pub fn forget_dead_sftp_tabs(&mut self, live: &HashSet<u64>) {
         self.sftp_dock_tabs.retain(|id| live.contains(id));
+        self.overview_tabs.retain(|id| live.contains(id));
     }
 
     /// 终端页上现在是否画文件面板（布局计算也用这个值）。
@@ -1448,5 +1463,18 @@ mod tests {
         let b = compute(narrow_b);
         assert!(!b.collapse_ai);
         assert!(b.ai_width > 0.0);
+    }
+
+    #[test]
+    fn the_overview_is_remembered_per_tab_and_closed_on_other_tabs() {
+        let mut docks = DockState::default();
+        docks.set_overview_open_for(1, true);
+        assert!(docks.overview_open_for(Some(1)));
+        // 切到别的标签：默认关；没有标签也算关。
+        assert!(!docks.overview_open_for(Some(2)));
+        assert!(!docks.overview_open_for(None));
+        // 标签 1 关掉了：记录跟着清掉，同号的新标签不会继承。
+        docks.forget_dead_sftp_tabs(&HashSet::from([2]));
+        assert!(!docks.overview_open_for(Some(1)));
     }
 }
