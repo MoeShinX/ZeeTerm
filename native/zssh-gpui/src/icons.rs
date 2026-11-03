@@ -75,6 +75,10 @@ const OWN_ICONS: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/folder-back.svg"),
     ),
     (
+        "zeeterm/gear.svg",
+        include_bytes!("../assets/icons/gear.svg"),
+    ),
+    (
         "zeeterm/folder-front.svg",
         include_bytes!("../assets/icons/folder-front.svg"),
     ),
@@ -83,6 +87,12 @@ const OWN_ICONS: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/folder-open-front.svg"),
     ),
 ];
+
+/// 设置齿轮（原创）：8 个圆头的齿、细线、中心一个明显的圆孔，风格取自 macOS / iOS 系统设置，但不是 Apple 的字形
+/// （SF Symbols 的许可不允许分发），线条是自己用程序按几何算出来的。侧栏左下的「设置」和标题栏折叠后的入口共用。
+pub fn gear_icon() -> gpui_kit::component::Icon {
+    gpui_kit::component::Icon::empty().path("zeeterm/gear.svg")
+}
 
 /// 固定的黄色文件夹（不随皮肤变）：前板 / 后板的颜色，接近 Windows 资源管理器的文件夹黄。
 pub const FOLDER_BODY: u32 = 0xF8C33A;
@@ -244,6 +254,26 @@ mod tests {
         // 卡里定的两个黄色：前板（主体）F8C33A，后板（边 / 折角）D9A21B；常量不随皮肤变。
         assert_eq!(FOLDER_BODY, 0xF8C33A);
         assert_eq!(FOLDER_EDGE, 0xD9A21B);
+    }
+
+    #[test]
+    fn the_settings_gear_is_one_own_svg_used_by_every_settings_entry() {
+        let bytes = AppAssets
+            .load("zeeterm/gear.svg")
+            .expect("读图标")
+            .expect("齿轮没有编进来");
+        let text = std::str::from_utf8(&bytes).expect("SVG 是文本");
+        assert!(text.starts_with("<svg") && text.contains("currentColor"), "线条图标，颜色跟着文字色走");
+        assert!(text.contains("<circle"), "中心要有圆孔");
+        // 侧栏左下的「设置」和标题栏折叠后的齿轮都走 gear_icon，不再用组件库的 Settings。
+        for (name, text) in [
+            ("sidebar.rs", include_str!("main_window/sidebar.rs")),
+            ("titlebar.rs", include_str!("main_window/titlebar.rs")),
+        ] {
+            let code = text.split("#[cfg(test)]").next().unwrap_or(text);
+            assert!(code.contains("gear_icon()"), "{name} 没用 gear_icon");
+            assert!(!code.contains("IconName::Settings"), "{name} 里还有旧齿轮");
+        }
     }
 
     #[test]

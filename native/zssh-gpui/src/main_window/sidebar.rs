@@ -97,7 +97,7 @@ struct FooterAction {
 impl FooterAction {
     fn icon(&self) -> Icon {
         match self.kind {
-            FooterKind::Settings => Icon::new(IconName::Settings),
+            FooterKind::Settings => crate::icons::gear_icon(),
             FooterKind::Credentials => Icon::new(crate::icons::Ico::KeyRound),
         }
     }

@@ -296,7 +296,7 @@ impl MainWindow {
             let entity = entity.clone();
             icon_button(
                 "settings-button",
-                IconName::Settings,
+                crate::icons::gear_icon(),
                 "设置与管理 (Ctrl+,)",
                 view == MainView::Settings,
                 true,
