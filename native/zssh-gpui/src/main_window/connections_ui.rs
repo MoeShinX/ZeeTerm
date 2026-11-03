@@ -400,7 +400,7 @@ impl MainWindow {
             .children(dialog.report.as_ref().filter(|r| r.truncated).map(|_| {
                 div()
                     .typo(Role::Caption, tokens)
-                    .text_color(tokens.dot_connecting)
+                    .text_color(tokens.caution)
                     .child(format!(
                         "连接太多，只显示前 {} 条。",
                         zssh_core::ssh::CONNECTIONS_MAX_ROWS

@@ -1362,7 +1362,7 @@ impl SftpDemo {
                 .text_color(rgb(LINK_COLOR)),
             _ => Icon::new(IconName::Copy)
                 .size_3p5()
-                .text_color(tokens.dot_connecting),
+                .text_color(tokens.caution),
         };
         let button = |suffix: &'static str, icon: Icon, tip: &'static str| {
             Button::new((suffix, index))

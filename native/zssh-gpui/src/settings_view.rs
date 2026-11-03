@@ -522,7 +522,7 @@ fn terminal_mismatch_hint(
             .items_center()
             .py_1()
             .text_xs()
-            .text_color(tokens.dot_connecting)
+            .text_color(tokens.caution)
             .child(format!(
                 "终端配色固定为 {}（{}），现在是{}主题，所以终端和界面明暗不一样。",
                 fixed.name,

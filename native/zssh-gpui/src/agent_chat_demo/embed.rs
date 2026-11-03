@@ -1544,14 +1544,14 @@ impl AgentChatDemo {
                 d.child(
                     div()
                         .text_xs()
-                        .text_color(tokens.dot_connecting)
+                        .text_color(tokens.caution)
                         .child(NO_HOST_HINT),
                 )
             })
             .children(refused_reason.map(|reason| {
                 div()
                     .text_xs()
-                    .text_color(tokens.dot_connecting)
+                    .text_color(tokens.caution)
                     .child(SharedString::from(reason))
             }))
             .children(banner_row);

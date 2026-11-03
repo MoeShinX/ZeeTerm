@@ -309,7 +309,7 @@ impl SftpDemo {
                     } else {
                         "已经有同名的条目，确定会失败"
                     },
-                    tokens.dot_connecting,
+                    tokens.caution,
                 )
             }))
             .child(buttons(vec![
