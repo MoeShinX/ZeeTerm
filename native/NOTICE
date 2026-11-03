@@ -65,6 +65,20 @@ models.dev model database (built-in assistant, crates/zssh-core/src/ai/agent/bui
   with scripts/models-dev-snapshot.ps1. MIT is compatible with distribution
   under GPL-3.0-or-later.
 
+OpenAI Codex CLI (built-in assistant context compaction prompts,
+crates/zssh-core/src/ai/agent/builtin/context.rs)
+  https://github.com/openai/codex (codex-rs/core/templates/compact/)
+  Copyright 2025 OpenAI
+  License: Apache-2.0
+
+  COMPACT_PROMPT and SUMMARY_PREFIX are adapted from Codex's compaction
+  prompt ("context checkpoint compaction": write a handoff summary for the
+  model that resumes the task) and its summary prefix. They are translated
+  into Chinese and rewritten for server operations (targets, commands run,
+  files touched); the trigger rule, truncation of old tool output and the
+  splitting of the conversation are written independently. Apache-2.0 is
+  compatible with distribution under GPL-3.0-or-later.
+
 Build-time only: embed-resource 3.0.12 (MIT, https://crates.io/crates/embed-resource)
   compiles the application icon (native/zssh-gpui/assets/brand/zeeterm.ico)
   into zeeterm.exe with the Windows SDK resource compiler (rc.exe); no part of
