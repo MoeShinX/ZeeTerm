@@ -19,10 +19,12 @@ use zssh_core::model::{
 use super::MainWindow;
 use super::host_dialog::HostPropsDialog;
 use super::host_form::{
-    FormInput, SerialInput, TelnetInput, can_reveal, initial_proxy_mode, mismatch_note,
-    password_identity, plan_save,
+    ConnMode, FormInput, SerialInput, TelnetInput, can_reveal, effective_routing,
+    initial_conn_mode, initial_proxy_mode, jump_keeps_proxy, mismatch_note, password_identity,
+    plan_save,
 };
-use super::host_props::{self, Category};
+use super::host_props::{self, LayoutState, Row};
+use super::host_test::TestState;
 use super::modal::Modal;
 use super::protocol_form::{self, FormField, PortChoice};
 
@@ -80,6 +82,10 @@ pub struct HostForm {
     pub proxy_mode: ProxyMode,
     pub proxy: Option<i64>,
     pub jump: Option<i64>,
+    /// 「连接方式」选中的段（直接连接 / SSH 跳板 / 代理访问）；怎么映射到上面三个字段见 `host_form::ConnMode`。
+    pub conn_mode: ConnMode,
+    /// 旧数据里跳板机和代理都设了：「SSH 跳板」段下面也显示代理设置，保存时带着。
+    pub jump_keeps_proxy: bool,
     pub legacy: bool,
     pub protocol: Protocol,
     pub x11: bool,
@@ -96,6 +102,13 @@ pub struct HostForm {
     pub mismatch_note: Option<String>,
     pub fingerprint: Option<String>,
     pub memory: Option<MemoryForm>,
+    /// 「高级设置」「AI 记忆」折叠区展开了没有（默认都折叠）。
+    pub advanced_open: bool,
+    pub memory_open: bool,
+    /// 表单滚动区的滚动句柄：校验出错时滚到出错的那一行。
+    pub scroll: ::gpui::ScrollHandle,
+    /// 「测试连接」的进行中 / 结果。
+    pub test: TestState,
 }
 
 impl HostForm {
@@ -198,6 +211,8 @@ impl HostForm {
             proxy_mode: initial_proxy_mode(host),
             proxy: host.and_then(|h| h.proxy_id),
             jump: host.and_then(|h| h.jump_host_id),
+            conn_mode: initial_conn_mode(host),
+            jump_keeps_proxy: jump_keeps_proxy(host),
             legacy: host.is_some_and(|h| h.legacy_algorithms),
             protocol,
             x11: settings.x11_forwarding,
@@ -212,6 +227,10 @@ impl HostForm {
             mismatch_note: None,
             fingerprint: None,
             memory,
+            advanced_open: false,
+            memory_open: false,
+            scroll: ::gpui::ScrollHandle::new(),
+            test: TestState::default(),
         }
     }
 
@@ -234,9 +253,16 @@ impl HostForm {
         self.memory.is_some() && protocol_form::visible(self.protocol).memory
     }
 
-    /// 现在这个协议下左侧列出的类别。
-    pub fn categories(&self) -> Vec<Category> {
-        host_props::categories(self.protocol, self.has_memory())
+    /// 决定表单有哪些行的状态。
+    pub fn layout_state(&self) -> LayoutState {
+        LayoutState {
+            protocol: self.protocol,
+            has_memory: self.has_memory(),
+            advanced_open: self.advanced_open,
+            memory_open: self.memory_open,
+            conn_mode: self.conn_mode,
+            auto_login: self.telnet.auto_login,
+        }
     }
 
     /// 表单里所有输入的当前值拼成一个字符串：和刚打开时的快照不一样就说明有没保存的修改。
@@ -265,6 +291,7 @@ impl HostForm {
                 self.legacy,
                 self.protocol,
                 self.x11,
+                self.conn_mode,
             ),
             (
                 telnet.newline,
@@ -421,19 +448,7 @@ impl MainWindow {
         if protocol == Protocol::Serial {
             form.serial.ports = protocol_form::list_ports();
         }
-        self.fit_host_category();
         cx.notify();
-    }
-
-    /// 切协议后，对话框停着的类别如果在新协议下没有了（比如从 SSH 的「安全」切到 Telnet）就回到「常规」。
-    fn fit_host_category(&mut self) {
-        let Some(form) = &self.host_form else {
-            return;
-        };
-        let (protocol, has_memory) = (form.protocol, form.has_memory());
-        if let Some(Modal::HostProps(dialog)) = &mut self.modal {
-            dialog.category = host_props::fit(dialog.category, protocol, has_memory);
-        }
     }
 
     /// 串口设备下拉旁的刷新按钮：重新列一遍本机串口。
@@ -583,9 +598,9 @@ impl MainWindow {
 
     // ---- 保存 / 删除 ----
 
-    /// 保存校验没过：错误挂在对应字段旁边，并且自动切到这个字段所在的类别（左侧该类别标红点）；
-    /// 找不到对应字段的显示在对话框底部。
-    fn show_form_error(
+    /// 保存 / 测试校验没过：错误挂在对应字段下面，自动滚到出错的那一行并把键盘焦点交给它；
+    /// 出错的字段在折叠的「高级设置」里就先展开它；找不到对应字段的显示在对话框底部。
+    pub(super) fn show_form_error(
         &mut self,
         field: FormField,
         message: &str,
@@ -596,48 +611,87 @@ impl MainWindow {
             .strip_prefix("输入不合法：")
             .unwrap_or(message)
             .to_owned();
+        let row = self
+            .host_form
+            .as_ref()
+            .and_then(|form| host_props::row_of_field(field, form.protocol));
         if let Some(form) = &mut self.host_form {
             form.errors.clear();
             form.errors.insert(field, message);
+            // 结果栏里上一次的测试结果和新的错误无关，先清掉免得并排显示。
+            form.test.result = None;
+            if row.is_some_and(host_props::is_advanced) {
+                form.advanced_open = true;
+            }
         }
-        if let Some(category) = host_props::category_of(field) {
-            self.host_select_category(category, window, cx);
+        if let Some(row) = row {
+            self.host_scroll_to(row, window, cx);
         }
         cx.notify();
     }
 
-    /// 左侧点了一个类别（或出错自动跳过去）：换右边显示的字段，并把键盘焦点交给这个类别里的第一个输入框
-    /// （没有输入框的类别交给窗口，免得焦点还停在已经不显示的输入框上）。
-    pub(crate) fn host_select_category(
-        &mut self,
-        category: Category,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// 滚到这一行并把焦点交给它里面的第一个输入框（没有输入框的行不动焦点，免得停在已不可见的框上）。
+    pub(crate) fn host_scroll_to(&mut self, row: Row, window: &mut Window, cx: &mut Context<Self>) {
         let Some(form) = &self.host_form else {
             return;
         };
-        if !form.categories().contains(&category) {
-            return;
+        let state = form.layout_state();
+        if let Some(index) = host_props::index_of(state, row) {
+            form.scroll.scroll_to_top_of_item(index);
         }
-        let focus = match category {
-            Category::General => Some(form.name.read(cx).focus_handle(cx)),
-            Category::Auth => Some(form.username.read(cx).focus_handle(cx)),
-            Category::Terminal => Some(form.telnet.terminal_type.read(cx).focus_handle(cx)),
-            Category::Memory => form
+        let focus = match row {
+            Row::Name => Some(form.name.read(cx).focus_handle(cx)),
+            Row::Endpoint if form.protocol == Protocol::Serial => {
+                Some(form.serial.device.read(cx).focus_handle(cx))
+            }
+            Row::Endpoint => Some(form.address.read(cx).focus_handle(cx)),
+            Row::Credentials => Some(form.username.read(cx).focus_handle(cx)),
+            Row::Advanced(host_props::AdvRow::TelnetTerm) => {
+                Some(form.telnet.terminal_type.read(cx).focus_handle(cx))
+            }
+            Row::MemoryBody => form
                 .memory
                 .as_ref()
                 .map(|memory| memory.input.read(cx).focus_handle(cx)),
-            Category::Connection | Category::SerialParams | Category::Security => None,
+            _ => None,
         };
-        if let Some(Modal::HostProps(dialog)) = &mut self.modal {
-            dialog.category = category;
-        }
         match focus {
             Some(handle) => window.focus(&handle, cx),
             None => window.focus(&self.focus, cx),
         }
         cx.notify();
+    }
+
+    /// 键盘焦点现在在「AI 记忆」那个多行框里吗（是的话 Enter 是换行，Ctrl+Enter 才是确定）。
+    pub(super) fn host_memory_focused(&self, window: &Window, cx: &App) -> bool {
+        matches!(self.modal, Some(Modal::HostProps(_)))
+            && self
+                .host_form
+                .as_ref()
+                .and_then(|form| form.memory.as_ref())
+                .is_some_and(|memory| memory.input.read(cx).focus_handle(cx).is_focused(window))
+    }
+
+    /// 「高级设置」标题：展开 / 折叠。
+    pub(crate) fn host_toggle_advanced(&mut self, cx: &mut Context<Self>) {
+        self.with_form(cx, |form| form.advanced_open = !form.advanced_open);
+    }
+
+    /// 「AI 记忆」标题：展开 / 折叠。
+    pub(crate) fn host_toggle_memory(&mut self, cx: &mut Context<Self>) {
+        self.with_form(cx, |form| form.memory_open = !form.memory_open);
+    }
+
+    /// 「连接方式」分段：换一段。选「代理访问」时原来是「不用代理」就落成「跟随默认代理」。
+    pub(crate) fn host_set_conn_mode(&mut self, mode: ConnMode, cx: &mut Context<Self>) {
+        self.with_form(cx, |form| {
+            form.conn_mode = mode;
+            if mode == ConnMode::Proxy && form.proxy_mode == ProxyMode::None {
+                form.proxy_mode = ProxyMode::Default;
+            }
+            form.errors.remove(&FormField::Proxy);
+            form.errors.remove(&FormField::Jump);
+        });
     }
 
     /// 「确定」：保存并关掉对话框。
@@ -666,7 +720,8 @@ impl MainWindow {
                 .and_then(|form| form.memory.as_ref())
                 .is_some_and(|memory| memory.error.is_some());
             if failed {
-                self.host_select_category(Category::Memory, window, cx);
+                self.with_form(cx, |form| form.memory_open = true);
+                self.host_scroll_to(Row::MemoryBody, window, cx);
                 return;
             }
         }
@@ -687,6 +742,21 @@ impl MainWindow {
         let password_prompts = form.telnet.password_prompts.read(cx).value().to_string();
         let device = form.serial.device.read(cx).value().to_string();
         let baud = form.serial.baud.read(cx).value().to_string();
+        // 「连接方式」三段 → 要保存的代理 / 跳板机三个字段（规则见 `host_form::effective_routing`）。
+        let routing = effective_routing(
+            form.conn_mode,
+            form.proxy_mode,
+            form.proxy,
+            form.jump,
+            form.jump_keeps_proxy,
+        );
+        if form.protocol != Protocol::Serial
+            && form.conn_mode == ConnMode::Jump
+            && routing.jump.is_none()
+        {
+            self.show_form_error(FormField::Jump, "请选择跳板机", window, cx);
+            return;
+        }
         let input = FormInput {
             name: &name,
             address: &address,
@@ -696,9 +766,9 @@ impl MainWindow {
             group: form.group,
             auth: form.auth,
             identity: form.identity,
-            proxy_mode: form.proxy_mode,
-            proxy: form.proxy,
-            jump: form.jump,
+            proxy_mode: routing.proxy_mode,
+            proxy: routing.proxy,
+            jump: routing.jump,
             legacy: form.legacy,
             protocol: form.protocol,
             x11: form.x11,

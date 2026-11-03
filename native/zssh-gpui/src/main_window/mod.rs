@@ -33,6 +33,7 @@ mod dev_acts_sync;
 mod dev_acts_tcp;
 mod dev_acts_u1;
 mod dev_acts_u12;
+mod dev_acts_u13;
 mod dev_acts_u2;
 mod dev_acts_u4;
 mod dev_acts_u6;
@@ -50,6 +51,7 @@ mod host_form;
 mod host_panel;
 mod host_props;
 pub mod host_store;
+mod host_test;
 pub mod host_tree;
 mod identity_form;
 mod key_dialogs;
@@ -1223,8 +1225,14 @@ impl MainWindow {
         // 对话框开着：Esc 取消、Enter 确认（带多行输入框的对话框里是 Ctrl+Enter，普通 Enter 留给输入框
         // 换行），别的按键照常给输入框；其余窗口级快捷键先不响应。
         let ctrl_only = mods.control && !mods.shift && !mods.alt && !mods.platform;
+        let memory_focused = self.host_memory_focused(window, cx);
         if let Some(action) = self.modal.as_ref().map(|modal| {
-            modal::modal_key(&key, !mods.modified(), ctrl_only, modal.multiline_form())
+            modal::modal_key(
+                &key,
+                !mods.modified(),
+                ctrl_only,
+                modal.multiline_form(memory_focused),
+            )
         }) {
             match action {
                 modal::ModalKey::Cancel => {
@@ -1334,9 +1342,14 @@ impl MainWindow {
         // `on_capture_key` 做（拦下来之后按键事件还会走到它）。
         let mods = keystroke.modifiers;
         let ctrl_only = mods.control && !mods.shift && !mods.alt && !mods.platform;
+        let memory_focused = self.host_memory_focused(window, cx);
         if self.modal.as_ref().is_some_and(|modal| {
-            modal::modal_key(&keystroke.key, false, ctrl_only, modal.multiline_form())
-                == modal::ModalKey::Confirm
+            modal::modal_key(
+                &keystroke.key,
+                false,
+                ctrl_only,
+                modal.multiline_form(memory_focused),
+            ) == modal::ModalKey::Confirm
         }) {
             cx.stop_propagation();
             return;

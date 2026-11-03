@@ -127,13 +127,13 @@ impl Modal {
         }
     }
 
-    /// 里面有多行输入框：回车是换行，要 Ctrl+Enter 才确认。主机属性只有停在「AI 记忆」类别时才是这样\n    /// （别的类别全是单行输入框，Enter 就是确定）。
-    pub fn multiline_form(&self) -> bool {
+    /// 里面有多行输入框：回车是换行，要 Ctrl+Enter 才确认。主机属性只有键盘焦点在「AI 记忆」那个多行框里时才是这样
+    /// （`memory_focused`），在别的单行框里 Enter 就是确定。
+    pub fn multiline_form(&self, memory_focused: bool) -> bool {
         match self {
             Self::QuickEdit(_) => true,
             Self::HostProps(dialog) => {
-                dialog.category == super::host_props::Category::Memory
-                    && matches!(dialog.overlay, super::host_dialog::Overlay::None)
+                memory_focused && matches!(dialog.overlay, super::host_dialog::Overlay::None)
             }
             _ => false,
         }

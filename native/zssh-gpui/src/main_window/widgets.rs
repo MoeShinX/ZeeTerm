@@ -90,6 +90,122 @@ pub fn segmented(
         )
 }
 
+/// 整行等分的分段控件（V2-U13 主机表单：协议 / 认证方式 / 连接方式）：外面一个带边框的圆角条，
+/// 每个选项平分宽度，选中项实底（强调色）。`options` 同 [`segmented`]：（文字，是否选中，不可选时的悬停说明）。
+pub fn segmented_bar(
+    id: &'static str,
+    options: Vec<(String, bool, Option<&'static str>)>,
+    tokens: &Tokens,
+    on_pick: impl Fn(usize, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let on_pick = std::rc::Rc::new(on_pick);
+    let (accent, on_accent, hover, muted) = (
+        tokens.accent,
+        tokens.on_accent,
+        tokens.hover,
+        tokens.text_muted,
+    );
+    h_flex()
+        .w_full()
+        .p_0p5()
+        .gap_0p5()
+        .rounded_md()
+        .border_1()
+        .border_color(tokens.border)
+        .bg(tokens.subtle)
+        .children(
+            options
+                .into_iter()
+                .enumerate()
+                .map(|(index, (label, selected, locked))| {
+                    let on_pick = on_pick.clone();
+                    let item = div()
+                        .id((id, index))
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(28.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_md()
+                        .text_sm()
+                        .truncate()
+                        .child(SharedString::from(label));
+                    match (selected, locked) {
+                        (true, _) => item
+                            .bg(accent)
+                            .text_color(on_accent)
+                            .font_weight(FontWeight::MEDIUM),
+                        (false, Some(reason)) => {
+                            item.text_color(muted)
+                                .opacity(0.5)
+                                .tooltip(move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(reason)
+                                        .build(window, cx)
+                                })
+                        }
+                        (false, None) => item
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(hover))
+                            .on_click(move |_, window, cx| on_pick(index, window, cx)),
+                    }
+                }),
+        )
+}
+
+/// 开关卡片（V2-U13 高级设置里的开关）：带边框的一块，左边勾选框，右边标题 + 一行说明。
+pub fn check_card(
+    id: impl Into<SharedString>,
+    title: &str,
+    hint: Option<&str>,
+    checked: bool,
+    tokens: &Tokens,
+    on_toggle: impl Fn(bool, &mut Window, &mut App) + 'static,
+) -> Div {
+    h_flex()
+        .w_full()
+        .gap_3()
+        .items_start()
+        .p_3()
+        .rounded_md()
+        .border_1()
+        .border_color(tokens.border)
+        .child(
+            gpui_kit::component::checkbox::Checkbox::new(id.into())
+                .checked(checked)
+                .on_click(move |value, window, cx| on_toggle(*value, window, cx)),
+        )
+        .child(
+            v_flex()
+                .min_w_0()
+                .gap_0p5()
+                .child(
+                    div()
+                        .typo(Role::FieldLabel, tokens)
+                        .child(SharedString::from(title.to_owned())),
+                )
+                .children(hint.map(|hint| note(SharedString::from(hint.to_owned()), tokens))),
+        )
+}
+
+/// 带红色星号的字段标签（必填项）。
+pub fn required_label(label: &str, tokens: &Tokens) -> Div {
+    h_flex()
+        .gap_1()
+        .items_baseline()
+        .child(
+            div()
+                .typo(Role::FieldLabel, tokens)
+                .child(SharedString::from(label.to_owned())),
+        )
+        .child(
+            div()
+                .typo(Role::FieldLabel, tokens)
+                .text_color(tokens.danger)
+                .child("*"),
+        )
+}
+
 /// 面板里的一组字段：全大写风格的小标题 + 内容。
 pub fn section(title: &str, children: Vec<AnyElement>, tokens: &Tokens) -> Div {
     v_flex()
