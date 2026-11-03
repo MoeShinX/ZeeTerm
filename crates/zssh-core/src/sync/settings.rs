@@ -70,6 +70,8 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     // 会话日志：目录是本机路径，开关跟着目录走，都不同步
     ("session_log_enabled", SyncMode::LocalOnly),
     ("session_log_dir", SyncMode::LocalOnly),
+    // 侧栏底部的主机属性面板显不显示（V2-U17）：本机的界面习惯，不同步
+    ("host_info_panel", SyncMode::LocalOnly),
     // 关闭主窗口时缩到托盘还是退出（UI-4）：每台电脑的使用习惯不同（常驻托盘还是用完就退），
     // 同步过去会让另一台电脑的 × 突然变了行为；「托盘提示出过了」是本机状态。都不同步。
     ("close_action", SyncMode::LocalOnly),

@@ -35,6 +35,12 @@ const FOOTER_BUTTON: f32 = 28.0;
 /// 属性面板固定高度（放得下 7 行：基本 5 行 + 跳板机 + 代理），切换主机时树不会跟着跳。
 const INFO_HEIGHT: f32 = 184.0;
 
+/// 属性面板这一帧要显示哪台主机：设置里的开关关着（默认）就一律不显示，开着才跟着选中的主机走。
+/// 面板上的 × 只收起这一次（清掉 `info_host`），不动开关；开关只在 设置 → 外观 → 主机树 里改。
+fn info_target(enabled: bool, selected: Option<i64>) -> Option<i64> {
+    selected.filter(|_| enabled)
+}
+
 /// 侧栏空了的时候的提示（对应抬头的 + 图标）。
 pub const EMPTY_HINT: &str = "还没有主机，点上方 + 添加";
 
@@ -356,8 +362,7 @@ impl MainWindow {
             list.into_any_element()
         };
         let blank_hot = matches!(self.drop_hint, Some(DropHint::IntoRoot));
-        let info = self
-            .info_host
+        let info = info_target(self.prefs.host_info_panel, self.info_host)
             .and_then(|id| self.store.host(id))
             .map(|host| self.render_info_panel(host, tokens, cx));
 
@@ -1061,11 +1066,23 @@ fn count_label(count: usize, tokens: &Tokens) -> impl IntoElement {
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        EMPTY_HINT, FOOTER_ACTIONS, HEADER_ACTIONS, THEME_CHOICES, ThemeChoice, match_hint,
-        match_ranges,
+        EMPTY_HINT, FOOTER_ACTIONS, HEADER_ACTIONS, THEME_CHOICES, ThemeChoice, info_target,
+        match_hint, match_ranges,
     };
     use std::ops::Range;
     use zssh_core::model::{AuthMethod, Host, ProxyMode};
+
+    #[test]
+    fn the_info_panel_only_shows_when_the_setting_is_on() {
+        assert_eq!(
+            info_target(false, Some(7)),
+            None,
+            "默认关：选中主机也不出面板"
+        );
+        assert_eq!(info_target(false, None), None);
+        assert_eq!(info_target(true, Some(7)), Some(7));
+        assert_eq!(info_target(true, None), None, "开着但没选主机：没有面板");
+    }
 
     #[test]
     fn the_footer_theme_buttons_are_light_dark_and_follow_system_with_tips() {
