@@ -19,6 +19,7 @@
 #   -SkipGates          不跑 scripts/gates.ps1。
 #   -DryRun             演练：版本号只在改完后还原（git 看不到任何变化）；不检查分支 / 工作区；公钥与私钥对不上只警告；
 #                       不编译安装包（必须给 -PrebuiltInstaller，里面的文件当安装包用，产物不能发布）。
+#   -Force              dist\<版本>\ 已有内容时默认直接报错退出（免得盖掉上一次的产物）；给了 -Force 才在打包前清空该目录再继续。
 #   -PrebuiltInstaller  只在 -DryRun 时有效。
 #
 # 版本号的所有来源（统一由本脚本改，见 docs/RELEASING.md；有单测 every_place_that_carries_the_version_agrees 核对）：
@@ -32,6 +33,7 @@ param(
     [string]$Repo = 'MoeShinX/ZeeTerm',
     [switch]$SkipGates,
     [switch]$DryRun,
+    [switch]$Force,
     [string]$PrebuiltInstaller = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -44,6 +46,9 @@ if (-not $OutRoot) { $OutRoot = Join-Path $repoRoot 'dist' }
 function Stop-WithError([string]$Message) {
     [Console]::Error.WriteLine("错误：$Message")
     exit 1
+}
+function Test-OutDirHasContent([string]$Path) {
+    return (Test-Path -LiteralPath $Path) -and @(Get-ChildItem -LiteralPath $Path -Force).Count -gt 0
 }
 function Step([string]$Text) { Write-Host ''; Write-Host "==> $Text" -ForegroundColor Cyan }
 
@@ -59,6 +64,11 @@ if ($DryRun -and -not $PrebuiltInstaller) {
 }
 if ($PrebuiltInstaller -and -not (Test-Path -LiteralPath $PrebuiltInstaller -PathType Leaf)) {
     Stop-WithError "找不到 -PrebuiltInstaller 指定的文件：$PrebuiltInstaller"
+}
+# 产物目录有内容就在最前面拒绝（比打完包才发现省时间，也不会先改了版本号再失败）；-Force 才允许继续。
+$outDir = Join-Path $OutRoot $Version
+if ((Test-OutDirHasContent $outDir) -and -not $Force) {
+    Stop-WithError "$outDir 已经有内容，拒绝覆盖。确认可以丢弃就加 -Force（会先清空该目录），或换个版本号。"
 }
 if (-not (Test-Path -LiteralPath $KeyPath -PathType Leaf)) {
     Stop-WithError "找不到更新私钥：$KeyPath（先跑 scripts/updater-keygen.ps1，或用 -KeyPath 指定）"
@@ -212,9 +222,11 @@ try {
     }
 
     # ---------- 5. 安装包 ----------
-    $outDir = Join-Path $OutRoot $Version
-    if ((Test-Path -LiteralPath $outDir) -and @(Get-ChildItem -LiteralPath $outDir -Force).Count -gt 0) {
-        Stop-WithError "$outDir 已经有内容，拒绝覆盖（换个版本号，或先自己清掉）。"
+    if (Test-OutDirHasContent $outDir) {
+        # 到这里只可能是给了 -Force（最前面已拦过）；门禁之后才清，前面失败时不会丢掉旧产物。
+        if (-not $Force) { Stop-WithError "$outDir 已经有内容，拒绝覆盖。确认可以丢弃就加 -Force，或换个版本号。" }
+        Step "-Force：清空 $outDir"
+        Get-ChildItem -LiteralPath $outDir -Force | Remove-Item -Recurse -Force
     }
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
     $installerName = "ZeeTerm-Setup-$Version.exe"

@@ -36,7 +36,7 @@ powershell -File scripts/release.ps1 -Version 1.0.0
 5. 现编安装包：`native/installer/build.ps1`，产物 `ZeeTerm-Setup-<版本>.exe`。
 6. 用私钥签名：签名的 trusted comment 里带 `version:<版本>`，程序验签时要求它与清单公告的版本一致；签完立即用 `updater.json` 的公钥自检。
 7. 生成 `latest.json`（`version`、`notes`、`pub_date`、`platforms.windows-x86_64` 的 `url` 和 `signature`），再按程序里的验签逻辑把成品验一遍。
-8. 产物写到 `dist\<版本>\`（`dist/` 已在 `.gitignore`）：安装包、`.sig`、`latest.json`、`RELEASE_NOTES.md`，并打印安装包的 SHA-256。
+8. 产物写到 `dist\<版本>\`（`dist/` 已在 `.gitignore`）：安装包、`.sig`、`latest.json`、`RELEASE_NOTES.md`，并打印安装包的 SHA-256。该目录已经有内容时脚本一开始就报错退出，不会盖掉上一次的产物；确认可以丢弃时加 `-Force`，脚本会在门禁通过后、打包前清空该目录再继续。
 
 脚本**不推送、不打 tag、不创建 Release**。最后打印下一步命令，确认产物没问题后手动执行：
 
