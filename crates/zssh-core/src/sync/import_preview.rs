@@ -40,6 +40,8 @@ pub struct ImportPreview {
     pub identities: ChangeCounts,
     pub proxies: ChangeCounts,
     pub known_hosts_added: usize,
+    /// 会被跳过的可疑主机密钥记录数（万能通配、字段不合格）；导入时不会写进 known_hosts。
+    pub known_hosts_skipped: usize,
     pub settings_changed: usize,
     /// 合并时两边都改过的条数（取较新的，另一份进冲突页）。
     pub conflicts: usize,
@@ -121,10 +123,17 @@ impl SyncEngine<'_> {
             |a, b| a.same_content(b),
         );
         let known_before: BTreeSet<String> = current.known_hosts.iter().map(|r| r.key()).collect();
-        let known_hosts_added = target
-            .known_hosts
-            .iter()
-            .filter(|r| !known_before.contains(&r.key()))
+        let known_new = || {
+            target
+                .known_hosts
+                .iter()
+                .filter(|r| !known_before.contains(&r.key()))
+        };
+        let known_hosts_added = known_new()
+            .filter(|r| super::known_hosts::is_importable(r))
+            .count();
+        let known_hosts_skipped = known_new()
+            .filter(|r| !super::known_hosts::is_importable(r))
             .count();
         let settings_changed = target
             .settings
@@ -187,6 +196,7 @@ impl SyncEngine<'_> {
                 |a, b| a.same_content(b),
             ),
             known_hosts_added,
+            known_hosts_skipped,
             settings_changed,
             conflicts: plan.conflicts.len(),
             duplicate_hosts,
