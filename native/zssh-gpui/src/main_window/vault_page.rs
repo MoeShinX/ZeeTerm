@@ -180,9 +180,9 @@ impl MainWindow {
             .items_center()
             .px_4()
             .py_2()
-            .bg(tokens.surface)
+            .bg(tokens.background)
             .border_b_1()
-            .border_color(tokens.border)
+            .border_color(tokens.divider)
             .child(
                 div().flex_1().min_w(px(160.0)).max_w(px(448.0)).child(
                     Input::new(&self.vault_query)

@@ -299,14 +299,27 @@ impl MainWindow {
         let resize = {
             let entity_down = entity.clone();
             let entity_reset = entity.clone();
+            // 6px 宽的拖动手柄，中间一根 1px 的线：平时透明（分隔线是侧栏自己的细边），悬停 / 拖动时加深作提示。
+            let (idle, active) = (tokens.border, tokens.accent);
+            let resizing = self.tree.resizing;
             div()
                 .id("tree-resize")
+                .group("tree-resize")
                 .absolute()
                 .top_0()
                 .bottom_0()
                 .right(px(-3.0))
                 .w(px(6.0))
+                .flex()
+                .justify_center()
                 .cursor_col_resize()
+                .child(
+                    div()
+                        .w(px(1.0))
+                        .h_full()
+                        .when(resizing, move |d| d.bg(active))
+                        .group_hover("tree-resize", move |style| style.bg(idle)),
+                )
                 .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                     cx.stop_propagation();
                     // 双击恢复默认宽度，单击开始拖动。
@@ -354,9 +367,9 @@ impl MainWindow {
             .w(px(width))
             .h_full()
             .flex_none()
-            .bg(tokens.surface)
+            .bg(tokens.background)
             .border_r_1()
-            .border_color(tokens.border)
+            .border_color(tokens.divider)
             .child(top)
             .child(
                 div().px_2().pt_2().pb_3().child(
@@ -403,7 +416,7 @@ impl MainWindow {
             .px_2()
             .py_1p5()
             .border_t_1()
-            .border_color(tokens.border)
+            .border_color(tokens.divider)
             .children(FOOTER_ACTIONS.iter().map(|action| {
                 let entity = entity.clone();
                 let kind = action.kind;
@@ -480,7 +493,7 @@ impl MainWindow {
             .py_3()
             .bg(tokens.background)
             .border_r_1()
-            .border_color(tokens.border)
+            .border_color(tokens.divider)
             .child(icon_button(
                 "tree-expand",
                 IconName::PanelLeftOpen,
@@ -516,7 +529,7 @@ impl MainWindow {
             .flex_none()
             .h(px(INFO_HEIGHT))
             .border_t_1()
-            .border_color(tokens.border)
+            .border_color(tokens.divider)
             .text_size(px(12.0))
             .child(
                 h_flex()

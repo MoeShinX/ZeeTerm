@@ -653,10 +653,10 @@ impl Render for FileWindow {
                     .bg(if drop_target {
                         tokens.accent_soft
                     } else {
-                        tokens.surface
+                        tokens.background
                     })
                     .border_b_1()
-                    .border_color(tokens.border)
+                    .border_color(tokens.divider)
                     .child(
                         h_flex()
                             .id("file-window-drag")

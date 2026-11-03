@@ -1113,7 +1113,7 @@ impl MainWindow {
             .min_h_0()
             .bg(tokens.background)
             .border_l_1()
-            .border_color(tokens.border)
+            .border_color(tokens.divider)
             .child(handle)
             .child(
                 h_flex()
@@ -1124,7 +1124,7 @@ impl MainWindow {
                     .items_center()
                     .justify_between()
                     .border_b_1()
-                    .border_color(tokens.border)
+                    .border_color(tokens.divider)
                     .child(
                         h_flex()
                             .min_w_0()

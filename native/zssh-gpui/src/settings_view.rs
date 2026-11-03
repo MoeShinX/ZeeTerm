@@ -390,7 +390,10 @@ fn skin_card(
                 .h_full()
                 .gap_1()
                 .p_1p5()
-                .bg(color(ui.surface))
+                // 真界面里侧栏和主区同一个底色，只隔一根淡线。
+                .bg(color(ui.background))
+                .border_r_1()
+                .border_color(color(crate::app_theme::divider_hex(skin)))
                 .child(bar(ui.accent, 20.0))
                 .child(bar(ui.border, 14.0))
                 .child(bar(ui.border, 14.0)),

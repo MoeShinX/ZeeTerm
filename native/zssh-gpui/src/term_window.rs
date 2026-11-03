@@ -486,13 +486,13 @@ impl Render for TermWindow {
                     .bg(if drop_target {
                         tokens.accent_soft
                     } else {
-                        tokens.surface
+                        tokens.background
                     })
                     .border_b_1()
                     .border_color(if drop_target {
                         tokens.accent
                     } else {
-                        tokens.border
+                        tokens.divider
                     })
                     .child(
                         h_flex()

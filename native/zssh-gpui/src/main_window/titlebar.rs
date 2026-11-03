@@ -336,7 +336,7 @@ impl MainWindow {
             .pr(px(LEFT_PAD_RIGHT))
             .when_some(aligned_tree_width, |d, width| {
                 // 主机树展开时左侧块就是树的「抬头」：宽度一样，右边那条线和树的分隔线连起来。
-                d.w(px(width)).border_r_1().border_color(tokens.border)
+                d.w(px(width)).border_r_1().border_color(tokens.divider)
             })
             .children(icons);
 
@@ -437,7 +437,7 @@ impl MainWindow {
             .bg(if drop_target {
                 tokens.accent_soft
             } else {
-                tokens.surface
+                tokens.background
             })
             .child(
                 // 底边那条细线先画：当前标签后画，盖住它下面那一段，和内容连成一块。
@@ -447,7 +447,7 @@ impl MainWindow {
                     .left_0()
                     .right_0()
                     .h(px(1.0))
-                    .bg(tokens.border),
+                    .bg(tokens.divider),
             )
             .child(
                 h_flex()
@@ -531,7 +531,7 @@ impl MainWindow {
             .cursor_pointer()
             .when(dragging, |d| d.opacity(0.4))
             .when(active, |d| {
-                d.border_color(tokens.border)
+                d.border_color(tokens.divider)
                     .bg(tokens.background)
                     .text_color(text)
             })

@@ -139,11 +139,11 @@ impl MainWindow {
             .gap_3()
             .items_center()
             .border_t_1()
-            .border_color(tokens.border)
+            .border_color(tokens.divider)
             .bg(if overview_open {
                 tokens.hover
             } else {
-                tokens.surface
+                tokens.background
             })
             .typo(Role::Caption, tokens);
         // 左边这块（服务器状态）可点：打开 / 关上服务器概览（同 0.2.14）。
