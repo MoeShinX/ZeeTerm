@@ -164,3 +164,44 @@ fn package_records_do_not_leak_secrets_in_debug_output() {
     assert!(debug.contains("***"), "{debug}");
     assert!(debug.contains("proxy.example.com"), "{debug}");
 }
+
+#[test]
+fn a_host_without_a_proxy_mode_follows_the_default_proxy() {
+    let mut snapshot = SyncSnapshot::empty("dev-a", 1);
+    for (uid, mode) in [("h1", "default"), ("h2", "none"), ("h3", "custom")] {
+        snapshot.hosts.push(HostRecord {
+            uid: uid.to_owned(),
+            group_uid: None,
+            name: uid.to_owned(),
+            host: "web.example.internal".to_owned(),
+            port: 22,
+            username: "root".to_owned(),
+            auth_method: "password".to_owned(),
+            identity_uid: None,
+            proxy_uid: None,
+            jump_host_uid: None,
+            proxy_mode: mode.to_owned(),
+            tags: Vec::new(),
+            sort: 0,
+            legacy_algorithms: false,
+            protocol: "ssh".to_owned(),
+            x11_forwarding: false,
+            protocol_options: None,
+            created_at: 1,
+            updated_at: 1,
+            device_id: "dev-a".to_owned(),
+        });
+    }
+    let bytes = snapshot.to_json().expect("序列化");
+    // 写了的值原样读回。
+    let back = SyncSnapshot::parse(&bytes).expect("解析");
+    let modes: Vec<&str> = back.hosts.iter().map(|h| h.proxy_mode.as_str()).collect();
+    assert_eq!(modes, ["default", "none", "custom"]);
+    // 没写这个字段的包（旧版本 / 别的来源）：落成「跟随默认代理」，不是空串。
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    for host in value["hosts"].as_array_mut().unwrap() {
+        host.as_object_mut().unwrap().remove("proxy_mode");
+    }
+    let stripped = SyncSnapshot::parse(&serde_json::to_vec(&value).unwrap()).expect("解析");
+    assert!(stripped.hosts.iter().all(|h| h.proxy_mode == "default"));
+}

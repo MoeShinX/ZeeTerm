@@ -19,7 +19,8 @@ use zssh_core::model::{
 use super::MainWindow;
 use super::host_dialog::HostPropsDialog;
 use super::host_form::{
-    FormInput, IdentityAction, SerialInput, TelnetInput, can_reveal, mismatch_note, plan_save,
+    FormInput, IdentityAction, SerialInput, TelnetInput, can_reveal, initial_proxy_mode,
+    mismatch_note, plan_save,
 };
 use super::host_props::{self, Category};
 use super::modal::Modal;
@@ -190,8 +191,8 @@ impl HostForm {
             group: host.map_or(group, |h| h.group_id),
             auth: host.map_or(AuthMethod::Password, |h| h.auth_method),
             identity: host.and_then(|h| h.identity_id),
-            // 新建主机默认不使用代理（不跟随全局默认代理）；编辑已有主机显示它保存的值。
-            proxy_mode: host.map_or(ProxyMode::None, |h| h.proxy_mode),
+            // 新建主机默认跟随全局默认代理（用户 11-03 定）；编辑已有主机显示它保存的值。
+            proxy_mode: initial_proxy_mode(host),
             proxy: host.and_then(|h| h.proxy_id),
             jump: host.and_then(|h| h.jump_host_id),
             remember: true,

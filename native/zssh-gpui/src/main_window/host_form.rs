@@ -354,6 +354,12 @@ pub fn plan_save(
     })
 }
 
+/// 表单打开时的代理方式：新建主机默认「跟随默认代理」，编辑已有主机显示它保存的值。
+/// 串口主机不用代理由保存时的规则保证（`plan_save` 对串口一律写「不用代理」），这里不特殊处理。
+pub fn initial_proxy_mode(existing: Option<&Host>) -> ProxyMode {
+    existing.map_or(ProxyMode::Default, |host| host.proxy_mode)
+}
+
 /// 原来存的组合就不配套（旧数据或同步来的）：返回要取消选择的原因。
 pub fn mismatch_note(identity: &Identity, method: AuthMethod) -> Option<String> {
     (!identity_fits_auth(identity.kind, method))
@@ -399,6 +405,29 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    #[test]
+    fn new_hosts_follow_the_default_proxy_and_existing_ones_keep_theirs() {
+        assert_eq!(initial_proxy_mode(None), ProxyMode::Default);
+        // 已有主机原样（host() 夹具存的是「不用代理」），不被新默认带偏。
+        let none = host(1);
+        assert_eq!(initial_proxy_mode(Some(&none)), ProxyMode::None);
+        let mut custom = host(2);
+        custom.proxy_mode = ProxyMode::Custom;
+        assert_eq!(initial_proxy_mode(Some(&custom)), ProxyMode::Custom);
+        let mut follow = host(3);
+        follow.proxy_mode = ProxyMode::Default;
+        assert_eq!(initial_proxy_mode(Some(&follow)), ProxyMode::Default);
+    }
+
+    #[test]
+    fn a_new_serial_host_still_saves_without_a_proxy() {
+        // 新建表单的初值是「跟随默认代理」，串口主机保存时仍然落成「不用代理」。
+        let mut form = serial_input();
+        form.proxy_mode = initial_proxy_mode(None);
+        let plan = plan_save(&form, None, &[], None).expect("合法");
+        assert_eq!(plan.draft.proxy_mode, ProxyMode::None);
     }
 
     fn identity(id: i64, name: &str, kind: IdentityKind, has_secret: bool) -> Identity {

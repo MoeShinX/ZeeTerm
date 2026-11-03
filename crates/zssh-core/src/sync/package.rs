@@ -96,7 +96,8 @@ pub struct HostRecord {
     pub proxy_uid: Option<String>,
     #[serde(default)]
     pub jump_host_uid: Option<String>,
-    #[serde(default)]
+    /// 包里没写代理方式（旧版本 / 别的来源）：落成「跟随默认代理」，不能是空串（空串读不回库）。
+    #[serde(default = "default_proxy_mode")]
     pub proxy_mode: String,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -122,6 +123,10 @@ pub struct HostRecord {
     /// 不认识的键。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_options: Option<Value>,
+}
+
+fn default_proxy_mode() -> String {
+    "default".to_owned()
 }
 
 fn default_protocol() -> String {
