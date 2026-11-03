@@ -51,6 +51,7 @@ mod real {
         "x11_close_owned",
         "assert_x11",
         "assert_n4",
+        "assert_tab_numbers",
     ];
 
     pub fn is_known(name: &str) -> bool {
@@ -364,6 +365,22 @@ mod real {
                     _ => return Err("不认识的项".to_owned()),
                 };
                 return check(got == b, &format!("{a}（现在是 {got}）"));
+            }
+            // 终端标签的序号小方块：`assert_tab_numbers:<序号>[,<序号>…]`（V2-U11：按主机编号）。
+            "assert_tab_numbers" => {
+                let infos = this.workspace.read(cx).tab_infos();
+                let got = super::super::titlebar::tab_numbers(&infos)
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                // 调试脚本里逗号会和后面的参数混在一起，所以这里把 a / b 拼回去。
+                let want = if b.is_empty() {
+                    a.to_owned()
+                } else {
+                    format!("{a}:{b}")
+                };
+                return check(got == want, "标签序号");
             }
             "assert_host_form" => {
                 let form = this.host_form.as_ref().ok_or("主机表单没开着")?;

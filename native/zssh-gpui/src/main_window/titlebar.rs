@@ -52,9 +52,45 @@ fn status_color(status: TabStatus, tokens: &Tokens) -> Hsla {
     }
 }
 
-/// 标签序号：从 1 开始的位置（拖动排序、关闭之后跟着重排，超过 9 个就是两位数）。
-fn badge_label(index: usize) -> SharedString {
-    (index + 1).to_string().into()
+/// 标签「是哪一处」：序号按它编，同一处的标签同一个号。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum TabTarget {
+    /// 有主机记录的按主机 id。
+    Host(i64),
+    /// 没有主机记录的快速连接按 `用户@地址:端口`。
+    Quick(String),
+    /// 空白标签（还没连任何东西）：各自单独一个号，用标签 id 区分。
+    Blank(u64),
+}
+
+fn tab_target(info: &TabInfo) -> TabTarget {
+    match (info.host_id, &info.quick_key) {
+        (Some(id), _) => TabTarget::Host(id),
+        (None, Some(key)) => TabTarget::Quick(key.clone()),
+        (None, None) => TabTarget::Blank(info.id),
+    }
+}
+
+/// 每个标签的序号（从 1 开始）：从左到右扫，第一次出现的「处」拿下一个号，之后同一处的标签沿用。
+/// 例：A、A、B、A、C → 1、1、2、1、3。关标签、拖动排序、复制会话之后重新算，同一处的号可能因此变化。
+fn badge_numbers(targets: &[TabTarget]) -> Vec<usize> {
+    let mut seen: std::collections::HashMap<&TabTarget, usize> = std::collections::HashMap::new();
+    targets
+        .iter()
+        .map(|target| {
+            let next = seen.len() + 1;
+            *seen.entry(target).or_insert(next)
+        })
+        .collect()
+}
+
+/// 一排终端标签的序号（标签条和调试断言共用）。
+pub(super) fn tab_numbers(infos: &[TabInfo]) -> Vec<usize> {
+    badge_numbers(&infos.iter().map(tab_target).collect::<Vec<_>>())
+}
+
+fn badge_label(number: usize) -> SharedString {
+    number.to_string().into()
 }
 
 /// 序号的字色：琥珀色（连接中）底色偏亮，用深色字；其余状态底色偏深，用白字。
@@ -63,6 +99,11 @@ fn badge_ink(status: TabStatus) -> Hsla {
         TabStatus::Connecting => ::gpui::rgb(0x1F2937).into(),
         _ => ::gpui::white(),
     }
+}
+
+/// 序号小方块的悬停提示：「<主机名> · <状态>」。
+fn badge_tooltip(name: &str, status: TabStatus) -> SharedString {
+    format!("{name} · {}", status_title(status)).into()
 }
 
 fn status_title(status: TabStatus) -> &'static str {
@@ -300,6 +341,7 @@ impl MainWindow {
             .children(icons);
 
         // ---- 会话标签 ----
+        let numbers = tab_numbers(&infos);
         // 标签条：标签放不下先等比缩窄到最小宽度，再放不下就横向滚动（右边出现溢出按钮）。
         let wheel_entity = entity.clone();
         let strip = h_flex()
@@ -324,7 +366,7 @@ impl MainWindow {
             })
             .children(infos.iter().enumerate().map(|(index, info)| {
                 self.render_tab(
-                    index,
+                    (index, numbers[index]),
                     info,
                     active == Some(index)
                         && view == MainView::Terminal
@@ -424,7 +466,8 @@ impl MainWindow {
 
     fn render_tab(
         &self,
-        index: usize,
+        // （标签位置，序号）：位置用来当元素 id / 菜单下标，序号是按主机编的小方块数字。
+        (index, number): (usize, usize),
         info: &TabInfo,
         active: bool,
         tab_count: usize,
@@ -433,7 +476,12 @@ impl MainWindow {
     ) -> AnyElement {
         let entity = cx.entity();
         let dot = status_color(info.status, tokens);
-        let dot_title = status_title(info.status);
+        // 悬停提示「<主机名> · <状态>」：序号不是位置，别让人以为是。
+        let host_name = info
+            .host_id
+            .and_then(|id| self.store.host(id))
+            .map_or_else(|| info.title.clone(), |host| host.name.clone());
+        let dot_title = badge_tooltip(&host_name, info.status);
         let title: SharedString = info.title.clone().into();
         let group: SharedString = format!("tab-group-{}", info.id).into();
         let hover = tokens.hover;
@@ -498,7 +546,7 @@ impl MainWindow {
                 move |window, cx| Tooltip::new(title.clone()).build(window, cx)
             })
             .child(
-                // 序号小方块：数字是标签从左到右的位置，底色是连接状态（原来的状态小圆点换成它）。
+                // 序号小方块：数字按主机编（同一台主机的标签同一个号），底色是这个标签自己的连接状态。
                 div()
                     .id(("tab-badge", index))
                     .flex()
@@ -514,8 +562,8 @@ impl MainWindow {
                     .text_size(px(11.0))
                     .font_weight(::gpui::FontWeight::BOLD)
                     .line_height(px(16.0))
-                    .child(badge_label(index))
-                    .tooltip(move |window, cx| Tooltip::new(dot_title).build(window, cx)),
+                    .child(badge_label(number))
+                    .tooltip(move |window, cx| Tooltip::new(dot_title.clone()).build(window, cx)),
             )
             .child(div().flex_1().min_w_0().truncate().child(title))
             .when(info.ai_active, |d| {
@@ -636,9 +684,12 @@ pub(crate) fn window_controls(tokens: &Tokens, maximized: bool) -> impl IntoElem
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{LeftIcon, badge_ink, badge_label, left_block_width, left_icons, status_color};
+    use super::{
+        LeftIcon, TabTarget, badge_ink, badge_label, badge_numbers, badge_tooltip,
+        left_block_width, left_icons, status_color, tab_target,
+    };
     use crate::app_theme::Tokens;
-    use crate::terminal_workspace::TabStatus;
+    use crate::terminal_workspace::{TabInfo, TabStatus};
     use crate::window_state::TREE_MIN_WIDTH;
 
     #[test]
@@ -682,13 +733,92 @@ mod tests {
         assert!(left_block_width(left_icons(true).len()) <= TREE_MIN_WIDTH);
     }
 
+    fn host(id: i64) -> TabTarget {
+        TabTarget::Host(id)
+    }
+
+    fn quick(key: &str) -> TabTarget {
+        TabTarget::Quick(key.to_owned())
+    }
+
     #[test]
-    fn the_badge_number_is_the_position_counted_from_one() {
-        let labels: Vec<_> = (0..11).map(|i| badge_label(i).to_string()).collect();
-        assert_eq!(labels[0], "1");
-        assert_eq!(labels[8], "9");
-        assert_eq!(labels[9], "10", "两位数照样显示");
-        assert_eq!(labels[10], "11");
+    fn the_same_host_keeps_the_same_number_and_new_hosts_take_the_next_one() {
+        // A、A、B、A、C → 1、1、2、1、3
+        assert_eq!(
+            badge_numbers(&[host(1), host(1), host(2), host(1), host(3)]),
+            [1, 1, 2, 1, 3]
+        );
+        assert_eq!(badge_numbers(&[]), Vec::<usize>::new());
+        assert_eq!(badge_numbers(&[host(7)]), [1]);
+        // 号码只按第一次出现的先后给，不是主机 id 的大小。
+        assert_eq!(badge_numbers(&[host(9), host(2), host(9)]), [1, 2, 1]);
+    }
+
+    #[test]
+    fn quick_connects_merge_by_user_address_and_port_and_blanks_stand_alone() {
+        let tabs = [
+            quick("ops@192.0.2.5:22"),
+            host(1),
+            quick("ops@192.0.2.5:22"),
+            quick("ops@192.0.2.5:2222"),
+            quick("root@192.0.2.5:22"),
+            TabTarget::Blank(10),
+            TabTarget::Blank(11),
+            host(1),
+        ];
+        assert_eq!(badge_numbers(&tabs), [1, 2, 1, 3, 4, 5, 6, 2]);
+    }
+
+    #[test]
+    fn a_tab_is_identified_by_host_then_quick_key_then_itself() {
+        let mut info = TabInfo {
+            id: 5,
+            title: "x".to_owned(),
+            status: TabStatus::Empty,
+            host_id: None,
+            quick_target: None,
+            quick_key: None,
+            can_reconnect: false,
+            can_disconnect: false,
+            ai_active: false,
+        };
+        assert_eq!(tab_target(&info), TabTarget::Blank(5), "空白标签各自一个号");
+        info.quick_key = Some("ops@192.0.2.5:22".to_owned());
+        assert_eq!(tab_target(&info), quick("ops@192.0.2.5:22"));
+        info.host_id = Some(3);
+        assert_eq!(tab_target(&info), host(3), "有主机记录的按主机 id");
+    }
+
+    #[test]
+    fn numbers_are_recomputed_after_a_close_or_a_reorder() {
+        let before = [host(1), host(2), host(1), host(3)];
+        assert_eq!(badge_numbers(&before), [1, 2, 1, 3]);
+        // 关掉最左边的标签：host 2 成了第一个，它的号变成 1，其余顺延。
+        assert_eq!(badge_numbers(&before[1..]), [1, 2, 3]);
+        // 把最后一个拖到最前：host 3 先出现，拿 1。
+        assert_eq!(
+            badge_numbers(&[host(3), host(1), host(2), host(1)]),
+            [1, 2, 3, 2]
+        );
+    }
+
+    #[test]
+    fn the_badge_tooltip_names_the_host_and_the_status() {
+        assert_eq!(
+            badge_tooltip("web-1", TabStatus::Connected).to_string(),
+            "web-1 · 已连接"
+        );
+        assert_eq!(
+            badge_tooltip("ops@192.0.2.5", TabStatus::Disconnected).to_string(),
+            "ops@192.0.2.5 · 已断开"
+        );
+    }
+
+    #[test]
+    fn the_badge_text_is_the_number_and_two_digits_still_show() {
+        assert_eq!(badge_label(1).to_string(), "1");
+        assert_eq!(badge_label(9).to_string(), "9");
+        assert_eq!(badge_label(10).to_string(), "10");
     }
 
     #[test]

@@ -499,6 +499,9 @@ pub(crate) struct TabInfo {
     pub host_id: Option<i64>,
     /// 聚焦窗格是快速连接时的 `user@host:port`（右键「复制地址」用）。
     pub quick_target: Option<String>,
+    /// 聚焦窗格是快速连接时归并用的键 `用户@地址:端口`（地址不分大小写）：输入写法不同（带不带端口）
+    /// 但连的是同一处，就算同一台主机（标签序号按它编号）。
+    pub quick_key: Option<String>,
     /// 至少有一个窗格已经断开（右键「重新连接」才可用）。
     pub can_reconnect: bool,
     /// 至少有一个窗格还连着或正在连（右键「断开连接」才可用）。
@@ -649,6 +652,14 @@ impl Tab {
             status: self.status(),
             host_id: self.active().host_id,
             quick_target: self.active().quick.as_ref().map(|spec| spec.label.clone()),
+            quick_key: self.active().quick.as_ref().map(|spec| {
+                format!(
+                    "{}@{}:{}",
+                    spec.target.username,
+                    spec.target.host.to_lowercase(),
+                    spec.target.port
+                )
+            }),
             can_reconnect: self
                 .panes
                 .iter()
@@ -3913,6 +3924,8 @@ mod tab_tests {
         let info = down.info();
         assert_eq!(info.host_id, None, "快速连接没有主机记录");
         assert_eq!(info.quick_target.as_deref(), Some("ops@192.0.2.5"));
+        // 归并用的键带上端口（输入时没写端口也一样），地址不分大小写。
+        assert_eq!(info.quick_key.as_deref(), Some("ops@192.0.2.5:22"));
         assert!(info.can_reconnect, "断线后能重连（地址和密码都记着）");
         assert!(
             !Tab::new("x".to_owned(), pane_in(PaneState::Disconnected, None))
