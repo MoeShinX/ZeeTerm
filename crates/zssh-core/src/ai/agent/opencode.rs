@@ -396,11 +396,11 @@ impl Drop for AgentRuntime {
         let child = self.shared.child.lock().ok().and_then(|mut c| c.take());
         if let Some(child) = child {
             if let Some(pid) = child.id() {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                let mut kill = std::process::Command::new("taskkill");
+                kill.args(["/PID", &pid.to_string(), "/T", "/F"])
                     .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
+                    .stderr(std::process::Stdio::null());
+                let _ = crate::process_util::hide_console(&mut kill).status();
             }
         }
     }

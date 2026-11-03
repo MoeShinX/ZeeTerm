@@ -3,6 +3,9 @@
 //! 各功能的独立演示窗口只在 debug 钩子下打开（见 `dev_hooks`），G07b/G07c 逐个收编。
 //! 数据目录按 `ZSSH_DATA_DIR` 决定。
 
+// 发行版用 GUI 子系统：双击 exe 不再多出一个控制台窗口。调试构建保留控制台，方便看日志。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod about_view;
 mod agent_chat_demo;
 #[cfg(test)]

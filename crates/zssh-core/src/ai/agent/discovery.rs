@@ -847,20 +847,15 @@ pub async fn probe_version(path: &Path) -> Result<String, ProbeError> {
 /// 会被 cmd 当成命令语法解释。标准库发现程序本身是批处理脚本时会改用 cmd 专用的转义
 /// （Rust 1.77 起，CVE-2024-24576 的修复），转义不了的参数直接拒绝启动，而不是冒险。
 pub fn build_command(path: &Path) -> tokio::process::Command {
-    tokio::process::Command::new(path)
+    // 发行版是 GUI 子系统：不隐藏的话每启动一个智能体就弹一个控制台窗口。
+    let mut cmd = tokio::process::Command::new(path);
+    hide_console(&mut cmd);
+    cmd
 }
 
 /// 不给子进程弹控制台窗口。
 pub fn hide_console(cmd: &mut tokio::process::Command) {
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = cmd;
-    }
+    crate::process_util::hide_console_async(cmd);
 }
 
 /// 版本号是否低于最低要求。

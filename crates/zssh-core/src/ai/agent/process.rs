@@ -47,11 +47,12 @@ pub async fn kill_process_tree(child: &mut tokio::process::Child) -> std::io::Re
         let _ = child.wait().await;
         return Ok(());
     };
-    let status = tokio::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
+    let mut kill = tokio::process::Command::new("taskkill");
+    kill.args(["/PID", &pid.to_string(), "/T", "/F"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let status = crate::process_util::hide_console_async(&mut kill)
         .status()
         .await;
     let _ = child.wait().await;

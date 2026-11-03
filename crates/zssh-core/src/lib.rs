@@ -8,6 +8,7 @@ pub mod error;
 pub mod external_url;
 pub mod model;
 pub mod pathnorm;
+pub mod process_util;
 pub mod sftp;
 pub mod ssh;
 pub mod store;
