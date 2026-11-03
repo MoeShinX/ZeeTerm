@@ -5,8 +5,8 @@
 
 use crate::error::ZsshError;
 
-/// 应用级 entropy。换掉它旧密文就解不开了，所以不能随便改
-/// （产品名改成了 `Z-SSH`，这里也保持原样——改这个等于换 entropy）。
+/// 应用级 entropy。这是历史值：当初产品还叫 Z-ssh 时定下的，现在产品叫 ZeeTerm，
+/// 这里也保持原样。**永远不要改**——改一个字节，已有的密文就都解不开了。
 #[cfg(windows)]
 const ENTROPY: &[u8] = b"Z-ssh/v1/secret";
 
