@@ -1,6 +1,6 @@
 //! 原生更新：读取 `latest.json`、选择平台包、验证 minisign 签名和签名里的版本。
 //!
-//! 语义与已安装的 Tauri updater 2.14.0 保持一致：
+//! 语义沿用 Tauri updater 2.14.0（Z-SSH 的更新器）的约定：
 //! - manifest 的 `version` 只是"公告版本"，本身没有被签名；
 //! - 签名 trusted comment 里的 `version:` 才是包真正对应的版本；
 //! - 两者不一致、缺版本、错公钥、包被改过都必须拒绝；
@@ -22,11 +22,24 @@ pub use install::{
     verify_plan_file,
 };
 
-/// 更新配置（`updater.json`，只有 `pubkey` 和 `endpoints`），编译期嵌入。ZeeTerm 沿用 Tauri 版的
-/// 同一把公钥和同一个更新源，这样从 Tauri 版装的程序更新到 ZeeTerm 时验的是同一条信任链。
-/// 这份文件放在本 crate 里而不是读 `src-tauri/tauri.conf.json`，是为了让原生版能脱离 Tauri 版
-/// 单独成库；在同时带着 Tauri 版的仓库里，有测试保证两份内容一致。
+/// 更新配置（`updater.json`，只有 `pubkey` 和 `endpoints`），编译期嵌入。
+///
+/// `pubkey` 是 ZeeTerm 专用的更新签名公钥（和 Z-SSH 的分开）：由 `scripts/updater-keygen.ps1`
+/// 生成，发版人把打印出来的公钥填进这个文件。还没填的时候它是占位值（见
+/// [`is_placeholder_pubkey`]），发行构建据此拒绝安装任何更新。
 const UPDATER_CONF: &str = include_str!("../updater.json");
+
+/// `updater.json` 里 `pubkey` 还没填真实公钥时的占位值前缀。
+pub const PUBKEY_PLACEHOLDER: &str = "PLACEHOLDER";
+
+/// 公钥是不是还没配置的占位值。占位时发行构建不检查更新、不下载、不安装：没有公钥就没法证明
+/// 安装包来自发布者，宁可不更新也不能放行。
+pub fn is_placeholder_pubkey(pubkey: &str) -> bool {
+    pubkey
+        .trim()
+        .to_ascii_uppercase()
+        .starts_with(PUBKEY_PLACEHOLDER)
+}
 
 /// 编译期嵌入的更新器配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +48,13 @@ pub struct UpdaterConfig {
     pub pubkey: String,
     /// 更新清单地址，按顺序尝试。
     pub endpoints: Vec<String>,
+}
+
+impl UpdaterConfig {
+    /// 更新签名公钥是否已经配置（不是占位值）。
+    pub fn signing_configured(&self) -> bool {
+        !is_placeholder_pubkey(&self.pubkey)
+    }
 }
 
 /// 取内嵌的更新器配置；配置文件被改坏时返回原因（有单测保证仓库里的这份能解析）。
@@ -69,8 +89,8 @@ fn parse_updater_config(json: &str) -> Result<UpdaterConfig, String> {
     Ok(UpdaterConfig { pubkey, endpoints })
 }
 
-/// 由更新源地址推出发布页（`https://github.com/<owner>/<repo>/releases`）。试用版不能自动更新时，
-/// "打开发布页"打开它让用户手动下载。只认 `https://github.com/<owner>/<repo>/releases/...`
+/// 由更新源地址推出发布页（`https://github.com/<owner>/<repo>/releases`）。自动更新走不通时（比如网络不通）
+/// 用户可以"打开发布页"手动下载。只认 `https://github.com/<owner>/<repo>/releases/...`
 /// 形式的地址，owner / repo 只允许常见的名字字符；推不出来返回 `None`（界面就不显示按钮）。
 pub fn releases_page_url(endpoint: &str) -> Option<String> {
     let rest = endpoint.strip_prefix("https://github.com/")?;
@@ -182,6 +202,89 @@ impl Manifest {
     }
 }
 
+/// 发版时写进 `latest.json` 的平台键（只写通用的 Windows 键；解析端两个键都认）。
+pub const RELEASE_PLATFORM_KEY: &str = "windows-x86_64";
+
+/// 发版用的清单参数。
+#[derive(Debug, Clone)]
+pub struct ReleaseManifest<'a> {
+    pub version: &'a str,
+    pub notes: &'a str,
+    /// RFC 3339 时间，例如 `2026-11-03T08:00:00Z`。
+    pub pub_date: &'a str,
+    /// 安装包的下载地址。
+    pub url: &'a str,
+    /// 安装包 `.minisig` 文件全文的 base64（`sign_installer` 的结果）。
+    pub signature: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct ManifestOut<'a> {
+    version: &'a str,
+    notes: &'a str,
+    pub_date: &'a str,
+    platforms: BTreeMap<&'static str, AssetOut<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct AssetOut<'a> {
+    signature: &'a str,
+    url: &'a str,
+}
+
+/// 生成 `latest.json` 文本。版本必须是合法 semver（不带 `v`）、地址必须是 https、签名不能为空；
+/// 生成的文本能被 [`parse_manifest`] 读回来，这是单测钉住的往返。
+pub fn build_latest_json(release: &ReleaseManifest<'_>) -> Result<String, UpdateError> {
+    if release.version.starts_with('v') || Version::parse(release.version).is_err() {
+        return Err(UpdateError::BadVersion(release.version.to_owned()));
+    }
+    if release.signature.trim().is_empty() {
+        return Err(UpdateError::MissingSignature);
+    }
+    if !release.url.starts_with("https://") {
+        return Err(UpdateError::Signature(format!(
+            "安装包地址必须是 https：{}",
+            release.url
+        )));
+    }
+    let mut platforms = BTreeMap::new();
+    platforms.insert(
+        RELEASE_PLATFORM_KEY,
+        AssetOut {
+            signature: release.signature.trim(),
+            url: release.url,
+        },
+    );
+    let out = ManifestOut {
+        version: release.version,
+        notes: release.notes,
+        pub_date: release.pub_date,
+        platforms,
+    };
+    serde_json::to_string_pretty(&out).map_err(UpdateError::Json)
+}
+
+/// 签名的 trusted comment：`version:` 是验签时和清单公告版本对账的那一项（见
+/// [`verify_signature`]），`file:` 记安装包文件名，`timestamp:` 是签名时间（Unix 秒）。
+/// 字段用制表符隔开，所以文件名里不能有制表符和换行。
+pub fn trusted_comment(
+    version: &str,
+    file_name: &str,
+    timestamp: u64,
+) -> Result<String, UpdateError> {
+    if Version::parse(version).is_err() {
+        return Err(UpdateError::BadVersion(version.to_owned()));
+    }
+    if file_name.chars().any(|c| c.is_control()) {
+        return Err(UpdateError::Signature(
+            "安装包文件名里有控制字符".to_owned(),
+        ));
+    }
+    Ok(format!(
+        "timestamp:{timestamp}\tfile:{file_name}\tversion:{version}"
+    ))
+}
+
 /// 验证包字节、签名、以及 trusted comment 里的版本绑定。
 pub fn verify_signature(
     data: &[u8],
@@ -192,16 +295,16 @@ pub fn verify_signature(
 ) -> Result<(), UpdateError> {
     let pubkey_text = decode_text(pubkey_b64)?;
     let public_key =
-        PublicKey::decode(&pubkey_text).map_err(|e| UpdateError::Signature(e.to_string()))?;
+        PublicKey::decode(&pubkey_text).map_err(|e| UpdateError::Signature(describe(&e)))?;
 
     let signature_text = decode_text(signature_b64)?;
     let signature =
-        Signature::decode(&signature_text).map_err(|e| UpdateError::Signature(e.to_string()))?;
+        Signature::decode(&signature_text).map_err(|e| UpdateError::Signature(describe(&e)))?;
 
     // `true` 与 Tauri 2.14.0 一致：兼容旧版 minisign 生成的签名。
     public_key
         .verify(data, &signature, true)
-        .map_err(|e| UpdateError::Signature(e.to_string()))?;
+        .map_err(|e| UpdateError::Signature(describe(&e)))?;
 
     // 全局签名通过之后才能信任 trusted comment。
     verify_signed_version(
@@ -209,6 +312,20 @@ pub fn verify_signature(
         announced_version,
         require_signed_version,
     )
+}
+
+/// minisign-verify 的错误原文是英文；给用户看的原因换成中文（拿不准的原样带上）。
+fn describe(err: &minisign_verify::Error) -> String {
+    use minisign_verify::Error;
+    match err {
+        Error::InvalidSignature => {
+            "安装包内容与签名对不上（文件可能被改动过，或下载不完整）".to_owned()
+        }
+        Error::UnexpectedKeyId => "签名不是用 ZeeTerm 的更新密钥签的".to_owned(),
+        Error::InvalidEncoding => "签名或公钥的格式不对".to_owned(),
+        Error::UnexpectedAlgorithm | Error::UnsupportedAlgorithm => "不支持的签名算法".to_owned(),
+        other => other.to_string(),
+    }
 }
 
 fn decode_text(value: &str) -> Result<String, UpdateError> {
@@ -304,17 +421,129 @@ mod tests {
         ] {
             assert_eq!(releases_page_url(bad), None, "{bad}");
         }
-        // 内嵌配置的第一个源应该能推出发布页（试用版"打开发布页"按钮靠它）。
+        // 内嵌配置的第一个源应该能推出发布页（关于页"打开发布页"按钮靠它）。
         let config = embedded_config().expect("内嵌的更新配置应能解析");
         assert!(releases_page_url(&config.endpoints[0]).is_some_and(|url| {
             url.starts_with("https://github.com/") && url.ends_with("/releases")
         }));
     }
     #[test]
-    fn production_public_key_decodes() {
+    fn embedded_public_key_is_a_real_key_or_the_documented_placeholder() {
         let config = embedded_config().expect("内嵌的更新配置应能解析");
-        let text = decode_text(&config.pubkey).expect("公钥 base64");
-        PublicKey::decode(&text).expect("生产公钥应能解析");
+        if config.signing_configured() {
+            let text = decode_text(&config.pubkey).expect("公钥 base64");
+            PublicKey::decode(&text).expect("配置了的公钥应能解析");
+        } else {
+            // 占位值：发行构建据此拒绝安装任何更新（update_demo 里有对应测试）。
+            assert!(is_placeholder_pubkey(&config.pubkey));
+            assert!(
+                decode_text(&config.pubkey).is_err()
+                    || PublicKey::decode(&decode_text(&config.pubkey).unwrap_or_default()).is_err(),
+                "占位值不能恰好是一把能用的公钥"
+            );
+        }
+    }
+
+    #[test]
+    fn placeholder_detection_ignores_case_and_spaces_but_not_real_keys() {
+        assert!(is_placeholder_pubkey("PLACEHOLDER"));
+        assert!(is_placeholder_pubkey(
+            "  placeholder-run-the-keygen-script "
+        ));
+        let (_kp, pubkey) = keypair();
+        assert!(!is_placeholder_pubkey(&pubkey));
+        let configured = UpdaterConfig {
+            pubkey,
+            endpoints: vec!["https://example.com/latest.json".to_owned()],
+        };
+        assert!(configured.signing_configured());
+        let unconfigured = UpdaterConfig {
+            pubkey: "PLACEHOLDER".to_owned(),
+            ..configured
+        };
+        assert!(!unconfigured.signing_configured());
+    }
+
+    #[test]
+    fn generated_latest_json_round_trips_through_the_parser_and_the_verifier() {
+        let (kp, pubkey) = keypair();
+        let installer = b"installer bytes for the round trip";
+        let comment = trusted_comment("1.4.0", "ZeeTerm-Setup-1.4.0.exe", 1_700_000_000).unwrap();
+        let signature = sign(&kp, installer, &comment);
+        let json = build_latest_json(&ReleaseManifest {
+            version: "1.4.0",
+            notes: "修复若干问题\n- 第二行",
+            pub_date: "2026-11-03T08:00:00Z",
+            url: "https://github.com/owner/repo/releases/download/v1.4.0/ZeeTerm-Setup-1.4.0.exe",
+            signature: &signature,
+        })
+        .expect("生成清单");
+
+        let manifest = parse_manifest(&json).expect("清单能读回来");
+        assert_eq!(manifest.version, "1.4.0");
+        assert_eq!(manifest.notes.as_deref(), Some("修复若干问题\n- 第二行"));
+        assert_eq!(manifest.date.as_deref(), Some("2026-11-03T08:00:00Z"));
+        let package = manifest.select("1.3.9").unwrap().expect("比 1.3.9 新");
+        assert_eq!(package.platform_key, RELEASE_PLATFORM_KEY);
+        assert_eq!(package.version, "1.4.0");
+        assert!(package.url.ends_with("/v1.4.0/ZeeTerm-Setup-1.4.0.exe"));
+        verify_signature(
+            installer,
+            &package.signature,
+            &pubkey,
+            &package.version,
+            true,
+        )
+        .expect("生成的签名能通过验签和版本绑定");
+        assert!(manifest.select("1.4.0").unwrap().is_none(), "同版本不更新");
+    }
+
+    #[test]
+    fn latest_json_generation_refuses_bad_input() {
+        let ok = ReleaseManifest {
+            version: "1.0.0",
+            notes: "",
+            pub_date: "2026-11-03T08:00:00Z",
+            url: "https://example.com/a.exe",
+            signature: "c2ln",
+        };
+        assert!(build_latest_json(&ok).is_ok());
+        for bad_version in ["v1.0.0", "1.0", "latest", ""] {
+            let release = ReleaseManifest {
+                version: bad_version,
+                ..ok.clone()
+            };
+            assert!(
+                matches!(build_latest_json(&release), Err(UpdateError::BadVersion(_))),
+                "{bad_version}"
+            );
+        }
+        let release = ReleaseManifest {
+            signature: "  ",
+            ..ok.clone()
+        };
+        assert!(matches!(
+            build_latest_json(&release),
+            Err(UpdateError::MissingSignature)
+        ));
+        let release = ReleaseManifest {
+            url: "http://example.com/a.exe",
+            ..ok
+        };
+        assert!(build_latest_json(&release).is_err(), "清单里不放 http 地址");
+    }
+
+    #[test]
+    fn trusted_comment_binds_the_version_and_rejects_odd_input() {
+        let comment = trusted_comment("1.2.3", "ZeeTerm-Setup-1.2.3.exe", 5).unwrap();
+        assert_eq!(
+            comment,
+            "timestamp:5\tfile:ZeeTerm-Setup-1.2.3.exe\tversion:1.2.3"
+        );
+        assert_eq!(signed_version(&comment), Some("1.2.3"));
+        assert!(trusted_comment("1.2", "a.exe", 0).is_err());
+        assert!(trusted_comment("1.2.3", "a\tb.exe", 0).is_err());
+        assert!(trusted_comment("1.2.3", "a\nb.exe", 0).is_err());
     }
 
     /// 在同时带着 Tauri 版的仓库里，两份更新配置必须一致；独立导出的原生版仓库里没有
@@ -407,6 +636,7 @@ mod tests {
         let sig_b64 = sign(&kp, b"installer bytes", "version:0.3.0");
         let err = verify_signature(b"tampered", &sig_b64, &pubkey, "0.3.0", true).unwrap_err();
         assert!(matches!(err, UpdateError::Signature(_)));
+        assert!(err.to_string().contains("对不上"), "{err}");
     }
 
     #[test]
@@ -435,5 +665,6 @@ mod tests {
         let sig_b64 = sign(&kp, data, "version:0.3.0");
         let err = verify_signature(data, &sig_b64, &other, "0.3.0", true).unwrap_err();
         assert!(matches!(err, UpdateError::Signature(_)));
+        assert!(err.to_string().contains("更新密钥"), "{err}");
     }
 }

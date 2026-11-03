@@ -37,6 +37,20 @@ pub struct InstallPlan {
     pub sha256: String,
 }
 
+impl InstallPlan {
+    /// 同一份计划，改成"装完重启程序"：托盘的「重启安装」用它把已经排好队的计划补上
+    /// `/R /ARGS <原参数>`（与 [`plan_install`] 在 `restart` 为真时拼的参数一致）。
+    pub fn with_restart(mut self, current_exe_args: &[String]) -> Self {
+        if !self.restart {
+            self.args.push("/R".to_owned());
+            self.args.push("/ARGS".to_owned());
+            self.args.extend(current_exe_args.iter().cloned());
+            self.restart = true;
+        }
+        self
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum InstallError {
     EmptyVersion,
@@ -209,6 +223,21 @@ mod tests {
         assert_eq!(plan.args, ["/P", "/UPDATE"]);
         assert!(!plan.restart);
         assert!(command_line(&plan).contains("setup.exe"));
+    }
+
+    #[test]
+    fn with_restart_turns_a_queued_plan_into_the_restart_plan_once() {
+        let root = temp_cache("with-restart");
+        let args = vec!["--minimized".to_owned()];
+        let plain = plan_install(&request(&root, false)).expect("计划应通过");
+        let upgraded = plain.clone().with_restart(&args);
+        let direct = plan_install(&request(&root, true)).expect("计划应通过");
+        assert_eq!(upgraded, direct, "和直接按重启生成的计划一样");
+        assert_eq!(
+            upgraded.clone().with_restart(&args),
+            upgraded,
+            "已经是重启计划就不再追加参数"
+        );
     }
 
     #[test]
