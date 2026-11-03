@@ -10537,6 +10537,7 @@ dependencies = [
  "tracing",
  "uuid",
  "windows 0.62.2",
+ "windows-future 0.3.2",
  "zeroize",
  "zip",
 ]
@@ -10561,6 +10562,7 @@ dependencies = [
  "raw-window-handle",
  "reqwest",
  "russh",
+ "russh-sftp",
  "serde",
  "serde_json",
  "tokio",

@@ -30,6 +30,7 @@ mod language;
 mod lines;
 #[cfg(test)]
 mod live_tests;
+pub(crate) mod open_files;
 pub(crate) mod recovery;
 mod remote;
 mod view;
@@ -293,6 +294,8 @@ pub struct RemoteEditor {
     font_size: f32,
     /// 登记到进程级的「未保存修改」计数：退出 / 安装前检查用。
     unsaved_registration: Registration,
+    /// 登记「这个远端文件正开在编辑器里」：文件视图的「移动到…」据此跳过它（V2-U23）。
+    open_file: open_files::OpenFile,
     /// `ZSSH_EDIT_SAVE=<text>`：文件读完后替换成这段文本并保存一次（自动化测试用）。
     automation_save: Option<String>,
     /// `ZSSH_EDIT_SAVE_AS=<path>`：保存之后再另存一份（自动化测试用）。
@@ -345,6 +348,7 @@ impl RemoteEditor {
         // 数据目录只取一次：草稿路径和写线程用的是同一份，运行中改环境变量不会拆开它们。
         let data_dir = crate::settings::data_dir();
         let draft_path = draft_file_in(&data_dir, host_id, &path);
+        let open_file = open_files::OpenFile::register(host_id, &path);
 
         let mut subs = Vec::new();
         // 用户改了文字：修订号 +1。程序化替换（加载、放弃修改、恢复草稿）不发这个事件，那几处自己加。
@@ -367,6 +371,17 @@ impl RemoteEditor {
                 }
             },
         ));
+        // 查找面板在编辑器里开关（Esc、面板上的 ×、快捷键）：工具栏「查找」「替换」的按下态跟着变。
+        // 编辑器每次光标闪烁都会通知，只在面板状态真变了时才重画工具栏。
+        let mut search_shown = (false, false);
+        subs.push(cx.observe(&editor, move |_this, editor, cx| {
+            let session = editor.read(cx).search_session();
+            let now = (session.open, session.replace_mode);
+            if now != search_shown {
+                search_shown = now;
+                cx.notify();
+            }
+        }));
         // 输入框自己的状态变了（文字、光标）：本视图跟着重画。
         for input in [&save_as_input, &goto_input, &conflict_name] {
             subs.push(cx.observe(input, |_this, _input, cx| cx.notify()));
@@ -423,6 +438,7 @@ impl RemoteEditor {
             close_confirmed: false,
             font_size: ui.font_size,
             unsaved_registration: Registration::new(WorkKind::UnsavedEdits),
+            open_file,
             automation_save: var("ZSSH_EDIT_SAVE"),
             automation_save_as: var("ZSSH_EDIT_SAVE_AS"),
             automation_draft: var("ZSSH_EDIT_DRAFT"),
@@ -839,6 +855,7 @@ impl RemoteEditor {
                 // 旧路径的草稿不再属于这个编辑器。
                 self.drafts.send(DraftJob::Delete(self.draft_path.clone()));
                 self.path = path;
+                self.open_file.relocate(&self.path);
                 self.draft_path = draft_file_in(&self.data_dir, self.host_id, &self.path);
                 self.version = Some(version);
                 self.baseline = text;
@@ -1636,6 +1653,30 @@ impl RemoteEditor {
         }
     }
 
+    /// 工具栏「查找」「替换」按钮：面板已经以同一模式开着就关掉，否则打开（或切到）这个模式。
+    /// 快捷键仍走 [`Self::open_search`]，再按一次是重新选中查找框，和常见编辑器一致。
+    pub(crate) fn toggle_search(
+        &mut self,
+        replace: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session = self.editor.read(cx).search_session();
+        if search_button_closes(session.open, session.replace_mode, replace) {
+            self.editor.update(cx, |state, cx| state.close_search(cx));
+            self.focus_editor(window, cx);
+            cx.notify();
+        } else {
+            self.open_search(replace, window, cx);
+        }
+    }
+
+    /// 工具栏按钮按下态：面板开着且正是这个模式。
+    pub(crate) fn search_button_active(&self, replace: bool, cx: &App) -> bool {
+        let session = self.editor.read(cx).search_session();
+        session.open && session.replace_mode == replace
+    }
+
     /// 打开编辑器内置的查找/替换面板，并让编辑器重新拿到焦点。
     pub(crate) fn open_search(
         &mut self,
@@ -1860,6 +1901,12 @@ fn close_decision(confirmed: bool, unsaved: bool) -> CloseDecision {
     }
 }
 
+/// 工具栏「查找」/「替换」按下去是关面板还是开面板：同一模式已经开着 → 关；
+/// 没开，或开着的是另一个模式 → 打开（切到）按下的那个模式。
+fn search_button_closes(open: bool, open_in_replace: bool, pressed_replace: bool) -> bool {
+    open && open_in_replace == pressed_replace
+}
+
 /// debug 入口：把一个远端文件开在独立窗口里（`ZSSH_SFTP_EDIT` 钩子和没有主窗口时的退路）。
 /// 正式界面里编辑器是主窗口的标签（`main_window/editor_tabs.rs`）。
 pub fn open_remote_editor_window(
@@ -1908,7 +1955,20 @@ pub fn open_remote_editor_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{CloseDecision, close_decision, parse_goto, word_at};
+    use super::{CloseDecision, close_decision, parse_goto, search_button_closes, word_at};
+
+    #[test]
+    fn search_buttons_toggle_their_own_mode_and_switch_the_other() {
+        // 没开：两个按钮都是打开。
+        assert!(!search_button_closes(false, false, false));
+        assert!(!search_button_closes(false, false, true));
+        // 查找开着：再点查找关掉，点替换切到替换。
+        assert!(search_button_closes(true, false, false));
+        assert!(!search_button_closes(true, false, true));
+        // 替换开着：再点替换关掉，点查找切回查找。
+        assert!(search_button_closes(true, true, true));
+        assert!(!search_button_closes(true, true, false));
+    }
 
     #[test]
     fn closing_asks_only_when_something_is_unsaved() {

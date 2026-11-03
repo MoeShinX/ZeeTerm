@@ -149,6 +149,8 @@ pub struct UpdateDemo {
     events: Receiver<DownloadEvent>,
     sender: Sender<DownloadEvent>,
     focus: FocusHandle,
+    /// 锁屏页（V2-U26）：锁着时整个窗口只画它。
+    lock_screen: Option<Entity<crate::app_lock::LockScreen>>,
     _ime_focus: Subscription,
     _ime_blur: Subscription,
     _tick: Task<()>,
@@ -194,6 +196,7 @@ impl UpdateDemo {
             events,
             sender,
             focus,
+            lock_screen: None,
             _ime_focus,
             _ime_blur,
             _tick: Task::ready(()),

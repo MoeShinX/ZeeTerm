@@ -58,6 +58,10 @@ fn notes_heading_size(level: u8) -> f32 {
 
 impl Render for UpdateDemo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 锁屏（V2-U26）：锁着时整个窗口只画锁屏页；这个窗口是自绘标题栏，锁屏页自己带窗口按钮。
+        if let Some(cover) = crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
+            return cover;
+        }
         let tokens = Tokens::current(cx);
         let screen = self.screen();
         let version = self
@@ -82,6 +86,7 @@ impl Render for UpdateDemo {
             .child(self.header(title, subtitle, &tokens, cx))
             .child(self.body(screen, &tokens))
             .child(self.footer(screen, &tokens, cx))
+            .into_any_element()
     }
 }
 

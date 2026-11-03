@@ -443,7 +443,8 @@ impl MainWindow {
             .children(FOOTER_ACTIONS.iter().map(|action| {
                 let entity = entity.clone();
                 let kind = action.kind;
-                footer_button(action, tokens, move |_, window, cx| {
+                let brand = super::welcome::brand_icon_color(cx);
+                footer_button(action, tokens, brand, move |_, window, cx| {
                     entity.update(cx, |this, cx| match kind {
                         FooterKind::Settings => this.toggle_settings(window, cx),
                         FooterKind::Credentials => this.open_settings_section(
@@ -985,6 +986,7 @@ impl MainWindow {
 fn footer_button(
     action: &FooterAction,
     tokens: &Tokens,
+    brand: ::gpui::Hsla,
     on_click: impl Fn(&::gpui::ClickEvent, &mut ::gpui::Window, &mut ::gpui::App) + 'static,
 ) -> impl IntoElement {
     let (hover, text, muted) = (tokens.hover, tokens.text, tokens.text_muted);
@@ -1007,7 +1009,11 @@ fn footer_button(
         .tooltip(move |window, cx| {
             gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
         })
-        .child(action.icon().size_4())
+        // 设置齿轮用品牌紫（和首页标题同色系），钥匙照常跟文字色。
+        .child(match action.kind {
+            FooterKind::Settings => action.icon().text_color(brand).size_4(),
+            FooterKind::Credentials => action.icon().size_4(),
+        })
         .children(action.label.map(|label| {
             div()
                 .typo(Role::Body, tokens)

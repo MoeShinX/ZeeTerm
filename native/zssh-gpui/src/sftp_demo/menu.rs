@@ -29,6 +29,8 @@ pub(super) enum MenuAction {
     Paste,
     CopyPath,
     Rename,
+    /// 同一侧内移动到别的文件夹（V2-U23）；跨侧是上传 / 下载。
+    MoveTo,
     Delete,
     Mkdir,
     Create,
@@ -61,6 +63,7 @@ impl MenuAction {
             Self::Copy | Self::CopyPath => IconName::Copy.into(),
             Self::Paste => Ico::ClipboardPaste.into(),
             Self::Rename => Ico::Pencil.into(),
+            Self::MoveTo => Ico::FolderInput.into(),
             Self::Delete => Ico::Trash.into(),
             Self::Mkdir => Ico::FolderPlus.into(),
             Self::Create => Ico::FilePlus.into(),
@@ -409,9 +412,17 @@ pub(super) fn build_menu(context: &MenuContext) -> Vec<MenuNode> {
     };
     let open_reason = selection_reason(entries, Need::One, false);
 
+    // 「打开」和「用内置编辑器编辑」在文件上做的是同一件事，只留一个（V2-U23）：
+    // 选中的全是可进入的目录（含指向目录的链接、本地盘符）→ 「打开」；其它情况 → 「编辑」。
+    let all_enterable = !entries.is_empty() && entries.iter().all(Entry::is_enterable);
+    let open_or_edit = if all_enterable {
+        item(MenuAction::Open, "打开", open_reason, None)
+    } else {
+        item(MenuAction::EditBuiltin, "用内置编辑器编辑", builtin, None)
+    };
+
     let mut nodes = vec![
-        item(MenuAction::Open, "打开", open_reason, None),
-        item(MenuAction::EditBuiltin, "用内置编辑器编辑", builtin, None),
+        open_or_edit,
         MenuNode::Separator,
         item(
             MenuAction::Transfer,
@@ -450,6 +461,12 @@ pub(super) fn build_menu(context: &MenuContext) -> Vec<MenuNode> {
             "重命名",
             selection_reason(entries, Need::One, true),
             Some("F2"),
+        ),
+        item(
+            MenuAction::MoveTo,
+            "移动到…",
+            selection_reason(entries, Need::Some, true),
+            None,
         ),
         item(
             MenuAction::Delete,
@@ -632,7 +649,6 @@ mod tests {
         assert_eq!(
             labels(&nodes),
             [
-                "打开",
                 "用内置编辑器编辑",
                 "下载到本地",
                 "下载到…",
@@ -640,6 +656,7 @@ mod tests {
                 "粘贴",
                 "复制路径",
                 "重命名",
+                "移动到…",
                 "删除",
                 "新建",
                 "修改权限",
@@ -669,18 +686,141 @@ mod tests {
     }
 
     #[test]
-    fn folders_cannot_be_opened_in_the_editor_but_can_be_renamed() {
+    fn folders_get_open_instead_of_the_editor_and_can_be_renamed() {
         let nodes = build_menu(&context(
             Side::Remote,
             false,
             vec![entry("dir", EntryKind::Dir)],
         ));
+        assert!(find(&nodes, MenuAction::EditBuiltin).is_none());
+        assert_eq!(reason(&nodes, MenuAction::Open), None);
+        assert_eq!(reason(&nodes, MenuAction::Rename), None);
+        assert_eq!(reason(&nodes, MenuAction::MoveTo), None);
+        assert_eq!(reason(&nodes, MenuAction::Transfer), None);
+    }
+
+    fn link(name: &str, target: Option<TargetKind>) -> Entry {
+        let mut link = entry(name, EntryKind::Symlink);
+        link.target_kind = target;
+        link
+    }
+
+    /// 「打开」和「用内置编辑器编辑」永远只出现一个（文件上两者本来做同一件事）。
+    #[test]
+    fn open_and_edit_are_never_both_in_the_menu() {
+        let dir = || entry("d", EntryKind::Dir);
+        let file = || entry("f", EntryKind::File);
+        // (选中的条目, 是不是应该显示「打开」)
+        let cases: Vec<(Vec<Entry>, bool, &str)> = vec![
+            (vec![dir()], true, "目录"),
+            (vec![file()], false, "文件"),
+            (
+                vec![link("l", Some(TargetKind::Dir))],
+                true,
+                "指向目录的链接",
+            ),
+            (
+                vec![link("l", Some(TargetKind::File))],
+                false,
+                "指向文件的链接",
+            ),
+            (vec![link("l", None)], false, "断链"),
+            (vec![entry("s", EntryKind::Other)], false, "特殊文件"),
+            (vec![dir(), file()], false, "目录和文件混选"),
+            (vec![dir(), dir()], true, "多个目录"),
+            (vec![file(), file()], false, "多个文件"),
+        ];
+        for side in [Side::Remote, Side::Local] {
+            for (entries, want_open, label) in &cases {
+                let nodes = build_menu(&context(side, false, entries.clone()));
+                let has_open = find(&nodes, MenuAction::Open).is_some();
+                let has_edit = find(&nodes, MenuAction::EditBuiltin).is_some();
+                assert_eq!(has_open, *want_open, "{label} / {side:?}：打开");
+                assert_eq!(has_edit, !*want_open, "{label} / {side:?}：编辑");
+            }
+        }
+    }
+
+    #[test]
+    fn the_surviving_item_keeps_its_own_disabled_rules() {
+        // 多个目录：留下「打开」，只能对单个操作所以置灰。
+        let nodes = build_menu(&context(
+            Side::Remote,
+            false,
+            vec![entry("a", EntryKind::Dir), entry("b", EntryKind::Dir)],
+        ));
+        assert_eq!(
+            reason(&nodes, MenuAction::Open).as_deref(),
+            Some("只能对单个条目操作")
+        );
+        // 目录和文件混选：留下「编辑」，只能对单个文件所以置灰。
+        let nodes = build_menu(&context(
+            Side::Remote,
+            false,
+            vec![entry("a", EntryKind::Dir), entry("b", EntryKind::File)],
+        ));
         assert_eq!(
             reason(&nodes, MenuAction::EditBuiltin).as_deref(),
-            Some("文件夹不能用编辑器打开")
+            Some("编辑只能对单个文件")
         );
-        assert_eq!(reason(&nodes, MenuAction::Rename), None);
-        assert_eq!(reason(&nodes, MenuAction::Transfer), None);
+        // 本地文件：只剩一个置灰的「编辑」（不是两个都灰）。
+        let mut ctx = context(Side::Local, false, vec![entry("a.txt", EntryKind::File)]);
+        ctx.features.builtin_editor = false;
+        let nodes = build_menu(&ctx);
+        assert!(find(&nodes, MenuAction::Open).is_none());
+        assert_eq!(
+            reason(&nodes, MenuAction::EditBuiltin).as_deref(),
+            Some("这个功能还在做")
+        );
+        // 本地盘符：「打开」可用。
+        let nodes = build_menu(&context(
+            Side::Local,
+            false,
+            vec![entry("C:", EntryKind::Drive)],
+        ));
+        assert_eq!(reason(&nodes, MenuAction::Open), None);
+        assert!(find(&nodes, MenuAction::EditBuiltin).is_none());
+    }
+
+    #[test]
+    fn move_to_sits_under_rename_on_both_sides() {
+        for side in [Side::Remote, Side::Local] {
+            let nodes = build_menu(&context(side, false, vec![entry("a.txt", EntryKind::File)]));
+            let names = labels(&nodes);
+            let at = names.iter().position(|n| n == "移动到…").expect("移动到…");
+            assert_eq!(names[at - 1], "重命名", "{side:?}");
+            assert_eq!(names[at + 1], "删除", "{side:?}");
+            assert_eq!(reason(&nodes, MenuAction::MoveTo), None);
+        }
+    }
+
+    #[test]
+    fn move_to_works_on_a_multi_selection_but_not_on_drives_or_odd_names() {
+        let nodes = build_menu(&context(
+            Side::Remote,
+            false,
+            vec![entry("a", EntryKind::File), entry("b", EntryKind::Dir)],
+        ));
+        assert_eq!(reason(&nodes, MenuAction::MoveTo), None);
+        let nodes = build_menu(&context(
+            Side::Local,
+            false,
+            vec![entry("C:", EntryKind::Drive)],
+        ));
+        assert_eq!(
+            reason(&nodes, MenuAction::MoveTo).as_deref(),
+            Some("盘符不能这样操作")
+        );
+        let mut bad = entry("\u{fffd}x", EntryKind::File);
+        bad.name_is_utf8 = false;
+        let nodes = build_menu(&context(Side::Remote, false, vec![bad]));
+        assert_eq!(
+            reason(&nodes, MenuAction::MoveTo).as_deref(),
+            Some(NOT_UTF8_REASON)
+        );
+        // 空白处的菜单没有「移动到」。
+        let nodes = build_menu(&context(Side::Remote, true, vec![]));
+        assert!(find(&nodes, MenuAction::MoveTo).is_none());
     }
 
     #[test]
@@ -701,14 +841,14 @@ mod tests {
             reason(&nodes, MenuAction::EditBuiltin).as_deref(),
             Some("这种特殊文件不能编辑")
         );
-        // 指向目录的链接也算文件夹。
-        let mut link = entry("l", EntryKind::Symlink);
-        link.target_kind = Some(TargetKind::Dir);
-        let nodes = build_menu(&context(Side::Remote, false, vec![link]));
-        assert_eq!(
-            reason(&nodes, MenuAction::EditBuiltin).as_deref(),
-            Some("文件夹不能用编辑器打开")
-        );
+        // 指向目录的链接也算文件夹：菜单里是「打开」，没有编辑项。
+        let nodes = build_menu(&context(
+            Side::Remote,
+            false,
+            vec![link("l", Some(TargetKind::Dir))],
+        ));
+        assert!(find(&nodes, MenuAction::EditBuiltin).is_none());
+        assert_eq!(reason(&nodes, MenuAction::Open), None);
     }
 
     #[test]
@@ -729,7 +869,6 @@ mod tests {
             vec![entry("a", EntryKind::File), entry("b", EntryKind::File)],
         ));
         for action in [
-            MenuAction::Open,
             MenuAction::EditBuiltin,
             MenuAction::Rename,
             MenuAction::Permissions,
@@ -739,6 +878,7 @@ mod tests {
         for action in [
             MenuAction::Transfer,
             MenuAction::DownloadTo,
+            MenuAction::MoveTo,
             MenuAction::Delete,
             MenuAction::CopyPath,
             MenuAction::Properties,
@@ -753,9 +893,10 @@ mod tests {
         bad.name_is_utf8 = false;
         let nodes = build_menu(&context(Side::Remote, false, vec![bad]));
         for action in [
-            MenuAction::Open,
+            MenuAction::EditBuiltin,
             MenuAction::Transfer,
             MenuAction::Rename,
+            MenuAction::MoveTo,
             MenuAction::Delete,
             MenuAction::Permissions,
             MenuAction::Properties,
@@ -973,6 +1114,7 @@ mod icon_tests {
             Paste,
             CopyPath,
             Rename,
+            MoveTo,
             Delete,
             Mkdir,
             Create,

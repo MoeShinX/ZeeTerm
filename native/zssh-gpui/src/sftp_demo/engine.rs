@@ -557,12 +557,12 @@ pub(super) async fn count_remaining(channel: &SftpChannel, path: &str) -> Result
     Ok(count)
 }
 
-/// 主机名只用于标题和头部；读不到就退回编号，不影响浏览。
+/// 主机名只用于标题和头部：有名字用名字，没有才用地址；读不到就退回编号，不影响浏览。
 pub(super) fn host_label(host_id: i64) -> String {
     Database::open(&data_dir().join("zssh.db"))
         .ok()
         .and_then(|db| db.host_get(host_id).ok())
-        .map(|host| host.name)
+        .map(|host| super::header::display_name(&host.name, &host.host, host_id))
         .unwrap_or_else(|| format!("主机 #{host_id}"))
 }
 

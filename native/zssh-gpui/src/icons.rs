@@ -55,6 +55,7 @@ icon_assets!(
         Radio,
         Rows2,
         Rows3,
+        ScanText,
         SendHorizontal,
         Server,
         SquarePen,
@@ -88,8 +89,9 @@ const OWN_ICONS: &[(&str, &[u8])] = &[
     ),
 ];
 
-/// 设置齿轮（原创）：8 个圆头的齿、细线、中心一个明显的圆孔，风格取自 macOS / iOS 系统设置，但不是 Apple 的字形
-/// （SF Symbols 的许可不允许分发），线条是自己用程序按几何算出来的。侧栏左下的「设置」和标题栏折叠后的入口共用。
+/// 设置齿轮（原创）：线框，外圈 14 个细齿、里面一圈圆环、三根辐条汇到中心，风格取自 iOS「设置」的齿轮，
+/// 但不是 Apple 的图形（不能分发），形状是自己用程序按几何算出来的。侧栏左下的「设置」和标题栏折叠后的入口共用，
+/// 两处都染成首页标题的品牌紫（`welcome::brand_icon_color`）。
 pub fn gear_icon() -> gpui_kit::component::Icon {
     gpui_kit::component::Icon::empty().path("zeeterm/gear.svg")
 }
@@ -209,6 +211,7 @@ mod tests {
             Ico::Radio,
             Ico::Rows2,
             Ico::Rows3,
+            Ico::ScanText,
             Ico::SendHorizontal,
             Ico::Server,
             Ico::ShieldAlert,
@@ -270,9 +273,13 @@ mod tests {
         let text = std::str::from_utf8(&bytes).expect("SVG 是文本");
         assert!(
             text.starts_with("<svg") && text.contains("currentColor"),
-            "线条图标，颜色跟着文字色走"
+            "单色图标，颜色跟着文字色走（调用处染成品牌紫）"
         );
-        assert!(text.contains("<circle"), "中心要有圆孔");
+        // iOS「设置」那种齿轮：外圈细齿、里面一圈圆环、三根辐条汇到中心。
+        assert!(
+            text.contains("<circle") && text.contains("<line"),
+            "要有内圈和辐条"
+        );
         // 侧栏左下的「设置」和标题栏折叠后的齿轮都走 gear_icon，不再用组件库的 Settings。
         for (name, text) in [
             ("sidebar.rs", include_str!("main_window/sidebar.rs")),

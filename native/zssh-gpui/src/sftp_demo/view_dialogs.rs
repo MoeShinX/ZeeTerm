@@ -217,6 +217,9 @@ impl SftpDemo {
             Dialog::DownloadTo(d) => (460.0, self.download_body(d, tokens, cx)),
             Dialog::ExtractConflict(a) => (480.0, self.extract_body(a, tokens, cx)),
             Dialog::OverwriteRename(a) => (420.0, self.overwrite_body(a, tokens, cx)),
+            Dialog::MoveTo(d) => (520.0, self.move_body(d, tokens, cx)),
+            Dialog::MoveConflict(c) => (440.0, self.move_conflict_body(c, tokens, cx)),
+            Dialog::MoveSummary(r) => (480.0, self.move_summary_body(r, tokens, cx)),
         };
         let click_entity = entity.clone();
         let key_entity = entity.clone();

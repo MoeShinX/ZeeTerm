@@ -127,6 +127,8 @@ pub struct TermWindow {
     focus: FocusHandle,
     ime_key: String,
     dragger: Dragger,
+    /// 锁屏页（V2-U26）：锁着时整个窗口只画它。
+    lock_screen: Option<Entity<crate::app_lock::LockScreen>>,
     _observe: Subscription,
 }
 
@@ -143,6 +145,7 @@ impl TermWindow {
             focus,
             ime_key,
             dragger: Dragger::default(),
+            lock_screen: None,
             _observe,
         }
     }
@@ -427,6 +430,16 @@ impl TermWindow {
 
 impl Render for TermWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 锁屏（V2-U26）：锁着时整个窗口只画锁屏页，里面的内容这一帧不进元素树。
+        if let Some(cover) = crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
+            return cover;
+        }
+        self.render_unlocked(window, cx).into_any_element()
+    }
+}
+
+impl TermWindow {
+    fn render_unlocked(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = Tokens::current(cx);
         let infos = self.workspace.read(cx).tab_infos();
         let active = self.workspace.read(cx).active_index();

@@ -312,3 +312,181 @@ pub async fn connect_trusting(
         .await
         .expect("连上本机测试服务器")
 }
+
+// ---------------------------------------------------------------------------
+// SFTP 子系统：一棵固定的假目录树（只读），验证文件视图的首屏逻辑（家目录、起始目录、回退）。
+// ---------------------------------------------------------------------------
+
+/// [`spawn_sftp`] 的登录目录（`realpath(".")` 的结果）。
+pub const SFTP_HOME: &str = "/home/tester";
+
+/// 假目录树：目录 -> 里面的条目（名字、是不是目录）。
+fn sftp_tree(dir: &str) -> Option<Vec<(&'static str, bool)>> {
+    match dir {
+        "/home/tester" => Some(vec![("notes.txt", false), ("work", true)]),
+        "/srv/www" => Some(vec![("releases", true), ("app.tar.gz", false)]),
+        "/srv/www/releases" => Some(vec![("2026-11-01", true), ("deploy.sh", false)]),
+        _ => None,
+    }
+}
+
+struct SftpFiles {
+    /// 已经把内容读完的目录句柄：再读一次回 EOF。
+    drained: std::collections::HashSet<String>,
+}
+
+impl russh_sftp::server::Handler for SftpFiles {
+    type Error = russh_sftp::protocol::StatusCode;
+
+    fn unimplemented(&self) -> Self::Error {
+        russh_sftp::protocol::StatusCode::OpUnsupported
+    }
+
+    async fn init(
+        &mut self,
+        _version: u32,
+        _extensions: std::collections::HashMap<String, String>,
+    ) -> Result<russh_sftp::protocol::Version, Self::Error> {
+        Ok(russh_sftp::protocol::Version::new())
+    }
+
+    async fn close(
+        &mut self,
+        id: u32,
+        _handle: String,
+    ) -> Result<russh_sftp::protocol::Status, Self::Error> {
+        Ok(russh_sftp::protocol::Status {
+            id,
+            status_code: russh_sftp::protocol::StatusCode::Ok,
+            error_message: "Ok".to_owned(),
+            language_tag: "en-US".to_owned(),
+        })
+    }
+
+    async fn realpath(
+        &mut self,
+        id: u32,
+        path: String,
+    ) -> Result<russh_sftp::protocol::Name, Self::Error> {
+        let resolved = if path == "." || path.is_empty() {
+            SFTP_HOME.to_owned()
+        } else {
+            path
+        };
+        Ok(russh_sftp::protocol::Name {
+            id,
+            files: vec![russh_sftp::protocol::File::dummy(resolved)],
+        })
+    }
+
+    async fn opendir(
+        &mut self,
+        id: u32,
+        path: String,
+    ) -> Result<russh_sftp::protocol::Handle, Self::Error> {
+        if sftp_tree(&path).is_none() {
+            return Err(russh_sftp::protocol::StatusCode::NoSuchFile);
+        }
+        self.drained.remove(&path);
+        Ok(russh_sftp::protocol::Handle { id, handle: path })
+    }
+
+    async fn readdir(
+        &mut self,
+        id: u32,
+        handle: String,
+    ) -> Result<russh_sftp::protocol::Name, Self::Error> {
+        let entries = sftp_tree(&handle).ok_or(russh_sftp::protocol::StatusCode::NoSuchFile)?;
+        if !self.drained.insert(handle) {
+            return Err(russh_sftp::protocol::StatusCode::Eof);
+        }
+        let files = entries
+            .into_iter()
+            .map(|(name, is_dir)| {
+                let attrs = russh_sftp::protocol::FileAttributes {
+                    size: Some(if is_dir { 4096 } else { 1024 }),
+                    permissions: Some(if is_dir { 0o040_755 } else { 0o100_644 }),
+                    mtime: Some(1_730_000_000),
+                    ..Default::default()
+                };
+                russh_sftp::protocol::File::new(name, attrs)
+            })
+            .collect();
+        Ok(russh_sftp::protocol::Name { id, files })
+    }
+}
+
+/// 接 SFTP 子系统的迷你服务器：登录目录 [`SFTP_HOME`]，另有 `/srv/www`、`/srv/www/releases` 两个目录。
+struct SftpShell {
+    channels: std::collections::HashMap<ChannelId, Channel<Msg>>,
+}
+
+impl server::Handler for SftpShell {
+    type Error = russh::Error;
+
+    async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
+        Ok(Auth::Reject {
+            proceed_with_methods: Some(MethodSet::from(&[MethodKind::Password][..])),
+            partial_success: false,
+        })
+    }
+
+    async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
+        Ok(Auth::Accept)
+    }
+
+    async fn channel_open_session(
+        &mut self,
+        channel: Channel<Msg>,
+        reply: server::ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.channels.insert(channel.id(), channel);
+        reply.accept().await;
+        Ok(())
+    }
+
+    async fn subsystem_request(
+        &mut self,
+        channel: ChannelId,
+        name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let Some(opened) = self.channels.remove(&channel).filter(|_| name == "sftp") else {
+            return session.channel_failure(channel);
+        };
+        session.channel_success(channel)?;
+        let handler = SftpFiles {
+            drained: std::collections::HashSet::new(),
+        };
+        russh_sftp::server::run(opened.into_stream(), handler).await;
+        Ok(())
+    }
+}
+
+/// 起一个带 SFTP 子系统的服务器（接一个连接），返回监听地址。
+#[allow(dead_code)]
+pub async fn spawn_sftp() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("绑定本机端口");
+    let addr = listener.local_addr().expect("取端口");
+    let config = Arc::new(server::Config {
+        inactivity_timeout: None,
+        auth_rejection_time: Duration::from_millis(1),
+        keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("生成主机密钥")],
+        ..Default::default()
+    });
+    tokio::spawn(async move {
+        let Ok((socket, _)) = listener.accept().await else {
+            return;
+        };
+        let handler = SftpShell {
+            channels: std::collections::HashMap::new(),
+        };
+        if let Ok(running) = server::run_stream(config, socket, handler).await {
+            let _ = running.await;
+        }
+    });
+    addr
+}
