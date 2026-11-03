@@ -434,6 +434,52 @@ mod tests {
         assert_eq!(menu_entries(false, Some("1.2.3")).len(), 4);
     }
 
+    /// 菜单里现在每一项的文字（分隔线记为空串）。
+    fn menu_texts(menu: &Menu) -> Vec<String> {
+        use tray_icon::menu::MenuItemKind;
+        menu.items()
+            .iter()
+            .map(|item| match item {
+                MenuItemKind::MenuItem(item) => item.text(),
+                _ => String::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_live_menu_gains_and_loses_the_restart_item_with_the_queued_update() {
+        let menu = Menu::new();
+        for entry in menu_entries(crate::product::AUTO_UPDATE_ENABLED, None) {
+            let appended = match (entry.id(), entry.label()) {
+                (Some(id), Some(label)) => menu.append(&MenuItem::with_id(id, label, true, None)),
+                _ => menu.append(&PredefinedMenuItem::separator()),
+            };
+            appended.expect("加菜单项");
+        }
+        let mut state = RestartItem::default();
+        let idle = menu_texts(&menu);
+        assert_eq!(idle, ["显示 ZeeTerm", "检查更新", "", "退出"]);
+
+        // 有排队的更新：插在「检查更新」后面、分隔线前面。
+        sync_restart_item(&menu, &mut state, Some("1.2.3".to_owned()));
+        assert_eq!(
+            menu_texts(&menu),
+            ["显示 ZeeTerm", "检查更新", "重启安装 v1.2.3", "", "退出"]
+        );
+        // 同一个版本再同步：不重复加。
+        sync_restart_item(&menu, &mut state, Some("1.2.3".to_owned()));
+        assert_eq!(menu_texts(&menu).len(), 5);
+        // 版本变了：换掉旧的那一项，不是再加一项。
+        sync_restart_item(&menu, &mut state, Some("1.3.0".to_owned()));
+        assert_eq!(
+            menu_texts(&menu),
+            ["显示 ZeeTerm", "检查更新", "重启安装 v1.3.0", "", "退出"]
+        );
+        // 排队的更新没了（比如已经启动了安装器）：菜单回到原样。
+        sync_restart_item(&menu, &mut state, None);
+        assert_eq!(menu_texts(&menu), idle);
+    }
+
     #[test]
     fn check_update_sits_right_under_show_with_or_without_a_ready_package() {
         for ready in [None, Some("1.2.3")] {

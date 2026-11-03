@@ -10,7 +10,7 @@
 use super::{
     DownloadContext, DownloadEvent, DownloadFailure, InstallState, ManifestSource,
     SIGNING_UNCONFIGURED, advance_install, build_install_plan, check_with, download_with,
-    launch_if_unchanged, update_client_builder,
+    launch_if_unchanged, proxy_from_settings, update_client_builder,
 };
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -594,4 +594,49 @@ fn the_installer_stub_is_never_called_for_a_package_that_failed_verification() {
     );
     assert!(plan.is_err(), "未验签的文件不能生成安装计划");
     let _ = std::fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn updates_use_the_software_network_proxy_setting_and_report_a_broken_one() {
+    use zssh_core::model::{ProxyDraft, ProxyKind};
+    use zssh_core::store::Database;
+    use zssh_core::sync::app_proxy::APP_NETWORK_PROXY_KEY;
+
+    let db = Database::open_in_memory().expect("内存库");
+    let draft = |name: &str, port: u16| ProxyDraft {
+        id: None,
+        name: name.to_owned(),
+        kind: ProxyKind::Socks5,
+        host: "127.0.0.1".to_owned(),
+        port,
+        username: None,
+        secret: None,
+    };
+    let app = db.proxy_save(&draft("app", 7890)).expect("存代理");
+    let ssh = db.proxy_save(&draft("ssh", 1080)).expect("存代理");
+    db.set_default_proxy_id(Some(ssh.id)).expect("默认代理");
+
+    // 明确选了库里的某个代理：更新用它（socks5h：域名交给代理解析）。
+    db.setting_set(APP_NETWORK_PROXY_KEY, &format!("\"proxy:{}\"", app.id))
+        .expect("写设置");
+    assert_eq!(
+        proxy_from_settings(&db),
+        Ok(Some("socks5h://127.0.0.1:7890".to_owned()))
+    );
+    // 选了「使用 SSH 默认代理」：跟 SSH 默认代理一样。
+    db.setting_set(APP_NETWORK_PROXY_KEY, "\"ssh_default\"")
+        .expect("写设置");
+    assert_eq!(
+        proxy_from_settings(&db),
+        Ok(Some("socks5h://127.0.0.1:1080".to_owned()))
+    );
+    // 选了「不使用代理」：直连。
+    db.setting_set(APP_NETWORK_PROXY_KEY, "\"none\"")
+        .expect("写设置");
+    assert_eq!(proxy_from_settings(&db), Ok(None));
+    // 指定的代理被删了：说清楚设置有问题，而不是悄悄改成直连。
+    db.setting_set(APP_NETWORK_PROXY_KEY, "\"proxy:99999\"")
+        .expect("写设置");
+    let err = proxy_from_settings(&db).expect_err("该报错");
+    assert!(err.starts_with("软件网络的代理设置有问题"), "{err}");
 }

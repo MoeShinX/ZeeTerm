@@ -1534,7 +1534,12 @@ fn update_proxy() -> Result<Option<String>, String> {
     }
     let db = zssh_core::store::Database::open(&crate::settings::data_dir().join("zssh.db"))
         .map_err(|err| format!("打开设置库失败：{err}"))?;
-    zssh_core::sync::app_proxy::app_proxy(&db)
+    proxy_from_settings(&db)
+}
+
+/// 设置库里的「软件网络」代理 -> 代理地址（含账号密码，不能打印）；`None` 是直连。
+fn proxy_from_settings(db: &zssh_core::store::Database) -> Result<Option<String>, String> {
+    zssh_core::sync::app_proxy::app_proxy(db)
         .map(|proxy| proxy.map(|proxy| proxy.url_with_credentials()))
         .map_err(|err| format!("软件网络的代理设置有问题：{err}"))
 }
