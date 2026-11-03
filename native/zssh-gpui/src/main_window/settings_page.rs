@@ -526,7 +526,10 @@ impl MainWindow {
                     blocks
                 }
                 SettingsSection::Sftp => vec![self.sftp_card(tokens, cx)],
-                SettingsSection::Ai => vec![agents.into_any_element()],
+                SettingsSection::Ai => vec![
+                    self.ai_builtin_block(tokens, window, cx),
+                    agents.into_any_element(),
+                ],
                 SettingsSection::Sync => {
                     vec![sync.into_any_element(), backup.into_any_element()]
                 }

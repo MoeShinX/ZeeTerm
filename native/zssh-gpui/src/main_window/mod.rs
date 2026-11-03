@@ -14,6 +14,8 @@
 //! `keychain_panel` / `quick_panel` / `proxy_panel` / `forward_panel` 的列表和表单）、
 //! `status_bar`（底部状态栏）。
 
+mod ai_builtin;
+mod ai_endpoint_dialog;
 pub mod anchor;
 pub mod bar_height;
 pub mod bar_settings;
@@ -24,6 +26,7 @@ pub mod collation;
 pub mod compose_history;
 mod connections_ui;
 mod dev_acts;
+mod dev_acts_a4;
 mod dev_acts_about;
 mod dev_acts_agent;
 mod dev_acts_dock;
@@ -213,6 +216,8 @@ pub struct MainWindow {
     /// 面板外壳的焦点：焦点在面板里时 Esc 才收起面板（终端里的 Esc 要留给远端）。
     pub(super) panel_focus: FocusHandle,
     pub(super) host_form: Option<HostForm>,
+    /// 设置 → AI → 内置助手那一块的列表状态（V2-A4）。
+    pub(super) ai_builtin: ai_builtin::AiBuiltinUi,
     /// X11：设置页那一节和「需要 X 显示程序」提示的状态（一键安装的进度也在这里）。
     pub(super) x11_ui: x11_ui::X11Ui,
     pub(super) keychain: KeychainUi,
@@ -416,6 +421,7 @@ impl MainWindow {
             panel_drag: None,
             panel_focus: cx.focus_handle(),
             host_form: None,
+            ai_builtin: ai_builtin::AiBuiltinUi::default(),
             x11_ui: x11_ui::X11Ui::new(window, cx),
             keychain,
             proxy_ui,
@@ -442,6 +448,11 @@ impl MainWindow {
         this.apply_prefs();
         let mut this = this;
         this._subs.extend(slider_subs);
+        // 模型资料库（models.dev）的后台更新：启动后延迟一会儿再做，不跟启动抢网络；设置里关了就不做。
+        static MODELS_REFRESH: std::sync::Once = std::sync::Once::new();
+        MODELS_REFRESH.call_once(|| {
+            crate::agent_setup::builtin::spawn_background_refresh(Duration::from_secs(30));
+        });
 
         // 后台节拍：重读主机库（别的窗口改了主机这里能看到）、跟着活动标签换状态栏订阅、
         // 取状态栏数据。窗口没了 `update_in` 会报错，任务自己退出。
@@ -475,6 +486,12 @@ impl MainWindow {
         if self.tick_count.is_multiple_of(4) && self.store.reload() {
             self.drop_stale_state();
             changed = true;
+        }
+        // 内置助手的接口清单也一起跟：同步下来的、别的窗口改的接口，面板的智能体下拉里要能看到。
+        if self.tick_count.is_multiple_of(4)
+            && let Ok(db) = self.store.db()
+        {
+            crate::agent_setup::builtin::reload_with(db);
         }
         changed |= self.sync_status(cx);
         self.connections_tick(window, cx);

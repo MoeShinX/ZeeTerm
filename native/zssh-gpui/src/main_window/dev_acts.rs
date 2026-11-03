@@ -102,6 +102,7 @@ pub fn validate(spec: &str) -> Result<(), String> {
     if super::dev_acts_dock::is_known(name)
         || super::dev_acts_edit::is_known(name)
         || super::dev_acts_agent::is_known(name)
+        || super::dev_acts_a4::is_known(name)
         || super::dev_acts_about::is_known(name)
         || super::dev_acts_pane::is_known(name)
         || super::dev_acts_u1::is_known(name)
@@ -193,6 +194,7 @@ pub(super) fn modal_name(this: &MainWindow) -> &'static str {
         Some(Modal::Recovery(_)) => "recovery",
         Some(Modal::X11Needed(_)) => "x11",
         Some(Modal::Connections(_)) => "connections",
+        Some(Modal::AiEndpoint(_)) => "ai_endpoint",
     }
 }
 
@@ -233,6 +235,10 @@ fn run_inner(
     }
     // AI 智能体（面板里换智能体 / 模型 / 强度，设置页的路径和下载）的动作在 `dev_acts_agent`。
     if let Some(result) = super::dev_acts_agent::run(this, spec, window, cx) {
+        return result;
+    }
+    // V2-A4（设置页内置助手接口管理、添加 / 编辑接口对话框）的动作在 `dev_acts_a4`。
+    if let Some(result) = super::dev_acts_a4::run(this, spec, window, cx) {
         return result;
     }
     // 设置页分类导航、连接 / SFTP / 窗口 / 高亮 / 会话日志设置的动作在 `dev_acts_u2`。

@@ -26,6 +26,8 @@ pub enum ConfirmAction {
     DeleteHost(i64),
     DeleteGroup(i64),
     DeleteIdentity(i64),
+    /// 删除内置助手的一个接口（连同它的 API Key）。
+    DeleteAiEndpoint(i64),
     DeleteProxy(i64),
     DeleteForward(i64),
     ClearIdentitySecret(i64),
@@ -106,6 +108,8 @@ pub enum Modal {
     HostProps(super::host_dialog::HostPropsDialog),
     GenerateKey(GenerateKeyDialog),
     InstallKey(InstallKeyDialog),
+    /// 设置 → AI → 内置助手：添加 / 编辑接口（V2-A4）；状态较大，装箱。
+    AiEndpoint(Box<super::ai_endpoint_dialog::AiEndpointDialog>),
     /// 编辑器有未保存修改：保存 / 不保存 / 取消。
     Unsaved(super::editor_tabs::UnsavedAsk),
     /// 启动时的恢复提示：上次没处理完的修改。
@@ -132,6 +136,8 @@ impl Modal {
     pub fn multiline_form(&self, memory_focused: bool) -> bool {
         match self {
             Self::QuickEdit(_) => true,
+            // 额外模型是多行框：普通 Enter 不确认（免得在地址框里敲回车就把没填完的表单存了），Ctrl+Enter 才保存。
+            Self::AiEndpoint(_) => true,
             Self::HostProps(dialog) => {
                 memory_focused && matches!(dialog.overlay, super::host_dialog::Overlay::None)
             }
@@ -143,7 +149,7 @@ impl Modal {
     pub fn tall(&self) -> bool {
         matches!(
             self,
-            Self::QuickEdit(_) | Self::HostProps(_) | Self::Connections(_)
+            Self::QuickEdit(_) | Self::HostProps(_) | Self::AiEndpoint(_) | Self::Connections(_)
         )
     }
 
@@ -333,6 +339,7 @@ impl MainWindow {
             Some(Modal::QuickTarget(_)) => self.submit_quick_target(window, cx),
             Some(Modal::QuickEdit(_)) => self.quick_save(window, cx),
             Some(Modal::HostProps(_)) => self.host_props_confirm(window, cx),
+            Some(Modal::AiEndpoint(_)) => self.ai_endpoint_save(window, cx),
             Some(Modal::GenerateKey(_)) => self.submit_generate_key(window, cx),
             Some(Modal::InstallKey(_)) => self.submit_install_key(window, cx),
             Some(Modal::Unsaved(_)) => self.answer_unsaved(true, window, cx),
@@ -359,6 +366,7 @@ impl MainWindow {
             ConfirmAction::DeleteHost(id) => self.do_delete_host(id, window, cx),
             ConfirmAction::DeleteGroup(id) => self.do_delete_group(id, window, cx),
             ConfirmAction::DeleteIdentity(id) => self.do_delete_identity(id, window, cx),
+            ConfirmAction::DeleteAiEndpoint(id) => self.do_delete_ai_endpoint(id, window, cx),
             ConfirmAction::DeleteProxy(id) => self.do_delete_proxy(id, window, cx),
             ConfirmAction::DeleteForward(id) => self.do_delete_forward(id, window, cx),
             ConfirmAction::ClearIdentitySecret(id) => self.do_clear_identity_secret(id, window, cx),
@@ -476,6 +484,10 @@ impl MainWindow {
             Modal::HostProps(dialog) => (
                 super::host_dialog::DIALOG_WIDTH,
                 self.host_props_body(dialog, tokens, cx),
+            ),
+            Modal::AiEndpoint(dialog) => (
+                super::ai_endpoint_dialog::DIALOG_WIDTH,
+                self.ai_endpoint_body(dialog, tokens, cx),
             ),
             Modal::GenerateKey(dialog) => (480.0, self.generate_key_body(dialog, tokens, cx)),
             Modal::InstallKey(dialog) => (480.0, self.install_key_body(dialog, tokens, cx)),
