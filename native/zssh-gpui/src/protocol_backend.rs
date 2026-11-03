@@ -108,6 +108,10 @@ pub(crate) fn plan_from_db(db: &Database, host_id: i64) -> Result<HostPlan, Stri
     }
 }
 
+/// Telnet 标签要不要测延迟。默认关：TCP connect 计时每 10 秒对设备多开一条连接，交换机 / 路由器
+/// 往往把每次连接记进日志或占用会话名额（2026-11-03 定）。延迟徽标只给 SSH。
+const TELNET_LATENCY_ENABLED: bool = false;
+
 /// Telnet 的延迟监视器：Telnet 没有协议级往返，只能对同一地址端口单独做 TCP connect 计时；
 /// 经代理时只测得到代理（徽标提示里写明）；经 SSH 跳板机测不到"到目标"那一段，诚实起见不测、不显示。
 /// 要在 tokio 运行时里调用（后台任务由它起）。
@@ -135,7 +139,11 @@ pub(crate) async fn open_telnet(plan: TelnetPlan, size: Size, generation: u64) -
         password,
         route,
     } = plan;
-    let latency = telnet_latency(&route, &host, port);
+    let latency = if TELNET_LATENCY_ENABLED {
+        telnet_latency(&route, &host, port)
+    } else {
+        None
+    };
     let (stream, guard): (BoxedStream, Box<dyn Send>) = match route {
         Route::Direct => {
             let socket = connect_direct(&host, port)

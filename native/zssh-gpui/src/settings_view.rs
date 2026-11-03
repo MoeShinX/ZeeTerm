@@ -601,7 +601,7 @@ fn display_section(
         switch_row(
             "show-latency",
             "在终端右上角显示延迟",
-            "SSH 显示到服务器的往返延迟；Telnet 显示 TCP 连接延迟。关掉后也不再发测量请求。",
+            "SSH 标签显示到服务器的往返延迟（Telnet、串口不显示）。关掉后也不再发测量请求。",
             s.show_latency,
             |this, cx| this.toggle_show_latency(cx),
             ws,
