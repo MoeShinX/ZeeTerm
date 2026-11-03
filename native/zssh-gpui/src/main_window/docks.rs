@@ -201,6 +201,8 @@ impl MainWindow {
         }
         self.docks.ai_open = !self.docks.ai_open;
         if self.docks.ai_open {
+            // 打开面板：Tokenway 的余额重新取一次（最多每 60 秒一次，节流在 agent_setup::tokenway）。
+            crate::agent_setup::tokenway::mark_balance_dirty();
             self.sync_docks(window, cx);
             self.enforce_dock_layout(window, cx);
         }
@@ -862,7 +864,14 @@ impl MainWindow {
             // 标题栏右侧（关闭按钮左边）：上下文用量指示器（V2-U15）。
             let actions: Vec<AnyElement> = chat
                 .as_ref()
-                .map(|chat| vec![chat.read(cx).usage_meter(chat.clone(), tokens)])
+                .map(|chat| {
+                    let panel = chat.read(cx);
+                    // Tokenway 的余额（V2-A5）在上下文指示器左边。
+                    let mut items: Vec<AnyElement> =
+                        panel.balance_chip(tokens).into_iter().collect();
+                    items.push(panel.usage_meter(chat.clone(), tokens));
+                    items
+                })
                 .unwrap_or_default();
             let body = match chat {
                 Some(chat) => chat.into_any_element(),

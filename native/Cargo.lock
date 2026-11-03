@@ -10521,6 +10521,7 @@ dependencies = [
  "hmac 0.13.0",
  "rand 0.10.3",
  "reqwest",
+ "ring",
  "rusqlite",
  "russh",
  "russh-sftp",

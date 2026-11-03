@@ -39,6 +39,8 @@ zeroize = "1"
 rand = "0.10"
 # 同步包的 key_check（HMAC-SHA256）和测试里的 SHA-256。
 sha2 = "0.10"
+# Tokenway 预设清单的 ed25519 验签（V2-A5）。russh 的 ring 后端本来就在依赖树里，不引新的编译产物。
+ring = "0.17"
 
 [target.'cfg(windows)'.dependencies]
 # DPAPI（CryptProtectData / CryptUnprotectData）

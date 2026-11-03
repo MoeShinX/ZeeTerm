@@ -28,6 +28,8 @@ pub enum ConfirmAction {
     DeleteIdentity(i64),
     /// 删除内置助手的一个接口（连同它的 API Key）。
     DeleteAiEndpoint(i64),
+    /// 断开 Tokenway（通知服务端停用令牌、删 Key、删接口配置）。
+    DisconnectTokenway(i64),
     DeleteProxy(i64),
     DeleteForward(i64),
     ClearIdentitySecret(i64),
@@ -110,6 +112,10 @@ pub enum Modal {
     InstallKey(InstallKeyDialog),
     /// 设置 → AI → 内置助手：添加 / 编辑接口（V2-A4）；状态较大，装箱。
     AiEndpoint(Box<super::ai_endpoint_dialog::AiEndpointDialog>),
+    /// 设置 → AI → 内置助手 →「添加接口」先选预设（Tokenway 推荐在第一位，V2-A5）。
+    AiPresets,
+    /// 「用 Tokenway 连接」：浏览器授权的进度、取消、粘贴 Key、注册（V2-A5）。
+    Tokenway(Box<super::ai_presets::TokenwayDialog>),
     /// 编辑器有未保存修改：保存 / 不保存 / 取消。
     Unsaved(super::editor_tabs::UnsavedAsk),
     /// 启动时的恢复提示：上次没处理完的修改。
@@ -156,7 +162,8 @@ impl Modal {
     /// 点遮罩算不算取消。填了半天的表单不能被一次误点丢掉，只能用取消按钮或 Esc 关。
     pub fn closes_on_scrim(&self) -> bool {
         // 连接列表是只读的，点遮罩可以关；填了半天的表单才不行。
-        !self.tall() || matches!(self, Self::Connections(_))
+        // 连接 Tokenway 的对话框里有进行中的授权，不能被一次误点取消。
+        (!self.tall() && !matches!(self, Self::Tokenway(_))) || matches!(self, Self::Connections(_))
     }
 }
 
@@ -320,6 +327,11 @@ impl MainWindow {
         if self.modal.as_ref().is_some_and(Modal::busy) {
             return;
         }
+        // Tokenway 连接对话框：进行中的授权一并取消（监听关闭）。
+        if matches!(self.modal, Some(Modal::Tokenway(_))) {
+            self.tokenway_close(window, cx);
+            return;
+        }
         // 主机属性：先收小浮层；有没保存的修改先问是否放弃。
         if matches!(self.modal, Some(Modal::HostProps(_))) {
             self.host_props_cancel(window, cx);
@@ -340,6 +352,9 @@ impl MainWindow {
             Some(Modal::QuickEdit(_)) => self.quick_save(window, cx),
             Some(Modal::HostProps(_)) => self.host_props_confirm(window, cx),
             Some(Modal::AiEndpoint(_)) => self.ai_endpoint_save(window, cx),
+            // 预设列表每一行自己有按钮，回车不替用户选。
+            Some(Modal::AiPresets) => {}
+            Some(Modal::Tokenway(_)) => self.tokenway_confirm(window, cx),
             Some(Modal::GenerateKey(_)) => self.submit_generate_key(window, cx),
             Some(Modal::InstallKey(_)) => self.submit_install_key(window, cx),
             Some(Modal::Unsaved(_)) => self.answer_unsaved(true, window, cx),
@@ -367,6 +382,7 @@ impl MainWindow {
             ConfirmAction::DeleteGroup(id) => self.do_delete_group(id, window, cx),
             ConfirmAction::DeleteIdentity(id) => self.do_delete_identity(id, window, cx),
             ConfirmAction::DeleteAiEndpoint(id) => self.do_delete_ai_endpoint(id, window, cx),
+            ConfirmAction::DisconnectTokenway(id) => self.do_disconnect_tokenway(id, window, cx),
             ConfirmAction::DeleteProxy(id) => self.do_delete_proxy(id, window, cx),
             ConfirmAction::DeleteForward(id) => self.do_delete_forward(id, window, cx),
             ConfirmAction::ClearIdentitySecret(id) => self.do_clear_identity_secret(id, window, cx),
@@ -489,6 +505,8 @@ impl MainWindow {
                 super::ai_endpoint_dialog::DIALOG_WIDTH,
                 self.ai_endpoint_body(dialog, tokens, cx),
             ),
+            Modal::AiPresets => (520.0, self.ai_presets_body(tokens, cx)),
+            Modal::Tokenway(dialog) => (540.0, self.tokenway_body(dialog, tokens, cx)),
             Modal::GenerateKey(dialog) => (480.0, self.generate_key_body(dialog, tokens, cx)),
             Modal::InstallKey(dialog) => (480.0, self.install_key_body(dialog, tokens, cx)),
             Modal::Unsaved(ask) => (440.0, self.unsaved_body(ask, tokens, cx)),

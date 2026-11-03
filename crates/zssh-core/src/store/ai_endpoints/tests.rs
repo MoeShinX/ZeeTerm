@@ -163,6 +163,36 @@ fn an_endpoint_without_a_key_is_fine() {
 }
 
 #[test]
+fn marking_no_key_needed_makes_it_ready_drops_a_stored_key_and_survives_a_reload() {
+    let db = db();
+    // 没填 Key、也没说不需要：存得下来，但不算配好。
+    let bare = db.ai_endpoint_save(&draft("本地", None)).unwrap();
+    assert!(!bare.is_ready());
+
+    // 先有 Key，再改成"不需要 Key"：Key 凭据一起清掉。
+    let keyed = db
+        .ai_endpoint_save(&draft("甲", Some("sk-a-0001")))
+        .unwrap();
+    assert!(keyed.is_ready());
+    let mut no_key = draft("甲", None);
+    no_key.id = Some(keyed.id);
+    no_key.openai_options.no_key = true;
+    let saved = db.ai_endpoint_save(&no_key).unwrap();
+    assert!(saved.is_ready() && !saved.has_key && saved.key_identity_id.is_none());
+    assert_eq!(db.ai_endpoint_api_key(saved.id).unwrap(), None);
+    assert!(!identity_names(&db).iter().any(|n| n.starts_with("甲")));
+
+    let reloaded = db.ai_endpoint_get(saved.id).unwrap();
+    assert!(reloaded.openai_options.no_key && reloaded.is_ready());
+
+    // Anthropic 不允许。
+    let mut anthropic = draft("乙", None);
+    anthropic.kind = EndpointKind::Anthropic;
+    anthropic.openai_options.no_key = true;
+    assert!(db.ai_endpoint_save(&anthropic).is_err());
+}
+
+#[test]
 fn deleting_the_endpoint_deletes_its_key_unless_a_host_uses_it() {
     let db = db();
     let a = db

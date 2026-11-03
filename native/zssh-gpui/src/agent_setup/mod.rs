@@ -10,7 +10,9 @@ pub mod download;
 pub mod fake;
 pub mod fake_tools;
 mod kind;
+pub mod presets;
 pub mod status;
+pub mod tokenway;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

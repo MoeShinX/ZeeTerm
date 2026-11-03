@@ -1,0 +1,94 @@
+{
+  "public_key": "JoZhJG3b/PBurtUXH8yrJXDq9iRsQCM4HcSbGVAh/W8=",
+  "signed_at": "2026-11-03T08:00:00.123Z",
+  "cases": [
+    {
+      "name": "basic",
+      "manifest": {
+        "version": 1,
+        "presets": [
+          {
+            "id": "tokenway",
+            "name": "Tokenway",
+            "recommended": true,
+            "tagline": "国内直连，按量计费",
+            "connect_url": "https://tokenwayapi.com/connect/zeeterm",
+            "token_url": "https://tokenwayapi.com/api/connect/token",
+            "status_url": "https://tokenwayapi.com/api/connect/status",
+            "revoke_url": "https://tokenwayapi.com/api/connect/revoke",
+            "openai_base": "https://api.tokenwayapi.com/v1",
+            "anthropic_base": "https://api.tokenwayapi.com",
+            "register_url": "https://tokenwayapi.com/register?source=zeeterm",
+            "topup_url": "https://tokenwayapi.com/dashboard/topup"
+          }
+        ],
+        "issued_at": "2026-11-03T08:00:00Z",
+        "signature": "Gkxn3kZYczhzog1VyMntAJDPtkIBqNKJMgEiBEjusDtD1nbLivIhtUVcnGu8ntchooNavHt63S4QB1TUTVm1Aw=="
+      },
+      "canonical": "{\"issued_at\":\"2026-11-03T08:00:00Z\",\"presets\":[{\"anthropic_base\":\"https://api.tokenwayapi.com\",\"connect_url\":\"https://tokenwayapi.com/connect/zeeterm\",\"id\":\"tokenway\",\"name\":\"Tokenway\",\"openai_base\":\"https://api.tokenwayapi.com/v1\",\"recommended\":true,\"register_url\":\"https://tokenwayapi.com/register?source=zeeterm\",\"revoke_url\":\"https://tokenwayapi.com/api/connect/revoke\",\"status_url\":\"https://tokenwayapi.com/api/connect/status\",\"tagline\":\"国内直连，按量计费\",\"token_url\":\"https://tokenwayapi.com/api/connect/token\",\"topup_url\":\"https://tokenwayapi.com/dashboard/topup\"}],\"version\":1}"
+    },
+    {
+      "name": "tricky",
+      "manifest": {
+        "version": 1,
+        "note": "quote \" backslash  newline \n tab \t ctrl \u0001 del  lt < gt > amp & ls   ps   zh 中文 emoji 😀 é",
+        "zeta": 1,
+        "Alpha": -3,
+        "中": "cjk key",
+        "ｱ": "halfwidth katakana key",
+        "😀": "emoji key",
+        "é": "e acute",
+        "Z": 0,
+        "a": [
+          3,
+          "x",
+          {
+            "b": true,
+            "a": null,
+            "": ""
+          },
+          [],
+          {}
+        ],
+        "nested": {
+          "z": {
+            "y": [
+              1,
+              2,
+              {
+                "x": "w",
+                "W": "v"
+              }
+            ]
+          },
+          "a": false
+        },
+        "big": 9007199254740991,
+        "presets": [
+          {
+            "id": "tokenway",
+            "name": "Tokenway",
+            "recommended": true,
+            "extra_future_field": {
+              "k": [
+                1,
+                "two"
+              ]
+            },
+            "connect_url": "https://tokenwayapi.com/connect/zeeterm",
+            "token_url": "https://tokenwayapi.com/api/connect/token",
+            "status_url": "https://tokenwayapi.com/api/connect/status",
+            "revoke_url": "https://tokenwayapi.com/api/connect/revoke",
+            "openai_base": "https://api.tokenwayapi.com/v1",
+            "anthropic_base": "https://api.tokenwayapi.com",
+            "register_url": "https://tokenwayapi.com/register?source=zeeterm",
+            "topup_url": "https://tokenwayapi.com/dashboard/topup"
+          }
+        ],
+        "issued_at": "2026-11-03T08:00:00Z",
+        "signature": "KMpSWQIxctljn1Warx7c4fl9VDZcd9AH5eRRWmHg6FNG+Bbqf/WthAquag6EtPu7iBCeefHNkyLTYWdLraEuAQ=="
+      },
+      "canonical": "{\"Alpha\":-3,\"Z\":0,\"a\":[3,\"x\",{\"\":\"\",\"a\":null,\"b\":true},[],{}],\"big\":9007199254740991,\"issued_at\":\"2026-11-03T08:00:00Z\",\"nested\":{\"a\":false,\"z\":{\"y\":[1,2,{\"W\":\"v\",\"x\":\"w\"}]}},\"note\":\"quote \\\" backslash  newline \\n tab \\t ctrl \\u0001 del  lt < gt > amp & ls   ps   zh 中文 emoji 😀 é\",\"presets\":[{\"anthropic_base\":\"https://api.tokenwayapi.com\",\"connect_url\":\"https://tokenwayapi.com/connect/zeeterm\",\"extra_future_field\":{\"k\":[1,\"two\"]},\"id\":\"tokenway\",\"name\":\"Tokenway\",\"openai_base\":\"https://api.tokenwayapi.com/v1\",\"recommended\":true,\"register_url\":\"https://tokenwayapi.com/register?source=zeeterm\",\"revoke_url\":\"https://tokenwayapi.com/api/connect/revoke\",\"status_url\":\"https://tokenwayapi.com/api/connect/status\",\"token_url\":\"https://tokenwayapi.com/api/connect/token\",\"topup_url\":\"https://tokenwayapi.com/dashboard/topup\"}],\"version\":1,\"zeta\":1,\"é\":\"e acute\",\"中\":\"cjk key\",\"😀\":\"emoji key\",\"ｱ\":\"halfwidth katakana key\"}"
+    }
+  ]
+}

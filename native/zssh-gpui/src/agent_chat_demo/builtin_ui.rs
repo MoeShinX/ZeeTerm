@@ -12,10 +12,17 @@ use zssh_core::ai::agent::builtin::config::AiEndpoint;
 use zssh_core::ai::agent::builtin::{BuiltinSignal, FailureInfo};
 use zssh_core::ai::agent::usage::ContextUsage;
 
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::*;
 use gpui_kit::*;
+use zssh_core::ai::agent::builtin::tokenway::endpoint::is_authorized_token;
+use zssh_core::ai::agent::builtin::tokenway::{ChatFailureAction, classify_chat_failure};
+
+use crate::app_theme::Tokens;
 
 use super::{
-    AgentChatDemo, AgentSession, ChatMessage, ChatState, HostEvent, ModelChoice,
+    AgentChatDemo, AgentSession, CardKind, ChatMessage, ChatState, HostEvent, ModelChoice,
     start_builtin_agent,
 };
 use crate::agent_setup::AgentKind;
@@ -97,7 +104,7 @@ impl AgentChatDemo {
             return;
         }
         let info = builtin::info();
-        if info.get(id).is_none_or(|endpoint| !endpoint.has_key) {
+        if info.get(id).is_none_or(|endpoint| !endpoint.ready) {
             return;
         }
         let started = self.session.is_some()
@@ -134,16 +141,77 @@ impl AgentChatDemo {
         cx.notify();
     }
 
+    /// 选中的接口是浏览器授权的 Tokenway 令牌吗（是就返回接口 id）：只有它有余额接口和"重新连接"。
+    pub fn tokenway_endpoint(&self) -> Option<i64> {
+        if !self.is_builtin() {
+            return None;
+        }
+        let id = self.builtin.endpoint?;
+        let info = builtin::info();
+        let endpoint = info.get(id)?;
+        is_authorized_token(endpoint.preset_id.as_deref()).then_some(id)
+    }
+
+    /// 标题栏上上下文指示器旁边的余额（V2-A5）：「余额 ¥12.34」；没有可用的充值余额时是「需充值」+「充值」按钮；
+    /// 授权被服务端停用时是「授权已失效」+「重新连接」按钮。还没取到余额（或不是 Tokenway）就不显示。
+    pub fn balance_chip(&self, tokens: &Tokens) -> Option<AnyElement> {
+        let id = self.tokenway_endpoint()?;
+        let view = crate::agent_setup::tokenway::balance_view(id)?;
+        let invalid = view.problem
+            == Some(crate::agent_setup::tokenway::BalanceProblem::AuthorizationInvalid);
+        let color = if invalid || view.needs_topup {
+            tokens.danger
+        } else {
+            tokens.text
+        };
+        let detail = SharedString::from(view.detail.clone());
+        let label = div()
+            .id("ai-balance")
+            .flex_none()
+            .text_xs()
+            .text_color(color)
+            .child(SharedString::from(view.label.clone()))
+            .tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx));
+        let mut chip = h_flex()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .ml_2()
+            .child(label);
+        if invalid {
+            chip = chip.child(
+                Button::new("ai-balance-reconnect")
+                    .label("重新连接")
+                    .ghost()
+                    .compact()
+                    .on_click(|_, _, _| crate::agent_setup::tokenway::request_reconnect()),
+            );
+        } else if view.needs_topup {
+            chip = chip.child(
+                Button::new("ai-balance-topup")
+                    .label("充值")
+                    .ghost()
+                    .compact()
+                    .on_click(|_, _, _| {
+                        let _ = crate::agent_setup::tokenway::open_topup();
+                    }),
+            );
+        }
+        Some(chip.into_any_element())
+    }
+
     /// 每个节拍：选中的接口还在不在、配置改了没有、接口自报的模型清单到了没有、模型下拉套用了没有。
     pub(super) fn sync_builtin_state(&mut self) -> bool {
         let mut changed = false;
         let info = builtin::info();
+        // 401 时给不给「重新连接」要看这个对话用的是不是浏览器授权的 Tokenway 令牌。
+        self.chat.tokenway_token = self.tokenway_endpoint().is_some();
         // 选中的接口被删了 / 没 Key 了：换回默认接口。
         let valid = self
             .builtin
             .endpoint
             .and_then(|id| info.get(id))
-            .filter(|endpoint| endpoint.has_key)
+            .filter(|endpoint| endpoint.ready)
             .map(|endpoint| endpoint.id);
         if valid != self.builtin.endpoint || valid.is_none() {
             let fallback = valid.or_else(|| info.default_endpoint().map(|e| e.id));
@@ -311,6 +379,46 @@ impl AgentChatDemo {
         Some((usage.window?, usage.window_estimated))
     }
 
+    /// 标题栏余额现在写的字（没有就是 `None`）。
+    #[cfg(debug_assertions)]
+    pub fn dev_balance_label(&self) -> Option<String> {
+        let id = self.tokenway_endpoint()?;
+        crate::agent_setup::tokenway::balance_view(id).map(|view| view.label)
+    }
+
+    /// 对话里的提示卡种类（`topup` / `reconnect`），按出现顺序。
+    #[cfg(debug_assertions)]
+    pub fn dev_cards(&self) -> Vec<&'static str> {
+        self.chat
+            .messages
+            .iter()
+            .filter_map(|message| match message {
+                ChatMessage::Assistant(message) => Some(message),
+                _ => None,
+            })
+            .flat_map(|message| message.cards.iter())
+            .map(|card| match card {
+                CardKind::TopUp => "topup",
+                CardKind::Reconnect => "reconnect",
+            })
+            .collect()
+    }
+
+    /// 点提示卡上的按钮（和界面按钮同一个动作）。
+    #[cfg(debug_assertions)]
+    pub fn dev_click_card(&mut self, which: &str, cx: &mut Context<Self>) -> Result<(), String> {
+        match which {
+            "topup" => crate::agent_setup::tokenway::open_topup(),
+            "reconnect" => {
+                crate::agent_setup::tokenway::request_reconnect();
+                Ok(())
+            }
+            _ => Err("tw_card:topup|reconnect".to_owned()),
+        }?;
+        cx.notify();
+        Ok(())
+    }
+
     /// 输入框上方的淡色提示：当前模型不支持工具调用。
     pub(super) fn no_tools_hint(&self) -> Option<&'static str> {
         if !self.is_builtin() {
@@ -418,37 +526,53 @@ impl ChatState {
         }
     }
 
-    /// 回合因为接口错误失败了。服务端要求充值（`zeeterm_requires_topup`）时显示"需要充值"的文字：
-    /// 通用的错误提示行（带着错误码原文）换成它；错误事件还没到就先记着。
+    /// 回合因为接口错误失败了。Tokenway 的两种失败换成带按钮的提示卡：服务端要求充值
+    /// （`zeeterm_requires_topup`）→「去充值」；浏览器授权的令牌被停用（401）→「重新连接」。
+    /// 通用的错误提示行（带着错误码原文）不再显示；错误事件还没到就先记着。
     fn note_failure(&mut self, failure: FailureInfo) {
-        let topup = failure.code.as_deref() == Some(builtin::REQUIRES_TOPUP_CODE);
+        let card = match classify_chat_failure(&failure) {
+            Some(ChatFailureAction::RequiresTopup) => Some(CardKind::TopUp),
+            Some(ChatFailureAction::AuthorizationInvalid) if self.tokenway_token => {
+                Some(CardKind::Reconnect)
+            }
+            _ => None,
+        };
         self.last_failure = Some(failure);
-        if !topup {
+        let Some(card) = card else {
             return;
-        }
-        let replaced = self
-            .messages
-            .iter_mut()
-            .rev()
-            .find_map(|message| match message {
-                ChatMessage::Assistant(message) => {
-                    message.notices.iter_mut().rev().find(|notice| {
-                        notice.error && notice.text.contains(builtin::REQUIRES_TOPUP_CODE)
-                    })
+        };
+        // 通用错误行已经显示出来了（错误事件先到）：换成卡片。
+        // 只看最后一条助手消息（当前这一回合的），别动更早的回合留下的错误行。
+        let replaced = match self.messages.last_mut() {
+            Some(ChatMessage::Assistant(message)) => {
+                match message.notices.iter().rposition(|notice| {
+                    notice.error
+                        && (notice.text.contains(builtin::REQUIRES_TOPUP_CODE)
+                            || (card == CardKind::Reconnect && notice.text.contains("HTTP 401")))
+                }) {
+                    Some(found) => {
+                        message.notices.remove(found);
+                        message.cards.push(card);
+                        true
+                    }
+                    None => false,
                 }
-                ChatMessage::User(_) | ChatMessage::System(_) => None,
-            })
-            .map(|notice| notice.text = builtin::REQUIRES_TOPUP_TEXT.to_owned())
-            .is_some();
-        self.topup_pending = !replaced;
+            }
+            _ => false,
+        };
+        if !replaced {
+            self.card_pending = Some(card);
+        }
     }
 
     /// 内置助手的普通事件：在通用处理之前多做三件事——错误事件在"需要充值"时换文字；重试时撤回
     /// 这一次请求已经流出的半段正文；工具结果回来 = 下一次请求从这里开始。
     pub(super) fn apply_builtin_event(&mut self, event: AgentEvent) {
         match &event {
-            AgentEvent::Error { .. } if std::mem::take(&mut self.topup_pending) => {
-                self.push_notice(builtin::REQUIRES_TOPUP_TEXT, true);
+            AgentEvent::Error { .. } if self.card_pending.is_some() => {
+                if let Some(card) = self.card_pending.take() {
+                    self.push_card(card);
+                }
                 return;
             }
             AgentEvent::Retrying { .. } => self.rewind_current_request(),
@@ -458,6 +582,12 @@ impl ChatState {
         self.apply_agent_event(event);
         if tool_ended {
             self.mark_request_start();
+        }
+    }
+
+    fn push_card(&mut self, card: CardKind) {
+        if let Some(message) = self.ensure_assistant() {
+            message.cards.push(card);
         }
     }
 
@@ -491,7 +621,8 @@ impl AgentSession {
 #[cfg(test)]
 mod tests {
     // 不写 `use super::*`：`gpui_kit::*` 里有个同名的 `test` 宏，会把 `#[test]` 抢走。
-    use super::super::{AssistantMessage, ChatMessage, ChatState, Notice};
+    use super::super::{AssistantMessage, CardKind, ChatMessage, ChatState, Notice};
+    use crate::agent_setup::builtin;
     use zssh_core::ai::agent::AgentEvent;
     use zssh_core::ai::agent::builtin::provider::ErrorKind;
     use zssh_core::ai::agent::builtin::{
@@ -619,11 +750,14 @@ mod tests {
         );
         chat.apply_builtin_signal(failure());
         let shown = texts(&assistant(&chat).notices);
-        assert_eq!(shown.len(), 1, "{shown:?}");
-        assert!(shown[0].0.starts_with("需要充值"), "{shown:?}");
-        assert!(shown[0].1, "是错误样式");
+        assert!(shown.is_empty(), "通用错误行换成了提示卡：{shown:?}");
+        assert_eq!(assistant(&chat).cards, [CardKind::TopUp]);
         assert!(
-            !shown[0].0.contains("zeeterm_requires_topup"),
+            builtin::REQUIRES_TOPUP_TEXT.contains("需要充值后使用")
+                && builtin::REQUIRES_TOPUP_TEXT.contains("赠送额度可在网页和其他客户端试用")
+        );
+        assert!(
+            !builtin::REQUIRES_TOPUP_TEXT.contains("zeeterm_requires_topup"),
             "不把内部错误码摆给用户"
         );
 
@@ -634,8 +768,8 @@ mod tests {
             message: generic.to_owned(),
         });
         let shown = texts(&assistant(&chat).notices);
-        assert_eq!(shown.len(), 1, "{shown:?}");
-        assert!(shown[0].0.starts_with("需要充值"));
+        assert!(shown.is_empty(), "{shown:?}");
+        assert_eq!(assistant(&chat).cards, [CardKind::TopUp]);
         assert_eq!(
             chat.last_failure.as_ref().and_then(|f| f.code.as_deref()),
             Some("zeeterm_requires_topup")
@@ -655,9 +789,75 @@ mod tests {
         });
         let shown = texts(&assistant(&chat).notices);
         assert_eq!(shown, [("错误：API Key 不对或没有权限（HTTP 401）", true)]);
-        assert!(!chat.topup_pending);
+        assert!(chat.card_pending.is_none());
+        assert!(
+            assistant(&chat).cards.is_empty(),
+            "普通 Key 的 401 照旧显示错误行，没有重新连接卡"
+        );
     }
 
+    fn auth_failure() -> BuiltinSignal {
+        BuiltinSignal::Failure(FailureInfo {
+            kind: ErrorKind::Auth,
+            code: Some("invalid_token".into()),
+            status: Some(401),
+        })
+    }
+
+    #[test]
+    fn a_revoked_tokenway_token_gets_a_reconnect_card_but_keeps_local_config_untouched() {
+        // 失败信号先到。
+        let mut chat = running();
+        chat.tokenway_token = true;
+        chat.apply_builtin_signal(auth_failure());
+        chat.apply_builtin_event(AgentEvent::Error {
+            message: "API Key 不对或没有权限（HTTP 401）".into(),
+        });
+        assert!(texts(&assistant(&chat).notices).is_empty());
+        assert_eq!(assistant(&chat).cards, [CardKind::Reconnect]);
+        assert!(builtin::AUTHORIZATION_INVALID_TEXT.contains("重新连接"));
+        assert!(builtin::AUTHORIZATION_INVALID_TEXT.contains("可能在网站上改过密码或停用了授权"));
+
+        // 错误事件先到：已经显示的通用错误行换成卡片，而且只换当前回合的。
+        let mut chat = running();
+        chat.tokenway_token = true;
+        chat.apply_builtin_event(AgentEvent::Error {
+            message: "API Key 不对或没有权限（HTTP 401）".into(),
+        });
+        assert_eq!(texts(&assistant(&chat).notices).len(), 1);
+        chat.apply_builtin_signal(auth_failure());
+        assert!(texts(&assistant(&chat).notices).is_empty());
+        assert_eq!(assistant(&chat).cards, [CardKind::Reconnect]);
+    }
+
+    #[test]
+    fn an_ordinary_key_that_fails_with_401_is_not_offered_reconnect() {
+        let mut chat = running();
+        chat.tokenway_token = false;
+        chat.apply_builtin_signal(auth_failure());
+        assert!(chat.card_pending.is_none());
+        chat.apply_builtin_event(AgentEvent::Error {
+            message: "API Key 不对或没有权限（HTTP 401）".into(),
+        });
+        assert_eq!(texts(&assistant(&chat).notices).len(), 1);
+        assert!(assistant(&chat).cards.is_empty());
+    }
+
+    #[test]
+    fn rate_limits_and_other_failures_stay_ordinary_error_lines() {
+        let mut chat = running();
+        chat.tokenway_token = true;
+        chat.apply_builtin_signal(BuiltinSignal::Failure(FailureInfo {
+            kind: ErrorKind::RateLimited,
+            code: Some("rate_limited".into()),
+            status: Some(429),
+        }));
+        chat.apply_builtin_event(AgentEvent::Error {
+            message: "请求太频繁（HTTP 429）".into(),
+        });
+        assert_eq!(texts(&assistant(&chat).notices).len(), 1);
+        assert!(assistant(&chat).cards.is_empty());
+    }
     #[test]
     fn a_retry_throws_away_the_half_reply_of_that_request_only() {
         let mut chat = running();
@@ -724,9 +924,9 @@ mod tests {
             code: Some("zeeterm_requires_topup".into()),
             status: Some(402),
         }));
-        assert!(chat.topup_pending);
+        assert!(chat.card_pending.is_some());
         chat.new_conversation();
-        assert!(!chat.topup_pending);
+        assert!(chat.card_pending.is_none());
         assert!(chat.last_failure.is_none());
         assert_eq!(chat.request_mark, (0, 0));
     }

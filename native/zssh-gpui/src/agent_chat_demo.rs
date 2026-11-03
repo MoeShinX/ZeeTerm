@@ -26,7 +26,7 @@ use ::gpui::{
     App, ClickEvent, ClipboardItem, FocusHandle, ImageSource, MouseButton, Resource, ScrollHandle,
     Subscription, Task, Window, WindowBounds, WindowOptions,
 };
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::text::{SelectionFormat, TextView};
 use gpui_kit::component::*;
@@ -583,6 +583,15 @@ struct Notice {
     error: bool,
 }
 
+/// 助手消息下面带按钮的提示卡（Tokenway，V2-A5）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CardKind {
+    /// 需要充值：按钮「去充值」打开充值页。
+    TopUp,
+    /// 授权失效：按钮「重新连接」打开连接对话框。
+    Reconnect,
+}
+
 /// 一条助手消息；文本和思考都往同一条里累积，工具卡片按顺序挂在下面。
 #[derive(Clone, Debug, Default)]
 struct AssistantMessage {
@@ -591,6 +600,8 @@ struct AssistantMessage {
     reasoning_expanded: bool,
     tools: Vec<ToolCard>,
     notices: Vec<Notice>,
+    /// 带按钮的提示卡（需要充值 / 授权失效）。只是界面状态，不进历史。
+    cards: Vec<CardKind>,
     stopped: bool,
     /// 正文显示原文还是渲染：「原文 / 渲染」按钮切换，只影响显示。
     show_raw: bool,
@@ -881,8 +892,10 @@ struct ChatState {
     /// 内置助手：当前这一次请求从助手消息的哪个位置开始流出文字（正文、思考的字节长度）。
     /// 重试时据此撤回已经流出的半段，见 `builtin_ui`。
     request_mark: (usize, usize),
-    /// 内置助手：服务端要求充值，但对应的错误事件还没到（到了就换成"需要充值"的文字）。
-    topup_pending: bool,
+    /// 内置助手：服务端要求充值 / 授权失效，但对应的错误事件还没到（到了就换成带按钮的提示卡）。
+    card_pending: Option<CardKind>,
+    /// 当前对话用的是浏览器授权的 Tokenway 令牌（401 时才给"重新连接"，普通 Key 的 401 照旧显示错误）。
+    tokenway_token: bool,
     /// 内置助手：最近一次接口失败的详情。
     last_failure: Option<FailureInfo>,
 }
@@ -1075,7 +1088,7 @@ impl ChatState {
         self.turn_started = Some(Instant::now());
         self.last_item = Some(LastKind::User);
         self.request_mark = (0, 0);
-        self.topup_pending = false;
+        self.card_pending = None;
         // 新回合开始：之前因为「停止」扣住的队列，从这一回合结束时起重新按「回合结束后发出」算。
         self.queue.release();
         true
@@ -1137,6 +1150,7 @@ impl ChatState {
                     && message.reasoning.is_empty()
                     && message.tools.is_empty()
                     && message.notices.is_empty()
+                    && message.cards.is_empty()
         );
         if blank {
             self.messages.pop();
@@ -1527,7 +1541,7 @@ impl ChatState {
         self.queue.clear();
         self.usage = None;
         self.request_mark = (0, 0);
-        self.topup_pending = false;
+        self.card_pending = None;
         self.last_failure = None;
     }
 
@@ -3040,6 +3054,10 @@ impl AgentChatDemo {
         }
         if turn_ended {
             self.save_history();
+            // 一轮对话结束：余额变了，下次允许时（最多每 60 秒）重新取。
+            if builtin_session {
+                agent_setup::tokenway::mark_balance_dirty();
+            }
         }
         // TurnEnd 已经把 `real_running` 置 false；这里补一次计数更新。
         self.sync_ai_turn_count();
@@ -4928,7 +4946,71 @@ impl AgentChatDemo {
         }
     }
 }
-
+/// 助手消息下面带按钮的提示卡（需要充值 / 授权失效，V2-A5）。
+fn tokenway_card(
+    entity: Entity<AgentChatDemo>,
+    index: usize,
+    card_index: usize,
+    card: CardKind,
+    cx: &App,
+) -> AnyElement {
+    let (text, label, id) = match card {
+        CardKind::TopUp => (
+            agent_setup::builtin::REQUIRES_TOPUP_TEXT,
+            "去充值",
+            "agent-chat-card-topup",
+        ),
+        CardKind::Reconnect => (
+            agent_setup::builtin::AUTHORIZATION_INVALID_TEXT,
+            "重新连接",
+            "agent-chat-card-reconnect",
+        ),
+    };
+    h_flex()
+        .id(("agent-chat-card", index * 8 + card_index))
+        .w_full()
+        .min_w_0()
+        .gap_2()
+        .items_center()
+        .p_2()
+        .rounded_md()
+        .border_1()
+        .border_color(cx.theme().warning)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_xs()
+                .text_color(cx.theme().foreground)
+                .child(text),
+        )
+        .child(
+            Button::new((id, index * 8 + card_index))
+                .label(label)
+                .compact()
+                .primary()
+                .on_click(move |_, _window, cx| match card {
+                    CardKind::TopUp => {
+                        let opened = agent_setup::tokenway::open_topup();
+                        entity.update(cx, |this, cx| {
+                            this.link_notice = Some(match opened {
+                                Ok(()) => Notice {
+                                    text: "已用浏览器打开充值页，充值后几秒内就能继续用".to_owned(),
+                                    error: false,
+                                },
+                                Err(reason) => Notice {
+                                    text: format!("没能打开充值页：{reason}"),
+                                    error: true,
+                                },
+                            });
+                            cx.notify();
+                        });
+                    }
+                    CardKind::Reconnect => agent_setup::tokenway::request_reconnect(),
+                }),
+        )
+        .into_any_element()
+}
 impl AgentChatDemo {
     /// 消息区（或历史面板，二选一）：独立窗口和嵌在主窗口里的面板共用同一份。
     fn conversation_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -5019,6 +5101,15 @@ impl AgentChatDemo {
                                 })
                                 .child(redact_paths(&notice.text)),
                         );
+                    }
+                    for (card_index, card) in message.cards.iter().enumerate() {
+                        block = block.child(tokenway_card(
+                            entity.clone(),
+                            index,
+                            card_index,
+                            *card,
+                            cx,
+                        ));
                     }
 
                     if !message.reasoning.is_empty() {

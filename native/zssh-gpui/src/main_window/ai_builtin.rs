@@ -32,6 +32,10 @@ pub struct Row {
     pub base_url: String,
     /// "…ab12"：Key 的末 4 位；没有 Key 是 `None`。
     pub key_tail: Option<String>,
+    /// 明确设成不需要 Key（Ollama 之类）。
+    pub no_key: bool,
+    /// 来自哪个预设（`tokenway` = 浏览器授权的令牌，`tokenway_key` = 自己粘贴的 Key）。
+    pub preset_id: Option<String>,
     pub default_model: Option<String>,
     pub is_default: bool,
 }
@@ -99,6 +103,7 @@ pub fn read_rows(db: &Database) -> Vec<Row> {
                 .then(|| db.ai_endpoint_api_key(endpoint.id).ok().flatten())
                 .flatten()
                 .and_then(|key| key_tail(&key));
+            let no_key = endpoint.key_not_needed();
             Row {
                 is_default: default
                     .as_ref()
@@ -108,6 +113,8 @@ pub fn read_rows(db: &Database) -> Vec<Row> {
                 kind: endpoint.kind,
                 base_url: endpoint.base_url,
                 key_tail: tail,
+                no_key,
+                preset_id: endpoint.preset_id,
                 default_model: endpoint.default_model,
             }
         })
@@ -119,6 +126,7 @@ pub fn row_detail(row: &Row) -> String {
     let mut parts = vec![row.base_url.clone()];
     parts.push(match &row.key_tail {
         Some(tail) => format!("Key {tail}"),
+        None if row.no_key => "不需要 Key".to_owned(),
         None => "未设置 Key".to_owned(),
     });
     if let Some(model) = &row.default_model {
@@ -171,7 +179,7 @@ impl MainWindow {
                         .primary()
                         .on_click(move |_, window, cx| {
                             add.update(cx, |this, cx| {
-                                this.open_ai_endpoint_dialog(None, window, cx)
+                                this.open_ai_presets(window, cx)
                             });
                         }),
                 )
@@ -275,6 +283,13 @@ impl MainWindow {
     ) -> ::gpui::AnyElement {
         let id = row.id;
         let (edit, delete, set_default) = (entity.clone(), entity.clone(), entity.clone());
+        // Tokenway（浏览器授权的令牌 / 自己粘贴的 Key）：删除按钮叫「断开」，授权的令牌还显示余额。
+        let tokenway = super::ai_presets::is_tokenway_row(row.preset_id.as_deref());
+        let authorized = row.preset_id.as_deref()
+            == Some(zssh_core::ai::agent::builtin::tokenway::endpoint::PRESET_AUTHORIZED);
+        let balance = authorized
+            .then(|| super::ai_presets::balance_text(id))
+            .flatten();
         h_flex()
             .id(("ai-endpoint-row", id as usize))
             .w_full()
@@ -297,6 +312,18 @@ impl MainWindow {
                             .child(badge(kind_label(row.kind), BadgeKind::Outline, tokens))
                             .when(row.is_default, |d| {
                                 d.child(badge("默认接口", BadgeKind::Neutral, tokens))
+                            })
+                            .when(authorized, |d| {
+                                d.child(badge("已授权", BadgeKind::Good, tokens))
+                            })
+                            .when_some(balance, |d, text| {
+                                d.child(
+                                    div()
+                                        .id(("ai-endpoint-balance", id as usize))
+                                        .text_xs()
+                                        .text_color(tokens.text_muted)
+                                        .child(SharedString::from(text)),
+                                )
                             }),
                     )
                     .child(
@@ -334,10 +361,16 @@ impl MainWindow {
                     ))
                     .child(text_button(
                         format!("ai-endpoint-delete-{id}"),
-                        "删除",
+                        if tokenway { "断开" } else { "删除" },
                         ButtonLook::Ghost,
                         move |_, _window, cx| {
-                            delete.update(cx, |this, cx| this.ask_delete_ai_endpoint(id, cx));
+                            delete.update(cx, |this, cx| {
+                                if tokenway {
+                                    this.ask_disconnect_tokenway(id, cx)
+                                } else {
+                                    this.ask_delete_ai_endpoint(id, cx)
+                                }
+                            });
                         },
                     )),
             )
@@ -521,6 +554,8 @@ mod tests {
             kind: EndpointKind::OpenAiChat,
             base_url: "https://api.example.com/v1".into(),
             key_tail: Some("••••1234".into()),
+            no_key: false,
+            preset_id: None,
             default_model: Some("gpt-5.5".into()),
             is_default: true,
         };
