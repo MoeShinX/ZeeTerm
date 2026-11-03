@@ -5,7 +5,7 @@
 //! 字段和流程对照 0.2.14 的 `GroupFormDialog.tsx` / `QuickConnectDialog.tsx` / `ConfirmDialog` /
 //! `SshKeyDialogs.tsx`。
 
-use ::gpui::{Entity, SharedString, hsla, px};
+use ::gpui::{Entity, SharedString};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -16,7 +16,9 @@ use super::MainWindow;
 use super::key_dialogs::{GenerateKeyDialog, InstallKeyDialog};
 use super::page_logic::{delete_group_message, flatten_groups, forbidden_parents};
 use super::quick_commands::Field as QuickField;
-use super::widgets::{ButtonLook, Choice, error_note, field, note, select, text_button};
+use super::widgets::{
+    ButtonLook, Choice, error_note, field, modal_card, modal_scrim, note, select, text_button,
+};
 use crate::app_theme::Tokens;
 use crate::typography::{Role, Typo as _};
 
@@ -550,41 +552,15 @@ impl MainWindow {
         };
         let scrim = {
             let entity = entity.clone();
-            div()
-                .id("modal-scrim")
-                .occlude()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(hsla(0.0, 0.0, 0.0, 0.45))
-                .when(tall, |d| d.py_6().px_6())
-                .on_mouse_down(::gpui::MouseButton::Left, move |_, window, cx| {
-                    if closes_on_scrim {
-                        entity.update(cx, |this, cx| this.close_modal(window, cx));
-                    }
-                })
+            modal_scrim("modal-scrim", tall, move |window, cx| {
+                if closes_on_scrim {
+                    entity.update(cx, |this, cx| this.close_modal(window, cx));
+                }
+            })
         };
         Some(
             scrim
-                .child(
-                    v_flex()
-                        .id("modal-card")
-                        .w(px(width))
-                        .max_w_full()
-                        .when(!tall, |d| d.max_h(px(640.0)))
-                        .when(tall, |d| d.max_h_full())
-                        .p_5()
-                        .gap_4()
-                        .rounded_lg()
-                        .bg(tokens.background)
-                        .border_1()
-                        .border_color(tokens.border)
-                        .shadow_lg()
-                        .on_mouse_down(::gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(content),
-                )
+                .child(modal_card("modal-card", width, tall, tokens).child(content))
                 .children(overlay)
                 .into_any_element(),
         )

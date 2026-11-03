@@ -9,7 +9,7 @@
 //! - `term_paste_switch:on|off`（设置页「右键粘贴」开关）、`assert_term_paste_switch:on|off`（从磁盘重读设置）；
 //! - `assert_term_focus:yes|no`：键盘焦点在不在终端上；`assert_panes:<个数>`：活动标签的窗格数；
 //! - `clip_stash` / `clip_restore`：存下 / 还原剪贴板（验证会写剪贴板的动作之前之后用，别弄丢用户的内容）；
-//!   `clip_set:<文字>`、`assert_clipboard:<文字|empty>`。
+//!   `clip_set:<文字>`（支持反斜杠转义，写法同 `type:`，多行粘贴的验证要用）、`assert_clipboard:<文字|empty>`。
 
 #[cfg(debug_assertions)]
 mod real {
@@ -17,7 +17,7 @@ mod real {
     use gpui_kit::*;
 
     use super::super::MainWindow;
-    use super::super::dev_script::Outcome;
+    use super::super::dev_script::{Outcome, unescape};
     use crate::terminal_menu::MenuItem;
 
     const KNOWN: &[&str] = &[
@@ -178,7 +178,7 @@ mod real {
                 Ok(Outcome::Done)
             }
             "clip_set" => {
-                cx.write_to_clipboard(ClipboardItem::new_string(arg.to_owned()));
+                cx.write_to_clipboard(ClipboardItem::new_string(unescape(arg)));
                 Ok(Outcome::Done)
             }
             _ => {

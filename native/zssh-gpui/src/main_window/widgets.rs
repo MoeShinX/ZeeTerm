@@ -3,7 +3,7 @@
 //!
 //! 只做外观，不持有状态；颜色一律从 `Tokens` 取。
 
-use ::gpui::{App, ClickEvent, Hsla, SharedString, Window, px};
+use ::gpui::{App, ClickEvent, Hsla, SharedString, Stateful, Window, px};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::switch::Switch;
@@ -439,4 +439,49 @@ pub fn pick(
     move |index, window, cx| {
         entity.update(cx, |this, cx| f(this, index, window, cx));
     }
+}
+
+/// 对话框的遮罩：盖满父级（主窗口对话框和终端的粘贴确认共用，样子一致）。`occlude` 挡住下面的鼠标事件；
+/// 点遮罩算不算取消由调用方在 `on_click` 里决定（填了半天的表单不该被误点丢掉）。
+pub fn modal_scrim(
+    id: impl Into<::gpui::ElementId>,
+    tall: bool,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .occlude()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(::gpui::hsla(0.0, 0.0, 0.0, 0.45))
+        .when(tall, |d| d.py_6().px_6())
+        .on_mouse_down(::gpui::MouseButton::Left, move |_, window, cx| {
+            on_click(window, cx)
+        })
+}
+
+/// 对话框的卡片：固定宽度、圆角、边框、阴影；点在卡片上不穿透到遮罩。
+pub fn modal_card(
+    id: impl Into<::gpui::ElementId>,
+    width: f32,
+    tall: bool,
+    tokens: &Tokens,
+) -> Stateful<Div> {
+    v_flex()
+        .id(id)
+        .w(px(width))
+        .max_w_full()
+        .when(!tall, |d| d.max_h(px(640.0)))
+        .when(tall, |d| d.max_h_full())
+        .p_5()
+        .gap_4()
+        .rounded_lg()
+        .bg(tokens.background)
+        .border_1()
+        .border_color(tokens.border)
+        .shadow_lg()
+        .on_mouse_down(::gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }

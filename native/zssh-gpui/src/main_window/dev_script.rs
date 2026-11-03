@@ -399,7 +399,7 @@ pub fn parse_script(raw: &str) -> Result<Vec<Step>, String> {
 }
 
 /// `\r`、`\n`、`\t`、`\e`（ESC）、`\s`（空格）、`\\` 转义；别的反斜杠原样保留。
-fn unescape(raw: &str) -> String {
+pub(super) fn unescape(raw: &str) -> String {
     let mut out = String::new();
     let mut chars = raw.chars();
     while let Some(ch) = chars.next() {

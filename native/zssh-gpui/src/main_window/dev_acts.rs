@@ -117,6 +117,7 @@ pub fn validate(spec: &str) -> Result<(), String> {
         || super::dev_acts_u19::is_known(name)
         || super::dev_acts_u20::is_known(name)
         || super::dev_acts_u25::is_known(name)
+        || super::dev_acts_c1::is_known(name)
         || super::dev_acts_n4::is_known(name)
         || super::dev_acts_sync::is_known(name)
         || KNOWN.contains(&name)
@@ -275,6 +276,10 @@ fn run_inner(
     }
     // V2-U25（终端右键菜单）的动作在 `dev_acts_u25`。
     if let Some(result) = super::dev_acts_u25::run(this, spec, window, cx) {
+        return result;
+    }
+    // V2-C1（多行粘贴确认框）的动作在 `dev_acts_c1`。
+    if let Some(result) = super::dev_acts_c1::run(this, spec, window, cx) {
         return result;
     }
     // V2-U13（主机属性单栏表单、测试连接）的动作在 `dev_acts_u13`。

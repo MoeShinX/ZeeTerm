@@ -383,7 +383,7 @@ mod tests {
         let allowed: &[(&str, usize)] = &[
             ("main_window/titlebar.rs", 1),
             ("main_window/host_dialog.rs", 1),
-            ("main_window/modal.rs", 1),
+            ("main_window/widgets.rs", 1),
             ("main_window/processes_ui.rs", 1),
             ("main_window/bars.rs", 2),
             ("sftp_demo/view.rs", 4),

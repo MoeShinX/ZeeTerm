@@ -31,6 +31,7 @@ mod dev_acts_a4;
 mod dev_acts_a5;
 mod dev_acts_about;
 mod dev_acts_agent;
+mod dev_acts_c1;
 mod dev_acts_dock;
 mod dev_acts_edit;
 mod dev_acts_n4;

@@ -14,7 +14,6 @@ use ::gpui::{
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollDelta, ScrollEvent, Subscription,
     Task, Window, anchored, canvas, deferred,
 };
-use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::slider::{SliderEvent, SliderState};
@@ -157,6 +156,13 @@ pub(crate) struct PaneLatency {
 
 /// 下一个窗格编号（全进程唯一：标签可以在窗口之间搬）。
 fn next_pane_id() -> PaneId {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 下一个连接代次（全进程唯一）。每个窗格的每次（重）连接都拿一个新的：迟到的事件、
+/// 终端协议回复、待确认的粘贴靠它认出"这已经不是当初那条连接了"。
+fn next_generation() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
@@ -486,6 +492,8 @@ impl Pane {
             self.disconnect(&disconnect_notice(&exit));
             changed = true;
         }
+        // 不管有没有重绘、窗格在不在前台：远端的查询（DSR / DA 等）等着回复。
+        self.flush_replies();
         if changed {
             self.snapshot = self.driver.pump().snapshot();
         }
@@ -494,6 +502,29 @@ impl Pane {
 
     fn refresh(&mut self) {
         self.snapshot = self.driver.pump().snapshot();
+    }
+
+    /// 把终端对远端查询的协议回复写回这个窗格自己的会话。走写端专门的回复接口，不经 [`Self::write`]：
+    /// 它不是用户输入，不受广播、锁屏、快捷命令影响；回复只回给产生查询的会话，代次不符就丢。
+    /// 没连上（连接中 / 已断开 / 空白）的窗格没有可回的远端，回复作废。
+    fn flush_replies(&mut self) {
+        let Some(replies) = self.pump_mut().take_replies() else {
+            return;
+        };
+        if self.state != PaneState::Live || replies.generation != self.generation {
+            return;
+        }
+        self.backend.send_reply(replies.generation, replies.bytes);
+    }
+
+    /// 粘贴确认要记住的"目标身份"：窗格编号 + 连接代次 + 状态。重连换代次，断开 / 连上换状态，
+    /// 任何一项变了都说明这已经不是确认条上展示过的那个目标。
+    fn paste_target(&self) -> PasteTarget {
+        PasteTarget {
+            pane_id: self.id,
+            generation: self.generation,
+            state: self.state,
+        }
     }
 
     /// 写命令走会话后端；同进程回环后端会立刻回送事件。
@@ -700,6 +731,55 @@ impl Tab {
         }
     }
 
+    /// 为一次待确认的粘贴记下目标：标签、广播开关、每个接收窗格的身份。确认条上写的接收者就是
+    /// 这里记的"已连接"窗格；没有任何已连接窗格时返回 `None`（粘贴不出去，不必弹确认）。
+    fn capture_paste(&self, text: String) -> Option<PendingPaste> {
+        let targets: Vec<PasteTarget> = self
+            .input_targets()
+            .into_iter()
+            .map(|index| self.panes[index].paste_target())
+            .collect();
+        if !targets.iter().any(|target| target.state == PaneState::Live) {
+            return None;
+        }
+        Some(PendingPaste {
+            text,
+            tab_id: self.id,
+            broadcast: self.broadcast,
+            pane_ids: self.panes.iter().map(|pane| pane.id).collect(),
+            targets,
+        })
+    }
+
+    /// 确认时核对：这个标签还是当初那个、广播开关没变、（广播时）窗格集合没变、每个目标窗格还在且
+    /// 代次 / 状态都没变。全对才返回要发的窗格下标（只含已连接的）；任何一项变了返回 `None`。
+    /// 焦点换到别的窗格不算变化：非广播时目标是当初那个窗格，不是现在聚焦的。
+    fn resolve_paste(&self, pending: &PendingPaste) -> Option<Vec<usize>> {
+        if self.id != pending.tab_id || self.broadcast != pending.broadcast {
+            return None;
+        }
+        if pending.broadcast {
+            let now: Vec<PaneId> = self.panes.iter().map(|pane| pane.id).collect();
+            if now != pending.pane_ids {
+                return None;
+            }
+        }
+        let mut indices = Vec::new();
+        for target in &pending.targets {
+            let index = self
+                .panes
+                .iter()
+                .position(|pane| pane.id == target.pane_id)?;
+            if self.panes[index].paste_target() != *target {
+                return None;
+            }
+            if target.state == PaneState::Live {
+                indices.push(index);
+            }
+        }
+        Some(indices)
+    }
+
     fn status(&self) -> TabStatus {
         let states: Vec<PaneState> = self.panes.iter().map(|pane| pane.state).collect();
         tab_status(&states)
@@ -751,6 +831,39 @@ impl Tab {
     }
 }
 
+/// 待确认粘贴的一个目标窗格的身份（见 [`Pane::paste_target`]）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PasteTarget {
+    pane_id: PaneId,
+    generation: u64,
+    state: PaneState,
+}
+
+/// 多行粘贴在确认框里等用户点头。它绑定的是**发起粘贴时**的目标，不是确认时的：用户在确认框
+/// 开着的时候切了分屏焦点、开关了广播、关了窗格或重连，都不能让这段文字悄悄发到别处。
+struct PendingPaste {
+    text: String,
+    tab_id: u64,
+    broadcast: bool,
+    /// 发起时这个标签的全部窗格（广播时用来发现窗格增减）。
+    pane_ids: Vec<PaneId>,
+    /// 发起时的接收窗格（含身份）。
+    targets: Vec<PasteTarget>,
+}
+
+impl PendingPaste {
+    /// 实际会收到的窗格个数（已连接的）：确认框上写的就是它。
+    fn recipients(&self) -> usize {
+        self.targets
+            .iter()
+            .filter(|target| target.state == PaneState::Live)
+            .count()
+    }
+}
+
+/// 粘贴目标变了而取消时的提示。
+const PASTE_CANCELLED: &str = "会话已变化，已取消粘贴，请重新粘贴";
+
 /// 高亮状态：规则、修订号、最近扫描结果都在这里（面板的输入框等界面状态归外壳）。
 struct HighlightUi {
     rules: Vec<HighlightRule>,
@@ -793,7 +906,7 @@ pub struct TerminalWorkspace {
     drag_anchor: Option<(usize, usize)>,
     cell_width: f32,
     cell_height: f32,
-    pending_paste: Option<String>,
+    pending_paste: Option<PendingPaste>,
     hover_link: Option<Arc<str>>,
     /// 持久化的界面设置（字号、行高、光标、主题）。
     settings: UiSettings,
@@ -1214,7 +1327,10 @@ impl TerminalWorkspace {
         self.selecting = false;
         self.drag_anchor = None;
         self.hover_link = None;
-        self.pending_paste = None;
+        // 标签 / 窗格结构变了，待确认的粘贴作废：不静默，告诉用户要重来。
+        if self.pending_paste.take().is_some() {
+            self.status_text = PASTE_CANCELLED.to_owned();
+        }
         self.mouse_pressed = false;
         self.last_mouse_cell = None;
         self.dragging_split = None;
@@ -1294,7 +1410,13 @@ impl TerminalWorkspace {
         cx: &mut Context<Self>,
     ) -> usize {
         let history = self.settings.scrollback;
-        let pane = Pane::start_ssh(factory, Some(host_id), self.default_size, history, 1);
+        let pane = Pane::start_ssh(
+            factory,
+            Some(host_id),
+            self.default_size,
+            history,
+            next_generation(),
+        );
         let index = self.tabs.push(Tab::new(title, pane));
         self.reset_interaction();
         cx.notify();
@@ -1315,7 +1437,7 @@ impl TerminalWorkspace {
             label: label.clone(),
         });
         let history = self.settings.scrollback;
-        let pane = Pane::start_quick(spec, None, self.default_size, history, 1);
+        let pane = Pane::start_quick(spec, None, self.default_size, history, next_generation());
         let index = self.tabs.push(Tab::new(label, pane));
         self.reset_interaction();
         cx.notify();
@@ -1331,7 +1453,7 @@ impl TerminalWorkspace {
         cx: &mut Context<Self>,
     ) {
         let history = self.settings.scrollback;
-        let pane = Pane::start_ssh(factory, Some(host_id), size, history, 1);
+        let pane = Pane::start_ssh(factory, Some(host_id), size, history, next_generation());
         self.replace_with_tab(Tab::new(format!("终端 #{host_id}"), pane));
         cx.notify();
     }
@@ -1358,7 +1480,13 @@ impl TerminalWorkspace {
     /// 「+」：一个空白标签，等用户在里面选主机。
     pub(crate) fn new_empty_tab(&mut self, cx: &mut Context<Self>) -> usize {
         let history = self.settings.scrollback;
-        let pane = Pane::placeholder(self.default_size, history, 1, None, PaneState::Empty);
+        let pane = Pane::placeholder(
+            self.default_size,
+            history,
+            next_generation(),
+            None,
+            PaneState::Empty,
+        );
         let index = self.tabs.push(Tab::new("新标签".to_owned(), pane));
         self.reset_interaction();
         cx.notify();
@@ -1382,7 +1510,13 @@ impl TerminalWorkspace {
         }
         tab.title = title;
         // 空白标签里即使被分过屏，选了主机也是整个标签换成一个窗格。
-        tab.reset_to(Pane::start_ssh(None, Some(host_id), size, history, 1));
+        tab.reset_to(Pane::start_ssh(
+            None,
+            Some(host_id),
+            size,
+            history,
+            next_generation(),
+        ));
         self.reset_interaction();
         cx.notify();
         true
@@ -1407,8 +1541,10 @@ impl TerminalWorkspace {
         let title = tab.title.clone();
         let history = self.settings.scrollback;
         let pane = match (&source.quick, source.host_id) {
-            (Some(spec), _) => Pane::start_quick(Arc::clone(spec), factory, size, history, 1),
-            (None, host_id) => Pane::start_ssh(factory, host_id, size, history, 1),
+            (Some(spec), _) => {
+                Pane::start_quick(Arc::clone(spec), factory, size, history, next_generation())
+            }
+            (None, host_id) => Pane::start_ssh(factory, host_id, size, history, next_generation()),
         };
         self.tabs.insert_after(index, Tab::new(title, pane));
         self.reset_interaction();
@@ -1567,7 +1703,7 @@ impl TerminalWorkspace {
 
     /// 离线演示标签（不连任何主机，键入内容本地回显）：只有调试窗口用。
     pub(crate) fn push_offline_tab(&mut self, title: &str, size: Size) -> usize {
-        let pane = Pane::new(size, self.settings.scrollback, 1);
+        let pane = Pane::new(size, self.settings.scrollback, next_generation());
         let index = self.tabs.push(Tab::new(title.to_owned(), pane));
         self.reset_interaction();
         index
@@ -2005,11 +2141,11 @@ impl TerminalWorkspace {
             },
         };
         let mut pane = if blank {
-            Pane::placeholder(half, history, 1, None, PaneState::Empty)
+            Pane::placeholder(half, history, next_generation(), None, PaneState::Empty)
         } else if let Some(spec) = quick.clone() {
-            Pane::start_quick(spec, factory, half, history, 1)
+            Pane::start_quick(spec, factory, half, history, next_generation())
         } else {
-            Pane::start_ssh(factory, host_id, half, history, 1)
+            Pane::start_ssh(factory, host_id, half, history, next_generation())
         };
         if host_id.is_none() && quick.is_none() && !blank {
             for i in 0..5 {
@@ -2119,8 +2255,8 @@ impl TerminalWorkspace {
         let id = pane.id;
         pane.close();
         *pane = match quick {
-            Some(spec) => Pane::start_quick(spec, None, size, history, 1),
-            None => Pane::start_ssh(None, host_id, size, history, 1),
+            Some(spec) => Pane::start_quick(spec, None, size, history, next_generation()),
+            None => Pane::start_ssh(None, host_id, size, history, next_generation()),
         };
         pane.id = id;
         pane.refresh();
@@ -2631,6 +2767,15 @@ impl TerminalWorkspace {
         let ctrl = keystroke.modifiers.control;
         let shift = keystroke.modifiers.shift;
         let key = keystroke.key.as_str();
+        // 粘贴确认框开着是模态的：Esc 取消、回车粘贴（沿用 0.2.14），其余按键一律不进终端。
+        if self.pending_paste.is_some() {
+            match key {
+                "escape" => self.cancel_paste(window, cx),
+                "enter" => self.confirm_paste(window, cx),
+                _ => {}
+            }
+            return;
+        }
         // 打字时光标先亮着，停下来才闪（和常见终端一致）。
         self.cursor_blink.reset();
 
@@ -2715,7 +2860,7 @@ impl TerminalWorkspace {
         // - Ctrl+C 有选区才复制，没有选区继续发 ^C；
         // - Ctrl+Shift+C 没有选区时吞掉，不能把 ^C 发给远端。
         if ctrl && key.eq_ignore_ascii_case("v") {
-            self.request_paste(cx);
+            self.request_paste(window, cx);
             return;
         }
         if ctrl && key.eq_ignore_ascii_case("c") {
@@ -2733,7 +2878,7 @@ impl TerminalWorkspace {
             }
         }
         if shift && key.eq_ignore_ascii_case("insert") {
-            self.request_paste(cx);
+            self.request_paste(window, cx);
             return;
         }
 
@@ -2967,7 +3112,7 @@ impl TerminalWorkspace {
                 self.settings.right_click_paste,
                 link.is_some(),
             ) {
-                crate::terminal_menu::RightClick::Paste => self.request_paste(cx),
+                crate::terminal_menu::RightClick::Paste => self.request_paste(window, cx),
                 crate::terminal_menu::RightClick::Menu => {
                     self.open_context_menu(event.position, link, window, cx)
                 }
@@ -3267,7 +3412,7 @@ impl TerminalWorkspace {
                 self.copy_selection(cx);
                 self.selection = None;
             }
-            MenuItem::Paste => self.request_paste(cx),
+            MenuItem::Paste => self.request_paste(window, cx),
             MenuItem::SelectAll => self.select_all(cx),
             MenuItem::SplitRight => {
                 self.split_active(Axis::X, cx);
@@ -3314,22 +3459,39 @@ impl TerminalWorkspace {
         cx.notify();
     }
 
-    fn request_paste(&mut self, cx: &mut Context<Self>) {
+    fn request_paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(item) = cx.read_from_clipboard() else {
             return;
         };
         let Some(text) = item.text() else {
             return;
         };
+        self.begin_paste(text, window, cx);
+    }
+
+    /// 粘贴一段文字（剪贴板读出来之后的那一步，调试钩子也走这里）：多行先弹确认框，目标在这一刻
+    /// 就定下来；单行直接发。
+    pub(crate) fn begin_paste(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if text.is_empty() {
             return;
         }
         // 多行粘贴先确认：远端没开 bracketed paste 时，多行会被 shell 直接执行。
         if text.contains(['\r', '\n']) && self.settings.confirm_multiline {
-            self.pending_paste = Some(text);
+            self.pending_paste = self.tabs.active().and_then(|tab| tab.capture_paste(text));
+            if self.pending_paste.is_some() {
+                // 键盘留在终端上：Enter / Esc 由终端的按键处理接走，不会漏到远端。
+                window.focus(&self.focus, cx);
+            } else {
+                self.status_text = "没有已连接的窗格，无法粘贴".to_owned();
+            }
             cx.notify();
         } else {
-            // 直接粘贴时清掉之前的确认条，避免旧内容还挂在那里。
+            // 直接粘贴时清掉之前的确认框，避免旧内容还挂在那里。
             self.pending_paste = None;
             self.send_paste(&text, cx);
         }
@@ -3393,12 +3555,30 @@ impl TerminalWorkspace {
         cx.notify();
     }
 
+    /// 不需要确认的粘贴：发给此刻的输入目标（聚焦窗格，或广播时的全部窗格）。
     fn send_paste(&mut self, text: &str, cx: &mut Context<Self>) {
+        let (Some(index), Some(tab)) = (self.tabs.active_index(), self.tabs.active()) else {
+            return;
+        };
+        let targets = tab.input_targets();
+        self.send_paste_to(index, &targets, text, cx);
+    }
+
+    /// 把粘贴发给第 `tab_index` 个标签的指定窗格（各自按自己的括号粘贴状态编码）。
+    fn send_paste_to(
+        &mut self,
+        tab_index: usize,
+        targets: &[usize],
+        text: &str,
+        cx: &mut Context<Self>,
+    ) {
         self.selection = None;
         let mode = self.settings.bracketed_paste;
-        if let Some(tab) = self.tabs.active_mut() {
-            for index in tab.input_targets() {
-                let pane = &mut tab.panes[index];
+        if let Some(tab) = self.tabs.get_mut(tab_index) {
+            for &index in targets {
+                let Some(pane) = tab.panes.get_mut(index) else {
+                    continue;
+                };
                 let wrapped = mode.wraps(pane.pump().bracketed_paste());
                 pane.write(&zssh_session::encode_paste(text, wrapped));
             }
@@ -3406,12 +3586,59 @@ impl TerminalWorkspace {
         cx.notify();
     }
 
-    fn confirm_paste(&mut self, cx: &mut Context<Self>) {
-        if let Some(text) = self.pending_paste.take() {
-            self.send_paste(&text, cx);
+    /// 确认框点了「粘贴」（或回车）：核对目标还是发起时的那些，是才发，否则取消并提示，绝不改发别处。
+    fn confirm_paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_paste.take() else {
+            return;
+        };
+        window.focus(&self.focus, cx);
+        let resolved = self
+            .tabs
+            .items()
+            .iter()
+            .position(|tab| tab.id == pending.tab_id)
+            .and_then(|index| {
+                self.tabs
+                    .get(index)
+                    .and_then(|tab| tab.resolve_paste(&pending))
+                    .map(|targets| (index, targets))
+            });
+        match resolved {
+            Some((index, targets)) => self.send_paste_to(index, &targets, &pending.text, cx),
+            None => {
+                self.status_text = PASTE_CANCELLED.to_owned();
+                window.push_notification(PASTE_CANCELLED.to_owned(), cx);
+            }
         }
-        self.pending_paste = None;
         cx.notify();
+    }
+
+    fn cancel_paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_paste = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// 调试钩子：确认框现在的样子（行数、接收窗格数、是不是广播）；没有确认框返回 `None`。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_paste_state(&self) -> Option<(usize, usize, bool)> {
+        self.pending_paste.as_ref().map(|pending| {
+            (
+                pending.text.lines().count().max(1),
+                pending.recipients(),
+                pending.broadcast,
+            )
+        })
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_paste_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm_paste(window, cx);
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_paste_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_paste(window, cx);
     }
 
     /// 调试钩子用：往活动窗格的会话里"打字"（和键盘输入同一条路径）。
@@ -3650,34 +3877,23 @@ impl Render for TerminalWorkspace {
         let broadcast = active.broadcast;
         let dragging = self.dragging_split;
 
-        let pending_bar = self.pending_paste.clone().map(|text| {
-            let lines = text.lines().count().max(1);
-            let confirm = entity.clone();
-            let cancel = entity.clone();
-            h_flex()
-                .h(::gpui::px(40.0))
-                .px_2()
-                .gap_2()
-                .items_center()
-                .child(div().text_sm().child(format!(
-                    "\u{7c98}\u{8d34} {lines} \u{884c}\u{5185}\u{5bb9}\u{ff1f}"
-                )))
-                .child(Button::new("paste-ok").label("\u{7c98}\u{8d34}").on_click(
-                    move |_, _, cx| {
-                        confirm.update(cx, |this, cx| this.confirm_paste(cx));
-                    },
-                ))
-                .child(
-                    Button::new("paste-cancel")
-                        .label("\u{53d6}\u{6d88}")
-                        .on_click(move |_, _, cx| {
-                            cancel.update(cx, |this, cx| {
-                                this.pending_paste = None;
-                                cx.notify();
-                            });
-                        }),
-                )
-                .into_any_element()
+        // 多行粘贴的确认框：窗口正中的模态框（0.2.14 的样子），盖满整个窗口，不只是终端区域。
+        let paste_dialog = self.pending_paste.as_ref().map(|pending| {
+            let viewport = window.viewport_size();
+            let dialog = paste_dialog(pending, &tokens, &mono, &entity);
+            deferred(
+                anchored()
+                    .position(::gpui::point(::gpui::px(0.0), ::gpui::px(0.0)))
+                    .anchor(Anchor::TopLeft)
+                    .child(
+                        div()
+                            .relative()
+                            .w(viewport.width)
+                            .h(viewport.height)
+                            .child(dialog),
+                    ),
+            )
+            .with_priority(gpui_kit::base::POPUP_PRIORITY)
         });
 
         let area_cell = Rc::clone(&self.area);
@@ -3824,8 +4040,8 @@ impl Render for TerminalWorkspace {
             .on_scroll(cx.listener(Self::on_wheel))
             .bg(background)
             .when(self.hover_link.is_some(), |d| d.cursor_pointer())
-            .children(pending_bar)
             .children(context_menu)
+            .children(paste_dialog)
             .child(
                 div()
                     .relative()
@@ -3873,6 +4089,128 @@ impl Render for TerminalWorkspace {
             )
             .into_any_element()
     }
+}
+
+/// 预览框最多显示的行数 / 字符数：几万行的剪贴板不能整段塞进界面。
+const PASTE_PREVIEW_LINES: usize = 30;
+const PASTE_PREVIEW_CHARS: usize = 4000;
+
+/// 确认框里的预览文字：前若干行（太长截断），以及是不是被截断了。
+fn paste_preview(text: &str) -> (String, bool) {
+    let mut out = String::new();
+    let mut truncated = false;
+    for (index, line) in text.lines().enumerate() {
+        if index >= PASTE_PREVIEW_LINES || out.chars().count() >= PASTE_PREVIEW_CHARS {
+            truncated = true;
+            break;
+        }
+        if index > 0 {
+            out.push('\n');
+        }
+        // 终端控制字符不放进界面预览（可能夹带转义序列，也会让排版乱）。
+        out.extend(
+            line.chars()
+                .map(|ch| if ch.is_control() { '\u{fffd}' } else { ch }),
+        );
+    }
+    if out.chars().count() > PASTE_PREVIEW_CHARS {
+        out = out.chars().take(PASTE_PREVIEW_CHARS).collect();
+        truncated = true;
+    }
+    (out, truncated)
+}
+
+/// 确认框上写的"发给谁"：和实际接收者一致（见 [`PendingPaste::recipients`]）。
+fn paste_target_line(pending: &PendingPaste) -> String {
+    if pending.broadcast {
+        format!("会发送到 {} 个窗格（广播）", pending.recipients())
+    } else {
+        "会发送到当前窗格".to_owned()
+    }
+}
+
+/// 多行粘贴的确认框：标题、说明、目标、等宽预览、取消 / 粘贴。外壳和主窗口的确认框同一套。
+fn paste_dialog(
+    pending: &PendingPaste,
+    tokens: &crate::app_theme::Tokens,
+    mono: &::gpui::SharedString,
+    entity: &Entity<TerminalWorkspace>,
+) -> AnyElement {
+    use crate::main_window::widgets::{ButtonLook, modal_card, modal_scrim, text_button};
+    use crate::typography::{Role, Typo as _};
+
+    let lines = pending.text.lines().count().max(1);
+    let (preview, truncated) = paste_preview(&pending.text);
+    let scrim_cancel = entity.clone();
+    let cancel = entity.clone();
+    let confirm = entity.clone();
+    modal_scrim("paste-scrim", false, move |window, cx| {
+        scrim_cancel.update(cx, |this, cx| this.cancel_paste(window, cx));
+    })
+    .child(
+        modal_card("paste-card", 420.0, false, tokens)
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .typo(Role::GroupTitle, tokens)
+                            .child(format!("粘贴 {lines} 行内容？")),
+                    )
+                    .child(
+                        div()
+                            .typo(Role::Body, tokens)
+                            .child("内容带换行，对方 shell 没开括号粘贴模式时会直接执行。"),
+                    )
+                    .child(
+                        div()
+                            .typo(Role::Caption, tokens)
+                            .child(paste_target_line(pending)),
+                    )
+                    .child(
+                        div()
+                            .id("paste-preview")
+                            .max_h(::gpui::px(160.0))
+                            .overflow_y_scroll()
+                            .rounded_md()
+                            .p_2()
+                            .bg(tokens.subtle)
+                            .font_family(mono.clone())
+                            .text_size(::gpui::px(12.0))
+                            .text_color(tokens.text)
+                            .child(preview),
+                    )
+                    .when(truncated, |d| {
+                        d.child(
+                            div()
+                                .typo(Role::Caption, tokens)
+                                .child(format!("共 {lines} 行，这里只显示前面一部分")),
+                        )
+                    }),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .child(text_button(
+                        "paste-cancel",
+                        "取消",
+                        ButtonLook::Outline,
+                        move |_, window, cx| {
+                            cancel.update(cx, |this, cx| this.cancel_paste(window, cx));
+                        },
+                    ))
+                    .child(text_button(
+                        "paste-ok",
+                        "粘贴",
+                        ButtonLook::Primary,
+                        move |_, window, cx| {
+                            confirm.update(cx, |this, cx| this.confirm_paste(window, cx));
+                        },
+                    )),
+            ),
+    )
+    .into_any_element()
 }
 
 /// 窗格右上角的延迟徽标：小圆角、半透明底（悬停变实）、数值按色档着色；悬停提示写明测的是什么。
@@ -5071,6 +5409,36 @@ mod live_tests {
         pane
     }
 
+    /// V2-C1 端到端：服务端发 `ESC[6n` / `ESC[c`，窗格自己的终端回答，经真实 SSH 通道回到服务端
+    /// （服务端把收到的回复原样回显成 `GOT_REPLY:...`）。没有任何用户输入参与；窗格不重绘也一样。
+    #[test]
+    fn a_real_ssh_channel_gets_the_terminal_protocol_replies() {
+        let factory = local_factory();
+        let mut pane = open_live(&factory);
+        type_line(&mut pane, "cpr");
+        assert!(
+            wait_until(&mut pane, Duration::from_secs(10), |p| screen(p)
+                .contains("GOT_REPLY:^[[5;12R")),
+            "光标位置回复应到达服务端：{}",
+            screen(&pane)
+        );
+        type_line(&mut pane, "da");
+        assert!(
+            wait_until(&mut pane, Duration::from_secs(10), |p| screen(p)
+                .contains("GOT_REPLY:^[[?6c")),
+            "设备属性回复应到达服务端：{}",
+            screen(&pane)
+        );
+        // 回复是协议应答不是按键：服务端的行缓冲里没有它们（再按回车只会回显空行）。
+        type_line(&mut pane, "");
+        assert!(
+            wait_until(&mut pane, Duration::from_secs(10), |p| has_line(p, "ECHO:")),
+            "{}",
+            screen(&pane)
+        );
+        pane.close();
+    }
+
     /// 真连进程内迷你 SSH 服务器：开 shell 就起这条连接的延迟测量，窗格从连接上取到同一份监视器；
     /// 看不见时不测，看得见时测到真实往返；同一条连接上的第二个窗格拿到的是同一个监视器。
     #[test]
@@ -5430,5 +5798,448 @@ mod protocol_session_tests {
             assert!(Instant::now() < deadline, "对端关闭后窗格应当显示已断开");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+}
+
+/// V2-C1：多行粘贴的确认绑定发起时的目标（R01）。纯状态测试：不起窗口，用带记录的假后端。
+#[cfg(test)]
+mod paste_tests {
+    // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
+    use super::{
+        Axis, CoreFilter, FlowGate, PASTE_PREVIEW_CHARS, PASTE_PREVIEW_LINES, Pane, PaneState,
+        SessionBackend, SessionCommand, SessionPump, Size, Tab, paste_preview, paste_target_line,
+    };
+    use std::sync::{Arc, Mutex};
+
+    const SIZE: Size = Size { rows: 8, cols: 40 };
+
+    type Sent = Arc<Mutex<Vec<SessionCommand>>>;
+
+    /// 记录收到的写入（用户输入 / 粘贴）。
+    struct Recorder(Sent);
+
+    impl SessionBackend for Recorder {
+        fn send(&mut self, command: SessionCommand) {
+            self.0.lock().unwrap().push(command);
+        }
+    }
+
+    fn live_pane() -> (Pane, Sent) {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let sent: Sent = Arc::new(Mutex::new(Vec::new()));
+        let generation = super::next_generation();
+        let pump = SessionPump::new(
+            SIZE,
+            50,
+            Arc::new(FlowGate::new()),
+            CoreFilter::new(),
+            generation,
+        );
+        let pane = Pane::with_parts(
+            pump,
+            Box::new(Recorder(Arc::clone(&sent))),
+            rx,
+            Some(1),
+            None,
+        );
+        (pane, sent)
+    }
+
+    /// n 个已连接的窗格组成一个标签，聚焦第一个。
+    fn tab_of(n: usize) -> (Tab, Vec<Sent>) {
+        let (first, sent) = live_pane();
+        let mut logs = vec![sent];
+        let mut tab = Tab::new("t".to_owned(), first);
+        for _ in 1..n {
+            let (pane, sent) = live_pane();
+            tab.split_active(Axis::X, pane);
+            logs.push(sent);
+        }
+        // `split_active` 把焦点给了新窗格；回到第一个。
+        tab.active_pane = 0;
+        (tab, logs)
+    }
+
+    fn writes(log: &Sent) -> Vec<Vec<u8>> {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter_map(|command| match command {
+                SessionCommand::Write(bytes) => Some(bytes.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 像界面的 `confirm_paste` 那样：核对，通过才逐个窗格写出。
+    fn confirm(tab: &mut Tab, pending: &super::PendingPaste) -> Option<Vec<usize>> {
+        let targets = tab.resolve_paste(pending)?;
+        for &index in &targets {
+            let pane = &mut tab.panes[index];
+            pane.write(&zssh_session::encode_paste(&pending.text, false));
+        }
+        Some(targets)
+    }
+
+    #[test]
+    fn confirming_sends_to_the_pane_the_paste_started_in_even_after_focus_moves() {
+        let (mut tab, logs) = tab_of(2);
+        let pending = tab.capture_paste("a\nb".to_owned()).unwrap();
+        assert_eq!(pending.recipients(), 1);
+        assert_eq!(paste_target_line(&pending), "会发送到当前窗格");
+
+        // 确认条出来之后点到了另一个分屏。
+        tab.active_pane = 1;
+        assert_eq!(confirm(&mut tab, &pending), Some(vec![0]));
+        let expected = zssh_session::encode_paste("a\nb", false);
+        assert_eq!(writes(&logs[0]), vec![expected]);
+        assert!(writes(&logs[1]).is_empty(), "不能改发到现在聚焦的窗格");
+    }
+
+    #[test]
+    fn toggling_broadcast_either_way_cancels() {
+        // 单窗格发起，之后开了广播：接收者会变多。
+        let (mut tab, logs) = tab_of(3);
+        let pending = tab.capture_paste("a\nb".to_owned()).unwrap();
+        tab.broadcast = true;
+        assert_eq!(confirm(&mut tab, &pending), None);
+        assert!(logs.iter().all(|log| writes(log).is_empty()));
+
+        // 广播时发起，之后关了广播：接收者会变少。
+        let pending = tab.capture_paste("a\nb".to_owned()).unwrap();
+        assert!(pending.broadcast);
+        tab.broadcast = false;
+        assert_eq!(confirm(&mut tab, &pending), None);
+        assert!(logs.iter().all(|log| writes(log).is_empty()));
+    }
+
+    #[test]
+    fn a_broadcast_paste_goes_to_exactly_the_panes_it_listed() {
+        let (mut tab, logs) = tab_of(3);
+        tab.broadcast = true;
+        let pending = tab.capture_paste("x\ny".to_owned()).unwrap();
+        assert_eq!(pending.recipients(), 3);
+        assert_eq!(paste_target_line(&pending), "会发送到 3 个窗格（广播）");
+        assert_eq!(confirm(&mut tab, &pending), Some(vec![0, 1, 2]));
+        let expected = zssh_session::encode_paste("x\ny", false);
+        for log in &logs {
+            assert_eq!(writes(log), vec![expected.clone()]);
+        }
+    }
+
+    #[test]
+    fn closing_or_adding_a_pane_cancels_a_broadcast_paste() {
+        let (mut tab, logs) = tab_of(3);
+        tab.broadcast = true;
+        let pending = tab.capture_paste("x\ny".to_owned()).unwrap();
+        tab.close_pane_at(2);
+        assert_eq!(confirm(&mut tab, &pending), None);
+
+        let (mut tab, other_logs) = tab_of(2);
+        tab.broadcast = true;
+        let pending = tab.capture_paste("x\ny".to_owned()).unwrap();
+        let (extra, _sent) = live_pane();
+        tab.split_active(Axis::Y, extra);
+        assert_eq!(confirm(&mut tab, &pending), None, "多了一个窗格也算变了");
+        assert!(logs.iter().all(|log| writes(log).is_empty()));
+        assert!(other_logs.iter().all(|log| writes(log).is_empty()));
+    }
+
+    #[test]
+    fn closing_the_target_pane_cancels_but_closing_another_does_not() {
+        let (mut tab, logs) = tab_of(3);
+        tab.active_pane = 1;
+        let pending = tab.capture_paste("a\nb".to_owned()).unwrap();
+        // 关掉的不是目标窗格：目标没变，照常发。
+        tab.close_pane_at(2);
+        assert_eq!(confirm(&mut tab, &pending), Some(vec![1]));
+        assert_eq!(writes(&logs[1]).len(), 1);
+
+        // 关掉目标窗格本身：撤销。
+        let (mut tab, logs) = tab_of(2);
+        let pending = tab.capture_paste("a\nb".to_owned()).unwrap();
+        tab.close_pane_at(0);
+        assert_eq!(confirm(&mut tab, &pending), None);
+        assert!(writes(&logs[1]).is_empty());
+    }
+
+    #[test]
+    fn reconnecting_or_disconnecting_the_target_cancels() {
+        // 重连：整个窗格被换掉（沿用编号，代次是新的）。
+        let (mut tab, logs) = tab_of(2);
+        let pending = tab.capture_paste("a\nb".to_owned()).unwrap();
+        let (mut fresh, _sent) = live_pane();
+        fresh.id = tab.panes[0].id;
+        tab.panes[0] = fresh;
+        assert_eq!(confirm(&mut tab, &pending), None);
+
+        // 断开：状态变了。
+        let (mut tab, _logs) = tab_of(2);
+        let pending = tab.capture_paste("a\nb".to_owned()).unwrap();
+        tab.panes[0].disconnect("断开");
+        assert_eq!(confirm(&mut tab, &pending), None);
+        assert!(writes(&logs[0]).is_empty());
+    }
+
+    #[test]
+    fn a_different_tab_never_receives_the_paste() {
+        let (mut tab, _logs) = tab_of(1);
+        let (mut other, other_logs) = tab_of(1);
+        let pending = tab.capture_paste("a\nb".to_owned()).unwrap();
+        assert_eq!(confirm(&mut other, &pending), None);
+        assert!(writes(&other_logs[0]).is_empty());
+        assert!(confirm(&mut tab, &pending).is_some());
+    }
+
+    #[test]
+    fn nothing_to_paste_into_means_no_confirmation() {
+        let mut tab = Tab::new(
+            "t".to_owned(),
+            Pane::placeholder(SIZE, 10, 1, Some(1), PaneState::Disconnected),
+        );
+        assert!(tab.capture_paste("a\nb".to_owned()).is_none());
+        // 广播里只有已连接的窗格算接收者，确认框写的数字和实际一致。
+        let (live, sent) = live_pane();
+        tab.split_active(Axis::X, live);
+        tab.broadcast = true;
+        let pending = tab.capture_paste("a\nb".to_owned()).unwrap();
+        assert_eq!(pending.recipients(), 1);
+        assert_eq!(confirm(&mut tab, &pending), Some(vec![1]));
+        assert_eq!(writes(&sent).len(), 1);
+    }
+
+    #[test]
+    fn the_preview_is_bounded_and_strips_control_characters() {
+        let (small, cut) = paste_preview("ls\npwd");
+        assert_eq!((small.as_str(), cut), ("ls\npwd", false));
+
+        let many: String = (0..500).map(|i| format!("line {i}\n")).collect();
+        let (shown, cut) = paste_preview(&many);
+        assert!(cut);
+        assert_eq!(shown.lines().count(), PASTE_PREVIEW_LINES);
+
+        let wide = "x".repeat(PASTE_PREVIEW_CHARS * 3);
+        let (shown, cut) = paste_preview(&wide);
+        assert!(cut);
+        assert_eq!(shown.chars().count(), PASTE_PREVIEW_CHARS);
+
+        let (shown, _) = paste_preview("a\x1b[2Jb");
+        assert!(!shown.contains('\x1b'));
+    }
+}
+
+/// V2-C1：终端协议回复（DSR / DA …）接回产生查询的那个窗格（R02）。
+#[cfg(test)]
+mod reply_tests {
+    use super::{
+        Axis, CoreFilter, FlowGate, Pane, PaneState, SessionBackend, SessionCommand, SessionPump,
+        Size, Tab,
+    };
+    use std::sync::mpsc::Sender;
+    use std::sync::{Arc, Mutex};
+    use zssh_session::SessionEvent;
+
+    const SIZE: Size = Size { rows: 8, cols: 40 };
+
+    /// 记录写入和协议回复，并像真实写端一样丢掉代次不符的回复。
+    #[derive(Default)]
+    struct Log {
+        writes: Vec<Vec<u8>>,
+        replies: Vec<Vec<u8>>,
+    }
+
+    struct Recorder {
+        log: Arc<Mutex<Log>>,
+        generation: u64,
+    }
+
+    impl SessionBackend for Recorder {
+        fn send(&mut self, command: SessionCommand) {
+            if let SessionCommand::Write(bytes) = command {
+                self.log.lock().unwrap().writes.push(bytes);
+            }
+        }
+
+        fn send_reply(&mut self, generation: u64, bytes: Vec<u8>) {
+            if generation == self.generation {
+                self.log.lock().unwrap().replies.push(bytes);
+            }
+        }
+    }
+
+    struct Fixture {
+        pane: Pane,
+        events: Sender<SessionEvent>,
+        log: Arc<Mutex<Log>>,
+        generation: u64,
+    }
+
+    fn fixture() -> Fixture {
+        let (events, rx) = std::sync::mpsc::channel();
+        let log = Arc::new(Mutex::new(Log::default()));
+        let generation = super::next_generation();
+        let pump = SessionPump::new(
+            SIZE,
+            50,
+            Arc::new(FlowGate::new()),
+            CoreFilter::new(),
+            generation,
+        );
+        let backend = Recorder {
+            log: Arc::clone(&log),
+            generation,
+        };
+        let pane = Pane::with_parts(pump, Box::new(backend), rx, Some(1), None);
+        Fixture {
+            pane,
+            events,
+            log,
+            generation,
+        }
+    }
+
+    impl Fixture {
+        fn remote_says(&self, bytes: &[u8]) {
+            self.events
+                .send(SessionEvent::Data {
+                    generation: self.generation,
+                    bytes: bytes.to_vec(),
+                })
+                .unwrap();
+        }
+
+        fn replies(&self) -> Vec<Vec<u8>> {
+            self.log.lock().unwrap().replies.clone()
+        }
+    }
+
+    fn dummy() -> Pane {
+        Pane::placeholder(SIZE, 10, 1, None, PaneState::Empty)
+    }
+
+    #[test]
+    fn a_status_and_cursor_query_are_answered_through_the_reply_interface_not_as_input() {
+        let mut f = fixture();
+        f.remote_says(b"ab\x1b[5n\x1b[6n");
+        f.pane.poll_events();
+        assert_eq!(f.replies(), vec![b"\x1b[0n\x1b[1;3R".to_vec()]);
+        assert!(f.log.lock().unwrap().writes.is_empty(), "不是用户输入");
+
+        f.remote_says(b"\x1b[c");
+        f.pane.poll_events();
+        assert_eq!(f.replies().last(), Some(&b"\x1b[?6c".to_vec()));
+    }
+
+    #[test]
+    fn replies_are_sent_by_the_tick_alone_without_any_redraw() {
+        // 后台标签的窗格没有人看、不重绘，只有每个节拍的 `poll_events`：照样要回。
+        let mut f = fixture();
+        f.remote_says(b"\x1b[5n");
+        f.pane.poll_events();
+        assert_eq!(f.replies().len(), 1);
+        // 没有新数据的节拍不会重复回复。
+        f.pane.poll_events();
+        assert_eq!(f.replies().len(), 1);
+    }
+
+    #[test]
+    fn broadcast_and_focus_do_not_redirect_a_reply() {
+        let mut a = fixture();
+        let mut b = fixture();
+        let mut tab = Tab::new("t".to_owned(), std::mem::replace(&mut a.pane, dummy()));
+        tab.split_active(Axis::X, std::mem::replace(&mut b.pane, dummy()));
+        tab.broadcast = true;
+        tab.active_pane = 1;
+        // 只有第一个窗格的远端发了查询。
+        a.remote_says(b"\x1b[5n");
+        for pane in &mut tab.panes {
+            pane.poll_events();
+        }
+        assert_eq!(a.replies(), vec![b"\x1b[0n".to_vec()]);
+        assert!(
+            b.replies().is_empty(),
+            "广播 / 焦点都不会把回复送给别的窗格"
+        );
+    }
+
+    #[test]
+    fn a_pane_that_is_not_connected_has_nobody_to_answer() {
+        let mut f = fixture();
+        f.remote_says(b"\x1b[5n");
+        f.pane.state = PaneState::Disconnected;
+        f.pane.poll_events();
+        assert!(f.replies().is_empty());
+        // 断开期间攒的回复作废：重新连上后不会补发。
+        f.pane.state = PaneState::Live;
+        f.pane.poll_events();
+        assert!(f.replies().is_empty());
+    }
+
+    #[test]
+    fn an_old_connection_cannot_answer_into_a_new_one() {
+        let mut f = fixture();
+        let old_log = Arc::clone(&f.log);
+        f.remote_says(b"\x1b[5n");
+        f.pane.poll_events();
+        assert_eq!(old_log.lock().unwrap().replies.len(), 1);
+
+        // 窗格换了写端和事件流（新的泵）。旧写端收不到之后的回复。
+        let (events, rx) = std::sync::mpsc::channel();
+        let new_log = Arc::new(Mutex::new(Log::default()));
+        f.pane.attach(
+            Box::new(Recorder {
+                log: Arc::clone(&new_log),
+                generation: f.generation,
+            }),
+            rx,
+            Arc::new(FlowGate::new()),
+            None,
+        );
+        events
+            .send(SessionEvent::Data {
+                generation: f.generation,
+                bytes: b"\x1b[6n".to_vec(),
+            })
+            .unwrap();
+        f.pane.poll_events();
+        assert_eq!(new_log.lock().unwrap().replies, vec![b"\x1b[1;1R".to_vec()]);
+        assert_eq!(old_log.lock().unwrap().replies.len(), 1, "旧连接没有多收");
+    }
+
+    #[test]
+    fn a_reply_tagged_with_another_generation_is_dropped_before_the_backend() {
+        let mut f = fixture();
+        // 泵换了代次但窗格没有（不该发生）：回复带着泵的代次，窗格核对不上就丢。
+        f.pane.pump_mut().set_generation(f.generation + 100);
+        f.events
+            .send(SessionEvent::Data {
+                generation: f.generation + 100,
+                bytes: b"\x1b[5n".to_vec(),
+            })
+            .unwrap();
+        f.pane.poll_events();
+        assert!(f.replies().is_empty());
+    }
+
+    #[test]
+    fn an_offline_loopback_pane_does_not_echo_replies_onto_the_screen() {
+        let mut pane = Pane::new(SIZE, 50, super::next_generation());
+        pane.write(b"\x1b[5n\x1b[6n");
+        let text: String = pane
+            .snapshot
+            .rows
+            .iter()
+            .map(|row| row.text.clone())
+            .collect();
+        assert!(!text.contains("0n") && !text.contains('R'), "{text:?}");
+    }
+
+    #[test]
+    fn osc52_and_color_queries_get_no_reply_through_the_pane() {
+        let mut f = fixture();
+        f.remote_says(b"\x1b]52;c;?\x07\x1b]52;c;aGk=\x07\x1b]11;?\x07\x1b[14t");
+        f.pane.poll_events();
+        assert!(f.replies().is_empty());
+        assert!(f.log.lock().unwrap().writes.is_empty());
     }
 }
