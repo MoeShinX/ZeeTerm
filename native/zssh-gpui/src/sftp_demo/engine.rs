@@ -791,6 +791,14 @@ pub(super) fn initial_local_dir() -> PathBuf {
     dir
 }
 
+/// 不碰磁盘的“暂定落点”：`ZSSH_SFTP_LOCAL` 指到哪就是哪（还没验证），否则默认临时目录。
+/// 视图创建时界面线程先用它显示路径，真正的落点由后台线程用 [`initial_local_dir`] 定。
+pub(super) fn initial_local_candidate() -> PathBuf {
+    env_value("ZSSH_SFTP_LOCAL")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_download_dir)
+}
+
 /// 默认本地目录：`%TEMP%\zssh-sftp-dl`，不往用户的文档 / 桌面写东西。
 pub(super) fn default_download_dir() -> PathBuf {
     std::env::temp_dir().join("zssh-sftp-dl")

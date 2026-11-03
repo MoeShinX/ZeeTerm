@@ -618,9 +618,13 @@ pub(super) async fn remote_folders(channel: &SftpChannel, dir: &str) -> Result<V
     ))
 }
 
-/// 本地：列出一个目录里的子文件夹（空路径 = “此电脑”，列出盘符）。
-pub(super) fn local_folders(dir: &str) -> Result<Vec<Entry>, String> {
-    super::local_ops::list_dir(dir).map(folders_only)
+/// 本地：列出一个目录里的子文件夹（空路径 = “此电脑”，列出盘符）。只能在后台线程里调
+/// （见 [`super::local_listing`]），`fs` 由线程池传进来。
+pub(super) fn local_folders(
+    fs: &dyn super::local_listing::LocalFs,
+    dir: &str,
+) -> Result<Vec<Entry>, String> {
+    fs.list_dir(dir).map(folders_only)
 }
 
 /// 本地：移动一项（见 [`super::local_ops::move_item`]）。

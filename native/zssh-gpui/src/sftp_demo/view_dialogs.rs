@@ -712,6 +712,7 @@ impl SftpDemo {
                     .as_ref()
                     .map(|err| error_note(err.clone(), tokens.danger)),
             )
+            .children(d.checking.then(|| note("正在检查目录…", tokens)))
             .child(buttons(vec![
                 text_button(
                     "sftp-download-cancel",
@@ -730,7 +731,7 @@ impl SftpDemo {
                         ok.update(cx, |this, cx| this.confirm_download_to(window, cx));
                     },
                 )
-                .disabled(check != NameCheck::Ok)
+                .disabled(check != NameCheck::Ok || d.checking)
                 .into_any_element(),
             ]))
             .into_any_element()
