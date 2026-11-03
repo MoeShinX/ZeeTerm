@@ -455,6 +455,8 @@ impl MainWindow {
         // AI 面板里点了「去设置」/「下载」：打开设置页（那里有各智能体的路径、检测、下载）。
         if crate::agent_setup::take_settings_request() {
             self.show_view(MainView::Settings, window, cx);
+            // 这些按钮（内置助手没配接口、opencode 下载、路径）要的都在 AI 这一类里。
+            self.set_settings_section(crate::settings_nav::SettingsSection::Ai, cx);
         }
 
         let live: HashSet<u64> = tab_hosts.iter().map(|(id, _)| *id).collect();
