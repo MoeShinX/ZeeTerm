@@ -1,7 +1,7 @@
 //! 文件栏的浏览和交互：换目录、后退前进、刷新、点击 / 双击 / 键盘、排序、路径栏编辑、
 //! 右键点击时的选择处理。动作怎么执行（删除、改名、传输……）在 `ops` / `transfer`。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use ::gpui::{KeyDownEvent, Window};
 use gpui_kit::component::input::{InputEvent, InputState};
@@ -11,10 +11,11 @@ use zssh_core::sftp::DirEntry;
 use zssh_core::sftp::path::{join, normalize};
 
 use super::engine::resolve_local_path;
+use super::local_listing::{LocalReply, LocalRequest, ScanError, accepts, request_listing};
 use super::menu::{NOT_UTF8_REASON, Side};
 use super::model::{Entry, NavMode, SortKey, local_parent, remote_parent};
 use super::pane::PathEdit;
-use super::{SftpDemo, SftpEvent, local_ops};
+use super::{SftpDemo, SftpEvent};
 use crate::ssh_backend::runtime;
 
 impl SftpDemo {
@@ -124,6 +125,8 @@ impl SftpDemo {
         cx.notify();
     }
 
+    /// 换本地目录。路径校验（`is_dir`）和目录读取都交给后台线程，这里只提交请求、挂上“正在读取”：
+    /// 慢盘、大目录、失联的网络路径不会卡住窗口；用户又去了别处，之前那次的结果回来也会被丢弃。
     fn navigate_local(
         &mut self,
         path: &str,
@@ -131,21 +134,82 @@ impl SftpDemo {
         notice: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        // 给界面的路径不带 `\\?\` 前缀。
+        // 给界面的路径不带 `\\?\` 前缀（纯字符串处理，不碰磁盘）。
         let target = if path.is_empty() {
             String::new()
         } else {
             simplify_verbatim(PathBuf::from(path)).display().to_string()
         };
-        if !target.is_empty() && !Path::new(&target).is_dir() {
-            self.warn(format!("不是目录：{target}"));
-            if mode == NavMode::History {
-                self.local.history.forget(path);
-            }
-            cx.notify();
+        self.say(if target.is_empty() {
+            "正在读取 此电脑".to_owned()
+        } else {
+            format!("正在读取 {target}")
+        });
+        self.local.loading = true;
+        let request = LocalRequest::Dir(target);
+        if let Err(message) = self.submit_local(request, path.to_owned(), mode, notice, false) {
+            self.local.loading = false;
+            self.warn(message);
+        }
+        cx.notify();
+    }
+
+    /// 视图刚创建：后台定落点并读首屏（`wanted` 是复制标签带来的目录）。
+    pub(super) fn request_local_start(&mut self, wanted: Option<String>) {
+        let requested = wanted.clone().unwrap_or_default();
+        if let Err(message) = self.submit_local(
+            LocalRequest::Start(wanted),
+            requested,
+            NavMode::Visit,
+            None,
+            true,
+        ) {
+            self.local.loading = false;
+            self.warn(format!("本地：{message}"));
+        }
+    }
+
+    /// 把一次本地读取交给后台；读完以 [`SftpEvent::LocalListed`] 回到界面。
+    fn submit_local(
+        &mut self,
+        request: LocalRequest,
+        requested: String,
+        mode: NavMode,
+        notice: Option<String>,
+        initial: bool,
+    ) -> Result<(), String> {
+        let sender = self.sender.clone();
+        request_listing(
+            &self.local_lister,
+            &self.local_gate,
+            request,
+            move |reply| {
+                let _ = sender.send(SftpEvent::LocalListed {
+                    reply,
+                    requested,
+                    mode,
+                    notice,
+                    initial,
+                });
+            },
+        )
+        .map(|_| ())
+    }
+
+    /// 本地目录在后台读回来了。不是最新一次请求的结果（用户已经去了别处）直接丢掉。
+    pub(super) fn apply_local_listed(
+        &mut self,
+        reply: LocalReply,
+        requested: String,
+        mode: NavMode,
+        notice: Option<String>,
+        initial: bool,
+    ) {
+        if !accepts(&self.local_gate, &reply) {
             return;
         }
-        match local_ops::list_dir(&target) {
+        let target = reply.target;
+        match reply.result {
             Ok(rows) => {
                 let count = rows.len();
                 let same = self.local.path == target;
@@ -161,14 +225,21 @@ impl SftpDemo {
                     None => self.say(format!("本地 {count} 项")),
                 }
             }
-            Err(err) => {
+            Err(error) => {
+                self.local.loading = false;
                 if mode == NavMode::History {
-                    self.local.history.forget(path);
+                    self.local.history.forget(&requested);
                 }
-                self.warn(format!("读取本地目录失败：{err}"));
+                // 首屏读不出来：本地栏仍显示落点路径（列表是空的），不留一个看不出在哪的空栏。
+                if initial {
+                    self.local.path = target.clone();
+                }
+                match error {
+                    ScanError::NotDir => self.warn(format!("不是目录：{target}")),
+                    ScanError::Failed(err) => self.warn(format!("读取本地目录失败：{err}")),
+                }
             }
         }
-        cx.notify();
     }
 
     pub(super) fn refresh(&mut self, side: Side, cx: &mut Context<Self>) {

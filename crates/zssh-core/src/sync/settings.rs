@@ -70,6 +70,8 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     // 会话日志：目录是本机路径，开关跟着目录走，都不同步
     ("session_log_enabled", SyncMode::LocalOnly),
     ("session_log_dir", SyncMode::LocalOnly),
+    // 上次退出时会话日志的状况提示（有日志没写完 / 写失败）：这台电脑磁盘的事，不同步
+    ("session_log_exit_note", SyncMode::LocalOnly),
     // 从 Z-SSH 迁移的提示点过「不再提示」：这台电脑自己的事，不同步
     ("zssh_migrate_dismissed", SyncMode::LocalOnly),
     // 侧栏底部的主机属性面板显不显示（V2-U17）：本机的界面习惯，不同步

@@ -65,6 +65,7 @@ mod engine;
 mod fixture;
 mod follow;
 mod header;
+mod local_listing;
 mod local_ops;
 mod menu;
 mod model;
@@ -89,6 +90,7 @@ use dialogs::Dialog;
 pub use drag::{SftpDrag, terminal_insert_text};
 use engine::*;
 pub(crate) use follow::FOLLOW_POLL_MS;
+use local_listing::{LocalLister, LocalReply, SeqGate};
 use menu::Side;
 use model::NavMode;
 use pane::Pane;
@@ -131,6 +133,22 @@ enum SftpEvent {
         mode: NavMode,
         /// 刷新前想留在状态栏里的一句话（比如"已删除 XXX"），刷新回来一起显示。
         notice: Option<String>,
+    },
+    /// 本地目录在后台线程里读完了（V2-C3）。`reply.seq` 不是最新一次请求就丢弃。
+    LocalListed {
+        reply: LocalReply,
+        /// 用户 / 历史记录给的原始路径（失败时从历史里拿掉用）。
+        requested: String,
+        mode: NavMode,
+        notice: Option<String>,
+        /// 视图刚创建时的首屏：读不出来也要让本地栏显示落点路径。
+        initial: bool,
+    },
+    /// 「下载到…」后台确认本地目录读得出来的结果（`request` 是发起时的序号）。
+    DownloadDirChecked {
+        request: u64,
+        dir: String,
+        result: Result<(), String>,
     },
     /// 连接 / 开通道 / 首条目录失败：窗口停在失败态。
     ConnectFailed(String),
@@ -412,6 +430,12 @@ pub struct SftpDemo {
     batch_scope: Option<Arc<ConflictBatch>>,
     /// 目录列表请求序号。
     listing: ListingGate,
+    /// 本地目录读取：文件系统 + 有界线程池，界面线程只提交请求（V2-C3）。
+    local_lister: LocalLister,
+    /// 本地栏的请求序号：新请求发出后，更早的读取结果作废。
+    local_gate: SeqGate,
+    /// 「下载到…」确认目录的请求序号。
+    probe_gate: SeqGate,
     /// 冲突面板里「重命名」用的名字。
     conflict_name_input: Entity<InputState>,
     /// 连上之后才有：传输引擎和浏览通道分开，互不拖累。
@@ -457,7 +481,7 @@ pub struct SftpDemo {
     moving: Option<move_to::MoveJob>,
     next_move: u64,
     /// 「移动到…」对话框里目录读取的序号。
-    move_browse_seq: u64,
+    move_gate: SeqGate,
     next_op: u64,
     /// 属性对话框里“计算大小”的编号（事件带着它回来认领）。
     next_calc: u64,
@@ -499,22 +523,16 @@ impl SftpDemo {
             cx.new(|cx| InputState::new(window, cx).placeholder("新名字（留空 = 自动起名）"));
         let remote = Pane::new(show_hidden, remote_filter, cx.focus_handle());
         let mut local = Pane::new(show_hidden, local_filter, cx.focus_handle());
-        // 本地栏先落地：初始目录必须是临时区，读不出来就空着，绝不回退到家目录。
-        // 复制标签带来的目录必须还是个目录才用，否则按默认处理。
-        let local_start = start_local
-            .filter(|dir| !dir.is_empty() && Path::new(dir).is_dir())
-            .unwrap_or_else(|| absolute_local(&initial_local_dir()).display().to_string());
-        let mut local_status = String::new();
-        match local_ops::list_dir(&local_start) {
-            Ok(entries) => {
-                local.set_listing(local_start.clone(), entries, false);
-                local.history.visit(&local_start);
-            }
-            Err(err) => {
-                local.path = local_start;
-                local_status = err;
-            }
-        }
+        // 本地栏的落点和首屏列表都在后台线程里定、读（`is_dir`、建临时目录、`read_dir` 都可能很慢）：
+        // 这里只先放一个暂定的路径，免得首屏回来之前本地栏的路径是空的。落点规则不变：复制标签带来的
+        // 目录必须还是个目录才用，否则默认的临时目录，绝不回退到家目录。
+        let wanted_local = start_local.filter(|dir| !dir.is_empty());
+        local.path = wanted_local.clone().unwrap_or_else(|| {
+            absolute_local(&initial_local_candidate())
+                .display()
+                .to_string()
+        });
+        local.loading = true;
 
         let pending_hooks = test_hooks();
         let (conflict_automation, conflict_automation_error) = conflict_automation();
@@ -566,6 +584,9 @@ impl SftpDemo {
             conflicts: VecDeque::new(),
             batch_scope: None,
             listing: ListingGate::default(),
+            local_lister: LocalLister::real(),
+            local_gate: SeqGate::default(),
+            probe_gate: SeqGate::default(),
             conflict_name_input,
             engine: None,
             endpoints: None,
@@ -590,7 +611,7 @@ impl SftpDemo {
             archive_caps: ArchiveCapsState::Idle,
             moving: None,
             next_move: 1,
-            move_browse_seq: 0,
+            move_gate: SeqGate::default(),
             next_op: 1,
             next_calc: 1,
             focus,
@@ -599,9 +620,7 @@ impl SftpDemo {
             _tick: Task::ready(()),
         };
         this._subscriptions = this.build_subscriptions(window, cx);
-        if !local_status.is_empty() {
-            this.status = format!("{} · 本地：{local_status}", this.status);
-        }
+        this.request_local_start(wanted_local);
         // 写错了就说出来：这次仍按界面处理，免得以为钩子生效了、其实在等人点。
         if let Some(message) = conflict_automation_error {
             this.status = format!("{} · {message}", this.status);
@@ -876,6 +895,18 @@ impl SftpDemo {
                 self.phase = Phase::Ready;
                 self.set_remote_listing(path, entries, mode, notice);
             }
+            SftpEvent::LocalListed {
+                reply,
+                requested,
+                mode,
+                notice,
+                initial,
+            } => self.apply_local_listed(reply, requested, mode, notice, initial),
+            SftpEvent::DownloadDirChecked {
+                request,
+                dir,
+                result,
+            } => self.apply_download_dir_checked(request, dir, result, window, cx),
             SftpEvent::ConnectFailed(message) => {
                 self.phase = Phase::Failed;
                 self.warn(format!("连接失败：{message}"));
@@ -1267,6 +1298,8 @@ impl SftpDemo {
     }
 }
 
+#[cfg(test)]
+mod local_listing_tests;
 #[cfg(test)]
 mod move_e2e_tests;
 #[cfg(test)]

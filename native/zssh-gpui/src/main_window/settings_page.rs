@@ -1055,6 +1055,11 @@ impl MainWindow {
         let has_custom_dir = !self.prefs.session_log_dir.is_empty();
         // 目录只显示脱敏后的路径（用户目录换成 %USERPROFILE%），截图和录屏不带出用户名。
         let shown_dir = crate::about_view::display_path(&self.prefs.session_log_dir_path());
+        // 日志出过的问题：本次运行里的（写失败、建不成文件、磁盘跟不上）加上上次退出时留下的。
+        let mut problems = crate::app_prefs::session_log_problem_lines();
+        if !self.prefs.session_log_exit_note.is_empty() {
+            problems.push(format!("上次退出时：{}", self.prefs.session_log_exit_note));
+        }
         card(
             "settings-session-log",
             "会话日志",
@@ -1117,7 +1122,20 @@ impl MainWindow {
                         ),
                     tokens,
                 ),
-            ],
+            ]
+            .into_iter()
+            .chain((!problems.is_empty()).then(|| {
+                row_with(
+                    "日志有问题",
+                    Some(SharedString::from(problems.join(
+                        "
+",
+                    ))),
+                    div(),
+                    tokens,
+                )
+            }))
+            .collect(),
         )
     }
 

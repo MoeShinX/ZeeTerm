@@ -685,13 +685,14 @@ mod tests {
 
         let mut pump = pump(DropHidden);
         let log = zssh_core::ssh::session_log::SessionLog::create(&dir, "web-1", "t").unwrap();
-        let path = log.path().to_path_buf();
+        let path = log.path().expect("同步创建的日志有路径").to_path_buf();
         pump.set_plain_log(log);
         assert!(pump.has_plain_log());
         pump.on_data(7, b"HIDDEN secret bytes");
         pump.on_data(7, b"\x1b[31mred\x1b[0m line\r\n");
-        // 丢掉日志 = 把剩下的写完、关文件。
-        drop(pump.take_plain_log().expect("日志应还在"));
+        // 丢掉日志不再等写线程（R10），要确认落盘就显式等它收尾。
+        let log = pump.take_plain_log().expect("日志应还在");
+        assert!(log.close_and_wait(std::time::Duration::from_secs(10)));
         assert!(!pump.has_plain_log());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "red line\n");
         let _ = std::fs::remove_dir_all(&dir);

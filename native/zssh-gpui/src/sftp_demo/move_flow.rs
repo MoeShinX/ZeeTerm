@@ -114,19 +114,18 @@ impl SftpDemo {
 
     /// 后台读 `dir` 里的子文件夹；结果以 `MoveBrowsed` 回来。`confirming` = 这次读是为了确认目标存在。
     fn spawn_browse(&mut self, dir: String, confirming: bool, select: Option<String>) {
-        self.move_browse_seq += 1;
-        let request = self.move_browse_seq;
         let side = {
             let Some(Dialog::MoveTo(d)) = &mut self.dialog else {
                 return;
             };
-            d.browse.request = request;
             d.browse.loading = true;
             d.browse.pending_select = select;
             d.confirming = confirming;
             d.error = None;
             d.side
         };
+        // 远端和本地共用同一个序号：新的读取发出后，更早的结果（不论哪一边）都作废。
+        let mut request = self.move_gate.next();
         let sender = self.sender.clone();
         let outcome = match side {
             Side::Remote => match (self.connected_channel(), runtime()) {
@@ -144,22 +143,30 @@ impl SftpDemo {
                 }
                 (Err(err), _) | (_, Err(err)) => Err(err),
             },
-            Side::Local => match runtime() {
-                Ok(runtime) => {
-                    let dir = dir.clone();
-                    runtime.spawn_blocking(move || {
-                        let result = local_folders(&dir);
-                        let _ = sender.send(SftpEvent::MoveBrowsed {
-                            request,
-                            dir,
-                            result,
-                        });
-                    });
-                    Ok(())
-                }
-                Err(err) => Err(err),
-            },
+            // 本地：走有界后台线程池（`is_dir` / `read_dir` / 逐项属性都不在界面线程上）；
+            // 排在队里还没开始的旧读取会被直接跳过。
+            Side::Local => {
+                let dir = dir.clone();
+                let event_dir = dir.clone();
+                self.local_lister
+                    .spawn(
+                        &self.move_gate,
+                        move |fs| local_folders(fs, &dir),
+                        move |seq, outcome| {
+                            let _ = sender.send(SftpEvent::MoveBrowsed {
+                                request: seq,
+                                dir: event_dir,
+                                result: outcome.unwrap_or_else(Err),
+                            });
+                        },
+                    )
+                    .map(|seq| request = seq)
+                    .map_err(|_| "本地目录读取排队太多，稍后再试".to_owned())
+            }
         };
+        if let Some(Dialog::MoveTo(d)) = &mut self.dialog {
+            d.browse.request = request;
+        }
         if let Err(err) = outcome
             && let Some(Dialog::MoveTo(d)) = &mut self.dialog
         {

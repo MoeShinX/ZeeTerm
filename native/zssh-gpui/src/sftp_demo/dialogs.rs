@@ -80,6 +80,10 @@ pub(super) struct DownloadDialog {
     pub(super) entries: Vec<Entry>,
     pub(super) input: Entity<InputState>,
     pub(super) error: Option<String>,
+    /// 点了“下载”，后台正在确认这个本地目录读得出来（慢盘上不能卡界面）；回来才开始下载。
+    pub(super) checking: bool,
+    /// 最近一次后台确认的序号（旧的结果不算数）。
+    pub(super) check_request: u64,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 

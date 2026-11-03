@@ -30,6 +30,7 @@ use super::dialogs::{
     validate_name,
 };
 use super::engine::{DeleteJob, parse_octal_mode, run_delete_many};
+use super::local_listing::{ScanError, scan};
 use super::menu::{ArchiveMenuState, MenuAction, MenuContext, MenuFeatures, NOT_UTF8_REASON, Side};
 use super::model::{Entry, EntryKind};
 use super::props::{
@@ -1090,6 +1091,8 @@ impl SftpDemo {
             entries,
             input,
             error: None,
+            checking: false,
+            check_request: 0,
             _subscriptions: subscriptions,
         }));
         cx.notify();
@@ -1123,7 +1126,7 @@ impl SftpDemo {
         .detach();
     }
 
-    pub(super) fn confirm_download_to(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn confirm_download_to(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(Dialog::DownloadTo(dialog)) = &mut self.dialog else {
             return;
         };
@@ -1133,16 +1136,65 @@ impl SftpDemo {
             cx.notify();
             return;
         }
-        // 目录要存在：列不出来就把原因留在对话框里。
-        let dir = PathBuf::from(&text);
-        if let Err(err) = local_ops::list_dir(&text) {
+        // 目录要存在、读得出来：在后台线程里确认（慢盘、失联的网络路径不能卡界面），
+        // 不行就把原因留在对话框里，行了才开始下载（见 `apply_download_dir_checked`）。
+        if dialog.checking {
+            return;
+        }
+        dialog.checking = true;
+        let sender = self.sender.clone();
+        let dir = text.clone();
+        let submitted = self.local_lister.spawn(
+            &self.probe_gate,
+            move |fs| scan(fs, &dir).map(|_| ()),
+            move |seq, outcome| {
+                let result = match outcome {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(ScanError::NotDir)) => Err("不是一个目录".to_owned()),
+                    Ok(Err(ScanError::Failed(err))) | Err(err) => Err(err),
+                };
+                let _ = sender.send(SftpEvent::DownloadDirChecked {
+                    request: seq,
+                    dir: text,
+                    result,
+                });
+            },
+        );
+        match submitted {
+            Ok(seq) => dialog.check_request = seq,
+            Err(_) => {
+                dialog.checking = false;
+                dialog.error = Some("本地目录读取排队太多，稍后再试".to_owned());
+            }
+        }
+        cx.notify();
+    }
+
+    /// 后台确认完这个下载目录：能用就开始下载，不能用把原因写在对话框里。
+    pub(super) fn apply_download_dir_checked(
+        &mut self,
+        request: u64,
+        dir: String,
+        result: Result<(), String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Dialog::DownloadTo(dialog)) = &mut self.dialog else {
+            return;
+        };
+        // 对话框已经重开 / 又点了一次：旧的确认结果不算数。
+        if dialog.check_request != request || !self.probe_gate.is_latest(request) {
+            return;
+        }
+        dialog.checking = false;
+        if let Err(err) = result {
             dialog.error = Some(format!("这个目录用不了：{err}"));
             cx.notify();
             return;
         }
         let entries = dialog.entries.clone();
         self.dialog = None;
-        self.transfer_entries(Side::Remote, &entries, Some(dir));
+        self.transfer_entries(Side::Remote, &entries, Some(PathBuf::from(dir)));
         self.focus_pane(Side::Remote, window, cx);
         cx.notify();
     }

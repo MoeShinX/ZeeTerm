@@ -18,6 +18,9 @@ pub const FILE_WINDOW_CLOSE_KEY: &str = "file_window_close";
 /// 会话日志：开关（默认关）和目录（空 = 数据目录下的 `session-logs`），都只在本机。
 pub const SESSION_LOG_ENABLED_KEY: &str = "session_log_enabled";
 pub const SESSION_LOG_DIR_KEY: &str = "session_log_dir";
+/// 上一次退出时会话日志的状况（有日志没写完 / 写失败 / 建不成文件时留一句话，正常退出就清空），
+/// 下次打开设置里的会话日志时显示。只在本机。
+pub const SESSION_LOG_EXIT_NOTE_KEY: &str = "session_log_exit_note";
 /// 侧栏底部的「属性」面板（选中主机时显示名称 / 主机 / 用户名…）：默认关，只在本机（V2-U17）。
 pub const HOST_INFO_PANEL_KEY: &str = "host_info_panel";
 
@@ -126,6 +129,8 @@ pub struct AppPrefs {
     pub session_log_enabled: bool,
     /// 设置里填的会话日志目录（已去掉首尾空白，可能为空）。
     pub session_log_dir: String,
+    /// 上一次退出时会话日志的状况（空 = 一切正常）。
+    pub session_log_exit_note: String,
     /// 在侧栏显示主机属性面板（默认关）。
     pub host_info_panel: bool,
 }
@@ -172,6 +177,10 @@ impl AppPrefs {
                 .map(|dir| dir.trim().to_owned())
                 .filter(|dir| !dir.chars().any(char::is_control))
                 .unwrap_or_default(),
+            session_log_exit_note: text_of(raw(SESSION_LOG_EXIT_NOTE_KEY).as_deref())
+                .map(|note| note.trim().to_owned())
+                .filter(|note| !note.chars().any(char::is_control))
+                .unwrap_or_default(),
             host_info_panel: flag(raw(HOST_INFO_PANEL_KEY).as_deref(), false),
         }
     }
@@ -209,8 +218,12 @@ impl AppPrefs {
     }
 }
 
-/// 开了会话日志就为这个会话建一个日志文件（纯文本，去掉颜色和光标控制）；没开、目录建不了
-/// （没权限）都返回 `None`，会话照常。每个会话一个文件，只对新打开的会话生效。
+/// 开了会话日志就为这个会话建一个日志文件（纯文本，去掉颜色和光标控制）；没开就返回 `None`，
+/// 会话照常。每个会话一个文件，只对新打开的会话生效。
+///
+/// 建目录和开文件在日志的写线程里做，这里立刻返回（调用者常常在界面线程上）；目录建不了
+/// （没权限、路径失效、慢盘出错）时这个会话没有日志，原因记在
+/// [`zssh_core::ssh::session_log::problems`] 里，设置页的会话日志一栏会显示。
 pub fn open_session_log(label: &str) -> Option<zssh_core::ssh::session_log::SessionLog> {
     open_session_log_with(&AppPrefs::load_default_db(), label)
 }
@@ -224,7 +237,7 @@ pub fn open_session_log_with(
         return None;
     }
     let dir = prefs.session_log_dir_path();
-    match zssh_core::ssh::session_log::SessionLog::create(
+    match zssh_core::ssh::session_log::SessionLog::start(
         &dir,
         label,
         &zssh_core::ssh::session_log::local_stamp(),
@@ -232,10 +245,67 @@ pub fn open_session_log_with(
         Ok(log) => Some(log),
         Err(err) => {
             // 目录路径是用户填的本机路径，日志里只写原因，不写路径。
-            tracing::warn!(%err, "建不了会话日志文件，这个会话不记日志");
+            tracing::warn!(%err, "起不了会话日志的写线程，这个会话不记日志");
             None
         }
     }
+}
+
+/// 退出时让所有会话日志把排着的写完，最多等这么久（磁盘慢时不能让退出无限期卡住）。
+pub const SESSION_LOG_EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// 把 [`zssh_core::ssh::session_log::FinishReport`] 写成一句话（设置页显示）；一切正常返回空串。
+pub fn exit_note(report: &zssh_core::ssh::session_log::FinishReport) -> String {
+    let mut parts = Vec::new();
+    if report.unfinished > 0 {
+        parts.push(format!(
+            "退出时有 {} 个会话日志还没写完（磁盘太慢？），它们的结尾可能不完整",
+            report.unfinished
+        ));
+    }
+    for problem in report.problems.iter().take(3) {
+        parts.push(format!("{}：{}", problem.file, problem.message));
+    }
+    if report.problems.len() > 3 {
+        parts.push(format!("另有 {} 条", report.problems.len() - 3));
+    }
+    parts.join("；")
+}
+
+/// 程序退出时调用：让会话日志收尾（有限等待），并把状况记进设置，下次打开会话日志设置时看得到。
+/// 一切正常时清掉上次留下的提示。设置库打不开不影响退出。
+pub fn finish_session_logs_at_exit() {
+    let report = zssh_core::ssh::session_log::finish_all(SESSION_LOG_EXIT_WAIT);
+    let note = exit_note(&report);
+    let Ok(db) = Database::open(&crate::settings::data_dir().join("zssh.db")) else {
+        return;
+    };
+    record_exit_note(&db, &note);
+}
+
+/// 写（或清掉）退出提示；没变化就不碰库。
+fn record_exit_note(db: &Database, note: &str) {
+    let current = text_of(
+        db.setting_get(SESSION_LOG_EXIT_NOTE_KEY)
+            .ok()
+            .flatten()
+            .as_deref(),
+    )
+    .unwrap_or_default();
+    if current.trim() == note {
+        return;
+    }
+    if let Err(err) = write_text(db, SESSION_LOG_EXIT_NOTE_KEY, note) {
+        tracing::warn!(%err, "没能记下会话日志的退出状况");
+    }
+}
+
+/// 设置页显示用：本次运行里会话日志出过的问题，一条一行。
+pub fn session_log_problem_lines() -> Vec<String> {
+    zssh_core::ssh::session_log::problems()
+        .into_iter()
+        .map(|problem| format!("{}：{}", problem.file, problem.message))
+        .collect()
 }
 
 /// 写一个整数设置（夹进范围再写）。
@@ -418,9 +488,18 @@ mod tests {
 
         p.session_log_enabled = true;
         let log = open_session_log_with(&p, "web-1").expect("开了就建");
-        let path = log.path().to_path_buf();
         log.write(b"\x1b[32mok\x1b[0m done\r\n");
-        drop(log);
+        // 文件在写线程里建，等它建出来、收尾之后路径和内容才都确定。
+        let started = std::time::Instant::now();
+        while log.path().is_none() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "文件一直没建出来"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let path = log.path().map(std::path::Path::to_path_buf).unwrap();
+        assert!(log.close_and_wait(std::time::Duration::from_secs(10)));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "ok done\n");
         assert!(
             path.file_name()
@@ -429,12 +508,64 @@ mod tests {
             "文件名是 <主机名>-<时间>.log"
         );
 
-        // 目录建不出来（路径上有一个同名的文件）：不记日志，不报错。
+        // 目录建不出来（路径上有一个同名的文件）：调用立刻返回、会话照常；原因记在问题清单里。
         let blocker = dir.join("blocker");
         std::fs::write(&blocker, b"x").unwrap();
         p.session_log_dir = blocker.join("sub").display().to_string();
-        assert!(open_session_log_with(&p, "web-1").is_none());
+        let broken = open_session_log_with(&p, "blocked-host").expect("立刻拿到对象，失败在后台");
+        assert!(broken.close_and_wait(std::time::Duration::from_secs(10)));
+        let lines = session_log_problem_lines();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("blocked-host-") && line.contains("建不了日志文件")),
+            "{lines:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_exit_note_says_what_was_left_unwritten_and_what_failed() {
+        use zssh_core::ssh::session_log::{FinishReport, LogProblem};
+        let clean = FinishReport {
+            closed: 2,
+            unfinished: 0,
+            problems: Vec::new(),
+        };
+        assert_eq!(exit_note(&clean), "", "一切正常：没有提示");
+        let slow = FinishReport {
+            closed: 2,
+            unfinished: 1,
+            problems: vec![LogProblem {
+                file: "web-1-20261103-100000.log".to_owned(),
+                message: "写入失败（磁盘已满），从这里起的输出没有记录，已丢掉约 12 字节"
+                    .to_owned(),
+            }],
+        };
+        let note = exit_note(&slow);
+        assert!(note.contains("1 个会话日志还没写完"), "{note}");
+        assert!(
+            note.contains("web-1-20261103-100000.log：写入失败（磁盘已满）"),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn the_exit_note_is_stored_shown_next_time_and_cleared_by_a_clean_exit() {
+        let db = Database::open_in_memory().unwrap();
+        assert_eq!(AppPrefs::load(&db).session_log_exit_note, "");
+        record_exit_note(&db, "退出时有 1 个会话日志还没写完");
+        assert_eq!(
+            AppPrefs::load(&db).session_log_exit_note,
+            "退出时有 1 个会话日志还没写完"
+        );
+        // 下一次正常退出：提示清掉。
+        record_exit_note(&db, "");
+        assert_eq!(AppPrefs::load(&db).session_log_exit_note, "");
+        // 带控制字符的脏值读成空，不显示。
+        db.setting_set(SESSION_LOG_EXIT_NOTE_KEY, "\"a\\u0007b\"")
+            .unwrap();
+        assert_eq!(AppPrefs::load(&db).session_log_exit_note, "");
     }
 
     #[test]
