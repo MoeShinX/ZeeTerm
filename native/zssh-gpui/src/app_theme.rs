@@ -799,6 +799,43 @@ fn luminance(hex: u32) -> f32 {
     0.2126 * r + 0.7152 * g + 0.0722 * b
 }
 
+/// 终端右上角延迟徽标的颜色：字色 `fg`、底色 `fill`（都是不透明色，画的时候由界面加半透明）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LatencyBadge {
+    pub fg: u32,
+    pub fill: u32,
+}
+
+/// 延迟徽标在 `terminal_bg`（终端底色，可能和界面皮肤不是一套）上的颜色。
+///
+/// 绿取状态点的已连接色，琥珀取警示色（深底用亮琥珀、浅底用深琥珀），红取皮肤的危险色；底色是
+/// 这个颜色淡淡地叠在终端底色上。字色在此基础上向白 / 黑推到对底色的对比度不低于
+/// [`MUTED_MIN_CONTRAST`]，深浅终端配色上都读得清。
+pub fn latency_badge(
+    level: zssh_core::ssh::latency::Level,
+    skin: &Skin,
+    terminal_bg: u32,
+) -> LatencyBadge {
+    use zssh_core::ssh::latency::Level;
+    let dark_bg = luminance(terminal_bg) < 0.4;
+    let base = match level {
+        Level::Good => DOT_CONNECTED,
+        Level::Warn if dark_bg => DOT_CONNECTING,
+        Level::Warn => CAUTION_ON_LIGHT,
+        Level::Bad => skin.ui.danger,
+    };
+    let fill = mix(base, terminal_bg, 0.16);
+    let toward = if dark_bg { 0xFFFFFF } else { 0x000000 };
+    let mut fg = base;
+    for step in 0..=10 {
+        fg = mix(toward, base, step as f32 / 10.0);
+        if contrast(fg, fill) >= MUTED_MIN_CONTRAST {
+            break;
+        }
+    }
+    LatencyBadge { fg, fill }
+}
+
 /// WCAG 对比度。
 pub fn contrast(a: u32, b: u32) -> f32 {
     let (la, lb) = (luminance(a), luminance(b));
@@ -1295,5 +1332,32 @@ mod tests {
         let latte = Tokens::for_skin(skin_for(false, "catppuccin-latte"));
         assert_ne!(paper.background, latte.background);
         assert_ne!(paper.accent, latte.accent);
+    }
+
+    #[test]
+    fn the_latency_badge_is_readable_on_every_terminal_background_and_tier() {
+        use zssh_core::ssh::latency::Level;
+        for ui in SKINS {
+            for term in SKINS {
+                for level in [Level::Good, Level::Warn, Level::Bad] {
+                    let badge = latency_badge(level, ui, term.terminal.background);
+                    assert!(
+                        contrast(badge.fg, badge.fill) >= MUTED_MIN_CONTRAST,
+                        "{} 的界面色 + {} 的终端底 + {level:?}：字 {:06X} 底 {:06X}",
+                        ui.name,
+                        term.name,
+                        badge.fg,
+                        badge.fill
+                    );
+                }
+            }
+        }
+        // 三档在同一个底上互相分得开。
+        let skin = skin_for(true, DEFAULT_DARK_SKIN);
+        let bg = skin.terminal.background;
+        let colours: Vec<u32> = [Level::Good, Level::Warn, Level::Bad]
+            .map(|level| latency_badge(level, skin, bg).fg)
+            .to_vec();
+        assert!(colours[0] != colours[1] && colours[1] != colours[2] && colours[0] != colours[2]);
     }
 }

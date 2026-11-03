@@ -18,6 +18,7 @@ use crate::ssh::id_tap::IdTap;
 use crate::ssh::interact::{BoxFuture, HopProgress};
 use crate::ssh::interact::{HostKeyDecision, HostKeyInfo, HostKeyStatus, Interactor};
 use crate::ssh::known_hosts::{HostKeyLookup, KnownHosts, StoredIn};
+use crate::ssh::latency::{LatencyMonitor, ProbeKind, SshProbe};
 use crate::ssh::shell::{OpenExtras, ShellSession, DEFAULT_BUFFER_LIMIT, OPEN_REPLY_TIMEOUT};
 use crate::ssh::stream::{ChannelByteStream, PrefixedStream};
 use crate::x11::{X11Failure, X11Hub, X11Outcome, X11Request};
@@ -168,6 +169,8 @@ pub struct Connection {
     identity: Option<String>,
     /// 服务器握手时发来的版本行（`SSH-2.0-OpenSSH_9.6`）；没抓到是 `None`。只给「测试连接」显示。
     server_version: Option<String>,
+    /// 这条连接的延迟统计（终端右上角的徽标）；连接上几个终端窗格共用它。
+    latency: Arc<LatencyMonitor>,
 }
 
 /// 服务器身份：`用户名@主机:端口`，主机名不分大小写、去掉结尾的点。
@@ -373,6 +376,7 @@ impl Connection {
             channels_opened: AtomicUsize::new(0),
             identity,
             server_version: version_slot.get().cloned(),
+            latency: LatencyMonitor::new(ProbeKind::Ssh),
         })
     }
 
@@ -518,6 +522,35 @@ impl Connection {
     /// 连接是不是已经断了（对端断开或者 keepalive 超时）。连接池用它判断能不能复用。
     pub fn is_closed(&self) -> bool {
         self.handle.is_closed()
+    }
+
+    /// 在这条连接上测一次真实的 SSH 往返：发 `keepalive@openssh.com`（要回复），服务器回成功或
+    /// 失败都算一次往返。不开通道、不碰终端数据。超过 `limit` 没回是 `Ok(None)`（记"超时"）；
+    /// 连接已经没了是错误。
+    pub async fn measure_rtt(&self, limit: Duration) -> Result<Option<Duration>, ZsshError> {
+        if self.is_closed() {
+            return Err(ZsshError::Shell("连接已断开".to_owned()));
+        }
+        let started = Instant::now();
+        match timeout(limit, self.handle.send_ping()).await {
+            // russh 在连接中途断掉时也会让 `send_ping` 正常返回（回复通道被丢弃），
+            // 所以返回后再看一眼连接还在不在，别把断线算成一次很快的往返。
+            Ok(Ok(())) if self.is_closed() => Err(ZsshError::Shell("连接已断开".to_owned())),
+            Ok(Ok(())) => Ok(Some(started.elapsed())),
+            Ok(Err(err)) => Err(ZsshError::Ssh(err)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// 这条连接的延迟统计。几个终端窗格共用一条连接时读到的是同一份。
+    pub fn latency(&self) -> &Arc<LatencyMonitor> {
+        &self.latency
+    }
+
+    /// 起这条连接的延迟测量任务（要在 tokio 运行时里调用；重复调用只起一次）。
+    /// 任务只拿连接的弱引用：连接被丢掉或断开它就结束，不会让连接多活。
+    pub fn start_latency_probe(self: &Arc<Self>) {
+        self.latency.spawn(SshProbe::new(Arc::downgrade(self)));
     }
 
     /// 认证成功时用户勾了"保存"的密码或口令，调用方负责落库。

@@ -507,6 +507,12 @@ impl MainWindow {
         changed |= self.sync_forwards(cx);
         changed |= self.x11_poll(window, cx);
         self.sync_docks(window, cx);
+        // 终端内容有没有摆在窗口里（主机页 / 设置页 / 文件和编辑器标签盖住它时没有）：延迟测量据此暂停。
+        let terminal_shown = self.nav.view == MainView::Terminal
+            && self.active_sftp_view().is_none()
+            && self.active_editor_view().is_none();
+        self.workspace
+            .update(cx, |ws, _cx| ws.set_surface_shown(terminal_shown));
         self.progress_unsaved_ask(window, cx);
         if self.tick_count >= 2 {
             self.scan_recovery_once(window, cx);

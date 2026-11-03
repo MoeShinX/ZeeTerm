@@ -5,7 +5,7 @@
 //! 见 `modal::quick_target_check`），「新建主机」打开现有的新建主机面板。ZeeTerm 没有本地终端，
 //! 所以没有「新建本地终端」。
 
-use ::gpui::px;
+use ::gpui::{HighlightStyle, StyledText, px};
 use gpui_kit::component::*;
 use gpui_kit::*;
 
@@ -20,6 +20,69 @@ pub const WELCOME_SUBTITLE: &str = "简洁的 SSH / Telnet / 串口终端";
 pub const WELCOME_HINT: &str = "从左侧双击主机开始连接，或按 Ctrl+Shift+T 新建标签";
 /// 两个按钮的文字，顺序即显示顺序。
 pub const WELCOME_BUTTONS: [&str; 2] = ["快速连接", "新建主机"];
+/// 大标题（产品名）。
+const WELCOME_TITLE: &str = "ZeeTerm";
+/// 标题渐变的两端：Logo 的紫（`#7950F2`）到浅紫（`#A263FF`），取自 `assets/brand/zeeterm-logo.svg`。
+pub const TITLE_GRADIENT: (u32, u32) = (0x7950F2, 0xA263FF);
+
+/// 标题第 `index` 个字（共 `count` 个）的颜色：从左到右在渐变两端之间线性插值（sRGB 各通道）。
+///
+/// GPUI 的文字颜色只能是单色（渐变只有背景支持，没法按字形裁剪），所以逐字取色：一个字一个颜色，
+/// 7 个字母的步进很小，看上去就是连续的渐变。
+pub fn title_color(index: usize, count: usize) -> u32 {
+    let t = if count <= 1 {
+        0.0
+    } else {
+        index as f32 / (count - 1) as f32
+    };
+    let (from, to) = TITLE_GRADIENT;
+    let channel = |shift: u32| {
+        let a = ((from >> shift) & 0xFF) as f32;
+        let b = ((to >> shift) & 0xFF) as f32;
+        ((a + (b - a) * t).round() as u32) & 0xFF
+    };
+    (channel(16) << 16) | (channel(8) << 8) | channel(0)
+}
+
+/// 大标题字的最低对比度（WCAG 大号字 3:1）。
+const TITLE_MIN_CONTRAST: f32 = 3.0;
+
+/// 同 [`title_color`]，但保证在 `background` 上读得清：对比度不够（深色底上的深紫、浅色底上的浅紫）
+/// 就向白 / 黑推，直到够为止。够的字保持原色，所以浅色、深色皮肤上仍是同一条渐变，只是端点按底色微调。
+pub fn title_color_on(index: usize, count: usize, background: u32) -> u32 {
+    use crate::app_theme::{contrast, mix};
+    let base = title_color(index, count);
+    if contrast(base, background) >= TITLE_MIN_CONTRAST {
+        return base;
+    }
+    let toward = if contrast(0xFFFFFF, background) >= contrast(0x000000, background) {
+        0xFFFFFF
+    } else {
+        0x000000
+    };
+    (1..=50)
+        .map(|step| mix(toward, base, step as f32 / 50.0))
+        .find(|candidate| contrast(*candidate, background) >= TITLE_MIN_CONTRAST)
+        .unwrap_or(toward)
+}
+
+/// 渐变标题：整段文字一次排版（保留字距），每个字母一段颜色。
+fn gradient_title(background: u32) -> StyledText {
+    let count = WELCOME_TITLE.chars().count();
+    let ranges = WELCOME_TITLE
+        .char_indices()
+        .enumerate()
+        .map(|(i, (at, ch))| {
+            (
+                at..at + ch.len_utf8(),
+                HighlightStyle {
+                    color: Some(gpui_kit::rgb(title_color_on(i, count, background)).into()),
+                    ..Default::default()
+                },
+            )
+        });
+    StyledText::new(WELCOME_TITLE).with_highlights(ranges)
+}
 
 impl MainWindow {
     pub(super) fn render_welcome(
@@ -28,6 +91,8 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let entity = cx.entity();
+        // 标题的颜色要对着当前皮肤的底色校一次对比度（深色皮肤上最深的紫会发暗）。
+        let skin_background = crate::app_theme::active_skin(cx).ui.background;
         v_flex()
             .id("welcome-page")
             .size_full()
@@ -39,8 +104,7 @@ impl MainWindow {
                 div()
                     .text_3xl()
                     .font_weight(FontWeight::BOLD)
-                    .text_color(tokens.text)
-                    .child("ZeeTerm"),
+                    .child(gradient_title(skin_background)),
             )
             .child(
                 div()
@@ -86,7 +150,53 @@ impl MainWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{WELCOME_BUTTONS, WELCOME_HINT, WELCOME_SUBTITLE};
+    use super::{
+        TITLE_GRADIENT, WELCOME_BUTTONS, WELCOME_HINT, WELCOME_SUBTITLE, title_color,
+        title_color_on,
+    };
+
+    #[test]
+    fn the_title_runs_from_the_logo_purple_to_the_light_purple() {
+        assert_eq!(
+            TITLE_GRADIENT,
+            (0x7950F2, 0xA263FF),
+            "取自 zeeterm-logo.svg"
+        );
+        let colours: Vec<u32> = (0..7).map(|i| title_color(i, 7)).collect();
+        assert_eq!(colours[0], 0x7950F2, "第一个字是深紫");
+        assert_eq!(colours[6], 0xA263FF, "最后一个字是浅紫");
+        // 中间 6 步均匀过渡：每个通道单调、相邻两步的差不超过一个步长。
+        assert_eq!(colours[3], 0x8E5AF9, "正中间是两端的平均");
+        for pair in colours.windows(2) {
+            for shift in [16, 8, 0] {
+                let (a, b) = ((pair[0] >> shift) & 0xFF, (pair[1] >> shift) & 0xFF);
+                assert!(b >= a && b - a <= 8, "{:06X} -> {:06X}", pair[0], pair[1]);
+            }
+        }
+        // 只有一个字时取起点，不除零。
+        assert_eq!(title_color(0, 1), 0x7950F2);
+        assert_eq!(title_color(0, 0), 0x7950F2);
+    }
+
+    #[test]
+    fn the_gradient_title_reads_clearly_on_light_and_dark_skins() {
+        use crate::app_theme::{SKINS, contrast};
+        // 每个皮肤的底色上，7 个字都不低于大号字的 3:1。
+        for skin in SKINS {
+            let bg = skin.ui.background;
+            for i in 0..7 {
+                let c = contrast(title_color_on(i, 7, bg), bg);
+                assert!(c >= 3.0, "{} 的第 {i} 个字对比度只有 {c:.2}", skin.name);
+            }
+        }
+        // 默认的浅色（纸白）、深色（Dracula）皮肤：浅色底上完全保持原渐变，深色底上只调亮暗端。
+        let paper = crate::app_theme::skin_for(false, crate::app_theme::DEFAULT_LIGHT_SKIN);
+        assert_eq!(title_color_on(0, 7, paper.ui.background), 0x7950F2);
+        assert_eq!(title_color_on(6, 7, paper.ui.background), 0xA263FF);
+        let dracula = crate::app_theme::skin_for(true, crate::app_theme::DEFAULT_DARK_SKIN);
+        assert_eq!(title_color_on(6, 7, dracula.ui.background), 0xA263FF);
+        assert_ne!(title_color_on(0, 7, dracula.ui.background), 0x7950F2);
+    }
 
     #[test]
     fn the_welcome_page_has_two_entries_and_only_mentions_real_shortcuts() {

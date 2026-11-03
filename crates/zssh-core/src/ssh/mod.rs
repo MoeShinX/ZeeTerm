@@ -12,6 +12,7 @@ mod id_tap;
 pub mod interact;
 pub mod keygen;
 pub mod known_hosts;
+pub mod latency;
 pub mod os_probe;
 pub mod pool;
 pub mod session_log;

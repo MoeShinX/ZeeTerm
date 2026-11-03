@@ -107,6 +107,8 @@ pub struct UiSettings {
     pub confirm_multiline: bool,
     /// 高亮总开关。
     pub highlight_enabled: bool,
+    /// 终端右上角显示延迟徽标（SSH 往返 / Telnet 的 TCP 连接）。默认开；关着时也不发测量请求。
+    pub show_latency: bool,
     /// 启动时直接隐藏到托盘。
     pub start_hidden: bool,
     /// 高亮规则；`None` 表示用默认那一组。
@@ -134,6 +136,7 @@ impl Default for UiSettings {
             right_click_paste: true,
             confirm_multiline: true,
             highlight_enabled: true,
+            show_latency: true,
             start_hidden: false,
             highlight_rules: None,
             bracketed_paste: BracketedPaste::Auto,
@@ -304,6 +307,7 @@ mod tests {
             right_click_paste: false,
             confirm_multiline: false,
             highlight_enabled: false,
+            show_latency: false,
             start_hidden: true,
             highlight_rules: Some(vec![HighlightRule::new(3, "err(or)?", true)]),
             bracketed_paste: BracketedPaste::On,
@@ -322,6 +326,7 @@ mod tests {
             .sanitized();
         assert!(loaded.cursor_blink, "光标闪烁默认开");
         assert!(loaded.ime_english, "自动英文输入默认开");
+        assert!(loaded.show_latency, "延迟徽标默认开");
         assert_eq!(loaded.cursor, CursorShape::Underline);
     }
 
