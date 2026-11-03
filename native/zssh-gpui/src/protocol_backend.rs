@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use zssh_core::model::{Protocol, SerialOptions, TelnetOptions};
+use zssh_core::ssh::latency::{LatencyMonitor, TcpProbe, Transport, probe_kind_for};
 use zssh_core::ssh::{BoxedStream, ProxyConfig, connect_direct, dialer::connect_via_proxy};
 use zssh_core::store::Database;
 use zssh_protocols::serial::open_serial;
@@ -107,6 +108,23 @@ pub(crate) fn plan_from_db(db: &Database, host_id: i64) -> Result<HostPlan, Stri
     }
 }
 
+/// Telnet 的延迟监视器：Telnet 没有协议级往返，只能对同一地址端口单独做 TCP connect 计时；
+/// 经代理时只测得到代理（徽标提示里写明）；经 SSH 跳板机测不到"到目标"那一段，诚实起见不测、不显示。
+/// 要在 tokio 运行时里调用（后台任务由它起）。
+pub(crate) fn telnet_latency(route: &Route, host: &str, port: u16) -> Option<Arc<LatencyMonitor>> {
+    let (transport, probe) = match route {
+        Route::Direct => (Transport::TelnetDirect, TcpProbe::new(host, port)),
+        Route::Proxy(proxy) => (
+            Transport::TelnetProxy,
+            TcpProbe::new(proxy.host.clone(), proxy.port),
+        ),
+        Route::Jump(_) => return None,
+    };
+    let monitor = LatencyMonitor::new(probe_kind_for(transport)?);
+    monitor.spawn(probe);
+    Some(monitor)
+}
+
 /// 连接 Telnet 目标并开始会话。
 pub(crate) async fn open_telnet(plan: TelnetPlan, size: Size, generation: u64) -> OpenResult {
     let TelnetPlan {
@@ -117,6 +135,7 @@ pub(crate) async fn open_telnet(plan: TelnetPlan, size: Size, generation: u64) -
         password,
         route,
     } = plan;
+    let latency = telnet_latency(&route, &host, port);
     let (stream, guard): (BoxedStream, Box<dyn Send>) = match route {
         Route::Direct => {
             let socket = connect_direct(&host, port)
@@ -135,9 +154,9 @@ pub(crate) async fn open_telnet(plan: TelnetPlan, size: Size, generation: u64) -
             open_via_jump(&factory, &host, port).await?
         }
     };
-    Ok(start_telnet(
-        stream, guard, options, username, password, size, generation,
-    ))
+    let mut opened = start_telnet(stream, guard, options, username, password, size, generation);
+    opened.latency = latency;
+    Ok(opened)
 }
 
 /// 在跳板机的已认证连接上开 `direct-tcpip` 通道到目标。返回的守卫要和会话一起活着：
@@ -174,6 +193,7 @@ pub(crate) fn start_telnet(
         backend: Box::new(backend),
         events,
         gate,
+        latency: None,
     }
 }
 
@@ -194,6 +214,7 @@ pub(crate) async fn open_serial_host(
         backend: Box::new(backend),
         events,
         gate,
+        latency: None,
     })
 }
 
@@ -576,6 +597,45 @@ mod tests {
             .await
         });
         assert!(closed.is_ok(), "关闭之后目标应当看到连接断开");
+    }
+
+    /// Telnet 的延迟：直连测目标、经代理只测代理、经跳板机不测；真连本机监听时看得见就测到第一个值。
+    #[test]
+    fn telnet_latency_follows_the_route_and_measures_a_real_connect() {
+        use zssh_core::ssh::latency::{ProbeKind, Sample};
+        let runtime = crate::ssh_backend::runtime().expect("runtime");
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let probe_port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+
+            assert!(telnet_latency(&Route::Jump(1), "device.internal", 23).is_none());
+            let proxy = ProxyConfig {
+                kind: zssh_core::model::ProxyKind::Socks5,
+                host: "127.0.0.1".to_owned(),
+                port: probe_port,
+                username: None,
+                password: None,
+            };
+            let via_proxy = telnet_latency(&Route::Proxy(proxy), "device.internal", 23).unwrap();
+            assert_eq!(via_proxy.kind(), ProbeKind::Tcp { via_proxy: true });
+
+            // 直连：测的是目标自己的端口（这里是一个一直 accept 的本机监听）。
+            let direct = telnet_latency(&Route::Direct, "127.0.0.1", probe_port).unwrap();
+            assert_eq!(direct.kind(), ProbeKind::Tcp { via_proxy: false });
+            let mut viewer = direct.viewer();
+            assert!(direct.snapshot().stats.is_empty(), "没人看之前不测");
+            viewer.set_visible(true);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while direct.snapshot().stats.is_empty() {
+                assert!(Instant::now() < deadline, "看得见之后应当很快测到第一个值");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(matches!(
+                direct.snapshot().stats.last(),
+                Some(Sample::Rtt(_))
+            ));
+        });
     }
 
     /// 目标连不上时，跳板机给的错误要带上目标地址。

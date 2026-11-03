@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use zssh_core::ssh::flow::FlowGate;
+use zssh_core::ssh::latency::{self, LatencyMonitor, LatencySnapshot, LatencyViewer};
 use zssh_session::{
     CoreFilter, KeyInput, LoopbackBackend, MouseAction, MouseButton as TerminalMouseButton,
     MouseInput, SessionBackend, SessionCommand, SessionDriver, SessionLog, SessionPump, encode_key,
@@ -141,6 +142,15 @@ pub(crate) struct Pane {
     shell_seq: u64,
     /// 这个窗格的 shell 在 AI 终端登记表里的编号（V2-G10b）；没连上 / 离线回环窗格没有。
     terminal_id: Option<String>,
+    /// 右上角延迟徽标的数据来源；串口、经跳板机的 Telnet、没连上的窗格没有。
+    latency: Option<PaneLatency>,
+}
+
+/// 窗格对延迟监视器的登记：`viewer` 报告这个窗格现在看不看得见（都看不见时后台测量暂停），
+/// `label` 是悬停提示里写的主机名。
+pub(crate) struct PaneLatency {
+    viewer: LatencyViewer,
+    label: String,
 }
 
 /// 下一个窗格编号（全进程唯一：标签可以在窗口之间搬）。
@@ -195,6 +205,7 @@ impl Pane {
             generation,
             shell_seq: next_shell_seq(),
             terminal_id: None,
+            latency: None,
         }
     }
 
@@ -340,6 +351,8 @@ impl Pane {
     /// 连接失败或会话断开：停止接收输入，在窗格里写明原因。
     fn disconnect(&mut self, notice: &str) {
         self.terminal_id = None;
+        // 断开后徽标没有意义；丢掉登记，共用这条连接的其他窗格不受影响。
+        self.latency = None;
         self.state = PaneState::Disconnected;
         self.pending = None;
         self.pump_mut().feed_local(notice.as_bytes());
@@ -367,6 +380,58 @@ impl Pane {
         self.refresh();
     }
 
+    /// 接上延迟监视器（`None` 就是这个窗格不显示延迟）。
+    fn set_latency(&mut self, monitor: Option<Arc<LatencyMonitor>>) {
+        self.latency = monitor.map(|monitor| PaneLatency {
+            viewer: monitor.viewer(),
+            label: self.latency_label(),
+        });
+    }
+
+    /// 悬停提示里写的主机名：快速连接用输入的那串，主机库里的主机用它的名字。
+    fn latency_label(&self) -> String {
+        if self.is_session() {
+            self.log_label()
+        } else {
+            String::new()
+        }
+    }
+
+    /// 这个窗格现在看得见吗（外壳每个节拍告诉它）；变了才动监视器。
+    fn set_latency_visible(&mut self, visible: bool) {
+        if let Some(latency) = &mut self.latency {
+            latency.viewer.set_visible(visible);
+        }
+    }
+
+    /// 徽标要画的东西：监视器的快照和悬停提示用的主机名。已经断开 / 还没有第一次结果就不画。
+    fn latency_snapshot(&self) -> Option<(LatencySnapshot, &str)> {
+        let latency = self.latency.as_ref()?;
+        let snapshot = latency.viewer.monitor().snapshot();
+        (!snapshot.stopped && !snapshot.stats.is_empty())
+            .then_some((snapshot, latency.label.as_str()))
+    }
+
+    /// 调试钩子：摆一个固定的延迟值（给截图用）。窗格没有监视器就装一个不测量的。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_set_latency(&mut self, sample: Option<latency::Sample>) {
+        let Some(sample) = sample else {
+            self.latency = None;
+            return;
+        };
+        if self.latency.is_none() {
+            self.set_latency(Some(LatencyMonitor::new(latency::ProbeKind::Ssh)));
+            if let Some(latency) = &mut self.latency
+                && latency.label.is_empty()
+            {
+                latency.label = "web-1".to_owned();
+            }
+        }
+        if let Some(latency) = &self.latency {
+            latency.viewer.monitor().record(sample);
+        }
+    }
+
     /// 回滚上限改了：新建会话（重连后的泵）用新值，正在用的终端立刻生效（调小会丢掉最旧的行）。
     fn set_history(&mut self, history: usize) {
         self.history = history;
@@ -389,7 +454,17 @@ impl Pane {
         };
         self.pending = None;
         match result {
-            Ok(opened) => self.attach(opened.backend, opened.events, opened.gate, opened.factory),
+            Ok(opened) => {
+                // SSH 窗格没有自带的监视器：用已认证连接上那一份（同一条连接上的窗格共用）。
+                let monitor = opened.latency.or_else(|| {
+                    opened
+                        .factory
+                        .as_ref()
+                        .map(|factory| Arc::clone(factory.connection().latency()))
+                });
+                self.attach(opened.backend, opened.events, opened.gate, opened.factory);
+                self.set_latency(monitor);
+            }
             Err(err) => self.disconnect(&failure_notice(&err)),
         }
         true
@@ -757,8 +832,44 @@ pub struct TerminalWorkspace {
     ime_key: String,
     /// 光标闪烁的相位时钟。
     cursor_blink: BlinkClock,
+    /// 终端内容现在有没有摆在窗口里（主窗口在主机页 / 设置页 / 文件标签时没有）。外壳每个节拍告诉
+    /// 它；独立终端窗口恒为真。延迟测量只对看得见的窗格做。
+    surface_shown: bool,
+    /// 上一次看到的各窗格延迟版本之和：变了就要重画徽标。
+    latency_stamp: u64,
     _ime_focus: Subscription,
     _ime_blur: Subscription,
+}
+
+/// 窗口现在是不是真的摆在用户面前：可见且没有最小化（收进托盘的窗口不可见）。
+/// 非 Windows 没有这个概念（ZeeTerm 只面向 Windows），一律当作可见。
+fn window_shown(window: &Window) -> bool {
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowVisible};
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Win32(win32) = handle.as_raw()
+        {
+            let hwnd = HWND(win32.hwnd.get() as _);
+            // SAFETY: 只读查询，句柄失效时返回假。
+            return unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() };
+        }
+    }
+    let _ = window;
+    true
+}
+
+/// 哪些窗格该被登记成"看得见"：只有活动标签的窗格，而且设置开着、窗口和页面都摆在用户面前。
+pub(crate) fn latency_visible_flags(
+    pane_count: usize,
+    tab_is_active: bool,
+    setting_on: bool,
+    surface_shown: bool,
+    window_shown: bool,
+) -> Vec<bool> {
+    vec![tab_is_active && setting_on && surface_shown && window_shown; pane_count]
 }
 
 impl TerminalWorkspace {
@@ -862,6 +973,8 @@ impl TerminalWorkspace {
             default_size: DEFAULT_SIZE,
             ime_key,
             cursor_blink: BlinkClock::new(),
+            surface_shown: true,
+            latency_stamp: 0,
             _ime_focus,
             _ime_blur,
         };
@@ -879,7 +992,8 @@ impl TerminalWorkspace {
                     let blink = this.settings.cursor_blink
                         && this.focus.is_focused(window)
                         && this.cursor_blink.changed();
-                    if this.poll_highlight() || sessions || relayout || blink {
+                    let latency = this.sync_latency(window);
+                    if this.poll_highlight() || sessions || relayout || blink || latency {
                         cx.notify();
                     }
                 });
@@ -904,6 +1018,39 @@ impl TerminalWorkspace {
 
     pub fn focus_handle(&self) -> FocusHandle {
         self.focus.clone()
+    }
+
+    /// 外壳告诉工作区：终端内容现在有没有摆在窗口里（影响延迟测量的暂停 / 恢复）。
+    pub(crate) fn set_surface_shown(&mut self, shown: bool) {
+        self.surface_shown = shown;
+    }
+
+    /// 每个节拍：把各窗格"看不看得见"登记给延迟监视器（变了才有动作），并看延迟有没有新数据。
+    /// 返回是否要重画。
+    fn sync_latency(&mut self, window: &Window) -> bool {
+        let shown = window_shown(window);
+        let active = self.tabs.active_index();
+        let setting = self.settings.show_latency;
+        let surface = self.surface_shown;
+        let mut stamp = 0u64;
+        for (index, tab) in self.tabs.items_mut().iter_mut().enumerate() {
+            let flags = latency_visible_flags(
+                tab.panes.len(),
+                Some(index) == active,
+                setting,
+                surface,
+                shown,
+            );
+            for (pane, visible) in tab.panes.iter_mut().zip(flags) {
+                pane.set_latency_visible(visible);
+                if visible && let Some(latency) = &pane.latency {
+                    stamp = stamp.wrapping_add(latency.viewer.monitor().version() + 1);
+                }
+            }
+        }
+        let changed = stamp != self.latency_stamp;
+        self.latency_stamp = stamp;
+        changed
     }
 
     // ---- 只读查询（外壳用） ----
@@ -1414,6 +1561,36 @@ impl TerminalWorkspace {
         let size = self.default_size;
         self.push_offline_tab("离线演示", size);
         cx.notify();
+    }
+
+    /// 调试驱动用：给活动标签的窗格摆延迟值（`pane` 为空就是所有窗格；`sample` 为空是清掉）。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_latency_set(
+        &mut self,
+        sample: Option<latency::Sample>,
+        pane: Option<usize>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let tab = self.tabs.active_mut().ok_or("没有标签")?;
+        if pane.is_some_and(|at| at >= tab.panes.len()) {
+            return Err("没有这个窗格".to_owned());
+        }
+        for (at, target) in tab.panes.iter_mut().enumerate() {
+            if pane.is_none_or(|wanted| wanted == at) {
+                target.dev_set_latency(sample);
+            }
+        }
+        cx.notify();
+        Ok(())
+    }
+
+    /// 调试驱动用：第 `tab` 个标签第 `pane` 个窗格的（延迟监视器登记的"看得见"数, 已有样本数）；
+    /// 没有监视器是 `None`。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_latency_state(&self, tab: usize, pane: usize) -> Option<(usize, usize)> {
+        let latency = self.tabs.get(tab)?.panes.get(pane)?.latency.as_ref()?;
+        let monitor = latency.viewer.monitor();
+        Some((monitor.visible_viewers(), monitor.snapshot().stats.len()))
     }
 
     /// 活动窗格的 shell 在它那条连接上排第几个、这条连接上现在有几个 shell（跟随终端目录用，见
@@ -2254,6 +2431,13 @@ impl TerminalWorkspace {
     }
 
     /// 「终端里自动切到英文输入」：关掉时焦点进终端不再动输入法；已经在英文区的话马上还回去。
+    /// 「在终端右上角显示延迟」：关着时窗格也不再登记成看得见，后台测量随之暂停。
+    pub(crate) fn toggle_show_latency(&mut self, cx: &mut Context<Self>) {
+        self.settings.show_latency = !self.settings.show_latency;
+        self.settings.save();
+        cx.notify();
+    }
+
     pub(crate) fn toggle_ime_english(&mut self, cx: &mut Context<Self>) {
         self.settings.ime_english = !self.settings.ime_english;
         if !self.settings.ime_english {
@@ -3223,6 +3407,8 @@ impl Render for TerminalWorkspace {
                 .into_any_element();
         };
         let active_pane = active.active_pane;
+        let show_latency = self.settings.show_latency;
+        let ui_skin = crate::app_theme::active_skin(cx);
         let split = active.is_split();
         let selection = self.selection;
         let broadcast = active.broadcast;
@@ -3327,6 +3513,17 @@ impl Render for TerminalWorkspace {
                                 .bg(tokens.accent.alpha(0.7)),
                         )
                     })
+                    // 右上角延迟徽标：设置开着、窗格连着、已经测到第一个值才画。
+                    .when(show_latency && pane.state == PaneState::Live, |d| {
+                        d.children(latency_badge(
+                            index,
+                            pane,
+                            &mono,
+                            ui_skin,
+                            term.background,
+                            self.settings.font_size,
+                        ))
+                    })
                     .into_any_element(),
             );
         }
@@ -3423,6 +3620,47 @@ impl Render for TerminalWorkspace {
             )
             .into_any_element()
     }
+}
+
+/// 窗格右上角的延迟徽标：小圆角、半透明底（悬停变实）、数值按色档着色；悬停提示写明测的是什么。
+/// 窗格没有监视器、还没有第一个值、或者已断开时是 `None`。
+fn latency_badge(
+    index: usize,
+    pane: &Pane,
+    mono: &::gpui::SharedString,
+    skin: &crate::app_theme::Skin,
+    terminal_bg: u32,
+    font_size: f32,
+) -> Option<AnyElement> {
+    let (snapshot, host) = pane.latency_snapshot()?;
+    let last = snapshot.stats.last()?;
+    let badge = crate::app_theme::latency_badge(latency::level(last), skin, terminal_bg);
+    let fill: Hsla = ::gpui::rgb(badge.fill).into();
+    let fg: Hsla = ::gpui::rgb(badge.fg).into();
+    let text = latency::format_sample(last);
+    let tip: ::gpui::SharedString = latency::tooltip(host, snapshot.kind, &snapshot.stats).into();
+    Some(
+        div()
+            .id(("latency-badge", index))
+            .absolute()
+            .top(::gpui::px(6.0))
+            .right(::gpui::px(12.0))
+            .px(::gpui::px(6.0))
+            .py(::gpui::px(1.0))
+            .rounded(::gpui::px(5.0))
+            .bg(fill.alpha(0.8))
+            .hover(move |style| style.bg(fill))
+            .text_color(fg)
+            .font_family(mono.clone())
+            .text_size(::gpui::px((font_size - 2.0).max(10.0)))
+            .child(text)
+            // 点在徽标上不要开始选区 / 抢走终端焦点以外的东西。
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+            })
+            .into_any_element(),
+    )
 }
 
 /// 一个窗格的可见行；不同窗格各自独立选区，只有聚焦窗格画光标。
@@ -3879,8 +4117,12 @@ mod pane_tests {
 #[cfg(test)]
 mod tab_tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{Axis, Pane, PaneState, QuickSpec, Size, Tab, TabStatus, split_tree, tab_status};
+    use super::{
+        Axis, LatencyMonitor, Pane, PaneState, QuickSpec, Size, Tab, TabStatus, latency,
+        latency_visible_flags, split_tree, tab_status,
+    };
     use std::sync::Arc;
+    use std::time::Duration;
 
     const SIZE: Size = Size { rows: 10, cols: 40 };
 
@@ -3891,6 +4133,85 @@ mod tab_tests {
 
     fn pane_in(state: PaneState, host: Option<i64>) -> Pane {
         Pane::placeholder(SIZE, 100, 1, host, state)
+    }
+
+    fn monitor_with(rtt_ms: u64) -> Arc<LatencyMonitor> {
+        let monitor = LatencyMonitor::new(latency::ProbeKind::Ssh);
+        monitor.record(latency::Sample::Rtt(Duration::from_millis(rtt_ms)));
+        monitor
+    }
+
+    #[test]
+    fn a_pane_registers_whether_it_is_visible_and_forgets_it_on_disconnect() {
+        let mut pane = pane_in(PaneState::Live, None);
+        let monitor = LatencyMonitor::new(latency::ProbeKind::Ssh);
+        pane.set_latency(Some(Arc::clone(&monitor)));
+        assert_eq!(
+            monitor.visible_viewers(),
+            0,
+            "接上时默认看不见，等外壳的节拍"
+        );
+        assert!(pane.latency_snapshot().is_none(), "还没有第一个值不画徽标");
+
+        monitor.record(latency::Sample::Rtt(Duration::from_millis(42)));
+        pane.set_latency_visible(true);
+        pane.set_latency_visible(true);
+        assert_eq!(monitor.visible_viewers(), 1);
+        let (snapshot, _) = pane.latency_snapshot().expect("有值就画");
+        assert_eq!(
+            snapshot.stats.last(),
+            Some(latency::Sample::Rtt(Duration::from_millis(42)))
+        );
+
+        pane.set_latency_visible(false);
+        assert_eq!(monitor.visible_viewers(), 0, "切到后台标签 / 最小化：暂停");
+        pane.set_latency_visible(true);
+        pane.disconnect("断开");
+        assert!(pane.latency.is_none() && pane.latency_snapshot().is_none());
+        assert_eq!(monitor.visible_viewers(), 0, "断开后不再占着监视器");
+    }
+
+    #[test]
+    fn panes_on_one_connection_share_a_value_and_count_separately() {
+        let monitor = monitor_with(8);
+        let mut a = pane_in(PaneState::Live, None);
+        let mut b = pane_in(PaneState::Live, None);
+        a.set_latency(Some(Arc::clone(&monitor)));
+        b.set_latency(Some(Arc::clone(&monitor)));
+        a.set_latency_visible(true);
+        b.set_latency_visible(true);
+        assert_eq!(monitor.visible_viewers(), 2);
+        assert_eq!(
+            a.latency_snapshot().map(|(s, _)| s),
+            b.latency_snapshot().map(|(s, _)| s),
+            "同一条连接上的窗格显示同一个值"
+        );
+        a.set_latency_visible(false);
+        assert_eq!(monitor.visible_viewers(), 1, "还有一个窗格看得见，测量继续");
+    }
+
+    #[test]
+    fn a_pane_without_a_monitor_shows_nothing_and_ignores_visibility() {
+        // 串口、经跳板机的 Telnet、离线窗格：没有监视器。
+        let mut pane = pane_in(PaneState::Live, None);
+        pane.set_latency(None);
+        pane.set_latency_visible(true);
+        assert!(pane.latency_snapshot().is_none());
+    }
+
+    #[test]
+    fn only_the_active_tab_of_a_shown_window_with_the_setting_on_counts_as_visible() {
+        assert_eq!(
+            latency_visible_flags(2, true, true, true, true),
+            [true, true]
+        );
+        assert_eq!(
+            latency_visible_flags(2, false, true, true, true),
+            [false, false]
+        );
+        assert_eq!(latency_visible_flags(1, true, false, true, true), [false]);
+        assert_eq!(latency_visible_flags(1, true, true, false, true), [false]);
+        assert_eq!(latency_visible_flags(1, true, true, true, false), [false]);
     }
 
     #[test]
@@ -4495,6 +4816,49 @@ mod live_tests {
         );
         assert_eq!(pane.state, PaneState::Live);
         pane
+    }
+
+    /// 真连进程内迷你 SSH 服务器：开 shell 就起这条连接的延迟测量，窗格从连接上取到同一份监视器；
+    /// 看不见时不测，看得见时测到真实往返；同一条连接上的第二个窗格拿到的是同一个监视器。
+    #[test]
+    fn a_local_ssh_pane_measures_a_real_round_trip_only_while_visible() {
+        let factory = local_factory();
+        let mut first = open_live(&factory);
+        let mut second = open_live(&factory);
+        let monitor = Arc::clone(factory.connection().latency());
+        assert!(monitor.is_started(), "开 shell 时起了测量任务");
+        for pane in [&first, &second] {
+            let own = pane.latency.as_ref().expect("SSH 窗格有延迟监视器");
+            assert!(
+                Arc::ptr_eq(own.viewer.monitor(), &monitor),
+                "共用同一个监视器"
+            );
+        }
+
+        // 都没登记成看得见：等一阵也不测。
+        std::thread::sleep(Duration::from_millis(800));
+        assert!(monitor.snapshot().stats.is_empty());
+
+        first.set_latency_visible(true);
+        assert!(
+            wait_until(&mut first, Duration::from_secs(10), |p| p
+                .latency_snapshot()
+                .is_some()),
+            "看得见之后应当很快测到第一个值"
+        );
+        let (snapshot, _) = first.latency_snapshot().expect("有值");
+        assert!(matches!(
+            snapshot.stats.last(),
+            Some(zssh_core::ssh::latency::Sample::Rtt(rtt)) if rtt > Duration::ZERO
+        ));
+        assert_eq!(
+            second.latency_snapshot().map(|(s, _)| s),
+            Some(snapshot),
+            "同一条连接上的另一个窗格读到同一个值"
+        );
+
+        first.close();
+        second.close();
     }
 
     /// B-1 的端到端验证：真实 russh 传输 + 核心流控，输出 6 MiB（高水位的 6 倍）

@@ -74,5 +74,6 @@ tracing-subscriber = { workspace = true }
 # 工具桥端到端实测（tests/ai_bridge_live.rs）：MCP 客户端 + 起 zssh-mcp 子进程。
 rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 # 端到端实测要拿 tokio::process 起子进程。
-tokio = { workspace = true, features = ["process"] }# 测试临时目录守卫：任何退出路径（含 panic）都会清理。
+# test-util：延迟监视器的暂停 / 恢复测试用暂停的时钟，不用真等 5 秒的间隔。
+tokio = { workspace = true, features = ["process", "test-util"] }# 测试临时目录守卫：任何退出路径（含 panic）都会清理。
 tempfile = { workspace = true }

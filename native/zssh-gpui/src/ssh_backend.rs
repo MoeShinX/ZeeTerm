@@ -202,6 +202,9 @@ pub struct Opened {
     pub backend: Box<dyn SessionBackend>,
     pub events: Receiver<SessionEvent>,
     pub gate: Arc<FlowGate>,
+    /// 终端右上角延迟徽标用的监视器：Telnet 会话自带；SSH 会话为 `None`，窗格从已认证连接上取
+    /// （同一条连接上的窗格共用一份）。串口和经跳板机的 Telnet 没有。
+    pub latency: Option<Arc<zssh_core::ssh::latency::LatencyMonitor>>,
 }
 
 pub type OpenResult = Result<Opened, String>;
@@ -273,6 +276,7 @@ pub fn begin_open(factory: Arc<SshSessionFactory>, size: Size, generation: u64) 
             backend: Box::new(backend),
             events,
             gate,
+            latency: None,
         })
     })
 }
@@ -297,6 +301,7 @@ pub fn begin_connect_quick(
             backend: Box::new(backend),
             events,
             gate,
+            latency: None,
         })
     })
 }
@@ -389,6 +394,8 @@ impl SshSessionFactory {
         generation: u64,
         x11: Option<crate::x11_glue::X11Attempt>,
     ) -> Result<(SshBackend, Receiver<SessionEvent>, Arc<FlowGate>), String> {
+        // 延迟徽标：这条连接的测量任务在第一次开 shell 时起（重复调用只起一次，窗格不可见时任务暂停）。
+        self.connection.start_latency_probe();
         // 核心转发路径往环形缓冲里旁路复制最近输出：AI 的 `read_terminal` 和结束标记解析读它。
         let ring = TerminalRing::shared();
         // X11 被拒后要再开一条普通通道，两次各最多等一轮回复。
@@ -519,6 +526,7 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
                     backend: Box::new(backend),
                     events,
                     gate,
+                    latency: None,
                 });
             }
             // 连接已经死了：摘掉旧条目，下面重新握手。
@@ -533,6 +541,7 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
         backend: Box::new(backend),
         events,
         gate,
+        latency: None,
     })
 }
 

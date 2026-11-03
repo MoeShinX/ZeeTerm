@@ -7,7 +7,9 @@
 //! - `pref_set:<键>:<值>`、`pref_assert:<键>:<值>`：连接 / SFTP / 窗口 / 会话日志这些数据库设置，
 //!   键见 `settings_page::dev_set_pref`；
 //! - `ui_set:<项>:<值>`、`ui_assert:<项>:<值>`：外观 / 终端这些 `ui-settings.json` 里的设置
-//!   （`cursor` `cursor_blink` `ime_english` `highlight` `copy_on_select` `start_hidden`）；
+//!   （`cursor` `cursor_blink` `ime_english` `highlight` `copy_on_select` `start_hidden` `show_latency`）；
+//! - `latency:<毫秒|timeout|clear>[:窗格下标]`、`latency_assert:<viewers|samples>:<标签>:<窗格>:<个数>`：
+//!   摆延迟徽标的值 / 断言监视器的登记与样本；
 //! - `offline_tab`：开一个离线演示标签（本地回显）并切到终端页，截光标样式用；
 //! - `hl_type:<第几条>:<文字>`（在规则输入框里打字并提交）、`hl_op:<操作>`（`add` `samples` `remove:<i>`
 //!   `toggle:<i>` `regex:<i>:on|off` `case:<i>:on|off` `bg:<i>:on|off` `color:<i>:<十六进制>`）、
@@ -35,6 +37,8 @@ mod real {
         "hl_op",
         "hl_assert",
         "offline_tab",
+        "latency",
+        "latency_assert",
     ];
 
     pub fn is_known(name: &str) -> bool {
@@ -99,6 +103,49 @@ mod real {
                 this.show_view(super::super::nav::MainView::Terminal, window, cx);
                 Ok(Outcome::Done)
             }
+            // `latency:<毫秒|timeout|clear>[:窗格下标]`：给活动标签的窗格摆延迟徽标的值（不测量）。
+            "latency" => {
+                let sample = match a {
+                    "clear" => None,
+                    "timeout" => Some(zssh_core::ssh::latency::Sample::Timeout),
+                    ms => Some(zssh_core::ssh::latency::Sample::Rtt(
+                        std::time::Duration::from_millis(
+                            ms.parse::<u64>()
+                                .map_err(|_| "latency:<毫秒|timeout|clear>")?,
+                        ),
+                    )),
+                };
+                let pane = if b.is_empty() { None } else { Some(index(b)?) };
+                this.workspace
+                    .update(cx, |ws, cx| ws.dev_latency_set(sample, pane, cx))?;
+                Ok(Outcome::Done)
+            }
+            // `latency_assert:<viewers|samples>:<标签>:<窗格>:<个数>`：第几个标签第几个窗格的监视器里
+            // "看得见的窗格数"（暂停 / 恢复验证）或"已测到的样本数下限"；没有监视器就失败。
+            "latency_assert" => {
+                let mut nums = b.split(':');
+                let (Some(tab), Some(pane), Some(want)) = (nums.next(), nums.next(), nums.next())
+                else {
+                    return Err("latency_assert:<项>:<标签>:<窗格>:<个数>".to_owned());
+                };
+                let state = this
+                    .workspace
+                    .read(cx)
+                    .dev_latency_state(index(tab)?, index(pane)?)
+                    .ok_or("这个窗格没有延迟监视器")?;
+                let want = want.parse::<usize>().map_err(|_| "个数要是数字")?;
+                match a {
+                    "viewers" => check(
+                        state.0 == want,
+                        &format!("看得见的窗格 {}，要 {want}", state.0),
+                    ),
+                    "samples" => check(
+                        state.1 >= want,
+                        &format!("样本 {} 个，至少要 {want}", state.1),
+                    ),
+                    _ => Err("latency_assert:viewers|samples".to_owned()),
+                }
+            }
             "settings_assert" => match a {
                 "section" => check(
                     this.settings_section.id() == b,
@@ -139,6 +186,14 @@ mod real {
                         ws.update(cx, |ws, cx| {
                             if ws.settings().ime_english != want {
                                 ws.toggle_ime_english(cx);
+                            }
+                        });
+                    }
+                    "show_latency" => {
+                        let want = on_off(b)?;
+                        ws.update(cx, |ws, cx| {
+                            if ws.settings().show_latency != want {
+                                ws.toggle_show_latency(cx);
                             }
                         });
                     }
@@ -183,6 +238,7 @@ mod real {
                     "cursor_blink" => on_off_text(saved.cursor_blink),
                     "ime_english" => on_off_text(saved.ime_english),
                     "highlight" => on_off_text(saved.highlight_enabled),
+                    "show_latency" => on_off_text(saved.show_latency),
                     "copy_on_select" => on_off_text(saved.copy_on_select),
                     "start_hidden" => on_off_text(saved.start_hidden),
                     _ => return Err(format!("不认识的外观 / 终端设置 {a}")),
