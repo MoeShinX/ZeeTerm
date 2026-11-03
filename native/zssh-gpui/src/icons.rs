@@ -14,6 +14,8 @@ icon_assets!(
     [
         ArrowDownAZ,
         ArrowLeftRight,
+        ArrowLeftToLine,
+        ArrowRightToLine,
         ArrowUpDown,
         ArrowUpRight,
         Cable,
@@ -44,7 +46,10 @@ icon_assets!(
         Server,
         SquarePen,
         Terminal,
-        Trash
+        Trash,
+        Unplug,
+        X,
+        Zap
     ]
 );
 
@@ -78,6 +83,8 @@ mod tests {
         for icon in [
             Ico::ArrowDownAZ,
             Ico::ArrowLeftRight,
+            Ico::ArrowLeftToLine,
+            Ico::ArrowRightToLine,
             Ico::ArrowUpDown,
             Ico::ArrowUpRight,
             Ico::Command,
@@ -107,6 +114,9 @@ mod tests {
             Ico::Server,
             Ico::SquarePen,
             Ico::Trash,
+            Ico::Unplug,
+            Ico::X,
+            Ico::Zap,
         ] {
             let bytes = source
                 .load(&icon.path())

@@ -1240,6 +1240,11 @@ impl TerminalWorkspace {
         self.finish_bulk_close(removed, cx)
     }
 
+    pub(crate) fn close_tabs_left(&mut self, index: usize, cx: &mut Context<Self>) -> usize {
+        let removed = self.tabs.remove_left(index);
+        self.finish_bulk_close(removed, cx)
+    }
+
     pub(crate) fn close_tabs_right(&mut self, index: usize, cx: &mut Context<Self>) -> usize {
         let removed = self.tabs.remove_right(index);
         self.finish_bulk_close(removed, cx)

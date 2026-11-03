@@ -72,6 +72,7 @@ mod side_panel;
 mod sidebar;
 mod status_bar;
 mod sync_bar;
+mod tab_menu;
 mod tab_move;
 pub(crate) mod tab_strip;
 pub(crate) mod titlebar;
@@ -138,6 +139,7 @@ pub struct TreeState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseScope {
     Others,
+    Left,
     Right,
     All,
 }
@@ -732,6 +734,7 @@ impl MainWindow {
     ) {
         let count = self.workspace.update(cx, |ws, cx| match scope {
             CloseScope::Others => ws.close_other_tabs(index, cx),
+            CloseScope::Left => ws.close_tabs_left(index, cx),
             CloseScope::Right => ws.close_tabs_right(index, cx),
             CloseScope::All => ws.close_all_tabs(cx),
         });
@@ -770,7 +773,7 @@ impl MainWindow {
         }
     }
 
-    /// 复制标签（双击标签和右键「复制标签页」是同一个动作）。
+    /// 复制标签（双击标签和右键「复制会话」是同一个动作）。
     pub(crate) fn duplicate_tab(
         &mut self,
         index: usize,
@@ -872,6 +875,19 @@ impl MainWindow {
                 self.notice(&format!("已复制：{address}"), window, cx);
             }
             None => self.notice("这个标签没有可复制的地址", window, cx),
+        }
+    }
+
+    /// 右键「复制主机名」：复制这个标签连的那台主机在 ZeeTerm 里的名称（快速连接等没有主机记录的标签没有）。
+    pub(crate) fn copy_tab_host_name(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.workspace.read(cx).tab_host_id(index) {
+            Some(id) => self.copy_host_field(id, CopyField::Name, window, cx),
+            None => self.notice("这个标签没有对应的主机记录", window, cx),
         }
     }
 

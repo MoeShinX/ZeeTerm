@@ -8,14 +8,14 @@
 //! 在它们身上挖掉，这样点击不会被系统当成拖标题栏；双击空白处最大化也由系统处理。
 
 use ::gpui::{AnyElement, Hsla, MouseButton, SharedString, Stateful, WindowControlArea, px};
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::MainWindow;
 use super::nav::MainView;
-use super::{CloseScope, MainWindow};
 use crate::app_theme::Tokens;
 use crate::terminal_workspace::{TabInfo, TabStatus};
 
@@ -426,12 +426,20 @@ impl MainWindow {
         let hover = tokens.hover;
         let text = tokens.text;
         let muted = tokens.text_muted;
-        let can_reconnect = info.can_reconnect;
-        let can_disconnect = info.can_disconnect;
-        let has_host = info.host_id.is_some();
         let caps = info
             .host_id
             .map_or(super::protocol_form::Caps::ALL, |id| self.caps_of(id));
+        let menu_spec = super::tab_menu::TabMenuSpec {
+            index,
+            tab_count,
+            host_record: info.host_id.is_some_and(|id| self.store.host(id).is_some()),
+            has_address: info.host_id.is_some() || info.quick_target.is_some(),
+            has_host: info.host_id.is_some(),
+            can_reconnect: info.can_reconnect,
+            can_disconnect: info.can_disconnect,
+            caps,
+        };
+        let danger = tokens.danger;
         let select = entity.clone();
         let middle = entity.clone();
         let close = entity.clone();
@@ -542,100 +550,7 @@ impl MainWindow {
                 drag_entity.update(cx, |this, _cx| this.press_terminal_tab(tab_id, title, pos));
             })
             .context_menu(move |menu, _window, _cx| {
-                let (reconnect, disconnect, duplicate, copy, sftp, send_break) = (
-                    menu_entity.clone(),
-                    menu_entity.clone(),
-                    menu_entity.clone(),
-                    menu_entity.clone(),
-                    menu_entity.clone(),
-                    menu_entity.clone(),
-                );
-                let (close, others, right, all) = (
-                    menu_entity.clone(),
-                    menu_entity.clone(),
-                    menu_entity.clone(),
-                    menu_entity.clone(),
-                );
-                menu.item(
-                    PopupMenuItem::new("重新连接")
-                        .disabled(!can_reconnect)
-                        .on_click(move |_, window, cx| {
-                            reconnect.update(cx, |this, cx| this.reconnect_tab(index, window, cx));
-                        }),
-                )
-                .item(
-                    PopupMenuItem::new("断开连接")
-                        .disabled(!can_disconnect)
-                        .on_click(move |_, window, cx| {
-                            disconnect
-                                .update(cx, |this, cx| this.disconnect_tab(index, window, cx));
-                        }),
-                )
-                .item(
-                    PopupMenuItem::new(if caps.send_break {
-                        "复制标签页（串口只能开一个）"
-                    } else {
-                        "复制标签页"
-                    })
-                    .disabled(caps.send_break)
-                    .on_click(move |_, window, cx| {
-                        duplicate.update(cx, |this, cx| this.duplicate_tab(index, window, cx));
-                    }),
-                )
-                .item(PopupMenuItem::new("复制地址").disabled(!has_host).on_click(
-                    move |_, window, cx| {
-                        copy.update(cx, |this, cx| this.copy_tab_address(index, window, cx));
-                    },
-                ))
-                .item(if has_host && !caps.sftp {
-                    // Telnet / 串口标签：置灰并说明原因。
-                    super::vault_menus::ssh_only_item("打开 SFTP", None, false, |_, _, _| {})
-                } else {
-                    PopupMenuItem::new("打开 SFTP")
-                        .disabled(!has_host)
-                        .on_click(move |_, window, cx| {
-                            sftp.update(cx, |this, cx| this.open_sftp_from_tab(index, window, cx));
-                        })
-                })
-                .when(caps.send_break, |menu| {
-                    menu.item(
-                        PopupMenuItem::new("发送 Break")
-                            .disabled(!can_disconnect)
-                            .on_click(move |_, window, cx| {
-                                send_break
-                                    .update(cx, |this, cx| this.send_break_tab(index, window, cx));
-                            }),
-                    )
-                })
-                .item(PopupMenuItem::separator())
-                .item(PopupMenuItem::new("关闭").on_click(move |_, window, cx| {
-                    close.update(cx, |this, cx| this.close_tab(index, window, cx));
-                }))
-                .item(
-                    PopupMenuItem::new("关闭其他标签页")
-                        .disabled(tab_count < 2)
-                        .on_click(move |_, window, cx| {
-                            others.update(cx, |this, cx| {
-                                this.close_tabs(index, CloseScope::Others, window, cx);
-                            });
-                        }),
-                )
-                .item(
-                    PopupMenuItem::new("关闭右侧标签页")
-                        .disabled(index + 1 >= tab_count)
-                        .on_click(move |_, window, cx| {
-                            right.update(cx, |this, cx| {
-                                this.close_tabs(index, CloseScope::Right, window, cx);
-                            });
-                        }),
-                )
-                .item(
-                    PopupMenuItem::new("关闭所有标签页").on_click(move |_, window, cx| {
-                        all.update(cx, |this, cx| {
-                            this.close_tabs(index, CloseScope::All, window, cx);
-                        });
-                    }),
-                )
+                super::tab_menu::build_tab_menu(menu, &menu_spec, &menu_entity, danger)
             });
         tab.into_any_element()
     }

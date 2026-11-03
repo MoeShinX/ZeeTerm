@@ -5,7 +5,7 @@
 //! - 新标签默认加在最后并成为活动标签；复制标签紧挨在原标签右边；
 //! - 关掉活动标签，优先回到它左边那个，没有左边才用右边那个；
 //! - 关掉的标签在活动标签左边时，活动标签跟着往前挪一格，指向的仍是同一个标签；
-//! - 「关闭其他」只剩被点的那个；「关闭右侧」若活动标签被关掉，落到被点的那个；
+//! - 「关闭其他」只剩被点的那个；「关闭右侧」「关闭左侧」若活动标签被关掉，落到被点的那个；
 //! - Ctrl+Tab 循环切换，少于两个标签时不动。
 //!
 //! 放成不依赖 GPUI 的泛型，是为了让这些规则不用起窗口就能单测。
@@ -143,6 +143,19 @@ impl<T> TabSet<T> {
         removed
     }
 
+    /// 关掉第 `index` 个左边的所有标签，返回被关掉的（保持原来的顺序）。活动标签在被点标签右边或
+    /// 就是它时仍指向同一个标签（下标跟着前移）；活动标签被关掉则落到被点的那个。
+    pub fn remove_left(&mut self, index: usize) -> Vec<T> {
+        if index == 0 || index >= self.items.len() {
+            return Vec::new();
+        }
+        let rest = self.items.split_off(index);
+        let removed = std::mem::replace(&mut self.items, rest);
+        // 被点的标签现在是第 0 个：活动标签在它左边时（被关掉了）饱和减到 0 正好落在它上面。
+        self.active = self.active.saturating_sub(index);
+        removed
+    }
+
     /// 关掉全部，返回被关掉的。
     pub fn remove_all(&mut self) -> Vec<T> {
         self.active = 0;
@@ -191,6 +204,7 @@ mod tests {
         assert_eq!(tabs.remove(0), None);
         assert!(tabs.remove_others(0).is_empty());
         assert!(tabs.remove_right(0).is_empty());
+        assert!(tabs.remove_left(0).is_empty());
         assert!(tabs.remove_all().is_empty());
     }
 
@@ -283,6 +297,39 @@ mod tests {
         let mut tabs = set(&["a", "b"], 1);
         assert!(tabs.remove_right(1).is_empty());
         assert_eq!(names(&tabs), ["a", "b"]);
+    }
+
+    #[test]
+    fn close_left_moves_a_closed_active_tab_to_the_clicked_one() {
+        let mut tabs = set(&["a", "b", "c", "d"], 0);
+        let removed = tabs.remove_left(2);
+        assert_eq!(removed, ["a", "b"]);
+        assert_eq!(names(&tabs), ["c", "d"]);
+        assert_eq!(tabs.active(), Some(&"c"));
+        assert_eq!(tabs.active_index(), Some(0));
+    }
+
+    #[test]
+    fn close_left_keeps_the_same_tab_active_when_it_is_the_clicked_one_or_to_its_right() {
+        let mut tabs = set(&["a", "b", "c", "d"], 2);
+        tabs.remove_left(2);
+        assert_eq!(tabs.active(), Some(&"c"));
+        assert_eq!(tabs.active_index(), Some(0));
+
+        let mut tabs = set(&["a", "b", "c", "d"], 3);
+        tabs.remove_left(1);
+        assert_eq!(names(&tabs), ["b", "c", "d"]);
+        assert_eq!(tabs.active(), Some(&"d"));
+        assert_eq!(tabs.active_index(), Some(2));
+    }
+
+    #[test]
+    fn close_left_on_the_first_tab_or_out_of_range_closes_nothing() {
+        let mut tabs = set(&["a", "b"], 1);
+        assert!(tabs.remove_left(0).is_empty());
+        assert!(tabs.remove_left(5).is_empty());
+        assert_eq!(names(&tabs), ["a", "b"]);
+        assert_eq!(tabs.active(), Some(&"b"));
     }
 
     #[test]
