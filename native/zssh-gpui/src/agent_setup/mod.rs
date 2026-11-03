@@ -3,6 +3,8 @@
 //! 面板（`agent_chat_demo`）和设置页（`agents_demo`）读同一份进程级状态，业务判定全部是 core 的，
 //! 这里只拼装；对应 0.2.14 的 `src-tauri/src/commands/agent.rs`（发现 / 登录 / 目录 / 下载那几条命令）。
 
+pub mod builtin;
+pub mod builtin_fake;
 pub mod catalog;
 pub mod download;
 pub mod fake;
@@ -15,16 +17,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub use kind::{AgentKind, default_agent};
 pub use status::{Availability, InstallState, Snapshot, missing_text};
 
-/// 当前三种智能体的状态；第一次调用会在后台开始检测。
+/// 当前三种外部智能体和内置助手的状态；第一次调用会在后台开始检测外部智能体。
 pub fn snapshot() -> Snapshot {
     let store = status::store();
     store.ensure_checked(&crate::settings::data_dir());
-    store.snapshot()
+    let mut snapshot = store.snapshot();
+    snapshot.builtin = builtin::status();
+    snapshot.version = version();
+    snapshot
 }
 
-/// 状态的版本号（任何一项变了就加一）：面板每个节拍比一下，变了才取整份快照。
+/// 状态的版本号（任何一项变了就加一，含内置助手的接口清单）：面板每个节拍比一下，变了才取整份快照。
 pub fn version() -> u64 {
-    status::store().version()
+    status::store().version() + builtin::version()
 }
 
 /// AI 面板里点了「去设置」（或版本过低提示里的「下载」）：主窗口下一个节拍打开设置页。

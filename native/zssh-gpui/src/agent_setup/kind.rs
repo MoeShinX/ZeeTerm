@@ -1,23 +1,36 @@
-//! 三种智能体的身份：id、显示名、发现规则、手动路径存在设置库的哪个键。
+//! 智能体的身份：id、显示名、发现规则、手动路径存在设置库的哪个键。
 //!
-//! 和 0.2.14 的 `AgentId`（`ui/src/api/agent.ts`）、Tauri 侧的 `AgentKind`
-//! （`src-tauri/src/commands/agent.rs`）一一对应；顺序也一样（opencode、codex、Claude Code），
-//! 面板的下拉和设置页都按这个顺序排。
+//! 三个外部智能体和 0.2.14 的 `AgentId`（`ui/src/api/agent.ts`）、Tauri 侧的 `AgentKind`
+//! （`src-tauri/src/commands/agent.rs`）一一对应；顺序也一样（opencode、codex、Claude Code）。
+//! 第四个 [`AgentKind::Builtin`] 是 ZeeTerm 内置助手（V2-A4）：没有安装路径、没有发现过程，
+//! 只看设置里有没有配好 Key 的接口，所以 [`AgentKind::ALL`] 仍然只含三个外部智能体（发现、路径、
+//! 下载那些按外部智能体循环的代码不用动），面板下拉和默认智能体选择用 [`AgentKind::SELECTABLE`]。
 
 use zssh_core::ai::agent::discovery::{AgentSpec, CLAUDE, CODEX, OPENCODE};
 use zssh_core::error::ZsshError;
 use zssh_core::store::Database;
+use zssh_core::store::settings::AI_DEFAULT_AGENT_KEY;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AgentKind {
     OpenCode,
     Codex,
     Claude,
+    /// ZeeTerm 内置助手：直接对接用户配置的第三方模型接口。
+    Builtin,
 }
 
 impl AgentKind {
-    /// 面板下拉、设置页的排列顺序。
+    /// 三个外部智能体，顺序同 0.2.14：发现、手动路径、下载都按它循环。
     pub const ALL: [AgentKind; 3] = [AgentKind::OpenCode, AgentKind::Codex, AgentKind::Claude];
+
+    /// 面板下拉、默认智能体选择里的排列顺序：内置助手排第一，其后是三个外部智能体。
+    pub const SELECTABLE: [AgentKind; 4] = [
+        AgentKind::Builtin,
+        AgentKind::OpenCode,
+        AgentKind::Codex,
+        AgentKind::Claude,
+    ];
 
     /// 设置库里 `ai_default_agent` 的值，也是历史目录名（`<数据目录>\ai-history\<id>`）。
     pub fn id(self) -> &'static str {
@@ -25,6 +38,7 @@ impl AgentKind {
             AgentKind::OpenCode => "opencode",
             AgentKind::Codex => "codex",
             AgentKind::Claude => "claude",
+            AgentKind::Builtin => "builtin",
         }
     }
 
@@ -34,28 +48,33 @@ impl AgentKind {
             AgentKind::OpenCode => "opencode",
             AgentKind::Codex => "codex",
             AgentKind::Claude => "Claude Code",
+            AgentKind::Builtin => "ZeeTerm 内置助手",
         }
     }
 
-    /// 通用发现模块里的规则。
-    pub fn spec(self) -> &'static AgentSpec {
+    /// 通用发现模块里的规则；内置助手没有安装可找，是 `None`。
+    pub fn spec(self) -> Option<&'static AgentSpec> {
         match self {
-            AgentKind::OpenCode => &OPENCODE,
-            AgentKind::Codex => &CODEX,
-            AgentKind::Claude => &CLAUDE,
+            AgentKind::OpenCode => Some(&OPENCODE),
+            AgentKind::Codex => Some(&CODEX),
+            AgentKind::Claude => Some(&CLAUDE),
+            AgentKind::Builtin => None,
         }
     }
 
-    /// 在 [`Self::ALL`] 里的下标（状态数组用）。
+    /// 在 [`Self::ALL`] 里的下标（外部智能体的状态数组用）；内置助手不在数组里，给 3 只是
+    /// "不是外部"的占位（`Snapshot::get` 单独处理它），别拿它去索引数组。
     pub fn index(self) -> usize {
         match self {
             AgentKind::OpenCode => 0,
             AgentKind::Codex => 1,
             AgentKind::Claude => 2,
+            AgentKind::Builtin => 3,
         }
     }
 
     /// 设置库里的值 → 智能体。不认识的值按 opencode（和 0.2.14 的默认一致）。
+    #[cfg(test)]
     pub fn from_setting(value: &str) -> AgentKind {
         Self::parse(value).unwrap_or(AgentKind::OpenCode)
     }
@@ -65,6 +84,7 @@ impl AgentKind {
             "opencode" => Some(AgentKind::OpenCode),
             "codex" => Some(AgentKind::Codex),
             "claude" => Some(AgentKind::Claude),
+            "builtin" => Some(AgentKind::Builtin),
             _ => None,
         }
     }
@@ -75,6 +95,7 @@ impl AgentKind {
             AgentKind::OpenCode => db.ai_opencode_path(),
             AgentKind::Codex => db.ai_codex_path(),
             AgentKind::Claude => db.ai_claude_path(),
+            AgentKind::Builtin => Ok(None),
         }
     }
 
@@ -87,6 +108,8 @@ impl AgentKind {
             AgentKind::OpenCode => AI_OPENCODE_PATH_KEY,
             AgentKind::Codex => AI_CODEX_PATH_KEY,
             AgentKind::Claude => AI_CLAUDE_PATH_KEY,
+            // 内置助手没有手动路径；空串不是任何设置键，写进去会被拒绝。
+            AgentKind::Builtin => "",
         }
     }
 
@@ -96,15 +119,38 @@ impl AgentKind {
             AgentKind::OpenCode => r"C:\path\to\opencode.exe",
             AgentKind::Codex => r"C:\path\to\codex.exe",
             AgentKind::Claude => r"C:\path\to\claude.exe",
+            AgentKind::Builtin => "",
         }
     }
 }
 
-/// 设置库里的默认智能体（读不到按 opencode）。
+/// 默认用哪个智能体（V2-A4）：
+/// - 用户在 AI 设置里选过（设置库里有 `ai_default_agent`）→ 以用户为准；选的是内置助手但
+///   现在一个可用接口都没有（删光了）→ 退回 opencode，面板不至于打开就是一块"没配置"；
+/// - 没选过：配好了内置助手（至少一个有 Key 的接口）→ 内置助手；没配 → opencode（和以前一样）。
+///
+/// `saved` 是设置库里存的原始值（JSON 字符串，没存过是 `None`），`builtin_usable` 是现在有没有
+/// 可用的内置接口。
+pub fn choose_default_agent(saved: Option<&str>, builtin_usable: bool) -> AgentKind {
+    let explicit = saved
+        .and_then(|raw| serde_json::from_str::<String>(raw).ok())
+        .and_then(|value| AgentKind::parse(&value));
+    match explicit {
+        Some(AgentKind::Builtin) if !builtin_usable => AgentKind::OpenCode,
+        Some(kind) => kind,
+        None if saved.is_none() && builtin_usable => AgentKind::Builtin,
+        None => AgentKind::OpenCode,
+    }
+}
+
+/// 设置库里的默认智能体（读不到按 opencode），套用 [`choose_default_agent`] 的规则。
 pub fn default_agent(db: Option<&Database>) -> AgentKind {
-    db.and_then(|db| db.ai_default_agent().ok())
-        .map(|value| AgentKind::from_setting(&value))
-        .unwrap_or(AgentKind::OpenCode)
+    let Some(db) = db else {
+        return AgentKind::OpenCode;
+    };
+    let saved = db.setting_get(AI_DEFAULT_AGENT_KEY).ok().flatten();
+    let usable = super::builtin::usable_in(db);
+    choose_default_agent(saved.as_deref(), usable)
 }
 
 #[cfg(test)]
@@ -125,11 +171,96 @@ mod tests {
     }
 
     #[test]
+    fn the_builtin_agent_sits_outside_the_external_ones() {
+        // 外部智能体的数组、发现、手动路径都按 ALL 循环，不能混进内置助手。
+        assert!(!AgentKind::ALL.contains(&AgentKind::Builtin));
+        assert_eq!(
+            AgentKind::SELECTABLE.map(|kind| kind.id()),
+            ["builtin", "opencode", "codex", "claude"]
+        );
+        assert_eq!(AgentKind::Builtin.label(), "ZeeTerm 内置助手");
+        assert_eq!(AgentKind::parse("builtin"), Some(AgentKind::Builtin));
+        assert_eq!(AgentKind::from_setting("builtin"), AgentKind::Builtin);
+        assert!(AgentKind::Builtin.spec().is_none());
+    }
+
+    #[test]
+    fn default_agent_rule_prefers_the_builtin_only_until_the_user_chooses() {
+        use super::{AgentKind::*, choose_default_agent as choose};
+        // 没选过：配好内置就用内置，没配行为不变。
+        assert_eq!(choose(None, true), Builtin);
+        assert_eq!(choose(None, false), OpenCode);
+        // 用户选过的以用户为准，不管内置配没配。
+        assert_eq!(choose(Some("\"claude\""), true), Claude);
+        assert_eq!(choose(Some("\"codex\""), false), Codex);
+        assert_eq!(choose(Some("\"opencode\""), true), OpenCode);
+        // 用户选了内置，但接口都删光了：退回 opencode，不让面板一打开就是空的。
+        assert_eq!(choose(Some("\"builtin\""), true), Builtin);
+        assert_eq!(choose(Some("\"builtin\""), false), OpenCode);
+        // 存的值读不懂（手改、别的版本）：当没选过的话会悄悄换默认，所以按 opencode，和 0.2.14 一致。
+        assert_eq!(choose(Some("\"gemini\""), true), OpenCode);
+        assert_eq!(choose(Some("not json"), true), OpenCode);
+    }
+
+    #[test]
     fn unknown_settings_fall_back_to_opencode_like_0_2_14() {
         assert_eq!(AgentKind::from_setting("gemini"), AgentKind::OpenCode);
         assert_eq!(AgentKind::from_setting(""), AgentKind::OpenCode);
         assert_eq!(AgentKind::from_setting(" claude "), AgentKind::Claude);
         assert_eq!(AgentKind::parse("gemini"), None);
+    }
+
+    fn endpoint_draft(
+        name: &str,
+        key: Option<&str>,
+    ) -> zssh_core::ai::agent::builtin::config::AiEndpointDraft {
+        use zssh_core::ai::agent::builtin::config::{
+            AiEndpointDraft, EndpointKind, OpenAiOptionsConfig,
+        };
+        AiEndpointDraft {
+            id: None,
+            name: name.to_owned(),
+            kind: EndpointKind::OpenAiChat,
+            base_url: "https://api.example.com/v1".to_owned(),
+            api_key: key.map(str::to_owned),
+            default_model: Some("m".to_owned()),
+            models: Vec::new(),
+            overrides: Default::default(),
+            openai_options: OpenAiOptionsConfig::default(),
+            preset_id: None,
+        }
+    }
+
+    #[test]
+    fn the_default_agent_follows_the_database_through_setup_choice_and_removal() {
+        let db = Database::open_in_memory().expect("内存库");
+        // 没配内置助手：行为不变。
+        assert_eq!(super::default_agent(Some(&db)), AgentKind::OpenCode);
+        // 只有没 Key 的接口：还不算配好。
+        let keyless = db
+            .ai_endpoint_save(&endpoint_draft("本地", None))
+            .expect("存");
+        assert_eq!(super::default_agent(Some(&db)), AgentKind::OpenCode);
+        // 配好 Key：没选过默认智能体，所以默认用内置。
+        let keyed = db
+            .ai_endpoint_save(&endpoint_draft("主力", Some("sk-test-0001")))
+            .expect("存");
+        assert_eq!(super::default_agent(Some(&db)), AgentKind::Builtin);
+        // 用户在设置里明确选了别的：以用户为准，哪怕内置配好了。
+        db.set_ai_default_agent("claude").expect("写");
+        assert_eq!(super::default_agent(Some(&db)), AgentKind::Claude);
+        db.set_ai_default_agent("opencode").expect("写");
+        assert_eq!(
+            super::default_agent(Some(&db)),
+            AgentKind::OpenCode,
+            "明确选 opencode 也是选过"
+        );
+        // 明确选内置，之后把有 Key 的接口删光：退回 opencode。
+        db.set_ai_default_agent("builtin").expect("写");
+        assert_eq!(super::default_agent(Some(&db)), AgentKind::Builtin);
+        db.ai_endpoint_delete(keyed.id).expect("删");
+        assert_eq!(super::default_agent(Some(&db)), AgentKind::OpenCode);
+        let _ = keyless;
     }
 
     #[test]

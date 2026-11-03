@@ -341,7 +341,7 @@ impl AgentChatDemo {
     /// 面板标题栏右侧的「上下文 ▬ 12% ∨」：主窗口画标题栏时放进去，点一下开 / 关明细卡片。
     /// 没有用量数据时写「上下文 —」，不能点开。
     pub fn usage_meter(&self, entity: Entity<Self>, tokens: &Tokens) -> AnyElement {
-        let view = usage_view::meter(self.chat.usage.as_ref());
+        let view = usage_view::meter(self.display_usage().as_ref());
         let open = self.embed.as_ref().is_some_and(|embed| embed.usage_open);
         let (muted, text, hover) = (tokens.text_muted, tokens.text, tokens.hover);
         let fill = |level: UsageLevel| match level {
@@ -423,7 +423,7 @@ impl AgentChatDemo {
 
     /// 标题栏指示器上现在写的字（脚本断言用）：`上下文 —` / `上下文 12.3k` / `上下文 3%`。
     pub fn usage_text(&self) -> String {
-        match usage_view::meter(self.chat.usage.as_ref()) {
+        match usage_view::meter(self.display_usage().as_ref()) {
             MeterView::Empty => "上下文 —".to_owned(),
             MeterView::Tokens { text } => format!("上下文 {text}"),
             MeterView::Bar { percent_text, .. } => format!("上下文 {percent_text}"),
@@ -432,7 +432,7 @@ impl AgentChatDemo {
 
     /// 指示器的颜色档（脚本断言用）：`normal` / `warning` / `danger`，没有数据是 `none`。
     pub fn usage_level_name(&self) -> &'static str {
-        match self.chat.usage.as_ref() {
+        match self.display_usage().as_ref() {
             None => "none",
             Some(usage) => match usage.level() {
                 UsageLevel::Normal => "normal",
@@ -677,13 +677,29 @@ impl AgentChatDemo {
 
     // ---- 驱动脚本用的读写口（调试版自动化；走和按钮同一批方法）----
 
-    /// 当前智能体的 id（`opencode` / `codex` / `claude`）。
+    /// 当前智能体的 id（`opencode` / `codex` / `claude` / `builtin`）。
     pub fn agent_id(&self) -> &'static str {
         self.agent.id()
     }
 
+    /// 当前是内置助手吗（脚本放行"发送"时用：内置助手配了假接口就不联网）。
+    pub fn agent_is_builtin(&self) -> bool {
+        self.is_builtin()
+    }
+
     /// 换智能体（和下拉里点一项同一个方法）；这一项不可选（没装 / 没登录 / 版本过低）时说明原因。
     pub fn switch_agent_by_id(&mut self, id: &str, cx: &mut Context<Self>) -> Result<(), String> {
+        // `builtin:<接口名>`：内置助手的某个接口（脚本用，和下拉里点那一项同一个方法）。
+        if let Some(name) = id.strip_prefix("builtin:") {
+            let info = crate::agent_setup::builtin::info();
+            let endpoint = info
+                .selectable()
+                .into_iter()
+                .find(|endpoint| endpoint.name == name)
+                .ok_or("没有这个内置助手接口，或它没配 Key")?;
+            self.switch_builtin_endpoint(endpoint.id, cx);
+            return Ok(());
+        }
         let kind = crate::agent_setup::AgentKind::parse(id).ok_or("不认识的智能体")?;
         if let Some(note) = self.status.get(kind).availability().selector_note() {
             return Err(format!("{} 不可选：{note}", kind.label()));
@@ -1703,6 +1719,17 @@ impl AgentChatDemo {
                     });
                 })
         };
+        // 内置助手的当前模型不支持工具调用：输入框上方一行淡色提示（只能聊天，不能操作服务器）。
+        let no_tools_row = self.no_tools_hint().map(|hint| {
+            div()
+                .id("ai-no-tools-hint")
+                .w_full()
+                .px_1()
+                .pb_1p5()
+                .text_xs()
+                .text_color(muted)
+                .child(hint)
+        });
         // 输入框和工具行在同一个圆角边框里（聚焦时整个卡片高亮边框）。
         let focused = self
             .input
@@ -1810,6 +1837,7 @@ impl AgentChatDemo {
                 }
             })
             .child(handle)
+            .children(no_tools_row)
             .child(composer_card);
 
         // ---- 底部提示 ----
@@ -1888,9 +1916,10 @@ impl AgentChatDemo {
         });
 
         // 「上下文」明细卡片：点标题栏的指示器打开，点卡片外面关上。只展示，没有任何操作。
+        let shown_usage = self.display_usage();
         let usage_card = embed
             .filter(|e| e.usage_open)
-            .and(self.chat.usage.as_ref())
+            .and(shown_usage.as_ref())
             .map(|usage| {
                 let fallback =
                     (model_label.as_ref() != "默认模型").then(|| model_label.to_string());

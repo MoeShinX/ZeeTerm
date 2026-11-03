@@ -202,6 +202,11 @@ impl FakeWorld {
             AgentKind::OpenCode => &self.doc.opencode,
             AgentKind::Codex => &self.doc.codex,
             AgentKind::Claude => &self.doc.claude,
+            // 假世界只管三个外部智能体；内置助手走自己的假接口（`builtin_fake`），这里当"什么都没装"。
+            AgentKind::Builtin => {
+                static NONE: std::sync::OnceLock<FakeAgent> = std::sync::OnceLock::new();
+                NONE.get_or_init(FakeAgent::default)
+            }
         }
     }
 

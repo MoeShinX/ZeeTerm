@@ -33,6 +33,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::{Value, json};
+use zssh_core::ai::agent::builtin::FailureInfo;
 use zssh_core::ai::agent::usage::ContextUsage;
 use zssh_core::ai::agent::{AgentEvent, AgentModelCatalog};
 use zssh_core::ai::bridge::{ApprovalRequest, ExecMode, ExecTargetReport, FileApproval};
@@ -44,7 +45,11 @@ use zssh_core::ai::history::{
 use zssh_core::ai::safety::DangerLevel;
 use zssh_core::store::Database;
 
-use crate::agent_host::{AgentSession, HostTarget, send_unless_cancelled, start_agent};
+use crate::agent_host::{
+    AgentSession, HostTarget, load_endpoint, send_unless_cancelled, start_agent,
+    start_builtin_agent,
+};
+use crate::agent_setup::builtin::{self, RemoteModels};
 use crate::agent_setup::{self, AgentKind, Availability};
 use crate::agent_text::{
     BODY_PREVIEW_CHARS, LinkAction, MESSAGES_PER_PAGE, OUTPUT_PREVIEW_CHARS, OUTPUT_PREVIEW_LINES,
@@ -871,6 +876,13 @@ struct ChatState {
     queue: queue::PendingQueue,
     /// 最近一轮的上下文用量（面板标题栏的指示器，V2-U15）；新对话清掉，切到历史对话时是它存下的那一次。
     usage: Option<ContextUsage>,
+    /// 内置助手：当前这一次请求从助手消息的哪个位置开始流出文字（正文、思考的字节长度）。
+    /// 重试时据此撤回已经流出的半段，见 `builtin_ui`。
+    request_mark: (usize, usize),
+    /// 内置助手：服务端要求充值，但对应的错误事件还没到（到了就换成"需要充值"的文字）。
+    topup_pending: bool,
+    /// 内置助手：最近一次接口失败的详情。
+    last_failure: Option<FailureInfo>,
 }
 
 /// 回合里最后一次动静。
@@ -1060,6 +1072,8 @@ impl ChatState {
         self.retry = None;
         self.turn_started = Some(Instant::now());
         self.last_item = Some(LastKind::User);
+        self.request_mark = (0, 0);
+        self.topup_pending = false;
         // 新回合开始：之前因为「停止」扣住的队列，从这一回合结束时起重新按「回合结束后发出」算。
         self.queue.release();
         true
@@ -1510,6 +1524,9 @@ impl ChatState {
         self.last_item = None;
         self.queue.clear();
         self.usage = None;
+        self.request_mark = (0, 0);
+        self.topup_pending = false;
+        self.last_failure = None;
     }
 
     fn toggle_reasoning(&mut self, index: usize) -> bool {
@@ -2009,6 +2026,7 @@ fn history_tool_status(status: &str) -> String {
 
 /// 「目标主机」里的一台主机；只留执行需要的字段。
 mod agent_ui;
+mod builtin_ui;
 mod composer;
 mod embed;
 mod queue;
@@ -2161,6 +2179,11 @@ enum HostEvent {
         key: Option<String>,
         result: Result<AgentModelCatalog, String>,
     },
+    /// 内置助手：接口自报的模型清单拉回来了（`None` = 没拿到）。`key` 是 `builtin::remote_key`。
+    BuiltinModels {
+        key: String,
+        result: Option<RemoteModels>,
+    },
     /// 已有会话上发消息的结果。
     Sent(Result<(), String>),
     /// 后台存历史的结果（`id` 是那条历史）；失败是 `HistoryError` 的文字。
@@ -2278,6 +2301,8 @@ pub struct AgentChatDemo {
     focus: FocusHandle,
     /// 嵌在主窗口面板里时才有：目标主机标签、模型 / 强度选择、输入框高度（见 `embed`）。
     embed: Option<embed::Embed>,
+    /// 内置助手（V2-A4）：选中的接口、能力合成要的配置（见 `builtin_ui`）。
+    builtin: builtin_ui::BuiltinPanel,
     _input_events: Subscription,
     _tick: Task<()>,
 }
@@ -2363,9 +2388,13 @@ impl AgentChatDemo {
             scroll: ScrollHandle::new(),
             focus,
             embed: None,
+            builtin: builtin_ui::BuiltinPanel::default(),
             _input_events,
             _tick: Task::ready(()),
         };
+        if this.is_builtin() {
+            this.pick_default_builtin_endpoint();
+        }
         this._tick = cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(TICK_INTERVAL).await;
@@ -2433,6 +2462,13 @@ impl AgentChatDemo {
             changed = true;
         }
         if !self.real {
+            return changed;
+        }
+        // 内置助手没有安装可找：模型目录来自接口配置（和接口自报的清单），见 `builtin_ui`。
+        if self.is_builtin() {
+            if self.status.get(AgentKind::Builtin).availability() == Availability::Ready {
+                changed |= self.sync_builtin_state();
+            }
             return changed;
         }
         let kind = self.agent;
@@ -2511,6 +2547,9 @@ impl AgentChatDemo {
             self.new_conversation(cx);
         }
         self.agent = next;
+        if next == AgentKind::Builtin {
+            self.pick_default_builtin_endpoint();
+        }
         self.applied_catalog = None;
         self.models = vec![ModelChoice::default()];
         self.model_index = 0;
@@ -2739,6 +2778,10 @@ impl AgentChatDemo {
         model: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        if self.is_builtin() {
+            self.start_builtin_and_send(targets, text, model, cx);
+            return;
+        }
         let kind = self.agent;
         // 续接 id 只用在这一次启动上：启动失败也不再留着，免得下次误接。
         let resume_session_id = self.pending_resume.take();
@@ -2894,6 +2937,10 @@ impl AgentChatDemo {
                         }
                     }
                 },
+                HostEvent::BuiltinModels { key, result } => {
+                    // 下一个节拍的 `sync_builtin_state` 从进程级缓存里取到它，补进模型下拉。
+                    builtin::remote_finish(key, result);
+                }
                 HostEvent::Sent(Ok(())) => {}
                 HostEvent::Sent(Err(err)) => {
                     // 已经点了停止 / 新对话：迟到的发送错误不再往对话里写。
@@ -2934,17 +2981,23 @@ impl AgentChatDemo {
 
     /// 把会话里的事件和确认请求取出来；不阻塞界面线程。
     fn drain_session(&mut self) -> bool {
+        // 内置助手的用量 / 提示 / 失败信号先处理（它们总在回合结束之前发出）。
+        let mut changed = self.drain_builtin_signals();
         let Some(session) = self.session.as_mut() else {
-            return false;
+            return changed;
         };
-        let mut changed = false;
+        let builtin_session = session.is_builtin();
         // 只有还在跑的回合收到 TurnEnd 才值得存一次；停止之后迟到的 TurnEnd 不再写。
         let mut turn_ended = false;
         while let Ok(event) = session.events.try_recv() {
             if matches!(&event, AgentEvent::TurnEnd) && self.chat.real_running {
                 turn_ended = true;
             }
-            self.chat.apply_agent_event(event);
+            if builtin_session {
+                self.chat.apply_builtin_event(event);
+            } else {
+                self.chat.apply_agent_event(event);
+            }
             changed = true;
         }
         while let Some(prompt) = session.next_prompt() {

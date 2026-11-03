@@ -22,14 +22,33 @@ impl AgentChatDemo {
             .iter()
             .map(|kind| (*kind, self.status.get(*kind).availability().selector_note()))
             .collect();
+        // 内置助手排在最上面：每个配好 Key 的接口一项；一个都没有就一条灰的"未配置"。
+        let builtin_items = self.builtin_menu_items();
         Button::new("ai-agent")
             .ghost()
             .compact()
-            .label(current.label())
+            .label(self.agent_label_now())
             .dropdown_caret(true)
             .tooltip("智能体")
             .dropdown_menu(move |menu, _window, _cx| {
                 let mut menu = menu.min_w(::gpui::px(180.0));
+                if builtin_items.is_empty() {
+                    menu = menu.item(
+                        PopupMenuItem::new(format!("{}  ·  未配置", AgentKind::Builtin.label()))
+                            .disabled(true),
+                    );
+                }
+                for (id, label, selected) in &builtin_items {
+                    let entity = entity.clone();
+                    let id = *id;
+                    menu = menu.item(
+                        PopupMenuItem::new(label.clone())
+                            .checked(*selected)
+                            .on_click(move |_: &ClickEvent, _window, cx| {
+                                entity.update(cx, |this, cx| this.switch_builtin_endpoint(id, cx));
+                            }),
+                    );
+                }
                 for (kind, note) in &items {
                     let entity = entity.clone();
                     let kind = *kind;

@@ -42,6 +42,25 @@ impl ReqwestFetch {
     pub fn new(client: reqwest::Client) -> Self {
         Self { client }
     }
+
+    /// 按"软件网络"解析出的代理建客户端（`None` = 直连，且不读系统 / 环境变量里的代理）。
+    pub fn build(proxy: Option<&crate::sync::net::SyncProxy>) -> Result<Self, String> {
+        let mut builder = reqwest::Client::builder()
+            .user_agent(concat!("ZeeTerm/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(std::time::Duration::from_secs(15));
+        builder = match proxy {
+            Some(proxy) => {
+                let proxy = reqwest::Proxy::all(proxy.url_with_credentials())
+                    .map_err(|err| format!("代理设置不合法：{}", err.without_url()))?;
+                builder.proxy(proxy)
+            }
+            None => builder.no_proxy(),
+        };
+        let client = builder
+            .build()
+            .map_err(|err| format!("HTTP 客户端创建失败：{}", err.without_url()))?;
+        Ok(Self { client })
+    }
 }
 
 impl HttpFetch for ReqwestFetch {

@@ -139,6 +139,7 @@ pub fn missing_text(kind: AgentKind) -> &'static str {
         AgentKind::Claude => {
             "没有找到 Claude Code。安装方法：npm i -g @anthropic-ai/claude-code（也可以在设置页指定路径）。"
         }
+        AgentKind::Builtin => super::builtin::MISSING_TEXT,
     }
 }
 
@@ -197,7 +198,7 @@ pub fn login_followup(kind: AgentKind, login: &LoginStatus) -> Option<String> {
 pub fn too_old_note(kind: AgentKind) -> String {
     let minimum = kind
         .spec()
-        .minimum_version
+        .and_then(|spec| spec.minimum_version)
         .map(|(a, b, c)| format!("{a}.{b}.{c}"))
         .unwrap_or_default();
     match kind {
@@ -210,6 +211,8 @@ pub fn too_old_note(kind: AgentKind) -> String {
         AgentKind::Claude => {
             format!("版本过低，建议升级（Claude Code 需要 {minimum} 及以上，可 `claude update`）。")
         }
+        // 内置助手没有版本这回事。
+        AgentKind::Builtin => String::new(),
     }
 }
 
@@ -284,8 +287,11 @@ impl Probe for RealProbe {
     ) -> BoxFuture<'static, Result<Option<AgentInstall>, String>> {
         Box::pin(async move {
             // 手动路径读不出来（库打不开 / 值坏了）按自动发现，不让一条设置读失败拦住整个检测。
+            let Some(spec) = kind.spec() else {
+                return Ok(None);
+            };
             let setting = read_saved_path(kind, &data_dir);
-            discovery::discover(kind.spec(), setting.as_deref(), &data_dir).await
+            discovery::discover(spec, setting.as_deref(), &data_dir).await
         })
     }
 
@@ -319,6 +325,8 @@ async fn real_login(kind: AgentKind, install: &AgentInstall) -> Option<LoginStat
         AgentKind::OpenCode => None,
         AgentKind::Claude => Some(claude_login(install).await),
         AgentKind::Codex => codex_login(install).await,
+        // 内置助手靠 API Key，没有"登录"。
+        AgentKind::Builtin => None,
     }
 }
 
@@ -440,11 +448,16 @@ pub async fn check_agent(probe: &dyn Probe, kind: AgentKind, data_dir: PathBuf) 
 pub struct Snapshot {
     pub version: u64,
     pub agents: [AgentStatus; 3],
+    /// 内置助手：有没有配好 Key 的接口（由 `builtin::status` 填，不在 [`StatusStore`] 里）。
+    pub builtin: AgentStatus,
 }
 
 impl Snapshot {
     pub fn get(&self, kind: AgentKind) -> &AgentStatus {
-        &self.agents[kind.index()]
+        match kind {
+            AgentKind::Builtin => &self.builtin,
+            external => &self.agents[external.index()],
+        }
     }
 }
 
@@ -493,6 +506,7 @@ impl StatusStore {
         Snapshot {
             version: inner.version,
             agents: inner.agents.clone(),
+            builtin: AgentStatus::checking(),
         }
     }
 

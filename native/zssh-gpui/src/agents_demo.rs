@@ -70,6 +70,7 @@ fn block_description(kind: AgentKind) -> &'static str {
         AgentKind::Codex => {
             "codex 不提供一键下载：先 `npm i -g @openai/codex`，或在这里手动指定路径。发现方式同上；模型和登录用 codex 自己的配置。"
         }
+        AgentKind::Builtin => "内置助手不需要安装：在上面的\"内置助手\"里添加接口即可。",
         AgentKind::Claude => {
             "Claude Code 不提供一键下载：先 `npm i -g @anthropic-ai/claude-code`（或官方安装脚本，装到 ~/.local/bin），也可以在这里手动指定路径。发现方式同上；登录和模型用 Claude Code 自己的配置（不改 CLAUDE_CONFIG_DIR / HOME）。"
         }
@@ -179,8 +180,9 @@ impl AgentsDemo {
                     Err(err) => problems.push(format!("读取 {} 的路径失败：{err}", kind.label())),
                 }
             }
+            // 用户选过的以用户为准；没选过且配好了内置助手，默认就是内置助手（V2-A4）。
             match db.ai_default_agent() {
-                Ok(value) => default_agent = AgentKind::from_setting(&value),
+                Ok(_) => default_agent = agent_setup::default_agent(Some(db)),
                 Err(err) => problems.push(format!("读取默认智能体失败：{err}")),
             }
             match db.ai_exec_mode() {
@@ -267,6 +269,8 @@ impl AgentsDemo {
         let mut changed = false;
         if agent_setup::version() != self.status.version {
             self.status = agent_setup::snapshot();
+            // 内置助手的接口配好 / 删光会改变"没选过时的默认"。
+            self.default_agent = agent_setup::default_agent(self.db.as_ref());
             changed = true;
         }
         while let Ok(event) = self.events.try_recv() {
@@ -457,7 +461,10 @@ impl AgentsDemo {
         block.note = None;
         let seq = block.probe_seq;
         let sender = self.sender.clone();
-        let spec = kind.spec();
+        // 手动路径只有外部智能体有（内置助手不会走到这里）。
+        let Some(spec) = kind.spec() else {
+            return;
+        };
         match runtime() {
             Ok(runtime) => {
                 let task_value = value.clone();
@@ -805,10 +812,10 @@ fn setting_row(
 impl AgentsDemo {
     /// 默认智能体：三个按钮里高亮当前的（0.2.14 是下拉，这里和主题 / 光标行一样用分段按钮）。
     fn default_agent_row(&self, entity: &Entity<Self>, tokens: &Tokens) -> AnyElement {
-        let segments = AgentKind::ALL
+        let segments = AgentKind::SELECTABLE
             .iter()
             .map(|kind| crate::settings_view::Segment {
-                id: format!("ai-default-agent-{}", kind.index()).into(),
+                id: format!("ai-default-agent-{}", kind.id()).into(),
                 label: kind.label(),
                 icon: None,
                 selected: self.default_agent == *kind,
@@ -819,7 +826,7 @@ impl AgentsDemo {
             "默认智能体",
             Some("打开 AI 面板时默认用哪一个（面板顶部还能按对话切换）。".to_owned()),
             crate::settings_view::choice_group(segments, tokens, move |index, _, cx| {
-                if let Some(kind) = AgentKind::ALL.get(index).copied() {
+                if let Some(kind) = AgentKind::SELECTABLE.get(index).copied() {
                     entity.update(cx, |this, cx| this.set_default_agent(kind, cx));
                 }
             }),

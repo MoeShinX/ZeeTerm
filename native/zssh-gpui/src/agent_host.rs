@@ -24,6 +24,12 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, oneshot};
 
+use zssh_core::ai::agent::builtin::catalog::Catalog;
+use zssh_core::ai::agent::builtin::config::AiEndpoint;
+use zssh_core::ai::agent::builtin::provider::{ApiKey, Transport};
+use zssh_core::ai::agent::builtin::{
+    BuiltinConversation, BuiltinParams, BuiltinSignal, BuiltinTuning,
+};
 use zssh_core::ai::agent::claude::{self, StartOptions};
 use zssh_core::ai::agent::codex::{
     self, CodexRuntime, DEFAULT_IDLE_TIMEOUT as CODEX_IDLE_TIMEOUT,
@@ -1127,6 +1133,25 @@ pub struct AgentSession {
     /// （界面提示"之前的上下文没有带给 AI"）。Claude Code 要到第一次发消息才知道，这里先按
     /// true，续不上时驱动另发 `ResumeFailed` 事件。
     pub resumed: bool,
+    /// 内置助手专有的两样（外部智能体是 `None`）。
+    pub builtin: Option<BuiltinLink>,
+}
+
+/// 内置助手的会话多出来的东西：旁路信号（用量 / 提示 / 失败，由界面翻成统一的事件）。
+pub struct BuiltinLink {
+    pub signals: mpsc::UnboundedReceiver<BuiltinSignal>,
+}
+
+/// 启动内置助手对话要的东西。
+pub struct BuiltinStart {
+    pub endpoint: AiEndpoint,
+    pub api_key: ApiKey,
+    /// HTTP 层：产品里按"软件网络"代理建；测试里是假接口。
+    pub transport: Arc<dyn Transport>,
+    pub catalog: Arc<Catalog>,
+    /// 续接：上次 `resume_id()` 给的值。
+    pub resume: Option<String>,
+    pub tuning: BuiltinTuning,
 }
 
 impl AgentSession {
@@ -1201,18 +1226,6 @@ fn mcp_binary_location() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|err| format!("拿不到主程序路径：{err}"))?;
     let dir = exe.parent().ok_or_else(|| "主程序没有父目录".to_string())?;
     Ok(dir.join("zssh-mcp.exe"))
-}
-
-/// `zssh-mcp.exe` 的路径；不在原位就报错并说清它应该在哪。
-fn mcp_binary_path() -> Result<PathBuf, String> {
-    let path = mcp_binary_location()?;
-    if !path.is_file() {
-        return Err(format!(
-            "没有找到 zssh-mcp.exe（应当和主程序放在同一个目录：{}）",
-            path.display()
-        ));
-    }
-    Ok(path)
 }
 
 /// 驱动的启动参数。
@@ -1400,6 +1413,17 @@ impl AgentHub {
         .await
     }
 
+    /// 外部智能体要靠 `zssh-mcp.exe` 回头调工具桥，它不在原位就别启动（内置助手进程内调桥，不需要它）。
+    fn require_mcp_binary(&self) -> Result<(), String> {
+        if fake::world().is_some() || self.mcp_binary.is_file() {
+            return Ok(());
+        }
+        Err(format!(
+            "没有找到 zssh-mcp.exe（应当和主程序放在同一个目录：{}）",
+            self.mcp_binary.display()
+        ))
+    }
+
     fn mcp_spec(&self) -> McpServerSpec {
         McpServerSpec::zssh(&self.mcp_binary, self.port, self.bridge.connection_token())
     }
@@ -1429,11 +1453,13 @@ impl AgentHub {
         if let Some(runtime) = self.live_runtime(kind) {
             return Ok(runtime);
         }
+        self.require_mcp_binary()?;
         let workspace = self.data_dir.join("agent-workspace");
         let spec = self.mcp_spec();
         let runtime = match kind {
             // claude 不用共用进程（一个对话一个进程），走不到这儿。
             AgentKind::Claude => return Err("claude 不使用共用进程".to_string()),
+            AgentKind::Builtin => return Err("内置助手不使用共用进程".to_string()),
             AgentKind::OpenCode => {
                 // 只带上用户配置里的模型相关键（自建服务商照常可用），其余一律不带。
                 let user_config = overrides
@@ -1489,6 +1515,9 @@ impl AgentHub {
         resume: Option<String>,
         overrides: StartOverrides,
     ) -> Result<AgentSession, String> {
+        if kind == AgentKind::Builtin {
+            return Err("内置助手要用 start_builtin 启动".to_string());
+        }
         let tools = ToolChannel::attach(&self.bridge, &self.approver, &self.reports);
         let (events_tx, events) = mpsc::unbounded_channel();
         // 假世界（调试版自动化）：不拉任何真实进程。
@@ -1506,13 +1535,16 @@ impl AgentHub {
                 tools,
                 events,
                 resumed,
+                builtin: None,
             });
         }
         let capability = tools.scope().capability().to_string();
         let (conversation, resumed): (Arc<dyn AgentConversation>, bool) = match kind {
             // claude：一个对话一个进程（懒启动：第一次发消息才拉；空闲 10 分钟关，
             // 下次发消息 `--resume` 恢复上下文）。
+            AgentKind::Builtin => return Err("内置助手要用 start_builtin 启动".to_string()),
             AgentKind::Claude => {
+                self.require_mcp_binary()?;
                 let options = start_options(
                     install,
                     &self.data_dir,
@@ -1561,6 +1593,50 @@ impl AgentHub {
             tools,
             events,
             resumed,
+            builtin: None,
+        })
+    }
+
+    /// 启动一个内置助手对话：不拉进程，对话循环在本进程里，工具调用直接走共用的工具桥
+    /// （安全确认、执行模式、只读、审计都是桥的）。**不发消息**，第一条消息由调用方发。
+    ///
+    /// `events` 是和外部智能体同一套的 [`AgentEvent`]；用量 / 提示 / 失败走 `builtin.signals`。
+    pub async fn start_builtin(
+        self: &Arc<Self>,
+        start: BuiltinStart,
+    ) -> Result<AgentSession, String> {
+        let BuiltinStart {
+            endpoint,
+            api_key,
+            transport,
+            catalog,
+            resume,
+            tuning,
+        } = start;
+        let tools = ToolChannel::attach(&self.bridge, &self.approver, &self.reports);
+        let (events_tx, events) = mpsc::unbounded_channel();
+        let (signals_tx, signals) = mpsc::unbounded_channel();
+        let resumed = resume.is_some();
+        let conversation = Arc::new(BuiltinConversation::new(BuiltinParams {
+            endpoint,
+            api_key,
+            transport,
+            catalog,
+            bridge: Arc::clone(&self.bridge),
+            scope: tools.scope().clone(),
+            events: events_tx,
+            signals: Some(signals_tx),
+            data_dir: Some(self.data_dir.clone()),
+            resume_id: resume,
+            tuning,
+        }));
+        Ok(AgentSession {
+            kind: AgentKind::Builtin,
+            conversation: Arc::clone(&conversation) as Arc<dyn AgentConversation>,
+            tools,
+            events,
+            resumed,
+            builtin: Some(BuiltinLink { signals }),
         })
     }
 
@@ -1598,11 +1674,9 @@ static HUB: tokio::sync::OnceCell<Arc<AgentHub>> = tokio::sync::OnceCell::const_
 async fn global_hub() -> Result<Arc<AgentHub>, String> {
     HUB.get_or_try_init(|| async {
         // 假世界里没有真实进程要连桥，`zssh-mcp.exe` 在不在无所谓。
-        let mcp = if fake::world().is_some() {
-            mcp_binary_location()?
-        } else {
-            mcp_binary_path()?
-        };
+        // 外部智能体启动时才检查 `zssh-mcp.exe` 在不在（见 `require_mcp_binary`）：
+        // 只用内置助手的人不需要它。
+        let mcp = mcp_binary_location()?;
         AgentHub::production(crate::settings::data_dir(), mcp).await
     })
     .await
@@ -1619,6 +1693,46 @@ pub async fn start_agent(
         .await?
         .start_session(kind, install, resume, StartOverrides::default())
         .await
+}
+
+/// 启动一个内置助手对话（产品入口）：读接口配置和 Key，按"软件网络"的代理建传输层，
+/// 加载模型资料库。`endpoint_id` 是设置里的接口。
+pub async fn start_builtin_agent(
+    endpoint_id: i64,
+    resume: Option<String>,
+) -> Result<AgentSession, String> {
+    let (endpoint, api_key) = load_endpoint(endpoint_id)?;
+    let transport = crate::agent_setup::builtin::make_transport()?;
+    let catalog = crate::agent_setup::builtin::catalog();
+    global_hub()
+        .await?
+        .start_builtin(BuiltinStart {
+            endpoint,
+            api_key,
+            transport,
+            catalog,
+            resume,
+            tuning: BuiltinTuning::default(),
+        })
+        .await
+}
+
+/// 读接口配置和它的 Key（Key 只在这里短暂出现，交给对话后由 `ApiKey` 的 `Debug` 挡住）。
+pub(crate) fn load_endpoint(endpoint_id: i64) -> Result<(AiEndpoint, ApiKey), String> {
+    let db = crate::hosts_demo::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
+    let endpoint = db
+        .ai_endpoint_get(endpoint_id)
+        .map_err(|_| "这个接口已经不存在了，请在智能体下拉里重新选一个。".to_string())?;
+    let key = db
+        .ai_endpoint_api_key(endpoint_id)
+        .map_err(|err| format!("读取 API Key 失败：{err}"))?
+        .ok_or_else(|| {
+            format!(
+                "接口「{}」还没有 API Key：到 设置 → AI → 内置助手 里补上。",
+                endpoint.name
+            )
+        })?;
+    Ok((endpoint, ApiKey::new(key)))
 }
 
 /// 取某个安装的模型目录（产品入口）。
@@ -2421,6 +2535,7 @@ mod tests {
             tools,
             events,
             resumed: false,
+            builtin: None,
         };
         session.shutdown().await;
 
@@ -2436,6 +2551,265 @@ mod tests {
             hub.approver.route_of(&scope_id).is_none(),
             "关掉之后桥上不再有这个对话的出口"
         );
+    }
+
+    // ---- 内置助手（假接口，不联网、不拉任何进程）----
+
+    fn fake_endpoint(kind: zssh_core::ai::agent::builtin::config::EndpointKind) -> AiEndpoint {
+        AiEndpoint {
+            id: 1,
+            uid: "uid-e2e".into(),
+            name: "测试接口".into(),
+            kind,
+            base_url: "https://api.example.com/v1".into(),
+            key_identity_id: None,
+            has_key: true,
+            default_model: Some("gpt-5.5".into()),
+            models: Vec::new(),
+            overrides: Default::default(),
+            openai_options: Default::default(),
+            preset_id: None,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn fast_tuning() -> BuiltinTuning {
+        BuiltinTuning {
+            retry_base_delay: Duration::from_millis(10),
+            ..BuiltinTuning::default()
+        }
+    }
+
+    /// 收事件直到这一回合结束，返回（事件，旁路信号）。
+    async fn collect_turn(session: &mut AgentSession) -> (Vec<AgentEvent>, Vec<BuiltinSignal>) {
+        let mut events = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let event = tokio::time::timeout_at(deadline, session.events.recv())
+                .await
+                .expect("10 秒内回合要结束")
+                .expect("事件通道没关");
+            let done = matches!(event, AgentEvent::TurnEnd);
+            events.push(event);
+            if done {
+                break;
+            }
+        }
+        let mut signals = Vec::new();
+        if let Some(link) = session.builtin.as_mut() {
+            while let Ok(signal) = link.signals.try_recv() {
+                signals.push(signal);
+            }
+        }
+        (events, signals)
+    }
+
+    #[tokio::test]
+    async fn a_builtin_session_calls_a_tool_through_the_shared_bridge_and_reports_usage() {
+        use crate::agent_setup::builtin_fake::FakeTransport;
+        use zssh_core::ai::agent::builtin::config::EndpointKind;
+        let host = Arc::new(CountingHost::default());
+        let dir = std::env::temp_dir().join(format!("zssh-builtin-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let hub = AgentHub::with_parts(
+            host,
+            Arc::new(NoAudit),
+            Arc::new(FixedMode(ExecMode::Manual)),
+            dir.clone(),
+            PathBuf::from("zssh-mcp.exe"),
+        )
+        .await
+        .expect("建共用桥");
+        let fake = Arc::new(FakeTransport::default());
+        let mut session = hub
+            .start_builtin(BuiltinStart {
+                endpoint: fake_endpoint(EndpointKind::OpenAiChat),
+                api_key: ApiKey::new("sk-test-e2e"),
+                transport: Arc::clone(&fake) as Arc<dyn Transport>,
+                catalog: Arc::new(Catalog::builtin()),
+                resume: None,
+                tuning: fast_tuning(),
+            })
+            .await
+            .expect("启动内置助手");
+        assert_eq!(session.kind, AgentKind::Builtin);
+        assert!(!session.resumed);
+        assert!(session.builtin.is_some());
+        session.sync_hosts(&[web_host(1)]);
+
+        // 第一条：模型先调 list_targets（只读、不需要确认），工具结果回填后给结论。
+        session
+            .conversation
+            .send("tool:list", Some("gpt-5.5"))
+            .await
+            .expect("发送");
+        let (events, signals) = collect_turn(&mut session).await;
+        let started = events.iter().find_map(|e| match e {
+            AgentEvent::ToolStart { tool, .. } => Some(tool.clone()),
+            _ => None,
+        });
+        assert_eq!(started.as_deref(), Some("list_targets"));
+        let ended = events.iter().find_map(|e| match e {
+            AgentEvent::ToolEnd { output, error, .. } => Some((output.clone(), *error)),
+            _ => None,
+        });
+        let (output, error) = ended.expect("有工具结果");
+        assert!(!error, "{output}");
+        assert!(
+            output.contains("web-1"),
+            "工具桥把这台主机交给了模型：{output}"
+        );
+        let text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            text.contains("看过了"),
+            "工具结果回填后模型给了结论：{text}"
+        );
+        // 一个回合里发了两次请求，每次都有用量；窗口是模型的（gpt-5.5 在资料库里）。
+        let usages: Vec<_> = signals
+            .iter()
+            .filter_map(|s| match s {
+                BuiltinSignal::Usage(usage) => Some(usage.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usages.len(), 2, "{signals:?}");
+        assert!(usages[0].window >= 128_000 && !usages[0].window_estimated);
+        assert_eq!(usages[0].model, "gpt-5.5");
+        assert_eq!(fake.post_count(), 2);
+
+        // 对话记录存下来了，resume_id 可以续接；关掉后收回密钥。
+        let resume = session.conversation.resume_id().expect("有可续接的记录");
+        session.shutdown().await;
+
+        // 新对话：同一个接口再开一个，互不影响；续接旧的能带回历史。
+        let mut again = hub
+            .start_builtin(BuiltinStart {
+                endpoint: fake_endpoint(EndpointKind::OpenAiChat),
+                api_key: ApiKey::new("sk-test-e2e"),
+                transport: Arc::clone(&fake) as Arc<dyn Transport>,
+                catalog: Arc::new(Catalog::builtin()),
+                resume: Some(resume.clone()),
+                tuning: fast_tuning(),
+            })
+            .await
+            .expect("续接");
+        assert!(again.resumed);
+        assert_eq!(
+            again.conversation.resume_id().as_deref(),
+            Some(resume.as_str())
+        );
+        again.shutdown().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_anthropic_flavour_and_a_rejected_key_both_surface_properly() {
+        use crate::agent_setup::builtin_fake::FakeTransport;
+        use zssh_core::ai::agent::builtin::config::EndpointKind;
+        let host = Arc::new(CountingHost::default());
+        let hub = test_hub(host).await;
+        let fake = Arc::new(FakeTransport::default());
+
+        let mut anthropic = hub
+            .start_builtin(BuiltinStart {
+                endpoint: fake_endpoint(EndpointKind::Anthropic),
+                api_key: ApiKey::new("sk-test-claude"),
+                transport: Arc::clone(&fake) as Arc<dyn Transport>,
+                catalog: Arc::new(Catalog::builtin()),
+                resume: None,
+                tuning: fast_tuning(),
+            })
+            .await
+            .expect("启动");
+        anthropic
+            .conversation
+            .send("你好", Some("claude-sonnet-5-5"))
+            .await
+            .expect("发送");
+        let (events, _signals) = collect_turn(&mut anthropic).await;
+        let text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "收到：你好");
+        anthropic.shutdown().await;
+
+        // Key 被拒（401）：不重试，回合以错误结束，旁路给结构化的失败详情。
+        let mut bad = hub
+            .start_builtin(BuiltinStart {
+                endpoint: fake_endpoint(EndpointKind::OpenAiChat),
+                api_key: ApiKey::new("sk-test-bad-key"),
+                transport: Arc::clone(&fake) as Arc<dyn Transport>,
+                catalog: Arc::new(Catalog::builtin()),
+                resume: None,
+                tuning: fast_tuning(),
+            })
+            .await
+            .expect("启动");
+        bad.conversation
+            .send("hi", Some("gpt-5.5"))
+            .await
+            .expect("发送");
+        let (events, signals) = collect_turn(&mut bad).await;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Error { message } if message.contains("API Key"))),
+            "{events:?}"
+        );
+        assert!(
+            signals
+                .iter()
+                .any(|s| matches!(s, BuiltinSignal::Failure(f) if f.status == Some(401))),
+            "{signals:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Retrying { .. }))
+        );
+        bad.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_topup_error_code_reaches_the_ui_as_a_structured_signal() {
+        use crate::agent_setup::builtin_fake::FakeTransport;
+        use zssh_core::ai::agent::builtin::config::EndpointKind;
+        let hub = test_hub(Arc::new(CountingHost::default())).await;
+        let mut session = hub
+            .start_builtin(BuiltinStart {
+                endpoint: fake_endpoint(EndpointKind::OpenAiChat),
+                api_key: ApiKey::new("sk-test-topup"),
+                transport: Arc::new(FakeTransport::default()),
+                catalog: Arc::new(Catalog::builtin()),
+                resume: None,
+                tuning: fast_tuning(),
+            })
+            .await
+            .expect("启动");
+        session
+            .conversation
+            .send("hi", Some("gpt-5.5"))
+            .await
+            .expect("发送");
+        let (_events, signals) = collect_turn(&mut session).await;
+        let code = signals.iter().find_map(|s| match s {
+            BuiltinSignal::Failure(f) => f.code.clone(),
+            _ => None,
+        });
+        assert_eq!(code.as_deref(), Some("zeeterm_requires_topup"));
+        session.shutdown().await;
     }
 
     // ---- 真实智能体（显式 ZSSH_AGENT_E2E=1 才拉起；每种都用独立配置，不碰用户真实的配置）----
