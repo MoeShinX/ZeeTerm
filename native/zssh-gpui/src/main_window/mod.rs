@@ -18,6 +18,7 @@ mod ai_builtin;
 pub(crate) mod ai_endpoint_dialog;
 pub(crate) mod ai_presets;
 pub mod anchor;
+mod app_lock_ui;
 pub mod bar_height;
 pub mod bar_settings;
 mod bars;
@@ -45,7 +46,9 @@ mod dev_acts_u18;
 mod dev_acts_u19;
 mod dev_acts_u2;
 mod dev_acts_u20;
+mod dev_acts_u21;
 mod dev_acts_u25;
+mod dev_acts_u26;
 mod dev_acts_u4;
 mod dev_acts_u6;
 mod dev_acts_u7;
@@ -207,6 +210,8 @@ pub struct MainWindow {
     pub(super) settings_section: crate::settings_nav::SettingsSection,
     /// 数据库里的连接 / SFTP / 窗口设置（`app_prefs`）：进设置页时重读，改的时候同步更新。
     pub(super) prefs: crate::app_prefs::AppPrefs,
+    /// 锁屏（V2-U26）：库里的设置、主窗口的锁屏页、忘记密码验证的进度。
+    pub(super) app_lock: app_lock_ui::AppLockUi,
     /// 数值设置的滑块。
     pub(super) pref_sliders: settings_page::PrefSliders,
     /// 设置页「终端 → 关键词高亮」的规则编辑器：第一次进「终端」分类时才建。
@@ -361,6 +366,14 @@ impl MainWindow {
         let entity = cx.entity().downgrade();
         let handle = window.window_handle();
         subs.push(cx.intercept_keystrokes(move |event, window, cx| {
+            // Ctrl+Alt+L 锁定：任何一个 ZeeTerm 窗口里按都行（V2-U26）。
+            let locked_now = entity
+                .update(cx, |this, cx| this.lock_shortcut(event, cx))
+                .unwrap_or(false);
+            if locked_now {
+                cx.stop_propagation();
+                return;
+            }
             if window.window_handle() != handle {
                 return;
             }
@@ -386,6 +399,8 @@ impl MainWindow {
             .map(crate::app_prefs::AppPrefs::load)
             .unwrap_or_default();
         let pref_sliders = settings_page::PrefSliders::new(&prefs, cx);
+        let app_lock = app_lock_ui::AppLockUi::load(store.db().ok());
+        crate::tray::set_lock_menu(app_lock.config.status.is_enabled());
         let keychain = KeychainUi::new(window, cx);
         let proxy_ui = ProxyUi::new(window, cx);
         let bars = bars::BarUi::new(window, cx);
@@ -440,6 +455,7 @@ impl MainWindow {
                 layout.settings_section.as_deref(),
             ),
             prefs,
+            app_lock,
             pref_sliders,
             highlight_editor: None,
             panel_scroll: ::gpui::ScrollHandle::new(),
@@ -519,6 +535,7 @@ impl MainWindow {
 
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.tick_count += 1;
+        self.lock_tick(window, cx);
         let mut changed = false;
         // 主机库每 2 秒重读一次（500ms × 4）。
         if self.tick_count.is_multiple_of(4) && self.store.reload() {
@@ -1274,6 +1291,10 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 锁着时主窗口只画锁屏页，不该走到这里；万一走到也不处理任何窗口级快捷键（V2-U26）。
+        if crate::app_lock::is_locked() {
+            return;
+        }
         let keystroke = &event.keystroke;
         let key = keystroke.key.to_ascii_lowercase();
         let mods = keystroke.modifiers;
@@ -1406,6 +1427,10 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 锁着时输入框在锁屏页上：别让主窗口的对话框 / 搜索框逻辑吞掉回车和方向键（V2-U26）。
+        if crate::app_lock::is_locked() {
+            return;
+        }
         let keystroke = &event.keystroke;
         // 带多行输入框的对话框（新建 / 编辑快捷命令）：命令框自己绑了 Ctrl+Enter（插一个换行），
         // 动作比 `capture_key_down` 先跑，所以这里先把它拦下来；真正的「保存」由随后的
@@ -1528,6 +1553,19 @@ pub enum CopyField {
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 锁着：整个窗口只画一页不透明的锁屏页，下面的终端、主机树、AI 面板这一帧根本不进元素树（V2-U26）。
+        if crate::app_lock::is_locked() {
+            self.window_width = f32::from(window.viewport_size().width);
+            self.window_height = f32::from(window.viewport_size().height);
+            return self.render_lock_cover(window, cx);
+        }
+        self.after_unlock_refocus(window, cx);
+        self.render_unlocked(window, cx).into_any_element()
+    }
+}
+
+impl MainWindow {
+    fn render_unlocked(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = Tokens::current(cx);
         self.window_width = f32::from(window.viewport_size().width);
         self.window_height = f32::from(window.viewport_size().height);

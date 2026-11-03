@@ -3,11 +3,11 @@
 //! 行为对照 0.2.14 的 `ui/src/components/sftp/`：文件列表（列、点表头排序、单选 / Ctrl / Shift /
 //! Ctrl+A 多选、键盘上下 / 回车 / Backspace / F2 / F5 / Delete / Alt+Enter、面包屑和可编辑路径栏、
 //! 过滤、隐藏文件开关、后退前进）、右键菜单（文件、文件夹、空白处、多选各一套，带子菜单“新建”）、
-//! 对话框（新建 / 重命名、删除确认、修改权限、属性、下载到…、解压同名文件、远端改名覆盖确认）、
+//! 对话框（新建 / 重命名、删除确认、修改权限、属性、下载到…、移动到…、解压同名文件、远端改名覆盖确认）、
 //! 远端压缩 / 解压、传输队列。
 //!
 //! 代码分层：
-//! - `model` / `menu` / `props` / `queue` / `archive_ui` / `dialogs` / `chmod` / `local_ops`：
+//! - `model` / `menu` / `props` / `queue` / `archive_ui` / `dialogs` / `chmod` / `local_ops` / `move_to`：
 //!   没有界面的规则和操作，每条都有单测；
 //! - `engine`：同名文件提问者、递归删除、路径和名字规则、自动化钩子的环境变量解析；
 //! - `pane` 保存一栏的状态，本文件和 `nav` / `ops` / `transfer` 是 [`SftpDemo`] 的状态与动作，
@@ -68,6 +68,8 @@ mod header;
 mod local_ops;
 mod menu;
 mod model;
+mod move_flow;
+mod move_to;
 mod nav;
 mod ops;
 mod pane;
@@ -78,6 +80,7 @@ mod script;
 mod transfer;
 mod view;
 mod view_dialogs;
+mod view_move;
 
 pub(crate) use model::civil_from_days;
 pub(crate) use view::local_utc_offset;
@@ -192,6 +195,23 @@ enum SftpEvent {
     PasteDone {
         op: u64,
         result: Result<(clip::Outcome, Vec<paste::PastedJob>), String>,
+    },
+    /// 「移动到…」对话框里读回来一个目录的子文件夹（`request` 是发起时的序号）。
+    MoveBrowsed {
+        request: u64,
+        dir: String,
+        result: Result<Vec<model::Entry>, String>,
+    },
+    /// 「移动到…」对话框里新建文件夹的结果。
+    MoveFolderMade {
+        dir: String,
+        path: String,
+        result: Result<(), String>,
+    },
+    /// 「移动到…」里一项移动完了（成功、同名或失败）。
+    MoveStep {
+        job: u64,
+        result: move_to::StepResult,
     },
     /// 解压结束（`Ok(None)` = 被取消）。
     ExtractDone {
@@ -433,6 +453,11 @@ pub struct SftpDemo {
     /// 递归改权限的取消开关（关窗口时用）。
     chmod_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     archive_caps: ArchiveCapsState,
+    /// 正在进行的「移动到…」（同一时间一个）。
+    moving: Option<move_to::MoveJob>,
+    next_move: u64,
+    /// 「移动到…」对话框里目录读取的序号。
+    move_browse_seq: u64,
     next_op: u64,
     /// 属性对话框里“计算大小”的编号（事件带着它回来认领）。
     next_calc: u64,
@@ -563,6 +588,9 @@ impl SftpDemo {
             orphan_reports: std::collections::HashMap::new(),
             chmod_cancel: None,
             archive_caps: ArchiveCapsState::Idle,
+            moving: None,
+            next_move: 1,
+            move_browse_seq: 0,
             next_op: 1,
             next_calc: 1,
             focus,
@@ -630,6 +658,15 @@ impl SftpDemo {
                     }
                 }
             }));
+            // 窄栏里点开的过滤框：失去焦点、又没输入文字，就收回成放大镜按钮。
+            let handle = input.read(cx).focus_handle(cx);
+            subscriptions.push(cx.on_blur(&handle, window, move |this, _window, cx| {
+                let pane = this.pane_mut(side);
+                if pane.filter_open && pane.filter.text.is_empty() {
+                    pane.filter_open = false;
+                    cx.notify();
+                }
+            }));
         }
         subscriptions
     }
@@ -668,6 +705,10 @@ impl SftpDemo {
         self.conflict_name_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("新名字（留空 = 自动起名）"));
         self.prefill_conflict_name(window, cx);
+        // 换了窗口，旧窗口里的同名询问没了：停在询问上的移动不会再有人回答，放弃它。
+        if matches!(self.dialog, Some(Dialog::MoveConflict(_))) {
+            self.moving = None;
+        }
         self.dialog = None;
         self._subscriptions = self.build_subscriptions(window, cx);
         self._tick = self.spawn_tick(window, cx);
@@ -722,6 +763,7 @@ impl SftpDemo {
         self.cancel_property_calcs();
         self.close_prompt = false;
         self.dialog = None;
+        self.moving = None;
         // 输入法登记跟着窗口走；真正关窗口才注销（用户在确认条上选"继续传输"时不会走到这里）。
         crate::ime::window_destroyed(&self.ime_key);
         if let Some(engine) = &self.engine {
@@ -973,6 +1015,15 @@ impl SftpDemo {
             }
             SftpEvent::PasteDone { op, result } => self.finish_paste(op, result, cx),
             SftpEvent::ExtractDone { op, ask, result } => self.finish_extract(op, ask, result, cx),
+            SftpEvent::MoveBrowsed {
+                request,
+                dir,
+                result,
+            } => self.apply_move_browsed(request, dir, result, window, cx),
+            SftpEvent::MoveFolderMade { dir, path, result } => {
+                self.apply_move_folder_made(dir, path, result, cx)
+            }
+            SftpEvent::MoveStep { job, result } => self.apply_move_step(job, result, window, cx),
         }
         cx.notify();
     }
@@ -1216,6 +1267,8 @@ impl SftpDemo {
     }
 }
 
+#[cfg(test)]
+mod move_e2e_tests;
 #[cfg(test)]
 mod paste_tests;
 #[cfg(test)]

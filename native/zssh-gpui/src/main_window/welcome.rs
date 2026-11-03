@@ -66,6 +66,13 @@ pub fn title_color_on(index: usize, count: usize, background: u32) -> u32 {
         .unwrap_or(toward)
 }
 
+/// 设置齿轮的颜色：首页标题渐变的中间那个紫（和 Logo 一个色系），对着当前皮肤底色校过对比度。
+/// 图标是单色 SVG（按文字颜色着色），没法逐字渐变，所以取渐变正中间的一档。
+pub(crate) fn brand_icon_color(cx: &::gpui::App) -> ::gpui::Hsla {
+    let background = crate::app_theme::active_skin(cx).ui.background;
+    gpui_kit::rgb(title_color_on(3, 7, background)).into()
+}
+
 /// 渐变标题：整段文字一次排版（保留字距），每个字母一段颜色。
 fn gradient_title(background: u32) -> StyledText {
     let count = WELCOME_TITLE.chars().count();

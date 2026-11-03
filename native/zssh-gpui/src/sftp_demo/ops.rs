@@ -173,6 +173,7 @@ impl SftpDemo {
                     self.open_rename(side, entry.clone(), window, cx);
                 }
             }
+            MenuAction::MoveTo => self.open_move_to(side, entries, window, cx),
             MenuAction::Delete => self.ask_delete(side, entries, window, cx),
             MenuAction::Mkdir => self.open_name_dialog(NameKind::Mkdir, side, None, window, cx),
             MenuAction::Create => self.open_name_dialog(NameKind::Create, side, None, window, cx),
@@ -242,6 +243,12 @@ impl SftpDemo {
             Some(Dialog::Delete(dialog)) => {
                 self.say(format!("已取消删除 {}", delete_subject(&dialog.entries)));
             }
+            // 同名询问上按 Esc / 点遮罩 = 取消移动：这一项和后面没处理的都不动。
+            Some(Dialog::MoveConflict(conflict)) => {
+                self.dialog = Some(Dialog::MoveConflict(conflict));
+                self.abort_move(window, cx);
+                return;
+            }
             _ => {}
         }
         let side = self.focused_side;
@@ -255,11 +262,13 @@ impl SftpDemo {
             Some(Dialog::Name(_)) => self.confirm_name(window, cx),
             Some(Dialog::Permissions(_)) => self.confirm_permissions(window, cx),
             Some(Dialog::DownloadTo(_)) => self.confirm_download_to(window, cx),
-            Some(Dialog::Properties(_)) => self.close_dialog(window, cx),
+            Some(Dialog::Properties(_) | Dialog::MoveSummary(_)) => self.close_dialog(window, cx),
+            Some(Dialog::MoveTo(_)) => self.move_enter(window, cx),
             Some(Dialog::ExtractConflict(_)) => {
                 self.choose_extract(ConflictPolicy::SkipExisting, window, cx)
             }
-            Some(Dialog::Delete(_) | Dialog::OverwriteRename(_)) | None => {}
+            Some(Dialog::Delete(_) | Dialog::OverwriteRename(_) | Dialog::MoveConflict(_))
+            | None => {}
         }
     }
 

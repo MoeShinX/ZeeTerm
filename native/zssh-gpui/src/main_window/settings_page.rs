@@ -547,6 +547,7 @@ impl MainWindow {
                         backup.into_any_element(),
                     ]
                 }
+                SettingsSection::Lock => self.lock_blocks(tokens, cx),
                 SettingsSection::Shortcuts => shortcuts_cards(tokens),
                 SettingsSection::About => vec![about.into_any_element()],
                 _ => Vec::new(),
@@ -1562,7 +1563,7 @@ fn system_proxy_text(proxy: &SystemProxy) -> String {
 
 /// 按用途展示原有只读快捷键，索引仍指向唯一的数据清单。
 const SHORTCUT_GROUPS: &[(&str, &[usize])] = &[
-    ("标签与窗口", &[0, 1, 4, 5, 14]),
+    ("标签与窗口", &[0, 1, 4, 5, 14, 15]),
     ("终端与分屏", &[2, 3, 6, 7, 10]),
     ("终端显示与操作", &[11, 12, 13]),
     ("面板", &[8, 9]),

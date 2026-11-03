@@ -69,7 +69,7 @@ fn load_prefs() -> zssh_core::updater::UpdatePrefs {
 }
 
 /// 做一轮：开关关着就什么都不做；开着就查一次，返回需要提示的结果。
-async fn check_once() -> Option<(String, Package)> {
+async fn check_once() -> Option<update_demo::Checked> {
     let prefs = load_prefs();
     if !zssh_core::updater::should_auto_check(&prefs) {
         return None;
@@ -86,14 +86,13 @@ async fn check_once() -> Option<(String, Package)> {
     if let Ok(db) = crate::hosts_demo::open_database() {
         let _ = zssh_core::updater::record_check(&db, now_secs());
     }
-    let (status, package) = checked;
-    let package = package?;
+    let package = checked.package.clone()?;
     let mut announced = ANNOUNCED.lock().ok()?;
     if !should_announce_found(&prefs, &current, &package, announced.as_deref()) {
         return None;
     }
     *announced = Some(package.version.clone());
-    Some((status, package))
+    Some(checked)
 }
 
 /// 拉起自动检查：主窗口启动时调一次。任务挂在 `App` 上，进程退出时一起结束。
@@ -104,8 +103,8 @@ pub fn spawn(cx: &mut App) {
     cx.spawn(async move |cx| {
         cx.background_executor().timer(startup_delay()).await;
         loop {
-            if let Some((status, package)) = check_once().await {
-                cx.update(|app| update_demo::open_update_window_for_found(app, status, package));
+            if let Some(checked) = check_once().await {
+                cx.update(|app| update_demo::open_update_window_for_found(app, checked));
             }
             cx.background_executor().timer(check_interval()).await;
         }

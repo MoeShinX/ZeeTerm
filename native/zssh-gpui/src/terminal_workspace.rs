@@ -533,6 +533,11 @@ impl Pane {
         if self.state != PaneState::Live {
             return;
         }
+        // 锁屏（V2-U26）：键盘、粘贴、快捷命令、撰写栏、广播都从这里出去，锁着时一律丢掉。
+        // AI 助手的终端另有自己的通道（`ai_terminals`），不受影响，锁定期间照常跑。
+        if crate::app_lock::is_locked() {
+            return;
+        }
         self.backend.send(SessionCommand::Write(bytes.to_vec()));
         self.poll_events();
     }
@@ -5683,6 +5688,78 @@ mod protocol_session_tests {
         fn send_break(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    /// 记录送到写端的输入次数。
+    struct WriteCounter(Arc<AtomicUsize>);
+
+    impl SessionBackend for WriteCounter {
+        fn send(&mut self, command: SessionCommand) {
+            if matches!(command, SessionCommand::Write(_)) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    fn pane_counting_writes(counter: Arc<AtomicUsize>) -> Pane {
+        let pump = SessionPump::new(
+            Size { rows: 5, cols: 20 },
+            100,
+            Arc::new(FlowGate::new()),
+            CoreFilter::new(),
+            1,
+        );
+        let (_, events) = std::sync::mpsc::channel();
+        Pane::with_parts(pump, Box::new(WriteCounter(counter)), events, Some(1), None)
+    }
+
+    /// 锁屏（V2-U26）：窗格是用户输入进会话的唯一出口，锁着时键入、粘贴、快捷命令、广播全被丢掉，
+    /// 解锁后恢复；锁定本身不动会话（状态仍是 Live）。
+    #[test]
+    fn user_input_is_dropped_while_the_app_is_locked_and_flows_again_after() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut pane = pane_counting_writes(Arc::clone(&counter));
+        pane.write(b"ls\r");
+        assert_eq!(counter.load(Ordering::SeqCst), 1, "没锁时正常送出");
+
+        crate::app_lock::set_locked(true);
+        pane.write(b"rm -rf x\r");
+        pane.write(&zssh_session::encode_paste("pasted text", true));
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "锁着时键入和粘贴都不送出"
+        );
+        assert_eq!(pane.state, PaneState::Live, "锁定不会断开会话");
+
+        crate::app_lock::set_locked(false);
+        pane.write(b"pwd\r");
+        assert_eq!(counter.load(Ordering::SeqCst), 2, "解锁后恢复");
+    }
+
+    /// 广播输入（和快捷命令 / 撰写栏发给“整个标签”）走的是同一个出口：锁着时每个窗格都收不到。
+    #[test]
+    fn a_broadcast_reaches_no_pane_while_the_app_is_locked() {
+        let counters: Vec<Arc<AtomicUsize>> =
+            (0..3).map(|_| Arc::new(AtomicUsize::new(0))).collect();
+        let mut panes: Vec<Pane> = counters
+            .iter()
+            .map(|counter| pane_counting_writes(Arc::clone(counter)))
+            .collect();
+        let total = |counters: &[Arc<AtomicUsize>]| -> usize {
+            counters.iter().map(|c| c.load(Ordering::SeqCst)).sum()
+        };
+        for pane in &mut panes {
+            pane.write(b"echo hi\r");
+        }
+        assert_eq!(total(&counters), 3);
+
+        crate::app_lock::set_locked(true);
+        for pane in &mut panes {
+            pane.write(b"echo secret\r");
+        }
+        assert_eq!(total(&counters), 3, "锁着时三个窗格一个都没收到");
+        crate::app_lock::set_locked(false);
     }
 
     fn pane_with(counter: Arc<AtomicUsize>) -> Pane {

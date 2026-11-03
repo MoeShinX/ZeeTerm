@@ -22,7 +22,9 @@ use gpui_kit::*;
 
 use crate::app_theme::Tokens;
 use crate::icons::Ico;
-use crate::main_window::titlebar::window_controls;
+use crate::main_window::titlebar::{
+    back_button, back_button_shows_text, back_button_visible, window_controls,
+};
 use crate::tab_drag::{self, DragKey, Dragger, Drop, Hover};
 use crate::terminal_workspace::{Tab, TabStatus, TerminalWorkspace};
 use crate::typography::UiFontStyled as _;
@@ -127,6 +129,8 @@ pub struct TermWindow {
     focus: FocusHandle,
     ime_key: String,
     dragger: Dragger,
+    /// 锁屏页（V2-U26）：锁着时整个窗口只画它。
+    lock_screen: Option<Entity<crate::app_lock::LockScreen>>,
     _observe: Subscription,
 }
 
@@ -143,6 +147,7 @@ impl TermWindow {
             focus,
             ime_key,
             dragger: Dragger::default(),
+            lock_screen: None,
             _observe,
         }
     }
@@ -209,6 +214,15 @@ impl TermWindow {
             cx.defer(move |cx| {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
             });
+        }
+    }
+
+    /// 标题栏上的「移回主窗口」按钮：对当前选中的标签，和标签右键「移回主窗口」是同一个 `move_to_main`。
+    fn move_active_to_main(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let infos = self.workspace.read(cx).tab_infos();
+        let active = self.workspace.read(cx).active_index();
+        if let Some(info) = active.and_then(|index| infos.get(index)) {
+            self.move_to_main(info.id, window, cx);
         }
     }
 
@@ -427,6 +441,16 @@ impl TermWindow {
 
 impl Render for TermWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 锁屏（V2-U26）：锁着时整个窗口只画锁屏页，里面的内容这一帧不进元素树。
+        if let Some(cover) = crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
+            return cover;
+        }
+        self.render_unlocked(window, cx).into_any_element()
+    }
+}
+
+impl TermWindow {
+    fn render_unlocked(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = Tokens::current(cx);
         let infos = self.workspace.read(cx).tab_infos();
         let active = self.workspace.read(cx).active_index();
@@ -458,6 +482,14 @@ impl Render for TermWindow {
         );
         let hint = self.drag_hint(window, cx, &tokens);
         let ghost = tab_drag::ghost_chip(window, cx, &tokens);
+        let back = back_button_visible(infos.len()).then(|| {
+            let me = cx.entity();
+            back_button(
+                &tokens,
+                back_button_shows_text(f32::from(window.viewport_size().width)),
+                move |window, cx| me.update(cx, |this, cx| this.move_active_to_main(window, cx)),
+            )
+        });
         v_flex()
             .id("term-window")
             .size_full()
@@ -523,6 +555,8 @@ impl Render for TermWindow {
                             .children(tabs)
                             .children(hint),
                     )
+                    // 最小化按钮左边：把当前标签移回主窗口（没有标签时不画）。
+                    .children(back)
                     .child(
                         div()
                             .h_full()
@@ -571,4 +605,22 @@ pub fn merge_into(cx: &mut App, target: ::gpui::WindowId, tab: Tab) -> Result<()
         }
     }
     slot.borrow_mut().take().map_or(Ok(()), Err)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_titlebar_button_and_the_tab_menu_share_one_move_back_function() {
+        // 标题栏按钮经 `move_active_to_main` 对当前标签调 `move_to_main`，右键菜单也直接调它。
+        let code = include_str!("term_window.rs");
+        let code = code.split("#[cfg(test)]").next().unwrap_or(code);
+        assert!(code.contains("back.update(cx, |this, cx| this.move_to_main(id, window, cx))"));
+        assert!(code.contains("this.move_active_to_main(window, cx)"));
+        let body = code
+            .split("fn move_active_to_main")
+            .nth(1)
+            .and_then(|rest| rest.split("fn move_to_main").next())
+            .unwrap_or("");
+        assert!(body.contains("self.move_to_main(info.id, window, cx)"));
+    }
 }

@@ -14,6 +14,7 @@ use zssh_core::sftp::local::check_child_name;
 
 use super::menu::Side;
 use super::model::{Entry, EntryKind};
+use super::move_to::MoveAsk;
 use super::props::{CalcState, PermMatrix, PropTarget};
 
 /// 同一时间只有一个对话框，盖在整个文件视图上。
@@ -25,6 +26,12 @@ pub(super) enum Dialog {
     DownloadTo(DownloadDialog),
     ExtractConflict(ExtractAsk),
     OverwriteRename(OverwriteAsk),
+    /// 「移动到…」：选目标文件夹（V2-U23）。
+    MoveTo(MoveDialog),
+    /// 移动时目标里有同名项，问替换 / 跳过。
+    MoveConflict(MoveConflict),
+    /// 移动结束后有跳过 / 失败的项，列出来。
+    MoveSummary(MoveReport),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +81,55 @@ pub(super) struct DownloadDialog {
     pub(super) input: Entity<InputState>,
     pub(super) error: Option<String>,
     pub(super) _subscriptions: Vec<Subscription>,
+}
+
+/// 「移动到…」里目录浏览列表的状态。
+pub(super) struct BrowseState {
+    /// 列表显示的是哪个文件夹里的子文件夹（还没读回来之前是上一个）。
+    pub(super) dir: String,
+    pub(super) folders: Vec<Entry>,
+    pub(super) loading: bool,
+    /// 读不出来的原因（保留旧列表）。
+    pub(super) error: Option<String>,
+    /// 单击选中的子文件夹（路径）。
+    pub(super) selected: Option<String>,
+    /// 最新一次读取的序号：旧请求的结果不算数。
+    pub(super) request: u64,
+    /// 读回来之后要选中的子文件夹（刚新建的那个）。
+    pub(super) pending_select: Option<String>,
+}
+
+pub(super) struct MoveDialog {
+    pub(super) side: Side,
+    pub(super) entries: Vec<Entry>,
+    /// 目标文件夹的路径输入框（和列表双向同步）。
+    pub(super) input: Entity<InputState>,
+    pub(super) browse: BrowseState,
+    /// 点了“移动”，正在确认目标文件夹存在（列一遍它的子文件夹），回来才开始移动。
+    pub(super) confirming: bool,
+    /// 目标文件夹用不了等原因，写在按钮上面。
+    pub(super) error: Option<String>,
+    /// 「新建文件夹」展开了：名字输入框。
+    pub(super) new_folder: Option<Entity<InputState>>,
+    pub(super) new_folder_error: Option<String>,
+    /// 新建文件夹的请求在路上，别重复发。
+    pub(super) creating: bool,
+    /// 目录浏览列表的滚动（新建文件夹后要滚到它）。
+    pub(super) scroll: ::gpui::ScrollHandle,
+    pub(super) _subscriptions: Vec<Subscription>,
+}
+
+/// 移动时目标里有同名项：等用户在 替换 / 跳过 / 取消移动 里选。
+pub(super) struct MoveConflict {
+    pub(super) ask: MoveAsk,
+    /// 勾了“对其余同名项都这样做”。
+    pub(super) apply_rest: bool,
+}
+
+/// 移动结束后有跳过 / 失败的项：汇总 + 明细。
+pub(super) struct MoveReport {
+    pub(super) summary: String,
+    pub(super) lines: Vec<String>,
 }
 
 /// 一次解压的目标：压缩包、解到哪个文件夹。

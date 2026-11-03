@@ -132,8 +132,8 @@ impl MenuRow {
     }
 
     /// 悬停说明（置灰时说明原因最有用）。
-    pub fn tooltip(mut self, text: Option<&'static str>) -> Self {
-        self.tooltip = text.map(SharedString::from);
+    pub fn tooltip(mut self, text: Option<impl Into<SharedString>>) -> Self {
+        self.tooltip = text.map(Into::into);
         self
     }
 

@@ -6,6 +6,7 @@ pub mod connection_test;
 pub mod connections;
 pub mod cwd;
 pub mod dialer;
+pub mod disconnect;
 pub mod flow;
 pub mod forward;
 mod id_tap;
@@ -27,12 +28,18 @@ pub use connection::{
     ServerKey, EXEC_MAX_STREAM_BYTES,
 };
 pub use connections::{
-    collect_connections, connections_command, matches_query, parse_connections, view_indices,
-    ConnFilter, ConnSource, ConnState, ConnectionsError, ConnectionsReport, Endpoint, NetConn,
-    NetProto, ProcRef, ProcessHint, SortKey, SortSpec, CONNECTIONS_MAX_ROWS,
+    collect_connections, connections_command, matches_query, parse_connections,
+    parse_ssh_connection, same_endpoint, view_indices, ConnFilter, ConnSource, ConnState,
+    ConnectionsError, ConnectionsReport, Endpoint, NetConn, NetProto, ProcRef, ProcessHint,
+    SortKey, SortSpec, SshConnection, CONNECTIONS_MAX_ROWS,
 };
 pub use cwd::{parse_probe_output, pick_shell, probe_command, probe_shell_cwds, ShellCwd};
 pub use dialer::{connect_direct, BoxedStream, ByteStream, ProxyConfig, HOP_TIMEOUT};
+pub use disconnect::{
+    classify_disconnect, disconnect_check, disconnect_command, disconnect_connection, kill_check,
+    kill_output_mentions, menu_processes, DisconnectBlock, DisconnectError, KillBlock,
+    DISCONNECT_TIMEOUT, MENU_MAX_PROCESSES,
+};
 pub use flow::FlowGate;
 pub use interact::{
     BoxFuture, HopProgress, HostKeyDecision, HostKeyInfo, HostKeyStatus, Interactor,

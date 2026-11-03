@@ -63,6 +63,8 @@ Netcatty (host operating-system logos and brand colours, native interface)
 Other direct dependencies of the native interface (native/Cargo.toml and its
 Cargo.lock), all used unmodified from crates.io:
   alacritty_terminal 0.26.0 (terminal emulation core) - Apache-2.0
+  markdown 1.0.0 (update-notes sanitising before rendering; the same crate
+  gpui-base uses) - MIT
   fancy-regex 0.20.0, minisign 0.10.0, minisign-verify 0.3.0 (update signature
   check) - MIT; tray-icon 0.25.1, windows 0.62, reqwest 0.12, russh 0.64 (tests
   only), tokio, serde, regex, sha2, futures, semver, image 0.25.10 (decodes the

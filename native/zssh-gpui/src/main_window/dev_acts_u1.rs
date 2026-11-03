@@ -221,6 +221,17 @@ mod real {
                             .map_err(|_| "窗口已经关闭".to_owned())?;
                         pending(have == want)
                     }
+                    // resize:<宽>:<高>：把第一个独立终端窗口调成这个大小（看窄窗口的标题栏用）
+                    "resize" => {
+                        let width: f32 = number(b, "宽")?;
+                        let height: f32 = number(c, "高")?;
+                        handle
+                            .update(cx, |_, window, _| {
+                                window.resize(::gpui::size(::gpui::px(width), ::gpui::px(height)));
+                            })
+                            .map_err(|_| "窗口已经关闭".to_owned())?;
+                        Ok(Outcome::Done)
+                    }
                     "type" => {
                         let text = b.replace(r"\r", "\r");
                         handle

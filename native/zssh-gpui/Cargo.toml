@@ -11,6 +11,8 @@ futures = "0.3"
 gpui-kit = { version = "=0.8.1", features = ["syntect"] }
 gpui = { package = "gpui-pre", version = "=0.3.10" }
 image = { version = "0.25", default-features = false, features = ["png"] }
+# 更新说明显示前先用它解析、改写（去 HTML / 图片 / 非 https 链接），版本与 gpui-base 用的是同一个。
+markdown = "1.0.0"
 raw-window-handle = "0.6"
 reqwest = { version = "0.12", default-features = false, features = [
     "default-tls",
@@ -48,8 +50,9 @@ windows = { version = "0.62", features = [
 base64 = "0.22"
 minisign = "0.10"
 rand = "0.10"
-russh-sftp = "3.0"
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
+# 进程内 SFTP 服务器夹具（src/test_sftp_server.rs、test_ssh_server.rs 的 SFTP 部分，测试和 examples/fake_sftp_server.rs 共用）。
+russh-sftp = "3.0"
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3"

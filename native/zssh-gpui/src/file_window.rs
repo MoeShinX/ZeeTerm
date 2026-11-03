@@ -27,7 +27,9 @@ use gpui_kit::*;
 use crate::app_theme::Tokens;
 use crate::icons::Ico;
 use crate::main_window::MainWindow;
-use crate::main_window::titlebar::window_controls;
+use crate::main_window::titlebar::{
+    back_button, back_button_shows_text, back_button_visible, window_controls,
+};
 use crate::settings::data_dir;
 use crate::sftp_demo::SftpDemo;
 use crate::typography::{Role, Typo as _, UiFontStyled as _};
@@ -177,6 +179,8 @@ pub struct FileWindow {
     focus: FocusHandle,
     /// 标签拖到主窗口的标签栏上 = 合并回主窗口（V2-U1 第 7 条，见 `tab_drag`）。
     dragger: crate::tab_drag::Dragger,
+    /// 锁屏页（V2-U26）：锁着时整个窗口只画它。
+    lock_screen: Option<Entity<crate::app_lock::LockScreen>>,
     /// 窗口大小 / 位置变了就记下来（见 [`Self::watch_bounds`]）。
     _bounds_watch: Option<::gpui::Subscription>,
     /// 等拖动停下来再写盘的任务；又变了就换掉（旧的取消）。
@@ -249,6 +253,7 @@ impl FileWindow {
             confirm: None,
             focus: cx.focus_handle(),
             dragger: crate::tab_drag::Dragger::default(),
+            lock_screen: None,
             _bounds_watch: None,
             save_task: None,
         }
@@ -473,6 +478,13 @@ impl FileWindow {
             window.remove_window();
         }
         cx.notify();
+    }
+
+    /// 标题栏上的「移回主窗口」按钮：对当前选中的标签，和标签右键「移回主窗口」是同一个 `move_to_main`。
+    pub fn move_active_to_main(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.active {
+            self.move_to_main(id, window, cx);
+        }
     }
 
     /// 交不出去的标签放回原处。
@@ -734,6 +746,16 @@ impl FileWindow {
 
 impl Render for FileWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 锁屏（V2-U26）：锁着时整个窗口只画锁屏页，里面的内容这一帧不进元素树。
+        if let Some(cover) = crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
+            return cover;
+        }
+        self.render_unlocked(window, cx).into_any_element()
+    }
+}
+
+impl FileWindow {
+    fn render_unlocked(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = Tokens::current(cx);
         let tabs: Vec<AnyElement> = self
             .tabs
@@ -764,6 +786,14 @@ impl Render for FileWindow {
             drag.hover == crate::tab_drag::Hover::Over(me) && drag.source != me
         });
         let hint = crate::tab_drag::hint_chip(window, cx, &tokens);
+        let back = back_button_visible(self.tabs.len()).then(|| {
+            let me = cx.entity();
+            back_button(
+                &tokens,
+                back_button_shows_text(f32::from(window.viewport_size().width)),
+                move |window, cx| me.update(cx, |this, cx| this.move_active_to_main(window, cx)),
+            )
+        });
         v_flex()
             .id("file-window")
             .size_full()
@@ -828,6 +858,8 @@ impl Render for FileWindow {
                             .children(tabs)
                             .children(hint),
                     )
+                    // 最小化按钮左边：把当前标签移回主窗口（没有标签时不画）。
+                    .children(back)
                     .child(
                         div()
                             .h_full()
@@ -889,6 +921,23 @@ mod tests {
         let mut last = vec![10, 20];
         last.insert(insert_after(1), 99);
         assert_eq!(last, [10, 20, 99]);
+    }
+
+    #[test]
+    fn the_titlebar_button_and_the_tab_menu_share_one_move_back_function() {
+        // 点击走的是同一个 `move_to_main`：右键菜单直接调它，标题栏按钮经 `move_active_to_main`
+        // 对当前选中的标签调它；不能各写一份移回的逻辑。
+        let code = include_str!("file_window.rs");
+        let code = code.split("#[cfg(test)]").next().unwrap_or(code);
+        assert_eq!(code.matches("this.move_to_main(id, window, cx)").count(), 1);
+        assert!(code.contains("self.move_to_main(id, window, cx)"));
+        assert!(code.contains("this.move_active_to_main(window, cx)"));
+        let body = code
+            .split("pub fn move_active_to_main")
+            .nth(1)
+            .and_then(|rest| rest.split("fn restore_tab").next())
+            .unwrap_or("");
+        assert!(body.contains("self.active") && body.contains("self.move_to_main("));
     }
 
     #[test]
