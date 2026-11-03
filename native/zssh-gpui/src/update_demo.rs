@@ -19,6 +19,10 @@
 //!
 //! 「退出后安装」只把计划排进进程级队列，界面不退出；真正的 `ShellExecuteW`
 //! 放在 `App::on_app_quit` 注册的回调里，等程序退出时再启动。
+//!
+//! 界面（V2-U22 重做，只动版式，流程不变）：每种状态都是"顶部信息区 / 中间内容区 / 底部按钮区"三段。
+//! 画哪一屏、标题和按钮集合见 `layout`，更新说明（Markdown）先经 `notes` 改写成安全的版本再渲染，
+//! `view` 是 `Render`。「跳过此版本」把版本号写进本机设置 `update_skipped_version`，自动检查据此不再提示它。
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,9 +31,6 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use ::gpui::{App, FocusHandle, Subscription, Task, Window, WindowBounds, WindowOptions};
-use gpui_kit::component::button::Button;
-use gpui_kit::component::*;
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use tokio::io::AsyncReadExt as _;
 use zssh_update::{
@@ -37,6 +38,12 @@ use zssh_update::{
 };
 
 use crate::install_state;
+
+// 界面分三块：`layout` 决定画哪一屏、标题和按钮（纯函数），`notes` 处理更新说明（Markdown 安全改写），
+// `view` 是 `Render`。验签 / 下载 / 安装的流程都在本文件，界面改版不碰它们。
+mod layout;
+mod notes;
+mod view;
 
 /// 更新检查窗口的编号；IME 按窗口 key 管理。
 static NEXT_UPDATE: AtomicU64 = AtomicU64::new(1);
@@ -71,12 +78,64 @@ const EXIT_DELAY: Duration = Duration::from_millis(300);
 /// 「退出后安装」排队后的提示。
 const QUEUED_MESSAGE: &str = "已排队：退出程序后启动安装器";
 
+/// 一次检查的结论。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckKind {
+    /// 已是最新版本。
+    Latest,
+    /// 有新版本（`package` 一定有值）。
+    Found,
+    /// 没查成：网络、清单格式、选不出包、更新签名未配置……（`status` 里是中文原因）。
+    Failed,
+}
+
+/// 检查更新的结果：`status` 是给人看的文字（失败时就是原因），其余是界面要用的结构化信息。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Checked {
+    pub kind: CheckKind,
+    pub status: String,
+    /// 清单里选中的包；没有更新或清单出错时为 `None`。
+    pub package: Option<Package>,
+    /// 清单里的更新说明（Markdown 原文）。
+    pub notes: Option<String>,
+    /// 清单里的发布时间（RFC 3339 原文）。
+    pub published: Option<String>,
+}
+
+impl Checked {
+    fn failed(status: impl Into<String>) -> Self {
+        Self {
+            kind: CheckKind::Failed,
+            status: status.into(),
+            package: None,
+            notes: None,
+            published: None,
+        }
+    }
+
+    /// 失败原因，去掉"检查更新失败："这个前缀（界面标题已经说了"检查更新失败"）。
+    fn failure_reason(&self) -> &str {
+        self.status
+            .strip_prefix("检查更新失败：")
+            .unwrap_or(&self.status)
+    }
+}
+
 pub struct UpdateDemo {
     current: String,
-    status: String,
+    /// 检查结果；`None` 表示还在检查。
+    checked: Option<Checked>,
+    /// 更新说明（已做安全改写，见 `notes`），交给 `TextView` 渲染；没有说明时为 `None`。
+    notes_markdown: Option<::gpui::SharedString>,
     /// 清单里选中的包；没有更新或清单出错时为 `None`。
     package: Option<Package>,
     phase: DownloadState,
+    /// 下载速度（平滑后），只在下载中显示。
+    speed: layout::SpeedMeter,
+    /// 「跳过此版本」没存成时的提示。
+    skip_error: Option<String>,
+    /// 这个窗口的 IME key，窗口被程序自己关掉时要还给 `ime`。
+    ime_key: String,
     /// 安装后是否重启；只在生成安装计划时使用。
     restart: bool,
     install: InstallState,
@@ -96,12 +155,12 @@ pub struct UpdateDemo {
 }
 
 impl UpdateDemo {
-    /// `preset`：后台自动检查已经取到的结果（状态文字 + 选出的包），有它就不再重复请求清单。
+    /// `preset`：后台自动检查已经取到的结果，有它就不再重复请求清单。
     pub fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
         ime_key: String,
-        preset: Option<(String, Option<Package>)>,
+        preset: Option<Checked>,
     ) -> Self {
         let focus = cx.focus_handle();
         let _ime_focus = cx.on_focus(&focus, window, {
@@ -110,15 +169,22 @@ impl UpdateDemo {
                 crate::ime::apply(&key, true);
             }
         });
-        let _ime_blur = cx.on_blur(&focus, window, move |_this, _window, _cx| {
-            crate::ime::apply(&ime_key, false);
+        let _ime_blur = cx.on_blur(&focus, window, {
+            let key = ime_key.clone();
+            move |_this, _window, _cx| {
+                crate::ime::apply(&key, false);
+            }
         });
         let (sender, events) = std::sync::mpsc::channel();
         let mut this = Self {
             current: current_version(),
-            status: String::new(),
+            checked: None,
+            notes_markdown: None,
             package: None,
             phase: DownloadState::Idle,
+            speed: layout::SpeedMeter::default(),
+            skip_error: None,
+            ime_key,
             restart: true,
             install: InstallState::Idle,
             blocked: None,
@@ -133,10 +199,7 @@ impl UpdateDemo {
             _tick: Task::ready(()),
         };
         match preset {
-            Some((status, package)) => {
-                this.status = status;
-                this.package = package;
-            }
+            Some(checked) => this.apply_checked(checked),
             None => this.reload(cx),
         }
         // 100ms 取一次下载/校验进度；窗口没了 `update_in` 会报错，任务自己退出。
@@ -163,21 +226,67 @@ impl UpdateDemo {
         self.cancel_job();
         self.current = current_version();
         self.package = None;
+        self.notes_markdown = None;
         self.phase = DownloadState::Idle;
         self.install = InstallState::Idle;
         self.blocked = None;
+        self.skip_error = None;
         match crate::ssh_backend::runtime() {
             Ok(runtime) => {
-                self.status = "正在检查更新…".to_owned();
+                self.checked = None;
                 runtime.spawn(run_check(
                     self.generation,
                     self.current.clone(),
                     self.sender.clone(),
                 ));
             }
-            Err(err) => self.status = format!("检查更新失败：{err}"),
+            Err(err) => self.checked = Some(Checked::failed(format!("检查更新失败：{err}"))),
         }
         cx.notify();
+    }
+
+    /// 收下一次检查的结果：选出的包、更新说明（先做安全改写）都在这里落到界面状态上。
+    fn apply_checked(&mut self, checked: Checked) {
+        self.package = checked.package.clone();
+        self.notes_markdown =
+            notes::display_markdown(checked.notes.as_deref()).map(::gpui::SharedString::from);
+        self.checked = Some(checked);
+    }
+
+    /// 当前画哪一屏。
+    fn screen(&self) -> layout::Screen {
+        layout::screen(
+            self.checked.as_ref().map(|checked| checked.kind),
+            &self.phase,
+        )
+    }
+
+    /// 关掉这个窗口（程序自己关：要把 IME 的窗口记录还回去，和用户点关闭按钮走的收尾一致）。
+    fn close_window(&mut self, window: &mut Window) {
+        crate::ime::window_destroyed(&self.ime_key);
+        window.remove_window();
+    }
+
+    /// 「跳过此版本」：记下版本号（之后的自动检查不再提示它，更新的版本照常提示），然后关窗口。
+    fn skip_version(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(package) = &self.package else {
+            return;
+        };
+        match record_skipped_version(&package.version) {
+            Ok(()) => self.close_window(window),
+            Err(err) => {
+                self.skip_error = Some(err);
+                cx.notify();
+            }
+        }
+    }
+
+    /// 「稍后」：发现新版本时只关窗口；已验证时先排队"退出后安装"（没排上就留在窗口里说原因）再关。
+    fn later(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.phase, DownloadState::Verified { .. }) && !self.click_queue_install(cx) {
+            return;
+        }
+        self.close_window(window);
     }
 
     /// 作废当前下载任务；后台任务看到取消标志后删除半截文件。
@@ -199,6 +308,7 @@ impl UpdateDemo {
         let generation = self.generation.wrapping_add(1);
         self.generation = generation;
         self.phase.start();
+        self.speed.reset();
         self.install = InstallState::Idle;
 
         let cancel = Arc::new(AtomicBool::new(false));
@@ -275,26 +385,32 @@ impl UpdateDemo {
     }
 
     /// 「退出后安装」：生成计划并排队，界面不退出，等进程结束时再启动安装器。
-    fn click_queue_install(&mut self, cx: &mut Context<Self>) {
+    fn click_queue_install(&mut self, cx: &mut Context<Self>) -> bool {
         let (installer, version, sha256) = match (&self.phase, &self.package) {
             (DownloadState::Verified { path, sha256, .. }, Some(package)) => {
                 (path.clone(), package.version.clone(), sha256.clone())
             }
-            _ => return,
+            _ => return false,
         };
         let cache_root = update_cache_dir();
         let args = current_exe_args();
         let restart = self.restart;
-        match build_install_plan(&installer, &cache_root, &version, restart, &args, &sha256) {
-            Ok(plan) => {
-                queue_install(plan);
-                self.queued = Some(QUEUED_MESSAGE.to_owned());
-                self.blocked = None;
-            }
-            // 没排上队：沿用「安装」失败时的提示，之前排好的计划保持不动。
-            Err(err) => self.install = InstallState::Failed(format!("准备安装失败：{err}")),
-        }
+        let queued =
+            match build_install_plan(&installer, &cache_root, &version, restart, &args, &sha256) {
+                Ok(plan) => {
+                    queue_install(plan);
+                    self.queued = Some(QUEUED_MESSAGE.to_owned());
+                    self.blocked = None;
+                    true
+                }
+                // 没排上队：沿用「安装」失败时的提示，之前排好的计划保持不动。
+                Err(err) => {
+                    self.install = InstallState::Failed(format!("准备安装失败：{err}"));
+                    false
+                }
+            };
         cx.notify();
+        queued
     }
 
     /// 取走后台事件；过期的任务结果直接丢掉。
@@ -308,7 +424,10 @@ impl UpdateDemo {
             match event {
                 DownloadEvent::Progress {
                     received, total, ..
-                } => self.phase.progress(received, total),
+                } => {
+                    self.phase.progress(received, total);
+                    self.speed.record(Instant::now(), received);
+                }
                 DownloadEvent::Verifying { .. } => self.phase.begin_verify(),
                 DownloadEvent::Verified {
                     path, size, sha256, ..
@@ -316,11 +435,8 @@ impl UpdateDemo {
                     self.phase.verified(path, size, sha256);
                     self.job = None;
                 }
-                DownloadEvent::Checked {
-                    status, package, ..
-                } => {
-                    self.status = status;
-                    self.package = package;
+                DownloadEvent::Checked { checked, .. } => {
+                    self.apply_checked(checked);
                     // 调试钩子：查到新版本就直接开始下载（自动化 / 截图下载中的画面用，发行版里读不到）。
                     auto_download = self.package.is_some()
                         && crate::dev_hooks::var_os("ZSSH_UPDATE_AUTODOWNLOAD").is_some();
@@ -345,150 +461,6 @@ impl UpdateDemo {
     }
 }
 
-impl Render for UpdateDemo {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let entity = cx.entity();
-        let tokens = crate::app_theme::Tokens::current(cx);
-        let lines: Vec<String> = self.status.lines().map(str::to_owned).collect();
-        let phase_text = self.phase.text();
-        let verified = match &self.phase {
-            DownloadState::Verified { path, size, .. } => Some((path.clone(), *size)),
-            _ => None,
-        };
-        let can_download = self.package.is_some() && self.phase.can_start();
-        let downloading = self.phase.is_downloading();
-        let install_text = match &self.install {
-            InstallState::Idle => None,
-            InstallState::Confirming(plan) => Some(format!(
-                "{}\n再次点击「确认安装」启动安装器",
-                command_line(plan)
-            )),
-            InstallState::Launched => Some("安装器已启动，程序即将退出".to_owned()),
-            InstallState::Failed(err) => Some(err.clone()),
-        };
-        let awaiting_confirm = self.install.awaiting_confirm();
-        let launched = matches!(self.install, InstallState::Launched);
-        let install_label = if awaiting_confirm {
-            "确认安装"
-        } else {
-            "安装"
-        };
-        let restart = self.restart;
-        let blocked = self.blocked.clone();
-        let queued = self.queued.clone();
-
-        let recheck = entity.clone();
-        let download = entity.clone();
-        let cancel = entity.clone();
-        let toggle = entity.clone();
-        let queue = entity.clone();
-        let install = entity;
-
-        v_flex()
-            .size_full()
-            .p_3()
-            .gap_2()
-            .track_focus(&self.focus)
-            .bg(cx.theme().background)
-            // 文字色取皮肤的色板（不写的话深色皮肤下是黑字）。
-            .text_color(tokens.text)
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().text_lg().child("检查更新"))
-                    .child(
-                        Button::new("recheck")
-                            .label("重新检查")
-                            .on_click(move |_, _, cx| {
-                                recheck.update(cx, |this, cx| this.reload(cx));
-                            }),
-                    ),
-            )
-            .child(div().text_sm().child(format!("当前版本：{}", self.current)))
-            .child(div().text_sm().child(format!(
-                "更新源：{}（下载后校验签名，确认后才启动安装器）",
-                source_label()
-            )))
-            // 更新说明可能很长：放进可滚动的区域，下面的按钮始终在窗口里。
-            .child(
-                div()
-                    .id("update-status")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .children(lines.into_iter().map(|line| div().text_sm().child(line))),
-                    ),
-            )
-            .when(can_download, |section| {
-                section.child(Button::new("download").label("下载并校验").on_click(
-                    move |_, _, cx| {
-                        download.update(cx, |this, cx| this.start_download(cx));
-                    },
-                ))
-            })
-            .when_some(phase_text, |section, text| {
-                section.child(div().text_sm().child(text))
-            })
-            .when(downloading, |section| {
-                section.child(Button::new("cancel").label("取消").compact().on_click(
-                    move |_, _, cx| {
-                        cancel.update(cx, |this, cx| this.cancel_download(cx));
-                    },
-                ))
-            })
-            .when_some(verified, |section, verified| {
-                let (path, size) = verified;
-                section
-                    .child(div().text_sm().child(file_summary(&path, size)))
-                    .child(h_flex().gap_2().items_center().when(!launched, |row| {
-                        row.child(
-                            Button::new("restart")
-                                .label("安装后重启")
-                                .compact()
-                                .toggled(restart)
-                                .on_click(move |_, _, cx| {
-                                    toggle.update(cx, |this, cx| this.toggle_restart(cx));
-                                }),
-                        )
-                        .child(
-                            Button::new("install")
-                                .label(install_label)
-                                .compact()
-                                .on_click(move |_, _, cx| {
-                                    if install.update(cx, |this, cx| this.click_install(cx)) {
-                                        quit_after_paint(cx);
-                                    }
-                                }),
-                        )
-                        .child(
-                            Button::new("queue-install")
-                                .label("退出后安装")
-                                .compact()
-                                .on_click(move |_, _, cx| {
-                                    queue.update(cx, |this, cx| this.click_queue_install(cx));
-                                }),
-                        )
-                    }))
-            })
-            .when_some(install_text, |section, text| {
-                section.children(
-                    text.lines()
-                        .map(|line| div().text_sm().child(line.to_owned())),
-                )
-            })
-            .when_some(queued, |section, text| {
-                section.child(div().text_sm().child(text))
-            })
-            .when_some(blocked, |section, text| {
-                section.child(div().text_sm().text_color(tokens.danger).child(text))
-            })
-    }
-}
-
 /// 打开更新检查窗口；同一个进程可以开多个。手动检查（关于页、托盘）走这里：抢焦点，窗口里自己去取清单。
 pub fn open_update_window(cx: &mut App) {
     open_window_with(cx, true, None);
@@ -496,25 +468,40 @@ pub fn open_update_window(cx: &mut App) {
 
 /// 后台自动检查发现了新版本：把已经取到的结果交给窗口（不重复请求），并且**不抢焦点**——
 /// 用户可能正在终端里打字，窗口只是出现在那里等他有空看。
-pub fn open_update_window_for_found(cx: &mut App, status: String, package: Package) {
-    open_window_with(cx, false, Some((status, Some(package))));
+pub fn open_update_window_for_found(cx: &mut App, checked: Checked) {
+    open_window_with(cx, false, Some(checked));
 }
 
-fn open_window_with(cx: &mut App, focus: bool, preset: Option<(String, Option<Package>)>) {
+/// 窗口默认尺寸（逻辑像素）和最小尺寸：内容少时卡片按内容算高度，不留大片空白。
+const WINDOW_SIZE: (f32, f32) = (560., 600.);
+/// 窗口标题：自绘标题栏上的文字，也是任务栏 / Alt+Tab 里的系统标题（截图脚本按它找窗口）。
+const WINDOW_TITLE: &str = "检查更新";
+const WINDOW_MIN_SIZE: (f32, f32) = (480., 420.);
+
+fn open_window_with(cx: &mut App, focus: bool, preset: Option<Checked>) {
     let n = NEXT_UPDATE.fetch_add(1, Ordering::Relaxed);
     let ime_key = format!("update-window-{n}");
     let close_key = ime_key.clone();
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(
-            size(::gpui::px(640.), ::gpui::px(520.)),
+            size(::gpui::px(WINDOW_SIZE.0), ::gpui::px(WINDOW_SIZE.1)),
             cx,
         )),
+        window_min_size: Some(size(
+            ::gpui::px(WINDOW_MIN_SIZE.0),
+            ::gpui::px(WINDOW_MIN_SIZE.1),
+        )),
         focus,
+        // 标题栏自己画（跟着深 / 浅皮肤），系统不画。
+        titlebar: Some(::gpui::TitlebarOptions {
+            title: Some(WINDOW_TITLE.into()),
+            ..gpui_kit::component::TitleBar::title_bar_options()
+        }),
         ..Default::default()
     };
     let _ = cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| UpdateDemo::new(window, cx, ime_key, preset));
-        window.set_window_title("检查更新");
+        window.set_window_title(WINDOW_TITLE);
         window.on_window_should_close(cx, move |_window, _cx| {
             crate::ime::window_destroyed(&close_key);
             true
@@ -587,10 +574,6 @@ impl DownloadState {
     /// 只有空闲、失败或已取消时可以重新下载。
     fn can_start(&self) -> bool {
         matches!(self, Self::Idle | Self::Failed(_) | Self::Cancelled)
-    }
-
-    fn is_downloading(&self) -> bool {
-        matches!(self, Self::Downloading { .. })
     }
 
     fn text(&self) -> Option<String> {
@@ -683,8 +666,7 @@ enum DownloadEvent {
     /// 取清单的结果。
     Checked {
         generation: u64,
-        status: String,
-        package: Option<Package>,
+        checked: Checked,
     },
 }
 
@@ -884,11 +866,10 @@ async fn fetch_bytes(
 
 /// 取清单并判断有没有更新；结果经事件交给界面。
 async fn run_check(generation: u64, current: String, sender: Sender<DownloadEvent>) {
-    let (status, package) = check_for_update(&current).await;
+    let checked = check_for_update(&current).await;
     let _ = sender.send(DownloadEvent::Checked {
         generation,
-        status,
-        package,
+        checked,
     });
 }
 
@@ -983,13 +964,13 @@ async fn load_manifest_text(
 /// 读清单 + 选择包；读不到也算界面错误，不让窗口崩。
 ///
 /// 更新签名公钥是占位值时直接返回"更新签名未配置"，一个请求都不发。
-pub(crate) async fn check_for_update(current: &str) -> (String, Option<Package>) {
+pub(crate) async fn check_for_update(current: &str) -> Checked {
     let pubkey = update_pubkey();
     // 公钥不可用时先不建客户端（建客户端要读设置库）：下面 `check_with` 会原样返回原因。
     let client = if pubkey.is_ok() {
         match update_client() {
             Ok(client) => client,
-            Err(err) => return (format!("检查更新失败：{err}"), None),
+            Err(err) => return Checked::failed(format!("检查更新失败：{err}")),
         }
     } else {
         reqwest::Client::new()
@@ -1011,17 +992,17 @@ async fn check_with(
     client: &reqwest::Client,
     allow_insecure: bool,
     pubkey: Result<&str, &String>,
-) -> (String, Option<Package>) {
+) -> Checked {
     // 没有可用的验签公钥（占位值、内置配置坏了）就不发任何请求：后面下的包也验不了。
     match pubkey {
-        Err(message) => return (message.clone(), None),
+        Err(message) => return Checked::failed(message.clone()),
         Ok(key) if zssh_update::is_placeholder_pubkey(key) => {
-            return (SIGNING_UNCONFIGURED.to_owned(), None);
+            return Checked::failed(SIGNING_UNCONFIGURED);
         }
         Ok(_) => {}
     }
     if sources.is_empty() {
-        return ("未配置更新源".to_owned(), None);
+        return Checked::failed("未配置更新源");
     }
     let mut last_error = String::new();
     for source in sources {
@@ -1030,7 +1011,7 @@ async fn check_with(
             Err(err) => last_error = err,
         }
     }
-    (format!("读取更新说明失败：{last_error}"), None)
+    Checked::failed(format!("读取更新说明失败：{last_error}"))
 }
 
 /// 下载、校验、上报结果都在 runtime 线程里跑。
@@ -1255,6 +1236,17 @@ fn file_summary(path: &Path, size: u64) -> String {
 
 fn update_cache_dir() -> PathBuf {
     crate::settings::data_dir().join(CACHE_DIR)
+}
+
+/// 把「跳过此版本」写进本机设置（`update_skipped_version`，不参与同步）。
+fn record_skipped_version(version: &str) -> Result<(), String> {
+    let db = crate::hosts_demo::open_database().map_err(|err| format!("没能记住跳过：{err}"))?;
+    skip_version_in(&db, version)
+}
+
+/// [`record_skipped_version`] 的可注入版本（测试用内存库）。
+fn skip_version_in(db: &zssh_core::store::Database, version: &str) -> Result<(), String> {
+    zssh_core::updater::skip_version(db, version).map_err(|err| format!("没能记住跳过：{err}"))
 }
 
 fn current_exe_args() -> Vec<String> {
@@ -1581,19 +1573,35 @@ fn resolve_current_version(hook: Option<String>) -> String {
 }
 
 /// 解析清单并选包；选出的安装包地址也要过协议检查。
-fn evaluate_manifest(text: &str, current: &str, allow_insecure: bool) -> (String, Option<Package>) {
+fn evaluate_manifest(text: &str, current: &str, allow_insecure: bool) -> Checked {
     match zssh_update::parse_manifest(text) {
         Ok(manifest) => {
             let outcome = manifest.select(current);
             if let Ok(Some(package)) = &outcome
                 && let Err(err) = check_update_url(&package.url, allow_insecure)
             {
-                return (format!("检查更新失败：{err}"), None);
+                return Checked::failed(format!("检查更新失败：{err}"));
             }
-            let text = status_text(&outcome, manifest.notes.as_deref());
-            (text, outcome.ok().flatten())
+            let status = status_text(&outcome, manifest.notes.as_deref());
+            match outcome {
+                Ok(Some(package)) => Checked {
+                    kind: CheckKind::Found,
+                    status,
+                    package: Some(package),
+                    notes: manifest.notes,
+                    published: manifest.date,
+                },
+                Ok(None) => Checked {
+                    kind: CheckKind::Latest,
+                    status,
+                    package: None,
+                    notes: None,
+                    published: None,
+                },
+                Err(_) => Checked::failed(status),
+            }
         }
-        Err(err) => (status_text(&Err(err), None), None),
+        Err(err) => Checked::failed(status_text(&Err(err), None)),
     }
 }
 
@@ -1959,10 +1967,11 @@ mod tests {
     // ---- 协议、大小、超时、重定向 ----
 
     use super::{
-        DownloadFailure, MAX_REDIRECTS, ManifestSource, PUBKEY_UNAVAILABLE, SIGNING_UNCONFIGURED,
-        allow_insecure_sources, append_capped, check_update_url, evaluate_manifest, fetch_bytes,
-        launch_if_unchanged, redirect_allowed, resolve_current_version, resolve_manifest_sources,
-        resolve_pubkey, update_client_builder, verify_and_store,
+        CheckKind, Checked, DownloadFailure, MAX_REDIRECTS, ManifestSource, PUBKEY_UNAVAILABLE,
+        SIGNING_UNCONFIGURED, allow_insecure_sources, append_capped, check_update_url,
+        evaluate_manifest, fetch_bytes, launch_if_unchanged, redirect_allowed,
+        resolve_current_version, resolve_manifest_sources, resolve_pubkey, skip_version_in,
+        update_client_builder, verify_and_store,
     };
     use std::io::{Read as _, Write as _};
     use std::sync::atomic::AtomicBool;
@@ -2507,12 +2516,129 @@ mod tests {
             "version": "0.3.0",
             "platforms": { "windows-x86_64-nsis": { "url": "http://example.com/a.exe", "signature": "sig" } }
         }"#;
-        let (text, package) = evaluate_manifest(manifest, "0.2.14", false);
-        assert!(package.is_none());
-        assert!(text.contains("https"), "{text}");
+        let refused = evaluate_manifest(manifest, "0.2.14", false);
+        assert!(refused.package.is_none());
+        assert_eq!(refused.kind, CheckKind::Failed);
+        assert!(refused.status.contains("https"), "{}", refused.status);
         // 调试配置放行同一份清单。
-        let (_, package) = evaluate_manifest(manifest, "0.2.14", true);
-        assert!(package.is_some());
+        let allowed = evaluate_manifest(manifest, "0.2.14", true);
+        assert!(allowed.package.is_some());
+        assert_eq!(allowed.kind, CheckKind::Found);
+    }
+
+    const FOUND_MANIFEST: &str = r####"{
+        "version": "0.3.1",
+        "notes": "### 新增\n- 更新窗口有了版式",
+        "pub_date": "2026-11-03T08:00:00Z",
+        "platforms": { "windows-x86_64": { "url": "https://example.com/a.exe", "signature": "sig" } }
+    }"####;
+
+    #[test]
+    fn a_found_update_carries_the_notes_and_the_release_date_for_the_window() {
+        let checked = evaluate_manifest(FOUND_MANIFEST, "0.2.14", false);
+        assert_eq!(checked.kind, CheckKind::Found);
+        assert_eq!(
+            checked.package.as_ref().map(|p| p.version.as_str()),
+            Some("0.3.1")
+        );
+        assert_eq!(
+            checked.notes.as_deref(),
+            Some("### 新增\n- 更新窗口有了版式")
+        );
+        assert_eq!(checked.published.as_deref(), Some("2026-11-03T08:00:00Z"));
+    }
+
+    #[test]
+    fn latest_and_failures_have_no_package_and_no_notes() {
+        let latest = evaluate_manifest(FOUND_MANIFEST, "0.3.1", false);
+        assert_eq!(latest.kind, CheckKind::Latest);
+        assert_eq!(latest.status, "已是最新版本");
+        assert!(latest.package.is_none() && latest.notes.is_none() && latest.published.is_none());
+
+        let broken = evaluate_manifest("这不是 JSON", "0.2.14", false);
+        assert_eq!(broken.kind, CheckKind::Failed);
+        assert!(
+            broken.status.contains("更新说明格式错误"),
+            "{}",
+            broken.status
+        );
+        assert!(broken.package.is_none());
+
+        let no_platform = r#"{ "version": "0.3.1", "platforms": {} }"#;
+        let failed = evaluate_manifest(no_platform, "0.2.14", false);
+        assert_eq!(failed.kind, CheckKind::Failed);
+        assert!(failed.status.contains("没有适用于当前平台"));
+    }
+
+    #[test]
+    fn the_failure_reason_drops_the_title_prefix_only() {
+        let failed = Checked::failed("检查更新失败：没有适用于当前平台的安装包");
+        assert_eq!(failed.failure_reason(), "没有适用于当前平台的安装包");
+        let other =
+            Checked::failed("读取更新说明失败：下载失败：服务器上找不到这个文件（HTTP 404）");
+        assert_eq!(
+            other.failure_reason(),
+            "读取更新说明失败：下载失败：服务器上找不到这个文件（HTTP 404）"
+        );
+        assert_eq!(
+            Checked::failed(SIGNING_UNCONFIGURED).failure_reason(),
+            SIGNING_UNCONFIGURED
+        );
+    }
+
+    #[test]
+    fn skipping_a_version_is_remembered_and_the_auto_check_stops_announcing_it() {
+        use zssh_core::store::Database;
+        use zssh_core::updater::{UpdatePrefs, load_prefs, should_announce};
+
+        let db = Database::open_in_memory().expect("内存库");
+        let before = load_prefs(&db).expect("读偏好");
+        assert_eq!(before, UpdatePrefs::default());
+        assert!(crate::update_auto::should_announce_found(
+            &before,
+            "0.2.14",
+            &package(),
+            None
+        ));
+
+        // 窗口里的包是 0.3.0；点「跳过此版本」写的是它的版本号。
+        skip_version_in(&db, &package().version).expect("写入设置");
+        let after = load_prefs(&db).expect("读偏好");
+        assert_eq!(after.skipped_version.as_deref(), Some("0.3.0"));
+        assert!(
+            !crate::update_auto::should_announce_found(&after, "0.2.14", &package(), None),
+            "跳过的版本，自动检查不再提示"
+        );
+        // 更新的版本照常提示；手动「检查更新」不受跳过影响（用户主动问了就如实告诉他）。
+        let newer = Package {
+            version: "0.3.1".to_owned(),
+            ..package()
+        };
+        assert!(crate::update_auto::should_announce_found(
+            &after, "0.2.14", &newer, None
+        ));
+        assert!(should_announce(&after, "0.2.14", "0.3.0", true));
+        // 带 v 前缀的写法也认。
+        skip_version_in(&db, "v0.3.1").expect("写入设置");
+        assert_eq!(
+            load_prefs(&db).expect("读偏好").skipped_version.as_deref(),
+            Some("0.3.1")
+        );
+    }
+
+    #[test]
+    fn the_window_hands_the_text_view_sanitised_notes_or_nothing() {
+        assert_eq!(super::notes::display_markdown(None), None);
+        assert_eq!(super::notes::display_markdown(Some("  \n ")), None);
+        let shown = super::notes::display_markdown(Some(
+            "### 新增\n\n<script>x()</script>\n\n![图](http://e.com/a.png)",
+        ))
+        .expect("有说明");
+        assert!(shown.starts_with("### 新增"));
+        // 标签被转义成字面文字：每个 `<` 前都有反斜杠，不会被当成 HTML。
+        assert!(shown.contains(r"\<script"), "{shown}");
+        assert!(!shown.replace(r"\<", "").contains('<'), "{shown}");
+        assert!(!shown.contains("!["), "{shown}");
     }
 }
 

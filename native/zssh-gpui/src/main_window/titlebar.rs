@@ -638,6 +638,15 @@ impl MainWindow {
 /// 最小化 / 最大化（还原）/ 关闭：点击由系统按 `WindowControlArea` 处理，关闭走窗口的
 /// `on_window_should_close`（关到托盘或退出，见 `main.rs`）。
 pub(crate) fn window_controls(tokens: &Tokens, maximized: bool) -> impl IntoElement {
+    window_controls_with(tokens, maximized, true)
+}
+
+/// 同 [`window_controls`]，`with_maximize` 为假时不放最大化按钮（固定用途的小窗口，如更新窗口：只有最小化 / 关闭）。
+pub(crate) fn window_controls_with(
+    tokens: &Tokens,
+    maximized: bool,
+    with_maximize: bool,
+) -> impl IntoElement {
     let hover = tokens.hover;
     let text = tokens.text;
     let danger = tokens.danger;
@@ -670,16 +679,18 @@ pub(crate) fn window_controls(tokens: &Tokens, maximized: bool) -> impl IntoElem
             IconName::WindowMinimize,
             false,
         ))
-        .child(button(
-            "win-max",
-            WindowControlArea::Max,
-            if maximized {
-                IconName::WindowRestore
-            } else {
-                IconName::WindowMaximize
-            },
-            false,
-        ))
+        .when(with_maximize, |row| {
+            row.child(button(
+                "win-max",
+                WindowControlArea::Max,
+                if maximized {
+                    IconName::WindowRestore
+                } else {
+                    IconName::WindowMaximize
+                },
+                false,
+            ))
+        })
         .child(button(
             "win-close",
             WindowControlArea::Close,

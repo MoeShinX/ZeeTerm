@@ -10555,6 +10555,7 @@ dependencies = [
  "gpui-kit",
  "gpui-pre",
  "image",
+ "markdown",
  "minisign",
  "rand 0.10.3",
  "raw-window-handle",

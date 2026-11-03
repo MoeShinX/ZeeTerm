@@ -11,6 +11,8 @@ futures = "0.3"
 gpui-kit = { version = "=0.8.1", features = ["syntect"] }
 gpui = { package = "gpui-pre", version = "=0.3.10" }
 image = { version = "0.25", default-features = false, features = ["png"] }
+# 更新说明显示前先用它解析、改写（去 HTML / 图片 / 非 https 链接），版本与 gpui-base 用的是同一个。
+markdown = "1.0.0"
 raw-window-handle = "0.6"
 reqwest = { version = "0.12", default-features = false, features = [
     "default-tls",
