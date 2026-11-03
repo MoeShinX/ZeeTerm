@@ -8,7 +8,8 @@
 //! - `host_telnet:<项>:<值>`（`newline` `echo` `naws` `encoding` `auto_login` `raw_tcp`）、
 //!   `host_serial:<项>:<值>`（`data_bits` `parity` `stop_bits` `flow` `newline` `echo` `encoding`）；
 //! - `host_ports:refresh`、`host_ports:pick:<设备名>`；
-//! - `assert_host_form:<项>:<值>`：`protocol` `port` `username` `advanced` `device` `error.<字段>`（值是
+//! - `assert_host_form:<项>:<值>`：`protocol` `port` `username` `advanced` `device` `auth_fields`
+//!   （认证类别的字段 id，逗号分隔）`error.<字段>`（值是
 //!   错误里应有的文字，`none` = 没有错误）；
 //! - `x11_choose:<settings|skip>`：点「需要 X 显示程序」提示里的选项（**没有 install**：自动化不碰真实安装）；
 //! - `x11_fake:<idle|downloading|installing|failed|cancelled>`：把安装进度摆成这个样子（只改界面状态，
@@ -18,7 +19,7 @@
 //! - `assert_n4:<项>:<值>`：`status_host`（`none` / `some`，状态栏订阅的主机）`active_caps`
 //!   （活动标签的 `ssh`/`serial`/`other`）；
 //! - `assert_stored:<@主机>:<项>:<值>`：从库里**重新读**主机检查（`protocol` `detail` `x11` `device`
-//!   `baud` `username` `port` `host` `telnet.newline` `telnet.auto_login` ...）。
+//!   `baud` `username` `port` `host` `identity_name`（关联的身份名）`telnet.newline` `telnet.auto_login` ...）。
 
 #[cfg(debug_assertions)]
 mod real {
@@ -390,6 +391,12 @@ mod real {
                         _ => String::new(),
                     },
                     "dirty" => this.host_props_dirty(cx).to_string(),
+                    // 认证类别现在显示哪些字段（V2-U11：密码认证没有「保存的凭据」）。
+                    "auth_fields" => super::super::host_form::auth_fields(form.protocol, form.auth)
+                        .iter()
+                        .map(|item| item.id())
+                        .collect::<Vec<_>>()
+                        .join(","),
                     "device" => form.serial.device.read(cx).value().to_string(),
                     "x11" => form.x11.to_string(),
                     "ports" => form.serial.ports.len().to_string(),
@@ -421,6 +428,11 @@ mod real {
                     "username" => host.username.clone(),
                     "port" => host.port.to_string(),
                     "host" => host.host.clone(),
+                    // 关联的身份名（`none` = 没有关联）；只给名字，不碰密文。
+                    "identity_name" => host
+                        .identity_id
+                        .and_then(|id| this.store.identities().iter().find(|item| item.id == id))
+                        .map_or_else(|| "none".to_owned(), |item| item.name.clone()),
                     "telnet.newline" => host
                         .protocol
                         .telnet

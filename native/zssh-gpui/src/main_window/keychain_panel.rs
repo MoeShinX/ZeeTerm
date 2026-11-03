@@ -11,7 +11,7 @@ use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use zssh_core::model::{Identity, IdentityKind};
+use zssh_core::model::{Host, Identity, IdentityKind};
 
 use super::MainWindow;
 use super::identity_form::{
@@ -85,6 +85,31 @@ pub fn identity_matches(identity: &Identity, kind: Option<IdentityKind>, query: 
             .key_path
             .as_deref()
             .is_some_and(|path| path.to_lowercase().contains(&query))
+}
+
+/// 列表里一条凭据的副标题：类型（私钥带路径）；密码身份再带上用它的主机（V2-U11：主机的密码归主机，
+/// 在这里能认出是哪台的）。只读显示，三台以上写前两台和总数。
+pub fn identity_detail(identity: &Identity, hosts: &[Host]) -> String {
+    let mut detail = kind_label(identity.kind).to_owned();
+    if let Some(path) = &identity.key_path {
+        detail.push_str(&format!(" · {path}"));
+    }
+    if identity.kind == IdentityKind::Password {
+        let users: Vec<&str> = hosts
+            .iter()
+            .filter(|host| host.identity_id == Some(identity.id))
+            .map(|host| host.name.as_str())
+            .collect();
+        match users.as_slice() {
+            [] => {}
+            [one, two] => detail.push_str(&format!(" · 主机：{one}、{two}")),
+            [one] => detail.push_str(&format!(" · 主机：{one}")),
+            [first, second, ..] => {
+                detail.push_str(&format!(" · 主机：{first}、{second} 等 {} 台", users.len()))
+            }
+        }
+    }
+    detail
 }
 
 impl MainWindow {
@@ -414,15 +439,7 @@ impl MainWindow {
             let id = identity.id;
             let selected = ui.selected == Some(id);
             let snapshot = (*identity).clone();
-            let detail = format!(
-                "{}{}",
-                kind_label(identity.kind),
-                identity
-                    .key_path
-                    .as_ref()
-                    .map(|path| format!(" · {path}"))
-                    .unwrap_or_default()
-            );
+            let detail = identity_detail(identity, self.store.hosts());
             let hover = tokens.hover;
             h_flex()
                 .id(("identity-row", id as usize))
@@ -734,8 +751,8 @@ impl MainWindow {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::identity_matches;
-    use zssh_core::model::{Identity, IdentityKind};
+    use super::{identity_detail, identity_matches};
+    use zssh_core::model::{Host, Identity, IdentityKind};
 
     fn identity(name: &str, kind: IdentityKind, path: Option<&str>) -> Identity {
         Identity {
@@ -766,5 +783,55 @@ mod tests {
             Some(IdentityKind::Password),
             "laptop"
         ));
+    }
+
+    fn host_using(id: i64, name: &str, identity_id: i64) -> Host {
+        Host {
+            protocol: zssh_core::model::ProtocolSettings::default(),
+            id,
+            group_id: None,
+            name: name.to_owned(),
+            host: "192.0.2.10".to_owned(),
+            port: 22,
+            username: "ops".to_owned(),
+            auth_method: zssh_core::model::AuthMethod::Password,
+            identity_id: Some(identity_id),
+            proxy_id: None,
+            jump_host_id: None,
+            proxy_mode: zssh_core::model::ProxyMode::None,
+            tags: Vec::new(),
+            sort: 0,
+            legacy_algorithms: false,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn a_password_shows_which_host_uses_it() {
+        let pw = identity("web-1 的密码", IdentityKind::Password, None);
+        assert_eq!(identity_detail(&pw, &[]), "密码", "没有主机在用：只写类型");
+        let hosts = [host_using(10, "web-1", 1), host_using(11, "db-1", 2)];
+        assert_eq!(identity_detail(&pw, &hosts), "密码 · 主机：web-1");
+        let shared = [
+            host_using(10, "web-1", 1),
+            host_using(11, "web-2", 1),
+            host_using(12, "web-3", 1),
+        ];
+        assert_eq!(
+            identity_detail(&pw, &shared[..2]),
+            "密码 · 主机：web-1、web-2"
+        );
+        assert_eq!(
+            identity_detail(&pw, &shared),
+            "密码 · 主机：web-1、web-2 等 3 台"
+        );
+    }
+
+    #[test]
+    fn keys_do_not_list_hosts() {
+        let key = identity("laptop", IdentityKind::KeyFile, Some("keys/id_demo"));
+        let hosts = [host_using(10, "web-1", 1)];
+        assert_eq!(identity_detail(&key, &hosts), "私钥文件 · keys/id_demo");
     }
 }

@@ -1,6 +1,6 @@
 //! 主机「属性」对话框（V2-U7）：在当前页面上居中弹出，左边是类别、右边是这个类别的字段，底部
 //! 「确定 / 连接 / 取消」。交互形态借自 Xshell 的会话属性对话框，字段全是 ZeeTerm 原来的主机表单里的
-//! （名称、协议、地址、端口、分组、认证、凭据、代理、跳板机、X11、Telnet / 串口选项、指纹、AI 记忆），
+//! （名称、协议、地址、端口、分组、认证、代理、跳板机、X11、Telnet / 串口选项、指纹、AI 记忆），
 //! 一个没加；原来折叠的「高级设置」拆进了对应的类别，不再折叠。
 //!
 //! 外壳（遮罩、卡片）在 `modal::render_modal`；表单状态、保存、类别切换在 `host_panel`，类别列表和错误落点
@@ -15,10 +15,13 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use zssh_core::ai::host_memory::MAX_MEMORY_CHARS;
-use zssh_core::model::{AuthMethod, Host, Protocol, ProxyKind, ProxyMode};
+use zssh_core::model::{AuthMethod, Host, IdentityKind, Protocol, ProxyKind, ProxyMode};
 
 use super::MainWindow;
-use super::host_form::{auth_label, can_reveal, identity_fits_auth, password_hint};
+use super::host_form::{
+    AuthField, auth_fields, auth_label, can_reveal, password_hint, password_identity,
+    pickable_identities,
+};
 use super::host_panel::HostForm;
 use super::host_props::{self, Category};
 use super::page_logic::{flatten_groups, ungrouped_option_label};
@@ -770,7 +773,10 @@ impl MainWindow {
         .into_any_element()
     }
 
-    /// 认证：用户名、认证方式（SSH）、保存的凭据、密码；Telnet 还有自动登录。
+    /// 认证：用户名、认证方式（SSH）、按方式出现的字段；Telnet 还有自动登录。
+    ///
+    /// 密码归主机（V2-U11）：密码认证只有「密码」一个框，没有「选凭据」；私钥认证才从凭据库选密钥。
+    /// 字段顺序由 `host_form::auth_fields` 定（有单测，窗口级断言 `assert_host_form:auth_fields`）。
     fn rows_auth(
         &self,
         form: &HostForm,
@@ -778,47 +784,76 @@ impl MainWindow {
         tokens: &Tokens,
         cx: &App,
     ) -> Vec<AnyElement> {
-        let vis = protocol_form::visible(form.protocol);
         let telnet = form.protocol == Protocol::Telnet;
-        let existing = form.existing.as_ref();
-        let effective = if vis.auth_method {
-            form.auth
-        } else {
-            AuthMethod::Password
-        };
-        let identity = form
-            .identity
-            .and_then(|id| self.store.identities().iter().find(|item| item.id == id));
+        let effective = form.effective_auth();
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for item in auth_fields(form.protocol, form.auth) {
+            match item {
+                AuthField::Username => rows.push(
+                    field_with_error(
+                        "用户名",
+                        telnet.then(|| "可以不填".to_owned()),
+                        Input::new(&form.username),
+                        form.error_of(FormField::Username),
+                        tokens,
+                    )
+                    .into_any_element(),
+                ),
+                AuthField::Method => rows.push(self.auth_method_row(form, entity, tokens)),
+                AuthField::Password => {
+                    rows.push(self.password_row(form, entity, tokens, cx, telnet, effective))
+                }
+                AuthField::KeyPicker | AuthField::AgentPicker => {
+                    rows.push(self.identity_picker_row(form, entity, tokens, effective))
+                }
+                AuthField::AutoLogin => {
+                    rows.extend(self.telnet_auto_login_rows(form, entity, tokens))
+                }
+            }
+        }
+        rows
+    }
+
+    fn auth_method_row(
+        &self,
+        form: &HostForm,
+        entity: &Entity<MainWindow>,
+        tokens: &Tokens,
+    ) -> AnyElement {
         let auth_methods = [AuthMethod::Password, AuthMethod::Key, AuthMethod::Agent];
         let auth_choices: Vec<Choice> = auth_methods
             .iter()
             .map(|m| Choice::new(auth_label(*m), *m == form.auth))
             .collect();
-        let fitting: Vec<&zssh_core::model::Identity> = self
-            .store
-            .identities()
-            .iter()
-            .filter(|item| identity_fits_auth(item.kind, effective))
-            .collect();
-        let describe = |item: &zssh_core::model::Identity| {
-            format!(
-                "{}{}",
-                item.name,
-                if item.has_secret {
-                    ""
-                } else {
-                    "（没有密码）"
-                }
-            )
-        };
-        let mut identity_choices = vec![Choice::new("不用", form.identity.is_none())];
-        let mut identity_targets: Vec<Option<i64>> = vec![None];
-        for item in &fitting {
-            identity_choices.push(Choice::new(describe(item), form.identity == Some(item.id)));
-            identity_targets.push(Some(item.id));
-        }
-        let identity_label = identity.map_or_else(|| "不用".to_owned(), describe);
+        field(
+            "认证方式",
+            None,
+            select(
+                "host-auth",
+                auth_label(form.auth),
+                auth_choices,
+                pick(entity, move |this, index, window, cx| {
+                    if let Some(method) = auth_methods.get(index).copied() {
+                        this.host_set_auth(method, window, cx);
+                    }
+                }),
+            ),
+            tokens,
+        )
+        .into_any_element()
+    }
 
+    /// 密码框（带小眼睛）：存的是这台主机自己的密码，留空表示不改。
+    fn password_row(
+        &self,
+        form: &HostForm,
+        entity: &Entity<MainWindow>,
+        tokens: &Tokens,
+        cx: &App,
+        telnet: bool,
+        effective: AuthMethod,
+    ) -> AnyElement {
+        let identity = password_identity(form.existing.as_ref(), self.store.identities());
         let revealable = can_reveal(identity, effective);
         let has_text = !form.password.read(cx).value().is_empty();
         let eye = (revealable || has_text).then(|| {
@@ -840,68 +875,12 @@ impl MainWindow {
                 }))
         });
         let hint = password_hint(
-            existing.is_some(),
+            form.existing.is_some(),
             identity.is_some_and(|item| item.has_secret),
         );
-
-        let mut rows: Vec<AnyElement> = vec![
-            field_with_error(
-                "用户名",
-                telnet.then(|| "可以不填".to_owned()),
-                Input::new(&form.username),
-                form.error_of(FormField::Username),
-                tokens,
-            )
-            .into_any_element(),
-        ];
-        if vis.auth_method {
-            rows.push(
-                field(
-                    "认证方式",
-                    None,
-                    select(
-                        "host-auth",
-                        auth_label(form.auth),
-                        auth_choices,
-                        pick(entity, move |this, index, window, cx| {
-                            if let Some(method) = auth_methods.get(index).copied() {
-                                this.host_set_auth(method, window, cx);
-                            }
-                        }),
-                    ),
-                    tokens,
-                )
-                .into_any_element(),
-            );
-        }
-        rows.push(
-            v_flex()
-                .gap_1p5()
-                .child(field_with_error(
-                    "保存的凭据",
-                    telnet.then(|| "可选，只能选密码凭据".to_owned()),
-                    select(
-                        "host-identity",
-                        identity_label,
-                        identity_choices,
-                        pick(entity, move |this, index, window, cx| {
-                            if let Some(target) = identity_targets.get(index).copied() {
-                                this.host_set_identity(target, window, cx);
-                            }
-                        }),
-                    ),
-                    form.error_of(FormField::Identity),
-                    tokens,
-                ))
-                .children(
-                    form.mismatch_note
-                        .clone()
-                        .map(|text| error_note(text, tokens.danger)),
-                )
-                .into_any_element(),
-        );
-        rows.push(
-            field_with_error(
+        v_flex()
+            .gap_1p5()
+            .child(field_with_error(
                 "密码",
                 Some(if telnet {
                     format!("{hint}；开了自动登录才会用到")
@@ -916,22 +895,74 @@ impl MainWindow {
                     .children(eye),
                 form.error_of(FormField::Password),
                 tokens,
+            ))
+            // 核心库报的凭据错误（密码认证下没有下拉可挂）显示在密码框下面。
+            .children(
+                form.error_of(FormField::Identity)
+                    .map(|text| error_note(text.to_owned(), tokens.danger)),
             )
-            .into_any_element(),
-        );
-        rows.push(toggle_row(
-            entity,
-            "host-remember",
-            "没有选凭据时，把密码存成一条新凭据",
-            None,
-            form.remember,
-            |form, value| form.remember = value,
-            tokens,
-        ));
-        if telnet {
-            rows.extend(self.telnet_auto_login_rows(form, entity, tokens));
+            .into_any_element()
+    }
+
+    /// 私钥认证：从凭据库选密钥（只列密钥类）；ssh-agent 认证：可选的 agent 凭据。
+    fn identity_picker_row(
+        &self,
+        form: &HostForm,
+        entity: &Entity<MainWindow>,
+        tokens: &Tokens,
+        effective: AuthMethod,
+    ) -> AnyElement {
+        let key = effective == AuthMethod::Key;
+        let fitting = pickable_identities(self.store.identities(), effective);
+        let describe = |item: &zssh_core::model::Identity| {
+            if item.kind == IdentityKind::Agent || item.has_secret || item.key_path.is_some() {
+                item.name.clone()
+            } else {
+                format!("{}（没有内容）", item.name)
+            }
+        };
+        let empty_label = if key { "（请选择）" } else { "不用" };
+        let mut choices = vec![Choice::new(empty_label, form.identity.is_none())];
+        let mut targets: Vec<Option<i64>> = vec![None];
+        for item in &fitting {
+            choices.push(Choice::new(describe(item), form.identity == Some(item.id)));
+            targets.push(Some(item.id));
         }
-        rows
+        let label = form
+            .identity
+            .and_then(|id| fitting.iter().find(|item| item.id == id))
+            .map_or_else(|| empty_label.to_owned(), |item| describe(item));
+        let hint = if key {
+            fitting
+                .is_empty()
+                .then(|| "凭据库里还没有密钥：先到「管理 → 凭据」导入或生成一把".to_owned())
+        } else {
+            Some("可选".to_owned())
+        };
+        v_flex()
+            .gap_1p5()
+            .child(field_with_error(
+                if key { "密钥" } else { "ssh-agent 凭据" },
+                hint,
+                select(
+                    "host-identity",
+                    label,
+                    choices,
+                    pick(entity, move |this, index, window, cx| {
+                        if let Some(target) = targets.get(index).copied() {
+                            this.host_set_identity(target, window, cx);
+                        }
+                    }),
+                ),
+                form.error_of(FormField::Identity),
+                tokens,
+            ))
+            .children(
+                form.mismatch_note
+                    .clone()
+                    .map(|text| error_note(text, tokens.danger)),
+            )
+            .into_any_element()
     }
 
     /// Telnet 的自动登录：开关、用户名 / 密码提示词、错误。
@@ -947,7 +978,7 @@ impl MainWindow {
             "telnet-auto-login",
             "自动登录",
             Some(
-                "看到用户名 / 密码提示就自动发送；用户名取上面的「用户名」，密码取选中的凭据或上面输入的密码。",
+                "看到用户名 / 密码提示就自动发送；用户名取上面的「用户名」，密码取上面的「密码」。",
             ),
             telnet.auto_login,
             |form, value| form.telnet.auto_login = value,

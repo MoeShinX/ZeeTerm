@@ -19,8 +19,8 @@ use zssh_core::model::{
 use super::MainWindow;
 use super::host_dialog::HostPropsDialog;
 use super::host_form::{
-    FormInput, IdentityAction, SerialInput, TelnetInput, can_reveal, initial_proxy_mode,
-    mismatch_note, plan_save,
+    FormInput, SerialInput, TelnetInput, can_reveal, initial_proxy_mode, mismatch_note,
+    password_identity, plan_save,
 };
 use super::host_props::{self, Category};
 use super::modal::Modal;
@@ -75,11 +75,11 @@ pub struct HostForm {
     pub password: Entity<InputState>,
     pub group: Option<i64>,
     pub auth: AuthMethod,
+    /// 私钥 / ssh-agent 认证时选的凭据；密码认证不用它（密码归主机，见 `host_form`）。
     pub identity: Option<i64>,
     pub proxy_mode: ProxyMode,
     pub proxy: Option<i64>,
     pub jump: Option<i64>,
-    pub remember: bool,
     pub legacy: bool,
     pub protocol: Protocol,
     pub x11: bool,
@@ -190,12 +190,14 @@ impl HostForm {
             password,
             group: host.map_or(group, |h| h.group_id),
             auth: host.map_or(AuthMethod::Password, |h| h.auth_method),
-            identity: host.and_then(|h| h.identity_id),
+            // 只有私钥 / agent 主机的关联才进「选凭据」下拉；密码主机的密码身份由保存规则管。
+            identity: host
+                .filter(|h| h.auth_method != AuthMethod::Password)
+                .and_then(|h| h.identity_id),
             // 新建主机默认跟随全局默认代理（用户 11-03 定）；编辑已有主机显示它保存的值。
             proxy_mode: initial_proxy_mode(host),
             proxy: host.and_then(|h| h.proxy_id),
             jump: host.and_then(|h| h.jump_host_id),
-            remember: true,
             legacy: host.is_some_and(|h| h.legacy_algorithms),
             protocol,
             x11: settings.x11_forwarding,
@@ -210,6 +212,15 @@ impl HostForm {
             mismatch_note: None,
             fingerprint: None,
             memory,
+        }
+    }
+
+    /// 真正生效的认证方式：SSH 按下拉，Telnet 恒为密码。
+    pub fn effective_auth(&self) -> AuthMethod {
+        if self.protocol == Protocol::Ssh {
+            self.auth
+        } else {
+            AuthMethod::Password
         }
     }
 
@@ -251,7 +262,6 @@ impl HostForm {
                 self.proxy_mode,
                 self.proxy,
                 self.jump,
-                self.remember,
                 self.legacy,
                 self.protocol,
                 self.x11,
@@ -411,23 +421,6 @@ impl MainWindow {
         if protocol == Protocol::Serial {
             form.serial.ports = protocol_form::list_ports();
         }
-        // Telnet 只能选密码凭据：之前选的私钥 / agent 凭据取消选择并说明。
-        if protocol == Protocol::Telnet {
-            form.mismatch_note = None;
-            let wrong = form.identity.and_then(|id| {
-                self.store
-                    .identities()
-                    .iter()
-                    .find(|item| item.id == id && item.kind != IdentityKind::Password)
-                    .map(|item| item.name.clone())
-            });
-            if let Some(name) = wrong {
-                form.identity = None;
-                form.mismatch_note = Some(format!(
-                    "凭据「{name}」不是密码凭据，Telnet 主机只能选密码凭据，已取消选择"
-                ));
-            }
-        }
         self.fit_host_category();
         cx.notify();
     }
@@ -480,16 +473,16 @@ impl MainWindow {
                 .find(|item| item.id == id)
                 .cloned()
         });
-        if let Some(item) = &identity
+        // 密码认证不选凭据（选过的密钥留着，切回私钥时还在）；私钥 / agent 之间切换时类型对不上就取消选择。
+        if form.auth != AuthMethod::Password
+            && let Some(item) = &identity
             && let Some(note) = mismatch_note(item, form.auth)
         {
             form.mismatch_note = Some(note);
             form.identity = None;
         }
-        let still_valid = matches!(
-            (&form.revealed, form.identity),
-            (Some((id, _)), Some(current)) if *id == current
-        ) && form.auth == AuthMethod::Password;
+        // 取回来的明文只在密码认证下有意义。
+        let still_valid = form.revealed.is_some() && form.effective_auth() == AuthMethod::Password;
         if !still_valid && let Some((_, value)) = form.revealed.take() {
             form.password_shown = false;
             let password = form.password.clone();
@@ -540,15 +533,10 @@ impl MainWindow {
             return;
         }
         let empty = password.read(cx).value().is_empty();
-        let identity = form.identity.and_then(|id| {
-            self.store
-                .identities()
-                .iter()
-                .find(|item| item.id == id)
-                .cloned()
-        });
+        // 小眼睛取的是这台主机自己的密码身份（表单里没有选它的地方）。
+        let identity = password_identity(form.existing.as_ref(), self.store.identities()).cloned();
         if empty
-            && can_reveal(identity.as_ref(), form.auth)
+            && can_reveal(identity.as_ref(), form.effective_auth())
             && let Some(identity) = identity
         {
             match self.store.db().and_then(|db| {
@@ -711,7 +699,6 @@ impl MainWindow {
             proxy_mode: form.proxy_mode,
             proxy: form.proxy,
             jump: form.jump,
-            remember: form.remember,
             legacy: form.legacy,
             protocol: form.protocol,
             x11: form.x11,
@@ -753,39 +740,21 @@ impl MainWindow {
             .revealed
             .as_ref()
             .map(|(id, value)| (*id, value.as_str()));
-        let plan = match plan_save(&input, existing.as_ref(), self.store.identities(), revealed) {
+        let plan = match plan_save(
+            &input,
+            existing.as_ref(),
+            self.store.identities(),
+            self.store.hosts(),
+            revealed,
+        ) {
             Ok(plan) => plan,
             Err(error) => {
                 self.show_form_error(error.field, &error.message, window, cx);
                 return;
             }
         };
-        let mut draft = plan.draft;
-        // 先动凭据库（填了新密码时），再存主机。
-        let identity_result: Result<(), String> = match plan.identity {
-            IdentityAction::None => Ok(()),
-            IdentityAction::Overwrite { id, draft: lite } => self
-                .store
-                .db()
-                .and_then(|db| {
-                    db.identity_save(&lite.into_draft(Some(id)))
-                        .map_err(|e| e.to_string())
-                })
-                .map(|_| ()),
-            IdentityAction::Create { draft: lite } => self
-                .store
-                .db()
-                .and_then(|db| {
-                    db.identity_save(&lite.into_draft(None))
-                        .map_err(|e| e.to_string())
-                })
-                .map(|created| draft.identity_id = Some(created.id)),
-        };
-        if let Err(err) = identity_result {
-            self.notice_error(&err, window, cx);
-            return;
-        }
-        match self.store.save_host(&draft) {
+        // 先动这台主机的密码身份，再存主机，最后释放不再用的独占密码（见 `host_form::apply_save`）。
+        match self.store.save_host_plan(plan) {
             Ok(saved) => {
                 self.close_host_props_now();
                 self.focus_content(window, cx);

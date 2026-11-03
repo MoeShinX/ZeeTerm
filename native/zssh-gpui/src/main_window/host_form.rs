@@ -2,6 +2,10 @@
 //! 是否配套。规则取自 0.2.14 的 `HostDetailsPanel.tsx` 和 `authIdentity.ts`，并保留 V2-F3 的
 //! 修复（保存已有主机时未展示的字段 `tags` / `sort` 取库里的原值，不丢）。
 //!
+//! V2-U11 起**密码归主机自己**（同 Xshell）：表单里没有「选哪条密码凭据」，主机的密码就是库里一条
+//! 名为「<主机名> 的密码」的密码身份，由 [`plan_save`] 在保存时新建 / 覆盖 / 改名 / 释放；
+//! 密钥是共享资源，认证方式选私钥 / ssh-agent 时仍从凭据库里选。
+//!
 //! 不依赖 GPUI：单测直接盯这些规则。
 
 use zssh_core::model::{
@@ -9,6 +13,7 @@ use zssh_core::model::{
     ProtocolSettings, ProxyMode, SerialDataBits, SerialFlowControl, SerialNewline, SerialOptions,
     SerialParity, SerialStopBits, TelnetNewline, TelnetOptions, TextEncoding,
 };
+use zssh_core::store::Database;
 
 use super::host_store::normalize_address;
 use super::protocol_form::{FieldError, FormField, parse_baud, parse_patterns};
@@ -44,12 +49,12 @@ pub struct FormInput<'a> {
     pub password: &'a str,
     pub group: Option<i64>,
     pub auth: AuthMethod,
+    /// 私钥 / ssh-agent 认证时选的凭据（密钥或 agent）。密码认证不看它：主机的密码身份是
+    /// 已有主机自己关联的那条（见 [`password_identity`]），表单里没有选它的地方。
     pub identity: Option<i64>,
     pub proxy_mode: ProxyMode,
     pub proxy: Option<i64>,
     pub jump: Option<i64>,
-    /// 没有选凭据时，把密码存成一条新凭据。
-    pub remember: bool,
     pub legacy: bool,
     pub protocol: Protocol,
     /// X11 转发（只对 SSH 有意义，别的协议保存时忽略）。
@@ -168,15 +173,17 @@ impl FormInput<'_> {
     }
 }
 
-/// 保存前要对凭据库做的事。
+/// 保存前要对凭据库做的事（只涉及这台主机的密码身份）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IdentityAction {
     /// 不动凭据库。
     None,
-    /// 选了凭据：用填的密码覆盖它的密码。
+    /// 这台主机独占的密码身份：用填的密码覆盖它（名称可能顺带跟着主机改名）。
     Overwrite { id: i64, draft: IdentityDraftLite },
-    /// 没选凭据且打开了「存成新凭据」：新建一条。
+    /// 新建一条「<名称> 的密码」并关联到这台主机。
     Create { draft: IdentityDraftLite },
+    /// 密码没改，只是主机改了名：独占的、名字还是「<旧名> 的密码」的那条跟着改名（密文不动）。
+    Rename { id: i64, name: String },
 }
 
 /// 密码凭据草稿里需要的几项（完整草稿在调用方拼，这里只描述要存什么）。
@@ -209,20 +216,114 @@ impl IdentityDraftLite {
     }
 }
 
-/// 保存要做的全部：先（可能）动凭据库，再存主机。
+/// 保存要做的全部：先（可能）动凭据库，再存主机，最后（可能）释放它不再用的独占密码。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavePlan {
     pub identity: IdentityAction,
+    /// 主机存好之后要删的旧密码身份：认证方式从密码改成私钥 / agent 时，原来那条只有这台主机在用的。
+    /// 删之前 `identity_delete` 还会再查一次引用，被别处用上了就保留。
+    pub release: Option<i64>,
     pub draft: HostDraft,
+}
+
+/// 主机密码身份的默认名。
+pub fn default_password_name(host_name: &str) -> String {
+    format!("{host_name} 的密码")
+}
+
+/// 已有主机现在关联的**密码**身份（关联的是密钥 / agent 或没有关联就是 `None`）。
+/// 密码认证时主机的密码就是它；表单里没有选它的地方。
+pub fn password_identity<'a>(
+    existing: Option<&Host>,
+    identities: &'a [Identity],
+) -> Option<&'a Identity> {
+    let id = existing?.identity_id?;
+    identities
+        .iter()
+        .find(|item| item.id == id && item.kind == IdentityKind::Password)
+}
+
+/// 除了 `host_id` 这台，还有没有别的主机在用这条身份。
+fn used_by_others(hosts: &[Host], host_id: Option<i64>, identity_id: i64) -> bool {
+    hosts
+        .iter()
+        .any(|host| Some(host.id) != host_id && host.identity_id == Some(identity_id))
+}
+
+/// 私钥 / ssh-agent 认证时下拉里列哪些凭据：私钥认证只列密钥类，agent 只列 agent，密码认证不列
+/// （密码归主机，不从凭据库里选）。
+pub fn pickable_identities(identities: &[Identity], method: AuthMethod) -> Vec<&Identity> {
+    if method == AuthMethod::Password {
+        return Vec::new();
+    }
+    identities
+        .iter()
+        .filter(|item| identity_fits_auth(item.kind, method))
+        .collect()
+}
+
+/// 认证类别里按顺序显示哪些字段（对话框照它画；没有「保存的凭据」下拉）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthField {
+    Username,
+    Method,
+    /// 密码（带小眼睛）。
+    Password,
+    /// 私钥认证：从凭据库选密钥。
+    KeyPicker,
+    /// ssh-agent 认证：可选的 agent 凭据。
+    AgentPicker,
+    /// Telnet 的自动登录开关和提示词。
+    AutoLogin,
+}
+
+impl AuthField {
+    /// 调试脚本里断言用的短名字。
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Username => "username",
+            Self::Method => "method",
+            Self::Password => "password",
+            Self::KeyPicker => "key",
+            Self::AgentPicker => "agent",
+            Self::AutoLogin => "autologin",
+        }
+    }
+}
+
+pub fn auth_fields(protocol: Protocol, method: AuthMethod) -> Vec<AuthField> {
+    let mut fields = vec![AuthField::Username];
+    match protocol {
+        Protocol::Ssh => {
+            fields.push(AuthField::Method);
+            fields.push(match method {
+                AuthMethod::Password => AuthField::Password,
+                AuthMethod::Key => AuthField::KeyPicker,
+                AuthMethod::Agent => AuthField::AgentPicker,
+            });
+        }
+        Protocol::Telnet => {
+            fields.push(AuthField::Password);
+            fields.push(AuthField::AutoLogin);
+        }
+        Protocol::Serial => fields.clear(),
+    }
+    fields
 }
 
 /// 检查表单、决定怎么处理密码，拼出保存草稿。
 ///
 /// - 名称不能为空；SSH / Telnet 还要地址、端口 1–65535，SSH 还要用户名（Telnet 可以不填）；
 ///   串口要设备名和波特率，不看地址 / 端口 / 用户名；
-/// - 只在认证方式是密码、并且填了「真的改过」的密码时才动凭据库：只是点小眼睛看了一下已存的密码、
-///   没改（`revealed` 里取回来的值和框里一样），不算改密码，不重写保险库；
-/// - 选了凭据就覆盖它的密码；没选凭据且 `remember` 打开就新建一条「<名称> 的密码」；
+/// - **密码归主机**（认证方式是密码，Telnet 恒为密码）：主机的密码身份是它现在关联的那条密码身份
+///   （[`password_identity`]），`hosts` 用来判断有没有别的主机也在用它：
+///   - 填了「真的改过」的密码（点小眼睛取出来看了一眼、没改的不算）：新建主机 / 原来没有密码身份 /
+///     原来关联的是密钥 → 新建一条「<名称> 的密码」并关联；关联的密码身份只有自己在用 → 覆盖它；
+///     还有别的主机在用（旧数据里共用的）→ 不动它，新建一条并改关联；
+///   - 密码没改：关联不变（共用的旧密码照常能用）；原来关联的是密钥 / agent 就解除关联（密钥不删）；
+/// - 主机改名时，独占的、名字还是「<旧名> 的密码」的那条密码身份跟着改名；用户自己改过名的不动；
+/// - 认证方式是私钥 / agent：关联到选的凭据（类型对不上就不关联）；原来那条独占的密码身份放进
+///   `release`，存完主机后删掉，共用的保留；密码框里的字一律不写进保险库；
 /// - 地址整理成裸地址（IPv6 去方括号）；已有主机的 `tags` / `sort` 取库里的原值（F3 X1）；
 /// - 不适用于当前协议的字段（已填的值还在表单里）保存时按协议忽略：Telnet 只用密码认证，
 ///   串口不带凭据 / 代理 / 跳板机，X11 只给 SSH；
@@ -233,6 +334,7 @@ pub fn plan_save(
     input: &FormInput<'_>,
     existing: Option<&Host>,
     identities: &[Identity],
+    hosts: &[Host],
     revealed: Option<(i64, &str)>,
 ) -> Result<SavePlan, FieldError> {
     let protocol = input.protocol;
@@ -276,42 +378,67 @@ pub fn plan_save(
     } else {
         AuthMethod::Password
     };
-    let mut identity_id = if serial { None } else { input.identity };
-    if protocol == Protocol::Telnet
-        && let Some(id) = identity_id
-        && !identities
-            .iter()
-            .any(|item| item.id == id && item.kind == IdentityKind::Password)
-    {
-        identity_id = None;
-    }
+    let host_id = existing.map(|host| host.id);
+    let current = password_identity(existing, identities);
+    let exclusive = current.filter(|item| !used_by_others(hosts, host_id, item.id));
+    // 主机改名了，并且独占的那条密码身份还叫「<旧名> 的密码」：跟着改名。
+    let follow_name = |item: &Identity| -> Option<String> {
+        let old = existing?.name.as_str();
+        (old != name && item.name == default_password_name(old))
+            .then(|| default_password_name(name))
+    };
+
     let mut action = IdentityAction::None;
-    let unchanged_reveal = matches!(
-        (revealed, input.identity),
-        (Some((id, value)), Some(current)) if id == current && value == input.password
-    );
-    let password_changed = !input.password.is_empty() && !unchanged_reveal;
-    if password_changed && auth == AuthMethod::Password && !serial {
-        if let Some(id) = identity_id {
-            let name = identities
-                .iter()
-                .find(|item| item.id == id)
-                .map_or_else(|| format!("{name} 的密码"), |item| item.name.clone());
-            action = IdentityAction::Overwrite {
-                id,
-                draft: IdentityDraftLite {
-                    name,
-                    secret: input.password.to_owned(),
-                },
-            };
-        } else if input.remember {
-            action = IdentityAction::Create {
-                draft: IdentityDraftLite {
-                    name: format!("{name} 的密码"),
-                    secret: input.password.to_owned(),
-                },
-            };
+    let mut release = None;
+    let mut identity_id = None;
+    if serial {
+        release = exclusive.map(|item| item.id);
+    } else if auth == AuthMethod::Password {
+        let unchanged_reveal = matches!(
+            (revealed, current),
+            (Some((id, value)), Some(item)) if id == item.id && value == input.password
+        );
+        let password_changed = !input.password.is_empty() && !unchanged_reveal;
+        match (current, exclusive, password_changed) {
+            (Some(item), Some(_), true) => {
+                identity_id = Some(item.id);
+                action = IdentityAction::Overwrite {
+                    id: item.id,
+                    draft: IdentityDraftLite {
+                        name: follow_name(item).unwrap_or_else(|| item.name.clone()),
+                        secret: input.password.to_owned(),
+                    },
+                };
+            }
+            // 没有密码身份，或者它还被别的主机用着（不能动）：给本主机新建一条自己的。
+            (_, _, true) => {
+                action = IdentityAction::Create {
+                    draft: IdentityDraftLite {
+                        name: default_password_name(name),
+                        secret: input.password.to_owned(),
+                    },
+                };
+            }
+            (Some(item), exclusive, false) => {
+                identity_id = Some(item.id);
+                if exclusive.is_some()
+                    && let Some(new_name) = follow_name(item)
+                {
+                    action = IdentityAction::Rename {
+                        id: item.id,
+                        name: new_name,
+                    };
+                }
+            }
+            (None, _, false) => {}
         }
+    } else {
+        identity_id = input.identity.filter(|id| {
+            identities
+                .iter()
+                .any(|item| item.id == *id && identity_fits_auth(item.kind, auth))
+        });
+        release = exclusive.map(|item| item.id);
     }
 
     let protocol_change = match existing {
@@ -321,6 +448,7 @@ pub fn plan_save(
     };
     Ok(SavePlan {
         identity: action,
+        release,
         draft: HostDraft {
             id: existing.map(|host| host.id),
             group_id: input.group,
@@ -352,6 +480,63 @@ pub fn plan_save(
             protocol: protocol_change,
         },
     })
+}
+
+/// 照 [`SavePlan`] 落库：先动密码身份，再存主机，最后释放不再用的独占密码。
+///
+/// 主机没存成功时，刚新建的那条密码身份删掉（免得留下没人用的孤儿）；覆盖 / 改名没法回滚，
+/// 但它们都只动这台主机自己独占的身份。释放失败不算保存失败（主机已经存好了，只是留着一条没人用的
+/// 密码，用户能在凭据页看到并删除），只记日志；日志里没有密码。
+pub fn apply_save(db: &Database, plan: SavePlan) -> Result<Host, String> {
+    let SavePlan {
+        identity,
+        release,
+        mut draft,
+    } = plan;
+    let mut created = None;
+    match identity {
+        IdentityAction::None => {}
+        IdentityAction::Overwrite { id, draft: lite } => {
+            db.identity_save(&lite.into_draft(Some(id)))
+                .map_err(|err| err.to_string())?;
+        }
+        IdentityAction::Create { draft: lite } => {
+            let made = db
+                .identity_save(&lite.into_draft(None))
+                .map_err(|err| err.to_string())?;
+            draft.identity_id = Some(made.id);
+            created = Some(made.id);
+        }
+        IdentityAction::Rename { id, name } => {
+            // secret 为 None：只改名，密文原样保留。
+            db.identity_save(&IdentityDraft {
+                id: Some(id),
+                name,
+                kind: IdentityKind::Password,
+                key_path: None,
+                secret: None,
+                passphrase: None,
+            })
+            .map_err(|err| err.to_string())?;
+        }
+    }
+    let saved = match db.host_save(&draft) {
+        Ok(saved) => saved,
+        Err(err) => {
+            if let Some(id) = created {
+                let _ = db.identity_delete(id);
+            }
+            return Err(err.to_string());
+        }
+    };
+    if let Some(id) = release {
+        match db.identity_delete(id) {
+            // 两步之间被别处引用了：保留，不算错误。
+            Ok(()) | Err(zssh_core::error::ZsshError::IdentityInUse { .. }) => {}
+            Err(err) => tracing::warn!(%err, identity = id, "释放主机不再用的密码失败"),
+        }
+    }
+    Ok(saved)
 }
 
 /// 表单打开时的代理方式：新建主机默认「跟随默认代理」，编辑已有主机显示它保存的值。
@@ -453,7 +638,6 @@ mod tests {
             proxy_mode: ProxyMode::None,
             proxy: None,
             jump: None,
-            remember: true,
             legacy: false,
             protocol: Protocol::Ssh,
             x11: false,
@@ -546,94 +730,436 @@ mod tests {
         );
     }
 
+    // ---- V2-U11：密码归主机 ----
+
+    /// 测试里的旧四参调用（不关心别的主机）；要看「别的主机也在用」的用 [`plan_with`]。
+    fn plan_save(
+        input: &FormInput<'_>,
+        existing: Option<&Host>,
+        identities: &[Identity],
+        revealed: Option<(i64, &str)>,
+    ) -> Result<SavePlan, FieldError> {
+        super::plan_save(input, existing, identities, &[], revealed)
+    }
+
+    fn plan_with(
+        input: &FormInput<'_>,
+        existing: Option<&Host>,
+        identities: &[Identity],
+        hosts: &[Host],
+        revealed: Option<(i64, &str)>,
+    ) -> SavePlan {
+        super::plan_save(input, existing, identities, hosts, revealed).expect("合法")
+    }
+
+    /// 一台已有的 SSH 密码主机：名「web」，关联密码身份 `identity_id`。
+    fn pw_host(id: i64, name: &str, identity_id: Option<i64>) -> Host {
+        let mut item = host(id);
+        item.name = name.to_owned();
+        item.identity_id = identity_id;
+        item.auth_method = AuthMethod::Password;
+        item
+    }
+
+    fn pw_identity(id: i64, name: &str) -> Identity {
+        identity(id, name, IdentityKind::Password, true)
+    }
+
+    fn lite(name: &str, secret: &str) -> IdentityDraftLite {
+        IdentityDraftLite {
+            name: name.to_owned(),
+            secret: secret.to_owned(),
+        }
+    }
+
     #[test]
-    fn a_typed_password_overwrites_the_chosen_identity_or_makes_a_new_one() {
-        let identities = [identity(7, "shared", IdentityKind::Password, true)];
+    fn a_new_host_with_a_password_gets_its_own_identity_and_without_one_gets_none() {
         let mut form = input();
         form.password = "s3cret";
-        form.identity = Some(7);
-        let plan = plan_save(&form, None, &identities, None).expect("合法");
+        let plan = plan_with(&form, None, &[], &[], None);
+        assert_eq!(
+            plan.identity,
+            IdentityAction::Create {
+                draft: lite("web 的密码", "s3cret")
+            }
+        );
+        assert_eq!(plan.release, None);
+
+        // 没填密码：不建（连接时再问），也没有关联。
+        let plan = plan_with(&input(), None, &[], &[], None);
+        assert_eq!(plan.identity, IdentityAction::None);
+        assert_eq!(plan.draft.identity_id, None);
+        assert_eq!(plan.release, None);
+    }
+
+    #[test]
+    fn a_new_hosts_name_is_trimmed_in_the_password_identity_name() {
+        let mut form = input();
+        form.name = "  web  ";
+        form.password = "pw";
+        assert!(matches!(
+            plan_with(&form, None, &[], &[], None).identity,
+            IdentityAction::Create { draft } if draft.name == "web 的密码"
+        ));
+    }
+
+    #[test]
+    fn changing_the_password_of_an_exclusive_identity_overwrites_it() {
+        let existing = pw_host(1, "web", Some(7));
+        let identities = [pw_identity(7, "web 的密码")];
+        let hosts = [existing.clone(), pw_host(2, "other", Some(8))];
+        let mut form = input();
+        form.password = "changed";
+        let plan = plan_with(&form, Some(&existing), &identities, &hosts, None);
         assert_eq!(
             plan.identity,
             IdentityAction::Overwrite {
                 id: 7,
-                draft: IdentityDraftLite {
-                    name: "shared".to_owned(),
-                    secret: "s3cret".to_owned()
-                }
+                draft: lite("web 的密码", "changed")
             }
         );
-        assert_eq!(plan.draft.identity_id, Some(7));
-
-        form.identity = None;
-        let plan = plan_save(&form, None, &identities, None).expect("合法");
-        assert!(matches!(
-            &plan.identity,
-            IdentityAction::Create { draft } if draft.name == "web 的密码"
-        ));
-        form.remember = false;
-        assert_eq!(
-            plan_save(&form, None, &identities, None)
-                .expect("合法")
-                .identity,
-            IdentityAction::None,
-            "没选凭据又不想存：不动凭据库"
-        );
+        assert_eq!(plan.draft.identity_id, Some(7), "关联不变");
+        assert_eq!(plan.release, None);
     }
 
     #[test]
-    fn an_empty_password_or_a_non_password_login_never_touches_the_vault() {
-        let identities = [identity(7, "shared", IdentityKind::Password, true)];
+    fn changing_the_password_of_a_shared_identity_leaves_it_alone_and_makes_a_new_one() {
+        let existing = pw_host(1, "web", Some(7));
+        let identities = [pw_identity(7, "共用密码")];
+        // 旧数据里 web 和 db 共用同一条。
+        let hosts = [existing.clone(), pw_host(2, "db", Some(7))];
         let mut form = input();
-        form.identity = Some(7);
+        form.password = "changed";
+        let plan = plan_with(&form, Some(&existing), &identities, &hosts, None);
         assert_eq!(
-            plan_save(&form, None, &identities, None)
-                .expect("合法")
-                .identity,
-            IdentityAction::None
+            plan.identity,
+            IdentityAction::Create {
+                draft: lite("web 的密码", "changed")
+            },
+            "共用的那条不能改，别的主机不受影响"
         );
-        form.password = "typed";
-        form.auth = AuthMethod::Key;
+        // 关联由 apply_save 改成新建的那条；计划里先不带旧的。
+        assert_eq!(plan.draft.identity_id, None);
+        assert_eq!(plan.release, None, "共用的旧密码保留");
+    }
+
+    #[test]
+    fn switching_a_key_host_to_password_creates_a_password_identity() {
+        let mut existing = pw_host(1, "web", Some(5));
+        existing.auth_method = AuthMethod::Key;
+        let identities = [identity(5, "deploy key", IdentityKind::KeyFile, false)];
+        let hosts = [existing.clone()];
+        let mut form = input();
+        form.auth = AuthMethod::Password;
+        form.password = "pw";
+        let plan = plan_with(&form, Some(&existing), &identities, &hosts, None);
         assert_eq!(
-            plan_save(&form, None, &identities, None)
-                .expect("合法")
-                .identity,
-            IdentityAction::None,
-            "私钥登录时密码框里的字不能写进保险库"
+            plan.identity,
+            IdentityAction::Create {
+                draft: lite("web 的密码", "pw")
+            }
         );
+        assert_eq!(plan.release, None, "密钥不动");
+
+        // 没填密码：只是解除对密钥的关联（密码认证不带密钥），密钥本身不动。
+        form.password = "";
+        let plan = plan_with(&form, Some(&existing), &identities, &hosts, None);
+        assert_eq!(plan.identity, IdentityAction::None);
+        assert_eq!(plan.draft.identity_id, None);
+        assert_eq!(plan.release, None);
+    }
+
+    #[test]
+    fn an_agent_host_switching_to_password_is_handled_like_a_key_host() {
+        let mut existing = pw_host(1, "web", Some(5));
+        existing.auth_method = AuthMethod::Agent;
+        let identities = [identity(5, "agent", IdentityKind::Agent, false)];
+        let mut form = input();
+        form.password = "pw";
+        let plan = plan_with(
+            &form,
+            Some(&existing),
+            &identities,
+            std::slice::from_ref(&existing),
+            None,
+        );
+        assert!(matches!(plan.identity, IdentityAction::Create { .. }));
+        assert_eq!(plan.release, None);
+    }
+
+    #[test]
+    fn an_unchanged_password_leaves_the_vault_and_the_link_alone() {
+        let existing = pw_host(1, "web", Some(7));
+        let identities = [pw_identity(7, "共用密码")];
+        // 共用的旧密码、没改密码：关联不变，照常能用。
+        let hosts = [existing.clone(), pw_host(2, "db", Some(7))];
+        let plan = plan_with(&input(), Some(&existing), &identities, &hosts, None);
+        assert_eq!(plan.identity, IdentityAction::None);
+        assert_eq!(plan.draft.identity_id, Some(7));
+        assert_eq!(plan.release, None);
     }
 
     #[test]
     fn peeking_at_the_stored_password_is_not_a_change() {
-        let identities = [identity(7, "shared", IdentityKind::Password, true)];
+        let existing = pw_host(1, "web", Some(7));
+        let identities = [pw_identity(7, "web 的密码")];
+        let hosts = [existing.clone()];
         let mut form = input();
-        form.identity = Some(7);
         form.password = "stored";
-        let plan = plan_save(&form, None, &identities, Some((7, "stored"))).expect("合法");
-        assert_eq!(
-            plan.identity,
-            IdentityAction::None,
-            "取出来看了一眼，没改，不重写"
+        let plan = plan_with(
+            &form,
+            Some(&existing),
+            &identities,
+            &hosts,
+            Some((7, "stored")),
         );
-        // 取回来的是 A 凭据的密码，现在选的是 B：不能当成没改。
-        form.identity = Some(8);
-        let other = [
-            identity(7, "a", IdentityKind::Password, true),
-            identity(8, "b", IdentityKind::Password, true),
-        ];
-        let plan = plan_save(&form, None, &other, Some((7, "stored"))).expect("合法");
-        assert!(matches!(
-            plan.identity,
-            IdentityAction::Overwrite { id: 8, .. }
-        ));
-        // 取出来之后又改了：算改。
-        form.identity = Some(7);
+        assert_eq!(plan.identity, IdentityAction::None, "看了一眼没改，不重写");
+        assert_eq!(plan.draft.identity_id, Some(7));
+
+        // 看了之后又改了：算改。
         form.password = "stored2";
-        let plan = plan_save(&form, None, &other, Some((7, "stored"))).expect("合法");
+        let plan = plan_with(
+            &form,
+            Some(&existing),
+            &identities,
+            &hosts,
+            Some((7, "stored")),
+        );
         assert!(matches!(
             plan.identity,
             IdentityAction::Overwrite { id: 7, .. }
         ));
+
+        // 取回来的是别条身份的密码：不能当成没改。
+        let plan = plan_with(
+            &form,
+            Some(&existing),
+            &identities,
+            &hosts,
+            Some((8, "stored2")),
+        );
+        assert!(matches!(
+            plan.identity,
+            IdentityAction::Overwrite { id: 7, .. }
+        ));
+    }
+
+    #[test]
+    fn switching_from_password_to_key_releases_an_exclusive_password() {
+        let existing = pw_host(1, "web", Some(7));
+        let identities = [
+            pw_identity(7, "web 的密码"),
+            identity(5, "deploy key", IdentityKind::KeyFile, false),
+        ];
+        let hosts = [existing.clone(), pw_host(2, "db", Some(8))];
+        let mut form = input();
+        form.auth = AuthMethod::Key;
+        form.identity = Some(5);
+        form.password = "typed but must not be saved";
+        let plan = plan_with(&form, Some(&existing), &identities, &hosts, None);
+        assert_eq!(plan.draft.auth_method, AuthMethod::Key);
+        assert_eq!(plan.draft.identity_id, Some(5));
+        assert_eq!(plan.release, Some(7), "独占的旧密码存完主机后删掉");
+        assert_eq!(
+            plan.identity,
+            IdentityAction::None,
+            "私钥登录时密码框里的字不能写进保险库"
+        );
+        // agent 同理。
+        let mut agent = form.clone();
+        agent.auth = AuthMethod::Agent;
+        agent.identity = None;
+        let plan = plan_with(&agent, Some(&existing), &identities, &hosts, None);
+        assert_eq!(plan.release, Some(7));
+        assert_eq!(plan.draft.identity_id, None);
+    }
+
+    #[test]
+    fn switching_from_password_to_key_keeps_a_shared_password() {
+        let existing = pw_host(1, "web", Some(7));
+        let identities = [
+            pw_identity(7, "共用密码"),
+            identity(5, "deploy key", IdentityKind::KeyFile, false),
+        ];
+        let hosts = [existing.clone(), pw_host(2, "db", Some(7))];
+        let mut form = input();
+        form.auth = AuthMethod::Key;
+        form.identity = Some(5);
+        let plan = plan_with(&form, Some(&existing), &identities, &hosts, None);
+        assert_eq!(plan.release, None, "db 还在用，保留");
+        assert_eq!(plan.draft.identity_id, Some(5));
+    }
+
+    #[test]
+    fn a_key_host_only_links_a_fitting_credential() {
+        let identities = [
+            pw_identity(7, "p"),
+            identity(5, "k", IdentityKind::KeyInline, true),
+            identity(6, "a", IdentityKind::Agent, false),
+        ];
+        let mut form = input();
+        form.auth = AuthMethod::Key;
+        for (picked, expect) in [(5, Some(5)), (7, None), (6, None), (99, None)] {
+            form.identity = Some(picked);
+            assert_eq!(
+                plan_with(&form, None, &identities, &[], None)
+                    .draft
+                    .identity_id,
+                expect,
+                "私钥认证选 {picked}"
+            );
+        }
+        form.auth = AuthMethod::Agent;
+        form.identity = Some(6);
+        assert_eq!(
+            plan_with(&form, None, &identities, &[], None)
+                .draft
+                .identity_id,
+            Some(6)
+        );
+        form.identity = Some(5);
+        assert_eq!(
+            plan_with(&form, None, &identities, &[], None)
+                .draft
+                .identity_id,
+            None
+        );
+    }
+
+    #[test]
+    fn renaming_a_host_renames_its_exclusive_default_named_password() {
+        let existing = pw_host(1, "web", Some(7));
+        let identities = [pw_identity(7, "web 的密码")];
+        let hosts = [existing.clone()];
+        let mut form = input();
+        form.name = "web-new";
+        // 只改名：密文不动，只改名字。
+        let plan = plan_with(&form, Some(&existing), &identities, &hosts, None);
+        assert_eq!(
+            plan.identity,
+            IdentityAction::Rename {
+                id: 7,
+                name: "web-new 的密码".to_owned()
+            }
+        );
+        assert_eq!(plan.draft.identity_id, Some(7));
+        // 改名同时改密码：一次覆盖，名字一起改。
+        form.password = "pw2";
+        let plan = plan_with(&form, Some(&existing), &identities, &hosts, None);
+        assert_eq!(
+            plan.identity,
+            IdentityAction::Overwrite {
+                id: 7,
+                draft: lite("web-new 的密码", "pw2")
+            }
+        );
+    }
+
+    #[test]
+    fn renaming_does_not_touch_a_custom_named_or_shared_password() {
+        let existing = pw_host(1, "web", Some(7));
+        let mut form = input();
+        form.name = "web-new";
+        // 用户自己改过名的：不动。
+        let custom = [pw_identity(7, "运维账号")];
+        let plan = plan_with(
+            &form,
+            Some(&existing),
+            &custom,
+            std::slice::from_ref(&existing),
+            None,
+        );
+        assert_eq!(plan.identity, IdentityAction::None);
+        // 名字是默认格式但还有别的主机在用：不是它独占的，不动。
+        let default_named = [pw_identity(7, "web 的密码")];
+        let hosts = [existing.clone(), pw_host(2, "db", Some(7))];
+        let plan = plan_with(&form, Some(&existing), &default_named, &hosts, None);
+        assert_eq!(plan.identity, IdentityAction::None);
+        // 名字没变（只是前后有空格）：不算改名。
+        form.name = " web ";
+        let plan = plan_with(
+            &form,
+            Some(&existing),
+            &default_named,
+            std::slice::from_ref(&existing),
+            None,
+        );
+        assert_eq!(plan.identity, IdentityAction::None);
+    }
+
+    #[test]
+    fn a_serial_host_never_touches_credentials() {
+        let mut form = serial_input();
+        form.identity = Some(7);
+        form.password = "typed";
+        let plan = plan_with(&form, None, &[pw_identity(7, "p")], &[], None);
+        assert_eq!(plan.identity, IdentityAction::None);
+        assert_eq!((plan.draft.identity_id, plan.release), (None, None));
+    }
+
+    #[test]
+    fn the_auth_category_has_no_saved_credential_picker_for_passwords() {
+        use AuthField::*;
+        assert_eq!(
+            auth_fields(Protocol::Ssh, AuthMethod::Password),
+            [Username, Method, Password],
+            "密码认证：只有用户名和密码"
+        );
+        assert_eq!(
+            auth_fields(Protocol::Ssh, AuthMethod::Key),
+            [Username, Method, KeyPicker]
+        );
+        assert_eq!(
+            auth_fields(Protocol::Ssh, AuthMethod::Agent),
+            [Username, Method, AgentPicker]
+        );
+        // Telnet 只有密码：表单里残留的认证方式不影响。
+        for method in [AuthMethod::Password, AuthMethod::Key, AuthMethod::Agent] {
+            assert_eq!(
+                auth_fields(Protocol::Telnet, method),
+                [Username, Password, AutoLogin]
+            );
+        }
+        assert!(auth_fields(Protocol::Serial, AuthMethod::Password).is_empty());
+    }
+
+    #[test]
+    fn the_key_picker_lists_only_keys() {
+        let identities = [
+            pw_identity(1, "p"),
+            identity(2, "file", IdentityKind::KeyFile, false),
+            identity(3, "inline", IdentityKind::KeyInline, true),
+            identity(4, "agent", IdentityKind::Agent, false),
+        ];
+        let ids = |method| {
+            pickable_identities(&identities, method)
+                .iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(AuthMethod::Key),
+            [2, 3],
+            "私钥文件和导入的私钥，没有密码、agent"
+        );
+        assert_eq!(ids(AuthMethod::Agent), [4]);
+        assert!(ids(AuthMethod::Password).is_empty(), "密码不从凭据库里选");
+    }
+
+    #[test]
+    fn the_password_identity_is_the_hosts_linked_password_only() {
+        let identities = [
+            pw_identity(7, "p"),
+            identity(5, "k", IdentityKind::KeyFile, false),
+        ];
+        assert_eq!(
+            password_identity(Some(&pw_host(1, "a", Some(7))), &identities).map(|item| item.id),
+            Some(7)
+        );
+        assert!(password_identity(Some(&pw_host(1, "a", Some(5))), &identities).is_none());
+        assert!(password_identity(Some(&pw_host(1, "a", None)), &identities).is_none());
+        assert!(password_identity(Some(&pw_host(1, "a", Some(99))), &identities).is_none());
+        assert!(password_identity(None, &identities).is_none());
     }
 
     #[test]
@@ -674,108 +1200,209 @@ mod tests {
             secret: "hunter2".to_owned(),
         };
         assert!(!format!("{lite:?}").contains("hunter2"));
+        // 整个计划的 Debug（断言失败时会被打印）也不带密码。
+        let mut form = input();
+        form.password = "hunter2";
+        let plan = plan_with(&form, None, &[], &[], None);
+        assert!(!format!("{plan:?}").contains("hunter2"));
+    }
+
+    // ---- 经过真实的库：apply_save ----
+
+    fn db_identity(
+        db: &Database,
+        name: &str,
+        kind: IdentityKind,
+        secret: Option<&str>,
+    ) -> Identity {
+        db.identity_save(&IdentityDraft {
+            id: None,
+            name: name.to_owned(),
+            kind,
+            key_path: (kind == IdentityKind::KeyFile).then(|| "keys/id_test".to_owned()),
+            secret: secret.map(str::to_owned),
+            passphrase: None,
+        })
+        .expect("凭据")
+    }
+
+    /// 按当前库的状态跑一遍：读主机 / 凭据 / 主机列表 → plan_save → apply_save。
+    fn save(
+        db: &Database,
+        form: &FormInput<'_>,
+        host_id: Option<i64>,
+        revealed: Option<(i64, &str)>,
+    ) -> Host {
+        let existing = host_id.map(|id| db.host_get(id).expect("主机"));
+        let plan = super::plan_save(
+            form,
+            existing.as_ref(),
+            &db.identity_list().expect("凭据"),
+            &db.host_list().expect("主机列表"),
+            revealed,
+        )
+        .expect("合法");
+        apply_save(db, plan).expect("保存")
+    }
+
+    fn names(db: &Database) -> Vec<String> {
+        let mut all: Vec<String> = db
+            .identity_list()
+            .expect("凭据")
+            .into_iter()
+            .map(|item| item.name)
+            .collect();
+        all.sort();
+        all
     }
 
     #[test]
-    fn saving_through_the_plan_keeps_hidden_fields_and_rewrites_the_vault_only_on_a_real_change() {
-        use zssh_core::model::{GroupDraft, IdentityDraft};
-        let db = zssh_core::store::Database::open_in_memory().expect("内存库");
-        let group = db
-            .group_save(&GroupDraft {
-                id: None,
-                name: "g".to_owned(),
-                parent_id: None,
-                sort: 0,
-            })
-            .expect("分组");
-        let vault = db
-            .identity_save(&IdentityDraft {
-                id: None,
-                name: "shared".to_owned(),
-                kind: IdentityKind::Password,
-                key_path: None,
-                secret: Some("stored".to_owned()),
-                passphrase: None,
-            })
-            .expect("凭据");
-        let mut first = input();
-        first.group = Some(group.id);
-        first.identity = Some(vault.id);
-        let created = db
-            .host_save(
-                &plan_save(&first, None, std::slice::from_ref(&vault), None)
-                    .expect("合法")
-                    .draft,
-            )
-            .expect("新建");
-        // 给它一个标签和排序（表单不编辑它们）。
-        let mut tagged = zssh_core::model::HostDraft {
+    fn a_whole_password_lifecycle_through_the_real_database() {
+        let db = Database::open_in_memory().expect("内存库");
+        let key = db_identity(&db, "deploy key", IdentityKind::KeyFile, None);
+
+        // 新建：填密码 → 一条「web 的密码」并关联。
+        let mut form = input();
+        form.password = "first";
+        let created = save(&db, &form, None, None);
+        let pw = created.identity_id.expect("关联了密码");
+        assert_eq!(names(&db), ["deploy key", "web 的密码"]);
+        assert_eq!(
+            db.identity_saved_password(pw).expect("取").as_str(),
+            "first"
+        );
+
+        // 只改名：密码身份跟着改名，密文还在。
+        let mut form = input();
+        form.name = "web2";
+        let renamed = save(&db, &form, Some(created.id), None);
+        assert_eq!(renamed.identity_id, Some(pw));
+        assert_eq!(names(&db), ["deploy key", "web2 的密码"]);
+        assert_eq!(
+            db.identity_saved_password(pw).expect("取").as_str(),
+            "first"
+        );
+
+        // 改密码：覆盖同一条，没有多出新的。
+        form.password = "second";
+        save(&db, &form, Some(created.id), None);
+        assert_eq!(names(&db), ["deploy key", "web2 的密码"]);
+        assert_eq!(
+            db.identity_saved_password(pw).expect("取").as_str(),
+            "second"
+        );
+
+        // 密码 → 私钥：独占的密码删掉，密钥还在。
+        let mut form = input();
+        form.name = "web2";
+        form.auth = AuthMethod::Key;
+        form.identity = Some(key.id);
+        let keyed = save(&db, &form, Some(created.id), None);
+        assert_eq!(keyed.identity_id, Some(key.id));
+        assert_eq!(names(&db), ["deploy key"]);
+        assert!(db.identity_saved_password(pw).is_err(), "密文跟着没了");
+
+        // 私钥 → 密码：新建一条，密钥不动。
+        let mut form = input();
+        form.name = "web2";
+        form.password = "third";
+        let back = save(&db, &form, Some(created.id), None);
+        assert_ne!(back.identity_id, Some(key.id));
+        assert_eq!(names(&db), ["deploy key", "web2 的密码"]);
+    }
+
+    #[test]
+    fn a_shared_legacy_password_survives_when_one_host_changes_its_password() {
+        let db = Database::open_in_memory().expect("内存库");
+        let shared = db_identity(&db, "共用密码", IdentityKind::Password, Some("old"));
+        let draft = |name: &str| HostDraft {
             protocol: None,
-            id: Some(created.id),
-            group_id: created.group_id,
-            name: created.name.clone(),
-            host: created.host.clone(),
-            port: created.port,
-            username: created.username.clone(),
-            auth_method: created.auth_method,
-            identity_id: created.identity_id,
+            id: None,
+            group_id: None,
+            name: name.to_owned(),
+            host: "192.0.2.10".to_owned(),
+            port: 22,
+            username: "ops".to_owned(),
+            auth_method: AuthMethod::Password,
+            identity_id: Some(shared.id),
             proxy_id: None,
             jump_host_id: None,
-            proxy_mode: created.proxy_mode,
-            tags: vec!["blue".to_owned()],
+            proxy_mode: ProxyMode::None,
+            tags: Vec::new(),
             sort: 0,
             legacy_algorithms: false,
         };
-        tagged.sort = 0;
-        let tagged = db.host_save(&tagged).expect("加标签");
+        let a = db.host_save(&draft("a")).expect("a");
+        let b = db.host_save(&draft("b")).expect("b");
 
-        // 只改名字再保存：标签还在；点小眼睛看过（取回的明文没改）不重写保险库。
-        let mut renamed = input();
-        renamed.name = "web renamed";
-        renamed.group = tagged.group_id;
-        renamed.identity = Some(vault.id);
-        renamed.password = "stored";
-        let plan = plan_save(
-            &renamed,
-            Some(&tagged),
-            std::slice::from_ref(&vault),
-            Some((vault.id, "stored")),
-        )
-        .expect("合法");
-        assert_eq!(plan.identity, IdentityAction::None);
-        let saved = db.host_save(&plan.draft).expect("保存");
-        assert_eq!(saved.name, "web renamed");
-        assert_eq!(
-            saved.tags,
-            vec!["blue".to_owned()],
-            "标签不能因为改了名字就丢"
-        );
-        assert_eq!(
-            db.identity_saved_password(vault.id)
-                .expect("取密码")
-                .as_str(),
-            "stored"
-        );
+        // 不改密码只改别的：关联和旧密码原样。
+        let mut form = input();
+        form.name = "a";
+        let same = save(&db, &form, Some(a.id), None);
+        assert_eq!(same.identity_id, Some(shared.id));
 
-        // 真的改了密码：覆盖选中的凭据。
-        renamed.password = "changed";
-        let plan = plan_save(
-            &renamed,
-            Some(&saved),
-            std::slice::from_ref(&vault),
-            Some((vault.id, "stored")),
-        )
-        .expect("合法");
-        let IdentityAction::Overwrite { id, draft } = plan.identity else {
-            panic!("应该覆盖凭据");
-        };
-        db.identity_save(&draft.into_draft(Some(id))).expect("覆盖");
+        // a 改密码：a 拿到自己的新密码，b 还用旧的。
+        form.password = "new for a";
+        let changed = save(&db, &form, Some(a.id), None);
+        let mine = changed.identity_id.expect("有密码");
+        assert_ne!(mine, shared.id);
         assert_eq!(
-            db.identity_saved_password(vault.id)
-                .expect("取密码")
-                .as_str(),
-            "changed"
+            db.identity_saved_password(mine).expect("取").as_str(),
+            "new for a"
         );
+        assert_eq!(
+            db.identity_saved_password(shared.id).expect("取").as_str(),
+            "old",
+            "共用的旧密码没被改"
+        );
+        assert_eq!(db.host_get(b.id).expect("b").identity_id, Some(shared.id));
+        assert_eq!(names(&db), ["a 的密码", "共用密码"]);
+
+        // b 改成私钥：它是共用密码最后一个用户（a 已经换了），所以现在算独占，一起删。
+        let key = db_identity(
+            &db,
+            "k",
+            IdentityKind::KeyInline,
+            Some("placeholder-key-body"),
+        );
+        let mut form = input();
+        form.name = "b";
+        form.auth = AuthMethod::Key;
+        form.identity = Some(key.id);
+        save(&db, &form, Some(b.id), None);
+        assert_eq!(names(&db), ["a 的密码", "k"]);
+    }
+
+    #[test]
+    fn a_failed_host_save_leaves_no_orphan_password() {
+        let db = Database::open_in_memory().expect("内存库");
+        let mut form = input();
+        form.password = "pw";
+        // 主机草稿里的分组不存在：核心库拒绝保存。
+        form.group = Some(9999);
+        let plan = super::plan_save(&form, None, &[], &[], None).expect("合法");
+        assert!(apply_save(&db, plan).is_err());
+        assert!(names(&db).is_empty(), "刚建的密码要撤掉");
+    }
+
+    #[test]
+    fn deleting_the_host_still_deletes_the_password_it_owns() {
+        // 新规则下建出来的「<名称> 的密码」和删主机的现有规则对得上：独占就一起删，密钥不动。
+        let db = Database::open_in_memory().expect("内存库");
+        let key = db_identity(&db, "deploy key", IdentityKind::KeyFile, None);
+        let mut form = input();
+        form.password = "pw";
+        let web = save(&db, &form, None, None);
+        let mut keyed = input();
+        keyed.name = "k-host";
+        keyed.auth = AuthMethod::Key;
+        keyed.identity = Some(key.id);
+        let k = save(&db, &keyed, None, None);
+        let deleted =
+            super::super::host_delete::delete_host_with_passwords(&db, web.id).expect("删除");
+        assert_eq!(deleted.passwords, ["web 的密码"]);
+        super::super::host_delete::delete_host_with_passwords(&db, k.id).expect("删除");
+        assert_eq!(names(&db), ["deploy key"]);
     }
 
     // ---- V2-N4：多协议 ----
@@ -860,20 +1487,23 @@ mod tests {
     #[test]
     fn telnet_ignores_a_leftover_key_login_and_a_key_identity() {
         let key = identity(5, "私钥", IdentityKind::KeyFile, false);
-        let password = identity(6, "密码", IdentityKind::Password, true);
         let mut form = telnet_input();
         form.auth = AuthMethod::Key;
         form.identity = Some(key.id);
-        let plan = plan_save(&form, None, &[key.clone(), password.clone()], None).expect("合法");
+        let plan = plan_save(&form, None, std::slice::from_ref(&key), None).expect("合法");
         assert_eq!(plan.draft.auth_method, AuthMethod::Password);
         assert_eq!(
             plan.draft.identity_id, None,
             "私钥凭据对 Telnet 没有意义，保存时丢掉"
         );
 
-        form.identity = Some(password.id);
-        let plan = plan_save(&form, None, &[key, password.clone()], None).expect("合法");
-        assert_eq!(plan.draft.identity_id, Some(password.id));
+        // Telnet 的密码同样归主机：填了就新建一条「<名称> 的密码」。
+        form.password = "pw";
+        let plan = plan_save(&form, None, &[key], None).expect("合法");
+        assert!(matches!(
+            plan.identity,
+            IdentityAction::Create { draft } if draft.name == "web 的密码"
+        ));
     }
 
     #[test]

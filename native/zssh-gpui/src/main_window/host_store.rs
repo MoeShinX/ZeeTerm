@@ -208,6 +208,16 @@ impl HostStore {
         self.after_write(result)
     }
 
+    /// 按保存计划落库：主机的密码身份、主机本身、释放不再用的独占密码（见 `host_form::apply_save`）。
+    pub fn save_host_plan(&mut self, plan: super::host_form::SavePlan) -> Result<Host, String> {
+        let result = self
+            .db()
+            .and_then(|db| super::host_form::apply_save(db, plan));
+        // 写失败也重读：库里的真实状态才是界面该显示的。
+        self.reload();
+        result
+    }
+
     /// 读库里这台主机现在的样子（保存前合并未展示的字段用）。
     pub fn host_fresh(&self, id: i64) -> Result<Host, String> {
         self.db()?.host_get(id).map_err(|err| err.to_string())

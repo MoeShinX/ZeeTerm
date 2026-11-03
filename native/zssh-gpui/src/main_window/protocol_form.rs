@@ -128,7 +128,7 @@ pub struct Visible {
     pub password: bool,
     /// 认证方式下拉（只有 SSH 能选私钥 / agent）。
     pub auth_method: bool,
-    /// "保存的凭据"下拉。
+    /// 选凭据（私钥 / ssh-agent 认证的密钥下拉；密码归主机，不选）。
     pub identity: bool,
     pub proxy: bool,
     pub jump: bool,

@@ -19,7 +19,7 @@ use super::protocol_form::FormField;
 pub enum Category {
     /// 名称、协议、地址 / 端口（串口是设备 / 波特率）、分组。
     General,
-    /// 用户名、认证方式、保存的凭据、密码；Telnet 还有自动登录。
+    /// 用户名、认证方式、密码（密码认证）/ 密钥下拉（私钥认证）；Telnet 还有自动登录。
     Auth,
     /// 代理、跳板机；SSH 还有 X11 转发。
     Connection,
