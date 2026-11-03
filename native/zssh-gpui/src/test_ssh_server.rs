@@ -300,15 +300,73 @@ pub async fn spawn_forwarding() -> SocketAddr {
     addr
 }
 
-/// 连上 [`spawn`] 系列起的服务器（任何密码都收，主机密钥首次信任）；`dir` 放临时的 known_hosts。
+/// 数连接的服务器（[`spawn_counting`]）的计数：握手了几次、现在还连着几条。
+#[derive(Default)]
+pub struct ServerProbe {
+    accepted: std::sync::atomic::AtomicUsize,
+    live: std::sync::atomic::AtomicUsize,
+}
+
+impl ServerProbe {
+    /// 累计接受了多少条 TCP 连接（每条 = 一次握手 + 认证）。
+    pub fn accepted(&self) -> usize {
+        self.accepted.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// 现在还没断开的连接数。
+    pub fn live(&self) -> usize {
+        self.live.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// 同 [`spawn`]，但一直接受新连接，并数握手次数和存活连接数（连接池测试用）。
 #[allow(dead_code)]
-pub async fn connect_trusting(
-    addr: SocketAddr,
-    dir: &std::path::Path,
-) -> zssh_core::ssh::connection::Connection {
+pub async fn spawn_counting() -> (SocketAddr, Arc<ServerProbe>) {
+    use std::sync::atomic::Ordering;
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("绑定本机端口");
+    let addr = listener.local_addr().expect("取端口");
+    let config = Arc::new(server::Config {
+        inactivity_timeout: None,
+        auth_rejection_time: Duration::from_millis(1),
+        keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("生成主机密钥")],
+        ..Default::default()
+    });
+    let probe = Arc::new(ServerProbe::default());
+    let counted = Arc::clone(&probe);
+    tokio::spawn(async move {
+        loop {
+            let Ok((socket, _)) = listener.accept().await else {
+                return;
+            };
+            counted.accepted.fetch_add(1, Ordering::SeqCst);
+            counted.live.fetch_add(1, Ordering::SeqCst);
+            let config = Arc::clone(&config);
+            let counted = Arc::clone(&counted);
+            tokio::spawn(async move {
+                let handler = MiniShell {
+                    line: Vec::new(),
+                    reply: None,
+                    password: None,
+                    exec_output: None,
+                };
+                if let Ok(running) = server::run_stream(config, socket, handler).await {
+                    let _ = running.await;
+                }
+                counted.live.fetch_sub(1, Ordering::SeqCst);
+            });
+        }
+    });
+    (addr, probe)
+}
+
+/// 测试里的交互器：主机密钥首次信任，不问密码。
+#[allow(dead_code)]
+pub fn trust_once() -> Arc<dyn zssh_core::ssh::Interactor> {
     use zssh_core::ssh::{
-        BoxFuture, ChainHop, HostKeyDecision, HostKeyInfo, Interactor, KnownHosts, PromptAnswers,
-        PromptRequest,
+        BoxFuture, HostKeyDecision, HostKeyInfo, Interactor, PromptAnswers, PromptRequest,
     };
 
     struct TrustOnce;
@@ -320,7 +378,15 @@ pub async fn connect_trusting(
             Box::pin(async { None })
         }
     }
-    let hops = vec![ChainHop {
+    Arc::new(TrustOnce)
+}
+
+/// 连 [`spawn`] 系列服务器的拨号链（一跳，密码任意）；`dir` 放临时的 known_hosts。
+#[allow(dead_code)]
+pub fn trusting_hops(addr: SocketAddr, dir: &std::path::Path) -> Vec<zssh_core::ssh::ChainHop> {
+    use zssh_core::ssh::{ChainHop, KnownHosts};
+
+    vec![ChainHop {
         label: "测试服务器".to_owned(),
         host: addr.ip().to_string(),
         port: addr.port(),
@@ -329,8 +395,16 @@ pub async fn connect_trusting(
         auth: zssh_core::ssh::AuthConfig::password(Some("pw".to_owned())),
         known_hosts: KnownHosts::new(dir.join(format!("kh-{}", addr.port()))),
         legacy_algorithms: false,
-    }];
-    zssh_core::ssh::connection::Connection::connect_chain(hops, Arc::new(TrustOnce))
+    }]
+}
+
+/// 连上 [`spawn`] 系列起的服务器（任何密码都收，主机密钥首次信任）；`dir` 放临时的 known_hosts。
+#[allow(dead_code)]
+pub async fn connect_trusting(
+    addr: SocketAddr,
+    dir: &std::path::Path,
+) -> zssh_core::ssh::connection::Connection {
+    zssh_core::ssh::connection::Connection::connect_chain(trusting_hops(addr, dir), trust_once())
         .await
         .expect("连上本机测试服务器")
 }

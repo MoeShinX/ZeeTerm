@@ -194,6 +194,7 @@ impl MainWindow {
     /// 启动时把设置里影响全局行为的两项套上：保活间隔、状态栏采集间隔。
     pub(super) fn apply_prefs(&self) {
         zssh_core::ssh::set_keepalive_interval(u64::from(self.prefs.keepalive_secs));
+        self.prefs.apply_pool_idle();
         crate::status_demo::set_refresh_secs(u64::from(self.prefs.stats_refresh_secs));
     }
 
@@ -1381,7 +1382,7 @@ impl MainWindow {
                 self.number_row(
                     PrefNumber::PoolIdle,
                     "连接空闲断开",
-                    "最后一个终端关掉之后，连接再空转多久断开；0 = 立刻断开。ZeeTerm 现在最后一个终端关掉连接就立即释放，这一项先只保存，不影响行为。",
+                    "终端、SFTP、端口转发等都不再使用这条连接之后，再空转多久断开；0 = 立刻断开。改动对已经空闲的连接也生效，从改动那一刻起重新计时。",
                     "s",
                     tokens,
                     cx,

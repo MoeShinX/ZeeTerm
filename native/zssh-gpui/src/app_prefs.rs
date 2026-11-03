@@ -142,6 +142,11 @@ impl Default for AppPrefs {
 }
 
 impl AppPrefs {
+    /// 把「连接空闲断开」推给连接池。启动、改设置、重读设置之后都要调，池才按当前值计时。
+    pub fn apply_pool_idle(&self) {
+        crate::ssh_backend::set_pool_idle_secs(self.pool_idle_secs);
+    }
+
     /// 按键取原始值（表里没有就是 `None`）造一份；测试用它不开库。
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
         let raw = |key: &str| get(key);

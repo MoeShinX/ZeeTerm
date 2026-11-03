@@ -7,12 +7,11 @@
 //!
 //! 主机指纹和密码提问走 [`crate::ssh_interact`]，它在阻塞线程池里弹系统对话框。
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use tokio::runtime::Runtime;
@@ -30,12 +29,15 @@ use zssh_session::{SessionBackend, SessionCommand, SessionEvent, map_core_event}
 use zssh_terminal::Size;
 
 use crate::ai_terminals::{TermCommand, terminals};
+use crate::conn_pool::{Acquired, PRODUCTION_POLL, Pool, PoolConfig, PoolItem};
 use crate::settings::data_dir;
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
-/// 已认证连接的复用池：同一台主机（配置未变）的新窗口直接开 shell，不重新握手。
-static POOL: OnceLock<Mutex<HashMap<String, Weak<SshSessionFactory>>>> = OnceLock::new();
+/// 已认证连接的复用池：同一台主机（配置未变）的新窗口直接开 shell，不重新握手；
+/// 同一份配置同时来的建连请求合并成一次握手；所有使用者放手之后按「连接空闲断开」设置计时关闭。
+/// 细节见 [`crate::conn_pool`]。
+static POOL: OnceLock<Pool<SshSessionFactory>> = OnceLock::new();
 
 /// 命令队列容量。界面线程用 `try_send`，远端不读 stdin 时队列满了就丢弃并提示，
 /// 不能为了等它而卡住界面（也不能无限堆内存）。
@@ -47,8 +49,19 @@ const OPEN_SHELL_TIMEOUT: Duration = Duration::from_secs(20);
 /// 关闭时给 EOF/close 帧的时间，写端卡住也不能拖住收尾。
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 
-fn pool() -> &'static Mutex<HashMap<String, Weak<SshSessionFactory>>> {
-    POOL.get_or_init(|| Mutex::new(HashMap::new()))
+fn pool() -> &'static Pool<SshSessionFactory> {
+    POOL.get_or_init(|| {
+        Pool::new(PoolConfig {
+            idle_timeout: Duration::from_secs(u64::from(crate::app_prefs::POOL_IDLE_DEFAULT)),
+            poll_interval: PRODUCTION_POLL,
+        })
+    })
+}
+
+/// 设置页的「连接空闲断开」：所有使用者放手之后，连接再空转多久关闭（0 = 立刻）。
+/// 运行中改它，已经空闲的连接从改动那一刻起按新值重新计时。启动时和每次设置变动后调用。
+pub fn set_pool_idle_secs(secs: u32) {
+    pool().set_idle_timeout(Duration::from_secs(u64::from(secs)));
 }
 
 /// 连接池的键：目标主机 id + 整条拨号链的内容摘要。
@@ -219,6 +232,26 @@ pub struct SshSessionFactory {
     connection: Arc<Connection>,
 }
 
+impl PoolItem for SshSessionFactory {
+    fn is_closed(&self) -> bool {
+        self.connection.is_closed()
+    }
+
+    /// 使用者 = 拿着工厂本身的（终端标签、SFTP 窗口、转发、状态采集……）加上只拿着
+    /// `Arc<Connection>` 的（shell 会话任务、SFTP 通道、AI 工具的 exec / SFTP 通道、远端转发……）。
+    /// 池里的一份工厂（1）和工厂自己握的一份连接（1）都扣掉。延迟测量、主机系统探测只持弱引用或
+    /// 一次性持有，不算长期使用者。
+    fn outside_holders(this: &Arc<Self>) -> usize {
+        (Arc::strong_count(this) - 1) + (Arc::strong_count(&this.connection) - 1)
+    }
+
+    fn close(self: Arc<Self>) -> BoxFuture<'static, ()> {
+        Box::pin(async move {
+            let _ = self.connection.disconnect().await;
+        })
+    }
+}
+
 /// 一次打开的结果：连接工厂、写端、事件接收端和会话自己的流控门。
 ///
 /// `SessionPump` 必须用这个门：它的 ack 才会传回 SSH 读任务。
@@ -317,10 +350,10 @@ pub fn begin_connect_quick(
     let target = target.clone();
     spawn_open(async move {
         let (key, hops) = prepare_quick(&target, password)?;
-        let factory = match pooled(&key) {
-            Some(factory) => factory,
-            None => dial(key, hops, None).await?,
-        };
+        let Acquired {
+            item: factory,
+            reused: _,
+        } = acquire_factory(pool(), crate::ssh_interact::interactor(), key, hops, None).await?;
         let (backend, events, gate) = factory.open_async(size, generation).await?;
         Ok(Opened {
             factory: Some(factory),
@@ -495,56 +528,31 @@ pub(crate) fn prepare_from_db(
     Ok((pool_key(host_id, &hops), hops))
 }
 
-/// 池里同键、还活着的连接。
-fn pooled(key: &str) -> Option<Arc<SshSessionFactory>> {
-    let existing = pool()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(key)
-        .and_then(Weak::upgrade);
-    match existing {
-        Some(factory) if !factory.connection.is_closed() => Some(factory),
-        Some(_) => {
-            forget(key);
-            None
-        }
-        None => None,
-    }
-}
-
-fn forget(key: &str) {
-    pool()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(key);
-}
-
-fn remember(key: String, factory: &Arc<SshSessionFactory>) {
-    let mut pool = pool()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    pool.retain(|_, weak| weak.strong_count() > 0);
-    pool.insert(key, Arc::downgrade(factory));
-}
-
-/// 新建一条已认证的连接并放进连接池。`host_id` 是库里的主机（快速连接没有）：给了就在后台探一次
-/// 远端系统，主机树里的图标据此换成发行版标志（见 [`crate::host_os`]）；池里复用的连接不再探。
-async fn dial(
+/// 拿这个键的已认证连接：池里有就复用；同一份配置有人正在握手就等那一次；否则握手并放进池。
+/// `host_id` 是库里的主机（快速连接没有）：新握手出来的连接会在后台探一次远端系统，主机树里的图标据此换成
+/// 发行版标志（见 [`crate::host_os`]）；复用池里的连接不再探。
+///
+/// `interactor` 单独传是为了测试能换成不弹对话框的；生产里是 [`crate::ssh_interact::interactor`]。
+async fn acquire_factory(
+    pool: &Pool<SshSessionFactory>,
+    interactor: Arc<dyn zssh_core::ssh::Interactor>,
     key: String,
     hops: Vec<ChainHop>,
     host_id: Option<i64>,
-) -> Result<Arc<SshSessionFactory>, String> {
-    let connection = Connection::connect_chain(hops, crate::ssh_interact::interactor())
-        .await
-        .map_err(|err| format!("连接失败：{err}"))?;
-    let factory = Arc::new(SshSessionFactory {
-        connection: Arc::new(connection),
-    });
-    remember(key, &factory);
-    if let Some(host_id) = host_id {
-        crate::host_os::spawn_probe(host_id, Arc::clone(&factory.connection));
-    }
-    Ok(factory)
+) -> Result<Acquired<SshSessionFactory>, String> {
+    pool.acquire(&key, move || async move {
+        let connection = Connection::connect_chain(hops, interactor)
+            .await
+            .map_err(|err| format!("连接失败：{err}"))?;
+        let factory = Arc::new(SshSessionFactory {
+            connection: Arc::new(connection),
+        });
+        if let Some(host_id) = host_id {
+            crate::host_os::spawn_probe(host_id, Arc::clone(&factory.connection));
+        }
+        Ok(factory)
+    })
+    .await
 }
 
 /// 连接一台已保存的主机并开一个终端会话（池里有同配置的活连接就复用）。
@@ -552,25 +560,39 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
     let (key, hops) = prepare(host_id)?;
     // 这台主机开了 X11 转发时，连上之后、开 shell 之前才准备本机 X 服务器（连不上就不白拉起）。
     let x11_wanted = crate::x11_glue::wanted(host_id);
-    if let Some(factory) = pooled(&key) {
-        let x11 = crate::x11_glue::attempt(x11_wanted).await;
-        match factory.open_async_with(size, generation, x11).await {
-            Ok((backend, events, gate)) => {
-                return Ok(Opened {
-                    factory: Some(factory),
-                    backend: Box::new(backend),
-                    events,
-                    gate,
-                    latency: None,
-                });
-            }
-            // 连接已经死了：摘掉旧条目，下面重新握手。
-            Err(_) => forget(&key),
-        }
-    }
-    let factory = dial(key, hops, Some(host_id)).await?;
+    let Acquired {
+        item: factory,
+        reused,
+    } = acquire_factory(
+        pool(),
+        crate::ssh_interact::interactor(),
+        key.clone(),
+        hops.clone(),
+        Some(host_id),
+    )
+    .await?;
     let x11 = crate::x11_glue::attempt(x11_wanted).await;
-    let (backend, events, gate) = factory.open_async_with(size, generation, x11).await?;
+    let (factory, (backend, events, gate)) =
+        match factory.open_async_with(size, generation, x11).await {
+            Ok(opened) => (factory, opened),
+            // 复用的连接已经死了：摘掉旧条目，重新握手一次。刚握手出来的连接开 shell 失败是真失败。
+            Err(_) if reused => {
+                pool().forget(&key, &factory);
+                let fresh = acquire_factory(
+                    pool(),
+                    crate::ssh_interact::interactor(),
+                    key,
+                    hops,
+                    Some(host_id),
+                )
+                .await?
+                .item;
+                let x11 = crate::x11_glue::attempt(x11_wanted).await;
+                let opened = fresh.open_async_with(size, generation, x11).await?;
+                (fresh, opened)
+            }
+            Err(err) => return Err(err),
+        };
     Ok(Opened {
         factory: Some(factory),
         backend: Box::new(backend),
@@ -582,13 +604,18 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
 
 /// 拿一台主机的已认证连接，只建连接、不开 shell（SFTP 窗口用）。
 ///
-/// 池里已经有同配置的活连接就直接复用；否则拨号链重新握手。
+/// 池里已经有同配置的活连接就直接复用；同时来的请求合并成一次握手；否则拨号链重新握手。
 pub async fn factory_for_host(host_id: i64) -> Result<Arc<SshSessionFactory>, String> {
     let (key, hops) = prepare(host_id)?;
-    if let Some(factory) = pooled(&key) {
-        return Ok(factory);
-    }
-    dial(key, hops, Some(host_id)).await
+    acquire_factory(
+        pool(),
+        crate::ssh_interact::interactor(),
+        key,
+        hops,
+        Some(host_id),
+    )
+    .await
+    .map(|acquired| acquired.item)
 }
 
 /// 会话里对 shell 写半边的抽象；真实实现是 [`ShellWriter`]，测试里换成假的。
@@ -873,6 +900,7 @@ fn proxy_label(kind: &ProxyKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
     use zssh_core::ssh::AuthConfig;
 
@@ -1772,5 +1800,256 @@ mod tests {
         let _ = std::fs::remove_file(&known_hosts);
         let seen = outcome.expect("快速连接的拨号链能连上本机测试服务器");
         assert!(seen.contains("MINI_READY"), "应该进了 shell：{seen}");
+    }
+
+    // ---- 连接池（R07 空闲回收、R08 并发建连合并）：真实 SSH 握手，对着进程内测试服务器 ----
+
+    use crate::test_ssh_server::{spawn_counting, trust_once, trusting_hops};
+
+    fn pool_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("zssh-pool-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("临时目录");
+        dir
+    }
+
+    fn test_pool(idle: Duration) -> Pool<SshSessionFactory> {
+        Pool::new(PoolConfig {
+            idle_timeout: idle,
+            poll_interval: Duration::from_millis(50),
+        })
+    }
+
+    async fn acquire_test(
+        pool: &Pool<SshSessionFactory>,
+        key: &str,
+        hops: Vec<ChainHop>,
+    ) -> Result<Acquired<SshSessionFactory>, String> {
+        acquire_factory(pool, trust_once(), key.to_owned(), hops, None).await
+    }
+
+    /// 等到条件成立，最多 `limit`；返回最后一次的结果。
+    async fn eventually(limit: Duration, mut condition: impl FnMut() -> bool) -> bool {
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            if condition() {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    /// R08：同一份配置同时来十个建连请求，服务器只看到一次握手；配置不同则各握各的。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn ten_concurrent_connects_to_one_host_handshake_once() {
+        let dir = pool_dir("r08");
+        let (addr, probe) = spawn_counting().await;
+        let pool = test_pool(Duration::from_secs(60));
+        let hops = trusting_hops(addr, &dir);
+        let key = pool_key(9001, &hops);
+
+        let mut tasks = Vec::new();
+        for _ in 0..10 {
+            let pool = pool.clone();
+            let key = key.clone();
+            let hops = trusting_hops(addr, &dir);
+            tasks.push(tokio::spawn(async move {
+                acquire_test(&pool, &key, hops).await
+            }));
+        }
+        let mut factories = Vec::new();
+        for task in tasks {
+            factories.push(task.await.expect("任务").expect("连上").item);
+        }
+        assert_eq!(probe.accepted(), 1, "十个请求只能握一次手");
+        assert!(
+            factories
+                .iter()
+                .all(|factory| Arc::ptr_eq(factory, &factories[0]))
+        );
+
+        // 在这条连接上照常开 shell：握手一次，之后按需开通道。
+        let (_backend, _events, _gate) = factories[0]
+            .open_async(Size { rows: 24, cols: 80 }, 1)
+            .await
+            .expect("开 shell");
+        assert_eq!(probe.accepted(), 1);
+
+        // 密码换了 = 配置变了 = 另一个键：不会误用旧连接。
+        let mut changed = trusting_hops(addr, &dir);
+        changed[0].auth = zssh_core::ssh::AuthConfig::password(Some("another".to_owned()));
+        let changed_key = pool_key(9001, &changed);
+        assert_ne!(changed_key, key);
+        let other = acquire_test(&pool, &changed_key, changed)
+            .await
+            .expect("连上")
+            .item;
+        assert!(!Arc::ptr_eq(&other, &factories[0]));
+        assert_eq!(probe.accepted(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R08：握手失败不会留下永远在等的占位——同键的下一次请求重新拨号并成功。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_failed_connect_does_not_block_the_next_attempt() {
+        let dir = pool_dir("r08-fail");
+        // 一个没人监听的端口：连接被拒绝。
+        let dead = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("占一个端口");
+            let addr = listener.local_addr().expect("端口");
+            drop(listener);
+            addr
+        };
+        let (addr, probe) = spawn_counting().await;
+        let pool = test_pool(Duration::from_secs(60));
+
+        let results = tokio::join!(
+            acquire_test(&pool, "k", trusting_hops(dead, &dir)),
+            acquire_test(&pool, "k", trusting_hops(dead, &dir)),
+            acquire_test(&pool, "k", trusting_hops(dead, &dir)),
+        );
+        for result in [results.0, results.1, results.2] {
+            assert!(result.is_err(), "拨不通应该报错");
+        }
+        assert_eq!(pool.len(), 0, "失败的占位不能留着");
+
+        let retried = tokio::time::timeout(
+            Duration::from_secs(20),
+            acquire_test(&pool, "k", trusting_hops(addr, &dir)),
+        )
+        .await
+        .expect("重试不能永久等待")
+        .expect("重试连上");
+        assert!(!retried.reused);
+        assert_eq!(probe.accepted(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R07：所有使用者放手之后才开始计时，到点真的断开服务器那一端的连接；超时值不同，断开时刻不同。
+    async fn idle_close_scenario(idle: Duration) -> Duration {
+        let dir = pool_dir(&format!("r07-{}", idle.as_millis()));
+        let (addr, probe) = spawn_counting().await;
+        let pool = test_pool(idle);
+        let hops = trusting_hops(addr, &dir);
+        let key = pool_key(9002, &hops);
+        let factory = acquire_test(&pool, &key, hops).await.expect("连上").item;
+        let backup = Arc::clone(&factory);
+
+        // 还有使用者：放着远超超时也不断。
+        tokio::time::sleep(idle + Duration::from_millis(500)).await;
+        assert_eq!(probe.live(), 1, "有使用者，不能断");
+        assert!(!factory.connection.is_closed());
+
+        // 一个放手，另一个还在：仍不断。
+        drop(factory);
+        tokio::time::sleep(idle + Duration::from_millis(300)).await;
+        assert_eq!(probe.live(), 1, "还有使用者，不能断");
+
+        // 最后一个放手：从现在计时。
+        let released = std::time::Instant::now();
+        drop(backup);
+        assert!(
+            eventually(idle + Duration::from_secs(5), || probe.live() == 0).await,
+            "放手满 {idle:?} 之后连接应该断开"
+        );
+        let elapsed = released.elapsed();
+        let _ = std::fs::remove_dir_all(&dir);
+        elapsed
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_short_idle_timeout_closes_the_real_connection_soon_after_the_last_user_leaves() {
+        let elapsed = idle_close_scenario(Duration::from_millis(400)).await;
+        assert!(
+            elapsed >= Duration::from_millis(350),
+            "不能早于超时：{elapsed:?}"
+        );
+        assert!(elapsed < Duration::from_secs(4), "{elapsed:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_long_idle_timeout_keeps_the_real_connection_longer() {
+        let elapsed = idle_close_scenario(Duration::from_millis(2500)).await;
+        assert!(
+            elapsed >= Duration::from_millis(2400),
+            "不能早于超时：{elapsed:?}"
+        );
+        assert!(elapsed < Duration::from_secs(8), "{elapsed:?}");
+    }
+
+    /// R07：只握着 `Arc<Connection>`（AI 工具的 exec 通道、转发、状态采集这类不握工厂的使用者）
+    /// 同样算使用者，超时再短也不能在它用着的时候断开。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn holding_only_the_connection_handle_keeps_the_connection_open() {
+        let dir = pool_dir("r07-conn");
+        let (addr, probe) = spawn_counting().await;
+        let pool = test_pool(Duration::from_millis(200));
+        let hops = trusting_hops(addr, &dir);
+        let key = pool_key(9003, &hops);
+        let factory = acquire_test(&pool, &key, hops).await.expect("连上").item;
+        let connection = factory.connection();
+        drop(factory);
+
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert_eq!(probe.live(), 1, "转发之类还拿着连接，不能断");
+        assert!(!connection.is_closed());
+
+        drop(connection);
+        assert!(
+            eventually(Duration::from_secs(5), || probe.live() == 0).await,
+            "放手后应该断开"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R07：开着 SFTP 通道（远端编辑器就是这样，不握工厂）时，空闲回收不能把连接关掉；通道关掉之后才回收。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_open_sftp_channel_keeps_the_connection_from_being_reaped() {
+        let dir = pool_dir("r07-sftp");
+        let addr = crate::test_ssh_server::spawn_sftp().await;
+        let pool = test_pool(Duration::from_millis(200));
+        let hops = trusting_hops(addr, &dir);
+        let key = pool_key(9004, &hops);
+        let factory = acquire_test(&pool, &key, hops).await.expect("连上").item;
+        let connection = factory.connection();
+        let watcher = Arc::downgrade(&connection);
+        let channel = zssh_core::sftp::SftpChannel::open(&connection)
+            .await
+            .expect("开 SFTP 通道");
+        drop(connection);
+        drop(factory);
+
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        channel
+            .realpath(".")
+            .await
+            .expect("SFTP 还在用，连接不能被空闲回收关掉");
+        assert!(watcher.upgrade().is_some());
+
+        drop(channel);
+        assert!(
+            eventually(Duration::from_secs(5), || watcher.upgrade().is_none()).await,
+            "通道关掉之后，连接应该被回收"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 设置页的「连接空闲断开」确实接到了全局连接池。
+    #[test]
+    fn the_idle_setting_reaches_the_global_pool() {
+        let before = pool().idle_timeout();
+        let prefs = |value: &'static str| {
+            crate::app_prefs::AppPrefs::from_lookup(move |key| {
+                (key == zssh_core::store::settings::POOL_IDLE_TIMEOUT_KEY).then(|| value.to_owned())
+            })
+        };
+        prefs("37").apply_pool_idle();
+        assert_eq!(pool().idle_timeout(), Duration::from_secs(37));
+        prefs("0").apply_pool_idle();
+        assert_eq!(pool().idle_timeout(), Duration::ZERO);
+        pool().set_idle_timeout(before);
     }
 }

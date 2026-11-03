@@ -20,6 +20,7 @@ mod app_lock;
 mod app_prefs;
 mod app_theme;
 mod backup_demo;
+mod conn_pool;
 mod dev_hooks;
 mod editor_demo;
 #[cfg(debug_assertions)]

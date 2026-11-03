@@ -163,6 +163,9 @@ pub struct SftpChannel {
     connection_id: usize,
     /// 这条通道连的是哪台服务器（用户名@主机:端口），开通道时从连接上取。远端目标锁的键里要用。
     server_key: String,
+    /// 通道活着，它所在的 SSH 连接就算「有人在用」：连接池按谁还握着这条连接的 `Arc` 判断能不能做
+    /// 空闲回收，只拿着通道（比如远端编辑器）而不握工厂的使用者不能被漏掉，否则编辑到一半连接被关。
+    _connection: Arc<Connection>,
 }
 
 /// 远端锁用的服务器身份：连接实际连到的 用户名@主机:端口。
@@ -199,6 +202,7 @@ impl SftpChannel {
             caps,
             connection_id: Arc::as_ptr(connection) as usize,
             server_key: identity_of(connection),
+            _connection: Arc::clone(connection),
         })
     }
 
