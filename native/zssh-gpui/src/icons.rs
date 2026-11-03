@@ -263,7 +263,10 @@ mod tests {
             .expect("读图标")
             .expect("齿轮没有编进来");
         let text = std::str::from_utf8(&bytes).expect("SVG 是文本");
-        assert!(text.starts_with("<svg") && text.contains("currentColor"), "线条图标，颜色跟着文字色走");
+        assert!(
+            text.starts_with("<svg") && text.contains("currentColor"),
+            "线条图标，颜色跟着文字色走"
+        );
         assert!(text.contains("<circle"), "中心要有圆孔");
         // 侧栏左下的「设置」和标题栏折叠后的齿轮都走 gear_icon，不再用组件库的 Settings。
         for (name, text) in [
