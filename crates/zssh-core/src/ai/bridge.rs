@@ -1517,16 +1517,38 @@ impl Bridge {
         ticket: &RequestTicket,
         request: ApprovalRequest,
     ) -> (ExecDecision, Option<String>) {
+        self.decide_with(scope, ticket, request, false).await
+    }
+
+    /// 同 [`Bridge::decide`]；`force_confirm` 为真时不论哪种模式都要人确认（只读文件工具
+    /// 读到敏感文件时用，那条路径本来不经过批准）。
+    pub(crate) async fn decide_with(
+        &self,
+        scope: &Arc<Scope>,
+        ticket: &RequestTicket,
+        mut request: ApprovalRequest,
+        force_confirm: bool,
+    ) -> (ExecDecision, Option<String>) {
         let mode = self.mode.mode();
-        let auto = match mode {
-            ExecMode::Auto => true,
-            ExecMode::ReadOnly => {
-                request.file.is_none()
-                    && request.danger == DangerLevel::Safe
-                    && crate::ai::readonly::is_read_only(&request.command)
-            }
-            ExecMode::Manual => false,
-        };
+        let auto = !force_confirm
+            && match mode {
+                ExecMode::Auto => true,
+                ExecMode::ReadOnly => {
+                    let read_only = request.file.is_none()
+                        && request.danger == DangerLevel::Safe
+                        && crate::ai::readonly::is_read_only(&request.command);
+                    // 只读命令也可能把私钥、云凭据读出来交给模型服务商：命中敏感路径的
+                    // 降级为要确认，并在卡片上写明原因。
+                    match crate::ai::sensitive::sensitive_path_in_command(&request.command) {
+                        Some(hit) if read_only => {
+                            request.reasons.push(hit.reason());
+                            false
+                        }
+                        _ => read_only,
+                    }
+                }
+                ExecMode::Manual => false,
+            };
         let (decision, refusal) = match auto {
             true => (ExecDecision::Auto, None),
             false => {
@@ -2590,6 +2612,96 @@ root password: hunter2" }),
         let entries = h.audit.entries();
         assert_eq!(entries[0].decision, ExecDecision::Auto);
         assert_eq!(entries[1].decision, ExecDecision::Denied);
+    }
+
+    /// 「只读自动」读敏感文件要确认：`cat ~/.ssh/id_rsa` 不改动系统，也要问；
+    /// 确认卡上写明原因。普通的只读命令不受影响。
+    #[tokio::test]
+    async fn readonly_mode_asks_before_reading_sensitive_files() {
+        let h = harness(ExecMode::ReadOnly, ApproverBehavior::Deny, short_wait()).await;
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", true, false);
+        let mut client =
+            Client::authenticated(h.port, h.bridge.connection_token(), scope.capability()).await;
+
+        let response = client
+            .request(
+                1,
+                METHOD_RUN_COMMAND,
+                json!({ "target_id": "s1", "command": "cat /etc/hosts" }),
+            )
+            .await;
+        assert_eq!(result_of(&response)["exit_code"], 0);
+        assert_eq!(h.approver.calls(), 0, "普通只读命令不问");
+
+        for (id, command, shown) in [
+            (2, "cat ~/.ssh/id_rsa", "~/.ssh/id_rsa"),
+            (3, "base64 ~/.aws/credentials", "~/.aws/credentials"),
+            (4, "tail -n 5 /srv/app/.env", "/srv/app/.env"),
+            (5, "cat ~/.s*/*", "~/.s*/*"),
+        ] {
+            let before = h.approver.calls();
+            let response = client
+                .request(
+                    id,
+                    METHOD_RUN_COMMAND,
+                    json!({ "target_id": "s1", "command": command }),
+                )
+                .await;
+            assert_eq!(h.approver.calls(), before + 1, "{command} 要问");
+            assert!(error_of(&response).contains("用户拒绝"), "{response}");
+            let asked = h.approver.last().expect("审批请求");
+            assert_eq!(asked.command, command);
+            assert!(
+                asked
+                    .reasons
+                    .iter()
+                    .any(|reason| reason.starts_with("读取敏感文件：") && reason.contains(shown)),
+                "{command}：{:?}",
+                asked.reasons
+            );
+            assert_eq!(
+                h.host.last_exec().unwrap().1,
+                "cat /etc/hosts",
+                "被拒的命令没有执行"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn sensitive_reads_run_after_approval_and_need_no_prompt_in_auto_mode() {
+        // 批准后照常执行，审计记“人工批准”。
+        let h = harness(ExecMode::ReadOnly, ApproverBehavior::Allow, short_wait()).await;
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", true, false);
+        let mut client =
+            Client::authenticated(h.port, h.bridge.connection_token(), scope.capability()).await;
+        let response = client
+            .request(
+                1,
+                METHOD_RUN_COMMAND,
+                json!({ "target_id": "s1", "command": "cat ~/.ssh/id_rsa" }),
+            )
+            .await;
+        assert_eq!(result_of(&response)["exit_code"], 0);
+        assert_eq!(h.approver.calls(), 1);
+        assert_eq!(h.audit.entries()[0].decision, ExecDecision::Allowed);
+
+        // 「全部放行」不变。
+        let h = harness(ExecMode::Auto, ApproverBehavior::Deny, short_wait()).await;
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", true, false);
+        let mut client =
+            Client::authenticated(h.port, h.bridge.connection_token(), scope.capability()).await;
+        let response = client
+            .request(
+                1,
+                METHOD_RUN_COMMAND,
+                json!({ "target_id": "s1", "command": "cat ~/.ssh/id_rsa" }),
+            )
+            .await;
+        assert_eq!(result_of(&response)["exit_code"], 0);
+        assert_eq!(h.approver.calls(), 0);
     }
 
     /// AUDIT-2 A01：完整执行链。ReadOnly 模式 + 一律拒绝的审批替身：写操作的写法

@@ -835,3 +835,101 @@ async fn file_tools_open_the_bound_session_and_report_where_they_run() {
     assert_eq!(ids.len(), 4, "四次调用四个不同的编号");
     assert_eq!(approvals[0].exec_id, reports[3].exec_id);
 }
+
+// ---------- 「只读自动」读敏感文件要确认 ----------
+
+#[tokio::test]
+async fn readonly_mode_asks_before_reading_sensitive_files_with_the_reason() {
+    let rig = rig(ExecMode::ReadOnly, Answer::Allow);
+    rig.fs.put("/home/u/.ssh/id_rsa", b"KEYDATA\n", 0o600);
+    rig.fs.put("/home/u/notes.txt", b"hello\n", 0o644);
+    let cap = scope_with_target(&rig);
+
+    // 普通文件照旧不问。
+    let read = call(&rig, &cap, METHOD_READ_FILE, json!({ "path": "notes.txt" }))
+        .await
+        .unwrap();
+    assert_eq!(read["content"], "hello\n");
+    assert!(rig.approvals.requests.lock().unwrap().is_empty());
+
+    // 敏感文件：问，批准后才读，卡片上有原因，审计记“人工批准”。
+    let read = call(
+        &rig,
+        &cap,
+        METHOD_READ_FILE,
+        json!({ "path": "/home/u/.ssh/id_rsa" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(read["content"], "KEYDATA\n");
+    let requests = rig.approvals.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].reasons,
+        vec!["读取敏感文件：/home/u/.ssh/id_rsa".to_owned()]
+    );
+    assert_eq!(requests[0].command, "read_file /home/u/.ssh/id_rsa");
+    let entries = rig.audit.0.lock().unwrap().clone();
+    assert_eq!(entries.last().unwrap().decision, ExecDecision::Allowed);
+    let dump = format!("{entries:?}");
+    assert!(!dump.contains("KEYDATA"), "审计不能带文件内容");
+}
+
+#[tokio::test]
+async fn readonly_mode_denied_sensitive_read_returns_no_content() {
+    let rig = rig(ExecMode::ReadOnly, Answer::Deny);
+    rig.fs
+        .put("/home/u/.aws/credentials", b"SECRETDATA\n", 0o600);
+    let cap = scope_with_target(&rig);
+    for (method, params) in [
+        (METHOD_READ_FILE, json!({ "path": "~/.aws/credentials" })),
+        (METHOD_LIST_DIR, json!({ "path": "~/.aws" })),
+        (METHOD_STAT, json!({ "path": "/home/u/.aws/credentials" })),
+    ] {
+        let err = call(&rig, &cap, method, params).await.unwrap_err();
+        assert!(err.contains("用户拒绝"), "{method}: {err}");
+        assert!(!err.contains("SECRETDATA"));
+    }
+    assert_eq!(rig.approvals.requests.lock().unwrap().len(), 3);
+    let entries = rig.audit.0.lock().unwrap().clone();
+    assert!(entries
+        .iter()
+        .all(|e| e.decision == ExecDecision::Denied && e.exit_code == Some(1)));
+}
+
+/// 通过符号链接绕：路径看着普通，真实目标是私钥。
+#[tokio::test]
+async fn readonly_mode_follows_symlinks_to_sensitive_files() {
+    let rig = rig(ExecMode::ReadOnly, Answer::Deny);
+    rig.fs.put("/home/u/.ssh/id_rsa", b"KEYDATA\n", 0o600);
+    rig.fs.links.lock().unwrap().insert(
+        "/home/u/link.txt".to_owned(),
+        "/home/u/.ssh/id_rsa".to_owned(),
+    );
+    let cap = scope_with_target(&rig);
+    let err = call(&rig, &cap, METHOD_READ_FILE, json!({ "path": "link.txt" }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("用户拒绝"), "{err}");
+    assert_eq!(rig.approvals.requests.lock().unwrap().len(), 1);
+}
+
+/// 「全部放行」不变，「逐条确认」下只读文件工具照旧不问（既有行为，产品定的）。
+#[tokio::test]
+async fn auto_and_manual_modes_do_not_add_a_sensitive_read_prompt() {
+    for mode in [ExecMode::Auto, ExecMode::Manual] {
+        let rig = rig(mode, Answer::Deny);
+        rig.fs.put("/home/u/.ssh/id_rsa", b"KEYDATA\n", 0o600);
+        let cap = scope_with_target(&rig);
+        let read = call(
+            &rig,
+            &cap,
+            METHOD_READ_FILE,
+            json!({ "path": "/home/u/.ssh/id_rsa" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(read["content"], "KEYDATA\n");
+        assert!(rig.approvals.requests.lock().unwrap().is_empty());
+    }
+}
