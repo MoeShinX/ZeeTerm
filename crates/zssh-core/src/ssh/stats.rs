@@ -28,7 +28,7 @@ pub const CPU_MODEL_PROBE: &str = r#"cpumodel=$( { awk '/^(model name|cpu model|
 /// 采集脚本。参照 Netcatty `linuxStatsCommand`：每项 `|| echo""` 兜底，
 /// 占内存最多的进程带 BusyBox 的两级回退（`top -b` → 裸 `ps`）。
 /// 字段分隔符 `;`（进程内部）和 `,`（条目之间）都被脚本替换成 `_`，不会串。
-pub const STATS_SCRIPT: &str = "cores=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo \"1\"); cpuraw=$(awk '/^cpu / {total=0; for(i=2;i<=NF;i++) total+=$i; printf \"%d %d\", total, $5}' /proc/stat 2>/dev/null || echo \"\"); percoreraw=$(awk '/^cpu[0-9]/ {total=0; for(i=2;i<=NF;i++) total+=$i; printf \"%d:%d,\", total, $5}' /proc/stat 2>/dev/null | sed 's/,$//' || echo \"\"); meminfo=$(awk '/^MemTotal:/{t=$2} /^MemFree:/{f=$2} /^Buffers:/{b=$2} /^Cached:/{c=$2} /^SReclaimable:/{s=$2} /^SwapTotal:/{st=$2} /^SwapFree:/{sf=$2} END{printf \"%d %d %d %d %d %d\", t/1024, f/1024, b/1024, (c+s)/1024, st/1024, sf/1024}' /proc/meminfo 2>/dev/null || echo \"\"); procs=$(if procraw=$(ps -eo pid,%mem,comm --sort=-%mem 2>/dev/null); then printf \"%s\\n\" \"$procraw\" | awk 'NR>1 && NR<=11 {gsub(/;/, \"_\", $3); printf \"%s;%.1f;%s,\", $1, $2, $3}' | sed 's/,$//'; elif topraw=$(top -b -n 1 2>/dev/null); then printf \"%s\\n\" \"$topraw\" | awk '$1 == \"PID\" {for(i=1;i<=NF;i++){if($i==\"%VSZ\") mem_col=i; else if($i==\"COMMAND\") cmd_col=i} next} $1 ~ /^[0-9]+$/ && mem_col && cmd_col {pct=$(mem_col); gsub(/%/, \"\", pct); cmd=$(cmd_col); gsub(/;/, \"_\", cmd); print pct \";\" $1 \";\" cmd}' | sort -t ';' -k1,1rn | head -10 | awk -F';' '{printf \"%s;%.1f;%s,\", $2, $1, $3}' | sed 's/,$//'; else ps ww 2>/dev/null | awk -v total=$(awk '/^MemTotal:/{print $2}' /proc/meminfo) '$1 ~ /^[0-9]+$/ {v=$3; unit=substr(v,length(v),1); mult=1; if(unit==\"m\"||unit==\"M\")mult=1024; else if(unit==\"g\"||unit==\"G\")mult=1048576; sub(/[mMgG]$/, \"\", v); pct=total>0?v*mult*100/total:0; cmd=$5; gsub(/;/, \"_\", cmd); print pct, $1, cmd}' | sort -rn | head -10 | awk '{printf \"%s;%.1f;%s,\", $2, $1, $3}' | sed 's/,$//'; fi); net=$(cat /proc/net/dev 2>/dev/null | awk 'NR>2 {gsub(/^[ \\t]+/, \"\"); split($0, a, \":\"); iface=a[1]; if(iface != \"lo\" && iface !~ /^veth/ && iface !~ /^docker/ && iface !~ /^br-/) {split(a[2], b); printf \"%s:%s:%s,\", iface, b[1], b[9]}}' | sed 's/,$//' || echo \"\"); disks=$(df -kP / 2>/dev/null | awk 'NR==2 {printf \"%s:%s:%s\", $6, $3, $2}' || echo \"\"); mounts=$( { df -kPT 2>/dev/null || df -kP 2>/dev/null; } | awk 'NR>1 { if (NF>=7) { src=$1; t=$2; total=$3; used=$4; m=$7 } else { src=$1; t=\"-\"; total=$2; used=$3; m=$6 } if (t ~ /^(tmpfs|devtmpfs|overlay|squashfs|proc|sysfs|cgroup|cgroup2|devpts|mqueue|autofs|efivarfs|ramfs|nsfs|tracefs|debugfs|fuse.lxcfs)$/) next; if (src ~ /^(tmpfs|overlay|shm|none|udev|devtmpfs)$/) next; if (index(m, \"/proc\") == 1 || index(m, \"/sys\") == 1 || index(m, \"/dev\") == 1 || index(m, \"/run\") == 1 || index(m, \"/var/lib/docker/\") == 1 || index(m, \"/snap/\") == 1) next; if (total + 0 <= 0) next; if (seen[src]++) next; if (++count > 32) next; gsub(/[;,|:]/, \"_\", m); gsub(/[;,|:]/, \"_\", src); gsub(/[;,|:]/, \"_\", t); printf \"%s;%s;%s;%s;%s,\", m, t, src, used, total }' | sed 's/,$//' || echo \"\"); hostname_value=$(hostname 2>/dev/null || uname -n 2>/dev/null || echo \"\"); osname=$(awk -F= '/^PRETTY_NAME=/{gsub(/\"/,\"\",$2);print $2;exit}' /etc/os-release 2>/dev/null || uname -s 2>/dev/null || echo \"\"); kernel=$(uname -r 2>/dev/null || echo \"\"); uptime=$(awk '{printf \"%.0f\",$1}' /proc/uptime 2>/dev/null || echo \"\"); loadavg=$(awk '{print $1\" \"$2\" \"$3}' /proc/loadavg 2>/dev/null || echo \"\"); echo \"CPURAW:$cpuraw|CORES:$cores|PERCORERAW:$percoreraw|MEMINFO:$meminfo|PROCS:$procs|NET:$net|DISK:$disks|HOST:$hostname_value|OS:$osname|KERNEL:$kernel|UPTIME:$uptime|LOAD:$loadavg|MOUNTS:$mounts\"";
+pub const STATS_SCRIPT: &str = "cores=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo \"1\"); cpuraw=$(awk '/^cpu / {total=0; for(i=2;i<=NF;i++) total+=$i; printf \"%d %d\", total, $5}' /proc/stat 2>/dev/null || echo \"\"); percoreraw=$(awk '/^cpu[0-9]/ {total=0; for(i=2;i<=NF;i++) total+=$i; printf \"%d:%d,\", total, $5}' /proc/stat 2>/dev/null | sed 's/,$//' || echo \"\"); meminfo=$(awk '/^MemTotal:/{t=$2} /^MemFree:/{f=$2} /^Buffers:/{b=$2} /^Cached:/{c=$2} /^SReclaimable:/{s=$2} /^SwapTotal:/{st=$2} /^SwapFree:/{sf=$2} END{printf \"%d %d %d %d %d %d\", t/1024, f/1024, b/1024, (c+s)/1024, st/1024, sf/1024}' /proc/meminfo 2>/dev/null || echo \"\"); procs=$(if procraw=$(ps -eo pid,%mem,comm --sort=-%mem 2>/dev/null); then printf \"%s\\n\" \"$procraw\" | awk 'NR>1 && NR<=11 {gsub(/;/, \"_\", $3); printf \"%s;%.1f;%s,\", $1, $2, $3}' | sed 's/,$//'; elif topraw=$(top -b -n 1 2>/dev/null); then printf \"%s\\n\" \"$topraw\" | awk '$1 == \"PID\" {for(i=1;i<=NF;i++){if($i==\"%VSZ\") mem_col=i; else if($i==\"COMMAND\") cmd_col=i} next} $1 ~ /^[0-9]+$/ && mem_col && cmd_col {pct=$(mem_col); gsub(/%/, \"\", pct); cmd=$(cmd_col); gsub(/;/, \"_\", cmd); print pct \";\" $1 \";\" cmd}' | sort -t ';' -k1,1rn | head -10 | awk -F';' '{printf \"%s;%.1f;%s,\", $2, $1, $3}' | sed 's/,$//'; else ps ww 2>/dev/null | awk -v total=$(awk '/^MemTotal:/{print $2}' /proc/meminfo) '$1 ~ /^[0-9]+$/ {v=$3; unit=substr(v,length(v),1); mult=1; if(unit==\"m\"||unit==\"M\")mult=1024; else if(unit==\"g\"||unit==\"G\")mult=1048576; sub(/[mMgG]$/, \"\", v); pct=total>0?v*mult*100/total:0; cmd=$5; gsub(/;/, \"_\", cmd); print pct, $1, cmd}' | sort -rn | head -10 | awk '{printf \"%s;%.1f;%s,\", $2, $1, $3}' | sed 's/,$//'; fi); procscpu=$(if procraw=$(ps -eo pid,%cpu,comm --sort=-%cpu 2>/dev/null); then printf \"%s\\n\" \"$procraw\" | awk -v me=$$ 'NR>1 && $1 != me && $3 != \"ps\" {gsub(/;/, \"_\", $3); printf \"%s;%.1f;%s,\", $1, $2, $3; if (++n >= 10) exit}' | sed 's/,$//'; elif topraw=$(top -b -n 1 2>/dev/null); then printf \"%s\\n\" \"$topraw\" | awk '$1 == \"PID\" {for(i=1;i<=NF;i++){if($i==\"%CPU\") cpu_col=i; else if($i==\"COMMAND\") cmd_col=i} next} $1 ~ /^[0-9]+$/ && cpu_col && cmd_col && $(cmd_col) != \"top\" {pct=$(cpu_col); gsub(/%/, \"\", pct); cmd=$(cmd_col); gsub(/;/, \"_\", cmd); print pct \";\" $1 \";\" cmd}' | sort -t ';' -k1,1rn | head -10 | awk -F';' '{printf \"%s;%.1f;%s,\", $2, $1, $3}' | sed 's/,$//'; fi); net=$(cat /proc/net/dev 2>/dev/null | awk 'NR>2 {gsub(/^[ \\t]+/, \"\"); split($0, a, \":\"); iface=a[1]; if(iface != \"lo\" && iface !~ /^veth/ && iface !~ /^docker/ && iface !~ /^br-/) {split(a[2], b); printf \"%s:%s:%s,\", iface, b[1], b[9]}}' | sed 's/,$//' || echo \"\"); disks=$(df -kP / 2>/dev/null | awk 'NR==2 {printf \"%s:%s:%s\", $6, $3, $2}' || echo \"\"); mounts=$( { df -kPT 2>/dev/null || df -kP 2>/dev/null; } | awk 'NR>1 { if (NF>=7) { src=$1; t=$2; total=$3; used=$4; m=$7 } else { src=$1; t=\"-\"; total=$2; used=$3; m=$6 } if (t ~ /^(tmpfs|devtmpfs|overlay|squashfs|proc|sysfs|cgroup|cgroup2|devpts|mqueue|autofs|efivarfs|ramfs|nsfs|tracefs|debugfs|fuse.lxcfs)$/) next; if (src ~ /^(tmpfs|overlay|shm|none|udev|devtmpfs)$/) next; if (index(m, \"/proc\") == 1 || index(m, \"/sys\") == 1 || index(m, \"/dev\") == 1 || index(m, \"/run\") == 1 || index(m, \"/var/lib/docker/\") == 1 || index(m, \"/snap/\") == 1) next; if (total + 0 <= 0) next; if (seen[src]++) next; if (++count > 32) next; gsub(/[;,|:]/, \"_\", m); gsub(/[;,|:]/, \"_\", src); gsub(/[;,|:]/, \"_\", t); printf \"%s;%s;%s;%s;%s,\", m, t, src, used, total }' | sed 's/,$//' || echo \"\"); hostname_value=$(hostname 2>/dev/null || uname -n 2>/dev/null || echo \"\"); osname=$(awk -F= '/^PRETTY_NAME=/{gsub(/\"/,\"\",$2);print $2;exit}' /etc/os-release 2>/dev/null || uname -s 2>/dev/null || echo \"\"); kernel=$(uname -r 2>/dev/null || echo \"\"); uptime=$(awk '{printf \"%.0f\",$1}' /proc/uptime 2>/dev/null || echo \"\"); loadavg=$(awk '{print $1\" \"$2\" \"$3}' /proc/loadavg 2>/dev/null || echo \"\"); echo \"CPURAW:$cpuraw|CORES:$cores|PERCORERAW:$percoreraw|MEMINFO:$meminfo|PROCS:$procs|PROCSCPU:$procscpu|NET:$net|DISK:$disks|HOST:$hostname_value|OS:$osname|KERNEL:$kernel|UPTIME:$uptime|LOAD:$loadavg|MOUNTS:$mounts\"";
 
 /// 一次采样里一块网卡的原始计数。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +67,8 @@ pub struct StatsSample {
     pub mounts: Vec<MountRaw>,
     pub net: Vec<NetCounters>,
     pub top_processes: Vec<ProcessInfo>,
+    /// 占 CPU 最多的进程（`PROCSCPU:` 段；旧脚本 / 拿不到时为空）。
+    pub top_cpu_processes: Vec<CpuProcessInfo>,
     pub hostname: String,
     pub os_name: String,
     pub kernel: String,
@@ -109,6 +111,30 @@ impl ProcessInfo {
             pid,
             mem_percent,
             command,
+        })
+    }
+}
+
+/// 占 CPU 最多的一个进程（概览面板「进程」一节的 CPU 档）。
+///
+/// `ps` 给的是进程启动以来的平均占用（cputime / 运行时间），不是此刻的瞬时值；
+/// BusyBox 的 `top` 回退给的是它自己那一次的读数。
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CpuProcessInfo {
+    pub pid: String,
+    /// CPU 占比（%）。
+    pub cpu_percent: f64,
+    pub command: String,
+}
+
+impl CpuProcessInfo {
+    /// 解析 `PROCSCPU:` 里的一个条目（`pid;pct;cmd`），缺字段返回 `None`。
+    pub fn parse(entry: &str) -> Option<Self> {
+        let parsed = ProcessInfo::parse(entry)?;
+        Some(Self {
+            pid: parsed.pid,
+            cpu_percent: parsed.mem_percent,
+            command: parsed.command,
         })
     }
 }
@@ -197,6 +223,8 @@ pub struct ServerStats {
     /// 所有真实分区（概览面板的"存储"）。
     pub mounts: Vec<MountUsage>,
     pub top_processes: Vec<ProcessInfo>,
+    /// 占 CPU 最多的进程（前 10）；采集脚本拿不到时为空。
+    pub top_cpu_processes: Vec<CpuProcessInfo>,
     pub hostname: String,
     pub os_name: String,
     pub kernel: String,
@@ -295,6 +323,11 @@ impl StatsSample {
                             value.split(',').filter_map(ProcessInfo::parse).collect();
                         seen_any_key = true;
                     }
+                }
+                // CPU 档的进程：附加信息，不当作"能解析"的依据。
+                "PROCSCPU" => {
+                    sample.top_cpu_processes =
+                        value.split(',').filter_map(CpuProcessInfo::parse).collect();
                 }
                 "NET" => {
                     if !value.is_empty() {
@@ -474,6 +507,7 @@ impl StatsSample {
                 })
                 .collect(),
             top_processes: self.top_processes.clone(),
+            top_cpu_processes: self.top_cpu_processes.clone(),
             hostname: self.hostname.clone(),
             os_name: self.os_name.clone(),
             kernel: self.kernel.clone(),
@@ -1216,5 +1250,96 @@ mod tests {
         assert_eq!(stats.mounts[0].fs_type, "ext4");
         assert_eq!(stats.mounts[0].percent, 29);
         assert!((stats.mounts[0].total_mib - 19990.234).abs() < 0.01);
+    }
+    #[test]
+    fn cpu_processes_parse_and_old_output_without_them_stays_compatible() {
+        let sample = StatsSample::parse(
+            "CORES:2|PROCS:123;42.5;zsh|PROCSCPU:812;55.5;app-worker,bad,7;0.3;sshd|NET:",
+        );
+        assert_eq!(
+            sample.top_cpu_processes,
+            vec![
+                CpuProcessInfo {
+                    pid: "812".into(),
+                    cpu_percent: 55.5,
+                    command: "app-worker".into()
+                },
+                CpuProcessInfo {
+                    pid: "7".into(),
+                    cpu_percent: 0.3,
+                    command: "sshd".into()
+                },
+            ]
+        );
+        // 内存档不受影响。
+        assert_eq!(sample.top_processes.len(), 1);
+        assert_eq!(sample.top_processes[0].command, "zsh");
+
+        // 旧脚本的输出没有 PROCSCPU：CPU 档是空的，其余照旧。
+        let old = StatsSample::parse(&full_output());
+        assert!(old.top_cpu_processes.is_empty());
+        assert_eq!(old.top_processes.len(), 2);
+        let stats = old.diff(&PreviousSample::none());
+        assert!(stats.top_cpu_processes.is_empty());
+        assert_eq!(stats.top_processes.len(), 2);
+
+        // 空段也不算错。
+        let empty = StatsSample::parse("CORES:1|PROCSCPU:|NET:");
+        assert!(empty.top_cpu_processes.is_empty());
+        assert!(empty.parseable);
+
+        // 只有 PROCSCPU 不能让别的系统的输出被当成可解析。
+        assert!(!StatsSample::parse("PROCSCPU:1;2.0;x").parseable);
+    }
+
+    /// 用本机 sh 真跑采集脚本，`ps` / `top` 用 shell 函数顶替（按参数给出样本），验证 CPU 档的 awk / sort
+    /// 流水线：procps 路径要滤掉脚本自己的 `ps`，BusyBox 路径读 `%CPU` 列并滤掉 `top`。本机没有 `sh` 就跳过。
+    #[test]
+    fn cpu_processes_script_runs_under_sh_for_procps_and_busybox() {
+        let run = |stubs: &str| -> Option<StatsSample> {
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("{stubs}\n{STATS_SCRIPT}"))
+                .output()
+                .ok()?;
+            Some(StatsSample::parse(&String::from_utf8_lossy(&output.stdout)))
+        };
+        let procps = r#"ps() { case "$*" in
+  *--sort=-%cpu*) printf '  PID %%CPU COMMAND\n 4242 93.4 ps\n  812 55.5 app-worker\n 1290  7.0 a;b\n    1  0.0 systemd\n';;
+  *--sort=-%mem*) printf '  PID %%MEM COMMAND\n  812 12.4 app-worker\n';;
+  *) return 1;; esac; }"#;
+        let Some(sample) = run(procps) else {
+            println!("跳过 cpu_processes_script_runs_under_sh_for_procps_and_busybox：本机没有 sh");
+            return;
+        };
+        let cpu: Vec<(&str, f64, &str)> = sample
+            .top_cpu_processes
+            .iter()
+            .map(|p| (p.pid.as_str(), p.cpu_percent, p.command.as_str()))
+            .collect();
+        assert_eq!(
+            cpu,
+            vec![
+                ("812", 55.5, "app-worker"),
+                ("1290", 7.0, "a_b"),
+                ("1", 0.0, "systemd")
+            ],
+            "ps 自己不能出现在 CPU 档里，`;` 要换成 `_`"
+        );
+        assert_eq!(sample.top_processes.len(), 1, "内存档原样保留");
+
+        let busybox = r#"ps() { return 1; }
+top() { printf 'Mem: 900K used, 100K free\nCPU:  1%% usr\n  PID  PPID USER     STAT   VSZ %%VSZ %%CPU COMMAND\n  812     1 app      S     120m  1.2  55.5 app-worker\n    7     1 root     S       1m  0.0   0.3 sshd\n 9999   100 root     R       1m  0.0  99.0 top\n'; }"#;
+        let sample = run(busybox).expect("sh 在");
+        let cpu: Vec<(&str, f64, &str)> = sample
+            .top_cpu_processes
+            .iter()
+            .map(|p| (p.pid.as_str(), p.cpu_percent, p.command.as_str()))
+            .collect();
+        assert_eq!(
+            cpu,
+            vec![("812", 55.5, "app-worker"), ("7", 0.3, "sshd")],
+            "BusyBox 的 top 自己要滤掉，按 %CPU 从高到低"
+        );
     }
 }
