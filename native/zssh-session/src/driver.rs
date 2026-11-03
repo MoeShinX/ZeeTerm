@@ -183,6 +183,7 @@ impl<F: ByteFilter> SessionDriver<F> {
     /// 最多处理 `budget` 个数据字节（至少处理一批，保证有进展）。
     pub fn poll_with_budget(&mut self, budget: usize) -> bool {
         let mut changed = false;
+        let mut ended = false;
         let mut used = 0usize;
         self.backlog = false;
         while used < budget {
@@ -200,6 +201,7 @@ impl<F: ByteFilter> SessionDriver<F> {
                         // 先到的 Error 带着原因，后面的 Exit 不能把它冲掉。
                         self.exited
                             .get_or_insert(SessionExit { code, reason: None });
+                        ended = true;
                         changed = true;
                     }
                 }
@@ -212,6 +214,7 @@ impl<F: ByteFilter> SessionDriver<F> {
                             code: None,
                             reason: Some(message),
                         });
+                        ended = true;
                         changed = true;
                     }
                 }
@@ -238,8 +241,15 @@ impl<F: ByteFilter> SessionDriver<F> {
         }
         // 预算用完时通道里多半还有东西；下一次轮询接着处理。
         self.backlog = used >= budget;
-        if changed {
-            self.pump.tick();
+        // 过滤器压着的尾巴到期要放行，这不依赖有没有新事件：空闲的轮询也得走到这里，否则远端
+        // 安静下来以后尾巴会一直留着，直到下一次事件。放行了内容才算"有变化"，没东西可放的
+        // 空闲轮询不报变化，界面不会因此被持续重绘。
+        let released = self.pump.tick();
+        changed |= released.consumed > 0 || released.filtered > 0;
+        // 会话结束以后不会再有数据可等：尾巴不必再等到期，当场放行。
+        if ended {
+            let flushed = self.pump.flush();
+            changed |= flushed.consumed > 0 || flushed.filtered > 0;
         }
         changed
     }
@@ -494,6 +504,117 @@ mod tests {
         assert!(screen.contains("plain"), "{screen}");
         assert!(!screen.contains("uptime"), "{screen}");
         assert_eq!(driver.pump().ledger().stale_batches, 1);
+    }
+
+    /// 一个已超时返回的 AI 命令（标记转成待处理）之后，输出末尾恰好是半截结束标记：显示过滤器会把
+    /// 这段尾巴压住等后续数据。返回 (发送端, 驱动, 流控门, 压住的尾巴字节数)。
+    fn driver_with_a_held_marker_tail() -> (
+        Sender<SessionEvent>,
+        SessionDriver<CoreFilter>,
+        Arc<FlowGate>,
+        usize,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let gate = Arc::new(FlowGate::new());
+        let pump = SessionPump::new(
+            Size { rows: 8, cols: 80 },
+            100,
+            Arc::clone(&gate),
+            CoreFilter::new(),
+            1,
+        );
+        let mut driver = SessionDriver::new(pump, rx);
+        let marker = "__ZSSH_000000000007__";
+        tx.send(SessionEvent::AiArm {
+            generation: 1,
+            marker: marker.to_owned(),
+            payload: format!("{marker} x"),
+            command: "sleep 99".to_owned(),
+        })
+        .expect("发 AiArm");
+        tx.send(SessionEvent::AiRelease {
+            generation: 1,
+            marker: marker.to_owned(),
+        })
+        .expect("发 AiRelease");
+        let tail = "__ZSSH_0000000";
+        let bytes = format!("done\r\n{tail}").into_bytes();
+        gate.on_sent(bytes.len());
+        tx.send(SessionEvent::Data {
+            generation: 1,
+            bytes,
+        })
+        .expect("发数据");
+        assert!(driver.poll(), "这一批本身是有新事件的");
+        // 前面整行显示了，半截标记压住了：账本暂时不平，流控门里还有未确认的字节。
+        assert!(screen_text(&driver).contains("done"));
+        assert!(!screen_text(&driver).contains("__ZSSH_"));
+        assert_eq!(gate.unacked(), tail.len());
+        (tx, driver, gate, tail.len())
+    }
+
+    /// R05：压住的尾巴到期以后，不需要等下一个远端事件——空闲的轮询自己放行，账和 ACK 都对；
+    /// 没有到期之前、放行之后的轮询都不报"有变化"（否则界面会被持续重绘）。
+    #[test]
+    fn an_idle_poll_releases_a_held_tail_once_it_is_due() {
+        let (_tx, mut driver, gate, held) = driver_with_a_held_marker_tail();
+
+        // 没到期：什么都不变，也不报变化。
+        assert!(!driver.poll());
+        assert_eq!(gate.unacked(), held);
+
+        // 远端从此再没有任何事件；到期之后的第一次空闲轮询把尾巴放出来。
+        thread::sleep(zssh_core::ai::display::HOLD_MAX_AGE + Duration::from_millis(150));
+        assert!(driver.poll(), "到期放行了内容，要通知界面重绘");
+        assert!(screen_text(&driver).contains("__ZSSH_0000000"));
+        let ledger = driver.pump().ledger();
+        assert!(ledger.is_balanced(), "{ledger:?}");
+        assert_eq!(gate.unacked(), 0, "放行的字节按消费后 ack");
+
+        // 放行之后再轮询不会一直报变化。
+        assert!(!driver.poll());
+        assert!(!driver.poll());
+    }
+
+    /// R05：会话结束（远端退出 / 出错）时，压着的尾巴不再有"后续数据"可等，当场放行并 ack。
+    #[test]
+    fn a_held_tail_is_flushed_when_the_session_ends() {
+        for exit in [
+            SessionEvent::Exit {
+                generation: 1,
+                code: Some(0),
+            },
+            SessionEvent::Error {
+                generation: 1,
+                message: "boom".to_owned(),
+            },
+        ] {
+            let (tx, mut driver, gate, _held) = driver_with_a_held_marker_tail();
+            tx.send(exit).expect("发结束事件");
+            assert!(driver.poll());
+            assert!(driver.exited());
+            assert!(
+                screen_text(&driver).contains("__ZSSH_0000000"),
+                "结束时要把尾巴显示出来：{}",
+                screen_text(&driver)
+            );
+            assert!(driver.pump().ledger().is_balanced());
+            assert_eq!(gate.unacked(), 0);
+        }
+    }
+
+    /// 别的代次的结束事件不能冲掉这个会话压着的尾巴。
+    #[test]
+    fn a_stale_exit_does_not_flush_the_held_tail() {
+        let (tx, mut driver, gate, held) = driver_with_a_held_marker_tail();
+        tx.send(SessionEvent::Exit {
+            generation: 99,
+            code: None,
+        })
+        .expect("发旧代次的 Exit");
+        assert!(!driver.poll());
+        assert_eq!(gate.unacked(), held);
+        assert!(!driver.exited());
     }
 
     #[test]

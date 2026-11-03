@@ -50,6 +50,11 @@ pub trait ByteFilter {
     /// 定时器调用：压住的尾巴到时间后放行。
     fn tick(&mut self) -> Filtered;
 
+    /// 会话结束：压着的尾巴不会再等到后续数据，全部放行。默认没有压着的东西。
+    fn flush(&mut self) -> Filtered {
+        Filtered::empty()
+    }
+
     /// AI 命令马上要写进终端（V2-G10b）：让过滤器记住它，包装脚本的回显和标记行就不会显示给用户。
     /// 默认不处理（测试用的过滤器、直通过滤器都不认 AI 命令）。
     fn arm(&mut self, _marker: &str, _payload: &str, _command: &str) -> Filtered {
@@ -109,6 +114,14 @@ impl ByteFilter for CoreFilter {
 
     fn tick(&mut self) -> Filtered {
         let out = self.0.poll_at(Instant::now());
+        Filtered {
+            data: out.data,
+            suppressed: out.suppressed,
+        }
+    }
+
+    fn flush(&mut self) -> Filtered {
+        let out = self.0.flush();
         Filtered {
             data: out.data,
             suppressed: out.suppressed,
@@ -314,24 +327,7 @@ impl<F: ByteFilter> SessionPump<F> {
         self.apply_filtered(filtered);
     }
 
-    fn apply_filtered(&mut self, filtered: Filtered) {
-        if filtered.suppressed > 0 {
-            self.gate.on_ack(filtered.suppressed);
-            self.ledger.filtered += filtered.suppressed;
-            self.ledger.acked += filtered.suppressed;
-        }
-        self.log_write(&filtered.data);
-        let consumed = self.model.feed(&filtered.data);
-        if consumed > 0 {
-            self.gate.on_ack(consumed);
-            self.ledger.consumed += consumed;
-            self.ledger.acked += consumed;
-        }
-    }
-
-    /// 过滤器的定时器：压住的尾巴到时间后放行，并按消费后的字节 ack。
-    pub fn tick(&mut self) -> PumpOutcome {
-        let filtered = self.filter.tick();
+    fn apply_filtered(&mut self, filtered: Filtered) -> PumpOutcome {
         if filtered.suppressed > 0 {
             self.gate.on_ack(filtered.suppressed);
             self.ledger.filtered += filtered.suppressed;
@@ -349,6 +345,18 @@ impl<F: ByteFilter> SessionPump<F> {
             consumed,
             filtered: filtered.suppressed,
         }
+    }
+
+    /// 过滤器的定时器：压住的尾巴到时间后放行，并按消费后的字节 ack。
+    pub fn tick(&mut self) -> PumpOutcome {
+        let filtered = self.filter.tick();
+        self.apply_filtered(filtered)
+    }
+
+    /// 会话结束：过滤器压着的尾巴不会再有后续数据可等，当场放行（按消费后的字节 ack）。
+    pub fn flush(&mut self) -> PumpOutcome {
+        let filtered = self.filter.flush();
+        self.apply_filtered(filtered)
     }
 
     /// 界面自己要显示的文字（"正在连接…"、断线提示）：直接进终端，
