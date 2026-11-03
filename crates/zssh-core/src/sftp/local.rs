@@ -121,6 +121,8 @@ pub fn long_path(path: &Path) -> PathBuf {
     if text.starts_with("\\\\?\\") {
         return path.to_path_buf();
     }
+    // `\\?\` 前缀下系统不再把 `/` 当分隔符（`D:/data` 会报 os error 123），先统一成 `\`。
+    let text = text.replace('/', "\\");
     if let Some(rest) = text.strip_prefix("\\\\") {
         return PathBuf::from(format!("\\\\?\\UNC\\{rest}"));
     }
@@ -732,6 +734,18 @@ mod tests {
         );
         assert_eq!(plan.assignments[0].1.name, "A.txt");
         assert_eq!(plan.assignments[1].1.name, "a (3).txt");
+    }
+
+    #[test]
+    fn forward_slashes_are_turned_into_backslashes_under_the_prefix() {
+        assert_eq!(
+            long_path(Path::new("D:/data/logs")).to_string_lossy(),
+            "\\\\?\\D:\\data\\logs"
+        );
+        assert_eq!(
+            long_path(Path::new("//server/share/a")).to_string_lossy(),
+            "\\\\?\\UNC\\server\\share\\a"
+        );
     }
 
     #[test]
