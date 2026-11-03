@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "issued_at": "2026-11-03T00:00:00Z",
+  "presets": [
+    {
+      "id": "tokenway",
+      "name": "Tokenway",
+      "recommended": true,
+      "tagline": "国内直连，按量计费",
+      "connect_url": "https://tokenwayapi.com/connect/zeeterm",
+      "token_url": "https://tokenwayapi.com/api/connect/token",
+      "status_url": "https://tokenwayapi.com/api/connect/status",
+      "revoke_url": "https://tokenwayapi.com/api/connect/revoke",
+      "openai_base": "https://api.tokenwayapi.com/v1",
+      "anthropic_base": "https://api.tokenwayapi.com",
+      "register_url": "https://tokenwayapi.com/register?source=zeeterm",
+      "topup_url": "https://tokenwayapi.com/dashboard/topup"
+    }
+  ]
+}

@@ -3552,6 +3552,7 @@ dependencies = [
  "hmac",
  "rand",
  "reqwest",
+ "ring",
  "rmcp",
  "rusqlite",
  "russh",

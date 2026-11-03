@@ -17,6 +17,7 @@ pub mod mapping;
 pub mod probe;
 pub mod prompt;
 pub mod provider;
+pub mod tokenway;
 pub mod transcript;
 
 pub use conversation::{
