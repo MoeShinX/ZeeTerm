@@ -1,8 +1,9 @@
 //! 更新检查窗口：取更新清单、下载安装包、校验 minisign 签名、生成安装计划。
 //!
 //! 发行版：当前版本是编译进来的包版本，公钥和更新源取自 `zssh_update::embedded_config`
-//! （即 Tauri 版 `tauri.conf.json` 里的那一份），清单和安装包只允许 `https://`，
-//! 下载有大小上限和总时长上限，重定向只跟到 https。
+//! （`native/zssh-update/updater.json`），清单和安装包只允许 `https://`，
+//! 下载有大小上限和总时长上限，重定向只跟到 https。联网走「软件网络」代理设置。
+//! 公钥还是占位值时（见 [`SIGNING_UNCONFIGURED`]）不请求、不下载、不安装。
 //! 调试版额外认 `ZSSH_UPDATE_MANIFEST`（本地清单路径或 URL）、`ZSSH_CURRENT_VERSION`、
 //! `ZSSH_UPDATE_PUBKEY`、`ZSSH_UPDATE_PROXY`，并放开 `http://` / `file://`；这些变量
 //! 经 `dev_hooks` 读取，release 里恒为未设置。
@@ -53,6 +54,8 @@ const CHUNK_SIZE: usize = 64 * 1024;
 const CACHE_DIR: &str = "update-cache";
 /// 内嵌公钥解析不出来时的固定前缀（正常构建里有单测保证不会发生）。
 const PUBKEY_UNAVAILABLE: &str = "内置的更新公钥不可用，无法校验更新包";
+/// 更新签名公钥还是占位值时的提示：这时没法证明安装包来自发布者，所以什么都不请求、不下载、不安装。
+pub const SIGNING_UNCONFIGURED: &str = "更新签名未配置：这个构建还没有设置更新签名公钥，不能在线更新（不会下载或安装任何更新）。请到发布页下载新的安装包。";
 /// 安装包大小上限。清单里没有大小字段，用一个宽松但有限的值挡住"无限流"和撑满内存。
 const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
 /// 清单大小上限。
@@ -93,7 +96,13 @@ pub struct UpdateDemo {
 }
 
 impl UpdateDemo {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, ime_key: String) -> Self {
+    /// `preset`：后台自动检查已经取到的结果（状态文字 + 选出的包），有它就不再重复请求清单。
+    pub fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        ime_key: String,
+        preset: Option<(String, Option<Package>)>,
+    ) -> Self {
         let focus = cx.focus_handle();
         let _ime_focus = cx.on_focus(&focus, window, {
             let key = ime_key.clone();
@@ -110,7 +119,7 @@ impl UpdateDemo {
             status: String::new(),
             package: None,
             phase: DownloadState::Idle,
-            restart: false,
+            restart: true,
             install: InstallState::Idle,
             blocked: None,
             queued: None,
@@ -123,7 +132,13 @@ impl UpdateDemo {
             _ime_blur,
             _tick: Task::ready(()),
         };
-        this.reload(cx);
+        match preset {
+            Some((status, package)) => {
+                this.status = status;
+                this.package = package;
+            }
+            None => this.reload(cx),
+        }
         // 100ms 取一次下载/校验进度；窗口没了 `update_in` 会报错，任务自己退出。
         this._tick = cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -285,6 +300,7 @@ impl UpdateDemo {
     /// 取走后台事件；过期的任务结果直接丢掉。
     fn poll_events(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
+        let mut auto_download = false;
         while let Ok(event) = self.events.try_recv() {
             if event.generation() != self.generation {
                 continue;
@@ -305,6 +321,9 @@ impl UpdateDemo {
                 } => {
                     self.status = status;
                     self.package = package;
+                    // 调试钩子：查到新版本就直接开始下载（自动化 / 截图下载中的画面用，发行版里读不到）。
+                    auto_download = self.package.is_some()
+                        && crate::dev_hooks::var_os("ZSSH_UPDATE_AUTODOWNLOAD").is_some();
                 }
                 DownloadEvent::Failed { message, .. } => {
                     self.phase.fail(message);
@@ -317,6 +336,9 @@ impl UpdateDemo {
             }
             changed = true;
         }
+        if auto_download {
+            self.start_download(cx);
+        }
         if changed {
             cx.notify();
         }
@@ -326,6 +348,7 @@ impl UpdateDemo {
 impl Render for UpdateDemo {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
+        let tokens = crate::app_theme::Tokens::current(cx);
         let lines: Vec<String> = self.status.lines().map(str::to_owned).collect();
         let phase_text = self.phase.text();
         let verified = match &self.phase {
@@ -365,7 +388,9 @@ impl Render for UpdateDemo {
             .size_full()
             .p_3()
             .gap_2()
-            .track_focus(&self.focus)
+            // 窗口跟着应用的皮肤走：底色和文字色都取皮肤的色板（不写文字色时深色皮肤下是黑字）。
+            .bg(tokens.background)
+            .text_color(tokens.text)
             .bg(cx.theme().background)
             .child(
                 h_flex()
@@ -385,11 +410,18 @@ impl Render for UpdateDemo {
                 "更新源：{}（下载后校验签名，确认后才启动安装器）",
                 source_label()
             )))
+            // 更新说明可能很长：放进可滚动的区域，下面的按钮始终在窗口里。
             .child(
-                v_flex()
+                div()
+                    .id("update-status")
                     .flex_1()
-                    .gap_1()
-                    .children(lines.into_iter().map(|line| div().text_sm().child(line))),
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .children(lines.into_iter().map(|line| div().text_sm().child(line))),
+                    ),
             )
             .when(can_download, |section| {
                 section.child(Button::new("download").label("下载并校验").on_click(
@@ -452,13 +484,23 @@ impl Render for UpdateDemo {
                 section.child(div().text_sm().child(text))
             })
             .when_some(blocked, |section, text| {
-                section.child(div().text_sm().text_color(cx.theme().danger).child(text))
+                section.child(div().text_sm().text_color(tokens.danger).child(text))
             })
     }
 }
 
-/// 打开更新检查窗口；同一个进程可以开多个。
+/// 打开更新检查窗口；同一个进程可以开多个。手动检查（关于页、托盘）走这里：抢焦点，窗口里自己去取清单。
 pub fn open_update_window(cx: &mut App) {
+    open_window_with(cx, true, None);
+}
+
+/// 后台自动检查发现了新版本：把已经取到的结果交给窗口（不重复请求），并且**不抢焦点**——
+/// 用户可能正在终端里打字，窗口只是出现在那里等他有空看。
+pub fn open_update_window_for_found(cx: &mut App, status: String, package: Package) {
+    open_window_with(cx, false, Some((status, Some(package))));
+}
+
+fn open_window_with(cx: &mut App, focus: bool, preset: Option<(String, Option<Package>)>) {
     let n = NEXT_UPDATE.fetch_add(1, Ordering::Relaxed);
     let ime_key = format!("update-window-{n}");
     let close_key = ime_key.clone();
@@ -467,17 +509,19 @@ pub fn open_update_window(cx: &mut App) {
             size(::gpui::px(640.), ::gpui::px(520.)),
             cx,
         )),
-        focus: true,
+        focus,
         ..Default::default()
     };
     let _ = cx.open_window(options, move |window, cx| {
-        let view = cx.new(|cx| UpdateDemo::new(window, cx, ime_key));
+        let view = cx.new(|cx| UpdateDemo::new(window, cx, ime_key, preset));
         window.set_window_title("检查更新");
         window.on_window_should_close(cx, move |_window, _cx| {
             crate::ime::window_destroyed(&close_key);
             true
         });
-        window.focus(&view.read(cx).focus_handle(), cx);
+        if focus {
+            window.focus(&view.read(cx).focus_handle(), cx);
+        }
         view
     });
 }
@@ -727,6 +771,19 @@ fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
     text
 }
 
+/// 服务器返回非 2xx 时给用户看的原因：最常见的几种说人话，其余带上状态码。
+fn http_status_message(status: reqwest::StatusCode) -> String {
+    let code = status.as_u16();
+    match code {
+        404 => "下载失败：服务器上找不到这个文件（HTTP 404），可能这个版本还没发布或已被撤回"
+            .to_owned(),
+        401 | 403 => format!("下载失败：服务器拒绝访问（HTTP {code}）"),
+        429 => "下载失败：请求太频繁，被服务器限流了（HTTP 429），稍后再试".to_owned(),
+        500..=599 => format!("下载失败：服务器出错了（HTTP {code}），稍后再试"),
+        _ => format!("下载失败：HTTP {status}"),
+    }
+}
+
 fn too_large_message(max_bytes: u64) -> String {
     format!(
         "更新文件超过大小上限（{} MiB），已中止",
@@ -800,7 +857,7 @@ async fn fetch_bytes(
         .await
         .map_err(|err| failed(format!("下载失败：{}", error_chain(&err))))?;
     if !response.status().is_success() {
-        return Err(failed(format!("下载失败：HTTP {}", response.status())));
+        return Err(failed(http_status_message(response.status())));
     }
     let total = response.content_length().filter(|len| *len > 0);
     if total.is_some_and(|len| len > max_bytes) {
@@ -924,19 +981,51 @@ async fn load_manifest_text(
 }
 
 /// 读清单 + 选择包；读不到也算界面错误，不让窗口崩。
-async fn check_for_update(current: &str) -> (String, Option<Package>) {
-    let allow_insecure = allow_insecure_sources();
-    let sources = manifest_sources();
+///
+/// 更新签名公钥是占位值时直接返回"更新签名未配置"，一个请求都不发。
+pub(crate) async fn check_for_update(current: &str) -> (String, Option<Package>) {
+    let pubkey = update_pubkey();
+    // 公钥不可用时先不建客户端（建客户端要读设置库）：下面 `check_with` 会原样返回原因。
+    let client = if pubkey.is_ok() {
+        match update_client() {
+            Ok(client) => client,
+            Err(err) => return (format!("检查更新失败：{err}"), None),
+        }
+    } else {
+        reqwest::Client::new()
+    };
+    check_with(
+        current,
+        &manifest_sources(),
+        &client,
+        allow_insecure_sources(),
+        pubkey.as_deref(),
+    )
+    .await
+}
+
+/// [`check_for_update`] 的可注入版本：清单来源、客户端和协议放行由调用方给（测试用本机服务）。
+async fn check_with(
+    current: &str,
+    sources: &[ManifestSource],
+    client: &reqwest::Client,
+    allow_insecure: bool,
+    pubkey: Result<&str, &String>,
+) -> (String, Option<Package>) {
+    // 没有可用的验签公钥（占位值、内置配置坏了）就不发任何请求：后面下的包也验不了。
+    match pubkey {
+        Err(message) => return (message.clone(), None),
+        Ok(key) if zssh_update::is_placeholder_pubkey(key) => {
+            return (SIGNING_UNCONFIGURED.to_owned(), None);
+        }
+        Ok(_) => {}
+    }
     if sources.is_empty() {
         return ("未配置更新源".to_owned(), None);
     }
-    let client = match update_client() {
-        Ok(client) => client,
-        Err(err) => return (format!("检查更新失败：{err}"), None),
-    };
     let mut last_error = String::new();
-    for source in &sources {
-        match load_manifest_text(source, &client, allow_insecure).await {
+    for source in sources {
+        match load_manifest_text(source, client, allow_insecure).await {
             Ok(text) => return evaluate_manifest(&text, current, allow_insecure),
             Err(err) => last_error = err,
         }
@@ -981,20 +1070,55 @@ async fn download_and_verify(
     cancel: &AtomicBool,
     sender: &Sender<DownloadEvent>,
 ) -> Result<(PathBuf, u64, String), DownloadFailure> {
-    let url = check_update_url(&package.url, allow_insecure_sources())
-        .map_err(DownloadFailure::Failed)?;
+    // 公钥是占位值就在这里挡住，连文件名都不用看，更不会发出下载请求。
+    let pubkey = update_pubkey().map_err(DownloadFailure::Failed)?;
+    let client = update_client().map_err(DownloadFailure::Failed)?;
+    download_with(
+        &DownloadContext {
+            pubkey: &pubkey,
+            client: &client,
+            allow_insecure: allow_insecure_sources(),
+        },
+        generation,
+        package,
+        cache_root,
+        cancel,
+        sender,
+    )
+    .await
+}
+
+/// 下载用的环境：验签公钥、HTTP 客户端、是否放行 http / file（测试注入本机服务）。
+struct DownloadContext<'a> {
+    pubkey: &'a str,
+    client: &'a reqwest::Client,
+    allow_insecure: bool,
+}
+
+/// [`download_and_verify`] 的可注入版本。
+async fn download_with(
+    env: &DownloadContext<'_>,
+    generation: u64,
+    package: &Package,
+    cache_root: &Path,
+    cancel: &AtomicBool,
+    sender: &Sender<DownloadEvent>,
+) -> Result<(PathBuf, u64, String), DownloadFailure> {
+    if zssh_update::is_placeholder_pubkey(env.pubkey) {
+        return Err(DownloadFailure::Failed(SIGNING_UNCONFIGURED.to_owned()));
+    }
+    let url =
+        check_update_url(&package.url, env.allow_insecure).map_err(DownloadFailure::Failed)?;
     let name = download_file_name(&package.url).map_err(DownloadFailure::Failed)?;
     // 先把文件名查一遍，名字不合法就不必下载。
     cache_path(cache_root, &name).map_err(DownloadFailure::Failed)?;
-    let pubkey = update_pubkey().map_err(DownloadFailure::Failed)?;
     if cancel.load(Ordering::Relaxed) {
         return Err(DownloadFailure::Cancelled);
     }
 
-    let client = update_client().map_err(DownloadFailure::Failed)?;
     let mut last_report = None;
     let bytes = fetch_bytes(
-        &client,
+        env.client,
         &url,
         MAX_PACKAGE_BYTES,
         PACKAGE_TIMEOUT,
@@ -1008,6 +1132,7 @@ async fn download_and_verify(
     let _ = sender.send(DownloadEvent::Verifying { generation });
     let package = package.clone();
     let cache_root = cache_root.to_path_buf();
+    let pubkey = env.pubkey.to_owned();
     let stored = tokio::task::spawn_blocking(move || {
         verify_and_store(&bytes, &package, &pubkey, &cache_root, &name)
     })
@@ -1065,7 +1190,7 @@ fn verify_and_store(
 }
 
 /// 验签用的公钥：调试钩子优先，否则用编译期内嵌的那一把。
-fn update_pubkey() -> Result<String, String> {
+pub(crate) fn update_pubkey() -> Result<String, String> {
     resolve_pubkey(
         crate::dev_hooks::var("ZSSH_UPDATE_PUBKEY"),
         zssh_update::embedded_config(),
@@ -1076,15 +1201,20 @@ fn resolve_pubkey(
     hook: Option<String>,
     embedded: Result<zssh_update::UpdaterConfig, String>,
 ) -> Result<String, String> {
-    if let Some(key) = hook
+    let key = match hook
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
     {
-        return Ok(key);
+        Some(key) => key,
+        None => embedded
+            .map(|config| config.pubkey)
+            .map_err(|err| format!("{PUBKEY_UNAVAILABLE}：{err}"))?,
+    };
+    // 占位公钥验不了任何签名：与其让后面报一个看不懂的验签错误，不如在这里就明说。
+    if zssh_update::is_placeholder_pubkey(&key) {
+        return Err(SIGNING_UNCONFIGURED.to_owned());
     }
-    embedded
-        .map(|config| config.pubkey)
-        .map_err(|err| format!("{PUBKEY_UNAVAILABLE}：{err}"))
+    Ok(key)
 }
 
 /// 进度节流：首个数据块和每 100ms 各上报一次，结束再补一次。
@@ -1189,6 +1319,26 @@ fn take_pending_install() -> Option<InstallPlan> {
 /// 清掉排队的计划；立即安装成功后调用，免得退出时再启动一次。
 fn clear_pending_install() {
     *locked_pending_install() = None;
+}
+
+/// 排队等退出后安装的版本号（不带 `v`）；托盘据此显示「重启安装 vX」。没有排队时为 `None`。
+pub fn pending_install_version() -> Option<String> {
+    locked_pending_install()
+        .as_ref()
+        .map(|plan| plan.version.clone())
+}
+
+/// 托盘的「重启安装」：把排队的计划改成"装完重启 ZeeTerm"。返回是否真有计划可改。
+/// 实际启动安装器仍然在程序退出时（`run_pending_install`），由调用方随后退出程序。
+pub fn arm_pending_restart() -> bool {
+    let mut slot = locked_pending_install();
+    match slot.take() {
+        Some(plan) => {
+            *slot = Some(plan.with_restart(&current_exe_args()));
+            true
+        }
+        None => false,
+    }
 }
 
 /// 退出时启动排队好的安装器；由 `App::on_app_quit` 调用。
@@ -1372,40 +1522,50 @@ fn validate_file_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 代理：调试钩子 `ZSSH_UPDATE_PROXY` 优先，其次常见的 HTTPS/HTTP 代理变量（产品行为）。
-fn update_proxy() -> Option<String> {
-    crate::dev_hooks::var("ZSSH_UPDATE_PROXY")
-        .into_iter()
-        .chain(
-            ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"]
-                .into_iter()
-                .filter_map(|key| std::env::var(key).ok()),
-        )
+/// 软件联网用的代理：调试钩子 `ZSSH_UPDATE_PROXY` 优先，其次是设置里的「软件网络」代理
+/// （跟随系统代理 / SSH 默认代理 / 代理库里的某个 / 直连，和配置同步、下载 opencode 是同一个设置）。
+/// `Ok(None)` 是直连；设置库打不开或代理配置有问题（例如指定的代理被删了）返回原因，不静默改成直连。
+fn update_proxy() -> Result<Option<String>, String> {
+    if let Some(hook) = crate::dev_hooks::var("ZSSH_UPDATE_PROXY")
         .map(|value| value.trim().to_owned())
-        .find(|value| !value.is_empty())
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(Some(hook));
+    }
+    let db = zssh_core::store::Database::open(&crate::settings::data_dir().join("zssh.db"))
+        .map_err(|err| format!("打开设置库失败：{err}"))?;
+    zssh_core::sync::app_proxy::app_proxy(&db)
+        .map(|proxy| proxy.map(|proxy| proxy.url_with_credentials()))
+        .map_err(|err| format!("软件网络的代理设置有问题：{err}"))
 }
 
 /// 不带代理的客户端构造器：超时、UA 和重定向规则都在这里，测试可以直接拿它连本地服务。
 fn update_client_builder(allow_insecure: bool) -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
-        .user_agent(concat!("Z-SSH/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("ZeeTerm/", env!("CARGO_PKG_VERSION")))
         .redirect(redirect_policy(allow_insecure))
 }
 
 fn update_client() -> Result<reqwest::Client, String> {
     let mut builder = update_client_builder(allow_insecure_sources());
-    if let Some(proxy) = update_proxy() {
-        builder = builder
-            .proxy(reqwest::Proxy::all(&proxy).map_err(|err| format!("更新代理配置错误：{err}"))?);
-    }
+    builder = match update_proxy()? {
+        // 本机回环地址永远不走代理（调试用的本机夹具、以及误填的回环清单地址都直连）。
+        Some(proxy) => builder.proxy(
+            reqwest::Proxy::all(&proxy)
+                .map_err(|err| format!("更新代理配置错误：{err}"))?
+                .no_proxy(reqwest::NoProxy::from_string("localhost,127.0.0.1,::1")),
+        ),
+        // 直连：也不读环境变量里的代理，和软件网络的其他联网一致。
+        None => builder.no_proxy(),
+    };
     builder
         .build()
         .map_err(|err| format!("创建下载客户端失败：{err}"))
 }
 
 /// 当前版本：编译进来的包版本。调试钩子 `ZSSH_CURRENT_VERSION` 可以覆盖（为了测更新流程）。
-fn current_version() -> String {
+pub(crate) fn current_version() -> String {
     resolve_current_version(crate::dev_hooks::var("ZSSH_CURRENT_VERSION"))
 }
 
@@ -1794,10 +1954,10 @@ mod tests {
     // ---- 协议、大小、超时、重定向 ----
 
     use super::{
-        DownloadFailure, MAX_REDIRECTS, ManifestSource, PUBKEY_UNAVAILABLE, allow_insecure_sources,
-        append_capped, check_update_url, evaluate_manifest, fetch_bytes, launch_if_unchanged,
-        redirect_allowed, resolve_current_version, resolve_manifest_sources, resolve_pubkey,
-        update_client_builder, verify_and_store,
+        DownloadFailure, MAX_REDIRECTS, ManifestSource, PUBKEY_UNAVAILABLE, SIGNING_UNCONFIGURED,
+        allow_insecure_sources, append_capped, check_update_url, evaluate_manifest, fetch_bytes,
+        launch_if_unchanged, redirect_allowed, resolve_current_version, resolve_manifest_sources,
+        resolve_pubkey, update_client_builder, verify_and_store,
     };
     use std::io::{Read as _, Write as _};
     use std::sync::atomic::AtomicBool;
@@ -2246,22 +2406,57 @@ mod tests {
     }
 
     #[test]
-    fn embedded_public_key_is_used_unless_a_debug_hook_overrides_it() {
-        let config = zssh_update::embedded_config().expect("内嵌配置应能解析");
+    fn the_public_key_comes_from_the_hook_or_the_config_and_a_placeholder_is_refused() {
+        let configured = |pubkey: &str| zssh_update::UpdaterConfig {
+            pubkey: pubkey.to_owned(),
+            endpoints: vec!["https://example.com/latest.json".to_owned()],
+        };
         assert_eq!(
-            resolve_pubkey(None, zssh_update::embedded_config()).unwrap(),
-            config.pubkey
+            resolve_pubkey(None, Ok(configured("real-key"))).unwrap(),
+            "real-key"
         );
         assert_eq!(
-            resolve_pubkey(Some(" ".to_owned()), zssh_update::embedded_config()).unwrap(),
-            config.pubkey
+            resolve_pubkey(Some(" ".to_owned()), Ok(configured("real-key"))).unwrap(),
+            "real-key"
         );
         assert_eq!(
-            resolve_pubkey(Some(" custom ".to_owned()), zssh_update::embedded_config()).unwrap(),
+            resolve_pubkey(Some(" custom ".to_owned()), Ok(configured("real-key"))).unwrap(),
             "custom"
         );
         let err = resolve_pubkey(None, Err("坏了".to_owned())).unwrap_err();
         assert!(err.starts_with(PUBKEY_UNAVAILABLE), "{err}");
+
+        // 占位公钥：无论来自配置还是钩子，都明说"更新签名未配置"，不当成一把能用的钥匙。
+        assert_eq!(
+            resolve_pubkey(None, Ok(configured("PLACEHOLDER-not-set"))).unwrap_err(),
+            SIGNING_UNCONFIGURED
+        );
+        assert_eq!(
+            resolve_pubkey(Some("placeholder".to_owned()), Ok(configured("real-key"))).unwrap_err(),
+            SIGNING_UNCONFIGURED
+        );
+        // 钩子给了真公钥时盖过配置里的占位值（调试构建里测更新流程靠它）。
+        assert_eq!(
+            resolve_pubkey(Some("test-key".to_owned()), Ok(configured("PLACEHOLDER"))).unwrap(),
+            "test-key"
+        );
+    }
+
+    #[test]
+    fn the_embedded_config_has_a_real_key_or_refuses_every_update() {
+        // 仓库里的 updater.json 在"占位"和"已填真公钥"两种状态下都应自洽：
+        // 占位 -> 拿不到公钥（检查 / 下载 / 安装都会被挡住）；已填 -> 就是它。
+        let config = zssh_update::embedded_config().expect("内嵌配置应能解析");
+        match resolve_pubkey(None, zssh_update::embedded_config()) {
+            Ok(key) => {
+                assert!(config.signing_configured());
+                assert_eq!(key, config.pubkey);
+            }
+            Err(message) => {
+                assert!(!config.signing_configured());
+                assert_eq!(message, SIGNING_UNCONFIGURED);
+            }
+        }
     }
 
     #[test]
@@ -2315,3 +2510,6 @@ mod tests {
         assert!(package.is_some());
     }
 }
+
+#[cfg(test)]
+mod e2e_tests;

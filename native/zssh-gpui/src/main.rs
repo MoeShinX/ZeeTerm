@@ -66,6 +66,7 @@ mod terminal_workspace;
 mod test_ssh_server;
 mod tray;
 mod typography;
+mod update_auto;
 mod update_demo;
 mod window_state;
 mod x11_glue;
@@ -139,6 +140,8 @@ fn main() {
 
         // 自动同步的调度器：一个进程一个，和同步设置窗口的开关无关。
         sync_demo::spawn_auto_sync(cx);
+        // 后台自动检查更新：启动后延迟一会儿查一次，之后每 6 小时一次（设置里可关）。
+        update_auto::spawn(cx);
         // 底部同步状态条的数据：每 2 秒读一次本机的同步设置（0.2.14 的 `SyncStatusBar`）。
         sync_demo::spawn_status_refresher(cx);
 

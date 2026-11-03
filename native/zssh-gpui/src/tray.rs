@@ -12,7 +12,7 @@ use tray_icon::{Icon, TrayIconBuilder, TrayIconEvent};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, GetSystemMetrics, MSG, SM_CXSMICON, SM_CYSMICON, SW_HIDE,
-    SW_SHOW, ShowWindowAsync, TranslateMessage,
+    SW_SHOW, SetTimer, ShowWindowAsync, TranslateMessage, WM_TIMER,
 };
 
 /// 托盘图标是否已经建好。没建好时"关闭"不能只把窗口藏起来：
@@ -90,8 +90,8 @@ impl TrayEntry {
     }
 }
 
-/// 托盘菜单该有哪些项。「显示」下面是「检查更新」（试用版也有：点了和关于页一样，只显示说明）；
-/// 只有"自动更新开着、并且已经下载好一个更新"才再多一项「重启安装」。
+/// 托盘菜单该有哪些项。「显示」下面是「检查更新」（和关于页同一个入口，打开更新窗口）；
+/// 只有"在线更新开着、并且有一个已验签、排队等安装的更新"才再多一项「重启安装 vX」。
 pub fn menu_entries(auto_update: bool, ready_version: Option<&str>) -> Vec<TrayEntry> {
     let mut entries = vec![TrayEntry::Show, TrayEntry::CheckUpdate];
     if let (true, Some(version)) = (auto_update, ready_version) {
@@ -107,6 +107,8 @@ pub fn menu_entries(auto_update: bool, ready_version: Option<&str>) -> Vec<TrayE
 enum Command {
     Show,
     CheckUpdate,
+    /// 托盘「重启安装 vX」：把排队的更新计划补上"装完重启"，然后和「退出」走同一条退出路径。
+    RestartInstall,
     Quit,
 }
 
@@ -148,17 +150,16 @@ pub fn spawn(
                     let _ = window.update(cx, |_, window, _| set_visible(window, true));
                 }
                 Command::CheckUpdate => {
-                    // 和关于页同一个入口：自动更新开着时直接弹更新窗口；试用版只有一段说明，
-                    // 它写在设置的「关于」里，所以先把主窗口叫出来。
+                    // 和关于页同一个入口：弹出更新窗口。
                     let main = main.clone();
                     let _ = window.update(cx, move |_, window, cx| {
-                        if !crate::product::AUTO_UPDATE_ENABLED {
-                            set_visible(window, true);
-                        }
                         main.update(cx, |this, cx| this.check_for_updates(window, cx));
                     });
                 }
-                Command::Quit => {
+                Command::RestartInstall | Command::Quit => {
+                    if matches!(command, Command::RestartInstall) {
+                        crate::update_demo::arm_pending_restart();
+                    }
                     // 有进行中的传输 / AI 回合：先把主窗口叫出来问一下，确认后由主窗口自己退出。
                     let main = main.clone();
                     let can_quit = window
@@ -208,7 +209,7 @@ pub fn spawn(
             };
 
             let tray = match TrayIconBuilder::new()
-                .with_menu(Box::new(menu))
+                .with_menu(Box::new(menu.clone()))
                 .with_tooltip(crate::product::NAME)
                 .with_icon(icon)
                 .build()
@@ -232,6 +233,9 @@ pub fn spawn(
                             }
                             CHECK_ID => {
                                 let _ = menu_tx.unbounded_send(Command::CheckUpdate);
+                            }
+                            UPDATE_ID => {
+                                let _ = menu_tx.unbounded_send(Command::RestartInstall);
                             }
                             QUIT_ID => {
                                 let _ = menu_tx.unbounded_send(Command::Quit);
@@ -259,10 +263,25 @@ pub fn spawn(
                 })
                 .ok();
 
+            // 线程定时器：每秒看一眼有没有排队等安装的更新，有就在菜单里加一项「重启安装 vX」。
+            // 菜单对象只能在创建它的这个线程里改，所以放在消息循环里做。
+            let mut restart_item = RestartItem::default();
+            // SAFETY: 线程定时器没有窗口句柄，WM_TIMER 直接进本线程的消息队列。
+            unsafe {
+                SetTimer(None, 0, RESTART_POLL_MS, None);
+            }
             // SAFETY: 当前线程拥有托盘窗口，标准的 GetMessage/DispatchMessage 循环。
             unsafe {
                 let mut msg = MSG::default();
                 while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    if msg.message == WM_TIMER && msg.hwnd.is_invalid() {
+                        sync_restart_item(
+                            &menu,
+                            &mut restart_item,
+                            crate::update_demo::pending_install_version(),
+                        );
+                        continue;
+                    }
                     let _ = TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }
@@ -272,6 +291,45 @@ pub fn spawn(
             drop(tray);
         })
         .ok();
+}
+
+/// 查「有没有排队等安装的更新」的间隔（毫秒）。
+const RESTART_POLL_MS: u32 = 1000;
+
+/// 菜单里「重启安装」这一项当前的状态：是否在菜单里、对应哪个版本。
+#[derive(Default)]
+struct RestartItem {
+    item: Option<MenuItem>,
+    version: Option<String>,
+}
+
+/// 让菜单里的「重启安装」和排队的更新一致：版本没变不动，变了就先删旧的再按 [`menu_entries`] 的顺序
+///（显示、检查更新、重启安装、分隔线、退出）插在第 3 位。
+fn sync_restart_item(menu: &Menu, state: &mut RestartItem, ready: Option<String>) {
+    if state.version == ready {
+        return;
+    }
+    if let Some(old) = state.item.take() {
+        let _ = menu.remove(&old);
+    }
+    state.version = ready.clone();
+    let Some(version) = ready else {
+        return;
+    };
+    let entries = menu_entries(crate::product::AUTO_UPDATE_ENABLED, Some(&version));
+    let Some(index) = entries
+        .iter()
+        .position(|entry| matches!(entry, TrayEntry::RestartInstall { .. }))
+    else {
+        return;
+    };
+    let Some(label) = entries[index].label() else {
+        return;
+    };
+    let item = MenuItem::with_id(UPDATE_ID, label, true, None);
+    if menu.insert(&item, index).is_ok() {
+        state.item = Some(item);
+    }
 }
 
 /// 托盘图标：优先用 exe 里嵌入的图标资源（`build.rs` 编进去的 ID 1，系统会按托盘需要的尺寸
@@ -335,14 +393,24 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_is_show_and_quit_in_the_trial_build() {
-        // 试用版没有自动更新：就算（假设）有已下载的更新，菜单也不多出「重启安装」。
-        let entries = menu_entries(crate::product::AUTO_UPDATE_ENABLED, Some("9.9.9"));
+    fn the_official_menu_has_the_restart_item_only_when_an_update_is_queued() {
+        let idle = menu_entries(crate::product::AUTO_UPDATE_ENABLED, None);
         assert_eq!(
-            labels(&entries),
+            labels(&idle),
             vec![
                 Some("显示 ZeeTerm".to_owned()),
                 Some("检查更新".to_owned()),
+                None,
+                Some("退出".to_owned())
+            ]
+        );
+        let queued = menu_entries(crate::product::AUTO_UPDATE_ENABLED, Some("9.9.9"));
+        assert_eq!(
+            labels(&queued),
+            vec![
+                Some("显示 ZeeTerm".to_owned()),
+                Some("检查更新".to_owned()),
+                Some("重启安装 v9.9.9".to_owned()),
                 None,
                 Some("退出".to_owned())
             ]

@@ -262,7 +262,7 @@ function Test-InstalledFiles([string]$Dir, [string]$Where) {
         $notice = [System.IO.File]::ReadAllText($noticePath, (New-Object System.Text.UTF8Encoding($false)))
         # 根 NOTICE（Netcatty 一节）和 native/NOTICE（GPUI 一节）都在，产品名已换掉。
         Check "$Where：NOTICE 含根 NOTICE 和 native/NOTICE 两份内容" ($notice.Contains('Netcatty') -and $notice.Contains('GPUI, gpui-component'))
-        Check "$Where：NOTICE 里没有 Z-SSH 字样" (-not $notice.Contains('Z-SSH'))
+        Check "$Where：NOTICE 以 ZeeTerm 开头" ($notice.StartsWith('ZeeTerm'))
     }
     Check "$Where：没有子目录（没带 WebView2 之类）" (@(Get-ChildItem -LiteralPath $Dir -Directory -Force).Count -eq 0)
 }
@@ -290,7 +290,7 @@ function Test-Launch([string]$Exe, [string]$DataDir, [string]$Where) {
         }
         Check "$Where：窗口持续响应（Responding，8 次采样）" (-not $hung)
     }
-    # 程序自己不该发起任何对外连接（试用版没有自动更新 / 自动检查）。
+    # 启动后的自动检查更新要等一段时间（update_auto 的启动延迟）才发请求，这段采样期内程序不该发起任何对外连接。
     $remote = @(Get-NetTCPConnection -OwningProcess $app.Id -ErrorAction SilentlyContinue |
         Where-Object { $_.RemoteAddress -notin @('127.0.0.1', '::1', '0.0.0.0', '::') -and $_.State -ne 'Listen' })
     Check "$Where：运行期间没有任何对外的 TCP 连接" ($remote.Count -eq 0) "有 $($remote.Count) 条"

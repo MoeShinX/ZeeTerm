@@ -21,7 +21,7 @@ subset listed in native/zssh-gpui/src/icons.rs)
   License: ISC. The icons that Lucide derived from the Feather project
   (Copyright (c) 2013-present Cole Bemis) are MIT; the complete list and both
   license texts are in LICENSE-LUCIDE inside the gpui-kit-assets 0.8.1 crate,
-  which ships the SVG files (the crate's own code is Apache-2.0). Z-SSH compiles
+  which ships the SVG files (the crate's own code is Apache-2.0). ZeeTerm compiles
   only the icons it uses into the executable (icon_assets!, no change to the
   artwork).
 

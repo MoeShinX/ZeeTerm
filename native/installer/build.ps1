@@ -41,21 +41,20 @@ function Copy-Required([string]$Source, [string]$Destination) {
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
-# 仓库根的 LICENSE / NOTICE 是和 Tauri 版共用的文件，里面写的产品名是 Z-SSH；
-# 安装包里的副本把产品名换成 ZeeTerm（第三方署名里没有这个词，原样保留）。不改仓库里的原文件。
-function Copy-Branded([string]$Source, [string]$Destination) {
+# 把仓库根的 LICENSE 原样复制进暂存目录（换行统一成 LF，和仓库检出一致）。
+function Copy-Plain([string]$Source, [string]$Destination) {
     if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
         Stop-WithError "缺少必要文件：$Source"
     }
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     $text = [System.IO.File]::ReadAllText($Source, $utf8)
-    [System.IO.File]::WriteAllText($Destination, $text.Replace('Z-SSH', $productName), $utf8)
+    [System.IO.File]::WriteAllText($Destination, $text, $utf8)
 }
 
-# 安装包里的 NOTICE = 根 NOTICE + 空一行 + native/NOTICE（ZeeTerm 额外使用的第三方组件），再换产品名。
+# 安装包里的 NOTICE = 根 NOTICE + 空一行 + native/NOTICE（原生界面额外使用的第三方组件）。
 # 拼法和 native/zssh-gpui/src/product.rs 的 combine_notices 一致（有测试核对）：换行统一成 LF，
 # 根 NOTICE 去掉末尾空白，中间只留一个空行。
-function Copy-BrandedNotice([string]$RootSource, [string]$NativeSource, [string]$Destination) {
+function Copy-Notice([string]$RootSource, [string]$NativeSource, [string]$Destination) {
     foreach ($source in @($RootSource, $NativeSource)) {
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
             Stop-WithError "缺少必要文件：$source"
@@ -65,7 +64,7 @@ function Copy-BrandedNotice([string]$RootSource, [string]$NativeSource, [string]
     $root = [System.IO.File]::ReadAllText($RootSource, $utf8).Replace("`r`n", "`n").TrimEnd()
     $native = [System.IO.File]::ReadAllText($NativeSource, $utf8).Replace("`r`n", "`n")
     $merged = $root + "`n`n" + $native
-    [System.IO.File]::WriteAllText($Destination, $merged.Replace('Z-SSH', $productName), $utf8)
+    [System.IO.File]::WriteAllText($Destination, $merged, $utf8)
 }
 
 # 版本号只从 native 工作区的 [workspace.package] 段读取（zssh-gpui 继承它），
@@ -145,8 +144,8 @@ New-Item -ItemType Directory -Path $StageDir -Force | Out-Null
 
 Copy-Required (Join-Path $nativeRoot 'target\release\zssh-gpui.exe') (Join-Path $StageDir $mainExeName)
 Copy-Required $mcpExe (Join-Path $StageDir 'zssh-mcp.exe')
-Copy-Branded (Join-Path $repoRoot 'LICENSE') (Join-Path $StageDir 'LICENSE')
-Copy-BrandedNotice (Join-Path $repoRoot 'NOTICE') (Join-Path $nativeRoot 'NOTICE') (Join-Path $StageDir 'NOTICE')
+Copy-Plain (Join-Path $repoRoot 'LICENSE') (Join-Path $StageDir 'LICENSE')
+Copy-Notice (Join-Path $repoRoot 'NOTICE') (Join-Path $nativeRoot 'NOTICE') (Join-Path $StageDir 'NOTICE')
 # 图标放在 native/installer/assets/，和 0.2.14 Tauri 包的是同一个文件（带着 Tauri 版的仓库里有测试
 # 核对字节一致）；不依赖 Tauri 版的目录，原生版单独成库后也能打包。
 Copy-Required (Join-Path $scriptDir 'assets\icon.ico') (Join-Path $StageDir 'icon.ico')

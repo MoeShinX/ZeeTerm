@@ -1,4 +1,4 @@
-﻿; ZeeTerm（Z-SSH 的 GPUI 原生版，试用）的独立 NSIS 安装程序：与 Tauri 版 Z-SSH 并存，不碰它的安装目录、卸载项和快捷方式。
+﻿; ZeeTerm 的 NSIS 安装程序（可与 Tauri 版 Z-SSH 并存），不碰它的安装目录、卸载项和快捷方式。
 ; 只按当前用户安装，不需要管理员权限，也不安装 WebView2、Edge、Node 等共享运行时。
 ; 构建入口是 native/installer/build.ps1，构建期通过 /D 传入版本、暂存目录和输出路径。
 ;
@@ -77,7 +77,7 @@ VIAddVersionKey "LegalCopyright" "GPL-3.0-or-later"
 !define MUI_UNICON "${STAGE_DIR}\${APP_ICON}"
 
 !define MUI_WELCOMEPAGE_TITLE "欢迎安装 ${APP_NAME}"
-!define MUI_WELCOMEPAGE_TEXT "ZeeTerm（Z-SSH 的 GPUI 原生版）目前是试用版本，可以和 Z-SSH（Tauri 版）同时安装。$\r$\n$\r$\n版本：${APP_VERSION}$\r$\n$\r$\n本安装程序只写入当前用户目录，不需要管理员权限；不会安装 WebView2、Edge、Node 或其他共享运行时。$\r$\n$\r$\n点击「下一步」选择安装目录。"
+!define MUI_WELCOMEPAGE_TEXT "ZeeTerm 是面向 Windows 的 SSH 客户端，可以和 Z-SSH（Tauri 版）同时安装。$\r$\n$\r$\n版本：${APP_VERSION}$\r$\n$\r$\n本安装程序只写入当前用户目录，不需要管理员权限；不会安装 WebView2、Edge、Node 或其他共享运行时。$\r$\n$\r$\n点击「下一步」选择安装目录。"
 
 !define MUI_DIRECTORYPAGE_TEXT_TOP "请选择 ${APP_NAME} 的安装目录。安装程序只需要当前用户的写入权限，默认放在本地应用数据目录下。"
 !define MUI_DIRECTORYPAGE_TEXT_DESTINATION "安装目录"

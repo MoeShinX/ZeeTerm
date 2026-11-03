@@ -171,9 +171,11 @@ fn the_build_script_stages_the_same_files_and_rebuilds_the_mcp_bridge() {
     assert!(script.contains(&format!("$productName = '{}'", product::NAME)));
     assert!(script.contains("@($mainExeName, 'zssh-mcp.exe', 'LICENSE', 'NOTICE', 'icon.ico')"));
     // 安装包里的 NOTICE 是根 NOTICE 和 native/NOTICE 合并的（拼法与 product::combine_notices 一致）。
-    assert!(script.contains(
-        "Copy-BrandedNotice (Join-Path $repoRoot 'NOTICE') (Join-Path $nativeRoot 'NOTICE')"
-    ));
+    assert!(
+        script.contains(
+            "Copy-Notice (Join-Path $repoRoot 'NOTICE') (Join-Path $nativeRoot 'NOTICE')"
+        )
+    );
     assert!(script.contains(r#"$root + "`n`n" + $native"#));
     assert!(script.contains(r#".Replace("`r`n", "`n").TrimEnd()"#));
     // zssh-mcp 每次现编，并取 cargo 报告的路径；不再按固定位置去找旧文件。
@@ -255,4 +257,104 @@ fn the_native_workflow_only_builds_and_uploads_the_installer() {
     if template.is_file() {
         assert_workflow_only_builds_and_uploads(&repo_file("scripts/export-zeeterm/ci.yml"));
     }
+}
+
+// ---- 版本号来源：改版本只该动 release.ps1 统一写的那几处，彼此必须一致 ----
+
+/// `[workspace.package]` 段里的 `version = "x.y.z"`。
+fn workspace_version(manifest: &str) -> String {
+    let section = manifest
+        .split("[workspace.package]")
+        .nth(1)
+        .expect("Cargo.toml 应有 [workspace.package]");
+    section
+        .lines()
+        .take_while(|line| !line.trim_start().starts_with('['))
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("version")
+                .and_then(|rest| rest.trim_start().strip_prefix('='))
+                .map(|value| value.trim().trim_matches('"').to_owned())
+        })
+        .expect("workspace 应有版本号")
+}
+
+/// Cargo.lock 里"本仓库自己的、版本跟随工作区"的包：名字以 `zssh-` 开头、没有 `source`（路径依赖）、
+/// 版本不是占位的 `0.0.0`。返回 `(包名, 版本)`。
+fn lock_workspace_versions(lock: &str) -> Vec<(String, String)> {
+    lock.split("[[package]]")
+        .skip(1)
+        .filter_map(|block| {
+            let field = |key: &str| {
+                block
+                    .lines()
+                    .find_map(|line| line.strip_prefix(&format!("{key} = \"")))
+                    .and_then(|rest| rest.strip_suffix('"'))
+                    .map(str::to_owned)
+            };
+            let name = field("name")?;
+            let version = field("version")?;
+            let has_source = block.lines().any(|line| line.starts_with("source = "));
+            (name.starts_with("zssh-") && !has_source && version != "0.0.0")
+                .then_some((name, version))
+        })
+        .collect()
+}
+
+#[test]
+fn every_place_that_carries_the_version_agrees() {
+    let native = workspace_version(&repo_file("native/Cargo.toml"));
+    let root = workspace_version(&repo_file("Cargo.toml"));
+    assert_eq!(
+        native, root,
+        "native/Cargo.toml 与根 Cargo.toml 的版本要一致"
+    );
+    assert_eq!(native, env!("CARGO_PKG_VERSION"), "编进程序里的版本");
+
+    for lock in ["Cargo.lock", "native/Cargo.lock"] {
+        let versions = lock_workspace_versions(&repo_file(lock));
+        assert!(!versions.is_empty(), "{lock} 里应有本仓库的包");
+        for (name, version) in versions {
+            assert_eq!(
+                version, native,
+                "{lock} 里 {name} 的版本落后了（release.ps1 会统一改）"
+            );
+        }
+    }
+
+    // 安装包的版本来自 native/Cargo.toml（build.ps1 读它），安装脚本里不写死具体版本。
+    let build = repo_file("native/installer/build.ps1");
+    assert!(build.contains(r"^\[workspace\.package\]"));
+    let nsi = nsi();
+    assert_eq!(
+        define(&nsi, "APP_VERSION"),
+        "0.0.0",
+        "只有构建参数覆盖的占位默认值"
+    );
+}
+
+#[test]
+fn the_lock_file_parser_only_counts_path_packages_that_follow_the_workspace() {
+    let lock = r#"
+[[package]]
+name = "zssh-core"
+version = "1.2.3"
+
+[[package]]
+name = "zssh-regex"
+version = "0.0.0"
+
+[[package]]
+name = "zssh-lookalike"
+version = "9.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+"#;
+    assert_eq!(
+        lock_workspace_versions(lock),
+        vec![("zssh-core".to_owned(), "1.2.3".to_owned())]
+    );
 }

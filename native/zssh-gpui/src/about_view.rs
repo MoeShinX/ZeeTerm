@@ -1,6 +1,10 @@
-//! 设置页的「关于」一节（G12）：版本、检查更新、启动时自动检查、数据目录、known_hosts、开源许可。
-//! 对齐 0.2.14 设置页的 `AboutSection` / `UpdateRow`，但按试用版的规则显示（见 `product`）：
-//! 试用版不连任何更新源——"检查更新"只显示说明并给"打开发布页"，"启动时自动检查"锁在关闭。
+//! 设置页的「关于」一节（G12，R1 起是正式版的样子）：版本、检查更新、启动时自动检查、数据目录、
+//! known_hosts、第三方组件与许可。
+//!
+//! 「检查更新」打开更新窗口（`update_demo`）：读 `latest.json`、下载、校验签名、确认后安装。
+//! 「启动时自动检查」默认开，存在本机设置里（`zssh_core::updater::AUTO_CHECK_KEY`，不参与同步）；
+//! 它只管后台自动检查（`update_auto`），手动「检查更新」不受影响。
+//! 更新签名公钥还是占位值时（`zssh_update::is_placeholder_pubkey`）这一行改成提示"更新签名未配置"。
 //!
 //! 数据目录、known_hosts 的路径显示前过 `redact_paths`（用户目录换成 `%USERPROFILE%`），
 //! 截图和录屏不会带出用户名。
@@ -17,11 +21,12 @@ use crate::product;
 use crate::settings_view::card;
 use crate::typography::{Role, Typo as _};
 
-/// 关于页的状态：只有两个界面开关，没有任何后台任务。
-#[derive(Default)]
+/// 关于页的状态：两个界面开关，加上「启动时自动检查」这一项的本机偏好。
 pub struct AboutView {
-    /// 点过「检查更新」：说明从默认提示换成试用版的完整说明。
-    checked: bool,
+    /// 「启动时自动检查」当前值（建页时从设置库读一次，切换时写回）。
+    auto_check: bool,
+    /// 保存偏好失败时的提示（显示在开关下面的说明里）。
+    save_error: Option<String>,
     /// 第三方声明展开着。
     license_open: bool,
 }
@@ -46,29 +51,26 @@ pub fn known_hosts_text() -> String {
     display_path(&crate::settings::data_dir().join("known_hosts"))
 }
 
-/// 「检查更新」一行下面的说明。
-pub fn update_description(auto_update: bool, checked: bool) -> &'static str {
-    match (auto_update, checked) {
-        // 自动更新开着时由更新窗口负责呈现结果，这一行只留一句引导。
-        (true, _) => "点「检查更新」打开更新窗口，检查、下载并校验新版本。",
-        (false, false) => product::TRIAL_UPDATE_HINT,
-        (false, true) => product::TRIAL_UPDATE_NOTICE,
-    }
-}
-
-/// 「启动时自动检查」一行的说明和开关能不能点：`(说明, 能不能点)`。
-pub fn auto_check_row(auto_update: bool) -> (&'static str, bool) {
-    if auto_update {
-        (
-            "每次打开时检查一次，程序开着时定时再查；关掉后只在点「检查更新」时检查。",
-            true,
-        )
+/// 「检查更新」一行下面的说明。`signing_configured` 为假（公钥还是占位）时说明改成"更新签名未配置"。
+pub fn update_description(signing_configured: bool) -> &'static str {
+    if signing_configured {
+        "点「检查更新」打开更新窗口，检查、下载并校验新版本。"
     } else {
-        (product::TRIAL_AUTO_CHECK_NOTE, false)
+        crate::update_demo::SIGNING_UNCONFIGURED
     }
 }
 
-/// 试用版"打开发布页"的地址：由内嵌的更新源推出；推不出来就没有这个按钮。
+/// 更新签名公钥是不是已经配置好（占位值、内置配置读不出来都算没配；调试构建里钩子给的公钥也算）。
+pub fn signing_configured() -> bool {
+    crate::update_demo::update_pubkey().is_ok()
+}
+
+/// 「启动时自动检查」一行的说明。
+pub fn auto_check_description() -> &'static str {
+    "每次打开程序时检查一次，程序开着时每 6 小时再查一次；关掉后只在点「检查更新」时检查。"
+}
+
+/// 发布页的地址：由内嵌的更新源推出；推不出来就没有这个按钮。
 pub fn releases_url() -> Option<String> {
     let config = zssh_update::embedded_config().ok()?;
     config
@@ -77,17 +79,45 @@ pub fn releases_url() -> Option<String> {
         .find_map(|endpoint| zssh_update::releases_page_url(endpoint))
 }
 
+/// 读「启动时自动检查」偏好；设置库打不开或值读不懂就按缺省（开）。
+fn load_auto_check() -> bool {
+    crate::hosts_demo::open_database()
+        .ok()
+        .and_then(|db| zssh_core::updater::load_prefs(&db).ok())
+        .is_none_or(|prefs| zssh_core::updater::should_auto_check(&prefs))
+}
+
 impl AboutView {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            auto_check: load_auto_check(),
+            save_error: None,
+            license_open: false,
+        }
     }
 
-    /// 「检查更新」。试用版只显示说明，不发任何请求；自动更新开着时打开更新窗口（F2 的完整流程）。
+    /// 「检查更新」：打开更新窗口（手动检查，不受「启动时自动检查」开关影响）。
     pub fn check_update(&mut self, cx: &mut Context<Self>) {
         if product::AUTO_UPDATE_ENABLED {
             crate::update_demo::open_update_window(cx);
-        } else {
-            self.checked = true;
+        }
+        cx.notify();
+    }
+
+    /// 切换「启动时自动检查」并写回设置库；写失败就保持原值并给出原因。
+    pub fn toggle_auto_check(&mut self, cx: &mut Context<Self>) {
+        let next = !self.auto_check;
+        let saved = crate::hosts_demo::open_database()
+            .map_err(|err| err.to_string())
+            .and_then(|db| {
+                zssh_core::updater::set_auto_check(&db, next).map_err(|err| err.to_string())
+            });
+        match saved {
+            Ok(()) => {
+                self.auto_check = next;
+                self.save_error = None;
+            }
+            Err(err) => self.save_error = Some(format!("保存失败：{err}")),
         }
         cx.notify();
     }
@@ -100,12 +130,15 @@ impl AboutView {
     /// 驱动脚本断言用：当前界面上这几行文字拼在一起（不含第三方声明正文）。
     #[cfg(debug_assertions)]
     pub fn visible_text(&self) -> String {
-        let (auto_note, _) = auto_check_row(product::AUTO_UPDATE_ENABLED);
         [
             product::NAME.to_owned(),
             version_text(),
-            update_description(product::AUTO_UPDATE_ENABLED, self.checked).to_owned(),
-            auto_note.to_owned(),
+            update_description(signing_configured()).to_owned(),
+            auto_check_description().to_owned(),
+            format!(
+                "启动时自动检查：{}",
+                if self.auto_check { "开" } else { "关" }
+            ),
             data_dir_text(),
             known_hosts_text(),
         ]
@@ -115,6 +148,17 @@ impl AboutView {
     #[cfg(debug_assertions)]
     pub fn license_open(&self) -> bool {
         self.license_open
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn auto_check(&self) -> bool {
+        self.auto_check
+    }
+}
+
+impl Default for AboutView {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -169,10 +213,10 @@ impl AboutView {
     #[inline(never)]
     fn update_rows(&self, tokens: &Tokens, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let check = cx.entity();
+        let toggle = cx.entity();
         let mut buttons = h_flex().gap_2().items_center();
-        if !product::AUTO_UPDATE_ENABLED
-            && let Some(url) = releases_url()
-        {
+        // 发布页是网络不通、签名没配置时手动下载的退路，正式版也留着。
+        if let Some(url) = releases_url() {
             buttons = buttons.child(
                 Button::new("about-open-releases")
                     .label("打开发布页")
@@ -188,22 +232,26 @@ impl AboutView {
                     check.update(cx, |this, cx| this.check_update(cx));
                 }),
         );
-        let (auto_note, auto_enabled) = auto_check_row(product::AUTO_UPDATE_ENABLED);
+        let auto_note = match &self.save_error {
+            Some(error) => format!("{}（{error}）", auto_check_description()),
+            None => auto_check_description().to_owned(),
+        };
         vec![
             setting(
                 "检查更新",
-                update_description(product::AUTO_UPDATE_ENABLED, self.checked),
+                update_description(signing_configured()),
                 buttons,
                 tokens,
             ),
             setting(
                 "启动时自动检查",
                 auto_note,
-                // 试用版：锁在关闭。接管身份、补上偏好存取之后再接开关的状态。
                 Switch::new("about-auto-check")
-                    .checked(false)
-                    .disabled(!auto_enabled)
-                    .accessibility_label("启动时自动检查"),
+                    .checked(self.auto_check)
+                    .accessibility_label("启动时自动检查")
+                    .on_click(move |_, _, cx| {
+                        toggle.update(cx, |this, cx| this.toggle_auto_check(cx));
+                    }),
                 tokens,
             ),
         ]
@@ -252,9 +300,9 @@ impl AboutView {
                 toggle.update(cx, |this, cx| this.toggle_license(cx));
             });
         let mut rows = vec![setting(
-            "开源许可",
+            "第三方组件与许可",
             format!(
-                "{} 以 GPL-3.0-or-later 许可发布；第三方组件与致谢见第三方声明。",
+                "{} 以 GPL-3.0-or-later 许可发布；使用的第三方组件及其许可见第三方声明。",
                 product::NAME
             ),
             button,
@@ -303,29 +351,38 @@ impl Render for AboutView {
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        auto_check_row, data_dir_text, display_path, known_hosts_text, releases_url,
-        update_description, version_text,
+        auto_check_description, data_dir_text, display_path, known_hosts_text, releases_url,
+        signing_configured, update_description, version_text,
     };
     use crate::product;
 
     #[test]
-    fn the_trial_build_never_offers_an_automatic_update() {
-        assert_eq!(update_description(false, false), product::TRIAL_UPDATE_HINT);
-        let after = update_description(false, true);
-        assert_eq!(after, product::TRIAL_UPDATE_NOTICE);
-        assert!(after.contains("试用版") && after.contains("发布页"));
-        let (note, enabled) = auto_check_row(false);
-        assert!(!enabled, "试用版里这个开关不能点");
-        assert_eq!(note, product::TRIAL_AUTO_CHECK_NOTE);
+    fn the_official_build_offers_online_updates_with_no_trial_wording() {
+        const {
+            assert!(product::AUTO_UPDATE_ENABLED);
+        }
+        let configured = update_description(true);
+        assert!(
+            configured.contains("更新窗口"),
+            "点「检查更新」打开更新窗口"
+        );
+        assert!(!configured.contains("试用"));
+        assert!(!auto_check_description().contains("试用"));
+        assert!(
+            auto_check_description().contains("每次打开程序时检查一次"),
+            "说明里写清自动检查的时机"
+        );
     }
 
     #[test]
-    fn with_automatic_updates_the_switch_works_and_the_update_window_takes_over() {
-        assert!(auto_check_row(true).1);
-        assert!(update_description(true, false).contains("更新窗口"));
+    fn an_unconfigured_update_key_is_called_out_instead_of_promising_updates() {
+        let text = update_description(false);
+        assert_eq!(text, crate::update_demo::SIGNING_UNCONFIGURED);
+        assert!(text.contains("更新签名未配置"));
+        // 界面上"配没配"和更新流程里拿不拿得到公钥是同一个判断。
         assert_eq!(
-            update_description(true, true),
-            update_description(true, false)
+            signing_configured(),
+            crate::update_demo::update_pubkey().is_ok()
         );
     }
 

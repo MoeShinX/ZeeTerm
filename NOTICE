@@ -1,5 +1,5 @@
-Z-SSH
-Copyright (C) 2026 Z-SSH contributors
+ZeeTerm
+Copyright (C) 2026 ZeeTerm contributors
 
 This program is free software: you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -10,6 +10,10 @@ This program is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 PARTICULAR PURPOSE.
 
+ZeeTerm is derived from Z-SSH (https://github.com/MoeShinX/Z-SSH), an earlier
+SSH client by the same authors; the core library under crates/ and the first
+version of the native application under native/ come from it.
+
 --------------------------------------------------------------------------------
 Third-party code
 --------------------------------------------------------------------------------
@@ -19,7 +23,7 @@ Netcatty
   Copyright (C) binaricat and Netcatty contributors
   License: GPL-3.0-or-later
 
-  Parts of the Z-SSH user interface (base UI components, theme tokens and
+  Parts of the ZeeTerm user interface (base UI components, theme tokens and
   presets, terminal themes, title bar, host vault views, settings page,
   terminal layer, server stats bar, AI chat side panel) and the server
   stats collection script were adapted from Netcatty. The in-terminal AI
@@ -56,7 +60,7 @@ Netcatty
   components/sftp/ (SftpPaneFileList, SftpPaneToolbar, SftpBreadcrumb,
   SftpPaneView, SftpTransferQueue, SftpTransferItem, SftpConflictDialog,
   SftpPermissionsDialog, sftpSorting); the layout, the option semantics and
-  the dialogs were followed, while the code was rewritten against the Z-SSH
+  the dialogs were followed, while the code was rewritten against the application's own
   data model and Tauri commands. The SFTP panel docked next to the terminal
   (ui/src/components/sftp/SftpDockPanel.tsx, adapted from
   components/SftpSidePanel.tsx) and the "follow the terminal's directory"
@@ -78,7 +82,7 @@ Netcatty
   infrastructure/services/adapters/OneDriveAdapter.ts; the PKCE loopback
   listener, the conditional (eTag / If-Match) upload-session writes and
   everything else there are independent Rust implementations. Adapted files are marked with an "Adapted
-  from Netcatty" comment at the top. The Z-SSH
+  from Netcatty" comment at the top. The ZeeTerm
   backend (SSH, flow control, vault storage, authentication, proxy and
   jump-host dialing, connection pool, AI tool bridge, opencode / codex /
   claude agent drivers) is an independent Rust implementation.
