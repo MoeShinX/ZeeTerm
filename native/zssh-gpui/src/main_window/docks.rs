@@ -356,7 +356,7 @@ impl MainWindow {
             self.ai_dots = dots;
             cx.notify();
         }
-        // AI 在对话里改了某台主机的记忆：主机详情里开着的记忆框跟着刷新。
+        // AI 在对话里改了某台主机的记忆：主机属性里开着的记忆框跟着刷新。
         let (seen, changed) = crate::host_activity::memory_changes_since(self.memory_seen);
         self.memory_seen = seen;
         if !changed.is_empty() {

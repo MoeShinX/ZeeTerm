@@ -106,10 +106,10 @@ impl MainWindow {
 
     // ---- 编辑 / 新建 ----
 
-    /// 右键「编辑」和卡片 / 行上的铅笔按钮：打开详情（并选中）。
+    /// 右键「属性…」和卡片 / 行上的铅笔按钮（F2 也是）：弹出主机属性对话框（并选中）。
     pub(crate) fn edit_host(&mut self, host_id: i64, window: &mut Window, cx: &mut Context<Self>) {
         self.tree.selected_host = Some(host_id);
-        self.open_host_details(Some(host_id), None, window, cx);
+        self.open_host_props(Some(host_id), None, window, cx);
     }
 
     /// 新建主机（带上现在选中的分组）。
@@ -118,7 +118,7 @@ impl MainWindow {
             GroupSel::Group(id) => Some(id),
             _ => None,
         };
-        self.open_host_details(None, group, window, cx);
+        self.open_host_props(None, group, window, cx);
     }
 
     /// 打开这台主机的文件视图：主窗口里的 SFTP 标签（0.2.14 同样是主视图标签）。
@@ -434,8 +434,7 @@ impl MainWindow {
         // 搜索框里那串地址已经用掉了：清掉，回来时主机页是完整的。
         let query = self.vault_query.clone();
         query.update(cx, |input, cx| input.set_value("", window, cx));
-        self.panels.close_host_details();
-        self.host_form = None;
+        self.close_host_props_now();
         self.panels.close_side();
         self.workspace
             .update(cx, |ws, cx| ws.open_quick_tab(parsed, password, label, cx));

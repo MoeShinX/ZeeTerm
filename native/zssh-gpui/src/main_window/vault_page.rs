@@ -428,7 +428,7 @@ impl MainWindow {
                     .compact()
                     .ghost()
                     .icon(crate::icons::Ico::Pencil)
-                    .tooltip("编辑")
+                    .tooltip("属性…")
                     .on_click({
                         let entity = entity.clone();
                         move |_, window, cx| {

@@ -361,14 +361,14 @@ fn run_inner(
             }
             cx.notify();
         }
-        // form_memory_has:<文字>：主机详情里记忆框当前显示的内容。
+        // form_memory_has:<文字>：主机属性对话框里记忆框当前显示的内容。
         "form_memory_has" => {
             let input = this
                 .host_form
                 .as_ref()
                 .and_then(|form| form.memory.as_ref())
                 .map(|memory| memory.input.clone())
-                .ok_or("主机详情里没有记忆小节")?;
+                .ok_or("主机属性里没有记忆小节")?;
             let value = input.read(cx).value().to_string();
             let text = if c.is_empty() {
                 a.to_owned()

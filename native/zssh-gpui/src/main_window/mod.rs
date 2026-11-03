@@ -34,6 +34,7 @@ mod dev_acts_u1;
 mod dev_acts_u2;
 mod dev_acts_u4;
 mod dev_acts_u6;
+mod dev_acts_u7;
 pub mod dev_script;
 pub mod dev_seed;
 pub mod dock_layout;
@@ -42,8 +43,10 @@ mod drag;
 pub(crate) mod editor_tabs;
 mod forward_panel;
 mod host_delete;
+mod host_dialog;
 mod host_form;
 mod host_panel;
+mod host_props;
 pub mod host_store;
 pub mod host_tree;
 mod identity_form;
@@ -504,8 +507,7 @@ impl MainWindow {
             && let Some(id) = form.host_id
             && self.store.host(id).is_none()
         {
-            self.panels.close_host_details();
-            self.host_form = None;
+            self.close_host_props_now();
         }
         if self
             .tree

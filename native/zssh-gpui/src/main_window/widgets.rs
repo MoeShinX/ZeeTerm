@@ -90,41 +90,6 @@ pub fn segmented(
         )
 }
 
-/// 可折叠区块的标题行：小箭头 + 文字，整行可点。
-pub fn collapse_header(
-    id: impl Into<SharedString>,
-    title: &str,
-    open: bool,
-    on_toggle: impl Fn(&mut Window, &mut App) + 'static,
-    tokens: &Tokens,
-) -> ::gpui::Stateful<Div> {
-    let hover = tokens.hover;
-    div()
-        .id(id.into())
-        .flex()
-        .items_center()
-        .gap_1p5()
-        .w_full()
-        .px_1()
-        .py_1p5()
-        .rounded_md()
-        .cursor_pointer()
-        .text_xs()
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(tokens.text_muted)
-        .hover(move |style| style.bg(hover))
-        .child(
-            Icon::new(if open {
-                IconName::ChevronDown
-            } else {
-                IconName::ChevronRight
-            })
-            .size_3p5(),
-        )
-        .child(SharedString::from(title.to_owned()))
-        .on_click(move |_, window, cx| on_toggle(window, cx))
-}
-
 /// 面板里的一组字段：全大写风格的小标题 + 内容。
 pub fn section(title: &str, children: Vec<AnyElement>, tokens: &Tokens) -> Div {
     v_flex()

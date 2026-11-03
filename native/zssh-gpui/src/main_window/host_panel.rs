@@ -1,43 +1,29 @@
-//! 右侧的主机详情 / 新建面板（0.2.14 `HostDetailsPanel.tsx`，加上 V2-N4 的多协议）：
-//! 名称、协议（SSH / Telnet / 串口分段按钮）、各协议自己的字段、分组、可折叠的「高级设置」
-//! 和 AI 记忆。
+//! 主机「属性」对话框背后的表单状态和动作（0.2.14 `HostDetailsPanel.tsx`，加上 V2-N4 的多协议；
+//! V2-U7 起不再是右侧面板，界面搬到了居中对话框，见 `host_dialog`）。
 //!
-//! 表单状态放在 [`HostForm`] 里，换一台主机就整个换掉（同 0.2.14 的 `key` 重挂载）；开着凭据 /
-//! 代理面板时它只是被藏在下面，里面没保存的编辑还在。切换协议只是换显示哪些字段，已填的值不清，
-//! 保存时才按协议忽略不适用的（见 `host_form::plan_save`）。保存逻辑在 `host_form`、字段显隐和
-//! 端口默认值规则在 `protocol_form`（都是纯函数，有测试），这里只管界面和调用。
+//! 表单状态放在 [`HostForm`] 里，换一台主机就整个换掉（同 0.2.14 的 `key` 重挂载）。切换协议只是换
+//! 显示哪些字段，已填的值不清，保存时才按协议忽略不适用的（见 `host_form::plan_save`）。保存逻辑在
+//! `host_form`、字段显隐和端口默认值规则在 `protocol_form`、类别和错误落点在 `host_props`（都是纯函数，
+//! 有测试），这里只管状态和调用。
 
 use std::collections::HashMap;
 
-use ::gpui::{App, Entity, SharedString};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
-use gpui_kit::component::*;
-use gpui_kit::prelude::FluentBuilder as _;
+use ::gpui::{App, Entity};
+use gpui_kit::component::input::{InputState, TextareaState};
 use gpui_kit::*;
-use zssh_core::ai::host_memory::MAX_MEMORY_CHARS;
 use zssh_core::model::{
     AuthMethod, Host, IdentityKind, LocalEcho, Protocol, ProxyMode, SerialDataBits,
     SerialFlowControl, SerialNewline, SerialParity, SerialStopBits, TelnetNewline, TextEncoding,
 };
 
 use super::MainWindow;
+use super::host_dialog::HostPropsDialog;
 use super::host_form::{
-    FormInput, IdentityAction, SerialInput, TelnetInput, auth_label, can_reveal,
-    identity_fits_auth, mismatch_note, password_hint, plan_save,
+    FormInput, IdentityAction, SerialInput, TelnetInput, can_reveal, mismatch_note, plan_save,
 };
-use super::page_logic::{flatten_groups, ungrouped_option_label};
-use super::protocol_form::{
-    self, COMMON_BAUD_RATES, DATA_BITS, ENCODINGS, FLOW_CONTROLS, FormField, LOCAL_ECHOES,
-    PARITIES, PROTOCOLS, PortChoice, SERIAL_NEWLINES, STOP_BITS, TELNET_NEWLINES,
-};
-use super::side_panel::{PROXIES, PanelContent};
-use super::widgets::{
-    ButtonLook, Choice, act, collapse_header, error_note, field, field_with_error, note, pick,
-    section, segmented, select, switch_row, text_button,
-};
-use crate::app_theme::Tokens;
-use crate::typography::{Role, Typo as _};
+use super::host_props::{self, Category};
+use super::modal::Modal;
+use super::protocol_form::{self, FormField, PortChoice};
 
 /// AI 记忆小节的状态。
 pub struct MemoryForm {
@@ -98,8 +84,6 @@ pub struct HostForm {
     pub x11: bool,
     pub telnet: TelnetForm,
     pub serial: SerialForm,
-    /// 「高级设置」折叠区是否展开。
-    pub advanced_open: bool,
     /// 保存校验的错误，落在对应字段旁边。
     pub errors: HashMap<FormField, String>,
     /// 端口 / 用户名框里上一次**自动**填的值：框里还是它就说明用户没改过，换协议时跟着默认值走。
@@ -216,7 +200,6 @@ impl HostForm {
             x11: settings.x11_forwarding,
             telnet,
             serial,
-            advanced_open: false,
             errors: HashMap::new(),
             port_auto: protocol_form::default_port_text(protocol)
                 .unwrap_or_else(|| "22".to_owned()),
@@ -233,56 +216,88 @@ impl HostForm {
     pub fn error_of(&self, field: FormField) -> Option<&str> {
         self.errors.get(&field).map(String::as_str)
     }
-}
 
-fn proxy_mode_label(mode: ProxyMode) -> &'static str {
-    match mode {
-        ProxyMode::Default => "跟随默认代理",
-        ProxyMode::None => "不用代理",
-        ProxyMode::Custom => "指定代理",
+    /// 有没有 AI 记忆这一类（只有已保存的、AI 能操作的 SSH 主机才有）。
+    pub fn has_memory(&self) -> bool {
+        self.memory.is_some() && protocol_form::visible(self.protocol).memory
     }
-}
 
-/// 高级设置里「标题 + 说明 + 开关」一行的生成函数（id、标题、说明、当前值、改表单的函数）。
-type ToggleRow<'a> = dyn Fn(
-        &'static str,
-        &'static str,
-        Option<&'static str>,
-        bool,
-        fn(&mut HostForm, bool),
-    ) -> ::gpui::AnyElement
-    + 'a;
+    /// 现在这个协议下左侧列出的类别。
+    pub fn categories(&self) -> Vec<Category> {
+        host_props::categories(self.protocol, self.has_memory())
+    }
 
-/// 一个"枚举值下拉"：按钮上写当前值，菜单里列全部，选中后交给 `set` 改表单。
-fn enum_select<T: Copy + PartialEq + 'static>(
-    id: &'static str,
-    entity: &Entity<MainWindow>,
-    current: T,
-    all: &'static [T],
-    label: fn(T) -> &'static str,
-    set: fn(&mut HostForm, T),
-) -> impl IntoElement {
-    let choices: Vec<Choice> = all
-        .iter()
-        .map(|value| Choice::new(label(*value), *value == current))
-        .collect();
-    select(
-        id,
-        label(current),
-        choices,
-        pick(entity, move |this, index, _window, cx| {
-            if let Some(value) = all.get(index).copied() {
-                this.with_form(cx, |form| set(form, value));
-            }
-        }),
-    )
+    /// 表单里所有输入的当前值拼成一个字符串：和刚打开时的快照不一样就说明有没保存的修改。
+    /// 只在内存里比较，不进日志（里面有密码框的内容）。
+    pub fn snapshot(&self, cx: &App) -> String {
+        let text = |state: &Entity<InputState>| state.read(cx).value().to_string();
+        let telnet = &self.telnet;
+        let serial = &self.serial;
+        // 元组的 Debug 最多 12 项，所以分几组拼。
+        format!(
+            "{:?}|{:?}|{:?}|{:?}",
+            (
+                text(&self.name),
+                text(&self.address),
+                text(&self.port),
+                text(&self.username),
+                text(&self.password),
+                self.group,
+                self.auth,
+                self.identity,
+            ),
+            (
+                self.proxy_mode,
+                self.proxy,
+                self.jump,
+                self.remember,
+                self.legacy,
+                self.protocol,
+                self.x11,
+            ),
+            (
+                telnet.newline,
+                telnet.local_echo,
+                telnet.naws,
+                telnet.encoding,
+                telnet.auto_login,
+                telnet.raw_tcp,
+                text(&telnet.terminal_type),
+                text(&telnet.username_prompts),
+                text(&telnet.password_prompts),
+            ),
+            (
+                text(&serial.device),
+                text(&serial.baud),
+                serial.data_bits,
+                serial.parity,
+                serial.stop_bits,
+                serial.flow_control,
+                serial.newline,
+                serial.local_echo,
+                serial.encoding,
+            ),
+        )
+    }
+
+    /// AI 记忆框里有没有改了没存的内容（它不在 [`snapshot`] 里：AI 自己改了记忆时框会刷新，不算用户的修改；
+    /// 点「确定」会把它一起存）。
+    pub fn memory_dirty(&self, cx: &App) -> bool {
+        self.host_id.is_some()
+            && self.has_memory()
+            && self
+                .memory
+                .as_ref()
+                .is_some_and(|memory| memory.input.read(cx).value() != memory.saved)
+    }
 }
 
 impl MainWindow {
     // ---- 打开 / 关闭 ----
 
-    /// 打开主机详情；`host_id` 为空是新建（`group` 是默认分组）。已经开着同一台就只是显示它。
-    pub(crate) fn open_host_details(
+    /// 打开主机「属性」对话框（所有编辑 / 新建主机的入口都走这里）；`host_id` 为空是新建（`group` 是默认分组）。
+    /// 对话框盖在当前页面上：不切页面、不开侧面板，关掉以后还在原来的页面。已经开着同一台就只是回到它。
+    pub(crate) fn open_host_props(
         &mut self,
         host_id: Option<i64>,
         group: Option<i64>,
@@ -293,32 +308,34 @@ impl MainWindow {
             && self
                 .host_form
                 .as_ref()
-                .is_some_and(|form| form.host_id == host_id);
-        self.proxy_ui.from_host_form = false;
-        if !same {
-            let host = host_id.and_then(|id| self.store.host(id).cloned());
-            if host_id.is_some() && host.is_none() {
-                return;
-            }
-            let memory = host
-                .as_ref()
-                .filter(|h| h.protocol.supports_ai_exec())
-                .and_then(|h| self.read_memory(h.id));
-            let mut form = HostForm::new(window, cx, host.as_ref(), group, memory);
-            if let Some(host) = &host
-                && host.protocol.protocol == Protocol::Ssh
-            {
-                form.fingerprint =
-                    crate::ssh_backend::known_hosts().saved_fingerprint(&host.host, host.port);
-            }
-            let focus = form.name.read(cx).focus_handle(cx);
-            self.host_form = Some(form);
-            window.focus(&focus, cx);
+                .is_some_and(|form| form.host_id == host_id)
+            && matches!(self.modal, Some(Modal::HostProps(_)));
+        if same {
+            cx.notify();
+            return;
         }
-        self.panels.open_host_details();
+        let host = host_id.and_then(|id| self.store.host(id).cloned());
+        if host_id.is_some() && host.is_none() {
+            return;
+        }
+        let memory = host
+            .as_ref()
+            .filter(|h| h.protocol.supports_ai_exec())
+            .and_then(|h| self.read_memory(h.id));
+        let mut form = HostForm::new(window, cx, host.as_ref(), group, memory);
+        if let Some(host) = &host
+            && host.protocol.protocol == Protocol::Ssh
+        {
+            form.fingerprint =
+                crate::ssh_backend::known_hosts().saved_fingerprint(&host.host, host.port);
+        }
+        let initial = form.snapshot(cx);
+        let focus = form.name.read(cx).focus_handle(cx);
+        self.host_form = Some(form);
+        self.modal = Some(Modal::HostProps(HostPropsDialog::new(initial)));
+        window.focus(&focus, cx);
         cx.notify();
     }
-
     fn read_memory(&self, host_id: i64) -> Option<(String, Option<i64>)> {
         let db = self.store.db().ok()?;
         match db.host_memory_get(host_id) {
@@ -333,11 +350,19 @@ impl MainWindow {
 
     // ---- 表单上的动作 ----
 
-    fn with_form(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut HostForm)) {
+    pub(super) fn with_form(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut HostForm)) {
         if let Some(form) = &mut self.host_form {
             f(form);
         }
         cx.notify();
+    }
+
+    /// 直接关掉属性对话框并丢掉表单状态（保存成功、主机被删之后用；取消走 close_modal 的未保存检查）。
+    pub(super) fn close_host_props_now(&mut self) {
+        if matches!(self.modal, Some(Modal::HostProps(_))) {
+            self.modal = None;
+        }
+        self.host_form = None;
     }
 
     /// 切换协议：只换显示哪些字段；端口和用户名框里如果还是上一次自动填的值就跟着新协议的默认值走，
@@ -402,7 +427,19 @@ impl MainWindow {
                 ));
             }
         }
+        self.fit_host_category();
         cx.notify();
+    }
+
+    /// 切协议后，对话框停着的类别如果在新协议下没有了（比如从 SSH 的「安全」切到 Telnet）就回到「常规」。
+    fn fit_host_category(&mut self) {
+        let Some(form) = &self.host_form else {
+            return;
+        };
+        let (protocol, has_memory) = (form.protocol, form.has_memory());
+        if let Some(Modal::HostProps(dialog)) = &mut self.modal {
+            dialog.category = host_props::fit(dialog.category, protocol, has_memory);
+        }
     }
 
     /// 串口设备下拉旁的刷新按钮：重新列一遍本机串口。
@@ -537,7 +574,7 @@ impl MainWindow {
         cx.notify();
     }
 
-    fn host_forget_fingerprint(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn host_forget_fingerprint(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(host) = self.host_form.as_ref().and_then(|f| f.existing.clone()) else {
             return;
         };
@@ -557,27 +594,97 @@ impl MainWindow {
 
     // ---- 保存 / 删除 ----
 
-    /// 保存校验没过：错误挂在对应字段旁边（在折叠的「高级设置」里的字段，顺手展开）；
-    /// 找不到对应字段的显示在表单最下面。
-    fn show_form_error(&mut self, field: FormField, message: &str, cx: &mut Context<Self>) {
+    /// 保存校验没过：错误挂在对应字段旁边，并且自动切到这个字段所在的类别（左侧该类别标红点）；
+    /// 找不到对应字段的显示在对话框底部。
+    fn show_form_error(
+        &mut self,
+        field: FormField,
+        message: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let message = message
             .strip_prefix("输入不合法：")
             .unwrap_or(message)
             .to_owned();
         if let Some(form) = &mut self.host_form {
             form.errors.clear();
-            if matches!(
-                field,
-                FormField::X11 | FormField::TerminalType | FormField::AutoLogin
-            ) {
-                form.advanced_open = true;
-            }
             form.errors.insert(field, message);
+        }
+        if let Some(category) = host_props::category_of(field) {
+            self.host_select_category(category, window, cx);
         }
         cx.notify();
     }
 
+    /// 左侧点了一个类别（或出错自动跳过去）：换右边显示的字段，并把键盘焦点交给这个类别里的第一个输入框
+    /// （没有输入框的类别交给窗口，免得焦点还停在已经不显示的输入框上）。
+    pub(crate) fn host_select_category(
+        &mut self,
+        category: Category,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(form) = &self.host_form else {
+            return;
+        };
+        if !form.categories().contains(&category) {
+            return;
+        }
+        let focus = match category {
+            Category::General => Some(form.name.read(cx).focus_handle(cx)),
+            Category::Auth => Some(form.username.read(cx).focus_handle(cx)),
+            Category::Terminal => Some(form.telnet.terminal_type.read(cx).focus_handle(cx)),
+            Category::Memory => form
+                .memory
+                .as_ref()
+                .map(|memory| memory.input.read(cx).focus_handle(cx)),
+            Category::Connection | Category::SerialParams | Category::Security => None,
+        };
+        if let Some(Modal::HostProps(dialog)) = &mut self.modal {
+            dialog.category = category;
+        }
+        match focus {
+            Some(handle) => window.focus(&handle, cx),
+            None => window.focus(&self.focus, cx),
+        }
+        cx.notify();
+    }
+
+    /// 「确定」：保存并关掉对话框。
     pub(crate) fn host_form_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.host_form_commit(false, window, cx);
+    }
+
+    /// 「确定」（`connect` 为假）/「连接」（为真，保存成功之后立刻用这台主机连接）：
+    /// 校验不过就停在对话框里，不保存也不连接。
+    pub(crate) fn host_form_commit(
+        &mut self,
+        connect: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // AI 记忆框里改了没存：先存（它有自己的存储和校验，出错就停在「AI 记忆」类别里）。
+        if self
+            .host_form
+            .as_ref()
+            .is_some_and(|form| form.memory_dirty(cx))
+        {
+            self.host_memory_save(window, cx, false);
+            let failed = self
+                .host_form
+                .as_ref()
+                .and_then(|form| form.memory.as_ref())
+                .is_some_and(|memory| memory.error.is_some());
+            if failed {
+                self.host_select_category(Category::Memory, window, cx);
+                return;
+            }
+        }
+        self.host_form_save_now(connect, window, cx);
+    }
+
+    fn host_form_save_now(&mut self, connect: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(form) = &self.host_form else {
             return;
         };
@@ -648,7 +755,7 @@ impl MainWindow {
         let plan = match plan_save(&input, existing.as_ref(), self.store.identities(), revealed) {
             Ok(plan) => plan,
             Err(error) => {
-                self.show_form_error(error.field, &error.message, cx);
+                self.show_form_error(error.field, &error.message, window, cx);
                 return;
             }
         };
@@ -679,19 +786,22 @@ impl MainWindow {
         }
         match self.store.save_host(&draft) {
             Ok(saved) => {
-                self.panels.close_host_details();
-                self.host_form = None;
+                self.close_host_props_now();
                 self.focus_content(window, cx);
                 self.tree.selected_host = Some(saved.id);
                 self.notice_success(&format!("已保存主机「{}」", saved.name), window, cx);
                 cx.notify();
+                // 「连接」：保存成功之后立刻连（走和双击一样的入口，X11 提示、密码询问都照常）。
+                if connect {
+                    self.open_host(saved.id, window, cx);
+                }
             }
             Err(err) => {
                 let field = protocol_form::locate_error(&err);
                 if field == FormField::General {
                     self.notice_error(&err, window, cx);
                 }
-                self.show_form_error(field, &err, cx);
+                self.show_form_error(field, &err, window, cx);
             }
         }
     }
@@ -711,8 +821,7 @@ impl MainWindow {
                     .as_ref()
                     .is_some_and(|f| f.host_id == Some(id))
                 {
-                    self.panels.close_host_details();
-                    self.host_form = None;
+                    self.close_host_props_now();
                 }
                 if self.tree.selected_host == Some(id) {
                     self.tree.selected_host = None;
@@ -798,7 +907,7 @@ impl MainWindow {
         });
     }
 
-    /// AI 在对话里改了这些主机的记忆（0.2.14 的 `host-memory-changed`）：主机详情里开着的记忆框跟着刷新。
+    /// AI 在对话里改了这些主机的记忆（0.2.14 的 `host-memory-changed`）：主机属性里开着的记忆框跟着刷新。
     /// 用户正在改的内容（框里和已保存的不一样）不覆盖，只提示「AI 刚更新了记忆」。
     pub(super) fn refresh_memory_from_ai(
         &mut self,
@@ -855,1140 +964,14 @@ impl MainWindow {
         cx.notify();
     }
 
-    // ---- 画 ----
-
-    pub(super) fn host_panel_content(
-        &mut self,
-        tokens: &Tokens,
-        _window: &mut ::gpui::Window,
-        cx: &mut Context<Self>,
-    ) -> PanelContent {
-        let entity = cx.entity();
-        let Some(form) = &self.host_form else {
-            return PanelContent {
-                title: "主机详情".into(),
-                subtitle: None,
-                back: None,
-                actions: Vec::new(),
-                body: div().into_any_element(),
-                footer: None,
-            };
-        };
-        let existing = form.existing.as_ref();
-        let title: SharedString = if existing.is_some() {
-            "主机详情"
-        } else {
-            "新建主机"
-        }
-        .into();
-        let subtitle: SharedString = match existing {
-            Some(host) => protocol_form::host_detail(host).into(),
-            None => "填好之后保存到主机库".into(),
-        };
-        let vis = protocol_form::visible(form.protocol);
-
-        let body = v_flex()
-            .w_full()
-            .gap_4()
-            .child(self.form_basic(form, &entity, tokens))
-            .when(vis.serial, |d| {
-                d.child(self.form_serial(form, &entity, tokens, cx))
-            })
-            .when(vis.address, |d| {
-                d.child(self.form_connection(form, &entity, tokens, cx))
-            })
-            .when(vis.identity, |d| {
-                d.child(self.form_auth(form, &entity, tokens))
-            })
-            .when(vis.proxy, |d| {
-                d.child(self.form_network(form, &entity, tokens))
-            })
-            .child(self.form_group(form, &entity, tokens))
-            .child(self.form_advanced(form, &entity, tokens, cx))
-            .children(
-                vis.memory
-                    .then(|| self.form_memory(form, &entity, tokens, cx))
-                    .flatten(),
-            )
-            .children(
-                form.error_of(FormField::General)
-                    .map(|text| error_note(text.to_owned(), tokens.danger)),
-            )
-            .into_any_element();
-
-        let host_id = form.host_id;
-        let footer = h_flex()
-            .gap_2()
-            .items_center()
-            .when_some(host_id, |d, id| {
-                d.child(div().mr_auto().child(text_button(
-                    "host-delete",
-                    "删除",
-                    ButtonLook::Ghost,
-                    act(&entity, move |this, _window, cx| {
-                        this.ask_delete_host(id, cx)
-                    }),
-                )))
-            })
-            .when(host_id.is_none(), |d| d.child(div().mr_auto()))
-            .child(text_button(
-                "host-cancel",
-                "取消",
-                ButtonLook::Outline,
-                act(&entity, |this, window, cx| {
-                    this.cancel_host_form(window, cx)
-                }),
-            ))
-            .child(text_button(
-                "host-save",
-                "保存",
-                ButtonLook::Primary,
-                act(&entity, |this, window, cx| this.host_form_save(window, cx)),
-            ))
-            .into_any_element();
-
-        PanelContent {
-            title,
-            subtitle: Some(subtitle),
-            back: None,
-            actions: Vec::new(),
-            body,
-            footer: Some(footer),
-        }
-    }
-
-    /// 名称 + 协议分段按钮。
-    fn form_basic(
-        &self,
-        form: &HostForm,
-        entity: &Entity<MainWindow>,
-        tokens: &Tokens,
-    ) -> ::gpui::AnyElement {
-        let editing = form.existing.as_ref().map(|host| host.protocol.protocol);
-        let options: Vec<(String, bool, Option<&'static str>)> = PROTOCOLS
-            .iter()
-            .map(|protocol| {
-                (
-                    protocol.label().to_owned(),
-                    *protocol == form.protocol,
-                    (!protocol_form::can_switch_to(editing, *protocol))
-                        .then_some("串口主机和网络主机不能互相转换，要换类型请新建一台主机"),
-                )
-            })
-            .collect();
-        section(
-            "基本",
-            vec![
-                field_with_error(
-                    "名称",
-                    None,
-                    Input::new(&form.name),
-                    form.error_of(FormField::Name),
-                    tokens,
-                )
-                .into_any_element(),
-                field(
-                    "协议",
-                    None,
-                    segmented(
-                        "host-protocol",
-                        options,
-                        pick(entity, move |this, index, window, cx| {
-                            if let Some(protocol) = PROTOCOLS.get(index).copied() {
-                                this.host_set_protocol(protocol, window, cx);
-                            }
-                        }),
-                    ),
-                    tokens,
-                )
-                .into_any_element(),
-            ],
-            tokens,
-        )
-        .into_any_element()
-    }
-
-    /// 分组下拉。
-    fn form_group(
-        &self,
-        form: &HostForm,
-        entity: &Entity<MainWindow>,
-        tokens: &Tokens,
-    ) -> ::gpui::AnyElement {
-        let flat = self.store.flat();
-        let groups = self.store.groups();
-        let ordered = flatten_groups(groups);
-        let mut group_choices = vec![Choice::new(
-            ungrouped_option_label(flat),
-            form.group.is_none(),
-        )];
-        let mut group_targets: Vec<Option<i64>> = vec![None];
-        for (group, depth) in &ordered {
-            group_choices
-                .push(Choice::new(group.name.clone(), form.group == Some(group.id)).depth(*depth));
-            group_targets.push(Some(group.id));
-        }
-        let group_label = form
-            .group
-            .and_then(|id| groups.iter().find(|g| g.id == id))
-            .map_or_else(
-                || ungrouped_option_label(flat).to_owned(),
-                |g| g.name.clone(),
-            );
-        section(
-            "分组",
-            vec![
-                select(
-                    "host-group",
-                    group_label,
-                    group_choices,
-                    pick(entity, move |this, index, _window, cx| {
-                        if let Some(target) = group_targets.get(index).copied() {
-                            this.with_form(cx, |form| form.group = target);
-                        }
-                    }),
-                )
-                .into_any_element(),
-            ],
-            tokens,
-        )
-        .into_any_element()
-    }
-
-    /// SSH / Telnet 的连接：地址、端口、用户名、密码。
-    fn form_connection(
-        &self,
-        form: &HostForm,
-        entity: &Entity<MainWindow>,
-        tokens: &Tokens,
-        cx: &App,
-    ) -> ::gpui::AnyElement {
-        let existing = form.existing.as_ref();
-        let identity = form
-            .identity
-            .and_then(|id| self.store.identities().iter().find(|item| item.id == id));
-        let auth = if form.protocol == Protocol::Ssh {
-            form.auth
-        } else {
-            AuthMethod::Password
-        };
-        let revealable = can_reveal(identity, auth);
-        let has_text = !form.password.read(cx).value().is_empty();
-        let eye = (revealable || has_text).then(|| {
-            Button::new("host-password-eye")
-                .ghost()
-                .compact()
-                .icon(if form.password_shown {
-                    IconName::EyeOff
-                } else {
-                    IconName::Eye
-                })
-                .tooltip(if form.password_shown {
-                    "隐藏密码"
-                } else {
-                    "显示密码"
-                })
-                .on_click(act(entity, |this, window, cx| {
-                    this.host_toggle_password(window, cx)
-                }))
-        });
-        let hint = password_hint(
-            existing.is_some(),
-            identity.is_some_and(|item| item.has_secret),
-        );
-        let telnet = form.protocol == Protocol::Telnet;
-        section(
-            "连接",
-            vec![
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .items_start()
-                    .child(div().flex_1().min_w_0().child(field_with_error(
-                        "地址",
-                        None,
-                        Input::new(&form.address),
-                        form.error_of(FormField::Address),
-                        tokens,
-                    )))
-                    .child(
-                        div()
-                            .w(::gpui::px(88.0))
-                            .flex_none()
-                            .child(field_with_error(
-                                "端口",
-                                None,
-                                Input::new(&form.port),
-                                form.error_of(FormField::Port),
-                                tokens,
-                            )),
-                    )
-                    .into_any_element(),
-                field_with_error(
-                    "用户名",
-                    telnet.then(|| "可以不填".to_owned()),
-                    Input::new(&form.username),
-                    form.error_of(FormField::Username),
-                    tokens,
-                )
-                .into_any_element(),
-                field_with_error(
-                    "密码",
-                    Some(if telnet {
-                        format!("{hint}；开了自动登录才会用到")
-                    } else {
-                        hint.to_owned()
-                    }),
-                    h_flex()
-                        .w_full()
-                        .gap_1()
-                        .items_center()
-                        .child(div().flex_1().min_w_0().child(Input::new(&form.password)))
-                        .children(eye),
-                    form.error_of(FormField::Password),
-                    tokens,
-                )
-                .into_any_element(),
-                switch_row(
-                    "host-remember",
-                    "没有选凭据时，把密码存成一条新凭据",
-                    None,
-                    form.remember,
-                    {
-                        let entity = entity.clone();
-                        move |_window, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.with_form(cx, |form| form.remember = !form.remember);
-                            });
-                        }
-                    },
-                    tokens,
-                )
-                .into_any_element(),
-            ],
-            tokens,
-        )
-        .into_any_element()
-    }
-
-    /// 认证：SSH 选认证方式 + 凭据；Telnet 只有密码凭据（可选）。
-    fn form_auth(
-        &self,
-        form: &HostForm,
-        entity: &Entity<MainWindow>,
-        tokens: &Tokens,
-    ) -> ::gpui::AnyElement {
-        let vis = protocol_form::visible(form.protocol);
-        let effective = if vis.auth_method {
-            form.auth
-        } else {
-            AuthMethod::Password
-        };
-        let identity = form
-            .identity
-            .and_then(|id| self.store.identities().iter().find(|item| item.id == id));
-        let auth_methods = [AuthMethod::Password, AuthMethod::Key, AuthMethod::Agent];
-        let auth_choices: Vec<Choice> = auth_methods
-            .iter()
-            .map(|m| Choice::new(auth_label(*m), *m == form.auth))
-            .collect();
-        let fitting: Vec<&zssh_core::model::Identity> = self
-            .store
-            .identities()
-            .iter()
-            .filter(|item| identity_fits_auth(item.kind, effective))
-            .collect();
-        let describe = |item: &zssh_core::model::Identity| {
-            format!(
-                "{}{}",
-                item.name,
-                if item.has_secret {
-                    ""
-                } else {
-                    "（没有密码）"
-                }
-            )
-        };
-        let mut identity_choices = vec![Choice::new("不用", form.identity.is_none())];
-        let mut identity_targets: Vec<Option<i64>> = vec![None];
-        for item in &fitting {
-            identity_choices.push(Choice::new(describe(item), form.identity == Some(item.id)));
-            identity_targets.push(Some(item.id));
-        }
-        let identity_label = identity.map_or_else(|| "不用".to_owned(), describe);
-        let mut rows: Vec<::gpui::AnyElement> = Vec::new();
-        if vis.auth_method {
-            rows.push(
-                field(
-                    "认证方式",
-                    None,
-                    select(
-                        "host-auth",
-                        auth_label(form.auth),
-                        auth_choices,
-                        pick(entity, move |this, index, window, cx| {
-                            if let Some(method) = auth_methods.get(index).copied() {
-                                this.host_set_auth(method, window, cx);
-                            }
-                        }),
-                    ),
-                    tokens,
-                )
-                .into_any_element(),
-            );
-        }
-        rows.push(
-            v_flex()
-                .gap_1p5()
-                .child(field_with_error(
-                    "保存的凭据",
-                    (form.protocol == Protocol::Telnet).then(|| "可选，只能选密码凭据".to_owned()),
-                    select(
-                        "host-identity",
-                        identity_label,
-                        identity_choices,
-                        pick(entity, move |this, index, window, cx| {
-                            if let Some(target) = identity_targets.get(index).copied() {
-                                this.host_set_identity(target, window, cx);
-                            }
-                        }),
-                    ),
-                    form.error_of(FormField::Identity),
-                    tokens,
-                ))
-                .children(
-                    form.mismatch_note
-                        .clone()
-                        .map(|text| error_note(text, tokens.danger)),
-                )
-                .into_any_element(),
-        );
-        section("认证", rows, tokens).into_any_element()
-    }
-
-    /// 网络：代理和跳板机（跳板机只能选 SSH 主机）。
-    fn form_network(
-        &self,
-        form: &HostForm,
-        entity: &Entity<MainWindow>,
-        tokens: &Tokens,
-    ) -> ::gpui::AnyElement {
-        let proxies = self.store.proxies();
-        let modes = [ProxyMode::Default, ProxyMode::None, ProxyMode::Custom];
-        let mode_choices: Vec<Choice> = modes
-            .iter()
-            .map(|m| Choice::new(proxy_mode_label(*m), *m == form.proxy_mode))
-            .collect();
-        let mut proxy_choices = vec![Choice::new("（请选择）", form.proxy.is_none())];
-        let mut proxy_targets: Vec<Option<i64>> = vec![None];
-        for item in proxies {
-            proxy_choices.push(Choice::new(
-                format!(
-                    "{}（{}）",
-                    item.name,
-                    crate::proxies_demo::kind_label(item.kind)
-                ),
-                form.proxy == Some(item.id),
-            ));
-            proxy_targets.push(Some(item.id));
-        }
-        let proxy_label = form
-            .proxy
-            .and_then(|id| proxies.iter().find(|p| p.id == id))
-            .map_or_else(
-                || "（请选择）".to_owned(),
-                |p| format!("{}（{}）", p.name, crate::proxies_demo::kind_label(p.kind)),
-            );
-        // 跳板机只能是 SSH 主机（Telnet / 串口主机不能当跳板）。
-        let others: Vec<&Host> = self
-            .store
-            .hosts()
-            .iter()
-            .filter(|item| Some(item.id) != form.host_id && item.protocol.protocol == Protocol::Ssh)
-            .collect();
-        let mut jump_choices = vec![Choice::new("不使用", form.jump.is_none())];
-        let mut jump_targets: Vec<Option<i64>> = vec![None];
-        for item in &others {
-            jump_choices.push(Choice::new(item.name.clone(), form.jump == Some(item.id)));
-            jump_targets.push(Some(item.id));
-        }
-        let jump_label = form
-            .jump
-            .and_then(|id| others.iter().find(|h| h.id == id))
-            .map_or_else(|| "不使用".to_owned(), |h| h.name.clone());
-        let mut network = vec![
-            field_with_error(
-                "代理",
-                None,
-                select(
-                    "host-proxy-mode",
-                    proxy_mode_label(form.proxy_mode),
-                    mode_choices,
-                    pick(entity, move |this, index, _window, cx| {
-                        if let Some(mode) = modes.get(index).copied() {
-                            this.with_form(cx, |form| form.proxy_mode = mode);
-                        }
-                    }),
-                ),
-                form.error_of(FormField::Proxy),
-                tokens,
-            )
-            .into_any_element(),
-        ];
-        if form.proxy_mode == ProxyMode::Custom {
-            network.push(
-                v_flex()
-                    .gap_1p5()
-                    .child(field(
-                        "用哪个代理",
-                        None,
-                        select(
-                            "host-proxy",
-                            proxy_label,
-                            proxy_choices,
-                            pick(entity, move |this, index, _window, cx| {
-                                if let Some(target) = proxy_targets.get(index).copied() {
-                                    this.with_form(cx, |form| form.proxy = target);
-                                }
-                            }),
-                        ),
-                        tokens,
-                    ))
-                    .when(proxies.is_empty(), |d| {
-                        d.child(note(
-                            "还没有代理，点下面的「新建 / 管理代理」添加一个。",
-                            tokens,
-                        ))
-                    })
-                    .child(
-                        Button::new("host-manage-proxies")
-                            .outline()
-                            .compact()
-                            .icon(IconName::Network)
-                            .label("新建 / 管理代理")
-                            .on_click(act(entity, |this, window, cx| {
-                                this.manage_proxies_from_host_form(window, cx);
-                            })),
-                    )
-                    .into_any_element(),
-            );
-        }
-        network.push(
-            field_with_error(
-                "跳板机",
-                Some("只能选 SSH 主机".to_owned()),
-                select(
-                    "host-jump",
-                    jump_label,
-                    jump_choices,
-                    pick(entity, move |this, index, _window, cx| {
-                        if let Some(target) = jump_targets.get(index).copied() {
-                            this.with_form(cx, |form| form.jump = target);
-                        }
-                    }),
-                ),
-                form.error_of(FormField::Jump),
-                tokens,
-            )
-            .into_any_element(),
-        );
-        section("网络", network, tokens).into_any_element()
-    }
-
-    /// 串口：设备（本机列表 + 刷新 / 手填）、波特率、数据位 / 校验位 / 停止位。
-    fn form_serial(
-        &self,
-        form: &HostForm,
-        entity: &Entity<MainWindow>,
-        tokens: &Tokens,
-        cx: &App,
-    ) -> ::gpui::AnyElement {
-        let serial = &form.serial;
-        let device_text = serial.device.read(cx).value().to_string();
-        let listed = serial
-            .ports
-            .iter()
-            .any(|port| port.device.eq_ignore_ascii_case(device_text.trim()));
-        // 没有串口、选了「手动输入」、或框里的设备不在列表里（拔掉了 / 以前手填的）：显示文字框。
-        let manual =
-            serial.manual || serial.ports.is_empty() || (!device_text.trim().is_empty() && !listed);
-        let ports = serial.ports.clone();
-        let mut choices: Vec<Choice> = ports
-            .iter()
-            .map(|port| {
-                Choice::new(
-                    port.label.clone(),
-                    port.device.eq_ignore_ascii_case(device_text.trim()),
-                )
-            })
-            .collect();
-        choices.push(Choice::new("手动输入…", manual && !ports.is_empty()));
-        let picker: ::gpui::AnyElement = if ports.is_empty() {
-            Button::new("serial-device-none")
-                .outline()
-                .label("未检测到串口")
-                .w_full()
-                .disabled(true)
-                .into_any_element()
-        } else {
-            let devices: Vec<String> = ports.iter().map(|port| port.device.clone()).collect();
-            select(
-                "serial-device",
-                protocol_form::device_button_label(&device_text, &ports),
-                choices,
-                pick(entity, move |this, index, window, cx| {
-                    match devices.get(index) {
-                        Some(device) => this.host_pick_port(device, window, cx),
-                        None => this.with_form(cx, |form| form.serial.manual = true),
-                    }
-                }),
-            )
-            .into_any_element()
-        };
-        let device_control = v_flex()
-            .w_full()
-            .gap_1p5()
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_1()
-                    .items_center()
-                    .child(div().flex_1().min_w_0().child(picker))
-                    .child(
-                        Button::new("serial-refresh")
-                            .outline()
-                            .compact()
-                            .icon(IconName::RefreshCw)
-                            .tooltip("刷新串口列表")
-                            .on_click(act(entity, |this, _window, cx| this.host_refresh_ports(cx))),
-                    ),
-            )
-            .when(manual, |d| d.child(Input::new(&serial.device)))
-            .when(ports.is_empty(), |d| {
-                d.child(note(
-                    "没有检测到串口，可以直接填设备名（例如 COM3）；插上设备后点右边的刷新。",
-                    tokens,
-                ))
-            });
-        let baud_choices: Vec<Choice> = COMMON_BAUD_RATES
-            .iter()
-            .map(|rate| Choice::new(rate.to_string(), false))
-            .collect();
-        let baud_control = h_flex()
-            .w_full()
-            .gap_1()
-            .items_center()
-            .child(div().flex_1().min_w_0().child(Input::new(&serial.baud)))
-            .child(div().w(::gpui::px(104.0)).flex_none().child(select(
-                "serial-baud-common",
-                "常用值",
-                baud_choices,
-                pick(entity, move |this, index, window, cx| {
-                    if let Some(rate) = COMMON_BAUD_RATES.get(index).copied() {
-                        this.host_set_baud(rate, window, cx);
-                    }
-                }),
-            )));
-        let framing = h_flex()
-            .w_full()
-            .gap_2()
-            .items_start()
-            .child(div().flex_1().min_w_0().child(field(
-                "数据位",
-                None,
-                enum_select(
-                    "serial-data-bits",
-                    entity,
-                    serial.data_bits,
-                    &DATA_BITS,
-                    protocol_form::data_bits_label,
-                    |form, value| form.serial.data_bits = value,
-                ),
-                tokens,
-            )))
-            .child(div().flex_1().min_w_0().child(field(
-                "校验位",
-                None,
-                enum_select(
-                    "serial-parity",
-                    entity,
-                    serial.parity,
-                    &PARITIES,
-                    protocol_form::parity_label,
-                    |form, value| form.serial.parity = value,
-                ),
-                tokens,
-            )))
-            .child(div().flex_1().min_w_0().child(field(
-                "停止位",
-                None,
-                enum_select(
-                    "serial-stop-bits",
-                    entity,
-                    serial.stop_bits,
-                    &STOP_BITS,
-                    protocol_form::stop_bits_label,
-                    |form, value| form.serial.stop_bits = value,
-                ),
-                tokens,
-            )));
-        section(
-            "串口",
-            vec![
-                field_with_error(
-                    "设备",
-                    None,
-                    device_control,
-                    form.error_of(FormField::Device),
-                    tokens,
-                )
-                .into_any_element(),
-                field_with_error(
-                    "波特率",
-                    Some("可以直接填别的数值".to_owned()),
-                    baud_control,
-                    form.error_of(FormField::Baud),
-                    tokens,
-                )
-                .into_any_element(),
-                v_flex()
-                    .gap_1p5()
-                    .child(framing)
-                    .children(
-                        form.error_of(FormField::Framing)
-                            .map(|text| error_note(text.to_owned(), tokens.danger)),
-                    )
-                    .into_any_element(),
-            ],
-            tokens,
-        )
-        .into_any_element()
-    }
-
-    /// 可折叠的「高级设置」：SSH 是 X11 / 旧算法 / 主机指纹，Telnet 是回车 / 回显 / NAWS / 终端类型 /
-    /// 编码 / 自动登录 / 纯 TCP，串口是流控 / 换行 / 本地回显 / 编码。
-    fn form_advanced(
-        &self,
-        form: &HostForm,
-        entity: &Entity<MainWindow>,
-        tokens: &Tokens,
-        cx: &App,
-    ) -> ::gpui::AnyElement {
-        let toggle = {
-            let entity = entity.clone();
-            collapse_header(
-                "host-advanced-toggle",
-                "高级设置",
-                form.advanced_open,
-                move |_window, cx| {
-                    entity.update(cx, |this, cx| {
-                        this.with_form(cx, |form| form.advanced_open = !form.advanced_open);
-                    });
-                },
-                tokens,
-            )
-        };
-        if !form.advanced_open {
-            return v_flex().w_full().child(toggle).into_any_element();
-        }
-        let toggle_row = |id: &'static str,
-                          title: &'static str,
-                          hint: Option<&'static str>,
-                          checked: bool,
-                          set: fn(&mut HostForm, bool)| {
-            let entity = entity.clone();
-            switch_row(
-                id,
-                title,
-                hint.map(str::to_owned),
-                checked,
-                move |_window, cx| {
-                    entity.update(cx, |this, cx| {
-                        this.with_form(cx, |form| set(form, !checked));
-                    });
-                },
-                tokens,
-            )
-            .into_any_element()
-        };
-        let mut rows: Vec<::gpui::AnyElement> = Vec::new();
-        match form.protocol {
-            Protocol::Ssh => {
-                rows.push(toggle_row(
-                    "host-x11",
-                    "X11 转发",
-                    Some("把远程图形程序显示在本机的 X 服务器上（如 VcXsrv）；本机没有时连接会提示安装。"),
-                    form.x11,
-                    |form, value| form.x11 = value,
-                ));
-                if let Some(text) = form.error_of(FormField::X11) {
-                    rows.push(error_note(text.to_owned(), tokens.danger).into_any_element());
-                }
-                rows.push(
-                    v_flex()
-                        .w_full()
-                        .gap_2()
-                        .p_3()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(tokens.border)
-                        .child(toggle_row(
-                            "host-legacy",
-                            "旧算法兼容",
-                            None,
-                            form.legacy,
-                            |form, value| form.legacy = value,
-                        ))
-                        .child(error_note(
-                            "仅用于老服务器：允许 SHA1 签名的 ssh-rsa、老的密钥交换和 CBC 加密。安全性较低，只在这台机器连不上、并且确认对方是老系统时才打开。",
-                            tokens.danger,
-                        ))
-                        .into_any_element(),
-                );
-                rows.push(self.fingerprint_box(form, entity, tokens));
-            }
-            Protocol::Telnet => {
-                rows.extend(self.telnet_advanced(form, entity, tokens, &toggle_row))
-            }
-            Protocol::Serial => {
-                let serial = &form.serial;
-                rows.push(
-                    field(
-                        "流控",
-                        None,
-                        enum_select(
-                            "serial-flow",
-                            entity,
-                            serial.flow_control,
-                            &FLOW_CONTROLS,
-                            protocol_form::flow_control_label,
-                            |form, value| form.serial.flow_control = value,
-                        ),
-                        tokens,
-                    )
-                    .into_any_element(),
-                );
-                rows.push(
-                    field(
-                        "换行发送模式",
-                        Some("按回车键时发送什么".to_owned()),
-                        enum_select(
-                            "serial-newline",
-                            entity,
-                            serial.newline,
-                            &SERIAL_NEWLINES,
-                            protocol_form::serial_newline_label,
-                            |form, value| form.serial.newline = value,
-                        ),
-                        tokens,
-                    )
-                    .into_any_element(),
-                );
-                rows.push(toggle_row(
-                    "serial-echo",
-                    "本地回显",
-                    Some("设备自己不回显键入的字符时打开"),
-                    serial.local_echo,
-                    |form, value| form.serial.local_echo = value,
-                ));
-                rows.push(
-                    field(
-                        "编码",
-                        None,
-                        enum_select(
-                            "serial-encoding",
-                            entity,
-                            serial.encoding,
-                            &ENCODINGS,
-                            protocol_form::encoding_label,
-                            |form, value| form.serial.encoding = value,
-                        ),
-                        tokens,
-                    )
-                    .into_any_element(),
-                );
-            }
-        }
-        let _ = cx;
-        v_flex()
-            .w_full()
-            .gap_2()
-            .child(toggle)
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap_3()
-                    .p_3()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(tokens.border)
-                    .children(rows),
-            )
-            .into_any_element()
-    }
-
-    fn fingerprint_box(
-        &self,
-        form: &HostForm,
-        entity: &Entity<MainWindow>,
-        tokens: &Tokens,
-    ) -> ::gpui::AnyElement {
-        v_flex()
-            .w_full()
-            .gap_2()
-            .p_3()
-            .rounded_md()
-            .border_1()
-            .border_color(tokens.border)
-            .child(note("已保存的主机指纹", tokens))
-            .child(match form.existing.as_ref() {
-                Some(_) => v_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_family("Consolas")
-                            .text_color(if form.fingerprint.is_some() {
-                                tokens.text
-                            } else {
-                                tokens.text_muted
-                            })
-                            .child(SharedString::from(
-                                form.fingerprint
-                                    .clone()
-                                    .unwrap_or_else(|| "（没有保存，下次连接会问）".to_owned()),
-                            )),
-                    )
-                    .child(
-                        Button::new("host-forget-fingerprint")
-                            .outline()
-                            .compact()
-                            .label("清除已保存的指纹")
-                            .on_click(act(entity, |this, window, cx| {
-                                this.host_forget_fingerprint(window, cx);
-                            })),
-                    )
-                    .child(note(
-                        "服务器换过密钥（比如重装系统）时用；如果是被人冒充，先查清楚原因再清。",
-                        tokens,
-                    ))
-                    .into_any_element(),
-                None => note("保存之后才能看到。", tokens).into_any_element(),
-            })
-            .into_any_element()
-    }
-
-    /// Telnet 高级设置里的各行。
-    fn telnet_advanced(
-        &self,
-        form: &HostForm,
-        entity: &Entity<MainWindow>,
-        tokens: &Tokens,
-        toggle_row: &ToggleRow,
-    ) -> Vec<::gpui::AnyElement> {
-        let telnet = &form.telnet;
-        let mut rows: Vec<::gpui::AnyElement> = vec![
-            field(
-                "回车模式",
-                Some("按回车键时发送什么".to_owned()),
-                enum_select(
-                    "telnet-newline",
-                    entity,
-                    telnet.newline,
-                    &TELNET_NEWLINES,
-                    protocol_form::telnet_newline_label,
-                    |form, value| form.telnet.newline = value,
-                ),
-                tokens,
-            )
-            .into_any_element(),
-            field(
-                "本地回显",
-                None,
-                enum_select(
-                    "telnet-echo",
-                    entity,
-                    telnet.local_echo,
-                    &LOCAL_ECHOES,
-                    protocol_form::local_echo_label,
-                    |form, value| form.telnet.local_echo = value,
-                ),
-                tokens,
-            )
-            .into_any_element(),
-            toggle_row(
-                "telnet-naws",
-                "NAWS（把窗口大小告诉服务器）",
-                None,
-                telnet.naws,
-                |form, value| form.telnet.naws = value,
-            ),
-            field_with_error(
-                "终端类型",
-                Some("回应服务器的 TTYPE 协商".to_owned()),
-                Input::new(&telnet.terminal_type),
-                form.error_of(FormField::TerminalType),
-                tokens,
-            )
-            .into_any_element(),
-            field(
-                "编码",
-                None,
-                enum_select(
-                    "telnet-encoding",
-                    entity,
-                    telnet.encoding,
-                    &ENCODINGS,
-                    protocol_form::encoding_label,
-                    |form, value| form.telnet.encoding = value,
-                ),
-                tokens,
-            )
-            .into_any_element(),
-            toggle_row(
-                "telnet-auto-login",
-                "自动登录",
-                Some(
-                    "看到用户名 / 密码提示就自动发送；用户名取上面的「用户名」，密码取选中的凭据或上面输入的密码。",
-                ),
-                telnet.auto_login,
-                |form, value| form.telnet.auto_login = value,
-            ),
-        ];
-        if telnet.auto_login {
-            rows.push(
-                v_flex()
-                    .gap_2()
-                    .child(field(
-                        "用户名提示",
-                        Some("逗号分隔，不区分大小写".to_owned()),
-                        Input::new(&telnet.username_prompts),
-                        tokens,
-                    ))
-                    .child(field(
-                        "密码提示",
-                        Some("逗号分隔，不区分大小写".to_owned()),
-                        Input::new(&telnet.password_prompts),
-                        tokens,
-                    ))
-                    .into_any_element(),
-            );
-        }
-        if let Some(text) = form.error_of(FormField::AutoLogin) {
-            rows.push(error_note(text.to_owned(), tokens.danger).into_any_element());
-        }
-        rows.push(toggle_row(
-            "telnet-raw-tcp",
-            "纯 TCP 模式",
-            Some("不做任何 Telnet 协商，连的是裸 TCP 服务（设备调试口、netcat）时用"),
-            telnet.raw_tcp,
-            |form, value| form.telnet.raw_tcp = value,
-        ));
-        rows
-    }
-
-    /// AI 记忆小节（只有 SSH 主机有）。
-    fn form_memory(
-        &self,
-        form: &HostForm,
-        entity: &Entity<MainWindow>,
-        tokens: &Tokens,
-        cx: &App,
-    ) -> Option<::gpui::AnyElement> {
-        let memory = form.memory.as_ref()?;
-        let current = memory.input.read(cx).value().to_string();
-        let dirty = current != memory.saved;
-        let length = current.chars().count();
-        let stamp = memory
-            .updated_at
-            .map(|at| crate::hosts_demo::memory_summary(Some(at), crate::hosts_demo::now_unix()))
-            .unwrap_or_default();
-        Some(
-            section(
-                "AI 记忆",
-                vec![v_flex()
-                    .gap_2()
-                    .child(note(
-                        "AI 排查这台主机时记下的笔记（服务、配置位置、处理过的问题、待办），下次对话会带上。「全部放行」模式下不带。只存在这台电脑上。",
-                        tokens,
-                    ))
-                    .child(Textarea::new(&memory.input))
-                    .children(memory.error.clone().map(|e| error_note(e, tokens.danger)))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .typo(Role::Caption, tokens)
-                                    .child(SharedString::from(format!(
-                                        "{stamp}{}",
-                                        if length > 0 {
-                                            format!(" · {length}/{MAX_MEMORY_CHARS}")
-                                        } else {
-                                            String::new()
-                                        }
-                                    ))),
-                            )
-                            .when(!memory.saved.is_empty(), |d| {
-                                d.child(text_button(
-                                    "host-memory-clear",
-                                    "清空",
-                                    ButtonLook::Ghost,
-                                    act(entity, |this, window, cx| this.host_memory_save(window, cx, true)),
-                                ))
-                            })
-                            .child(
-                                text_button(
-                                    "host-memory-save",
-                                    "保存记忆",
-                                    ButtonLook::Outline,
-                                    act(entity, |this, window, cx| this.host_memory_save(window, cx, false)),
-                                )
-                                .disabled(!dirty),
-                            ),
-                    )
-                    .into_any_element()],
-                tokens,
-            )
-            .into_any_element(),
-        )
-    }
-
-    /// 「取消」：丢掉编辑，收起面板。
-    pub(crate) fn cancel_host_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.panels.close_host_details();
-        self.host_form = None;
-        self.focus_content(window, cx);
-        cx.notify();
-    }
-
-    /// 主机详情里「新建 / 管理代理」：盖上代理面板，返回键回到这里。
-    fn manage_proxies_from_host_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let none_yet = self.store.proxies().is_empty();
-        self.proxy_ui.from_host_form = true;
-        self.panels.open_side(PROXIES);
-        self.proxy_start_creating_if(none_yet, window, cx);
-        cx.notify();
-    }
-
-    /// 代理面板的返回键 / ✕（从主机详情进来的）：回到主机详情，没保存的编辑还在。
-    pub(crate) fn back_to_host_details(&mut self, cx: &mut Context<Self>) {
-        self.proxy_ui.from_host_form = false;
-        self.panels.close_side();
-        cx.notify();
-    }
-
-    /// 代理面板里新建了代理：主机详情自动选中它（不用再去下拉框里找）。
+    /// 对话框里「新建代理…」保存成功：主机表单自动选中它（不用再去下拉框里找），没保存的编辑原样留着。
     pub(crate) fn host_form_adopt_proxy(&mut self, proxy_id: i64) {
         if let Some(form) = &mut self.host_form {
             form.proxy_mode = ProxyMode::Custom;
             form.proxy = Some(proxy_id);
         }
     }
-
-    /// 主机详情的某个字段在被调试脚本 / 测试读：名称输入框当前的文字。
+    /// 主机属性的某个字段在被调试脚本 / 测试读：名称输入框当前的文字。
     #[allow(dead_code)]
     pub(crate) fn host_form_name(&self, cx: &App) -> Option<String> {
         self.host_form

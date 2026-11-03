@@ -486,7 +486,7 @@ impl MainWindow {
             .when(count == 0 && !ui.editing(), |d| {
                 d.child(empty_state(
                     "暂无凭据",
-                    Some("在主机详情里填密码时勾选「存成凭据」，也会出现在这里。"),
+                    Some("在主机属性里填密码时勾选「存成凭据」，也会出现在这里。"),
                     Some(
                         text_button(
                             "identity-empty-new",

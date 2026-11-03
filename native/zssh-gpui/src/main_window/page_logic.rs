@@ -481,7 +481,7 @@ pub fn ungrouped_label(flat: bool) -> &'static str {
     if flat { "顶层" } else { "未分组" }
 }
 
-/// 主机详情里分组下拉的第一项。
+/// 主机属性对话框里分组下拉的第一项。
 pub fn ungrouped_option_label(flat: bool) -> &'static str {
     if flat { "（顶层）" } else { "未分组" }
 }

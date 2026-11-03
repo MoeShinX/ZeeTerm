@@ -6,9 +6,8 @@
 //! 拿同一份 [`PanelContent`] 画在整页里（凭据、快捷命令、代理、端口转发），所以这些面板的列表 / 表单
 //! 只有一份实现。
 //!
-//! 谁盖谁（同 0.2.14 的 `hostPanel` + `sidePanel` 两层）：主机详情单独一层；代理（从主机详情进来管理）/
-//! 快捷命令（终端命令栏的「管理」「新建」「编辑」）这类侧栏另一层，开着侧栏时主机详情只是被藏到下面
-//! （里面没保存的编辑还在），关掉侧栏回来；打开主机详情会先把侧栏收掉。
+//! 现在只剩一个面板：快捷命令（终端命令栏的「管理」「新建」「编辑」）。V2-U7 起主机的编辑 / 新建不再是
+//! 右侧面板，改成居中的「属性」对话框（`host_dialog`），代理管理也只在「管理 + 设置」页里。
 
 use ::gpui::{MouseButton, SharedString, px};
 use gpui_kit::component::*;
@@ -25,41 +24,21 @@ use crate::typography::{Role, Typo as _};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PanelId(pub &'static str);
 
-pub const HOST_DETAILS: PanelId = PanelId("host-details");
-pub const PROXIES: PanelId = PanelId("proxies");
 pub const QUICK_COMMANDS: PanelId = PanelId("quick-commands");
 
 /// 哪些面板开着。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PanelState {
-    /// 主机详情（新建 / 编辑）开着。
-    host: bool,
-    /// 凭据 / 代理 / 转发这类侧栏。
     side: Option<PanelId>,
 }
 
 impl PanelState {
-    /// 屏幕上现在显示哪个：侧栏盖在主机详情上面。
+    /// 屏幕上现在显示哪个。
     pub fn visible(self) -> Option<PanelId> {
-        self.side.or(self.host.then_some(HOST_DETAILS))
+        self.side
     }
 
-    pub fn host_details_open(self) -> bool {
-        self.host
-    }
-
-    /// 打开主机详情：先把侧栏收掉，再显示它。
-    pub fn open_host_details(&mut self) {
-        self.side = None;
-        self.host = true;
-    }
-
-    /// 关掉主机详情（保存、删除、取消之后）。
-    pub fn close_host_details(&mut self) {
-        self.host = false;
-    }
-
-    /// 打开某个侧栏；已经开着别的就换成它。
+    /// 打开某个面板；已经开着别的就换成它。
     pub fn open_side(&mut self, id: PanelId) {
         self.side = Some(id);
     }
@@ -68,23 +47,16 @@ impl PanelState {
         self.side = None;
     }
 
-    /// ✕ 和 Esc：关掉屏幕上显示的那个；返回关掉了谁。侧栏关掉后，下面的主机详情重新露出来。
+    /// ✕ 和 Esc：关掉屏幕上显示的那个；返回关掉了谁。
     pub fn close_visible(&mut self) -> Option<PanelId> {
-        let shown = self.visible()?;
-        if self.side.is_some() {
-            self.side = None;
-        } else {
-            self.host = false;
-        }
-        Some(shown)
+        self.side.take()
     }
 }
-
 /// 一个面板交给外壳的内容。
 pub struct PanelContent {
     pub title: SharedString,
     pub subtitle: Option<SharedString>,
-    /// 标题前面的返回键（从主机详情进代理管理时回主机详情）。
+    /// 标题前面的返回键（暂时没有面板用到）。
     pub back: Option<AnyElement>,
     /// 标题栏右边、✕ 前面的按钮。
     pub actions: Vec<AnyElement>,
@@ -114,15 +86,7 @@ impl MainWindow {
 
     /// 关掉屏幕上的面板（✕、Esc）。
     pub(crate) fn close_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.proxy_ui.from_host_form && self.panels.visible() == Some(PROXIES) {
-            // 从主机详情进来的代理管理：✕ 和返回键一样回到主机详情。
-            self.back_to_host_details(cx);
-            return;
-        }
         if self.panels.close_visible().is_some() {
-            if !self.panels.host_details_open() {
-                self.host_form = None;
-            }
             self.focus_content(window, cx);
             cx.notify();
         }
@@ -140,8 +104,6 @@ impl MainWindow {
         }
         let id = self.panels.visible()?;
         let content = match id {
-            HOST_DETAILS => self.host_panel_content(tokens, window, cx),
-            PROXIES => self.proxy_panel_content(tokens, window, cx),
             QUICK_COMMANDS => self.quick_panel_content(tokens, window, cx),
             _ => return None,
         };
@@ -297,47 +259,25 @@ impl MainWindow {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{HOST_DETAILS, PROXIES, PanelState, QUICK_COMMANDS};
+    use super::{PanelState, QUICK_COMMANDS};
 
     #[test]
-    fn nothing_is_open_at_first_and_opening_host_details_shows_it() {
+    fn nothing_is_open_at_first_and_opening_a_panel_shows_it() {
         let mut state = PanelState::default();
         assert_eq!(state.visible(), None);
-        state.open_host_details();
-        assert_eq!(state.visible(), Some(HOST_DETAILS));
-        assert!(state.host_details_open());
+        state.open_side(QUICK_COMMANDS);
+        assert_eq!(state.visible(), Some(QUICK_COMMANDS));
     }
 
     #[test]
-    fn a_side_panel_covers_the_host_details_without_closing_them() {
+    fn closing_the_visible_panel_leaves_nothing_open() {
         let mut state = PanelState::default();
-        state.open_host_details();
-        state.open_side(QUICK_COMMANDS);
-        assert_eq!(state.visible(), Some(QUICK_COMMANDS), "侧栏盖在上面");
-        assert!(state.host_details_open(), "主机详情只是藏在下面，没丢");
-        assert_eq!(state.close_visible(), Some(QUICK_COMMANDS));
-        assert_eq!(
-            state.visible(),
-            Some(HOST_DETAILS),
-            "关掉侧栏，主机详情重新露出来"
-        );
-        assert_eq!(state.close_visible(), Some(HOST_DETAILS));
-        assert_eq!(state.visible(), None);
         assert_eq!(state.close_visible(), None, "什么都没开时关闭不做事");
-    }
-
-    #[test]
-    fn opening_host_details_closes_any_side_panel_first() {
-        let mut state = PanelState::default();
         state.open_side(QUICK_COMMANDS);
-        state.open_host_details();
-        assert_eq!(state.visible(), Some(HOST_DETAILS));
-        state.open_side(PROXIES);
+        assert_eq!(state.close_visible(), Some(QUICK_COMMANDS));
+        assert_eq!(state.visible(), None);
         state.open_side(QUICK_COMMANDS);
-        assert_eq!(
-            state.visible(),
-            Some(QUICK_COMMANDS),
-            "同一时间只有一个侧栏，后开的换掉先开的"
-        );
+        state.close_side();
+        assert_eq!(state.visible(), None);
     }
 }

@@ -1,5 +1,5 @@
-//! 右侧的代理面板（0.2.14 `ProxyPanel.tsx`）：顶部选全局默认代理，下面是可以增删改的代理列表。
-//! 从主机详情的「新建 / 管理代理」进来时带返回键，新建出来的代理会被主机详情自动选中。
+//! 「管理 + 设置」页里的代理管理（0.2.14 `ProxyPanel.tsx`）：顶部选全局默认代理，下面是可以增删改的代理列表。
+//! 主机属性对话框里的「新建代理…」是它自己的小对话框（`host_dialog`），新建出来的代理会被主机表单自动选中。
 //! V2-F3：代理密码留空 = 不改、可以「清除已存密码」；删除前列出还在用它的主机，有就不给删。
 
 use ::gpui::{Entity, SharedString};
@@ -11,7 +11,6 @@ use zssh_core::model::{Proxy, ProxyDraft, ProxyKind};
 
 use super::MainWindow;
 use super::modal::{Confirm, ConfirmAction, Modal};
-use super::nav::MainView;
 use super::side_panel::PanelContent;
 use super::widgets::{
     BadgeKind, ButtonLook, Choice, act, badge, empty_state, field, icon_button, note, pick,
@@ -93,8 +92,6 @@ pub struct ProxyUi {
     pub port: Entity<InputState>,
     pub username: Entity<InputState>,
     pub secret: Entity<InputState>,
-    /// 是从主机详情点进来的（带返回键，新建的代理回填给它）。
-    pub from_host_form: bool,
 }
 
 impl ProxyUi {
@@ -108,7 +105,6 @@ impl ProxyUi {
             port: cx.new(|cx| InputState::new(window, cx).default_value("10808")),
             username: cx.new(|cx| InputState::new(window, cx)),
             secret: cx.new(|cx| InputState::new(window, cx).masked(true)),
-            from_host_form: false,
         }
     }
 
@@ -144,20 +140,6 @@ impl MainWindow {
         let focus = self.proxy_ui.name.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         cx.notify();
-    }
-
-    /// 主机详情里没有代理时，点进来直接是「新建代理」的表单。
-    pub(crate) fn proxy_start_creating_if(
-        &mut self,
-        wanted: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if wanted {
-            self.proxy_new(window, cx);
-        } else {
-            self.proxy_reset(window, cx);
-        }
     }
 
     pub(crate) fn proxy_pick(
@@ -210,21 +192,15 @@ impl MainWindow {
                 return;
             }
         };
-        let created = draft.id.is_none();
         let saved = self
             .store
             .db()
             .and_then(|db| db.proxy_save(&draft).map_err(|err| err.to_string()));
         self.store.reload();
         match saved {
-            Ok(proxy) => {
+            Ok(_) => {
+                // 主机属性对话框里新建代理走它自己的小对话框（host_dialog），这里只管理库里的代理。
                 self.proxy_reset(window, cx);
-                // 从主机详情进来新建的：主机详情自动选中它，回到主机详情。
-                // 「管理 + 设置」页里的代理管理没有主机详情可回：只有侧面板那条路才回填。
-                if created && self.proxy_ui.from_host_form && self.nav.view != MainView::Settings {
-                    self.host_form_adopt_proxy(proxy.id);
-                    self.back_to_host_details(cx);
-                }
             }
             Err(err) => self.notice_error(&err, window, cx),
         }
@@ -295,7 +271,7 @@ impl MainWindow {
                 if self.proxy_ui.selected == Some(id) {
                     self.proxy_reset(window, cx);
                 }
-                // 主机详情里正选着这个代理：选择作废。
+                // 主机属性对话框里正选着这个代理：选择作废。
                 if let Some(form) = &mut self.host_form
                     && form.proxy == Some(id)
                 {
@@ -391,7 +367,6 @@ impl MainWindow {
     ) -> PanelContent {
         let entity = cx.entity();
         let proxies = self.store.proxies();
-        let on_page = self.nav.view == MainView::Settings;
         let query = self.manage_query(cx);
         let ui = &self.proxy_ui;
         let default_id = self
@@ -683,20 +658,10 @@ impl MainWindow {
                 .into_any_element()
         });
 
-        let back = (ui.from_host_form && !on_page).then(|| {
-            icon_button(
-                "proxy-back",
-                IconName::ArrowLeft,
-                "返回主机详情",
-                act(&entity, |this, _window, cx| this.back_to_host_details(cx)),
-            )
-            .into_any_element()
-        });
-
         PanelContent {
             title: "代理".into(),
             subtitle: Some(format!("{} 个", proxies.len()).into()),
-            back,
+            back: None,
             actions: vec![
                 text_button(
                     "proxy-new",

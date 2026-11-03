@@ -15,7 +15,6 @@ use super::dev_script::Outcome;
 use super::drag::DropHint;
 use super::modal::{ConfirmAction, Modal};
 use super::page_logic::{PageOptions, ViewMode, page_hosts};
-use super::side_panel::{HOST_DETAILS, PROXIES};
 
 const KNOWN: &[&str] = &[
     "new_host",
@@ -109,6 +108,7 @@ pub fn validate(spec: &str) -> Result<(), String> {
         || super::dev_acts_u2::is_known(name)
         || super::dev_acts_u4::is_known(name)
         || super::dev_acts_u6::is_known(name)
+        || super::dev_acts_u7::is_known(name)
         || super::dev_acts_n4::is_known(name)
         || super::dev_acts_sync::is_known(name)
         || KNOWN.contains(&name)
@@ -171,8 +171,6 @@ fn state_name(this: &MainWindow) -> &'static str {
         }
     }
     match this.panels.visible() {
-        Some(HOST_DETAILS) => "host_details",
-        Some(PROXIES) => "proxies",
         Some(_) => "other",
         None => "none",
     }
@@ -186,6 +184,7 @@ pub(super) fn modal_name(this: &MainWindow) -> &'static str {
         Some(Modal::Quick(_)) => "quick",
         Some(Modal::QuickTarget(_)) => "quick_target",
         Some(Modal::QuickEdit(_)) => "quick_edit",
+        Some(Modal::HostProps(_)) => "host_props",
         Some(Modal::GenerateKey(_)) => "generate",
         Some(Modal::InstallKey(_)) => "install",
         Some(Modal::Unsaved(_)) => "unsaved",
@@ -245,6 +244,10 @@ fn run_inner(
     if let Some(result) = super::dev_acts_u6::run(this, spec, window, cx) {
         return result;
     }
+    // V2-U7（主机属性对话框）的动作在 `dev_acts_u7`。
+    if let Some(result) = super::dev_acts_u7::run(this, spec, window, cx) {
+        return result;
+    }
     // V2-N4（主机协议的界面、X11）的动作在 `dev_acts_n4`。
     if let Some(result) = super::dev_acts_n4::run(this, spec, window, cx) {
         return result;
@@ -282,7 +285,7 @@ fn run_inner(
             } else {
                 group_ref(this, a)?
             };
-            this.open_host_details(None, group, window, cx);
+            this.open_host_props(None, group, window, cx);
         }
         "select_host" => {
             let id = host_ref(this, a)?;
@@ -587,7 +590,7 @@ fn run_inner(
         "keychain_save" => this.keychain_save(window, cx),
         "keychain_ask_delete" => this.keychain_ask_delete(cx),
         "proxy_new" => {
-            this.panels.open_side(PROXIES);
+            this.open_settings_section(crate::settings_nav::SettingsSection::Proxies, window, cx);
             this.proxy_new(window, cx);
         }
         "proxy_pick" => {

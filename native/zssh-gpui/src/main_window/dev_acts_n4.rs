@@ -36,7 +36,7 @@ mod real {
 
     const KNOWN: &[&str] = &[
         "host_protocol",
-        "host_advanced",
+        "host_category",
         "host_x11",
         "host_input",
         "host_telnet",
@@ -145,11 +145,11 @@ mod real {
     ) -> Result<Outcome, String> {
         match name {
             "host_protocol" => this.host_set_protocol(protocol_of(a)?, window, cx),
-            "host_advanced" => {
-                let open = on_off(a)?;
-                let form = this.host_form.as_mut().ok_or("主机表单没开着")?;
-                form.advanced_open = open;
-                cx.notify();
+            "host_category" => {
+                let category = super::super::host_props::Category::parse(a).ok_or(
+                    "类别写 general / auth / connection / terminal / serial / security / memory",
+                )?;
+                this.host_select_category(category, window, cx);
             }
             "host_x11" => {
                 let on = on_off(a)?;
@@ -383,7 +383,13 @@ mod real {
                     "protocol" => form.protocol.as_str().to_owned(),
                     "port" => form.port.read(cx).value().to_string(),
                     "username" => form.username.read(cx).value().to_string(),
-                    "advanced" => form.advanced_open.to_string(),
+                    "category" => match &this.modal {
+                        Some(super::super::modal::Modal::HostProps(dialog)) => {
+                            dialog.category.id().to_owned()
+                        }
+                        _ => String::new(),
+                    },
+                    "dirty" => this.host_props_dirty(cx).to_string(),
                     "device" => form.serial.device.read(cx).value().to_string(),
                     "x11" => form.x11.to_string(),
                     "ports" => form.serial.ports.len().to_string(),

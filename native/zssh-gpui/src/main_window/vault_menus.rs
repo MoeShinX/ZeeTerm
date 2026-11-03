@@ -116,6 +116,76 @@ fn with_hint(label: &str, order: OrderState) -> String {
     }
 }
 
+/// 主机右键菜单里的一项（从上到下的次序就是 [`host_menu_items`] 返回的次序）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostMenuItem {
+    Connect,
+    ConnectInNewTab,
+    OpenSftp,
+    CopyName,
+    CopyAddress,
+    CopyPassword,
+    CopyInfo,
+    InstallKey,
+    Forwards,
+    MoveToGroup,
+    MoveUp,
+    MoveDown,
+    ResetTopOrder,
+    Separator,
+    /// 弹出主机属性对话框（原来的「编辑」）：紧挨在「删除」上面。
+    Properties,
+    Delete,
+}
+
+impl HostMenuItem {
+    /// 菜单上写的字（分隔线没有字）。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Connect => "连接",
+            Self::ConnectInNewTab => "在新标签连接",
+            Self::OpenSftp => "打开 SFTP",
+            Self::CopyName => "复制主机名",
+            Self::CopyAddress => "复制地址",
+            Self::CopyPassword => "复制密码",
+            Self::CopyInfo => "复制连接信息",
+            Self::InstallKey => "安装公钥…",
+            Self::Forwards => "端口转发…",
+            Self::MoveToGroup => "移动到分组",
+            Self::MoveUp => "上移",
+            Self::MoveDown => "下移",
+            Self::ResetTopOrder => "按名字重新排序（顶层主机）",
+            Self::Separator => "",
+            Self::Properties => "属性…",
+            Self::Delete => "删除",
+        }
+    }
+}
+
+/// 这台主机的右键菜单有哪些项、什么次序：「属性…」在「删除」正上方（两者和上面的移动 / 排序之间
+/// 一条分隔线），其余项的次序不变；没法复制密码的主机没有「复制密码」，平铺模式下顶层主机多一项
+/// 「按名字重新排序」。
+pub fn host_menu_items(spec: &HostMenuSpec) -> Vec<HostMenuItem> {
+    use HostMenuItem::*;
+    let mut items = vec![Connect, ConnectInNewTab, OpenSftp, CopyName, CopyAddress];
+    if spec.can_copy_password {
+        items.push(CopyPassword);
+    }
+    items.extend([
+        CopyInfo,
+        InstallKey,
+        Forwards,
+        MoveToGroup,
+        MoveUp,
+        MoveDown,
+    ]);
+    if spec.reset_top {
+        items.push(ResetTopOrder);
+    }
+    items.extend([Separator, Properties, Delete]);
+    items
+}
+
 /// 主机的右键菜单。
 pub fn host_menu(
     menu: PopupMenu,
@@ -126,132 +196,135 @@ pub fn host_menu(
 ) -> PopupMenu {
     let id = spec.host_id;
     let order_locked = spec.order != OrderState::Manual;
-    let mut menu = menu
-        .item(
-            PopupMenuItem::new("连接")
-                .icon(IconName::Play)
-                .on_click(run(entity, move |this, window, cx| {
-                    this.open_host(id, window, cx)
-                })),
-        )
-        .item(
-            PopupMenuItem::new("在新标签连接").on_click(run(entity, move |this, window, cx| {
-                this.open_host_in_new_tab(id, window, cx);
-            })),
-        )
-        .item(ssh_only_item(
-            "打开 SFTP",
-            Some(crate::icons::Ico::FolderTree),
-            spec.caps.sftp,
-            run(entity, move |this, window, cx| {
-                this.open_sftp(id, window, cx)
-            }),
-        ))
-        .item(
-            PopupMenuItem::new("编辑")
-                .icon(crate::icons::Ico::Pencil)
-                .on_click(run(entity, move |this, window, cx| {
-                    this.edit_host(id, window, cx)
-                })),
-        )
-        .item(
-            PopupMenuItem::new("复制主机名").on_click(run(entity, move |this, window, cx| {
-                this.copy_host_field(id, CopyField::Name, window, cx);
-            })),
-        )
-        .item(
-            PopupMenuItem::new("复制地址").on_click(run(entity, move |this, window, cx| {
-                this.copy_host_field(id, CopyField::Address, window, cx);
-            })),
-        );
-    if spec.can_copy_password {
-        menu = menu.item(
-            PopupMenuItem::new("复制密码").on_click(run(entity, move |this, window, cx| {
-                this.copy_host_password(id, window, cx)
-            })),
-        );
-    }
-    menu = menu
-        .item(
-            PopupMenuItem::new("复制连接信息").on_click(run(entity, move |this, window, cx| {
-                this.copy_host_info(id, window, cx)
-            })),
-        )
-        .item(ssh_only_item(
-            "安装公钥…",
-            Some(crate::icons::Ico::KeyRound),
-            spec.caps.ssh,
-            run(entity, move |this, window, cx| {
-                this.open_install_key_dialog(id, window, cx);
-            }),
-        ))
-        .item(ssh_only_item(
-            "端口转发…",
-            Some(crate::icons::Ico::ArrowLeftRight),
-            spec.caps.port_forward,
-            run(entity, move |this, window, cx| {
-                this.open_forwards(Some(id), window, cx)
-            }),
-        ));
-    let targets = spec.targets.clone();
-    let move_entity = entity.clone();
-    menu = menu.submenu("移动到分组", window, cx, move |sub, _window, _cx| {
-        let mut sub = sub
-            .min_w(::gpui::px(180.0))
-            .max_h(::gpui::px(320.0))
-            .scrollable(true);
-        for (index, target) in targets.iter().enumerate() {
-            let group = target.group;
-            let label = format!("{}{}", "　".repeat(target.depth), target.label);
-            sub = sub.item(
-                PopupMenuItem::new(label)
-                    .checked(target.current)
-                    .disabled(target.current)
-                    .on_click(run(&move_entity, move |this, window, cx| {
-                        this.move_host_ui(id, group, window, cx);
+    let mut menu = menu;
+    for item in host_menu_items(spec) {
+        menu = match item {
+            HostMenuItem::Connect => menu.item(
+                PopupMenuItem::new(item.label())
+                    .icon(IconName::Play)
+                    .on_click(run(entity, move |this, window, cx| {
+                        this.open_host(id, window, cx)
                     })),
-            );
-            if index == 0 && targets.len() > 1 {
-                sub = sub.separator();
+            ),
+            HostMenuItem::ConnectInNewTab => menu.item(PopupMenuItem::new(item.label()).on_click(
+                run(entity, move |this, window, cx| {
+                    this.open_host_in_new_tab(id, window, cx);
+                }),
+            )),
+            HostMenuItem::OpenSftp => menu.item(ssh_only_item(
+                item.label(),
+                Some(crate::icons::Ico::FolderTree),
+                spec.caps.sftp,
+                run(entity, move |this, window, cx| {
+                    this.open_sftp(id, window, cx)
+                }),
+            )),
+            HostMenuItem::CopyName => menu.item(PopupMenuItem::new(item.label()).on_click(run(
+                entity,
+                move |this, window, cx| {
+                    this.copy_host_field(id, CopyField::Name, window, cx);
+                },
+            ))),
+            HostMenuItem::CopyAddress => menu.item(PopupMenuItem::new(item.label()).on_click(run(
+                entity,
+                move |this, window, cx| {
+                    this.copy_host_field(id, CopyField::Address, window, cx);
+                },
+            ))),
+            HostMenuItem::CopyPassword => menu.item(PopupMenuItem::new(item.label()).on_click(
+                run(entity, move |this, window, cx| {
+                    this.copy_host_password(id, window, cx)
+                }),
+            )),
+            HostMenuItem::CopyInfo => menu.item(
+                PopupMenuItem::new(item.label()).on_click(run(entity, move |this, window, cx| {
+                    this.copy_host_info(id, window, cx)
+                })),
+            ),
+            HostMenuItem::InstallKey => menu.item(ssh_only_item(
+                item.label(),
+                Some(crate::icons::Ico::KeyRound),
+                spec.caps.ssh,
+                run(entity, move |this, window, cx| {
+                    this.open_install_key_dialog(id, window, cx);
+                }),
+            )),
+            HostMenuItem::Forwards => menu.item(ssh_only_item(
+                item.label(),
+                Some(crate::icons::Ico::ArrowLeftRight),
+                spec.caps.port_forward,
+                run(entity, move |this, window, cx| {
+                    this.open_forwards(Some(id), window, cx)
+                }),
+            )),
+            HostMenuItem::MoveToGroup => {
+                let targets = spec.targets.clone();
+                let move_entity = entity.clone();
+                menu.submenu(item.label(), window, cx, move |sub, _window, _cx| {
+                    let mut sub = sub
+                        .min_w(::gpui::px(180.0))
+                        .max_h(::gpui::px(320.0))
+                        .scrollable(true);
+                    for (index, target) in targets.iter().enumerate() {
+                        let group = target.group;
+                        let label = format!("{}{}", "　".repeat(target.depth), target.label);
+                        sub = sub.item(
+                            PopupMenuItem::new(label)
+                                .checked(target.current)
+                                .disabled(target.current)
+                                .on_click(run(&move_entity, move |this, window, cx| {
+                                    this.move_host_ui(id, group, window, cx);
+                                })),
+                        );
+                        if index == 0 && targets.len() > 1 {
+                            sub = sub.separator();
+                        }
+                    }
+                    sub
+                })
             }
-        }
-        sub
-    });
-    menu = menu
-        .item(
-            PopupMenuItem::new(with_hint("上移", spec.order))
-                .icon(IconName::ArrowUp)
-                .disabled(order_locked || !spec.step.0)
-                .on_click(run(entity, move |this, window, cx| {
-                    this.step_host(id, -1, window, cx)
-                })),
-        )
-        .item(
-            PopupMenuItem::new(with_hint("下移", spec.order))
-                .icon(IconName::ArrowDown)
-                .disabled(order_locked || !spec.step.1)
-                .on_click(run(entity, move |this, window, cx| {
-                    this.step_host(id, 1, window, cx)
-                })),
-        );
-    if spec.reset_top {
-        menu = menu.item(
-            PopupMenuItem::new("按名字重新排序（顶层主机）")
-                .icon(crate::icons::Ico::ArrowDownAZ)
-                .on_click(run(entity, |this, window, cx| {
-                    this.reset_layer_order(None, window, cx)
-                })),
-        );
+            HostMenuItem::MoveUp => menu.item(
+                PopupMenuItem::new(with_hint(item.label(), spec.order))
+                    .icon(IconName::ArrowUp)
+                    .disabled(order_locked || !spec.step.0)
+                    .on_click(run(entity, move |this, window, cx| {
+                        this.step_host(id, -1, window, cx)
+                    })),
+            ),
+            HostMenuItem::MoveDown => menu.item(
+                PopupMenuItem::new(with_hint(item.label(), spec.order))
+                    .icon(IconName::ArrowDown)
+                    .disabled(order_locked || !spec.step.1)
+                    .on_click(run(entity, move |this, window, cx| {
+                        this.step_host(id, 1, window, cx)
+                    })),
+            ),
+            HostMenuItem::ResetTopOrder => menu.item(
+                PopupMenuItem::new(item.label())
+                    .icon(crate::icons::Ico::ArrowDownAZ)
+                    .on_click(run(entity, |this, window, cx| {
+                        this.reset_layer_order(None, window, cx)
+                    })),
+            ),
+            HostMenuItem::Separator => menu.separator(),
+            HostMenuItem::Properties => menu.item(
+                PopupMenuItem::new(item.label())
+                    .icon(crate::icons::Ico::Pencil)
+                    .on_click(run(entity, move |this, window, cx| {
+                        this.edit_host(id, window, cx)
+                    })),
+            ),
+            HostMenuItem::Delete => menu.item(
+                PopupMenuItem::new(item.label())
+                    .icon(crate::icons::Ico::Trash)
+                    .on_click(run(entity, move |this, _window, cx| {
+                        this.ask_delete_host(id, cx)
+                    })),
+            ),
+        };
     }
-    menu.separator().item(
-        PopupMenuItem::new("删除")
-            .icon(crate::icons::Ico::Trash)
-            .on_click(run(entity, move |this, _window, cx| {
-                this.ask_delete_host(id, cx)
-            })),
-    )
+    menu
 }
-
 /// 分组行的右键菜单需要的状态。
 #[derive(Clone)]
 pub struct GroupMenuSpec {
@@ -345,4 +418,92 @@ pub fn ungrouped_menu(menu: PopupMenu, entity: &Entity<MainWindow>) -> PopupMenu
                 this.reset_layer_order(None, window, cx)
             })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
+    use super::{HostMenuItem, HostMenuSpec, host_menu_items};
+    use crate::main_window::page_logic::OrderState;
+    use crate::main_window::protocol_form::Caps;
+
+    fn spec() -> HostMenuSpec {
+        HostMenuSpec {
+            host_id: 1,
+            caps: Caps::ALL,
+            can_copy_password: true,
+            targets: Vec::new(),
+            step: (true, true),
+            order: OrderState::Manual,
+            reset_top: false,
+        }
+    }
+
+    fn labels(spec: &HostMenuSpec) -> Vec<&'static str> {
+        host_menu_items(spec)
+            .into_iter()
+            .map(HostMenuItem::label)
+            .collect()
+    }
+
+    #[test]
+    fn properties_sits_right_above_delete_and_edit_is_gone() {
+        let items = labels(&spec());
+        assert_eq!(items[items.len() - 2..], ["属性…", "删除"]);
+        assert!(!items.contains(&"编辑"), "「编辑」改名成了「属性…」");
+        assert_eq!(
+            items.iter().filter(|label| **label == "属性…").count(),
+            1,
+            "只有一个入口"
+        );
+    }
+
+    #[test]
+    fn the_other_items_keep_their_order() {
+        assert_eq!(
+            labels(&spec()),
+            [
+                "连接",
+                "在新标签连接",
+                "打开 SFTP",
+                "复制主机名",
+                "复制地址",
+                "复制密码",
+                "复制连接信息",
+                "安装公钥…",
+                "端口转发…",
+                "移动到分组",
+                "上移",
+                "下移",
+                "",
+                "属性…",
+                "删除"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_separator_divides_the_move_items_from_properties_and_delete() {
+        let items = host_menu_items(&spec());
+        let at = items
+            .iter()
+            .position(|item| *item == HostMenuItem::Properties)
+            .expect("有属性");
+        assert_eq!(items[at - 1], HostMenuItem::Separator);
+    }
+
+    #[test]
+    fn optional_items_appear_only_when_they_apply() {
+        let mut host = spec();
+        host.can_copy_password = false;
+        assert!(!labels(&host).contains(&"复制密码"));
+        host.reset_top = true;
+        let items = labels(&host);
+        assert!(items.contains(&"按名字重新排序（顶层主机）"));
+        assert_eq!(
+            items[items.len() - 2..],
+            ["属性…", "删除"],
+            "属性仍在删除正上方"
+        );
+    }
 }

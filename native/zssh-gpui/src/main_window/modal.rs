@@ -1,4 +1,4 @@
-//! 主窗口里的对话框：确认、分组新建 / 重命名、快速连接的密码、生成密钥、安装公钥。
+//! 主窗口里的对话框：确认、分组新建 / 重命名、快速连接的密码、生成密钥、安装公钥、快捷命令和主机属性的新建 / 编辑。
 //!
 //! 同一时间一个，盖在整个窗口上面（半透明遮罩 + 居中卡片）。对话框是主窗口自己画的，不走系统
 //! 模态框：状态都在 [`Modal`] 里，自动化驱动能直接看、直接点，Esc 取消、Enter 确认。
@@ -102,6 +102,8 @@ pub enum Modal {
     QuickTarget(QuickTargetDialog),
     /// 新建 / 编辑快捷命令（所有入口共用）。
     QuickEdit(QuickEditDialog),
+    /// 主机「属性」（编辑 / 新建主机，所有入口共用，V2-U7）；表单状态在 `MainWindow::host_form`。
+    HostProps(super::host_dialog::HostPropsDialog),
     GenerateKey(GenerateKeyDialog),
     InstallKey(InstallKeyDialog),
     /// 编辑器有未保存修改：保存 / 不保存 / 取消。
@@ -123,14 +125,26 @@ impl Modal {
         }
     }
 
-    /// 里面有多行输入框：回车是换行，要 Ctrl+Enter 才确认。
+    /// 里面有多行输入框：回车是换行，要 Ctrl+Enter 才确认。主机属性只有停在「AI 记忆」类别时才是这样\n    /// （别的类别全是单行输入框，Enter 就是确定）。
     pub fn multiline_form(&self) -> bool {
-        matches!(self, Self::QuickEdit(_))
+        match self {
+            Self::QuickEdit(_) => true,
+            Self::HostProps(dialog) => {
+                dialog.category == super::host_props::Category::Memory
+                    && matches!(dialog.overlay, super::host_dialog::Overlay::None)
+            }
+            _ => false,
+        }
+    }
+
+    /// 填了半天的表单（有多行框的、主机属性）：卡片占满窗口高度、内部自己滚动。
+    pub fn tall(&self) -> bool {
+        matches!(self, Self::QuickEdit(_) | Self::HostProps(_))
     }
 
     /// 点遮罩算不算取消。填了半天的表单不能被一次误点丢掉，只能用取消按钮或 Esc 关。
     pub fn closes_on_scrim(&self) -> bool {
-        !self.multiline_form()
+        !self.tall()
     }
 }
 
@@ -294,6 +308,11 @@ impl MainWindow {
         if self.modal.as_ref().is_some_and(Modal::busy) {
             return;
         }
+        // 主机属性：先收小浮层；有没保存的修改先问是否放弃。
+        if matches!(self.modal, Some(Modal::HostProps(_))) {
+            self.host_props_cancel(window, cx);
+            return;
+        }
         self.modal = None;
         self.focus_content(window, cx);
         cx.notify();
@@ -307,6 +326,7 @@ impl MainWindow {
             Some(Modal::Quick(_)) => self.submit_quick_dialog(window, cx),
             Some(Modal::QuickTarget(_)) => self.submit_quick_target(window, cx),
             Some(Modal::QuickEdit(_)) => self.quick_save(window, cx),
+            Some(Modal::HostProps(_)) => self.host_props_confirm(window, cx),
             Some(Modal::GenerateKey(_)) => self.submit_generate_key(window, cx),
             Some(Modal::InstallKey(_)) => self.submit_install_key(window, cx),
             Some(Modal::Unsaved(_)) => self.answer_unsaved(true, window, cx),
@@ -445,6 +465,10 @@ impl MainWindow {
             Modal::Quick(dialog) => (440.0, self.quick_body(dialog, tokens, cx)),
             Modal::QuickTarget(dialog) => (440.0, self.quick_target_body(dialog, tokens, cx)),
             Modal::QuickEdit(dialog) => (560.0, self.quick_edit_body(dialog, tokens, window, cx)),
+            Modal::HostProps(dialog) => (
+                super::host_dialog::DIALOG_WIDTH,
+                self.host_props_body(dialog, tokens, cx),
+            ),
             Modal::GenerateKey(dialog) => (480.0, self.generate_key_body(dialog, tokens, cx)),
             Modal::InstallKey(dialog) => (480.0, self.install_key_body(dialog, tokens, cx)),
             Modal::Unsaved(ask) => (440.0, self.unsaved_body(ask, tokens, cx)),
@@ -452,7 +476,11 @@ impl MainWindow {
             Modal::X11Needed(prompt) => (460.0, self.x11_prompt_body(prompt, tokens, cx)),
         };
         let closes_on_scrim = modal.closes_on_scrim();
-        let tall = modal.multiline_form();
+        let tall = modal.tall();
+        let overlay = match modal {
+            Modal::HostProps(dialog) => self.host_props_overlay(dialog, tokens, cx),
+            _ => None,
+        };
         let scrim = {
             let entity = entity.clone();
             div()
@@ -464,7 +492,7 @@ impl MainWindow {
                 .items_center()
                 .justify_center()
                 .bg(hsla(0.0, 0.0, 0.0, 0.45))
-                .when(tall, |d| d.py_6())
+                .when(tall, |d| d.py_6().px_6())
                 .on_mouse_down(::gpui::MouseButton::Left, move |_, window, cx| {
                     if closes_on_scrim {
                         entity.update(cx, |this, cx| this.close_modal(window, cx));
@@ -477,6 +505,7 @@ impl MainWindow {
                     v_flex()
                         .id("modal-card")
                         .w(px(width))
+                        .max_w_full()
                         .when(!tall, |d| d.max_h(px(640.0)))
                         .when(tall, |d| d.max_h_full())
                         .p_5()
@@ -489,6 +518,7 @@ impl MainWindow {
                         .on_mouse_down(::gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(content),
                 )
+                .children(overlay)
                 .into_any_element(),
         )
     }
