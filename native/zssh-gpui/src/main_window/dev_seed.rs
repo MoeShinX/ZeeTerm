@@ -8,6 +8,8 @@
 //!   X11 的 SSH 主机，主机页的协议标识、SSH-only 置灰、X11 提示的截图用；
 //! - `ZSSH_SEED_NESTED=1`：在占位主机的「生产环境」下再建两层子分组和几台主机（主机树连接线的截图用，
 //!   要和 `ZSSH_SEED_PLACEHOLDERS=1` 一起用）；
+//! - `ZSSH_SEED_MANY=<n>`：再建 n 台不在任何分组里的占位主机（`node-01`…，地址同样是文档保留段），
+//!   让侧栏树 / 主机页长到需要滚动（拖动自动滚动的截图用）；
 //! - `ZSSH_SEED_PLACEHOLDERS=1`：建几组演示用的主机，地址一律是文档保留段（RFC 5737），
 //!   不会真的连出去；主机页截图用它，画面里不会出现真实地址。
 
@@ -28,7 +30,8 @@ pub fn seed_from_env() -> Result<(), String> {
     let placeholders = env("ZSSH_SEED_PLACEHOLDERS").is_some();
     let protocols = env("ZSSH_SEED_PROTOCOLS").is_some();
     let nested = env("ZSSH_SEED_NESTED").is_some();
-    if test_host.is_none() && !placeholders && !protocols && !nested {
+    let many = env("ZSSH_SEED_MANY").and_then(|raw| raw.trim().parse::<usize>().ok());
+    if test_host.is_none() && !placeholders && !protocols && !nested && many.is_none() {
         return Ok(());
     }
     let db = crate::hosts_demo::open_database().map_err(|err| err.to_string())?;
@@ -43,6 +46,24 @@ pub fn seed_from_env() -> Result<(), String> {
     }
     if nested {
         seed_nested_groups(&db)?;
+    }
+    if let Some(count) = many {
+        seed_many(&db, count.min(500))?;
+    }
+    Ok(())
+}
+
+/// `node-01`… 共 `count` 台占位主机，已经有的同名主机跳过。
+fn seed_many(db: &Database, count: usize) -> Result<(), String> {
+    let existing = db.host_list().map_err(|err| err.to_string())?;
+    for n in 1..=count {
+        let name = format!("node-{n:02}");
+        if existing.iter().any(|host| host.name == name) {
+            continue;
+        }
+        let address = format!("192.0.2.{}", 100 + n % 150);
+        db.host_save(&host_draft(&name, &address, 22, "ops", None))
+            .map_err(|err| err.to_string())?;
     }
     Ok(())
 }
