@@ -697,7 +697,7 @@ impl AgentChatDemo {
                 .selectable()
                 .into_iter()
                 .find(|endpoint| endpoint.name == name)
-                .ok_or("没有这个内置助手接口，或它没配 Key")?;
+                .ok_or("没有这个 ZeePilot 接口，或它没配 Key")?;
             self.switch_builtin_endpoint(endpoint.id, cx);
             return Ok(());
         }

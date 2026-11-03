@@ -194,7 +194,7 @@ async fn run(
     on_event: &mut (dyn FnMut(StreamEvent) + Send),
 ) -> Result<AssistantTurn, ProviderError> {
     let http_request = build_http_request(config, request)?;
-    tracing::debug!(request = ?request, kind = ?config.kind, "发送内置助手请求");
+    tracing::debug!(request = ?request, kind = ?config.kind, "发送 ZeePilot 请求");
     let mut response = transport
         .post(http_request)
         .await

@@ -365,14 +365,14 @@ fn load_transcript(
         Ok(Some(bytes)) => bytes,
         Ok(None) => return None,
         Err(err) => {
-            tracing::warn!(error = %err, "内置助手的对话记录读不了，按新会话处理");
+            tracing::warn!(error = %err, "ZeePilot 的对话记录读不了，按新会话处理");
             return None;
         }
     };
     match transcript::decode(&bytes) {
         Ok(record) => Some(record),
         Err(err) => {
-            tracing::warn!(error = %err, "内置助手的对话记录读不出来，按新会话处理");
+            tracing::warn!(error = %err, "ZeePilot 的对话记录读不出来，按新会话处理");
             None
         }
     }
@@ -447,12 +447,12 @@ impl Inner {
             match transcript::encode(&self.session_id, model.as_deref(), &messages, &secrets) {
                 Ok(bytes) => bytes,
                 Err(err) => {
-                    tracing::warn!(error = %err, "内置助手的对话记录序列化失败");
+                    tracing::warn!(error = %err, "ZeePilot 的对话记录序列化失败");
                     return;
                 }
             };
         if let Err(err) = history.transcript_save(HISTORY_AGENT, &self.session_id, &bytes) {
-            tracing::warn!(error = %err, "内置助手的对话记录保存失败");
+            tracing::warn!(error = %err, "ZeePilot 的对话记录保存失败");
         }
     }
 
@@ -966,13 +966,13 @@ impl Inner {
             Ok(turn) => turn,
             Err(StepError::Stopped(_)) => return false,
             Err(StepError::Failed(error, _)) => {
-                tracing::warn!(kind = ?error.kind, forced, "内置助手压缩对话失败，继续用原来的历史");
+                tracing::warn!(kind = ?error.kind, forced, "ZeePilot 压缩对话失败，继续用原来的历史");
                 return false;
             }
         };
         let summary = turn.text.trim();
         if summary.is_empty() {
-            tracing::warn!("内置助手压缩对话得到了空摘要，继续用原来的历史");
+            tracing::warn!("ZeePilot 压缩对话得到了空摘要，继续用原来的历史");
             return false;
         }
         {
@@ -1086,7 +1086,7 @@ impl Inner {
         match outcome {
             Ok(outcome) => (outcome.text, outcome.is_error),
             Err(err) => {
-                tracing::warn!(error = %err, "内置助手的工具调用任务异常结束");
+                tracing::warn!(error = %err, "ZeePilot 的工具调用任务异常结束");
                 ("工具调用异常结束了。".to_owned(), true)
             }
         }

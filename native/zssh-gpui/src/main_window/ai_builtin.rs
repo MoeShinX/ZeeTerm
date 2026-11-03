@@ -166,7 +166,7 @@ impl MainWindow {
                         .child(
                             div()
                                 .typo(Role::ItemName, tokens)
-                                .child("ZeeTerm 内置助手"),
+                                .child("ZeePilot"),
                         )
                         .child(div().typo(Role::Caption, tokens).child(
                             "填一个接口地址和 API Key 就能用，不用装别的工具。支持 OpenAI 兼容和 Anthropic 两种接口；配好后，AI 面板默认用它。",
@@ -272,7 +272,13 @@ impl MainWindow {
                 .into_any_element(),
         );
 
-        crate::settings_view::card("ai-builtin", "内置助手", None, tokens, rows)
+        crate::settings_view::card(
+            "ai-builtin",
+            "ZeePilot",
+            Some("ZeeTerm 自带的 AI 助手：填一个接口地址和 API Key 就能用。"),
+            tokens,
+            rows,
+        )
     }
 
     fn ai_endpoint_row(

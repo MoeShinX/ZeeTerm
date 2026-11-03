@@ -115,13 +115,13 @@ fn host_options_text(host: &super::package::HostRecord) -> Result<Option<String>
 fn check_ai_endpoint(endpoint: &AiEndpointRecord) -> Result<(), SyncError> {
     crate::ai::agent::builtin::config::EndpointKind::parse(&endpoint.kind).map_err(|_| {
         SyncError::InvalidData(format!(
-            "内置助手接口「{}」用了这个版本不认识的类型「{}」，请先升级 ZeeTerm",
+            "ZeePilot 接口「{}」用了这个版本不认识的类型「{}」，请先升级 ZeeTerm",
             endpoint.name, endpoint.kind
         ))
     })?;
     if !endpoint.overrides.is_object() || !endpoint.openai_options.is_object() {
         return Err(SyncError::InvalidData(format!(
-            "内置助手接口「{}」的选项格式不对",
+            "ZeePilot 接口「{}」的选项格式不对",
             endpoint.name
         )));
     }
@@ -129,7 +129,7 @@ fn check_ai_endpoint(endpoint: &AiEndpointRecord) -> Result<(), SyncError> {
         || !crate::ai::agent::builtin::config::valid_base_url(&endpoint.base_url)
     {
         return Err(SyncError::InvalidData(format!(
-            "内置助手接口「{}」的名字或地址不合格",
+            "ZeePilot 接口「{}」的名字或地址不合格",
             endpoint.name
         )));
     }
@@ -219,7 +219,7 @@ pub fn apply_snapshot_guarded_with(
             require_uid("代理", &proxy.uid)?;
         }
         for endpoint in &snapshot.ai_endpoints {
-            require_uid("内置助手接口", &endpoint.uid)?;
+            require_uid("ZeePilot 接口", &endpoint.uid)?;
             check_ai_endpoint(endpoint)?;
         }
 

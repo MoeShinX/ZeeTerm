@@ -163,7 +163,7 @@ fn summarize(entity: &str, key: &str, json: &str) -> Summary {
         ENTITY_AI_ENDPOINT => Summary {
             name: text_of("name"),
             text: format!(
-                "内置助手接口「{}」（{} {}）",
+                "ZeePilot 接口「{}」（{} {}）",
                 text_of("name"),
                 text_of("kind"),
                 text_of("base_url")
@@ -428,7 +428,7 @@ pub fn use_other(
                     .iter_mut()
                     .find(|e| e.uid == row.key)
                     .ok_or_else(|| {
-                        SyncError::InvalidData("这个内置助手接口已经不存在了".to_owned())
+                        SyncError::InvalidData("这个 ZeePilot 接口已经不存在了".to_owned())
                     })?;
                 // Key 凭据以现在的为准：另一份里引用的凭据可能已经被删了。
                 record.uid = slot.uid.clone();

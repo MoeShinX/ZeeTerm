@@ -1043,7 +1043,7 @@ fn logs_never_contain_passwords_keys_or_package_plaintext() {
         openai_options: Default::default(),
         preset_id: None,
     })
-    .expect("内置助手接口");
+    .expect("ZeePilot 接口");
 
     let engine_a = SyncEngine::new(&db_a, &sealer_a, "dev-a", &dir_a, None, None);
     let engine_b = SyncEngine::new(&db_b, &sealer_b, "dev-b", &dir_b, None, None);

@@ -1459,7 +1459,7 @@ impl AgentHub {
         let runtime = match kind {
             // claude 不用共用进程（一个对话一个进程），走不到这儿。
             AgentKind::Claude => return Err("claude 不使用共用进程".to_string()),
-            AgentKind::Builtin => return Err("内置助手不使用共用进程".to_string()),
+            AgentKind::Builtin => return Err("ZeePilot 不使用共用进程".to_string()),
             AgentKind::OpenCode => {
                 // 只带上用户配置里的模型相关键（自建服务商照常可用），其余一律不带。
                 let user_config = overrides
@@ -1516,7 +1516,7 @@ impl AgentHub {
         overrides: StartOverrides,
     ) -> Result<AgentSession, String> {
         if kind == AgentKind::Builtin {
-            return Err("内置助手要用 start_builtin 启动".to_string());
+            return Err("ZeePilot 要用 start_builtin 启动".to_string());
         }
         let tools = ToolChannel::attach(&self.bridge, &self.approver, &self.reports);
         let (events_tx, events) = mpsc::unbounded_channel();
@@ -1542,7 +1542,7 @@ impl AgentHub {
         let (conversation, resumed): (Arc<dyn AgentConversation>, bool) = match kind {
             // claude：一个对话一个进程（懒启动：第一次发消息才拉；空闲 10 分钟关，
             // 下次发消息 `--resume` 恢复上下文）。
-            AgentKind::Builtin => return Err("内置助手要用 start_builtin 启动".to_string()),
+            AgentKind::Builtin => return Err("ZeePilot 要用 start_builtin 启动".to_string()),
             AgentKind::Claude => {
                 self.require_mcp_binary()?;
                 let options = start_options(
@@ -1740,7 +1740,7 @@ pub(crate) fn load_endpoint_from(
         None if endpoint.key_not_needed() => String::new(),
         None => {
             return Err(format!(
-                "接口「{}」还没有 API Key：到 设置 → AI → 内置助手 里补上。",
+                "接口「{}」还没有 API Key：到 设置 → AI → ZeePilot 里补上。",
                 endpoint.name
             ));
         }
@@ -2646,7 +2646,7 @@ mod tests {
                 tuning: fast_tuning(),
             })
             .await
-            .expect("启动内置助手");
+            .expect("启动 ZeePilot");
         assert_eq!(session.kind, AgentKind::Builtin);
         assert!(!session.resumed);
         assert!(session.builtin.is_some());
