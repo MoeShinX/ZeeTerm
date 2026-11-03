@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 zssh-core = { path = "../../crates/zssh-core" }
 zssh-session = { path = "../zssh-session" }
+zssh-terminal = { path = "../zssh-terminal" }
 tokio = { version = "1", features = ["rt", "time", "sync", "io-util", "macros"] }
 # Telnet / 串口的非 UTF-8 编码（GBK、Big5、Shift-JIS、EUC-KR、Latin1）与终端的 UTF-8 之间互转。
 encoding_rs = "0.8"
@@ -32,4 +33,3 @@ windows = { version = "0.62", features = [
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "macros", "sync"] }
-zssh-terminal = { path = "../zssh-terminal" }

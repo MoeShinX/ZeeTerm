@@ -163,9 +163,11 @@ fn write_loop(
     ends: BackendEnds,
     mut done: watch::Receiver<bool>,
 ) {
+    // 串口没有窗口大小这回事，最新尺寸那一路不用。
     let BackendEnds {
         mut commands,
         mut closing,
+        ..
     } = ends;
     let Ok(event) = IoEvent::new() else {
         out.error(format!("无法使用 {label}：创建写事件失败"));

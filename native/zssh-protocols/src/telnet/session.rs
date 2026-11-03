@@ -16,6 +16,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zssh_core::model::{LocalEcho, TelnetOptions};
 use zssh_core::ssh::FlowGate;
 use zssh_session::{SessionCommand, SessionEvent};
+use zssh_terminal::Size;
 
 use super::autologin::AutoLogin;
 use super::codec::{Decoder, IAC, NOP, escape_iac};
@@ -180,15 +181,17 @@ impl Session {
         self.out.data(utf8)
     }
 
+    fn on_resize(&mut self, size: Size) {
+        if !self.raw() {
+            let cols = u16::try_from(size.cols).unwrap_or(u16::MAX);
+            let rows = u16::try_from(size.rows).unwrap_or(u16::MAX);
+            self.negotiator.resize(cols, rows, &mut self.outbox);
+        }
+    }
+
     fn on_command(&mut self, command: BackendCommand) {
         match command {
-            BackendCommand::Session(SessionCommand::Resize(size)) => {
-                if !self.raw() {
-                    let cols = u16::try_from(size.cols).unwrap_or(u16::MAX);
-                    let rows = u16::try_from(size.rows).unwrap_or(u16::MAX);
-                    self.negotiator.resize(cols, rows, &mut self.outbox);
-                }
-            }
+            BackendCommand::Session(SessionCommand::Resize(size)) => self.on_resize(size),
             // 协议应答照原样发给远端：不是用户输入（不动自动登录、不转换回车、不本地回显）。
             BackendCommand::Reply(bytes) => self.queue_text(&bytes),
             // Write 在循环里单独处理（它可能让界面那头断掉），Close 走关闭信号，Break 对 Telnet 无意义。
@@ -230,6 +233,7 @@ where
     let BackendEnds {
         mut commands,
         mut closing,
+        mut resizes,
     } = ends;
     let (mut reader, mut writer) = tokio::io::split(stream);
     let raw = options.raw_tcp;
@@ -317,6 +321,16 @@ where
                         session.out.error(format!("读取远端失败：{error}"));
                         break;
                     }
+                }
+            }
+            // 窗口大小只取最新的一个，不走（可能已满的）命令队列；发送缓冲太大时同样先不收。
+            changed = resizes.changed(), if session.outbox.len() < OUTBOX_SOFT_LIMIT => {
+                if changed.is_err() {
+                    break;
+                }
+                let latest = *resizes.borrow_and_update();
+                if let Some(size) = latest {
+                    session.on_resize(size);
                 }
             }
             command = commands.recv(), if session.outbox.len() < OUTBOX_SOFT_LIMIT => {

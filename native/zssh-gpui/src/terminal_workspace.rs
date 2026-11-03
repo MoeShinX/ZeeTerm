@@ -134,7 +134,9 @@ pub(crate) struct Pane {
     pub(crate) state: PaneState,
     /// 后台连接任务；窗格被关掉时随它一起取消。
     pending: Option<crate::ssh_backend::PendingOpen>,
-    /// 向远端申请 PTY 时用的尺寸；连接期间窗口变了，连上后要补发一次。
+    /// 最近一次交给后端的尺寸（"已排队"）；本地尺寸是 `snapshot.size`，两者不同只会发生在连接
+    /// 期间（还没有后端可交），连上后要补发一次。后端把尺寸当"最新状态"保存、保证最新值最终送达，
+    /// 输入堵塞不会让它丢（见 `SshBackend` / `StreamBackend`）。
     open_size: Size,
     history: usize,
     generation: u64,
@@ -550,7 +552,8 @@ impl Pane {
         }
     }
 
-    /// 本地重排后把新尺寸也发给远端（回环后端忽略）。
+    /// 本地重排后把新尺寸也交给后端（回环后端忽略）。后端不会因为输入队列满而丢它，所以这里
+    /// 不需要靠"下一次还会再发"来补。
     fn resize(&mut self, size: Size) {
         self.pump_mut().resize(size);
         if self.state == PaneState::Live {

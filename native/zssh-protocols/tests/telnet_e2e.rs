@@ -175,6 +175,73 @@ async fn negotiation_naws_ttype_and_resize_reach_the_server() {
     read_until(&mut harness.server, &naws_frame(255, 24)).await;
 }
 
+/// R06：对端不读、输入把命令队列塞满的时候只改一次窗口大小；对端恢复读取以后，
+/// 最新的窗口大小仍然必须到达（窗口大小是最新状态，不能和按键一起被静默丢掉）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resize_sent_while_the_input_queue_is_full_still_reaches_the_server() {
+    let mut harness = connect(TelnetParams::new(
+        TelnetOptions::default(),
+        String::new(),
+        None,
+        100,
+        30,
+    ))
+    .await;
+    harness
+        .server
+        .write_all(&[IAC, DO, OPT_NAWS])
+        .await
+        .unwrap();
+    read_until(&mut harness.server, &naws_frame(100, 30)).await;
+
+    // 服务器从此不读：一直发大块输入，直到界面这边收到"已丢弃按键"的提示——命令队列确实满了。
+    let chunk = vec![b'k'; 32 * 1024];
+    let deadline = Instant::now() + WAIT;
+    let mut full = false;
+    while !full {
+        assert!(Instant::now() < deadline, "队列一直没满");
+        for _ in 0..64 {
+            harness.backend.send(SessionCommand::Write(chunk.clone()));
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        while let Ok(event) = harness.events.try_recv() {
+            if let SessionEvent::Notice { text, .. } = &event
+                && text.contains("已丢弃")
+            {
+                full = true;
+            }
+        }
+    }
+
+    // 只改这一次窗口大小，之后不再碰窗口。
+    harness.backend.send(SessionCommand::Resize(Size {
+        rows: 50,
+        cols: 132,
+    }));
+
+    // 服务器恢复读取：把堆积的输入读完（量很大，只在滚动窗口里找，不整个攒起来），
+    // 最新的窗口大小要出现在流里。
+    let needle = naws_frame(132, 50);
+    let mut window: Vec<u8> = Vec::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    while !contains(&window, &needle) {
+        // 堆积的输入读完以后流就安静了：几秒没有新字节还没看到窗口大小，就是它丢了。
+        let read = tokio::time::timeout(Duration::from_secs(3), harness.server.read(&mut buffer))
+            .await
+            .expect("堆积的输入读完以后一直没等到最新的窗口大小")
+            .expect("读");
+        assert!(read > 0, "对端提前关闭了");
+        window.extend_from_slice(&buffer[..read]);
+        let keep = needle.len() - 1;
+        if window.len() > keep {
+            let cut = window.len() - keep;
+            if !contains(&window, &needle) {
+                window.drain(..cut);
+            }
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn naws_off_never_sends_a_window_size() {
     let mut harness = connect(params(TelnetOptions {

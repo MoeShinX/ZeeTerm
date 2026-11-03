@@ -7,6 +7,7 @@ use std::sync::mpsc::Sender;
 
 use tokio::sync::{mpsc, watch};
 use zssh_session::{SessionBackend, SessionCommand, SessionEvent};
+use zssh_terminal::Size;
 
 /// 命令队列容量（和 SSH 会话一致）。
 pub const COMMAND_QUEUE: usize = 256;
@@ -71,6 +72,9 @@ impl EventOut {
 pub struct StreamBackend {
     commands: mpsc::Sender<BackendCommand>,
     closing: watch::Sender<bool>,
+    /// 窗口大小是"最新状态"：只有最后一次有意义，不排进（可能已满的）命令队列，写进这个槽，
+    /// 会话任务有空时取最新的一个。
+    resizes: watch::Sender<Option<Size>>,
     notices: Sender<SessionEvent>,
     generation: u64,
     /// 已经提示过"输入被丢弃"，队列恢复之前不重复刷屏。
@@ -81,6 +85,8 @@ pub struct StreamBackend {
 pub struct BackendEnds {
     pub commands: mpsc::Receiver<BackendCommand>,
     pub closing: watch::Receiver<bool>,
+    /// 最新的窗口大小（还没改过是 `None`）。
+    pub resizes: watch::Receiver<Option<Size>>,
 }
 
 impl StreamBackend {
@@ -91,10 +97,12 @@ impl StreamBackend {
     ) -> (Self, BackendEnds) {
         let (commands, command_rx) = mpsc::channel(capacity);
         let (closing, closing_rx) = watch::channel(false);
+        let (resizes, resizes_rx) = watch::channel(None);
         (
             Self {
                 commands,
                 closing,
+                resizes,
                 notices,
                 generation,
                 warned: false,
@@ -102,6 +110,7 @@ impl StreamBackend {
             BackendEnds {
                 commands: command_rx,
                 closing: closing_rx,
+                resizes: resizes_rx,
             },
         )
     }
@@ -111,7 +120,7 @@ impl StreamBackend {
         match self.commands.try_send(command) {
             Ok(()) => self.warned = false,
             Err(mpsc::error::TrySendError::Full(_)) => {
-                // 改窗口大小丢了无所谓（下一次还会发）；输入丢了要让用户知道。
+                // 输入丢了要让用户知道。
                 if is_write && !self.warned {
                     self.warned = true;
                     let _ = self.notices.send(SessionEvent::Notice {
@@ -129,11 +138,16 @@ impl StreamBackend {
 
 impl SessionBackend for StreamBackend {
     fn send(&mut self, command: SessionCommand) {
-        if matches!(command, SessionCommand::Close) {
-            let _ = self.closing.send(true);
-            return;
+        match command {
+            SessionCommand::Close => {
+                let _ = self.closing.send(true);
+            }
+            // 窗口大小只认最新值，不占命令队列：输入堵满时也不会丢。
+            SessionCommand::Resize(size) => {
+                self.resizes.send_replace(Some(size));
+            }
+            SessionCommand::Write(_) => self.enqueue(BackendCommand::Session(command)),
         }
-        self.enqueue(BackendCommand::Session(command));
     }
 
     fn send_break(&mut self) {
@@ -234,12 +248,25 @@ mod tests {
     }
 
     #[test]
-    fn a_dropped_resize_is_silent() {
-        let (mut backend, _ends, rx) = parts();
-        for _ in 0..5 {
-            backend.send(SessionCommand::Resize(Size { rows: 5, cols: 5 }));
+    fn resizes_never_use_the_input_queue_and_only_the_latest_is_kept() {
+        let (mut backend, mut ends, rx) = parts();
+        // 先把输入队列塞满（容量 2），再连着改几次窗口大小：不提示、不占位、不丢。
+        for _ in 0..2 {
+            backend.send(SessionCommand::Write(b"x".to_vec()));
+        }
+        for cols in [10usize, 20, 30] {
+            backend.send(SessionCommand::Resize(Size { rows: 5, cols }));
         }
         assert_eq!(rx.try_iter().count(), 0);
+        assert_eq!(
+            *ends.resizes.borrow_and_update(),
+            Some(Size { rows: 5, cols: 30 })
+        );
+        let mut queued = 0;
+        while ends.commands.try_recv().is_ok() {
+            queued += 1;
+        }
+        assert_eq!(queued, 2, "队列里只有两个按键");
     }
 
     #[test]

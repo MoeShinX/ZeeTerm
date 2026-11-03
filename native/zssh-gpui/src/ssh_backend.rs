@@ -122,6 +122,9 @@ pub(crate) fn runtime() -> Result<&'static Runtime, String> {
 pub struct SshBackend {
     commands: mpsc::Sender<TermCommand>,
     closing: watch::Sender<bool>,
+    /// 窗口大小是"最新状态"：只有最后一次有意义，所以不排进命令队列（队列满会被丢掉），
+    /// 而是写进这个槽，会话任务有空时取最新的一个发给远端。
+    resizes: watch::Sender<Option<Size>>,
     notices: Sender<SessionEvent>,
     generation: u64,
     /// 已经提示过"输入被丢弃"，队列恢复之前不重复刷屏。
@@ -135,20 +138,25 @@ impl SshBackend {
         capacity: usize,
         notices: Sender<SessionEvent>,
         generation: u64,
-    ) -> (Self, mpsc::Receiver<TermCommand>, watch::Receiver<bool>) {
+    ) -> (Self, mpsc::Receiver<TermCommand>, SessionSignals) {
         let (commands, command_rx) = mpsc::channel(capacity);
         let (closing, closing_rx) = watch::channel(false);
+        let (resizes, resizes_rx) = watch::channel(None);
         (
             Self {
                 commands,
                 closing,
+                resizes,
                 notices,
                 generation,
                 warned: false,
                 terminal_id: None,
             },
             command_rx,
-            closing_rx,
+            SessionSignals {
+                closing: closing_rx,
+                resizes: resizes_rx,
+            },
         )
     }
 
@@ -160,14 +168,22 @@ impl SshBackend {
 
 impl SessionBackend for SshBackend {
     fn send(&mut self, command: SessionCommand) {
-        if matches!(command, SessionCommand::Close) {
-            let _ = self.closing.send(true);
-            return;
+        match command {
+            SessionCommand::Close => {
+                let _ = self.closing.send(true);
+                return;
+            }
+            // 窗口大小只认最新值，不进（可能已满的）命令队列，所以不会因为输入堵塞而丢。
+            SessionCommand::Resize(size) => {
+                self.resizes.send_replace(Some(size));
+                return;
+            }
+            SessionCommand::Write(_) => {}
         }
         match self.commands.try_send(TermCommand::Session(command)) {
             Ok(()) => self.warned = false,
             Err(mpsc::error::TrySendError::Full(dropped)) => {
-                // 改窗口大小丢了无所谓（下一次还会发）；输入丢了要让用户知道。
+                // 输入丢了要让用户知道。
                 if matches!(dropped, TermCommand::Session(SessionCommand::Write(_))) && !self.warned
                 {
                     self.warned = true;
@@ -430,7 +446,7 @@ impl SshSessionFactory {
         let gate = shell.flow_handle();
         let (writer, stream) = shell.split();
         let (events, event_rx) = std::sync::mpsc::channel();
-        let (mut backend, command_rx, closing_rx) =
+        let (mut backend, command_rx, signals) =
             SshBackend::new(COMMAND_QUEUE, events.clone(), generation);
         let state = Arc::new(TerminalState::new());
         let entry = terminals().register(
@@ -445,7 +461,7 @@ impl SshSessionFactory {
             writer,
             stream,
             command_rx,
-            closing_rx,
+            signals,
             events,
             generation,
             Some(state),
@@ -627,6 +643,12 @@ async fn finish_in_flight(
     }
 }
 
+/// 会话任务收的两路"最新状态"信号：关闭、窗口大小。都不走命令队列，所以不会被堵住的输入挡在后面或挤掉。
+pub(crate) struct SessionSignals {
+    closing: watch::Receiver<bool>,
+    resizes: watch::Receiver<Option<Size>>,
+}
+
 /// 会话任务入口。持有 `_connection` 是为了会话活着时连接不被释放。
 #[allow(clippy::too_many_arguments)]
 async fn run_session(
@@ -634,7 +656,7 @@ async fn run_session(
     writer: ShellWriter,
     mut stream: ShellEventStream,
     mut commands: mpsc::Receiver<TermCommand>,
-    mut closing: watch::Receiver<bool>,
+    mut signals: SessionSignals,
     events: Sender<SessionEvent>,
     generation: u64,
     terminal: Option<Arc<TerminalState>>,
@@ -644,7 +666,7 @@ async fn run_session(
         &writer,
         &mut stream,
         &mut commands,
-        &mut closing,
+        &mut signals,
         &events,
         generation,
         terminal.as_deref(),
@@ -666,7 +688,7 @@ async fn session_loop<W: ShellIo, S: ShellSource>(
     writer: &W,
     stream: &mut S,
     commands: &mut mpsc::Receiver<TermCommand>,
-    closing: &mut watch::Receiver<bool>,
+    signals: &mut SessionSignals,
     events: &Sender<SessionEvent>,
     generation: u64,
     terminal: Option<&TerminalState>,
@@ -675,7 +697,18 @@ async fn session_loop<W: ShellIo, S: ShellSource>(
     loop {
         tokio::select! {
             // 关闭不排在队列和写入后面。发送端被丢掉（后端没了）同样当作关闭。
-            _ = closing.changed() => break,
+            _ = signals.closing.changed() => break,
+            // 窗口大小和普通写入一样一次只进行一个（在途写入没完成前不取）；取的永远是最新的尺寸，
+            // 堵塞期间改了多次也只发最后一次。发送端没了就是后端被丢掉，按关闭处理。
+            changed = signals.resizes.changed(), if in_flight.is_none() => {
+                if changed.is_err() {
+                    break;
+                }
+                let latest = *signals.resizes.borrow_and_update();
+                if let Some(size) = latest {
+                    in_flight = Some(writer.resize(size.cols as u16, size.rows as u16));
+                }
+            }
             result = finish_in_flight(&mut in_flight) => {
                 in_flight = None;
                 if let Err(err) = result {
@@ -715,6 +748,7 @@ async fn session_loop<W: ShellIo, S: ShellSource>(
                     | Some(TermCommand::Reply(bytes)) => {
                         in_flight = Some(writer.write(bytes));
                     }
+                    // 正常情况下窗口大小走 `signals.resizes`，这里只是兜底（别处直接往队列里塞的）。
                     Some(TermCommand::Session(SessionCommand::Resize(size))) => {
                         in_flight = Some(writer.resize(size.cols as u16, size.rows as u16));
                     }
@@ -987,6 +1021,8 @@ mod tests {
     struct FakeIo {
         mode: WriteMode,
         written: Arc<Mutex<Vec<Vec<u8>>>>,
+        /// 远端实际收到的窗口大小（列、行），按收到的顺序。
+        resized: Arc<Mutex<Vec<(u16, u16)>>>,
         closed: Arc<AtomicBool>,
     }
 
@@ -1004,8 +1040,11 @@ mod tests {
             })
         }
 
-        fn resize(&self, _cols: u16, _rows: u16) -> BoxFuture<'_, Result<(), String>> {
-            Box::pin(async { Ok(()) })
+        fn resize(&self, cols: u16, rows: u16) -> BoxFuture<'_, Result<(), String>> {
+            Box::pin(async move {
+                self.resized.lock().unwrap().push((cols, rows));
+                Ok(())
+            })
         }
 
         fn close(&self) -> BoxFuture<'_, ()> {
@@ -1028,7 +1067,7 @@ mod tests {
         io: FakeIo,
         source: FakeSource,
         commands: mpsc::Receiver<TermCommand>,
-        closing: watch::Receiver<bool>,
+        closing: SessionSignals,
         events_tx: Sender<SessionEvent>,
         events_rx: Receiver<SessionEvent>,
         shell_tx: mpsc::UnboundedSender<ShellEvent>,
@@ -1043,6 +1082,7 @@ mod tests {
             io: FakeIo {
                 mode,
                 written: Arc::new(Mutex::new(Vec::new())),
+                resized: Arc::new(Mutex::new(Vec::new())),
                 closed: Arc::new(AtomicBool::new(false)),
             },
             source: FakeSource(shell_rx),
@@ -1240,6 +1280,152 @@ mod tests {
             queued += 1;
         }
         assert_eq!(queued, 2);
+    }
+
+    /// 写入要等"放行"信号才完成的假 shell：模拟远端一时不补充 SSH 窗口（输入堵住），解除拥塞后继续。
+    struct CongestedIo {
+        released: watch::Receiver<bool>,
+        written: Arc<Mutex<Vec<Vec<u8>>>>,
+        resized: Arc<Mutex<Vec<(u16, u16)>>>,
+    }
+
+    impl ShellIo for CongestedIo {
+        fn write(&self, data: Vec<u8>) -> BoxFuture<'_, Result<(), String>> {
+            Box::pin(async move {
+                let mut released = self.released.clone();
+                let _ = released.wait_for(|open| *open).await;
+                self.written.lock().unwrap().push(data);
+                Ok(())
+            })
+        }
+
+        fn resize(&self, cols: u16, rows: u16) -> BoxFuture<'_, Result<(), String>> {
+            Box::pin(async move {
+                self.resized.lock().unwrap().push((cols, rows));
+                Ok(())
+            })
+        }
+
+        fn close(&self) -> BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    /// R06：命令队列被输入堵满、远端又不收输入的时候只改一次窗口大小，之后窗口不再变——
+    /// 拥塞解除后远端必须最终收到新尺寸。窗口大小是"最新状态"，不能和按键一起被静默丢掉。
+    #[test]
+    fn a_resize_sent_while_the_input_queue_is_full_still_reaches_the_remote() {
+        let (events_tx, _events_rx) = std::sync::mpsc::channel();
+        let (mut backend, mut commands, mut closing) = SshBackend::new(2, events_tx.clone(), 1);
+        let (release, released) = watch::channel(false);
+        let io = CongestedIo {
+            released,
+            written: Arc::new(Mutex::new(Vec::new())),
+            resized: Arc::new(Mutex::new(Vec::new())),
+        };
+        let (_shell_tx, shell_rx) = mpsc::unbounded_channel();
+        let mut source = FakeSource(shell_rx);
+
+        // 输入把队列塞满（容量 2），多出来的按键被丢；随后只改一次窗口大小。
+        for _ in 0..6 {
+            backend.send(SessionCommand::Write(b"k".to_vec()));
+        }
+        backend.send(SessionCommand::Resize(Size {
+            rows: 40,
+            cols: 120,
+        }));
+
+        test_runtime().block_on(async {
+            let run = session_loop(
+                &io,
+                &mut source,
+                &mut commands,
+                &mut closing,
+                &events_tx,
+                1,
+                None,
+            );
+            tokio::pin!(run);
+            // 远端还堵着：在途的写入没完成，窗口大小也排不上，但会话仍在运行。
+            let outcome = tokio::time::timeout(Duration::from_millis(100), &mut run).await;
+            assert!(outcome.is_err());
+            assert!(io.resized.lock().unwrap().is_empty());
+
+            // 解除拥塞，什么都不再操作：远端最终收到新尺寸，而且只收到一次。
+            release.send(true).unwrap();
+            let outcome = tokio::time::timeout(Duration::from_millis(300), &mut run).await;
+            assert!(outcome.is_err());
+            assert_eq!(*io.resized.lock().unwrap(), vec![(120, 40)]);
+
+            backend.send(SessionCommand::Close);
+            tokio::time::timeout(Duration::from_secs(2), &mut run)
+                .await
+                .expect("Close 要能结束会话");
+        });
+    }
+
+    /// 窗口连续拖动时只有最后一个尺寸有意义：堵塞期间的多次改动合并成一次，远端收到的是最新值。
+    #[test]
+    fn resizes_while_congested_coalesce_into_the_latest_size() {
+        let (events_tx, _events_rx) = std::sync::mpsc::channel();
+        let (mut backend, mut commands, mut closing) = SshBackend::new(2, events_tx.clone(), 1);
+        let (release, released) = watch::channel(false);
+        let io = CongestedIo {
+            released,
+            written: Arc::new(Mutex::new(Vec::new())),
+            resized: Arc::new(Mutex::new(Vec::new())),
+        };
+        let (_shell_tx, shell_rx) = mpsc::unbounded_channel();
+        let mut source = FakeSource(shell_rx);
+        for _ in 0..4 {
+            backend.send(SessionCommand::Write(b"k".to_vec()));
+        }
+        for cols in [90usize, 100, 110, 132] {
+            backend.send(SessionCommand::Resize(Size { rows: 30, cols }));
+        }
+
+        test_runtime().block_on(async {
+            let run = session_loop(
+                &io,
+                &mut source,
+                &mut commands,
+                &mut closing,
+                &events_tx,
+                1,
+                None,
+            );
+            tokio::pin!(run);
+            let _ = tokio::time::timeout(Duration::from_millis(100), &mut run).await;
+            release.send(true).unwrap();
+            let _ = tokio::time::timeout(Duration::from_millis(300), &mut run).await;
+            assert_eq!(*io.resized.lock().unwrap(), vec![(132, 30)]);
+            backend.send(SessionCommand::Close);
+            let _ = tokio::time::timeout(Duration::from_secs(2), &mut run).await;
+        });
+    }
+
+    /// 窗口大小不占命令队列：队列满了的时候改尺寸既不丢，也不再占用输入的位置。
+    #[test]
+    fn a_resize_does_not_take_a_slot_in_the_input_queue() {
+        let mut h = harness(WriteMode::Ok, 2);
+        h.backend.send(SessionCommand::Write(b"a".to_vec()));
+        h.backend
+            .send(SessionCommand::Resize(Size { rows: 10, cols: 50 }));
+        h.backend.send(SessionCommand::Write(b"b".to_vec()));
+        let mut queued = Vec::new();
+        while let Ok(command) = h.commands.try_recv() {
+            queued.push(command);
+        }
+        assert!(
+            matches!(
+                queued.as_slice(),
+                [
+                    TermCommand::Session(SessionCommand::Write(first)),
+                    TermCommand::Session(SessionCommand::Write(second)),
+                ] if first == b"a" && second == b"b"
+            ),
+            "两个按键都进了队列：{queued:?}"
+        );
     }
 
     #[test]
@@ -1489,7 +1675,7 @@ mod tests {
         h.backend.send(SessionCommand::Write(b"k".to_vec()));
         h.backend.send(SessionCommand::Write(b"k".to_vec()));
         h.backend.send(SessionCommand::Close);
-        assert!(*h.closing.borrow_and_update());
+        assert!(*h.closing.closing.borrow_and_update());
     }
 
     fn quick_target(port: u16) -> zssh_core::model::QuickTarget {
