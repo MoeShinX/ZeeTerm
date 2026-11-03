@@ -140,7 +140,10 @@ impl HostStore {
         }
         let hosts = read(&mut error, "主机", db.host_list());
         let groups = read(&mut error, "分组", db.group_list());
-        let identities = read(&mut error, "凭据", db.identity_list());
+        // 内置助手接口的 API Key 也存在保险库里，但它归接口管：凭据页不显示、主机表单选不到。
+        let ai_keys = db.ai_endpoint_key_identity_ids().unwrap_or_default();
+        let identities = read(&mut error, "凭据", db.identity_list())
+            .map(|list| without_ai_keys(list, &ai_keys));
         let proxies = read(&mut error, "代理", db.proxy_list());
         let forwards = read(&mut error, "端口转发", db.forward_list());
         let flag = db.setting_get(FLAT_FLAG_KEY).ok().flatten();
@@ -407,6 +410,12 @@ pub fn normalize_address(raw: &str) -> String {
     trimmed.to_owned()
 }
 
+/// 去掉被内置助手接口当 API Key 用的凭据（界面的凭据列表、主机表单的下拉都只看这份）。
+pub fn without_ai_keys(mut identities: Vec<Identity>, ai_keys: &[i64]) -> Vec<Identity> {
+    identities.retain(|identity| !ai_keys.contains(&identity.id));
+    identities
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,6 +441,65 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    #[test]
+    fn an_endpoints_api_key_credential_is_hidden_from_the_credential_list_and_host_form() {
+        use zssh_core::ai::agent::builtin::config::{
+            AiEndpointDraft, EndpointKind, OpenAiOptionsConfig,
+        };
+        use zssh_core::model::{IdentityDraft, IdentityKind};
+        let mut store = HostStore::in_memory();
+        let db = store.db().expect("内存库");
+        let normal = db
+            .identity_save(&IdentityDraft {
+                id: None,
+                name: "普通密码".to_owned(),
+                kind: IdentityKind::Password,
+                key_path: None,
+                secret: Some("pw".to_owned()),
+                passphrase: None,
+            })
+            .expect("存凭据");
+        let endpoint = db
+            .ai_endpoint_save(&AiEndpointDraft {
+                id: None,
+                name: "主力".to_owned(),
+                kind: EndpointKind::OpenAiChat,
+                base_url: "https://api.example.com/v1".to_owned(),
+                api_key: Some("sk-test-0001".to_owned()),
+                default_model: None,
+                models: Vec::new(),
+                overrides: Default::default(),
+                openai_options: OpenAiOptionsConfig::default(),
+                preset_id: None,
+            })
+            .expect("存接口");
+        let key_id = endpoint.key_identity_id.expect("Key 在保险库里");
+        // 库里确实有两条凭据，但界面读到的只有普通那条。
+        assert_eq!(db.identity_list().expect("读").len(), 2);
+        assert!(store.reload());
+        let names: Vec<&str> = store.identities().iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["普通密码"], "{names:?}");
+        assert!(store.identities().iter().all(|i| i.id != key_id));
+        // 主机表单读的也是这份（`store.identities()`）；核心库另外在保存主机时拒绝选 Key 凭据
+        // （见 core 的 `the_key_identities_are_listed_and_hosts_cannot_pick_them`）。
+        let _ = normal;
+    }
+
+    #[test]
+    fn without_ai_keys_only_drops_the_listed_ids() {
+        use zssh_core::model::{Identity, IdentityKind};
+        let identity = |id: i64| Identity {
+            id,
+            name: format!("凭据{id}"),
+            kind: IdentityKind::Password,
+            key_path: None,
+            has_secret: true,
+        };
+        let kept = without_ai_keys(vec![identity(1), identity(2), identity(3)], &[2]);
+        assert_eq!(kept.iter().map(|i| i.id).collect::<Vec<_>>(), [1, 3]);
+        assert_eq!(without_ai_keys(vec![identity(1)], &[]).len(), 1);
     }
 
     #[test]
