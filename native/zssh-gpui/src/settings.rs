@@ -79,14 +79,14 @@ impl BracketedPaste {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiSettings {
-    /// 深色主题；新装默认深色（0.2.7 起，同 0.2.14 的 `ui_theme_mode`）。
+    /// 深色主题；`follow_system` 开着时只当作读不到系统值时的回退（新装默认深色）。
     pub dark: bool,
-    /// 跟随系统主题；`dark` 作为读不到系统值时的回退。
+    /// 跟随系统主题（V2-U17 起新装默认开）；`dark` 作为读不到系统值时的回退。
     pub follow_system: bool,
     /// 浅色、深色各用哪个皮肤（`app_theme::SKINS` 的 id）。
     pub skin_light: String,
     pub skin_dark: String,
-    /// 终端配色：`skin` = 跟随皮肤，或某个皮肤的 id（默认 Tokyo Night）。
+    /// 终端配色：`skin` = 跟随皮肤（默认），或某个皮肤的 id。
     pub terminal_theme: String,
     /// 终端字体栈，见 [`DEFAULT_FONT_FAMILY`]。
     pub font_family: String,
@@ -121,7 +121,7 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             dark: true,
-            follow_system: false,
+            follow_system: true,
             skin_light: crate::app_theme::DEFAULT_LIGHT_SKIN.to_owned(),
             skin_dark: crate::app_theme::DEFAULT_DARK_SKIN.to_owned(),
             terminal_theme: crate::app_theme::DEFAULT_TERMINAL_THEME.to_owned(),
@@ -380,11 +380,11 @@ mod tests {
         let settings = UiSettings::load_from(&path).unwrap();
         assert_eq!(settings.font_size, 16.0);
         assert_eq!(settings.line_height, DEFAULT_LINE_HEIGHT);
-        // 没写过的字段取 0.2.14 的默认：深色 + Dracula + Tokyo Night，回滚 10000 行。
-        assert!(settings.dark);
-        assert_eq!(settings.skin_dark, "dracula");
-        assert_eq!(settings.skin_light, "paper");
-        assert_eq!(settings.terminal_theme, "tokyo-night");
+        // 没写过的字段取新用户默认：跟随系统（读不到时深色）、GitHub / 石墨、终端跟随皮肤，回滚 10000 行。
+        assert!(settings.dark && settings.follow_system);
+        assert_eq!(settings.skin_dark, "graphite");
+        assert_eq!(settings.skin_light, "github-light");
+        assert_eq!(settings.terminal_theme, "skin");
         assert_eq!(settings.scrollback, 10_000);
         assert_eq!(settings.font_family, DEFAULT_FONT_FAMILY);
         assert!(!settings.copy_on_select);
@@ -417,14 +417,15 @@ mod tests {
     }
 
     #[test]
-    fn the_new_install_defaults_match_0_2_14() {
+    fn the_new_install_defaults() {
         let s = UiSettings::default();
-        assert!(s.dark && !s.follow_system, "新装默认深色");
+        assert!(s.follow_system, "新装默认跟随系统");
+        assert!(s.dark, "读不到系统明暗时的回退是深色");
         assert_eq!(
             (s.skin_light.as_str(), s.skin_dark.as_str()),
-            ("paper", "dracula")
+            ("github-light", "graphite")
         );
-        assert_eq!(s.terminal_theme, "tokyo-night");
+        assert_eq!(s.terminal_theme, "skin", "终端配色默认跟随皮肤");
         assert_eq!(
             s.font_family,
             "JetBrains Mono, Cascadia Mono, Consolas, monospace"
@@ -486,8 +487,8 @@ mod tests {
             ..Default::default()
         }
         .sanitized();
-        assert_eq!(settings.skin_light, "paper");
-        assert_eq!(settings.skin_dark, "dracula");
+        assert_eq!(settings.skin_light, "github-light");
+        assert_eq!(settings.skin_dark, "graphite");
         assert_eq!(settings.terminal_theme, "skin");
         assert_eq!(settings.font_family, DEFAULT_FONT_FAMILY);
         // 存在的选择原样保留。
