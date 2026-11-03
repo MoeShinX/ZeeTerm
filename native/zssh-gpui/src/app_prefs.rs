@@ -18,6 +18,8 @@ pub const FILE_WINDOW_CLOSE_KEY: &str = "file_window_close";
 /// 会话日志：开关（默认关）和目录（空 = 数据目录下的 `session-logs`），都只在本机。
 pub const SESSION_LOG_ENABLED_KEY: &str = "session_log_enabled";
 pub const SESSION_LOG_DIR_KEY: &str = "session_log_dir";
+/// 侧栏底部的「属性」面板（选中主机时显示名称 / 主机 / 用户名…）：默认关，只在本机（V2-U17）。
+pub const HOST_INFO_PANEL_KEY: &str = "host_info_panel";
 
 /// 保活间隔（秒，0 = 关闭）：滑块 0～300，步长 5。
 pub const KEEPALIVE_RANGE: (u32, u32) = (0, 300);
@@ -124,6 +126,8 @@ pub struct AppPrefs {
     pub session_log_enabled: bool,
     /// 设置里填的会话日志目录（已去掉首尾空白，可能为空）。
     pub session_log_dir: String,
+    /// 在侧栏显示主机属性面板（默认关）。
+    pub host_info_panel: bool,
 }
 
 impl Default for AppPrefs {
@@ -168,6 +172,7 @@ impl AppPrefs {
                 .map(|dir| dir.trim().to_owned())
                 .filter(|dir| !dir.chars().any(char::is_control))
                 .unwrap_or_default(),
+            host_info_panel: flag(raw(HOST_INFO_PANEL_KEY).as_deref(), false),
         }
     }
 
@@ -275,6 +280,18 @@ mod tests {
         assert_eq!(p.file_window_close, FileWindowChoice::Close);
         assert!(!p.session_log_enabled, "会话日志默认关");
         assert_eq!(p.session_log_dir, "");
+    }
+
+    #[test]
+    fn the_host_info_panel_is_off_by_default_and_the_choice_is_saved() {
+        assert!(!AppPrefs::default().host_info_panel, "属性面板默认关");
+        assert!(!prefs(&[("host_info_panel", "garbage")]).host_info_panel);
+        let db = Database::open_in_memory().expect("内存库");
+        assert!(!AppPrefs::load(&db).host_info_panel);
+        write_flag(&db, HOST_INFO_PANEL_KEY, true).unwrap();
+        assert!(AppPrefs::load(&db).host_info_panel);
+        write_flag(&db, HOST_INFO_PANEL_KEY, false).unwrap();
+        assert!(!AppPrefs::load(&db).host_info_panel);
     }
 
     #[test]

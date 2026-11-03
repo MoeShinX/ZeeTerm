@@ -353,7 +353,7 @@ fn check_not_ai_key(
         }
     }
     Err(ZsshError::InvalidInput(
-        "这条凭据是内置助手接口的 API Key，不能给主机用。".to_owned(),
+        "这条凭据是 ZeePilot 接口的 API Key，不能给主机用。".to_owned(),
     ))
 }
 

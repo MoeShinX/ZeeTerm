@@ -64,7 +64,7 @@ impl Database {
                     )
                     .optional()?
                     .ok_or(ZsshError::NotFound {
-                        entity: "内置助手接口",
+                        entity: "ZeePilot 接口",
                         id,
                     })?,
                 ),
@@ -217,7 +217,7 @@ impl Database {
                 )
                 .optional()?
                 .ok_or(ZsshError::NotFound {
-                    entity: "内置助手接口",
+                    entity: "ZeePilot 接口",
                     id,
                 })?;
             match key_id {
@@ -288,7 +288,7 @@ fn endpoint_get(conn: &Connection, id: i64) -> Result<AiEndpoint, ZsshError> {
     )
     .map_err(|err| match err {
         rusqlite::Error::QueryReturnedNoRows => ZsshError::NotFound {
-            entity: "内置助手接口",
+            entity: "ZeePilot 接口",
             id,
         },
         other => other.into(),

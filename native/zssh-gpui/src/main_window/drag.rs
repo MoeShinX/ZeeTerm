@@ -92,14 +92,13 @@ impl Render for DragChip {
             .shadow_lg()
             .text_xs()
             .text_color(tokens.text)
-            .child(
-                match self.item {
-                    DragItem::Host(_) => Icon::new(crate::icons::Ico::Server),
-                    DragItem::Group(_) => Icon::new(IconName::Folder),
-                }
-                .size_3()
-                .text_color(tokens.text_muted),
-            )
+            .child(match self.item {
+                DragItem::Host(_) => Icon::new(crate::icons::Ico::Server)
+                    .size_3()
+                    .text_color(tokens.text_muted)
+                    .into_any_element(),
+                DragItem::Group(_) => crate::icons::folder_icon(false, 12.0).into_any_element(),
+            })
             .child(SharedString::from(text))
     }
 }

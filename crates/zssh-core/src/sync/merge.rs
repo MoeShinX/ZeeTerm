@@ -638,7 +638,7 @@ pub fn null_missing_references(snapshot: &mut SyncSnapshot) -> Vec<String> {
         if let Some(key) = endpoint.key_identity_uid.clone() {
             if !identity_uids.contains(&key) {
                 notes.push(format!(
-                    "内置助手接口「{}」的 API Key 凭据已不存在，已改为没设置 Key",
+                    "ZeePilot 接口「{}」的 API Key 凭据已不存在，已改为没设置 Key",
                     endpoint.name
                 ));
                 endpoint.key_identity_uid = None;
@@ -656,7 +656,7 @@ pub fn null_missing_references(snapshot: &mut SyncSnapshot) -> Vec<String> {
                 .is_none_or(|uid| !endpoint_uids.contains(uid))
         });
     if dangling_default {
-        notes.push("内置助手的默认接口已不存在，已清除默认接口设置".to_owned());
+        notes.push("ZeePilot 的默认接口已不存在，已清除默认接口设置".to_owned());
         snapshot
             .settings
             .remove(crate::store::settings::AI_BUILTIN_DEFAULT_KEY);

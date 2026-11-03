@@ -48,13 +48,16 @@ pub struct Skin {
     pub terminal: TermPalette,
 }
 
-/// 浅色、深色各自的默认皮肤（浅色「纸白」、深色「Dracula」）。
-pub const DEFAULT_LIGHT_SKIN: &str = "paper";
-pub const DEFAULT_DARK_SKIN: &str = "dracula";
+/// 浅色、深色各自的默认皮肤（浅色「GitHub」、深色「石墨」；V2-U17 起，只影响没设置过的新用户）。
+pub const DEFAULT_LIGHT_SKIN: &str = "github-light";
+pub const DEFAULT_DARK_SKIN: &str = "graphite";
 /// 终端配色设置的特殊值：跟随当前皮肤。
 pub const TERMINAL_FOLLOW_SKIN: &str = "skin";
-/// 终端配色的默认值：Tokyo Night（0.2.7 起新装默认，只影响没改过这项设置的人）。
-pub const DEFAULT_TERMINAL_THEME: &str = "tokyo-night";
+/// 终端配色的默认值：跟随皮肤（V2-U17 起；之前是固定 Tokyo Night）。只影响没改过这项设置的人。
+pub const DEFAULT_TERMINAL_THEME: &str = TERMINAL_FOLLOW_SKIN;
+
+/// 聚焦控件外面的光晕圈：关（只留 1px 强调色边框）。见 `apply`。
+pub const FOCUS_HALO: bool = false;
 
 /// 全部皮肤，顺序和 0.2.14 `skins.ts` 的 `SKINS` 一样（先浅色后深色）。
 /// 色值由脚本从 `skins.ts` 抽出，不手写；`skin_ids_match_the_sync_whitelist` 核对 id 与同步白名单一致。
@@ -863,6 +866,9 @@ fn apply(dark: bool, cx: &mut App) {
         // 界面字体：显式的字体栈代替 `.SystemUIFont`（见 `fonts::resolve_ui_font`）。中文后备在各窗口的
         // 顶层元素上设（`typography::UiFontStyled`），主题只有主字体一个槽。
         theme.font_family = ui_font.family.clone().into();
+        // 输入框聚焦只把 1px 边框换成强调色（`ring` = 强调色）：组件库默认还会在外面再画一圈半透明光晕，
+        // 和边框叠成「粗蓝双框」（V2-U17）。关掉这个开关，组件库就退回到只染边框的样式，按钮的键盘焦点也是这样。
+        theme.focus_ring = FOCUS_HALO;
         let c = &mut theme.colors;
         c.background = t.background;
         c.foreground = t.text;
@@ -980,11 +986,11 @@ mod tests {
     use super::*;
 
     fn light() -> Skin {
-        *skin_for(false, DEFAULT_LIGHT_SKIN)
+        *skin_for(false, "paper")
     }
 
     fn dark() -> Skin {
-        *skin_for(true, DEFAULT_DARK_SKIN)
+        *skin_for(true, "dracula")
     }
 
     #[test]
@@ -1008,6 +1014,18 @@ mod tests {
         assert_eq!(mix(0x102030, 0xFFFFFF, 1.0), 0x102030);
         assert_eq!(mix(0x102030, 0xFFFFFF, 0.0), 0xFFFFFF);
         assert_eq!(mix(0x000000, 0xFFFFFF, 0.5), 0x808080);
+    }
+
+    #[test]
+    fn focus_is_a_thin_accent_border_without_the_outer_halo() {
+        // 聚焦输入框 = 1px 强调色边框；外圈光晕关着（组件库在光晕关闭时只染边框）。
+        const { assert!(!FOCUS_HALO) };
+        let source = include_str!("app_theme.rs");
+        assert!(
+            source.contains("theme.focus_ring = FOCUS_HALO;"),
+            "apply 要把它写进主题"
+        );
+        assert!(source.contains("c.ring = t.accent;"), "边框色取强调色");
     }
 
     #[test]
@@ -1039,16 +1057,26 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_are_the_0_2_7_look() {
-        // 新装默认：深色 + Dracula + Tokyo Night 终端（UI-8）；浅色默认「纸白」。
+    fn the_defaults_are_github_graphite_and_a_terminal_that_follows_the_skin() {
+        // 新用户默认（V2-U17）：浅色 GitHub、深色石墨、终端配色跟随皮肤。
         let look = Look::default();
-        assert_eq!(look.skin(true).id, "dracula");
-        assert_eq!(look.skin(false).id, "paper");
-        assert_eq!(look.terminal_theme, "tokyo-night");
-        // 界面是 Dracula，终端却是 Tokyo Night：两套底色不同。
-        let term = look.terminal_palette(true);
-        assert_eq!(term.background, 0x1A1B26);
-        assert_ne!(term.background, look.skin(true).ui.background);
+        assert_eq!(look.skin(true).id, "graphite");
+        assert_eq!(look.skin(false).id, "github-light");
+        assert_eq!(look.terminal_theme, TERMINAL_FOLLOW_SKIN);
+        // 跟随皮肤：终端底色就是皮肤自己的终端底色，不会出现「界面浅色、终端深色」。
+        for dark in [false, true] {
+            assert_eq!(
+                look.terminal_palette(dark).background,
+                look.skin(dark).terminal.background
+            );
+        }
+        // 这三个默认值都得是真实存在的皮肤，且明暗对得上。
+        assert!(skin(DEFAULT_LIGHT_SKIN).is_some_and(|s| !s.dark));
+        assert!(skin(DEFAULT_DARK_SKIN).is_some_and(|s| s.dark));
+        assert_eq!(
+            normalize_terminal_theme(DEFAULT_TERMINAL_THEME),
+            TERMINAL_FOLLOW_SKIN
+        );
     }
 
     #[test]
@@ -1159,7 +1187,7 @@ mod tests {
             );
             assert!(contrast(ink.primary, skin.ui.surface) >= 9.5, "{}", skin.id);
         }
-        // 默认两个皮肤的具体取值：纸白 #1b1b1b，Dracula #fcfcf9。
+        // 纸白 #1b1b1b、Dracula #fcfcf9 的具体取值。
         assert_eq!(ink_for(&light()).primary, 0x1B1B1B);
         assert_eq!(ink_for(&dark()).primary, 0xFCFCF9);
     }

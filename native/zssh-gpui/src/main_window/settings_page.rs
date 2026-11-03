@@ -390,6 +390,7 @@ impl MainWindow {
             "sftp_hidden" => self.set_pref_flag(PrefFlag::SftpShowHidden, flag()?, window, cx),
             "ungrouped_flat" => self.set_ungrouped_flat(flag()?, window, cx),
             "session_log" => self.set_session_log_enabled(flag()?, window, cx),
+            "host_info_panel" => self.set_host_info_panel(flag()?, window, cx),
             "session_log_dir" => self.set_session_log_dir(value.to_owned(), window, cx),
             "close_action" => {
                 let choice = if value == "quit" {
@@ -444,6 +445,7 @@ impl MainWindow {
             "sftp_perms" => text(prefs.sftp_preserve_permissions),
             "sftp_hidden" => text(prefs.sftp_show_hidden),
             "session_log" => text(prefs.session_log_enabled),
+            "host_info_panel" => text(prefs.host_info_panel),
             "session_log_dir" => prefs.session_log_dir,
             "close_action" => prefs.close_action.id().to_owned(),
             "file_window_close" => prefs.file_window_close.id().to_owned(),
@@ -885,21 +887,36 @@ impl MainWindow {
     /// 主机树：不显示「未分组」文件夹（0.2.14 的 `HostTreeCard`，写同步键 `vault_ungrouped_flat`）。
     fn host_tree_card(&self, tokens: &Tokens, cx: &mut Context<Self>) -> ::gpui::AnyElement {
         let entity = cx.entity();
+        let info_entity = entity.clone();
         card(
             "settings-host-tree",
             "主机树",
             None,
             tokens,
-            vec![pref_switch(
-                "ungrouped-flat",
-                "主机树里不显示「未分组」文件夹，不分组的主机直接放在最下面",
-                "打开后，没有分组的主机排在所有分组下面，中间用一条线隔开。",
-                self.store.flat(),
-                tokens,
-                move |checked, window, cx| {
-                    entity.update(cx, |this, cx| this.set_ungrouped_flat(checked, window, cx));
-                },
-            )],
+            vec![
+                pref_switch(
+                    "ungrouped-flat",
+                    "主机树里不显示「未分组」文件夹，不分组的主机直接放在最下面",
+                    "打开后，没有分组的主机排在所有分组下面，中间用一条线隔开。",
+                    self.store.flat(),
+                    tokens,
+                    move |checked, window, cx| {
+                        entity.update(cx, |this, cx| this.set_ungrouped_flat(checked, window, cx));
+                    },
+                ),
+                pref_switch(
+                    "host-info-panel",
+                    "在侧栏显示主机属性面板",
+                    "选中主机时，在侧栏底部显示名称、主机、用户名、协议、端口。默认关。",
+                    self.prefs.host_info_panel,
+                    tokens,
+                    move |checked, window, cx| {
+                        info_entity.update(cx, |this, cx| {
+                            this.set_host_info_panel(checked, window, cx);
+                        });
+                    },
+                ),
+            ],
         )
     }
 
@@ -1096,6 +1113,24 @@ impl MainWindow {
             .and_then(|db| app_prefs::write_flag(db, app_prefs::SESSION_LOG_ENABLED_KEY, enabled));
         match result {
             Ok(()) => self.prefs.session_log_enabled = enabled,
+            Err(err) => self.notice_error(&err, window, cx),
+        }
+        cx.notify();
+    }
+
+    /// 「在侧栏显示主机属性面板」：只写本机设置；关掉时顺手清掉已经展开的那台。
+    fn set_host_info_panel(&mut self, enabled: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let result = self
+            .store
+            .db()
+            .and_then(|db| app_prefs::write_flag(db, app_prefs::HOST_INFO_PANEL_KEY, enabled));
+        match result {
+            Ok(()) => {
+                self.prefs.host_info_panel = enabled;
+                if !enabled {
+                    self.info_host = None;
+                }
+            }
             Err(err) => self.notice_error(&err, window, cx),
         }
         cx.notify();

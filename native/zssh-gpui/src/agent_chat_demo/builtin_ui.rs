@@ -447,7 +447,7 @@ impl AgentChatDemo {
         let runtime = match runtime() {
             Ok(runtime) => runtime,
             Err(err) => {
-                self.start_failed(format!("启动内置助手失败：{err}"), cx);
+                self.start_failed(format!("启动 ZeePilot 失败：{err}"), cx);
                 return;
             }
         };

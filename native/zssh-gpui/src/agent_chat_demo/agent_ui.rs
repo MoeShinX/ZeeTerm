@@ -5,12 +5,13 @@
 
 use ::gpui::ClickEvent;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::*;
 use gpui_kit::*;
 
 use super::{AgentChatDemo, redact_paths};
 use crate::agent_setup::{self, AgentKind, Availability, InstallState};
+use crate::menu_kit;
 
 impl AgentChatDemo {
     /// 智能体下拉（面板顶部）：每项带"未安装 / 未登录 / 版本过低"的备注，不可用的灰掉点不了；
@@ -34,20 +35,21 @@ impl AgentChatDemo {
                 let mut menu = menu.min_w(::gpui::px(180.0));
                 if builtin_items.is_empty() {
                     menu = menu.item(
-                        PopupMenuItem::new(format!("{}  ·  未配置", AgentKind::Builtin.label()))
-                            .disabled(true),
+                        menu_kit::choice(
+                            format!("{}  ·  未配置", AgentKind::Builtin.label()),
+                            false,
+                        )
+                        .disabled(true),
                     );
                 }
                 for (id, label, selected) in &builtin_items {
                     let entity = entity.clone();
                     let id = *id;
-                    menu = menu.item(
-                        PopupMenuItem::new(label.clone())
-                            .checked(*selected)
-                            .on_click(move |_: &ClickEvent, _window, cx| {
-                                entity.update(cx, |this, cx| this.switch_builtin_endpoint(id, cx));
-                            }),
-                    );
+                    menu = menu.item(menu_kit::choice(label.clone(), *selected).on_click(
+                        move |_: &ClickEvent, _window, cx| {
+                            entity.update(cx, |this, cx| this.switch_builtin_endpoint(id, cx));
+                        },
+                    ));
                 }
                 for (kind, note) in &items {
                     let entity = entity.clone();
@@ -57,8 +59,7 @@ impl AgentChatDemo {
                         None => kind.label().to_owned(),
                     };
                     menu = menu.item(
-                        PopupMenuItem::new(label)
-                            .checked(current == kind)
+                        menu_kit::choice(label, current == kind)
                             .disabled(note.is_some())
                             .on_click(move |_: &ClickEvent, _window, cx| {
                                 entity.update(cx, |this, cx| this.switch_agent(kind, cx));

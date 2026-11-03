@@ -133,30 +133,29 @@ fn banner(color: Hsla, children: Vec<AnyElement>) -> AnyElement {
         .into_any_element()
 }
 
-fn label_cell(label: &'static str) -> impl IntoElement {
-    div().w(px(LABEL_WIDTH)).flex_none().text_sm().child(label)
+/// 字段上方的小标签（V2-U17 起表单都是「上标签、下输入框」的单栏，不再左标签对齐）。
+fn label_above(label: &'static str, tokens: &Tokens) -> impl IntoElement {
+    div().typo(Role::FieldLabel, tokens).child(label)
 }
 
-/// 带标签的输入行。
-fn field(label: &'static str, input: &Entity<InputState>) -> AnyElement {
-    h_flex()
+/// 一个字段：标签在上、输入框在下，整行宽。
+fn field(label: &'static str, input: &Entity<InputState>, tokens: &Tokens) -> AnyElement {
+    v_flex()
         .w_full()
-        .gap_2()
-        .items_center()
-        .child(label_cell(label))
-        .child(Input::new(input).flex_1())
+        .gap_1()
+        .child(label_above(label, tokens))
+        .child(Input::new(input).w_full())
         .into_any_element()
 }
 
-fn password_field(label: &'static str, input: &Entity<InputState>) -> AnyElement {
-    h_flex()
+fn password_field(label: &'static str, input: &Entity<InputState>, tokens: &Tokens) -> AnyElement {
+    v_flex()
         .w_full()
-        .gap_2()
-        .items_center()
-        .child(label_cell(label))
+        .gap_1()
+        .child(label_above(label, tokens))
         .child(
             Input::new(input)
-                .flex_1()
+                .w_full()
                 .content_type(InputContentType::Password),
         )
         .into_any_element()
@@ -371,47 +370,45 @@ impl SyncDemo {
     }
 
     fn provider_row(&self, entity: &Entity<Self>, tokens: &Tokens) -> AnyElement {
+        const CHOICES: [ProviderChoice; 4] = [
+            ProviderChoice::WebDav,
+            ProviderChoice::S3,
+            ProviderChoice::Github,
+            ProviderChoice::OneDrive,
+        ];
         let current = self.drafts.provider;
-        let button = |choice: ProviderChoice, id: &'static str| {
-            let target = entity.clone();
-            Button::new(id)
-                .label(choice.label())
-                .compact()
-                .toggled(current == choice)
-                .on_click(move |_, _, cx| {
-                    target.update(cx, |this, cx| this.switch_provider(choice, cx));
-                })
-        };
-        h_flex()
+        let target = entity.clone();
+        v_flex()
             .w_full()
-            .gap_2()
-            .items_center()
-            .child(
-                div()
-                    .w(px(LABEL_WIDTH))
-                    .flex_none()
-                    .text_sm()
-                    .text_color(tokens.text_muted)
-                    .child("存储类型"),
-            )
-            .child(button(ProviderChoice::WebDav, "sync-provider-webdav"))
-            .child(button(ProviderChoice::S3, "sync-provider-s3"))
-            .child(button(ProviderChoice::Github, "sync-provider-github"))
-            .child(button(ProviderChoice::OneDrive, "sync-provider-onedrive"))
+            .gap_1()
+            .child(label_above("存储类型", tokens))
+            .child(crate::main_window::widgets::segmented_bar(
+                "sync-provider",
+                CHOICES
+                    .iter()
+                    .map(|choice| (choice.label().to_owned(), *choice == current, None))
+                    .collect(),
+                tokens,
+                move |index, _, cx| {
+                    if let Some(choice) = CHOICES.get(index).copied() {
+                        target.update(cx, |this, cx| this.switch_provider(choice, cx));
+                    }
+                },
+            ))
             .into_any_element()
     }
 
     #[inline(never)]
     fn webdav_rows(&self, entity: &Entity<Self>, tokens: &Tokens, cx: &App) -> AnyElement {
         let mut rows = vec![
-            field("WebDAV 地址", &self.url),
+            field("WebDAV 地址", &self.url, tokens),
             muted(
                 "例如 https://dav.example.com/remote.php/dav/files/me/",
                 tokens,
             ),
-            field("用户名", &self.username),
-            password_field("密码", &self.password),
-            field("存放目录（可选）", &self.directory),
+            field("用户名", &self.username, tokens),
+            password_field("密码", &self.password, tokens),
+            field("存放目录（可选）", &self.directory, tokens),
             muted("同步包放在这个子目录里，不存在会自动创建。", tokens),
         ];
         if self.webdav_has_secret {
@@ -454,21 +451,20 @@ impl SyncDemo {
         let style = entity.clone();
         let path_style = self.drafts.s3.path_style;
         let mut rows = vec![
-            field("Endpoint", &self.s3_endpoint),
+            field("Endpoint", &self.s3_endpoint, tokens),
             muted(
                 "例如 https://s3.us-east-1.amazonaws.com、http://127.0.0.1:9000",
                 tokens,
             ),
-            field("Region", &self.s3_region),
-            field("Bucket", &self.s3_bucket),
-            field("Access Key", &self.s3_access_key),
-            password_field("Secret", &self.s3_secret),
-            field("对象路径前缀（可选）", &self.s3_prefix),
-            h_flex()
+            field("Region", &self.s3_region, tokens),
+            field("Bucket", &self.s3_bucket, tokens),
+            field("Access Key", &self.s3_access_key, tokens),
+            password_field("Secret", &self.s3_secret, tokens),
+            field("对象路径前缀（可选）", &self.s3_prefix, tokens),
+            v_flex()
                 .w_full()
-                .gap_2()
-                .items_center()
-                .child(label_cell("地址风格"))
+                .gap_1()
+                .child(label_above("地址风格", tokens))
                 .child(
                     Button::new("sync-s3-path-style")
                         .label(if path_style {
@@ -495,17 +491,17 @@ impl SyncDemo {
     #[inline(never)]
     fn github_rows(&self, entity: &Entity<Self>, tokens: &Tokens, cx: &App) -> AnyElement {
         let mut rows = vec![
-            field("接口地址", &self.github_api_base),
+            field("接口地址", &self.github_api_base, tokens),
             muted(
                 "留空 = https://api.github.com（GitHub Enterprise 填自己的）",
                 tokens,
             ),
-            password_field("个人访问令牌", &self.github_token),
+            password_field("个人访问令牌", &self.github_token, tokens),
             muted(
                 "需要 gist 权限。令牌只用本机的 Windows 账户加密保存，不会进同步包。",
                 tokens,
             ),
-            field("Gist ID", &self.github_gist_id),
+            field("Gist ID", &self.github_gist_id, tokens),
             muted(
                 "留空 = 第一次同步时自动新建一个 secret Gist。第二台电脑上填同一个 Gist ID 和一个有 \
                  Gist 权限的令牌。secret Gist 拿到链接的人都能打开，但里面是密文。",
@@ -703,7 +699,7 @@ impl SyncDemo {
                     ),
                 )
                 .when(self.onedrive_advanced, |col| {
-                    col.child(field("自己的 client ID", &self.onedrive_client_id))
+                    col.child(field("自己的 client ID", &self.onedrive_client_id, tokens))
                         .child(muted(
                             "填了就用它登录，不用程序里内置的。client ID 只存在这台电脑上，不会同步。",
                             tokens,
@@ -822,11 +818,15 @@ impl SyncDemo {
                 tokens,
             ));
         }
-        rows.push(password_field("主密码", &self.master_password));
+        rows.push(password_field("主密码", &self.master_password, tokens));
         let typed = self.master_password.read(cx).value().to_string();
         if creating {
             rows.extend(strength_bar(&typed, tokens));
-            rows.push(password_field("再输入一次", &self.master_password_confirm));
+            rows.push(password_field(
+                "再输入一次",
+                &self.master_password_confirm,
+                tokens,
+            ));
             let flip = entity.clone();
             rows.push(
                 Checkbox::new("sync-understood")
@@ -892,11 +892,15 @@ impl SyncDemo {
         }
         let new_text = self.change_pw.new.read(cx).value().to_string();
         let mut form: Vec<AnyElement> = vec![
-            password_field("旧主密码", &self.change_pw.old),
-            password_field("新主密码", &self.change_pw.new),
+            password_field("旧主密码", &self.change_pw.old, tokens),
+            password_field("新主密码", &self.change_pw.new, tokens),
         ];
         form.extend(strength_bar(&new_text, tokens));
-        form.push(password_field("确认新主密码", &self.change_pw.confirm));
+        form.push(password_field(
+            "确认新主密码",
+            &self.change_pw.confirm,
+            tokens,
+        ));
         form.push(muted(
             "会用新密码重新加密云端数据。忘记主密码就无法恢复云端数据。",
             tokens,

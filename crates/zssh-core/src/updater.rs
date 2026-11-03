@@ -422,14 +422,14 @@ mod tests {
 
     #[test]
     fn release_page_comes_from_the_github_endpoint() {
-        let endpoint = "https://github.com/MoeShinX/Z-SSH/releases/latest/download/latest.json";
+        let endpoint = "https://github.com/MoeShinX/ZeeTerm/releases/latest/download/latest.json";
         assert_eq!(
             release_page_url(endpoint, "0.1.2").as_deref(),
-            Some("https://github.com/MoeShinX/Z-SSH/releases/tag/v0.1.2")
+            Some("https://github.com/MoeShinX/ZeeTerm/releases/tag/v0.1.2")
         );
         assert_eq!(
             release_page_url(endpoint, "v0.2.0-beta.1").as_deref(),
-            Some("https://github.com/MoeShinX/Z-SSH/releases/tag/v0.2.0-beta.1")
+            Some("https://github.com/MoeShinX/ZeeTerm/releases/tag/v0.2.0-beta.1")
         );
         assert_eq!(
             release_page_url("http://github.com/a/b/releases/x", "1.0.0"),

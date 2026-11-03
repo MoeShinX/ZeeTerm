@@ -15,7 +15,7 @@ use std::time::Duration;
 use ::gpui::{App, Entity, ScrollHandle, SharedString, Subscription, Window, px};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::*;
 use gpui_kit::*;
 use zssh_core::ai::agent::builtin::catalog::{
@@ -34,6 +34,7 @@ use super::widgets::{
 };
 use crate::agent_setup::builtin::{self, caps_summary, source_label};
 use crate::app_theme::Tokens;
+use crate::menu_kit;
 use crate::typography::{Role, Typo as _};
 
 /// 对话框卡片宽度：和主机属性一样的单栏表单。
@@ -1339,7 +1340,7 @@ impl MainWindow {
                     for model in &choices {
                         let pick = pick.clone();
                         let model = model.clone();
-                        menu = menu.item(PopupMenuItem::new(model.clone()).on_click(
+                        menu = menu.item(menu_kit::choice(model.clone(), false).on_click(
                             move |_: &::gpui::ClickEvent, window, cx| {
                                 let model = model.clone();
                                 pick.update(cx, |this, cx| {
@@ -1817,7 +1818,7 @@ impl MainWindow {
                     }
                     let pick = pick.clone();
                     let model = model.clone();
-                    menu = menu.item(PopupMenuItem::new(text).on_click(
+                    menu = menu.item(menu_kit::choice(text, false).on_click(
                         move |_: &::gpui::ClickEvent, window, cx| {
                             let model = model.clone();
                             pick.update(cx, |this, cx| {

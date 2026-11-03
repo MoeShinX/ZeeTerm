@@ -22,8 +22,9 @@ pub use install::{
     verify_plan_file,
 };
 
-/// 更新配置（`updater.json`，只有 `pubkey` 和 `endpoints`），编译期嵌入。ZeeTerm 沿用 Tauri 版的
-/// 同一把公钥和同一个更新源，这样从 Tauri 版装的程序更新到 ZeeTerm 时验的是同一条信任链。
+/// 更新配置（`updater.json`，只有 `pubkey` 和 `endpoints`），编译期嵌入。公钥暂时沿用 Tauri 版的那一把
+/// （发版签名没换）；更新源指向 ZeeTerm 自己的发布仓库，**绝不能指回 Z-SSH 的**：那份清单里是 Tauri 版的安装包，
+/// 拉下来就把 ZeeTerm 装回成 Tauri 版。
 /// 这份文件放在本 crate 里而不是读 `src-tauri/tauri.conf.json`，是为了让原生版能脱离 Tauri 版
 /// 单独成库；在同时带着 Tauri 版的仓库里，有测试保证两份内容一致。
 const UPDATER_CONF: &str = include_str!("../updater.json");
@@ -310,6 +311,27 @@ mod tests {
             url.starts_with("https://github.com/") && url.ends_with("/releases")
         }));
     }
+    #[test]
+    fn updates_come_from_the_zeeterm_repository_never_from_z_ssh() {
+        let config = embedded_config().expect("内嵌的更新配置应能解析");
+        assert!(!config.endpoints.is_empty());
+        for endpoint in &config.endpoints {
+            assert!(
+                endpoint.starts_with("https://github.com/MoeShinX/ZeeTerm/releases/"),
+                "{endpoint}"
+            );
+            assert!(
+                !endpoint.to_ascii_lowercase().contains("z-ssh"),
+                "更新源不能指向 Z-SSH 的仓库：{endpoint}"
+            );
+        }
+        // 试用版「打开发布页」由它推出来。
+        assert_eq!(
+            releases_page_url(&config.endpoints[0]).as_deref(),
+            Some("https://github.com/MoeShinX/ZeeTerm/releases")
+        );
+    }
+
     #[test]
     fn production_public_key_decodes() {
         let config = embedded_config().expect("内嵌的更新配置应能解析");

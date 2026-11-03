@@ -196,11 +196,11 @@ mod tests {
                 assert!(c >= 3.0, "{} 的第 {i} 个字对比度只有 {c:.2}", skin.name);
             }
         }
-        // 默认的浅色（纸白）、深色（Dracula）皮肤：浅色底上完全保持原渐变，深色底上只调亮暗端。
-        let paper = crate::app_theme::skin_for(false, crate::app_theme::DEFAULT_LIGHT_SKIN);
+        // 纸白、Dracula 皮肤（不再是默认皮肤，但渐变的取色规则要对它们保持）：浅色底上完全保持原渐变，深色底上只调亮暗端。
+        let paper = crate::app_theme::skin_for(false, "paper");
         assert_eq!(title_color_on(0, 7, paper.ui.background), 0x7950F2);
         assert_eq!(title_color_on(6, 7, paper.ui.background), 0xA263FF);
-        let dracula = crate::app_theme::skin_for(true, crate::app_theme::DEFAULT_DARK_SKIN);
+        let dracula = crate::app_theme::skin_for(true, "dracula");
         assert_eq!(title_color_on(6, 7, dracula.ui.background), 0xA263FF);
         assert_ne!(title_color_on(0, 7, dracula.ui.background), 0x7950F2);
     }

@@ -424,7 +424,7 @@ fn builtin_content_roundtrips_and_keeps_unknown_option_keys() {
     snapshot.sort_canonical();
     assert_eq!(
         snapshot.schema_version, 3,
-        "内置助手 + 协议字段同时有，取更高的版本"
+        "ZeePilot + 协议字段同时有，取更高的版本"
     );
     let bytes = snapshot.to_json().unwrap();
     let parsed = SyncSnapshot::parse(&bytes).unwrap();

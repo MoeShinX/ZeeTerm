@@ -342,7 +342,7 @@ impl Balance {
             ));
         }
         if self.needs_topup {
-            text.push_str("。ZeeTerm 内置助手只能用充值余额，赠送额度可在网页和其他客户端试用");
+            text.push_str("。ZeePilot 只能用充值余额，赠送额度可在网页和其他客户端试用");
         }
         text
     }
