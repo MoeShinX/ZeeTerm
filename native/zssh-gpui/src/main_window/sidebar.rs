@@ -24,6 +24,7 @@ use super::vault_menus::{GroupMenuSpec, HostMenuSpec, group_menu, host_menu, ung
 use super::widgets::{act, icon_button, protocol_icon};
 use super::{GroupSel, MainWindow};
 use crate::app_theme::Tokens;
+use crate::os_icons::{self, OsIconSize};
 use crate::typography::{Role, Typo as _};
 
 /// 缩进：每层 14px，再加行内左边距。
@@ -887,11 +888,7 @@ impl MainWindow {
                 .relative()
                 .children(self.tree_insert_line(host_id, tokens))
                 .child(div().w(px(16.0)).flex_none())
-                .child(
-                    protocol_icon(host.protocol.protocol)
-                        .size_4()
-                        .text_color(tokens.accent),
-                )
+                .child(host_icon(self.store.os_icon_of(host), host, tokens))
                 .child(
                     div().flex_1().min_w_0().child(match term {
                         Some(term) => highlighted(&host.name, term, tokens),
@@ -1021,6 +1018,17 @@ fn line(after: bool, tokens: &Tokens) -> AnyElement {
         .rounded_full()
         .bg(tokens.accent);
     if after { line.bottom_0() } else { line.top_0() }.into_any_element()
+}
+
+/// 主机行的图标：探测出过系统的 SSH 主机是发行版图标，其余（没连过、认不出、Telnet / 串口）是协议图标。
+fn host_icon(os: Option<&str>, host: &Host, tokens: &Tokens) -> AnyElement {
+    os.and_then(|os| os_icons::badge(os, OsIconSize::Row))
+        .unwrap_or_else(|| {
+            protocol_icon(host.protocol.protocol)
+                .size_4()
+                .text_color(tokens.accent)
+                .into_any_element()
+        })
 }
 
 /// 树里的一行：缩进、悬停和选中底色。

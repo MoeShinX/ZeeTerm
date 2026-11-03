@@ -10,6 +10,8 @@
 //! （保存 / 删除 / 移动 / 排序）都在这里，每次写完立刻重读，界面马上就能看到；别的窗口改了
 //! 东西，节拍里隔几秒重读也能看到。
 
+use std::collections::BTreeMap;
+
 use zssh_core::model::{Group, GroupDraft, Host, HostDraft, Identity, Proxy};
 use zssh_core::store::Database;
 use zssh_core::store::forwards::PortForward;
@@ -70,6 +72,8 @@ pub struct HostStore {
     layout: VaultLayout,
     bars: BarSettings,
     flat: bool,
+    /// 主机 id → 连上之后探测出的系统 id（`zssh_core::ssh::os_probe`），主机图标用；只在本机。
+    host_os: BTreeMap<i64, String>,
     /// 打不开库或读失败的原因（界面原样显示，不崩）。
     error: Option<String>,
 }
@@ -96,6 +100,7 @@ impl HostStore {
             layout: VaultLayout::default(),
             bars: BarSettings::default(),
             flat: false,
+            host_os: BTreeMap::new(),
             error,
         }
     }
@@ -146,6 +151,7 @@ impl HostStore {
             .map(|list| without_ai_keys(list, &ai_keys));
         let proxies = read(&mut error, "代理", db.proxy_list());
         let forwards = read(&mut error, "端口转发", db.forward_list());
+        let host_os = read(&mut error, "主机系统", db.host_os_list());
         let flag = db.setting_get(FLAT_FLAG_KEY).ok().flatten();
         let local = db.setting_get(FLAT_DEFAULT_KEY).ok().flatten();
         let flat = effective_flat(flag.as_deref(), local.as_deref());
@@ -183,6 +189,7 @@ impl HostStore {
         replace(&mut self.layout, Some(layout), &mut changed);
         replace(&mut self.bars, Some(BarSettings::load(db)), &mut changed);
         replace(&mut self.flat, Some(flat), &mut changed);
+        replace(&mut self.host_os, host_os, &mut changed);
         changed
     }
 
@@ -378,6 +385,25 @@ impl HostStore {
 
     pub fn flat(&self) -> bool {
         self.flat
+    }
+
+    /// 这台主机该显示哪个发行版图标：只有 SSH 主机、探测出过系统、且我们有这个系统的图标时才有。
+    /// Telnet / 串口不探测，沿用各自的协议图标。
+    pub fn os_icon_of(&self, host: &Host) -> Option<&str> {
+        if host.protocol.protocol != zssh_core::model::Protocol::Ssh {
+            return None;
+        }
+        self.host_os
+            .get(&host.id)
+            .map(String::as_str)
+            .filter(|os| crate::os_icons::is_known(os))
+    }
+
+    /// 造一条探测记录（测试 / 调试驱动用：真实路径是连上之后由 `host_os` 写库）。
+    #[cfg(test)]
+    pub fn set_host_os(&mut self, host_id: i64, os: &str) -> Result<(), String> {
+        let result = self.db()?.host_os_set(host_id, os).map(|_| ());
+        self.after_write(result)
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -718,6 +744,58 @@ mod tests {
         assert_eq!(
             store.host(loose.id).expect("主机").group_id,
             Some(created.id)
+        );
+    }
+
+    #[test]
+    fn a_probed_ssh_host_shows_its_distro_icon_and_everything_else_keeps_the_protocol_icon() {
+        use zssh_core::model::{Protocol, ProtocolSettings};
+        let mut store = HostStore::in_memory();
+        let ssh = store.save_host(&draft("web-1", None)).expect("主机");
+        let mut telnet_draft = draft("switch-1", None);
+        telnet_draft.protocol = Some(ProtocolSettings::new(Protocol::Telnet));
+        let telnet = store.save_host(&telnet_draft).expect("主机");
+        // 还没探测过：协议图标。
+        assert_eq!(store.os_icon_of(store.host(ssh.id).expect("主机")), None);
+        store.set_host_os(ssh.id, "debian").expect("写");
+        // Telnet 不探测；就算库里有记录（不该有）也不用发行版图标。
+        store.set_host_os(telnet.id, "debian").expect("写");
+        assert_eq!(
+            store.os_icon_of(store.host(ssh.id).expect("主机")),
+            Some("debian")
+        );
+        assert_eq!(store.os_icon_of(store.host(telnet.id).expect("主机")), None);
+        // 库里是我们没有图标的 id（比如以后的版本多探出一种）：回退到协议图标，不崩。
+        store.set_host_os(ssh.id, "plan9").expect("写");
+        assert_eq!(store.os_icon_of(store.host(ssh.id).expect("主机")), None);
+    }
+
+    #[test]
+    fn probe_results_are_picked_up_by_the_periodic_reload_and_follow_the_host() {
+        let mut store = HostStore::in_memory();
+        let host = store.save_host(&draft("db-1", None)).expect("主机");
+        // 后台探测任务自己开库写（这里直接写同一个库），界面靠定时重读看到。
+        store
+            .db()
+            .expect("库")
+            .host_os_set(host.id, "ubuntu")
+            .expect("写");
+        assert_eq!(store.os_icon_of(store.host(host.id).expect("主机")), None);
+        assert!(store.reload(), "探测结果变了要报告有变化，界面才重绘");
+        assert_eq!(
+            store.os_icon_of(store.host(host.id).expect("主机")),
+            Some("ubuntu")
+        );
+        assert!(!store.reload());
+        // 删主机：探测记录一起清掉（外键级联）。
+        store.delete_host_with_passwords(host.id).expect("删");
+        assert!(
+            store
+                .db()
+                .expect("库")
+                .host_os_list()
+                .expect("读")
+                .is_empty()
         );
     }
 }

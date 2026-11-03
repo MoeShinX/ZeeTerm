@@ -76,12 +76,17 @@ impl AssetSource for AppAssets {
         if let Some(bytes) = AppIconSet.load(path)? {
             return Ok(Some(bytes));
         }
+        // 主机的系统图标（发行版标志，见 `os_icons`）：不是 Lucide 图标，单独一份。
+        if let Some(bytes) = crate::os_icons::logo_bytes(path) {
+            return Ok(Some(bytes));
+        }
         Assets.load(path)
     }
 
     fn list(&self, path: &str) -> gpui_kit::Result<Vec<gpui_kit::SharedString>> {
         let mut paths = Assets.list(path)?;
         paths.extend(AppIconSet.list(path)?);
+        paths.extend(crate::os_icons::logo_paths().filter(|logo| logo.starts_with(path)));
         paths.sort();
         paths.dedup();
         Ok(paths)

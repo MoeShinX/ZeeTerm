@@ -38,6 +38,21 @@ chooses which grammar to use)
   the individual licenses of the bundled bat grammars were not audited one by
   one).
 
+Netcatty (host operating-system logos and brand colours, native interface)
+  https://github.com/binaricat/Netcatty
+  Copyright (C) binaricat and Netcatty contributors
+  License: GPL-3.0-or-later (same as ZeeTerm)
+
+  The 18 distribution logos in native/zssh-gpui/assets/os/*.svg come from
+  Netcatty's public/distro/ (brought over through Z-SSH's ui/src/assets/os/,
+  artwork unchanged; each file carries a source comment) and the brand
+  colours in native/zssh-gpui/src/os_icons.rs from its
+  components/DistroAvatar.tsx. They show a host's operating system in the host
+  tree, host page, quick-connect list and tabs once it has been detected. The
+  logos are trademarks of their respective owners and are used only to
+  identify the operating system a host reports. The os-release name matching
+  (crates/zssh-core/src/ssh/os_probe.rs) is described in the root NOTICE.
+
 Other direct dependencies of the native interface (native/Cargo.toml and its
 Cargo.lock), all used unmodified from crates.io:
   alacritty_terminal 0.26.0 (terminal emulation core) - Apache-2.0
