@@ -34,7 +34,7 @@ use crate::typography::{Role, Typo as _};
 /// 列表一行的高度（0.2.14 是 26，V2-U14 起 14px 文字配 34px 行，不挤）。
 const ROW_HEIGHT: f32 = 34.0;
 
-/// 文件夹图标的颜色（0.2.14 的 `text-sky-400`）和符号链接（`text-emerald-500`）。
+/// 盘符图标的颜色（0.2.14 的 `text-sky-400`）和符号链接（`text-emerald-500`）；文件夹是固定的黄色，见 `icons::folder_icon`。
 const FOLDER_COLOR: u32 = 0x38BDF8;
 const LINK_COLOR: u32 = 0x10B981;
 
@@ -42,12 +42,11 @@ const LINK_COLOR: u32 = 0x10B981;
 /// 表示「这是链接」；断链的角标换成警示色。
 fn link_icon(info: &LinkInfo, tokens: &Tokens) -> impl IntoElement {
     let base = match info.base {
-        LinkBase::Folder => Icon::new(IconName::Folder)
-            .size_4()
-            .text_color(rgb(FOLDER_COLOR)),
+        LinkBase::Folder => crate::icons::folder_icon(false, 16.0).into_any_element(),
         LinkBase::File => Icon::new(IconName::File)
             .size_4()
-            .text_color(tokens.text_muted),
+            .text_color(tokens.text_muted)
+            .into_any_element(),
     };
     // 角标：白底 + 蓝箭头；断链是琥珀底 + 深色箭头。颜色固定（深浅主题里都清楚）。
     let (badge_bg, arrow) = if info.broken {
@@ -795,10 +794,9 @@ impl SftpDemo {
                 let link = entry.link_info();
                 let icon = match (&link, entry.kind) {
                     (Some(info), _) => link_icon(info, tokens).into_any_element(),
-                    (None, EntryKind::Dir) => Icon::new(IconName::Folder)
-                        .size_4()
-                        .text_color(rgb(FOLDER_COLOR))
-                        .into_any_element(),
+                    (None, EntryKind::Dir) => {
+                        crate::icons::folder_icon(false, 16.0).into_any_element()
+                    }
                     (None, EntryKind::Drive) => Icon::new(IconName::HardDrive)
                         .size_4()
                         .text_color(rgb(FOLDER_COLOR))

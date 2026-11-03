@@ -25,6 +25,13 @@ subset listed in native/zssh-gpui/src/icons.rs)
   only the icons it uses into the executable (icon_assets!, no change to the
   artwork).
 
+Original ZeeTerm icons (native/zssh-gpui/assets/icons/*.svg)
+  The yellow folder (two single-colour layers, folder-back / folder-front /
+  folder-open-front) and the settings gear (gear.svg) are drawn for ZeeTerm and
+  are not taken from any icon set. The gear outline is generated from plain
+  geometry (8 rounded teeth on two radii plus a centre hole). Neither is a copy
+  of an Apple SF Symbols glyph. License: GPL-3.0-or-later, same as ZeeTerm.
+
 Syntax highlighting of the native editor (via gpui-kit's "syntect" feature;
 the language map in native/zssh-gpui/src/remote_editor_demo/language.rs only
 chooses which grammar to use)

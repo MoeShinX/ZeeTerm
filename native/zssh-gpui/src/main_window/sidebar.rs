@@ -711,15 +711,7 @@ impl MainWindow {
                                 )
                             }),
                     )
-                    .child(
-                        Icon::new(if *expanded {
-                            IconName::FolderOpen
-                        } else {
-                            IconName::Folder
-                        })
-                        .size_4()
-                        .text_color(tokens.text_muted),
-                    )
+                    .child(crate::icons::folder_icon(*expanded, 16.0))
                     .child(match term {
                         Some(term) => highlighted(name, term, tokens),
                         None => div()
@@ -818,15 +810,7 @@ impl MainWindow {
                                 )
                             }),
                     )
-                    .child(
-                        Icon::new(if *expanded {
-                            IconName::FolderOpen
-                        } else {
-                            IconName::Folder
-                        })
-                        .size_4()
-                        .text_color(tokens.text_muted),
-                    )
+                    .child(crate::icons::folder_icon(*expanded, 16.0))
                     .child(match term {
                         Some(term) => highlighted(host_tree::UNGROUPED_LABEL, term, tokens),
                         None => div()
