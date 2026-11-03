@@ -40,7 +40,10 @@ mod dev_acts_tcp;
 mod dev_acts_u1;
 mod dev_acts_u12;
 mod dev_acts_u13;
+mod dev_acts_u18;
+mod dev_acts_u19;
 mod dev_acts_u2;
+mod dev_acts_u20;
 mod dev_acts_u4;
 mod dev_acts_u6;
 mod dev_acts_u7;
@@ -62,6 +65,7 @@ pub mod host_tree;
 mod identity_form;
 mod key_dialogs;
 mod keychain_panel;
+mod migrate_ui;
 mod modal;
 pub mod model_picker;
 pub mod nav;
@@ -70,6 +74,7 @@ pub mod page_logic;
 mod pages;
 pub mod panel_width;
 mod privacy;
+mod processes_ui;
 mod protocol_caps;
 pub mod protocol_form;
 mod proxy_panel;
@@ -86,6 +91,7 @@ mod tab_menu;
 mod tab_move;
 pub(crate) mod tab_strip;
 pub(crate) mod titlebar;
+mod tree_guides;
 mod vault_actions;
 mod vault_keys;
 mod vault_menus;
@@ -173,6 +179,9 @@ pub struct MainWindow {
     /// 「所有网络连接」对话框的搜索框，和给迟到结果对号的采集编号（V2-U12）。
     pub(super) conn_query: Entity<InputState>,
     pub(super) conn_generation: u64,
+    /// 「进程管理」对话框的搜索框和打开计数（V2-U18）。
+    pub(super) proc_query: Entity<InputState>,
+    pub(super) proc_generation: u64,
     /// 调试驱动喂的假数据（概览面板 / 连接列表），release 里是空结构。
     pub(super) dev_fake: dev_acts_u12::DevFake,
     /// 空白标签里选主机的光标位置。
@@ -182,6 +191,10 @@ pub struct MainWindow {
     /// 设置页同步一节（连接存储 / 主密码 / 同步 / 冲突）和备份一节：第一次打开设置页时建。
     pub(super) sync_settings: Option<Entity<crate::sync_demo::SyncDemo>>,
     pub(super) backup_settings: Option<Entity<crate::backup_demo::BackupDemo>>,
+    /// 设置页同步一节最上面的「从 Z-SSH 迁移」（V2-U19）：欢迎页的入口也会建它。
+    pub(super) migrate_settings: Option<Entity<crate::migrate_demo::MigrateDemo>>,
+    /// 欢迎页「检测到 Z-SSH 的数据」提示卡的状态。
+    pub(super) migrate_hint: migrate_ui::MigrateHint,
     /// 设置页「关于」一节（版本 / 检查更新 / 数据目录 / 开源许可）：第一次打开设置页时建。
     pub(super) about_settings: Option<Entity<crate::about_view::AboutView>>,
     /// 底部同步状态条现在画的内容（版本号用来判断要不要重绘）。
@@ -267,6 +280,8 @@ impl MainWindow {
             cx.new(|cx| InputState::new(window, cx).placeholder("user@host 或 user@host:端口"));
         let conn_query =
             cx.new(|cx| InputState::new(window, cx).placeholder("按地址、端口、进程名搜索"));
+        let proc_query =
+            cx.new(|cx| InputState::new(window, cx).placeholder("按 PID、用户、命令搜索"));
         let saved_view = layout.view.as_deref().and_then(MainView::parse);
 
         let mut subs = Vec::new();
@@ -280,6 +295,7 @@ impl MainWindow {
             &manage_search,
             &quick_target,
             &conn_query,
+            &proc_query,
         ] {
             subs.push(cx.observe(input, |_this, _input, cx| cx.notify()));
         }
@@ -313,6 +329,15 @@ impl MainWindow {
             |this, _input, event: &InputEvent, _window, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.connections_refilter(cx);
+                }
+            },
+        ));
+        subs.push(cx.subscribe_in(
+            &proc_query,
+            window,
+            |this, _input, event: &InputEvent, _window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.processes_refilter(cx);
                 }
             },
         ));
@@ -397,11 +422,15 @@ impl MainWindow {
             quick_target,
             conn_query,
             conn_generation: 0,
+            proc_query,
+            proc_generation: 0,
             dev_fake: Default::default(),
             launcher_cursor: 0,
             agent_settings: None,
             sync_settings: None,
             backup_settings: None,
+            migrate_settings: None,
+            migrate_hint: migrate_ui::MigrateHint::default(),
             about_settings: None,
             sync_bar: crate::sync_demo::bar_model(),
             settings_scroll: ::gpui::ScrollHandle::new(),
@@ -503,6 +532,7 @@ impl MainWindow {
         changed |= self.sync_status(cx);
         changed |= self.tokenway_tick(window, cx);
         self.connections_tick(window, cx);
+        self.processes_tick(window, cx);
         changed |= self.sync_sync_bar();
         changed |= self.sync_forwards(cx);
         changed |= self.x11_poll(window, cx);
@@ -516,6 +546,7 @@ impl MainWindow {
         self.progress_unsaved_ask(window, cx);
         if self.tick_count >= 2 {
             self.scan_recovery_once(window, cx);
+            self.scan_zssh_once(window, cx);
         }
         self.record_net_history();
         if changed {
@@ -1452,6 +1483,12 @@ impl MainWindow {
         // 主机页的卡片会显示「用户@地址:端口」，只在主机页上才算画面里的文字。
         if self.nav.view == MainView::Vault {
             texts.extend(self.store.hosts().iter().map(protocol_form::host_detail));
+        }
+        // 设置页上的「从 Z-SSH 迁移」会显示数据文件夹、备份文件路径和结果文字（V2-U19）。
+        if self.nav.view == MainView::Settings
+            && let Some(migrate) = &self.migrate_settings
+        {
+            texts.extend(migrate.read(cx).privacy_texts(cx));
         }
         // 调用方给的禁用片段（地址、用户名）+ 内置规则（公网 IP、Last login、用户目录）。
         // 命中只返回类别或序号，不返回原文：原文正是不能出现的东西。

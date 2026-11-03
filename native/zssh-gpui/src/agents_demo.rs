@@ -70,7 +70,7 @@ fn block_description(kind: AgentKind) -> &'static str {
         AgentKind::Codex => {
             "codex 不提供一键下载：先 `npm i -g @openai/codex`，或在这里手动指定路径。发现方式同上；模型和登录用 codex 自己的配置。"
         }
-        AgentKind::Builtin => "内置助手不需要安装：在上面的\"内置助手\"里添加接口即可。",
+        AgentKind::Builtin => "ZeePilot 不需要安装：在上面的\"ZeePilot\"里添加接口即可。",
         AgentKind::Claude => {
             "Claude Code 不提供一键下载：先 `npm i -g @anthropic-ai/claude-code`（或官方安装脚本，装到 ~/.local/bin），也可以在这里手动指定路径。发现方式同上；登录和模型用 Claude Code 自己的配置（不改 CLAUDE_CONFIG_DIR / HOME）。"
         }

@@ -27,6 +27,8 @@ pub use install::{
 /// `pubkey` 是 ZeeTerm 专用的更新签名公钥（和 Z-SSH 的分开）：由 `scripts/updater-keygen.ps1`
 /// 生成，发版人把打印出来的公钥填进这个文件。还没填的时候它是占位值（见
 /// [`is_placeholder_pubkey`]），发行构建据此拒绝安装任何更新。
+/// 更新源指向 ZeeTerm 自己的发布仓库，**绝不能指回 Z-SSH 的**：那份清单里是 Tauri 版的安装包，
+/// 拉下来就把 ZeeTerm 装回成 Tauri 版。
 const UPDATER_CONF: &str = include_str!("../updater.json");
 
 /// `updater.json` 里 `pubkey` 还没填真实公钥时的占位值前缀。
@@ -427,6 +429,27 @@ mod tests {
             url.starts_with("https://github.com/") && url.ends_with("/releases")
         }));
     }
+    #[test]
+    fn updates_come_from_the_zeeterm_repository_never_from_z_ssh() {
+        let config = embedded_config().expect("内嵌的更新配置应能解析");
+        assert!(!config.endpoints.is_empty());
+        for endpoint in &config.endpoints {
+            assert!(
+                endpoint.starts_with("https://github.com/MoeShinX/ZeeTerm/releases/"),
+                "{endpoint}"
+            );
+            assert!(
+                !endpoint.to_ascii_lowercase().contains("z-ssh"),
+                "更新源不能指向 Z-SSH 的仓库：{endpoint}"
+            );
+        }
+        // 关于页「打开发布页」由它推出来。
+        assert_eq!(
+            releases_page_url(&config.endpoints[0]).as_deref(),
+            Some("https://github.com/MoeShinX/ZeeTerm/releases")
+        );
+    }
+
     #[test]
     fn embedded_public_key_is_a_real_key_or_the_documented_placeholder() {
         let config = embedded_config().expect("内嵌的更新配置应能解析");

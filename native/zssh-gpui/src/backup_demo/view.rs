@@ -25,11 +25,12 @@ use crate::typography::{Role, Typo as _};
 /// 保留份数的可选值（核心接受 1～200，同 0.2.14）。
 pub(super) const KEEP_CHOICES: [usize; 6] = [5, 10, 20, 50, 100, 200];
 
-/// 离线备份的默认文件名（同 0.2.14：`zssh-日期.zsshbak`）。
+/// 离线备份的默认文件名（`zeeterm-日期.zsshbak`）：扩展名和 Z-SSH 0.2.14 一样，两边的备份文件互相能导入；
+/// 文件名改成产品名，免得和 Z-SSH 导出的混在一起分不清。
 pub(super) fn default_file_name() -> String {
     let stamp = format_stamp(super::now_secs());
     let date: String = stamp.chars().take(10).filter(|c| *c != '-').collect();
-    format!("zssh-{date}.zsshbak")
+    format!("zeeterm-{date}.zsshbak")
 }
 
 /// 保留份数下拉里要列出的值：固定几档，当前值不在里面就加进去排好。
@@ -77,8 +78,19 @@ fn colored(text: impl Into<SharedString>, color: ::gpui::Hsla) -> AnyElement {
         .into_any_element()
 }
 
-fn label_cell(label: &'static str) -> impl IntoElement {
-    div().w(px(96.0)).flex_none().text_sm().child(label)
+/// 字段上方的小标签：表单是「上标签、下输入框」的单栏（V2-U17）。
+fn label_above(label: &'static str, tokens: &Tokens) -> impl IntoElement {
+    div().typo(Role::FieldLabel, tokens).child(label)
+}
+
+/// 标签在上、一个整行宽控件在下。
+fn labelled(label: &'static str, control: impl IntoElement, tokens: &Tokens) -> AnyElement {
+    v_flex()
+        .w_full()
+        .gap_1()
+        .child(label_above(label, tokens))
+        .child(control)
+        .into_any_element()
 }
 
 fn act_button(
@@ -196,20 +208,19 @@ impl BackupDemo {
     }
 
     fn keep_row(&self, entity: &Entity<Self>, tokens: &Tokens, busy: bool) -> AnyElement {
-        let mut choices = h_flex().gap_1();
-        for count in keep_choices(self.keep) {
-            let target = entity.clone();
-            choices = choices.child(
-                Button::new(("backup-keep", count))
-                    .label(format!("{count} 份"))
-                    .compact()
-                    .toggled(self.keep == count)
-                    .disabled(busy)
-                    .on_click(move |_, _, cx| {
-                        target.update(cx, |this, cx| this.set_keep(count, cx));
-                    }),
-            );
-        }
+        // 份数是几个互斥的选项：用整条分段按钮（和主机表单同一个控件），右边留出固定宽度。
+        let counts = keep_choices(self.keep);
+        let options = counts
+            .iter()
+            .map(|count| {
+                (
+                    format!("{count} 份"),
+                    self.keep == *count,
+                    busy.then_some("正在处理备份，稍后再改"),
+                )
+            })
+            .collect();
+        let target = entity.clone();
         h_flex()
             .w_full()
             .min_h(px(28.0))
@@ -222,12 +233,22 @@ impl BackupDemo {
                     .gap_0p5()
                     .child(div().typo(Role::ItemName, tokens).child("最多保留份数"))
                     .child(muted(
-                        "超过的最早的备份会被清理。调小之后，多出来的旧备份在下一次备份时才删，改这个设置\
-                         本身不会删任何东西。",
+                        "超过的最早的备份会被清理。调小之后，多出来的旧备份在下一次备份时才删，改这个设置本身不会删任何东西。",
                         tokens,
                     )),
             )
-            .child(choices)
+            .child(div().flex_none().w(px(380.0)).child(
+                crate::main_window::widgets::segmented_bar(
+                    "backup-keep",
+                    options,
+                    tokens,
+                    move |index, _, cx| {
+                        if let Some(count) = counts.get(index).copied() {
+                            target.update(cx, |this, cx| this.set_keep(count, cx));
+                        }
+                    },
+                ),
+            ))
             .into_any_element()
     }
 
@@ -330,90 +351,91 @@ impl BackupDemo {
             }
             OfflineImportMode::Replace => "替换导入",
         };
-        let mode_button = |id: &'static str,
-                           label: &'static str,
-                           target: OfflineImportMode,
-                           hint: &'static str| {
-            let entity = entity.clone();
-            v_flex()
-                .gap_0p5()
-                .child(
-                    Button::new(id)
-                        .label(label)
-                        .compact()
-                        .toggled(mode == target)
-                        .disabled(busy)
-                        .on_click(move |_, _, cx| {
-                            entity.update(cx, |this, cx| this.set_import_mode(target, cx));
-                        }),
-                )
-                .child(muted(hint, tokens))
-        };
         let mut rows: Vec<AnyElement> = vec![
-            h_flex()
-                .w_full()
-                .gap_2()
-                .items_center()
-                .child(label_cell("文件"))
-                .child(Input::new(&self.package_path).flex_1())
-                .child(act_button(
-                    "offline-browse-export",
-                    "选择保存位置…",
-                    entity,
-                    busy,
-                    |this, window, cx| this.browse(true, window, cx),
-                ))
-                .child(act_button(
-                    "offline-browse-import",
-                    "选择文件…",
-                    entity,
-                    busy,
-                    |this, window, cx| this.browse(false, window, cx),
-                ))
-                .into_any_element(),
-            h_flex()
-                .w_full()
-                .gap_2()
-                .items_center()
-                .child(label_cell("密码"))
-                .child(
-                    Input::new(&self.password)
-                        .flex_1()
-                        .content_type(InputContentType::Password),
-                )
-                .into_any_element(),
-            h_flex()
-                .w_full()
-                .gap_2()
-                .items_center()
-                .child(label_cell("再输一次（导出）"))
-                .child(
-                    Input::new(&self.password_confirm)
-                        .flex_1()
-                        .content_type(InputContentType::Password),
-                )
-                .into_any_element(),
+            labelled(
+                "文件",
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .items_center()
+                    .child(Input::new(&self.package_path).flex_1())
+                    .child(act_button(
+                        "offline-browse-export",
+                        "选择保存位置…",
+                        entity,
+                        busy,
+                        |this, window, cx| this.browse(true, window, cx),
+                    ))
+                    .child(act_button(
+                        "offline-browse-import",
+                        "选择文件…",
+                        entity,
+                        busy,
+                        |this, window, cx| this.browse(false, window, cx),
+                    ))
+                    .into_any_element(),
+                tokens,
+            ),
+            labelled(
+                "密码",
+                Input::new(&self.password)
+                    .w_full()
+                    .content_type(InputContentType::Password),
+                tokens,
+            ),
+            labelled(
+                "再输一次（导出时用）",
+                Input::new(&self.password_confirm)
+                    .w_full()
+                    .content_type(InputContentType::Password),
+                tokens,
+            ),
             muted(
                 "导出：选保存位置，再设一个密码（至少 8 个字符，忘了密码文件就打不开）。\
                  导入：导入之前会自动给当前状态做一份本地备份，导错了可以在上面的列表恢复。密码不会保存。",
                 tokens,
             ),
-            h_flex()
+            v_flex()
                 .w_full()
-                .gap_6()
-                .items_start()
-                .child(label_cell("导入方式"))
-                .child(mode_button(
-                    "offline-import-merge",
-                    "合并",
-                    OfflineImportMode::Merge,
-                    "两边都留。同一条记录两边都改过时取较新的，另一份进冲突页。",
+                .gap_1()
+                .child(label_above("导入方式", tokens))
+                .child(crate::main_window::widgets::segmented_bar(
+                    "offline-import-mode",
+                    vec![
+                        (
+                            "合并".to_owned(),
+                            mode == OfflineImportMode::Merge,
+                            busy.then_some("正在处理，稍后再选"),
+                        ),
+                        (
+                            "替换".to_owned(),
+                            mode == OfflineImportMode::Replace,
+                            busy.then_some("正在处理，稍后再选"),
+                        ),
+                    ],
+                    tokens,
+                    {
+                        let target = entity.clone();
+                        move |index, _, cx| {
+                            let picked = if index == 0 {
+                                OfflineImportMode::Merge
+                            } else {
+                                OfflineImportMode::Replace
+                            };
+                            target.update(cx, |this, cx| this.set_import_mode(picked, cx));
+                        }
+                    },
                 ))
-                .child(mode_button(
-                    "offline-import-replace",
-                    "替换",
-                    OfflineImportMode::Replace,
-                    "本机变成和文件一模一样，文件里没有的主机、凭据会被删掉。",
+                .child(muted(
+                    match mode {
+                        OfflineImportMode::Merge => {
+                            "两边都留。同一条记录两边都改过时取较新的，另一份进冲突页。"
+                        }
+                        OfflineImportMode::Replace => {
+                            "本机变成和文件一模一样，文件里没有的主机、凭据会被删掉。"
+                        }
+                    },
+                    tokens,
                 ))
                 .into_any_element(),
             h_flex()
@@ -571,9 +593,9 @@ mod tests {
     fn the_default_file_name_is_dated_and_has_the_old_extension() {
         let name = default_file_name();
         assert!(
-            name.starts_with("zssh-") && name.ends_with(".zsshbak"),
+            name.starts_with("zeeterm-") && name.ends_with(".zsshbak"),
             "{name}"
         );
-        assert_eq!(name.len(), "zssh-20260101.zsshbak".len(), "{name}");
+        assert_eq!(name.len(), "zeeterm-20260101.zsshbak".len(), "{name}");
     }
 }

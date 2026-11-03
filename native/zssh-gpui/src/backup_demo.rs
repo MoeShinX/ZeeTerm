@@ -119,7 +119,7 @@ impl BackupDemo {
                 .masked(true)
                 .placeholder("导出时再输入一次")
         });
-        // 和 0.2.14 一样的文件名（`zssh-日期.zsshbak`）；0.2.14 是弹保存对话框选位置，这里默认放在
+        // `zeeterm-日期.zsshbak`（扩展名和 0.2.14 一样，互相能导入）；0.2.14 是弹保存对话框选位置，这里默认放在
         // 数据目录里，用「选择…」可以换。
         let default_path = crate::settings::data_dir().join(view::default_file_name());
         let package_path = cx.new(|cx| {

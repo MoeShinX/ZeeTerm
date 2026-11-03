@@ -20,20 +20,28 @@ use super::drag::{DragChip, DragGroup, DragHost, DragItem, DropHint, Scope};
 use super::host_tree::{self, TreeRow};
 use super::page_logic::host_info_rows;
 use super::protocol_form;
+use super::tree_guides;
 use super::vault_menus::{GroupMenuSpec, HostMenuSpec, group_menu, host_menu, ungrouped_menu};
 use super::widgets::{act, icon_button, protocol_icon};
 use super::{GroupSel, MainWindow};
 use crate::app_theme::Tokens;
+use crate::os_icons::{self, OsIconSize};
 use crate::typography::{Role, Typo as _};
 
 /// 缩进：每层 14px，再加行内左边距。
-const INDENT: f32 = 16.0;
+pub(super) const INDENT: f32 = 16.0;
 /// 树里一行的高度（V2-U14：13px 字配 23px 行太挤，改成 14px 字配 30px 行）。
-const ROW_HEIGHT: f32 = 30.0;
+pub(super) const ROW_HEIGHT: f32 = 30.0;
 /// 侧栏底部按钮的热区高度。
 const FOOTER_BUTTON: f32 = 28.0;
 /// 属性面板固定高度（放得下 7 行：基本 5 行 + 跳板机 + 代理），切换主机时树不会跟着跳。
 const INFO_HEIGHT: f32 = 184.0;
+
+/// 属性面板这一帧要显示哪台主机：设置里的开关关着（默认）就一律不显示，开着才跟着选中的主机走。
+/// 面板上的 × 只收起这一次（清掉 `info_host`），不动开关；开关只在 设置 → 外观 → 主机树 里改。
+fn info_target(enabled: bool, selected: Option<i64>) -> Option<i64> {
+    selected.filter(|_| enabled)
+}
 
 /// 侧栏空了的时候的提示（对应抬头的 + 图标）。
 pub const EMPTY_HINT: &str = "还没有主机，点上方 + 添加";
@@ -91,7 +99,7 @@ struct FooterAction {
 impl FooterAction {
     fn icon(&self) -> Icon {
         match self.kind {
-            FooterKind::Settings => Icon::new(IconName::Settings),
+            FooterKind::Settings => crate::icons::gear_icon(),
             FooterKind::Credentials => Icon::new(crate::icons::Ico::KeyRound),
         }
     }
@@ -287,13 +295,29 @@ impl MainWindow {
                 )
             }));
 
+        // 虚线连接线：设置里可以关；关了就不算。
+        let guides = if self.store.tree_guides() {
+            tree_guides::row_guides(&rows)
+        } else {
+            Vec::new()
+        };
         let list = v_flex()
             .w_full()
             .px_2()
             .pb_2()
             .gap_px()
             .children(rows.iter().enumerate().map(|(at, row)| {
-                self.render_tree_row(at, row, cursor, term.as_deref(), searching, tokens, cx)
+                let guide = guides.get(at).and_then(Option::as_ref);
+                self.render_tree_row(
+                    at,
+                    row,
+                    guide,
+                    cursor,
+                    term.as_deref(),
+                    searching,
+                    tokens,
+                    cx,
+                )
             }));
 
         let resize = {
@@ -356,8 +380,7 @@ impl MainWindow {
             list.into_any_element()
         };
         let blank_hot = matches!(self.drop_hint, Some(DropHint::IntoRoot));
-        let info = self
-            .info_host
+        let info = info_target(self.prefs.host_info_panel, self.info_host)
             .and_then(|id| self.store.host(id))
             .map(|host| self.render_info_panel(host, tokens, cx));
 
@@ -615,6 +638,7 @@ impl MainWindow {
         &self,
         at: usize,
         row: &TreeRow,
+        guide: Option<&tree_guides::RowGuide>,
         cursor: Option<i64>,
         term: Option<&str>,
         searching: bool,
@@ -666,6 +690,7 @@ impl MainWindow {
                 let dbl_entity = entity.clone();
                 let el = tree_line(("tree-row", at), *depth as f32 * INDENT, active, tokens)
                     .relative()
+                    .children(guide.map(|g| tree_guides::paint(g, at, guide_color(tokens))))
                     .when(hot, |d| {
                         d.bg(tokens.accent_soft)
                             .border_1()
@@ -706,15 +731,7 @@ impl MainWindow {
                                 )
                             }),
                     )
-                    .child(
-                        Icon::new(if *expanded {
-                            IconName::FolderOpen
-                        } else {
-                            IconName::Folder
-                        })
-                        .size_4()
-                        .text_color(tokens.text_muted),
-                    )
+                    .child(crate::icons::folder_icon(*expanded, 16.0))
                     .child(match term {
                         Some(term) => highlighted(name, term, tokens),
                         None => div()
@@ -813,15 +830,7 @@ impl MainWindow {
                                 )
                             }),
                     )
-                    .child(
-                        Icon::new(if *expanded {
-                            IconName::FolderOpen
-                        } else {
-                            IconName::Folder
-                        })
-                        .size_4()
-                        .text_color(tokens.text_muted),
-                    )
+                    .child(crate::icons::folder_icon(*expanded, 16.0))
                     .child(match term {
                         Some(term) => highlighted(host_tree::UNGROUPED_LABEL, term, tokens),
                         None => div()
@@ -885,13 +894,10 @@ impl MainWindow {
                     tokens,
                 )
                 .relative()
+                .children(guide.map(|g| tree_guides::paint(g, at, guide_color(tokens))))
                 .children(self.tree_insert_line(host_id, tokens))
                 .child(div().w(px(16.0)).flex_none())
-                .child(
-                    protocol_icon(host.protocol.protocol)
-                        .size_4()
-                        .text_color(tokens.accent),
-                )
+                .child(host_icon(self.store.os_icon_of(host), host, tokens))
                 .child(
                     div().flex_1().min_w_0().child(match term {
                         Some(term) => highlighted(&host.name, term, tokens),
@@ -1023,6 +1029,25 @@ fn line(after: bool, tokens: &Tokens) -> AnyElement {
     if after { line.bottom_0() } else { line.top_0() }.into_any_element()
 }
 
+/// 连接线的颜色：次要文字色压低透明度（同 0.2.14 的 `muted-foreground / 0.4`）：1px 的小点，
+/// 用区域分隔线的颜色在浅色皮肤上几乎看不见，用文字色的淡色深浅皮肤都看得清又不抢眼。
+fn guide_color(tokens: &Tokens) -> ::gpui::Hsla {
+    let mut color = tokens.text_muted;
+    color.a = 0.55;
+    color
+}
+
+/// 主机行的图标：探测出过系统的 SSH 主机是发行版图标，其余（没连过、认不出、Telnet / 串口）是协议图标。
+fn host_icon(os: Option<&str>, host: &Host, tokens: &Tokens) -> AnyElement {
+    os.and_then(|os| os_icons::badge(os, OsIconSize::Row))
+        .unwrap_or_else(|| {
+            protocol_icon(host.protocol.protocol)
+                .size_4()
+                .text_color(tokens.accent)
+                .into_any_element()
+        })
+}
+
 /// 树里的一行：缩进、悬停和选中底色。
 fn tree_line(
     id: (&'static str, usize),
@@ -1061,11 +1086,23 @@ fn count_label(count: usize, tokens: &Tokens) -> impl IntoElement {
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        EMPTY_HINT, FOOTER_ACTIONS, HEADER_ACTIONS, THEME_CHOICES, ThemeChoice, match_hint,
-        match_ranges,
+        EMPTY_HINT, FOOTER_ACTIONS, HEADER_ACTIONS, THEME_CHOICES, ThemeChoice, info_target,
+        match_hint, match_ranges,
     };
     use std::ops::Range;
     use zssh_core::model::{AuthMethod, Host, ProxyMode};
+
+    #[test]
+    fn the_info_panel_only_shows_when_the_setting_is_on() {
+        assert_eq!(
+            info_target(false, Some(7)),
+            None,
+            "默认关：选中主机也不出面板"
+        );
+        assert_eq!(info_target(false, None), None);
+        assert_eq!(info_target(true, Some(7)), Some(7));
+        assert_eq!(info_target(true, None), None, "开着但没选主机：没有面板");
+    }
 
     #[test]
     fn the_footer_theme_buttons_are_light_dark_and_follow_system_with_tips() {

@@ -20,6 +20,8 @@ pub struct DevFake {
     /// 下一次采集要拿到的：`Ok(脚本输出)` 或一个失败原因。
     #[cfg(debug_assertions)]
     pub connections: Option<Result<String, ConnectionsError>>,
+    /// 进程管理（V2-U18）的假数据，见 `dev_acts_u18`。
+    pub procs: super::dev_acts_u18::FakeProcs,
 }
 
 #[cfg(debug_assertions)]
@@ -54,7 +56,7 @@ mod real {
         CONNECTIONS_MAX_ROWS, ConnFilter, ConnSource, ConnectionsError, ProcessHint, SortKey,
         SortSpec,
     };
-    use zssh_core::ssh::{NetInterfaceSpeed, ProcessInfo, ServerStats};
+    use zssh_core::ssh::{CpuProcessInfo, NetInterfaceSpeed, ProcessInfo, ServerStats};
 
     use super::super::MainWindow;
     use super::super::dev_script::Outcome;
@@ -187,18 +189,44 @@ mod real {
                     percent: 82,
                 },
             ],
-            top_processes: vec![
-                ProcessInfo {
-                    pid: "812".to_owned(),
-                    mem_percent: 12.4,
-                    command: "app-worker".to_owned(),
-                },
-                ProcessInfo {
-                    pid: "1290".to_owned(),
-                    mem_percent: 6.1,
-                    command: "a-process-with-an-unusually-long-command-name".to_owned(),
-                },
-            ],
+            top_processes: [
+                ("812", 12.4, "app-worker"),
+                ("950", 9.8, "db-main"),
+                ("1290", 6.1, "a-process-with-an-unusually-long-command-name"),
+                ("1500", 4.3, "job-runner"),
+                ("123", 3.7, "cache-store"),
+                ("124", 2.5, "web-server"),
+                ("620", 1.2, "resolver"),
+                ("800", 0.6, "sshd"),
+                ("701", 0.4, "mdns-agent"),
+                ("1", 0.3, "init"),
+            ]
+            .into_iter()
+            .map(|(pid, mem_percent, command)| ProcessInfo {
+                pid: pid.to_owned(),
+                mem_percent,
+                command: command.to_owned(),
+            })
+            .collect(),
+            top_cpu_processes: [
+                ("812", 62.3, "app-worker"),
+                ("123", 18.4, "cache-store"),
+                ("950", 11.0, "db-main"),
+                ("1500", 7.5, "job-runner"),
+                ("124", 3.2, "web-server"),
+                ("1290", 1.8, "a-process-with-an-unusually-long-command-name"),
+                ("620", 0.9, "resolver"),
+                ("701", 0.4, "mdns-agent"),
+                ("800", 0.1, "sshd"),
+                ("1", 0.0, "init"),
+            ]
+            .into_iter()
+            .map(|(pid, cpu_percent, command)| CpuProcessInfo {
+                pid: pid.to_owned(),
+                cpu_percent,
+                command: command.to_owned(),
+            })
+            .collect(),
             hostname: "web-1".to_owned(),
             os_name: "Ubuntu 22.04.5 LTS".to_owned(),
             kernel: "5.15.0-202-generic".to_owned(),

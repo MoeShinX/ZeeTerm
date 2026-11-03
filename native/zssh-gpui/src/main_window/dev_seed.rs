@@ -6,6 +6,8 @@
 //!   地址只在环境变量和库文件里，不进代码、不进日志。
 //! - `ZSSH_SEED_PROTOCOLS=1`：再建一台 Telnet 主机、一台串口主机（地址 / 设备名都是占位的）和一台开了
 //!   X11 的 SSH 主机，主机页的协议标识、SSH-only 置灰、X11 提示的截图用；
+//! - `ZSSH_SEED_NESTED=1`：在占位主机的「生产环境」下再建两层子分组和几台主机（主机树连接线的截图用，
+//!   要和 `ZSSH_SEED_PLACEHOLDERS=1` 一起用）；
 //! - `ZSSH_SEED_PLACEHOLDERS=1`：建几组演示用的主机，地址一律是文档保留段（RFC 5737），
 //!   不会真的连出去；主机页截图用它，画面里不会出现真实地址。
 
@@ -25,7 +27,8 @@ pub fn seed_from_env() -> Result<(), String> {
     let test_host = env("ZSSH_SEED_TEST_HOST");
     let placeholders = env("ZSSH_SEED_PLACEHOLDERS").is_some();
     let protocols = env("ZSSH_SEED_PROTOCOLS").is_some();
-    if test_host.is_none() && !placeholders && !protocols {
+    let nested = env("ZSSH_SEED_NESTED").is_some();
+    if test_host.is_none() && !placeholders && !protocols && !nested {
         return Ok(());
     }
     let db = crate::hosts_demo::open_database().map_err(|err| err.to_string())?;
@@ -37,6 +40,43 @@ pub fn seed_from_env() -> Result<(), String> {
     }
     if protocols {
         seed_protocol_hosts(&db)?;
+    }
+    if nested {
+        seed_nested_groups(&db)?;
+    }
+    Ok(())
+}
+
+/// 「生产环境」下面再建两层子分组（`数据库` > `边缘节点`），各放几台主机。已经建过就跳过。
+fn seed_nested_groups(db: &Database) -> Result<(), String> {
+    let groups = db.group_list().map_err(|err| err.to_string())?;
+    let Some(prod) = groups.iter().find(|group| group.name == "生产环境") else {
+        return Err("ZSSH_SEED_NESTED 要先有占位主机的「生产环境」分组".to_owned());
+    };
+    if groups.iter().any(|group| group.name == "数据库") {
+        return Ok(());
+    }
+    let make_group = |name: &str, parent: i64| -> Result<i64, String> {
+        db.group_save(&GroupDraft {
+            id: None,
+            name: name.to_owned(),
+            parent_id: Some(parent),
+            sort: 0,
+        })
+        .map(|group| group.id)
+        .map_err(|err| err.to_string())
+    };
+    let database = make_group("数据库", prod.id)?;
+    let edge = make_group("边缘节点", database)?;
+    let rows: [(&str, &str, i64); 4] = [
+        ("db-2", "192.0.2.22", database),
+        ("db-3", "192.0.2.23", database),
+        ("edge-1", "192.0.2.41", edge),
+        ("edge-2", "192.0.2.42", edge),
+    ];
+    for (name, address, group) in rows {
+        db.host_save(&host_draft(name, address, 22, "ops", Some(group)))
+            .map_err(|err| err.to_string())?;
     }
     Ok(())
 }

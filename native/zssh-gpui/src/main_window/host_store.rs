@@ -10,6 +10,8 @@
 //! （保存 / 删除 / 移动 / 排序）都在这里，每次写完立刻重读，界面马上就能看到；别的窗口改了
 //! 东西，节拍里隔几秒重读也能看到。
 
+use std::collections::BTreeMap;
+
 use zssh_core::model::{Group, GroupDraft, Host, HostDraft, Identity, Proxy};
 use zssh_core::store::Database;
 use zssh_core::store::forwards::PortForward;
@@ -28,6 +30,8 @@ pub const VIEW_MODE_KEY: &str = "layout.vault_view_mode";
 pub const DENSITY_KEY: &str = "layout.vault_density";
 pub const SORT_MODE_KEY: &str = "layout.vault_sort_mode";
 pub const RECENT_KEY: &str = "layout.recent_hosts";
+/// 主机树要不要画虚线连接线（本机设置，不同步，默认开）。
+pub const TREE_GUIDES_KEY: &str = "layout.vault_tree_guides";
 
 /// 主机页右边卡片 / 列表的显示选项（本机布局，不同步）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -70,6 +74,10 @@ pub struct HostStore {
     layout: VaultLayout,
     bars: BarSettings,
     flat: bool,
+    /// 主机 id → 连上之后探测出的系统 id（`zssh_core::ssh::os_probe`），主机图标用；只在本机。
+    host_os: BTreeMap<i64, String>,
+    /// 主机树的虚线连接线开着没有。
+    tree_guides: bool,
     /// 打不开库或读失败的原因（界面原样显示，不崩）。
     error: Option<String>,
 }
@@ -96,6 +104,8 @@ impl HostStore {
             layout: VaultLayout::default(),
             bars: BarSettings::default(),
             flat: false,
+            host_os: BTreeMap::new(),
+            tree_guides: true,
             error,
         }
     }
@@ -146,6 +156,11 @@ impl HostStore {
             .map(|list| without_ai_keys(list, &ai_keys));
         let proxies = read(&mut error, "代理", db.proxy_list());
         let forwards = read(&mut error, "端口转发", db.forward_list());
+        let host_os = read(&mut error, "主机系统", db.host_os_list());
+        let tree_guides = super::bar_settings::parse_bool(
+            db.setting_get(TREE_GUIDES_KEY).ok().flatten().as_deref(),
+            true,
+        );
         let flag = db.setting_get(FLAT_FLAG_KEY).ok().flatten();
         let local = db.setting_get(FLAT_DEFAULT_KEY).ok().flatten();
         let flat = effective_flat(flag.as_deref(), local.as_deref());
@@ -183,6 +198,8 @@ impl HostStore {
         replace(&mut self.layout, Some(layout), &mut changed);
         replace(&mut self.bars, Some(BarSettings::load(db)), &mut changed);
         replace(&mut self.flat, Some(flat), &mut changed);
+        replace(&mut self.host_os, host_os, &mut changed);
+        replace(&mut self.tree_guides, Some(tree_guides), &mut changed);
         changed
     }
 
@@ -378,6 +395,37 @@ impl HostStore {
 
     pub fn flat(&self) -> bool {
         self.flat
+    }
+
+    /// 这台主机该显示哪个发行版图标：只有 SSH 主机、探测出过系统、且我们有这个系统的图标时才有。
+    /// Telnet / 串口不探测，沿用各自的协议图标。
+    pub fn os_icon_of(&self, host: &Host) -> Option<&str> {
+        if host.protocol.protocol != zssh_core::model::Protocol::Ssh {
+            return None;
+        }
+        self.host_os
+            .get(&host.id)
+            .map(String::as_str)
+            .filter(|os| crate::os_icons::is_known(os))
+    }
+
+    /// 主机树画不画虚线连接线（设置 → 外观，默认开）。
+    pub fn tree_guides(&self) -> bool {
+        self.tree_guides
+    }
+
+    pub fn set_tree_guides(&mut self, on: bool) -> Result<(), String> {
+        let result = self
+            .db()?
+            .setting_set(TREE_GUIDES_KEY, if on { "true" } else { "false" });
+        self.after_write(result)
+    }
+
+    /// 造一条探测记录（测试 / 调试驱动用：真实路径是连上之后由 `host_os` 写库）。
+    #[cfg(any(test, debug_assertions))]
+    pub fn set_host_os(&mut self, host_id: i64, os: &str) -> Result<(), String> {
+        let result = self.db()?.host_os_set(host_id, os).map(|_| ());
+        self.after_write(result)
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -719,5 +767,94 @@ mod tests {
             store.host(loose.id).expect("主机").group_id,
             Some(created.id)
         );
+    }
+
+    #[test]
+    fn a_probed_ssh_host_shows_its_distro_icon_and_everything_else_keeps_the_protocol_icon() {
+        use zssh_core::model::{Protocol, ProtocolSettings};
+        let mut store = HostStore::in_memory();
+        let ssh = store.save_host(&draft("web-1", None)).expect("主机");
+        let mut telnet_draft = draft("switch-1", None);
+        telnet_draft.protocol = Some(ProtocolSettings::new(Protocol::Telnet));
+        let telnet = store.save_host(&telnet_draft).expect("主机");
+        // 还没探测过：协议图标。
+        assert_eq!(store.os_icon_of(store.host(ssh.id).expect("主机")), None);
+        store.set_host_os(ssh.id, "debian").expect("写");
+        // Telnet 不探测；就算库里有记录（不该有）也不用发行版图标。
+        store.set_host_os(telnet.id, "debian").expect("写");
+        assert_eq!(
+            store.os_icon_of(store.host(ssh.id).expect("主机")),
+            Some("debian")
+        );
+        assert_eq!(store.os_icon_of(store.host(telnet.id).expect("主机")), None);
+        // 库里是我们没有图标的 id（比如以后的版本多探出一种）：回退到协议图标，不崩。
+        store.set_host_os(ssh.id, "plan9").expect("写");
+        assert_eq!(store.os_icon_of(store.host(ssh.id).expect("主机")), None);
+    }
+
+    #[test]
+    fn probe_results_are_picked_up_by_the_periodic_reload_and_follow_the_host() {
+        let mut store = HostStore::in_memory();
+        let host = store.save_host(&draft("db-1", None)).expect("主机");
+        // 后台探测任务自己开库写（这里直接写同一个库），界面靠定时重读看到。
+        store
+            .db()
+            .expect("库")
+            .host_os_set(host.id, "ubuntu")
+            .expect("写");
+        assert_eq!(store.os_icon_of(store.host(host.id).expect("主机")), None);
+        assert!(store.reload(), "探测结果变了要报告有变化，界面才重绘");
+        assert_eq!(
+            store.os_icon_of(store.host(host.id).expect("主机")),
+            Some("ubuntu")
+        );
+        assert!(!store.reload());
+        // 删主机：探测记录一起清掉（外键级联）。
+        store.delete_host_with_passwords(host.id).expect("删");
+        assert!(
+            store
+                .db()
+                .expect("库")
+                .host_os_list()
+                .expect("读")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn tree_guides_are_on_by_default_and_the_switch_is_remembered_locally() {
+        let mut store = HostStore::in_memory();
+        assert!(store.tree_guides());
+        store.set_tree_guides(false).expect("关");
+        assert!(!store.tree_guides());
+        assert_eq!(
+            store
+                .db()
+                .expect("库")
+                .setting_get(TREE_GUIDES_KEY)
+                .expect("读")
+                .as_deref(),
+            Some("false")
+        );
+        store.set_tree_guides(true).expect("开");
+        assert!(store.tree_guides());
+        // 读不懂的值回到默认（开）。
+        store
+            .db()
+            .expect("库")
+            .setting_set(TREE_GUIDES_KEY, "\"maybe\"")
+            .expect("写");
+        store.reload();
+        assert!(store.tree_guides());
+    }
+
+    #[test]
+    fn the_tree_guides_key_is_a_local_only_setting() {
+        use zssh_core::sync::settings::{SETTINGS_SYNC_CLASS, SyncMode};
+        let class = SETTINGS_SYNC_CLASS
+            .iter()
+            .find(|(key, _)| *key == TREE_GUIDES_KEY)
+            .map(|(_, mode)| *mode);
+        assert_eq!(class, Some(SyncMode::LocalOnly));
     }
 }

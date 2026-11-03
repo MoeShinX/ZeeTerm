@@ -25,6 +25,13 @@ subset listed in native/zssh-gpui/src/icons.rs)
   only the icons it uses into the executable (icon_assets!, no change to the
   artwork).
 
+Original ZeeTerm icons (native/zssh-gpui/assets/icons/*.svg)
+  The yellow folder (two single-colour layers, folder-back / folder-front /
+  folder-open-front) and the settings gear (gear.svg) are drawn for ZeeTerm and
+  are not taken from any icon set. The gear outline is generated from plain
+  geometry (8 rounded teeth on two radii plus a centre hole). Neither is a copy
+  of an Apple SF Symbols glyph. License: GPL-3.0-or-later, same as ZeeTerm.
+
 Syntax highlighting of the native editor (via gpui-kit's "syntect" feature;
 the language map in native/zssh-gpui/src/remote_editor_demo/language.rs only
 chooses which grammar to use)
@@ -37,6 +44,21 @@ chooses which grammar to use)
   recovery or external edit work (the crates' own licenses are MIT/Apache-2.0;
   the individual licenses of the bundled bat grammars were not audited one by
   one).
+
+Netcatty (host operating-system logos and brand colours, native interface)
+  https://github.com/binaricat/Netcatty
+  Copyright (C) binaricat and Netcatty contributors
+  License: GPL-3.0-or-later (same as ZeeTerm)
+
+  The 18 distribution logos in native/zssh-gpui/assets/os/*.svg come from
+  Netcatty's public/distro/ (brought over through Z-SSH's ui/src/assets/os/,
+  artwork unchanged; each file carries a source comment) and the brand
+  colours in native/zssh-gpui/src/os_icons.rs from its
+  components/DistroAvatar.tsx. They show a host's operating system in the host
+  tree, host page, quick-connect list and tabs once it has been detected. The
+  logos are trademarks of their respective owners and are used only to
+  identify the operating system a host reports. The os-release name matching
+  (crates/zssh-core/src/ssh/os_probe.rs) is described in the root NOTICE.
 
 Other direct dependencies of the native interface (native/Cargo.toml and its
 Cargo.lock), all used unmodified from crates.io:

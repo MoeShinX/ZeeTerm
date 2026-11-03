@@ -98,7 +98,7 @@ impl BuiltinInfo {
     pub fn label_for(&self, id: i64) -> String {
         let name = self.get(id).map(|endpoint| endpoint.name.as_str());
         match (name, self.selectable().len()) {
-            (Some(name), count) if count > 1 => format!("内置 · {name}"),
+            (Some(name), count) if count > 1 => format!("ZeePilot · {name}"),
             _ => super::AgentKind::Builtin.label().to_owned(),
         }
     }
@@ -108,7 +108,7 @@ fn read_info(db: &Database) -> BuiltinInfo {
     let endpoints = match db.ai_endpoint_list() {
         Ok(list) => list,
         Err(err) => {
-            tracing::warn!(error = %err, "读取内置助手接口失败");
+            tracing::warn!(error = %err, "读取 ZeePilot 接口失败");
             Vec::new()
         }
     };
@@ -163,7 +163,7 @@ fn load_from_disk() -> BuiltinInfo {
     match crate::hosts_demo::open_database() {
         Ok(db) => read_info(&db),
         Err(err) => {
-            tracing::warn!(error = %err, "打开设置库失败，内置助手按没配置处理");
+            tracing::warn!(error = %err, "打开设置库失败，ZeePilot 按没配置处理");
             BuiltinInfo::default()
         }
     }
@@ -232,7 +232,7 @@ pub fn status() -> AgentStatus {
 }
 
 /// 面板里内置助手没配置时的整段说明。
-pub const MISSING_TEXT: &str = "还没有配置内置助手：到 设置 → AI → 内置助手 添加一个接口并填好 API Key（本机的 Ollama 之类可以勾选「不需要 Key」），就能直接对话，不用安装别的工具。";
+pub const MISSING_TEXT: &str = "还没有配置 ZeePilot：到 设置 → AI → ZeePilot 添加一个接口并填好 API Key（本机的 Ollama 之类可以勾选「不需要 Key」），就能直接对话，不用安装别的工具。";
 
 // ---------------------------------------------------------------------------
 // 模型资料库（models.dev）
@@ -527,8 +527,7 @@ pub fn preview_usage(caps: &ModelCaps, model: &str) -> ContextUsage {
 pub const REQUIRES_TOPUP_CODE: &str = "zeeterm_requires_topup";
 
 /// 需要充值的提示卡文字（卡上的「去充值」按钮打开清单里的充值页）。
-pub const REQUIRES_TOPUP_TEXT: &str =
-    "ZeeTerm 内置助手需要充值后使用，赠送额度可在网页和其他客户端试用";
+pub const REQUIRES_TOPUP_TEXT: &str = "ZeePilot 需要充值后使用，赠送额度可在网页和其他客户端试用";
 
 /// Tokenway 令牌被服务端停用（改密码、停用授权、封号）时的提示卡文字（卡上的「重新连接」按钮重新授权）。
 pub const AUTHORIZATION_INVALID_TEXT: &str =
@@ -711,7 +710,7 @@ mod tests {
     #[test]
     fn labels_name_the_endpoint_only_when_there_is_a_choice() {
         let one = info_with(vec![endpoint_info(1, "主力", true)], None);
-        assert_eq!(one.label_for(1), "ZeeTerm 内置助手");
+        assert_eq!(one.label_for(1), "ZeePilot");
         let two = info_with(
             vec![
                 endpoint_info(1, "主力", true),
@@ -719,7 +718,7 @@ mod tests {
             ],
             None,
         );
-        assert_eq!(two.label_for(2), "内置 · 备用");
+        assert_eq!(two.label_for(2), "ZeePilot · 备用");
     }
 
     #[test]

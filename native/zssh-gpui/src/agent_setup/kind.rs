@@ -48,7 +48,7 @@ impl AgentKind {
             AgentKind::OpenCode => "opencode",
             AgentKind::Codex => "codex",
             AgentKind::Claude => "Claude Code",
-            AgentKind::Builtin => "ZeeTerm 内置助手",
+            AgentKind::Builtin => "ZeePilot",
         }
     }
 
@@ -170,6 +170,57 @@ mod tests {
         }
     }
 
+    /// 读一个目录下所有 .rs（不含测试文件和 `#[cfg(test)]` 之后的部分、不含注释行）。
+    fn product_code_lines(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                product_code_lines(&path, out);
+                continue;
+            }
+            let name = path.to_string_lossy().replace('\\', "/");
+            if path.extension().is_none_or(|e| e != "rs")
+                || name.ends_with("tests.rs")
+                || name.contains("/tests/")
+                // 假的 Tokenway 服务端：它回放的是服务端自己的原文，不是客户端文案。
+                || name.ends_with("tokenway/fake.rs")
+            {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let code = text.split("#[cfg(test)]").next().unwrap_or(&text);
+            for line in code.lines() {
+                if !line.trim_start().starts_with("//") {
+                    out.push((name.clone(), line.to_owned()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_builtin_agent_is_called_zeepilot_everywhere_in_the_product_text() {
+        // 界面（含同步 / 存储里给用户看的提示）里不再出现「内置助手」：只改显示名，类型名和存储键不动。
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut lines = Vec::new();
+        product_code_lines(&manifest.join("src"), &mut lines);
+        product_code_lines(&manifest.join("../../crates/zssh-core/src"), &mut lines);
+        assert!(lines.len() > 1000, "扫描没读到源码");
+        for (name, line) in lines {
+            assert!(
+                !line.contains("内置助手"),
+                "{name} 里还有「内置助手」：{}",
+                line.trim()
+            );
+        }
+        assert_eq!(AgentKind::Builtin.label(), "ZeePilot");
+        assert_eq!(AgentKind::Builtin.id(), "builtin", "存储键不能变");
+    }
+
     #[test]
     fn the_builtin_agent_sits_outside_the_external_ones() {
         // 外部智能体的数组、发现、手动路径都按 ALL 循环，不能混进内置助手。
@@ -178,7 +229,7 @@ mod tests {
             AgentKind::SELECTABLE.map(|kind| kind.id()),
             ["builtin", "opencode", "codex", "claude"]
         );
-        assert_eq!(AgentKind::Builtin.label(), "ZeeTerm 内置助手");
+        assert_eq!(AgentKind::Builtin.label(), "ZeePilot");
         assert_eq!(AgentKind::parse("builtin"), Some(AgentKind::Builtin));
         assert_eq!(AgentKind::from_setting("builtin"), AgentKind::Builtin);
         assert!(AgentKind::Builtin.spec().is_none());

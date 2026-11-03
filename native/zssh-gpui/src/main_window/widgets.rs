@@ -5,7 +5,7 @@
 
 use ::gpui::{App, ClickEvent, Hsla, SharedString, Window, px};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -14,6 +14,7 @@ use gpui_kit::*;
 use zssh_core::model::Protocol;
 
 use crate::app_theme::Tokens;
+use crate::menu_kit;
 use crate::typography::{Role, Typo as _};
 
 /// 字段：上面一行小标签（可带灰色的补充说明），下面是控件。
@@ -297,8 +298,7 @@ pub fn select(
                 let on_pick = on_pick.clone();
                 let label = format!("{}{}", "　".repeat(choice.depth), choice.label);
                 menu = menu.item(
-                    PopupMenuItem::new(label)
-                        .checked(choice.selected)
+                    menu_kit::choice(label, choice.selected)
                         .disabled(choice.disabled)
                         .on_click(move |_: &ClickEvent, window, cx| on_pick(index, window, cx)),
                 );

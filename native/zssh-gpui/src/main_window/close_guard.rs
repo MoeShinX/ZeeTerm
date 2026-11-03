@@ -8,7 +8,16 @@ use crate::install_state::PendingWork;
 
 /// 有进行中的工作就返回 `(标题, 正文)`，没有返回 `None`（可以直接退出）。
 pub fn quit_prompt(work: PendingWork) -> Option<(String, String)> {
+    quit_prompt_with_sessions(work, 0)
+}
+
+/// 同 [`quit_prompt`]，再算上还连着（或正在连）的终端会话：退出会把它们全部断开，
+/// 和 0.2.14 一样先问一句。
+pub fn quit_prompt_with_sessions(work: PendingWork, sessions: usize) -> Option<(String, String)> {
     let mut parts: Vec<String> = Vec::new();
+    if sessions > 0 {
+        parts.push(format!("{sessions} 个已连接的会话"));
+    }
     if work.transfers > 0 {
         parts.push(format!("{} 个文件传输", work.transfers));
     }
@@ -65,6 +74,13 @@ mod tests {
         for needle in ["2 个文件传输", "1 个 AI 回合", "同步", "备份恢复", "中断"] {
             assert!(body.contains(needle), "{needle}：{body}");
         }
+    }
+
+    #[test]
+    fn connected_sessions_alone_are_enough_to_ask() {
+        assert!(quit_prompt_with_sessions(PendingWork::default(), 0).is_none());
+        let (_, body) = quit_prompt_with_sessions(PendingWork::default(), 3).expect("有会话");
+        assert!(body.contains("3 个已连接的会话"), "{body}");
     }
 
     #[test]

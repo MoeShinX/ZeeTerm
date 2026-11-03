@@ -70,6 +70,10 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     // 会话日志：目录是本机路径，开关跟着目录走，都不同步
     ("session_log_enabled", SyncMode::LocalOnly),
     ("session_log_dir", SyncMode::LocalOnly),
+    // 从 Z-SSH 迁移的提示点过「不再提示」：这台电脑自己的事，不同步
+    ("zssh_migrate_dismissed", SyncMode::LocalOnly),
+    // 侧栏底部的主机属性面板显不显示（V2-U17）：本机的界面习惯，不同步
+    ("host_info_panel", SyncMode::LocalOnly),
     // 关闭主窗口时缩到托盘还是退出（UI-4）：每台电脑的使用习惯不同（常驻托盘还是用完就退），
     // 同步过去会让另一台电脑的 × 突然变了行为；「托盘提示出过了」是本机状态。都不同步。
     ("close_action", SyncMode::LocalOnly),
@@ -111,6 +115,8 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     // 主机树「不分组的主机平铺」的本机默认（UI-18）：首次启动按「是不是新用户」判断一次，只存本机，
     // 不能进同步包（不然几台电脑各判各的、合并时被当成冲突）；用户的明确选择在同步键 vault_ungrouped_flat
     ("layout.vault_flat_default", SyncMode::LocalOnly),
+    // 主机树要不要画虚线连接线（V2-U20）：本机的显示偏好，不同步
+    ("layout.vault_tree_guides", SyncMode::LocalOnly),
     // 主机页卡片按最近打开排：每台电脑用的不一样
     ("layout.recent_hosts", SyncMode::LocalOnly),
     ("layout.overview_width", SyncMode::LocalOnly),
