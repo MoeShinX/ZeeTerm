@@ -32,6 +32,8 @@ pub struct Row {
     pub base_url: String,
     /// "…ab12"：Key 的末 4 位；没有 Key 是 `None`。
     pub key_tail: Option<String>,
+    /// 明确设成不需要 Key（Ollama 之类）。
+    pub no_key: bool,
     pub default_model: Option<String>,
     pub is_default: bool,
 }
@@ -99,6 +101,7 @@ pub fn read_rows(db: &Database) -> Vec<Row> {
                 .then(|| db.ai_endpoint_api_key(endpoint.id).ok().flatten())
                 .flatten()
                 .and_then(|key| key_tail(&key));
+            let no_key = endpoint.key_not_needed();
             Row {
                 is_default: default
                     .as_ref()
@@ -108,6 +111,7 @@ pub fn read_rows(db: &Database) -> Vec<Row> {
                 kind: endpoint.kind,
                 base_url: endpoint.base_url,
                 key_tail: tail,
+                no_key,
                 default_model: endpoint.default_model,
             }
         })
@@ -119,6 +123,7 @@ pub fn row_detail(row: &Row) -> String {
     let mut parts = vec![row.base_url.clone()];
     parts.push(match &row.key_tail {
         Some(tail) => format!("Key {tail}"),
+        None if row.no_key => "不需要 Key".to_owned(),
         None => "未设置 Key".to_owned(),
     });
     if let Some(model) = &row.default_model {
@@ -521,6 +526,7 @@ mod tests {
             kind: EndpointKind::OpenAiChat,
             base_url: "https://api.example.com/v1".into(),
             key_tail: Some("••••1234".into()),
+            no_key: false,
             default_model: Some("gpt-5.5".into()),
             is_default: true,
         };

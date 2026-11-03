@@ -136,10 +136,20 @@ pub fn build_draft(values: &FormValues<'_>) -> Result<AiEndpointDraft, FormError
             "Base URL 要以 http:// 或 https:// 开头，不能含空格",
         ));
     }
-    let typed_key = values.api_key.trim();
-    let needs_key = values.id.is_none() || !values.has_stored_key;
+    // 「不需要 Key」只有 OpenAI 兼容接口能选（Ollama、vLLM、本机网关）；Anthropic 一律要 Key。
+    let no_key = values.kind == EndpointKind::OpenAiChat && values.options.no_key;
+    let typed_key = if no_key { "" } else { values.api_key.trim() };
+    let needs_key = !no_key && (values.id.is_none() || !values.has_stored_key);
     if typed_key.is_empty() && needs_key {
-        return Err(FormError::new(Field::ApiKey, "请填 API Key"));
+        return Err(FormError::new(
+            Field::ApiKey,
+            match values.kind {
+                EndpointKind::OpenAiChat => {
+                    "请填 API Key；接口不需要 Key 的话（比如本机的 Ollama）勾选「不需要 Key」"
+                }
+                EndpointKind::Anthropic => "请填 API Key",
+            },
+        ));
     }
     if let Some(problem) = key_problem(typed_key) {
         return Err(FormError::new(Field::ApiKey, problem));
@@ -160,11 +170,19 @@ pub fn build_draft(values: &FormValues<'_>) -> Result<AiEndpointDraft, FormError
         name: name.to_owned(),
         kind: values.kind,
         base_url: url.to_owned(),
-        api_key: (!typed_key.is_empty()).then(|| typed_key.to_owned()),
+        // 明确不需要 Key：空串 = 把库里已存的 Key 一起清掉。
+        api_key: if no_key {
+            Some(String::new())
+        } else {
+            (!typed_key.is_empty()).then(|| typed_key.to_owned())
+        },
         default_model: (!default_model.is_empty()).then(|| default_model.to_owned()),
         models,
         overrides: values.overrides.clone(),
-        openai_options: values.options.clone(),
+        openai_options: OpenAiOptionsConfig {
+            no_key,
+            ..values.options.clone()
+        },
         preset_id: values.preset_id.clone(),
     })
 }
@@ -293,6 +311,31 @@ pub fn store_override(
     } else {
         overrides.insert(model.to_owned(), item);
     }
+}
+
+/// 手动覆盖现在对应哪个模型：专门选过别的就是它，否则跟着默认模型。
+pub fn override_target(pick: Option<&str>, default: &str) -> String {
+    pick.unwrap_or(default).to_owned()
+}
+
+/// 用户在「要覆盖的模型」里选了 `model`：选的就是默认模型（或空）时回到「跟着默认模型」。
+pub fn normalize_pick(model: &str, default: &str) -> Option<String> {
+    let model = model.trim();
+    (!model.is_empty() && model != default.trim()).then(|| model.to_owned())
+}
+
+/// 切换覆盖目标：把正在编辑的旧模型的覆盖存回整张表（`old_item` 为 `None` = 表单里的数字读不懂，旧值不动），
+/// 再返回新目标已有的覆盖（没有就是全空）。别的模型的覆盖一概原样保留。
+pub fn switch_override_target(
+    overrides: &mut BTreeMap<String, CapsOverride>,
+    old_model: &str,
+    old_item: Option<CapsOverride>,
+    new_model: &str,
+) -> CapsOverride {
+    if let Some(item) = old_item {
+        store_override(overrides, old_model, item);
+    }
+    overrides.get(new_model.trim()).cloned().unwrap_or_default()
 }
 
 /// 思考覆盖的几个常用档（分段按钮用）。`None` = 自动。
@@ -438,6 +481,8 @@ pub struct AiEndpointDialog {
     pub overrides: BTreeMap<String, CapsOverride>,
     /// 下面这组覆盖表单项对应哪个模型。
     pub override_model: String,
+    /// 用户在「要覆盖的模型」里专门选的（`None` = 跟着默认模型）。
+    pub override_pick: Option<String>,
     pub cap_context: Entity<InputState>,
     pub cap_output: Entity<InputState>,
     pub cap_fields: OverrideFields,
@@ -508,6 +553,7 @@ impl AiEndpointDialog {
                 .unwrap_or_default(),
             overrides,
             override_model: String::new(),
+            override_pick: None,
             cap_context,
             cap_output,
             cap_fields: OverrideFields::default(),
@@ -539,13 +585,22 @@ impl AiEndpointDialog {
         }
     }
 
-    /// 默认模型换了：先把旧模型的覆盖存好，再把新模型的覆盖读进表单项。
+    /// 覆盖表单现在对应哪个模型：用户在「要覆盖的模型」里专门选过就是它，否则跟着默认模型。
+    pub fn override_target(&self, cx: &App) -> String {
+        override_target(self.override_pick.as_deref(), &self.model_text(cx))
+    }
+
+    /// 默认模型换了（或选了别的要覆盖的模型）：先把旧模型的覆盖存好，再把新目标的覆盖读进表单项。
     pub fn load_overrides(&mut self, window: &mut Window, cx: &mut Context<MainWindow>) {
-        if !self.override_model.is_empty() {
-            self.commit_override_fields(cx);
+        let model = self.override_target(cx);
+        // 目标没变（比如专门选了别的模型、默认模型又被改了）：表单项原样留着，别用旧值覆盖正在输入的内容。
+        if !self.override_model.is_empty() && self.override_model == model {
+            return;
         }
-        let model = self.model_text(cx);
-        let item = self.overrides.get(&model).cloned().unwrap_or_default();
+        // 旧目标的覆盖存回整张表（表单里数字读不懂就不动旧值），再读新目标的。
+        let old_item = self.current_override(cx).ok();
+        let old_model = self.override_model.clone();
+        let item = switch_override_target(&mut self.overrides, &old_model, old_item, &model);
         self.cap_fields = OverrideFields::from_override(&item);
         let (context, output) = (
             self.cap_fields.context.clone(),
@@ -558,7 +613,33 @@ impl AiEndpointDialog {
         self.override_model = model;
     }
 
-    /// 现在表单里的覆盖（只对默认模型）；数字读不懂时是 `Err`。
+    /// 选「要覆盖的模型」：选的就是默认模型时回到「跟着默认模型」。
+    pub fn pick_override_model(
+        &mut self,
+        model: &str,
+        window: &mut Window,
+        cx: &mut Context<MainWindow>,
+    ) {
+        self.override_pick = normalize_pick(model, &self.model_text(cx));
+        self.load_overrides(window, cx);
+    }
+
+    /// 有手动覆盖的模型（不含正在编辑的那个；界面下拉里也要能点到它们）。
+    pub fn models_with_overrides(&self) -> Vec<String> {
+        self.overrides.keys().cloned().collect()
+    }
+
+    /// 某个模型现在生效的手动覆盖：正在编辑的那个读表单，别的读已存的表；全空 = `None`。
+    pub fn manual_for(&self, model: &str, cx: &App) -> Option<CapsOverride> {
+        let item = if model == self.override_model {
+            self.current_override(cx).ok()?
+        } else {
+            self.overrides.get(model).cloned()?
+        };
+        (item != CapsOverride::default()).then_some(item)
+    }
+
+    /// 现在表单里的覆盖（对应 `override_model` 那个模型）；数字读不懂时是 `Err`。
     pub fn current_override(&self, cx: &App) -> Result<CapsOverride, FormError> {
         let mut fields = self.cap_fields.clone();
         fields.context = self.cap_context.read(cx).value().to_string();
@@ -572,8 +653,7 @@ impl AiEndpointDialog {
         cx: &App,
     ) -> Result<BTreeMap<String, CapsOverride>, FormError> {
         let mut all = self.overrides.clone();
-        let model = self.model_text(cx);
-        store_override(&mut all, &model, self.current_override(cx)?);
+        store_override(&mut all, &self.override_model, self.current_override(cx)?);
         Ok(all)
     }
 
@@ -625,17 +705,22 @@ impl AiEndpointDialog {
         if model.is_empty() {
             return None;
         }
-        let manual = self
-            .current_override(cx)
-            .ok()
-            .filter(|item| *item != CapsOverride::default());
+        let manual = self.manual_for(&model, cx);
         let reported = self.remote.get(&model).cloned();
         let caps = resolve(&model, manual, reported, catalog);
         Some((model, caps))
     }
 
+    /// 勾了「不需要 Key」（只有 OpenAI 兼容接口算数）。
+    pub fn key_not_needed(&self) -> bool {
+        self.kind == EndpointKind::OpenAiChat && self.options.no_key
+    }
+
     /// 测试用的连接配置：表单里新填的 Key 优先，没填用库里已存的。
     pub fn probe_key(&self, cx: &App) -> ApiKey {
+        if self.key_not_needed() {
+            return ApiKey::default();
+        }
         let typed = self.api_key.read(cx).value().trim().to_owned();
         if !typed.is_empty() {
             return ApiKey::new(typed);
@@ -844,6 +929,10 @@ impl MainWindow {
             return;
         }
         dialog.kind = kind;
+        // Anthropic 一定要 Key：换过去时「不需要 Key」自动取消。
+        if kind == EndpointKind::Anthropic {
+            dialog.options.no_key = false;
+        }
         // 两种类型的示例地址不同：地址框还是空的（或还是另一种的示例）就换成新示例的占位。
         dialog.base_url.update(cx, |input, cx| {
             input.set_placeholder(example_url(kind), window, cx);
@@ -1026,10 +1115,7 @@ impl MainWindow {
                     dialog.remote_models = models.iter().map(|(id, _)| id.clone()).collect();
                     dialog.remote = probe.remote_caps();
                 }
-                let manual = dialog
-                    .current_override(cx)
-                    .ok()
-                    .filter(|item| *item != CapsOverride::default());
+                let manual = dialog.manual_for(&model, cx);
                 let caps = resolve(
                     &model,
                     manual,
@@ -1156,9 +1242,35 @@ impl MainWindow {
             } else {
                 "加密存在本机凭据保险库里，不会写进日志"
             };
-            rows.push(
-                v_flex()
-                    .gap_1p5()
+            let no_key = dialog.key_not_needed();
+            let mut key_rows = v_flex().gap_1p5();
+            // 只有 OpenAI 兼容接口能不要 Key（Ollama、vLLM、本机网关）。
+            if dialog.kind == EndpointKind::OpenAiChat {
+                let toggle = entity.clone();
+                key_rows = key_rows.child(check_card(
+                    "ai-endpoint-no-key",
+                    "不需要 Key",
+                    Some("Ollama、vLLM、本机网关这类不校验 Key 的接口勾上；请求里就不带 Authorization 头"),
+                    no_key,
+                    tokens,
+                    move |value, _window, cx| {
+                        toggle.update(cx, |this, cx| {
+                            this.with_ai_dialog(cx, |dialog| {
+                                dialog.options.no_key = value;
+                                dialog.error = None;
+                                dialog.test.result = None;
+                            });
+                        });
+                    },
+                ));
+            }
+            if no_key {
+                key_rows = key_rows.child(note(
+                    "已设为不需要 Key。保存时，这个接口原来存的 Key 会一起清掉。",
+                    tokens,
+                ));
+            } else {
+                key_rows = key_rows
                     .child(labelled(
                         // 编辑时库里已经有 Key、留空表示不改：不标必填。
                         if dialog.id.is_some() && dialog.has_stored_key {
@@ -1178,9 +1290,9 @@ impl MainWindow {
                         err(Field::ApiKey),
                         tokens,
                     ))
-                    .child(note(hint, tokens))
-                    .into_any_element(),
-            );
+                    .child(note(hint, tokens));
+            }
+            rows.push(key_rows.into_any_element());
         }
         // 默认模型 + 下拉
         {
@@ -1462,10 +1574,12 @@ impl MainWindow {
     ) -> Vec<AnyElement> {
         let entity = cx.entity();
         let mut rows: Vec<AnyElement> = Vec::new();
-        let model = dialog.model_text(cx);
+        // 手动覆盖的目标：默认是默认模型，也可以在下拉里改成别的（接口里的、手填的、已经有覆盖的）。
+        let model = dialog.override_model.clone();
         if model.is_empty() {
             rows.push(note("先填默认模型，才能给它手动改能力。", tokens).into_any_element());
         } else {
+            rows.push(self.ai_override_target_row(dialog, &model, tokens, cx));
             rows.push(
                 note(
                     format!("下面的手动值只对「{model}」生效，优先于自动识别；留空 / 选「自动」就用识别结果。"),
@@ -1635,6 +1749,84 @@ impl MainWindow {
             );
         }
         rows
+    }
+
+    /// 「要覆盖的模型」一行：当前目标 + 下拉（默认模型排第一，其后是接口返回的、手填的、已经有覆盖的）。
+    fn ai_override_target_row(
+        &self,
+        dialog: &AiEndpointDialog,
+        target: &str,
+        tokens: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let default = dialog.model_text(cx);
+        let mut choices: Vec<String> = Vec::new();
+        for name in std::iter::once(default.clone())
+            .chain(dialog.model_choices(cx))
+            .chain(dialog.models_with_overrides())
+        {
+            if !name.is_empty() && !choices.contains(&name) {
+                choices.push(name);
+            }
+        }
+        let overridden = dialog.models_with_overrides();
+        let pick = cx.entity();
+        let label = if target == default {
+            format!("{target}（默认模型）")
+        } else {
+            target.to_owned()
+        };
+        let menu_button = Button::new("ai-override-model-menu")
+            .outline()
+            .compact()
+            .label(SharedString::from(label))
+            .dropdown_caret(true)
+            .dropdown_menu(move |menu, _window, _cx| {
+                let mut menu = menu.min_w(px(260.0)).max_h(px(320.0)).scrollable(true);
+                for model in &choices {
+                    let mut text = model.clone();
+                    if *model == default {
+                        text.push_str("（默认模型）");
+                    }
+                    if overridden.contains(model) {
+                        text.push_str(" · 已有手动值");
+                    }
+                    let pick = pick.clone();
+                    let model = model.clone();
+                    menu = menu.item(PopupMenuItem::new(text).on_click(
+                        move |_: &::gpui::ClickEvent, window, cx| {
+                            let model = model.clone();
+                            pick.update(cx, |this, cx| {
+                                this.ai_dialog_pick_override_model(model, window, cx)
+                            });
+                        },
+                    ));
+                }
+                menu
+            });
+        field(
+            "要覆盖的模型",
+            Some("默认就是上面的默认模型；也可以给接口里别的模型单独改".to_owned()),
+            menu_button,
+            tokens,
+        )
+        .into_any_element()
+    }
+
+    /// 选「要覆盖的模型」：先把正在编辑的那个模型的覆盖存好，再读新目标的。
+    pub(crate) fn ai_dialog_pick_override_model(
+        &mut self,
+        model: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Modal::AiEndpoint(mut dialog)) = self.modal.take() else {
+            return;
+        };
+        dialog.pick_override_model(&model, window, cx);
+        // 测试结果说的是别的模型时不动它；能力块是实时算的，会跟着手动值变。
+        self.modal = Some(Modal::AiEndpoint(dialog));
+        cx.notify();
     }
 
     /// "识别为"不对时改选：在 models.dev 的数据里搜一个，点一下就按它的能力算。
@@ -1865,6 +2057,85 @@ mod tests {
         v.api_key = "";
         v.has_stored_key = true;
         assert_eq!(build_draft(&v).unwrap_err().field, Field::ApiKey);
+    }
+
+    #[test]
+    fn an_openai_endpoint_can_say_it_needs_no_key_and_then_drops_any_stored_key() {
+        let mut v = values();
+        v.api_key = "";
+        v.options.no_key = true;
+        let draft = build_draft(&v).expect("不需要 Key 就不用填");
+        assert_eq!(
+            draft.api_key.as_deref(),
+            Some(""),
+            "空串 = 清掉库里已存的 Key"
+        );
+        assert!(draft.openai_options.no_key);
+        // 勾了不需要，即使框里残留着内容也不存。
+        v.api_key = "sk-leftover-0001";
+        let draft = build_draft(&v).expect("合法");
+        assert_eq!(draft.api_key.as_deref(), Some(""));
+        // 没勾又没填：报错并提示可以勾选。
+        let mut v = values();
+        v.api_key = "";
+        let error = build_draft(&v).unwrap_err();
+        assert_eq!(error.field, Field::ApiKey);
+        assert!(error.message.contains("不需要 Key"), "{}", error.message);
+    }
+
+    #[test]
+    fn anthropic_always_needs_a_key_even_if_the_flag_was_left_on() {
+        let mut v = values();
+        v.kind = EndpointKind::Anthropic;
+        v.api_key = "";
+        v.options.no_key = true;
+        let error = build_draft(&v).unwrap_err();
+        assert_eq!(error.field, Field::ApiKey);
+        assert!(!error.message.contains("不需要 Key"), "{}", error.message);
+        v.api_key = "sk-ant-test-0001";
+        let draft = build_draft(&v).expect("合法");
+        assert!(
+            !draft.openai_options.no_key,
+            "Anthropic 存下来不带不需要 Key 的标记"
+        );
+        assert_eq!(draft.api_key.as_deref(), Some("sk-ant-test-0001"));
+    }
+
+    #[test]
+    fn the_override_target_follows_the_default_model_until_another_one_is_picked() {
+        use super::{normalize_pick, override_target, switch_override_target};
+        assert_eq!(override_target(None, "gpt-5.5"), "gpt-5.5");
+        assert_eq!(override_target(Some("other"), "gpt-5.5"), "other");
+        // 选的就是默认模型 = 回到跟着默认模型；空也是。
+        assert_eq!(normalize_pick("gpt-5.5", "gpt-5.5"), None);
+        assert_eq!(normalize_pick(" gpt-5.5 ", " gpt-5.5"), None);
+        assert_eq!(normalize_pick("", "gpt-5.5"), None);
+        assert_eq!(normalize_pick("other", "gpt-5.5"), Some("other".to_owned()));
+
+        let mut table: BTreeMap<String, CapsOverride> = BTreeMap::new();
+        let context = |n: u32| CapsOverride {
+            context_window: Some(n),
+            ..CapsOverride::default()
+        };
+        table.insert("other".to_owned(), context(64_000));
+        // 默认模型 → other：默认模型正在编辑的值先存回，other 已有的覆盖读出来。
+        let loaded = switch_override_target(&mut table, "gpt-5.5", Some(context(400_000)), "other");
+        assert_eq!(loaded.context_window, Some(64_000));
+        assert_eq!(table["gpt-5.5"].context_window, Some(400_000));
+        // other → 一个没有覆盖的模型：other 改成全空就从表里删掉；新目标读到全空。
+        let loaded =
+            switch_override_target(&mut table, "other", Some(CapsOverride::default()), "m3");
+        assert_eq!(loaded, CapsOverride::default());
+        assert!(!table.contains_key("other"));
+        assert_eq!(
+            table["gpt-5.5"].context_window,
+            Some(400_000),
+            "别的模型的覆盖不动"
+        );
+        // 表单里的数字读不懂（旧项是 None）：旧模型的已存值不动。
+        let loaded = switch_override_target(&mut table, "gpt-5.5", None, "m3");
+        assert_eq!(loaded, CapsOverride::default());
+        assert_eq!(table["gpt-5.5"].context_window, Some(400_000));
     }
 
     #[test]

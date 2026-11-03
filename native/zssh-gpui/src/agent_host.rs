@@ -1720,18 +1720,31 @@ pub async fn start_builtin_agent(
 /// 读接口配置和它的 Key（Key 只在这里短暂出现，交给对话后由 `ApiKey` 的 `Debug` 挡住）。
 pub(crate) fn load_endpoint(endpoint_id: i64) -> Result<(AiEndpoint, ApiKey), String> {
     let db = crate::hosts_demo::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
+    load_endpoint_from(&db, endpoint_id)
+}
+
+/// 同 [`load_endpoint`]，用已经打开的库。
+pub(crate) fn load_endpoint_from(
+    db: &zssh_core::store::Database,
+    endpoint_id: i64,
+) -> Result<(AiEndpoint, ApiKey), String> {
     let endpoint = db
         .ai_endpoint_get(endpoint_id)
         .map_err(|_| "这个接口已经不存在了，请在智能体下拉里重新选一个。".to_string())?;
     let key = db
         .ai_endpoint_api_key(endpoint_id)
-        .map_err(|err| format!("读取 API Key 失败：{err}"))?
-        .ok_or_else(|| {
-            format!(
+        .map_err(|err| format!("读取 API Key 失败：{err}"))?;
+    let key = match key {
+        Some(key) => key,
+        // 明确设成"不需要 Key"的接口（Ollama 之类）：Key 为空，请求里就不带 Authorization 头。
+        None if endpoint.key_not_needed() => String::new(),
+        None => {
+            return Err(format!(
                 "接口「{}」还没有 API Key：到 设置 → AI → 内置助手 里补上。",
                 endpoint.name
-            )
-        })?;
+            ));
+        }
+    };
     Ok((endpoint, ApiKey::new(key)))
 }
 
@@ -2782,6 +2795,112 @@ mod tests {
         bad.shutdown().await;
     }
 
+    /// 记下每个请求的头，其余转给假接口。
+    struct HeaderRecorder {
+        inner: crate::agent_setup::builtin_fake::FakeTransport,
+        seen: std::sync::Mutex<Vec<Vec<(String, String)>>>,
+    }
+
+    impl Transport for HeaderRecorder {
+        fn post<'a>(
+            &'a self,
+            request: zssh_core::ai::agent::builtin::provider::HttpRequest,
+        ) -> zssh_core::ssh::BoxFuture<
+            'a,
+            Result<
+                zssh_core::ai::agent::builtin::provider::HttpResponse,
+                zssh_core::ai::agent::builtin::provider::TransportError,
+            >,
+        > {
+            self.seen.lock().expect("锁").push(request.headers.clone());
+            self.inner.post(request)
+        }
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_marked_no_key_chats_without_an_authorization_header() {
+        use zssh_core::ai::agent::builtin::config::{
+            AiEndpointDraft, EndpointKind, OpenAiOptionsConfig,
+        };
+        let db = Database::open_in_memory().expect("内存库");
+        let saved = db
+            .ai_endpoint_save(&AiEndpointDraft {
+                id: None,
+                name: "本机 Ollama".into(),
+                kind: EndpointKind::OpenAiChat,
+                base_url: "http://localhost:11434/v1".into(),
+                api_key: None,
+                default_model: Some("gpt-5.5".into()),
+                models: Vec::new(),
+                overrides: Default::default(),
+                openai_options: OpenAiOptionsConfig {
+                    no_key: true,
+                    ..OpenAiOptionsConfig::default()
+                },
+                preset_id: Some("ollama".into()),
+            })
+            .expect("保存");
+        // 没写「不需要 Key」的同类接口读不出 Key，提示去补。
+        let bare = db
+            .ai_endpoint_save(&AiEndpointDraft {
+                id: None,
+                name: "没填".into(),
+                kind: EndpointKind::OpenAiChat,
+                base_url: "http://localhost:11434/v1".into(),
+                api_key: None,
+                default_model: None,
+                models: Vec::new(),
+                overrides: Default::default(),
+                openai_options: OpenAiOptionsConfig::default(),
+                preset_id: None,
+            })
+            .expect("保存");
+        let err = load_endpoint_from(&db, bare.id).unwrap_err();
+        assert!(err.contains("还没有 API Key"), "{err}");
+
+        let (endpoint, key) = load_endpoint_from(&db, saved.id).expect("不需要 Key 的接口可以读");
+        assert!(key.is_empty() && endpoint.is_ready());
+        let hub = test_hub(Arc::new(CountingHost::default())).await;
+        let recorder = Arc::new(HeaderRecorder {
+            inner: crate::agent_setup::builtin_fake::FakeTransport::default(),
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut session = hub
+            .start_builtin(BuiltinStart {
+                endpoint,
+                api_key: key,
+                transport: Arc::clone(&recorder) as Arc<dyn Transport>,
+                catalog: Arc::new(Catalog::builtin()),
+                resume: None,
+                tuning: fast_tuning(),
+            })
+            .await
+            .expect("启动");
+        session
+            .conversation
+            .send("你好", Some("gpt-5.5"))
+            .await
+            .expect("发送");
+        let (events, _signals) = collect_turn(&mut session).await;
+        let text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(text.contains("收到"), "没有 Key 也聊得起来：{text}");
+        let seen = recorder.seen.lock().expect("锁");
+        assert!(!seen.is_empty());
+        assert!(
+            seen.iter()
+                .flatten()
+                .all(|(name, _)| !name.eq_ignore_ascii_case("authorization")),
+            "不需要 Key 的接口不能发 Authorization 头：{seen:?}"
+        );
+        drop(seen);
+        session.shutdown().await;
+    }
     #[tokio::test]
     async fn a_topup_error_code_reaches_the_ui_as_a_structured_signal() {
         use crate::agent_setup::builtin_fake::FakeTransport;

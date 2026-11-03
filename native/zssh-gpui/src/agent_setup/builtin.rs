@@ -37,8 +37,8 @@ pub struct EndpointInfo {
     pub uid: String,
     pub name: String,
     pub kind: EndpointKind,
-    /// 配好了 Key（接口表只记有没有，Key 在保险库里）。
-    pub has_key: bool,
+    /// 配好了（有 Key，或明确设成不需要 Key；接口表只记有没有，Key 在保险库里）。
+    pub ready: bool,
     pub default_model: Option<String>,
     /// 改了就变：模型目录、远端模型清单的缓存键用它。
     pub updated_at: i64,
@@ -60,7 +60,7 @@ pub struct BuiltinInfo {
 impl BuiltinInfo {
     /// 内置助手算不算可用：至少有一个配好 Key 的接口。
     pub fn usable(&self) -> bool {
-        self.endpoints.iter().any(|endpoint| endpoint.has_key)
+        self.endpoints.iter().any(|endpoint| endpoint.ready)
     }
 
     pub fn get(&self, id: i64) -> Option<&EndpointInfo> {
@@ -69,7 +69,7 @@ impl BuiltinInfo {
 
     /// 面板里能选的接口（配好 Key 的）。
     pub fn selectable(&self) -> Vec<&EndpointInfo> {
-        self.endpoints.iter().filter(|e| e.has_key).collect()
+        self.endpoints.iter().filter(|e| e.ready).collect()
     }
 
     /// 新对话默认用哪个接口：设置里的默认接口（它得可用）> 第一个可用的。
@@ -77,8 +77,8 @@ impl BuiltinInfo {
         self.default
             .as_ref()
             .and_then(|choice| self.get(choice.endpoint_id))
-            .filter(|endpoint| endpoint.has_key)
-            .or_else(|| self.endpoints.iter().find(|endpoint| endpoint.has_key))
+            .filter(|endpoint| endpoint.ready)
+            .or_else(|| self.endpoints.iter().find(|endpoint| endpoint.ready))
     }
 
     /// 这个接口开新对话时默认选哪个模型：设为默认的那个接口用设置里的默认模型，
@@ -122,11 +122,11 @@ fn read_info(db: &Database) -> BuiltinInfo {
         endpoints: endpoints
             .into_iter()
             .map(|endpoint| EndpointInfo {
+                ready: endpoint.is_ready(),
                 id: endpoint.id,
                 uid: endpoint.uid,
                 name: endpoint.name,
                 kind: endpoint.kind,
-                has_key: endpoint.has_key,
                 default_model: endpoint.default_model,
                 updated_at: endpoint.updated_at,
             })
@@ -224,7 +224,7 @@ pub fn status() -> AgentStatus {
 }
 
 /// 面板里内置助手没配置时的整段说明。
-pub const MISSING_TEXT: &str = "还没有配置内置助手：到 设置 → AI → 内置助手 添加一个接口并填好 API Key，就能直接对话，不用安装别的工具。";
+pub const MISSING_TEXT: &str = "还没有配置内置助手：到 设置 → AI → 内置助手 添加一个接口并填好 API Key（本机的 Ollama 之类可以勾选「不需要 Key」），就能直接对话，不用安装别的工具。";
 
 // ---------------------------------------------------------------------------
 // 模型资料库（models.dev）
@@ -594,7 +594,7 @@ mod tests {
             uid: format!("uid-{id}"),
             name: name.to_owned(),
             kind: EndpointKind::OpenAiChat,
-            has_key,
+            ready: has_key,
             default_model: Some(format!("model-{id}")),
             updated_at: 1,
         }
@@ -638,6 +638,34 @@ mod tests {
         assert_eq!(both.selectable().len(), 1);
     }
 
+    #[test]
+    fn a_keyless_endpoint_marked_no_key_is_ready_but_a_bare_one_is_not() {
+        use zssh_core::ai::agent::builtin::config::AiEndpointDraft;
+        let db = Database::open_in_memory().expect("内存库");
+        let draft = |name: &str, no_key: bool| AiEndpointDraft {
+            id: None,
+            name: name.to_owned(),
+            kind: EndpointKind::OpenAiChat,
+            base_url: "http://localhost:11434/v1".to_owned(),
+            api_key: None,
+            default_model: Some("llama".to_owned()),
+            models: Vec::new(),
+            overrides: Default::default(),
+            openai_options: OpenAiOptionsConfig {
+                no_key,
+                ..OpenAiOptionsConfig::default()
+            },
+            preset_id: None,
+        };
+        let bare = db.ai_endpoint_save(&draft("没填", false)).unwrap();
+        assert!(!read_info(&db).usable(), "光有地址不算配好");
+        let ollama = db.ai_endpoint_save(&draft("Ollama", true)).unwrap();
+        let info = read_info(&db);
+        assert!(info.usable());
+        assert_eq!(info.default_endpoint().map(|e| e.id), Some(ollama.id));
+        assert_eq!(info.selectable().len(), 1);
+        assert!(!info.get(bare.id).unwrap().ready);
+    }
     #[test]
     fn the_default_endpoint_and_model_follow_the_setting_when_it_is_usable() {
         let info = info_with(

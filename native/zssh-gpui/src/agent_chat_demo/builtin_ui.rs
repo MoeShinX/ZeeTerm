@@ -97,7 +97,7 @@ impl AgentChatDemo {
             return;
         }
         let info = builtin::info();
-        if info.get(id).is_none_or(|endpoint| !endpoint.has_key) {
+        if info.get(id).is_none_or(|endpoint| !endpoint.ready) {
             return;
         }
         let started = self.session.is_some()
@@ -143,7 +143,7 @@ impl AgentChatDemo {
             .builtin
             .endpoint
             .and_then(|id| info.get(id))
-            .filter(|endpoint| endpoint.has_key)
+            .filter(|endpoint| endpoint.ready)
             .map(|endpoint| endpoint.id);
         if valid != self.builtin.endpoint || valid.is_none() {
             let fallback = valid.or_else(|| info.default_endpoint().map(|e| e.id));
