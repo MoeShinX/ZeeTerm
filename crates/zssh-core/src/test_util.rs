@@ -118,3 +118,115 @@ pub(crate) fn capture_logs<R>(f: impl FnOnce() -> R) -> (R, String) {
         .unwrap_or_default();
     (result, logs)
 }
+
+/// 判定一次本机 `sh` 的运行结果能不能用：能启动、退出码是 0、stdout 不为空。
+/// 不能用就返回原因。纯函数，方便单测。
+///
+/// 为什么不只看“能不能启动”：装了损坏的 MSYS / Git Bash、WSL 混装的 Windows 上，
+/// `sh.exe` 能启动却立刻崩（退出码非 0、什么都不输出），这不是被测代码的问题，测试
+/// 应该跳过而不是失败（AGENTS.md：依赖本机环境的测试在环境不满足时跳过并打印原因）。
+pub(crate) fn sh_outcome(result: std::io::Result<std::process::Output>) -> Result<String, String> {
+    let output = result.map_err(|err| format!("本机没有可用的 sh（{err}）"))?;
+    if !output.status.success() {
+        return Err(format!("本机的 sh 退出码非 0（{}）", output.status));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    if stdout.trim().is_empty() {
+        return Err("本机的 sh 没有输出任何东西".to_owned());
+    }
+    Ok(stdout)
+}
+
+fn run_sh_raw(script: &str) -> std::io::Result<std::process::Output> {
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .stdin(std::process::Stdio::null())
+        .output()
+}
+
+/// 本机 `sh` 能不能跑最小的脚本（`echo ok` 输出 `ok`）。结果缓存，整个测试进程只探一次。
+pub(crate) fn sh_probe() -> Result<(), String> {
+    static PROBE: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    PROBE
+        .get_or_init(|| {
+            let out = sh_outcome(run_sh_raw("echo ok"))?;
+            if out.trim() == "ok" {
+                Ok(())
+            } else {
+                Err(format!(
+                    "本机的 sh 对 echo ok 的回答不对（{:?}）",
+                    out.trim()
+                ))
+            }
+        })
+        .clone()
+}
+
+/// 用本机 `sh -c` 跑 `script`，返回 stdout。sh 不可用（探针不过）或这次运行不正常
+/// （见 [`sh_outcome`]）时打印“跳过 <test>：<原因>”并返回 `None`，调用方直接 `return`。
+pub(crate) fn run_sh(test: &str, script: &str) -> Option<String> {
+    if let Err(reason) = sh_probe() {
+        println!("跳过 {test}：{reason}");
+        return None;
+    }
+    match sh_outcome(run_sh_raw(script)) {
+        Ok(stdout) => Some(stdout),
+        Err(reason) => {
+            println!("跳过 {test}：{reason}");
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod sh_probe_tests {
+    use super::*;
+    use std::process::{ExitStatus, Output};
+
+    fn output(code: u32, stdout: &str) -> std::io::Result<Output> {
+        #[cfg(windows)]
+        let status = {
+            use std::os::windows::process::ExitStatusExt;
+            ExitStatus::from_raw(code)
+        };
+        #[cfg(unix)]
+        let status = {
+            use std::os::unix::process::ExitStatusExt;
+            ExitStatus::from_raw((code as i32) << 8)
+        };
+        Ok(Output {
+            status,
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn a_healthy_sh_run_is_usable() {
+        assert_eq!(sh_outcome(output(0, "ok\n")).as_deref(), Ok("ok\n"));
+    }
+
+    #[test]
+    fn a_missing_sh_is_skipped_with_the_reason() {
+        let err = sh_outcome(Err(std::io::Error::from(std::io::ErrorKind::NotFound)))
+            .expect_err("启动失败要跳过");
+        assert!(err.contains("没有可用的 sh"), "{err}");
+    }
+
+    /// 本机 sh 能启动但立刻崩（退出码非 0、stdout 为空）：旧的跳过条件只看“能不能启动”，
+    /// 这种情况会让断言失败。
+    #[test]
+    fn a_sh_that_starts_but_crashes_is_skipped() {
+        let err = sh_outcome(output(0xC000_0022, "")).expect_err("非 0 退出码要跳过");
+        assert!(err.contains("退出码非 0"), "{err}");
+        let err = sh_outcome(output(1, "")).expect_err("非 0 退出码要跳过");
+        assert!(err.contains("退出码非 0"), "{err}");
+    }
+
+    #[test]
+    fn a_sh_that_exits_zero_but_prints_nothing_is_skipped() {
+        let err = sh_outcome(output(0, "  \n")).expect_err("空输出要跳过");
+        assert!(err.contains("没有输出"), "{err}");
+    }
+}

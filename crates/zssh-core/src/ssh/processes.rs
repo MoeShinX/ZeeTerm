@@ -1429,15 +1429,10 @@ this line is not a process
     }
 
     /// 用本机 sh 真跑采集脚本：`ps` 用 shell 函数按参数顶替，验证 fallback 的先后顺序、来源标记，
-    /// 并把整份输出交给解析器。本机没有 `sh` 就跳过。
-    fn run_script_with(stubs: &str) -> Option<String> {
-        let script = format!("{stubs}\n{SCRIPT}");
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(script)
-            .output()
-            .ok()?;
-        Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    /// 并把整份输出交给解析器。本机没有 `sh`、sh 能启动但立刻崩（退出码非 0 / 没有输出）都跳过
+    /// 并打印原因（见 [`crate::test_util::run_sh`]）。
+    fn run_script_with(test: &str, stubs: &str) -> Option<String> {
+        crate::test_util::run_sh(test, &format!("{stubs}\n{SCRIPT}"))
     }
 
     #[test]
@@ -1446,8 +1441,8 @@ this line is not a process
         let modern = r#"ps() { case "$*" in
   *etimes*) printf '  PID  PPID USER %%CPU %%MEM RSS STAT ELAPSED COMMAND\n  812     1 app 55.5 12.4 1000 S 100 app-worker\n';;
   *) return 1;; esac; }"#;
-        let Some(out) = run_script_with(modern) else {
-            println!("跳过 the_script_falls_back_through_the_ps_variants_in_order：本机没有 sh");
+        const NAME: &str = "the_script_falls_back_through_the_ps_variants_in_order";
+        let Some(out) = run_script_with(NAME, modern) else {
             return;
         };
         assert_eq!(out.matches("@@ZSSH source").count(), 1, "{out}");
@@ -1460,7 +1455,9 @@ this line is not a process
   *etimes*|*user:32*) return 1;;
   *--sort*) printf '  PID  PPID USER %%CPU %%MEM RSS STAT ELAPSED COMMAND\n  812     1 app 55.5 12.4 1000 S 01:40 app-worker\n';;
   *) return 1;; esac; }"#;
-        let out = run_script_with(old).expect("sh 在");
+        let Some(out) = run_script_with(NAME, old) else {
+            return;
+        };
         let report = parse_processes(&out).expect("解析");
         assert_eq!(report.source, ProcSource::Procps);
         assert_eq!(report.rows[0].elapsed_secs, Some(100));
@@ -1470,7 +1467,9 @@ this line is not a process
   *--sort*) return 1;;
   *"-o pid,ppid,user,stat,rss,etime,args"*) printf '  PID  PPID USER STAT RSS ELAPSED COMMAND\n  310     1 root S 5000 01:02:03 dropbear -F\n';;
   *) return 1;; esac; }"#;
-        let out = run_script_with(busybox).expect("sh 在");
+        let Some(out) = run_script_with(NAME, busybox) else {
+            return;
+        };
         let report = parse_processes(&out).expect("解析");
         assert_eq!(report.source, ProcSource::PsBasic);
         assert_eq!(report.rows[0].elapsed_secs, Some(3723));
@@ -1479,7 +1478,9 @@ this line is not a process
         let minimal = r#"ps() { case "$*" in
   w) printf 'PID   USER     VSZ STAT COMMAND\n    1 root     1356 S    init\n';;
   *) return 1;; esac; }"#;
-        let out = run_script_with(minimal).expect("sh 在");
+        let Some(out) = run_script_with(NAME, minimal) else {
+            return;
+        };
         let report = parse_processes(&out).expect("解析");
         assert_eq!(report.source, ProcSource::PsMinimal);
         assert_eq!(report.rows[0].command, "init");
@@ -1529,18 +1530,13 @@ this line is not a process
         let full = format!(
             "ps() {{ return 1; }}\ngetconf() {{ case \"$1\" in CLK_TCK) echo 100;; *) echo 4096;; esac; }}\n{script}"
         );
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(full)
-            .output();
-        let Ok(output) = output else {
-            println!(
-                "跳过 the_proc_fallback_awk_computes_the_same_columns_from_proc_files：本机没有 sh"
-            );
+        let Some(text) = crate::test_util::run_sh(
+            "the_proc_fallback_awk_computes_the_same_columns_from_proc_files",
+            &full,
+        ) else {
             let _ = std::fs::remove_dir_all(&dir);
             return;
         };
-        let text = String::from_utf8_lossy(&output.stdout).into_owned();
         let report = parse_processes(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(report.source, ProcSource::Proc, "{text}");
