@@ -62,7 +62,10 @@ use contract::{MAX_BYTES, Opened, RemoteVersion};
 use drafts::{
     DraftJob, DraftNotice, DraftWriter, EditDraft, draft_age_label, draft_file_in, draft_notice,
     export_recovered, legacy_draft_file_in, now_unix, read_draft, read_legacy_draft,
+    set_aside_locked,
 };
+// 恢复列表的「另存到本地」也要在界面上说明导出的是明文。
+pub(crate) use drafts::EXPORT_PLAINTEXT_NOTE;
 use language::Lang;
 use remote::{RemoteGlimpse, RemoteStamp, RemoteWatch};
 
@@ -799,7 +802,10 @@ impl RemoteEditor {
             }
             RemoteEditEvent::Exported(result) => {
                 self.status = match result {
-                    Ok(path) => format!("草稿已另存为本地文件：{}", path.display()),
+                    Ok(path) => format!(
+                        "草稿已另存为本地文件（{EXPORT_PLAINTEXT_NOTE}）：{}",
+                        path.display()
+                    ),
                     Err(message) => format!("草稿导出失败：{message}"),
                 };
             }
@@ -908,11 +914,22 @@ impl RemoteEditor {
             .update(cx, |state, cx| state.set_highlighter(token, cx));
         self.set_text(opened.text, window, cx);
         // 草稿要等加载完成才查：`base_version` 比的就是这次读到的版本。
-        self.draft = draft_notice(
-            read_draft(&self.draft_path, self.host_id, &self.path),
-            opened.version,
-        )
-        .or_else(|| {
+        let own_draft = match read_draft(&self.draft_path, self.host_id, &self.path) {
+            Ok(draft) => draft,
+            Err(locked) => {
+                // 解不开（别的 Windows 用户 / 别的电脑保存的）：文件挪到一边留着，不然下一次自动保存会把它盖掉。
+                let kept = match set_aside_locked(&locked) {
+                    Ok(path) => path
+                        .file_name()
+                        .map(|name| format!("，已原样保留为 {}", name.to_string_lossy()))
+                        .unwrap_or_default(),
+                    Err(err) => format!("（挪到一边失败：{err}；继续编辑会覆盖它）"),
+                };
+                self.status = format!("{locked}{kept}");
+                None
+            }
+        };
+        self.draft = draft_notice(own_draft, opened.version).or_else(|| {
             // 认不出主人的旧格式草稿：只提示、不恢复、不删。
             read_legacy_draft(
                 &legacy_draft_file_in(&self.data_dir, &self.path),

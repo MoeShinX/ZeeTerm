@@ -5,6 +5,10 @@
 //! - **revision**：草稿里记着写它时编辑器内容的修订号，保存成功只删「修订号不晚于这次保存」的草稿
 //!   （[`DraftJob::DeleteUpTo`]），保存期间继续输入产生的更新草稿不会被误删；
 //! - **扫描**：[`list_drafts`] 把数据目录下所有草稿列出来，启动时的恢复提示用它。
+//!
+//! S01：草稿落盘前整份用 Windows DPAPI（当前登录用户）加密，磁盘上找不到正文。读到旧版本留下的明文草稿
+//! 时照常读出来，并就地改写成加密格式。「另存为本地文件」导出的 `edit-recovered/` 是用户主动要的文件，
+//! 仍是明文（界面上会说明）。别的用户 / 别的电脑保存的草稿解不开：报清楚的原因，文件原样保留。
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -16,6 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use zssh_core::sftp::edit::sanitize_local_name;
 use zssh_core::sftp::path::{file_name, normalize};
+use zssh_core::store::secrets;
 
 use super::contract::{MAX_BYTES, RemoteVersion};
 
@@ -25,6 +30,65 @@ pub(super) const DRAFT_DIR: &str = "edit-drafts";
 pub(super) const RECOVERED_DIR: &str = "edit-recovered";
 /// 草稿文件上限：编辑上限的文本再加 JSON 转义余量；再大就不会是正常草稿，直接删掉。
 pub(super) const DRAFT_FILE_LIMIT: u64 = MAX_BYTES as u64 * 2;
+/// 加密格式比明文 JSON 多出来的余量（标记 + DPAPI 的头和校验），算上限时要留着。
+const SEALED_OVERHEAD: u64 = 4096;
+/// 加密草稿文件的开头标记。明文草稿是 JSON，以 `{` 开头，不会撞上。
+const SEALED_MAGIC: &[u8; 8] = b"ZTDRAFT\x01";
+
+/// 草稿正文的加解密。生产里是 [`Dpapi`]；测试换成假的来模拟「换了个 Windows 用户」解不开、加密失败。
+pub(super) trait DraftCipher {
+    fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, String>;
+    fn open(&self, sealed: &[u8]) -> Result<Vec<u8>, String>;
+}
+
+/// Windows DPAPI，绑定当前登录用户（和主机密码、私钥口令用同一套）。
+pub(super) struct Dpapi;
+
+impl DraftCipher for Dpapi {
+    fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, String> {
+        secrets::protect(plain).map_err(|err| err.to_string())
+    }
+
+    fn open(&self, sealed: &[u8]) -> Result<Vec<u8>, String> {
+        secrets::unprotect(sealed).map_err(|err| err.to_string())
+    }
+}
+
+/// 一份草稿文件存在，但这个用户解不开（别的 Windows 用户 / 别的电脑保存的，或文件损坏）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct DraftLocked {
+    pub(super) file: PathBuf,
+    reason: String,
+}
+
+impl std::fmt::Display for DraftLocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "本地有一份草稿无法解密（可能是另一个 Windows 用户或另一台电脑保存的，或文件已损坏）：{}",
+            self.reason
+        )
+    }
+}
+
+impl std::error::Error for DraftLocked {}
+
+/// 读一份草稿文件的结果。
+pub(super) enum Loaded {
+    Draft(EditDraft),
+    /// 读不了 / 太大 / 内容坏了：当作没有。
+    Unusable,
+    Locked(DraftLocked),
+}
+
+/// 读草稿时的两个开关。
+#[derive(Clone, Copy)]
+pub(super) struct LoadOpts {
+    /// 确定坏掉的文件（超限、坏 JSON、文本超上限）顺手删掉。
+    pub(super) delete_broken: bool,
+    /// 读到旧版本的明文草稿，就地改写成加密格式。
+    pub(super) migrate: bool,
+}
 
 /// 一份未保存的编辑草稿；字段名就是磁盘上的 JSON 格式，改名要先想好旧草稿怎么办。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,12 +182,31 @@ pub(super) fn draft_notice(
     })
 }
 
-/// 写草稿：同目录临时文件 + `sync_all` + 改名，崩溃时不会留下半截 JSON。
+/// 写草稿：序列化后整份加密，再同目录临时文件 + `sync_all` + 改名，崩溃时不会留下半截文件。
+/// 加密失败就不写（不退回明文）：宁可这一轮没有草稿，也不把正文落到磁盘上。
 pub(super) fn write_draft(path: &Path, draft: &EditDraft) -> std::io::Result<()> {
+    write_draft_with(&Dpapi, path, draft)
+}
+
+pub(super) fn write_draft_with(
+    cipher: &dyn DraftCipher,
+    path: &Path,
+    draft: &EditDraft,
+) -> std::io::Result<()> {
+    let json = serde_json::to_vec(draft)?;
+    let sealed = cipher
+        .seal(&json)
+        .map_err(|reason| std::io::Error::other(format!("草稿加密失败：{reason}")))?;
+    let mut bytes = Vec::with_capacity(SEALED_MAGIC.len() + sealed.len());
+    bytes.extend_from_slice(SEALED_MAGIC);
+    bytes.extend_from_slice(&sealed);
+    write_atomically(path, &bytes)
+}
+
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_vec(draft)?;
     // 临时名带进程号和自增序号：多个窗口同时编辑不同文件也不会互相截断。
     static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
     let name = path
@@ -137,7 +220,7 @@ pub(super) fn write_draft(path: &Path, draft: &EditDraft) -> std::io::Result<()>
     ));
     let result = (|| -> std::io::Result<()> {
         let mut file = std::fs::File::create(&temp)?;
-        file.write_all(&json)?;
+        file.write_all(bytes)?;
         file.sync_all()?;
         std::fs::rename(&temp, path)
     })();
@@ -147,50 +230,151 @@ pub(super) fn write_draft(path: &Path, draft: &EditDraft) -> std::io::Result<()>
     result
 }
 
-/// 解析一份草稿文件：读不了、太大、JSON 坏了、文本超限都是 `None`。
+/// 解析一份草稿文件。加密格式用 `cipher` 解开；旧版本的明文 JSON 照常读，`opts.migrate` 为真时顺手改写成加密格式。
 ///
-/// `delete_broken` 为真时，确定坏掉的文件（超限、坏 JSON、文本超上限）顺手删掉，免得每次
-/// 打开都重试；旧格式文件不删（认不出主人的东西宁可留着）。单纯读文件失败（比如被别的
-/// 程序占着）一律先留着，下次再说。
-pub(super) fn parse_draft_file(path: &Path, delete_broken: bool) -> Option<EditDraft> {
-    let metadata = std::fs::metadata(path).ok()?;
-    if metadata.len() > DRAFT_FILE_LIMIT {
-        if delete_broken {
+/// 确定坏掉的文件（超限、坏 JSON、文本超上限）在 `opts.delete_broken` 为真时删掉，免得每次打开都重试；
+/// 单纯读文件失败（比如被别的程序占着）一律先留着，下次再说。**解不开的加密草稿永远不删**——
+/// 它可能是另一个用户的，也可能换回原用户就能读。
+pub(super) fn load_draft_file(cipher: &dyn DraftCipher, path: &Path, opts: LoadOpts) -> Loaded {
+    let discard = |path: &Path| {
+        if opts.delete_broken {
             remove_draft(path);
         }
-        return None;
+    };
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return Loaded::Unusable;
+    };
+    if metadata.len() > DRAFT_FILE_LIMIT + SEALED_OVERHEAD {
+        discard(path);
+        return Loaded::Unusable;
     }
-    let bytes = std::fs::read(path).ok()?;
-    let draft: EditDraft = match serde_json::from_slice(&bytes) {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Loaded::Unusable;
+    };
+    let sealed = bytes.starts_with(SEALED_MAGIC);
+    let json = if sealed {
+        match cipher.open(&bytes[SEALED_MAGIC.len()..]) {
+            Ok(json) => json,
+            Err(reason) => {
+                return Loaded::Locked(DraftLocked {
+                    file: path.to_owned(),
+                    reason,
+                });
+            }
+        }
+    } else {
+        if metadata.len() > DRAFT_FILE_LIMIT {
+            discard(path);
+            return Loaded::Unusable;
+        }
+        bytes.clone()
+    };
+    let draft: EditDraft = match serde_json::from_slice(&json) {
         Ok(draft) => draft,
         Err(_) => {
-            if delete_broken {
-                remove_draft(path);
-            }
-            return None;
+            discard(path);
+            return Loaded::Unusable;
         }
     };
     if draft.text.len() > MAX_BYTES {
-        if delete_broken {
-            remove_draft(path);
-        }
-        return None;
+        discard(path);
+        return Loaded::Unusable;
     }
-    Some(draft)
+    if !sealed && opts.migrate {
+        migrate_to_sealed(cipher, path, &bytes, &draft);
+    }
+    Loaded::Draft(draft)
+}
+
+/// 旧版本的明文草稿：改写成加密格式。改写前再确认一次文件还是刚才读到的那份（别把别处刚写的新草稿盖掉）；
+/// 失败不影响读出来的结果，下次读到再试。
+fn migrate_to_sealed(cipher: &dyn DraftCipher, path: &Path, original: &[u8], draft: &EditDraft) {
+    match std::fs::read(path) {
+        Ok(current) if current == original => {}
+        _ => return,
+    }
+    if let Err(err) = write_draft_with(cipher, path, draft) {
+        tracing::warn!(%err, path = %path.display(), "把旧的明文草稿改写成加密格式失败");
+    }
 }
 
 /// 读这台主机、这个路径的草稿：主机 id 和路径都要对上，对不上的当没有（也不删别人的）。
-pub(super) fn read_draft(path: &Path, host_id: i64, remote_path: &str) -> Option<EditDraft> {
-    let draft = parse_draft_file(path, true)?;
-    (draft.host_id == Some(host_id) && normalize(&draft.path) == normalize(remote_path))
-        .then_some(draft)
+/// 解不开返回 [`DraftLocked`]，调用方要告诉用户并把那个文件挪开（见 [`set_aside_locked`]），
+/// 否则下一次自动保存会把它盖掉。
+pub(super) fn read_draft(
+    path: &Path,
+    host_id: i64,
+    remote_path: &str,
+) -> Result<Option<EditDraft>, DraftLocked> {
+    read_draft_with(&Dpapi, path, host_id, remote_path)
 }
 
-/// 找同路径的旧格式草稿（没有主机 id）。只读不删：认不出主人，不自动恢复。
-pub(super) fn read_legacy_draft(path: &Path, remote_path: &str) -> Option<EditDraft> {
-    let draft = parse_draft_file(path, false)?;
-    (draft.host_id.is_none() && draft.path == remote_path).then_some(draft)
+pub(super) fn read_draft_with(
+    cipher: &dyn DraftCipher,
+    path: &Path,
+    host_id: i64,
+    remote_path: &str,
+) -> Result<Option<EditDraft>, DraftLocked> {
+    let opts = LoadOpts {
+        delete_broken: true,
+        migrate: true,
+    };
+    match load_draft_file(cipher, path, opts) {
+        Loaded::Draft(draft) => Ok((draft.host_id == Some(host_id)
+            && normalize(&draft.path) == normalize(remote_path))
+        .then_some(draft)),
+        Loaded::Unusable => Ok(None),
+        Loaded::Locked(locked) => Err(locked),
+    }
 }
+
+/// 找同路径的旧格式草稿（没有主机 id）。不删：认不出主人，不自动恢复；明文的会改写成加密格式（内容不变）。
+pub(super) fn read_legacy_draft(path: &Path, remote_path: &str) -> Option<EditDraft> {
+    let opts = LoadOpts {
+        delete_broken: false,
+        migrate: true,
+    };
+    match load_draft_file(&Dpapi, path, opts) {
+        Loaded::Draft(draft) => {
+            (draft.host_id.is_none() && draft.path == remote_path).then_some(draft)
+        }
+        Loaded::Unusable => None,
+        Loaded::Locked(locked) => {
+            tracing::warn!(path = %locked.file.display(), "旧格式草稿无法解密，已跳过");
+            None
+        }
+    }
+}
+
+/// 解不开的草稿挪到一边（改名，数据原样保留），让出原来的文件名给新草稿。
+/// 新名字不是 `.json`，扫描恢复列表时不会再碰它。
+pub(super) fn set_aside_locked(locked: &DraftLocked) -> std::io::Result<PathBuf> {
+    let name = locked
+        .file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("draft");
+    let stamp = now_unix();
+    for attempt in 0..1000u32 {
+        let candidate = if attempt == 0 {
+            format!("{name}.undecryptable-{stamp}")
+        } else {
+            format!("{name}.undecryptable-{stamp}-{attempt}")
+        };
+        let target = locked.file.with_file_name(candidate);
+        if !target.exists() {
+            std::fs::rename(&locked.file, &target)?;
+            return Ok(target);
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "同名的无法解密草稿太多",
+    ))
+}
+
+/// 导出的草稿文件是**明文**（用户主动要的、要拿去用的文件），界面上要说明：见 [`EXPORT_PLAINTEXT_NOTE`]。
+pub(crate) const EXPORT_PLAINTEXT_NOTE: &str = "这是明文文件，没有加密，用完请自行删除";
 
 /// 把一份草稿存成本地文件（只增不覆盖）：用户从提示条选「另存为本地文件」时用。
 ///
@@ -365,12 +549,16 @@ pub(super) fn run_draft_writer(jobs: Receiver<DraftJob>) {
 
 /// 磁盘上的草稿修订号不晚于 `revision` 才删；读不出来（文件坏了 / 不在）按「没有可保护的新草稿」处理。
 pub(super) fn remove_draft_up_to(path: &Path, revision: u64) {
-    if let Some(draft) = parse_draft_file(path, false)
-        && draft.revision > revision
-    {
-        return;
+    let opts = LoadOpts {
+        delete_broken: false,
+        migrate: false,
+    };
+    match load_draft_file(&Dpapi, path, opts) {
+        Loaded::Draft(draft) if draft.revision > revision => {}
+        // 解不开的不知道修订号，也不是我们刚保存的那一份：不删。
+        Loaded::Locked(_) => {}
+        _ => remove_draft(path),
     }
-    remove_draft(path);
 }
 
 /// 当前 Unix 秒；时钟早于纪元时按 0 处理（这个值只用来显示）。
@@ -403,35 +591,70 @@ pub(crate) struct FoundDraft {
     pub(super) draft: EditDraft,
 }
 
+/// 扫描结果：能读的草稿，和这个用户解不开的加密草稿。
+pub(super) struct DraftScan {
+    pub(super) found: Vec<FoundDraft>,
+    pub(super) locked: Vec<DraftLocked>,
+}
+
 /// 把数据目录下所有能读出来的草稿列出来，最近改的在前。
 ///
-/// 只读不改：坏的、太大的、读不了的文件一概跳过（不删——这里是「列一列」，删不删是各自的事）；
+/// 坏的、太大的、读不了的文件一概跳过（不删——这里是「列一列」，删不删是各自的事）；
+/// 旧版本的明文草稿读出来之后顺手改写成加密格式；解不开的另外报出来（文件不动）。
 /// 临时文件（`*.tmp`）是写到一半的残留，不算草稿。文本为空的草稿也列（用户可能确实清空了文件）。
 pub(super) fn list_drafts(base: &Path) -> Vec<FoundDraft> {
-    let Ok(entries) = std::fs::read_dir(draft_dir_in(base)) else {
-        return Vec::new();
+    let scan = scan_drafts_with(&Dpapi, base);
+    if !scan.locked.is_empty() {
+        tracing::warn!(
+            count = scan.locked.len(),
+            "有无法解密的编辑草稿（可能是另一个 Windows 用户或另一台电脑保存的），已保留、没有列出"
+        );
+    }
+    scan.found
+}
+
+pub(super) fn scan_drafts_with(cipher: &dyn DraftCipher, base: &Path) -> DraftScan {
+    let mut scan = DraftScan {
+        found: Vec::new(),
+        locked: Vec::new(),
     };
-    let mut found: Vec<FoundDraft> = entries
+    let Ok(entries) = std::fs::read_dir(draft_dir_in(base)) else {
+        return scan;
+    };
+    let opts = LoadOpts {
+        delete_broken: false,
+        migrate: true,
+    };
+    let mut files: Vec<PathBuf> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-        .filter_map(|file| {
-            let draft = parse_draft_file(&file, false)?;
-            Some(FoundDraft { file, draft })
-        })
         .collect();
-    found.sort_by(|a, b| {
+    files.sort();
+    for file in files {
+        match load_draft_file(cipher, &file, opts) {
+            Loaded::Draft(draft) => scan.found.push(FoundDraft { file, draft }),
+            Loaded::Locked(locked) => scan.locked.push(locked),
+            Loaded::Unusable => {}
+        }
+    }
+    scan.found.sort_by(|a, b| {
         b.draft
             .saved_at_unix
             .cmp(&a.draft.saved_at_unix)
             .then_with(|| a.file.cmp(&b.file))
     });
-    found
+    scan
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 老测试按「读不出来 = None」写的，沿用这个形状；解不开的单独有测试。
+    fn read_draft(path: &Path, host_id: i64, remote_path: &str) -> Option<EditDraft> {
+        super::read_draft(path, host_id, remote_path).ok().flatten()
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir =
@@ -522,7 +745,14 @@ mod tests {
         // 新格式的读取不认它。
         assert!(read_draft(&legacy_path, HOST, "/srv/app/main.rs").is_none());
         assert!(legacy_path.is_file(), "旧格式草稿读完还在");
-        assert_eq!(std::fs::read_to_string(&legacy_path).expect("读回"), json);
+        // S01：文件和内容都留着，只是明文改写成了加密格式（读出来的草稿不变）。
+        let raw = std::fs::read(&legacy_path).expect("读回");
+        assert!(raw.starts_with(SEALED_MAGIC), "旧格式明文也要改写成加密");
+        assert!(!contains(&raw, "旧草稿"));
+        assert_eq!(
+            read_legacy_draft(&legacy_path, "/srv/app/main.rs"),
+            Some(found.clone())
+        );
         // 路径对不上的不当成它。
         assert!(read_legacy_draft(&legacy_path, "/srv/app/other.rs").is_none());
         // 坏掉的旧文件也不删。
@@ -847,5 +1077,221 @@ mod tests {
         assert!(draft_dir_in(&base).join("junk.json").exists());
         assert!(list_drafts(&base.join("nope")).is_empty());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ---- S01：草稿正文加密落盘 ----
+
+    /// 模拟「换了个 Windows 用户 / 换了台电脑」：加密照旧（用 DPAPI），解密一律被拒。
+    struct OtherUser;
+
+    impl DraftCipher for OtherUser {
+        fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, String> {
+            Dpapi.seal(plain)
+        }
+
+        fn open(&self, _sealed: &[u8]) -> Result<Vec<u8>, String> {
+            Err("拒绝访问".to_owned())
+        }
+    }
+
+    /// 加密本身失败（系统加密不可用）。
+    struct SealFails;
+
+    impl DraftCipher for SealFails {
+        fn seal(&self, _plain: &[u8]) -> Result<Vec<u8>, String> {
+            Err("系统加密不可用".to_owned())
+        }
+
+        fn open(&self, sealed: &[u8]) -> Result<Vec<u8>, String> {
+            Dpapi.open(sealed)
+        }
+    }
+
+    const SECRET_BODY: &str = "db_password=hunter2-0xDEADBEEF\napi_token=tok-中文-123";
+
+    fn contains(haystack: &[u8], needle: &str) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    }
+
+    /// S01：新写的草稿文件里找不到正文（连远端路径也不露），读回来一字不差。
+    #[test]
+    fn a_new_draft_file_holds_no_plaintext() {
+        let dir = temp_dir("sealed-write");
+        let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
+        let draft = sample_draft(SECRET_BODY);
+        write_draft(&path, &draft).expect("写草稿");
+
+        let raw = std::fs::read(&path).expect("读原始字节");
+        assert!(raw.starts_with(SEALED_MAGIC), "应该是加密格式");
+        assert!(!contains(&raw, "hunter2"), "磁盘上不能有正文");
+        assert!(!contains(&raw, "tok-"), "磁盘上不能有正文");
+        assert!(!contains(&raw, "/srv/app/main.rs"), "远端路径也不露");
+        assert!(!contains(&raw, "db_password"));
+        // 不留 JSON 明文的任何痕迹。
+        assert!(!contains(&raw, "\"text\""));
+        assert_eq!(read_draft(&path, HOST, "/srv/app/main.rs"), Some(draft));
+        // 目录里没有残留的临时文件。
+        let leftovers: Vec<_> = std::fs::read_dir(draft_dir_in(&dir))
+            .expect("读目录")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(leftovers.len(), 1, "{leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S01：旧版本留下的明文草稿照常读出来，读到之后就地改写成加密格式，再读还是同样的内容。
+    #[test]
+    fn a_plaintext_draft_from_an_older_version_is_read_then_rewritten_encrypted() {
+        let dir = temp_dir("sealed-migrate");
+        let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
+        std::fs::create_dir_all(draft_dir_in(&dir)).expect("建草稿目录");
+        let draft = sample_draft(SECRET_BODY);
+        let json = serde_json::to_vec(&draft).expect("序列化");
+        std::fs::write(&path, &json).expect("写旧版明文草稿");
+        assert!(contains(&std::fs::read(&path).unwrap(), "hunter2"));
+
+        assert_eq!(
+            read_draft(&path, HOST, "/srv/app/main.rs"),
+            Some(draft.clone()),
+            "明文草稿要能读"
+        );
+        let raw = std::fs::read(&path).expect("读回");
+        assert!(raw.starts_with(SEALED_MAGIC), "读到之后改写成加密格式");
+        assert!(!contains(&raw, "hunter2"), "改写之后磁盘上不再有正文");
+        assert_eq!(
+            read_draft(&path, HOST, "/srv/app/main.rs"),
+            Some(draft),
+            "改写后内容不变"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S01：启动时的恢复扫描也会把明文草稿改写成加密格式，并且列得出来。
+    #[test]
+    fn the_startup_scan_rewrites_plaintext_drafts_too() {
+        let dir = temp_dir("sealed-scan");
+        let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
+        std::fs::create_dir_all(draft_dir_in(&dir)).expect("建草稿目录");
+        let draft = sample_draft(SECRET_BODY);
+        std::fs::write(&path, serde_json::to_vec(&draft).unwrap()).expect("写旧版明文草稿");
+
+        let found = list_drafts(&dir);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].draft, draft);
+        let raw = std::fs::read(&path).expect("读回");
+        assert!(raw.starts_with(SEALED_MAGIC));
+        assert!(!contains(&raw, "hunter2"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S01：别的用户 / 别的电脑保存的草稿解不开：给清楚的错误，不崩，不删，不改；
+    /// 恢复扫描把它单独报出来；挪到一边之后，新草稿能写在原来的位置，旧的原样还在。
+    #[test]
+    fn a_draft_another_user_cannot_decrypt_is_reported_clearly_and_kept() {
+        let dir = temp_dir("sealed-other-user");
+        let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
+        write_draft(&path, &sample_draft(SECRET_BODY)).expect("写草稿");
+        let before = std::fs::read(&path).expect("读原始字节");
+
+        let error = read_draft_with(&OtherUser, &path, HOST, "/srv/app/main.rs")
+            .expect_err("解不开必须是错误，不是 None 也不是崩溃");
+        let message = error.to_string();
+        assert!(message.contains("无法解密"), "{message}");
+        assert!(message.contains("另一个 Windows 用户"), "{message}");
+        assert!(!message.contains("hunter2"), "错误信息里不能带正文");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "文件不能被删或改");
+
+        let scan = scan_drafts_with(&OtherUser, &dir);
+        assert!(scan.found.is_empty());
+        assert_eq!(scan.locked.len(), 1, "恢复扫描要把它报出来");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        // 挪到一边：数据一字节不动，名字不再是 .json（扫描不会再碰它）。
+        let kept = set_aside_locked(&error).expect("挪开");
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(&kept).unwrap(), before);
+        assert!(kept.extension().is_none_or(|ext| ext != "json"), "{kept:?}");
+        // 原来的位置现在能写新草稿，旧的不受影响。
+        write_draft(&path, &sample_draft("新的内容")).expect("写新草稿");
+        assert_eq!(std::fs::read(&kept).unwrap(), before);
+        assert_eq!(
+            read_draft(&path, HOST, "/srv/app/main.rs").map(|draft| draft.text),
+            Some("新的内容".to_owned())
+        );
+        // 换回原来的用户（真实 DPAPI）就能读出挪开的那份。
+        let loaded = load_draft_file(
+            &Dpapi,
+            &kept,
+            LoadOpts {
+                delete_broken: false,
+                migrate: false,
+            },
+        );
+        assert!(matches!(loaded, Loaded::Draft(draft) if draft.text == SECRET_BODY));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S01：加密文件被改坏：也是「解不开」的清楚错误，不是崩溃，也不会被当成坏文件删掉。
+    #[test]
+    fn a_damaged_encrypted_draft_is_reported_and_never_deleted() {
+        let dir = temp_dir("sealed-damaged");
+        let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
+        write_draft(&path, &sample_draft(SECRET_BODY)).expect("写草稿");
+        let mut raw = std::fs::read(&path).expect("读");
+        let last = raw.len() - 1;
+        raw[last] ^= 0xff;
+        let middle = SEALED_MAGIC.len() + 40;
+        raw[middle] ^= 0xff;
+        std::fs::write(&path, &raw).expect("写坏");
+
+        let error =
+            super::read_draft(&path, HOST, "/srv/app/main.rs").expect_err("改坏的加密草稿读不了");
+        assert!(error.to_string().contains("无法解密"));
+        assert_eq!(std::fs::read(&path).unwrap(), raw, "解不开的不能删");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S01：加密失败就不写——不退回明文，也不留临时文件。
+    #[test]
+    fn when_encryption_fails_nothing_is_written() {
+        let dir = temp_dir("sealed-seal-fails");
+        let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
+        let error = write_draft_with(&SealFails, &path, &sample_draft(SECRET_BODY))
+            .expect_err("加密失败要报错");
+        assert!(error.to_string().contains("加密失败"), "{error}");
+        assert!(!path.exists());
+        let leftovers = std::fs::read_dir(draft_dir_in(&dir))
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        assert_eq!(leftovers, 0, "连临时文件都不能有");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S01：保存成功后的清理删不掉「读不出修订号」的加密草稿（可能是别人的），也不会因此崩。
+    #[test]
+    fn cleanup_after_a_save_leaves_a_draft_it_cannot_decrypt() {
+        let dir = temp_dir("sealed-cleanup");
+        let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
+        std::fs::create_dir_all(draft_dir_in(&dir)).expect("建草稿目录");
+        let mut foreign = SEALED_MAGIC.to_vec();
+        foreign.extend_from_slice(b"not-a-valid-dpapi-blob");
+        std::fs::write(&path, &foreign).expect("写别人的草稿");
+        remove_draft_up_to(&path, 5);
+        assert_eq!(std::fs::read(&path).unwrap(), foreign);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S01：加密格式比明文 JSON 稍大；贴着上限、全是要转义的字符的草稿也不能被当成"太大"删掉。
+    #[test]
+    fn a_maximum_size_draft_with_heavy_escaping_still_reads_back() {
+        let dir = temp_dir("sealed-max");
+        let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
+        let draft = sample_draft(&"\n".repeat(MAX_BYTES));
+        write_draft(&path, &draft).expect("写草稿");
+        assert_eq!(read_draft(&path, HOST, "/srv/app/main.rs"), Some(draft));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

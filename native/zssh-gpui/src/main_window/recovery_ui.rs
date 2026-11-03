@@ -136,7 +136,14 @@ impl MainWindow {
                     // 另存出来了，原来的还留着：等用户确认没问题再选放弃。
                     ui.notes.insert(
                         id.to_owned(),
-                        (false, format!("已另存到 {}", message.unwrap_or_default())),
+                        (
+                            false,
+                            format!(
+                                "已另存到 {}（{}）",
+                                message.unwrap_or_default(),
+                                crate::remote_editor_demo::EXPORT_PLAINTEXT_NOTE
+                            ),
+                        ),
                     );
                 } else {
                     ui.items.retain(|item| item.id != id);
