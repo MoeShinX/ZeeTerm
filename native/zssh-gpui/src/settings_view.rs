@@ -665,7 +665,7 @@ fn input_section(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens
         switch_row(
             "right-click-paste",
             "右键粘贴",
-            "在终端里点右键直接粘贴剪贴板内容。",
+            "开着时右键直接粘贴（在链接上右键仍然弹出链接菜单）；关着时右键弹出菜单。",
             s.right_click_paste,
             |this, cx| this.toggle_right_click_paste(cx),
             ws,

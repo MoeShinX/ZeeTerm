@@ -101,7 +101,7 @@ pub struct UiSettings {
     pub ime_english: bool,
     /// 选中即复制。
     pub copy_on_select: bool,
-    /// 右键粘贴。
+    /// 右键直接粘贴。新用户默认关：关着时右键弹终端菜单（V2-U25）；在链接上右键不论开关都弹链接菜单。
     pub right_click_paste: bool,
     /// 多行粘贴先确认。
     pub confirm_multiline: bool,
@@ -133,7 +133,7 @@ impl Default for UiSettings {
             cursor_blink: true,
             ime_english: true,
             copy_on_select: false,
-            right_click_paste: true,
+            right_click_paste: false,
             confirm_multiline: true,
             highlight_enabled: true,
             show_latency: true,
@@ -304,7 +304,7 @@ mod tests {
             cursor_blink: false,
             ime_english: false,
             copy_on_select: true,
-            right_click_paste: false,
+            right_click_paste: true,
             confirm_multiline: false,
             highlight_enabled: false,
             show_latency: false,
@@ -388,7 +388,7 @@ mod tests {
         assert_eq!(settings.scrollback, 10_000);
         assert_eq!(settings.font_family, DEFAULT_FONT_FAMILY);
         assert!(!settings.copy_on_select);
-        assert!(settings.right_click_paste);
+        assert!(!settings.right_click_paste, "右键默认弹菜单，不再直接粘贴");
         assert!(settings.confirm_multiline);
         assert!(settings.highlight_enabled);
         assert!(!settings.start_hidden);
@@ -451,6 +451,29 @@ mod tests {
         assert!(!settings.dark);
         assert_eq!(settings.font_size, 14.0);
         assert_eq!(settings.line_height, 1.35);
+    }
+
+    #[test]
+    fn a_saved_right_click_paste_choice_wins_over_the_new_default() {
+        // V2-U25 把默认改成关：存过「开」的老用户仍是开，存过「关」的仍是关，只有从没写过这一项的才取新默认。
+        let dir = temp_dir("keeps-saved-right-click");
+        let path = dir.join("ui-settings.json");
+        std::fs::write(&path, br#"{"right_click_paste": true}"#).unwrap();
+        let on = UiSettings::load_from(&path).unwrap().sanitized();
+        assert!(on.right_click_paste);
+        std::fs::write(&path, br#"{"right_click_paste": false}"#).unwrap();
+        let off = UiSettings::load_from(&path).unwrap().sanitized();
+        assert!(!off.right_click_paste);
+        std::fs::write(&path, br#"{"font_size": 14.0}"#).unwrap();
+        let unset = UiSettings::load_from(&path).unwrap().sanitized();
+        assert!(!unset.right_click_paste);
+        // 打开后存盘再读回来，还是开。
+        let saved = UiSettings {
+            right_click_paste: true,
+            ..Default::default()
+        };
+        saved.save_to(&path).unwrap();
+        assert!(UiSettings::load_from(&path).unwrap().right_click_paste);
     }
 
     #[test]
