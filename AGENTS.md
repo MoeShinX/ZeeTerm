@@ -56,7 +56,7 @@ ZeeTerm 要能在**别人的 Windows 10/11** 上用，不能只照着开发这�
 
 ## 截图隐私
 
-截图前必须清理画面：不能出现测试服务器的地址、主机名、任何公网 IP、能看出服务器用途的进程名，以及本机用户名和 `C:\Users\...` 这类用户目录路径（设置页"关于"会显示数据目录，最容易被拍进去）。截图脚本要有真正生效的检查：读取画面文本，命中就让脚本失败，不能只靠人工看一眼；数据目录用不含用户名的路径（例如 `C:\zssh-shots\<场景>`）。
+截图前必须清理画面：不能出现测试服务器的地址、主机名、任何公网 IP、能看出服务器用途的进程名，以及本机用户名和 `C:\Users\...` 这类用户目录路径（设置页"关于"会显示数据目录，最容易被拍进去）。截图要有真正生效的检查，不能只靠人工看一眼：`scripts/native-shot.ps1` 起程序前自己校验 `-DataDir` 必须在 `C:\zssh-v2-data\` 或系统临时目录之下、且路径里没有当前 Windows 用户名，不满足就报错退出；画面文字的检查在应用里（`shot:<名字>` 步骤先查公网 IP、`Last login` 行、用户目录路径和 `ZSSH_SHOT_FORBID` 里的禁用片段，命中就不写 `.ready`、不会有截图）。数据目录用不含用户名的路径（例如 `C:\zssh-v2-data\<场景>`）。
 
 ## 每次提交前的检查
 
@@ -64,7 +64,7 @@ ZeeTerm 要能在**别人的 Windows 10/11** 上用，不能只照着开发这�
 powershell -File scripts/gates.ps1
 ```
 
-它依次跑核心库（根工作区）和原生应用（`native/`）各自的 `cargo fmt --check`、`cargo clippy --all-targets -D warnings`、`cargo test`，再做一次原生应用的 release 构建，逐条报告退出码和耗时，任何一条非 0 整体就失败。
+它依次跑核心库（根工作区）和原生应用（`native/`）各自的 `cargo fmt --check`、`cargo clippy --all-targets -D warnings`、`cargo test`，再加两步 release 配置的检查——`cargo test -p zssh-gpui --release dev_hooks`（release 下测试钩子读不到环境变量的断言）和一次原生应用的 release 构建，这两步的编译输出里出现任何 warning 也算失败（release 下才冒出来的"从未使用"：只给 debug 调试脚本用的函数要用 `#[cfg(debug_assertions)]` 门住，不要用 `allow(dead_code)` 糊）。逐条报告退出码和耗时，任何一条非 0 整体就失败。
 
 平时改完代码可以只跑相关的 `cargo test -p <crate> <过滤>`，加 `cargo fmt` 和 `cargo clippy`；动了共享库、持久化、同步、安装包，或一次改动很大时跑全套。`target/` 会越积越大，定期 `cargo clean`。
 
@@ -73,4 +73,4 @@ powershell -File scripts/gates.ps1
 - 小步提交，一个提交做一件事，提交信息用 Conventional Commits（`feat(core): ...`），说明为什么。
 - 只 `git add` 自己改过的具体文件，不用 `git add -A` / `git add .`；测试产物、截图输出、日志（`.log`）不进仓库。
 - 不改写已有提交的历史。
-- 公开或推送到别处之前跑 `powershell -File scripts/privacy-scan.ps1`：它查开发机的用户名、用户目录、计算机名、`ZSSH_TEST_*` 里的值、令牌 / 私钥样式、公网 IPv4 和邮箱，有命中就不能公开。还要查自己不能写进仓库的具体值（别的用户名、私人 IP、内部域名……）时，把它们逐行写进仓库外面的一个文件，用 `-ExtraPatternsFile <文件>` 传给它；这类宽模式命中中性占位时靠 `scripts/privacy-allow.txt` 放行，里面只能放明显不属于任何真人的占位。
+- 公开或推送到别处之前跑 `powershell -File scripts/privacy-scan.ps1`：它查开发机的用户名、用户目录、计算机名、`ZSSH_TEST_*` 里的值、令牌 / 私钥样式、公网 IPv4 和邮箱，有命中就不能公开。还要查自己不能写进仓库的具体值（别的用户名、私人 IP、内部域名……）时，把它们逐行写进仓库外面的一个文件，用 `-ExtraPatternsFile <文件>` 传给它；这类宽模式命中中性占位时靠 `scripts/privacy-allow.txt` 放行——不给 `-AllowListFile` 时它默认就加载这份，对内置的用户名 / 用户目录命中也生效，但放行必须把整段命中都盖住，占位里含本机真实用户目录或用户名时一律不放行；里面只能放明显不属于任何真人的占位（`x`、`ab` 这种太短的名字不收）。

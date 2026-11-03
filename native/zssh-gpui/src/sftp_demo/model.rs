@@ -483,7 +483,7 @@ fn split_local_root(path: &str) -> (String, String) {
     (root, rest)
 }
 
-/// 本地路径的面包屑：`C:\Users\x` → `C:`、Users、x；“此电脑”（空）是空列表。
+/// 本地路径的面包屑：`C:\Users\demo` → `C:`、Users、demo；“此电脑”（空）是空列表。
 pub(super) fn local_crumbs(path: &str) -> Vec<Crumb> {
     if path.is_empty() {
         return Vec::new();

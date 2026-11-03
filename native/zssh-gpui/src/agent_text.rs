@@ -28,7 +28,7 @@ fn fold(c: char) -> char {
 }
 
 /// 用户目录后面紧跟什么才算"目录名到此为止"：路径分隔符、空白、引号括号和常见标点。
-/// 防止 `C:\Users\ab` 误伤 `C:\Users\abc\x`。
+/// 防止 `C:\Users\demo` 误伤 `C:\Users\demo2\x`。
 fn ends_home_component(next: Option<char>) -> bool {
     match next {
         None => true,
@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn redact_home_survives_multibyte_directories_without_panicking() {
         // 审查 H5：旧实现按字节切 `path[..home.len()]`，第 N 个字节落在汉字中间会 panic。
-        let home = r"C:\Users\ab";
+        let home = r"C:\Users\demo";
         let path = r"C:\Users\张三\bin\claude.exe";
         assert_eq!(redact_home(path, home), path, "不是同一个目录，原样返回");
         // 用户目录本身含中文、emoji。
@@ -358,9 +358,9 @@ mod tests {
             r"%USERPROFILE%\x",
             "大小写不敏感"
         );
-        // 路径比 home 短、且截断点在多字节字符里。
+        // 路径比 home 短，末尾是多字节字符。
         assert_eq!(
-            redact_home("C:\\Users\\张", r"C:\Users\ab"),
+            redact_home("C:\\Users\\张", r"C:\Users\demo"),
             "C:\\Users\\张"
         );
         // 非 ASCII 字母也不区分大小写。
@@ -372,17 +372,17 @@ mod tests {
 
     #[test]
     fn redact_home_requires_a_whole_directory_name() {
-        let home = r"C:\Users\ab";
+        let home = r"C:\Users\demo";
         assert_eq!(
-            redact_home(r"C:\Users\abc\x", home),
-            r"C:\Users\abc\x",
-            "ab 不能误伤 abc"
+            redact_home(r"C:\Users\demo2\x", home),
+            r"C:\Users\demo2\x",
+            "demo 不能误伤 demo2"
         );
         assert_eq!(
-            redact_home(r"C:\Users\ab.old\x", home),
-            r"C:\Users\ab.old\x"
+            redact_home(r"C:\Users\demo.old\x", home),
+            r"C:\Users\demo.old\x"
         );
-        assert_eq!(redact_home(r"C:\Users\ab", home), "%USERPROFILE%");
+        assert_eq!(redact_home(r"C:\Users\demo", home), "%USERPROFILE%");
     }
 
     #[test]

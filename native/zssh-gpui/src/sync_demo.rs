@@ -3244,7 +3244,7 @@ fn sync_status_label(status: SyncStatus) -> &'static str {
 /// 各类记录的写入统计。核心的 `ApplyReport` 只有这几项；主机记忆和转发规则
 /// 的条数只在恢复备份的 `RestoreReport.extras` 里，同步结果拿不到。
 fn applied_text(applied: &ApplyReport) -> String {
-    format!(
+    let mut text = format!(
         "应用：主机 新增{}/更新{}/删除{}；凭据 新增{}/更新{}/删除{}；\
          分组 新增{}/更新{}/删除{}；代理 新增{}/更新{}/删除{}；\
          设置 {} 项；known_hosts {} 条；冲突 {} 条",
@@ -3263,7 +3263,14 @@ fn applied_text(applied: &ApplyReport) -> String {
         applied.settings_written,
         applied.known_hosts_added,
         applied.conflicts_stored
-    )
+    );
+    if applied.known_hosts_skipped > 0 {
+        text.push_str(&format!(
+            "；跳过 {} 条可疑主机密钥记录",
+            applied.known_hosts_skipped
+        ));
+    }
+    text
 }
 
 /// 一条冲突摘要：哪个实体、哪条记录、核心给的说明。
@@ -4207,6 +4214,7 @@ mod tests {
             },
             settings_written: 4,
             known_hosts_added: 5,
+            known_hosts_skipped: 0,
             conflicts_stored: 6,
         }
     }

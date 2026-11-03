@@ -167,21 +167,25 @@ impl TermWindow {
         crate::ime::window_destroyed(&self.ime_key);
     }
 
+    #[cfg(debug_assertions)]
     pub fn tab_count(&self, cx: &App) -> usize {
         self.workspace.read(cx).tab_count()
     }
 
     /// 这个窗口的工作区（驱动脚本改设置、读设置用）。
+    #[cfg(debug_assertions)]
     pub fn dev_workspace(&self) -> Entity<TerminalWorkspace> {
         self.workspace.clone()
     }
 
     /// 往当前标签打字（驱动脚本用，和主窗口的 `type:` 步骤同一个方法）。
+    #[cfg(debug_assertions)]
     pub fn dev_type(&mut self, text: &str, cx: &mut Context<Self>) {
         self.workspace.update(cx, |ws, cx| ws.type_text(text, cx));
     }
 
     /// 当前标签屏幕上有没有这段文字（驱动脚本用）。
+    #[cfg(debug_assertions)]
     pub fn dev_has_text(&self, text: &str, cx: &App) -> bool {
         self.workspace
             .read(cx)
@@ -191,6 +195,7 @@ impl TermWindow {
     }
 
     /// 每个标签的连接状态（驱动脚本用）。
+    #[cfg(debug_assertions)]
     pub fn dev_statuses(&self, cx: &App) -> Vec<TabStatus> {
         self.workspace
             .read(cx)

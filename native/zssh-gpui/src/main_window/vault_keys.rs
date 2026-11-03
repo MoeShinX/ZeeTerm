@@ -99,6 +99,7 @@ impl MainWindow {
     }
 
     /// 现在键盘焦点在第几张卡片上。
+    #[cfg(debug_assertions)]
     pub(crate) fn focused_host_index(&self, window: &Window) -> Option<usize> {
         self.vault_nav.ids.iter().position(|id| {
             self.host_focus

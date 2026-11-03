@@ -371,3 +371,69 @@ fn a_protocol_this_version_does_not_know_is_refused_before_anything_is_written()
     assert!(err.to_string().contains("协议选项"), "{err}");
     assert_eq!(db.host_list().unwrap().len(), 0);
 }
+
+fn known_host(host: &str) -> crate::sync::package::KnownHostRecord {
+    crate::sync::package::KnownHostRecord {
+        host: host.to_owned(),
+        port: 22,
+        key_type: "ssh-ed25519".to_owned(),
+        key: "AAAAC3NzaC1lZDI1NTE5AAAAInew".to_owned(),
+        marker: None,
+        updated_at: 1,
+        device_id: "dev-a".to_owned(),
+    }
+}
+
+#[test]
+fn imported_match_everything_known_hosts_are_skipped_and_reported() {
+    let db = Database::open_in_memory().expect("内存库");
+    let sealer = FakeSealer(5);
+    let dir = crate::test_util::TestDir::new("sync-apply-wildcard");
+    let known_hosts = dir.join("known_hosts");
+    let mut snapshot = sample("dev-a");
+    snapshot.known_hosts = vec![
+        known_host("*"),
+        known_host("*.*"),
+        known_host("db.example.internal"),
+    ];
+    let report = apply_snapshot(&db, &snapshot, &sealer, Some(&known_hosts), &[], 1).expect("导入");
+    assert_eq!(report.known_hosts_added, 1);
+    assert_eq!(report.known_hosts_skipped, 2);
+    let content = std::fs::read_to_string(&known_hosts).expect("读回");
+    assert_eq!(content.lines().count(), 1, "{content}");
+    assert!(content.starts_with("db.example.internal "), "{content}");
+}
+
+#[test]
+fn a_known_hosts_file_that_cannot_be_appended_does_not_undo_the_committed_import() {
+    let db = Database::open_in_memory().expect("内存库");
+    let sealer = FakeSealer(6);
+    let dir = crate::test_util::TestDir::new("sync-apply-kh-late");
+    let known_hosts = dir.join("known_hosts");
+    // 不是 UTF-8：追加会报错。数据库已经提交，不应该再回头报整个导入失败。
+    std::fs::write(&known_hosts, b"web ssh-ed25519 AAAA # \xff\xfe\n").expect("写样本");
+    let mut snapshot = sample("dev-a");
+    snapshot.known_hosts = vec![known_host("db.example.internal")];
+    let report = apply_snapshot(&db, &snapshot, &sealer, Some(&known_hosts), &[], 1)
+        .expect("数据库提交后文件失败不该让导入报错");
+    assert_eq!(report.known_hosts_added, 0);
+    assert_eq!(db.host_list().unwrap().len(), 1, "数据库部分已提交");
+    assert_eq!(
+        std::fs::read(&known_hosts).expect("读回"),
+        b"web ssh-ed25519 AAAA # \xff\xfe\n",
+        "文件不能被改"
+    );
+}
+
+#[test]
+fn a_failed_import_leaves_known_hosts_untouched() {
+    let db = Database::open_in_memory().expect("内存库");
+    let sealer = FakeSealer(7);
+    let dir = crate::test_util::TestDir::new("sync-apply-kh-rollback");
+    let known_hosts = dir.join("known_hosts");
+    let mut snapshot = sample("dev-a");
+    snapshot.hosts[0].auth_method = "nonsense".to_owned();
+    snapshot.known_hosts = vec![known_host("db.example.internal")];
+    apply_snapshot(&db, &snapshot, &sealer, Some(&known_hosts), &[], 1).expect_err("应该失败");
+    assert!(!known_hosts.exists(), "导入失败时不能留下导入来的信任");
+}

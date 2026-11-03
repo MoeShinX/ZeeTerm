@@ -122,7 +122,12 @@ async fn fixture() -> Fixture {
     let local = dir.join("app.conf");
     std::fs::write(&local, EDITED).unwrap();
     let (base, _) = backend.stat(REMOTE).await.unwrap();
-    let session = EditSession::new(REMOTE.to_owned(), local, base);
+    let session = EditSession::new(
+        REMOTE.to_owned(),
+        local,
+        base,
+        recovery::sha256_hex(ORIGINAL),
+    );
     Fixture {
         fs,
         backend,
@@ -527,7 +532,8 @@ async fn in_place_write_locks_the_link_target_not_the_link_path() {
     let dir = crate::test_util::TestDir::new("edit-inplace-link");
     let local = dir.join("link.conf");
     std::fs::write(&local, EDITED).unwrap();
-    let mut session = EditSession::new(LINK.to_owned(), local, base);
+    let mut session =
+        EditSession::new(LINK.to_owned(), local, base, recovery::sha256_hex(ORIGINAL));
     *fx.fs.server_key.lock().unwrap() = Some("edit-link@lock-host:22".to_owned());
 
     let transfer = TargetLocks::remote()

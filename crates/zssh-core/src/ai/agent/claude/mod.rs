@@ -545,10 +545,8 @@ impl ClaudeConversation {
             return;
         }
         let Ok(message) = serde_json::from_str::<Value>(line) else {
-            tracing::debug!(
-                line = %line.chars().take(160).collect::<String>(),
-                "claude 输出了解析不了的行"
-            );
+            // 行内容可能带着智能体读到的秘密：只记长度。
+            tracing::debug!(len = line.len(), "claude 输出了解析不了的行");
             return;
         };
         // 续接没确认时先来了 result（没有 system/init）：会话已经不在了。实测 2.1.302 对
@@ -1407,6 +1405,50 @@ mod tests {
         assert!(drain(&mut rx).is_empty());
         tokio::time::sleep(RETRY_STOP_GRACE + Duration::from_millis(300)).await;
         assert!(drain(&mut rx).is_empty());
+    }
+
+    /// M-2：进程意外退出时，错误提示和日志里的“尾部输出”不能带着智能体刚读到的秘密。
+    #[tokio::test]
+    async fn exit_message_and_log_do_not_echo_secrets_from_the_output_tail() {
+        let (conversation, mut rx, _ws) = running_conversation().await;
+        let sk = format!("{}{}", "sk-", "Zq81xLmN0pQ4rStUvWx9YzAb");
+        let begin = format!("{}{}", "-----BEGIN OPENSSH ", "PRIVATE KEY-----");
+        let end = format!("{}{}", "-----END OPENSSH ", "PRIVATE KEY-----");
+        let body = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW";
+        let ((), logs) = crate::test_util::capture_logs(|| {
+            for line in [
+                "ordinary line".to_owned(),
+                format!(
+                    r#"{{"type":"user","text":"{begin}
+{body}
+{end}
+"}}"#
+                ),
+                begin.clone(),
+                body.to_owned(),
+                end.clone(),
+                format!("key is {sk}"),
+            ] {
+                conversation.record_stdout(5, &line);
+            }
+            conversation.on_process_gone(5);
+        });
+        let message = match drain(&mut rx).as_slice() {
+            [AgentEvent::Error { message }, AgentEvent::TurnEnd] => message.clone(),
+            other => panic!("{other:?}"),
+        };
+        for secret in [body, sk.as_str(), "PRIVATE KEY"] {
+            assert!(
+                !message.contains(secret),
+                "错误提示里出现了 {secret}：{message}"
+            );
+            assert!(!logs.contains(secret), "日志里出现了 {secret}：{logs}");
+        }
+        assert!(message.contains("ordinary line"), "{message}");
+        assert!(
+            logs.contains("claude 进程退出了"),
+            "日志没抓到（抓取失效）：{logs}"
+        );
     }
 
     /// 重试超限停掉之后进程直接退出：报我们那一条，不再冒出「进程退出了」。

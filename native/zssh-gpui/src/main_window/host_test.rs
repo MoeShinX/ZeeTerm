@@ -450,9 +450,11 @@ mod tests {
         ProxyKind, ProxyMode,
     };
     use zssh_core::ssh::connection_test::{
-        SshTestPlan, TcpRoute, TcpTestPlan, TestStage, test_ssh, test_ssh_with, test_tcp,
-        test_tcp_with,
+        SshTestPlan, TcpRoute, TestStage, test_ssh, test_ssh_with,
     };
+    // 只有用假 Telnet 设备的用例会用到（它们只在 debug 下编译）。
+    #[cfg(debug_assertions)]
+    use zssh_core::ssh::connection_test::{TcpTestPlan, test_tcp, test_tcp_with};
     use zssh_core::ssh::{AuthConfig, ChainHop, KnownHosts, ProxyConfig};
     use zssh_core::store::Database;
 
@@ -694,7 +696,10 @@ mod tests {
     }
 
     // ---- 端到端：Telnet 只测 TCP ----
+    // 假 Telnet 设备（`fake_telnet`）只在 debug 构建里存在，用它的用例也只在 debug 下编译；
+    // 否则 `cargo test --release` 编不过。
 
+    #[cfg(debug_assertions)]
     fn spawn_fake_telnet() -> SocketAddr {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("绑定");
         let addr = listener.local_addr().expect("地址");
@@ -706,6 +711,7 @@ mod tests {
         addr
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_telnet_device_that_speaks_first_passes_and_one_that_stays_quiet_passes_too() {
         let (talkative, quiet, refused) = runtime().block_on(async {
@@ -763,6 +769,7 @@ mod tests {
         assert!(talkative.detail.contains("未做登录"));
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn a_telnet_test_can_go_through_an_ssh_jump_host() {
         let known = temp_known_hosts("tjump");

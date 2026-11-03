@@ -185,7 +185,9 @@ try {
     foreach ($path in $manifestFiles) {
         Backup $path
         $file = Read-Text $path
-        $new = [regex]::Replace($file.Text, $versionPattern, { param($m) $m.Groups[1].Value + $Version + $m.Groups[3].Value }, 1)
+        # 只替换第一处：.NET 的静态 Regex.Replace 没有 count 重载，第 4 个参数会被当成 RegexOptions（1 = IgnoreCase），
+        # 所以必须用实例的 Replace(输入, 替换, 次数)。
+        $new = ([regex]::new($versionPattern)).Replace($file.Text, { param($m) $m.Groups[1].Value + $Version + $m.Groups[3].Value }, 1)
         Write-Text $path $new $file.Bom
     }
     # Cargo.lock：名字以 zssh- 开头、没有 source、版本等于旧工作区版本的包（路径依赖，跟随工作区）。
@@ -197,7 +199,7 @@ try {
         for ($i = 0; $i -lt $blocks.Length; $i++) {
             $block = $blocks[$i]
             if ($block -match '(?m)^name = "zssh-[^"]+"\r?$' -and $block -notmatch '(?m)^source = ' -and $block -match ('(?m)^version = "' + [regex]::Escape($currentVersion) + '"')) {
-                $blocks[$i] = [regex]::Replace($block, ('(?m)^version = "' + [regex]::Escape($currentVersion) + '"'), "version = `"$Version`"", 1)
+                $blocks[$i] = ([regex]::new('(?m)^version = "' + [regex]::Escape($currentVersion) + '"')).Replace($block, "version = `"$Version`"", 1)
                 $count++
             }
         }
@@ -289,7 +291,13 @@ try {
     if ($LASTEXITCODE -ne 0) { Stop-WithError '自检没通过，产物不能发布。' }
     $parsed = Get-Content -LiteralPath $latest -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($parsed.version -ne $Version -or $parsed.platforms.'windows-x86_64'.url -ne $url) { Stop-WithError 'latest.json 的内容与预期不符。' }
+    # 安装包的 SHA-256：写进 SHA256SUMS.txt（`<hash>  <文件名>`，和 sha256sum 的格式一样），也附在 Release 正文末尾，
+    # 让下载的人能自己核对。放在 latest.json 生成之后追加：更新窗口里显示的更新说明（latest.json 的 notes）不带这一行。
     $sha = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+    $sums = Join-Path $outDir 'SHA256SUMS.txt'
+    Write-Text $sums ("$sha  $installerName`n") $false
+    $notesText = (Read-Text $notesOut).Text.TrimEnd()
+    Write-Text $notesOut ($notesText + "`n`n安装包 SHA-256：" + [char]96 + $sha + [char]96 + "`n") $false
 } finally {
     [Environment]::SetEnvironmentVariable($passwordEnv, $previousPassword, 'Process')
     # 演练（或中途出错）时把版本号相关文件原样还原；正式发版成功时保留，让发版人提交。
@@ -315,12 +323,14 @@ Write-Host ''
 Write-Host '下一步（脚本不会替你执行；确认无误后手动运行）：' -ForegroundColor Cyan
 Write-Host '  1. 版本号相关文件已改好，检查并提交（可能还要在 CHANGELOG.md 里把 [Unreleased] 改成这个版本）：'
 Write-Host '       git diff'
-Write-Host "       git add Cargo.toml Cargo.lock native/Cargo.toml native/Cargo.lock CHANGELOG.md"
+$addFiles = 'Cargo.toml Cargo.lock native/Cargo.toml native/Cargo.lock CHANGELOG.md'
+if (Test-Path -LiteralPath (Join-Path $repoRoot "docs\release-notes\$Version.md") -PathType Leaf) { $addFiles += " docs/release-notes/$Version.md" }
+Write-Host "       git add $addFiles"
 Write-Host "       git commit -m `"chore(release): v$Version`""
 Write-Host '  2. 打 tag 并推送：'
 Write-Host "       git tag v$Version"
 Write-Host "       git push origin main v$Version"
-Write-Host '  3. 创建 Release 并上传安装包和 latest.json（latest.json 是用户端检查更新读的那份）：'
-Write-Host "       gh release create v$Version `"$installer`" `"$latest`" --repo $Repo --title `"ZeeTerm $Version`" --notes-file `"$notesOut`""
+Write-Host '  3. 创建 Release 并上传安装包、latest.json 和 SHA256SUMS.txt（latest.json 是用户端检查更新读的那份；正文末尾已带安装包的 SHA-256）：'
+Write-Host "       gh release create v$Version `"$installer`" `"$latest`" `"$sums`" --repo $Repo --title `"ZeeTerm $Version`" --notes-file `"$notesOut`""
 Write-Host '  4. 发布后用旧版本程序点一次「检查更新」验证；出问题的回滚办法见 docs/RELEASING.md。'
 exit 0

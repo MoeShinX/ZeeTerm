@@ -28,7 +28,7 @@ use super::dock_layout::{self, DockLayout};
 use super::modal::{Confirm, ConfirmAction, Modal};
 use super::nav::MainView;
 use super::panel_width::{self, DragStart, PanelKind};
-use crate::agent_chat_demo::{AgentChatDemo, EmbedContext};
+use crate::agent_chat_demo::{AgentChatDemo, AgentChatEvent, EmbedContext};
 use crate::agent_host::HostTarget;
 use crate::app_theme::Tokens;
 use crate::icons::Ico;
@@ -485,6 +485,15 @@ impl MainWindow {
         if self.docks.ai_open && self.docks.ai.is_none() {
             let height = self.store.bars().ai_input_height;
             let chat = cx.new(|cx| AgentChatDemo::new_embedded(window, cx, height));
+            // 面板里选了「全部放行」：确认框归主窗口弹（和别的确认框同一套），确认后再回写模式。
+            cx.subscribe_in(
+                &chat,
+                window,
+                |this, _chat, event, _window, cx| match event {
+                    AgentChatEvent::ConfirmAllowAll => this.ask_allow_all_commands(cx),
+                },
+            )
+            .detach();
             self.docks.ai = Some(chat);
             // 面板实体是节拍里补的：不通知主窗口重画，它就一直是空白，直到别的什么触发重绘。
             cx.notify();
@@ -530,6 +539,27 @@ impl MainWindow {
         // 切到一个开着文件面板的标签、窗口又窄：和手动打开时一样收起 AI 面板。
         self.enforce_dock_layout(window, cx);
         self.poll_follow(cx);
+    }
+
+    /// AI 面板要切到「全部放行」：先弹确认框，确认才真的写设置。
+    fn ask_allow_all_commands(&mut self, cx: &mut Context<Self>) {
+        self.modal = Some(Modal::Confirm(Confirm {
+            title: crate::agent_chat_demo::ALLOW_ALL_TITLE.to_owned(),
+            message: crate::agent_chat_demo::ALLOW_ALL_MESSAGE.to_owned(),
+            confirm_label: Some("全部放行".to_owned()),
+            destructive: true,
+            action: ConfirmAction::AllowAllCommands,
+        }));
+        cx.notify();
+    }
+
+    /// 确认框点了「全部放行」。
+    pub(super) fn do_allow_all_commands(&mut self, cx: &mut Context<Self>) {
+        if let Some(chat) = self.docks.ai.clone() {
+            chat.update(cx, |chat, cx| {
+                chat.set_mode_explicit(zssh_core::ai::bridge::ExecMode::Auto, cx);
+            });
+        }
     }
 
     /// 跟随终端目录（0.2.14 `useTerminalCwd`）：停靠面板开着、这台主机的文件视图开着跟随时，每 1.5 秒

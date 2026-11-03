@@ -809,6 +809,16 @@ impl Approver for NativeApprover {
 // 执行模式 / 审计
 // ---------------------------------------------------------------------------
 
+/// 应用现在是否锁屏。界面线程在锁定 / 解锁时写（见 `app_lock::set_locked`），工具桥每次请求都读：
+/// 锁着时 AI 要在服务器上做的任何事都变成“要确认”（确认卡等解锁后才看得到），不再因为
+/// 执行模式是“全部放行 / 只读自动”就直接执行。
+static AI_LOCKED: AtomicBool = AtomicBool::new(false);
+
+/// 界面通知工具桥：锁屏状态变了。
+pub fn set_ai_locked(locked: bool) {
+    AI_LOCKED.store(locked, Ordering::SeqCst);
+}
+
 /// 执行模式来源：每次命令都重新读设置库（用户改完马上生效）。
 pub struct NativeMode {
     db_path: PathBuf,
@@ -835,6 +845,10 @@ impl NativeMode {
 }
 
 impl ExecModeProvider for NativeMode {
+    fn force_confirm(&self) -> bool {
+        AI_LOCKED.load(Ordering::SeqCst)
+    }
+
     fn mode(&self) -> ExecMode {
         match Database::open(&self.db_path) {
             Ok(db) => Self::from_db(&db),
