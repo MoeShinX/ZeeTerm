@@ -302,76 +302,7 @@ impl Database {
                 ));
             }
 
-            let auth = match host.auth_method {
-                AuthMethod::Password => match host.identity_id {
-                    Some(identity_id) => {
-                        // 只有密码类凭据的秘密才能当 SSH 密码发出去：私钥类凭据的秘密是私钥口令
-                        // 或整段私钥，发给服务器就等于交出了私钥。旧数据或同步来的数据可能是这种
-                        // 组合，连接时也要拦（R-10 H2）。
-                        let identity = crate::store::identities::identity_get(conn, identity_id)?;
-                        check_identity_matches(AuthMethod::Password, &identity)?;
-                        let secret = crate::store::identities::identity_secret(conn, identity_id)?;
-                        AuthConfig::password(secret)
-                    }
-                    // 没配凭据：连的时候问用户
-                    None => AuthConfig::password(None),
-                },
-
-                AuthMethod::Key => {
-                    let identity_id = host.identity_id.ok_or_else(|| {
-                        ZsshError::InvalidInput(format!(
-                            "主机「{}」选了私钥认证但没选凭据",
-                            host.name
-                        ))
-                    })?;
-                    let identity = crate::store::identities::identity_get(conn, identity_id)?;
-                    let secret = crate::store::identities::identity_secret(conn, identity_id)?;
-
-                    let source = match identity.kind {
-                        IdentityKind::KeyFile => {
-                            let path = identity
-                                .key_path
-                                .clone()
-                                .filter(|path| !path.trim().is_empty())
-                                .ok_or_else(|| {
-                                    ZsshError::InvalidInput(format!(
-                                        "凭据「{}」没有填私钥文件路径",
-                                        identity.name
-                                    ))
-                                })?;
-                            KeySource::File {
-                                path: path.into(),
-                                passphrase: secret,
-                            }
-                        }
-                        IdentityKind::KeyInline => {
-                            let inline = crate::store::identities::InlineKey::parse(
-                                secret.as_deref().unwrap_or_default(),
-                            );
-                            if inline.key.trim().is_empty() {
-                                return Err(ZsshError::InvalidInput(format!(
-                                    "凭据「{}」里没有私钥内容",
-                                    identity.name
-                                )));
-                            }
-                            KeySource::Inline {
-                                pem: inline.key,
-                                passphrase: inline.passphrase,
-                            }
-                        }
-                        IdentityKind::Password | IdentityKind::Agent => {
-                            return Err(ZsshError::InvalidInput(format!(
-                                "凭据「{}」不是私钥凭据，不能用来做私钥认证",
-                                identity.name
-                            )))
-                        }
-                    };
-
-                    AuthConfig::key(source)
-                }
-
-                AuthMethod::Agent => AuthConfig::agent(),
-            };
+            let auth = resolve_auth(conn, host.auth_method, host.identity_id, &host.name)?;
 
             Ok(HostLogin {
                 host: host.host,
@@ -381,6 +312,98 @@ impl Database {
                 legacy_algorithms: host.legacy_algorithms,
             })
         })
+    }
+}
+
+/// 把认证方式 + 关联的凭据解析成连接要用的认证材料（从保险库里取出秘密）。
+///
+/// `label` 只用在报错里（「主机「xx」选了私钥认证但没选凭据」）。缺的密码 / 口令不在这里报错，
+/// 留给连接时问用户。
+fn resolve_auth(
+    conn: &Connection,
+    method: AuthMethod,
+    identity_id: Option<i64>,
+    label: &str,
+) -> Result<AuthConfig, ZsshError> {
+    Ok(match method {
+        AuthMethod::Password => match identity_id {
+            Some(identity_id) => {
+                // 只有密码类凭据的秘密才能当 SSH 密码发出去：私钥类凭据的秘密是私钥口令
+                // 或整段私钥，发给服务器就等于交出了私钥。旧数据或同步来的数据可能是这种
+                // 组合，连接时也要拦（R-10 H2）。
+                let identity = crate::store::identities::identity_get(conn, identity_id)?;
+                check_identity_matches(AuthMethod::Password, &identity)?;
+                let secret = crate::store::identities::identity_secret(conn, identity_id)?;
+                AuthConfig::password(secret)
+            }
+            // 没配凭据：连的时候问用户
+            None => AuthConfig::password(None),
+        },
+
+        AuthMethod::Key => {
+            let identity_id = identity_id.ok_or_else(|| {
+                ZsshError::InvalidInput(format!("主机「{label}」选了私钥认证但没选凭据"))
+            })?;
+            let identity = crate::store::identities::identity_get(conn, identity_id)?;
+            let secret = crate::store::identities::identity_secret(conn, identity_id)?;
+
+            let source = match identity.kind {
+                IdentityKind::KeyFile => {
+                    let path = identity
+                        .key_path
+                        .clone()
+                        .filter(|path| !path.trim().is_empty())
+                        .ok_or_else(|| {
+                            ZsshError::InvalidInput(format!(
+                                "凭据「{}」没有填私钥文件路径",
+                                identity.name
+                            ))
+                        })?;
+                    KeySource::File {
+                        path: path.into(),
+                        passphrase: secret,
+                    }
+                }
+                IdentityKind::KeyInline => {
+                    let inline = crate::store::identities::InlineKey::parse(
+                        secret.as_deref().unwrap_or_default(),
+                    );
+                    if inline.key.trim().is_empty() {
+                        return Err(ZsshError::InvalidInput(format!(
+                            "凭据「{}」里没有私钥内容",
+                            identity.name
+                        )));
+                    }
+                    KeySource::Inline {
+                        pem: inline.key,
+                        passphrase: inline.passphrase,
+                    }
+                }
+                IdentityKind::Password | IdentityKind::Agent => {
+                    return Err(ZsshError::InvalidInput(format!(
+                        "凭据「{}」不是私钥凭据，不能用来做私钥认证",
+                        identity.name
+                    )))
+                }
+            };
+
+            AuthConfig::key(source)
+        }
+
+        AuthMethod::Agent => AuthConfig::agent(),
+    })
+}
+
+impl Database {
+    /// 表单里还没保存的登录设置也要能连一下（「测试连接」）：按认证方式 + 选的凭据解出认证材料。
+    /// 规则和 [`Database::host_login`] 完全一样（同一个函数）。`label` 是报错里的主机名。
+    pub fn auth_for_login(
+        &self,
+        method: AuthMethod,
+        identity_id: Option<i64>,
+        label: &str,
+    ) -> Result<AuthConfig, ZsshError> {
+        self.with_conn(|conn| resolve_auth(conn, method, identity_id, label))
     }
 }
 

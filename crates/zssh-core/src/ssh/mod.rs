@@ -2,11 +2,13 @@
 
 pub mod auth;
 pub mod connection;
+pub mod connection_test;
 pub mod connections;
 pub mod cwd;
 pub mod dialer;
 pub mod flow;
 pub mod forward;
+mod id_tap;
 pub mod interact;
 pub mod keygen;
 pub mod known_hosts;
