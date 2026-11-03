@@ -19,7 +19,9 @@ pub mod transport;
 pub mod types;
 
 pub use anthropic::AnthropicOptions;
-pub use client::{build_http_request, stream_chat, ApiKey, ProviderConfig, ProviderKind};
+pub use client::{
+    build_http_request, build_models_request, stream_chat, ApiKey, ProviderConfig, ProviderKind,
+};
 pub use error::{ErrorKind, ProviderError, TransportError};
 pub use openai_chat::{OpenAiOptions, Switch};
 pub use tools::bridge_tool_specs;
@@ -30,6 +32,6 @@ pub use types::{
 };
 
 #[cfg(test)]
-mod testing;
+pub(crate) mod testing;
 #[cfg(test)]
 mod tests;

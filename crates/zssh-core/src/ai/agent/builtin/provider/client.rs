@@ -292,3 +292,47 @@ async fn run(
     deliver!(decoder.finish()?);
     Ok(acc.finish())
 }
+
+/// `GET {base}/models` 的请求（地址 + 鉴权头；没有请求体）。
+///
+/// OpenAI 兼容：`{base_url}/models`（Base URL 已带版本段；误填成 `/chat/completions` 结尾的
+/// 先去掉）。Anthropic：`.../v1/models`（和 [`anthropic::endpoint_url`] 同样的补版本段规则）。
+pub fn build_models_request(config: &ProviderConfig) -> HttpRequest {
+    let base = config.base_url.trim().trim_end_matches('/');
+    let (url, mut headers) = match config.kind {
+        ProviderKind::OpenAiChat => {
+            let base = base.strip_suffix("/chat/completions").unwrap_or(base);
+            let mut headers = Vec::new();
+            if !config.api_key.is_empty() {
+                headers.push((
+                    "authorization".to_string(),
+                    format!("Bearer {}", config.api_key.expose()),
+                ));
+            }
+            (format!("{base}/models"), headers)
+        }
+        ProviderKind::Anthropic => {
+            let base = base.strip_suffix("/messages").unwrap_or(base);
+            let url = if base.ends_with("/v1") {
+                format!("{base}/models")
+            } else {
+                format!("{base}/v1/models")
+            };
+            let mut headers = vec![(
+                "anthropic-version".to_string(),
+                config.anthropic.version.clone(),
+            )];
+            if !config.api_key.is_empty() {
+                headers.push(("x-api-key".to_string(), config.api_key.expose().to_string()));
+            }
+            (url, headers)
+        }
+    };
+    headers.push(("accept".to_string(), "application/json".to_string()));
+    headers.extend(config.extra_headers.iter().cloned());
+    HttpRequest {
+        url,
+        headers,
+        body: Vec::new(),
+    }
+}

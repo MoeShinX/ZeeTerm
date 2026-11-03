@@ -21,8 +21,11 @@ pub struct ToolSpec {
 /// 思考参数。各 provider 自己映射，映射不了就不发（见各 provider 文件头的规则）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReasoningParam {
-    /// 不指定：什么思考参数都不发（模型按自己的默认行为走）。
+    /// 明确关闭思考：有开关的接口发关闭（DeepSeek 的 `thinking: disabled`），没有开关的
+    /// 什么都不发。用户要的是"不思考"才用它；"用户没选"请用 [`ReasoningParam::Unspecified`]。
     Off,
+    /// 用户没指定：什么思考参数都不发，包括 DeepSeek 的开关（模型按服务端的默认行为走）。
+    Unspecified,
     /// 思考等级，原样交给 provider（`low` / `medium` / `high` / `xhigh` / `max` ……）。
     /// 具体哪些等级可用由能力识别（A1）决定，这里不校验。
     Effort(String),

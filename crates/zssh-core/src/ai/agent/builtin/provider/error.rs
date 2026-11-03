@@ -67,6 +67,9 @@ pub struct ProviderError {
     pub retry_after: Option<Duration>,
     /// HTTP 状态码（有的话）。
     pub status: Option<u16>,
+    /// 服务端给的错误码 / 错误类型原文（`error.code`，没有就取 `error.type`），例如 Tokenway 的
+    /// `zeeterm_requires_topup`。给界面按码识别用，别拿 `message` 做字符串匹配。
+    pub code: Option<String>,
 }
 
 impl fmt::Display for ProviderError {
@@ -90,6 +93,7 @@ impl ProviderError {
             retryable,
             retry_after: None,
             status: None,
+            code: None,
         }
     }
 
@@ -243,6 +247,7 @@ impl ProviderError {
         err.status = Some(status);
         err.retry_after = retry_after;
         err.detail = parsed.display_detail();
+        err.code = parsed.code_text();
         err
     }
 
@@ -298,6 +303,7 @@ impl ProviderError {
         };
         let mut err = Self::new(kind, text.to_string(), retryable);
         err.detail = short(message);
+        err.code = Some(kind_text.trim().to_owned()).filter(|code| !code.is_empty());
         err
     }
 
@@ -449,6 +455,8 @@ fn is_context_text(lower_or_not: &str) -> bool {
 struct ParsedBody {
     is_html: bool,
     is_json: bool,
+    /// `error.code`（数字也转成文字）。
+    code: String,
     error_type: String,
     message: String,
     raw: String,
@@ -461,6 +469,19 @@ impl ParsedBody {
             return String::new();
         }
         format!("{} {} {}", self.error_type, self.message, self.raw)
+    }
+
+    /// 错误码：优先 `error.code`，没有就取类型。
+    fn code_text(&self) -> Option<String> {
+        let code = if self.code.is_empty() {
+            self.error_type
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+        } else {
+            self.code.as_str()
+        };
+        Some(code.to_owned()).filter(|code| !code.is_empty())
     }
 
     fn display_detail(&self) -> Option<String> {
@@ -510,6 +531,7 @@ fn parse_error_body(body: &[u8]) -> ParsedBody {
                     parsed.message = pick(obj, "message");
                     let kind = pick(obj, "type");
                     let code = pick(obj, "code");
+                    parsed.code = code.clone();
                     parsed.error_type = if kind.is_empty() { code.clone() } else { kind };
                     if !code.is_empty() && !parsed.error_type.contains(&code) {
                         parsed.error_type.push(' ');

@@ -80,12 +80,21 @@ impl fmt::Debug for HttpResponse {
     }
 }
 
-/// 发 POST 并返回流式响应。
+/// 发 POST 并返回流式响应；另有一个 GET（列模型用）。
 pub trait Transport: Send + Sync {
     fn post<'a>(
         &'a self,
         request: HttpRequest,
     ) -> BoxFuture<'a, Result<HttpResponse, TransportError>>;
+
+    /// 发 GET（请求体忽略）。不实现就报"不支持"：只有列模型用它，失败时调用方退回手填列表。
+    fn get<'a>(
+        &'a self,
+        request: HttpRequest,
+    ) -> BoxFuture<'a, Result<HttpResponse, TransportError>> {
+        let _ = request;
+        Box::pin(async { Err(TransportError::Other("这个传输层不支持 GET".to_string())) })
+    }
 }
 
 /// 基于 `reqwest` 的真实实现。
@@ -156,42 +165,59 @@ impl ByteStream for ReqwestBody {
     }
 }
 
+impl ReqwestTransport {
+    async fn send(&self, get: bool, request: HttpRequest) -> Result<HttpResponse, TransportError> {
+        let mut builder = if get {
+            self.client.get(&request.url)
+        } else {
+            self.client.post(&request.url)
+        };
+        for (name, value) in &request.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        if !get {
+            builder = builder.body(request.body);
+        }
+        let sent = tokio::time::timeout(RESPONSE_HEADER_TIMEOUT, builder.send())
+            .await
+            .map_err(|_| {
+                TransportError::Timeout(format!(
+                    "{} 秒没有收到响应头",
+                    RESPONSE_HEADER_TIMEOUT.as_secs()
+                ))
+            })?
+            .map_err(map_send_error)?;
+        let status = sent.status().as_u16();
+        let headers = sent
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|value| (name.as_str().to_ascii_lowercase(), value.to_string()))
+            })
+            .collect();
+        Ok(HttpResponse {
+            status,
+            headers,
+            body: Box::new(ReqwestBody { response: sent }),
+        })
+    }
+}
+
 impl Transport for ReqwestTransport {
     fn post<'a>(
         &'a self,
         request: HttpRequest,
     ) -> BoxFuture<'a, Result<HttpResponse, TransportError>> {
-        Box::pin(async move {
-            let mut builder = self.client.post(&request.url);
-            for (name, value) in &request.headers {
-                builder = builder.header(name.as_str(), value.as_str());
-            }
-            let sent =
-                tokio::time::timeout(RESPONSE_HEADER_TIMEOUT, builder.body(request.body).send())
-                    .await
-                    .map_err(|_| {
-                        TransportError::Timeout(format!(
-                            "{} 秒没有收到响应头",
-                            RESPONSE_HEADER_TIMEOUT.as_secs()
-                        ))
-                    })?
-                    .map_err(map_send_error)?;
-            let status = sent.status().as_u16();
-            let headers = sent
-                .headers()
-                .iter()
-                .filter_map(|(name, value)| {
-                    value
-                        .to_str()
-                        .ok()
-                        .map(|value| (name.as_str().to_ascii_lowercase(), value.to_string()))
-                })
-                .collect();
-            Ok(HttpResponse {
-                status,
-                headers,
-                body: Box::new(ReqwestBody { response: sent }),
-            })
-        })
+        Box::pin(self.send(false, request))
+    }
+
+    fn get<'a>(
+        &'a self,
+        request: HttpRequest,
+    ) -> BoxFuture<'a, Result<HttpResponse, TransportError>> {
+        Box::pin(self.send(true, request))
     }
 }

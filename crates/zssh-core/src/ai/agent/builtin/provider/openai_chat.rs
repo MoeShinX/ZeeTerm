@@ -277,6 +277,7 @@ pub fn build_body(request: &ChatRequest, options: &OpenAiOptions) -> Value {
                 body.insert("thinking".into(), json!({"type": "disabled"}));
             }
         }
+        ReasoningParam::Unspecified => {}
     }
     if let Some(temperature) = request.temperature {
         body.insert("temperature".into(), temperature_json(temperature));

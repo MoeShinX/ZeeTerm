@@ -1114,3 +1114,171 @@ async fn live_round_trip() {
     );
     assert!(events > 0 && turn.stop.is_some());
 }
+
+// ---------------------------------------------------------------- A3 追加：用户没选思考 / 错误码 / 列模型
+
+#[test]
+fn unspecified_reasoning_sends_nothing_even_for_deepseek_while_off_disables_it() {
+    let build = |model: &str, reasoning: ReasoningParam| {
+        let mut req = request(model);
+        req.reasoning = reasoning;
+        openai_chat::build_body(&req, &OpenAiOptions::default())
+    };
+    for model in ["gpt-5.5", "deepseek-v4-flash"] {
+        let body = build(model, ReasoningParam::Unspecified);
+        assert!(body.get("thinking").is_none(), "{model}");
+        assert!(body.get("reasoning_effort").is_none(), "{model}");
+    }
+    // 明确关闭：DeepSeek 发 disabled，别家什么都不发。
+    assert_eq!(
+        build("deepseek-v4-flash", ReasoningParam::Off)["thinking"],
+        json!({"type": "disabled"})
+    );
+    assert!(build("gpt-5.5", ReasoningParam::Off)
+        .get("thinking")
+        .is_none());
+    // Anthropic：Unspecified 和 Off 一样什么都不发。
+    let mut req = request("claude-test");
+    req.reasoning = ReasoningParam::Unspecified;
+    let body = anthropic::build_body(&req, &AnthropicOptions::default());
+    assert!(body.get("thinking").is_none() && body.get("output_config").is_none());
+}
+
+#[test]
+fn http_errors_keep_the_server_code_for_the_ui_to_recognize() {
+    let err = ProviderError::from_http(
+        402,
+        &[],
+        r#"{"error":{"code":"zeeterm_requires_topup","message":"需要充值"}}"#.as_bytes(),
+    );
+    assert_eq!(err.kind, ErrorKind::Quota);
+    assert_eq!(err.code.as_deref(), Some("zeeterm_requires_topup"));
+    assert_eq!(err.detail.as_deref(), Some("需要充值"));
+    // 没有 code 时取 type；数字 code 转成文字；纯文字错误没有 code。
+    let err = ProviderError::from_http(
+        400,
+        &[],
+        br#"{"error":{"message":"bad","type":"invalid_request_error"}}"#,
+    );
+    assert_eq!(err.code.as_deref(), Some("invalid_request_error"));
+    let err = ProviderError::from_http(500, &[], br#"{"error":{"message":"x","code":1234}}"#);
+    assert_eq!(err.code.as_deref(), Some("1234"));
+    assert_eq!(
+        ProviderError::from_http(502, &[], b"<html>bad gateway</html>").code,
+        None
+    );
+    assert_eq!(
+        ProviderError::from_http(500, &[], br#"{"error":"text"}"#).code,
+        None
+    );
+    // 流里的错误事件：type 就是 code。
+    let err = ProviderError::from_stream_error("overloaded_error", "busy");
+    assert_eq!(err.code.as_deref(), Some("overloaded_error"));
+}
+
+#[test]
+fn models_request_has_the_right_url_and_auth_for_each_kind() {
+    let openai = build_models_request(&ProviderConfig::new(
+        ProviderKind::OpenAiChat,
+        "https://llm.example.test/v1/",
+        ApiKey::new(TEST_KEY),
+    ));
+    assert_eq!(openai.url, "https://llm.example.test/v1/models");
+    assert!(openai
+        .headers
+        .iter()
+        .any(|(k, v)| k == "authorization" && v == &format!("Bearer {TEST_KEY}")));
+    assert!(openai.body.is_empty());
+    // 误把完整的聊天地址当 Base URL 填了。
+    let url = |kind, base: &str| {
+        build_models_request(&ProviderConfig::new(kind, base, ApiKey::new(""))).url
+    };
+    assert_eq!(
+        url(ProviderKind::OpenAiChat, "https://h/v1/chat/completions"),
+        "https://h/v1/models"
+    );
+    assert_eq!(
+        url(ProviderKind::Anthropic, "https://h"),
+        "https://h/v1/models"
+    );
+    assert_eq!(
+        url(ProviderKind::Anthropic, "https://h/v1"),
+        "https://h/v1/models"
+    );
+    assert_eq!(
+        url(ProviderKind::Anthropic, "https://h/v1/messages"),
+        "https://h/v1/models"
+    );
+    let anthropic = build_models_request(&config(ProviderKind::Anthropic));
+    assert!(anthropic
+        .headers
+        .iter()
+        .any(|(k, v)| k == "x-api-key" && v == TEST_KEY));
+    assert!(anthropic
+        .headers
+        .iter()
+        .any(|(k, _)| k == "anthropic-version"));
+    // 没有 Key（Ollama）就不发鉴权头。
+    let none = build_models_request(&ProviderConfig::new(
+        ProviderKind::OpenAiChat,
+        "http://localhost:11434/v1",
+        ApiKey::new(""),
+    ));
+    assert!(none.headers.iter().all(|(k, _)| k != "authorization"));
+}
+
+#[tokio::test]
+async fn the_default_get_is_unsupported_and_the_stub_does_not_pretend_otherwise() {
+    let transport = StubTransport::new(Script::sse(vec![]));
+    let request = build_models_request(&config(ProviderKind::OpenAiChat));
+    let err = transport.get(request).await.expect_err("桩不支持 GET");
+    assert!(err.to_string().contains("不支持 GET"));
+}
+
+mod loopback_get {
+    use super::*;
+    use std::net::Ipv4Addr;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn real_transport_can_get_the_model_list() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = socket.read(&mut buf).await.unwrap();
+            let body = r#"{"data":[{"id":"m-1"},{"id":"m-2"}]}"#;
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(reply.as_bytes()).await.unwrap();
+            let _ = socket.shutdown().await;
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+        let transport = ReqwestTransport::build(None).unwrap();
+        let cfg = ProviderConfig::new(
+            ProviderKind::OpenAiChat,
+            format!("http://{}:{port}/v1", Ipv4Addr::LOCALHOST),
+            ApiKey::new(TEST_KEY),
+        );
+        let mut response = transport.get(build_models_request(&cfg)).await.unwrap();
+        assert_eq!(response.status, 200);
+        let mut body = Vec::new();
+        while let Some(chunk) = response.body.next_chunk().await.unwrap() {
+            body.extend(chunk);
+        }
+        let ids = crate::ai::agent::builtin::catalog::parse_models_endpoint(
+            &String::from_utf8_lossy(&body),
+        );
+        assert_eq!(ids.len(), 2);
+        let received = server.await.unwrap();
+        assert!(
+            received.starts_with("GET /v1/models HTTP/1.1"),
+            "{received}"
+        );
+        assert!(received.to_lowercase().contains("authorization: bearer"));
+    }
+}
