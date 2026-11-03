@@ -227,7 +227,9 @@ impl MainWindow {
                 } else {
                     "文件（仅 SSH 主机可用）"
                 },
-                self.docks.sftp_open && self.nav.view == MainView::Terminal,
+                self.docks
+                    .sftp_open_for(self.workspace.read(cx).active_tab_id())
+                    && self.nav.view == MainView::Terminal,
                 sftp_ok,
                 tokens,
             )

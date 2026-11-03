@@ -505,7 +505,8 @@ pub(super) fn run_dock(
             }
         }
         "sftp_dock" => {
-            if on_off(a)? != this.docks.sftp_open {
+            let tab = this.workspace.read(cx).active_tab_id();
+            if on_off(a)? != this.docks.sftp_open_for(tab) {
                 this.toggle_sftp_dock(window, cx);
             }
         }
@@ -895,7 +896,8 @@ pub(super) fn run_dock(
         }
         "assert_docks" => {
             let want = (on_off(a)?, on_off(b)?);
-            let have = (this.docks.ai_open, this.docks.sftp_open);
+            let tab = this.workspace.read(cx).active_tab_id();
+            let have = (this.docks.ai_open, this.docks.sftp_open_for(tab));
             if have != want {
                 return fail(format!("AI / 文件面板是 {have:?}，不是 {want:?}"));
             }

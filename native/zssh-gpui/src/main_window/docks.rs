@@ -51,7 +51,9 @@ pub enum DockKind {
 
 pub struct DockState {
     pub ai_open: bool,
-    pub sftp_open: bool,
+    /// 开着文件面板的终端标签（标签 id）。开关按标签记：在 A 开了，新开的标签 B 默认不开，
+    /// 切回 A 还在。AI 面板的 `ai_open` 仍是全窗口一个值，不在这里。
+    sftp_dock_tabs: HashSet<u64>,
     /// 每个终端标签一个对话（标签 id → 面板里的对话）。
     pub ai: HashMap<u64, Entity<AgentChatDemo>>,
     /// 每台主机一个停靠用的文件视图（主机 id → 视图）。
@@ -85,7 +87,7 @@ impl Default for DockState {
     fn default() -> Self {
         Self {
             ai_open: false,
-            sftp_open: false,
+            sftp_dock_tabs: HashSet::new(),
             ai: HashMap::new(),
             sftp: HashMap::new(),
             sftp_tabs: Vec::new(),
@@ -118,6 +120,30 @@ impl DockState {
         let id = self.next_tab;
         self.next_tab += 1;
         id
+    }
+
+    /// 这个终端标签的文件面板开着没有；没有标签（`None`）就是没开。
+    pub fn sftp_open_for(&self, tab: Option<u64>) -> bool {
+        tab.is_some_and(|id| self.sftp_dock_tabs.contains(&id))
+    }
+
+    pub fn set_sftp_open_for(&mut self, tab: u64, open: bool) {
+        if open {
+            self.sftp_dock_tabs.insert(tab);
+        } else {
+            self.sftp_dock_tabs.remove(&tab);
+        }
+    }
+
+    /// 标签关了 / 搬去别的窗口了：只留还活着的标签的记录。
+    /// 搬走的标签回来时记录已经没了，按「不开」处理（别的窗口没有停靠面板，开关带不过去）。
+    pub fn forget_dead_sftp_tabs(&mut self, live: &HashSet<u64>) {
+        self.sftp_dock_tabs.retain(|id| live.contains(id));
+    }
+
+    /// 终端页上现在是否画文件面板（布局计算也用这个值）。
+    pub fn sftp_shown(&self, docks_available: bool, active_tab: Option<u64>) -> bool {
+        docks_available && self.sftp_open_for(active_tab)
     }
 }
 
@@ -180,13 +206,17 @@ impl MainWindow {
             return;
         }
         // Telnet / 串口主机没有 SFTP：打开面板之前拦下来说明（已经开着的面板随时可以关）。
-        if !self.docks.sftp_open && !self.active_caps(cx).sftp {
+        let Some(tab) = self.workspace.read(cx).active_tab_id() else {
+            return;
+        };
+        let was_open = self.docks.sftp_open_for(Some(tab));
+        if !was_open && !self.active_caps(cx).sftp {
             let host = self.workspace.read(cx).active_host_id();
             self.ssh_only_notice(host, "文件面板", window, cx);
             return;
         }
-        self.docks.sftp_open = !self.docks.sftp_open;
-        if self.docks.sftp_open {
+        self.docks.set_sftp_open_for(tab, !was_open);
+        if !was_open {
             self.sync_docks(window, cx);
             self.enforce_dock_layout(window, cx);
         }
@@ -217,7 +247,9 @@ impl MainWindow {
         dock_layout::compute(dock_layout::Input {
             window_width: self.window_width,
             ai_open: visible && self.docks.ai_open,
-            sftp_open: visible && self.docks.sftp_open,
+            sftp_open: self
+                .docks
+                .sftp_shown(visible, self.workspace.read(cx).active_tab_id()),
             ai_desired: self.ai_width_stored(),
             sftp_desired: self.sftp_width_stored(),
             reserved: self.tree_reserved()
@@ -403,7 +435,9 @@ impl MainWindow {
 
         // 文件面板：当前标签的主机补一个视图（复用终端那条已认证连接）；没有标签开着的主机、
         // 又没有未结束传输的视图回收掉（连接回到池里）。
-        if self.docks.sftp_open
+        // 标签关了 / 搬走了：它的文件面板开关记录一起清掉。
+        self.docks.forget_dead_sftp_tabs(&live);
+        if self.docks.sftp_open_for(active_tab)
             && let Some((host_id, factory)) = active_origin
             && self.caps_of(host_id).sftp
             && !self.docks.sftp.contains_key(&host_id)
@@ -432,6 +466,8 @@ impl MainWindow {
             }
         }
         self.sync_local_hidden(window, cx);
+        // 切到一个开着文件面板的标签、窗口又窄：和手动打开时一样收起 AI 面板。
+        self.enforce_dock_layout(window, cx);
         self.poll_follow(cx);
     }
 
@@ -447,7 +483,12 @@ impl MainWindow {
                 }
             }
         }
-        if self.docks.follow_in_flight || !self.docks_available(cx) || !self.docks.sftp_open {
+        if self.docks.follow_in_flight
+            || !self.docks.sftp_shown(
+                self.docks_available(cx),
+                self.workspace.read(cx).active_tab_id(),
+            )
+        {
             return;
         }
         let Some(host) = self.workspace.read(cx).active_host_id() else {
@@ -583,7 +624,10 @@ impl MainWindow {
             return;
         };
         view.update(cx, |view, cx| view.set_dock_layout(false, cx));
-        self.docks.sftp_open = false;
+        // 面板是当前终端标签开的：挪成主视图标签后，这个标签的面板收起。
+        if let Some(tab) = self.workspace.read(cx).active_tab_id() {
+            self.docks.set_sftp_open_for(tab, false);
+        }
         // 文件窗口开着：拆出来的标签放进文件窗口（同 0.2.14 `undockToTab`）。
         if crate::file_window::is_open(cx) {
             crate::file_window::adopt(cx, host_id, format!("{name} (SFTP)"), view);
@@ -788,7 +832,11 @@ impl MainWindow {
                 cx,
             ));
         }
-        if self.docks.sftp_open && layout.sftp_width > 0.0 {
+        if layout.sftp_width > 0.0
+            && self
+                .docks
+                .sftp_open_for(self.workspace.read(cx).active_tab_id())
+        {
             let host_id = self.workspace.read(cx).active_host_id();
             out.push(self.render_sftp_dock(host_id, layout.sftp_width, tokens, cx));
         }
@@ -1186,5 +1234,97 @@ impl MainWindow {
             .iter()
             .find(|tab| tab.id == id)
             .map(|tab| tab.view.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
+    use super::DockState;
+    use crate::main_window::dock_layout::{Input, compute};
+    use std::collections::HashSet;
+
+    fn input(docks: &DockState, tab: Option<u64>, available: bool, ai: bool) -> Input {
+        Input {
+            window_width: 1200.0,
+            ai_open: available && ai,
+            sftp_open: docks.sftp_shown(available, tab),
+            ai_desired: 400.0,
+            sftp_desired: 420.0,
+            reserved: 0.0,
+        }
+    }
+
+    #[test]
+    fn sftp_dock_belongs_to_the_tab_that_opened_it() {
+        let mut docks = DockState::default();
+        assert!(!docks.sftp_open_for(Some(1)));
+        docks.set_sftp_open_for(1, true);
+        // 新开的标签 B 默认没有。
+        assert!(!docks.sftp_open_for(Some(2)));
+        // 切回 A 还在。
+        assert!(docks.sftp_open_for(Some(1)));
+        // 没有标签就是没开。
+        assert!(!docks.sftp_open_for(None));
+    }
+
+    #[test]
+    fn toggling_one_tab_leaves_the_others_alone() {
+        let mut docks = DockState::default();
+        docks.set_sftp_open_for(1, true);
+        docks.set_sftp_open_for(2, true);
+        docks.set_sftp_open_for(1, false);
+        assert!(!docks.sftp_open_for(Some(1)));
+        assert!(docks.sftp_open_for(Some(2)));
+        // 重复开 / 关是幂等的。
+        docks.set_sftp_open_for(2, true);
+        docks.set_sftp_open_for(3, false);
+        assert!(docks.sftp_open_for(Some(2)));
+        assert!(!docks.sftp_open_for(Some(3)));
+    }
+
+    #[test]
+    fn closed_or_moved_tabs_lose_their_record() {
+        let mut docks = DockState::default();
+        docks.set_sftp_open_for(1, true);
+        docks.set_sftp_open_for(2, true);
+        let live: HashSet<u64> = [2, 3].into_iter().collect();
+        docks.forget_dead_sftp_tabs(&live);
+        assert!(!docks.sftp_open_for(Some(1)), "关掉的标签 1 清掉");
+        assert!(docks.sftp_open_for(Some(2)));
+        // 标签 1 之后以同一个 id 回来（从别的窗口合并回来）：按不开处理。
+        let live: HashSet<u64> = [1, 2, 3].into_iter().collect();
+        docks.forget_dead_sftp_tabs(&live);
+        assert!(!docks.sftp_open_for(Some(1)));
+    }
+
+    #[test]
+    fn layout_follows_the_current_tab() {
+        let mut docks = DockState::default();
+        docks.set_sftp_open_for(1, true);
+        let a = compute(input(&docks, Some(1), true, false));
+        assert_eq!(a.sftp_width, 420.0);
+        assert_eq!(a.terminal_width, 780.0);
+        let b = compute(input(&docks, Some(2), true, false));
+        assert_eq!(b.sftp_width, 0.0);
+        assert_eq!(b.terminal_width, 1200.0);
+        // 不在终端页（面板不可用）时 A 的面板也不占宽度。
+        let away = compute(input(&docks, Some(1), false, false));
+        assert_eq!(away.sftp_width, 0.0);
+    }
+
+    #[test]
+    fn ai_panel_stays_global_while_sftp_is_per_tab() {
+        let mut docks = DockState::default();
+        docks.set_sftp_open_for(1, true);
+        // AI 开着、窗口 900 宽：A 要放两块 → 收起 AI；B 只有 AI → 不收。
+        let mut narrow_a = input(&docks, Some(1), true, true);
+        narrow_a.window_width = 900.0;
+        assert!(compute(narrow_a).collapse_ai);
+        let mut narrow_b = input(&docks, Some(2), true, true);
+        narrow_b.window_width = 900.0;
+        let b = compute(narrow_b);
+        assert!(!b.collapse_ai);
+        assert!(b.ai_width > 0.0);
     }
 }
