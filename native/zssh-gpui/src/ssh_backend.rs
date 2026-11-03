@@ -1326,14 +1326,7 @@ mod tests {
         let (_shell_tx, shell_rx) = mpsc::unbounded_channel();
         let mut source = FakeSource(shell_rx);
 
-        // 输入把队列塞满（容量 2），多出来的按键被丢；随后只改一次窗口大小。
-        for _ in 0..6 {
-            backend.send(SessionCommand::Write(b"k".to_vec()));
-        }
-        backend.send(SessionCommand::Resize(Size {
-            rows: 40,
-            cols: 120,
-        }));
+        backend.send(SessionCommand::Write(b"k".to_vec()));
 
         test_runtime().block_on(async {
             let run = session_loop(
@@ -1346,7 +1339,19 @@ mod tests {
                 None,
             );
             tokio::pin!(run);
-            // 远端还堵着：在途的写入没完成，窗口大小也排不上，但会话仍在运行。
+            // 第一个按键已经在途（远端堵着，写入永远不完成）。
+            let outcome = tokio::time::timeout(Duration::from_millis(100), &mut run).await;
+            assert!(outcome.is_err());
+
+            // 之后输入把命令队列塞满（容量 2），多出来的按键被丢；随后只改一次窗口大小。
+            for _ in 0..6 {
+                backend.send(SessionCommand::Write(b"k".to_vec()));
+            }
+            backend.send(SessionCommand::Resize(Size {
+                rows: 40,
+                cols: 120,
+            }));
+            // 远端还堵着：窗口大小排不上，但会话仍在运行。
             let outcome = tokio::time::timeout(Duration::from_millis(100), &mut run).await;
             assert!(outcome.is_err());
             assert!(io.resized.lock().unwrap().is_empty());
@@ -1377,12 +1382,7 @@ mod tests {
         };
         let (_shell_tx, shell_rx) = mpsc::unbounded_channel();
         let mut source = FakeSource(shell_rx);
-        for _ in 0..4 {
-            backend.send(SessionCommand::Write(b"k".to_vec()));
-        }
-        for cols in [90usize, 100, 110, 132] {
-            backend.send(SessionCommand::Resize(Size { rows: 30, cols }));
-        }
+        backend.send(SessionCommand::Write(b"k".to_vec()));
 
         test_runtime().block_on(async {
             let run = session_loop(
@@ -1395,7 +1395,13 @@ mod tests {
                 None,
             );
             tokio::pin!(run);
+            // 第一个按键在途、远端堵着；之后窗口被连续拖了几下。
             let _ = tokio::time::timeout(Duration::from_millis(100), &mut run).await;
+            for cols in [90usize, 100, 110, 132] {
+                backend.send(SessionCommand::Resize(Size { rows: 30, cols }));
+            }
+            let _ = tokio::time::timeout(Duration::from_millis(100), &mut run).await;
+            assert!(io.resized.lock().unwrap().is_empty());
             release.send(true).unwrap();
             let _ = tokio::time::timeout(Duration::from_millis(300), &mut run).await;
             assert_eq!(*io.resized.lock().unwrap(), vec![(132, 30)]);
