@@ -22,6 +22,9 @@ pub struct DevFake {
     pub connections: Option<Result<String, ConnectionsError>>,
     /// 进程管理（V2-U18）的假数据，见 `dev_acts_u18`。
     pub procs: super::dev_acts_u18::FakeProcs,
+    /// 断开连接（V2-U21）的假结果，见 `dev_acts_u21`。
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    pub disconnect: super::dev_acts_u21::FakeDisconnect,
 }
 
 #[cfg(debug_assertions)]

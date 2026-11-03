@@ -116,6 +116,7 @@ pub fn validate(spec: &str) -> Result<(), String> {
         || super::dev_acts_u18::is_known(name)
         || super::dev_acts_u19::is_known(name)
         || super::dev_acts_u20::is_known(name)
+        || super::dev_acts_u21::is_known(name)
         || super::dev_acts_u25::is_known(name)
         || super::dev_acts_n4::is_known(name)
         || super::dev_acts_sync::is_known(name)
@@ -271,6 +272,10 @@ fn run_inner(
     }
     // V2-U20（主机的系统图标、主机树连接线）的动作在 `dev_acts_u20`。
     if let Some(result) = super::dev_acts_u20::run(this, spec, window, cx) {
+        return result;
+    }
+    // V2-U21（所有网络连接右键菜单：断开连接、结束进程）的动作在 `dev_acts_u21`。
+    if let Some(result) = super::dev_acts_u21::run(this, spec, window, cx) {
         return result;
     }
     // V2-U25（终端右键菜单）的动作在 `dev_acts_u25`。
