@@ -5,13 +5,17 @@
 //! 时每个用例都直接跳过（`cargo test` 默认不会拉起 claude）；CI 上没有 Claude Code，也不设
 //! 这个变量。
 //!
-//! 关于凭据：为了不碰开发者真实的 `~/.claude`（旧版本或测试流程可能改写里面的设置、会话），
-//! 每个用例都给 claude 单独设一个 `CLAUDE_CONFIG_DIR`，放在 cargo 的 `target/` 下。Claude Code
-//! 要登录才能用，所以会把本机的 `.credentials.json` **按字节复制**进这个临时目录：不读取内容、
-//! 不打印、不上传，用例结束（包括断言失败、panic）时连目录一起删掉，见 [`FakeClaudeConfigDir`]。
+//! 关于凭据：**绝不复制用户真实的 `.credentials.json`**——刷新令牌是轮换的，副本一刷新原件
+//! 就失效，开发者自己终端里的 claude 会掉登录。需要已登录 claude 的用例改读环境变量
+//! `ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR`：一个开发者**专门为测试**准备的配置目录，事先用
+//! `CLAUDE_CONFIG_DIR=<该目录> claude` 单独登录过一次（登录的是另一份会话，和日常终端里的
+//! 互不影响）。测试直接把它当 `CLAUDE_CONFIG_DIR` 用，**不复制、不改、不删**；没设置（或目录
+//! 不存在）就跳过并打印原因。只需要空配置目录的用例仍用 [`FakeClaudeConfigDir`]（放在
+//! cargo 的 `target/` 下，用例结束包括断言失败、panic 时整个删掉）。
 //!
-//! 前置条件：`ZSSH_TEST_*` 环境变量、本机装了 Claude Code 且已登录、先编译出
-//! `zssh-mcp.exe`、`ZSSH_AGENT_E2E=1` 显式开启（真的调用模型）。
+//! 前置条件：`ZSSH_TEST_*` 环境变量、本机装了 Claude Code、先编译出 `zssh-mcp.exe`、
+//! `ZSSH_AGENT_E2E=1` 显式开启（真的调用模型）、`ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR` 指向上面
+//! 那个专用的已登录目录（hooks 用例不需要它）。
 //!
 //! 跑的时候加 `--test-threads=1`：几个用例都用同一个 claude 安装，"没有残留进程 /
 //! 空闲关闭后内存归零"这类断言并行跑会互相干扰。
@@ -88,8 +92,7 @@ async fn claude_driver_runs_commands_and_cannot_touch_the_local_machine() {
         println!("跳过 claude_driver...：找不到 Claude Code（或拆不出真实 exe）");
         return;
     };
-    let Some(claude_home) = isolated_claude_home("driver") else {
-        println!("跳过 claude_driver...：本机 Claude Code 没登录（没有凭据文件）");
+    let Some(claude_home) = logged_in_claude_home("claude_driver...") else {
         return;
     };
     println!("Claude Code：{}（版本 {}）", install.path, install.version);
@@ -543,8 +546,7 @@ async fn claude_idle_close_then_resume_keeps_context() {
         println!("跳过 claude_idle_close...：找不到 Claude Code");
         return;
     };
-    let Some(claude_home) = isolated_claude_home("idle") else {
-        println!("跳过 claude_idle_close...：本机 Claude Code 没登录（没有凭据文件）");
+    let Some(claude_home) = logged_in_claude_home("claude_idle_close...") else {
         return;
     };
     let workspace_guard = common::TestDir::new("ai4-claude-idle");
@@ -645,10 +647,10 @@ async fn claude_idle_close_then_resume_keeps_context() {
 /// 用户 hooks 不能触发（卡片第 3.4 节）：造一个带 SessionStart hook 的独立配置目录，
 /// 我们的启动参数下 hook 不许触发。
 ///
-/// 凭据（R-2 0.4）：**先试不复制凭据**——没登录时 Claude Code 也会跑 SessionStart
-/// hook，对照组能触发就不需要凭据。只有对照组没触发时才复制一次，且复制出来的目录
-/// 由 [`FakeClaudeConfigDir`] 管着：Drop 时整个删掉，正常结束、断言失败、panic 都删。
-/// 目录建在 target 下的测试数据目录里，不落系统临时目录。
+/// 凭据：**不需要，也不复制**——没登录时 Claude Code 也会跑 SessionStart hook，对照组
+/// 能触发就够；对照组没触发时跳过。假配置目录由 [`FakeClaudeConfigDir`] 管着：Drop 时
+/// 整个删掉，正常结束、断言失败、panic 都删。目录建在 target 下的测试数据目录里，
+/// 不落系统临时目录。
 #[tokio::test]
 async fn claude_hooks_do_not_fire_with_our_settings() {
     if !common::full_live("claude_hooks_do_not_fire_with_our_settings") {
@@ -667,7 +669,7 @@ async fn claude_hooks_do_not_fire_with_our_settings() {
         println!("跳过 claude_hooks...：找不到 Claude Code");
         return;
     };
-    // 假配置目录（有 hook、一开始没有凭据）：出作用域就整个删掉，别留凭据副本。
+    // 假配置目录（有 hook、没有凭据）：出作用域就整个删掉。
     let home = FakeClaudeConfigDir::new("hooks");
     let dir = home.path().to_path_buf();
     let marker = dir.join("hook-fired.txt");
@@ -680,33 +682,17 @@ async fn claude_hooks_do_not_fire_with_our_settings() {
     )
     .expect("写设置");
 
-    // 对照组（不复制凭据）：直接跑一次 claude（不带我们的 --settings），hook 该触发。
-    let mut copied_credentials = false;
-    let mut control = run_hook_control(&install.path, &dir).await;
-    if !control {
-        // 没触发才复制凭据（字节复制，不读内容）再试一次。
-        let _ = std::fs::remove_file(&marker);
-        match copy_credentials_into(&dir) {
-            Some(()) => {
-                copied_credentials = true;
-                println!("没凭据时对照组没触发 hook，已复制一份凭据（Drop 守卫负责删掉）");
-                control = run_hook_control(&install.path, &dir).await;
-            }
-            None => {
-                println!("跳过 claude_hooks...：没凭据时 hook 不触发，也拿不到用户的凭据文件");
-                return;
-            }
-        }
-    }
-    if !control {
-        println!("跳过 claude_hooks...：对照组（直接跑 claude）没触发 hook，这个环境验证不了");
+    // 对照组（没有任何凭据）：直接跑一次 claude（不带我们的 --settings），hook 该触发。
+    // 没触发就跳过：不再去复制用户的凭据凑一个已登录环境（会让用户的登录失效），
+    // 也不往专用的已登录目录里写 hook 设置（那个目录测试不改）。
+    if !run_hook_control(&install.path, &dir).await {
+        println!(
+            "跳过 claude_hooks...：没登录时对照组（直接跑 claude）没触发 hook，这个环境验证不了"
+        );
         return;
     }
     let _ = std::fs::remove_file(&marker);
-    println!(
-        "对照组：hook 触发了（文件出现了；凭据副本：{}）",
-        if copied_credentials { "有" } else { "没有" }
-    );
+    println!("对照组：hook 触发了（文件出现了）");
 
     // 我们的驱动：带 `--settings disableAllHooks`，hook 不许触发。
     let workspace_guard = common::TestDir::new("ai4-claude-hooks-workspace");
@@ -752,7 +738,7 @@ async fn claude_hooks_do_not_fire_with_our_settings() {
 
 /// 测试数据目录的根：`<target 目录>/zssh-test-data`。
 ///
-/// 凭据副本这类东西不放系统临时目录（R-2 0.4），放测试自己的数据目录里，
+/// 假配置目录这类东西不放系统临时目录（R-2 0.4），放测试自己的数据目录里，
 /// 跟着 cargo 的 target 一起清。
 fn test_data_root() -> PathBuf {
     let exe = std::env::current_exe().expect("拿不到测试可执行文件路径");
@@ -765,8 +751,8 @@ fn test_data_root() -> PathBuf {
 
 /// 一次性的假 Claude 配置目录：**任何退出路径**都会删掉整个目录。
 ///
-/// 里面可能有从用户配置复制来的凭据副本（见 [`copy_credentials_into`]），所以不能靠
-/// 测试"跑完了记得删"——中途断言失败、panic 展开时 Drop 一样会删。
+/// 不能靠测试"跑完了记得删"——中途断言失败、panic 展开时 Drop 一样会删。里面从不放用户的
+/// 凭据（见文件头）。
 struct FakeClaudeConfigDir {
     path: PathBuf,
 }
@@ -790,39 +776,37 @@ impl FakeClaudeConfigDir {
 
 impl Drop for FakeClaudeConfigDir {
     fn drop(&mut self) {
-        // 先删副本文件再删目录：删除本身失败也不能让凭据留在磁盘上，所以两步都做，
-        // 目录删不掉时至少凭据文件已经没了。
-        let _ = std::fs::remove_file(self.path.join(".credentials.json"));
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 
-/// 给这个用例准备一个独立的 Claude 配置目录（带凭据副本）。本机没登录返回 `None`。
-fn isolated_claude_home(tag: &str) -> Option<FakeClaudeConfigDir> {
-    let home = FakeClaudeConfigDir::new(tag);
-    copy_credentials_into(home.path())?;
-    Some(home)
-}
-
-/// 让 claude 用这个独立配置目录的环境变量。
-fn claude_env(home: &FakeClaudeConfigDir) -> Vec<(String, String)> {
-    vec![(
-        "CLAUDE_CONFIG_DIR".to_string(),
-        home.path().to_string_lossy().into_owned(),
-    )]
-}
-
-/// 把用户的凭据**按字节**复制进假配置目录（不读内容、不打印）。
+/// 开发者专门为测试准备的、已登录的 Claude 配置目录（环境变量 `ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR`）。
 ///
-/// 用户没配置目录 / 没有凭据文件时返回 `None`（调用方跳过，不算失败）。
-fn copy_credentials_into(home: &std::path::Path) -> Option<()> {
-    let real = zssh_core::ai::agent::claude::login::config_dir()?;
-    let credentials = real.join(".credentials.json");
-    if !credentials.is_file() {
+/// 只返回路径：**不复制、不改、不删**里面的任何东西（凭据是轮换的，见文件头）。没设置或
+/// 目录不存在时打印原因返回 `None`，调用方直接跳过，不算失败。
+fn logged_in_claude_home(test: &str) -> Option<PathBuf> {
+    let Some(raw) = std::env::var_os("ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty())
+    else {
+        println!(
+            "跳过 {test}：没设置 ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR（需要一个事先用 \
+             CLAUDE_CONFIG_DIR=<该目录> claude 单独登录过的专用目录；不会复制用户真实的凭据）"
+        );
+        return None;
+    };
+    let dir = PathBuf::from(raw);
+    if !dir.is_dir() {
+        println!("跳过 {test}：ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR 指向的目录不存在");
         return None;
     }
-    std::fs::copy(&credentials, home.join(".credentials.json")).ok()?;
-    Some(())
+    Some(dir)
+}
+
+/// 让 claude 用这个配置目录的环境变量。
+fn claude_env(dir: &std::path::Path) -> Vec<(String, String)> {
+    vec![(
+        "CLAUDE_CONFIG_DIR".to_string(),
+        dir.to_string_lossy().into_owned(),
+    )]
 }
 
 /// 对照：直接跑 claude（最小参数、带假配置目录、不带 disableAllHooks）看 hook 会不会触发。
@@ -1139,8 +1123,7 @@ async fn claude_catalog_comes_from_claude_code_itself() {
         println!("跳过 claude_catalog...：找不到 Claude Code");
         return;
     };
-    let Some(claude_home) = isolated_claude_home("catalog") else {
-        println!("跳过 claude_catalog...：本机 Claude Code 没登录（没有凭据文件）");
+    let Some(claude_home) = logged_in_claude_home("claude_catalog...") else {
         return;
     };
     let Some(catalog) = zssh_core::ai::agent::claude::live_catalog::live_catalog_with_env(

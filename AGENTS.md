@@ -51,6 +51,7 @@ ZeeTerm 要能在**别人的 Windows 10/11** 上用，不能只照着开发这�
 - 自动化脚本、测试、截图一律用独立数据目录：通过 `ZSSH_DATA_DIR` 覆盖（默认是 `%APPDATA%\ZeeTerm`）。**不碰用户的真实数据目录**，没设置就报错退出，不要回退到真实目录。
 - 不碰用户的 `~/.ssh/known_hosts`、`~/.claude` 等个人配置。
 - **不要把真实的 Claude Code 登录凭据（`.credentials.json`）复制进别的配置目录去跑**：刷新令牌是轮换的，副本刷新后原件会失效，用户自己的终端会掉登录。会拉起真实智能体的测试必须显式开启（`ZSSH_AGENT_E2E=1`），默认的 `cargo test` 和 CI 不拉起它。
+- 需要已登录 claude 的真实测试读环境变量 `ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR`：开发者事先为测试单独准备的配置目录（`CLAUDE_CONFIG_DIR=<该目录> claude` 登录一次，和日常终端里的登录互不相干），测试直接把它当 `CLAUDE_CONFIG_DIR` 用，**不复制、不改、不删**；没设置就跳过并打印原因。
 - 用户机器上可能正开着他自己的 ZeeTerm：只结束自己启动的进程，不弹会挡住桌面的模态框给自己点。
 
 ## 截图隐私

@@ -3305,41 +3305,6 @@ mod tests {
         .find(|path| path.is_file())
     }
 
-    /// 登录文件里的访问令牌还有 30 分钟以上才算新鲜。只读 `expiresAt`（毫秒时间戳），不碰令牌本身。
-    fn claude_access_token_is_fresh(credentials: &[u8]) -> bool {
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(credentials) else {
-            return false;
-        };
-        let Some(expires_at) = value["claudeAiOauth"]["expiresAt"].as_u64() else {
-            return false;
-        };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_millis() as u64)
-            .unwrap_or(u64::MAX);
-        expires_at > now.saturating_add(30 * 60 * 1000)
-    }
-
-    #[test]
-    fn a_login_file_is_only_copied_for_tests_while_its_access_token_is_fresh() {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_millis() as u64)
-            .unwrap_or(0);
-        let file = |expires_at: u64| {
-            serde_json::json!({"claudeAiOauth": {"accessToken": "x", "expiresAt": expires_at}})
-                .to_string()
-                .into_bytes()
-        };
-        assert!(claude_access_token_is_fresh(&file(now + 4 * 3600 * 1000)));
-        assert!(!claude_access_token_is_fresh(&file(now + 10 * 60 * 1000)));
-        assert!(!claude_access_token_is_fresh(&file(
-            now.saturating_sub(1000)
-        )));
-        assert!(!claude_access_token_is_fresh(b"not json"));
-        assert!(!claude_access_token_is_fresh(b"{}"));
-    }
-
     /// 发一句纯对话，读到回合结束；返回回复文字。`Err("条件缺失…")` 表示环境不满足（跳过，不算失败）。
     async fn chat_once(session: &mut AgentSession, model: Option<&str>) -> Result<String, String> {
         let cancel = AtomicBool::new(false);
@@ -3390,9 +3355,11 @@ mod tests {
         }
     }
 
-    /// 真实 Claude Code 的端到端：给它一个独立的 `CLAUDE_CONFIG_DIR`（只按字节复制登录文件进去，
-    /// 用完删），不碰用户真实的 `~/.claude`。没装 claude / 没有登录文件 / 登录不可用都打印
-    /// "条件缺失"后跳过，不算失败。
+    /// 真实 Claude Code 的端到端：用开发者专门为测试登录过的配置目录
+    /// （`ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR`，事先 `CLAUDE_CONFIG_DIR=<该目录> claude` 登录一次），
+    /// 直接把它当 `CLAUDE_CONFIG_DIR` 用——**不复制、不改、不删**。不能复制用户真实的 `~/.claude`
+    /// 里的登录文件：刷新令牌是轮换的，副本一刷新原件就失效，用户终端里的 claude 会掉登录。
+    /// 没设置 / 目录不存在 / 没装 claude / 登录不可用都打印"条件缺失"后跳过，不算失败。
     #[test]
     fn real_claude_round_trip_with_an_isolated_config_dir() {
         use zssh_core::ai::agent::discovery::{self, CLAUDE};
@@ -3400,28 +3367,20 @@ mod tests {
         let Some(data_dir) = e2e_data_dir("real_claude_round_trip") else {
             return;
         };
-        let Some(real_home) = std::env::var_os("USERPROFILE").map(PathBuf::from) else {
-            println!("条件缺失：没有 USERPROFILE，找不到登录文件");
-            return;
-        };
-        let credentials = real_home.join(".claude").join(".credentials.json");
-        let Ok(bytes) = std::fs::read(&credentials) else {
-            println!("条件缺失：没有可复制的 .credentials.json，跳过真实对话");
-            return;
-        };
-        // 访问令牌已过期（或读不出过期时间）就不跑：副本里的 claude 会拿刷新令牌去换新令牌，服务器
-        // 换发后原件里的刷新令牌就作废了（刷新令牌只能用一次），用户真实的登录会因为这次测试掉线。
-        if !claude_access_token_is_fresh(&bytes) {
+        let Some(config_dir) = std::env::var_os("ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+        else {
             println!(
-                "条件缺失：登录凭据的访问令牌已过期或读不出过期时间，跳过真实对话\
-                 （复制后刷新会让原件里的刷新令牌失效）"
+                "条件缺失：没设置 ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR（要一个事先单独登录过的专用目录），\
+                 跳过真实对话"
             );
             return;
+        };
+        if !config_dir.is_dir() {
+            println!("条件缺失：ZSSH_AGENT_E2E_CLAUDE_CONFIG_DIR 指向的目录不存在，跳过真实对话");
+            return;
         }
-        let config_dir = data_dir.join("e2e-claude-config");
-        let _ = std::fs::remove_dir_all(&config_dir);
-        std::fs::create_dir_all(&config_dir).expect("建独立配置目录");
-        std::fs::write(config_dir.join(".credentials.json"), &bytes).expect("按字节复制登录文件");
 
         let runtime = crate::ssh_backend::runtime().expect("运行时");
         let outcome = runtime.block_on(async {
@@ -3452,8 +3411,6 @@ mod tests {
             session.shutdown().await;
             result
         });
-        // 无论成败都删掉复制进去的登录文件。
-        let _ = std::fs::remove_dir_all(&config_dir);
         report("real_claude_round_trip", outcome);
     }
 
