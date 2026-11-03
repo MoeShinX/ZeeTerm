@@ -28,9 +28,9 @@ use std::time::Duration;
 use zssh_core::ssh::flow::FlowGate;
 use zssh_core::ssh::latency::{self, LatencyMonitor, LatencySnapshot, LatencyViewer};
 use zssh_session::{
-    CoreFilter, KeyInput, LoopbackBackend, MouseAction, MouseButton as TerminalMouseButton,
-    MouseInput, SessionBackend, SessionCommand, SessionDriver, SessionLog, SessionPump, encode_key,
-    encode_mouse,
+    CoreFilter, FRAME_BYTE_BUDGET, FrameScheduler, KeyInput, LoopbackBackend, MouseAction,
+    MouseButton as TerminalMouseButton, MouseInput, PollOutcome, SessionBackend, SessionCommand,
+    SessionDriver, SessionLog, SessionPump, encode_key, encode_mouse,
 };
 use zssh_terminal::{MouseMode, NamedColor, Size, Snapshot, TerminalColor};
 
@@ -484,10 +484,12 @@ impl Pane {
         true
     }
 
-    /// 事件到了就刷新快照；返回是否有变化。
-    fn poll_events(&mut self) -> bool {
+    /// 事件到了就刷新快照；`allowance` 是这一帧分给本窗格的数据字节额度（见
+    /// `zssh_session::FrameScheduler`）。返回是否有变化和实际处理的字节数。
+    fn poll_events_within(&mut self, allowance: usize) -> PollOutcome {
         let mut changed = self.poll_pending();
-        if self.driver.poll() {
+        let polled = self.driver.poll_counted(allowance);
+        if polled.changed {
             changed = true;
         }
         // 远端退出、连接断了、写失败：提示一次。离线回环窗格关闭时的 Exit 不提示。
@@ -503,7 +505,15 @@ impl Pane {
         if changed {
             self.snapshot = self.driver.pump().snapshot();
         }
-        changed
+        PollOutcome {
+            changed,
+            used: polled.used,
+        }
+    }
+
+    /// 写入后立刻取一下回环回显：这是单个窗格自己的轮询，不经帧调度，额度给一整帧。
+    fn poll_events(&mut self) -> bool {
+        self.poll_events_within(FRAME_BYTE_BUDGET).changed
     }
 
     fn refresh(&mut self) {
@@ -922,6 +932,8 @@ struct PaneGeom {
 
 pub struct TerminalWorkspace {
     tabs: TabSet<Tab>,
+    /// 每帧输出预算的分配器：窗格再多，一帧解析的终端数据总量也有上限。
+    frame_budget: FrameScheduler,
     focus: FocusHandle,
     /// (anchor, head)，可见区坐标。
     selection: Option<((usize, usize), (usize, usize))>,
@@ -1112,6 +1124,7 @@ impl TerminalWorkspace {
         );
         let mut this = Self {
             tabs: TabSet::new(),
+            frame_budget: FrameScheduler::new(),
             focus,
             selection: None,
             selecting: false,
@@ -1394,15 +1407,21 @@ impl TerminalWorkspace {
         }
     }
 
-    /// 每帧取一下所有窗格的会话事件；后台标签也继续消费。
+    /// 每帧取一下所有窗格的会话事件；后台标签也继续消费。一帧的数据总量由 `frame_budget`
+    /// 在所有窗格之间分配（前台优先、后台轮转），不是每个窗格各吃一份。
     fn poll_sessions(&mut self) -> bool {
-        let mut changed = false;
-        for tab in self.tabs.items_mut() {
-            for pane in &mut tab.panes {
-                changed |= pane.poll_events();
-            }
+        let active = self.tabs.active_index();
+        let mut panes: Vec<(bool, &mut Pane)> = Vec::new();
+        for (index, tab) in self.tabs.items_mut().iter_mut().enumerate() {
+            let foreground = Some(index) == active;
+            panes.extend(tab.panes.iter_mut().map(|pane| (foreground, pane)));
         }
-        changed
+        let foreground: Vec<bool> = panes.iter().map(|(front, _)| *front).collect();
+        self.frame_budget.run(
+            panes.len(),
+            |i| foreground[i],
+            |i, allowance| panes[i].1.poll_events_within(allowance),
+        )
     }
 
     /// 关闭所有会话（窗口关闭前调用），避免 SSH 通道挂着。

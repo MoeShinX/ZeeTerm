@@ -20,6 +20,7 @@ use zssh_terminal::{Size, Snapshot, TerminalModel};
 pub mod driver;
 pub mod keys;
 pub mod log;
+pub mod schedule;
 
 pub use driver::{
     ChannelBackend, LoopbackBackend, POLL_BYTE_BUDGET, SessionBackend, SessionCommand,
@@ -29,6 +30,7 @@ pub use keys::{
     KeyInput, MouseAction, MouseButton, MouseInput, encode_key, encode_mouse, encode_paste,
 };
 pub use log::SessionLog;
+pub use schedule::{FRAME_BYTE_BUDGET, FrameScheduler, PollOutcome};
 
 /// 过滤结果：`data` 给终端，`suppressed` 是被吞掉、需要由过滤侧 ack 的字节数。
 pub struct Filtered {
