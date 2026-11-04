@@ -22,6 +22,36 @@ use russh::server::{self, Auth, Msg, Session};
 use russh::{Channel, ChannelId, MethodKind, MethodSet};
 use tokio::net::TcpListener;
 
+/// 各个测试服务器的主机公钥（按监听地址）：「测试连接」不信任陌生指纹，测试要先把它写进 known_hosts。
+fn host_keys()
+-> &'static std::sync::Mutex<std::collections::HashMap<SocketAddr, russh::keys::PublicKey>> {
+    static KEYS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<SocketAddr, russh::keys::PublicKey>>,
+    > = std::sync::OnceLock::new();
+    KEYS.get_or_init(Default::default)
+}
+
+fn remember_host_key(addr: SocketAddr, key: &PrivateKey) {
+    host_keys()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(addr, key.public_key().clone());
+}
+
+/// 把 `addr` 上那台测试服务器的主机密钥写进 `known_hosts`（让它成为已信任的主机）。
+#[allow(dead_code)]
+pub fn trust_host_key(addr: SocketAddr, known_hosts: &std::path::Path) {
+    let key = host_keys()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&addr)
+        .cloned()
+        .expect("这个地址不是 test_ssh_server 起的服务器");
+    zssh_core::ssh::KnownHosts::new(known_hosts)
+        .append(&addr.ip().to_string(), addr.port(), &key)
+        .expect("预先信任测试服务器");
+}
+
 /// `flood` 命令发出的字节数。
 pub const FLOOD_BYTES: usize = 6 * 1024 * 1024;
 
@@ -212,10 +242,12 @@ async fn spawn_with(password: Option<String>, exec_output: Option<String>) -> So
         .await
         .expect("绑定本机端口");
     let addr = listener.local_addr().expect("取端口");
+    let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("生成主机密钥");
+    remember_host_key(addr, &host_key);
     let config = Arc::new(server::Config {
         inactivity_timeout: None,
         auth_rejection_time: Duration::from_millis(1),
-        keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("生成主机密钥")],
+        keys: vec![host_key],
         ..Default::default()
     });
     tokio::spawn(async move {
@@ -283,10 +315,12 @@ pub async fn spawn_forwarding() -> SocketAddr {
         .await
         .expect("绑定本机端口");
     let addr = listener.local_addr().expect("取端口");
+    let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("生成主机密钥");
+    remember_host_key(addr, &host_key);
     let config = Arc::new(server::Config {
         inactivity_timeout: None,
         auth_rejection_time: Duration::from_millis(1),
-        keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("生成主机密钥")],
+        keys: vec![host_key],
         ..Default::default()
     });
     tokio::spawn(async move {
@@ -328,10 +362,12 @@ pub async fn spawn_counting() -> (SocketAddr, Arc<ServerProbe>) {
         .await
         .expect("绑定本机端口");
     let addr = listener.local_addr().expect("取端口");
+    let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("生成主机密钥");
+    remember_host_key(addr, &host_key);
     let config = Arc::new(server::Config {
         inactivity_timeout: None,
         auth_rejection_time: Duration::from_millis(1),
-        keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("生成主机密钥")],
+        keys: vec![host_key],
         ..Default::default()
     });
     let probe = Arc::new(ServerProbe::default());
@@ -567,10 +603,12 @@ pub async fn spawn_sftp() -> SocketAddr {
         .await
         .expect("绑定本机端口");
     let addr = listener.local_addr().expect("取端口");
+    let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("生成主机密钥");
+    remember_host_key(addr, &host_key);
     let config = Arc::new(server::Config {
         inactivity_timeout: None,
         auth_rejection_time: Duration::from_millis(1),
-        keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("生成主机密钥")],
+        keys: vec![host_key],
         ..Default::default()
     });
     tokio::spawn(async move {

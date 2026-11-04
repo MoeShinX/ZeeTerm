@@ -298,22 +298,25 @@ impl HostKeyButton {
 /// 这个状态下对话框有哪些按钮，从左到右（最右边是主按钮）。
 pub fn host_key_buttons(status: HostKeyStatus) -> &'static [HostKeyButton] {
     match status {
-        HostKeyStatus::Unknown | HostKeyStatus::OtherKeyTypesSaved => &[
+        HostKeyStatus::Unknown => &[
             HostKeyButton::Cancel,
             HostKeyButton::TrustOnce,
             HostKeyButton::TrustAndSave,
         ],
+        // 换了密钥类型也没有「仅本次」：和指纹变了一样是危险提示，只留「信任并保存」（危险色）和「取消」。
+        HostKeyStatus::OtherKeyTypesSaved => &[HostKeyButton::Cancel, HostKeyButton::TrustAndSave],
         // 指纹变了没有「仅本次」：core 规定 `Changed` 只认 `TrustAndSave`。
         HostKeyStatus::Changed => &[HostKeyButton::Cancel, HostKeyButton::UpdateAndConnect],
         HostKeyStatus::Revoked => &[HostKeyButton::Close],
     }
 }
 
-/// Enter 触发哪个按钮：必须是安全的那个。指纹变了是取消；未知主机是「信任并保存」（有 300ms 防误触）。
+/// Enter 触发哪个按钮：必须是安全的那个。指纹变了、密钥类型变了是取消；第一次见到的主机是「信任并保存」
+/// （有 300ms 防误触）。
 pub fn enter_button(status: HostKeyStatus) -> HostKeyButton {
     match status {
-        HostKeyStatus::Unknown | HostKeyStatus::OtherKeyTypesSaved => HostKeyButton::TrustAndSave,
-        HostKeyStatus::Changed => HostKeyButton::Cancel,
+        HostKeyStatus::Unknown => HostKeyButton::TrustAndSave,
+        HostKeyStatus::Changed | HostKeyStatus::OtherKeyTypesSaved => HostKeyButton::Cancel,
         HostKeyStatus::Revoked => HostKeyButton::Close,
     }
 }
@@ -330,12 +333,16 @@ pub fn button_decision(status: HostKeyStatus, button: HostKeyButton) -> HostKeyD
     sanitize_decision(status, wanted)
 }
 
-/// 兜底规则：吊销的密钥无论如何拒绝；指纹变了只认「更新指纹」（`TrustAndSave`）。
+/// 兜底规则：吊销的密钥无论如何拒绝；指纹变了、密钥类型变了只认明确的「信任并保存」（`TrustAndSave`），
+/// 「仅本次」也不行——没有人核对过的密钥不能因为一个顺手的回答就放行。
 pub fn sanitize_decision(status: HostKeyStatus, decision: HostKeyDecision) -> HostKeyDecision {
     match (status, decision) {
         (HostKeyStatus::Revoked, _) => HostKeyDecision::Reject,
-        (HostKeyStatus::Changed, HostKeyDecision::TrustAndSave) => HostKeyDecision::TrustAndSave,
-        (HostKeyStatus::Changed, _) => HostKeyDecision::Reject,
+        (
+            HostKeyStatus::Changed | HostKeyStatus::OtherKeyTypesSaved,
+            HostKeyDecision::TrustAndSave,
+        ) => HostKeyDecision::TrustAndSave,
+        (HostKeyStatus::Changed | HostKeyStatus::OtherKeyTypesSaved, _) => HostKeyDecision::Reject,
         (_, decision) => decision,
     }
 }
@@ -361,15 +368,17 @@ pub struct HostKeyText {
     pub fingerprint: String,
     /// 指纹变了时已保存的那条旧指纹。
     pub stored: Option<String>,
+    /// 换了密钥类型时这台主机已保存的（类型, 指纹）；认不出来时为空，界面只显示新的。
+    pub saved: Vec<(String, String)>,
 }
 
 pub fn host_key_text(info: &HostKeyInfo) -> HostKeyText {
     let (title, intro, danger) = match info.status {
         HostKeyStatus::Unknown => ("确认主机指纹", "第一次连接这台主机，请核对指纹。", false),
         HostKeyStatus::OtherKeyTypesSaved => (
-            "确认主机指纹",
-            "这台主机以前保存的是别的类型的密钥，请核对指纹。",
-            false,
+            "主机密钥类型变了",
+            "这台主机以前保存的是别的类型的密钥。服务器可能升级了密钥，也可能有人在中间拦截。确认是你自己改过的再信任。",
+            true,
         ),
         HostKeyStatus::Changed => (
             "主机指纹已变化",
@@ -389,6 +398,14 @@ pub fn host_key_text(info: &HostKeyInfo) -> HostKeyText {
         stored: match info.status {
             HostKeyStatus::Changed => info.stored_fingerprint.as_deref().map(clean_text),
             _ => None,
+        },
+        saved: match info.status {
+            HostKeyStatus::OtherKeyTypesSaved => info
+                .saved_keys
+                .iter()
+                .map(|key| (clean_text(&key.key_type), clean_text(&key.fingerprint)))
+                .collect(),
+            _ => Vec::new(),
         },
     }
 }
@@ -474,6 +491,14 @@ mod tests {
             status,
             stored_fingerprint: matches!(status, HostKeyStatus::Changed | HostKeyStatus::Revoked)
                 .then(|| "SHA256:oldoldoldoldoldoldoldoldoldoldoldoldoldold".to_owned()),
+            saved_keys: if status == HostKeyStatus::OtherKeyTypesSaved {
+                vec![zssh_core::ssh::SavedHostKey {
+                    key_type: "ecdsa-sha2-nistp256".to_owned(),
+                    fingerprint: "SHA256:savedsavedsavedsavedsavedsavedsavedsavedsa".to_owned(),
+                }]
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -510,13 +535,44 @@ mod tests {
         );
         assert_eq!(
             host_key_buttons(HostKeyStatus::OtherKeyTypesSaved),
-            [Cancel, TrustOnce, TrustAndSave]
+            [Cancel, TrustAndSave],
+            "换了密钥类型：没有「仅本次」"
         );
         assert_eq!(
             host_key_buttons(HostKeyStatus::Changed),
             [Cancel, UpdateAndConnect]
         );
         assert_eq!(host_key_buttons(HostKeyStatus::Revoked), [Close]);
+    }
+
+    #[test]
+    fn a_changed_key_type_is_handled_like_a_changed_key() {
+        let status = HostKeyStatus::OtherKeyTypesSaved;
+        assert!(!host_key_buttons(status).contains(&HostKeyButton::TrustOnce));
+        assert_eq!(enter_button(status), HostKeyButton::Cancel, "Enter = 取消");
+        assert_eq!(
+            button_decision(status, enter_button(status)),
+            HostKeyDecision::Reject
+        );
+        assert_eq!(
+            button_decision(status, HostKeyButton::TrustAndSave),
+            HostKeyDecision::TrustAndSave,
+            "明确点「信任并保存」才放行"
+        );
+        assert_eq!(
+            button_decision(status, HostKeyButton::TrustOnce),
+            HostKeyDecision::Reject,
+            "硬塞一个「仅本次」也只会被拒绝"
+        );
+        assert_eq!(
+            sanitize_decision(status, HostKeyDecision::TrustOnce),
+            HostKeyDecision::Reject
+        );
+        // 第一次见到的主机不受影响。
+        assert_eq!(
+            button_decision(HostKeyStatus::Unknown, HostKeyButton::TrustOnce),
+            HostKeyDecision::TrustOnce
+        );
     }
 
     #[test]
@@ -541,12 +597,12 @@ mod tests {
                 button_decision(status, TrustAndSave),
                 HostKeyDecision::TrustAndSave
             );
-            assert_eq!(
-                button_decision(status, TrustOnce),
-                HostKeyDecision::TrustOnce
-            );
             assert_eq!(button_decision(status, Cancel), HostKeyDecision::Reject);
         }
+        assert_eq!(
+            button_decision(HostKeyStatus::Unknown, TrustOnce),
+            HostKeyDecision::TrustOnce
+        );
         assert_eq!(
             button_decision(HostKeyStatus::Changed, Cancel),
             HostKeyDecision::Reject
@@ -581,10 +637,7 @@ mod tests {
         for status in ALL {
             assert_eq!(
                 button_decision(status, enter_button(status)) == HostKeyDecision::TrustAndSave,
-                matches!(
-                    status,
-                    HostKeyStatus::Unknown | HostKeyStatus::OtherKeyTypesSaved
-                ),
+                status == HostKeyStatus::Unknown,
                 "只有从未见过的主机，Enter 才会信任"
             );
             assert!(
@@ -619,7 +672,19 @@ mod tests {
         assert_eq!(unknown.stored, None);
 
         let other = host_key_text(&info(HostKeyStatus::OtherKeyTypesSaved));
-        assert!(other.intro.contains("别的类型"));
+        assert_eq!(other.title, "主机密钥类型变了");
+        assert!(other.danger, "和指纹变了同一套警示样式");
+        assert!(other.intro.contains("别的类型") && other.intro.contains("中间拦截"));
+        assert_eq!(
+            other.saved,
+            [(
+                "ecdsa-sha2-nistp256".to_owned(),
+                "SHA256:savedsavedsavedsavedsavedsavedsavedsavedsa".to_owned()
+            )],
+            "已保存的类型和指纹都要给用户看"
+        );
+        assert_eq!(other.stored, None);
+        assert!(unknown.saved.is_empty());
 
         let changed = host_key_text(&info(HostKeyStatus::Changed));
         assert_eq!(changed.title, "主机指纹已变化");

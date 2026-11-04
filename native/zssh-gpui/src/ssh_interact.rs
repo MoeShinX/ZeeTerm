@@ -436,6 +436,7 @@ mod tests {
             fingerprint: "SHA256:demo".to_owned(),
             status: HostKeyStatus::Unknown,
             stored_fingerprint: None,
+            saved_keys: Vec::new(),
         }
     }
 

@@ -247,3 +247,140 @@ fn dot_dot_segments_cannot_hide_a_sensitive_path() {
     );
     assert!(cmd_hit("cat /etc/x/../shadow").is_some());
 }
+
+/// V2-C7a S5：补上审查指出的几类凭据 / 秘密文件。
+#[test]
+fn sshd_host_private_keys_are_hit_but_the_public_ones_are_not() {
+    for path in [
+        "/etc/ssh/ssh_host_rsa_key",
+        "/etc/ssh/ssh_host_ed25519_key",
+        "/etc/ssh/ssh_host_ecdsa_key",
+        "/etc/ssh/ssh_host_dsa_key",
+        "/etc/ssh/SSH_HOST_RSA_KEY",
+        "/etc/ssh/ssh_host_rsa_key.bak",
+        "/mnt/backup/etc/ssh/ssh_host_ed25519_key-old",
+        "ssh_host_ed25519_key",
+    ] {
+        assert!(path_hit(path), "应该命中：{path}");
+    }
+    for path in [
+        "/etc/ssh/ssh_host_rsa_key.pub",
+        "/etc/ssh/ssh_host_ed25519_key.pub",
+        "/etc/ssh/sshd_config",
+        "/etc/ssh/ssh_config",
+        "/etc/ssh/moduli",
+        "/etc/ssh/ssh_host_notes.txt",
+    ] {
+        assert!(!path_hit(path), "不该命中：{path}");
+    }
+    let hit = cmd_hit("cat /etc/ssh/ssh_host_ed25519_key").expect("命令里的主机私钥");
+    assert!(hit.exact);
+    assert!(cmd_hit("cat /etc/ssh/ssh_host_ed25519_key.pub").is_none());
+    // 通配符能匹配到主机私钥的名字，按"可能命中"。
+    assert!(cmd_hit("cat /etc/ssh/ssh_host_*_key").is_some_and(|hit| !hit.exact));
+    assert!(cmd_hit("cat /etc/ssh/ssh_host_*").is_some_and(|hit| !hit.exact));
+}
+
+#[test]
+fn proc_environ_files_are_hit_in_every_form() {
+    for path in [
+        "/proc/self/environ",
+        "/proc/1/environ",
+        "/proc/12345/environ",
+        "/proc/thread-self/environ",
+        "/proc/self/task/42/environ",
+        "/PROC/SELF/ENVIRON",
+        "/proc/./self/environ",
+        "/proc/self/../1/environ",
+        "/host/proc/1/environ",
+    ] {
+        assert!(path_hit(path), "应该命中：{path}");
+    }
+    // 其它 /proc 文件和名字相近的文件不受影响。
+    for path in [
+        "/proc/self/status",
+        "/proc/self/cmdline",
+        "/proc/cpuinfo",
+        "/proc/meminfo",
+        "/proc/1/environment",
+        "/proc/self/environ.txt",
+        "/srv/docs/environ",
+        "/srv/proc/notes/environ",
+        "/proc/net/environ",
+    ] {
+        assert!(!path_hit(path), "不该命中：{path}");
+    }
+    assert!(cmd_hit("cat /proc/self/environ").is_some_and(|hit| hit.exact));
+    assert!(cmd_hit("tr '\0' '\n' < /proc/1/environ").is_some_and(|hit| hit.exact));
+    // 进程号是通配符 / 变量：无法确定，按可能命中。
+    assert!(cmd_hit("cat /proc/*/environ").is_some_and(|hit| !hit.exact));
+    assert!(cmd_hit("cat /proc/$PID/environ").is_some_and(|hit| !hit.exact));
+    assert!(cmd_hit("cat /proc/self/status").is_none());
+}
+
+#[test]
+fn shell_and_database_history_files_are_hit() {
+    for name in [
+        ".bash_history",
+        ".zsh_history",
+        ".mysql_history",
+        ".psql_history",
+        ".python_history",
+    ] {
+        for prefix in ["~/", "$HOME/", "/home/alice/", "/root/", "./", ""] {
+            let path = format!("{prefix}{name}");
+            assert!(path_hit(&path), "应该命中：{path}");
+            assert!(path_hit(&path.to_uppercase()), "大小写不敏感：{path}");
+        }
+        assert!(path_hit(&format!("/root/{name}.bak")), "备份：{name}");
+    }
+    assert!(cmd_hit("tail -n 50 ~/.bash_history").is_some_and(|hit| hit.exact));
+    assert!(cmd_hit("grep password ~/.mysql_history").is_some());
+    for path in [
+        "/root/bash_history_notes.txt",
+        "/home/alice/.bashrc",
+        "/home/alice/.profile",
+        "/home/alice/history.md",
+        "/var/log/history.log",
+        "/home/alice/.bash_historyx",
+    ] {
+        assert!(!path_hit(path), "不该命中：{path}");
+    }
+    // `history` 命令本身打印当前 shell 的历史，不是读文件，保持现状。
+    assert!(cmd_hit("history").is_none());
+}
+
+#[test]
+fn vault_tokens_and_cloud_credential_files_are_hit() {
+    for path in [
+        "~/.vault-token",
+        "/root/.vault-token",
+        "$HOME/.vault-token",
+        "/srv/app/credentials.json",
+        "credentials.json",
+        "/srv/app/CREDENTIALS.JSON",
+        "/srv/app/credentials.json.bak",
+        "/srv/gcp/service-account.json",
+        "/srv/gcp/service-account-prod.json",
+        "/srv/gcp/service-account-key-2026.json",
+        "/srv/gcp/service_account.json",
+    ] {
+        assert!(path_hit(path), "应该命中：{path}");
+    }
+    for path in [
+        "/srv/app/credentials.txt",
+        "/srv/app/credentials.jsonl-notes.md",
+        "/srv/app/my-credentials.json",
+        "/srv/gcp/service-accounts.md",
+        "/srv/gcp/service-account.yaml",
+        "/srv/app/package.json",
+        "/srv/app/vault-token-howto.md",
+    ] {
+        assert!(!path_hit(path), "不该命中：{path}");
+    }
+    assert!(cmd_hit("cat ~/.vault-token").is_some_and(|hit| hit.exact));
+    assert!(cmd_hit("cat service-account.json").is_some_and(|hit| hit.exact));
+    // 名字里带通配符、又能匹配到这些文件：按可能命中。
+    assert!(cmd_hit("cat service-account*.json").is_some_and(|hit| !hit.exact));
+    assert!(cmd_hit("cat cred*.json").is_some_and(|hit| !hit.exact));
+}

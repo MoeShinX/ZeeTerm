@@ -14,8 +14,9 @@ use crate::ai::terminal::SharedTerminalRing;
 use crate::error::{HostKeyMismatch, ZsshError};
 use crate::ssh::auth::{self, AuthConfig, AuthOutcome, RememberedSecret};
 use crate::ssh::dialer::{self, BoxedStream, ProxyConfig, HOP_TIMEOUT};
+use crate::ssh::hostkey_order;
 use crate::ssh::id_tap::IdTap;
-use crate::ssh::interact::{BoxFuture, HopProgress};
+use crate::ssh::interact::{BoxFuture, HopProgress, SavedHostKey};
 use crate::ssh::interact::{HostKeyDecision, HostKeyInfo, HostKeyStatus, Interactor};
 use crate::ssh::known_hosts::{HostKeyLookup, KnownHosts, StoredIn};
 use crate::ssh::latency::{LatencyMonitor, ProbeKind, SshProbe};
@@ -314,7 +315,9 @@ impl Connection {
         let version_slot = Arc::new(OnceLock::new());
         let stream: BoxedStream = Box::new(IdTap::new(stream, Arc::clone(&version_slot)));
         let server_key_slot = Arc::new(OnceLock::new());
-        let config = Arc::new(client_config(legacy_algorithms));
+        // 已保存过的主机密钥类型排到协商偏好最前：服务器有好几把密钥时出示我们认得的那把。
+        let saved_keys = hostkey_order::saved_host_keys(&known_hosts, host, port);
+        let config = Arc::new(client_config_preferring(legacy_algorithms, &saved_keys));
         let remote_forwards = RemoteForwardTable::default();
         let x11 = X11Hub::default();
 
@@ -1059,6 +1062,7 @@ impl ClientHandler {
             fingerprint: server_key.fingerprint.clone(),
             status,
             stored_fingerprint: Some(stored_fingerprint.to_owned()),
+            saved_keys: Vec::new(),
         };
         self.interactor.confirm_host_key(info).await
     }
@@ -1077,6 +1081,13 @@ pub(crate) fn client_config(legacy_algorithms: bool) -> Config {
     } else {
         modern_preferred()
     };
+    config
+}
+
+/// 同 [`client_config`]，另外把这台主机已保存的密钥类型排到主机密钥算法的最前（见 `hostkey_order`）。
+pub(crate) fn client_config_preferring(legacy_algorithms: bool, saved: &[SavedHostKey]) -> Config {
+    let mut config = client_config(legacy_algorithms);
+    hostkey_order::prefer_saved(&mut config.preferred, saved);
     config
 }
 
@@ -1337,6 +1348,11 @@ impl client::Handler for ClientHandler {
                     fingerprint: server_key.fingerprint.clone(),
                     status,
                     stored_fingerprint: None,
+                    saved_keys: if status == HostKeyStatus::OtherKeyTypesSaved {
+                        hostkey_order::saved_host_keys(&self.known_hosts, &self.host, self.port)
+                    } else {
+                        Vec::new()
+                    },
                 };
 
                 match self.interactor.confirm_host_key(info).await {
@@ -1501,6 +1517,42 @@ mod tests {
                 .contains(&Algorithm::Rsa { hash: None }),
             "老服务器要能用 SHA1 的 ssh-rsa 主机密钥和用户密钥"
         );
+    }
+
+    #[test]
+    fn saved_host_key_types_lead_the_host_key_negotiation() {
+        use crate::ssh::interact::SavedHostKey;
+        let saved = |key_type: &str| SavedHostKey {
+            key_type: key_type.to_owned(),
+            fingerprint: "SHA256:x".to_owned(),
+        };
+        let ecdsa = Algorithm::Ecdsa {
+            curve: russh::keys::ssh_key::EcdsaCurve::NistP256,
+        };
+        for legacy in [false, true] {
+            // 没存过：和 client_config 一模一样。
+            assert_eq!(
+                client_config_preferring(legacy, &[]).preferred.key,
+                client_config(legacy).preferred.key
+            );
+            // 存过 ECDSA：它排在默认第一的 Ed25519 前面，传给 russh 的 `preferred.key` 里能看到。
+            let config = client_config_preferring(legacy, &[saved("ecdsa-sha2-nistp256")]);
+            assert_eq!(config.preferred.key.first(), Some(&ecdsa));
+            assert!(
+                config.preferred.key.contains(&Algorithm::Ed25519),
+                "其它类型仍可协商"
+            );
+            // 存过 Ed25519：本来就在最前。
+            let config = client_config_preferring(legacy, &[saved("ssh-ed25519")]);
+            assert_eq!(config.preferred.key.first(), Some(&Algorithm::Ed25519));
+        }
+        // 兼容开关与此无关：现代模式仍不含 SHA1 的 ssh-rsa，即使存的是 ssh-rsa。
+        let rsa = client_config_preferring(false, &[saved("ssh-rsa")]);
+        assert!(!rsa.preferred.key.contains(&Algorithm::Rsa { hash: None }));
+        assert!(matches!(
+            rsa.preferred.key.first(),
+            Some(Algorithm::Rsa { .. })
+        ));
     }
 
     #[test]

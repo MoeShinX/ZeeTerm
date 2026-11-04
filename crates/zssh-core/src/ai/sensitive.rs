@@ -50,6 +50,13 @@ const PATH_RULES: &[PathRule] = &[
     file(&[".git-credentials"]),
     file(&[".npmrc"]),
     file(&[".pypirc"]),
+    // 命令行 / 数据库客户端的历史：里面常有手敲进去的密码和令牌。
+    file(&[".bash_history"]),
+    file(&[".zsh_history"]),
+    file(&[".mysql_history"]),
+    file(&[".psql_history"]),
+    file(&[".python_history"]),
+    file(&[".vault-token"]),
     file(&["etc", "shadow"]),
     file(&["etc", "gshadow"]),
     file(&["etc", "sudoers"]),
@@ -60,6 +67,46 @@ const ENV_FILE: &str = ".env";
 
 /// 敏感的扩展名（小写，带点）。
 const SENSITIVE_EXTENSIONS: &[&str] = &[".pem", ".key", ".p12", ".pfx", ".kdbx"];
+
+/// GCP 服务账号密钥常见的文件名：`credentials.json`、`service-account*.json`（`service_account*.json` 同理）。
+fn is_cloud_credentials_name(name: &str) -> bool {
+    segment_matches(name, "credentials.json", true)
+        || ["service-account", "service_account"]
+            .iter()
+            .any(|prefix| name.starts_with(prefix) && name.ends_with(".json"))
+}
+
+/// sshd 的主机私钥：`ssh_host_ed25519_key`、`ssh_host_rsa_key`……（可能带备份后缀）；`.pub` 是公钥，不算。
+fn is_ssh_host_key_name(name: &str) -> bool {
+    name.strip_prefix("ssh_host_")
+        .and_then(|rest| rest.find("_key").map(|at| &rest[at + "_key".len()..]))
+        .is_some_and(|suffix| !suffix.starts_with(".pub"))
+}
+
+/// `/proc/<pid>/environ`（含 `self`、`thread-self`、`task/<tid>/`）：进程的环境变量，常有密钥和令牌。
+/// 返回 `Some(是否精确)`；中间段是通配符 / 变量时按"可能命中"。
+fn proc_environ(parts: &[&str]) -> Option<bool> {
+    let at = parts.iter().position(|part| *part == "proc")?;
+    let rest = &parts[at + 1..];
+    let (last, middle) = rest.split_last()?;
+    if *last != "environ" || middle.is_empty() {
+        return None;
+    }
+    let mut exact = true;
+    for segment in middle {
+        let known = matches!(*segment, "self" | "thread-self" | "task")
+            || (!segment.is_empty() && segment.chars().all(|c| c.is_ascii_digit()));
+        if known {
+            continue;
+        }
+        if has_glob(segment) || has_variable(segment) {
+            exact = false;
+            continue;
+        }
+        return None;
+    }
+    Some(exact)
+}
 
 /// 文件名以这些开头的是 SSH 私钥（`id_rsa`、`id_rsa.pub` 一并算：公钥没有秘密，但名字
 /// 一样，宁可问；表是产品定的，不在这里放宽）。
@@ -225,6 +272,14 @@ fn classify(path: &str, shell_expanded: bool) -> Verdict {
         }
     }
 
+    if let Some(exact) = proc_environ(&parts) {
+        return if exact {
+            Verdict::Exact
+        } else {
+            Verdict::Maybe
+        };
+    }
+
     // 文件名规则（只看最后一段）。
     if let Some(name) = parts.last() {
         if filename_is_sensitive(name) {
@@ -306,6 +361,9 @@ fn filename_is_sensitive(name: &str) -> bool {
             "a.p12",
             "a.pfx",
             "a.kdbx",
+            "ssh_host_rsa_key",
+            "credentials.json",
+            "service-account.json",
         ];
         return samples.iter().any(|sample| glob_match(name, sample))
             || SENSITIVE_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
@@ -315,6 +373,8 @@ fn filename_is_sensitive(name: &str) -> bool {
     }
     name == ENV_FILE
         || name.starts_with(".env.")
+        || is_ssh_host_key_name(name)
+        || is_cloud_credentials_name(name)
         || SENSITIVE_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
         || KEY_NAME_PREFIXES
             .iter()
