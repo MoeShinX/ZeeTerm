@@ -420,6 +420,7 @@ fn stub_knob(name: &str, value: &str) -> Result<(), String> {
 /// stub_assert:<项>:<值>。项：
 /// - `package_gets` / `package_puts` / `requests` / `since_mark`：对同步包的请求数、全部请求数、`stub_mark` 之后的
 ///   请求数（`>=n` / `<=n` / `=n`）；
+/// - `backup_puts`：对云端备份对象（`zeeterm-backup.json`）的写请求数；
 /// - `first_put_if_none_match`：第一次写同步包带的是 `If-None-Match: *`；
 /// - `later_puts_if_match`：之后每次写都带 `If-Match`；
 /// - `client_id_seen`：授权页收到过这个 client ID（`default` = 内置 / 桩的那个）；
@@ -455,6 +456,7 @@ fn stub_assert(key: &str, value: &str) -> Result<Outcome, String> {
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 check(state.requests().saturating_sub(mark), value)?
             }
+            "backup_puts" => check(state.object_requests("PUT", "zeeterm-backup.json"), value)?,
             "first_put_if_none_match" => state
                 .package_puts()
                 .first()

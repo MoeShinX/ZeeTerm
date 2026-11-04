@@ -68,6 +68,15 @@ pub struct WebDavRaw {
 
 impl WebDavRaw {
     pub fn new(config: &WebDavConfig, proxy: Option<&SyncProxy>) -> Result<Self, StorageError> {
+        Self::new_named(config, proxy, OBJECT_NAME)
+    }
+
+    /// 同 [`Self::new`]，对象名由调用方给（云端备份用另一个固定名字，和同步包同目录也不会互相覆盖）。
+    pub fn new_named(
+        config: &WebDavConfig,
+        proxy: Option<&SyncProxy>,
+        object: &str,
+    ) -> Result<Self, StorageError> {
         let mut base = Url::parse(config.url.trim())
             .map_err(|err| StorageError::Io(format!("WebDAV 地址不合法：{err}")))?;
         match base.scheme() {
@@ -109,7 +118,7 @@ impl WebDavRaw {
             client: build_client(proxy)?,
             base,
             dirs,
-            object: OBJECT_NAME.to_owned(),
+            object: object.to_owned(),
             username: config.username.clone(),
             password: config.password.clone(),
         })
@@ -309,6 +318,19 @@ pub fn open_storage(
     mode: ConcurrencyMode,
 ) -> Result<ConditionalStore<WebDavRaw>, StorageError> {
     Ok(ConditionalStore::new(WebDavRaw::new(config, proxy)?, mode))
+}
+
+/// 同 [`open_storage`]，换一个对象名。
+pub fn open_storage_named(
+    config: &WebDavConfig,
+    proxy: Option<&SyncProxy>,
+    mode: ConcurrencyMode,
+    object: &str,
+) -> Result<ConditionalStore<WebDavRaw>, StorageError> {
+    Ok(ConditionalStore::new(
+        WebDavRaw::new_named(config, proxy, object)?,
+        mode,
+    ))
 }
 
 /// 测试连接：能连上、能读、能写（并清理）、是否支持并发保护。

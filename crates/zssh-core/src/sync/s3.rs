@@ -121,8 +121,17 @@ pub struct S3Raw {
 
 impl S3Raw {
     pub fn new(config: &S3Config, proxy: Option<&SyncProxy>) -> Result<Self, StorageError> {
+        Self::new_named(config, proxy, OBJECT_NAME)
+    }
+
+    /// 同 [`Self::new`]，对象名由调用方给（云端备份用另一个固定名字，同一个桶 / 前缀下也不会互相覆盖）。
+    pub fn new_named(
+        config: &S3Config,
+        proxy: Option<&SyncProxy>,
+        object: &str,
+    ) -> Result<Self, StorageError> {
         // 先验证地址能拼出来，错误在创建时就暴露。
-        object_location(config, OBJECT_NAME)?;
+        object_location(config, object)?;
         if config.region.trim().is_empty() {
             return Err(StorageError::Io("Region 不能为空".to_owned()));
         }
@@ -132,7 +141,7 @@ impl S3Raw {
         Ok(Self {
             client: build_client(proxy)?,
             config: config.clone(),
-            object: OBJECT_NAME.to_owned(),
+            object: object.to_owned(),
         })
     }
 
@@ -342,6 +351,19 @@ pub fn open_storage(
     mode: ConcurrencyMode,
 ) -> Result<ConditionalStore<S3Raw>, StorageError> {
     Ok(ConditionalStore::new(S3Raw::new(config, proxy)?, mode))
+}
+
+/// 同 [`open_storage`]，换一个对象名。
+pub fn open_storage_named(
+    config: &S3Config,
+    proxy: Option<&SyncProxy>,
+    mode: ConcurrencyMode,
+    object: &str,
+) -> Result<ConditionalStore<S3Raw>, StorageError> {
+    Ok(ConditionalStore::new(
+        S3Raw::new_named(config, proxy, object)?,
+        mode,
+    ))
 }
 
 pub async fn probe(

@@ -35,6 +35,7 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::*;
 use zssh_core::ai::history::now_ms;
 use zssh_core::store::Database;
+use zssh_core::sync::accounts::{AccountsRestore, SyncAccounts};
 use zssh_core::sync::apply::ApplyReport;
 use zssh_core::sync::backup::{BackupDetail, BackupInfo, BackupStore, RestoreReport};
 use zssh_core::sync::engine::SyncEngine;
@@ -89,6 +90,8 @@ pub struct BackupDemo {
     replace_confirm: OverwriteConfirm,
     /// 本地备份最多保留几份（设置里的值；读不出来是 [`FALLBACK_KEEP`]）。
     keep: usize,
+    /// 恢复 / 导入时备份里带着同步账号设置、而本机已经配置了同步：等用户决定要不要替换（默认不替换）。
+    pending_accounts: Option<PendingAccounts>,
     /// 保留份数输入框；回车 / 失焦时按 [`parse_keep`] 校验后保存。
     keep_input: Entity<InputState>,
     /// 输入框里的内容不合法时的提示（就地显示在说明下面）。
@@ -174,6 +177,7 @@ impl BackupDemo {
             import_mode: OfflineImportMode::Merge,
             replace_confirm: OverwriteConfirm::default(),
             keep: FALLBACK_KEEP,
+            pending_accounts: None,
             keep_input,
             keep_error: None,
             embedded,
@@ -506,6 +510,8 @@ impl BackupDemo {
                     self.busy = None;
                     self.confirm.disarm();
                     self.status = restore_summary(&report);
+                    let accounts = report.accounts.clone();
+                    self.take_accounts(accounts, AccountsOrigin::Local);
                     self.start_load(cx);
                 }
                 BackupEvent::RestoreFailed(message) => {
@@ -527,6 +533,8 @@ impl BackupDemo {
                     self.busy = None;
                     self.replace_confirm.disarm();
                     self.status = import_summary(&report);
+                    let accounts = report.accounts.clone();
+                    self.take_accounts(accounts, AccountsOrigin::Offline);
                     // 本地写过了：列表里多了一份导入前的安全备份。
                     self.start_load(cx);
                 }
@@ -538,6 +546,75 @@ impl BackupDemo {
             }
         }
         if changed {
+            cx.notify();
+        }
+    }
+}
+
+/// 备份里带着、而本机已经配置了同步的那份同步账号设置，和它是从哪来的（提示框画在对应的卡片里）。
+struct PendingAccounts {
+    accounts: Box<SyncAccounts>,
+    origin: AccountsOrigin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccountsOrigin {
+    /// 本地备份的恢复。
+    Local,
+    /// 离线备份文件的导入。
+    Offline,
+}
+
+impl BackupDemo {
+    /// 处理恢复 / 导入报告里的同步账号设置：已经写回的提示一句并通知同步页重读；要问用户的留着等回答；
+    /// 写回出错的把原因说出来（数据本身已经恢复好了）。
+    fn take_accounts(&mut self, accounts: AccountsRestore, origin: AccountsOrigin) {
+        self.pending_accounts = None;
+        match accounts {
+            AccountsRestore::NotInBackup => {}
+            AccountsRestore::Applied => {
+                self.status.push_str(
+                    "\n备份里的同步账号设置（存储连接、登录信息、云端备份目标）已一并写回，不用重新填",
+                );
+                crate::sync_demo::accounts_changed();
+            }
+            AccountsRestore::NeedsConfirmation(accounts) => {
+                self.status
+                    .push_str("\n备份里带着同步账号设置，本机已经配置了同步，等你决定要不要替换");
+                self.pending_accounts = Some(PendingAccounts { accounts, origin });
+            }
+            AccountsRestore::Failed(message) => {
+                self.status
+                    .push_str(&format!("\n备份里的同步账号设置没能写回：{message}"));
+            }
+        }
+    }
+
+    /// 「替换为备份里的」：用备份里的同步账号设置换掉本机现在的。写本机设置很快，不用后台线程。
+    fn replace_accounts(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_accounts.take() else {
+            return;
+        };
+        let result = open_db_at(&crate::settings::data_dir()).and_then(|db| {
+            pending
+                .accounts
+                .apply(&db, &DpapiSealer)
+                .map_err(|err| err.to_string())
+        });
+        match result {
+            Ok(()) => {
+                self.status = "已用备份里的同步账号设置替换了本机现在的".to_owned();
+                crate::sync_demo::accounts_changed();
+            }
+            Err(message) => self.status = format!("替换同步账号设置失败：{message}"),
+        }
+        cx.notify();
+    }
+
+    /// 「保留本机现在的」（默认）：什么也不改。
+    fn keep_accounts(&mut self, cx: &mut Context<Self>) {
+        if self.pending_accounts.take().is_some() {
+            self.status = "已保留本机现在的同步账号设置".to_owned();
             cx.notify();
         }
     }
@@ -931,8 +1008,17 @@ fn create_backup_with(
     let snapshot = snapshot_local(&db, sealer, &device_id, Some(&known_hosts), now)
         .map_err(|err| err.to_string())?;
     let local = LocalExtras::read(&db).map_err(|err| err.to_string())?;
+    // 本地备份带上同步账号设置（整个备份文件由本机 DPAPI 加密，不会上传）。
+    let accounts = SyncAccounts::read(&db, sealer).map_err(|err| err.to_string())?;
     BackupStore::new(data_dir, sealer)
-        .create(&snapshot, &local, now, keep, Some(app_version))
+        .create(
+            &snapshot,
+            &local,
+            accounts.as_ref(),
+            now,
+            keep,
+            Some(app_version),
+        )
         .map_err(|err| err.to_string())
 }
 
@@ -1368,6 +1454,7 @@ mod tests {
             applied: applied(),
             conflicts: 0,
             nulled_references: Vec::new(),
+            accounts: zssh_core::sync::accounts::AccountsRestore::NotInBackup,
         };
         let text = import_summary(&report);
         assert!(

@@ -135,6 +135,9 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     ("sync_ready", SyncMode::LocalOnly),
     // OneDrive 的访问令牌 + 刷新令牌（DPAPI 加密）：绝不能进同步包 / 离线备份
     ("sync_onedrive_tokens", SyncMode::LocalOnly),
+    // 云端备份目标列表（含各家存储的密码 / Secret / 令牌，整体 DPAPI 加密）：绝不能进同步包 / 云端备份。
+    // 各目标的 OneDrive 令牌在 `sync_backup_token.<目标 id>` 下，没归类 = 不同步（白名单）。
+    ("sync_backup_targets", SyncMode::LocalOnly),
     // 因为值本版本不接受、没写进本机的同步键（R-7b）：只记本机的状态，不能同步
     ("sync_pending_settings", SyncMode::LocalOnly),
     // 自动更新：开关、上次检查时间、跳过的版本，都是这台电脑自己的事

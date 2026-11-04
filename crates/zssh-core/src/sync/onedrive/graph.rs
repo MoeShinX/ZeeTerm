@@ -86,11 +86,22 @@ impl<'a> OneDriveRaw<'a> {
         proxy: Option<&SyncProxy>,
         tokens: Arc<dyn TokenStore + 'a>,
     ) -> Result<Self, StorageError> {
+        Self::new_named(endpoints, client_id, proxy, tokens, OBJECT_NAME)
+    }
+
+    /// 同 [`Self::new`]，文件名由调用方给（云端备份用另一个固定名字，同一个应用文件夹里也不会互相覆盖）。
+    pub fn new_named(
+        endpoints: Endpoints,
+        client_id: &str,
+        proxy: Option<&SyncProxy>,
+        tokens: Arc<dyn TokenStore + 'a>,
+        object: &str,
+    ) -> Result<Self, StorageError> {
         let client = build_client(proxy)?;
         Ok(Self {
             tokens: TokenManager::new(client.clone(), endpoints, client_id.to_owned(), tokens),
             client,
-            object: OBJECT_NAME.to_owned(),
+            object: object.to_owned(),
         })
     }
 
@@ -483,6 +494,21 @@ pub fn open_storage<'a>(
 ) -> Result<ConditionalStore<OneDriveRaw<'a>>, StorageError> {
     Ok(ConditionalStore::new(
         OneDriveRaw::new(endpoints, client_id, proxy, tokens)?,
+        mode,
+    ))
+}
+
+/// 同 [`open_storage`]，换一个文件名。
+pub fn open_storage_named<'a>(
+    endpoints: Endpoints,
+    client_id: &str,
+    proxy: Option<&SyncProxy>,
+    mode: ConcurrencyMode,
+    tokens: Arc<dyn TokenStore + 'a>,
+    object: &str,
+) -> Result<ConditionalStore<OneDriveRaw<'a>>, StorageError> {
+    Ok(ConditionalStore::new(
+        OneDriveRaw::new_named(endpoints, client_id, proxy, tokens, object)?,
         mode,
     ))
 }

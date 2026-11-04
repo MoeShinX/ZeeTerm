@@ -58,17 +58,34 @@ fn store_error(err: impl std::fmt::Display) -> StorageError {
 pub struct DbTokenStore<'a> {
     db: &'a Database,
     sealer: &'a dyn SecretSealer,
+    /// 令牌放在设置表的哪个键：主同步用 [`TOKENS_KEY`]，云端备份目标各用各的键，
+    /// 两边的令牌互不覆盖、互不清除。
+    key: String,
 }
 
 impl<'a> DbTokenStore<'a> {
     pub fn new(db: &'a Database, sealer: &'a dyn SecretSealer) -> Self {
-        Self { db, sealer }
+        Self::with_key(db, sealer, TOKENS_KEY)
+    }
+
+    /// 令牌存在另一个键里（云端备份目标的 OneDrive 令牌）。这个键必须是“只在本机”的：
+    /// 没在 `SETTINGS_SYNC_CLASS` 里归类的键一律不进同步包（白名单）。
+    pub fn with_key(
+        db: &'a Database,
+        sealer: &'a dyn SecretSealer,
+        key: impl Into<String>,
+    ) -> Self {
+        Self {
+            db,
+            sealer,
+            key: key.into(),
+        }
     }
 }
 
 impl TokenStore for DbTokenStore<'_> {
     fn load(&self) -> Result<Option<TokenSet>, StorageError> {
-        let plain = match open_from_setting(self.db, self.sealer, TOKENS_KEY) {
+        let plain = match open_from_setting(self.db, self.sealer, &self.key) {
             Ok(Some(plain)) => plain,
             Ok(None) => return Ok(None),
             // 数据库本身出了问题：是暂时的故障，不能误判成“没登录”。
@@ -85,11 +102,11 @@ impl TokenStore for DbTokenStore<'_> {
         let plain = zeroize::Zeroizing::new(
             serde_json::to_vec(tokens).map_err(|err| store_error(err.to_string()))?,
         );
-        seal_to_setting(self.db, self.sealer, TOKENS_KEY, &plain).map_err(store_error)
+        seal_to_setting(self.db, self.sealer, &self.key, &plain).map_err(store_error)
     }
 
     fn clear(&self) -> Result<(), StorageError> {
-        clear_setting(self.db, TOKENS_KEY).map_err(store_error)
+        clear_setting(self.db, &self.key).map_err(store_error)
     }
 }
 

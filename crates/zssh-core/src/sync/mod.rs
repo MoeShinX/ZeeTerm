@@ -5,9 +5,11 @@
 //! [`storage::SyncStorage`] 提供。数据全部来自本地 [`Database`](crate::Database)
 //! 和一个 known_hosts 文件。
 
+pub mod accounts;
 pub mod app_proxy;
 pub mod apply;
 pub mod backup;
+pub mod backup_targets;
 pub mod conflicts;
 pub mod crypto;
 pub mod engine;

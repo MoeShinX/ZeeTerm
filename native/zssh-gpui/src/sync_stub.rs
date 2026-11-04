@@ -310,6 +310,22 @@ impl State {
         self.log.len()
     }
 
+    /// 对路径以 `suffix` 结尾的对象的某种请求有几次（云端备份：没变化时不该再传）。
+    pub(crate) fn object_requests(&self, method: &str, suffix: &str) -> usize {
+        self.log
+            .iter()
+            .filter(|req| req.method == method && req.path.ends_with(suffix))
+            .count()
+    }
+
+    /// 桩里现有的 WebDAV / S3 对象的路径（排好序）。云端备份测试用来核对同步包和备份在不在、有没有互相覆盖。
+    #[cfg(test)]
+    pub(crate) fn object_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.objects.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
     pub(crate) fn opened_urls(&self) -> Vec<String> {
         self.od_opened.clone()
     }

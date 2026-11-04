@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+use super::accounts::{AccountsRestore, SyncAccounts};
 use super::apply::{apply_snapshot_guarded, ApplyReport, LocalGuard};
 use super::error::SyncError;
 use super::local_extras::{ExtrasRestored, LocalExtras};
@@ -30,6 +31,10 @@ pub struct BackupEnvelope {
     /// 只在本机的主机记忆和转发规则（同步包里没有；旧备份没有这个字段，按空处理）。
     #[serde(default)]
     pub local: LocalExtras,
+    /// 同步账号设置（存储连接、令牌、主密码、云端备份目标……）。**不是**同步快照的一部分，
+    /// 所以不会上传；整个信封由本机 DPAPI 加密。旧备份没有这个字段，按没有处理。
+    #[serde(default)]
+    pub sync_accounts: Option<SyncAccounts>,
 }
 
 pub const BACKUP_SCHEMA_VERSION: u32 = 1;
@@ -65,6 +70,8 @@ pub struct RestoreReport {
     pub applied: ApplyReport,
     /// 跟着恢复回来的主机记忆和转发规则。
     pub extras: ExtrasRestored,
+    /// 备份里的同步账号设置：本机还没配置同步就已经写回；已经配置了就等用户决定。
+    pub accounts: AccountsRestore,
 }
 
 pub struct BackupStore<'a> {
@@ -121,6 +128,7 @@ impl<'a> BackupStore<'a> {
         &self,
         snapshot: &SyncSnapshot,
         local: &LocalExtras,
+        accounts: Option<&SyncAccounts>,
         now: i64,
         keep: usize,
         app_version: Option<&str>,
@@ -132,6 +140,7 @@ impl<'a> BackupStore<'a> {
             app_version: app_version.map(str::to_owned),
             snapshot: snapshot.clone(),
             local: local.clone(),
+            sync_accounts: accounts.cloned(),
         };
         let plaintext = Zeroizing::new(
             serde_json::to_vec(&envelope)
@@ -320,6 +329,7 @@ impl<'a> BackupStore<'a> {
         let safety_backup = self.create(
             &current,
             &LocalExtras::read(db)?,
+            SyncAccounts::read(db, self.sealer)?.as_ref(),
             now,
             keep,
             envelope.app_version.as_deref(),
@@ -351,10 +361,14 @@ impl<'a> BackupStore<'a> {
         )?;
         // 主机回来了，它的记忆和转发规则也回来（复审 F4）
         let extras = envelope.local.restore(db, &renamed)?;
+        // 同步账号设置：本机没配置同步就直接写回，已经配置了就交给用户决定（默认不替换）。
+        let accounts =
+            SyncAccounts::restore_or_offer(envelope.sync_accounts.clone(), db, self.sealer)?;
         Ok(RestoreReport {
             safety_backup,
             applied,
             extras,
+            accounts,
         })
     }
 
@@ -390,6 +404,7 @@ impl<'a> BackupStore<'a> {
         let info = self.create(
             &snapshot,
             &LocalExtras::read(db)?,
+            SyncAccounts::read(db, self.sealer)?.as_ref(),
             now,
             keep,
             Some(app_version),

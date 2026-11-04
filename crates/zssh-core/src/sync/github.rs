@@ -106,6 +106,8 @@ pub struct GithubApi {
     host: String,
     token: HeaderValue,
     gist_id: String,
+    /// 这个存储唯一会碰的文件名（同步包是 [`FILE_NAME`]，云端备份用另一个固定名字）。
+    file_name: String,
 }
 
 impl GithubApi {
@@ -114,6 +116,17 @@ impl GithubApi {
         config: &GithubConfig,
         proxy: Option<&SyncProxy>,
         need_gist: bool,
+    ) -> Result<Self, StorageError> {
+        Self::new_named(config, proxy, need_gist, FILE_NAME)
+    }
+
+    /// 同 [`Self::new`]，文件名由调用方给：云端备份和主同步可以指向同一个 Gist，各用各的文件，
+    /// 互相不读、不覆盖、不删。
+    pub fn new_named(
+        config: &GithubConfig,
+        proxy: Option<&SyncProxy>,
+        need_gist: bool,
+        file_name: &str,
     ) -> Result<Self, StorageError> {
         let raw = config.effective_api_base().trim().trim_end_matches('/');
         let url = Url::parse(raw).map_err(|err| io(format!("GitHub 接口地址不合法：{err}")))?;
@@ -161,6 +174,7 @@ impl GithubApi {
             host,
             token: header,
             gist_id,
+            file_name: file_name.to_owned(),
         })
     }
 
@@ -237,7 +251,7 @@ impl GithubApi {
             .check(response, "找不到这个 Gist：ID 填错了，或者这个令牌看不到它")
             .await?;
         let value = read_json(response, MAX_PACKAGE_BYTES).await?;
-        GistInfo::parse(&value)
+        GistInfo::parse_named(&value, &self.file_name)
     }
 
     /// 取文件的完整内容。接口里的内容被截断时改读 `raw_url`。
@@ -295,7 +309,7 @@ impl GithubApi {
             Some(text) => json!({ "content": text }),
             None => Value::Null,
         };
-        let body = json!({ "files": { FILE_NAME: file } });
+        let body = json!({ "files": { self.file_name.as_str(): file } });
         let response = self
             .request(Method::PATCH, &self.gist_path())
             .json(&body)
@@ -357,7 +371,7 @@ impl GithubApi {
         let body = json!({
             "description": description,
             "public": false,
-            "files": { FILE_NAME: { "content": PLACEHOLDER } },
+            "files": { self.file_name.as_str(): { "content": PLACEHOLDER } },
         });
         let response = self
             .request(Method::POST, "/gists")
@@ -505,13 +519,19 @@ pub(crate) fn latest_version(value: &Value) -> Option<String> {
 }
 
 impl GistInfo {
+    /// 同步包的文件（测试用；生产代码按存储自己的文件名走 [`Self::parse_named`]）。
+    #[cfg(test)]
     pub(crate) fn parse(value: &Value) -> Result<Self, StorageError> {
+        Self::parse_named(value, FILE_NAME)
+    }
+
+    pub(crate) fn parse_named(value: &Value, file_name: &str) -> Result<Self, StorageError> {
         if !value.is_object() {
             return Err(io("GitHub 返回的 Gist 格式不对"));
         }
         let file = value
             .get("files")
-            .and_then(|files| files.get(FILE_NAME))
+            .and_then(|files| files.get(file_name))
             .filter(|file| file.is_object())
             .map(|file| GistFile {
                 content: file
@@ -634,6 +654,26 @@ pub fn open_storage(
     proxy: Option<&SyncProxy>,
 ) -> Result<GithubApi, StorageError> {
     GithubApi::new(config, proxy, true)
+}
+
+/// 同 [`open_storage`]，换一个文件名（云端备份用）。
+pub fn open_storage_named(
+    config: &GithubConfig,
+    proxy: Option<&SyncProxy>,
+    file_name: &str,
+) -> Result<GithubApi, StorageError> {
+    GithubApi::new_named(config, proxy, true, file_name)
+}
+
+/// 新建一个 secret Gist，里面只放 `file_name` 这个占位文件（云端备份第一次上传、Gist ID 留空时用）。
+pub async fn create_gist_named(
+    config: &GithubConfig,
+    proxy: Option<&SyncProxy>,
+    file_name: &str,
+) -> Result<String, StorageError> {
+    GithubApi::new_named(config, proxy, false, file_name)?
+        .create_gist()
+        .await
 }
 
 /// 新建一个 secret Gist，返回 ID。
