@@ -83,7 +83,8 @@ fn split_pattern(pattern: &str) -> Option<(String, u16)> {
 /// 就能多出字段、多出一整行（例如再塞一条 `@cert-authority *`），把信任扩到别的主机。
 /// 所以每个字段都必须是单个合法 token：
 /// - 主机：逗号分隔的一个或多个模式，每个只能是主机名 / IP 字符，允许 `*` `?` 通配
-///   （本机查表支持，`*.example.com` 这类导入很常见）；不收 `!` 否定——采集时一行
+///   （本机查表支持，`*.example.com` 这类导入很常见），但每个模式至少要有一段（按 `.`
+///   分）完全不含通配符，见 [`pattern_is_anchored`]；不收 `!` 否定——采集时一行
 ///   被拆成了单个模式，单独一条否定模式已经没有原来的意思。哈希主机名
 ///   `|1|salt|hash` 两段都必须是 base64。
 /// - 密钥类型：算法名字符（字母数字和 `-._@`）。
@@ -133,8 +134,24 @@ fn validate_host(host: &str, port: u16) -> Result<(), &'static str> {
         if !ok {
             return Err("主机名里有不允许的字符");
         }
+        // 导入的记录会被写进用户自己的 known_hosts，`*` 这样的万能模式一旦进去，
+        // 任意主机都会被判成“指纹一致”，等于关掉全局校验。
+        if !pattern_is_anchored(pattern) {
+            return Err("通配符模式没有固定的主机名段，会匹配任意主机");
+        }
     }
     Ok(())
+}
+
+/// 模式里至少有一段（按 `.` 分）非空且完全不含 `*` / `?`。
+///
+/// `*`、`*.*`、`?*`、`**` 不合格；`*.example.com`、`10.0.0.*` 合格。不含通配符的
+/// 普通主机名只有“一整段”，自然合格。这是故意写得保守的下限：只挡住“匹配一切”，
+/// 不去猜 `*.com` 这类过宽但仍有固定段的模式。
+fn pattern_is_anchored(pattern: &str) -> bool {
+    pattern
+        .split('.')
+        .any(|segment| !segment.is_empty() && !segment.contains(['*', '?']))
 }
 
 fn is_base64(text: &str) -> bool {
@@ -158,7 +175,21 @@ fn line_for(record: &KnownHostRecord) -> String {
     format!("{marker}{host} {} {}\n", record.key_type, record.key)
 }
 
-/// 把还没有的记录追加到文件里。返回追加了几条。
+/// [`append_missing`] 的结果。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AppendOutcome {
+    /// 追加了几条。
+    pub added: usize,
+    /// 因为字段不合格（含万能通配）被跳过的条数，界面上要告诉用户。
+    pub skipped: usize,
+}
+
+/// 导入时，这条记录是否会被 [`append_missing`] 接受。预览用它预估“新增几条”。
+pub fn is_importable(record: &KnownHostRecord) -> bool {
+    validate(record).is_ok()
+}
+
+/// 把还没有的记录追加到文件里，返回追加和跳过的条数。
 ///
 /// 只追加，不改已有行：吊销记录、注释和其他程序写的内容都原样保留。字段不合格的
 /// 记录跳过并记一条警告（见 [`validate`]）。
@@ -166,7 +197,10 @@ fn line_for(record: &KnownHostRecord) -> String {
 /// 现有文件读不了（权限、不是 UTF-8……）就报错、什么都不写：当成空文件的话会把
 /// 已有的记录再追加一遍，还可能写进一个本来就不该动的文件。只有“文件不存在”才
 /// 等于空。
-pub fn append_missing(path: &Path, records: &[KnownHostRecord]) -> Result<usize, SyncError> {
+pub fn append_missing(
+    path: &Path,
+    records: &[KnownHostRecord],
+) -> Result<AppendOutcome, SyncError> {
     let existing = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -179,8 +213,10 @@ pub fn append_missing(path: &Path, records: &[KnownHostRecord]) -> Result<usize,
 
     let mut lines = String::new();
     let mut appended = 0usize;
+    let mut skipped = 0usize;
     for record in records {
         if let Err(reason) = validate(record) {
+            skipped += 1;
             // 不打印公钥；主机名截短，防止异常长的字段刷爆日志。
             let host: String = record.host.chars().take(80).collect();
             tracing::warn!(host = %host.escape_debug(), port = record.port, reason, "同步来的主机指纹字段不合格，没有写入 known_hosts");
@@ -193,7 +229,7 @@ pub fn append_missing(path: &Path, records: &[KnownHostRecord]) -> Result<usize,
         appended += 1;
     }
     if appended == 0 {
-        return Ok(0);
+        return Ok(AppendOutcome { added: 0, skipped });
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -204,7 +240,10 @@ pub fn append_missing(path: &Path, records: &[KnownHostRecord]) -> Result<usize,
         .open(path)?;
     file.write_all(lines.as_bytes())?;
     file.flush()?;
-    Ok(appended)
+    Ok(AppendOutcome {
+        added: appended,
+        skipped,
+    })
 }
 
 #[cfg(test)]
@@ -274,7 +313,7 @@ web-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIaaa
                 device_id: "dev-a".to_owned(),
             },
         ];
-        assert_eq!(append_missing(&path, &records).expect("追加"), 2);
+        assert_eq!(append_missing(&path, &records).expect("追加").added, 2);
         let content = std::fs::read_to_string(&path).expect("读回");
         assert!(content.contains("# 注释"), "注释要保留");
         assert!(
@@ -307,7 +346,7 @@ web-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIaaa
             updated_at: 1,
             device_id: "dev-a".to_owned(),
         }];
-        assert_eq!(append_missing(&path, &records).expect("创建"), 1);
+        assert_eq!(append_missing(&path, &records).expect("创建").added, 1);
         assert!(std::fs::read_to_string(&path)
             .unwrap()
             .contains("a.example.internal"));
@@ -386,7 +425,8 @@ ef",
             record("l.example.internal", 0, "ssh-ed25519", KEY),
             bad_marker,
         ];
-        assert_eq!(append_missing(&path, &records).expect("追加"), 0);
+        let outcome = append_missing(&path, &records).expect("追加");
+        assert_eq!((outcome.added, outcome.skipped), (0, 15));
         let content = std::fs::read_to_string(&path).expect("读回");
         assert_eq!(
             content,
@@ -410,7 +450,7 @@ ef",
             record(hashed, 22, "ssh-ed25519", KEY),
             revoked,
         ];
-        assert_eq!(append_missing(&path, &records).expect("追加"), 5);
+        assert_eq!(append_missing(&path, &records).expect("追加").added, 5);
         let content = std::fs::read_to_string(&path).expect("读回");
         assert!(content.contains("a.example.internal,10.0.0.1 ssh-ed25519 "));
         assert!(content.contains("*.example.internal ecdsa-sha2-nistp256 "));
@@ -444,5 +484,51 @@ ef",
             original,
             "文件不能被改动"
         );
+    }
+
+    #[test]
+    fn match_everything_patterns_are_skipped_and_counted() {
+        let dir = crate::test_util::TestDir::new("kh-sync-wildcard");
+        let path = dir.join("known_hosts");
+        let records = vec![
+            record("*", 22, "ssh-ed25519", KEY),
+            record("*.*", 22, "ssh-ed25519", KEY),
+            record("?*", 22, "ssh-ed25519", KEY),
+            record("**", 22, "ssh-ed25519", KEY),
+            record("*.?", 22, "ssh-ed25519", KEY),
+            record("web-*", 22, "ssh-ed25519", KEY),
+            record("*,ok.example.internal", 22, "ssh-ed25519", KEY),
+            record("ok.example.internal,*.*", 22, "ssh-ed25519", KEY),
+            record("*", 2222, "ssh-ed25519", KEY),
+            record("*.example.internal", 22, "ssh-ed25519", KEY),
+            record("10.0.0.*", 22, "ssh-ed25519", KEY),
+        ];
+        let outcome = append_missing(&path, &records).expect("追加");
+        assert_eq!((outcome.added, outcome.skipped), (2, 9));
+        let content = std::fs::read_to_string(&path).expect("读回");
+        assert_eq!(content.lines().count(), 2, "{content}");
+        assert!(content.contains("*.example.internal ssh-ed25519 "));
+        assert!(content.contains("10.0.0.* ssh-ed25519 "));
+        for line in content.lines() {
+            let host = line.split_whitespace().next().unwrap_or_default();
+            assert!(host != "*" && host != "*.*", "万能模式不能落盘：{line}");
+        }
+    }
+
+    #[test]
+    fn anchored_pattern_rule() {
+        for ok in [
+            "web-1.example.internal",
+            "*.example.internal",
+            "10.0.0.*",
+            "web-*.example.internal",
+            "fe80::1%eth0",
+            "localhost",
+        ] {
+            assert!(pattern_is_anchored(ok), "{ok}");
+        }
+        for bad in ["*", "?", "*.*", "?*", "**", "*.?", "web-*", "*.*.*", "*."] {
+            assert!(!pattern_is_anchored(bad), "{bad}");
+        }
     }
 }

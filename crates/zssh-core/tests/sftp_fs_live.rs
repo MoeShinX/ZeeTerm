@@ -550,7 +550,12 @@ async fn discarding_local_edits_refuses_a_remote_file_over_the_editor_limit() {
         .expect("本地临时目录");
     let local = local_dir.path().join("a.txt");
     std::fs::write(&local, &data).expect("写本地临时文件");
-    let mut session = EditSession::new(remote.clone(), local.clone(), base);
+    let mut session = EditSession::new(
+        remote.clone(),
+        local.clone(),
+        base,
+        zssh_core::sftp::edit::recovery::sha256_hex(&data),
+    );
 
     // 别人把远端撑大到超过上限；本地这边改了内容并保存。
     let grown = exec(

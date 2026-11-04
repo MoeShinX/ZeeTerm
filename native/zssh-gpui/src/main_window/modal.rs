@@ -46,6 +46,8 @@ pub enum ConfirmAction {
     /// 有进行中的工作时真正退出。
     QuitApp,
     CloseSftpTab(u64),
+    /// AI 面板的执行模式切到「全部放行」。
+    AllowAllCommands,
 }
 
 pub struct Confirm {
@@ -435,6 +437,7 @@ impl MainWindow {
                 return;
             }
             ConfirmAction::CloseSftpTab(id) => self.do_close_sftp_tab(id, window, cx),
+            ConfirmAction::AllowAllCommands => self.do_allow_all_commands(cx),
         }
         self.focus_content(window, cx);
         cx.notify();

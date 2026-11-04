@@ -9,8 +9,13 @@
 #       用来查"不能写进仓库"的具体值（别的用户名、私人 IP、内部域名、本机路径……）。
 #       这个文件必须放在仓库外面；输出里只报"文件:位置 + 类别"，不打印命中的内容，也不打印模式本身。
 #   powershell -File scripts/privacy-scan.ps1 -AllowListFile <文件>
-#       放行清单：每行一条 .NET 正则（空行和 # 开头的行忽略），在"外部模式文件"命中的位置上起头匹配（\G），
-#       匹配上就当作中性占位放行。只对外部模式的命中生效，内置的敏感值和固定样式照查。
+#       放行清单：每行一条 .NET 正则（空行和 # 开头的行忽略），从命中的位置（或它前面最多 64 个字符，好让
+#       `C:\Users\` 这样的前缀也算进占位里）起头匹配（\G），匹配上就当作中性占位放行。不给这个参数就默认用
+#       scripts/privacy-allow.txt，所以按上面的用法直接跑就带着放行清单；给了就只用给的那份。
+#       放行对所有命中都生效——外部模式文件的条目，也包括内置的用户名 / 用户目录一类——但有两道闸，
+#       免得真值溜过去：(1) 占位的匹配必须把"整段命中"都盖住，只盖住一部分不算；(2) 占位文字里含本机真实的
+#       用户目录、或 `\Users\<本机用户名>` 时一律不放行（开发机的用户名恰好撞上占位名也一样要报）。
+#       固定样式（令牌、私钥、公网 IP、邮箱）不看放行清单，照查。
 #       用法举例：外部模式里有 `C:\Users\` 这样的宽模式，而代码里确实要写 `C:\Users\<用户>`、`C:\Users\alice`
 #       这类占位来测路径脱敏——把"哪些占位算中性"写进放行清单，清单里不能放任何真实的个人值。
 #
@@ -33,6 +38,18 @@ param(
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+
+# 没指定放行清单就用仓库里这份：文档给的命令（不带 -AllowListFile）也要带着它，否则它形同虚设。
+$defaultAllowList = Join-Path $PSScriptRoot "privacy-allow.txt"
+$usingDefaultAllowList = -not $AllowListFile
+if ($usingDefaultAllowList) { $AllowListFile = $defaultAllowList }
+
+# 本机真实的身份（小写、反斜杠形式）：占位文字里出现它们就不能当占位放行。
+$realIdentities = New-Object System.Collections.Generic.List[string]
+foreach ($id in @($env:USERPROFILE, $(if ($env:USERNAME) { "\users\" + $env:USERNAME }))) {
+    if ([string]::IsNullOrWhiteSpace($id)) { continue }
+    $realIdentities.Add((($id.Trim() -replace '/', '\').TrimEnd('\')).ToLowerInvariant())
+}
 
 # 不公开的东西：开发过程记录、被替换的旧清单。
 $excludedPrefixes = @("docs/tasks/", "docs/reports/", "docs/M1-manual-test.md", ".claude/")
@@ -163,7 +180,8 @@ function Get-AllowRegexes {
     $list = New-Object System.Collections.Generic.List[regex]
     if (-not $AllowListFile) { return , $list }
     if (-not (Test-Path -LiteralPath $AllowListFile -PathType Leaf)) {
-        Write-Host "读不到 -AllowListFile 指定的文件。" -ForegroundColor Red
+        if ($usingDefaultAllowList) { Write-Host "读不到默认放行清单 scripts/privacy-allow.txt。" -ForegroundColor Red }
+        else { Write-Host "读不到 -AllowListFile 指定的文件。" -ForegroundColor Red }
         exit 2
     }
     foreach ($line in [System.IO.File]::ReadAllLines($AllowListFile, (New-Object System.Text.UTF8Encoding($false)))) {
@@ -173,6 +191,24 @@ function Get-AllowRegexes {
         catch { Write-Host "放行清单里有不合法的正则：$($_.Exception.Message)" -ForegroundColor Red; exit 2 }
     }
     return , $list
+}
+
+# 这个命中是不是一段完整的中性占位的一部分。放行正则从命中处或它前面最多 64 个字符起头匹配，
+# 必须把整段命中盖住；占位文字里含本机真实用户目录 / 用户名时不放行。
+# $ctx 是命中周围的文字，$hitStart / $hitLength 是命中在 $ctx 里的位置和长度（字符数）。
+function Test-Waived($allow, [string]$ctx, [int]$hitStart, [int]$hitLength) {
+    $from = [Math]::Max(0, $hitStart - 64)
+    for ($p = $hitStart; $p -ge $from; $p--) {
+        foreach ($ar in $allow) {
+            $m = $ar.Match($ctx, $p)
+            if (-not $m.Success -or $m.Index -ne $p -or ($p + $m.Length) -lt ($hitStart + $hitLength)) { continue }
+            $covered = ($m.Value -replace '\\\\', '\' -replace '/', '\').ToLowerInvariant()
+            $real = $false
+            foreach ($id in $realIdentities) { if ($covered.Contains($id)) { $real = $true; break } }
+            if (-not $real) { return $true }
+        }
+    }
+    return $false
 }
 
 function Invoke-Scan($files, $needles) {
@@ -200,16 +236,18 @@ function Invoke-Scan($files, $needles) {
                 $re = '(?<![A-Za-z0-9])' + [regex]::Escape($n.Value) + '(?![A-Za-z0-9])'
                 if ($n.Literal) { $re = [regex]::Escape($n.Value) }
                 foreach ($m in [regex]::Matches($view, $re, 'IgnoreCase')) {
-                    if ($n.Literal -and $allow.Count -gt 0) {
-                        $waived = $false
-                        # 第一个视图是 Latin1（下标 = 字节偏移）：放行正则要按 UTF-8 看命中处后面的字，否则带中文的占位匹配不上。
-                        $ctx = $view; $at = $m.Index
+                    if ($allow.Count -gt 0) {
+                        # 第一个视图是 Latin1（下标 = 字节偏移）：放行正则要按 UTF-8 看命中处前后的字，否则带中文的占位匹配不上。
+                        $ctx = $view; $at = $m.Index; $len = $m.Length
                         if ($viewNo -eq 1) {
-                            $take = [Math]::Min(96, $bytes.Length - $m.Index)
-                            $ctx = [System.Text.Encoding]::UTF8.GetString($bytes, $m.Index, $take); $at = 0
+                            $back = [Math]::Min(64, $m.Index)
+                            $take = [Math]::Min(96 + $m.Length, $bytes.Length - $m.Index)
+                            $pre = [System.Text.Encoding]::UTF8.GetString($bytes, $m.Index - $back, $back)
+                            $ctx = $pre + [System.Text.Encoding]::UTF8.GetString($bytes, $m.Index, $take)
+                            $at = $pre.Length
+                            $len = [System.Text.Encoding]::UTF8.GetString($bytes, $m.Index, $m.Length).Length
                         }
-                        foreach ($ar in $allow) { if ($ar.Match($ctx, $at).Success) { $waived = $true; break } }
-                        if ($waived) { continue }
+                        if (Test-Waived $allow $ctx $at $len) { continue }
                     }
                     $pos = Get-Position $view $m.Index $isBinary
                     $key = "$($n.Kind)|$pos"
@@ -262,9 +300,13 @@ if ($SelfTest) {
         # 外部模式文件：造一个只含一条假模式的文件，经过和真实使用同一条读取路径；命中要按子串、不分大小写。
         $fakeLiteral = "zz-fake-literal-" + "9"
         $patternFile = Join-Path $dir "patterns.txt"
-        [System.IO.File]::WriteAllLines($patternFile, @($fakeLiteral, ""))
+        $fakeLong = "zz-fake-long-9"
+        [System.IO.File]::WriteAllLines($patternFile, @($fakeLiteral, ($fakeLong + "-tail"), ""))
         $script:ExtraPatternsFile = $patternFile
         $needles = Get-Needles
+        # 内置那类（非字面量）命中也要吃放行清单：造一个假的"用户目录"类敏感值，不碰真实的。
+        $fakeUser = "zz-fake-user-9"
+        $needles = @($needles) + [pscustomobject]@{ Kind = "用户目录"; Value = $fakeUser }
         $lines = @(
             ("owner=" + $userNeedle),
             ("t=" + "ghp" + "_" + ("A1b2C3d4" * 3)),
@@ -277,8 +319,24 @@ if ($SelfTest) {
         [System.IO.File]::WriteAllBytes((Join-Path $dir "sample.bin"), $bin)
         # 放行清单：只在外部模式命中的位置上起头匹配；匹配上的放行，别处的同一个模式照样命中。
         $allowFile = Join-Path $dir "allow.txt"
-        [System.IO.File]::WriteAllLines($allowFile, @("# 注释", "", ("\G" + [regex]::Escape($fakeLiteral) + "-allowed"), ("\G" + [regex]::Escape($fakeLiteral) + "-张")))
+        $allowLines = @(
+            "# 注释", "",
+            ("\G" + [regex]::Escape($fakeLiteral) + "-allowed"),
+            ("\G" + [regex]::Escape($fakeLiteral) + "-张"),
+            # 占位只盖住了命中的一半：不算整段占位，不放行。
+            ("\G" + [regex]::Escape($fakeLong)),
+            # 内置类命中：`C:\Users\<假名字>` 整段是占位。
+            ("\GC:(\\|/)Users(\\|/)" + [regex]::Escape($fakeUser) + "(?![\p{L}\p{N}])")
+        )
+        # 把本机真实用户名也写成"占位"：不管清单里怎么写，真值不能被放行。
+        if ($env:USERNAME) { $allowLines += ("\GC:(\\|/)Users(\\|/)" + [regex]::Escape($env:USERNAME)) }
+        [System.IO.File]::WriteAllLines($allowFile, $allowLines)
         $script:AllowListFile = $allowFile
+        $script:usingDefaultAllowList = $false
+        [System.IO.File]::WriteAllLines((Join-Path $dir "waived-builtin.txt"), @("p=C:\Users\" + $fakeUser + "\bin"))
+        [System.IO.File]::WriteAllLines((Join-Path $dir "bare-builtin.txt"), @("name=" + $fakeUser))
+        [System.IO.File]::WriteAllLines((Join-Path $dir "partial.txt"), @("x=" + $fakeLong + "-tail"))
+        if ($env:USERNAME) { [System.IO.File]::WriteAllLines((Join-Path $dir "real-path.txt"), @("p=C:\Users\" + $env:USERNAME + "\x")) }
         [System.IO.File]::WriteAllLines((Join-Path $dir "waived.txt"), @("x=" + $fakeLiteral + "-allowed"))
         # 放行正则要能认出带中文的占位（命中处在 Latin1 视图里，按 UTF-8 看后面的字）。
         [System.IO.File]::WriteAllLines((Join-Path $dir "waived-cjk.txt"), @("x=" + $fakeLiteral + "-张"), (New-Object System.Text.UTF8Encoding($false)))
@@ -292,17 +350,26 @@ if ($SelfTest) {
             Write-Host "自检失败：放行清单没有放行该放行的命中。" -ForegroundColor Red
             exit 1
         }
+        # 不该放行的必须仍然命中：光秃秃的假值（没有占位前缀）、占位只盖住一部分、本机真实用户名。
+        $mustHit = @("bare-builtin.txt", "partial.txt")
+        if ($env:USERNAME) { $mustHit += "real-path.txt" }
+        $leaked = @($mustHit | Where-Object { $name = $_; @($hits | Where-Object { $_ -like "${name}:*" }).Count -eq 0 })
+        if ($leaked.Count -gt 0) {
+            Write-Host ("自检失败：这些文件里的命中被错误放行了：" + ($leaked -join "、")) -ForegroundColor Red
+            exit 1
+        }
         if ($missing.Count -gt 0 -or $binHit -eq 0) {
             Write-Host ("自检失败：没有命中 " + ($missing -join "、") + $(if ($binHit -eq 0) { "；二进制文件里的用户名也没命中" } else { "" })) -ForegroundColor Red
             exit 1
         }
-        Write-Host ("自检通过：5 类假值（含外部模式文件）和二进制文件里的用户名都命中了（{0} 条）" -f $hits.Count) -ForegroundColor Green
+        Write-Host ("自检通过：5 类假值（含外部模式文件）和二进制文件里的用户名都命中了；放行清单对内置类命中也生效，且不放行光秃秃的值、只盖住一部分的占位和本机真实用户名（{0} 条命中）" -f $hits.Count) -ForegroundColor Green
         exit 0
     } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
 }
 
 $files = Get-FileList
 Write-Host ("扫描 {0} 个文件；敏感值来源 {1} 项（类别：{2}）" -f $files.Count, $needles.Count, ((($needles | ForEach-Object { $_.Kind }) | Sort-Object -Unique) -join "、"))
+Write-Host ("放行清单：{0}（{1} 条）" -f $(if ($usingDefaultAllowList) { "scripts/privacy-allow.txt（默认）" } else { "-AllowListFile 指定的文件" }), (Get-AllowRegexes).Count)
 $hits = Invoke-Scan $files $needles
 if ($hits.Count -eq 0) {
     Write-Host "没有命中。" -ForegroundColor Green

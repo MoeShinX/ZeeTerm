@@ -1,8 +1,14 @@
-﻿# 原生主窗口的截图 / 驱动脚本（调试构建）：带着 `ZSSH_MAIN_SCRIPT` 起程序，程序执行到 `shot:<名字>` 时先做隐私
-# 检查再写 <ShotDir>\<名字>.ready，这里用 PrintWindow 截自己启动的那个窗口（不动真实鼠标、不碰桌面），
-# 存成 <OutDir>\<名字>.png，再写 <名字>.done 放行。
+﻿# 原生主窗口的截图 / 驱动脚本（调试构建）：带着 `ZSSH_MAIN_SCRIPT` 起程序，程序执行到 `shot:<名字>` 时先做
+# 画面文字的隐私检查（在应用里，dev_script.rs：内置规则查公网 IP、`Last login` 行、用户目录路径，另加 `ZSSH_SHOT_FORBID`
+# 里的禁用片段）；通过才写 <ShotDir>\<名字>.ready。这里等到 .ready 后用 PrintWindow 截自己启动的那个窗口
+# （不动真实鼠标、不碰桌面），存成 <OutDir>\<名字>.png，再写 <名字>.done 放行。
 #
-# 用法（数据目录必须是不含用户名的独立目录；联网用例的服务器信息只放在 -ExtraEnv 里，用 | 分隔）：
+# 本脚本自己做的校验只有一条：-DataDir 必须在 C:\zssh-v2-data\ 或系统临时目录之下，并且路径里不能含当前
+# Windows 用户名——不满足就在起程序之前报错退出，什么也不启动（设置页“关于”会显示数据目录，最容易把用户名拍进画面）。
+# 脚本不读画面像素也不读画面文字：画面文字的检查全在应用里，要查的禁用片段（测试服务器地址、本机用户名……）
+# 用 -ExtraEnv "ZSSH_SHOT_FORBID=片段1;片段2" 传给它；应用没写出 .ready（检查没通过）就不会有截图。
+#
+# 用法（联网用例的服务器信息只放在 -ExtraEnv 里，用 | 分隔）：
 #   powershell -File scripts/native-shot.ps1 -Script "view:vault;shot:a;quit" -DataDir C:\zssh-v2-data\x\data `
 #     -ShotDir C:\zssh-v2-data\x\sig -OutDir C:\zssh-v2-data\x\out -ExtraEnv "ZSSH_SEED_PLACEHOLDERS=1"
 # 步骤写法见 native/zssh-gpui/src/main_window/dev_script.rs 和 dev_acts.rs。
@@ -17,6 +23,32 @@ param(
   [string]$ExtraEnv = ''
 )
 if (-not $Exe) { $Exe = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\native\target\debug\zssh-gpui.exe' }
+
+# 数据目录的隐私闸：返回 $null 表示可以用，否则是拒绝的原因。
+# 要求同时满足：在 C:\zssh-v2-data\ 或系统临时目录之下；路径里没有当前 Windows 用户名
+# （按路径段整段比，用户名三个字符以上时再按子串比，免得短用户名误伤别的字）。
+function Get-DataDirProblem([string]$Path, [string]$UserName = $env:USERNAME) {
+  try { $full = [System.IO.Path]::GetFullPath($Path) } catch { return "数据目录不是合法路径：$Path" }
+  $norm = ($full -replace '\\', '/').TrimEnd('/') + '/'
+  $roots = @('C:/zssh-v2-data/')
+  $temp = ([System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()) -replace '\\', '/').TrimEnd('/') + '/'
+  $roots += $temp
+  $under = $false
+  foreach ($root in $roots) { if ($norm.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) { $under = $true; break } }
+  if (-not $under) { return '数据目录必须在 C:\zssh-v2-data\ 或系统临时目录之下（截图 / 自动化不能用真实的数据目录）。' }
+  if ($UserName) {
+    $segments = $norm.Trim('/').Split('/')
+    $named = $segments | Where-Object { $_ -ieq $UserName }
+    $inside = $UserName.Length -ge 3 -and $norm.IndexOf($UserName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+    if ($named -or $inside) { return '数据目录的路径里不能含当前 Windows 用户名（“关于”页会把数据目录显示出来，截图会带出用户名）；换一个像 C:\zssh-v2-data\<场景> 这样的目录。' }
+  }
+  return $null
+}
+$dataDirProblem = Get-DataDirProblem $DataDir
+if ($dataDirProblem) {
+  [Console]::Error.WriteLine("错误：$dataDirProblem")
+  exit 1
+}
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System;

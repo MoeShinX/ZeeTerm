@@ -279,6 +279,7 @@ pub enum AuthField {
 
 impl AuthField {
     /// 调试脚本里断言用的短名字。
+    #[cfg(debug_assertions)]
     pub fn id(self) -> &'static str {
         match self {
             Self::Username => "username",
@@ -577,6 +578,7 @@ impl ConnMode {
     }
 
     /// 调试脚本里用的短名字。
+    #[cfg(debug_assertions)]
     pub fn id(self) -> &'static str {
         match self {
             Self::Direct => "direct",

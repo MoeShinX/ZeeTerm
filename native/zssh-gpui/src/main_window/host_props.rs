@@ -72,6 +72,7 @@ pub enum Row {
 
 impl Row {
     /// 调试脚本里用的短名字。
+    #[cfg(any(debug_assertions, test))]
     pub fn id(self) -> &'static str {
         match self {
             Self::Name => "name",

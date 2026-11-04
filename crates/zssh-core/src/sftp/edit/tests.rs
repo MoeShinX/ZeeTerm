@@ -9,6 +9,10 @@ use super::*;
 struct FakeRemote {
     files: Mutex<HashMap<String, (Vec<u8>, u32)>>,
     clock: Mutex<u32>,
+    /// 模拟不返回修改时间的服务器。
+    hide_mtime: std::sync::atomic::AtomicBool,
+    /// 模拟读内容失败（权限、断线……）。
+    fail_reads: std::sync::atomic::AtomicBool,
 }
 
 impl FakeRemote {
@@ -19,6 +23,12 @@ impl FakeRemote {
             .lock()
             .unwrap()
             .insert(path.to_owned(), (data.to_vec(), 1000 + *clock));
+    }
+    /// 换内容但保持修改时间不变：模拟别人在同一秒里写进了同样长度的内容。
+    fn put_same_stamp(&self, path: &str, data: &[u8]) {
+        let mut files = self.files.lock().unwrap();
+        let mtime = files.get(path).map(|(_, mtime)| *mtime).unwrap_or(1000);
+        files.insert(path.to_owned(), (data.to_vec(), mtime));
     }
     fn get(&self, path: &str) -> Option<Vec<u8>> {
         self.files.lock().unwrap().get(path).map(|(d, _)| d.clone())
@@ -38,7 +48,8 @@ impl EditBackend for FakeRemote {
                 Some((data, mtime)) => Ok((
                     RemoteSnapshot {
                         size: data.len() as u64,
-                        mtime: Some(*mtime),
+                        mtime: (!self.hide_mtime.load(std::sync::atomic::Ordering::SeqCst))
+                            .then_some(*mtime),
                     },
                     path.ends_with("/dir"),
                 )),
@@ -54,6 +65,9 @@ impl EditBackend for FakeRemote {
         limit: u64,
     ) -> BoxFuture<'a, Result<Vec<u8>, SftpError>> {
         Box::pin(async move {
+            if self.fail_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(SftpError::Remote("读失败".to_owned()));
+            }
             let data = self.get(path).ok_or_else(|| SftpError::NotFound {
                 path: path.to_owned(),
             })?;
@@ -93,7 +107,12 @@ async fn open(remote: &FakeRemote, tag: &str) -> (EditSession, crate::test_util:
         .unwrap();
     let (guard, local) = temp_file(tag, &data);
     (
-        EditSession::new("/srv/a.txt".to_owned(), local, base),
+        EditSession::new(
+            "/srv/a.txt".to_owned(),
+            local,
+            base,
+            recovery::sha256_hex(&data),
+        ),
         guard,
     )
 }
@@ -140,6 +159,115 @@ async fn same_size_but_newer_mtime_still_counts_as_changed() {
         session.on_local_saved(&remote).await,
         EditOutcome::Conflict { remote: Some(_) }
     ));
+}
+
+/// H-2：大小和修改时间都和基线一样，内容却被别人换了（同一秒、同样长度）：不能上传。
+#[tokio::test]
+async fn same_size_and_same_mtime_but_different_content_is_a_conflict() {
+    let remote = FakeRemote::default();
+    let (mut session, _guard) = open(&remote, "same-stamp").await;
+    remote.put_same_stamp("/srv/a.txt", b"abc"); // 原来是 old，同样 3 字节
+    assert_eq!(
+        remote.stat("/srv/a.txt").await.unwrap().0,
+        session.base(),
+        "前提：属性和基线完全一样"
+    );
+    std::fs::write(&session.local_path, b"mine").unwrap();
+    let outcome = session.on_local_saved(&remote).await;
+    assert!(
+        matches!(outcome, EditOutcome::Conflict { remote: Some(_) }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        remote.get("/srv/a.txt").unwrap(),
+        b"abc",
+        "别人的内容不能被覆盖"
+    );
+    assert!(session.has_pending_problem());
+}
+
+/// 服务器不给修改时间时只剩大小，更要靠内容比对。
+#[tokio::test]
+async fn without_an_mtime_the_content_decides() {
+    let remote = FakeRemote::default();
+    remote
+        .hide_mtime
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (mut session, _guard) = open(&remote, "no-mtime").await;
+    assert_eq!(session.base().mtime, None);
+
+    remote.put("/srv/a.txt", b"abc");
+    std::fs::write(&session.local_path, b"mine").unwrap();
+    assert!(matches!(
+        session.on_local_saved(&remote).await,
+        EditOutcome::Conflict { remote: Some(_) }
+    ));
+    assert_eq!(remote.get("/srv/a.txt").unwrap(), b"abc");
+
+    // 没人改过时照常上传。
+    let (mut session, _guard) = open(&remote, "no-mtime-ok").await;
+    std::fs::write(&session.local_path, b"mine").unwrap();
+    assert_eq!(
+        session.on_local_saved(&remote).await,
+        EditOutcome::Uploaded { size: 4 }
+    );
+}
+
+/// 保存成功后基线内容跟着换成刚传的那份：之后别人同大小同时间的改动同样被发现。
+#[tokio::test]
+async fn the_baseline_hash_follows_each_successful_save() {
+    let remote = FakeRemote::default();
+    let (mut session, _guard) = open(&remote, "follow").await;
+    std::fs::write(&session.local_path, b"first").unwrap();
+    assert_eq!(
+        session.on_local_saved(&remote).await,
+        EditOutcome::Uploaded { size: 5 }
+    );
+    remote.put_same_stamp("/srv/a.txt", b"FIRST");
+    std::fs::write(&session.local_path, b"second").unwrap();
+    assert!(matches!(
+        session.on_local_saved(&remote).await,
+        EditOutcome::Conflict { remote: Some(_) }
+    ));
+    assert_eq!(remote.get("/srv/a.txt").unwrap(), b"FIRST");
+}
+
+/// 读回内容失败不能当成“没变”直接覆盖。
+#[tokio::test]
+async fn a_failed_read_back_never_falls_through_to_overwrite() {
+    let remote = FakeRemote::default();
+    let (mut session, _guard) = open(&remote, "read-fail").await;
+    remote
+        .fail_reads
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    std::fs::write(&session.local_path, b"mine").unwrap();
+    let outcome = session.on_local_saved(&remote).await;
+    assert!(matches!(outcome, EditOutcome::Failed(_)), "{outcome:?}");
+    assert_eq!(remote.get("/srv/a.txt").unwrap(), b"old");
+    assert!(session.has_pending_problem());
+
+    // 恢复后重试能正常保存。
+    remote
+        .fail_reads
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        session.on_local_saved(&remote).await,
+        EditOutcome::Uploaded { size: 4 }
+    );
+}
+
+/// 属主选择之后的第二次核对同样要比内容。
+#[tokio::test]
+async fn the_owner_prompt_follow_up_also_compares_content() {
+    let remote = FakeRemote::default();
+    let (mut session, _guard) = open(&remote, "owner-follow").await;
+    remote.put_same_stamp("/srv/a.txt", b"abc");
+    std::fs::write(&session.local_path, b"mine").unwrap();
+    assert!(matches!(
+        session.resolve(&remote, Resolution::KeepNewOwner).await,
+        EditOutcome::Conflict { remote: Some(_) }
+    ));
+    assert_eq!(remote.get("/srv/a.txt").unwrap(), b"abc");
 }
 
 #[tokio::test]

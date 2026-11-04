@@ -32,8 +32,8 @@ use super::composer::{self, ActionKind, ComposerItem, EffortStyle, ModeTone};
 use super::usage_view::{self, MeterView};
 use super::{
     AgentChatDemo, ApprovalDetail, ApprovalState, ChatMessage, HistoryPanel, HostChoice,
-    NO_HOST_HINT, ToolCard, ToolStatus, card_detail_lines, card_status_text, mode_label,
-    redact_paths,
+    NO_HOST_HINT, ToolCard, ToolStatus, card_detail_lines, card_status_text, mode_is_persisted,
+    mode_label, redact_paths,
 };
 use crate::agent_host::HostTarget;
 use crate::agent_tools::{self, ToolRow};
@@ -1089,7 +1089,7 @@ impl AgentChatDemo {
     }
 
     pub fn set_mode_explicit(&mut self, mode: ExecMode, cx: &mut Context<Self>) {
-        if self.real {
+        if mode_is_persisted(self.real) {
             match self.write_mode(mode) {
                 Ok(()) => self.settings_error = None,
                 Err(err) => self.settings_error = Some(err),
@@ -1323,7 +1323,7 @@ impl AgentChatDemo {
                             .on_click(
                                 move |_: &ClickEvent, _window, cx| {
                                     entity.update(cx, |this, cx| {
-                                        this.set_mode_explicit(mode, cx);
+                                        this.request_mode(mode, cx);
                                     });
                                 },
                             ),

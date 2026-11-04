@@ -373,11 +373,10 @@ impl SftpChannel {
         status_ok(status, path)
     }
 
-    /// 建一个空文件（`create + truncate` 之后立刻关掉）。
+    /// 建一个空文件。**已经有同名的东西就报 [`SftpError::AlreadyExists`]**，绝不清空它。
     pub async fn create_file(&self, path: &str) -> Result<(), SftpError> {
         self.guard_name(path).await?;
-        let handle = self.open_write_truncate(path).await?;
-        self.close_handle(&handle).await
+        create_new_file(&self.raw, path).await
     }
 
     /// 删除文件。
@@ -643,6 +642,56 @@ impl SftpChannel {
     }
 }
 
+/// 只在目标不存在时建一个空文件（M-5）。
+///
+/// SFTP v3 的 `open` 带 `CREATE` + `TRUNCATE` 会清空已有文件，所以这里：
+/// 1. 先 `lstat`：已经有东西（含悬空链接）就直接报已存在；有的服务器会忽略独占标志，
+///    不先看一眼就会把文件清空；
+/// 2. 再用 `CREATE | EXCLUDE`（SFTP 的独占创建，`TRUNCATE` 不带）打开：两步之间有人抢先
+///    建了文件，服务器能挡住的就挡住；
+/// 3. 独占创建失败时服务器多半只回笼统的 `Failure`，再 `lstat` 一次，有了就是已存在。
+async fn create_new_file(raw: &RawSftpSession, path: &str) -> Result<(), SftpError> {
+    match raw.lstat(path).await {
+        Ok(_) => {
+            return Err(SftpError::AlreadyExists {
+                path: path.to_owned(),
+            })
+        }
+        // 不存在才往下走；断线就别再发请求；别的错误（权限、不支持 lstat……）交给下面
+        // 的独占创建去报，它不会清空任何东西。
+        Err(err) => {
+            if let disconnected @ SftpError::Disconnected(_) = with_path(err, path) {
+                return Err(disconnected);
+            }
+        }
+    }
+    let handle = match raw
+        .open(
+            path,
+            OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUDE,
+            FileAttributes::default(),
+        )
+        .await
+    {
+        Ok(handle) => handle.handle,
+        Err(err) => {
+            let mapped = with_path(err, path);
+            return match mapped {
+                SftpError::RemoteStatus { .. } | SftpError::Remote(_)
+                    if raw.lstat(path).await.is_ok() =>
+                {
+                    Err(SftpError::AlreadyExists {
+                        path: path.to_owned(),
+                    })
+                }
+                other => Err(other),
+            };
+        }
+    };
+    let status = raw.close(&handle).await.map_err(SftpError::from)?;
+    status_ok(status, "")
+}
+
 /// `SftpChannel` 上的三步改名操作（普通 rename 目标存在会失败，正是三步需要的语义）。
 struct ChannelOps<'a>(&'a SftpChannel);
 
@@ -772,6 +821,9 @@ fn first_name(name: Name) -> Option<String> {
 
 /// 通道空闲多久回收（专用通道在传输任务结束后关掉；浏览通道跟连接同寿命）。
 pub const IDLE_CHANNEL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+#[cfg(test)]
+mod create_tests;
 
 #[cfg(test)]
 mod tests {

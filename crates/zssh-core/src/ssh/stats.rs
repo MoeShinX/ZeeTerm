@@ -1198,18 +1198,12 @@ mod tests {
                 to_sh_path(&lscpu),
                 CPU_MODEL_PROBE.replace("/proc/cpuinfo", &to_sh_path(&cpuinfo))
             );
-            let output = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(script)
-                .output()
-                .ok()?;
-            Some(String::from_utf8_lossy(&output.stdout).into_owned())
+            crate::test_util::run_sh("cpu_model_probe_script_runs_under_sh", &script)
         };
 
         let x86 = "processor\t: 0\nmodel name\t: Intel(R) Xeon(R) Gold 6148 CPU @ 2.40GHz\n\
                    processor\t: 1\nmodel name\t: Intel(R) Xeon(R) Gold 6148 CPU @ 2.40GHz\n";
         let Some(output) = run(x86, "Model name: should-not-be-used\n") else {
-            println!("跳过 cpu_model_probe_script_runs_under_sh：本机没有 sh");
             let _ = std::fs::remove_dir_all(&dir);
             return;
         };
@@ -1225,12 +1219,18 @@ mod tests {
 
         let arm = "processor\t: 0\nCPU implementer\t: 0x41\nCPU part\t: 0xd08\n\
                    processor\t: 1\nCPU implementer\t: 0x41\nCPU part\t: 0xd08\n";
-        let output = run(arm, "Architecture: aarch64\nModel name: Cortex-A72|x\n").unwrap();
+        let Some(output) = run(arm, "Architecture: aarch64\nModel name: Cortex-A72|x\n") else {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
         let sample = StatsSample::parse(&output);
         // lscpu 输出里的 `|` 被换掉了，不会切坏分段。
         assert_eq!(sample.cpu_model.as_deref(), Some("Cortex-A72_x"));
 
-        let output = run(arm, "").unwrap();
+        let Some(output) = run(arm, "") else {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
         assert_eq!(
             StatsSample::parse(&output).cpu_model.as_deref(),
             Some("Cortex-A72")
@@ -1297,19 +1297,17 @@ mod tests {
     #[test]
     fn cpu_processes_script_runs_under_sh_for_procps_and_busybox() {
         let run = |stubs: &str| -> Option<StatsSample> {
-            let output = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(format!("{stubs}\n{STATS_SCRIPT}"))
-                .output()
-                .ok()?;
-            Some(StatsSample::parse(&String::from_utf8_lossy(&output.stdout)))
+            let output = crate::test_util::run_sh(
+                "cpu_processes_script_runs_under_sh_for_procps_and_busybox",
+                &format!("{stubs}\n{STATS_SCRIPT}"),
+            )?;
+            Some(StatsSample::parse(&output))
         };
         let procps = r#"ps() { case "$*" in
   *--sort=-%cpu*) printf '  PID %%CPU COMMAND\n 4242 93.4 ps\n  812 55.5 app-worker\n 1290  7.0 a;b\n    1  0.0 systemd\n';;
   *--sort=-%mem*) printf '  PID %%MEM COMMAND\n  812 12.4 app-worker\n';;
   *) return 1;; esac; }"#;
         let Some(sample) = run(procps) else {
-            println!("跳过 cpu_processes_script_runs_under_sh_for_procps_and_busybox：本机没有 sh");
             return;
         };
         let cpu: Vec<(&str, f64, &str)> = sample
@@ -1341,7 +1339,9 @@ mod tests {
         }
         let busybox = r#"ps() { return 1; }
 top() { printf 'Mem: 900K used, 100K free\nCPU:  1%% usr\n  PID  PPID USER     STAT   VSZ %%VSZ %%CPU COMMAND\n  812     1 app      S     120m  1.2  55.5 app-worker\n    7     1 root     S       1m  0.0   0.3 sshd\n 9999   100 root     R       1m  0.0  99.0 top\n'; }"#;
-        let sample = run(busybox).expect("sh 在");
+        let Some(sample) = run(busybox) else {
+            return;
+        };
         let cpu: Vec<(&str, f64, &str)> = sample
             .top_cpu_processes
             .iter()

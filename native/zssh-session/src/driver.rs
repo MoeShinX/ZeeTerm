@@ -8,6 +8,7 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use zssh_terminal::Size;
 
+use crate::schedule::PollOutcome;
 use crate::{ByteFilter, SessionPump};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,11 +144,12 @@ impl SessionBackend for LoopbackBackend {
     }
 }
 
-/// 每次 `poll` 最多处理的数据字节数。
+/// 单个会话每次 `poll` 最多处理的数据字节数（只有一个会话、没有调度器时用）。
 ///
 /// 界面线程 60 ms 轮询一次；生产者比解析快时通道永远取不空，没有上限的话
 /// 这个循环就不会把线程还给界面。超出的批次留到下一次 `poll`：它们没处理就没 ack，
-/// 流控门会自然压住读通道。
+/// 流控门会自然压住读通道。多个窗格同时轮询时，一帧的总量由
+/// [`crate::schedule::FrameScheduler`] 在它们之间分配，不是每个窗格各来一份。
 pub const POLL_BYTE_BUDGET: usize = 1024 * 1024;
 
 /// 会话结束的情况：退出码和（异常结束时的）原因。
@@ -180,8 +182,14 @@ impl<F: ByteFilter> SessionDriver<F> {
         self.poll_with_budget(POLL_BYTE_BUDGET)
     }
 
-    /// 最多处理 `budget` 个数据字节（至少处理一批，保证有进展）。
+    /// 最多处理 `budget` 个数据字节（预算不为 0 时至少处理一批，保证有进展）。
     pub fn poll_with_budget(&mut self, budget: usize) -> bool {
+        self.poll_counted(budget).changed
+    }
+
+    /// 同 [`Self::poll_with_budget`]，另外报告实际处理了多少数据字节，
+    /// 好让调用方（[`crate::schedule::FrameScheduler`]）把一帧的总预算在多个会话之间分配。
+    pub fn poll_counted(&mut self, budget: usize) -> PollOutcome {
         let mut changed = false;
         let mut ended = false;
         let mut used = 0usize;
@@ -251,7 +259,7 @@ impl<F: ByteFilter> SessionDriver<F> {
             let flushed = self.pump.flush();
             changed |= flushed.consumed > 0 || flushed.filtered > 0;
         }
-        changed
+        PollOutcome { changed, used }
     }
 
     /// 上一次 `poll` 是否因预算用完而提前返回。

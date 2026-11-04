@@ -57,7 +57,7 @@ impl Bridge {
         match method {
             METHOD_LIST_DIR => {
                 let params: PathParams = parse(params)?;
-                let (summary, fs, ticket, _) = self
+                let (summary, fs, ticket, session_id) = self
                     .file_target(
                         scope,
                         params.target_id.as_deref(),
@@ -67,6 +67,19 @@ impl Bridge {
                     )
                     .await?;
                 let started = std::time::Instant::now();
+                let decision = self
+                    .confirm_sensitive_read(
+                        scope,
+                        &ticket,
+                        &summary,
+                        session_id.as_deref(),
+                        fs.as_ref(),
+                        "list_dir",
+                        &params.path,
+                        call_id,
+                        started,
+                    )
+                    .await?;
                 self.ensure_still_valid(
                     scope,
                     &ticket,
@@ -96,13 +109,14 @@ impl Bridge {
                         .map(|(listing, _)| listing.entries.len() as i64),
                     outcome.is_ok(),
                     started,
+                    decision,
                 );
                 let (listing, _) = outcome?;
                 to_value(&listing)
             }
             METHOD_STAT => {
                 let params: PathParams = parse(params)?;
-                let (summary, fs, ticket, _) = self
+                let (summary, fs, ticket, session_id) = self
                     .file_target(
                         scope,
                         params.target_id.as_deref(),
@@ -112,6 +126,19 @@ impl Bridge {
                     )
                     .await?;
                 let started = std::time::Instant::now();
+                let decision = self
+                    .confirm_sensitive_read(
+                        scope,
+                        &ticket,
+                        &summary,
+                        session_id.as_deref(),
+                        fs.as_ref(),
+                        "stat",
+                        &params.path,
+                        call_id,
+                        started,
+                    )
+                    .await?;
                 self.ensure_still_valid(
                     scope,
                     &ticket,
@@ -138,13 +165,14 @@ impl Bridge {
                     None,
                     outcome.is_ok(),
                     started,
+                    decision,
                 );
                 let (result, _) = outcome?;
                 to_value(&result)
             }
             METHOD_READ_FILE => {
                 let params: ReadFileParams = parse(params)?;
-                let (summary, fs, ticket, _) = self
+                let (summary, fs, ticket, session_id) = self
                     .file_target(
                         scope,
                         params.target_id.as_deref(),
@@ -154,6 +182,19 @@ impl Bridge {
                     )
                     .await?;
                 let started = std::time::Instant::now();
+                let decision = self
+                    .confirm_sensitive_read(
+                        scope,
+                        &ticket,
+                        &summary,
+                        session_id.as_deref(),
+                        fs.as_ref(),
+                        "read_file",
+                        &params.path,
+                        call_id,
+                        started,
+                    )
+                    .await?;
                 self.ensure_still_valid(
                     scope,
                     &ticket,
@@ -183,6 +224,7 @@ impl Bridge {
                     outcome.as_ref().ok().map(|r| r.returned_bytes as i64),
                     outcome.is_ok(),
                     started,
+                    decision,
                 );
                 to_value(&outcome?)
             }
@@ -214,6 +256,80 @@ impl Bridge {
         Ok((resolved.summary, fs, resolved.ticket, resolved.session_id))
     }
 
+    /// 「只读自动」模式下，读到敏感文件（私钥、云凭据……）要人确认；其他模式、其他路径
+    /// 原样直接读。读本身不改服务器，但内容会交给所选的模型服务商，所以单独问一句。
+    ///
+    /// 路径先按原样判断，再按符号链接解析后的真实路径判断（`/tmp/x -> ~/.ssh/id_rsa`）。
+    /// 返回这次读的处置：不需要确认是 `Auto`，用户批准是 `Allowed`；拒绝 / 超时 / 作用范围
+    /// 失效返回错误（已记审计）。
+    #[allow(clippy::too_many_arguments)]
+    async fn confirm_sensitive_read(
+        &self,
+        scope: &Arc<Scope>,
+        ticket: &RequestTicket,
+        summary: &crate::ai::protocol::TargetSummary,
+        session_id: Option<&str>,
+        fs: &dyn RemoteFs,
+        tool: &'static str,
+        path: &str,
+        call_id: &str,
+        started: std::time::Instant,
+    ) -> Result<ExecDecision, String> {
+        // 敏感文件只在「只读自动」里额外问（全部放行是用户明确接受的，逐条确认下这些读取
+        // 本来就不问）；锁屏时不论哪种模式都问，由 `confirm_query` 统一处理。
+        let mut reasons = Vec::new();
+        if self.mode.mode() == super::ExecMode::ReadOnly {
+            if let Some(hit) = self.sensitive_hit(fs, path).await {
+                reasons.push(hit.reason());
+            }
+        }
+        match self
+            .confirm_query(
+                scope, ticket, summary, session_id, tool, path, call_id, reasons,
+            )
+            .await
+        {
+            Ok(decision) => Ok(decision),
+            Err((decision, message)) => {
+                self.read_audit(
+                    scope,
+                    &summary.host_label,
+                    tool,
+                    None,
+                    path,
+                    None,
+                    false,
+                    started,
+                    decision,
+                );
+                Err(format!("{message}，文件没有读取"))
+            }
+        }
+    }
+
+    /// 路径（按原样、展开后、符号链接解析后）是不是敏感文件。
+    async fn sensitive_hit(
+        &self,
+        fs: &dyn RemoteFs,
+        path: &str,
+    ) -> Option<crate::ai::sensitive::SensitiveHit> {
+        let mut hit = crate::ai::sensitive::sensitive_file_path(path);
+        if hit.is_none() {
+            // 相对路径、`~`、`..` 先按登录目录展开成工具真正会读的那个路径，再看符号链接指向哪。
+            // 解析不了（拿不到登录目录、不存在、没权限）就只看原路径。
+            let home = fs.home().await.ok();
+            if let Some(resolved) = crate::ai::files::resolve_path(path, home.as_deref()) {
+                hit = crate::ai::sensitive::sensitive_file_path(&resolved);
+                if hit.is_none() {
+                    if let Ok(real) = fs.realpath(&resolved).await {
+                        hit = crate::ai::sensitive::sensitive_file_path(&real);
+                    }
+                }
+            }
+        }
+        hit
+    }
+
     /// 只读工具的有效性核对：目标被移出对话（哪怕又被加回来）、用户点了停止、作用范围销毁，
     /// 这条请求都不能再读 / 再返回内容。和写文件、执行命令用的是同一张 [`RequestTicket`]。
     /// 失效时记一条失败审计（不含内容），返回给模型的原因和写工具一致。
@@ -230,7 +346,15 @@ impl Bridge {
             None => Ok(()),
             Some(reason) => {
                 self.read_audit(
-                    scope, host_label, tool, None, requested, None, false, started,
+                    scope,
+                    host_label,
+                    tool,
+                    None,
+                    requested,
+                    None,
+                    false,
+                    started,
+                    ExecDecision::Auto,
                 );
                 Err(reason.to_string())
             }
@@ -248,6 +372,7 @@ impl Bridge {
         bytes: Option<i64>,
         ok: bool,
         started: std::time::Instant,
+        decision: ExecDecision,
     ) {
         self.record_file_audit(
             scope,
@@ -256,7 +381,7 @@ impl Bridge {
                 tool,
                 path: resolved.unwrap_or_else(|| requested.to_owned()),
                 danger: DangerLevel::Safe,
-                decision: ExecDecision::Auto,
+                decision,
                 ok,
                 bytes,
                 backup_path: None,

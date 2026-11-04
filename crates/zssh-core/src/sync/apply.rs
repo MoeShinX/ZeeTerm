@@ -36,6 +36,8 @@ pub struct ApplyReport {
     pub proxies: ChangeCounts,
     pub settings_written: usize,
     pub known_hosts_added: usize,
+    /// 因字段不合格（含“匹配任意主机”的万能通配）没有写进 known_hosts 的条数。
+    pub known_hosts_skipped: usize,
     pub conflicts_stored: usize,
 }
 
@@ -596,12 +598,23 @@ pub fn apply_snapshot_guarded_with(
             report.conflicts_stored += 1;
         }
 
-        // known_hosts 是文件不是表：只追加缺的行。放在 commit 之前，失败就回滚数据库。
-        if let Some(path) = known_hosts_path {
-            report.known_hosts_added = super::known_hosts::append_missing(path, &snapshot.known_hosts)?;
-        }
-
         tx.commit()?;
+
+        // known_hosts 是文件不是表，没法跟数据库一起回滚，所以放在 commit 之后：
+        // commit 失败时文件一个字节都没动；反过来，追加失败只是少了几条“已信任”，
+        // 之后连接时会重新弹指纹确认，不会放过任何东西（失败方向是安全的）。
+        // 放在 commit 之前的话，commit 失败后数据库回滚了，文件里却留下了导入来的信任。
+        if let Some(path) = known_hosts_path {
+            match super::known_hosts::append_missing(path, &snapshot.known_hosts) {
+                Ok(outcome) => {
+                    report.known_hosts_added = outcome.added;
+                    report.known_hosts_skipped = outcome.skipped;
+                }
+                Err(err) => {
+                    tracing::warn!(%err, "导入已提交，但追加 known_hosts 失败；这些主机下次连接会重新确认指纹");
+                }
+            }
+        }
         Ok(report)
     })
 }

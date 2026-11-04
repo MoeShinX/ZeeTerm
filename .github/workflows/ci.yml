@@ -9,18 +9,21 @@
 # 不设 path 过滤：共享库或 Cargo.lock 变化必须同时触发两个任务。
 name: CI
 
+# push 只在 main 上触发：同仓库分支开了 PR 时，PR 已经会跑一遍，再按分支 push 跑一遍是白烧。
+# 没开 PR 的分支想跑检查，用 workflow_dispatch 手动触发。
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# 只取消非 main 的旧运行（同一个分支 / PR 又有新提交时）；main 上刚合进去的提交，它的门禁结果不能被下一次推送顶掉。
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always

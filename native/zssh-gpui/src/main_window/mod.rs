@@ -49,6 +49,7 @@ mod dev_acts_u20;
 mod dev_acts_u21;
 mod dev_acts_u25;
 mod dev_acts_u26;
+mod dev_acts_u28;
 mod dev_acts_u29;
 mod dev_acts_u4;
 mod dev_acts_u6;
@@ -58,6 +59,7 @@ pub mod dev_seed;
 pub mod dock_layout;
 mod docks;
 mod drag;
+mod drag_scroll;
 pub(crate) mod editor_tabs;
 mod forward_panel;
 mod host_delete;
@@ -268,6 +270,8 @@ pub struct MainWindow {
     /// 再点一次「收起」的待执行任务编号：双击连接时让它作废。
     pub(super) info_collapse_gen: u64,
     pub(super) drop_hint: Option<DropHint>,
+    /// 拖动时靠近侧栏树 / 主机页上下沿自动滚动的状态（V2-U28）。
+    pub(super) drag_scroll: drag_scroll::DragScroll,
     /// 「切换到手动排序后才能拖动」已经提示过一次。
     pub(super) mode_hint_shown: bool,
     /// 已经自动开启过转发的标签（标签 id）：同一次连接只开一次。
@@ -495,6 +499,7 @@ impl MainWindow {
             info_host: None,
             info_collapse_gen: 0,
             drop_hint: None,
+            drag_scroll: drag_scroll::DragScroll::default(),
             mode_hint_shown: false,
             autostarted_tabs: std::collections::HashSet::new(),
             forward_seen: crate::forward_runtime::manager().version(),

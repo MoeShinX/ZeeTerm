@@ -15,6 +15,7 @@ use gpui_kit::*;
 use zssh_core::model::{Host, Protocol};
 
 use super::drag::{DragHost, DragItem, DropHint, Scope};
+use super::drag_scroll::ScrollArea;
 use super::page_logic::{
     Density, OrderState, PageOptions, SortMode, ViewMode, page_hosts, ungrouped_label,
 };
@@ -300,6 +301,17 @@ impl MainWindow {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(&self.drag_scroll.page)
+                    .on_drag_move::<DragHost>(cx.listener(
+                        |this, event: &::gpui::DragMoveEvent<DragHost>, window, cx| {
+                            this.drag_scroll_probe(
+                                ScrollArea::Page,
+                                event.event.position,
+                                window,
+                                cx,
+                            );
+                        },
+                    ))
                     .p_4()
                     .child(
                         v_flex()

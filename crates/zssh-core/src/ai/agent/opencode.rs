@@ -698,7 +698,7 @@ struct Spawned {
 }
 
 /// 最近若干行输出（出错时一起报出去）；实现移到 [`super::process`]（AI-3 起共用）。
-use super::process::{kill_process_tree, tail_buf, tail_text, TailBuf};
+use super::process::{kill_process_tree, push_tail, tail_buf, tail_text, TailBuf};
 
 /// 起 `opencode serve`。
 async fn spawn_serve(
@@ -815,12 +815,8 @@ impl<R: tokio::io::AsyncRead + Unpin> Lines<R> {
             return Ok(None);
         }
         let line = buf.trim_end_matches(['\r', '\n']).to_string();
-        if let Ok(mut tail) = self.tail.lock() {
-            tail.push(line.clone());
-            if tail.len() > 20 {
-                tail.remove(0);
-            }
-        }
+        // 和 claude / codex 共用同一套：进缓冲前脱敏、限长（缓冲会进错误提示）。
+        push_tail(&self.tail, &line, 20);
         Ok(Some(line))
     }
 }
@@ -871,7 +867,8 @@ where
 {
     tokio::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
-            tracing::trace!(target: "opencode", "{tag}: {line}");
+            // 只记长度：输出可能带着智能体刚读到的秘密（M-2）。
+            tracing::trace!(target: "opencode", len = line.len(), "{tag}: 一行输出");
         }
     })
 }

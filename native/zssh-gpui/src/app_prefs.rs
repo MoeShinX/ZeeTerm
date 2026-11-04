@@ -241,12 +241,7 @@ pub fn open_session_log_with(
     if !prefs.session_log_enabled {
         return None;
     }
-    let dir = prefs.session_log_dir_path();
-    match zssh_core::ssh::session_log::SessionLog::start(
-        &dir,
-        label,
-        &zssh_core::ssh::session_log::local_stamp(),
-    ) {
+    match start_session_log(prefs, label) {
         Ok(log) => Some(log),
         Err(err) => {
             // 目录路径是用户填的本机路径，日志里只写原因，不写路径。
@@ -254,6 +249,19 @@ pub fn open_session_log_with(
             None
         }
     }
+}
+
+/// 不管设置里的开关，为这个会话建一个日志文件（手动「开始记录」用）。位置、命名、写线程
+/// 和 [`open_session_log`] 完全一样——会话日志只有这一个写入位置。
+pub fn start_session_log(
+    prefs: &AppPrefs,
+    label: &str,
+) -> std::io::Result<zssh_core::ssh::session_log::SessionLog> {
+    zssh_core::ssh::session_log::SessionLog::start(
+        &prefs.session_log_dir_path(),
+        label,
+        &zssh_core::ssh::session_log::local_stamp(),
+    )
 }
 
 /// 退出时让所有会话日志把排着的写完，最多等这么久（磁盘慢时不能让退出无限期卡住）。

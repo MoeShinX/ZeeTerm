@@ -93,6 +93,7 @@ enum Flow {
 }
 
 /// 阶段的文字（界面和驱动脚本断言共用）。
+#[cfg(any(debug_assertions, test))]
 pub fn phase_name(phase: &Phase) -> &'static str {
     match phase {
         Phase::Idle => "idle",

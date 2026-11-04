@@ -63,7 +63,7 @@ pwsh native/installer/build.ps1
 | `native/zssh-gpui` | ZeeTerm 应用本体（GPUI 界面） |
 | `native/zssh-terminal`、`zssh-session`、`zssh-editor`、`zssh-regex`、`zssh-update` | 终端模型、会话泵、编辑器文件契约、高亮正则引擎、更新清单与验签（含发版用的 `release_tool` 示例） |
 | `native/installer` | NSIS 安装脚本、打包脚本和静默安装测试脚本 |
-| `scripts` | `gates.ps1`（全部检查）、`privacy-scan.ps1` 与它的放行清单 `privacy-allow.txt`（公开前的隐私扫描）、`updater-keygen.ps1`（生成更新签名密钥）、`release.ps1`（发版）；说明见 `docs/RELEASING.md` |
+| `scripts` | `gates.ps1`（全部检查）、`privacy-scan.ps1` 与它默认加载的放行清单 `privacy-allow.txt`（公开前的隐私扫描）、`native-shot.ps1`（调试构建的截图 / 驱动脚本，数据目录必须在 `C:\zssh-v2-data\` 或系统临时目录下且路径不含 Windows 用户名）、`updater-keygen.ps1`（生成更新签名密钥）、`release.ps1`（发版）；说明见 `docs/RELEASING.md` |
 
 `crates/` 是一个 Cargo 工作区，`native/` 是另一个（它用路径依赖引用 `crates/` 里的库），各有自己的 `Cargo.lock`。
 
