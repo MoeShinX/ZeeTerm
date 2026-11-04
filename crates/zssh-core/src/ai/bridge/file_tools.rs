@@ -256,8 +256,9 @@ impl Bridge {
         Ok((resolved.summary, fs, resolved.ticket, resolved.session_id))
     }
 
-    /// 「只读自动」模式下，读到敏感文件（私钥、云凭据……）要人确认；其他模式、其他路径
-    /// 原样直接读。读本身不改服务器，但内容会交给所选的模型服务商，所以单独问一句。
+    /// 除「全部放行」外，读到敏感文件（私钥、云凭据……）要人确认；其他路径原样直接读。
+    /// 读本身不改服务器，但内容会交给所选的模型服务商，所以单独问一句。「逐条确认」下
+    /// 普通的读文件 / 列目录不问，敏感文件照样要问。
     ///
     /// 路径先按原样判断，再按符号链接解析后的真实路径判断（`/tmp/x -> ~/.ssh/id_rsa`）。
     /// 返回这次读的处置：不需要确认是 `Auto`，用户批准是 `Allowed`；拒绝 / 超时 / 作用范围
@@ -275,10 +276,10 @@ impl Bridge {
         call_id: &str,
         started: std::time::Instant,
     ) -> Result<ExecDecision, String> {
-        // 敏感文件只在「只读自动」里额外问（全部放行是用户明确接受的，逐条确认下这些读取
-        // 本来就不问）；锁屏时不论哪种模式都问，由 `confirm_query` 统一处理。
+        // 全部放行是用户明确接受的，不额外问；锁屏时不论哪种模式都问，由 `confirm_query`
+        // 统一处理。
         let mut reasons = Vec::new();
-        if self.mode.mode() == super::ExecMode::ReadOnly {
+        if self.mode.mode() != super::ExecMode::Auto {
             if let Some(hit) = self.sensitive_hit(fs, path).await {
                 reasons.push(hit.reason());
             }
