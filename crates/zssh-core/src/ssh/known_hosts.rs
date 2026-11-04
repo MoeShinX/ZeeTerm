@@ -211,6 +211,17 @@ impl KnownHosts {
     /// 调用方必须已经拿着 `write_lock`。`keep_revoked`：`@revoked` 行留着不删——更新指纹时
     /// 只换掉旧的普通记录，吊销过的密钥以后出现照样拦。
     fn forget_locked(&self, host: &str, port: u16, keep_revoked: bool) -> Result<usize, ZsshError> {
+        self.forget_locked_with(host, port, keep_revoked, &crate::sftp::local::write_atomic)
+    }
+
+    /// `forget_locked` 的实体；写回的办法单独传进来，单测用它模拟「写到一半失败」。
+    fn forget_locked_with(
+        &self,
+        host: &str,
+        port: u16,
+        keep_revoked: bool,
+        write_back: &dyn Fn(&Path, &[u8]) -> std::io::Result<()>,
+    ) -> Result<usize, ZsshError> {
         let content = match read_known_hosts(&self.our_file) {
             Ok(Some(content)) => content,
             Ok(None) => return Ok(0),
@@ -232,6 +243,12 @@ impl KnownHosts {
                     && !(keep_revoked && entry.marker == Some(Marker::Revoked))
             }) {
                 removed += 1;
+                // 一行写了好几台主机（`host1,host2 ssh-ed25519 …`）时只去掉要忘记的这个，
+                // 另一台的指纹不能跟着丢；哈希行和只剩它自己的行整行删。
+                if let Some(rest) = line_without_host(line, &wanted) {
+                    kept.push_str(&rest);
+                    kept.push('\n');
+                }
                 continue;
             }
             kept.push_str(line);
@@ -239,7 +256,9 @@ impl KnownHosts {
         }
 
         if removed > 0 {
-            std::fs::write(&self.our_file, kept)
+            // 同目录临时文件 + 刷盘 + 原子替换：写到一半断电 / 磁盘满，原文件还是完整的旧版，
+            // 不会剩下一个被截断的 known_hosts（那等于把所有主机的指纹都忘了）。
+            write_back(&self.our_file, kept.as_bytes())
                 .map_err(|err| ZsshError::HostKeyStore(format!("写 known_hosts 失败：{err}")))?;
         }
         Ok(removed)
@@ -531,6 +550,45 @@ fn wildcard_match(text: &str, pattern: &str) -> bool {
         p += 1;
     }
     p == pattern.len()
+}
+
+/// 一行匹配了 `wanted`（`host_pattern` 的写法）时，去掉其中匹配它的那些模式之后的整行。
+/// 返回 `None` 表示整行都该删。
+///
+/// 只改主机名那一栏，标记（`@revoked`）、密钥和行尾注释原样保留。
+fn line_without_host(line: &str, wanted: &str) -> Option<String> {
+    let start = line.len() - line.trim_start().len();
+    let mut field_start = start;
+    let mut rest = &line[start..];
+    if rest.starts_with('@') {
+        // `@revoked <主机名> …`：主机名在标记后面那一栏。
+        let marker_len = rest.find(char::is_whitespace)?;
+        let after_marker = &rest[marker_len..];
+        let gap = after_marker.len() - after_marker.trim_start().len();
+        field_start += marker_len + gap;
+        rest = &line[field_start..];
+    }
+    let field_len = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let field = &rest[..field_len];
+    let patterns: Vec<&str> = field.split(',').collect();
+    // 哈希主机名（`|1|盐|哈希`）认不出是不是同一个人写的多主机行：照整行处理。
+    if patterns.len() < 2 || patterns.iter().any(|pattern| pattern.starts_with("|1|")) {
+        return None;
+    }
+    let remaining: Vec<&str> = patterns
+        .into_iter()
+        .filter(|pattern| pattern.starts_with('!') || !matches_pattern(wanted, pattern))
+        .collect();
+    // 只剩否定模式的行不匹配任何主机，留着只会误导人。
+    if remaining.iter().all(|pattern| pattern.starts_with('!')) {
+        return None;
+    }
+    Some(format!(
+        "{}{}{}",
+        &line[..field_start],
+        remaining.join(","),
+        &line[field_start + field_len..]
+    ))
 }
 
 /// 进程内一把写锁，避免两条连接同时确认同一台主机时把文件写坏。
@@ -1446,5 +1504,190 @@ other",
             HostKeyLookup::Unknown,
             "不合格的地址一条都不写"
         );
+    }
+
+    // ---- C7b：忘记一台主机不连带别的主机；写回是原子的 ----
+
+    #[test]
+    fn forgetting_one_host_of_a_multi_host_line_keeps_the_others() {
+        let file = TempFile::new();
+        file.write(&format!(
+            "# 手写的注释\na.example.com,b.example.com,10.0.0.1 {ED25519_A} 备注\nc.example.com {ED25519_B}\n"
+        ));
+        let known = KnownHosts::new(&file.path);
+
+        assert_eq!(known.forget("b.example.com", 22).expect("删除"), 1);
+
+        assert_eq!(
+            known.lookup("b.example.com", 22, &key(ED25519_A)),
+            HostKeyLookup::Unknown,
+            "被忘记的这台不再匹配"
+        );
+        for host in ["a.example.com", "10.0.0.1"] {
+            assert_eq!(
+                known.lookup(host, 22, &key(ED25519_A)),
+                HostKeyLookup::Match,
+                "{host} 的指纹不能被连带删掉"
+            );
+        }
+        assert_eq!(
+            known.lookup("c.example.com", 22, &key(ED25519_B)),
+            HostKeyLookup::Match
+        );
+        assert_eq!(
+            file.read(),
+            format!(
+                "# 手写的注释\na.example.com,10.0.0.1 {ED25519_A} 备注\nc.example.com {ED25519_B}\n"
+            ),
+            "只改主机名那一栏，注释和别的行原样"
+        );
+    }
+
+    #[test]
+    fn forgetting_the_last_host_of_a_line_drops_the_whole_line() {
+        let file = TempFile::new();
+        file.write(&format!("a.example.com,b.example.com {ED25519_A}\n"));
+        let known = KnownHosts::new(&file.path);
+        assert_eq!(known.forget("a.example.com", 22).expect("删除"), 1);
+        assert_eq!(known.forget("b.example.com", 22).expect("删除"), 1);
+        assert_eq!(file.read(), "");
+    }
+
+    #[test]
+    fn a_non_default_port_is_a_separate_pattern_on_the_same_line() {
+        let file = TempFile::new();
+        file.write(&format!("a.example.com,[a.example.com]:2200 {ED25519_A}\n"));
+        let known = KnownHosts::new(&file.path);
+        assert_eq!(known.forget("a.example.com", 2200).expect("删除"), 1);
+        assert_eq!(
+            known.lookup("a.example.com", 22, &key(ED25519_A)),
+            HostKeyLookup::Match
+        );
+        assert_eq!(
+            known.lookup("a.example.com", 2200, &key(ED25519_A)),
+            HostKeyLookup::Unknown
+        );
+    }
+
+    #[test]
+    fn a_revoked_multi_host_line_keeps_its_marker_and_the_other_hosts() {
+        let file = TempFile::new();
+        file.write(&format!(
+            "@revoked a.example.com,b.example.com {ED25519_A}\n"
+        ));
+        let known = KnownHosts::new(&file.path);
+        assert_eq!(known.forget("a.example.com", 22).expect("删除"), 1);
+        assert_eq!(file.read(), format!("@revoked b.example.com {ED25519_A}\n"));
+    }
+
+    #[test]
+    fn replacing_keeps_the_other_hosts_of_a_multi_host_line() {
+        let file = TempFile::new();
+        file.write(&format!("a.example.com,b.example.com {ED25519_A}\n"));
+        let known = KnownHosts::new(&file.path);
+        assert_eq!(
+            known
+                .replace("a.example.com", 22, &key(ED25519_B))
+                .expect("更新"),
+            1
+        );
+        assert_eq!(
+            known.lookup("a.example.com", 22, &key(ED25519_B)),
+            HostKeyLookup::Match
+        );
+        assert_eq!(
+            known.lookup("b.example.com", 22, &key(ED25519_A)),
+            HostKeyLookup::Match,
+            "更新 a 的指纹不能把 b 的旧记录删掉"
+        );
+    }
+
+    #[test]
+    fn a_hashed_line_is_removed_as_a_whole() {
+        let salt: [u8; 16] = [9; 16];
+        let mut hmac = Hmac::<Sha1>::new_from_slice(&salt).expect("hmac");
+        hmac.update(b"hashed.example.com");
+        let hash = hmac.finalize().into_bytes();
+        use base64::Engine as _;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let hashed = format!("|1|{}|{}", engine.encode(salt), engine.encode(hash));
+
+        let file = TempFile::new();
+        file.write(&format!(
+            "{hashed} {ED25519_A}\nother.example.com {ED25519_B}\n"
+        ));
+        let known = KnownHosts::new(&file.path);
+        assert_eq!(known.forget("hashed.example.com", 22).expect("删除"), 1);
+        assert_eq!(file.read(), format!("other.example.com {ED25519_B}\n"));
+
+        // 手写的「哈希 + 明文」混合行：认不出是谁写的，也照整行处理（和以前一样）。
+        file.write(&format!("{hashed},other.example.com {ED25519_A}\n"));
+        assert_eq!(known.forget("hashed.example.com", 22).expect("删除"), 1);
+        assert_eq!(file.read(), "");
+    }
+
+    #[test]
+    fn a_failed_write_back_leaves_the_original_file_untouched() {
+        let file = TempFile::new();
+        let original =
+            format!("a.example.com,b.example.com {ED25519_A}\nc.example.com {ED25519_B}\n");
+        file.write(&original);
+        let known = KnownHosts::new(&file.path);
+
+        let failing = |_: &Path, _: &[u8]| -> std::io::Result<()> {
+            Err(std::io::Error::other("磁盘满（测试注入）"))
+        };
+        let err = known
+            .forget_locked_with("a.example.com", 22, false, &failing)
+            .expect_err("写回失败要报错");
+        assert!(err.to_string().contains("写 known_hosts 失败"), "{err}");
+        assert_eq!(file.read(), original, "写回失败，原文件一个字节都不能变");
+    }
+
+    /// 真实的写回路径：Windows 上替换一个只读文件会失败——原文件不变，目录里不留临时文件。
+    #[cfg(windows)]
+    #[test]
+    fn a_real_failed_replace_keeps_the_file_and_leaves_no_temp_file() {
+        let file = TempFile::new();
+        let original = format!("a.example.com,b.example.com {ED25519_A}\n");
+        file.write(&original);
+        let mut permissions = std::fs::metadata(&file.path).expect("元数据").permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&file.path, permissions).expect("设只读");
+
+        let known = KnownHosts::new(&file.path);
+        let result = known.forget("a.example.com", 22);
+
+        // 先把只读去掉，不然测试目录清理不掉。
+        let mut permissions = std::fs::metadata(&file.path).expect("元数据").permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&file.path, permissions).expect("去掉只读");
+
+        assert!(result.is_err(), "替换只读文件应当失败");
+        assert_eq!(file.read(), original);
+        let leftovers: Vec<_> = std::fs::read_dir(file.path.parent().expect("父目录"))
+            .expect("列目录")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "known_hosts")
+            .collect();
+        assert!(leftovers.is_empty(), "不能留下临时文件：{leftovers:?}");
+    }
+
+    #[test]
+    fn a_successful_forget_leaves_no_temp_file_behind() {
+        let file = TempFile::new();
+        file.write(&format!(
+            "a.example.com {ED25519_A}\nb.example.com {ED25519_B}\n"
+        ));
+        let known = KnownHosts::new(&file.path);
+        known.forget("a.example.com", 22).expect("删除");
+        let names: Vec<_> = std::fs::read_dir(file.path.parent().expect("父目录"))
+            .expect("列目录")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["known_hosts".to_owned()]);
     }
 }
