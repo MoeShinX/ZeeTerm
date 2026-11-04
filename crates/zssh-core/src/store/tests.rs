@@ -1932,3 +1932,24 @@ fn the_default_agent_is_builtin_until_the_user_chooses_one() {
     db.setting_set("ai_default_agent", "7").unwrap();
     assert_eq!(db.ai_default_agent().unwrap(), "builtin");
 }
+
+#[test]
+fn the_local_backup_keep_defaults_to_five_and_stored_values_are_kept_and_clamped() {
+    let db = memory_db();
+    assert_eq!(db.sync_backup_keep().unwrap(), 5);
+    assert_eq!(crate::store::settings::SYNC_BACKUP_KEEP_DEFAULT, 5);
+    // 以前存过的值保持原样（包括旧默认 20）。
+    db.setting_set(crate::store::settings::SYNC_BACKUP_KEEP_KEY, "20")
+        .unwrap();
+    assert_eq!(db.sync_backup_keep().unwrap(), 20);
+    db.setting_set(crate::store::settings::SYNC_BACKUP_KEEP_KEY, "0")
+        .unwrap();
+    assert_eq!(db.sync_backup_keep().unwrap(), 1);
+    db.setting_set(crate::store::settings::SYNC_BACKUP_KEEP_KEY, "9999")
+        .unwrap();
+    assert_eq!(db.sync_backup_keep().unwrap(), 200);
+    // 读不懂的值回到默认。
+    db.setting_set(crate::store::settings::SYNC_BACKUP_KEEP_KEY, "\"x\"")
+        .unwrap();
+    assert_eq!(db.sync_backup_keep().unwrap(), 5);
+}
