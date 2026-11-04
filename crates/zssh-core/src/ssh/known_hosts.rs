@@ -281,6 +281,36 @@ impl KnownHosts {
         None
     }
 
+    /// 这台主机已保存的密钥类型和指纹：每种类型取第一条普通记录，自己的文件优先（和
+    /// [`Self::lookup`] 判断"同类型记录以哪个文件为准"的顺序一致）。吊销记录不算"保存过"。
+    ///
+    /// 任何一个文件读不了就返回空：读不了 = 不确定，调用方按默认顺序协商，真正的判断
+    /// 仍由 `lookup` 的 `Unreadable` 去拦。
+    pub fn saved_key_types(&self, host: &str, port: u16) -> Vec<(String, String)> {
+        let wanted = host_pattern(host, port);
+        let mut saved: Vec<(String, String)> = Vec::new();
+        for path in self.all_files() {
+            let content = match read_known_hosts(&path) {
+                Ok(Some(content)) => content,
+                Ok(None) => continue,
+                Err(_) => return Vec::new(),
+            };
+            for entry in parse(&content) {
+                if entry.marker.is_some() || !entry.matches_host(&wanted) {
+                    continue;
+                }
+                if saved
+                    .iter()
+                    .any(|(key_type, _)| *key_type == entry.key_type)
+                {
+                    continue;
+                }
+                saved.push((entry.key_type.clone(), entry.fingerprint()));
+            }
+        }
+        saved
+    }
+
     fn all_files(&self) -> Vec<PathBuf> {
         let mut files = vec![self.our_file.clone()];
         files.extend(self.read_only.iter().cloned());
