@@ -34,12 +34,11 @@ const LABEL_WIDTH: f32 = 112.0;
 // 纯函数：文案和判断
 // ---------------------------------------------------------------------------
 
-/// OneDrive 登录按钮能不能点：「高级」里填了就看格式，没填就看这个版本有没有内置 client ID
-/// （0.2.14 的 `canLogin`）。
-pub(super) fn can_login(builtin: bool, custom_client_id: &str) -> bool {
+/// OneDrive 登录按钮能不能点：「高级」里填了就看格式，没填就用内置的 client ID（总是可用）。
+pub(super) fn can_login(custom_client_id: &str) -> bool {
     let custom = custom_client_id.trim();
     if custom.is_empty() {
-        return builtin;
+        return true;
     }
     zssh_core::sync::onedrive::config::is_valid_client_id(custom)
 }
@@ -554,8 +553,7 @@ impl SyncDemo {
         let busy = self.busy();
         let signed_in = matches!(self.saved, Some(StorageConfig::Onedrive(_)));
         let custom = self.onedrive_client_id.read(cx).value().to_string();
-        let builtin = zssh_core::sync::onedrive::config::builtin_client_id().is_some();
-        let allowed = can_login(builtin, &custom);
+        let allowed = can_login(&custom);
         let custom_invalid = !custom.trim().is_empty()
             && !zssh_core::sync::onedrive::config::is_valid_client_id(&custom);
         let mut rows: Vec<AnyElement> = vec![
@@ -651,13 +649,6 @@ impl SyncDemo {
                 );
             }
             rows.push(buttons.into_any_element());
-            if !allowed && !custom_invalid {
-                rows.push(div().id("onedrive-no-client").child(colored(
-                    "这个版本没有内置 OneDrive 的 client ID（自己从源码编译的版本是这样），登录按钮暂时不可用。\
-                     在下面的「高级」里填你自己在 Azure 注册的应用的 client ID 就能用。",
-                    tokens.dot_connecting,
-                )).into_any_element());
-            }
             if custom_invalid {
                 rows.push(colored(
                     "client ID 的格式不对，应该形如 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx。",
@@ -1319,17 +1310,15 @@ mod tests {
     const GUID: &str = "11111111-2222-3333-4444-555555555555";
 
     #[test]
-    fn login_needs_a_built_in_id_or_a_well_formed_custom_one() {
-        // 没内置 + 没填：不能登录（出「这个版本没有内置…」的提示）。
-        assert!(!can_login(false, ""));
-        assert!(!can_login(false, "   "));
-        // 内置了：不填也行。
-        assert!(can_login(true, ""));
+    fn login_uses_the_built_in_id_unless_a_custom_one_is_filled_in_and_well_formed() {
+        // 不填：用内置的，总能登录。
+        assert!(can_login(""));
+        assert!(can_login("   "));
         // 填了就看格式，内置的不能替它兜底。
-        assert!(can_login(false, GUID));
-        assert!(can_login(false, &format!("  {GUID}  ")));
-        assert!(!can_login(true, "not-a-guid"));
-        assert!(!can_login(false, "11111111-2222-3333-4444-55555555555"));
+        assert!(can_login(GUID));
+        assert!(can_login(&format!("  {GUID}  ")));
+        assert!(!can_login("not-a-guid"));
+        assert!(!can_login("11111111-2222-3333-4444-55555555555"));
     }
 
     #[test]

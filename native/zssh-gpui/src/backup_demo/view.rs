@@ -22,9 +22,6 @@ use crate::settings_view::card;
 use crate::sync_demo::format_stamp;
 use crate::typography::{Role, Typo as _};
 
-/// 保留份数的可选值（核心接受 1～200，同 0.2.14）。
-pub(super) const KEEP_CHOICES: [usize; 6] = [5, 10, 20, 50, 100, 200];
-
 /// 离线备份的默认文件名（`zeeterm-日期.zsshbak`）：扩展名和 Z-SSH 0.2.14 一样，两边的备份文件互相能导入；
 /// 文件名改成产品名，免得和 Z-SSH 导出的混在一起分不清。
 pub(super) fn default_file_name() -> String {
@@ -36,16 +33,6 @@ pub(super) fn default_file_name() -> String {
 /// 导出界面的提醒：文件里带着同步账号的登录信息。
 pub(super) const EXPORT_CREDENTIALS_NOTE: &str =
     "备份文件里包含同步账号（S3 / WebDAV / OneDrive 等）的登录信息，请妥善保管";
-
-/// 保留份数下拉里要列出的值：固定几档，当前值不在里面就加进去排好。
-pub(super) fn keep_choices(current: usize) -> Vec<usize> {
-    let mut choices = KEEP_CHOICES.to_vec();
-    if !choices.contains(&current) {
-        choices.push(current);
-        choices.sort_unstable();
-    }
-    choices
-}
 
 /// 列表里一行的两行字：时间；应用版本 + 记录数（解不开的说明原因）。
 pub(super) fn row_texts(detail: &BackupDetail) -> (String, String) {
@@ -170,7 +157,7 @@ impl BackupDemo {
     #[inline(never)]
     fn local_card(&self, entity: &Entity<Self>, tokens: &Tokens) -> AnyElement {
         let busy = self.busy.is_some();
-        let mut rows: Vec<AnyElement> = vec![self.keep_row(entity, tokens, busy)];
+        let mut rows: Vec<AnyElement> = vec![self.keep_row(tokens, busy)];
         if self.backups.is_empty() {
             rows.push(
                 div()
@@ -215,20 +202,8 @@ impl BackupDemo {
         )
     }
 
-    fn keep_row(&self, entity: &Entity<Self>, tokens: &Tokens, busy: bool) -> AnyElement {
-        // 份数是几个互斥的选项：用整条分段按钮（和主机表单同一个控件），右边留出固定宽度。
-        let counts = keep_choices(self.keep);
-        let options = counts
-            .iter()
-            .map(|count| {
-                (
-                    format!("{count} 份"),
-                    self.keep == *count,
-                    busy.then_some("正在处理备份，稍后再改"),
-                )
-            })
-            .collect();
-        let target = entity.clone();
+    fn keep_row(&self, tokens: &Tokens, busy: bool) -> AnyElement {
+        // 份数是一个 1–200 的整数：输入框，回车或点到别处时保存；不合法的不保存，就地写范围。
         h_flex()
             .w_full()
             .min_h(px(28.0))
@@ -243,20 +218,27 @@ impl BackupDemo {
                     .child(muted(
                         "超过的最早的备份会被清理。调小之后，多出来的旧备份在下一次备份时才删，改这个设置本身不会删任何东西。",
                         tokens,
-                    )),
+                    ))
+                    .when_some(self.keep_error.clone(), |col, message| {
+                        col.child(
+                            div()
+                                .id("backup-keep-error")
+                                .child(colored(message, tokens.danger)),
+                        )
+                    }),
             )
-            .child(div().flex_none().w(px(380.0)).child(
-                crate::main_window::widgets::segmented_bar(
-                    "backup-keep",
-                    options,
-                    tokens,
-                    move |index, _, cx| {
-                        if let Some(count) = counts.get(index).copied() {
-                            target.update(cx, |this, cx| this.set_keep(count, cx));
-                        }
-                    },
-                ),
-            ))
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .w(px(88.0))
+                            .child(Input::new(&self.keep_input).w_full().disabled(busy)),
+                    )
+                    .child(muted("份", tokens)),
+            )
             .into_any_element()
     }
 
@@ -333,6 +315,32 @@ impl BackupDemo {
                     .child(colored(CONFIRM_WARNING, tokens.danger))
             })
             .into_any_element()
+    }
+
+    /// 输入框回车 / 失焦：合法就保存（和现在的值一样不重复写），不合法只显示提示、不保存。
+    pub(super) fn commit_keep_input(&mut self, cx: &mut Context<Self>) {
+        let text = self.keep_input.read(cx).value().to_string();
+        match super::parse_keep(&text) {
+            Ok(keep) => {
+                self.keep_error = None;
+                if keep != self.keep {
+                    self.set_keep(keep, cx);
+                }
+            }
+            Err(message) => self.keep_error = Some(message),
+        }
+        cx.notify();
+    }
+
+    /// 把已经读到 / 存好的份数显示到输入框里（输入框里的数字已经是这个值就不动，免得打断输入）。
+    pub(super) fn show_keep(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let want = self.keep.to_string();
+        let shown = self.keep_input.read(cx).value().trim().to_owned();
+        if shown != want {
+            self.keep_input
+                .update(cx, |input, cx| input.set_value(want, window, cx));
+        }
+        self.keep_error = None;
     }
 
     /// 改保留份数：直接写设置；失败把原因显示出来，界面上的值不变。
@@ -631,7 +639,7 @@ impl BackupDemo {
 mod tests {
     use zssh_core::sync::backup::{BackupDetail, BackupInfo};
 
-    use super::{default_file_name, keep_choices, row_texts};
+    use super::{default_file_name, row_texts};
 
     fn detail(readable: bool) -> BackupDetail {
         BackupDetail {
@@ -666,13 +674,6 @@ mod tests {
         let (title, sub) = row_texts(&detail(false));
         assert_eq!(title, "20260101-010203");
         assert_eq!(sub, "这份备份读不了（可能是换了 Windows 用户保存的）");
-    }
-
-    #[test]
-    fn keep_choices_include_the_current_value_in_order() {
-        assert_eq!(keep_choices(20), vec![5, 10, 20, 50, 100, 200]);
-        assert_eq!(keep_choices(7), vec![5, 7, 10, 20, 50, 100, 200]);
-        assert_eq!(keep_choices(500), vec![5, 10, 20, 50, 100, 200, 500]);
     }
 
     #[test]

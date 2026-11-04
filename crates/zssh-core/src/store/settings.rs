@@ -54,7 +54,8 @@ pub const SYNC_BACKUP_KEEP_KEY: &str = "sync_backup_keep";
 /// 上次自动备份时的应用版本（升级后第一次启动要备份）。
 pub const SYNC_LAST_BACKUP_VERSION_KEY: &str = "sync_last_backup_version";
 
-pub const SYNC_BACKUP_KEEP_DEFAULT: usize = 20;
+/// 没设置过时保留几份（V2-U32 起 5，原来是 20；已经存过值的用户不受影响）。
+pub const SYNC_BACKUP_KEEP_DEFAULT: usize = 5;
 pub const SYNC_BACKUP_KEEP_MAX: usize = 200;
 
 impl Database {
@@ -167,14 +168,19 @@ impl Database {
         }
     }
 
-    /// 默认智能体（`"opencode"` / `"codex"` / `"claude"` / `"builtin"`）；没设置或值不认识按 `"opencode"`。
+    /// 默认智能体（`"opencode"` / `"codex"` / `"claude"` / `"builtin"`）；没设置或值不认识按 `"builtin"`
+    /// （ZeePilot，V2-U32 起新装默认；选过的以用户为准）。
     pub fn ai_default_agent(&self) -> Result<String, ZsshError> {
         match self.setting_get(AI_DEFAULT_AGENT_KEY)? {
             Some(raw) => match serde_json::from_str::<String>(&raw) {
-                Ok(agent) if matches!(agent.as_str(), "codex" | "claude" | "builtin") => Ok(agent),
-                _ => Ok("opencode".into()),
+                Ok(agent)
+                    if matches!(agent.as_str(), "opencode" | "codex" | "claude" | "builtin") =>
+                {
+                    Ok(agent)
+                }
+                _ => Ok("builtin".into()),
             },
-            None => Ok("opencode".into()),
+            None => Ok("builtin".into()),
         }
     }
 
@@ -243,7 +249,7 @@ impl Database {
         })
     }
 
-    /// 本地自动备份最多保留几份；没设置或值不合法用默认 20。
+    /// 本地自动备份最多保留几份；没设置或值不合法用默认 [`SYNC_BACKUP_KEEP_DEFAULT`]（5）。
     pub fn sync_backup_keep(&self) -> Result<usize, ZsshError> {
         let keep = match self.setting_get(SYNC_BACKUP_KEEP_KEY)? {
             Some(raw) => serde_json::from_str::<u64>(&raw).ok(),

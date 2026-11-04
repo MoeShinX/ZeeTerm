@@ -169,7 +169,7 @@ impl AgentsDemo {
         };
         let mut settings_error = None;
         let mut saved: [Option<String>; 3] = std::array::from_fn(|_| None);
-        let mut default_agent = AgentKind::OpenCode;
+        let mut default_agent = AgentKind::Builtin;
         let mut exec_mode = "manual".to_owned();
         let mut backup_keep = 5;
         if let Some(db) = &db {
@@ -180,7 +180,7 @@ impl AgentsDemo {
                     Err(err) => problems.push(format!("读取 {} 的路径失败：{err}", kind.label())),
                 }
             }
-            // 用户选过的以用户为准；没选过且配好了内置助手，默认就是内置助手（V2-A4）。
+            // 用户选过的以用户为准；没选过默认就是 ZeePilot（V2-U32），不管配没配好。
             match db.ai_default_agent() {
                 Ok(_) => default_agent = agent_setup::default_agent(Some(db)),
                 Err(err) => problems.push(format!("读取默认智能体失败：{err}")),
@@ -269,7 +269,7 @@ impl AgentsDemo {
         let mut changed = false;
         if agent_setup::version() != self.status.version {
             self.status = agent_setup::snapshot();
-            // 内置助手的接口配好 / 删光会改变"没选过时的默认"。
+            // 状态变了顺手重读默认智能体（别的窗口 / 同步可能改了它）。
             self.default_agent = agent_setup::default_agent(self.db.as_ref());
             changed = true;
         }

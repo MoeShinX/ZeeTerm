@@ -196,28 +196,40 @@ async fn switching_to_another_storage_removes_the_saved_onedrive_tokens() {
 }
 
 #[tokio::test]
-async fn a_build_without_a_client_id_refuses_to_log_in_and_never_opens_the_browser() {
+async fn without_a_custom_client_id_the_login_uses_the_built_in_one() {
     let mock = MockMicrosoft::start().await;
     let a = Machine::new("od-noid", "dev-a");
-    let browser = FakeBrowser::approving();
-    let err = service::onedrive_sign_in(
+    let browser = FakeBrowser::idle();
+    // 模拟的微软服务只认测试用的 client ID，所以这次登录走不完（不会有回调）；这里只看交给浏览器的
+    // 授权地址：没填自己的就带内置的 client ID，不会不带、也不会带别的。
+    let result = service::onedrive_sign_in(
         &a.db,
         &DpapiSealer,
         &mock.endpoints(),
         "",
-        Duration::from_secs(5),
+        Duration::from_secs(1),
         &browser,
         &Notify::new(),
     )
-    .await
-    .expect_err("没有 client ID");
-    assert!(matches!(err, LoginError::NoClientId), "{err:?}");
-    assert!(err.to_string().contains("高级"), "{err}");
+    .await;
     assert!(
-        browser.urls().is_empty(),
-        "不能把没有 client ID 的请求交给浏览器"
+        !matches!(result, Err(LoginError::InvalidClientId)),
+        "{result:?}"
     );
+    let urls = browser.urls();
+    assert_eq!(urls.len(), 1, "{urls:?}");
+    assert!(
+        urls[0].contains(&format!(
+            "client_id={}",
+            zssh_core::sync::onedrive::config::DEFAULT_CLIENT_ID
+        )),
+        "{}",
+        urls[0]
+    );
+    assert!(!urls[0].contains(CLIENT_ID), "{}", urls[0]);
+    assert_eq!(service::load_config(&a.db, &DpapiSealer).unwrap(), None);
 
+    // 填得不合法的不会悄悄换成内置的：直接报格式错误，不打开浏览器。
     let err = sign_in(&a, &mock.endpoints(), "not-a-guid")
         .await
         .expect_err("格式不对");

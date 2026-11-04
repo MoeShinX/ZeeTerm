@@ -3184,7 +3184,8 @@ mod tests {
         let db = Database::open_in_memory().expect("内存库");
         assert_eq!(
             crate::agent_setup::default_agent(Some(&db)),
-            AgentKind::OpenCode
+            AgentKind::Builtin,
+            "没选过时默认 ZeePilot，接口还没配也一样"
         );
         let draft = build_draft(&FormValues {
             id: None,
@@ -3224,7 +3225,7 @@ mod tests {
             Some("sk-test-flow0001")
         );
 
-        // 3 配好之后默认智能体是内置助手；面板的模型下拉有接口的模型和思考强度变体。
+        // 3 配好之后默认智能体还是内置助手；面板的模型下拉有接口的模型和思考强度变体。
         assert_eq!(
             crate::agent_setup::default_agent(Some(&db)),
             AgentKind::Builtin

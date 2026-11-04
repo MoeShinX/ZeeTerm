@@ -32,8 +32,9 @@ pub const MAX_FONT_FAMILY_CHARS: usize = 200;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CursorShape {
-    #[default]
     Block,
+    /// 新装默认（V2-U32）；已经存过设置的用户保持自己存下的值。
+    #[default]
     Underline,
     /// 竖线（0.2.14 的 `bar`）。
     Bar,
@@ -129,7 +130,7 @@ impl Default for UiSettings {
             font_size: DEFAULT_FONT_SIZE,
             line_height: DEFAULT_LINE_HEIGHT,
             scrollback: DEFAULT_SCROLLBACK,
-            cursor: CursorShape::Block,
+            cursor: CursorShape::default(),
             cursor_blink: true,
             ime_english: true,
             copy_on_select: false,
@@ -325,6 +326,22 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_cursor_shape_is_kept_and_a_missing_one_gets_the_new_default() {
+        let dir = temp_dir("cursor-default");
+        let path = dir.join("ui-settings.json");
+        std::fs::write(&path, br#"{"font_size": 15.0, "cursor": "block"}"#).unwrap();
+        let kept = UiSettings::load_from(&path).expect("旧文件照常读");
+        assert_eq!(kept.cursor, CursorShape::Block, "存过方块的用户不被改");
+        std::fs::write(&path, br#"{"font_size": 15.0}"#).unwrap();
+        let fresh = UiSettings::load_from(&path).expect("旧文件照常读");
+        assert_eq!(
+            fresh.cursor,
+            CursorShape::Underline,
+            "没存过光标样式的用下划线"
+        );
+    }
+
+    #[test]
     fn the_bar_cursor_round_trips_as_bar() {
         let json = serde_json::to_string(&CursorShape::Bar).unwrap();
         assert_eq!(json, "\"bar\"");
@@ -426,6 +443,7 @@ mod tests {
         );
         assert_eq!((s.font_size, s.line_height), (12.0, 1.3));
         assert_eq!(s.scrollback, 10_000);
+        assert_eq!(s.cursor, CursorShape::Underline, "光标默认下划线");
         assert!(s.highlight_enabled);
         // 默认值本身不能被 sanitized 改掉。
         assert_eq!(s.clone().sanitized(), s);

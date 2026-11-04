@@ -1087,6 +1087,9 @@ impl MainWindow {
         Some(
             v_flex()
                 .id("server-overview")
+                // 盖在终端上的浮层：不挡的话，滚轮落在面板的空白处 / 表头 / 边框上时，事件会穿到下面终端的
+                // 滚轮处理，终端跟着回滚。面板里自己的滚动区在它前面，照常滚。
+                .occlude()
                 .absolute()
                 .top_0()
                 .right_0()

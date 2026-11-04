@@ -314,7 +314,7 @@ pub async fn onedrive_sign_in(
         client_id: custom.to_owned(),
         account: String::new(),
     };
-    let client_id = draft.effective_client_id().ok_or(LoginError::NoClientId)?;
+    let client_id = draft.effective_client_id();
     let proxy =
         super::app_proxy::app_proxy(db).map_err(|err| LoginError::Internal(err.to_string()))?;
     let success = login::login(
@@ -494,11 +494,6 @@ pub fn default_proxy(db: &Database) -> Result<Option<SyncProxy>, SyncError> {
     }))
 }
 
-/// OneDrive 的 client ID 不可用时给用户看的说明。
-fn no_client_id() -> super::storage::StorageError {
-    super::storage::StorageError::AuthFailed(LoginError::NoClientId.to_string())
-}
-
 pub fn open_storage<'a>(
     config: &StorageConfig,
     proxy: Option<&SyncProxy>,
@@ -540,9 +535,7 @@ pub fn open_storage_named<'a>(
             Box::new(github::open_storage_named(config, proxy, object_name).map_err(storage_error)?)
         }
         StorageConfig::Onedrive(config) => {
-            let client_id = config
-                .effective_client_id()
-                .ok_or_else(|| storage_error(no_client_id()))?;
+            let client_id = config.effective_client_id();
             Box::new(
                 onedrive_graph::open_storage_named(
                     onedrive_endpoints.clone(),
@@ -570,12 +563,10 @@ pub async fn test_connection(
         StorageConfig::Webdav(config) => webdav::probe(config, proxy).await,
         StorageConfig::S3(config) => s3::probe(config, proxy).await,
         StorageConfig::Github(config) => github::probe(config, proxy).await,
-        StorageConfig::Onedrive(config) => match config.effective_client_id() {
-            Some(client_id) => {
-                onedrive_graph::probe(onedrive_endpoints.clone(), &client_id, proxy, tokens).await
-            }
-            None => Err(no_client_id()),
-        },
+        StorageConfig::Onedrive(config) => {
+            let client_id = config.effective_client_id();
+            onedrive_graph::probe(onedrive_endpoints.clone(), &client_id, proxy, tokens).await
+        }
     };
     match result {
         Ok(probe) => probe,

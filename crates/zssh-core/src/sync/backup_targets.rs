@@ -400,7 +400,7 @@ pub async fn onedrive_sign_in_for_target(
         client_id: custom.to_owned(),
         account: String::new(),
     };
-    let client_id = draft.effective_client_id().ok_or(LoginError::NoClientId)?;
+    let client_id = draft.effective_client_id();
     let proxy =
         super::app_proxy::app_proxy(db).map_err(|err| LoginError::Internal(err.to_string()))?;
     let success = login::login(

@@ -1,4 +1,4 @@
-//! 主机的系统图标：连上过一次、探测出发行版之后，主机树 / 主机页 / 快速连接 / 标签里的图标换成
+//! 主机的系统图标：连上过一次、探测出发行版之后，主机树 / 主机页 / 快速连接里的图标换成
 //! 发行版标志（品牌色圆角方块 + 白色标志）。认不出来、还没连过的主机继续用协议图标。
 //!
 //! 标志和品牌色移植自 Netcatty（`public/distro/`、`components/DistroAvatar.tsx`），经 Z-SSH 的
@@ -122,8 +122,6 @@ pub fn is_known(os: &str) -> bool {
 pub enum OsIconSize {
     /// 主机树 / 列表行 / 快速连接：16px 方块。
     Row,
-    /// 标签上：14px 方块，比标签里的字小一点。
-    Tab,
     /// 主机页卡片（舒适）。
     Card,
     /// 主机页卡片（紧凑）。
@@ -135,7 +133,6 @@ impl OsIconSize {
     pub fn dims(self) -> (f32, f32, f32) {
         match self {
             Self::Row => (16.0, 11.0, 4.0),
-            Self::Tab => (14.0, 10.0, 3.0),
             Self::Card => (36.0, 20.0, 7.0),
             Self::CardCompact => (28.0, 16.0, 6.0),
         }
@@ -238,12 +235,7 @@ mod tests {
 
     #[test]
     fn sizes_fit_the_boxes_they_sit_in() {
-        for size in [
-            OsIconSize::Row,
-            OsIconSize::Tab,
-            OsIconSize::Card,
-            OsIconSize::CardCompact,
-        ] {
+        for size in [OsIconSize::Row, OsIconSize::Card, OsIconSize::CardCompact] {
             let (boxed, logo, radius) = size.dims();
             assert!(logo < boxed && radius * 2.0 <= boxed);
         }

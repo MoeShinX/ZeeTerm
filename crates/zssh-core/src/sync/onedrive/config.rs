@@ -1,19 +1,15 @@
 //! OneDrive 的连接设置和 client ID 的来源。
 //!
-//! client ID（Azure 里“应用程序(客户端) ID”）是公共客户端的标识，**不是秘密**，但不写进代码：
-//! - 发布版：构建时从环境变量 `ZSSH_ONEDRIVE_CLIENT_ID` 读取，编进程序（`src-tauri` 启动时
-//!   调用 [`set_builtin_client_id`] 传进来）；
-//! - 自己从源码编译的版本没有内置的：同步设置“高级”里可以填自己的（存在本机 [`OneDriveConfig`]
-//!   里，随 `sync_storage` 一起 DPAPI 加密，**不同步**）。
-
-use std::sync::OnceLock;
+//! client ID（Azure 里“应用程序(客户端) ID”）是公共客户端的标识，**不是秘密**，可以进仓库：
+//! 程序内置一个默认的 [`DEFAULT_CLIENT_ID`]；同步设置“高级”里可以填自己的（存在本机
+//! [`OneDriveConfig`] 里，随 `sync_storage` 一起 DPAPI 加密，**不同步**），填了合法值就优先用它。
 
 use serde::{Deserialize, Serialize};
 
 /// 一个连接上的 OneDrive 账号：非秘密的部分。令牌另存（[`super::tokens`]）。
 #[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct OneDriveConfig {
-    /// 用户在“高级”里填的 client ID；空 = 用编进程序里的那个。
+    /// 用户在“高级”里填的 client ID；空 = 用内置的那个。
     #[serde(default)]
     pub client_id: String,
     /// 登录时记下的账号显示名（界面显示用）。
@@ -40,28 +36,17 @@ pub fn is_valid_client_id(text: &str) -> bool {
             .all(|(len, part)| part.len() == *len && part.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
-static BUILTIN_CLIENT_ID: OnceLock<String> = OnceLock::new();
-
-/// 程序启动时把构建时编进来的 client ID 交给这里。空的、格式不对的当作没有（不 panic、不使用）。
-pub fn set_builtin_client_id(raw: Option<&str>) {
-    if let Some(id) = raw.map(str::trim).filter(|id| is_valid_client_id(id)) {
-        let _ = BUILTIN_CLIENT_ID.set(id.to_owned());
-    }
-}
-
-/// 编进程序的 client ID（自己编译的版本没有）。
-pub fn builtin_client_id() -> Option<&'static str> {
-    BUILTIN_CLIENT_ID.get().map(String::as_str)
-}
+/// 内置的 client ID（公共客户端标识，不是机密）。
+pub const DEFAULT_CLIENT_ID: &str = "2feedc3e-6152-4734-a68a-4a946485e1d1";
 
 impl OneDriveConfig {
-    /// 实际用的 client ID：用户填的优先，其次编进程序的。
-    pub fn effective_client_id(&self) -> Option<String> {
+    /// 实际用的 client ID：用户在“高级”里填的合法值优先，没填或填得不合法就用内置的。
+    pub fn effective_client_id(&self) -> String {
         let custom = self.client_id.trim();
         if is_valid_client_id(custom) {
-            return Some(custom.to_owned());
+            return custom.to_owned();
         }
-        builtin_client_id().map(str::to_owned)
+        DEFAULT_CLIENT_ID.to_owned()
     }
 }
 
@@ -90,31 +75,25 @@ mod tests {
     }
 
     #[test]
-    fn a_custom_client_id_is_preferred_and_an_invalid_one_is_ignored() {
+    fn the_built_in_id_is_a_well_formed_guid() {
+        assert!(is_valid_client_id(DEFAULT_CLIENT_ID));
+    }
+
+    #[test]
+    fn a_custom_client_id_is_preferred_and_an_invalid_one_falls_back_to_the_built_in() {
         let custom = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
         let config = OneDriveConfig {
             client_id: format!("  {custom} "),
             account: String::new(),
         };
-        assert_eq!(config.effective_client_id().as_deref(), Some(custom));
-        // 填错了的当作没填：回退到编进程序的（这个测试进程里没有设置，所以是 None）。
-        let bad = OneDriveConfig {
-            client_id: "oops".to_owned(),
-            account: String::new(),
-        };
-        assert_eq!(
-            bad.effective_client_id(),
-            builtin_client_id().map(str::to_owned)
-        );
-    }
-
-    #[test]
-    fn invalid_builtin_ids_are_never_used() {
-        // OnceLock 只能设一次，这里只验证无效值不会被接受（不影响其他用例）。
-        set_builtin_client_id(Some("  "));
-        set_builtin_client_id(Some("garbage"));
-        set_builtin_client_id(None);
-        assert_eq!(builtin_client_id(), None);
+        assert_eq!(config.effective_client_id(), custom);
+        for unset in ["", "   ", "oops"] {
+            let config = OneDriveConfig {
+                client_id: unset.to_owned(),
+                account: String::new(),
+            };
+            assert_eq!(config.effective_client_id(), DEFAULT_CLIENT_ID, "{unset:?}");
+        }
     }
 
     #[test]

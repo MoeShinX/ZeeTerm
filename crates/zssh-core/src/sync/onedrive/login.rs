@@ -46,9 +46,6 @@ pub enum LoginError {
     Exchange(String),
     #[error("内部错误：{0}")]
     Internal(String),
-    /// 自己从源码编译的版本没有内置的 client ID，又没在“高级”里填。
-    #[error("这个版本没有内置 OneDrive 的 client ID，没法登录。可以在“高级”里填你自己在 Azure 注册的应用的 client ID")]
-    NoClientId,
     #[error("client ID 的格式不对（应该形如 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx）")]
     InvalidClientId,
 }

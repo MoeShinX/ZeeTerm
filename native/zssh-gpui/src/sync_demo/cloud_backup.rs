@@ -25,7 +25,7 @@ use zssh_core::sync::backup_targets::{
     self, BackupTarget, MAX_TARGETS, OutcomeStatus, TargetOutcome, provider_label,
 };
 use zssh_core::sync::offline::OfflineImportReport;
-use zssh_core::sync::onedrive::config::{OneDriveConfig, builtin_client_id, is_valid_client_id};
+use zssh_core::sync::onedrive::config::{OneDriveConfig, is_valid_client_id};
 use zssh_core::sync::sealer::{DpapiSealer, SecretSealer};
 use zssh_core::sync::service::SyncContext;
 
@@ -1646,7 +1646,7 @@ impl SyncDemo {
         cx: &App,
     ) -> AnyElement {
         let custom = form.od_client_id.read(cx).value().to_string();
-        let allowed = super::view::can_login(builtin_client_id().is_some(), &custom);
+        let allowed = super::view::can_login(&custom);
         let custom_invalid = !custom.trim().is_empty() && !is_valid_client_id(&custom);
         let account = match &form.od_account {
             Some(account) if !account.trim().is_empty() => account.clone(),
@@ -1706,12 +1706,6 @@ impl SyncDemo {
                     )
                     .into_any_element(),
             );
-            if !allowed && !custom_invalid {
-                rows.push(colored(
-                    "这个版本没有内置 OneDrive 的 client ID，需要在下面的「高级」里填你自己的。",
-                    tokens.dot_connecting,
-                ));
-            }
             if custom_invalid {
                 rows.push(colored(
                     "client ID 的格式不对，应该形如 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx。",

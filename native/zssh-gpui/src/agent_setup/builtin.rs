@@ -138,7 +138,8 @@ fn read_info(db: &Database) -> BuiltinInfo {
     }
 }
 
-/// 库里现在有没有可用的内置接口（设置库已经打开时用）。
+/// 库里现在有没有可用的内置接口（设置库已经打开时用；产品代码不再靠它选默认智能体，只剩测试用）。
+#[cfg(test)]
 pub fn usable_in(db: &Database) -> bool {
     read_info(db).usable()
 }

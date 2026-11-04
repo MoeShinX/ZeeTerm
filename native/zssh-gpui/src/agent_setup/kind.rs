@@ -124,33 +124,23 @@ impl AgentKind {
     }
 }
 
-/// 默认用哪个智能体（V2-A4）：
-/// - 用户在 AI 设置里选过（设置库里有 `ai_default_agent`）→ 以用户为准；选的是内置助手但
-///   现在一个可用接口都没有（删光了）→ 退回 opencode，面板不至于打开就是一块"没配置"；
-/// - 没选过：配好了内置助手（至少一个有 Key 的接口）→ 内置助手；没配 → opencode（和以前一样）。
+/// 默认用哪个智能体（V2-A4，V2-U32 改）：
+/// - 用户在 AI 设置里明确选过（设置库里有认得的 `ai_default_agent`）→ 以用户为准，选内置助手
+///   但还没配好接口时也不退回别的智能体，面板显示 ZeePilot 自己的配置引导；
+/// - 没选过 → ZeePilot（不管配没配好）。存的值读不懂（手改、别的版本）也当没选过。
 ///
-/// `saved` 是设置库里存的原始值（JSON 字符串，没存过是 `None`），`builtin_usable` 是现在有没有
-/// 可用的内置接口。
-pub fn choose_default_agent(saved: Option<&str>, builtin_usable: bool) -> AgentKind {
-    let explicit = saved
+/// `saved` 是设置库里存的原始值（JSON 字符串，没存过是 `None`）。
+pub fn choose_default_agent(saved: Option<&str>) -> AgentKind {
+    saved
         .and_then(|raw| serde_json::from_str::<String>(raw).ok())
-        .and_then(|value| AgentKind::parse(&value));
-    match explicit {
-        Some(AgentKind::Builtin) if !builtin_usable => AgentKind::OpenCode,
-        Some(kind) => kind,
-        None if saved.is_none() && builtin_usable => AgentKind::Builtin,
-        None => AgentKind::OpenCode,
-    }
+        .and_then(|value| AgentKind::parse(&value))
+        .unwrap_or(AgentKind::Builtin)
 }
 
-/// 设置库里的默认智能体（读不到按 opencode），套用 [`choose_default_agent`] 的规则。
+/// 设置库里的默认智能体，套用 [`choose_default_agent`] 的规则；设置库打不开按没选过算。
 pub fn default_agent(db: Option<&Database>) -> AgentKind {
-    let Some(db) = db else {
-        return AgentKind::OpenCode;
-    };
-    let saved = db.setting_get(AI_DEFAULT_AGENT_KEY).ok().flatten();
-    let usable = super::builtin::usable_in(db);
-    choose_default_agent(saved.as_deref(), usable)
+    let saved = db.and_then(|db| db.setting_get(AI_DEFAULT_AGENT_KEY).ok().flatten());
+    choose_default_agent(saved.as_deref())
 }
 
 #[cfg(test)]
@@ -236,21 +226,18 @@ mod tests {
     }
 
     #[test]
-    fn default_agent_rule_prefers_the_builtin_only_until_the_user_chooses() {
+    fn default_agent_is_zeepilot_until_the_user_chooses() {
         use super::{AgentKind::*, choose_default_agent as choose};
-        // 没选过：配好内置就用内置，没配行为不变。
-        assert_eq!(choose(None, true), Builtin);
-        assert_eq!(choose(None, false), OpenCode);
-        // 用户选过的以用户为准，不管内置配没配。
-        assert_eq!(choose(Some("\"claude\""), true), Claude);
-        assert_eq!(choose(Some("\"codex\""), false), Codex);
-        assert_eq!(choose(Some("\"opencode\""), true), OpenCode);
-        // 用户选了内置，但接口都删光了：退回 opencode，不让面板一打开就是空的。
-        assert_eq!(choose(Some("\"builtin\""), true), Builtin);
-        assert_eq!(choose(Some("\"builtin\""), false), OpenCode);
-        // 存的值读不懂（手改、别的版本）：当没选过的话会悄悄换默认，所以按 opencode，和 0.2.14 一致。
-        assert_eq!(choose(Some("\"gemini\""), true), OpenCode);
-        assert_eq!(choose(Some("not json"), true), OpenCode);
+        // 没选过：ZeePilot，不管配没配好。
+        assert_eq!(choose(None), Builtin);
+        // 用户选过的以用户为准。
+        assert_eq!(choose(Some("\"claude\"")), Claude);
+        assert_eq!(choose(Some("\"codex\"")), Codex);
+        assert_eq!(choose(Some("\"opencode\"")), OpenCode);
+        assert_eq!(choose(Some("\"builtin\"")), Builtin);
+        // 存的值读不懂：当没选过。
+        assert_eq!(choose(Some("\"gemini\"")), Builtin);
+        assert_eq!(choose(Some("not json")), Builtin);
     }
 
     #[test]
@@ -283,35 +270,31 @@ mod tests {
     }
 
     #[test]
-    fn the_default_agent_follows_the_database_through_setup_choice_and_removal() {
+    fn the_default_agent_follows_the_database_and_never_falls_back_to_another_agent() {
         let db = Database::open_in_memory().expect("内存库");
-        // 没配内置助手：行为不变。
-        assert_eq!(super::default_agent(Some(&db)), AgentKind::OpenCode);
-        // 只有没 Key 的接口：还不算配好。
-        let keyless = db
-            .ai_endpoint_save(&endpoint_draft("本地", None))
-            .expect("存");
-        assert_eq!(super::default_agent(Some(&db)), AgentKind::OpenCode);
-        // 配好 Key：没选过默认智能体，所以默认用内置。
+        // 没选过、没配接口：仍是 ZeePilot（面板里显示配置引导）。
+        assert_eq!(super::default_agent(Some(&db)), AgentKind::Builtin);
+        assert_eq!(super::default_agent(None), AgentKind::Builtin);
+        assert_eq!(db.ai_default_agent().expect("读"), "builtin");
+        // 配好接口不影响。
         let keyed = db
             .ai_endpoint_save(&endpoint_draft("主力", Some("sk-test-0001")))
             .expect("存");
         assert_eq!(super::default_agent(Some(&db)), AgentKind::Builtin);
-        // 用户在设置里明确选了别的：以用户为准，哪怕内置配好了。
-        db.set_ai_default_agent("claude").expect("写");
-        assert_eq!(super::default_agent(Some(&db)), AgentKind::Claude);
-        db.set_ai_default_agent("opencode").expect("写");
-        assert_eq!(
-            super::default_agent(Some(&db)),
-            AgentKind::OpenCode,
-            "明确选 opencode 也是选过"
-        );
-        // 明确选内置，之后把有 Key 的接口删光：退回 opencode。
+        // 用户明确选了别的：以用户为准，哪怕内置配好了；明确选 opencode 也是选过。
+        for (id, kind) in [
+            ("claude", AgentKind::Claude),
+            ("opencode", AgentKind::OpenCode),
+            ("codex", AgentKind::Codex),
+        ] {
+            db.set_ai_default_agent(id).expect("写");
+            assert_eq!(super::default_agent(Some(&db)), kind, "{id}");
+            assert_eq!(db.ai_default_agent().expect("读"), id);
+        }
+        // 明确选内置，之后把接口删光：还是 ZeePilot，不悄悄退回 opencode。
         db.set_ai_default_agent("builtin").expect("写");
-        assert_eq!(super::default_agent(Some(&db)), AgentKind::Builtin);
         db.ai_endpoint_delete(keyed.id).expect("删");
-        assert_eq!(super::default_agent(Some(&db)), AgentKind::OpenCode);
-        let _ = keyless;
+        assert_eq!(super::default_agent(Some(&db)), AgentKind::Builtin);
     }
 
     #[test]
@@ -329,10 +312,10 @@ mod tests {
                 Some(r"C:\tools\my agent\x.exe")
             );
         }
-        // 默认智能体：库里没写按 opencode；写了按写的；没有库也按 opencode。
-        assert_eq!(super::default_agent(Some(&db)), AgentKind::OpenCode);
+        // 默认智能体：库里没写是 ZeePilot；写了按写的；没有库也是 ZeePilot。
+        assert_eq!(super::default_agent(Some(&db)), AgentKind::Builtin);
         db.set_ai_default_agent("codex").expect("写");
         assert_eq!(super::default_agent(Some(&db)), AgentKind::Codex);
-        assert_eq!(super::default_agent(None), AgentKind::OpenCode);
+        assert_eq!(super::default_agent(None), AgentKind::Builtin);
     }
 }

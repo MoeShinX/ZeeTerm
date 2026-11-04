@@ -31,7 +31,7 @@ use std::time::Duration;
 use ::gpui::{
     App, FocusHandle, ScrollHandle, Subscription, Task, Window, WindowBounds, WindowOptions,
 };
-use gpui_kit::component::input::InputState;
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::*;
 use zssh_core::ai::history::now_ms;
 use zssh_core::store::Database;
@@ -55,8 +55,23 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// 恢复确认提示；任务卡要求原文显示。
 const CONFIRM_WARNING: &str = "恢复前会自动创建一份安全备份，并覆盖当前主机/凭据/设置。";
 
-/// `sync_backup_keep` 读不出来时用几份。
-const FALLBACK_KEEP: usize = 5;
+/// `sync_backup_keep` 读不出来时用几份：和核心里没设置时的默认是同一个常量。
+const FALLBACK_KEEP: usize = zssh_core::store::settings::SYNC_BACKUP_KEEP_DEFAULT;
+
+/// 保留份数输入框里的文字 → 份数。只接受 1–200 的整数（不带正负号、小数点、单位）；别的都给一句话
+/// 说明范围，调用方不保存。
+pub(crate) fn parse_keep(text: &str) -> Result<usize, String> {
+    let max = zssh_core::store::settings::SYNC_BACKUP_KEEP_MAX;
+    let text = text.trim();
+    let hint = || format!("请输入 1–{max} 的整数");
+    if text.is_empty() || !text.chars().all(|c| c.is_ascii_digit()) {
+        return Err(hint());
+    }
+    match text.parse::<usize>() {
+        Ok(keep) if (1..=max).contains(&keep) => Ok(keep),
+        _ => Err(hint()),
+    }
+}
 
 pub struct BackupDemo {
     backups: Vec<BackupDetail>,
@@ -77,6 +92,10 @@ pub struct BackupDemo {
     keep: usize,
     /// 恢复 / 导入时备份里带着同步账号设置、而本机已经配置了同步：等用户决定要不要替换（默认不替换）。
     pending_accounts: Option<PendingAccounts>,
+    /// 保留份数输入框；回车 / 失焦时按 [`parse_keep`] 校验后保存。
+    keep_input: Entity<InputState>,
+    /// 输入框里的内容不合法时的提示（就地显示在说明下面）。
+    keep_error: Option<String>,
     /// 嵌在设置页里：只画卡片，不画窗口标题，也不接输入法的英文区。
     embedded: bool,
     events: Receiver<BackupEvent>,
@@ -84,6 +103,7 @@ pub struct BackupDemo {
     scroll: ScrollHandle,
     focus: FocusHandle,
     _ime: Vec<Subscription>,
+    _keep_sub: Subscription,
     _tick: Task<()>,
 }
 
@@ -130,6 +150,20 @@ impl BackupDemo {
                 .default_value(default_path.display().to_string())
                 .placeholder("离线包路径")
         });
+        let keep_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(FALLBACK_KEEP.to_string())
+                .placeholder("1–200")
+        });
+        let keep_sub = cx.subscribe_in(
+            &keep_input,
+            window,
+            |this, _input, event: &InputEvent, _window, cx| {
+                if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                    this.commit_keep_input(cx);
+                }
+            },
+        );
         let (sender, events) = std::sync::mpsc::channel();
         let mut this = Self {
             backups: Vec::new(),
@@ -144,12 +178,15 @@ impl BackupDemo {
             replace_confirm: OverwriteConfirm::default(),
             keep: FALLBACK_KEEP,
             pending_accounts: None,
+            keep_input,
+            keep_error: None,
             embedded,
             events,
             sender,
             scroll: ScrollHandle::new(),
             focus,
             _ime: ime,
+            _keep_sub: keep_sub,
             _tick: Task::ready(()),
         };
         // 100ms 取一次后台结果；窗口没了 `update_in` 会报错，任务自己退出。
@@ -157,7 +194,7 @@ impl BackupDemo {
             loop {
                 cx.background_executor().timer(POLL_INTERVAL).await;
                 if this
-                    .update_in(cx, |this, _window, cx| this.poll_events(cx))
+                    .update_in(cx, |this, window, cx| this.poll_events(window, cx))
                     .is_err()
                 {
                     break;
@@ -439,7 +476,7 @@ impl BackupDemo {
     }
 
     /// 取走后台事件；同一时间只允许一个任务，所以不用代号。
-    fn poll_events(&mut self, cx: &mut Context<Self>) {
+    fn poll_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut changed = false;
         while let Ok(event) = self.events.try_recv() {
             changed = true;
@@ -447,6 +484,7 @@ impl BackupDemo {
                 BackupEvent::Loaded { details, keep } => {
                     self.busy = None;
                     self.keep = keep;
+                    self.show_keep(window, cx);
                     // 列表刷新后原来确认的那一行可能已经被保留策略删掉了。
                     if let Some(armed) = self.confirm.armed()
                         && !details.iter().any(|detail| detail.info.path == armed.path)
@@ -1123,7 +1161,7 @@ mod tests {
     use super::{
         OverwriteCheck, OverwriteConfirm, RestoreConfirm, create_backup_with, export_offline_to,
         export_request, format_size, import_offline_from, import_summary, list_backups_with,
-        offline_request, restore_backup_with, restore_summary,
+        offline_request, parse_keep, read_keep, restore_backup_with, restore_summary, write_keep,
     };
 
     /// 和核心里的 TestSealer 同一套可逆混淆；那个类型是 `cfg(test)` 私有的，
@@ -1151,6 +1189,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("创建临时目录");
         dir
+    }
+
+    #[test]
+    fn the_keep_default_is_five_and_a_stored_value_wins() {
+        let dir = temp_dir("keep-default");
+        // 还没有数据库 / 没设置过：5。
+        assert_eq!(read_keep(&dir), 5);
+        drop(Database::open(&dir.join("zssh.db")).expect("建库"));
+        assert_eq!(read_keep(&dir), 5);
+        // 以前存过 20 的用户保持 20。
+        assert_eq!(write_keep(&dir, 20), Ok(20));
+        assert_eq!(read_keep(&dir), 20);
+    }
+
+    #[test]
+    fn the_keep_box_only_accepts_whole_numbers_from_1_to_200() {
+        for ok in ["1", "5", " 30 ", "200", "007"] {
+            assert!(parse_keep(ok).is_ok(), "{ok:?}");
+        }
+        assert_eq!(parse_keep("30"), Ok(30));
+        for bad in [
+            "",
+            "  ",
+            "0",
+            "201",
+            "-1",
+            "+5",
+            "abc",
+            "5份",
+            "3.5",
+            "1e2",
+            "99999999999999999999",
+        ] {
+            let err = parse_keep(bad).expect_err(bad);
+            assert!(err.contains("1–200"), "{bad:?}：{err}");
+        }
+    }
+
+    #[test]
+    fn invalid_input_is_not_saved_and_a_valid_one_is() {
+        // 界面的保存链路：输入框文字 → parse_keep → write_keep。
+        let dir = temp_dir("keep-input");
+        let save = |text: &str| parse_keep(text).and_then(|keep| write_keep(&dir, keep));
+        for bad in ["0", "201", "abc"] {
+            assert!(save(bad).is_err(), "{bad}");
+            assert_eq!(read_keep(&dir), 5, "{bad} 不能保存");
+        }
+        assert_eq!(save("30"), Ok(30));
+        assert_eq!(read_keep(&dir), 30);
+        // 之后再输非法值，已经存的 30 不动。
+        assert!(save("0").is_err());
+        assert_eq!(read_keep(&dir), 30);
     }
 
     fn host_draft() -> HostDraft {
