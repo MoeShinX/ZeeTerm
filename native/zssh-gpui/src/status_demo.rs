@@ -1806,7 +1806,10 @@ mod poll_tests {
         let runtime = runtime();
         let link = FakeLink::new(Dial::Ok);
         let (stop, reports, handle) = spawn_loop(&runtime, &link, fast());
-        wait_until("至少采 6 次", || link.collects() >= 6);
+        // 等报告本身而不是采集计数：采集计数先加、报告后推，按计数停下时最后一份报告可能还没推进去。
+        wait_until("至少报告 6 次", || {
+            reports.lock().unwrap_or_else(|p| p.into_inner()).len() >= 6
+        });
         stop.store(true, Ordering::SeqCst);
         runtime.block_on(handle).expect("循环正常结束");
 
