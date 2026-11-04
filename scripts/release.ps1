@@ -1,5 +1,10 @@
-﻿# ZeeTerm 发版脚本：统一改版本号 -> 门禁 -> 打安装包 -> 用更新私钥签名 -> 生成 latest.json -> 自检。
+﻿# ZeeTerm 本机发版脚本（备用路径）：统一改版本号 -> 门禁 -> 打安装包 -> 用更新私钥签名 -> 生成 latest.json -> 自检。
 # 产物放在 dist\<版本>\ 里。**脚本不推送、不打 tag、不发布 Release**：最后只打印下一步命令，由发版人确认后自己执行。
+#
+# **现在的主发版路径是 GitHub Actions**（.github/workflows/release.yml）：用 scripts/bump-version.ps1 改好版本号并提交，
+# 推 v* tag，由工作流编译、签名（私钥和口令在 GitHub 的 release 环境 Secrets 里）、发布 Release，本机不需要私钥。
+# 本脚本只在 GitHub 那条路出问题（Actions 故障、Secrets 失效等）时手动发版用；改版本号、签名、latest.json、
+# SHA256SUMS 的实现和工作流共用 scripts/release-lib.ps1，产物格式一致。流程见 docs/RELEASING.md。
 #
 # 用法：
 #   powershell -File scripts/release.ps1 -Version 1.0.0                # 正式发版（要求在 main、工作区干净）
@@ -22,7 +27,7 @@
 #   -Force              dist\<版本>\ 已有内容时默认直接报错退出（免得盖掉上一次的产物）；给了 -Force 才在打包前清空该目录再继续。
 #   -PrebuiltInstaller  只在 -DryRun 时有效。
 #
-# 版本号的所有来源（统一由本脚本改，见 docs/RELEASING.md；有单测 every_place_that_carries_the_version_agrees 核对）：
+# 版本号的所有来源（统一由本脚本或 bump-version.ps1 改，见 docs/RELEASING.md；有单测 every_place_that_carries_the_version_agrees 核对）：
 #   Cargo.toml、native/Cargo.toml 的 [workspace.package] version；Cargo.lock、native/Cargo.lock 里跟随工作区的 zssh-* 包；
 #   安装包文件名 / 版本资源 / 卸载项显示版本（build.ps1 从 native/Cargo.toml 读）；程序里显示的版本（编译时来自同一处）。
 param(
@@ -40,20 +45,16 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $repoRoot
+. (Join-Path $PSScriptRoot 'release-lib.ps1')
 if (-not $KeyPath) { $KeyPath = Join-Path $env:USERPROFILE '.zeeterm\updater.key' }
 if (-not $OutRoot) { $OutRoot = Join-Path $repoRoot 'dist' }
 
-function Stop-WithError([string]$Message) {
-    [Console]::Error.WriteLine("错误：$Message")
-    exit 1
-}
 function Test-OutDirHasContent([string]$Path) {
     return (Test-Path -LiteralPath $Path) -and @(Get-ChildItem -LiteralPath $Path -Force).Count -gt 0
 }
-function Step([string]$Text) { Write-Host ''; Write-Host "==> $Text" -ForegroundColor Cyan }
 
 # ---------- 0. 参数检查 ----------
-if ($Version -notmatch '^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z][0-9A-Za-z.]*)?$') {
+if (-not (Test-VersionFormat $Version)) {
     Stop-WithError "版本号要写成 X.Y.Z（可带 -rc.1 这类预发布后缀，不带 v）：$Version"
 }
 if ($PrebuiltInstaller -and -not $DryRun) {
@@ -78,46 +79,7 @@ foreach ($tool in @('cargo', 'git')) {
 }
 
 # ---------- 当前版本与版本比较 ----------
-$nativeManifest = Join-Path $repoRoot 'native\Cargo.toml'
-$rootManifest = Join-Path $repoRoot 'Cargo.toml'
-
-function Read-Text([string]$Path) {
-    $bytes = [System.IO.File]::ReadAllBytes($Path)
-    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
-    $utf8 = New-Object System.Text.UTF8Encoding($false)
-    $offset = if ($hasBom) { 3 } else { 0 }
-    return [pscustomobject]@{ Text = $utf8.GetString($bytes, $offset, $bytes.Length - $offset); Bom = $hasBom; Bytes = $bytes }
-}
-function Write-Text([string]$Path, [string]$Text, [bool]$Bom) {
-    $utf8 = New-Object System.Text.UTF8Encoding($Bom)
-    [System.IO.File]::WriteAllText($Path, $Text, $utf8)
-}
-
-$versionPattern = '(?ms)(^\[workspace\.package\][^\[]*?^version\s*=\s*")([^"]+)(")'
-function Get-WorkspaceVersion([string]$Path) {
-    $m = [regex]::Match((Read-Text $Path).Text, $versionPattern)
-    if (-not $m.Success) { Stop-WithError "$Path 里找不到 [workspace.package] 的 version。" }
-    return $m.Groups[2].Value
-}
-$currentVersion = Get-WorkspaceVersion $nativeManifest
-if ((Get-WorkspaceVersion $rootManifest) -ne $currentVersion) {
-    Stop-WithError "Cargo.toml 和 native/Cargo.toml 的版本不一致，先修好再发版。"
-}
-
-# semver 比较：先比 X.Y.Z；同号时正式版高于预发布；预发布之间按字符串比。
-function Compare-Version([string]$A, [string]$B) {
-    $pa = [regex]::Match($A, '^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$')
-    $pb = [regex]::Match($B, '^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$')
-    for ($i = 1; $i -le 3; $i++) {
-        $x = [int64]$pa.Groups[$i].Value; $y = [int64]$pb.Groups[$i].Value
-        if ($x -ne $y) { return [math]::Sign($x - $y) }
-    }
-    $ra = $pa.Groups[4].Value; $rb = $pb.Groups[4].Value
-    if ($ra -eq $rb) { return 0 }
-    if ($ra -eq '') { return 1 }
-    if ($rb -eq '') { return -1 }
-    return [math]::Sign([string]::CompareOrdinal($ra, $rb))
-}
+$currentVersion = Get-CurrentVersion $repoRoot
 if ((Compare-Version $Version $currentVersion) -le 0) {
     Stop-WithError "新版本 $Version 必须高于当前版本 $currentVersion。"
 }
@@ -138,32 +100,25 @@ if ($DryRun) {
 # ---------- 2. 更新公钥与私钥必须是一对 ----------
 Step '核对更新公钥'
 $updaterJson = Join-Path $repoRoot 'native\zssh-update\updater.json'
-$configuredPubkey = ([regex]::Match((Read-Text $updaterJson).Text, '"pubkey"\s*:\s*"([^"]*)"')).Groups[1].Value
-$toolArgs = @('run', '--quiet', '--release', '--locked', '--manifest-path', $nativeManifest, '-p', 'zssh-update', '--example', 'release_tool', '--')
+$configuredPubkey = Get-ConfiguredPubkey $updaterJson
 
 # 私钥有口令就问一次，只放进本进程的环境变量。
 $passwordEnv = 'ZEETERM_UPDATER_KEY_PASSWORD'
 $previousPassword = [Environment]::GetEnvironmentVariable($passwordEnv, 'Process')
-function Invoke-Tool([string[]]$ToolCommand) {
-    $out = & cargo @toolArgs @ToolCommand
-    if ($LASTEXITCODE -ne 0) { return $null }
-    return $out
-}
 try {
-    $derived = Invoke-Tool @('pubkey', '--key', $KeyPath)
+    $derived = Get-DerivedPubkey $repoRoot $KeyPath
     if (-not $derived) {
         $secure = Read-Host -AsSecureString '更新私钥有口令，请输入'
         $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
         try { $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
         finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
         [Environment]::SetEnvironmentVariable($passwordEnv, $plain, 'Process')
-        $derived = Invoke-Tool @('pubkey', '--key', $KeyPath)
+        $derived = Get-DerivedPubkey $repoRoot $KeyPath
     }
     if (-not $derived) { Stop-WithError '读不了更新私钥（口令不对，或文件损坏）。' }
-    $derived = ($derived | Select-Object -Last 1).Trim()
 
-    $placeholder = $configuredPubkey.Trim().ToUpperInvariant().StartsWith('PLACEHOLDER')
-    if ($placeholder -or $configuredPubkey.Trim() -ne $derived) {
+    $placeholder = $configuredPubkey.ToUpperInvariant().StartsWith('PLACEHOLDER')
+    if ($placeholder -or $configuredPubkey -ne $derived) {
         $reason = if ($placeholder) { 'native/zssh-update/updater.json 里的 pubkey 还是占位值' } else { 'updater.json 里的公钥与这把私钥不是一对' }
         if ($DryRun) {
             Write-Host "（演练）$reason；演练改用私钥自己的公钥来自检。" -ForegroundColor Yellow
@@ -177,42 +132,7 @@ try {
 
     # ---------- 3. 统一改版本号（演练：改完在 finally 里还原） ----------
     Step "统一版本号 $currentVersion -> $Version$(if ($DryRun) { '（演练：结束后还原）' })"
-    $script:touched = @()   # 备份原始字节，演练和出错时还原
-    function Backup([string]$Path) {
-        $script:touched += [pscustomobject]@{ Path = $Path; Bytes = [System.IO.File]::ReadAllBytes($Path) }
-    }
-    $manifestFiles = @($rootManifest, $nativeManifest)
-    foreach ($path in $manifestFiles) {
-        Backup $path
-        $file = Read-Text $path
-        # 只替换第一处：.NET 的静态 Regex.Replace 没有 count 重载，第 4 个参数会被当成 RegexOptions（1 = IgnoreCase），
-        # 所以必须用实例的 Replace(输入, 替换, 次数)。
-        $new = ([regex]::new($versionPattern)).Replace($file.Text, { param($m) $m.Groups[1].Value + $Version + $m.Groups[3].Value }, 1)
-        Write-Text $path $new $file.Bom
-    }
-    # Cargo.lock：名字以 zssh- 开头、没有 source、版本等于旧工作区版本的包（路径依赖，跟随工作区）。
-    foreach ($lockPath in @((Join-Path $repoRoot 'Cargo.lock'), (Join-Path $repoRoot 'native\Cargo.lock'))) {
-        Backup $lockPath
-        $file = Read-Text $lockPath
-        $count = 0
-        $blocks = $file.Text -split '(?=\[\[package\]\])'
-        for ($i = 0; $i -lt $blocks.Length; $i++) {
-            $block = $blocks[$i]
-            if ($block -match '(?m)^name = "zssh-[^"]+"\r?$' -and $block -notmatch '(?m)^source = ' -and $block -match ('(?m)^version = "' + [regex]::Escape($currentVersion) + '"')) {
-                $blocks[$i] = ([regex]::new('(?m)^version = "' + [regex]::Escape($currentVersion) + '"')).Replace($block, "version = `"$Version`"", 1)
-                $count++
-            }
-        }
-        Write-Text $lockPath ($blocks -join '') $file.Bom
-        $label = (Split-Path -Leaf (Split-Path -Parent $lockPath)) + '/' + (Split-Path -Leaf $lockPath)
-        Write-Host ("  {0}：{1} 个包" -f $label, $count)
-    }
-    foreach ($path in $manifestFiles) { Write-Host "  $path" }
-    # 改完立刻用 --locked 检查 lock 与 Cargo.toml 一致（不一致说明上面漏改了什么）。
-    foreach ($manifest in @($rootManifest, $nativeManifest)) {
-        & cargo metadata --locked --offline --format-version 1 --manifest-path $manifest | Out-Null
-        if ($LASTEXITCODE -ne 0) { Stop-WithError "改完版本号后 $manifest 与它的 Cargo.lock 对不上（cargo metadata --locked 失败）。" }
-    }
+    Set-WorkspaceVersion $repoRoot $currentVersion $Version
 
     # ---------- 4. 门禁 ----------
     if ($SkipGates) {
@@ -243,73 +163,26 @@ try {
         if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { Stop-WithError "没有找到预期的安装包：$installer" }
     }
 
-    # ---------- 6. 签名 ----------
-    Step '用更新私钥签名（签名里带 version，签完用配置里的公钥自检）'
-    $sigFile = "$installer.sig"
-    & cargo @toolArgs sign --key $KeyPath --file $installer --version $Version --pubkey $configuredPubkey --out $sigFile
-    if ($LASTEXITCODE -ne 0) { Stop-WithError '签名失败。' }
-
-    # ---------- 7. latest.json ----------
-    Step '生成 latest.json'
+    # ---------- 6. 更新说明 -> 签名 -> latest.json -> 自检 -> SHA256SUMS ----------
     $notesOut = Join-Path $outDir 'RELEASE_NOTES.md'
-    $releaseNotesFile = Join-Path $repoRoot "docs\release-notes\$Version.md"
-    # 更新说明的来源，优先级：-NotesFile > docs/release-notes/<版本>.md > CHANGELOG.md 的 "## [<版本>]" 一节。
-    if ($NotesFile) {
-        if (-not (Test-Path -LiteralPath $NotesFile -PathType Leaf)) { Stop-WithError "找不到更新说明文件：$NotesFile" }
-        Copy-Item -LiteralPath $NotesFile -Destination $notesOut
-        Write-Host "更新说明：取自 -NotesFile $NotesFile"
-    } elseif (Test-Path -LiteralPath $releaseNotesFile -PathType Leaf) {
-        # 面向用户的更新说明（几条要点）优先于 CHANGELOG：CHANGELOG 是写给开发者的，里面有脚本名和内部实现。
-        $userNotes = (Read-Text $releaseNotesFile).Text -replace "`r`n", "`n"
-        if ($userNotes.Trim() -eq '') {
-            Stop-WithError "docs/release-notes/$Version.md 是空的。写上给用户看的更新说明，或删掉这个文件改用 CHANGELOG.md 里的一节。"
-        }
-        Write-Text $notesOut ($userNotes.Trim() + "`n") $false
-        Write-Host "更新说明：取自 docs/release-notes/$Version.md"
-    } else {
-        Write-Host '更新说明：取自 CHANGELOG.md（没有 docs/release-notes/<版本>.md；那是面向用户的简短说明，建议写一份）。'
-        $changelog = (Read-Text (Join-Path $repoRoot 'CHANGELOG.md')).Text -replace "`r`n", "`n"
-        $section = [regex]::Match($changelog, '(?ms)^## \[' + [regex]::Escape($Version) + '\][^\n]*\n(.*?)(?=^## \[|\z)')
-        if (-not $section.Success -and $DryRun) {
-            $section = [regex]::Match($changelog, '(?ms)^## \[Unreleased\][^\n]*\n(.*?)(?=^## \[|\z)')
-            Write-Host '（演练）CHANGELOG 里还没有这个版本的一节，用 [Unreleased] 充当更新说明。' -ForegroundColor Yellow
-        }
-        if (-not $section.Success -or $section.Groups[1].Value.Trim() -eq '') {
-            Stop-WithError "CHANGELOG.md 里没有 ## [$Version] 一节（或是空的）。先写更新说明，或用 -NotesFile 指定。"
-        }
-        Write-Text $notesOut ($section.Groups[1].Value.Trim() + "`n") $false
-    }
-    $url = "https://github.com/$Repo/releases/download/v$Version/$installerName"
-    $latest = Join-Path $outDir 'latest.json'
-    $pubDate = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
-    & cargo @toolArgs manifest --version $Version --notes-file $notesOut --pub-date $pubDate --url $url --signature-file $sigFile --out $latest
-    if ($LASTEXITCODE -ne 0) { Stop-WithError '生成 latest.json 失败。' }
-
-    # ---------- 8. 自检：按应用里验签的同一套代码，再验一遍成品 ----------
-    Step '自检：用 updater.json 的公钥验安装包 + 签名 + 版本绑定'
-    & cargo @toolArgs verify --pubkey $configuredPubkey --file $installer --signature-file $sigFile --version $Version
-    if ($LASTEXITCODE -ne 0) { Stop-WithError '自检没通过，产物不能发布。' }
-    $parsed = Get-Content -LiteralPath $latest -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($parsed.version -ne $Version -or $parsed.platforms.'windows-x86_64'.url -ne $url) { Stop-WithError 'latest.json 的内容与预期不符。' }
-    # 安装包的 SHA-256：写进 SHA256SUMS.txt（`<hash>  <文件名>`，和 sha256sum 的格式一样），也附在 Release 正文末尾，
-    # 让下载的人能自己核对。放在 latest.json 生成之后追加：更新窗口里显示的更新说明（latest.json 的 notes）不带这一行。
-    $sha = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-    $sums = Join-Path $outDir 'SHA256SUMS.txt'
-    Write-Text $sums ("$sha  $installerName`n") $false
-    $notesText = (Read-Text $notesOut).Text.TrimEnd()
-    Write-Text $notesOut ($notesText + "`n`n安装包 SHA-256：" + [char]96 + $sha + [char]96 + "`n") $false
+    Write-ReleaseNotes -RepoRoot $repoRoot -Version $Version -OutFile $notesOut -NotesFile $NotesFile -DryRun:$DryRun
+    $artifacts = New-ReleaseArtifacts -RepoRoot $repoRoot -Version $Version -Installer $installer -KeyPath $KeyPath `
+        -ConfiguredPubkey $configuredPubkey -NotesOut $notesOut -OutDir $outDir -Repo $Repo
+    $sha = $artifacts.Sha256
+    $latest = $artifacts.Latest
+    $sums = $artifacts.Sums
 } finally {
     [Environment]::SetEnvironmentVariable($passwordEnv, $previousPassword, 'Process')
     # 演练（或中途出错）时把版本号相关文件原样还原；正式发版成功时保留，让发版人提交。
     $restore = $DryRun -or ($null -eq $sha)
-    if ($restore -and $script:touched) {
-        foreach ($item in $script:touched) { [System.IO.File]::WriteAllBytes($item.Path, $item.Bytes) }
+    if ($restore -and $script:VersionBackups.Count -gt 0) {
+        Restore-VersionFiles | Out-Null
         Write-Host ''
         Write-Host '（版本号相关文件已还原）' -ForegroundColor DarkGray
     }
 }
 
-# ---------- 9. 汇总和下一步 ----------
+# ---------- 7. 汇总和下一步 ----------
 Write-Host ''
 Write-Host "发版产物：$outDir" -ForegroundColor Green
 Get-ChildItem -LiteralPath $outDir | ForEach-Object { Write-Host ("  {0}  ({1:N0} 字节)" -f $_.Name, $_.Length) }
@@ -320,17 +193,18 @@ if ($DryRun) {
     exit 0
 }
 Write-Host ''
-Write-Host '下一步（脚本不会替你执行；确认无误后手动运行）：' -ForegroundColor Cyan
+Write-Host '下一步（脚本不会替你执行；确认无误后手动运行）。这是 GitHub 出问题时的备用路径，平时用推 tag 触发 Actions：' -ForegroundColor Cyan
 Write-Host '  1. 版本号相关文件已改好，检查并提交（可能还要在 CHANGELOG.md 里把 [Unreleased] 改成这个版本）：'
 Write-Host '       git diff'
 $addFiles = 'Cargo.toml Cargo.lock native/Cargo.toml native/Cargo.lock CHANGELOG.md'
 if (Test-Path -LiteralPath (Join-Path $repoRoot "docs\release-notes\$Version.md") -PathType Leaf) { $addFiles += " docs/release-notes/$Version.md" }
 Write-Host "       git add $addFiles"
 Write-Host "       git commit -m `"chore(release): v$Version`""
-Write-Host '  2. 打 tag 并推送：'
+Write-Host "  2. 打 tag 并推送。推 v* tag 会触发 GitHub 的发版工作流、与下面手动建 Release 冲突，所以手动发版前先停用它，发完再启用："
+Write-Host "       gh workflow disable release.yml --repo $Repo"
 Write-Host "       git tag v$Version"
 Write-Host "       git push origin main v$Version"
 Write-Host '  3. 创建 Release 并上传安装包、latest.json 和 SHA256SUMS.txt（latest.json 是用户端检查更新读的那份；正文末尾已带安装包的 SHA-256）：'
 Write-Host "       gh release create v$Version `"$installer`" `"$latest`" `"$sums`" --repo $Repo --title `"ZeeTerm $Version`" --notes-file `"$notesOut`""
-Write-Host '  4. 发布后用旧版本程序点一次「检查更新」验证；出问题的回滚办法见 docs/RELEASING.md。'
+Write-Host "  4. 发布后重新启用工作流：gh workflow enable release.yml --repo $Repo；再用旧版本程序点一次「检查更新」验证；出问题的回滚办法见 docs/RELEASING.md。"
 exit 0
