@@ -312,10 +312,10 @@ mod tests {
                 Some(r"C:\tools\my agent\x.exe")
             );
         }
-        // 默认智能体：库里没写按 opencode；写了按写的；没有库也按 opencode。
-        assert_eq!(super::default_agent(Some(&db)), AgentKind::OpenCode);
+        // 默认智能体：库里没写是 ZeePilot；写了按写的；没有库也是 ZeePilot。
+        assert_eq!(super::default_agent(Some(&db)), AgentKind::Builtin);
         db.set_ai_default_agent("codex").expect("写");
         assert_eq!(super::default_agent(Some(&db)), AgentKind::Codex);
-        assert_eq!(super::default_agent(None), AgentKind::OpenCode);
+        assert_eq!(super::default_agent(None), AgentKind::Builtin);
     }
 }
