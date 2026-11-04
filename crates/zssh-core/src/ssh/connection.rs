@@ -353,8 +353,16 @@ impl Connection {
         // 握手完成、开始认证：界面用这个事件把状态文字从"连接中"换成"认证中"。
         interactor.authentication_started().await;
 
-        let auth_outcome =
-            auth::authenticate(&mut handle, username, auth, legacy_algorithms, interactor).await?;
+        let target = crate::ssh::interact::format_target(username, host, port);
+        let auth_outcome = auth::authenticate(
+            &mut handle,
+            username,
+            &target,
+            auth,
+            legacy_algorithms,
+            interactor,
+        )
+        .await?;
 
         info!(
             %host,

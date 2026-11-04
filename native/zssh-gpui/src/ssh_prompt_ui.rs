@@ -305,13 +305,7 @@ impl SshPromptLayer {
         let id = self.view.as_ref().map_or(0, |view| view.id);
         let entity = cx.entity();
 
-        let mut details = v_flex()
-            .gap_2()
-            .p_3()
-            .rounded_md()
-            .bg(tokens.subtle)
-            .border_1()
-            .border_color(tokens.border);
+        let mut details = details_box(tokens);
         details = details.child(detail_row("主机", plain_value(text.host, tokens), tokens));
         details = details.child(detail_row(
             "密钥类型",
@@ -420,6 +414,13 @@ impl SshPromptLayer {
                     .child(Icon::new(Ico::KeyRound).size_5().text_color(tokens.accent))
                     .child(div().typo(Role::GroupTitle, tokens).child(text.title)),
             )
+            .when(!text.target.is_empty(), |d| {
+                d.child(details_box(tokens).child(detail_row(
+                    "主机",
+                    plain_value(text.target.clone(), tokens),
+                    tokens,
+                )))
+            })
             .when(!text.instructions.is_empty(), |d| {
                 d.child(
                     div()
@@ -471,6 +472,17 @@ fn host_key_look(status: zssh_core::ssh::HostKeyStatus, button: HostKeyButton) -
         _ if button == enter_button(status) => ButtonLook::Primary,
         _ => ButtonLook::Outline,
     }
+}
+
+/// 浅底带边框的信息块（指纹框和输入框上的「主机」行共用）。
+fn details_box(tokens: &Tokens) -> Div {
+    v_flex()
+        .gap_2()
+        .p_3()
+        .rounded_md()
+        .bg(tokens.subtle)
+        .border_1()
+        .border_color(tokens.border)
 }
 
 /// 一行「名称 + 值」，名称固定宽度，值占满剩下的地方并自动换行。
@@ -592,8 +604,14 @@ pub mod dev {
     /// 放一个假的输入请求：`password`（一个密码框）或 `ki`（带说明和两个问题的 keyboard-interactive）。
     pub fn prompt_demo(kind: &str) -> Result<(), String> {
         let request = match kind {
-            "password" => PromptRequest::single(PromptKind::Password, "请输入密码", true),
+            "password" => PromptRequest::single(
+                PromptKind::Password,
+                "ops@demo.example.com:22",
+                "请输入密码",
+                true,
+            ),
             "ki" => PromptRequest {
+                target: "ops@demo.example.com:22".to_owned(),
                 kind: PromptKind::KeyboardInteractive,
                 name: "两步验证".to_owned(),
                 instructions: "请输入登录密码和手机上的验证码。\n验证码 30 秒内有效。".to_owned(),

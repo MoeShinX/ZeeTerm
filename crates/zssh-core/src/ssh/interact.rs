@@ -82,6 +82,9 @@ pub struct PromptItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptRequest {
     pub kind: PromptKind,
+    /// 这次提问是为谁认证的，形如 `user@host:port`（跳板链上是正在认证的那一跳）；
+    /// 同时连着几台主机时界面靠它分清。只有账号和地址，不含本机路径。空串 = 不知道，界面不显示这一行。
+    pub target: String,
     /// keyboard-interactive 的标题和说明原文，其它类型是空串
     pub name: String,
     pub instructions: String,
@@ -91,10 +94,11 @@ pub struct PromptRequest {
 }
 
 impl PromptRequest {
-    /// 单题提问（密码、口令）。
-    pub fn single(kind: PromptKind, text: &str, can_remember: bool) -> Self {
+    /// 单题提问（密码、口令）。`target` 见 [`PromptRequest::target`]。
+    pub fn single(kind: PromptKind, target: &str, text: &str, can_remember: bool) -> Self {
         Self {
             kind,
+            target: target.to_owned(),
             name: String::new(),
             instructions: String::new(),
             prompts: vec![PromptItem {
@@ -113,6 +117,20 @@ pub struct PromptAnswers {
     pub answers: Vec<String>,
     /// 用户勾了"保存到保险库"（由调用方落库，core 不碰存储）
     pub remember: bool,
+}
+
+/// `user@host:port`（IPv6 地址加方括号；用户名为空就只有 `host:port`），[`PromptRequest::target`] 用。
+pub(crate) fn format_target(username: &str, host: &str, port: u16) -> String {
+    let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    };
+    if username.is_empty() {
+        format!("{host}:{port}")
+    } else {
+        format!("{username}@{host}:{port}")
+    }
 }
 
 /// 开始连某一跳时的进度（界面拿它显示"连接中：第 2/3 跳 jump1"）。
@@ -165,5 +183,39 @@ impl Interactor for NonInteractive {
 
     fn prompt(&self, _request: PromptRequest) -> BoxFuture<'_, Option<PromptAnswers>> {
         Box::pin(async { None })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_target_is_user_at_host_and_port() {
+        assert_eq!(format_target("ops", "web-1", 22), "ops@web-1:22");
+        assert_eq!(
+            format_target("ops", "192.0.2.10", 2222),
+            "ops@192.0.2.10:2222"
+        );
+    }
+
+    #[test]
+    fn ipv6_hosts_are_bracketed_and_a_missing_user_is_left_out() {
+        assert_eq!(
+            format_target("ops", "2001:db8::1", 22),
+            "ops@[2001:db8::1]:22"
+        );
+        assert_eq!(
+            format_target("ops", "[2001:db8::1]", 22),
+            "ops@[2001:db8::1]:22"
+        );
+        assert_eq!(format_target("", "web-1", 22), "web-1:22");
+    }
+
+    #[test]
+    fn a_single_question_carries_the_target() {
+        let request = PromptRequest::single(PromptKind::Password, "ops@web-1:22", "密码", true);
+        assert_eq!(request.target, "ops@web-1:22");
+        assert_eq!(request.prompts.len(), 1);
     }
 }

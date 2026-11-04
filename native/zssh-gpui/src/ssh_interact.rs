@@ -470,6 +470,60 @@ mod tests {
         assert!(still_waiting.is_err(), "连接已经成功之后不该被当成取消");
     }
 
+    /// 记下每次提问、用同一个密码回答的交互器（指纹一律「仅本次」）。
+    struct Recording {
+        requests: std::sync::Mutex<Vec<PromptRequest>>,
+    }
+
+    impl Interactor for Recording {
+        fn confirm_host_key(&self, _info: HostKeyInfo) -> BoxFuture<'_, HostKeyDecision> {
+            Box::pin(async { HostKeyDecision::TrustOnce })
+        }
+
+        fn prompt(&self, request: PromptRequest) -> BoxFuture<'_, Option<PromptAnswers>> {
+            Box::pin(async move {
+                let count = request.prompts.len();
+                if let Ok(mut seen) = self.requests.lock() {
+                    seen.push(request);
+                }
+                Some(PromptAnswers {
+                    answers: vec!["hunter2".to_owned(); count],
+                    remember: false,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn the_password_prompt_names_the_hop_that_is_being_authenticated() {
+        let dir = TempDir::new("target-chain");
+        let jump = test_ssh_server::spawn_forwarding().await;
+        let target = test_ssh_server::spawn_requiring_password("hunter2").await;
+        let mut chain = hops(jump, dir.path(), None);
+        chain[0].username = "jumper".to_owned();
+        let mut last = hops(target, dir.path(), None);
+        last[0].username = "ops".to_owned();
+        chain.append(&mut last);
+        let recording = Arc::new(Recording {
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let interactor: Arc<dyn Interactor> = Arc::clone(&recording) as Arc<dyn Interactor>;
+
+        let connection = Connection::connect_chain(chain, interactor).await;
+
+        assert!(connection.is_ok(), "两跳都应该连上");
+        let seen = recording.requests.lock().expect("锁");
+        let targets: Vec<&str> = seen.iter().map(|request| request.target.as_str()).collect();
+        assert_eq!(
+            targets,
+            [
+                format!("jumper@127.0.0.1:{}", jump.port()),
+                format!("ops@127.0.0.1:{}", target.port()),
+            ],
+            "每次提问写的是当时在认证的那一跳"
+        );
+    }
+
     #[tokio::test]
     async fn a_prompt_without_questions_is_cancelled_without_asking() {
         let hub = Arc::new(Hub::default());
@@ -477,6 +531,7 @@ mod tests {
         let interactor = NativeInteractor::with_hub(Arc::clone(&hub));
         let request = PromptRequest {
             kind: PromptKind::KeyboardInteractive,
+            target: String::new(),
             name: String::new(),
             instructions: String::new(),
             prompts: Vec::new(),

@@ -407,6 +407,8 @@ fn host_port(host: &str, port: u16) -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PromptText {
     pub title: String,
+    /// 为谁认证（`user@host:port`），空串 = 不显示这一行。
+    pub target: String,
     /// 服务器给的说明（可能多行），没有就是空串。
     pub instructions: String,
     /// 每道题的文字。
@@ -424,6 +426,11 @@ pub fn prompt_text(request: &PromptRequest) -> PromptText {
     };
     PromptText {
         title,
+        // 只要一行：多出来的换行压成空格，免得对端 / 调用方把它撑成一大段。
+        target: clean_text(&request.target)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
         instructions: clean_text(&request.instructions).trim().to_owned(),
         questions: request
             .prompts
@@ -471,7 +478,12 @@ mod tests {
     }
 
     fn password_request() -> PromptRequest {
-        PromptRequest::single(PromptKind::Password, "请输入密码", true)
+        PromptRequest::single(
+            PromptKind::Password,
+            "ops@demo.example.com:22",
+            "请输入密码",
+            true,
+        )
     }
 
     fn hub_with_main() -> Arc<Hub> {
@@ -640,9 +652,22 @@ mod tests {
     }
 
     #[test]
+    fn the_target_line_is_empty_when_core_did_not_say_and_one_line_otherwise() {
+        let mut request = password_request();
+        assert_eq!(prompt_text(&request).target, "ops@demo.example.com:22");
+        request.target = String::new();
+        assert_eq!(prompt_text(&request).target, "", "为空界面就不显示这一行");
+        request.target = "  \n ".to_owned();
+        assert_eq!(prompt_text(&request).target, "");
+        request.target = "ops@web-1:22\n\u{202E}evil".to_owned();
+        assert_eq!(prompt_text(&request).target, "ops@web-1:22 evil");
+    }
+
+    #[test]
     fn keyboard_interactive_shows_the_servers_name_and_questions() {
         let request = PromptRequest {
             kind: PromptKind::KeyboardInteractive,
+            target: "ops@demo.example.com:22".to_owned(),
             name: "Duo 验证".to_owned(),
             instructions: "请输入验证码\n或回复 push".to_owned(),
             prompts: vec![
@@ -659,6 +684,7 @@ mod tests {
         };
         let text = prompt_text(&request);
         assert_eq!(text.title, "Duo 验证");
+        assert_eq!(text.target, "ops@demo.example.com:22");
         assert_eq!(text.instructions, "请输入验证码\n或回复 push");
         assert_eq!(text.questions, ["密码: ", "验证码: "]);
 

@@ -1197,6 +1197,7 @@ mod tests {
             let answer = interactor
                 .prompt(PromptRequest::single(
                     PromptKind::Password,
+                    "ops@web-1:22",
                     "Password:",
                     true,
                 ))
