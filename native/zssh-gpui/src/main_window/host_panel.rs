@@ -504,7 +504,7 @@ impl MainWindow {
             let typed = password.read(cx).value().to_string();
             password.update(cx, |input, cx| {
                 input.set_masked(true, window, cx);
-                if typed == value {
+                if fetched_value_untouched(&value, &typed) {
                     input.set_value("", window, cx);
                 }
             });
@@ -579,6 +579,32 @@ impl MainWindow {
             form.password_shown = true;
         }
         password.update(cx, |input, cx| input.set_masked(false, window, cx));
+        cx.notify();
+    }
+
+    /// 锁屏时把主机属性对话框里还显示着的密码重新遮住（V2-C9）。只切换显示方式：用户自己在框里敲的 /
+    /// 改过的字原样保留；框里是点小眼睛从保险库取出来、没动过的明文，就把它从框里和内存里丢掉
+    /// （框回到"空 = 沿用已保存的密码"，和取出来之前一样，下次再看要重新验证）。
+    pub(super) fn remask_host_password(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = &mut self.host_form else {
+            return;
+        };
+        // 每个锁屏帧都会进来：没有要遮的就别碰输入框。
+        if !form.password_shown && form.revealed.is_none() {
+            return;
+        }
+        let revealed = form.revealed.take();
+        form.password_shown = false;
+        let password = form.password.clone();
+        let typed = password.read(cx).value().to_string();
+        let drop_fetched =
+            revealed.is_some_and(|(_, value)| fetched_value_untouched(&value, &typed));
+        password.update(cx, |input, cx| {
+            input.set_masked(true, window, cx);
+            if drop_fetched {
+                input.set_value("", window, cx);
+            }
+        });
         cx.notify();
     }
 
@@ -1025,5 +1051,25 @@ impl MainWindow {
 
     pub(crate) fn host_kind_is_key(kind: IdentityKind) -> bool {
         matches!(kind, IdentityKind::KeyFile | IdentityKind::KeyInline)
+    }
+}
+
+/// 框里的字还是不是点小眼睛取出来的那份、没被改过。是的话锁屏遮住时可以整个丢掉；
+/// 不是的话那是用户自己敲的 / 改过的，不能丢。
+fn fetched_value_untouched(fetched: &str, typed: &str) -> bool {
+    fetched == typed
+}
+
+#[cfg(test)]
+mod remask_tests {
+    use super::fetched_value_untouched;
+
+    #[test]
+    fn only_an_unedited_fetched_password_may_be_dropped() {
+        assert!(fetched_value_untouched("saved-pw", "saved-pw"));
+        // 取出来之后用户改过一个字：这是未保存的输入，锁屏只切换显示方式，不能丢
+        assert!(!fetched_value_untouched("saved-pw", "saved-pw2"));
+        assert!(!fetched_value_untouched("saved-pw", ""));
+        assert!(!fetched_value_untouched("saved-pw", "typed-by-user"));
     }
 }

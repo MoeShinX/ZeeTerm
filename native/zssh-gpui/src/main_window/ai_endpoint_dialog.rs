@@ -978,6 +978,21 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// 锁屏时把显示着的 API Key 重新遮住（V2-C9）。框里的字原样保留，只切换显示方式。
+    pub(crate) fn remask_ai_dialog_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Modal::AiEndpoint(dialog)) = &mut self.modal else {
+            return;
+        };
+        if !dialog.key_shown {
+            return;
+        }
+        dialog.key_shown = false;
+        dialog
+            .api_key
+            .update(cx, |input, cx| input.set_masked(true, window, cx));
+        cx.notify();
+    }
+
     /// 选了一个模型：填进"默认模型"。
     pub(crate) fn ai_dialog_pick_model(
         &mut self,

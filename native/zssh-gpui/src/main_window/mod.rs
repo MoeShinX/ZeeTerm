@@ -1601,6 +1601,9 @@ impl Render for MainWindow {
             self.forget_info_secret(window, cx);
             // 验证小对话框里刚敲的密码和等着做的动作也一并作废。
             self.drop_reveal_ask();
+            // 对话框里还显示着的明文（主机属性的密码、AI 接口的 Key）重新遮住，解锁后看到的是遮住的样子。
+            self.remask_host_password(window, cx);
+            self.remask_ai_dialog_key(window, cx);
             return self.render_lock_cover(window, cx);
         }
         self.after_unlock_refocus(window, cx);
