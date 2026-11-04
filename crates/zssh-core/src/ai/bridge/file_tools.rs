@@ -280,6 +280,8 @@ impl Bridge {
         // 统一处理。
         let mut reasons = Vec::new();
         if self.mode.mode() != super::ExecMode::Auto {
+            // 判断敏感路径要在远端解析登录目录和符号链接；目标已经被移出对话时一下都不能再碰。
+            self.ensure_still_valid(scope, ticket, &summary.host_label, tool, path, started)?;
             if let Some(hit) = self.sensitive_hit(fs, path).await {
                 reasons.push(hit.reason());
             }
