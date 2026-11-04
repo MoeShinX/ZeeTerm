@@ -960,7 +960,8 @@ fn kubectl_is_read_only(args: &[String]) -> bool {
 ///   可以是 `secret/名字`、逗号列表里的一项（`pods,secrets`）；`-o yaml|json|jsonpath|go-template` 本身不特殊处理，
 ///   因为不写 secret 的资源（pods、configmaps）用它没有这个问题——要紧的是读哪种资源；
 /// - `--raw` 直接请求 API 路径（`/api/v1/namespaces/x/secrets`），绕过资源类型，一律要确认。
-/// 和命名一个资源叫 secret 的 pod 同名会误报，宁可多问。
+///
+/// 和一个叫 secret 的资源名（比如 pod）同名会误报，宁可多问。
 fn kubectl_reads_secrets(args: &[String]) -> bool {
     args.iter().any(|arg| {
         if let Some(flag) = arg.strip_prefix("--") {
