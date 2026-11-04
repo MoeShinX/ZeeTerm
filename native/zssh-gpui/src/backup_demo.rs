@@ -35,6 +35,7 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::*;
 use zssh_core::ai::history::now_ms;
 use zssh_core::store::Database;
+use zssh_core::sync::accounts::SyncAccounts;
 use zssh_core::sync::apply::ApplyReport;
 use zssh_core::sync::backup::{BackupDetail, BackupInfo, BackupStore, RestoreReport};
 use zssh_core::sync::engine::SyncEngine;
@@ -893,8 +894,17 @@ fn create_backup_with(
     let snapshot = snapshot_local(&db, sealer, &device_id, Some(&known_hosts), now)
         .map_err(|err| err.to_string())?;
     let local = LocalExtras::read(&db).map_err(|err| err.to_string())?;
+    // 本地备份带上同步账号设置（整个备份文件由本机 DPAPI 加密，不会上传）。
+    let accounts = SyncAccounts::read(&db, sealer).map_err(|err| err.to_string())?;
     BackupStore::new(data_dir, sealer)
-        .create(&snapshot, &local, now, keep, Some(app_version))
+        .create(
+            &snapshot,
+            &local,
+            accounts.as_ref(),
+            now,
+            keep,
+            Some(app_version),
+        )
         .map_err(|err| err.to_string())
 }
 

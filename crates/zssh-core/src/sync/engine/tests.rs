@@ -1309,7 +1309,14 @@ async fn a_restored_backup_survives_the_next_sync() {
     let snapshot = engine.local(SyncEngine::now()).expect("本地快照");
     let backup = engine
         .backup_store()
-        .create(&snapshot, &Default::default(), SyncEngine::now(), 20, None)
+        .create(
+            &snapshot,
+            &Default::default(),
+            None,
+            SyncEngine::now(),
+            20,
+            None,
+        )
         .expect("建备份");
 
     // 之后改了名并同步上云：云端和基线都是 renamed。
@@ -1367,7 +1374,14 @@ async fn restoring_a_backup_with_a_deleted_host_survives_the_next_sync() {
     let snapshot = engine.local(SyncEngine::now()).expect("本地快照");
     let backup = engine
         .backup_store()
-        .create(&snapshot, &Default::default(), SyncEngine::now(), 20, None)
+        .create(
+            &snapshot,
+            &Default::default(),
+            None,
+            SyncEngine::now(),
+            20,
+            None,
+        )
         .expect("建备份");
 
     // 删掉 web-a 并同步：云端、基线、本机都有它的墓碑。

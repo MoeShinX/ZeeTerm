@@ -564,6 +564,7 @@ impl<'a> SyncEngine<'a> {
             .create(
                 snapshot,
                 &super::local_extras::LocalExtras::read(self.db)?,
+                super::accounts::SyncAccounts::read(self.db, self.sealer)?.as_ref(),
                 now,
                 keep,
                 self.app_version.as_deref(),

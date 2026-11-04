@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::accounts::{AccountsRestore, SyncAccounts};
 use super::apply::{apply_snapshot_guarded_with, ApplyReport, LocalGuard};
 use super::backup::{renew_deleted_uids, BackupInfo};
 use super::crypto::{seal_with, KdfParams};
@@ -42,6 +43,42 @@ pub struct OfflineImportReport {
     /// 合并时两边都改过、进了冲突页的条数。
     pub conflicts: usize,
     pub nulled_references: Vec<String>,
+    /// 文件里带的同步账号设置：本机还没配置同步就已经写回；已经配置了就等用户决定。
+    /// 不序列化（里面是凭据）。
+    #[serde(skip)]
+    pub accounts: AccountsRestore,
+}
+
+/// 导出文件的明文：同步快照 + 独立字段里的同步账号设置。账号设置**不在快照里**，
+/// 所以主同步包和云端备份包永远没有它；Z-SSH 0.2.14 和老版本解析时会把这个字段当不认识的丢掉。
+#[derive(Serialize)]
+struct Exported<'a> {
+    #[serde(flatten)]
+    snapshot: &'a SyncSnapshot,
+    // 字段名必须和 `accounts::EXPORT_FIELD` 一致（有测试核对）。
+    #[serde(
+        rename = "zeeterm_sync_accounts",
+        skip_serializing_if = "Option::is_none"
+    )]
+    accounts: Option<&'a SyncAccounts>,
+}
+
+/// 从导出文件的明文里取同步账号设置。没有、或者格式认不出来都当没有（不让导入因此失败）。
+fn parse_accounts(plaintext: &[u8]) -> Option<SyncAccounts> {
+    #[derive(Deserialize)]
+    struct Extras {
+        #[serde(default)]
+        zeeterm_sync_accounts: Option<serde_json::Value>,
+    }
+    let extras: Extras = serde_json::from_slice(plaintext).ok()?;
+    let value = extras.zeeterm_sync_accounts?;
+    match serde_json::from_value(value) {
+        Ok(accounts) => Some(accounts),
+        Err(err) => {
+            tracing::warn!(%err, "导入文件里的同步账号设置格式认不出来，已忽略");
+            None
+        }
+    }
 }
 
 fn random_bytes<const N: usize>() -> Result<[u8; N], SyncError> {
@@ -79,7 +116,15 @@ impl SyncEngine<'_> {
         // 墓碑是"这台电脑删过什么"，带到别的电脑上只会误删那边的东西
         snapshot.tombstones.clear();
         snapshot.sort_canonical();
-        let plaintext = zeroize::Zeroizing::new(snapshot.to_json()?);
+        // 同步账号设置跟着导出文件一起被导出密码加密。离线包就是 `.zsshbak`，没有另一种格式。
+        let accounts = SyncAccounts::read(self.db, self.sealer)?;
+        let plaintext = zeroize::Zeroizing::new(
+            serde_json::to_vec(&Exported {
+                snapshot: &snapshot,
+                accounts: accounts.as_ref(),
+            })
+            .map_err(|err| SyncError::Internal(format!("离线备份序列化失败：{err}")))?,
+        );
         seal_with(
             &plaintext,
             password,
@@ -96,8 +141,14 @@ impl SyncEngine<'_> {
         password: &str,
         mode: OfflineImportMode,
     ) -> Result<OfflineImportReport, SyncError> {
-        let incoming = SyncSnapshot::open(bytes, password)?;
-        self.import_snapshot(incoming, mode)
+        let plaintext = super::crypto::open(bytes, password)?;
+        let incoming = SyncSnapshot::parse(&plaintext)?;
+        let accounts = parse_accounts(&plaintext);
+        drop(plaintext);
+        let mut report = self.import_snapshot(incoming, mode)?;
+        // 数据已经导入；账号设置的处理结果单独带回去。
+        report.accounts = SyncAccounts::restore_or_offer(accounts, self.db, self.sealer)?;
+        Ok(report)
     }
 
     /// 把一份已经解开的快照按 `mode` 导入。离线备份文件和"直接读 Z-SSH 的库"两条路径共用它，
@@ -120,6 +171,7 @@ impl SyncEngine<'_> {
         let safety_backup = self.backup_store().create(
             &current,
             &super::local_extras::LocalExtras::read(self.db)?,
+            SyncAccounts::read(self.db, self.sealer)?.as_ref(),
             now,
             keep,
             self.app_version.as_deref(),
@@ -142,6 +194,7 @@ impl SyncEngine<'_> {
             applied,
             conflicts: conflicts.len(),
             nulled_references,
+            accounts: AccountsRestore::NotInBackup,
         })
     }
 

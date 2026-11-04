@@ -44,6 +44,7 @@ fn backups_are_dpapi_sealed_and_listed_newest_first() {
         .create(
             &snapshot_with_host("web-1"),
             &Default::default(),
+            None,
             1_760_000_000,
             20,
             Some("0.1.0"),
@@ -64,6 +65,7 @@ fn backups_are_dpapi_sealed_and_listed_newest_first() {
         .create(
             &snapshot_with_host("web-2"),
             &Default::default(),
+            None,
             1_760_000_100,
             20,
             None,
@@ -89,6 +91,7 @@ fn retention_keeps_twenty_and_never_touches_other_files() {
             .create(
                 &snapshot_with_host(&format!("web-{index}")),
                 &Default::default(),
+                None,
                 1_700_000_000 + index,
                 20,
                 None,
@@ -123,7 +126,14 @@ fn restore_backs_up_current_state_before_overwriting() {
     let mut restored = snapshot_with_host("restored");
     restored.hosts[0].uid = "h-restored".to_owned();
     let info = store
-        .create(&restored, &Default::default(), 1_750_000_000, 20, None)
+        .create(
+            &restored,
+            &Default::default(),
+            None,
+            1_750_000_000,
+            20,
+            None,
+        )
         .expect("备份");
 
     let report = store
