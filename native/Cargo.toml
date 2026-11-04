@@ -23,3 +23,12 @@ expect_used = "warn"
 opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
+
+# 发布版优化，和根工作区的 [profile.release] 保持一致：native 是独立工作区，根的 profile 对它
+# 不生效，以前这里没写，出货的 exe 就是没有 LTO、没去符号的默认发布配置。
+# 改这里时记得同步根 Cargo.toml（两处要一样）。
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 3
