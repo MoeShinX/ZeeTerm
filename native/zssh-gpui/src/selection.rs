@@ -3,47 +3,70 @@
 //! 只做纯函数：给定一行快照和列号，返回要选中的列范围。宽字符的占位格
 //! 跟随前一个 cell，复制时由 `text_between` 跳过。
 
-use zssh_terminal::RowSnapshot;
+use zssh_terminal::{CellSnapshot, RowSnapshot};
 
-/// 词字符：字母、数字、下划线、连字符、点、斜杠、冒号、@。
-/// 这样 `user@host:/tmp/file.txt`、URL、路径都能整段选中。
+/// 词字符：字母、数字，加上常出现在主机名 / IP / 路径 / 邮箱里的 `_ - . / : @ ~`。
+/// 这样 `user@host:/tmp/file.txt`、`10-7-46-164`、`~/work` 都能整段选中；
+/// 空格、引号、括号、逗号、`=`、`;` 等仍然断开（`a=b` 双击只选 `a` 或 `b`）。
 fn is_word_char(ch: char) -> bool {
-    ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '@')
+    ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '@' | '~')
+}
+
+/// 词尾的句末标点（`ping 10.0.0.1.`、`error:`）：词里有别的字符时从选区里去掉，
+/// 双击 IP 不该把句号一起带走。
+fn is_trailing_punct(ch: char) -> bool {
+    matches!(ch, '.' | ':')
+}
+
+/// 占位格（宽字符的右半）不是任何字，点在它上面等于点在前一个 cell。
+fn leading_col(row: &RowSnapshot, col: usize) -> Option<usize> {
+    let mut col = col;
+    while row.cells.get(col)?.spacer {
+        col = col.checked_sub(1)?;
+    }
+    Some(col)
+}
+
+fn is_word_cell(cell: &CellSnapshot) -> bool {
+    cell.spacer || is_word_char(cell.ch)
 }
 
 /// 双击：返回光标所在词的列范围；空白或符号上返回 `None`。
 pub fn word_span(row: &RowSnapshot, col: usize) -> Option<(usize, usize)> {
-    let cell = row.cells.get(col)?;
-    if cell.spacer || !is_word_char(cell.ch) {
+    let col = leading_col(row, col)?;
+    if !is_word_char(row.cells.get(col)?.ch) {
         return None;
     }
 
     let mut start = col;
-    while start > 0 {
-        let previous = &row.cells[start - 1];
-        if previous.spacer {
-            start -= 1;
-            continue;
-        }
-        if is_word_char(previous.ch) {
-            start -= 1;
-        } else {
-            break;
-        }
+    while start > 0 && is_word_cell(&row.cells[start - 1]) {
+        start -= 1;
+    }
+    // 起点不能落在占位格上（宽字符的右半）。
+    while row.cells[start].spacer && start < col {
+        start += 1;
     }
 
     let mut end = col;
-    while end + 1 < row.cells.len() {
-        let next = &row.cells[end + 1];
-        if next.spacer {
-            end += 1;
-            continue;
-        }
-        if is_word_char(next.ch) {
-            end += 1;
-        } else {
+    while end + 1 < row.cells.len() && is_word_cell(&row.cells[end + 1]) {
+        end += 1;
+    }
+
+    // 去掉句末标点，但不能把被点的那一格去掉（点的就是 `:` 本身时原样保留）。
+    let floor = col.max(start);
+    let mut trimmed = end;
+    let mut peeled = false;
+    while trimmed > floor {
+        let cell = &row.cells[trimmed];
+        if is_trailing_punct(cell.ch) && !cell.spacer {
+            peeled = true;
+        } else if !cell.spacer {
             break;
         }
+        trimmed -= 1;
+    }
+    if peeled {
+        end = trimmed;
     }
     Some((start, end))
 }
@@ -51,6 +74,24 @@ pub fn word_span(row: &RowSnapshot, col: usize) -> Option<(usize, usize)> {
 /// 三击：整行。
 pub fn line_span(row: &RowSnapshot) -> (usize, usize) {
     (0, row.cells.len().saturating_sub(1))
+}
+
+/// 左键按下一次该做什么：`click_count` 是系统给的连击次数（1、2、3……，一直累加）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PressAction {
+    /// 选中这一段列范围（双击词 / 三击行）；不开始拖选。
+    Select((usize, usize)),
+    /// 单击（或双击落在空白 / 符号上）：清掉旧选区，只记锚点，拖出这一格才成为选区。
+    Anchor,
+}
+
+pub fn press_action(row: &RowSnapshot, col: usize, click_count: usize) -> PressAction {
+    let span = match click_count {
+        0 | 1 => None,
+        2 => word_span(row, col),
+        _ => Some(line_span(row)),
+    };
+    span.map_or(PressAction::Anchor, PressAction::Select)
 }
 
 /// Ctrl+C / Ctrl+Shift+C 在终端里该做什么（和 0.2.14 前端的 `terminalKeys.ts` 一致）。
@@ -109,6 +150,120 @@ mod tests {
         assert_eq!(word_span(&snap.rows[0], 7), Some((5, 17)));
         let snap = snapshot("see https://example.com/a now");
         assert_eq!(word_span(&snap.rows[0], 10), Some((4, 24)));
+    }
+
+    fn word_at(text: &str, needle: &str) -> Option<String> {
+        let snap = snapshot(text);
+        let row = &snap.rows[0];
+        let byte = row.text.find(needle)?;
+        // 行文字不含占位格，列号要按单元格数一遍。
+        let col = row
+            .text
+            .char_indices()
+            .take_while(|(i, _)| *i < byte)
+            .map(|(_, ch)| if wide(ch) { 2 } else { 1 })
+            .sum::<usize>();
+        let (start, end) = word_span(row, col)?;
+        Some(
+            row.cells[start..=end]
+                .iter()
+                .filter(|cell| !cell.spacer)
+                .map(|cell| cell.ch)
+                .collect(),
+        )
+    }
+
+    fn wide(ch: char) -> bool {
+        ('\u{1100}'..='\u{115f}').contains(&ch)
+            || ('\u{2e80}'..='\u{a4cf}').contains(&ch)
+            || ('\u{ac00}'..='\u{d7a3}').contains(&ch)
+            || ('\u{ff00}'..='\u{ff60}').contains(&ch)
+    }
+
+    #[test]
+    fn ips_hostnames_and_emails_are_one_word() {
+        for (text, needle, want) in [
+            ("ping 192.0.2.17 now", "192.0.2.17", "192.0.2.17"),
+            ("[root@10-7-46-164 ~]#", "10-7", "root@10-7-46-164"),
+            ("10.0.0.1:22 open", "10.0.0.1", "10.0.0.1:22"),
+            (
+                "mail user@web-1.example.org now",
+                "web-1",
+                "user@web-1.example.org",
+            ),
+            ("cd ~/work/app now", "work", "~/work/app"),
+            ("a_b-c.d now", "b-c", "a_b-c.d"),
+        ] {
+            assert_eq!(word_at(text, needle).as_deref(), Some(want), "{text}");
+        }
+    }
+
+    #[test]
+    fn equals_quotes_brackets_and_commas_break_words() {
+        assert_eq!(word_at("set a=b now", "a=").as_deref(), Some("a"));
+        assert_eq!(word_at("set a=b now", "b now").as_deref(), Some("b"));
+        assert_eq!(word_at("x=\"v1\" y", "v1").as_deref(), Some("v1"));
+        assert_eq!(word_at("f(a, b)", "a,").as_deref(), Some("a"));
+        assert_eq!(word_at("[abc] d", "abc").as_deref(), Some("abc"));
+        assert_eq!(word_at("a;b", "b").as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn a_trailing_period_or_colon_is_not_part_of_the_word() {
+        assert_eq!(
+            word_at("ping 10.0.0.1. ok", "10.0").as_deref(),
+            Some("10.0.0.1")
+        );
+        assert_eq!(word_at("error: boom", "error").as_deref(), Some("error"));
+        // 点的就是标点本身：不能把被点的格子去掉。
+        let snap = snapshot("end.");
+        assert_eq!(word_span(&snap.rows[0], 3), Some((0, 3)));
+    }
+
+    #[test]
+    fn full_width_text_and_punctuation() {
+        // 中文连成一词，全角标点断开。
+        assert_eq!(word_at("你好，world", "你好").as_deref(), Some("你好"));
+        assert_eq!(word_at("你好，world", "world").as_deref(), Some("world"));
+        assert_eq!(word_at("（abc）", "abc").as_deref(), Some("abc"));
+        // 全角冒号后面的词不会把占位格带进起点。
+        let snap = snapshot("名称：host-1");
+        let row = &snap.rows[0];
+        let (start, end) = word_span(row, 8).expect("host-1 是一个词");
+        assert!(!row.cells[start].spacer, "起点落在占位格上");
+        let text: String = row.cells[start..=end]
+            .iter()
+            .filter(|c| !c.spacer)
+            .map(|c| c.ch)
+            .collect();
+        assert_eq!(text, "host-1");
+    }
+
+    #[test]
+    fn clicking_the_right_half_of_a_wide_char_still_selects_the_word() {
+        let snap = snapshot("中文 ab");
+        let row = &snap.rows[0];
+        assert!(row.cells[1].spacer);
+        assert_eq!(word_span(row, 1), Some((0, 3)));
+        assert_eq!(word_span(row, 0), Some((0, 3)));
+        // 全角标点的右半不是词。
+        let snap = snapshot("a：b");
+        assert_eq!(word_span(&snap.rows[0], 2), None);
+    }
+
+    #[test]
+    fn successive_presses_double_then_triple() {
+        let snap = snapshot("run 192.0.2.17 now");
+        let row = &snap.rows[0];
+        // 同一位置连按：1 单击只记锚点；2 选词；3 及以后选整行（系统的连击数一直累加）。
+        assert_eq!(press_action(row, 8, 1), PressAction::Anchor);
+        assert_eq!(press_action(row, 8, 2), PressAction::Select((4, 13)));
+        assert_eq!(press_action(row, 8, 3), PressAction::Select((0, 79)));
+        assert_eq!(press_action(row, 8, 4), PressAction::Select((0, 79)));
+        // 双击落在空格上：和单击一样（清选区、记锚点），不残留上一次的选区。
+        assert_eq!(press_action(row, 3, 2), PressAction::Anchor);
+        // 三击落在空白上也是整行。
+        assert_eq!(press_action(row, 40, 3), PressAction::Select((0, 79)));
     }
 
     #[test]

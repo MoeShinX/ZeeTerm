@@ -24,6 +24,10 @@ const KNOWN: &[&str] = &[
     "ai_history",
     // G10b：工具卡片、审批、停止、思考指示、标签活动点、主机记忆框
     "ai_stop",
+    // ai_clip:clear|none|last:<文字>|has:<片段>：聊天里「复制」写出的内容（进内存缓冲，不碰系统剪贴板）
+    "ai_clip",
+    // ai_notice:error|info:<文字>：往对话里放一条错误 / 提示（文字里的换行写反斜杠 n）
+    "ai_notice",
     "ai_queue",
     "ai_layout",
     "ai_scroll",
@@ -145,6 +149,48 @@ fn run_inner(
             chat.update(cx, |chat, cx| chat.pick_effort_by_label(a, cx))?;
         }
         // ---- G10b：工具卡片 / 审批 / 停止 ----
+        "ai_notice" => {
+            let chat = active_ai(this, cx)?;
+            let text = if c.is_empty() {
+                b.to_owned()
+            } else {
+                format!("{b}:{c}")
+            };
+            let text = super::dev_script::unescape(&text);
+            let error = a == "error";
+            chat.update(cx, |chat, cx| chat.dev_push_notice(&text, error, cx));
+        }
+        "ai_clip" => {
+            #[cfg(debug_assertions)]
+            {
+                use crate::chat_copy::{capture_last, capture_start, capture_take};
+                let text = super::dev_script::unescape(&if c.is_empty() {
+                    b.to_owned()
+                } else {
+                    format!("{b}:{c}")
+                });
+                match a {
+                    "clear" => {
+                        capture_start();
+                        let _ = capture_take();
+                    }
+                    "none" => {
+                        if let Some(have) = capture_last() {
+                            return fail(format!("不该写过剪贴板，却写了 {have:?}"));
+                        }
+                    }
+                    "last" => match capture_last() {
+                        Some(have) if have == text => {}
+                        other => return fail(format!("最后一次复制的是 {other:?}")),
+                    },
+                    "has" => match capture_last() {
+                        Some(have) if have.contains(&text) => {}
+                        other => return fail(format!("最后一次复制的是 {other:?}")),
+                    },
+                    _ => return fail("ai_clip 只能是 clear / none / last / has"),
+                }
+            }
+        }
         // ai_stop：点「停止」。
         "ai_stop" => {
             let chat = active_ai(this, cx)?;

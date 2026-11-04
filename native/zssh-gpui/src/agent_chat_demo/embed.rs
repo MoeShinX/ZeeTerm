@@ -890,6 +890,13 @@ impl AgentChatDemo {
         self.stop(cx);
     }
 
+    /// 往当前助手消息里放一条提示（`error` 为真是红色的错误），截图 / 复制验证用，不进历史。
+    pub fn dev_push_notice(&mut self, text: &str, error: bool, cx: &mut Context<Self>) {
+        self.chat.push_notice(text, error);
+        self.scroll.scroll_to_bottom();
+        cx.notify();
+    }
+
     /// 消息区滚到最新（截图前用）。
     pub fn dev_scroll_bottom(&mut self, cx: &mut Context<Self>) {
         self.scroll.scroll_to_bottom();

@@ -26,9 +26,10 @@ use ::gpui::{
     App, ClickEvent, ClipboardItem, EventEmitter, FocusHandle, ImageSource, MouseButton, Resource,
     ScrollHandle, Subscription, Task, Window, WindowBounds, WindowOptions, anchored, deferred,
 };
+use gpui_kit::base::SelectableText;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
-use gpui_kit::component::menu::DropdownMenu as _;
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
 use gpui_kit::component::text::{SelectionFormat, TextView};
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -73,6 +74,8 @@ static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
 
 /// 脚本推进间隔；和 AI 智能体窗口、终端窗口的轮询节奏一致。
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
+/// 点了消息上的「复制」之后，对勾和「已复制」留多久。
+const COPIED_FLASH: Duration = Duration::from_millis(1500);
 
 /// 调试版里让窗口从离线演示开始的钩子（走 `dev_hooks`，发行版读不到）。
 const DEMO_ENV: &str = "ZSSH_AGENT_DEMO";
@@ -715,6 +718,31 @@ fn body_markdown(message: &AssistantMessage, mode: BodyMode) -> Option<String> {
         BodyMode::Raw if text.is_empty() => Some(RAW_NO_BODY.to_owned()),
         BodyMode::Raw => Some(raw_markdown_block(&text)),
     }
+}
+
+/// 一条助手消息「复制」要复制的内容：Markdown 原文（不是渲染后的，也不是只显示的前一段）。
+/// 没有正文（只有错误 / 重试提示，它们各自带复制按钮）返回空串，整条消息就不画复制按钮。
+fn assistant_copy_text(message: &AssistantMessage) -> String {
+    message.text.clone()
+}
+
+/// 一条错误 / 重试提示的完整文字（和界面上显示的一致：用户目录等路径已脱敏）。
+fn notice_copy_text(notice: &Notice) -> String {
+    redact_paths(&notice.text)
+}
+
+/// 右键菜单「复制」的名字和内容：此刻有选中文字就复制选中的，没有就复制整块。
+fn copy_menu_choice(selected: &str, whole: &str) -> (&'static str, String) {
+    if selected.trim().is_empty() {
+        ("复制", whole.to_owned())
+    } else {
+        ("复制选中文字", selected.to_owned())
+    }
+}
+
+/// 一条消息的「悬停组」名字：复制按钮靠它在鼠标移进这条消息时才显示。
+fn copy_group(key: &str) -> SharedString {
+    format!("chat-copy-{key}").into()
 }
 
 /// 对话里的一条消息。
@@ -2339,6 +2367,8 @@ pub struct AgentChatDemo {
     footer_error: Option<String>,
     /// 点链接之后的底部提示（复制了什么网址，或为什么没复制）。
     link_notice: Option<Notice>,
+    /// 刚点过「复制」的那条消息的键和时刻：键对上的按钮在 [`COPIED_FLASH`] 内显示对勾和「已复制」。
+    copied: Option<(String, Instant)>,
     /// 对话区最多画多少条消息（更早的折叠，点按钮再多画一页）。
     shown_messages: usize,
     /// 历史面板：关着 / 列表 / 查看一条。
@@ -2448,6 +2478,7 @@ impl AgentChatDemo {
             host_rx,
             footer_error: host_error,
             link_notice: None,
+            copied: None,
             shown_messages: MESSAGES_PER_PAGE,
             history: HistoryPanel::Closed,
             history_rows: Vec::new(),
@@ -2508,6 +2539,10 @@ impl AgentChatDemo {
                     }
                     if this.thinking_tick() {
                         changed = true;
+                    }
+                    // 「已复制」的对勾到点就收回；只重画，不能借 `changed` 把对话滚到底部。
+                    if this.expire_copied() {
+                        cx.notify();
                     }
                     if changed {
                         if stick {
@@ -3717,7 +3752,7 @@ impl AgentChatDemo {
     fn open_link(&mut self, raw: &str, cx: &mut Context<Self>) {
         let (notice, copy) = link_click_notice(raw);
         if let Some(url) = copy {
-            cx.write_to_clipboard(ClipboardItem::new_string(url));
+            crate::chat_copy::write(url, cx);
         }
         self.link_notice = Some(notice);
         cx.notify();
@@ -3725,7 +3760,145 @@ impl AgentChatDemo {
 
     /// 复制一段文字（命令全文等）。
     fn copy_text(&mut self, text: String, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        crate::chat_copy::write(text, cx);
+    }
+
+    /// 消息上的「复制」按钮 / 右键菜单的「复制」：写剪贴板，并让键对上的按钮闪一下对勾。
+    fn copy_message(&mut self, key: &str, text: String, cx: &mut Context<Self>) {
+        crate::chat_copy::write(text, cx);
+        self.copied = Some((key.to_owned(), Instant::now()));
+        cx.notify();
+    }
+
+    /// 对勾到点了就收回；返回有没有变化。
+    fn expire_copied(&mut self) -> bool {
+        if self
+            .copied
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= COPIED_FLASH)
+        {
+            self.copied = None;
+            return true;
+        }
+        false
+    }
+
+    fn is_copied(&self, key: &str) -> bool {
+        self.copied.as_ref().is_some_and(|(k, _)| k == key)
+    }
+
+    /// 复制按钮（V2-U31）：鼠标移进所在的组（[`copy_group`]）才显示，刚复制过则一直显示对勾和「已复制」，
+    /// 到点（[`COPIED_FLASH`]）收回。`key` 同时是「谁刚被复制」的标记。
+    fn copy_controls(
+        &self,
+        key: &str,
+        whole: &str,
+        entity: &Entity<Self>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let copied = self.is_copied(key);
+        let group = copy_group(key);
+        let click_entity = entity.clone();
+        let click_key = key.to_owned();
+        let click_text = whole.to_owned();
+        let button = Button::new(format!("{key}-copy"))
+            .ghost()
+            .compact()
+            .icon(if copied {
+                IconName::Check
+            } else {
+                IconName::Copy
+            })
+            .tooltip(if copied { "已复制" } else { "复制" })
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                let text = click_text.clone();
+                click_entity.update(cx, |this, cx| this.copy_message(&click_key, text, cx));
+            });
+        h_flex()
+            .flex_none()
+            .gap_1()
+            .items_center()
+            .rounded_sm()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .when(copied, |row| {
+                row.child(
+                    div()
+                        .pl_1()
+                        .text_xs()
+                        .text_color(cx.theme().success)
+                        .child("已复制"),
+                )
+            })
+            .when(!copied, |row| {
+                row.invisible().group_hover(group, |style| style.visible())
+            })
+            .child(button)
+    }
+
+    /// 给一块消息内容套上「悬停出复制按钮 + 右键菜单」的外壳（V2-U31），按钮浮在右上角。
+    /// 按钮要占位的消息（用户气泡）自己用 [`Self::copy_controls`] 摆好再走 [`Self::copy_wrap`]。
+    ///
+    /// `menu` 为假时只有按钮（嵌在已经有菜单的消息里的小块，右键走外层那一个）。
+    fn copy_shell(
+        &self,
+        key: String,
+        whole: String,
+        body: AnyElement,
+        menu: bool,
+        entity: Entity<Self>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let controls = self
+            .copy_controls(&key, &whole, &entity, cx)
+            .absolute()
+            .top_0()
+            .right_0();
+        let content = div()
+            .relative()
+            .w_full()
+            .min_w_0()
+            .child(body)
+            .child(controls)
+            .into_any_element();
+        Self::copy_wrap(key, whole, content, menu, entity)
+    }
+
+    /// 外壳的另一半：悬停组 + 右键菜单「复制」。右键菜单：此刻有选中文字就复制选中的那部分，没有就复制
+    /// 整块（[`copy_menu_choice`]）；选区要在菜单**建起来的那一刻**读，点菜单项的左键按下会先清掉选区。
+    fn copy_wrap(
+        key: String,
+        whole: String,
+        content: AnyElement,
+        menu: bool,
+        entity: Entity<Self>,
+    ) -> AnyElement {
+        let shell = div()
+            .id(key.clone())
+            .group(copy_group(&key))
+            .w_full()
+            .min_w_0()
+            .child(content);
+        if !menu {
+            return shell.into_any_element();
+        }
+        shell
+            .context_menu(move |popup, window, cx| {
+                let selected = gpui_kit::base::TextSelection::selected_text(window, cx);
+                let (label, text) = copy_menu_choice(&selected, &whole);
+                let tokens = Tokens::current(cx);
+                let entity = entity.clone();
+                let key = key.clone();
+                popup.item(menu_kit::row(&tokens, label, IconName::Copy).on_click(
+                    move |_, _, cx| {
+                        let text = text.clone();
+                        entity.update(cx, |this, cx| this.copy_message(&key, text, cx));
+                    },
+                ))
+            })
+            .into_any_element()
     }
 
     /// 助手正文：渲染模式保留 Markdown 视图；原文模式把原始 Markdown 放进代码块。
@@ -4828,7 +5001,24 @@ impl AgentChatDemo {
             );
         }
         for (index, message) in record.messages.iter().enumerate().skip(start) {
-            panel = panel.child(self.history_message(index, message, cx));
+            let element = self.history_message(index, message, cx);
+            // 用户 / 助手消息和对话里一样能复制（原文）；工具卡片没有。
+            let whole = match message {
+                HistoryMessage::User { text } | HistoryMessage::Assistant { text } => text.clone(),
+                HistoryMessage::Tool { .. } => String::new(),
+            };
+            panel = panel.child(if whole.is_empty() {
+                element
+            } else {
+                self.copy_shell(
+                    format!("agent-chat-hist-{index}"),
+                    whole,
+                    element,
+                    true,
+                    cx.entity(),
+                    cx,
+                )
+            });
         }
         panel.into_any_element()
     }
@@ -5093,33 +5283,60 @@ impl AgentChatDemo {
             .enumerate()
             .skip(first_shown)
             .map(|(index, message)| match message {
-                ChatMessage::User(text) => h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .justify_end()
-                    .child(
-                        div()
-                            .max_w(::gpui::px(680.0))
-                            .min_w_0()
-                            .p_2()
-                            .rounded_md()
-                            .bg(cx.theme().primary)
-                            .text_color(cx.theme().primary_foreground)
-                            .text_sm()
-                            .child(text.clone()),
-                    )
-                    .into_any_element(),
+                ChatMessage::User(text) => {
+                    // 按钮摆在气泡左边（占位、不遮字）。
+                    let key = format!("agent-chat-msg-{index}");
+                    let controls = self.copy_controls(&key, text, &entity, cx);
+                    let row = h_flex()
+                        .w_full()
+                        .min_w_0()
+                        .justify_end()
+                        .items_start()
+                        .gap_1()
+                        .child(controls)
+                        .child(
+                            div()
+                                .max_w(::gpui::px(680.0))
+                                .min_w_0()
+                                .p_2()
+                                .rounded_md()
+                                .bg(cx.theme().primary)
+                                .text_color(cx.theme().primary_foreground)
+                                .text_sm()
+                                .child(SelectableText::new(
+                                    ("agent-chat-user-text", index),
+                                    text.clone(),
+                                )),
+                        )
+                        .into_any_element();
+                    Self::copy_wrap(key, text.clone(), row, true, entity.clone())
+                }
                 // 独立的系统提示行：居中、淡色，没有行头和按钮（V2-U14）。
-                ChatMessage::System(text) => div()
-                    .id(("agent-chat-system", index))
-                    .w_full()
-                    .min_w_0()
-                    .py_1()
-                    .text_center()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(redact_paths(text))
-                    .into_any_element(),
+                ChatMessage::System(text) => {
+                    let shown = redact_paths(text);
+                    let line = div()
+                        .id(("agent-chat-system", index))
+                        .w_full()
+                        .min_w_0()
+                        .py_1()
+                        .px_8()
+                        .text_center()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SelectableText::new(
+                            ("agent-chat-system-text", index),
+                            shown.clone(),
+                        ))
+                        .into_any_element();
+                    self.copy_shell(
+                        format!("agent-chat-msg-{index}"),
+                        shown,
+                        line,
+                        true,
+                        entity.clone(),
+                        cx,
+                    )
+                }
                 ChatMessage::Assistant(message) => {
                     let toggle_entity = entity.clone();
                     let raw_entity = entity.clone();
@@ -5156,17 +5373,29 @@ impl AgentChatDemo {
                             ),
                     );
 
-                    for notice in &message.notices {
-                        block = block.child(
-                            div()
-                                .text_xs()
-                                .text_color(if notice.error {
-                                    cx.theme().danger
-                                } else {
-                                    cx.theme().warning
-                                })
-                                .child(redact_paths(&notice.text)),
-                        );
+                    for (notice_index, notice) in message.notices.iter().enumerate() {
+                        let shown = notice_copy_text(notice);
+                        let line = div()
+                            .pr_8()
+                            .text_xs()
+                            .text_color(if notice.error {
+                                cx.theme().danger
+                            } else {
+                                cx.theme().warning
+                            })
+                            .child(SelectableText::new(
+                                ("agent-chat-notice-text", index * 1000 + notice_index),
+                                shown.clone(),
+                            ))
+                            .into_any_element();
+                        block = block.child(self.copy_shell(
+                            format!("agent-chat-notice-{index}-{notice_index}"),
+                            shown,
+                            line,
+                            true,
+                            entity.clone(),
+                            cx,
+                        ));
                     }
                     for (card_index, card) in message.cards.iter().enumerate() {
                         block = block.child(tokenway_card(
@@ -5261,7 +5490,18 @@ impl AgentChatDemo {
                         }
                     }
 
-                    block.into_any_element()
+                    let whole = assistant_copy_text(message);
+                    if whole.is_empty() {
+                        return block.into_any_element();
+                    }
+                    self.copy_shell(
+                        format!("agent-chat-msg-{index}"),
+                        whole,
+                        block.into_any_element(),
+                        true,
+                        entity.clone(),
+                        cx,
+                    )
                 }
             })
             .collect::<Vec<_>>();
@@ -7859,5 +8099,92 @@ mod tests {
         // 正文里最长的一串是 9 个，比围栏短，所以不会提前关闭。
         let inner = &block[fence.len()..block.len() - fence.len()];
         assert!(!inner.contains(&fence));
+    }
+
+    // ---- V2-U31：消息的复制内容（不碰系统剪贴板：这里只验证"要复制什么"，写入口见 chat_copy 的测试）----
+
+    fn notice(text: &str, error: bool) -> super::Notice {
+        super::Notice {
+            text: text.to_owned(),
+            error,
+        }
+    }
+
+    #[test]
+    fn copying_an_assistant_message_gives_the_markdown_source_not_the_clipped_preview() {
+        let source = format!(
+            "## 标题\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```rust\nfn main() {{}}\n```\n\n{}",
+            "很长的正文。".repeat(BODY_PREVIEW_CHARS)
+        );
+        let message = AssistantMessage {
+            text: source.clone(),
+            ..AssistantMessage::default()
+        };
+        let copied = super::assistant_copy_text(&message);
+        assert_eq!(
+            copied, source,
+            "整段 Markdown 原文，不是渲染后的、也不是只显示的前一段"
+        );
+        assert!(copied.chars().count() > BODY_PREVIEW_CHARS);
+        assert!(copied.contains("```rust") && copied.contains("|---|---|"));
+    }
+
+    #[test]
+    fn an_error_notice_copies_its_complete_text() {
+        let full = "错误：连接 192.0.2.17:22 超时（15 秒）\n请检查网络后重试。\n".to_owned()
+            + &"详细信息 ".repeat(400);
+        assert_eq!(super::notice_copy_text(&notice(&full, true)), full);
+        // 和界面显示用的是同一个脱敏函数：路径不会因为复制而多出来。
+        let with_path = r"错误：找不到 C:\Users\someone\app\a.log";
+        assert_eq!(
+            super::notice_copy_text(&notice(with_path, true)),
+            crate::agent_text::redact_paths(with_path)
+        );
+    }
+
+    #[test]
+    fn a_message_without_body_has_nothing_to_copy_as_a_whole() {
+        // 只有提示：提示各自复制，整条消息不画复制按钮（空串）。
+        let only_notices = AssistantMessage {
+            notices: vec![notice("错误：第一条", true), notice("正在重试", false)],
+            ..AssistantMessage::default()
+        };
+        assert_eq!(super::assistant_copy_text(&only_notices), "");
+        // 有正文：只复制正文，提示是各自独立复制的。
+        let with_text = AssistantMessage {
+            text: "好的".to_owned(),
+            notices: vec![notice("错误：x", true)],
+            ..AssistantMessage::default()
+        };
+        assert_eq!(super::assistant_copy_text(&with_text), "好的");
+    }
+
+    #[test]
+    fn the_context_menu_copies_the_selection_or_else_the_whole_message() {
+        assert_eq!(
+            super::copy_menu_choice("", "整条消息"),
+            ("复制", "整条消息".to_owned())
+        );
+        assert_eq!(
+            super::copy_menu_choice("  \n", "整条消息"),
+            ("复制", "整条消息".to_owned()),
+            "只有空白的选区不算"
+        );
+        assert_eq!(
+            super::copy_menu_choice("选中的一段", "整条消息"),
+            ("复制选中文字", "选中的一段".to_owned())
+        );
+    }
+
+    #[test]
+    fn every_message_has_its_own_hover_group() {
+        assert_ne!(
+            super::copy_group("agent-chat-msg-1"),
+            super::copy_group("agent-chat-msg-2")
+        );
+        assert_ne!(
+            super::copy_group("agent-chat-msg-1"),
+            super::copy_group("agent-chat-notice-1-0")
+        );
     }
 }

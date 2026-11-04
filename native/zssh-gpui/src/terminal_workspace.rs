@@ -3430,27 +3430,24 @@ impl TerminalWorkspace {
             self.open_link(&link);
             return;
         }
-        // 三击选行、双击选词（链接优先）。
+        // 三击选行、双击选词（链接优先）；单击只记锚点，拖动离开这一格才成为选区。
         if let Some((_, row, col)) = self.cell_at(event.position) {
-            let Some(snapshot_rows) = self.pane().map(|pane| &pane.snapshot.rows) else {
+            let Some(line) = self.pane().and_then(|pane| pane.snapshot.rows.get(row)) else {
                 return;
             };
-            let span = match snapshot_rows.get(row) {
-                Some(line) if event.click_count >= 3 => Some(crate::selection::line_span(line)),
-                Some(line) if event.click_count == 2 => crate::selection::word_span(line, col),
-                _ => None,
-            };
-            if let Some((start, end)) = span {
-                self.selection = Some(((row, start), (row, end)));
-                self.selecting = false;
-                self.copy_on_select(cx);
-                cx.notify();
-                return;
+            match crate::selection::press_action(line, col, event.click_count) {
+                crate::selection::PressAction::Select((start, end)) => {
+                    self.selection = Some(((row, start), (row, end)));
+                    self.selecting = false;
+                    self.drag_anchor = None;
+                    self.copy_on_select(cx);
+                }
+                crate::selection::PressAction::Anchor => {
+                    self.selection = None;
+                    self.drag_anchor = Some((row, col));
+                    self.selecting = true;
+                }
             }
-            // 单击只记锚点，拖动离开这一格才成为选区。
-            self.selection = None;
-            self.drag_anchor = Some((row, col));
-            self.selecting = true;
             cx.notify();
         }
     }
