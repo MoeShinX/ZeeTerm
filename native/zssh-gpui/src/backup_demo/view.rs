@@ -22,10 +22,6 @@ use crate::settings_view::card;
 use crate::sync_demo::format_stamp;
 use crate::typography::{Role, Typo as _};
 
-/// 导出界面的提醒：文件里带着同步账号的登录信息。
-pub(super) const EXPORT_CREDENTIALS_NOTE: &str =
-    "备份文件里包含同步账号（S3 / WebDAV / OneDrive 等）的登录信息，请妥善保管";
-
 /// 保留份数的可选值（核心接受 1～200，同 0.2.14）。
 pub(super) const KEEP_CHOICES: [usize; 6] = [5, 10, 20, 50, 100, 200];
 
@@ -36,6 +32,10 @@ pub(super) fn default_file_name() -> String {
     let date: String = stamp.chars().take(10).filter(|c| *c != '-').collect();
     format!("zeeterm-{date}.zsshbak")
 }
+
+/// 导出界面的提醒：文件里带着同步账号的登录信息。
+pub(super) const EXPORT_CREDENTIALS_NOTE: &str =
+    "备份文件里包含同步账号（S3 / WebDAV / OneDrive 等）的登录信息，请妥善保管";
 
 /// 保留份数下拉里要列出的值：固定几档，当前值不在里面就加进去排好。
 pub(super) fn keep_choices(current: usize) -> Vec<usize> {
@@ -683,5 +683,17 @@ mod tests {
             "{name}"
         );
         assert_eq!(name.len(), "zeeterm-20260101.zsshbak".len(), "{name}");
+    }
+}
+
+#[cfg(test)]
+mod export_note_tests {
+    #[test]
+    fn the_export_note_warns_that_the_file_holds_sync_logins() {
+        let note = super::EXPORT_CREDENTIALS_NOTE;
+        assert!(
+            note.contains("同步账号") && note.contains("登录信息") && note.contains("妥善保管"),
+            "{note}"
+        );
     }
 }
