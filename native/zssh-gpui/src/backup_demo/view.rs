@@ -22,6 +22,10 @@ use crate::settings_view::card;
 use crate::sync_demo::format_stamp;
 use crate::typography::{Role, Typo as _};
 
+/// 导出界面的提醒：文件里带着同步账号的登录信息。
+pub(super) const EXPORT_CREDENTIALS_NOTE: &str =
+    "备份文件里包含同步账号（S3 / WebDAV / OneDrive 等）的登录信息，请妥善保管";
+
 /// 保留份数的可选值（核心接受 1～200，同 0.2.14）。
 pub(super) const KEEP_CHOICES: [usize; 6] = [5, 10, 20, 50, 100, 200];
 
@@ -195,12 +199,16 @@ impl BackupDemo {
                     .into_any_element(),
             );
         }
+        if let Some(prompt) = self.accounts_prompt(super::AccountsOrigin::Local, entity, tokens) {
+            rows.push(prompt);
+        }
         card(
             "backup-local",
             "本地备份",
             Some(
                 "用 Windows 账户加密保存在本机。每次从云端合并之前、每次恢复之前、版本升级后第一次启动时\
-                 （库里有数据才备份）会自动留一份。恢复之前会先自动备份当前状态。",
+                 （库里有数据才备份）会自动留一份。恢复之前会先自动备份当前状态。备份里也带着同步账号设置\
+                 （存储连接、登录信息、云端备份目标），恢复后不用重新填。",
             ),
             tokens,
             rows,
@@ -395,6 +403,10 @@ impl BackupDemo {
                  导入：导入之前会自动给当前状态做一份本地备份，导错了可以在上面的列表恢复。密码不会保存。",
                 tokens,
             ),
+            div()
+                .id("offline-credentials-note")
+                .child(colored(EXPORT_CREDENTIALS_NOTE, tokens.caution))
+                .into_any_element(),
             v_flex()
                 .w_full()
                 .gap_1()
@@ -490,6 +502,9 @@ impl BackupDemo {
                     .into_any_element(),
             );
         }
+        if let Some(prompt) = self.accounts_prompt(super::AccountsOrigin::Offline, entity, tokens) {
+            rows.push(prompt);
+        }
         card(
             "backup-offline",
             "离线备份文件",
@@ -499,6 +514,77 @@ impl BackupDemo {
             ),
             tokens,
             rows,
+        )
+    }
+
+    /// 恢复 / 导入时备份里带着同步账号设置、本机又已经配置了同步：问要不要替换，默认不替换。
+    /// 只在触发这次恢复 / 导入的那张卡里画。
+    fn accounts_prompt(
+        &self,
+        origin: super::AccountsOrigin,
+        entity: &Entity<Self>,
+        tokens: &Tokens,
+    ) -> Option<AnyElement> {
+        let pending = self
+            .pending_accounts
+            .as_ref()
+            .filter(|p| p.origin == origin)?;
+        let what = match pending.accounts.storage.as_ref() {
+            Some(config) => match config.provider() {
+                "webdav" => "WebDAV",
+                "s3" => "S3",
+                "github" => "GitHub Gist",
+                _ => "OneDrive",
+            },
+            None => "没有主同步",
+        };
+        let targets = pending.accounts.backup_targets.len();
+        Some(
+            div()
+                .id("backup-accounts-prompt")
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .p_3()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(tokens.dot_connecting.opacity(0.5))
+                        .bg(tokens.dot_connecting.opacity(0.1))
+                        .text_xs()
+                        .child(
+                            div()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(tokens.caution)
+                                .child("用备份里的同步设置替换本机现在的？"),
+                        )
+                        .child(format!(
+                            "备份里带着同步账号设置（主同步：{what}，云端备份目标 {targets} 个），本机已经配置了同步。\
+                             替换会换掉本机现在的存储连接、登录信息、记住的主密码和云端备份目标；不替换就保留本机现在的。"
+                        ))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(act_button(
+                                    "backup-accounts-keep",
+                                    "保留本机现在的",
+                                    entity,
+                                    false,
+                                    |this, _, cx| this.keep_accounts(cx),
+                                ))
+                                .child(
+                                    act_button(
+                                        "backup-accounts-replace",
+                                        "替换为备份里的",
+                                        entity,
+                                        false,
+                                        |this, _, cx| this.replace_accounts(cx),
+                                    )
+                                    .danger(),
+                                ),
+                        ),
+                )
+                .into_any_element(),
         )
     }
 

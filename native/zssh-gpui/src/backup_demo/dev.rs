@@ -55,6 +55,9 @@ impl BackupDemo {
             "export" => self.start_export(cx),
             "import" => self.start_import(cx),
             "overwrite" => self.confirm_overwrite(cx),
+            // 恢复 / 导入时备份里带着同步账号设置、本机已配置了同步：替换或保留
+            "accounts_replace" => self.replace_accounts(cx),
+            "accounts_keep" => self.keep_accounts(cx),
             "overwrite_cancel" => self.cancel_overwrite(cx),
             "mode" => {
                 let mode = match arg {
@@ -74,6 +77,7 @@ impl BackupDemo {
         Ok(match key {
             "status" => self.status.clone(),
             "count" => self.backups.len().to_string(),
+            "accounts_pending" => flag(self.pending_accounts.is_some()),
             "keep" => self.keep.to_string(),
             "armed" => flag(self.confirm.armed().is_some()),
             "mode" => match self.import_mode {
