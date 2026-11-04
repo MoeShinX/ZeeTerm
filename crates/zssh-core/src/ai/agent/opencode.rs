@@ -103,6 +103,10 @@ struct Shared {
     /// 等级列表。发消息时靠它分辨 `…/high` 的最后一段是等级还是模型 id 的一部分
     /// （模型 id 自己也可能带斜杠，比如 `openrouter/anthropic/xxx`）。
     variants: Mutex<HashMap<String, Vec<String>>>,
+    /// 这个进程取过模型目录没有。新对话新起的进程表还是空的，界面却已经从缓存里拿到
+    /// 带等级的 id（`deepseek/deepseek-flash/max`），不先取一次就会把 `/max` 当成模型 id
+    /// 的一部分发出去，第一条消息报「模型不存在」。
+    variants_loaded: AtomicBool,
 }
 
 /// 一个对话的内部状态（进程的事件流把它的事件投递到这里）。
@@ -256,6 +260,7 @@ impl AgentRuntime {
             last_activity: Mutex::new(Instant::now()),
             closed: AtomicBool::new(false),
             variants: Mutex::new(HashMap::new()),
+            variants_loaded: AtomicBool::new(false),
         });
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -502,6 +507,12 @@ impl OpenCodeConversation {
             "parts": [{ "type": "text", "text": text }],
         });
         if let Some(model_ref) = model {
+            if needs_variant_lookup(model_ref, shared.variants_loaded.load(Ordering::SeqCst)) {
+                // 取不到就按原样发：最坏是服务端报模型不存在，和以前一样。
+                if let Err(err) = fetch_models(shared).await {
+                    tracing::debug!(%err, "发消息前取模型目录失败");
+                }
+            }
             let parsed = {
                 let variants = shared
                     .variants
@@ -989,6 +1000,7 @@ async fn fetch_models(shared: &Shared) -> Result<AgentModelCatalog, AgentError> 
     if let Ok(mut map) = shared.variants.lock() {
         *map = variant_map(&body);
     }
+    shared.variants_loaded.store(true, Ordering::SeqCst);
     let provider_defaults = only_provider_default(&body);
 
     // 默认模型放在 /config 里（字段可能是字符串或对象），拿不到就不填。
@@ -1140,6 +1152,12 @@ pub fn variant_map(body: &Value) -> HashMap<String, Vec<String>> {
 
 /// 界面选中的 id → (服务商, 模型 id, 思考等级)。`…/等级` 的最后一段只有在目录里确实是这个
 /// 模型的等级时才拆出来，否则整个当模型 id（模型 id 自己可能带斜杠）。
+/// 发消息前要不要先取一次模型目录：id 至少三段（`provider/model/等级`，最后一段可能是
+/// 等级）而这个进程还没取过目录时要。两段的 id 不可能带等级，不用取。
+fn needs_variant_lookup(model_ref: &str, loaded: bool) -> bool {
+    !loaded && model_ref.matches('/').count() >= 2
+}
+
 pub fn split_model_ref(
     model_ref: &str,
     variants: &HashMap<String, Vec<String>>,
@@ -1840,6 +1858,16 @@ pub(crate) mod tests {
         assert!(!map.contains_key("opus/plain"));
     }
 
+    /// 新进程还没取过目录时，三段的 id 要先取目录才分得清最后一段是不是等级；
+    /// 两段的不用；取过一次就不再取。
+    #[test]
+    fn a_fresh_process_looks_up_variants_before_sending_a_three_part_id() {
+        assert!(needs_variant_lookup("deepseek/deepseek-flash/max", false));
+        assert!(needs_variant_lookup("openrouter/anthropic/claude", false));
+        assert!(!needs_variant_lookup("deepseek/deepseek-flash", false));
+        assert!(!needs_variant_lookup("deepseek/deepseek-flash/max", true));
+    }
+
     #[test]
     fn model_ref_splits_off_only_known_variants() {
         let mut variants = HashMap::new();
@@ -2023,6 +2051,7 @@ pub(crate) mod tests {
             last_activity: Mutex::new(Instant::now()),
             closed: AtomicBool::new(false),
             variants: Mutex::new(HashMap::new()),
+            variants_loaded: AtomicBool::new(false),
         });
         shared.conversations.lock().unwrap().insert(
             "ses_a".into(),
