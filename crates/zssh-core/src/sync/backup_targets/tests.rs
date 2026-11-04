@@ -477,6 +477,19 @@ async fn automatic_backups_skip_unchanged_data_but_manual_ones_always_upload() {
     assert_eq!(manual[0].status, OutcomeStatus::Uploaded);
     assert_ne!(fake.store(&id).current_version(), version);
 
+    // 主密码改了：云端那份还是旧密码加密的，自动备份要重新传
+    let renewed = backup_with(&m.engine(), &fake, "another-master-password", None)
+        .await
+        .unwrap();
+    assert_eq!(renewed[0].status, OutcomeStatus::Uploaded);
+    assert!(
+        SyncSnapshot::open(&fake.store(&id).bytes().unwrap(), "another-master-password").is_ok()
+    );
+    let back = backup_with(&m.engine(), &fake, PASSWORD, None)
+        .await
+        .unwrap();
+    assert_eq!(back[0].status, OutcomeStatus::Uploaded);
+
     // 数据变了：自动备份又会传
     add_host(&m.db, "web-2");
     let third = backup_with(&m.engine(), &fake, PASSWORD, None)

@@ -429,8 +429,9 @@ pub async fn onedrive_sign_in_for_target(
 /// 一份要上传的备份：密文 + 内容指纹。
 pub struct BackupPackage {
     pub bytes: Vec<u8>,
-    /// 快照内容（不含导出时间）的 SHA-256。两次之间本机数据没变，指纹就一样；
-    /// 加密每次都用新的盐和 nonce，所以不能拿密文比。
+    /// 快照内容（不含导出时间）加主密码的 SHA-256。两次之间本机数据和主密码都没变，指纹就一样；
+    /// 加密每次都用新的盐和 nonce，所以不能拿密文比。带上主密码是因为改了主密码之后云端那份
+    /// 还是旧密码加密的，必须重新传（这个指纹和“记住的主密码”一样只存在本机 DPAPI 保护的设置里）。
     pub digest: String,
 }
 
@@ -447,7 +448,10 @@ impl SyncEngine<'_> {
             &self.policy,
         )?;
         snapshot.created_at = 0;
-        let digest = content_hash(&Zeroizing::new(snapshot.to_json()?));
+        let mut material = Zeroizing::new(snapshot.to_json()?);
+        material.push(0);
+        material.extend_from_slice(master_password.as_bytes());
+        let digest = content_hash(&material);
         snapshot.created_at = now;
         Ok(BackupPackage {
             bytes: snapshot.seal(master_password)?,
