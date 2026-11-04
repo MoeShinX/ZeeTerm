@@ -114,12 +114,27 @@ impl OwnedRegistry {
 }
 
 /// 自己拉起（或沿用）的 X 服务器，转发用它的端点和 cookie。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` 是手写的：cookie 是本机 X 服务器的口令（同 `X11Route`），不能进日志。
+#[derive(Clone, PartialEq, Eq)]
 pub struct OwnedServer {
     pub endpoint: XEndpoint,
     pub cookie: Vec<u8>,
     /// true = 沿用上次运行留下的实例。
     pub reused: bool,
+}
+
+impl std::fmt::Debug for OwnedServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnedServer")
+            .field("endpoint", &self.endpoint)
+            .field(
+                "cookie",
+                &format_args!("<{} 字节，已隐藏>", self.cookie.len()),
+            )
+            .field("reused", &self.reused)
+            .finish()
+    }
 }
 
 /// 沿用上次留下的实例：记录在、端口还在监听、授权文件读得出 cookie。
@@ -225,6 +240,24 @@ pub fn start_owned(
 mod tests {
     use super::super::detect::fake::FakeSystem;
     use super::*;
+
+    #[test]
+    fn the_owned_servers_debug_output_hides_the_cookie() {
+        let server = OwnedServer {
+            endpoint: XEndpoint {
+                host: "127.0.0.1".to_owned(),
+                port: 6000,
+                screen: 0,
+            },
+            cookie: vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02],
+            reused: false,
+        };
+        for text in [format!("{server:?}"), format!("{server:#?}")] {
+            assert!(!text.contains("222") && !text.contains("173"), "{text}");
+            assert!(!text.to_lowercase().contains("dead"), "{text}");
+            assert!(text.contains("6 字节") && text.contains("6000"), "{text}");
+        }
+    }
     use crate::test_util::TestDir;
 
     fn install() -> VcXsrvInstall {

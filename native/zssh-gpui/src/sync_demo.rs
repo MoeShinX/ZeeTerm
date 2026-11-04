@@ -2121,7 +2121,9 @@ fn broadcast_auto_result(result: LastResult) {
 }
 
 /// WebDAV 表单里的原始值；`build_webdav` 负责裁剪、合并旧密码和校验。
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// 三个表单的 `Debug` 都是手写的：密码 / Secret / 令牌是用户刚敲进去的明文，断言失败或 `{:?}` 时不能露出来。
+#[derive(Clone, Default, PartialEq, Eq)]
 struct WebDavForm {
     url: String,
     directory: String,
@@ -2130,8 +2132,29 @@ struct WebDavForm {
     allow_insecure_http: bool,
 }
 
+impl std::fmt::Debug for WebDavForm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebDavForm")
+            .field("url", &self.url)
+            .field("directory", &self.directory)
+            .field("username", &self.username)
+            .field("password", &redacted(&self.password))
+            .field("allow_insecure_http", &self.allow_insecure_http)
+            .finish()
+    }
+}
+
+/// `Debug` 里代替秘密的占位：只说有没有填，不说内容和长度。
+fn redacted(secret: &str) -> &'static str {
+    if secret.is_empty() {
+        "<空>"
+    } else {
+        "<已隐藏>"
+    }
+}
+
 /// S3 表单里的原始值；`build_s3` 负责裁剪、合并旧 Secret 和校验。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct S3Form {
     endpoint: String,
     region: String,
@@ -2140,6 +2163,20 @@ struct S3Form {
     secret_key: String,
     prefix: String,
     path_style: bool,
+}
+
+impl std::fmt::Debug for S3Form {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Form")
+            .field("endpoint", &self.endpoint)
+            .field("region", &self.region)
+            .field("bucket", &self.bucket)
+            .field("access_key", &self.access_key)
+            .field("secret_key", &redacted(&self.secret_key))
+            .field("prefix", &self.prefix)
+            .field("path_style", &self.path_style)
+            .finish()
+    }
 }
 
 impl Default for S3Form {
@@ -2158,7 +2195,7 @@ impl Default for S3Form {
 }
 
 /// GitHub Gist 表单里的原始值；`build_github` 负责裁剪、合并旧令牌和校验。
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 struct GithubForm {
     /// 空 = 用核心的默认地址 `https://api.github.com`。
     api_base: String,
@@ -2166,6 +2203,17 @@ struct GithubForm {
     /// 空 = 第一次同步时让 ZeeTerm 新建一个。
     gist_id: String,
     allow_insecure_http: bool,
+}
+
+impl std::fmt::Debug for GithubForm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GithubForm")
+            .field("api_base", &self.api_base)
+            .field("token", &redacted(&self.token))
+            .field("gist_id", &self.gist_id)
+            .field("allow_insecure_http", &self.allow_insecure_http)
+            .finish()
+    }
 }
 
 /// OneDrive 表单里的原始值。只有「高级」里的 client ID；账号和令牌都由登录流程
@@ -5749,5 +5797,52 @@ mod protection_tests {
         let config =
             build_webdav(&form("https://other.example.com/dav/"), Some(&saved)).expect("有效");
         assert_eq!(password_of(config), "");
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    // 同 `tests`：不写 `use super::*`（会盖掉内置的 `#[test]`）。
+    use super::{GithubForm, S3Form, WebDavForm};
+
+    #[test]
+    fn the_sync_forms_never_show_their_secrets_in_debug_output() {
+        let webdav = WebDavForm {
+            url: "https://dav.example.com/".to_owned(),
+            username: "alice".to_owned(),
+            password: "dav-password-hunter2".to_owned(),
+            ..Default::default()
+        };
+        let s3 = S3Form {
+            bucket: "backups".to_owned(),
+            access_key: "AKIAEXAMPLE".to_owned(),
+            secret_key: "s3-secret-hunter2".to_owned(),
+            ..Default::default()
+        };
+        let github = GithubForm {
+            token: "ghp_token_hunter2".to_owned(),
+            gist_id: "abc123".to_owned(),
+            ..Default::default()
+        };
+        for text in [
+            format!("{webdav:?}"),
+            format!("{webdav:#?}"),
+            format!("{s3:?}"),
+            format!("{s3:#?}"),
+            format!("{github:?}"),
+            format!("{github:#?}"),
+        ] {
+            assert!(!text.contains("hunter2"), "{text}");
+            assert!(text.contains("<已隐藏>"), "{text}");
+        }
+        // 非秘密字段照常显示，空的秘密也看得出是空的。
+        let text = format!("{:?}", WebDavForm::default());
+        assert!(
+            text.contains("<空>") && !text.contains("<已隐藏>"),
+            "{text}"
+        );
+        assert!(format!("{webdav:?}").contains("dav.example.com"));
+        assert!(format!("{s3:?}").contains("AKIAEXAMPLE"));
+        assert!(format!("{github:?}").contains("abc123"));
     }
 }

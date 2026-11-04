@@ -123,12 +123,35 @@ impl PromptRequest {
 }
 
 /// 用户对提问的回答。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` 是手写的：回答就是密码、口令和一次性验证码，`{:?}` 打进日志或 panic 信息时只能看到条数。
+#[derive(Clone, PartialEq, Eq)]
 pub struct PromptAnswers {
     /// 和 [`PromptRequest::prompts`] 一一对应
     pub answers: Vec<String>,
     /// 用户勾了"保存到保险库"（由调用方落库，core 不碰存储）
     pub remember: bool,
+}
+
+/// 在 `Debug` 输出里顶替被隐藏的内容（不加引号）。
+struct Hidden(String);
+
+impl std::fmt::Debug for Hidden {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::fmt::Debug for PromptAnswers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PromptAnswers")
+            .field(
+                "answers",
+                &Hidden(format!("[{} 项，已隐藏]", self.answers.len())),
+            )
+            .field("remember", &self.remember)
+            .finish()
+    }
 }
 
 /// `user@host:port`（IPv6 地址加方括号；用户名为空就只有 `host:port`），[`PromptRequest::target`] 用。
@@ -201,6 +224,42 @@ impl Interactor for NonInteractive {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_answers_never_show_their_contents_in_debug_output() {
+        let answers = PromptAnswers {
+            answers: vec![
+                "hunter2-the-password".to_owned(),
+                "123456".to_owned(),
+                "".to_owned(),
+            ],
+            remember: true,
+        };
+        assert_eq!(
+            format!("{answers:?}"),
+            "PromptAnswers { answers: [3 项，已隐藏], remember: true }"
+        );
+        // 漂亮打印、套在 Option / Vec 里、断言失败时的输出，都一样。
+        for text in [
+            format!("{answers:#?}"),
+            format!("{:?}", Some(answers.clone())),
+            format!("{:?}", vec![answers.clone()]),
+        ] {
+            assert!(
+                !text.contains("hunter2") && !text.contains("123456"),
+                "{text}"
+            );
+            assert!(text.contains("3 项"), "{text}");
+        }
+        let none = PromptAnswers {
+            answers: Vec::new(),
+            remember: false,
+        };
+        assert_eq!(
+            format!("{none:?}"),
+            "PromptAnswers { answers: [0 项，已隐藏], remember: false }"
+        );
+    }
 
     #[test]
     fn the_target_is_user_at_host_and_port() {
