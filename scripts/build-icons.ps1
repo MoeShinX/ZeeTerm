@@ -6,7 +6,7 @@
 #
 # 源文件（都在 native/zssh-gpui/assets/brand/）：
 #   zeeterm-logo.svg                    48 / 64 / 128 / 256 以及 zeeterm-logo-64.png
-#   small/zeeterm-icon-{16,24,32}.svg   小尺寸，按像素网格画的；zeeterm-logo-32.png 也用 32 这张
+#   small/zeeterm-icon-{16,20,24,32}.svg   小尺寸，按像素网格画的；zeeterm-logo-32.png 也用 32 这张
 # 用法：
 #   powershell -NoProfile -File scripts/build-icons.ps1            # 重新生成并写入
 #   powershell -NoProfile -File scripts/build-icons.ps1 -Check     # 只比对，源 SVG 和已提交的图标不一致就失败

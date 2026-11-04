@@ -5,7 +5,7 @@
 //! 渲染结果只取决于输入的 SVG 和 resvg 的版本（不读系统字体、不带时间戳），同样的输入产出逐字节相同的文件。
 //!
 //! 尺寸分两档：
-//! - 16 / 24 / 32：用 `assets/brand/small/zeeterm-icon-<N>.svg`。每个尺寸一张按像素网格画的 SVG（viewBox 就是
+//! - 16 / 20 / 24 / 32：用 `assets/brand/small/zeeterm-icon-<N>.svg`。每个尺寸一张按像素网格画的 SVG（viewBox 就是
 //!   N×N，坐标落在像素边界上，线宽不小于 2 像素），小尺寸直接缩矢量图会糊成一团。
 //! - 48 / 64 / 128 / 256：用 `assets/brand/zeeterm-logo.svg` 直接渲染。
 //!
@@ -19,7 +19,7 @@ use resvg::{tiny_skia, usvg};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// ico 里的尺寸，顺序也是写入顺序。
-const ICO_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
+const ICO_SIZES: [u32; 8] = [16, 20, 24, 32, 48, 64, 128, 256];
 /// 这些尺寸及以下用像素对齐的小图 SVG。
 const SMALL_MAX: u32 = 32;
 

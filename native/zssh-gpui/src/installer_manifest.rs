@@ -218,7 +218,7 @@ fn the_build_script_stages_the_same_files_and_rebuilds_the_mcp_bridge() {
         })
         .collect();
     sizes.sort_unstable();
-    assert_eq!(sizes, vec![16, 24, 32, 48, 64, 128, 256]);
+    assert_eq!(sizes, vec![16, 20, 24, 32, 48, 64, 128, 256]);
 }
 
 /// 原生版的 CI 工作流：带着 Tauri 版的仓库里是 `native.yml`；导出的独立仓库里只有 `ci.yml`。
