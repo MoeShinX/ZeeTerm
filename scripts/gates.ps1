@@ -1,8 +1,13 @@
 ﻿# ZeeTerm 全部检查：核心库（根工作区）和原生应用（native 工作区）各自的 fmt / clippy / test，
-# 再加原生应用的 release 配置检查：只跑 dev_hooks 的 release 断言（release 里测试钩子读不到环境变量，
-# 这是它唯一的自动防线），以及一次 release 构建。逐条报告退出码和耗时，任何一条失败整体退出码就是 1。
+# 再加原生应用的 release 类配置检查：只跑 dev_hooks 的 release 断言（release 里测试钩子读不到环境变量，
+# 这是它唯一的自动防线），以及一次构建。逐条报告退出码和耗时，任何一条失败整体退出码就是 1。
 #
-# release 的两步（DenyWarnings）还要求编译输出里没有任何 warning：release 下才会冒出来的"从未使用"
+# 这两步用 `--profile gate`（Cargo.toml 里的自定义配置，inherits release，只关掉 LTO、放开并行代码生成单元），
+# 不用完整的 release：thin LTO + 单个代码生成单元让这两步各要四五分钟，而这里要验证的是
+# `cfg(debug_assertions)` 为 false 时的行为和 release 下才冒出来的 warning，二者 gate 配置下都和 release 一致。
+# 正式发版（native/installer/build.ps1、release.yml、scripts/release.ps1）仍然是完整的 release。
+#
+# gate 的两步（DenyWarnings）还要求编译输出里没有任何 warning：release 下才会冒出来的"从未使用"
 # （只给 debug 调试脚本用的函数）平时没人看。不用 RUSTFLAGS=-D warnings 是因为 RUSTFLAGS 一变，cargo 会把
 # 整个 target 缓存按新参数重编，和平时不带它的 debug 构建互相顶掉；所以改成扫输出里的 `warning` 行，缓存不受影响
 # （cargo 会把缓存命中的 crate 的 warning 原样重放，不会因为命中缓存而漏掉）。
@@ -29,8 +34,8 @@ $steps = @(
     @{ Name = '原生 cargo fmt';       Args = @('fmt', '--manifest-path', 'native/Cargo.toml', '--all', '--', '--check') },
     @{ Name = '原生 cargo clippy';    Args = @('clippy', '--manifest-path', 'native/Cargo.toml', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings') },
     @{ Name = '原生 cargo test';      Args = @('test', '--manifest-path', 'native/Cargo.toml', '--workspace', '--locked') },
-    @{ Name = '原生 release dev_hooks'; DenyWarnings = $true; Args = @('test', '--manifest-path', 'native/Cargo.toml', '-p', 'zssh-gpui', '--release', '--locked', 'dev_hooks') },
-    @{ Name = '原生 release 构建';    DenyWarnings = $true; Args = @('build', '--manifest-path', 'native/Cargo.toml', '--workspace', '--release', '--locked') }
+    @{ Name = '原生 gate dev_hooks';  DenyWarnings = $true; Args = @('test', '--manifest-path', 'native/Cargo.toml', '-p', 'zssh-gpui', '--profile', 'gate', '--locked', 'dev_hooks') },
+    @{ Name = '原生 gate 构建';       DenyWarnings = $true; Args = @('build', '--manifest-path', 'native/Cargo.toml', '--workspace', '--profile', 'gate', '--locked') }
 )
 
 $total = [System.Diagnostics.Stopwatch]::StartNew()

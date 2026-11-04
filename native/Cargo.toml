@@ -32,3 +32,14 @@ lto = "thin"
 codegen-units = 1
 strip = true
 opt-level = 3
+
+# 门禁（scripts/gates.ps1）用的轻量配置：和 release 只差 LTO / 并行代码生成单元，
+# opt-level、debug-assertions、overflow-checks、panic 都继承 release，所以 `cfg(debug_assertions)` 为 false，
+# 测试钩子在这里读不到环境变量，和出货版一致；省下的是 thin LTO + 单个代码生成单元的链接耗时。
+# 正式发版（native/installer/build.ps1、release.yml、scripts/release.ps1）仍然用完整的 release。
+# 改这里时记得同步另一个工作区的 Cargo.toml（两处要一样）。
+[profile.gate]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true

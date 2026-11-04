@@ -64,7 +64,9 @@ ZeeTerm 要能在**别人的 Windows 10/11** 上用，不能只照着开发这�
 powershell -File scripts/gates.ps1
 ```
 
-它依次跑核心库（根工作区）和原生应用（`native/`）各自的 `cargo fmt --check`、`cargo clippy --all-targets -D warnings`、`cargo test`，再加两步 release 配置的检查——`cargo test -p zssh-gpui --release dev_hooks`（release 下测试钩子读不到环境变量的断言）和一次原生应用的 release 构建，这两步的编译输出里出现任何 warning 也算失败（release 下才冒出来的"从未使用"：只给 debug 调试脚本用的函数要用 `#[cfg(debug_assertions)]` 门住，不要用 `allow(dead_code)` 糊）。逐条报告退出码和耗时，任何一条非 0 整体就失败。
+它依次跑核心库（根工作区）和原生应用（`native/`）各自的 `cargo fmt --check`、`cargo clippy --all-targets -D warnings`、`cargo test`，再加两步 gate 配置的检查——`cargo test -p zssh-gpui --profile gate dev_hooks`（无 `debug_assertions` 时测试钩子读不到环境变量的断言）和一次原生应用的 gate 构建，这两步的编译输出里出现任何 warning 也算失败（无 `debug_assertions` 时才冒出来的"从未使用"：只给 debug 调试脚本用的函数要用 `#[cfg(debug_assertions)]` 门住，不要用 `allow(dead_code)` 糊）。逐条报告退出码和耗时，任何一条非 0 整体就失败。
+
+`gate` 是 `Cargo.toml`（根和 `native/` 各一份）里的自定义配置：`inherits = "release"`，只把 LTO 关掉、代码生成单元放开到 16，其余（`opt-level`、`debug-assertions = false`……）与 release 相同，所以钩子行为、`cfg(debug_assertions)` 判断和出货版一致，编译却快得多。**门禁用 gate，正式发版（`native/installer/build.ps1`、`release.yml`、`scripts/release.ps1`）仍用完整的 release**；两个配置要保持同步，只差 LTO / 并行单元。
 
 平时改完代码可以只跑相关的 `cargo test -p <crate> <过滤>`，加 `cargo fmt` 和 `cargo clippy`；动了共享库、持久化、同步、安装包，或一次改动很大时跑全套。`target/` 会越积越大，定期 `cargo clean`。
 
