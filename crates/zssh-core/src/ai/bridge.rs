@@ -1583,7 +1583,15 @@ impl Bridge {
                         _ => read_only,
                     }
                 }
-                ExecMode::Manual => false,
+                ExecMode::Manual => {
+                    // 逐条确认本来就问；命中敏感路径时在卡片上写明，用户批之前看得到。
+                    if let Some(hit) =
+                        crate::ai::sensitive::sensitive_path_in_command(&request.command)
+                    {
+                        request.reasons.push(hit.reason());
+                    }
+                    false
+                }
             };
         let (decision, refusal) = match auto {
             true => (ExecDecision::Auto, None),
@@ -2786,6 +2794,51 @@ root password: hunter2" }),
                 "被拒的命令没有执行"
             );
         }
+    }
+
+    /// 「逐条确认」本来每条都问；读敏感文件的命令在卡片上额外写明原因，普通命令不加。
+    #[tokio::test]
+    async fn manual_mode_cards_say_when_a_command_reads_sensitive_files() {
+        let h = harness(ExecMode::Manual, ApproverBehavior::Deny, short_wait()).await;
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", true, false);
+        let mut client =
+            Client::authenticated(h.port, h.bridge.connection_token(), scope.capability()).await;
+
+        client
+            .request(
+                1,
+                METHOD_RUN_COMMAND,
+                json!({ "target_id": "s1", "command": "cat /etc/hosts" }),
+            )
+            .await;
+        let plain = h.approver.last().expect("审批请求");
+        assert!(
+            !plain
+                .reasons
+                .iter()
+                .any(|r| r.starts_with("读取敏感文件：")),
+            "{:?}",
+            plain.reasons
+        );
+
+        client
+            .request(
+                2,
+                METHOD_RUN_COMMAND,
+                json!({ "target_id": "s1", "command": "cat ~/.ssh/id_rsa" }),
+            )
+            .await;
+        assert_eq!(h.approver.calls(), 2);
+        let sensitive = h.approver.last().expect("审批请求");
+        assert!(
+            sensitive
+                .reasons
+                .iter()
+                .any(|r| r.starts_with("读取敏感文件：") && r.contains("~/.ssh/id_rsa")),
+            "{:?}",
+            sensitive.reasons
+        );
     }
 
     #[tokio::test]

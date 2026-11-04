@@ -914,24 +914,57 @@ async fn readonly_mode_follows_symlinks_to_sensitive_files() {
     assert_eq!(rig.approvals.requests.lock().unwrap().len(), 1);
 }
 
-/// 「全部放行」不变，「逐条确认」下只读文件工具照旧不问（既有行为，产品定的）。
+/// 「全部放行」读敏感文件不额外问（用户明确接受的）。
 #[tokio::test]
-async fn auto_and_manual_modes_do_not_add_a_sensitive_read_prompt() {
-    for mode in [ExecMode::Auto, ExecMode::Manual] {
-        let rig = rig(mode, Answer::Deny);
-        rig.fs.put("/home/u/.ssh/id_rsa", b"KEYDATA\n", 0o600);
-        let cap = scope_with_target(&rig);
-        let read = call(
-            &rig,
-            &cap,
-            METHOD_READ_FILE,
-            json!({ "path": "/home/u/.ssh/id_rsa" }),
-        )
+async fn auto_mode_does_not_add_a_sensitive_read_prompt() {
+    let rig = rig(ExecMode::Auto, Answer::Deny);
+    rig.fs.put("/home/u/.ssh/id_rsa", b"KEYDATA\n", 0o600);
+    let cap = scope_with_target(&rig);
+    let read = call(
+        &rig,
+        &cap,
+        METHOD_READ_FILE,
+        json!({ "path": "/home/u/.ssh/id_rsa" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(read["content"], "KEYDATA\n");
+    assert!(rig.approvals.requests.lock().unwrap().is_empty());
+}
+
+/// 「逐条确认」下普通的读文件 / 列目录照旧不问，敏感文件要问（读、列、看属性都算），
+/// 拒绝时拿不到内容。
+#[tokio::test]
+async fn manual_mode_asks_only_for_sensitive_reads() {
+    let rig = rig(ExecMode::Manual, Answer::Deny);
+    rig.fs.put("/home/u/.ssh/id_rsa", b"KEYDATA\n", 0o600);
+    rig.fs.put("/home/u/notes.txt", b"hello\n", 0o644);
+    let cap = scope_with_target(&rig);
+
+    let read = call(&rig, &cap, METHOD_READ_FILE, json!({ "path": "notes.txt" }))
         .await
         .unwrap();
-        assert_eq!(read["content"], "KEYDATA\n");
-        assert!(rig.approvals.requests.lock().unwrap().is_empty());
+    assert_eq!(read["content"], "hello\n");
+    assert!(
+        rig.approvals.requests.lock().unwrap().is_empty(),
+        "普通文件不问"
+    );
+
+    for (method, params) in [
+        (METHOD_READ_FILE, json!({ "path": "/home/u/.ssh/id_rsa" })),
+        (METHOD_LIST_DIR, json!({ "path": "~/.ssh" })),
+        (METHOD_STAT, json!({ "path": "/home/u/.ssh/id_rsa" })),
+    ] {
+        let err = call(&rig, &cap, method, params).await.unwrap_err();
+        assert!(err.contains("用户拒绝"), "{method}: {err}");
+        assert!(!err.contains("KEYDATA"));
     }
+    let requests = rig.approvals.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 3);
+    assert!(requests.iter().all(|r| r
+        .reasons
+        .iter()
+        .any(|reason| reason.starts_with("读取敏感文件："))));
 }
 
 // ---------- 锁屏：文件工具（读和写）也要确认 ----------
