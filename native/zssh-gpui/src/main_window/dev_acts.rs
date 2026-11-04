@@ -117,6 +117,7 @@ pub fn validate(spec: &str) -> Result<(), String> {
         || super::dev_acts_u19::is_known(name)
         || super::dev_acts_u20::is_known(name)
         || super::dev_acts_u26::is_known(name)
+        || super::dev_acts_u30::is_known(name)
         || super::dev_acts_u21::is_known(name)
         || super::dev_acts_u25::is_known(name)
         || super::dev_acts_c1::is_known(name)
@@ -275,6 +276,10 @@ fn run_inner(
     }
     // V2-U26（锁屏）的动作在 `dev_acts_u26`。
     if let Some(result) = super::dev_acts_u26::run(this, spec, window, cx) {
+        return result;
+    }
+    // V2-U30（断线遮罩）的动作在 `dev_acts_u30`。
+    if let Some(result) = super::dev_acts_u30::run(this, spec, window, cx) {
         return result;
     }
     // V2-U20（主机的系统图标、主机树连接线）的动作在 `dev_acts_u20`。

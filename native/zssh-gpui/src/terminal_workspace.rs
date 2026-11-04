@@ -9,6 +9,7 @@
 //! 外壳，通过 `open_host_tab` / `new_empty_tab` / `duplicate_tab` 等方法开标签。
 //! 网格在窗口里的位置由 `canvas` 量出来（上一帧的结果），不再写死窗口坐标。
 
+use ::gpui::FontWeight;
 use ::gpui::{
     Anchor, Bounds, ClipboardItem, DismissEvent, FocusHandle, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollDelta, ScrollEvent, Subscription,
@@ -82,17 +83,17 @@ fn plain(text: &str) -> String {
     text.chars().filter(|ch| !ch.is_control()).collect()
 }
 
-const RECONNECT_HINT: &str = "按 Ctrl+Shift+R 或点「重连」重新连接。";
+// 窗格里只留一行"发生了什么"当回滚记录；怎么重连由断线遮罩说（V2-U30），这里不再重复操作提示。
 
 /// 用户主动断开时窗格里显示的文字。
-const USER_DISCONNECT_NOTICE: &str = "\r\n\x1b[33m已断开连接（手动）\x1b[0m\r\n按 Ctrl+Shift+R 或点标签右键「重新连接」重新连接。\r\n";
+const USER_DISCONNECT_NOTICE: &str = "\r\n\x1b[33m已断开连接（手动）\x1b[0m\r\n";
+
+/// 用户主动断开时遮罩上写的原因。
+const USER_DISCONNECT_REASON: &str = "已手动断开连接";
 
 /// 连接失败时窗格里显示的文字。
 fn failure_notice(error: &str) -> String {
-    format!(
-        "\r\n\x1b[31m{}\x1b[0m\r\n{RECONNECT_HINT}\r\n",
-        plain(error)
-    )
+    format!("\r\n\x1b[31m{}\x1b[0m\r\n", plain(error))
 }
 
 /// 会话结束时窗格里显示的文字：有原因写原因，否则写退出码。
@@ -102,7 +103,21 @@ fn disconnect_notice(exit: &zssh_session::SessionExit) -> String {
         (None, Some(code)) => format!("（退出码 {code}）"),
         (None, None) => "（远端关闭了连接）".to_owned(),
     };
-    format!("\r\n\x1b[33m连接已断开{detail}\x1b[0m\r\n{RECONNECT_HINT}\r\n")
+    format!("\r\n\x1b[33m连接已断开{detail}\x1b[0m\r\n")
+}
+
+/// 断线遮罩上写的原因：和 [`disconnect_notice`] 同一套判断，只是不带"连接已断开"的前缀。
+fn disconnect_reason(exit: &zssh_session::SessionExit) -> String {
+    match (&exit.reason, exit.code) {
+        (Some(reason), _) => plain(reason),
+        (None, Some(code)) => format!("退出码 {code}"),
+        (None, None) => "远端关闭了连接".to_owned(),
+    }
+}
+
+/// 按键是不是"在断线遮罩上按 R 重连"：只认不带任何修饰键的 R（Ctrl/Alt/Shift/Win+R 留给别的快捷键）。
+fn is_reconnect_key(key: &str, modifiers: &::gpui::Modifiers) -> bool {
+    key.eq_ignore_ascii_case("r") && !modifiers.modified()
 }
 
 /// 快速连接（`user@host:port` + 密码，不进主机库）的目标。密码只留在内存里，给重连和复制标签用
@@ -153,6 +168,8 @@ pub(crate) struct Pane {
     latency: Option<PaneLatency>,
     /// 这个窗格的会话日志是怎么来的（日志本身挂在泵上）。
     log_mode: LogMode,
+    /// 断开 / 连接失败的原因（只有 `Disconnected` 时有值），断线遮罩上显示；重连会换掉整个窗格，所以不用手动清。
+    disconnect_reason: Option<String>,
 }
 
 /// 窗格会话日志的来源。写入位置只有一个——设置里的会话日志目录；区别只在谁开的：
@@ -269,6 +286,7 @@ impl Pane {
             terminal_id: None,
             latency: None,
             log_mode: LogMode::Off,
+            disconnect_reason: None,
         }
     }
 
@@ -404,6 +422,7 @@ impl Pane {
         self.backend = backend;
         self.factory = factory;
         self.state = PaneState::Live;
+        self.disconnect_reason = None;
         self.shell_seq = next_shell_seq();
         if size != self.open_size {
             self.backend.send(SessionCommand::Resize(size));
@@ -412,14 +431,23 @@ impl Pane {
         self.snapshot = self.driver.pump().snapshot();
     }
 
-    /// 连接失败或会话断开：停止接收输入，在窗格里写明原因。
-    fn disconnect(&mut self, notice: &str) {
+    /// 连接失败或会话断开：停止接收输入，在窗格里写一行记录，原因另存一份给断线遮罩用。
+    fn disconnect(&mut self, reason: String, notice: &str) {
         self.terminal_id = None;
         // 断开后徽标没有意义；丢掉登记，共用这条连接的其他窗格不受影响。
         self.latency = None;
         self.state = PaneState::Disconnected;
+        self.disconnect_reason = Some(reason);
         self.pending = None;
         self.pump_mut().feed_local(notice.as_bytes());
+    }
+
+    /// 断线遮罩要不要盖在这个窗格上，盖的话返回原因（可能为空串）。只有会话窗格会盖：
+    /// 离线演示窗格、空白标签没有"重连"可言；连接中的窗格另有"正在连接…"，也不盖。
+    /// 用户主动断开、远端正常退出（`exit`）、连接失败都算断开，和标签上的断开状态点一致。
+    pub(crate) fn overlay_reason(&self) -> Option<&str> {
+        (self.state == PaneState::Disconnected && self.is_session())
+            .then(|| self.disconnect_reason.as_deref().unwrap_or(""))
     }
 
     /// 这个窗格有没有可以主动断开的会话：连着或正在连的主机 / 快速连接。
@@ -440,8 +468,35 @@ impl Pane {
         // 旧写端丢掉：之后的输入不会再写进（可能已经半关的）通道。
         self.backend = Box::new(NullBackend);
         self.factory = None;
-        self.disconnect(USER_DISCONNECT_NOTICE);
+        self.disconnect(USER_DISCONNECT_REASON.to_owned(), USER_DISCONNECT_NOTICE);
         self.refresh();
+    }
+
+    /// 把这个窗格原地换成一条新连接（窗格编号、位置、尺寸不变；旧通道和日志先收尾，免得新旧两条同时跑）。
+    /// `factory` 是已认证的连接（`None` 就按库里的主机 / 快速连接信息重新拨号；只有测试会给）。
+    /// 不是会话窗格什么也不做，返回 `None`；否则返回重连前是不是在手动记日志（调用方负责接着记）。
+    fn reconnect_in_place(
+        &mut self,
+        history: usize,
+        factory: Option<Arc<crate::ssh_backend::SshSessionFactory>>,
+    ) -> Option<bool> {
+        if !self.is_session() {
+            return None;
+        }
+        let (host_id, quick) = (self.host_id, self.quick.clone());
+        let size = self.snapshot.size;
+        // 手动开的日志重连后接着记；设置里自动开的，新连接上时会按设置重新开。
+        let logging = self.log_mode == LogMode::Manual;
+        // 分屏树的叶子认窗格编号：换掉整个窗格时沿用旧编号，位置和比例都不变。
+        let id = self.id;
+        self.close();
+        *self = match quick {
+            Some(spec) => Pane::start_quick(spec, factory, size, history, next_generation()),
+            None => Pane::start_ssh(factory, host_id, size, history, next_generation()),
+        };
+        self.id = id;
+        self.refresh();
+        Some(logging)
     }
 
     /// 接上延迟监视器（`None` 就是这个窗格不显示延迟）。
@@ -529,7 +584,7 @@ impl Pane {
                 self.attach(opened.backend, opened.events, opened.gate, opened.factory);
                 self.set_latency(monitor);
             }
-            Err(err) => self.disconnect(&failure_notice(&err)),
+            Err(err) => self.disconnect(plain(&err), &failure_notice(&err)),
         }
         true
     }
@@ -547,7 +602,7 @@ impl Pane {
             && self.is_session()
             && let Some(exit) = self.driver.exit().cloned()
         {
-            self.disconnect(&disconnect_notice(&exit));
+            self.disconnect(disconnect_reason(&exit), &disconnect_notice(&exit));
             changed = true;
         }
         // 不管有没有重绘、窗格在不在前台：远端的查询（DSR / DA 等）等着回复。
@@ -1883,6 +1938,20 @@ impl TerminalWorkspace {
         self.selected_text()
     }
 
+    /// 调试驱动用：活动标签第 `pane` 个窗格的断线遮罩（`None` = 没有这个窗格；`Some(None)` = 没盖遮罩）。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_overlay(&self, pane: usize) -> Option<Option<String>> {
+        let pane = self.tabs.active()?.panes.get(pane)?;
+        Some(pane.overlay_reason().map(str::to_owned))
+    }
+
+    /// 调试驱动用：活动标签第 `pane` 个窗格是不是翻在回滚里（离开了最底下）。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_scrolled_back(&self, pane: usize) -> Option<bool> {
+        let pane = self.tabs.active()?.panes.get(pane)?;
+        Some(pane.snapshot.display_offset != 0)
+    }
+
     /// 调试驱动用：这段文字在聚焦窗格里第一次出现的位置，返回它中间那一格的中心（窗口逻辑像素）。
     /// 按字符算列，所以只对前面没有宽字符的行准。
     pub(crate) fn dev_text_center(&self, text: &str) -> Option<(f32, f32)> {
@@ -2435,26 +2504,37 @@ impl TerminalWorkspace {
         else {
             return;
         };
-        if !pane.is_session() {
-            return;
-        }
-        let (host_id, quick) = (pane.host_id, pane.quick.clone());
-        let size = pane.snapshot.size;
-        // 手动开的日志重连后接着记；设置里自动开的，新连接上时会按设置重新开。
-        let logging = pane.log_mode == LogMode::Manual;
-        // 分屏树的叶子认窗格编号：换掉整个窗格时沿用旧编号，位置和比例都不变。
-        let id = pane.id;
-        pane.close();
-        *pane = match quick {
-            Some(spec) => Pane::start_quick(spec, None, size, history, next_generation()),
-            None => Pane::start_ssh(None, host_id, size, history, next_generation()),
-        };
-        pane.id = id;
-        pane.refresh();
-        if logging {
+        if let Some(logging) = pane.reconnect_in_place(history, None)
+            && logging
+        {
             let prefs = crate::app_prefs::AppPrefs::load_default_db();
             self.status_text = pane.toggle_log_with(&prefs).status_text();
         }
+    }
+
+    /// 点断线遮罩 / 在遮罩上按 R：重连活动标签里的第 `pane_index` 个窗格，并让它成为聚焦窗格。
+    /// 和 Ctrl+Shift+R、标签右键「重新连接」走同一个 [`Self::reconnect_pane`]；只对盖着遮罩的窗格生效
+    /// （广播开着也只重连这一个）。返回是否真的开始了重连。
+    fn reconnect_overlay_pane(&mut self, pane_index: usize, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self.tabs.active_index() else {
+            return false;
+        };
+        let covered = self
+            .tabs
+            .get(index)
+            .and_then(|tab| tab.panes.get(pane_index))
+            .is_some_and(|pane| pane.overlay_reason().is_some());
+        if !covered {
+            return false;
+        }
+        self.focus_pane(pane_index);
+        // 先写提示：之前在记录日志时，新窗格续记会把状态改成日志路径，那个更有用。
+        self.status_text = "正在重新连接…".to_owned();
+        self.reconnect_pane(index, pane_index);
+        self.reset_interaction();
+        self.refresh();
+        cx.notify();
+        true
     }
 
     /// Ctrl+Shift+R：重连当前窗格；离线窗格只提示。
@@ -2985,6 +3065,17 @@ impl TerminalWorkspace {
             return;
         }
 
+        // 断线遮罩盖着聚焦窗格时，单按 R（不带修饰键）重连这一个窗格（V2-U30）。遮罩只盖已断开的窗格，
+        // 所以平时 R 照常进终端；遮罩盖着时别的键都发不出去（`Pane::write` 丢弃），不会排队也不报错。
+        // 锁屏时主窗口根本不画终端，这里再兜一次底。
+        if is_reconnect_key(key, &keystroke.modifiers)
+            && !crate::app_lock::is_locked()
+            && let Some(active) = self.tabs.active().map(|tab| tab.active_pane)
+            && self.reconnect_overlay_pane(active, cx)
+        {
+            return;
+        }
+
         // Ctrl+= / Ctrl+- / Ctrl+0 缩放终端字号。
         if ctrl {
             match key {
@@ -3284,6 +3375,13 @@ impl TerminalWorkspace {
         // 点在哪个窗格就聚焦哪个（含四周的内边距）；先聚焦，下面的模式判断、选择、上报都按它走。
         if let Some(index) = self.pane_at(event.position) {
             self.focus_pane(index);
+            // 左键点在断线遮罩上 = 重连这个窗格（V2-U30）；右键仍可弹菜单（复制回滚里的内容）。
+            if event.button == MouseButton::Left
+                && !crate::app_lock::is_locked()
+                && self.reconnect_overlay_pane(index, cx)
+            {
+                return;
+            }
         }
 
         let mode = self.mouse_report_mode(event.modifiers.shift);
@@ -4141,6 +4239,12 @@ impl Render for TerminalWorkspace {
                                 &ansi,
                             )),
                     )
+                    // 断线遮罩（V2-U30）：盖暗整个窗格，正中写明已断开 + 原因 + 怎么重连。点击 / 按 R 的处理
+                    // 在窗口级的鼠标 / 键盘入口（`reconnect_overlay_pane`），所以这里只画不接事件：
+                    // 滚轮能照常滚动下面的回滚。
+                    .children(pane.overlay_reason().map(|reason| {
+                        disconnect_overlay(index, reason, &tokens, foreground, background)
+                    }))
                     // 分屏时聚焦窗格顶上一道细线，告诉用户键盘输入去哪（单个窗格不画；
                     // 广播时每个窗格都收输入，线就没有意义了）。同 0.2.14 的 `pane-focus-line`。
                     .when(split && focused && !broadcast, |d| {
@@ -4400,6 +4504,65 @@ fn paste_dialog(
             ),
     )
     .into_any_element()
+}
+
+/// 断线遮罩（0.2.14 的样子）：底色是终端自己的背景色 88% 不透明（界面和终端一明一暗时仍和终端是一块），
+/// 文字用终端前景色，下面的回滚内容隐约可见。正中竖排：「已断开」（危险色、加粗）、原因（淡一档、过长截断）、
+/// 重连提示。
+fn disconnect_overlay(
+    index: usize,
+    reason: &str,
+    tokens: &crate::app_theme::Tokens,
+    foreground: Hsla,
+    background: Hsla,
+) -> AnyElement {
+    use crate::icons::Ico;
+    let reason: ::gpui::SharedString = if reason.is_empty() {
+        "未知原因".into()
+    } else {
+        reason.to_owned().into()
+    };
+    v_flex()
+        .id(("disconnect-overlay", index))
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .items_center()
+        .justify_center()
+        .gap(::gpui::px(6.0))
+        .bg(background.alpha(0.88))
+        .text_color(foreground)
+        .text_size(::gpui::px(13.0))
+        .cursor_pointer()
+        .child(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .text_color(tokens.danger)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(Icon::new(Ico::Unplug).size_4())
+                .child("已断开"),
+        )
+        .child(
+            div()
+                .max_w(::gpui::relative(0.8))
+                .truncate()
+                .text_size(::gpui::px(12.0))
+                .text_color(foreground.alpha(0.7))
+                .child(reason),
+        )
+        .child(
+            h_flex()
+                .items_center()
+                .gap_1()
+                .mt_1()
+                .text_size(::gpui::px(12.0))
+                .text_color(foreground.alpha(0.8))
+                .child(Icon::new(Ico::RotateCcw).size_3())
+                .child("按 R 重连，或者点这里"),
+        )
+        .into_any_element()
 }
 
 /// 窗格右上角的延迟徽标：小圆角、半透明底（悬停变实）、数值按色档着色；悬停提示写明测的是什么。
@@ -4829,7 +4992,8 @@ mod pane_tests {
         assert_eq!(pane.state, PaneState::Disconnected);
         let text = screen(&pane);
         assert!(text.contains("连接失败：timed out"), "{text}");
-        assert!(text.contains("Ctrl+Shift+R"), "{text}");
+        assert!(!text.contains("Ctrl+Shift+R"), "{text}");
+        assert_eq!(pane.overlay_reason(), Some("连接失败：timed out"));
         // 还能重连：主机 id 没丢。
         assert_eq!(pane.host_id, Some(7));
 
@@ -4864,7 +5028,8 @@ mod pane_tests {
         let text = screen(&pane);
         assert!(text.contains("bye"), "{text}");
         assert!(text.contains("连接已断开（退出码 3）"), "{text}");
-        assert!(text.contains("Ctrl+Shift+R"), "{text}");
+        assert!(!text.contains("Ctrl+Shift+R"), "{text}");
+        assert_eq!(pane.overlay_reason(), Some("退出码 3"));
 
         // 之后的输入不再发给后端，也不再重复提示。
         pane.write(b"ls\r");
@@ -5152,7 +5317,7 @@ mod tab_tests {
         pane.set_latency_visible(false);
         assert_eq!(monitor.visible_viewers(), 0, "切到后台标签 / 最小化：暂停");
         pane.set_latency_visible(true);
-        pane.disconnect("断开");
+        pane.disconnect("断开".to_owned(), "断开");
         assert!(pane.latency.is_none() && pane.latency_snapshot().is_none());
         assert_eq!(monitor.visible_viewers(), 0, "断开后不再占着监视器");
     }
@@ -5734,7 +5899,7 @@ mod live_tests {
         );
         let text = screen(&pane);
         assert!(text.contains("连接已断开"), "{text}");
-        assert!(text.contains("Ctrl+Shift+R"), "{text}");
+        assert!(pane.overlay_reason().is_some(), "{text}");
         // 断开后的输入不回显、不发送。
         pane.write(b"must-not-appear\r");
         assert!(!screen(&pane).contains("must-not-appear"));
@@ -5963,7 +6128,7 @@ mod live_tests {
             "死连接上开 shell 应当明确失败：{}",
             screen(&dead)
         );
-        assert!(screen(&dead).contains("Ctrl+Shift+R"), "{}", screen(&dead));
+        assert!(dead.overlay_reason().is_some(), "{}", screen(&dead));
         assert_eq!(dead.host_id, Some(1), "失败后仍可重连");
     }
     /// V2-U1 第 3 条：标签右键「断开连接」只放掉这个窗格自己的那份连接引用。同一条 SSH 连接上
@@ -5986,7 +6151,7 @@ mod live_tests {
             "只少了这个窗格的一份"
         );
         assert!(screen(&a).contains("已断开连接（手动）"), "{}", screen(&a));
-        assert!(screen(&a).contains("Ctrl+Shift+R"), "{}", screen(&a));
+        assert!(a.overlay_reason().is_some(), "{}", screen(&a));
         // 断开之后输入不再发出，也不回显。
         a.write(b"must-not-appear\r");
         assert!(!screen(&a).contains("ECHO:must-not-appear"));
@@ -6443,7 +6608,7 @@ mod paste_tests {
         // 断开：状态变了。
         let (mut tab, _logs) = tab_of(2);
         let pending = tab.capture_paste("a\nb".to_owned()).unwrap();
-        tab.panes[0].disconnect("断开");
+        tab.panes[0].disconnect("断开".to_owned(), "断开");
         assert_eq!(confirm(&mut tab, &pending), None);
         assert!(writes(&logs[0]).is_empty());
     }
@@ -6708,5 +6873,283 @@ mod reply_tests {
         f.pane.poll_events();
         assert!(f.replies().is_empty());
         assert!(f.log.lock().unwrap().writes.is_empty());
+    }
+}
+
+/// 断线遮罩（V2-U30）：什么时候盖、盖的原因、重连的触发键，以及一遍进程内 SSH 服务器上的
+/// "服务端断开 -> 遮罩 -> 重连 -> 重新连上"。点击和滚轮属于窗口级输入，由 `dev_acts_u30` 的脚本验证。
+#[cfg(test)]
+mod overlay_tests {
+    use super::{
+        CoreFilter, FlowGate, Pane, PaneState, QuickSpec, SessionBackend, SessionCommand,
+        SessionPump, Size, Tab, disconnect_reason, is_reconnect_key,
+    };
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    use zssh_session::{SessionEvent, SessionExit};
+
+    const SIZE: Size = Size { rows: 12, cols: 60 };
+
+    fn screen(pane: &Pane) -> String {
+        pane.snapshot
+            .rows
+            .iter()
+            .map(|row| row.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    struct Recorder(Arc<Mutex<Vec<SessionCommand>>>);
+
+    impl SessionBackend for Recorder {
+        fn send(&mut self, command: SessionCommand) {
+            self.0.lock().unwrap().push(command);
+        }
+    }
+
+    fn remote_pane() -> (
+        Pane,
+        std::sync::mpsc::Sender<SessionEvent>,
+        Arc<Mutex<Vec<SessionCommand>>>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let pump = SessionPump::new(SIZE, 100, Arc::new(FlowGate::new()), CoreFilter::new(), 1);
+        let pane = Pane::with_parts(
+            pump,
+            Box::new(Recorder(Arc::clone(&sent))),
+            rx,
+            Some(7),
+            None,
+        );
+        (pane, tx, sent)
+    }
+
+    fn mods(control: bool, alt: bool, shift: bool, platform: bool) -> ::gpui::Modifiers {
+        ::gpui::Modifiers {
+            control,
+            alt,
+            shift,
+            platform,
+            function: false,
+        }
+    }
+
+    #[test]
+    fn a_live_connecting_or_offline_pane_has_no_overlay() {
+        let (live, _tx, _sent) = remote_pane();
+        assert_eq!(live.overlay_reason(), None);
+        // 离线演示窗格没有会话，永远不会"断开"。
+        let mut offline = Pane::new(SIZE, 100, 1);
+        offline.close();
+        offline.poll_events();
+        assert_eq!(offline.overlay_reason(), None);
+        // 连接中：有"正在连接…"，不盖遮罩。
+        let pending = crate::ssh_backend::ready(Err("never read".to_owned()));
+        let connecting = Pane::connecting(SIZE, 100, 1, Some(7), pending);
+        assert_eq!(connecting.state, PaneState::Connecting);
+        assert_eq!(connecting.overlay_reason(), None);
+    }
+
+    #[test]
+    fn a_remote_exit_shows_the_overlay_with_the_reason_and_keeps_one_line_in_the_scrollback() {
+        let (mut pane, tx, sent) = remote_pane();
+        tx.send(SessionEvent::Data {
+            generation: 1,
+            bytes: b"before\r\n".to_vec(),
+        })
+        .unwrap();
+        tx.send(SessionEvent::Exit {
+            generation: 1,
+            code: Some(3),
+        })
+        .unwrap();
+        assert!(pane.poll_events());
+        assert_eq!(pane.overlay_reason(), Some("退出码 3"));
+        let text = screen(&pane);
+        assert!(text.contains("before"), "回滚里断线前的输出还在：{text}");
+        assert_eq!(text.matches("连接已断开").count(), 1, "{text}");
+        assert!(
+            !text.contains("Ctrl+Shift+R") && !text.contains("重连"),
+            "操作提示只在遮罩上说：{text}"
+        );
+
+        // 遮罩盖着时按键、粘贴都发不出去，也不排队：之后重连也不会补发。
+        pane.write(b"ls\r");
+        pane.write(b"r");
+        assert!(
+            !sent
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|cmd| matches!(cmd, SessionCommand::Write(_))),
+            "已断开的会话不收输入"
+        );
+    }
+
+    #[test]
+    fn the_overlay_reason_follows_the_same_cases_as_the_scrollback_line() {
+        let exit = |code, reason: Option<&str>| SessionExit {
+            code,
+            reason: reason.map(str::to_owned),
+        };
+        assert_eq!(disconnect_reason(&exit(None, None)), "远端关闭了连接");
+        assert_eq!(disconnect_reason(&exit(Some(0), None)), "退出码 0");
+        assert_eq!(
+            disconnect_reason(&exit(Some(1), Some("写入远端失败：broken pipe"))),
+            "写入远端失败：broken pipe"
+        );
+        // 原因里可能带远端可控的文字：控制字符一律去掉。
+        let reason = disconnect_reason(&exit(None, Some("bad\x1b]0;title\x07\r\nreason")));
+        assert!(!reason.chars().any(char::is_control), "{reason:?}");
+    }
+
+    #[test]
+    fn a_failed_connect_shows_the_overlay_and_a_user_disconnect_shows_its_own_reason() {
+        let pending = crate::ssh_backend::ready(Err("连接失败：timed out".to_owned()));
+        let mut pane = Pane::connecting(SIZE, 100, 1, Some(7), pending);
+        assert!(pane.poll_events());
+        assert_eq!(pane.overlay_reason(), Some("连接失败：timed out"));
+        let text = screen(&pane);
+        assert!(text.contains("连接失败：timed out"), "{text}");
+        assert!(!text.contains("Ctrl+Shift+R"), "{text}");
+
+        let (mut live, _tx, _sent) = remote_pane();
+        live.disconnect_by_user();
+        assert_eq!(live.overlay_reason(), Some("已手动断开连接"));
+        let text = screen(&live);
+        assert!(text.contains("已断开连接（手动）"), "{text}");
+        assert!(!text.contains("Ctrl+Shift+R"), "{text}");
+    }
+
+    #[test]
+    fn only_a_bare_r_triggers_the_reconnect() {
+        let none = mods(false, false, false, false);
+        assert!(is_reconnect_key("r", &none));
+        assert!(is_reconnect_key("R", &none), "大写锁定下键名可能是大写");
+        assert!(!is_reconnect_key("r", &mods(true, false, false, false)));
+        assert!(!is_reconnect_key("r", &mods(false, true, false, false)));
+        assert!(!is_reconnect_key("r", &mods(false, false, true, false)));
+        assert!(!is_reconnect_key("r", &mods(false, false, false, true)));
+        assert!(!is_reconnect_key("r", &mods(true, false, true, false)));
+        assert!(!is_reconnect_key("enter", &none));
+        assert!(!is_reconnect_key("rr", &none));
+    }
+
+    /// 每个窗格各盖各的：分屏里一边断开，另一边还连着时只有断开的那个有遮罩。
+    #[test]
+    fn each_split_pane_has_its_own_overlay() {
+        let (mut left, tx, _sent) = remote_pane();
+        let (right, _tx2, _sent2) = remote_pane();
+        tx.send(SessionEvent::Exit {
+            generation: 1,
+            code: None,
+        })
+        .unwrap();
+        left.poll_events();
+        let mut tab = Tab::new("t".to_owned(), left);
+        tab.panes.push(right);
+        assert!(tab.panes[0].overlay_reason().is_some());
+        assert!(tab.panes[1].overlay_reason().is_none());
+    }
+
+    fn wait_for(pane: &mut Pane, what: &str, done: impl Fn(&Pane) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !done(pane) {
+            assert!(
+                Instant::now() < deadline,
+                "等不到：{what}；屏幕：\n{}",
+                screen(pane)
+            );
+            pane.poll_events();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn quick_spec() -> Arc<QuickSpec> {
+        Arc::new(QuickSpec {
+            target: zssh_core::model::QuickTarget {
+                username: "tester".to_owned(),
+                host: "127.0.0.1".to_owned(),
+                port: 22,
+            },
+            password: "pw".to_owned(),
+            label: "tester@lab".to_owned(),
+        })
+    }
+
+    /// 进程内 SSH 服务器上走一遍：连上 -> 服务端主动断开 -> 遮罩（原因对）-> 重连开始遮罩立即消失 ->
+    /// 重新连上能用；重连换了连接但窗格编号、尺寸不变。再让第二条连接退出，遮罩再次出现；重连失败带新原因。
+    #[test]
+    fn a_server_side_disconnect_then_a_reconnect_over_the_test_server() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("运行时");
+        let dir = std::env::temp_dir().join(format!("zssh-u30-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("临时目录");
+        let connect = || {
+            let addr = runtime.block_on(crate::test_ssh_server::spawn());
+            let connection = runtime.block_on(crate::test_ssh_server::connect_trusting(addr, &dir));
+            crate::ssh_backend::SshSessionFactory::from_connection(connection)
+        };
+
+        let mut pane = Pane::start_quick(quick_spec(), Some(connect()), SIZE, 100, 1);
+        let id = pane.id;
+        assert_eq!(pane.state, PaneState::Connecting);
+        assert_eq!(pane.overlay_reason(), None, "连接中不盖");
+        wait_for(&mut pane, "连上", |p| p.state == PaneState::Live);
+        pane.write(b"hello\r");
+        wait_for(&mut pane, "回显", |p| screen(p).contains("ECHO:hello"));
+        assert_eq!(pane.overlay_reason(), None);
+
+        // 服务端不发退出码直接断开整条 TCP 连接。
+        pane.write(b"drop\r");
+        wait_for(&mut pane, "断开", |p| p.state == PaneState::Disconnected);
+        let reason = pane.overlay_reason().expect("断开后盖遮罩").to_owned();
+        assert!(!reason.is_empty(), "要有原因");
+        let text = screen(&pane);
+        assert!(
+            text.contains("ECHO:hello"),
+            "断线前的输出留在回滚里：{text}"
+        );
+        assert_eq!(text.matches("连接已断开").count(), 1, "{text}");
+        assert!(!text.contains("Ctrl+Shift+R"), "{text}");
+        // 之后的按键既不报错也不排队。
+        pane.write(b"echo more\r");
+
+        // 重连（和 R / 点遮罩 / Ctrl+Shift+R 同一个函数）：窗格原地换成新连接，遮罩立刻没了。
+        let logging = pane.reconnect_in_place(100, Some(connect()));
+        assert_eq!(logging, Some(false));
+        assert_eq!(pane.id, id, "分屏树按窗格编号认位置");
+        assert_eq!(pane.state, PaneState::Connecting);
+        assert_eq!(pane.overlay_reason(), None, "重连一开始遮罩就消失");
+        assert!(screen(&pane).contains("正在连接"));
+        wait_for(&mut pane, "重新连上", |p| p.state == PaneState::Live);
+        assert_eq!(pane.overlay_reason(), None);
+        pane.write(b"again\r");
+        wait_for(&mut pane, "新连接回显", |p| {
+            screen(p).contains("ECHO:again")
+        });
+        assert!(
+            !screen(&pane).contains("more"),
+            "遮罩期间的按键不会补发到新连接"
+        );
+
+        // 再断一次（这回服务端发退出码）：遮罩再出现。
+        pane.write(b"bye\r");
+        wait_for(&mut pane, "再次断开", |p| {
+            p.state == PaneState::Disconnected
+        });
+        assert_eq!(pane.overlay_reason(), Some("退出码 3"));
+
+        // 重连失败（拨号失败）：遮罩再显示，原因是新的。
+        let pending = crate::ssh_backend::ready(Err("连接失败：refused".to_owned()));
+        let mut failing = Pane::connecting(SIZE, 100, 2, None, pending);
+        failing.quick = Some(quick_spec());
+        failing.poll_events();
+        assert_eq!(failing.overlay_reason(), Some("连接失败：refused"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
