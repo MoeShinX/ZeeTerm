@@ -101,11 +101,6 @@ fn main() {
 
     app.run(move |cx| {
         gpui_kit::init(cx);
-        // OneDrive 登录用的 client ID：构建时从环境变量 `ZSSH_ONEDRIVE_CLIENT_ID` 编进来（和 0.2.14
-        // 同一个变量，发布版由工作流从仓库 Variables 取）。自己编译的版本没有，同步设置「高级」里可以填。
-        zssh_core::sync::onedrive::config::set_builtin_client_id(option_env!(
-            "ZSSH_ONEDRIVE_CLIENT_ID"
-        ));
         // 编辑器的快捷键要在组件的键位之后注册，同深度的绑定后注册的优先。
         remote_editor_demo::init_commands(cx);
 

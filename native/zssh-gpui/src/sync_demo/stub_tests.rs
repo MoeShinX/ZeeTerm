@@ -579,7 +579,7 @@ fn onedrive_login_failures_leave_nothing_behind() {
     .expect_err("超时");
     assert!(matches!(timed_out, LoginError::Timeout), "{timed_out}");
 
-    // client ID 格式不对 / 没内置也没填：根本不会打开浏览器。
+    // client ID 格式不对：根本不会打开浏览器。
     let before = server.with(|state| state.opened_urls().len());
     let invalid = sign_in(
         &server,
@@ -591,16 +591,6 @@ fn onedrive_login_failures_leave_nothing_behind() {
     )
     .expect_err("格式不对");
     assert!(matches!(invalid, LoginError::InvalidClientId), "{invalid}");
-    let missing = sign_in(
-        &server,
-        &runtime,
-        &device,
-        "",
-        Duration::from_secs(5),
-        &Notify::new(),
-    )
-    .expect_err("没有 client ID");
-    assert!(matches!(missing, LoginError::NoClientId), "{missing}");
     assert_eq!(server.with(|state| state.opened_urls().len()), before);
 
     // 失败都没有留下任何连接设置。
