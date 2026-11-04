@@ -4,6 +4,10 @@
 //! 项目自己用 `enclosed_name` 逐条解压，不走 `ZipArchive::extract`；升级 zip 库之后
 //! 这条行为不能变（见 `zssh_core::ai::agent::download::extract_exe`）。
 
+// 集成测试在 crate 外面，clippy.toml 里「测试里允许 unwrap」的放行对它不生效；
+// 测试失败就让它 panic。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::io::Write;
 use std::path::Path;
 
