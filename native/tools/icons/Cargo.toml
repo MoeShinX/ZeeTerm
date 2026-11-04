@@ -1,0 +1,15 @@
+[package]
+name = "zssh-icons"
+description = "ZeeTerm 图标出图工具：从 SVG 渲染各尺寸 PNG 并打包 zeeterm.ico（scripts/build-icons.ps1 调用）"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# resvg / tiny-skia 已经在依赖树里（gpui 用它画 SVG），这里不引入新的第三方代码。
+# 不开 text / 系统字体：图标 SVG 里没有文字，也省得渲染结果随机器上装的字体变。
+resvg = { version = "0.45.1", default-features = false }
+
+[lints]
+workspace = true
