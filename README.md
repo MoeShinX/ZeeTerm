@@ -26,7 +26,7 @@ ZeeTerm 源自 [Z-SSH](https://github.com/MoeShinX/Z-SSH)（Tauri + React 版）
 
 从 [Releases](https://github.com/MoeShinX/ZeeTerm/releases) 下载 `ZeeTerm-Setup-<版本>.exe` 运行即可：按当前用户安装，不需要管理员权限，数据在 `%APPDATA%ZeeTerm`，覆盖安装不影响数据。
 
-程序会在启动时（之后每 6 小时）检查是否有新版本，也可以在「设置 → 关于」里手动检查；这个自动检查可以在同一处关掉。发现新版本后更新窗口会列出更新说明，下载完成后**先校验发布者的签名（minisign）和签名里的版本号**，确认后才退出程序并运行安装包。联网走「设置 → 连接 → 软件网络」里的代理设置。发版与签名的做法见 [docs/RELEASING.md](docs/RELEASING.md)。
+程序会在启动时（之后每 6 小时）检查是否有新版本，也可以在「设置 → 关于」里手动检查；这个自动检查可以在同一处关掉。发现新版本后更新窗口会列出更新说明，下载完成后**先校验发布者的签名（minisign）和签名里的版本号**，确认后才退出程序并运行安装包。联网走「设置 → 连接 → 软件网络」里的代理设置。发版（推 tag 由 GitHub Actions 编译、签名、发布）与签名的做法见 [docs/RELEASING.md](docs/RELEASING.md)。
 
 ## 构建
 
@@ -63,7 +63,7 @@ pwsh native/installer/build.ps1
 | `native/zssh-gpui` | ZeeTerm 应用本体（GPUI 界面） |
 | `native/zssh-terminal`、`zssh-session`、`zssh-editor`、`zssh-regex`、`zssh-update` | 终端模型、会话泵、编辑器文件契约、高亮正则引擎、更新清单与验签（含发版用的 `release_tool` 示例） |
 | `native/installer` | NSIS 安装脚本、打包脚本和静默安装测试脚本 |
-| `scripts` | `gates.ps1`（全部检查）、`privacy-scan.ps1` 与它默认加载的放行清单 `privacy-allow.txt`（公开前的隐私扫描）、`native-shot.ps1`（调试构建的截图 / 驱动脚本，数据目录必须在 `C:\zssh-v2-data\` 或系统临时目录下且路径不含 Windows 用户名）、`updater-keygen.ps1`（生成更新签名密钥）、`release.ps1`（发版）；说明见 `docs/RELEASING.md` |
+| `scripts` | `gates.ps1`（全部检查）、`privacy-scan.ps1` 与它默认加载的放行清单 `privacy-allow.txt`（公开前的隐私扫描）、`native-shot.ps1`（调试构建的截图 / 驱动脚本，数据目录必须在 `C:\zssh-v2-data\` 或系统临时目录下且路径不含 Windows 用户名）、`updater-keygen.ps1`（生成更新签名密钥）、`bump-version.ps1`（发版第一步：改版本号、切 CHANGELOG）、`release-sign.ps1` 与 `release-lib.ps1`（签名、生成 `latest.json` / `SHA256SUMS.txt`，GitHub 发版工作流和本机共用）、`release.ps1`（本机备用发版）、`release-drill.ps1`（发版流程演练）；发版走 GitHub Actions（推 `v*` tag 自动编译、签名、发布），说明见 `docs/RELEASING.md` |
 
 `crates/` 是一个 Cargo 工作区，`native/` 是另一个（它用路径依赖引用 `crates/` 里的库），各有自己的 `Cargo.lock`。
 

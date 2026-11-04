@@ -1,6 +1,6 @@
 # 面向用户的更新说明
 
-这个目录放每个版本的**更新说明**，文件名是版本号，例如 `0.4.0.md`。发版时 `scripts/release.ps1` 会优先用它作为 `latest.json` 里的 `notes`，用户在更新窗口里看到的就是这份文字（同时也是 GitHub Release 页的正文）。没有这份文件时脚本才退回 `CHANGELOG.md` 里的 `## [<版本>]` 一节，见 `docs/RELEASING.md` 的"更新说明"。
+这个目录放每个版本的**更新说明**，文件名是版本号，例如 `0.4.0.md`。发版时（GitHub 发版工作流，以及本机备用的 `scripts/release.ps1`）用它作为 `latest.json` 里的 `notes`，用户在更新窗口里看到的就是这份文字（同时也是 GitHub Release 页的正文）。没有这份文件时，`scripts/bump-version.ps1` 和 GitHub 发版工作流直接报错，只有本机备用脚本会退回 `CHANGELOG.md` 里的 `## [<版本>]` 一节，见 `docs/RELEASING.md` 的"更新说明"。
 
 ## 怎么写
 

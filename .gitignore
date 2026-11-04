@@ -17,5 +17,5 @@ docs/reports/**/scenarios/*.log
 # 本地内部资料（计划、任务卡、验收报告、审查记录）：只留在本机，不推到 GitHub
 /docs/internal/
 
-# 发版产物（scripts/release.ps1 的输出）
+# 发版产物（scripts/release.ps1 和 GitHub 发版工作流的输出）
 /dist/
