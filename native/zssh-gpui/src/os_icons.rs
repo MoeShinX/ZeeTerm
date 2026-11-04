@@ -235,11 +235,7 @@ mod tests {
 
     #[test]
     fn sizes_fit_the_boxes_they_sit_in() {
-        for size in [
-            OsIconSize::Row,
-            OsIconSize::Card,
-            OsIconSize::CardCompact,
-        ] {
+        for size in [OsIconSize::Row, OsIconSize::Card, OsIconSize::CardCompact] {
             let (boxed, logo, radius) = size.dims();
             assert!(logo < boxed && radius * 2.0 <= boxed);
         }
