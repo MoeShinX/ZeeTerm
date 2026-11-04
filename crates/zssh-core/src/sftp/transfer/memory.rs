@@ -34,6 +34,9 @@ pub(crate) struct MemoryFs {
     /// 下一次收尾（commit）之前，"别的程序"先在这个路径建出这份内容（一次性）：
     /// 模拟传输期间目标位置冒出同名文件（C05）。
     pub(crate) appear_on_commit: Mutex<Option<(String, Vec<u8>)>>,
+    /// 为真时 `truncate_partial` / `remove_partial` 都报断线：模拟「写失败的同时连接已经断了」，
+    /// 收尾时把临时文件截回已确认前缀（或删掉）也做不到。
+    pub(crate) cleanup_fails: AtomicBool,
 }
 
 /// 一个内存端点（源或目标）。
@@ -53,6 +56,10 @@ pub struct MemoryEndpoint {
     no_space_after: Arc<AtomicU64>,
     /// 读的限制（模拟 SFTP 服务器返回比请求少的字节、或者源文件中途变短）。
     read_limits: Arc<ReadLimits>,
+    /// 写到这个偏移的那一次请求失败（只失败一次，其余请求照常落盘）：
+    /// 模拟一批并发写里只有某一块丢了、后面的块却已经写进去（乱序落盘留洞）。
+    fail_at_offset: Arc<AtomicU64>,
+    fail_at_offset_used: Arc<AtomicBool>,
 }
 
 /// 读这一侧的失真注入。
@@ -108,6 +115,8 @@ impl MemoryEndpoint {
             failed_once: Arc::new(AtomicBool::new(false)),
             no_space_after: Arc::new(AtomicU64::new(u64::MAX)),
             read_limits: Arc::new(ReadLimits::default()),
+            fail_at_offset: Arc::new(AtomicU64::new(u64::MAX)),
+            fail_at_offset_used: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -143,6 +152,8 @@ impl MemoryEndpoint {
             failed_once: Arc::clone(&fs_owner.failed_once),
             no_space_after: Arc::clone(&fs_owner.no_space_after),
             read_limits: Arc::clone(&fs_owner.read_limits),
+            fail_at_offset: Arc::clone(&fs_owner.fail_at_offset),
+            fail_at_offset_used: Arc::clone(&fs_owner.fail_at_offset_used),
         }
     }
 
@@ -160,6 +171,17 @@ impl MemoryEndpoint {
     /// 设置"写到第 N 字节就断线"（只断一次）。
     pub fn fail_write_after(&self, bytes: u64) {
         self.fail_after.store(bytes, Ordering::SeqCst);
+    }
+
+    /// 让写到偏移 `offset` 的那一次请求失败（只一次，同批里别的块照常写进去）。
+    pub fn fail_write_at_offset(&self, offset: u64) {
+        self.fail_at_offset_used.store(false, Ordering::SeqCst);
+        self.fail_at_offset.store(offset, Ordering::SeqCst);
+    }
+
+    /// 让 `truncate_partial` / `remove_partial` 报断线（或恢复正常）。
+    pub fn set_cleanup_fails(&self, fails: bool) {
+        self.fs.cleanup_fails.store(fails, Ordering::SeqCst);
     }
 
     /// 设置"写到第 N 字节就报磁盘满"（不停机）。
@@ -290,6 +312,8 @@ impl FileEndpoint for MemoryEndpoint {
                 fail_after: Arc::clone(&self.fail_after),
                 failed_once: Arc::clone(&self.failed_once),
                 no_space_after: Arc::clone(&self.no_space_after),
+                fail_at_offset: Arc::clone(&self.fail_at_offset),
+                fail_at_offset_used: Arc::clone(&self.fail_at_offset_used),
             }) as Arc<dyn WriteAt>)
         })
     }
@@ -350,6 +374,9 @@ impl FileEndpoint for MemoryEndpoint {
 
     fn remove_partial<'a>(&'a self) -> EndpointFuture<'a, Result<(), SftpError>> {
         Box::pin(async move {
+            if self.fs.cleanup_fails.load(Ordering::SeqCst) {
+                return Err(SftpError::Disconnected("测试注入的断线".to_owned()));
+            }
             self.remove_file(&self.part_key());
             Ok(())
         })
@@ -361,6 +388,9 @@ impl FileEndpoint for MemoryEndpoint {
 
     fn truncate_partial<'a>(&'a self, len: u64) -> EndpointFuture<'a, Result<(), SftpError>> {
         Box::pin(async move {
+            if self.fs.cleanup_fails.load(Ordering::SeqCst) {
+                return Err(SftpError::Disconnected("测试注入的断线".to_owned()));
+            }
             let part = self.part_key();
             let mut files = self.fs.files.lock().expect("锁");
             if let Some(data) = files.get_mut(&part) {
@@ -435,6 +465,8 @@ struct MemoryWriter {
     fail_after: Arc<AtomicU64>,
     failed_once: Arc<AtomicBool>,
     no_space_after: Arc<AtomicU64>,
+    fail_at_offset: Arc<AtomicU64>,
+    fail_at_offset_used: Arc<AtomicBool>,
 }
 
 impl MemoryWriter {
@@ -461,6 +493,11 @@ impl WriteAt for MemoryWriter {
         data: Vec<u8>,
     ) -> EndpointFuture<'a, Result<(), SftpError>> {
         Box::pin(async move {
+            if offset == self.fail_at_offset.load(Ordering::SeqCst)
+                && !self.fail_at_offset_used.swap(true, Ordering::SeqCst)
+            {
+                return Err(SftpError::Disconnected("测试注入的断线".to_owned()));
+            }
             self.maybe_fail(data.len() as u64)?;
             write_into(&self.fs, &self.path, offset, &data);
             self.written.fetch_add(data.len() as u64, Ordering::SeqCst);
@@ -565,6 +602,16 @@ impl MemoryEndpoints {
     /// 下一次收尾之前，让"别的程序"在 `path` 建出 `contents`（传输期间冒出同名文件）。
     pub fn appear_on_commit(&self, path: &str, contents: Vec<u8>) {
         *self.remote.fs.appear_on_commit.lock().expect("锁") = Some((path.to_owned(), contents));
+    }
+
+    /// 让「远端」上写到偏移 `offset` 的那一次请求失败（同批别的块照常落盘）。
+    pub fn fail_remote_write_at_offset(&self, offset: u64) {
+        self.remote.fail_write_at_offset(offset);
+    }
+
+    /// 让「远端」的截断 / 删除临时文件都报断线（模拟失败时连接已经断了）。
+    pub fn set_remote_cleanup_fails(&self, fails: bool) {
+        self.remote.set_cleanup_fails(fails);
     }
 
     /// 造一个"写到第 N 字节断线"的远端。

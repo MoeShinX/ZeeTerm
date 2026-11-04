@@ -2478,3 +2478,135 @@ async fn concurrent_auto_renames_never_end_up_on_the_same_name() {
     done.sort_unstable();
     assert_eq!(landed, done, "成功的任务和落地的文件一一对应");
 }
+
+// ---- C7b：断点续传不能接在一个带洞的临时文件后面 ----
+
+/// 全是非零字节的样本：空洞（零）一眼就看出来。
+fn nonzero_pattern(len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i % 251) as u8 + 1).collect()
+}
+
+/// 上传 `data`，第二批里的第二块写失败而同批其他块已经落盘，且失败后连接已断
+/// （截断 / 删除临时文件都做不到）。返回引擎、事件、任务号、远端、源文件。
+async fn upload_that_leaves_a_hole(
+    tag: &str,
+    data: &[u8],
+) -> (
+    Arc<TransferEngine>,
+    mpsc::UnboundedReceiver<TransferEvent>,
+    TransferId,
+    Arc<MemoryEndpoints>,
+    crate::test_util::TestDir,
+) {
+    let root = temp_root(tag);
+    let source = root.join("hole.bin");
+    std::fs::write(&source, data).unwrap();
+    let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+    // 块 4096、一批 4 块：第二批是 16384..32768，写 20480 那块失败，其余 3 块照常落盘。
+    endpoints.fail_remote_write_at_offset(20_480);
+    endpoints.set_remote_cleanup_fails(true);
+    let (engine, mut events) = TransferEngine::new(
+        endpoints.clone(),
+        Arc::new(OverwriteAll),
+        TransferOptions {
+            max_retries: 0,
+            ..local_options()
+        },
+    );
+    let id = engine.submit(TransferJob {
+        direction: Direction::Upload,
+        source: source.display().to_string(),
+        target: "/remote/hole.bin".to_owned(),
+        recursive: false,
+        peer: None,
+    });
+    let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+    assert!(
+        matches!(report.state, TransferState::Failed(_)),
+        "{report:?}"
+    );
+    (engine, events, id, endpoints, root)
+}
+
+/// 乱序写完一部分后断线、截断也失败：临时文件比连续前缀长，中间有洞。
+/// 重试必须把洞补上，最终文件和源逐字节一致（以前只比对末尾 4096 字节，洞发现不了）。
+#[tokio::test]
+async fn resume_after_out_of_order_writes_and_failed_truncate_has_no_hole() {
+    let data = nonzero_pattern(10 * 4096);
+    let (engine, mut events, id, endpoints, _root) =
+        upload_that_leaves_a_hole("hole-resume", &data).await;
+
+    // 前提成立：临时文件长度 32768 > 已确认前缀 16384，20480..24576 是零。
+    assert_eq!(endpoints.remote_partial_len("/remote/hole.bin"), 8 * 4096);
+    let part = endpoints.remote_part_files("/remote/hole.bin");
+    assert_eq!(part.len(), 1, "{part:?}");
+    let partial = endpoints.remote_contents(&part[0]);
+    assert!(partial[20_480..24_576].iter().all(|byte| *byte == 0));
+    assert!(
+        partial[24_576..28_672] == data[24_576..28_672],
+        "末块是好的：只比末尾的对账发现不了洞"
+    );
+    let state = engine.job(id).unwrap();
+    assert_eq!(state.confirmed_prefix("/remote/hole.bin"), Some(16_384));
+
+    // 重连之后重试：清理这次能做了，先截回 16384 再续。
+    endpoints.set_remote_cleanup_fails(false);
+    assert!(engine.retry(id));
+    let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    assert_eq!(endpoints.remote_contents("/remote/hole.bin"), data);
+}
+
+/// 重试时清理仍然做不到（连接还没恢复）：截不动就从头传，同样不能留洞。
+#[tokio::test]
+async fn resume_with_failing_truncate_restarts_from_scratch() {
+    let data = nonzero_pattern(10 * 4096);
+    let (engine, mut events, id, endpoints, _root) =
+        upload_that_leaves_a_hole("hole-restart", &data).await;
+
+    // 清理依旧失败：续传点（16384）之后的洞截不掉。
+    assert!(engine.retry(id));
+    let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    assert!(
+        report.notes.iter().any(|note| note.contains("从头传")),
+        "要告诉用户为什么从头传：{:?}",
+        report.notes
+    );
+    assert_eq!(endpoints.remote_contents("/remote/hole.bin"), data);
+}
+
+/// 没有已确认前缀的记录（老任务 / 记录丢了）：不信临时文件的长度，从头传。
+#[tokio::test]
+async fn resume_without_a_confirmed_prefix_record_restarts_from_scratch() {
+    let data = nonzero_pattern(10 * 4096);
+    let (engine, mut events, id, endpoints, _root) =
+        upload_that_leaves_a_hole("hole-norecord", &data).await;
+
+    endpoints.set_remote_cleanup_fails(false);
+    engine.job(id).unwrap().confirmed.lock().unwrap().clear();
+    assert!(engine.retry(id));
+    let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("没有已确认的续传位置")),
+        "{:?}",
+        report.notes
+    );
+    assert_eq!(endpoints.remote_contents("/remote/hole.bin"), data);
+}
+
+#[test]
+fn resume_point_is_the_smaller_of_actual_length_and_confirmed_prefix() {
+    assert_eq!(
+        resume_point(32_768, Some(16_384)),
+        16_384,
+        "长出来的部分不要"
+    );
+    assert_eq!(resume_point(8_192, Some(16_384)), 8_192, "临时文件被截短了");
+    assert_eq!(resume_point(32_768, None), 0, "没有记录：不可续传");
+    assert_eq!(resume_point(0, Some(4_096)), 0);
+}

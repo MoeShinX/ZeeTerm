@@ -327,6 +327,37 @@ struct JobState {
     resume_signal: Notify,
     progress: Mutex<JobProgress>,
     state: Mutex<TransferState>,
+    /// 每个目标的临时文件里**已确认的连续前缀**长度（目标路径 → 字节数）。
+    /// 只在整批写都成功之后才往前走。续传点由它决定，而不是临时文件的长度：
+    /// 一批并发写里失败时，后面的块可能已经落盘，长度大于前缀、中间有洞，
+    /// 而这时连接多半也断了，截回前缀（或删掉）都会失败。
+    confirmed: Mutex<HashMap<String, u64>>,
+}
+
+impl JobState {
+    fn confirmed_prefix(&self, target: &str) -> Option<u64> {
+        self.confirmed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(target)
+            .copied()
+    }
+
+    fn record_confirmed(&self, target: &str, len: u64) {
+        self.confirmed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(target.to_owned(), len);
+    }
+}
+
+/// 续传从哪里开始：临时文件实际长度和本任务记下的已确认前缀取较小者。
+///
+/// 没有记录（`None`）就是 0——不知道哪一段是连续写好的，宁可从头传。
+/// 记录只在本进程内存里，而临时文件名里带着本进程引擎的随机标识（见 `owner_of`）：
+/// 换了进程找不到旧的临时文件，所以记录和临时文件的有效期正好一致，不需要落盘。
+fn resume_point(actual_len: u64, confirmed: Option<u64>) -> u64 {
+    confirmed.map_or(0, |confirmed| actual_len.min(confirmed))
 }
 
 struct JobProgress {
@@ -454,6 +485,7 @@ impl TransferEngine {
             resume_signal: Notify::new(),
             progress: Mutex::new(JobProgress::new()),
             state: Mutex::new(TransferState::Queued),
+            confirmed: Mutex::new(HashMap::new()),
         });
         self.jobs
             .lock()
@@ -829,15 +861,34 @@ impl TransferEngine {
 
             // 续传：先看临时文件有多少，再和源对一下尾部；对不上从头来。
             let source_size = source.size().await?.unwrap_or(0);
-            let mut resume_len = if resume_from_partial {
+            let actual_len = if resume_from_partial {
                 target_endpoint.partial_len().await?
             } else {
                 0
             };
+            // 续传点以「已确认的连续前缀」为准，不信临时文件的长度（可能带洞，见 `JobState::confirmed`）。
+            let mut resume_len = resume_point(actual_len, state.confirmed_prefix(&target));
+            if actual_len > 0 && resume_len == 0 {
+                self.push_note(
+                    state,
+                    format!("{} 没有已确认的续传位置，从头传", planned.target),
+                );
+            }
             if resume_len > source_size {
                 // 临时文件比源还长（源换了 / 上次传的是别的文件）：放弃续传。
                 target_endpoint.remove_partial().await?;
                 resume_len = 0;
+            }
+            if resume_len > 0 && actual_len > resume_len {
+                // 确认的前缀之后可能有乱序落盘的块：先截掉再续。截不动就从头传
+                // （`open_write(0)` 会截断临时文件），不冒险接在一个带洞的文件后面。
+                if target_endpoint.truncate_partial(resume_len).await.is_err() {
+                    self.push_note(
+                        state,
+                        format!("{} 的临时文件无法截回续传位置，从头传", planned.target),
+                    );
+                    resume_len = 0;
+                }
             }
             if resume_len > 0
                 && !tails_match(
@@ -869,6 +920,7 @@ impl TransferEngine {
                 },
             };
             let mut file_bytes_done = resume_len;
+            let confirmed_key = target.clone();
             let outcome = copy_file(
                 Arc::clone(&source),
                 Arc::clone(&target_endpoint),
@@ -880,6 +932,8 @@ impl TransferEngine {
                     let state = Arc::clone(state);
                     let engine = Arc::clone(self);
                     move |done, _total| {
+                        // `done` 只在整批写成功之后才报：就是已确认的连续前缀。
+                        state.record_confirmed(&confirmed_key, done);
                         // 进度 = 之前文件累计 + 本文件已传（不含续传前已有的部分）。
                         let delta = done - file_bytes_done.min(done);
                         file_bytes_done = done;
