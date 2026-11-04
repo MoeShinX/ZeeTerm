@@ -1213,6 +1213,7 @@ mod tests {
             fingerprint: "SHA256:abc".into(),
             status,
             stored_fingerprint: None,
+            saved_keys: Vec::new(),
         };
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -1392,6 +1393,49 @@ mod untrusted_host_tests {
         assert!(!outcome.ok);
         assert!(outcome.headline.contains(STOP_NOTE), "{}", outcome.headline);
         assert_eq!(outcome.untrusted_fingerprint, Some(fingerprint(&target)));
+    }
+
+    #[tokio::test]
+    async fn a_server_with_several_host_keys_shows_the_type_we_already_saved() {
+        // 服务器有 Ed25519 和 ECDSA 两把主机密钥；这台主机以前只存过 ECDSA。
+        // 默认顺序（Ed25519 优先）会出示 Ed25519，落到「只存过别种类型」而被拦下；
+        // 把已保存的类型排到协商偏好最前，服务器就会出示 ECDSA，直接核对通过。
+        let ecdsa = fake_server::ecdsa_key();
+        let server = fake_server::spawn(vec![fake_server::ed25519_key(), ecdsa.clone()]).await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let known = dir.path().join("known_hosts");
+        KnownHosts::new(&known)
+            .append(
+                &server.addr.ip().to_string(),
+                server.addr.port(),
+                ecdsa.public_key(),
+            )
+            .expect("预先信任");
+        let outcome = test_ssh(SshTestPlan {
+            hops: vec![hop("目标 lab-1", &server, &known)],
+        })
+        .await;
+        assert!(outcome.ok, "{}", outcome.headline);
+        assert_eq!(server.counters.passwords(), 1);
+        assert_eq!(outcome.untrusted_fingerprint, None);
+    }
+
+    #[tokio::test]
+    async fn without_a_saved_key_the_default_order_still_applies() {
+        let ecdsa = fake_server::ecdsa_key();
+        let ed = fake_server::ed25519_key();
+        let server = fake_server::spawn(vec![ecdsa, ed.clone()]).await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let known = dir.path().join("known_hosts");
+        let outcome = test_ssh(SshTestPlan {
+            hops: vec![hop("目标 lab-1", &server, &known)],
+        })
+        .await;
+        // 没存过任何类型：保持默认的 Ed25519 优先，指纹就是 Ed25519 那把。
+        assert_eq!(
+            outcome.untrusted_fingerprint,
+            Some(ed.public_key().fingerprint(HashAlg::Sha256).to_string())
+        );
     }
 
     #[tokio::test]

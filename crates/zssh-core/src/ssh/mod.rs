@@ -11,6 +11,7 @@ pub mod disconnect;
 mod fake_server;
 pub mod flow;
 pub mod forward;
+mod hostkey_order;
 mod id_tap;
 pub mod interact;
 pub mod keygen;
@@ -45,7 +46,7 @@ pub use disconnect::{
 pub use flow::FlowGate;
 pub use interact::{
     BoxFuture, HopProgress, HostKeyDecision, HostKeyInfo, HostKeyStatus, Interactor,
-    NonInteractive, PromptAnswers, PromptItem, PromptKind, PromptRequest,
+    NonInteractive, PromptAnswers, PromptItem, PromptKind, PromptRequest, SavedHostKey,
 };
 pub use known_hosts::KnownHosts;
 pub use pool::{ConnectionGuard, ConnectionPool, PoolConfig, Pooled};

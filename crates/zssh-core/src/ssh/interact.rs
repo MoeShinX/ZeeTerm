@@ -35,6 +35,15 @@ pub enum HostKeyStatus {
     OtherKeyTypesSaved,
 }
 
+/// known_hosts 里已保存的一把主机密钥（类型 + 指纹）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedHostKey {
+    /// 例如 `ecdsa-sha2-nistp256`
+    pub key_type: String,
+    /// OpenSSH 格式的 SHA256 指纹
+    pub fingerprint: String,
+}
+
 /// 未知主机弹窗要显示的信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostKeyInfo {
@@ -47,6 +56,9 @@ pub struct HostKeyInfo {
     pub status: HostKeyStatus,
     /// 指纹变化 / 吊销时，已保存的那条旧指纹（让用户对比）；其它情况没有
     pub stored_fingerprint: Option<String>,
+    /// 只记过别种类型密钥（[`HostKeyStatus::OtherKeyTypesSaved`]）时，这台主机已保存的类型和指纹，
+    /// 让用户拿它和这次出示的对比；其它状态为空。
+    pub saved_keys: Vec<SavedHostKey>,
 }
 
 /// 提问的种类，界面据此决定用什么控件。

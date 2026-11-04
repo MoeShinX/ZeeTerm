@@ -98,6 +98,10 @@ impl SshPromptLayer {
                 let text = host_key_text(info);
                 let mut texts = vec![text.host, text.key_type, text.fingerprint];
                 texts.extend(text.stored);
+                for (key_type, fingerprint) in text.saved {
+                    texts.push(key_type);
+                    texts.push(fingerprint);
+                }
                 texts
             }
             Some(Body::Prompt(form)) => {
@@ -312,7 +316,31 @@ impl SshPromptLayer {
             plain_value(text.key_type, tokens),
             tokens,
         ));
-        if let Some(stored) = text.stored {
+        if !text.saved.is_empty() {
+            // 换了密钥类型：把已保存的（可能不止一种）和现在出示的并排给用户核对。
+            for (index, (key_type, fingerprint)) in text.saved.iter().enumerate() {
+                details = details
+                    .child(detail_row(
+                        "已保存的类型",
+                        plain_value(key_type.clone(), tokens),
+                        tokens,
+                    ))
+                    .child(detail_row(
+                        "已保存的指纹",
+                        fingerprint_value(
+                            ("ssh-fp-old", id * 16 + index as u64),
+                            fingerprint,
+                            tokens,
+                        ),
+                        tokens,
+                    ));
+            }
+            details = details.child(detail_row(
+                "现在的指纹",
+                fingerprint_value(("ssh-fp-new", id), &text.fingerprint, tokens),
+                tokens,
+            ));
+        } else if let Some(stored) = text.stored {
             details = details
                 .child(detail_row(
                     "已保存的指纹",
@@ -469,6 +497,12 @@ impl SshPromptLayer {
 fn host_key_look(status: zssh_core::ssh::HostKeyStatus, button: HostKeyButton) -> ButtonLook {
     match button {
         HostKeyButton::UpdateAndConnect => ButtonLook::Danger,
+        // 换了密钥类型：信任它要有明确的警惕，不是默认动作。
+        HostKeyButton::TrustAndSave
+            if status == zssh_core::ssh::HostKeyStatus::OtherKeyTypesSaved =>
+        {
+            ButtonLook::Danger
+        }
         _ if button == enter_button(status) => ButtonLook::Primary,
         _ => ButtonLook::Outline,
     }
@@ -584,6 +618,14 @@ pub mod dev {
             status,
             stored_fingerprint: matches!(status, HostKeyStatus::Changed)
                 .then(|| "SHA256:Qe8mT2vLx0RjH5cYbN7uWd3kPaZfS1oIgA9tXyC4nM6".to_owned()),
+            saved_keys: if status == HostKeyStatus::OtherKeyTypesSaved {
+                vec![zssh_core::ssh::SavedHostKey {
+                    key_type: "ecdsa-sha2-nistp256".to_owned(),
+                    fingerprint: "SHA256:Qe8mT2vLx0RjH5cYbN7uWd3kPaZfS1oIgA9tXyC4nM6".to_owned(),
+                }]
+            } else {
+                Vec::new()
+            },
         }
     }
 
