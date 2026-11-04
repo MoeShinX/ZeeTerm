@@ -66,7 +66,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "socks",
 ] }
 # 一键下载 opencode 后解压 zip（只要 deflate，不拉 lzma/zstd 一堆多余依赖）。
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
