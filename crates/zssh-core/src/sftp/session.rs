@@ -16,6 +16,7 @@
 //! 进度都按块来）。高层封装的 AsyncRead/AsyncWrite 把这两件事都藏在里面了。
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,6 +35,19 @@ pub const CONSERVATIVE_CHUNK: u32 = 32 * 1024;
 
 /// 单次请求的上限（就算服务器声明了更大的值也不超这个：再大内存和延迟都不划算）。
 pub const MAX_CHUNK: u32 = 256 * 1024;
+
+/// 常规 SFTP 请求等应答的上限（秒）。russh-sftp 默认只给 10 秒：上行慢的链路上，
+/// 一块写要先排在别的数据后面发出去，10 秒不够就会把正常的传输判成超时。
+pub const REQUEST_TIMEOUT_SECS: u64 = 60;
+
+/// 服务器自己做很久的请求（`copy-data` 把整个文件拷一遍）等应答的上限（秒）：
+/// 应答要等服务器拷完才回来，耗时跟文件大小成正比，不是链路延迟，不能按常规的 60 秒算。
+pub const SERVER_SIDE_REQUEST_TIMEOUT_SECS: u64 = 30 * 60;
+
+/// 握手之后给会话设上常规请求的超时。
+fn apply_request_timeout(raw: &RawSftpSession) {
+    raw.set_timeout(REQUEST_TIMEOUT_SECS);
+}
 
 /// `posix-rename@openssh.com`（重命名时目标存在也能覆盖）。
 pub const POSIX_RENAME: &str = "posix-rename@openssh.com";
@@ -166,6 +180,35 @@ pub struct SftpChannel {
     /// 通道活着，它所在的 SSH 连接就算「有人在用」：连接池按谁还握着这条连接的 `Arc` 判断能不能做
     /// 空闲回收，只拿着通道（比如远端编辑器）而不握工厂的使用者不能被漏掉，否则编辑到一半连接被关。
     _connection: Arc<Connection>,
+    /// 正在等「服务器端长请求」应答的个数（见 [`LongRequestGuard`]）。
+    long_requests: AtomicUsize,
+}
+
+/// 服务器端长请求期间把这条通道的请求超时放宽，结束（含被取消）时恢复。
+///
+/// russh-sftp 的超时是整条会话一个值、在发请求那一刻读取，没有「单个请求」的接口，
+/// 所以放宽的是这条通道在这段时间里**新发出**的请求；已经在等的请求不受影响。
+/// 用计数而不是直接设回去：同一条通道上同时有几个长请求时，最后一个结束才恢复。
+struct LongRequestGuard<'a> {
+    raw: &'a RawSftpSession,
+    active: &'a AtomicUsize,
+}
+
+impl<'a> LongRequestGuard<'a> {
+    fn enter(raw: &'a RawSftpSession, active: &'a AtomicUsize, secs: u64) -> Self {
+        if active.fetch_add(1, Ordering::SeqCst) == 0 {
+            raw.set_timeout(secs);
+        }
+        Self { raw, active }
+    }
+}
+
+impl Drop for LongRequestGuard<'_> {
+    fn drop(&mut self) {
+        if self.active.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.raw.set_timeout(REQUEST_TIMEOUT_SECS);
+        }
+    }
 }
 
 /// 远端锁用的服务器身份：连接实际连到的 用户名@主机:端口。
@@ -190,6 +233,8 @@ impl SftpChannel {
             SftpError::Disconnected(message) => SftpError::NoSubsystem(message),
             other => other,
         })?;
+        // 握手用默认的 10 秒（没装 sftp-server 时要尽快报出来）；握手之后才放宽到常规请求的上限。
+        apply_request_timeout(&raw);
         let mut caps = SftpCaps::from_extensions(version.version, &version.extensions);
         // 服务器声明了 limits 才去问；没声明问了也是白问。
         if caps.has(extensions::LIMITS) {
@@ -203,6 +248,7 @@ impl SftpChannel {
             connection_id: Arc::as_ptr(connection) as usize,
             server_key: identity_of(connection),
             _connection: Arc::clone(connection),
+            long_requests: AtomicUsize::new(0),
         })
     }
 
@@ -609,14 +655,13 @@ impl SftpChannel {
         write_handle: &str,
         write_offset: u64,
     ) -> Result<(), SftpError> {
-        let reply = self
-            .raw
-            .extended(
-                COPY_DATA,
-                copy_data_payload(read_handle, read_offset, len, write_handle, write_offset),
-            )
-            .await
-            .map_err(SftpError::from)?;
+        let reply = extended_with_long_timeout(
+            &self.raw,
+            &self.long_requests,
+            COPY_DATA,
+            copy_data_payload(read_handle, read_offset, len, write_handle, write_offset),
+        )
+        .await?;
         match reply {
             Packet::Status(status) => status_ok(status, ""),
             Packet::ExtendedReply(_) => Ok(()),
@@ -779,6 +824,25 @@ pub fn posix_rename_payload(from: &str, to: &str) -> Vec<u8> {
 /// 服务器端复制的扩展名（SFTP 草案 `copy-data`，OpenSSH 9.0 起的 sftp-server 支持）。
 pub const COPY_DATA: &str = "copy-data";
 
+/// 发一个要服务器做很久的扩展请求：等应答的上限放宽到 [`SERVER_SIDE_REQUEST_TIMEOUT_SECS`]，
+/// 超时报「服务器 N 秒没有响应」（N 是这个请求自己的上限）。
+async fn extended_with_long_timeout(
+    raw: &RawSftpSession,
+    active: &AtomicUsize,
+    request: &str,
+    payload: Vec<u8>,
+) -> Result<Packet, SftpError> {
+    let _guard = LongRequestGuard::enter(raw, active, SERVER_SIDE_REQUEST_TIMEOUT_SECS);
+    raw.extended(request, payload)
+        .await
+        .map_err(|err| match err {
+            russh_sftp::client::error::Error::Timeout => {
+                super::error::timeout_error(SERVER_SIDE_REQUEST_TIMEOUT_SECS)
+            }
+            other => SftpError::from(other),
+        })
+}
+
 /// `copy-data` 的载荷：`string read-from-handle`、`uint64 read-from-offset`、
 /// `uint64 read-data-length`、`string write-to-handle`、`uint64 write-to-offset`。
 pub fn copy_data_payload(
@@ -824,6 +888,9 @@ pub const IDLE_CHANNEL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[cfg(test)]
 mod create_tests;
+
+#[cfg(test)]
+mod timeout_tests;
 
 #[cfg(test)]
 mod tests {

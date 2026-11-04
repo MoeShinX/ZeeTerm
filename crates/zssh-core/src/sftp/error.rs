@@ -226,7 +226,7 @@ impl From<SftpClientError> for SftpError {
                     SftpError::Remote(message)
                 }
             }
-            SftpClientError::Timeout => SftpError::Remote("SFTP 请求超时".to_owned()),
+            SftpClientError::Timeout => timeout_error(crate::sftp::session::REQUEST_TIMEOUT_SECS),
             SftpClientError::Limited(message) => {
                 SftpError::Remote(format!("超过服务器限制：{message}"))
             }
@@ -242,6 +242,11 @@ impl From<SftpClientError> for SftpError {
             }
         }
     }
+}
+
+/// 请求等了 `secs` 秒还没有应答。
+pub fn timeout_error(secs: u64) -> SftpError {
+    SftpError::Remote(format!("服务器 {secs} 秒没有响应（SFTP 请求超时）"))
 }
 
 /// 带上路径再映射（协议层的错误里没有路径信息，调用方知道路径）。
