@@ -11,6 +11,7 @@
 //! - `view:welcome|vault|terminal|settings`、`settings`（齿轮开关）；
 //! - `key:<按键>` 走真实的按键分发路径（如 `key:ctrl-shift-t`、`key:escape`）；
 //!   `click:<x>,<y>[,<次数>[,l|m|r]]` 走真实的鼠标分发路径（先移动再按下抬起，坐标是窗口内逻辑像素）；
+//!   `wheel:<x>,<y>,<行数>` 在那里滚一下滚轮（正数向上，同样走真实的平台输入）；
 //! - `assert_view:<页>`、`assert_tabs:<个数>`、`assert_status:<标签下标>:<connected|disconnected|connecting|empty>`
 //!   检查结果，不对就让脚本失败；
 //! - `tree_width:<像素>`、`toggle_tree`、`toggle_group:<键>`、`search:<文字>`、`theme:dark|light`
@@ -85,6 +86,13 @@ pub enum Step {
         paths: Vec<String>,
         /// 拖进来之后又拖走（Esc / 拖出窗口）：不该有任何东西被传。
         cancel: bool,
+    },
+    /// `wheel:<x>,<y>,<行数>`：在那个位置滚一下鼠标滚轮（正数 = 向上滚，翻看历史），走 gpui 的
+    /// `Scroll` 平台输入，所以会经过命中测试，盖在上面的元素挡没挡滚轮一试便知。
+    Wheel {
+        x: f32,
+        y: f32,
+        lines: f32,
     },
     /// 鼠标按下（`d`）/ 移动（`m`，按下过就带着左键）/ 抬起（`u`）。
     Mouse {
@@ -242,6 +250,22 @@ pub fn parse_script(raw: &str) -> Result<Vec<Step>, String> {
                     button,
                     ctrl,
                     shift,
+                }
+            }
+            "wheel" => {
+                let raw = need("坐标和行数")?;
+                let mut parts = raw.split(',').map(str::trim);
+                let mut value = || -> Result<f32, String> {
+                    parts
+                        .next()
+                        .and_then(|v| v.parse::<f32>().ok())
+                        .filter(|v| v.is_finite())
+                        .ok_or_else(|| "步骤 wheel 要写 <x>,<y>,<行数>".to_owned())
+                };
+                Step::Wheel {
+                    x: value()?,
+                    y: value()?,
+                    lines: value()?,
                 }
             }
             "click_text" => {
@@ -577,6 +601,10 @@ pub fn spawn_from_env(view: Entity<MainWindow>, handle: AnyWindowHandle, cx: &mu
                     }
                     Step::Files(inner) => to_file_window(inner, cx),
                     Step::TermWin(inner) => to_term_window(inner, cx),
+                    Step::Wheel { x, y, lines } => {
+                        wheel(window, cx, *x, *y, *lines);
+                        Outcome::Done
+                    }
                     Step::Mouse { kind, x, y } => {
                         mouse(window, cx, *kind, *x, *y);
                         Outcome::Done
@@ -788,6 +816,7 @@ fn run_step(
         | Step::Click { .. }
         | Step::ClickText { .. }
         | Step::Mouse { .. }
+        | Step::Wheel { .. }
         | Step::FileDrop { .. }
         | Step::Files(_)
         | Step::TermWin(_) => Outcome::Done,
@@ -1056,6 +1085,33 @@ fn file_drop(window: &mut Window, cx: &mut App, x: f32, y: f32, paths: &[String]
         FileDropEvent::Submit { position }
     };
     window.dispatch_event(PlatformInput::FileDrop(last), cx);
+}
+
+/// 在 (x, y) 滚鼠标滚轮：先移过去，再发一个 `ScrollWheel`（行数为正 = 向上滚）。
+fn wheel(window: &mut Window, cx: &mut App, x: f32, y: f32, lines: f32) {
+    use ::gpui::{
+        Modifiers, MouseMoveEvent, PlatformInput, ScrollDelta, ScrollEvent, ScrollSource,
+        TouchPhase, point, px,
+    };
+    let position = point(px(x), px(y));
+    window.dispatch_event(
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position,
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        }),
+        cx,
+    );
+    window.dispatch_event(
+        PlatformInput::Scroll(ScrollEvent {
+            position,
+            delta: ScrollDelta::Lines(point(0.0, lines)),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+            source: ScrollSource::Pointer,
+        }),
+        cx,
+    );
 }
 
 /// 有没有按着左键（`down` 之后的 `move` 要带着左键）。
