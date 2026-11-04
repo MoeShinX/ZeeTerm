@@ -25,6 +25,7 @@ mod real {
     use zssh_core::ssh::connection_test::{
         FailurePhase, FirstByte, HopRole, Interaction, TestOutcome, TestStage, classify_failure,
         serial_failure, serial_success, ssh_success_headline, tcp_success_headline,
+        untrusted_stop_headline,
     };
 
     use super::super::MainWindow;
@@ -377,13 +378,22 @@ mod real {
             untrusted_fingerprint: None,
         };
         let outcome = match kind {
-            "ssh_ok" => ok(ssh_success_headline(86, Some(version), None, 0)),
-            "ssh_untrusted" => ok(ssh_success_headline(
-                92,
-                Some(version),
-                Some(("SHA256:3xAmPlEfIngErPrInTdOcUmEnTaTiOnOnLy0123456", false)),
-                0,
-            )),
+            "ssh_ok" => ok(ssh_success_headline(86, Some(version))),
+            // 指纹没信任：测试停在认证之前，既不是成功也不是红色失败（和真实流程一样 stage 留空）。
+            "ssh_untrusted" => TestOutcome {
+                ok: false,
+                headline: untrusted_stop_headline(
+                    "SHA256:3xAmPlEfIngErPrInTdOcUmEnTaTiOnOnLy0123456",
+                    false,
+                    None,
+                ),
+                detail: "测试连接\n结果：没有测试登录".to_owned(),
+                elapsed_ms: 92,
+                stage: None,
+                untrusted_fingerprint: Some(
+                    "SHA256:3xAmPlEfIngErPrInTdOcUmEnTaTiOnOnLy0123456".to_owned(),
+                ),
+            },
             "ssh_auth_failed" => failure(
                 &ZsshError::AuthFailed,
                 FailurePhase::Handshake,

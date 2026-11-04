@@ -7,6 +7,8 @@ pub mod connections;
 pub mod cwd;
 pub mod dialer;
 pub mod disconnect;
+#[cfg(test)]
+mod fake_server;
 pub mod flow;
 pub mod forward;
 mod id_tap;

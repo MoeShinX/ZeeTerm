@@ -496,50 +496,73 @@ mod tests {
     // ---- 端到端：进程内迷你 SSH 服务器 ----
 
     #[test]
-    fn an_ssh_test_succeeds_reports_the_server_version_and_never_writes_known_hosts() {
+    fn an_ssh_test_succeeds_for_a_trusted_host_and_never_writes_known_hosts() {
         let known = temp_known_hosts("ok");
-        let outcome = runtime().block_on(async {
-            let addr = test_ssh_server::spawn().await;
-            test_ssh(SshTestPlan {
+        let (stopped, outcome) = runtime().block_on(async {
+            // 要连两次（先陌生、再信任），所以用能一直接受连接的那个。
+            let (addr, _probe) = test_ssh_server::spawn_counting().await;
+            // 没见过这台主机：测试停在握手 + 指纹，不登录（V2-C7a S1），也不保存指纹。
+            let stopped = test_ssh(SshTestPlan {
                 hops: vec![hop("目标 lab-1", addr, "pw", &known)],
             })
-            .await
+            .await;
+            assert!(!known.exists(), "测试连接不能写 known_hosts");
+            test_ssh_server::trust_host_key(addr, &known);
+            let saved = std::fs::read(&known).expect("读");
+            let outcome = test_ssh(SshTestPlan {
+                hops: vec![hop("目标 lab-1", addr, "pw", &known)],
+            })
+            .await;
+            assert_eq!(
+                std::fs::read(&known).expect("读"),
+                saved,
+                "测试连接不能改 known_hosts"
+            );
+            (stopped, outcome)
         });
-        assert!(outcome.ok, "{}", outcome.headline);
-        // 没见过这台主机：连接成功，但指纹尚未信任，并且没有保存。
         assert!(
-            outcome
-                .headline
-                .starts_with("连接成功；首次连接，指纹 SHA256:"),
+            !stopped.ok && stopped.stage.is_none(),
             "{}",
-            outcome.headline
+            stopped.headline
         );
-        assert!(outcome.headline.contains("尚未信任"));
+        assert!(
+            stopped
+                .headline
+                .contains("没有测试登录；请先正式连接一次并核对指纹"),
+            "{}",
+            stopped.headline
+        );
+        assert!(stopped.untrusted_fingerprint.is_some());
+        assert!(stopped.detail.contains("直连") && stopped.detail.contains("没有保存"));
+        // 已信任：照常登录，结果里带服务器版本。
+        assert!(outcome.ok, "{}", outcome.headline);
         assert!(
             outcome.headline.contains("服务器 SSH-2.0-"),
             "{}",
             outcome.headline
         );
-        assert!(outcome.untrusted_fingerprint.is_some());
-        assert!(outcome.detail.contains("直连") && outcome.detail.contains("没有保存"));
-        assert!(!known.exists(), "测试连接不能写 known_hosts");
+        assert!(outcome.untrusted_fingerprint.is_none());
     }
 
     #[test]
     fn a_wrong_password_is_an_authentication_failure_and_the_right_one_succeeds() {
         let known = temp_known_hosts("auth");
-        let (bad, good) = runtime().block_on(async {
+        let (bad, good, saved) = runtime().block_on(async {
+            // 主机已信任：测试才会真的去登录。
             let addr = test_ssh_server::spawn_requiring_password("right-pw").await;
+            test_ssh_server::trust_host_key(addr, &known);
             let bad = test_ssh(SshTestPlan {
                 hops: vec![hop("目标 lab-1", addr, "wrong-pw", &known)],
             })
             .await;
             let addr = test_ssh_server::spawn_requiring_password("right-pw").await;
+            test_ssh_server::trust_host_key(addr, &known);
+            let saved = std::fs::read(&known).expect("读");
             let good = test_ssh(SshTestPlan {
                 hops: vec![hop("目标 lab-1", addr, "right-pw", &known)],
             })
             .await;
-            (bad, good)
+            (bad, good, saved)
         });
         assert!(!bad.ok);
         assert_eq!(bad.stage, Some(TestStage::Auth));
@@ -552,7 +575,11 @@ mod tests {
             );
         }
         assert!(good.ok, "{}", good.headline);
-        assert!(!known.exists(), "失败和成功的测试都不写 known_hosts");
+        assert_eq!(
+            std::fs::read(&known).expect("读"),
+            saved,
+            "失败和成功的测试都不改 known_hosts"
+        );
     }
 
     #[test]
@@ -675,16 +702,20 @@ mod tests {
     #[test]
     fn ssh_through_a_jump_host_works_and_the_route_names_it() {
         let known = temp_known_hosts("jump");
-        let outcome = runtime().block_on(async {
+        let (outcome, saved) = runtime().block_on(async {
             let jump = test_ssh_server::spawn_forwarding().await;
             let target = test_ssh_server::spawn().await;
-            test_ssh(SshTestPlan {
+            test_ssh_server::trust_host_key(jump, &known);
+            test_ssh_server::trust_host_key(target, &known);
+            let saved = std::fs::read(&known).expect("读");
+            let outcome = test_ssh(SshTestPlan {
                 hops: vec![
                     hop("跳板机 edge-1", jump, "pw", &known),
                     hop("目标 lab-1", target, "pw", &known),
                 ],
             })
-            .await
+            .await;
+            (outcome, saved)
         });
         assert!(outcome.ok, "{}", outcome.headline);
         assert!(
@@ -692,7 +723,7 @@ mod tests {
             "{}",
             outcome.detail
         );
-        assert!(!known.exists());
+        assert_eq!(std::fs::read(&known).expect("读"), saved);
     }
 
     // ---- 端到端：Telnet 只测 TCP ----
@@ -775,6 +806,7 @@ mod tests {
         let known = temp_known_hosts("tjump");
         let outcome = runtime().block_on(async {
             let jump = test_ssh_server::spawn_forwarding().await;
+            test_ssh_server::trust_host_key(jump, &known);
             let device = spawn_fake_telnet();
             test_tcp(TcpTestPlan {
                 host: device.ip().to_string(),
@@ -789,7 +821,6 @@ mod tests {
             "{}",
             outcome.detail
         );
-        assert!(!known.exists());
     }
 
     #[cfg(windows)]
