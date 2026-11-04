@@ -311,11 +311,13 @@ impl SshPromptLayer {
 
         let mut details = details_box(tokens);
         details = details.child(detail_row("主机", plain_value(text.host, tokens), tokens));
-        details = details.child(detail_row(
-            "密钥类型",
-            plain_value(text.key_type, tokens),
-            tokens,
-        ));
+        if text.saved.is_empty() {
+            details = details.child(detail_row(
+                "密钥类型",
+                plain_value(text.key_type.clone(), tokens),
+                tokens,
+            ));
+        }
         if !text.saved.is_empty() {
             // 换了密钥类型：把已保存的（可能不止一种）和现在出示的并排给用户核对。
             for (index, (key_type, fingerprint)) in text.saved.iter().enumerate() {
@@ -335,11 +337,17 @@ impl SshPromptLayer {
                         tokens,
                     ));
             }
-            details = details.child(detail_row(
-                "现在的指纹",
-                fingerprint_value(("ssh-fp-new", id), &text.fingerprint, tokens),
-                tokens,
-            ));
+            details = details
+                .child(detail_row(
+                    "现在的类型",
+                    plain_value(text.key_type.clone(), tokens),
+                    tokens,
+                ))
+                .child(detail_row(
+                    "现在的指纹",
+                    fingerprint_value(("ssh-fp-new", id), &text.fingerprint, tokens),
+                    tokens,
+                ));
         } else if let Some(stored) = text.stored {
             details = details
                 .child(detail_row(
