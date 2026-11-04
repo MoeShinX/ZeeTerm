@@ -1,0 +1,200 @@
+# ZeeTerm 发版：推 v* tag 后在 GitHub 上编译、签名、发布 Release。
+#
+# 流程：校验 tag -> 门禁（和本机 scripts/gates.ps1 同一份）-> 打安装包 -> 用更新私钥签名并自检 ->
+#       生成 latest.json / SHA256SUMS.txt / Release 正文 -> gh release create。
+# 改版本号、写更新说明、打 tag 的步骤见 docs/RELEASING.md（先 scripts/bump-version.ps1，提交推 main，再推 tag）。
+#
+# 密钥：更新签名私钥和口令放在仓库的 `release` 环境（Settings -> Environments -> release）里，
+#   ZEETERM_UPDATER_KEY            私钥文件全文
+#   ZEETERM_UPDATER_KEY_PASSWORD   私钥口令
+# 只有本工作流的这个 job 拿得到；而且只暴露给"写私钥文件"和"签名"两个步骤，编译、跑测试的步骤环境里没有它们。
+# 日志里不打印私钥和口令（GitHub 会对 Secret 打码，这里也不 echo，签名工具不开详细输出）。
+#
+# 第三方 action 一律钉 commit SHA；能用 gh 做的事不引入新的 action。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # 重跑 / 补发：从 main 分支触发，输入已经存在的 tag（例如 v0.4.0）。该 tag 的 Release 必须还不存在。
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（例如 v0.4.0；必须已经存在，且在 main 上）"
+        required: true
+        type: string
+
+# 默认什么权限都不给；唯一的 job 只要 contents: write（建 Release 用）。
+permissions: {}
+
+# 同一个 tag 只跑一个；后来的排队等着，不取消正在进行的发版。
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  release:
+    name: 编译、签名、发布（windows-latest）
+    # 手动触发只接受从 main 触发：别的分支上的工作流文件可能被改过，不能让它碰到私钥。
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 120
+    environment: release
+    permissions:
+      contents: write
+
+    steps:
+      - name: 取代码（要完整历史，用来核对 tag 在 main 上）
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ format('refs/tags/{0}', inputs.tag || github.ref_name) }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 校验 tag、版本号和更新说明
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TAG -notmatch '^v(\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.]*)?)$') {
+            throw "tag 要写成 vX.Y.Z（可带 -rc.1 这类后缀）：$env:TAG"
+          }
+          $version = $Matches[1]
+          . ./scripts/release-lib.ps1
+
+          # 1. tag 去掉 v 之后必须等于两个工作区的版本号（程序里显示的版本、安装包文件名都来自它）。
+          foreach ($manifest in @('native/Cargo.toml', 'Cargo.toml')) {
+            $declared = Get-WorkspaceVersion (Join-Path $env:GITHUB_WORKSPACE $manifest)
+            if ($declared -ne $version) { throw "tag 是 $env:TAG，但 $manifest 的版本是 $declared。先用 scripts/bump-version.ps1 改版本号并提交。" }
+          }
+
+          # 2. 检出的就是 tag 指向的提交，而且这个提交在 main 上（没合进 main 的提交不发版）。
+          $head = (git rev-parse HEAD).Trim()
+          $tagCommit = (git rev-parse "refs/tags/$($env:TAG)^{commit}").Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -ne $tagCommit) { throw "检出的提交 $head 不是 tag $env:TAG 指向的提交 $tagCommit。" }
+          git merge-base --is-ancestor $head origin/main
+          if ($LASTEXITCODE -ne 0) { throw "tag $env:TAG 指向的提交不在 main 上：先把它合进 main，再在 main 的提交上打 tag。" }
+
+          # 3. 面向用户的更新说明必须存在且不是空的。
+          $notes = "docs/release-notes/$version.md"
+          $notesPath = Join-Path $env:GITHUB_WORKSPACE $notes
+          if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) { throw "缺少 $notes。" }
+          if ((Read-Text $notesPath).Text.Trim() -eq '') { throw "$notes 是空的。" }
+
+          # 4. 公钥不能还是占位值（真正核对公钥和私钥是一对，在拿到私钥的签名那一步）。
+          $pubkey = Get-ConfiguredPubkey (Join-Path $env:GITHUB_WORKSPACE 'native/zssh-update/updater.json')
+          if ($pubkey -eq '' -or $pubkey.ToUpperInvariant().StartsWith('PLACEHOLDER')) { throw 'native/zssh-update/updater.json 的 pubkey 还是占位值。' }
+
+          # 5. 这个 tag 的 Release 还不存在（早点失败，别等编译完才发现）。
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) { throw "tag $env:TAG 的 Release 已经存在，不会覆盖。要重发请先删掉那个 Release（以及里面的附件）。" }
+
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "tag $env:TAG，版本 $version，提交 $head：校验通过。"
+
+      # 版本由 rust-toolchain.toml 固定；无参数的 rustup toolchain install 就是按那个文件安装。
+      - name: 装 Rust（按 rust-toolchain.toml，MSVC）
+        shell: pwsh
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo clippy --version
+
+      - name: 缓存 cargo 的编译产物
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            native -> target
+          key: release
+
+      # 和本机一样的门禁：核心库 + 原生应用的 fmt / clippy / test，再加 release 配置的两步检查。
+      # runner 上没有 ZSSH_TEST_* 环境变量，联网用例会自己跳过并打印原因。
+      - name: 门禁（scripts/gates.ps1）
+        shell: pwsh
+        run: ./scripts/gates.ps1
+
+      - name: 装 NSIS（runner 镜像里没有时才装）
+        shell: pwsh
+        run: |
+          $known = @(
+            "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+            "$env:ProgramFiles\NSIS\makensis.exe"
+          )
+          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue) -and
+              -not ($known | Where-Object { Test-Path -LiteralPath $_ })) {
+            choco install nsis -y --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: 打安装包
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:GITHUB_WORKSPACE "dist\$env:VERSION"
+          ./native/installer/build.ps1 -OutDir $out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installer = Join-Path $out "ZeeTerm-Setup-$env:VERSION.exe"
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "没有找到预期的安装包：$installer" }
+
+      # 私钥只在"写文件"到"清理"之间存在于磁盘，文件放在 runner 的临时目录；下面的清理步骤 always() 一定会删。
+      - name: 写出更新私钥（临时文件）
+        shell: pwsh
+        env:
+          UPDATER_KEY: ${{ secrets.ZEETERM_UPDATER_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:UPDATER_KEY)) { throw 'Secret ZEETERM_UPDATER_KEY 是空的（release 环境里没设，或工作流没拿到环境）。' }
+          # 统一成 LF 并保证末尾有换行：Secret 是从文件灌进去的，换行风格取决于当时怎么灌的。
+          $text = ($env:UPDATER_KEY -replace "`r`n", "`n").TrimEnd() + "`n"
+          $path = Join-Path $env:RUNNER_TEMP 'zeeterm-updater.key'
+          [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
+
+      - name: 签名并生成 latest.json、SHA256SUMS.txt、Release 正文
+        shell: pwsh
+        env:
+          ZEETERM_UPDATER_KEY_PASSWORD: ${{ secrets.ZEETERM_UPDATER_KEY_PASSWORD }}
+        run: |
+          $dist = Join-Path $env:GITHUB_WORKSPACE "dist\$env:VERSION"
+          ./scripts/release-sign.ps1 `
+            -Version $env:VERSION `
+            -InstallerPath (Join-Path $dist "ZeeTerm-Setup-$env:VERSION.exe") `
+            -KeyPath (Join-Path $env:RUNNER_TEMP 'zeeterm-updater.key') `
+            -OutDir $dist `
+            -Repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: 删掉临时私钥文件
+        if: always()
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'zeeterm-updater.key'
+          if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+          if (Test-Path -LiteralPath $path) { throw '临时私钥文件没删掉。' }
+          Write-Host '临时私钥文件已删除。'
+
+      # gh release create 遇到同名 Release 会报错而不是覆盖；--verify-tag 要求 tag 已在远端。
+      - name: 创建 Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $dist = Join-Path $env:GITHUB_WORKSPACE "dist\$env:VERSION"
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) { throw "tag $env:TAG 的 Release 已经存在，不会覆盖。" }
+          gh release create $env:TAG `
+            (Join-Path $dist "ZeeTerm-Setup-$env:VERSION.exe") `
+            (Join-Path $dist 'latest.json') `
+            (Join-Path $dist 'SHA256SUMS.txt') `
+            --verify-tag `
+            --title "ZeeTerm $env:VERSION" `
+            --notes-file (Join-Path $dist 'RELEASE_NOTES.md')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "已发布：$env:TAG"
