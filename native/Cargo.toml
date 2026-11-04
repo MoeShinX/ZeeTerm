@@ -5,7 +5,7 @@ resolver = "2"
 [workspace.package]
 # 与根 workspace 的版本保持一致（有测试比对）：
 # 更新器用它判断「公告版本是否更新」，写成 0.0.0 会让任何旧包都显得可更新。
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
