@@ -1917,3 +1917,18 @@ fn reorder_notifies_sync_listeners_only_on_success() {
     assert!(db.host_reorder(&[a, a]).is_err());
     assert_eq!(fired.load(Ordering::SeqCst), 1, "失败不通知");
 }
+
+#[test]
+fn the_default_agent_is_builtin_until_the_user_chooses_one() {
+    let db = memory_db();
+    assert_eq!(db.ai_default_agent().unwrap(), "builtin");
+    for agent in ["opencode", "codex", "claude", "builtin"] {
+        db.set_ai_default_agent(agent).unwrap();
+        assert_eq!(db.ai_default_agent().unwrap(), agent);
+    }
+    // 读不懂的值当没选过。
+    db.setting_set("ai_default_agent", "\"gemini\"").unwrap();
+    assert_eq!(db.ai_default_agent().unwrap(), "builtin");
+    db.setting_set("ai_default_agent", "7").unwrap();
+    assert_eq!(db.ai_default_agent().unwrap(), "builtin");
+}

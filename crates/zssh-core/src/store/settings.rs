@@ -167,14 +167,19 @@ impl Database {
         }
     }
 
-    /// 默认智能体（`"opencode"` / `"codex"` / `"claude"` / `"builtin"`）；没设置或值不认识按 `"opencode"`。
+    /// 默认智能体（`"opencode"` / `"codex"` / `"claude"` / `"builtin"`）；没设置或值不认识按 `"builtin"`
+    /// （ZeePilot，V2-U32 起新装默认；选过的以用户为准）。
     pub fn ai_default_agent(&self) -> Result<String, ZsshError> {
         match self.setting_get(AI_DEFAULT_AGENT_KEY)? {
             Some(raw) => match serde_json::from_str::<String>(&raw) {
-                Ok(agent) if matches!(agent.as_str(), "codex" | "claude" | "builtin") => Ok(agent),
-                _ => Ok("opencode".into()),
+                Ok(agent)
+                    if matches!(agent.as_str(), "opencode" | "codex" | "claude" | "builtin") =>
+                {
+                    Ok(agent)
+                }
+                _ => Ok("builtin".into()),
             },
-            None => Ok("opencode".into()),
+            None => Ok("builtin".into()),
         }
     }
 
