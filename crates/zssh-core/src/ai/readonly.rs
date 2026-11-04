@@ -18,6 +18,9 @@
 //!   变量名像秘密的 `printenv`、带 BSD 风格 `e` 的 `ps`（`ps eww`、`ps aux e`；`ps -e` 是"所有进程"，不受影响）、
 //!   `docker inspect`（含 `container|image inspect`，会打出 `Config.Env`）、`kubectl describe` 带 Pod 模板的资源
 //!   （`Environment:` 会列出字面值）、带 `e` 的 `docker top` ps 选项；
+//!   `kubectl get` 带 Pod 模板的资源或 configmap 且 `-o yaml|json|jsonpath|go-template|custom-columns`、
+//!   `systemctl show`（`Environment=`）、`docker history`（`ENV` 指令）、`docker compose config`、
+//!   `echo` / `printf` 展开名字像机密的变量（`$TOKEN`、`${API_KEY:-x}`，名字表见 [`SECRET_NAME_HINTS`]）；
 //! - `dig -f`、`mtr -F` 把文件内容当查询目标发出去，不算只读；
 //! - `<<` / `<<<`（here-doc / here-string）不算只读：here-doc 的正文是另起的多行，分段逻辑看不到它，
 //!   审查认为不能绕过，但这里再加一道保险，宁可多问一句；
@@ -791,7 +794,7 @@ const SYSTEMD_CTL: Spec = Spec {
 
 const SYSTEMCTL_VERBS: &[&str] = &[
     "status",
-    "show",
+    // 没有 `show`：它的输出带 `Environment=` / `EnvironmentFiles=`，服务单元里的环境变量会整份打出来
     "cat",
     "list-units",
     "list-unit-files",
@@ -950,7 +953,8 @@ fn kubectl_is_read_only(args: &[String]) -> bool {
     match verb {
         // get / describe 会把 Secret 的内容（get -o yaml 是 base64 的明文）读出来交给模型服务商，
         // 所以资源是 secret 的要确认；logs / top / explain 等不碰 Secret 的照旧放行。
-        "get" => !kubectl_reads_secrets(rest),
+        // get -o yaml|json|… 还会把 Pod 模板里的 env 字面值和 configmap 的内容整份打出来
+        "get" => !kubectl_reads_secrets(rest) && !kubectl_get_dumps_pod_template(rest),
         // describe 还会把 Pod 模板里的 `Environment:` 字面值列出来（Pod 和所有带 Pod 模板的工作负载）
         "describe" => !kubectl_reads_secrets(rest) && !kubectl_describes_pod_template(rest),
         "logs" | "top" | "version" | "api-resources" | "api-versions" | "explain" => true,
@@ -962,8 +966,8 @@ fn kubectl_is_read_only(args: &[String]) -> bool {
 
 /// `kubectl get|describe` 的参数是不是在读 Secret：
 /// - 资源类型写成 `secret` / `secrets`（大小写不敏感，带组 / 版本的 `secrets.v1`、`secret.core` 也是），
-///   可以是 `secret/名字`、逗号列表里的一项（`pods,secrets`）；`-o yaml|json|jsonpath|go-template` 本身不特殊处理，
-///   因为不写 secret 的资源（pods、configmaps）用它没有这个问题——要紧的是读哪种资源；
+///   可以是 `secret/名字`、逗号列表里的一项（`pods,secrets`）；输出格式本身在这里不看，
+///   pods / configmaps 的 `-o yaml` 另由 [`kubectl_get_dumps_pod_template`] 拦；这里要紧的是读哪种资源；
 /// - `--raw` 直接请求 API 路径（`/api/v1/namespaces/x/secrets`），绕过资源类型，一律要确认。
 ///
 /// 和一个叫 secret 的资源名（比如 pod）同名会误报，宁可多问。
@@ -1000,22 +1004,9 @@ fn docker_is_read_only(args: &[String]) -> bool {
                 return false;
             };
             match sub {
+                // 没有 `config`：它渲染出来的 `environment:` 带着服务的环境变量字面值
+                // （`--environment` 更是直接打印环境），不论带什么参数
                 "ps" | "logs" | "ls" | "images" | "top" | "version" => true,
-                // `config -o 文件` / `--output` 把结果写进文件
-                "config" => rest[1..].iter().all(|a| {
-                    matches!(
-                        *a,
-                        "-q" | "--quiet"
-                            | "--services"
-                            | "--volumes"
-                            | "--images"
-                            | "--profiles"
-                            | "--no-interpolate"
-                            | "--no-normalize"
-                            | "--resolve-image-digests"
-                            | "--hash"
-                    ) || !a.starts_with('-')
-                }),
                 _ => false,
             }
         }
@@ -1024,9 +1015,8 @@ fn docker_is_read_only(args: &[String]) -> bool {
         "top" => rest
             .get(1..)
             .is_none_or(|ps_args| !ps_shows_environment(ps_args)),
-        "ps" | "images" | "logs" | "version" | "info" | "port" | "diff" | "history" | "events" => {
-            true
-        }
+        // 没有 `history`：镜像历史里的 `ENV` 指令会把构建时的环境变量打出来
+        "ps" | "images" | "logs" | "version" | "info" | "port" | "diff" | "events" => true,
         "stats" => rest.contains(&"--no-stream"),
         "container" | "image" | "network" | "volume" => {
             rest.first().is_some_and(|sub| match (first, *sub) {
@@ -1147,6 +1137,10 @@ enum Rule {
     /// 要看参数：参数里有任何需要 shell 展开才知道真实内容的词就直接要确认，
     /// 否则再交给这个函数按允许列表检查。
     Filtered(fn(&[String]) -> bool),
+    /// 要看参数、而且**自己负责**判断展开：`echo $PATH` 这种无害的展开要放行，
+    /// 只有展开出机密变量才要确认，所以不能走 `Filtered` 那道"有展开就拒绝"。
+    /// 函数拿到的是带展开标记的词（命令名之后的部分）。
+    Words(fn(&[Word]) -> bool),
     /// 不在白名单里。
     Unknown,
 }
@@ -1168,7 +1162,9 @@ fn rule_for(name: &str) -> Rule {
         }
         // history -c 清空、-w 写文件、-d 删除……只认不带参数的
         "history" => Rule::Filtered(|args| args.is_empty()),
-        "printf" => Rule::Filtered(printf_is_read_only),
+        // echo / printf 本身无害，但 `echo $GITHUB_TOKEN` 会把环境变量里的机密打给模型
+        "echo" => Rule::Words(echo_is_read_only),
+        "printf" => Rule::Words(printf_is_read_only),
         // find 的主表达式（-exec、-delete、-fprint…）必须写全，不能缩写，也不能合并，
         // 所以按完整名字拦就够了；带这些名字当值的写法（`-name -delete`）也一并要确认
         "find" => Rule::Filtered(|args| {
@@ -1294,11 +1290,115 @@ fn kubectl_describes_pod_template(args: &[String]) -> bool {
     })
 }
 
+/// `kubectl get <资源> -o yaml|json|jsonpath|go-template|custom-columns` 会把资源的完整内容打出来：
+/// Pod 和带 Pod 模板的工作负载里是容器的 `env` 字面值，configmap 本身就可能存明文配置。
+/// 默认表格、`-o wide`、`-o name` 只有名字和状态，照旧放行；node / service 等没有这些内容的资源，
+/// 用 `-o yaml` 也放行。`-f` / `-k` 从文件读目标、看不出种类，带数据格式输出时一并要确认。
+fn kubectl_get_dumps_pod_template(args: &[String]) -> bool {
+    const KINDS: &[&str] = &[
+        "pod",
+        "pods",
+        "po",
+        "deploy",
+        "deployment",
+        "deployments",
+        "rs",
+        "replicaset",
+        "replicasets",
+        "sts",
+        "statefulset",
+        "statefulsets",
+        "ds",
+        "daemonset",
+        "daemonsets",
+        "job",
+        "jobs",
+        "cronjob",
+        "cronjobs",
+        "cj",
+        "rc",
+        "replicationcontroller",
+        "replicationcontrollers",
+        "configmap",
+        "configmaps",
+        "cm",
+        "all",
+    ];
+    if !kubectl_output_is_data_dump(args) {
+        return false;
+    }
+    args.iter().any(|arg| {
+        if let Some(flag) = arg.strip_prefix("--") {
+            let name = flag.split('=').next().unwrap_or(flag);
+            return matches!(name, "filename" | "kustomize" | "recursive");
+        }
+        if let Some(short) = arg.strip_prefix('-') {
+            return short.starts_with(['f', 'k']);
+        }
+        arg.split(',').any(|item| {
+            let kind = item.split('/').next().unwrap_or(item);
+            let kind = kind.split('.').next().unwrap_or(kind).to_ascii_lowercase();
+            KINDS.contains(&kind.as_str())
+        })
+    })
+}
+
+/// 参数里有没有 `-o` / `--output` 且值是会输出资源完整内容的格式（yaml、json、jsonpath*、
+/// go-template*、custom-columns*、template*）。写法：`-o yaml`、`-oyaml`、`-o=yaml`、
+/// `--output yaml`、`--output=yaml`，以及合并在短选项簇末尾（`-Ao yaml`）。
+fn kubectl_output_is_data_dump(args: &[String]) -> bool {
+    let is_dump = |value: &str| {
+        let value = value.trim_start_matches('=').to_ascii_lowercase();
+        ["yaml", "json", "go-template", "custom-columns", "template"]
+            .iter()
+            .any(|format| value.starts_with(format))
+    };
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        i += 1;
+        if let Some(long) = arg.strip_prefix("--") {
+            if long == "output" {
+                if args.get(i).is_some_and(|value| is_dump(value)) {
+                    return true;
+                }
+            } else if let Some(value) = long.strip_prefix("output=") {
+                if is_dump(value) {
+                    return true;
+                }
+            }
+            continue;
+        }
+        let Some(cluster) = arg.strip_prefix('-') else {
+            continue;
+        };
+        for (index, c) in cluster.char_indices() {
+            if c == 'o' {
+                let rest = &cluster[index + 1..];
+                let value = if rest.is_empty() {
+                    args.get(i).map(String::as_str).unwrap_or("")
+                } else {
+                    rest
+                };
+                if is_dump(value) {
+                    return true;
+                }
+                break;
+            }
+            // 别的带值的短选项（-n prod、-l app=web）：后面是它的值，不是选项簇
+            if !matches!(c, 'A' | 'w' | 'R') {
+                break;
+            }
+        }
+    }
+    false
+}
+
 /// `printenv` 只放行指定变量名的写法，而且名字不能像秘密：名字里（不分大小写）有
-/// TOKEN / SECRET / KEY / PASS（含 PASSWORD）/ CRED。不带变量名是打印整份环境，不放行。
+/// TOKEN / SECRET / KEY / PASS（含 PASSWORD）/ CRED / AUTH / PRIVATE / SESSION / COOKIE
+/// （[`SECRET_NAME_HINTS`]，和 `echo $名字` 共用）。不带变量名是打印整份环境，不放行。
 /// 选项只认 `-0` / `--null`（换行符换成 NUL）；别的选项和 `--help` 之类一律要确认。
 fn printenv_is_read_only(args: &[String]) -> bool {
-    const SECRET_HINTS: &[&str] = &["token", "secret", "key", "pass", "cred"];
     let mut names = 0;
     let mut only_names = false;
     for arg in args {
@@ -1312,8 +1412,7 @@ fn printenv_is_read_only(args: &[String]) -> bool {
             }
             return false;
         }
-        let lower = arg.to_ascii_lowercase();
-        if SECRET_HINTS.iter().any(|hint| lower.contains(hint)) {
+        if name_looks_secret(arg) {
             return false;
         }
         names += 1;
@@ -1387,9 +1486,71 @@ fn mtr_is_read_only(args: &[String]) -> bool {
 
 /// bash 内建 `printf -v 变量` 会给 shell 变量赋值（`PROMPT_COMMAND`、`PATH`……），
 /// 是在改终端会话的行为。只有 `printf 格式 参数…` 和 `printf -- 格式 …` 算只读。
-fn printf_is_read_only(args: &[String]) -> bool {
-    args.first()
-        .is_none_or(|first| !first.starts_with('-') || first == "--")
+///
+/// 格式串（第一个参数）自己不能要展开：`printf $X` 的 X 可能是 `-v`。后面的参数只是数据，
+/// 展开成什么都无害，除非展开的是机密变量（见 [`expansion_names_secret`]）。
+fn printf_is_read_only(words: &[Word]) -> bool {
+    let first_is_safe = words
+        .first()
+        .is_none_or(|first| !first.expands && (!first.text.starts_with('-') || first.text == "--"));
+    first_is_safe && !words_expand_secret(words)
+}
+
+/// `echo` 的参数里展开出机密变量（`echo $GITHUB_TOKEN`、`echo "${API_KEY:-x}"`）就要确认。
+/// `echo $PATH`、`echo "$USER"` 这类照旧放行。
+fn echo_is_read_only(words: &[Word]) -> bool {
+    !words_expand_secret(words)
+}
+
+fn words_expand_secret(words: &[Word]) -> bool {
+    words
+        .iter()
+        .any(|word| word.expands && expansion_names_secret(&word.text))
+}
+
+/// 名字像机密的变量：不分大小写含下面任一片段。`printenv 名字` 和 `echo $名字` 共用这一张表，
+/// 两边一致。子串匹配会误伤（`MONKEY` 含 `KEY`），宁可多问一句。
+const SECRET_NAME_HINTS: &[&str] = &[
+    "token", "secret", "key", "pass", "cred", "auth", "private", "session", "cookie",
+];
+
+fn name_looks_secret(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    SECRET_NAME_HINTS.iter().any(|hint| lower.contains(hint))
+}
+
+/// 一个词里有没有 `$名字` / `${名字…}` 指向机密变量。词里所有的 `$` 都看（`${X:-$TOKEN}` 的默认值
+/// 里也会展开）。`${!X}`（间接展开）拿不到最终名字，一律当作机密。
+/// 单引号里的 `$` 在分词时已经去掉引号，会被一并看到——只会多问，不会漏。
+fn expansion_names_secret(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '$' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if chars.get(i) == Some(&'{') {
+            i += 1;
+            match chars.get(i) {
+                Some('!') => return true,
+                // ${#NAME} 是长度，名字照样看
+                Some('#') => i += 1,
+                _ => {}
+            }
+        }
+        let start = i;
+        while i < chars.len() && is_ident(chars[i]) {
+            i += 1;
+        }
+        let name: String = chars[start..i].iter().collect();
+        if name_looks_secret(&name) {
+            return true;
+        }
+    }
+    false
 }
 
 fn segment_is_read_only(segment: &str) -> bool {
@@ -1423,6 +1584,7 @@ fn segment_is_read_only(segment: &str) -> bool {
             let args: Vec<String> = words[1..].iter().map(|word| word.text.clone()).collect();
             check(&args)
         }
+        Rule::Words(check) => check(&words[1..]),
         Rule::Unknown => false,
     }
 }
@@ -1653,7 +1815,7 @@ mod tests {
             "journalctl --lines=50 --no-pager",
             "systemctl list-units --type=service --state=running",
             "systemctl is-active nginx",
-            "systemctl show -p MainPID nginx",
+            "systemctl cat nginx",
             "systemctl status nginx -l --no-pager",
             "systemctl --user status foo",
             "timedatectl",
@@ -1668,7 +1830,6 @@ mod tests {
             "docker network inspect bridge",
             "docker container ls -a",
             "docker compose logs --tail 20 web",
-            "docker compose config --services",
             "apt show nginx",
             "apt-cache policy nginx",
             "apt search -n nginx",
@@ -2147,7 +2308,6 @@ mod tests {
             "blkid",
             "lastlog",
             "history",
-            "printf '%s' x",
             "find . -name x",
             "hostname",
             "date",
@@ -2329,9 +2489,9 @@ mod hardening_tests {
         assert_all_read_only(&[
             "kubectl get pods",
             "kubectl get pods -A -o wide",
-            "kubectl get pods -o yaml",
-            "kubectl get pod web-1 -o json",
-            "kubectl get pods -o jsonpath='{.items[*].metadata.name}'",
+            "kubectl get nodes -o yaml",
+            "kubectl get pod web-1 -o wide",
+            "kubectl get pods -o name",
             "kubectl get configmaps -n prod",
             "kubectl get svc,deploy -n prod",
             "kubectl get nodes",
@@ -2438,7 +2598,6 @@ mod env_leak_tests {
         ("docker logs --tail 100 web", true),
         ("docker network inspect bridge", true),
         ("docker volume inspect data", true),
-        ("docker compose config --services", true),
         ("docker top web", true),
         ("docker top web aux", true),
         ("docker top web -ef", true),
@@ -2480,6 +2639,142 @@ mod env_leak_tests {
         ("kubectl describe --filename=pod.yaml", false),
         ("kubectl exec web-1 -- env", false),
         ("kubectl exec web-1 -- printenv", false),
+        // --- V2-C9：kubectl get -o（Pod 模板里的 env 字面值）、systemctl show、docker history、
+        //     docker compose config、echo / printf 展开机密变量 ---
+        ("kubectl get pods", true),
+        ("kubectl get pods -o wide", true),
+        ("kubectl get pods -A -o wide", true),
+        ("kubectl get nodes -o yaml", true),
+        ("kubectl get nodes -o json", true),
+        ("kubectl get svc -o yaml", true),
+        ("kubectl get deploy", true),
+        ("kubectl get configmaps -n prod", true),
+        ("kubectl get pods -o name", true),
+        ("kubectl get pods -o yaml", false),
+        ("kubectl get pod web-1 -o json", false),
+        ("kubectl get po -o yaml", false),
+        ("kubectl get pods -oyaml", false),
+        ("kubectl get pods -o=yaml", false),
+        ("kubectl get pods --output yaml", false),
+        ("kubectl get pods --output=yaml", false),
+        ("kubectl get pods --output=json", false),
+        ("kubectl get pods -A -o yaml", false),
+        ("kubectl get -o yaml pods", false),
+        ("kubectl -n prod get pods -o yaml", false),
+        (
+            "kubectl get pods -o jsonpath='{.items[*].metadata.name}'",
+            false,
+        ),
+        ("kubectl get pods -o jsonpath-as-json='{.items[*]}'", false),
+        ("kubectl get pods -o go-template='{{.items}}'", false),
+        ("kubectl get pods -o go-template-file=/tmp/t", false),
+        (
+            "kubectl get pods -o custom-columns=NAME:.metadata.name",
+            false,
+        ),
+        ("kubectl get deployments -o yaml", false),
+        ("kubectl get deploy web -o yaml", false),
+        ("kubectl get deployment/web -o json", false),
+        ("kubectl get deployments.apps -o yaml", false),
+        ("kubectl get statefulsets -o yaml", false),
+        ("kubectl get sts -o yaml", false),
+        ("kubectl get daemonsets -o yaml", false),
+        ("kubectl get ds -o json", false),
+        ("kubectl get replicasets -o yaml", false),
+        ("kubectl get rs -o yaml", false),
+        ("kubectl get jobs -o yaml", false),
+        ("kubectl get job migrate -o json", false),
+        ("kubectl get cronjobs -o yaml", false),
+        ("kubectl get cj -o yaml", false),
+        ("kubectl get configmaps -o yaml", false),
+        ("kubectl get configmap app-config -o json", false),
+        ("kubectl get cm -o yaml", false),
+        ("kubectl get cm app-config -o jsonpath='{.data}'", false),
+        ("kubectl get pods,svc -o yaml", false),
+        ("kubectl get all -o yaml", false),
+        ("kubectl get rc -o yaml", false),
+        ("kubectl get -f pod.yaml -o yaml", false),
+        ("systemctl status nginx", true),
+        ("systemctl list-units --type=service", true),
+        ("systemctl is-active nginx", true),
+        ("systemctl cat nginx", true),
+        ("systemctl show nginx", false),
+        ("systemctl show", false),
+        ("systemctl show -p MainPID nginx", false),
+        ("systemctl show --property=Environment nginx", false),
+        ("systemctl --user show nginx", false),
+        ("systemctl -p Environment show nginx", false),
+        ("systemctl show nginx | grep Environment", false),
+        ("docker ps", true),
+        ("docker images", true),
+        ("docker history nginx", false),
+        ("docker history --no-trunc nginx", false),
+        ("docker history -q nginx", false),
+        ("podman history nginx", false),
+        ("docker compose config", false),
+        ("docker compose config --environment", false),
+        ("docker compose config --services", false),
+        ("docker compose -f x.yml config", false),
+        ("docker-compose config", false),
+        ("docker-compose config --services", false),
+        ("docker compose ps", true),
+        ("docker compose logs web", true),
+        ("echo hello", true),
+        ("echo", true),
+        ("echo $PATH", true),
+        ("echo ${PATH}", true),
+        ("echo $HOME", true),
+        ("echo \"$USER\"", true),
+        ("echo \"$HOME/bin\" $LANG", true),
+        ("echo $?", true),
+        ("echo 'a $TOKEN is literal'", true),
+        (r"echo \$TOKEN", true),
+        ("printf '%s\n' \"$SHELL\"", true),
+        ("printf '%s\n' hello", true),
+        ("printf '%s=%s\n' a \"$HOME\"", true),
+        ("echo $TOKEN", false),
+        ("echo $GITHUB_TOKEN", false),
+        ("echo ${GITHUB_TOKEN}", false),
+        ("echo \"$GITHUB_TOKEN\"", false),
+        ("echo \"${GITHUB_TOKEN}\"", false),
+        ("echo ${GITHUB_TOKEN:-none}", false),
+        ("echo ${GITHUB_TOKEN:+set}", false),
+        ("echo ${X:-$GITHUB_TOKEN}", false),
+        ("echo ${#GITHUB_TOKEN}", false),
+        ("echo $AWS_SECRET_ACCESS_KEY", false),
+        ("echo $aws_secret_access_key", false),
+        ("echo $API_KEY", false),
+        ("echo $MYSQL_PASSWORD", false),
+        ("echo $PASSWD", false),
+        ("echo $db_pass", false),
+        ("echo $AWS_CREDENTIALS", false),
+        ("echo $SSH_AUTH_SOCK", false),
+        ("echo $AUTHORIZATION", false),
+        ("echo $PRIVATE_KEY", false),
+        ("echo $SESSION_ID", false),
+        ("echo $COOKIE", false),
+        ("echo -n $TOKEN", false),
+        ("echo a $HOME $TOKEN", false),
+        ("echo \"user=$USER token=$TOKEN\"", false),
+        ("echo ${!NAME}", false),
+        ("echo $TOKEN | sha256sum", false),
+        ("echo ok && echo $TOKEN", false),
+        // 名字里带 KEY 的会命中 MONKEY：宁可多问
+        ("echo $MONKEY_COUNT", false),
+        ("printf '%s\n' $TOKEN", false),
+        ("printf '%s\n' \"$GITHUB_TOKEN\"", false),
+        ("printf '%s\n' ${SECRET_VALUE}", false),
+        ("printf '%s\n' \"${X:-$PASSWORD}\"", false),
+        // printf 的格式串（第一个参数）本身要展开，可能变成 -v 之类的选项
+        ("printf $X", false),
+        ("printf \"$HOME\n\"", false),
+        ("printf '%s' $TOKEN", false),
+        // printenv 与 echo 共用同一张"机密名字"表
+        ("printenv AUTH_URL", false),
+        ("printenv PRIVATE_FOO", false),
+        ("printenv SESSION_FOO", false),
+        ("printenv COOKIE_JAR", false),
+        ("printenv PATH", true),
     ];
 
     #[test]
