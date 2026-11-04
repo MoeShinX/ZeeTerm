@@ -11,8 +11,9 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIconBuilder, TrayIconEvent};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, GetSystemMetrics, MSG, SM_CXSMICON, SM_CYSMICON, SW_HIDE,
-    SW_SHOW, SetTimer, ShowWindowAsync, TranslateMessage, WM_TIMER,
+    BringWindowToTop, DispatchMessageW, GetMessageW, GetSystemMetrics, HWND_NOTOPMOST,
+    HWND_TOPMOST, MSG, SM_CXSMICON, SM_CYSMICON, SW_HIDE, SW_SHOW, SWP_NOMOVE, SWP_NOSIZE,
+    SetForegroundWindow, SetTimer, SetWindowPos, ShowWindowAsync, TranslateMessage, WM_TIMER,
 };
 
 /// 托盘图标是否已经建好。没建好时"关闭"不能只把窗口藏起来：
@@ -154,6 +155,30 @@ fn set_visible(window: &mut gpui::Window, visible: bool) {
         }
         if visible {
             window.activate_window();
+        }
+    }
+}
+
+/// 把一个新开的窗口真正放到最前面。
+///
+/// 从托盘菜单打开的窗口光靠 `activate_window` 常常停在后面：菜单命令要先从托盘线程转到
+/// GPUI 主线程，窗口建出来时前台已经不在本进程手里，Windows 的前台锁会把
+/// `SetForegroundWindow` 降级成任务栏闪烁。先临时置顶再取消置顶，窗口至少会盖在其他
+/// 窗口上面；再补一次 `SetForegroundWindow`，系统允许时顺便拿到键盘焦点。
+pub fn bring_to_front(window: &mut gpui::Window) {
+    window.activate_window();
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    if let RawWindowHandle::Win32(win32) = handle.as_raw() {
+        let hwnd = HWND(win32.hwnd.get() as _);
+        let flags = SWP_NOMOVE | SWP_NOSIZE;
+        // SAFETY: hwnd 来自当前窗口的 raw handle，调用期间窗口仍然存活。
+        unsafe {
+            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, flags);
+            let _ = SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, flags);
+            let _ = BringWindowToTop(hwnd);
+            let _ = SetForegroundWindow(hwnd);
         }
     }
 }

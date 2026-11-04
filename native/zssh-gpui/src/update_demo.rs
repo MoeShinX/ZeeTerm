@@ -511,6 +511,8 @@ fn open_window_with(cx: &mut App, focus: bool, preset: Option<Checked>) {
         });
         if focus {
             window.focus(&view.read(cx).focus_handle(), cx);
+            // 手动检查（关于页、托盘）是用户刚点的，窗口要到最前面；从托盘点时不这样会停在后面。
+            crate::tray::bring_to_front(window);
         }
         view
     });
