@@ -103,14 +103,14 @@ pub(super) fn is_plain_http(url: &str) -> bool {
 // 小部件
 // ---------------------------------------------------------------------------
 
-fn muted(text: impl Into<SharedString>, tokens: &Tokens) -> AnyElement {
+pub(super) fn muted(text: impl Into<SharedString>, tokens: &Tokens) -> AnyElement {
     div()
         .typo(Role::Caption, tokens)
         .child(text.into())
         .into_any_element()
 }
 
-fn colored(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
+pub(super) fn colored(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
     div()
         .text_xs()
         .text_color(color)
@@ -119,7 +119,7 @@ fn colored(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
 }
 
 /// 有颜色的提示框（0.2.14 的琥珀 / 红色 `rounded-md border bg-…/10` 那种）。
-fn banner(color: Hsla, children: Vec<AnyElement>) -> AnyElement {
+pub(super) fn banner(color: Hsla, children: Vec<AnyElement>) -> AnyElement {
     v_flex()
         .w_full()
         .gap_2()
@@ -139,7 +139,11 @@ fn label_above(label: &'static str, tokens: &Tokens) -> impl IntoElement {
 }
 
 /// 一个字段：标签在上、输入框在下，整行宽。
-fn field(label: &'static str, input: &Entity<InputState>, tokens: &Tokens) -> AnyElement {
+pub(super) fn field(
+    label: &'static str,
+    input: &Entity<InputState>,
+    tokens: &Tokens,
+) -> AnyElement {
     v_flex()
         .w_full()
         .gap_1()
@@ -148,7 +152,11 @@ fn field(label: &'static str, input: &Entity<InputState>, tokens: &Tokens) -> An
         .into_any_element()
 }
 
-fn password_field(label: &'static str, input: &Entity<InputState>, tokens: &Tokens) -> AnyElement {
+pub(super) fn password_field(
+    label: &'static str,
+    input: &Entity<InputState>,
+    tokens: &Tokens,
+) -> AnyElement {
     v_flex()
         .w_full()
         .gap_1()
@@ -179,7 +187,7 @@ fn label_row(label: &'static str, value: String, tokens: &Tokens) -> AnyElement 
 }
 
 /// 设置行：左边标题 + 说明，右边是控件（同设置页其他行）。
-fn setting(
+pub(super) fn setting(
     title: &'static str,
     description: impl Into<SharedString>,
     control: impl IntoElement,
@@ -309,11 +317,13 @@ impl SyncDemo {
             cards.push(self.sync_card(&entity, tokens, cx));
             cards.push(self.conflicts_card(&entity, tokens));
         }
+        // 云端备份（U33）：不依赖主同步，没配置主同步也能单独用。
+        cards.push(self.cloud_backup_card(&entity, tokens, cx));
         cards
     }
 
-    fn busy(&self) -> bool {
-        self.testing || self.syncing || self.signing_in
+    pub(super) fn busy(&self) -> bool {
+        self.testing || self.syncing || self.signing_in || self.cloud.is_busy()
     }
 
     // ---- 连接存储 ----

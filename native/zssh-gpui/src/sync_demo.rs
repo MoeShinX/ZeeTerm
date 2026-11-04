@@ -145,6 +145,7 @@ const MAX_DELETION_NAMES: usize = zssh_core::sync::guard::MAX_SAMPLES;
 const ERROR_STATUS: &str = "error";
 
 mod actions;
+mod cloud_backup;
 #[cfg(debug_assertions)]
 mod dev;
 mod status;
@@ -152,6 +153,9 @@ mod strength;
 // 依赖 debug-only 的 sync_stub（见 main.rs），release 下没有它，测试模块也不能编译。
 #[cfg(all(test, debug_assertions))]
 mod stub_tests;
+// 同上：用 debug-only 的桩跑云端备份。
+#[cfg(all(test, debug_assertions))]
+mod cloud_backup_tests;
 mod view;
 
 pub(crate) use status::{
@@ -263,6 +267,10 @@ pub struct SyncDemo {
     understood: bool,
     /// 「修改主密码」表单。
     change_pw: actions::ChangePw,
+    /// 「云端备份」一节：备份目标列表、添加 / 编辑表单、进行中的任务（U33）。
+    cloud: cloud_backup::CloudBackup,
+    /// 上次看到的「同步账号设置被改过」计数（从备份恢复 / 导入会改本机的同步设置）。
+    accounts_epoch: u64,
     /// OneDrive「高级」折叠区展开了没有。
     onedrive_advanced: bool,
     /// 本机保存的并发保护检测结果（测试连接时写入）。
@@ -511,6 +519,8 @@ impl SyncDemo {
             embedded,
             understood: false,
             change_pw,
+            cloud: cloud_backup::CloudBackup::load(&crate::settings::data_dir()),
+            accounts_epoch: ACCOUNTS_EPOCH.load(Ordering::SeqCst),
             onedrive_advanced: false,
             concurrency,
             scroll: ScrollHandle::new(),
@@ -958,7 +968,14 @@ impl SyncDemo {
                 drop(runtime.spawn_blocking(move || {
                     // 守卫活到这次同步结束（含出错）；期间自动同步的这一拍会跳过。
                     let _guard = guard;
-                    let event = match run_sync_at(&handle, &data_dir, &password, decision) {
+                    let outcome = run_sync_at(&handle, &data_dir, &password, decision);
+                    // 主同步成功才顺带备份；备份在同步结果送回界面之后再做，哪个目标慢都不会拖住这次同步的结果。
+                    let backup_password = matches!(
+                        &outcome,
+                        Ok(report) if report.status == SyncStatus::Completed
+                    )
+                    .then(|| password.clone());
+                    let event = match outcome {
                         Ok(report) => {
                             with_sync_guard(|guard| {
                                 guard.note(&SyncOutcome::Report(report.status), Instant::now());
@@ -979,6 +996,15 @@ impl SyncDemo {
                         }
                     };
                     let _ = sender.send(event);
+                    if let Some(password) = backup_password {
+                        cloud_backup::backup_after_sync(
+                            &handle,
+                            &data_dir,
+                            &DpapiSealer,
+                            &password,
+                        );
+                        let _ = sender.send(SyncEvent::PostSyncBackupsDone);
+                    }
                 }));
             }
             Err(err) => self.sync_state.fail(format!("启动同步任务失败：{err}")),
@@ -1247,6 +1273,8 @@ impl SyncDemo {
                     self.auto.error = None;
                     // 自动同步能跑起来就说明本机确实记住了主密码（可能是另一个窗口刚保存的）。
                     self.remember.saved = true;
+                    // 自动同步成功之后会顺带备份到各个云端备份目标，结果在目标自己的状态里。
+                    self.reload_targets_now();
                     // 自动同步也可能新建 Gist、留下冲突。
                     self.ready = load_ready_at(&crate::settings::data_dir());
                     self.baseline_broken = baseline_broken_at(&crate::settings::data_dir());
@@ -1271,7 +1299,22 @@ impl SyncDemo {
                     self.change_pw.busy = false;
                     self.change_pw.error = Some(message);
                 }
+                SyncEvent::TargetBackedUp { id, result } => {
+                    self.on_target_backed_up(&id, result, cx);
+                }
+                SyncEvent::TargetRestored { id, result } => {
+                    self.on_target_restored(&id, result, cx);
+                }
+                SyncEvent::TargetSignedIn(result) => self.on_target_signed_in(result, cx),
+                SyncEvent::PostSyncBackupsDone => self.reload_targets_now(),
             }
+        }
+        // 备份页恢复 / 导入时写回了同步账号设置：把这一页的显示也换成新的。
+        let epoch = ACCOUNTS_EPOCH.load(Ordering::SeqCst);
+        if epoch != self.accounts_epoch {
+            self.accounts_epoch = epoch;
+            self.reload_after_accounts_change(window, cx);
+            changed = true;
         }
         if changed {
             // 同步 / 登录 / 改密码刚结束：不等定时器，马上让底部状态条重读本机设置。
@@ -1440,6 +1483,20 @@ enum SyncEvent {
         new: String,
     },
     PasswordChangeFailed(String),
+    /// 云端备份：某个目标的「立即备份」结束。
+    TargetBackedUp {
+        id: String,
+        result: Result<zssh_core::sync::backup_targets::OutcomeStatus, String>,
+    },
+    /// 云端备份：「从这里恢复」结束。
+    TargetRestored {
+        id: String,
+        result: Result<Box<zssh_core::sync::offline::OfflineImportReport>, String>,
+    },
+    /// 云端备份表单里的 OneDrive 登录结束。
+    TargetSignedIn(Result<zssh_core::sync::onedrive::config::OneDriveConfig, String>),
+    /// 手动同步成功之后顺带做的云端备份跑完了（每个目标的结果已经写进它自己的状态）。
+    PostSyncBackupsDone,
 }
 
 // ---------------------------------------------------------------------------
@@ -1455,6 +1512,16 @@ static SYNC_IN_FLIGHT: AtomicU8 = AtomicU8::new(0);
 
 /// 调度器已经拉起过（一个进程一个，不是每个窗口一个）。
 static AUTO_SCHEDULER_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// 「同步账号设置被改过」的计数：备份页从备份 / 离线文件写回了同步设置，或者用户确认用备份里的替换本机的。
+/// 同步页每 100ms 看一眼，变了就重读显示。
+static ACCOUNTS_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// 本机的同步账号设置被备份页改过：让同步页重读，并清掉之前“凭据被拒 / 限流”的运行时暂停（设置换了就不再适用）。
+pub(crate) fn accounts_changed() {
+    clear_sync_guard();
+    ACCOUNTS_EPOCH.fetch_add(1, Ordering::SeqCst);
+}
 
 /// 调度器自己的计时和退避。只在内存里，重启后从「上次结果」的时间重新开始算。
 static AUTO_CLOCK: OnceLock<Mutex<AutoClock>> = OnceLock::new();
@@ -1949,6 +2016,10 @@ fn auto_tick_with(
     let guard = SyncInFlight::acquire(ExclusiveKind::Sync).ok()?;
     with_auto_clock(|clock| clock.started(now));
     let outcome = run_auto_sync_with(handle, data_dir, sealer, password.as_str());
+    // 主同步成功之后顺带备份到各个云端备份目标；失败只记在目标自己的状态里，不影响这次同步的结果。
+    if matches!(&outcome, Ok(report) if report.status == SyncStatus::Completed) {
+        cloud_backup::backup_after_sync(handle, data_dir, sealer, password.as_str());
+    }
     drop(guard);
     let finished = now_secs();
     let result = match outcome {
