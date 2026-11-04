@@ -8,6 +8,7 @@
 pub mod app_proxy;
 pub mod apply;
 pub mod backup;
+pub mod backup_targets;
 pub mod conflicts;
 pub mod crypto;
 pub mod engine;

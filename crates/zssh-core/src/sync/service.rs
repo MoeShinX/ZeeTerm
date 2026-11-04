@@ -506,29 +506,51 @@ pub fn open_storage<'a>(
     tokens: Arc<dyn TokenStore + 'a>,
     onedrive_endpoints: &Endpoints,
 ) -> Result<Box<dyn SyncStorage + 'a>, SyncError> {
+    // 同步包在四种存储里都叫 `zssh-sync.json`，各家的常量值相同。
+    open_storage_named(
+        config,
+        proxy,
+        mode,
+        tokens,
+        onedrive_endpoints,
+        webdav::OBJECT_NAME,
+    )
+}
+
+/// 同 [`open_storage`]，对象名（Gist 是文件名）由调用方给。云端备份（`backup_targets`）用另一个
+/// 固定名字，所以和主同步指向同一个目录 / 桶 / Gist / 应用文件夹时也不会互相覆盖。
+pub fn open_storage_named<'a>(
+    config: &StorageConfig,
+    proxy: Option<&SyncProxy>,
+    mode: ConcurrencyMode,
+    tokens: Arc<dyn TokenStore + 'a>,
+    onedrive_endpoints: &Endpoints,
+    object_name: &str,
+) -> Result<Box<dyn SyncStorage + 'a>, SyncError> {
     let storage_error = SyncError::from;
     Ok(match config {
-        StorageConfig::Webdav(config) => {
-            Box::new(webdav::open_storage(config, proxy, mode).map_err(storage_error)?)
-        }
-        StorageConfig::S3(config) => {
-            Box::new(s3::open_storage(config, proxy, mode).map_err(storage_error)?)
-        }
+        StorageConfig::Webdav(config) => Box::new(
+            webdav::open_storage_named(config, proxy, mode, object_name).map_err(storage_error)?,
+        ),
+        StorageConfig::S3(config) => Box::new(
+            s3::open_storage_named(config, proxy, mode, object_name).map_err(storage_error)?,
+        ),
         // Gist 没有条件写入，并发控制是固定的“写前再读 + 写后确认”，不看检测结果。
         StorageConfig::Github(config) => {
-            Box::new(github::open_storage(config, proxy).map_err(storage_error)?)
+            Box::new(github::open_storage_named(config, proxy, object_name).map_err(storage_error)?)
         }
         StorageConfig::Onedrive(config) => {
             let client_id = config
                 .effective_client_id()
                 .ok_or_else(|| storage_error(no_client_id()))?;
             Box::new(
-                onedrive_graph::open_storage(
+                onedrive_graph::open_storage_named(
                     onedrive_endpoints.clone(),
                     &client_id,
                     proxy,
                     mode,
                     tokens,
+                    object_name,
                 )
                 .map_err(storage_error)?,
             )
