@@ -21,6 +21,7 @@ use super::nav::MainView;
 use crate::app_theme::Tokens;
 use crate::terminal_workspace::{TabInfo, TabStatus};
 use crate::typography::{Role, Typo as _};
+use zssh_core::model::{Host, Protocol, parse_quick_target};
 
 /// 标题栏高度（0.2.14 的 `h-9`）。
 pub const BAR_HEIGHT: f32 = 36.0;
@@ -107,6 +108,47 @@ fn badge_ink(status: TabStatus) -> Hsla {
 /// 序号小方块的悬停提示：「<主机名> · <状态>」。
 fn badge_tooltip(name: &str, status: TabStatus) -> SharedString {
     format!("{name} · {}", status_title(status)).into()
+}
+
+/// 标签整体的悬停提示里的地址（V2-U32）：SSH / Telnet 是 `用户@主机:端口`（端口默认值也写出来，方便
+/// 核对）；串口是 `设备 · 波特率`；有跳板机只写最终目标，后面加「（经跳板）」。取主机配置里的值，用户填
+/// 域名就是域名，不是解析后的 IP。快速连接（没有主机记录）取它的 `user@host[:port]`。
+/// 空标签、本地标签等没有地址的返回 `None`，由调用方退回显示标题。
+pub(super) fn tab_address_tip(host: Option<&Host>, quick_target: Option<&str>) -> Option<String> {
+    if let Some(host) = host {
+        let serial = host.protocol.protocol == Protocol::Serial;
+        if serial {
+            let options = host.protocol.serial.as_ref()?;
+            let device = options.device.trim();
+            return (!device.is_empty()).then(|| format!("{device} · {}", options.baud_rate));
+        }
+        let address = host.host.trim();
+        if address.is_empty() {
+            return None;
+        }
+        let mut text = endpoint_text(host.username.trim(), address, host.port);
+        if host.jump_host_id.is_some() {
+            text.push_str("（经跳板）");
+        }
+        return Some(text);
+    }
+    let target = parse_quick_target(quick_target?).ok()?;
+    Some(endpoint_text(&target.username, &target.host, target.port))
+}
+
+/// `用户@主机:端口`；没有用户名就不写 `@`；IPv6 地址加方括号，免得和端口的冒号混在一起。
+fn endpoint_text(username: &str, address: &str, port: u16) -> String {
+    let address = super::host_store::normalize_address(address);
+    let address = if address.contains(':') {
+        format!("[{address}]")
+    } else {
+        address
+    };
+    if username.is_empty() {
+        format!("{address}:{port}")
+    } else {
+        format!("{username}@{address}:{port}")
+    }
 }
 
 fn status_title(status: TabStatus) -> &'static str {
@@ -486,6 +528,12 @@ impl MainWindow {
             .map_or_else(|| info.title.clone(), |host| host.name.clone());
         let dot_title = badge_tooltip(&host_name, info.status);
         let title: SharedString = info.title.clone().into();
+        // 标签整体的悬停提示：有地址只显示地址（标题标签上就看得见），没有地址（空标签、本地标签）退回标题。
+        let tab_tip: SharedString = tab_address_tip(
+            info.host_id.and_then(|id| self.store.host(id)),
+            info.quick_target.as_deref(),
+        )
+        .map_or_else(|| title.clone(), SharedString::from);
         let group: SharedString = format!("tab-group-{}", info.id).into();
         let hover = tokens.hover;
         let text = tokens.text;
@@ -545,8 +593,8 @@ impl MainWindow {
             })
             .when(active, |d| d.child(active_tab_indicator(tokens)))
             .tooltip({
-                let title = title.clone();
-                move |window, cx| Tooltip::new(title.clone()).build(window, cx)
+                let tip = tab_tip.clone();
+                move |window, cx| Tooltip::new(tip.clone()).build(window, cx)
             })
             .child(
                 // 序号小方块：数字按主机编（同一台主机的标签同一个号），底色是这个标签自己的连接状态。
@@ -756,11 +804,12 @@ mod tests {
     use super::{
         BACK_TEXT_MIN_WIDTH, LeftIcon, TabTarget, back_button_shows_text, back_button_visible,
         badge_ink, badge_label, badge_numbers, badge_tooltip, left_block_width, left_icons,
-        status_color, tab_target,
+        status_color, tab_address_tip, tab_target,
     };
     use crate::app_theme::Tokens;
     use crate::terminal_workspace::{TabInfo, TabStatus};
     use crate::window_state::TREE_MIN_WIDTH;
+    use zssh_core::model::{AuthMethod, Host, Protocol, ProtocolSettings, ProxyMode};
 
     #[test]
     fn the_left_block_holds_sidebar_hosts_ai_and_files_in_that_order() {
@@ -887,6 +936,111 @@ mod tests {
             badge_numbers(&[host(3), host(1), host(2), host(1)]),
             [1, 2, 3, 2]
         );
+    }
+
+    fn tip_host(protocol: Protocol) -> Host {
+        Host {
+            protocol: ProtocolSettings::new(protocol),
+            id: 1,
+            group_id: None,
+            name: "web-1".to_owned(),
+            host: "192.0.2.10".to_owned(),
+            port: 22,
+            username: "ops".to_owned(),
+            auth_method: AuthMethod::Password,
+            identity_id: None,
+            proxy_id: None,
+            jump_host_id: None,
+            proxy_mode: ProxyMode::Default,
+            tags: Vec::new(),
+            sort: 0,
+            legacy_algorithms: false,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn the_tab_tip_is_user_at_host_and_port_with_the_ports_spelled_out() {
+        let mut ssh = tip_host(Protocol::Ssh);
+        assert_eq!(
+            tab_address_tip(Some(&ssh), None).as_deref(),
+            Some("ops@192.0.2.10:22")
+        );
+        // 用户填的是域名就显示域名；端口不是默认值照样写。
+        ssh.host = " example.com ".to_owned();
+        ssh.port = 2222;
+        assert_eq!(
+            tab_address_tip(Some(&ssh), None).as_deref(),
+            Some("ops@example.com:2222")
+        );
+        // IPv6 加方括号（带方括号存的老数据也一样）。
+        ssh.host = "2001:db8::1".to_owned();
+        assert_eq!(
+            tab_address_tip(Some(&ssh), None).as_deref(),
+            Some("ops@[2001:db8::1]:2222")
+        );
+        ssh.host = "[2001:db8::1]".to_owned();
+        assert_eq!(
+            tab_address_tip(Some(&ssh), None).as_deref(),
+            Some("ops@[2001:db8::1]:2222")
+        );
+        // Telnet 同样写出 23；没有用户名就不写 @。
+        let mut telnet = tip_host(Protocol::Telnet);
+        telnet.port = 23;
+        assert_eq!(
+            tab_address_tip(Some(&telnet), None).as_deref(),
+            Some("ops@192.0.2.10:23")
+        );
+        telnet.username = String::new();
+        assert_eq!(
+            tab_address_tip(Some(&telnet), None).as_deref(),
+            Some("192.0.2.10:23")
+        );
+    }
+
+    #[test]
+    fn a_jump_host_adds_a_note_but_only_the_final_target_is_shown() {
+        let mut ssh = tip_host(Protocol::Ssh);
+        ssh.jump_host_id = Some(7);
+        assert_eq!(
+            tab_address_tip(Some(&ssh), None).as_deref(),
+            Some("ops@192.0.2.10:22（经跳板）")
+        );
+    }
+
+    #[test]
+    fn a_serial_tab_shows_the_device_and_the_baud_rate() {
+        let mut serial = tip_host(Protocol::Serial);
+        let options = serial.protocol.serial.as_mut().expect("串口选项");
+        options.device = "COM3".to_owned();
+        options.baud_rate = 115_200;
+        assert_eq!(
+            tab_address_tip(Some(&serial), None).as_deref(),
+            Some("COM3 · 115200")
+        );
+        // 设备名还没填：没有地址。
+        serial.protocol.serial.as_mut().expect("串口选项").device = "  ".to_owned();
+        assert_eq!(tab_address_tip(Some(&serial), None), None);
+    }
+
+    #[test]
+    fn quick_connects_use_their_target_and_blank_tabs_have_no_address() {
+        assert_eq!(
+            tab_address_tip(None, Some("ops@192.0.2.5")).as_deref(),
+            Some("ops@192.0.2.5:22")
+        );
+        assert_eq!(
+            tab_address_tip(None, Some("ops@[2001:db8::1]:2200")).as_deref(),
+            Some("ops@[2001:db8::1]:2200")
+        );
+        // 空标签、本地标签：没有主机也没有快速连接串；读不懂的串也当没有。
+        assert_eq!(tab_address_tip(None, None), None);
+        assert_eq!(tab_address_tip(None, Some("not a target")), None);
+        // 主机地址空着也没有。
+        let mut blank = tip_host(Protocol::Ssh);
+        blank.host = String::new();
+        assert_eq!(tab_address_tip(Some(&blank), None), None);
     }
 
     #[test]
