@@ -568,13 +568,6 @@ impl MainWindow {
                     .child(badge_label(number))
                     .tooltip(move |window, cx| Tooltip::new(dot_title.clone()).build(window, cx)),
             )
-            // 连上过、探测出系统的 SSH 主机：标题前面带发行版小图标（认不出的不画）。
-            .children(
-                info.host_id
-                    .and_then(|id| self.store.host(id))
-                    .and_then(|host| self.store.os_icon_of(host))
-                    .and_then(|os| crate::os_icons::badge(os, crate::os_icons::OsIconSize::Tab)),
-            )
             .child(div().flex_1().min_w_0().truncate().child(title))
             .when(info.ai_active, |d| {
                 d.child(
