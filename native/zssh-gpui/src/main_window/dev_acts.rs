@@ -118,9 +118,11 @@ pub fn validate(spec: &str) -> Result<(), String> {
         || super::dev_acts_u20::is_known(name)
         || super::dev_acts_u26::is_known(name)
         || super::dev_acts_u30::is_known(name)
+        || super::dev_acts_u29::is_known(name)
         || super::dev_acts_u21::is_known(name)
         || super::dev_acts_u25::is_known(name)
         || super::dev_acts_c1::is_known(name)
+        || super::dev_acts_u28::is_known(name)
         || super::dev_acts_n4::is_known(name)
         || super::dev_acts_sync::is_known(name)
         || KNOWN.contains(&name)
@@ -282,6 +284,10 @@ fn run_inner(
     if let Some(result) = super::dev_acts_u30::run(this, spec, window, cx) {
         return result;
     }
+    // V2-U29（SSH 提问改成应用内对话框）的动作在 `dev_acts_u29`。
+    if let Some(result) = super::dev_acts_u29::run(this, spec, window, cx) {
+        return result;
+    }
     // V2-U20（主机的系统图标、主机树连接线）的动作在 `dev_acts_u20`。
     if let Some(result) = super::dev_acts_u20::run(this, spec, window, cx) {
         return result;
@@ -292,6 +298,10 @@ fn run_inner(
     }
     // V2-U25（终端右键菜单）的动作在 `dev_acts_u25`。
     if let Some(result) = super::dev_acts_u25::run(this, spec, window, cx) {
+        return result;
+    }
+    // V2-U28（拖动自动滚动）的动作在 `dev_acts_u28`。
+    if let Some(result) = super::dev_acts_u28::run(this, spec, window, cx) {
         return result;
     }
     // V2-C1（多行粘贴确认框）的动作在 `dev_acts_c1`。

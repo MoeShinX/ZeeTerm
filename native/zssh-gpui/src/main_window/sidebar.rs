@@ -17,6 +17,7 @@ use gpui_kit::*;
 use zssh_core::model::Host;
 
 use super::drag::{DragChip, DragGroup, DragHost, DragItem, DropHint, Scope};
+use super::drag_scroll::ScrollArea;
 use super::host_tree::{self, TreeRow};
 use super::page_logic::host_info_rows;
 use super::protocol_form;
@@ -411,10 +412,27 @@ impl MainWindow {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(&self.drag_scroll.tree)
                     .when(flat && blank_hot, |d| d.bg(tokens.accent_soft))
                     .on_drag_move::<DragHost>(cx.listener(
-                        |this, event: &DragMoveEvent<DragHost>, _w, cx| {
+                        |this, event: &DragMoveEvent<DragHost>, window, cx| {
                             this.drag_over_tree_blank(event, cx);
+                            this.drag_scroll_probe(
+                                ScrollArea::Tree,
+                                event.event.position,
+                                window,
+                                cx,
+                            );
+                        },
+                    ))
+                    .on_drag_move::<DragGroup>(cx.listener(
+                        |this, event: &DragMoveEvent<DragGroup>, window, cx| {
+                            this.drag_scroll_probe(
+                                ScrollArea::Tree,
+                                event.event.position,
+                                window,
+                                cx,
+                            );
                         },
                     ))
                     .on_drop::<DragHost>(cx.listener(|this, dragged: &DragHost, window, cx| {

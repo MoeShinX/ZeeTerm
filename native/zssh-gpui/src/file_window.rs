@@ -181,6 +181,8 @@ pub struct FileWindow {
     dragger: crate::tab_drag::Dragger,
     /// 锁屏页（V2-U26）：锁着时整个窗口只画它。
     lock_screen: Option<Entity<crate::app_lock::LockScreen>>,
+    /// SSH 提问（指纹确认、密码输入）的应用内对话框层（V2-U29）：第一次画窗口时才建。
+    ssh_prompt: Option<Entity<crate::ssh_prompt_ui::SshPromptLayer>>,
     /// 窗口大小 / 位置变了就记下来（见 [`Self::watch_bounds`]）。
     _bounds_watch: Option<::gpui::Subscription>,
     /// 等拖动停下来再写盘的任务；又变了就换掉（旧的取消）。
@@ -254,6 +256,7 @@ impl FileWindow {
             focus: cx.focus_handle(),
             dragger: crate::tab_drag::Dragger::default(),
             lock_screen: None,
+            ssh_prompt: None,
             _bounds_watch: None,
             save_task: None,
         }
@@ -786,6 +789,12 @@ impl FileWindow {
             drag.hover == crate::tab_drag::Hover::Over(me) && drag.source != me
         });
         let hint = crate::tab_drag::hint_chip(window, cx, &tokens);
+        let ssh_prompt = self
+            .ssh_prompt
+            .get_or_insert_with(|| {
+                cx.new(|cx| crate::ssh_prompt_ui::SshPromptLayer::new(window, cx, false))
+            })
+            .clone();
         let back = back_button_visible(self.tabs.len()).then(|| {
             let me = cx.entity();
             back_button(
@@ -796,6 +805,7 @@ impl FileWindow {
         });
         v_flex()
             .id("file-window")
+            .relative()
             .size_full()
             .track_focus(&self.focus)
             .capture_key_down(
@@ -869,6 +879,7 @@ impl FileWindow {
             )
             .child(div().flex_1().min_h_0().child(content))
             .children(self.render_confirm(&tokens, cx))
+            .child(ssh_prompt)
     }
 }
 

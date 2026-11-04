@@ -1,18 +1,32 @@
-//! GPUI 入口的 SSH 交互：主机指纹确认用系统对话框，密码/口令暂时不支持。
+//! GPUI 入口的 SSH 交互：主机指纹确认、密码 / 口令 / keyboard-interactive 的输入。
 //!
-//! 指纹确认在 Tokio 的阻塞线程池里弹 MessageBox，不占异步 worker；
-//! 自动化可用 `ZSSH_SSH_TRUST_ONCE=1` 跳过对话框（只信任本次，不写 known_hosts）；
+//! 这里不弹任何东西：请求交给 [`crate::ssh_prompt`] 的中转站，由某个窗口里的应用内对话框
+//! （`ssh_prompt_ui`）显示，用户答完再送回来。连接 future 被丢掉（标签关了、连接取消）时请求自动撤回，
+//! 对话框跟着收起。
+//!
+//! 自动化可用 `ZSSH_SSH_TRUST_ONCE=1` 跳过指纹确认（只信任本次，不写 known_hosts）；
 //! 该钩子只在调试构建里生效，见 `dev_hooks`。
 
 use std::sync::Arc;
 
+use tokio::sync::watch;
 use zssh_core::ssh::{
-    BoxFuture, HostKeyDecision, HostKeyInfo, HostKeyStatus, Interactor, PromptAnswers,
-    PromptRequest,
+    BoxFuture, HopProgress, HostKeyDecision, HostKeyInfo, Interactor, PromptAnswers, PromptRequest,
 };
 
-/// 用系统对话框确认主机指纹。
-pub struct NativeInteractor;
+use crate::ssh_prompt::{Answer, Ask, Hub, hub};
+
+/// 把提问交给应用内对话框的交互器。
+pub struct NativeInteractor {
+    hub: Arc<Hub>,
+}
+
+impl NativeInteractor {
+    /// 接在指定的中转站上（测试用自己的；正式路径用 [`interactor`]）。
+    pub fn with_hub(hub: Arc<Hub>) -> Self {
+        Self { hub }
+    }
+}
 
 impl Interactor for NativeInteractor {
     fn confirm_host_key(&self, info: HostKeyInfo) -> BoxFuture<'_, HostKeyDecision> {
@@ -20,319 +34,510 @@ impl Interactor for NativeInteractor {
             if crate::dev_hooks::var_os("ZSSH_SSH_TRUST_ONCE").is_some() {
                 return HostKeyDecision::TrustOnce;
             }
-            tokio::task::spawn_blocking(move || ask_host_key(&info))
-                .await
-                .unwrap_or(HostKeyDecision::Reject)
+            let mut pending = self.hub.submit(Ask::HostKey(info));
+            match pending.wait().await {
+                Some(Answer::HostKey(decision)) => decision,
+                // 请求被撤销（窗口关了）或种类对不上：按拒绝。
+                _ => HostKeyDecision::Reject,
+            }
         })
     }
 
     fn prompt(&self, request: PromptRequest) -> BoxFuture<'_, Option<PromptAnswers>> {
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || ask_prompt(&request))
-                .await
-                .ok()
-                .flatten()
-        })
-    }
-}
-
-/// 密码/口令/单轮 keyboard-interactive 的输入框；多题会依次列出。
-fn ask_prompt(request: &PromptRequest) -> Option<PromptAnswers> {
-    if request.prompts.is_empty() {
-        return None;
-    }
-    let mut header = String::new();
-    if !request.name.is_empty() {
-        header.push_str(&request.name);
-        header.push('\n');
-    }
-    if !request.instructions.is_empty() {
-        header.push_str(&request.instructions);
-        header.push('\n');
-    }
-    let fields: Vec<(String, bool)> = request
-        .prompts
-        .iter()
-        .map(|item| (item.text.clone(), !item.echo))
-        .collect();
-    let answers = show_prompt(&header, &fields)?;
-    Some(PromptAnswers {
-        answers,
-        remember: false,
-    })
-}
-
-#[derive(Default)]
-struct PromptState {
-    edits: Vec<windows::Win32::Foundation::HWND>,
-    answers: Option<Vec<String>>,
-}
-
-thread_local! {
-    static PROMPT: std::cell::RefCell<Option<PromptState>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-fn show_prompt(header: &str, fields: &[(String, bool)]) -> Option<Vec<String>> {
-    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        BS_DEFPUSHBUTTON, CreateWindowExW, DispatchMessageW, ES_AUTOHSCROLL, ES_PASSWORD,
-        GetMessageW, GetSystemMetrics, MSG, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW,
-        SetForegroundWindow, ShowWindow, TranslateMessage, WINDOW_STYLE, WNDCLASSW, WS_CAPTION,
-        WS_CHILD, WS_EX_TOPMOST, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
-    };
-    use windows::core::{HSTRING, PCWSTR, w};
-
-    let hinstance = unsafe { GetModuleHandleW(None) }.ok()?;
-    let hinstance = windows::Win32::Foundation::HINSTANCE(hinstance.0);
-    let class = w!("ZsshPromptWindow");
-    let wc = WNDCLASSW {
-        lpfnWndProc: Some(prompt_proc),
-        hInstance: hinstance,
-        lpszClassName: class,
-        ..Default::default()
-    };
-    unsafe { RegisterClassW(&wc) };
-
-    const ROW: i32 = 54;
-    let width = 500;
-    let header_h = if header.trim().is_empty() { 12 } else { 56 };
-    let buttons_y = 12 + header_h + fields.len() as i32 * ROW + 8;
-    let height = buttons_y + 64;
-    let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
-    let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
-    let x = (screen_w - width) / 2;
-    let y = (screen_h - height) / 2;
-    let title = HSTRING::from(format!("{} 需要输入", crate::product::NAME));
-    PROMPT.with(|slot| *slot.borrow_mut() = Some(PromptState::default()));
-    let hwnd = unsafe {
-        CreateWindowExW(
-            WS_EX_TOPMOST,
-            class,
-            PCWSTR(title.as_ptr()),
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-            x,
-            y,
-            width,
-            height,
-            None,
-            None,
-            Some(hinstance),
-            None,
-        )
-    }
-    .ok()?;
-    unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOW);
-        let _ = SetForegroundWindow(hwnd);
-    }
-
-    if !header.trim().is_empty() {
-        let header_wide: Vec<u16> = header.encode_utf16().chain(Some(0)).collect();
-        let _ = unsafe {
-            CreateWindowExW(
-                Default::default(),
-                w!("STATIC"),
-                PCWSTR(header_wide.as_ptr()),
-                WS_CHILD | WS_VISIBLE,
-                16,
-                10,
-                width - 32,
-                header_h - 8,
-                Some(hwnd),
-                None,
-                Some(hinstance),
-                None,
-            )
-        };
-    }
-
-    let mut edits = Vec::with_capacity(fields.len());
-    for (index, (label, password)) in fields.iter().enumerate() {
-        let top = 12 + header_h + index as i32 * ROW;
-        let label_wide: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
-        let _ = unsafe {
-            CreateWindowExW(
-                Default::default(),
-                w!("STATIC"),
-                PCWSTR(label_wide.as_ptr()),
-                WS_CHILD | WS_VISIBLE,
-                16,
-                top,
-                width - 32,
-                18,
-                Some(hwnd),
-                None,
-                Some(hinstance),
-                None,
-            )
-        };
-        let edit_style = WS_CHILD
-            | WS_VISIBLE
-            | WS_TABSTOP
-            | WINDOW_STYLE(ES_AUTOHSCROLL as u32)
-            | if *password {
-                WINDOW_STYLE(ES_PASSWORD as u32)
-            } else {
-                WINDOW_STYLE(0)
-            };
-        let edit = unsafe {
-            CreateWindowExW(
-                Default::default(),
-                w!("EDIT"),
-                PCWSTR::null(),
-                edit_style,
-                16,
-                top + 20,
-                width - 32,
-                26,
-                Some(hwnd),
-                None,
-                Some(hinstance),
-                None,
-            )
-        }
-        .ok()?;
-        edits.push(edit);
-    }
-    PROMPT.with(|slot| {
-        if let Some(state) = slot.borrow_mut().as_mut() {
-            state.edits = edits.clone();
-        }
-    });
-    if let Some(first) = edits.first() {
-        unsafe {
-            let _ = SetFocus(Some(*first));
-        }
-    }
-
-    for (id, text, left) in [(1usize, "确定", width - 190), (2, "取消", width - 100)] {
-        let text = HSTRING::from(text);
-        let _ = unsafe {
-            CreateWindowExW(
-                Default::default(),
-                w!("BUTTON"),
-                PCWSTR(text.as_ptr()),
-                WS_CHILD
-                    | WS_VISIBLE
-                    | WS_TABSTOP
-                    | WINDOW_STYLE((if id == 1 { BS_DEFPUSHBUTTON } else { 0 }) as u32),
-                left,
-                buttons_y,
-                80,
-                28,
-                Some(hwnd),
-                Some(windows::Win32::UI::WindowsAndMessaging::HMENU(
-                    id as *mut core::ffi::c_void,
-                )),
-                Some(hinstance),
-                None,
-            )
-        };
-    }
-
-    let mut msg = MSG::default();
-    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
-        unsafe {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-    PROMPT
-        .with(|slot| slot.borrow_mut().take())
-        .and_then(|s| s.answers)
-}
-
-unsafe extern "system" fn prompt_proc(
-    hwnd: windows::Win32::Foundation::HWND,
-    msg: u32,
-    wparam: windows::Win32::Foundation::WPARAM,
-    lparam: windows::Win32::Foundation::LPARAM,
-) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        DefWindowProcW, DestroyWindow, GetWindowTextLengthW, GetWindowTextW, PostQuitMessage,
-        WM_CLOSE, WM_COMMAND, WM_DESTROY,
-    };
-    match msg {
-        WM_COMMAND => {
-            let id = (wparam.0 & 0xffff) as i32;
-            if id == 1 {
-                let answers = PROMPT.with(|slot| {
-                    let mut slot = slot.borrow_mut();
-                    slot.as_mut().map(|state| {
-                        state
-                            .edits
-                            .iter()
-                            .map(|edit| {
-                                let len = unsafe { GetWindowTextLengthW(*edit) };
-                                let mut buf = vec![0u16; len.max(0) as usize + 1];
-                                let copied = unsafe { GetWindowTextW(*edit, &mut buf) };
-                                String::from_utf16_lossy(&buf[..copied.max(0) as usize])
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                });
-                PROMPT.with(|slot| {
-                    if let Some(state) = slot.borrow_mut().as_mut() {
-                        state.answers = answers;
-                    }
-                });
-                let _ = unsafe { DestroyWindow(hwnd) };
-            } else if id == 2 {
-                let _ = unsafe { DestroyWindow(hwnd) };
+            // 没有题目就没什么可问的，按取消。
+            if request.prompts.is_empty() {
+                return None;
             }
-            windows::Win32::Foundation::LRESULT(0)
-        }
-        WM_CLOSE => {
-            let _ = unsafe { DestroyWindow(hwnd) };
-            windows::Win32::Foundation::LRESULT(0)
-        }
-        WM_DESTROY => {
-            unsafe { PostQuitMessage(0) };
-            windows::Win32::Foundation::LRESULT(0)
-        }
-        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
-    }
-}
-
-fn ask_host_key(info: &HostKeyInfo) -> HostKeyDecision {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_TOPMOST, MB_YESNO, MessageBoxW,
-    };
-    use windows::core::HSTRING;
-
-    let status = match info.status {
-        HostKeyStatus::Unknown => "第一次连接这台主机".to_owned(),
-        HostKeyStatus::OtherKeyTypesSaved => "这台主机只保存过其它类型的密钥".to_owned(),
-        HostKeyStatus::Changed => format!(
-            "指纹已变化！\n已保存：{}",
-            info.stored_fingerprint.as_deref().unwrap_or("（未知）")
-        ),
-        HostKeyStatus::Revoked => "这个指纹已被标记为吊销".to_owned(),
-    };
-    let text = format!(
-        "主机：{}:{}\n密钥类型：{}\n指纹：{}\n\n{}\n\n信任并保存到 known_hosts？",
-        info.host, info.port, info.key_type, info.fingerprint, status
-    );
-    let title = HSTRING::from(format!("{} 主机指纹确认", crate::product::NAME));
-    let body = HSTRING::from(text);
-    let result = unsafe {
-        MessageBoxW(
-            None,
-            windows::core::PCWSTR(body.as_ptr()),
-            windows::core::PCWSTR(title.as_ptr()),
-            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TOPMOST,
-        )
-    };
-    if result == IDYES {
-        HostKeyDecision::TrustAndSave
-    } else {
-        HostKeyDecision::Reject
+            let mut pending = self.hub.submit(Ask::Prompt(request));
+            match pending.wait().await {
+                Some(Answer::Prompt(answers)) => answers,
+                _ => None,
+            }
+        })
     }
 }
 
 /// 让入口只拿一个 `Arc<dyn Interactor>`。
 pub fn interactor() -> Arc<dyn Interactor> {
-    Arc::new(NativeInteractor)
+    Arc::new(NativeInteractor::with_hub(Arc::clone(hub())))
+}
+
+/// 一次连接尝试的“取消开关”。握着它的那段代码被丢掉（拨号任务被中止：标签关了、连接取消）而没有
+/// [`CancelGuard::disarm`] 时，包在 [`scoped`] 里的交互器会让正在等回答的提问立刻撤回、按拒绝 / 取消返回。
+///
+/// 为什么需要：主机指纹确认发生在 russh 自己起的会话任务里，连接 future 被丢掉并不会把它一起丢掉，
+/// 没有这个开关，对话框就会一直开着（用户点了“信任并保存”还会写进 known_hosts）。
+pub struct CancelGuard {
+    tx: watch::Sender<bool>,
+    armed: bool,
+}
+
+impl CancelGuard {
+    /// 连接已经有结果（成功或失败）：不再取消。
+    pub fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.tx.send(true);
+        }
+    }
+}
+
+/// 给一个交互器套上取消开关。
+pub fn scoped(inner: Arc<dyn Interactor>) -> (Arc<dyn Interactor>, CancelGuard) {
+    let (tx, rx) = watch::channel(false);
+    (
+        Arc::new(Scoped {
+            inner,
+            cancelled: rx,
+        }),
+        CancelGuard { tx, armed: true },
+    )
+}
+
+struct Scoped {
+    inner: Arc<dyn Interactor>,
+    cancelled: watch::Receiver<bool>,
+}
+
+impl Scoped {
+    /// 取消开关被触发时才返回；开关被放手（`disarm` 后丢掉）则永远不返回。
+    async fn cancelled(&self) {
+        let mut rx = self.cancelled.clone();
+        loop {
+            if *rx.borrow() {
+                return;
+            }
+            if rx.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+}
+
+impl Interactor for Scoped {
+    fn confirm_host_key(&self, info: HostKeyInfo) -> BoxFuture<'_, HostKeyDecision> {
+        Box::pin(async move {
+            tokio::select! {
+                decision = self.inner.confirm_host_key(info) => decision,
+                () = self.cancelled() => HostKeyDecision::Reject,
+            }
+        })
+    }
+
+    fn prompt(&self, request: PromptRequest) -> BoxFuture<'_, Option<PromptAnswers>> {
+        Box::pin(async move {
+            tokio::select! {
+                answers = self.inner.prompt(request) => answers,
+                () = self.cancelled() => None,
+            }
+        })
+    }
+
+    fn hop_started(&self, progress: HopProgress) -> BoxFuture<'_, ()> {
+        self.inner.hop_started(progress)
+    }
+
+    fn authentication_started(&self) -> BoxFuture<'_, ()> {
+        self.inner.authentication_started()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
+
+    use zssh_core::ssh::{AuthConfig, ChainHop, Connection, HostKeyStatus, KnownHosts, PromptKind};
+
+    use super::*;
+    use crate::ssh_prompt::{HostKeyButton, button_decision};
+    use crate::test_ssh_server;
+
+    /// 临时目录里的 known_hosts；用完整个目录删掉。
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            static COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+            let dir =
+                std::env::temp_dir().join(format!("zssh-u29-{tag}-{}-{n}", std::process::id()));
+            let _ = std::fs::create_dir_all(&dir);
+            Self(dir)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// 代替“窗口 + 用户点击”：盯着中转站，看到指纹确认就点 `button`；
+    /// 看到输入框就按 `password` 回答。返回值是线程句柄和“看到过几次指纹确认”的计数。
+    fn spawn_clicker(
+        hub: Arc<Hub>,
+        button: HostKeyButton,
+        password: Option<&'static str>,
+    ) -> (std::thread::JoinHandle<()>, Arc<AtomicUsize>) {
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&seen);
+        hub.register(1, true);
+        let handle = std::thread::spawn(move || {
+            let deadline = Instant::now() + std::time::Duration::from_secs(20);
+            // 连接那一侧（交互器）放手之后中转站只剩这里一份引用，就收工。
+            while Instant::now() < deadline && Arc::strong_count(&hub) > 1 {
+                if let Some(shown) = hub.poll(1, false, Instant::now()) {
+                    match &shown.ask {
+                        Ask::HostKey(info) => {
+                            counter.fetch_add(1, Ordering::SeqCst);
+                            let decision = button_decision(info.status, button);
+                            hub.answer(shown.id, Answer::HostKey(decision));
+                        }
+                        Ask::Prompt(request) => {
+                            let answer = password.map(|pw| PromptAnswers {
+                                answers: request.prompts.iter().map(|_| pw.to_owned()).collect(),
+                                remember: false,
+                            });
+                            hub.answer(shown.id, Answer::Prompt(answer));
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        });
+        (handle, seen)
+    }
+
+    fn hops(addr: std::net::SocketAddr, dir: &Path, password: Option<&str>) -> Vec<ChainHop> {
+        vec![ChainHop {
+            label: "测试服务器".to_owned(),
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            username: "tester".to_owned(),
+            proxy: None,
+            auth: AuthConfig::password(password.map(str::to_owned)),
+            known_hosts: KnownHosts::new(dir.join("known_hosts")),
+            legacy_algorithms: false,
+        }]
+    }
+
+    #[tokio::test]
+    async fn first_connection_trust_and_save_writes_known_hosts() {
+        let dir = TempDir::new("save");
+        let addr = test_ssh_server::spawn().await;
+        let hub = Arc::new(Hub::default());
+        let (clicker, seen) = spawn_clicker(Arc::clone(&hub), HostKeyButton::TrustAndSave, None);
+        let interactor: Arc<dyn Interactor> = Arc::new(NativeInteractor::with_hub(hub));
+
+        let connection =
+            Connection::connect_chain(hops(addr, dir.path(), Some("pw")), interactor).await;
+
+        let known = KnownHosts::new(dir.path().join("known_hosts"));
+        assert!(connection.is_ok(), "信任并保存后应该连上");
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "只问了一次指纹");
+        assert!(
+            known
+                .saved_fingerprint(&addr.ip().to_string(), addr.port())
+                .is_some(),
+            "known_hosts 里应该有这台主机的记录"
+        );
+        let _ = clicker;
+    }
+
+    #[tokio::test]
+    async fn trust_once_connects_without_saving() {
+        let dir = TempDir::new("once");
+        let addr = test_ssh_server::spawn().await;
+        let hub = Arc::new(Hub::default());
+        let (_clicker, seen) = spawn_clicker(Arc::clone(&hub), HostKeyButton::TrustOnce, None);
+        let interactor: Arc<dyn Interactor> = Arc::new(NativeInteractor::with_hub(hub));
+
+        let connection =
+            Connection::connect_chain(hops(addr, dir.path(), Some("pw")), interactor).await;
+
+        assert!(connection.is_ok());
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+        let known = KnownHosts::new(dir.path().join("known_hosts"));
+        assert!(
+            known
+                .saved_fingerprint(&addr.ip().to_string(), addr.port())
+                .is_none(),
+            "仅本次不写 known_hosts"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_fingerprint_dialog_fails_the_connection_and_saves_nothing() {
+        let dir = TempDir::new("cancel");
+        let addr = test_ssh_server::spawn().await;
+        let hub = Arc::new(Hub::default());
+        let (_clicker, seen) = spawn_clicker(Arc::clone(&hub), HostKeyButton::Cancel, None);
+        let interactor: Arc<dyn Interactor> = Arc::new(NativeInteractor::with_hub(hub));
+
+        let connection =
+            Connection::connect_chain(hops(addr, dir.path(), Some("pw")), interactor).await;
+
+        assert!(connection.is_err(), "取消后连接应该失败");
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+        assert!(
+            !dir.path().join("known_hosts").exists()
+                || KnownHosts::new(dir.path().join("known_hosts"))
+                    .saved_fingerprint(&addr.ip().to_string(), addr.port())
+                    .is_none(),
+            "取消不留记录"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_password_dialog_answer_is_used_to_log_in() {
+        let dir = TempDir::new("password");
+        let addr = test_ssh_server::spawn_requiring_password("hunter2").await;
+        let hub = Arc::new(Hub::default());
+        let (_clicker, _seen) = spawn_clicker(
+            Arc::clone(&hub),
+            HostKeyButton::TrustAndSave,
+            Some("hunter2"),
+        );
+        let interactor: Arc<dyn Interactor> = Arc::new(NativeInteractor::with_hub(hub));
+
+        // 没带密码：认证时会弹输入框，按“用户输入”回答。
+        let connection = Connection::connect_chain(hops(addr, dir.path(), None), interactor).await;
+
+        assert!(connection.is_ok(), "输入框里填的密码应该用于登录");
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_password_dialog_aborts_the_connection() {
+        let dir = TempDir::new("password-cancel");
+        let addr = test_ssh_server::spawn_requiring_password("hunter2").await;
+        let hub = Arc::new(Hub::default());
+        // password = None：输入框一律按取消回答。
+        let (_clicker, _seen) = spawn_clicker(Arc::clone(&hub), HostKeyButton::TrustAndSave, None);
+        let interactor: Arc<dyn Interactor> = Arc::new(NativeInteractor::with_hub(hub));
+
+        let connection = Connection::connect_chain(hops(addr, dir.path(), None), interactor).await;
+
+        assert!(connection.is_err());
+    }
+
+    #[tokio::test]
+    async fn dropping_the_connection_withdraws_the_open_dialog() {
+        let dir = TempDir::new("withdraw");
+        let addr = test_ssh_server::spawn().await;
+        let hub = Arc::new(Hub::default());
+        hub.register(1, true);
+        let interactor: Arc<dyn Interactor> =
+            Arc::new(NativeInteractor::with_hub(Arc::clone(&hub)));
+        let chain = hops(addr, dir.path(), Some("pw"));
+        // 和 `ssh_backend::acquire_factory` 里一样：拨号任务握着取消开关。
+        let task = tokio::spawn(async move {
+            let (interactor, guard) = scoped(interactor);
+            let _ = Connection::connect_chain(chain, interactor).await;
+            guard.disarm();
+        });
+        // 等指纹对话框出现。
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        let shown = loop {
+            if let Some(shown) = hub.poll(1, false, Instant::now()) {
+                break shown;
+            }
+            assert!(Instant::now() < deadline, "对话框没有出现");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        assert!(matches!(
+            shown.ask,
+            Ask::HostKey(HostKeyInfo {
+                status: HostKeyStatus::Unknown,
+                ..
+            })
+        ));
+        // 连接被取消（标签关了）：请求撤回，对话框下一次轮询就没了。
+        task.abort();
+        let _ = task.await;
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while hub.poll(1, false, Instant::now()).is_some() {
+            assert!(Instant::now() < deadline, "取消之后对话框还开着");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    /// 另一把随机主机密钥的公钥：假装 known_hosts 里存着“旧指纹”。
+    fn other_public_key() -> russh::keys::PublicKey {
+        russh::keys::PrivateKey::random(&mut rand::rng(), russh::keys::Algorithm::Ed25519)
+            .expect("生成密钥")
+            .public_key()
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn a_changed_fingerprint_is_replaced_only_after_update_and_connect() {
+        let dir = TempDir::new("changed-update");
+        let addr = test_ssh_server::spawn().await;
+        let (host, port) = (addr.ip().to_string(), addr.port());
+        let known = KnownHosts::new(dir.path().join("known_hosts"));
+        known
+            .append(&host, port, &other_public_key())
+            .expect("写入旧指纹");
+        let old = known.saved_fingerprint(&host, port);
+        assert!(old.is_some());
+        let hub = Arc::new(Hub::default());
+        let (_clicker, seen) =
+            spawn_clicker(Arc::clone(&hub), HostKeyButton::UpdateAndConnect, None);
+        let interactor: Arc<dyn Interactor> = Arc::new(NativeInteractor::with_hub(hub));
+
+        let connection =
+            Connection::connect_chain(hops(addr, dir.path(), Some("pw")), interactor).await;
+
+        assert!(connection.is_ok(), "更新指纹并连接后应该连上");
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+        let now = known.saved_fingerprint(&host, port);
+        assert!(now.is_some() && now != old, "旧指纹应该被换成新的");
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_changed_fingerprint_keeps_the_old_record_and_refuses() {
+        let dir = TempDir::new("changed-cancel");
+        let addr = test_ssh_server::spawn().await;
+        let (host, port) = (addr.ip().to_string(), addr.port());
+        let known = KnownHosts::new(dir.path().join("known_hosts"));
+        known
+            .append(&host, port, &other_public_key())
+            .expect("写入旧指纹");
+        let old = known.saved_fingerprint(&host, port);
+        let hub = Arc::new(Hub::default());
+        let (_clicker, seen) = spawn_clicker(Arc::clone(&hub), HostKeyButton::Cancel, None);
+        let interactor: Arc<dyn Interactor> = Arc::new(NativeInteractor::with_hub(hub));
+
+        let connection =
+            Connection::connect_chain(hops(addr, dir.path(), Some("pw")), interactor).await;
+
+        assert!(connection.is_err(), "取消后不能连上指纹变了的主机");
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+        assert_eq!(known.saved_fingerprint(&host, port), old, "旧记录不动");
+    }
+
+    fn demo_key_info() -> HostKeyInfo {
+        HostKeyInfo {
+            host: "demo.example.com".to_owned(),
+            port: 22,
+            key_type: "ssh-ed25519".to_owned(),
+            fingerprint: "SHA256:demo".to_owned(),
+            status: HostKeyStatus::Unknown,
+            stored_fingerprint: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_an_armed_guard_declines_the_waiting_question() {
+        let hub = Arc::new(Hub::default());
+        hub.register(1, true);
+        let (scoped, guard) = scoped(Arc::new(NativeInteractor::with_hub(Arc::clone(&hub))));
+        let waiting = tokio::spawn(async move { scoped.confirm_host_key(demo_key_info()).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(hub.poll(1, false, Instant::now()).is_some(), "对话框开着");
+        drop(guard);
+        let decision = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+            .await
+            .expect("取消后应该很快返回")
+            .expect("任务没 panic");
+        assert_eq!(decision, HostKeyDecision::Reject);
+        assert!(hub.poll(1, false, Instant::now()).is_none(), "请求一并撤回");
+    }
+
+    #[tokio::test]
+    async fn a_disarmed_guard_leaves_the_question_alone() {
+        let hub = Arc::new(Hub::default());
+        hub.register(1, true);
+        let (scoped, guard) = scoped(Arc::new(NativeInteractor::with_hub(Arc::clone(&hub))));
+        guard.disarm();
+        let still_waiting = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            scoped.confirm_host_key(demo_key_info()),
+        )
+        .await;
+        assert!(still_waiting.is_err(), "连接已经成功之后不该被当成取消");
+    }
+
+    /// 记下每次提问、用同一个密码回答的交互器（指纹一律「仅本次」）。
+    struct Recording {
+        requests: std::sync::Mutex<Vec<PromptRequest>>,
+    }
+
+    impl Interactor for Recording {
+        fn confirm_host_key(&self, _info: HostKeyInfo) -> BoxFuture<'_, HostKeyDecision> {
+            Box::pin(async { HostKeyDecision::TrustOnce })
+        }
+
+        fn prompt(&self, request: PromptRequest) -> BoxFuture<'_, Option<PromptAnswers>> {
+            Box::pin(async move {
+                let count = request.prompts.len();
+                if let Ok(mut seen) = self.requests.lock() {
+                    seen.push(request);
+                }
+                Some(PromptAnswers {
+                    answers: vec!["hunter2".to_owned(); count],
+                    remember: false,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn the_password_prompt_names_the_hop_that_is_being_authenticated() {
+        let dir = TempDir::new("target-chain");
+        let jump = test_ssh_server::spawn_forwarding().await;
+        let target = test_ssh_server::spawn_requiring_password("hunter2").await;
+        let mut chain = hops(jump, dir.path(), None);
+        chain[0].username = "jumper".to_owned();
+        let mut last = hops(target, dir.path(), None);
+        last[0].username = "ops".to_owned();
+        chain.append(&mut last);
+        let recording = Arc::new(Recording {
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let interactor: Arc<dyn Interactor> = Arc::clone(&recording) as Arc<dyn Interactor>;
+
+        let connection = Connection::connect_chain(chain, interactor).await;
+
+        assert!(connection.is_ok(), "两跳都应该连上");
+        let seen = recording.requests.lock().expect("锁");
+        let targets: Vec<&str> = seen.iter().map(|request| request.target.as_str()).collect();
+        assert_eq!(
+            targets,
+            [
+                format!("jumper@127.0.0.1:{}", jump.port()),
+                format!("ops@127.0.0.1:{}", target.port()),
+            ],
+            "每次提问写的是当时在认证的那一跳"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prompt_without_questions_is_cancelled_without_asking() {
+        let hub = Arc::new(Hub::default());
+        hub.register(1, true);
+        let interactor = NativeInteractor::with_hub(Arc::clone(&hub));
+        let request = PromptRequest {
+            kind: PromptKind::KeyboardInteractive,
+            target: String::new(),
+            name: String::new(),
+            instructions: String::new(),
+            prompts: Vec::new(),
+            can_remember: false,
+        };
+        assert!(interactor.prompt(request).await.is_none());
+        assert!(hub.poll(1, false, Instant::now()).is_none());
+    }
 }

@@ -5,7 +5,7 @@
 //! - 在进程级 Tokio runtime 上连接、开 shell（界面线程只拿结果，不阻塞）；
 //! - 把 `ShellWriter` / `ShellEventStream` 接到 `SessionBackend` 与 `SessionEvent`。
 //!
-//! 主机指纹和密码提问走 [`crate::ssh_interact`]，它在阻塞线程池里弹系统对话框。
+//! 主机指纹和密码提问走 [`crate::ssh_interact`]，由窗口里的应用内对话框回答（V2-U29）。
 
 use std::future::Future;
 use std::hash::{Hash, Hasher};
@@ -541,9 +541,11 @@ async fn acquire_factory(
     host_id: Option<i64>,
 ) -> Result<Acquired<SshSessionFactory>, String> {
     pool.acquire(&key, move || async move {
-        let connection = Connection::connect_chain(hops, interactor)
-            .await
-            .map_err(|err| format!("连接失败：{err}"))?;
+        // 拨号任务被中止（标签关了、连接取消）时，正在等回答的指纹 / 密码对话框一并收起（见 `ssh_interact::scoped`）。
+        let (interactor, cancel) = crate::ssh_interact::scoped(interactor);
+        let connected = Connection::connect_chain(hops, interactor).await;
+        cancel.disarm();
+        let connection = connected.map_err(|err| format!("连接失败：{err}"))?;
         let factory = Arc::new(SshSessionFactory {
             connection: Arc::new(connection),
         });

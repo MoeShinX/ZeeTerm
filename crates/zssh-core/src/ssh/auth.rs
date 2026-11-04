@@ -142,6 +142,7 @@ type AnyAgent = AgentClient<Box<dyn AgentStream + Send + Unpin + 'static>>;
 pub(crate) async fn authenticate(
     handle: &mut Handle<ClientHandler>,
     username: &str,
+    target: &str,
     config: &AuthConfig,
     legacy_algorithms: bool,
     interactor: &Arc<dyn Interactor>,
@@ -175,6 +176,7 @@ pub(crate) async fn authenticate(
                 match publickey_auth(
                     handle,
                     username,
+                    target,
                     source,
                     legacy_algorithms,
                     interactor,
@@ -229,6 +231,7 @@ pub(crate) async fn authenticate(
                 let answers = interactor
                     .prompt(PromptRequest::single(
                         PromptKind::Password,
+                        target,
                         "请输入密码",
                         true,
                     ))
@@ -260,7 +263,7 @@ pub(crate) async fn authenticate(
 
     // 4. keyboard-interactive（服务器发什么题就答什么，支持多轮）
     if supports(&supported, MethodKind::KeyboardInteractive) {
-        match keyboard_interactive_auth(handle, username, interactor).await? {
+        match keyboard_interactive_auth(handle, username, target, interactor).await? {
             KeyboardOutcome::Success => return Ok(outcome),
             KeyboardOutcome::Failed => tried.push("keyboard-interactive".to_owned()),
         }
@@ -325,12 +328,13 @@ fn source_name(source: &KeySource) -> String {
 async fn publickey_auth(
     handle: &mut Handle<ClientHandler>,
     username: &str,
+    target: &str,
     source: &KeySource,
     legacy_algorithms: bool,
     interactor: &Arc<dyn Interactor>,
     outcome: &mut AuthOutcome,
 ) -> Result<Option<AuthResult>, ZsshError> {
-    let key = load_key(source, interactor, outcome).await?;
+    let key = load_key(source, target, interactor, outcome).await?;
     let choice = rsa_hash_choice(handle, legacy_algorithms).await?;
     // 服务器只认 SHA-1 而用户没开兼容时直接报错，不往下试密码：
     // 不然原因会被后面的密码框盖住，用户不知道为什么私钥没用上。
@@ -402,6 +406,7 @@ fn hash_for_key(
 /// 读私钥；口令不够（或者不对）就问用户。
 async fn load_key(
     source: &KeySource,
+    target: &str,
     interactor: &Arc<dyn Interactor>,
     outcome: &mut AuthOutcome,
 ) -> Result<PrivateKey, ZsshError> {
@@ -435,6 +440,7 @@ async fn load_key(
             let answers = interactor
                 .prompt(PromptRequest::single(
                     PromptKind::Passphrase,
+                    target,
                     "请输入私钥口令",
                     true,
                 ))
@@ -556,6 +562,7 @@ enum KeyboardOutcome {
 async fn keyboard_interactive_auth(
     handle: &mut Handle<ClientHandler>,
     username: &str,
+    target: &str,
     interactor: &Arc<dyn Interactor>,
 ) -> Result<KeyboardOutcome, ZsshError> {
     let mut response = step(handle.authenticate_keyboard_interactive_start(username, None)).await?;
@@ -578,6 +585,7 @@ async fn keyboard_interactive_auth(
 
                 let request = PromptRequest {
                     kind: PromptKind::KeyboardInteractive,
+                    target: target.to_owned(),
                     name,
                     instructions,
                     prompts: prompts
@@ -727,6 +735,7 @@ mod tests {
                     path: key_file.path.clone(),
                     passphrase: None,
                 },
+                "ops@web-1:22",
                 &(Arc::clone(&mock) as Arc<dyn Interactor>),
                 &mut outcome,
             ))
@@ -755,6 +764,7 @@ mod tests {
                     path: key_file.path.clone(),
                     passphrase: None,
                 },
+                "ops@web-1:22",
                 &(Arc::clone(&mock) as Arc<dyn Interactor>),
                 &mut outcome,
             ))
@@ -786,12 +796,48 @@ mod tests {
                     path: key_file.path.clone(),
                     passphrase: Some("vault-passphrase".to_owned()),
                 },
+                "ops@web-1:22",
                 &(Arc::clone(&mock) as Arc<dyn Interactor>),
                 &mut outcome,
             ))
             .expect("保险库里的口令应该够用");
 
         assert!(mock.asked_kinds().is_empty(), "保险库里有口令就不该弹窗");
+    }
+
+    #[test]
+    fn the_passphrase_prompt_names_the_host_but_never_a_local_path() {
+        let Some(key_file) = generate_key("target", "the-passphrase") else {
+            return;
+        };
+        let mock = Arc::new(MockInteractor::new(
+            HostKeyDecision::TrustOnce,
+            vec![Some("the-passphrase")],
+        ));
+        let mut outcome = AuthOutcome::default();
+
+        tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(load_key(
+                &KeySource::File {
+                    path: key_file.path.clone(),
+                    passphrase: None,
+                },
+                "ops@web-1:22",
+                &(Arc::clone(&mock) as Arc<dyn Interactor>),
+                &mut outcome,
+            ))
+            .expect("口令对，应该读出来");
+
+        let prompts = mock.prompts.lock().expect("锁");
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].kind, PromptKind::Passphrase);
+        assert_eq!(prompts[0].target, "ops@web-1:22");
+        let path = key_file.path.to_string_lossy().into_owned();
+        assert!(
+            !format!("{:?}", prompts[0]).contains(&path),
+            "提问里不能带本机的私钥路径"
+        );
     }
 
     #[test]
@@ -809,6 +855,7 @@ mod tests {
                     path: key_file.path.clone(),
                     passphrase: None,
                 },
+                "ops@web-1:22",
                 &(Arc::clone(&mock) as Arc<dyn Interactor>),
                 &mut outcome,
             ));
@@ -837,6 +884,7 @@ mod tests {
                     path: key_file.path.clone(),
                     passphrase: None,
                 },
+                "ops@web-1:22",
                 &(Arc::clone(&mock) as Arc<dyn Interactor>),
                 &mut outcome,
             ));
@@ -865,6 +913,7 @@ mod tests {
                     pem,
                     passphrase: None,
                 },
+                "ops@web-1:22",
                 &(Arc::clone(&mock) as Arc<dyn Interactor>),
                 &mut outcome,
             ))
