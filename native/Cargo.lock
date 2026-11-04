@@ -10577,6 +10577,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "zssh-icons"
+version = "0.0.0"
+dependencies = [
+ "resvg 0.45.1",
+]
+
+[[package]]
 name = "zssh-platform-windows"
 version = "0.3.3"
 dependencies = [
