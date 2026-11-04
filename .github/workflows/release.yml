@@ -98,6 +98,9 @@ jobs:
 
           "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "tag $env:TAG，版本 $version，提交 $head：校验通过。"
+          # 上面 `gh release view` 查不到 Release 时退出码是 1（正是我们要的结果），pwsh 步骤会把
+          # 最后一个原生命令的退出码当成整步的结果，所以这里明确以成功结束。
+          exit 0
 
       # 版本由 rust-toolchain.toml 固定；无参数的 rustup toolchain install 就是按那个文件安装。
       - name: 装 Rust（按 rust-toolchain.toml，MSVC）
