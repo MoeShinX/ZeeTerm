@@ -9,13 +9,13 @@ use gpui_kit::component::*;
 use gpui_kit::*;
 use zssh_core::model::QuickTarget;
 
+use super::GroupSel;
 use super::MainWindow;
 use super::host_tree::group_key;
 use super::page_logic::{
     OrderState, can_step_group, can_step_host, group_layer_ids, host_layer_ids,
     looks_like_quick_target, order_state, step_in_layer,
 };
-use super::{CopyField, GroupSel};
 
 /// 系统的双击间隔 + 一点余量：单击已经展开着的主机属性要「再点一下收起」，但双击（连接）的
 /// 第二下不能让面板来回闪，所以收起要等过了双击间隔才执行。
@@ -208,15 +208,6 @@ impl MainWindow {
             Ok(false) => self.notice("已复制连接信息", window, cx),
             Err(err) => self.notice_error(&format!("复制连接信息失败：{err}"), window, cx),
         }
-    }
-
-    pub(crate) fn copy_address_of(
-        &mut self,
-        host_id: i64,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.copy_host_field(host_id, CopyField::Address, window, cx);
     }
 
     // ---- 分组 ----

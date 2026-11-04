@@ -267,7 +267,7 @@ fn seed_placeholder_extras(db: &Database) -> Result<(), String> {
             name: "运维账号".to_owned(),
             kind: IdentityKind::Password,
             key_path: None,
-            secret: Some("placeholder-not-a-real-password".to_owned()),
+            secret: Some("demo-pass".to_owned()),
             passphrase: None,
         })
         .map_err(|err| err.to_string())?;

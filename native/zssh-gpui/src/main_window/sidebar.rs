@@ -9,6 +9,8 @@ use std::ops::Range;
 use ::gpui::{
     DragMoveEvent, HighlightStyle, MouseButton, SharedString, StyledText, WeakEntity, px,
 };
+use gpui_kit::base::SelectableText;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::*;
@@ -19,13 +21,14 @@ use zssh_core::model::Host;
 use super::drag::{DragChip, DragGroup, DragHost, DragItem, DropHint, Scope};
 use super::drag_scroll::ScrollArea;
 use super::host_tree::{self, TreeRow};
-use super::page_logic::host_info_rows;
+use super::page_logic::{InfoRow, PASSWORD_MASK, host_info_rows, info_row_copy_text};
 use super::protocol_form;
 use super::tree_guides;
 use super::vault_menus::{GroupMenuSpec, HostMenuSpec, group_menu, host_menu, ungrouped_menu};
 use super::widgets::{act, icon_button, protocol_icon};
 use super::{GroupSel, MainWindow};
 use crate::app_theme::Tokens;
+use crate::menu_kit;
 use crate::os_icons::{self, OsIconSize};
 use crate::typography::{Role, Typo as _};
 
@@ -35,12 +38,13 @@ pub(super) const INDENT: f32 = 16.0;
 pub(super) const ROW_HEIGHT: f32 = 30.0;
 /// 侧栏底部按钮的热区高度。
 const FOOTER_BUTTON: f32 = 28.0;
-/// 属性面板固定高度（放得下 7 行：基本 5 行 + 跳板机 + 代理），切换主机时树不会跟着跳。
-const INFO_HEIGHT: f32 = 184.0;
+/// 属性面板固定高度（放得下 7 行：基本 5 行 + 密码 + 跳板机 / 代理之一），切换主机时树不会跟着跳；
+/// 8 行（密码 + 跳板机 + 代理都有）的极少数情况面板里可以滚动。
+const INFO_HEIGHT: f32 = 196.0;
 
 /// 属性面板这一帧要显示哪台主机：设置里的开关关着（默认）就一律不显示，开着才跟着选中的主机走。
 /// 面板上的 × 只收起这一次（清掉 `info_host`），不动开关；开关只在 设置 → 外观 → 主机树 里改。
-fn info_target(enabled: bool, selected: Option<i64>) -> Option<i64> {
+pub(super) fn info_target(enabled: bool, selected: Option<i64>) -> Option<i64> {
     selected.filter(|_| enabled)
 }
 
@@ -564,8 +568,19 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let entity = cx.entity();
-        let rows = host_info_rows(host, self.store.hosts(), self.store.proxies());
+        let rows = host_info_rows(
+            host,
+            self.store.hosts(),
+            self.store.proxies(),
+            self.store.identities(),
+        );
         let id = host.id;
+        let revealed = self.info_revealed(id);
+        let cells: Vec<AnyElement> = rows
+            .into_iter()
+            .enumerate()
+            .map(|(at, row)| info_row(at, id, row, revealed, &entity, tokens))
+            .collect();
         v_flex()
             .id("host-info")
             .flex_none()
@@ -604,49 +619,7 @@ impl MainWindow {
                             .border_1()
                             .border_color(tokens.border)
                             .overflow_hidden()
-                            .children(rows.into_iter().enumerate().map(|(at, row)| {
-                                let copy = (row.key == "address").then(|| {
-                                    icon_button(
-                                        "host-info-copy",
-                                        IconName::Copy,
-                                        "复制地址",
-                                        act(&entity, move |this, window, cx| {
-                                            this.copy_address_of(id, window, cx);
-                                        }),
-                                    )
-                                });
-                                h_flex()
-                                    .h(px(22.0))
-                                    .items_stretch()
-                                    .when(at > 0, |d| d.border_t_1().border_color(tokens.border))
-                                    .child(
-                                        div()
-                                            .w(px(64.0))
-                                            .flex_none()
-                                            .flex()
-                                            .items_center()
-                                            .px_2()
-                                            .border_r_1()
-                                            .border_color(tokens.border)
-                                            .bg(tokens.hover)
-                                            .text_color(tokens.text_muted)
-                                            .child(row.label),
-                                    )
-                                    .child(
-                                        h_flex()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .items_center()
-                                            .gap_1()
-                                            .px_2()
-                                            .child(
-                                                div()
-                                                    .truncate()
-                                                    .child(SharedString::from(row.value)),
-                                            )
-                                            .children(copy),
-                                    )
-                            })),
+                            .children(cells),
                     ),
             )
             .into_any_element()
@@ -1097,6 +1070,113 @@ fn tree_line(
             d.bg(tokens.accent_soft).font_weight(FontWeight::MEDIUM)
         })
         .when(!active, |d| d.hover(move |style| style.bg(hover)))
+}
+
+/// 属性面板的一行：灰底标签 + 可以用鼠标选中复制的值（V2-U34）。
+///
+/// 值是 `SelectableText`：拖选、双击选词、Ctrl+C 都是窗口级的文字选区。值太长时**换行显示**（行高跟着撑开，
+/// 面板自己能滚动）：带省略号的单行截断会让选区对不上可见文字，选中也复制不全。
+/// 右键「复制」复制整行的值。密码行隐藏时只画圆点（不是 `SelectableText`，选不中，也没有明文可复制），
+/// 点行尾小眼睛才显示明文并变成可选中。
+fn info_row(
+    at: usize,
+    host_id: i64,
+    row: InfoRow,
+    revealed: Option<&str>,
+    entity: &Entity<MainWindow>,
+    tokens: &Tokens,
+) -> AnyElement {
+    let is_password = row.key == "password";
+    let copy_text = info_row_copy_text(&row, revealed);
+    let value: AnyElement = match (is_password, revealed) {
+        (true, None) => div().child(PASSWORD_MASK).into_any_element(),
+        (true, Some(secret)) => div()
+            .child(SelectableText::new(
+                SharedString::from(format!("host-info-secret-{host_id}")),
+                SharedString::from(secret.to_owned()),
+            ))
+            .into_any_element(),
+        (false, _) => div()
+            .child(SelectableText::new(
+                SharedString::from(format!("host-info-value-{host_id}-{at}")),
+                SharedString::from(row.value.clone()),
+            ))
+            .into_any_element(),
+    };
+    let eye = is_password.then(|| {
+        let shown = revealed.is_some();
+        let entity = entity.clone();
+        Button::new("host-info-password-eye")
+            .ghost()
+            .compact()
+            .xsmall()
+            .icon(if shown {
+                IconName::EyeOff
+            } else {
+                IconName::Eye
+            })
+            .tooltip(if shown {
+                "隐藏密码"
+            } else {
+                "显示密码"
+            })
+            .on_click(move |_, window, cx| {
+                entity.update(cx, |this, cx| {
+                    this.toggle_info_password(host_id, window, cx)
+                });
+            })
+    });
+    let menu_entity = entity.clone();
+    let menu_ready = copy_text.is_some();
+    // 普通行把值带进菜单；密码行不带明文，点的时候再从面板状态里取（隐藏时菜单项是灰的）。
+    let menu_text = if is_password { None } else { copy_text };
+    h_flex()
+        .min_h(px(22.0))
+        .items_stretch()
+        .when(at > 0, |d| d.border_t_1().border_color(tokens.border))
+        .child(
+            div()
+                .w(px(64.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .px_2()
+                .border_r_1()
+                .border_color(tokens.border)
+                .bg(tokens.hover)
+                .text_color(tokens.text_muted)
+                .child(row.label),
+        )
+        .child(
+            h_flex()
+                .id(("host-info-value", at))
+                .flex_1()
+                .min_w_0()
+                .items_center()
+                .gap_1()
+                .pl_2()
+                .pr_1()
+                .child(div().flex_1().min_w_0().child(value))
+                .children(eye)
+                .context_menu(move |menu, _window, cx| {
+                    let tokens = Tokens::current(cx);
+                    let line = menu_kit::row(&tokens, "复制", IconName::Copy);
+                    let item = if !menu_ready {
+                        line.disabled(true).right(Some("先点眼睛显示")).inert()
+                    } else {
+                        let entity = menu_entity.clone();
+                        let text = menu_text.clone();
+                        line.on_click(move |_, window, cx| {
+                            entity.update(cx, |this, cx| match &text {
+                                Some(text) => this.copy_info_value(text.clone(), window, cx),
+                                None => this.copy_info_password(host_id, window, cx),
+                            });
+                        })
+                    };
+                    menu.item(item)
+                }),
+        )
+        .into_any_element()
 }
 
 fn count_label(count: usize, tokens: &Tokens) -> impl IntoElement {

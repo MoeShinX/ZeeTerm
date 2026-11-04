@@ -34,6 +34,8 @@ zssh-regex = { path = "../zssh-regex" }
 zssh-session = { path = "../zssh-session" }
 zssh-terminal = { path = "../zssh-terminal" }
 zssh-update = { path = "../zssh-update" }
+# 属性面板的明文密码丢弃时清零（和 zssh-core 用的同一个库）。
+zeroize = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

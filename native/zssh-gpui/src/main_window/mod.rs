@@ -52,6 +52,7 @@ mod dev_acts_u26;
 mod dev_acts_u28;
 mod dev_acts_u29;
 mod dev_acts_u30;
+mod dev_acts_u34;
 mod dev_acts_u4;
 mod dev_acts_u6;
 mod dev_acts_u7;
@@ -72,6 +73,7 @@ pub mod host_store;
 mod host_test;
 pub mod host_tree;
 mod identity_form;
+mod info_panel;
 mod key_dialogs;
 mod keychain_panel;
 mod migrate_ui;
@@ -268,6 +270,8 @@ pub struct MainWindow {
     pub(super) modal: Option<Modal>,
     /// 树底部属性面板现在显示哪台主机。
     pub(super) info_host: Option<i64>,
+    /// 属性面板里点了小眼睛取回来的明文密码（只属于 `info_host` 那台；隐藏 / 切换 / 收起 / 锁屏都丢掉）。
+    pub(super) info_secret: Option<info_panel::InfoSecret>,
     /// 再点一次「收起」的待执行任务编号：双击连接时让它作废。
     pub(super) info_collapse_gen: u64,
     pub(super) drop_hint: Option<DropHint>,
@@ -498,6 +502,7 @@ impl MainWindow {
             pending_compose_text: None,
             modal: None,
             info_host: None,
+            info_secret: None,
             info_collapse_gen: 0,
             drop_hint: None,
             drag_scroll: drag_scroll::DragScroll::default(),
@@ -1574,6 +1579,8 @@ impl Render for MainWindow {
         if crate::app_lock::is_locked() {
             self.window_width = f32::from(window.viewport_size().width);
             self.window_height = f32::from(window.viewport_size().height);
+            // 锁屏页盖住了属性面板，但明文不该在锁着的时候还留在内存里。
+            self.forget_info_secret(window, cx);
             return self.render_lock_cover(window, cx);
         }
         self.after_unlock_refocus(window, cx);
@@ -1590,6 +1597,9 @@ impl MainWindow {
         let view = self.nav.view;
         let tree_on_page = view.has_sidebar();
         let tree_visible = !self.tree.collapsed && tree_on_page;
+        let panel_host = sidebar::info_target(self.prefs.host_info_panel, self.info_host)
+            .filter(|_| tree_visible);
+        self.sync_info_secret(panel_host, window, cx);
         let tree_width = window_state::clamp_tree_width(self.tree.width, self.window_width);
         let panel_visible = self.panels_on_page() && self.panels.visible().is_some();
         let panel_width = if panel_visible {

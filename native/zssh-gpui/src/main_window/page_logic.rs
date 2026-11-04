@@ -514,9 +514,39 @@ pub struct InfoRow {
     pub value: String,
 }
 
+/// 密码行在隐藏状态下显示的圆点（和明文长度无关，不泄露密码有多长）。
+pub const PASSWORD_MASK: &str = "••••••••";
+
+/// 属性面板「密码」行用哪条凭据：主机是密码认证、引用了密码类凭据、且凭据里存了密码——
+/// 和主机编辑对话框里「显示密码」小眼睛是同一套判断（`password_identity` + `can_reveal`）。
+/// 私钥 / Agent / 每次询问的主机没有这一行。
+pub fn info_password_identity<'a>(host: &Host, identities: &'a [Identity]) -> Option<&'a Identity> {
+    if host.protocol.protocol == Protocol::Serial {
+        return None;
+    }
+    let identity = super::host_form::password_identity(Some(host), identities);
+    identity.filter(|item| super::host_form::can_reveal(Some(item), host.auth_method))
+}
+
+/// 一行里能复制的文字：普通行就是显示的值；密码行只有明文显示出来（`revealed`）才有，
+/// 隐藏时返回 `None`——圆点不是密码，复制出去会误导人。
+pub fn info_row_copy_text(row: &InfoRow, revealed: Option<&str>) -> Option<String> {
+    if row.key == "password" {
+        revealed.map(str::to_owned)
+    } else {
+        Some(row.value.clone())
+    }
+}
+
 /// 单击主机在树底部展开的只读属性：名称、地址、用户名、协议、端口，有跳板机 / 指定代理时再加一行；
-/// 不显示任何凭据，跟随默认代理的看不出具体是谁，也不显示（同 `hostInfoRows`）。
-pub fn host_info_rows(host: &Host, hosts: &[Host], proxies: &[Proxy]) -> Vec<InfoRow> {
+/// 主机用已存的密码登录时在用户名后面加一行「密码」（`value` 是空的，明文只在用户点了小眼睛以后
+/// 由界面按需取回，不经过这里）；跟随默认代理的看不出具体是谁，也不显示（同 `hostInfoRows`）。
+pub fn host_info_rows(
+    host: &Host,
+    hosts: &[Host],
+    proxies: &[Proxy],
+    identities: &[Identity],
+) -> Vec<InfoRow> {
     let protocol = InfoRow {
         key: "protocol",
         label: "协议",
@@ -560,13 +590,20 @@ pub fn host_info_rows(host: &Host, hosts: &[Host], proxies: &[Proxy]) -> Vec<Inf
             label: "用户名",
             value: host.username.clone(),
         },
-        protocol,
-        InfoRow {
-            key: "port",
-            label: "端口",
-            value: host.port.to_string(),
-        },
     ];
+    if info_password_identity(host, identities).is_some() {
+        rows.push(InfoRow {
+            key: "password",
+            label: "密码",
+            value: String::new(),
+        });
+    }
+    rows.push(protocol);
+    rows.push(InfoRow {
+        key: "port",
+        label: "端口",
+        value: host.port.to_string(),
+    });
     if let Some(jump) = host
         .jump_host_id
         .and_then(|id| hosts.iter().find(|h| h.id == id))
@@ -1058,14 +1095,14 @@ mod tests {
             username: None,
             has_secret: true,
         }];
-        let plain = host_info_rows(&target, &[target.clone(), jump.clone()], &proxies);
+        let plain = host_info_rows(&target, &[target.clone(), jump.clone()], &proxies, &[]);
         let keys: Vec<_> = plain.iter().map(|r| r.key).collect();
         assert_eq!(keys, ["name", "address", "user", "protocol", "port"]);
         assert_eq!(plain[1].value, "2001:db8::1", "方括号去掉");
         target.jump_host_id = Some(2);
         target.proxy_mode = ProxyMode::Custom;
         target.proxy_id = Some(7);
-        let full = host_info_rows(&target, &[target.clone(), jump], &proxies);
+        let full = host_info_rows(&target, &[target.clone(), jump], &proxies, &[]);
         let labels: Vec<_> = full.iter().map(|r| r.label).collect();
         assert_eq!(
             labels,
@@ -1073,9 +1110,105 @@ mod tests {
         );
         target.proxy_mode = ProxyMode::Default;
         assert_eq!(
-            host_info_rows(&target, &[target.clone()], &proxies).len(),
+            host_info_rows(&target, &[target.clone()], &proxies, &[]).len(),
             5,
             "跟随默认代理不显示"
+        );
+    }
+
+    fn pw_identity(id: i64, kind: IdentityKind, has_secret: bool) -> Identity {
+        Identity {
+            id,
+            name: "i".to_owned(),
+            kind,
+            key_path: None,
+            has_secret,
+        }
+    }
+
+    #[test]
+    fn the_password_row_needs_a_password_host_with_a_stored_password() {
+        let mut target = host(1, None, "web", 0);
+        let keys = |target: &Host, ids: &[Identity]| -> Vec<&'static str> {
+            host_info_rows(target, &[], &[], ids)
+                .iter()
+                .map(|row| row.key)
+                .collect()
+        };
+        let stored = [pw_identity(5, IdentityKind::Password, true)];
+        // 没引用凭据：每次询问。
+        assert!(!keys(&target, &stored).contains(&"password"));
+        target.identity_id = Some(5);
+        assert_eq!(
+            keys(&target, &stored),
+            ["name", "address", "user", "password", "protocol", "port"],
+            "密码行紧跟在用户名后面"
+        );
+        // 凭据里没存密码 / 凭据是私钥 / 凭据找不到：都没有这一行。
+        let empty = [pw_identity(5, IdentityKind::Password, false)];
+        assert!(!keys(&target, &empty).contains(&"password"));
+        let key_file = [pw_identity(5, IdentityKind::KeyFile, true)];
+        assert!(!keys(&target, &key_file).contains(&"password"));
+        assert!(!keys(&target, &[]).contains(&"password"));
+        // 认证方式不是密码（私钥 / Agent）：即便还挂着密码凭据也不显示。
+        for method in [AuthMethod::Key, AuthMethod::Agent] {
+            target.auth_method = method;
+            assert!(!keys(&target, &stored).contains(&"password"), "{method:?}");
+        }
+    }
+
+    #[test]
+    fn telnet_hosts_follow_the_same_rule_and_serial_hosts_never_have_a_password_row() {
+        use zssh_core::model::ProtocolSettings;
+        let stored = [pw_identity(5, IdentityKind::Password, true)];
+        let mut telnet = host(1, None, "switch", 0);
+        telnet.identity_id = Some(5);
+        telnet.protocol = ProtocolSettings::new(Protocol::Telnet);
+        let has = |target: &Host| {
+            host_info_rows(target, &[], &[], &stored)
+                .iter()
+                .any(|row| row.key == "password")
+        };
+        assert!(has(&telnet));
+        let mut serial = telnet.clone();
+        serial.protocol = ProtocolSettings::new(Protocol::Serial);
+        assert!(!has(&serial), "串口没有账号密码");
+        let keys: Vec<_> = host_info_rows(&serial, &[], &[], &stored)
+            .iter()
+            .map(|row| row.key)
+            .collect();
+        assert_eq!(keys, ["name", "protocol", "device", "baud"]);
+    }
+
+    #[test]
+    fn a_hidden_password_row_has_nothing_to_copy() {
+        let password = InfoRow {
+            key: "password",
+            label: "密码",
+            value: String::new(),
+        };
+        assert_eq!(
+            info_row_copy_text(&password, None),
+            None,
+            "隐藏时取不到明文"
+        );
+        assert_ne!(
+            info_row_copy_text(&password, Some("demo-pass")).as_deref(),
+            Some(PASSWORD_MASK)
+        );
+        assert_eq!(
+            info_row_copy_text(&password, Some("demo-pass")).as_deref(),
+            Some("demo-pass")
+        );
+        let plain = InfoRow {
+            key: "address",
+            label: "主机",
+            value: "192.0.2.10".to_owned(),
+        };
+        assert_eq!(
+            info_row_copy_text(&plain, None).as_deref(),
+            Some("192.0.2.10"),
+            "普通行整行的值，和有没有显示密码无关"
         );
     }
 

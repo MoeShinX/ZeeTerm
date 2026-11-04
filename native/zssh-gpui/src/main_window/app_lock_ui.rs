@@ -348,6 +348,8 @@ impl MainWindow {
         if !self.lock_enabled() || lock_ui::is_locked() {
             return;
         }
+        // 属性面板里显示着的明文密码，锁上的这一刻就丢掉。
+        self.info_secret = None;
         lock_ui::lock(cx);
         cx.notify();
     }
