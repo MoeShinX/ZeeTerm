@@ -6,7 +6,7 @@
 //! - 密码只保存 Argon2id 哈希 + 随机盐，不存明文，不可逆；参数取同步包 / 离线备份用的那一组
 //!   （128 MiB × 8 次 × 1 并行，见 [`crate::sync::crypto`]），不更弱。
 //! - 校验用常数时间比较；记录里的参数被改过也不会让校验崩溃或去分配几 GB 内存（有范围检查）。
-//! - 三个设置键都只留在本机（`sync::settings::SETTINGS_SYNC_CLASS` 里是 `LocalOnly`），所以
+//! - 设置键都只留在本机（`sync::settings::SETTINGS_SYNC_CLASS` 里是 `LocalOnly`），所以
 //!   不会进同步包，也不会进离线备份。
 //! - 密码不进日志：这个模块里没有任何 `tracing` 调用，`Debug` 输出里也只有盐和哈希的长度。
 
@@ -27,8 +27,16 @@ pub const IDLE_MINUTES_KEY: &str = "app_lock_idle_minutes";
 /// 关到托盘时自动锁定（JSON 布尔）。
 pub const LOCK_ON_TRAY_KEY: &str = "app_lock_on_tray";
 
+/// 启动时就锁定（JSON 布尔）。只有设了锁屏密码才能打开；关锁屏时一起清掉。
+pub const LOCK_ON_START_KEY: &str = "app_lock_on_start";
+
 /// 本模块用到的全部设置键（同步白名单里要逐个登记为本机键）。
-pub const SETTING_KEYS: [&str; 3] = [HASH_KEY, IDLE_MINUTES_KEY, LOCK_ON_TRAY_KEY];
+pub const SETTING_KEYS: [&str; 4] = [
+    HASH_KEY,
+    IDLE_MINUTES_KEY,
+    LOCK_ON_TRAY_KEY,
+    LOCK_ON_START_KEY,
+];
 
 /// 锁屏密码的长度范围（按字符数，不是字节数）。
 pub const MIN_PASSWORD_CHARS: usize = 4;
@@ -276,6 +284,9 @@ pub struct LockConfig {
     pub idle_minutes: u32,
     /// 关到托盘时自动锁定。
     pub lock_on_tray: bool,
+    /// 启动时就锁定（程序一开就显示锁屏页）。库里这一项单独存着，是否真的生效还要看锁屏有没有启用，
+    /// 见 [`LockConfig::start_locked`]。
+    pub lock_on_start: bool,
 }
 
 impl Default for LockConfig {
@@ -284,6 +295,7 @@ impl Default for LockConfig {
             status: LockStatus::Disabled,
             idle_minutes: 0,
             lock_on_tray: false,
+            lock_on_start: false,
         }
     }
 }
@@ -308,11 +320,24 @@ impl LockConfig {
             .flatten()
             .and_then(|raw| serde_json::from_str::<bool>(&raw).ok())
             .unwrap_or(false);
+        let lock_on_start = db
+            .setting_get(LOCK_ON_START_KEY)
+            .ok()
+            .flatten()
+            .and_then(|raw| serde_json::from_str::<bool>(&raw).ok())
+            .unwrap_or(false);
         Self {
             status,
             idle_minutes,
             lock_on_tray,
+            lock_on_start,
         }
+    }
+
+    /// 这次启动要不要一开始就锁着：开关打开**并且**锁屏还启用着（库里的开关残留、而密码已经没了时
+    /// 不能把人锁在一个没有密码的锁屏页上）。
+    pub fn start_locked(&self) -> bool {
+        self.lock_on_start && self.status.is_enabled()
     }
 }
 
@@ -333,8 +358,10 @@ pub fn save_password(db: &Database, record: &PasswordRecord) -> Result<(), ZsshE
 }
 
 /// 关闭锁屏：清掉密码记录（设置表没有删除接口，写成 JSON `null`，读的时候当没启用）。
+/// “启动时锁定”依附于密码，一起关掉——不然哪天重新启用锁屏，会在用户没要求的情况下悄悄变成启动即锁。
 pub fn clear_password(db: &Database) -> Result<(), ZsshError> {
-    db.setting_set(HASH_KEY, "null")
+    db.setting_set(HASH_KEY, "null")?;
+    db.setting_set(LOCK_ON_START_KEY, "false")
 }
 
 pub fn save_idle_minutes(db: &Database, minutes: u32) -> Result<(), ZsshError> {
@@ -346,6 +373,17 @@ pub fn save_idle_minutes(db: &Database, minutes: u32) -> Result<(), ZsshError> {
 
 pub fn save_lock_on_tray(db: &Database, on: bool) -> Result<(), ZsshError> {
     db.setting_set(LOCK_ON_TRAY_KEY, if on { "true" } else { "false" })
+}
+
+/// 打开 / 关闭“启动时锁定”。打开要求锁屏已经启用（设了密码）：没有密码的锁屏页谁都解不开，
+/// 也不该有这种状态。界面上开关会置灰，这里是最后一道防线。关闭随时可以。
+pub fn save_lock_on_start(db: &Database, on: bool) -> Result<(), ZsshError> {
+    if on && !LockConfig::load(db).status.is_enabled() {
+        return Err(ZsshError::InvalidInput(
+            "请先设置锁屏密码，再打开“启动时锁定”".to_owned(),
+        ));
+    }
+    db.setting_set(LOCK_ON_START_KEY, if on { "true" } else { "false" })
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +439,52 @@ impl Backoff {
     pub fn record_success(&mut self) {
         self.failures = 0;
         self.blocked_until = None;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 查看 / 复制已保存密码前的验证
+// ---------------------------------------------------------------------------
+
+/// 验证通过之后多久内不再要求（查看 / 复制已保存的密码）。
+pub const REVEAL_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+/// “查看 / 复制已保存密码”的验证状态：最近一次验证通过的时间。
+///
+/// 只在锁屏启用时才有意义（没启用锁屏的用户行为不变）；整窗锁屏 / 解锁都会 [`Self::reset`]，之后
+/// 第一次查看 / 复制又要验证。时间由调用方传进来，测试不用真等。输错的退避不在这里：它和锁屏页
+/// 共用同一份 [`Backoff`]，由界面层持有。
+///
+/// 威胁模型：防旁人看屏幕 / 顺手操作，不防本机上的恶意程序（它能直接读写库和进程内存）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RevealGate {
+    verified_at: Option<Instant>,
+}
+
+impl RevealGate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 窗口期内吗。
+    pub fn is_fresh(&self, now: Instant) -> bool {
+        self.verified_at
+            .is_some_and(|at| now.saturating_duration_since(at) < REVEAL_WINDOW)
+    }
+
+    /// 现在查看 / 复制要不要先验证：锁屏启用着，并且窗口期已过（或从没验证过）。
+    pub fn needs_verification(&self, lock_enabled: bool, now: Instant) -> bool {
+        lock_enabled && !self.is_fresh(now)
+    }
+
+    /// 刚验证通过。
+    pub fn mark_verified(&mut self, now: Instant) {
+        self.verified_at = Some(now);
+    }
+
+    /// 作废（锁屏 / 解锁时）。
+    pub fn reset(&mut self) {
+        self.verified_at = None;
     }
 }
 

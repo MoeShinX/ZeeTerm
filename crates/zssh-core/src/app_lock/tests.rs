@@ -275,7 +275,141 @@ fn every_lock_setting_stays_on_this_machine() {
         );
         assert!(!is_synced(key), "{key} 不能进同步包 / 离线备份");
     }
-    assert_eq!(SETTING_KEYS, [HASH_KEY, IDLE_MINUTES_KEY, LOCK_ON_TRAY_KEY]);
+    assert_eq!(
+        SETTING_KEYS,
+        [
+            HASH_KEY,
+            IDLE_MINUTES_KEY,
+            LOCK_ON_TRAY_KEY,
+            LOCK_ON_START_KEY
+        ]
+    );
+}
+
+// ---- 启动时锁定（V2-U35） ----
+
+#[test]
+fn lock_on_start_is_off_by_default_and_needs_a_password_to_turn_on() {
+    let (_dir, db) = open_db();
+    let config = LockConfig::load(&db);
+    assert!(!config.lock_on_start, "默认关");
+    assert!(!config.start_locked());
+
+    // 没设密码：打不开，库里也没被写成 true。
+    let err = save_lock_on_start(&db, true).expect_err("没密码不能打开");
+    assert!(err.to_string().contains("锁屏密码"), "{err}");
+    assert!(!LockConfig::load(&db).lock_on_start);
+
+    // 关随时可以（没密码时关也不报错）。
+    save_lock_on_start(&db, false).unwrap();
+
+    save_password(
+        &db,
+        &PasswordRecord::create_with("abcd1234", CHEAP).unwrap(),
+    )
+    .unwrap();
+    save_lock_on_start(&db, true).unwrap();
+    let config = LockConfig::load(&db);
+    assert!(config.lock_on_start);
+    assert!(config.start_locked(), "有密码又打开了开关：启动即锁");
+    save_lock_on_start(&db, false).unwrap();
+    assert!(!LockConfig::load(&db).start_locked());
+}
+
+#[test]
+fn lock_on_start_without_an_enabled_lock_never_locks_the_start() {
+    // 库被改成“开关 true、没有密码记录”：不能把人锁在一个没有密码的锁屏页上。
+    let (_dir, db) = open_db();
+    db.setting_set(LOCK_ON_START_KEY, "true").unwrap();
+    let config = LockConfig::load(&db);
+    assert!(config.lock_on_start);
+    assert!(!config.start_locked());
+
+    // 记录读不懂（Unreadable）按已启用算：仍然启动即锁，用户走“忘记密码”重置。
+    db.setting_set(HASH_KEY, "{\"v\":1,\"junk\":true}").unwrap();
+    assert!(LockConfig::load(&db).start_locked());
+}
+
+#[test]
+fn turning_the_lock_off_also_turns_lock_on_start_off() {
+    let (_dir, db) = open_db();
+    save_password(
+        &db,
+        &PasswordRecord::create_with("abcd1234", CHEAP).unwrap(),
+    )
+    .unwrap();
+    save_lock_on_start(&db, true).unwrap();
+    clear_password(&db).unwrap();
+    assert!(!LockConfig::load(&db).lock_on_start, "开关跟着密码一起关");
+
+    // 以后重新启用锁屏，不会悄悄变成启动即锁。
+    save_password(
+        &db,
+        &PasswordRecord::create_with("efgh5678", CHEAP).unwrap(),
+    )
+    .unwrap();
+    assert!(!LockConfig::load(&db).start_locked());
+}
+
+#[test]
+fn a_garbled_lock_on_start_value_reads_as_off() {
+    let (_dir, db) = open_db();
+    save_password(
+        &db,
+        &PasswordRecord::create_with("abcd1234", CHEAP).unwrap(),
+    )
+    .unwrap();
+    db.setting_set(LOCK_ON_START_KEY, "\"yes\"").unwrap();
+    assert!(!LockConfig::load(&db).start_locked());
+}
+
+// ---- 查看 / 复制已保存密码前的验证（V2-U35） ----
+
+#[test]
+fn the_reveal_gate_asks_once_then_stays_quiet_for_five_minutes() {
+    let t0 = Instant::now();
+    let mut gate = RevealGate::new();
+    assert!(gate.needs_verification(true, t0), "从没验证过：要问");
+
+    gate.mark_verified(t0);
+    assert!(!gate.needs_verification(true, t0));
+    assert!(!gate.needs_verification(true, t0 + Duration::from_secs(60)));
+    assert!(!gate.needs_verification(true, t0 + REVEAL_WINDOW - Duration::from_millis(1)));
+    assert!(
+        gate.needs_verification(true, t0 + REVEAL_WINDOW),
+        "刚好 5 分钟：窗口期结束，要再问"
+    );
+    assert!(gate.needs_verification(true, t0 + Duration::from_secs(3600)));
+    assert_eq!(REVEAL_WINDOW, Duration::from_secs(300));
+}
+
+#[test]
+fn the_reveal_gate_never_asks_when_the_lock_is_off() {
+    let t0 = Instant::now();
+    let gate = RevealGate::new();
+    assert!(!gate.needs_verification(false, t0), "没启用锁屏：行为不变");
+    assert!(!gate.needs_verification(false, t0 + Duration::from_secs(86_400)));
+}
+
+#[test]
+fn locking_resets_the_reveal_gate() {
+    let t0 = Instant::now();
+    let mut gate = RevealGate::new();
+    gate.mark_verified(t0);
+    assert!(gate.is_fresh(t0));
+    gate.reset();
+    assert!(!gate.is_fresh(t0));
+    assert!(gate.needs_verification(true, t0), "锁过一次以后要重新验证");
+}
+
+#[test]
+fn a_clock_that_looks_backwards_does_not_panic_or_extend_the_window() {
+    let t0 = Instant::now();
+    let later = t0 + Duration::from_secs(10);
+    let mut gate = RevealGate::new();
+    gate.mark_verified(later);
+    // “现在”早于验证时间（单调钟不该发生，但不能因此崩溃）：按刚验证处理。
+    assert!(gate.is_fresh(t0));
 }
 
 #[test]

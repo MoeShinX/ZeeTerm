@@ -554,6 +554,10 @@ impl MainWindow {
             && can_reveal(identity.as_ref(), form.effective_auth())
             && let Some(identity) = identity
         {
+            // 要从保险库取明文了：启用了锁屏的话先验证锁屏密码（V2-U35）。只显示用户自己刚敲的字不用问。
+            if !self.reveal_allowed(super::reveal_ui::RevealAction::HostDialogEye, window, cx) {
+                return;
+            }
             match self.store.db().and_then(|db| {
                 db.identity_saved_password(identity.id)
                     .map_err(|err| err.to_string())

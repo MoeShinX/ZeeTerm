@@ -53,6 +53,7 @@ mod dev_acts_u28;
 mod dev_acts_u29;
 mod dev_acts_u30;
 mod dev_acts_u34;
+mod dev_acts_u35;
 mod dev_acts_u4;
 mod dev_acts_u6;
 mod dev_acts_u7;
@@ -92,6 +93,7 @@ mod proxy_panel;
 pub mod quick_commands;
 mod quick_panel;
 mod recovery_ui;
+mod reveal_ui;
 pub mod scope_targets;
 mod settings_page;
 mod side_panel;
@@ -268,6 +270,8 @@ pub struct MainWindow {
     /// 撰写栏翻历史时要填进输入框的内容（按键处理里拿不到 `Window`，渲染前再写）。
     pub(super) pending_compose_text: Option<String>,
     pub(super) modal: Option<Modal>,
+    /// 查看 / 复制已保存密码前的锁屏密码验证小对话框（V2-U35）；压在 `modal` 上面，锁屏时丢掉。
+    pub(super) reveal_ask: Option<reveal_ui::RevealAsk>,
     /// 树底部属性面板现在显示哪台主机。
     pub(super) info_host: Option<i64>,
     /// 属性面板里点了小眼睛取回来的明文密码（只属于 `info_host` 那台；隐藏 / 切换 / 收起 / 锁屏都丢掉）。
@@ -414,6 +418,9 @@ impl MainWindow {
         let pref_sliders = settings_page::PrefSliders::new(&prefs, cx);
         let app_lock = app_lock_ui::AppLockUi::load(store.db().ok());
         crate::tray::set_lock_menu(app_lock.config.status.is_enabled());
+        // “启动时锁定”：第一帧就是锁屏页（V2-U35）。这时窗口还没画过，托盘和单实例唤起也只会看到
+        // 锁屏页；会话、传输没有任何东西在启动时自动开，恢复提示等也等解锁后再出（见 `tick`）。
+        app_lock_ui::apply_start_lock(&app_lock.config);
         let keychain = KeychainUi::new(window, cx);
         let proxy_ui = ProxyUi::new(window, cx);
         let bars = bars::BarUi::new(window, cx);
@@ -501,6 +508,7 @@ impl MainWindow {
             quick_ui,
             pending_compose_text: None,
             modal: None,
+            reveal_ask: None,
             info_host: None,
             info_secret: None,
             info_collapse_gen: 0,
@@ -579,7 +587,8 @@ impl MainWindow {
         self.workspace
             .update(cx, |ws, _cx| ws.set_surface_shown(terminal_shown));
         self.progress_unsaved_ask(window, cx);
-        if self.tick_count >= 2 {
+        // 启动时锁定的话，上次没处理完的修改等解锁以后再扫、再提示（V2-U35：解锁前什么都不恢复）。
+        if self.tick_count >= 2 && app_lock_ui::startup_scans_allowed() {
             self.scan_recovery_once(window, cx);
             self.scan_zssh_once(window, cx);
         }
@@ -1308,6 +1317,7 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         // 锁着时主窗口只画锁屏页，不该走到这里；万一走到也不处理任何窗口级快捷键（V2-U26）。
+        // （锁屏页上弹出的“重置锁屏密码”框的 Esc / Enter 由锁屏页自己那层处理，见 `render_lock_cover`。）
         if crate::app_lock::is_locked() {
             return;
         }
@@ -1318,6 +1328,14 @@ impl MainWindow {
         let keystroke = &event.keystroke;
         let key = keystroke.key.to_ascii_lowercase();
         let mods = keystroke.modifiers;
+
+        // 查看 / 复制密码前的锁屏密码验证框开着：它压在一切上面，Esc 取消、Enter 验证（V2-U35）。
+        if self.reveal_ask.is_some() {
+            if self.reveal_ask_key(&key, !mods.modified(), window, cx) {
+                cx.stop_propagation();
+            }
+            return;
+        }
 
         // 正在拖标签：Esc 取消（V2-U1，见 `tab_move`）。
         if self.tab_dragger.pending() && key == "escape" {
@@ -1581,6 +1599,8 @@ impl Render for MainWindow {
             self.window_height = f32::from(window.viewport_size().height);
             // 锁屏页盖住了属性面板，但明文不该在锁着的时候还留在内存里。
             self.forget_info_secret(window, cx);
+            // 验证小对话框里刚敲的密码和等着做的动作也一并作废。
+            self.drop_reveal_ask();
             return self.render_lock_cover(window, cx);
         }
         self.after_unlock_refocus(window, cx);
@@ -1627,6 +1647,7 @@ impl MainWindow {
         let docks = self.render_docks(&tokens, cx);
         let panel = self.render_side_panel(&tokens, window, cx);
         let modal = self.render_modal(&tokens, window, cx);
+        let reveal_ask = self.render_reveal_ask(&tokens, cx);
         let tab_menu = self.render_tab_menu(&tokens, cx);
         let me_entity = cx.entity();
         let drag_sensor = crate::tab_drag::sensor(
@@ -1668,6 +1689,7 @@ impl MainWindow {
             .children(self.render_status_bar(&tokens, cx))
             .children(self.render_sync_bar(&tokens, cx))
             .children(modal)
+            .children(reveal_ask)
             .children(tab_menu)
             .children(drag_ghost)
             .child(self.ssh_prompt.clone())

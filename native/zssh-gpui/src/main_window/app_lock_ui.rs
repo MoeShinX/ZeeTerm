@@ -128,6 +128,23 @@ pub fn is_lock_shortcut(key: &str, control: bool, alt: bool, shift: bool, platfo
     control && alt && !shift && !platform && key.eq_ignore_ascii_case("l")
 }
 
+// ---- 启动时锁定（V2-U35） ----
+
+/// 主窗口建出来之前套用“启动时锁定”：开关打开并且锁屏启用着，就让第一帧直接是锁屏页。
+/// 返回现在是不是锁着。其他窗口（文件窗口、拖出的终端窗口）读同一份全局状态，不用各自处理。
+pub fn apply_start_lock(config: &LockConfig) -> bool {
+    if config.start_locked() {
+        lock_ui::set_locked(true);
+    }
+    lock_ui::is_locked()
+}
+
+/// 启动后要做的后台扫描（上次没处理完的修改、Z-SSH 迁移提示）能不能开始：锁着就等解锁以后。
+/// 解锁前不恢复任何东西；解锁后照原来的逻辑做一次。
+pub fn startup_scans_allowed() -> bool {
+    !lock_ui::is_locked()
+}
+
 // ---- 纯数据：空闲自动锁定 ----
 
 /// 空闲了这么久要不要锁。设置是“不自动”（0 分钟）时永远不锁。`override_secs` 是调试钩子给的秒数
@@ -280,12 +297,16 @@ impl LockDialogKind {
     }
 }
 
-/// 锁着的时候还能画出来的对话框：只有“退出前的确认”（点了关闭按钮、有进行中的工作）。别的对话框
-/// 里可能有主机、文件名这类内容，等解锁再显示。
+/// 锁着的时候还能画出来的对话框：“退出前的确认”（点了关闭按钮、有进行中的工作），以及锁屏页上
+/// “忘记密码 → 验证 Windows 账户”通过后弹出的“重置锁屏密码”（V2-U35：开了“启动时锁定”，重新打开
+/// 仍是锁屏页，到不了设置，所以重置必须能在锁屏页上完成）。别的对话框里可能有主机、文件名这类内容，
+/// 等解锁再显示；“重置”只认**锁着的时候**才弹出来的那一个（`over_lock`），解锁状态下开着的重置框
+/// 在锁上的那一刻就会被收掉，不能趁锁着替人把它点完。
 pub fn modal_visible_while_locked(modal: &Modal) -> bool {
     match modal {
         Modal::Confirm(confirm) => confirm.action == ConfirmAction::QuitApp,
         Modal::Unsaved(ask) => ask.purpose == UnsavedPurpose::Quit,
+        Modal::AppLock(dialog) => dialog.over_lock && dialog.kind == LockDialogKind::Reset,
         _ => false,
     }
 }
@@ -298,6 +319,9 @@ pub struct LockDialog {
     pub error: Option<String>,
     /// 后台正在算哈希：不能再点、不能关。
     pub busy: bool,
+    /// 是在锁着的时候（锁屏页上走“忘记密码”）弹出来的：只有这样的“重置”框才能叠在锁屏页上，
+    /// 成功后顺带解锁。
+    pub over_lock: bool,
 }
 
 impl LockDialog {
@@ -348,8 +372,13 @@ impl MainWindow {
         if !self.lock_enabled() || lock_ui::is_locked() {
             return;
         }
-        // 属性面板里显示着的明文密码，锁上的这一刻就丢掉。
+        // 属性面板里显示着的明文密码，锁上的这一刻就丢掉；查看 / 复制密码的验证框同理。
         self.info_secret = None;
+        self.drop_reveal_ask();
+        // 解锁状态下开着的锁屏密码对话框（含验证过 Windows 账户的“重置”框）一并收掉。
+        if matches!(self.modal, Some(Modal::AppLock(_))) {
+            self.modal = None;
+        }
         lock_ui::lock(cx);
         cx.notify();
     }
@@ -420,7 +449,9 @@ impl MainWindow {
                 cx.notify();
                 return;
             }
-            if let Some(screen) = self.app_lock.screen.clone() {
+            // 叠在锁屏页上的“重置锁屏密码”框开着时，键盘归它的输入框，不能被锁屏页的密码框抢回去。
+            let reset_dialog_open = matches!(self.modal, Some(Modal::AppLock(_)));
+            if !reset_dialog_open && let Some(screen) = self.app_lock.screen.clone() {
                 screen.update(cx, |screen, cx| screen.keep_focus(window, cx));
             }
             clear_notifications(window, cx);
@@ -445,8 +476,14 @@ impl MainWindow {
     ) -> AnyElement {
         self.app_lock.refocus = true;
         let tokens = Tokens::current(cx);
-        let cover = crate::app_lock::cover(&mut self.app_lock.screen, true, window, cx)
-            .unwrap_or_else(|| div().into_any_element());
+        // 锁屏页的“忘记密码”里带“验证 Windows 账户并重置…”按钮（只有主窗口有；V2-U35）。
+        let weak = cx.entity().downgrade();
+        let forgot: lock_ui::ForgotHook = std::rc::Rc::new(move |window, cx| {
+            let _ = weak.update(cx, |this, cx| this.start_forgot_reset(window, cx));
+        });
+        let cover =
+            crate::app_lock::cover_with(&mut self.app_lock.screen, true, Some(forgot), window, cx)
+                .unwrap_or_else(|| div().into_any_element());
         let modal = if self.modal.as_ref().is_some_and(modal_visible_while_locked) {
             self.render_modal(&tokens, window, cx)
         } else {
@@ -458,6 +495,10 @@ impl MainWindow {
             .size_full()
             .bg(tokens.background)
             .ui_font_fallbacks(cx)
+            // 只有叠在锁屏页上的“重置锁屏密码”框要收 Esc / Enter（其余按键不管）。
+            .capture_key_down(cx.listener(|this, event, window, cx| {
+                this.locked_modal_key(event, window, cx);
+            }))
             .child(cover)
             .children(modal)
             .into_any_element()
@@ -492,8 +533,36 @@ impl MainWindow {
             fields,
             error: None,
             busy: false,
+            over_lock: lock_ui::is_locked(),
         })));
         cx.notify();
+    }
+
+    /// 锁着时的一次按键：只有叠在锁屏页上的“重置锁屏密码”框收 Esc / Enter，别的一概不管。
+    pub(super) fn locked_modal_key(
+        &mut self,
+        event: &::gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.modal.as_ref().is_some_and(modal_visible_while_locked)
+            || !matches!(self.modal, Some(Modal::AppLock(_)))
+        {
+            return;
+        }
+        let mods = event.keystroke.modifiers;
+        let key = event.keystroke.key.to_ascii_lowercase();
+        match super::modal::modal_key(&key, !mods.modified(), false, false) {
+            super::modal::ModalKey::Cancel => {
+                self.close_modal(window, cx);
+                cx.stop_propagation();
+            }
+            super::modal::ModalKey::Confirm => {
+                self.confirm_modal(window, cx);
+                cx.stop_propagation();
+            }
+            super::modal::ModalKey::Pass => {}
+        }
     }
 
     fn set_lock_dialog_error(&mut self, message: Option<String>, cx: &mut Context<Self>) {
@@ -548,9 +617,13 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(Modal::AppLock(dialog)) = &mut self.modal {
-            dialog.busy = false;
-        }
+        let over_lock = match &mut self.modal {
+            Some(Modal::AppLock(dialog)) => {
+                dialog.busy = false;
+                dialog.over_lock
+            }
+            _ => false,
+        };
         match outcome {
             JobOutcome::Done => {
                 if kind.needs_old() || kind == LockDialogKind::Reset {
@@ -558,6 +631,10 @@ impl MainWindow {
                 }
                 self.reload_lock_config();
                 self.modal = None;
+                // 在锁屏页上走“忘记密码”重置成功：Windows 账户和新密码都过了，直接解锁。
+                if over_lock && kind == LockDialogKind::Reset && lock_ui::is_locked() {
+                    lock_ui::unlock(cx);
+                }
                 self.focus_content(window, cx);
                 window.push_notification(Notification::success(kind.success_text()), cx);
             }
@@ -678,6 +755,12 @@ impl MainWindow {
         self.app_lock.os_busy = false;
         match forgot_step(check) {
             ForgotStep::OpenResetDialog => self.open_lock_dialog(LockDialogKind::Reset, window, cx),
+            // 锁着时右上角的通知每个节拍都会清掉，提示写在锁屏页上才看得见。
+            ForgotStep::Notice(text) if lock_ui::is_locked() => {
+                if let Some(screen) = self.app_lock.screen.clone() {
+                    screen.update(cx, |screen, cx| screen.show_notice(text, cx));
+                }
+            }
             ForgotStep::Notice(text) => self.notice_error(text, window, cx),
             ForgotStep::Nothing => {}
         }
@@ -799,6 +882,25 @@ impl MainWindow {
             tokens,
         ));
 
+        let start_entity = entity.clone();
+        rows.push(row(
+            "启动时锁定",
+            Some(if enabled {
+                "打开后，每次启动 ZeeTerm 都先显示锁屏页，解锁前看不到任何主机和终端，也不会自动恢复或连接；从托盘打开、再次双击图标看到的也是锁屏页。"
+            } else {
+                "需要先启用锁屏并设置密码，才能打开这一项。"
+            }),
+            Switch::new("lock-on-start")
+                .checked(enabled && config.lock_on_start)
+                .disabled(!enabled)
+                .accessibility_label("启动时锁定")
+                .on_click(move |checked: &bool, window, cx| {
+                    let on = *checked;
+                    start_entity.update(cx, |this, cx| this.set_lock_on_start(on, window, cx));
+                }),
+            tokens,
+        ));
+
         if enabled {
             let forgot = entity.clone();
             let busy = self.app_lock.os_busy;
@@ -839,6 +941,24 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// 设置页「启动时锁定」开关。打开要求已经设了锁屏密码（核心库里也会拒绝，这里把原因告诉用户）。
+    pub(crate) fn set_lock_on_start(
+        &mut self,
+        on: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let result = self
+            .store
+            .db()
+            .and_then(|db| app_lock::save_lock_on_start(db, on).map_err(|err| err.to_string()));
+        match result {
+            Ok(()) => self.reload_lock_config(),
+            Err(err) => self.notice_error(&err, window, cx),
+        }
+        cx.notify();
+    }
+
     fn set_lock_on_tray(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         let result = self
             .store
@@ -865,13 +985,15 @@ fn clear_notifications(window: &mut Window, cx: &mut Context<MainWindow>) {
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        ForgotStep, LockClick, LockDialogKind, LockMenuItem, forgot_step, idle_expired, idle_label,
-        is_lock_shortcut, left_click_action, lock_menu, modal_visible_while_locked,
+        ForgotStep, LockClick, LockDialog, LockDialogKind, LockMenuItem, apply_start_lock,
+        forgot_step, idle_expired, idle_label, is_lock_shortcut, left_click_action, lock_menu,
+        modal_visible_while_locked, startup_scans_allowed,
     };
     use crate::app_lock::Job;
     use crate::main_window::modal::{Confirm, ConfirmAction, Modal};
     use std::time::Duration;
     use zssh_core::app_lock::OsCheck;
+    use zssh_core::app_lock::{LockConfig, LockStatus};
 
     // ---- 锁按钮 ----
 
@@ -1102,5 +1224,82 @@ mod tests {
             ConfirmAction::DeleteHost(1)
         )));
         assert!(!modal_visible_while_locked(&Modal::AiPresets));
+    }
+
+    // ---- 启动时锁定 ----
+
+    fn config(status: LockStatus, lock_on_start: bool) -> LockConfig {
+        LockConfig {
+            status,
+            lock_on_start,
+            ..LockConfig::default()
+        }
+    }
+
+    #[test]
+    fn start_lock_locks_the_first_frame_and_holds_back_the_startup_scans() {
+        crate::app_lock::set_locked(false);
+        // 记录读不懂（Unreadable）也算启用着：照样锁，用户走“忘记密码”重置。
+        assert!(apply_start_lock(&config(LockStatus::Unreadable, true)));
+        assert!(crate::app_lock::is_locked(), "第一帧就是锁屏页");
+        assert!(!startup_scans_allowed(), "解锁前不扫描、不恢复");
+
+        crate::app_lock::set_locked(false);
+        assert!(startup_scans_allowed(), "解锁以后照原来的逻辑做");
+    }
+
+    #[test]
+    fn start_lock_does_nothing_unless_switched_on_and_a_password_exists() {
+        crate::app_lock::set_locked(false);
+        // 开关默认关：启用了锁屏，启动也不锁（和以前一样）。
+        assert!(!apply_start_lock(&config(LockStatus::Unreadable, false)));
+        // 开关残留、密码已经没了：不能把人锁在没有密码的锁屏页上。
+        assert!(!apply_start_lock(&config(LockStatus::Disabled, true)));
+        assert!(!apply_start_lock(&LockConfig::default()));
+        assert!(startup_scans_allowed());
+    }
+
+    #[test]
+    fn start_lock_leaves_an_already_locked_state_alone() {
+        crate::app_lock::set_locked(true);
+        let epoch = crate::app_lock::lock_epoch();
+        assert!(apply_start_lock(&config(LockStatus::Unreadable, true)));
+        assert_eq!(
+            crate::app_lock::lock_epoch(),
+            epoch,
+            "已经锁着，不算新的一次锁定"
+        );
+        crate::app_lock::set_locked(false);
+    }
+
+    fn lock_dialog(kind: LockDialogKind, over_lock: bool) -> Modal {
+        Modal::AppLock(Box::new(LockDialog {
+            kind,
+            fields: Vec::new(),
+            error: None,
+            busy: false,
+            over_lock,
+        }))
+    }
+
+    #[test]
+    fn only_a_reset_opened_on_the_lock_page_may_show_over_it() {
+        assert!(modal_visible_while_locked(&lock_dialog(
+            LockDialogKind::Reset,
+            true
+        )));
+        // 解锁状态下开着的重置框（Windows 验证早就过了）：锁上以后不能趁锁着替人点完。
+        assert!(!modal_visible_while_locked(&lock_dialog(
+            LockDialogKind::Reset,
+            false
+        )));
+        // 改密码、关锁屏要原密码，更不能在锁着时露出来。
+        for kind in [
+            LockDialogKind::Enable,
+            LockDialogKind::Change,
+            LockDialogKind::Disable,
+        ] {
+            assert!(!modal_visible_while_locked(&lock_dialog(kind, true)));
+        }
     }
 }

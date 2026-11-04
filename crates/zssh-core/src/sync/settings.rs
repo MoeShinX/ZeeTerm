@@ -154,6 +154,8 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     ("app_lock_hash", SyncMode::LocalOnly),
     ("app_lock_idle_minutes", SyncMode::LocalOnly),
     ("app_lock_on_tray", SyncMode::LocalOnly),
+    // V2-U35：启动时锁定，同样只属于这台电脑。
+    ("app_lock_on_start", SyncMode::LocalOnly),
 ];
 
 /// 0.1.4 及以前的界面主题 id（旧版本同步过来的值照样收）。
@@ -1283,6 +1285,7 @@ mod tests {
             "app_lock_hash",
             "app_lock_idle_minutes",
             "app_lock_on_tray",
+            "app_lock_on_start",
         ] {
             assert_eq!(sync_mode(key), Some(SyncMode::LocalOnly), "{key}");
             assert!(!is_synced(key), "{key} 不能同步");
