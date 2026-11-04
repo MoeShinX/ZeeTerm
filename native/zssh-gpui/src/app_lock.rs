@@ -11,6 +11,7 @@
 //! 测试互相锁住对方）。
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,7 +24,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use zssh_core::app_lock::{
-    Backoff, KdfCost, LockConfig, LockStatus, OsCheck, OsVerifier, PasswordRecord,
+    Backoff, KdfCost, LockConfig, LockStatus, OsCheck, OsVerifier, PasswordRecord, RevealGate,
 };
 use zssh_core::store::Database;
 
@@ -35,11 +36,20 @@ use crate::typography::{Role, Typo as _, UiFontStyled as _};
 /// 忘记密码的说明（卡里指定的原话）。
 pub const FORGOT_TEXT: &str = "锁屏密码只保存在这台电脑上，无法找回。可以退出 ZeeTerm（会断开所有会话），重新打开后在 设置 → 锁屏 里用 Windows 账户验证重置。";
 
+/// 锁屏页自带“验证 Windows 账户并重置”入口时的说明（主窗口有；开了“启动时锁定”时重新打开还是锁屏页，
+/// 到不了设置，所以重置必须能直接在锁屏页上做）。
+pub const FORGOT_TEXT_INLINE: &str = "锁屏密码只保存在这台电脑上，无法找回。可以用 Windows Hello / PIN（没有就用 Windows 登录密码）验证你是这台电脑的用户，然后设一个新密码，会话不受影响。";
+
+/// 锁屏页上“忘记密码”里那个按钮的回调（由主窗口给，其他窗口没有）。
+pub type ForgotHook = Rc<dyn Fn(&mut Window, &mut App)>;
+
 thread_local! {
     static LOCKED: Cell<bool> = const { Cell::new(false) };
     /// 每次锁定加一：锁屏页据此知道“又锁了一次”，清空输入框和上次的提示。
     static EPOCH: Cell<u64> = const { Cell::new(0) };
     static BACKOFF: RefCell<Backoff> = RefCell::new(Backoff::new());
+    /// 查看 / 复制已保存密码前的验证状态（V2-U35）。
+    static REVEAL: RefCell<RevealGate> = RefCell::new(RevealGate::new());
 }
 
 /// 现在锁着吗。任何要把用户输入送给会话的地方都可以问一句（见 `Pane::write`）。
@@ -58,6 +68,28 @@ pub(crate) fn set_locked(locked: bool) {
     if locked && !was {
         EPOCH.with(|cell| cell.set(cell.get() + 1));
     }
+    // 锁上、解开都让“查看 / 复制密码”的验证作废：之后第一次又要输锁屏密码。
+    if locked != was {
+        REVEAL.with(|gate| gate.borrow_mut().reset());
+    }
+}
+
+// ---- 查看 / 复制已保存密码前的验证（V2-U35） ----
+
+/// 现在查看 / 复制已保存的密码要不要先验证（锁屏启用着，且 5 分钟窗口期已过）。
+pub fn reveal_needs_verification(lock_enabled: bool, now: Instant) -> bool {
+    REVEAL.with(|gate| gate.borrow().needs_verification(lock_enabled, now))
+}
+
+/// 验证通过：开始 5 分钟窗口期。
+pub fn reveal_mark_verified(now: Instant) {
+    REVEAL.with(|gate| gate.borrow_mut().mark_verified(now));
+}
+
+/// 窗口期作废（测试和调试驱动用；正式路径靠 [`set_locked`] 的状态变化）。
+#[cfg(any(test, debug_assertions))]
+pub fn dev_reset_reveal() {
+    REVEAL.with(|gate| gate.borrow_mut().reset());
 }
 
 /// 锁定：之后每个窗口的下一帧都只画锁屏页。
@@ -124,6 +156,8 @@ pub enum Job {
     Disable { old: String },
     /// 忘记密码，Windows 验证通过之后设新密码。
     Reset { new: String },
+    /// 查看 / 复制已保存密码前的验证（V2-U35）：只核对，不改任何东西。
+    Verify { password: String },
 }
 
 impl std::fmt::Debug for Job {
@@ -135,6 +169,7 @@ impl std::fmt::Debug for Job {
             Self::Change { .. } => "Job::Change",
             Self::Disable { .. } => "Job::Disable",
             Self::Reset { .. } => "Job::Reset",
+            Self::Verify { .. } => "Job::Verify",
         })
     }
 }
@@ -168,7 +203,7 @@ pub fn run_job(db: &Database, job: Job, cost: KdfCost) -> JobOutcome {
         Err(err) => JobOutcome::Failed(format!("没能生成锁屏密码：{err}")),
     };
     match job {
-        Job::Unlock { password } => match &config.status {
+        Job::Unlock { password } | Job::Verify { password } => match &config.status {
             // 别处（比如设置被改了）已经关掉了锁：放行，不让人卡在锁屏页上。
             LockStatus::Disabled => JobOutcome::Done,
             _ => {
@@ -295,6 +330,8 @@ pub struct LockScreen {
     logo: Arc<Image>,
     /// 自己画标题栏（拖动 + 最小化 / 最大化 / 关闭）；系统画标题栏的窗口不用。
     custom_titlebar: bool,
+    /// 有就在“忘记密码？”展开的说明下面多一个“验证 Windows 账户并重置…”按钮。
+    forgot_hook: Option<ForgotHook>,
     error: Option<String>,
     checking: bool,
     show_forgot: bool,
@@ -306,7 +343,12 @@ pub struct LockScreen {
 }
 
 impl LockScreen {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, custom_titlebar: bool) -> Self {
+    pub fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        custom_titlebar: bool,
+        forgot_hook: Option<ForgotHook>,
+    ) -> Self {
         let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
@@ -327,6 +369,7 @@ impl LockScreen {
             input,
             logo: Arc::new(Image::from_bytes(ImageFormat::Png, LOGO_PNG.to_vec())),
             custom_titlebar,
+            forgot_hook,
             error: None,
             checking: false,
             show_forgot: false,
@@ -451,6 +494,12 @@ impl LockScreen {
     #[cfg(debug_assertions)]
     pub fn dev_error(&self) -> Option<String> {
         self.error.clone()
+    }
+
+    /// 在锁屏页上显示一条提示（Windows 账户验证没通过之类，主窗口在没有别的地方可显示时用）。
+    pub fn show_notice(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.error = Some(text.to_owned());
+        cx.notify();
     }
 
     /// 别的东西（后台的面板、停靠视图）抢走了键盘焦点就拿回来：锁着的时候只有密码框该有焦点。
@@ -615,17 +664,31 @@ impl Render for LockScreen {
                 },
             ))
             .when(self.show_forgot, |d| {
+                let hook = self.forgot_hook.clone();
                 d.child(
-                    div()
+                    v_flex()
                         .id("lock-forgot-text")
                         .w_full()
                         .p_3()
+                        .gap_2()
                         .rounded_md()
                         .border_1()
                         .border_color(tokens.border)
                         .bg(tokens.subtle)
-                        .typo(Role::Caption, &tokens)
-                        .child(FORGOT_TEXT),
+                        .child(div().typo(Role::Caption, &tokens).child(if hook.is_some() {
+                            FORGOT_TEXT_INLINE
+                        } else {
+                            FORGOT_TEXT
+                        }))
+                        .children(hook.map(|hook| {
+                            text_button(
+                                "lock-forgot-reset",
+                                "验证 Windows 账户并重置…",
+                                ButtonLook::Outline,
+                                move |_, window, cx| hook(window, cx),
+                            )
+                            .w_full()
+                        })),
                 )
             });
 
@@ -661,13 +724,24 @@ pub fn cover<T: 'static>(
     window: &mut Window,
     cx: &mut Context<T>,
 ) -> Option<AnyElement> {
+    cover_with(slot, custom_titlebar, None, window, cx)
+}
+
+/// 同 [`cover`]，锁屏页第一次建出来时可以带上“忘记密码”按钮的回调（只有主窗口给）。
+pub fn cover_with<T: 'static>(
+    slot: &mut Option<Entity<LockScreen>>,
+    custom_titlebar: bool,
+    forgot_hook: Option<ForgotHook>,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) -> Option<AnyElement> {
     if !is_locked() {
         return None;
     }
     let screen = match slot {
         Some(screen) => screen.clone(),
         None => {
-            let screen = cx.new(|cx| LockScreen::new(window, cx, custom_titlebar));
+            let screen = cx.new(|cx| LockScreen::new(window, cx, custom_titlebar, forgot_hook));
             *slot = Some(screen.clone());
             screen
         }
@@ -679,8 +753,10 @@ pub fn cover<T: 'static>(
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        FORGOT_TEXT, Job, JobOutcome, StubVerifier, dev_reset_backoff, is_locked, lock_epoch,
-        record_attempt, remaining_wait, run_job, set_locked, wait_text, wrong_count,
+        FORGOT_TEXT, FORGOT_TEXT_INLINE, Job, JobOutcome, StubVerifier, dev_reset_backoff,
+        dev_reset_reveal, is_locked, lock_epoch, record_attempt, remaining_wait,
+        reveal_mark_verified, reveal_needs_verification, run_job, set_locked, wait_text,
+        wrong_count,
     };
     use std::time::{Duration, Instant};
     use zssh_core::app_lock::{
@@ -1077,6 +1153,119 @@ mod tests {
         assert_eq!(
             verify(OsCheck::Unavailable, OsCheck::Unavailable),
             OsCheck::Unavailable
+        );
+    }
+
+    // ---- 查看 / 复制已保存密码前的验证（V2-U35） ----
+
+    #[test]
+    fn verifying_checks_the_lock_password_and_changes_nothing() {
+        let db = enabled_db("lock-pass");
+        let before = db.setting_get(HASH_KEY).unwrap();
+        assert_eq!(
+            run_job(
+                &db,
+                Job::Verify {
+                    password: pw("lock-pass")
+                },
+                CHEAP
+            ),
+            JobOutcome::Done
+        );
+        assert_eq!(
+            run_job(
+                &db,
+                Job::Verify {
+                    password: pw("lock-pasS")
+                },
+                CHEAP
+            ),
+            JobOutcome::WrongPassword
+        );
+        assert_eq!(db.setting_get(HASH_KEY).unwrap(), before, "只核对，不写库");
+        // 读不懂的记录不能当成“验证通过”。
+        db.setting_set(HASH_KEY, "{\"v\":1,\"broken\":1}").unwrap();
+        assert_eq!(
+            run_job(
+                &db,
+                Job::Verify {
+                    password: pw("anything")
+                },
+                CHEAP
+            ),
+            JobOutcome::WrongPassword
+        );
+    }
+
+    #[test]
+    fn the_reveal_window_asks_once_and_is_not_asked_without_a_lock() {
+        dev_reset_reveal();
+        let now = Instant::now();
+        assert!(!reveal_needs_verification(false, now), "没启用锁屏不问");
+        assert!(reveal_needs_verification(true, now), "启用了第一次要问");
+        reveal_mark_verified(now);
+        assert!(!reveal_needs_verification(true, now));
+        assert!(!reveal_needs_verification(
+            true,
+            now + Duration::from_secs(299)
+        ));
+        assert!(reveal_needs_verification(
+            true,
+            now + Duration::from_secs(300)
+        ));
+        dev_reset_reveal();
+    }
+
+    #[test]
+    fn locking_and_unlocking_both_restart_the_reveal_window() {
+        set_locked(false);
+        dev_reset_reveal();
+        let now = Instant::now();
+        reveal_mark_verified(now);
+        assert!(!reveal_needs_verification(true, now));
+
+        set_locked(true);
+        assert!(reveal_needs_verification(true, now), "锁屏后要重新验证");
+
+        reveal_mark_verified(now);
+        set_locked(true);
+        assert!(
+            !reveal_needs_verification(true, now),
+            "已经锁着再锁不算一次变化"
+        );
+
+        set_locked(false);
+        assert!(reveal_needs_verification(true, now), "解锁后也要重新验证");
+        dev_reset_reveal();
+    }
+
+    #[test]
+    fn wrong_reveal_passwords_use_the_same_counter_as_the_lock_screen() {
+        // 对话框和锁屏页走同一对函数（`record_attempt` / `remaining_wait`）：在这里输错的次数，
+        // 锁屏页上的下一次尝试也要等。
+        dev_reset_backoff();
+        let now = Instant::now();
+        for _ in 0..5 {
+            record_attempt(false, now);
+        }
+        assert_eq!(wrong_count(), 5);
+        assert_eq!(remaining_wait(now), Some(Duration::from_secs(5)));
+        // 退避期间再提交，界面一律先问 `remaining_wait`，不会去后台校验——密码对也不行。
+        assert!(remaining_wait(now + Duration::from_secs(1)).is_some());
+        assert_eq!(remaining_wait(now + Duration::from_secs(5)), None);
+        // 输对一次，两边的计数一起清零。
+        record_attempt(true, now + Duration::from_secs(5));
+        assert_eq!(wrong_count(), 0);
+        dev_reset_backoff();
+    }
+
+    #[test]
+    fn the_inline_forgot_text_points_at_windows_verification_not_at_restarting() {
+        assert!(FORGOT_TEXT_INLINE.contains("Windows"));
+        assert!(FORGOT_TEXT_INLINE.contains("无法找回"));
+        assert!(
+            !FORGOT_TEXT_INLINE.contains("重新打开"),
+            "开了启动时锁定，重新打开仍是锁屏页，不能再让人去重启"
         );
     }
 

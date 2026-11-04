@@ -11,6 +11,7 @@ use zeroize::Zeroizing;
 
 use super::MainWindow;
 use super::page_logic::info_password_identity;
+use super::reveal_ui::RevealAction;
 
 /// 取回来的明文密码，只属于 `host_id` 这一台主机；丢弃时内存清零。
 pub(crate) struct InfoSecret {
@@ -58,6 +59,10 @@ impl MainWindow {
         else {
             return;
         };
+        // 要从保险库取明文了：启用了锁屏的话先验证锁屏密码（V2-U35）。
+        if !self.reveal_allowed(RevealAction::InfoEye(host_id), window, cx) {
+            return;
+        }
         let fetched = self.store.db().and_then(|db| {
             db.identity_saved_password(identity)
                 .map_err(|err| err.to_string())
@@ -128,6 +133,10 @@ impl MainWindow {
             self.notice("先点眼睛显示密码", window, cx);
             return;
         };
+        // 明文可能早就显示着、5 分钟窗口期已过：复制前再问一次（V2-U35）。
+        if !self.reveal_allowed(RevealAction::InfoCopyPassword(host_id), window, cx) {
+            return;
+        }
         match crate::chat_copy::write_sensitive(secret.as_str(), cx) {
             Ok(()) => self.notice("已复制密码，30 秒后自动清除", window, cx),
             Err(err) => self.notice_error(&format!("复制密码失败：{err}"), window, cx),

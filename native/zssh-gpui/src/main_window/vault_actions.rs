@@ -16,6 +16,7 @@ use super::page_logic::{
     OrderState, can_step_group, can_step_host, group_layer_ids, host_layer_ids,
     looks_like_quick_target, order_state, step_in_layer,
 };
+use super::reveal_ui::RevealAction;
 
 /// 系统的双击间隔 + 一点余量：单击已经展开着的主机属性要「再点一下收起」，但双击（连接）的
 /// 第二下不能让面板来回闪，所以收起要等过了双击间隔才执行。
@@ -164,6 +165,10 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 启用了锁屏的话，取明文之前先验证锁屏密码（V2-U35）。
+        if !self.reveal_allowed(RevealAction::CopyHostPassword(host_id), window, cx) {
+            return;
+        }
         let result = self
             .store
             .db()
@@ -171,9 +176,8 @@ impl MainWindow {
                 db.host_saved_password(host_id)
                     .map_err(|err| err.to_string())
             })
-            .and_then(|password| {
-                zssh_platform_windows::clipboard::write_sensitive(password.as_str())
-            });
+            // 经 `chat_copy` 写：和聊天复制同一个可替换的写入口，测试里不碰系统剪贴板。
+            .and_then(|password| crate::chat_copy::write_sensitive(password.as_str(), cx));
         match result {
             Ok(()) => self.notice("已复制密码，30 秒后自动清除", window, cx),
             Err(err) => self.notice_error(&format!("复制密码失败：{err}"), window, cx),
@@ -187,22 +191,26 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let result = self
-            .store
-            .db()
-            .and_then(|db| {
-                db.host_connection_info(host_id)
-                    .map_err(|err| err.to_string())
-            })
-            .and_then(|info| {
-                let text = zssh_core::store::connection_info::format_connection_info(&info);
-                if info.has_password() {
-                    zssh_platform_windows::clipboard::write_sensitive(text.as_str())?;
-                } else {
-                    zssh_platform_windows::clipboard::write_plain(text.as_str())?;
-                }
-                Ok(info.has_password())
-            });
+        let info = self.store.db().and_then(|db| {
+            db.host_connection_info(host_id)
+                .map_err(|err| err.to_string())
+        });
+        // 连接信息里带着密码才要验证锁屏密码（V2-U35）；不带密码的主机照旧直接复制。
+        // 上面取到的明文还在内存里（`Zeroizing`），没验证通过就原样丢掉，不会显示、不会复制。
+        if info.as_ref().is_ok_and(|info| info.has_password())
+            && !self.reveal_allowed(RevealAction::CopyHostInfo(host_id), window, cx)
+        {
+            return;
+        }
+        let result = info.and_then(|info| {
+            let text = zssh_core::store::connection_info::format_connection_info(&info);
+            if info.has_password() {
+                crate::chat_copy::write_sensitive(text.as_str(), cx)?;
+            } else {
+                crate::chat_copy::write_plain(text.as_str())?;
+            }
+            Ok(info.has_password())
+        });
         match result {
             Ok(true) => self.notice("已复制连接信息（含密码），30 秒后自动清除", window, cx),
             Ok(false) => self.notice("已复制连接信息", window, cx),

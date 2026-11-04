@@ -25,6 +25,15 @@ pub fn write_sensitive(text: &str, _cx: &mut App) -> Result<(), String> {
     write_sensitive_with(text, zssh_platform_windows::clipboard::write_sensitive)
 }
 
+/// 写一段普通文字（不做排除、不自动清除），走平台层的写法；抓取模式下同样只进内存缓冲。
+/// 「复制连接信息」不带密码时用它，这样测试里复制路径一律碰不到系统剪贴板。
+pub fn write_plain(text: &str) -> Result<(), String> {
+    if capture_push(text) {
+        return Ok(());
+    }
+    zssh_platform_windows::clipboard::write_plain(text)
+}
+
 /// [`write_sensitive`] 的内核：`system` 是真正写系统剪贴板的函数，抓取模式下不会被调用（测试用它证明这一点）。
 fn write_sensitive_with(
     text: &str,

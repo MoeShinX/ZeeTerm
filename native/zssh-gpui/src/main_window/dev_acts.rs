@@ -119,6 +119,7 @@ pub fn validate(spec: &str) -> Result<(), String> {
         || super::dev_acts_u26::is_known(name)
         || super::dev_acts_u30::is_known(name)
         || super::dev_acts_u34::is_known(name)
+        || super::dev_acts_u35::is_known(name)
         || super::dev_acts_u29::is_known(name)
         || super::dev_acts_u21::is_known(name)
         || super::dev_acts_u25::is_known(name)
@@ -287,6 +288,10 @@ fn run_inner(
     }
     // V2-U34（属性面板：值可选中复制、密码行）的动作在 `dev_acts_u34`。
     if let Some(result) = super::dev_acts_u34::run(this, spec, window, cx) {
+        return result;
+    }
+    // V2-U35（启动时锁定、查看 / 复制密码前验证）的动作在 `dev_acts_u35`。
+    if let Some(result) = super::dev_acts_u35::run(this, spec, window, cx) {
         return result;
     }
     // V2-U29（SSH 提问改成应用内对话框）的动作在 `dev_acts_u29`。
