@@ -517,7 +517,7 @@ pub fn failure_notice(err: &KillError, target: &ProcRow, login_user: Option<&str
     };
     KillNotice {
         level,
-        text: err.describe(&target.user, login_user),
+        text: crate::ops_text::kill_error(err, &target.user, login_user),
     }
 }
 
@@ -1625,7 +1625,12 @@ impl MainWindow {
         let blocked = dialog.selected_protection();
         let tip = |normal: &'static str| -> SharedString {
             match blocked {
-                Some(p) => format!("{}{}", t(ProcessMsg::ProtectedPrefix), p.reason()).into(),
+                Some(p) => format!(
+                    "{}{}",
+                    t(ProcessMsg::ProtectedPrefix),
+                    crate::ops_text::protection(p)
+                )
+                .into(),
                 None => normal.into(),
             }
         };
@@ -1652,7 +1657,7 @@ impl MainWindow {
                                 .map(|p| format!(
                                     "{}{}{}",
                                     t(ProcessMsg::ProtectedSuffixOpen),
-                                    p.reason(),
+                                    crate::ops_text::protection(p),
                                     t(ProcessMsg::ProtectedSuffixClose)
                                 ))
                                 .unwrap_or_default()
@@ -1845,7 +1850,9 @@ impl MainWindow {
                         .child({
                             // 命令列：受保护的进程前面带小锁，悬停说原因。
                             let tip = match protection {
-                                Some(p) => crate::i18n::colon(p.reason(), &command),
+                                Some(p) => {
+                                    crate::i18n::colon(crate::ops_text::protection(p), &command)
+                                }
                                 None => command.clone(),
                             };
                             h_flex()
@@ -1864,7 +1871,8 @@ impl MainWindow {
                                         .flex_none()
                                         .text_color(tokens.caution)
                                         .tooltip(move |window, cx| {
-                                            Tooltip::new(p.reason()).build(window, cx)
+                                            Tooltip::new(crate::ops_text::protection(p))
+                                                .build(window, cx)
                                         })
                                         .child(Icon::new(Ico::Lock).size_3())
                                 }))
@@ -1888,7 +1896,7 @@ impl MainWindow {
                             menu.item(
                                 crate::menu_kit::row(&tokens, KillSignal::Term.label(), Ico::X)
                                     .disabled(protection.is_some())
-                                    .right(protection.map(|p| p.reason()))
+                                    .right(protection.map(crate::ops_text::protection))
                                     .on_click(move |_, _window, cx| {
                                         term.update(cx, |this, cx| {
                                             this.processes_ask_kill(pid, KillSignal::Term, cx);
@@ -1899,7 +1907,7 @@ impl MainWindow {
                                 crate::menu_kit::row(&tokens, KillSignal::Kill.label(), Ico::Zap)
                                     .danger()
                                     .disabled(protection.is_some())
-                                    .right(protection.map(|p| p.reason()))
+                                    .right(protection.map(crate::ops_text::protection))
                                     .on_click(move |_, _window, cx| {
                                         force.update(cx, |this, cx| {
                                             this.processes_ask_kill(pid, KillSignal::Kill, cx);

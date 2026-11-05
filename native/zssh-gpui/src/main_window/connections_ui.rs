@@ -548,8 +548,8 @@ pub fn row_menu(
         Err(block) => MenuItem::off(
             MenuAct::Disconnect,
             t(ConnMsg::DisconnectRow),
-            block.reason().to_owned(),
-            block.reason(),
+            crate::ops_text::disconnect_block(block).to_owned(),
+            crate::ops_text::disconnect_block(block),
         ),
     }));
     // 结束进程：每个 PID 一项（最多 6 个），一个都没有时一行置灰的说明。
@@ -563,8 +563,8 @@ pub fn row_menu(
         entries.push(Some(MenuItem::off(
             MenuAct::KillNone,
             t(ConnMsg::KillProcess),
-            block.reason(),
-            block.short(),
+            crate::ops_text::kill_block_reason(block),
+            crate::ops_text::kill_block_short(block),
         )));
     }
     for proc in &listed {
@@ -581,8 +581,8 @@ pub fn row_menu(
             Err(block) => MenuItem::off(
                 MenuAct::Kill(proc.pid),
                 label,
-                block.reason(),
-                block.short(),
+                crate::ops_text::kill_block_reason(block),
+                crate::ops_text::kill_block_short(block),
             ),
         }));
     }
@@ -608,8 +608,8 @@ pub fn row_menu(
             MenuItem::off(
                 MenuAct::ShowProcess(0),
                 t(ConnMsg::ViewInManager),
-                block.reason(),
-                block.short(),
+                crate::ops_text::kill_block_reason(block),
+                crate::ops_text::kill_block_short(block),
             )
         }
     }));
@@ -684,7 +684,7 @@ pub fn disconnect_failure(err: &DisconnectError) -> (KillNotice, bool) {
     (
         KillNotice {
             level,
-            text: err.to_string(),
+            text: crate::ops_text::disconnect_error(err),
         },
         refresh,
     )
@@ -993,7 +993,7 @@ impl MainWindow {
         if let Err(block) = disconnect_check(report, row) {
             dialog.notice = Some(KillNotice {
                 level: NoticeLevel::Error,
-                text: DisconnectError::Blocked(block).to_string(),
+                text: crate::ops_text::disconnect_error(&DisconnectError::Blocked(block)),
             });
             cx.notify();
             return;
@@ -1025,7 +1025,7 @@ impl MainWindow {
         if let Err(block) = verdict {
             dialog.notice = Some(KillNotice {
                 level: NoticeLevel::Error,
-                text: block.reason(),
+                text: crate::ops_text::kill_block_reason(block),
             });
             cx.notify();
             return;

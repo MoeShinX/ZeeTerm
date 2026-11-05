@@ -26,6 +26,7 @@ mod conn_pool;
 mod datetime;
 mod dev_hooks;
 mod error_text;
+mod ops_text;
 mod reason_text;
 // 编辑器演示窗口只有 dev 钩子开得到（ZSSH_OPEN_EDITOR / terminal_demo 内部），release 不编译。
 #[cfg(debug_assertions)]
