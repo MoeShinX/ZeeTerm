@@ -25,6 +25,7 @@ use russh_sftp::extensions::{self, LimitsExtension};
 use russh_sftp::protocol::{FileAttributes, Handle, Name, OpenFlags, Packet, Status, StatusCode};
 
 use super::error::{from_status_code, with_path, SftpError};
+use crate::error::{reason_keys, Reason};
 use crate::ssh::Connection;
 
 /// 保守的读写块大小（服务器没声明 `limits@openssh.com` 时用）。
@@ -325,7 +326,12 @@ impl SftpChannel {
             .realpath(path)
             .await
             .map_err(|err| with_path(err, path))?;
-        first_name(name).ok_or_else(|| SftpError::Remote("realpath 没有返回路径".to_owned()))
+        first_name(name).ok_or_else(|| {
+            SftpError::RemoteReason(Reason::new(
+                reason_keys::SFTP_REALPATH_EMPTY,
+                "realpath 没有返回路径",
+            ))
+        })
     }
 
     /// 操作前的名字检查（M3-1 第 2 节）：名字里有替换字符（U+FFFD）时先确认服务器上
@@ -352,7 +358,12 @@ impl SftpChannel {
             .readlink(path)
             .await
             .map_err(|err| with_path(err, path))?;
-        first_name(name).ok_or_else(|| SftpError::Remote("readlink 没有返回目标".to_owned()))
+        first_name(name).ok_or_else(|| {
+            SftpError::RemoteReason(Reason::new(
+                reason_keys::SFTP_READLINK_EMPTY,
+                "readlink 没有返回目标",
+            ))
+        })
     }
 
     // ---------- 目录 ----------
@@ -476,9 +487,10 @@ impl SftpChannel {
                 }
                 // 有的实现用扩展应答回一个空包表示成功。
                 Packet::ExtendedReply(_) => Ok(RenameOutcome::PosixRename),
-                _ => Err(SftpError::Remote(
-                    "posix-rename 收到了意料之外的回包".to_owned(),
-                )),
+                _ => Err(SftpError::RemoteReason(Reason::new(
+                    reason_keys::SFTP_POSIX_RENAME_REPLY,
+                    "posix-rename 收到了意料之外的回包",
+                ))),
             };
         }
         if rename_plan(&self.caps, overwrite) == RenamePlan::RemoveThenRename {
@@ -668,9 +680,10 @@ impl SftpChannel {
         match reply {
             Packet::Status(status) => status_ok(status, ""),
             Packet::ExtendedReply(_) => Ok(()),
-            _ => Err(SftpError::Remote(
-                "copy-data 收到了意料之外的回包".to_owned(),
-            )),
+            _ => Err(SftpError::RemoteReason(Reason::new(
+                reason_keys::SFTP_COPY_DATA_REPLY,
+                "copy-data 收到了意料之外的回包",
+            ))),
         }
     }
 
@@ -725,7 +738,9 @@ async fn create_new_file(raw: &RawSftpSession, path: &str) -> Result<(), SftpErr
         Err(err) => {
             let mapped = with_path(err, path);
             return match mapped {
-                SftpError::RemoteStatus { .. } | SftpError::Remote(_)
+                SftpError::RemoteStatus { .. }
+                | SftpError::Remote(_)
+                | SftpError::RemoteReason(_)
                     if raw.lstat(path).await.is_ok() =>
                 {
                     Err(SftpError::AlreadyExists {

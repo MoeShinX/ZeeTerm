@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::ai::shell_kind::{parse_shell_probe_output, ShellKind, SHELL_PROBE_MARKER};
+use crate::error::{reason_keys, reason_params, ErrorWithCode, Reason};
 use crate::sftp::error::SftpError;
 use crate::sftp::path as remote_path;
 use crate::sftp::server_copy::{lock_target, shell_quote, CopyAttrs, CopyDataOps};
@@ -59,9 +60,9 @@ pub enum ArchiveError {
     /// 带的是第一个这样的条目的相对路径。
     DestSymlink(String),
     /// 不认识的格式 / 不能这样做（给人看的原因）。
-    Unsupported(String),
+    Unsupported(Reason),
     /// 命令跑了但失败，或者其它出错（给人看的原因）。
-    Failed(String),
+    Failed(Reason),
 }
 
 impl std::fmt::Display for ArchiveError {
@@ -73,7 +74,34 @@ impl std::fmt::Display for ArchiveError {
                 f,
                 "目标目录里有符号链接（{path}），解压可能写到目录外，已拒绝"
             ),
-            Self::Unsupported(message) | Self::Failed(message) => f.write_str(message),
+            Self::Unsupported(reason) | Self::Failed(reason) => f.write_str(reason.zh()),
+        }
+    }
+}
+
+/// 错误码与结构化参数：界面按它们出当前语言的整句（`Display` 的中文只留给日志和兜底）。
+impl ErrorWithCode for ArchiveError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Cancelled => "archive.cancelled",
+            Self::UnsafeEntries => "archive.unsafe_entries",
+            Self::DestSymlink(_) => "archive.dest_symlink",
+            Self::Unsupported(_) | Self::Failed(_) => "archive.reason",
+        }
+    }
+
+    fn params(&self) -> Vec<(&'static str, String)> {
+        match self {
+            Self::Cancelled | Self::UnsafeEntries => Vec::new(),
+            Self::DestSymlink(path) => vec![("path", path.clone())],
+            Self::Unsupported(reason) | Self::Failed(reason) => reason_params(reason),
+        }
+    }
+
+    fn causes(&self) -> Vec<(&'static str, &dyn ErrorWithCode)> {
+        match self {
+            Self::Unsupported(reason) | Self::Failed(reason) => reason.causes(),
+            _ => Vec::new(),
         }
     }
 }
@@ -82,7 +110,9 @@ impl From<SftpError> for ArchiveError {
     fn from(err: SftpError) -> Self {
         match err {
             SftpError::Cancelled => Self::Cancelled,
-            other => Self::Failed(other.to_string()),
+            other => Self::Failed(
+                Reason::new(reason_keys::SFTP_WRAPPED, other.to_string()).caused_by(&other),
+            ),
         }
     }
 }
@@ -211,9 +241,13 @@ pub async fn first_free_name(
             Err(err) => return Err(err.into()),
         }
     }
-    Err(ArchiveError::Failed(format!(
-        "「{base}」的压缩包名字试到 (1000) 还是重名，没有压缩"
-    )))
+    Err(ArchiveError::Failed(
+        Reason::new(
+            reason_keys::ARCHIVE_NAME_TAKEN,
+            format!("「{base}」的压缩包名字试到 (1000) 还是重名，没有压缩"),
+        )
+        .with("base", base),
+    ))
 }
 
 /// 临时名：同目录、点开头、`.<任务标识>.zssh-part` 结尾（别的任务和用户自己的文件不会重名）。
@@ -580,26 +614,43 @@ pub fn classify_compress(
     format: CompressFormat,
     exit_code: Option<u32>,
     stderr: &str,
-) -> Result<Option<String>, String> {
+) -> Result<Option<Reason>, Reason> {
     match exit_code {
         Some(0) => Ok(None),
-        Some(1) if format == CompressFormat::TarGz && tar_changed_only(stderr) => Ok(Some(
-            "有文件在打包期间被改动过，压缩包里是打包时读到的内容".to_owned(),
+        Some(1) if format == CompressFormat::TarGz && tar_changed_only(stderr) => {
+            Ok(Some(Reason::new(
+                reason_keys::ARCHIVE_FILES_CHANGED,
+                "有文件在打包期间被改动过，压缩包里是打包时读到的内容",
+            )))
+        }
+        Some(127) => Err(command_missing(if format == CompressFormat::Zip {
+            "zip"
+        } else {
+            "tar"
+        })),
+        Some(code) => {
+            let tail = stderr_tail(stderr);
+            Err(Reason::new(
+                reason_keys::ARCHIVE_COMPRESS_FAILED,
+                format!("压缩失败（退出码 {code}）：{tail}"),
+            )
+            .with("code", code)
+            .with("stderr", tail))
+        }
+        None => Err(Reason::new(
+            reason_keys::ARCHIVE_COMPRESS_NO_EXIT,
+            "压缩命令没有返回退出码，不知道有没有成功",
         )),
-        Some(127) => Err(format!(
-            "服务器上找不到 {} 命令",
-            if format == CompressFormat::Zip {
-                "zip"
-            } else {
-                "tar"
-            }
-        )),
-        Some(code) => Err(format!(
-            "压缩失败（退出码 {code}）：{}",
-            stderr_tail(stderr)
-        )),
-        None => Err("压缩命令没有返回退出码，不知道有没有成功".to_owned()),
     }
+}
+
+/// 「服务器上找不到 X 命令」。
+fn command_missing(command: &str) -> Reason {
+    Reason::new(
+        reason_keys::ARCHIVE_COMMAND_MISSING,
+        format!("服务器上找不到 {command} 命令"),
+    )
+    .with("command", command)
 }
 
 /// stderr 里的每一行是不是都只是「文件在读取时被改动」之类的警告。
@@ -622,7 +673,7 @@ fn tar_changed_only(stderr: &str) -> bool {
 /// `tar -k` 解压的结果：GNU tar 对每个已有文件报「File exists」并以退出码 2 收尾，
 /// 但其余文件照常解出。全部 stderr 行都只是「已存在」或收尾提示才算「只是跳过了」，
 /// 返回跳过的个数；出现别的错误就是真失败。
-pub fn classify_keep_old(exit_code: Option<u32>, stderr: &str) -> Result<u64, String> {
+pub fn classify_keep_old(exit_code: Option<u32>, stderr: &str) -> Result<u64, Reason> {
     if exit_code == Some(0) {
         return Ok(0);
     }
@@ -646,11 +697,19 @@ pub fn classify_keep_old(exit_code: Option<u32>, stderr: &str) -> Result<u64, St
     if exit_code.is_some() && other.is_empty() && skipped > 0 {
         Ok(skipped)
     } else {
-        Err(format!(
-            "解压失败（退出码 {}）：{}",
-            exit_code.map_or_else(|| "无".to_owned(), |code| code.to_string()),
-            stderr_tail(stderr)
-        ))
+        let tail = stderr_tail(stderr);
+        Err(match exit_code {
+            Some(code) => Reason::new(
+                reason_keys::ARCHIVE_EXTRACT_FAILED,
+                format!("解压失败（退出码 {code}）：{tail}"),
+            )
+            .with("code", code),
+            None => Reason::new(
+                reason_keys::ARCHIVE_EXTRACT_FAILED_NO_CODE,
+                format!("解压失败（退出码 无）：{tail}"),
+            ),
+        }
+        .with("stderr", tail))
     }
 }
 
@@ -758,7 +817,13 @@ impl ExecRunner for Connection {
                     if cancel.load(Ordering::SeqCst) {
                         ArchiveError::Cancelled
                     } else {
-                        ArchiveError::Failed(format!("没法在服务器上执行命令：{err}"))
+                        ArchiveError::Failed(
+                            Reason::new(
+                                reason_keys::ARCHIVE_EXEC_FAILED,
+                                format!("没法在服务器上执行命令：{err}"),
+                            )
+                            .caused_by(&err),
+                        )
                     }
                 })?;
             Ok(ExecOutput {
@@ -872,12 +937,15 @@ pub struct CompressOutcome {
     /// 压缩包的完整路径。
     pub path: String,
     pub name: String,
-    pub warning: Option<String>,
+    pub warning: Option<Reason>,
 }
 
 fn check_names(names: &[String]) -> Result<(), ArchiveError> {
     if names.is_empty() {
-        return Err(ArchiveError::Unsupported("没有选中要压缩的条目".to_owned()));
+        return Err(ArchiveError::Unsupported(Reason::new(
+            reason_keys::ARCHIVE_NOTHING_SELECTED,
+            "没有选中要压缩的条目",
+        )));
     }
     for name in names {
         if name.is_empty()
@@ -886,9 +954,13 @@ fn check_names(names: &[String]) -> Result<(), ArchiveError> {
             || name.contains('/')
             || name.contains('\0')
         {
-            return Err(ArchiveError::Unsupported(format!(
-                "「{name}」不是当前目录下的有效名字，没有压缩"
-            )));
+            return Err(ArchiveError::Unsupported(
+                Reason::new(
+                    reason_keys::ARCHIVE_BAD_NAME,
+                    format!("「{name}」不是当前目录下的有效名字，没有压缩"),
+                )
+                .with("name", name),
+            ));
         }
     }
     Ok(())
@@ -904,9 +976,10 @@ pub async fn compress(
 ) -> Result<CompressOutcome, ArchiveError> {
     check_names(request.names)?;
     if !request.dir.starts_with('/') {
-        return Err(ArchiveError::Unsupported(
-            "当前目录不是绝对路径，没有压缩".to_owned(),
-        ));
+        return Err(ArchiveError::Unsupported(Reason::new(
+            reason_keys::ARCHIVE_DIR_NOT_ABSOLUTE,
+            "当前目录不是绝对路径，没有压缩",
+        )));
     }
     if cancel.load(Ordering::SeqCst) {
         return Err(ArchiveError::Cancelled);
@@ -938,35 +1011,48 @@ pub async fn compress(
     }
     if output.timed_out {
         cleanup_temp(runner, fs, &temp).await;
-        return Err(ArchiveError::Failed(
-            "压缩超时，没有等到结束（服务器上可能还在继续压缩）".to_owned(),
-        ));
+        return Err(ArchiveError::Failed(Reason::new(
+            reason_keys::ARCHIVE_COMPRESS_TIMEOUT,
+            "压缩超时，没有等到结束（服务器上可能还在继续压缩）",
+        )));
     }
     let warning = match classify_compress(request.format, output.exit_code, &output.stderr) {
         Ok(warning) => warning,
-        Err(message) => {
+        Err(reason) => {
             cleanup_temp(runner, fs, &temp).await;
-            return Err(ArchiveError::Failed(message));
+            return Err(ArchiveError::Failed(reason));
         }
     };
     match fs.stat_path(&temp).await {
         Ok(attrs) if !attrs.is_dir => {}
         Ok(_) => {
             cleanup_temp(runner, fs, &temp).await;
-            return Err(ArchiveError::Failed("压缩没有生成压缩包文件".to_owned()));
+            return Err(ArchiveError::Failed(Reason::new(
+                reason_keys::ARCHIVE_NO_OUTPUT,
+                "压缩没有生成压缩包文件",
+            )));
         }
         Err(err) => {
             cleanup_temp(runner, fs, &temp).await;
-            return Err(ArchiveError::Failed(format!(
-                "压缩命令结束了，但找不到压缩包：{err}"
-            )));
+            return Err(ArchiveError::Failed(
+                Reason::new(
+                    reason_keys::ARCHIVE_OUTPUT_MISSING,
+                    format!("压缩命令结束了，但找不到压缩包：{err}"),
+                )
+                .caused_by(&err),
+            ));
         }
     }
     if let Err(err) = fs.rename_new(&temp, &final_path).await {
         cleanup_temp(runner, fs, &temp).await;
-        return Err(ArchiveError::Failed(format!(
-            "压缩包没能改成最终名字「{name}」：{err}"
-        )));
+        return Err(ArchiveError::Failed(
+            Reason::new(
+                reason_keys::ARCHIVE_RENAME_FAILED,
+                format!("压缩包没能改成最终名字「{name}」：{err}"),
+            )
+            .with("name", &name)
+            .caused_by(&err),
+        ));
     }
     Ok(CompressOutcome {
         path: final_path,
@@ -1008,12 +1094,30 @@ pub struct ExtractPlan {
     pub fingerprint: ArchiveFingerprint,
 }
 
+fn path_not_absolute() -> ArchiveError {
+    ArchiveError::Unsupported(Reason::new(
+        reason_keys::ARCHIVE_PATH_NOT_ABSOLUTE,
+        "路径不是绝对路径，没有解压",
+    ))
+}
+
+/// 读压缩包的属性失败。
+fn read_failed(err: SftpError) -> ArchiveError {
+    ArchiveError::Failed(
+        Reason::new(
+            reason_keys::ARCHIVE_READ_FAILED,
+            format!("读不了压缩包：{err}"),
+        )
+        .caused_by(&err),
+    )
+}
+
 fn archive_format(archive: &str) -> Result<ArchiveFormat, ArchiveError> {
     ArchiveFormat::detect(&remote_path::file_name(archive)).ok_or_else(|| {
-        ArchiveError::Unsupported(
-            "不认识这种压缩包（支持 .tar.gz .tgz .tar .tar.xz .txz .tar.bz2 .tbz2 .zip）"
-                .to_owned(),
-        )
+        ArchiveError::Unsupported(Reason::new(
+            reason_keys::ARCHIVE_UNKNOWN_FORMAT,
+            "不认识这种压缩包（支持 .tar.gz .tgz .tar .tar.xz .txz .tar.bz2 .tbz2 .zip）",
+        ))
     })
 }
 
@@ -1021,10 +1125,16 @@ fn archive_format(archive: &str) -> Result<ArchiveFormat, ArchiveError> {
 async fn dest_state(fs: &dyn ArchiveFs, dest: &str) -> Result<bool, ArchiveError> {
     match fs.stat_path(dest).await {
         Ok(attrs) if attrs.is_dir => Ok(true),
-        Ok(_) => Err(ArchiveError::Failed(format!(
-            "解压的目标「{}」已经存在，但它是个文件，不是文件夹",
-            remote_path::file_name(dest)
-        ))),
+        Ok(_) => {
+            let name = remote_path::file_name(dest);
+            Err(ArchiveError::Failed(
+                Reason::new(
+                    reason_keys::ARCHIVE_DEST_IS_FILE,
+                    format!("解压的目标「{name}」已经存在，但它是个文件，不是文件夹"),
+                )
+                .with("name", name),
+            ))
+        }
         Err(SftpError::NotFound { .. }) => Ok(false),
         Err(err) => Err(err.into()),
     }
@@ -1040,18 +1150,14 @@ pub async fn plan_extract(
 ) -> Result<ExtractPlan, ArchiveError> {
     let format = archive_format(archive)?;
     if !archive.starts_with('/') || !dest.starts_with('/') {
-        return Err(ArchiveError::Unsupported(
-            "路径不是绝对路径，没有解压".to_owned(),
-        ));
+        return Err(path_not_absolute());
     }
-    let archive_attrs = fs
-        .stat_path(archive)
-        .await
-        .map_err(|err| ArchiveError::Failed(format!("读不了压缩包：{err}")))?;
+    let archive_attrs = fs.stat_path(archive).await.map_err(read_failed)?;
     if archive_attrs.is_dir {
-        return Err(ArchiveError::Unsupported(
-            "这是个文件夹，不是压缩包".to_owned(),
-        ));
+        return Err(ArchiveError::Unsupported(Reason::new(
+            reason_keys::ARCHIVE_IS_FOLDER,
+            "这是个文件夹，不是压缩包",
+        )));
     }
     let dest_exists = dest_state(fs, dest).await?;
 
@@ -1074,34 +1180,48 @@ pub async fn plan_extract(
         break output;
     };
     if output.timed_out {
-        return Err(ArchiveError::Failed("检查压缩包超时".to_owned()));
+        return Err(ArchiveError::Failed(Reason::new(
+            reason_keys::ARCHIVE_INSPECT_TIMEOUT,
+            "检查压缩包超时",
+        )));
     }
     match list_exit_code(&output.stderr) {
         Some(0) => {}
         Some(127) => {
-            return Err(ArchiveError::Failed(format!(
-                "服务器上找不到 {} 命令",
-                if format.is_zip() { "unzip" } else { "tar" }
-            )))
+            return Err(ArchiveError::Failed(command_missing(if format.is_zip() {
+                "unzip"
+            } else {
+                "tar"
+            })))
         }
         Some(code) => {
-            return Err(ArchiveError::Failed(format!(
-                "读不了压缩包（退出码 {code}）：{}",
-                stderr_tail(&output.stderr)
-            )))
+            let tail = stderr_tail(&output.stderr);
+            return Err(ArchiveError::Failed(
+                Reason::new(
+                    reason_keys::ARCHIVE_LIST_FAILED_CODE,
+                    format!("读不了压缩包（退出码 {code}）：{tail}"),
+                )
+                .with("code", code)
+                .with("stderr", tail),
+            ));
         }
         None => {
-            return Err(ArchiveError::Failed(format!(
-                "读不了压缩包：{}",
-                stderr_tail(&output.stderr)
-            )))
+            let tail = stderr_tail(&output.stderr);
+            return Err(ArchiveError::Failed(
+                Reason::new(
+                    reason_keys::ARCHIVE_LIST_FAILED,
+                    format!("读不了压缩包：{tail}"),
+                )
+                .with("stderr", tail),
+            ));
         }
     }
     if output.stdout_truncated {
         // 条目多到没法逐条检查：宁可拒绝。
-        return Err(ArchiveError::Failed(
-            "压缩包里的条目太多，没法逐条检查是否安全，已拒绝解压".to_owned(),
-        ));
+        return Err(ArchiveError::Failed(Reason::new(
+            reason_keys::ARCHIVE_TOO_MANY_ENTRIES,
+            "压缩包里的条目太多，没法逐条检查是否安全，已拒绝解压",
+        )));
     }
     let scan = scan_plan_output(&output.stdout, format.is_zip())?;
     Ok(ExtractPlan {
@@ -1133,7 +1253,7 @@ pub struct ExtractRequest<'a> {
 pub struct ExtractOutcome {
     pub extracted: u64,
     pub skipped: u64,
-    pub warning: Option<String>,
+    pub warning: Option<Reason>,
 }
 
 /// 实际执行一次解压命令（含 tar 的 `--skip-old-files` → `-k` 回退）。返回按 stderr 数出来的跳过个数
@@ -1146,7 +1266,7 @@ async fn run_extract(
     new_dir: bool,
     policy: ConflictPolicy,
     cancel: &AtomicBool,
-) -> Result<(Option<u64>, Option<String>), ArchiveError> {
+) -> Result<(Option<u64>, Option<Reason>), ArchiveError> {
     let skip = policy == ConflictPolicy::SkipExisting && !new_dir;
     let mode = if skip && !format.is_zip() {
         TarMode::SkipOldFiles
@@ -1180,9 +1300,10 @@ async fn run_extract(
         return Err(ArchiveError::Cancelled);
     }
     if output.timed_out {
-        return Err(ArchiveError::Failed(
-            "解压超时，没有等到结束（服务器上可能还在继续解压）".to_owned(),
-        ));
+        return Err(ArchiveError::Failed(Reason::new(
+            reason_keys::ARCHIVE_EXTRACT_TIMEOUT,
+            "解压超时，没有等到结束（服务器上可能还在继续解压）",
+        )));
     }
     let mut warning = None;
     if used_keep_old {
@@ -1196,27 +1317,38 @@ async fn run_extract(
             Some(1) if format.is_zip() => {
                 let tail = stderr_tail(&output.stderr);
                 warning = Some(if tail.is_empty() {
-                    "解压时有警告".to_owned()
+                    Reason::new(reason_keys::ARCHIVE_EXTRACT_WARNING, "解压时有警告")
                 } else {
-                    format!("解压时有警告：{tail}")
+                    Reason::new(
+                        reason_keys::ARCHIVE_EXTRACT_WARNING_DETAIL,
+                        format!("解压时有警告：{tail}"),
+                    )
+                    .with("tail", tail)
                 });
             }
             Some(127) => {
-                return Err(ArchiveError::Failed(format!(
-                    "服务器上找不到 {} 命令",
-                    if format.is_zip() { "unzip" } else { "tar" }
-                )))
+                return Err(ArchiveError::Failed(command_missing(if format.is_zip() {
+                    "unzip"
+                } else {
+                    "tar"
+                })))
             }
             Some(code) => {
-                return Err(ArchiveError::Failed(format!(
-                    "解压失败（退出码 {code}）：{}",
-                    stderr_tail(&output.stderr)
-                )))
+                let tail = stderr_tail(&output.stderr);
+                return Err(ArchiveError::Failed(
+                    Reason::new(
+                        reason_keys::ARCHIVE_EXTRACT_FAILED,
+                        format!("解压失败（退出码 {code}）：{tail}"),
+                    )
+                    .with("code", code)
+                    .with("stderr", tail),
+                ));
             }
             None => {
-                return Err(ArchiveError::Failed(
-                    "解压命令没有返回退出码，不知道有没有成功".to_owned(),
-                ))
+                return Err(ArchiveError::Failed(Reason::new(
+                    reason_keys::ARCHIVE_EXTRACT_NO_EXIT,
+                    "解压命令没有返回退出码，不知道有没有成功",
+                )))
             }
         }
     }
@@ -1238,27 +1370,24 @@ pub async fn extract(
 ) -> Result<ExtractOutcome, ArchiveError> {
     let format = archive_format(request.archive)?;
     if !request.archive.starts_with('/') || !request.dest.starts_with('/') {
-        return Err(ArchiveError::Unsupported(
-            "路径不是绝对路径，没有解压".to_owned(),
-        ));
+        return Err(path_not_absolute());
     }
     if cancel.load(Ordering::SeqCst) {
         return Err(ArchiveError::Cancelled);
     }
-    let archive_attrs = fs
-        .stat_path(request.archive)
-        .await
-        .map_err(|err| ArchiveError::Failed(format!("读不了压缩包：{err}")))?;
+    let archive_attrs = fs.stat_path(request.archive).await.map_err(read_failed)?;
     if ArchiveFingerprint::of(&archive_attrs) != request.plan_fingerprint {
-        return Err(ArchiveError::Failed(
-            "压缩包在检查之后被改动过，请重新操作".to_owned(),
-        ));
+        return Err(ArchiveError::Failed(Reason::new(
+            reason_keys::ARCHIVE_CHANGED_AFTER_CHECK,
+            "压缩包在检查之后被改动过，请重新操作",
+        )));
     }
     let dest_exists = dest_state(fs, request.dest).await?;
     if dest_exists != request.plan_dest_exists {
-        return Err(ArchiveError::Failed(
-            "目标文件夹的状态在检查之后变了，请重新操作".to_owned(),
-        ));
+        return Err(ArchiveError::Failed(Reason::new(
+            reason_keys::ARCHIVE_DEST_CHANGED,
+            "目标文件夹的状态在检查之后变了，请重新操作",
+        )));
     }
     // 解压期间占着目标文件夹：别的任务不能同时往里写。
     let _guard = lock_target(request.server, request.dest)?;
@@ -1300,10 +1429,15 @@ pub async fn extract(
         }
         if let Err(err) = fs.rename_new(temp, request.dest).await {
             cleanup_temp(runner, fs, temp).await;
-            return Err(ArchiveError::Failed(format!(
-                "解压完了，但没能把临时文件夹改成「{}」：{err}",
-                remote_path::file_name(request.dest)
-            )));
+            let name = remote_path::file_name(request.dest);
+            return Err(ArchiveError::Failed(
+                Reason::new(
+                    reason_keys::ARCHIVE_EXTRACT_RENAME_FAILED,
+                    format!("解压完了，但没能把临时文件夹改成「{name}」：{err}"),
+                )
+                .with("name", name)
+                .caused_by(&err),
+            ));
         }
     }
     let skipped = if request.policy == ConflictPolicy::SkipExisting && !new_dir {

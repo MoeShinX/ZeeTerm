@@ -841,7 +841,10 @@ impl<C: Borrow<SftpChannel> + Send + Sync> RemoteFs for SftpRemoteFs<C> {
                 .await
                 .map(|_| ())
                 .map_err(|err| match err {
-                    SftpError::ReplaceFailed { state, message } => RenameFailure { state, message },
+                    SftpError::ReplaceFailed { state, message } => RenameFailure {
+                        state,
+                        message: message.into_zh(),
+                    },
                     // 连接在改名的过程中断了：改名可能已经发生，不能当成"没动"。
                     other if other.is_disconnect() => RenameFailure {
                         state: ReplaceState::Uncertain,

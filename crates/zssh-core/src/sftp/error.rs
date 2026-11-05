@@ -9,7 +9,7 @@ use std::io;
 use russh_sftp::client::error::Error as SftpClientError;
 use russh_sftp::protocol::StatusCode;
 
-use crate::error::{ErrorWithCode, ZsshError};
+use crate::error::{reason_keys, reason_params, ErrorWithCode, Reason, ZsshError};
 
 /// 覆盖改名失败之后，服务器上是什么状态（决定调用方能不能删临时文件）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,7 +30,7 @@ pub enum SftpError {
     #[error("{message}")]
     ReplaceFailed {
         state: ReplaceState,
-        message: String,
+        message: Reason,
     },
 
     /// 服务器没开 SFTP（精简系统、路由器，或者服务端关掉了 `Subsystem sftp`）。
@@ -76,6 +76,10 @@ pub enum SftpError {
     #[error("远端错误：{0}")]
     Remote(String),
 
+    /// 同上，但文字是我们自己写的（不是服务器 / 库的原文）：带稳定 key，界面按语言出整句。
+    #[error("远端错误：{0}")]
+    RemoteReason(Reason),
+
     #[error("本地文件操作失败（{path}）：{message}")]
     Local { path: String, message: String },
 
@@ -96,10 +100,10 @@ pub enum SftpError {
     Cancelled,
 
     #[error("输入不合法：{0}")]
-    InvalidInput(String),
+    InvalidInput(Reason),
 
     #[error("内部错误：{0}")]
-    Internal(String),
+    Internal(Reason),
 }
 
 impl SftpError {
@@ -157,7 +161,7 @@ impl ErrorWithCode for SftpError {
             SftpError::NonUtf8Name { .. } => "sftp.non_utf8_name",
             SftpError::TooLarge { .. } => "sftp.too_large",
             SftpError::RemoteStatus { .. } => "sftp.remote_status",
-            SftpError::Remote(_) => "sftp.remote_error",
+            SftpError::Remote(_) | SftpError::RemoteReason(_) => "sftp.remote_error",
             SftpError::Local { .. } => "sftp.local_error",
             SftpError::TargetBusy { .. } => "sftp.target_busy",
             SftpError::RenameTargetExists { .. } => "sftp.rename_target_exists",
@@ -170,13 +174,18 @@ impl ErrorWithCode for SftpError {
 
     fn params(&self) -> Vec<(&'static str, String)> {
         match self {
-            SftpError::ReplaceFailed { message, .. } => vec![("message", message.clone())],
+            SftpError::ReplaceFailed { message, .. } => {
+                let mut out = reason_params(message);
+                out.push(("message", message.zh().to_owned()));
+                out
+            }
             SftpError::NoSubsystem(detail)
             | SftpError::ChannelLimit(detail)
             | SftpError::Disconnected(detail)
-            | SftpError::Remote(detail)
-            | SftpError::InvalidInput(detail)
-            | SftpError::Internal(detail) => vec![("detail", detail.clone())],
+            | SftpError::Remote(detail) => vec![("detail", detail.clone())],
+            SftpError::RemoteReason(reason)
+            | SftpError::InvalidInput(reason)
+            | SftpError::Internal(reason) => reason_params(reason),
             SftpError::PermissionDenied { path }
             | SftpError::NotFound { path }
             | SftpError::AlreadyExists { path }
@@ -201,6 +210,18 @@ impl ErrorWithCode for SftpError {
                 vec![("path", path.clone()), ("tried", tried.to_string())]
             }
             SftpError::Cancelled => Vec::new(),
+        }
+    }
+
+    fn causes(&self) -> Vec<(&'static str, &dyn ErrorWithCode)> {
+        match self {
+            SftpError::ReplaceFailed {
+                message: reason, ..
+            }
+            | SftpError::RemoteReason(reason)
+            | SftpError::InvalidInput(reason)
+            | SftpError::Internal(reason) => reason.causes(),
+            _ => Vec::new(),
         }
     }
 }
@@ -293,12 +314,17 @@ impl From<SftpClientError> for SftpError {
                 }
             }
             SftpClientError::Timeout => timeout_error(crate::sftp::session::REQUEST_TIMEOUT_SECS),
-            SftpClientError::Limited(message) => {
-                SftpError::Remote(format!("超过服务器限制：{message}"))
-            }
-            SftpClientError::UnexpectedPacket => {
-                SftpError::Remote("SFTP 协议出错（收到了意料之外的回包）".to_owned())
-            }
+            SftpClientError::Limited(message) => SftpError::RemoteReason(
+                Reason::new(
+                    reason_keys::SFTP_LIMITED,
+                    format!("超过服务器限制：{message}"),
+                )
+                .with("message", &message),
+            ),
+            SftpClientError::UnexpectedPacket => SftpError::RemoteReason(Reason::new(
+                reason_keys::SFTP_UNEXPECTED_PACKET,
+                "SFTP 协议出错（收到了意料之外的回包）",
+            )),
             SftpClientError::UnexpectedBehavior(message) => {
                 if is_disconnect_text(&message) {
                     SftpError::Disconnected(message)
@@ -312,7 +338,13 @@ impl From<SftpClientError> for SftpError {
 
 /// 请求等了 `secs` 秒还没有应答。
 pub fn timeout_error(secs: u64) -> SftpError {
-    SftpError::Remote(format!("服务器 {secs} 秒没有响应（SFTP 请求超时）"))
+    SftpError::RemoteReason(
+        Reason::new(
+            reason_keys::SFTP_REQUEST_TIMEOUT,
+            format!("服务器 {secs} 秒没有响应（SFTP 请求超时）"),
+        )
+        .with("secs", secs),
+    )
 }
 
 /// 带上路径再映射（协议层的错误里没有路径信息，调用方知道路径）。

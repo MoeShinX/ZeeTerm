@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::ai::shell_kind::{build_shell_probe_command, parse_shell_probe_output, ShellKind};
+use crate::error::{reason_keys, reason_params, ErrorWithCode, Reason};
 use crate::sftp::error::SftpError;
 use crate::sftp::path as remote_path;
 use crate::sftp::session::{SftpCaps, SftpChannel, COPY_DATA};
@@ -169,9 +170,16 @@ async fn check_not_inside(
     name: Option<&str>,
 ) -> Result<(), SftpError> {
     let refuse = |real_target: &str| {
-        SftpError::InvalidInput(format!(
-            "不能把文件夹 {source} 复制到它自己或它的子文件夹里（目标实际位置是 {real_target}）"
-        ))
+        SftpError::InvalidInput(
+            Reason::new(
+                reason_keys::SFTP_COPY_INTO_SELF,
+                format!(
+                    "不能把文件夹 {source} 复制到它自己或它的子文件夹里（目标实际位置是 {real_target}）"
+                ),
+            )
+            .with("source", source)
+            .with("real_target", real_target),
+        )
     };
     if is_same_or_inside(source, target) {
         return Err(refuse(target));
@@ -181,9 +189,16 @@ async fn check_not_inside(
         return Ok(());
     }
     let unsure = |path: &str, err: SftpError| {
-        SftpError::Remote(format!(
-            "无法确认目标不在源文件夹里（解析不了 {path} 的真实位置：{err}），没有复制"
-        ))
+        SftpError::RemoteReason(
+            Reason::new(
+                reason_keys::SFTP_COPY_UNSURE,
+                format!(
+                    "无法确认目标不在源文件夹里（解析不了 {path} 的真实位置：{err}），没有复制"
+                ),
+            )
+            .with("path", path)
+            .caused_by(&err),
+        )
     };
     let real_source = ops
         .real_path(source)
@@ -210,18 +225,30 @@ fn is_own_temp(name: &str, owner: &str) -> bool {
 }
 
 fn too_deep(path: &str) -> SftpError {
-    SftpError::Remote(format!(
-        "文件夹嵌套超过 {MAX_COPY_DEPTH} 层，停止复制（可能是符号链接或别名造成的循环）：{path}"
-    ))
+    SftpError::RemoteReason(
+        Reason::new(
+            reason_keys::SFTP_COPY_TOO_DEEP,
+            format!(
+                "文件夹嵌套超过 {MAX_COPY_DEPTH} 层，停止复制（可能是符号链接或别名造成的循环）：{path}"
+            ),
+        )
+        .with("max", MAX_COPY_DEPTH)
+        .with("path", path),
+    )
+}
+
+/// 把一个 SFTP 错误原样包成 [`Reason`]（中文照旧，英文由界面按它的码重新生成）。
+fn wrapped(err: &SftpError) -> Reason {
+    Reason::new(reason_keys::SFTP_WRAPPED, err.to_string()).caused_by(err)
 }
 
 /// `cp` 没做成的两种情况：命令根本没法用（可以换办法）和跑了但失败（必须报错，不能换办法）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CpFailure {
     /// 服务器上没有 `cp`（退出码 127）、不让开 exec 通道：命令没有真正执行过。
-    NotAvailable(String),
+    NotAvailable(Reason),
     /// `cp` 跑了、报错了：目标可能已经写了一部分，调用方要把原因告诉用户。
-    Failed(String),
+    Failed(Reason),
     /// 用户取消：通道已经关掉，临时文件按第 1 项清理过。
     Cancelled,
 }
@@ -229,8 +256,32 @@ pub enum CpFailure {
 impl std::fmt::Display for CpFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotAvailable(message) | Self::Failed(message) => f.write_str(message),
+            Self::NotAvailable(reason) | Self::Failed(reason) => f.write_str(reason.zh()),
             Self::Cancelled => f.write_str("已取消"),
+        }
+    }
+}
+
+/// 界面按码和参数出当前语言的整句（`Display` 的中文只留给日志和兜底）。
+impl ErrorWithCode for CpFailure {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::NotAvailable(_) | Self::Failed(_) => "sftp.cp_reason",
+            Self::Cancelled => "archive.cancelled",
+        }
+    }
+
+    fn params(&self) -> Vec<(&'static str, String)> {
+        match self {
+            Self::NotAvailable(reason) | Self::Failed(reason) => reason_params(reason),
+            Self::Cancelled => Vec::new(),
+        }
+    }
+
+    fn causes(&self) -> Vec<(&'static str, &dyn ErrorWithCode)> {
+        match self {
+            Self::NotAvailable(reason) | Self::Failed(reason) => reason.causes(),
+            Self::Cancelled => Vec::new(),
         }
     }
 }
@@ -272,7 +323,15 @@ impl CpRunner for Connection {
             let result = self
                 .exec_capture_cancellable(command, wait, 16 * 1024, cancel)
                 .await
-                .map_err(|err| CpFailure::NotAvailable(format!("没法在服务器上执行命令：{err}")))?;
+                .map_err(|err| {
+                    CpFailure::NotAvailable(
+                        Reason::new(
+                            reason_keys::SFTP_CP_EXEC_UNAVAILABLE,
+                            format!("没法在服务器上执行命令：{err}"),
+                        )
+                        .caused_by(&err),
+                    )
+                })?;
             Ok(CpRun {
                 exit_code: result.exit_code,
                 stderr: result.stderr,
@@ -304,20 +363,29 @@ pub fn classify_cp_result(
     timed_out: bool,
 ) -> Result<(), CpFailure> {
     if timed_out {
-        return Err(CpFailure::Failed(
-            "服务器上复制超时，没有等到结束（服务器上可能还在继续复制）".to_owned(),
-        ));
+        return Err(CpFailure::Failed(Reason::new(
+            reason_keys::SFTP_CP_TIMEOUT,
+            "服务器上复制超时，没有等到结束（服务器上可能还在继续复制）",
+        )));
     }
     match exit_code {
         Some(0) => Ok(()),
-        Some(127) => Err(CpFailure::NotAvailable("服务器上找不到 cp 命令".to_owned())),
-        Some(code) => Err(CpFailure::Failed(format!(
-            "服务器上的 cp 失败（退出码 {code}）：{}",
-            stderr.trim()
+        Some(127) => Err(CpFailure::NotAvailable(Reason::new(
+            reason_keys::SFTP_CP_NOT_FOUND,
+            "服务器上找不到 cp 命令",
         ))),
-        None => Err(CpFailure::Failed(
-            "服务器上的 cp 没有返回退出码，不知道有没有复制成功".to_owned(),
+        Some(code) => Err(CpFailure::Failed(
+            Reason::new(
+                reason_keys::SFTP_CP_FAILED,
+                format!("服务器上的 cp 失败（退出码 {code}）：{}", stderr.trim()),
+            )
+            .with("code", code)
+            .with("stderr", stderr.trim()),
         )),
+        None => Err(CpFailure::Failed(Reason::new(
+            reason_keys::SFTP_CP_NO_EXIT,
+            "服务器上的 cp 没有返回退出码，不知道有没有复制成功",
+        ))),
     }
 }
 
@@ -578,29 +646,40 @@ pub async fn copy_with_cp(
     options: &CopyOptions<'_>,
 ) -> Result<Duration, CpFailure> {
     let started = Instant::now();
-    let source_attrs = ops
-        .lstat(source)
-        .await
-        .map_err(|err| CpFailure::Failed(format!("读不了源：{err}")))?;
+    let source_attrs = ops.lstat(source).await.map_err(|err| {
+        CpFailure::Failed(
+            Reason::new(reason_keys::SFTP_CP_READ_SOURCE, format!("读不了源：{err}"))
+                .caused_by(&err),
+        )
+    })?;
     let target_exists = match ops.lstat(target).await {
         Ok(attrs) => Some(attrs),
         Err(SftpError::NotFound { .. }) => None,
-        Err(err) => return Err(CpFailure::Failed(format!("看不了目标：{err}"))),
+        Err(err) => {
+            return Err(CpFailure::Failed(
+                Reason::new(
+                    reason_keys::SFTP_CP_STAT_TARGET,
+                    format!("看不了目标：{err}"),
+                )
+                .caused_by(&err),
+            ))
+        }
     };
     if target_exists.is_some_and(|attrs| attrs.is_dir) {
-        return Err(CpFailure::Failed(
-            "目标已存在且是文件夹；合并要用 copy-data 或经本机中转".to_owned(),
-        ));
+        return Err(CpFailure::Failed(Reason::new(
+            reason_keys::SFTP_CP_TARGET_IS_DIR_MERGE,
+            "目标已存在且是文件夹；合并要用 copy-data 或经本机中转",
+        )));
     }
     if source_attrs.is_dir {
         ensure_not_into_itself(ops, source, target)
             .await
-            .map_err(|err| CpFailure::Failed(err.to_string()))?;
+            .map_err(|err| CpFailure::Failed(wrapped(&err)))?;
     }
     // 复制期间占着整个目标：文件夹用前缀锁（树里任何路径都不许别的任务写），
     // 文件用同一个路径的锁。拿不到就一个字节都不写。
     let _guard =
-        lock_target(options.server, target).map_err(|err| CpFailure::Failed(err.to_string()))?;
+        lock_target(options.server, target).map_err(|err| CpFailure::Failed(wrapped(&err)))?;
     if options.cancel.load(Ordering::SeqCst) {
         return Err(CpFailure::Cancelled);
     }
@@ -633,29 +712,49 @@ pub async fn copy_with_cp(
                 if expected == actual {
                     Ok(())
                 } else {
-                    Err(format!(
-                        "服务器上复制后大小对不上（源 {} 个文件 / {} 字节，副本 {} 个文件 / {} 字节）",
-                        expected.0, expected.1, actual.0, actual.1
-                    ))
+                    Err(Reason::new(
+                        reason_keys::SFTP_CP_TREE_SIZE_MISMATCH,
+                        format!(
+                            "服务器上复制后大小对不上（源 {} 个文件 / {} 字节，副本 {} 个文件 / {} 字节）",
+                            expected.0, expected.1, actual.0, actual.1
+                        ),
+                    )
+                    .with("src_files", expected.0)
+                    .with("src_bytes", expected.1)
+                    .with("dst_files", actual.0)
+                    .with("dst_bytes", actual.1))
                 }
             }
-            (Err(err), _) | (_, Err(err)) => Err(format!("核对大小失败：{err}")),
+            (Err(err), _) | (_, Err(err)) => Err(Reason::new(
+                reason_keys::SFTP_CP_VERIFY_FAILED,
+                format!("核对大小失败：{err}"),
+            )
+            .caused_by(&err)),
         }
     } else if let Some(expected) = source_attrs.size {
         match ops.lstat(&temp).await {
             Ok(actual) if actual.size == Some(expected) => Ok(()),
-            Ok(actual) => Err(format!(
-                "服务器上复制后大小对不上（源 {expected} 字节，副本 {} 字节）",
-                actual.size.unwrap_or(0)
-            )),
-            Err(err) => Err(format!("核对副本大小失败：{err}")),
+            Ok(actual) => {
+                let bytes = actual.size.unwrap_or(0);
+                Err(Reason::new(
+                    reason_keys::SFTP_CP_FILE_SIZE_MISMATCH,
+                    format!("服务器上复制后大小对不上（源 {expected} 字节，副本 {bytes} 字节）"),
+                )
+                .with("expected", expected)
+                .with("bytes", bytes))
+            }
+            Err(err) => Err(Reason::new(
+                reason_keys::SFTP_CP_VERIFY_COPY_FAILED,
+                format!("核对副本大小失败：{err}"),
+            )
+            .caused_by(&err)),
         }
     } else {
         Ok(())
     };
-    if let Err(message) = verified {
+    if let Err(reason) = verified {
         remove_cp_temp(runner, ops, &temp).await;
-        return Err(CpFailure::Failed(message));
+        return Err(CpFailure::Failed(reason));
     }
     let overwrite = target_exists.is_some();
     match ops.rename(&temp, target, overwrite).await {
@@ -665,7 +764,7 @@ pub async fn copy_with_cp(
             if may_remove_temp(&err) {
                 remove_cp_temp(runner, ops, &temp).await;
             }
-            return Err(CpFailure::Failed(err.to_string()));
+            return Err(CpFailure::Failed(wrapped(&err)));
         }
     }
     Ok(started.elapsed())
@@ -693,9 +792,13 @@ pub async fn copy_with_copy_data(
             Err(err) => return Err(err),
         };
         if target_attrs.is_some_and(|attrs| attrs.is_dir) {
-            return Err(SftpError::Remote(format!(
-                "目标是个文件夹，不能用文件覆盖它：{target}"
-            )));
+            return Err(SftpError::RemoteReason(
+                Reason::new(
+                    reason_keys::SFTP_COPY_TARGET_IS_DIR,
+                    format!("目标是个文件夹，不能用文件覆盖它：{target}"),
+                )
+                .with("target", target),
+            ));
         }
         let bytes = copy_file_atomic(ops, source, target, &attrs, options, true).await?;
         stats.files += 1;
@@ -716,16 +819,24 @@ pub async fn copy_with_copy_data(
     match target_attrs {
         Some(existing) if existing.is_dir => {
             let Some(resolver) = options.conflict else {
-                return Err(SftpError::Remote(format!(
-                    "目标文件夹已经存在，合并要先决定同名文件怎么处理：{target}"
-                )));
+                return Err(SftpError::RemoteReason(
+                    Reason::new(
+                        reason_keys::SFTP_COPY_MERGE_NEEDS_POLICY,
+                        format!("目标文件夹已经存在，合并要先决定同名文件怎么处理：{target}"),
+                    )
+                    .with("target", target),
+                ));
             };
             merge_dir(ops, source, target, options, resolver, &mut stats, 0).await?;
             Ok(stats)
         }
-        Some(_) => Err(SftpError::Remote(format!(
-            "目标是个文件，不能用文件夹覆盖它：{target}"
-        ))),
+        Some(_) => Err(SftpError::RemoteReason(
+            Reason::new(
+                reason_keys::SFTP_COPY_TARGET_IS_FILE,
+                format!("目标是个文件，不能用文件夹覆盖它：{target}"),
+            )
+            .with("target", target),
+        )),
         None => {
             copy_dir_atomic(ops, source, target, &attrs, options, &mut stats).await?;
             Ok(stats)
@@ -870,9 +981,13 @@ async fn merge_dir(
                     .await?;
                 }
                 Some(_) => {
-                    return Err(SftpError::Remote(format!(
-                        "目标是个文件，不能用文件夹覆盖它：{dest}"
-                    )))
+                    return Err(SftpError::RemoteReason(
+                        Reason::new(
+                            reason_keys::SFTP_COPY_TARGET_IS_FILE,
+                            format!("目标是个文件，不能用文件夹覆盖它：{dest}"),
+                        )
+                        .with("target", &dest),
+                    ))
                 }
                 None => {
                     ops.create_dir(&dest).await?;
@@ -907,9 +1022,13 @@ async fn merge_dir(
                 options.report(stats, Some(&dest));
             }
             Some(target_attrs) if target_attrs.is_dir => {
-                return Err(SftpError::Remote(format!(
-                    "目标是个文件夹，不能用文件覆盖它：{dest}"
-                )))
+                return Err(SftpError::RemoteReason(
+                    Reason::new(
+                        reason_keys::SFTP_COPY_TARGET_IS_DIR,
+                        format!("目标是个文件夹，不能用文件覆盖它：{dest}"),
+                    )
+                    .with("target", &dest),
+                ))
             }
             Some(target_attrs) => {
                 let decision = resolver
@@ -975,9 +1094,15 @@ async fn copy_file_atomic(
     if let Some(expected) = attrs.size {
         if bytes != expected {
             remove_tree(ops, &temp).await;
-            return Err(SftpError::Remote(format!(
-                "复制后大小对不上（源 {expected} 字节，副本 {bytes} 字节）：{target}"
-            )));
+            return Err(SftpError::RemoteReason(
+                Reason::new(
+                    reason_keys::SFTP_COPY_SIZE_MISMATCH,
+                    format!("复制后大小对不上（源 {expected} 字节，副本 {bytes} 字节）：{target}"),
+                )
+                .with("expected", expected)
+                .with("bytes", bytes)
+                .with("target", target),
+            ));
         }
     }
     if let Err(err) = options.check_cancel() {
@@ -1018,9 +1143,15 @@ async fn copy_file_contents(
     let bytes = actual.unwrap_or(0);
     if let Some(expected) = attrs.size {
         if bytes != expected {
-            return Err(SftpError::Remote(format!(
-                "复制后大小对不上（源 {expected} 字节，副本 {bytes} 字节）：{dest}"
-            )));
+            return Err(SftpError::RemoteReason(
+                Reason::new(
+                    reason_keys::SFTP_COPY_SIZE_MISMATCH,
+                    format!("复制后大小对不上（源 {expected} 字节，副本 {bytes} 字节）：{dest}"),
+                )
+                .with("expected", expected)
+                .with("bytes", bytes)
+                .with("target", dest),
+            ));
         }
     }
     // 像 `cp -a` 一样保留权限和修改时间（尽力而为：设不上不算复制失败）。
@@ -1106,10 +1237,17 @@ async fn tree_totals(
             return Err(SftpError::Cancelled);
         }
         if depth > budget.max_depth {
-            return Err(SftpError::Remote(format!(
-                "文件夹嵌套超过 {} 层，无法确认副本完整：{dir}",
-                budget.max_depth
-            )));
+            return Err(SftpError::RemoteReason(
+                Reason::new(
+                    reason_keys::SFTP_COPY_VERIFY_TOO_DEEP,
+                    format!(
+                        "文件夹嵌套超过 {} 层，无法确认副本完整：{dir}",
+                        budget.max_depth
+                    ),
+                )
+                .with("max", budget.max_depth)
+                .with("dir", &dir),
+            ));
         }
         for entry in ops.read_dir(&dir).await? {
             if cancel.load(Ordering::SeqCst) {
@@ -1117,10 +1255,17 @@ async fn tree_totals(
             }
             seen += 1;
             if seen > budget.max_entries {
-                return Err(SftpError::Remote(format!(
-                    "条目超过 {} 个，无法确认副本完整：{root}",
-                    budget.max_entries
-                )));
+                return Err(SftpError::RemoteReason(
+                    Reason::new(
+                        reason_keys::SFTP_COPY_VERIFY_TOO_MANY,
+                        format!(
+                            "条目超过 {} 个，无法确认副本完整：{root}",
+                            budget.max_entries
+                        ),
+                    )
+                    .with("max", budget.max_entries)
+                    .with("root", root),
+                ));
             }
             if entry.is_dir && !entry.is_symlink {
                 pending.push((entry.path.clone(), depth + 1));

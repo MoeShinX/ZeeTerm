@@ -25,6 +25,11 @@ pub trait ErrorWithCode: std::fmt::Display {
     fn cause(&self) -> Option<&dyn ErrorWithCode> {
         None
     }
+
+    /// 带名字的内层错误们（`Reason::caused_by` 记下的）：名字就是模板里的占位符。
+    fn causes(&self) -> Vec<(&'static str, &dyn ErrorWithCode)> {
+        Vec::new()
+    }
 }
 
 /// `zssh-core` 的统一错误类型。
@@ -388,7 +393,7 @@ impl ErrorWithCode for ZsshError {
 
 /// 带 [`Reason`] 的错误的参数：`reason` 是 key，`detail` 是中文原文（中文界面和兜底用），
 /// 后面跟这条原因自己的参数。
-fn reason_params(reason: &Reason) -> Vec<(&'static str, String)> {
+pub fn reason_params(reason: &Reason) -> Vec<(&'static str, String)> {
     let mut out = vec![
         ("reason", reason.key().to_owned()),
         ("detail", reason.zh().to_owned()),

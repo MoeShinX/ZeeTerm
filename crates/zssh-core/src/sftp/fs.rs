@@ -20,6 +20,7 @@ use tokio::task::JoinSet;
 use super::error::SftpError;
 use super::path;
 use super::session::SftpChannel;
+use crate::error::{reason_keys, Reason};
 
 /// 小文本文件的体积上限（AI 读文件 / 快速编辑用；超了明确报错，不截断）。
 pub const SMALL_TEXT_LIMIT: u64 = 2 * 1024 * 1024;
@@ -145,8 +146,15 @@ pub async fn entries_from_protocol(
             });
         }
         while let Some(joined) = set.join_next().await {
-            let (row, link_target, target) =
-                joined.map_err(|err| SftpError::Internal(format!("解析符号链接崩了：{err}")))?;
+            let (row, link_target, target) = joined.map_err(|err| {
+                SftpError::Internal(
+                    Reason::new(
+                        reason_keys::SFTP_TASK_SYMLINK,
+                        format!("解析符号链接崩了：{err}"),
+                    )
+                    .with("cause", &err),
+                )
+            })?;
             rows[row].link_target = link_target;
             rows[row].kind = FileKind::Symlink { target };
         }
@@ -170,8 +178,15 @@ pub async fn entries_from_protocol(
             });
         }
         while let Some(joined) = set.join_next().await {
-            let (row, clean) =
-                joined.map_err(|err| SftpError::Internal(format!("检查文件名崩了：{err}")))?;
+            let (row, clean) = joined.map_err(|err| {
+                SftpError::Internal(
+                    Reason::new(
+                        reason_keys::SFTP_TASK_NAME_CHECK,
+                        format!("检查文件名崩了：{err}"),
+                    )
+                    .with("cause", &err),
+                )
+            })?;
             rows[row].name_is_utf8 = clean;
         }
     }
@@ -278,7 +293,13 @@ pub async fn create_dir_all(channel: &SftpChannel, path_str: &str) -> Result<(),
                     return Err(SftpError::AlreadyExists { path: built });
                 }
                 if !kind_of(&attrs).is_dir() {
-                    return Err(SftpError::Remote(format!("{built} 已存在，但不是目录")));
+                    return Err(SftpError::RemoteReason(
+                        Reason::new(
+                            reason_keys::SFTP_EXISTS_NOT_DIR,
+                            format!("{built} 已存在，但不是目录"),
+                        )
+                        .with("path", &built),
+                    ));
                 }
             }
             Err(SftpError::NotFound { .. }) => channel.create_dir(&built).await?,

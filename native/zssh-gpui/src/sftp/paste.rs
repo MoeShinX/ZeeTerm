@@ -585,12 +585,19 @@ async fn paste_remote(
                         results.push(ItemResult::new(
                             item,
                             ItemState::Queued,
-                            Some(format!("{reason}{}", t(SftpMsg::PasteRelaySuffix))),
+                            Some(format!(
+                                "{}{}",
+                                crate::error_text::reason_text(&reason),
+                                t(SftpMsg::PasteRelaySuffix)
+                            )),
                         ));
                     }
                     Err(CpFailure::Failed(message)) => {
                         method = Some(CopyMethod::ServerCp);
-                        results.push(ItemResult::failed_relayable(item, message));
+                        results.push(ItemResult::failed_relayable(
+                            item,
+                            crate::error_text::reason_text(&message),
+                        ));
                     }
                     Err(CpFailure::Cancelled) => {
                         method = Some(CopyMethod::ServerCp);

@@ -70,6 +70,10 @@ enum CoreErrorMsg {
     SftpRenameTargetExists,
     SftpNoFreeName,
     SftpCancelled,
+    ArchiveUnsafeEntries,
+    ArchiveDestSymlink,
+    /// 整句就是一条 [`Reason`]（压缩 / 解压、服务器端 `cp`……）：`{detail}` 已经是当前语言。
+    ReasonOnly,
 }
 
 impl Msg for CoreErrorMsg {
@@ -143,6 +147,11 @@ impl Msg for CoreErrorMsg {
                 "{path} 旁边的自动改名（试了 {tried} 个名字）都已被占用，请手动换个名字，或先清理同名文件"
             }
             Self::SftpCancelled => "操作被取消",
+            Self::ArchiveUnsafeEntries => "压缩包里有指向目录外的路径，已拒绝解压",
+            Self::ArchiveDestSymlink => {
+                "目标目录里有符号链接（{path}），解压可能写到目录外，已拒绝"
+            }
+            Self::ReasonOnly => "{detail}",
         }
     }
 
@@ -234,6 +243,13 @@ impl Msg for CoreErrorMsg {
                 "Every automatic rename near {path} (tried {tried} names) is taken; choose a name manually or clean up the same-name files first"
             }
             Self::SftpCancelled => "Operation cancelled",
+            Self::ArchiveUnsafeEntries => {
+                "The archive contains paths that point outside the target directory; extraction was refused"
+            }
+            Self::ArchiveDestSymlink => {
+                "The target directory contains a symlink ({path}); extracting might write outside it, so it was refused"
+            }
+            Self::ReasonOnly => "{detail}",
         }
     }
 }
@@ -292,7 +308,10 @@ fn message_for(code: &str) -> Option<CoreErrorMsg> {
         "sftp.target_busy" => CoreErrorMsg::SftpTargetBusy,
         "sftp.rename_target_exists" => CoreErrorMsg::SftpRenameTargetExists,
         "sftp.no_free_name" => CoreErrorMsg::SftpNoFreeName,
-        "sftp.cancelled" => CoreErrorMsg::SftpCancelled,
+        "sftp.cancelled" | "archive.cancelled" => CoreErrorMsg::SftpCancelled,
+        "archive.unsafe_entries" => CoreErrorMsg::ArchiveUnsafeEntries,
+        "archive.dest_symlink" => CoreErrorMsg::ArchiveDestSymlink,
+        "archive.reason" | "sftp.cp_reason" => CoreErrorMsg::ReasonOnly,
         _ => return None,
     })
 }
@@ -324,10 +343,18 @@ pub(crate) fn reason_text(reason: &zssh_core::error::Reason) -> String {
     reason_text_in(current(), reason)
 }
 
+/// 同上，`None` 还是 `None`。
+pub(crate) fn reason_text_opt(reason: Option<&zssh_core::error::Reason>) -> Option<String> {
+    reason.map(reason_text)
+}
+
 pub(crate) fn reason_text_in(lang: Lang, reason: &zssh_core::error::Reason) -> String {
     if lang == Lang::En {
         let mut params = vec![("reason", reason.key().to_owned())];
         params.extend(reason.params().iter().cloned());
+        for (name, inner) in reason.causes() {
+            params.push((name, error_text_in(lang, inner)));
+        }
         if let Some(sentence) = crate::reason_text::sentence(reason.key(), &params) {
             return sentence;
         }
@@ -354,11 +381,17 @@ fn localize_params<E: ErrorWithCode + ?Sized>(
         }
     }
 
+    // 原因里的内层错误（`Reason::caused_by`）：按当前语言生成整句，英文模板里用 `{cause}` 等占位。
+    for (name, inner) in err.causes() {
+        let text = error_text_in(lang, inner);
+        params.push((name, text));
+    }
     if lang == Lang::En
         && let Some(key) = get(params, "reason")
         && let Some(sentence) = crate::reason_text::sentence(key, params)
     {
-        set(params, "detail", sentence);
+        set(params, "detail", sentence.clone());
+        set(params, "message", sentence);
     }
     if err.code() == "store.not_found"
         && let Some(noun) = get(params, "entity").map(|key| entity_noun(lang, key))
@@ -524,6 +557,9 @@ pub(crate) fn fill(template: &str, params: &[(&'static str, String)]) -> Option<
 }
 
 #[cfg(test)]
+mod fix3_tests;
+
+#[cfg(test)]
 mod tests {
     use std::fmt;
 
@@ -589,6 +625,9 @@ mod tests {
             CoreErrorMsg::SftpRenameTargetExists,
             CoreErrorMsg::SftpNoFreeName,
             CoreErrorMsg::SftpCancelled,
+            CoreErrorMsg::ArchiveUnsafeEntries,
+            CoreErrorMsg::ArchiveDestSymlink,
+            CoreErrorMsg::ReasonOnly,
         ];
         for msg in all {
             assert!(!msg.zh().is_empty(), "{msg:?} 缺中文");

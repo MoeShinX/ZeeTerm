@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::error::{reason_keys, Reason};
 use crate::sftp::error::SftpError;
 use crate::sftp::local::{self, LocalNamePlan};
 use crate::sftp::path as remote_path;
@@ -32,7 +33,7 @@ pub struct TransferPlan {
     /// 目标端要先建出来的目录（远端路径或本地路径，按方向解释）。
     pub dirs: Vec<String>,
     /// 需要告诉用户的说明（跳过链接、名字改动、空目录等）。
-    pub notes: Vec<String>,
+    pub notes: Vec<Reason>,
 }
 
 impl TransferPlan {
@@ -71,9 +72,7 @@ pub fn plan_upload(
         });
     }
     if !recursive {
-        return Err(SftpError::InvalidInput(
-            "这是个目录：要么勾选递归，要么选一个文件".to_owned(),
-        ));
+        return Err(dir_needs_recursive());
     }
 
     let tree = local::walk_local_tree(local_source)?;
@@ -83,7 +82,13 @@ pub fn plan_upload(
     plan.dirs.push(remote_target.to_owned());
     for dir in &tree.empty_dirs {
         plan.dirs.push(remote_path::join(remote_target, dir));
-        plan.notes.push(format!("空目录 {dir} 也建出来"));
+        plan.notes.push(
+            Reason::new(
+                reason_keys::XFER_NOTE_EMPTY_DIR,
+                format!("空目录 {dir} 也建出来"),
+            )
+            .with("dir", dir),
+        );
     }
     // 所有文件的父目录都要建。
     for file in &tree.files {
@@ -95,8 +100,7 @@ pub fn plan_upload(
         }
     }
     for skipped in &tree.skipped_links {
-        plan.notes
-            .push(format!("跳过符号链接 / 目录联接：{skipped}"));
+        plan.notes.push(skipped_link_note(skipped));
     }
     for file in tree.files {
         plan.files.push(PlannedFile {
@@ -106,8 +110,53 @@ pub fn plan_upload(
             note: None,
         });
     }
-    plan.notes.push(format!("共 {} 个文件", plan.files.len()));
+    plan.notes.push(file_count_note(plan.files.len()));
     Ok(plan)
+}
+
+fn skipped_link_note(path: &str) -> Reason {
+    Reason::new(
+        reason_keys::XFER_NOTE_SKIPPED_LINK,
+        format!("跳过符号链接 / 目录联接：{path}"),
+    )
+    .with("path", path)
+}
+
+fn skipped_symlink_note(path: &str) -> Reason {
+    Reason::new(
+        reason_keys::XFER_NOTE_SKIPPED_SYMLINK,
+        format!("跳过符号链接：{path}"),
+    )
+    .with("path", path)
+}
+
+fn file_count_note(count: usize) -> Reason {
+    Reason::new(
+        reason_keys::XFER_NOTE_FILE_COUNT,
+        format!("共 {count} 个文件"),
+    )
+    .with("count", count)
+}
+
+fn dir_needs_recursive() -> SftpError {
+    SftpError::InvalidInput(Reason::new(
+        reason_keys::XFER_DIR_NEEDS_RECURSIVE,
+        "这是个目录：要么勾选递归，要么选一个文件",
+    ))
+}
+
+/// 下载时一个条目的名字被改过：记一条「远端名 → 本地名（原因）」。
+fn rename_note(remote_name: &str, assigned: &local::LocalName) -> Option<Reason> {
+    let note = assigned.note.as_ref()?;
+    Some(
+        Reason::new(
+            reason_keys::XFER_NOTE_RENAMED,
+            format!("{remote_name} → {}（{note}）", assigned.name),
+        )
+        .with("remote", remote_name)
+        .with("local", &assigned.name)
+        .with("fixes", local::NameFix::codes(&assigned.fixes)),
+    )
 }
 
 /// 下载：远端路径 → 本地路径。
@@ -129,9 +178,7 @@ pub async fn plan_download(
         return Ok(plan);
     }
     if !recursive {
-        return Err(SftpError::InvalidInput(
-            "这是个目录：要么勾选递归，要么选一个文件".to_owned(),
-        ));
+        return Err(dir_needs_recursive());
     }
 
     // 逐层走远端树：每层先拿到名字，再给这一层分配本地名字。
@@ -144,17 +191,24 @@ pub async fn plan_download(
         let mut sub_dirs = Vec::new();
         for entry in &entries {
             if entry.kind.is_symlink() {
-                plan.notes.push(format!("跳过符号链接：{}", entry.path));
+                plan.notes.push(skipped_symlink_note(&entry.path));
                 continue;
             }
             if !entry.name_is_utf8 {
                 // 名字不是 UTF-8：本地落盘会有损，明确记下来（下载下来内容是对的，
                 // 名字只能用有损版本）。
-                plan.notes.push(format!(
-                    "{} 的名字不是 UTF-8，本地名字用有损版本 {}",
-                    entry.path,
-                    local::local_name(&entry.name).name
-                ));
+                let lossy = local::local_name(&entry.name).name;
+                plan.notes.push(
+                    Reason::new(
+                        reason_keys::XFER_NOTE_NON_UTF8,
+                        format!(
+                            "{} 的名字不是 UTF-8，本地名字用有损版本 {lossy}",
+                            entry.path
+                        ),
+                    )
+                    .with("path", &entry.path)
+                    .with("local", lossy),
+                );
             }
             if entry.kind.is_dir() {
                 sub_dirs.push((entry.path.clone(), entry.name.clone()));
@@ -178,14 +232,8 @@ pub async fn plan_download(
             let assigned = local_for
                 .get(&remote_name)
                 .cloned()
-                .unwrap_or(local::LocalName {
-                    name: remote_name.clone(),
-                    note: None,
-                });
-            if let Some(note) = &assigned.note {
-                plan.notes
-                    .push(format!("{remote_name} → {}（{note}）", assigned.name));
-            }
+                .unwrap_or_else(|| local::LocalName::plain(remote_name.clone()));
+            plan.notes.extend(rename_note(&remote_name, &assigned));
             let local_file = local_dir.join(&assigned.name);
             local::ensure_inside(local_target, &local_file)?;
             plan.files.push(PlannedFile {
@@ -199,21 +247,15 @@ pub async fn plan_download(
             let assigned = local_for
                 .get(&remote_name)
                 .cloned()
-                .unwrap_or(local::LocalName {
-                    name: remote_name.clone(),
-                    note: None,
-                });
-            if let Some(note) = &assigned.note {
-                plan.notes
-                    .push(format!("{remote_name} → {}（{note}）", assigned.name));
-            }
+                .unwrap_or_else(|| local::LocalName::plain(remote_name.clone()));
+            plan.notes.extend(rename_note(&remote_name, &assigned));
             let local_child = local_dir.join(&assigned.name);
             local::ensure_inside(local_target, &local_child)?;
             plan.dirs.push(local_child.display().to_string());
             pending.push((remote_dir, local_child));
         }
     }
-    plan.notes.push(format!("共 {} 个文件", plan.files.len()));
+    plan.notes.push(file_count_note(plan.files.len()));
     Ok(plan)
 }
 
@@ -228,9 +270,10 @@ pub async fn plan_remote_copy(
     let mut plan = TransferPlan::default();
     let attrs = lister.stat_remote(source).await?;
     if attrs.is_symlink() {
-        return Err(SftpError::InvalidInput(
-            "符号链接不能用中转复制（会复制成链接指向的内容，和 cp -a 的行为不一致）".to_owned(),
-        ));
+        return Err(SftpError::InvalidInput(Reason::new(
+            reason_keys::XFER_SYMLINK_NO_RELAY,
+            "符号链接不能用中转复制（会复制成链接指向的内容，和 cp -a 的行为不一致）",
+        )));
     }
     if !attrs.is_dir() {
         plan.files.push(PlannedFile {
@@ -242,16 +285,14 @@ pub async fn plan_remote_copy(
         return Ok(plan);
     }
     if !recursive {
-        return Err(SftpError::InvalidInput(
-            "这是个目录：要么勾选递归，要么选一个文件".to_owned(),
-        ));
+        return Err(dir_needs_recursive());
     }
     plan.dirs.push(target.to_owned());
     let mut pending = vec![(source.to_owned(), target.to_owned())];
     while let Some((dir, target_dir)) = pending.pop() {
         for entry in lister.list_dir(&dir).await? {
             if entry.kind.is_symlink() {
-                plan.notes.push(format!("跳过符号链接：{}", entry.path));
+                plan.notes.push(skipped_symlink_note(&entry.path));
                 continue;
             }
             let child = remote_path::join(&target_dir, &entry.name);
@@ -268,7 +309,7 @@ pub async fn plan_remote_copy(
             }
         }
     }
-    plan.notes.push(format!("共 {} 个文件", plan.files.len()));
+    plan.notes.push(file_count_note(plan.files.len()));
     Ok(plan)
 }
 
@@ -297,9 +338,7 @@ pub fn plan_local_copy(
         });
     }
     if !recursive {
-        return Err(SftpError::InvalidInput(
-            "这是个目录：要么勾选递归，要么选一个文件".to_owned(),
-        ));
+        return Err(dir_needs_recursive());
     }
     let tree = local::walk_local_tree(source)?;
     plan.dirs.push(target.display().to_string());
@@ -322,8 +361,7 @@ pub fn plan_local_copy(
         }
     }
     for skipped in &tree.skipped_links {
-        plan.notes
-            .push(format!("跳过符号链接 / 目录联接：{skipped}"));
+        plan.notes.push(skipped_link_note(skipped));
     }
     for file in tree.files {
         plan.files.push(PlannedFile {
@@ -333,7 +371,7 @@ pub fn plan_local_copy(
             note: None,
         });
     }
-    plan.notes.push(format!("共 {} 个文件", plan.files.len()));
+    plan.notes.push(file_count_note(plan.files.len()));
     Ok(plan)
 }
 

@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use super::endpoint::{FileEndpoint, LocalEndpoint, RemoteEndpoint};
 use super::Direction;
+use crate::error::{reason_keys, Reason};
 use crate::sftp::error::SftpError;
 use crate::sftp::fs::DirEntry;
 use crate::sftp::session::SftpChannel;
@@ -256,9 +257,10 @@ impl SftpEndpoints {
                 .get(name)
                 .cloned()
                 .ok_or_else(|| {
-                    SftpError::Remote(
-                        "复制的源所在的连接已经关闭，请重新打开那个标签再试".to_owned(),
-                    )
+                    SftpError::RemoteReason(Reason::new(
+                        reason_keys::SFTP_COPY_PEER_CLOSED,
+                        "复制的源所在的连接已经关闭，请重新打开那个标签再试",
+                    ))
                 }),
         }
     }
@@ -371,7 +373,13 @@ impl TransferEndpoints for SftpEndpoints {
                     Ok(attrs) if attrs.permissions.is_some_and(|mode| mode & 0o40000 != 0) => {
                         Ok(())
                     }
-                    Ok(_) => Err(SftpError::Remote(format!("{path} 已存在，但不是目录"))),
+                    Ok(_) => Err(SftpError::RemoteReason(
+                        Reason::new(
+                            reason_keys::SFTP_EXISTS_NOT_DIR,
+                            format!("{path} 已存在，但不是目录"),
+                        )
+                        .with("path", path),
+                    )),
                     Err(err) => Err(err),
                 },
             }

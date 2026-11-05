@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use super::error::{from_io, SftpError};
+use crate::error::{reason_keys, Reason};
 
 /// Windows 文件名里不允许出现的字符。
 const ILLEGAL_CHARS: [char; 9] = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
@@ -31,11 +32,101 @@ pub struct LocalName {
     pub name: String,
     /// 改过名的原因（`None` = 原名就能用）。界面把它们列出来。
     pub note: Option<String>,
+    /// 同样的原因，结构化：英文界面按它们重新生成（`note` 是中文原文）。
+    pub fixes: Vec<NameFix>,
+}
+
+impl LocalName {
+    /// 不需要改名。
+    pub fn plain(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            note: None,
+            fixes: Vec::new(),
+        }
+    }
+
+    /// 中文说明由修正们拼出来，`note` 和 `fixes` 永远一致。
+    pub fn with_fixes(name: String, fixes: Vec<NameFix>) -> Self {
+        let note = (!fixes.is_empty())
+            .then(|| fixes.iter().map(NameFix::zh).collect::<Vec<_>>().join("；"));
+        Self { name, note, fixes }
+    }
+}
+
+/// 一个远端名字为了能在 Windows 上用而被改掉的一处。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NameFix {
+    /// 非法字符（`label` 是字符本身，控制字符写成 `\x07`）换成了 `REPLACEMENT`。
+    IllegalChar { label: String },
+    /// 结尾的点或空格去掉了。
+    TrailingDotSpace,
+    /// Windows 保留名，加了前缀。
+    Reserved { name: String },
+    /// 名字变成空的，用 `_` 代替。
+    Empty,
+    /// 和同一批的另一个条目同名（只差大小写），改成了 `candidate`。
+    BatchClash { candidate: String },
+    /// 本地已有同名的、类型不同的条目（`existing_is_dir`），改成了 `candidate`。
+    KindClash {
+        existing_is_dir: bool,
+        candidate: String,
+    },
+}
+
+impl NameFix {
+    pub fn zh(&self) -> String {
+        match self {
+            Self::IllegalChar { label } => format!("非法字符 {label} 换成 {REPLACEMENT}"),
+            Self::TrailingDotSpace => "结尾的点或空格去掉了".to_owned(),
+            Self::Reserved { name } => format!("{name} 是 Windows 保留名，加了前缀"),
+            Self::Empty => "名字变成空的，用 _ 代替".to_owned(),
+            Self::BatchClash { candidate } => {
+                format!("和同一批的另一个条目同名（只差大小写），改成 {candidate}")
+            }
+            Self::KindClash {
+                existing_is_dir: false,
+                candidate,
+            } => format!("本地已有同名文件，改成 {candidate}"),
+            Self::KindClash {
+                existing_is_dir: true,
+                candidate,
+            } => format!("本地已有同名文件夹，改成 {candidate}"),
+        }
+    }
+
+    /// 稳定的代码（界面据此出词）：`illegal:<字符>`、`trailing`、`reserved:<名字>`、`empty`。
+    pub fn code(&self) -> String {
+        match self {
+            Self::IllegalChar { label } => format!("illegal:{label}"),
+            Self::TrailingDotSpace => "trailing".to_owned(),
+            Self::Reserved { name } => format!("reserved:{name}"),
+            Self::Empty => "empty".to_owned(),
+            Self::BatchClash { candidate } => format!("clash_batch:{candidate}"),
+            Self::KindClash {
+                existing_is_dir: false,
+                candidate,
+            } => format!("clash_file:{candidate}"),
+            Self::KindClash {
+                existing_is_dir: true,
+                candidate,
+            } => format!("clash_dir:{candidate}"),
+        }
+    }
+
+    /// 一串修正合成一个参数值（`\u{1f}` 分隔）。
+    pub fn codes(fixes: &[NameFix]) -> String {
+        fixes
+            .iter()
+            .map(NameFix::code)
+            .collect::<Vec<_>>()
+            .join("\u{1f}")
+    }
 }
 
 /// 这个名字能不能直接用（不能用的原因见 [`LocalName::note`]）。
 pub fn local_name(remote_name: &str) -> LocalName {
-    let mut notes: Vec<String> = Vec::new();
+    let mut fixes: Vec<NameFix> = Vec::new();
     let mut name = String::with_capacity(remote_name.len());
 
     for ch in remote_name.chars() {
@@ -46,8 +137,11 @@ pub fn local_name(remote_name: &str) -> LocalName {
             } else {
                 ch.to_string()
             };
-            if !notes.iter().any(|note| note.contains(&label)) {
-                notes.push(format!("非法字符 {label} 换成 {REPLACEMENT}"));
+            if !fixes
+                .iter()
+                .any(|fix| matches!(fix, NameFix::IllegalChar { label: seen } if seen == &label))
+            {
+                fixes.push(NameFix::IllegalChar { label });
             }
         } else {
             name.push(ch);
@@ -57,29 +151,22 @@ pub fn local_name(remote_name: &str) -> LocalName {
     // 结尾的点和空格（Windows 会悄悄去掉，导致名字和预期不一致）。
     let trimmed = name.trim_end_matches(['.', ' ']);
     if trimmed.len() != name.len() {
-        notes.push("结尾的点或空格去掉了".to_owned());
+        fixes.push(NameFix::TrailingDotSpace);
         name = trimmed.to_owned();
     }
 
     // 保留名：加个前缀（`CON` → `_CON`）。
     if is_reserved_name(&name) {
-        notes.push(format!("{name} 是 Windows 保留名，加了前缀"));
+        fixes.push(NameFix::Reserved { name: name.clone() });
         name = format!("_{name}");
     }
 
     if name.is_empty() {
-        notes.push("名字变成空的，用 _ 代替".to_owned());
+        fixes.push(NameFix::Empty);
         name = "_".to_owned();
     }
 
-    LocalName {
-        name,
-        note: if notes.is_empty() {
-            None
-        } else {
-            Some(notes.join("；"))
-        },
-    }
+    LocalName::with_fixes(name, fixes)
 }
 
 /// 用户在对话框里输入的"同一目录下的新名字"（另存为、粘贴时重命名）：必须原样就是一个合法的
@@ -91,15 +178,27 @@ pub fn local_name(remote_name: &str) -> LocalName {
 pub fn check_child_name(name: &str) -> Result<String, SftpError> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
-        return Err(SftpError::InvalidInput("名字不能为空".to_owned()));
+        return Err(SftpError::InvalidInput(Reason::new(
+            reason_keys::SFTP_NAME_EMPTY,
+            "名字不能为空",
+        )));
     }
     if trimmed == "." || trimmed == ".." {
-        return Err(SftpError::InvalidInput("名字不能是 . 或 ..".to_owned()));
-    }
-    if let Some(note) = local_name(trimmed).note {
-        return Err(SftpError::InvalidInput(format!(
-            "「{trimmed}」不能用作文件名：{note}"
+        return Err(SftpError::InvalidInput(Reason::new(
+            reason_keys::SFTP_NAME_DOTS,
+            "名字不能是 . 或 ..",
         )));
+    }
+    let checked = local_name(trimmed);
+    if let Some(note) = checked.note {
+        return Err(SftpError::InvalidInput(
+            Reason::new(
+                reason_keys::SFTP_NAME_UNUSABLE,
+                format!("「{trimmed}」不能用作文件名：{note}"),
+            )
+            .with("name", trimmed)
+            .with("fixes", NameFix::codes(&checked.fixes)),
+        ));
     }
     Ok(trimmed.to_owned())
 }
@@ -181,7 +280,7 @@ impl LocalNamePlan {
         for (remote_name, is_dir) in remote {
             let base = local_name(remote_name);
             let mut candidate = base.name.clone();
-            let mut note = base.note.clone();
+            let mut fixes = base.fixes.clone();
             let lower = candidate.to_lowercase();
             let batch_clash = taken.contains(&lower);
             let kind_clash = existing
@@ -197,26 +296,20 @@ impl LocalNamePlan {
                         break;
                     }
                 }
-                let why = if batch_clash {
-                    "和同一批的另一个条目同名（只差大小写）"
-                } else if *is_dir {
-                    "本地已有同名文件"
+                fixes.push(if batch_clash {
+                    NameFix::BatchClash {
+                        candidate: candidate.clone(),
+                    }
                 } else {
-                    "本地已有同名文件夹"
-                };
-                note = Some(match note {
-                    Some(note) => format!("{note}；{why}，改成 {candidate}"),
-                    None => format!("{why}，改成 {candidate}"),
+                    // 远端是目录就说明本地撞上的是文件，反之亦然。
+                    NameFix::KindClash {
+                        existing_is_dir: !*is_dir,
+                        candidate: candidate.clone(),
+                    }
                 });
             }
             taken.push(candidate.to_lowercase());
-            assignments.push((
-                remote_name.clone(),
-                LocalName {
-                    name: candidate,
-                    note,
-                },
-            ));
+            assignments.push((remote_name.clone(), LocalName::with_fixes(candidate, fixes)));
         }
         Self { assignments }
     }
@@ -346,9 +439,13 @@ pub fn download_target(local_dir: &Path, remote_source: &str) -> Result<PathBuf,
     let trimmed = remote_source.trim_end_matches('/');
     let name = trimmed.rsplit('/').next().unwrap_or_default();
     if name.is_empty() {
-        return Err(SftpError::InvalidInput(format!(
-            "{remote_source:?} 没有可用的文件名，没法下载到本地"
-        )));
+        return Err(SftpError::InvalidInput(
+            Reason::new(
+                reason_keys::SFTP_DOWNLOAD_NO_NAME,
+                format!("{remote_source:?} 没有可用的文件名，没法下载到本地"),
+            )
+            .with("path", format!("{remote_source:?}")),
+        ));
     }
     let target = local_dir.join(local_name(name).name);
     ensure_inside(local_dir, &target)?;
@@ -359,11 +456,18 @@ pub fn download_target(local_dir: &Path, remote_source: &str) -> Result<PathBuf,
 /// Windows 上不分大小写）；带盘符、`..` 逃出去、名字里有 `:` 的都拒绝。
 pub fn ensure_inside(root: &Path, target: &Path) -> Result<(), SftpError> {
     let outside = || {
-        SftpError::InvalidInput(format!(
-            "目标路径 {} 不在所选目录 {} 里，已拒绝",
-            target.display(),
-            root.display()
-        ))
+        SftpError::InvalidInput(
+            Reason::new(
+                reason_keys::SFTP_TARGET_OUTSIDE,
+                format!(
+                    "目标路径 {} 不在所选目录 {} 里，已拒绝",
+                    target.display(),
+                    root.display()
+                ),
+            )
+            .with("target", target.display())
+            .with("root", root.display()),
+        )
     };
     // 先规范化（8.3 短路径 / 长路径、大小写、符号链接）：目标还不存在时只解析它已存在的父目录。
     let root_parts = lexical_parts(&crate::pathnorm::normalize(root)).ok_or_else(outside)?;

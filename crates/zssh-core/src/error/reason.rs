@@ -11,12 +11,79 @@
 
 use std::fmt;
 
+use super::ErrorWithCode;
+
 /// 一条会上屏的原因。
 #[derive(Clone, PartialEq, Eq)]
 pub struct Reason {
     key: &'static str,
     zh: String,
     params: Vec<(&'static str, String)>,
+    /// 这条原因是由别的错误引起的（"检查 X 时失败：<内层错误>"）：名字对应模板里的占位符
+    /// （`cause`、`restore`……）。界面按当前语言把内层也生成整句，不用拼好的中文。
+    causes: Vec<(&'static str, Box<Captured>)>,
+}
+
+/// 把一个错误的「码 + 参数 + 中文原文 + 内层」抓下来，好放进 [`Reason`]（`Reason` 要能
+/// `Clone` / 比较，所以不直接装 `Box<dyn ErrorWithCode>`）。
+#[derive(Clone, PartialEq, Eq)]
+pub struct Captured {
+    code: &'static str,
+    params: Vec<(&'static str, String)>,
+    zh: String,
+    cause: Option<Box<Captured>>,
+    causes: Vec<(&'static str, Box<Captured>)>,
+}
+
+impl Captured {
+    fn of(err: &dyn ErrorWithCode) -> Self {
+        Self {
+            code: err.code(),
+            params: err.params(),
+            zh: err.to_string(),
+            cause: err.cause().map(|inner| Box::new(Self::of(inner))),
+            causes: err
+                .causes()
+                .into_iter()
+                .map(|(name, inner)| (name, Box::new(Self::of(inner))))
+                .collect(),
+        }
+    }
+}
+
+impl fmt::Display for Captured {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.zh)
+    }
+}
+
+impl fmt::Debug for Captured {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.code, self.zh)
+    }
+}
+
+impl ErrorWithCode for Captured {
+    fn code(&self) -> &'static str {
+        self.code
+    }
+
+    fn params(&self) -> Vec<(&'static str, String)> {
+        self.params.clone()
+    }
+
+    fn cause(&self) -> Option<&dyn ErrorWithCode> {
+        self.cause
+            .as_deref()
+            .map(|inner| inner as &dyn ErrorWithCode)
+    }
+
+    fn causes(&self) -> Vec<(&'static str, &dyn ErrorWithCode)> {
+        self.causes
+            .iter()
+            .map(|(name, inner)| (*name, inner.as_ref() as &dyn ErrorWithCode))
+            .collect()
+    }
 }
 
 impl Reason {
@@ -26,6 +93,7 @@ impl Reason {
             key,
             zh: zh.into(),
             params: Vec::new(),
+            causes: Vec::new(),
         }
     }
 
@@ -40,6 +108,28 @@ impl Reason {
     pub fn with(mut self, name: &'static str, value: impl ToString) -> Self {
         self.params.push((name, value.to_string()));
         self
+    }
+
+    /// 记下引起这条原因的内层错误（中文原文里已经拼进了它的 `Display`；英文由界面按它的
+    /// 码和参数重新生成，模板里用 `{cause}`）。
+    #[must_use]
+    pub fn caused_by(self, err: &dyn ErrorWithCode) -> Self {
+        self.caused_by_as("cause", err)
+    }
+
+    /// 同上，占位符名字自己取（一条原因里有两个内层错误时用）。
+    #[must_use]
+    pub fn caused_by_as(mut self, name: &'static str, err: &dyn ErrorWithCode) -> Self {
+        self.causes.push((name, Box::new(Captured::of(err))));
+        self
+    }
+
+    /// 内层错误们（见 [`Reason::caused_by`]）。
+    pub fn causes(&self) -> Vec<(&'static str, &dyn ErrorWithCode)> {
+        self.causes
+            .iter()
+            .map(|(name, inner)| (*name, inner.as_ref() as &dyn ErrorWithCode))
+            .collect()
     }
 
     /// 在中文原文后面接一段（只改 `Display`；英文由界面按参数补，见 `ipv6_hint`）。
@@ -64,6 +154,11 @@ impl Reason {
 
     pub fn into_zh(self) -> String {
         self.zh
+    }
+
+    /// 中文原文里有没有这段文字（断言和日志筛选用）。
+    pub fn contains(&self, needle: &str) -> bool {
+        self.zh.contains(needle)
     }
 }
 
@@ -392,6 +487,108 @@ pub mod keys {
         CMD_SU = "cmd.su";
         CMD_REDIRECT_BLOCK_DEVICE = "cmd.redirect_block_device";
         CMD_REDIRECT_SYSTEM_FILE = "cmd.redirect_system_file";
+        SFTP_LIMITED = "sftp.limited";
+        SFTP_UNEXPECTED_PACKET = "sftp.unexpected_packet";
+        SFTP_REQUEST_TIMEOUT = "sftp.request_timeout";
+        SFTP_REALPATH_EMPTY = "sftp.realpath_empty";
+        SFTP_READLINK_EMPTY = "sftp.readlink_empty";
+        SFTP_POSIX_RENAME_REPLY = "sftp.posix_rename_reply";
+        SFTP_COPY_DATA_REPLY = "sftp.copy_data_reply";
+        SFTP_COPY_PEER_CLOSED = "sftp.copy_peer_closed";
+        SFTP_EXISTS_NOT_DIR = "sftp.exists_not_dir";
+        SFTP_TASK_SYMLINK = "sftp.task_symlink";
+        SFTP_TASK_NAME_CHECK = "sftp.task_name_check";
+        SFTP_TASK_WRITE = "sftp.task_write";
+        SFTP_TASK_READ = "sftp.task_read";
+        SFTP_TASK_LOCAL_READ = "sftp.task_local_read";
+        SFTP_TASK_LOCAL_WRITE = "sftp.task_local_write";
+        SFTP_TASK_LOCAL_FINISH = "sftp.task_local_finish";
+        SFTP_TASK_LOCAL_SYNC = "sftp.task_local_sync";
+        SFTP_READ_OFFSET_MISMATCH = "sftp.read_offset_mismatch";
+        SFTP_SOURCE_ENDED_EARLY = "sftp.source_ended_early";
+        SFTP_OWNER_WOULD_CHANGE = "sftp.owner_would_change";
+        SFTP_NAME_EMPTY = "sftp.name_empty";
+        SFTP_NAME_DOTS = "sftp.name_dots";
+        SFTP_NAME_UNUSABLE = "sftp.name_unusable";
+        SFTP_DOWNLOAD_NO_NAME = "sftp.download_no_name";
+        SFTP_TARGET_OUTSIDE = "sftp.target_outside";
+        SFTP_COPY_INTO_SELF = "sftp.copy_into_self";
+        SFTP_COPY_UNSURE = "sftp.copy_unsure";
+        SFTP_COPY_TOO_DEEP = "sftp.copy_too_deep";
+        SFTP_COPY_TARGET_IS_DIR = "sftp.copy_target_is_dir";
+        SFTP_COPY_MERGE_NEEDS_POLICY = "sftp.copy_merge_needs_policy";
+        SFTP_COPY_TARGET_IS_FILE = "sftp.copy_target_is_file";
+        SFTP_COPY_SIZE_MISMATCH = "sftp.copy_size_mismatch";
+        SFTP_COPY_VERIFY_TOO_DEEP = "sftp.copy_verify_too_deep";
+        SFTP_COPY_VERIFY_TOO_MANY = "sftp.copy_verify_too_many";
+        SFTP_REPLACE_EXISTS_CHECK = "sftp.replace_exists_check";
+        SFTP_REPLACE_RENAME = "sftp.replace_rename";
+        SFTP_REPLACE_ASIDE_LOST = "sftp.replace_aside_lost";
+        SFTP_REPLACE_ASIDE_FAILED = "sftp.replace_aside_failed";
+        SFTP_REPLACE_IN_LOST = "sftp.replace_in_lost";
+        SFTP_REPLACE_IN_RESTORED = "sftp.replace_in_restored";
+        SFTP_REPLACE_IN_RESTORE_FAILED = "sftp.replace_in_restore_failed";
+        XFER_NOTE_EMPTY_DIR = "xfer.note_empty_dir";
+        XFER_NOTE_SKIPPED_LINK = "xfer.note_skipped_link";
+        XFER_NOTE_FILE_COUNT = "xfer.note_file_count";
+        XFER_NOTE_SKIPPED_SYMLINK = "xfer.note_skipped_symlink";
+        XFER_NOTE_NON_UTF8 = "xfer.note_non_utf8";
+        XFER_NOTE_RENAMED = "xfer.note_renamed";
+        XFER_DIR_NEEDS_RECURSIVE = "xfer.dir_needs_recursive";
+        XFER_SYMLINK_NO_RELAY = "xfer.symlink_no_relay";
+        XFER_NOTE_NO_RESUME_POINT = "xfer.note_no_resume_point";
+        XFER_NOTE_CANNOT_TRUNCATE = "xfer.note_cannot_truncate";
+        XFER_NOTE_RESUME_MISMATCH = "xfer.note_resume_mismatch";
+        XFER_NOTE_TARGET_APPEARED = "xfer.note_target_appeared";
+        XFER_NOTE_RECONNECT = "xfer.note_reconnect";
+        XFER_NOTE_SKIP_EXISTING = "xfer.note_skip_existing";
+        XFER_NOTE_CANNOT_RESUME = "xfer.note_cannot_resume";
+        XFER_NOTE_RENAMED_TO = "xfer.note_renamed_to";
+        SFTP_WRAPPED = "sftp.wrapped";
+        ARCHIVE_NAME_TAKEN = "archive.name_taken";
+        ARCHIVE_NOTHING_SELECTED = "archive.nothing_selected";
+        ARCHIVE_BAD_NAME = "archive.bad_name";
+        ARCHIVE_DIR_NOT_ABSOLUTE = "archive.dir_not_absolute";
+        ARCHIVE_COMPRESS_TIMEOUT = "archive.compress_timeout";
+        ARCHIVE_NO_OUTPUT = "archive.no_output";
+        ARCHIVE_OUTPUT_MISSING = "archive.output_missing";
+        ARCHIVE_RENAME_FAILED = "archive.rename_failed";
+        ARCHIVE_UNKNOWN_FORMAT = "archive.unknown_format";
+        ARCHIVE_DEST_IS_FILE = "archive.dest_is_file";
+        ARCHIVE_PATH_NOT_ABSOLUTE = "archive.path_not_absolute";
+        ARCHIVE_READ_FAILED = "archive.read_failed";
+        ARCHIVE_IS_FOLDER = "archive.is_folder";
+        ARCHIVE_INSPECT_TIMEOUT = "archive.inspect_timeout";
+        ARCHIVE_COMMAND_MISSING = "archive.command_missing";
+        ARCHIVE_LIST_FAILED_CODE = "archive.list_failed_code";
+        ARCHIVE_LIST_FAILED = "archive.list_failed";
+        ARCHIVE_TOO_MANY_ENTRIES = "archive.too_many_entries";
+        ARCHIVE_EXTRACT_TIMEOUT = "archive.extract_timeout";
+        ARCHIVE_EXTRACT_WARNING = "archive.extract_warning";
+        ARCHIVE_EXTRACT_WARNING_DETAIL = "archive.extract_warning_detail";
+        ARCHIVE_EXTRACT_FAILED = "archive.extract_failed";
+        ARCHIVE_EXTRACT_FAILED_NO_CODE = "archive.extract_failed_no_code";
+        ARCHIVE_EXTRACT_NO_EXIT = "archive.extract_no_exit";
+        ARCHIVE_COMPRESS_FAILED = "archive.compress_failed";
+        ARCHIVE_COMPRESS_NO_EXIT = "archive.compress_no_exit";
+        ARCHIVE_FILES_CHANGED = "archive.files_changed";
+        ARCHIVE_CHANGED_AFTER_CHECK = "archive.changed_after_check";
+        ARCHIVE_DEST_CHANGED = "archive.dest_changed";
+        ARCHIVE_EXTRACT_RENAME_FAILED = "archive.extract_rename_failed";
+        ARCHIVE_EXEC_FAILED = "archive.exec_failed";
+        SFTP_CP_EXEC_UNAVAILABLE = "sftp.cp_exec_unavailable";
+        SFTP_CP_TIMEOUT = "sftp.cp_timeout";
+        SFTP_CP_NOT_FOUND = "sftp.cp_not_found";
+        SFTP_CP_FAILED = "sftp.cp_failed";
+        SFTP_CP_NO_EXIT = "sftp.cp_no_exit";
+        SFTP_CP_READ_SOURCE = "sftp.cp_read_source";
+        SFTP_CP_STAT_TARGET = "sftp.cp_stat_target";
+        SFTP_CP_TARGET_IS_DIR_MERGE = "sftp.cp_target_is_dir_merge";
+        SFTP_CP_TREE_SIZE_MISMATCH = "sftp.cp_tree_size_mismatch";
+        SFTP_CP_VERIFY_FAILED = "sftp.cp_verify_failed";
+        SFTP_CP_FILE_SIZE_MISMATCH = "sftp.cp_file_size_mismatch";
+        SFTP_CP_VERIFY_COPY_FAILED = "sftp.cp_verify_copy_failed";
+        SFTP_NAME_BAD = "sftp.name_bad";
         // @generated-keys-end
     }
 }

@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, Notify, Semaphore};
 
+use crate::error::{reason_keys, Reason};
 use crate::sftp::error::SftpError;
 use crate::ssh::BoxFuture;
 
@@ -120,7 +121,7 @@ pub struct ProgressReport {
     /// 正在传的文件。
     pub current: Option<String>,
     /// 要不要告诉用户的说明（改过的名字、跳过的链接、重连次数…）。
-    pub notes: Vec<String>,
+    pub notes: Vec<Reason>,
 }
 
 /// 引擎往外发的事件。
@@ -366,7 +367,7 @@ struct JobProgress {
     total_bytes: u64,
     done_bytes: u64,
     current: Option<String>,
-    notes: Vec<String>,
+    notes: Vec<Reason>,
     last_emit: Option<Instant>,
     /// 速度采样（最近一次：时刻 + 当时已传字节）。
     sample: Option<(Instant, u64)>,
@@ -871,7 +872,11 @@ impl TransferEngine {
             if actual_len > 0 && resume_len == 0 {
                 self.push_note(
                     state,
-                    format!("{} 没有已确认的续传位置，从头传", planned.target),
+                    Reason::new(
+                        reason_keys::XFER_NOTE_NO_RESUME_POINT,
+                        format!("{} 没有已确认的续传位置，从头传", planned.target),
+                    )
+                    .with("target", &planned.target),
                 );
             }
             if resume_len > source_size {
@@ -885,7 +890,11 @@ impl TransferEngine {
                 if target_endpoint.truncate_partial(resume_len).await.is_err() {
                     self.push_note(
                         state,
-                        format!("{} 的临时文件无法截回续传位置，从头传", planned.target),
+                        Reason::new(
+                            reason_keys::XFER_NOTE_CANNOT_TRUNCATE,
+                            format!("{} 的临时文件无法截回续传位置，从头传", planned.target),
+                        )
+                        .with("target", &planned.target),
                     );
                     resume_len = 0;
                 }
@@ -901,7 +910,11 @@ impl TransferEngine {
             {
                 self.push_note(
                     state,
-                    format!("{} 的续传位置对不上，从头传", planned.target),
+                    Reason::new(
+                        reason_keys::XFER_NOTE_RESUME_MISMATCH,
+                        format!("{} 的续传位置对不上，从头传", planned.target),
+                    )
+                    .with("target", &planned.target),
                 );
                 target_endpoint.remove_partial().await?;
                 resume_len = 0;
@@ -958,7 +971,13 @@ impl TransferEngine {
                             // 沿用"对后续都这样"），不能当成失败，更不能盖掉它。
                             self.push_note(
                                 state,
-                                format!("传输期间 {target} 被别的程序建出来了，重新确认怎么处理"),
+                                Reason::new(
+                                    reason_keys::XFER_NOTE_TARGET_APPEARED,
+                                    format!(
+                                        "传输期间 {target} 被别的程序建出来了，重新确认怎么处理"
+                                    ),
+                                )
+                                .with("target", &target),
                             );
                             recheck_conflict = true;
                             resume_from_partial = true;
@@ -1062,7 +1081,15 @@ impl TransferEngine {
         err: &SftpError,
     ) -> Result<(), SftpError> {
         self.set_state(state, TransferState::WaitingReconnect);
-        self.push_note(state, format!("连接断了（第 {attempt} 次重试）：{err}"));
+        self.push_note(
+            state,
+            Reason::new(
+                reason_keys::XFER_NOTE_RECONNECT,
+                format!("连接断了（第 {attempt} 次重试）：{err}"),
+            )
+            .with("attempt", attempt)
+            .caused_by(err),
+        );
         self.emit(state, true);
         let delay = backoff_delay(attempt);
         // 退避期间也响应取消。
@@ -1201,14 +1228,25 @@ impl TransferEngine {
                 overwrite: true,
             },
             ConflictAction::Skip => {
-                self.push_note(state, format!("目标已存在，跳过 {target_path}"));
+                self.push_note(
+                    state,
+                    Reason::new(
+                        reason_keys::XFER_NOTE_SKIP_EXISTING,
+                        format!("目标已存在，跳过 {target_path}"),
+                    )
+                    .with("path", target_path),
+                );
                 ConflictOutcome::Skip
             }
             ConflictAction::Resume => {
                 if !can_resume {
                     self.push_note(
                         state,
-                        format!("{target_path} 不能续传（目标不比源小），改成覆盖"),
+                        Reason::new(
+                            reason_keys::XFER_NOTE_CANNOT_RESUME,
+                            format!("{target_path} 不能续传（目标不比源小），改成覆盖"),
+                        )
+                        .with("path", target_path),
                     );
                 }
                 ConflictOutcome::Proceed {
@@ -1231,7 +1269,14 @@ impl TransferEngine {
                     Some(path) => self.claim_manual_name(state, planned, path).await?,
                     None => self.pick_free_name(state, planned, target_path).await?,
                 };
-                self.push_note(state, format!("目标已存在，改成 {renamed}"));
+                self.push_note(
+                    state,
+                    Reason::new(
+                        reason_keys::XFER_NOTE_RENAMED_TO,
+                        format!("目标已存在，改成 {renamed}"),
+                    )
+                    .with("renamed", &renamed),
+                );
                 ConflictOutcome::Renamed(renamed, Some(guard))
             }
         })
@@ -1376,7 +1421,7 @@ impl TransferEngine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn push_note(&self, state: &Arc<JobState>, note: String) {
+    fn push_note(&self, state: &Arc<JobState>, note: Reason) {
         let mut progress = self.lock_progress(state);
         if !progress.notes.contains(&note) {
             progress.notes.push(note);

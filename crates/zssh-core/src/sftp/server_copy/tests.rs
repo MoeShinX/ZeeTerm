@@ -568,7 +568,7 @@ impl CpRunner for FakeCp {
                 FakeCpMode::Copy => {
                     self.fs
                         .copy_tree(&source, &target)
-                        .map_err(|err| CpFailure::Failed(err.to_string()))?;
+                        .map_err(|err| CpFailure::Failed(Reason::text(err.to_string())))?;
                 }
                 FakeCpMode::HalfThenFail => {
                     // cp 先打开/截断目标，写一半，然后失败。

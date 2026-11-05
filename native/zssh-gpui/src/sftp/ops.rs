@@ -1475,7 +1475,7 @@ impl SftpDemo {
             let result = match result {
                 Ok(outcome) => Ok(Some(outcome)),
                 Err(ArchiveError::Cancelled) => Ok(None),
-                Err(err) => Err(err.to_string()),
+                Err(err) => Err(crate::error_text::error_text(&err)),
             };
             let _ = sender.send(SftpEvent::CompressDone { op, result });
         });
@@ -1492,8 +1492,11 @@ impl SftpDemo {
         }
         match result {
             Ok(Some(outcome)) => {
-                let notice =
-                    archive_ui::compress_notice(false, &outcome.name, outcome.warning.as_deref());
+                let notice = archive_ui::compress_notice(
+                    false,
+                    &outcome.name,
+                    crate::error_text::reason_text_opt(outcome.warning.as_ref()).as_deref(),
+                );
                 self.say(notice.text);
                 self.remote.select_request = Some(vec![outcome.path]);
             }
@@ -1567,7 +1570,7 @@ impl SftpDemo {
             let result = match result {
                 Ok(plan) => Ok(Some(plan)),
                 Err(ArchiveError::Cancelled) => Ok(None),
-                Err(err) => Err(err.to_string()),
+                Err(err) => Err(crate::error_text::error_text(&err)),
             };
             let _ = sender.send(SftpEvent::ExtractPlanned { op, target, result });
         });
@@ -1657,7 +1660,7 @@ impl SftpDemo {
             let result = match result {
                 Ok(outcome) => Ok(Some(outcome)),
                 Err(ArchiveError::Cancelled) => Ok(None),
-                Err(err) => Err(err.to_string()),
+                Err(err) => Err(crate::error_text::error_text(&err)),
             };
             let _ = sender.send(SftpEvent::ExtractDone { op, ask, result });
         });
@@ -1679,7 +1682,7 @@ impl SftpDemo {
                     false,
                     outcome.extracted,
                     outcome.skipped,
-                    outcome.warning.as_deref(),
+                    crate::error_text::reason_text_opt(outcome.warning.as_ref()).as_deref(),
                     &ask.target.dest_name,
                     ask.plan.dest_exists,
                 );

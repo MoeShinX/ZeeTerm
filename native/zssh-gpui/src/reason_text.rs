@@ -352,6 +352,198 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "cmd.su" => "su switches to another user, so the execution environment is not controlled",
         "cmd.redirect_block_device" => "The redirect writes to a block device and may destroy data",
         "cmd.redirect_system_file" => "The redirect overwrites files under a system path",
+        "sftp.limited" => "Exceeded a server limit: {message}",
+        "sftp.unexpected_packet" => "SFTP protocol error (received an unexpected reply)",
+        "sftp.request_timeout" => {
+            "The server did not respond for {secs} seconds (SFTP request timed out)"
+        }
+        "sftp.realpath_empty" => "realpath returned no path",
+        "sftp.readlink_empty" => "readlink returned no target",
+        "sftp.posix_rename_reply" => "posix-rename received an unexpected reply",
+        "sftp.copy_data_reply" => "copy-data received an unexpected reply",
+        "sftp.copy_peer_closed" => {
+            "The connection holding the copy source has been closed; reopen that tab and try again"
+        }
+        "sftp.exists_not_dir" => "{path} already exists but is not a directory",
+        "sftp.task_symlink" => "The symlink resolution task crashed: {cause}",
+        "sftp.task_name_check" => "The file name check task crashed: {cause}",
+        "sftp.task_write" => "The write task crashed: {cause}",
+        "sftp.task_read" => "The read task crashed: {cause}",
+        "sftp.task_local_read" => "The local read task failed to run: {cause}",
+        "sftp.task_local_write" => "The local write task failed to run: {cause}",
+        "sftp.task_local_finish" => "The local finishing task failed to run: {cause}",
+        "sftp.task_local_sync" => "The local flush task failed to run: {cause}",
+        "sftp.read_offset_mismatch" => {
+            "Read back at the wrong offset: expected {expected}, got {got}"
+        }
+        "sftp.source_ended_early" => "The source file ended early (read {read} of {total})",
+        "sftp.owner_would_change" => "The owner would change from {from} to {to}",
+        "sftp.name_empty" => "The name cannot be empty",
+        "sftp.name_dots" => "The name cannot be . or ..",
+        "sftp.name_unusable" => "\"{name}\" cannot be used as a file name: {fixes}",
+        "sftp.download_no_name" => {
+            "{path} has no usable file name, so it cannot be downloaded locally"
+        }
+        "sftp.target_outside" => {
+            "Target path {target} is not inside the chosen directory {root}; refused"
+        }
+        "sftp.copy_into_self" => {
+            "Cannot copy folder {source} into itself or one of its subfolders (the target's real location is {real_target})"
+        }
+        "sftp.copy_unsure" => {
+            "Cannot confirm the target is outside the source folder (could not resolve the real location of {path}: {cause}); nothing was copied"
+        }
+        "sftp.copy_too_deep" => {
+            "Folders are nested more than {max} levels deep; copying stopped (a symlink or alias may form a loop): {path}"
+        }
+        "sftp.copy_target_is_dir" => {
+            "The target is a folder and cannot be overwritten with a file: {target}"
+        }
+        "sftp.copy_merge_needs_policy" => {
+            "The target folder already exists; decide how to handle same-name files before merging: {target}"
+        }
+        "sftp.copy_target_is_file" => {
+            "The target is a file and cannot be overwritten with a folder: {target}"
+        }
+        "sftp.copy_size_mismatch" => {
+            "The sizes differ after copying (source {expected} bytes, copy {bytes} bytes): {target}"
+        }
+        "sftp.copy_verify_too_deep" => {
+            "Folders are nested more than {max} levels deep; cannot confirm the copy is complete: {dir}"
+        }
+        "sftp.copy_verify_too_many" => {
+            "More than {max} entries; cannot confirm the copy is complete: {root}"
+        }
+        "sftp.replace_exists_check" => "Failed to check whether {to} exists: {cause}",
+        "sftp.replace_rename" => "Rename failed: {cause}",
+        "sftp.replace_aside_lost" => {
+            "The connection had a problem while moving the original file aside: {cause} (the original may still be at {to}, or already at {backup})"
+        }
+        "sftp.replace_aside_failed" => {
+            "Failed to move the original file to the backup name {backup}; the original is untouched: {cause}"
+        }
+        "sftp.replace_in_lost" => {
+            "The connection had a problem while renaming the new content to {to}: {cause} (the original is at the backup name {backup}; the new content is at {from} or already at {to})"
+        }
+        "sftp.replace_in_restored" => {
+            "Failed to rename the new content to {to}; the original file has been restored: {cause}"
+        }
+        "sftp.replace_in_restore_failed" => {
+            "Failed to rename the new content to {to}: {cause}; restoring the original from {backup} also failed: {restore}"
+        }
+        "xfer.note_empty_dir" => "Empty directory {dir} will be created too",
+        "xfer.note_skipped_link" => "Skipped symlink / directory junction: {path}",
+        "xfer.note_file_count" => "{count} files in total",
+        "xfer.note_skipped_symlink" => "Skipped symlink: {path}",
+        "xfer.note_non_utf8" => {
+            "The name of {path} is not UTF-8; the local name uses the lossy version {local}"
+        }
+        "xfer.note_renamed" => "{remote} → {local} ({fixes})",
+        "xfer.dir_needs_recursive" => "This is a directory: either tick recursive or choose a file",
+        "xfer.symlink_no_relay" => {
+            "Symlinks cannot be copied through the relay (they would be copied as the content they point to, which differs from cp -a)"
+        }
+        "xfer.note_no_resume_point" => "{target} has no confirmed resume point; starting over",
+        "xfer.note_cannot_truncate" => {
+            "The temporary file of {target} cannot be truncated back to the resume point; starting over"
+        }
+        "xfer.note_resume_mismatch" => "The resume point of {target} does not match; starting over",
+        "xfer.note_target_appeared" => {
+            "{target} was created by another program during the transfer; re-confirming how to handle it"
+        }
+        "xfer.note_reconnect" => "Connection lost (retry {attempt}): {cause}",
+        "xfer.note_skip_existing" => "Target already exists; skipping {path}",
+        "xfer.note_cannot_resume" => {
+            "{path} cannot be resumed (the target is not smaller than the source); overwriting instead"
+        }
+        "xfer.note_renamed_to" => "Target already exists; renamed to {renamed}",
+        "sftp.wrapped" => "{cause}",
+        "archive.name_taken" => {
+            "The archive name for \"{base}\" is still taken after trying up to (1000); nothing was compressed"
+        }
+        "archive.nothing_selected" => "No entries were selected to compress",
+        "archive.bad_name" => {
+            "\"{name}\" is not a valid name in the current directory; nothing was compressed"
+        }
+        "archive.dir_not_absolute" => {
+            "The current directory is not an absolute path; nothing was compressed"
+        }
+        "archive.compress_timeout" => {
+            "Compression timed out without finishing (the server may still be compressing)"
+        }
+        "archive.no_output" => "Compression did not produce an archive file",
+        "archive.output_missing" => {
+            "The compression command finished, but the archive cannot be found: {cause}"
+        }
+        "archive.rename_failed" => {
+            "The archive could not be renamed to its final name \"{name}\": {cause}"
+        }
+        "archive.unknown_format" => {
+            "Unrecognized archive type (supported: .tar.gz .tgz .tar .tar.xz .txz .tar.bz2 .tbz2 .zip)"
+        }
+        "archive.dest_is_file" => {
+            "The extraction target \"{name}\" already exists, but it is a file, not a folder"
+        }
+        "archive.path_not_absolute" => "The path is not absolute; nothing was extracted",
+        "archive.read_failed" => "Cannot read the archive: {cause}",
+        "archive.is_folder" => "This is a folder, not an archive",
+        "archive.inspect_timeout" => "Checking the archive timed out",
+        "archive.command_missing" => "The {command} command was not found on the server",
+        "archive.list_failed_code" => "Cannot read the archive (exit code {code}): {stderr}",
+        "archive.list_failed" => "Cannot read the archive: {stderr}",
+        "archive.too_many_entries" => {
+            "The archive has too many entries to check each one for safety; extraction was refused"
+        }
+        "archive.extract_timeout" => {
+            "Extraction timed out without finishing (the server may still be extracting)"
+        }
+        "archive.extract_warning" => "Warnings during extraction",
+        "archive.extract_warning_detail" => "Warnings during extraction: {tail}",
+        "archive.extract_failed" => "Extraction failed (exit code {code}): {stderr}",
+        "archive.extract_failed_no_code" => "Extraction failed (no exit code): {stderr}",
+        "archive.extract_no_exit" => {
+            "The extraction command returned no exit code, so it is unknown whether it succeeded"
+        }
+        "archive.compress_failed" => "Compression failed (exit code {code}): {stderr}",
+        "archive.compress_no_exit" => {
+            "The compression command returned no exit code, so it is unknown whether it succeeded"
+        }
+        "archive.files_changed" => {
+            "Some files changed while being archived; the archive holds what was read at that moment"
+        }
+        "archive.changed_after_check" => {
+            "The archive changed after it was checked; please start again"
+        }
+        "archive.dest_changed" => {
+            "The target folder changed after it was checked; please start again"
+        }
+        "archive.extract_rename_failed" => {
+            "Extraction finished, but the temporary folder could not be renamed to \"{name}\": {cause}"
+        }
+        "archive.exec_failed" => "Cannot run the command on the server: {cause}",
+        "sftp.cp_exec_unavailable" => "Cannot run commands on the server: {cause}",
+        "sftp.cp_timeout" => {
+            "The copy on the server timed out without finishing (it may still be copying on the server)"
+        }
+        "sftp.cp_not_found" => "The cp command was not found on the server",
+        "sftp.cp_failed" => "cp on the server failed (exit code {code}): {stderr}",
+        "sftp.cp_no_exit" => {
+            "cp on the server returned no exit code, so it is unknown whether the copy succeeded"
+        }
+        "sftp.cp_read_source" => "Cannot read the source: {cause}",
+        "sftp.cp_stat_target" => "Cannot inspect the target: {cause}",
+        "sftp.cp_target_is_dir_merge" => {
+            "The target already exists and is a folder; merging needs copy-data or the local relay"
+        }
+        "sftp.cp_tree_size_mismatch" => {
+            "The sizes differ after copying on the server (source {src_files} files / {src_bytes} bytes, copy {dst_files} files / {dst_bytes} bytes)"
+        }
+        "sftp.cp_verify_failed" => "Failed to verify the sizes: {cause}",
+        "sftp.cp_file_size_mismatch" => {
+            "The sizes differ after copying on the server (source {expected} bytes, copy {bytes} bytes)"
+        }
+        "sftp.cp_verify_copy_failed" => "Failed to verify the size of the copy: {cause}",
+        "sftp.name_bad" => "The name cannot contain /, and cannot be . or ..",
         _ => return None,
     })
 }
@@ -359,6 +551,19 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
 /// 把 key 对应的英文模板填上参数；认不得的 key、对不上的参数返回 `None`（调用方退回中文原文）。
 /// 参数里有 `ipv6_hint` 的（目标是 IPv6 地址、代理 / 跳板机连不过去）再补一句出口提示。
 pub(crate) fn sentence(key: &str, params: &[(&'static str, String)]) -> Option<String> {
+    // `fixes`（本地名字被改的原因们）核心给的是稳定代码，先换成英文说法再填模板。
+    let mut expanded;
+    let params = if params.iter().any(|(name, _)| *name == "fixes") {
+        expanded = params.to_vec();
+        for (name, value) in &mut expanded {
+            if *name == "fixes" {
+                *value = name_fixes_en(value);
+            }
+        }
+        expanded.as_slice()
+    } else {
+        params
+    };
     let mut text = crate::error_text::fill(english(key)?, params)?;
     if params
         .iter()
@@ -368,4 +573,32 @@ pub(crate) fn sentence(key: &str, params: &[(&'static str, String)]) -> Option<S
         text.push_str(english("hint.ipv6_egress")?);
     }
     Some(text)
+}
+
+/// 本地名字被改的原因们（`NameFix::codes` 的稳定代码，`\u{1f}` 分隔）→ 英文。
+fn name_fixes_en(codes: &str) -> String {
+    codes
+        .split('\u{1f}')
+        .map(|code| match code.split_once(':') {
+            Some(("illegal", label)) => format!("illegal character {label} replaced with _"),
+            Some(("reserved", name)) => {
+                format!("{name} is a reserved Windows name, so a prefix was added")
+            }
+            Some(("clash_batch", candidate)) => format!(
+                "same name as another entry in this batch (differs only by case), renamed to {candidate}"
+            ),
+            Some(("clash_file", candidate)) => {
+                format!("a file with the same name already exists locally, renamed to {candidate}")
+            }
+            Some(("clash_dir", candidate)) => {
+                format!("a folder with the same name already exists locally, renamed to {candidate}")
+            }
+            _ => match code {
+                "trailing" => "trailing dots or spaces were removed".to_owned(),
+                "empty" => "the name became empty, so _ is used".to_owned(),
+                other => other.to_owned(),
+            },
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }

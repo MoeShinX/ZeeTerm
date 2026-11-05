@@ -41,7 +41,7 @@ pub(super) fn open_bytes(bytes: &[u8]) -> Result<Opened, String> {
     if bytes.len() > MAX_BYTES {
         return Err(too_large(bytes.len()));
     }
-    let decoded = text::decode(bytes).map_err(|refusal| refusal.message())?;
+    let decoded = text::decode(bytes).map_err(|refusal| refusal_text(&refusal))?;
     Ok(Opened {
         text: decoded.text,
         format: decoded.format,
@@ -57,6 +57,12 @@ enum ContractMsg {
     TooLargeMid,
     TooLargeSuffix,
     ByteSuffix,
+    RefuseBinary,
+    RefuseUtf16,
+    RefuseNotUtf8,
+    RefuseMixedEol,
+    /// 「另存为」默认名里的「副本」。
+    CopyWord,
 }
 
 impl crate::i18n::Msg for ContractMsg {
@@ -66,6 +72,19 @@ impl crate::i18n::Msg for ContractMsg {
             Self::TooLargeMid => "，超过内置编辑器的上限（",
             Self::TooLargeSuffix => "）。请下载后再看",
             Self::ByteSuffix => " 字节",
+            Self::RefuseBinary => {
+                "这个文件含有二进制内容（NUL 字节），不能用内置编辑器打开；请下载后再处理"
+            }
+            Self::RefuseUtf16 => {
+                "这个文件是 UTF-16 编码，不是 UTF-8。用内置编辑器保存可能损坏内容，请下载后再处理"
+            }
+            Self::RefuseNotUtf8 => {
+                "这个文件不是 UTF-8 编码。用内置编辑器保存可能损坏内容，请下载后再处理"
+            }
+            Self::RefuseMixedEol => {
+                "这个文件的换行符混用了（有的行是 LF，有的是 CRLF 或单独的 CR）。用内置编辑器保存会统一换行、改动整个文件，请下载后再处理"
+            }
+            Self::CopyWord => "副本",
         }
     }
 
@@ -75,8 +94,40 @@ impl crate::i18n::Msg for ContractMsg {
             Self::TooLargeMid => ", over the built-in editor limit (",
             Self::TooLargeSuffix => "). Download it to view",
             Self::ByteSuffix => " bytes",
+            Self::RefuseBinary => {
+                "This file contains binary data (NUL bytes) and cannot be opened in the built-in editor; download it to work on it"
+            }
+            Self::RefuseUtf16 => {
+                "This file is UTF-16 encoded, not UTF-8. Saving it in the built-in editor could corrupt it; download it to work on it"
+            }
+            Self::RefuseNotUtf8 => {
+                "This file is not UTF-8 encoded. Saving it in the built-in editor could corrupt it; download it to work on it"
+            }
+            Self::RefuseMixedEol => {
+                "This file mixes line endings (some lines are LF, others CRLF or a lone CR). Saving in the built-in editor would normalize them and change the whole file; download it to work on it"
+            }
+            Self::CopyWord => "copy",
         }
     }
+}
+
+/// 不适合内置编辑器的原因，按当前语言（中文逐字等于核心的 `Refusal::message`）。
+pub(super) fn refusal_text(refusal: &text::Refusal) -> String {
+    let msg = match refusal {
+        text::Refusal::Binary => ContractMsg::RefuseBinary,
+        text::Refusal::NotUtf8 { utf16: true } => ContractMsg::RefuseUtf16,
+        text::Refusal::NotUtf8 { utf16: false } => ContractMsg::RefuseNotUtf8,
+        text::Refusal::MixedEol => ContractMsg::RefuseMixedEol,
+    };
+    crate::i18n::t(msg).to_owned()
+}
+
+/// 「另存为」的默认名：`a.txt` → `a (副本).txt` / `a (copy).txt`。
+pub(super) fn default_save_as_name(remote_path: &str) -> String {
+    zssh_core::sftp::edit::default_save_as_name_with(
+        remote_path,
+        crate::i18n::t(ContractMsg::CopyWord),
+    )
 }
 
 /// 超过上限的说法（读文件时发现、保存时发现共用）。

@@ -276,9 +276,10 @@ impl RemoteFs for MemFs {
                 return crate::sftp::replace::replace_with_backup(&MemOps(self), from, to, "tok1")
                     .await
                     .map_err(|err| match err {
-                        SftpError::ReplaceFailed { state, message } => {
-                            RenameFailure { state, message }
-                        }
+                        SftpError::ReplaceFailed { state, message } => RenameFailure {
+                            state,
+                            message: message.into_zh(),
+                        },
                         other => RenameFailure::untouched(other.to_string()),
                     });
             }

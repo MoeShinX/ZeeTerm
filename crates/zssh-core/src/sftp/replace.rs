@@ -11,6 +11,7 @@
 //! 失败时要说清楚现在是什么状态（[`ReplaceState`]）：提交前失败原文件没动、原文件已经挪开但
 //! 没能恢复（现在在备用名）、或者结果不确定（连接断了）。调用方据此决定能不能删临时文件。
 
+use crate::error::{reason_keys, Reason};
 use crate::sftp::error::{ReplaceState, SftpError};
 use crate::ssh::BoxFuture;
 
@@ -28,7 +29,7 @@ pub fn backup_path(target: &str, token: &str) -> String {
     format!("{target}.zssh-old-{token}")
 }
 
-fn failed(state: ReplaceState, message: String) -> SftpError {
+fn failed(state: ReplaceState, message: Reason) -> SftpError {
     SftpError::ReplaceFailed { state, message }
 }
 
@@ -51,7 +52,15 @@ pub async fn replace_with_backup(
             } else {
                 ReplaceState::Untouched
             };
-            return Err(failed(state, format!("检查 {to} 是否存在时失败：{err}")));
+            return Err(failed(
+                state,
+                Reason::new(
+                    reason_keys::SFTP_REPLACE_EXISTS_CHECK,
+                    format!("检查 {to} 是否存在时失败：{err}"),
+                )
+                .with("to", to)
+                .caused_by(&err),
+            ));
         }
     };
     if !exists {
@@ -62,7 +71,11 @@ pub async fn replace_with_backup(
             } else {
                 ReplaceState::Untouched
             };
-            failed(state, format!("改名失败：{err}"))
+            failed(
+                state,
+                Reason::new(reason_keys::SFTP_REPLACE_RENAME, format!("改名失败：{err}"))
+                    .caused_by(&err),
+            )
         });
     }
 
@@ -73,12 +86,23 @@ pub async fn replace_with_backup(
         return Err(if lost_connection(&err) {
             failed(
                 ReplaceState::Uncertain,
-                format!("把原文件改名成备用名时连接出了问题：{err}（原文件可能还在 {to}，也可能已经在 {backup}）"),
+                Reason::new(
+                    reason_keys::SFTP_REPLACE_ASIDE_LOST,
+                    format!("把原文件改名成备用名时连接出了问题：{err}（原文件可能还在 {to}，也可能已经在 {backup}）"),
+                )
+                .with("to", to)
+                .with("backup", &backup)
+                .caused_by(&err),
             )
         } else {
             failed(
                 ReplaceState::Untouched,
-                format!("把原文件挪到备用名 {backup} 时失败，原文件没动：{err}"),
+                Reason::new(
+                    reason_keys::SFTP_REPLACE_ASIDE_FAILED,
+                    format!("把原文件挪到备用名 {backup} 时失败，原文件没动：{err}"),
+                )
+                .with("backup", &backup)
+                .caused_by(&err),
             )
         });
     }
@@ -88,23 +112,42 @@ pub async fn replace_with_backup(
         if lost_connection(&err) {
             return Err(failed(
                 ReplaceState::Uncertain,
-                format!(
-                    "把新内容改名成 {to} 时连接出了问题：{err}（原文件在备用名 {backup}，新内容在 {from} 或者已经到了 {to}）"
-                ),
+                Reason::new(
+                    reason_keys::SFTP_REPLACE_IN_LOST,
+                    format!(
+                        "把新内容改名成 {to} 时连接出了问题：{err}（原文件在备用名 {backup}，新内容在 {from} 或者已经到了 {to}）"
+                    ),
+                )
+                .with("to", to)
+                .with("from", from)
+                .with("backup", &backup)
+                .caused_by(&err),
             ));
         }
         return Err(match ops.rename(&backup, to).await {
             Ok(()) => failed(
                 ReplaceState::Untouched,
-                format!("把新内容改名成 {to} 失败，原文件已经恢复：{err}"),
+                Reason::new(
+                    reason_keys::SFTP_REPLACE_IN_RESTORED,
+                    format!("把新内容改名成 {to} 失败，原文件已经恢复：{err}"),
+                )
+                .with("to", to)
+                .caused_by(&err),
             ),
             Err(restore) => failed(
                 ReplaceState::OriginalAside {
                     backup: backup.clone(),
                 },
-                format!(
-                    "把新内容改名成 {to} 失败：{err}；把原文件从 {backup} 改回来也失败了：{restore}"
-                ),
+                Reason::new(
+                    reason_keys::SFTP_REPLACE_IN_RESTORE_FAILED,
+                    format!(
+                        "把新内容改名成 {to} 失败：{err}；把原文件从 {backup} 改回来也失败了：{restore}"
+                    ),
+                )
+                .with("to", to)
+                .with("backup", &backup)
+                .caused_by(&err)
+                .caused_by_as("restore", &restore),
             ),
         });
     }

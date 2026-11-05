@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use super::endpoint::{
     part_name, EndpointFuture, FileEndpoint, LocalEndpoint, ReadAt, WriteAt, PART_SUFFIX,
 };
+use crate::error::Reason;
 use crate::sftp::error::SftpError;
 
 /// 往内存文件系统写一段（超出就补零）。
@@ -299,10 +300,10 @@ impl FileEndpoint for MemoryEndpoint {
             } else {
                 let existing = self.read_file(&part);
                 if !self.present(&part) || (existing.len() as u64) < resume_len {
-                    return Err(SftpError::InvalidInput(format!(
+                    return Err(SftpError::InvalidInput(Reason::text(format!(
                         "临时文件只有 {} 字节，不能从 {resume_len} 续",
                         existing.len()
-                    )));
+                    ))));
                 }
             }
             Ok(Arc::new(MemoryWriter {

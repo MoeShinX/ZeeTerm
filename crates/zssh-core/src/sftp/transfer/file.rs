@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::task::JoinSet;
 
 use super::endpoint::{FileEndpoint, WriteAt};
+use crate::error::{reason_keys, Reason};
 use crate::sftp::error::SftpError;
 
 /// 任务在传输途中的控制状态（界面点暂停/取消时改它）。
@@ -152,7 +153,12 @@ async fn write_batch(
         set.spawn(async move { writer.write_at(offset, data).await });
     }
     while let Some(joined) = set.join_next().await {
-        joined.map_err(|err| SftpError::Internal(format!("写任务崩了：{err}")))??
+        joined.map_err(|err| {
+            SftpError::Internal(
+                Reason::new(reason_keys::SFTP_TASK_WRITE, format!("写任务崩了：{err}"))
+                    .with("cause", &err),
+            )
+        })??
     }
     Ok(())
 }
@@ -263,7 +269,10 @@ pub async fn copy_file(
                     break;
                 }
                 Err(err) => {
-                    read_error = Some(SftpError::Internal(format!("读任务崩了：{err}")));
+                    read_error = Some(SftpError::Internal(
+                        Reason::new(reason_keys::SFTP_TASK_READ, format!("读任务崩了：{err}"))
+                            .with("cause", &err),
+                    ));
                     break;
                 }
             }
@@ -277,18 +286,28 @@ pub async fn copy_file(
         pieces.sort_by_key(|(offset, _)| *offset);
         for ((req_offset, req_len), (piece_offset, data)) in requests.iter().zip(pieces.iter()) {
             if *piece_offset != *req_offset {
-                result = Err(SftpError::Internal(format!(
-                    "读回来的偏移不对：期望 {req_offset}，拿到 {piece_offset}"
-                )));
+                result = Err(SftpError::Internal(
+                    Reason::new(
+                        reason_keys::SFTP_READ_OFFSET_MISMATCH,
+                        format!("读回来的偏移不对：期望 {req_offset}，拿到 {piece_offset}"),
+                    )
+                    .with("expected", req_offset)
+                    .with("got", piece_offset),
+                ));
                 break 'outer;
             }
             if data.len() != *req_len as usize {
                 // `read_full` 只有碰到文件末尾才会少：源文件比 stat 出来的时候短了（被改小了）。
                 // 不能把这块写进去——后面的块会隔着一个洞落盘。
-                result = Err(SftpError::Remote(format!(
-                    "源文件提前结束（读到 {}，总共 {total}）",
-                    piece_offset + data.len() as u64
-                )));
+                let read = piece_offset + data.len() as u64;
+                result = Err(SftpError::RemoteReason(
+                    Reason::new(
+                        reason_keys::SFTP_SOURCE_ENDED_EARLY,
+                        format!("源文件提前结束（读到 {read}，总共 {total}）"),
+                    )
+                    .with("read", read)
+                    .with("total", total),
+                ));
                 break 'outer;
             }
         }

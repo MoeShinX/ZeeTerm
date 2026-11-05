@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::error::{reason_keys, Reason};
 use crate::sftp::error::{from_io, SftpError};
 use crate::sftp::local;
 use crate::sftp::session::SftpChannel;
@@ -441,7 +442,15 @@ impl FileEndpoint for LocalEndpoint {
             let display = self.path.display().to_string();
             let file = tokio::task::spawn_blocking(move || std::fs::File::open(path))
                 .await
-                .map_err(|err| SftpError::Internal(format!("本地读任务没跑起来：{err}")))?
+                .map_err(|err| {
+                    SftpError::Internal(
+                        Reason::new(
+                            reason_keys::SFTP_TASK_LOCAL_READ,
+                            format!("本地读任务没跑起来：{err}"),
+                        )
+                        .with("cause", &err),
+                    )
+                })?
                 .map_err(|err| from_io(err, &display))?;
             Ok(Arc::new(LocalReader {
                 file,
@@ -467,7 +476,15 @@ impl FileEndpoint for LocalEndpoint {
                 options.open(part)
             })
             .await
-            .map_err(|err| SftpError::Internal(format!("本地写任务没跑起来：{err}")))?
+            .map_err(|err| {
+                SftpError::Internal(
+                    Reason::new(
+                        reason_keys::SFTP_TASK_LOCAL_WRITE,
+                        format!("本地写任务没跑起来：{err}"),
+                    )
+                    .with("cause", &err),
+                )
+            })?
             .map_err(|err| from_io(err, &display))?;
             Ok(Arc::new(LocalWriter {
                 file,
@@ -498,7 +515,15 @@ impl FileEndpoint for LocalEndpoint {
                 }
             })
             .await
-            .map_err(|err| SftpError::Internal(format!("本地收尾任务没跑起来：{err}")))?
+            .map_err(|err| {
+                SftpError::Internal(
+                    Reason::new(
+                        reason_keys::SFTP_TASK_LOCAL_FINISH,
+                        format!("本地收尾任务没跑起来：{err}"),
+                    )
+                    .with("cause", &err),
+                )
+            })?
             .map_err(|err| from_io(err, &display))
         })
     }
@@ -600,7 +625,15 @@ impl FileEndpoint for LocalEndpoint {
                 Ok(buf)
             })
             .await
-            .map_err(|err| SftpError::Internal(format!("本地读任务没跑起来：{err}")))?
+            .map_err(|err| {
+                SftpError::Internal(
+                    Reason::new(
+                        reason_keys::SFTP_TASK_LOCAL_READ,
+                        format!("本地读任务没跑起来：{err}"),
+                    )
+                    .with("cause", &err),
+                )
+            })?
             .map_err(|err| from_io(err, &display))?;
             Ok(Some(data))
         })
@@ -696,7 +729,15 @@ impl WriteAt for LocalWriter {
                 write_file_at(&file, offset, &data)
             })
             .await
-            .map_err(|err| SftpError::Internal(format!("本地写任务没跑起来：{err}")))?
+            .map_err(|err| {
+                SftpError::Internal(
+                    Reason::new(
+                        reason_keys::SFTP_TASK_LOCAL_WRITE,
+                        format!("本地写任务没跑起来：{err}"),
+                    )
+                    .with("cause", &err),
+                )
+            })?
             .map_err(|err| from_io(err, &path))?;
             let _ = len;
             Ok(())
@@ -714,7 +755,15 @@ impl WriteAt for LocalWriter {
                 file.sync_all()
             })
             .await
-            .map_err(|err| SftpError::Internal(format!("本地刷盘任务没跑起来：{err}")))?
+            .map_err(|err| {
+                SftpError::Internal(
+                    Reason::new(
+                        reason_keys::SFTP_TASK_LOCAL_SYNC,
+                        format!("本地刷盘任务没跑起来：{err}"),
+                    )
+                    .with("cause", &err),
+                )
+            })?
             .map_err(|err| from_io(err, &path))
         })
     }
@@ -736,7 +785,15 @@ async fn read_file_at(
         Ok(buf)
     })
     .await
-    .map_err(|err| SftpError::Internal(format!("本地读任务没跑起来：{err}")))?
+    .map_err(|err| {
+        SftpError::Internal(
+            Reason::new(
+                reason_keys::SFTP_TASK_LOCAL_READ,
+                format!("本地读任务没跑起来：{err}"),
+            )
+            .with("cause", &err),
+        )
+    })?
     .map_err(|err| from_io(err, &display))
 }
 

@@ -1864,7 +1864,11 @@ impl TransferRow {
         self.speed_bps = report.speed_bps;
         self.eta_secs = report.eta_secs;
         self.current = report.current.clone();
-        self.notes = report.notes.clone();
+        self.notes = report
+            .notes
+            .iter()
+            .map(crate::error_text::reason_text)
+            .collect();
         if report.state.is_terminal() {
             self.finished.get_or_insert_with(Instant::now);
         } else {

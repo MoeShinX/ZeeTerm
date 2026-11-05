@@ -52,8 +52,8 @@ use gpui_kit::component::input::{
 };
 use gpui_kit::*;
 use zssh_core::sftp::SftpChannel;
+use zssh_core::sftp::edit::OwnerMode;
 use zssh_core::sftp::edit::text::TextFormat;
-use zssh_core::sftp::edit::{OwnerMode, default_save_as_name};
 use zssh_core::sftp::path::{file_name, normalize};
 
 use crate::install_state::{Registration, WorkKind};
@@ -1056,7 +1056,7 @@ impl RemoteEditor {
                     remote,
                     later: false,
                 });
-                let suggested = default_save_as_name(&self.path);
+                let suggested = contract::default_save_as_name(&self.path);
                 self.conflict_name
                     .update(cx, |state, cx| state.set_value(suggested, window, cx));
                 self.fail_close_save(crate::i18n::t(StatusMsg::ConflictCloseSave));

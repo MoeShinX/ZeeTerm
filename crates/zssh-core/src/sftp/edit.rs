@@ -18,6 +18,7 @@ use std::sync::Arc;
 use super::error::SftpError;
 use super::fs::{self, FileKind};
 use super::session::SftpChannel;
+use crate::error::{reason_keys, Reason};
 use crate::ssh::BoxFuture;
 
 /// 内置编辑器能打开的文件大小上限（超过就提示，不打开）。
@@ -158,9 +159,14 @@ impl EditBackend for SftpChannel {
             .map(|_report| ())
             .map_err(|err| match err {
                 OverwriteError::Failed(err) => err,
-                OverwriteError::OwnerWouldChange(change) => {
-                    SftpError::Remote(format!("属主会从 {} 变成 {}", change.from, change.to))
-                }
+                OverwriteError::OwnerWouldChange(change) => SftpError::RemoteReason(
+                    Reason::new(
+                        reason_keys::SFTP_OWNER_WOULD_CHANGE,
+                        format!("属主会从 {} 变成 {}", change.from, change.to),
+                    )
+                    .with("from", &change.from)
+                    .with("to", &change.to),
+                ),
             })
         })
     }
@@ -640,7 +646,7 @@ impl EditSession {
             }
             Resolution::SaveAs(name) => {
                 if let Err(reason) = validate_remote_name(&name) {
-                    return EditOutcome::Failed(reason);
+                    return EditOutcome::Failed(reason.into_zh());
                 }
                 let target = sibling_remote_path(&self.remote_path, name.trim());
                 if backend.stat(&target).await.is_ok() {
@@ -683,23 +689,31 @@ pub fn sibling_remote_path(path: &str, name: &str) -> String {
 }
 
 /// 另存为的新名字：不能为空、不能带路径分隔符。
-pub fn validate_remote_name(name: &str) -> Result<(), String> {
+pub fn validate_remote_name(name: &str) -> Result<(), Reason> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
-        return Err("名字不能为空".to_owned());
+        return Err(Reason::new(reason_keys::SFTP_NAME_EMPTY, "名字不能为空"));
     }
     if trimmed.contains('/') || trimmed == "." || trimmed == ".." || trimmed.contains('\0') {
-        return Err("名字里不能有 /，也不能是 . 或 ..".to_owned());
+        return Err(Reason::new(
+            reason_keys::SFTP_NAME_BAD,
+            "名字里不能有 /，也不能是 . 或 ..",
+        ));
     }
     Ok(())
 }
 
 /// 给"另存为"一个默认名字：`a.txt` → `a (副本).txt`。
 pub fn default_save_as_name(remote_path: &str) -> String {
+    default_save_as_name_with(remote_path, "副本")
+}
+
+/// 同上，「副本」这个词由调用方按界面语言给（`a.txt` + `copy` → `a (copy).txt`）。
+pub fn default_save_as_name_with(remote_path: &str, copy_word: &str) -> String {
     let name = remote_path.rsplit('/').next().unwrap_or(remote_path);
     match name.rfind('.') {
-        Some(dot) if dot > 0 => format!("{} (副本){}", &name[..dot], &name[dot..]),
-        _ => format!("{name} (副本)"),
+        Some(dot) if dot > 0 => format!("{} ({copy_word}){}", &name[..dot], &name[dot..]),
+        _ => format!("{name} ({copy_word})"),
     }
 }
 

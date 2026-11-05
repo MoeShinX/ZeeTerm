@@ -491,7 +491,7 @@ pub(super) async fn save_beside<B: EditBackend + ?Sized>(
     name: &str,
     bytes: &[u8],
 ) -> Result<String, String> {
-    validate_remote_name(name)?;
+    validate_remote_name(name).map_err(|reason| crate::error_text::reason_text(&reason))?;
     let target = sibling_remote_path(original, name.trim());
     let _gate = write_gate(backend, &target).await;
     match backend.stat(&target).await {
