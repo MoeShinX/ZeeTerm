@@ -22,10 +22,11 @@ use gpui_kit::*;
 
 use super::layout::{self, Action, Screen};
 use super::{
-    DownloadState, InstallState, UpdateDemo, WINDOW_TITLE, command_line, file_summary, notes,
-    quit_after_paint, source_label,
+    DownloadState, InstallState, UpdateDemo, UpdateMsg, command_line, file_summary, notes,
+    quit_after_paint, source_label, window_title,
 };
 use crate::app_theme::Tokens;
+use crate::i18n::t;
 use crate::main_window::titlebar::window_controls_with;
 use crate::typography::{Role, Typo as _};
 
@@ -114,7 +115,7 @@ fn titlebar(tokens: &Tokens, window: &Window) -> AnyElement {
                 .pl_3()
                 .window_control_area(WindowControlArea::Drag)
                 .child(img(logo()).size(px(16.)).flex_none())
-                .child(div().typo(Role::ItemName, tokens).child(WINDOW_TITLE)),
+                .child(div().typo(Role::ItemName, tokens).child(window_title())),
         )
         .child(div().h_full().flex_none().child(window_controls_with(
             tokens,
@@ -135,8 +136,10 @@ impl UpdateDemo {
     ) -> AnyElement {
         let recheck = cx.entity();
         let tip = format!(
-            "更新来自{}。安装包下载后会先校验签名，你确认后才会启动安装程序。",
-            source_label()
+            "{}{}{}",
+            t(UpdateMsg::UpdateSourceTooltipPrefix),
+            source_label(),
+            t(UpdateMsg::UpdateSourceTooltipSuffix)
         );
         h_flex()
             .w_full()
@@ -171,7 +174,7 @@ impl UpdateDemo {
                             .ghost()
                             .compact()
                             .icon(IconName::RefreshCw)
-                            .tooltip("重新检查")
+                            .tooltip(t(UpdateMsg::RecheckTooltip))
                             .on_click(move |_, _, cx| {
                                 recheck.update(cx, |this, cx| this.reload(cx));
                             }),
@@ -196,7 +199,7 @@ impl UpdateDemo {
                 .child(
                     div()
                         .typo(Role::Caption, tokens)
-                        .child("正在向发布页询问最新版本…"),
+                        .child(t(UpdateMsg::CheckingMessage)),
                 )
                 .into_any_element(),
             Screen::Latest => body
@@ -211,7 +214,7 @@ impl UpdateDemo {
                 .child(
                     div()
                         .typo(Role::Body, tokens)
-                        .child("你用的已经是最新版本，无需更新。"),
+                        .child(t(UpdateMsg::LatestMessage)),
                 )
                 .into_any_element(),
             Screen::CheckFailed => {
@@ -268,7 +271,7 @@ impl UpdateDemo {
                     .child(
                         div()
                             .typo(Role::Caption, tokens)
-                            .child("下载完成，正在校验签名…"),
+                            .child(t(UpdateMsg::DownloadCompleteVerifying)),
                     )
                     .into_any_element(),
             ),
@@ -286,7 +289,11 @@ impl UpdateDemo {
                                 .size_4()
                                 .text_color(tokens.dot_connected),
                         )
-                        .child(div().typo(Role::ItemName, tokens).child("签名已验证"))
+                        .child(
+                            div()
+                                .typo(Role::ItemName, tokens)
+                                .child(t(UpdateMsg::SignatureVerifiedLabel)),
+                        )
                         .into_any_element(),
                 )
             }
@@ -319,13 +326,13 @@ impl UpdateDemo {
             InstallState::Idle => {}
             InstallState::Confirming(plan) => {
                 notices.push(line(
-                    "再点一次「确认安装」：ZeeTerm 会退出，并运行已验证的安装程序。".to_owned(),
+                    t(UpdateMsg::ConfirmAgainNotice).to_owned(),
                     tokens.text_muted,
                 ));
                 notices.push(line(command_line(plan), tokens.text_faint));
             }
             InstallState::Launched => notices.push(line(
-                "安装器已启动，程序即将退出".to_owned(),
+                t(UpdateMsg::InstallerStartedNotice).to_owned(),
                 tokens.text_muted,
             )),
             InstallState::Failed(err) => notices.push(line(err.clone(), tokens.danger)),
@@ -348,7 +355,7 @@ impl UpdateDemo {
             Some(markdown) => notes_view(markdown.clone(), tokens).into_any_element(),
             None => div()
                 .typo(Role::Caption, tokens)
-                .child(notes::EMPTY_NOTES)
+                .child(t(UpdateMsg::EmptyNotes))
                 .into_any_element(),
         };
         v_flex()
@@ -358,7 +365,7 @@ impl UpdateDemo {
                 div()
                     .flex_none()
                     .typo(Role::FieldLabel, tokens)
-                    .child("更新内容"),
+                    .child(t(UpdateMsg::NotesHeading)),
             )
             .child(
                 div()
@@ -400,7 +407,7 @@ impl UpdateDemo {
             .when(layout::shows_restart_choice(screen) && !launched, |row| {
                 row.child(
                     Checkbox::new("update-restart")
-                        .label("安装后重启 ZeeTerm")
+                        .label(t(UpdateMsg::RestartAfterInstallCheckbox))
                         .checked(restart)
                         .on_click(move |_, _, cx| {
                             toggle.update(cx, |this, cx| this.toggle_restart(cx));

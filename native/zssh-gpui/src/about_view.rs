@@ -56,7 +56,7 @@ pub fn update_description(signing_configured: bool) -> &'static str {
     if signing_configured {
         "点「检查更新」打开更新窗口，检查、下载并校验新版本。"
     } else {
-        crate::update::SIGNING_UNCONFIGURED
+        crate::update::signing_unconfigured()
     }
 }
 
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn an_unconfigured_update_key_is_called_out_instead_of_promising_updates() {
         let text = update_description(false);
-        assert_eq!(text, crate::update::SIGNING_UNCONFIGURED);
+        assert_eq!(text, crate::update::signing_unconfigured());
         assert!(text.contains("更新签名未配置"));
         // 界面上"配没配"和更新流程里拿不拿得到公钥是同一个判断。
         assert_eq!(signing_configured(), crate::update::update_pubkey().is_ok());

@@ -37,6 +37,7 @@ use zssh_update::{
     InstallPlan, InstallRequest, Package, UpdateError, command_line, plan_install, sha256_hex,
 };
 
+use crate::i18n::{Msg, t};
 use crate::install_state;
 
 // 界面分三块：`layout` 决定画哪一屏、标题和按钮（纯函数），`notes` 处理更新说明（Markdown 安全改写），
@@ -59,10 +60,16 @@ const REPORT_INTERVAL: Duration = Duration::from_millis(100);
 const CHUNK_SIZE: usize = 64 * 1024;
 /// 更新包缓存目录名。
 const CACHE_DIR: &str = "update-cache";
-/// 内嵌公钥解析不出来时的固定前缀（正常构建里有单测保证不会发生）。
-const PUBKEY_UNAVAILABLE: &str = "内置的更新公钥不可用，无法校验更新包";
 /// 更新签名公钥还是占位值时的提示：这时没法证明安装包来自发布者，所以什么都不请求、不下载、不安装。
+///
+/// 这里保留中文常量给还没有走 `i18n` 的调用方（`about_view` 的「关于」页）；更新窗口自己
+/// 用 [`UpdateMsg::SigningUnconfigured`]，两种语言都从这里的中文原文取词。
 pub const SIGNING_UNCONFIGURED: &str = "更新签名未配置：这个构建还没有设置更新签名公钥，不能在线更新（不会下载或安装任何更新）。请到发布页下载新的安装包。";
+
+/// 「更新签名未配置」那句，按当前语言取。「关于」页也显示它，所以不走模块内部的键。
+pub(crate) fn signing_unconfigured() -> &'static str {
+    crate::i18n::t(UpdateMsg::SigningUnconfigured)
+}
 /// 安装包大小上限。清单里没有大小字段，用一个宽松但有限的值挡住"无限流"和撑满内存。
 const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
 /// 清单大小上限。
@@ -75,8 +82,332 @@ const MANIFEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_REDIRECTS: usize = 5;
 /// 启动安装器后等界面画出结果再退出。
 const EXIT_DELAY: Duration = Duration::from_millis(300);
-/// 「退出后安装」排队后的提示。
-const QUEUED_MESSAGE: &str = "已排队：退出程序后启动安装器";
+
+/// 更新窗口自己的界面文案：窗口标题、按钮、状态行、进度行和错误提示。
+///
+/// 只放**应用自己的**文字；清单里的更新说明正文、版本号、URL、文件名和路径属于远端 / 用户数据，
+/// 原样显示，不经过这里。切语言即时生效（`t` 每次按当前语言取词）。
+enum UpdateMsg {
+    // ---- 窗口标题 / 主标题 / 副标题 ----
+    WindowTitle,
+    CheckingTitle,
+    CheckFailedTitle,
+    LatestVersion,
+    FoundVersionPrefix,
+    DownloadingTitlePrefix,
+    VerifyingSignature,
+    ReadyToInstallPrefix,
+    UpdateToVersionPrefix,
+    UpdateToVersionSuffix,
+    CurrentVersionPrefix,
+    PublishedSuffix,
+    // ---- 按钮 ----
+    CloseButton,
+    RetryButton,
+    SkipVersionButton,
+    LaterButton,
+    DownloadAndInstallButton,
+    CancelButton,
+    ConfirmInstallButton,
+    InstallNowButton,
+    // ---- 正文提示 ----
+    UpdateSourceTooltipPrefix,
+    UpdateSourceTooltipSuffix,
+    RecheckTooltip,
+    CheckingMessage,
+    LatestMessage,
+    DownloadCompleteVerifying,
+    SignatureVerifiedLabel,
+    ConfirmAgainNotice,
+    InstallerStartedNotice,
+    NotesHeading,
+    RestartAfterInstallCheckbox,
+    EmptyNotes,
+    ImagePlaceholder,
+    // ---- 状态行 / 进度行 ----
+    DownloadedPrefix,
+    UnknownFile,
+    FileSummaryPrefix,
+    FileSizeSuffix,
+    OpenParen,
+    CloseParen,
+    SignatureCheckPassed,
+    DownloadCancelled,
+    QueuedMessage,
+    // ---- 失败原因 ----
+    CheckFailedPrefix,
+    StartDownloadFailedPrefix,
+    PrepareInstallFailedPrefix,
+    LaunchInstallerFailedPrefix,
+    UpdateUrlInvalidPrefix,
+    UpdateUrlNotLocalFile,
+    UpdateUrlNoOtherHosts,
+    UpdateUrlMustBeHttpsPrefix,
+    TooManyRedirects,
+    RedirectToNonHttps,
+    HttpNotFound,
+    HttpForbiddenPrefix,
+    HttpTooManyRequests,
+    HttpServerErrorPrefix,
+    HttpServerErrorSuffix,
+    DownloadFailedHttpPrefix,
+    DownloadFailedPrefix,
+    ErrorChainSeparator,
+    TooLargePrefix,
+    TooLargeSuffix,
+    ReadLocalPackageFailedPrefix,
+    DebugSourceLabel,
+    OfficialSourceLabel,
+    CancelledShort,
+    NotesNotUtf8,
+    NoUpdateSource,
+    ReadManifestFailedPrefix,
+    VerifyPackageFailedPrefix,
+    CreateCacheDirFailedPrefix,
+    CleanOldPackageFailedPrefix,
+    WritePackageFailedPrefix,
+    RememberSkipFailedPrefix,
+    PackageChangedRefusedPrefix,
+    ShellExecuteErrorPrefix,
+    /// 只有非 Windows 构建会用到（Windows 上走 `ShellExecuteW`）。
+    #[cfg(not(windows))]
+    InstallerWindowsOnly,
+    UnsupportedUrlSchemePrefix,
+    UrlWithoutFileName,
+    InvalidFileNamePrefix,
+    EmptyFileName,
+    OpenSettingsDbFailedPrefix,
+    ProxySettingsProblemPrefix,
+    UpdateProxyConfigErrorPrefix,
+    CreateDownloadClientFailedPrefix,
+    PubkeyUnavailable,
+    SigningUnconfigured,
+    NoReleaseNotes,
+    PackageLabel,
+    PlatformLabel,
+}
+
+impl Msg for UpdateMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::WindowTitle => "检查更新",
+            Self::CheckingTitle => "正在检查更新…",
+            Self::CheckFailedTitle => "检查更新失败",
+            Self::LatestVersion => "已是最新版本",
+            Self::FoundVersionPrefix => "发现新版本 ",
+            Self::DownloadingTitlePrefix => "正在下载 ",
+            Self::VerifyingSignature => "正在校验签名…",
+            Self::ReadyToInstallPrefix => "已准备好安装 ",
+            Self::UpdateToVersionPrefix => "更新到 ",
+            Self::UpdateToVersionSuffix => " 失败",
+            Self::CurrentVersionPrefix => "当前版本 ",
+            Self::PublishedSuffix => " · 发布于 ",
+            Self::CloseButton => "关闭",
+            Self::RetryButton => "重试",
+            Self::SkipVersionButton => "跳过此版本",
+            Self::LaterButton => "稍后",
+            Self::DownloadAndInstallButton => "下载并安装",
+            Self::CancelButton => "取消",
+            Self::ConfirmInstallButton => "确认安装",
+            Self::InstallNowButton => "立即安装",
+            Self::UpdateSourceTooltipPrefix => "更新来自",
+            Self::UpdateSourceTooltipSuffix => {
+                "。安装包下载后会先校验签名，你确认后才会启动安装程序。"
+            }
+            Self::RecheckTooltip => "重新检查",
+            Self::CheckingMessage => "正在向发布页询问最新版本…",
+            Self::LatestMessage => "你用的已经是最新版本，无需更新。",
+            Self::DownloadCompleteVerifying => "下载完成，正在校验签名…",
+            Self::SignatureVerifiedLabel => "签名已验证",
+            Self::ConfirmAgainNotice => {
+                "再点一次「确认安装」：ZeeTerm 会退出，并运行已验证的安装程序。"
+            }
+            Self::InstallerStartedNotice => "安装器已启动，程序即将退出",
+            Self::NotesHeading => "更新内容",
+            Self::RestartAfterInstallCheckbox => "安装后重启 ZeeTerm",
+            Self::EmptyNotes => "这个版本没有附带更新说明",
+            Self::ImagePlaceholder => "（图片）",
+            Self::DownloadedPrefix => "已下载 ",
+            Self::UnknownFile => "（未知文件）",
+            Self::FileSummaryPrefix => "文件：",
+            Self::FileSizeSuffix => " 字节",
+            Self::OpenParen => "（",
+            Self::CloseParen => "）",
+            Self::SignatureCheckPassed => "签名校验通过",
+            Self::DownloadCancelled => "已取消下载",
+            Self::QueuedMessage => "已排队：退出程序后启动安装器",
+            Self::CheckFailedPrefix => "检查更新失败：",
+            Self::StartDownloadFailedPrefix => "启动下载失败：",
+            Self::PrepareInstallFailedPrefix => "准备安装失败：",
+            Self::LaunchInstallerFailedPrefix => "启动安装器失败：",
+            Self::UpdateUrlInvalidPrefix => "更新地址无效：",
+            Self::UpdateUrlNotLocalFile => "更新地址不是本地文件路径",
+            Self::UpdateUrlNoOtherHosts => "更新地址不能指向其他主机的文件",
+            Self::UpdateUrlMustBeHttpsPrefix => "更新地址必须是 https，实际是 ",
+            Self::TooManyRedirects => "更新地址重定向次数过多",
+            Self::RedirectToNonHttps => "更新地址重定向到了非 https 的地址，已拒绝",
+            Self::HttpNotFound => {
+                "下载失败：服务器上找不到这个文件（HTTP 404），可能这个版本还没发布或已被撤回"
+            }
+            Self::HttpForbiddenPrefix => "下载失败：服务器拒绝访问（HTTP ",
+            Self::HttpTooManyRequests => {
+                "下载失败：请求太频繁，被服务器限流了（HTTP 429），稍后再试"
+            }
+            Self::HttpServerErrorPrefix => "下载失败：服务器出错了（HTTP ",
+            Self::HttpServerErrorSuffix => "），稍后再试",
+            Self::DownloadFailedHttpPrefix => "下载失败：HTTP ",
+            Self::DownloadFailedPrefix => "下载失败：",
+            Self::ErrorChainSeparator => "：",
+            Self::TooLargePrefix => "更新文件超过大小上限（",
+            Self::TooLargeSuffix => " MiB），已中止",
+            Self::ReadLocalPackageFailedPrefix => "读取本地更新包失败：",
+            Self::DebugSourceLabel => "调试指定的更新说明",
+            Self::OfficialSourceLabel => "官方发布页",
+            Self::CancelledShort => "已取消",
+            Self::NotesNotUtf8 => "更新说明不是有效的 UTF-8 文本",
+            Self::NoUpdateSource => "未配置更新源",
+            Self::ReadManifestFailedPrefix => "读取更新说明失败：",
+            Self::VerifyPackageFailedPrefix => "校验更新包失败：",
+            Self::CreateCacheDirFailedPrefix => "创建更新缓存目录失败：",
+            Self::CleanOldPackageFailedPrefix => "清理旧的更新包失败：",
+            Self::WritePackageFailedPrefix => "写入更新包失败：",
+            Self::RememberSkipFailedPrefix => "没能记住跳过：",
+            Self::PackageChangedRefusedPrefix => "安装包与验签时不一致，已拒绝启动：",
+            Self::ShellExecuteErrorPrefix => "ShellExecuteW 返回错误码 ",
+            #[cfg(not(windows))]
+            Self::InstallerWindowsOnly => "只支持在 Windows 上启动安装器",
+            Self::UnsupportedUrlSchemePrefix => "不支持的更新地址协议：",
+            Self::UrlWithoutFileName => "更新地址里没有可用的文件名",
+            Self::InvalidFileNamePrefix => "更新包文件名不合法：",
+            Self::EmptyFileName => "更新包文件名为空",
+            Self::OpenSettingsDbFailedPrefix => "打开设置库失败：",
+            Self::ProxySettingsProblemPrefix => "软件网络的代理设置有问题：",
+            Self::UpdateProxyConfigErrorPrefix => "更新代理配置错误：",
+            Self::CreateDownloadClientFailedPrefix => "创建下载客户端失败：",
+            Self::PubkeyUnavailable => "内置的更新公钥不可用，无法校验更新包",
+            Self::SigningUnconfigured => SIGNING_UNCONFIGURED,
+            Self::NoReleaseNotes => "（无更新说明）",
+            Self::PackageLabel => "安装包：",
+            Self::PlatformLabel => "平台：",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::WindowTitle => "Check for Updates",
+            Self::CheckingTitle => "Checking for updates…",
+            Self::CheckFailedTitle => "Update check failed",
+            Self::LatestVersion => "You're up to date",
+            Self::FoundVersionPrefix => "New version available: ",
+            Self::DownloadingTitlePrefix => "Downloading ",
+            Self::VerifyingSignature => "Verifying signature…",
+            Self::ReadyToInstallPrefix => "Ready to install ",
+            Self::UpdateToVersionPrefix => "Updating to ",
+            Self::UpdateToVersionSuffix => " failed",
+            Self::CurrentVersionPrefix => "Current version ",
+            Self::PublishedSuffix => " · Published ",
+            Self::CloseButton => "Close",
+            Self::RetryButton => "Retry",
+            Self::SkipVersionButton => "Skip This Version",
+            Self::LaterButton => "Later",
+            Self::DownloadAndInstallButton => "Download and Install",
+            Self::CancelButton => "Cancel",
+            Self::ConfirmInstallButton => "Confirm Install",
+            Self::InstallNowButton => "Install Now",
+            Self::UpdateSourceTooltipPrefix => "Updates come from ",
+            Self::UpdateSourceTooltipSuffix => {
+                ". The installer is signature-checked after download, and only starts once you confirm."
+            }
+            Self::RecheckTooltip => "Check Again",
+            Self::CheckingMessage => "Asking the release page for the latest version…",
+            Self::LatestMessage => "You're already on the latest version. No update is needed.",
+            Self::DownloadCompleteVerifying => "Download complete, verifying signature…",
+            Self::SignatureVerifiedLabel => "Signature verified",
+            Self::ConfirmAgainNotice => {
+                "Click \"Confirm Install\" again: ZeeTerm will quit and run the verified installer."
+            }
+            Self::InstallerStartedNotice => "The installer has started; the app is about to quit",
+            Self::NotesHeading => "What's New",
+            Self::RestartAfterInstallCheckbox => "Restart ZeeTerm after installing",
+            Self::EmptyNotes => "This version has no release notes",
+            Self::ImagePlaceholder => "(image)",
+            Self::DownloadedPrefix => "Downloaded ",
+            Self::UnknownFile => "(unknown file)",
+            Self::FileSummaryPrefix => "File: ",
+            Self::FileSizeSuffix => " bytes",
+            Self::OpenParen => " (",
+            Self::CloseParen => ")",
+            Self::SignatureCheckPassed => "Signature check passed",
+            Self::DownloadCancelled => "Download cancelled",
+            Self::QueuedMessage => "Queued: the installer will start after you quit",
+            Self::CheckFailedPrefix => "Update check failed: ",
+            Self::StartDownloadFailedPrefix => "Failed to start the download: ",
+            Self::PrepareInstallFailedPrefix => "Failed to prepare the installation: ",
+            Self::LaunchInstallerFailedPrefix => "Failed to launch the installer: ",
+            Self::UpdateUrlInvalidPrefix => "Invalid update address: ",
+            Self::UpdateUrlNotLocalFile => "The update address is not a local file path",
+            Self::UpdateUrlNoOtherHosts => {
+                "The update address cannot point to a file on another host"
+            }
+            Self::UpdateUrlMustBeHttpsPrefix => "The update address must be https, but it is ",
+            Self::TooManyRedirects => "The update address redirected too many times",
+            Self::RedirectToNonHttps => {
+                "The update address redirected to a non-https address; refused"
+            }
+            Self::HttpNotFound => {
+                "Download failed: the file was not found on the server (HTTP 404); it may not be released yet or may have been withdrawn"
+            }
+            Self::HttpForbiddenPrefix => "Download failed: the server refused access (HTTP ",
+            Self::HttpTooManyRequests => {
+                "Download failed: too many requests, the server is rate limiting (HTTP 429); try again later"
+            }
+            Self::HttpServerErrorPrefix => "Download failed: the server had an error (HTTP ",
+            Self::HttpServerErrorSuffix => "); try again later",
+            Self::DownloadFailedHttpPrefix => "Download failed: HTTP ",
+            Self::DownloadFailedPrefix => "Download failed: ",
+            Self::ErrorChainSeparator => ": ",
+            Self::TooLargePrefix => "The update file exceeds the size limit (",
+            Self::TooLargeSuffix => " MiB), aborted",
+            Self::ReadLocalPackageFailedPrefix => "Failed to read the local update package: ",
+            Self::DebugSourceLabel => "Debug-specified update notes",
+            Self::OfficialSourceLabel => "Official release page",
+            Self::CancelledShort => "Cancelled",
+            Self::NotesNotUtf8 => "The release notes are not valid UTF-8 text",
+            Self::NoUpdateSource => "No update source is configured",
+            Self::ReadManifestFailedPrefix => "Failed to read the update manifest: ",
+            Self::VerifyPackageFailedPrefix => "Failed to verify the update package: ",
+            Self::CreateCacheDirFailedPrefix => "Failed to create the update cache directory: ",
+            Self::CleanOldPackageFailedPrefix => "Failed to remove the old update package: ",
+            Self::WritePackageFailedPrefix => "Failed to write the update package: ",
+            Self::RememberSkipFailedPrefix => "Could not remember the skip: ",
+            Self::PackageChangedRefusedPrefix => {
+                "The package no longer matches the verified bytes; launch refused: "
+            }
+            Self::ShellExecuteErrorPrefix => "ShellExecuteW returned error code ",
+            #[cfg(not(windows))]
+            Self::InstallerWindowsOnly => "The installer can only be launched on Windows",
+            Self::UnsupportedUrlSchemePrefix => "Unsupported update address scheme: ",
+            Self::UrlWithoutFileName => "The update address has no usable file name",
+            Self::InvalidFileNamePrefix => "Invalid update package file name: ",
+            Self::EmptyFileName => "The update package file name is empty",
+            Self::OpenSettingsDbFailedPrefix => "Failed to open the settings database: ",
+            Self::ProxySettingsProblemPrefix => {
+                "The software network proxy setting has a problem: "
+            }
+            Self::UpdateProxyConfigErrorPrefix => "Bad update proxy configuration: ",
+            Self::CreateDownloadClientFailedPrefix => "Failed to create the download client: ",
+            Self::PubkeyUnavailable => {
+                "The built-in update public key is unusable, so update packages cannot be verified"
+            }
+            Self::SigningUnconfigured => {
+                "Update signing is not configured: this build has no update signing public key yet, so online updates are unavailable (no update will be downloaded or installed). Please download the latest installer from the release page."
+            }
+            Self::NoReleaseNotes => "(no release notes)",
+            Self::PackageLabel => "Package: ",
+            Self::PlatformLabel => "Platform: ",
+        }
+    }
+}
 
 /// 一次检查的结论。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,9 +445,14 @@ impl Checked {
     }
 
     /// 失败原因，去掉"检查更新失败："这个前缀（界面标题已经说了"检查更新失败"）。
+    ///
+    /// 状态文字是在产生时按当时的语言拼好的，所以中文、英文两个前缀都认。
     fn failure_reason(&self) -> &str {
+        let zh = UpdateMsg::CheckFailedPrefix.zh();
+        let en = UpdateMsg::CheckFailedPrefix.en();
         self.status
-            .strip_prefix("检查更新失败：")
+            .strip_prefix(zh)
+            .or_else(|| self.status.strip_prefix(en))
             .unwrap_or(&self.status)
     }
 }
@@ -238,7 +574,12 @@ impl UpdateDemo {
                     self.sender.clone(),
                 ));
             }
-            Err(err) => self.checked = Some(Checked::failed(format!("检查更新失败：{err}"))),
+            Err(err) => {
+                self.checked = Some(Checked::failed(format!(
+                    "{}{err}",
+                    t(UpdateMsg::CheckFailedPrefix)
+                )))
+            }
         }
         cx.notify();
     }
@@ -322,7 +663,8 @@ impl UpdateDemo {
                 ));
             }
             Err(err) => {
-                self.phase.fail(format!("启动下载失败：{err}"));
+                self.phase
+                    .fail(format!("{}{err}", t(UpdateMsg::StartDownloadFailedPrefix)));
                 self.job = None;
             }
         }
@@ -400,13 +742,16 @@ impl UpdateDemo {
             match build_install_plan(&installer, &cache_root, &version, restart, &args, &sha256) {
                 Ok(plan) => {
                     queue_install(plan);
-                    self.queued = Some(QUEUED_MESSAGE.to_owned());
+                    self.queued = Some(t(UpdateMsg::QueuedMessage).to_owned());
                     self.blocked = None;
                     true
                 }
                 // 没排上队：沿用「安装」失败时的提示，之前排好的计划保持不动。
                 Err(err) => {
-                    self.install = InstallState::Failed(format!("准备安装失败：{err}"));
+                    self.install = InstallState::Failed(format!(
+                        "{}{err}",
+                        t(UpdateMsg::PrepareInstallFailedPrefix)
+                    ));
                     false
                 }
             };
@@ -475,9 +820,12 @@ pub fn open_update_window_for_found(cx: &mut App, checked: Checked) {
 
 /// 窗口默认尺寸（逻辑像素）和最小尺寸：内容少时卡片按内容算高度，不留大片空白。
 const WINDOW_SIZE: (f32, f32) = (560., 600.);
-/// 窗口标题：自绘标题栏上的文字，也是任务栏 / Alt+Tab 里的系统标题（截图脚本按它找窗口）。
-const WINDOW_TITLE: &str = "检查更新";
 const WINDOW_MIN_SIZE: (f32, f32) = (480., 420.);
+
+/// 窗口标题：自绘标题栏上的文字，也是任务栏 / Alt+Tab 里的系统标题（截图脚本按它找窗口）。
+fn window_title() -> &'static str {
+    t(UpdateMsg::WindowTitle)
+}
 
 fn open_window_with(cx: &mut App, focus: bool, preset: Option<Checked>) {
     let n = NEXT_UPDATE.fetch_add(1, Ordering::Relaxed);
@@ -495,14 +843,14 @@ fn open_window_with(cx: &mut App, focus: bool, preset: Option<Checked>) {
         focus,
         // 标题栏自己画（跟着深 / 浅皮肤），系统不画。
         titlebar: Some(::gpui::TitlebarOptions {
-            title: Some(WINDOW_TITLE.into()),
+            title: Some(window_title().into()),
             ..gpui_kit::component::TitleBar::title_bar_options()
         }),
         ..Default::default()
     };
     let _ = cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| UpdateDemo::new(window, cx, ime_key, preset));
-        window.set_window_title(WINDOW_TITLE);
+        window.set_window_title(window_title());
         window.on_window_should_close(cx, move |_window, _cx| {
             crate::ime::window_destroyed(&close_key);
             true
@@ -583,10 +931,10 @@ impl DownloadState {
         match self {
             Self::Idle => None,
             Self::Downloading { received, total } => Some(progress_text(*received, *total)),
-            Self::Verifying => Some("正在校验签名…".to_owned()),
-            Self::Verified { .. } => Some("签名校验通过".to_owned()),
+            Self::Verifying => Some(t(UpdateMsg::VerifyingSignature).to_owned()),
+            Self::Verified { .. } => Some(t(UpdateMsg::SignatureCheckPassed).to_owned()),
             Self::Failed(message) => Some(message.clone()),
-            Self::Cancelled => Some("已取消下载".to_owned()),
+            Self::Cancelled => Some(t(UpdateMsg::DownloadCancelled).to_owned()),
         }
     }
 }
@@ -637,7 +985,10 @@ fn advance_install(
         InstallState::Confirming(plan) => match launch(&plan) {
             Ok(()) => (InstallState::Launched, true),
             Err(err) => (
-                InstallState::Failed(format!("启动安装器失败：{err}")),
+                InstallState::Failed(format!(
+                    "{}{err}",
+                    t(UpdateMsg::LaunchInstallerFailedPrefix)
+                )),
                 false,
             ),
         },
@@ -646,15 +997,24 @@ fn advance_install(
             Ok(plan) => match launch(&plan) {
                 Ok(()) => (InstallState::Launched, true),
                 Err(err) => (
-                    InstallState::Failed(format!("启动安装器失败：{err}")),
+                    InstallState::Failed(format!(
+                        "{}{err}",
+                        t(UpdateMsg::LaunchInstallerFailedPrefix)
+                    )),
                     false,
                 ),
             },
-            Err(err) => (InstallState::Failed(format!("准备安装失败：{err}")), false),
+            Err(err) => (
+                InstallState::Failed(format!("{}{err}", t(UpdateMsg::PrepareInstallFailedPrefix))),
+                false,
+            ),
         },
         _ => match plan() {
             Ok(plan) => (InstallState::Confirming(plan), false),
-            Err(err) => (InstallState::Failed(format!("准备安装失败：{err}")), false),
+            Err(err) => (
+                InstallState::Failed(format!("{}{err}", t(UpdateMsg::PrepareInstallFailedPrefix))),
+                false,
+            ),
         },
     }
 }
@@ -724,15 +1084,19 @@ fn allow_insecure_sources() -> bool {
 /// `allow_insecure` 为真（调试构建）时才放行 `http://` 和本地 `file://`；
 /// `file://` 带非本机主机名（Windows 上会变成 UNC 路径，打开就触发 SMB 认证）一律拒绝。
 fn check_update_url(url: &str, allow_insecure: bool) -> Result<reqwest::Url, String> {
-    let parsed = reqwest::Url::parse(url).map_err(|err| format!("更新地址无效：{err}"))?;
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|err| format!("{}{err}", t(UpdateMsg::UpdateUrlInvalidPrefix)))?;
     match parsed.scheme() {
         "https" => Ok(parsed),
         "http" if allow_insecure => Ok(parsed),
         "file" if allow_insecure => match parsed.host_str() {
             None | Some("") | Some("localhost") => Ok(parsed),
-            Some(_) => Err("更新地址不能指向其他主机的文件".to_owned()),
+            Some(_) => Err(t(UpdateMsg::UpdateUrlNoOtherHosts).to_owned()),
         },
-        other => Err(format!("更新地址必须是 https，实际是 {other}")),
+        other => Err(format!(
+            "{}{other}",
+            t(UpdateMsg::UpdateUrlMustBeHttpsPrefix)
+        )),
     }
 }
 
@@ -743,12 +1107,12 @@ fn redirect_allowed(
     allow_insecure: bool,
 ) -> Result<(), &'static str> {
     if previous > MAX_REDIRECTS {
-        return Err("更新地址重定向次数过多");
+        return Err(t(UpdateMsg::TooManyRedirects));
     }
     match scheme {
         "https" => Ok(()),
         "http" if allow_insecure => Ok(()),
-        _ => Err("更新地址重定向到了非 https 的地址，已拒绝"),
+        _ => Err(t(UpdateMsg::RedirectToNonHttps)),
     }
 }
 
@@ -771,7 +1135,7 @@ fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
     let mut text = err.to_string();
     let mut source = err.source();
     while let Some(cause) = source {
-        text.push('：');
+        text.push_str(t(UpdateMsg::ErrorChainSeparator));
         text.push_str(&cause.to_string());
         source = cause.source();
     }
@@ -782,19 +1146,28 @@ fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
 fn http_status_message(status: reqwest::StatusCode) -> String {
     let code = status.as_u16();
     match code {
-        404 => "下载失败：服务器上找不到这个文件（HTTP 404），可能这个版本还没发布或已被撤回"
-            .to_owned(),
-        401 | 403 => format!("下载失败：服务器拒绝访问（HTTP {code}）"),
-        429 => "下载失败：请求太频繁，被服务器限流了（HTTP 429），稍后再试".to_owned(),
-        500..=599 => format!("下载失败：服务器出错了（HTTP {code}），稍后再试"),
-        _ => format!("下载失败：HTTP {status}"),
+        404 => t(UpdateMsg::HttpNotFound).to_owned(),
+        401 | 403 => format!(
+            "{}{code}{}",
+            t(UpdateMsg::HttpForbiddenPrefix),
+            t(UpdateMsg::CloseParen)
+        ),
+        429 => t(UpdateMsg::HttpTooManyRequests).to_owned(),
+        500..=599 => format!(
+            "{}{code}{}",
+            t(UpdateMsg::HttpServerErrorPrefix),
+            t(UpdateMsg::HttpServerErrorSuffix)
+        ),
+        _ => format!("{}{status}", t(UpdateMsg::DownloadFailedHttpPrefix)),
     }
 }
 
 fn too_large_message(max_bytes: u64) -> String {
     format!(
-        "更新文件超过大小上限（{} MiB），已中止",
-        max_bytes / (1024 * 1024)
+        "{}{}{}",
+        t(UpdateMsg::TooLargePrefix),
+        max_bytes / (1024 * 1024),
+        t(UpdateMsg::TooLargeSuffix)
     )
 }
 
@@ -824,10 +1197,13 @@ async fn fetch_bytes(
     if url.scheme() == "file" {
         let source = url
             .to_file_path()
-            .map_err(|_| failed("更新地址不是本地文件路径".to_owned()))?;
-        let mut input = tokio::fs::File::open(&source)
-            .await
-            .map_err(|err| failed(format!("读取本地更新包失败：{err}")))?;
+            .map_err(|_| failed(t(UpdateMsg::UpdateUrlNotLocalFile).to_owned()))?;
+        let mut input = tokio::fs::File::open(&source).await.map_err(|err| {
+            failed(format!(
+                "{}{err}",
+                t(UpdateMsg::ReadLocalPackageFailedPrefix)
+            ))
+        })?;
         let total = input
             .metadata()
             .await
@@ -843,10 +1219,12 @@ async fn fetch_bytes(
             if cancel.load(Ordering::Relaxed) {
                 return Err(DownloadFailure::Cancelled);
             }
-            let read = input
-                .read(&mut buffer)
-                .await
-                .map_err(|err| failed(format!("读取本地更新包失败：{err}")))?;
+            let read = input.read(&mut buffer).await.map_err(|err| {
+                failed(format!(
+                    "{}{err}",
+                    t(UpdateMsg::ReadLocalPackageFailedPrefix)
+                ))
+            })?;
             if read == 0 {
                 break;
             }
@@ -862,7 +1240,13 @@ async fn fetch_bytes(
         .timeout(timeout)
         .send()
         .await
-        .map_err(|err| failed(format!("下载失败：{}", error_chain(&err))))?;
+        .map_err(|err| {
+            failed(format!(
+                "{}{}",
+                t(UpdateMsg::DownloadFailedPrefix),
+                error_chain(&err)
+            ))
+        })?;
     if !response.status().is_success() {
         return Err(failed(http_status_message(response.status())));
     }
@@ -871,11 +1255,13 @@ async fn fetch_bytes(
         return Err(failed(too_large_message(max_bytes)));
     }
     let mut data = Vec::with_capacity(prealloc(total));
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|err| failed(format!("下载失败：{}", error_chain(&err))))?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|err| {
+        failed(format!(
+            "{}{}",
+            t(UpdateMsg::DownloadFailedPrefix),
+            error_chain(&err)
+        ))
+    })? {
         if cancel.load(Ordering::Relaxed) {
             return Err(DownloadFailure::Cancelled);
         }
@@ -944,9 +1330,9 @@ fn manifest_sources() -> Vec<ManifestSource> {
 /// 界面上显示的更新源说明。
 fn source_label() -> &'static str {
     if crate::dev_hooks::var_os("ZSSH_UPDATE_MANIFEST").is_some_and(|value| !value.is_empty()) {
-        "调试指定的更新说明"
+        t(UpdateMsg::DebugSourceLabel)
     } else {
-        "官方发布页"
+        t(UpdateMsg::OfficialSourceLabel)
     }
 }
 
@@ -978,12 +1364,12 @@ async fn load_manifest_text(
             )
             .await
             .map_err(|failure| match failure {
-                DownloadFailure::Cancelled => "已取消".to_owned(),
+                DownloadFailure::Cancelled => t(UpdateMsg::CancelledShort).to_owned(),
                 DownloadFailure::Failed(message) => message,
             })?
         }
     };
-    String::from_utf8(bytes).map_err(|_| "更新说明不是有效的 UTF-8 文本".to_owned())
+    String::from_utf8(bytes).map_err(|_| t(UpdateMsg::NotesNotUtf8).to_owned())
 }
 
 /// 读清单 + 选择包；读不到也算界面错误，不让窗口崩。
@@ -995,7 +1381,9 @@ pub(crate) async fn check_for_update(current: &str) -> Checked {
     let client = if pubkey.is_ok() {
         match update_client() {
             Ok(client) => client,
-            Err(err) => return Checked::failed(format!("检查更新失败：{err}")),
+            Err(err) => {
+                return Checked::failed(format!("{}{err}", t(UpdateMsg::CheckFailedPrefix)));
+            }
         }
     } else {
         reqwest::Client::new()
@@ -1022,12 +1410,12 @@ async fn check_with(
     match pubkey {
         Err(message) => return Checked::failed(message.clone()),
         Ok(key) if zssh_update::is_placeholder_pubkey(key) => {
-            return Checked::failed(SIGNING_UNCONFIGURED);
+            return Checked::failed(t(UpdateMsg::SigningUnconfigured));
         }
         Ok(_) => {}
     }
     if sources.is_empty() {
-        return Checked::failed("未配置更新源");
+        return Checked::failed(t(UpdateMsg::NoUpdateSource));
     }
     let mut last_error = String::new();
     for source in sources {
@@ -1036,7 +1424,10 @@ async fn check_with(
             Err(err) => last_error = err,
         }
     }
-    Checked::failed(format!("读取更新说明失败：{last_error}"))
+    Checked::failed(format!(
+        "{}{last_error}",
+        t(UpdateMsg::ReadManifestFailedPrefix)
+    ))
 }
 
 /// 下载、校验、上报结果都在 runtime 线程里跑。
@@ -1111,7 +1502,9 @@ async fn download_with(
     sender: &Sender<DownloadEvent>,
 ) -> Result<(PathBuf, u64, String), DownloadFailure> {
     if zssh_update::is_placeholder_pubkey(env.pubkey) {
-        return Err(DownloadFailure::Failed(SIGNING_UNCONFIGURED.to_owned()));
+        return Err(DownloadFailure::Failed(
+            t(UpdateMsg::SigningUnconfigured).to_owned(),
+        ));
     }
     let url =
         check_update_url(&package.url, env.allow_insecure).map_err(DownloadFailure::Failed)?;
@@ -1143,7 +1536,9 @@ async fn download_with(
         verify_and_store(&bytes, &package, &pubkey, &cache_root, &name)
     })
     .await
-    .map_err(|err| DownloadFailure::Failed(format!("校验更新包失败：{err}")))?
+    .map_err(|err| {
+        DownloadFailure::Failed(format!("{}{err}", t(UpdateMsg::VerifyPackageFailedPrefix)))
+    })?
     .map_err(DownloadFailure::Failed)?;
     if cancel.load(Ordering::Relaxed) {
         // 用户在校验期间取消了：别把这份文件留着当"已校验"。
@@ -1171,11 +1566,17 @@ fn verify_and_store(
     // 哈希目录让不同版本 / 不同内容互不覆盖：排队等退出安装的那份不会被后来的下载截断。
     let dir = cache_root.join(&sha256[..16]);
     let path = cache_path(&dir, name)?;
-    std::fs::create_dir_all(&dir).map_err(|err| format!("创建更新缓存目录失败：{err}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| format!("{}{err}", t(UpdateMsg::CreateCacheDirFailedPrefix)))?;
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(format!("清理旧的更新包失败：{err}")),
+        Err(err) => {
+            return Err(format!(
+                "{}{err}",
+                t(UpdateMsg::CleanOldPackageFailedPrefix)
+            ));
+        }
     }
     let write = || -> std::io::Result<()> {
         use std::io::Write as _;
@@ -1190,7 +1591,7 @@ fn verify_and_store(
     if let Err(err) = write() {
         // 半截文件不能留着被误当成完整安装包。
         let _ = std::fs::remove_file(&path);
-        return Err(format!("写入更新包失败：{err}"));
+        return Err(format!("{}{err}", t(UpdateMsg::WritePackageFailedPrefix)));
     }
     Ok((path, bytes.len() as u64, sha256))
 }
@@ -1212,13 +1613,17 @@ fn resolve_pubkey(
         .filter(|value| !value.is_empty())
     {
         Some(key) => key,
-        None => embedded
-            .map(|config| config.pubkey)
-            .map_err(|err| format!("{PUBKEY_UNAVAILABLE}：{err}"))?,
+        None => embedded.map(|config| config.pubkey).map_err(|err| {
+            format!(
+                "{}{}{err}",
+                t(UpdateMsg::PubkeyUnavailable),
+                t(UpdateMsg::ErrorChainSeparator)
+            )
+        })?,
     };
     // 占位公钥验不了任何签名：与其让后面报一个看不懂的验签错误，不如在这里就明说。
     if zssh_update::is_placeholder_pubkey(&key) {
-        return Err(SIGNING_UNCONFIGURED.to_owned());
+        return Err(t(UpdateMsg::SigningUnconfigured).to_owned());
     }
     Ok(key)
 }
@@ -1245,9 +1650,10 @@ fn report_progress(
 
 /// 总大小未知或为 0 时只显示已下载字节数。
 fn progress_text(received: u64, total: Option<u64>) -> String {
+    let prefix = t(UpdateMsg::DownloadedPrefix);
     match total {
-        Some(total) if total > 0 => format!("已下载 {received} / {total}"),
-        _ => format!("已下载 {received}"),
+        Some(total) if total > 0 => format!("{prefix}{received} / {total}"),
+        _ => format!("{prefix}{received}"),
     }
 }
 
@@ -1255,8 +1661,14 @@ fn file_summary(path: &Path, size: u64) -> String {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("（未知文件）");
-    format!("文件：{name}（{size} 字节）")
+        .unwrap_or(t(UpdateMsg::UnknownFile));
+    format!(
+        "{}{name}{}{size}{}{}",
+        t(UpdateMsg::FileSummaryPrefix),
+        t(UpdateMsg::OpenParen),
+        t(UpdateMsg::FileSizeSuffix),
+        t(UpdateMsg::CloseParen)
+    )
 }
 
 fn update_cache_dir() -> PathBuf {
@@ -1265,13 +1677,15 @@ fn update_cache_dir() -> PathBuf {
 
 /// 把「跳过此版本」写进本机设置（`update_skipped_version`，不参与同步）。
 fn record_skipped_version(version: &str) -> Result<(), String> {
-    let db = crate::host_db::open_database().map_err(|err| format!("没能记住跳过：{err}"))?;
+    let db = crate::host_db::open_database()
+        .map_err(|err| format!("{}{err}", t(UpdateMsg::RememberSkipFailedPrefix)))?;
     skip_version_in(&db, version)
 }
 
 /// [`record_skipped_version`] 的可注入版本（测试用内存库）。
 fn skip_version_in(db: &zssh_core::store::Database, version: &str) -> Result<(), String> {
-    zssh_core::updater::skip_version(db, version).map_err(|err| format!("没能记住跳过：{err}"))
+    zssh_core::updater::skip_version(db, version)
+        .map_err(|err| format!("{}{err}", t(UpdateMsg::RememberSkipFailedPrefix)))
 }
 
 fn current_exe_args() -> Vec<String> {
@@ -1398,7 +1812,7 @@ fn launch_if_unchanged(
     launch: impl FnOnce(&InstallPlan) -> Result<(), String>,
 ) -> Result<(), String> {
     let held = zssh_update::install::open_and_verify(plan)
-        .map_err(|err| format!("安装包与验签时不一致，已拒绝启动：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(UpdateMsg::PackageChangedRefusedPrefix)))?;
     let result = launch(plan);
     drop(held);
     result
@@ -1446,13 +1860,13 @@ fn shell_execute_installer(plan: &InstallPlan) -> Result<(), String> {
     if code > 32 {
         Ok(())
     } else {
-        Err(format!("ShellExecuteW 返回错误码 {code}"))
+        Err(format!("{}{code}", t(UpdateMsg::ShellExecuteErrorPrefix)))
     }
 }
 
 #[cfg(not(windows))]
 fn shell_execute_installer(_plan: &InstallPlan) -> Result<(), String> {
-    Err("只支持在 Windows 上启动安装器".to_owned())
+    Err(t(UpdateMsg::InstallerWindowsOnly).to_owned())
 }
 
 /// 按 Windows 命令行规则拼一组参数。
@@ -1506,10 +1920,16 @@ fn push_repeated(line: &mut String, ch: char, count: usize) {
 
 /// 从下载地址取文件名：只看最后一段，挡掉空名、`.`/`..` 和 Windows 非法字符。
 fn download_file_name(url: &str) -> Result<String, String> {
-    let parsed = reqwest::Url::parse(url).map_err(|err| format!("更新地址无效：{err}"))?;
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|err| format!("{}{err}", t(UpdateMsg::UpdateUrlInvalidPrefix)))?;
     match parsed.scheme() {
         "http" | "https" | "file" => {}
-        other => return Err(format!("不支持的更新地址协议：{other}")),
+        other => {
+            return Err(format!(
+                "{}{other}",
+                t(UpdateMsg::UnsupportedUrlSchemePrefix)
+            ));
+        }
     }
     let raw = parsed
         .path_segments()
@@ -1517,7 +1937,7 @@ fn download_file_name(url: &str) -> Result<String, String> {
         .unwrap_or("");
     let name = raw.trim();
     if name.is_empty() || name == "." || name == ".." {
-        return Err("更新地址里没有可用的文件名".to_owned());
+        return Err(t(UpdateMsg::UrlWithoutFileName).to_owned());
     }
     validate_file_name(name)?;
     Ok(name.to_owned())
@@ -1528,19 +1948,19 @@ fn cache_path(cache_root: &Path, name: &str) -> Result<PathBuf, String> {
     validate_file_name(name)?;
     let mut components = Path::new(name).components();
     if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
-        return Err(format!("更新包文件名不合法：{name}"));
+        return Err(format!("{}{name}", t(UpdateMsg::InvalidFileNamePrefix)));
     }
     Ok(cache_root.join(name))
 }
 
 fn validate_file_name(name: &str) -> Result<(), String> {
     if name.trim().is_empty() {
-        return Err("更新包文件名为空".to_owned());
+        return Err(t(UpdateMsg::EmptyFileName).to_owned());
     }
     if name.chars().any(|ch| {
         ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
     }) {
-        return Err(format!("更新包文件名不合法：{name}"));
+        return Err(format!("{}{name}", t(UpdateMsg::InvalidFileNamePrefix)));
     }
     Ok(())
 }
@@ -1556,7 +1976,7 @@ fn update_proxy() -> Result<Option<String>, String> {
         return Ok(Some(hook));
     }
     let db = zssh_core::store::Database::open(&crate::settings::data_dir().join("zssh.db"))
-        .map_err(|err| format!("打开设置库失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(UpdateMsg::OpenSettingsDbFailedPrefix)))?;
     proxy_from_settings(&db)
 }
 
@@ -1564,7 +1984,7 @@ fn update_proxy() -> Result<Option<String>, String> {
 fn proxy_from_settings(db: &zssh_core::store::Database) -> Result<Option<String>, String> {
     zssh_core::sync::app_proxy::app_proxy(db)
         .map(|proxy| proxy.map(|proxy| proxy.url_with_credentials()))
-        .map_err(|err| format!("软件网络的代理设置有问题：{err}"))
+        .map_err(|err| format!("{}{err}", t(UpdateMsg::ProxySettingsProblemPrefix)))
 }
 
 /// 不带代理的客户端构造器：超时、UA 和重定向规则都在这里，测试可以直接拿它连本地服务。
@@ -1581,7 +2001,7 @@ fn update_client() -> Result<reqwest::Client, String> {
         // 本机回环地址永远不走代理（调试用的本机夹具、以及误填的回环清单地址都直连）。
         Some(proxy) => builder.proxy(
             reqwest::Proxy::all(&proxy)
-                .map_err(|err| format!("更新代理配置错误：{err}"))?
+                .map_err(|err| format!("{}{err}", t(UpdateMsg::UpdateProxyConfigErrorPrefix)))?
                 .no_proxy(reqwest::NoProxy::from_string("localhost,127.0.0.1,::1")),
         ),
         // 直连：也不读环境变量里的代理，和软件网络的其他联网一致。
@@ -1589,7 +2009,7 @@ fn update_client() -> Result<reqwest::Client, String> {
     };
     builder
         .build()
-        .map_err(|err| format!("创建下载客户端失败：{err}"))
+        .map_err(|err| format!("{}{err}", t(UpdateMsg::CreateDownloadClientFailedPrefix)))
 }
 
 /// 当前版本：编译进来的包版本。调试钩子 `ZSSH_CURRENT_VERSION` 可以覆盖（为了测更新流程）。
@@ -1611,7 +2031,7 @@ fn evaluate_manifest(text: &str, current: &str, allow_insecure: bool) -> Checked
             if let Ok(Some(package)) = &outcome
                 && let Err(err) = check_update_url(&package.url, allow_insecure)
             {
-                return Checked::failed(format!("检查更新失败：{err}"));
+                return Checked::failed(format!("{}{err}", t(UpdateMsg::CheckFailedPrefix)));
             }
             let status = status_text(&outcome, manifest.notes.as_deref());
             match outcome {
@@ -1639,18 +2059,24 @@ fn evaluate_manifest(text: &str, current: &str, allow_insecure: bool) -> Checked
 /// 纯文本状态，方便单测；文件 I/O 留在 [`check_manifest`] 里。
 fn status_text(outcome: &Result<Option<Package>, UpdateError>, notes: Option<&str>) -> String {
     match outcome {
-        Ok(None) => "已是最新版本".to_owned(),
+        Ok(None) => t(UpdateMsg::LatestVersion).to_owned(),
         Ok(Some(package)) => {
             let notes = notes
                 .map(str::trim)
                 .filter(|notes| !notes.is_empty())
-                .unwrap_or("（无更新说明）");
+                .unwrap_or(t(UpdateMsg::NoReleaseNotes));
             format!(
-                "发现新版本 {}\n{}\n安装包：{}\n平台：{}",
-                package.version, notes, package.url, package.platform_key
+                "{}{}\n{}\n{}{}\n{}{}",
+                t(UpdateMsg::FoundVersionPrefix),
+                package.version,
+                notes,
+                t(UpdateMsg::PackageLabel),
+                package.url,
+                t(UpdateMsg::PlatformLabel),
+                package.platform_key
             )
         }
-        Err(err) => format!("检查更新失败：{err}"),
+        Err(err) => format!("{}{err}", t(UpdateMsg::CheckFailedPrefix)),
     }
 }
 
@@ -2037,11 +2463,11 @@ mod tests {
     // ---- 协议、大小、超时、重定向 ----
 
     use super::{
-        CheckKind, Checked, DownloadFailure, MAX_REDIRECTS, ManifestSource, PUBKEY_UNAVAILABLE,
-        SIGNING_UNCONFIGURED, allow_insecure_sources, append_capped, check_update_url,
-        evaluate_manifest, fetch_bytes, launch_if_unchanged, redirect_allowed,
-        resolve_current_version, resolve_manifest_sources, resolve_pubkey, skip_version_in,
-        update_client_builder, verify_and_store,
+        CheckKind, Checked, DownloadFailure, MAX_REDIRECTS, ManifestSource, SIGNING_UNCONFIGURED,
+        UpdateMsg, allow_insecure_sources, append_capped, check_update_url, evaluate_manifest,
+        fetch_bytes, launch_if_unchanged, redirect_allowed, resolve_current_version,
+        resolve_manifest_sources, resolve_pubkey, skip_version_in, update_client_builder,
+        verify_and_store,
     };
     use std::io::{Read as _, Write as _};
     use std::sync::atomic::AtomicBool;
@@ -2498,7 +2924,10 @@ mod tests {
             "custom"
         );
         let err = resolve_pubkey(None, Err("坏了".to_owned())).unwrap_err();
-        assert!(err.starts_with(PUBKEY_UNAVAILABLE), "{err}");
+        assert!(
+            err.starts_with(crate::i18n::t(UpdateMsg::PubkeyUnavailable)),
+            "{err}"
+        );
 
         // 占位公钥：无论来自配置还是钩子，都明说"更新签名未配置"，不当成一把能用的钥匙。
         assert_eq!(

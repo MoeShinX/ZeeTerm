@@ -4,7 +4,8 @@
 
 use std::time::{Duration, Instant};
 
-use super::{CheckKind, DownloadState};
+use super::{CheckKind, DownloadState, UpdateMsg};
+use crate::i18n::t;
 
 /// 窗口当前这一屏。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,24 +121,28 @@ pub(super) fn shows_restart_choice(screen: Screen) -> bool {
 /// 主标题。`version` 是新版本号（没有新版本时不用）。
 pub(super) fn title(screen: Screen, version: &str) -> String {
     match screen {
-        Screen::Checking => "正在检查更新…".to_owned(),
-        Screen::CheckFailed => "检查更新失败".to_owned(),
-        Screen::Latest => "已是最新版本".to_owned(),
-        Screen::Found => format!("发现新版本 {version}"),
-        Screen::Downloading => format!("正在下载 {version}"),
-        Screen::Verifying => "正在校验签名…".to_owned(),
-        Screen::Verified => format!("已准备好安装 {version}"),
-        Screen::DownloadFailed => format!("更新到 {version} 失败"),
+        Screen::Checking => t(UpdateMsg::CheckingTitle).to_owned(),
+        Screen::CheckFailed => t(UpdateMsg::CheckFailedTitle).to_owned(),
+        Screen::Latest => t(UpdateMsg::LatestVersion).to_owned(),
+        Screen::Found => format!("{}{version}", t(UpdateMsg::FoundVersionPrefix)),
+        Screen::Downloading => format!("{}{version}", t(UpdateMsg::DownloadingTitlePrefix)),
+        Screen::Verifying => t(UpdateMsg::VerifyingSignature).to_owned(),
+        Screen::Verified => format!("{}{version}", t(UpdateMsg::ReadyToInstallPrefix)),
+        Screen::DownloadFailed => format!(
+            "{}{version}{}",
+            t(UpdateMsg::UpdateToVersionPrefix),
+            t(UpdateMsg::UpdateToVersionSuffix)
+        ),
     }
 }
 
 /// 副标题：当前版本，有发布日期就带上（只有发现了新版本的几屏才有日期）。
 pub(super) fn subtitle(screen: Screen, current: &str, published: Option<&str>) -> String {
-    let mut text = format!("当前版本 {current}");
+    let mut text = format!("{}{current}", t(UpdateMsg::CurrentVersionPrefix));
     if shows_notes(screen)
         && let Some(date) = published.and_then(publish_date)
     {
-        text.push_str(&format!(" · 发布于 {date}"));
+        text.push_str(&format!("{}{date}", t(UpdateMsg::PublishedSuffix)));
     }
     text
 }
@@ -156,34 +161,40 @@ pub(super) fn publish_date(raw: &str) -> Option<String> {
 /// 底部右侧的按钮，从左到右。`confirming`：已经点过一次"立即安装"，在等确认。
 pub(super) fn buttons(screen: Screen, confirming: bool) -> Vec<ButtonSpec> {
     match screen {
-        Screen::Checking => vec![ButtonSpec::plain(Action::Close, "关闭")],
+        Screen::Checking => vec![ButtonSpec::plain(Action::Close, t(UpdateMsg::CloseButton))],
         Screen::CheckFailed => vec![
-            ButtonSpec::plain(Action::Close, "关闭"),
-            ButtonSpec::primary(Action::RecheckAgain, "重试"),
+            ButtonSpec::plain(Action::Close, t(UpdateMsg::CloseButton)),
+            ButtonSpec::primary(Action::RecheckAgain, t(UpdateMsg::RetryButton)),
         ],
-        Screen::Latest => vec![ButtonSpec::primary(Action::Close, "关闭")],
+        Screen::Latest => vec![ButtonSpec::primary(
+            Action::Close,
+            t(UpdateMsg::CloseButton),
+        )],
         Screen::Found => vec![
-            ButtonSpec::text(Action::Skip, "跳过此版本"),
-            ButtonSpec::plain(Action::Later, "稍后"),
-            ButtonSpec::primary(Action::Download, "下载并安装"),
+            ButtonSpec::text(Action::Skip, t(UpdateMsg::SkipVersionButton)),
+            ButtonSpec::plain(Action::Later, t(UpdateMsg::LaterButton)),
+            ButtonSpec::primary(Action::Download, t(UpdateMsg::DownloadAndInstallButton)),
         ],
-        Screen::Downloading => vec![ButtonSpec::plain(Action::Cancel, "取消")],
+        Screen::Downloading => vec![ButtonSpec::plain(
+            Action::Cancel,
+            t(UpdateMsg::CancelButton),
+        )],
         // 校验只有一瞬间，没有可点的东西（取消只对下载中有效）。
         Screen::Verifying => Vec::new(),
         Screen::Verified => vec![
-            ButtonSpec::plain(Action::Later, "稍后"),
+            ButtonSpec::plain(Action::Later, t(UpdateMsg::LaterButton)),
             ButtonSpec::primary(
                 Action::Install,
                 if confirming {
-                    "确认安装"
+                    t(UpdateMsg::ConfirmInstallButton)
                 } else {
-                    "立即安装"
+                    t(UpdateMsg::InstallNowButton)
                 },
             ),
         ],
         Screen::DownloadFailed => vec![
-            ButtonSpec::plain(Action::Close, "关闭"),
-            ButtonSpec::primary(Action::RetryDownload, "重试"),
+            ButtonSpec::plain(Action::Close, t(UpdateMsg::CloseButton)),
+            ButtonSpec::primary(Action::RetryDownload, t(UpdateMsg::RetryButton)),
         ],
     }
 }

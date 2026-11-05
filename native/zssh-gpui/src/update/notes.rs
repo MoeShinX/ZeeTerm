@@ -13,10 +13,9 @@
 use markdown::mdast::Node;
 use markdown::{ParseOptions, to_mdast};
 
+use super::UpdateMsg;
 use crate::agent_text::markdown_fence;
-
-/// 说明为空时显示的占位。
-pub(super) const EMPTY_NOTES: &str = "这个版本没有附带更新说明";
+use crate::i18n::t;
 
 /// 清单里的说明去掉首尾空白；全是空白算没有。
 pub(super) fn notes_text(notes: Option<&str>) -> Option<String> {
@@ -122,7 +121,7 @@ fn collect_edits(node: &Node, edits: &mut Vec<Edit>) {
 fn image_text(alt: &str) -> String {
     let alt = alt.trim();
     if alt.is_empty() {
-        "（图片）".to_owned()
+        t(UpdateMsg::ImagePlaceholder).to_owned()
     } else {
         escape_punctuation(alt)
     }
@@ -159,7 +158,9 @@ fn escape_punctuation(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{EMPTY_NOTES, link_target, notes_text, parse_options, sanitize_markdown};
+    use super::super::UpdateMsg;
+    use super::{link_target, notes_text, parse_options, sanitize_markdown};
+    use crate::i18n::t;
     use markdown::mdast::Node;
 
     /// 解析后还剩多少"危险节点"：HTML、图片、非 https 链接。
@@ -317,7 +318,7 @@ mod tests {
         assert_eq!(notes_text(Some("")), None);
         assert_eq!(notes_text(Some(" \r\n\t ")), None);
         assert_eq!(notes_text(Some("  好  ")).as_deref(), Some("好"));
-        assert!(EMPTY_NOTES.contains("没有附带更新说明"));
+        assert!(t(UpdateMsg::EmptyNotes).contains("没有附带更新说明"));
     }
 
     #[test]
