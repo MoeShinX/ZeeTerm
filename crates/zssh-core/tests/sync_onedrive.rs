@@ -147,9 +147,9 @@ async fn a_revoked_refresh_token_means_sign_in_again() {
         .access_token()
         .await
         .expect_err("刷新令牌已被撤销");
-    assert_eq!(
-        err,
-        StorageError::AuthFailed(Reason::text(REAUTH_MESSAGE.to_owned()))
+    assert!(
+        matches!(&err, StorageError::AuthFailed(reason) if reason == REAUTH_MESSAGE),
+        "{err:?}"
     );
     assert_eq!(REAUTH_MESSAGE, "OneDrive 登录已失效，请重新登录");
     assert!(
