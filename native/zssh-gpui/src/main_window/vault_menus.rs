@@ -134,25 +134,26 @@ impl HostMenuItem {
         })
     }
 
-    /// 菜单上写的字（分隔线没有字）。
+    /// 菜单上写的字（分隔线没有字）。走 `i18n`：应用自己的文案，切语言即时生效。
     pub fn label(self) -> &'static str {
+        use crate::i18n::{Key, t};
         match self {
-            Self::Connect => "连接",
-            Self::ConnectInNewTab => "在新标签连接",
-            Self::OpenSftp => "打开 SFTP",
-            Self::CopyName => "复制主机名",
-            Self::CopyAddress => "复制地址",
-            Self::CopyPassword => "复制密码",
-            Self::CopyInfo => "复制连接信息",
-            Self::InstallKey => "安装公钥…",
-            Self::Forwards => "端口转发…",
-            Self::MoveToGroup => "移动到分组",
-            Self::MoveUp => "上移",
-            Self::MoveDown => "下移",
-            Self::ResetTopOrder => "按名字重新排序（顶层主机）",
+            Self::Connect => t(Key::MenuConnect),
+            Self::ConnectInNewTab => t(Key::MenuConnectNewTab),
+            Self::OpenSftp => t(Key::MenuOpenSftp),
+            Self::CopyName => t(Key::MenuCopyName),
+            Self::CopyAddress => t(Key::MenuCopyAddress),
+            Self::CopyPassword => t(Key::MenuCopyPassword),
+            Self::CopyInfo => t(Key::MenuCopyInfo),
+            Self::InstallKey => t(Key::MenuInstallPublicKey),
+            Self::Forwards => t(Key::MenuForwards),
+            Self::MoveToGroup => t(Key::MenuMoveToGroup),
+            Self::MoveUp => t(Key::MenuMoveUp),
+            Self::MoveDown => t(Key::MenuMoveDown),
+            Self::ResetTopOrder => t(Key::MenuSortByName),
             Self::Separator => "",
-            Self::Properties => "属性…",
-            Self::Delete => "删除",
+            Self::Properties => t(Key::MenuProperties),
+            Self::Delete => t(Key::MenuDelete),
         }
     }
 }

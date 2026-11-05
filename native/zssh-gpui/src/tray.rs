@@ -82,13 +82,20 @@ pub enum TrayEntry {
 
 impl TrayEntry {
     pub fn label(&self) -> Option<String> {
+        use crate::i18n::{Key, t};
         match self {
-            Self::Show => Some(format!("显示 {}", crate::product::NAME)),
-            Self::Lock => Some("锁定".to_owned()),
-            Self::CheckUpdate => Some("检查更新".to_owned()),
-            Self::RestartInstall { version } => Some(format!("重启安装 v{version}")),
+            Self::Show => Some(format!(
+                "{}{}",
+                t(Key::TrayShowPrefix),
+                crate::product::NAME
+            )),
+            Self::Lock => Some(t(Key::TrayLock).to_owned()),
+            Self::CheckUpdate => Some(t(Key::TrayCheckUpdate).to_owned()),
+            Self::RestartInstall { version } => {
+                Some(format!("{}{version}", t(Key::TrayRestartInstallPrefix)))
+            }
             Self::Separator => None,
-            Self::Quit => Some("退出".to_owned()),
+            Self::Quit => Some(t(Key::TrayQuit).to_owned()),
         }
     }
 
