@@ -17,7 +17,7 @@ use tokio::sync::Notify;
 use zssh_core::ai::agent::builtin::config::AiEndpoint;
 use zssh_core::ai::agent::builtin::probe::{MODELS_TIMEOUT, fetch_models};
 use zssh_core::ai::agent::builtin::provider::{ProviderConfig, ProviderKind, Transport};
-use zssh_core::ai::agent::builtin::tokenway::api::fetch_status;
+use zssh_core::ai::agent::builtin::tokenway::api::{fetch_status, format_yuan};
 use zssh_core::ai::agent::builtin::tokenway::connect::{AuthorizeParams, aff_from_register_url};
 use zssh_core::ai::agent::builtin::tokenway::endpoint::{
     DisconnectReport, disconnect, is_authorized_token, resolve_base_url, save_authorized,
@@ -51,6 +51,11 @@ enum TokenwayMsg {
     OpenSettingsDbFailedPrefix,
     AuthorizationInvalidLabel,
     AuthorizationInvalidDetail,
+    BalanceNeedsTopup,
+    BalancePrefix,
+    BalanceDetail,
+    BalanceLimitDetail,
+    BalanceTopupNote,
     NotAuthorizedToken,
     NoStatusUrl,
     RuntimeUnavailable,
@@ -69,6 +74,11 @@ impl Msg for TokenwayMsg {
             Self::AuthorizationInvalidDetail => {
                 "Tokenway 授权已失效（可能在网站上改过密码或停用了授权），请重新连接"
             }
+            Self::BalanceNeedsTopup => "需充值",
+            Self::BalancePrefix => "余额 ",
+            Self::BalanceDetail => "ZeeTerm 可用 {usable}；账户余额 {total}（其中充值 {paid}）",
+            Self::BalanceLimitDetail => "；这台设备的授权上限 {limit}，已用 {used}",
+            Self::BalanceTopupNote => "。ZeePilot 只能用充值余额，赠送额度可在网页和其他客户端试用",
             Self::NotAuthorizedToken => "这个接口不是浏览器授权的 Tokenway 令牌",
             Self::NoStatusUrl => "清单里没有余额地址",
             Self::RuntimeUnavailable => "后台运行时没起来",
@@ -83,9 +93,21 @@ impl Msg for TokenwayMsg {
             Self::NoRegisterUrl => "The manifest has no registration URL",
             Self::NoOneClickAuth => "This preset does not support one-click authorization",
             Self::OpenSettingsDbFailedPrefix => "Failed to open the settings database: ",
-            Self::AuthorizationInvalidLabel => "Authorization invalid",
+            // 标题栏里和「重新连接」按钮、上下文指示器挤在一行，英文要短。
+            Self::AuthorizationInvalidLabel => "Auth invalid",
             Self::AuthorizationInvalidDetail => {
                 "The Tokenway authorization is no longer valid (the password may have been changed or the authorization disabled on the website). Please reconnect."
+            }
+            Self::BalanceNeedsTopup => "Needs top-up",
+            Self::BalancePrefix => "Balance ",
+            Self::BalanceDetail => {
+                "Usable in ZeeTerm: {usable}; account balance: {total} (of which paid: {paid})"
+            }
+            Self::BalanceLimitDetail => {
+                "; authorization limit for this device: {limit}, used: {used}"
+            }
+            Self::BalanceTopupNote => {
+                ". ZeePilot can only use the paid balance; the bonus credit can be tried on the web and in other clients"
             }
             Self::NotAuthorizedToken => "This endpoint is not a browser-authorized Tokenway token",
             Self::NoStatusUrl => "The manifest has no balance URL",
@@ -521,14 +543,46 @@ impl BalanceBook {
                 problem: entry.problem.clone(),
             }),
             (Some(balance), problem) => Some(BalanceView {
-                label: balance.label(),
-                detail: balance.detail(),
+                label: balance_label(balance),
+                detail: balance_detail(balance),
                 needs_topup: balance.needs_topup,
                 problem: problem.clone(),
             }),
             (None, _) => None,
         }
     }
+}
+
+/// 面板上显示的短文字，按当前语言（金额格式沿用核心库的 `format_yuan`）。
+fn balance_label(balance: &Balance) -> String {
+    if balance.needs_topup {
+        t(TokenwayMsg::BalanceNeedsTopup).to_owned()
+    } else {
+        format!(
+            "{}{}",
+            t(TokenwayMsg::BalancePrefix),
+            format_yuan(balance.usable_cents)
+        )
+    }
+}
+
+/// 悬停说明，按当前语言。
+fn balance_detail(balance: &Balance) -> String {
+    let mut text = t(TokenwayMsg::BalanceDetail)
+        .replace("{usable}", &format_yuan(balance.usable_cents))
+        .replace("{total}", &format_yuan(balance.total_cents))
+        .replace("{paid}", &format_yuan(balance.paid_cents));
+    if let Some(limit) = balance.quota_limit_cents {
+        text.push_str(
+            &t(TokenwayMsg::BalanceLimitDetail)
+                .replace("{limit}", &format_yuan(limit))
+                .replace("{used}", &format_yuan(balance.used_cents)),
+        );
+    }
+    if balance.needs_topup {
+        text.push_str(t(TokenwayMsg::BalanceTopupNote));
+    }
+    text
 }
 
 static BOOK: std::sync::LazyLock<Mutex<BalanceBook>> =

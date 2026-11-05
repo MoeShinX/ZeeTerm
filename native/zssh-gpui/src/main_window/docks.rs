@@ -1337,14 +1337,17 @@ impl MainWindow {
                     .border_b_1()
                     .border_color(tokens.divider)
                     .child(
+                        // 右边的指示器（余额、用量）多起来时，标题让位截断，而不是叠在它们上面（英文更长）。
                         h_flex()
+                            .flex_1()
                             .min_w_0()
                             .gap_2()
                             .items_center()
-                            .child(icon.size_4().text_color(tokens.accent))
+                            .child(icon.size_4().flex_none().text_color(tokens.accent))
                             .child(
                                 div()
-                                    .flex_none()
+                                    .min_w_0()
+                                    .truncate()
                                     .text_sm()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(title),

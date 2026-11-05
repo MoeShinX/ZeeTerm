@@ -65,6 +65,40 @@ fn the_balance_is_fetched_when_first_seen_then_only_after_a_turn_and_at_most_onc
 }
 
 #[test]
+fn the_balance_chip_wording_matches_core_in_chinese_and_has_no_chinese_in_english() {
+    // 中文界面（默认）：和核心库原来的措辞逐字一致。
+    for balance in [ok_balance(1234, false), ok_balance(0, true)] {
+        assert_eq!(balance_label(&balance), balance.label());
+        assert_eq!(balance_detail(&balance), balance.detail());
+    }
+    let mut no_limit = ok_balance(100, false);
+    no_limit.quota_limit_cents = None;
+    assert_eq!(balance_detail(&no_limit), no_limit.detail());
+    // 英文表里不能有中文，占位符要和中文表一一对应。
+    for key in [
+        TokenwayMsg::BalanceNeedsTopup,
+        TokenwayMsg::BalancePrefix,
+        TokenwayMsg::BalanceDetail,
+        TokenwayMsg::BalanceLimitDetail,
+        TokenwayMsg::BalanceTopupNote,
+    ] {
+        assert!(
+            !key.en()
+                .chars()
+                .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            "{key:?}"
+        );
+        for placeholder in ["{usable}", "{total}", "{paid}", "{limit}", "{used}"] {
+            assert_eq!(
+                key.zh().contains(placeholder),
+                key.en().contains(placeholder),
+                "{key:?} {placeholder}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_balance_without_paid_funds_shows_topup() {
     let mut book = BalanceBook::default();
     assert!(book.poll(1, Instant::now()));
