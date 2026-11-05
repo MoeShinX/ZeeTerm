@@ -347,8 +347,9 @@ impl CalcState {
 /// “计算大小”那一行的文字。
 pub(super) fn calc_text(state: &CalcState) -> String {
     let base = format!(
-        "{}，{}",
+        "{}{}{}",
         bytes_text(state.totals.bytes),
+        crate::i18n::comma(),
         counts_text(&state.totals)
     );
     let mut extras = Vec::new();

@@ -233,12 +233,6 @@ pub fn status() -> AgentStatus {
     }
 }
 
-/// 面板里内置助手没配置时的整段说明。
-///
-/// 保留成常量给还没走 `i18n` 的调用方；本模块自己的两语言版本是
-/// [`BuiltinMsg::MissingText`]，中文原句就是这里。
-pub const MISSING_TEXT: &str = "还没有配置 ZeePilot：到 设置 → AI → ZeePilot 添加一个接口并填好 API Key（本机的 Ollama 之类可以勾选「不需要 Key」），就能直接对话，不用安装别的工具。";
-
 /// 面板里内置助手没配置时的整段说明，按当前语言取。
 pub fn missing_text() -> &'static str {
     t(BuiltinMsg::MissingText)
@@ -251,6 +245,9 @@ pub fn missing_text() -> &'static str {
 #[derive(Clone, Copy, Debug)]
 enum BuiltinMsg {
     MissingText,
+    // ---- 提示卡（Tokenway 令牌专用） ----
+    RequiresTopup,
+    AuthorizationInvalid,
     // ---- 模型资料那一行 ----
     CatalogUpdatedPrefix,
     CatalogSnapshotPrefix,
@@ -285,7 +282,13 @@ enum BuiltinMsg {
 impl Msg for BuiltinMsg {
     fn zh(&self) -> &'static str {
         match *self {
-            Self::MissingText => MISSING_TEXT,
+            Self::MissingText => {
+                "还没有配置 ZeePilot：到 设置 → AI → ZeePilot 添加一个接口并填好 API Key（本机的 Ollama 之类可以勾选「不需要 Key」），就能直接对话，不用安装别的工具。"
+            }
+            Self::RequiresTopup => "ZeePilot 需要充值后使用，赠送额度可在网页和其他客户端试用",
+            Self::AuthorizationInvalid => {
+                "Tokenway 授权已失效（可能在网站上改过密码或停用了授权），请重新连接"
+            }
             Self::CatalogUpdatedPrefix => "模型资料：已更新于 ",
             Self::CatalogSnapshotPrefix => "模型资料：内置快照 ",
             Self::CatalogSnapshot => "模型资料：内置快照",
@@ -318,6 +321,12 @@ impl Msg for BuiltinMsg {
         match *self {
             Self::MissingText => {
                 "ZeePilot is not configured yet: open Settings → AI → ZeePilot, add an endpoint and fill in the API key (local services such as Ollama can be marked \"No key needed\") to start chatting without installing anything else."
+            }
+            Self::RequiresTopup => {
+                "ZeePilot needs a top-up before it can be used; the bonus credit can be tried on the web and in other clients"
+            }
+            Self::AuthorizationInvalid => {
+                "Tokenway authorization is no longer valid (the password may have been changed or the authorization disabled on the website). Please reconnect"
             }
             Self::CatalogUpdatedPrefix => "Model info: updated on ",
             Self::CatalogSnapshotPrefix => "Model info: built-in snapshot ",
@@ -648,12 +657,16 @@ pub fn preview_usage(caps: &ModelCaps, model: &str) -> ContextUsage {
 /// 服务端要求充值时的错误码（Tokenway 网关给 ZeeTerm 专用令牌的）。
 pub const REQUIRES_TOPUP_CODE: &str = "zeeterm_requires_topup";
 
-/// 需要充值的提示卡文字（卡上的「去充值」按钮打开清单里的充值页）。
-pub const REQUIRES_TOPUP_TEXT: &str = "ZeePilot 需要充值后使用，赠送额度可在网页和其他客户端试用";
+/// 需要充值的提示卡文字（卡上的「去充值」按钮打开清单里的充值页），按当前语言取。
+pub fn requires_topup_text() -> &'static str {
+    t(BuiltinMsg::RequiresTopup)
+}
 
-/// Tokenway 令牌被服务端停用（改密码、停用授权、封号）时的提示卡文字（卡上的「重新连接」按钮重新授权）。
-pub const AUTHORIZATION_INVALID_TEXT: &str =
-    "Tokenway 授权已失效（可能在网站上改过密码或停用了授权），请重新连接";
+/// Tokenway 令牌被服务端停用（改密码、停用授权、封号）时的提示卡文字（卡上的「重新连接」按钮重新授权），
+/// 按当前语言取。
+pub fn authorization_invalid_text() -> &'static str {
+    t(BuiltinMsg::AuthorizationInvalid)
+}
 
 /// 提示的类别在对话里显示成什么样：压缩 / 历史修复是中性提示；不支持工具、输出被截断带警示。
 pub fn notice_is_warning(kind: NoticeKind) -> bool {
@@ -1013,6 +1026,8 @@ mod tests {
         use crate::i18n::Msg as _;
         for key in [
             BuiltinMsg::MissingText,
+            BuiltinMsg::RequiresTopup,
+            BuiltinMsg::AuthorizationInvalid,
             BuiltinMsg::CatalogUpdatedPrefix,
             BuiltinMsg::CatalogSnapshotPrefix,
             BuiltinMsg::CatalogSnapshot,
@@ -1042,6 +1057,18 @@ mod tests {
             assert!(!key.zh().is_empty(), "{key:?} 缺中文");
             assert!(!key.en().is_empty(), "{key:?} 缺英文");
         }
-        assert_eq!(BuiltinMsg::MissingText.zh(), MISSING_TEXT);
+        // 英文表里不能漏进中文。
+        for key in [
+            BuiltinMsg::MissingText,
+            BuiltinMsg::RequiresTopup,
+            BuiltinMsg::AuthorizationInvalid,
+        ] {
+            assert!(
+                !key.en()
+                    .chars()
+                    .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "{key:?} 的英文里有中文"
+            );
+        }
     }
 }

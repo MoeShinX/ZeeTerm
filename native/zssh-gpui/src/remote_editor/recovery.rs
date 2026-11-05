@@ -55,7 +55,7 @@ impl RecoveryItem {
 pub(crate) fn recovery_line(item: &RecoveryItem) -> String {
     match &item.path {
         Some(path) => match item.host_label.as_deref().filter(|name| !name.is_empty()) {
-            Some(host) => format!("{host}：{path}"),
+            Some(host) => crate::i18n::colon(host, path),
             None => path.clone(),
         },
         None => format!(

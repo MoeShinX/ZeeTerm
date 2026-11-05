@@ -1845,7 +1845,7 @@ impl MainWindow {
                         .child({
                             // 命令列：受保护的进程前面带小锁，悬停说原因。
                             let tip = match protection {
-                                Some(p) => format!("{}：{command}", p.reason()),
+                                Some(p) => crate::i18n::colon(p.reason(), &command),
                                 None => command.clone(),
                             };
                             h_flex()

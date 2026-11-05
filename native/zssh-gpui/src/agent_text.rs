@@ -36,7 +36,7 @@ fn ends_home_component(next: Option<char>) -> bool {
             matches!(c, '\\' | '/')
                 || c.is_whitespace()
                 || "\"'`()[]{}<>,;:|".contains(c)
-                || "，。；：！？（）【】「」、".contains(c)
+                || "，。；：！？（）【】「」、".contains(c) // i18n-allow: 判断路径结尾的中文标点，是数据不是界面文案
         }
     }
 }

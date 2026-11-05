@@ -4,7 +4,7 @@
 //!
 //! 关到托盘不算退出（进程和后台任务继续跑），不走这个确认。
 
-use crate::i18n::{Msg, count, is_en, t};
+use crate::i18n::{Msg, count, t};
 use crate::install_state::PendingWork;
 
 /// 退出确认 / 关闭文件视图确认的文案。主机名、产品名是数据，不进这张表。
@@ -76,7 +76,7 @@ impl Msg for CloseMsg {
 
 /// 列表的连接符跟着语言走（中文用顿号）。
 fn join_list(parts: &[String]) -> String {
-    parts.join(if is_en() { ", " } else { "、" })
+    parts.join(crate::i18n::list_sep())
 }
 
 /// 有进行中的工作就返回 `(标题, 正文)`，没有返回 `None`（可以直接退出）。

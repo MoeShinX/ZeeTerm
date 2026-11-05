@@ -88,7 +88,7 @@ pub fn confirm_lines(plan: &DeletePlan) -> Vec<String> {
         let names: Vec<String> = plan
             .remove
             .iter()
-            .map(|item| format!("「{}」", item.name))
+            .map(|item| crate::i18n::quote(&item.name))
             .collect();
         // 英文要分单复数；中文两句一样。
         let (prefix, suffix) = if names.len() > 1 {
@@ -123,7 +123,11 @@ pub fn confirm_lines(plan: &DeletePlan) -> Vec<String> {
         ));
     }
     if !plan.keys.is_empty() {
-        let names: Vec<String> = plan.keys.iter().map(|name| format!("「{name}」")).collect();
+        let names: Vec<String> = plan
+            .keys
+            .iter()
+            .map(|name| crate::i18n::quote(name))
+            .collect();
         lines.push(format!(
             "{}{}{}",
             t(HostDeleteMsg::KeysKeptPrefix),

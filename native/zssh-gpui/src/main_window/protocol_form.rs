@@ -399,7 +399,7 @@ pub fn serial_newline_label(value: SerialNewline) -> &'static str {
 
 /// 输入框里的提示词：逗号 / 分号 / 换行分隔，去掉空白和空项。
 pub fn parse_patterns(text: &str) -> Vec<String> {
-    text.split([',', '，', ';', '；', '\n'])
+    text.split([',', '，', ';', '；', '\n']) // i18n-allow: 用户输入的分隔符（中文逗号 / 分号也认），不是界面文案
         .map(str::trim)
         .filter(|item| !item.is_empty())
         .map(str::to_owned)

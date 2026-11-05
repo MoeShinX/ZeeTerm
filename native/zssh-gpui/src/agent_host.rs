@@ -1586,8 +1586,8 @@ impl AgentHub {
         let spec = self.mcp_spec();
         let runtime = match kind {
             // claude 不用共用进程（一个对话一个进程），走不到这儿。
-            AgentKind::Claude => return Err("claude 不使用共用进程".to_string()),
-            AgentKind::Builtin => return Err("ZeePilot 不使用共用进程".to_string()),
+            AgentKind::Claude => return Err("claude 不使用共用进程".to_string()), // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
+            AgentKind::Builtin => return Err("ZeePilot 不使用共用进程".to_string()), // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
             AgentKind::OpenCode => {
                 // 只带上用户配置里的模型相关键（自建服务商照常可用），其余一律不带。
                 let user_config = overrides
@@ -1644,7 +1644,7 @@ impl AgentHub {
         overrides: StartOverrides,
     ) -> Result<AgentSession, String> {
         if kind == AgentKind::Builtin {
-            return Err("ZeePilot 要用 start_builtin 启动".to_string());
+            return Err("ZeePilot 要用 start_builtin 启动".to_string()); // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
         }
         let tools = ToolChannel::attach(&self.bridge, &self.approver, &self.reports);
         let (events_tx, events) = mpsc::unbounded_channel();
@@ -1670,7 +1670,7 @@ impl AgentHub {
         let (conversation, resumed): (Arc<dyn AgentConversation>, bool) = match kind {
             // claude：一个对话一个进程（懒启动：第一次发消息才拉；空闲 10 分钟关，
             // 下次发消息 `--resume` 恢复上下文）。
-            AgentKind::Builtin => return Err("ZeePilot 要用 start_builtin 启动".to_string()),
+            AgentKind::Builtin => return Err("ZeePilot 要用 start_builtin 启动".to_string()), // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
             AgentKind::Claude => {
                 self.require_mcp_binary()?;
                 let options = start_options(
@@ -1691,7 +1691,7 @@ impl AgentHub {
                 let SharedRuntime::OpenCode(runtime) =
                     self.runtime_for(kind, install, &overrides).await?
                 else {
-                    return Err("opencode 的共用进程类型不对".to_string());
+                    return Err("opencode 的共用进程类型不对".to_string()); // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
                 };
                 let (conversation, resumed) = runtime
                     .open_conversation_resuming(capability, events_tx, resume.as_deref())
@@ -1706,7 +1706,7 @@ impl AgentHub {
                 let SharedRuntime::Codex(runtime) =
                     self.runtime_for(kind, install, &overrides).await?
                 else {
-                    return Err("codex 的共用进程类型不对".to_string());
+                    return Err("codex 的共用进程类型不对".to_string()); // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
                 };
                 let (conversation, resumed) = runtime
                     .open_conversation_resuming(capability, events_tx, resume.as_deref())

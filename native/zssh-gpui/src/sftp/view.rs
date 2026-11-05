@@ -1760,10 +1760,12 @@ impl SftpDemo {
                             .when(!compact, |d| d.w(px(176.0)).flex_none())
                             .child(div().truncate().min_w_0().child(name))
                             .children(is_dir.then(|| {
-                                div()
-                                    .flex_none()
-                                    .typo(Role::Caption, tokens)
-                                    .child(format!("（{}/{}）", row.done_files, row.total_files))
+                                div().flex_none().typo(Role::Caption, tokens).child(
+                                    crate::i18n::parens(&format!(
+                                        "{}/{}",
+                                        row.done_files, row.total_files
+                                    )),
+                                )
                             })),
                     )
                     .when(!compact, |line| {

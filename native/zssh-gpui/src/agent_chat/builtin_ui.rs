@@ -477,7 +477,7 @@ impl AgentChatDemo {
         self.resume_requested = resume.is_some();
         self.unsent_text = Some(text.clone());
         let Some(endpoint_id) = self.builtin.endpoint else {
-            self.start_failed(super::builtin::MISSING_TEXT.to_owned(), cx);
+            self.start_failed(super::builtin::missing_text().to_owned(), cx);
             return;
         };
         let sender = self.host_tx.clone();
@@ -787,11 +787,11 @@ mod tests {
         assert!(shown.is_empty(), "通用错误行换成了提示卡：{shown:?}");
         assert_eq!(assistant(&chat).cards, [CardKind::TopUp]);
         assert!(
-            builtin::REQUIRES_TOPUP_TEXT.contains("需要充值后使用")
-                && builtin::REQUIRES_TOPUP_TEXT.contains("赠送额度可在网页和其他客户端试用")
+            builtin::requires_topup_text().contains("需要充值后使用")
+                && builtin::requires_topup_text().contains("赠送额度可在网页和其他客户端试用")
         );
         assert!(
-            !builtin::REQUIRES_TOPUP_TEXT.contains("zeeterm_requires_topup"),
+            !builtin::requires_topup_text().contains("zeeterm_requires_topup"),
             "不把内部错误码摆给用户"
         );
 
@@ -849,8 +849,8 @@ mod tests {
         });
         assert!(texts(&assistant(&chat).notices).is_empty());
         assert_eq!(assistant(&chat).cards, [CardKind::Reconnect]);
-        assert!(builtin::AUTHORIZATION_INVALID_TEXT.contains("重新连接"));
-        assert!(builtin::AUTHORIZATION_INVALID_TEXT.contains("可能在网站上改过密码或停用了授权"));
+        assert!(builtin::authorization_invalid_text().contains("重新连接"));
+        assert!(builtin::authorization_invalid_text().contains("可能在网站上改过密码或停用了授权"));
 
         // 错误事件先到：已经显示的通用错误行换成卡片，而且只换当前回合的。
         let mut chat = running();

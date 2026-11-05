@@ -639,8 +639,8 @@ impl MainWindow {
     /// AI 面板要切到「全部放行」：先弹确认框，确认才真的写设置。
     fn ask_allow_all_commands(&mut self, cx: &mut Context<Self>) {
         self.modal = Some(Modal::Confirm(Confirm {
-            title: crate::agent_chat::ALLOW_ALL_TITLE.to_owned(),
-            message: crate::agent_chat::ALLOW_ALL_MESSAGE.to_owned(),
+            title: crate::agent_chat::allow_all_title().to_owned(),
+            message: crate::agent_chat::allow_all_message().to_owned(),
             confirm_label: Some(t(DockMsg::AllowAll).to_owned()),
             destructive: true,
             action: ConfirmAction::AllowAllCommands,

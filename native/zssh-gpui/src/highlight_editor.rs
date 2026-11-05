@@ -58,6 +58,11 @@ enum HighlightMsg {
     AddSamplesTooltipPrefix,
     MaxRulesPrefix,
     MaxRulesSuffix,
+    // ---- 正则编译失败的原因（来自 zssh-regex 的错误类型，按类型生成当前语言） ----
+    ErrEmptyPattern,
+    ErrTooLong,
+    ErrMatchesEmpty,
+    ErrTimedOut,
 }
 
 impl Msg for HighlightMsg {
@@ -83,6 +88,10 @@ impl Msg for HighlightMsg {
             Self::AddSamplesTooltipPrefix => "补上还没有的常用规则：",
             Self::MaxRulesPrefix => "最多 ",
             Self::MaxRulesSuffix => " 条规则",
+            Self::ErrEmptyPattern => "不能为空",
+            Self::ErrTooLong => "规则太长",
+            Self::ErrMatchesEmpty => "这个正则能匹配空字符串，会标满整屏",
+            Self::ErrTimedOut => "正则编译超时",
         }
     }
 
@@ -112,6 +121,12 @@ impl Msg for HighlightMsg {
             Self::AddSamplesTooltipPrefix => "Add common rules that are missing: ",
             Self::MaxRulesPrefix => "At most ",
             Self::MaxRulesSuffix => " rules",
+            Self::ErrEmptyPattern => "Cannot be empty",
+            Self::ErrTooLong => "The rule is too long",
+            Self::ErrMatchesEmpty => {
+                "This regex can match the empty string and would highlight the whole screen"
+            }
+            Self::ErrTimedOut => "Compiling the regex timed out",
         }
     }
 }
@@ -130,7 +145,19 @@ pub fn rule_error(rule: &HighlightRule) -> Option<String> {
     }
     zssh_regex::compile(&rule.effective_pattern(), rule.case_sensitive)
         .err()
-        .map(|err| err.to_string())
+        .map(|err| compile_error_text(&err))
+}
+
+/// 正则编译失败的原因：已知类型按当前语言生成；正则库自己的原文（`Unsupported`）原样显示。
+fn compile_error_text(err: &zssh_regex::CompileError) -> String {
+    use zssh_regex::CompileError;
+    match err {
+        CompileError::EmptyPattern => t(HighlightMsg::ErrEmptyPattern).to_owned(),
+        CompileError::TooLong => t(HighlightMsg::ErrTooLong).to_owned(),
+        CompileError::MatchesEmpty => t(HighlightMsg::ErrMatchesEmpty).to_owned(),
+        CompileError::TimedOut => t(HighlightMsg::ErrTimedOut).to_owned(),
+        CompileError::Unsupported(message) => message.clone(),
+    }
 }
 
 impl HighlightEditor {
@@ -417,7 +444,7 @@ impl HighlightEditor {
             .iter()
             .map(HighlightRule::label)
             .collect::<Vec<_>>()
-            .join("、");
+            .join(crate::i18n::list_sep());
         h_flex()
             .id("highlight-footer")
             .w_full()
@@ -469,7 +496,9 @@ impl HighlightEditor {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{HighlightRule, rule_error};
+    use super::{HighlightMsg, HighlightRule, compile_error_text, rule_error};
+    use crate::i18n::Msg as _;
+    use zssh_regex::CompileError;
 
     #[test]
     fn an_empty_pattern_is_not_an_error_but_a_broken_regex_is() {
@@ -479,6 +508,32 @@ mod tests {
         assert_eq!(rule_error(&rule), None);
         rule.pattern = "(".to_owned();
         assert!(rule_error(&rule).is_some(), "括号没配对");
+    }
+
+    #[test]
+    fn compile_errors_are_worded_from_the_error_type_in_both_languages() {
+        // 当前语言默认中文：已知类型给中文原句；正则库自己的原文原样给。
+        assert_eq!(
+            compile_error_text(&CompileError::EmptyPattern),
+            HighlightMsg::ErrEmptyPattern.zh()
+        );
+        assert_eq!(
+            compile_error_text(&CompileError::Unsupported("unclosed group".to_owned())),
+            "unclosed group"
+        );
+        for key in [
+            HighlightMsg::ErrEmptyPattern,
+            HighlightMsg::ErrTooLong,
+            HighlightMsg::ErrMatchesEmpty,
+            HighlightMsg::ErrTimedOut,
+        ] {
+            assert!(
+                !key.en()
+                    .chars()
+                    .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "{key:?} 的英文里有中文"
+            );
+        }
     }
 
     #[test]

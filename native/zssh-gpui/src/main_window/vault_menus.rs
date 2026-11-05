@@ -121,7 +121,7 @@ fn run(
 
 fn with_hint(label: &str, order: OrderState) -> String {
     match order.hint() {
-        Some(hint) => format!("{label}（{hint}）"),
+        Some(hint) => crate::i18n::paren(label, hint),
         None => label.to_owned(),
     }
 }

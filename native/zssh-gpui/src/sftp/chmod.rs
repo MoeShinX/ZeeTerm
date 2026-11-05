@@ -138,7 +138,11 @@ impl ChmodSummary {
             ));
         }
         if !notes.is_empty() {
-            text.push_str(&format!("；{}", notes.join("；")));
+            text.push_str(&format!(
+                "{}{}",
+                crate::i18n::semicolon(),
+                notes.join(crate::i18n::semicolon())
+            ));
         }
         text
     }
@@ -175,7 +179,7 @@ pub(super) async fn recursive_chmod(
                 progress(summary.changed);
             }
             Err(reason) if dir == root => {
-                return Err(format!("{dir}：{reason}"));
+                return Err(crate::i18n::colon(&dir, &reason));
             }
             Err(reason) => {
                 summary.failed += 1;

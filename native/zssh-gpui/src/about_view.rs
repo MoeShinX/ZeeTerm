@@ -338,7 +338,7 @@ impl AboutView {
                 }),
         );
         let auto_note = match &self.save_error {
-            Some(error) => format!("{}（{error}）", auto_check_description()),
+            Some(error) => crate::i18n::paren(auto_check_description(), error),
             None => auto_check_description().to_owned(),
         };
         vec![

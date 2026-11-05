@@ -405,9 +405,7 @@ impl MainWindow {
         if !impact.via_jump.is_empty() {
             let n = impact.via_jump.len();
             // 名单的连接符跟着语言走（中文用顿号）。
-            let names = impact
-                .via_jump
-                .join(if crate::i18n::is_en() { ", " } else { "、" });
+            let names = impact.via_jump.join(crate::i18n::list_sep());
             let count = crate::i18n::count(
                 n as u64,
                 crate::i18n::t(ModalMsg::HostCountSuffix),

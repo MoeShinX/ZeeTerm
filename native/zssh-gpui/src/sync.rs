@@ -2184,7 +2184,7 @@ fn classify_failure(err: &SyncError) -> FailureKind {
         },
         SyncError::AuthFailed(message) => FailureKind::AuthFailed(message.clone()),
         SyncError::WrongPassword => FailureKind::WrongPassword,
-        SyncError::Format(message) if message.contains("基线") => FailureKind::BaselineBroken,
+        SyncError::Format(message) if message.contains("基线") => FailureKind::BaselineBroken, // i18n-allow: 匹配核心库的中文错误原文（界面语言无关）
         _ => FailureKind::Other,
     }
 }
@@ -2673,9 +2673,9 @@ impl std::fmt::Debug for WebDavForm {
 /// `Debug` 里代替秘密的占位：只说有没有填，不说内容和长度。
 fn redacted(secret: &str) -> &'static str {
     if secret.is_empty() {
-        "<空>"
+        "<空>" // i18n-allow: Debug 输出的占位，不上屏
     } else {
-        "<已隐藏>"
+        "<已隐藏>" // i18n-allow: Debug 输出的占位，不上屏
     }
 }
 

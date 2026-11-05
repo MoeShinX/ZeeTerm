@@ -143,6 +143,96 @@ pub(crate) fn count(
     }
 }
 
+/// 标点和连接符：中文用全角（`名称（说明）`、`项目：值`、`「名称」`、顿号 / 全角逗号），
+/// 英文用半角（`Name (note)`、`Label: value`、`“Name”`、`, `）。
+///
+/// 拼句子时统一走下面的 [`paren`] / [`colon`] / [`quote`] / [`list_sep`] / [`comma`] /
+/// [`semicolon`]，不要在调用点写死全角字符（英文界面会露出来）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Punct {
+    ParenOpen,
+    ParenClose,
+    WrapOpen,
+    WrapClose,
+    Colon,
+    QuoteOpen,
+    QuoteClose,
+    ListSep,
+    Comma,
+    Semicolon,
+}
+
+impl Msg for Punct {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::ParenOpen => "（",
+            Self::ParenClose => "）",
+            Self::WrapOpen => "（",
+            Self::WrapClose => "）",
+            Self::Colon => "：",
+            Self::QuoteOpen => "「",
+            Self::QuoteClose => "」",
+            Self::ListSep => "、",
+            Self::Comma => "，",
+            Self::Semicolon => "；",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::ParenOpen => " (",
+            Self::ParenClose => ")",
+            Self::WrapOpen => "(",
+            Self::WrapClose => ")",
+            Self::Colon => ": ",
+            Self::QuoteOpen => "“",
+            Self::QuoteClose => "”",
+            Self::ListSep => ", ",
+            Self::Comma => ", ",
+            Self::Semicolon => "; ",
+        }
+    }
+}
+
+/// 括注：中文 `名称（说明）`，英文 `Name (note)`。
+pub(crate) fn paren(main: &str, note: &str) -> String {
+    format!(
+        "{main}{}{note}{}",
+        t(Punct::ParenOpen),
+        t(Punct::ParenClose)
+    )
+}
+
+/// 把一小段内容括起来（前面不加空格，由所在布局的间距管）：中文 `（内容）`，英文 `(content)`。
+pub(crate) fn parens(inner: &str) -> String {
+    format!("{}{inner}{}", t(Punct::WrapOpen), t(Punct::WrapClose))
+}
+
+/// 冒号分隔：中文 `项目：值`，英文 `Label: value`。
+pub(crate) fn colon(label: &str, value: &str) -> String {
+    format!("{label}{}{value}", t(Punct::Colon))
+}
+
+/// 引用一个名字：中文 `「名称」`，英文 `“Name”`。
+pub(crate) fn quote(name: &str) -> String {
+    format!("{}{name}{}", t(Punct::QuoteOpen), t(Punct::QuoteClose))
+}
+
+/// 名单里的连接符：中文顿号，英文 `, `。
+pub(crate) fn list_sep() -> &'static str {
+    t(Punct::ListSep)
+}
+
+/// 子句之间的逗号：中文 `，`，英文 `, `。
+pub(crate) fn comma() -> &'static str {
+    t(Punct::Comma)
+}
+
+/// 并列说明之间的分号：中文 `；`，英文 `; `。
+pub(crate) fn semicolon() -> &'static str {
+    t(Punct::Semicolon)
+}
+
 /// 界面文案的键。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Key {
@@ -371,6 +461,42 @@ mod tests {
             assert!(!key.zh().is_empty(), "{key:?} 缺中文");
             assert!(!key.en().is_empty(), "{key:?} 缺英文");
         }
+    }
+
+    #[test]
+    fn punctuation_follows_the_language() {
+        // 默认中文：全角标点。
+        assert_eq!(current(), Lang::Zh, "没设过时默认中文");
+        assert_eq!(paren("名称", "说明"), "名称（说明）");
+        assert_eq!(parens("3/5"), "（3/5）");
+        assert_eq!(colon("项目", "值"), "项目：值");
+        assert_eq!(quote("web"), "「web」");
+        assert_eq!(list_sep(), "、");
+        assert_eq!(comma(), "，");
+        assert_eq!(semicolon(), "；");
+        // 英文：半角，而且一个全角字符都不能漏出来。
+        for punct in [
+            Punct::ParenOpen,
+            Punct::ParenClose,
+            Punct::WrapOpen,
+            Punct::WrapClose,
+            Punct::Colon,
+            Punct::QuoteOpen,
+            Punct::QuoteClose,
+            Punct::ListSep,
+            Punct::Comma,
+            Punct::Semicolon,
+        ] {
+            assert!(
+                punct
+                    .en()
+                    .chars()
+                    .all(|c| c.is_ascii() || c == '“' || c == '”'),
+                "{punct:?} 的英文里有全角字符"
+            );
+        }
+        assert_eq!(Punct::ParenOpen.en(), " (");
+        assert_eq!(Punct::Colon.en(), ": ");
     }
 
     #[test]

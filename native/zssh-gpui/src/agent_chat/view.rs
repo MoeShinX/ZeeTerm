@@ -1076,12 +1076,12 @@ pub(super) fn tokenway_card(
 ) -> AnyElement {
     let (text, label, id) = match card {
         CardKind::TopUp => (
-            agent_setup::builtin::REQUIRES_TOPUP_TEXT,
+            agent_setup::builtin::requires_topup_text(),
             t(ChatMsg::TopUp),
             "agent-chat-card-topup",
         ),
         CardKind::Reconnect => (
-            agent_setup::builtin::AUTHORIZATION_INVALID_TEXT,
+            agent_setup::builtin::authorization_invalid_text(),
             t(ChatMsg::Reconnect),
             "agent-chat-card-reconnect",
         ),

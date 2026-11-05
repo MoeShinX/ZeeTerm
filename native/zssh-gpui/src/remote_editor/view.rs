@@ -317,9 +317,9 @@ impl Render for RemoteEditor {
                     .truncate()
                     .text_sm()
                     .text_color(tokens.text_muted)
-                    .child(SharedString::from(format!(
-                        "{}：{}",
-                        self.host_label, self.path
+                    .child(SharedString::from(crate::i18n::colon(
+                        &self.host_label,
+                        &self.path,
                     ))),
             )
             .child(

@@ -30,6 +30,7 @@ use zssh_terminal::Size;
 
 use crate::ai_terminals::{TermCommand, terminals};
 use crate::conn_pool::{Acquired, PRODUCTION_POLL, Pool, PoolConfig, PoolItem};
+use crate::error_text::error_text;
 use crate::settings::data_dir;
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -137,6 +138,20 @@ enum BackendMsg {
     RuntimeInitFailed,
     InputDropped,
     ConnectTaskEnded,
+    // ---- 连接失败的前缀和拨号链每一跳的标签（核心库错误正文走 `error_text`） ----
+    PrepareFailed,
+    OpenHostDbFailed,
+    HopTarget,
+    HopProxy,
+    HopJump,
+    OpenShellTimeout,
+    OpenShellFailed,
+    NotSshHostPrefix,
+    NotSshHostSuffix,
+    ConnectFailed,
+    WriteRemoteFailed,
+    CustomProxyMissingPrefix,
+    CustomProxyMissingSuffix,
 }
 
 impl Msg for BackendMsg {
@@ -146,6 +161,19 @@ impl Msg for BackendMsg {
             Self::RuntimeInitFailed => "SSH 运行时初始化失败",
             Self::InputDropped => "\r\n\x1b[31m[远端暂时不接收输入，已丢弃部分按键]\x1b[0m\r\n",
             Self::ConnectTaskEnded => "连接任务意外结束",
+            Self::PrepareFailed => "准备连接失败：",
+            Self::OpenHostDbFailed => "打开主机库失败：",
+            Self::HopTarget => "目标 ",
+            Self::HopProxy => "代理 ",
+            Self::HopJump => "跳板机 ",
+            Self::OpenShellTimeout => "打开 shell 超时",
+            Self::OpenShellFailed => "打开 shell 失败：",
+            Self::NotSshHostPrefix => "这是一台 ",
+            Self::NotSshHostSuffix => " 主机，没有 SSH 连接",
+            Self::ConnectFailed => "连接失败：",
+            Self::WriteRemoteFailed => "写入远端失败：",
+            Self::CustomProxyMissingPrefix => "主机「",
+            Self::CustomProxyMissingSuffix => "」选了指定代理，但没有选是哪个代理",
         }
     }
 
@@ -157,6 +185,19 @@ impl Msg for BackendMsg {
                 "\r\n\x1b[31m[The remote side is not accepting input right now; some keystrokes were dropped]\x1b[0m\r\n"
             }
             Self::ConnectTaskEnded => "The connection task ended unexpectedly",
+            Self::PrepareFailed => "Could not prepare the connection: ",
+            Self::OpenHostDbFailed => "Could not open the host database: ",
+            Self::HopTarget => "Target ",
+            Self::HopProxy => "Proxy ",
+            Self::HopJump => "Jump host ",
+            Self::OpenShellTimeout => "Timed out opening a shell",
+            Self::OpenShellFailed => "Could not open a shell: ",
+            Self::NotSshHostPrefix => "This is a ",
+            Self::NotSshHostSuffix => " host; it has no SSH connection",
+            Self::ConnectFailed => "Connection failed: ",
+            Self::WriteRemoteFailed => "Could not write to the remote end: ",
+            Self::CustomProxyMissingPrefix => "Host “",
+            Self::CustomProxyMissingSuffix => "” uses a specific proxy, but none is selected",
         }
     }
 }
@@ -384,7 +425,7 @@ pub fn begin_connect_quick(
         // 读库是同步 IO：放到阻塞线程池（审查 M-13）。
         let (key, hops) = tokio::task::spawn_blocking(move || prepare_quick(&target, password))
             .await
-            .map_err(|err| format!("准备连接失败：{err}"))??;
+            .map_err(|err| format!("{}{err}", t(BackendMsg::PrepareFailed)))??;
         let Acquired {
             item: factory,
             reused: _,
@@ -406,7 +447,7 @@ fn prepare_quick(
     password: String,
 ) -> Result<(String, Vec<ChainHop>), String> {
     let db = Database::open(&data_dir().join("zssh.db"))
-        .map_err(|err| format!("打开主机库失败：{err}"))?;
+        .map_err(|err| format!("{}{}", t(BackendMsg::OpenHostDbFailed), error_text(&err)))?;
     let proxy = match db.default_proxy_id().map_err(|err| err.to_string())? {
         Some(id) => {
             let login = db.proxy_login(id).map_err(|err| err.to_string())?;
@@ -431,7 +472,7 @@ fn quick_hops(
     known_hosts: KnownHosts,
 ) -> (String, Vec<ChainHop>) {
     let hops = vec![ChainHop {
-        label: format!("目标 {}", target.display()),
+        label: format!("{}{}", t(BackendMsg::HopTarget), target.display()),
         host: target.host.clone(),
         port: target.port,
         username: target.username.clone(),
@@ -509,8 +550,8 @@ impl SshSessionFactory {
             ),
         )
         .await
-        .map_err(|_| "打开 shell 超时".to_owned())?
-        .map_err(|err| format!("打开 shell 失败：{err}"))?;
+        .map_err(|_| t(BackendMsg::OpenShellTimeout).to_owned())?
+        .map_err(|err| format!("{}{}", t(BackendMsg::OpenShellFailed), error_text(&err)))?;
         let gate = shell.flow_handle();
         let (writer, stream) = shell.split();
         let (events, event_rx) = std::sync::mpsc::channel();
@@ -543,7 +584,7 @@ impl SshSessionFactory {
 /// 所有查询在这个同步函数里做完，不能带着它跨 `await`。
 fn prepare(host_id: i64) -> Result<(String, Vec<ChainHop>), String> {
     let db = Database::open(&data_dir().join("zssh.db"))
-        .map_err(|err| format!("打开主机库失败：{err}"))?;
+        .map_err(|err| format!("{}{}", t(BackendMsg::OpenHostDbFailed), error_text(&err)))?;
     prepare_from_db(&db, host_id)
 }
 
@@ -557,7 +598,12 @@ pub(crate) fn prepare_from_db(
         .map_err(|err| err.to_string())?
         .protocol;
     if protocol != zssh_core::model::Protocol::Ssh {
-        return Err(format!("这是一台 {} 主机，没有 SSH 连接", protocol.label()));
+        return Err(format!(
+            "{}{}{}",
+            t(BackendMsg::NotSshHostPrefix),
+            protocol.label(),
+            t(BackendMsg::NotSshHostSuffix)
+        ));
     }
     let hops = build_chain(db, host_id)?;
     Ok((pool_key(host_id, &hops), hops))
@@ -580,7 +626,8 @@ async fn acquire_factory(
         let (interactor, cancel) = crate::ssh_interact::scoped(interactor);
         let connected = Connection::connect_chain(hops, interactor).await;
         cancel.disarm();
-        let connection = connected.map_err(|err| format!("连接失败：{err}"))?;
+        let connection = connected
+            .map_err(|err| format!("{}{}", t(BackendMsg::ConnectFailed), error_text(&err)))?;
         let factory = Arc::new(SshSessionFactory {
             connection: Arc::new(connection),
         });
@@ -597,7 +644,7 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
     // 读库是同步 IO：放到阻塞线程池，别占住只有 2 个 worker 的 SSH runtime（审查 M-13）。
     let (key, hops) = tokio::task::spawn_blocking(move || prepare(host_id))
         .await
-        .map_err(|err| format!("准备连接失败：{err}"))??;
+        .map_err(|err| format!("{}{err}", t(BackendMsg::PrepareFailed)))??;
     // 这台主机开了 X11 转发时，连上之后、开 shell 之前才准备本机 X 服务器（连不上就不白拉起）。
     let x11_wanted = crate::x11_glue::wanted(host_id);
     let Acquired {
@@ -649,7 +696,7 @@ pub async fn factory_for_host(host_id: i64) -> Result<Arc<SshSessionFactory>, St
     // 同 `connect_async`：同步读库不能占 SSH runtime 的 worker（审查 M-13）。
     let (key, hops) = tokio::task::spawn_blocking(move || prepare(host_id))
         .await
-        .map_err(|err| format!("准备连接失败：{err}"))??;
+        .map_err(|err| format!("{}{err}", t(BackendMsg::PrepareFailed)))??;
     acquire_factory(
         pool(),
         crate::ssh_interact::interactor(),
@@ -784,7 +831,7 @@ async fn session_loop<W: ShellIo, S: ShellSource>(
                 if let Err(err) = result {
                     let _ = events.send(SessionEvent::Error {
                         generation,
-                        message: format!("写入远端失败：{err}"),
+                        message: format!("{}{err}", t(BackendMsg::WriteRemoteFailed)),
                     });
                     break;
                 }
@@ -890,9 +937,11 @@ fn build_chain(db: &Database, host_id: i64) -> Result<Vec<ChainHop>, String> {
         let login = db.host_login(host.id).map_err(|err| err.to_string())?;
         let proxy = resolve_proxy(db, host, default_proxy_id)?;
         let label = match (&proxy, index + 1 == total) {
-            (Some(proxy), _) if index == 0 => format!("代理 {}", proxy_label(&proxy.kind)),
-            (_, true) => format!("目标 {}", host.name),
-            _ => format!("跳板机 {}", host.name),
+            (Some(proxy), _) if index == 0 => {
+                format!("{}{}", t(BackendMsg::HopProxy), proxy_label(&proxy.kind))
+            }
+            (_, true) => format!("{}{}", t(BackendMsg::HopTarget), host.name),
+            _ => format!("{}{}", t(BackendMsg::HopJump), host.name),
         };
         hops.push(ChainHop {
             label,
@@ -919,9 +968,14 @@ pub(crate) fn resolve_proxy(
             Some(id) => id,
             None => return Ok(None),
         },
-        ProxyMode::Custom => host
-            .proxy_id
-            .ok_or_else(|| format!("主机「{}」选了指定代理，但没有选是哪个代理", host.name))?,
+        ProxyMode::Custom => host.proxy_id.ok_or_else(|| {
+            format!(
+                "{}{}{}",
+                t(BackendMsg::CustomProxyMissingPrefix),
+                host.name,
+                t(BackendMsg::CustomProxyMissingSuffix)
+            )
+        })?,
     };
     let login = db.proxy_login(proxy_id).map_err(|err| err.to_string())?;
     Ok(Some(ProxyConfig {

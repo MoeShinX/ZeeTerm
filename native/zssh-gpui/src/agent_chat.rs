@@ -139,7 +139,7 @@ mod history_tests;
 mod tests;
 
 pub use approval::AgentChatEvent;
-pub(crate) use approval::{ALLOW_ALL_MESSAGE, ALLOW_ALL_TITLE};
+pub(crate) use approval::{allow_all_message, allow_all_title};
 pub(crate) use view::link_click_opens;
 
 pub use embed::EmbedContext;
