@@ -1156,7 +1156,7 @@ impl MainWindow {
             .iter()
             .map(|protocol| {
                 (
-                    protocol.label().to_owned(),
+                    crate::ops_text::protocol_label(*protocol).to_owned(),
                     *protocol == form.protocol,
                     (!protocol_form::can_switch_to(editing, *protocol))
                         .then_some(t(HostDialogMsg::SerialMixedHint)),

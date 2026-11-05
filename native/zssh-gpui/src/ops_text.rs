@@ -428,3 +428,28 @@ mod tests {
         );
     }
 }
+
+/// 协议的显示名：SSH / Telnet 是专有名词，串口按界面语言（核心的 `Protocol::label` 只有中文）。
+pub(crate) fn protocol_label(protocol: zssh_core::model::Protocol) -> &'static str {
+    use zssh_core::model::Protocol;
+    match protocol {
+        Protocol::Ssh => "SSH",
+        Protocol::Telnet => "Telnet",
+        Protocol::Serial => t(ProtocolMsg::Serial),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ProtocolMsg {
+    Serial,
+}
+
+impl Msg for ProtocolMsg {
+    fn zh(&self) -> &'static str {
+        "串口"
+    }
+
+    fn en(&self) -> &'static str {
+        "Serial"
+    }
+}

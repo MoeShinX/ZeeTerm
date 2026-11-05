@@ -606,7 +606,7 @@ pub(crate) fn prepare_from_db(
         return Err(format!(
             "{}{}{}",
             t(BackendMsg::NotSshHostPrefix),
-            protocol.label(),
+            crate::ops_text::protocol_label(protocol),
             t(BackendMsg::NotSshHostSuffix)
         ));
     }

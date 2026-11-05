@@ -335,7 +335,12 @@ impl MainWindow {
             let (name, label) = self
                 .store
                 .host(id)
-                .map(|h| (h.name.clone(), h.protocol.protocol.label()))
+                .map(|h| {
+                    (
+                        h.name.clone(),
+                        crate::ops_text::protocol_label(h.protocol.protocol),
+                    )
+                })
                 .unwrap_or_default();
             // 入口（右键菜单）上这一项已经置灰，走到这里的是调试驱动之类的间接调用。
             tracing::info!(host = %name, protocol = label, "端口转发只有 SSH 主机能用，没有打开");

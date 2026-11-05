@@ -433,7 +433,12 @@ mod real {
                 &ZsshError::AuthFailed,
                 FailurePhase::Handshake,
                 HopRole::Jump,
-                "跳板机 edge-1",
+                // 真实流程里这个前缀来自界面文案（`host_test`），夹具照着语言给一份。
+                if crate::i18n::current() == crate::i18n::Lang::En {
+                    "Jump host edge-1"
+                } else {
+                    "跳板机 edge-1"
+                },
             ),
             "ssh_hostkey" => failure(
                 &ZsshError::HostKeyChanged(Box::new(HostKeyMismatch {
