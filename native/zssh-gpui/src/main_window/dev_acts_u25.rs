@@ -3,6 +3,7 @@
 //!
 //! - `term_select:<行1>,<列1>,<行2>,<列2>`：设选区（可见区坐标）；`assert_term_selection:some|none`；
 //!   `assert_term_selected:<文字>`：选中的文字就是这段；
+//! - `assert_term_search:closed` 或 `assert_term_search:<查询>|<计数>`：搜索条（右键菜单「搜索」打开）的状态；
 //! - `assert_term_menu:closed` 或 `assert_term_menu:<项,项,…>`：右键菜单现在的条目，从上到下，`|` 是分隔线，
 //!   名字后面加 `!` 表示置灰；
 //! - `term_menu_pick:<名字>`：选菜单里的一项（和点它走同一个方法）；`term_menu_close`：不选任何项关掉；
@@ -25,6 +26,7 @@ mod real {
         "assert_term_selection",
         "assert_term_selected",
         "assert_term_menu",
+        "assert_term_search",
         "term_menu_pick",
         "term_menu_close",
         "term_paste_switch",
@@ -131,6 +133,20 @@ mod real {
                     .collect();
                 let have = have.join(",");
                 check(have == arg, format!("菜单现在是 {have}"))
+            }
+            "assert_term_search" => {
+                // `closed`，或 `<查询>|<计数>`（如 `error|2/3`）；条件暂时不成立会重试到步骤超时。
+                let state = ws.read(cx).dev_search_state();
+                let have = match &state {
+                    None => "closed".to_owned(),
+                    Some((query, count)) => format!("{query}|{count}"),
+                };
+                // 打开 / 重搜在下一个节拍才到位：不对先等，超时才算失败。
+                Ok(if have == arg {
+                    Outcome::Done
+                } else {
+                    Outcome::Pending
+                })
             }
             "term_menu_pick" => {
                 let mut result = Ok(());

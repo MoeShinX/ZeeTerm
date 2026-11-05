@@ -56,8 +56,14 @@ pub enum MenuItem {
     Copy,
     Paste,
     SelectAll,
+    /// 打开当前窗格的搜索条（只在右键菜单里，不配快捷键）。
+    Search,
+    /// 清屏（只在右键菜单里，不配快捷键）。
+    Clear,
     SplitRight,
     SplitDown,
+    /// 关闭右键点中的那个窗格（只在当前标签有分屏时出现）。
+    ClosePane,
     Separator,
 }
 
@@ -70,6 +76,8 @@ pub struct MenuState {
     pub has_selection: bool,
     /// 剪贴板里有文字。
     pub clipboard_has_text: bool,
+    /// 当前标签有分屏（只有一个窗格时不显示「关闭窗格」）。
+    pub split: bool,
 }
 
 /// 菜单上的一行。
@@ -124,8 +132,11 @@ enum TerminalMenuMsg {
     Copy,
     Paste,
     SelectAll,
+    Search,
+    Clear,
     SplitRight,
     SplitDown,
+    ClosePane,
 }
 
 impl crate::i18n::Msg for TerminalMenuMsg {
@@ -136,8 +147,11 @@ impl crate::i18n::Msg for TerminalMenuMsg {
             Self::Copy => "复制",
             Self::Paste => "粘贴",
             Self::SelectAll => "全选",
+            Self::Search => "搜索",
+            Self::Clear => "清屏",
             Self::SplitRight => "左右分屏",
             Self::SplitDown => "上下分屏",
+            Self::ClosePane => "关闭窗格",
         }
     }
 
@@ -148,16 +162,21 @@ impl crate::i18n::Msg for TerminalMenuMsg {
             Self::Copy => "Copy",
             Self::Paste => "Paste",
             Self::SelectAll => "Select All",
+            Self::Search => "Search",
+            Self::Clear => "Clear Screen",
             Self::SplitRight => "Split Right",
             Self::SplitDown => "Split Down",
+            Self::ClosePane => "Close Pane",
         }
     }
 }
 
 /// 菜单从上到下的内容：
-/// （在链接上：打开链接、复制链接、分隔线）复制、粘贴、全选 | 左右分屏、上下分屏。
+/// （在链接上：打开链接、复制链接、分隔线）复制、粘贴、全选 | 搜索、清屏 | 左右分屏、上下分屏
+/// （有分屏时：关闭窗格）。
 ///
-/// 卡里提到的「查找…」「清屏」：终端现在没有这两个动作，所以不放（放了也是死按钮）。
+/// 搜索和清屏只在这里，不配快捷键（`Ctrl+Shift+F` 是文件面板，`Ctrl+Shift+K` 在串口里是 Break），
+/// 所以这两项右边不写快捷键。
 pub fn menu_entries(state: &MenuState) -> Vec<Entry> {
     let mut entries = Vec::new();
     if let Some(link) = &state.link {
@@ -196,6 +215,19 @@ pub fn menu_entries(state: &MenuState) -> Vec<Entry> {
         ),
         Entry::separator(),
         Entry::new(
+            MenuItem::Search,
+            crate::i18n::t(TerminalMenuMsg::Search),
+            true,
+            None,
+        ),
+        Entry::new(
+            MenuItem::Clear,
+            crate::i18n::t(TerminalMenuMsg::Clear),
+            true,
+            None,
+        ),
+        Entry::separator(),
+        Entry::new(
             MenuItem::SplitRight,
             crate::i18n::t(TerminalMenuMsg::SplitRight),
             true,
@@ -208,6 +240,14 @@ pub fn menu_entries(state: &MenuState) -> Vec<Entry> {
             Some("Ctrl+Shift+E"),
         ),
     ]);
+    if state.split {
+        entries.push(Entry::new(
+            MenuItem::ClosePane,
+            crate::i18n::t(TerminalMenuMsg::ClosePane),
+            true,
+            Some("Ctrl+Shift+W"),
+        ));
+    }
     entries
 }
 
@@ -219,8 +259,11 @@ pub fn icon_of(item: MenuItem) -> Option<Ico> {
         MenuItem::Copy => Ico::Copy,
         MenuItem::Paste => Ico::ClipboardPaste,
         MenuItem::SelectAll => Ico::ScanText,
+        MenuItem::Search => Ico::Search,
+        MenuItem::Clear => Ico::Eraser,
         MenuItem::SplitRight => Ico::Columns2,
         MenuItem::SplitDown => Ico::Rows2,
+        MenuItem::ClosePane => Ico::X,
         MenuItem::Separator => return None,
     })
 }
@@ -283,6 +326,14 @@ mod tests {
             link: link.map(str::to_owned),
             has_selection: selection,
             clipboard_has_text: clipboard,
+            split: false,
+        }
+    }
+
+    fn split_state() -> MenuState {
+        MenuState {
+            split: true,
+            ..state(None, true, true)
         }
     }
 
@@ -346,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn the_plain_menu_has_copy_paste_select_all_and_the_two_splits() {
+    fn the_plain_menu_has_copy_paste_select_all_search_clear_and_the_two_splits() {
         let entries = menu_entries(&state(None, true, true));
         assert_eq!(
             items(&entries),
@@ -354,6 +405,9 @@ mod tests {
                 MenuItem::Copy,
                 MenuItem::Paste,
                 MenuItem::SelectAll,
+                MenuItem::Separator,
+                MenuItem::Search,
+                MenuItem::Clear,
                 MenuItem::Separator,
                 MenuItem::SplitRight,
                 MenuItem::SplitDown,
@@ -365,7 +419,68 @@ mod tests {
                 .all(|e| e.item == MenuItem::Separator || e.enabled)
         );
         let labels: Vec<_> = entries.iter().map(|e| e.label).collect();
-        assert_eq!(labels, ["复制", "粘贴", "全选", "", "左右分屏", "上下分屏"]);
+        assert_eq!(
+            labels,
+            [
+                "复制",
+                "粘贴",
+                "全选",
+                "",
+                "搜索",
+                "清屏",
+                "",
+                "左右分屏",
+                "上下分屏"
+            ]
+        );
+    }
+
+    #[test]
+    fn close_pane_shows_up_last_only_when_the_tab_is_split() {
+        let single = menu_entries(&state(None, true, true));
+        assert!(!items(&single).contains(&MenuItem::ClosePane));
+
+        let split = menu_entries(&split_state());
+        assert_eq!(items(&split).last(), Some(&MenuItem::ClosePane));
+        let close = entry(&split, MenuItem::ClosePane);
+        assert_eq!(close.label, "关闭窗格");
+        assert!(close.enabled);
+        // 和 Ctrl+Shift+W 同一个快捷键，菜单上照写。
+        assert_eq!(close.shortcut, Some("Ctrl+Shift+W"));
+        // 其余部分和没分屏时一样，只是末尾多一项。
+        assert_eq!(
+            &items(&split)[..items(&split).len() - 1],
+            &items(&single)[..]
+        );
+    }
+
+    #[test]
+    fn the_new_items_have_both_languages() {
+        use super::TerminalMenuMsg as M;
+        use crate::i18n::Msg;
+        assert_eq!(
+            [M::Search.en(), M::Clear.en(), M::ClosePane.en()],
+            ["Search", "Clear Screen", "Close Pane"]
+        );
+        assert_eq!(
+            [M::Search.zh(), M::Clear.zh(), M::ClosePane.zh()],
+            ["搜索", "清屏", "关闭窗格"]
+        );
+    }
+
+    #[test]
+    fn search_and_clear_have_no_shortcut_because_the_keys_belong_to_other_features() {
+        // Ctrl+Shift+F 是文件面板，Ctrl+Shift+K 在串口里是 Break：这两项只放在右键菜单。
+        for entries in [
+            menu_entries(&state(None, false, false)),
+            menu_entries(&split_state()),
+        ] {
+            for item in [MenuItem::Search, MenuItem::Clear] {
+                let found = entry(&entries, item);
+                assert!(found.enabled, "{item:?}");
+                assert_eq!(found.shortcut, None, "{item:?}");
+            }
+        }
     }
 
     #[test]
@@ -394,7 +509,7 @@ mod tests {
                 MenuItem::Copy
             ]
         );
-        assert_eq!(items(&entries).len(), 9);
+        assert_eq!(items(&entries).len(), 12);
         assert!(entry(&entries, MenuItem::OpenLink).enabled);
         assert!(entry(&entries, MenuItem::CopyLink).enabled);
         // 没在链接上就没有这两项。
@@ -471,7 +586,9 @@ mod tests {
     #[test]
     fn every_real_item_has_an_icon_and_only_the_separator_does_not() {
         use super::icon_of;
-        for entry in menu_entries(&state(Some("https://example.com/"), true, true)) {
+        let mut every = menu_entries(&state(Some("https://example.com/"), true, true));
+        every.extend(menu_entries(&split_state()));
+        for entry in every {
             assert_eq!(
                 icon_of(entry.item).is_none(),
                 entry.item == MenuItem::Separator,
