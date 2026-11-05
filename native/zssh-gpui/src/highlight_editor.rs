@@ -18,6 +18,7 @@ use gpui_kit::*;
 
 use crate::app_theme::Tokens;
 use crate::highlight::{HIGHLIGHT_COLORS, HighlightRule, MAX_RULES, color_label, missing_samples};
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::main_window::widgets::{Choice, icon_button, select};
 use crate::settings_view::card;
@@ -33,6 +34,87 @@ struct RuleInput {
 
 /// 编译检查的缓存：键是规则里影响编译的三项，值是错误说明（`None` = 能编译）。
 type ErrorCache = HashMap<u64, ((String, bool, bool), Option<String>)>;
+
+/// 关键词高亮卡自己的界面文案。
+///
+/// 规则模式、颜色名、正则库的错误原文属于用户数据或别的模块，原样显示。
+#[derive(Clone, Copy, Debug)]
+enum HighlightMsg {
+    PatternPlaceholder,
+    Enable,
+    CardTitle,
+    CardDescription,
+    DisableRule,
+    EnableRule,
+    Regex,
+    RegexTooltip,
+    CaseSensitive,
+    Background,
+    BackgroundTooltip,
+    Delete,
+    NotEffectiveSuffix,
+    AddRule,
+    AddSamples,
+    AddSamplesTooltipPrefix,
+    MaxRulesPrefix,
+    MaxRulesSuffix,
+}
+
+impl Msg for HighlightMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::PatternPlaceholder => "关键词或正则，例如 error|fail",
+            Self::Enable => "开启高亮",
+            Self::CardTitle => "关键词高亮",
+            Self::CardDescription => {
+                "把终端里看得见的关键词标上颜色（比如 error、warning）。只标屏幕上显示的那几十行，不改输出内容，大量输出时也不拖慢终端。vim、less 这类全屏程序里不标。"
+            }
+            Self::DisableRule => "关闭这条规则",
+            Self::EnableRule => "开启这条规则",
+            Self::Regex => "正则",
+            Self::RegexTooltip => "按正则表达式匹配；不勾就按字面的关键词",
+            Self::CaseSensitive => "区分大小写",
+            Self::Background => "背景",
+            Self::BackgroundTooltip => "涂背景色（不勾只改文字颜色）",
+            Self::Delete => "删除",
+            Self::NotEffectiveSuffix => "（这条先不生效）",
+            Self::AddRule => "添加规则",
+            Self::AddSamples => "添加常用规则",
+            Self::AddSamplesTooltipPrefix => "补上还没有的常用规则：",
+            Self::MaxRulesPrefix => "最多 ",
+            Self::MaxRulesSuffix => " 条规则",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::PatternPlaceholder => "Keyword or regex, e.g. error|fail",
+            Self::Enable => "Enable highlighting",
+            Self::CardTitle => "Keyword Highlighting",
+            Self::CardDescription => {
+                "Colors keywords visible in the terminal (such as error or warning). Only the few dozen lines on screen are highlighted; output is not changed and heavy output is not slowed down. Full-screen programs such as vim or less are not highlighted."
+            }
+            Self::DisableRule => "Disable this rule",
+            Self::EnableRule => "Enable this rule",
+            Self::Regex => "Regex",
+            Self::RegexTooltip => {
+                "Match as a regular expression; unchecked matches the literal keyword"
+            }
+            Self::CaseSensitive => "Case sensitive",
+            Self::Background => "Background",
+            Self::BackgroundTooltip => {
+                "Fill the background (unchecked changes only the text color)"
+            }
+            Self::Delete => "Delete",
+            Self::NotEffectiveSuffix => " (this rule has no effect for now)",
+            Self::AddRule => "Add Rule",
+            Self::AddSamples => "Add Common Rules",
+            Self::AddSamplesTooltipPrefix => "Add common rules that are missing: ",
+            Self::MaxRulesPrefix => "At most ",
+            Self::MaxRulesSuffix => " rules",
+        }
+    }
+}
 
 pub struct HighlightEditor {
     ws: Entity<TerminalWorkspace>,
@@ -78,7 +160,7 @@ impl HighlightEditor {
             let pattern = rule.pattern.clone();
             let input = cx.new(|cx| {
                 let mut state =
-                    InputState::new(window, cx).placeholder("关键词或正则，例如 error|fail");
+                    InputState::new(window, cx).placeholder(t(HighlightMsg::PatternPlaceholder));
                 state.set_value(pattern, window, cx);
                 state
             });
@@ -175,11 +257,15 @@ impl Render for HighlightEditor {
                 .gap_4()
                 .items_center()
                 .justify_between()
-                .child(div().typo(Role::ItemName, &tokens).child("开启高亮"))
+                .child(
+                    div()
+                        .typo(Role::ItemName, &tokens)
+                        .child(t(HighlightMsg::Enable)),
+                )
                 .child(
                     Switch::new("highlight-enabled")
                         .checked(enabled)
-                        .accessibility_label("开启高亮")
+                        .accessibility_label(t(HighlightMsg::Enable))
                         .on_click(move |_, _, cx| {
                             toggle_ws.update(cx, |ws, cx| ws.toggle_highlight_enabled(cx));
                         }),
@@ -195,10 +281,8 @@ impl Render for HighlightEditor {
         }
         card(
             "settings-highlight",
-            "关键词高亮",
-            Some(
-                "把终端里看得见的关键词标上颜色（比如 error、warning）。只标屏幕上显示的那几十行，不改输出内容，大量输出时也不拖慢终端。vim、less 这类全屏程序里不标。",
-            ),
+            t(HighlightMsg::CardTitle),
+            Some(t(HighlightMsg::CardDescription)),
             &tokens,
             rows,
         )
@@ -247,9 +331,9 @@ impl HighlightEditor {
                         Switch::new(SharedString::from(format!("hl-on-{id}")))
                             .checked(enabled)
                             .accessibility_label(if enabled {
-                                "关闭这条规则"
+                                t(HighlightMsg::DisableRule)
                             } else {
-                                "开启这条规则"
+                                t(HighlightMsg::EnableRule)
                             })
                             .on_click(move |_, _, cx| {
                                 ws_on.update(cx, |ws, cx| ws.toggle_highlight_rule(id, cx));
@@ -276,8 +360,8 @@ impl HighlightEditor {
                     .child(
                         Checkbox::new(SharedString::from(format!("hl-regex-{id}")))
                             .checked(rule.regex)
-                            .label("正则")
-                            .tooltip("按正则表达式匹配；不勾就按字面的关键词")
+                            .label(t(HighlightMsg::Regex))
+                            .tooltip(t(HighlightMsg::RegexTooltip))
                             .on_click(move |checked, _, cx| {
                                 let checked = *checked;
                                 ws_regex
@@ -288,7 +372,7 @@ impl HighlightEditor {
                         Checkbox::new(SharedString::from(format!("hl-case-{id}")))
                             .checked(rule.case_sensitive)
                             .label("Aa")
-                            .tooltip("区分大小写")
+                            .tooltip(t(HighlightMsg::CaseSensitive))
                             .on_click(move |checked, _, cx| {
                                 let checked = *checked;
                                 ws_case.update(cx, |ws, cx| ws.set_highlight_case(id, checked, cx));
@@ -297,8 +381,8 @@ impl HighlightEditor {
                     .child(
                         Checkbox::new(SharedString::from(format!("hl-bg-{id}")))
                             .checked(rule.background.is_some())
-                            .label("背景")
-                            .tooltip("涂背景色（不勾只改文字颜色）")
+                            .label(t(HighlightMsg::Background))
+                            .tooltip(t(HighlightMsg::BackgroundTooltip))
                             .on_click(move |checked, _, cx| {
                                 let checked = *checked;
                                 ws_bg.update(cx, |ws, cx| {
@@ -309,7 +393,7 @@ impl HighlightEditor {
                     .child(icon_button(
                         SharedString::from(format!("hl-del-{id}")),
                         Ico::Trash,
-                        "删除",
+                        t(HighlightMsg::Delete),
                         move |_, _, cx| {
                             ws_del.update(cx, |ws, cx| ws.remove_highlight_rule(id, cx));
                         },
@@ -319,7 +403,7 @@ impl HighlightEditor {
                 div()
                     .text_xs()
                     .text_color(tokens.danger)
-                    .child(format!("{error}（这条先不生效）"))
+                    .child(format!("{error}{}", t(HighlightMsg::NotEffectiveSuffix)))
             }))
             .into_any_element()
     }
@@ -345,7 +429,7 @@ impl HighlightEditor {
                     .outline()
                     .compact()
                     .icon(IconName::Plus)
-                    .label("添加规则")
+                    .label(t(HighlightMsg::AddRule))
                     .disabled(full)
                     .on_click(move |_, _, cx| {
                         add_ws.update(cx, |ws, cx| {
@@ -358,9 +442,10 @@ impl HighlightEditor {
                     Button::new("highlight-add-samples")
                         .ghost()
                         .compact()
-                        .label("添加常用规则")
+                        .label(t(HighlightMsg::AddSamples))
                         .tooltip(SharedString::from(format!(
-                            "补上还没有的常用规则：{sample_names}"
+                            "{}{sample_names}",
+                            t(HighlightMsg::AddSamplesTooltipPrefix)
                         )))
                         .disabled(full)
                         .on_click(move |_, _, cx| {
@@ -371,11 +456,11 @@ impl HighlightEditor {
                 )
             })
             .when(full, |d| {
-                d.child(
-                    div()
-                        .typo(Role::Caption, tokens)
-                        .child(format!("最多 {MAX_RULES} 条规则")),
-                )
+                d.child(div().typo(Role::Caption, tokens).child(format!(
+                    "{}{MAX_RULES}{}",
+                    t(HighlightMsg::MaxRulesPrefix),
+                    t(HighlightMsg::MaxRulesSuffix)
+                )))
             })
             .into_any_element()
     }

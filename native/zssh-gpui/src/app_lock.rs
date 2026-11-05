@@ -29,9 +29,99 @@ use zssh_core::app_lock::{
 use zssh_core::store::Database;
 
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::main_window::titlebar;
 use crate::main_window::widgets::{ButtonLook, text_button};
 use crate::typography::{Role, Typo as _, UiFontStyled as _};
+
+/// 锁屏页自己的界面文案。
+///
+/// 只放应用自己的固定文案；输错次数、产品名这类值由 `format!` 带进来。锁屏密码本身、
+/// 后台任务的调试输出都不进这张表。
+#[derive(Clone, Copy, Debug)]
+enum LockMsg {
+    LockedSuffix,
+    Subtitle,
+    PasswordPlaceholder,
+    EmptyPassword,
+    WrongPassword,
+    WrongPasswordPrefix,
+    Unlock,
+    Verifying,
+    ForgotQuestion,
+    ForgotReset,
+    ForgotText,
+    ForgotTextInline,
+    WaitPrefix,
+    WaitSuffix,
+    VerifyMessage,
+    LockNotEnabled,
+    LockAlreadyEnabled,
+    SavePasswordFailedPrefix,
+    CreatePasswordFailedPrefix,
+    DisableFailedPrefix,
+    SettingsDbOpenFailedPrefix,
+}
+
+impl Msg for LockMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::LockedSuffix => " 已锁定",
+            Self::Subtitle => "连接和传输仍在后台运行，输入锁屏密码后继续使用",
+            Self::PasswordPlaceholder => "锁屏密码",
+            Self::EmptyPassword => "请输入锁屏密码",
+            Self::WrongPassword => "密码错误",
+            Self::WrongPasswordPrefix => "密码错误。",
+            Self::Unlock => "解锁",
+            Self::Verifying => "验证中…",
+            Self::ForgotQuestion => "忘记密码？",
+            Self::ForgotReset => "验证 Windows 账户并重置…",
+            Self::ForgotText => FORGOT_TEXT,
+            Self::ForgotTextInline => FORGOT_TEXT_INLINE,
+            Self::WaitPrefix => "输错次数过多，请 ",
+            Self::WaitSuffix => " 秒后再试",
+            Self::VerifyMessage => "验证你的身份，以重置 ZeeTerm 的锁屏密码",
+            Self::LockNotEnabled => "锁屏没有启用",
+            Self::LockAlreadyEnabled => "锁屏已经启用",
+            Self::SavePasswordFailedPrefix => "没能保存锁屏密码：",
+            Self::CreatePasswordFailedPrefix => "没能生成锁屏密码：",
+            Self::DisableFailedPrefix => "没能关闭锁屏：",
+            Self::SettingsDbOpenFailedPrefix => "打不开设置库：",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::LockedSuffix => " is locked",
+            Self::Subtitle => {
+                "Connections and transfers keep running in the background. Enter the lock password to continue."
+            }
+            Self::PasswordPlaceholder => "Lock password",
+            Self::EmptyPassword => "Enter the lock password",
+            Self::WrongPassword => "Incorrect password",
+            Self::WrongPasswordPrefix => "Incorrect password. ",
+            Self::Unlock => "Unlock",
+            Self::Verifying => "Verifying…",
+            Self::ForgotQuestion => "Forgot password?",
+            Self::ForgotReset => "Verify Windows account and reset…",
+            Self::ForgotText => {
+                "The lock password is stored only on this computer and cannot be recovered. You can quit ZeeTerm (this disconnects all sessions), reopen it, and reset the password with Windows account verification under Settings → App Lock."
+            }
+            Self::ForgotTextInline => {
+                "The lock password is stored only on this computer and cannot be recovered. You can verify that you are a user of this computer with Windows Hello / PIN (or your Windows sign-in password), then set a new password; sessions are not affected."
+            }
+            Self::WaitPrefix => "Too many failed attempts. Try again in ",
+            Self::WaitSuffix => " s",
+            Self::VerifyMessage => "Verify your identity to reset the ZeeTerm lock password",
+            Self::LockNotEnabled => "App lock is not enabled",
+            Self::LockAlreadyEnabled => "App lock is already enabled",
+            Self::SavePasswordFailedPrefix => "Could not save the lock password: ",
+            Self::CreatePasswordFailedPrefix => "Could not create the lock password: ",
+            Self::DisableFailedPrefix => "Could not turn off app lock: ",
+            Self::SettingsDbOpenFailedPrefix => "Could not open the settings database: ",
+        }
+    }
+}
 
 /// 忘记密码的说明（卡里指定的原话）。
 pub const FORGOT_TEXT: &str = "锁屏密码只保存在这台电脑上，无法找回。可以退出 ZeeTerm（会断开所有会话），重新打开后在 设置 → 锁屏 里用 Windows 账户验证重置。";
@@ -138,7 +228,12 @@ pub fn dev_reset_backoff() {
 /// “请 N 秒后再试”的文字（向上取整，别出现“0 秒”）。
 pub fn wait_text(left: Duration) -> String {
     let secs = left.as_millis().div_ceil(1000).max(1);
-    format!("输错次数过多，请 {secs} 秒后再试")
+    format!("{}{secs}{}", t(LockMsg::WaitPrefix), t(LockMsg::WaitSuffix))
+}
+
+/// 这条提示是不是「输错次数过多…」的倒计时（两种语言的写法都认）。
+fn is_wait_notice(text: &str) -> bool {
+    text.contains(LockMsg::WaitSuffix.zh()) || text.contains(LockMsg::WaitPrefix.en())
 }
 
 // ---- 后台任务：哈希要上百毫秒，不能在界面线程上做 ----
@@ -188,7 +283,7 @@ fn check_old(config: &LockConfig, old: &str) -> Result<(), JobOutcome> {
         LockStatus::Enabled(record) if record.verify(old) => Ok(()),
         // 记录读不懂时没法校验原密码：当作不对，用户走“忘记密码”重置。
         LockStatus::Enabled(_) | LockStatus::Unreadable => Err(JobOutcome::WrongPassword),
-        LockStatus::Disabled => Err(JobOutcome::Failed("锁屏没有启用".to_owned())),
+        LockStatus::Disabled => Err(JobOutcome::Failed(t(LockMsg::LockNotEnabled).to_owned())),
     }
 }
 
@@ -198,9 +293,11 @@ pub fn run_job(db: &Database, job: Job, cost: KdfCost) -> JobOutcome {
     let save = |password: &str| match PasswordRecord::create_with(password, cost) {
         Ok(record) => match zssh_core::app_lock::save_password(db, &record) {
             Ok(()) => JobOutcome::Done,
-            Err(err) => JobOutcome::Failed(format!("没能保存锁屏密码：{err}")),
+            Err(err) => {
+                JobOutcome::Failed(format!("{}{err}", t(LockMsg::SavePasswordFailedPrefix)))
+            }
         },
-        Err(err) => JobOutcome::Failed(format!("没能生成锁屏密码：{err}")),
+        Err(err) => JobOutcome::Failed(format!("{}{err}", t(LockMsg::CreatePasswordFailedPrefix))),
     };
     match job {
         Job::Unlock { password } | Job::Verify { password } => match &config.status {
@@ -212,7 +309,7 @@ pub fn run_job(db: &Database, job: Job, cost: KdfCost) -> JobOutcome {
         },
         Job::Enable { password } => {
             if config.status.is_enabled() {
-                return JobOutcome::Failed("锁屏已经启用".to_owned());
+                return JobOutcome::Failed(t(LockMsg::LockAlreadyEnabled).to_owned());
             }
             save(&password)
         }
@@ -223,13 +320,13 @@ pub fn run_job(db: &Database, job: Job, cost: KdfCost) -> JobOutcome {
         Job::Disable { old } => match check_old(&config, &old) {
             Ok(()) => match zssh_core::app_lock::clear_password(db) {
                 Ok(()) => JobOutcome::Done,
-                Err(err) => JobOutcome::Failed(format!("没能关闭锁屏：{err}")),
+                Err(err) => JobOutcome::Failed(format!("{}{err}", t(LockMsg::DisableFailedPrefix))),
             },
             Err(outcome) => outcome,
         },
         Job::Reset { new } => {
             if !config.status.is_enabled() {
-                return JobOutcome::Failed("锁屏没有启用".to_owned());
+                return JobOutcome::Failed(t(LockMsg::LockNotEnabled).to_owned());
             }
             save(&new)
         }
@@ -254,7 +351,10 @@ pub fn spawn_job<T: 'static>(
             .spawn(async move {
                 match Database::open(&path) {
                     Ok(db) => run_job(&db, job, KdfCost::STANDARD),
-                    Err(err) => JobOutcome::Failed(format!("打不开设置库：{err}")),
+                    Err(err) => JobOutcome::Failed(format!(
+                        "{}{err}",
+                        t(LockMsg::SettingsDbOpenFailedPrefix)
+                    )),
                 }
             })
             .await;
@@ -300,11 +400,11 @@ impl OsVerifier for StubVerifier {
 
 /// 阻塞地做一次“证明你是这台电脑的 Windows 用户”（在后台线程里调）。
 pub fn verify_windows_user(window: Option<isize>) -> OsCheck {
-    const MESSAGE: &str = "验证你的身份，以重置 ZeeTerm 的锁屏密码";
+    let message = t(LockMsg::VerifyMessage);
     if let Some(stub) = stub_from_env() {
-        return zssh_core::app_lock::verify_os_user(&stub, MESSAGE);
+        return zssh_core::app_lock::verify_os_user(&stub, message);
     }
-    zssh_core::app_lock::verify_os_user(&zssh_core::app_lock::WindowsVerifier::new(window), MESSAGE)
+    zssh_core::app_lock::verify_os_user(&zssh_core::app_lock::WindowsVerifier::new(window), message)
 }
 
 /// 这个窗口的 HWND（给 Windows Hello 对话框挂在 ZeeTerm 上）。
@@ -352,7 +452,7 @@ impl LockScreen {
         let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
-                .placeholder("锁屏密码")
+                .placeholder(t(LockMsg::PasswordPlaceholder))
         });
         cx.observe(&input, |_this, _input, cx| cx.notify()).detach();
         cx.subscribe_in(
@@ -406,7 +506,7 @@ impl LockScreen {
         }
         let password = self.input.read(cx).value().to_string();
         if password.is_empty() {
-            self.error = Some("请输入锁屏密码".to_owned());
+            self.error = Some(t(LockMsg::EmptyPassword).to_owned());
             cx.notify();
             return;
         }
@@ -434,9 +534,9 @@ impl LockScreen {
             JobOutcome::WrongPassword => {
                 let wait = record_attempt(false, Instant::now());
                 self.error = Some(if wait.is_zero() {
-                    "密码错误".to_owned()
+                    t(LockMsg::WrongPassword).to_owned()
                 } else {
-                    format!("密码错误。{}", wait_text(wait))
+                    format!("{}{}", t(LockMsg::WrongPasswordPrefix), wait_text(wait))
                 });
                 self.input
                     .update(cx, |state, cx| state.set_value("", window, cx));
@@ -526,19 +626,11 @@ impl LockScreen {
                         let left = remaining_wait(Instant::now());
                         if left.is_none() {
                             // 等完了：把“请 N 秒后再试”撤掉。
-                            if this
-                                .error
-                                .as_deref()
-                                .is_some_and(|e| e.contains("秒后再试"))
-                            {
+                            if this.error.as_deref().is_some_and(is_wait_notice) {
                                 this.error = None;
                             }
                             this.ticking = false;
-                        } else if this
-                            .error
-                            .as_deref()
-                            .is_some_and(|e| e.contains("秒后再试"))
-                        {
+                        } else if this.error.as_deref().is_some_and(is_wait_notice) {
                             // 保留“密码错误。”前缀的写法也统一成纯倒计时。
                             this.error = left.map(wait_text);
                         }
@@ -603,15 +695,15 @@ impl Render for LockScreen {
                 v_flex()
                     .items_center()
                     .gap_1()
-                    .child(
-                        div()
-                            .typo(Role::PageTitle, &tokens)
-                            .child(format!("{} 已锁定", crate::product::NAME)),
-                    )
+                    .child(div().typo(Role::PageTitle, &tokens).child(format!(
+                        "{}{}",
+                        crate::product::NAME,
+                        t(LockMsg::LockedSuffix)
+                    )))
                     .child(
                         div()
                             .typo(Role::Caption, &tokens)
-                            .child("连接和传输仍在后台运行，输入锁屏密码后继续使用"),
+                            .child(t(LockMsg::Subtitle)),
                     ),
             )
             .child(
@@ -640,9 +732,9 @@ impl Render for LockScreen {
                     text_button(
                         "lock-unlock",
                         if self.checking {
-                            "验证中…"
+                            t(LockMsg::Verifying)
                         } else {
-                            "解锁"
+                            t(LockMsg::Unlock)
                         },
                         ButtonLook::Primary,
                         move |_, window, cx| {
@@ -654,7 +746,7 @@ impl Render for LockScreen {
             )
             .child(text_button(
                 "lock-forgot",
-                "忘记密码？",
+                t(LockMsg::ForgotQuestion),
                 ButtonLook::Ghost,
                 move |_, _window, cx| {
                     forgot.update(cx, |this, cx| {
@@ -676,14 +768,14 @@ impl Render for LockScreen {
                         .border_color(tokens.border)
                         .bg(tokens.subtle)
                         .child(div().typo(Role::Caption, &tokens).child(if hook.is_some() {
-                            FORGOT_TEXT_INLINE
+                            t(LockMsg::ForgotTextInline)
                         } else {
-                            FORGOT_TEXT
+                            t(LockMsg::ForgotText)
                         }))
                         .children(hook.map(|hook| {
                             text_button(
                                 "lock-forgot-reset",
-                                "验证 Windows 账户并重置…",
+                                t(LockMsg::ForgotReset),
                                 ButtonLook::Outline,
                                 move |_, window, cx| hook(window, cx),
                             )

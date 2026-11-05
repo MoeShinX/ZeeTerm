@@ -17,7 +17,172 @@ use super::widgets::{
     section, select, text_button,
 };
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::typography::{Role, Typo as _};
+
+/// 「代理」管理页自己的界面文案。
+///
+/// 只放应用自己的固定文案；代理名、地址、用户名、错误原文一律原样显示；SOCKS5 / HTTP CONNECT
+/// 是协议名，不翻译。
+#[derive(Clone, Copy, Debug)]
+enum ProxyPanelMsg {
+    NameHostRequired,
+    PortRange,
+    DeleteDefaultMessage,
+    DeleteMessage,
+    UsernameOptional,
+    Password,
+    CantCheckTitle,
+    ReadHostsFailedPrefix,
+    DeleteTitlePrefix,
+    DeleteTitleSuffix,
+    CantDeleteTitlePrefix,
+    CantDeleteTitleSuffix,
+    Delete,
+    ClearTitlePrefix,
+    ClearTitleSuffix,
+    ClearMessage,
+    Clear,
+    CantClearTitle,
+    ClearedPrefix,
+    ClearedSuffix,
+    NoDefaultProxy,
+    ParenOpen,
+    ParenClose,
+    DefaultSectionTitle,
+    DefaultNote,
+    NoProxiesNote,
+    Edit,
+    ProxyListTitle,
+    NoProxiesTitle,
+    NewProxy,
+    NoMatches,
+    EditTitle,
+    NewTitle,
+    NameLabel,
+    TypeLabel,
+    AddressLabel,
+    PortLabel,
+    PasswordStoredHint,
+    PasswordKeepHint,
+    ClearPassword,
+    Cancel,
+    Save,
+    PanelTitle,
+    CountSuffix,
+}
+
+impl Msg for ProxyPanelMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::NameHostRequired => "代理名称和地址不能为空",
+            Self::PortRange => "端口要在 1-65535 之间",
+            Self::DeleteDefaultMessage => {
+                "它是现在的 SSH 默认代理，删除后跟随默认代理的主机改为直连。正在被主机单独使用的代理不能删除。"
+            }
+            Self::DeleteMessage => "正在被主机单独使用的代理不能删除，要先在那些主机里换掉。",
+            Self::UsernameOptional => "用户名（可选）",
+            Self::Password => "密码",
+            Self::CantCheckTitle => "不能确认有没有主机在用它",
+            Self::ReadHostsFailedPrefix => "读取主机失败：",
+            Self::DeleteTitlePrefix => "删除代理「",
+            Self::DeleteTitleSuffix => "」？",
+            Self::CantDeleteTitlePrefix => "不能删除代理「",
+            Self::CantDeleteTitleSuffix => "」",
+            Self::Delete => "删除",
+            Self::ClearTitlePrefix => "清除代理「",
+            Self::ClearTitleSuffix => "」已存的密码？",
+            Self::ClearMessage => "只清掉保存的密码，其余不动；不能恢复。",
+            Self::Clear => "清除",
+            Self::CantClearTitle => "不能清除",
+            Self::ClearedPrefix => "已清除「",
+            Self::ClearedSuffix => "」已存的密码",
+            Self::NoDefaultProxy => "不使用默认代理",
+            Self::ParenOpen => "（",
+            Self::ParenClose => "）",
+            Self::DefaultSectionTitle => "默认代理",
+            Self::DefaultNote => "「跟随默认代理」的主机（包括快速连接）都走这一个。",
+            Self::NoProxiesNote => "还没有代理，先点右上角「新建代理」添加一个。",
+            Self::Edit => "编辑",
+            Self::ProxyListTitle => "代理列表",
+            Self::NoProxiesTitle => "暂无代理",
+            Self::NewProxy => "新建代理",
+            Self::NoMatches => "没有匹配的代理。",
+            Self::EditTitle => "编辑代理",
+            Self::NewTitle => "新建代理",
+            Self::NameLabel => "名称",
+            Self::TypeLabel => "类型",
+            Self::AddressLabel => "地址",
+            Self::PortLabel => "端口",
+            Self::PasswordStoredHint => "已存密码 · 留空表示不改",
+            Self::PasswordKeepHint => "留空表示不改",
+            Self::ClearPassword => "清除密码",
+            Self::Cancel => "取消",
+            Self::Save => "保存",
+            Self::PanelTitle => "代理",
+            Self::CountSuffix => " 个",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::NameHostRequired => "Proxy name and address cannot be empty",
+            Self::PortRange => "Port must be between 1 and 65535",
+            Self::DeleteDefaultMessage => {
+                "It is the current default SSH proxy; hosts that follow the default will switch to a direct connection after deletion. A proxy used directly by any host cannot be deleted."
+            }
+            Self::DeleteMessage => {
+                "A proxy used directly by any host cannot be deleted; switch those hosts to something else first."
+            }
+            Self::UsernameOptional => "User name (optional)",
+            Self::Password => "Password",
+            Self::CantCheckTitle => "Cannot check whether any host uses it",
+            Self::ReadHostsFailedPrefix => "Could not read hosts: ",
+            Self::DeleteTitlePrefix => "Delete proxy \"",
+            Self::DeleteTitleSuffix => "\"?",
+            Self::CantDeleteTitlePrefix => "Cannot delete proxy \"",
+            Self::CantDeleteTitleSuffix => "\"",
+            Self::Delete => "Delete",
+            Self::ClearTitlePrefix => "Clear the password stored in proxy \"",
+            Self::ClearTitleSuffix => "\"?",
+            Self::ClearMessage => {
+                "Only the saved password is cleared; everything else stays. This cannot be undone."
+            }
+            Self::Clear => "Clear",
+            Self::CantClearTitle => "Cannot clear",
+            Self::ClearedPrefix => "Cleared the password stored in \"",
+            Self::ClearedSuffix => "\"",
+            Self::NoDefaultProxy => "No default proxy",
+            Self::ParenOpen => " (",
+            Self::ParenClose => ")",
+            Self::DefaultSectionTitle => "Default Proxy",
+            Self::DefaultNote => {
+                "Hosts that follow the default proxy (including quick connect) all use this one."
+            }
+            Self::NoProxiesNote => {
+                "No proxies yet. Click \"New Proxy\" in the top right to add one."
+            }
+            Self::Edit => "Edit",
+            Self::ProxyListTitle => "Proxy List",
+            Self::NoProxiesTitle => "No proxies yet",
+            Self::NewProxy => "New Proxy",
+            Self::NoMatches => "No matching proxies.",
+            Self::EditTitle => "Edit Proxy",
+            Self::NewTitle => "New Proxy",
+            Self::NameLabel => "Name",
+            Self::TypeLabel => "Type",
+            Self::AddressLabel => "Address",
+            Self::PortLabel => "Port",
+            Self::PasswordStoredHint => "Password stored · leave blank to keep",
+            Self::PasswordKeepHint => "Leave blank to keep",
+            Self::ClearPassword => "Clear Password",
+            Self::Cancel => "Cancel",
+            Self::Save => "Save",
+            Self::PanelTitle => "Proxies",
+            Self::CountSuffix => " total",
+        }
+    }
+}
 
 pub const PROXY_KINDS: [(ProxyKind, &str); 2] = [
     (ProxyKind::Socks5, "SOCKS5"),
@@ -42,7 +207,7 @@ pub fn build_proxy_draft(
     editing: Option<i64>,
 ) -> Result<ProxyDraft, String> {
     if input.name.trim().is_empty() || input.host.trim().is_empty() {
-        return Err("代理名称和地址不能为空".to_owned());
+        return Err(t(ProxyPanelMsg::NameHostRequired).to_owned());
     }
     let port = input
         .port
@@ -50,7 +215,7 @@ pub fn build_proxy_draft(
         .parse::<u32>()
         .ok()
         .filter(|port| (1..=65535).contains(port))
-        .ok_or_else(|| "端口要在 1-65535 之间".to_owned())? as u16;
+        .ok_or_else(|| t(ProxyPanelMsg::PortRange).to_owned())? as u16;
     let username = input.username.trim();
     Ok(ProxyDraft {
         id: editing,
@@ -77,9 +242,9 @@ pub fn proxy_matches(proxy: &Proxy, query: &str) -> bool {
 /// 删除确认的话：是默认代理就多说一句。
 pub fn delete_message(is_default: bool) -> &'static str {
     if is_default {
-        "它是现在的 SSH 默认代理，删除后跟随默认代理的主机改为直连。正在被主机单独使用的代理不能删除。"
+        t(ProxyPanelMsg::DeleteDefaultMessage)
     } else {
-        "正在被主机单独使用的代理不能删除，要先在那些主机里换掉。"
+        t(ProxyPanelMsg::DeleteMessage)
     }
 }
 
@@ -224,8 +389,8 @@ impl MainWindow {
             Ok(hosts) => crate::proxies::hosts_using_proxy(&hosts, proxy_id),
             Err(err) => {
                 self.modal = Some(Modal::Confirm(Confirm {
-                    title: "不能确认有没有主机在用它".to_owned(),
-                    message: format!("读取主机失败：{err}"),
+                    title: t(ProxyPanelMsg::CantCheckTitle).to_owned(),
+                    message: format!("{}{err}", t(ProxyPanelMsg::ReadHostsFailedPrefix)),
                     confirm_label: None,
                     destructive: false,
                     action: ConfirmAction::DeleteProxy(proxy_id),
@@ -244,16 +409,26 @@ impl MainWindow {
             crate::proxies::proxy_delete_prompt(&proxy.name, &users, is_default);
         self.modal = Some(Modal::Confirm(Confirm {
             title: if can_delete {
-                format!("删除代理「{}」？", proxy.name)
+                format!(
+                    "{}{}{}",
+                    t(ProxyPanelMsg::DeleteTitlePrefix),
+                    proxy.name,
+                    t(ProxyPanelMsg::DeleteTitleSuffix)
+                )
             } else {
-                format!("不能删除代理「{}」", proxy.name)
+                format!(
+                    "{}{}{}",
+                    t(ProxyPanelMsg::CantDeleteTitlePrefix),
+                    proxy.name,
+                    t(ProxyPanelMsg::CantDeleteTitleSuffix)
+                )
             },
             message: if can_delete {
                 delete_message(is_default).to_owned()
             } else {
                 text
             },
-            confirm_label: can_delete.then(|| "删除".to_owned()),
+            confirm_label: can_delete.then(|| t(ProxyPanelMsg::Delete).to_owned()),
             destructive: true,
             action: ConfirmAction::DeleteProxy(proxy_id),
         }));
@@ -294,14 +469,19 @@ impl MainWindow {
         self.modal = Some(Modal::Confirm(
             match crate::proxies::clear_secret_draft(&proxy) {
                 Ok(_) => Confirm {
-                    title: format!("清除代理「{}」已存的密码？", proxy.name),
-                    message: "只清掉保存的密码，其余不动；不能恢复。".to_owned(),
-                    confirm_label: Some("清除".to_owned()),
+                    title: format!(
+                        "{}{}{}",
+                        t(ProxyPanelMsg::ClearTitlePrefix),
+                        proxy.name,
+                        t(ProxyPanelMsg::ClearTitleSuffix)
+                    ),
+                    message: t(ProxyPanelMsg::ClearMessage).to_owned(),
+                    confirm_label: Some(t(ProxyPanelMsg::Clear).to_owned()),
                     destructive: true,
                     action: ConfirmAction::ClearProxySecret(proxy.id),
                 },
                 Err(message) => Confirm {
-                    title: "不能清除".to_owned(),
+                    title: t(ProxyPanelMsg::CantClearTitle).to_owned(),
                     message,
                     confirm_label: None,
                     destructive: false,
@@ -334,9 +514,16 @@ impl MainWindow {
             .and_then(|db| db.proxy_save(&draft).map_err(|err| err.to_string()));
         self.store.reload();
         match result {
-            Ok(_) => {
-                self.notice_success(&format!("已清除「{}」已存的密码", proxy.name), window, cx)
-            }
+            Ok(_) => self.notice_success(
+                &format!(
+                    "{}{}{}",
+                    t(ProxyPanelMsg::ClearedPrefix),
+                    proxy.name,
+                    t(ProxyPanelMsg::ClearedSuffix)
+                ),
+                window,
+                cx,
+            ),
             Err(err) => self.notice_error(&err, window, cx),
         }
     }
@@ -378,14 +565,19 @@ impl MainWindow {
             .selected
             .and_then(|id| proxies.iter().find(|p| p.id == id));
 
-        let mut default_choices = vec![Choice::new("不使用默认代理", default_id.is_none())];
+        let mut default_choices = vec![Choice::new(
+            t(ProxyPanelMsg::NoDefaultProxy),
+            default_id.is_none(),
+        )];
         let mut default_targets: Vec<Option<i64>> = vec![None];
         for proxy in proxies {
             default_choices.push(Choice::new(
                 format!(
-                    "{}（{}）",
+                    "{}{}{}{}",
                     proxy.name,
-                    crate::proxies::kind_label(proxy.kind)
+                    t(ProxyPanelMsg::ParenOpen),
+                    crate::proxies::kind_label(proxy.kind),
+                    t(ProxyPanelMsg::ParenClose)
                 ),
                 default_id == Some(proxy.id),
             ));
@@ -394,11 +586,19 @@ impl MainWindow {
         let default_label = default_id
             .and_then(|id| proxies.iter().find(|p| p.id == id))
             .map_or_else(
-                || "不使用默认代理".to_owned(),
-                |p| format!("{}（{}）", p.name, crate::proxies::kind_label(p.kind)),
+                || t(ProxyPanelMsg::NoDefaultProxy).to_owned(),
+                |p| {
+                    format!(
+                        "{}{}{}{}",
+                        p.name,
+                        t(ProxyPanelMsg::ParenOpen),
+                        crate::proxies::kind_label(p.kind),
+                        t(ProxyPanelMsg::ParenClose)
+                    )
+                },
             );
         let default_section = section(
-            "默认代理",
+            t(ProxyPanelMsg::DefaultSectionTitle),
             vec![
                 select(
                     "proxy-default",
@@ -411,13 +611,13 @@ impl MainWindow {
                     }),
                 )
                 .into_any_element(),
-                note("「跟随默认代理」的主机（包括快速连接）都走这一个。", tokens)
-                    .into_any_element(),
+                note(t(ProxyPanelMsg::DefaultNote), tokens).into_any_element(),
             ]
             .into_iter()
-            .chain((proxies.is_empty()).then(|| {
-                note("还没有代理，先点右上角「新建代理」添加一个。", tokens).into_any_element()
-            }))
+            .chain(
+                (proxies.is_empty())
+                    .then(|| note(t(ProxyPanelMsg::NoProxiesNote), tokens).into_any_element()),
+            )
             .collect(),
             tokens,
         );
@@ -494,7 +694,7 @@ impl MainWindow {
                     .child(icon_button(
                         SharedString::from(format!("proxy-edit-{id}")),
                         crate::icons::Ico::Pencil,
-                        "编辑",
+                        t(ProxyPanelMsg::Edit),
                         {
                             let entity = entity.clone();
                             move |_, window, cx| {
@@ -507,7 +707,7 @@ impl MainWindow {
                     .child(icon_button(
                         SharedString::from(format!("proxy-delete-{id}")),
                         crate::icons::Ico::Trash,
-                        "删除",
+                        t(ProxyPanelMsg::Delete),
                         act(&entity, move |this, _window, cx| {
                             this.proxy_ask_delete(id, cx)
                         }),
@@ -516,16 +716,16 @@ impl MainWindow {
             })
             .collect();
         let list = section(
-            "代理列表",
+            t(ProxyPanelMsg::ProxyListTitle),
             if rows.is_empty() && proxies.is_empty() {
                 vec![
                     empty_state(
-                        "暂无代理",
+                        t(ProxyPanelMsg::NoProxiesTitle),
                         None,
                         Some(
                             text_button(
                                 "proxy-empty-new",
-                                "新建代理",
+                                t(ProxyPanelMsg::NewProxy),
                                 ButtonLook::Primary,
                                 act(&entity, |this, window, cx| this.proxy_new(window, cx)),
                             )
@@ -537,7 +737,7 @@ impl MainWindow {
                     .into_any_element(),
                 ]
             } else if rows.is_empty() {
-                vec![note("没有匹配的代理。", tokens).into_any_element()]
+                vec![note(t(ProxyPanelMsg::NoMatches), tokens).into_any_element()]
             } else {
                 rows
             },
@@ -556,14 +756,20 @@ impl MainWindow {
             let has_secret = selected.is_some_and(|p| p.has_secret);
             section(
                 if ui.selected.is_some() {
-                    "编辑代理"
+                    t(ProxyPanelMsg::EditTitle)
                 } else {
-                    "新建代理"
+                    t(ProxyPanelMsg::NewTitle)
                 },
                 vec![
-                    field("名称", None, Input::new(&ui.name), tokens).into_any_element(),
                     field(
-                        "类型",
+                        t(ProxyPanelMsg::NameLabel),
+                        None,
+                        Input::new(&ui.name),
+                        tokens,
+                    )
+                    .into_any_element(),
+                    field(
+                        t(ProxyPanelMsg::TypeLabel),
                         None,
                         select(
                             "proxy-kind",
@@ -583,27 +789,32 @@ impl MainWindow {
                         .w_full()
                         .gap_2()
                         .child(div().flex_1().min_w_0().child(field(
-                            "地址",
+                            t(ProxyPanelMsg::AddressLabel),
                             None,
                             Input::new(&ui.host),
                             tokens,
                         )))
                         .child(div().w(::gpui::px(88.0)).flex_none().child(field(
-                            "端口",
+                            t(ProxyPanelMsg::PortLabel),
                             None,
                             Input::new(&ui.port),
                             tokens,
                         )))
                         .into_any_element(),
-                    field("用户名（可选）", None, Input::new(&ui.username), tokens)
-                        .into_any_element(),
                     field(
-                        "密码",
+                        t(ProxyPanelMsg::UsernameOptional),
+                        None,
+                        Input::new(&ui.username),
+                        tokens,
+                    )
+                    .into_any_element(),
+                    field(
+                        t(ProxyPanelMsg::Password),
                         Some(if selected.is_some() {
                             if has_secret {
-                                "已存密码 · 留空表示不改"
+                                t(ProxyPanelMsg::PasswordStoredHint)
                             } else {
-                                "留空表示不改"
+                                t(ProxyPanelMsg::PasswordKeepHint)
                             }
                             .to_owned()
                         } else {
@@ -627,7 +838,7 @@ impl MainWindow {
                 .when_some(id, |d, id| {
                     d.child(div().mr_auto().child(text_button(
                         "proxy-form-delete",
-                        "删除",
+                        t(ProxyPanelMsg::Delete),
                         ButtonLook::Ghost,
                         act(&entity, move |this, _window, cx| {
                             this.proxy_ask_delete(id, cx)
@@ -638,20 +849,20 @@ impl MainWindow {
                 .when(selected.is_some_and(|p| p.has_secret), |d| {
                     d.child(text_button(
                         "proxy-clear-secret",
-                        "清除密码",
+                        t(ProxyPanelMsg::ClearPassword),
                         ButtonLook::Outline,
                         act(&entity, |this, _window, cx| this.proxy_ask_clear_secret(cx)),
                     ))
                 })
                 .child(text_button(
                     "proxy-cancel",
-                    "取消",
+                    t(ProxyPanelMsg::Cancel),
                     ButtonLook::Outline,
                     act(&entity, |this, window, cx| this.proxy_reset(window, cx)),
                 ))
                 .child(text_button(
                     "proxy-save",
-                    "保存",
+                    t(ProxyPanelMsg::Save),
                     ButtonLook::Primary,
                     act(&entity, |this, window, cx| this.proxy_save(window, cx)),
                 ))
@@ -659,13 +870,13 @@ impl MainWindow {
         });
 
         PanelContent {
-            title: "代理".into(),
-            subtitle: Some(format!("{} 个", proxies.len()).into()),
+            title: t(ProxyPanelMsg::PanelTitle).into(),
+            subtitle: Some(format!("{}{}", proxies.len(), t(ProxyPanelMsg::CountSuffix)).into()),
             back: None,
             actions: vec![
                 text_button(
                     "proxy-new",
-                    "新建代理",
+                    t(ProxyPanelMsg::NewProxy),
                     ButtonLook::Outline,
                     act(&entity, |this, window, cx| this.proxy_new(window, cx)),
                 )

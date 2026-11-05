@@ -23,6 +23,275 @@ use zssh_core::model::{
 use zssh_core::store::Database;
 use zssh_core::store::forwards::PortForward;
 
+use crate::i18n::{Msg, t};
+
+/// 主机库窗口自己的界面文案。
+///
+/// 只放应用自己的固定文案；主机名、用户名、路径、错误原文一律原样显示。
+#[derive(Clone, Copy, Debug)]
+enum HostsMsg {
+    NamePlaceholder,
+    HostPlaceholder,
+    PortPlaceholder,
+    UsernamePlaceholder,
+    SearchPlaceholder,
+    NewGroupPlaceholder,
+    DbOpenFailed,
+    HostCountSuffix,
+    ReadHostsFailedPrefix,
+    ReadGroupsFailedPrefix,
+    ReadProxiesFailedPrefix,
+    ReadIdentitiesFailedPrefix,
+    QuickFilledPrefix,
+    QuickFilledSuffix,
+    OrderAdjustedPrefix,
+    OrderAdjustedSuffix,
+    GroupNameEmpty,
+    GroupCreatedPrefix,
+    ReadHostFailedNoSavePrefix,
+    SavedPrefix,
+    DeletedPrefix,
+    SelectHostConnect,
+    SelectHostFile,
+    SelectHostMemory,
+    ReadMemoryFailedPrefix,
+    MemoryPlaceholder,
+    EditingMemoryPrefix,
+    EditingMemorySuffix,
+    MemoryPanelClosed,
+    MemorySaved,
+    MemoryCleared,
+    ClearedMemoryPrefix,
+    ClearedMemorySuffix,
+    ClearAgainPrefix,
+    ClearAgainSuffix,
+    DeleteAgainPrefix,
+    JumpImpactPrefix,
+    JumpImpactMiddle,
+    JumpImpactSuffix,
+    ForwardsImpactPrefix,
+    ForwardsImpactSuffix,
+    ListSeparator,
+    HasMemoryMark,
+    NoGroup,
+    NoneLabel,
+    DefaultProxy,
+    DirectProxy,
+    ProxyFallback,
+    AuthLabel,
+    PasswordAuth,
+    KeyAuth,
+    IdentityLabel,
+    GroupLabel,
+    CreateGroup,
+    ProxyLabel,
+    JumpLabel,
+    AuthHint,
+    MemoryPanelPrefix,
+    UpdatedAtPrefix,
+    JustNow,
+    MinutesAgoSuffix,
+    HoursAgoSuffix,
+    DaysAgoSuffix,
+    NoMemoryYet,
+    Clear,
+    ConfirmClear,
+    Save,
+    Cancel,
+    MaxCharsPrefix,
+    MaxCharsMiddle,
+    Title,
+    New,
+    Connect,
+    Files,
+    Memory,
+    Delete,
+    ConfirmDelete,
+    Parse,
+    Proxies,
+    Identities,
+}
+
+impl Msg for HostsMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::NamePlaceholder => "名称",
+            Self::HostPlaceholder => "主机名或 IP",
+            Self::PortPlaceholder => "端口",
+            Self::UsernamePlaceholder => "用户名",
+            Self::SearchPlaceholder => "搜索名称 / 地址 / 用户",
+            Self::NewGroupPlaceholder => "新分组名",
+            Self::DbOpenFailed => "打开主机库失败（数据目录不可写？）",
+            Self::HostCountSuffix => " 台主机",
+            Self::ReadHostsFailedPrefix => "读取主机失败：",
+            Self::ReadGroupsFailedPrefix => "读取分组失败：",
+            Self::ReadProxiesFailedPrefix => "读取代理失败：",
+            Self::ReadIdentitiesFailedPrefix => "读取身份失败：",
+            Self::QuickFilledPrefix => "已填入 ",
+            Self::QuickFilledSuffix => "，确认后保存",
+            Self::OrderAdjustedPrefix => "已调整 ",
+            Self::OrderAdjustedSuffix => " 的顺序",
+            Self::GroupNameEmpty => "分组名不能为空",
+            Self::GroupCreatedPrefix => "已创建分组 ",
+            Self::ReadHostFailedNoSavePrefix => "读取主机失败，没有保存：",
+            Self::SavedPrefix => "已保存 ",
+            Self::DeletedPrefix => "已删除 ",
+            Self::SelectHostConnect => "先选一台主机再连接",
+            Self::SelectHostFile => "先选一台主机再浏览文件",
+            Self::SelectHostMemory => "先选一台主机再看记忆",
+            Self::ReadMemoryFailedPrefix => "读取记忆失败：",
+            Self::MemoryPlaceholder => "这台主机的服务、已知问题、近期改动；密码、令牌会自动隐藏",
+            Self::EditingMemoryPrefix => "编辑 ",
+            Self::EditingMemorySuffix => " 的记忆",
+            Self::MemoryPanelClosed => "已关闭记忆面板（未保存的输入已丢弃）",
+            Self::MemorySaved => "已保存",
+            Self::MemoryCleared => "已清空",
+            Self::ClearedMemoryPrefix => "已清空 ",
+            Self::ClearedMemorySuffix => " 的记忆",
+            Self::ClearAgainPrefix => "再次点击「确认清空」才会清空 ",
+            Self::ClearAgainSuffix => " 的记忆",
+            Self::DeleteAgainPrefix => "再点一次「确认删除」才会删除 ",
+            Self::JumpImpactPrefix => "；",
+            Self::JumpImpactMiddle => " 台经它跳转的主机（",
+            Self::JumpImpactSuffix => "）会改成直连目标地址",
+            Self::ForwardsImpactPrefix => "；它的 ",
+            Self::ForwardsImpactSuffix => " 条端口转发规则会一起删除",
+            Self::ListSeparator => "、",
+            Self::HasMemoryMark => "有记忆",
+            Self::NoGroup => "无分组",
+            Self::NoneLabel => "无",
+            Self::DefaultProxy => "默认",
+            Self::DirectProxy => "直连",
+            Self::ProxyFallback => "代理",
+            Self::AuthLabel => "认证",
+            Self::PasswordAuth => "密码",
+            Self::KeyAuth => "密钥",
+            Self::IdentityLabel => "凭据",
+            Self::GroupLabel => "分组",
+            Self::CreateGroup => "建组",
+            Self::ProxyLabel => "代理",
+            Self::JumpLabel => "跳板",
+            Self::AuthHint => "认证方式只存方式本身；密码/私钥在凭据库接入前不落盘。",
+            Self::MemoryPanelPrefix => "记忆 · ",
+            Self::UpdatedAtPrefix => "更新于 ",
+            Self::JustNow => "刚刚",
+            Self::MinutesAgoSuffix => " 分钟前",
+            Self::HoursAgoSuffix => " 小时前",
+            Self::DaysAgoSuffix => " 天前",
+            Self::NoMemoryYet => "还没有记忆",
+            Self::Clear => "清空",
+            Self::ConfirmClear => "确认清空",
+            Self::Save => "保存",
+            Self::Cancel => "取消",
+            Self::MaxCharsPrefix => "最多 ",
+            Self::MaxCharsMiddle => " 字；密码、令牌会隐藏，不传给列表",
+            Self::Title => "主机库",
+            Self::New => "新建",
+            Self::Connect => "连接",
+            Self::Files => "文件",
+            Self::Memory => "记忆",
+            Self::Delete => "删除",
+            Self::ConfirmDelete => "确认删除",
+            Self::Parse => "解析",
+            Self::Proxies => "代理",
+            Self::Identities => "身份",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::NamePlaceholder => "Name",
+            Self::HostPlaceholder => "Host name or IP",
+            Self::PortPlaceholder => "Port",
+            Self::UsernamePlaceholder => "User name",
+            Self::SearchPlaceholder => "Search name / address / user",
+            Self::NewGroupPlaceholder => "New group name",
+            Self::DbOpenFailed => {
+                "Could not open the host library (is the data directory writable?)"
+            }
+            Self::HostCountSuffix => " hosts",
+            Self::ReadHostsFailedPrefix => "Could not read hosts: ",
+            Self::ReadGroupsFailedPrefix => "Could not read groups: ",
+            Self::ReadProxiesFailedPrefix => "Could not read proxies: ",
+            Self::ReadIdentitiesFailedPrefix => "Could not read credentials: ",
+            Self::QuickFilledPrefix => "Filled in ",
+            Self::QuickFilledSuffix => "; save to confirm",
+            Self::OrderAdjustedPrefix => "Reordered ",
+            Self::OrderAdjustedSuffix => "",
+            Self::GroupNameEmpty => "Group name cannot be empty",
+            Self::GroupCreatedPrefix => "Created group ",
+            Self::ReadHostFailedNoSavePrefix => "Could not read the host; not saved: ",
+            Self::SavedPrefix => "Saved ",
+            Self::DeletedPrefix => "Deleted ",
+            Self::SelectHostConnect => "Select a host before connecting",
+            Self::SelectHostFile => "Select a host before browsing files",
+            Self::SelectHostMemory => "Select a host before viewing memory",
+            Self::ReadMemoryFailedPrefix => "Could not read memory: ",
+            Self::MemoryPlaceholder => {
+                "Services, known issues, recent changes for this host; passwords and tokens are hidden automatically"
+            }
+            Self::EditingMemoryPrefix => "Editing memory for ",
+            Self::EditingMemorySuffix => "",
+            Self::MemoryPanelClosed => "Memory panel closed (unsaved input was discarded)",
+            Self::MemorySaved => "Saved",
+            Self::MemoryCleared => "Cleared",
+            Self::ClearedMemoryPrefix => "Cleared memory for ",
+            Self::ClearedMemorySuffix => "",
+            Self::ClearAgainPrefix => "Click \"Confirm Clear\" again to clear memory for ",
+            Self::ClearAgainSuffix => "",
+            Self::DeleteAgainPrefix => "Click \"Confirm Delete\" again to delete ",
+            Self::JumpImpactPrefix => "; ",
+            Self::JumpImpactMiddle => " host(s) that jump through it (",
+            Self::JumpImpactSuffix => ") will connect directly to their targets",
+            Self::ForwardsImpactPrefix => "; its ",
+            Self::ForwardsImpactSuffix => " port forwarding rule(s) will be deleted too",
+            Self::ListSeparator => ", ",
+            Self::HasMemoryMark => "Has memory",
+            Self::NoGroup => "No group",
+            Self::NoneLabel => "None",
+            Self::DefaultProxy => "Default",
+            Self::DirectProxy => "Direct",
+            Self::ProxyFallback => "Proxy",
+            Self::AuthLabel => "Authentication",
+            Self::PasswordAuth => "Password",
+            Self::KeyAuth => "Key",
+            Self::IdentityLabel => "Credential",
+            Self::GroupLabel => "Group",
+            Self::CreateGroup => "Create",
+            Self::ProxyLabel => "Proxy",
+            Self::JumpLabel => "Jump",
+            Self::AuthHint => {
+                "Only the authentication method is stored; passwords/private keys are not written until the credential store is connected."
+            }
+            Self::MemoryPanelPrefix => "Memory · ",
+            Self::UpdatedAtPrefix => "Updated ",
+            Self::JustNow => "just now",
+            Self::MinutesAgoSuffix => " min ago",
+            Self::HoursAgoSuffix => " h ago",
+            Self::DaysAgoSuffix => " d ago",
+            Self::NoMemoryYet => "No memory yet",
+            Self::Clear => "Clear",
+            Self::ConfirmClear => "Confirm Clear",
+            Self::Save => "Save",
+            Self::Cancel => "Cancel",
+            Self::MaxCharsPrefix => "At most ",
+            Self::MaxCharsMiddle => {
+                " characters; passwords and tokens are hidden and never sent to the list"
+            }
+            Self::Title => "Host Library",
+            Self::New => "New",
+            Self::Connect => "Connect",
+            Self::Files => "Files",
+            Self::Memory => "Memory",
+            Self::Delete => "Delete",
+            Self::ConfirmDelete => "Confirm Delete",
+            Self::Parse => "Parse",
+            Self::Proxies => "Proxies",
+            Self::Identities => "Credentials",
+        }
+    }
+}
+
 /// 代理库窗口编号。
 static NEXT_PROXIES: AtomicU64 = AtomicU64::new(1);
 
@@ -201,21 +470,25 @@ pub(crate) fn now_unix() -> i64 {
 fn memory_age_label(updated_at: i64, now: i64) -> String {
     let age = now.saturating_sub(updated_at).max(0) as u64;
     if age < 60 {
-        "刚刚".to_owned()
+        t(HostsMsg::JustNow).to_owned()
     } else if age < 3_600 {
-        format!("{} 分钟前", age / 60)
+        format!("{}{}", age / 60, t(HostsMsg::MinutesAgoSuffix))
     } else if age < 86_400 {
-        format!("{} 小时前", age / 3_600)
+        format!("{}{}", age / 3_600, t(HostsMsg::HoursAgoSuffix))
     } else {
-        format!("{} 天前", age / 86_400)
+        format!("{}{}", age / 86_400, t(HostsMsg::DaysAgoSuffix))
     }
 }
 
 /// 面板标题下面那行：有记忆写更新时间，没有就直说。
 pub(crate) fn memory_summary(updated_at: Option<i64>, now: i64) -> String {
     match updated_at {
-        Some(updated_at) => format!("更新于 {}", memory_age_label(updated_at, now)),
-        None => "还没有记忆".to_owned(),
+        Some(updated_at) => format!(
+            "{}{}",
+            t(HostsMsg::UpdatedAtPrefix),
+            memory_age_label(updated_at, now)
+        ),
+        None => t(HostsMsg::NoMemoryYet).to_owned(),
     }
 }
 
@@ -248,9 +521,9 @@ impl MemoryDraft {
     /// 「清空」按钮文字：第一次点只是上锁。
     pub(crate) fn clear_label(&self) -> &'static str {
         if self.clear_armed {
-            "确认清空"
+            t(HostsMsg::ConfirmClear)
         } else {
-            "清空"
+            t(HostsMsg::Clear)
         }
     }
 
@@ -393,18 +666,23 @@ pub(crate) fn host_delete_impact(
 
 /// 第一次点「删除」时状态栏上的话：有连带影响就逐条列出来。
 pub(crate) fn host_delete_prompt(name: &str, impact: &HostDeleteImpact) -> String {
-    let mut text = format!("再点一次「确认删除」才会删除 {name}");
+    let mut text = format!("{}{name}", t(HostsMsg::DeleteAgainPrefix));
     if !impact.via_jump.is_empty() {
         text.push_str(&format!(
-            "；{} 台经它跳转的主机（{}）会改成直连目标地址",
+            "{}{}{}{}{}",
+            t(HostsMsg::JumpImpactPrefix),
             impact.via_jump.len(),
-            impact.via_jump.join("、")
+            t(HostsMsg::JumpImpactMiddle),
+            impact.via_jump.join(t(HostsMsg::ListSeparator)),
+            t(HostsMsg::JumpImpactSuffix)
         ));
     }
     if impact.forwards > 0 {
         text.push_str(&format!(
-            "；它的 {} 条端口转发规则会一起删除",
-            impact.forwards
+            "{}{}{}",
+            t(HostsMsg::ForwardsImpactPrefix),
+            impact.forwards,
+            t(HostsMsg::ForwardsImpactSuffix)
         ));
     }
     text
@@ -459,17 +737,17 @@ impl HostsDemo {
             }
         };
         let focus = cx.focus_handle();
-        let name = text_input(window, cx, "名称");
-        let host = text_input(window, cx, "主机名或 IP");
+        let name = text_input(window, cx, t(HostsMsg::NamePlaceholder));
+        let host = text_input(window, cx, t(HostsMsg::HostPlaceholder));
         let port = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value("22")
-                .placeholder("端口")
+                .placeholder(t(HostsMsg::PortPlaceholder))
         });
-        let user = text_input(window, cx, "用户名");
-        let query = text_input(window, cx, "搜索名称 / 地址 / 用户");
+        let user = text_input(window, cx, t(HostsMsg::UsernamePlaceholder));
+        let query = text_input(window, cx, t(HostsMsg::SearchPlaceholder));
         let quick = text_input(window, cx, "user@host:port");
-        let group_new = text_input(window, cx, "新分组名");
+        let group_new = text_input(window, cx, t(HostsMsg::NewGroupPlaceholder));
         let _query_changed = cx.observe(&query, |_this, _query, cx| cx.notify());
         let (_ime_focus, _ime_blur) = crate::ime::attach(cx, &focus, window, &ime_key);
         let mut this = Self {
@@ -505,7 +783,7 @@ impl HostsDemo {
             _activity_tick: Task::ready(()),
         };
         if this.db.is_none() {
-            this.status = "打开主机库失败（数据目录不可写？）".to_owned();
+            this.status = t(HostsMsg::DbOpenFailed).to_owned();
         }
         this.reload(cx);
         // 「AI 使用中」标记：每秒对一次进程级快照，只有变化时才重绘；
@@ -546,22 +824,30 @@ impl HostsDemo {
         };
         match db.host_list() {
             Ok(hosts) => {
-                self.status = format!("{} 台主机", hosts.len());
+                self.status = format!("{}{}", hosts.len(), t(HostsMsg::HostCountSuffix));
                 self.hosts = hosts;
             }
-            Err(err) => self.status = format!("读取主机失败：{err}"),
+            Err(err) => {
+                self.status = format!("{}{err}", t(HostsMsg::ReadHostsFailedPrefix));
+            }
         }
         match db.group_list() {
             Ok(groups) => self.groups = groups,
-            Err(err) => self.status = format!("读取分组失败：{err}"),
+            Err(err) => {
+                self.status = format!("{}{err}", t(HostsMsg::ReadGroupsFailedPrefix));
+            }
         }
         match db.proxy_list() {
             Ok(proxies) => self.proxies = proxies,
-            Err(err) => self.status = format!("读取代理失败：{err}"),
+            Err(err) => {
+                self.status = format!("{}{err}", t(HostsMsg::ReadProxiesFailedPrefix));
+            }
         }
         match db.identity_list() {
             Ok(identities) => self.identities = identities,
-            Err(err) => self.status = format!("读取身份失败：{err}"),
+            Err(err) => {
+                self.status = format!("{}{err}", t(HostsMsg::ReadIdentitiesFailedPrefix));
+            }
         }
         if self
             .group_id
@@ -696,7 +982,12 @@ impl HostsDemo {
                 self.jump_host_id = None;
                 self.identity_id = None;
                 self.pending_form = Some(form_from_quick(&target));
-                self.status = format!("已填入 {}，确认后保存", target.display());
+                self.status = format!(
+                    "{}{}{}",
+                    t(HostsMsg::QuickFilledPrefix),
+                    target.display(),
+                    t(HostsMsg::QuickFilledSuffix)
+                );
             }
             Err(err) => self.status = err.to_string(),
         }
@@ -726,7 +1017,11 @@ impl HostsDemo {
         };
         match db.host_reorder(&next) {
             Ok(()) => {
-                self.status = format!("已调整 {name} 的顺序");
+                self.status = format!(
+                    "{}{name}{}",
+                    t(HostsMsg::OrderAdjustedPrefix),
+                    t(HostsMsg::OrderAdjustedSuffix)
+                );
                 self.reload(cx);
             }
             Err(err) => {
@@ -742,7 +1037,7 @@ impl HostsDemo {
         };
         let name = self.group_new.read(cx).value().trim().to_owned();
         if name.is_empty() {
-            self.status = "分组名不能为空".to_owned();
+            self.status = t(HostsMsg::GroupNameEmpty).to_owned();
             cx.notify();
             return;
         }
@@ -754,7 +1049,7 @@ impl HostsDemo {
         }) {
             Ok(group) => {
                 self.group_id = Some(group.id);
-                self.status = format!("已创建分组 {}", group.name);
+                self.status = format!("{}{}", t(HostsMsg::GroupCreatedPrefix), group.name);
                 self.reload(cx);
             }
             Err(err) => {
@@ -862,7 +1157,7 @@ impl HostsDemo {
             Some(id) => match db.host_get(id) {
                 Ok(host) => Some(host),
                 Err(err) => {
-                    self.status = format!("读取主机失败，没有保存：{err}");
+                    self.status = format!("{}{err}", t(HostsMsg::ReadHostFailedNoSavePrefix));
                     cx.notify();
                     return;
                 }
@@ -883,7 +1178,7 @@ impl HostsDemo {
                 self.jump_host_id = host.jump_host_id;
                 self.identity_id = host.identity_id;
                 self.pending_delete = None;
-                self.status = format!("已保存 {}", host.name);
+                self.status = format!("{}{}", t(HostsMsg::SavedPrefix), host.name);
                 self.reload(cx);
                 self.pending_form = Some(FormValues::from_host(&host));
             }
@@ -896,7 +1191,7 @@ impl HostsDemo {
 
     fn connect(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.selected else {
-            self.status = "先选一台主机再连接".to_owned();
+            self.status = t(HostsMsg::SelectHostConnect).to_owned();
             cx.notify();
             return;
         };
@@ -913,7 +1208,7 @@ impl HostsDemo {
     /// 打开选中主机的远端文件浏览窗口（复用同一条已认证连接）。
     fn open_sftp(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.selected else {
-            self.status = "先选一台主机再浏览文件".to_owned();
+            self.status = t(HostsMsg::SelectHostFile).to_owned();
             cx.notify();
             return;
         };
@@ -923,7 +1218,7 @@ impl HostsDemo {
     /// 打开选中主机的记忆面板：先从库里读现有正文，再填进文本框。
     fn open_memory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.selected else {
-            self.status = "先选一台主机再看记忆".to_owned();
+            self.status = t(HostsMsg::SelectHostMemory).to_owned();
             cx.notify();
             return;
         };
@@ -945,7 +1240,7 @@ impl HostsDemo {
             return;
         };
         let Some(db) = &self.db else {
-            self.status = "打开主机库失败（数据目录不可写？）".to_owned();
+            self.status = t(HostsMsg::DbOpenFailed).to_owned();
             cx.notify();
             return;
         };
@@ -953,14 +1248,14 @@ impl HostsDemo {
             Ok(Some(memory)) => (memory.content, Some(memory.updated_at)),
             Ok(None) => (String::new(), None),
             Err(err) => {
-                self.status = format!("读取记忆失败：{err}");
+                self.status = format!("{}{err}", t(HostsMsg::ReadMemoryFailedPrefix));
                 cx.notify();
                 return;
             }
         };
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .placeholder("这台主机的服务、已知问题、近期改动；密码、令牌会自动隐藏")
+                .placeholder(t(HostsMsg::MemoryPlaceholder))
                 .auto_grow(4, 10)
                 .default_value(content)
         });
@@ -969,14 +1264,18 @@ impl HostsDemo {
             host_name: name.clone(),
             input,
         });
-        self.status = format!("编辑 {name} 的记忆");
+        self.status = format!(
+            "{}{name}{}",
+            t(HostsMsg::EditingMemoryPrefix),
+            t(HostsMsg::EditingMemorySuffix)
+        );
         cx.notify();
     }
 
     /// 关掉面板：没保存的输入直接丢，不弹确认。
     fn close_memory(&mut self, cx: &mut Context<Self>) {
         self.memory = None;
-        self.status = "已关闭记忆面板（未保存的输入已丢弃）".to_owned();
+        self.status = t(HostsMsg::MemoryPanelClosed).to_owned();
         cx.notify();
     }
 
@@ -1006,7 +1305,7 @@ impl HostsDemo {
             }
         };
         let Some(db) = &self.db else {
-            self.memory_error("打开主机库失败（数据目录不可写？）".to_owned(), cx);
+            self.memory_error(t(HostsMsg::DbOpenFailed).to_owned(), cx);
             return;
         };
         let written = match &action {
@@ -1030,8 +1329,8 @@ impl HostsDemo {
         };
         if let Some(editor) = &mut self.memory {
             let notice = match &action {
-                MemoryAction::Save(_) => "已保存",
-                MemoryAction::Clear => "已清空",
+                MemoryAction::Save(_) => t(HostsMsg::MemorySaved),
+                MemoryAction::Clear => t(HostsMsg::MemoryCleared),
             };
             editor.draft.saved(updated_at, notice);
         }
@@ -1048,9 +1347,17 @@ impl HostsDemo {
         let cleared = shown.is_empty();
         input.update(cx, |state, cx| state.set_value(shown, window, cx));
         self.status = if cleared {
-            format!("已清空 {host_name} 的记忆")
+            format!(
+                "{}{host_name}{}",
+                t(HostsMsg::ClearedMemoryPrefix),
+                t(HostsMsg::ClearedMemorySuffix)
+            )
         } else {
-            format!("已保存 {host_name} 的记忆")
+            format!(
+                "{}{host_name}{}",
+                t(HostsMsg::SavedPrefix),
+                t(HostsMsg::ClearedMemorySuffix)
+            )
         };
         cx.notify();
     }
@@ -1064,22 +1371,30 @@ impl HostsDemo {
         let host_name = editor.host_name.clone();
         let input = editor.input.clone();
         if !editor.draft.click_clear() {
-            self.status = format!("再次点击「确认清空」才会清空 {host_name} 的记忆");
+            self.status = format!(
+                "{}{host_name}{}",
+                t(HostsMsg::ClearAgainPrefix),
+                t(HostsMsg::ClearAgainSuffix)
+            );
             cx.notify();
             return;
         }
         let Some(db) = &self.db else {
-            self.memory_error("打开主机库失败（数据目录不可写？）".to_owned(), cx);
+            self.memory_error(t(HostsMsg::DbOpenFailed).to_owned(), cx);
             return;
         };
         match db.host_memory_set(host_id, "") {
             Ok(()) => {
                 input.update(cx, |state, cx| state.set_value("", window, cx));
                 if let Some(editor) = &mut self.memory {
-                    editor.draft.saved(None, "已清空");
+                    editor.draft.saved(None, t(HostsMsg::MemoryCleared));
                 }
                 self.memory_marks.remove(&host_id);
-                self.status = format!("已清空 {host_name} 的记忆");
+                self.status = format!(
+                    "{}{host_name}{}",
+                    t(HostsMsg::ClearedMemoryPrefix),
+                    t(HostsMsg::ClearedMemorySuffix)
+                );
                 cx.notify();
             }
             Err(err) => self.memory_error(err.to_string(), cx),
@@ -1112,7 +1427,7 @@ impl HostsDemo {
                 self.memory = None;
                 self.pending_form = Some(FormValues::new());
                 self.reload(cx);
-                self.status = format!("已删除 {name}");
+                self.status = format!("{}{}", t(HostsMsg::DeletedPrefix), name);
             }
             Err(err) => {
                 self.status = err.to_string();
@@ -1190,7 +1505,7 @@ impl HostsDemo {
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child("有记忆"),
+                                        .child(t(HostsMsg::HasMemoryMark)),
                                 )
                             })
                             .child(
@@ -1219,42 +1534,47 @@ impl HostsDemo {
             .group_id
             .and_then(|id| self.groups.iter().find(|group| group.id == id))
             .map(|group| group.name.clone())
-            .unwrap_or_else(|| "无分组".to_owned());
+            .unwrap_or_else(|| t(HostsMsg::NoGroup).to_owned());
         let identity_label = self
             .identity_id
             .and_then(|id| self.identities.iter().find(|identity| identity.id == id))
             .map(|identity| identity.name.clone())
-            .unwrap_or_else(|| "无".to_owned());
+            .unwrap_or_else(|| t(HostsMsg::NoneLabel).to_owned());
         let proxy_label = match self.proxy_mode {
-            ProxyMode::Default => "默认".to_owned(),
-            ProxyMode::None => "直连".to_owned(),
+            ProxyMode::Default => t(HostsMsg::DefaultProxy).to_owned(),
+            ProxyMode::None => t(HostsMsg::DirectProxy).to_owned(),
             ProxyMode::Custom => self
                 .proxy_id
                 .and_then(|id| self.proxies.iter().find(|proxy| proxy.id == id))
                 .map(|proxy| proxy.name.clone())
-                .unwrap_or_else(|| "代理".to_owned()),
+                .unwrap_or_else(|| t(HostsMsg::ProxyFallback).to_owned()),
         };
         let jump_label = self
             .jump_host_id
             .and_then(|id| self.hosts.iter().find(|host| host.id == id))
             .map(|host| host.name.clone())
-            .unwrap_or_else(|| "无".to_owned());
+            .unwrap_or_else(|| t(HostsMsg::NoneLabel).to_owned());
         v_flex()
             .flex_1()
             .p_4()
             .gap_2()
-            .child(field("名称", &self.name))
-            .child(field("主机", &self.host))
-            .child(field("端口", &self.port))
-            .child(field("用户名", &self.user))
+            .child(field(t(HostsMsg::NamePlaceholder), &self.name))
+            .child(field(t(HostsMsg::HostPlaceholder), &self.host))
+            .child(field(t(HostsMsg::PortPlaceholder), &self.port))
+            .child(field(t(HostsMsg::UsernamePlaceholder), &self.user))
             .child(
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().w(::gpui::px(56.0)).text_sm().child("认证"))
+                    .child(
+                        div()
+                            .w(::gpui::px(56.0))
+                            .text_sm()
+                            .child(t(HostsMsg::AuthLabel)),
+                    )
                     .child(
                         Button::new("auth-password")
-                            .label("\u{5bc6}\u{7801}")
+                            .label(t(HostsMsg::PasswordAuth))
                             .compact()
                             .toggled(self.auth == AuthMethod::Password)
                             .on_click(move |_, _, cx| {
@@ -1265,7 +1585,7 @@ impl HostsDemo {
                     )
                     .child(
                         Button::new("auth-key")
-                            .label("\u{5bc6}\u{94a5}")
+                            .label(t(HostsMsg::KeyAuth))
                             .compact()
                             .toggled(self.auth == AuthMethod::Key)
                             .on_click(move |_, _, cx| {
@@ -1290,7 +1610,12 @@ impl HostsDemo {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().w(::gpui::px(56.0)).text_sm().child("凭据"))
+                    .child(
+                        div()
+                            .w(::gpui::px(56.0))
+                            .text_sm()
+                            .child(t(HostsMsg::IdentityLabel)),
+                    )
                     .child(
                         Button::new("identity-cycle")
                             .label(identity_label)
@@ -1305,7 +1630,12 @@ impl HostsDemo {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().w(::gpui::px(56.0)).text_sm().child("分组"))
+                    .child(
+                        div()
+                            .w(::gpui::px(56.0))
+                            .text_sm()
+                            .child(t(HostsMsg::GroupLabel)),
+                    )
                     .child(
                         Button::new("group-cycle")
                             .label(group_label)
@@ -1317,7 +1647,7 @@ impl HostsDemo {
                     .child(Input::new(&self.group_new).w(::gpui::px(140.0)))
                     .child(
                         Button::new("group-create")
-                            .label("建组")
+                            .label(t(HostsMsg::CreateGroup))
                             .compact()
                             .on_click(move |_, _, cx| {
                                 group_create_entity.update(cx, |this, cx| this.create_group(cx));
@@ -1328,7 +1658,12 @@ impl HostsDemo {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().w(::gpui::px(56.0)).text_sm().child("代理"))
+                    .child(
+                        div()
+                            .w(::gpui::px(56.0))
+                            .text_sm()
+                            .child(t(HostsMsg::ProxyLabel)),
+                    )
                     .child(
                         Button::new("proxy-cycle")
                             .label(proxy_label)
@@ -1342,7 +1677,12 @@ impl HostsDemo {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().w(::gpui::px(56.0)).text_sm().child("跳板"))
+                    .child(
+                        div()
+                            .w(::gpui::px(56.0))
+                            .text_sm()
+                            .child(t(HostsMsg::JumpLabel)),
+                    )
                     .child(
                         Button::new("jump-cycle")
                             .label(jump_label)
@@ -1356,7 +1696,7 @@ impl HostsDemo {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("认证方式只存方式本身；密码/私钥在凭据库接入前不落盘。"),
+                    .child(t(HostsMsg::AuthHint)),
             )
     }
 
@@ -1379,11 +1719,11 @@ impl HostsDemo {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(
-                            div()
-                                .text_sm()
-                                .child(format!("记忆 · {}", editor.host_name)),
-                        )
+                        .child(div().text_sm().child(format!(
+                            "{}{}",
+                            t(HostsMsg::MemoryPanelPrefix),
+                            editor.host_name
+                        )))
                         .child(
                             div()
                                 .text_xs()
@@ -1396,11 +1736,14 @@ impl HostsDemo {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(Button::new("memory-save").label("保存").compact().on_click(
-                            move |_, window, cx| {
-                                save_entity.update(cx, |this, cx| this.save_memory(window, cx));
-                            },
-                        ))
+                        .child(
+                            Button::new("memory-save")
+                                .label(t(HostsMsg::Save))
+                                .compact()
+                                .on_click(move |_, window, cx| {
+                                    save_entity.update(cx, |this, cx| this.save_memory(window, cx));
+                                }),
+                        )
                         .child(
                             Button::new("memory-clear")
                                 .label(editor.draft.clear_label())
@@ -1412,7 +1755,7 @@ impl HostsDemo {
                         )
                         .child(
                             Button::new("memory-cancel")
-                                .label("取消")
+                                .label(t(HostsMsg::Cancel))
                                 .compact()
                                 .on_click(move |_, _, cx| {
                                     cancel_entity.update(cx, |this, cx| this.close_memory(cx));
@@ -1423,7 +1766,9 @@ impl HostsDemo {
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(format!(
-                                    "最多 {MAX_MEMORY_CHARS} 字；密码、令牌会隐藏，不传给列表"
+                                    "{}{MAX_MEMORY_CHARS}{}",
+                                    t(HostsMsg::MaxCharsPrefix),
+                                    t(HostsMsg::MaxCharsMiddle)
                                 )),
                         ),
                 )
@@ -1488,22 +1833,22 @@ impl Render for HostsDemo {
             self.name = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(values.name)
-                    .placeholder("名称")
+                    .placeholder(t(HostsMsg::NamePlaceholder))
             });
             self.host = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(values.host)
-                    .placeholder("主机名或 IP")
+                    .placeholder(t(HostsMsg::HostPlaceholder))
             });
             self.port = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(values.port)
-                    .placeholder("端口")
+                    .placeholder(t(HostsMsg::PortPlaceholder))
             });
             self.user = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(values.user)
-                    .placeholder("用户名")
+                    .placeholder(t(HostsMsg::UsernamePlaceholder))
             });
         }
 
@@ -1527,49 +1872,47 @@ impl Render for HostsDemo {
                     .px_2()
                     .gap_2()
                     .items_center()
-                    .child(div().text_lg().child("主机库"))
-                    .child(
-                        Button::new("host-new")
-                            .label("新建")
-                            .on_click(move |_, _, cx| {
-                                new_entity.update(cx, |this, cx| this.new_host(cx));
-                            }),
-                    )
-                    .child(
-                        Button::new("host-save")
-                            .label("保存")
-                            .on_click(move |_, _, cx| {
-                                save_entity.update(cx, |this, cx| this.save(cx));
-                            }),
-                    )
+                    .child(div().text_lg().child(t(HostsMsg::Title)))
+                    .child(Button::new("host-new").label(t(HostsMsg::New)).on_click(
+                        move |_, _, cx| {
+                            new_entity.update(cx, |this, cx| this.new_host(cx));
+                        },
+                    ))
+                    .child(Button::new("host-save").label(t(HostsMsg::Save)).on_click(
+                        move |_, _, cx| {
+                            save_entity.update(cx, |this, cx| this.save(cx));
+                        },
+                    ))
                     .child(
                         Button::new("host-connect")
-                            .label("连接")
+                            .label(t(HostsMsg::Connect))
                             .on_click(move |_, _, cx| {
                                 connect_entity.update(cx, |this, cx| this.connect(cx));
                             }),
                     )
                     .child(
                         Button::new("host-files")
-                            .label("文件")
+                            .label(t(HostsMsg::Files))
                             .on_click(move |_, _, cx| {
                                 sftp_entity.update(cx, |this, cx| this.open_sftp(cx));
                             }),
                     )
-                    .child(Button::new("host-memory").label("记忆").on_click(
-                        move |_, window, cx| {
-                            memory_entity.update(cx, |this, cx| this.open_memory(window, cx));
-                        },
-                    ))
+                    .child(
+                        Button::new("host-memory")
+                            .label(t(HostsMsg::Memory))
+                            .on_click(move |_, window, cx| {
+                                memory_entity.update(cx, |this, cx| this.open_memory(window, cx));
+                            }),
+                    )
                     .child(
                         Button::new("host-delete")
                             .label(
                                 if self.pending_delete.is_some()
                                     && self.pending_delete == self.selected
                                 {
-                                    "确认删除"
+                                    t(HostsMsg::ConfirmDelete)
                                 } else {
-                                    "删除"
+                                    t(HostsMsg::Delete)
                                 },
                             )
                             .on_click(move |_, _, cx| {
@@ -1579,24 +1922,26 @@ impl Render for HostsDemo {
                     .child(Input::new(&self.quick).w(::gpui::px(160.0)))
                     .child(
                         Button::new("quick-parse")
-                            .label("解析")
+                            .label(t(HostsMsg::Parse))
                             .on_click(move |_, _, cx| {
                                 quick_entity.update(cx, |this, cx| this.parse_quick(cx));
                             }),
                     )
                     .child(
                         Button::new("proxies-window")
-                            .label("代理")
+                            .label(t(HostsMsg::Proxies))
                             .on_click(move |_, _, cx| {
                                 proxies_entity.update(cx, |this, cx| this.open_proxies_window(cx));
                             }),
                     )
-                    .child(Button::new("identities-window").label("身份").on_click(
-                        move |_, _, cx| {
-                            identities_entity
-                                .update(cx, |this, cx| this.open_identities_window(cx));
-                        },
-                    ))
+                    .child(
+                        Button::new("identities-window")
+                            .label(t(HostsMsg::Identities))
+                            .on_click(move |_, _, cx| {
+                                identities_entity
+                                    .update(cx, |this, cx| this.open_identities_window(cx));
+                            }),
+                    )
                     .child(div().text_sm().child(self.status.clone())),
             )
             .child(

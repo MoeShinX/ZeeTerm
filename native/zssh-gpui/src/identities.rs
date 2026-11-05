@@ -13,6 +13,174 @@ use zssh_core::model::{Host, Identity, IdentityDraft, IdentityKind};
 use zssh_core::store::Database;
 
 use crate::host_db::open_database;
+use crate::i18n::{Msg, t};
+
+/// 身份库窗口自己的界面文案。
+///
+/// 只放应用自己的固定文案；身份名、主机名、路径、错误原文一律原样显示。
+#[derive(Clone, Copy, Debug)]
+enum IdentitiesMsg {
+    DbOpenFailed,
+    IdentityCountSuffix,
+    ReadIdentitiesFailedPrefix,
+    SavedPrefix,
+    ReadHostsCheckFailedPrefix,
+    DeletedPrefix,
+    SelectIdentityFirst,
+    ClearAgainPrefix,
+    ClearAgainSuffix,
+    ClearedPrefix,
+    ClearedSuffix,
+    DeleteAgainPrefix,
+    InUsePrefix,
+    InUseNameStart,
+    InUseListStart,
+    InUseSuffix,
+    ListSeparator,
+    KindPassword,
+    KindKeyFile,
+    KindKeyInline,
+    KindAgent,
+    SecretStoredSuffix,
+    NamePlaceholder,
+    KeyPathPlaceholder,
+    SecretPlaceholder,
+    InlineNoReplace,
+    InlineCannotClear,
+    NoSecretStoredPrefix,
+    NoSecretStoredSuffix,
+    Title,
+    New,
+    Save,
+    Delete,
+    ConfirmDelete,
+    NameLabel,
+    KindLabel,
+    KeyPathLabel,
+    SecretLabel,
+    ConfirmClear,
+    ClearSecret,
+    InlineHint,
+    SecretHint,
+}
+
+impl Msg for IdentitiesMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::DbOpenFailed => "打开身份库失败（数据目录不可写？）",
+            Self::IdentityCountSuffix => " 个身份",
+            Self::ReadIdentitiesFailedPrefix => "读取身份失败：",
+            Self::SavedPrefix => "已保存 ",
+            Self::ReadHostsCheckFailedPrefix => "读取主机失败，没法确认有没有主机在用它：",
+            Self::DeletedPrefix => "已删除 ",
+            Self::SelectIdentityFirst => "先在列表里选一条身份",
+            Self::ClearAgainPrefix => "再点一次「确认清除」才会清掉「",
+            Self::ClearAgainSuffix => "」已存的秘密（不能恢复）",
+            Self::ClearedPrefix => "已清除「",
+            Self::ClearedSuffix => "」已存的秘密",
+            Self::DeleteAgainPrefix => "再点一次「确认删除」才会删除 ",
+            Self::InUsePrefix => "还有 ",
+            Self::InUseNameStart => " 台主机在用「",
+            Self::InUseListStart => "」：",
+            Self::InUseSuffix => "。先把它们改成别的凭据，才能删除",
+            Self::ListSeparator => "、",
+            Self::KindPassword => "密码",
+            Self::KindKeyFile => "密钥文件",
+            Self::KindKeyInline => "内联密钥",
+            Self::KindAgent => "Agent",
+            Self::SecretStoredSuffix => " · 已存秘密",
+            Self::NamePlaceholder => "名称",
+            Self::KeyPathPlaceholder => "私钥路径（密钥文件需要）",
+            Self::SecretPlaceholder => "密码 / 口令（留空 = 不修改）",
+            Self::InlineNoReplace => {
+                "内联私钥不能在这里替换（输入的内容没有保存）：只能改名；要换私钥请删掉这条凭据后重新导入"
+            }
+            Self::InlineCannotClear => {
+                "内联私钥的秘密就是整把私钥，不能只清掉它；要丢掉请删除整条凭据"
+            }
+            Self::NoSecretStoredPrefix => "「",
+            Self::NoSecretStoredSuffix => "」没有存过秘密",
+            Self::Title => "身份库",
+            Self::New => "新建",
+            Self::Save => "保存",
+            Self::Delete => "删除",
+            Self::ConfirmDelete => "确认删除",
+            Self::NameLabel => "名称",
+            Self::KindLabel => "类型",
+            Self::KeyPathLabel => "私钥",
+            Self::SecretLabel => "秘密",
+            Self::ConfirmClear => "确认清除",
+            Self::ClearSecret => "清除已存秘密",
+            Self::InlineHint => {
+                "内联私钥只能改名：秘密输入框在这里不起作用，要换私钥请删除后重新导入。"
+            }
+            Self::SecretHint => {
+                "秘密用 DPAPI 加密，只写入 secret_blob；留空表示不修改，要删掉请点「清除已存秘密」。"
+            }
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::DbOpenFailed => {
+                "Could not open the credential library (is the data directory writable?)"
+            }
+            Self::IdentityCountSuffix => " credentials",
+            Self::ReadIdentitiesFailedPrefix => "Could not read credentials: ",
+            Self::SavedPrefix => "Saved ",
+            Self::ReadHostsCheckFailedPrefix => {
+                "Could not read hosts to check whether any host uses it: "
+            }
+            Self::DeletedPrefix => "Deleted ",
+            Self::SelectIdentityFirst => "Select a credential in the list first",
+            Self::ClearAgainPrefix => {
+                "Click \"Confirm Clear\" again to clear the stored secret in \""
+            }
+            Self::ClearAgainSuffix => "\" (cannot be undone)",
+            Self::ClearedPrefix => "Cleared the stored secret in \"",
+            Self::ClearedSuffix => "\"",
+            Self::DeleteAgainPrefix => "Click \"Confirm Delete\" again to delete ",
+            Self::InUsePrefix => "",
+            Self::InUseNameStart => " host(s) still use \"",
+            Self::InUseListStart => "\": ",
+            Self::InUseSuffix => ". Change them to another credential before deleting",
+            Self::ListSeparator => ", ",
+            Self::KindPassword => "Password",
+            Self::KindKeyFile => "Key file",
+            Self::KindKeyInline => "Inline key",
+            Self::KindAgent => "Agent",
+            Self::SecretStoredSuffix => " · Secret stored",
+            Self::NamePlaceholder => "Name",
+            Self::KeyPathPlaceholder => "Private key path (required for a key file)",
+            Self::SecretPlaceholder => "Password / passphrase (leave blank to keep)",
+            Self::InlineNoReplace => {
+                "An inline private key cannot be replaced here (what you typed was not saved); only the name can change. To switch keys, delete this credential and import it again"
+            }
+            Self::InlineCannotClear => {
+                "The secret of an inline private key is the whole key; it cannot be cleared alone. Delete the credential to discard it"
+            }
+            Self::NoSecretStoredPrefix => "\"",
+            Self::NoSecretStoredSuffix => "\" has no stored secret",
+            Self::Title => "Credential Library",
+            Self::New => "New",
+            Self::Save => "Save",
+            Self::Delete => "Delete",
+            Self::ConfirmDelete => "Confirm Delete",
+            Self::NameLabel => "Name",
+            Self::KindLabel => "Type",
+            Self::KeyPathLabel => "Private key",
+            Self::SecretLabel => "Secret",
+            Self::ConfirmClear => "Confirm Clear",
+            Self::ClearSecret => "Clear Stored Secret",
+            Self::InlineHint => {
+                "An inline private key can only be renamed; the secret box has no effect here. To switch keys, delete and import again."
+            }
+            Self::SecretHint => {
+                "Secrets are encrypted with DPAPI and written only to secret_blob; leave blank to keep the current one, or click \"Clear Stored Secret\" to remove it."
+            }
+        }
+    }
+}
 
 #[derive(Clone, Default, PartialEq, Eq)]
 struct FormValues {
@@ -51,10 +219,7 @@ fn draft_from(values: &FormValues, id: Option<i64>, kind: IdentityKind) -> Ident
 /// 保存前的检查：内联私钥身份不接受秘密输入，免得误输入的一行字替换整把私钥。
 fn check_secret_input(kind: IdentityKind, typed_secret: &str) -> Result<(), String> {
     if kind == IdentityKind::KeyInline && !typed_secret.trim().is_empty() {
-        return Err(
-            "内联私钥不能在这里替换（输入的内容没有保存）：只能改名；要换私钥请删掉这条凭据后重新导入"
-                .to_owned(),
-        );
+        return Err(t(IdentitiesMsg::InlineNoReplace).to_owned());
     }
     Ok(())
 }
@@ -63,10 +228,15 @@ fn check_secret_input(kind: IdentityKind, typed_secret: &str) -> Result<(), Stri
 /// 内联私钥不给清（清了就等于丢掉整把私钥，该删整条凭据）；本来就没存秘密的也没得清。
 pub(crate) fn clear_secret_draft(identity: &Identity) -> Result<IdentityDraft, String> {
     if identity.kind == IdentityKind::KeyInline {
-        return Err("内联私钥的秘密就是整把私钥，不能只清掉它；要丢掉请删除整条凭据".to_owned());
+        return Err(t(IdentitiesMsg::InlineCannotClear).to_owned());
     }
     if !identity.has_secret {
-        return Err(format!("「{}」没有存过秘密", identity.name));
+        return Err(format!(
+            "{}{}{}",
+            t(IdentitiesMsg::NoSecretStoredPrefix),
+            identity.name,
+            t(IdentitiesMsg::NoSecretStoredSuffix)
+        ));
     }
     Ok(IdentityDraft {
         id: Some(identity.id),
@@ -90,13 +260,20 @@ pub(crate) fn hosts_using_identity(hosts: &[Host], identity_id: i64) -> Vec<Stri
 /// 第一次点「删除」：有主机在用就不给确认（核心也会拒绝），把主机名列出来。
 pub(crate) fn identity_delete_prompt(name: &str, users: &[String]) -> (String, bool) {
     if users.is_empty() {
-        (format!("再点一次「确认删除」才会删除 {name}"), true)
+        (
+            format!("{}{name}", t(IdentitiesMsg::DeleteAgainPrefix)),
+            true,
+        )
     } else {
         (
             format!(
-                "还有 {} 台主机在用「{name}」：{}。先把它们改成别的凭据，才能删除",
+                "{}{}{}{name}{}{}{}",
+                t(IdentitiesMsg::InUsePrefix),
                 users.len(),
-                users.join("、")
+                t(IdentitiesMsg::InUseNameStart),
+                t(IdentitiesMsg::InUseListStart),
+                users.join(t(IdentitiesMsg::ListSeparator)),
+                t(IdentitiesMsg::InUseSuffix)
             ),
             false,
         )
@@ -105,10 +282,10 @@ pub(crate) fn identity_delete_prompt(name: &str, users: &[String]) -> (String, b
 
 pub(crate) fn kind_label(kind: IdentityKind) -> &'static str {
     match kind {
-        IdentityKind::Password => "密码",
-        IdentityKind::KeyFile => "密钥文件",
-        IdentityKind::KeyInline => "内联密钥",
-        IdentityKind::Agent => "Agent",
+        IdentityKind::Password => t(IdentitiesMsg::KindPassword),
+        IdentityKind::KeyFile => t(IdentitiesMsg::KindKeyFile),
+        IdentityKind::KeyInline => t(IdentitiesMsg::KindKeyInline),
+        IdentityKind::Agent => t(IdentitiesMsg::KindAgent),
     }
 }
 
@@ -140,12 +317,12 @@ impl IdentitiesDemo {
             }
         };
         let focus = cx.focus_handle();
-        let name = text_input(window, cx, "名称");
-        let key_path = text_input(window, cx, "私钥路径（密钥文件需要）");
+        let name = text_input(window, cx, t(IdentitiesMsg::NamePlaceholder));
+        let key_path = text_input(window, cx, t(IdentitiesMsg::KeyPathPlaceholder));
         let secret = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
-                .placeholder("密码 / 口令（留空 = 不修改）")
+                .placeholder(t(IdentitiesMsg::SecretPlaceholder))
         });
         let (_ime_focus, _ime_blur) = crate::ime::attach(cx, &focus, window, &ime_key);
         let mut this = Self {
@@ -165,7 +342,7 @@ impl IdentitiesDemo {
             _ime_blur,
         };
         if this.db.is_none() {
-            this.status = "打开身份库失败（数据目录不可写？）".to_owned();
+            this.status = t(IdentitiesMsg::DbOpenFailed).to_owned();
         }
         this.reload(cx);
         this
@@ -181,10 +358,16 @@ impl IdentitiesDemo {
         };
         match db.identity_list() {
             Ok(identities) => {
-                self.status = format!("{} 个身份", identities.len());
+                self.status = format!(
+                    "{}{}",
+                    identities.len(),
+                    t(IdentitiesMsg::IdentityCountSuffix)
+                );
                 self.identities = identities;
             }
-            Err(err) => self.status = format!("读取身份失败：{err}"),
+            Err(err) => {
+                self.status = format!("{}{err}", t(IdentitiesMsg::ReadIdentitiesFailedPrefix));
+            }
         }
         cx.notify();
     }
@@ -240,7 +423,7 @@ impl IdentitiesDemo {
                 self.kind = identity.kind;
                 self.pending_delete = None;
                 self.pending_clear = None;
-                self.status = format!("已保存 {}", identity.name);
+                self.status = format!("{}{}", t(IdentitiesMsg::SavedPrefix), identity.name);
                 self.reload(cx);
                 self.pending_form = Some(FormValues::from_identity(&identity));
             }
@@ -265,7 +448,7 @@ impl IdentitiesDemo {
             let users = match db.host_list() {
                 Ok(hosts) => hosts_using_identity(&hosts, id),
                 Err(err) => {
-                    self.status = format!("读取主机失败，没法确认有没有主机在用它：{err}");
+                    self.status = format!("{}{err}", t(IdentitiesMsg::ReadHostsCheckFailedPrefix));
                     cx.notify();
                     return;
                 }
@@ -282,7 +465,7 @@ impl IdentitiesDemo {
                 self.pending_delete = None;
                 self.pending_form = Some(FormValues::default());
                 self.reload(cx);
-                self.status = format!("已删除 {name}");
+                self.status = format!("{}{}", t(IdentitiesMsg::DeletedPrefix), name);
             }
             Err(err) => {
                 self.status = err.to_string();
@@ -294,7 +477,7 @@ impl IdentitiesDemo {
     /// 「清除已存秘密」：点两次才真清（只清秘密，名字、类型、路径不动）。
     fn clear_secret(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.selected else {
-            self.status = "先在列表里选一条身份".to_owned();
+            self.status = t(IdentitiesMsg::SelectIdentityFirst).to_owned();
             cx.notify();
             return;
         };
@@ -312,7 +495,11 @@ impl IdentitiesDemo {
         let name = identity.name.clone();
         if self.pending_clear != Some(id) {
             self.pending_clear = Some(id);
-            self.status = format!("再点一次「确认清除」才会清掉「{name}」已存的秘密（不能恢复）");
+            self.status = format!(
+                "{}{name}{}",
+                t(IdentitiesMsg::ClearAgainPrefix),
+                t(IdentitiesMsg::ClearAgainSuffix)
+            );
             cx.notify();
             return;
         }
@@ -323,7 +510,11 @@ impl IdentitiesDemo {
         match db.identity_save(&draft) {
             Ok(_) => {
                 self.reload(cx);
-                self.status = format!("已清除「{name}」已存的秘密");
+                self.status = format!(
+                    "{}{name}{}",
+                    t(IdentitiesMsg::ClearedPrefix),
+                    t(IdentitiesMsg::ClearedSuffix)
+                );
             }
             Err(err) => self.status = err.to_string(),
         }
@@ -359,7 +550,7 @@ impl IdentitiesDemo {
                         "{}{}",
                         kind_label(identity.kind),
                         if identity.has_secret {
-                            " · 已存秘密"
+                            t(IdentitiesMsg::SecretStoredSuffix)
                         } else {
                             ""
                         }
@@ -377,23 +568,28 @@ impl IdentitiesDemo {
         let clear_entity = cx.entity();
         let inline = self.kind == IdentityKind::KeyInline;
         let clear_label = if self.pending_clear.is_some() && self.pending_clear == self.selected {
-            "确认清除"
+            t(IdentitiesMsg::ConfirmClear)
         } else {
-            "清除已存秘密"
+            t(IdentitiesMsg::ClearSecret)
         };
         v_flex()
             .flex_1()
             .p_4()
             .gap_2()
-            .child(field("名称", &self.name))
+            .child(field(t(IdentitiesMsg::NameLabel), &self.name))
             .child(
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().w(::gpui::px(56.0)).text_sm().child("类型"))
+                    .child(
+                        div()
+                            .w(::gpui::px(56.0))
+                            .text_sm()
+                            .child(t(IdentitiesMsg::KindLabel)),
+                    )
                     .child(
                         Button::new("identity-password")
-                            .label("密码")
+                            .label(t(IdentitiesMsg::KindPassword))
                             .compact()
                             .toggled(self.kind == IdentityKind::Password)
                             .on_click(move |_, _, cx| {
@@ -404,7 +600,7 @@ impl IdentitiesDemo {
                     )
                     .child(
                         Button::new("identity-key")
-                            .label("密钥文件")
+                            .label(t(IdentitiesMsg::KindKeyFile))
                             .compact()
                             .toggled(self.kind == IdentityKind::KeyFile)
                             .on_click(move |_, _, cx| {
@@ -425,8 +621,8 @@ impl IdentitiesDemo {
                             }),
                     ),
             )
-            .child(field("私钥", &self.key_path))
-            .child(field("秘密", &self.secret))
+            .child(field(t(IdentitiesMsg::KeyPathLabel), &self.key_path))
+            .child(field(t(IdentitiesMsg::SecretLabel), &self.secret))
             .child(
                 h_flex().gap_2().items_center().child(
                     Button::new("identity-clear-secret")
@@ -442,9 +638,9 @@ impl IdentitiesDemo {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(if inline {
-                        "内联私钥只能改名：秘密输入框在这里不起作用，要换私钥请删除后重新导入。"
+                        t(IdentitiesMsg::InlineHint)
                     } else {
-                        "秘密用 DPAPI 加密，只写入 secret_blob；留空表示不修改，要删掉请点「清除已存秘密」。"
+                        t(IdentitiesMsg::SecretHint)
                     }),
             )
     }
@@ -472,17 +668,17 @@ impl Render for IdentitiesDemo {
             self.name = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(values.name)
-                    .placeholder("名称")
+                    .placeholder(t(IdentitiesMsg::NamePlaceholder))
             });
             self.key_path = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(values.key_path)
-                    .placeholder("私钥路径（密钥文件需要）")
+                    .placeholder(t(IdentitiesMsg::KeyPathPlaceholder))
             });
             self.secret = cx.new(|cx| {
                 InputState::new(window, cx)
                     .masked(true)
-                    .placeholder("密码 / 口令（留空 = 不修改）")
+                    .placeholder(t(IdentitiesMsg::SecretPlaceholder))
             });
         }
 
@@ -500,17 +696,17 @@ impl Render for IdentitiesDemo {
                     .px_2()
                     .gap_2()
                     .items_center()
-                    .child(div().text_lg().child("身份库"))
+                    .child(div().text_lg().child(t(IdentitiesMsg::Title)))
                     .child(
                         Button::new("identity-new")
-                            .label("新建")
+                            .label(t(IdentitiesMsg::New))
                             .on_click(move |_, _, cx| {
                                 new_entity.update(cx, |this, cx| this.new_identity(cx));
                             }),
                     )
                     .child(
                         Button::new("identity-save")
-                            .label("保存")
+                            .label(t(IdentitiesMsg::Save))
                             .on_click(move |_, _, cx| {
                                 save_entity.update(cx, |this, cx| this.save(cx));
                             }),
@@ -521,9 +717,9 @@ impl Render for IdentitiesDemo {
                                 if self.pending_delete.is_some()
                                     && self.pending_delete == self.selected
                                 {
-                                    "确认删除"
+                                    t(IdentitiesMsg::ConfirmDelete)
                                 } else {
-                                    "删除"
+                                    t(IdentitiesMsg::Delete)
                                 },
                             )
                             .on_click(move |_, _, cx| {

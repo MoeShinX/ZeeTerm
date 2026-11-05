@@ -23,6 +23,7 @@ use super::nav::MainView;
 use super::widgets::{ButtonLook, Choice, error_note, field, note, select, text_button};
 use crate::app_lock::{self as lock_ui, Job, JobOutcome, LockScreen};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::settings_nav::SettingsSection;
 use crate::settings_view::{card, row};
@@ -30,6 +31,257 @@ use crate::typography::{Role, Typo as _, UiFontStyled as _};
 
 /// 锁按钮的悬停说明。
 pub const LOCK_TOOLTIP: &str = "锁定 ZeeTerm（Ctrl+Alt+L）";
+
+/// 主窗口里和锁屏有关的界面文案（右键菜单、对话框、设置页「锁屏」一节）。
+///
+/// 只放应用自己的固定文案；产品名、分钟数、等待秒数由 `format!` 带进来。
+#[derive(Clone, Copy, Debug)]
+enum LockUiMsg {
+    // ---- 锁按钮右键菜单 ----
+    MenuLockNow,
+    MenuChangePassword,
+    MenuSettings,
+    // ---- 空闲自动锁定 ----
+    IdleNever,
+    IdleMinutesSuffix,
+    // ---- 忘记密码 ----
+    WindowsVerifyFailed,
+    WindowsVerifyUnavailable,
+    // ---- 对话框标题 ----
+    DialogEnableTitle,
+    DialogChangeTitle,
+    DialogDisableTitle,
+    DialogResetTitle,
+    // ---- 对话框说明 ----
+    DialogEnableDescription,
+    DialogChangeDescription,
+    DialogDisableDescription,
+    DialogResetDescription,
+    // ---- 字段 ----
+    LabelNewPassword,
+    LabelRepeat,
+    LabelOldPassword,
+    LabelRepeatNew,
+    LabelCurrentPassword,
+    // ---- 按钮 / 结果 ----
+    OkEnable,
+    OkChange,
+    OkDisable,
+    OkReset,
+    SuccessEnabled,
+    SuccessChanged,
+    SuccessDisabled,
+    SuccessReset,
+    Cancel,
+    Processing,
+    WrongOldPassword,
+    WrongPassword,
+    SentenceEnd,
+    // ---- 设置页「锁屏」一节 ----
+    SwitchLabel,
+    SwitchDescription,
+    PasswordRowTitle,
+    PasswordReadableDescription,
+    PasswordUnreadableDescription,
+    ChangePassword,
+    DisableLock,
+    IdleRowTitle,
+    IdleRowDescription,
+    TrayRowTitle,
+    TrayRowDescription,
+    StartRowTitle,
+    StartDescriptionEnabled,
+    StartDescriptionDisabled,
+    ForgotRowTitle,
+    ForgotRowDescription,
+    ForgotBusy,
+    ForgotRowButton,
+    SectionTitle,
+    SectionDescription,
+    // ---- 输入校验（核心只给类型，文字在界面这一层出） ----
+    PasswordTooShortPrefix,
+    PasswordTooLongPrefix,
+    PasswordLengthSuffix,
+    PasswordMismatch,
+    EnterOldPassword,
+    EnterCurrentPassword,
+}
+
+impl Msg for LockUiMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::MenuLockNow => "立即锁定",
+            Self::MenuChangePassword => "修改锁屏密码…",
+            Self::MenuSettings => "锁屏设置…",
+            Self::IdleNever => "不自动",
+            Self::IdleMinutesSuffix => " 分钟",
+            Self::WindowsVerifyFailed => "Windows 账户验证没有通过，没有重置锁屏密码",
+            Self::WindowsVerifyUnavailable => "这台电脑上无法验证 Windows 账户，不能重置锁屏密码",
+            Self::DialogEnableTitle => "设置锁屏密码",
+            Self::DialogChangeTitle => "修改锁屏密码",
+            Self::DialogDisableTitle => "关闭锁屏",
+            Self::DialogResetTitle => "重置锁屏密码",
+            Self::DialogEnableDescription => {
+                "锁屏时窗口里的内容全部盖住，连接和传输照常在后台运行。密码只保存在这台电脑上，无法找回。"
+            }
+            Self::DialogChangeDescription => "修改密码需要先输入原来的密码。",
+            Self::DialogDisableDescription => "关闭锁屏需要输入当前的锁屏密码。",
+            Self::DialogResetDescription => {
+                "已验证你是这台电脑的 Windows 用户。设一个新密码，旧密码作废。"
+            }
+            Self::LabelNewPassword => "新密码",
+            Self::LabelRepeat => "再输入一次",
+            Self::LabelOldPassword => "原密码",
+            Self::LabelRepeatNew => "再输入一次新密码",
+            Self::LabelCurrentPassword => "当前密码",
+            Self::OkEnable => "启用",
+            Self::OkChange => "修改",
+            Self::OkDisable => "关闭锁屏",
+            Self::OkReset => "重置",
+            Self::SuccessEnabled => "锁屏已启用",
+            Self::SuccessChanged => "锁屏密码已修改",
+            Self::SuccessDisabled => "锁屏已关闭",
+            Self::SuccessReset => "锁屏密码已重置",
+            Self::Cancel => "取消",
+            Self::Processing => "处理中…",
+            Self::WrongOldPassword => "原密码不正确",
+            Self::WrongPassword => "密码不正确",
+            Self::SentenceEnd => "。",
+            Self::SwitchLabel => "启用锁屏",
+            Self::SwitchDescription => {
+                "锁定后窗口里的内容全部盖住，要输入锁屏密码才能继续；连接、传输、AI 在后台照常运行。"
+            }
+            Self::PasswordRowTitle => "锁屏密码",
+            Self::PasswordReadableDescription => "修改或关闭都要先输入原来的密码。",
+            Self::PasswordUnreadableDescription => "密码记录读不出来，只能用下面的“忘记密码”重置。",
+            Self::ChangePassword => "修改密码…",
+            Self::DisableLock => "关闭锁屏",
+            Self::IdleRowTitle => "空闲多久自动锁定",
+            Self::IdleRowDescription => {
+                "以键盘、鼠标在 ZeeTerm 窗口里的操作为准；窗口在后台时也计时。需要先启用锁屏。"
+            }
+            Self::TrayRowTitle => "关到托盘时自动锁定",
+            Self::TrayRowDescription => {
+                "点关闭按钮缩到托盘的同时锁定；从托盘重新打开时先看到锁屏页。需要先启用锁屏。"
+            }
+            Self::StartRowTitle => "启动时锁定",
+            Self::StartDescriptionEnabled => {
+                "打开后，每次启动 ZeeTerm 都先显示锁屏页，解锁前看不到任何主机和终端，也不会自动恢复或连接；从托盘打开、再次双击图标看到的也是锁屏页。"
+            }
+            Self::StartDescriptionDisabled => "需要先启用锁屏并设置密码，才能打开这一项。",
+            Self::ForgotRowTitle => "忘记密码",
+            Self::ForgotRowDescription => {
+                "密码无法找回。可以用 Windows Hello / PIN（没有就用 Windows 登录密码）验证你是这台电脑的用户，然后设一个新密码。"
+            }
+            Self::ForgotBusy => "验证中…",
+            Self::ForgotRowButton => "验证 Windows 账户并重置…",
+            Self::SectionTitle => "锁屏",
+            Self::SectionDescription => {
+                "锁屏密码和这些选项只保存在这台电脑上，不同步，也不进备份。"
+            }
+            Self::PasswordTooShortPrefix => "密码至少 ",
+            Self::PasswordTooLongPrefix => "密码最多 ",
+            Self::PasswordLengthSuffix => " 个字符",
+            Self::PasswordMismatch => "两次输入的密码不一致",
+            Self::EnterOldPassword => "请输入原密码",
+            Self::EnterCurrentPassword => "请输入当前密码",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::MenuLockNow => "Lock Now",
+            Self::MenuChangePassword => "Change Lock Password…",
+            Self::MenuSettings => "App Lock Settings…",
+            Self::IdleNever => "Never",
+            Self::IdleMinutesSuffix => " min",
+            Self::WindowsVerifyFailed => {
+                "Windows account verification failed; the lock password was not reset"
+            }
+            Self::WindowsVerifyUnavailable => {
+                "A Windows account cannot be verified on this computer; the lock password cannot be reset"
+            }
+            Self::DialogEnableTitle => "Set Lock Password",
+            Self::DialogChangeTitle => "Change Lock Password",
+            Self::DialogDisableTitle => "Turn Off App Lock",
+            Self::DialogResetTitle => "Reset Lock Password",
+            Self::DialogEnableDescription => {
+                "While locked, everything in the window is covered and connections keep running in the background. The password is stored only on this computer and cannot be recovered."
+            }
+            Self::DialogChangeDescription => {
+                "Changing the password requires the current password first."
+            }
+            Self::DialogDisableDescription => {
+                "Turning off app lock requires the current lock password."
+            }
+            Self::DialogResetDescription => {
+                "You have verified that you are a Windows user of this computer. Set a new password; the old one stops working."
+            }
+            Self::LabelNewPassword => "New password",
+            Self::LabelRepeat => "Enter it again",
+            Self::LabelOldPassword => "Current password",
+            Self::LabelRepeatNew => "Enter the new password again",
+            Self::LabelCurrentPassword => "Current password",
+            Self::OkEnable => "Enable",
+            Self::OkChange => "Change",
+            Self::OkDisable => "Turn Off",
+            Self::OkReset => "Reset",
+            Self::SuccessEnabled => "App lock enabled",
+            Self::SuccessChanged => "Lock password changed",
+            Self::SuccessDisabled => "App lock turned off",
+            Self::SuccessReset => "Lock password reset",
+            Self::Cancel => "Cancel",
+            Self::Processing => "Working…",
+            Self::WrongOldPassword => "The current password is incorrect",
+            Self::WrongPassword => "The password is incorrect",
+            Self::SentenceEnd => ". ",
+            Self::SwitchLabel => "Enable app lock",
+            Self::SwitchDescription => {
+                "When locked, everything in the window is covered and the lock password is required to continue; connections, transfers, and AI keep running in the background."
+            }
+            Self::PasswordRowTitle => "Lock password",
+            Self::PasswordReadableDescription => {
+                "Changing or turning it off requires the current password."
+            }
+            Self::PasswordUnreadableDescription => {
+                "The password record cannot be read; use \"Forgot password\" below to reset it."
+            }
+            Self::ChangePassword => "Change Password…",
+            Self::DisableLock => "Turn Off App Lock",
+            Self::IdleRowTitle => "Auto-lock when idle",
+            Self::IdleRowDescription => {
+                "Keyboard and mouse activity in ZeeTerm windows counts, including windows in the background. Requires app lock to be enabled."
+            }
+            Self::TrayRowTitle => "Lock when minimized to tray",
+            Self::TrayRowDescription => {
+                "Locks when the window is minimized to the tray; reopening from the tray shows the lock screen. Requires app lock to be enabled."
+            }
+            Self::StartRowTitle => "Lock on startup",
+            Self::StartDescriptionEnabled => {
+                "When on, ZeeTerm shows the lock screen at every startup; no hosts or terminals are visible and nothing is restored or connected before unlocking. Opening from the tray or double-clicking the icon again also shows the lock screen."
+            }
+            Self::StartDescriptionDisabled => {
+                "Enable app lock and set a password before turning this on."
+            }
+            Self::ForgotRowTitle => "Forgot password",
+            Self::ForgotRowDescription => {
+                "The password cannot be recovered. You can verify that you are a user of this computer with Windows Hello / PIN (or your Windows sign-in password), then set a new password."
+            }
+            Self::ForgotBusy => "Verifying…",
+            Self::ForgotRowButton => "Verify Windows Account and Reset…",
+            Self::SectionTitle => "App Lock",
+            Self::SectionDescription => {
+                "The lock password and these options are stored only on this computer; they are not synced or included in backups."
+            }
+            Self::PasswordTooShortPrefix => "Password must be at least ",
+            Self::PasswordTooLongPrefix => "Password must be at most ",
+            Self::PasswordLengthSuffix => " characters",
+            Self::PasswordMismatch => "The two passwords do not match",
+            Self::EnterOldPassword => "Enter the current password",
+            Self::EnterCurrentPassword => "Enter the current password",
+        }
+    }
+}
 
 // ---- 纯数据：点击去向、右键菜单 ----
 
@@ -69,17 +321,17 @@ pub fn lock_menu(enabled: bool) -> Vec<LockMenuEntry> {
     vec![
         LockMenuEntry {
             item: LockMenuItem::LockNow,
-            label: "立即锁定",
+            label: t(LockUiMsg::MenuLockNow),
             enabled,
         },
         LockMenuEntry {
             item: LockMenuItem::ChangePassword,
-            label: "修改锁屏密码…",
+            label: t(LockUiMsg::MenuChangePassword),
             enabled,
         },
         LockMenuEntry {
             item: LockMenuItem::Settings,
-            label: "锁屏设置…",
+            label: t(LockUiMsg::MenuSettings),
             enabled: true,
         },
     ]
@@ -163,9 +415,9 @@ pub fn idle_expired(idle: Duration, minutes: u32, override_secs: Option<u64>) ->
 /// 设置页下拉里的名字。
 pub fn idle_label(minutes: u32) -> String {
     if minutes == 0 {
-        "不自动".to_owned()
+        t(LockUiMsg::IdleNever).to_owned()
     } else {
-        format!("{minutes} 分钟")
+        format!("{minutes}{}", t(LockUiMsg::IdleMinutesSuffix))
     }
 }
 
@@ -185,11 +437,9 @@ pub enum ForgotStep {
 pub fn forgot_step(check: OsCheck) -> ForgotStep {
     match check {
         OsCheck::Verified => ForgotStep::OpenResetDialog,
-        OsCheck::Failed => ForgotStep::Notice("Windows 账户验证没有通过，没有重置锁屏密码"),
+        OsCheck::Failed => ForgotStep::Notice(t(LockUiMsg::WindowsVerifyFailed)),
         OsCheck::Cancelled => ForgotStep::Nothing,
-        OsCheck::Unavailable => {
-            ForgotStep::Notice("这台电脑上无法验证 Windows 账户，不能重置锁屏密码")
-        }
+        OsCheck::Unavailable => ForgotStep::Notice(t(LockUiMsg::WindowsVerifyUnavailable)),
     }
 }
 
@@ -210,39 +460,43 @@ pub enum LockDialogKind {
 impl LockDialogKind {
     pub fn title(self) -> &'static str {
         match self {
-            Self::Enable => "设置锁屏密码",
-            Self::Change => "修改锁屏密码",
-            Self::Disable => "关闭锁屏",
-            Self::Reset => "重置锁屏密码",
+            Self::Enable => t(LockUiMsg::DialogEnableTitle),
+            Self::Change => t(LockUiMsg::DialogChangeTitle),
+            Self::Disable => t(LockUiMsg::DialogDisableTitle),
+            Self::Reset => t(LockUiMsg::DialogResetTitle),
         }
     }
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Enable => {
-                "锁屏时窗口里的内容全部盖住，连接和传输照常在后台运行。密码只保存在这台电脑上，无法找回。"
-            }
-            Self::Change => "修改密码需要先输入原来的密码。",
-            Self::Disable => "关闭锁屏需要输入当前的锁屏密码。",
-            Self::Reset => "已验证你是这台电脑的 Windows 用户。设一个新密码，旧密码作废。",
+            Self::Enable => t(LockUiMsg::DialogEnableDescription),
+            Self::Change => t(LockUiMsg::DialogChangeDescription),
+            Self::Disable => t(LockUiMsg::DialogDisableDescription),
+            Self::Reset => t(LockUiMsg::DialogResetDescription),
         }
     }
 
     /// 每个输入框的标签，从上到下。
-    pub fn labels(self) -> &'static [&'static str] {
+    pub fn labels(self) -> Vec<&'static str> {
         match self {
-            Self::Enable | Self::Reset => &["新密码", "再输入一次"],
-            Self::Change => &["原密码", "新密码", "再输入一次新密码"],
-            Self::Disable => &["当前密码"],
+            Self::Enable | Self::Reset => {
+                vec![t(LockUiMsg::LabelNewPassword), t(LockUiMsg::LabelRepeat)]
+            }
+            Self::Change => vec![
+                t(LockUiMsg::LabelOldPassword),
+                t(LockUiMsg::LabelNewPassword),
+                t(LockUiMsg::LabelRepeatNew),
+            ],
+            Self::Disable => vec![t(LockUiMsg::LabelCurrentPassword)],
         }
     }
 
     pub fn ok_label(self) -> &'static str {
         match self {
-            Self::Enable => "启用",
-            Self::Change => "修改",
-            Self::Disable => "关闭锁屏",
-            Self::Reset => "重置",
+            Self::Enable => t(LockUiMsg::OkEnable),
+            Self::Change => t(LockUiMsg::OkChange),
+            Self::Disable => t(LockUiMsg::OkDisable),
+            Self::Reset => t(LockUiMsg::OkReset),
         }
     }
 
@@ -253,10 +507,10 @@ impl LockDialogKind {
 
     pub fn success_text(self) -> &'static str {
         match self {
-            Self::Enable => "锁屏已启用",
-            Self::Change => "锁屏密码已修改",
-            Self::Disable => "锁屏已关闭",
-            Self::Reset => "锁屏密码已重置",
+            Self::Enable => t(LockUiMsg::SuccessEnabled),
+            Self::Change => t(LockUiMsg::SuccessChanged),
+            Self::Disable => t(LockUiMsg::SuccessDisabled),
+            Self::Reset => t(LockUiMsg::SuccessReset),
         }
     }
 
@@ -266,7 +520,7 @@ impl LockDialogKind {
         let value = |index: usize| values.get(index).cloned().unwrap_or_default();
         let check_new = |first: usize| {
             app_lock::check_new_password(&value(first), &value(first + 1))
-                .map_err(|problem| problem.message())
+                .map_err(password_problem_text)
         };
         match self {
             Self::Enable => {
@@ -279,7 +533,7 @@ impl LockDialogKind {
             }
             Self::Change => {
                 if value(0).is_empty() {
-                    return Err("请输入原密码".to_owned());
+                    return Err(t(LockUiMsg::EnterOldPassword).to_owned());
                 }
                 check_new(1)?;
                 Ok(Job::Change {
@@ -289,11 +543,30 @@ impl LockDialogKind {
             }
             Self::Disable => {
                 if value(0).is_empty() {
-                    return Err("请输入当前密码".to_owned());
+                    return Err(t(LockUiMsg::EnterCurrentPassword).to_owned());
                 }
                 Ok(Job::Disable { old: value(0) })
             }
         }
+    }
+}
+
+/// 新密码不合格的原因：核心只给类型，文字在这里按当前语言生成。
+fn password_problem_text(problem: app_lock::PasswordProblem) -> String {
+    match problem {
+        app_lock::PasswordProblem::TooShort => format!(
+            "{}{}{}",
+            t(LockUiMsg::PasswordTooShortPrefix),
+            app_lock::MIN_PASSWORD_CHARS,
+            t(LockUiMsg::PasswordLengthSuffix)
+        ),
+        app_lock::PasswordProblem::TooLong => format!(
+            "{}{}{}",
+            t(LockUiMsg::PasswordTooLongPrefix),
+            app_lock::MAX_PASSWORD_CHARS,
+            t(LockUiMsg::PasswordLengthSuffix)
+        ),
+        app_lock::PasswordProblem::Mismatch => t(LockUiMsg::PasswordMismatch).to_owned(),
     }
 }
 
@@ -640,12 +913,16 @@ impl MainWindow {
             }
             JobOutcome::WrongPassword => {
                 let wait = lock_ui::record_attempt(false, Instant::now());
-                let mut message = "原密码不正确".to_owned();
+                let mut message = t(LockUiMsg::WrongOldPassword).to_owned();
                 if kind == LockDialogKind::Disable {
-                    message = "密码不正确".to_owned();
+                    message = t(LockUiMsg::WrongPassword).to_owned();
                 }
                 if !wait.is_zero() {
-                    message = format!("{message}。{}", lock_ui::wait_text(wait));
+                    message = format!(
+                        "{message}{}{}",
+                        t(LockUiMsg::SentenceEnd),
+                        lock_ui::wait_text(wait)
+                    );
                 }
                 // 输错的那个框清空，光标回到它。
                 if let Some(Modal::AppLock(dialog)) = &self.modal
@@ -697,7 +974,7 @@ impl MainWindow {
                     .justify_end()
                     .child(text_button(
                         "modal-cancel",
-                        "取消",
+                        t(LockUiMsg::Cancel),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             cancel.update(cx, |this, cx| this.close_modal(window, cx));
@@ -706,7 +983,7 @@ impl MainWindow {
                     .child(text_button(
                         "modal-ok",
                         if dialog.busy {
-                            "处理中…"
+                            t(LockUiMsg::Processing)
                         } else {
                             kind.ok_label()
                         },
@@ -783,7 +1060,7 @@ impl MainWindow {
             let entity = entity.clone();
             Switch::new("lock-enabled")
                 .checked(enabled)
-                .accessibility_label("启用锁屏")
+                .accessibility_label(t(LockUiMsg::SwitchLabel))
                 .on_click(move |checked: &bool, window, cx| {
                     let want = *checked;
                     entity.update(cx, |this, cx| {
@@ -798,10 +1075,8 @@ impl MainWindow {
         };
 
         let mut rows = vec![row(
-            "启用锁屏",
-            Some(
-                "锁定后窗口里的内容全部盖住，要输入锁屏密码才能继续；连接、传输、AI 在后台照常运行。",
-            ),
+            t(LockUiMsg::SwitchLabel),
+            Some(t(LockUiMsg::SwitchDescription)),
             switch,
             tokens,
         )];
@@ -810,18 +1085,18 @@ impl MainWindow {
             let change = entity.clone();
             let disable = entity.clone();
             rows.push(row(
-                "锁屏密码",
+                t(LockUiMsg::PasswordRowTitle),
                 Some(if unreadable {
-                    "密码记录读不出来，只能用下面的“忘记密码”重置。"
+                    t(LockUiMsg::PasswordUnreadableDescription)
                 } else {
-                    "修改或关闭都要先输入原来的密码。"
+                    t(LockUiMsg::PasswordReadableDescription)
                 }),
                 h_flex()
                     .gap_2()
                     .child(
                         text_button(
                             "lock-change",
-                            "修改密码…",
+                            t(LockUiMsg::ChangePassword),
                             ButtonLook::Outline,
                             move |_, window, cx| {
                                 change.update(cx, |this, cx| {
@@ -834,7 +1109,7 @@ impl MainWindow {
                     .child(
                         text_button(
                             "lock-disable",
-                            "关闭锁屏",
+                            t(LockUiMsg::DisableLock),
                             ButtonLook::Outline,
                             move |_, window, cx| {
                                 disable.update(cx, |this, cx| {
@@ -851,8 +1126,8 @@ impl MainWindow {
         let idle_entity = entity.clone();
         let idle_current = config.idle_minutes;
         rows.push(row(
-            "空闲多久自动锁定",
-            Some("以键盘、鼠标在 ZeeTerm 窗口里的操作为准；窗口在后台时也计时。需要先启用锁屏。"),
+            t(LockUiMsg::IdleRowTitle),
+            Some(t(LockUiMsg::IdleRowDescription)),
             div().w(::gpui::px(160.0)).child(select(
                 "lock-idle",
                 idle_label(idle_current),
@@ -870,11 +1145,11 @@ impl MainWindow {
 
         let tray_entity = entity.clone();
         rows.push(row(
-            "关到托盘时自动锁定",
-            Some("点关闭按钮缩到托盘的同时锁定；从托盘重新打开时先看到锁屏页。需要先启用锁屏。"),
+            t(LockUiMsg::TrayRowTitle),
+            Some(t(LockUiMsg::TrayRowDescription)),
             Switch::new("lock-on-tray")
                 .checked(config.lock_on_tray)
-                .accessibility_label("关到托盘时自动锁定")
+                .accessibility_label(t(LockUiMsg::TrayRowTitle))
                 .on_click(move |checked: &bool, window, cx| {
                     let on = *checked;
                     tray_entity.update(cx, |this, cx| this.set_lock_on_tray(on, window, cx));
@@ -884,16 +1159,16 @@ impl MainWindow {
 
         let start_entity = entity.clone();
         rows.push(row(
-            "启动时锁定",
+            t(LockUiMsg::StartRowTitle),
             Some(if enabled {
-                "打开后，每次启动 ZeeTerm 都先显示锁屏页，解锁前看不到任何主机和终端，也不会自动恢复或连接；从托盘打开、再次双击图标看到的也是锁屏页。"
+                t(LockUiMsg::StartDescriptionEnabled)
             } else {
-                "需要先启用锁屏并设置密码，才能打开这一项。"
+                t(LockUiMsg::StartDescriptionDisabled)
             }),
             Switch::new("lock-on-start")
                 .checked(enabled && config.lock_on_start)
                 .disabled(!enabled)
-                .accessibility_label("启动时锁定")
+                .accessibility_label(t(LockUiMsg::StartRowTitle))
                 .on_click(move |checked: &bool, window, cx| {
                     let on = *checked;
                     start_entity.update(cx, |this, cx| this.set_lock_on_start(on, window, cx));
@@ -905,11 +1180,15 @@ impl MainWindow {
             let forgot = entity.clone();
             let busy = self.app_lock.os_busy;
             rows.push(row(
-                "忘记密码",
-                Some("密码无法找回。可以用 Windows Hello / PIN（没有就用 Windows 登录密码）验证你是这台电脑的用户，然后设一个新密码。"),
+                t(LockUiMsg::ForgotRowTitle),
+                Some(t(LockUiMsg::ForgotRowDescription)),
                 text_button(
                     "lock-forgot-reset",
-                    if busy { "验证中…" } else { "验证 Windows 账户并重置…" },
+                    if busy {
+                        t(LockUiMsg::ForgotBusy)
+                    } else {
+                        t(LockUiMsg::ForgotRowButton)
+                    },
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         forgot.update(cx, |this, cx| this.start_forgot_reset(window, cx));
@@ -922,8 +1201,8 @@ impl MainWindow {
 
         vec![card(
             "settings-lock",
-            "锁屏",
-            Some("锁屏密码和这些选项只保存在这台电脑上，不同步，也不进备份。"),
+            t(LockUiMsg::SectionTitle),
+            Some(t(LockUiMsg::SectionDescription)),
             tokens,
             rows,
         )]

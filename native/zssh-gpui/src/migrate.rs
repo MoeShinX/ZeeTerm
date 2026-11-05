@@ -37,7 +37,83 @@ use zssh_core::sync::zssh_import::{
     DetectEnv, MIGRATE_DISMISSED_KEY, ZsshImportError, ZsshSource, detect, read_zssh, source_at,
 };
 
+use crate::i18n::{Msg, t};
 use crate::sync::{ExclusiveKind, SyncInFlight, exclusive_busy_message};
+
+/// 迁移块的界面文案（本文件里的固定文案）。
+///
+/// 数据文件夹、备份文件路径、核心库返回的错误原文一律原样显示。
+#[derive(Clone, Copy, Debug)]
+enum MigrateMsg {
+    OwnFolder,
+    NoDatabase,
+    SaveFailedPrefix,
+    CreateDataDirFailedPrefix,
+    OpenDatabaseFailedPrefix,
+    ReadSyncDeviceIdFailedPrefix,
+    WrongBackupPassword,
+    ChooseBackupFile,
+    EnterBackupPassword,
+    BusyDetecting,
+    BusyReading,
+    BusyPreviewing,
+    BusyImporting,
+    BackgroundTaskFailedPrefix,
+    BackupPathPlaceholder,
+    BackupPasswordPlaceholder,
+}
+
+impl Msg for MigrateMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::OwnFolder => "这是 ZeeTerm 自己的数据文件夹，不是 Z-SSH 的",
+            Self::NoDatabase => {
+                "这个文件夹里没有 Z-SSH 的数据库（应该有 data.db，默认在 %APPDATA%\\Z-ssh）"
+            }
+            Self::SaveFailedPrefix => "保存失败：",
+            Self::CreateDataDirFailedPrefix => "创建数据目录失败：",
+            Self::OpenDatabaseFailedPrefix => "打开数据库失败：",
+            Self::ReadSyncDeviceIdFailedPrefix => "读取同步设备 ID 失败：",
+            Self::WrongBackupPassword => "密码不对（或者这不是 Z-SSH / ZeeTerm 导出的备份文件）",
+            Self::ChooseBackupFile => "请先选择 Z-SSH 导出的备份文件（.zsshbak）",
+            Self::EnterBackupPassword => "请输入导出这份备份时设的密码",
+            Self::BusyDetecting => "正在查找 Z-SSH 的数据…",
+            Self::BusyReading => "正在读取…",
+            Self::BusyPreviewing => "正在重新计算预览…",
+            Self::BusyImporting => "正在导入…",
+            Self::BackgroundTaskFailedPrefix => "启动后台任务失败：",
+            Self::BackupPathPlaceholder => "Z-SSH 导出的备份文件（.zsshbak）的路径",
+            Self::BackupPasswordPlaceholder => "导出这份备份时设的密码（不会保存）",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::OwnFolder => "This is ZeeTerm's own data folder, not a Z-SSH one",
+            Self::NoDatabase => {
+                "This folder has no Z-SSH database (expected data.db, normally under %APPDATA%\\Z-ssh)"
+            }
+            Self::SaveFailedPrefix => "Save failed: ",
+            Self::CreateDataDirFailedPrefix => "Could not create the data directory: ",
+            Self::OpenDatabaseFailedPrefix => "Could not open the database: ",
+            Self::ReadSyncDeviceIdFailedPrefix => "Could not read the sync device ID: ",
+            Self::WrongBackupPassword => {
+                "Incorrect password (or this is not a backup exported by Z-SSH / ZeeTerm)"
+            }
+            Self::ChooseBackupFile => "Select the backup file exported by Z-SSH (.zsshbak) first",
+            Self::EnterBackupPassword => "Enter the password used when this backup was exported",
+            Self::BusyDetecting => "Looking for Z-SSH data…",
+            Self::BusyReading => "Reading…",
+            Self::BusyPreviewing => "Recalculating the preview…",
+            Self::BusyImporting => "Importing…",
+            Self::BackgroundTaskFailedPrefix => "Could not start the background task: ",
+            Self::BackupPathPlaceholder => "Path to the backup file exported by Z-SSH (.zsshbak)",
+            Self::BackupPasswordPlaceholder => {
+                "Password used when this backup was exported (not saved)"
+            }
+        }
+    }
+}
 
 /// 后台事件轮询间隔。
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -102,11 +178,9 @@ pub(crate) fn env_for(
 /// 用户手动指定的文件夹：不是有效的 Z-SSH 数据、或就是 ZeeTerm 自己的数据目录都不收。
 pub fn pick_folder(dir: &Path) -> Result<ZsshSource, String> {
     if zssh_core::sync::zssh_import::same_dir(dir, &crate::settings::data_dir()) {
-        return Err("这是 ZeeTerm 自己的数据文件夹，不是 Z-SSH 的".to_owned());
+        return Err(t(MigrateMsg::OwnFolder).to_owned());
     }
-    source_at(dir).ok_or_else(|| {
-        "这个文件夹里没有 Z-SSH 的数据库（应该有 data.db，默认在 %APPDATA%\\Z-ssh）".to_owned()
-    })
+    source_at(dir).ok_or_else(|| t(MigrateMsg::NoDatabase).to_owned())
 }
 
 // ---- 欢迎页提示卡 ----
@@ -125,7 +199,7 @@ pub fn is_dismissed(db: &Database) -> bool {
 
 pub fn set_dismissed(db: &Database) -> Result<(), String> {
     db.setting_set(MIGRATE_DISMISSED_KEY, "true")
-        .map_err(|err| format!("保存失败：{err}"))
+        .map_err(|err| format!("{}{err}", t(MigrateMsg::SaveFailedPrefix)))
 }
 
 // ---- 读取 / 预览 / 导入（后台线程里跑）----
@@ -187,8 +261,10 @@ pub struct Loaded {
 }
 
 fn open_db(data_dir: &Path) -> Result<Database, String> {
-    std::fs::create_dir_all(data_dir).map_err(|err| format!("创建数据目录失败：{err}"))?;
-    Database::open(&data_dir.join("zssh.db")).map_err(|err| format!("打开数据库失败：{err}"))
+    std::fs::create_dir_all(data_dir)
+        .map_err(|err| format!("{}{err}", t(MigrateMsg::CreateDataDirFailedPrefix)))?;
+    Database::open(&data_dir.join("zssh.db"))
+        .map_err(|err| format!("{}{err}", t(MigrateMsg::OpenDatabaseFailedPrefix)))
 }
 
 /// 和备份页同一种引擎：同一个数据目录、同一份 known_hosts。
@@ -199,7 +275,7 @@ fn engine<'a>(
 ) -> Result<SyncEngine<'a>, String> {
     let device_id = db
         .sync_device_id()
-        .map_err(|err| format!("读取同步设备 ID 失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(MigrateMsg::ReadSyncDeviceIdFailedPrefix)))?;
     Ok(SyncEngine::new(
         db,
         sealer,
@@ -252,9 +328,7 @@ pub fn load_file(
     let bytes = zssh_core::sync::offline::read_offline_file(path).map_err(fail)?;
     let snapshot = SyncSnapshot::open(&bytes, password).map_err(|err| {
         fail(match err {
-            SyncError::WrongPassword => {
-                "密码不对（或者这不是 Z-SSH / ZeeTerm 导出的备份文件）".to_owned()
-            }
+            SyncError::WrongPassword => t(MigrateMsg::WrongBackupPassword).to_owned(),
             other => other.to_string(),
         })
     })?;
@@ -287,10 +361,10 @@ pub fn run_import(
 pub fn file_request(path: &str, password: &str) -> Result<(PathBuf, String), String> {
     let path = path.trim();
     if path.is_empty() {
-        return Err("请先选择 Z-SSH 导出的备份文件（.zsshbak）".to_owned());
+        return Err(t(MigrateMsg::ChooseBackupFile).to_owned());
     }
     if password.trim().is_empty() {
-        return Err("请输入导出这份备份时设的密码".to_owned());
+        return Err(t(MigrateMsg::EnterBackupPassword).to_owned());
     }
     Ok((PathBuf::from(path), password.to_owned()))
 }
@@ -315,10 +389,10 @@ pub enum Busy {
 impl Busy {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Detecting => "正在查找 Z-SSH 的数据…",
-            Self::Reading => "正在读取…",
-            Self::Previewing => "正在重新计算预览…",
-            Self::Importing => "正在导入…",
+            Self::Detecting => t(MigrateMsg::BusyDetecting),
+            Self::Reading => t(MigrateMsg::BusyReading),
+            Self::Previewing => t(MigrateMsg::BusyPreviewing),
+            Self::Importing => t(MigrateMsg::BusyImporting),
         }
     }
 }
@@ -475,12 +549,12 @@ pub struct MigrateDemo {
 impl MigrateDemo {
     pub fn new_embedded(window: &mut Window, cx: &mut Context<Self>, notice: NoticeFn) -> Self {
         let file_path = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Z-SSH 导出的备份文件（.zsshbak）的路径")
+            InputState::new(window, cx).placeholder(t(MigrateMsg::BackupPathPlaceholder))
         });
         let file_password = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
-                .placeholder("导出这份备份时设的密码（不会保存）")
+                .placeholder(t(MigrateMsg::BackupPasswordPlaceholder))
         });
         let (sender, events) = std::sync::mpsc::channel();
         let mut this = Self {
@@ -526,7 +600,7 @@ impl MigrateDemo {
             Err(err) => {
                 self.state.stage = Stage::Failed(Failure::other(
                     Origin::Direct,
-                    format!("启动后台任务失败：{err}"),
+                    format!("{}{err}", t(MigrateMsg::BackgroundTaskFailedPrefix)),
                 ));
             }
         }

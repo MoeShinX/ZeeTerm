@@ -24,7 +24,199 @@ use super::widgets::{
     switch_row, text_button,
 };
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::typography::{Role, Typo as _};
+
+/// 「凭据」管理页自己的界面文案。
+///
+/// 只放应用自己的固定文案；凭据名、路径、主机名、核心库的错误原文一律原样显示。
+#[derive(Clone, Copy, Debug)]
+enum KeychainMsg {
+    HostsPrefix,
+    ListSeparator,
+    OthersMiddle,
+    OthersSuffix,
+    BadgeStored,
+    BadgeNoSecret,
+    EmptyListTitle,
+    EmptyListDetail,
+    EmptyNewPassword,
+    NoMatches,
+    NameLabel,
+    KindLabel,
+    KeyPathLabel,
+    KeyBodyLabel,
+    PassphraseLabel,
+    PasswordLabel,
+    KeepExisting,
+    PasteKey,
+    EmptyPassphrase,
+    KindClearedPrefix,
+    KindClearedSuffix,
+    ClearPassphraseRow,
+    Browse,
+    EditTitle,
+    NewTitle,
+    DeleteButton,
+    ClearSecretButton,
+    CopyPublicKey,
+    ResetForm,
+    Save,
+    PanelTitle,
+    ItemCountSuffix,
+    NewPassword,
+    KeyFile,
+    ImportKey,
+    GenerateKey,
+    CantCheckHostsTitle,
+    ReadHostsFailedPrefix,
+    DeleteTitlePrefix,
+    DeleteTitleSuffix,
+    CantDeleteTitlePrefix,
+    CantDeleteTitleSuffix,
+    DeleteConfirmMessage,
+    Delete,
+    CantClearTitle,
+    ClearTitlePrefix,
+    ClearTitleSuffix,
+    ClearConfirmMessage,
+    Clear,
+    ClearedSecretPrefix,
+    ClearedSecretSuffix,
+    CopiedPublicKey,
+    ReadPublicKeyFailedPrefix,
+    KeyPathPlaceholder,
+}
+
+impl Msg for KeychainMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::HostsPrefix => " · 主机：",
+            Self::ListSeparator => "、",
+            Self::OthersMiddle => " 等 ",
+            Self::OthersSuffix => " 台",
+            Self::BadgeStored => "已保存",
+            Self::BadgeNoSecret => "无密码",
+            Self::EmptyListTitle => "暂无凭据",
+            Self::EmptyListDetail => "在主机属性里填密码时勾选「存成凭据」，也会出现在这里。",
+            Self::EmptyNewPassword => "新建密码",
+            Self::NoMatches => "没有匹配的凭据。",
+            Self::NameLabel => "名称",
+            Self::KindLabel => "类型",
+            Self::KeyPathLabel => "私钥文件路径",
+            Self::KeyBodyLabel => "私钥内容",
+            Self::PassphraseLabel => "私钥口令",
+            Self::PasswordLabel => "密码",
+            Self::KeepExisting => "留空表示不改",
+            Self::PasteKey => "粘贴私钥文本",
+            Self::EmptyPassphrase => "私钥没有口令就留空",
+            Self::KindClearedPrefix => "改了类型：原来保存的",
+            Self::KindClearedSuffix => "内容不会带过来，保存时会清掉；需要的话在下面重新填写。",
+            Self::ClearPassphraseRow => "清除已保存的口令（私钥没有口令时用）",
+            Self::Browse => "浏览…",
+            Self::EditTitle => "编辑凭据",
+            Self::NewTitle => "新建凭据",
+            Self::DeleteButton => "删除",
+            Self::ClearSecretButton => "清除秘密",
+            Self::CopyPublicKey => "复制公钥",
+            Self::ResetForm => "清空",
+            Self::Save => "保存",
+            Self::PanelTitle => "凭据",
+            Self::ItemCountSuffix => " 条",
+            Self::NewPassword => "新建密码",
+            Self::KeyFile => "私钥文件",
+            Self::ImportKey => "导入私钥",
+            Self::GenerateKey => "生成密钥",
+            Self::CantCheckHostsTitle => "不能确认有没有主机在用它",
+            Self::ReadHostsFailedPrefix => "读取主机失败：",
+            Self::DeleteTitlePrefix => "删除凭据「",
+            Self::DeleteTitleSuffix => "」？",
+            Self::CantDeleteTitlePrefix => "不能删除凭据「",
+            Self::CantDeleteTitleSuffix => "」",
+            Self::DeleteConfirmMessage => "凭据里保存的密码或私钥会一起删掉，不能恢复。",
+            Self::Delete => "删除",
+            Self::CantClearTitle => "不能清除",
+            Self::ClearTitlePrefix => "清除「",
+            Self::ClearTitleSuffix => "」已存的秘密？",
+            Self::ClearConfirmMessage => {
+                "只清掉保存的密码 / 口令，名称、类型、路径不动；不能恢复。"
+            }
+            Self::Clear => "清除",
+            Self::ClearedSecretPrefix => "已清除「",
+            Self::ClearedSecretSuffix => "」已存的秘密",
+            Self::CopiedPublicKey => "已复制公钥",
+            Self::ReadPublicKeyFailedPrefix => "读取公钥失败：",
+            Self::KeyPathPlaceholder => "私钥文件的完整路径",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::HostsPrefix => " · Hosts: ",
+            Self::ListSeparator => ", ",
+            Self::OthersMiddle => " and ",
+            Self::OthersSuffix => " in total",
+            Self::BadgeStored => "Saved",
+            Self::BadgeNoSecret => "No secret",
+            Self::EmptyListTitle => "No credentials yet",
+            Self::EmptyListDetail => {
+                "Passwords saved from host properties with \"Save as credential\" also appear here."
+            }
+            Self::EmptyNewPassword => "New Password",
+            Self::NoMatches => "No matching credentials.",
+            Self::NameLabel => "Name",
+            Self::KindLabel => "Type",
+            Self::KeyPathLabel => "Key file path",
+            Self::KeyBodyLabel => "Key contents",
+            Self::PassphraseLabel => "Key passphrase",
+            Self::PasswordLabel => "Password",
+            Self::KeepExisting => "Leave blank to keep",
+            Self::PasteKey => "Paste the private key",
+            Self::EmptyPassphrase => "Leave blank if the key has no passphrase",
+            Self::KindClearedPrefix => "Type changed: the previously stored ",
+            Self::KindClearedSuffix => {
+                " content will not be carried over and is cleared on save; enter it again below if needed."
+            }
+            Self::ClearPassphraseRow => "Clear the saved passphrase (for keys without one)",
+            Self::Browse => "Browse…",
+            Self::EditTitle => "Edit Credential",
+            Self::NewTitle => "New Credential",
+            Self::DeleteButton => "Delete",
+            Self::ClearSecretButton => "Clear Secret",
+            Self::CopyPublicKey => "Copy Public Key",
+            Self::ResetForm => "Clear",
+            Self::Save => "Save",
+            Self::PanelTitle => "Credentials",
+            Self::ItemCountSuffix => " items",
+            Self::NewPassword => "New Password",
+            Self::KeyFile => "Key File",
+            Self::ImportKey => "Import Key",
+            Self::GenerateKey => "Generate Key",
+            Self::CantCheckHostsTitle => "Cannot check whether any host uses it",
+            Self::ReadHostsFailedPrefix => "Could not read hosts: ",
+            Self::DeleteTitlePrefix => "Delete credential \"",
+            Self::DeleteTitleSuffix => "\"?",
+            Self::CantDeleteTitlePrefix => "Cannot delete credential \"",
+            Self::CantDeleteTitleSuffix => "\"",
+            Self::DeleteConfirmMessage => {
+                "The password or private key stored in the credential is deleted too and cannot be recovered."
+            }
+            Self::Delete => "Delete",
+            Self::CantClearTitle => "Cannot clear",
+            Self::ClearTitlePrefix => "Clear the secret stored in \"",
+            Self::ClearTitleSuffix => "\"?",
+            Self::ClearConfirmMessage => {
+                "Only the saved password / passphrase is cleared; name, type, and path stay. This cannot be undone."
+            }
+            Self::Clear => "Clear",
+            Self::ClearedSecretPrefix => "Cleared the secret stored in \"",
+            Self::ClearedSecretSuffix => "\"",
+            Self::CopiedPublicKey => "Public key copied",
+            Self::ReadPublicKeyFailedPrefix => "Could not read the public key: ",
+            Self::KeyPathPlaceholder => "Full path to the private key file",
+        }
+    }
+}
 
 /// 凭据面板的界面状态。
 pub struct KeychainUi {
@@ -51,7 +243,9 @@ impl KeychainUi {
             creating: false,
             name: cx.new(|cx| InputState::new(window, cx)),
             kind: IdentityKind::Password,
-            key_path: cx.new(|cx| InputState::new(window, cx).placeholder("私钥文件的完整路径")),
+            key_path: cx.new(|cx| {
+                InputState::new(window, cx).placeholder(t(KeychainMsg::KeyPathPlaceholder))
+            }),
             secret: cx.new(|cx| InputState::new(window, cx).masked(true)),
             passphrase: cx.new(|cx| InputState::new(window, cx).masked(true)),
             inline_key: cx.new(|cx| {
@@ -102,11 +296,20 @@ pub fn identity_detail(identity: &Identity, hosts: &[Host]) -> String {
             .collect();
         match users.as_slice() {
             [] => {}
-            [one, two] => detail.push_str(&format!(" · 主机：{one}、{two}")),
-            [one] => detail.push_str(&format!(" · 主机：{one}")),
-            [first, second, ..] => {
-                detail.push_str(&format!(" · 主机：{first}、{second} 等 {} 台", users.len()))
-            }
+            [one] => detail.push_str(&format!("{}{one}", t(KeychainMsg::HostsPrefix))),
+            [one, two] => detail.push_str(&format!(
+                "{}{one}{}{two}",
+                t(KeychainMsg::HostsPrefix),
+                t(KeychainMsg::ListSeparator)
+            )),
+            [first, second, ..] => detail.push_str(&format!(
+                "{}{first}{}{second}{}{}{}",
+                t(KeychainMsg::HostsPrefix),
+                t(KeychainMsg::ListSeparator),
+                t(KeychainMsg::OthersMiddle),
+                users.len(),
+                t(KeychainMsg::OthersSuffix)
+            )),
         }
     }
     detail
@@ -257,8 +460,8 @@ impl MainWindow {
             Ok(hosts) => crate::identities::hosts_using_identity(&hosts, id),
             Err(err) => {
                 self.modal = Some(Modal::Confirm(Confirm {
-                    title: "不能确认有没有主机在用它".to_owned(),
-                    message: format!("读取主机失败：{err}"),
+                    title: t(KeychainMsg::CantCheckHostsTitle).to_owned(),
+                    message: format!("{}{err}", t(KeychainMsg::ReadHostsFailedPrefix)),
                     confirm_label: None,
                     destructive: false,
                     action: ConfirmAction::DeleteIdentity(id),
@@ -270,16 +473,26 @@ impl MainWindow {
         let (text, can_delete) = crate::identities::identity_delete_prompt(&identity.name, &users);
         self.modal = Some(Modal::Confirm(Confirm {
             title: if can_delete {
-                format!("删除凭据「{}」？", identity.name)
+                format!(
+                    "{}{}{}",
+                    t(KeychainMsg::DeleteTitlePrefix),
+                    identity.name,
+                    t(KeychainMsg::DeleteTitleSuffix)
+                )
             } else {
-                format!("不能删除凭据「{}」", identity.name)
+                format!(
+                    "{}{}{}",
+                    t(KeychainMsg::CantDeleteTitlePrefix),
+                    identity.name,
+                    t(KeychainMsg::CantDeleteTitleSuffix)
+                )
             },
             message: if can_delete {
-                "凭据里保存的密码或私钥会一起删掉，不能恢复。".to_owned()
+                t(KeychainMsg::DeleteConfirmMessage).to_owned()
             } else {
                 text
             },
-            confirm_label: can_delete.then(|| "删除".to_owned()),
+            confirm_label: can_delete.then(|| t(KeychainMsg::Delete).to_owned()),
             destructive: true,
             action: ConfirmAction::DeleteIdentity(id),
         }));
@@ -318,7 +531,7 @@ impl MainWindow {
         };
         if let Err(message) = crate::identities::clear_secret_draft(&identity) {
             self.modal = Some(Modal::Confirm(Confirm {
-                title: "不能清除".to_owned(),
+                title: t(KeychainMsg::CantClearTitle).to_owned(),
                 message,
                 confirm_label: None,
                 destructive: false,
@@ -326,9 +539,14 @@ impl MainWindow {
             }));
         } else {
             self.modal = Some(Modal::Confirm(Confirm {
-                title: format!("清除「{}」已存的秘密？", identity.name),
-                message: "只清掉保存的密码 / 口令，名称、类型、路径不动；不能恢复。".to_owned(),
-                confirm_label: Some("清除".to_owned()),
+                title: format!(
+                    "{}{}{}",
+                    t(KeychainMsg::ClearTitlePrefix),
+                    identity.name,
+                    t(KeychainMsg::ClearTitleSuffix)
+                ),
+                message: t(KeychainMsg::ClearConfirmMessage).to_owned(),
+                confirm_label: Some(t(KeychainMsg::Clear).to_owned()),
                 destructive: true,
                 action: ConfirmAction::ClearIdentitySecret(id),
             }));
@@ -365,7 +583,12 @@ impl MainWindow {
         self.store.reload();
         match result {
             Ok(_) => self.notice_success(
-                &format!("已清除「{}」已存的秘密", identity.name),
+                &format!(
+                    "{}{}{}",
+                    t(KeychainMsg::ClearedSecretPrefix),
+                    identity.name,
+                    t(KeychainMsg::ClearedSecretSuffix)
+                ),
                 window,
                 cx,
             ),
@@ -384,9 +607,13 @@ impl MainWindow {
         {
             Ok((public_key, _)) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(public_key));
-                self.notice("已复制公钥", window, cx);
+                self.notice(t(KeychainMsg::CopiedPublicKey), window, cx);
             }
-            Err(err) => self.notice_error(&format!("读取公钥失败：{err}"), window, cx),
+            Err(err) => self.notice_error(
+                &format!("{}{err}", t(KeychainMsg::ReadPublicKeyFailedPrefix)),
+                window,
+                cx,
+            ),
         }
     }
 
@@ -476,9 +703,9 @@ impl MainWindow {
                 )
                 .child(badge(
                     if identity.has_secret {
-                        "已保存"
+                        t(KeychainMsg::BadgeStored)
                     } else {
-                        "无密码"
+                        t(KeychainMsg::BadgeNoSecret)
                     },
                     if identity.has_secret {
                         BadgeKind::Neutral
@@ -501,12 +728,12 @@ impl MainWindow {
             .gap_2()
             .when(count == 0 && !ui.editing(), |d| {
                 d.child(empty_state(
-                    "暂无凭据",
-                    Some("在主机属性里填密码时勾选「存成凭据」，也会出现在这里。"),
+                    t(KeychainMsg::EmptyListTitle),
+                    Some(t(KeychainMsg::EmptyListDetail)),
                     Some(
                         text_button(
                             "identity-empty-new",
-                            "新建密码",
+                            t(KeychainMsg::EmptyNewPassword),
                             ButtonLook::Primary,
                             act(&entity, |this, window, cx| this.keychain_new(window, cx)),
                         )
@@ -517,23 +744,33 @@ impl MainWindow {
                 ))
             })
             .when(count > 0 && shown == 0, |d| {
-                d.child(note("没有匹配的凭据。", tokens))
+                d.child(note(t(KeychainMsg::NoMatches), tokens))
             })
             .children(rows);
 
         let form = ui.editing().then(|| {
             let kind_choices: Vec<Choice> = KINDS
                 .iter()
-                .map(|(kind, label)| Choice::new(*label, *kind == ui.kind))
+                .map(|(kind, _)| Choice::new(kind_label(*kind), *kind == ui.kind))
                 .collect();
             let can_keep = can_keep_passphrase(selected_identity, ui.kind);
-            let secret_label = if ui.kind == IdentityKind::Password { "密码" } else { "私钥口令" };
+            let secret_label = if ui.kind == IdentityKind::Password {
+                t(KeychainMsg::PasswordLabel)
+            } else {
+                t(KeychainMsg::PassphraseLabel)
+            };
             let mut items: Vec<AnyElement> = vec![
-                field("名称", None, Input::new(&ui.name), tokens).into_any_element(),
+                field(
+                    t(KeychainMsg::NameLabel),
+                    None,
+                    Input::new(&ui.name),
+                    tokens,
+                )
+                .into_any_element(),
                 v_flex()
                     .gap_1p5()
                     .child(field(
-                        "类型",
+                        t(KeychainMsg::KindLabel),
                         None,
                         select(
                             "identity-kind",
@@ -551,8 +788,10 @@ impl MainWindow {
                     .when(kind_change_clears_secret(selected_identity, ui.kind), |d| {
                         d.child(note(
                             format!(
-                                "改了类型：原来保存的{}内容不会带过来，保存时会清掉；需要的话在下面重新填写。",
-                                selected_identity.map_or("", |i| kind_label(i.kind))
+                                "{}{}{}",
+                                t(KeychainMsg::KindClearedPrefix),
+                                selected_identity.map_or("", |i| kind_label(i.kind)),
+                                t(KeychainMsg::KindClearedSuffix)
                             ),
                             tokens,
                         ))
@@ -562,7 +801,7 @@ impl MainWindow {
             if ui.kind == IdentityKind::KeyFile {
                 items.push(
                     field(
-                        "私钥文件路径",
+                        t(KeychainMsg::KeyPathLabel),
                         None,
                         h_flex()
                             .w_full()
@@ -572,8 +811,10 @@ impl MainWindow {
                                 Button::new("identity-browse")
                                     .outline()
                                     .compact()
-                                    .label("浏览…")
-                                    .on_click(act(&entity, |this, window, cx| this.keychain_browse(window, cx))),
+                                    .label(t(KeychainMsg::Browse))
+                                    .on_click(act(&entity, |this, window, cx| {
+                                        this.keychain_browse(window, cx)
+                                    })),
                             ),
                         tokens,
                     )
@@ -584,8 +825,15 @@ impl MainWindow {
                 let has = selected_identity.is_some_and(|i| i.has_secret);
                 items.push(
                     field(
-                        "私钥内容",
-                        Some(if has { "留空表示不改" } else { "粘贴私钥文本" }.to_owned()),
+                        t(KeychainMsg::KeyBodyLabel),
+                        Some(
+                            if has {
+                                t(KeychainMsg::KeepExisting)
+                            } else {
+                                t(KeychainMsg::PasteKey)
+                            }
+                            .to_owned(),
+                        ),
                         Textarea::new(&ui.inline_key),
                         tokens,
                     )
@@ -595,22 +843,30 @@ impl MainWindow {
                     v_flex()
                         .gap_1p5()
                         .child(field(
-                            "私钥口令",
-                            Some(if can_keep { "留空表示不改" } else { "私钥没有口令就留空" }.to_owned()),
+                            t(KeychainMsg::PassphraseLabel),
+                            Some(
+                                if can_keep {
+                                    t(KeychainMsg::KeepExisting)
+                                } else {
+                                    t(KeychainMsg::EmptyPassphrase)
+                                }
+                                .to_owned(),
+                            ),
                             Input::new(&ui.passphrase),
                             tokens,
                         ))
                         .when(can_keep, |d| {
                             d.child(switch_row(
                                 "identity-clear-passphrase",
-                                "清除已保存的口令（私钥没有口令时用）",
+                                t(KeychainMsg::ClearPassphraseRow),
                                 None,
                                 ui.clear_passphrase,
                                 {
                                     let entity = entity.clone();
                                     move |_window, cx| {
                                         entity.update(cx, |this, cx| {
-                                            this.keychain.clear_passphrase = !this.keychain.clear_passphrase;
+                                            this.keychain.clear_passphrase =
+                                                !this.keychain.clear_passphrase;
                                             cx.notify();
                                         });
                                     }
@@ -625,7 +881,15 @@ impl MainWindow {
                 items.push(
                     field(
                         secret_label,
-                        Some(if selected_identity.is_some() { "留空表示不改" } else { "" }.to_owned()).filter(|s| !s.is_empty()),
+                        Some(
+                            if selected_identity.is_some() {
+                                t(KeychainMsg::KeepExisting)
+                            } else {
+                                ""
+                            }
+                            .to_owned(),
+                        )
+                        .filter(|s| !s.is_empty()),
                         Input::new(&ui.secret),
                         tokens,
                     )
@@ -633,7 +897,11 @@ impl MainWindow {
                 );
             }
             section(
-                if ui.selected.is_some() { "编辑凭据" } else { "新建凭据" },
+                if ui.selected.is_some() {
+                    t(KeychainMsg::EditTitle)
+                } else {
+                    t(KeychainMsg::NewTitle)
+                },
                 items,
                 tokens,
             )
@@ -651,7 +919,7 @@ impl MainWindow {
                 .when(ui.selected.is_some(), |d| {
                     d.child(div().mr_auto().child(text_button(
                         "identity-delete",
-                        "删除",
+                        t(KeychainMsg::DeleteButton),
                         ButtonLook::Ghost,
                         act(&entity, |this, _window, cx| this.keychain_ask_delete(cx)),
                     )))
@@ -660,7 +928,7 @@ impl MainWindow {
                 .when(clearable, |d| {
                     d.child(text_button(
                         "identity-clear-secret",
-                        "清除秘密",
+                        t(KeychainMsg::ClearSecretButton),
                         ButtonLook::Outline,
                         act(&entity, |this, _window, cx| {
                             this.keychain_ask_clear_secret(cx)
@@ -670,7 +938,7 @@ impl MainWindow {
                 .when(key_kind, |d| {
                     d.child(text_button(
                         "identity-copy-key",
-                        "复制公钥",
+                        t(KeychainMsg::CopyPublicKey),
                         ButtonLook::Outline,
                         act(&entity, |this, window, cx| {
                             this.keychain_copy_public_key(window, cx)
@@ -679,13 +947,13 @@ impl MainWindow {
                 })
                 .child(text_button(
                     "identity-clear",
-                    "清空",
+                    t(KeychainMsg::ResetForm),
                     ButtonLook::Outline,
                     act(&entity, |this, window, cx| this.keychain_reset(window, cx)),
                 ))
                 .child(text_button(
                     "identity-save",
-                    "保存",
+                    t(KeychainMsg::Save),
                     ButtonLook::Primary,
                     act(&entity, |this, window, cx| this.keychain_save(window, cx)),
                 ))
@@ -693,13 +961,13 @@ impl MainWindow {
         });
 
         PanelContent {
-            title: "凭据".into(),
-            subtitle: Some(format!("{count} 条").into()),
+            title: t(KeychainMsg::PanelTitle).into(),
+            subtitle: Some(format!("{count}{}", t(KeychainMsg::ItemCountSuffix)).into()),
             back: None,
             actions: vec![
                 text_button(
                     "identity-new",
-                    "新建密码",
+                    t(KeychainMsg::NewPassword),
                     ButtonLook::Outline,
                     act(&entity, |this, window, cx| this.keychain_new(window, cx)),
                 )
@@ -707,7 +975,7 @@ impl MainWindow {
                 .into_any_element(),
                 text_button(
                     "identity-new-keyfile",
-                    "私钥文件",
+                    t(KeychainMsg::KeyFile),
                     ButtonLook::Outline,
                     act(&entity, |this, window, cx| {
                         this.keychain_new_kind(IdentityKind::KeyFile, window, cx)
@@ -717,7 +985,7 @@ impl MainWindow {
                 .into_any_element(),
                 text_button(
                     "identity-new-inline",
-                    "导入私钥",
+                    t(KeychainMsg::ImportKey),
                     ButtonLook::Outline,
                     act(&entity, |this, window, cx| {
                         this.keychain_new_kind(IdentityKind::KeyInline, window, cx)
@@ -727,7 +995,7 @@ impl MainWindow {
                 .into_any_element(),
                 text_button(
                     "identity-generate",
-                    "生成密钥",
+                    t(KeychainMsg::GenerateKey),
                     ButtonLook::Outline,
                     act(&entity, |this, window, cx| {
                         this.open_generate_key_dialog(window, cx)

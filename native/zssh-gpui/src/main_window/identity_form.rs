@@ -4,7 +4,9 @@
 
 use zssh_core::model::{Identity, IdentityDraft, IdentityKind};
 
-/// 类型下拉里的四项，顺序同 0.2.14。
+use crate::i18n::{Msg, t};
+
+/// 类型下拉里的四项，顺序同 0.2.14。名字按当前语言取（见 [`kind_label`]）。
 pub const KINDS: [(IdentityKind, &str); 4] = [
     (IdentityKind::Password, "密码"),
     (IdentityKind::KeyFile, "私钥文件"),
@@ -12,11 +14,45 @@ pub const KINDS: [(IdentityKind, &str); 4] = [
     (IdentityKind::Agent, "ssh-agent"),
 ];
 
+/// 凭据类型的界面名字。
+#[derive(Clone, Copy, Debug)]
+enum IdentityKindMsg {
+    Password,
+    KeyFile,
+    KeyInline,
+    Agent,
+    NameRequired,
+}
+
+impl Msg for IdentityKindMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::Password => "密码",
+            Self::KeyFile => "私钥文件",
+            Self::KeyInline => "导入的私钥",
+            Self::Agent => "ssh-agent",
+            Self::NameRequired => "凭据名称不能为空",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::Password => "Password",
+            Self::KeyFile => "Key file",
+            Self::KeyInline => "Imported key",
+            Self::Agent => "ssh-agent",
+            Self::NameRequired => "Credential name cannot be empty",
+        }
+    }
+}
+
 pub fn kind_label(kind: IdentityKind) -> &'static str {
-    KINDS
-        .iter()
-        .find(|(item, _)| *item == kind)
-        .map_or("", |(_, label)| *label)
+    match kind {
+        IdentityKind::Password => t(IdentityKindMsg::Password),
+        IdentityKind::KeyFile => t(IdentityKindMsg::KeyFile),
+        IdentityKind::KeyInline => t(IdentityKindMsg::KeyInline),
+        IdentityKind::Agent => t(IdentityKindMsg::Agent),
+    }
 }
 
 /// 保存凭据时要传给存储层的 `secret`：`None` 表示不改，`Some("")` 表示清掉，其他是新内容。
@@ -85,7 +121,7 @@ pub fn build_draft(
     editing: Option<&Identity>,
 ) -> Result<IdentityDraft, String> {
     if input.name.trim().is_empty() {
-        return Err("凭据名称不能为空".to_owned());
+        return Err(t(IdentityKindMsg::NameRequired).to_owned());
     }
     Ok(IdentityDraft {
         id: editing.map(|item| item.id),

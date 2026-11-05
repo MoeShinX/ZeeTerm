@@ -25,12 +25,128 @@ use super::widgets::{
     ButtonLook, act, empty_state, error_note, field_with_error, note, switch_row, text_button,
 };
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::typography::{Role, Typo as _};
 
 type RowAction = Box<dyn Fn(&mut Window, &mut App)>;
 
 /// 保存后高亮多久。
 const FLASH_FOR: Duration = Duration::from_millis(1800);
+
+/// 快捷命令面板自己的界面文案。
+///
+/// 命令正文、分组名、颜色名和 `quick_commands` 里的校验提示属于用户数据或别的模块，原样显示。
+#[derive(Clone, Copy, Debug)]
+enum QuickPanelMsg {
+    SearchPlaceholder,
+    NamePlaceholder,
+    GroupPlaceholder,
+    DeleteTitlePrefix,
+    DeleteTitleSuffix,
+    Delete,
+    UpSearching,
+    Up,
+    DownSearching,
+    Down,
+    EditTip,
+    Ungrouped,
+    ListNote,
+    EmptyTitle,
+    NewCommand,
+    NoMatches,
+    PanelTitle,
+    CountSuffix,
+    NameLabel,
+    GroupLabel,
+    Optional,
+    ColorLabel,
+    CommandLabel,
+    MultiLineHint,
+    EnterRow,
+    EnterHint,
+    ShortcutHint,
+    Cancel,
+    Save,
+    DefaultColor,
+}
+
+impl Msg for QuickPanelMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::SearchPlaceholder => "搜索名称、命令或分组",
+            Self::NamePlaceholder => "例如：端口查看",
+            Self::GroupPlaceholder => "可选，例如：Debian、面板安装、测试脚本",
+            Self::DeleteTitlePrefix => "删除快捷命令「",
+            Self::DeleteTitleSuffix => "」？",
+            Self::Delete => "删除",
+            Self::UpSearching => "上移（搜索时不可用）",
+            Self::Up => "上移",
+            Self::DownSearching => "下移（搜索时不可用）",
+            Self::Down => "下移",
+            Self::EditTip => "编辑（双击这一行也可以）",
+            Self::Ungrouped => "未分组",
+            Self::ListNote => {
+                "显示在终端底部的命令栏里，同一分组内的顺序就是命令栏里的顺序（上移 / 下移只在分组内移动）。单击发到当前窗格，Ctrl+单击发到这个标签的所有分屏。双击这里的一条可以编辑。"
+            }
+            Self::EmptyTitle => "暂无快捷命令",
+            Self::NewCommand => "新建命令",
+            Self::NoMatches => "没有匹配的命令。",
+            Self::PanelTitle => "快捷命令",
+            Self::CountSuffix => " 条",
+            Self::NameLabel => "名称",
+            Self::GroupLabel => "分组",
+            Self::Optional => "可选",
+            Self::ColorLabel => "颜色",
+            Self::CommandLabel => "命令",
+            Self::MultiLineHint => "可以写多行，每一行按回车执行一次。",
+            Self::EnterRow => "发送后回车执行",
+            Self::EnterHint => "关掉就只填进去，改完自己按回车。",
+            Self::ShortcutHint => "Ctrl+Enter 保存，Esc 取消",
+            Self::Cancel => "取消",
+            Self::Save => "保存",
+            Self::DefaultColor => "默认",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::SearchPlaceholder => "Search name, command, or group",
+            Self::NamePlaceholder => "e.g. Port check",
+            Self::GroupPlaceholder => "Optional, e.g. Debian, panel setup, test scripts",
+            Self::DeleteTitlePrefix => "Delete snippet \"",
+            Self::DeleteTitleSuffix => "\"?",
+            Self::Delete => "Delete",
+            Self::UpSearching => "Move up (unavailable while searching)",
+            Self::Up => "Move up",
+            Self::DownSearching => "Move down (unavailable while searching)",
+            Self::Down => "Move down",
+            Self::EditTip => "Edit (or double-click this row)",
+            Self::Ungrouped => "Ungrouped",
+            Self::ListNote => {
+                "Shown in the command bar at the bottom of the terminal; the order within a group is the order in the bar (move up / down only within a group). Click to send to the current pane; Ctrl+click to send to all splits in this tab. Double-click a row here to edit it."
+            }
+            Self::EmptyTitle => "No snippets yet",
+            Self::NewCommand => "New Command",
+            Self::NoMatches => "No matching commands.",
+            Self::PanelTitle => "Snippets",
+            Self::CountSuffix => " items",
+            Self::NameLabel => "Name",
+            Self::GroupLabel => "Group",
+            Self::Optional => "Optional",
+            Self::ColorLabel => "Color",
+            Self::CommandLabel => "Command",
+            Self::MultiLineHint => "Multiple lines are allowed; each line runs when Enter is sent.",
+            Self::EnterRow => "Send Enter after the command",
+            Self::EnterHint => {
+                "When off, the command is only typed in; press Enter yourself after editing."
+            }
+            Self::ShortcutHint => "Ctrl+Enter to save, Esc to cancel",
+            Self::Cancel => "Cancel",
+            Self::Save => "Save",
+            Self::DefaultColor => "Default",
+        }
+    }
+}
 
 pub struct QuickUi {
     pub search: Entity<InputState>,
@@ -52,10 +168,14 @@ pub struct QuickUi {
 impl QuickUi {
     pub fn new(window: &mut Window, cx: &mut Context<MainWindow>) -> Self {
         Self {
-            search: cx.new(|cx| InputState::new(window, cx).placeholder("搜索名称、命令或分组")),
-            name: cx.new(|cx| InputState::new(window, cx).placeholder("例如：端口查看")),
+            search: cx.new(|cx| {
+                InputState::new(window, cx).placeholder(t(QuickPanelMsg::SearchPlaceholder))
+            }),
+            name: cx.new(|cx| {
+                InputState::new(window, cx).placeholder(t(QuickPanelMsg::NamePlaceholder))
+            }),
             group: cx.new(|cx| {
-                InputState::new(window, cx).placeholder("可选，例如：Debian、面板安装、测试脚本")
+                InputState::new(window, cx).placeholder(t(QuickPanelMsg::GroupPlaceholder))
             }),
             command: cx.new(|cx| {
                 TextareaState::new(window, cx)
@@ -230,9 +350,14 @@ impl MainWindow {
             return;
         };
         self.modal = Some(Modal::Confirm(Confirm {
-            title: format!("删除快捷命令「{}」？", command.name),
+            title: format!(
+                "{}{}{}",
+                t(QuickPanelMsg::DeleteTitlePrefix),
+                command.name,
+                t(QuickPanelMsg::DeleteTitleSuffix)
+            ),
             message: command.command.lines().next().unwrap_or("").to_owned(),
-            confirm_label: Some("删除".to_owned()),
+            confirm_label: Some(t(QuickPanelMsg::Delete).to_owned()),
             destructive: true,
             action: ConfirmAction::DeleteQuickCommand(id.to_owned()),
         }));
@@ -435,9 +560,9 @@ impl MainWindow {
                     "quick-up",
                     Icon::new(IconName::ArrowUp),
                     if searching {
-                        "上移（搜索时不可用）"
+                        t(QuickPanelMsg::UpSearching)
                     } else {
-                        "上移"
+                        t(QuickPanelMsg::Up)
                     },
                     can_up && !searching,
                     Box::new(move |window, cx| {
@@ -449,9 +574,9 @@ impl MainWindow {
                     "quick-down",
                     Icon::new(IconName::ArrowDown),
                     if searching {
-                        "下移（搜索时不可用）"
+                        t(QuickPanelMsg::DownSearching)
                     } else {
-                        "下移"
+                        t(QuickPanelMsg::Down)
                     },
                     can_down && !searching,
                     Box::new(move |window, cx| {
@@ -462,7 +587,7 @@ impl MainWindow {
                 .child(small_button(
                     "quick-edit",
                     Icon::new(crate::icons::Ico::Pencil),
-                    "编辑（双击这一行也可以）",
+                    t(QuickPanelMsg::EditTip),
                     true,
                     Box::new(move |window, cx| {
                         let id = edit_id.clone();
@@ -472,7 +597,7 @@ impl MainWindow {
                 .child(small_button(
                     "quick-delete",
                     Icon::new(crate::icons::Ico::Trash),
-                    "删除",
+                    t(QuickPanelMsg::Delete),
                     true,
                     Box::new(move |_window, cx| {
                         let id = del_id.clone();
@@ -502,7 +627,7 @@ impl MainWindow {
             let key = section.group.clone();
             let toggle = entity.clone();
             let title: SharedString = if section.group.is_empty() {
-                "未分组".into()
+                t(QuickPanelMsg::Ungrouped).into()
             } else {
                 section.group.clone().into()
             };
@@ -555,22 +680,18 @@ impl MainWindow {
         let list = v_flex()
             .w_full()
             .gap_1()
-            .child(note(
-                "显示在终端底部的命令栏里，同一分组内的顺序就是命令栏里的顺序（上移 / 下移只在分组内移动）。\
-                 单击发到当前窗格，Ctrl+单击发到这个标签的所有分屏。双击这里的一条可以编辑。",
-                tokens,
-            ))
+            .child(note(t(QuickPanelMsg::ListNote), tokens))
             .when(!commands.is_empty() && !on_page, |d| {
                 d.child(div().mt_1().child(Input::new(&self.quick_ui.search)))
             })
             .when(commands.is_empty(), |d| {
                 d.child(empty_state(
-                    "暂无快捷命令",
+                    t(QuickPanelMsg::EmptyTitle),
                     None,
                     Some(
                         text_button(
                             "quick-empty-new",
-                            "新建命令",
+                            t(QuickPanelMsg::NewCommand),
                             ButtonLook::Primary,
                             act(&entity, |this, window, cx| {
                                 this.open_quick_new(window, cx);
@@ -583,18 +704,18 @@ impl MainWindow {
                 ))
             })
             .when(!commands.is_empty() && sections.is_empty(), |d| {
-                d.child(note("没有匹配的命令。", tokens))
+                d.child(note(t(QuickPanelMsg::NoMatches), tokens))
             })
             .children(rows);
 
         PanelContent {
-            title: "快捷命令".into(),
-            subtitle: Some(format!("{} 条", commands.len()).into()),
+            title: t(QuickPanelMsg::PanelTitle).into(),
+            subtitle: Some(format!("{}{}", commands.len(), t(QuickPanelMsg::CountSuffix)).into()),
             back: None,
             actions: vec![
                 text_button(
                     "quick-new",
-                    "新建命令",
+                    t(QuickPanelMsg::NewCommand),
                     ButtonLook::Outline,
                     act(&entity, |this, window, cx| {
                         this.open_quick_new(window, cx);
@@ -644,7 +765,7 @@ impl MainWindow {
                     let pick = entity.clone();
                     let label = color
                         .and_then(quick_commands::color_style)
-                        .map_or("默认", |(label, _)| label);
+                        .map_or(t(QuickPanelMsg::DefaultColor), |(label, _)| label);
                     div()
                         .id(("quick-color", index))
                         .size(px(20.0))
@@ -716,7 +837,7 @@ impl MainWindow {
             .gap_3()
             .overflow_y_scroll()
             .child(field_with_error(
-                "名称",
+                t(QuickPanelMsg::NameLabel),
                 None,
                 Input::new(&ui.name),
                 error_of(Field::Name).as_deref(),
@@ -726,8 +847,8 @@ impl MainWindow {
                 v_flex()
                     .gap_1p5()
                     .child(field_with_error(
-                        "分组",
-                        Some("可选".to_owned()),
+                        t(QuickPanelMsg::GroupLabel),
+                        Some(t(QuickPanelMsg::Optional).to_owned()),
                         Input::new(&ui.group),
                         error_of(Field::Group).as_deref(),
                         tokens,
@@ -735,8 +856,8 @@ impl MainWindow {
                     .children(group_chips),
             )
             .child(super::widgets::field(
-                "颜色",
-                Some("可选".to_owned()),
+                t(QuickPanelMsg::ColorLabel),
+                Some(t(QuickPanelMsg::Optional).to_owned()),
                 color_row,
                 tokens,
             ))
@@ -744,7 +865,7 @@ impl MainWindow {
                 v_flex()
                     .gap_1p5()
                     .child(field_with_error(
-                        "命令",
+                        t(QuickPanelMsg::CommandLabel),
                         None,
                         Textarea::new(&ui.command)
                             .h(px(200.0))
@@ -756,13 +877,13 @@ impl MainWindow {
                         div()
                             .typo(Role::Caption, tokens)
                             .text_color(tokens.text_faint)
-                            .child("可以写多行，每一行按回车执行一次。"),
+                            .child(t(QuickPanelMsg::MultiLineHint)),
                     ),
             )
             .child(switch_row(
                 "quick-enter",
-                "发送后回车执行",
-                Some("关掉就只填进去，改完自己按回车。".to_owned()),
+                t(QuickPanelMsg::EnterRow),
+                Some(t(QuickPanelMsg::EnterHint).to_owned()),
                 dialog.enter,
                 {
                     let entity = entity.clone();
@@ -799,11 +920,11 @@ impl MainWindow {
                             .flex_1()
                             .typo(Role::Caption, tokens)
                             .text_color(tokens.text_faint)
-                            .child("Ctrl+Enter 保存，Esc 取消"),
+                            .child(t(QuickPanelMsg::ShortcutHint)),
                     )
                     .child(text_button(
                         "modal-cancel",
-                        "取消",
+                        t(QuickPanelMsg::Cancel),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             cancel.update(cx, |this, cx| this.close_modal(window, cx));
@@ -811,7 +932,7 @@ impl MainWindow {
                     ))
                     .child(text_button(
                         "modal-ok",
-                        "保存",
+                        t(QuickPanelMsg::Save),
                         ButtonLook::Primary,
                         move |_, window, cx| {
                             save.update(cx, |this, cx| this.confirm_modal(window, cx));

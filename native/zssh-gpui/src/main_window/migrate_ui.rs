@@ -15,6 +15,7 @@ use super::bridge::on_blocking;
 use super::nav::MainView;
 use super::widgets::{ButtonLook, act, text_button};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::migrate::{self, MigrateDemo, MigrateNotice};
 use crate::typography::{Role, Typo as _};
 
@@ -24,6 +25,40 @@ pub const TIP_TEXT: &str =
     "一键导入到 ZeeTerm：先预览，导入前会自动备份，不会改动 Z-SSH 里的数据。";
 /// 欢迎页按钮行下面的链接文字。
 pub const WELCOME_LINK: &str = "从 Z-SSH 导入";
+
+/// 迁移入口的界面文案（提示卡和欢迎页链接）。
+#[derive(Clone, Copy, Debug)]
+enum MigrateUiMsg {
+    TipTitle,
+    TipText,
+    WelcomeLink,
+    Import,
+    Dismiss,
+}
+
+impl Msg for MigrateUiMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::TipTitle => TIP_TITLE,
+            Self::TipText => TIP_TEXT,
+            Self::WelcomeLink => WELCOME_LINK,
+            Self::Import => "导入",
+            Self::Dismiss => "不再提示",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::TipTitle => "Z-SSH data detected",
+            Self::TipText => {
+                "Import it into ZeeTerm in one step: preview first; a backup is made before importing, and nothing in Z-SSH is changed."
+            }
+            Self::WelcomeLink => "Import from Z-SSH",
+            Self::Import => "Import",
+            Self::Dismiss => "Don't show again",
+        }
+    }
+}
 
 /// 欢迎页提示卡的状态。
 #[derive(Default)]
@@ -148,8 +183,16 @@ impl MainWindow {
                         v_flex()
                             .min_w_0()
                             .gap_0p5()
-                            .child(div().typo(Role::ItemName, tokens).child(TIP_TITLE))
-                            .child(div().typo(Role::Caption, tokens).child(TIP_TEXT)),
+                            .child(
+                                div()
+                                    .typo(Role::ItemName, tokens)
+                                    .child(t(MigrateUiMsg::TipTitle)),
+                            )
+                            .child(
+                                div()
+                                    .typo(Role::Caption, tokens)
+                                    .child(t(MigrateUiMsg::TipText)),
+                            ),
                     )
                     .child(
                         h_flex()
@@ -157,7 +200,7 @@ impl MainWindow {
                             .gap_2()
                             .child(text_button(
                                 "zssh-tip-import",
-                                "导入",
+                                t(MigrateUiMsg::Import),
                                 ButtonLook::Primary,
                                 act(&entity, |this, window, cx| {
                                     this.open_migrate(true, window, cx)
@@ -165,7 +208,7 @@ impl MainWindow {
                             ))
                             .child(text_button(
                                 "zssh-tip-dismiss",
-                                "不再提示",
+                                t(MigrateUiMsg::Dismiss),
                                 ButtonLook::Ghost,
                                 act(&entity, |this, _window, cx| this.dismiss_zssh_tip(cx)),
                             )),
@@ -187,7 +230,7 @@ impl MainWindow {
             .text_color(tokens.accent)
             .cursor_pointer()
             .hover(|style| style.opacity(0.75))
-            .child(WELCOME_LINK)
+            .child(t(MigrateUiMsg::WelcomeLink))
             .on_click(move |_, window, cx| {
                 entity.update(cx, |this, cx| {
                     // 本机找到了 Z-SSH 的数据就直接读出来预览；没找到只打开页面，那里能指定文件夹或选备份文件。

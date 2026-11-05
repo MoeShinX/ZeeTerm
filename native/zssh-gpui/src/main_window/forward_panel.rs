@@ -22,7 +22,179 @@ use super::widgets::{
 };
 use crate::app_theme::Tokens;
 use crate::forward_runtime::{self, ForwardStatus, Phase};
+use crate::i18n::{Msg, t};
 use crate::typography::{Role, Typo as _};
+
+/// 端口转发页自己的界面文案。
+///
+/// 主机名、规则名、地址、端口和 `forward_runtime` 的说明文字原样显示。
+#[derive(Clone, Copy, Debug)]
+enum ForwardPanelMsg {
+    BindPort,
+    TargetPort,
+    PortRangeSuffix,
+    BindHostRequired,
+    DestHostRequired,
+    RuleLocal,
+    RuleRemote,
+    ListeningPrefix,
+    ListeningMiddle,
+    CounterPrefix,
+    CounterConnections,
+    CounterTotal,
+    CounterSeparator,
+    NamePlaceholder,
+    DeleteTitlePrefix,
+    DeleteTitleSuffix,
+    DeleteMessage,
+    Delete,
+    Title,
+    TitleHostMiddle,
+    PhaseNotStarted,
+    PhaseStarting,
+    PhaseFailed,
+    PhaseRunning,
+    Stop,
+    Start,
+    EmptyTitle,
+    EmptyDetail,
+    NewForward,
+    NoMatches,
+    KindLocal,
+    KindRemote,
+    EditTitle,
+    NewTitle,
+    HostLabel,
+    NameLabel,
+    DirectionLabel,
+    BindHostLocal,
+    BindHostRemote,
+    PortLabel,
+    DestLocal,
+    DestRemote,
+    NonLoopbackWarning,
+    AutoStartRow,
+    AutoStartHint,
+    Cancel,
+    Save,
+    CountSuffix,
+}
+
+impl Msg for ForwardPanelMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::BindPort => "监听端口",
+            Self::TargetPort => "目标端口",
+            Self::PortRangeSuffix => "要在 1-65535 之间",
+            Self::BindHostRequired => "监听地址不能为空",
+            Self::DestHostRequired => "目标地址不能为空",
+            Self::RuleLocal => "本地转发",
+            Self::RuleRemote => "远程转发",
+            Self::ListeningPrefix => "服务器实际监听 ",
+            Self::ListeningMiddle => " · ",
+            Self::CounterPrefix => "当前 ",
+            Self::CounterConnections => " 条连接 · 共 ",
+            Self::CounterTotal => " 条 · ↑",
+            Self::CounterSeparator => " ↓",
+            Self::NamePlaceholder => "比如：数据库",
+            Self::DeleteTitlePrefix => "删除转发「",
+            Self::DeleteTitleSuffix => "」？",
+            Self::DeleteMessage => "规则会被删除；正开着的转发会先停掉。",
+            Self::Delete => "删除",
+            Self::Title => "端口转发",
+            Self::TitleHostMiddle => " · ",
+            Self::PhaseNotStarted => "未开启",
+            Self::PhaseStarting => "连接中…",
+            Self::PhaseFailed => "出错",
+            Self::PhaseRunning => "运行中",
+            Self::Stop => "停止",
+            Self::Start => "开启",
+            Self::EmptyTitle => "暂无端口转发规则",
+            Self::EmptyDetail => {
+                "本地转发把服务器那边的端口（比如数据库）映射到本机；远程转发反过来，让服务器能连到本机这边。"
+            }
+            Self::NewForward => "新建转发",
+            Self::NoMatches => "没有匹配的转发规则。",
+            Self::KindLocal => "本地转发（-L）：本机端口 → 服务器那边",
+            Self::KindRemote => "远程转发（-R）：服务器端口 → 本机这边",
+            Self::EditTitle => "修改转发",
+            Self::NewTitle => "新建转发",
+            Self::HostLabel => "主机",
+            Self::NameLabel => "名称",
+            Self::DirectionLabel => "方向",
+            Self::BindHostLocal => "本机监听地址",
+            Self::BindHostRemote => "服务器监听地址",
+            Self::PortLabel => "端口",
+            Self::DestLocal => "目标地址（从服务器看）",
+            Self::DestRemote => "目标地址（从本机看）",
+            Self::NonLoopbackWarning => {
+                "监听的不是回环地址：同一网络里的其他机器也能连上这个端口。"
+            }
+            Self::AutoStartRow => "连上这台主机时自动开启",
+            Self::AutoStartHint => "打开它的终端标签时一起开。",
+            Self::Cancel => "取消",
+            Self::Save => "保存",
+            Self::CountSuffix => " 条",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::BindPort => "Listen port",
+            Self::TargetPort => "Target port",
+            Self::PortRangeSuffix => " must be between 1 and 65535",
+            Self::BindHostRequired => "Listen address cannot be empty",
+            Self::DestHostRequired => "Target address cannot be empty",
+            Self::RuleLocal => "Local forwarding",
+            Self::RuleRemote => "Remote forwarding",
+            Self::ListeningPrefix => "Server actually listens on ",
+            Self::ListeningMiddle => " · ",
+            Self::CounterPrefix => "Active ",
+            Self::CounterConnections => " connections · ",
+            Self::CounterTotal => " total · ↑",
+            Self::CounterSeparator => " ↓",
+            Self::NamePlaceholder => "e.g. Database",
+            Self::DeleteTitlePrefix => "Delete forward \"",
+            Self::DeleteTitleSuffix => "\"?",
+            Self::DeleteMessage => "The rule will be deleted; a running forward is stopped first.",
+            Self::Delete => "Delete",
+            Self::Title => "Port Forwarding",
+            Self::TitleHostMiddle => " · ",
+            Self::PhaseNotStarted => "Not started",
+            Self::PhaseStarting => "Connecting…",
+            Self::PhaseFailed => "Error",
+            Self::PhaseRunning => "Running",
+            Self::Stop => "Stop",
+            Self::Start => "Start",
+            Self::EmptyTitle => "No port forwarding rules yet",
+            Self::EmptyDetail => {
+                "Local forwarding maps a port on the server side (such as a database) to this computer; remote forwarding does the opposite, letting the server reach this computer."
+            }
+            Self::NewForward => "New Forward",
+            Self::NoMatches => "No matching forwarding rules.",
+            Self::KindLocal => "Local forwarding (-L): local port → server side",
+            Self::KindRemote => "Remote forwarding (-R): server port → local side",
+            Self::EditTitle => "Edit Forward",
+            Self::NewTitle => "New Forward",
+            Self::HostLabel => "Host",
+            Self::NameLabel => "Name",
+            Self::DirectionLabel => "Direction",
+            Self::BindHostLocal => "Local listen address",
+            Self::BindHostRemote => "Server listen address",
+            Self::PortLabel => "Port",
+            Self::DestLocal => "Target address (from the server)",
+            Self::DestRemote => "Target address (from this computer)",
+            Self::NonLoopbackWarning => {
+                "The listen address is not loopback: other machines on the same network can also connect to this port."
+            }
+            Self::AutoStartRow => "Start automatically when connected to this host",
+            Self::AutoStartHint => "Starts together with its terminal tab.",
+            Self::Cancel => "Cancel",
+            Self::Save => "Save",
+            Self::CountSuffix => " rules",
+        }
+    }
+}
 
 /// 监听地址是不是回环（不是的话要提醒：同一网络里的其他机器也能连上）。
 pub fn is_loopback(host: &str) -> bool {
@@ -57,13 +229,13 @@ pub fn build_forward_draft(input: &ForwardInput<'_>) -> Result<PortForwardDraft,
             .ok()
             .filter(|port| (1..=65535).contains(port))
             .map(|port| port as u16)
-            .ok_or_else(|| format!("{what}要在 1-65535 之间"))
+            .ok_or_else(|| format!("{what}{}", t(ForwardPanelMsg::PortRangeSuffix)))
     };
     if input.bind_host.trim().is_empty() {
-        return Err("监听地址不能为空".to_owned());
+        return Err(t(ForwardPanelMsg::BindHostRequired).to_owned());
     }
     if input.dest_host.trim().is_empty() {
-        return Err("目标地址不能为空".to_owned());
+        return Err(t(ForwardPanelMsg::DestHostRequired).to_owned());
     }
     Ok(PortForwardDraft {
         id: input.id,
@@ -71,9 +243,9 @@ pub fn build_forward_draft(input: &ForwardInput<'_>) -> Result<PortForwardDraft,
         name: input.name.trim().to_owned(),
         kind: input.kind,
         bind_host: input.bind_host.trim().to_owned(),
-        bind_port: port(input.bind_port, "监听端口")?,
+        bind_port: port(input.bind_port, t(ForwardPanelMsg::BindPort))?,
         dest_host: input.dest_host.trim().to_owned(),
-        dest_port: port(input.dest_port, "目标端口")?,
+        dest_port: port(input.dest_port, t(ForwardPanelMsg::TargetPort))?,
         auto_start: input.auto_start,
     })
 }
@@ -82,8 +254,8 @@ pub fn build_forward_draft(input: &ForwardInput<'_>) -> Result<PortForwardDraft,
 pub fn rule_title(rule: &PortForward) -> String {
     if rule.name.is_empty() {
         match rule.kind {
-            ForwardKind::Local => "本地转发",
-            ForwardKind::Remote => "远程转发",
+            ForwardKind::Local => t(ForwardPanelMsg::RuleLocal),
+            ForwardKind::Remote => t(ForwardPanelMsg::RuleRemote),
         }
         .to_owned()
     } else {
@@ -97,13 +269,23 @@ pub fn counters_line(status: &ForwardStatus, bind_port: u16) -> String {
     let actual = status
         .listening_port
         .filter(|port| *port != u32::from(bind_port))
-        .map(|port| format!("服务器实际监听 {port} · "))
+        .map(|port| {
+            format!(
+                "{}{port}{}",
+                t(ForwardPanelMsg::ListeningPrefix),
+                t(ForwardPanelMsg::ListeningMiddle)
+            )
+        })
         .unwrap_or_default();
     format!(
-        "{actual}当前 {} 条连接 · 共 {} 条 · ↑{} ↓{}",
+        "{actual}{}{}{}{}{}{}{}{}",
+        t(ForwardPanelMsg::CounterPrefix),
         c.active,
+        t(ForwardPanelMsg::CounterConnections),
         c.total,
+        t(ForwardPanelMsg::CounterTotal),
         crate::format::size(c.bytes_sent),
+        t(ForwardPanelMsg::CounterSeparator),
         crate::format::size(c.bytes_received)
     )
 }
@@ -227,7 +409,7 @@ impl MainWindow {
             host_id,
             kind,
             auto_start,
-            name: make(values[0], "比如：数据库", window, cx),
+            name: make(values[0], t(ForwardPanelMsg::NamePlaceholder), window, cx),
             bind_host: make(values[1], "127.0.0.1", window, cx),
             bind_port: make(values[2], "", window, cx),
             dest_host: make(values[3], "localhost", window, cx),
@@ -317,9 +499,13 @@ impl MainWindow {
             .map(rule_title)
             .unwrap_or_default();
         self.modal = Some(Modal::Confirm(Confirm {
-            title: format!("删除转发「{title}」？"),
-            message: "规则会被删除；正开着的转发会先停掉。".to_owned(),
-            confirm_label: Some("删除".to_owned()),
+            title: format!(
+                "{}{title}{}",
+                t(ForwardPanelMsg::DeleteTitlePrefix),
+                t(ForwardPanelMsg::DeleteTitleSuffix)
+            ),
+            message: t(ForwardPanelMsg::DeleteMessage).to_owned(),
+            confirm_label: Some(t(ForwardPanelMsg::Delete).to_owned()),
             destructive: true,
             action: ConfirmAction::DeleteForward(id),
         }));
@@ -398,8 +584,13 @@ impl MainWindow {
             .filter(|rule| forward_matches(rule, &host_name(rule.host_id), &query))
             .collect();
         let title = match ui.host_filter {
-            None => "端口转发".to_owned(),
-            Some(id) => format!("端口转发 · {}", host_name(id)),
+            None => t(ForwardPanelMsg::Title).to_owned(),
+            Some(id) => format!(
+                "{}{}{}",
+                t(ForwardPanelMsg::Title),
+                t(ForwardPanelMsg::TitleHostMiddle),
+                host_name(id)
+            ),
         };
         // 端口转发只能建在 SSH 主机上：Telnet / 串口主机不出现在选择里。
         let ssh_hosts: Vec<&zssh_core::model::Host> = hosts
@@ -416,10 +607,20 @@ impl MainWindow {
                 let editing = ui.draft.as_ref().and_then(|d| d.id) == Some(rule.id);
                 let (edit_rule, toggle_rule) = ((*rule).clone(), (*rule).clone());
                 let badge_el = match status.map(|s| s.phase) {
-                    None => badge("未开启", BadgeKind::Outline, tokens),
-                    Some(Phase::Starting) => badge("连接中…", BadgeKind::Busy, tokens),
-                    Some(Phase::Failed) => badge("出错", BadgeKind::Bad, tokens),
-                    Some(Phase::Running) => badge("运行中", BadgeKind::Good, tokens),
+                    None => badge(
+                        t(ForwardPanelMsg::PhaseNotStarted),
+                        BadgeKind::Outline,
+                        tokens,
+                    ),
+                    Some(Phase::Starting) => {
+                        badge(t(ForwardPanelMsg::PhaseStarting), BadgeKind::Busy, tokens)
+                    }
+                    Some(Phase::Failed) => {
+                        badge(t(ForwardPanelMsg::PhaseFailed), BadgeKind::Bad, tokens)
+                    }
+                    Some(Phase::Running) => {
+                        badge(t(ForwardPanelMsg::PhaseRunning), BadgeKind::Good, tokens)
+                    }
                 };
                 v_flex()
                     .w_full()
@@ -491,7 +692,11 @@ impl MainWindow {
                                 } else {
                                     IconName::Play
                                 },
-                                if active { "停止" } else { "开启" },
+                                if active {
+                                    t(ForwardPanelMsg::Stop)
+                                } else {
+                                    t(ForwardPanelMsg::Start)
+                                },
                                 {
                                     let entity = entity.clone();
                                     move |_, _window, cx| {
@@ -524,14 +729,12 @@ impl MainWindow {
             .gap_1()
             .when(in_scope.is_empty() && ui.draft.is_none(), |d| {
                 d.child(empty_state(
-                    "暂无端口转发规则",
-                    Some(
-                        "本地转发把服务器那边的端口（比如数据库）映射到本机；远程转发反过来，让服务器能连到本机这边。",
-                    ),
+                    t(ForwardPanelMsg::EmptyTitle),
+                    Some(t(ForwardPanelMsg::EmptyDetail)),
                     can_create.then(|| {
                         text_button(
                             "forward-empty-new",
-                            "新建转发",
+                            t(ForwardPanelMsg::NewForward),
                             ButtonLook::Primary,
                             act(&entity, |this, window, cx| this.forward_new(window, cx)),
                         )
@@ -542,7 +745,7 @@ impl MainWindow {
                 ))
             })
             .when(!in_scope.is_empty() && rows.is_empty(), |d| {
-                d.child(note("没有匹配的转发规则。", tokens))
+                d.child(note(t(ForwardPanelMsg::NoMatches), tokens))
             })
             .children(rows);
 
@@ -550,17 +753,17 @@ impl MainWindow {
             let kinds = [ForwardKind::Local, ForwardKind::Remote];
             let kind_choices = vec![
                 Choice::new(
-                    "本地转发（-L）：本机端口 → 服务器那边",
+                    t(ForwardPanelMsg::KindLocal),
                     draft.kind == ForwardKind::Local,
                 ),
                 Choice::new(
-                    "远程转发（-R）：服务器端口 → 本机这边",
+                    t(ForwardPanelMsg::KindRemote),
                     draft.kind == ForwardKind::Remote,
                 ),
             ];
             let kind_label = match draft.kind {
-                ForwardKind::Local => "本地转发（-L）：本机端口 → 服务器那边",
-                ForwardKind::Remote => "远程转发（-R）：服务器端口 → 本机这边",
+                ForwardKind::Local => t(ForwardPanelMsg::KindLocal),
+                ForwardKind::Remote => t(ForwardPanelMsg::KindRemote),
             };
             let bind_text = draft.bind_host.read(cx).value().to_string();
             let host_ids: Vec<i64> = ssh_hosts.iter().map(|h| h.id).collect();
@@ -575,14 +778,14 @@ impl MainWindow {
                     div()
                         .typo(Role::GroupTitle, tokens)
                         .child(if draft.id.is_none() {
-                            "新建转发"
+                            t(ForwardPanelMsg::NewTitle)
                         } else {
-                            "修改转发"
+                            t(ForwardPanelMsg::EditTitle)
                         }),
                 )
                 .when(ui.host_filter.is_none(), |d| {
                     d.child(field(
-                        "主机",
+                        t(ForwardPanelMsg::HostLabel),
                         None,
                         select(
                             "forward-host",
@@ -600,9 +803,14 @@ impl MainWindow {
                         tokens,
                     ))
                 })
-                .child(field("名称", None, Input::new(&draft.name), tokens))
                 .child(field(
-                    "方向",
+                    t(ForwardPanelMsg::NameLabel),
+                    None,
+                    Input::new(&draft.name),
+                    tokens,
+                ))
+                .child(field(
+                    t(ForwardPanelMsg::DirectionLabel),
                     None,
                     select(
                         "forward-kind",
@@ -625,16 +833,16 @@ impl MainWindow {
                         .gap_2()
                         .child(div().flex_1().min_w_0().child(field(
                             if draft.kind == ForwardKind::Local {
-                                "本机监听地址"
+                                t(ForwardPanelMsg::BindHostLocal)
                             } else {
-                                "服务器监听地址"
+                                t(ForwardPanelMsg::BindHostRemote)
                             },
                             None,
                             Input::new(&draft.bind_host),
                             tokens,
                         )))
                         .child(div().w(::gpui::px(96.0)).flex_none().child(field(
-                            "端口",
+                            t(ForwardPanelMsg::PortLabel),
                             None,
                             Input::new(&draft.bind_port),
                             tokens,
@@ -646,16 +854,16 @@ impl MainWindow {
                         .gap_2()
                         .child(div().flex_1().min_w_0().child(field(
                             if draft.kind == ForwardKind::Local {
-                                "目标地址（从服务器看）"
+                                t(ForwardPanelMsg::DestLocal)
                             } else {
-                                "目标地址（从本机看）"
+                                t(ForwardPanelMsg::DestRemote)
                             },
                             None,
                             Input::new(&draft.dest_host),
                             tokens,
                         )))
                         .child(div().w(::gpui::px(96.0)).flex_none().child(field(
-                            "端口",
+                            t(ForwardPanelMsg::PortLabel),
                             None,
                             Input::new(&draft.dest_port),
                             tokens,
@@ -665,15 +873,15 @@ impl MainWindow {
                     !bind_text.trim().is_empty() && !is_loopback(&bind_text),
                     |d| {
                         d.child(error_note(
-                            "监听的不是回环地址：同一网络里的其他机器也能连上这个端口。",
+                            t(ForwardPanelMsg::NonLoopbackWarning),
                             tokens.danger,
                         ))
                     },
                 )
                 .child(switch_row(
                     "forward-auto-start",
-                    "连上这台主机时自动开启",
-                    Some("打开它的终端标签时一起开。".to_owned()),
+                    t(ForwardPanelMsg::AutoStartRow),
+                    Some(t(ForwardPanelMsg::AutoStartHint).to_owned()),
                     draft.auto_start,
                     {
                         let entity = entity.clone();
@@ -698,7 +906,7 @@ impl MainWindow {
                 .when(draft.id.is_some(), |d| {
                     d.child(div().mr_auto().child(text_button(
                         "forward-delete",
-                        "删除",
+                        t(ForwardPanelMsg::Delete),
                         ButtonLook::Ghost,
                         act(&entity, |this, _window, cx| this.forward_ask_delete(cx)),
                     )))
@@ -706,7 +914,7 @@ impl MainWindow {
                 .when(draft.id.is_none(), |d| d.child(div().mr_auto()))
                 .child(text_button(
                     "forward-cancel",
-                    "取消",
+                    t(ForwardPanelMsg::Cancel),
                     ButtonLook::Outline,
                     act(&entity, |this, _window, cx| {
                         this.forward_ui.draft = None;
@@ -715,7 +923,7 @@ impl MainWindow {
                 ))
                 .child(text_button(
                     "forward-save",
-                    "保存",
+                    t(ForwardPanelMsg::Save),
                     ButtonLook::Primary,
                     act(&entity, |this, window, cx| this.forward_save(window, cx)),
                 ))
@@ -724,13 +932,13 @@ impl MainWindow {
 
         PanelContent {
             title: title.into(),
-            subtitle: Some(format!("{} 条", visible.len()).into()),
+            subtitle: Some(format!("{}{}", visible.len(), t(ForwardPanelMsg::CountSuffix)).into()),
             back: None,
             actions: can_create
                 .then(|| {
                     text_button(
                         "forward-new",
-                        "新建转发",
+                        t(ForwardPanelMsg::NewForward),
                         ButtonLook::Outline,
                         act(&entity, |this, window, cx| this.forward_new(window, cx)),
                     )

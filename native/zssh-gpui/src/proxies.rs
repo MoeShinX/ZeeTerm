@@ -11,6 +11,161 @@ use zssh_core::model::{Host, Proxy, ProxyDraft, ProxyKind, ProxyMode};
 use zssh_core::store::Database;
 
 use crate::host_db::open_database;
+use crate::i18n::{Msg, t};
+
+/// 代理库窗口自己的界面文案。
+///
+/// 只放应用自己的固定文案；代理名、地址、用户名、错误原文一律原样显示；SOCKS5 / HTTP 是协议名，
+/// 不翻译。
+#[derive(Clone, Copy, Debug)]
+enum ProxiesMsg {
+    NoStoredPasswordPrefix,
+    NoStoredPasswordSuffix,
+    DeleteAgainPrefix,
+    InUsePrefix,
+    InUseCountStart,
+    InUseNameEnd,
+    InUseSuffix,
+    ListSeparator,
+    DefaultProxyWarning,
+    NamePlaceholder,
+    HostPlaceholder,
+    PortPlaceholder,
+    UsernamePlaceholder,
+    PasswordPlaceholder,
+    DbOpenFailed,
+    CountSuffix,
+    ReadFailedPrefix,
+    SavedPrefix,
+    DeletedPrefix,
+    ReadHostsCheckFailedPrefix,
+    SelectProxyFirst,
+    ClearAgainPrefix,
+    ClearAgainSuffix,
+    ClearedPrefix,
+    ClearedSuffix,
+    SecretStoredSuffix,
+    NameLabel,
+    HostLabel,
+    PortLabel,
+    UsernameLabel,
+    PasswordLabel,
+    KindLabel,
+    ConfirmClear,
+    ClearSecret,
+    Hint,
+    Title,
+    New,
+    Save,
+    Delete,
+    ConfirmDelete,
+}
+
+impl Msg for ProxiesMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::NoStoredPasswordPrefix => "「",
+            Self::NoStoredPasswordSuffix => "」没有存过密码",
+            Self::DeleteAgainPrefix => "再点一次「确认删除」才会删除 ",
+            Self::InUsePrefix => "还有 ",
+            Self::InUseCountStart => " 台主机在用代理「",
+            Self::InUseNameEnd => "」：",
+            Self::InUseSuffix => "。先把它们改成别的代理或直连，才能删除",
+            Self::ListSeparator => "、",
+            Self::DefaultProxyWarning => "；它是默认 SSH 代理，删除后默认改成不用代理",
+            Self::NamePlaceholder => "名称",
+            Self::HostPlaceholder => "代理地址",
+            Self::PortPlaceholder => "端口",
+            Self::UsernamePlaceholder => "用户名（可空）",
+            Self::PasswordPlaceholder => "密码（留空 = 不修改）",
+            Self::DbOpenFailed => "打开代理库失败（数据目录不可写？）",
+            Self::CountSuffix => " 个代理",
+            Self::ReadFailedPrefix => "读取代理失败：",
+            Self::SavedPrefix => "已保存 ",
+            Self::DeletedPrefix => "已删除 ",
+            Self::ReadHostsCheckFailedPrefix => "读取主机失败，没法确认有没有主机在用它：",
+            Self::SelectProxyFirst => "先在列表里选一个代理",
+            Self::ClearAgainPrefix => "再点一次「确认清除」才会清掉「",
+            Self::ClearAgainSuffix => "」已存的密码（不能恢复）",
+            Self::ClearedPrefix => "已清除「",
+            Self::ClearedSuffix => "」已存的密码",
+            Self::SecretStoredSuffix => " · 已存密码",
+            Self::NameLabel => "名称",
+            Self::HostLabel => "地址",
+            Self::PortLabel => "端口",
+            Self::UsernameLabel => "用户名",
+            Self::PasswordLabel => "密码",
+            Self::KindLabel => "类型",
+            Self::ConfirmClear => "确认清除",
+            Self::ClearSecret => "清除已存密码",
+            Self::Hint => {
+                "密码用 DPAPI 加密保存，窗口里不回显；留空表示不修改，要删掉请点「清除已存密码」。"
+            }
+            Self::Title => "代理库",
+            Self::New => "新建",
+            Self::Save => "保存",
+            Self::Delete => "删除",
+            Self::ConfirmDelete => "确认删除",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::NoStoredPasswordPrefix => "\"",
+            Self::NoStoredPasswordSuffix => "\" has no stored password",
+            Self::DeleteAgainPrefix => "Click \"Confirm Delete\" again to delete ",
+            Self::InUsePrefix => "",
+            Self::InUseCountStart => " host(s) use proxy \"",
+            Self::InUseNameEnd => "\": ",
+            Self::InUseSuffix => {
+                ". Change them to another proxy or direct connection before deleting"
+            }
+            Self::ListSeparator => ", ",
+            Self::DefaultProxyWarning => {
+                "; it is the default SSH proxy, and the default becomes no proxy after deletion"
+            }
+            Self::NamePlaceholder => "Name",
+            Self::HostPlaceholder => "Proxy address",
+            Self::PortPlaceholder => "Port",
+            Self::UsernamePlaceholder => "User name (optional)",
+            Self::PasswordPlaceholder => "Password (leave blank to keep)",
+            Self::DbOpenFailed => {
+                "Could not open the proxy library (is the data directory writable?)"
+            }
+            Self::CountSuffix => " proxies",
+            Self::ReadFailedPrefix => "Could not read proxies: ",
+            Self::SavedPrefix => "Saved ",
+            Self::DeletedPrefix => "Deleted ",
+            Self::ReadHostsCheckFailedPrefix => {
+                "Could not read hosts to check whether any host uses it: "
+            }
+            Self::SelectProxyFirst => "Select a proxy in the list first",
+            Self::ClearAgainPrefix => {
+                "Click \"Confirm Clear\" again to clear the stored password in \""
+            }
+            Self::ClearAgainSuffix => "\" (cannot be undone)",
+            Self::ClearedPrefix => "Cleared the stored password in \"",
+            Self::ClearedSuffix => "\"",
+            Self::SecretStoredSuffix => " · Password stored",
+            Self::NameLabel => "Name",
+            Self::HostLabel => "Address",
+            Self::PortLabel => "Port",
+            Self::UsernameLabel => "User name",
+            Self::PasswordLabel => "Password",
+            Self::KindLabel => "Type",
+            Self::ConfirmClear => "Confirm Clear",
+            Self::ClearSecret => "Clear Stored Password",
+            Self::Hint => {
+                "Passwords are encrypted with DPAPI and never shown in the window; leave blank to keep the current one, or click \"Clear Stored Password\" to remove it."
+            }
+            Self::Title => "Proxy Library",
+            Self::New => "New",
+            Self::Save => "Save",
+            Self::Delete => "Delete",
+            Self::ConfirmDelete => "Confirm Delete",
+        }
+    }
+}
 
 #[derive(Clone, Default, PartialEq, Eq)]
 struct FormValues {
@@ -64,7 +219,12 @@ fn draft_from(values: &FormValues, id: Option<i64>, kind: ProxyKind) -> ProxyDra
 /// 「清除已存密码」要提交的草稿：别的字段原样，密码给空串（= 清掉）。
 pub(crate) fn clear_secret_draft(proxy: &Proxy) -> Result<ProxyDraft, String> {
     if !proxy.has_secret {
-        return Err(format!("「{}」没有存过密码", proxy.name));
+        return Err(format!(
+            "{}{}{}",
+            t(ProxiesMsg::NoStoredPasswordPrefix),
+            proxy.name,
+            t(ProxiesMsg::NoStoredPasswordSuffix)
+        ));
     }
     Ok(ProxyDraft {
         id: Some(proxy.id),
@@ -97,16 +257,20 @@ pub(crate) fn proxy_delete_prompt(
     if !users.is_empty() {
         return (
             format!(
-                "还有 {} 台主机在用代理「{name}」：{}。先把它们改成别的代理或直连，才能删除",
+                "{}{}{}{name}{}{}{}",
+                t(ProxiesMsg::InUsePrefix),
                 users.len(),
-                users.join("、")
+                t(ProxiesMsg::InUseCountStart),
+                t(ProxiesMsg::InUseNameEnd),
+                users.join(t(ProxiesMsg::ListSeparator)),
+                t(ProxiesMsg::InUseSuffix)
             ),
             false,
         );
     }
-    let mut text = format!("再点一次「确认删除」才会删除 {name}");
+    let mut text = format!("{}{name}", t(ProxiesMsg::DeleteAgainPrefix));
     if is_default {
-        text.push_str("；它是默认 SSH 代理，删除后默认改成不用代理");
+        text.push_str(t(ProxiesMsg::DefaultProxyWarning));
     }
     (text, true)
 }
@@ -149,18 +313,18 @@ impl ProxiesDemo {
             }
         };
         let focus = cx.focus_handle();
-        let name = text_input(window, cx, "名称");
-        let host = text_input(window, cx, "代理地址");
+        let name = text_input(window, cx, t(ProxiesMsg::NamePlaceholder));
+        let host = text_input(window, cx, t(ProxiesMsg::HostPlaceholder));
         let port = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value("1080")
-                .placeholder("端口")
+                .placeholder(t(ProxiesMsg::PortPlaceholder))
         });
-        let user = text_input(window, cx, "用户名（可空）");
+        let user = text_input(window, cx, t(ProxiesMsg::UsernamePlaceholder));
         let secret = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
-                .placeholder("密码（留空 = 不修改）")
+                .placeholder(t(ProxiesMsg::PasswordPlaceholder))
         });
         let (_ime_focus, _ime_blur) = crate::ime::attach(cx, &focus, window, &ime_key);
         let mut this = Self {
@@ -182,7 +346,7 @@ impl ProxiesDemo {
             _ime_blur,
         };
         if this.db.is_none() {
-            this.status = "打开代理库失败（数据目录不可写？）".to_owned();
+            this.status = t(ProxiesMsg::DbOpenFailed).to_owned();
         }
         this.reload(cx);
         this
@@ -198,10 +362,10 @@ impl ProxiesDemo {
         };
         match db.proxy_list() {
             Ok(proxies) => {
-                self.status = format!("{} 个代理", proxies.len());
+                self.status = format!("{}{}", proxies.len(), t(ProxiesMsg::CountSuffix));
                 self.proxies = proxies;
             }
-            Err(err) => self.status = format!("读取代理失败：{err}"),
+            Err(err) => self.status = format!("{}{err}", t(ProxiesMsg::ReadFailedPrefix)),
         }
         cx.notify();
     }
@@ -253,7 +417,7 @@ impl ProxiesDemo {
                 self.kind = proxy.kind;
                 self.pending_delete = None;
                 self.pending_clear = None;
-                self.status = format!("已保存 {}", proxy.name);
+                self.status = format!("{}{}", t(ProxiesMsg::SavedPrefix), proxy.name);
                 self.reload(cx);
                 self.pending_form = Some(FormValues::from_proxy(&proxy));
             }
@@ -278,7 +442,7 @@ impl ProxiesDemo {
             let users = match db.host_list() {
                 Ok(hosts) => hosts_using_proxy(&hosts, id),
                 Err(err) => {
-                    self.status = format!("读取主机失败，没法确认有没有主机在用它：{err}");
+                    self.status = format!("{}{err}", t(ProxiesMsg::ReadHostsCheckFailedPrefix));
                     cx.notify();
                     return;
                 }
@@ -296,7 +460,7 @@ impl ProxiesDemo {
                 self.pending_delete = None;
                 self.pending_form = Some(FormValues::new());
                 self.reload(cx);
-                self.status = format!("已删除 {name}");
+                self.status = format!("{}{}", t(ProxiesMsg::DeletedPrefix), name);
             }
             Err(err) => {
                 self.status = err.to_string();
@@ -308,7 +472,7 @@ impl ProxiesDemo {
     /// 「清除已存密码」：点两次才真清（只清密码，地址、用户名不动）。
     fn clear_secret(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.selected else {
-            self.status = "先在列表里选一个代理".to_owned();
+            self.status = t(ProxiesMsg::SelectProxyFirst).to_owned();
             cx.notify();
             return;
         };
@@ -326,7 +490,11 @@ impl ProxiesDemo {
         let name = proxy.name.clone();
         if self.pending_clear != Some(id) {
             self.pending_clear = Some(id);
-            self.status = format!("再点一次「确认清除」才会清掉「{name}」已存的密码（不能恢复）");
+            self.status = format!(
+                "{}{name}{}",
+                t(ProxiesMsg::ClearAgainPrefix),
+                t(ProxiesMsg::ClearAgainSuffix)
+            );
             cx.notify();
             return;
         }
@@ -337,7 +505,11 @@ impl ProxiesDemo {
         match db.proxy_save(&draft) {
             Ok(_) => {
                 self.reload(cx);
-                self.status = format!("已清除「{name}」已存的密码");
+                self.status = format!(
+                    "{}{name}{}",
+                    t(ProxiesMsg::ClearedPrefix),
+                    t(ProxiesMsg::ClearedSuffix)
+                );
             }
             Err(err) => self.status = err.to_string(),
         }
@@ -375,7 +547,7 @@ impl ProxiesDemo {
                         proxy.host,
                         proxy.port,
                         if proxy.has_secret {
-                            " · 已存密码"
+                            t(ProxiesMsg::SecretStoredSuffix)
                         } else {
                             ""
                         }
@@ -391,24 +563,29 @@ impl ProxiesDemo {
         let http_entity = cx.entity();
         let clear_entity = cx.entity();
         let clear_label = if self.pending_clear.is_some() && self.pending_clear == self.selected {
-            "确认清除"
+            t(ProxiesMsg::ConfirmClear)
         } else {
-            "清除已存密码"
+            t(ProxiesMsg::ClearSecret)
         };
         v_flex()
             .flex_1()
             .p_4()
             .gap_2()
-            .child(field("名称", &self.name))
-            .child(field("地址", &self.host))
-            .child(field("端口", &self.port))
-            .child(field("用户名", &self.user))
-            .child(field("密码", &self.secret))
+            .child(field(t(ProxiesMsg::NameLabel), &self.name))
+            .child(field(t(ProxiesMsg::HostLabel), &self.host))
+            .child(field(t(ProxiesMsg::PortLabel), &self.port))
+            .child(field(t(ProxiesMsg::UsernameLabel), &self.user))
+            .child(field(t(ProxiesMsg::PasswordLabel), &self.secret))
             .child(
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().w(::gpui::px(56.0)).text_sm().child("类型"))
+                    .child(
+                        div()
+                            .w(::gpui::px(56.0))
+                            .text_sm()
+                            .child(t(ProxiesMsg::KindLabel)),
+                    )
                     .child(
                         Button::new("proxy-kind-socks")
                             .label("SOCKS5")
@@ -434,7 +611,7 @@ impl ProxiesDemo {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("密码用 DPAPI 加密保存，窗口里不回显；留空表示不修改，要删掉请点「清除已存密码」。"),
+                    .child(t(ProxiesMsg::Hint)),
             )
             .child(
                 h_flex().gap_2().items_center().child(
@@ -471,28 +648,28 @@ impl Render for ProxiesDemo {
             self.name = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(values.name)
-                    .placeholder("名称")
+                    .placeholder(t(ProxiesMsg::NamePlaceholder))
             });
             self.host = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(values.host)
-                    .placeholder("代理地址")
+                    .placeholder(t(ProxiesMsg::HostPlaceholder))
             });
             self.port = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(values.port)
-                    .placeholder("端口")
+                    .placeholder(t(ProxiesMsg::PortPlaceholder))
             });
             self.user = cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(values.user)
-                    .placeholder("用户名（可空）")
+                    .placeholder(t(ProxiesMsg::UsernamePlaceholder))
             });
             // 密码框每次都重建成空的：已存的密码不回显，也不会把上一个代理里敲的字带过来。
             self.secret = cx.new(|cx| {
                 InputState::new(window, cx)
                     .masked(true)
-                    .placeholder("密码（留空 = 不修改）")
+                    .placeholder(t(ProxiesMsg::PasswordPlaceholder))
             });
         }
 
@@ -510,17 +687,15 @@ impl Render for ProxiesDemo {
                     .px_2()
                     .gap_2()
                     .items_center()
-                    .child(div().text_lg().child("代理库"))
-                    .child(
-                        Button::new("proxy-new")
-                            .label("新建")
-                            .on_click(move |_, _, cx| {
-                                new_entity.update(cx, |this, cx| this.new_proxy(cx));
-                            }),
-                    )
+                    .child(div().text_lg().child(t(ProxiesMsg::Title)))
+                    .child(Button::new("proxy-new").label(t(ProxiesMsg::New)).on_click(
+                        move |_, _, cx| {
+                            new_entity.update(cx, |this, cx| this.new_proxy(cx));
+                        },
+                    ))
                     .child(
                         Button::new("proxy-save")
-                            .label("保存")
+                            .label(t(ProxiesMsg::Save))
                             .on_click(move |_, _, cx| {
                                 save_entity.update(cx, |this, cx| this.save(cx));
                             }),
@@ -531,9 +706,9 @@ impl Render for ProxiesDemo {
                                 if self.pending_delete.is_some()
                                     && self.pending_delete == self.selected
                                 {
-                                    "确认删除"
+                                    t(ProxiesMsg::ConfirmDelete)
                                 } else {
-                                    "删除"
+                                    t(ProxiesMsg::Delete)
                                 },
                             )
                             .on_click(move |_, _, cx| {

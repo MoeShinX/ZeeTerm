@@ -19,6 +19,7 @@ use super::widgets::{
     ButtonLook, Choice, error_note, field, note, select, switch_row, text_button,
 };
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::typography::{Role, Typo as _};
 
 /// 算法下拉里的三项：算法、名字、一句话说明。
@@ -40,11 +41,190 @@ pub const ALGORITHMS: [(KeyAlgorithm, &str, &str); 3] = [
     ),
 ];
 
+/// 生成 / 安装密钥对话框的界面文案。
+///
+/// 密钥内容、指纹、主机名、核心库的错误原文一律原样显示；算法名（Ed25519、ECDSA P-256、
+/// RSA 4096）是协议名，不翻译，只翻译括号里的注解和说明。
+#[derive(Clone, Copy, Debug)]
+enum KeyDialogMsg {
+    AlgorithmEd25519,
+    AlgorithmEd25519Hint,
+    AlgorithmEcdsa,
+    AlgorithmEcdsaHint,
+    AlgorithmRsa,
+    AlgorithmRsaHint,
+    DefaultKeyName,
+    NameRequired,
+    PassphraseMismatch,
+    InstallAddedPrefix,
+    InstallPresentPrefix,
+    InstallHostSuffix,
+    InstallSwitchedSuffix,
+    GeneratedTitle,
+    GenerateTitle,
+    GeneratedNote,
+    GenerateNote,
+    NameLabel,
+    AlgorithmLabel,
+    CommentLabel,
+    CommentHint,
+    PassphraseLabel,
+    Optional,
+    ConfirmLabel,
+    Cancel,
+    Done,
+    Generating,
+    Generate,
+    PublicKey,
+    CopyPublicKey,
+    CopiedPublicKey,
+    InstallTitlePrefix,
+    InstallTitleSuffix,
+    InstallNote,
+    KeyPickLabel,
+    NoKeys,
+    ChooseKey,
+    GenerateNew,
+    SwitchRow,
+    SwitchHint,
+    Installing,
+    Install,
+    GenerateFailedPrefix,
+    SwitchAuthFailedPrefix,
+    InstallFailedPrefix,
+}
+
+impl Msg for KeyDialogMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::AlgorithmEd25519 => ALGORITHMS[0].1,
+            Self::AlgorithmEd25519Hint => ALGORITHMS[0].2,
+            Self::AlgorithmEcdsa => ALGORITHMS[1].1,
+            Self::AlgorithmEcdsaHint => ALGORITHMS[1].2,
+            Self::AlgorithmRsa => ALGORITHMS[2].1,
+            Self::AlgorithmRsaHint => ALGORITHMS[2].2,
+            Self::DefaultKeyName => "我的密钥",
+            Self::NameRequired => "名称不能为空",
+            Self::PassphraseMismatch => "两次输入的口令不一样",
+            Self::InstallAddedPrefix => "公钥已装到「",
+            Self::InstallPresentPrefix => "公钥本来就在「",
+            Self::InstallHostSuffix => "」上",
+            Self::InstallSwitchedSuffix => "，这台主机改用密钥登录",
+            Self::GeneratedTitle => "密钥已生成",
+            Self::GenerateTitle => "生成 SSH 密钥",
+            Self::GeneratedNote => {
+                "私钥已经加密存进凭据库。把下面的公钥装到服务器上就能用这把密钥登录（主机右键「安装公钥」可以一键装）。"
+            }
+            Self::GenerateNote => {
+                "私钥存在本机凭据库里（Windows 数据保护加密），不会离开这台电脑，除非开了配置同步。"
+            }
+            Self::NameLabel => "名称",
+            Self::AlgorithmLabel => "算法",
+            Self::CommentLabel => "注释",
+            Self::CommentHint => "写在公钥末尾，方便在服务器上认出是哪把",
+            Self::PassphraseLabel => "口令",
+            Self::Optional => "可选",
+            Self::ConfirmLabel => "再输一次",
+            Self::Cancel => "取消",
+            Self::Done => "完成",
+            Self::Generating => "生成中…",
+            Self::Generate => "生成",
+            Self::PublicKey => "公钥",
+            Self::CopyPublicKey => "复制公钥",
+            Self::CopiedPublicKey => "已复制公钥",
+            Self::InstallTitlePrefix => "把公钥装到「",
+            Self::InstallTitleSuffix => "」",
+            Self::InstallNote => {
+                "用这台主机现在的登录方式连上，把公钥追加到 ~/.ssh/authorized_keys（已经有就不重复加）。"
+            }
+            Self::KeyPickLabel => "用哪把密钥",
+            Self::NoKeys => "凭据库里还没有私钥。",
+            Self::ChooseKey => "选择一把密钥",
+            Self::GenerateNew => "生成一把新密钥…",
+            Self::SwitchRow => "装好后这台主机改用密钥登录",
+            Self::SwitchHint => "认证方式改成私钥，凭据选这把。",
+            Self::Installing => "安装中…",
+            Self::Install => "安装",
+            Self::GenerateFailedPrefix => "生成失败：",
+            Self::SwitchAuthFailedPrefix => "公钥装好了，但没能改成密钥登录：",
+            Self::InstallFailedPrefix => "安装公钥失败：",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::AlgorithmEd25519 => "Ed25519 (recommended)",
+            Self::AlgorithmEd25519Hint => "Short and fast; current servers all support it",
+            Self::AlgorithmEcdsa => "ECDSA P-256",
+            Self::AlgorithmEcdsaHint => "Some devices or compliance policies only accept ECDSA",
+            Self::AlgorithmRsa => "RSA 4096",
+            Self::AlgorithmRsaHint => "Works with very old servers; generation takes a few seconds",
+            Self::DefaultKeyName => "My key",
+            Self::NameRequired => "Name cannot be empty",
+            Self::PassphraseMismatch => "The two passphrases do not match",
+            Self::InstallAddedPrefix => "Public key installed on \"",
+            Self::InstallPresentPrefix => "The public key was already on \"",
+            Self::InstallHostSuffix => "\"",
+            Self::InstallSwitchedSuffix => "; this host now signs in with the key",
+            Self::GeneratedTitle => "Key Generated",
+            Self::GenerateTitle => "Generate SSH Key",
+            Self::GeneratedNote => {
+                "The private key has been encrypted and stored in the credential library. Install the public key below on the server to sign in with it (right-click the host and choose \"Install Public Key\" for one-click installation)."
+            }
+            Self::GenerateNote => {
+                "The private key is stored in the local credential library (encrypted with Windows Data Protection) and never leaves this computer unless configuration sync is enabled."
+            }
+            Self::NameLabel => "Name",
+            Self::AlgorithmLabel => "Algorithm",
+            Self::CommentLabel => "Comment",
+            Self::CommentHint => "Appended to the public key so you can recognize it on the server",
+            Self::PassphraseLabel => "Passphrase",
+            Self::Optional => "Optional",
+            Self::ConfirmLabel => "Enter it again",
+            Self::Cancel => "Cancel",
+            Self::Done => "Done",
+            Self::Generating => "Generating…",
+            Self::Generate => "Generate",
+            Self::PublicKey => "Public key",
+            Self::CopyPublicKey => "Copy Public Key",
+            Self::CopiedPublicKey => "Public key copied",
+            Self::InstallTitlePrefix => "Install the public key on \"",
+            Self::InstallTitleSuffix => "\"",
+            Self::InstallNote => {
+                "Connect using this host's current sign-in method and append the public key to ~/.ssh/authorized_keys (it is not added twice)."
+            }
+            Self::KeyPickLabel => "Which key to use",
+            Self::NoKeys => "There are no private keys in the credential library yet.",
+            Self::ChooseKey => "Choose a key",
+            Self::GenerateNew => "Generate a New Key…",
+            Self::SwitchRow => "Switch this host to key sign-in after installing",
+            Self::SwitchHint => "Set authentication to the private key and select this credential.",
+            Self::Installing => "Installing…",
+            Self::Install => "Install",
+            Self::GenerateFailedPrefix => "Generation failed: ",
+            Self::SwitchAuthFailedPrefix => {
+                "The public key was installed, but switching to key sign-in failed: "
+            }
+            Self::InstallFailedPrefix => "Installing the public key failed: ",
+        }
+    }
+}
+
 pub fn algorithm_info(algorithm: KeyAlgorithm) -> (&'static str, &'static str) {
-    ALGORITHMS
-        .iter()
-        .find(|(item, _, _)| *item == algorithm)
-        .map_or(("", ""), |(_, label, hint)| (*label, *hint))
+    match algorithm {
+        KeyAlgorithm::Ed25519 => (
+            t(KeyDialogMsg::AlgorithmEd25519),
+            t(KeyDialogMsg::AlgorithmEd25519Hint),
+        ),
+        KeyAlgorithm::EcdsaP256 => (
+            t(KeyDialogMsg::AlgorithmEcdsa),
+            t(KeyDialogMsg::AlgorithmEcdsaHint),
+        ),
+        KeyAlgorithm::Rsa4096 => (
+            t(KeyDialogMsg::AlgorithmRsa),
+            t(KeyDialogMsg::AlgorithmRsaHint),
+        ),
+    }
 }
 
 /// 生成好的密钥：给用户看公钥和指纹。
@@ -71,7 +251,9 @@ pub struct GenerateKeyDialog {
 impl GenerateKeyDialog {
     pub fn new(window: &mut Window, cx: &mut Context<MainWindow>, nested: bool) -> Self {
         Self {
-            name: cx.new(|cx| InputState::new(window, cx).default_value("我的密钥")),
+            name: cx.new(|cx| {
+                InputState::new(window, cx).default_value(t(KeyDialogMsg::DefaultKeyName))
+            }),
             comment: cx.new(|cx| InputState::new(window, cx).default_value("z-ssh")),
             passphrase: cx.new(|cx| InputState::new(window, cx).masked(true)),
             confirm: cx.new(|cx| InputState::new(window, cx).masked(true)),
@@ -108,10 +290,10 @@ impl InstallKeyDialog {
 /// 检查「生成密钥」表单：名称不能为空、两次口令要一样。
 pub fn check_generate_input(name: &str, passphrase: &str, confirm: &str) -> Result<(), String> {
     if name.trim().is_empty() {
-        return Err("名称不能为空".to_owned());
+        return Err(t(KeyDialogMsg::NameRequired).to_owned());
     }
     if passphrase != confirm {
-        return Err("两次输入的口令不一样".to_owned());
+        return Err(t(KeyDialogMsg::PassphraseMismatch).to_owned());
     }
     Ok(())
 }
@@ -119,13 +301,14 @@ pub fn check_generate_input(name: &str, passphrase: &str, confirm: &str) -> Resu
 /// 安装结果的提示文字。
 pub fn install_message(outcome: InstallOutcome, host_name: &str, switched: bool) -> String {
     format!(
-        "{}「{host_name}」上{}",
+        "{}{host_name}{}{}",
         match outcome {
-            InstallOutcome::Added => "公钥已装到",
-            InstallOutcome::AlreadyPresent => "公钥本来就在",
+            InstallOutcome::Added => t(KeyDialogMsg::InstallAddedPrefix),
+            InstallOutcome::AlreadyPresent => t(KeyDialogMsg::InstallPresentPrefix),
         },
+        t(KeyDialogMsg::InstallHostSuffix),
         if switched {
-            "，这台主机改用密钥登录"
+            t(KeyDialogMsg::InstallSwitchedSuffix)
         } else {
             ""
         }
@@ -185,7 +368,7 @@ impl MainWindow {
             let passphrase = (!passphrase.is_empty()).then_some(passphrase.as_str());
             let identity = db
                 .identity_generate(name.trim(), algorithm, &comment, passphrase)
-                .map_err(|err| format!("生成失败：{err}"))?;
+                .map_err(|err| format!("{}{err}", t(KeyDialogMsg::GenerateFailedPrefix)))?;
             let (public_key, fingerprint) = db
                 .identity_public_key(identity.id)
                 .map_err(|err| err.to_string())?;
@@ -279,23 +462,25 @@ impl MainWindow {
         };
         let choices: Vec<Choice> = ALGORITHMS
             .iter()
-            .map(|(algorithm, label, _)| Choice::new(*label, *algorithm == dialog.algorithm))
+            .map(|(algorithm, _, _)| {
+                Choice::new(algorithm_info(*algorithm).0, *algorithm == dialog.algorithm)
+            })
             .collect();
         v_flex()
             .gap_4()
             .child(
                 v_flex()
                     .gap_1p5()
-                    .child(
-                        div()
-                            .typo(Role::GroupTitle, tokens)
-                            .child(if done { "密钥已生成" } else { "生成 SSH 密钥" }),
-                    )
+                    .child(div().typo(Role::GroupTitle, tokens).child(if done {
+                        t(KeyDialogMsg::GeneratedTitle)
+                    } else {
+                        t(KeyDialogMsg::GenerateTitle)
+                    }))
                     .child(note(
                         if done {
-                            "私钥已经加密存进凭据库。把下面的公钥装到服务器上就能用这把密钥登录（主机右键「安装公钥」可以一键装）。"
+                            t(KeyDialogMsg::GeneratedNote)
                         } else {
-                            "私钥存在本机凭据库里（Windows 数据保护加密），不会离开这台电脑，除非开了配置同步。"
+                            t(KeyDialogMsg::GenerateNote)
                         },
                         tokens,
                     )),
@@ -304,16 +489,21 @@ impl MainWindow {
                 Some(view) => self.public_key_box(&view.public_key, &view.fingerprint, tokens, cx),
                 None => v_flex()
                     .gap_3()
-                    .child(field("名称", None, Input::new(&dialog.name), tokens))
                     .child(field(
-                        "算法",
+                        t(KeyDialogMsg::NameLabel),
+                        None,
+                        Input::new(&dialog.name),
+                        tokens,
+                    ))
+                    .child(field(
+                        t(KeyDialogMsg::AlgorithmLabel),
                         Some(algo_hint.to_owned()),
                         select("keygen-algorithm", algo_label, choices, pick),
                         tokens,
                     ))
                     .child(field(
-                        "注释",
-                        Some("写在公钥末尾，方便在服务器上认出是哪把".to_owned()),
+                        t(KeyDialogMsg::CommentLabel),
+                        Some(t(KeyDialogMsg::CommentHint).to_owned()),
                         Input::new(&dialog.comment),
                         tokens,
                     ))
@@ -321,13 +511,13 @@ impl MainWindow {
                         h_flex()
                             .gap_2()
                             .child(div().flex_1().child(field(
-                                "口令",
-                                Some("可选".to_owned()),
+                                t(KeyDialogMsg::PassphraseLabel),
+                                Some(t(KeyDialogMsg::Optional).to_owned()),
                                 Input::new(&dialog.passphrase),
                                 tokens,
                             )))
                             .child(div().flex_1().child(field(
-                                "再输一次",
+                                t(KeyDialogMsg::ConfirmLabel),
                                 None,
                                 Input::new(&dialog.confirm),
                                 tokens,
@@ -348,7 +538,7 @@ impl MainWindow {
                     .when(!done, |d| {
                         d.child(text_button(
                             "modal-cancel",
-                            "取消",
+                            t(KeyDialogMsg::Cancel),
                             ButtonLook::Outline,
                             move |_, window, cx| {
                                 cancel.update(cx, |this, cx| this.cancel_generate(window, cx));
@@ -358,11 +548,11 @@ impl MainWindow {
                     .child(text_button(
                         "modal-ok",
                         if done {
-                            "完成"
+                            t(KeyDialogMsg::Done)
                         } else if dialog.running {
-                            "生成中…"
+                            t(KeyDialogMsg::Generating)
                         } else {
-                            "生成"
+                            t(KeyDialogMsg::Generate)
                         },
                         ButtonLook::Primary,
                         move |_, window, cx| {
@@ -402,7 +592,11 @@ impl MainWindow {
         let entity = cx.entity();
         v_flex()
             .gap_1p5()
-            .child(div().typo(Role::FieldLabel, tokens).child("公钥"))
+            .child(
+                div()
+                    .typo(Role::FieldLabel, tokens)
+                    .child(t(KeyDialogMsg::PublicKey)),
+            )
             .child(
                 div()
                     .w_full()
@@ -429,11 +623,13 @@ impl MainWindow {
                     )
                     .child(text_button(
                         "copy-public-key",
-                        "复制公钥",
+                        t(KeyDialogMsg::CopyPublicKey),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                            entity.update(cx, |this, cx| this.notice("已复制公钥", window, cx));
+                            entity.update(cx, |this, cx| {
+                                this.notice(t(KeyDialogMsg::CopiedPublicKey), window, cx)
+                            });
                         },
                     )),
             )
@@ -579,7 +775,7 @@ impl MainWindow {
                         Ok(_) => switched = true,
                         Err(err) => {
                             self.notice_error(
-                                &format!("公钥装好了，但没能改成密钥登录：{err}"),
+                                &format!("{}{err}", t(KeyDialogMsg::SwitchAuthFailedPrefix)),
                                 window,
                                 cx,
                             );
@@ -592,7 +788,7 @@ impl MainWindow {
             }
             Err(err) => {
                 if let Some(Modal::InstallKey(install)) = &mut self.modal {
-                    install.error = Some(format!("安装公钥失败：{err}"));
+                    install.error = Some(format!("{}{err}", t(KeyDialogMsg::InstallFailedPrefix)));
                 }
             }
         }
@@ -619,7 +815,10 @@ impl MainWindow {
         let current = dialog
             .key_id
             .and_then(|id| keys.iter().find(|(key, _)| *key == id))
-            .map_or_else(|| "选择一把密钥".to_owned(), |(_, name)| name.clone());
+            .map_or_else(
+                || t(KeyDialogMsg::ChooseKey).to_owned(),
+                |(_, name)| name.clone(),
+            );
         let choices: Vec<Choice> = keys
             .iter()
             .map(|(id, name)| Choice::new(name.clone(), Some(*id) == dialog.key_id))
@@ -653,26 +852,28 @@ impl MainWindow {
                     .child(
                         div()
                             .typo(Role::GroupTitle, tokens)
-                            .child(SharedString::from(format!("把公钥装到「{}」", dialog.host_name))),
+                            .child(SharedString::from(format!(
+                                "{}{}{}",
+                                t(KeyDialogMsg::InstallTitlePrefix),
+                                dialog.host_name,
+                                t(KeyDialogMsg::InstallTitleSuffix)
+                            ))),
                     )
-                    .child(note(
-                        "用这台主机现在的登录方式连上，把公钥追加到 ~/.ssh/authorized_keys（已经有就不重复加）。",
-                        tokens,
-                    )),
+                    .child(note(t(KeyDialogMsg::InstallNote), tokens)),
             )
             .child(field(
-                "用哪把密钥",
+                t(KeyDialogMsg::KeyPickLabel),
                 None,
                 v_flex()
                     .gap_2()
                     .child(if keys.is_empty() {
-                        note("凭据库里还没有私钥。", tokens).into_any_element()
+                        note(t(KeyDialogMsg::NoKeys), tokens).into_any_element()
                     } else {
                         select("install-key-pick", current, choices, pick).into_any_element()
                     })
                     .child(text_button(
                         "install-generate",
-                        "生成一把新密钥…",
+                        t(KeyDialogMsg::GenerateNew),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             new_key.update(cx, |this, cx| this.open_nested_generate(window, cx));
@@ -685,8 +886,8 @@ impl MainWindow {
             }))
             .child(switch_row(
                 "install-switch-auth",
-                "装好后这台主机改用密钥登录",
-                Some("认证方式改成私钥，凭据选这把。".to_owned()),
+                t(KeyDialogMsg::SwitchRow),
+                Some(t(KeyDialogMsg::SwitchHint).to_owned()),
                 dialog.switch_auth,
                 move |_window, cx| {
                     toggle.update(cx, |this, cx| {
@@ -710,7 +911,7 @@ impl MainWindow {
                     .justify_end()
                     .child(text_button(
                         "modal-cancel",
-                        "取消",
+                        t(KeyDialogMsg::Cancel),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             cancel.update(cx, |this, cx| this.close_modal(window, cx));
@@ -718,7 +919,11 @@ impl MainWindow {
                     ))
                     .child(text_button(
                         "modal-ok",
-                        if busy { "安装中…" } else { "安装" },
+                        if busy {
+                            t(KeyDialogMsg::Installing)
+                        } else {
+                            t(KeyDialogMsg::Install)
+                        },
                         ButtonLook::Primary,
                         move |_, window, cx| {
                             go.update(cx, |this, cx| this.submit_install_key(window, cx));
