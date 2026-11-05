@@ -281,7 +281,7 @@ async fn manual_write_asks_with_diff_and_flags_system_paths() {
     let ask = &requests[0];
     assert_eq!(ask.command, "write_file /etc/hosts");
     assert_eq!(ask.danger, crate::ai::safety::DangerLevel::Dangerous);
-    assert!(ask.reasons.iter().any(|r| r.contains("/etc")));
+    assert!(ask.reasons.iter().any(|r| r.text().contains("/etc")));
     let file = ask.file.as_ref().expect("确认卡片要带文件细节");
     assert_eq!(file.path, "/etc/hosts");
     assert!(!file.is_new);
@@ -866,7 +866,15 @@ async fn readonly_mode_asks_before_reading_sensitive_files_with_the_reason() {
     assert_eq!(requests.len(), 1);
     assert_eq!(
         requests[0].reasons,
-        vec!["读取敏感文件：/home/u/.ssh/id_rsa".to_owned()]
+        vec![crate::ai::reason::ApprovalReason::SensitiveRead {
+            path: "/home/u/.ssh/id_rsa".to_owned(),
+            exact: true,
+        }]
+    );
+    assert_eq!(
+        requests[0].reasons[0].text(),
+        "读取敏感文件：/home/u/.ssh/id_rsa",
+        "中文原文不变"
     );
     assert_eq!(requests[0].command, "read_file /home/u/.ssh/id_rsa");
     let entries = rig.audit.0.lock().unwrap().clone();
@@ -964,7 +972,7 @@ async fn manual_mode_asks_only_for_sensitive_reads() {
     assert!(requests.iter().all(|r| r
         .reasons
         .iter()
-        .any(|reason| reason.starts_with("读取敏感文件："))));
+        .any(|reason| reason.text().starts_with("读取敏感文件："))));
 }
 
 // ---------- 锁屏：文件工具（读和写）也要确认 ----------
@@ -1026,7 +1034,7 @@ async fn while_locked_file_tools_ask_even_in_full_access_mode_and_resume_after_u
     assert!(requests.iter().all(|r| r
         .reasons
         .iter()
-        .any(|reason| reason == crate::ai::bridge::LOCKED_REASON)));
+        .any(|reason| *reason == crate::ai::reason::ApprovalReason::Locked)));
     assert_eq!(rig.fs.get("/home/u/a.txt").unwrap(), b"hello\n", "没有写成");
 
     lock.locked.store(false, Ordering::SeqCst);
@@ -1060,6 +1068,13 @@ async fn locked_and_sensitive_reads_show_both_reasons_and_a_timeout_says_it_was_
     let requests = rig.approvals.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].reasons.len(), 2, "{:?}", requests[0].reasons);
-    assert!(requests[0].reasons[0].starts_with("读取敏感文件："));
-    assert_eq!(requests[0].reasons[1], crate::ai::bridge::LOCKED_REASON);
+    assert!(requests[0].reasons[0].text().starts_with("读取敏感文件："));
+    assert_eq!(
+        requests[0].reasons[1],
+        crate::ai::reason::ApprovalReason::Locked
+    );
+    assert_eq!(
+        requests[0].reasons[1].text(),
+        crate::ai::bridge::LOCKED_REASON
+    );
 }

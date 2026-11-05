@@ -118,7 +118,7 @@ fn commands_reading_sensitive_files_are_hit_with_the_path_shown() {
     let hit = cmd_hit("cat ~/.ssh/id_rsa").expect("命中");
     assert_eq!(hit.path, "~/.ssh/id_rsa");
     assert!(hit.exact);
-    assert_eq!(hit.reason(), "读取敏感文件：~/.ssh/id_rsa");
+    assert_eq!(hit.reason().text(), "读取敏感文件：~/.ssh/id_rsa");
 
     for command in [
         "base64 ~/.aws/credentials",
@@ -170,9 +170,9 @@ fn wildcards_and_variables_that_may_reach_a_sensitive_file_are_hit() {
     // 含通配符 / 变量、没法确定具体文件的，原因里要说明。
     let hit = cmd_hit("cat ~/.s*/*").expect("命中");
     assert!(!hit.exact);
-    assert!(hit.reason().contains("无法确定"), "{}", hit.reason());
+    assert!(hit.reason().text().contains("无法确定"), "{}", hit.reason());
     let exact = cmd_hit("cat ~/.ssh/id_rsa").expect("命中");
-    assert!(!exact.reason().contains("无法确定"));
+    assert!(!exact.reason().text().contains("无法确定"));
 }
 
 #[test]

@@ -412,7 +412,14 @@ impl AgentChatDemo {
                     .text_xs()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(cx.theme().danger)
-                    .child(request.reasons.join(t(ChatMsg::ReasonSeparator))),
+                    .child(
+                        request
+                            .reasons
+                            .iter()
+                            .map(super::reason::reason_text)
+                            .collect::<Vec<_>>()
+                            .join(t(ChatMsg::ReasonSeparator)),
+                    ),
             );
         }
         if let Some(command) = detail.command_text() {

@@ -30,6 +30,7 @@ use crate::ai::protocol::{
     METHOD_LIST_TARGETS, METHOD_READ_FILE, METHOD_READ_TERMINAL, METHOD_REMEMBER_HOST,
     METHOD_RUN_COMMAND, METHOD_STAT, METHOD_WRITE_FILE,
 };
+use crate::ai::reason::ApprovalReason;
 use crate::ai::safety::{assess, DangerLevel};
 use crate::ssh::{BoxFuture, ExecCapture, EXEC_MAX_STREAM_BYTES};
 use crate::store::audit::NewAiAudit;
@@ -123,7 +124,7 @@ pub struct ApprovalRequest {
     /// `run_command` 是命令全文；`write_file` 是 `write_file <路径>`（卡片上用 `file` 里的细节）。
     pub command: String,
     pub danger: DangerLevel,
-    pub reasons: Vec<String>,
+    pub reasons: Vec<ApprovalReason>,
     /// `write_file` 的细节（路径、差异）；`run_command` 为 `None`。
     pub file: Option<FileApproval>,
 }
@@ -395,8 +396,8 @@ pub trait ExecModeProvider: Send + Sync {
     }
 }
 
-/// 锁屏时确认卡上写的原因。
-pub const LOCKED_REASON: &str = "应用已锁屏：AI 要在服务器上做的事需要解锁后由你确认";
+/// 锁屏时确认卡上写的原因（中文原文；结构化的写法是 [`ApprovalReason::Locked`]）。
+pub use super::reason::LOCKED_REASON;
 
 /// 锁屏期间等审批超时的拒绝原因。
 const LOCKED_TIMEOUT_MESSAGE: &str = "锁屏期间超时，已按拒绝处理";
@@ -1375,7 +1376,12 @@ impl Bridge {
                     host_label: summary.host_label.clone(),
                     command: params.command.clone(),
                     danger: verdict.level,
-                    reasons: verdict.reasons.clone(),
+                    reasons: verdict
+                        .reasons
+                        .iter()
+                        .cloned()
+                        .map(ApprovalReason::text_only)
+                        .collect(),
                     file: None,
                 },
             )
@@ -1569,7 +1575,7 @@ impl Bridge {
         // 锁屏：任何模式（含全部放行）都要确认，原因写在卡片上。
         let locked = self.mode.force_confirm();
         if locked {
-            request.reasons.push(LOCKED_REASON.to_owned());
+            request.reasons.push(ApprovalReason::Locked);
         }
         let auto = !force_confirm
             && !locked
@@ -1653,7 +1659,7 @@ impl Bridge {
         tool: &str,
         key: &str,
         call_id: &str,
-        reasons: Vec<String>,
+        reasons: Vec<ApprovalReason>,
     ) -> Result<ExecDecision, (ExecDecision, String)> {
         if reasons.is_empty() && !self.mode.force_confirm() {
             return Ok(ExecDecision::Auto);

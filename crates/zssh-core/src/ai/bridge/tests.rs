@@ -871,10 +871,10 @@ async fn readonly_mode_asks_before_reading_sensitive_files() {
         let asked = h.approver.last().expect("审批请求");
         assert_eq!(asked.command, command);
         assert!(
-            asked
-                .reasons
-                .iter()
-                .any(|reason| reason.starts_with("读取敏感文件：") && reason.contains(shown)),
+            asked.reasons.iter().any(|reason| {
+                let text = reason.text();
+                text.starts_with("读取敏感文件：") && text.contains(shown)
+            }),
             "{command}：{:?}",
             asked.reasons
         );
@@ -907,7 +907,7 @@ async fn manual_mode_cards_say_when_a_command_reads_sensitive_files() {
         !plain
             .reasons
             .iter()
-            .any(|r| r.starts_with("读取敏感文件：")),
+            .any(|r| r.text().starts_with("读取敏感文件：")),
         "{:?}",
         plain.reasons
     );
@@ -922,10 +922,10 @@ async fn manual_mode_cards_say_when_a_command_reads_sensitive_files() {
     assert_eq!(h.approver.calls(), 2);
     let sensitive = h.approver.last().expect("审批请求");
     assert!(
-        sensitive
-            .reasons
-            .iter()
-            .any(|r| r.starts_with("读取敏感文件：") && r.contains("~/.ssh/id_rsa")),
+        sensitive.reasons.iter().any(|r| {
+            let text = r.text();
+            text.starts_with("读取敏感文件：") && text.contains("~/.ssh/id_rsa")
+        }),
         "{:?}",
         sensitive.reasons
     );
@@ -996,7 +996,7 @@ async fn while_locked_every_mode_asks_and_unlocking_restores_the_mode() {
         assert_eq!(h.approver.calls(), 1, "{mode:?} 锁屏时要问：{command}");
         let asked = h.approver.last().expect("审批请求");
         assert!(
-            asked.reasons.iter().any(|r| r == LOCKED_REASON),
+            asked.reasons.iter().any(|r| r.text() == LOCKED_REASON),
             "卡片上写明锁屏：{:?}",
             asked.reasons
         );

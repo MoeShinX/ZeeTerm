@@ -343,7 +343,9 @@ fn dangerous_commands_are_highlighted_by_the_bridge_danger_level() {
     let mut state = real_started();
     let mut request = approval_request("rm -rf /");
     request.danger = DangerLevel::Dangerous;
-    request.reasons = vec!["会删除根目录".to_owned()];
+    request.reasons = vec![zssh_core::ai::reason::ApprovalReason::text_only(
+        "会删除根目录",
+    )];
     assert!(state.approval_prompt(1, &request));
     assert!(state.approval_prompt(2, &approval_request("uptime")));
     let tools = &assistant(&state).tools;

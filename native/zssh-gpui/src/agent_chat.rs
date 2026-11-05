@@ -126,6 +126,7 @@ mod history_view;
 mod model;
 mod queue;
 mod queue_view;
+mod reason;
 mod session;
 mod state;
 mod text;

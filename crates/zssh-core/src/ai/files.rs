@@ -19,6 +19,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
 
+use crate::ai::reason::{ApprovalReason, SystemDirKind};
 use crate::sftp::edit::MAX_EDIT_BYTES;
 use crate::sftp::error::ReplaceState;
 use crate::sftp::{fs as sftp_fs, FileKind, SftpChannel, SftpError};
@@ -43,7 +44,7 @@ pub const DIFF_CONTEXT: usize = 3;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PathVerdict {
     pub dangerous: bool,
-    pub reasons: Vec<String>,
+    pub reasons: Vec<ApprovalReason>,
 }
 
 /// 把路径规范成绝对路径：`~` / `~/x` 换成家目录，相对路径接在家目录后面，
@@ -85,19 +86,19 @@ pub fn validate_path(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 系统目录：写进这些目录会影响系统本身。`(前缀, 说明)`，前缀按路径段匹配。
-const SYSTEM_DIRS: &[(&str, &str)] = &[
-    ("/etc", "系统配置目录 /etc"),
-    ("/boot", "引导目录 /boot"),
-    ("/usr", "系统程序目录 /usr"),
-    ("/bin", "系统程序目录 /bin"),
-    ("/sbin", "系统程序目录 /sbin"),
-    ("/dev", "设备目录 /dev"),
-    ("/proc", "内核接口目录 /proc"),
-    ("/sys", "内核接口目录 /sys"),
-    ("/var/spool/cron", "定时任务目录 /var/spool/cron"),
-    ("/var/lib/dpkg", "软件包数据库 /var/lib/dpkg"),
-    ("/var/lib/rpm", "软件包数据库 /var/lib/rpm"),
+/// 系统目录：写进这些目录会影响系统本身。`(前缀, 类别)`，前缀按路径段匹配。
+const SYSTEM_DIRS: &[(&str, SystemDirKind)] = &[
+    ("/etc", SystemDirKind::Config),
+    ("/boot", SystemDirKind::Boot),
+    ("/usr", SystemDirKind::Programs),
+    ("/bin", SystemDirKind::Programs),
+    ("/sbin", SystemDirKind::Programs),
+    ("/dev", SystemDirKind::Devices),
+    ("/proc", SystemDirKind::KernelInterface),
+    ("/sys", SystemDirKind::KernelInterface),
+    ("/var/spool/cron", SystemDirKind::CronSpool),
+    ("/var/lib/dpkg", SystemDirKind::PackageDb),
+    ("/var/lib/rpm", SystemDirKind::PackageDb),
 ];
 
 /// 判断一个**已经规范成绝对路径**的位置危险不危险。
@@ -108,19 +109,28 @@ pub fn assess_absolute_path(path: &str) -> PathVerdict {
     let mut reasons = Vec::new();
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
-    for (prefix, label) in SYSTEM_DIRS {
+    for (prefix, kind) in SYSTEM_DIRS {
         let prefix_segments: Vec<&str> = prefix.split('/').filter(|s| !s.is_empty()).collect();
         if segments.len() >= prefix_segments.len()
             && segments[..prefix_segments.len()] == prefix_segments[..]
         {
-            reasons.push(format!("写入系统路径：{label}"));
+            reasons.push(ApprovalReason::SystemPath {
+                kind: *kind,
+                dir: (*prefix).to_owned(),
+            });
             break;
         }
     }
     // /lib、/lib32、/lib64、/libx32：第一级以 lib 开头。
     if let Some(first) = segments.first() {
-        if first.starts_with("lib") && !reasons.iter().any(|r| r.contains("/lib")) {
-            reasons.push(format!("写入系统路径：系统库目录 /{first}"));
+        let lib_already = reasons
+            .iter()
+            .any(|r| matches!(r, ApprovalReason::SystemPath { dir, .. } if dir.contains("/lib")));
+        if first.starts_with("lib") && !lib_already {
+            reasons.push(ApprovalReason::SystemPath {
+                kind: SystemDirKind::Libraries,
+                dir: format!("/{first}"),
+            });
         }
     }
     // 远程登录凭据：任何用户的 authorized_keys。
@@ -128,17 +138,15 @@ pub fn assess_absolute_path(path: &str) -> PathVerdict {
         let name = segments[segments.len() - 1];
         let dir = segments[segments.len() - 2];
         if dir == ".ssh" && (name == "authorized_keys" || name == "authorized_keys2") {
-            reasons.push(
-                "写入 SSH 登录授权文件 authorized_keys（会改变谁能登录这台服务器）".to_owned(),
-            );
+            reasons.push(ApprovalReason::AuthorizedKeys);
         }
     }
     if let Some(name) = segments.last() {
         if name.contains("sudoers") {
-            reasons.push("写入 sudoers 提权配置".to_owned());
+            reasons.push(ApprovalReason::Sudoers);
         }
         if name.contains("crontab") {
-            reasons.push("写入 crontab 定时任务".to_owned());
+            reasons.push(ApprovalReason::Crontab);
         }
     }
     PathVerdict {
@@ -157,7 +165,7 @@ pub fn assess_path(raw: &str, home: Option<&str>) -> PathVerdict {
             if escapes {
                 PathVerdict {
                     dangerous: true,
-                    reasons: vec!["路径里有 ..，又无法确定起点，可能落在系统目录".to_owned()],
+                    reasons: vec![ApprovalReason::ParentEscape],
                 }
             } else {
                 PathVerdict {
@@ -1175,7 +1183,7 @@ pub async fn prepare_write(
                         danger,
                         PathVerdict {
                             dangerous: true,
-                            reasons: vec!["无法解析上级目录的真实路径（可能有符号链接）".to_owned()],
+                            reasons: vec![ApprovalReason::ParentUnresolved],
                         },
                     );
                 }
@@ -1676,7 +1684,12 @@ pub async fn execute_write_checked(
         retention_note,
         owner_change,
         dangerous: plan.danger.dangerous,
-        danger_reasons: plan.danger.reasons.clone(),
+        danger_reasons: plan
+            .danger
+            .reasons
+            .iter()
+            .map(ApprovalReason::text)
+            .collect(),
     })
 }
 

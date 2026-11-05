@@ -128,13 +128,11 @@ pub struct SensitiveHit {
 }
 
 impl SensitiveHit {
-    /// 确认卡片上写的原因。
-    pub fn reason(&self) -> String {
-        let path = clip(&self.path, 120);
-        if self.exact {
-            format!("读取敏感文件：{path}")
-        } else {
-            format!("读取敏感文件：{path}（含通配符或变量，无法确定具体文件，按敏感处理）")
+    /// 确认卡片上写的原因（结构化：界面按语言生成文案，路径过长会截断）。
+    pub fn reason(&self) -> crate::ai::reason::ApprovalReason {
+        crate::ai::reason::ApprovalReason::SensitiveRead {
+            path: clip(&self.path, 120),
+            exact: self.exact,
         }
     }
 }

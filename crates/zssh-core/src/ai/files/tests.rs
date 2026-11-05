@@ -438,7 +438,11 @@ async fn prepare_write_flags_system_paths_but_does_not_block() {
     .await
     .unwrap();
     assert!(plan.danger.dangerous);
-    assert!(plan.danger.reasons.iter().any(|r| r.contains("/etc")));
+    assert!(plan
+        .danger
+        .reasons
+        .iter()
+        .any(|r| r.text().contains("/etc")));
     assert_eq!(plan.diff.added, 1);
     assert_eq!(plan.old_mode, Some(0o644));
 }

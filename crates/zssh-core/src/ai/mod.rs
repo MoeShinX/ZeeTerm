@@ -15,6 +15,7 @@ pub mod lines;
 pub mod protocol;
 pub mod pty;
 pub mod readonly;
+pub mod reason;
 pub mod runs;
 pub mod safety;
 pub mod sensitive;

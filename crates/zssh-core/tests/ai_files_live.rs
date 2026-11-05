@@ -407,7 +407,7 @@ async fn file_tools_through_the_bridge_on_a_real_server() {
     let asked = approver.requests.lock().unwrap().last().cloned().unwrap();
     assert!(asked.danger == DangerLevel::Dangerous, "系统路径要标红");
     assert!(
-        asked.reasons.iter().any(|r| r.contains("/etc")),
+        asked.reasons.iter().any(|r| r.text().contains("/etc")),
         "{:?}",
         asked.reasons
     );
