@@ -421,6 +421,41 @@ impl<F: ByteFilter> SessionPump<F> {
         self.model.display_offset()
     }
 
+    /// 把 `old` 泵里的终端（屏幕 + 回滚缓冲）接过来，`old` 拿到这边原来的（通常是空的）。
+    /// 重连时用：连接、流控、过滤器、代次都是新的，终端内容沿用旧的。
+    pub fn adopt_terminal<G: ByteFilter>(&mut self, old: &mut SessionPump<G>) {
+        std::mem::swap(&mut self.model, &mut old.model);
+    }
+
+    /// 接新会话之前复位旧会话遗留的终端状态（备用屏幕、鼠标上报……），不清屏不清回滚。
+    pub fn reset_terminal_for_new_session(&mut self) {
+        self.model.reset_for_new_session();
+    }
+
+    /// 清屏：本地清掉屏幕和回滚，只留光标所在行在第一行。不向远端发任何东西。
+    pub fn clear_screen(&mut self) {
+        self.model.clear_keep_cursor_line();
+    }
+
+    /// 在屏幕和回滚里搜字面量，见 [`zssh_terminal::TerminalModel::search`]。
+    pub fn search(&self, query: &str, case_sensitive: bool) -> Vec<zssh_terminal::SearchMatch> {
+        self.model.search(query, case_sensitive)
+    }
+
+    /// 滚到网格行 `line` 可见（见 [`zssh_terminal::TerminalModel::scroll_to_line`]）。
+    pub fn scroll_to_line(&mut self, line: i32) {
+        self.model.scroll_to_line(line);
+    }
+
+    /// 文字内容的修订号（滚动不算）。
+    pub fn content_revision(&self) -> u64 {
+        self.model.content_revision()
+    }
+
+    pub fn alt_screen(&self) -> bool {
+        self.model.alt_screen()
+    }
+
     /// 可见区两点之间的文字，用于复制。
     pub fn selection_text(&self, start: (usize, usize), end: (usize, usize)) -> String {
         self.model.text_between(start, end)
@@ -613,6 +648,52 @@ mod tests {
         assert_eq!(pump.take_replies(), None);
         pump.on_data(9, b"\x1b[5n");
         assert_eq!(pump.take_replies().map(|r| r.generation), Some(9));
+    }
+
+    #[test]
+    fn a_new_pump_can_adopt_the_old_terminal_and_old_generation_data_stays_out() {
+        let mut old = pump(PassThrough);
+        old.on_data(7, b"old screen\r\n");
+        let mut fresh = SessionPump::new(
+            Size { rows: 10, cols: 40 },
+            1_000,
+            Arc::new(FlowGate::new()),
+            PassThrough,
+            8,
+        );
+        fresh.adopt_terminal(&mut old);
+        fresh.reset_terminal_for_new_session();
+        assert_eq!(fresh.snapshot().rows[0].text, "old screen");
+        // 新会话的数据接在后面；旧代次迟到的数据被丢弃，账本只记新会话的。
+        fresh.on_data(8, b"new\r\n");
+        assert!(!fresh.on_data(7, b"late\r\n").accepted);
+        let rows: Vec<_> = fresh
+            .snapshot()
+            .rows
+            .iter()
+            .map(|r| r.text.clone())
+            .collect();
+        assert_eq!(&rows[..2], ["old screen", "new"]);
+        assert!(fresh.ledger().is_balanced());
+        assert_eq!(fresh.ledger().raw, 5);
+        // 被换走的是空终端，不带旧内容。
+        assert_eq!(old.snapshot().rows[0].text, "");
+    }
+
+    #[test]
+    fn clear_screen_is_local_only_and_keeps_the_cursor_line() {
+        let mut pump = pump(PassThrough);
+        for i in 0..30 {
+            pump.on_data(7, format!("line{i}\r\n").as_bytes());
+        }
+        pump.on_data(7, b"$ ");
+        assert!(pump.history_size() > 0);
+        pump.clear_screen();
+        assert_eq!(pump.history_size(), 0);
+        assert_eq!(pump.snapshot().rows[0].text, "$");
+        assert_eq!(pump.take_replies(), None, "清屏不向远端发任何东西");
+        // 账本没有因为清屏变化：它只是本地操作。
+        assert!(pump.ledger().is_balanced());
     }
 
     #[test]
