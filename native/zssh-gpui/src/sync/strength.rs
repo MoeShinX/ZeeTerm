@@ -1,6 +1,37 @@
 //! 主密码强度条的评分（0.2.14 `state/syncModel.ts` 的 `passwordStrength`）：
 //! 只看长度和字符种类，是提醒不是门槛（门槛是核心的最短长度）。
 
+use crate::i18n::{Msg, t};
+
+/// 强度条上的文字（四个档位）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyncStrengthMsg {
+    TooWeak,
+    Weak,
+    Fair,
+    Strong,
+}
+
+impl Msg for SyncStrengthMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::TooWeak => "太弱",
+            Self::Weak => "弱",
+            Self::Fair => "一般",
+            Self::Strong => "强",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::TooWeak => "Too weak",
+            Self::Weak => "Weak",
+            Self::Fair => "Fair",
+            Self::Strong => "Strong",
+        }
+    }
+}
+
 /// 评分和文字。`score`：0 空 · 1 太弱 · 2 弱 · 3 一般 · 4 强。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Strength {
@@ -29,24 +60,24 @@ pub fn password_strength(password: &str) -> Strength {
     if length < 8 {
         return Strength {
             score: 1,
-            label: "太弱",
+            label: t(SyncStrengthMsg::TooWeak),
         };
     }
     if length >= 16 || (length >= 12 && kinds >= 3) {
         return Strength {
             score: 4,
-            label: "强",
+            label: t(SyncStrengthMsg::Strong),
         };
     }
     if length >= 12 || kinds >= 3 {
         return Strength {
             score: 3,
-            label: "一般",
+            label: t(SyncStrengthMsg::Fair),
         };
     }
     Strength {
         score: 2,
-        label: "弱",
+        label: t(SyncStrengthMsg::Weak),
     }
 }
 

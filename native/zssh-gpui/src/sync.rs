@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::armed::ArmedConfirm;
+use crate::i18n::{Msg, t};
 use ::gpui::{
     App, FocusHandle, ScrollHandle, Subscription, Task, Window, WindowBounds, WindowOptions,
 };
@@ -40,7 +41,7 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::*;
 use tokio::sync::Notify;
 use zssh_core::store::Database;
-use zssh_core::sync::apply::ApplyReport;
+use zssh_core::sync::apply::{ApplyReport, ChangeCounts};
 use zssh_core::sync::conflicts::{self, ConflictView};
 use zssh_core::sync::engine::{SyncEngine, SyncReport, SyncStatus};
 use zssh_core::sync::error::SyncError;
@@ -65,53 +66,586 @@ static NEXT_SYNC: AtomicU64 = AtomicU64::new(1);
 /// 后台事件轮询间隔。
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// 已经保存过密码时的占位提示；任务卡要求原文显示。
-const PASSWORD_SAVED: &str = "已保存（留空保持不变）";
+/// 同步设置（`sync.rs`）自己的界面文案：占位提示、状态行、确认提示、校验错误前缀。
+///
+/// 只放应用自己的固定文案；存储连接信息、路径、账号名、Gist ID、Gist 名称和核心库的错误原文
+/// 属于远端 / 用户数据，原样拼在本地化前缀后面，不经过这里。带参数的句子保留 `format!`，
+/// 这里只提供固定片段。`webdav` / `s3` / `github` / `onedrive` 这些协议键不进这张表。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SyncMsg {
+    // ---- 占位提示 ----
+    PasswordSaved,
+    PasswordEmpty,
+    S3SecretEmpty,
+    GithubTokenEmpty,
+    MasterPasswordPlaceholder,
+    MasterPasswordConfirmPlaceholder,
+    RememberSaved,
+    RememberPending,
+    RememberClearPending,
+    RememberOff,
+    MasterPasswordRemembered,
+    MasterPasswordForgotten,
+    WebdavUrlPlaceholder,
+    SyncSubdirPlaceholder,
+    UsernamePlaceholder,
+    S3EndpointPlaceholder,
+    S3RegionPlaceholder,
+    S3BucketPlaceholder,
+    S3PrefixPlaceholder,
+    GithubApiPlaceholder,
+    GithubGistPlaceholder,
+    OnedriveClientIdPlaceholder,
+    // ---- 状态行 ----
+    OneDriveSavedByLogin,
+    SavedSettingsPrefix,
+    SavedSettingsSuffix,
+    TestingConnection,
+    WaitingForBrowser,
+    CancellingLogin,
+    SignedInOneDrive,
+    SignedInAsPrefix,
+    NotSignedInOneDrive,
+    OneDriveNotSignedIn,
+    SyncCompletedRememberFailedPrefix,
+    SyncCompletedClearFailedPrefix,
+    BaselineResetConfirm,
+    BaselineResetDone,
+    ClearConfirm,
+    ClearedSettings,
+    ClearedSettingsButPasswordFailedPrefix,
+    LogoutConfirm,
+    LoggedOutOneDrive,
+    // ---- 任务启动失败（前缀，后面接错误原文） ----
+    StartTestFailedPrefix,
+    StartSyncFailedPrefix,
+    StartLoginFailedPrefix,
+    ReadDeviceIdFailedPrefix,
+    SaveConcurrencyFailedPrefix,
+    CreateGistFailedPrefix,
+    SaveGistIdFailedPrefix,
+    SaveGistIdFailedSuffix,
+    OpenDatabaseFailedPrefix,
+    CreateDataDirFailedPrefix,
+    // ---- 互斥 / 保护状态 ----
+    SyncAlreadyRunning,
+    BusyRestoring,
+    BusySyncing,
+    BusyOtherRestore,
+    PendingDeletionHint,
+    RateLimitedPrefix,
+    RateLimitedSuffix,
+    RateLimitedTail,
+    AuthRejectedPrefix,
+    AuthRejectedSuffix,
+    WrongMasterPassword,
+    AutoSyncTimeoutPrefix,
+    AutoSyncTimeoutSuffix,
+    // ---- 自动同步暂停原因 ----
+    AutoOff,
+    AutoNoStorage,
+    AutoNoPassword,
+    AutoBaselineBroken,
+    AutoNotReady,
+    BaselineBrokenMessage,
+    IntervalError,
+    UnderstoodRequired,
+    // ---- 表单校验 ----
+    WebdavUrlRequired,
+    WebdavUsernameRequired,
+    WebdavInsecureHttp,
+    S3EndpointRequired,
+    S3BucketRequired,
+    S3BucketSlash,
+    S3AccessKeyRequired,
+    S3RegionRequired,
+    S3SecretRequired,
+    S3EndpointScheme,
+    S3EndpointNoHost,
+    GithubTokenRequired,
+    GithubApiScheme,
+    GithubApiNoHost,
+    GithubInsecureHttp,
+    OneDriveSignInRequired,
+    SaveSettingsFirstPrefix,
+    SaveSettingsFirstSuffix,
+    SaveCurrentSettingsFirst,
+    MasterPasswordTooShortPrefix,
+    MasterPasswordTooShortMiddle,
+    MasterPasswordTooShortSuffix,
+    MasterPasswordMismatch,
+    // ---- 连接测试结果 ----
+    ProbeRead,
+    ProbeWrite,
+    ConcurrencyPrefix,
+    ConcurrencyNotePrefix,
+    ConcurrencyNotChecked,
+    CloudHasData,
+    CloudEmpty,
+    CheckOkMiddle,
+    CheckFailedMiddle,
+    ConcurrencyConditional,
+    ConcurrencyReadBeforeWrite,
+    // ---- 同步结果 ----
+    StatusPrefix,
+    SummaryPrefix,
+    BackupPrefix,
+    ConflictCountPrefix,
+    ConflictCountSuffix,
+    MoreConflictsPrefix,
+    MoreConflictsSuffix,
+    WillDelete,
+    DeletionSamplePrefix,
+    DeletionSampleMiddle,
+    ConflictKeySeparator,
+    MoreDeletionsPrefix,
+    MoreDeletionsSuffix,
+    StatusCompleted,
+    StatusLocalChanged,
+    StatusNeedsConfirmation,
+    StatusCancelled,
+    // ---- 应用统计 ----
+    AppliedPrefix,
+    AppliedUpdated,
+    AppliedDeleted,
+    AppliedIdentitiesPrefix,
+    AppliedGroupsPrefix,
+    AppliedProxiesPrefix,
+    AppliedSettingsPrefix,
+    AppliedKnownHostsPrefix,
+    AppliedConflictsPrefix,
+    AppliedSuffix,
+    SkippedHostKeysPrefix,
+    SkippedHostKeysSuffix,
+    // ---- 冲突面板 ----
+    KeptDeletion,
+    KeptChangePrefix,
+    KeptChangeMiddle,
+    OtherLastContentPrefix,
+    OtherLastContentMiddle,
+    OtherChangePrefix,
+    OtherChangeMiddle,
+    EntityHost,
+    EntityGroup,
+    EntityIdentity,
+    EntityProxy,
+    EntityKnownHost,
+    EntitySetting,
+    ThisComputer,
+    OtherComputerPrefix,
+    OtherComputerSuffix,
+    OtherComputer,
+    UnsupportedProviderPrefix,
+    UnsupportedProviderSuffix,
+    NoSyncDatabase,
+    // ---- 窗口标题 ----
+    WindowTitle,
+}
 
-/// 还没保存过密码时的占位提示。
-const PASSWORD_EMPTY: &str = "密码";
+impl Msg for SyncMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::PasswordSaved => "已保存（留空保持不变）",
+            Self::PasswordEmpty => "密码",
+            Self::S3SecretEmpty => "Secret Key",
+            Self::GithubTokenEmpty => "个人访问令牌（需要 gist 权限）",
+            Self::MasterPasswordPlaceholder => "主密码（至少 8 个字符）",
+            Self::MasterPasswordConfirmPlaceholder => "再输入一次主密码",
+            Self::RememberSaved => "已记住（本机加密）",
+            Self::RememberPending => "同步成功后记住",
+            Self::RememberClearPending => "同步成功后清除",
+            Self::RememberOff => "不记住",
+            Self::MasterPasswordRemembered => "已记住主密码",
+            Self::MasterPasswordForgotten => "已清除记住的主密码",
+            Self::WebdavUrlPlaceholder => "https://dav.example.com/remote.php/dav/files/<用户>/",
+            Self::SyncSubdirPlaceholder => "同步子目录（可空）",
+            Self::UsernamePlaceholder => "用户名",
+            Self::S3EndpointPlaceholder => {
+                "https://s3.us-east-1.amazonaws.com 或 https://<账号>.r2.cloudflarestorage.com"
+            }
+            Self::S3RegionPlaceholder => "Region（例如 us-east-1；R2 填 auto）",
+            Self::S3BucketPlaceholder => "Bucket 名称",
+            Self::S3PrefixPlaceholder => "对象前缀（可空）",
+            Self::GithubApiPlaceholder => "https://api.github.com（留空用默认）",
+            Self::GithubGistPlaceholder => "留空 = 第一次同步时自动新建",
+            Self::OnedriveClientIdPlaceholder => {
+                "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx（留空用内置的）"
+            }
+            Self::OneDriveSavedByLogin => {
+                "OneDrive 的连接由「登录 OneDrive」保存，不用再点「保存」"
+            }
+            Self::SavedSettingsPrefix => "已保存 ",
+            Self::SavedSettingsSuffix => " 同步设置",
+            Self::TestingConnection => "正在测试连接…",
+            Self::WaitingForBrowser => "正在等待浏览器授权…",
+            Self::CancellingLogin => "正在取消登录…",
+            Self::SignedInOneDrive => "已登录 OneDrive",
+            Self::SignedInAsPrefix => "已登录：",
+            Self::NotSignedInOneDrive => "还没有登录 OneDrive",
+            Self::OneDriveNotSignedIn => "未登录",
+            Self::SyncCompletedRememberFailedPrefix => "同步完成，但记住主密码失败：",
+            Self::SyncCompletedClearFailedPrefix => "同步完成，但清除记住的主密码失败：",
+            Self::BaselineResetConfirm => {
+                "再次点击「确认重建」：下一次同步按首次同步处理，两边的数据都会保留，\
+                 同名的不会去重；重建之前在另一边删掉的记录可能会回来"
+            }
+            Self::BaselineResetDone => "已重建同步基线，下一次同步按首次同步处理",
+            Self::ClearConfirm => "再次点击「确认清除」会删除本机保存的同步设置（云端数据不动）",
+            Self::ClearedSettings => "已清除本机保存的同步设置（云端数据不动）",
+            Self::ClearedSettingsButPasswordFailedPrefix => {
+                "已清除本机保存的同步设置（云端数据不动），但清除记住的主密码失败："
+            }
+            Self::LogoutConfirm => {
+                "再次点击「确认退出」会删除本机保存的 OneDrive 登录信息（云端同步包不动）"
+            }
+            Self::LoggedOutOneDrive => "已退出 OneDrive（云端同步包不动）",
+            Self::StartTestFailedPrefix => "启动测试任务失败：",
+            Self::StartSyncFailedPrefix => "启动同步任务失败：",
+            Self::StartLoginFailedPrefix => "启动登录任务失败：",
+            Self::ReadDeviceIdFailedPrefix => "读取同步设备 ID 失败：",
+            Self::SaveConcurrencyFailedPrefix => "保存并发保护检测结果失败：",
+            Self::CreateGistFailedPrefix => "新建 Gist 失败：",
+            Self::SaveGistIdFailedPrefix => "保存新建的 Gist ID 失败（",
+            Self::SaveGistIdFailedSuffix => "）：",
+            Self::OpenDatabaseFailedPrefix => "打开数据库失败：",
+            Self::CreateDataDirFailedPrefix => "创建数据目录失败：",
+            Self::SyncAlreadyRunning => "已经有一个同步正在进行，请稍后再试",
+            Self::BusyRestoring => "正在恢复备份或导入离线包，结束后再同步",
+            Self::BusySyncing => "同步正在进行，结束后再恢复或导入",
+            Self::BusyOtherRestore => "另一个恢复或导入正在进行，请稍后再试",
+            Self::PendingDeletionHint => "有待确认的删除，请先在同步窗口处理",
+            Self::RateLimitedPrefix => "",
+            Self::RateLimitedSuffix => " 限流，",
+            Self::RateLimitedTail => "后重试",
+            Self::AuthRejectedPrefix => "存储拒绝了凭据（",
+            Self::AuthRejectedSuffix => "），修改设置或手动同步一次后恢复",
+            Self::WrongMasterPassword => "主密码不对（可能在别处改过），重新输入后手动同步一次",
+            Self::AutoSyncTimeoutPrefix => "自动同步超过 ",
+            Self::AutoSyncTimeoutSuffix => " 分钟没有完成，已放弃这一次",
+            Self::AutoOff => "自动同步未开启",
+            Self::AutoNoStorage => "还没有保存同步存储",
+            Self::AutoNoPassword => "还没有记住主密码",
+            Self::AutoBaselineBroken => "同步基线损坏，请先重建基线",
+            Self::AutoNotReady => "还没有成功同步过，先手动同步一次",
+            Self::BaselineBrokenMessage => "同步基线损坏，请先点「重建同步基线」",
+            Self::IntervalError => "间隔需要 1–1440 之间的整数（分钟）",
+            Self::UnderstoodRequired => "请先勾选「我知道忘记主密码就无法恢复云端数据」",
+            Self::WebdavUrlRequired => "请填写 WebDAV 地址",
+            Self::WebdavUsernameRequired => "请填写 WebDAV 用户名",
+            Self::WebdavInsecureHttp => {
+                "地址是 http://，密码会以明文发送；需要先勾选「我了解密码会以明文发送，仍然使用 http://」"
+            }
+            Self::S3EndpointRequired => "请填写 S3 Endpoint",
+            Self::S3BucketRequired => "请填写 S3 Bucket",
+            Self::S3BucketSlash => "S3 Bucket 不能包含 /",
+            Self::S3AccessKeyRequired => "请填写 S3 Access Key",
+            Self::S3RegionRequired => "请填写 S3 Region",
+            Self::S3SecretRequired => "请填写 S3 Secret Key",
+            Self::S3EndpointScheme => "S3 Endpoint 必须以 http:// 或 https:// 开头",
+            Self::S3EndpointNoHost => "S3 Endpoint 缺少主机名",
+            Self::GithubTokenRequired => "请填写 GitHub 令牌",
+            Self::GithubApiScheme => {
+                "API 地址必须以 https:// 或 http:// 开头（留空用 https://api.github.com）"
+            }
+            Self::GithubApiNoHost => "API 地址缺少主机名",
+            Self::GithubInsecureHttp => {
+                "接口地址是 http://，令牌会以明文发送；需要先勾选「我了解令牌会以明文发送，仍然使用 http://」"
+            }
+            Self::OneDriveSignInRequired => "请先登录 OneDrive",
+            Self::SaveSettingsFirstPrefix => "请先保存 ",
+            Self::SaveSettingsFirstSuffix => " 同步设置再同步",
+            Self::SaveCurrentSettingsFirst => "请先保存当前存储设置",
+            Self::MasterPasswordTooShortPrefix => "主密码至少需要 ",
+            Self::MasterPasswordTooShortMiddle => " 个字符（现在 ",
+            Self::MasterPasswordTooShortSuffix => " 个）",
+            Self::MasterPasswordMismatch => "两次输入的主密码不一致",
+            Self::ProbeRead => "读取",
+            Self::ProbeWrite => "写入",
+            Self::ConcurrencyPrefix => "并发保护：",
+            Self::ConcurrencyNotePrefix => "  · ",
+            Self::ConcurrencyNotChecked => "并发保护：未检测（读写未通过）",
+            Self::CloudHasData => "云端：已有同步数据（第二台电脑需要输入主密码解开）",
+            Self::CloudEmpty => "云端：还没有同步数据",
+            Self::CheckOkMiddle => "：成功 — ",
+            Self::CheckFailedMiddle => "：失败 — ",
+            Self::ConcurrencyConditional => "支持条件写入（服务器保证原子）",
+            Self::ConcurrencyReadBeforeWrite => "不支持条件写入（写前再读，仍可能覆盖）",
+            Self::StatusPrefix => "状态：",
+            Self::SummaryPrefix => "摘要：",
+            Self::BackupPrefix => "备份：",
+            Self::ConflictCountPrefix => "冲突 ",
+            Self::ConflictCountSuffix => " 项：",
+            Self::MoreConflictsPrefix => "  …还有 ",
+            Self::MoreConflictsSuffix => " 条",
+            Self::WillDelete => "将被删除：",
+            Self::DeletionSamplePrefix => "  · ",
+            Self::DeletionSampleMiddle => "：",
+            Self::ConflictKeySeparator => "：",
+            Self::MoreDeletionsPrefix => "  …另有 ",
+            Self::MoreDeletionsSuffix => " 条",
+            Self::StatusCompleted => "完成",
+            Self::StatusLocalChanged => "本地有变化",
+            Self::StatusNeedsConfirmation => "需要确认",
+            Self::StatusCancelled => "已取消",
+            Self::AppliedPrefix => "应用：主机 新增",
+            Self::AppliedUpdated => "/更新",
+            Self::AppliedDeleted => "/删除",
+            Self::AppliedIdentitiesPrefix => "；凭据 新增",
+            Self::AppliedGroupsPrefix => "；分组 新增",
+            Self::AppliedProxiesPrefix => "；代理 新增",
+            Self::AppliedSettingsPrefix => "；设置 ",
+            Self::AppliedKnownHostsPrefix => " 项；known_hosts ",
+            Self::AppliedConflictsPrefix => " 条；冲突 ",
+            Self::AppliedSuffix => " 条",
+            Self::SkippedHostKeysPrefix => "；跳过 ",
+            Self::SkippedHostKeysSuffix => " 条可疑主机密钥记录",
+            Self::KeptDeletion => "保留：删除（这条记录在另一边已被删除）",
+            Self::KeptChangePrefix => "保留：",
+            Self::KeptChangeMiddle => " 的改动：",
+            Self::OtherLastContentPrefix => "另一份：",
+            Self::OtherLastContentMiddle => " 最后的内容：",
+            Self::OtherChangePrefix => "另一份：",
+            Self::OtherChangeMiddle => " 的改动：",
+            Self::EntityHost => "主机",
+            Self::EntityGroup => "分组",
+            Self::EntityIdentity => "凭据",
+            Self::EntityProxy => "代理",
+            Self::EntityKnownHost => "主机指纹",
+            Self::EntitySetting => "设置",
+            Self::ThisComputer => "本机",
+            Self::OtherComputerPrefix => "另一台电脑（",
+            Self::OtherComputerSuffix => "）",
+            Self::OtherComputer => "另一台电脑",
+            Self::UnsupportedProviderPrefix => "本机保存的同步存储是 ",
+            Self::UnsupportedProviderSuffix => "，原生窗口目前不支持编辑它；保存别的存储会替换它。",
+            Self::NoSyncDatabase => "本机还没有同步数据库",
+            Self::WindowTitle => "同步设置",
+        }
+    }
 
-/// S3 Secret 还没保存过时的占位提示。
-const S3_SECRET_EMPTY: &str = "Secret Key";
-
-/// GitHub 令牌还没保存过时的占位提示。
-const GITHUB_TOKEN_EMPTY: &str = "个人访问令牌（需要 gist 权限）";
-
-/// 主密码输入框的占位提示。
-const MASTER_PASSWORD_PLACEHOLDER: &str = "主密码（至少 8 个字符）";
-
-/// 已经在本次运行里写过本机保存的主密码。
-const REMEMBER_SAVED: &str = "已记住（本机加密）";
-
-/// 开关打开、还没同步成功时的提示。
-const REMEMBER_PENDING: &str = "同步成功后记住";
-
-/// 开关刚关掉、下一轮同步成功后才会删掉本机保存的那份。
-const REMEMBER_CLEAR_PENDING: &str = "同步成功后清除";
-
-/// 开关关着、本机也没有保存时的提示。
-const REMEMBER_OFF: &str = "不记住";
-
-/// 同步成功后记住主密码时，footer 的文字。
-const MASTER_PASSWORD_REMEMBERED: &str = "已记住主密码";
-
-/// 同步成功后忘掉主密码时，footer 的文字。
-const MASTER_PASSWORD_FORGOTTEN: &str = "已清除记住的主密码";
-
-/// 第一次设置主密码没勾「我知道…」时的提示。
-const UNDERSTOOD_REQUIRED: &str = "请先勾选「我知道忘记主密码就无法恢复云端数据」";
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::PasswordSaved => "Saved (leave empty to keep it)",
+            Self::PasswordEmpty => "Password",
+            Self::S3SecretEmpty => "Secret Key",
+            Self::GithubTokenEmpty => "Personal access token (needs the gist scope)",
+            Self::MasterPasswordPlaceholder => "Master password (at least 8 characters)",
+            Self::MasterPasswordConfirmPlaceholder => "Enter the master password again",
+            Self::RememberSaved => "Remembered (encrypted on this computer)",
+            Self::RememberPending => "Remember after a successful sync",
+            Self::RememberClearPending => "Clear after a successful sync",
+            Self::RememberOff => "Do not remember",
+            Self::MasterPasswordRemembered => "Master password remembered",
+            Self::MasterPasswordForgotten => "Remembered master password cleared",
+            Self::WebdavUrlPlaceholder => "https://dav.example.com/remote.php/dav/files/<user>/",
+            Self::SyncSubdirPlaceholder => "Sync subdirectory (optional)",
+            Self::UsernamePlaceholder => "Username",
+            Self::S3EndpointPlaceholder => {
+                "https://s3.us-east-1.amazonaws.com or https://<account>.r2.cloudflarestorage.com"
+            }
+            Self::S3RegionPlaceholder => "Region (for example us-east-1; use auto for R2)",
+            Self::S3BucketPlaceholder => "Bucket name",
+            Self::S3PrefixPlaceholder => "Object prefix (optional)",
+            Self::GithubApiPlaceholder => "https://api.github.com (leave empty for the default)",
+            Self::GithubGistPlaceholder => "Leave empty = created automatically on the first sync",
+            Self::OnedriveClientIdPlaceholder => {
+                "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (leave empty for the built-in one)"
+            }
+            Self::OneDriveSavedByLogin => {
+                "The OneDrive connection is saved by “Sign in to OneDrive”; no need to click “Save”"
+            }
+            Self::SavedSettingsPrefix => "Saved ",
+            Self::SavedSettingsSuffix => " sync settings",
+            Self::TestingConnection => "Testing the connection…",
+            Self::WaitingForBrowser => "Waiting for browser authorization…",
+            Self::CancellingLogin => "Cancelling sign-in…",
+            Self::SignedInOneDrive => "Signed in to OneDrive",
+            Self::SignedInAsPrefix => "Signed in as ",
+            Self::NotSignedInOneDrive => "Not signed in to OneDrive yet",
+            Self::OneDriveNotSignedIn => "Not signed in",
+            Self::SyncCompletedRememberFailedPrefix => {
+                "Sync completed, but remembering the master password failed: "
+            }
+            Self::SyncCompletedClearFailedPrefix => {
+                "Sync completed, but clearing the remembered master password failed: "
+            }
+            Self::BaselineResetConfirm => {
+                "Click “Confirm Reset” again: the next sync is treated as the first one, both sides keep \
+                 their data and same-named records are not deduplicated; records deleted on the other side \
+                 before the reset may come back"
+            }
+            Self::BaselineResetDone => {
+                "Sync baseline rebuilt; the next sync is treated as the first one"
+            }
+            Self::ClearConfirm => {
+                "Click “Confirm Clear” again to delete the sync settings saved on this computer (cloud data is untouched)"
+            }
+            Self::ClearedSettings => {
+                "Deleted the sync settings saved on this computer (cloud data is untouched)"
+            }
+            Self::ClearedSettingsButPasswordFailedPrefix => {
+                "Deleted the sync settings saved on this computer (cloud data is untouched), but clearing the remembered master password failed: "
+            }
+            Self::LogoutConfirm => {
+                "Click “Confirm Sign Out” again to delete the OneDrive sign-in info saved on this computer (the cloud sync package is untouched)"
+            }
+            Self::LoggedOutOneDrive => {
+                "Signed out of OneDrive (the cloud sync package is untouched)"
+            }
+            Self::StartTestFailedPrefix => "Could not start the connection test: ",
+            Self::StartSyncFailedPrefix => "Could not start the sync task: ",
+            Self::StartLoginFailedPrefix => "Could not start the sign-in task: ",
+            Self::ReadDeviceIdFailedPrefix => "Could not read the sync device ID: ",
+            Self::SaveConcurrencyFailedPrefix => "Could not save the concurrency probe result: ",
+            Self::CreateGistFailedPrefix => "Could not create the Gist: ",
+            Self::SaveGistIdFailedPrefix => "Could not save the new Gist ID (",
+            Self::SaveGistIdFailedSuffix => "): ",
+            Self::OpenDatabaseFailedPrefix => "Could not open the database: ",
+            Self::CreateDataDirFailedPrefix => "Could not create the data directory: ",
+            Self::SyncAlreadyRunning => "A sync is already running, please try again later",
+            Self::BusyRestoring => {
+                "A restore or offline import is running; sync when it finishes"
+            }
+            Self::BusySyncing => {
+                "A sync is running; restore or import when it finishes"
+            }
+            Self::BusyOtherRestore => {
+                "Another restore or import is running, please try again later"
+            }
+            Self::PendingDeletionHint => {
+                "A deletion is waiting for confirmation; handle it in the sync window first"
+            }
+            Self::RateLimitedPrefix => "",
+            Self::RateLimitedSuffix => " rate limited, retry after ",
+            Self::RateLimitedTail => "",
+            Self::AuthRejectedPrefix => "The storage rejected the credentials (",
+            Self::AuthRejectedSuffix => "); fix the settings or sync manually to recover",
+            Self::WrongMasterPassword => {
+                "The master password is wrong (it may have been changed elsewhere); enter it again and sync manually"
+            }
+            Self::AutoSyncTimeoutPrefix => "Auto sync did not finish within ",
+            Self::AutoSyncTimeoutSuffix => " minutes and was abandoned",
+            Self::AutoOff => "Auto sync is off",
+            Self::AutoNoStorage => "No sync storage saved yet",
+            Self::AutoNoPassword => "Master password not remembered yet",
+            Self::AutoBaselineBroken => "The sync baseline is broken; rebuild it first",
+            Self::AutoNotReady => "Never synced successfully; sync manually once first",
+            Self::BaselineBrokenMessage => {
+                "The sync baseline is broken; click “Rebuild Sync Baseline” first"
+            }
+            Self::IntervalError => "The interval must be a whole number from 1–1440 (minutes)",
+            Self::UnderstoodRequired => {
+                "Please tick “I understand that forgetting the master password means the cloud data cannot be recovered” first"
+            }
+            Self::WebdavUrlRequired => "Please enter the WebDAV URL",
+            Self::WebdavUsernameRequired => "Please enter the WebDAV username",
+            Self::WebdavInsecureHttp => {
+                "The URL is http://, so the password is sent in clear text; tick “I understand the password is sent in clear text and still want to use http://” first"
+            }
+            Self::S3EndpointRequired => "Please enter the S3 Endpoint",
+            Self::S3BucketRequired => "Please enter the S3 Bucket",
+            Self::S3BucketSlash => "The S3 Bucket cannot contain /",
+            Self::S3AccessKeyRequired => "Please enter the S3 Access Key",
+            Self::S3RegionRequired => "Please enter the S3 Region",
+            Self::S3SecretRequired => "Please enter the S3 Secret Key",
+            Self::S3EndpointScheme => "The S3 Endpoint must start with http:// or https://",
+            Self::S3EndpointNoHost => "The S3 Endpoint is missing a host name",
+            Self::GithubTokenRequired => "Please enter a GitHub token",
+            Self::GithubApiScheme => {
+                "The API URL must start with https:// or http:// (leave empty to use https://api.github.com)"
+            }
+            Self::GithubApiNoHost => "The API URL is missing a host name",
+            Self::GithubInsecureHttp => {
+                "The API URL is http://, so the token is sent in clear text; tick “I understand the token is sent in clear text and still want to use http://” first"
+            }
+            Self::OneDriveSignInRequired => "Please sign in to OneDrive first",
+            Self::SaveSettingsFirstPrefix => "Please save the ",
+            Self::SaveSettingsFirstSuffix => " sync settings before syncing",
+            Self::SaveCurrentSettingsFirst => "Please save the current storage settings first",
+            Self::MasterPasswordTooShortPrefix => "The master password must be at least ",
+            Self::MasterPasswordTooShortMiddle => " characters (currently ",
+            Self::MasterPasswordTooShortSuffix => ")",
+            Self::MasterPasswordMismatch => "The two master passwords do not match",
+            Self::ProbeRead => "Read",
+            Self::ProbeWrite => "Write",
+            Self::ConcurrencyPrefix => "Concurrency protection: ",
+            Self::ConcurrencyNotePrefix => "  · ",
+            Self::ConcurrencyNotChecked => {
+                "Concurrency protection: not checked (read/write did not pass)"
+            }
+            Self::CloudHasData => {
+                "Cloud: sync data already exists (a second computer must enter the master password to unlock it)"
+            }
+            Self::CloudEmpty => "Cloud: no sync data yet",
+            Self::CheckOkMiddle => ": succeeded — ",
+            Self::CheckFailedMiddle => ": failed — ",
+            Self::ConcurrencyConditional => {
+                "Conditional writes are supported (the server guarantees atomicity)"
+            }
+            Self::ConcurrencyReadBeforeWrite => {
+                "Conditional writes are not supported (read before write; may still overwrite)"
+            }
+            Self::StatusPrefix => "Status: ",
+            Self::SummaryPrefix => "Summary: ",
+            Self::BackupPrefix => "Backup: ",
+            Self::ConflictCountPrefix => "Conflicts: ",
+            Self::ConflictCountSuffix => " items:",
+            Self::MoreConflictsPrefix => "  …and ",
+            Self::MoreConflictsSuffix => " more",
+            Self::WillDelete => "Will be deleted:",
+            Self::DeletionSamplePrefix => "  · ",
+            Self::DeletionSampleMiddle => ": ",
+            Self::ConflictKeySeparator => ": ",
+            Self::MoreDeletionsPrefix => "  …and ",
+            Self::MoreDeletionsSuffix => " more",
+            Self::StatusCompleted => "Completed",
+            Self::StatusLocalChanged => "Local changes",
+            Self::StatusNeedsConfirmation => "Needs confirmation",
+            Self::StatusCancelled => "Cancelled",
+            Self::AppliedPrefix => "Applied: hosts added ",
+            Self::AppliedUpdated => "/updated",
+            Self::AppliedDeleted => "/deleted",
+            Self::AppliedIdentitiesPrefix => "; credentials added",
+            Self::AppliedGroupsPrefix => "; groups added",
+            Self::AppliedProxiesPrefix => "; proxies added",
+            Self::AppliedSettingsPrefix => "; settings ",
+            Self::AppliedKnownHostsPrefix => " items; known_hosts ",
+            Self::AppliedConflictsPrefix => " entries; conflicts ",
+            Self::AppliedSuffix => " entries",
+            Self::SkippedHostKeysPrefix => "; skipped ",
+            Self::SkippedHostKeysSuffix => " suspicious host key records",
+            Self::KeptDeletion => "Kept: the deletion (this record was deleted on the other side)",
+            Self::KeptChangePrefix => "Kept: ",
+            Self::KeptChangeMiddle => " changes: ",
+            Self::OtherLastContentPrefix => "Other copy: the last content on ",
+            Self::OtherLastContentMiddle => ": ",
+            Self::OtherChangePrefix => "Other copy: ",
+            Self::OtherChangeMiddle => " changes: ",
+            Self::EntityHost => "Host",
+            Self::EntityGroup => "Group",
+            Self::EntityIdentity => "Credential",
+            Self::EntityProxy => "Proxy",
+            Self::EntityKnownHost => "Host key",
+            Self::EntitySetting => "Setting",
+            Self::ThisComputer => "this computer",
+            Self::OtherComputerPrefix => "the other computer (",
+            Self::OtherComputerSuffix => ")",
+            Self::OtherComputer => "the other computer",
+            Self::UnsupportedProviderPrefix => "The sync storage saved on this computer is ",
+            Self::UnsupportedProviderSuffix => {
+                ", which the native window cannot edit yet; saving another storage replaces it."
+            }
+            Self::NoSyncDatabase => "There is no sync database on this computer yet",
+            Self::WindowTitle => "Sync Settings",
+        }
+    }
+}
 
 /// 同步结果里最多列几条冲突摘要。
 const MAX_CONFLICT_LINES: usize = 5;
 
 /// OneDrive 登录等浏览器授权的最长时间：用 core 的值（0.2.14 同一个，5 分钟）。
 const ONEDRIVE_LOGIN_TIMEOUT: Duration = zssh_core::sync::onedrive::login::LOGIN_TIMEOUT;
-
-/// 还没登录 OneDrive 时，测试连接和同步给的说法。
-const ONEDRIVE_SIGN_IN_REQUIRED: &str = "请先登录 OneDrive";
-
-/// 没有 OneDrive 连接时「账号」一行的内容。
-const ONEDRIVE_NOT_SIGNED_IN: &str = "未登录";
 
 /// 自动同步的间隔范围（分钟）；和核心 `load_auto` / `save_auto` 的夹取规则一致。
 const MIN_AUTO_INTERVAL_MINUTES: u32 = 1;
@@ -122,22 +656,6 @@ const AUTO_SYNC_TICK: Duration = Duration::from_secs(30);
 
 /// 一次自动同步最多跑多久；网络卡住时别把这一拍一直占着。
 const AUTO_SYNC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-
-/// 自动同步能不能跑；界面把原因拼成「自动同步暂停：<原因>」。
-const AUTO_OFF: &str = "自动同步未开启";
-const AUTO_NO_STORAGE: &str = "还没有保存同步存储";
-const AUTO_NO_PASSWORD: &str = "还没有记住主密码";
-const AUTO_BASELINE_BROKEN: &str = "同步基线损坏，请先重建基线";
-const AUTO_NOT_READY: &str = "还没有成功同步过，先手动同步一次";
-
-/// 基线读不出来时手动点「立即同步」的说法。
-const BASELINE_BROKEN_MESSAGE: &str = "同步基线损坏，请先点「重建同步基线」";
-
-/// 间隔输入框里不是 1–1440 的整数时给的说法。
-const INTERVAL_ERROR: &str = "间隔需要 1–1440 之间的整数（分钟）";
-
-/// 已经有一个同步在跑时，手动点「立即同步」的说法。
-const SYNC_ALREADY_RUNNING: &str = "已经有一个同步正在进行，请稍后再试";
 
 /// 防误删确认最多列几个名字；和 0.2.14（`DeletionPlan::samples`）同一个上限。
 const MAX_DELETION_NAMES: usize = zssh_core::sync::guard::MAX_SAMPLES;
@@ -353,43 +871,43 @@ impl SyncDemo {
         let url_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(webdav_form.url.clone())
-                .placeholder("https://dav.example.com/remote.php/dav/files/<用户>/")
+                .placeholder(t(SyncMsg::WebdavUrlPlaceholder))
         });
         let directory_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(webdav_form.directory.clone())
-                .placeholder("同步子目录（可空）")
+                .placeholder(t(SyncMsg::SyncSubdirPlaceholder))
         });
         let username_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(webdav_form.username.clone())
-                .placeholder("用户名")
+                .placeholder(t(SyncMsg::UsernamePlaceholder))
         });
         let password_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
                 .placeholder(if webdav_has_secret {
-                    PASSWORD_SAVED
+                    t(SyncMsg::PasswordSaved)
                 } else {
-                    PASSWORD_EMPTY
+                    t(SyncMsg::PasswordEmpty)
                 })
         });
         let s3_endpoint_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(s3_form.endpoint.clone())
                 .placeholder(
-                    "https://s3.us-east-1.amazonaws.com 或 https://<账号>.r2.cloudflarestorage.com",
+                    t(SyncMsg::S3EndpointPlaceholder),
                 )
         });
         let s3_region_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(s3_form.region.clone())
-                .placeholder("Region（例如 us-east-1；R2 填 auto）")
+                .placeholder(t(SyncMsg::S3RegionPlaceholder))
         });
         let s3_bucket_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(s3_form.bucket.clone())
-                .placeholder("Bucket 名称")
+                .placeholder(t(SyncMsg::S3BucketPlaceholder))
         });
         let s3_access_key_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -400,50 +918,50 @@ impl SyncDemo {
             InputState::new(window, cx)
                 .masked(true)
                 .placeholder(if s3_has_secret {
-                    PASSWORD_SAVED
+                    t(SyncMsg::PasswordSaved)
                 } else {
-                    S3_SECRET_EMPTY
+                    t(SyncMsg::S3SecretEmpty)
                 })
         });
         let s3_prefix_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(s3_form.prefix.clone())
-                .placeholder("对象前缀（可空）")
+                .placeholder(t(SyncMsg::S3PrefixPlaceholder))
         });
         let github_api_base_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(github_form.api_base.clone())
-                .placeholder("https://api.github.com（留空用默认）")
+                .placeholder(t(SyncMsg::GithubApiPlaceholder))
         });
         let github_token_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
                 .placeholder(if github_has_secret {
-                    PASSWORD_SAVED
+                    t(SyncMsg::PasswordSaved)
                 } else {
-                    GITHUB_TOKEN_EMPTY
+                    t(SyncMsg::GithubTokenEmpty)
                 })
         });
         let github_gist_id_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(github_form.gist_id.clone())
-                .placeholder("留空 = 第一次同步时自动新建")
+                .placeholder(t(SyncMsg::GithubGistPlaceholder))
         });
         let onedrive_client_id_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(onedrive_form.client_id.clone())
-                .placeholder("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx（留空用内置的）")
+                .placeholder(t(SyncMsg::OnedriveClientIdPlaceholder))
         });
         let master_password_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
                 .default_value(remembered_password.clone().unwrap_or_default())
-                .placeholder(MASTER_PASSWORD_PLACEHOLDER)
+                .placeholder(t(SyncMsg::MasterPasswordPlaceholder))
         });
         let master_password_confirm_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
-                .placeholder("再输入一次主密码")
+                .placeholder(t(SyncMsg::MasterPasswordConfirmPlaceholder))
         });
         let ready = load_ready_at(&crate::settings::data_dir());
         let baseline_broken = baseline_broken_at(&crate::settings::data_dir());
@@ -620,7 +1138,10 @@ impl SyncDemo {
                     }
                 }
                 Err(message) => {
-                    self.status = format!("同步完成，但记住主密码失败：{message}");
+                    self.status = format!(
+                        "{}{message}",
+                        t(SyncMsg::SyncCompletedRememberFailedPrefix)
+                    );
                 }
             },
             RememberAction::Clear => match clear_master_password_at(&data_dir) {
@@ -631,7 +1152,10 @@ impl SyncDemo {
                     }
                 }
                 Err(message) => {
-                    self.status = format!("同步完成，但清除记住的主密码失败：{message}");
+                    self.status = format!(
+                        "{}{message}",
+                        t(SyncMsg::SyncCompletedClearFailedPrefix)
+                    );
                 }
             },
             // 取消、失败和需要确认不改变本机是否保存；footer 也保留原来的内容。
@@ -666,7 +1190,7 @@ impl SyncDemo {
     fn commit_interval(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.auto_interval.read(cx).value().to_string();
         let Some(minutes) = parse_interval(&text) else {
-            self.auto.error = Some(INTERVAL_ERROR.to_owned());
+            self.auto.error = Some(t(SyncMsg::IntervalError).to_owned());
             let saved = self.auto.settings.interval_minutes.to_string();
             self.auto_interval
                 .update(cx, |state, cx| state.set_value(saved.as_str(), window, cx));
@@ -729,7 +1253,7 @@ impl SyncDemo {
         self.clear_confirm.disarm();
         self.logout_confirm.disarm();
         if self.drafts.provider == ProviderChoice::OneDrive {
-            self.status = "OneDrive 的连接由「登录 OneDrive」保存，不用再点「保存」".to_owned();
+            self.status = t(SyncMsg::OneDriveSavedByLogin).to_owned();
             cx.notify();
             return;
         }
@@ -770,7 +1294,12 @@ impl SyncDemo {
                     ProviderChoice::OneDrive => {}
                 }
                 self.probe = None;
-                self.status = format!("已保存 {} 同步设置", provider.label());
+                self.status = format!(
+                    "{}{}{}",
+                    t(SyncMsg::SavedSettingsPrefix),
+                    provider.label(),
+                    t(SyncMsg::SavedSettingsSuffix)
+                );
             }
             Err(message) => self.status = message,
         }
@@ -800,7 +1329,7 @@ impl SyncDemo {
             Ok(runtime) => {
                 self.testing = true;
                 self.probe = None;
-                self.status = "正在测试连接…".to_owned();
+                self.status = t(SyncMsg::TestingConnection).to_owned();
                 let handle = runtime.handle().clone();
                 drop(runtime.spawn_blocking(move || {
                     let event = match probe_connection_at(&handle, &data_dir, &config) {
@@ -810,7 +1339,9 @@ impl SyncDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => self.status = format!("启动测试任务失败：{err}"),
+            Err(err) => {
+                self.status = format!("{}{err}", t(SyncMsg::StartTestFailedPrefix))
+            }
         }
         cx.notify();
     }
@@ -839,7 +1370,7 @@ impl SyncDemo {
             return;
         }
         if self.baseline_broken {
-            self.sync_state.fail(BASELINE_BROKEN_MESSAGE.to_owned());
+            self.sync_state.fail(t(SyncMsg::BaselineBrokenMessage).to_owned());
             cx.notify();
             return;
         }
@@ -856,7 +1387,7 @@ impl SyncDemo {
         }
         // 第一次设置主密码还要勾「我知道忘记主密码就无法恢复云端数据」（0.2.14 没勾按钮就点不了）。
         if confirm.is_some() && !self.understood {
-            self.sync_state.fail(UNDERSTOOD_REQUIRED.to_owned());
+            self.sync_state.fail(t(SyncMsg::UnderstoodRequired).to_owned());
             cx.notify();
             return;
         }
@@ -885,9 +1416,7 @@ impl SyncDemo {
         }
         if !self.baseline_reset_armed {
             self.baseline_reset_armed = true;
-            self.status = "再次点击「确认重建」：下一次同步按首次同步处理，两边的数据都会保留，\
-                           同名的不会去重；重建之前在另一边删掉的记录可能会回来"
-                .to_owned();
+            self.status = t(SyncMsg::BaselineResetConfirm).to_owned();
             cx.notify();
             return;
         }
@@ -895,7 +1424,7 @@ impl SyncDemo {
         match reset_baseline_at(&crate::settings::data_dir()) {
             Ok(()) => {
                 self.baseline_broken = baseline_broken_at(&crate::settings::data_dir());
-                self.status = "已重建同步基线，下一次同步按首次同步处理".to_owned();
+                self.status = t(SyncMsg::BaselineResetDone).to_owned();
             }
             Err(message) => self.status = message,
         }
@@ -1008,7 +1537,9 @@ impl SyncDemo {
                     }
                 }));
             }
-            Err(err) => self.sync_state.fail(format!("启动同步任务失败：{err}")),
+            Err(err) => self
+                .sync_state
+                .fail(format!("{}{err}", t(SyncMsg::StartSyncFailedPrefix))),
         }
         cx.notify();
     }
@@ -1022,7 +1553,7 @@ impl SyncDemo {
         self.logout_confirm.disarm();
         if self.clear_confirm.take().is_none() {
             self.clear_confirm.arm(());
-            self.status = "再次点击「确认清除」会删除本机保存的同步设置（云端数据不动）".to_owned();
+            self.status = t(SyncMsg::ClearConfirm).to_owned();
             cx.notify();
             return;
         }
@@ -1046,9 +1577,10 @@ impl SyncDemo {
                 // 存储设置没了，记住的主密码也没有意义；本机密文和输入框一起清掉。
                 self.remember = RememberPassword::default();
                 self.status = match clear_master_password_at(&data_dir) {
-                    Ok(()) => "已清除本机保存的同步设置（云端数据不动）".to_owned(),
+                    Ok(()) => t(SyncMsg::ClearedSettings).to_owned(),
                     Err(message) => format!(
-                        "已清除本机保存的同步设置（云端数据不动），但清除记住的主密码失败：{message}"
+                        "{}{message}",
+                        t(SyncMsg::ClearedSettingsButPasswordFailedPrefix)
                     ),
                 };
             }
@@ -1076,7 +1608,7 @@ impl SyncDemo {
                 self.onedrive_cancel = Some(cancel.clone());
                 self.signing_in = true;
                 self.probe = None;
-                self.status = "正在等待浏览器授权…".to_owned();
+                self.status = t(SyncMsg::WaitingForBrowser).to_owned();
                 let handle = runtime.handle().clone();
                 drop(runtime.spawn_blocking(move || {
                     let event = match sign_in_onedrive_at(&handle, &data_dir, &client_id, &cancel) {
@@ -1086,7 +1618,9 @@ impl SyncDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => self.status = format!("启动登录任务失败：{err}"),
+            Err(err) => {
+                self.status = format!("{}{err}", t(SyncMsg::StartLoginFailedPrefix))
+            }
         }
         cx.notify();
     }
@@ -1097,7 +1631,7 @@ impl SyncDemo {
             return;
         };
         cancel.notify_one();
-        self.status = "正在取消登录…".to_owned();
+        self.status = t(SyncMsg::CancellingLogin).to_owned();
         cx.notify();
     }
 
@@ -1109,15 +1643,13 @@ impl SyncDemo {
         self.clear_confirm.disarm();
         if !matches!(self.saved, Some(StorageConfig::Onedrive(_))) {
             self.logout_confirm.disarm();
-            self.status = "还没有登录 OneDrive".to_owned();
+            self.status = t(SyncMsg::NotSignedInOneDrive).to_owned();
             cx.notify();
             return;
         }
         if self.logout_confirm.take().is_none() {
             self.logout_confirm.arm(());
-            self.status =
-                "再次点击「确认退出」会删除本机保存的 OneDrive 登录信息（云端同步包不动）"
-                    .to_owned();
+            self.status = t(SyncMsg::LogoutConfirm).to_owned();
             cx.notify();
             return;
         }
@@ -1128,7 +1660,7 @@ impl SyncDemo {
                 self.refresh_secret_ui(window, cx);
                 self.reset_onedrive_inputs(window, cx);
                 self.probe = None;
-                self.status = "已退出 OneDrive（云端同步包不动）".to_owned();
+                self.status = t(SyncMsg::LoggedOutOneDrive).to_owned();
             }
             Err(message) => self.status = message,
         }
@@ -1157,19 +1689,19 @@ impl SyncDemo {
             Some(StorageConfig::Github(config)) if !config.token.trim().is_empty()
         );
         let webdav_placeholder = if self.webdav_has_secret {
-            PASSWORD_SAVED
+            t(SyncMsg::PasswordSaved)
         } else {
-            PASSWORD_EMPTY
+            t(SyncMsg::PasswordEmpty)
         };
         let s3_placeholder = if self.s3_has_secret {
-            PASSWORD_SAVED
+            t(SyncMsg::PasswordSaved)
         } else {
-            S3_SECRET_EMPTY
+            t(SyncMsg::S3SecretEmpty)
         };
         let github_placeholder = if self.github_has_secret {
-            PASSWORD_SAVED
+            t(SyncMsg::PasswordSaved)
         } else {
-            GITHUB_TOKEN_EMPTY
+            t(SyncMsg::GithubTokenEmpty)
         };
         self.password.update(cx, |state, cx| {
             state.set_placeholder(webdav_placeholder, window, cx);
@@ -1190,7 +1722,7 @@ impl SyncDemo {
         self.username
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.password.update(cx, |state, cx| {
-            state.set_placeholder(PASSWORD_EMPTY, window, cx);
+            state.set_placeholder(t(SyncMsg::PasswordEmpty), window, cx);
             state.set_value("", window, cx);
         });
         self.s3_endpoint
@@ -1202,7 +1734,7 @@ impl SyncDemo {
         self.s3_access_key
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.s3_secret.update(cx, |state, cx| {
-            state.set_placeholder(S3_SECRET_EMPTY, window, cx);
+            state.set_placeholder(t(SyncMsg::S3SecretEmpty), window, cx);
             state.set_value("", window, cx);
         });
         self.s3_prefix
@@ -1210,7 +1742,7 @@ impl SyncDemo {
         self.github_api_base
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.github_token.update(cx, |state, cx| {
-            state.set_placeholder(GITHUB_TOKEN_EMPTY, window, cx);
+            state.set_placeholder(t(SyncMsg::GithubTokenEmpty), window, cx);
             state.set_value("", window, cx);
         });
         self.github_gist_id
@@ -1346,9 +1878,9 @@ impl SyncDemo {
         self.probe = None;
         // 核心通常能读到账号显示名；读不到时只说「已登录」，不编一个名字。
         self.status = if account.is_empty() {
-            "已登录 OneDrive".to_owned()
+            t(SyncMsg::SignedInOneDrive).to_owned()
         } else {
-            format!("已登录：{account}")
+            format!("{}{account}", t(SyncMsg::SignedInAsPrefix))
         };
     }
 
@@ -1452,7 +1984,7 @@ pub fn open_sync_window(cx: &mut App) {
     };
     let _ = cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| SyncDemo::new(window, cx, ime_key));
-        window.set_window_title("同步设置");
+        window.set_window_title(t(SyncMsg::WindowTitle));
         window.on_window_should_close(cx, move |_window, _cx| {
             crate::ime::window_destroyed(&close_key);
             true
@@ -1593,10 +2125,10 @@ impl Drop for SyncInFlight {
 /// 抢不到独占权时给用户看的话：区分"想做什么"和"被谁占着"。
 pub(crate) fn exclusive_busy_message(wanted: ExclusiveKind, holder: ExclusiveKind) -> &'static str {
     match (wanted, holder) {
-        (ExclusiveKind::Sync, ExclusiveKind::Sync) => SYNC_ALREADY_RUNNING,
-        (ExclusiveKind::Sync, ExclusiveKind::Restore) => "正在恢复备份或导入离线包，结束后再同步",
-        (ExclusiveKind::Restore, ExclusiveKind::Sync) => "同步正在进行，结束后再恢复或导入",
-        (ExclusiveKind::Restore, ExclusiveKind::Restore) => "另一个恢复或导入正在进行，请稍后再试",
+        (ExclusiveKind::Sync, ExclusiveKind::Sync) => t(SyncMsg::SyncAlreadyRunning),
+        (ExclusiveKind::Sync, ExclusiveKind::Restore) => t(SyncMsg::BusyRestoring),
+        (ExclusiveKind::Restore, ExclusiveKind::Sync) => t(SyncMsg::BusySyncing),
+        (ExclusiveKind::Restore, ExclusiveKind::Restore) => t(SyncMsg::BusyOtherRestore),
     }
 }
 
@@ -1755,20 +2287,25 @@ impl SyncGuardState {
     /// 自动同步这一拍该不该停，以及停的原因（给界面显示）。
     fn block_reason(&mut self, now: Instant) -> Option<String> {
         if self.pending_confirmation {
-            return Some("有待确认的删除，请先在同步窗口处理".to_owned());
+            return Some(t(SyncMsg::PendingDeletionHint).to_owned());
         }
         if let Some((service, secs)) = self.rate_limit_remaining(now) {
             return Some(format!(
-                "{service} 限流，{}后重试",
-                zssh_core::sync::storage::wait_text(secs)
+                "{}{service}{}{}{}",
+                t(SyncMsg::RateLimitedPrefix),
+                t(SyncMsg::RateLimitedSuffix),
+                zssh_core::sync::storage::wait_text(secs),
+                t(SyncMsg::RateLimitedTail)
             ));
         }
         match &self.pause {
             Some(AutoPause::Auth(message)) => Some(format!(
-                "存储拒绝了凭据（{message}），修改设置或手动同步一次后恢复"
+                "{}{message}{}",
+                t(SyncMsg::AuthRejectedPrefix),
+                t(SyncMsg::AuthRejectedSuffix)
             )),
             Some(AutoPause::WrongPassword) => {
-                Some("主密码不对（可能在别处改过），重新输入后手动同步一次".to_owned())
+                Some(t(SyncMsg::WrongMasterPassword).to_owned())
             }
             None => None,
         }
@@ -1917,10 +2454,10 @@ fn auto_block_reason(
         return Some(reason.to_owned());
     }
     if baseline_broken {
-        return Some(AUTO_BASELINE_BROKEN.to_owned());
+        return Some(t(SyncMsg::AutoBaselineBroken).to_owned());
     }
     if !ready {
-        return Some(AUTO_NOT_READY.to_owned());
+        return Some(t(SyncMsg::AutoNotReady).to_owned());
     }
     guard_reason
 }
@@ -1929,13 +2466,13 @@ fn auto_block_reason(
 /// 开关关着也算暂停，但界面只在打开时显示「自动同步暂停」。
 fn auto_pause_reason(enabled: bool, has_password: bool, has_config: bool) -> Option<&'static str> {
     if !enabled {
-        return Some(AUTO_OFF);
+        return Some(t(SyncMsg::AutoOff));
     }
     if !has_config {
-        return Some(AUTO_NO_STORAGE);
+        return Some(t(SyncMsg::AutoNoStorage));
     }
     if !has_password {
-        return Some(AUTO_NO_PASSWORD);
+        return Some(t(SyncMsg::AutoNoPassword));
     }
     None
 }
@@ -2058,7 +2595,7 @@ fn run_auto_sync_with(
     ensure_github_gist(handle, &db, sealer)?;
     let device_id = db
         .sync_device_id()
-        .map_err(|err| format!("读取同步设备 ID 失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(SyncMsg::ReadDeviceIdFailedPrefix)))?;
     let context = SyncContext {
         db: &db,
         sealer,
@@ -2072,8 +2609,10 @@ fn run_auto_sync_with(
         match tokio::time::timeout(AUTO_SYNC_TIMEOUT, context.run_sync(password, None)).await {
             Ok(result) => result.map_err(|err| SyncFailure::from_sync_error(&err)),
             Err(_) => Err(SyncFailure::from(format!(
-                "自动同步超过 {} 分钟没有完成，已放弃这一次",
-                AUTO_SYNC_TIMEOUT.as_secs() / 60
+                "{}{}{}",
+                t(SyncMsg::AutoSyncTimeoutPrefix),
+                AUTO_SYNC_TIMEOUT.as_secs() / 60,
+                t(SyncMsg::AutoSyncTimeoutSuffix)
             ))),
         }
     });
@@ -2319,11 +2858,11 @@ fn onedrive_form_from_view(view: &ConfigView) -> OneDriveForm {
 /// OneDrive 的「账号」一行：登录过就显示 `ConfigView.account`，否则「未登录」。
 fn onedrive_account_label(saved: Option<&StorageConfig>) -> String {
     let Some(config @ StorageConfig::Onedrive(_)) = saved else {
-        return ONEDRIVE_NOT_SIGNED_IN.to_owned();
+        return t(SyncMsg::OneDriveNotSignedIn).to_owned();
     };
     let account = config.view().account;
     if account.trim().is_empty() {
-        ONEDRIVE_NOT_SIGNED_IN.to_owned()
+        t(SyncMsg::OneDriveNotSignedIn).to_owned()
     } else {
         account
     }
@@ -2334,7 +2873,7 @@ fn onedrive_account_label(saved: Option<&StorageConfig>) -> String {
 fn build_onedrive(saved: Option<&StorageConfig>) -> Result<StorageConfig, String> {
     match saved {
         Some(config @ StorageConfig::Onedrive(_)) => Ok(config.clone()),
-        _ => Err(ONEDRIVE_SIGN_IN_REQUIRED.to_owned()),
+        _ => Err(t(SyncMsg::OneDriveSignInRequired).to_owned()),
     }
 }
 
@@ -2349,13 +2888,13 @@ fn build_webdav(form: &WebDavForm, saved: Option<&StorageConfig>) -> Result<Stor
         allow_insecure_http: form.allow_insecure_http,
     };
     if config.url.is_empty() {
-        return Err("请填写 WebDAV 地址".to_owned());
+        return Err(t(SyncMsg::WebdavUrlRequired).to_owned());
     }
     if config.username.is_empty() {
-        return Err("请填写 WebDAV 用户名".to_owned());
+        return Err(t(SyncMsg::WebdavUsernameRequired).to_owned());
     }
     if config.is_plain_http() && !config.allow_insecure_http {
-        return Err("地址是 http://，密码会以明文发送；需要先勾选「我了解密码会以明文发送，仍然使用 http://」".to_owned());
+        return Err(t(SyncMsg::WebdavInsecureHttp).to_owned());
     }
     let mut config = StorageConfig::Webdav(config);
     config.merge_saved_secret(saved_for_same_location(&config, saved));
@@ -2392,23 +2931,23 @@ fn saved_for_same_location<'a>(
 fn build_s3(form: &S3Form, saved: Option<&StorageConfig>) -> Result<StorageConfig, String> {
     let endpoint = form.endpoint.trim().to_owned();
     if endpoint.is_empty() {
-        return Err("请填写 S3 Endpoint".to_owned());
+        return Err(t(SyncMsg::S3EndpointRequired).to_owned());
     }
     validate_s3_endpoint(&endpoint)?;
     let bucket = form.bucket.trim().to_owned();
     if bucket.is_empty() {
-        return Err("请填写 S3 Bucket".to_owned());
+        return Err(t(SyncMsg::S3BucketRequired).to_owned());
     }
     if bucket.contains('/') {
-        return Err("S3 Bucket 不能包含 /".to_owned());
+        return Err(t(SyncMsg::S3BucketSlash).to_owned());
     }
     let access_key = form.access_key.trim().to_owned();
     if access_key.is_empty() {
-        return Err("请填写 S3 Access Key".to_owned());
+        return Err(t(SyncMsg::S3AccessKeyRequired).to_owned());
     }
     let region = form.region.trim().to_owned();
     if region.is_empty() {
-        return Err("请填写 S3 Region".to_owned());
+        return Err(t(SyncMsg::S3RegionRequired).to_owned());
     }
     let mut config = StorageConfig::S3(S3Config {
         endpoint,
@@ -2423,7 +2962,7 @@ fn build_s3(form: &S3Form, saved: Option<&StorageConfig>) -> Result<StorageConfi
     if let StorageConfig::S3(config) = &config
         && config.secret_key.is_empty()
     {
-        return Err("请填写 S3 Secret Key".to_owned());
+        return Err(t(SyncMsg::S3SecretRequired).to_owned());
     }
     Ok(config)
 }
@@ -2434,9 +2973,9 @@ fn validate_s3_endpoint(endpoint: &str) -> Result<(), String> {
     let rest = lower
         .strip_prefix("https://")
         .or_else(|| lower.strip_prefix("http://"))
-        .ok_or_else(|| "S3 Endpoint 必须以 http:// 或 https:// 开头".to_owned())?;
+        .ok_or_else(|| t(SyncMsg::S3EndpointScheme).to_owned())?;
     if rest.is_empty() || rest.starts_with('/') {
-        return Err("S3 Endpoint 缺少主机名".to_owned());
+        return Err(t(SyncMsg::S3EndpointNoHost).to_owned());
     }
     Ok(())
 }
@@ -2458,7 +2997,7 @@ fn build_github(form: &GithubForm, saved: Option<&StorageConfig>) -> Result<Stor
     if let StorageConfig::Github(config) = &config
         && config.token.trim().is_empty()
     {
-        return Err("请填写 GitHub 令牌".to_owned());
+        return Err(t(SyncMsg::GithubTokenRequired).to_owned());
     }
     Ok(config)
 }
@@ -2472,15 +3011,13 @@ fn validate_github_api_base(api_base: &str, allow_insecure_http: bool) -> Result
     } else if let Some(rest) = lower.strip_prefix("http://") {
         ("http", rest)
     } else {
-        return Err(
-            "API 地址必须以 https:// 或 http:// 开头（留空用 https://api.github.com）".to_owned(),
-        );
+        return Err(t(SyncMsg::GithubApiScheme).to_owned());
     };
     if rest.is_empty() || rest.starts_with('/') {
-        return Err("API 地址缺少主机名".to_owned());
+        return Err(t(SyncMsg::GithubApiNoHost).to_owned());
     }
     if scheme == "http" && !allow_insecure_http {
-        return Err("接口地址是 http://，令牌会以明文发送；需要先勾选「我了解令牌会以明文发送，仍然使用 http://」".to_owned());
+        return Err(t(SyncMsg::GithubInsecureHttp).to_owned());
     }
     Ok(())
 }
@@ -2489,12 +3026,17 @@ fn validate_github_api_base(api_base: &str, allow_insecure_http: bool) -> Result
 /// 免得「看到的是 A、同步的是 B」。OneDrive 没登录过直接提示先登录。
 fn sync_guard(selected: ProviderChoice, saved: Option<&StorageConfig>) -> Result<(), String> {
     if selected == ProviderChoice::OneDrive && !matches!(saved, Some(StorageConfig::Onedrive(_))) {
-        return Err(ONEDRIVE_SIGN_IN_REQUIRED.to_owned());
+        return Err(t(SyncMsg::OneDriveSignInRequired).to_owned());
     }
     match saved {
-        None => Err(format!("请先保存 {} 同步设置再同步", selected.label())),
+        None => Err(format!(
+            "{}{}{}",
+            t(SyncMsg::SaveSettingsFirstPrefix),
+            selected.label(),
+            t(SyncMsg::SaveSettingsFirstSuffix)
+        )),
         Some(config) if config.provider() != selected.key() => {
-            Err("请先保存当前存储设置".to_owned())
+            Err(t(SyncMsg::SaveCurrentSettingsFirst).to_owned())
         }
         Some(_) => Ok(()),
     }
@@ -2504,38 +3046,52 @@ fn sync_guard(selected: ProviderChoice, saved: Option<&StorageConfig>) -> Result
 /// 失败原因原样显示，不改写核心返回的内容。
 fn probe_text(probe: &ConnectionProbe) -> String {
     let mut lines = vec![
-        check_line("读取", &probe.read),
-        check_line("写入", &probe.write),
+        check_line(t(SyncMsg::ProbeRead), &probe.read),
+        check_line(t(SyncMsg::ProbeWrite), &probe.write),
     ];
     match &probe.concurrency {
         Some(concurrency) => {
-            lines.push(format!("并发保护：{}", concurrency_label(concurrency.mode)));
+            lines.push(format!(
+                "{}{}",
+                t(SyncMsg::ConcurrencyPrefix),
+                concurrency_label(concurrency.mode)
+            ));
             for note in &concurrency.notes {
-                lines.push(format!("  · {note}"));
+                lines.push(format!("{}{note}", t(SyncMsg::ConcurrencyNotePrefix)));
             }
         }
-        None => lines.push("并发保护：未检测（读写未通过）".to_owned()),
+        None => lines.push(t(SyncMsg::ConcurrencyNotChecked).to_owned()),
     }
     lines.push(if probe.has_existing_data {
-        "云端：已有同步数据（第二台电脑需要输入主密码解开）".to_owned()
+        t(SyncMsg::CloudHasData).to_owned()
     } else {
-        "云端：还没有同步数据".to_owned()
+        t(SyncMsg::CloudEmpty).to_owned()
     });
     lines.join("\n")
 }
 
 fn check_line(label: &str, check: &zssh_core::sync::remote::Check) -> String {
     if check.ok {
-        format!("{label}：成功 — {}", check.message)
+        format!(
+            "{prefix}{label}{middle}{message}",
+            prefix = "",
+            middle = t(SyncMsg::CheckOkMiddle),
+            message = check.message
+        )
     } else {
-        format!("{label}：失败 — {}", check.message)
+        format!(
+            "{prefix}{label}{middle}{message}",
+            prefix = "",
+            middle = t(SyncMsg::CheckFailedMiddle),
+            message = check.message
+        )
     }
 }
 
 fn concurrency_label(mode: ConcurrencyMode) -> &'static str {
     match mode {
-        ConcurrencyMode::Conditional => "支持条件写入（服务器保证原子）",
-        ConcurrencyMode::ReadBeforeWrite => "不支持条件写入（写前再读，仍可能覆盖）",
+        ConcurrencyMode::Conditional => t(SyncMsg::ConcurrencyConditional),
+        ConcurrencyMode::ReadBeforeWrite => t(SyncMsg::ConcurrencyReadBeforeWrite),
     }
 }
 
@@ -2568,10 +3124,10 @@ impl RememberPassword {
     /// 开关旁边的提示；`saved` 是打开窗口时读到的本机状态。
     fn hint(self) -> &'static str {
         match (self.toggled, self.saved) {
-            (true, true) => REMEMBER_SAVED,
-            (true, false) => REMEMBER_PENDING,
-            (false, true) => REMEMBER_CLEAR_PENDING,
-            (false, false) => REMEMBER_OFF,
+            (true, true) => t(SyncMsg::RememberSaved),
+            (true, false) => t(SyncMsg::RememberPending),
+            (false, true) => t(SyncMsg::RememberClearPending),
+            (false, false) => t(SyncMsg::RememberOff),
         }
     }
 }
@@ -2604,8 +3160,8 @@ fn remember_action(toggled: bool, status: Option<SyncStatus>) -> RememberAction 
 /// 同步结束后 footer 要显示的文字；`Keep` 不覆盖原有状态。
 fn remember_footer(action: RememberAction) -> Option<&'static str> {
     match action {
-        RememberAction::Save => Some(MASTER_PASSWORD_REMEMBERED),
-        RememberAction::Clear => Some(MASTER_PASSWORD_FORGOTTEN),
+        RememberAction::Save => Some(t(SyncMsg::MasterPasswordRemembered)),
+        RememberAction::Clear => Some(t(SyncMsg::MasterPasswordForgotten)),
         RememberAction::Keep => None,
     }
 }
@@ -2691,24 +3247,30 @@ fn conflict_row(view: &ConflictView, armed: bool) -> ConflictRow {
         view.name.clone()
     };
     let kept = if view.deletion {
-        "保留：删除（这条记录在另一边已被删除）".to_owned()
+        t(SyncMsg::KeptDeletion).to_owned()
     } else {
         format!(
-            "保留：{} 的改动：{}",
+            "{}{}{}{}",
+            t(SyncMsg::KeptChangePrefix),
             device_label(view.kept_is_local, view.kept_device.as_deref()),
+            t(SyncMsg::KeptChangeMiddle),
             view.kept_summary
         )
     };
     let other = if view.deletion {
         format!(
-            "另一份：{} 最后的内容：{}",
+            "{}{}{}{}",
+            t(SyncMsg::OtherLastContentPrefix),
             device_label(view.other_is_local, view.other_device.as_deref()),
+            t(SyncMsg::OtherLastContentMiddle),
             view.other_summary
         )
     } else {
         format!(
-            "另一份：{} 的改动：{}",
+            "{}{}{}{}",
+            t(SyncMsg::OtherChangePrefix),
             device_label(view.other_is_local, view.other_device.as_deref()),
+            t(SyncMsg::OtherChangeMiddle),
             view.other_summary
         )
     };
@@ -2727,12 +3289,12 @@ fn conflict_row(view: &ConflictView, armed: bool) -> ConflictRow {
 
 fn entity_label(entity: &str) -> &str {
     match entity {
-        "host" => "主机",
-        "group" => "分组",
-        "identity" => "凭据",
-        "proxy" => "代理",
-        "known_host" => "主机指纹",
-        "setting" => "设置",
+        "host" => t(SyncMsg::EntityHost),
+        "group" => t(SyncMsg::EntityGroup),
+        "identity" => t(SyncMsg::EntityIdentity),
+        "proxy" => t(SyncMsg::EntityProxy),
+        "known_host" => t(SyncMsg::EntityKnownHost),
+        "setting" => t(SyncMsg::EntitySetting),
         other => other,
     }
 }
@@ -2740,16 +3302,18 @@ fn entity_label(entity: &str) -> &str {
 /// 哪台电脑：本机，或者另一台（设备 ID 只显示前 8 位）。
 fn device_label(is_local: bool, device: Option<&str>) -> String {
     if is_local {
-        return "本机".to_owned();
+        return t(SyncMsg::ThisComputer).to_owned();
     }
     match device {
         Some(device) if !device.is_empty() => {
             format!(
-                "另一台电脑（{}）",
-                device.chars().take(8).collect::<String>()
+                "{}{}{}",
+                t(SyncMsg::OtherComputerPrefix),
+                device.chars().take(8).collect::<String>(),
+                t(SyncMsg::OtherComputerSuffix)
             )
         }
-        _ => "另一台电脑".to_owned(),
+        _ => t(SyncMsg::OtherComputer).to_owned(),
     }
 }
 
@@ -2887,8 +3451,10 @@ fn load_saved() -> (Option<StorageConfig>, Option<ConfigView>, String) {
                 (Some(config), Some(view), String::new())
             } else {
                 let message = format!(
-                    "本机保存的同步存储是 {}，原生窗口目前不支持编辑它；保存别的存储会替换它。",
-                    provider_label(config.provider())
+                    "{}{}{}",
+                    t(SyncMsg::UnsupportedProviderPrefix),
+                    provider_label(config.provider()),
+                    t(SyncMsg::UnsupportedProviderSuffix)
                 );
                 (None, None, message)
             }
@@ -2913,7 +3479,8 @@ fn load_saved_config(data_dir: &Path) -> Result<Option<StorageConfig>, String> {
     if !path.is_file() {
         return Ok(None);
     }
-    let db = Database::open(&path).map_err(|err| format!("打开数据库失败：{err}"))?;
+    let db = Database::open(&path)
+        .map_err(|err| format!("{}{err}", t(SyncMsg::OpenDatabaseFailedPrefix)))?;
     service::load_config(&db, &DpapiSealer).map_err(|err| err.to_string())
 }
 
@@ -2925,7 +3492,7 @@ fn load_conflicts_at(data_dir: &Path) -> Result<Vec<ConflictView>, String> {
     let db = open_existing_db_at(data_dir)?;
     let device_id = db
         .sync_device_id()
-        .map_err(|err| format!("读取同步设备 ID 失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(SyncMsg::ReadDeviceIdFailedPrefix)))?;
     conflicts::list(&db, &DpapiSealer, &device_id, now_secs()).map_err(|err| err.to_string())
 }
 
@@ -2937,7 +3504,7 @@ fn use_other_at(data_dir: &Path, id: i64) -> Result<(), String> {
     let db = open_existing_db_at(data_dir)?;
     let device_id = db
         .sync_device_id()
-        .map_err(|err| format!("读取同步设备 ID 失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(SyncMsg::ReadDeviceIdFailedPrefix)))?;
     let known_hosts = data_dir.join("known_hosts");
     conflicts::use_other(
         &db,
@@ -2961,9 +3528,10 @@ fn dismiss_at(data_dir: &Path, id: i64) -> Result<(), String> {
 fn open_existing_db_at(data_dir: &Path) -> Result<Database, String> {
     let path = data_dir.join("zssh.db");
     if !path.is_file() {
-        return Err("本机还没有同步数据库".to_owned());
+        return Err(t(SyncMsg::NoSyncDatabase).to_owned());
     }
-    Database::open(&path).map_err(|err| format!("打开数据库失败：{err}"))
+    Database::open(&path)
+        .map_err(|err| format!("{}{err}", t(SyncMsg::OpenDatabaseFailedPrefix)))
 }
 
 /// 冲突的保留期按秒算，和核心用同一个时钟。
@@ -3055,8 +3623,10 @@ fn disconnect_onedrive_at(data_dir: &Path) -> Result<(), String> {
 
 /// 后台线程自己开库；不复用界面里的连接，免得跨线程持有 SQLite 连接。
 fn open_db_at(data_dir: &Path) -> Result<Database, String> {
-    std::fs::create_dir_all(data_dir).map_err(|err| format!("创建数据目录失败：{err}"))?;
-    Database::open(&data_dir.join("zssh.db")).map_err(|err| format!("打开数据库失败：{err}"))
+    std::fs::create_dir_all(data_dir)
+        .map_err(|err| format!("{}{err}", t(SyncMsg::CreateDataDirFailedPrefix)))?;
+    Database::open(&data_dir.join("zssh.db"))
+        .map_err(|err| format!("{}{err}", t(SyncMsg::OpenDatabaseFailedPrefix)))
 }
 
 /// OneDrive 的服务地址：生产是微软的；debug 构建里验收脚本可以换成本机的桩（不连真实服务）。
@@ -3143,7 +3713,7 @@ fn save_probed_concurrency(db: &Database, probe: &ConnectionProbe) -> Result<(),
             checked_at: now_secs(),
         },
     )
-    .map_err(|err| format!("保存并发保护检测结果失败：{err}"))
+    .map_err(|err| format!("{}{err}", t(SyncMsg::SaveConcurrencyFailedPrefix)))
 }
 
 /// 在阻塞线程里跑一次真正的同步；界面线程不开库、不碰网络。
@@ -3181,7 +3751,7 @@ fn run_sync_inner(
     ensure_github_gist(handle, &db, sealer)?;
     let device_id = db
         .sync_device_id()
-        .map_err(|err| format!("读取同步设备 ID 失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(SyncMsg::ReadDeviceIdFailedPrefix)))?;
     let context = SyncContext {
         db: &db,
         sealer,
@@ -3213,11 +3783,17 @@ fn ensure_github_gist(
     let proxy = service::default_proxy(db).map_err(|err| err.to_string())?;
     let id = handle
         .block_on(github::create_gist(&config, proxy.as_ref()))
-        .map_err(|err| format!("新建 Gist 失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(SyncMsg::CreateGistFailedPrefix)))?;
     config.gist_id = id.clone();
     // 同步包只写这个 Gist；先存下来，中途失败也不会每点一次就多建一个。
     service::save_config(db, sealer, &StorageConfig::Github(config))
-        .map_err(|err| format!("保存新建的 Gist ID 失败（{id}）：{err}"))
+        .map_err(|err| {
+            format!(
+                "{}{id}{}{err}",
+                t(SyncMsg::SaveGistIdFailedPrefix),
+                t(SyncMsg::SaveGistIdFailedSuffix)
+            )
+        })
 }
 
 /// 主密码长度按核心的 [`service::MIN_MASTER_PASSWORD_CHARS`] 校验；按字符数
@@ -3226,8 +3802,11 @@ fn validate_master_password(password: &str) -> Result<(), String> {
     let chars = password.chars().count();
     if chars < service::MIN_MASTER_PASSWORD_CHARS {
         return Err(format!(
-            "主密码至少需要 {} 个字符（现在 {chars} 个）",
-            service::MIN_MASTER_PASSWORD_CHARS
+            "{}{}{}{chars}{}",
+            t(SyncMsg::MasterPasswordTooShortPrefix),
+            service::MIN_MASTER_PASSWORD_CHARS,
+            t(SyncMsg::MasterPasswordTooShortMiddle),
+            t(SyncMsg::MasterPasswordTooShortSuffix)
         ));
     }
     Ok(())
@@ -3236,8 +3815,12 @@ fn validate_master_password(password: &str) -> Result<(), String> {
 /// 同步结果给界面的文本行：状态、摘要、应用统计、备份名和冲突摘要。
 fn sync_report_lines(report: &SyncReport) -> Vec<String> {
     let mut lines = vec![
-        format!("状态：{}", sync_status_label(report.status)),
-        format!("摘要：{}", report.summary),
+        format!(
+            "{}{}",
+            t(SyncMsg::StatusPrefix),
+            sync_status_label(report.status)
+        ),
+        format!("{}{}", t(SyncMsg::SummaryPrefix), report.summary),
     ];
     if report.status == SyncStatus::NeedsConfirmation {
         lines.extend(deletion_lines(&report.deletion));
@@ -3246,17 +3829,28 @@ fn sync_report_lines(report: &SyncReport) -> Vec<String> {
         lines.push(applied_text(applied));
     }
     if let Some(backup) = report.backup.as_ref() {
-        lines.push(format!("备份：{}", backup.name));
+        lines.push(format!(
+            "{}{}",
+            t(SyncMsg::BackupPrefix),
+            backup.name
+        ));
     }
     if !report.conflicts.is_empty() {
-        lines.push(format!("冲突 {} 项：", report.conflicts.len()));
+        lines.push(format!(
+            "{}{}{}",
+            t(SyncMsg::ConflictCountPrefix),
+            report.conflicts.len(),
+            t(SyncMsg::ConflictCountSuffix)
+        ));
         for conflict in report.conflicts.iter().take(MAX_CONFLICT_LINES) {
             lines.push(conflict_line(conflict));
         }
         if report.conflicts.len() > MAX_CONFLICT_LINES {
             lines.push(format!(
-                "  …还有 {} 条",
-                report.conflicts.len() - MAX_CONFLICT_LINES
+                "{}{}{}",
+                t(SyncMsg::MoreConflictsPrefix),
+                report.conflicts.len() - MAX_CONFLICT_LINES,
+                t(SyncMsg::MoreConflictsSuffix)
             ));
         }
     }
@@ -3270,17 +3864,23 @@ fn deletion_lines(plan: &zssh_core::sync::guard::DeletionPlan) -> Vec<String> {
         return Vec::new();
     }
     let shown = plan.samples.len().min(MAX_DELETION_NAMES);
-    let mut lines = vec!["将被删除：".to_owned()];
+    let mut lines = vec![t(SyncMsg::WillDelete).to_owned()];
     for sample in plan.samples.iter().take(shown) {
         lines.push(format!(
-            "  · {}：{}",
+            "{}{}{}{}",
+            t(SyncMsg::DeletionSamplePrefix),
             entity_label(&sample.entity),
+            t(SyncMsg::DeletionSampleMiddle),
             sample.name
         ));
     }
     let more = plan.deleted_records.saturating_sub(shown);
     if more > 0 {
-        lines.push(format!("  …另有 {more} 条"));
+        lines.push(format!(
+            "{}{more}{}",
+            t(SyncMsg::MoreDeletionsPrefix),
+            t(SyncMsg::MoreDeletionsSuffix)
+        ));
     }
     lines
 }
@@ -3291,7 +3891,7 @@ fn check_master_password_entry(password: &str, confirm: Option<&str>) -> Result<
     if let Some(confirm) = confirm
         && confirm != password
     {
-        return Err("两次输入的主密码不一致".to_owned());
+        return Err(t(SyncMsg::MasterPasswordMismatch).to_owned());
     }
     Ok(())
 }
@@ -3309,40 +3909,58 @@ fn load_ready_at(data_dir: &Path) -> bool {
 
 fn sync_status_label(status: SyncStatus) -> &'static str {
     match status {
-        SyncStatus::Completed => "完成",
-        SyncStatus::LocalChanged => "本地有变化",
-        SyncStatus::NeedsConfirmation => "需要确认",
-        SyncStatus::Cancelled => "已取消",
+        SyncStatus::Completed => t(SyncMsg::StatusCompleted),
+        SyncStatus::LocalChanged => t(SyncMsg::StatusLocalChanged),
+        SyncStatus::NeedsConfirmation => t(SyncMsg::StatusNeedsConfirmation),
+        SyncStatus::Cancelled => t(SyncMsg::StatusCancelled),
     }
+}
+
+/// 一类记录的「新增/更新/删除」片段：`prefix` 后面接三个数字。
+fn counts_fragment(prefix: &str, counts: &ChangeCounts) -> String {
+    format!(
+        "{prefix}{}{updated}{}{deleted}{}",
+        counts.inserted,
+        counts.updated,
+        counts.deleted,
+        updated = t(SyncMsg::AppliedUpdated),
+        deleted = t(SyncMsg::AppliedDeleted),
+    )
 }
 
 /// 各类记录的写入统计。核心的 `ApplyReport` 只有这几项；主机记忆和转发规则
 /// 的条数只在恢复备份的 `RestoreReport.extras` 里，同步结果拿不到。
 fn applied_text(applied: &ApplyReport) -> String {
-    let mut text = format!(
-        "应用：主机 新增{}/更新{}/删除{}；凭据 新增{}/更新{}/删除{}；\
-         分组 新增{}/更新{}/删除{}；代理 新增{}/更新{}/删除{}；\
-         设置 {} 项；known_hosts {} 条；冲突 {} 条",
-        applied.hosts.inserted,
-        applied.hosts.updated,
-        applied.hosts.deleted,
-        applied.identities.inserted,
-        applied.identities.updated,
-        applied.identities.deleted,
-        applied.groups.inserted,
-        applied.groups.updated,
-        applied.groups.deleted,
-        applied.proxies.inserted,
-        applied.proxies.updated,
-        applied.proxies.deleted,
-        applied.settings_written,
-        applied.known_hosts_added,
-        applied.conflicts_stored
-    );
+    let mut text = counts_fragment(t(SyncMsg::AppliedPrefix), &applied.hosts);
+    text.push_str(&counts_fragment(
+        t(SyncMsg::AppliedIdentitiesPrefix),
+        &applied.identities,
+    ));
+    text.push_str(&counts_fragment(
+        t(SyncMsg::AppliedGroupsPrefix),
+        &applied.groups,
+    ));
+    text.push_str(&counts_fragment(
+        t(SyncMsg::AppliedProxiesPrefix),
+        &applied.proxies,
+    ));
+    text.push_str(&format!(
+        "{settings}{settings_written}{known_hosts}{known_hosts_added}\
+         {conflicts}{conflicts_stored}{tail}",
+        settings = t(SyncMsg::AppliedSettingsPrefix),
+        settings_written = applied.settings_written,
+        known_hosts = t(SyncMsg::AppliedKnownHostsPrefix),
+        known_hosts_added = applied.known_hosts_added,
+        conflicts = t(SyncMsg::AppliedConflictsPrefix),
+        conflicts_stored = applied.conflicts_stored,
+        tail = t(SyncMsg::AppliedSuffix),
+    ));
     if applied.known_hosts_skipped > 0 {
         text.push_str(&format!(
-            "；跳过 {} 条可疑主机密钥记录",
-            applied.known_hosts_skipped
+            "{}{}{}",
+            t(SyncMsg::SkippedHostKeysPrefix),
+            applied.known_hosts_skipped,
+            t(SyncMsg::SkippedHostKeysSuffix)
         ));
     }
     text
@@ -3351,8 +3969,12 @@ fn applied_text(applied: &ApplyReport) -> String {
 /// 一条冲突摘要：哪个实体、哪条记录、核心给的说明。
 fn conflict_line(conflict: &Conflict) -> String {
     format!(
-        "  · {} {}：{}",
-        conflict.entity, conflict.key, conflict.message
+        "{}{} {}{}{}",
+        t(SyncMsg::DeletionSamplePrefix),
+        conflict.entity,
+        conflict.key,
+        t(SyncMsg::ConflictKeySeparator),
+        conflict.message
     )
 }
 
@@ -3378,11 +4000,9 @@ mod tests {
     use zssh_core::sync::webdav::WebDavConfig;
 
     use super::{
-        AUTO_NO_PASSWORD, AUTO_NO_STORAGE, AUTO_OFF, AutoBackoff, AutoClock, ClearConfirm,
-        ConflictPanel, GithubForm, LogoutConfirm, MASTER_PASSWORD_FORGOTTEN,
-        MASTER_PASSWORD_REMEMBERED, OneDriveForm, ProviderChoice, ProviderDrafts,
-        REMEMBER_CLEAR_PENDING, REMEMBER_OFF, REMEMBER_PENDING, REMEMBER_SAVED, RememberAction,
-        RememberPassword, S3Form, SyncState, WebDavForm, auto_due, auto_pause_reason, build_github,
+        AutoBackoff, AutoClock, ClearConfirm, ConflictPanel, GithubForm, LogoutConfirm,
+        OneDriveForm, ProviderChoice, ProviderDrafts, RememberAction, RememberPassword, S3Form,
+        SyncState, WebDavForm, auto_due, auto_pause_reason, build_github,
         build_onedrive, build_s3, build_webdav, clamp_interval, conflict_row, form_from_view,
         github_form_from_view, last_result_error, last_result_from_report, onedrive_account_label,
         onedrive_form_from_view, parse_interval, probe_text, remember_action, remember_footer,
@@ -4346,22 +4966,22 @@ mod tests {
         let off = RememberPassword::default();
         assert!(!off.toggled, "「记住主密码」默认关闭");
         assert!(!off.saved);
-        assert_eq!(off.hint(), REMEMBER_OFF);
+        assert_eq!(off.hint(), "不记住");
 
         let mut toggled = RememberPassword::default();
         toggled.toggle();
         assert!(toggled.toggled);
         assert!(!toggled.saved, "开关打开不等于已经写盘");
-        assert_eq!(toggled.hint(), REMEMBER_PENDING);
+        assert_eq!(toggled.hint(), "同步成功后记住");
         toggled.toggle();
         assert!(!toggled.toggled);
-        assert_eq!(toggled.hint(), REMEMBER_OFF);
+        assert_eq!(toggled.hint(), "不记住");
 
         // 打开窗口时读到已保存的主密码：开关打开并显示「已记住」。
         let loaded = RememberPassword::from_saved(Some(PASSWORD));
         assert!(loaded.toggled);
         assert!(loaded.saved);
-        assert_eq!(loaded.hint(), REMEMBER_SAVED);
+        assert_eq!(loaded.hint(), "已记住（本机加密）");
 
         // 没有保存、或者保存的是空串：开关保持关闭。
         assert!(!RememberPassword::from_saved(None).toggled);
@@ -4371,7 +4991,7 @@ mod tests {
         let mut clearing = loaded;
         clearing.toggle();
         assert!(!clearing.toggled);
-        assert_eq!(clearing.hint(), REMEMBER_CLEAR_PENDING);
+        assert_eq!(clearing.hint(), "同步成功后清除");
     }
 
     #[test]
@@ -4409,11 +5029,11 @@ mod tests {
         assert_eq!(remember_footer(RememberAction::Keep), None);
         assert_eq!(
             remember_footer(RememberAction::Save),
-            Some(MASTER_PASSWORD_REMEMBERED)
+            Some("已记住主密码")
         );
         assert_eq!(
             remember_footer(RememberAction::Clear),
-            Some(MASTER_PASSWORD_FORGOTTEN)
+            Some("已清除记住的主密码")
         );
     }
 
@@ -4849,12 +5469,12 @@ mod tests {
 
     #[test]
     fn auto_pause_reasons() {
-        assert_eq!(auto_pause_reason(false, true, true), Some(AUTO_OFF));
-        assert_eq!(auto_pause_reason(true, true, false), Some(AUTO_NO_STORAGE));
-        assert_eq!(auto_pause_reason(true, false, true), Some(AUTO_NO_PASSWORD));
+        assert_eq!(auto_pause_reason(false, true, true), Some("自动同步未开启"));
+        assert_eq!(auto_pause_reason(true, true, false), Some("还没有保存同步存储"));
+        assert_eq!(auto_pause_reason(true, false, true), Some("还没有记住主密码"));
         assert_eq!(
             auto_pause_reason(true, false, false),
-            Some(AUTO_NO_STORAGE),
+            Some("还没有保存同步存储"),
             "没配存储时先说存储"
         );
         assert_eq!(auto_pause_reason(true, true, true), None);
@@ -4916,7 +5536,7 @@ mod protection_tests {
     use zssh_core::sync::webdav::WebDavConfig;
 
     use super::{
-        AUTO_BASELINE_BROKEN, AUTO_NOT_READY, AutoClock, AutoPause, ExclusiveKind, FailureKind,
+        AutoClock, AutoPause, ExclusiveKind, FailureKind,
         SyncGuardState, SyncInFlight, SyncOutcome, WebDavForm, auto_block_reason, auto_tick_with,
         baseline_broken_with, build_webdav, check_master_password_entry, classify_failure,
         deletion_lines, exclusive_busy_message, load_ready_at, probe_connection_with,
@@ -5428,17 +6048,20 @@ mod protection_tests {
             auto_block_reason(true, true, true, ready, broken, guard.map(str::to_owned))
         };
         assert_eq!(go(true, false, None), None);
-        assert_eq!(go(false, false, None).as_deref(), Some(AUTO_NOT_READY));
-        assert_eq!(go(true, true, None).as_deref(), Some(AUTO_BASELINE_BROKEN));
+        assert_eq!(go(false, false, None).as_deref(), Some("还没有成功同步过，先手动同步一次"));
+        assert_eq!(
+            go(true, true, None).as_deref(),
+            Some("同步基线损坏，请先重建基线")
+        );
         assert_eq!(go(true, false, Some("限流")).as_deref(), Some("限流"));
         // 本机配置不全时先报配置的原因。
         assert_eq!(
             auto_block_reason(true, false, true, true, false, None).as_deref(),
-            Some(super::AUTO_NO_PASSWORD)
+            Some("还没有记住主密码")
         );
         assert_eq!(
             auto_block_reason(false, true, true, true, false, None).as_deref(),
-            Some(super::AUTO_OFF)
+            Some("自动同步未开启")
         );
     }
 

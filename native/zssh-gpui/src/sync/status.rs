@@ -16,6 +16,89 @@ use super::{
     open_existing_db_at, with_sync_guard,
 };
 use crate::datetime::{civil_from_days, local_utc_offset};
+use crate::i18n::{Msg, t};
+
+/// 底部同步状态条（`status.rs`）自己的界面文案：各状态的整句、前缀 / 后缀和凭据叫法。
+///
+/// 只放应用自己的固定文案；失败原因（`last.summary`）和存储名属于远端 / 用户数据，原样拼在
+/// 本地化前缀后面，不经过这里。`webdav` / `s3` / `github` / `onedrive` 这些协议键不进这张表。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyncStatusMsg {
+    Syncing,
+    AutoPausedPrefix,
+    PendingDeletionDefault,
+    PendingDeletionSuffix,
+    BaselineBroken,
+    NoMasterPassword,
+    NeedMasterPassword,
+    OneDriveExpired,
+    AuthExpiredPrefix,
+    AuthExpiredSuffix,
+    NotSyncedYet,
+    SyncFailedPrefix,
+    LocalChanged,
+    Cancelled,
+    SyncedPrefix,
+    ConflictsMiddle,
+    ConflictsSuffix,
+    CredentialToken,
+    CredentialAccessKey,
+    CredentialAccount,
+}
+
+impl Msg for SyncStatusMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::Syncing => "同步中…",
+            Self::AutoPausedPrefix => "自动同步已暂停：",
+            Self::PendingDeletionDefault => "同步会删除很多记录",
+            Self::PendingDeletionSuffix => "，等待你确认",
+            Self::BaselineBroken => "同步基线损坏，需要重建后才能同步",
+            Self::NoMasterPassword => "同步：还没有设置主密码",
+            Self::NeedMasterPassword => "同步：需要输入主密码",
+            Self::OneDriveExpired => "同步已暂停：OneDrive 登录已失效，请重新登录",
+            Self::AuthExpiredPrefix => "同步已暂停：",
+            Self::AuthExpiredSuffix => "已失效，请重新填写",
+            Self::NotSyncedYet => "同步：尚未同步",
+            Self::SyncFailedPrefix => "同步失败：",
+            Self::LocalChanged => "同步期间有改动，稍后自动重新同步",
+            Self::Cancelled => "上次同步已取消",
+            Self::SyncedPrefix => "已同步 ",
+            Self::ConflictsMiddle => "，",
+            Self::ConflictsSuffix => " 条冲突待处理",
+            Self::CredentialToken => "令牌",
+            Self::CredentialAccessKey => "访问密钥",
+            Self::CredentialAccount => "账号或密码",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::Syncing => "Syncing…",
+            Self::AutoPausedPrefix => "Auto sync paused: ",
+            Self::PendingDeletionDefault => "The sync would delete many records",
+            Self::PendingDeletionSuffix => ", waiting for your confirmation",
+            Self::BaselineBroken => "The sync baseline is broken; rebuild it before syncing",
+            Self::NoMasterPassword => "Sync: no master password set yet",
+            Self::NeedMasterPassword => "Sync: the master password is required",
+            Self::OneDriveExpired => {
+                "Sync paused: the OneDrive sign-in has expired; please sign in again"
+            }
+            Self::AuthExpiredPrefix => "Sync paused: ",
+            Self::AuthExpiredSuffix => " has expired; please enter it again",
+            Self::NotSyncedYet => "Sync: not synced yet",
+            Self::SyncFailedPrefix => "Sync failed: ",
+            Self::LocalChanged => "Changed during the sync; it retries automatically later",
+            Self::Cancelled => "The last sync was cancelled",
+            Self::SyncedPrefix => "Synced ",
+            Self::ConflictsMiddle => ", ",
+            Self::ConflictsSuffix => " conflicts to resolve",
+            Self::CredentialToken => "the token",
+            Self::CredentialAccessKey => "the access key",
+            Self::CredentialAccount => "the username or password",
+        }
+    }
+}
 
 /// 状态条的颜色档位。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,9 +161,9 @@ pub(super) struct BarInput {
 /// 被拒绝的是什么凭据（各家叫法不同）。
 fn credential_name(provider: Option<&str>) -> &'static str {
     match provider {
-        Some("github") => "令牌",
-        Some("s3") => "访问密钥",
-        _ => "账号或密码",
+        Some("github") => t(SyncStatusMsg::CredentialToken),
+        Some("s3") => t(SyncStatusMsg::CredentialAccessKey),
+        _ => t(SyncStatusMsg::CredentialAccount),
     }
 }
 
@@ -103,51 +186,62 @@ pub(super) fn model_for(input: &BarInput) -> SyncBarModel {
         return SyncBarModel::hidden();
     }
     if input.running {
-        return SyncBarModel::shown(Tone::Busy, "同步中…");
+        return SyncBarModel::shown(Tone::Busy, t(SyncStatusMsg::Syncing));
     }
     if input.pending {
         let auto = input.last.as_ref().is_some_and(|last| last.auto);
-        let prefix = if auto { "自动同步已暂停：" } else { "" };
+        let prefix = if auto { t(SyncStatusMsg::AutoPausedPrefix) } else { "" };
         let detail = input
             .last
             .as_ref()
             .filter(|last| last.status == "needs_confirmation")
             .map(|last| last.summary.as_str())
             .filter(|summary| !summary.is_empty())
-            .unwrap_or("同步会删除很多记录");
-        return SyncBarModel::shown(Tone::Warn, format!("{prefix}{detail}，等待你确认"));
+            .unwrap_or(t(SyncStatusMsg::PendingDeletionDefault));
+        return SyncBarModel::shown(
+            Tone::Warn,
+            format!(
+                "{prefix}{detail}{}",
+                t(SyncStatusMsg::PendingDeletionSuffix)
+            ),
+        );
     }
     if input.baseline_broken {
-        return SyncBarModel::shown(Tone::Error, "同步基线损坏，需要重建后才能同步");
+        return SyncBarModel::shown(Tone::Error, t(SyncStatusMsg::BaselineBroken));
     }
     if !input.ready {
-        return SyncBarModel::shown(Tone::Warn, "同步：还没有设置主密码");
+        return SyncBarModel::shown(Tone::Warn, t(SyncStatusMsg::NoMasterPassword));
     }
     if !input.password_available {
-        return SyncBarModel::shown(Tone::Warn, "同步：需要输入主密码");
+        return SyncBarModel::shown(Tone::Warn, t(SyncStatusMsg::NeedMasterPassword));
     }
     if input.auth_paused {
         let text = if input.provider == Some("onedrive") {
-            "同步已暂停：OneDrive 登录已失效，请重新登录".to_owned()
+            t(SyncStatusMsg::OneDriveExpired).to_owned()
         } else {
             format!(
-                "同步已暂停：{}已失效，请重新填写",
-                credential_name(input.provider)
+                "{}{}{}",
+                t(SyncStatusMsg::AuthExpiredPrefix),
+                credential_name(input.provider),
+                t(SyncStatusMsg::AuthExpiredSuffix)
             )
         };
         return SyncBarModel::shown(Tone::Error, text);
     }
     let Some(last) = &input.last else {
-        return SyncBarModel::shown(Tone::Idle, "同步：尚未同步");
+        return SyncBarModel::shown(Tone::Idle, t(SyncStatusMsg::NotSyncedYet));
     };
     match last.status.as_str() {
         ERROR_STATUS => {
-            return SyncBarModel::shown(Tone::Error, format!("同步失败：{}", last.summary));
+            return SyncBarModel::shown(
+                Tone::Error,
+                format!("{}{}", t(SyncStatusMsg::SyncFailedPrefix), last.summary),
+            );
         }
         "local_changed" => {
-            return SyncBarModel::shown(Tone::Idle, "同步期间有改动，稍后自动重新同步");
+            return SyncBarModel::shown(Tone::Idle, t(SyncStatusMsg::LocalChanged));
         }
-        "cancelled" => return SyncBarModel::shown(Tone::Idle, "上次同步已取消"),
+        "cancelled" => return SyncBarModel::shown(Tone::Idle, t(SyncStatusMsg::Cancelled)),
         _ => {}
     }
     let stamp = format_stamp(last.at);
@@ -155,10 +249,19 @@ pub(super) fn model_for(input: &BarInput) -> SyncBarModel {
     if input.conflict_count > 0 {
         SyncBarModel::shown(
             Tone::Warn,
-            format!("已同步 {time}，{} 条冲突待处理", input.conflict_count),
+            format!(
+                "{}{time}{}{}{}",
+                t(SyncStatusMsg::SyncedPrefix),
+                t(SyncStatusMsg::ConflictsMiddle),
+                input.conflict_count,
+                t(SyncStatusMsg::ConflictsSuffix)
+            ),
         )
     } else {
-        SyncBarModel::shown(Tone::Ok, format!("已同步 {time}"))
+        SyncBarModel::shown(
+            Tone::Ok,
+            format!("{}{time}", t(SyncStatusMsg::SyncedPrefix)),
+        )
     }
 }
 

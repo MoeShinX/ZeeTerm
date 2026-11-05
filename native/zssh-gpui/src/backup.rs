@@ -29,6 +29,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 use crate::armed::ArmedConfirm;
+use crate::i18n::{Msg, t};
 use ::gpui::{
     App, FocusHandle, ScrollHandle, Subscription, Task, Window, WindowBounds, WindowOptions,
 };
@@ -37,7 +38,7 @@ use gpui_kit::*;
 use zssh_core::ai::history::now_ms;
 use zssh_core::store::Database;
 use zssh_core::sync::accounts::{AccountsRestore, SyncAccounts};
-use zssh_core::sync::apply::ApplyReport;
+use zssh_core::sync::apply::{ApplyReport, ChangeCounts};
 use zssh_core::sync::backup::{BackupDetail, BackupInfo, BackupStore, RestoreReport};
 use zssh_core::sync::engine::SyncEngine;
 use zssh_core::sync::local_extras::LocalExtras;
@@ -47,14 +48,271 @@ use zssh_core::sync::snapshot::snapshot_local;
 
 use crate::sync::{ExclusiveKind, SyncInFlight, exclusive_busy_message};
 
+/// 备份与恢复的界面文案：卡片标题、按钮、状态行、确认提示、错误前缀。
+///
+/// 只放**应用自己的**固定文案；备份文件名、路径、云端账号名和核心库的错误原文属于远端 / 用户
+/// 数据，原样拼在本地化前缀后面，不经过这里。带参数的句子保留 `format!`，这里只提供固定片段。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BackupMsg {
+    // ---- 窗口标题 / 后台任务 ----
+    WindowTitle,
+    BusyList,
+    BusyCreate,
+    BusyRestore,
+    BusyExport,
+    BusyImport,
+    // ---- 占位提示 ----
+    PasswordPlaceholder,
+    PasswordConfirmPlaceholder,
+    PackagePathPlaceholder,
+    // ---- 保留份数 ----
+    KeepRangePrefix,
+    KeepRangeSuffix,
+    // ---- 任务启动失败（前缀，后面接错误原文） ----
+    StartLoadFailedPrefix,
+    StartCreateFailedPrefix,
+    StartRestoreFailedPrefix,
+    StartExportFailedPrefix,
+    StartImportFailedPrefix,
+    // ---- 状态行 ----
+    OverwriteExistsPrefix,
+    OverwriteExistsSuffix,
+    CreatedPrefix,
+    ExportedPrefix,
+    ExportedBytesOpen,
+    ExportedBytesSuffix,
+    // ---- 恢复 / 导入带回的同步账号设置 ----
+    AccountsAppliedLine,
+    AccountsNeedsConfirmationLine,
+    AccountsWriteBackFailedPrefix,
+    AccountsReplaced,
+    AccountsReplaceFailedPrefix,
+    AccountsKept,
+    // ---- 确认提示 ----
+    ConfirmWarning,
+    ReplaceWarning,
+    // ---- 输入校验 ----
+    PasswordEmpty,
+    PasswordTooShortPrefix,
+    PasswordTooShortSuffix,
+    PasswordMismatch,
+    PackagePathEmpty,
+    // ---- 导入结果摘要 ----
+    ImportSummaryPrefix,
+    ImportSummaryUpdated,
+    ImportSummaryDeleted,
+    ImportSummaryIdentities,
+    ImportSummaryProxies,
+    ImportSummarySuffix,
+    ConflictsKeptNewerPrefix,
+    ConflictsKeptNewerSuffix,
+    NulledReferencesPrefix,
+    NulledReferencesSuffix,
+    SafetyBackupPrefix,
+    // ---- 应用统计 ----
+    AppliedPrefix,
+    AppliedUpdated,
+    AppliedDeleted,
+    AppliedIdentitiesPrefix,
+    AppliedGroupsPrefix,
+    AppliedProxiesPrefix,
+    AppliedSettingsPrefix,
+    AppliedKnownHostsPrefix,
+    AppliedConflictsPrefix,
+    AppliedSuffix,
+    SkippedHostKeysPrefix,
+    SkippedHostKeysInlinePrefix,
+    SkippedHostKeysSuffix,
+    // ---- 恢复结果摘要 ----
+    RestoreSummaryPrefix,
+    RestoreSummaryHostMemory,
+    RestoreSummaryForwards,
+    RestoreSummarySafetyBackupPrefix,
+    // ---- 本机设置读写失败（前缀，后面接错误原文） ----
+    SaveKeepFailedPrefix,
+    ReadDeviceIdFailedPrefix,
+    CreatePackageDirFailedPrefix,
+    WritePackageFailedPrefix,
+    CreateDataDirFailedPrefix,
+    OpenDatabaseFailedPrefix,
+}
+
+impl Msg for BackupMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::WindowTitle => "备份与恢复",
+            Self::BusyList => "正在读取备份列表…",
+            Self::BusyCreate => "正在创建备份…",
+            Self::BusyRestore => "正在恢复备份…",
+            Self::BusyExport => "正在导出离线包…",
+            Self::BusyImport => "正在导入离线包…",
+            Self::PasswordPlaceholder => "主密码（只用于离线包，不会保存）",
+            Self::PasswordConfirmPlaceholder => "导出时再输入一次",
+            Self::PackagePathPlaceholder => "离线包路径",
+            Self::KeepRangePrefix => "请输入 1–",
+            Self::KeepRangeSuffix => " 的整数",
+            Self::StartLoadFailedPrefix => "启动读取备份任务失败：",
+            Self::StartCreateFailedPrefix => "启动备份任务失败：",
+            Self::StartRestoreFailedPrefix => "启动恢复任务失败：",
+            Self::StartExportFailedPrefix => "启动导出任务失败：",
+            Self::StartImportFailedPrefix => "启动导入任务失败：",
+            Self::OverwriteExistsPrefix => "离线包已存在：",
+            Self::OverwriteExistsSuffix => "，再次点击「确认覆盖」才会覆盖",
+            Self::CreatedPrefix => "备份已创建：",
+            Self::ExportedPrefix => "离线包已导出：",
+            Self::ExportedBytesOpen => "（",
+            Self::ExportedBytesSuffix => " 字节）",
+            Self::AccountsAppliedLine => {
+                "\n备份里的同步账号设置（存储连接、登录信息、云端备份目标）已一并写回，不用重新填"
+            }
+            Self::AccountsNeedsConfirmationLine => {
+                "\n备份里带着同步账号设置，本机已经配置了同步，等你决定要不要替换"
+            }
+            Self::AccountsWriteBackFailedPrefix => "\n备份里的同步账号设置没能写回：",
+            Self::AccountsReplaced => "已用备份里的同步账号设置替换了本机现在的",
+            Self::AccountsReplaceFailedPrefix => "替换同步账号设置失败：",
+            Self::AccountsKept => "已保留本机现在的同步账号设置",
+            Self::ConfirmWarning => "恢复前会自动创建一份安全备份，并覆盖当前主机/凭据/设置。",
+            Self::ReplaceWarning => {
+                "替换会让本机和离线包一模一样：包里没有的本机主机、凭据、分组、代理都会被删掉。\
+                 导入前会自动备份，再点一次「确认替换导入」继续"
+            }
+            Self::PasswordEmpty => "密码不能为空",
+            Self::PasswordTooShortPrefix => "密码至少 ",
+            Self::PasswordTooShortSuffix => " 个字符",
+            Self::PasswordMismatch => "两次输入的密码不一样",
+            Self::PackagePathEmpty => "包路径不能为空",
+            Self::ImportSummaryPrefix => "已导入：主机新增 ",
+            Self::ImportSummaryUpdated => " / 更新 ",
+            Self::ImportSummaryDeleted => " / 删除 ",
+            Self::ImportSummaryIdentities => "，凭据新增 ",
+            Self::ImportSummaryProxies => "，代理新增 ",
+            Self::ImportSummarySuffix => "。",
+            Self::ConflictsKeptNewerPrefix => "",
+            Self::ConflictsKeptNewerSuffix => " 条两边都改过，保留了较新的，另一份在冲突页。",
+            Self::NulledReferencesPrefix => "有 ",
+            Self::NulledReferencesSuffix => " 处引用指向不存在的记录，已清空。",
+            Self::SafetyBackupPrefix => "导入前的状态已自动备份为 ",
+            Self::AppliedPrefix => "应用：主机 新增",
+            Self::AppliedUpdated => "/更新",
+            Self::AppliedDeleted => "/删除",
+            Self::AppliedIdentitiesPrefix => "；凭据 新增",
+            Self::AppliedGroupsPrefix => "；分组 新增",
+            Self::AppliedProxiesPrefix => "；代理 新增",
+            Self::AppliedSettingsPrefix => "；设置 ",
+            Self::AppliedKnownHostsPrefix => " 项；known_hosts ",
+            Self::AppliedConflictsPrefix => " 条；冲突 ",
+            Self::AppliedSuffix => " 条",
+            Self::SkippedHostKeysPrefix => "\n跳过 ",
+            Self::SkippedHostKeysInlinePrefix => "；跳过 ",
+            Self::SkippedHostKeysSuffix => " 条可疑主机密钥记录",
+            Self::RestoreSummaryPrefix => "恢复完成：主机 新增",
+            Self::RestoreSummaryHostMemory => " 条；主机记忆 ",
+            Self::RestoreSummaryForwards => " 条；转发规则 ",
+            Self::RestoreSummarySafetyBackupPrefix => " 条\n恢复前的安全备份：",
+            Self::SaveKeepFailedPrefix => "保存备份保留份数失败：",
+            Self::ReadDeviceIdFailedPrefix => "读取同步设备 ID 失败：",
+            Self::CreatePackageDirFailedPrefix => "创建离线包目录失败：",
+            Self::WritePackageFailedPrefix => "写入离线包失败：",
+            Self::CreateDataDirFailedPrefix => "创建数据目录失败：",
+            Self::OpenDatabaseFailedPrefix => "打开数据库失败：",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::WindowTitle => "Backup & Restore",
+            Self::BusyList => "Reading the backup list…",
+            Self::BusyCreate => "Creating a backup…",
+            Self::BusyRestore => "Restoring the backup…",
+            Self::BusyExport => "Exporting the offline package…",
+            Self::BusyImport => "Importing the offline package…",
+            Self::PasswordPlaceholder => "Master password (offline packages only, never saved)",
+            Self::PasswordConfirmPlaceholder => "Enter it again to export",
+            Self::PackagePathPlaceholder => "Offline package path",
+            Self::KeepRangePrefix => "Enter 1–",
+            Self::KeepRangeSuffix => " as a whole number",
+            Self::StartLoadFailedPrefix => "Could not start the backup list task: ",
+            Self::StartCreateFailedPrefix => "Could not start the backup task: ",
+            Self::StartRestoreFailedPrefix => "Could not start the restore task: ",
+            Self::StartExportFailedPrefix => "Could not start the export task: ",
+            Self::StartImportFailedPrefix => "Could not start the import task: ",
+            Self::OverwriteExistsPrefix => "The offline package already exists: ",
+            Self::OverwriteExistsSuffix => ". Click “Confirm Overwrite” again to overwrite it",
+            Self::CreatedPrefix => "Backup created: ",
+            Self::ExportedPrefix => "Offline package exported: ",
+            Self::ExportedBytesOpen => " (",
+            Self::ExportedBytesSuffix => " bytes)",
+            Self::AccountsAppliedLine => {
+                "\nThe sync account settings from this backup (storage connection, sign-in info, cloud backup targets) were written back too; no need to fill them in again"
+            }
+            Self::AccountsNeedsConfirmationLine => {
+                "\nThis backup carries sync account settings and this computer already has sync configured; waiting for you to decide whether to replace them"
+            }
+            Self::AccountsWriteBackFailedPrefix => "\nThe sync account settings in this backup could not be written back: ",
+            Self::AccountsReplaced => {
+                "Replaced this computer's sync account settings with the ones from the backup"
+            }
+            Self::AccountsReplaceFailedPrefix => "Could not replace the sync account settings: ",
+            Self::AccountsKept => "Kept this computer's current sync account settings",
+            Self::ConfirmWarning => {
+                "A safety backup is created first, and the current hosts/credentials/settings are overwritten."
+            }
+            Self::ReplaceWarning => {
+                "Replacing makes this computer identical to the offline package: hosts, credentials, groups and proxies that the package does not contain are deleted. A backup is made automatically before importing; click “Confirm Replace Import” again to continue"
+            }
+            Self::PasswordEmpty => "The password cannot be empty",
+            Self::PasswordTooShortPrefix => "The password must be at least ",
+            Self::PasswordTooShortSuffix => " characters",
+            Self::PasswordMismatch => "The two passwords do not match",
+            Self::PackagePathEmpty => "The package path cannot be empty",
+            Self::ImportSummaryPrefix => "Imported: hosts added ",
+            Self::ImportSummaryUpdated => " / updated ",
+            Self::ImportSummaryDeleted => " / deleted ",
+            Self::ImportSummaryIdentities => ", credentials added ",
+            Self::ImportSummaryProxies => ", proxies added ",
+            Self::ImportSummarySuffix => ".",
+            Self::ConflictsKeptNewerPrefix => "",
+            Self::ConflictsKeptNewerSuffix => {
+                " records were changed on both sides; the newer one was kept and the other is on the conflicts page."
+            }
+            Self::NulledReferencesPrefix => "",
+            Self::NulledReferencesSuffix => {
+                " references pointed at records that no longer exist and were cleared."
+            }
+            Self::SafetyBackupPrefix => "The state before importing was backed up automatically as ",
+            Self::AppliedPrefix => "Applied: hosts added ",
+            Self::AppliedUpdated => "/updated",
+            Self::AppliedDeleted => "/deleted",
+            Self::AppliedIdentitiesPrefix => "; credentials added",
+            Self::AppliedGroupsPrefix => "; groups added",
+            Self::AppliedProxiesPrefix => "; proxies added",
+            Self::AppliedSettingsPrefix => "; settings ",
+            Self::AppliedKnownHostsPrefix => " items; known_hosts ",
+            Self::AppliedConflictsPrefix => " entries; conflicts ",
+            Self::AppliedSuffix => " entries",
+            Self::SkippedHostKeysPrefix => "\nSkipped ",
+            Self::SkippedHostKeysInlinePrefix => "; skipped ",
+            Self::SkippedHostKeysSuffix => " suspicious host key records",
+            Self::RestoreSummaryPrefix => "Restore complete: hosts added",
+            Self::RestoreSummaryHostMemory => "; host memory ",
+            Self::RestoreSummaryForwards => " entries; port forwards ",
+            Self::RestoreSummarySafetyBackupPrefix => " entries\nSafety backup before restoring: ",
+            Self::SaveKeepFailedPrefix => "Could not save how many backups to keep: ",
+            Self::ReadDeviceIdFailedPrefix => "Could not read the sync device ID: ",
+            Self::CreatePackageDirFailedPrefix => "Could not create the offline package directory: ",
+            Self::WritePackageFailedPrefix => "Could not write the offline package: ",
+            Self::CreateDataDirFailedPrefix => "Could not create the data directory: ",
+            Self::OpenDatabaseFailedPrefix => "Could not open the database: ",
+        }
+    }
+}
+
 /// 备份与恢复窗口的编号；IME 按窗口 key 管理。
 static NEXT_BACKUP: AtomicU64 = AtomicU64::new(1);
 
 /// 后台事件轮询间隔。
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
-
-/// 恢复确认提示；任务卡要求原文显示。
-const CONFIRM_WARNING: &str = "恢复前会自动创建一份安全备份，并覆盖当前主机/凭据/设置。";
 
 /// `sync_backup_keep` 读不出来时用几份：和核心里没设置时的默认是同一个常量。
 const FALLBACK_KEEP: usize = zssh_core::store::settings::SYNC_BACKUP_KEEP_DEFAULT;
@@ -64,7 +322,13 @@ const FALLBACK_KEEP: usize = zssh_core::store::settings::SYNC_BACKUP_KEEP_DEFAUL
 pub(crate) fn parse_keep(text: &str) -> Result<usize, String> {
     let max = zssh_core::store::settings::SYNC_BACKUP_KEEP_MAX;
     let text = text.trim();
-    let hint = || format!("请输入 1–{max} 的整数");
+    let hint = || {
+        format!(
+            "{}{max}{}",
+            t(BackupMsg::KeepRangePrefix),
+            t(BackupMsg::KeepRangeSuffix)
+        )
+    };
     if text.is_empty() || !text.chars().all(|c| c.is_ascii_digit()) {
         return Err(hint());
     }
@@ -136,12 +400,12 @@ impl BackupDemo {
         let password = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
-                .placeholder("主密码（只用于离线包，不会保存）")
+                .placeholder(t(BackupMsg::PasswordPlaceholder))
         });
         let password_confirm = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
-                .placeholder("导出时再输入一次")
+                .placeholder(t(BackupMsg::PasswordConfirmPlaceholder))
         });
         // `zeeterm-日期.zsshbak`（扩展名和 0.2.14 一样，互相能导入）；0.2.14 是弹保存对话框选位置，这里默认放在
         // 数据目录里，用「选择…」可以换。
@@ -149,7 +413,7 @@ impl BackupDemo {
         let package_path = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(default_path.display().to_string())
-                .placeholder("离线包路径")
+                .placeholder(t(BackupMsg::PackagePathPlaceholder))
         });
         let keep_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -232,7 +496,9 @@ impl BackupDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => self.status = format!("启动读取备份任务失败：{err}"),
+            Err(err) => {
+                self.status = format!("{}{err}", t(BackupMsg::StartLoadFailedPrefix))
+            }
         }
         cx.notify();
     }
@@ -256,7 +522,9 @@ impl BackupDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => self.status = format!("启动备份任务失败：{err}"),
+            Err(err) => {
+                self.status = format!("{}{err}", t(BackupMsg::StartCreateFailedPrefix))
+            }
         }
         cx.notify();
     }
@@ -290,7 +558,9 @@ impl BackupDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => self.status = format!("启动恢复任务失败：{err}"),
+            Err(err) => {
+                self.status = format!("{}{err}", t(BackupMsg::StartRestoreFailedPrefix))
+            }
         }
         cx.notify();
     }
@@ -344,8 +614,10 @@ impl BackupDemo {
         match self.overwrite.check(&path, exists) {
             OverwriteCheck::Confirm => {
                 self.status = format!(
-                    "离线包已存在：{}，再次点击「确认覆盖」才会覆盖",
-                    path.display()
+                    "{}{}{}",
+                    t(BackupMsg::OverwriteExistsPrefix),
+                    path.display(),
+                    t(BackupMsg::OverwriteExistsSuffix)
                 );
                 cx.notify();
             }
@@ -394,7 +666,9 @@ impl BackupDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => self.status = format!("启动导出任务失败：{err}"),
+            Err(err) => {
+                self.status = format!("{}{err}", t(BackupMsg::StartExportFailedPrefix))
+            }
         }
         cx.notify();
     }
@@ -429,7 +703,7 @@ impl BackupDemo {
         if self.import_mode == OfflineImportMode::Replace {
             match self.replace_confirm.check(&path, true) {
                 OverwriteCheck::Confirm => {
-                    self.status = REPLACE_WARNING.to_owned();
+                    self.status = t(BackupMsg::ReplaceWarning).to_owned();
                     cx.notify();
                     return;
                 }
@@ -471,7 +745,9 @@ impl BackupDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => self.status = format!("启动导入任务失败：{err}"),
+            Err(err) => {
+                self.status = format!("{}{err}", t(BackupMsg::StartImportFailedPrefix))
+            }
         }
         cx.notify();
     }
@@ -500,7 +776,7 @@ impl BackupDemo {
                 }
                 BackupEvent::Created(info) => {
                     self.busy = None;
-                    self.status = format!("备份已创建：{}", info.name);
+                    self.status = format!("{}{}", t(BackupMsg::CreatedPrefix), info.name);
                     self.start_load(cx);
                 }
                 BackupEvent::CreateFailed(message) => {
@@ -523,7 +799,13 @@ impl BackupDemo {
                 BackupEvent::Exported { path, bytes } => {
                     self.busy = None;
                     self.overwrite.disarm();
-                    self.status = format!("离线包已导出：{}（{bytes} 字节）", path.display());
+                    self.status = format!(
+                        "{}{}{}{bytes}{}",
+                        t(BackupMsg::ExportedPrefix),
+                        path.display(),
+                        t(BackupMsg::ExportedBytesOpen),
+                        t(BackupMsg::ExportedBytesSuffix)
+                    );
                 }
                 BackupEvent::ExportFailed(message) => {
                     self.busy = None;
@@ -574,19 +856,19 @@ impl BackupDemo {
         match accounts {
             AccountsRestore::NotInBackup => {}
             AccountsRestore::Applied => {
-                self.status.push_str(
-                    "\n备份里的同步账号设置（存储连接、登录信息、云端备份目标）已一并写回，不用重新填",
-                );
+                self.status.push_str(t(BackupMsg::AccountsAppliedLine));
                 crate::sync::accounts_changed();
             }
             AccountsRestore::NeedsConfirmation(accounts) => {
                 self.status
-                    .push_str("\n备份里带着同步账号设置，本机已经配置了同步，等你决定要不要替换");
+                    .push_str(t(BackupMsg::AccountsNeedsConfirmationLine));
                 self.pending_accounts = Some(PendingAccounts { accounts, origin });
             }
             AccountsRestore::Failed(message) => {
-                self.status
-                    .push_str(&format!("\n备份里的同步账号设置没能写回：{message}"));
+                self.status.push_str(&format!(
+                    "{}{message}",
+                    t(BackupMsg::AccountsWriteBackFailedPrefix)
+                ));
             }
         }
     }
@@ -604,10 +886,12 @@ impl BackupDemo {
         });
         match result {
             Ok(()) => {
-                self.status = "已用备份里的同步账号设置替换了本机现在的".to_owned();
+                self.status = t(BackupMsg::AccountsReplaced).to_owned();
                 crate::sync::accounts_changed();
             }
-            Err(message) => self.status = format!("替换同步账号设置失败：{message}"),
+            Err(message) => {
+                self.status = format!("{}{message}", t(BackupMsg::AccountsReplaceFailedPrefix))
+            }
         }
         cx.notify();
     }
@@ -615,7 +899,7 @@ impl BackupDemo {
     /// 「保留本机现在的」（默认）：什么也不改。
     fn keep_accounts(&mut self, cx: &mut Context<Self>) {
         if self.pending_accounts.take().is_some() {
-            self.status = "已保留本机现在的同步账号设置".to_owned();
+            self.status = t(BackupMsg::AccountsKept).to_owned();
             cx.notify();
         }
     }
@@ -642,7 +926,7 @@ pub fn open_backup_window(cx: &mut App) {
     };
     let _ = cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| BackupDemo::new(window, cx, ime_key));
-        window.set_window_title("备份与恢复");
+        window.set_window_title(t(BackupMsg::WindowTitle));
         window.on_window_should_close(cx, move |_window, _cx| {
             crate::ime::window_destroyed(&close_key);
             true
@@ -685,11 +969,11 @@ enum Busy {
 impl Busy {
     fn label(self) -> &'static str {
         match self {
-            Self::List => "正在读取备份列表…",
-            Self::Create => "正在创建备份…",
-            Self::Restore => "正在恢复备份…",
-            Self::Export => "正在导出离线包…",
-            Self::Import => "正在导入离线包…",
+            Self::List => t(BackupMsg::BusyList),
+            Self::Create => t(BackupMsg::BusyCreate),
+            Self::Restore => t(BackupMsg::BusyRestore),
+            Self::Export => t(BackupMsg::BusyExport),
+            Self::Import => t(BackupMsg::BusyImport),
         }
     }
 }
@@ -747,16 +1031,12 @@ fn begin_restore() -> Result<SyncInFlight, String> {
         .map_err(|holder| exclusive_busy_message(ExclusiveKind::Restore, holder).to_owned())
 }
 
-/// 「替换」导入第一次点击时的说明。
-const REPLACE_WARNING: &str = "替换会让本机和离线包一模一样：包里没有的本机主机、凭据、分组、\
-                               代理都会被删掉。导入前会自动备份，再点一次「确认替换导入」继续";
-
 /// 离线包导入前的输入校验。密码不裁剪（前后空格可能是密码的一部分），路径裁剪后使用。
 fn offline_request(password: &str, path: &str) -> Result<(String, PathBuf), String> {
     validate_password(password)?;
     let path = path.trim();
     if path.is_empty() {
-        return Err("包路径不能为空".to_owned());
+        return Err(t(BackupMsg::PackagePathEmpty).to_owned());
     }
     Ok((password.to_owned(), PathBuf::from(path)))
 }
@@ -772,21 +1052,25 @@ fn export_request(password: &str, confirm: &str, path: &str) -> Result<(String, 
 fn validate_export_password(password: &str) -> Result<(), String> {
     validate_password(password)?;
     if password.chars().count() < MIN_PASSWORD_CHARS {
-        return Err(format!("密码至少 {MIN_PASSWORD_CHARS} 个字符"));
+        return Err(format!(
+            "{}{MIN_PASSWORD_CHARS}{}",
+            t(BackupMsg::PasswordTooShortPrefix),
+            t(BackupMsg::PasswordTooShortSuffix)
+        ));
     }
     Ok(())
 }
 
 fn check_confirmation(password: &str, confirm: &str) -> Result<(), String> {
     if password != confirm {
-        return Err("两次输入的密码不一样".to_owned());
+        return Err(t(BackupMsg::PasswordMismatch).to_owned());
     }
     Ok(())
 }
 
 fn validate_password(password: &str) -> Result<(), String> {
     if password.trim().is_empty() {
-        return Err("密码不能为空".to_owned());
+        return Err(t(BackupMsg::PasswordEmpty).to_owned());
     }
     Ok(())
 }
@@ -840,27 +1124,39 @@ impl OverwriteConfirm {
 fn import_summary(report: &OfflineImportReport) -> String {
     let applied = &report.applied;
     let mut text = format!(
-        "已导入：主机新增 {} / 更新 {} / 删除 {}，凭据新增 {}，代理新增 {}。",
-        applied.hosts.inserted,
-        applied.hosts.updated,
-        applied.hosts.deleted,
-        applied.identities.inserted,
-        applied.proxies.inserted,
+        "{head}{hosts}{updated}{hosts_updated}{deleted}{hosts_deleted}\
+         {identities}{identities_added}{proxies}{proxies_added}{tail}",
+        head = t(BackupMsg::ImportSummaryPrefix),
+        hosts = applied.hosts.inserted,
+        updated = t(BackupMsg::ImportSummaryUpdated),
+        hosts_updated = applied.hosts.updated,
+        deleted = t(BackupMsg::ImportSummaryDeleted),
+        hosts_deleted = applied.hosts.deleted,
+        identities = t(BackupMsg::ImportSummaryIdentities),
+        identities_added = applied.identities.inserted,
+        proxies = t(BackupMsg::ImportSummaryProxies),
+        proxies_added = applied.proxies.inserted,
+        tail = t(BackupMsg::ImportSummarySuffix),
     );
     if report.conflicts > 0 {
         text.push_str(&format!(
-            "{} 条两边都改过，保留了较新的，另一份在冲突页。",
-            report.conflicts
+            "{}{}{}",
+            t(BackupMsg::ConflictsKeptNewerPrefix),
+            report.conflicts,
+            t(BackupMsg::ConflictsKeptNewerSuffix)
         ));
     }
     if !report.nulled_references.is_empty() {
         text.push_str(&format!(
-            "有 {} 处引用指向不存在的记录，已清空。",
-            report.nulled_references.len()
+            "{}{}{}",
+            t(BackupMsg::NulledReferencesPrefix),
+            report.nulled_references.len(),
+            t(BackupMsg::NulledReferencesSuffix)
         ));
     }
     text.push_str(&format!(
-        "导入前的状态已自动备份为 {}",
+        "{}{}",
+        t(BackupMsg::SafetyBackupPrefix),
         report.safety_backup.name
     ));
     text.push('\n');
@@ -868,31 +1164,49 @@ fn import_summary(report: &OfflineImportReport) -> String {
     text
 }
 
+/// 一类记录的「新增/更新/删除」片段：`prefix` 后面接三个数字。
+fn counts_fragment(prefix: &str, counts: &ChangeCounts) -> String {
+    format!(
+        "{prefix}{}{updated}{}{deleted}{}",
+        counts.inserted,
+        counts.updated,
+        counts.deleted,
+        updated = t(BackupMsg::AppliedUpdated),
+        deleted = t(BackupMsg::AppliedDeleted),
+    )
+}
+
 fn applied_text(applied: &ApplyReport) -> String {
-    let mut text = format!(
-        "应用：主机 新增{}/更新{}/删除{}；凭据 新增{}/更新{}/删除{}；\
-         分组 新增{}/更新{}/删除{}；代理 新增{}/更新{}/删除{}；\
-         设置 {} 项；known_hosts {} 条；冲突 {} 条",
-        applied.hosts.inserted,
-        applied.hosts.updated,
-        applied.hosts.deleted,
-        applied.identities.inserted,
-        applied.identities.updated,
-        applied.identities.deleted,
-        applied.groups.inserted,
-        applied.groups.updated,
-        applied.groups.deleted,
-        applied.proxies.inserted,
-        applied.proxies.updated,
-        applied.proxies.deleted,
-        applied.settings_written,
-        applied.known_hosts_added,
-        applied.conflicts_stored
-    );
+    let mut text = counts_fragment(t(BackupMsg::AppliedPrefix), &applied.hosts);
+    text.push_str(&counts_fragment(
+        t(BackupMsg::AppliedIdentitiesPrefix),
+        &applied.identities,
+    ));
+    text.push_str(&counts_fragment(
+        t(BackupMsg::AppliedGroupsPrefix),
+        &applied.groups,
+    ));
+    text.push_str(&counts_fragment(
+        t(BackupMsg::AppliedProxiesPrefix),
+        &applied.proxies,
+    ));
+    text.push_str(&format!(
+        "{settings}{settings_written}{known_hosts}{known_hosts_added}\
+         {conflicts}{conflicts_stored}{tail}",
+        settings = t(BackupMsg::AppliedSettingsPrefix),
+        settings_written = applied.settings_written,
+        known_hosts = t(BackupMsg::AppliedKnownHostsPrefix),
+        known_hosts_added = applied.known_hosts_added,
+        conflicts = t(BackupMsg::AppliedConflictsPrefix),
+        conflicts_stored = applied.conflicts_stored,
+        tail = t(BackupMsg::AppliedSuffix),
+    ));
     if applied.known_hosts_skipped > 0 {
         text.push_str(&format!(
-            "；跳过 {} 条可疑主机密钥记录",
-            applied.known_hosts_skipped
+            "{}{}{}",
+            t(BackupMsg::SkippedHostKeysInlinePrefix),
+            applied.known_hosts_skipped,
+            t(BackupMsg::SkippedHostKeysSuffix)
         ));
     }
     text
@@ -901,36 +1215,43 @@ fn applied_text(applied: &ApplyReport) -> String {
 /// 恢复结果：各类记录的新增/更新/删除数、设置和 known_hosts 条数，以及安全备份名。
 fn restore_summary(report: &RestoreReport) -> String {
     let applied = &report.applied;
-    let mut text = format!(
-        "恢复完成：主机 新增{}/更新{}/删除{}；凭据 新增{}/更新{}/删除{}；\
-         分组 新增{}/更新{}/删除{}；代理 新增{}/更新{}/删除{}；\
-         设置 {} 项；known_hosts {} 条；冲突 {} 条；\
-         主机记忆 {} 条；转发规则 {} 条\n恢复前的安全备份：{}",
-        applied.hosts.inserted,
-        applied.hosts.updated,
-        applied.hosts.deleted,
-        applied.identities.inserted,
-        applied.identities.updated,
-        applied.identities.deleted,
-        applied.groups.inserted,
-        applied.groups.updated,
-        applied.groups.deleted,
-        applied.proxies.inserted,
-        applied.proxies.updated,
-        applied.proxies.deleted,
-        applied.settings_written,
-        applied.known_hosts_added,
-        applied.conflicts_stored,
-        report.extras.host_memory,
-        report.extras.forwards,
-        report.safety_backup.name
-    );
+    let mut text = counts_fragment(t(BackupMsg::RestoreSummaryPrefix), &applied.hosts);
+    text.push_str(&counts_fragment(
+        t(BackupMsg::AppliedIdentitiesPrefix),
+        &applied.identities,
+    ));
+    text.push_str(&counts_fragment(
+        t(BackupMsg::AppliedGroupsPrefix),
+        &applied.groups,
+    ));
+    text.push_str(&counts_fragment(
+        t(BackupMsg::AppliedProxiesPrefix),
+        &applied.proxies,
+    ));
+    text.push_str(&format!(
+        "{settings}{settings_written}{known_hosts}{known_hosts_added}\
+         {conflicts}{conflicts_stored}{host_memory}{host_memory_count}\
+         {forwards}{forwards_count}{safety_backup}{safety_backup_name}",
+        settings = t(BackupMsg::AppliedSettingsPrefix),
+        settings_written = applied.settings_written,
+        known_hosts = t(BackupMsg::AppliedKnownHostsPrefix),
+        known_hosts_added = applied.known_hosts_added,
+        conflicts = t(BackupMsg::AppliedConflictsPrefix),
+        conflicts_stored = applied.conflicts_stored,
+        host_memory = t(BackupMsg::RestoreSummaryHostMemory),
+        host_memory_count = report.extras.host_memory,
+        forwards = t(BackupMsg::RestoreSummaryForwards),
+        forwards_count = report.extras.forwards,
+        safety_backup = t(BackupMsg::RestoreSummarySafetyBackupPrefix),
+        safety_backup_name = report.safety_backup.name,
+    ));
     if applied.known_hosts_skipped > 0 {
         // 放在安全备份提示之前的同一行末尾不好找，单独起一行。
         text.push_str(&format!(
-            "
-跳过 {} 条可疑主机密钥记录",
-            applied.known_hosts_skipped
+            "{}{}{}",
+            t(BackupMsg::SkippedHostKeysPrefix),
+            applied.known_hosts_skipped,
+            t(BackupMsg::SkippedHostKeysSuffix)
         ));
     }
     text
@@ -955,7 +1276,7 @@ fn write_keep(data_dir: &Path, keep: usize) -> Result<usize, String> {
         zssh_core::store::settings::SYNC_BACKUP_KEEP_KEY,
         &keep.to_string(),
     )
-    .map_err(|err| format!("保存备份保留份数失败：{err}"))?;
+    .map_err(|err| format!("{}{err}", t(BackupMsg::SaveKeepFailedPrefix)))?;
     Ok(keep)
 }
 
@@ -988,7 +1309,7 @@ fn create_backup_with(
     let db = open_db_at(data_dir)?;
     let device_id = db
         .sync_device_id()
-        .map_err(|err| format!("读取同步设备 ID 失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(BackupMsg::ReadDeviceIdFailedPrefix)))?;
     let keep = db.sync_backup_keep().unwrap_or(FALLBACK_KEEP);
     let known_hosts = data_dir.join("known_hosts");
     let now = now_secs();
@@ -1023,7 +1344,7 @@ fn restore_backup_with(
     let db = open_db_at(data_dir)?;
     let device_id = db
         .sync_device_id()
-        .map_err(|err| format!("读取同步设备 ID 失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(BackupMsg::ReadDeviceIdFailedPrefix)))?;
     // 走引擎的入口而不是直接调 `BackupStore::restore`：引擎会先检查备份必须在备份目录内、
     // 文件名合法，并把同步基线里的删除记录一并带上，恢复出来的记录不会被基线墓碑再删掉。
     sync_engine(&db, sealer, device_id, data_dir)
@@ -1062,7 +1383,7 @@ fn export_offline_to(
     let db = open_db_at(data_dir)?;
     let device_id = db
         .sync_device_id()
-        .map_err(|err| format!("读取同步设备 ID 失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(BackupMsg::ReadDeviceIdFailedPrefix)))?;
     let engine = sync_engine(&db, sealer, device_id, data_dir);
     let bytes = engine
         .export_offline(password)
@@ -1070,9 +1391,9 @@ fn export_offline_to(
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent).map_err(|err| format!("创建离线包目录失败：{err}"))?;
+        std::fs::create_dir_all(parent).map_err(|err| format!("{}{err}", t(BackupMsg::CreatePackageDirFailedPrefix)))?;
     }
-    write_atomic(path, &bytes).map_err(|err| format!("写入离线包失败：{err}"))?;
+    write_atomic(path, &bytes).map_err(|err| format!("{}{err}", t(BackupMsg::WritePackageFailedPrefix)))?;
     Ok(bytes.len())
 }
 
@@ -1112,7 +1433,7 @@ fn import_offline_from(
     let db = open_db_at(data_dir)?;
     let device_id = db
         .sync_device_id()
-        .map_err(|err| format!("读取同步设备 ID 失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(BackupMsg::ReadDeviceIdFailedPrefix)))?;
     sync_engine(&db, sealer, device_id, data_dir)
         .import_offline(&bytes, password, mode)
         .map_err(|err| err.to_string())
@@ -1126,8 +1447,8 @@ fn now_secs() -> i64 {
 
 /// 后台任务自己开库；不复用界面里的连接，免得跨线程持有 SQLite 连接。
 fn open_db_at(data_dir: &Path) -> Result<Database, String> {
-    std::fs::create_dir_all(data_dir).map_err(|err| format!("创建数据目录失败：{err}"))?;
-    Database::open(&data_dir.join("zssh.db")).map_err(|err| format!("打开数据库失败：{err}"))
+    std::fs::create_dir_all(data_dir).map_err(|err| format!("{}{err}", t(BackupMsg::CreateDataDirFailedPrefix)))?;
+    Database::open(&data_dir.join("zssh.db")).map_err(|err| format!("{}{err}", t(BackupMsg::OpenDatabaseFailedPrefix)))
 }
 
 #[cfg(test)]

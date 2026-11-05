@@ -15,6 +15,66 @@ use super::{
     DpapiSealer, ExclusiveKind, SyncContext, SyncDemo, SyncEvent, SyncInFlight,
     exclusive_busy_message, open_existing_db_at, save_master_password_at, validate_master_password,
 };
+use crate::i18n::{Msg, t};
+
+/// 「修改主密码」这一组操作自己的界面文案：占位提示、校验错误和结果提示。
+///
+/// 只放应用自己的固定文案；核心库的错误原文原样拼在本地化前缀后面，不经过这里。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyncActionsMsg {
+    OldPasswordPlaceholder,
+    NewPasswordPlaceholder,
+    ConfirmPasswordPlaceholder,
+    OldPasswordRequired,
+    NewPasswordMismatch,
+    NewPasswordSameAsOld,
+    ReadDeviceIdFailedPrefix,
+    StartTaskFailedPrefix,
+    PasswordChanged,
+    PasswordChangedButRememberFailedPrefix,
+}
+
+impl Msg for SyncActionsMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::OldPasswordPlaceholder => "旧主密码",
+            Self::NewPasswordPlaceholder => "新主密码（至少 8 个字符）",
+            Self::ConfirmPasswordPlaceholder => "再输入一次新主密码",
+            Self::OldPasswordRequired => "请输入旧主密码",
+            Self::NewPasswordMismatch => "两次输入的新主密码不一致",
+            Self::NewPasswordSameAsOld => "新主密码和旧的一样，不用改",
+            Self::ReadDeviceIdFailedPrefix => "读取同步设备 ID 失败：",
+            Self::StartTaskFailedPrefix => "启动任务失败：",
+            Self::PasswordChanged => {
+                "已修改主密码：云端数据已用新密码重新加密，其他电脑之后要输入新的主密码"
+            }
+            Self::PasswordChangedButRememberFailedPrefix => {
+                "已修改主密码，但更新本机记住的主密码失败："
+            }
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::OldPasswordPlaceholder => "Old master password",
+            Self::NewPasswordPlaceholder => "New master password (at least 8 characters)",
+            Self::ConfirmPasswordPlaceholder => "Enter the new master password again",
+            Self::OldPasswordRequired => "Please enter the old master password",
+            Self::NewPasswordMismatch => "The two new master passwords do not match",
+            Self::NewPasswordSameAsOld => {
+                "The new master password is the same as the old one; nothing to change"
+            }
+            Self::ReadDeviceIdFailedPrefix => "Could not read the sync device ID: ",
+            Self::StartTaskFailedPrefix => "Could not start the task: ",
+            Self::PasswordChanged => {
+                "Master password changed: the cloud data was re-encrypted with the new password, and other computers must now enter the new one"
+            }
+            Self::PasswordChangedButRememberFailedPrefix => {
+                "Master password changed, but updating the remembered master password on this computer failed: "
+            }
+        }
+    }
+}
 
 /// 「修改主密码」表单的状态。
 pub(super) struct ChangePw {
@@ -39,9 +99,9 @@ impl ChangePw {
             open: false,
             busy: false,
             error: None,
-            old: make(window, cx, "旧主密码"),
-            new: make(window, cx, "新主密码（至少 8 个字符）"),
-            confirm: make(window, cx, "再输入一次新主密码"),
+            old: make(window, cx, t(SyncActionsMsg::OldPasswordPlaceholder)),
+            new: make(window, cx, t(SyncActionsMsg::NewPasswordPlaceholder)),
+            confirm: make(window, cx, t(SyncActionsMsg::ConfirmPasswordPlaceholder)),
         }
     }
 }
@@ -49,14 +109,14 @@ impl ChangePw {
 /// 检查「修改主密码」表单：旧密码要填，新密码够长且两遍一致。
 pub(super) fn check_change_password(old: &str, new: &str, confirm: &str) -> Result<(), String> {
     if old.is_empty() {
-        return Err("请输入旧主密码".to_owned());
+        return Err(t(SyncActionsMsg::OldPasswordRequired).to_owned());
     }
     validate_master_password(new)?;
     if new != confirm {
-        return Err("两次输入的新主密码不一致".to_owned());
+        return Err(t(SyncActionsMsg::NewPasswordMismatch).to_owned());
     }
     if old == new {
-        return Err("新主密码和旧的一样，不用改".to_owned());
+        return Err(t(SyncActionsMsg::NewPasswordSameAsOld).to_owned());
     }
     Ok(())
 }
@@ -73,7 +133,7 @@ pub(super) fn change_password_with(
     let db = open_existing_db_at(data_dir)?;
     let device_id = db
         .sync_device_id()
-        .map_err(|err| format!("读取同步设备 ID 失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(SyncActionsMsg::ReadDeviceIdFailedPrefix)))?;
     let context = SyncContext {
         db: &db,
         sealer,
@@ -152,7 +212,10 @@ impl SyncDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => self.change_pw.error = Some(format!("启动任务失败：{err}")),
+            Err(err) => {
+                self.change_pw.error =
+                    Some(format!("{}{err}", t(SyncActionsMsg::StartTaskFailedPrefix)))
+            }
         }
         cx.notify();
     }
@@ -169,11 +232,14 @@ impl SyncDemo {
         self.master_password
             .update(cx, |state, cx| state.set_value(new, window, cx));
         let mut note =
-            "已修改主密码：云端数据已用新密码重新加密，其他电脑之后要输入新的主密码".to_owned();
+            t(SyncActionsMsg::PasswordChanged).to_owned();
         if self.remember.saved
             && let Err(message) = save_master_password_at(&crate::settings::data_dir(), new)
         {
-            note = format!("已修改主密码，但更新本机记住的主密码失败：{message}");
+            note = format!(
+                "{}{message}",
+                t(SyncActionsMsg::PasswordChangedButRememberFailedPrefix)
+            );
         }
         self.status = note;
         self.close_change_password(window, cx);

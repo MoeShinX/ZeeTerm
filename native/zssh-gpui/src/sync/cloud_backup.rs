@@ -31,18 +31,400 @@ use zssh_core::sync::service::SyncContext;
 
 use super::view::{banner, colored, field, muted, password_field};
 use super::{
-    ExclusiveKind, GITHUB_TOKEN_EMPTY, GithubForm, ONEDRIVE_LOGIN_TIMEOUT, PASSWORD_EMPTY,
-    PASSWORD_SAVED, ProviderChoice, S3_SECRET_EMPTY, S3Form, StorageConfig, SyncDemo, SyncEvent,
-    SyncInFlight, WebDavForm, build_github, build_s3, build_webdav, exclusive_busy_message,
-    form_from_view, github_form_from_view, load_master_password_at, onedrive_endpoints,
-    onedrive_opener, open_db_at, open_existing_db_at, s3_form_from_view, validate_master_password,
+    ExclusiveKind, GithubForm, ONEDRIVE_LOGIN_TIMEOUT, ProviderChoice, S3Form, StorageConfig,
+    SyncDemo, SyncEvent, SyncInFlight, SyncMsg, WebDavForm, build_github, build_s3, build_webdav,
+    exclusive_busy_message, form_from_view, github_form_from_view, load_master_password_at,
+    onedrive_endpoints, onedrive_opener, open_db_at, open_existing_db_at, s3_form_from_view,
+    validate_master_password,
 };
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::settings_view::card;
 use crate::typography::{Role, Typo as _};
 
-/// 目标数已满时给用户看的话。
-const FULL_HINT: &str = "云端备份目标最多 5 个";
+/// 「云端备份」一节自己的界面文案：卡片标题、说明、按钮、状态行和校验提示。
+///
+/// 只放应用自己的固定文案；目标名（`provider_label` + `describe`）、路径、账号名和核心库的
+/// 错误原文属于远端 / 用户数据，原样拼在本地化前缀后面，不经过这里。id（`cloud-add`、
+/// `cloud-restore`……）和 `zeeterm-backup.json` / `zssh-sync.json` 这些文件名不进这张表。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloudBackupMsg {
+    // ---- 卡片 / 列表 ----
+    CardTitle,
+    CardDescription,
+    EmptyTargets,
+    AddTarget,
+    AddedCountPrefix,
+    AddedCountMiddle,
+    AddedCountSuffix,
+    FullHint,
+    UnnamedTarget,
+    EnableLabel,
+    EnableA11y,
+    DisabledHint,
+    NeverBackedUp,
+    LastOkPrefix,
+    LastOkSuffix,
+    LastFailedMiddle,
+    // ---- 行内按钮 ----
+    BackingUp,
+    BackupNow,
+    RestoreHere,
+    Edit,
+    ConfirmDelete,
+    Delete,
+    // ---- 恢复确认框 ----
+    RestoreWarningPrefix,
+    RestoreWarningSuffix,
+    RestoreWarningBody,
+    ConfirmRestore,
+    Cancel,
+    // ---- 结果提示 ----
+    BackedUpPrefix,
+    UpToDateSuffix,
+    BackupFailedPrefix,
+    BackupFailedMiddle,
+    RestoreFailedPrefix,
+    RestoreFailedMiddle,
+    RestoreDonePrefix,
+    RestoreDoneMiddle,
+    RestoreDoneUpdated,
+    RestoreDoneDeleted,
+    RestoreDoneIdentities,
+    RestoreDoneProxies,
+    RestoreDoneSafetyPrefix,
+    RestoreDoneSafetySuffix,
+    SavedEdited,
+    SavedAdded,
+    DeleteConfirmHint,
+    Deleted,
+    ResetDone,
+    // ---- 读不出来时的出路 ----
+    LoadErrorPrefix,
+    LoadErrorHint,
+    ConfirmClearAgain,
+    ClearSettings,
+    // ---- 主密码 ----
+    MasterPasswordLabel,
+    PasswordAgainLabel,
+    PasswordHint,
+    NoPrimarySyncHint,
+    PasswordMissing,
+    PasswordMismatch,
+    // ---- 表单 ----
+    EditTarget,
+    StorageType,
+    Save,
+    WebdavUrl,
+    DirectoryPlaceholder,
+    Directory,
+    DirectoryHint,
+    SavedPasswordHint,
+    PlainHttpTitle,
+    PlainHttpCheck,
+    S3Prefix,
+    AddressStyle,
+    PathStyle,
+    VirtualHostStyle,
+    SavedSecretHint,
+    ApiBase,
+    Token,
+    GithubHint,
+    SavedTokenHint,
+    TokenHttpTitle,
+    TokenHttpCheck,
+    OneDriveIntro,
+    Account,
+    SignedIn,
+    NotSignedIn,
+    LoggingInBrowser,
+    LoginHint,
+    CancelLogin,
+    Relogin,
+    SignInWithMs,
+    ClientIdInvalid,
+    AdvancedExpanded,
+    AdvancedCollapsed,
+    OwnClientId,
+    // ---- 任务启动失败 / 错误前缀 ----
+    StartBackupFailedPrefix,
+    StartRestoreFailedPrefix,
+    StartLoginFailedPrefix,
+    ReadDeviceIdFailedPrefix,
+    NoTarget,
+}
+
+impl Msg for CloudBackupMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::CardTitle => "云端备份",
+            Self::CardDescription => {
+                "主同步之外，可以再加几个只上传的备份：主同步每次成功后，把同样的数据用主密码加密，覆盖上传到这里（只留一份，\
+                 从不往回合并）。备份文件叫 zeeterm-backup.json，和同步包放在同一个目录 / 桶里也不会互相覆盖。账号信息\
+                 只存在本机，不进同步包，也不出现在云端备份里。"
+            }
+            Self::EmptyTargets => "还没有云端备份目标。",
+            Self::AddTarget => "添加备份目标",
+            Self::AddedCountPrefix => "已添加 ",
+            Self::AddedCountMiddle => " / ",
+            Self::AddedCountSuffix => " 个",
+            Self::FullHint => "云端备份目标最多 5 个",
+            Self::UnnamedTarget => "这个备份目标",
+            Self::EnableLabel => "启用",
+            Self::EnableA11y => "启用这个备份目标",
+            Self::DisabledHint => "已停用：主同步成功后不会自动备份到这里",
+            Self::NeverBackedUp => "还没有备份过",
+            Self::LastOkPrefix => "上次备份 ",
+            Self::LastOkSuffix => " 成功",
+            Self::LastFailedMiddle => " 失败：",
+            Self::BackingUp => "备份中…",
+            Self::BackupNow => "立即备份",
+            Self::RestoreHere => "从这里恢复",
+            Self::Edit => "编辑",
+            Self::ConfirmDelete => "确认删除",
+            Self::Delete => "删除",
+            Self::RestoreWarningPrefix => "从 ",
+            Self::RestoreWarningSuffix => " 恢复，会覆盖本机的数据",
+            Self::RestoreWarningBody => {
+                "本机的主机、分组、凭据、代理和可同步的设置会变成和这份云端备份一样，备份里没有的会被删掉。\
+                 恢复前会先自动做一份本地备份，可以在「备份与恢复」里恢复回去；不会改同步基线，\
+                 也不会动这里的备份目标和主同步设置。"
+            }
+            Self::ConfirmRestore => "确认恢复",
+            Self::Cancel => "取消",
+            Self::BackedUpPrefix => "已备份到 ",
+            Self::UpToDateSuffix => " 上的备份已经是最新的",
+            Self::BackupFailedPrefix => "备份到 ",
+            Self::BackupFailedMiddle => " 失败：",
+            Self::RestoreFailedPrefix => "从 ",
+            Self::RestoreFailedMiddle => " 恢复失败：",
+            Self::RestoreDonePrefix => "已从 ",
+            Self::RestoreDoneMiddle => " 恢复：主机 新增 ",
+            Self::RestoreDoneUpdated => " / 更新 ",
+            Self::RestoreDoneDeleted => " / 删除 ",
+            Self::RestoreDoneIdentities => "，凭据 新增 ",
+            Self::RestoreDoneProxies => "，代理 新增 ",
+            Self::RestoreDoneSafetyPrefix => "。恢复前的状态已自动备份为 ",
+            Self::RestoreDoneSafetySuffix => "，可以在「备份与恢复」里恢复回去",
+            Self::SavedEdited => "已保存。上次备份结果已清空，下一次备份会重新上传",
+            Self::SavedAdded => "已添加。主同步下一次成功之后会自动备份到这里，也可以点「立即备份」",
+            Self::DeleteConfirmHint => {
+                "再点一次「确认删除」会删掉本机保存的这个备份目标和它的登录信息（云端已经上传的备份文件不动）"
+            }
+            Self::Deleted => "已删除这个备份目标（云端已经上传的备份文件没有动）",
+            Self::ResetDone => "已清空本机保存的云端备份设置（云端的备份文件没有动）",
+            Self::LoadErrorPrefix => "读不出本机保存的云端备份设置：",
+            Self::LoadErrorHint => {
+                "可能是换了 Windows 账户，或者设置被破坏了。清空之后可以重新添加备份目标（云端已有的备份文件不会被删）。"
+            }
+            Self::ConfirmClearAgain => "再次点击「确认清空」",
+            Self::ClearSettings => "清空云端备份设置",
+            Self::MasterPasswordLabel => "主密码",
+            Self::PasswordAgainLabel => "再输入一次",
+            Self::PasswordHint => {
+                "云端备份用主密码加密，至少 8 个字符；忘了就打不开，也没有找回的办法。这里不会保存它，每次备份 / \
+                 恢复都要输入。配置了主同步之后，它在上面「主密码」那张卡里。"
+            }
+            Self::NoPrimarySyncHint => {
+                "没有配置主同步，所以主同步成功后的自动备份不会触发；点每个目标上的「立即备份」手动备份。"
+            }
+            Self::PasswordMissing => "请先输入主密码（用来加密 / 解开云端备份）",
+            Self::PasswordMismatch => "两次输入的主密码不一样",
+            Self::EditTarget => "编辑备份目标",
+            Self::StorageType => "存储类型",
+            Self::Save => "保存",
+            Self::WebdavUrl => "WebDAV 地址",
+            Self::DirectoryPlaceholder => "存放目录（可空）",
+            Self::Directory => "存放目录（可选）",
+            Self::DirectoryHint => {
+                "备份文件 zeeterm-backup.json 放在这个目录里，和同步包 zssh-sync.json 并排也不会互相覆盖；目录不存在会自动创建。"
+            }
+            Self::SavedPasswordHint => "已保存密码；留空 = 继续用已保存的密码",
+            Self::PlainHttpTitle => "地址是 http://，密码会以明文发送",
+            Self::PlainHttpCheck => "我了解密码会以明文发送，仍然使用 http://",
+            Self::S3Prefix => "对象路径前缀（可选）",
+            Self::AddressStyle => "地址风格",
+            Self::PathStyle => "路径风格（endpoint/bucket/key）",
+            Self::VirtualHostStyle => "虚拟主机风格（bucket.endpoint/key）",
+            Self::SavedSecretHint => "已保存 Secret；留空 = 继续用已保存的 Secret",
+            Self::ApiBase => "接口地址",
+            Self::Token => "个人访问令牌",
+            Self::GithubHint => {
+                "需要 gist 权限。Gist ID 留空 = 第一次备份时自动新建一个 secret Gist；也可以填主同步用的同一个 Gist，\
+                 备份文件 zeeterm-backup.json 和同步包是两个文件，互不影响。secret Gist 拿到链接的人都能打开，但里面是密文。"
+            }
+            Self::SavedTokenHint => "已保存令牌；留空 = 继续用已保存的令牌",
+            Self::TokenHttpTitle => "接口地址是 http://，令牌会以明文发送",
+            Self::TokenHttpCheck => "我了解令牌会以明文发送，仍然使用 http://",
+            Self::OneDriveIntro => {
+                "用微软账号登录，备份放在 OneDrive 的应用专用文件夹里。可以和主同步用同一个账号，也可以用另一个；\
+                 这里的登录信息和主同步的互相独立，断开其中一个不影响另一个。目前只支持个人微软账号。"
+            }
+            Self::Account => "账号",
+            Self::SignedIn => "已登录",
+            Self::NotSignedIn => "未登录",
+            Self::LoggingInBrowser => "正在浏览器中登录…",
+            Self::LoginHint => "请在刚刚打开的浏览器页面里登录并同意授权，最多等 5 分钟。",
+            Self::CancelLogin => "取消登录",
+            Self::Relogin => "重新登录",
+            Self::SignInWithMs => "用微软账号登录",
+            Self::ClientIdInvalid => {
+                "client ID 的格式不对，应该形如 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx。"
+            }
+            Self::AdvancedExpanded => "高级 ▾",
+            Self::AdvancedCollapsed => "高级 ▸",
+            Self::OwnClientId => "自己的 client ID",
+            Self::StartBackupFailedPrefix => "启动备份任务失败：",
+            Self::StartRestoreFailedPrefix => "启动恢复任务失败：",
+            Self::StartLoginFailedPrefix => "启动登录任务失败：",
+            Self::ReadDeviceIdFailedPrefix => "读取同步设备 ID 失败：",
+            Self::NoTarget => "没有这个备份目标",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::CardTitle => "Cloud Backup",
+            Self::CardDescription => {
+                "Besides the primary sync you can add upload-only backups: after every successful primary sync the \
+                 same data is encrypted with the master password and uploaded here, overwriting the previous copy \
+                 (a single copy, never merged back). The backup file is called zeeterm-backup.json; it can share a \
+                 directory or bucket with the sync package without overwriting it. Account information stays on this \
+                 computer and is never part of the sync package or the cloud backup."
+            }
+            Self::EmptyTargets => "No cloud backup targets yet.",
+            Self::AddTarget => "Add Backup Target",
+            Self::AddedCountPrefix => "Added ",
+            Self::AddedCountMiddle => " / ",
+            Self::AddedCountSuffix => "",
+            Self::FullHint => "You can have at most 5 cloud backup targets",
+            Self::UnnamedTarget => "this backup target",
+            Self::EnableLabel => "Enabled",
+            Self::EnableA11y => "Enable this backup target",
+            Self::DisabledHint => "Disabled: nothing is uploaded here after a successful primary sync",
+            Self::NeverBackedUp => "never backed up",
+            Self::LastOkPrefix => "Last backup ",
+            Self::LastOkSuffix => " succeeded",
+            Self::LastFailedMiddle => " failed: ",
+            Self::BackingUp => "Backing up…",
+            Self::BackupNow => "Back Up Now",
+            Self::RestoreHere => "Restore from Here",
+            Self::Edit => "Edit",
+            Self::ConfirmDelete => "Confirm Delete",
+            Self::Delete => "Delete",
+            Self::RestoreWarningPrefix => "Restoring from ",
+            Self::RestoreWarningSuffix => " overwrites this computer's data",
+            Self::RestoreWarningBody => {
+                "This computer's hosts, groups, credentials, proxies and syncable settings become identical to \
+                 this cloud backup, and anything the backup does not contain is deleted. A local backup is made \
+                 automatically first, so you can restore it from “Backup & Restore”; the sync baseline is not \
+                 touched, and neither are the backup targets or the primary sync settings shown here."
+            }
+            Self::ConfirmRestore => "Confirm Restore",
+            Self::Cancel => "Cancel",
+            Self::BackedUpPrefix => "Backed up to ",
+            Self::UpToDateSuffix => " is already up to date",
+            Self::BackupFailedPrefix => "Backing up to ",
+            Self::BackupFailedMiddle => " failed: ",
+            Self::RestoreFailedPrefix => "Restoring from ",
+            Self::RestoreFailedMiddle => " failed: ",
+            Self::RestoreDonePrefix => "Restored from ",
+            Self::RestoreDoneMiddle => ": hosts added ",
+            Self::RestoreDoneUpdated => " / updated ",
+            Self::RestoreDoneDeleted => " / deleted ",
+            Self::RestoreDoneIdentities => ", credentials added ",
+            Self::RestoreDoneProxies => ", proxies added ",
+            Self::RestoreDoneSafetyPrefix => ". The state before restoring was backed up automatically as ",
+            Self::RestoreDoneSafetySuffix => ", which you can restore from “Backup & Restore”",
+            Self::SavedEdited => "Saved. The last backup result was cleared; the next backup uploads again",
+            Self::SavedAdded => {
+                "Added. It backs up here automatically after the next successful primary sync, or click “Back Up Now”"
+            }
+            Self::DeleteConfirmHint => {
+                "Click “Confirm Delete” again to delete the backup target saved on this computer and its sign-in info (files already uploaded to the cloud are untouched)"
+            }
+            Self::Deleted => {
+                "Deleted this backup target (files already uploaded to the cloud are untouched)"
+            }
+            Self::ResetDone => {
+                "Cleared the cloud backup settings saved on this computer (cloud backup files are untouched)"
+            }
+            Self::LoadErrorPrefix => "Could not read the cloud backup settings saved on this computer: ",
+            Self::LoadErrorHint => {
+                "This may be a different Windows account, or the settings were damaged. Clear them and add the backup targets again (existing cloud backup files are not deleted)."
+            }
+            Self::ConfirmClearAgain => "Click “Confirm Clear” again",
+            Self::ClearSettings => "Clear Cloud Backup Settings",
+            Self::MasterPasswordLabel => "Master Password",
+            Self::PasswordAgainLabel => "Enter it again",
+            Self::PasswordHint => {
+                "Cloud backups are encrypted with the master password, at least 8 characters; forget it and the \
+                 backup cannot be opened, with no way to recover it. It is not saved here, so you enter it for \
+                 every backup / restore. Once a primary sync is configured it lives in the “Master Password” card above."
+            }
+            Self::NoPrimarySyncHint => {
+                "No primary sync is configured, so the automatic backup after a successful primary sync never runs; click “Back Up Now” on each target to back up manually."
+            }
+            Self::PasswordMissing => "Please enter the master password (used to encrypt / unlock cloud backups)",
+            Self::PasswordMismatch => "The two master passwords do not match",
+            Self::EditTarget => "Edit Backup Target",
+            Self::StorageType => "Storage Type",
+            Self::Save => "Save",
+            Self::WebdavUrl => "WebDAV URL",
+            Self::DirectoryPlaceholder => "Directory (optional)",
+            Self::Directory => "Directory (optional)",
+            Self::DirectoryHint => {
+                "The backup file zeeterm-backup.json is placed in this directory; it can sit next to the sync package zssh-sync.json without overwriting it, and the directory is created if missing."
+            }
+            Self::SavedPasswordHint => "Password saved; leave empty to keep using it",
+            Self::PlainHttpTitle => "The URL is http://, so the password is sent in clear text",
+            Self::PlainHttpCheck => {
+                "I understand the password is sent in clear text and still want to use http://"
+            }
+            Self::S3Prefix => "Object path prefix (optional)",
+            Self::AddressStyle => "Address Style",
+            Self::PathStyle => "Path style (endpoint/bucket/key)",
+            Self::VirtualHostStyle => "Virtual-host style (bucket.endpoint/key)",
+            Self::SavedSecretHint => "Secret saved; leave empty to keep using it",
+            Self::ApiBase => "API URL",
+            Self::Token => "Personal Access Token",
+            Self::GithubHint => {
+                "Needs the gist scope. Leave the Gist ID empty to create a secret Gist on the first backup; you can \
+                 also reuse the Gist of the primary sync — the backup file zeeterm-backup.json and the sync package \
+                 are two separate files. Anyone with the link can open a secret Gist, but the content is encrypted."
+            }
+            Self::SavedTokenHint => "Token saved; leave empty to keep using it",
+            Self::TokenHttpTitle => "The API URL is http://, so the token is sent in clear text",
+            Self::TokenHttpCheck => {
+                "I understand the token is sent in clear text and still want to use http://"
+            }
+            Self::OneDriveIntro => {
+                "Sign in with a Microsoft account; backups go into OneDrive's app-specific folder. You can use the same account as the primary sync or a different one; the sign-in here is independent from the primary sync, and disconnecting one does not affect the other. Only personal Microsoft accounts are supported."
+            }
+            Self::Account => "Account",
+            Self::SignedIn => "Signed in",
+            Self::NotSignedIn => "Not signed in",
+            Self::LoggingInBrowser => "Signing in in the browser…",
+            Self::LoginHint => {
+                "Sign in and grant access in the browser page that just opened; this waits at most 5 minutes."
+            }
+            Self::CancelLogin => "Cancel Sign-in",
+            Self::Relogin => "Sign In Again",
+            Self::SignInWithMs => "Sign In with a Microsoft Account",
+            Self::ClientIdInvalid => {
+                "The client ID has the wrong format; it should look like xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx."
+            }
+            Self::AdvancedExpanded => "Advanced ▾",
+            Self::AdvancedCollapsed => "Advanced ▸",
+            Self::OwnClientId => "Own client ID",
+            Self::StartBackupFailedPrefix => "Could not start the backup task: ",
+            Self::StartRestoreFailedPrefix => "Could not start the restore task: ",
+            Self::StartLoginFailedPrefix => "Could not start the sign-in task: ",
+            Self::ReadDeviceIdFailedPrefix => "Could not read the sync device ID: ",
+            Self::NoTarget => "There is no such backup target",
+        }
+    }
+}
 
 /// 在跑的后台任务；同时只允许一个。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,7 +501,7 @@ impl CloudBackup {
             .iter()
             .find(|target| target.id == id)
             .map(|target| format!("{} {}", provider_label(&target.config), target.describe()))
-            .unwrap_or_else(|| "这个备份目标".to_owned())
+            .unwrap_or_else(|| t(CloudBackupMsg::UnnamedTarget).to_owned())
     }
 }
 
@@ -200,7 +582,8 @@ impl TargetForm {
                 state
             })
         };
-        let secret_hint = |empty: &'static str, on: bool| if on { PASSWORD_SAVED } else { empty };
+        let secret_hint =
+            |empty: &'static str, on: bool| if on { t(SyncMsg::PasswordSaved) } else { empty };
         let secret_of = |p: ProviderChoice| has_secret && provider == p;
         Self {
             id,
@@ -212,68 +595,92 @@ impl TargetForm {
                 window,
                 cx,
                 &webdav.url,
-                "https://dav.example.com/remote.php/dav/files/<用户>/",
+                t(SyncMsg::WebdavUrlPlaceholder),
                 false,
             ),
-            directory: make(window, cx, &webdav.directory, "存放目录（可空）", false),
-            username: make(window, cx, &webdav.username, "用户名", false),
+            directory: make(
+                window,
+                cx,
+                &webdav.directory,
+                t(CloudBackupMsg::DirectoryPlaceholder),
+                false,
+            ),
+            username: make(
+                window,
+                cx,
+                &webdav.username,
+                t(SyncMsg::UsernamePlaceholder),
+                false,
+            ),
             password: make(
                 window,
                 cx,
                 "",
-                secret_hint(PASSWORD_EMPTY, secret_of(ProviderChoice::WebDav)),
+                secret_hint(t(SyncMsg::PasswordEmpty), secret_of(ProviderChoice::WebDav)),
                 true,
             ),
             s3_endpoint: make(
                 window,
                 cx,
                 &s3.endpoint,
-                "https://s3.us-east-1.amazonaws.com 或 https://<账号>.r2.cloudflarestorage.com",
+                t(SyncMsg::S3EndpointPlaceholder),
                 false,
             ),
             s3_region: make(
                 window,
                 cx,
                 &s3.region,
-                "Region（例如 us-east-1；R2 填 auto）",
+                t(SyncMsg::S3RegionPlaceholder),
                 false,
             ),
-            s3_bucket: make(window, cx, &s3.bucket, "Bucket 名称", false),
+            s3_bucket: make(
+                window,
+                cx,
+                &s3.bucket,
+                t(SyncMsg::S3BucketPlaceholder),
+                false,
+            ),
             s3_access_key: make(window, cx, &s3.access_key, "Access Key", false),
             s3_secret: make(
                 window,
                 cx,
                 "",
-                secret_hint(S3_SECRET_EMPTY, secret_of(ProviderChoice::S3)),
+                secret_hint(t(SyncMsg::S3SecretEmpty), secret_of(ProviderChoice::S3)),
                 true,
             ),
-            s3_prefix: make(window, cx, &s3.prefix, "对象前缀（可空）", false),
+            s3_prefix: make(
+                window,
+                cx,
+                &s3.prefix,
+                t(SyncMsg::S3PrefixPlaceholder),
+                false,
+            ),
             gh_api_base: make(
                 window,
                 cx,
                 &github.api_base,
-                "https://api.github.com（留空用默认）",
+                t(SyncMsg::GithubApiPlaceholder),
                 false,
             ),
             gh_token: make(
                 window,
                 cx,
                 "",
-                secret_hint(GITHUB_TOKEN_EMPTY, secret_of(ProviderChoice::Github)),
+                secret_hint(t(SyncMsg::GithubTokenEmpty), secret_of(ProviderChoice::Github)),
                 true,
             ),
             gh_gist_id: make(
                 window,
                 cx,
                 &github.gist_id,
-                "留空 = 第一次备份时自动新建",
+                t(SyncMsg::GithubGistPlaceholder),
                 false,
             ),
             od_client_id: make(
                 window,
                 cx,
                 &od_client,
-                "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx（留空用内置的）",
+                t(SyncMsg::OnedriveClientIdPlaceholder),
                 false,
             ),
             allow_http: webdav.allow_insecure_http,
@@ -354,7 +761,7 @@ impl TargetForm {
             ProviderChoice::Github => build_github(&self.github_form(cx), saved),
             ProviderChoice::OneDrive => {
                 let Some(account) = &self.od_account else {
-                    return Err("请先登录 OneDrive".to_owned());
+                    return Err(t(SyncMsg::OneDriveSignInRequired).to_owned());
                 };
                 Ok(StorageConfig::Onedrive(OneDriveConfig {
                     client_id: self.od_client_id.read(cx).value().trim().to_owned(),
@@ -377,11 +784,11 @@ pub(super) fn resolve_password(
     let password = if !typed.is_empty() {
         typed.to_owned()
     } else {
-        remembered.ok_or_else(|| "请先输入主密码（用来加密 / 解开云端备份）".to_owned())?
+        remembered.ok_or_else(|| t(CloudBackupMsg::PasswordMissing).to_owned())?
     };
     validate_master_password(&password)?;
     if needs_confirm && !typed.is_empty() && confirm != typed {
-        return Err("两次输入的主密码不一样".to_owned());
+        return Err(t(CloudBackupMsg::PasswordMismatch).to_owned());
     }
     Ok(password)
 }
@@ -464,7 +871,7 @@ fn context_for<'a>(
 ) -> Result<SyncContext<'a>, String> {
     let device_id = db
         .sync_device_id()
-        .map_err(|err| format!("读取同步设备 ID 失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(CloudBackupMsg::ReadDeviceIdFailedPrefix)))?;
     Ok(SyncContext {
         db,
         sealer,
@@ -530,16 +937,23 @@ pub(super) fn restore_with(
 /// 上次结果的一行字：时间 + 成功 / 失败原因。
 pub(super) fn last_text(target: &BackupTarget) -> (bool, String) {
     match &target.last {
-        None => (true, "还没有备份过".to_owned()),
+        None => (true, t(CloudBackupMsg::NeverBackedUp).to_owned()),
         Some(last) if last.ok => (
             true,
-            format!("上次备份 {} 成功", super::format_stamp(last.at)),
+            format!(
+                "{}{}{}",
+                t(CloudBackupMsg::LastOkPrefix),
+                super::format_stamp(last.at),
+                t(CloudBackupMsg::LastOkSuffix)
+            ),
         ),
         Some(last) => (
             false,
             format!(
-                "上次备份 {} 失败：{}",
+                "{}{}{}{}",
+                t(CloudBackupMsg::LastOkPrefix),
                 super::format_stamp(last.at),
+                t(CloudBackupMsg::LastFailedMiddle),
                 last.message
             ),
         ),
@@ -550,14 +964,23 @@ pub(super) fn last_text(target: &BackupTarget) -> (bool, String) {
 fn restore_text(label: &str, report: &OfflineImportReport) -> String {
     let applied = &report.applied;
     format!(
-        "已从 {label} 恢复：主机 新增 {} / 更新 {} / 删除 {}，凭据 新增 {}，代理 新增 {}。\
-         恢复前的状态已自动备份为 {}，可以在「备份与恢复」里恢复回去",
-        applied.hosts.inserted,
-        applied.hosts.updated,
-        applied.hosts.deleted,
-        applied.identities.inserted,
-        applied.proxies.inserted,
-        backup_name(&report.safety_backup),
+        "{prefix}{label}{head}{hosts}{updated}{hosts_updated}{deleted}{hosts_deleted}\
+         {identities}{identities_added}{proxies}{proxies_added}\
+         {safety}{safety_name}{tail}",
+        prefix = t(CloudBackupMsg::RestoreDonePrefix),
+        head = t(CloudBackupMsg::RestoreDoneMiddle),
+        hosts = applied.hosts.inserted,
+        updated = t(CloudBackupMsg::RestoreDoneUpdated),
+        hosts_updated = applied.hosts.updated,
+        deleted = t(CloudBackupMsg::RestoreDoneDeleted),
+        hosts_deleted = applied.hosts.deleted,
+        identities = t(CloudBackupMsg::RestoreDoneIdentities),
+        identities_added = applied.identities.inserted,
+        proxies = t(CloudBackupMsg::RestoreDoneProxies),
+        proxies_added = applied.proxies.inserted,
+        safety = t(CloudBackupMsg::RestoreDoneSafetyPrefix),
+        safety_name = backup_name(&report.safety_backup),
+        tail = t(CloudBackupMsg::RestoreDoneSafetySuffix),
     )
 }
 
@@ -676,7 +1099,7 @@ impl SyncDemo {
         self.cloud.notice = None;
         let existing = edit.and_then(|id| self.cloud.targets.iter().find(|t| t.id == id).cloned());
         if existing.is_none() && self.cloud.targets.len() >= MAX_TARGETS {
-            self.cloud_notice(false, FULL_HINT);
+            self.cloud_notice(false, t(CloudBackupMsg::FullHint));
             cx.notify();
             return;
         }
@@ -747,9 +1170,9 @@ impl SyncDemo {
                 self.cloud_notice(
                     true,
                     if editing {
-                        "已保存。上次备份结果已清空，下一次备份会重新上传"
+                        t(CloudBackupMsg::SavedEdited)
                     } else {
-                        "已添加。主同步下一次成功之后会自动备份到这里，也可以点「立即备份」"
+                        t(CloudBackupMsg::SavedAdded)
                     },
                 );
             }
@@ -792,14 +1215,14 @@ impl SyncDemo {
             self.cloud.delete_armed = Some(id.to_owned());
             self.cloud_notice(
                 false,
-                "再点一次「确认删除」会删掉本机保存的这个备份目标和它的登录信息（云端已经上传的备份文件不动）",
+                t(CloudBackupMsg::DeleteConfirmHint),
             );
             cx.notify();
             return;
         }
         self.cloud.disarm();
         match delete_target_at(&crate::settings::data_dir(), id) {
-            Ok(()) => self.cloud_notice(true, "已删除这个备份目标（云端已经上传的备份文件没有动）"),
+            Ok(()) => self.cloud_notice(true, t(CloudBackupMsg::Deleted)),
             Err(message) => self.cloud_notice(false, message),
         }
         self.reload_targets();
@@ -820,7 +1243,7 @@ impl SyncDemo {
         self.cloud.disarm();
         match reset_targets_at(&crate::settings::data_dir()) {
             Ok(()) => {
-                self.cloud_notice(true, "已清空本机保存的云端备份设置（云端的备份文件没有动）")
+                self.cloud_notice(true, t(CloudBackupMsg::ResetDone))
             }
             Err(message) => self.cloud_notice(false, message),
         }
@@ -890,12 +1313,15 @@ impl SyncDemo {
                                     .into_iter()
                                     .next()
                                     .map(|outcome| outcome.status)
-                                    .ok_or_else(|| "没有这个备份目标".to_owned())
+                                    .ok_or_else(|| t(CloudBackupMsg::NoTarget).to_owned())
                             });
                     let _ = sender.send(SyncEvent::TargetBackedUp { id, result });
                 }));
             }
-            Err(err) => self.cloud_notice(false, format!("启动备份任务失败：{err}")),
+            Err(err) => self.cloud_notice(
+                false,
+                format!("{}{err}", t(CloudBackupMsg::StartBackupFailedPrefix)),
+            ),
         }
         cx.notify();
     }
@@ -957,7 +1383,10 @@ impl SyncDemo {
                     let _ = sender.send(SyncEvent::TargetRestored { id, result });
                 }));
             }
-            Err(err) => self.cloud_notice(false, format!("启动恢复任务失败：{err}")),
+            Err(err) => self.cloud_notice(
+                false,
+                format!("{}{err}", t(CloudBackupMsg::StartRestoreFailedPrefix)),
+            ),
         }
         cx.notify();
     }
@@ -991,7 +1420,12 @@ impl SyncDemo {
                     let _ = sender.send(SyncEvent::TargetSignedIn(result));
                 }));
             }
-            Err(err) => form.error = Some(format!("启动登录任务失败：{err}")),
+            Err(err) => {
+                form.error = Some(format!(
+                    "{}{err}",
+                    t(CloudBackupMsg::StartLoginFailedPrefix)
+                ))
+            }
         }
         cx.notify();
     }
@@ -1044,13 +1478,22 @@ impl SyncDemo {
         self.cloud.busy = None;
         let label = self.cloud.describe(id);
         match result {
-            Ok(OutcomeStatus::Uploaded) => self.cloud_notice(true, format!("已备份到 {label}")),
-            Ok(OutcomeStatus::Unchanged) => {
-                self.cloud_notice(true, format!("{label} 上的备份已经是最新的"))
-            }
-            Ok(OutcomeStatus::Failed(message)) | Err(message) => {
-                self.cloud_notice(false, format!("备份到 {label} 失败：{message}"))
-            }
+            Ok(OutcomeStatus::Uploaded) => self.cloud_notice(
+                true,
+                format!("{}{label}", t(CloudBackupMsg::BackedUpPrefix)),
+            ),
+            Ok(OutcomeStatus::Unchanged) => self.cloud_notice(
+                true,
+                format!("{label}{}", t(CloudBackupMsg::UpToDateSuffix)),
+            ),
+            Ok(OutcomeStatus::Failed(message)) | Err(message) => self.cloud_notice(
+                false,
+                format!(
+                    "{}{label}{}{message}",
+                    t(CloudBackupMsg::BackupFailedPrefix),
+                    t(CloudBackupMsg::BackupFailedMiddle)
+                ),
+            ),
         }
         self.reload_targets();
         cx.notify();
@@ -1066,7 +1509,14 @@ impl SyncDemo {
         let label = self.cloud.describe(id);
         match result {
             Ok(report) => self.cloud_notice(true, restore_text(&label, &report)),
-            Err(message) => self.cloud_notice(false, format!("从 {label} 恢复失败：{message}")),
+            Err(message) => self.cloud_notice(
+                false,
+                format!(
+                    "{}{label}{}{message}",
+                    t(CloudBackupMsg::RestoreFailedPrefix),
+                    t(CloudBackupMsg::RestoreFailedMiddle)
+                ),
+            ),
         }
         self.reload_targets();
         cx.notify();
@@ -1122,7 +1572,7 @@ impl SyncDemo {
             rows.push(
                 div()
                     .id("cloud-empty")
-                    .child(muted("还没有云端备份目标。", tokens))
+                    .child(muted(t(CloudBackupMsg::EmptyTargets), tokens))
                     .into_any_element(),
             );
         }
@@ -1148,12 +1598,8 @@ impl SyncDemo {
         }
         card(
             "sync-cloud-backup",
-            "云端备份",
-            Some(
-                "主同步之外，可以再加几个只上传的备份：主同步每次成功后，把同样的数据用主密码加密，覆盖上传到这里（只留一份，\
-                 从不往回合并）。备份文件叫 zeeterm-backup.json，和同步包放在同一个目录 / 桶里也不会互相覆盖。账号信息\
-                 只存在本机，不进同步包，也不出现在云端备份里。",
-            ),
+            t(CloudBackupMsg::CardTitle),
+            Some(t(CloudBackupMsg::CardDescription)),
             tokens,
             rows,
         )
@@ -1165,18 +1611,18 @@ impl SyncDemo {
             tokens.danger,
             vec![
                 colored(
-                    format!("读不出本机保存的云端备份设置：{error}"),
+                    format!("{}{error}", t(CloudBackupMsg::LoadErrorPrefix)),
                     tokens.danger,
                 ),
                 muted(
-                    "可能是换了 Windows 账户，或者设置被破坏了。清空之后可以重新添加备份目标（云端已有的备份文件不会被删）。",
+                    t(CloudBackupMsg::LoadErrorHint),
                     tokens,
                 ),
                 Button::new("cloud-reset")
                     .label(if self.cloud.reset_armed {
-                        "再次点击「确认清空」"
+                        t(CloudBackupMsg::ConfirmClearAgain)
                     } else {
-                        "清空云端备份设置"
+                        t(CloudBackupMsg::ClearSettings)
                     })
                     .compact()
                     .on_click(move |_, _, cx| {
@@ -1189,17 +1635,20 @@ impl SyncDemo {
 
     fn cloud_password_rows(&self, tokens: &Tokens) -> AnyElement {
         let mut rows = vec![
-            password_field("主密码", &self.master_password, tokens),
-            password_field("再输入一次", &self.master_password_confirm, tokens),
+            password_field(t(CloudBackupMsg::MasterPasswordLabel), &self.master_password, tokens),
+            password_field(
+                t(CloudBackupMsg::PasswordAgainLabel),
+                &self.master_password_confirm,
+                tokens,
+            ),
             muted(
-                "云端备份用主密码加密，至少 8 个字符；忘了就打不开，也没有找回的办法。这里不会保存它，每次备份 / \
-                 恢复都要输入。配置了主同步之后，它在上面「主密码」那张卡里。",
+                t(CloudBackupMsg::PasswordHint),
                 tokens,
             ),
         ];
         if !self.remember.saved {
             rows.push(muted(
-                "没有配置主同步，所以主同步成功后的自动备份不会触发；点每个目标上的「立即备份」手动备份。",
+                t(CloudBackupMsg::NoPrimarySyncHint),
                 tokens,
             ));
         }
@@ -1220,7 +1669,7 @@ impl SyncDemo {
             .items_center()
             .child(
                 Button::new("cloud-add")
-                    .label("添加备份目标")
+                    .label(t(CloudBackupMsg::AddTarget))
                     .compact()
                     .disabled(full || self.cloud.is_busy())
                     .on_click(move |_, window, cx| {
@@ -1229,9 +1678,15 @@ impl SyncDemo {
             )
             .child(muted(
                 if full {
-                    FULL_HINT.to_owned()
+                    t(CloudBackupMsg::FullHint).to_owned()
                 } else {
-                    format!("已添加 {} / {MAX_TARGETS} 个", self.cloud.targets.len())
+                    format!(
+                        "{}{}{}{MAX_TARGETS}{}",
+                        t(CloudBackupMsg::AddedCountPrefix),
+                        self.cloud.targets.len(),
+                        t(CloudBackupMsg::AddedCountMiddle),
+                        t(CloudBackupMsg::AddedCountSuffix)
+                    )
                 },
                 tokens,
             ))
@@ -1283,12 +1738,12 @@ impl SyncDemo {
                     .flex_none()
                     .gap_2()
                     .items_center()
-                    .child(muted("启用", tokens))
+                    .child(muted(t(CloudBackupMsg::EnableLabel), tokens))
                     .child(
                         Switch::new(("cloud-enabled", target_index(&self.cloud, &id)))
                             .checked(target.enabled)
                             .disabled(busy)
-                            .accessibility_label("启用这个备份目标")
+                            .accessibility_label(t(CloudBackupMsg::EnableA11y))
                             .on_click(move |_, _, cx| {
                                 let id = toggle_id.clone();
                                 toggle.update(cx, |this, cx| this.toggle_target(&id, cx));
@@ -1299,7 +1754,7 @@ impl SyncDemo {
         let mut lines: Vec<AnyElement> = vec![head.into_any_element()];
         lines.push(colored(last, status_color));
         if !target.enabled {
-            lines.push(muted("已停用：主同步成功后不会自动备份到这里", tokens));
+            lines.push(muted(t(CloudBackupMsg::DisabledHint), tokens));
         }
         lines.push(self.target_buttons(&id, backing_up, busy, entity));
         if self.cloud.restore_armed.as_deref() == Some(id.as_str()) {
@@ -1324,9 +1779,9 @@ impl SyncDemo {
         let (backup_id, restore_id, edit_id, delete_id) =
             (id.to_owned(), id.to_owned(), id.to_owned(), id.to_owned());
         let delete_label = if self.cloud.delete_armed.as_deref() == Some(id) {
-            "确认删除"
+            t(CloudBackupMsg::ConfirmDelete)
         } else {
-            "删除"
+            t(CloudBackupMsg::Delete)
         };
         h_flex()
             .gap_2()
@@ -1336,9 +1791,9 @@ impl SyncDemo {
                 "cloud-backup",
                 index,
                 if backing_up {
-                    "备份中…"
+                    t(CloudBackupMsg::BackingUp)
                 } else {
-                    "立即备份"
+                    t(CloudBackupMsg::BackupNow)
                 },
                 busy,
                 move |this, _, cx| this.start_target_backup(&backup_id, cx),
@@ -1347,7 +1802,7 @@ impl SyncDemo {
                 entity,
                 "cloud-restore",
                 index,
-                "从这里恢复",
+                t(CloudBackupMsg::RestoreHere),
                 busy,
                 move |this, _, cx| this.arm_target_restore(&restore_id, cx),
             ))
@@ -1355,7 +1810,7 @@ impl SyncDemo {
                 entity,
                 "cloud-edit",
                 index,
-                "编辑",
+                t(CloudBackupMsg::Edit),
                 busy,
                 move |this, window, cx| this.open_target_form(Some(edit_id.clone()), window, cx),
             ))
@@ -1388,20 +1843,22 @@ impl SyncDemo {
                     div()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(tokens.caution)
-                        .child(format!("从 {label} 恢复，会覆盖本机的数据"))
+                        .child(format!(
+                            "{}{label}{}",
+                            t(CloudBackupMsg::RestoreWarningPrefix),
+                            t(CloudBackupMsg::RestoreWarningSuffix)
+                        ))
                         .into_any_element(),
                     div()
                         .child(
-                            "本机的主机、分组、凭据、代理和可同步的设置会变成和这份云端备份一样，备份里没有的会被删掉。\
-                             恢复前会先自动做一份本地备份，可以在「备份与恢复」里恢复回去；不会改同步基线，\
-                             也不会动这里的备份目标和主同步设置。",
+                            t(CloudBackupMsg::RestoreWarningBody),
                         )
                         .into_any_element(),
                     h_flex()
                         .gap_2()
                         .child(
                             Button::new("cloud-restore-confirm")
-                                .label("确认恢复")
+                                .label(t(CloudBackupMsg::ConfirmRestore))
                                 .compact()
                                 .danger()
                                 .disabled(busy)
@@ -1411,7 +1868,7 @@ impl SyncDemo {
                         )
                         .child(
                             Button::new("cloud-restore-cancel")
-                                .label("取消")
+                                .label(t(CloudBackupMsg::Cancel))
                                 .compact()
                                 .on_click(move |_, _, cx| {
                                     cancel.update(cx, |this, cx| this.cancel_target_restore(cx));
@@ -1445,15 +1902,15 @@ impl SyncDemo {
             div()
                 .typo(Role::ItemName, tokens)
                 .child(if form.editing {
-                    "编辑备份目标"
+                    t(CloudBackupMsg::EditTarget)
                 } else {
-                    "添加备份目标"
+                    t(CloudBackupMsg::AddTarget)
                 })
                 .into_any_element(),
             v_flex()
                 .w_full()
                 .gap_1()
-                .child(div().typo(Role::FieldLabel, tokens).child("存储类型"))
+                .child(div().typo(Role::FieldLabel, tokens).child(t(CloudBackupMsg::StorageType)))
                 .child(crate::main_window::widgets::segmented_bar(
                     "cloud-provider",
                     CHOICES
@@ -1489,7 +1946,7 @@ impl SyncDemo {
                 .gap_2()
                 .child(
                     Button::new("cloud-form-save")
-                        .label("保存")
+                        .label(t(CloudBackupMsg::Save))
                         .compact()
                         .disabled(form.signing_in)
                         .on_click(move |_, _, cx| {
@@ -1498,7 +1955,7 @@ impl SyncDemo {
                 )
                 .child(
                     Button::new("cloud-form-cancel")
-                        .label("取消")
+                        .label(t(CloudBackupMsg::Cancel))
                         .compact()
                         .disabled(form.signing_in)
                         .on_click(move |_, _, cx| {
@@ -1527,17 +1984,17 @@ impl SyncDemo {
         cx: &App,
     ) -> AnyElement {
         let mut rows = vec![
-            field("WebDAV 地址", &form.url, tokens),
-            field("用户名", &form.username, tokens),
-            password_field("密码", &form.password, tokens),
-            field("存放目录（可选）", &form.directory, tokens),
+            field(t(CloudBackupMsg::WebdavUrl), &form.url, tokens),
+            field(t(SyncMsg::UsernamePlaceholder), &form.username, tokens),
+            password_field(t(SyncMsg::PasswordEmpty), &form.password, tokens),
+            field(t(CloudBackupMsg::Directory), &form.directory, tokens),
             muted(
-                "备份文件 zeeterm-backup.json 放在这个目录里，和同步包 zssh-sync.json 并排也不会互相覆盖；目录不存在会自动创建。",
+                t(CloudBackupMsg::DirectoryHint),
                 tokens,
             ),
         ];
         if form.has_secret && form.provider == ProviderChoice::WebDav {
-            rows.push(muted("已保存密码；留空 = 继续用已保存的密码", tokens));
+            rows.push(muted(t(CloudBackupMsg::SavedPasswordHint), tokens));
         }
         if super::view::is_plain_http(form.url.read(cx).value().as_ref()) {
             let allow = entity.clone();
@@ -1547,11 +2004,11 @@ impl SyncDemo {
                     div()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(tokens.caution)
-                        .child("地址是 http://，密码会以明文发送")
+                        .child(t(CloudBackupMsg::PlainHttpTitle))
                         .into_any_element(),
                     Checkbox::new("cloud-allow-http")
                         .checked(form.allow_http)
-                        .label("我了解密码会以明文发送，仍然使用 http://")
+                        .label(t(CloudBackupMsg::PlainHttpCheck))
                         .on_click(move |_, _, cx| {
                             allow.update(cx, |this, cx| this.toggle_target_http(false, cx));
                         })
@@ -1570,17 +2027,17 @@ impl SyncDemo {
             field("Bucket", &form.s3_bucket, tokens),
             field("Access Key", &form.s3_access_key, tokens),
             password_field("Secret", &form.s3_secret, tokens),
-            field("对象路径前缀（可选）", &form.s3_prefix, tokens),
+            field(t(CloudBackupMsg::S3Prefix), &form.s3_prefix, tokens),
             v_flex()
                 .w_full()
                 .gap_1()
-                .child(div().typo(Role::FieldLabel, tokens).child("地址风格"))
+                .child(div().typo(Role::FieldLabel, tokens).child(t(CloudBackupMsg::AddressStyle)))
                 .child(
                     Button::new("cloud-s3-path-style")
                         .label(if form.s3_path_style {
-                            "路径风格（endpoint/bucket/key）"
+                            t(CloudBackupMsg::PathStyle)
                         } else {
-                            "虚拟主机风格（bucket.endpoint/key）"
+                            t(CloudBackupMsg::VirtualHostStyle)
                         })
                         .compact()
                         .on_click(move |_, _, cx| {
@@ -1590,7 +2047,7 @@ impl SyncDemo {
                 .into_any_element(),
         ];
         if form.has_secret && form.provider == ProviderChoice::S3 {
-            rows.push(muted("已保存 Secret；留空 = 继续用已保存的 Secret", tokens));
+            rows.push(muted(t(CloudBackupMsg::SavedSecretHint), tokens));
         }
         v_flex().w_full().gap_2().children(rows).into_any_element()
     }
@@ -1603,17 +2060,16 @@ impl SyncDemo {
         cx: &App,
     ) -> AnyElement {
         let mut rows = vec![
-            field("接口地址", &form.gh_api_base, tokens),
-            password_field("个人访问令牌", &form.gh_token, tokens),
+            field(t(CloudBackupMsg::ApiBase), &form.gh_api_base, tokens),
+            password_field(t(CloudBackupMsg::Token), &form.gh_token, tokens),
             field("Gist ID", &form.gh_gist_id, tokens),
             muted(
-                "需要 gist 权限。Gist ID 留空 = 第一次备份时自动新建一个 secret Gist；也可以填主同步用的同一个 Gist，\
-                 备份文件 zeeterm-backup.json 和同步包是两个文件，互不影响。secret Gist 拿到链接的人都能打开，但里面是密文。",
+                t(CloudBackupMsg::GithubHint),
                 tokens,
             ),
         ];
         if form.has_secret && form.provider == ProviderChoice::Github {
-            rows.push(muted("已保存令牌；留空 = 继续用已保存的令牌", tokens));
+            rows.push(muted(t(CloudBackupMsg::SavedTokenHint), tokens));
         }
         if super::view::is_plain_http(form.gh_api_base.read(cx).value().as_ref()) {
             let allow = entity.clone();
@@ -1623,11 +2079,11 @@ impl SyncDemo {
                     div()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(tokens.caution)
-                        .child("接口地址是 http://，令牌会以明文发送")
+                        .child(t(CloudBackupMsg::TokenHttpTitle))
                         .into_any_element(),
                     Checkbox::new("cloud-gh-allow-http")
                         .checked(form.gh_allow_http)
-                        .label("我了解令牌会以明文发送，仍然使用 http://")
+                        .label(t(CloudBackupMsg::TokenHttpCheck))
                         .on_click(move |_, _, cx| {
                             allow.update(cx, |this, cx| this.toggle_target_http(true, cx));
                         })
@@ -1650,18 +2106,17 @@ impl SyncDemo {
         let custom_invalid = !custom.trim().is_empty() && !is_valid_client_id(&custom);
         let account = match &form.od_account {
             Some(account) if !account.trim().is_empty() => account.clone(),
-            Some(_) => "已登录".to_owned(),
-            None => "未登录".to_owned(),
+            Some(_) => t(CloudBackupMsg::SignedIn).to_owned(),
+            None => t(CloudBackupMsg::NotSignedIn).to_owned(),
         };
         let mut rows: Vec<AnyElement> = vec![
             muted(
-                "用微软账号登录，备份放在 OneDrive 的应用专用文件夹里。可以和主同步用同一个账号，也可以用另一个；\
-                 这里的登录信息和主同步的互相独立，断开其中一个不影响另一个。目前只支持个人微软账号。",
+                t(CloudBackupMsg::OneDriveIntro),
                 tokens,
             ),
             h_flex()
                 .gap_2()
-                .child(muted("账号", tokens))
+                .child(muted(t(CloudBackupMsg::Account), tokens))
                 .child(div().text_sm().child(account))
                 .into_any_element(),
         ];
@@ -1673,13 +2128,13 @@ impl SyncDemo {
                     div()
                         .id("cloud-od-logging-in")
                         .font_weight(FontWeight::MEDIUM)
-                        .child("正在浏览器中登录…")
+                        .child(t(CloudBackupMsg::LoggingInBrowser))
                         .into_any_element(),
                     div()
-                        .child("请在刚刚打开的浏览器页面里登录并同意授权，最多等 5 分钟。")
+                        .child(t(CloudBackupMsg::LoginHint))
                         .into_any_element(),
                     Button::new("cloud-od-login-cancel")
-                        .label("取消登录")
+                        .label(t(CloudBackupMsg::CancelLogin))
                         .compact()
                         .on_click(move |_, _, cx| {
                             cancel.update(cx, |this, cx| this.cancel_target_login(cx));
@@ -1694,9 +2149,9 @@ impl SyncDemo {
                     .child(
                         Button::new("cloud-od-login")
                             .label(if form.od_account.is_some() {
-                                "重新登录"
+                                t(CloudBackupMsg::Relogin)
                             } else {
-                                "用微软账号登录"
+                                t(CloudBackupMsg::SignInWithMs)
                             })
                             .compact()
                             .disabled(!allowed)
@@ -1708,7 +2163,7 @@ impl SyncDemo {
             );
             if custom_invalid {
                 rows.push(colored(
-                    "client ID 的格式不对，应该形如 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx。",
+                    t(CloudBackupMsg::ClientIdInvalid),
                     tokens.dot_connecting,
                 ));
             }
@@ -1721,9 +2176,9 @@ impl SyncDemo {
                     h_flex().child(
                         Button::new("cloud-od-advanced")
                             .label(if form.od_advanced {
-                                "高级 ▾"
+                                t(CloudBackupMsg::AdvancedExpanded)
                             } else {
-                                "高级 ▸"
+                                t(CloudBackupMsg::AdvancedCollapsed)
                             })
                             .ghost()
                             .compact()
@@ -1733,7 +2188,7 @@ impl SyncDemo {
                     ),
                 )
                 .when(form.od_advanced, |col| {
-                    col.child(field("自己的 client ID", &form.od_client_id, tokens))
+                    col.child(field(t(CloudBackupMsg::OwnClientId), &form.od_client_id, tokens))
                 })
                 .into_any_element(),
         );

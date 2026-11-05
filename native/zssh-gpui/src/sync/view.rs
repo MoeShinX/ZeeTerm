@@ -20,12 +20,527 @@ use zssh_core::sync::service::{ConcurrencyRecord, LastResult};
 use super::status::format_stamp;
 use super::strength::password_strength;
 use super::{
-    ProviderChoice, StorageConfig, SyncDemo, auto_block_reason, conflict_row, deletion_lines,
-    onedrive_account_label, probe_text, sync_report_lines, with_sync_guard,
+    ProviderChoice, StorageConfig, SyncDemo, SyncMsg, auto_block_reason, conflict_row,
+    deletion_lines, onedrive_account_label, probe_text, sync_report_lines, with_sync_guard,
 };
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::settings_view::card;
 use crate::typography::{Role, Typo as _};
+
+/// 同步设置页（`view.rs`）自己的界面文案：各卡片标题、字段标签、说明、按钮和状态行。
+///
+/// 只放应用自己的固定文案；地址、账号名、Gist ID、测试结果里的错误原文和设备名属于远端 /
+/// 用户数据，原样拼在本地化前缀后面，不经过这里。id（`sync-save`、`sync-auto-toggle`……）
+/// 和 `WebDAV` / `S3` / `GitHub Gist` / `OneDrive` 这些服务名不进这张表。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyncViewMsg {
+    // ---- 窗口标题 / 副标题 ----
+    WindowTitle,
+    HeaderSubtitle,
+    // ---- 上次结果 ----
+    NeverSynced,
+    AutoSuffix,
+    UploadedVersionPrefix,
+    SyncedOkSuffix,
+    StoppedForConfirmationSuffix,
+    CancelledSuffix,
+    LocalChangedSuffix,
+    FailedSuffix,
+    // ---- 并发保护 ----
+    ConcurrencyNotProbed,
+    ConcurrencyUnsupported,
+    ConcurrencySupported,
+    // ---- 连接存储 ----
+    ConnectionCardTitle,
+    ConnectionCardDescription,
+    StorageType,
+    WebdavAddress,
+    WebdavAddressExample,
+    Username,
+    Password,
+    Directory,
+    DirectoryHint,
+    SavedPasswordHint,
+    PlainHttpTitle,
+    PlainHttpBody,
+    PlainHttpCheck,
+    S3EndpointExample,
+    S3Prefix,
+    AddressStyle,
+    PathStyle,
+    VirtualHostStyle,
+    SavedSecretHint,
+    ApiBase,
+    ApiBaseHint,
+    Token,
+    TokenHint,
+    GistIdHint,
+    SavedTokenHint,
+    TokenHttpTitle,
+    TokenHttpCheck,
+    SignInWithMicrosoft,
+    OneDriveIntro,
+    Account,
+    OneDriveTokenHint,
+    OneDriveExpired,
+    LoggingInBrowser,
+    LoggingInHint,
+    CancelLogin,
+    Relogin,
+    ConfirmDisconnect,
+    Disconnect,
+    ClientIdInvalid,
+    DisconnectHint,
+    OpenAppsPage,
+    AdvancedExpanded,
+    AdvancedCollapsed,
+    OwnClientId,
+    OwnClientIdHint,
+    // ---- 存储连接按钮 ----
+    ConfirmClearAgain,
+    Clear,
+    Save,
+    Testing,
+    TestConnection,
+    LastProbe,
+    // ---- 主密码 ----
+    ForgotWarningTitle,
+    ForgotWarningBody,
+    CloudHasDataHint,
+    MasterPassword,
+    PasswordAgain,
+    UnderstoodCheck,
+    RememberTitle,
+    RememberDescriptionPrefix,
+    RememberA11y,
+    MasterPasswordHint,
+    MasterPasswordCardTitle,
+    MasterPasswordCardDescription,
+    ChangeMasterPassword,
+    ChangeMasterPasswordDescription,
+    Change,
+    OldMasterPassword,
+    NewMasterPassword,
+    ConfirmNewMasterPassword,
+    ChangeWarning,
+    Changing,
+    ChangeAndUpload,
+    Cancel,
+    // ---- 同步 ----
+    Syncing,
+    SyncNow,
+    SyncResults,
+    SyncCardTitle,
+    SyncCardDescription,
+    DeleteManyTitle,
+    NothingChangedYet,
+    DeletionChoices,
+    UseCloudVersion,
+    Continue,
+    BaselineBrokenTitle,
+    BaselineBrokenBody,
+    ConfirmRebuild,
+    RebuildBaseline,
+    AutoSync,
+    AutoSyncDescription,
+    AutoSyncA11y,
+    Interval,
+    IntervalDescription,
+    AutoSyncPausedPrefix,
+    AutoSyncSkipsHint,
+    // ---- 冲突 ----
+    NoConflicts,
+    ConfirmUseOther,
+    RestoreThisRecord,
+    UseOther,
+    GotIt,
+    ConflictsCardTitle,
+    ConflictsCardDescription,
+}
+
+impl Msg for SyncViewMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::WindowTitle => "同步设置",
+            Self::HeaderSubtitle => "连接信息只保存在这台电脑上，云端放加密后的同步包",
+            Self::NeverSynced => "还没有同步过",
+            Self::AutoSuffix => "（自动）",
+            Self::UploadedVersionPrefix => "，上传版本 ",
+            Self::SyncedOkSuffix => " 同步成功",
+            Self::StoppedForConfirmationSuffix => " 停在了防误删确认上",
+            Self::CancelledSuffix => " 已取消",
+            Self::LocalChangedSuffix => " 同步期间本地有改动，稍后自动重新同步",
+            Self::FailedSuffix => " 失败：",
+            Self::ConcurrencyNotProbed => {
+                "还没有检测这个存储是否支持并发保护，同步会按「写之前再读一次」处理。点「测试连接」检测。"
+            }
+            Self::ConcurrencyUnsupported => "这个服务不支持并发保护，多台电脑同时同步时有很小的概率覆盖。",
+            Self::ConcurrencySupported => "支持并发保护（多台电脑同时同步不会互相覆盖）。",
+            Self::ConnectionCardTitle => "连接存储",
+            Self::ConnectionCardDescription => {
+                "同步包整体加密后存到你自己的 WebDAV、S3 兼容存储、GitHub Gist 或 OneDrive。\
+                 这里的密码 / Secret / 令牌 / 登录信息只用本机的 Windows 账户加密保存，不会进同步包。"
+            }
+            Self::StorageType => "存储类型",
+            Self::WebdavAddress => "WebDAV 地址",
+            Self::WebdavAddressExample => "例如 https://dav.example.com/remote.php/dav/files/me/",
+            Self::Username => "用户名",
+            Self::Password => "密码",
+            Self::Directory => "存放目录（可选）",
+            Self::DirectoryHint => "同步包放在这个子目录里，不存在会自动创建。",
+            Self::SavedPasswordHint => "已保存密码；留空 = 继续用已保存的密码",
+            Self::PlainHttpTitle => "地址是 http://，密码会以明文发送",
+            Self::PlainHttpBody => {
+                "同一网络里的人可以看到你的用户名和密码。同步包本身是加密的，但账号密码不是。\
+                 只在可信的内网里这样用。"
+            }
+            Self::PlainHttpCheck => "我了解密码会以明文发送，仍然使用 http://",
+            Self::S3EndpointExample => "例如 https://s3.us-east-1.amazonaws.com、http://127.0.0.1:9000",
+            Self::S3Prefix => "对象路径前缀（可选）",
+            Self::AddressStyle => "地址风格",
+            Self::PathStyle => "路径风格（endpoint/bucket/key）",
+            Self::VirtualHostStyle => "虚拟主机风格（bucket.endpoint/key）",
+            Self::SavedSecretHint => "已保存 Secret；留空 = 继续用已保存的 Secret",
+            Self::ApiBase => "接口地址",
+            Self::ApiBaseHint => "留空 = https://api.github.com（GitHub Enterprise 填自己的）",
+            Self::Token => "个人访问令牌",
+            Self::TokenHint => "需要 gist 权限。令牌只用本机的 Windows 账户加密保存，不会进同步包。",
+            Self::GistIdHint => {
+                "留空 = 第一次同步时自动新建一个 secret Gist。第二台电脑上填同一个 Gist ID 和一个有 \
+                 Gist 权限的令牌。secret Gist 拿到链接的人都能打开，但里面是密文。"
+            }
+            Self::SavedTokenHint => "已保存令牌；留空 = 继续用已保存的令牌",
+            Self::TokenHttpTitle => "接口地址是 http://，令牌会以明文发送",
+            Self::TokenHttpCheck => "我了解令牌会以明文发送，仍然使用 http://",
+            Self::SignInWithMicrosoft => "用微软账号登录",
+            Self::OneDriveIntro => {
+                "点「登录」后，ZeeTerm 会用系统默认浏览器打开微软的登录页；登录并同意后浏览器会自动\
+                 跳回本机，不用复制任何东西。同步包只放在 OneDrive 的应用专用文件夹（OneDrive 里 \
+                 Apps 下以应用名命名的文件夹）里，ZeeTerm 看不到你的其他文件。目前只支持个人微软账号\
+                 （outlook.com、hotmail.com 等），工作或学校账号暂不支持。"
+            }
+            Self::Account => "账号",
+            Self::OneDriveTokenHint => "登录信息（令牌）用本机的 Windows 账户加密保存，不会进同步包。",
+            Self::OneDriveExpired => {
+                "OneDrive 登录已失效，请重新登录。自动同步已暂停，重新登录之后恢复。"
+            }
+            Self::LoggingInBrowser => "正在浏览器中登录…",
+            Self::LoggingInHint => {
+                "请在刚刚打开的浏览器页面里登录并同意授权，最多等 5 分钟。完成后浏览器会自动回到本机，\
+                 显示「授权成功」。浏览器这一步用的是系统浏览器自己的网络设置；登录之后 ZeeTerm 换\
+                 令牌和同步走「连接」→「软件网络」里设置的代理。"
+            }
+            Self::CancelLogin => "取消登录",
+            Self::Relogin => "重新登录",
+            Self::ConfirmDisconnect => "再次点击「确认断开」",
+            Self::Disconnect => "断开连接",
+            Self::ClientIdInvalid => {
+                "client ID 的格式不对，应该形如 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx。"
+            }
+            Self::DisconnectHint => {
+                "断开连接只删除这台电脑上保存的登录信息。如果还要彻底撤销 ZeeTerm 的授权，请在微软账户的\
+                 「应用和服务」页面里移除它。"
+            }
+            Self::OpenAppsPage => "在浏览器中打开「应用和服务」页面",
+            Self::AdvancedExpanded => "高级 ▾",
+            Self::AdvancedCollapsed => "高级 ▸",
+            Self::OwnClientId => "自己的 client ID",
+            Self::OwnClientIdHint => {
+                "填了就用它登录，不用程序里内置的。client ID 只存在这台电脑上，不会同步。"
+            }
+            Self::ConfirmClearAgain => "再次点击「确认清除」",
+            Self::Clear => "清除",
+            Self::Save => "保存",
+            Self::Testing => "测试中…",
+            Self::TestConnection => "测试连接",
+            Self::LastProbe => "最近一次测试连接的结果：",
+            Self::ForgotWarningTitle => "忘记主密码就无法恢复云端数据。",
+            Self::ForgotWarningBody => {
+                "主密码不会上传，也没有「找回密码」——忘了只能删掉云端数据重新开始。请把它记在\
+                 安全的地方。"
+            }
+            Self::CloudHasDataHint => {
+                "云端已经有同步数据。输入当初设置的主密码来解开它（这台电脑上的主机会和云端合并，\
+                 两边都不会丢）。"
+            }
+            Self::MasterPassword => "主密码",
+            Self::PasswordAgain => "再输入一次",
+            Self::UnderstoodCheck => "我知道忘记主密码就无法恢复云端数据",
+            Self::RememberTitle => "在这台电脑上记住主密码",
+            Self::RememberDescriptionPrefix => "用 Windows 账户加密保存，下次不用再输入。",
+            Self::RememberA11y => "在这台电脑上记住主密码",
+            Self::MasterPasswordHint => "主密码用来解开云端同步包，至少 8 个字符；不上传、不写日志。",
+            Self::MasterPasswordCardTitle => "主密码",
+            Self::MasterPasswordCardDescription => {
+                "同步包用主密码加密后才上传，云端（和存储服务商）看不到你的任何内容。"
+            }
+            Self::ChangeMasterPassword => "修改主密码",
+            Self::ChangeMasterPasswordDescription => {
+                "需要旧密码。会用新密码重新加密云端数据；其他电脑之后要输入新的主密码。"
+            }
+            Self::Change => "修改…",
+            Self::OldMasterPassword => "旧主密码",
+            Self::NewMasterPassword => "新主密码",
+            Self::ConfirmNewMasterPassword => "确认新主密码",
+            Self::ChangeWarning => "会用新密码重新加密云端数据。忘记主密码就无法恢复云端数据。",
+            Self::Changing => "修改中…",
+            Self::ChangeAndUpload => "修改并上传",
+            Self::Cancel => "取消",
+            Self::Syncing => "同步中…",
+            Self::SyncNow => "立即同步",
+            Self::SyncResults => "同步结果",
+            Self::SyncCardTitle => "同步",
+            Self::SyncCardDescription => "手动同步，或者让它在后台自动做。",
+            Self::DeleteManyTitle => "这次同步会删除很多记录",
+            Self::NothingChangedYet => "还没有改动任何数据。",
+            Self::DeletionChoices => {
+                "· 继续：按合并结果删除这些记录（删除会同步到云端）。\n\
+                 · 用云端版本覆盖本地：放弃本地的版本，以云端为准。\n\
+                 · 取消：本地和云端都不动。"
+            }
+            Self::UseCloudVersion => "用云端版本覆盖本地",
+            Self::Continue => "继续",
+            Self::BaselineBrokenTitle => "同步基线损坏，暂停同步",
+            Self::BaselineBrokenBody => {
+                "基线是「上次同步成功时的状态」，用来判断哪边改过什么。重建后下一次同步按首次\
+                 同步处理：两边的数据都会保留，同名的不会去重（可能出现重复的主机，之后手动删就\
+                 行）；重建之前在另一边删掉的记录可能会回来。"
+            }
+            Self::ConfirmRebuild => "确认重建",
+            Self::RebuildBaseline => "重建同步基线",
+            Self::AutoSync => "自动同步",
+            Self::AutoSyncDescription => {
+                "应用启动后每隔一段时间自动同步一次。遇到需要确认的情况会停下来等你。"
+            }
+            Self::AutoSyncA11y => "自动同步",
+            Self::Interval => "定时同步间隔（分钟）",
+            Self::IntervalDescription => {
+                "1–1440，回车或移开焦点保存。本机记住主密码、保存好存储设置才会自动同步，失败后按 1x / 2x / 4x \
+                 间隔退避。"
+            }
+            Self::AutoSyncPausedPrefix => "自动同步暂停：",
+            Self::AutoSyncSkipsHint => "不同步：执行模式、智能体路径、窗口状态等本机设置。",
+            Self::NoConflicts => "没有冲突。",
+            Self::ConfirmUseOther => "确认改用",
+            Self::RestoreThisRecord => "恢复这条记录",
+            Self::UseOther => "改用另一份",
+            Self::GotIt => "我知道了",
+            Self::ConflictsCardTitle => "冲突",
+            Self::ConflictsCardDescription => {
+                "两台电脑改了同一条记录时，默认采用修改时间较新的那份；一边删除、另一边修改时，删除生效。\
+                 没被采用的那份留在这里，保留 90 天后自动清理。"
+            }
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::WindowTitle => "Sync Settings",
+            Self::HeaderSubtitle => {
+                "Connection details stay on this computer; only the encrypted sync package goes to the cloud"
+            }
+            Self::NeverSynced => "Never synced",
+            Self::AutoSuffix => " (auto)",
+            Self::UploadedVersionPrefix => ", uploaded version ",
+            Self::SyncedOkSuffix => " synced successfully",
+            Self::StoppedForConfirmationSuffix => " stopped at the deletion confirmation",
+            Self::CancelledSuffix => " cancelled",
+            Self::LocalChangedSuffix => " local changes during the sync; it retries automatically later",
+            Self::FailedSuffix => " failed: ",
+            Self::ConcurrencyNotProbed => {
+                "It is not known yet whether this storage supports concurrency protection; the sync reads again before writing. Click “Test Connection” to check."
+            }
+            Self::ConcurrencyUnsupported => {
+                "This service does not support concurrency protection, so two computers syncing at the same time have a small chance of overwriting each other."
+            }
+            Self::ConcurrencySupported => {
+                "Concurrency protection is supported (two computers syncing at the same time do not overwrite each other)."
+            }
+            Self::ConnectionCardTitle => "Storage Connection",
+            Self::ConnectionCardDescription => {
+                "The encrypted sync package is stored in your own WebDAV, S3-compatible storage, GitHub Gist or OneDrive. \
+                 The password / secret / token / sign-in info here is encrypted with your Windows account and never \
+                 enters the sync package."
+            }
+            Self::StorageType => "Storage Type",
+            Self::WebdavAddress => "WebDAV URL",
+            Self::WebdavAddressExample => "For example https://dav.example.com/remote.php/dav/files/me/",
+            Self::Username => "Username",
+            Self::Password => "Password",
+            Self::Directory => "Directory (optional)",
+            Self::DirectoryHint => "The sync package goes into this subdirectory; it is created if missing.",
+            Self::SavedPasswordHint => "Password saved; leave empty to keep using it",
+            Self::PlainHttpTitle => "The URL is http://, so the password is sent in clear text",
+            Self::PlainHttpBody => {
+                "Anyone on the same network can see your username and password. The sync package itself is \
+                 encrypted, but the credentials are not. Only do this on a trusted internal network."
+            }
+            Self::PlainHttpCheck => {
+                "I understand the password is sent in clear text and still want to use http://"
+            }
+            Self::S3EndpointExample => {
+                "For example https://s3.us-east-1.amazonaws.com, http://127.0.0.1:9000"
+            }
+            Self::S3Prefix => "Object path prefix (optional)",
+            Self::AddressStyle => "Address Style",
+            Self::PathStyle => "Path style (endpoint/bucket/key)",
+            Self::VirtualHostStyle => "Virtual-host style (bucket.endpoint/key)",
+            Self::SavedSecretHint => "Secret saved; leave empty to keep using it",
+            Self::ApiBase => "API URL",
+            Self::ApiBaseHint => {
+                "Leave empty for https://api.github.com (GitHub Enterprise users enter their own)"
+            }
+            Self::Token => "Personal Access Token",
+            Self::TokenHint => {
+                "Needs the gist scope. The token is encrypted with your Windows account and never enters the sync package."
+            }
+            Self::GistIdHint => {
+                "Leave empty to create a secret Gist on the first sync. On the second computer enter the same Gist ID \
+                 and a token with Gist access. Anyone with the link can open a secret Gist, but the content is encrypted."
+            }
+            Self::SavedTokenHint => "Token saved; leave empty to keep using it",
+            Self::TokenHttpTitle => "The API URL is http://, so the token is sent in clear text",
+            Self::TokenHttpCheck => {
+                "I understand the token is sent in clear text and still want to use http://"
+            }
+            Self::SignInWithMicrosoft => "Sign in with a Microsoft account",
+            Self::OneDriveIntro => {
+                "After you click “Sign In”, ZeeTerm opens the Microsoft sign-in page in your default browser; after \
+                 signing in and consenting, the browser returns here automatically and you copy nothing. The sync \
+                 package is stored only in OneDrive's app-specific folder (the folder named after the app under Apps \
+                 in OneDrive), and ZeeTerm cannot see your other files. Only personal Microsoft accounts \
+                 (outlook.com, hotmail.com etc.) are supported; work or school accounts are not yet."
+            }
+            Self::Account => "Account",
+            Self::OneDriveTokenHint => {
+                "The sign-in info (token) is encrypted with your Windows account and never enters the sync package."
+            }
+            Self::OneDriveExpired => {
+                "The OneDrive sign-in has expired; please sign in again. Auto sync is paused and resumes after you sign in again."
+            }
+            Self::LoggingInBrowser => "Signing in in the browser…",
+            Self::LoggingInHint => {
+                "Sign in and grant access in the browser page that just opened; this waits at most 5 minutes. The \
+                 browser then returns here and shows “Authorization successful”. This browser step uses the system \
+                 browser's own network settings; after signing in, ZeeTerm exchanges the token and syncs through the \
+                 proxy set under “Connection” → “App Network”."
+            }
+            Self::CancelLogin => "Cancel Sign-in",
+            Self::Relogin => "Sign In Again",
+            Self::ConfirmDisconnect => "Click “Confirm Disconnect” again",
+            Self::Disconnect => "Disconnect",
+            Self::ClientIdInvalid => {
+                "The client ID has the wrong format; it should look like xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx."
+            }
+            Self::DisconnectHint => {
+                "Disconnecting only deletes the sign-in info saved on this computer. To revoke ZeeTerm's authorization \
+                 completely, remove it on the Microsoft account's “Apps and services” page."
+            }
+            Self::OpenAppsPage => "Open the “Apps and services” page in the browser",
+            Self::AdvancedExpanded => "Advanced ▾",
+            Self::AdvancedCollapsed => "Advanced ▸",
+            Self::OwnClientId => "Own client ID",
+            Self::OwnClientIdHint => {
+                "If filled in, it is used for sign-in instead of the built-in one. The client ID stays on this computer and is never synced."
+            }
+            Self::ConfirmClearAgain => "Click “Confirm Clear” again",
+            Self::Clear => "Clear",
+            Self::Save => "Save",
+            Self::Testing => "Testing…",
+            Self::TestConnection => "Test Connection",
+            Self::LastProbe => "Result of the last connection test:",
+            Self::ForgotWarningTitle => "If you forget the master password, the cloud data cannot be recovered.",
+            Self::ForgotWarningBody => {
+                "The master password is never uploaded and there is no password recovery — if you forget it, the \
+                 only option is to delete the cloud data and start over. Keep it somewhere safe."
+            }
+            Self::CloudHasDataHint => {
+                "The cloud already has sync data. Enter the master password you set originally to unlock it (the hosts \
+                 on this computer are merged with the cloud, and neither side is lost)."
+            }
+            Self::MasterPassword => "Master Password",
+            Self::PasswordAgain => "Enter it again",
+            Self::UnderstoodCheck => {
+                "I understand that forgetting the master password means the cloud data cannot be recovered"
+            }
+            Self::RememberTitle => "Remember the master password on this computer",
+            Self::RememberDescriptionPrefix => {
+                "Encrypted with your Windows account, so you do not have to enter it next time. "
+            }
+            Self::RememberA11y => "Remember the master password on this computer",
+            Self::MasterPasswordHint => {
+                "The master password unlocks the cloud sync package and needs at least 8 characters; it is never uploaded or logged."
+            }
+            Self::MasterPasswordCardTitle => "Master Password",
+            Self::MasterPasswordCardDescription => {
+                "The sync package is encrypted with the master password before upload, so the cloud (and the storage provider) cannot see any of your content."
+            }
+            Self::ChangeMasterPassword => "Change Master Password",
+            Self::ChangeMasterPasswordDescription => {
+                "The old password is required. The cloud data is re-encrypted with the new password; other computers must enter the new one afterwards."
+            }
+            Self::Change => "Change…",
+            Self::OldMasterPassword => "Old Master Password",
+            Self::NewMasterPassword => "New Master Password",
+            Self::ConfirmNewMasterPassword => "Confirm New Master Password",
+            Self::ChangeWarning => {
+                "The cloud data is re-encrypted with the new password. If you forget the master password, the cloud data cannot be recovered."
+            }
+            Self::Changing => "Changing…",
+            Self::ChangeAndUpload => "Change and Upload",
+            Self::Cancel => "Cancel",
+            Self::Syncing => "Syncing…",
+            Self::SyncNow => "Sync Now",
+            Self::SyncResults => "Sync Results",
+            Self::SyncCardTitle => "Sync",
+            Self::SyncCardDescription => "Sync manually, or let it run automatically in the background.",
+            Self::DeleteManyTitle => "This sync would delete many records",
+            Self::NothingChangedYet => "Nothing has been changed yet.",
+            Self::DeletionChoices => {
+                "· Continue: delete these records as the merge result says (the deletion syncs to the cloud).\n\
+                 · Use the cloud version: discard the local version and take the cloud one.\n\
+                 · Cancel: nothing changes locally or in the cloud."
+            }
+            Self::UseCloudVersion => "Use the Cloud Version",
+            Self::Continue => "Continue",
+            Self::BaselineBrokenTitle => "The sync baseline is broken; sync is paused",
+            Self::BaselineBrokenBody => {
+                "The baseline is “the state at the last successful sync” and is used to tell which side changed what. \
+                 After rebuilding, the next sync is treated as the first one: both sides keep their data and \
+                 same-named records are not deduplicated (duplicate hosts may appear; delete them manually \
+                 afterwards); records deleted on the other side before the rebuild may come back."
+            }
+            Self::ConfirmRebuild => "Confirm Rebuild",
+            Self::RebuildBaseline => "Rebuild Sync Baseline",
+            Self::AutoSync => "Auto Sync",
+            Self::AutoSyncDescription => {
+                "After the app starts, sync automatically at a fixed interval. It stops and waits for you when something needs confirmation."
+            }
+            Self::AutoSyncA11y => "Auto Sync",
+            Self::Interval => "Sync Interval (minutes)",
+            Self::IntervalDescription => {
+                "1–1440; saved on Enter or when focus leaves. Auto sync only runs when the master password is \
+                 remembered and storage settings are saved; after a failure it backs off at 1x / 2x / 4x the interval."
+            }
+            Self::AutoSyncPausedPrefix => "Auto sync paused: ",
+            Self::AutoSyncSkipsHint => {
+                "Not synced: local settings such as execution mode, agent paths and window state."
+            }
+            Self::NoConflicts => "No conflicts.",
+            Self::ConfirmUseOther => "Confirm Switch",
+            Self::RestoreThisRecord => "Restore This Record",
+            Self::UseOther => "Use the Other Copy",
+            Self::GotIt => "Got It",
+            Self::ConflictsCardTitle => "Conflicts",
+            Self::ConflictsCardDescription => {
+                "When two computers changed the same record, the newer modification wins by default; when one side \
+                 deleted and the other modified, the deletion wins. The copy that was not used stays here and is \
+                 cleaned up automatically after 90 days."
+            }
+        }
+    }
+}
 
 /// 表单里标签的宽度。
 const LABEL_WIDTH: f32 = 112.0;
@@ -46,24 +561,37 @@ pub(super) fn can_login(custom_client_id: &str) -> bool {
 /// 「立即同步」那一行下面的说明（0.2.14 的 `lastResultText`）。
 pub(super) fn last_result_text(last: Option<&LastResult>) -> String {
     let Some(last) = last else {
-        return "还没有同步过".to_owned();
+        return t(SyncViewMsg::NeverSynced).to_owned();
     };
     let when = format_stamp(last.at);
-    let how = if last.auto { "（自动）" } else { "" };
+    let how = if last.auto { t(SyncViewMsg::AutoSuffix) } else { "" };
     match last.status.as_str() {
         "completed" => {
             let version = last
                 .version
                 .as_deref()
                 .filter(|v| !v.trim().is_empty())
-                .map(|v| format!("，上传版本 {v}"))
+                .map(|v| format!("{}{v}", t(SyncViewMsg::UploadedVersionPrefix)))
                 .unwrap_or_default();
-            format!("{when}{how} 同步成功{version}")
+            format!(
+                "{when}{how}{ok}{version}",
+                ok = t(SyncViewMsg::SyncedOkSuffix)
+            )
         }
-        "needs_confirmation" => format!("{when}{how} 停在了防误删确认上"),
-        "cancelled" => format!("{when} 已取消"),
-        "local_changed" => format!("{when}{how} 同步期间本地有改动，稍后自动重新同步"),
-        "error" => format!("{when}{how} 失败：{}", last.summary),
+        "needs_confirmation" => {
+            format!(
+                "{when}{how}{}",
+                t(SyncViewMsg::StoppedForConfirmationSuffix)
+            )
+        }
+        "cancelled" => format!("{when}{}", t(SyncViewMsg::CancelledSuffix)),
+        "local_changed" => {
+            format!(
+                "{when}{how}{}",
+                t(SyncViewMsg::LocalChangedSuffix)
+            )
+        }
+        "error" => format!("{when}{how}{}{}", t(SyncViewMsg::FailedSuffix), last.summary),
         other => format!("{when}{how} {other}"),
     }
 }
@@ -79,17 +607,11 @@ pub(super) fn concurrency_notice(
         return None;
     }
     Some(match record.map(|record| record.mode) {
-        None => (
-            false,
-            "还没有检测这个存储是否支持并发保护，同步会按「写之前再读一次」处理。点「测试连接」检测。",
-        ),
-        Some(ConcurrencyMode::ReadBeforeWrite) => (
-            false,
-            "这个服务不支持并发保护，多台电脑同时同步时有很小的概率覆盖。",
-        ),
-        Some(ConcurrencyMode::Conditional) => {
-            (true, "支持并发保护（多台电脑同时同步不会互相覆盖）。")
+        None => (false, t(SyncViewMsg::ConcurrencyNotProbed)),
+        Some(ConcurrencyMode::ReadBeforeWrite) => {
+            (false, t(SyncViewMsg::ConcurrencyUnsupported))
         }
+        Some(ConcurrencyMode::Conditional) => (true, t(SyncViewMsg::ConcurrencySupported)),
     })
 }
 
@@ -296,11 +818,8 @@ impl SyncDemo {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().text_lg().child("同步设置"))
-                    .child(muted(
-                        "连接信息只保存在这台电脑上，云端放加密后的同步包",
-                        &tokens,
-                    )),
+                    .child(div().text_lg().child(t(SyncViewMsg::WindowTitle)))
+                    .child(muted(t(SyncViewMsg::HeaderSubtitle), &tokens)),
             )
             .children(cards)
             .into_any_element()
@@ -368,11 +887,8 @@ impl SyncDemo {
         }
         card(
             "sync-connection",
-            "连接存储",
-            Some(
-                "同步包整体加密后存到你自己的 WebDAV、S3 兼容存储、GitHub Gist 或 OneDrive。\
-                 这里的密码 / Secret / 令牌 / 登录信息只用本机的 Windows 账户加密保存，不会进同步包。",
-            ),
+            t(SyncViewMsg::ConnectionCardTitle),
+            Some(t(SyncViewMsg::ConnectionCardDescription)),
             tokens,
             rows,
         )
@@ -390,7 +906,7 @@ impl SyncDemo {
         v_flex()
             .w_full()
             .gap_1()
-            .child(label_above("存储类型", tokens))
+            .child(label_above(t(SyncViewMsg::StorageType), tokens))
             .child(crate::main_window::widgets::segmented_bar(
                 "sync-provider",
                 CHOICES
@@ -410,18 +926,15 @@ impl SyncDemo {
     #[inline(never)]
     fn webdav_rows(&self, entity: &Entity<Self>, tokens: &Tokens, cx: &App) -> AnyElement {
         let mut rows = vec![
-            field("WebDAV 地址", &self.url, tokens),
-            muted(
-                "例如 https://dav.example.com/remote.php/dav/files/me/",
-                tokens,
-            ),
-            field("用户名", &self.username, tokens),
-            password_field("密码", &self.password, tokens),
-            field("存放目录（可选）", &self.directory, tokens),
-            muted("同步包放在这个子目录里，不存在会自动创建。", tokens),
+            field(t(SyncViewMsg::WebdavAddress), &self.url, tokens),
+            muted(t(SyncViewMsg::WebdavAddressExample), tokens),
+            field(t(SyncViewMsg::Username), &self.username, tokens),
+            password_field(t(SyncViewMsg::Password), &self.password, tokens),
+            field(t(SyncViewMsg::Directory), &self.directory, tokens),
+            muted(t(SyncViewMsg::DirectoryHint), tokens),
         ];
         if self.webdav_has_secret {
-            rows.push(muted("已保存密码；留空 = 继续用已保存的密码", tokens));
+            rows.push(muted(t(SyncViewMsg::SavedPasswordHint), tokens));
         }
         if is_plain_http(self.url.read(cx).value().as_ref()) {
             let allow = entity.clone();
@@ -431,17 +944,14 @@ impl SyncDemo {
                     div()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(tokens.caution)
-                        .child("地址是 http://，密码会以明文发送")
+                        .child(t(SyncViewMsg::PlainHttpTitle))
                         .into_any_element(),
                     div()
-                        .child(
-                            "同一网络里的人可以看到你的用户名和密码。同步包本身是加密的，但账号密码不是。\
-                             只在可信的内网里这样用。",
-                        )
+                        .child(t(SyncViewMsg::PlainHttpBody))
                         .into_any_element(),
                     Checkbox::new("sync-allow-http")
                         .checked(self.allow_insecure_http)
-                        .label("我了解密码会以明文发送，仍然使用 http://")
+                        .label(t(SyncViewMsg::PlainHttpCheck))
                         .on_click(move |_, _, cx| {
                             allow.update(cx, |this, cx| {
                                 this.allow_insecure_http = !this.allow_insecure_http;
@@ -461,25 +971,22 @@ impl SyncDemo {
         let path_style = self.drafts.s3.path_style;
         let mut rows = vec![
             field("Endpoint", &self.s3_endpoint, tokens),
-            muted(
-                "例如 https://s3.us-east-1.amazonaws.com、http://127.0.0.1:9000",
-                tokens,
-            ),
+            muted(t(SyncViewMsg::S3EndpointExample), tokens),
             field("Region", &self.s3_region, tokens),
             field("Bucket", &self.s3_bucket, tokens),
             field("Access Key", &self.s3_access_key, tokens),
             password_field("Secret", &self.s3_secret, tokens),
-            field("对象路径前缀（可选）", &self.s3_prefix, tokens),
+            field(t(SyncViewMsg::S3Prefix), &self.s3_prefix, tokens),
             v_flex()
                 .w_full()
                 .gap_1()
-                .child(label_above("地址风格", tokens))
+                .child(label_above(t(SyncViewMsg::AddressStyle), tokens))
                 .child(
                     Button::new("sync-s3-path-style")
                         .label(if path_style {
-                            "路径风格（endpoint/bucket/key）"
+                            t(SyncViewMsg::PathStyle)
                         } else {
-                            "虚拟主机风格（bucket.endpoint/key）"
+                            t(SyncViewMsg::VirtualHostStyle)
                         })
                         .compact()
                         .on_click(move |_, _, cx| {
@@ -492,7 +999,7 @@ impl SyncDemo {
                 .into_any_element(),
         ];
         if self.s3_has_secret {
-            rows.push(muted("已保存 Secret；留空 = 继续用已保存的 Secret", tokens));
+            rows.push(muted(t(SyncViewMsg::SavedSecretHint), tokens));
         }
         v_flex().w_full().gap_2().children(rows).into_any_element()
     }
@@ -500,25 +1007,15 @@ impl SyncDemo {
     #[inline(never)]
     fn github_rows(&self, entity: &Entity<Self>, tokens: &Tokens, cx: &App) -> AnyElement {
         let mut rows = vec![
-            field("接口地址", &self.github_api_base, tokens),
-            muted(
-                "留空 = https://api.github.com（GitHub Enterprise 填自己的）",
-                tokens,
-            ),
-            password_field("个人访问令牌", &self.github_token, tokens),
-            muted(
-                "需要 gist 权限。令牌只用本机的 Windows 账户加密保存，不会进同步包。",
-                tokens,
-            ),
+            field(t(SyncViewMsg::ApiBase), &self.github_api_base, tokens),
+            muted(t(SyncViewMsg::ApiBaseHint), tokens),
+            password_field(t(SyncViewMsg::Token), &self.github_token, tokens),
+            muted(t(SyncViewMsg::TokenHint), tokens),
             field("Gist ID", &self.github_gist_id, tokens),
-            muted(
-                "留空 = 第一次同步时自动新建一个 secret Gist。第二台电脑上填同一个 Gist ID 和一个有 \
-                 Gist 权限的令牌。secret Gist 拿到链接的人都能打开，但里面是密文。",
-                tokens,
-            ),
+            muted(t(SyncViewMsg::GistIdHint), tokens),
         ];
         if self.github_has_secret {
-            rows.push(muted("已保存令牌；留空 = 继续用已保存的令牌", tokens));
+            rows.push(muted(t(SyncViewMsg::SavedTokenHint), tokens));
         }
         let base = self.github_api_base.read(cx).value().to_string();
         if is_plain_http(&base) {
@@ -529,11 +1026,11 @@ impl SyncDemo {
                     div()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(tokens.caution)
-                        .child("接口地址是 http://，令牌会以明文发送")
+                        .child(t(SyncViewMsg::TokenHttpTitle))
                         .into_any_element(),
                     Checkbox::new("sync-github-allow-http")
                         .checked(self.github_allow_insecure_http)
-                        .label("我了解令牌会以明文发送，仍然使用 http://")
+                        .label(t(SyncViewMsg::TokenHttpCheck))
                         .on_click(move |_, _, cx| {
                             allow.update(cx, |this, cx| {
                                 this.github_allow_insecure_http = !this.github_allow_insecure_http;
@@ -562,32 +1059,25 @@ impl SyncDemo {
                 vec![
                     div()
                         .font_weight(FontWeight::MEDIUM)
-                        .child("用微软账号登录")
+                        .child(t(SyncViewMsg::SignInWithMicrosoft))
                         .into_any_element(),
                     div()
-                        .child(
-                            "点「登录」后，ZeeTerm 会用系统默认浏览器打开微软的登录页；登录并同意后浏览器会自动\
-                             跳回本机，不用复制任何东西。同步包只放在 OneDrive 的应用专用文件夹（OneDrive 里 \
-                             Apps 下以应用名命名的文件夹）里，ZeeTerm 看不到你的其他文件。目前只支持个人微软账号\
-                             （outlook.com、hotmail.com 等），工作或学校账号暂不支持。",
-                        )
+                        .child(t(SyncViewMsg::OneDriveIntro))
                         .into_any_element(),
                 ],
             ),
-            label_row("账号", onedrive_account_label(self.saved.as_ref()), tokens),
+            label_row(
+                t(SyncViewMsg::Account),
+                onedrive_account_label(self.saved.as_ref()),
+                tokens,
+            ),
         ];
         if signed_in {
-            rows.push(muted(
-                "登录信息（令牌）用本机的 Windows 账户加密保存，不会进同步包。",
-                tokens,
-            ));
+            rows.push(muted(t(SyncViewMsg::OneDriveTokenHint), tokens));
             if with_sync_guard(|guard| matches!(guard.pause, Some(super::AutoPause::Auth(_)))) {
                 rows.push(banner(
                     tokens.danger,
-                    vec![colored(
-                        "OneDrive 登录已失效，请重新登录。自动同步已暂停，重新登录之后恢复。",
-                        tokens.danger,
-                    )],
+                    vec![colored(t(SyncViewMsg::OneDriveExpired), tokens.danger)],
                 ));
             }
         }
@@ -599,17 +1089,13 @@ impl SyncDemo {
                     div()
                         .id("onedrive-logging-in")
                         .font_weight(FontWeight::MEDIUM)
-                        .child("正在浏览器中登录…")
+                        .child(t(SyncViewMsg::LoggingInBrowser))
                         .into_any_element(),
                     div()
-                        .child(
-                            "请在刚刚打开的浏览器页面里登录并同意授权，最多等 5 分钟。完成后浏览器会自动回到本机，\
-                             显示「授权成功」。浏览器这一步用的是系统浏览器自己的网络设置；登录之后 ZeeTerm 换\
-                             令牌和同步走「连接」→「软件网络」里设置的代理。",
-                        )
+                        .child(t(SyncViewMsg::LoggingInHint))
                         .into_any_element(),
                     Button::new("sync-onedrive-login-cancel")
-                        .label("取消登录")
+                        .label(t(SyncViewMsg::CancelLogin))
                         .compact()
                         .on_click(move |_, _, cx| {
                             cancel.update(cx, |this, cx| this.cancel_onedrive_login(cx));
@@ -622,9 +1108,9 @@ impl SyncDemo {
             let mut buttons = h_flex().gap_2().items_center().child(
                 Button::new("sync-onedrive-login")
                     .label(if signed_in {
-                        "重新登录"
+                        t(SyncViewMsg::Relogin)
                     } else {
-                        "用微软账号登录"
+                        t(SyncViewMsg::SignInWithMicrosoft)
                     })
                     .compact()
                     .disabled(busy || !allowed)
@@ -637,9 +1123,9 @@ impl SyncDemo {
                 buttons = buttons.child(
                     Button::new("sync-onedrive-logout")
                         .label(if self.logout_confirm.is_armed() {
-                            "再次点击「确认断开」"
+                            t(SyncViewMsg::ConfirmDisconnect)
                         } else {
-                            "断开连接"
+                            t(SyncViewMsg::Disconnect)
                         })
                         .compact()
                         .disabled(busy)
@@ -651,7 +1137,7 @@ impl SyncDemo {
             rows.push(buttons.into_any_element());
             if custom_invalid {
                 rows.push(colored(
-                    "client ID 的格式不对，应该形如 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx。",
+                    t(SyncViewMsg::ClientIdInvalid),
                     tokens.dot_connecting,
                 ));
             }
@@ -662,15 +1148,11 @@ impl SyncDemo {
             v_flex()
                 .id("onedrive-revoke-hint")
                 .gap_1()
-                .child(muted(
-                    "断开连接只删除这台电脑上保存的登录信息。如果还要彻底撤销 ZeeTerm 的授权，请在微软账户的\
-                     「应用和服务」页面里移除它。",
-                    tokens,
-                ))
+                .child(muted(t(SyncViewMsg::DisconnectHint), tokens))
                 .child(
                     h_flex().child(
                         Button::new("sync-onedrive-revoke")
-                            .label("在浏览器中打开「应用和服务」页面")
+                            .label(t(SyncViewMsg::OpenAppsPage))
                             .compact()
                             .on_click(move |_, _, cx| {
                                 revoke.update(cx, |this, cx| this.open_revoke_page(cx));
@@ -688,9 +1170,9 @@ impl SyncDemo {
                     h_flex().child(
                         Button::new("sync-onedrive-advanced")
                             .label(if self.onedrive_advanced {
-                                "高级 ▾"
+                                t(SyncViewMsg::AdvancedExpanded)
                             } else {
-                                "高级 ▸"
+                                t(SyncViewMsg::AdvancedCollapsed)
                             })
                             .ghost()
                             .compact()
@@ -700,11 +1182,12 @@ impl SyncDemo {
                     ),
                 )
                 .when(self.onedrive_advanced, |col| {
-                    col.child(field("自己的 client ID", &self.onedrive_client_id, tokens))
-                        .child(muted(
-                            "填了就用它登录，不用程序里内置的。client ID 只存在这台电脑上，不会同步。",
-                            tokens,
-                        ))
+                    col.child(field(
+                        t(SyncViewMsg::OwnClientId),
+                        &self.onedrive_client_id,
+                        tokens,
+                    ))
+                    .child(muted(t(SyncViewMsg::OwnClientIdHint), tokens))
                 })
                 .into_any_element(),
         );
@@ -716,9 +1199,9 @@ impl SyncDemo {
         let busy = self.busy();
         let onedrive = self.drafts.provider == ProviderChoice::OneDrive;
         let clear_label = if self.clear_confirm.is_armed() {
-            "再次点击「确认清除」"
+            t(SyncViewMsg::ConfirmClearAgain)
         } else {
-            "清除"
+            t(SyncViewMsg::Clear)
         };
         h_flex()
             .gap_2()
@@ -726,7 +1209,7 @@ impl SyncDemo {
             .when(!onedrive, |row| {
                 row.child(act_button(
                     "sync-save",
-                    "保存",
+                    t(SyncViewMsg::Save),
                     entity,
                     busy,
                     |this, window, cx| this.save(window, cx),
@@ -735,9 +1218,9 @@ impl SyncDemo {
             .child(act_button(
                 "sync-test",
                 if self.testing {
-                    "测试中…"
+                    t(SyncViewMsg::Testing)
                 } else {
-                    "测试连接"
+                    t(SyncViewMsg::TestConnection)
                 },
                 entity,
                 busy,
@@ -758,13 +1241,16 @@ impl SyncDemo {
         v_flex()
             .id("sync-probe")
             .gap_1()
-            .child(muted("最近一次测试连接的结果：", tokens))
+            .child(muted(t(SyncViewMsg::LastProbe), tokens))
             .children(text.lines().map(|line| {
-                let failed = line.contains("失败");
-                let warn = line.starts_with("并发保护")
-                    && (line.contains("不支持") || line.contains("未检测"));
+                let failed = line.contains(t(SyncMsg::CheckFailedMiddle));
+                let warn = line.starts_with(t(SyncMsg::ConcurrencyPrefix))
+                    && (line.contains(t(SyncMsg::ConcurrencyReadBeforeWrite))
+                        || line.contains(t(SyncMsg::ConcurrencyNotChecked)));
                 // 缩进的说明行和「云端：…」不是检查项，不打勾也不上色。
-                let detail = line.starts_with("  ·") || line.starts_with("云端");
+                let detail = line.starts_with(t(SyncMsg::ConcurrencyNotePrefix))
+                    || line == t(SyncMsg::CloudHasData)
+                    || line == t(SyncMsg::CloudEmpty);
                 let color = if failed {
                     tokens.danger
                 } else if warn {
@@ -802,29 +1288,26 @@ impl SyncDemo {
                     div()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(tokens.danger)
-                        .child("忘记主密码就无法恢复云端数据。")
+                        .child(t(SyncViewMsg::ForgotWarningTitle))
                         .into_any_element(),
                     div()
-                        .child(
-                            "主密码不会上传，也没有「找回密码」——忘了只能删掉云端数据重新开始。请把它记在\
-                             安全的地方。",
-                        )
+                        .child(t(SyncViewMsg::ForgotWarningBody))
                         .into_any_element(),
                 ],
             ));
         } else if !self.ready {
-            rows.push(muted(
-                "云端已经有同步数据。输入当初设置的主密码来解开它（这台电脑上的主机会和云端合并，\
-                 两边都不会丢）。",
-                tokens,
-            ));
+            rows.push(muted(t(SyncViewMsg::CloudHasDataHint), tokens));
         }
-        rows.push(password_field("主密码", &self.master_password, tokens));
+        rows.push(password_field(
+            t(SyncViewMsg::MasterPassword),
+            &self.master_password,
+            tokens,
+        ));
         let typed = self.master_password.read(cx).value().to_string();
         if creating {
             rows.extend(strength_bar(&typed, tokens));
             rows.push(password_field(
-                "再输入一次",
+                t(SyncViewMsg::PasswordAgain),
                 &self.master_password_confirm,
                 tokens,
             ));
@@ -832,7 +1315,7 @@ impl SyncDemo {
             rows.push(
                 Checkbox::new("sync-understood")
                     .checked(self.understood)
-                    .label("我知道忘记主密码就无法恢复云端数据")
+                    .label(t(SyncViewMsg::UnderstoodCheck))
                     .on_click(move |_, _, cx| {
                         flip.update(cx, |this, cx| this.toggle_understood(cx));
                     })
@@ -842,31 +1325,29 @@ impl SyncDemo {
         // 记住主密码：F5 的语义（同步成功才真正写盘 / 清除），开关旁边的提示说清当前状态。
         let remember = entity.clone();
         rows.push(setting(
-            "在这台电脑上记住主密码",
+            t(SyncViewMsg::RememberTitle),
             format!(
-                "用 Windows 账户加密保存，下次不用再输入。{}",
+                "{}{}",
+                t(SyncViewMsg::RememberDescriptionPrefix),
                 self.remember.hint()
             ),
             Switch::new("sync-remember-master-password")
                 .checked(self.remember.toggled)
                 .disabled(busy)
-                .accessibility_label("在这台电脑上记住主密码")
+                .accessibility_label(t(SyncViewMsg::RememberA11y))
                 .on_click(move |_, _, cx| {
                     remember.update(cx, |this, cx| this.toggle_remember(cx));
                 }),
             tokens,
         ));
-        rows.push(muted(
-            "主密码用来解开云端同步包，至少 8 个字符；不上传、不写日志。",
-            tokens,
-        ));
+        rows.push(muted(t(SyncViewMsg::MasterPasswordHint), tokens));
         if !creating && self.ready {
             rows.push(self.change_password_rows(entity, tokens, cx));
         }
         card(
             "sync-password",
-            "主密码",
-            Some("同步包用主密码加密后才上传，云端（和存储服务商）看不到你的任何内容。"),
+            t(SyncViewMsg::MasterPasswordCardTitle),
+            Some(t(SyncViewMsg::MasterPasswordCardDescription)),
             tokens,
             rows,
         )
@@ -877,10 +1358,10 @@ impl SyncDemo {
         let busy = self.busy() || self.change_pw.busy;
         let open = entity.clone();
         let entry = setting(
-            "修改主密码",
-            "需要旧密码。会用新密码重新加密云端数据；其他电脑之后要输入新的主密码。",
+            t(SyncViewMsg::ChangeMasterPassword),
+            t(SyncViewMsg::ChangeMasterPasswordDescription),
             Button::new("sync-change-password-open")
-                .label("修改…")
+                .label(t(SyncViewMsg::Change))
                 .compact()
                 .disabled(busy || self.change_pw.open)
                 .on_click(move |_, _, cx| {
@@ -893,19 +1374,16 @@ impl SyncDemo {
         }
         let new_text = self.change_pw.new.read(cx).value().to_string();
         let mut form: Vec<AnyElement> = vec![
-            password_field("旧主密码", &self.change_pw.old, tokens),
-            password_field("新主密码", &self.change_pw.new, tokens),
+            password_field(t(SyncViewMsg::OldMasterPassword), &self.change_pw.old, tokens),
+            password_field(t(SyncViewMsg::NewMasterPassword), &self.change_pw.new, tokens),
         ];
         form.extend(strength_bar(&new_text, tokens));
         form.push(password_field(
-            "确认新主密码",
+            t(SyncViewMsg::ConfirmNewMasterPassword),
             &self.change_pw.confirm,
             tokens,
         ));
-        form.push(muted(
-            "会用新密码重新加密云端数据。忘记主密码就无法恢复云端数据。",
-            tokens,
-        ));
+        form.push(muted(t(SyncViewMsg::ChangeWarning), tokens));
         if let Some(error) = &self.change_pw.error {
             form.push(
                 div()
@@ -920,9 +1398,9 @@ impl SyncDemo {
                 .child(act_button(
                     "sync-change-password-submit",
                     if self.change_pw.busy {
-                        "修改中…"
+                        t(SyncViewMsg::Changing)
                     } else {
-                        "修改并上传"
+                        t(SyncViewMsg::ChangeAndUpload)
                     },
                     entity,
                     busy,
@@ -930,7 +1408,7 @@ impl SyncDemo {
                 ))
                 .child(act_button(
                     "sync-change-password-cancel",
-                    "取消",
+                    t(SyncViewMsg::Cancel),
                     entity,
                     self.change_pw.busy,
                     |this, window, cx| this.close_change_password(window, cx),
@@ -962,12 +1440,12 @@ impl SyncDemo {
         let busy = self.busy();
         let mut rows: Vec<AnyElement> = Vec::new();
         let sync_label = if self.syncing {
-            "同步中…"
+            t(SyncViewMsg::Syncing)
         } else {
-            "立即同步"
+            t(SyncViewMsg::SyncNow)
         };
         rows.push(setting(
-            "立即同步",
+            t(SyncViewMsg::SyncNow),
             last_result_text(self.auto.last.as_ref()),
             act_button(
                 "sync-now",
@@ -1003,7 +1481,7 @@ impl SyncDemo {
                         .rounded_md()
                         .border_1()
                         .border_color(tokens.border)
-                        .child(div().text_sm().child("同步结果"))
+                        .child(div().text_sm().child(t(SyncViewMsg::SyncResults)))
                         .children(lines.into_iter().map(|line| muted(line, tokens)))
                         .into_any_element(),
                 );
@@ -1012,8 +1490,8 @@ impl SyncDemo {
         rows.push(self.auto_rows(entity, tokens, cx));
         card(
             "sync-run",
-            "同步",
-            Some("手动同步，或者让它在后台自动做。"),
+            t(SyncViewMsg::SyncCardTitle),
+            Some(t(SyncViewMsg::SyncCardDescription)),
             tokens,
             rows,
         )
@@ -1030,9 +1508,11 @@ impl SyncDemo {
             div()
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(tokens.caution)
-                .child("这次同步会删除很多记录")
+                .child(t(SyncViewMsg::DeleteManyTitle))
                 .into_any_element(),
-            div().child("还没有改动任何数据。").into_any_element(),
+            div()
+                .child(t(SyncViewMsg::NothingChangedYet))
+                .into_any_element(),
         ];
         if let Some(plan) = plan {
             body.push(
@@ -1045,25 +1525,20 @@ impl SyncDemo {
                 body.push(muted(line, tokens));
             }
         }
-        body.push(muted(
-            "· 继续：按合并结果删除这些记录（删除会同步到云端）。\n\
-             · 用云端版本覆盖本地：放弃本地的版本，以云端为准。\n\
-             · 取消：本地和云端都不动。",
-            tokens,
-        ));
+        body.push(muted(t(SyncViewMsg::DeletionChoices), tokens));
         body.push(
             h_flex()
                 .gap_2()
                 .child(act_button(
                     "sync-delete-cancel",
-                    "取消",
+                    t(SyncViewMsg::Cancel),
                     entity,
                     busy,
                     |this, _, cx| this.cancel_deletion(cx),
                 ))
                 .child(act_button(
                     "sync-delete-use-cloud",
-                    "用云端版本覆盖本地",
+                    t(SyncViewMsg::UseCloudVersion),
                     entity,
                     busy,
                     |this, _, cx| this.confirm_deletion_use_cloud(cx),
@@ -1071,7 +1546,7 @@ impl SyncDemo {
                 .child(
                     act_button(
                         "sync-delete-continue",
-                        "继续",
+                        t(SyncViewMsg::Continue),
                         entity,
                         busy,
                         |this, _, cx| this.confirm_deletion(cx),
@@ -1096,22 +1571,18 @@ impl SyncDemo {
                     div()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(tokens.danger)
-                        .child("同步基线损坏，暂停同步")
+                        .child(t(SyncViewMsg::BaselineBrokenTitle))
                         .into_any_element(),
                     div()
-                        .child(
-                            "基线是「上次同步成功时的状态」，用来判断哪边改过什么。重建后下一次同步按首次\
-                             同步处理：两边的数据都会保留，同名的不会去重（可能出现重复的主机，之后手动删就\
-                             行）；重建之前在另一边删掉的记录可能会回来。",
-                        )
+                        .child(t(SyncViewMsg::BaselineBrokenBody))
                         .into_any_element(),
                     h_flex()
                         .child(act_button(
                             "sync-reset-baseline",
                             if self.baseline_reset_armed {
-                                "确认重建"
+                                t(SyncViewMsg::ConfirmRebuild)
                             } else {
-                                "重建同步基线"
+                                t(SyncViewMsg::RebuildBaseline)
                             },
                             entity,
                             busy,
@@ -1143,21 +1614,20 @@ impl SyncDemo {
             .flatten();
         let mut rows: Vec<AnyElement> = vec![
             setting(
-                "自动同步",
-                "应用启动后每隔一段时间自动同步一次。遇到需要确认的情况会停下来等你。",
+                t(SyncViewMsg::AutoSync),
+                t(SyncViewMsg::AutoSyncDescription),
                 Switch::new("sync-auto-toggle")
                     .checked(enabled)
                     .disabled(busy)
-                    .accessibility_label("自动同步")
+                    .accessibility_label(t(SyncViewMsg::AutoSyncA11y))
                     .on_click(move |_, window, cx| {
                         toggle.update(cx, |this, cx| this.toggle_auto(window, cx));
                     }),
                 tokens,
             ),
             setting(
-                "定时同步间隔（分钟）",
-                "1–1440，回车或移开焦点保存。本机记住主密码、保存好存储设置才会自动同步，失败后按 1x / 2x / 4x \
-                 间隔退避。",
+                t(SyncViewMsg::Interval),
+                t(SyncViewMsg::IntervalDescription),
                 Input::new(&self.auto_interval).w(px(96.0)),
                 tokens,
             ),
@@ -1167,7 +1637,7 @@ impl SyncDemo {
                 div()
                     .id("sync-auto-pause")
                     .child(colored(
-                        format!("自动同步暂停：{reason}"),
+                        format!("{}{reason}", t(SyncViewMsg::AutoSyncPausedPrefix)),
                         tokens.dot_connecting,
                     ))
                     .into_any_element(),
@@ -1176,10 +1646,7 @@ impl SyncDemo {
         if let Some(error) = &self.auto.error {
             rows.push(colored(error.clone(), tokens.danger));
         }
-        rows.push(muted(
-            "不同步：执行模式、智能体路径、窗口状态等本机设置。",
-            tokens,
-        ));
+        rows.push(muted(t(SyncViewMsg::AutoSyncSkipsHint), tokens));
         v_flex().w_full().gap_1().children(rows).into_any_element()
     }
 
@@ -1207,7 +1674,7 @@ impl SyncDemo {
             rows.push(
                 div()
                     .id("conflicts-empty")
-                    .child(muted("没有冲突。", tokens))
+                    .child(muted(t(SyncViewMsg::NoConflicts), tokens))
                     .into_any_element(),
             );
         }
@@ -1245,11 +1712,11 @@ impl SyncDemo {
                 buttons = buttons.child(act_button(
                     format!("sync-conflict-use-{id}"),
                     if armed {
-                        "确认改用"
+                        t(SyncViewMsg::ConfirmUseOther)
                     } else if row.deletion {
-                        "恢复这条记录"
+                        t(SyncViewMsg::RestoreThisRecord)
                     } else {
-                        "改用另一份"
+                        t(SyncViewMsg::UseOther)
                     },
                     entity,
                     busy,
@@ -1259,7 +1726,7 @@ impl SyncDemo {
             if armed {
                 buttons = buttons.child(act_button(
                     format!("sync-conflict-cancel-{id}"),
-                    "取消",
+                    t(SyncViewMsg::Cancel),
                     entity,
                     busy,
                     |this, _, cx| this.cancel_use_other(cx),
@@ -1268,7 +1735,7 @@ impl SyncDemo {
             buttons = buttons.child(
                 act_button(
                     format!("sync-conflict-dismiss-{id}"),
-                    "我知道了",
+                    t(SyncViewMsg::GotIt),
                     entity,
                     busy,
                     move |this, _, cx| this.dismiss_conflict(id, cx),
@@ -1289,11 +1756,8 @@ impl SyncDemo {
         }
         card(
             "sync-conflicts",
-            "冲突",
-            Some(
-                "两台电脑改了同一条记录时，默认采用修改时间较新的那份；一边删除、另一边修改时，删除生效。\
-                 没被采用的那份留在这里，保留 90 天后自动清理。",
-            ),
+            t(SyncViewMsg::ConflictsCardTitle),
+            Some(t(SyncViewMsg::ConflictsCardDescription)),
             tokens,
             rows,
         )
