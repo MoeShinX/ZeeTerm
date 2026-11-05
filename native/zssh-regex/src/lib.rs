@@ -47,11 +47,11 @@ pub enum CompileError {
 impl std::fmt::Display for CompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::EmptyPattern => write!(f, "不能为空"),
-            Self::TooLong => write!(f, "规则太长"),
-            Self::MatchesEmpty => write!(f, "这个正则能匹配空字符串，会标满整屏"),
+            Self::EmptyPattern => write!(f, "不能为空"), // i18n-allow: 日志/测试用的 Display；界面按错误类型生成文案（highlight_editor::compile_error_text）
+            Self::TooLong => write!(f, "规则太长"), // i18n-allow: 日志/测试用的 Display；界面按错误类型生成文案（highlight_editor::compile_error_text）
+            Self::MatchesEmpty => write!(f, "这个正则能匹配空字符串，会标满整屏"), // i18n-allow: 日志/测试用的 Display；界面按错误类型生成文案（highlight_editor::compile_error_text）
             Self::Unsupported(message) => write!(f, "{message}"),
-            Self::TimedOut => write!(f, "正则编译超时"),
+            Self::TimedOut => write!(f, "正则编译超时"), // i18n-allow: 日志/测试用的 Display；界面按错误类型生成文案（highlight_editor::compile_error_text）
         }
     }
 }
