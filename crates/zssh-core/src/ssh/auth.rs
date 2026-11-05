@@ -167,7 +167,8 @@ pub(crate) async fn authenticate(
         debug!(?supported, "服务器声明支持的认证方法");
     }
 
-    let mut tried: Vec<String> = Vec::new();
+    // （中文说法, 稳定代码）：代码给界面按语言重新生成，见 `ZsshError::AllAuthFailed`。
+    let mut tried: Vec<(String, String)> = Vec::new();
 
     // 1. 私钥
     if config.method == AuthMethod::Key {
@@ -190,12 +191,13 @@ pub(crate) async fn authenticate(
                     }) => supported = remaining_methods,
                     None => {}
                 }
-                tried.push(format!("私钥（{}）", source_name(source)));
+                let (name, code) = source_name(source);
+                tried.push((format!("私钥（{name}）"), code));
             }
             Some(_) => debug!("服务器不支持 publickey，跳过私钥"),
             None => {
                 warn!("主机配置成私钥认证但没有私钥材料");
-                tried.push("私钥（主机没配私钥）".to_owned());
+                tried.push(("私钥（主机没配私钥）".to_owned(), "key_missing".to_owned()));
             }
         }
     }
@@ -209,12 +211,18 @@ pub(crate) async fn authenticate(
                     remaining_methods, ..
                 })) => {
                     supported = remaining_methods;
-                    tried.push("ssh-agent（密钥都不被接受）".to_owned());
+                    tried.push((
+                        "ssh-agent（密钥都不被接受）".to_owned(),
+                        "agent_rejected".to_owned(),
+                    ));
                 }
-                Ok(None) => tried.push("ssh-agent（没有可用密钥）".to_owned()),
+                Ok(None) => tried.push((
+                    "ssh-agent（没有可用密钥）".to_owned(),
+                    "agent_no_keys".to_owned(),
+                )),
                 Err(err) => {
                     warn!(%err, "ssh-agent 用不了，继续试后面的方法");
-                    tried.push(format!("ssh-agent（{err}）"));
+                    tried.push((format!("ssh-agent（{err}）"), "agent_error".to_owned()));
                 }
             }
         } else {
@@ -258,14 +266,17 @@ pub(crate) async fn authenticate(
                 outcome.remembered = None;
             }
         }
-        tried.push("密码".to_owned());
+        tried.push(("密码".to_owned(), "password".to_owned()));
     }
 
     // 4. keyboard-interactive（服务器发什么题就答什么，支持多轮）
     if supports(&supported, MethodKind::KeyboardInteractive) {
         match keyboard_interactive_auth(handle, username, target, interactor).await? {
             KeyboardOutcome::Success => return Ok(outcome),
-            KeyboardOutcome::Failed => tried.push("keyboard-interactive".to_owned()),
+            KeyboardOutcome::Failed => tried.push((
+                "keyboard-interactive".to_owned(),
+                "keyboard_interactive".to_owned(),
+            )),
         }
     }
 
@@ -273,9 +284,19 @@ pub(crate) async fn authenticate(
         tried: if tried.is_empty() {
             "没有可试的方法".to_owned()
         } else {
-            tried.join("、")
+            tried
+                .iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<Vec<_>>()
+                .join("、")
         },
         remaining: describe_methods(&supported),
+        tried_codes: tried
+            .iter()
+            .map(|(_, code)| code.as_str())
+            .collect::<Vec<_>>()
+            .join("\u{1f}"),
+        remaining_codes: method_codes(&supported),
     })
 }
 
@@ -314,14 +335,35 @@ fn describe_methods(methods: &MethodSet) -> String {
         .join("、")
 }
 
-fn source_name(source: &KeySource) -> String {
+/// 私钥来源的（中文名, 稳定代码）：文件名是用户数据，进代码里原样保留（`key_file:<名字>`）。
+fn source_name(source: &KeySource) -> (String, String) {
     match source {
-        KeySource::File { path, .. } => path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "<私钥文件>".to_owned()),
-        KeySource::Inline { .. } => "保险库里的私钥".to_owned(),
+        KeySource::File { path, .. } => match path.file_name() {
+            Some(name) => {
+                let name = name.to_string_lossy().into_owned();
+                let code = format!("key_file:{name}");
+                (name, code)
+            }
+            None => ("<私钥文件>".to_owned(), "key_file".to_owned()),
+        },
+        KeySource::Inline { .. } => ("保险库里的私钥".to_owned(), "key_vault".to_owned()),
     }
+}
+
+/// 服务器还支持的方法的稳定代码（`\u{1f}` 分隔）：没声明时是空串。
+fn method_codes(methods: &MethodSet) -> String {
+    methods
+        .iter()
+        .map(|method| match method {
+            MethodKind::None => "none",
+            MethodKind::Password => "password",
+            MethodKind::PublicKey => "publickey",
+            MethodKind::HostBased => "host-based",
+            MethodKind::KeyboardInteractive => "keyboard-interactive",
+            MethodKind::GssapiWithMic => "gssapi",
+        })
+        .collect::<Vec<_>>()
+        .join("\u{1f}")
 }
 
 /// 私钥认证。返回 `None` 表示这次没成功也没被明确拒绝（协议出错），继续试别的。
@@ -338,7 +380,7 @@ async fn publickey_auth(
     let choice = rsa_hash_choice(handle, legacy_algorithms).await?;
     // 服务器只认 SHA-1 而用户没开兼容时直接报错，不往下试密码：
     // 不然原因会被后面的密码框盖住，用户不知道为什么私钥没用上。
-    let hash_alg = hash_for_key(choice, &key.algorithm(), &source_name(source))?;
+    let hash_alg = hash_for_key(choice, &key.algorithm(), &source_name(source).0)?;
 
     let key = PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg);
     match step(handle.authenticate_publickey(username, key)).await {
@@ -639,6 +681,8 @@ async fn keyboard_interactive_auth(
     Err(ZsshError::AllAuthFailed {
         tried: format!("keyboard-interactive 超过 {MAX_KEYBOARD_ROUNDS} 轮"),
         remaining: "keyboard-interactive".to_owned(),
+        tried_codes: format!("keyboard_rounds:{MAX_KEYBOARD_ROUNDS}"),
+        remaining_codes: "keyboard-interactive".to_owned(),
     })
 }
 

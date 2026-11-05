@@ -272,7 +272,9 @@ fn classify_handshake(error: &ZsshError, interaction: Interaction) -> Failure {
         )),
         ZsshError::HostKeyStore(message) => host_key(one_line(message.zh())),
         ZsshError::AuthFailed => auth("认证失败：用户名或密码错误".to_owned()),
-        ZsshError::AllAuthFailed { tried, remaining } => auth(format!(
+        ZsshError::AllAuthFailed {
+            tried, remaining, ..
+        } => auth(format!(
             "认证失败：试过 {}，服务器还支持 {}",
             one_line(tried),
             one_line(remaining)
@@ -1067,6 +1069,8 @@ mod tests {
         let all = ZsshError::AllAuthFailed {
             tried: "publickey, password".into(),
             remaining: "keyboard-interactive".into(),
+            tried_codes: String::new(),
+            remaining_codes: String::new(),
         };
         let f = classify(&all, FailurePhase::Handshake, HopRole::Target);
         assert!(

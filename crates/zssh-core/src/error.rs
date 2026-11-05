@@ -148,7 +148,14 @@ pub enum ZsshError {
         "认证失败，试过这些方法：{tried}
 服务器还支持：{remaining}"
     )]
-    AllAuthFailed { tried: String, remaining: String },
+    AllAuthFailed {
+        tried: String,
+        remaining: String,
+        /// `tried` 的稳定代码（`\u{1f}` 分隔，见 `ssh::auth`）：界面据此按语言重新生成，不解析中文。
+        tried_codes: String,
+        /// `remaining` 的稳定代码（`\u{1f}` 分隔）。
+        remaining_codes: String,
+    },
 
     #[error("读私钥失败：{0}")]
     KeyLoad(Reason),
@@ -312,9 +319,17 @@ impl ErrorWithCode for ZsshError {
                 vec![("name", name.clone()), ("hosts", hosts.clone())]
             }
             ZsshError::AuthTimeout { seconds } => vec![("seconds", seconds.to_string())],
-            ZsshError::AllAuthFailed { tried, remaining } => {
-                vec![("tried", tried.clone()), ("remaining", remaining.clone())]
-            }
+            ZsshError::AllAuthFailed {
+                tried,
+                remaining,
+                tried_codes,
+                remaining_codes,
+            } => vec![
+                ("tried", tried.clone()),
+                ("remaining", remaining.clone()),
+                ("tried_codes", tried_codes.clone()),
+                ("remaining_codes", remaining_codes.clone()),
+            ],
             ZsshError::RsaSha1Refused { key } => vec![("key", key.clone())],
             ZsshError::HostKeyRejected {
                 host,
@@ -558,6 +573,8 @@ mod tests {
             ZsshError::AllAuthFailed {
                 tried: "password".into(),
                 remaining: "publickey".into(),
+                tried_codes: "password".into(),
+                remaining_codes: "publickey".into(),
             },
             ZsshError::KeyLoad("load".into()),
             ZsshError::AgentUnavailable("agent".into()),

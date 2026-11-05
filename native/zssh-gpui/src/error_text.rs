@@ -366,6 +366,12 @@ fn localize_params<E: ErrorWithCode + ?Sized>(
             set(params, "entity", noun);
         }
     }
+    if lang == Lang::En && err.code() == "ssh.all_auth_failed" {
+        let tried = tried_methods_en(get(params, "tried_codes").unwrap_or_default());
+        let offered = offered_methods_en(get(params, "remaining_codes").unwrap_or_default());
+        set(params, "tried", tried);
+        set(params, "remaining", offered);
+    }
     if let Some(cause) = err.cause() {
         let inner = error_text_in(lang, cause);
         let stage_msg = match get(params, "stage") {
@@ -393,6 +399,49 @@ fn pick(lang: Lang, msg: &impl Msg) -> &'static str {
         Lang::Zh => msg.zh(),
         Lang::En => msg.en(),
     }
+}
+
+/// `AllAuthFailed` 里"试过哪些方法"的英文（`\u{1f}` 分隔的稳定代码 → 一句话）；用户数据（私钥文件名）原样保留。
+fn tried_methods_en(codes: &str) -> String {
+    if codes.is_empty() {
+        return "no method could be tried".to_owned();
+    }
+    codes
+        .split('\u{1f}')
+        .map(|code| match code.split_once(':') {
+            Some(("key_file", name)) => format!("private key ({name})"),
+            Some(("keyboard_rounds", rounds)) => {
+                format!("keyboard-interactive (more than {rounds} rounds)")
+            }
+            _ => match code {
+                "key_file" => "private key (<key file>)".to_owned(),
+                "key_vault" => "private key (the key stored in the vault)".to_owned(),
+                "key_missing" => "private key (none configured for this host)".to_owned(),
+                "agent_rejected" => "ssh-agent (none of its keys were accepted)".to_owned(),
+                "agent_no_keys" => "ssh-agent (no usable keys)".to_owned(),
+                "agent_error" => "ssh-agent (not usable)".to_owned(),
+                "password" => "password".to_owned(),
+                "keyboard_interactive" => "keyboard-interactive".to_owned(),
+                other => other.to_owned(),
+            },
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `AllAuthFailed` 里"服务器还支持哪些方法"的英文。
+fn offered_methods_en(codes: &str) -> String {
+    if codes.is_empty() {
+        return "none declared".to_owned();
+    }
+    codes
+        .split('\u{1f}')
+        .map(|code| match code {
+            "publickey" => "public key",
+            other => other,
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// `NotFound` 的对象名（核心给的是稳定英文标识）。认不得的标识原样显示。
@@ -587,6 +636,8 @@ mod tests {
         let auth = ZsshError::AllAuthFailed {
             tried: "password, publickey".into(),
             remaining: "keyboard-interactive".into(),
+            tried_codes: "password\u{1f}key_vault".into(),
+            remaining_codes: "keyboard-interactive".into(),
         };
         assert_eq!(error_text_in(Lang::Zh, &auth), auth.to_string());
 
@@ -1040,5 +1091,28 @@ mod tests {
             "{text}"
         );
         assert!(!has_cjk(&text), "{text}");
+    }
+    /// 认证全部失败：试过的方法和服务器还支持的方法按语言重新生成，私钥文件名原样保留。
+    #[test]
+    fn all_auth_failed_lists_the_methods_in_each_language() {
+        let err = ZsshError::AllAuthFailed {
+            tried: "私钥（id_ed25519）、密码".into(),
+            remaining: "keyboard-interactive、公钥".into(),
+            tried_codes: "key_file:id_ed25519\u{1f}password".into(),
+            remaining_codes: "keyboard-interactive\u{1f}publickey".into(),
+        };
+        assert_eq!(error_text_in(Lang::Zh, &err), err.to_string());
+        assert_eq!(
+            error_text_in(Lang::En, &err),
+            "Authentication failed; tried these methods: private key (id_ed25519), password\nThe server also supports: keyboard-interactive, public key"
+        );
+        let none = ZsshError::AllAuthFailed {
+            tried: "没有可试的方法".into(),
+            remaining: "没有声明".into(),
+            tried_codes: String::new(),
+            remaining_codes: String::new(),
+        };
+        let en = error_text_in(Lang::En, &none);
+        assert!(!has_cjk(&en), "{en}");
     }
 }
