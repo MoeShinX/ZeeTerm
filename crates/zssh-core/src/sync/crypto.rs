@@ -27,6 +27,7 @@
 //! × 4 次更容易在慢机器上守住耗时。参数写在包头，旧包（19 MiB / 2 次）照样能解；
 //! 以后再调只需要改这里的默认值。
 
+use crate::error::{reason_keys, Reason};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine as _;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -84,10 +85,18 @@ impl KdfParams {
             || !(1..=64).contains(&self.iterations)
             || !(1..=64).contains(&self.parallelism)
         {
-            return Err(SyncError::Format(format!(
-                "KDF 参数超出范围（memory_kib={}, iterations={}, parallelism={}）",
-                self.memory_kib, self.iterations, self.parallelism
-            )));
+            return Err(SyncError::Format(
+                Reason::new(
+                    reason_keys::SYNC_PKG_KDF_RANGE,
+                    format!(
+                        "KDF 参数超出范围（memory_kib={}, iterations={}, parallelism={}）",
+                        self.memory_kib, self.iterations, self.parallelism
+                    ),
+                )
+                .with("memory", self.memory_kib)
+                .with("iterations", self.iterations)
+                .with("parallelism", self.parallelism),
+            ));
         }
         Ok(())
     }
@@ -100,12 +109,28 @@ impl KdfParams {
             self.parallelism,
             Some(self.output_bytes as usize),
         )
-        .map_err(|err| SyncError::Internal(format!("Argon2 参数不合法：{err}")))?;
+        .map_err(|err| {
+            SyncError::Internal(
+                Reason::new(
+                    reason_keys::SYNC_ARGON2_PARAMS,
+                    format!("Argon2 参数不合法：{err}"),
+                )
+                .with("cause", &err),
+            )
+        })?;
         let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
         let mut key = Zeroizing::new([0u8; KEY_BYTES]);
         argon
             .hash_password_into(password.as_bytes(), salt, key.as_mut())
-            .map_err(|err| SyncError::Internal(format!("Argon2 派生失败：{err}")))?;
+            .map_err(|err| {
+                SyncError::Internal(
+                    Reason::new(
+                        reason_keys::SYNC_ARGON2_FAILED,
+                        format!("Argon2 派生失败：{err}"),
+                    )
+                    .with("cause", &err),
+                )
+            })?;
         Ok(key)
     }
 }
@@ -142,7 +167,12 @@ fn b64(bytes: &[u8]) -> String {
 fn unb64(raw: &str) -> Result<Vec<u8>, SyncError> {
     base64::engine::general_purpose::STANDARD
         .decode(raw)
-        .map_err(|_| SyncError::Format("包里有不是 base64 的字段".to_owned()))
+        .map_err(|_| {
+            SyncError::Format(Reason::new(
+                reason_keys::SYNC_PKG_BASE64,
+                "包里有不是 base64 的字段",
+            ))
+        })
 }
 
 /// key_check：`SHA-256(标签 || 密钥 || 头部 JSON)` 的前 16 字节。
@@ -181,10 +211,14 @@ pub fn seal_with(
     nonce: &[u8],
 ) -> Result<Vec<u8>, SyncError> {
     if salt.len() != SALT_BYTES {
-        return Err(SyncError::Internal("盐必须是 16 字节".to_owned()));
+        return Err(SyncError::Internal(Reason::text(
+            "盐必须是 16 字节".to_owned(),
+        )));
     }
     if nonce.len() != NONCE_BYTES {
-        return Err(SyncError::Internal("nonce 必须是 24 字节".to_owned()));
+        return Err(SyncError::Internal(Reason::text(
+            "nonce 必须是 24 字节".to_owned(),
+        )));
     }
     let key = kdf.derive(password, salt)?;
     let header = Header {
@@ -195,11 +229,11 @@ pub fn seal_with(
         nonce: &b64(nonce),
     };
     let aad = serde_json::to_vec(&header)
-        .map_err(|err| SyncError::Internal(format!("头部序列化失败：{err}")))?;
+        .map_err(|err| SyncError::Internal(Reason::text(format!("头部序列化失败：{err}"))))?;
     let check = key_check(&key, &aad);
 
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_ref())
-        .map_err(|err| SyncError::Internal(format!("密钥长度不对：{err}")))?;
+        .map_err(|err| SyncError::Internal(Reason::text(format!("密钥长度不对：{err}"))))?;
     let ciphertext = cipher
         .encrypt(
             XNonce::from_slice(nonce),
@@ -208,7 +242,9 @@ pub fn seal_with(
                 aad: &aad,
             },
         )
-        .map_err(|_| SyncError::Internal("加密失败".to_owned()))?;
+        .map_err(|_| {
+            SyncError::Internal(Reason::new(reason_keys::SYNC_ENCRYPT_FAILED, "加密失败"))
+        })?;
 
     let envelope = Envelope {
         format: FORMAT.to_owned(),
@@ -220,17 +256,25 @@ pub fn seal_with(
         key_check: b64(&check),
     };
     serde_json::to_vec(&envelope)
-        .map_err(|err| SyncError::Internal(format!("同步包序列化失败：{err}")))
+        .map_err(|err| SyncError::Internal(Reason::text(format!("同步包序列化失败：{err}"))))
+}
+
+fn random_unavailable(err: getrandom::Error) -> SyncError {
+    SyncError::Internal(
+        Reason::new(
+            reason_keys::SYNC_RANDOM_UNAVAILABLE,
+            format!("系统随机数不可用：{err}"),
+        )
+        .with("cause", &err),
+    )
 }
 
 /// 随机盐 + 随机 nonce，用默认的 Argon2id 参数加密。
 pub fn seal(plaintext: &[u8], password: &str) -> Result<Vec<u8>, SyncError> {
     let mut salt = [0u8; SALT_BYTES];
     let mut nonce = [0u8; NONCE_BYTES];
-    getrandom::fill(&mut salt)
-        .map_err(|err| SyncError::Internal(format!("系统随机数不可用：{err}")))?;
-    getrandom::fill(&mut nonce)
-        .map_err(|err| SyncError::Internal(format!("系统随机数不可用：{err}")))?;
+    getrandom::fill(&mut salt).map_err(random_unavailable)?;
+    getrandom::fill(&mut nonce).map_err(random_unavailable)?;
     seal_with(plaintext, password, KdfParams::default(), &salt, &nonce)
 }
 
@@ -238,13 +282,23 @@ pub fn seal(plaintext: &[u8], password: &str) -> Result<Vec<u8>, SyncError> {
 ///
 /// 检查顺序很重要：**先看格式和版本，版本太新直接拒绝**，不做 Argon2、不解析明文。
 pub fn open(bytes: &[u8], password: &str) -> Result<Zeroizing<Vec<u8>>, SyncError> {
-    let envelope: Envelope = serde_json::from_slice(bytes)
-        .map_err(|err| SyncError::Format(format!("不是有效的加密包：{err}")))?;
+    let envelope: Envelope = serde_json::from_slice(bytes).map_err(|err| {
+        SyncError::Format(
+            Reason::new(
+                reason_keys::SYNC_PKG_NOT_ENCRYPTED,
+                format!("不是有效的加密包：{err}"),
+            )
+            .with("cause", &err),
+        )
+    })?;
     if envelope.format != FORMAT {
-        return Err(SyncError::Format(format!(
-            "不是 Z-SSH 同步包（format={}）",
-            envelope.format
-        )));
+        return Err(SyncError::Format(
+            Reason::new(
+                reason_keys::SYNC_PKG_NOT_SYNC,
+                format!("不是 Z-SSH 同步包（format={}）", envelope.format),
+            )
+            .with("format", &envelope.format),
+        ));
     }
     if envelope.version > FORMAT_VERSION {
         return Err(SyncError::FormatTooNew {
@@ -262,7 +316,10 @@ pub fn open(bytes: &[u8], password: &str) -> Result<Zeroizing<Vec<u8>>, SyncErro
     let expected_check = unb64(&envelope.key_check)?;
     let ciphertext = unb64(&envelope.ciphertext)?;
     if salt.len() != SALT_BYTES || nonce.len() != NONCE_BYTES {
-        return Err(SyncError::Format("盐或 nonce 长度不对".to_owned()));
+        return Err(SyncError::Format(Reason::new(
+            reason_keys::SYNC_PKG_SALT_NONCE,
+            "盐或 nonce 长度不对",
+        )));
     }
     let key = envelope.kdf.derive(password, &salt)?;
     // 用**包里的**头部字段重算 AAD；任何一个字符被改过都会导致认证失败。
@@ -274,13 +331,13 @@ pub fn open(bytes: &[u8], password: &str) -> Result<Zeroizing<Vec<u8>>, SyncErro
         nonce: &envelope.nonce,
     };
     let aad = serde_json::to_vec(&header)
-        .map_err(|err| SyncError::Internal(format!("头部序列化失败：{err}")))?;
+        .map_err(|err| SyncError::Internal(Reason::text(format!("头部序列化失败：{err}"))))?;
     let check = key_check(&key, &aad);
     if !equal_constant_time(&check, &expected_check) {
         return Err(SyncError::WrongPassword);
     }
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_ref())
-        .map_err(|err| SyncError::Internal(format!("密钥长度不对：{err}")))?;
+        .map_err(|err| SyncError::Internal(Reason::text(format!("密钥长度不对：{err}"))))?;
     let plaintext = cipher
         .decrypt(
             XNonce::from_slice(&nonce),

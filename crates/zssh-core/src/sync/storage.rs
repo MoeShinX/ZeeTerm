@@ -6,6 +6,7 @@
 
 use std::sync::Mutex;
 
+use crate::error::{reason_params, ErrorWithCode, Reason};
 use crate::ssh::BoxFuture;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +24,7 @@ pub enum StorageError {
     Timeout,
     /// 服务暂时不可用（HTTP 429 / 5xx）：和超时一样值得稍后重试。
     #[error("存储服务暂时不可用：{0}")]
-    Unavailable(String),
+    Unavailable(Reason),
     /// 服务明确说“请求太多了”，要等一段时间。**不能立刻重试**：引擎遇到它直接放弃这次
     /// 同步，调度器在这段时间内也不再自动同步。
     #[error("{service} 限流，{}后重试", wait_text(*retry_after_secs))]
@@ -32,10 +33,10 @@ pub enum StorageError {
         retry_after_secs: u64,
     },
     #[error("存储读写失败：{0}")]
-    Io(String),
+    Io(Reason),
     /// 凭据被服务拒绝（401、签名 / 密钥错误、没有权限）：换了配置才可能好，自动同步要暂停。
     #[error("存储读写失败：{0}")]
-    AuthFailed(String),
+    AuthFailed(Reason),
 }
 
 /// “还要等多久”的说法：不到 1 分钟说秒，之后按分钟向上取整，超过 2 小时说小时。
@@ -194,7 +195,7 @@ impl SyncStorage for MemoryStorage {
                 let half = bytes.len() / 2;
                 state.bytes = Some(bytes[..half].to_vec());
                 state.version += 1;
-                return Err(StorageError::Io("写到一半失败".to_owned()));
+                return Err(StorageError::Io(Reason::text("写到一半失败".to_owned())));
             }
             state.bytes = Some(bytes.to_vec());
             state.version += 1;
@@ -274,5 +275,44 @@ mod tests {
         );
         block_on(storage.delete(Some("1"))).expect("版本对，删掉");
         assert!(storage.bytes().is_none());
+    }
+}
+
+/// 错误码与结构化参数：界面按它们出当前语言的整句。
+impl ErrorWithCode for StorageError {
+    fn code(&self) -> &'static str {
+        match self {
+            StorageError::Conflict => "storage.conflict",
+            StorageError::Timeout => "storage.timeout",
+            StorageError::Unavailable(_) => "storage.unavailable",
+            StorageError::RateLimited { .. } => "storage.rate_limited",
+            StorageError::Io(_) => "storage.io",
+            StorageError::AuthFailed(_) => "storage.auth_failed",
+        }
+    }
+
+    fn params(&self) -> Vec<(&'static str, String)> {
+        match self {
+            StorageError::Conflict | StorageError::Timeout => Vec::new(),
+            StorageError::Unavailable(reason)
+            | StorageError::Io(reason)
+            | StorageError::AuthFailed(reason) => reason_params(reason),
+            StorageError::RateLimited {
+                service,
+                retry_after_secs,
+            } => vec![
+                ("service", service.clone()),
+                ("secs", retry_after_secs.to_string()),
+            ],
+        }
+    }
+
+    fn causes(&self) -> Vec<(&'static str, &dyn ErrorWithCode)> {
+        match self {
+            StorageError::Unavailable(reason)
+            | StorageError::Io(reason)
+            | StorageError::AuthFailed(reason) => reason.causes(),
+            _ => Vec::new(),
+        }
     }
 }

@@ -251,7 +251,7 @@ impl From<(ZsshImportError, Origin)> for Failure {
         };
         Self {
             kind,
-            message: err.to_string(),
+            message: crate::error_text::error_text(&err),
             origin,
         }
     }
@@ -310,7 +310,7 @@ fn preview_of(
     let db = open_db(data_dir)?;
     engine(&db, sealer, data_dir)?
         .preview_import(snapshot, mode)
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 路径一：读本机的 Z-SSH 库并预览。
@@ -366,7 +366,7 @@ pub fn run_import(
     let db = open_db(data_dir)?;
     let report = engine(&db, sealer, data_dir)?
         .import_snapshot(snapshot.clone(), mode)
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| crate::error_text::error_text(&err))?;
     // 记不上不算导入失败。
     let _ = set_dismissed(&db);
     Ok(report)

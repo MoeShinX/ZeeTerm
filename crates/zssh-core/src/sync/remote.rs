@@ -5,6 +5,7 @@
 //! 探测服务器到底支不支持——都在这里。**不支持就是不支持**：检测结果由上层存下来
 //! 并在设置页提示，这里绝不会在没检测过的情况下假定服务器支持。
 
+use crate::error::Reason;
 use sha2::{Digest, Sha256};
 
 use super::storage::{StorageError, StoredObject, SyncStorage};
@@ -274,7 +275,9 @@ impl<R: RawObjectStore> SyncStorage for ConditionalStore<R> {
             };
             let version = match self.mode {
                 ConcurrencyMode::Conditional => object.etag.clone().ok_or_else(|| {
-                    StorageError::Io("服务器这次没有返回 ETag，请重新测试连接".to_owned())
+                    StorageError::Io(Reason::text(
+                        "服务器这次没有返回 ETag，请重新测试连接".to_owned(),
+                    ))
                 })?,
                 ConcurrencyMode::ReadBeforeWrite => content_hash(&object.bytes),
             };
@@ -299,15 +302,17 @@ impl<R: RawObjectStore> SyncStorage for ConditionalStore<R> {
                     };
                     match self.raw.put(bytes, &condition).await? {
                         RawPut::PreconditionFailed => Err(StorageError::Conflict),
-                        RawPut::ConditionNotSupported => Err(StorageError::Io(
+                        RawPut::ConditionNotSupported => Err(StorageError::Io(Reason::text(
                             "服务器不支持条件写入，请重新测试连接".to_owned(),
-                        )),
+                        ))),
                         RawPut::Written { etag: Some(etag) } => Ok(etag),
                         RawPut::Written { etag: None } => {
                             // 有的服务器 PUT 的响应里不带 ETag，再读一次拿。
                             let object = self.raw.get().await?;
                             object.and_then(|o| o.etag).ok_or_else(|| {
-                                StorageError::Io("写入成功但服务器没有返回 ETag".to_owned())
+                                StorageError::Io(Reason::text(
+                                    "写入成功但服务器没有返回 ETag".to_owned(),
+                                ))
                             })
                         }
                     }

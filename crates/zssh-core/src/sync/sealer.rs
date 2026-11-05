@@ -37,7 +37,9 @@ impl SecretSealer for TestSealer {
 
     fn open(&self, blob: &[u8]) -> Result<Vec<u8>, SyncError> {
         if blob.len() < 2 || blob[0] != b'T' || blob[1] != self.0 {
-            return Err(SyncError::InvalidData("不是 TestSealer 的密文".to_owned()));
+            return Err(SyncError::InvalidData(crate::error::Reason::text(
+                "不是 TestSealer 的密文".to_owned(),
+            )));
         }
         Ok(blob[2..].iter().map(|byte| byte ^ self.0).collect())
     }

@@ -1,3 +1,4 @@
+use crate::error::Reason;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -156,7 +157,9 @@ impl TargetOpener for Fake {
         Box::pin(async move {
             match self.stores.get(&target.id) {
                 Some(store) => Ok(Box::new(Shared(store.clone())) as Box<dyn SyncStorage + 's>),
-                None => Err(SyncError::Storage("没有这个测试存储".to_owned())),
+                None => Err(SyncError::Storage(Reason::text(
+                    "没有这个测试存储".to_owned(),
+                ))),
             }
         })
     }

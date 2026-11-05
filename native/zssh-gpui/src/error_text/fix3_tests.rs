@@ -149,3 +149,81 @@ fn transfer_plan_notes_are_english_sentences() {
         assert_eq!(reason_text_in(Lang::Zh, note), note.zh());
     }
 }
+
+#[test]
+fn sync_package_errors_are_english_with_parameters() {
+    use zssh_core::sync::crypto::open;
+    use zssh_core::sync::error::SyncError;
+
+    // 不是加密包：serde 的原文作为参数保留，前缀按类型出词。
+    let err = open(b"{}", "pw").expect_err("空对象不是加密包");
+    let en = error_text_in(Lang::En, &err);
+    assert!(
+        en.starts_with("Invalid sync package: Not a valid encrypted package: "),
+        "{en}"
+    );
+    assert_english(&en);
+    assert_eq!(error_text_in(Lang::Zh, &err), err.to_string());
+
+    // 限流：等待时间按语言进位出词，中文逐字等于核心的 Display。
+    let limited = SyncError::RateLimited {
+        service: "GitHub".into(),
+        retry_after_secs: 90,
+    };
+    assert_eq!(
+        error_text_in(Lang::En, &limited),
+        "GitHub is rate limiting requests; retry in about 2 minutes"
+    );
+    assert_eq!(error_text_in(Lang::Zh, &limited), limited.to_string());
+
+    assert_eq!(
+        error_text_in(Lang::En, &SyncError::WrongPassword),
+        "Wrong master password (or the file header was modified)"
+    );
+}
+
+#[test]
+fn storage_backend_errors_are_english_and_nested() {
+    use zssh_core::sync::error::SyncError;
+    use zssh_core::sync::github::{GithubApi, GithubConfig};
+    use zssh_core::sync::webdav::{WebDavConfig, WebDavRaw};
+
+    // GitHub：没填令牌（表单校验），经 SyncError 包一层之后仍是整句英文。
+    let storage = GithubApi::new(
+        &GithubConfig {
+            api_base: String::new(),
+            token: String::new(),
+            gist_id: String::new(),
+            allow_insecure_http: false,
+        },
+        None,
+        false,
+    )
+    .err()
+    .expect("没有令牌不能创建");
+    let en = error_text_in(Lang::En, &storage);
+    assert_eq!(en, "Storage read/write failed: Enter a GitHub token");
+    assert_eq!(error_text_in(Lang::Zh, &storage), storage.to_string());
+    let wrapped = SyncError::from(storage);
+    assert_eq!(
+        error_text_in(Lang::En, &wrapped),
+        "Storage error: Storage read/write failed: Enter a GitHub token"
+    );
+    assert_eq!(error_text_in(Lang::Zh, &wrapped), wrapped.to_string());
+
+    // WebDAV：地址协议不对，协议名作为参数保留。
+    let config = WebDavConfig {
+        url: "ftp://dav.example.com/".into(),
+        directory: String::new(),
+        username: "u".into(),
+        password: "p".into(),
+        allow_insecure_http: false,
+    };
+    let err = WebDavRaw::new(&config, None).err().expect("ftp 不支持");
+    let en = error_text_in(Lang::En, &err);
+    assert_eq!(
+        en,
+        "Storage read/write failed: The WebDAV address only supports http(s), got ftp://"
+    );
+    assert_english(&en);
+}

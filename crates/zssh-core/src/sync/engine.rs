@@ -5,6 +5,7 @@
 //! - 版本冲突时重新读取、重新合并、再写，最多 [`MAX_ATTEMPTS`] 次；
 //! - 主密码只用于同步包，不落盘；日志只记数量，不记内容。
 
+use crate::error::Reason;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -149,7 +150,7 @@ impl<'a> SyncEngine<'a> {
         };
         let plaintext = self.sealer.open(&bytes)?;
         let file: BaselineFile = serde_json::from_slice(&plaintext)
-            .map_err(|err| SyncError::Format(format!("同步基线损坏：{err}")))?;
+            .map_err(|err| SyncError::Format(Reason::text(format!("同步基线损坏：{err}"))))?;
         if file.schema_version > BASELINE_VERSION {
             return Err(SyncError::FormatTooNew {
                 found: file.schema_version,
@@ -165,10 +166,10 @@ impl<'a> SyncEngine<'a> {
             schema_version: BASELINE_VERSION,
             snapshot: snapshot.clone(),
         };
-        let plaintext = zeroize::Zeroizing::new(
-            serde_json::to_vec(&file)
-                .map_err(|err| SyncError::Internal(format!("基线序列化失败：{err}")))?,
-        );
+        let plaintext =
+            zeroize::Zeroizing::new(serde_json::to_vec(&file).map_err(|err| {
+                SyncError::Internal(Reason::text(format!("基线序列化失败：{err}")))
+            })?);
         let sealed = self.sealer.seal(&plaintext)?;
         let path = self.baseline_path();
         let temp = self.data_dir.join(".sync-baseline.tmp");
@@ -520,8 +521,9 @@ impl<'a> SyncEngine<'a> {
         if fresh == self.load_pending()? {
             return Ok(());
         }
-        let raw = serde_json::to_string(&fresh)
-            .map_err(|err| SyncError::InvalidData(format!("待定设置记录序列化失败：{err}")))?;
+        let raw = serde_json::to_string(&fresh).map_err(|err| {
+            SyncError::InvalidData(Reason::text(format!("待定设置记录序列化失败：{err}")))
+        })?;
         self.db
             .setting_set(SYNC_PENDING_SETTINGS_KEY, &raw)
             .map_err(SyncError::from)

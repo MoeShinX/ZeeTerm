@@ -13,6 +13,7 @@
 //!
 //! 租户用 `consumers`：只支持个人微软账号（见 [`super`] 的说明）。
 
+use crate::error::{reason_keys, Reason};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use reqwest::{Client, Url};
@@ -121,9 +122,11 @@ pub enum OAuthError {
 impl From<OAuthError> for StorageError {
     fn from(err: OAuthError) -> Self {
         match err {
-            OAuthError::Reauth(_) => StorageError::AuthFailed(REAUTH_MESSAGE.to_owned()),
-            OAuthError::Rejected(message) => StorageError::AuthFailed(message),
-            OAuthError::Unavailable(message) => StorageError::Unavailable(message),
+            OAuthError::Reauth(_) => {
+                StorageError::AuthFailed(Reason::new(reason_keys::OD_REAUTH, REAUTH_MESSAGE))
+            }
+            OAuthError::Rejected(message) => StorageError::AuthFailed(Reason::text(message)),
+            OAuthError::Unavailable(message) => StorageError::Unavailable(Reason::text(message)),
             OAuthError::Transport(err) => err,
         }
     }
@@ -397,7 +400,10 @@ mod tests {
     #[test]
     fn oauth_errors_map_to_storage_errors_the_sync_engine_understands() {
         let reauth = StorageError::from(OAuthError::Reauth("AADSTS70008".to_owned()));
-        assert_eq!(reauth, StorageError::AuthFailed(REAUTH_MESSAGE.to_owned()));
+        assert_eq!(
+            reauth,
+            StorageError::AuthFailed(Reason::text(REAUTH_MESSAGE.to_owned()))
+        );
         assert!(matches!(
             StorageError::from(OAuthError::Unavailable("x".to_owned())),
             StorageError::Unavailable(_)

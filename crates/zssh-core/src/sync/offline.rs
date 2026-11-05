@@ -10,6 +10,7 @@
 //! 两种都会先自动做一份本地备份（和恢复备份一样），导错了可以在备份页恢复回去。
 //! 端口转发规则只存本机，不在文件里。
 
+use crate::error::{reason_keys, Reason};
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -115,7 +116,7 @@ fn parse_accounts(plaintext: &[u8]) -> Option<SyncAccounts> {
 fn random_bytes<const N: usize>() -> Result<[u8; N], SyncError> {
     let mut out = [0u8; N];
     getrandom::fill(&mut out)
-        .map_err(|err| SyncError::Internal(format!("系统随机数不可用：{err}")))?;
+        .map_err(|err| SyncError::Internal(Reason::text(format!("系统随机数不可用：{err}"))))?;
     Ok(out)
 }
 
@@ -131,9 +132,13 @@ impl SyncEngine<'_> {
         params: KdfParams,
     ) -> Result<Vec<u8>, SyncError> {
         if password.chars().count() < MIN_PASSWORD_CHARS {
-            return Err(SyncError::InvalidData(format!(
-                "备份密码至少 {MIN_PASSWORD_CHARS} 个字符"
-            )));
+            return Err(SyncError::InvalidData(
+                Reason::new(
+                    reason_keys::BK_PASSWORD_SHORT,
+                    format!("备份密码至少 {MIN_PASSWORD_CHARS} 个字符"),
+                )
+                .with("min", MIN_PASSWORD_CHARS),
+            ));
         }
         let now = Self::now();
         let mut snapshot = snapshot_local_with(
@@ -154,7 +159,9 @@ impl SyncEngine<'_> {
                 snapshot: &snapshot,
                 accounts: accounts.as_ref(),
             })
-            .map_err(|err| SyncError::Internal(format!("离线备份序列化失败：{err}")))?,
+            .map_err(|err| {
+                SyncError::Internal(Reason::text(format!("离线备份序列化失败：{err}")))
+            })?,
         );
         seal_with(
             &plaintext,

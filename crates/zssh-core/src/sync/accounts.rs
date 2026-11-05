@@ -10,6 +10,7 @@
 //! - 云端同步包 / 云端备份包由 [`super::snapshot`] 生成，不经过这个模块；
 //! - 老版本导出的包没有这个字段：照常导入；老版本读到带这个字段的包会把它当不认识的字段丢掉。
 
+use crate::error::Reason;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -174,9 +175,9 @@ impl SyncAccounts {
 
     fn check(&self) -> Result<(), SyncError> {
         if self.backup_targets.len() > MAX_TARGETS {
-            return Err(SyncError::InvalidData(format!(
+            return Err(SyncError::InvalidData(Reason::text(format!(
                 "备份里的云端备份目标超过 {MAX_TARGETS} 个"
-            )));
+            ))));
         }
         let mut seen = std::collections::BTreeSet::new();
         for target in &self.backup_targets {
@@ -187,9 +188,9 @@ impl SyncAccounts {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
             if !ok || !seen.insert(target.id.as_str()) {
-                return Err(SyncError::InvalidData(
+                return Err(SyncError::InvalidData(Reason::text(
                     "备份里的云端备份目标 ID 不合法".to_owned(),
-                ));
+                )));
             }
         }
         Ok(())

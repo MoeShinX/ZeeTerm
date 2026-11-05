@@ -8,11 +8,13 @@
 //! 只按文档实现、没有在真实服务商上验证的地方在报告里逐条列出；这里的注释只写
 //! 为什么这样处理。
 
+use crate::error::{reason_keys, Reason};
 use reqwest::{Client, Method, StatusCode, Url};
 
 use super::net::{
-    build_client, map_http_error, proxy_auth_required, read_body_limited, read_error_text,
-    retryable_status, SyncProxy, MAX_META_BYTES, MAX_PACKAGE_BYTES,
+    action_code, build_client, map_http_error, proxy_auth_required, read_body_limited,
+    read_error_text, retryable_status, server_returned, SyncProxy, MAX_META_BYTES,
+    MAX_PACKAGE_BYTES,
 };
 use super::remote::{
     probe_connection, ConcurrencyMode, Condition, ConditionalStore, ConnectionProbe, RawObject,
@@ -63,20 +65,37 @@ pub fn object_location(
     config: &S3Config,
     object_name: &str,
 ) -> Result<(Url, String), StorageError> {
-    let endpoint = Url::parse(config.endpoint.trim())
-        .map_err(|err| StorageError::Io(format!("S3 Endpoint 不合法：{err}")))?;
+    let endpoint = Url::parse(config.endpoint.trim()).map_err(|err| {
+        StorageError::Io(
+            Reason::new(
+                reason_keys::S3_ENDPOINT_BAD,
+                format!("S3 Endpoint 不合法：{err}"),
+            )
+            .with("cause", &err),
+        )
+    })?;
     let scheme = endpoint.scheme();
     if scheme != "https" && scheme != "http" {
-        return Err(StorageError::Io(format!(
-            "S3 Endpoint 只支持 http(s)，收到 {scheme}://"
-        )));
+        return Err(StorageError::Io(
+            Reason::new(
+                reason_keys::S3_ENDPOINT_SCHEME,
+                format!("S3 Endpoint 只支持 http(s)，收到 {scheme}://"),
+            )
+            .with("scheme", scheme),
+        ));
     }
-    let host = endpoint
-        .host_str()
-        .ok_or_else(|| StorageError::Io("S3 Endpoint 缺少主机名".to_owned()))?;
+    let host = endpoint.host_str().ok_or_else(|| {
+        StorageError::Io(Reason::new(
+            reason_keys::S3_ENDPOINT_NO_HOST,
+            "S3 Endpoint 缺少主机名",
+        ))
+    })?;
     let bucket = config.bucket.trim();
     if bucket.is_empty() || bucket.contains('/') {
-        return Err(StorageError::Io("Bucket 名称不合法".to_owned()));
+        return Err(StorageError::Io(Reason::new(
+            reason_keys::S3_BUCKET_BAD,
+            "Bucket 名称不合法",
+        )));
     }
     let key: String = config
         .prefix
@@ -108,8 +127,15 @@ pub fn object_location(
     path.push('/');
     path.push_str(&key);
     let canonical_path = uri_encode(&path, true);
-    let url = Url::parse(&format!("{scheme}://{authority}{canonical_path}"))
-        .map_err(|err| StorageError::Io(format!("S3 地址拼接失败：{err}")))?;
+    let url = Url::parse(&format!("{scheme}://{authority}{canonical_path}")).map_err(|err| {
+        StorageError::Io(
+            Reason::new(
+                reason_keys::S3_URL_FAILED,
+                format!("S3 地址拼接失败：{err}"),
+            )
+            .with("cause", &err),
+        )
+    })?;
     Ok((url, canonical_path))
 }
 
@@ -133,10 +159,16 @@ impl S3Raw {
         // 先验证地址能拼出来，错误在创建时就暴露。
         object_location(config, object)?;
         if config.region.trim().is_empty() {
-            return Err(StorageError::Io("Region 不能为空".to_owned()));
+            return Err(StorageError::Io(Reason::new(
+                reason_keys::S3_REGION_EMPTY,
+                "Region 不能为空",
+            )));
         }
         if config.access_key.trim().is_empty() || config.secret_key.is_empty() {
-            return Err(StorageError::Io("Access Key 和 Secret 不能为空".to_owned()));
+            return Err(StorageError::Io(Reason::new(
+                reason_keys::S3_KEYS_EMPTY,
+                "Access Key 和 Secret 不能为空",
+            )));
         }
         Ok(Self {
             client: build_client(proxy)?,
@@ -233,22 +265,36 @@ async fn status_error(response: reqwest::Response, action: &str) -> StorageError
     let body = read_error_text(response, MAX_META_BYTES).await;
     let code = error_code(&body);
     let reason = match (status, code.as_deref()) {
-        (_, Some("SignatureDoesNotMatch")) => {
-            "签名不对（Secret、Region 或地址风格可能填错了）".to_owned()
+        (_, Some("SignatureDoesNotMatch")) => Reason::new(
+            reason_keys::S3_SIGNATURE,
+            "签名不对（Secret、Region 或地址风格可能填错了）",
+        ),
+        (_, Some("InvalidAccessKeyId")) => {
+            Reason::new(reason_keys::S3_NO_ACCESS_KEY, "Access Key 不存在")
         }
-        (_, Some("InvalidAccessKeyId")) => "Access Key 不存在".to_owned(),
-        (_, Some("NoSuchBucket")) => "Bucket 不存在".to_owned(),
-        (_, Some("AccessDenied")) | (StatusCode::FORBIDDEN, _) => {
-            "没有权限（桶没给列表权限时，对象不存在也会返回这个）".to_owned()
-        }
+        (_, Some("NoSuchBucket")) => Reason::new(reason_keys::S3_NO_BUCKET, "Bucket 不存在"),
+        (_, Some("AccessDenied")) | (StatusCode::FORBIDDEN, _) => Reason::new(
+            reason_keys::S3_DENIED,
+            "没有权限（桶没给列表权限时，对象不存在也会返回这个）",
+        ),
         (_, Some("PermanentRedirect")) | (_, Some("AuthorizationHeaderMalformed")) => {
-            "Region 或 Endpoint 填得不对".to_owned()
+            Reason::new(reason_keys::S3_REGION_WRONG, "Region 或 Endpoint 填得不对")
         }
-        (StatusCode::UNAUTHORIZED, _) => "认证失败".to_owned(),
-        (other, Some(code)) => format!("服务器返回 {}（{code}）", other.as_u16()),
-        (other, None) => format!("服务器返回 {}", other.as_u16()),
+        (StatusCode::UNAUTHORIZED, _) => Reason::new(reason_keys::S3_AUTH_FAILED, "认证失败"),
+        (other, Some(code)) => Reason::new(
+            reason_keys::NET_SERVER_RETURNED_CODE,
+            format!("服务器返回 {}（{code}）", other.as_u16()),
+        )
+        .with("status", other.as_u16())
+        .with("code", code),
+        (other, None) => server_returned(other.as_u16()),
     };
-    let message = format!("S3 {action}失败：{reason}");
+    let message = Reason::new(
+        reason_keys::S3_FAILED,
+        format!("S3 {action}失败：{}", reason.zh()),
+    )
+    .with("action", action_code(action))
+    .caused_by_as("reason", &reason);
     let rejected_credentials = matches!(
         code.as_deref(),
         Some("SignatureDoesNotMatch" | "InvalidAccessKeyId" | "AccessDenied" | "InvalidSecurity")
@@ -275,7 +321,10 @@ impl RawObjectStore for S3Raw {
                 // 对象不存在是 404 NoSuchKey；桶不存在也是 404（NoSuchBucket），后者要报错。
                 let body = read_error_text(response, MAX_META_BYTES).await;
                 if error_code(&body).as_deref() == Some("NoSuchBucket") {
-                    return Err(StorageError::Io("S3 读取失败：Bucket 不存在".to_owned()));
+                    return Err(StorageError::Io(Reason::new(
+                        reason_keys::S3_NO_BUCKET_READ,
+                        "S3 读取失败：Bucket 不存在",
+                    )));
                 }
                 return Ok(None);
             }

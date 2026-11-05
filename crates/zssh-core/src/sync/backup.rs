@@ -3,6 +3,7 @@
 //! 触发时机由调用方决定：合并云端数据之前、恢复之前、应用版本升级后第一次启动。
 //! 恢复 = 先给当前状态做一份备份，再把选中的备份在一个数据库事务里写回去。
 
+use crate::error::{reason_keys, Reason};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -142,10 +143,10 @@ impl<'a> BackupStore<'a> {
             local: local.clone(),
             sync_accounts: accounts.cloned(),
         };
-        let plaintext = Zeroizing::new(
-            serde_json::to_vec(&envelope)
-                .map_err(|err| SyncError::Internal(format!("备份序列化失败：{err}")))?,
-        );
+        let plaintext =
+            Zeroizing::new(serde_json::to_vec(&envelope).map_err(|err| {
+                SyncError::Internal(Reason::text(format!("备份序列化失败：{err}")))
+            })?);
         let sealed = self.sealer.seal(&plaintext)?;
         let stamp = crate::ai::files::compact_timestamp(now);
         let mut sequence = 1u64;
@@ -161,7 +162,10 @@ impl<'a> BackupStore<'a> {
             }
             sequence += 1;
             if sequence > 1000 {
-                return Err(SyncError::Internal("同一秒内的备份太多了".to_owned()));
+                return Err(SyncError::Internal(Reason::new(
+                    reason_keys::BK_TOO_MANY,
+                    "同一秒内的备份太多了",
+                )));
             }
         };
         let temp = self.dir.join(format!(".{stamp}-{sequence}.tmp"));
@@ -269,12 +273,14 @@ impl<'a> BackupStore<'a> {
 
     /// 只认备份目录里、文件名符合备份命名的文件（界面传来的路径不可信）。
     pub fn check_path(&self, path: &Path) -> Result<PathBuf, SyncError> {
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| SyncError::InvalidData("备份路径不合法".to_owned()))?;
+        let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+            SyncError::InvalidData(Reason::new(reason_keys::BK_PATH_BAD, "备份路径不合法"))
+        })?;
         if Self::parse_name(name).is_none() {
-            return Err(SyncError::InvalidData("不是 Z-SSH 的备份文件".to_owned()));
+            return Err(SyncError::InvalidData(Reason::new(
+                reason_keys::BK_NOT_BACKUP,
+                "不是 Z-SSH 的备份文件",
+            )));
         }
         let candidate = self.dir.join(name);
         let same_dir = match (path.parent(), self.dir.canonicalize()) {
@@ -282,7 +288,10 @@ impl<'a> BackupStore<'a> {
             _ => false,
         };
         if !same_dir || !candidate.is_file() {
-            return Err(SyncError::InvalidData("备份文件不在备份目录里".to_owned()));
+            return Err(SyncError::InvalidData(Reason::new(
+                reason_keys::BK_OUTSIDE_DIR,
+                "备份文件不在备份目录里",
+            )));
         }
         Ok(candidate)
     }
@@ -291,7 +300,7 @@ impl<'a> BackupStore<'a> {
         let bytes = std::fs::read(path)?;
         let plaintext = self.sealer.open(&bytes)?;
         let envelope: BackupEnvelope = serde_json::from_slice(&plaintext)
-            .map_err(|err| SyncError::Format(format!("备份文件解析失败：{err}")))?;
+            .map_err(|err| SyncError::Format(Reason::text(format!("备份文件解析失败：{err}"))))?;
         if envelope.schema_version > BACKUP_SCHEMA_VERSION {
             return Err(SyncError::FormatTooNew {
                 found: envelope.schema_version,
@@ -392,7 +401,7 @@ impl<'a> BackupStore<'a> {
         }
         let snapshot = snapshot_local(db, self.sealer, device_id, known_hosts_path, now)?;
         let value = serde_json::to_string(app_version)
-            .map_err(|err| SyncError::Internal(format!("版本号序列化失败：{err}")))?;
+            .map_err(|err| SyncError::Internal(Reason::text(format!("版本号序列化失败：{err}"))))?;
         // 全新安装第一次启动时库是空的，备份一份空库没有意义，还白占一个备份名额。
         // 版本照样记下：这个版本的“升级”已经过去了，之后同一版本里有了数据也不用补备份。
         if snapshot.record_count() == 0 {

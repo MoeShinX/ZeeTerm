@@ -4,6 +4,7 @@
 //! 分组 → 父分组，默认代理设置 → 代理 uid。凭据和代理密码在这里用 DPAPI 解开，
 //! 明文只进加密后的同步包 / 本地基线，不会落到明文的磁盘文件里。
 
+use crate::error::Reason;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -392,12 +393,14 @@ fn decrypt_secret(
     match blob {
         Some(blob) if !blob.is_empty() => {
             let plaintext = sealer.open(&blob).map_err(|err| {
-                SyncError::InvalidData(format!(
+                SyncError::InvalidData(Reason::text(format!(
                     "{entity}「{name}」的密文解不开，不能导出（不导出比丢密码好）：{err}"
-                ))
+                )))
             })?;
             let text = String::from_utf8(plaintext).map_err(|_| {
-                SyncError::InvalidData(format!("{entity}「{name}」解出来的不是 UTF-8"))
+                SyncError::InvalidData(Reason::text(format!(
+                    "{entity}「{name}」解出来的不是 UTF-8"
+                )))
             })?;
             Ok(Some(text))
         }

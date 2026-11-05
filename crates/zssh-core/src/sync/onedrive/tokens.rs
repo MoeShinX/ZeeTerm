@@ -9,6 +9,7 @@
 //! - **刷新令牌失效**（被撤销、90 天没用过、改了密码）：返回 [`StorageError::AuthFailed`]，
 //!   引擎和调度器据此暂停自动同步，界面提示重新登录。网络不通、服务暂时不可用不算失效。
 
+use crate::error::{reason_keys, Reason};
 use std::sync::Arc;
 
 use reqwest::Client;
@@ -51,7 +52,9 @@ impl<T: TokenStore + ?Sized> TokenStore for &T {
 
 fn store_error(err: impl std::fmt::Display) -> StorageError {
     // 错误文本来自数据库 / DPAPI，不含令牌。
-    StorageError::Io(format!("读写本机保存的 OneDrive 登录信息失败：{err}"))
+    StorageError::Io(Reason::text(format!(
+        "读写本机保存的 OneDrive 登录信息失败：{err}"
+    )))
 }
 
 /// 本机数据库里的令牌存储（DPAPI 加密）。
@@ -184,7 +187,7 @@ impl<'a> TokenManager<'a> {
     }
 
     fn not_signed_in() -> StorageError {
-        StorageError::AuthFailed("还没有登录 OneDrive，请先登录".to_owned())
+        StorageError::AuthFailed(Reason::text("还没有登录 OneDrive，请先登录".to_owned()))
     }
 
     /// 当前可用的访问令牌；快过期就先刷新。
@@ -221,7 +224,9 @@ impl<'a> TokenManager<'a> {
         )
         .await
         .map_err(|err| match err {
-            OAuthError::Reauth(_) => StorageError::AuthFailed(REAUTH_MESSAGE.to_owned()),
+            OAuthError::Reauth(_) => {
+                StorageError::AuthFailed(Reason::new(reason_keys::OD_REAUTH, REAUTH_MESSAGE))
+            }
             other => StorageError::from(other),
         })?;
         // 先存盘再使用：新的刷新令牌丢了的话，下次只能拿旧的去刷（微软不会立刻作废旧的，

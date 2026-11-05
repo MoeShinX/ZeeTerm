@@ -24,6 +24,7 @@
 //! - 读取：先取元数据拿 `eTag`、再取内容。内容可能比 `eTag` 新（中间有人写了），这时下次带着旧 `eTag`
 //!   写会 412、重读，是安全的方向。
 
+use crate::error::{reason_keys, Reason};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,8 +36,8 @@ use super::oauth::{Endpoints, REAUTH_MESSAGE};
 use super::tokens::{TokenManager, TokenStore};
 use crate::ssh::BoxFuture;
 use crate::sync::net::{
-    build_client, map_http_error, proxy_auth_required, read_body_limited, read_error_text,
-    SyncProxy, MAX_META_BYTES, MAX_PACKAGE_BYTES,
+    action_code, build_client, map_http_error, proxy_auth_required, read_body_limited,
+    read_error_text, SyncProxy, MAX_META_BYTES, MAX_PACKAGE_BYTES,
 };
 use crate::sync::remote::{
     probe_connection, ConcurrencyMode, Condition, ConditionalStore, ConnectionProbe, RawObject,
@@ -55,7 +56,7 @@ const DEFAULT_WAIT_SECS: u64 = 60;
 /// 往上传会话传一片的最长时间（5 MiB，慢速网络也留足）。
 const FRAGMENT_TIMEOUT: Duration = Duration::from_secs(120);
 
-fn io(message: impl Into<String>) -> StorageError {
+fn io(message: impl Into<Reason>) -> StorageError {
     StorageError::Io(message.into())
 }
 
@@ -245,12 +246,24 @@ impl<'a> OneDriveRaw<'a> {
         let upload_url = value
             .get("uploadUrl")
             .and_then(Value::as_str)
-            .ok_or_else(|| io("OneDrive 没有返回上传地址"))?;
-        let parsed =
-            reqwest::Url::parse(upload_url).map_err(|_| io("OneDrive 返回的上传地址不合法"))?;
+            .ok_or_else(|| {
+                io(Reason::new(
+                    reason_keys::OD_NO_UPLOAD_URL,
+                    "OneDrive 没有返回上传地址",
+                ))
+            })?;
+        let parsed = reqwest::Url::parse(upload_url).map_err(|_| {
+            io(Reason::new(
+                reason_keys::OD_UPLOAD_URL_BAD,
+                "OneDrive 返回的上传地址不合法",
+            ))
+        })?;
         // 上传地址是服务器给的，不能被引到 http:// 上（上传内容虽然是密文，仍不走明文）。
         if parsed.scheme() != "https" && !is_loopback(&parsed) {
-            return Err(io("OneDrive 返回的上传地址不是 https"));
+            return Err(io(Reason::new(
+                reason_keys::OD_UPLOAD_NOT_HTTPS,
+                "OneDrive 返回的上传地址不是 https",
+            )));
         }
         Ok(Ok(upload_url.to_owned()))
     }
@@ -381,23 +394,45 @@ fn status_error(status: StatusCode, headers: &HeaderMap, code: &str, action: &st
             service: SERVICE.to_owned(),
             retry_after_secs: retry.unwrap_or(DEFAULT_WAIT_SECS).clamp(1, MAX_WAIT_SECS),
         },
-        401 => StorageError::AuthFailed(REAUTH_MESSAGE.to_owned()),
-        403 => StorageError::AuthFailed(
-            "OneDrive 拒绝了请求（没有权限）。授权可能被收回了，请重新登录".to_owned(),
+        401 => StorageError::AuthFailed(Reason::new(reason_keys::OD_REAUTH, REAUTH_MESSAGE)),
+        403 => StorageError::AuthFailed(Reason::new(
+            reason_keys::OD_DENIED,
+            "OneDrive 拒绝了请求（没有权限）。授权可能被收回了，请重新登录",
+        )),
+        404 => io(Reason::new(
+            reason_keys::OD_NOT_FOUND,
+            format!("OneDrive {action}失败：找不到应用文件夹或文件"),
+        )
+        .with("action", action_code(action))),
+        423 => io(Reason::new(
+            reason_keys::OD_LOCKED,
+            format!("OneDrive {action}失败：文件被锁定，稍后重试"),
+        )
+        .with("action", action_code(action))),
+        507 => io(Reason::new(
+            reason_keys::OD_FULL,
+            "OneDrive 空间不足（507），请清理 OneDrive 的空间后重试",
+        )),
+        408 | 500 | 502 | 503 | 504 => StorageError::Unavailable(
+            Reason::new(
+                reason_keys::OD_STATUS,
+                format!("OneDrive 返回 {}", status.as_u16()),
+            )
+            .with("code", status.as_u16()),
         ),
-        404 => io(format!("OneDrive {action}失败：找不到应用文件夹或文件")),
-        423 => io(format!("OneDrive {action}失败：文件被锁定，稍后重试")),
-        507 => io("OneDrive 空间不足（507），请清理 OneDrive 的空间后重试".to_owned()),
-        408 | 500 | 502 | 503 | 504 => {
-            StorageError::Unavailable(format!("OneDrive 返回 {}", status.as_u16()))
-        }
         other => {
             let detail = if code.is_empty() {
                 String::new()
             } else {
                 format!("（{code}）")
             };
-            io(format!("OneDrive {action}失败：服务器返回 {other}{detail}"))
+            io(Reason::new(
+                reason_keys::OD_FAILED_CODE,
+                format!("OneDrive {action}失败：服务器返回 {other}{detail}"),
+            )
+            .with("action", action_code(action))
+            .with("status", other)
+            .with("detail", &detail))
         }
     }
 }
@@ -409,9 +444,10 @@ impl RawObjectStore for OneDriveRaw<'_> {
                 return Ok(None);
             };
             if meta.size.is_some_and(|size| size > MAX_PACKAGE_BYTES) {
-                return Err(io(
+                return Err(io(Reason::new(
+                    reason_keys::OD_TOO_BIG,
                     "OneDrive 上的同步文件超过 64 MiB 上限，不像是 Z-SSH 的同步包，没有下载",
-                ));
+                )));
             }
             // /content 会 302 到一个带临时凭据的下载地址。reqwest 跨主机重定向时会去掉
             // Authorization，令牌不会发给下载服务器。
@@ -440,7 +476,10 @@ impl RawObjectStore for OneDriveRaw<'_> {
     ) -> BoxFuture<'a, Result<RawPut, StorageError>> {
         Box::pin(async move {
             if bytes.is_empty() {
-                return Err(io("同步包是空的，没有上传"));
+                return Err(io(Reason::new(
+                    reason_keys::OD_EMPTY_PACKAGE,
+                    "同步包是空的，没有上传",
+                )));
             }
             let Ok(upload_url) = self.create_session(condition).await? else {
                 return Ok(RawPut::PreconditionFailed);
@@ -594,7 +633,7 @@ mod tests {
         let none = HeaderMap::new();
         assert_eq!(
             status_error(StatusCode::UNAUTHORIZED, &none, "", "读取"),
-            StorageError::AuthFailed(REAUTH_MESSAGE.to_owned())
+            StorageError::AuthFailed(Reason::text(REAUTH_MESSAGE.to_owned()))
         );
         assert!(matches!(
             status_error(StatusCode::FORBIDDEN, &none, "accessDenied", "写入"),
@@ -616,7 +655,9 @@ mod tests {
         let other = status_error(StatusCode::BAD_REQUEST, &none, "invalidRequest", "写入");
         assert_eq!(
             other,
-            StorageError::Io("OneDrive 写入失败：服务器返回 400（invalidRequest）".to_owned())
+            StorageError::Io(Reason::text(
+                "OneDrive 写入失败：服务器返回 400（invalidRequest）".to_owned()
+            ))
         );
     }
 

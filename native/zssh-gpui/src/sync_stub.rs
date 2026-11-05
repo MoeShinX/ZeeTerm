@@ -995,7 +995,7 @@ impl SecretSealer for XorSealer {
     fn open(&self, blob: &[u8]) -> Result<Vec<u8>, zssh_core::sync::error::SyncError> {
         if blob.len() < 2 || blob[0] != b'X' || blob[1] != self.0 {
             return Err(zssh_core::sync::error::SyncError::InvalidData(
-                "不是 XorSealer 的密文".to_owned(),
+                zssh_core::error::Reason::text("不是 XorSealer 的密文".to_owned()),
             ));
         }
         Ok(blob[2..].iter().map(|byte| byte ^ self.0).collect())

@@ -162,6 +162,23 @@ impl Reason {
     }
 }
 
+/// `Reason` 自己也能当「内层错误」被嵌套：界面按它的 key 出整句。
+impl ErrorWithCode for Reason {
+    fn code(&self) -> &'static str {
+        "core.reason"
+    }
+
+    fn params(&self) -> Vec<(&'static str, String)> {
+        let mut out = vec![("reason", self.key.to_owned()), ("detail", self.zh.clone())];
+        out.extend(self.params.iter().cloned());
+        out
+    }
+
+    fn causes(&self) -> Vec<(&'static str, &dyn ErrorWithCode)> {
+        Reason::causes(self)
+    }
+}
+
 impl fmt::Display for Reason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.zh)
@@ -589,6 +606,124 @@ pub mod keys {
         SFTP_CP_FILE_SIZE_MISMATCH = "sftp.cp_file_size_mismatch";
         SFTP_CP_VERIFY_COPY_FAILED = "sftp.cp_verify_copy_failed";
         SFTP_NAME_BAD = "sftp.name_bad";
+        SYNC_STORAGE_CAUSE = "sync.storage_cause";
+        SYNC_PKG_BASE64 = "sync.pkg_base64";
+        SYNC_PKG_KDF_RANGE = "sync.pkg_kdf_range";
+        SYNC_ARGON2_PARAMS = "sync.argon2_params";
+        SYNC_ARGON2_FAILED = "sync.argon2_failed";
+        SYNC_ENCRYPT_FAILED = "sync.encrypt_failed";
+        SYNC_RANDOM_UNAVAILABLE = "sync.random_unavailable";
+        SYNC_PKG_NOT_ENCRYPTED = "sync.pkg_not_encrypted";
+        SYNC_PKG_NOT_SYNC = "sync.pkg_not_sync";
+        SYNC_PKG_SALT_NONCE = "sync.pkg_salt_nonce";
+        GH_API_NO_HOST = "github.api_no_host";
+        GH_API_EXTRAS = "github.api_extras";
+        GH_TOKEN_EMPTY = "github.token_empty";
+        GH_TOKEN_BAD_CHARS = "github.token_bad_chars";
+        GH_API_HTTP = "github.api_http";
+        GH_GIST_ID_EMPTY = "github.gist_id_empty";
+        GH_GIST_ID_BAD_LONG = "github.gist_id_bad_long";
+        GH_NO_RAW_URL = "github.no_raw_url";
+        GH_RAW_URL_BAD = "github.raw_url_bad";
+        GH_RAW_URL_NOT_HTTP = "github.raw_url_not_http";
+        GH_NO_VERSION = "github.no_version";
+        GH_NO_NEW_GIST_ID = "github.no_new_gist_id";
+        GH_GIST_ID_BAD = "github.gist_id_bad";
+        GH_NO_USER = "github.no_user";
+        GH_NOT_UTF8 = "github.not_utf8";
+        GH_BAD_GIST = "github.bad_gist";
+        GH_BAD_JSON = "github.bad_json";
+        GH_GIST_NOT_FOUND = "github.gist_not_found";
+        GH_RAW_404 = "github.raw_404";
+        GH_USER_NOT_FOUND = "github.user_not_found";
+        GH_TOKEN_EXPIRED = "github.token_expired";
+        GH_WRITE_DENIED = "github.write_denied";
+        GH_CREATE_DENIED = "github.create_denied";
+        GH_DELETE_FAILED = "github.delete_failed";
+        GH_FORBIDDEN = "github.forbidden";
+        GH_REJECTED_422 = "github.rejected_422";
+        GH_STATUS = "github.status";
+        GH_API_URL_BAD = "github.api_url_bad";
+        GH_API_SCHEME = "github.api_scheme";
+        GH_GIST_TOO_BIG = "github.gist_too_big";
+        GH_INCOMPLETE = "github.incomplete";
+        GH_TOO_MANY_FILES = "github.too_many_files";
+        NET_PROXY_AUTH = "net.proxy_auth";
+        NET_SERVER_RETURNED = "net.server_returned";
+        NET_SERVER_RETURNED_CODE = "net.server_returned_code";
+        NET_CONNECT_FAILED = "net.connect_failed";
+        NET_REQUEST_FAILED = "net.request_failed";
+        NET_PROXY_INVALID = "net.proxy_invalid";
+        NET_CLIENT_BUILD = "net.client_build";
+        S3_ENDPOINT_BAD = "s3.endpoint_bad";
+        S3_ENDPOINT_SCHEME = "s3.endpoint_scheme";
+        S3_ENDPOINT_NO_HOST = "s3.endpoint_no_host";
+        S3_BUCKET_BAD = "s3.bucket_bad";
+        S3_URL_FAILED = "s3.url_failed";
+        S3_REGION_EMPTY = "s3.region_empty";
+        S3_KEYS_EMPTY = "s3.keys_empty";
+        S3_NO_BUCKET_READ = "s3.no_bucket_read";
+        S3_FAILED = "s3.failed";
+        S3_SIGNATURE = "s3.signature";
+        S3_NO_ACCESS_KEY = "s3.no_access_key";
+        S3_NO_BUCKET = "s3.no_bucket";
+        S3_DENIED = "s3.denied";
+        S3_REGION_WRONG = "s3.region_wrong";
+        S3_AUTH_FAILED = "s3.auth_failed";
+        DAV_URL_BAD = "webdav.url_bad";
+        DAV_HTTP = "webdav.http";
+        DAV_SCHEME = "webdav.scheme";
+        DAV_NO_HOST = "webdav.no_host";
+        DAV_URL_INVALID = "webdav.url_invalid";
+        DAV_FAILED = "webdav.failed";
+        DAV_UNAUTHORIZED = "webdav.unauthorized";
+        DAV_FORBIDDEN = "webdav.forbidden";
+        DAV_NOT_FOUND = "webdav.not_found";
+        DAV_METHOD_NOT_ALLOWED = "webdav.method_not_allowed";
+        DAV_INSUFFICIENT = "webdav.insufficient";
+        DAV_LOCKED = "webdav.locked";
+        OD_DENIED = "onedrive.denied";
+        OD_NOT_FOUND = "onedrive.not_found";
+        OD_LOCKED = "onedrive.locked";
+        OD_FULL = "onedrive.full";
+        OD_STATUS = "onedrive.status";
+        OD_FAILED_CODE = "onedrive.failed_code";
+        OD_TOO_BIG = "onedrive.too_big";
+        OD_EMPTY_PACKAGE = "onedrive.empty_package";
+        OD_REAUTH = "onedrive.reauth";
+        OD_NO_REFRESH = "onedrive.no_refresh";
+        OD_NO_ACCESS_TOKEN = "onedrive.no_access_token";
+        OD_REJECTED = "onedrive.rejected";
+        OD_NO_UPLOAD_URL = "onedrive.no_upload_url";
+        OD_UPLOAD_URL_BAD = "onedrive.upload_url_bad";
+        OD_UPLOAD_NOT_HTTPS = "onedrive.upload_not_https";
+        BK_TOO_MANY = "backup.too_many";
+        BK_PATH_BAD = "backup.path_bad";
+        BK_NOT_BACKUP = "backup.not_backup";
+        BK_OUTSIDE_DIR = "backup.outside_dir";
+        BT_ID_BAD = "target.id_bad";
+        BT_EXISTS = "target.exists";
+        BT_NONE = "target.none";
+        BT_NO_BACKUP_YET = "target.no_backup_yet";
+        CF_ENCODING = "conflict.encoding";
+        CF_NOT_UTF8 = "conflict.not_utf8";
+        CF_GONE = "conflict.gone";
+        CF_NO_OTHER = "conflict.no_other";
+        CF_HOST_GONE = "conflict.host_gone";
+        CF_GROUP_GONE = "conflict.group_gone";
+        CF_IDENTITY_GONE = "conflict.identity_gone";
+        CF_PROXY_GONE = "conflict.proxy_gone";
+        CF_ENDPOINT_GONE = "conflict.endpoint_gone";
+        SV_SETTINGS_DAMAGED = "service.settings_damaged";
+        SV_PASSWORD_DAMAGED = "service.password_damaged";
+        SV_NO_CLOUD_DATA = "service.no_cloud_data";
+        SV_CLOUD_CHANGED = "service.cloud_changed";
+        BT_LOGIN_FIRST = "target.login_first";
+        BT_MAX_TARGETS = "target.max";
+        SV_MASTER_SHORT = "service.master_short";
+        SV_NEW_MASTER_SHORT = "service.new_master_short";
+        BK_PASSWORD_SHORT = "backup.password_short";
+        BT_TIMEOUT = "target.timeout";
         // @generated-keys-end
     }
 }

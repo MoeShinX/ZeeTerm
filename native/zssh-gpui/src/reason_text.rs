@@ -544,6 +544,174 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         }
         "sftp.cp_verify_copy_failed" => "Failed to verify the size of the copy: {cause}",
         "sftp.name_bad" => "The name cannot contain /, and cannot be . or ..",
+        "sync.storage_cause" => "{cause}",
+        "sync.pkg_base64" => "The package has a field that is not valid base64",
+        "sync.pkg_kdf_range" => {
+            "The key derivation parameters are out of range (memory_kib={memory}, iterations={iterations}, parallelism={parallelism})"
+        }
+        "sync.argon2_params" => "Invalid Argon2 parameters: {cause}",
+        "sync.argon2_failed" => "Argon2 key derivation failed: {cause}",
+        "sync.encrypt_failed" => "Encryption failed",
+        "sync.random_unavailable" => "The system random number generator is unavailable: {cause}",
+        "sync.pkg_not_encrypted" => "Not a valid encrypted package: {cause}",
+        "sync.pkg_not_sync" => "Not a ZeeTerm sync package (format={format})",
+        "sync.pkg_salt_nonce" => "The salt or nonce has the wrong length",
+        "github.api_no_host" => "The GitHub API address has no host name",
+        "github.api_extras" => {
+            "The GitHub API address cannot contain a query string, fragment or credentials"
+        }
+        "github.token_empty" => "Enter a GitHub token",
+        "github.token_bad_chars" => {
+            "The token contains invalid characters (spaces, line breaks or invisible characters); copy it again"
+        }
+        "github.api_http" => {
+            "The GitHub API address is http://, so the token would be sent in plain text; confirm first to use it"
+        }
+        "github.gist_id_empty" => "Enter a Gist ID, or let ZeeTerm create one",
+        "github.gist_id_bad_long" => {
+            "The Gist ID is invalid (letters and digits only; copy the last part of the Gist address)"
+        }
+        "github.no_raw_url" => "The content was truncated, but GitHub did not give a raw_url",
+        "github.raw_url_bad" => "The raw_url from GitHub is invalid",
+        "github.raw_url_not_http" => "The raw_url from GitHub is not an http(s) address",
+        "github.no_version" => "GitHub did not return the Gist's version information",
+        "github.no_new_gist_id" => "GitHub did not return the ID of the new Gist",
+        "github.gist_id_bad" => "The Gist ID is invalid",
+        "github.no_user" => "GitHub did not return user information",
+        "github.not_utf8" => "The sync package is not UTF-8 text",
+        "github.bad_gist" => "The Gist returned by GitHub has the wrong format",
+        "github.bad_json" => "The content returned by GitHub is not valid JSON",
+        "github.gist_not_found" => {
+            "Cannot find this Gist: the ID is wrong, or this token cannot see it"
+        }
+        "github.raw_404" => "Failed to read the full content: raw_url returned 404",
+        "github.user_not_found" => "GitHub cannot find this user (is the API address right?)",
+        "github.token_expired" => {
+            "The GitHub token is no longer valid; enter it again (it may have expired, been revoked or been typed wrong)"
+        }
+        "github.write_denied" => {
+            "Write failed: this Gist does not belong to the token's user, or the token has no Gist write permission"
+        }
+        "github.create_denied" => {
+            "Create failed: the token has no permission to create Gists (classic tokens need the gist scope; fine-grained tokens need Gists read/write)"
+        }
+        "github.delete_failed" => {
+            "Delete failed: this Gist was not found, or it does not belong to the token's user"
+        }
+        "github.forbidden" => {
+            "GitHub refused the request: the token has no Gist permission (classic tokens need the gist scope; fine-grained tokens need Gists read/write), or the token's organization restricts it"
+        }
+        "github.rejected_422" => "GitHub rejected the request content (422): {message}",
+        "github.status" => "GitHub returned {code}",
+        "github.api_url_bad" => "The GitHub API address is invalid: {cause}",
+        "github.api_scheme" => "The GitHub API address only supports http(s), got {scheme}://",
+        "github.gist_too_big" => {
+            "The sync file in the Gist is too large (over {mib} MiB); it does not look like a ZeeTerm sync package and was not downloaded"
+        }
+        "github.incomplete" => {
+            "The content read is incomplete (expected {size} bytes, got {got} bytes); try again later"
+        }
+        "github.too_many_files" => {
+            "This Gist has too many files (the API only returns the first 300), so the sync file cannot be found; use another Gist"
+        }
+        "net.proxy_auth" => {
+            "The proxy requires authentication, or the proxy user name / password is wrong (check Connections → Default proxy)"
+        }
+        "net.server_returned" => "The server returned {code}",
+        "net.server_returned_code" => "The server returned {status} ({code})",
+        "net.connect_failed" => {
+            "Cannot reach the storage service (the network is down or the proxy is unavailable): {cause}"
+        }
+        "net.request_failed" => "Request failed: {cause}",
+        "net.proxy_invalid" => "Invalid proxy settings: {cause}",
+        "net.client_build" => "Failed to create the HTTP client: {cause}",
+        "s3.endpoint_bad" => "The S3 Endpoint is invalid: {cause}",
+        "s3.endpoint_scheme" => "The S3 Endpoint only supports http(s), got {scheme}://",
+        "s3.endpoint_no_host" => "The S3 Endpoint has no host name",
+        "s3.bucket_bad" => "The bucket name is invalid",
+        "s3.url_failed" => "Failed to build the S3 address: {cause}",
+        "s3.region_empty" => "The Region cannot be empty",
+        "s3.keys_empty" => "The Access Key and Secret cannot be empty",
+        "s3.no_bucket_read" => "S3 read failed: the bucket does not exist",
+        "s3.failed" => "S3 {action} failed: {reason}",
+        "s3.signature" => {
+            "The signature is wrong (the Secret, Region or address style may be wrong)"
+        }
+        "s3.no_access_key" => "The Access Key does not exist",
+        "s3.no_bucket" => "The bucket does not exist",
+        "s3.denied" => {
+            "Permission denied (this is also returned when the object does not exist and the bucket gives no list permission)"
+        }
+        "s3.region_wrong" => "The Region or Endpoint is wrong",
+        "s3.auth_failed" => "Authentication failed",
+        "webdav.url_bad" => "The WebDAV address is invalid: {cause}",
+        "webdav.http" => {
+            "The WebDAV address is http://, so the password would be sent in plain text; confirm first to use it"
+        }
+        "webdav.scheme" => "The WebDAV address only supports http(s), got {scheme}://",
+        "webdav.no_host" => "The WebDAV address has no host name",
+        "webdav.url_invalid" => "The WebDAV address is invalid",
+        "webdav.failed" => "WebDAV {action} failed: {reason}",
+        "webdav.unauthorized" => "Wrong user name or password",
+        "webdav.forbidden" => "Permission denied",
+        "webdav.not_found" => "The address does not exist",
+        "webdav.method_not_allowed" => {
+            "The server does not allow this operation (the address may not be WebDAV)"
+        }
+        "webdav.insufficient" => "The server is out of space",
+        "webdav.locked" => "The file is locked by the server",
+        "onedrive.denied" => {
+            "OneDrive refused the request (no permission). The authorization may have been revoked; sign in again"
+        }
+        "onedrive.not_found" => "OneDrive {action} failed: the app folder or file was not found",
+        "onedrive.locked" => "OneDrive {action} failed: the file is locked; try again later",
+        "onedrive.full" => "OneDrive is out of space (507); free up OneDrive space and try again",
+        "onedrive.status" => "OneDrive returned {code}",
+        "onedrive.failed_code" => "OneDrive {action} failed: the server returned {status}{detail}",
+        "onedrive.too_big" => {
+            "The sync file on OneDrive is over the 64 MiB limit; it does not look like a ZeeTerm sync package and was not downloaded"
+        }
+        "onedrive.empty_package" => "The sync package is empty; nothing was uploaded",
+        "onedrive.reauth" => "OneDrive sign-in is no longer valid; please sign in again",
+        "onedrive.no_refresh" => {
+            "Microsoft did not return a refresh token (the offline_access permission is required), so the sign-in cannot be kept long term"
+        }
+        "onedrive.no_access_token" => "The Microsoft response has no access token",
+        "onedrive.rejected" => "Microsoft rejected the request: {detail}",
+        "onedrive.no_upload_url" => "OneDrive did not return an upload address",
+        "onedrive.upload_url_bad" => "The upload address returned by OneDrive is invalid",
+        "onedrive.upload_not_https" => "The upload address returned by OneDrive is not https",
+        "backup.too_many" => "Too many backups were made within the same second",
+        "backup.path_bad" => "The backup path is invalid",
+        "backup.not_backup" => "This is not a ZeeTerm backup file",
+        "backup.outside_dir" => "The backup file is not in the backup folder",
+        "target.id_bad" => "The backup target ID is invalid",
+        "target.exists" => "This backup target already exists",
+        "target.none" => "There is no such backup target",
+        "target.no_backup_yet" => "There is no backup on this backup target yet",
+        "conflict.encoding" => "The conflict record's encoding is damaged",
+        "conflict.not_utf8" => "The conflict record is not UTF-8",
+        "conflict.gone" => "This conflict no longer exists",
+        "conflict.no_other" => "This conflict has no other version to use",
+        "conflict.host_gone" => "This host no longer exists",
+        "conflict.group_gone" => "This group no longer exists",
+        "conflict.identity_gone" => "This credential no longer exists",
+        "conflict.proxy_gone" => "This proxy no longer exists",
+        "conflict.endpoint_gone" => "This ZeePilot endpoint no longer exists",
+        "service.settings_damaged" => "The sync settings saved on this computer are damaged",
+        "service.password_damaged" => "The master password saved on this computer is damaged",
+        "service.no_cloud_data" => "There is no sync data in the cloud yet; sync once first",
+        "service.cloud_changed" => {
+            "The cloud was just changed by another computer; sync once before changing the master password"
+        }
+        "target.login_first" => "Sign in to OneDrive first, then save this backup target",
+        "target.max" => "At most {max} cloud backup targets are allowed",
+        "service.master_short" => "The master password must be at least {min} characters",
+        "service.new_master_short" => "The new master password must be at least {min} characters",
+        "backup.password_short" => "The backup password must be at least {min} characters",
+        "target.timeout" => {
+            "It did not finish within {minutes} minutes, so this attempt was abandoned"
+        }
         _ => return None,
     })
 }
@@ -553,11 +721,16 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
 pub(crate) fn sentence(key: &str, params: &[(&'static str, String)]) -> Option<String> {
     // `fixes`（本地名字被改的原因们）核心给的是稳定代码，先换成英文说法再填模板。
     let mut expanded;
-    let params = if params.iter().any(|(name, _)| *name == "fixes") {
+    let params = if params
+        .iter()
+        .any(|(name, _)| matches!(*name, "fixes" | "action"))
+    {
         expanded = params.to_vec();
         for (name, value) in &mut expanded {
-            if *name == "fixes" {
-                *value = name_fixes_en(value);
+            match *name {
+                "fixes" => *value = name_fixes_en(value),
+                "action" => *value = action_en(value),
+                _ => {}
             }
         }
         expanded.as_slice()
@@ -601,4 +774,19 @@ fn name_fixes_en(codes: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// 存储操作的稳定代码（`net::action_code`）→ 英文动词。
+fn action_en(code: &str) -> String {
+    match code {
+        "read" => "read",
+        "write" => "write",
+        "delete" => "delete",
+        "mkcol" => "create directory",
+        "upload" => "upload",
+        "download" => "download",
+        "session" => "create upload session",
+        other => other,
+    }
+    .to_owned()
 }

@@ -11,6 +11,7 @@
 //!   不会进同步包。
 //! - 一个目标失败只记在它自己的状态里，不影响主同步的结果，也不影响其他目标。
 
+use crate::error::{reason_keys, Reason};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -181,8 +182,9 @@ fn load_unlocked(db: &Database, sealer: &dyn SecretSealer) -> Result<Vec<BackupT
     let Some(plain) = open_from_setting(db, sealer, TARGETS_KEY)? else {
         return Ok(Vec::new());
     };
-    serde_json::from_slice(&plain)
-        .map_err(|err| SyncError::InvalidData(format!("本机保存的云端备份设置损坏：{err}")))
+    serde_json::from_slice(&plain).map_err(|err| {
+        SyncError::InvalidData(Reason::text(format!("本机保存的云端备份设置损坏：{err}")))
+    })
 }
 
 fn save_unlocked(
@@ -193,10 +195,9 @@ fn save_unlocked(
     if targets.is_empty() {
         return clear(db, TARGETS_KEY);
     }
-    let plain = Zeroizing::new(
-        serde_json::to_vec(targets)
-            .map_err(|err| SyncError::Internal(format!("云端备份设置序列化失败：{err}")))?,
-    );
+    let plain = Zeroizing::new(serde_json::to_vec(targets).map_err(|err| {
+        SyncError::Internal(Reason::text(format!("云端备份设置序列化失败：{err}")))
+    })?);
     seal_to_setting(db, sealer, TARGETS_KEY, &plain)
 }
 
@@ -243,16 +244,26 @@ pub fn add_target(
     let _guard = lock();
     let mut targets = load_unlocked(db, sealer)?;
     if targets.len() >= MAX_TARGETS {
-        return Err(SyncError::InvalidData(format!(
-            "云端备份目标最多 {MAX_TARGETS} 个"
-        )));
+        return Err(SyncError::InvalidData(
+            Reason::new(
+                reason_keys::BT_MAX_TARGETS,
+                format!("云端备份目标最多 {MAX_TARGETS} 个"),
+            )
+            .with("max", MAX_TARGETS),
+        ));
     }
     let id = id.unwrap_or_else(new_target_id);
     if !valid_id(&id) {
-        return Err(SyncError::InvalidData("备份目标 ID 不合法".to_owned()));
+        return Err(SyncError::InvalidData(Reason::new(
+            reason_keys::BT_ID_BAD,
+            "备份目标 ID 不合法",
+        )));
     }
     if targets.iter().any(|target| target.id == id) {
-        return Err(SyncError::InvalidData("这个备份目标已经存在".to_owned()));
+        return Err(SyncError::InvalidData(Reason::new(
+            reason_keys::BT_EXISTS,
+            "这个备份目标已经存在",
+        )));
     }
     check_ready(db, sealer, &id, &config)?;
     let target = BackupTarget {
@@ -279,9 +290,10 @@ fn check_ready(
             .map_err(SyncError::from)?
             .is_none()
     {
-        return Err(SyncError::InvalidData(
-            "请先登录 OneDrive，再保存这个备份目标".to_owned(),
-        ));
+        return Err(SyncError::InvalidData(Reason::new(
+            reason_keys::BT_LOGIN_FIRST,
+            "请先登录 OneDrive，再保存这个备份目标",
+        )));
     }
     Ok(())
 }
@@ -300,7 +312,9 @@ pub fn update_target(
     let target = targets
         .iter_mut()
         .find(|target| target.id == id)
-        .ok_or_else(|| SyncError::InvalidData("没有这个备份目标".to_owned()))?;
+        .ok_or_else(|| {
+            SyncError::InvalidData(Reason::new(reason_keys::BT_NONE, "没有这个备份目标"))
+        })?;
     let leaving_onedrive = matches!(target.config, StorageConfig::Onedrive(_))
         && !matches!(config, StorageConfig::Onedrive(_));
     target.config = config;
@@ -340,7 +354,9 @@ pub fn set_enabled(
     let target = targets
         .iter_mut()
         .find(|target| target.id == id)
-        .ok_or_else(|| SyncError::InvalidData("没有这个备份目标".to_owned()))?;
+        .ok_or_else(|| {
+            SyncError::InvalidData(Reason::new(reason_keys::BT_NONE, "没有这个备份目标"))
+        })?;
     target.enabled = enabled;
     save_unlocked(db, sealer, &targets)
 }
@@ -567,7 +583,9 @@ pub async fn backup_with(
         Some(id) => vec![targets
             .into_iter()
             .find(|target| target.id == id)
-            .ok_or_else(|| SyncError::InvalidData("没有这个备份目标".to_owned()))?],
+            .ok_or_else(|| {
+                SyncError::InvalidData(Reason::new(reason_keys::BT_NONE, "没有这个备份目标"))
+            })?],
         None => targets
             .into_iter()
             .filter(|target| target.enabled)
@@ -577,9 +595,13 @@ pub async fn backup_with(
         return Ok(Vec::new());
     }
     if master_password.chars().count() < MIN_MASTER_PASSWORD_CHARS {
-        return Err(SyncError::InvalidData(format!(
-            "主密码至少 {MIN_MASTER_PASSWORD_CHARS} 个字符"
-        )));
+        return Err(SyncError::InvalidData(
+            Reason::new(
+                reason_keys::SV_MASTER_SHORT,
+                format!("主密码至少 {MIN_MASTER_PASSWORD_CHARS} 个字符"),
+            )
+            .with("min", MIN_MASTER_PASSWORD_CHARS),
+        ));
     }
     let package = match engine.backup_package(master_password) {
         Ok(package) => package,
@@ -620,10 +642,7 @@ pub async fn backup_with(
         };
         let result = match tokio::time::timeout(TARGET_TIMEOUT, run).await {
             Ok(result) => result,
-            Err(_) => Err(SyncError::Storage(format!(
-                "超过 {} 分钟没有完成，已放弃这一次",
-                TARGET_TIMEOUT.as_secs() / 60
-            ))),
+            Err(_) => Err(target_timeout()),
         };
         let status = match result {
             Ok(_) => {
@@ -683,7 +702,9 @@ pub async fn restore_with(
     let target = targets
         .iter()
         .find(|target| target.id == id)
-        .ok_or_else(|| SyncError::InvalidData("没有这个备份目标".to_owned()))?;
+        .ok_or_else(|| {
+            SyncError::InvalidData(Reason::new(reason_keys::BT_NONE, "没有这个备份目标"))
+        })?;
     let object = {
         let run = async {
             let storage = opener.open(target).await?;
@@ -691,15 +712,15 @@ pub async fn restore_with(
         };
         match tokio::time::timeout(TARGET_TIMEOUT, run).await {
             Ok(result) => result?,
-            Err(_) => {
-                return Err(SyncError::Storage(format!(
-                    "超过 {} 分钟没有完成，已放弃这一次",
-                    TARGET_TIMEOUT.as_secs() / 60
-                )))
-            }
+            Err(_) => return Err(target_timeout()),
         }
     }
-    .ok_or_else(|| SyncError::InvalidData("这个备份目标上还没有备份".to_owned()))?;
+    .ok_or_else(|| {
+        SyncError::InvalidData(Reason::new(
+            reason_keys::BT_NO_BACKUP_YET,
+            "这个备份目标上还没有备份",
+        ))
+    })?;
     let snapshot = SyncSnapshot::open(&object.bytes, master_password)?;
     engine.import_snapshot(snapshot, OfflineImportMode::Replace)
 }
@@ -738,3 +759,15 @@ impl SyncContext<'_> {
 
 #[cfg(test)]
 mod tests;
+
+/// 一个备份目标超过 `TARGET_TIMEOUT` 还没完成。
+fn target_timeout() -> SyncError {
+    let minutes = TARGET_TIMEOUT.as_secs() / 60;
+    SyncError::Storage(
+        Reason::new(
+            reason_keys::BT_TIMEOUT,
+            format!("超过 {minutes} 分钟没有完成，已放弃这一次"),
+        )
+        .with("minutes", minutes),
+    )
+}

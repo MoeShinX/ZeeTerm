@@ -32,21 +32,21 @@ pub(super) fn history_id_for_turn(slot: &mut Option<String>) -> String {
 pub(super) fn load_history_rows(agent: AgentKind) -> Result<Vec<HistorySummary>, String> {
     history_store()
         .list(agent.id())
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 读一条历史会话（回看 / 续接都要先读整条）。
 pub(super) fn load_history_record(agent: AgentKind, id: &str) -> Result<HistoryRecord, String> {
     history_store()
         .load(agent.id(), id)
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 删一条历史会话（不存在也算成功）。
 pub(super) fn delete_history_record(agent: AgentKind, id: &str) -> Result<(), String> {
     history_store()
         .delete(agent.id(), id)
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 「继续」要交给驱动的智能体会话 id；没有就只能回看。

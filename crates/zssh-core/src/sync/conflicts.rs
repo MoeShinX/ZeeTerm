@@ -8,6 +8,7 @@
 //!   一条**新记录**（新的 uid，内容照旧），不会被原来的墓碑再次删掉，之后正常
 //!   参与同步。
 
+use crate::error::{reason_keys, Reason};
 use base64::Engine as _;
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -54,9 +55,13 @@ fn decode_field(sealer: &dyn SecretSealer, stored: &str) -> Result<String, SyncE
     };
     let sealed = base64::engine::general_purpose::STANDARD
         .decode(encoded)
-        .map_err(|_| SyncError::InvalidData("冲突记录的编码损坏".to_owned()))?;
+        .map_err(|_| {
+            SyncError::InvalidData(Reason::new(reason_keys::CF_ENCODING, "冲突记录的编码损坏"))
+        })?;
     let plain = sealer.open(&sealed)?;
-    String::from_utf8(plain).map_err(|_| SyncError::InvalidData("冲突记录不是 UTF-8".to_owned()))
+    String::from_utf8(plain).map_err(|_| {
+        SyncError::InvalidData(Reason::new(reason_keys::CF_NOT_UTF8, "冲突记录不是 UTF-8"))
+    })
 }
 
 /// 清掉超过保留期的冲突，返回清掉的条数。
@@ -289,7 +294,9 @@ fn load_row(db: &crate::store::Database, id: i64) -> Result<Row, SyncError> {
         read_rows(conn)?
             .into_iter()
             .find(|row| row.id == id)
-            .ok_or_else(|| SyncError::InvalidData("这条冲突已经不存在".to_owned()))
+            .ok_or_else(|| {
+                SyncError::InvalidData(Reason::new(reason_keys::CF_GONE, "这条冲突已经不存在"))
+            })
     })
 }
 
@@ -312,15 +319,17 @@ pub fn use_other(
     let kept = decode_field(sealer, &row.kept)?;
     let other = decode_field(sealer, &row.other)?;
     if other.is_empty() {
-        return Err(SyncError::InvalidData(
-            "这条冲突没有可用的另一份".to_owned(),
-        ));
+        return Err(SyncError::InvalidData(Reason::new(
+            reason_keys::CF_NO_OTHER,
+            "这条冲突没有可用的另一份",
+        )));
     }
     let deletion = kept.is_empty();
     let local = snapshot_local(db, sealer, device_id, known_hosts_path, now)?;
     let mut target = local.clone();
-    let parse_err =
-        |err: serde_json::Error| SyncError::InvalidData(format!("冲突记录解析失败：{err}"));
+    let parse_err = |err: serde_json::Error| {
+        SyncError::InvalidData(Reason::text(format!("冲突记录解析失败：{err}")))
+    };
 
     match row.entity.as_str() {
         ENTITY_HOST => {
@@ -345,7 +354,12 @@ pub fn use_other(
                     .hosts
                     .iter_mut()
                     .find(|h| h.uid == row.key)
-                    .ok_or_else(|| SyncError::InvalidData("这条主机已经不存在了".to_owned()))?;
+                    .ok_or_else(|| {
+                        SyncError::InvalidData(Reason::new(
+                            reason_keys::CF_HOST_GONE,
+                            "这条主机已经不存在了",
+                        ))
+                    })?;
                 // 引用以现在的为准：另一份里引用的记录可能已经不在了。
                 record.group_uid = slot.group_uid.clone();
                 record.identity_uid = slot.identity_uid.clone();
@@ -370,7 +384,12 @@ pub fn use_other(
                     .groups
                     .iter_mut()
                     .find(|g| g.uid == row.key)
-                    .ok_or_else(|| SyncError::InvalidData("这个分组已经不存在了".to_owned()))?;
+                    .ok_or_else(|| {
+                        SyncError::InvalidData(Reason::new(
+                            reason_keys::CF_GROUP_GONE,
+                            "这个分组已经不存在了",
+                        ))
+                    })?;
                 record.uid = slot.uid.clone();
                 record.parent_uid = slot.parent_uid.clone();
                 *slot = record;
@@ -388,7 +407,12 @@ pub fn use_other(
                     .identities
                     .iter_mut()
                     .find(|i| i.uid == row.key)
-                    .ok_or_else(|| SyncError::InvalidData("这个凭据已经不存在了".to_owned()))?;
+                    .ok_or_else(|| {
+                        SyncError::InvalidData(Reason::new(
+                            reason_keys::CF_IDENTITY_GONE,
+                            "这个凭据已经不存在了",
+                        ))
+                    })?;
                 record.uid = slot.uid.clone();
                 *slot = record;
             }
@@ -405,7 +429,12 @@ pub fn use_other(
                     .proxies
                     .iter_mut()
                     .find(|p| p.uid == row.key)
-                    .ok_or_else(|| SyncError::InvalidData("这个代理已经不存在了".to_owned()))?;
+                    .ok_or_else(|| {
+                        SyncError::InvalidData(Reason::new(
+                            reason_keys::CF_PROXY_GONE,
+                            "这个代理已经不存在了",
+                        ))
+                    })?;
                 record.uid = slot.uid.clone();
                 *slot = record;
             }
@@ -428,7 +457,10 @@ pub fn use_other(
                     .iter_mut()
                     .find(|e| e.uid == row.key)
                     .ok_or_else(|| {
-                        SyncError::InvalidData("这个 ZeePilot 接口已经不存在了".to_owned())
+                        SyncError::InvalidData(Reason::new(
+                            reason_keys::CF_ENDPOINT_GONE,
+                            "这个 ZeePilot 接口已经不存在了",
+                        ))
                     })?;
                 // Key 凭据以现在的为准：另一份里引用的凭据可能已经被删了。
                 record.uid = slot.uid.clone();
@@ -443,7 +475,7 @@ pub fn use_other(
             } else {
                 KNOWN_HOST_REFUSAL
             };
-            return Err(SyncError::InvalidData(reason.to_owned()));
+            return Err(SyncError::InvalidData(Reason::text(reason.to_owned())));
         }
         _ => {
             let value: Value = serde_json::from_str(&other).map_err(parse_err)?;

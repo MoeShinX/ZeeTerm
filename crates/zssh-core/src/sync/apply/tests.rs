@@ -1,6 +1,7 @@
 //! 导入事务：引用换回本地 id、DPAPI 重新加密、失败回滚、known_hosts 只追加。
 
 use super::*;
+use crate::error::Reason;
 use crate::store::Database;
 use crate::sync::merge::Conflict;
 use crate::sync::package::{
@@ -19,7 +20,9 @@ impl SecretSealer for FakeSealer {
 
     fn open(&self, blob: &[u8]) -> Result<Vec<u8>, SyncError> {
         if blob.len() < 2 || blob[0] != b'F' || blob[1] != self.0 {
-            return Err(SyncError::InvalidData("不是这层封装".to_owned()));
+            return Err(SyncError::InvalidData(Reason::text(
+                "不是这层封装".to_owned(),
+            )));
         }
         Ok(blob[2..].iter().map(|byte| byte ^ self.0).collect())
     }

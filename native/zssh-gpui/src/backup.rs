@@ -878,7 +878,7 @@ impl BackupDemo {
             pending
                 .accounts
                 .apply(&db, &DpapiSealer)
-                .map_err(|err| err.to_string())
+                .map_err(|err| crate::error_text::error_text(&err))
         });
         match result {
             Ok(()) => {
@@ -1294,7 +1294,7 @@ fn list_backups_with(
 ) -> Result<Vec<BackupDetail>, String> {
     BackupStore::new(data_dir, sealer)
         .list_details()
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 新建备份；界面路径用生产 DPAPI。
@@ -1320,10 +1320,11 @@ fn create_backup_with(
     let known_hosts = data_dir.join("known_hosts");
     let now = now_secs();
     let snapshot = snapshot_local(&db, sealer, &device_id, Some(&known_hosts), now)
-        .map_err(|err| err.to_string())?;
-    let local = LocalExtras::read(&db).map_err(|err| err.to_string())?;
+        .map_err(|err| crate::error_text::error_text(&err))?;
+    let local = LocalExtras::read(&db).map_err(|err| crate::error_text::error_text(&err))?;
     // 本地备份带上同步账号设置（整个备份文件由本机 DPAPI 加密，不会上传）。
-    let accounts = SyncAccounts::read(&db, sealer).map_err(|err| err.to_string())?;
+    let accounts =
+        SyncAccounts::read(&db, sealer).map_err(|err| crate::error_text::error_text(&err))?;
     BackupStore::new(data_dir, sealer)
         .create(
             &snapshot,
@@ -1333,7 +1334,7 @@ fn create_backup_with(
             keep,
             Some(app_version),
         )
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 恢复备份；界面路径用生产 DPAPI。
@@ -1359,7 +1360,7 @@ fn restore_backup_with(
     // 文件名合法，并把同步基线里的删除记录一并带上，恢复出来的记录不会被基线墓碑再删掉。
     sync_engine(&db, sealer, device_id, data_dir)
         .restore_backup(path)
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 离线包的同步引擎；界面路径用生产 DPAPI，测试传本地 sealer 绕开 DPAPI。
@@ -1401,7 +1402,7 @@ fn export_offline_to(
     let engine = sync_engine(&db, sealer, device_id, data_dir);
     let bytes = engine
         .export_offline(password)
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| crate::error_text::error_text(&err))?;
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -1456,7 +1457,7 @@ fn import_offline_from(
     })?;
     sync_engine(&db, sealer, device_id, data_dir)
         .import_offline(&bytes, password, mode)
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 核心的备份文件名和记录时间都用 Unix **秒**（`compact_timestamp` 只认 10 位
@@ -1512,7 +1513,9 @@ mod tests {
 
         fn open(&self, blob: &[u8]) -> Result<Vec<u8>, SyncError> {
             if blob.len() < 2 || blob[0] != b'T' || blob[1] != self.0 {
-                return Err(SyncError::InvalidData("不是 TestSealer 的密文".to_owned()));
+                return Err(SyncError::InvalidData(zssh_core::error::Reason::text(
+                    "不是 TestSealer 的密文".to_owned(),
+                )));
             }
             Ok(blob[2..].iter().map(|byte| byte ^ self.0).collect())
         }

@@ -4,6 +4,7 @@
 //! 删掉的记录从库里移除；被引用的记录删了，引用已经由合并阶段置空，这里不会
 //! 因为外键失败。
 
+use crate::error::Reason;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -72,7 +73,9 @@ fn delete_missing(
 
 fn require_uid(entity: &str, uid: &str) -> Result<(), SyncError> {
     if uid.trim().is_empty() {
-        return Err(SyncError::InvalidData(format!("{entity}记录缺少 uid")));
+        return Err(SyncError::InvalidData(Reason::text(format!(
+            "{entity}记录缺少 uid"
+        ))));
     }
     Ok(())
 }
@@ -83,17 +86,17 @@ fn require_uid(entity: &str, uid: &str) -> Result<(), SyncError> {
 /// 这台主机就连不上、也没法编辑了。
 fn check_host_protocol(host: &super::package::HostRecord) -> Result<(), SyncError> {
     crate::model::Protocol::parse(&host.protocol).map_err(|_| {
-        SyncError::InvalidData(format!(
+        SyncError::InvalidData(Reason::text(format!(
             "主机「{}」用了这个版本不认识的协议「{}」，请先升级 ZeeTerm",
             host.name, host.protocol
-        ))
+        )))
     })?;
     if let Some(options) = &host.protocol_options {
         if !options.is_object() {
-            return Err(SyncError::InvalidData(format!(
+            return Err(SyncError::InvalidData(Reason::text(format!(
                 "主机「{}」的协议选项格式不对",
                 host.name
-            )));
+            ))));
         }
     }
     Ok(())
@@ -104,8 +107,9 @@ fn host_options_text(host: &super::package::HostRecord) -> Result<Option<String>
     host.protocol_options
         .as_ref()
         .map(|options| {
-            serde_json::to_string(options)
-                .map_err(|err| SyncError::InvalidData(format!("协议选项序列化失败：{err}")))
+            serde_json::to_string(options).map_err(|err| {
+                SyncError::InvalidData(Reason::text(format!("协议选项序列化失败：{err}")))
+            })
         })
         .transpose()
 }
@@ -116,24 +120,24 @@ fn host_options_text(host: &super::package::HostRecord) -> Result<Option<String>
 /// 导入报一个看不懂的数据库错误。
 fn check_ai_endpoint(endpoint: &AiEndpointRecord) -> Result<(), SyncError> {
     crate::ai::agent::builtin::config::EndpointKind::parse(&endpoint.kind).map_err(|_| {
-        SyncError::InvalidData(format!(
+        SyncError::InvalidData(Reason::text(format!(
             "ZeePilot 接口「{}」用了这个版本不认识的类型「{}」，请先升级 ZeeTerm",
             endpoint.name, endpoint.kind
-        ))
+        )))
     })?;
     if !endpoint.overrides.is_object() || !endpoint.openai_options.is_object() {
-        return Err(SyncError::InvalidData(format!(
+        return Err(SyncError::InvalidData(Reason::text(format!(
             "ZeePilot 接口「{}」的选项格式不对",
             endpoint.name
-        )));
+        ))));
     }
     if endpoint.name.trim().is_empty()
         || !crate::ai::agent::builtin::config::valid_base_url(&endpoint.base_url)
     {
-        return Err(SyncError::InvalidData(format!(
+        return Err(SyncError::InvalidData(Reason::text(format!(
             "ZeePilot 接口「{}」的名字或地址不合格",
             endpoint.name
-        )));
+        ))));
     }
     Ok(())
 }
@@ -388,7 +392,7 @@ pub fn apply_snapshot_guarded_with(
                 .as_ref()
                 .and_then(|uid| identity_ids.get(uid).copied());
             let models = serde_json::to_string(&endpoint.models)
-                .map_err(|err| SyncError::InvalidData(format!("模型清单序列化失败：{err}")))?;
+                .map_err(|err| SyncError::InvalidData(Reason::text(format!("模型清单序列化失败：{err}"))))?;
             let overrides = endpoint.overrides.to_string();
             let options = endpoint.openai_options.to_string();
             match endpoint_ids.get(&endpoint.uid) {
@@ -455,7 +459,7 @@ pub fn apply_snapshot_guarded_with(
                 .as_ref()
                 .and_then(|uid| proxy_ids.get(uid).copied());
             let tags = serde_json::to_string(&host.tags)
-                .map_err(|err| SyncError::InvalidData(format!("标签序列化失败：{err}")))?;
+                .map_err(|err| SyncError::InvalidData(Reason::text(format!("标签序列化失败：{err}"))))?;
             let options = host_options_text(host)?;
             match host_ids.get(&host.uid) {
                 Some(id) => {
@@ -573,7 +577,7 @@ pub fn apply_snapshot_guarded_with(
             } else {
                 serde_json::to_string(value)
             }
-            .map_err(|err| SyncError::InvalidData(format!("设置 {key} 序列化失败：{err}")))?;
+            .map_err(|err| SyncError::InvalidData(Reason::text(format!("设置 {key} 序列化失败：{err}"))))?;
             tx.execute(
                 "INSERT INTO settings (key, value) VALUES (?1, ?2) \
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",

@@ -317,7 +317,7 @@ async fn a_revoked_login_stops_the_sync_with_an_auth_error() {
         .expect_err("已撤销");
     // 引擎 / 调度器据此暂停自动同步，界面提示重新登录。
     assert!(
-        matches!(&err, SyncError::AuthFailed(m) if m == REAUTH_MESSAGE),
+        matches!(&err, SyncError::AuthFailed(m) if m.zh() == REAUTH_MESSAGE),
         "{err:?}"
     );
 }

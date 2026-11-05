@@ -12,6 +12,7 @@ mod mock_cloud;
 mod mock_microsoft;
 
 use mock_microsoft::{MockMicrosoft, CLIENT_ID};
+use zssh_core::error::Reason;
 use zssh_core::sync::net::build_client;
 use zssh_core::sync::onedrive::oauth::{now_secs, TokenSet, REAUTH_MESSAGE};
 use zssh_core::sync::onedrive::tokens::{MemoryTokenStore, TokenManager, TokenStore};
@@ -146,7 +147,10 @@ async fn a_revoked_refresh_token_means_sign_in_again() {
         .access_token()
         .await
         .expect_err("刷新令牌已被撤销");
-    assert_eq!(err, StorageError::AuthFailed(REAUTH_MESSAGE.to_owned()));
+    assert_eq!(
+        err,
+        StorageError::AuthFailed(Reason::text(REAUTH_MESSAGE.to_owned()))
+    );
     assert_eq!(REAUTH_MESSAGE, "OneDrive 登录已失效，请重新登录");
     assert!(
         store.snapshot().is_some(),

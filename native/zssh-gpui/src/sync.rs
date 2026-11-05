@@ -1465,7 +1465,7 @@ impl SyncDemo {
                 service,
                 retry_after_secs,
             };
-            self.sync_state.fail(err.to_string());
+            self.sync_state.fail(crate::error_text::error_text(&err));
             cx.notify();
             return;
         }
@@ -2164,7 +2164,7 @@ impl From<String> for SyncFailure {
 impl SyncFailure {
     fn from_sync_error(err: &SyncError) -> Self {
         Self {
-            message: err.to_string(),
+            message: crate::error_text::error_text(err),
             kind: classify_failure(err),
             baseline_broken: false,
         }
@@ -2182,9 +2182,9 @@ fn classify_failure(err: &SyncError) -> FailureKind {
             service: service.clone(),
             retry_after_secs: *retry_after_secs,
         },
-        SyncError::AuthFailed(message) => FailureKind::AuthFailed(message.clone()),
+        SyncError::AuthFailed(reason) => FailureKind::AuthFailed(reason.zh().to_owned()),
         SyncError::WrongPassword => FailureKind::WrongPassword,
-        SyncError::Format(message) if message.contains("基线") => FailureKind::BaselineBroken, // i18n-allow: 匹配核心库的中文错误原文（界面语言无关）
+        SyncError::Format(reason) if reason.contains("基线") => FailureKind::BaselineBroken, // i18n-allow: 匹配核心库的中文错误原文（界面语言无关）
         _ => FailureKind::Other,
     }
 }
@@ -2342,7 +2342,7 @@ fn reset_baseline_at(data_dir: &Path) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
     SyncEngine::new(&db, &DpapiSealer, "", data_dir, None, None)
         .reset_baseline()
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 自动同步的计时：上次同步（自动或手动）的起点和连续失败次数。
@@ -3476,7 +3476,7 @@ fn load_saved_config(data_dir: &Path) -> Result<Option<StorageConfig>, String> {
             crate::error_text::error_text(&err)
         )
     })?;
-    service::load_config(&db, &DpapiSealer).map_err(|err| err.to_string())
+    service::load_config(&db, &DpapiSealer).map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 冲突列表：库文件不存在就当没有冲突，不为了看列表新建一个库。
@@ -3492,7 +3492,8 @@ fn load_conflicts_at(data_dir: &Path) -> Result<Vec<ConflictView>, String> {
             crate::error_text::error_text(&err)
         )
     })?;
-    conflicts::list(&db, &DpapiSealer, &device_id, now_secs()).map_err(|err| err.to_string())
+    conflicts::list(&db, &DpapiSealer, &device_id, now_secs())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 改用另一份：结果写回本地库，成功后由调用方刷新列表。
@@ -3517,13 +3518,13 @@ fn use_other_at(data_dir: &Path, id: i64) -> Result<(), String> {
         id,
         now_secs(),
     )
-    .map_err(|err| err.to_string())
+    .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 忽略：只删本地冲突记录，不动云端和本地数据。
 fn dismiss_at(data_dir: &Path, id: i64) -> Result<(), String> {
     let db = open_existing_db_at(data_dir)?;
-    conflicts::dismiss(&db, id).map_err(|err| err.to_string())
+    conflicts::dismiss(&db, id).map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 打开已有的库。冲突只可能出现在已经有同步数据的库里，缺文件时报错而不是
@@ -3552,12 +3553,13 @@ fn now_secs() -> i64 {
 
 fn save_config_at(data_dir: &Path, config: &StorageConfig) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    service::save_config(&db, &DpapiSealer, config).map_err(|err| err.to_string())
+    service::save_config(&db, &DpapiSealer, config)
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 fn clear_config_at(data_dir: &Path) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    service::clear_config(&db).map_err(|err| err.to_string())
+    service::clear_config(&db).map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 打开窗口时读自动同步设置；库文件不存在就用核心的默认值，不为了读设置新建库。
@@ -3575,13 +3577,13 @@ fn load_auto_at(data_dir: &Path) -> Result<AutoSettings, String> {
         return Ok(AutoSettings::default());
     }
     let db = open_existing_db_at(data_dir)?;
-    service::load_auto(&db).map_err(|err| err.to_string())
+    service::load_auto(&db).map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 保存自动同步设置（开关或间隔）：显式操作，库不存在就建一个。
 fn save_auto_at(data_dir: &Path, settings: &AutoSettings) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    service::save_auto(&db, settings).map_err(|err| err.to_string())
+    service::save_auto(&db, settings).map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 读上次同步结果；库文件不存在就当没有，不为了读它新建库。
@@ -3590,13 +3592,13 @@ fn load_last_result_at(data_dir: &Path) -> Result<Option<LastResult>, String> {
         return Ok(None);
     }
     let db = open_existing_db_at(data_dir)?;
-    service::load_last_result(&db).map_err(|err| err.to_string())
+    service::load_last_result(&db).map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 写上次同步结果（手动同步结束时用；自动同步由调度器在后台写）。
 fn save_last_result_at(data_dir: &Path, result: &LastResult) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    service::save_last_result(&db, result).map_err(|err| err.to_string())
+    service::save_last_result(&db, result).map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 打开窗口时读本机记住的主密码；库文件不存在就当没记住，不为了读它新建库。
@@ -3607,26 +3609,27 @@ fn load_master_password_at(data_dir: &Path) -> Result<Option<String>, String> {
     let db = open_existing_db_at(data_dir)?;
     service::load_master_password(&db, &DpapiSealer)
         .map(|password| password.map(|password| password.as_str().to_owned()))
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 同步成功后记住主密码：交给核心用本机 DPAPI 加密，界面和日志都拿不到密文。
 fn save_master_password_at(data_dir: &Path, password: &str) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    service::save_master_password(&db, &DpapiSealer, password).map_err(|err| err.to_string())
+    service::save_master_password(&db, &DpapiSealer, password)
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 开关关掉或者清除存储时删掉本机保存的主密码。
 fn clear_master_password_at(data_dir: &Path) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    service::clear_master_password(&db).map_err(|err| err.to_string())
+    service::clear_master_password(&db).map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 退出 OneDrive：删本机令牌和连接设置（云端同步包不动）。「清除」清的是 OneDrive 时
 /// 也走这里，免得本机留下一份没人用的刷新令牌。
 fn disconnect_onedrive_at(data_dir: &Path) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    service::onedrive_disconnect(&db).map_err(|err| err.to_string())
+    service::onedrive_disconnect(&db).map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 后台线程自己开库；不复用界面里的连接，免得跨线程持有 SQLite 连接。
@@ -3682,7 +3685,7 @@ fn sign_in_onedrive_at(
             browser.as_ref(),
             cancel,
         ))
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 在阻塞线程里用进程级 Tokio runtime 跑一次连接测试；代理取默认代理设置。
@@ -3702,7 +3705,7 @@ fn probe_connection_with(
     sealer: &dyn SecretSealer,
     config: &StorageConfig,
 ) -> Result<ConnectionProbe, String> {
-    let proxy = service::default_proxy(db).map_err(|err| err.to_string())?;
+    let proxy = service::default_proxy(db).map_err(|err| crate::error_text::error_text(&err))?;
     let probe = handle.block_on(async {
         let tokens: Arc<dyn TokenStore + '_> = Arc::new(DbTokenStore::new(db, sealer));
         service::test_connection(config, proxy.as_ref(), tokens, &onedrive_endpoints()).await
@@ -3726,7 +3729,13 @@ fn save_probed_concurrency(db: &Database, probe: &ConnectionProbe) -> Result<(),
             checked_at: now_secs(),
         },
     )
-    .map_err(|err| format!("{}{err}", t(SyncMsg::SaveConcurrencyFailedPrefix)))
+    .map_err(|err| {
+        format!(
+            "{}{}",
+            t(SyncMsg::SaveConcurrencyFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })
 }
 
 /// 在阻塞线程里跑一次真正的同步；界面线程不开库、不碰网络。
@@ -3790,24 +3799,32 @@ fn ensure_github_gist(
     db: &Database,
     sealer: &dyn SecretSealer,
 ) -> Result<(), String> {
-    let loaded = service::load_config(db, sealer).map_err(|err| err.to_string())?;
+    let loaded =
+        service::load_config(db, sealer).map_err(|err| crate::error_text::error_text(&err))?;
     let Some(StorageConfig::Github(mut config)) = loaded else {
         return Ok(());
     };
     if !config.gist_id.trim().is_empty() {
         return Ok(());
     }
-    let proxy = service::default_proxy(db).map_err(|err| err.to_string())?;
+    let proxy = service::default_proxy(db).map_err(|err| crate::error_text::error_text(&err))?;
     let id = handle
         .block_on(github::create_gist(&config, proxy.as_ref()))
-        .map_err(|err| format!("{}{err}", t(SyncMsg::CreateGistFailedPrefix)))?;
+        .map_err(|err| {
+            format!(
+                "{}{}",
+                t(SyncMsg::CreateGistFailedPrefix),
+                crate::error_text::error_text(&err)
+            )
+        })?;
     config.gist_id = id.clone();
     // 同步包只写这个 Gist；先存下来，中途失败也不会每点一次就多建一个。
     service::save_config(db, sealer, &StorageConfig::Github(config)).map_err(|err| {
         format!(
-            "{}{id}{}{err}",
+            "{}{id}{}{}",
             t(SyncMsg::SaveGistIdFailedPrefix),
-            t(SyncMsg::SaveGistIdFailedSuffix)
+            t(SyncMsg::SaveGistIdFailedSuffix),
+            crate::error_text::error_text(&err)
         )
     })
 }
@@ -4037,7 +4054,9 @@ mod tests {
 
         fn open(&self, blob: &[u8]) -> Result<Vec<u8>, SyncError> {
             if blob.len() < 2 || blob[0] != b'T' || blob[1] != self.0 {
-                return Err(SyncError::InvalidData("不是 TestSealer 的密文".to_owned()));
+                return Err(SyncError::InvalidData(zssh_core::error::Reason::text(
+                    "不是 TestSealer 的密文".to_owned(),
+                )));
             }
             Ok(blob[2..].iter().map(|byte| byte ^ self.0).collect())
         }
@@ -5571,7 +5590,9 @@ mod protection_tests {
 
         fn open(&self, blob: &[u8]) -> Result<Vec<u8>, SyncError> {
             if blob.len() < 2 || blob[0] != b'T' || blob[1] != self.0 {
-                return Err(SyncError::InvalidData("不是 TestSealer 的密文".to_owned()));
+                return Err(SyncError::InvalidData(zssh_core::error::Reason::text(
+                    "不是 TestSealer 的密文".to_owned(),
+                )));
             }
             Ok(blob[2..].iter().map(|byte| byte ^ self.0).collect())
         }
@@ -5935,7 +5956,9 @@ mod protection_tests {
             }
         );
         assert_eq!(
-            classify_failure(&SyncError::AuthFailed("令牌过期".to_owned())),
+            classify_failure(&SyncError::AuthFailed(zssh_core::error::Reason::text(
+                "令牌过期".to_owned()
+            ))),
             FailureKind::AuthFailed("令牌过期".to_owned())
         );
         assert_eq!(
@@ -5943,15 +5966,21 @@ mod protection_tests {
             FailureKind::WrongPassword
         );
         assert_eq!(
-            classify_failure(&SyncError::Format("同步基线损坏：EOF".to_owned())),
+            classify_failure(&SyncError::Format(zssh_core::error::Reason::text(
+                "同步基线损坏：EOF".to_owned()
+            ))),
             FailureKind::BaselineBroken
         );
         assert_eq!(
-            classify_failure(&SyncError::Format("同步包格式不对".to_owned())),
+            classify_failure(&SyncError::Format(zssh_core::error::Reason::text(
+                "同步包格式不对".to_owned()
+            ))),
             FailureKind::Other
         );
         assert_eq!(
-            classify_failure(&SyncError::Storage("超时".to_owned())),
+            classify_failure(&SyncError::Storage(zssh_core::error::Reason::text(
+                "超时".to_owned()
+            ))),
             FailureKind::Other
         );
     }

@@ -74,6 +74,43 @@ enum CoreErrorMsg {
     ArchiveDestSymlink,
     /// 整句就是一条 [`Reason`]（压缩 / 解压、服务器端 `cp`……）：`{detail}` 已经是当前语言。
     ReasonOnly,
+    SyncFormat,
+    SyncTooNew,
+    SyncTooOld,
+    SyncUnsupportedKdf,
+    SyncWrongPassword,
+    SyncTampered,
+    SyncInvalidData,
+    SyncDatabase,
+    SyncIo,
+    SyncStorage,
+    SyncRateLimited,
+    SyncLocalChanged,
+    SyncNotConfigured,
+    SyncInternal,
+    StorageConflict,
+    StorageTimeout,
+    StorageUnavailable,
+    StorageIo,
+    LoginDenied,
+    LoginProvider,
+    LoginTimeout,
+    LoginCancelled,
+    LoginListen,
+    LoginBrowser,
+    LoginNetwork,
+    LoginExchange,
+    LoginInvalidClientId,
+    ImportInUse,
+    ImportNotData,
+    ImportTooNew,
+    ImportUndecryptable,
+    ImportUnreadable,
+    HistoryInvalidAgent,
+    HistoryInvalidId,
+    HistoryNotFound,
+    HistoryCorrupt,
+    HistoryIo,
 }
 
 impl Msg for CoreErrorMsg {
@@ -152,6 +189,53 @@ impl Msg for CoreErrorMsg {
                 "目标目录里有符号链接（{path}），解压可能写到目录外，已拒绝"
             }
             Self::ReasonOnly => "{detail}",
+            Self::SyncFormat => "同步包格式不对：{detail}",
+            Self::SyncTooNew => {
+                "同步包的格式版本太新（v{found}，本软件只支持到 v{supported}），请先升级 Z-SSH"
+            }
+            Self::SyncTooOld => "同步包的格式版本太旧（v{found}），这个版本不再支持",
+            Self::SyncUnsupportedKdf => {
+                "同步包用了不支持的密钥派生算法：{kdf}（可能是更新的 Z-SSH 写的）"
+            }
+            Self::SyncWrongPassword => "主密码错误（或文件头被改过）",
+            Self::SyncTampered => "同步包被改过（认证失败），没有解密",
+            Self::SyncInvalidData => "同步数据不合法：{detail}",
+            Self::SyncDatabase => "数据库错误：{detail}",
+            Self::SyncIo => "读写失败：{detail}",
+            Self::SyncStorage => "存储出错：{detail}",
+            Self::SyncRateLimited => "{service} 限流，{wait}后重试",
+            Self::SyncLocalChanged => "同步期间本地有改动，稍后自动重新同步",
+            Self::SyncNotConfigured => "还没有连接存储",
+            Self::SyncInternal => "内部错误：{detail}",
+            Self::StorageConflict => "云端数据已被别人改过",
+            Self::StorageTimeout => "存储读写超时",
+            Self::StorageUnavailable => "存储服务暂时不可用：{detail}",
+            Self::StorageIo => "存储读写失败：{detail}",
+            Self::LoginDenied => "你在浏览器里取消了授权，没有登录",
+            Self::LoginProvider => "微软返回了错误：{detail}",
+            Self::LoginTimeout => "5 分钟内没有完成登录，已经停止等待，可以重新登录",
+            Self::LoginCancelled => "已取消登录",
+            Self::LoginListen => "无法在本机开启登录回调的监听：{detail}",
+            Self::LoginBrowser => "无法打开系统浏览器：{detail}",
+            Self::LoginNetwork => "无法连接到微软的登录服务（网络不通或代理不可用）：{detail}",
+            Self::LoginExchange => "{detail}",
+            Self::LoginInvalidClientId => {
+                "client ID 的格式不对（应该形如 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx）"
+            }
+            Self::ImportInUse => "Z-SSH 正在运行，数据库被它占着：请先退出 Z-SSH 再导入",
+            Self::ImportNotData => "这里不是有效的 Z-SSH 数据：{detail}",
+            Self::ImportTooNew => {
+                "Z-SSH 的数据库版本（v{found}）比这个 ZeeTerm 能读的（v{supported}）新，请先升级 ZeeTerm"
+            }
+            Self::ImportUndecryptable => {
+                "Z-SSH 里保存的密码解不开（只有保存它们的那个 Windows 用户能解）：请改用 Z-SSH 导出的备份文件导入"
+            }
+            Self::ImportUnreadable => "读取 Z-SSH 的数据失败：{detail}",
+            Self::HistoryInvalidAgent => "不认识的智能体：{detail}",
+            Self::HistoryInvalidId => "会话 id 不合法",
+            Self::HistoryNotFound => "历史会话不存在",
+            Self::HistoryCorrupt => "历史会话文件损坏：{detail}",
+            Self::HistoryIo => "读写历史会话失败：{detail}",
         }
     }
 
@@ -250,6 +334,69 @@ impl Msg for CoreErrorMsg {
                 "The target directory contains a symlink ({path}); extracting might write outside it, so it was refused"
             }
             Self::ReasonOnly => "{detail}",
+            Self::SyncFormat => "Invalid sync package: {detail}",
+            Self::SyncTooNew => {
+                "The sync package format (v{found}) is newer than this app supports (up to v{supported}); please update ZeeTerm first"
+            }
+            Self::SyncTooOld => {
+                "The sync package format (v{found}) is too old and is no longer supported"
+            }
+            Self::SyncUnsupportedKdf => {
+                "The sync package uses an unsupported key derivation algorithm: {kdf} (it may have been written by a newer version)"
+            }
+            Self::SyncWrongPassword => "Wrong master password (or the file header was modified)",
+            Self::SyncTampered => {
+                "The sync package was modified (authentication failed); it was not decrypted"
+            }
+            Self::SyncInvalidData => "Invalid sync data: {detail}",
+            Self::SyncDatabase => "Database error: {detail}",
+            Self::SyncIo => "Read/write failed: {detail}",
+            Self::SyncStorage => "Storage error: {detail}",
+            Self::SyncRateLimited => "{service} is rate limiting requests; retry in {wait}",
+            Self::SyncLocalChanged => {
+                "Local data changed during the sync; it will sync again shortly"
+            }
+            Self::SyncNotConfigured => "No storage is connected yet",
+            Self::SyncInternal => "Internal error: {detail}",
+            Self::StorageConflict => "The cloud data was changed by someone else",
+            Self::StorageTimeout => "Storage read/write timed out",
+            Self::StorageUnavailable => "The storage service is temporarily unavailable: {detail}",
+            Self::StorageIo => "Storage read/write failed: {detail}",
+            Self::LoginDenied => {
+                "You cancelled the authorization in the browser, so you were not signed in"
+            }
+            Self::LoginProvider => "Microsoft returned an error: {detail}",
+            Self::LoginTimeout => {
+                "Sign-in was not completed within 5 minutes and waiting has stopped; you can sign in again"
+            }
+            Self::LoginCancelled => "Sign-in cancelled",
+            Self::LoginListen => {
+                "Cannot start listening for the sign-in callback on this computer: {detail}"
+            }
+            Self::LoginBrowser => "Cannot open the system browser: {detail}",
+            Self::LoginNetwork => {
+                "Cannot reach the Microsoft sign-in service (the network is down or the proxy is unavailable): {detail}"
+            }
+            Self::LoginExchange => "{detail}",
+            Self::LoginInvalidClientId => {
+                "The client ID format is invalid (it should look like xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)"
+            }
+            Self::ImportInUse => {
+                "Z-SSH is running and holds the database: quit Z-SSH first, then import"
+            }
+            Self::ImportNotData => "This is not valid Z-SSH data: {detail}",
+            Self::ImportTooNew => {
+                "The Z-SSH database version (v{found}) is newer than this ZeeTerm can read (v{supported}); please update ZeeTerm first"
+            }
+            Self::ImportUndecryptable => {
+                "The passwords saved in Z-SSH cannot be decrypted (only the Windows user who saved them can); import a backup file exported by Z-SSH instead"
+            }
+            Self::ImportUnreadable => "Failed to read the Z-SSH data: {detail}",
+            Self::HistoryInvalidAgent => "Unknown agent: {detail}",
+            Self::HistoryInvalidId => "Invalid conversation id",
+            Self::HistoryNotFound => "The conversation history does not exist",
+            Self::HistoryCorrupt => "The conversation history file is damaged: {detail}",
+            Self::HistoryIo => "Failed to read or write the conversation history: {detail}",
         }
     }
 }
@@ -311,7 +458,48 @@ fn message_for(code: &str) -> Option<CoreErrorMsg> {
         "sftp.cancelled" | "archive.cancelled" => CoreErrorMsg::SftpCancelled,
         "archive.unsafe_entries" => CoreErrorMsg::ArchiveUnsafeEntries,
         "archive.dest_symlink" => CoreErrorMsg::ArchiveDestSymlink,
-        "archive.reason" | "sftp.cp_reason" => CoreErrorMsg::ReasonOnly,
+        "archive.reason" | "sftp.cp_reason" | "core.reason" => CoreErrorMsg::ReasonOnly,
+        "sync.format" => CoreErrorMsg::SyncFormat,
+        "sync.format_too_new" => CoreErrorMsg::SyncTooNew,
+        "sync.format_too_old" => CoreErrorMsg::SyncTooOld,
+        "sync.unsupported_kdf" => CoreErrorMsg::SyncUnsupportedKdf,
+        "sync.wrong_password" => CoreErrorMsg::SyncWrongPassword,
+        "sync.tampered" => CoreErrorMsg::SyncTampered,
+        "sync.invalid_data" => CoreErrorMsg::SyncInvalidData,
+        "sync.database" => CoreErrorMsg::SyncDatabase,
+        "sync.io" => CoreErrorMsg::SyncIo,
+        "sync.storage" => CoreErrorMsg::SyncStorage,
+        "sync.rate_limited" => CoreErrorMsg::SyncRateLimited,
+        "sync.local_changed" => CoreErrorMsg::SyncLocalChanged,
+        "sync.not_configured" => CoreErrorMsg::SyncNotConfigured,
+        "sync.internal" => CoreErrorMsg::SyncInternal,
+        "storage.conflict" => CoreErrorMsg::StorageConflict,
+        "storage.timeout" => CoreErrorMsg::StorageTimeout,
+        "storage.unavailable" => CoreErrorMsg::StorageUnavailable,
+        "storage.io" => CoreErrorMsg::StorageIo,
+        "sync.auth_failed" => CoreErrorMsg::SyncStorage,
+        "storage.auth_failed" => CoreErrorMsg::StorageIo,
+        "login.denied" => CoreErrorMsg::LoginDenied,
+        "login.provider" => CoreErrorMsg::LoginProvider,
+        "login.timeout" => CoreErrorMsg::LoginTimeout,
+        "login.cancelled" => CoreErrorMsg::LoginCancelled,
+        "login.listen" => CoreErrorMsg::LoginListen,
+        "login.browser" => CoreErrorMsg::LoginBrowser,
+        "login.network" => CoreErrorMsg::LoginNetwork,
+        "login.exchange" => CoreErrorMsg::LoginExchange,
+        "login.invalid_client_id" => CoreErrorMsg::LoginInvalidClientId,
+        "import.in_use" => CoreErrorMsg::ImportInUse,
+        "import.not_data" => CoreErrorMsg::ImportNotData,
+        "import.too_new" => CoreErrorMsg::ImportTooNew,
+        "import.undecryptable" => CoreErrorMsg::ImportUndecryptable,
+        "import.unreadable" => CoreErrorMsg::ImportUnreadable,
+        "history.invalid_agent" => CoreErrorMsg::HistoryInvalidAgent,
+        "history.invalid_id" => CoreErrorMsg::HistoryInvalidId,
+        "history.not_found" => CoreErrorMsg::HistoryNotFound,
+        "history.corrupt" => CoreErrorMsg::HistoryCorrupt,
+        "history.io" => CoreErrorMsg::HistoryIo,
+
+        "storage.rate_limited" => CoreErrorMsg::SyncRateLimited,
         _ => return None,
     })
 }
@@ -386,6 +574,11 @@ fn localize_params<E: ErrorWithCode + ?Sized>(
         let text = error_text_in(lang, inner);
         params.push((name, text));
     }
+    if matches!(err.code(), "sync.rate_limited" | "storage.rate_limited")
+        && let Some(secs) = get(params, "secs").and_then(|secs| secs.parse::<u64>().ok())
+    {
+        params.push(("wait", wait_text(lang, secs)));
+    }
     if lang == Lang::En
         && let Some(key) = get(params, "reason")
         && let Some(sentence) = crate::reason_text::sentence(key, params)
@@ -422,6 +615,25 @@ fn localize_params<E: ErrorWithCode + ?Sized>(
         )
         .unwrap_or_default();
         set(params, "detail", detail);
+    }
+}
+
+/// "还要等多久"：中文逐字等于核心的 `wait_text`，英文按同样的进位规则。
+fn wait_text(lang: Lang, secs: u64) -> String {
+    match lang {
+        Lang::Zh => zssh_core::sync::storage::wait_text(secs),
+        Lang::En => {
+            if secs < 60 {
+                let n = secs.max(1);
+                format!("about {n} second{}", if n == 1 { "" } else { "s" })
+            } else if secs <= 2 * 3600 {
+                let n = secs.div_ceil(60);
+                format!("about {n} minute{}", if n == 1 { "" } else { "s" })
+            } else {
+                let n = secs.div_ceil(3600);
+                format!("about {n} hour{}", if n == 1 { "" } else { "s" })
+            }
+        }
     }
 }
 
@@ -628,6 +840,43 @@ mod tests {
             CoreErrorMsg::ArchiveUnsafeEntries,
             CoreErrorMsg::ArchiveDestSymlink,
             CoreErrorMsg::ReasonOnly,
+            CoreErrorMsg::SyncFormat,
+            CoreErrorMsg::SyncTooNew,
+            CoreErrorMsg::SyncTooOld,
+            CoreErrorMsg::SyncUnsupportedKdf,
+            CoreErrorMsg::SyncWrongPassword,
+            CoreErrorMsg::SyncTampered,
+            CoreErrorMsg::SyncInvalidData,
+            CoreErrorMsg::SyncDatabase,
+            CoreErrorMsg::SyncIo,
+            CoreErrorMsg::SyncStorage,
+            CoreErrorMsg::SyncRateLimited,
+            CoreErrorMsg::SyncLocalChanged,
+            CoreErrorMsg::SyncNotConfigured,
+            CoreErrorMsg::SyncInternal,
+            CoreErrorMsg::StorageConflict,
+            CoreErrorMsg::StorageTimeout,
+            CoreErrorMsg::StorageUnavailable,
+            CoreErrorMsg::StorageIo,
+            CoreErrorMsg::LoginDenied,
+            CoreErrorMsg::LoginProvider,
+            CoreErrorMsg::LoginTimeout,
+            CoreErrorMsg::LoginCancelled,
+            CoreErrorMsg::LoginListen,
+            CoreErrorMsg::LoginBrowser,
+            CoreErrorMsg::LoginNetwork,
+            CoreErrorMsg::LoginExchange,
+            CoreErrorMsg::LoginInvalidClientId,
+            CoreErrorMsg::ImportInUse,
+            CoreErrorMsg::ImportNotData,
+            CoreErrorMsg::ImportTooNew,
+            CoreErrorMsg::ImportUndecryptable,
+            CoreErrorMsg::ImportUnreadable,
+            CoreErrorMsg::HistoryInvalidAgent,
+            CoreErrorMsg::HistoryInvalidId,
+            CoreErrorMsg::HistoryNotFound,
+            CoreErrorMsg::HistoryCorrupt,
+            CoreErrorMsg::HistoryIo,
         ];
         for msg in all {
             assert!(!msg.zh().is_empty(), "{msg:?} 缺中文");

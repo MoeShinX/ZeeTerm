@@ -6,6 +6,7 @@
 //! - 主密码默认不落盘；“在这台电脑上记住”打开时才用 DPAPI 封装保存；
 //! - 请求走 Z-SSH 的默认代理设置（直连 / HTTP / SOCKS5）。
 
+use crate::error::{reason_keys, Reason};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -202,7 +203,7 @@ impl StorageConfig {
 
 fn set_json<T: Serialize>(db: &Database, key: &str, value: &T) -> Result<(), SyncError> {
     let text = serde_json::to_string(value)
-        .map_err(|err| SyncError::Internal(format!("设置序列化失败：{err}")))?;
+        .map_err(|err| SyncError::Internal(Reason::text(format!("设置序列化失败：{err}"))))?;
     db.setting_set(key, &text).map_err(SyncError::from)
 }
 
@@ -241,7 +242,12 @@ pub(super) fn open_from_setting(
     };
     let sealed = base64::engine::general_purpose::STANDARD
         .decode(encoded)
-        .map_err(|_| SyncError::InvalidData("本机保存的同步设置损坏".to_owned()))?;
+        .map_err(|_| {
+            SyncError::InvalidData(Reason::new(
+                reason_keys::SV_SETTINGS_DAMAGED,
+                "本机保存的同步设置损坏",
+            ))
+        })?;
     Ok(Some(Zeroizing::new(sealer.open(&sealed)?)))
 }
 
@@ -252,9 +258,9 @@ pub fn load_config(
     let Some(plain) = open_from_setting(db, sealer, STORAGE_KEY)? else {
         return Ok(None);
     };
-    serde_json::from_slice(&plain)
-        .map(Some)
-        .map_err(|err| SyncError::InvalidData(format!("本机保存的存储设置损坏：{err}")))
+    serde_json::from_slice(&plain).map(Some).map_err(|err| {
+        SyncError::InvalidData(Reason::text(format!("本机保存的存储设置损坏：{err}")))
+    })
 }
 
 pub fn save_config(
@@ -262,10 +268,10 @@ pub fn save_config(
     sealer: &dyn SecretSealer,
     config: &StorageConfig,
 ) -> Result<(), SyncError> {
-    let plain = Zeroizing::new(
-        serde_json::to_vec(config)
-            .map_err(|err| SyncError::Internal(format!("存储设置序列化失败：{err}")))?,
-    );
+    let plain =
+        Zeroizing::new(serde_json::to_vec(config).map_err(|err| {
+            SyncError::Internal(Reason::text(format!("存储设置序列化失败：{err}")))
+        })?);
     seal_to_setting(db, sealer, STORAGE_KEY, &plain)?;
     // 换了存储，上次的并发保护检测结果、“已设置主密码”都不再适用。
     clear(db, CONCURRENCY_KEY)?;
@@ -389,8 +395,12 @@ pub fn load_master_password(
     let Some(plain) = open_from_setting(db, sealer, MASTER_PASSWORD_KEY)? else {
         return Ok(None);
     };
-    let text = String::from_utf8(plain.to_vec())
-        .map_err(|_| SyncError::InvalidData("本机保存的主密码损坏".to_owned()))?;
+    let text = String::from_utf8(plain.to_vec()).map_err(|_| {
+        SyncError::InvalidData(Reason::new(
+            reason_keys::SV_PASSWORD_DAMAGED,
+            "本机保存的主密码损坏",
+        ))
+    })?;
     Ok(Some(Zeroizing::new(text)))
 }
 
@@ -644,24 +654,34 @@ impl<'a> SyncContext<'a> {
     /// 写入时云端被别人改过会返回错误，让用户先同步再改。
     pub async fn change_master_password(&self, old: &str, new: &str) -> Result<(), SyncError> {
         if new.chars().count() < MIN_MASTER_PASSWORD_CHARS {
-            return Err(SyncError::InvalidData(format!(
-                "新主密码至少 {MIN_MASTER_PASSWORD_CHARS} 个字符"
-            )));
+            return Err(SyncError::InvalidData(
+                Reason::new(
+                    reason_keys::SV_NEW_MASTER_SHORT,
+                    format!("新主密码至少 {MIN_MASTER_PASSWORD_CHARS} 个字符"),
+                )
+                .with("min", MIN_MASTER_PASSWORD_CHARS),
+            ));
         }
         let storage = self.storage()?;
         let object = storage
             .read()
             .await
             .map_err(SyncError::from)?
-            .ok_or_else(|| SyncError::InvalidData("云端还没有同步数据，先同步一次".to_owned()))?;
+            .ok_or_else(|| {
+                SyncError::InvalidData(Reason::new(
+                    reason_keys::SV_NO_CLOUD_DATA,
+                    "云端还没有同步数据，先同步一次",
+                ))
+            })?;
         let reencrypted = super::crypto::change_password(&object.bytes, old, new)?;
         storage
             .write(&reencrypted, Some(&object.version))
             .await
             .map_err(|err| match err {
-                super::storage::StorageError::Conflict => SyncError::Storage(
-                    "云端刚刚被另一台电脑改过，请先同步一次再改主密码".to_owned(),
-                ),
+                super::storage::StorageError::Conflict => SyncError::Storage(Reason::new(
+                    reason_keys::SV_CLOUD_CHANGED,
+                    "云端刚刚被另一台电脑改过，请先同步一次再改主密码",
+                )),
                 other => SyncError::from(other),
             })?;
         Ok(())

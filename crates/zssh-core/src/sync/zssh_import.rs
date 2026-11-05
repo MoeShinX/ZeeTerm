@@ -356,3 +356,29 @@ const DECRYPT_FAILED_MARK: &str = "密文解不开";
 
 #[cfg(test)]
 mod tests;
+
+/// 错误码与结构化参数：界面按它们出当前语言的整句。
+impl crate::error::ErrorWithCode for ZsshImportError {
+    fn code(&self) -> &'static str {
+        match self {
+            ZsshImportError::InUse => "import.in_use",
+            ZsshImportError::NotZsshData(_) => "import.not_data",
+            ZsshImportError::TooNew { .. } => "import.too_new",
+            ZsshImportError::Undecryptable => "import.undecryptable",
+            ZsshImportError::Unreadable(_) => "import.unreadable",
+        }
+    }
+
+    fn params(&self) -> Vec<(&'static str, String)> {
+        match self {
+            ZsshImportError::NotZsshData(detail) | ZsshImportError::Unreadable(detail) => {
+                vec![("detail", detail.clone())]
+            }
+            ZsshImportError::TooNew { found, supported } => vec![
+                ("found", found.to_string()),
+                ("supported", supported.to_string()),
+            ],
+            ZsshImportError::InUse | ZsshImportError::Undecryptable => Vec::new(),
+        }
+    }
+}

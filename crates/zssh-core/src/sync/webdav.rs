@@ -6,11 +6,12 @@
 //! - 不支持时走 [`ConcurrencyMode::ReadBeforeWrite`]；
 //! - 地址是 `http://` 时必须由调用方明确确认（`allow_insecure_http`），密码是明文发的。
 
+use crate::error::{reason_keys, Reason};
 use reqwest::{Client, Method, StatusCode, Url};
 
 use super::net::{
-    build_client, map_http_error, proxy_auth_required, read_body_limited, retryable_status,
-    SyncProxy, MAX_PACKAGE_BYTES,
+    action_code, build_client, map_http_error, proxy_auth_required, read_body_limited,
+    retryable_status, server_returned, SyncProxy, MAX_PACKAGE_BYTES,
 };
 use super::remote::{
     probe_connection, ConcurrencyMode, Condition, ConditionalStore, ConnectionProbe, RawObject,
@@ -77,29 +78,48 @@ impl WebDavRaw {
         proxy: Option<&SyncProxy>,
         object: &str,
     ) -> Result<Self, StorageError> {
-        let mut base = Url::parse(config.url.trim())
-            .map_err(|err| StorageError::Io(format!("WebDAV 地址不合法：{err}")))?;
+        let mut base = Url::parse(config.url.trim()).map_err(|err| {
+            StorageError::Io(
+                Reason::new(
+                    reason_keys::DAV_URL_BAD,
+                    format!("WebDAV 地址不合法：{err}"),
+                )
+                .with("cause", &err),
+            )
+        })?;
         match base.scheme() {
             "https" => {}
             "http" => {
                 if !config.allow_insecure_http {
-                    return Err(StorageError::Io(
-                        "WebDAV 地址是 http://，密码会以明文发送；需要先确认才能使用".to_owned(),
-                    ));
+                    return Err(StorageError::Io(Reason::new(
+                        reason_keys::DAV_HTTP,
+                        "WebDAV 地址是 http://，密码会以明文发送；需要先确认才能使用",
+                    )));
                 }
             }
             other => {
-                return Err(StorageError::Io(format!(
-                    "WebDAV 地址只支持 http(s)，收到 {other}://"
-                )))
+                return Err(StorageError::Io(
+                    Reason::new(
+                        reason_keys::DAV_SCHEME,
+                        format!("WebDAV 地址只支持 http(s)，收到 {other}://"),
+                    )
+                    .with("scheme", other),
+                ))
             }
         }
         if base.host_str().is_none() {
-            return Err(StorageError::Io("WebDAV 地址缺少主机名".to_owned()));
+            return Err(StorageError::Io(Reason::new(
+                reason_keys::DAV_NO_HOST,
+                "WebDAV 地址缺少主机名",
+            )));
         }
         // 地址里不允许夹带凭据：用户名密码走 Basic 头，地址会出现在日志 / 错误里。
-        base.set_username("")
-            .map_err(|_| StorageError::Io("WebDAV 地址不合法".to_owned()))?;
+        base.set_username("").map_err(|_| {
+            StorageError::Io(Reason::new(
+                reason_keys::DAV_URL_INVALID,
+                "WebDAV 地址不合法",
+            ))
+        })?;
         let _ = base.set_password(None);
         base.set_query(None);
         base.set_fragment(None);
@@ -170,7 +190,7 @@ impl WebDavRaw {
         for depth in 1..=self.dirs.len() {
             let url = self.url_for(depth, None);
             let method = Method::from_bytes(b"MKCOL")
-                .map_err(|_| StorageError::Io("内部错误：MKCOL 方法".to_owned()))?;
+                .map_err(|_| StorageError::Io(Reason::text("内部错误：MKCOL 方法".to_owned())))?;
             let response = self
                 .request(method, url)
                 .send()
@@ -220,15 +240,25 @@ fn status_error(status: StatusCode, action: &str) -> StorageError {
         return temporary;
     }
     let reason = match status {
-        StatusCode::UNAUTHORIZED => "用户名或密码不对".to_owned(),
-        StatusCode::FORBIDDEN => "没有权限".to_owned(),
-        StatusCode::NOT_FOUND => "地址不存在".to_owned(),
-        StatusCode::METHOD_NOT_ALLOWED => "服务器不允许这个操作（地址可能不是 WebDAV）".to_owned(),
-        StatusCode::INSUFFICIENT_STORAGE => "服务器空间不足".to_owned(),
-        StatusCode::LOCKED => "文件被服务器锁定".to_owned(),
-        other => format!("服务器返回 {}", other.as_u16()),
+        StatusCode::UNAUTHORIZED => Reason::new(reason_keys::DAV_UNAUTHORIZED, "用户名或密码不对"),
+        StatusCode::FORBIDDEN => Reason::new(reason_keys::DAV_FORBIDDEN, "没有权限"),
+        StatusCode::NOT_FOUND => Reason::new(reason_keys::DAV_NOT_FOUND, "地址不存在"),
+        StatusCode::METHOD_NOT_ALLOWED => Reason::new(
+            reason_keys::DAV_METHOD_NOT_ALLOWED,
+            "服务器不允许这个操作（地址可能不是 WebDAV）",
+        ),
+        StatusCode::INSUFFICIENT_STORAGE => {
+            Reason::new(reason_keys::DAV_INSUFFICIENT, "服务器空间不足")
+        }
+        StatusCode::LOCKED => Reason::new(reason_keys::DAV_LOCKED, "文件被服务器锁定"),
+        other => server_returned(other.as_u16()),
     };
-    let message = format!("WebDAV {action}失败：{reason}");
+    let message = Reason::new(
+        reason_keys::DAV_FAILED,
+        format!("WebDAV {action}失败：{}", reason.zh()),
+    )
+    .with("action", action_code(action))
+    .caused_by_as("reason", &reason);
     if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
         return StorageError::AuthFailed(message);
     }

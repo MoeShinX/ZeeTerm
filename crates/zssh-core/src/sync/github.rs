@@ -17,6 +17,7 @@
 //!   引擎不会重试，调度器在等待期内不再自动同步。
 //! - 接口地址可以配置（默认 `https://api.github.com`，GitHub Enterprise 填 `https://域名/api/v3`）。
 
+use crate::error::{reason_keys, Reason};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::{Client, Method, StatusCode, Url};
 use serde_json::{json, Value};
@@ -84,8 +85,12 @@ impl GithubConfig {
     }
 }
 
-fn io(message: impl Into<String>) -> StorageError {
-    StorageError::Io(message.into())
+fn github_status(code: u16) -> Reason {
+    Reason::new(reason_keys::GH_STATUS, format!("GitHub 返回 {code}")).with("code", code)
+}
+
+fn io_r(reason: Reason) -> StorageError {
+    StorageError::Io(reason)
 }
 
 /// Gist ID 只会是字母数字（GitHub.com 是 32 位十六进制，Enterprise 可能是数字）。
@@ -129,43 +134,77 @@ impl GithubApi {
         file_name: &str,
     ) -> Result<Self, StorageError> {
         let raw = config.effective_api_base().trim().trim_end_matches('/');
-        let url = Url::parse(raw).map_err(|err| io(format!("GitHub 接口地址不合法：{err}")))?;
+        let url = Url::parse(raw).map_err(|err| {
+            io_r(
+                Reason::new(
+                    reason_keys::GH_API_URL_BAD,
+                    format!("GitHub 接口地址不合法：{err}"),
+                )
+                .with("cause", &err),
+            )
+        })?;
         match url.scheme() {
             "https" => {}
             "http" => {
                 if !config.allow_insecure_http {
-                    return Err(io(
+                    return Err(io_r(Reason::new(
+                        reason_keys::GH_API_HTTP,
                         "GitHub 接口地址是 http://，令牌会以明文发送；需要先确认才能使用",
-                    ));
+                    )));
                 }
             }
             other => {
-                return Err(io(format!(
-                    "GitHub 接口地址只支持 http(s)，收到 {other}://"
-                )))
+                return Err(io_r(
+                    Reason::new(
+                        reason_keys::GH_API_SCHEME,
+                        format!("GitHub 接口地址只支持 http(s)，收到 {other}://"),
+                    )
+                    .with("scheme", other),
+                ))
             }
         }
         let host = url
             .host_str()
-            .ok_or_else(|| io("GitHub 接口地址缺少主机名"))?
+            .ok_or_else(|| {
+                io_r(Reason::new(
+                    reason_keys::GH_API_NO_HOST,
+                    "GitHub 接口地址缺少主机名",
+                ))
+            })?
             .to_owned();
         if url.query().is_some() || url.fragment().is_some() || !url.username().is_empty() {
-            return Err(io("GitHub 接口地址里不能带查询串、片段或账号密码"));
+            return Err(io_r(Reason::new(
+                reason_keys::GH_API_EXTRAS,
+                "GitHub 接口地址里不能带查询串、片段或账号密码",
+            )));
         }
         let token = config.token.trim();
         if token.is_empty() {
-            return Err(io("请填写 GitHub 令牌"));
+            return Err(io_r(Reason::new(
+                reason_keys::GH_TOKEN_EMPTY,
+                "请填写 GitHub 令牌",
+            )));
         }
-        let mut header = HeaderValue::from_str(&format!("Bearer {token}"))
-            .map_err(|_| io("令牌里有不合法的字符（空格、换行或不可见字符），请重新复制"))?;
+        let mut header = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| {
+            io_r(Reason::new(
+                reason_keys::GH_TOKEN_BAD_CHARS,
+                "令牌里有不合法的字符（空格、换行或不可见字符），请重新复制",
+            ))
+        })?;
         // 标成敏感：reqwest / hyper 的调试输出里不会带出它。
         header.set_sensitive(true);
         let gist_id = config.gist_id.trim().to_owned();
         if need_gist && !valid_gist_id(&gist_id) {
-            return Err(io(if gist_id.is_empty() {
-                "请填写 Gist ID，或者让 Z-SSH 新建一个"
+            return Err(io_r(if gist_id.is_empty() {
+                Reason::new(
+                    reason_keys::GH_GIST_ID_EMPTY,
+                    "请填写 Gist ID，或者让 Z-SSH 新建一个",
+                )
             } else {
-                "Gist ID 不合法（只能是字母和数字，从 Gist 地址最后一段复制）"
+                Reason::new(
+                    reason_keys::GH_GIST_ID_BAD_LONG,
+                    "Gist ID 不合法（只能是字母和数字，从 Gist 地址最后一段复制）",
+                )
             }));
         }
         Ok(Self {
@@ -197,7 +236,7 @@ impl GithubApi {
     async fn check(
         &self,
         response: reqwest::Response,
-        not_found: &str,
+        not_found: Reason,
     ) -> Result<reqwest::Response, StorageError> {
         let status = response.status();
         if status.is_success() {
@@ -216,23 +255,25 @@ impl GithubApi {
             });
         }
         Err(match status {
-            StatusCode::UNAUTHORIZED => StorageError::AuthFailed(
-                "GitHub 令牌已失效，请重新填写令牌（可能已过期、被撤销或填错了）".to_owned(),
-            ),
-            StatusCode::FORBIDDEN => StorageError::AuthFailed(
+            StatusCode::UNAUTHORIZED => StorageError::AuthFailed(Reason::new(reason_keys::GH_TOKEN_EXPIRED, "GitHub 令牌已失效，请重新填写令牌（可能已过期、被撤销或填错了）")),
+            StatusCode::FORBIDDEN => StorageError::AuthFailed(Reason::new(
+                reason_keys::GH_FORBIDDEN,
                 "GitHub 拒绝了请求：令牌没有 Gist 权限（经典令牌要勾选 gist，细粒度令牌要给 Gists 读写权限），\
-                 或者令牌所在的组织限制了它"
-                    .to_owned(),
+                 或者令牌所在的组织限制了它",
+            )),
+            StatusCode::NOT_FOUND => io_r(not_found),
+            StatusCode::UNPROCESSABLE_ENTITY => io_r(
+                Reason::new(
+                    reason_keys::GH_REJECTED_422,
+                    format!("GitHub 拒绝了请求内容（422）：{message}"),
+                )
+                .with("message", &message),
             ),
-            StatusCode::NOT_FOUND => io(not_found),
-            StatusCode::UNPROCESSABLE_ENTITY => {
-                io(format!("GitHub 拒绝了请求内容（422）：{message}"))
-            }
             other => {
                 if matches!(other.as_u16(), 408 | 500 | 502 | 503 | 504) {
-                    StorageError::Unavailable(format!("GitHub 返回 {}", other.as_u16()))
+                    StorageError::Unavailable(github_status(other.as_u16()))
                 } else {
-                    io(format!("GitHub 返回 {}", other.as_u16()))
+                    io_r(github_status(other.as_u16()))
                 }
             }
         })
@@ -248,7 +289,13 @@ impl GithubApi {
             .await
             .map_err(map_http_error)?;
         let response = self
-            .check(response, "找不到这个 Gist：ID 填错了，或者这个令牌看不到它")
+            .check(
+                response,
+                Reason::new(
+                    reason_keys::GH_GIST_NOT_FOUND,
+                    "找不到这个 Gist：ID 填错了，或者这个令牌看不到它",
+                ),
+            )
             .await?;
         let value = read_json(response, MAX_PACKAGE_BYTES).await?;
         GistInfo::parse_named(&value, &self.file_name)
@@ -261,20 +308,36 @@ impl GithubApi {
                 return Ok(content.as_bytes().to_vec());
             }
         }
-        let raw_url = file
-            .raw_url
-            .as_deref()
-            .ok_or_else(|| io("内容被截断了，但 GitHub 没有给出 raw_url"))?;
+        let raw_url = file.raw_url.as_deref().ok_or_else(|| {
+            io_r(Reason::new(
+                reason_keys::GH_NO_RAW_URL,
+                "内容被截断了，但 GitHub 没有给出 raw_url",
+            ))
+        })?;
         // GitHub 报的大小已经超限就不必去下载了。
         if file.size.is_some_and(|size| size > MAX_PACKAGE_BYTES) {
-            return Err(io(format!(
-                "Gist 里的同步文件太大（超过 {} MiB），不像是 Z-SSH 的同步包，没有下载",
-                MAX_PACKAGE_BYTES / (1024 * 1024)
-            )));
+            let mib = MAX_PACKAGE_BYTES / (1024 * 1024);
+            return Err(io_r(
+                Reason::new(
+                    reason_keys::GH_GIST_TOO_BIG,
+                    format!(
+                        "Gist 里的同步文件太大（超过 {mib} MiB），不像是 Z-SSH 的同步包，没有下载"
+                    ),
+                )
+                .with("mib", mib),
+            ));
         }
-        let url = Url::parse(raw_url).map_err(|_| io("GitHub 给出的 raw_url 不合法"))?;
+        let url = Url::parse(raw_url).map_err(|_| {
+            io_r(Reason::new(
+                reason_keys::GH_RAW_URL_BAD,
+                "GitHub 给出的 raw_url 不合法",
+            ))
+        })?;
         if url.scheme() != "https" && url.scheme() != "http" {
-            return Err(io("GitHub 给出的 raw_url 不是 http(s) 地址"));
+            return Err(io_r(Reason::new(
+                reason_keys::GH_RAW_URL_NOT_HTTP,
+                "GitHub 给出的 raw_url 不是 http(s) 地址",
+            )));
         }
         let mut request = self
             .client
@@ -287,15 +350,28 @@ impl GithubApi {
         }
         let response = request.send().await.map_err(map_http_error)?;
         let response = self
-            .check(response, "读取完整内容失败：raw_url 返回 404")
+            .check(
+                response,
+                Reason::new(
+                    reason_keys::GH_RAW_404,
+                    "读取完整内容失败：raw_url 返回 404",
+                ),
+            )
             .await?;
         let bytes = read_body_limited(response, MAX_PACKAGE_BYTES, "Gist 里的同步文件").await?;
         if let Some(size) = file.size {
             if bytes.len() as u64 != size {
-                return Err(io(format!(
-                    "读到的内容不完整（应该 {size} 字节，实际 {} 字节），稍后重试",
-                    bytes.len()
-                )));
+                return Err(io_r(
+                    Reason::new(
+                        reason_keys::GH_INCOMPLETE,
+                        format!(
+                            "读到的内容不完整（应该 {size} 字节，实际 {} 字节），稍后重试",
+                            bytes.len()
+                        ),
+                    )
+                    .with("size", size)
+                    .with("got", bytes.len()),
+                ));
             }
         }
         Ok(bytes)
@@ -319,7 +395,10 @@ impl GithubApi {
         let response = self
             .check(
                 response,
-                "写入失败：这个 Gist 不属于这个令牌的用户，或者令牌没有 Gist 的写权限",
+                Reason::new(
+                    reason_keys::GH_WRITE_DENIED,
+                    "写入失败：这个 Gist 不属于这个令牌的用户，或者令牌没有 Gist 的写权限",
+                ),
             )
             .await?;
         let value = read_json(response, MAX_PACKAGE_BYTES).await?;
@@ -348,9 +427,12 @@ impl GithubApi {
     /// 写完再读一次：最新版本必须就是刚写的那一版，否则说明写完之后又有人写了。
     async fn confirm(&self, written: &Option<String>) -> Result<String, StorageError> {
         let after = self.get_gist().await?;
-        let latest = after
-            .version
-            .ok_or_else(|| io("GitHub 没有返回 Gist 的版本信息"))?;
+        let latest = after.version.ok_or_else(|| {
+            io_r(Reason::new(
+                reason_keys::GH_NO_VERSION,
+                "GitHub 没有返回 Gist 的版本信息",
+            ))
+        })?;
         if let Some(written) = written {
             if &latest != written {
                 return Err(StorageError::Conflict);
@@ -382,7 +464,10 @@ impl GithubApi {
         let response = self
             .check(
                 response,
-                "新建失败：令牌没有创建 Gist 的权限（经典令牌要勾选 gist，细粒度令牌要给 Gists 读写权限）",
+                Reason::new(
+                    reason_keys::GH_CREATE_DENIED,
+                    "新建失败：令牌没有创建 Gist 的权限（经典令牌要勾选 gist，细粒度令牌要给 Gists 读写权限）",
+                ),
             )
             .await?;
         let value = read_json(response, MAX_META_BYTES).await?;
@@ -390,14 +475,22 @@ impl GithubApi {
             .get("id")
             .and_then(Value::as_str)
             .filter(|id| valid_gist_id(id))
-            .ok_or_else(|| io("GitHub 没有返回新 Gist 的 ID"))?;
+            .ok_or_else(|| {
+                io_r(Reason::new(
+                    reason_keys::GH_NO_NEW_GIST_ID,
+                    "GitHub 没有返回新 Gist 的 ID",
+                ))
+            })?;
         Ok(id.to_owned())
     }
 
     /// 删掉整个 Gist（只给“测试连接”的临时 Gist 和测试清理用，同步本身从不删 Gist）。
     pub async fn delete_gist(&self, id: &str) -> Result<(), StorageError> {
         if !valid_gist_id(id) {
-            return Err(io("Gist ID 不合法"));
+            return Err(io_r(Reason::new(
+                reason_keys::GH_GIST_ID_BAD,
+                "Gist ID 不合法",
+            )));
         }
         let response = self
             .request(Method::DELETE, &format!("/gists/{id}"))
@@ -406,7 +499,10 @@ impl GithubApi {
             .map_err(map_http_error)?;
         self.check(
             response,
-            "删除失败：找不到这个 Gist，或者它不属于这个令牌的用户",
+            Reason::new(
+                reason_keys::GH_DELETE_FAILED,
+                "删除失败：找不到这个 Gist，或者它不属于这个令牌的用户",
+            ),
         )
         .await?;
         Ok(())
@@ -420,7 +516,13 @@ impl GithubApi {
             .await
             .map_err(map_http_error)?;
         let response = self
-            .check(response, "GitHub 找不到这个用户（接口地址对吗？）")
+            .check(
+                response,
+                Reason::new(
+                    reason_keys::GH_USER_NOT_FOUND,
+                    "GitHub 找不到这个用户（接口地址对吗？）",
+                ),
+            )
             .await?;
         let scopes = response
             .headers()
@@ -431,7 +533,12 @@ impl GithubApi {
         let login = value
             .get("login")
             .and_then(Value::as_str)
-            .ok_or_else(|| io("GitHub 没有返回用户信息"))?
+            .ok_or_else(|| {
+                io_r(Reason::new(
+                    reason_keys::GH_NO_USER,
+                    "GitHub 没有返回用户信息",
+                ))
+            })?
             .to_owned();
         Ok((login, scopes))
     }
@@ -442,17 +549,20 @@ impl SyncStorage for GithubApi {
         Box::pin(async move {
             let info = self.get_gist().await?;
             if info.gist_truncated && info.file.is_none() {
-                return Err(io(
+                return Err(io_r(Reason::new(
+                    reason_keys::GH_TOO_MANY_FILES,
                     "这个 Gist 里的文件太多（接口只返回前 300 个），找不到同步文件，请换一个 Gist",
-                ));
+                )));
             }
             let Some(file) = info.package_file() else {
                 return Ok(None);
             };
-            let version = info
-                .version
-                .clone()
-                .ok_or_else(|| io("GitHub 没有返回 Gist 的版本信息"))?;
+            let version = info.version.clone().ok_or_else(|| {
+                io_r(Reason::new(
+                    reason_keys::GH_NO_VERSION,
+                    "GitHub 没有返回 Gist 的版本信息",
+                ))
+            })?;
             let bytes = self.content_of(file).await?;
             Ok(Some(StoredObject { bytes, version }))
         })
@@ -464,7 +574,12 @@ impl SyncStorage for GithubApi {
         expected_version: Option<&'a str>,
     ) -> BoxFuture<'a, Result<String, StorageError>> {
         Box::pin(async move {
-            let text = std::str::from_utf8(bytes).map_err(|_| io("同步包不是 UTF-8 文本"))?;
+            let text = std::str::from_utf8(bytes).map_err(|_| {
+                io_r(Reason::new(
+                    reason_keys::GH_NOT_UTF8,
+                    "同步包不是 UTF-8 文本",
+                ))
+            })?;
             self.precheck(expected_version).await?;
             let written = self.patch_file(Some(text)).await?;
             self.confirm(&written).await
@@ -527,7 +642,10 @@ impl GistInfo {
 
     pub(crate) fn parse_named(value: &Value, file_name: &str) -> Result<Self, StorageError> {
         if !value.is_object() {
-            return Err(io("GitHub 返回的 Gist 格式不对"));
+            return Err(io_r(Reason::new(
+                reason_keys::GH_BAD_GIST,
+                "GitHub 返回的 Gist 格式不对",
+            )));
         }
         let file = value
             .get("files")
@@ -588,7 +706,12 @@ impl GistInfo {
 /// 长度），所以读 Gist 用同步包的上限，其余小响应用元数据上限。
 async fn read_json(response: reqwest::Response, limit: u64) -> Result<Value, StorageError> {
     let bytes = read_body_limited(response, limit, "GitHub 的响应").await?;
-    serde_json::from_slice(&bytes).map_err(|_| io("GitHub 返回的内容不是有效的 JSON"))
+    serde_json::from_slice(&bytes).map_err(|_| {
+        io_r(Reason::new(
+            reason_keys::GH_BAD_JSON,
+            "GitHub 返回的内容不是有效的 JSON",
+        ))
+    })
 }
 
 fn body_message(body: &str) -> String {

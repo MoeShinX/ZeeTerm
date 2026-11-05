@@ -6,6 +6,7 @@
 //! 记录里带 `updated_at` 和 `device_id`：三方合并时用时间较新的那份，时间相同
 //! 或相差很小时用设备 ID 做确定性的平局规则（[`crate::sync::merge`]）。
 
+use crate::error::Reason;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -456,7 +457,7 @@ impl SyncSnapshot {
     /// 解析明文并检查数据格式版本。
     pub fn parse(bytes: &[u8]) -> Result<Self, SyncError> {
         let snapshot: Self = serde_json::from_slice(bytes)
-            .map_err(|err| SyncError::Format(format!("明文 JSON 解析失败：{err}")))?;
+            .map_err(|err| SyncError::Format(Reason::text(format!("明文 JSON 解析失败：{err}"))))?;
         if snapshot.schema_version > MAX_SNAPSHOT_VERSION {
             return Err(SyncError::FormatTooNew {
                 found: snapshot.schema_version,
@@ -498,7 +499,7 @@ impl SyncSnapshot {
 
     pub fn to_json(&self) -> Result<Vec<u8>, SyncError> {
         serde_json::to_vec(self)
-            .map_err(|err| SyncError::Internal(format!("同步包序列化失败：{err}")))
+            .map_err(|err| SyncError::Internal(Reason::text(format!("同步包序列化失败：{err}"))))
     }
 
     /// 排序成规范顺序，保证同样的数据序列化出来一样（平局规则、测试都靠它）。

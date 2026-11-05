@@ -2,6 +2,7 @@
 //! 系统证书库（Windows 上 reqwest 的 `default-tls` 就是 schannel），不提供“忽略
 //! 证书错误”的开关。
 
+use crate::error::{reason_keys, Reason};
 use std::time::Duration;
 
 use super::storage::StorageError;
@@ -107,8 +108,15 @@ pub fn build_client(proxy: Option<&SyncProxy>) -> Result<reqwest::Client, Storag
         }));
     match proxy {
         Some(proxy) => {
-            let mut reqwest_proxy = reqwest::Proxy::all(proxy.url())
-                .map_err(|err| StorageError::Io(format!("代理设置不合法：{err}")))?;
+            let mut reqwest_proxy = reqwest::Proxy::all(proxy.url()).map_err(|err| {
+                StorageError::Io(
+                    Reason::new(
+                        reason_keys::NET_PROXY_INVALID,
+                        format!("代理设置不合法：{err}"),
+                    )
+                    .with("cause", &err),
+                )
+            })?;
             if let Some(username) = &proxy.username {
                 reqwest_proxy =
                     reqwest_proxy.basic_auth(username, proxy.password.as_deref().unwrap_or(""));
@@ -118,18 +126,25 @@ pub fn build_client(proxy: Option<&SyncProxy>) -> Result<reqwest::Client, Storag
         // 没配代理 = 直连，不去读系统 / 环境变量里的代理（用户在 Z-SSH 里选了“不用代理”）。
         None => builder = builder.no_proxy(),
     }
-    builder
-        .build()
-        .map_err(|err| StorageError::Io(format!("HTTP 客户端创建失败：{err}")))
+    builder.build().map_err(|err| {
+        StorageError::Io(
+            Reason::new(
+                reason_keys::NET_CLIENT_BUILD,
+                format!("HTTP 客户端创建失败：{err}"),
+            )
+            .with("cause", &err),
+        )
+    })
 }
 
 /// 407：HTTP 代理要认证（访问 `http://` 地址时代理的响应会原样回到这里；访问 `https://`
 /// 地址时 CONNECT 被拒会在建立连接时就失败，走 [`map_http_error`]）。
 pub fn proxy_auth_required(status: reqwest::StatusCode) -> Option<StorageError> {
     (status == reqwest::StatusCode::PROXY_AUTHENTICATION_REQUIRED).then(|| {
-        StorageError::Io(
-            "代理要求认证，或者代理的用户名 / 密码不对（在「连接 → 默认代理」里检查）".to_owned(),
-        )
+        StorageError::Io(Reason::new(
+            reason_keys::NET_PROXY_AUTH,
+            "代理要求认证，或者代理的用户名 / 密码不对（在「连接 → 默认代理」里检查）",
+        ))
     })
 }
 
@@ -137,7 +152,7 @@ pub fn proxy_auth_required(status: reqwest::StatusCode) -> Option<StorageError> 
 pub fn retryable_status(status: reqwest::StatusCode) -> Option<StorageError> {
     let code = status.as_u16();
     let temporary = matches!(code, 408 | 429 | 500 | 502 | 503 | 504);
-    temporary.then(|| StorageError::Unavailable(format!("服务器返回 {code}")))
+    temporary.then(|| StorageError::Unavailable(server_returned(code)))
 }
 
 /// 同步包（含 Gist 接口里内嵌同步包的 JSON）最多读这么多。真实的同步包只有几十 KB
@@ -157,10 +172,10 @@ fn size_text(bytes: u64) -> String {
 }
 
 fn too_large(what: &str, limit: u64) -> StorageError {
-    StorageError::Io(format!(
+    StorageError::Io(Reason::text(format!(
         "{what}超过 {} 上限，已停止读取（存储里的对象可能不是 Z-SSH 的同步包，或者服务返回了异常内容）",
         size_text(limit)
-    ))
+    )))
 }
 
 /// 边读边数地读完响应体，超过 `limit` 立即报错、不再继续读。
@@ -211,9 +226,40 @@ pub fn map_http_error(err: reqwest::Error) -> StorageError {
         return StorageError::Timeout;
     }
     if err.is_connect() {
-        return StorageError::Io(format!("无法连接到存储服务（网络不通或代理不可用）：{err}"));
+        return StorageError::Io(
+            Reason::new(
+                reason_keys::NET_CONNECT_FAILED,
+                format!("无法连接到存储服务（网络不通或代理不可用）：{err}"),
+            )
+            .with("cause", &err),
+        );
     }
-    StorageError::Io(format!("请求失败：{err}"))
+    StorageError::Io(
+        Reason::new(reason_keys::NET_REQUEST_FAILED, format!("请求失败：{err}"))
+            .with("cause", &err),
+    )
+}
+
+/// 「服务器返回 N」。
+pub fn server_returned(code: u16) -> Reason {
+    Reason::new(
+        reason_keys::NET_SERVER_RETURNED,
+        format!("服务器返回 {code}"),
+    )
+    .with("code", code)
+}
+
+/// 存储操作（"读取" / "写入" / "删除"……）的稳定代码，给界面出英文动词用。
+pub fn action_code(action: &str) -> &'static str {
+    match action {
+        "读取" | "下载" => "read",
+        "写入" => "write",
+        "删除" => "delete",
+        "创建目录" => "mkcol",
+        "上传" => "upload",
+        "创建上传会话" => "session",
+        _ => "other",
+    }
 }
 
 #[cfg(test)]

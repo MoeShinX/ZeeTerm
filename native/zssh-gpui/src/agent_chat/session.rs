@@ -722,7 +722,7 @@ impl AgentChatDemo {
                     now_ms(),
                 ) {
                     Ok(_) => Ok(()),
-                    Err(err) => Err(err.to_string()),
+                    Err(err) => Err(crate::error_text::error_text(&err)),
                 }
             })
             .await;

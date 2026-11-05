@@ -816,36 +816,40 @@ fn load_targets_at(data_dir: &Path) -> Result<Vec<BackupTarget>, String> {
         return Ok(Vec::new());
     }
     let db = open_existing_db_at(data_dir)?;
-    backup_targets::load_targets(&db, &DpapiSealer).map_err(|err| err.to_string())
+    backup_targets::load_targets(&db, &DpapiSealer)
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 fn add_target_at(data_dir: &Path, id: String, config: StorageConfig) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
     backup_targets::add_target(&db, &DpapiSealer, Some(id), config, true)
         .map(|_| ())
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 fn update_target_at(data_dir: &Path, id: &str, config: StorageConfig) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
     backup_targets::update_target(&db, &DpapiSealer, id, config)
         .map(|_| ())
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 fn delete_target_at(data_dir: &Path, id: &str) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    backup_targets::delete_target(&db, &DpapiSealer, id).map_err(|err| err.to_string())
+    backup_targets::delete_target(&db, &DpapiSealer, id)
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 fn set_enabled_at(data_dir: &Path, id: &str, enabled: bool) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    backup_targets::set_enabled(&db, &DpapiSealer, id, enabled).map_err(|err| err.to_string())
+    backup_targets::set_enabled(&db, &DpapiSealer, id, enabled)
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 fn reset_targets_at(data_dir: &Path) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    backup_targets::reset_targets(&db, &DpapiSealer).map_err(|err| err.to_string())
+    backup_targets::reset_targets(&db, &DpapiSealer)
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 丢弃一个还没保存的新目标留下的 OneDrive 令牌。
@@ -876,7 +880,7 @@ fn sign_in_target_at(
             browser.as_ref(),
             cancel,
         ))
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 fn context_for<'a>(
@@ -915,7 +919,7 @@ pub(super) fn backup_with(
     let context = context_for(&db, sealer, data_dir)?;
     handle
         .block_on(context.backup_to_targets(password, only))
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 主同步成功之后顺带做的自动备份。失败不影响主同步：只记日志，每个目标的结果已经写进它自己的状态。
@@ -952,7 +956,7 @@ pub(super) fn restore_with(
     let context = context_for(&db, sealer, data_dir)?;
     handle
         .block_on(context.restore_from_target(id, password))
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 上次结果的一行字：时间 + 成功 / 失败原因。

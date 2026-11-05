@@ -149,7 +149,7 @@ pub(super) fn change_password_with(
     };
     handle
         .block_on(context.change_master_password(old, new))
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 impl SyncDemo {
