@@ -25,7 +25,8 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use super::discovery::{self, AgentInstall};
-use super::retry::{retry_limit_message, retry_limit_reached, RETRY_STOP_GRACE};
+use super::lifecycle::{self, random_hex};
+use super::retry::{retry_limit_message, retry_limit_reached};
 use super::translate::{translate_event, TranslateState};
 use super::{AgentConversation, AgentError, AgentEvent, AgentModel, AgentModelCatalog};
 use crate::ai::bridge::{ScopeCapability, ScopeHandle};
@@ -903,15 +904,6 @@ fn free_port() -> Result<u16, String> {
     Ok(port)
 }
 
-fn random_hex(bytes: usize) -> String {
-    let mut buf = vec![0u8; bytes];
-    // 系统随机数（BCryptGenRandom）在 Windows 10/11 上不会失败；真失败了也不能退回可预测的
-    // 令牌，宁可 panic。
-    #[allow(clippy::expect_used)]
-    getrandom::fill(&mut buf).expect("系统随机数不可用");
-    buf.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 fn basic_auth_header(user: &str, password: &str) -> String {
     use base64::Engine as _;
     let raw = format!("{user}:{password}");
@@ -1471,39 +1463,40 @@ fn end_turn(conv: &Conversation, inner: &mut ConvInner) -> bool {
 ///
 /// 正常情况下 opencode 中止后会自己发 `session.idle`，由 [`end_turn`] 先发错误再发 TurnEnd；
 /// 万一它没发（中止请求失败、事件丢了），宽限期过后由我们收尾；如果当前没有 tokio
-/// 运行时可用，就立刻收尾。
+/// 运行时可用，就立刻收尾（这一步是同步的，`lifecycle` 里的编排只能用 future 表达）。
 fn stop_after_retry_limit(
     shared: &Shared,
     session_id: &str,
     conv: &Arc<Conversation>,
     inner: &mut ConvInner,
 ) {
-    let Ok(handle) = tokio::runtime::Handle::try_current() else {
-        if end_turn(conv, inner) {
-            conv.emit(AgentEvent::TurnEnd);
-        }
-        return;
-    };
     let http = shared.http.clone();
     let session_id = session_id.to_string();
     let conv = Arc::clone(conv);
     let seq = inner.turn_seq;
     // 中止请求单独发，不占宽限期：它慢或失败都不影响下面的兜底收尾。
-    handle.spawn(async move {
+    let abort = async move {
         if let Err(err) = post_abort(&http, &session_id).await {
             tracing::warn!(error = %err, "重试超限后中止回合失败");
         }
-    });
-    handle.spawn(async move {
-        tokio::time::sleep(RETRY_STOP_GRACE).await;
-        let Ok(mut inner) = conv.inner.lock() else {
+    };
+    let fallback_conv = Arc::clone(&conv);
+    let fallback = async move {
+        let Ok(mut inner) = fallback_conv.inner.lock() else {
             return;
         };
         // 还是同一个回合、且还没收尾，才由我们收尾。
-        if inner.turn_seq == seq && end_turn(&conv, &mut inner) {
+        if inner.turn_seq == seq && end_turn(&fallback_conv, &mut inner) {
+            fallback_conv.emit(AgentEvent::TurnEnd);
+        }
+    };
+    if tokio::runtime::Handle::try_current().is_err() {
+        if end_turn(&conv, inner) {
             conv.emit(AgentEvent::TurnEnd);
         }
-    });
+        return;
+    }
+    lifecycle::stop_after_retry_limit(abort, fallback);
 }
 
 fn event_session_id(event: &Value) -> Option<&str> {
@@ -1557,6 +1550,7 @@ async fn idle_watch(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::ai::agent::retry::RETRY_STOP_GRACE;
     use std::sync::atomic::AtomicUsize;
 
     #[test]

@@ -9,6 +9,7 @@ pub mod codex;
 pub mod config;
 pub mod discovery;
 pub mod download;
+pub(crate) mod lifecycle;
 pub mod opencode;
 pub mod process;
 pub mod retry;

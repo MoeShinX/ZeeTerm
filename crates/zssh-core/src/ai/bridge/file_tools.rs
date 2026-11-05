@@ -13,9 +13,10 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::{
-    now_millis, random_hex, ApprovalRequest, AuditEntry, Bridge, ExecDecision, ExecGate,
-    FileApproval, RequestTicket, Scope,
+    now_millis, ApprovalRequest, AuditEntry, Bridge, ExecDecision, ExecGate, FileApproval, FsHost,
+    RequestTicket, Scope,
 };
+use crate::ai::agent::lifecycle::random_hex;
 use crate::ai::files::{
     execute_write_checked, prepare_write, tool_list_dir, tool_read_file, tool_stat, RemoteFs,
 };
@@ -46,6 +47,14 @@ struct FileAudit {
 }
 
 impl Bridge {
+    /// 文件工具只依赖文件能力（[`FsHost`]）：把宿主收窄成那个 trait，编译期就能拦住
+    /// "文件工具顺手用了执行 / 记忆 / 上报"这类扩散。trait 对象之间不能直接上转型，
+    /// 所以这里借 blanket impl（任何 [`super::BridgeHost`] 都具备四种能力）返回
+    /// `impl FsHost`。
+    fn fs_capability(&self) -> &(impl FsHost + ?Sized + '_) {
+        self.host.as_ref()
+    }
+
     /// 四个文件工具的入口（`dispatch` 按方法名转进来）。
     pub(super) async fn file_tool(
         &self,
@@ -252,7 +261,7 @@ impl Bridge {
             .resolve_exec_target(scope, target_id, tool, key, call_id)
             .await?;
         // 票据是解析会话之前记下的（连接可能要等好一会儿）。
-        let fs = self.host.remote_fs(&resolved.exec_id).await?;
+        let fs = self.fs_capability().remote_fs(&resolved.exec_id).await?;
         Ok((resolved.summary, fs, resolved.ticket, resolved.session_id))
     }
 
@@ -475,7 +484,7 @@ impl Bridge {
             params.create_only,
             now_millis() / 1000,
             &random_hex(4),
-            self.host.write_backup_keep(),
+            self.fs_capability().write_backup_keep(),
             &checkpoint,
         )
         .await;

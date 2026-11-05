@@ -37,10 +37,11 @@ use tokio::task::JoinHandle;
 
 use super::config::McpServerSpec;
 use super::discovery::{self, AgentInstall};
+use super::lifecycle;
 use super::process::{
     drain_tail_lines, idle_tick, kill_process_tree, tail_buf, tail_text, TailBuf, TAIL_LINES,
 };
-use super::retry::{retry_limit_message, retry_limit_reached, RETRY_STOP_GRACE};
+use super::retry::{retry_limit_message, retry_limit_reached};
 use super::{AgentConversation, AgentError, AgentEvent, AgentModel, AgentModelCatalog};
 use approval::Decision;
 use protocol::{method, ErrorResponse, Incoming, Request, Response, RpcError};
@@ -983,27 +984,26 @@ fn stop_after_retry_limit(
     thread: &Arc<ThreadEntry>,
     seq: u64,
 ) {
-    let Ok(handle) = tokio::runtime::Handle::try_current() else {
-        // 没有 tokio 运行时（只会在单测里出现）：打断发不出去，直接兜底收尾。
+    // 没有 tokio 运行时（只会在单测里出现）：打断发不出去，直接兜底收尾。
+    if tokio::runtime::Handle::try_current().is_err() {
         retry_stop_fallback_now(thread, seq);
         return;
-    };
-    {
+    }
+    let abort = {
         let shared = Arc::clone(shared);
         let thread = Arc::clone(thread);
         let thread_id = thread_id.to_string();
-        handle.spawn(async move {
+        async move {
             if let Err(err) = stop_turn(&shared, &thread_id, &thread, Some(seq)).await {
                 tracing::warn!(error = %err, "重试超限后打断回合失败");
             }
-        });
-    }
-    {
+        }
+    };
+    let fallback = {
         let shared = Arc::clone(shared);
         let thread = Arc::clone(thread);
         let thread_id = thread_id.to_string();
-        handle.spawn(async move {
-            tokio::time::sleep(RETRY_STOP_GRACE).await;
+        async move {
             if let Some(abandoned) = retry_stop_fallback_now(&thread, seq) {
                 // codex 没听打断：再试一次，免得旧回合在那边继续占着 thread（尽力而为）。
                 let _ = shared
@@ -1014,8 +1014,9 @@ fn stop_after_retry_limit(
                     )
                     .await;
             }
-        });
-    }
+        }
+    };
+    lifecycle::stop_after_retry_limit(abort, fallback);
 }
 
 /// 兜底收尾：还是同一个回合、而且 `turn/completed` 还没来，就由我们发 `Error` + `TurnEnd`，
@@ -1465,6 +1466,7 @@ pub fn empty_response_hint() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::agent::retry::RETRY_STOP_GRACE;
 
     #[test]
     fn model_refs_split_into_id_and_effort() {

@@ -15,8 +15,13 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Notify, Semaphore};
 
 mod file_tools;
+pub mod host;
 pub mod terminal_write;
 
+pub use host::{CapabilityHost, ExecHost, FsHost, MemoryHost, ReportHost};
+
+// 随机令牌只有一处实现（和三个智能体驱动共用，见 `ai::agent::lifecycle`）。
+use crate::ai::agent::lifecycle::random_hex;
 use crate::ai::files::{FileDiff, RemoteFs};
 use crate::ai::protocol::{
     clamp_max_lines, clamp_timeout_secs, method_carries_exec_id, ErrorBody, ExecLocation,
@@ -213,7 +218,17 @@ pub enum ExecPlacement {
     Background { reason: String },
 }
 
-/// 会话执行：在会话所在的连接上开 exec 通道 / 读环形缓冲 / 能否在终端里跑。
+/// 宿主契约：执行、文件、主机记忆、上报四种能力的并集。
+///
+/// 各能力另有独立的 trait（[`ExecHost`] / [`FsHost`] / [`MemoryHost`] / [`ReportHost`]，
+/// 见 [`host`] 模块）：每个能力只声明它必须回答的问题，只依赖一种能力的代码可以把参数
+/// 收窄成那个 trait。任何 `BridgeHost` 都通过 blanket impl 自动具备四种能力，所以现有
+/// 宿主（native 侧的 `NativeBridgeHost`、测试替身）不用改。
+///
+/// 为什么这里不写成 `trait BridgeHost: ExecHost + FsHost + MemoryHost + ReportHost`：
+/// 宿主是直接 `impl BridgeHost for ...` 一次写完所有方法的，组合关系会让这种写法同时
+/// 需要四个 blanket impl，Rust 的 coherence 检查不允许两者共存（会要求每个宿主拆开
+/// 实现）。保留这个组合名是刻意的：它是不改宿主就能加能力的唯一办法。
 pub trait BridgeHost: Send + Sync {
     /// 一个逻辑目标这次该用哪个会话执行（AI-SCOPE-2 第 1 节）。
     ///
@@ -487,15 +502,6 @@ pub(crate) fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
-}
-
-pub(crate) fn random_hex(bytes: usize) -> String {
-    let mut buf = vec![0u8; bytes];
-    // 系统随机数（BCryptGenRandom）在 Windows 10/11 上不会失败；真失败了也不能退回可预测的
-    // 令牌，宁可 panic。
-    #[allow(clippy::expect_used)]
-    getrandom::fill(&mut buf).expect("系统随机数不可用");
-    buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// 恒定时间比较两个令牌（R-8 第 11 节）。

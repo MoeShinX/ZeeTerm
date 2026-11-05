@@ -32,10 +32,11 @@ use tokio::task::JoinHandle;
 
 use super::config::McpServerSpec;
 use super::discovery;
+use super::lifecycle::{self, random_hex};
 use super::process::{
     drain_tail_lines, idle_tick, kill_process_tree, push_tail, tail_buf, tail_text, TailBuf,
 };
-use super::retry::{retry_limit_message, retry_limit_reached, RETRY_STOP_GRACE};
+use super::retry::{retry_limit_message, retry_limit_reached};
 use super::{AgentConversation, AgentError, AgentEvent, AgentModel, AgentModelCatalog};
 use config::{ClaudeFlags, ModelChoice, StartArgs};
 use translate::{TranslateState, TurnStats};
@@ -286,15 +287,6 @@ fn remove_stale_mcp_configs_with(
         tracing::info!(removed, "清掉上次异常退出留下的 MCP 配置文件");
     }
     removed
-}
-
-fn random_hex(bytes: usize) -> String {
-    let mut buf = vec![0u8; bytes];
-    // 系统随机数（BCryptGenRandom）在 Windows 10/11 上不会失败；真失败了也不能退回可预测的
-    // 令牌，宁可 panic。
-    #[allow(clippy::expect_used)]
-    getrandom::fill(&mut buf).expect("系统随机数不可用");
-    buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl ClaudeConversation {
@@ -662,7 +654,7 @@ impl ClaudeConversation {
     fn stop_after_retry_limit(&self, seq: u64) {
         let weak = self.this.lock().unwrap_or_else(|p| p.into_inner()).clone();
         let for_stop = weak.clone();
-        tokio::spawn(async move {
+        let abort = async move {
             if let Some(conversation) = for_stop.upgrade() {
                 // 这个回合已经收尾、用户开了新回合：别把中断打到新回合上。
                 if conversation.lock().turn_seq != seq {
@@ -672,13 +664,13 @@ impl ClaudeConversation {
                     tracing::warn!(error = %err, "重试超限后中断回合失败");
                 }
             }
-        });
-        tokio::spawn(async move {
-            tokio::time::sleep(RETRY_STOP_GRACE).await;
+        };
+        let fallback = async move {
             if let Some(conversation) = weak.upgrade() {
                 conversation.retry_stop_fallback(seq).await;
             }
-        });
+        };
+        lifecycle::stop_after_retry_limit(abort, fallback);
     }
 
     /// 重试超限后的兜底收尾：宽限期过了还是同一个回合、而且 `result` 还没来，就由我们
@@ -990,6 +982,7 @@ impl Drop for ClaudeConversation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::agent::retry::RETRY_STOP_GRACE;
 
     /// K06：崩溃留下的含令牌 MCP 配置，下次启动只删主人进程已不在的。
     #[test]
