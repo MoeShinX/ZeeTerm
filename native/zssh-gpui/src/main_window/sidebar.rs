@@ -1,5 +1,5 @@
 //! 左侧主机树（侧栏）：抬头一行小图标（新建主机、新建分组）、搜索框、「全部主机 / 分组 / 主机 / 未分组」、
-//! 属性面板、底部固定的入口区（设置与管理、凭据）、拖动调宽。
+//! 属性面板、底部固定的入口区（设置与管理）、拖动调宽。
 //!
 //! 主机页和终端页共用同一棵树（0.2.14 也是）。单击主机选中并展开底部的只读属性，双击连接，右键菜单
 //! 同主机页；分组行单击是选中、箭头才展开（双击行也展开 / 收起）；主机 / 分组可以拖动换分组、调顺序。
@@ -68,8 +68,6 @@ pub(super) enum SidebarMsg {
     SettingsTooltip,
     /// 底部设置入口图标旁边的字。
     SettingsLabel,
-    /// 底部凭据入口的悬停提示。
-    Credentials,
     /// 搜索没有结果。
     NoMatch,
     /// 折叠列 / 标题栏的「展开侧边栏」。
@@ -101,7 +99,6 @@ impl Msg for SidebarMsg {
             Self::ThemeFollowSystem => "跟随系统",
             Self::SettingsTooltip => "设置与管理 (Ctrl+,)",
             Self::SettingsLabel => "设置",
-            Self::Credentials => "凭据",
             Self::NoMatch => "没有匹配的主机",
             Self::ExpandSidebar => "展开侧边栏",
             Self::Properties => "属性",
@@ -124,7 +121,6 @@ impl Msg for SidebarMsg {
             Self::ThemeFollowSystem => "Follow System",
             Self::SettingsTooltip => "Settings & Management (Ctrl+,)",
             Self::SettingsLabel => "Settings",
-            Self::Credentials => "Credentials",
             Self::NoMatch => "No matching hosts",
             Self::ExpandSidebar => "Expand Sidebar",
             Self::Properties => "Properties",
@@ -147,7 +143,6 @@ enum HeaderKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FooterKind {
     Settings,
-    Credentials,
 }
 
 /// 抬头上的一个图标按钮：稳定 id、悬停提示、点了做什么。
@@ -183,7 +178,7 @@ const HEADER_ACTIONS: [HeaderAction; 2] = [
 struct FooterAction {
     id: &'static str,
     tooltip: SidebarMsg,
-    /// 图标旁边的字（设置按钮是「图标 + 设置」，钥匙只有图标）。
+    /// 图标旁边的字（设置按钮是「图标 + 设置」）。
     label: Option<SidebarMsg>,
     kind: FooterKind,
 }
@@ -192,7 +187,6 @@ impl FooterAction {
     fn icon(&self) -> Icon {
         match self.kind {
             FooterKind::Settings => crate::icons::gear_icon(),
-            FooterKind::Credentials => Icon::new(crate::icons::Ico::KeyRound),
         }
     }
 }
@@ -248,21 +242,13 @@ impl ThemeChoice {
     }
 }
 
-/// 侧栏底部左下角：设置与管理、凭据直达。
-const FOOTER_ACTIONS: [FooterAction; 2] = [
-    FooterAction {
-        id: "sidebar-settings",
-        tooltip: SidebarMsg::SettingsTooltip,
-        label: Some(SidebarMsg::SettingsLabel),
-        kind: FooterKind::Settings,
-    },
-    FooterAction {
-        id: "sidebar-credentials",
-        tooltip: SidebarMsg::Credentials,
-        label: None,
-        kind: FooterKind::Credentials,
-    },
-];
+/// 侧栏底部左下角：设置与管理（凭据在设置里，不单独放入口）。
+const FOOTER_ACTIONS: [FooterAction; 1] = [FooterAction {
+    id: "sidebar-settings",
+    tooltip: SidebarMsg::SettingsTooltip,
+    label: Some(SidebarMsg::SettingsLabel),
+    kind: FooterKind::Settings,
+}];
 
 /// 名字里搜索词（小写）出现的位置（字节范围）；转小写后长度变了的少数字符就不标，宁可不标也别标错。
 pub fn match_ranges(text: &str, term: &str) -> Vec<Range<usize>> {
@@ -541,7 +527,7 @@ impl MainWindow {
             .child(resize)
     }
 
-    /// 侧栏底部固定的入口区：设置与管理（齿轮）、凭据（钥匙）。侧栏折叠时这里看不见，
+    /// 侧栏底部固定的入口区：设置与管理（齿轮）。侧栏折叠时这里看不见，
     /// 标题栏会补一个齿轮（见 `titlebar`）。
     fn render_sidebar_footer(&self, tokens: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
@@ -561,11 +547,6 @@ impl MainWindow {
                 footer_button(action, tokens, brand, move |_, window, cx| {
                     entity.update(cx, |this, cx| match kind {
                         FooterKind::Settings => this.toggle_settings(window, cx),
-                        FooterKind::Credentials => this.open_settings_section(
-                            crate::settings_nav::SettingsSection::Credentials,
-                            window,
-                            cx,
-                        ),
                     });
                 })
             }))
@@ -1102,10 +1083,9 @@ fn footer_button(
         .tooltip(move |window, cx| {
             gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
         })
-        // 设置齿轮用品牌紫（和首页标题同色系），钥匙照常跟文字色。
+        // 设置齿轮用品牌紫（和首页标题同色系）。
         .child(match action.kind {
             FooterKind::Settings => action.icon().text_color(brand).size_4(),
-            FooterKind::Credentials => action.icon().size_4(),
         })
         .children(action.label.map(|label| {
             div()
@@ -1371,15 +1351,11 @@ mod tests {
     }
 
     #[test]
-    fn the_sidebar_footer_has_settings_and_credentials_with_tooltips() {
+    fn the_sidebar_footer_has_only_settings_with_a_tooltip() {
         let tips: Vec<_> = FOOTER_ACTIONS.iter().map(|a| t(a.tooltip)).collect();
-        assert_eq!(tips, ["设置与管理 (Ctrl+,)", "凭据"]);
+        assert_eq!(tips, ["设置与管理 (Ctrl+,)"]);
         let labels: Vec<_> = FOOTER_ACTIONS.iter().map(|a| a.label.map(t)).collect();
-        assert_eq!(
-            labels,
-            [Some("设置"), None],
-            "设置是图标加文字，钥匙只有图标"
-        );
+        assert_eq!(labels, [Some("设置")], "设置是图标加文字");
     }
 
     #[test]
@@ -1413,7 +1389,6 @@ mod tests {
         assert_eq!(SidebarMsg::ThemeFollowSystem.zh(), "跟随系统");
         assert_eq!(SidebarMsg::SettingsTooltip.zh(), "设置与管理 (Ctrl+,)");
         assert_eq!(SidebarMsg::SettingsLabel.zh(), "设置");
-        assert_eq!(SidebarMsg::Credentials.zh(), "凭据");
         assert_eq!(SidebarMsg::NoMatch.zh(), "没有匹配的主机");
         assert_eq!(SidebarMsg::ExpandSidebar.zh(), "展开侧边栏");
         assert_eq!(SidebarMsg::Properties.zh(), "属性");
@@ -1432,7 +1407,6 @@ mod tests {
             SidebarMsg::ThemeFollowSystem,
             SidebarMsg::SettingsTooltip,
             SidebarMsg::SettingsLabel,
-            SidebarMsg::Credentials,
             SidebarMsg::NoMatch,
             SidebarMsg::ExpandSidebar,
             SidebarMsg::Properties,
