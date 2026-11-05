@@ -814,6 +814,12 @@ pub mod keys {
         CT_NO_JUMP = "conntest.no_jump";
         CT_RESET_AFTER = "conntest.reset_after";
         CT_READ_FAILED = "conntest.read_failed";
+        SYNC_RECORD_NO_UID = "sync.record_no_uid";
+        SYNC_HOST_PROTOCOL_UNKNOWN = "sync.host_protocol_unknown";
+        SYNC_HOST_OPTIONS_BAD = "sync.host_options_bad";
+        SYNC_ENDPOINT_KIND_UNKNOWN = "sync.endpoint_kind_unknown";
+        SYNC_ENDPOINT_OPTIONS_BAD = "sync.endpoint_options_bad";
+        SYNC_ENDPOINT_INVALID = "sync.endpoint_invalid";
         // @generated-keys-end
     }
 }

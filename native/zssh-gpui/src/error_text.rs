@@ -722,11 +722,11 @@ fn host_key_advice_en(source: &str, hint: &str) -> String {
 /// X11 失败写进终端的那一行（不含颜色）：`X11: <原因和怎么办>`，跟随界面语言。
 /// 启动时用 [`zssh_core::x11::set_notice_renderer`] 装给核心库。
 pub(crate) fn x11_notice_line(failure: &zssh_core::x11::X11Failure) -> String {
-    let lang = current();
-    match lang {
-        Lang::Zh => format!("X11：{}", failure.advice()),
-        Lang::En => format!("X11: {}", x11_advice_en(failure)),
-    }
+    let advice = match current() {
+        Lang::Zh => failure.advice(),
+        Lang::En => x11_advice_en(failure),
+    };
+    fill(pick(current(), &ExtraMsg::X11Notice), &[("advice", advice)]).unwrap_or_default()
 }
 
 fn x11_advice_en(failure: &zssh_core::x11::X11Failure) -> String {
@@ -858,6 +858,7 @@ enum ExtraMsg {
     StageHandshake,
     StageTunnel,
     HopDetail,
+    X11Notice,
 }
 
 impl Msg for ExtraMsg {
@@ -873,6 +874,7 @@ impl Msg for ExtraMsg {
             Self::StageHandshake => "SSH 握手或认证",
             Self::StageTunnel => "经跳板机 {via} 打开转发通道",
             Self::HopDetail => "{stage}失败：{inner}",
+            Self::X11Notice => "X11：{advice}",
         }
     }
 
@@ -888,6 +890,7 @@ impl Msg for ExtraMsg {
             Self::StageHandshake => "SSH handshake or authentication",
             Self::StageTunnel => "Opening a forwarding channel through jump host {via}",
             Self::HopDetail => "{stage} failed: {inner}",
+            Self::X11Notice => "X11: {advice}",
         }
     }
 }

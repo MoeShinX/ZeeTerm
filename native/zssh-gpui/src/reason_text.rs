@@ -829,6 +829,20 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "conntest.no_jump" => "There is no jump host",
         "conntest.reset_after" => "The connection was reset by the peer right after connecting",
         "conntest.read_failed" => "Reading failed after connecting: {cause}",
+        "sync.record_no_uid" => "The {entity} record has no uid",
+        "sync.host_protocol_unknown" => {
+            "Host \"{name}\" uses protocol \"{protocol}\", which this version does not recognize; please update ZeeTerm first"
+        }
+        "sync.host_options_bad" => "The protocol options of host \"{name}\" have the wrong format",
+        "sync.endpoint_kind_unknown" => {
+            "ZeePilot endpoint \"{name}\" uses type \"{kind}\", which this version does not recognize; please update ZeeTerm first"
+        }
+        "sync.endpoint_options_bad" => {
+            "The options of ZeePilot endpoint \"{name}\" have the wrong format"
+        }
+        "sync.endpoint_invalid" => {
+            "The name or address of ZeePilot endpoint \"{name}\" is not valid"
+        }
         _ => return None,
     })
 }
@@ -841,7 +855,7 @@ pub(crate) fn sentence(key: &str, params: &[(&'static str, String)]) -> Option<S
     let params = if params.iter().any(|(name, _)| {
         matches!(
             *name,
-            "fixes" | "action" | "stage" | "io_reason" | "source" | "tried_codes"
+            "fixes" | "action" | "stage" | "io_reason" | "source" | "tried_codes" | "entity_code"
         )
     }) {
         expanded = params.to_vec();
@@ -855,6 +869,17 @@ pub(crate) fn sentence(key: &str, params: &[(&'static str, String)]) -> Option<S
                 "fixes" => *value = name_fixes_en(value),
                 "action" => *value = action_en(value),
                 "stage" => *value = stage_en(value),
+                "entity_code" => extra.push((
+                    "entity",
+                    match value.as_str() {
+                        "group" => "group",
+                        "host" => "host",
+                        "credential" => "credential",
+                        "proxy" => "proxy",
+                        _ => "ZeePilot endpoint",
+                    }
+                    .to_owned(),
+                )),
                 "io_reason" => *value = io_reason_en(value),
                 "tried_codes" => extra.push((
                     "tried",
@@ -881,7 +906,13 @@ pub(crate) fn sentence(key: &str, params: &[(&'static str, String)]) -> Option<S
         if let Some((_, codes)) = expanded.iter().find(|(name, _)| *name == "remaining_codes") {
             extra.push(("remaining", crate::error_text::offered_methods_en(codes)));
         }
-        expanded.extend(extra);
+        // 展开出来的值要盖掉同名的原参数（`fill` 取第一个同名的）。
+        for (name, value) in extra {
+            match expanded.iter_mut().find(|(key, _)| *key == name) {
+                Some(slot) => slot.1 = value,
+                None => expanded.push((name, value)),
+            }
+        }
         expanded.as_slice()
     } else {
         params

@@ -4,7 +4,7 @@
 //! 删掉的记录从库里移除；被引用的记录删了，引用已经由合并阶段置空，这里不会
 //! 因为外键失败。
 
-use crate::error::Reason;
+use crate::error::{reason_keys, Reason};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -71,11 +71,26 @@ fn delete_missing(
     Ok(deleted)
 }
 
+/// 记录种类的稳定代码（界面据此出英文名词）。
+fn entity_code(entity: &str) -> &'static str {
+    match entity {
+        "分组" => "group",
+        "主机" => "host",
+        "凭据" => "credential",
+        "代理" => "proxy",
+        _ => "endpoint",
+    }
+}
+
 fn require_uid(entity: &str, uid: &str) -> Result<(), SyncError> {
     if uid.trim().is_empty() {
-        return Err(SyncError::InvalidData(Reason::text(format!(
-            "{entity}记录缺少 uid"
-        ))));
+        return Err(SyncError::InvalidData(
+            Reason::new(
+                reason_keys::SYNC_RECORD_NO_UID,
+                format!("{entity}记录缺少 uid"),
+            )
+            .with("entity_code", entity_code(entity)),
+        ));
     }
     Ok(())
 }
@@ -86,17 +101,27 @@ fn require_uid(entity: &str, uid: &str) -> Result<(), SyncError> {
 /// 这台主机就连不上、也没法编辑了。
 fn check_host_protocol(host: &super::package::HostRecord) -> Result<(), SyncError> {
     crate::model::Protocol::parse(&host.protocol).map_err(|_| {
-        SyncError::InvalidData(Reason::text(format!(
-            "主机「{}」用了这个版本不认识的协议「{}」，请先升级 ZeeTerm",
-            host.name, host.protocol
-        )))
+        SyncError::InvalidData(
+            Reason::new(
+                reason_keys::SYNC_HOST_PROTOCOL_UNKNOWN,
+                format!(
+                    "主机「{}」用了这个版本不认识的协议「{}」，请先升级 ZeeTerm",
+                    host.name, host.protocol
+                ),
+            )
+            .with("name", &host.name)
+            .with("protocol", &host.protocol),
+        )
     })?;
     if let Some(options) = &host.protocol_options {
         if !options.is_object() {
-            return Err(SyncError::InvalidData(Reason::text(format!(
-                "主机「{}」的协议选项格式不对",
-                host.name
-            ))));
+            return Err(SyncError::InvalidData(
+                Reason::new(
+                    reason_keys::SYNC_HOST_OPTIONS_BAD,
+                    format!("主机「{}」的协议选项格式不对", host.name),
+                )
+                .with("name", &host.name),
+            ));
         }
     }
     Ok(())
@@ -120,24 +145,37 @@ fn host_options_text(host: &super::package::HostRecord) -> Result<Option<String>
 /// 导入报一个看不懂的数据库错误。
 fn check_ai_endpoint(endpoint: &AiEndpointRecord) -> Result<(), SyncError> {
     crate::ai::agent::builtin::config::EndpointKind::parse(&endpoint.kind).map_err(|_| {
-        SyncError::InvalidData(Reason::text(format!(
-            "ZeePilot 接口「{}」用了这个版本不认识的类型「{}」，请先升级 ZeeTerm",
-            endpoint.name, endpoint.kind
-        )))
+        SyncError::InvalidData(
+            Reason::new(
+                reason_keys::SYNC_ENDPOINT_KIND_UNKNOWN,
+                format!(
+                    "ZeePilot 接口「{}」用了这个版本不认识的类型「{}」，请先升级 ZeeTerm",
+                    endpoint.name, endpoint.kind
+                ),
+            )
+            .with("name", &endpoint.name)
+            .with("kind", &endpoint.kind),
+        )
     })?;
     if !endpoint.overrides.is_object() || !endpoint.openai_options.is_object() {
-        return Err(SyncError::InvalidData(Reason::text(format!(
-            "ZeePilot 接口「{}」的选项格式不对",
-            endpoint.name
-        ))));
+        return Err(SyncError::InvalidData(
+            Reason::new(
+                reason_keys::SYNC_ENDPOINT_OPTIONS_BAD,
+                format!("ZeePilot 接口「{}」的选项格式不对", endpoint.name),
+            )
+            .with("name", &endpoint.name),
+        ));
     }
     if endpoint.name.trim().is_empty()
         || !crate::ai::agent::builtin::config::valid_base_url(&endpoint.base_url)
     {
-        return Err(SyncError::InvalidData(Reason::text(format!(
-            "ZeePilot 接口「{}」的名字或地址不合格",
-            endpoint.name
-        ))));
+        return Err(SyncError::InvalidData(
+            Reason::new(
+                reason_keys::SYNC_ENDPOINT_INVALID,
+                format!("ZeePilot 接口「{}」的名字或地址不合格", endpoint.name),
+            )
+            .with("name", &endpoint.name),
+        ));
     }
     Ok(())
 }
