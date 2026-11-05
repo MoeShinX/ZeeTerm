@@ -332,6 +332,7 @@ fn a_new_release_goes_from_manifest_to_a_confirmed_install_with_the_stub_launche
     let args = vec!["--minimized".to_owned()];
     let (state, launched) = advance_install(
         InstallState::Idle,
+        false,
         || build_install_plan(&path, &cache, "1.4.0", true, &args, &sha256),
         |_| unreachable!("第一次点击不能启动"),
     );
@@ -339,6 +340,7 @@ fn a_new_release_goes_from_manifest_to_a_confirmed_install_with_the_stub_launche
     let mut launched_with: Vec<Vec<String>> = Vec::new();
     let (state, launched) = advance_install(
         state,
+        false,
         || unreachable!("计划已生成，不该重做"),
         |plan| {
             // 启动前复验：文件还是验签的那份；通过后才轮到（桩）启动函数。

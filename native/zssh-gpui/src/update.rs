@@ -139,6 +139,9 @@ pub struct UpdateDemo {
     /// 安装后是否重启；只在生成安装计划时使用。
     restart: bool,
     install: InstallState,
+    /// 这个窗口里已经点过一次「安装 / 确认安装」：之后重试（下载失败、启动失败、取消后再来）
+    /// 直接装，不再让用户确认第二遍。
+    install_confirmed: bool,
     /// 安装前安全检查拦下的原因；下一次点「安装 / 确认安装」时重算。
     blocked: Option<String>,
     /// 「退出后安装」的成功提示；排队状态本身在进程级队列里，关窗不丢。
@@ -178,6 +181,7 @@ impl UpdateDemo {
             ime_key,
             restart: true,
             install: InstallState::Idle,
+            install_confirmed: false,
             blocked: None,
             queued: None,
             generation: 0,
@@ -363,10 +367,13 @@ impl UpdateDemo {
         let restart = self.restart;
         let (state, launched) = advance_install(
             std::mem::take(&mut self.install),
+            self.install_confirmed,
             || build_install_plan(&installer, &cache_root, &version, restart, &args, &sha256),
             launch_installer,
         );
         self.install = state;
+        // 用户已经点过一次「安装」：之后的重试不再要求二次确认。
+        self.install_confirmed = true;
         if launched {
             // 安装器已经立即启动了，退出回调里不能再启动一次排队的计划。
             clear_pending_install();
@@ -605,9 +612,12 @@ impl InstallState {
 ///
 /// 第一次点击只生成计划并进入 [`InstallState::Confirming`]；再点一次才调用
 /// `launch`。返回 `(新状态, 是否已启动安装器)`，调用方据此决定是否退出。
+/// `confirmed_before` 为真（这个窗口里已经确认过一次）时，重试直接生成计划并启动，
+/// 不再要第二遍确认——下载失败 / 启动失败后重来是同一个决定。
 /// `launch` 由调用方注入，测试里换成假实现，不会真的启动进程。
 fn advance_install(
     state: InstallState,
+    confirmed_before: bool,
     plan: impl FnOnce() -> Result<InstallPlan, String>,
     launch: impl FnOnce(&InstallPlan) -> Result<(), String>,
 ) -> (InstallState, bool) {
@@ -620,6 +630,17 @@ fn advance_install(
                 InstallState::Failed(format!("启动安装器失败：{err}")),
                 false,
             ),
+        },
+        // 这次窗口里已经确认过：重试直接装。
+        _ if confirmed_before => match plan() {
+            Ok(plan) => match launch(&plan) {
+                Ok(()) => (InstallState::Launched, true),
+                Err(err) => (
+                    InstallState::Failed(format!("启动安装器失败：{err}")),
+                    false,
+                ),
+            },
+            Err(err) => (InstallState::Failed(format!("准备安装失败：{err}")), false),
         },
         _ => match plan() {
             Ok(plan) => (InstallState::Confirming(plan), false),
@@ -1848,6 +1869,7 @@ mod tests {
         // 第一次点击：只生成计划，不调用启动。
         let (state, launched) = advance_install(
             InstallState::Idle,
+            false,
             || Ok(plan.clone()),
             |_| {
                 launches += 1;
@@ -1862,6 +1884,7 @@ mod tests {
         // 第二次点击：才真正把计划交给启动函数。
         let (state, launched) = advance_install(
             state,
+            false,
             || Err("已经有计划，不该重新规划".to_owned()),
             |launched_plan| {
                 assert_eq!(launched_plan, &plan);
@@ -1875,9 +1898,28 @@ mod tests {
     }
 
     #[test]
+    fn a_retry_after_confirming_launches_without_asking_again() {
+        // 这个窗口里已经确认过一次（下载失败 / 启动失败后重来）：直接生成计划并启动。
+        let mut launches = 0;
+        let (state, launched) = advance_install(
+            InstallState::Failed("启动安装器失败：x".to_owned()),
+            true,
+            || Ok(sample_plan()),
+            |_| {
+                launches += 1;
+                Ok(())
+            },
+        );
+        assert!(launched, "重试不再停在确认阶段");
+        assert_eq!(launches, 1);
+        assert_eq!(state, InstallState::Launched);
+    }
+
+    #[test]
     fn plan_failure_keeps_the_error_and_does_not_arm_confirmation() {
         let (state, launched) = advance_install(
             InstallState::Idle,
+            false,
             || Err("安装包不存在".to_owned()),
             |_| panic!("计划失败时不能启动安装器"),
         );
@@ -1893,6 +1935,7 @@ mod tests {
     fn launch_failure_reports_the_code_and_does_not_exit() {
         let (state, launched) = advance_install(
             InstallState::Confirming(sample_plan()),
+            false,
             || Err("已经有计划，不该重新规划".to_owned()),
             |_| Err("ShellExecuteW 返回错误码 5".to_owned()),
         );
