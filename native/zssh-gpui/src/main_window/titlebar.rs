@@ -19,6 +19,7 @@ use gpui_kit::*;
 use super::MainWindow;
 use super::nav::MainView;
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::terminal_workspace::{TabInfo, TabStatus};
 use crate::typography::{Role, Typo as _};
 use zssh_core::model::{Host, Protocol, parse_quick_target};
@@ -128,7 +129,7 @@ pub(super) fn tab_address_tip(host: Option<&Host>, quick_target: Option<&str>) -
         }
         let mut text = endpoint_text(host.username.trim(), address, host.port);
         if host.jump_host_id.is_some() {
-            text.push_str("（经跳板）");
+            text.push_str(t(TitlebarMsg::ViaJump));
         }
         return Some(text);
     }
@@ -151,12 +152,99 @@ fn endpoint_text(username: &str, address: &str, port: u16) -> String {
     }
 }
 
+/// 标签状态、左侧图标块、「移回主窗口」按钮的文案（主机名、地址等用户数据不走这里）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TitlebarMsg {
+    /// 标签状态：连接中。
+    Connecting,
+    /// 标签状态：已连接。
+    Connected,
+    /// 标签状态：已断开。
+    Disconnected,
+    /// 标签状态：空标签。
+    EmptyTab,
+    /// 侧栏开关的提示（侧栏收起时是「展开」）。
+    ExpandSidebar,
+    /// 侧栏开关的提示（侧栏展开时是「收起」）。
+    CollapseSidebar,
+    /// 主机页入口的提示。
+    Hosts,
+    /// AI 助手入口的提示。
+    AiAssistant,
+    /// 文件（SFTP）入口的提示。
+    Files,
+    /// 文件入口置灰时的提示。
+    FilesSshOnly,
+    /// 设置与管理入口的提示。
+    Settings,
+    /// 「+」新标签的提示。
+    NewTab,
+    /// 标签上的小圆点：AI 正在这个终端里跑命令。
+    AiRunning,
+    /// 标签上 × 的提示。
+    CloseTab,
+    /// 独立窗口「移回主窗口」按钮上的字。
+    BackToMain,
+    /// 「移回主窗口」的悬停提示。
+    BackTip,
+    /// 跳板机地址后面的说明。
+    ViaJump,
+}
+
+impl Msg for TitlebarMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::Connecting => "连接中",
+            Self::Connected => "已连接",
+            Self::Disconnected => "已断开",
+            Self::EmptyTab => "空标签",
+            Self::ExpandSidebar => "展开侧边栏",
+            Self::CollapseSidebar => "收起侧边栏",
+            Self::Hosts => "主机",
+            Self::AiAssistant => "AI 助手 (Ctrl+Shift+A)",
+            Self::Files => "文件 (Ctrl+Shift+F)",
+            Self::FilesSshOnly => "文件（仅 SSH 主机可用）",
+            Self::Settings => "设置与管理 (Ctrl+,)",
+            Self::NewTab => "新标签 (Ctrl+Shift+T)",
+            Self::AiRunning => "AI 正在这个终端里执行命令",
+            Self::CloseTab => "关闭标签",
+            Self::BackToMain => "移回主窗口",
+            Self::BackTip => "把当前标签移回主窗口（连接和传输不中断）",
+            Self::ViaJump => "（经跳板）",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::Connecting => "Connecting",
+            Self::Connected => "Connected",
+            Self::Disconnected => "Disconnected",
+            Self::EmptyTab => "Empty Tab",
+            Self::ExpandSidebar => "Expand Sidebar",
+            Self::CollapseSidebar => "Collapse Sidebar",
+            Self::Hosts => "Hosts",
+            Self::AiAssistant => "AI Assistant (Ctrl+Shift+A)",
+            Self::Files => "Files (Ctrl+Shift+F)",
+            Self::FilesSshOnly => "Files (SSH hosts only)",
+            Self::Settings => "Settings & Management (Ctrl+,)",
+            Self::NewTab => "New Tab (Ctrl+Shift+T)",
+            Self::AiRunning => "AI is running commands in this terminal",
+            Self::CloseTab => "Close Tab",
+            Self::BackToMain => "Move Back to Main Window",
+            Self::BackTip => {
+                "Move the current tab back to the main window (connection and transfers keep running)"
+            }
+            Self::ViaJump => " (via jump host)",
+        }
+    }
+}
+
 fn status_title(status: TabStatus) -> &'static str {
     match status {
-        TabStatus::Connecting => "连接中",
-        TabStatus::Connected => "已连接",
-        TabStatus::Disconnected => "已断开",
-        TabStatus::Empty => "空标签",
+        TabStatus::Connecting => t(TitlebarMsg::Connecting),
+        TabStatus::Connected => t(TitlebarMsg::Connected),
+        TabStatus::Disconnected => t(TitlebarMsg::Disconnected),
+        TabStatus::Empty => t(TitlebarMsg::EmptyTab),
     }
 }
 
@@ -272,9 +360,9 @@ impl MainWindow {
                     IconName::PanelLeftClose
                 },
                 if collapsed {
-                    "展开侧边栏"
+                    t(TitlebarMsg::ExpandSidebar)
                 } else {
-                    "收起侧边栏"
+                    t(TitlebarMsg::CollapseSidebar)
                 },
                 false,
                 true,
@@ -290,7 +378,7 @@ impl MainWindow {
             icon_button(
                 "host-page-button",
                 IconName::LayoutDashboard,
-                "主机",
+                t(TitlebarMsg::Hosts),
                 view == MainView::Vault,
                 true,
                 tokens,
@@ -305,7 +393,7 @@ impl MainWindow {
             icon_button(
                 "ai-button",
                 IconName::Bot,
-                "AI 助手 (Ctrl+Shift+A)",
+                t(TitlebarMsg::AiAssistant),
                 self.docks.ai_open && self.nav.view == MainView::Terminal,
                 true,
                 tokens,
@@ -322,9 +410,9 @@ impl MainWindow {
                 "files-button",
                 crate::icons::Ico::FolderOpen,
                 if sftp_ok {
-                    "文件 (Ctrl+Shift+F)"
+                    t(TitlebarMsg::Files)
                 } else {
-                    "文件（仅 SSH 主机可用）"
+                    t(TitlebarMsg::FilesSshOnly)
                 },
                 self.docks
                     .sftp_open_for(self.workspace.read(cx).active_tab_id())
@@ -342,7 +430,7 @@ impl MainWindow {
             icon_button(
                 "settings-button",
                 crate::icons::gear_icon().text_color(super::welcome::brand_icon_color(cx)),
-                "设置与管理 (Ctrl+,)",
+                t(TitlebarMsg::Settings),
                 view == MainView::Settings,
                 true,
                 tokens,
@@ -454,7 +542,7 @@ impl MainWindow {
                 .text_color(tokens.text_muted)
                 .cursor_pointer()
                 .hover(move |style| style.bg(hover).text_color(text))
-                .tooltip(|window, cx| Tooltip::new("新标签 (Ctrl+Shift+T)").build(window, cx))
+                .tooltip(|window, cx| Tooltip::new(t(TitlebarMsg::NewTab)).build(window, cx))
                 .child(Icon::new(IconName::Plus).size_4())
                 .on_click(move |_, window, cx| {
                     entity.update(cx, |this, cx| this.new_tab(window, cx));
@@ -626,7 +714,7 @@ impl MainWindow {
                         .rounded_full()
                         .bg(tokens.accent)
                         .tooltip(|window, cx| {
-                            Tooltip::new("AI 正在这个终端里执行命令").build(window, cx)
+                            Tooltip::new(t(TitlebarMsg::AiRunning)).build(window, cx)
                         }),
                 )
             })
@@ -646,7 +734,7 @@ impl MainWindow {
                             .group_hover(group.clone(), |style| style.opacity(0.7))
                     })
                     .hover(move |style| style.bg(hover).text_color(text).opacity(1.0))
-                    .tooltip(|window, cx| Tooltip::new("关闭标签").build(window, cx))
+                    .tooltip(|window, cx| Tooltip::new(t(TitlebarMsg::CloseTab)).build(window, cx))
                     .child(Icon::new(IconName::Close).size_3p5())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(move |_, window, cx| {
@@ -684,8 +772,6 @@ impl MainWindow {
 pub(crate) const BACK_TEXT_MIN_WIDTH: f32 = 720.0;
 /// 按钮边长（只剩图标时）/ 高度。
 const BACK_BUTTON_SIZE: f32 = 28.0;
-const BACK_LABEL: &str = "移回主窗口";
-const BACK_TIP: &str = "把当前标签移回主窗口（连接和传输不中断）";
 
 /// 独立窗口里至少有一个标签时才显示「移回主窗口」（没有标签就没有可移的东西）。
 pub(crate) fn back_button_visible(tab_count: usize) -> bool {
@@ -724,9 +810,9 @@ pub(crate) fn back_button(
             .text_color(text)
             .cursor_pointer()
             .hover(move |style| style.bg(hover))
-            .tooltip(|window, cx| Tooltip::new(BACK_TIP).build(window, cx))
+            .tooltip(|window, cx| Tooltip::new(t(TitlebarMsg::BackTip)).build(window, cx))
             .child(Icon::new(IconName::PanelLeft).size_3p5())
-            .when(show_text, |d| d.child(BACK_LABEL))
+            .when(show_text, |d| d.child(t(TitlebarMsg::BackToMain)))
             .on_click(move |_, window, cx| {
                 cx.stop_propagation();
                 on_click(window, cx);
@@ -802,11 +888,12 @@ pub(crate) fn window_controls_with(
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        BACK_TEXT_MIN_WIDTH, LeftIcon, TabTarget, back_button_shows_text, back_button_visible,
-        badge_ink, badge_label, badge_numbers, badge_tooltip, left_block_width, left_icons,
-        status_color, tab_address_tip, tab_target,
+        BACK_TEXT_MIN_WIDTH, LeftIcon, TabTarget, TitlebarMsg, back_button_shows_text,
+        back_button_visible, badge_ink, badge_label, badge_numbers, badge_tooltip,
+        left_block_width, left_icons, status_color, tab_address_tip, tab_target,
     };
     use crate::app_theme::Tokens;
+    use crate::i18n::Msg as _;
     use crate::terminal_workspace::{TabInfo, TabStatus};
     use crate::window_state::TREE_MIN_WIDTH;
     use zssh_core::model::{AuthMethod, Host, Protocol, ProtocolSettings, ProxyMode};
@@ -1060,6 +1147,52 @@ mod tests {
         assert_eq!(badge_label(1).to_string(), "1");
         assert_eq!(badge_label(9).to_string(), "9");
         assert_eq!(badge_label(10).to_string(), "10");
+    }
+
+    #[test]
+    fn every_titlebar_message_keeps_its_chinese_and_has_english() {
+        // 中文是原来那句，一字不改（含全角括号 / 逗号、ASCII 空格）。
+        assert_eq!(TitlebarMsg::Connecting.zh(), "连接中");
+        assert_eq!(TitlebarMsg::Connected.zh(), "已连接");
+        assert_eq!(TitlebarMsg::Disconnected.zh(), "已断开");
+        assert_eq!(TitlebarMsg::EmptyTab.zh(), "空标签");
+        assert_eq!(TitlebarMsg::ExpandSidebar.zh(), "展开侧边栏");
+        assert_eq!(TitlebarMsg::CollapseSidebar.zh(), "收起侧边栏");
+        assert_eq!(TitlebarMsg::Hosts.zh(), "主机");
+        assert_eq!(TitlebarMsg::AiAssistant.zh(), "AI 助手 (Ctrl+Shift+A)");
+        assert_eq!(TitlebarMsg::Files.zh(), "文件 (Ctrl+Shift+F)");
+        assert_eq!(TitlebarMsg::FilesSshOnly.zh(), "文件（仅 SSH 主机可用）");
+        assert_eq!(TitlebarMsg::Settings.zh(), "设置与管理 (Ctrl+,)");
+        assert_eq!(TitlebarMsg::NewTab.zh(), "新标签 (Ctrl+Shift+T)");
+        assert_eq!(TitlebarMsg::AiRunning.zh(), "AI 正在这个终端里执行命令");
+        assert_eq!(TitlebarMsg::CloseTab.zh(), "关闭标签");
+        assert_eq!(TitlebarMsg::BackToMain.zh(), "移回主窗口");
+        assert_eq!(
+            TitlebarMsg::BackTip.zh(),
+            "把当前标签移回主窗口（连接和传输不中断）"
+        );
+        assert_eq!(TitlebarMsg::ViaJump.zh(), "（经跳板）");
+        for key in [
+            TitlebarMsg::Connecting,
+            TitlebarMsg::Connected,
+            TitlebarMsg::Disconnected,
+            TitlebarMsg::EmptyTab,
+            TitlebarMsg::ExpandSidebar,
+            TitlebarMsg::CollapseSidebar,
+            TitlebarMsg::Hosts,
+            TitlebarMsg::AiAssistant,
+            TitlebarMsg::Files,
+            TitlebarMsg::FilesSshOnly,
+            TitlebarMsg::Settings,
+            TitlebarMsg::NewTab,
+            TitlebarMsg::AiRunning,
+            TitlebarMsg::CloseTab,
+            TitlebarMsg::BackToMain,
+            TitlebarMsg::BackTip,
+            TitlebarMsg::ViaJump,
+        ] {
+            assert!(!key.en().is_empty(), "{key:?} 缺英文");
+        }
     }
 
     #[test]

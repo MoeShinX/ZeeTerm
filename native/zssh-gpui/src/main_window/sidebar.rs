@@ -28,6 +28,7 @@ use super::vault_menus::{GroupMenuSpec, HostMenuSpec, group_menu, host_menu, ung
 use super::widgets::{act, icon_button, protocol_icon};
 use super::{GroupSel, MainWindow};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::menu_kit;
 use crate::os_icons::{self, OsIconSize};
 use crate::typography::{Role, Typo as _};
@@ -48,8 +49,94 @@ pub(super) fn info_target(enabled: bool, selected: Option<i64>) -> Option<i64> {
     selected.filter(|_| enabled)
 }
 
-/// 侧栏空了的时候的提示（对应抬头的 + 图标）。
-pub const EMPTY_HINT: &str = "还没有主机，点上方 + 添加";
+/// 侧栏自己的文案（主机名、分组名、标签名这些用户数据不走这里）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SidebarMsg {
+    /// 主机库是空的：提示点抬头的 +。
+    EmptyHint,
+    /// 抬头 / 折叠列的「新建主机」。
+    NewHost,
+    /// 抬头 / 折叠列的「新建分组」。
+    NewGroup,
+    /// 主题按钮：浅色。
+    ThemeLight,
+    /// 主题按钮：深色。
+    ThemeDark,
+    /// 主题按钮：跟随系统。
+    ThemeFollowSystem,
+    /// 底部设置入口的悬停提示。
+    SettingsTooltip,
+    /// 底部设置入口图标旁边的字。
+    SettingsLabel,
+    /// 底部凭据入口的悬停提示。
+    Credentials,
+    /// 搜索没有结果。
+    NoMatch,
+    /// 折叠列 / 标题栏的「展开侧边栏」。
+    ExpandSidebar,
+    /// 属性面板的标题。
+    Properties,
+    /// 属性面板右上角收起它的提示。
+    CollapsePanel,
+    /// 树顶部的「全部主机」。
+    AllHosts,
+    /// 属性面板密码行：隐藏明文。
+    HidePassword,
+    /// 属性面板密码行：显示明文。
+    ShowPassword,
+    /// 属性面板值的右键「复制」。
+    Copy,
+    /// 密码隐藏时右键复制项的说明。
+    RevealFirst,
+}
+
+impl Msg for SidebarMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::EmptyHint => "还没有主机，点上方 + 添加",
+            Self::NewHost => "新建主机",
+            Self::NewGroup => "新建分组",
+            Self::ThemeLight => "浅色",
+            Self::ThemeDark => "深色",
+            Self::ThemeFollowSystem => "跟随系统",
+            Self::SettingsTooltip => "设置与管理 (Ctrl+,)",
+            Self::SettingsLabel => "设置",
+            Self::Credentials => "凭据",
+            Self::NoMatch => "没有匹配的主机",
+            Self::ExpandSidebar => "展开侧边栏",
+            Self::Properties => "属性",
+            Self::CollapsePanel => "收起",
+            Self::AllHosts => "全部主机",
+            Self::HidePassword => "隐藏密码",
+            Self::ShowPassword => "显示密码",
+            Self::Copy => "复制",
+            Self::RevealFirst => "先点眼睛显示",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::EmptyHint => "No hosts yet — click + above to add one",
+            Self::NewHost => "New Host",
+            Self::NewGroup => "New Group",
+            Self::ThemeLight => "Light",
+            Self::ThemeDark => "Dark",
+            Self::ThemeFollowSystem => "Follow System",
+            Self::SettingsTooltip => "Settings & Management (Ctrl+,)",
+            Self::SettingsLabel => "Settings",
+            Self::Credentials => "Credentials",
+            Self::NoMatch => "No matching hosts",
+            Self::ExpandSidebar => "Expand Sidebar",
+            Self::Properties => "Properties",
+            Self::CollapsePanel => "Collapse",
+            Self::AllHosts => "All Hosts",
+            Self::HidePassword => "Hide Password",
+            Self::ShowPassword => "Show Password",
+            Self::Copy => "Copy",
+            Self::RevealFirst => "Click the eye to show",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HeaderKind {
@@ -66,7 +153,7 @@ enum FooterKind {
 /// 抬头上的一个图标按钮：稳定 id、悬停提示、点了做什么。
 struct HeaderAction {
     id: &'static str,
-    tooltip: &'static str,
+    tooltip: SidebarMsg,
     kind: HeaderKind,
 }
 
@@ -83,21 +170,21 @@ impl HeaderAction {
 const HEADER_ACTIONS: [HeaderAction; 2] = [
     HeaderAction {
         id: "tree-new-host",
-        tooltip: "新建主机",
+        tooltip: SidebarMsg::NewHost,
         kind: HeaderKind::NewHost,
     },
     HeaderAction {
         id: "tree-new-group",
-        tooltip: "新建分组",
+        tooltip: SidebarMsg::NewGroup,
         kind: HeaderKind::NewGroup,
     },
 ];
 
 struct FooterAction {
     id: &'static str,
-    tooltip: &'static str,
+    tooltip: SidebarMsg,
     /// 图标旁边的字（设置按钮是「图标 + 设置」，钥匙只有图标）。
-    label: Option<&'static str>,
+    label: Option<SidebarMsg>,
     kind: FooterKind,
 }
 
@@ -127,9 +214,9 @@ pub const THEME_CHOICES: [ThemeChoice; 3] = [
 impl ThemeChoice {
     pub fn tooltip(self) -> &'static str {
         match self {
-            Self::Light => "浅色",
-            Self::Dark => "深色",
-            Self::FollowSystem => "跟随系统",
+            Self::Light => t(SidebarMsg::ThemeLight),
+            Self::Dark => t(SidebarMsg::ThemeDark),
+            Self::FollowSystem => t(SidebarMsg::ThemeFollowSystem),
         }
     }
 
@@ -165,13 +252,13 @@ impl ThemeChoice {
 const FOOTER_ACTIONS: [FooterAction; 2] = [
     FooterAction {
         id: "sidebar-settings",
-        tooltip: "设置与管理 (Ctrl+,)",
-        label: Some("设置"),
+        tooltip: SidebarMsg::SettingsTooltip,
+        label: Some(SidebarMsg::SettingsLabel),
         kind: FooterKind::Settings,
     },
     FooterAction {
         id: "sidebar-credentials",
-        tooltip: "凭据",
+        tooltip: SidebarMsg::Credentials,
         label: None,
         kind: FooterKind::Credentials,
     },
@@ -290,7 +377,7 @@ impl MainWindow {
                 icon_button(
                     action.id,
                     action.icon(),
-                    action.tooltip,
+                    t(action.tooltip),
                     move |_, window, cx| {
                         entity.update(cx, |this, cx| match kind {
                             HeaderKind::NewHost => this.new_host(window, cx),
@@ -370,7 +457,7 @@ impl MainWindow {
                 .text_center()
                 .typo(Role::Body, tokens)
                 .text_color(tokens.text_muted)
-                .child("没有匹配的主机")
+                .child(t(SidebarMsg::NoMatch))
                 .into_any_element()
         } else if self.store.hosts().is_empty() && self.store.groups().is_empty() {
             div()
@@ -379,7 +466,12 @@ impl MainWindow {
                 .text_center()
                 .typo(Role::Body, tokens)
                 .text_color(tokens.text_muted)
-                .child(self.store.error().unwrap_or(EMPTY_HINT).to_owned())
+                .child(
+                    self.store
+                        .error()
+                        .unwrap_or(t(SidebarMsg::EmptyHint))
+                        .to_owned(),
+                )
                 .into_any_element()
         } else {
             list.into_any_element()
@@ -543,19 +635,19 @@ impl MainWindow {
             .child(icon_button(
                 "tree-expand",
                 IconName::PanelLeftOpen,
-                "展开侧边栏",
+                t(SidebarMsg::ExpandSidebar),
                 act(&entity, |this, _window, cx| this.toggle_tree(cx)),
             ))
             .child(icon_button(
                 "tree-collapsed-new-host",
                 IconName::Plus,
-                "新建主机",
+                t(SidebarMsg::NewHost),
                 act(&entity, |this, window, cx| this.new_host(window, cx)),
             ))
             .child(icon_button(
                 "tree-collapsed-new-group",
                 crate::icons::Ico::FolderPlus,
-                "新建分组",
+                t(SidebarMsg::NewGroup),
                 act(&entity, |this, window, cx| this.new_group(None, window, cx)),
             ))
     }
@@ -597,11 +689,15 @@ impl MainWindow {
                     .items_center()
                     .justify_between()
                     .text_color(tokens.text_muted)
-                    .child(div().font_weight(FontWeight::MEDIUM).child("属性"))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(t(SidebarMsg::Properties)),
+                    )
                     .child(icon_button(
                         "host-info-close",
                         IconName::Close,
-                        "收起",
+                        t(SidebarMsg::CollapsePanel),
                         act(&entity, |this, _window, cx| this.close_info_panel(cx)),
                     )),
             )
@@ -644,7 +740,13 @@ impl MainWindow {
                 let active = self.tree.selected_group == GroupSel::All;
                 tree_line(("tree-row", at), 0.0, active, tokens)
                     .child(div().w(px(16.0)).flex_none())
-                    .child(div().flex_1().min_w_0().truncate().child("全部主机"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(t(SidebarMsg::AllHosts)),
+                    )
                     .child(count_label(*count, tokens))
                     .on_click(move |_, _, cx| {
                         entity.update(cx, |this, cx| this.click_group(GroupSel::All, cx));
@@ -981,7 +1083,7 @@ fn footer_button(
     on_click: impl Fn(&::gpui::ClickEvent, &mut ::gpui::Window, &mut ::gpui::App) + 'static,
 ) -> impl IntoElement {
     let (hover, text, muted) = (tokens.hover, tokens.text, tokens.text_muted);
-    let tip = action.tooltip;
+    let tip = t(action.tooltip);
     div()
         .id(action.id)
         .flex()
@@ -1009,7 +1111,7 @@ fn footer_button(
             div()
                 .typo(Role::Body, tokens)
                 .text_color(muted)
-                .child(label)
+                .child(t(label))
         }))
         .on_click(on_click)
 }
@@ -1116,9 +1218,9 @@ fn info_row(
                 IconName::Eye
             })
             .tooltip(if shown {
-                "隐藏密码"
+                t(SidebarMsg::HidePassword)
             } else {
-                "显示密码"
+                t(SidebarMsg::ShowPassword)
             })
             .on_click(move |_, window, cx| {
                 entity.update(cx, |this, cx| {
@@ -1160,9 +1262,11 @@ fn info_row(
                 .children(eye)
                 .context_menu(move |menu, _window, cx| {
                     let tokens = Tokens::current(cx);
-                    let line = menu_kit::row(&tokens, "复制", IconName::Copy);
+                    let line = menu_kit::row(&tokens, t(SidebarMsg::Copy), IconName::Copy);
                     let item = if !menu_ready {
-                        line.disabled(true).right(Some("先点眼睛显示")).inert()
+                        line.disabled(true)
+                            .right(Some(t(SidebarMsg::RevealFirst)))
+                            .inert()
                     } else {
                         let entity = menu_entity.clone();
                         let text = menu_text.clone();
@@ -1190,9 +1294,10 @@ fn count_label(count: usize, tokens: &Tokens) -> impl IntoElement {
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        EMPTY_HINT, FOOTER_ACTIONS, HEADER_ACTIONS, THEME_CHOICES, ThemeChoice, info_target,
+        FOOTER_ACTIONS, HEADER_ACTIONS, SidebarMsg, THEME_CHOICES, ThemeChoice, info_target,
         match_hint, match_ranges,
     };
+    use crate::i18n::{Msg as _, t};
     use std::ops::Range;
     use zssh_core::model::{AuthMethod, Host, ProxyMode};
 
@@ -1250,7 +1355,7 @@ mod tests {
 
     #[test]
     fn the_sidebar_header_is_two_icons_and_each_has_a_chinese_tooltip() {
-        let tips: Vec<_> = HEADER_ACTIONS.iter().map(|a| a.tooltip).collect();
+        let tips: Vec<_> = HEADER_ACTIONS.iter().map(|a| t(a.tooltip)).collect();
         assert_eq!(
             tips,
             ["新建主机", "新建分组"],
@@ -1259,15 +1364,15 @@ mod tests {
         let ids: std::collections::HashSet<_> = HEADER_ACTIONS.iter().map(|a| a.id).collect();
         assert_eq!(ids.len(), HEADER_ACTIONS.len(), "按钮 id 不重复");
         for action in HEADER_ACTIONS.iter() {
-            assert!(!action.tooltip.is_empty());
+            assert!(!t(action.tooltip).is_empty());
         }
     }
 
     #[test]
     fn the_sidebar_footer_has_settings_and_credentials_with_tooltips() {
-        let tips: Vec<_> = FOOTER_ACTIONS.iter().map(|a| a.tooltip).collect();
+        let tips: Vec<_> = FOOTER_ACTIONS.iter().map(|a| t(a.tooltip)).collect();
         assert_eq!(tips, ["设置与管理 (Ctrl+,)", "凭据"]);
-        let labels: Vec<_> = FOOTER_ACTIONS.iter().map(|a| a.label).collect();
+        let labels: Vec<_> = FOOTER_ACTIONS.iter().map(|a| a.label.map(t)).collect();
         assert_eq!(
             labels,
             [Some("设置"), None],
@@ -1288,8 +1393,56 @@ mod tests {
 
     #[test]
     fn the_empty_hint_points_at_the_plus_icon() {
-        assert!(EMPTY_HINT.contains('+'));
-        assert!(!EMPTY_HINT.contains("新建」"), "旧的「新建」下拉已经没有了");
+        assert!(t(SidebarMsg::EmptyHint).contains('+'));
+        assert!(
+            !t(SidebarMsg::EmptyHint).contains("新建」"),
+            "旧的「新建」下拉已经没有了"
+        );
+    }
+
+    #[test]
+    fn every_sidebar_message_keeps_its_chinese_and_has_english() {
+        // 中文是原来那句，一字不改（含全角括号、ASCII 空格）。
+        assert_eq!(SidebarMsg::EmptyHint.zh(), "还没有主机，点上方 + 添加");
+        assert_eq!(SidebarMsg::NewHost.zh(), "新建主机");
+        assert_eq!(SidebarMsg::NewGroup.zh(), "新建分组");
+        assert_eq!(SidebarMsg::ThemeLight.zh(), "浅色");
+        assert_eq!(SidebarMsg::ThemeDark.zh(), "深色");
+        assert_eq!(SidebarMsg::ThemeFollowSystem.zh(), "跟随系统");
+        assert_eq!(SidebarMsg::SettingsTooltip.zh(), "设置与管理 (Ctrl+,)");
+        assert_eq!(SidebarMsg::SettingsLabel.zh(), "设置");
+        assert_eq!(SidebarMsg::Credentials.zh(), "凭据");
+        assert_eq!(SidebarMsg::NoMatch.zh(), "没有匹配的主机");
+        assert_eq!(SidebarMsg::ExpandSidebar.zh(), "展开侧边栏");
+        assert_eq!(SidebarMsg::Properties.zh(), "属性");
+        assert_eq!(SidebarMsg::CollapsePanel.zh(), "收起");
+        assert_eq!(SidebarMsg::AllHosts.zh(), "全部主机");
+        assert_eq!(SidebarMsg::HidePassword.zh(), "隐藏密码");
+        assert_eq!(SidebarMsg::ShowPassword.zh(), "显示密码");
+        assert_eq!(SidebarMsg::Copy.zh(), "复制");
+        assert_eq!(SidebarMsg::RevealFirst.zh(), "先点眼睛显示");
+        for key in [
+            SidebarMsg::EmptyHint,
+            SidebarMsg::NewHost,
+            SidebarMsg::NewGroup,
+            SidebarMsg::ThemeLight,
+            SidebarMsg::ThemeDark,
+            SidebarMsg::ThemeFollowSystem,
+            SidebarMsg::SettingsTooltip,
+            SidebarMsg::SettingsLabel,
+            SidebarMsg::Credentials,
+            SidebarMsg::NoMatch,
+            SidebarMsg::ExpandSidebar,
+            SidebarMsg::Properties,
+            SidebarMsg::CollapsePanel,
+            SidebarMsg::AllHosts,
+            SidebarMsg::HidePassword,
+            SidebarMsg::ShowPassword,
+            SidebarMsg::Copy,
+            SidebarMsg::RevealFirst,
+        ] {
+            assert!(!key.en().is_empty(), "{key:?} 缺英文");
+        }
     }
 
     #[test]

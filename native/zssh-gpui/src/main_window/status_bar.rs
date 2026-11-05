@@ -16,9 +16,55 @@ use super::MainWindow;
 use super::app_lock_ui::{LOCK_TOOLTIP, build_lock_menu};
 use super::nav::MainView;
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::status::{Level, StatusSummary, level_of, mib_gb_label, uptime_label};
 use crate::typography::{Role, Typo as _};
+
+/// 状态栏上的文案（应用自己的话；数字和 `--` / `—` 这类占位符不在这里）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StatusBarMsg {
+    /// 快捷命令栏开关的悬停提示。
+    QuickBar,
+    /// 撰写栏开关的悬停提示。
+    ComposeBar,
+    /// 服务器状态块最右的「概览」入口。
+    Overview,
+    /// 运行时间前面那一段（后面跟 `uptime_label`）。
+    UptimePrefix,
+    /// 采集失败但还留着上一次读数：错误前面那一段。
+    DisconnectedPrefix,
+    /// 一次读数都还没有、采集出错。
+    CollectFailedPrefix,
+    /// 一次读数都还没有、还在等第一个样本。
+    CollectWaiting,
+}
+
+impl Msg for StatusBarMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::QuickBar => "快捷命令栏",
+            Self::ComposeBar => "撰写栏",
+            Self::Overview => "概览",
+            Self::UptimePrefix => "运行 ",
+            Self::DisconnectedPrefix => "已断开：",
+            Self::CollectFailedPrefix => "状态采集失败：",
+            Self::CollectWaiting => "状态采集等待中…",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::QuickBar => "Quick Command Bar",
+            Self::ComposeBar => "Compose Bar",
+            Self::Overview => "Overview",
+            Self::UptimePrefix => "Uptime ",
+            Self::DisconnectedPrefix => "Disconnected: ",
+            Self::CollectFailedPrefix => "Failed to collect status: ",
+            Self::CollectWaiting => "Waiting for status…",
+        }
+    }
+}
 
 /// 数值颜色：80% 黄、95% 红，其余用次级文字色（同 0.2.14 的 `usageClass`）。
 fn level_color(percent: Option<u8>, tokens: &Tokens) -> Hsla {
@@ -179,7 +225,7 @@ impl MainWindow {
                     switch_button(
                         "quick-switch",
                         Ico::Command,
-                        "快捷命令栏",
+                        t(StatusBarMsg::QuickBar),
                         self.quick_bar_open(),
                         tokens,
                     )
@@ -191,7 +237,7 @@ impl MainWindow {
                     switch_button(
                         "compose-switch",
                         Ico::SquarePen,
-                        "撰写栏",
+                        t(StatusBarMsg::ComposeBar),
                         self.compose_bar_open(),
                         tokens,
                     )
@@ -235,7 +281,7 @@ impl MainWindow {
                 tokens.text_muted
             })
             .child(Icon::new(Ico::CircleGauge).size_3())
-            .child("概览");
+            .child(t(StatusBarMsg::Overview));
         match summary {
             Some(s) => {
                 let stats = &s.stats;
@@ -301,7 +347,11 @@ impl MainWindow {
                             .gap_1()
                             .items_center()
                             .child(Icon::new(Ico::Clock).size_3())
-                            .child(format!("运行 {}", uptime_label(secs))),
+                            .child(format!(
+                                "{}{}",
+                                t(StatusBarMsg::UptimePrefix),
+                                uptime_label(secs)
+                            )),
                     )
                 })
                 // 采集失败但还留着上一次的数据：标出来，别让旧数字冒充实时。
@@ -311,7 +361,7 @@ impl MainWindow {
                             .min_w_0()
                             .truncate()
                             .text_color(tokens.danger)
-                            .child(format!("已断开：{error}")),
+                            .child(format!("{}{error}", t(StatusBarMsg::DisconnectedPrefix))),
                     )
                 })
                 .child(div().flex_1())
@@ -328,8 +378,10 @@ impl MainWindow {
                             tokens.text_muted
                         })
                         .child(match error {
-                            Some(error) => format!("状态采集失败：{error}"),
-                            None => "状态采集等待中…".to_owned(),
+                            Some(error) => {
+                                format!("{}{error}", t(StatusBarMsg::CollectFailedPrefix))
+                            }
+                            None => t(StatusBarMsg::CollectWaiting).to_owned(),
                         }),
                 )
                 .child(div().flex_1())
@@ -365,5 +417,30 @@ mod tests {
     fn the_status_bar_height_is_fixed() {
         // 栏高的上限（`bars::area_height`）按这个高度扣；改它要一起改。
         assert_eq!(STATUS_BAR_HEIGHT, 26.0);
+    }
+
+    #[test]
+    fn every_status_bar_message_keeps_its_chinese_and_has_english() {
+        use super::StatusBarMsg;
+        use crate::i18n::Msg as _;
+        // 中文是原来那句，一字不改（含全角冒号、省略号、行尾空格）。
+        assert_eq!(StatusBarMsg::QuickBar.zh(), "快捷命令栏");
+        assert_eq!(StatusBarMsg::ComposeBar.zh(), "撰写栏");
+        assert_eq!(StatusBarMsg::Overview.zh(), "概览");
+        assert_eq!(StatusBarMsg::UptimePrefix.zh(), "运行 ");
+        assert_eq!(StatusBarMsg::DisconnectedPrefix.zh(), "已断开：");
+        assert_eq!(StatusBarMsg::CollectFailedPrefix.zh(), "状态采集失败：");
+        assert_eq!(StatusBarMsg::CollectWaiting.zh(), "状态采集等待中…");
+        for key in [
+            StatusBarMsg::QuickBar,
+            StatusBarMsg::ComposeBar,
+            StatusBarMsg::Overview,
+            StatusBarMsg::UptimePrefix,
+            StatusBarMsg::DisconnectedPrefix,
+            StatusBarMsg::CollectFailedPrefix,
+            StatusBarMsg::CollectWaiting,
+        ] {
+            assert!(!key.en().is_empty(), "{key:?} 缺英文");
+        }
     }
 }

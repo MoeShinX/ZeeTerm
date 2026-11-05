@@ -12,14 +12,44 @@ use gpui_kit::*;
 use super::MainWindow;
 use super::widgets::{ButtonLook, act, text_button};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::typography::{Role, Typo as _};
 
-/// 副标题（自己的话，不照搬别的软件）。
-pub const WELCOME_SUBTITLE: &str = "简洁的 SSH / Telnet / 串口终端";
-/// 浅灰提示：两条入口都是真实存在的（侧栏双击主机、Ctrl+Shift+T 新标签）。
-pub const WELCOME_HINT: &str = "从左侧双击主机开始连接，或按 Ctrl+Shift+T 新建标签";
-/// 两个按钮的文字，顺序即显示顺序。
-pub const WELCOME_BUTTONS: [&str; 2] = ["快速连接", "新建主机"];
+/// 欢迎页上的文案（产品名 `ZeeTerm` 不翻译，不在表里）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WelcomeMsg {
+    /// 大标题下面的一行副标题。
+    Subtitle,
+    /// 底部的浅灰提示。
+    Hint,
+    /// 第一个按钮：快速连接。
+    QuickConnect,
+    /// 第二个按钮：新建主机。
+    NewHost,
+}
+
+impl Msg for WelcomeMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::Subtitle => "简洁的 SSH / Telnet / 串口终端",
+            Self::Hint => "从左侧双击主机开始连接，或按 Ctrl+Shift+T 新建标签",
+            Self::QuickConnect => "快速连接",
+            Self::NewHost => "新建主机",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::Subtitle => "A clean SSH / Telnet / serial terminal",
+            Self::Hint => {
+                "Double-click a host on the left to connect, or press Ctrl+Shift+T for a new tab"
+            }
+            Self::QuickConnect => "Quick Connect",
+            Self::NewHost => "New Host",
+        }
+    }
+}
+
 /// 大标题（产品名）。
 const WELCOME_TITLE: &str = "ZeeTerm";
 /// 标题渐变的两端：Logo 的紫（`#7950F2`）到浅紫（`#A263FF`），取自 `assets/brand/zeeterm-logo.svg`。
@@ -123,7 +153,7 @@ impl MainWindow {
                 div()
                     .typo(Role::Body, tokens)
                     .text_color(tokens.text_muted)
-                    .child(WELCOME_SUBTITLE),
+                    .child(t(WelcomeMsg::Subtitle)),
             )
             .child(
                 h_flex()
@@ -132,7 +162,7 @@ impl MainWindow {
                     .child(
                         text_button(
                             "welcome-quick-connect",
-                            WELCOME_BUTTONS[0],
+                            t(WelcomeMsg::QuickConnect),
                             ButtonLook::Primary,
                             act(&entity, |this, window, cx| {
                                 this.open_quick_target_dialog(window, cx)
@@ -143,7 +173,7 @@ impl MainWindow {
                     .child(
                         text_button(
                             "welcome-new-host",
-                            WELCOME_BUTTONS[1],
+                            t(WelcomeMsg::NewHost),
                             ButtonLook::Outline,
                             act(&entity, |this, window, cx| this.new_host(window, cx)),
                         )
@@ -157,17 +187,15 @@ impl MainWindow {
                     .max_w(px(480.0))
                     .typo(Role::Caption, tokens)
                     .opacity(0.8)
-                    .child(WELCOME_HINT),
+                    .child(t(WelcomeMsg::Hint)),
             )
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        TITLE_GRADIENT, WELCOME_BUTTONS, WELCOME_HINT, WELCOME_SUBTITLE, title_color,
-        title_color_on,
-    };
+    use super::{TITLE_GRADIENT, WelcomeMsg, title_color, title_color_on};
+    use crate::i18n::{Msg as _, t};
 
     #[test]
     fn the_title_runs_from_the_logo_purple_to_the_light_purple() {
@@ -214,14 +242,37 @@ mod tests {
 
     #[test]
     fn the_welcome_page_has_two_entries_and_only_mentions_real_shortcuts() {
-        assert_eq!(WELCOME_BUTTONS, ["快速连接", "新建主机"]);
-        assert!(WELCOME_HINT.contains("Ctrl+Shift+T"));
+        assert_eq!(
+            [t(WelcomeMsg::QuickConnect), t(WelcomeMsg::NewHost)],
+            ["快速连接", "新建主机"]
+        );
+        assert!(t(WelcomeMsg::Hint).contains("Ctrl+Shift+T"));
         // 快捷键表里确实有这一条，提示不会说谎。
         assert!(
             crate::settings_nav::SHORTCUTS
                 .iter()
                 .any(|s| s.keys == "Ctrl+Shift+T")
         );
-        assert!(!WELCOME_SUBTITLE.is_empty());
+        assert!(!t(WelcomeMsg::Subtitle).is_empty());
+    }
+
+    #[test]
+    fn every_welcome_message_keeps_its_chinese_and_has_english() {
+        // 中文是原来那句，一字不改。
+        assert_eq!(WelcomeMsg::Subtitle.zh(), "简洁的 SSH / Telnet / 串口终端");
+        assert_eq!(
+            WelcomeMsg::Hint.zh(),
+            "从左侧双击主机开始连接，或按 Ctrl+Shift+T 新建标签"
+        );
+        assert_eq!(WelcomeMsg::QuickConnect.zh(), "快速连接");
+        assert_eq!(WelcomeMsg::NewHost.zh(), "新建主机");
+        for key in [
+            WelcomeMsg::Subtitle,
+            WelcomeMsg::Hint,
+            WelcomeMsg::QuickConnect,
+            WelcomeMsg::NewHost,
+        ] {
+            assert!(!key.en().is_empty(), "{key:?} 缺英文");
+        }
     }
 }
