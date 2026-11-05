@@ -116,6 +116,9 @@ pub struct UiSettings {
     pub highlight_rules: Option<Vec<HighlightRule>>,
     /// 括号粘贴模式。
     pub bracketed_paste: BracketedPaste,
+    /// 界面语言偏好：`system` / `zh` / `en`。老设置文件里没有这个字段，默认按中文
+    /// （升级后保留原来的习惯）；全新安装由启动时按「设置文件是否存在」判成跟随系统。
+    pub language: String,
 }
 
 impl Default for UiSettings {
@@ -141,11 +144,17 @@ impl Default for UiSettings {
             start_hidden: false,
             highlight_rules: None,
             bracketed_paste: BracketedPaste::Auto,
+            language: "zh".to_owned(),
         }
     }
 }
 
 impl UiSettings {
+    /// 当前的界面语言偏好。
+    pub fn language_pref(&self) -> crate::i18n::LangPref {
+        crate::i18n::LangPref::parse(&self.language)
+    }
+
     /// 把越界/非有限值收回到可用范围。
     pub fn sanitized(mut self) -> Self {
         if !self.font_size.is_finite() {
@@ -306,6 +315,7 @@ mod tests {
             start_hidden: true,
             highlight_rules: Some(vec![HighlightRule::new(3, "err(or)?", true)]),
             bracketed_paste: BracketedPaste::On,
+            language: "en".to_owned(),
         };
         settings.save_to(&path).unwrap();
         assert_eq!(UiSettings::load_from(&path), Some(settings));

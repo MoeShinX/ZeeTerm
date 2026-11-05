@@ -6,5 +6,6 @@
 pub mod activity;
 pub mod clipboard;
 pub mod ime;
+pub mod locale;
 pub mod single_instance;
 pub mod theme;

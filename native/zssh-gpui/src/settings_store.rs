@@ -374,6 +374,17 @@ impl AppSettings {
         );
         // 皮肤和终端配色的选择先记下，`init_mode` 写主题时才取得到。
         cx.set_global(settings.look());
+        // 界面语言要在开窗口之前定下来。设置文件里没有语言字段 = 升级上来的老用户 → 中文
+        // （`UiSettings::default` 给的）；根本没有设置文件 = 全新安装 → 跟随系统。
+        let pref = if crate::settings::settings_path().exists() {
+            settings.language_pref()
+        } else {
+            crate::i18n::LangPref::System
+        };
+        crate::i18n::set(
+            pref.resolve(zssh_platform_windows::locale::system_is_chinese()),
+            cx,
+        );
         crate::app_theme::init_mode(dark, cx);
 
         let entity = cx.new(|_| AppSettings {

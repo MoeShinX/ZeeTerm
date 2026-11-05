@@ -40,6 +40,7 @@ mod host_activity;
 mod host_db;
 mod host_os;
 mod hosts;
+mod i18n;
 mod icons;
 mod identities;
 mod ime;
