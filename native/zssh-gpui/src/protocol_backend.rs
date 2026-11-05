@@ -53,15 +53,77 @@ impl std::fmt::Debug for TelnetPlan {
         f.debug_struct("TelnetPlan")
             .field("host", &self.host)
             .field("port", &self.port)
-            .field("password", &self.password.as_ref().map(|_| "<已隐藏>"))
+            .field(
+                "password",
+                &self
+                    .password
+                    .as_ref()
+                    .map(|_| crate::i18n::t(ProtocolMsg::HiddenSecret)),
+            )
             .finish_non_exhaustive()
+    }
+}
+
+/// 协议会话（串口 / Telnet）自己的文案：错误提示都是用户能看到的。
+#[derive(Clone, Copy, Debug)]
+enum ProtocolMsg {
+    DbOpenFailedPrefix,
+    NoSerialSettings,
+    NoSerialDevice,
+    DirectConnectPrefix,
+    ConnectFailSuffix,
+    ProxyConnectPrefix,
+    JumpConnectPrefix,
+    SerialTaskEnded,
+    HiddenSecret,
+    MissingAddress,
+    BadAddressPort,
+    BadPortPrefix,
+    BadBaudPrefix,
+}
+
+impl crate::i18n::Msg for ProtocolMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::DbOpenFailedPrefix => "打开主机库失败：",
+            Self::NoSerialSettings => "这台串口主机没有串口设置",
+            Self::NoSerialDevice => "这台串口主机还没有选择串口设备",
+            Self::DirectConnectPrefix => "连接 ",
+            Self::ConnectFailSuffix => " 失败：",
+            Self::ProxyConnectPrefix => "经代理连接 ",
+            Self::JumpConnectPrefix => "经跳板机连接 ",
+            Self::SerialTaskEnded => "打开串口的任务意外结束",
+            Self::HiddenSecret => "<已隐藏>",
+            Self::MissingAddress => "缺少地址 / 设备名",
+            Self::BadAddressPort => "要写成 <地址>:<端口>",
+            Self::BadPortPrefix => "端口不对：",
+            Self::BadBaudPrefix => "波特率不对：",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::DbOpenFailedPrefix => "Failed to open the host library: ",
+            Self::NoSerialSettings => "This serial host has no serial settings",
+            Self::NoSerialDevice => "No serial device has been selected for this host",
+            Self::DirectConnectPrefix => "Failed to connect to ",
+            Self::ConnectFailSuffix => ": ",
+            Self::ProxyConnectPrefix => "Failed to connect through the proxy to ",
+            Self::JumpConnectPrefix => "Failed to connect through the jump host to ",
+            Self::SerialTaskEnded => "The serial port task ended unexpectedly",
+            Self::HiddenSecret => "<hidden>",
+            Self::MissingAddress => "missing address / device name",
+            Self::BadAddressPort => "expected <address>:<port>",
+            Self::BadPortPrefix => "invalid port: ",
+            Self::BadBaudPrefix => "invalid baud rate: ",
+        }
     }
 }
 
 /// 读主机库，决定一台主机的打开方式。数据库句柄不是 `Send`，查询在这个同步函数里做完。
 pub(crate) fn plan_for_host(host_id: i64) -> Result<HostPlan, String> {
     let db = Database::open(&data_dir().join("zssh.db"))
-        .map_err(|err| format!("打开主机库失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", crate::i18n::t(ProtocolMsg::DbOpenFailedPrefix)))?;
     plan_from_db(&db, host_id)
 }
 
@@ -74,9 +136,9 @@ pub(crate) fn plan_from_db(db: &Database, host_id: i64) -> Result<HostPlan, Stri
         Protocol::Serial => {
             let options = settings
                 .serial
-                .ok_or_else(|| "这台串口主机没有串口设置".to_owned())?;
+                .ok_or_else(|| crate::i18n::t(ProtocolMsg::NoSerialSettings).to_owned())?;
             if options.device.trim().is_empty() {
-                return Err("这台串口主机还没有选择串口设备".to_owned());
+                return Err(crate::i18n::t(ProtocolMsg::NoSerialDevice).to_owned());
             }
             Ok(HostPlan::Serial(options))
         }
@@ -146,15 +208,25 @@ pub(crate) async fn open_telnet(plan: TelnetPlan, size: Size, generation: u64) -
     };
     let (stream, guard): (BoxedStream, Box<dyn Send>) = match route {
         Route::Direct => {
-            let socket = connect_direct(&host, port)
-                .await
-                .map_err(|err| format!("连接 {host}:{port} 失败：{err}"))?;
+            let socket = connect_direct(&host, port).await.map_err(|err| {
+                format!(
+                    "{}{host}:{port}{}{err}",
+                    crate::i18n::t(ProtocolMsg::DirectConnectPrefix),
+                    crate::i18n::t(ProtocolMsg::ConnectFailSuffix)
+                )
+            })?;
             (Box::new(socket), Box::new(()))
         }
         Route::Proxy(proxy) => {
             let stream = connect_via_proxy(&proxy, &host, port)
                 .await
-                .map_err(|err| format!("经代理连接 {host}:{port} 失败：{err}"))?;
+                .map_err(|err| {
+                    format!(
+                        "{}{host}:{port}{}{err}",
+                        crate::i18n::t(ProtocolMsg::ProxyConnectPrefix),
+                        crate::i18n::t(ProtocolMsg::ConnectFailSuffix)
+                    )
+                })?;
             (stream, Box::new(()))
         }
         Route::Jump(jump_id) => {
@@ -179,7 +251,13 @@ pub(crate) async fn open_via_jump(
         .connection()
         .open_forward_channel(host, port, originator)
         .await
-        .map_err(|err| format!("经跳板机连接 {host}:{port} 失败：{err}"))?;
+        .map_err(|err| {
+            format!(
+                "{}{host}:{port}{}{err}",
+                crate::i18n::t(ProtocolMsg::JumpConnectPrefix),
+                crate::i18n::t(ProtocolMsg::ConnectFailSuffix)
+            )
+        })?;
     Ok((Box::new(channel), Box::new(Arc::clone(factory))))
 }
 
@@ -214,7 +292,7 @@ pub(crate) async fn open_serial_host(
     let runtime = tokio::runtime::Handle::current();
     let opened = tokio::task::spawn_blocking(move || open_serial(&options, generation, runtime))
         .await
-        .map_err(|_| "打开串口的任务意外结束".to_owned())?
+        .map_err(|_| crate::i18n::t(ProtocolMsg::SerialTaskEnded).to_owned())?
         .map_err(|err| err.to_string())?;
     let (backend, events, gate) = opened;
     Ok(Opened {
@@ -240,13 +318,17 @@ pub(crate) fn dev_hook_hosts() -> Vec<i64> {
     if let Some(spec) = crate::dev_hooks::var("ZSSH_OPEN_TELNET") {
         match seed_dev_host(&spec, true) {
             Ok(id) => ids.push(id),
-            Err(err) => tracing::warn!("ZSSH_OPEN_TELNET 无效：{err}"),
+            Err(err) => {
+                tracing::warn!("ZSSH_OPEN_TELNET 无效：{err}");
+            }
         }
     }
     if let Some(spec) = crate::dev_hooks::var("ZSSH_OPEN_SERIAL") {
         match seed_dev_host(&spec, false) {
             Ok(id) => ids.push(id),
-            Err(err) => tracing::warn!("ZSSH_OPEN_SERIAL 无效：{err}"),
+            Err(err) => {
+                tracing::warn!("ZSSH_OPEN_SERIAL 无效：{err}");
+            }
         }
     }
     ids
@@ -254,7 +336,7 @@ pub(crate) fn dev_hook_hosts() -> Vec<i64> {
 
 fn seed_dev_host(spec: &str, telnet: bool) -> Result<i64, String> {
     let db = Database::open(&data_dir().join("zssh.db"))
-        .map_err(|err| format!("打开主机库失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", crate::i18n::t(ProtocolMsg::DbOpenFailedPrefix)))?;
     let (draft, settings) = dev_host_from_spec(spec, telnet)?;
     let mut draft = draft;
     draft.id = db
@@ -285,7 +367,7 @@ fn dev_host_from_spec(
     let first = parts
         .next()
         .filter(|part| !part.is_empty())
-        .ok_or("缺少地址 / 设备名")?;
+        .ok_or_else(|| crate::i18n::t(ProtocolMsg::MissingAddress))?;
     let mut draft = HostDraft {
         protocol: None,
         id: None,
@@ -304,9 +386,13 @@ fn dev_host_from_spec(
         legacy_algorithms: false,
     };
     if telnet {
-        let (host, port) = first.rsplit_once(':').ok_or("要写成 <地址>:<端口>")?;
+        let (host, port) = first
+            .rsplit_once(':')
+            .ok_or_else(|| crate::i18n::t(ProtocolMsg::BadAddressPort))?;
         draft.host = host.to_owned();
-        draft.port = port.parse().map_err(|_| format!("端口不对：{port}"))?;
+        draft.port = port
+            .parse()
+            .map_err(|_| format!("{}{port}", crate::i18n::t(ProtocolMsg::BadPortPrefix)))?;
         draft.name = format!("dev-telnet {host}:{port}");
         let mut settings = ProtocolSettings::new(Protocol::Telnet);
         if let Some(options) = settings.telnet.as_mut() {
@@ -319,7 +405,9 @@ fn dev_host_from_spec(
         if let Some(options) = settings.serial.as_mut() {
             options.device = first.to_owned();
             if let Some(baud) = parts.next() {
-                options.baud_rate = baud.parse().map_err(|_| format!("波特率不对：{baud}"))?;
+                options.baud_rate = baud
+                    .parse()
+                    .map_err(|_| format!("{}{baud}", crate::i18n::t(ProtocolMsg::BadBaudPrefix)))?;
             }
         }
         Ok((draft, settings))

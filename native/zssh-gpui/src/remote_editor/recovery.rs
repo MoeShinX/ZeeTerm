@@ -58,13 +58,26 @@ pub(crate) fn recovery_line(item: &RecoveryItem) -> String {
             Some(host) => format!("{host}：{path}"),
             None => path.clone(),
         },
-        None => format!("{}（认不出对应的服务器文件）", item.file_name),
+        None => format!(
+            "{}{}",
+            item.file_name,
+            crate::i18n::t(RecoveryMsg::UnknownFileLineSuffix)
+        ),
     }
 }
 
 /// 标题：上次有几个文件的修改没有上传。
 pub(crate) fn recovery_title(count: usize) -> String {
-    format!("上次有 {count} 个文件的修改没有上传")
+    format!(
+        "{}{}",
+        crate::i18n::t(RecoveryMsg::TitlePrefix),
+        crate::i18n::count(
+            count as u64,
+            crate::i18n::t(RecoveryMsg::UnsavedCountSuffix),
+            "file with unsaved edits",
+            "files with unsaved edits"
+        )
+    )
 }
 
 /// 扫一遍草稿目录（只读不改）。
@@ -122,15 +135,14 @@ pub(crate) async fn act(item: &RecoveryItem, action: Action, data_dir: &Path) ->
         Action::Discard | Action::SaveLocal => act_local(item, action, data_dir),
         Action::Reupload | Action::ReuploadOverwrite => {
             let Some(host_id) = item.host_id else {
-                return Outcome::Failed(
-                    "这份修改认不出对应的服务器文件，只能另存到本地或放弃".to_owned(),
-                );
+                return Outcome::Failed(crate::i18n::t(RecoveryMsg::UnknownServerFile).to_owned());
             };
             let channel = match remote::dial_channel(host_id).await {
                 Ok(channel) => channel,
                 Err(message) => {
                     return Outcome::Failed(format!(
-                        "连不上这台主机，没有上传（修改还保留着）：{message}"
+                        "{}{message}",
+                        crate::i18n::t(RecoveryMsg::ConnectFailedPrefix)
                     ));
                 }
             };
@@ -149,9 +161,12 @@ fn act_local(item: &RecoveryItem, action: Action, data_dir: &Path) -> Outcome {
         Action::SaveLocal => match export_recovered(data_dir, &item.draft) {
             // 已经另存出来了：草稿本身不动，用户确认没问题再选放弃。
             Ok(path) => Outcome::Done(Some(path.display().to_string())),
-            Err(err) => Outcome::Failed(format!("保存失败（修改还在，可以再试）：{err}")),
+            Err(err) => Outcome::Failed(format!(
+                "{}{err}",
+                crate::i18n::t(RecoveryMsg::SaveFailedPrefix)
+            )),
         },
-        _ => Outcome::Failed("这个动作需要连接服务器".to_owned()),
+        _ => Outcome::Failed(crate::i18n::t(RecoveryMsg::NeedsServer).to_owned()),
     }
 }
 
@@ -174,14 +189,14 @@ pub(crate) async fn reupload_draft<B: EditBackend>(
     overwrite: bool,
 ) -> Outcome {
     if draft.host_id.is_none() {
-        return Outcome::Failed("这份草稿认不出是哪台主机的，只能另存到本地或放弃".to_owned());
+        return Outcome::Failed(crate::i18n::t(RecoveryMsg::UnknownHostDraft).to_owned());
     }
     // 先读远端当前内容：既要它的版本，也要它的 BOM / 换行样子。
     let current = match remote::fetch_bytes(backend, &draft.path).await {
         Ok(bytes) => Some(bytes),
-        Err(message) if message.starts_with("打开失败") && !overwrite => {
+        Err(message) if is_open_failed(&message) && !overwrite => {
             // 文件不见了（被删 / 被改名）：不替用户重建。
-            return Outcome::Conflict("服务器上的文件已经被删掉了，没有上传".to_owned());
+            return Outcome::Conflict(crate::i18n::t(RecoveryMsg::RemoteDeleted).to_owned());
         }
         Err(_) if overwrite => None,
         Err(message) => return Outcome::Failed(message),
@@ -196,18 +211,108 @@ pub(crate) async fn reupload_draft<B: EditBackend>(
     match remote::save_remote(backend, &draft.path, &bytes, expected, OwnerMode::Require).await {
         SaveOutcome::Saved { size, .. } => {
             let _ = std::fs::remove_file(file);
-            Outcome::Done(Some(format!("{size} 字节")))
+            Outcome::Done(Some(crate::i18n::count(
+                size as u64,
+                crate::i18n::t(RecoveryMsg::ByteSuffix),
+                "byte",
+                "bytes",
+            )))
         }
         SaveOutcome::Conflict(glimpse) => Outcome::Conflict(if glimpse.gone {
-            "服务器上的文件已经被删掉了，没有上传".to_owned()
+            crate::i18n::t(RecoveryMsg::RemoteDeleted).to_owned()
         } else {
-            "服务器上的文件在你离开之后又被改过，没有上传".to_owned()
+            crate::i18n::t(RecoveryMsg::RemoteChanged).to_owned()
         }),
         SaveOutcome::OwnerWouldChange { from, to } => Outcome::Failed(format!(
-            "重新上传后文件的属主会从 {from} 变成 {to}，没有上传。请先打开这个文件，用编辑器重新保存一次再选处理方式。"
+            "{}{from}{}{to}{}",
+            crate::i18n::t(RecoveryMsg::OwnerChangePrefix),
+            crate::i18n::t(RecoveryMsg::OwnerChangeMid),
+            crate::i18n::t(RecoveryMsg::OwnerChangeSuffix)
         )),
         SaveOutcome::Failed(message) | SaveOutcome::Disconnected(message) => {
             Outcome::Failed(message)
+        }
+    }
+}
+
+/// 远端读取失败（文件不见了、不是普通文件……）：前缀由 `remote` 模块生成，
+/// 中英文两种都认，切过语言之后留下的旧消息也认得出。
+fn is_open_failed(message: &str) -> bool {
+    let key = RecoveryMsg::OpenFailedPrefix;
+    message.starts_with(crate::i18n::Msg::zh(&key))
+        || message.starts_with(crate::i18n::Msg::en(&key))
+}
+
+/// 恢复提示的界面文案。
+#[derive(Clone, Copy, Debug)]
+enum RecoveryMsg {
+    UnknownFileLineSuffix,
+    TitlePrefix,
+    UnsavedCountSuffix,
+    UnknownServerFile,
+    ConnectFailedPrefix,
+    SaveFailedPrefix,
+    NeedsServer,
+    UnknownHostDraft,
+    OpenFailedPrefix,
+    RemoteDeleted,
+    RemoteChanged,
+    OwnerChangePrefix,
+    OwnerChangeMid,
+    OwnerChangeSuffix,
+    ByteSuffix,
+}
+
+impl crate::i18n::Msg for RecoveryMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::UnknownFileLineSuffix => "（认不出对应的服务器文件）",
+            Self::TitlePrefix => "上次有 ",
+            Self::UnsavedCountSuffix => " 个文件的修改没有上传",
+            Self::UnknownServerFile => "这份修改认不出对应的服务器文件，只能另存到本地或放弃",
+            Self::ConnectFailedPrefix => "连不上这台主机，没有上传（修改还保留着）：",
+            Self::SaveFailedPrefix => "保存失败（修改还在，可以再试）：",
+            Self::NeedsServer => "这个动作需要连接服务器",
+            Self::UnknownHostDraft => "这份草稿认不出是哪台主机的，只能另存到本地或放弃",
+            Self::OpenFailedPrefix => "打开失败",
+            Self::RemoteDeleted => "服务器上的文件已经被删掉了，没有上传",
+            Self::RemoteChanged => "服务器上的文件在你离开之后又被改过，没有上传",
+            Self::OwnerChangePrefix => "重新上传后文件的属主会从 ",
+            Self::OwnerChangeMid => " 变成 ",
+            Self::OwnerChangeSuffix => {
+                "，没有上传。请先打开这个文件，用编辑器重新保存一次再选处理方式。"
+            }
+            Self::ByteSuffix => " 字节",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::UnknownFileLineSuffix => " (the matching server file could not be identified)",
+            Self::TitlePrefix => "Last session left ",
+            Self::UnsavedCountSuffix => " file with unsaved edits",
+            Self::UnknownServerFile => {
+                "This change cannot be matched to a server file; save it locally or discard it"
+            }
+            Self::ConnectFailedPrefix => {
+                "Could not connect to this host; nothing was uploaded (the change is still kept): "
+            }
+            Self::SaveFailedPrefix => "Save failed (the change is still here, you can try again): ",
+            Self::NeedsServer => "This action needs a server connection",
+            Self::UnknownHostDraft => {
+                "This draft cannot be matched to a host; save it locally or discard it"
+            }
+            Self::OpenFailedPrefix => "Could not open",
+            Self::RemoteDeleted => "The file on the server has been deleted; nothing was uploaded",
+            Self::RemoteChanged => {
+                "The file on the server changed while you were away; nothing was uploaded"
+            }
+            Self::OwnerChangePrefix => "Re-uploading would change the file owner from ",
+            Self::OwnerChangeMid => " to ",
+            Self::OwnerChangeSuffix => {
+                "; nothing was uploaded. Open the file, save it again in the editor, then choose how to proceed."
+            }
+            Self::ByteSuffix => " bytes",
         }
     }
 }

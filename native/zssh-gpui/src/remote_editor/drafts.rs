@@ -35,6 +35,56 @@ const SEALED_OVERHEAD: u64 = 4096;
 /// 加密草稿文件的开头标记。明文草稿是 JSON，以 `{` 开头，不会撞上。
 const SEALED_MAGIC: &[u8; 8] = b"ZTDRAFT\x01";
 
+/// 草稿读写与恢复列表的界面文案。
+#[derive(Clone, Copy, Debug)]
+enum DraftsMsg {
+    ExportPlaintextNote,
+    LockedPrefix,
+    SealFailedPrefix,
+    TooManyLockedFiles,
+    TooManyExports,
+    JustNow,
+    MinutesAgoSuffix,
+    HoursAgoSuffix,
+    DaysAgoSuffix,
+}
+
+impl crate::i18n::Msg for DraftsMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::LockedPrefix => {
+                "本地有一份草稿无法解密（可能是另一个 Windows 用户或另一台电脑保存的，或文件已损坏）："
+            }
+            Self::SealFailedPrefix => "草稿加密失败：",
+            Self::TooManyLockedFiles => "同名的无法解密草稿太多",
+            Self::TooManyExports => "同名的导出文件太多",
+            Self::JustNow => "刚刚",
+            Self::MinutesAgoSuffix => " 分钟前",
+            Self::HoursAgoSuffix => " 小时前",
+            Self::DaysAgoSuffix => " 天前",
+            Self::ExportPlaintextNote => "这是明文文件，没有加密，用完请自行删除",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::LockedPrefix => {
+                "A local draft cannot be decrypted (it may belong to another Windows user or another computer, or the file is damaged): "
+            }
+            Self::SealFailedPrefix => "Could not encrypt the draft: ",
+            Self::TooManyLockedFiles => "Too many undecryptable drafts with the same name",
+            Self::TooManyExports => "Too many exported files with the same name",
+            Self::JustNow => "just now",
+            Self::MinutesAgoSuffix => " minutes ago",
+            Self::HoursAgoSuffix => " hours ago",
+            Self::DaysAgoSuffix => " days ago",
+            Self::ExportPlaintextNote => {
+                "This file is plain text and is not encrypted; delete it when you no longer need it"
+            }
+        }
+    }
+}
+
 /// 草稿正文的加解密。生产里是 [`Dpapi`]；测试换成假的来模拟「换了个 Windows 用户」解不开、加密失败。
 pub(super) trait DraftCipher {
     fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, String>;
@@ -65,7 +115,8 @@ impl std::fmt::Display for DraftLocked {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "本地有一份草稿无法解密（可能是另一个 Windows 用户或另一台电脑保存的，或文件已损坏）：{}",
+            "{}{}",
+            crate::i18n::t(DraftsMsg::LockedPrefix),
             self.reason
         )
     }
@@ -194,9 +245,12 @@ pub(super) fn write_draft_with(
     draft: &EditDraft,
 ) -> std::io::Result<()> {
     let json = serde_json::to_vec(draft)?;
-    let sealed = cipher
-        .seal(&json)
-        .map_err(|reason| std::io::Error::other(format!("草稿加密失败：{reason}")))?;
+    let sealed = cipher.seal(&json).map_err(|reason| {
+        std::io::Error::other(format!(
+            "{}{reason}",
+            crate::i18n::t(DraftsMsg::SealFailedPrefix)
+        ))
+    })?;
     let mut bytes = Vec::with_capacity(SEALED_MAGIC.len() + sealed.len());
     bytes.extend_from_slice(SEALED_MAGIC);
     bytes.extend_from_slice(&sealed);
@@ -369,12 +423,14 @@ pub(super) fn set_aside_locked(locked: &DraftLocked) -> std::io::Result<PathBuf>
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::AlreadyExists,
-        "同名的无法解密草稿太多",
+        crate::i18n::t(DraftsMsg::TooManyLockedFiles),
     ))
 }
 
 /// 导出的草稿文件是**明文**（用户主动要的、要拿去用的文件），界面上要说明：见 [`EXPORT_PLAINTEXT_NOTE`]。
-pub(crate) const EXPORT_PLAINTEXT_NOTE: &str = "这是明文文件，没有加密，用完请自行删除";
+pub(crate) fn export_plaintext_note() -> &'static str {
+    crate::i18n::t(DraftsMsg::ExportPlaintextNote)
+}
 
 /// 把一份草稿存成本地文件（只增不覆盖）：用户从提示条选「另存为本地文件」时用。
 ///
@@ -413,7 +469,7 @@ pub(super) fn export_recovered(base: &Path, draft: &EditDraft) -> std::io::Resul
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::AlreadyExists,
-        "同名的导出文件太多",
+        crate::i18n::t(DraftsMsg::TooManyExports),
     ))
 }
 
@@ -422,7 +478,9 @@ pub(super) fn remove_draft(path: &Path) {
     match std::fs::remove_file(path) {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => tracing::warn!(%err, path = %path.display(), "删除编辑器草稿失败"),
+        Err(err) => {
+            tracing::warn!(%err, path = %path.display(), "删除编辑器草稿失败");
+        }
     }
 }
 
@@ -573,13 +631,28 @@ pub(super) fn now_unix() -> u64 {
 pub(super) fn draft_age_label(saved_at_unix: u64, now_unix: u64) -> String {
     let age = now_unix.saturating_sub(saved_at_unix);
     if age < 60 {
-        "刚刚".to_owned()
+        crate::i18n::t(DraftsMsg::JustNow).to_owned()
     } else if age < 3_600 {
-        format!("{} 分钟前", age / 60)
+        crate::i18n::count(
+            age / 60,
+            crate::i18n::t(DraftsMsg::MinutesAgoSuffix),
+            "minute ago",
+            "minutes ago",
+        )
     } else if age < 86_400 {
-        format!("{} 小时前", age / 3_600)
+        crate::i18n::count(
+            age / 3_600,
+            crate::i18n::t(DraftsMsg::HoursAgoSuffix),
+            "hour ago",
+            "hours ago",
+        )
     } else {
-        format!("{} 天前", age / 86_400)
+        crate::i18n::count(
+            age / 86_400,
+            crate::i18n::t(DraftsMsg::DaysAgoSuffix),
+            "day ago",
+            "days ago",
+        )
     }
 }
 
@@ -607,7 +680,7 @@ pub(super) fn list_drafts(base: &Path) -> Vec<FoundDraft> {
     if !scan.locked.is_empty() {
         tracing::warn!(
             count = scan.locked.len(),
-            "有无法解密的编辑草稿（可能是另一个 Windows 用户或另一台电脑保存的），已保留、没有列出"
+            "有无法解密的编辑草稿（可能是另一个 Windows 用户或另一台电脑保存的），已保留、没有列出" // i18n-allow: 仅日志
         );
     }
     scan.found

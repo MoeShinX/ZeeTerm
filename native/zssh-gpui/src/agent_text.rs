@@ -154,12 +154,47 @@ pub fn fold_diff(total: usize, expanded: bool) -> (usize, usize) {
     }
 }
 
+/// 差异摘要的两句话。
+#[derive(Clone, Copy, Debug)]
+enum AgentTextMsg {
+    NewFilePrefix,
+    LineSuffix,
+    NoChange,
+}
+
+impl crate::i18n::Msg for AgentTextMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::NewFilePrefix => "新建文件，共 ",
+            Self::LineSuffix => " 行",
+            Self::NoChange => "内容没有变化",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::NewFilePrefix => "New file, ",
+            Self::LineSuffix => " lines",
+            Self::NoChange => "No changes",
+        }
+    }
+}
+
 /// 差异的一句话摘要：`新建文件，共 3 行` / `+2 −1` / `内容没有变化`。
 pub fn diff_summary(added: usize, removed: usize, is_new: bool) -> String {
     if is_new {
-        format!("新建文件，共 {added} 行")
+        format!(
+            "{}{}",
+            crate::i18n::t(AgentTextMsg::NewFilePrefix),
+            crate::i18n::count(
+                added as u64,
+                crate::i18n::t(AgentTextMsg::LineSuffix),
+                "line",
+                "lines"
+            )
+        )
     } else if added == 0 && removed == 0 {
-        "内容没有变化".to_owned()
+        crate::i18n::t(AgentTextMsg::NoChange).to_owned()
     } else {
         format!("+{added} −{removed}")
     }

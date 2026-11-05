@@ -225,13 +225,13 @@ impl HighlightEditor {
             .highlight_rules()
             .get(index)
             .map(|rule| rule.id)
-            .ok_or_else(|| format!("没有第 {index} 条规则"))?;
+            .ok_or_else(|| format!("no rule at index {index}"))?;
         let input = self
             .inputs
             .iter()
             .find(|existing| existing.id == id)
             .map(|existing| existing.input.clone())
-            .ok_or("这条规则还没有输入框")?;
+            .ok_or("this rule has no input field yet")?;
         input.update(cx, |state, cx| state.set_value(text.to_owned(), window, cx));
         self.commit_pattern(id, text.to_owned(), cx);
         Ok(())

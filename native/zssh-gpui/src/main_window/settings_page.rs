@@ -712,12 +712,12 @@ impl MainWindow {
         let number = || {
             value
                 .parse::<u32>()
-                .map_err(|_| format!("{key} 的值要是整数"))
+                .map_err(|_| format!("{key} 的值要是整数")) // i18n-allow: 调试驱动（仅 debug 构建）的报错，不进界面
         };
         let flag = || match value {
             "true" | "on" => Ok(true),
             "false" | "off" => Ok(false),
-            _ => Err(format!("{key} 的值要是 on / off")),
+            _ => Err(format!("{key} 的值要是 on / off")), // i18n-allow: 调试驱动（仅 debug 构建）的报错，不进界面
         };
         match key {
             "keepalive" => self.set_pref_number(PrefNumber::Keepalive, number()?, window, cx),
@@ -761,13 +761,13 @@ impl MainWindow {
                     Some(
                         value
                             .parse::<i64>()
-                            .map_err(|_| "default_proxy 要是 none 或代理编号")?,
+                            .map_err(|_| "default_proxy 要是 none 或代理编号")?, // i18n-allow: 调试驱动（仅 debug 构建）的报错，不进界面
                     )
                 };
                 self.set_default_proxy(id, window, cx);
             }
             "app_proxy" => self.set_app_network_proxy(value, window, cx),
-            _ => return Err(format!("不认识的设置 {key}")),
+            _ => return Err(format!("不认识的设置 {key}")), // i18n-allow: 调试驱动（仅 debug 构建）的报错，不进界面
         }
         Ok(())
     }
@@ -808,7 +808,7 @@ impl MainWindow {
                     .as_deref(),
             )
             .unwrap_or_default(),
-            _ => return Err(format!("不认识的设置 {key}")),
+            _ => return Err(format!("不认识的设置 {key}")), // i18n-allow: 调试驱动（仅 debug 构建）的报错，不进界面
         })
     }
 
@@ -998,7 +998,7 @@ impl MainWindow {
         let (has_items, filter, search): (bool, Option<::gpui::AnyElement>, _) = match section {
             SettingsSection::Credentials => {
                 let current = self.keychain.kind_filter;
-                let kinds = super::identity_form::KINDS;
+                let kinds = super::identity_form::kinds();
                 let mut choices = vec![Choice::new(
                     t(SettingsMsg::FilterAllKinds),
                     current.is_none(),
@@ -1025,7 +1025,7 @@ impl MainWindow {
                                 pick(&entity, move |this, index, _window, cx| {
                                     this.keychain.kind_filter =
                                         index.checked_sub(1).and_then(|at| {
-                                            super::identity_form::KINDS
+                                            super::identity_form::kinds()
                                                 .get(at)
                                                 .map(|(kind, _)| *kind)
                                         });

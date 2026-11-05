@@ -29,6 +29,26 @@ use zssh_core::ai::terminal::SharedTerminalRing;
 use zssh_core::ssh::Connection;
 use zssh_session::SessionCommand;
 
+/// 终端登记表自己的文案。
+#[derive(Clone, Copy, Debug)]
+enum TerminalsMsg {
+    NoConnection,
+}
+
+impl crate::i18n::Msg for TerminalsMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::NoConnection => "这个终端没有可用的连接",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::NoConnection => "This terminal has no usable connection",
+        }
+    }
+}
+
 /// 终端编号的前缀。目标编号是 `host-<id>`，终端编号是 `term-<n>`，两者不会混。
 pub const TERMINAL_PREFIX: &str = "term-";
 
@@ -59,13 +79,13 @@ impl std::fmt::Debug for TermCommand {
         // 不打印内容：键盘输入可能是密码，包装脚本里有命令全文。
         match self {
             TermCommand::Session(SessionCommand::Write(bytes)) => {
-                write!(f, "Session::Write({} 字节)", bytes.len())
+                write!(f, "Session::Write({} bytes)", bytes.len())
             }
             TermCommand::Session(SessionCommand::Resize(size)) => {
                 write!(f, "Session::Resize({}x{})", size.cols, size.rows)
             }
             TermCommand::Session(SessionCommand::Close) => write!(f, "Session::Close"),
-            TermCommand::Reply(bytes) => write!(f, "Reply({} 字节)", bytes.len()),
+            TermCommand::Reply(bytes) => write!(f, "Reply({} bytes)", bytes.len()),
             TermCommand::AiWrite { marker, .. } => write!(f, "AiWrite({marker})"),
             TermCommand::AiTimedOut { marker } => write!(f, "AiTimedOut({marker})"),
         }
@@ -93,7 +113,7 @@ impl TermEntry {
     pub fn connection(&self) -> Result<Arc<Connection>, String> {
         self.connection
             .clone()
-            .ok_or_else(|| "这个终端没有可用的连接".to_owned())
+            .ok_or_else(|| crate::i18n::t(TerminalsMsg::NoConnection).to_owned())
     }
 
     pub fn host_id(&self) -> Option<i64> {

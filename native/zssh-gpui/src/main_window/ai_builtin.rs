@@ -1,8 +1,8 @@
 //! 设置 → AI → "内置助手"一节（V2-A4）：接口列表、设为默认、删除、模型资料库的显示与更新。
 //!
 //! 添加 / 编辑在 [`super::ai_endpoint_dialog`]。这里是列表那一块：每个接口一行（名称、类型、Base URL、
-//! Key 末 4 位、默认模型、是不是默认接口），右上"添加接口"；下面是"模型资料：……"一行、
-//! "立即更新"和"自动更新（每 7 天）"开关。接口的存取、能力识别、资料库更新都是 core 的，这里只拼装和画。
+//! Key 末 4 位、默认模型、是不是默认接口），右上crate::i18n::t(BuiltinMsg::AddEndpoint)；下面是"模型资料：……"一行、
+//! crate::i18n::t(BuiltinMsg::UpdateNow)和crate::i18n::t(BuiltinMsg::AutoUpdateTitle)开关。接口的存取、能力识别、资料库更新都是 core 的，这里只拼装和画。
 //!
 //! 保存 / 删除 / 改默认之后调 `agent_setup::builtin::reload()`，AI 面板据版本号变了就重读。
 
@@ -22,6 +22,135 @@ use super::widgets::{BadgeKind, ButtonLook, badge, note, text_button};
 use crate::agent_setup::builtin;
 use crate::app_theme::Tokens;
 use crate::typography::{Role, Typo as _};
+
+/// AI 内置接口页的文案。
+#[derive(Clone, Copy, Debug)]
+enum BuiltinMsg {
+    NoKey,
+    KeyUnset,
+    DefaultModelPrefix,
+    EndpointSection,
+    Intro,
+    AddEndpoint,
+    Empty,
+    ModelsTitle,
+    ModelsNote,
+    Updating,
+    UpdateNow,
+    AutoUpdateTitle,
+    AutoUpdateNote,
+    NotConfigured,
+    DefaultBadge,
+    AuthorizedBadge,
+    SetDefault,
+    Edit,
+    Disconnect,
+    Delete,
+    SetDefaultFailedPrefix,
+    DeleteTitlePrefix,
+    DeleteTitleSuffix,
+    DeleteMessage,
+    DeleteFailedPrefix,
+    SaveFailedPrefix,
+    RuntimeDown,
+    Updated,
+    NothingToUpdate,
+    UpdateFailedPrefix,
+}
+
+impl crate::i18n::Msg for BuiltinMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::NoKey => "不需要 Key",
+            Self::KeyUnset => "未设置 Key",
+            Self::DefaultModelPrefix => "默认模型 ",
+            Self::EndpointSection => "模型接口",
+            Self::Intro => {
+                "填一个接口地址和 API Key 就能用，不用装别的工具。支持 OpenAI 兼容和 Anthropic 两种接口；配好后，AI 面板默认用它。"
+            }
+            Self::AddEndpoint => "添加接口",
+            Self::Empty => {
+                "还没有接口。点右上的「添加接口」，填上名称、地址和 Key；填好后可以点「测试」确认能用。"
+            }
+            Self::ModelsTitle => "模型资料库",
+            Self::ModelsNote => {
+                "来自 models.dev，用来识别模型的上下文窗口、思考、工具调用等能力；识别不对可以在接口的「高级」里手动改。"
+            }
+            Self::Updating => "更新中…",
+            Self::UpdateNow => "立即更新",
+            Self::AutoUpdateTitle => "自动更新（每 7 天）",
+            Self::AutoUpdateNote => {
+                "启动后在后台联网更新模型资料库（走「软件网络」的代理设置）；关掉就只用内置快照和已有的缓存。只存在这台电脑上。"
+            }
+            Self::NotConfigured => "ZeeTerm 自带的 AI 助手。",
+            Self::DefaultBadge => "默认接口",
+            Self::AuthorizedBadge => "已授权",
+            Self::SetDefault => "设为默认",
+            Self::Edit => "编辑",
+            Self::Disconnect => "断开",
+            Self::Delete => "删除",
+            Self::SetDefaultFailedPrefix => "设为默认失败：",
+            Self::DeleteTitlePrefix => "删除接口「",
+            Self::DeleteTitleSuffix => "」？",
+            Self::DeleteMessage => {
+                "接口的配置和它的 API Key 会一起删掉，不能恢复。正在用它的 AI 对话不受影响，下次要重新选接口。"
+            }
+            Self::DeleteFailedPrefix => "删除接口失败：",
+            Self::SaveFailedPrefix => "保存失败：",
+            Self::RuntimeDown => "后台运行时没起来，不能更新",
+            Self::Updated => "已更新",
+            Self::NothingToUpdate => "没有需要更新的内容",
+            Self::UpdateFailedPrefix => "更新没成功，继续用现有的资料：",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::NoKey => "No key needed",
+            Self::KeyUnset => "No key set",
+            Self::DefaultModelPrefix => "default model ",
+            Self::EndpointSection => "Model Endpoints",
+            Self::Intro => {
+                "Add an endpoint address and an API key and you are ready — no extra tools. OpenAI-compatible and Anthropic APIs are supported; once configured, the AI panel uses it by default."
+            }
+            Self::AddEndpoint => "Add Endpoint",
+            Self::Empty => {
+                "No endpoints yet. Click \"Add Endpoint\" in the top right and fill in the name, address and key; then click \"Test\" to confirm it works."
+            }
+            Self::ModelsTitle => "Model Catalog",
+            Self::ModelsNote => {
+                "From models.dev; used to detect context window, reasoning, tool calls and other capabilities. If detection is wrong, override it under \"Advanced\" on the endpoint."
+            }
+            Self::Updating => "Updating…",
+            Self::UpdateNow => "Update Now",
+            Self::AutoUpdateTitle => "Auto-update (every 7 days)",
+            Self::AutoUpdateNote => {
+                "After launch, update the model catalog online in the background (using the proxy settings under \"Software network\"); when off, only the built-in snapshot and existing cache are used. Stored on this computer only."
+            }
+            Self::NotConfigured => "The built-in AI assistant of ZeeTerm.",
+            Self::DefaultBadge => "Default endpoint",
+            Self::AuthorizedBadge => "Authorized",
+            Self::SetDefault => "Set as Default",
+            Self::Edit => "Edit",
+            Self::Disconnect => "Disconnect",
+            Self::Delete => "Delete",
+            Self::SetDefaultFailedPrefix => "Could not set the default: ",
+            Self::DeleteTitlePrefix => "Delete endpoint \"",
+            Self::DeleteTitleSuffix => "\"?",
+            Self::DeleteMessage => {
+                "The endpoint configuration and its API key are deleted together and cannot be restored. Ongoing AI chats keep working, but you will need to pick an endpoint again next time."
+            }
+            Self::DeleteFailedPrefix => "Could not delete the endpoint: ",
+            Self::SaveFailedPrefix => "Save failed: ",
+            Self::RuntimeDown => {
+                "The background runtime is not running, so the update cannot start"
+            }
+            Self::Updated => "Updated",
+            Self::NothingToUpdate => "Nothing to update",
+            Self::UpdateFailedPrefix => "The update failed; continuing with the current catalog: ",
+        }
+    }
+}
 
 /// 列表里的一行。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,7 +191,7 @@ pub struct AiBuiltinUi {
     seen_version: Option<u64>,
     pub catalog_line: String,
     pub auto_update: bool,
-    /// 正在"立即更新"。
+    /// 正在crate::i18n::t(BuiltinMsg::UpdateNow)。
     pub catalog_busy: bool,
     /// 上一次操作的提示（文字，是不是出错）。
     pub note: Option<(String, bool)>,
@@ -126,11 +255,14 @@ pub fn row_detail(row: &Row) -> String {
     let mut parts = vec![row.base_url.clone()];
     parts.push(match &row.key_tail {
         Some(tail) => format!("Key {tail}"),
-        None if row.no_key => "不需要 Key".to_owned(),
-        None => "未设置 Key".to_owned(),
+        None if row.no_key => crate::i18n::t(BuiltinMsg::NoKey).to_owned(),
+        None => crate::i18n::t(BuiltinMsg::KeyUnset).to_owned(),
     });
     if let Some(model) = &row.default_model {
-        parts.push(format!("默认模型 {model}"));
+        parts.push(format!(
+            "{}{model}",
+            crate::i18n::t(BuiltinMsg::DefaultModelPrefix)
+        ));
     }
     parts.join(" · ")
 }
@@ -166,34 +298,28 @@ impl MainWindow {
                         .child(
                             div()
                                 .typo(Role::ItemName, tokens)
-                                .child("模型接口"),
+                                .child(crate::i18n::t(BuiltinMsg::EndpointSection)),
                         )
-                        .child(div().typo(Role::Caption, tokens).child(
-                            "填一个接口地址和 API Key 就能用，不用装别的工具。支持 OpenAI 兼容和 Anthropic 两种接口；配好后，AI 面板默认用它。",
-                        )),
+                        .child(
+                            div()
+                                .typo(Role::Caption, tokens)
+                                .child(crate::i18n::t(BuiltinMsg::Intro)),
+                        ),
                 )
                 .child(
                     Button::new("ai-endpoint-add")
-                        .label("添加接口")
+                        .label(crate::i18n::t(BuiltinMsg::AddEndpoint))
                         .compact()
                         .primary()
                         .on_click(move |_, window, cx| {
-                            add.update(cx, |this, cx| {
-                                this.open_ai_presets(window, cx)
-                            });
+                            add.update(cx, |this, cx| this.open_ai_presets(window, cx));
                         }),
                 )
                 .into_any_element(),
         );
 
         if ui.rows.is_empty() {
-            rows.push(
-                note(
-                    "还没有接口。点右上的「添加接口」，填上名称、地址和 Key；填好后可以点「测试」确认能用。",
-                    tokens,
-                )
-                .into_any_element(),
-            );
+            rows.push(note(crate::i18n::t(BuiltinMsg::Empty), tokens).into_any_element());
         }
         for row in &ui.rows {
             rows.push(self.ai_endpoint_row(row, &entity, tokens));
@@ -212,16 +338,22 @@ impl MainWindow {
                     v_flex()
                         .min_w_0()
                         .gap_0p5()
-                        .child(div().typo(Role::ItemName, tokens).child("模型资料库"))
+                        .child(
+                            div()
+                                .typo(Role::ItemName, tokens)
+                                .child(crate::i18n::t(BuiltinMsg::ModelsTitle)),
+                        )
                         .child(
                             div()
                                 .id("ai-catalog-line")
                                 .typo(Role::Caption, tokens)
                                 .child(SharedString::from(ui.catalog_line.clone())),
                         )
-                        .child(div().typo(Role::Caption, tokens).child(
-                            "来自 models.dev，用来识别模型的上下文窗口、思考、工具调用等能力；识别不对可以在接口的「高级」里手动改。",
-                        ))
+                        .child(
+                            div()
+                                .typo(Role::Caption, tokens)
+                                .child(crate::i18n::t(BuiltinMsg::ModelsNote)),
+                        )
                         .children(ui.note.as_ref().map(|(text, error)| {
                             div()
                                 .text_xs()
@@ -236,7 +368,11 @@ impl MainWindow {
                 .child(
                     text_button(
                         "ai-catalog-refresh",
-                        if busy { "更新中…" } else { "立即更新" },
+                        if busy {
+                            crate::i18n::t(BuiltinMsg::Updating)
+                        } else {
+                            crate::i18n::t(BuiltinMsg::UpdateNow)
+                        },
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             refresh.update(cx, |this, cx| this.ai_catalog_refresh(window, cx));
@@ -257,10 +393,16 @@ impl MainWindow {
                     v_flex()
                         .min_w_0()
                         .gap_0p5()
-                        .child(div().typo(Role::ItemName, tokens).child("自动更新（每 7 天）"))
-                        .child(div().typo(Role::Caption, tokens).child(
-                            "启动后在后台联网更新模型资料库（走「软件网络」的代理设置）；关掉就只用内置快照和已有的缓存。只存在这台电脑上。",
-                        )),
+                        .child(
+                            div()
+                                .typo(Role::ItemName, tokens)
+                                .child(crate::i18n::t(BuiltinMsg::AutoUpdateTitle)),
+                        )
+                        .child(
+                            div()
+                                .typo(Role::Caption, tokens)
+                                .child(crate::i18n::t(BuiltinMsg::AutoUpdateNote)),
+                        ),
                 )
                 .child(
                     Switch::new("ai-catalog-auto")
@@ -275,7 +417,7 @@ impl MainWindow {
         crate::settings_view::card(
             "ai-builtin",
             "ZeePilot",
-            Some("ZeeTerm 自带的 AI 助手。"),
+            Some(crate::i18n::t(BuiltinMsg::NotConfigured)),
             tokens,
             rows,
         )
@@ -317,10 +459,18 @@ impl MainWindow {
                             )
                             .child(badge(kind_label(row.kind), BadgeKind::Outline, tokens))
                             .when(row.is_default, |d| {
-                                d.child(badge("默认接口", BadgeKind::Neutral, tokens))
+                                d.child(badge(
+                                    crate::i18n::t(BuiltinMsg::DefaultBadge),
+                                    BadgeKind::Neutral,
+                                    tokens,
+                                ))
                             })
                             .when(authorized, |d| {
-                                d.child(badge("已授权", BadgeKind::Good, tokens))
+                                d.child(badge(
+                                    crate::i18n::t(BuiltinMsg::AuthorizedBadge),
+                                    BadgeKind::Good,
+                                    tokens,
+                                ))
                             })
                             .when_some(balance, |d, text| {
                                 d.child(
@@ -346,7 +496,7 @@ impl MainWindow {
                     .when(!row.is_default, |d| {
                         d.child(text_button(
                             format!("ai-endpoint-default-{id}"),
-                            "设为默认",
+                            crate::i18n::t(BuiltinMsg::SetDefault),
                             ButtonLook::Ghost,
                             move |_, window, cx| {
                                 set_default.update(cx, |this, cx| {
@@ -357,7 +507,7 @@ impl MainWindow {
                     })
                     .child(text_button(
                         format!("ai-endpoint-edit-{id}"),
-                        "编辑",
+                        crate::i18n::t(BuiltinMsg::Edit),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             edit.update(cx, |this, cx| {
@@ -367,7 +517,11 @@ impl MainWindow {
                     ))
                     .child(text_button(
                         format!("ai-endpoint-delete-{id}"),
-                        if tokenway { "断开" } else { "删除" },
+                        if tokenway {
+                            crate::i18n::t(BuiltinMsg::Disconnect)
+                        } else {
+                            crate::i18n::t(BuiltinMsg::Delete)
+                        },
                         ButtonLook::Ghost,
                         move |_, _window, cx| {
                             delete.update(cx, |this, cx| {
@@ -406,7 +560,15 @@ impl MainWindow {
                 self.ai_builtin.reload_rows();
                 self.ai_builtin.note = None;
             }
-            Err(err) => self.ai_builtin.note = Some((format!("设为默认失败：{err}"), true)),
+            Err(err) => {
+                self.ai_builtin.note = Some((
+                    format!(
+                        "{}{err}",
+                        crate::i18n::t(BuiltinMsg::SetDefaultFailedPrefix)
+                    ),
+                    true,
+                ))
+            }
         }
         let _ = window;
         cx.notify();
@@ -417,10 +579,14 @@ impl MainWindow {
             return;
         };
         self.modal = Some(Modal::Confirm(Confirm {
-            title: format!("删除接口「{}」？", row.name),
-            message: "接口的配置和它的 API Key 会一起删掉，不能恢复。正在用它的 AI 对话不受影响，下次要重新选接口。"
-                .to_owned(),
-            confirm_label: Some("删除".to_owned()),
+            title: format!(
+                "{}{}{}",
+                crate::i18n::t(BuiltinMsg::DeleteTitlePrefix),
+                row.name,
+                crate::i18n::t(BuiltinMsg::DeleteTitleSuffix)
+            ),
+            message: crate::i18n::t(BuiltinMsg::DeleteMessage).to_owned(),
+            confirm_label: Some(crate::i18n::t(BuiltinMsg::Delete).to_owned()),
             destructive: true,
             action: ConfirmAction::DeleteAiEndpoint(id),
         }));
@@ -449,7 +615,11 @@ impl MainWindow {
                 self.ai_builtin.reload_rows();
                 self.ai_builtin.note = None;
             }
-            Err(err) => self.notice(&format!("删除接口失败：{err}"), window, cx),
+            Err(err) => self.notice(
+                &format!("{}{err}", crate::i18n::t(BuiltinMsg::DeleteFailedPrefix)),
+                window,
+                cx,
+            ),
         }
     }
 
@@ -471,13 +641,18 @@ impl MainWindow {
                 self.ai_builtin.auto_update = next;
                 self.ai_builtin.note = None;
             }
-            Err(err) => self.ai_builtin.note = Some((format!("保存失败：{err}"), true)),
+            Err(err) => {
+                self.ai_builtin.note = Some((
+                    format!("{}{err}", crate::i18n::t(BuiltinMsg::SaveFailedPrefix)),
+                    true,
+                ))
+            }
         }
         let _ = window;
         cx.notify();
     }
 
-    /// "立即更新"：不看缓存新不新鲜，马上拉一次 models.dev。
+    /// crate::i18n::t(BuiltinMsg::UpdateNow)：不看缓存新不新鲜，马上拉一次 models.dev。
     pub(crate) fn ai_catalog_refresh(
         &mut self,
         window: &mut Window,
@@ -487,7 +662,7 @@ impl MainWindow {
             return;
         }
         let Ok(runtime) = crate::ssh_backend::runtime() else {
-            self.ai_builtin.note = Some(("后台运行时没起来，不能更新".to_owned(), true));
+            self.ai_builtin.note = Some((crate::i18n::t(BuiltinMsg::RuntimeDown).to_owned(), true));
             cx.notify();
             return;
         };
@@ -513,16 +688,18 @@ impl MainWindow {
                     this.ai_builtin.reload_rows();
                     this.ai_builtin.note = Some((
                         if updated {
-                            "已更新".to_owned()
+                            crate::i18n::t(BuiltinMsg::Updated).to_owned()
                         } else {
-                            "没有需要更新的内容".to_owned()
+                            crate::i18n::t(BuiltinMsg::NothingToUpdate).to_owned()
                         },
                         false,
                     ));
                 }
                 Err(reason) => {
-                    this.ai_builtin.note =
-                        Some((format!("更新没成功，继续用现有的资料：{reason}"), true));
+                    this.ai_builtin.note = Some((
+                        format!("{}{reason}", crate::i18n::t(BuiltinMsg::UpdateFailedPrefix)),
+                        true,
+                    ));
                 }
             }
             cx.notify();

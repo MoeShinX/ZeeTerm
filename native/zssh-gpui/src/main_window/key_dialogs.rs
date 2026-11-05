@@ -23,21 +23,24 @@ use crate::i18n::{Msg, t};
 use crate::typography::{Role, Typo as _};
 
 /// 算法下拉里的三项：算法、名字、一句话说明。
+///
+/// 界面上显示的文字按语言取（见 [`key_dialogs::algorithm_info`]），这里的名字和说明是英文原文，
+/// 只作为算法清单和测试的基准；中文在 `KeyDialogMsg::zh` 里。
 pub const ALGORITHMS: [(KeyAlgorithm, &str, &str); 3] = [
     (
         KeyAlgorithm::Ed25519,
-        "Ed25519（推荐）",
-        "短、快，现在的服务器都支持",
+        "Ed25519 (recommended)",
+        "Short and fast; supported by current servers",
     ),
     (
         KeyAlgorithm::EcdsaP256,
         "ECDSA P-256",
-        "部分设备或合规要求只认 ECDSA",
+        "Some devices or compliance rules only accept ECDSA",
     ),
     (
         KeyAlgorithm::Rsa4096,
         "RSA 4096",
-        "兼容很老的服务器，生成要几秒",
+        "Works with very old servers; generation takes a few seconds",
     ),
 ];
 
@@ -97,12 +100,12 @@ enum KeyDialogMsg {
 impl Msg for KeyDialogMsg {
     fn zh(&self) -> &'static str {
         match *self {
-            Self::AlgorithmEd25519 => ALGORITHMS[0].1,
-            Self::AlgorithmEd25519Hint => ALGORITHMS[0].2,
-            Self::AlgorithmEcdsa => ALGORITHMS[1].1,
-            Self::AlgorithmEcdsaHint => ALGORITHMS[1].2,
-            Self::AlgorithmRsa => ALGORITHMS[2].1,
-            Self::AlgorithmRsaHint => ALGORITHMS[2].2,
+            Self::AlgorithmEd25519 => "Ed25519（推荐）",
+            Self::AlgorithmEd25519Hint => "短、快，现在的服务器都支持",
+            Self::AlgorithmEcdsa => "ECDSA P-256",
+            Self::AlgorithmEcdsaHint => "部分设备或合规要求只认 ECDSA",
+            Self::AlgorithmRsa => "RSA 4096",
+            Self::AlgorithmRsaHint => "兼容很老的服务器，生成要几秒",
             Self::DefaultKeyName => "我的密钥",
             Self::NameRequired => "名称不能为空",
             Self::PassphraseMismatch => "两次输入的口令不一样",
@@ -978,9 +981,12 @@ mod tests {
 
     #[test]
     fn every_algorithm_has_a_label_and_a_hint() {
+        // 清单里的名字 / 说明（英文原文）非空，当前语言下取到的也一样。
         for (algorithm, label, hint) in ALGORITHMS {
-            assert_eq!(algorithm_info(algorithm), (label, hint));
-            assert!(!label.is_empty() && !hint.is_empty());
+            assert!(!label.is_empty() && !hint.is_empty(), "清单里缺名字或说明");
+            let (shown, shown_hint) = algorithm_info(algorithm);
+            assert!(!shown.is_empty(), "当前语言下没有算法名");
+            assert!(!shown_hint.is_empty(), "当前语言下没有算法说明");
         }
     }
 }

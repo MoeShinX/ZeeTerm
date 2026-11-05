@@ -50,9 +50,55 @@ pub(super) fn open_bytes(bytes: &[u8]) -> Result<Opened, String> {
     })
 }
 
+/// 打开 / 保存时给用户看的两句话。
+#[derive(Clone, Copy, Debug)]
+enum ContractMsg {
+    TooLargePrefix,
+    TooLargeMid,
+    TooLargeSuffix,
+    ByteSuffix,
+}
+
+impl crate::i18n::Msg for ContractMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::TooLargePrefix => "文件有 ",
+            Self::TooLargeMid => "，超过内置编辑器的上限（",
+            Self::TooLargeSuffix => "）。请下载后再看",
+            Self::ByteSuffix => " 字节",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::TooLargePrefix => "The file is ",
+            Self::TooLargeMid => ", over the built-in editor limit (",
+            Self::TooLargeSuffix => "). Download it to view",
+            Self::ByteSuffix => " bytes",
+        }
+    }
+}
+
 /// 超过上限的说法（读文件时发现、保存时发现共用）。
 pub(super) fn too_large(size: usize) -> String {
-    format!("文件有 {size} 字节，超过内置编辑器的上限（{MAX_BYTES} 字节）。请下载后再看")
+    format!(
+        "{}{}{}{}{}",
+        crate::i18n::t(ContractMsg::TooLargePrefix),
+        crate::i18n::count(
+            size as u64,
+            crate::i18n::t(ContractMsg::ByteSuffix),
+            "byte",
+            "bytes"
+        ),
+        crate::i18n::t(ContractMsg::TooLargeMid),
+        crate::i18n::count(
+            MAX_BYTES as u64,
+            crate::i18n::t(ContractMsg::ByteSuffix),
+            "byte",
+            "bytes"
+        ),
+        crate::i18n::t(ContractMsg::TooLargeSuffix)
+    )
 }
 
 /// 保存时把编辑器里的文本还原成文件字节（BOM、换行按打开时的样子）。

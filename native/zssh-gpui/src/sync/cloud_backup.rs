@@ -727,7 +727,7 @@ impl TargetForm {
             "t_gh_token" => &self.gh_token,
             "t_gh_gist" => &self.gh_gist_id,
             "t_od_client" => &self.od_client_id,
-            _ => return Err("不认识的表单字段".to_owned()),
+            _ => return Err("unknown form field".to_owned()),
         })
     }
 
@@ -931,7 +931,9 @@ pub(super) fn backup_after_sync(
                 tracing::warn!(failed, total = outcomes.len(), "有云端备份目标没有备份成功");
             }
         }
-        Err(message) => tracing::warn!(%message, "云端备份没有开始"),
+        Err(message) => {
+            tracing::warn!(%message, "云端备份没有开始");
+        }
     }
 }
 

@@ -12,6 +12,47 @@
 
 use std::collections::HashSet;
 
+use crate::i18n::{Msg, t};
+
+/// 本文件（锚定目标的提示语）的界面文案。主机名、`@` 进来的主机名是用户数据，不进这张表。
+#[derive(Clone, Copy, Debug)]
+enum AnchorMsg {
+    /// 快速连接终端的占位名（历史里不存地址，只存这个名字）。
+    QuickName,
+    QuoteOpen,
+    QuoteClose,
+    /// 「不能当目标：」+ 原因 + `RefusedSuffix`。
+    RefusedMid,
+    RefusedSuffix,
+    NotConnectedSuffix,
+}
+
+impl Msg for AnchorMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::QuickName => "快速连接",
+            Self::QuoteOpen => "「",
+            Self::QuoteClose => "」",
+            Self::RefusedMid => "不能当目标：",
+            Self::RefusedSuffix => "；这次对话先不绑定主机",
+            Self::NotConnectedSuffix => "还没连上，这次对话先不绑定主机",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::QuickName => "Quick connect",
+            Self::QuoteOpen => "“",
+            Self::QuoteClose => "”",
+            Self::RefusedMid => " cannot be a target: ",
+            Self::RefusedSuffix => "; this conversation stays unbound for now",
+            Self::NotConnectedSuffix => {
+                " is not connected yet, so this conversation stays unbound for now"
+            }
+        }
+    }
+}
+
 /// 用户 `@` 进来的一台主机，留在对话范围里直到用户 × 掉。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pin {
@@ -20,7 +61,9 @@ pub struct Pin {
 }
 
 /// 存进历史时快速连接终端的占位名（不存 `用户@地址`）。
-pub const QUICK_NAME: &str = "快速连接";
+pub fn quick_name() -> &'static str {
+    t(AnchorMsg::QuickName)
+}
 
 /// 目标的身份：主机库里的一台主机，或快速连接的一个终端（终端编号，`term-<n>`）。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -64,10 +107,21 @@ impl Unanchorable {
     pub fn message(&self) -> String {
         match self {
             Self::Refused { name, reason } => {
-                format!("「{name}」不能当目标：{reason}；这次对话先不绑定主机")
+                format!(
+                    "{}{name}{}{}{reason}{}",
+                    t(AnchorMsg::QuoteOpen),
+                    t(AnchorMsg::QuoteClose),
+                    t(AnchorMsg::RefusedMid),
+                    t(AnchorMsg::RefusedSuffix)
+                )
             }
             Self::NotConnected { name } => {
-                format!("「{name}」还没连上，这次对话先不绑定主机")
+                format!(
+                    "{}{name}{}{}",
+                    t(AnchorMsg::QuoteOpen),
+                    t(AnchorMsg::QuoteClose),
+                    t(AnchorMsg::NotConnectedSuffix)
+                )
             }
         }
     }
@@ -342,7 +396,7 @@ pub fn from_history(
         },
         None => Anchor {
             key: Key::Terminal(String::new()),
-            name: QUICK_NAME.to_owned(),
+            name: quick_name().to_owned(),
         },
     }
 }
@@ -351,7 +405,7 @@ pub fn from_history(
 pub fn to_history(anchor: &Anchor) -> (Option<i64>, String) {
     match &anchor.key {
         Key::Host(id) => (Some(*id), anchor.name.clone()),
-        Key::Terminal(_) => (None, QUICK_NAME.to_owned()),
+        Key::Terminal(_) => (None, quick_name().to_owned()),
     }
 }
 
@@ -719,10 +773,10 @@ mod tests {
         };
         assert_eq!(
             to_history(&quick_anchor),
-            (None, QUICK_NAME.to_owned()),
+            (None, quick_name().to_owned()),
             "不存地址"
         );
-        let restored = from_history(None, QUICK_NAME, |_| None);
+        let restored = from_history(None, quick_name(), |_| None);
         let h = hosts(&[]);
         let t = terms(&["term-4"]);
         assert!(

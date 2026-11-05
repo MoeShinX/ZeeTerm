@@ -1804,17 +1804,20 @@ impl SftpDemo {
         match (started, first_error) {
             (0, Some(err)) => self.warn(err),
             (0, None) => self.warn(t(empty)),
-            (count, None) => self.say(format!(
-                "{}{count}{}",
-                t(queued),
-                t(SftpMsg::ItemCountSuffix)
-            )),
-            (count, Some(err)) => self.warn(format!(
-                "{}{count}{}{}{err}",
-                t(queued),
-                t(SftpMsg::ItemCountSuffix),
-                t(SftpMsg::OpsQueuedSomeSuffix)
-            )),
+            (count, None) => {
+                let items =
+                    crate::i18n::count(count as u64, t(SftpMsg::ItemCountSuffix), "item", "items");
+                self.say(format!("{}{items}", t(queued)))
+            }
+            (count, Some(err)) => {
+                let items =
+                    crate::i18n::count(count as u64, t(SftpMsg::ItemCountSuffix), "item", "items");
+                self.warn(format!(
+                    "{}{items}{}{err}",
+                    t(queued),
+                    t(SftpMsg::OpsQueuedSomeSuffix)
+                ))
+            }
         }
     }
 

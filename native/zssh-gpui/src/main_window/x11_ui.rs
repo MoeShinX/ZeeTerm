@@ -412,8 +412,10 @@ impl MainWindow {
             Err(err) => {
                 // 先把界面切到「指定显示」让用户看到错误和输入框。
                 self.x11_ui.prefs.mode = mode;
+                // 只显示细节：前缀「输入不合法：」取自核心库自己的 `Display`，界面里不再硬编码一遍。
+                let prefix = zssh_core::error::ZsshError::InvalidInput(String::new()).to_string();
                 self.x11_ui.custom_error =
-                    Some(err.strip_prefix("输入不合法：").unwrap_or(&err).to_owned());
+                    Some(err.strip_prefix(&prefix).unwrap_or(&err).to_owned());
             }
         }
         cx.notify();
@@ -426,7 +428,9 @@ impl MainWindow {
             .and_then(|db| prefs::save_close_owned_on_exit(db, close).map_err(|e| e.to_string()));
         match result {
             Ok(()) => self.x11_ui.prefs.close_owned_on_exit = close,
-            Err(err) => tracing::warn!(%err, "保存 X11 退出设置失败"),
+            Err(err) => {
+                tracing::warn!(%err, "保存 X11 退出设置失败");
+            }
         }
         cx.notify();
     }

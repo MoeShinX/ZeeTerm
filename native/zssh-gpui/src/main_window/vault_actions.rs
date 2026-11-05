@@ -17,6 +17,64 @@ use super::page_logic::{
     looks_like_quick_target, order_state, step_in_layer,
 };
 use super::reveal_ui::RevealAction;
+use crate::i18n::{Msg, t};
+
+/// 本文件（主机页 / 主机树上的动作提示）的界面文案。主机名、分组名、地址来自用户或远端，
+/// 拼在文案里原样显示。
+#[derive(Clone, Copy, Debug)]
+enum VaultActMsg {
+    /// 传给 `ssh_only_notice` 的功能名（后面直接接「仅 SSH 主机可用」）。
+    SftpFeature,
+    PasswordCopied,
+    CopyPasswordFailedPrefix,
+    InfoCopiedWithPassword,
+    InfoCopied,
+    CopyInfoFailedPrefix,
+    GroupDeletedPrefix,
+    GroupDeletedSuffix,
+    DeleteFailedPrefix,
+    ReorderFailedPrefix,
+    ResortedByName,
+    ResortFailedPrefix,
+}
+
+impl Msg for VaultActMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::SftpFeature => "文件（SFTP）",
+            Self::PasswordCopied => "已复制密码，30 秒后自动清除",
+            Self::CopyPasswordFailedPrefix => "复制密码失败：",
+            Self::InfoCopiedWithPassword => "已复制连接信息（含密码），30 秒后自动清除",
+            Self::InfoCopied => "已复制连接信息",
+            Self::CopyInfoFailedPrefix => "复制连接信息失败：",
+            Self::GroupDeletedPrefix => "已删除分组「",
+            Self::GroupDeletedSuffix => "」",
+            Self::DeleteFailedPrefix => "删除失败：",
+            Self::ReorderFailedPrefix => "调整顺序失败：",
+            Self::ResortedByName => "已按名字重新排序",
+            Self::ResortFailedPrefix => "重新排序失败：",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::SftpFeature => "SFTP files — ",
+            Self::PasswordCopied => "Password copied; it is cleared automatically in 30 seconds",
+            Self::CopyPasswordFailedPrefix => "Failed to copy the password: ",
+            Self::InfoCopiedWithPassword => {
+                "Connection info copied (including the password); it is cleared automatically in 30 seconds"
+            }
+            Self::InfoCopied => "Connection info copied",
+            Self::CopyInfoFailedPrefix => "Failed to copy the connection info: ",
+            Self::GroupDeletedPrefix => "Deleted group “",
+            Self::GroupDeletedSuffix => "”",
+            Self::DeleteFailedPrefix => "Failed to delete: ",
+            Self::ReorderFailedPrefix => "Failed to reorder: ",
+            Self::ResortedByName => "Re-sorted by name",
+            Self::ResortFailedPrefix => "Failed to re-sort: ",
+        }
+    }
+}
 
 /// 系统的双击间隔 + 一点余量：单击已经展开着的主机属性要「再点一下收起」，但双击（连接）的
 /// 第二下不能让面板来回闪，所以收起要等过了双击间隔才执行。
@@ -125,7 +183,7 @@ impl MainWindow {
     /// 打开这台主机的文件视图：主窗口里的 SFTP 标签（0.2.14 同样是主视图标签）。
     pub(crate) fn open_sftp(&mut self, host_id: i64, window: &mut Window, cx: &mut Context<Self>) {
         if !self.caps_of(host_id).sftp {
-            self.ssh_only_notice(Some(host_id), "文件（SFTP）", window, cx);
+            self.ssh_only_notice(Some(host_id), t(VaultActMsg::SftpFeature), window, cx);
             return;
         }
         let factory = self
@@ -149,7 +207,7 @@ impl MainWindow {
         let origin = self.workspace.read(cx).tab_origin(index);
         if let Some((host_id, factory)) = origin {
             if !self.caps_of(host_id).sftp {
-                self.ssh_only_notice(Some(host_id), "文件（SFTP）", window, cx);
+                self.ssh_only_notice(Some(host_id), t(VaultActMsg::SftpFeature), window, cx);
                 return;
             }
             self.open_sftp_tab(host_id, factory, window, cx);
@@ -179,8 +237,12 @@ impl MainWindow {
             // 经 `chat_copy` 写：和聊天复制同一个可替换的写入口，测试里不碰系统剪贴板。
             .and_then(|password| crate::chat_copy::write_sensitive(password.as_str(), cx));
         match result {
-            Ok(()) => self.notice("已复制密码，30 秒后自动清除", window, cx),
-            Err(err) => self.notice_error(&format!("复制密码失败：{err}"), window, cx),
+            Ok(()) => self.notice(t(VaultActMsg::PasswordCopied), window, cx),
+            Err(err) => self.notice_error(
+                &format!("{}{err}", t(VaultActMsg::CopyPasswordFailedPrefix)),
+                window,
+                cx,
+            ),
         }
     }
 
@@ -212,9 +274,13 @@ impl MainWindow {
             Ok(info.has_password())
         });
         match result {
-            Ok(true) => self.notice("已复制连接信息（含密码），30 秒后自动清除", window, cx),
-            Ok(false) => self.notice("已复制连接信息", window, cx),
-            Err(err) => self.notice_error(&format!("复制连接信息失败：{err}"), window, cx),
+            Ok(true) => self.notice(t(VaultActMsg::InfoCopiedWithPassword), window, cx),
+            Ok(false) => self.notice(t(VaultActMsg::InfoCopied), window, cx),
+            Err(err) => self.notice_error(
+                &format!("{}{err}", t(VaultActMsg::CopyInfoFailedPrefix)),
+                window,
+                cx,
+            ),
         }
     }
 
@@ -267,9 +333,21 @@ impl MainWindow {
                 }
                 self.tree.expanded.remove(&group_key(Some(id)));
                 self.save_layout();
-                self.notice_success(&format!("已删除分组「{name}」"), window, cx);
+                self.notice_success(
+                    &format!(
+                        "{}{name}{}",
+                        t(VaultActMsg::GroupDeletedPrefix),
+                        t(VaultActMsg::GroupDeletedSuffix)
+                    ),
+                    window,
+                    cx,
+                );
             }
-            Err(err) => self.notice_error(&format!("删除失败：{err}"), window, cx),
+            Err(err) => self.notice_error(
+                &format!("{}{err}", t(VaultActMsg::DeleteFailedPrefix)),
+                window,
+                cx,
+            ),
         }
         cx.notify();
     }
@@ -293,7 +371,11 @@ impl MainWindow {
             return;
         };
         if let Err(err) = self.store.reorder_hosts(&next) {
-            self.notice_error(&format!("调整顺序失败：{err}"), window, cx);
+            self.notice_error(
+                &format!("{}{err}", t(VaultActMsg::ReorderFailedPrefix)),
+                window,
+                cx,
+            );
         }
         cx.notify();
     }
@@ -319,7 +401,11 @@ impl MainWindow {
             return;
         };
         if let Err(err) = self.store.reorder_groups(&next) {
-            self.notice_error(&format!("调整顺序失败：{err}"), window, cx);
+            self.notice_error(
+                &format!("{}{err}", t(VaultActMsg::ReorderFailedPrefix)),
+                window,
+                cx,
+            );
         }
         cx.notify();
     }
@@ -332,8 +418,12 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         match self.store.reset_order(group) {
-            Ok(()) => self.notice_success("已按名字重新排序", window, cx),
-            Err(err) => self.notice_error(&format!("重新排序失败：{err}"), window, cx),
+            Ok(()) => self.notice_success(t(VaultActMsg::ResortedByName), window, cx),
+            Err(err) => self.notice_error(
+                &format!("{}{err}", t(VaultActMsg::ResortFailedPrefix)),
+                window,
+                cx,
+            ),
         }
         cx.notify();
     }

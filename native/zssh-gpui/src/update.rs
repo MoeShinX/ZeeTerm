@@ -64,7 +64,7 @@ const CACHE_DIR: &str = "update-cache";
 ///
 /// 这里保留中文常量给还没有走 `i18n` 的调用方（`about_view` 的「关于」页）；更新窗口自己
 /// 用 [`UpdateMsg::SigningUnconfigured`]，两种语言都从这里的中文原文取词。
-pub const SIGNING_UNCONFIGURED: &str = "更新签名未配置：这个构建还没有设置更新签名公钥，不能在线更新（不会下载或安装任何更新）。请到发布页下载新的安装包。";
+pub const SIGNING_UNCONFIGURED: &str = "更新签名未配置：这个构建还没有设置更新签名公钥，不能在线更新（不会下载或安装任何更新）。请到发布页下载新的安装包。"; // i18n-allow: 旧常量，界面走 signing_unconfigured()
 
 /// 「更新签名未配置」那句，按当前语言取。「关于」页也显示它，所以不走模块内部的键。
 pub(crate) fn signing_unconfigured() -> &'static str {
@@ -285,7 +285,7 @@ impl Msg for UpdateMsg {
             Self::UpdateProxyConfigErrorPrefix => "更新代理配置错误：",
             Self::CreateDownloadClientFailedPrefix => "创建下载客户端失败：",
             Self::PubkeyUnavailable => "内置的更新公钥不可用，无法校验更新包",
-            Self::SigningUnconfigured => SIGNING_UNCONFIGURED,
+            Self::SigningUnconfigured => SIGNING_UNCONFIGURED, // i18n-allow: 与 e2e 测试共用的中文原文
             Self::NoReleaseNotes => "（无更新说明）",
             Self::PackageLabel => "安装包：",
             Self::PlatformLabel => "平台：",
@@ -1784,13 +1784,13 @@ pub fn run_pending_install() {
         Ok(()) => tracing::info!(
             version = %plan.version,
             program = %plan.program.display(),
-            "退出时已启动安装器"
+            "退出时已启动安装器" // i18n-allow: 仅日志
         ),
         Err(err) => tracing::warn!(
             version = %plan.version,
             program = %plan.program.display(),
             %err,
-            "退出时启动安装器失败"
+            "退出时启动安装器失败" // i18n-allow: 仅日志
         ),
     }
 }

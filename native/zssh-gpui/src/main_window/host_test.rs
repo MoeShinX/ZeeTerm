@@ -23,6 +23,8 @@ use zssh_core::ssh::connection_test::{
 use zssh_core::ssh::{AuthConfig, ChainHop, ProxyConfig};
 use zssh_core::store::Database;
 
+use crate::i18n::t;
+
 use super::MainWindow;
 use super::host_form::{FormInput, effective_routing};
 use super::protocol_form::{FieldError, FormField};
@@ -95,7 +97,7 @@ fn proxy_config(
             None => return Ok(None),
         },
         ProxyMode::Custom => proxy_id
-            .ok_or_else(|| FieldError::new(FormField::Proxy, "选了指定代理，但没有选是哪个代理"))?,
+            .ok_or_else(|| FieldError::new(FormField::Proxy, t(HostTestMsg::ProxyNotChosen)))?,
     };
     let login = db
         .proxy_login(id)
@@ -131,7 +133,7 @@ fn jump_hops(db: &Database, jump_id: i64) -> Result<Vec<ChainHop>, FieldError> {
             None
         };
         hops.push(ChainHop {
-            label: format!("跳板机 {}", host.name),
+            label: format!("{}{}", t(HostTestMsg::JumpLabelPrefix), host.name),
             host: login.host,
             port: login.port,
             username: login.username,
@@ -149,11 +151,9 @@ pub fn build_job(db: &Database, input: &JobInput<'_>) -> Result<Job, FieldError>
     let draft = input.draft;
     match input.settings.protocol {
         Protocol::Serial => {
-            let options = input
-                .settings
-                .serial
-                .clone()
-                .ok_or_else(|| FieldError::new(FormField::Device, "请选择或填写串口设备"))?;
+            let options = input.settings.serial.clone().ok_or_else(|| {
+                FieldError::new(FormField::Device, t(HostTestMsg::ChooseSerialDevice))
+            })?;
             Ok(Job::Serial(options))
         }
         Protocol::Telnet => {
@@ -198,7 +198,7 @@ pub fn build_job(db: &Database, input: &JobInput<'_>) -> Result<Job, FieldError>
                 None
             };
             hops.push(ChainHop {
-                label: format!("目标 {}", input.name),
+                label: format!("{}{}", t(HostTestMsg::TargetLabelPrefix), input.name),
                 host: draft.host.clone(),
                 port: draft.port,
                 username: draft.username.clone(),
@@ -222,12 +222,12 @@ async fn run_serial(options: SerialOptions) -> TestOutcome {
     match result {
         Ok(Ok(Ok(()))) => connection_test::serial_success(&device, elapsed),
         Ok(Ok(Err(err))) => connection_test::serial_failure(&device, &err.to_string(), elapsed),
-        Ok(Err(_)) => connection_test::serial_failure(&device, "测试任务意外结束", elapsed),
-        Err(_) => connection_test::serial_failure(
-            &device,
-            "打开串口超过 10 秒没有返回（驱动可能卡住了）",
-            elapsed,
-        ),
+        Ok(Err(_)) => {
+            connection_test::serial_failure(&device, t(HostTestMsg::TaskEndedUnexpectedly), elapsed)
+        }
+        Err(_) => {
+            connection_test::serial_failure(&device, t(HostTestMsg::SerialOpenTimeout), elapsed)
+        }
     }
 }
 
@@ -273,7 +273,7 @@ impl MainWindow {
         };
         let input = FormInput {
             name: if name.trim().is_empty() {
-                "测试"
+                t(HostTestMsg::DefaultTestName)
             } else {
                 &name
             },
@@ -319,7 +319,7 @@ impl MainWindow {
             && form.conn_mode == super::host_form::ConnMode::Jump
             && form.jump.is_none()
         {
-            self.show_form_error(FormField::Jump, "请选择跳板机", window, cx);
+            self.show_form_error(FormField::Jump, t(HostTestMsg::ChooseJumpHost), window, cx);
             return;
         }
         let planned = super::host_form::plan_save(
@@ -373,7 +373,7 @@ impl MainWindow {
             }
         };
         let Ok(runtime) = crate::ssh_backend::runtime() else {
-            self.notice("后台运行时没起来，不能测试连接", window, cx);
+            self.notice(t(HostTestMsg::RuntimeUnavailable), window, cx);
             return;
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -430,7 +430,58 @@ impl MainWindow {
             .map(|outcome| outcome.detail.clone());
         if let Some(detail) = detail {
             cx.write_to_clipboard(ClipboardItem::new_string(detail));
-            self.notice("已复制测试详情", window, cx);
+            self.notice(t(HostTestMsg::CopiedDetail), window, cx);
+        }
+    }
+}
+
+/// 「测试连接」对话框里的提示文字。
+#[derive(Clone, Copy, Debug)]
+enum HostTestMsg {
+    ProxyNotChosen,
+    ChooseSerialDevice,
+    ChooseJumpHost,
+    JumpLabelPrefix,
+    TargetLabelPrefix,
+    TaskEndedUnexpectedly,
+    SerialOpenTimeout,
+    RuntimeUnavailable,
+    CopiedDetail,
+    DefaultTestName,
+}
+
+impl crate::i18n::Msg for HostTestMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::ProxyNotChosen => "选了指定代理，但没有选是哪个代理",
+            Self::ChooseSerialDevice => "请选择或填写串口设备",
+            Self::ChooseJumpHost => "请选择跳板机",
+            Self::JumpLabelPrefix => "跳板机 ",
+            Self::TargetLabelPrefix => "目标 ",
+            Self::TaskEndedUnexpectedly => "测试任务意外结束",
+            Self::SerialOpenTimeout => "打开串口超过 10 秒没有返回（驱动可能卡住了）",
+            Self::RuntimeUnavailable => "后台运行时没起来，不能测试连接",
+            Self::CopiedDetail => "已复制测试详情",
+            Self::DefaultTestName => "测试",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::ProxyNotChosen => "A specific proxy was selected, but none was chosen",
+            Self::ChooseSerialDevice => "Select or enter a serial device",
+            Self::ChooseJumpHost => "Select a jump host",
+            Self::JumpLabelPrefix => "Jump host ",
+            Self::TargetLabelPrefix => "Target ",
+            Self::TaskEndedUnexpectedly => "The test task ended unexpectedly",
+            Self::SerialOpenTimeout => {
+                "Opening the serial port did not return within 10 seconds (the driver may be stuck)"
+            }
+            Self::RuntimeUnavailable => {
+                "The background runtime is not running, so the connection cannot be tested"
+            }
+            Self::CopiedDetail => "Test details copied",
+            Self::DefaultTestName => "test",
         }
     }
 }

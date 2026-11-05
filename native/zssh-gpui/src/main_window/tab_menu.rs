@@ -15,6 +15,7 @@ use crate::icons::Ico;
 #[derive(Clone, Copy, Debug)]
 enum TabMsg {
     DuplicateSession,
+    /// 串口同一时间只能被一个标签打开，所以不能复制。
     DuplicateSerial,
     CopyHostName,
     CopyAddress,
@@ -34,7 +35,7 @@ impl Msg for TabMsg {
     fn zh(&self) -> &'static str {
         match self {
             Self::DuplicateSession => "复制会话",
-            Self::DuplicateSerial => SERIAL_DUPLICATE_LABEL,
+            Self::DuplicateSerial => "复制会话（串口只能开一个）",
             Self::CopyHostName => "复制主机名",
             Self::CopyAddress => "复制地址",
             Self::Sftp => "SFTP",
@@ -123,9 +124,6 @@ impl TabMenuEntry {
         }
     }
 }
-
-/// 串口同一时间只能被一个标签打开，所以不能复制。
-pub const SERIAL_DUPLICATE_LABEL: &str = "复制会话（串口只能开一个）";
 
 /// 这个标签的右键菜单：
 /// 复制会话 | 复制主机名、复制地址、SFTP、重新连接、断开连接、（串口）发送 Break |

@@ -1,6 +1,6 @@
 //! 设置 → AI → 内置助手 →「添加接口」的预设列表，以及「用 Tokenway 连接」（V2-A5）。
 //!
-//! - 预设列表：Tokenway 在第一位（带"推荐"和一句介绍），后面是 OpenAI / Anthropic / DeepSeek /
+//! - 预设列表：Tokenway 在第一位（带crate::i18n::t(PresetMsg::Recommended)和一句介绍），后面是 OpenAI / Anthropic / DeepSeek /
 //!   OpenRouter / Ollama 和"自定义"，一个都不隐藏。非 Tokenway 的预设只是帮用户把添加接口的表单预填好；
 //! - 连接对话框：「用 Tokenway 连接」（浏览器授权 + PKCE + 本机回环，进度和取消都在这里）、
 //!   「我已有 Key，直接粘贴」、「还没有账号？注册 Tokenway」；
@@ -28,6 +28,186 @@ use crate::agent_setup::presets::{LocalPreset, PresetRow, preset_rows};
 use crate::agent_setup::tokenway::{self, Connected};
 use crate::app_theme::Tokens;
 use crate::typography::{Role, Typo as _};
+
+/// Tokenway 预设与接口连接向导的文案。
+#[derive(Clone, Copy, Debug)]
+enum PresetMsg {
+    DevicePlaceholder,
+    NoPreset,
+    RuntimeDownConnect,
+    RuntimeDownDisconnect,
+    Cancelled,
+    RegisterOpened,
+    DisconnectTokenwayBody,
+    DisconnectKeyBody,
+    DisconnectTitle,
+    DisconnectConfirm,
+    DisconnectedOk,
+    Recommended,
+    AddEndpoint,
+    AddIntro,
+    ReconnectTokenway,
+    ConnectTokenway,
+    StaleAuth,
+    BrowserIntro,
+    BalanceNote,
+    WaitingAuth,
+    ReceivingToken,
+    BrowserOpened,
+    AlmostDone,
+    DeviceName,
+    DeviceNameHint,
+    Cancel,
+    Retry,
+    ConnectWithTokenway,
+    NoAccount,
+    PasteKey,
+    OpenDbFailedPrefix,
+    DefaultModelSuffix,
+    ConnectedPrefix,
+    ConnectedSuffix,
+    AuthSaveFailedPrefix,
+    RegisterOpenFailedPrefix,
+    DisconnectFailedPrefix,
+    DisconnectedLocalPrefix,
+    DisconnectedLocalSuffix,
+}
+
+impl crate::i18n::Msg for PresetMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::DevicePlaceholder => "例如：办公室笔记本",
+            Self::NoPreset => "没有可用的 Tokenway 预设",
+            Self::RuntimeDownConnect => "后台运行时没起来，不能连接",
+            Self::RuntimeDownDisconnect => "后台运行时没起来，不能断开",
+            Self::Cancelled => "已取消连接",
+            Self::RegisterOpened => {
+                "已用浏览器打开 Tokenway 的注册页；注册好后回来点「用 Tokenway 连接」"
+            }
+            Self::DisconnectTokenwayBody => {
+                "会通知 Tokenway 停用这台电脑的授权令牌（网络不通时只删本地，之后可以在 Tokenway 网站的「已授权的应用」里停用），再从加密保险库里删掉令牌、删掉这个接口。同步到其他电脑时，那边也会删除。"
+            }
+            Self::DisconnectKeyBody => {
+                "会从加密保险库里删掉这个 Key、删掉这个接口（不会通知 Tokenway；Key 本身要在网站上自己停用）。同步到其他电脑时，那边也会删除。"
+            }
+            Self::DisconnectTitle => "断开 Tokenway？",
+            Self::DisconnectConfirm => "断开",
+            Self::DisconnectedOk => "已断开 Tokenway",
+            Self::Recommended => "推荐",
+            Self::AddEndpoint => "添加接口",
+            Self::AddIntro => {
+                "选一个起点：Tokenway 可以在浏览器里一键授权，不用复制 Key；其他的帮你把地址和类型填好，Key 自己贴。"
+            }
+            Self::ReconnectTokenway => "重新连接 Tokenway",
+            Self::ConnectTokenway => "连接 Tokenway",
+            Self::StaleAuth => {
+                "之前的授权已经失效。重新授权一次，ZeeTerm 会换上新的令牌，名字、默认模型这些设置都保留。"
+            }
+            Self::BrowserIntro => {
+                "点「用 Tokenway 连接」会用系统浏览器打开 Tokenway 的授权页：在网页上登录并点「授权」，ZeeTerm 就会拿到这台电脑专用的令牌。不用复制 Key，也不用在 ZeeTerm 里输入 Tokenway 的密码。"
+            }
+            Self::BalanceNote => {
+                "这个令牌只能使用充值余额，不使用赠送额度（赠送额度可以在网页和其他客户端试用）。授权可以随时在 Tokenway 网站的「已授权的应用」里停用。"
+            }
+            Self::WaitingAuth => "正在等待浏览器授权…",
+            Self::ReceivingToken => "已收到授权，正在领取令牌…",
+            Self::BrowserOpened => {
+                "已用系统浏览器打开 Tokenway 的授权页。在网页上登录并点「授权」，然后回到这里；最多等 5 分钟，不想等可以取消。"
+            }
+            Self::AlmostDone => "马上就好。",
+            Self::DeviceName => "设备名",
+            Self::DeviceNameHint => "显示在 Tokenway 的授权页和「已授权的应用」里；不要填你的真名",
+            Self::Cancel => "取消",
+            Self::Retry => "重试",
+            Self::ConnectWithTokenway => "用 Tokenway 连接",
+            Self::NoAccount => "还没有账号？注册 Tokenway",
+            Self::PasteKey => "我已有 Key，直接粘贴",
+            Self::OpenDbFailedPrefix => "打开设置库失败：",
+            Self::DefaultModelSuffix => "，默认模型 ",
+            Self::ConnectedPrefix => "已连接 Tokenway",
+            Self::ConnectedSuffix => "。令牌只存在这台电脑的加密保险库里",
+            Self::AuthSaveFailedPrefix => "授权成功了，但没能保存：",
+            Self::RegisterOpenFailedPrefix => "没能打开注册页：",
+            Self::DisconnectFailedPrefix => "断开失败：",
+            Self::DisconnectedLocalPrefix => {
+                "已断开 Tokenway（本地的令牌和配置都删了；没能通知服务端停用："
+            }
+            Self::DisconnectedLocalSuffix => "，可以在网站的「已授权的应用」里停用）",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::DevicePlaceholder => "For example: Office laptop",
+            Self::NoPreset => "No Tokenway preset is available",
+            Self::RuntimeDownConnect => {
+                "The background runtime is not running, so the connection cannot start"
+            }
+            Self::RuntimeDownDisconnect => {
+                "The background runtime is not running, so disconnecting is not possible"
+            }
+            Self::Cancelled => "Connection cancelled",
+            Self::RegisterOpened => {
+                "The Tokenway sign-up page is open in your browser; after signing up, come back and click \"Connect with Tokenway\""
+            }
+            Self::DisconnectTokenwayBody => {
+                "This asks Tokenway to revoke the token for this computer (if the network is down only the local copy is deleted, and you can revoke it later under \"Authorized apps\" on the Tokenway website), then deletes the token from the encrypted vault and removes this endpoint. Synced computers will remove it too."
+            }
+            Self::DisconnectKeyBody => {
+                "This deletes the key from the encrypted vault and removes this endpoint (Tokenway is not notified; revoke the key on its website yourself). Synced computers will remove it too."
+            }
+            Self::DisconnectTitle => "Disconnect Tokenway?",
+            Self::DisconnectConfirm => "Disconnect",
+            Self::DisconnectedOk => "Disconnected from Tokenway",
+            Self::Recommended => "Recommended",
+            Self::AddEndpoint => "Add Endpoint",
+            Self::AddIntro => {
+                "Choose a starting point: Tokenway can be authorized in one click in your browser with no key to copy; the others prefill the address and type, and you paste the key yourself."
+            }
+            Self::ReconnectTokenway => "Reconnect Tokenway",
+            Self::ConnectTokenway => "Connect Tokenway",
+            Self::StaleAuth => {
+                "The previous authorization is no longer valid. Authorize again and ZeeTerm will store a new token, keeping the name, default model and other settings."
+            }
+            Self::BrowserIntro => {
+                "Click \"Connect with Tokenway\" to open the Tokenway authorization page in your system browser: sign in and click Authorize, and ZeeTerm receives a token dedicated to this computer. No key to copy and no Tokenway password to type into ZeeTerm."
+            }
+            Self::BalanceNote => {
+                "This token can only use your purchased balance, not the free credit (use the free credit on the website or in other clients). You can revoke the authorization at any time under \"Authorized apps\" on the Tokenway website."
+            }
+            Self::WaitingAuth => "Waiting for browser authorization…",
+            Self::ReceivingToken => "Authorization received; fetching the token…",
+            Self::BrowserOpened => {
+                "The Tokenway authorization page is open in your system browser. Sign in, click Authorize, then come back; this waits up to 5 minutes and you can cancel."
+            }
+            Self::AlmostDone => "Almost done.",
+            Self::DeviceName => "Device name",
+            Self::DeviceNameHint => {
+                "Shown on the Tokenway authorization page and under \"Authorized apps\"; do not use your real name"
+            }
+            Self::Cancel => "Cancel",
+            Self::Retry => "Retry",
+            Self::ConnectWithTokenway => "Connect with Tokenway",
+            Self::NoAccount => "No account yet? Sign up for Tokenway",
+            Self::PasteKey => "I already have a key — paste it",
+            Self::OpenDbFailedPrefix => "Failed to open the settings database: ",
+            Self::DefaultModelSuffix => ", default model ",
+            Self::ConnectedPrefix => "Connected to Tokenway",
+            Self::ConnectedSuffix => {
+                ". The token is stored only in this computer's encrypted vault"
+            }
+            Self::AuthSaveFailedPrefix => "Authorization succeeded, but saving failed: ",
+            Self::RegisterOpenFailedPrefix => "Could not open the sign-up page: ",
+            Self::DisconnectFailedPrefix => "Disconnect failed: ",
+            Self::DisconnectedLocalPrefix => {
+                "Disconnected from Tokenway (the local token and configuration were deleted, but the service could not be notified to revoke it: "
+            }
+            Self::DisconnectedLocalSuffix => {
+                " — revoke it under \"Authorized apps\" on the website)"
+            }
+        }
+    }
+}
 
 /// 「添加接口」表单的预填内容（来自某个预设）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,7 +329,7 @@ impl MainWindow {
         let device = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(tokenway::default_device_name())
-                .placeholder("例如：办公室笔记本")
+                .placeholder(crate::i18n::t(PresetMsg::DevicePlaceholder))
         });
         self.modal = Some(Modal::Tokenway(Box::new(TokenwayDialog {
             device,
@@ -183,7 +363,7 @@ impl MainWindow {
         }
         let device = dialog.device.read(cx).value().trim().to_owned();
         let Some(preset) = tokenway::tokenway_preset() else {
-            dialog.phase = Phase::Failed("没有可用的 Tokenway 预设".to_owned());
+            dialog.phase = Phase::Failed(crate::i18n::t(PresetMsg::NoPreset).to_owned());
             cx.notify();
             return;
         };
@@ -196,7 +376,7 @@ impl MainWindow {
             }
         };
         let Ok(runtime) = crate::ssh_backend::runtime() else {
-            dialog.phase = Phase::Failed("后台运行时没起来，不能连接".to_owned());
+            dialog.phase = Phase::Failed(crate::i18n::t(PresetMsg::RuntimeDownConnect).to_owned());
             cx.notify();
             return;
         };
@@ -286,9 +466,9 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         let saved = (|| {
-            let preset = tokenway::tokenway_preset().ok_or("没有可用的 Tokenway 预设")?;
-            let db =
-                crate::host_db::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
+            let preset = tokenway::tokenway_preset().ok_or(crate::i18n::t(PresetMsg::NoPreset))?;
+            let db = crate::host_db::open_database()
+                .map_err(|err| format!("{}{err}", crate::i18n::t(PresetMsg::OpenDbFailedPrefix)))?;
             tokenway::finish_connect(&db, &preset, &connected, &tokenway::policy())
         })();
         match saved {
@@ -302,17 +482,24 @@ impl MainWindow {
                 let model = endpoint
                     .default_model
                     .as_deref()
-                    .map(|m| format!("，默认模型 {m}"))
+                    .map(|m| format!("{}{m}", crate::i18n::t(PresetMsg::DefaultModelSuffix)))
                     .unwrap_or_default();
                 self.notice(
-                    &format!("已连接 Tokenway{model}。令牌只存在这台电脑的加密保险库里"),
+                    &format!(
+                        "{}{model}{}",
+                        crate::i18n::t(PresetMsg::ConnectedPrefix),
+                        crate::i18n::t(PresetMsg::ConnectedSuffix)
+                    ),
                     window,
                     cx,
                 );
             }
             Err(reason) => {
                 self.with_tokenway_dialog(cx, |d| {
-                    d.phase = Phase::Failed(format!("授权成功了，但没能保存：{reason}"));
+                    d.phase = Phase::Failed(format!(
+                        "{}{reason}",
+                        crate::i18n::t(PresetMsg::AuthSaveFailedPrefix)
+                    ));
                     d.cancel = None;
                 });
             }
@@ -328,7 +515,7 @@ impl MainWindow {
             // 作废这一代的进度 / 结果，界面立刻回到未开始。
             d.generation += 1;
             d.phase = Phase::Idle;
-            d.note = Some("已取消连接".to_owned());
+            d.note = Some(crate::i18n::t(PresetMsg::Cancelled).to_owned());
         });
     }
 
@@ -360,7 +547,7 @@ impl MainWindow {
             cancel.notify_one();
         }
         let Some(preset) = tokenway::tokenway_preset() else {
-            self.notice("没有可用的 Tokenway 预设", window, cx);
+            self.notice(crate::i18n::t(PresetMsg::NoPreset), window, cx);
             return;
         };
         let prefill = Prefill {
@@ -377,12 +564,16 @@ impl MainWindow {
     pub(crate) fn tokenway_register(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match tokenway::open_register() {
             Ok(()) => self.with_tokenway_dialog(cx, |d| {
-                d.note = Some(
-                    "已用浏览器打开 Tokenway 的注册页；注册好后回来点「用 Tokenway 连接」"
-                        .to_owned(),
-                );
+                d.note = Some(crate::i18n::t(PresetMsg::RegisterOpened).to_owned());
             }),
-            Err(reason) => self.notice(&format!("没能打开注册页：{reason}"), window, cx),
+            Err(reason) => self.notice(
+                &format!(
+                    "{}{reason}",
+                    crate::i18n::t(PresetMsg::RegisterOpenFailedPrefix)
+                ),
+                window,
+                cx,
+            ),
         }
     }
 
@@ -395,14 +586,14 @@ impl MainWindow {
         let authorized = row.preset_id.as_deref()
             == Some(zssh_core::ai::agent::builtin::tokenway::endpoint::PRESET_AUTHORIZED);
         let message = if authorized {
-            "会通知 Tokenway 停用这台电脑的授权令牌（网络不通时只删本地，之后可以在 Tokenway 网站的「已授权的应用」里停用），再从加密保险库里删掉令牌、删掉这个接口。同步到其他电脑时，那边也会删除。"
+            crate::i18n::t(PresetMsg::DisconnectTokenwayBody)
         } else {
-            "会从加密保险库里删掉这个 Key、删掉这个接口（不会通知 Tokenway；Key 本身要在网站上自己停用）。同步到其他电脑时，那边也会删除。"
+            crate::i18n::t(PresetMsg::DisconnectKeyBody)
         };
         self.modal = Some(Modal::Confirm(Confirm {
-            title: "断开 Tokenway？".to_owned(),
+            title: crate::i18n::t(PresetMsg::DisconnectTitle).to_owned(),
             message: message.to_owned(),
-            confirm_label: Some("断开".to_owned()),
+            confirm_label: Some(crate::i18n::t(PresetMsg::DisconnectConfirm).to_owned()),
             destructive: true,
             action: ConfirmAction::DisconnectTokenway(id),
         }));
@@ -416,7 +607,7 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         let Ok(runtime) = crate::ssh_backend::runtime() else {
-            self.notice("后台运行时没起来，不能断开", window, cx);
+            self.notice(crate::i18n::t(PresetMsg::RuntimeDownDisconnect), window, cx);
             return;
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -428,14 +619,23 @@ impl MainWindow {
             match result {
                 Ok(report) => {
                     let text = match report.revoked {
-                        Ok(()) => "已断开 Tokenway".to_owned(),
+                        Ok(()) => crate::i18n::t(PresetMsg::DisconnectedOk).to_owned(),
                         Err(err) => format!(
-                            "已断开 Tokenway（本地的令牌和配置都删了；没能通知服务端停用：{err}，可以在网站的「已授权的应用」里停用）"
+                            "{}{err}{}",
+                            crate::i18n::t(PresetMsg::DisconnectedLocalPrefix),
+                            crate::i18n::t(PresetMsg::DisconnectedLocalSuffix)
                         ),
                     };
                     this.notice(&text, window, cx);
                 }
-                Err(reason) => this.notice(&format!("断开失败：{reason}"), window, cx),
+                Err(reason) => this.notice(
+                    &format!(
+                        "{}{reason}",
+                        crate::i18n::t(PresetMsg::DisconnectFailedPrefix)
+                    ),
+                    window,
+                    cx,
+                ),
             }
             cx.notify();
         });
@@ -521,7 +721,11 @@ impl MainWindow {
                                             .child(SharedString::from(row.title().to_owned())),
                                     )
                                     .when(recommended, |d| {
-                                        d.child(badge("推荐", BadgeKind::Good, tokens))
+                                        d.child(badge(
+                                            crate::i18n::t(PresetMsg::Recommended),
+                                            BadgeKind::Good,
+                                            tokens,
+                                        ))
                                     }),
                             )
                             .child(
@@ -543,16 +747,17 @@ impl MainWindow {
             .child(
                 v_flex()
                     .gap_1()
-                    .child(div().typo(Role::GroupTitle, tokens).child("添加接口"))
-                    .child(note(
-                        "选一个起点：Tokenway 可以在浏览器里一键授权，不用复制 Key；其他的帮你把地址和类型填好，Key 自己贴。",
-                        tokens,
-                    )),
+                    .child(
+                        div()
+                            .typo(Role::GroupTitle, tokens)
+                            .child(crate::i18n::t(PresetMsg::AddEndpoint)),
+                    )
+                    .child(note(crate::i18n::t(PresetMsg::AddIntro), tokens)),
             )
             .child(list)
             .child(h_flex().justify_end().child(text_button(
                 "ai-presets-cancel",
-                "取消",
+                crate::i18n::t(PresetMsg::Cancel),
                 ButtonLook::Outline,
                 move |_, window, cx| {
                     close.update(cx, |this, cx| this.close_modal(window, cx));
@@ -570,9 +775,9 @@ impl MainWindow {
         let entity = cx.entity();
         let running = dialog.phase.running();
         let title = if dialog.reconnect {
-            "重新连接 Tokenway"
+            crate::i18n::t(PresetMsg::ReconnectTokenway)
         } else {
-            "连接 Tokenway"
+            crate::i18n::t(PresetMsg::ConnectTokenway)
         };
         let mut body = v_flex().gap_3();
         body = body.child(
@@ -581,29 +786,26 @@ impl MainWindow {
                 .child(div().typo(Role::GroupTitle, tokens).child(title))
                 .child(note(
                     if dialog.reconnect {
-                        "之前的授权已经失效。重新授权一次，ZeeTerm 会换上新的令牌，名字、默认模型这些设置都保留。"
+                        crate::i18n::t(PresetMsg::StaleAuth)
                     } else {
-                        "点「用 Tokenway 连接」会用系统浏览器打开 Tokenway 的授权页：在网页上登录并点「授权」，ZeeTerm 就会拿到这台电脑专用的令牌。不用复制 Key，也不用在 ZeeTerm 里输入 Tokenway 的密码。"
+                        crate::i18n::t(PresetMsg::BrowserIntro)
                     },
                     tokens,
                 )),
         );
-        body = body.child(note(
-            "这个令牌只能使用充值余额，不使用赠送额度（赠送额度可以在网页和其他客户端试用）。授权可以随时在 Tokenway 网站的「已授权的应用」里停用。",
-            tokens,
-        ));
+        body = body.child(note(crate::i18n::t(PresetMsg::BalanceNote), tokens));
 
         match &dialog.phase {
             Phase::Waiting | Phase::Exchanging => {
                 let text = if dialog.phase == Phase::Waiting {
-                    "正在等待浏览器授权…"
+                    crate::i18n::t(PresetMsg::WaitingAuth)
                 } else {
-                    "已收到授权，正在领取令牌…"
+                    crate::i18n::t(PresetMsg::ReceivingToken)
                 };
                 let detail = if dialog.phase == Phase::Waiting {
-                    "已用系统浏览器打开 Tokenway 的授权页。在网页上登录并点「授权」，然后回到这里；最多等 5 分钟，不想等可以取消。"
+                    crate::i18n::t(PresetMsg::BrowserOpened)
                 } else {
-                    "马上就好。"
+                    crate::i18n::t(PresetMsg::AlmostDone)
                 };
                 body = body.child(
                     v_flex()
@@ -624,8 +826,8 @@ impl MainWindow {
             }
             Phase::Idle | Phase::Failed(_) => {
                 body = body.child(field(
-                    "设备名",
-                    Some("显示在 Tokenway 的授权页和「已授权的应用」里；不要填你的真名".to_owned()),
+                    crate::i18n::t(PresetMsg::DeviceName),
+                    Some(crate::i18n::t(PresetMsg::DeviceNameHint).to_owned()),
                     Input::new(&dialog.device),
                     tokens,
                 ));
@@ -656,7 +858,7 @@ impl MainWindow {
         let actions = if running {
             h_flex().gap_2().justify_end().child(text_button(
                 "tokenway-cancel",
-                "取消",
+                crate::i18n::t(PresetMsg::Cancel),
                 ButtonLook::Outline,
                 move |_, window, cx| {
                     cancel_flow.update(cx, |this, cx| this.tokenway_cancel(window, cx));
@@ -664,14 +866,14 @@ impl MainWindow {
             ))
         } else {
             let label = if matches!(dialog.phase, Phase::Failed(_)) {
-                "重试"
+                crate::i18n::t(PresetMsg::Retry)
             } else {
-                "用 Tokenway 连接"
+                crate::i18n::t(PresetMsg::ConnectWithTokenway)
             };
             // 注册链接单独一行放在左边（和按钮挤在一行宽度不够）。
             let register_row = h_flex().justify_start().child(text_button(
                 "tokenway-register",
-                "还没有账号？注册 Tokenway",
+                crate::i18n::t(PresetMsg::NoAccount),
                 ButtonLook::Ghost,
                 move |_, window, cx| {
                     register.update(cx, |this, cx| this.tokenway_register(window, cx));
@@ -682,7 +884,7 @@ impl MainWindow {
                 .justify_end()
                 .child(text_button(
                     "tokenway-paste",
-                    "我已有 Key，直接粘贴",
+                    crate::i18n::t(PresetMsg::PasteKey),
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         paste.update(cx, |this, cx| this.tokenway_paste_key(window, cx));
@@ -690,7 +892,7 @@ impl MainWindow {
                 ))
                 .child(text_button(
                     "tokenway-close",
-                    "取消",
+                    crate::i18n::t(PresetMsg::Cancel),
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         close.update(cx, |this, cx| this.tokenway_close(window, cx));

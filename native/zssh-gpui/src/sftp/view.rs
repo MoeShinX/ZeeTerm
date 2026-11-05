@@ -811,12 +811,22 @@ impl SftpDemo {
             .border_t_1()
             .border_color(tokens.border)
             .typo(Role::Caption, tokens)
-            .child(format!("{count}{}", t(SftpMsg::ItemCountSuffix)))
+            .child(crate::i18n::count(
+                count as u64,
+                t(SftpMsg::ItemCountSuffix),
+                "item",
+                "items",
+            ))
             .when(selected_count > 0, |bar| {
                 bar.child(format!(
-                    "{}{selected_count}{}",
+                    "{}{}",
                     t(SftpViewMsg::SelectedPrefix),
-                    t(SftpMsg::ItemCountSuffix)
+                    crate::i18n::count(
+                        selected_count as u64,
+                        t(SftpMsg::ItemCountSuffix),
+                        "item",
+                        "items"
+                    )
                 ))
             });
 

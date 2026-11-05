@@ -1,9 +1,9 @@
 //! 设置 → AI → 内置助手：添加 / 编辑接口的对话框（V2-A4）。
 //!
 //! 沿用主机属性对话框（V2-U7 / U13）的外壳和单栏表单：名称、类型（分段按钮）、Base URL、API Key
-//! （密码框带小眼睛，编辑时留空表示不改）、默认模型（可输入，旁边的下拉列出"测试"拉到的和手填的模型）、
-//! 额外模型（一行一个）；下面是"识别为……"的能力结果和折叠的"高级"（逐项手动覆盖、改选匹配、
-//! OpenAI 兼容的几个开关）；底部有"测试"按钮。
+//! （密码框带小眼睛，编辑时留空表示不改）、默认模型（可输入，旁边的下拉列出crate::i18n::t(EndpointMsg::Test)拉到的和手填的模型）、
+//! 额外模型（一行一个）；下面是"识别为……"的能力结果和折叠的crate::i18n::t(EndpointMsg::Advanced)（逐项手动覆盖、改选匹配、
+//! OpenAI 兼容的几个开关）；底部有crate::i18n::t(EndpointMsg::Test)按钮。
 //!
 //! 能力识别、错误分类、保存都是 core 的（`catalog::resolve` / `probe::test_endpoint` /
 //! `Database::ai_endpoint_save`），这里是表单校验、结果文案和界面。校验与结果映射是纯函数，
@@ -37,6 +37,416 @@ use crate::app_theme::Tokens;
 use crate::menu_kit;
 use crate::typography::{Role, Typo as _};
 
+/// 接口对话框自己的文案。
+#[derive(Clone, Copy, Debug)]
+enum EndpointMsg {
+    KindOpenAi,
+    KeyWhitespace,
+    KeyControl,
+    NameRequired,
+    NameTooLong,
+    BaseUrlScheme,
+    KeyRequiredWithHint,
+    KeyRequired,
+    ModelInvalid,
+    NumberExample,
+    NumberZero,
+    NumberTooLarge,
+    OutputTooLarge,
+    NoTextButOk,
+    NoModelList,
+    NamePlaceholder,
+    ModelPlaceholder,
+    ExtraModelsPlaceholder,
+    Auto,
+    Support,
+    Unsupported,
+    On,
+    Off,
+    Switch,
+    Level,
+    Budget,
+    SearchModelsPlaceholder,
+    EndpointGone,
+    TestNeedsModel,
+    RuntimeNotStarted,
+    EditTitle,
+    AddTitle,
+    NameLabel,
+    TypeLabel,
+    KindOpenAiNote,
+    KindAnthropicNote,
+    HideKey,
+    ShowKey,
+    KeyKeepHint,
+    KeyStoredHint,
+    NoKeyLabel,
+    NoKeyHint,
+    NoKeyCleared,
+    Choose,
+    ModelPickHint,
+    ModelFetchHint,
+    DefaultModelLabel,
+    DefaultModelHint,
+    ExtraModels,
+    ExtraModelsHint,
+    Advanced,
+    TestingLong,
+    Testing,
+    Test,
+    Cancel,
+    Save,
+    CapsHint,
+    NeedDefaultModel,
+    ContextWindow,
+    ContextHint,
+    MaxOutput,
+    Reasoning,
+    ReasoningHint,
+    ToolCalls,
+    ImageInput,
+    MaxCompletionTokens,
+    MaxCompletionHint,
+    ReasoningContent,
+    ReasoningContentHint,
+    ThinkingSwitch,
+    ThinkingSwitchHint,
+    IncludeUsage,
+    IncludeUsageHint,
+    ManualDefaultSuffix,
+    ManualOverrideSuffix,
+    OverrideModel,
+    OverrideHint,
+    Remap,
+    ClearRemap,
+    BaseUrlRequiredPrefix,
+    ContextWindowPrefix,
+    MaxOutputPrefix,
+    SecondsSuffix,
+    ReplyPrefix,
+    ReplyClose,
+    TestPassedPrefix,
+    TestPassedMid,
+    RecognizedPrefix,
+    RecognizedMid,
+    RecognizedClose,
+    TestFailedPrefix,
+    ServerSaidPrefix,
+    ErrorCodePrefix,
+    ModelsReturnedPrefix,
+    ModelsReturnedMid,
+    ModelCountSuffix,
+    SettingsDbPrefix,
+    SavedPrefix,
+    SavedClose,
+    BaseUrlFirstPrefix,
+    BaseUrlFirstClose,
+    TestAbortedPrefix,
+    ExamplePrefix,
+    ExampleDot,
+    Recognized2Prefix,
+    Recognized2Close,
+    ManualForPrefix,
+    ManualForSuffix,
+    RemapPrefix,
+    RemapSuffix,
+    RemappedPrefix,
+}
+
+impl crate::i18n::Msg for EndpointMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::KindOpenAi => "OpenAI 兼容",
+            Self::KeyWhitespace => "API Key 里有空格或换行，检查一下是不是复制多了",
+            Self::KeyControl => "API Key 里有看不见的控制字符",
+            Self::NameRequired => "请填一个接口名称",
+            Self::NameTooLong => "名称不能超过 100 个字符",
+            Self::BaseUrlScheme => "Base URL 要以 http:// 或 https:// 开头，不能含空格",
+            Self::KeyRequiredWithHint => {
+                "请填 API Key；接口不需要 Key 的话（比如本机的 Ollama）勾选「不需要 Key」"
+            }
+            Self::KeyRequired => "请填 API Key",
+            Self::ModelInvalid => "默认模型名不合法",
+            Self::NumberExample => "要填数字，例如 128000 或 128K",
+            Self::NumberZero => "不能是 0",
+            Self::NumberTooLarge => "数字太大了",
+            Self::OutputTooLarge => "最大输出不能比上下文窗口还大",
+            Self::NoTextButOk => "模型没有输出文字（可能把额度花在思考上了），但接口能用",
+            Self::NoModelList => "接口没有提供模型列表（或取不到）：模型名手填就行",
+            Self::NamePlaceholder => "例如：我的 OpenAI 网关",
+            Self::ModelPlaceholder => "例如 gpt-5.5",
+            Self::ExtraModelsPlaceholder => "接口的模型列表里没有的，一行填一个",
+            Self::Auto => "自动",
+            Self::Support => "支持",
+            Self::Unsupported => "不支持",
+            Self::On => "开",
+            Self::Off => "关",
+            Self::Switch => "开关",
+            Self::Level => "等级",
+            Self::Budget => "预算",
+            Self::SearchModelsPlaceholder => "搜索 models.dev 的模型…",
+            Self::EndpointGone => "这个接口已经不存在了",
+            Self::TestNeedsModel => {
+                "先填一个默认模型再测试（不知道填什么可以先留空点测试看接口返回的清单）"
+            }
+            Self::RuntimeNotStarted => "后台运行时没起来，不能测试",
+            Self::EditTitle => "编辑接口",
+            Self::AddTitle => "添加接口",
+            Self::NameLabel => "名称",
+            Self::TypeLabel => "类型",
+            Self::KindOpenAiNote => {
+                "通常带 /v1 这样的版本段；网关、DeepSeek、OpenRouter、Ollama 等都选这一种。"
+            }
+            Self::KindAnthropicNote => "官方或兼容 Anthropic Messages 的网关。",
+            Self::HideKey => "隐藏 Key",
+            Self::ShowKey => "显示 Key",
+            Self::KeyKeepHint => "留空表示不改；Key 加密存在本机凭据保险库里，不会写进日志",
+            Self::KeyStoredHint => "加密存在本机凭据保险库里，不会写进日志",
+            Self::NoKeyLabel => "不需要 Key",
+            Self::NoKeyHint => {
+                "Ollama、vLLM、本机网关这类不校验 Key 的接口勾上；请求里就不带 Authorization 头"
+            }
+            Self::NoKeyCleared => "已设为不需要 Key。保存时，这个接口原来存的 Key 会一起清掉。",
+            Self::Choose => "选择",
+            Self::ModelPickHint => "从接口返回的和手填的模型里选",
+            Self::ModelFetchHint => "点底部的「测试」可以拉取接口的模型列表",
+            Self::DefaultModelLabel => "默认模型",
+            Self::DefaultModelHint => "可以直接输入，也可以从右边的下拉里选",
+            Self::ExtraModels => "额外模型",
+            Self::ExtraModelsHint => "接口的模型列表里没有的；一行一个",
+            Self::Advanced => "高级",
+            Self::TestingLong => "正在测试…（拉模型列表，再对默认模型发一个很短的请求）",
+            Self::Testing => "测试中…",
+            Self::Test => "测试",
+            Self::Cancel => "取消",
+            Self::Save => "保存",
+            Self::CapsHint => {
+                "填了默认模型后，这里会显示识别出的能力（上下文窗口、思考、工具调用、图片）。"
+            }
+            Self::NeedDefaultModel => "先填默认模型，才能给它手动改能力。",
+            Self::ContextWindow => "上下文窗口",
+            Self::ContextHint => "token，如 128000 或 128K",
+            Self::MaxOutput => "最大输出",
+            Self::Reasoning => "思考",
+            Self::ReasoningHint => "等级默认 low / medium / high，预算默认 1024 到 32000 token",
+            Self::ToolCalls => "工具调用",
+            Self::ImageInput => "图片输入",
+            Self::MaxCompletionTokens => "输出上限用 max_completion_tokens",
+            Self::MaxCompletionHint => "自动：按接口 / 模型判断；关 = 用 max_tokens",
+            Self::ReasoningContent => "回传 reasoning_content",
+            Self::ReasoningContentHint => "DeepSeek 等要求工具调用后把思考内容原样带回去",
+            Self::ThinkingSwitch => "thinking 开关",
+            Self::ThinkingSwitchHint => "发 thinking: {type} 来开关思考（DeepSeek 风格）",
+            Self::IncludeUsage => "请求带 include_usage",
+            Self::IncludeUsageHint => {
+                "让接口在流的末尾回报 token 用量，上下文指示器靠它；个别网关不认这个参数时关掉"
+            }
+            Self::ManualDefaultSuffix => "（默认模型）",
+            Self::ManualOverrideSuffix => " · 已有手动值",
+            Self::OverrideModel => "要覆盖的模型",
+            Self::OverrideHint => "默认就是上面的默认模型；也可以给接口里别的模型单独改",
+            Self::Remap => "改选匹配",
+            Self::ClearRemap => "清除改选",
+            Self::BaseUrlRequiredPrefix => "请填 Base URL，例如 ",
+            Self::ContextWindowPrefix => "上下文窗口：",
+            Self::MaxOutputPrefix => "最大输出：",
+            Self::SecondsSuffix => " 秒",
+            Self::ReplyPrefix => "回复「",
+            Self::ReplyClose => "」",
+            Self::TestPassedPrefix => "测试通过：用时 ",
+            Self::TestPassedMid => " · 模型 ",
+            Self::RecognizedPrefix => "识别为 ",
+            Self::RecognizedMid => "（来源：",
+            Self::RecognizedClose => "）：",
+            Self::TestFailedPrefix => "测试失败：",
+            Self::ServerSaidPrefix => "服务端返回：",
+            Self::ErrorCodePrefix => "错误码：",
+            Self::ModelsReturnedPrefix => "接口返回了 ",
+            Self::ModelsReturnedMid => "，可以在「默认模型」旁的下拉里选",
+            Self::ModelCountSuffix => " 个模型",
+            Self::SettingsDbPrefix => "打开设置库失败：",
+            Self::SavedPrefix => "已保存接口「",
+            Self::SavedClose => "」",
+            Self::BaseUrlFirstPrefix => "先填好 Base URL（要以 http:// 或 https:// 开头，例如 ",
+            Self::BaseUrlFirstClose => "）",
+            Self::TestAbortedPrefix => "测试没能进行：",
+            Self::ExamplePrefix => "示例：",
+            Self::ExampleDot => "。",
+            Self::Recognized2Prefix => "识别为：",
+            Self::Recognized2Close => "）",
+            Self::ManualForPrefix => "下面的手动值只对「",
+            Self::ManualForSuffix => "」生效，优先于自动识别；留空 / 选「自动」就用识别结果。",
+            Self::RemapPrefix => "「",
+            Self::RemapSuffix => "」识别得不对时，从 models.dev 里选正确的那个",
+            Self::RemappedPrefix => "已改选：",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::KindOpenAi => "OpenAI-compatible",
+            Self::KeyWhitespace => {
+                "The API key contains spaces or line breaks — check for extra characters"
+            }
+            Self::KeyControl => "The API key contains invisible control characters",
+            Self::NameRequired => "Enter a name for the endpoint",
+            Self::NameTooLong => "The name cannot exceed 100 characters",
+            Self::BaseUrlScheme => {
+                "The Base URL must start with http:// or https:// and must not contain spaces"
+            }
+            Self::KeyRequiredWithHint => {
+                "Enter the API key; for endpoints that do not need one (for example a local Ollama), tick \"No API key\""
+            }
+            Self::KeyRequired => "Enter the API key",
+            Self::ModelInvalid => "The default model name is invalid",
+            Self::NumberExample => "Enter a number, for example 128000 or 128K",
+            Self::NumberZero => "Cannot be 0",
+            Self::NumberTooLarge => "The number is too large",
+            Self::OutputTooLarge => "Max output cannot exceed the context window",
+            Self::NoTextButOk => {
+                "The model returned no text (it may have spent the budget on reasoning), but the endpoint works"
+            }
+            Self::NoModelList => {
+                "The endpoint did not provide a model list (or it could not be fetched) — type the model name manually"
+            }
+            Self::NamePlaceholder => "For example: My OpenAI gateway",
+            Self::ModelPlaceholder => "For example: gpt-5.5",
+            Self::ExtraModelsPlaceholder => "Models missing from the endpoint list, one per line",
+            Self::Auto => "Auto",
+            Self::Support => "Supported",
+            Self::Unsupported => "Not supported",
+            Self::On => "On",
+            Self::Off => "Off",
+            Self::Switch => "Switch",
+            Self::Level => "Level",
+            Self::Budget => "Budget",
+            Self::SearchModelsPlaceholder => "Search models.dev…",
+            Self::EndpointGone => "This endpoint no longer exists",
+            Self::TestNeedsModel => {
+                "Fill in a default model before testing (leave it empty and click Test to see the endpoint list)"
+            }
+            Self::RuntimeNotStarted => {
+                "The background runtime is not running, so the test cannot start"
+            }
+            Self::EditTitle => "Edit Endpoint",
+            Self::AddTitle => "Add Endpoint",
+            Self::NameLabel => "Name",
+            Self::TypeLabel => "Type",
+            Self::KindOpenAiNote => {
+                "Usually includes a version segment such as /v1; use this for gateways, DeepSeek, OpenRouter, Ollama and similar."
+            }
+            Self::KindAnthropicNote => {
+                "The official API, or a gateway compatible with Anthropic Messages."
+            }
+            Self::HideKey => "Hide key",
+            Self::ShowKey => "Show key",
+            Self::KeyKeepHint => {
+                "Leave empty to keep it; the key is stored encrypted in the local credential vault and never written to logs"
+            }
+            Self::KeyStoredHint => {
+                "Stored encrypted in the local credential vault and never written to logs"
+            }
+            Self::NoKeyLabel => "No API key",
+            Self::NoKeyHint => {
+                "Tick for endpoints that do not check an API key (Ollama, vLLM, local gateways); requests then carry no Authorization header"
+            }
+            Self::NoKeyCleared => {
+                "Set to require no key. Saving will also clear the key previously stored for this endpoint."
+            }
+            Self::Choose => "Choose",
+            Self::ModelPickHint => {
+                "Pick from the models the endpoint returned and the ones you typed"
+            }
+            Self::ModelFetchHint => "Click Test at the bottom to fetch the endpoint model list",
+            Self::DefaultModelLabel => "Default model",
+            Self::DefaultModelHint => {
+                "Type it directly, or pick one from the dropdown on the right"
+            }
+            Self::ExtraModels => "Extra models",
+            Self::ExtraModelsHint => "Models missing from the endpoint list; one per line",
+            Self::Advanced => "Advanced",
+            Self::TestingLong => {
+                "Testing… (fetching the model list, then sending a very short request to the default model)"
+            }
+            Self::Testing => "Testing…",
+            Self::Test => "Test",
+            Self::Cancel => "Cancel",
+            Self::Save => "Save",
+            Self::CapsHint => {
+                "Once a default model is set, the detected capabilities (context window, reasoning, tool calls, images) appear here."
+            }
+            Self::NeedDefaultModel => "Set a default model before overriding its capabilities.",
+            Self::ContextWindow => "Context window",
+            Self::ContextHint => "tokens, for example 128000 or 128K",
+            Self::MaxOutput => "Max output",
+            Self::Reasoning => "Reasoning",
+            Self::ReasoningHint => {
+                "Level defaults to low / medium / high; budget defaults to 1024–32000 tokens"
+            }
+            Self::ToolCalls => "Tool calls",
+            Self::ImageInput => "Image input",
+            Self::MaxCompletionTokens => "Use max_completion_tokens for the output limit",
+            Self::MaxCompletionHint => "Auto: decide per endpoint and model; off = use max_tokens",
+            Self::ReasoningContent => "Send reasoning_content back",
+            Self::ReasoningContentHint => {
+                "DeepSeek and similar require the reasoning content to be sent back verbatim after tool calls"
+            }
+            Self::ThinkingSwitch => "thinking switch",
+            Self::ThinkingSwitchHint => {
+                "Send thinking: {type} to toggle reasoning (DeepSeek style)"
+            }
+            Self::IncludeUsage => "Request include_usage",
+            Self::IncludeUsageHint => {
+                "Ask the endpoint to report token usage at the end of the stream; the context indicator relies on it. Turn this off for gateways that reject the parameter."
+            }
+            Self::ManualDefaultSuffix => " (default model)",
+            Self::ManualOverrideSuffix => " · manual values set",
+            Self::OverrideModel => "Model to override",
+            Self::OverrideHint => {
+                "Defaults to the default model above; you can also override another model of this endpoint"
+            }
+            Self::Remap => "Remap",
+            Self::ClearRemap => "Clear remap",
+            Self::BaseUrlRequiredPrefix => "Enter the Base URL, for example ",
+            Self::ContextWindowPrefix => "Context window: ",
+            Self::MaxOutputPrefix => "Max output: ",
+            Self::SecondsSuffix => "s",
+            Self::ReplyPrefix => "Reply \"",
+            Self::ReplyClose => "\"",
+            Self::TestPassedPrefix => "Passed in ",
+            Self::TestPassedMid => " · model ",
+            Self::RecognizedPrefix => "Detected ",
+            Self::RecognizedMid => " (source: ",
+            Self::RecognizedClose => "): ",
+            Self::TestFailedPrefix => "Test failed: ",
+            Self::ServerSaidPrefix => "Server returned: ",
+            Self::ErrorCodePrefix => "Error code: ",
+            Self::ModelsReturnedPrefix => "The endpoint returned ",
+            Self::ModelsReturnedMid => "; pick one from the dropdown next to \"Default model\"",
+            Self::ModelCountSuffix => "models",
+            Self::SettingsDbPrefix => "Failed to open the settings database: ",
+            Self::SavedPrefix => "Saved endpoint \"",
+            Self::SavedClose => "\"",
+            Self::BaseUrlFirstPrefix => {
+                "Fill in the Base URL first (it must start with http:// or https://, for example "
+            }
+            Self::BaseUrlFirstClose => ")",
+            Self::TestAbortedPrefix => "The test could not run: ",
+            Self::ExamplePrefix => "Example: ",
+            Self::ExampleDot => ". ",
+            Self::Recognized2Prefix => "Detected: ",
+            Self::Recognized2Close => ")",
+            Self::ManualForPrefix => "The manual values below apply only to \"",
+            Self::ManualForSuffix => {
+                "\" and take precedence over auto-detection; leave them empty or choose \"Auto\" to use the detected values."
+            }
+            Self::RemapPrefix => "\"",
+            Self::RemapSuffix => "\" was detected incorrectly — pick the right one from models.dev",
+            Self::RemappedPrefix => "Remapped to: ",
+        }
+    }
+}
+
 /// 对话框卡片宽度：和主机属性一样的单栏表单。
 pub const DIALOG_WIDTH: f32 = super::host_dialog::DIALOG_WIDTH;
 
@@ -53,7 +463,7 @@ pub fn example_url(kind: EndpointKind) -> &'static str {
 
 pub fn kind_label(kind: EndpointKind) -> &'static str {
     match kind {
-        EndpointKind::OpenAiChat => "OpenAI 兼容",
+        EndpointKind::OpenAiChat => crate::i18n::t(EndpointMsg::KindOpenAi),
         EndpointKind::Anthropic => "Anthropic",
     }
 }
@@ -107,10 +517,10 @@ pub struct FormValues<'a> {
 /// Key 里不能有空白和控制字符（多半是复制时带进来的换行 / 空格）。
 fn key_problem(key: &str) -> Option<&'static str> {
     if key.chars().any(char::is_whitespace) {
-        return Some("API Key 里有空格或换行，检查一下是不是复制多了");
+        return Some(crate::i18n::t(EndpointMsg::KeyWhitespace));
     }
     if key.chars().any(char::is_control) {
-        return Some("API Key 里有看不见的控制字符");
+        return Some(crate::i18n::t(EndpointMsg::KeyControl));
     }
     None
 }
@@ -119,22 +529,32 @@ fn key_problem(key: &str) -> Option<&'static str> {
 pub fn build_draft(values: &FormValues<'_>) -> Result<AiEndpointDraft, FormError> {
     let name = values.name.trim();
     if name.is_empty() {
-        return Err(FormError::new(Field::Name, "请填一个接口名称"));
+        return Err(FormError::new(
+            Field::Name,
+            crate::i18n::t(EndpointMsg::NameRequired),
+        ));
     }
     if name.chars().count() > 100 {
-        return Err(FormError::new(Field::Name, "名称不能超过 100 个字符"));
+        return Err(FormError::new(
+            Field::Name,
+            crate::i18n::t(EndpointMsg::NameTooLong),
+        ));
     }
     let url = values.base_url.trim().trim_end_matches('/');
     if url.is_empty() {
         return Err(FormError::new(
             Field::BaseUrl,
-            format!("请填 Base URL，例如 {}", example_url(values.kind)),
+            format!(
+                "{}{}",
+                crate::i18n::t(EndpointMsg::BaseUrlRequiredPrefix),
+                example_url(values.kind)
+            ),
         ));
     }
     if !valid_base_url(url) {
         return Err(FormError::new(
             Field::BaseUrl,
-            "Base URL 要以 http:// 或 https:// 开头，不能含空格",
+            crate::i18n::t(EndpointMsg::BaseUrlScheme),
         ));
     }
     // 「不需要 Key」只有 OpenAI 兼容接口能选（Ollama、vLLM、本机网关）；Anthropic 一律要 Key。
@@ -145,10 +565,8 @@ pub fn build_draft(values: &FormValues<'_>) -> Result<AiEndpointDraft, FormError
         return Err(FormError::new(
             Field::ApiKey,
             match values.kind {
-                EndpointKind::OpenAiChat => {
-                    "请填 API Key；接口不需要 Key 的话（比如本机的 Ollama）勾选「不需要 Key」"
-                }
-                EndpointKind::Anthropic => "请填 API Key",
+                EndpointKind::OpenAiChat => crate::i18n::t(EndpointMsg::KeyRequiredWithHint),
+                EndpointKind::Anthropic => crate::i18n::t(EndpointMsg::KeyRequired),
             },
         ));
     }
@@ -157,7 +575,10 @@ pub fn build_draft(values: &FormValues<'_>) -> Result<AiEndpointDraft, FormError
     }
     let default_model = values.default_model.trim();
     if default_model.chars().count() > 200 || default_model.chars().any(char::is_control) {
-        return Err(FormError::new(Field::DefaultModel, "默认模型名不合法"));
+        return Err(FormError::new(
+            Field::DefaultModel,
+            crate::i18n::t(EndpointMsg::ModelInvalid),
+        ));
     }
     let models: Vec<String> = values
         .extra_models
@@ -262,28 +683,36 @@ pub fn parse_tokens(text: &str) -> Result<Option<u32>, String> {
     };
     let value: u64 = digits
         .parse()
-        .map_err(|_| "要填数字，例如 128000 或 128K".to_owned())?;
+        .map_err(|_| crate::i18n::t(EndpointMsg::NumberExample).to_owned())?;
     let total = value.saturating_mul(factor);
     if total == 0 {
-        return Err("不能是 0".to_owned());
+        return Err(crate::i18n::t(EndpointMsg::NumberZero).to_owned());
     }
     u32::try_from(total)
         .map(Some)
-        .map_err(|_| "数字太大了".to_owned())
+        .map_err(|_| crate::i18n::t(EndpointMsg::NumberTooLarge).to_owned())
 }
 
 /// 表单项 → `CapsOverride`（全空 = 默认值，调用方据此决定要不要存）。
 pub fn override_from_fields(fields: &OverrideFields) -> Result<CapsOverride, FormError> {
-    let context_window = parse_tokens(&fields.context)
-        .map_err(|e| FormError::new(Field::Overrides, format!("上下文窗口：{e}")))?;
-    let max_output = parse_tokens(&fields.output)
-        .map_err(|e| FormError::new(Field::Overrides, format!("最大输出：{e}")))?;
+    let context_window = parse_tokens(&fields.context).map_err(|e| {
+        FormError::new(
+            Field::Overrides,
+            format!("{}{e}", crate::i18n::t(EndpointMsg::ContextWindowPrefix)),
+        )
+    })?;
+    let max_output = parse_tokens(&fields.output).map_err(|e| {
+        FormError::new(
+            Field::Overrides,
+            format!("{}{e}", crate::i18n::t(EndpointMsg::MaxOutputPrefix)),
+        )
+    })?;
     if let (Some(window), Some(output)) = (context_window, max_output)
         && output > window
     {
         return Err(FormError::new(
             Field::Overrides,
-            "最大输出不能比上下文窗口还大",
+            crate::i18n::t(EndpointMsg::OutputTooLarge),
         ));
     }
     Ok(CapsOverride {
@@ -340,7 +769,15 @@ pub fn switch_override_target(
 }
 
 /// 思考覆盖的几个常用档（分段按钮用）。`None` = 自动。
-pub const THINKING_CHOICES: [&str; 5] = ["自动", "不支持", "开关", "等级", "预算"];
+pub fn thinking_choices() -> [&'static str; 5] {
+    [
+        crate::i18n::t(EndpointMsg::Auto),
+        crate::i18n::t(EndpointMsg::Unsupported),
+        crate::i18n::t(EndpointMsg::Switch),
+        crate::i18n::t(EndpointMsg::Level),
+        crate::i18n::t(EndpointMsg::Budget),
+    ]
+}
 
 pub fn thinking_choice_index(value: &Option<ReasoningSupport>) -> usize {
     match value {
@@ -388,7 +825,11 @@ pub struct TestResult {
 }
 
 fn seconds_text(elapsed: Duration) -> String {
-    format!("{:.1} 秒", elapsed.as_secs_f64())
+    format!(
+        "{:.1}{}",
+        elapsed.as_secs_f64(),
+        crate::i18n::t(EndpointMsg::SecondsSuffix)
+    )
 }
 
 /// 一行能力摘要：上下文 · 最大输出 · 思考 · 工具 · 图片。
@@ -407,37 +848,64 @@ pub fn describe_probe(probe: &EndpointProbe, model: &str, caps: &ModelCaps) -> T
     match &probe.reply {
         Ok(reply) => {
             let said = if reply.text.is_empty() {
-                "模型没有输出文字（可能把额度花在思考上了），但接口能用".to_owned()
+                crate::i18n::t(EndpointMsg::NoTextButOk).to_owned()
             } else {
-                format!("回复「{}」", reply.text)
+                format!(
+                    "{}{}{}",
+                    crate::i18n::t(EndpointMsg::ReplyPrefix),
+                    reply.text,
+                    crate::i18n::t(EndpointMsg::ReplyClose)
+                )
             };
             lines.push(format!(
-                "测试通过：用时 {} · 模型 {model} · {said}",
-                seconds_text(reply.elapsed)
+                "{}{}{}{model} · {said}",
+                crate::i18n::t(EndpointMsg::TestPassedPrefix),
+                seconds_text(reply.elapsed),
+                crate::i18n::t(EndpointMsg::TestPassedMid)
             ));
             lines.push(format!(
-                "识别为 {}（来源：{}）：{}",
+                "{}{}{}{}{}{}",
+                crate::i18n::t(EndpointMsg::RecognizedPrefix),
                 display_name(caps, model),
+                crate::i18n::t(EndpointMsg::RecognizedMid),
                 source_label(caps.source),
+                crate::i18n::t(EndpointMsg::RecognizedClose),
                 caps_one_line(caps)
             ));
         }
         Err(error) => {
-            lines.push(format!("测试失败：{}", error.message));
+            lines.push(format!(
+                "{}{}",
+                crate::i18n::t(EndpointMsg::TestFailedPrefix),
+                error.message
+            ));
             if let Some(detail) = &error.detail {
-                lines.push(format!("服务端返回：{detail}"));
+                lines.push(format!(
+                    "{}{detail}",
+                    crate::i18n::t(EndpointMsg::ServerSaidPrefix)
+                ));
             }
             if let Some(code) = &error.code {
-                lines.push(format!("错误码：{code}"));
+                lines.push(format!(
+                    "{}{code}",
+                    crate::i18n::t(EndpointMsg::ErrorCodePrefix)
+                ));
             }
         }
     }
     lines.push(match &probe.models {
         Some(models) => format!(
-            "接口返回了 {} 个模型，可以在「默认模型」旁的下拉里选",
-            models.len()
+            "{}{}{}",
+            crate::i18n::t(EndpointMsg::ModelsReturnedPrefix),
+            crate::i18n::count(
+                models.len() as u64,
+                crate::i18n::t(EndpointMsg::ModelCountSuffix),
+                "model",
+                "models"
+            ),
+            crate::i18n::t(EndpointMsg::ModelsReturnedMid)
         ),
-        None => "接口没有提供模型列表（或取不到）：模型名手填就行".to_owned(),
+        None => crate::i18n::t(EndpointMsg::NoModelList).to_owned(),
     });
     TestResult {
         ok: probe.ok(),
@@ -457,7 +925,7 @@ fn display_name(caps: &ModelCaps, model: &str) -> String {
 // 对话框状态
 // ---------------------------------------------------------------------------
 
-/// "测试"按钮的状态。
+/// crate::i18n::t(EndpointMsg::Test)按钮的状态。
 #[derive(Default)]
 pub struct TestUi {
     /// 每点一次加一；结果回来对不上就作废（中途改了表单重测、关了对话框）。
@@ -489,7 +957,7 @@ pub struct AiEndpointDialog {
     pub cap_fields: OverrideFields,
     pub pick_query: Entity<InputState>,
     pub advanced: bool,
-    /// "测试"拉到的模型清单和接口自报的能力。
+    /// crate::i18n::t(EndpointMsg::Test)拉到的模型清单和接口自报的能力。
     pub remote_models: Vec<String>,
     pub remote: HashMap<String, PartialCaps>,
     pub test: TestUi,
@@ -509,7 +977,7 @@ impl AiEndpointDialog {
         let name = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(existing.map(|e| e.name.clone()).unwrap_or_default())
-                .placeholder("例如：我的 OpenAI 网关")
+                .placeholder(crate::i18n::t(EndpointMsg::NamePlaceholder))
         });
         let base_url = cx.new(|cx| {
             InputState::new(window, cx)
@@ -524,19 +992,23 @@ impl AiEndpointDialog {
                         .and_then(|e| e.default_model.clone())
                         .unwrap_or_default(),
                 )
-                .placeholder("例如 gpt-5.5")
+                .placeholder(crate::i18n::t(EndpointMsg::ModelPlaceholder))
         });
         let extra = existing.map(|e| e.models.join("\n")).unwrap_or_default();
         let extra_models = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .default_value(extra)
-                .placeholder("接口的模型列表里没有的，一行填一个")
+                .placeholder(crate::i18n::t(EndpointMsg::ExtraModelsPlaceholder))
                 .auto_grow(2, 5)
         });
-        let cap_context = cx.new(|cx| InputState::new(window, cx).placeholder("自动"));
-        let cap_output = cx.new(|cx| InputState::new(window, cx).placeholder("自动"));
-        let pick_query =
-            cx.new(|cx| InputState::new(window, cx).placeholder("搜索 models.dev 的模型…"));
+        let cap_context =
+            cx.new(|cx| InputState::new(window, cx).placeholder(crate::i18n::t(EndpointMsg::Auto)));
+        let cap_output =
+            cx.new(|cx| InputState::new(window, cx).placeholder(crate::i18n::t(EndpointMsg::Auto)));
+        let pick_query = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(crate::i18n::t(EndpointMsg::SearchModelsPlaceholder))
+        });
         let overrides = existing.map(|e| e.overrides.clone()).unwrap_or_default();
         let mut dialog = Self {
             id: existing.map(|e| e.id),
@@ -807,11 +1279,15 @@ fn force_bar(
     let all = [Force::Auto, Force::Yes, Force::No];
     segmented_bar(
         id,
-        ["自动", "支持", "不支持"]
-            .iter()
-            .zip(all)
-            .map(|(label, value)| ((*label).to_owned(), value == current, None))
-            .collect(),
+        [
+            crate::i18n::t(EndpointMsg::Auto),
+            crate::i18n::t(EndpointMsg::Support),
+            crate::i18n::t(EndpointMsg::Unsupported),
+        ]
+        .iter()
+        .zip(all)
+        .map(|(label, value)| ((*label).to_owned(), value == current, None))
+        .collect(),
         tokens,
         move |index, window, cx| {
             if let Some(value) = all.get(index).copied() {
@@ -822,7 +1298,7 @@ fn force_bar(
 }
 
 impl MainWindow {
-    /// 打开"添加接口"（`existing = None`）或"编辑接口"对话框。
+    /// 打开crate::i18n::t(EndpointMsg::AddTitle)（`existing = None`）或crate::i18n::t(EndpointMsg::EditTitle)对话框。
     pub(crate) fn open_ai_endpoint_dialog(
         &mut self,
         existing: Option<i64>,
@@ -846,7 +1322,7 @@ impl MainWindow {
                 .and_then(|db| db.ai_endpoint_get(id).ok())
         });
         if existing.is_some() && endpoint.is_none() {
-            self.notice("这个接口已经不存在了", window, cx);
+            self.notice(crate::i18n::t(EndpointMsg::EndpointGone), window, cx);
             return;
         }
         let mut dialog = AiEndpointDialog::new(window, cx, endpoint.as_ref());
@@ -993,7 +1469,7 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// 选了一个模型：填进"默认模型"。
+    /// 选了一个模型：填进crate::i18n::t(EndpointMsg::DefaultModelLabel)。
     pub(crate) fn ai_dialog_pick_model(
         &mut self,
         model: String,
@@ -1024,7 +1500,7 @@ impl MainWindow {
             }
         };
         let saved = crate::host_db::open_database()
-            .map_err(|err| format!("打开设置库失败：{err}"))
+            .map_err(|err| format!("{}{err}", crate::i18n::t(EndpointMsg::SettingsDbPrefix)))
             .and_then(|db| db.ai_endpoint_save(&draft).map_err(|err| err.to_string()));
         match saved {
             Ok(endpoint) => {
@@ -1033,7 +1509,16 @@ impl MainWindow {
                 self.ai_builtin.reload_rows();
                 self.modal = None;
                 self.focus_content(window, cx);
-                self.notice(&format!("已保存接口「{}」", endpoint.name), window, cx);
+                self.notice(
+                    &format!(
+                        "{}{}{}",
+                        crate::i18n::t(EndpointMsg::SavedPrefix),
+                        endpoint.name,
+                        crate::i18n::t(EndpointMsg::SavedClose)
+                    ),
+                    window,
+                    cx,
+                );
             }
             Err(message) => {
                 if let Some(Modal::AiEndpoint(dialog)) = &mut self.modal {
@@ -1044,7 +1529,7 @@ impl MainWindow {
         }
     }
 
-    /// "测试"：用表单当前的值（没保存的也行）拉模型清单并对默认模型发一个极短的请求。
+    /// crate::i18n::t(EndpointMsg::Test)：用表单当前的值（没保存的也行）拉模型清单并对默认模型发一个极短的请求。
     pub(crate) fn ai_endpoint_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Modal::AiEndpoint(dialog)) = &mut self.modal else {
             return;
@@ -1067,8 +1552,10 @@ impl MainWindow {
             dialog.test.result = Some(TestResult {
                 ok: false,
                 lines: vec![format!(
-                    "先填好 Base URL（要以 http:// 或 https:// 开头，例如 {}）",
-                    example_url(dialog.kind)
+                    "{}{}{}",
+                    crate::i18n::t(EndpointMsg::BaseUrlFirstPrefix),
+                    example_url(dialog.kind),
+                    crate::i18n::t(EndpointMsg::BaseUrlFirstClose)
                 )],
             });
             cx.notify();
@@ -1086,10 +1573,7 @@ impl MainWindow {
         if model.is_empty() {
             dialog.test.result = Some(TestResult {
                 ok: false,
-                lines: vec![
-                    "先填一个默认模型再测试（不知道填什么可以先留空点测试看接口返回的清单）"
-                        .to_owned(),
-                ],
+                lines: vec![crate::i18n::t(EndpointMsg::TestNeedsModel).to_owned()],
             });
             cx.notify();
             return;
@@ -1110,7 +1594,7 @@ impl MainWindow {
             dialog.test.running = false;
             dialog.test.result = Some(TestResult {
                 ok: false,
-                lines: vec!["后台运行时没起来，不能测试".to_owned()],
+                lines: vec![crate::i18n::t(EndpointMsg::RuntimeNotStarted).to_owned()],
             });
             cx.notify();
             return;
@@ -1167,7 +1651,10 @@ impl MainWindow {
             Err(reason) => {
                 dialog.test.result = Some(TestResult {
                     ok: false,
-                    lines: vec![format!("测试没能进行：{reason}")],
+                    lines: vec![format!(
+                        "{}{reason}",
+                        crate::i18n::t(EndpointMsg::TestAbortedPrefix)
+                    )],
                 });
             }
         }
@@ -1184,9 +1671,9 @@ impl MainWindow {
         let entity = cx.entity();
         let body_h = Self::host_props_height(self.window_height);
         let title = if dialog.id.is_some() {
-            "编辑接口"
+            crate::i18n::t(EndpointMsg::EditTitle)
         } else {
-            "添加接口"
+            crate::i18n::t(EndpointMsg::AddTitle)
         };
         let err = |field: Field| {
             dialog
@@ -1199,7 +1686,7 @@ impl MainWindow {
 
         // 名称
         rows.push(labelled(
-            required_label("名称", tokens),
+            required_label(crate::i18n::t(EndpointMsg::NameLabel), tokens),
             Input::new(&dialog.name),
             err(Field::Name),
             tokens,
@@ -1210,7 +1697,7 @@ impl MainWindow {
             let pick = entity.clone();
             rows.push(
                 field(
-                    "类型",
+                    crate::i18n::t(EndpointMsg::TypeLabel),
                     None,
                     segmented_bar(
                         "ai-endpoint-kind",
@@ -1244,12 +1731,14 @@ impl MainWindow {
                 ))
                 .child(note(
                     format!(
-                        "示例：{}。{}",
+                        "{}{}{}{}",
+                        crate::i18n::t(EndpointMsg::ExamplePrefix),
                         example_url(dialog.kind),
+                        crate::i18n::t(EndpointMsg::ExampleDot),
                         match dialog.kind {
-                            EndpointKind::OpenAiChat =>
-                                "通常带 /v1 这样的版本段；网关、DeepSeek、OpenRouter、Ollama 等都选这一种。",
-                            EndpointKind::Anthropic => "官方或兼容 Anthropic Messages 的网关。",
+                            EndpointKind::OpenAiChat => crate::i18n::t(EndpointMsg::KindOpenAiNote),
+                            EndpointKind::Anthropic =>
+                                crate::i18n::t(EndpointMsg::KindAnthropicNote),
                         }
                     ),
                     tokens,
@@ -1269,18 +1758,18 @@ impl MainWindow {
                     IconName::Eye
                 })
                 .tooltip(if dialog.key_shown {
-                    "隐藏 Key"
+                    crate::i18n::t(EndpointMsg::HideKey)
                 } else {
-                    "显示 Key"
+                    crate::i18n::t(EndpointMsg::ShowKey)
                 })
                 .disabled(!has_text)
                 .on_click(move |_, window, cx| {
                     eye.update(cx, |this, cx| this.ai_dialog_toggle_key(window, cx));
                 });
             let hint = if dialog.id.is_some() && dialog.has_stored_key {
-                "留空表示不改；Key 加密存在本机凭据保险库里，不会写进日志"
+                crate::i18n::t(EndpointMsg::KeyKeepHint)
             } else {
-                "加密存在本机凭据保险库里，不会写进日志"
+                crate::i18n::t(EndpointMsg::KeyStoredHint)
             };
             let no_key = dialog.key_not_needed();
             let mut key_rows = v_flex().gap_1p5();
@@ -1289,8 +1778,8 @@ impl MainWindow {
                 let toggle = entity.clone();
                 key_rows = key_rows.child(check_card(
                     "ai-endpoint-no-key",
-                    "不需要 Key",
-                    Some("Ollama、vLLM、本机网关这类不校验 Key 的接口勾上；请求里就不带 Authorization 头"),
+                    crate::i18n::t(EndpointMsg::NoKeyLabel),
+                    Some(crate::i18n::t(EndpointMsg::NoKeyHint)),
                     no_key,
                     tokens,
                     move |value, _window, cx| {
@@ -1305,10 +1794,7 @@ impl MainWindow {
                 ));
             }
             if no_key {
-                key_rows = key_rows.child(note(
-                    "已设为不需要 Key。保存时，这个接口原来存的 Key 会一起清掉。",
-                    tokens,
-                ));
+                key_rows = key_rows.child(note(crate::i18n::t(EndpointMsg::NoKeyCleared), tokens));
             } else {
                 key_rows = key_rows
                     .child(labelled(
@@ -1342,12 +1828,12 @@ impl MainWindow {
             let menu_button = Button::new("ai-endpoint-model-menu")
                 .outline()
                 .compact()
-                .label("选择")
+                .label(crate::i18n::t(EndpointMsg::Choose))
                 .dropdown_caret(true)
                 .tooltip(if has_choices {
-                    "从接口返回的和手填的模型里选"
+                    crate::i18n::t(EndpointMsg::ModelPickHint)
                 } else {
-                    "点底部的「测试」可以拉取接口的模型列表"
+                    crate::i18n::t(EndpointMsg::ModelFetchHint)
                 })
                 .disabled(!has_choices)
                 .dropdown_menu(move |menu, _window, _cx| {
@@ -1367,7 +1853,11 @@ impl MainWindow {
                     menu
                 });
             rows.push(labelled(
-                field_label("默认模型", "可以直接输入，也可以从右边的下拉里选", tokens),
+                field_label(
+                    crate::i18n::t(EndpointMsg::DefaultModelLabel),
+                    crate::i18n::t(EndpointMsg::DefaultModelHint),
+                    tokens,
+                ),
                 h_flex()
                     .w_full()
                     .gap_1()
@@ -1386,8 +1876,8 @@ impl MainWindow {
         // 额外模型
         rows.push(
             field(
-                "额外模型",
-                Some("接口的模型列表里没有的；一行一个".to_owned()),
+                crate::i18n::t(EndpointMsg::ExtraModels),
+                Some(crate::i18n::t(EndpointMsg::ExtraModelsHint).to_owned()),
                 Textarea::new(&dialog.extra_models),
                 tokens,
             )
@@ -1400,7 +1890,7 @@ impl MainWindow {
             let toggle = entity.clone();
             rows.push(fold_header(
                 "ai-endpoint-advanced",
-                "高级",
+                crate::i18n::t(EndpointMsg::Advanced),
                 dialog.advanced,
                 tokens,
                 move |_window, cx| {
@@ -1439,7 +1929,7 @@ impl MainWindow {
                 div()
                     .text_sm()
                     .text_color(tokens.text_muted)
-                    .child("正在测试…（拉模型列表，再对默认模型发一个很短的请求）")
+                    .child(crate::i18n::t(EndpointMsg::TestingLong))
                     .into_any_element(),
             )
         } else if let Some(result) = &dialog.test.result {
@@ -1507,7 +1997,11 @@ impl MainWindow {
             .child(
                 text_button(
                     "ai-endpoint-test",
-                    if running { "测试中…" } else { "测试" },
+                    if running {
+                        crate::i18n::t(EndpointMsg::Testing)
+                    } else {
+                        crate::i18n::t(EndpointMsg::Test)
+                    },
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         test.update(cx, |this, cx| this.ai_endpoint_test(window, cx));
@@ -1518,7 +2012,7 @@ impl MainWindow {
             .child(div().flex_1())
             .child(text_button(
                 "ai-endpoint-cancel",
-                "取消",
+                crate::i18n::t(EndpointMsg::Cancel),
                 ButtonLook::Outline,
                 move |_, window, cx| {
                     cancel.update(cx, |this, cx| this.close_modal(window, cx));
@@ -1526,7 +2020,7 @@ impl MainWindow {
             ))
             .child(text_button(
                 "ai-endpoint-save",
-                "保存",
+                crate::i18n::t(EndpointMsg::Save),
                 ButtonLook::Primary,
                 move |_, window, cx| {
                     save.update(cx, |this, cx| this.ai_endpoint_save(window, cx));
@@ -1558,11 +2052,7 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some((model, caps)) = dialog.caps_now(&builtin::catalog(), cx) else {
-            return note(
-                "填了默认模型后，这里会显示识别出的能力（上下文窗口、思考、工具调用、图片）。",
-                tokens,
-            )
-            .into_any_element();
+            return note(crate::i18n::t(EndpointMsg::CapsHint), tokens).into_any_element();
         };
         let name = display_name(&caps, &model);
         let mut block = v_flex()
@@ -1577,8 +2067,11 @@ impl MainWindow {
                 div()
                     .typo(Role::FieldLabel, tokens)
                     .child(SharedString::from(format!(
-                        "识别为：{name}（来源：{}）",
-                        source_label(caps.source)
+                        "{}{name}{}{}{}",
+                        crate::i18n::t(EndpointMsg::Recognized2Prefix),
+                        crate::i18n::t(EndpointMsg::RecognizedMid),
+                        source_label(caps.source),
+                        crate::i18n::t(EndpointMsg::Recognized2Close)
                     ))),
             );
         for (label, value) in caps_summary(&caps) {
@@ -1605,7 +2098,7 @@ impl MainWindow {
         block.into_any_element()
     }
 
-    /// "高级"展开后的几行：能力覆盖、改选匹配、OpenAI 兼容的开关。
+    /// crate::i18n::t(EndpointMsg::Advanced)展开后的几行：能力覆盖、改选匹配、OpenAI 兼容的开关。
     fn ai_advanced_rows(
         &self,
         dialog: &AiEndpointDialog,
@@ -1617,12 +2110,18 @@ impl MainWindow {
         // 手动覆盖的目标：默认是默认模型，也可以在下拉里改成别的（接口里的、手填的、已经有覆盖的）。
         let model = dialog.override_model.clone();
         if model.is_empty() {
-            rows.push(note("先填默认模型，才能给它手动改能力。", tokens).into_any_element());
+            rows.push(
+                note(crate::i18n::t(EndpointMsg::NeedDefaultModel), tokens).into_any_element(),
+            );
         } else {
             rows.push(self.ai_override_target_row(dialog, &model, tokens, cx));
             rows.push(
                 note(
-                    format!("下面的手动值只对「{model}」生效，优先于自动识别；留空 / 选「自动」就用识别结果。"),
+                    format!(
+                        "{}{model}{}",
+                        crate::i18n::t(EndpointMsg::ManualForPrefix),
+                        crate::i18n::t(EndpointMsg::ManualForSuffix)
+                    ),
                     tokens,
                 )
                 .into_any_element(),
@@ -1633,13 +2132,13 @@ impl MainWindow {
                     .gap_3()
                     .items_start()
                     .child(div().flex_1().min_w_0().child(field(
-                        "上下文窗口",
-                        Some("token，如 128000 或 128K".to_owned()),
+                        crate::i18n::t(EndpointMsg::ContextWindow),
+                        Some(crate::i18n::t(EndpointMsg::ContextHint).to_owned()),
                         Input::new(&dialog.cap_context),
                         tokens,
                     )))
                     .child(div().flex_1().min_w_0().child(field(
-                        "最大输出",
+                        crate::i18n::t(EndpointMsg::MaxOutput),
                         Some("token".to_owned()),
                         Input::new(&dialog.cap_output),
                         tokens,
@@ -1652,13 +2151,11 @@ impl MainWindow {
                 let selected = thinking_choice_index(&current);
                 rows.push(
                     field(
-                        "思考",
-                        Some(
-                            "等级默认 low / medium / high，预算默认 1024 到 32000 token".to_owned(),
-                        ),
+                        crate::i18n::t(EndpointMsg::Reasoning),
+                        Some(crate::i18n::t(EndpointMsg::ReasoningHint).to_owned()),
                         segmented_bar(
                             "ai-cap-thinking",
-                            THINKING_CHOICES
+                            thinking_choices()
                                 .iter()
                                 .enumerate()
                                 .map(|(index, label)| {
@@ -1691,7 +2188,7 @@ impl MainWindow {
                         .gap_3()
                         .items_start()
                         .child(div().flex_1().min_w_0().child(field(
-                            "工具调用",
+                            crate::i18n::t(EndpointMsg::ToolCalls),
                             None,
                             force_bar(
                                 "ai-cap-tools",
@@ -1706,7 +2203,7 @@ impl MainWindow {
                             tokens,
                         )))
                         .child(div().flex_1().min_w_0().child(field(
-                            "图片输入",
+                            crate::i18n::t(EndpointMsg::ImageInput),
                             None,
                             force_bar(
                                 "ai-cap-image",
@@ -1738,7 +2235,11 @@ impl MainWindow {
                     tri_bar(
                         id,
                         current,
-                        ["自动", "开", "关"],
+                        [
+                            crate::i18n::t(EndpointMsg::Auto),
+                            crate::i18n::t(EndpointMsg::On),
+                            crate::i18n::t(EndpointMsg::Off),
+                        ],
                         tokens,
                         move |value, _w, cx| {
                             entity.update(cx, |this, cx| {
@@ -1752,22 +2253,22 @@ impl MainWindow {
             };
             rows.push(opt(
                 "ai-opt-max-completion",
-                "输出上限用 max_completion_tokens",
-                "自动：按接口 / 模型判断；关 = 用 max_tokens",
+                crate::i18n::t(EndpointMsg::MaxCompletionTokens),
+                crate::i18n::t(EndpointMsg::MaxCompletionHint),
                 dialog.options.max_completion_tokens,
                 |o, v| o.max_completion_tokens = v,
             ));
             rows.push(opt(
                 "ai-opt-reasoning-echo",
-                "回传 reasoning_content",
-                "DeepSeek 等要求工具调用后把思考内容原样带回去",
+                crate::i18n::t(EndpointMsg::ReasoningContent),
+                crate::i18n::t(EndpointMsg::ReasoningContentHint),
                 dialog.options.echo_reasoning_content,
                 |o, v| o.echo_reasoning_content = v,
             ));
             rows.push(opt(
                 "ai-opt-thinking",
-                "thinking 开关",
-                "发 thinking: {type} 来开关思考（DeepSeek 风格）",
+                crate::i18n::t(EndpointMsg::ThinkingSwitch),
+                crate::i18n::t(EndpointMsg::ThinkingSwitchHint),
                 dialog.options.thinking_toggle,
                 |o, v| o.thinking_toggle = v,
             ));
@@ -1775,8 +2276,8 @@ impl MainWindow {
             rows.push(
                 check_card(
                     "ai-opt-include-usage",
-                    "请求带 include_usage",
-                    Some("让接口在流的末尾回报 token 用量，上下文指示器靠它；个别网关不认这个参数时关掉"),
+                    crate::i18n::t(EndpointMsg::IncludeUsage),
+                    Some(crate::i18n::t(EndpointMsg::IncludeUsageHint)),
                     dialog.options.include_usage,
                     tokens,
                     move |value, _window, cx| {
@@ -1812,7 +2313,10 @@ impl MainWindow {
         let overridden = dialog.models_with_overrides();
         let pick = cx.entity();
         let label = if target == default {
-            format!("{target}（默认模型）")
+            format!(
+                "{target}{}",
+                crate::i18n::t(EndpointMsg::ManualDefaultSuffix)
+            )
         } else {
             target.to_owned()
         };
@@ -1826,10 +2330,10 @@ impl MainWindow {
                 for model in &choices {
                     let mut text = model.clone();
                     if *model == default {
-                        text.push_str("（默认模型）");
+                        text.push_str(crate::i18n::t(EndpointMsg::ManualDefaultSuffix));
                     }
                     if overridden.contains(model) {
-                        text.push_str(" · 已有手动值");
+                        text.push_str(crate::i18n::t(EndpointMsg::ManualOverrideSuffix));
                     }
                     let pick = pick.clone();
                     let model = model.clone();
@@ -1845,8 +2349,8 @@ impl MainWindow {
                 menu
             });
         field(
-            "要覆盖的模型",
-            Some("默认就是上面的默认模型；也可以给接口里别的模型单独改".to_owned()),
+            crate::i18n::t(EndpointMsg::OverrideModel),
+            Some(crate::i18n::t(EndpointMsg::OverrideHint).to_owned()),
             menu_button,
             tokens,
         )
@@ -1895,9 +2399,11 @@ impl MainWindow {
                 .collect()
         };
         let mut block = v_flex().gap_1p5().child(field(
-            "改选匹配",
+            crate::i18n::t(EndpointMsg::Remap),
             Some(format!(
-                "「{model}」识别得不对时，从 models.dev 里选正确的那个"
+                "{}{model}{}",
+                crate::i18n::t(EndpointMsg::RemapPrefix),
+                crate::i18n::t(EndpointMsg::RemapSuffix)
             )),
             Input::new(&dialog.pick_query),
             tokens,
@@ -1912,11 +2418,14 @@ impl MainWindow {
                         div()
                             .text_xs()
                             .text_color(tokens.text)
-                            .child(SharedString::from(format!("已改选：{picked}"))),
+                            .child(SharedString::from(format!(
+                                "{}{picked}",
+                                crate::i18n::t(EndpointMsg::RemappedPrefix)
+                            ))),
                     )
                     .child(text_button(
                         "ai-pick-clear",
-                        "清除改选",
+                        crate::i18n::t(EndpointMsg::ClearRemap),
                         ButtonLook::Ghost,
                         move |_, _w, cx| {
                             clear.update(cx, |this, cx| {

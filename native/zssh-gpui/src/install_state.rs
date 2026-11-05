@@ -119,6 +119,47 @@ pub fn snapshot() -> PendingWork {
     work
 }
 
+/// 拦下安装时那句话的文案。
+#[derive(Clone, Copy, Debug)]
+enum InstallMsg {
+    Prefix,
+    Suffix,
+    TransfersSuffix,
+    AiTurnSuffix,
+    Sync,
+    Restore,
+    UnsavedSuffix,
+    ListSeparator,
+}
+
+impl crate::i18n::Msg for InstallMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::Prefix => "还有 ",
+            Self::Suffix => "在进行，先等它们结束再安装",
+            Self::TransfersSuffix => " 个传输",
+            Self::AiTurnSuffix => " 个 AI 回合",
+            Self::Sync => "同步",
+            Self::Restore => "备份恢复",
+            Self::UnsavedSuffix => " 个文件没保存的修改",
+            Self::ListSeparator => "、",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::Prefix => "Still busy with ",
+            Self::Suffix => "; wait for it to finish before installing",
+            Self::TransfersSuffix => " transfers",
+            Self::AiTurnSuffix => " AI turns",
+            Self::Sync => "a sync",
+            Self::Restore => "a backup restore",
+            Self::UnsavedSuffix => " files with unsaved edits",
+            Self::ListSeparator => ", ",
+        }
+    }
+}
+
 /// 现在为什么不能安装；没有未结束的工作时返回 `None`。
 pub fn blocking_reason() -> Option<String> {
     let work = snapshot();
@@ -127,23 +168,40 @@ pub fn blocking_reason() -> Option<String> {
     }
     let mut parts = Vec::with_capacity(4);
     if work.transfers > 0 {
-        parts.push(format!("{} 个传输", work.transfers));
+        parts.push(crate::i18n::count(
+            work.transfers as u64,
+            crate::i18n::t(InstallMsg::TransfersSuffix),
+            "transfer",
+            "transfers",
+        ));
     }
     if work.ai_turns > 0 {
-        parts.push(format!("{} 个 AI 回合", work.ai_turns));
+        parts.push(crate::i18n::count(
+            work.ai_turns as u64,
+            crate::i18n::t(InstallMsg::AiTurnSuffix),
+            "AI turn",
+            "AI turns",
+        ));
     }
     if work.syncs > 0 {
-        parts.push("同步".to_owned());
+        parts.push(crate::i18n::t(InstallMsg::Sync).to_owned());
     }
     if work.restores > 0 {
-        parts.push("备份恢复".to_owned());
+        parts.push(crate::i18n::t(InstallMsg::Restore).to_owned());
     }
     if work.unsaved_edits > 0 {
-        parts.push(format!("{} 个文件没保存的修改", work.unsaved_edits));
+        parts.push(crate::i18n::count(
+            work.unsaved_edits as u64,
+            crate::i18n::t(InstallMsg::UnsavedSuffix),
+            "file with unsaved edits",
+            "files with unsaved edits",
+        ));
     }
     Some(format!(
-        "还有 {}在进行，先等它们结束再安装",
-        parts.join("、")
+        "{}{}{}",
+        crate::i18n::t(InstallMsg::Prefix),
+        parts.join(crate::i18n::t(InstallMsg::ListSeparator)),
+        crate::i18n::t(InstallMsg::Suffix)
     ))
 }
 

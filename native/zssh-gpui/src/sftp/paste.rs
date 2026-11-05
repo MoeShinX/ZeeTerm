@@ -598,7 +598,8 @@ async fn paste_remote(
                     }
                 }
             }
-            CopyMethod::Relay => unreachable!("中转在上面单独处理"),
+            // 中转在上面单独处理（开发期断言，不上界面）。
+            CopyMethod::Relay => unreachable!("Relay is handled above"),
         }
     }
 

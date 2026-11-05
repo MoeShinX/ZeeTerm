@@ -74,9 +74,9 @@ impl SftpDemo {
             source,
         });
         self.say(format!(
-            "{}{count}{}",
+            "{}{}",
             t(SftpMsg::ClipCopiedPrefix),
-            t(SftpMsg::ItemCountSuffix)
+            crate::i18n::count(count as u64, t(SftpMsg::ItemCountSuffix), "item", "items")
         ));
     }
 

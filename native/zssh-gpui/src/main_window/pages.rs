@@ -11,7 +11,44 @@ use zssh_core::model::Host;
 use super::MainWindow;
 use super::host_tree::{compare_names, host_matches};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::typography::{Role, Typo as _};
+
+/// 本文件（终端页 / 空白标签的启动页）的界面文案。主机名、地址是用户数据，不进这张表。
+#[derive(Clone, Copy, Debug)]
+enum PagesMsg {
+    NoTabs,
+    QuickConnect,
+    LauncherHint,
+    NoHosts,
+    NoMatch,
+}
+
+impl Msg for PagesMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::NoTabs => "没有打开的标签。按 Ctrl+Shift+T 新建，或者在左侧双击一台主机。",
+            Self::QuickConnect => "快速连接",
+            Self::LauncherHint => "搜索已保存的会话，回车即可连接",
+            Self::NoHosts => "主机库里还没有主机，点侧栏上方的 + 新建一台。",
+            Self::NoMatch => "没有匹配的主机",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::NoTabs => {
+                "No open tabs. Press Ctrl+Shift+T to create one, or double-click a host on the left."
+            }
+            Self::QuickConnect => "Quick Connect",
+            Self::LauncherHint => "Search your saved sessions, then press Enter to connect",
+            Self::NoHosts => {
+                "The host library is empty; click + at the top of the sidebar to add one."
+            }
+            Self::NoMatch => "No matching hosts",
+        }
+    }
+}
 
 /// 空白标签里「连接到主机」要列出的主机：按名字排序，搜索框里的字匹配名称 / 地址 /
 /// 用户名 / 标签（同 0.2.14 的 `filterHosts`）。
@@ -50,7 +87,7 @@ impl MainWindow {
                 .justify_center()
                 .text_sm()
                 .text_color(tokens.text_muted)
-                .child("没有打开的标签。按 Ctrl+Shift+T 新建，或者在左侧双击一台主机。")
+                .child(t(PagesMsg::NoTabs))
                 .into_any_element();
         }
         let blank = self.workspace.read(cx).active_tab_is_blank();
@@ -134,11 +171,15 @@ impl MainWindow {
                     .max_w(px(448.0))
                     .px_4()
                     .gap_2()
-                    .child(div().typo(Role::GroupTitle, tokens).child("快速连接"))
+                    .child(
+                        div()
+                            .typo(Role::GroupTitle, tokens)
+                            .child(t(PagesMsg::QuickConnect)),
+                    )
                     .child(
                         div()
                             .typo(Role::Caption, tokens)
-                            .child("搜索已保存的会话，回车即可连接"),
+                            .child(t(PagesMsg::LauncherHint)),
                     )
                     .child(Input::new(&self.launcher_query))
                     .child(if self.store.hosts().is_empty() {
@@ -147,7 +188,7 @@ impl MainWindow {
                             .text_center()
                             .typo(Role::Caption, tokens)
                             .text_size(px(14.0))
-                            .child("主机库里还没有主机，点侧栏上方的 + 新建一台。")
+                            .child(t(PagesMsg::NoHosts))
                             .into_any_element()
                     } else if shown.is_empty() {
                         div()
@@ -155,7 +196,7 @@ impl MainWindow {
                             .text_center()
                             .typo(Role::Caption, tokens)
                             .text_size(px(14.0))
-                            .child("没有匹配的主机")
+                            .child(t(PagesMsg::NoMatch))
                             .into_any_element()
                     } else {
                         v_flex()

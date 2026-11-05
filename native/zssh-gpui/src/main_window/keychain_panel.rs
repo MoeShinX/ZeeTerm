@@ -15,7 +15,7 @@ use zssh_core::model::{Host, Identity, IdentityKind};
 
 use super::MainWindow;
 use super::identity_form::{
-    IdentityInput, KINDS, build_draft, can_keep_passphrase, kind_change_clears_secret, kind_label,
+    IdentityInput, build_draft, can_keep_passphrase, kind_change_clears_secret, kind_label, kinds,
 };
 use super::modal::{Confirm, ConfirmAction, Modal};
 use super::side_panel::PanelContent;
@@ -749,7 +749,7 @@ impl MainWindow {
             .children(rows);
 
         let form = ui.editing().then(|| {
-            let kind_choices: Vec<Choice> = KINDS
+            let kind_choices: Vec<Choice> = kinds()
                 .iter()
                 .map(|(kind, _)| Choice::new(kind_label(*kind), *kind == ui.kind))
                 .collect();
@@ -777,7 +777,7 @@ impl MainWindow {
                             kind_label(ui.kind),
                             kind_choices,
                             pick(&entity, |this, index, _window, cx| {
-                                if let Some((kind, _)) = KINDS.get(index) {
+                                if let Some((kind, _)) = kinds().get(index) {
                                     this.keychain.kind = *kind;
                                     cx.notify();
                                 }
@@ -962,7 +962,15 @@ impl MainWindow {
 
         PanelContent {
             title: t(KeychainMsg::PanelTitle).into(),
-            subtitle: Some(format!("{count}{}", t(KeychainMsg::ItemCountSuffix)).into()),
+            subtitle: Some(
+                crate::i18n::count(
+                    count as u64,
+                    t(KeychainMsg::ItemCountSuffix),
+                    "item",
+                    "items",
+                )
+                .into(),
+            ),
             back: None,
             actions: vec![
                 text_button(

@@ -19,13 +19,6 @@ use crate::i18n::{Msg, t};
 use crate::migrate::{self, MigrateDemo, MigrateNotice};
 use crate::typography::{Role, Typo as _};
 
-/// 提示卡的标题和说明。
-pub const TIP_TITLE: &str = "检测到 Z-SSH 的数据";
-pub const TIP_TEXT: &str =
-    "一键导入到 ZeeTerm：先预览，导入前会自动备份，不会改动 Z-SSH 里的数据。";
-/// 欢迎页按钮行下面的链接文字。
-pub const WELCOME_LINK: &str = "从 Z-SSH 导入";
-
 /// 迁移入口的界面文案（提示卡和欢迎页链接）。
 #[derive(Clone, Copy, Debug)]
 enum MigrateUiMsg {
@@ -39,9 +32,11 @@ enum MigrateUiMsg {
 impl Msg for MigrateUiMsg {
     fn zh(&self) -> &'static str {
         match *self {
-            Self::TipTitle => TIP_TITLE,
-            Self::TipText => TIP_TEXT,
-            Self::WelcomeLink => WELCOME_LINK,
+            Self::TipTitle => "检测到 Z-SSH 的数据",
+            Self::TipText => {
+                "一键导入到 ZeeTerm：先预览，导入前会自动备份，不会改动 Z-SSH 里的数据。"
+            }
+            Self::WelcomeLink => "从 Z-SSH 导入",
             Self::Import => "导入",
             Self::Dismiss => "不再提示",
         }

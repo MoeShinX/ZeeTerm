@@ -51,6 +51,8 @@ enum HostPanelMsg {
     QuoteClose,
     DeleteFailedPrefix,
     MemoryConflict,
+    /// 核心库「输入不合法：」的前缀（字段旁边显示时不要它）。
+    InvalidInputPrefix,
 }
 
 impl Msg for HostPanelMsg {
@@ -73,6 +75,7 @@ impl Msg for HostPanelMsg {
             Self::QuoteOpen => "「",
             Self::QuoteClose => "」",
             Self::DeleteFailedPrefix => "删除失败：",
+            Self::InvalidInputPrefix => "输入不合法：",
             Self::MemoryConflict => {
                 "AI 刚刚更新了这台主机的记忆；你正在编辑的内容没有被覆盖，保存会替换 AI 写的。"
             }
@@ -104,6 +107,7 @@ impl Msg for HostPanelMsg {
             Self::QuoteOpen => "“",
             Self::QuoteClose => "”",
             Self::DeleteFailedPrefix => "Delete failed: ",
+            Self::InvalidInputPrefix => "Invalid input: ",
             Self::MemoryConflict => {
                 "The AI just updated this host's notes. Your edits were not overwritten; saving will replace what the AI wrote."
             }
@@ -720,8 +724,9 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 前缀由 `error_text` 按界面语言拼进整句，所以只剥当前语言的写法。
         let message = message
-            .strip_prefix("输入不合法：")
+            .strip_prefix(t(HostPanelMsg::InvalidInputPrefix))
             .unwrap_or(message)
             .to_owned();
         let row = self

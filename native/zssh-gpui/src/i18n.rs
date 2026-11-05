@@ -117,6 +117,32 @@ pub(crate) fn t<M: Msg>(key: M) -> &'static str {
     }
 }
 
+/// 现在是不是英文界面（需要自己拼句子、带数字/单复数的文案用）。
+pub(crate) fn is_en() -> bool {
+    current() == Lang::En
+}
+
+/// 英文单复数：`n == 1` 用 `one`，其余用 `many`。中文没有单复数，调用方按 `is_en()` 分开拼。
+pub(crate) fn plural(n: u64, one: &'static str, many: &'static str) -> &'static str {
+    if n == 1 { one } else { many }
+}
+
+/// 计数短语：中文 `{n}{zh_suffix}`（后缀自带量词，如 `" 项"`），英文 `{n} {one|many}`。
+///
+/// 只适用于"数字在前"的短语；`还有 N 项…` 这种整句请用整句模板，不要用片段拼。
+pub(crate) fn count(
+    n: u64,
+    zh_suffix: &str,
+    en_one: &'static str,
+    en_many: &'static str,
+) -> String {
+    if is_en() {
+        format!("{n} {}", plural(n, en_one, en_many))
+    } else {
+        format!("{n}{zh_suffix}")
+    }
+}
+
 /// 界面文案的键。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Key {

@@ -19,6 +19,62 @@ use super::page_logic::{
     OrderState, order_state, plan_group_drop, plan_host_drop, ungrouped_label,
 };
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
+
+/// 本文件（拖放标签、拖放后的提示）的界面文案。主机名、分组名是用户数据，拼在文案旁边。
+#[derive(Clone, Copy, Debug)]
+enum DragMsg {
+    /// 分组行的拖动标签：名字 + 本键。
+    ReorderSuffix,
+    /// 分组只能在同一层里调整：名字 + 本键。
+    SameLevelSuffix,
+    /// 主机拖到分组上：名字 + 本键。
+    DropOnGroupSuffix,
+    /// 找不到分组时的代称。
+    GroupFallback,
+    QuoteOpen,
+    QuoteClose,
+    SwitchToManualHint,
+    ReorderFailedPrefix,
+    MoveFailedPrefix,
+    /// 「『主机名』已移到」+ 目标分组。
+    MovedPrefix,
+    MovedMid,
+}
+
+impl Msg for DragMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::ReorderSuffix => "（调整顺序）",
+            Self::SameLevelSuffix => "（在同一层拖动调整顺序）",
+            Self::DropOnGroupSuffix => "（拖到左边的分组上）",
+            Self::GroupFallback => "分组",
+            Self::QuoteOpen => "「",
+            Self::QuoteClose => "」",
+            Self::SwitchToManualHint => "切换到「手动」排序后才能拖动",
+            Self::ReorderFailedPrefix => "调整顺序失败：",
+            Self::MoveFailedPrefix => "移动失败：",
+            Self::MovedPrefix => "「",
+            Self::MovedMid => "」已移到",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::ReorderSuffix => " (reorder)",
+            Self::SameLevelSuffix => " (drag within the same level to reorder)",
+            Self::DropOnGroupSuffix => " (drop onto a group on the left)",
+            Self::GroupFallback => "Group",
+            Self::QuoteOpen => "“",
+            Self::QuoteClose => "”",
+            Self::SwitchToManualHint => "Switch the sort mode to \"Manual\" before dragging",
+            Self::ReorderFailedPrefix => "Failed to reorder: ",
+            Self::MoveFailedPrefix => "Failed to move: ",
+            Self::MovedPrefix => "“",
+            Self::MovedMid => "” was moved to ",
+        }
+    }
+}
 
 /// 正在拖的主机。
 #[derive(Clone, Debug)]
@@ -121,8 +177,10 @@ impl MainWindow {
         };
         match item {
             DragItem::Group(group) => match self.drop_hint {
-                Some(DropHint::InsertGroup { .. }) => format!("{}（调整顺序）", group.name),
-                _ => format!("{}（在同一层拖动调整顺序）", group.name),
+                Some(DropHint::InsertGroup { .. }) => {
+                    format!("{}{}", group.name, t(DragMsg::ReorderSuffix))
+                }
+                _ => format!("{}{}", group.name, t(DragMsg::SameLevelSuffix)),
             },
             DragItem::Host(host) => match self.drop_hint {
                 Some(DropHint::InsertHost { id, .. }) => {
@@ -134,18 +192,18 @@ impl MainWindow {
                     if moved {
                         let name = target
                             .and_then(|t| group_name(t.group_id))
-                            .unwrap_or_else(|| "分组".to_owned());
+                            .unwrap_or_else(|| t(DragMsg::GroupFallback).to_owned());
                         format!("{} → {name}", host.name)
                     } else {
-                        format!("{}（调整顺序）", host.name)
+                        format!("{}{}", host.name, t(DragMsg::ReorderSuffix))
                     }
                 }
                 Some(DropHint::IntoGroup(group)) => match group_name(group) {
                     Some(name) => format!("{} → {name}", host.name),
-                    None => format!("{}（拖到左边的分组上）", host.name),
+                    None => format!("{}{}", host.name, t(DragMsg::DropOnGroupSuffix)),
                 },
                 Some(DropHint::IntoRoot) => format!("{} → {root}", host.name),
-                _ => format!("{}（拖到左边的分组上）", host.name),
+                _ => format!("{}{}", host.name, t(DragMsg::DropOnGroupSuffix)),
             },
         }
     }
@@ -256,7 +314,7 @@ impl MainWindow {
             return;
         }
         self.mode_hint_shown = true;
-        self.notice("切换到「手动」排序后才能拖动", window, cx);
+        self.notice(t(DragMsg::SwitchToManualHint), window, cx);
     }
 
     /// 把主机放到 `target` 的前面 / 后面（目标在别的分组就同时换过去）。
@@ -278,7 +336,11 @@ impl MainWindow {
                     self.announce_moved(host_id, group, window, cx);
                 }
             }
-            Err(err) => self.notice_error(&format!("调整顺序失败：{err}"), window, cx),
+            Err(err) => self.notice_error(
+                &format!("{}{err}", t(DragMsg::ReorderFailedPrefix)),
+                window,
+                cx,
+            ),
         }
         cx.notify();
     }
@@ -294,7 +356,11 @@ impl MainWindow {
         match self.store.move_host_to_group(host_id, group) {
             Ok(true) => self.announce_moved(host_id, group, window, cx),
             Ok(false) => {}
-            Err(err) => self.notice_error(&format!("移动失败：{err}"), window, cx),
+            Err(err) => self.notice_error(
+                &format!("{}{err}", t(DragMsg::MoveFailedPrefix)),
+                window,
+                cx,
+            ),
         }
         cx.notify();
     }
@@ -314,15 +380,25 @@ impl MainWindow {
         let target = match group {
             None => ungrouped_label(self.store.flat()).to_owned(),
             Some(id) => format!(
-                "「{}」",
+                "{}{}{}",
+                t(DragMsg::QuoteOpen),
                 self.store
                     .groups()
                     .iter()
                     .find(|g| g.id == id)
-                    .map_or("分组", |g| g.name.as_str())
+                    .map_or(t(DragMsg::GroupFallback), |g| g.name.as_str()),
+                t(DragMsg::QuoteClose)
             ),
         };
-        self.notice_success(&format!("「{name}」已移到{target}"), window, cx);
+        self.notice_success(
+            &format!(
+                "{}{name}{}{target}",
+                t(DragMsg::MovedPrefix),
+                t(DragMsg::MovedMid)
+            ),
+            window,
+            cx,
+        );
     }
 
     // ---- 分组行 ----
@@ -392,7 +468,11 @@ impl MainWindow {
             && let Some(order) = plan_group_drop(self.store.groups(), dragged.id, target, after)
             && let Err(err) = self.store.reorder_groups(&order)
         {
-            self.notice_error(&format!("调整顺序失败：{err}"), window, cx);
+            self.notice_error(
+                &format!("{}{err}", t(DragMsg::ReorderFailedPrefix)),
+                window,
+                cx,
+            );
         }
         cx.notify();
     }

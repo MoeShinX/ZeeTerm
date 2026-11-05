@@ -21,6 +21,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::main_window::titlebar::{
     back_button, back_button_shows_text, back_button_visible, window_controls,
@@ -66,9 +67,35 @@ pub fn handles(cx: &mut App) -> Vec<WindowHandle<TermWindow>> {
     registry.windows.clone()
 }
 
+/// 独立终端窗口自己的文案（窗口标题）。
+#[derive(Clone, Copy, Debug)]
+enum TermWindowMsg {
+    TitleSuffix,
+    MenuBackToMain,
+    MenuClose,
+}
+
+impl Msg for TermWindowMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::TitleSuffix => " 终端",
+            Self::MenuBackToMain => "移回主窗口",
+            Self::MenuClose => "关闭",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::TitleSuffix => " Terminal",
+            Self::MenuBackToMain => "Move back to main window",
+            Self::MenuClose => "Close",
+        }
+    }
+}
+
 /// 窗口标题。
 pub fn window_title() -> String {
-    format!("{} 终端", crate::product::NAME)
+    format!("{}{}", crate::product::NAME, t(TermWindowMsg::TitleSuffix))
 }
 
 /// 用一个已经存在的标签开一个终端窗口；`at` 是松手时指针在屏幕上的位置（窗口放在它附近，标签标题
@@ -117,10 +144,10 @@ pub fn open(
             registry(cx).windows.push(handle);
             Ok(handle)
         }
-        Err(_) => slot
-            .borrow_mut()
-            .take()
-            .map_or_else(|| unreachable!("窗口没建起来时标签还在交接槽里"), Err),
+        Err(_) => slot.borrow_mut().take().map_or_else(
+            || unreachable!("tab is still in the handoff slot when the window failed to open"),
+            Err,
+        ),
     }
 }
 
@@ -437,17 +464,21 @@ impl TermWindow {
                 let back = menu_back.clone();
                 let close = menu_close.clone();
                 menu.item(
-                    crate::menu_kit::row(&tokens, "移回主窗口", Ico::SquareArrowDownLeft).on_click(
-                        move |_, window, cx| {
-                            back.update(cx, |this, cx| this.move_to_main(id, window, cx));
-                        },
-                    ),
+                    crate::menu_kit::row(
+                        &tokens,
+                        crate::i18n::t(TermWindowMsg::MenuBackToMain),
+                        Ico::SquareArrowDownLeft,
+                    )
+                    .on_click(move |_, window, cx| {
+                        back.update(cx, |this, cx| this.move_to_main(id, window, cx));
+                    }),
                 )
-                .item(crate::menu_kit::row(&tokens, "关闭", Ico::X).on_click(
-                    move |_, window, cx| {
-                        close.update(cx, |this, cx| this.close_tab(index, window, cx));
-                    },
-                ))
+                .item(
+                    crate::menu_kit::row(&tokens, crate::i18n::t(TermWindowMsg::MenuClose), Ico::X)
+                        .on_click(move |_, window, cx| {
+                            close.update(cx, |this, cx| this.close_tab(index, window, cx));
+                        }),
+                )
             })
             .into_any_element()
     }

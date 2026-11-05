@@ -30,7 +30,7 @@ mod real {
 
     use super::super::MainWindow;
     use super::super::ai_endpoint_dialog::{
-        AiEndpointDialog, Force, THINKING_CHOICES, kind_label, thinking_from_choice,
+        AiEndpointDialog, Force, kind_label, thinking_choices, thinking_from_choice,
     };
     use super::super::dev_script::Outcome;
     use super::super::modal::Modal;
@@ -230,7 +230,7 @@ mod real {
                 Ok(Outcome::Done)
             }
             "aib_thinking" => {
-                let index = THINKING_CHOICES
+                let index = thinking_choices()
                     .iter()
                     .position(|label| *label == a)
                     .ok_or("思考只能是 自动 / 不支持 / 开关 / 等级 / 预算")?;

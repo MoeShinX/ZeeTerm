@@ -908,7 +908,9 @@ impl HostsDemo {
                 }
                 Ok(None) => {}
                 // 读不出一台不影响列表，只是这行没有标记；原因写日志。
-                Err(err) => tracing::warn!(%err, host_id = host.id, "读取主机记忆标记失败"),
+                Err(err) => {
+                    tracing::warn!(%err, host_id = host.id, "读取主机记忆标记失败");
+                }
             }
         }
         self.memory_marks = marks;

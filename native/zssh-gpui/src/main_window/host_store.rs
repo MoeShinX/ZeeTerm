@@ -21,6 +21,7 @@ use super::host_tree::effective_flat;
 use super::page_logic::{
     Density, HostDrop, SortMode, ViewMode, parse_recent, record_recent, setting_json, setting_text,
 };
+use crate::i18n::{Msg, t};
 
 /// 同步键：用户明确选过「平铺」。
 const FLAT_FLAG_KEY: &str = "vault_ungrouped_flat";
@@ -32,6 +33,58 @@ pub const SORT_MODE_KEY: &str = "layout.vault_sort_mode";
 pub const RECENT_KEY: &str = "layout.recent_hosts";
 /// 主机树要不要画虚线连接线（本机设置，不同步，默认开）。
 pub const TREE_GUIDES_KEY: &str = "layout.vault_tree_guides";
+
+/// 本文件（主机库读写失败的原因）的界面文案。主机名、分组名是用户数据，不进这张表；
+/// 库本身抛出来的错误原样附在句尾。
+#[derive(Clone, Copy, Debug)]
+enum StoreMsg {
+    OpenFailedPrefix,
+    /// 「读取」+ 下面某个「读什么」+ `ReadFailedSuffix` + 库里给的错误。
+    ReadPrefix,
+    ReadFailedSuffix,
+    HostsWhat,
+    GroupsWhat,
+    IdentitiesWhat,
+    ProxiesWhat,
+    ForwardsWhat,
+    HostOsWhat,
+    DbNotOpen,
+    HostGone,
+}
+
+impl Msg for StoreMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::OpenFailedPrefix => "打开主机库失败：",
+            Self::ReadPrefix => "读取",
+            Self::ReadFailedSuffix => "失败：",
+            Self::HostsWhat => "主机",
+            Self::GroupsWhat => "分组",
+            Self::IdentitiesWhat => "凭据",
+            Self::ProxiesWhat => "代理",
+            Self::ForwardsWhat => "端口转发",
+            Self::HostOsWhat => "主机系统",
+            Self::DbNotOpen => "主机库没有打开",
+            Self::HostGone => "主机已经不在库里了",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::OpenFailedPrefix => "Failed to open the host database: ",
+            Self::ReadPrefix => "Failed to read ",
+            Self::ReadFailedSuffix => ": ",
+            Self::HostsWhat => "hosts",
+            Self::GroupsWhat => "groups",
+            Self::IdentitiesWhat => "credentials",
+            Self::ProxiesWhat => "proxies",
+            Self::ForwardsWhat => "port forwards",
+            Self::HostOsWhat => "host OS info",
+            Self::DbNotOpen => "The host database is not open",
+            Self::HostGone => "The host is no longer in the database",
+        }
+    }
+}
 
 /// 主机页右边卡片 / 列表的显示选项（本机布局，不同步）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -87,7 +140,10 @@ impl HostStore {
     pub fn open() -> Self {
         let mut store = match crate::host_db::open_database() {
             Ok(db) => Self::with_db(Some(db), None),
-            Err(err) => Self::with_db(None, Some(format!("打开主机库失败：{err}"))),
+            Err(err) => Self::with_db(
+                None,
+                Some(format!("{}{err}", t(StoreMsg::OpenFailedPrefix))),
+            ),
         };
         store.reload();
         store
@@ -150,20 +206,24 @@ impl HostStore {
             match result {
                 Ok(value) => Some(value),
                 Err(err) => {
-                    *error = Some(format!("读取{what}失败：{err}"));
+                    *error = Some(format!(
+                        "{}{what}{}{err}",
+                        t(StoreMsg::ReadPrefix),
+                        t(StoreMsg::ReadFailedSuffix)
+                    ));
                     None
                 }
             }
         }
-        let hosts = read(&mut error, "主机", db.host_list());
-        let groups = read(&mut error, "分组", db.group_list());
+        let hosts = read(&mut error, t(StoreMsg::HostsWhat), db.host_list());
+        let groups = read(&mut error, t(StoreMsg::GroupsWhat), db.group_list());
         // 内置助手接口的 API Key 也存在保险库里，但它归接口管：凭据页不显示、主机表单选不到。
         let ai_keys = db.ai_endpoint_key_identity_ids().unwrap_or_default();
-        let identities = read(&mut error, "凭据", db.identity_list())
+        let identities = read(&mut error, t(StoreMsg::IdentitiesWhat), db.identity_list())
             .map(|list| without_ai_keys(list, &ai_keys));
-        let proxies = read(&mut error, "代理", db.proxy_list());
-        let forwards = read(&mut error, "端口转发", db.forward_list());
-        let host_os = read(&mut error, "主机系统", db.host_os_list());
+        let proxies = read(&mut error, t(StoreMsg::ProxiesWhat), db.proxy_list());
+        let forwards = read(&mut error, t(StoreMsg::ForwardsWhat), db.forward_list());
+        let host_os = read(&mut error, t(StoreMsg::HostOsWhat), db.host_os_list());
         let tree_guides = super::bar_settings::parse_bool(
             db.setting_get(TREE_GUIDES_KEY).ok().flatten().as_deref(),
             true,
@@ -217,7 +277,7 @@ impl HostStore {
         self.db.as_ref().ok_or_else(|| {
             self.error
                 .clone()
-                .unwrap_or_else(|| "主机库没有打开".to_owned())
+                .unwrap_or_else(|| t(StoreMsg::DbNotOpen).to_owned())
         })
     }
 
@@ -266,7 +326,7 @@ impl HostStore {
     /// 移到某个分组（右键菜单和拖放共用）；已经在那里返回 `false`。换了分组后顺序由库置 0。
     pub fn move_host_to_group(&mut self, host_id: i64, group: Option<i64>) -> Result<bool, String> {
         let Some(host) = self.host(host_id).cloned() else {
-            return Err("主机已经不在库里了".to_owned());
+            return Err(t(StoreMsg::HostGone).to_owned());
         };
         if host.group_id == group {
             return Ok(false);

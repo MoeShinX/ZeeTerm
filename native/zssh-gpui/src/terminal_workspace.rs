@@ -35,6 +35,8 @@ use zssh_session::{
 };
 use zssh_terminal::{MouseMode, NamedColor, Size, Snapshot, TerminalColor};
 
+use crate::i18n::{Msg, t};
+
 use crate::highlight::{
     EngineHandle, HighlightRule, HighlightScheduler, MAX_RULES as MAX_HIGHLIGHT_RULES, ScanKey,
     Span,
@@ -47,6 +49,100 @@ use crate::settings_store::AppSettings;
 use crate::sftp::{SftpDrag, terminal_insert_text};
 use crate::split_tree::{self, Axis, Layout, Node, PaneId};
 use crate::tab_set::TabSet;
+
+/// 终端页状态栏、粘贴确认等文案。
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // 有些键只在测试 / 调试构建里用到
+enum TermMsg {
+    Connecting,
+    Reconnecting,
+    Disconnected,
+    NoReconnectOffline,
+    PasteNoPane,
+    PasteCancelled,
+    PasteTargetBroadcastPrefix,
+    PasteTargetBroadcastSuffix,
+    PasteTargetCurrent,
+    PasteConfirmPrefix,
+    PasteConfirmSuffix,
+    PasteWarning,
+    PasteMorePrefix,
+    PasteMoreSuffix,
+    Cancel,
+    Paste,
+    UnknownReason,
+    DisconnectedBadge,
+    ReconnectHint,
+    TabTitlePrefix,
+    NewTab,
+    OfflineDemo,
+    SettingsSaveFailedPrefix,
+    HiddenPassword,
+}
+
+impl crate::i18n::Msg for TermMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::Connecting => "正在连接…",
+            Self::Reconnecting => "正在重新连接…",
+            Self::Disconnected => "已断开连接",
+            Self::NoReconnectOffline => "离线标签没有可重连的会话",
+            Self::PasteNoPane => "没有已连接的窗格，无法粘贴",
+            Self::PasteCancelled => "会话已变化，已取消粘贴，请重新粘贴",
+            Self::PasteTargetBroadcastPrefix => "会发送到 ",
+            Self::PasteTargetBroadcastSuffix => " 个窗格（广播）",
+            Self::PasteTargetCurrent => "会发送到当前窗格",
+            Self::PasteConfirmPrefix => "粘贴 ",
+            Self::PasteConfirmSuffix => " 行内容？",
+            Self::PasteWarning => "内容带换行，对方 shell 没开括号粘贴模式时会直接执行。",
+            Self::PasteMorePrefix => "共 ",
+            Self::PasteMoreSuffix => " 行，这里只显示前面一部分",
+            Self::Cancel => "取消",
+            Self::Paste => "粘贴",
+            Self::UnknownReason => "未知原因",
+            Self::DisconnectedBadge => "已断开",
+            Self::ReconnectHint => "按 R 重连，或者点这里",
+            Self::TabTitlePrefix => "终端 #",
+            Self::NewTab => "新标签",
+            Self::OfflineDemo => "离线演示",
+            Self::SettingsSaveFailedPrefix => "设置没能保存（会自动重试）：",
+            Self::HiddenPassword => "<已隐藏>",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::Connecting => "Connecting…",
+            Self::Reconnecting => "Reconnecting…",
+            Self::Disconnected => "Disconnected",
+            Self::NoReconnectOffline => "This offline tab has no session to reconnect",
+            Self::PasteNoPane => "No connected pane — cannot paste",
+            Self::PasteCancelled => "The session changed; the paste was cancelled — paste again",
+            Self::PasteTargetBroadcastPrefix => "This will be sent to ",
+            Self::PasteTargetBroadcastSuffix => " panes (broadcast)",
+            Self::PasteTargetCurrent => "This will be sent to the active pane",
+            Self::PasteConfirmPrefix => "Paste ",
+            Self::PasteConfirmSuffix => " lines?",
+            Self::PasteWarning => {
+                "The content contains line breaks; if the remote shell does not enable bracketed paste, it will execute immediately."
+            }
+            Self::PasteMorePrefix => "Total ",
+            Self::PasteMoreSuffix => " lines — only the first part is shown",
+            Self::Cancel => "Cancel",
+            Self::Paste => "Paste",
+            Self::UnknownReason => "Unknown reason",
+            Self::DisconnectedBadge => "Disconnected",
+            Self::ReconnectHint => "Press R to reconnect, or click here",
+            Self::TabTitlePrefix => "Terminal #",
+            Self::NewTab => "New tab",
+            Self::OfflineDemo => "Offline demo",
+            Self::SettingsSaveFailedPrefix => {
+                "Settings could not be saved (will retry automatically): "
+            }
+            Self::HiddenPassword => "<hidden>",
+        }
+    }
+}
 
 /// 每个窗格四周的内边距（0.2.14 的 `p-2`）：文字和光标不贴边，焦点线也不压在字上。
 const PANE_PAD: f32 = 8.0;
@@ -65,7 +161,7 @@ mod settings_ops;
 pub(crate) enum PaneState {
     /// 正常：离线演示窗格，或已连上的 SSH 会话。
     Live,
-    /// 后台正在连接/开 shell，界面只显示"正在连接…"。
+    /// 后台正在连接/开 shell，界面只显示crate::i18n::t(TermMsg::Connecting)。
     Connecting,
     /// 连接失败或已断开：输入不再发出，等用户重连。
     Disconnected,
@@ -88,11 +184,77 @@ fn plain(text: &str) -> String {
 
 // 窗格里只留一行"发生了什么"当回滚记录；怎么重连由断线遮罩说（V2-U30），这里不再重复操作提示。
 
+/// 断线、会话日志这些直接写进终端 / 状态栏的文案（两语言各一份）。
+#[derive(Clone, Copy, Debug)]
+enum ConnMsg {
+    ManualNotice,
+    ManualReason,
+    NoticeHead,
+    NoticeReasonPrefix,
+    NoticeExitPrefix,
+    NoticeExitSuffix,
+    NoticeRemoteClosed,
+    ReasonExitPrefix,
+    ReasonRemoteClosed,
+    LogStartedPrefix,
+    LogStoppedPrefix,
+    LogStopped,
+    LogAutoPrefix,
+    LogAutoSuffix,
+    LogFailedPrefix,
+}
+
+impl Msg for ConnMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::ManualNotice => "已断开连接（手动）",
+            Self::ManualReason => "已手动断开连接",
+            Self::NoticeHead => "连接已断开",
+            Self::NoticeReasonPrefix => "：",
+            Self::NoticeExitPrefix => "（退出码 ",
+            Self::NoticeExitSuffix => "）",
+            Self::NoticeRemoteClosed => "（远端关闭了连接）",
+            Self::ReasonExitPrefix => "退出码 ",
+            Self::ReasonRemoteClosed => "远端关闭了连接",
+            Self::LogStartedPrefix => "开始记录，日志保存在 ",
+            Self::LogStoppedPrefix => "日志已停止：",
+            Self::LogStopped => "日志已停止",
+            Self::LogAutoPrefix => "正在记录（自动）：日志保存在 ",
+            Self::LogAutoSuffix => "；要停止请在设置里关闭「记录会话日志」",
+            Self::LogFailedPrefix => "无法开始记录：",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::ManualNotice => "Disconnected (manually)",
+            Self::ManualReason => "Disconnected manually",
+            Self::NoticeHead => "Disconnected",
+            Self::NoticeReasonPrefix => ": ",
+            Self::NoticeExitPrefix => " (exit code ",
+            Self::NoticeExitSuffix => ")",
+            Self::NoticeRemoteClosed => " (closed by the remote side)",
+            Self::ReasonExitPrefix => "Exit code ",
+            Self::ReasonRemoteClosed => "Remote closed the connection",
+            Self::LogStartedPrefix => "Recording. Log file: ",
+            Self::LogStoppedPrefix => "Logging stopped: ",
+            Self::LogStopped => "Logging stopped",
+            Self::LogAutoPrefix => "Recording (automatic): ",
+            Self::LogAutoSuffix => "; turn off \"Session logging\" in Settings to stop",
+            Self::LogFailedPrefix => "Could not start logging: ",
+        }
+    }
+}
+
 /// 用户主动断开时窗格里显示的文字。
-const USER_DISCONNECT_NOTICE: &str = "\r\n\x1b[33m已断开连接（手动）\x1b[0m\r\n";
+fn user_disconnect_notice() -> String {
+    format!("\r\n\x1b[33m{}\x1b[0m\r\n", t(ConnMsg::ManualNotice))
+}
 
 /// 用户主动断开时遮罩上写的原因。
-const USER_DISCONNECT_REASON: &str = "已手动断开连接";
+fn user_disconnect_reason() -> &'static str {
+    t(ConnMsg::ManualReason)
+}
 
 /// 连接失败时窗格里显示的文字。
 fn failure_notice(error: &str) -> String {
@@ -102,19 +264,23 @@ fn failure_notice(error: &str) -> String {
 /// 会话结束时窗格里显示的文字：有原因写原因，否则写退出码。
 fn disconnect_notice(exit: &zssh_session::SessionExit) -> String {
     let detail = match (&exit.reason, exit.code) {
-        (Some(reason), _) => format!("：{}", plain(reason)),
-        (None, Some(code)) => format!("（退出码 {code}）"),
-        (None, None) => "（远端关闭了连接）".to_owned(),
+        (Some(reason), _) => format!("{}{}", t(ConnMsg::NoticeReasonPrefix), plain(reason)),
+        (None, Some(code)) => format!(
+            "{}{code}{}",
+            t(ConnMsg::NoticeExitPrefix),
+            t(ConnMsg::NoticeExitSuffix)
+        ),
+        (None, None) => t(ConnMsg::NoticeRemoteClosed).to_owned(),
     };
-    format!("\r\n\x1b[33m连接已断开{detail}\x1b[0m\r\n")
+    format!("\r\n\x1b[33m{}{detail}\x1b[0m\r\n", t(ConnMsg::NoticeHead))
 }
 
 /// 断线遮罩上写的原因：和 [`disconnect_notice`] 同一套判断，只是不带"连接已断开"的前缀。
 fn disconnect_reason(exit: &zssh_session::SessionExit) -> String {
     match (&exit.reason, exit.code) {
         (Some(reason), _) => plain(reason),
-        (None, Some(code)) => format!("退出码 {code}"),
-        (None, None) => "远端关闭了连接".to_owned(),
+        (None, Some(code)) => format!("{}{code}", t(ConnMsg::ReasonExitPrefix)),
+        (None, None) => t(ConnMsg::ReasonRemoteClosed).to_owned(),
     }
 }
 
@@ -136,7 +302,7 @@ impl std::fmt::Debug for QuickSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("QuickSpec")
             .field("label", &self.label)
-            .field("password", &"<已隐藏>")
+            .field("password", &crate::i18n::t(TermMsg::HiddenPassword))
             .finish()
     }
 }
@@ -209,14 +375,22 @@ impl LogOutcome {
         use crate::agent_text::redact_paths;
         let shown = |path: &std::path::Path| redact_paths(&path.display().to_string());
         match self {
-            Self::Started { dir } => format!("开始记录，日志保存在 {}", shown(dir)),
-            Self::Stopped { path: Some(path) } => format!("日志已停止：{}", shown(path)),
-            Self::Stopped { path: None } => "日志已停止".to_owned(),
+            Self::Started { dir } => {
+                format!("{}{}", t(ConnMsg::LogStartedPrefix), shown(dir))
+            }
+            Self::Stopped { path: Some(path) } => {
+                format!("{}{}", t(ConnMsg::LogStoppedPrefix), shown(path))
+            }
+            Self::Stopped { path: None } => t(ConnMsg::LogStopped).to_owned(),
             Self::Auto { dir } => format!(
-                "正在记录（自动）：日志保存在 {}；要停止请在设置里关闭「记录会话日志」",
-                shown(dir)
+                "{}{}{}",
+                t(ConnMsg::LogAutoPrefix),
+                shown(dir),
+                t(ConnMsg::LogAutoSuffix)
             ),
-            Self::Failed(err) => format!("无法开始记录：{}", redact_paths(err)),
+            Self::Failed(err) => {
+                format!("{}{}", t(ConnMsg::LogFailedPrefix), redact_paths(err))
+            }
         }
     }
 }
@@ -317,7 +491,7 @@ impl Pane {
         pane
     }
 
-    /// 后台开始连接：窗格立刻可见，显示"正在连接…"，结果在 `poll_events` 里接上。
+    /// 后台开始连接：窗格立刻可见，显示crate::i18n::t(TermMsg::Connecting)，结果在 `poll_events` 里接上。
     fn connecting(
         size: Size,
         history: usize,
@@ -327,7 +501,8 @@ impl Pane {
     ) -> Self {
         let mut pane = Self::placeholder(size, history, generation, host_id, PaneState::Connecting);
         pane.pending = Some(pending);
-        pane.pump_mut().feed_local("正在连接…\r\n".as_bytes());
+        pane.pump_mut()
+            .feed_local(format!("{}\r\n", crate::i18n::t(TermMsg::Connecting)).as_bytes());
         pane.refresh();
         pane
     }
@@ -471,7 +646,7 @@ impl Pane {
     }
 
     /// 断线遮罩要不要盖在这个窗格上，盖的话返回原因（可能为空串）。只有会话窗格会盖：
-    /// 离线演示窗格、空白标签没有"重连"可言；连接中的窗格另有"正在连接…"，也不盖。
+    /// 离线演示窗格、空白标签没有"重连"可言；连接中的窗格另有crate::i18n::t(TermMsg::Connecting)，也不盖。
     /// 用户主动断开、远端正常退出（`exit`）、连接失败都算断开，和标签上的断开状态点一致。
     pub(crate) fn overlay_reason(&self) -> Option<&str> {
         (self.state == PaneState::Disconnected && self.is_session())
@@ -496,7 +671,10 @@ impl Pane {
         // 旧写端丢掉：之后的输入不会再写进（可能已经半关的）通道。
         self.backend = Box::new(NullBackend);
         self.factory = None;
-        self.disconnect(USER_DISCONNECT_REASON.to_owned(), USER_DISCONNECT_NOTICE);
+        self.disconnect(
+            user_disconnect_reason().to_owned(),
+            &user_disconnect_notice(),
+        );
         self.refresh();
     }
 
@@ -876,7 +1054,7 @@ impl Tab {
         debug_assert_eq!(
             self.tree.pane_ids(),
             self.panes.iter().map(|pane| pane.id).collect::<Vec<_>>(),
-            "窗格表和分屏树不同序"
+            "窗格表和分屏树不同序" // i18n-allow: 内部不变式（调试）
         );
     }
 
@@ -1058,7 +1236,9 @@ impl PendingPaste {
 }
 
 /// 粘贴目标变了而取消时的提示。
-const PASTE_CANCELLED: &str = "会话已变化，已取消粘贴，请重新粘贴";
+fn paste_cancelled() -> &'static str {
+    crate::i18n::t(TermMsg::PasteCancelled)
+}
 
 /// 高亮状态：规则、修订号、最近扫描结果都在这里（面板的输入框等界面状态归外壳）。
 struct HighlightUi {
@@ -1371,7 +1551,10 @@ impl TerminalWorkspace {
         let Some(error) = error else {
             return false;
         };
-        self.status_text = format!("设置没能保存（会自动重试）：{error}");
+        self.status_text = format!(
+            "{}{error}",
+            crate::i18n::t(TermMsg::SettingsSaveFailedPrefix)
+        );
         true
     }
 
@@ -1560,7 +1743,7 @@ impl TerminalWorkspace {
         self.hover_link = None;
         // 标签 / 窗格结构变了，待确认的粘贴作废：不静默，告诉用户要重来。
         if self.pending_paste.take().is_some() {
-            self.status_text = PASTE_CANCELLED.to_owned();
+            self.status_text = paste_cancelled().to_owned();
         }
         self.mouse_pressed = false;
         self.last_mouse_cell = None;
@@ -1691,7 +1874,10 @@ impl TerminalWorkspace {
     ) {
         let history = self.settings.scrollback;
         let pane = Pane::start_ssh(factory, Some(host_id), size, history, next_generation());
-        self.replace_with_tab(Tab::new(format!("终端 #{host_id}"), pane));
+        self.replace_with_tab(Tab::new(
+            format!("{}{host_id}", crate::i18n::t(TermMsg::TabTitlePrefix)),
+            pane,
+        ));
         cx.notify();
     }
 
@@ -1704,7 +1890,7 @@ impl TerminalWorkspace {
         let snapshot = &pane.snapshot;
         let ledger = pane.pump().ledger();
         format!(
-            "{} 行 x {} 列  历史 {}  滚动 {}  已喂 {}  raw {}  acked {}",
+            "{} 行 x {} 列  历史 {}  滚动 {}  已喂 {}  raw {}  acked {}", // i18n-allow: 调试钩子
             snapshot.size.rows,
             snapshot.size.cols,
             snapshot.history_size,
@@ -1725,7 +1911,9 @@ impl TerminalWorkspace {
             None,
             PaneState::Empty,
         );
-        let index = self.tabs.push(Tab::new("新标签".to_owned(), pane));
+        let index = self
+            .tabs
+            .push(Tab::new(crate::i18n::t(TermMsg::NewTab).to_owned(), pane));
         self.reset_interaction();
         cx.notify();
         index
@@ -1954,7 +2142,7 @@ impl TerminalWorkspace {
     #[cfg(debug_assertions)]
     pub(crate) fn dev_offline_tab(&mut self, cx: &mut Context<Self>) {
         let size = self.default_size;
-        self.push_offline_tab("离线演示", size);
+        self.push_offline_tab(crate::i18n::t(TermMsg::OfflineDemo), size);
         cx.notify();
     }
 
@@ -2023,13 +2211,13 @@ impl TerminalWorkspace {
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let Some(open) = self.context_menu.as_ref() else {
-            return Err("菜单没有弹出".to_owned());
+            return Err("菜单没有弹出".to_owned()); // i18n-allow: 调试钩子
         };
         let Some(entry) = open.entries.iter().find(|entry| entry.label == label) else {
-            return Err("菜单里没有这一项".to_owned());
+            return Err("菜单里没有这一项".to_owned()); // i18n-allow: 调试钩子
         };
         if !entry.enabled {
-            return Err("这一项是置灰的".to_owned());
+            return Err("这一项是置灰的".to_owned()); // i18n-allow: 调试钩子
         }
         let (item, link) = (entry.item, open.link.clone());
         self.context_menu = None;
@@ -2073,7 +2261,7 @@ impl TerminalWorkspace {
             "revision" => self.settings_rev.to_string(),
             _ => {
                 return Err(
-                    "字段只能是 font_size / dark / follow_system / highlight / rules / revision"
+                    "字段只能是 font_size / dark / follow_system / highlight / rules / revision" // i18n-allow: 调试钩子
                         .to_owned(),
                 );
             }
@@ -2101,9 +2289,9 @@ impl TerminalWorkspace {
         pane: Option<usize>,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let tab = self.tabs.active_mut().ok_or("没有标签")?;
+        let tab = self.tabs.active_mut().ok_or("没有标签")?; // i18n-allow: 调试钩子
         if pane.is_some_and(|at| at >= tab.panes.len()) {
-            return Err("没有这个窗格".to_owned());
+            return Err("没有这个窗格".to_owned()); // i18n-allow: 调试钩子
         }
         for (at, target) in tab.panes.iter_mut().enumerate() {
             if pane.is_none_or(|wanted| wanted == at) {
@@ -2380,13 +2568,13 @@ impl TerminalWorkspace {
     #[cfg(debug_assertions)]
     pub(crate) fn check_layout(&self) -> Result<(), String> {
         let Some(bounds) = self.area.get() else {
-            return Err("还没有量到终端区域".to_owned());
+            return Err("还没有量到终端区域".to_owned()); // i18n-allow: 调试钩子
         };
         let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-        let tab = self.tabs.active().ok_or("没有标签")?;
+        let tab = self.tabs.active().ok_or("没有标签")?; // i18n-allow: 调试钩子
         // 上一帧画的布局要和树现在的比例对得上：拖完分隔条、关完窗格之后，下一帧才会重排。
         if split_tree::compute_layout(&tab.tree, w, h) != self.layout {
-            return Err("窗口还没有按最新的分屏树重排".to_owned());
+            return Err("窗口还没有按最新的分屏树重排".to_owned()); // i18n-allow: 调试钩子
         }
         split_tree::check_tiling(&self.layout, w, h)?;
         for (index, (pane, geom)) in tab.panes.iter().zip(&self.pane_geom).enumerate() {
@@ -2396,7 +2584,7 @@ impl TerminalWorkspace {
             };
             if pane.snapshot.size != want {
                 return Err(format!(
-                    "窗格 {index} 的终端是 {}x{}，矩形算出来是 {}x{}",
+                    "窗格 {index} 的终端是 {}x{}，矩形算出来是 {}x{}", // i18n-allow: 调试钩子
                     pane.snapshot.size.cols, pane.snapshot.size.rows, want.cols, want.rows
                 ));
             }
@@ -2485,7 +2673,7 @@ impl TerminalWorkspace {
             .filter(|(_, pane)| pane.state == PaneState::Disconnected && pane.is_session())
             .map(|(at, _)| at)
             .collect();
-        self.status_text = "正在重新连接…".to_owned();
+        self.status_text = crate::i18n::t(TermMsg::Reconnecting).to_owned();
         for &at in &targets {
             self.reconnect_pane(index, at);
         }
@@ -2527,7 +2715,7 @@ impl TerminalWorkspace {
         };
         let count = tab.disconnect_sessions();
         if count > 0 {
-            self.status_text = "已断开连接".to_owned();
+            self.status_text = crate::i18n::t(TermMsg::Disconnected).to_owned();
             self.reset_interaction();
             self.refresh();
             cx.notify();
@@ -2571,7 +2759,7 @@ impl TerminalWorkspace {
         }
         self.focus_pane(pane_index);
         // 先写提示：之前在记录日志时，新窗格续记会把状态改成日志路径，那个更有用。
-        self.status_text = "正在重新连接…".to_owned();
+        self.status_text = crate::i18n::t(TermMsg::Reconnecting).to_owned();
         self.reconnect_pane(index, pane_index);
         self.reset_interaction();
         self.refresh();
@@ -2589,12 +2777,12 @@ impl TerminalWorkspace {
             None => return,
         };
         if !is_session {
-            self.status_text = "离线标签没有可重连的会话".to_owned();
+            self.status_text = crate::i18n::t(TermMsg::NoReconnectOffline).to_owned();
             cx.notify();
             return;
         }
         // 先写提示：之前在记录日志时，新窗格续记会把状态改成日志路径，那个更有用。
-        self.status_text = "正在重新连接…".to_owned();
+        self.status_text = crate::i18n::t(TermMsg::Reconnecting).to_owned();
         self.reconnect_pane(index, pane_index);
         self.reset_interaction();
         self.refresh();
@@ -3356,7 +3544,7 @@ impl TerminalWorkspace {
                 // 键盘留在终端上：Enter / Esc 由终端的按键处理接走，不会漏到远端。
                 window.focus(&self.focus, cx);
             } else {
-                self.status_text = "没有已连接的窗格，无法粘贴".to_owned();
+                self.status_text = crate::i18n::t(TermMsg::PasteNoPane).to_owned();
             }
             cx.notify();
         } else {
@@ -3384,7 +3572,7 @@ impl TerminalWorkspace {
     }
 
     /// 从文件面板的远端栏拖来的文件落在第 `index` 个窗格上：把远端路径插到输入行（逐个单引号引用，不执行、
-    /// 不加回车，走和粘贴同一条编码，所以开了 bracketed paste 的 shell 里也是"粘贴"而不是逐键输入）。
+    /// 不加回车，走和粘贴同一条编码，所以开了 bracketed paste 的 shell 里也是crate::i18n::t(TermMsg::Paste)而不是逐键输入）。
     /// 窗格没连上、路径里有终端控制字符都不插。
     fn drop_sftp_paths(
         &mut self,
@@ -3475,8 +3663,8 @@ impl TerminalWorkspace {
         match resolved {
             Some((index, targets)) => self.send_paste_to(index, &targets, &pending.text, cx),
             None => {
-                self.status_text = PASTE_CANCELLED.to_owned();
-                window.push_notification(PASTE_CANCELLED.to_owned(), cx);
+                self.status_text = paste_cancelled().to_owned();
+                window.push_notification(paste_cancelled().to_owned(), cx);
             }
         }
         cx.notify();
@@ -3950,9 +4138,14 @@ fn paste_preview(text: &str) -> (String, bool) {
 /// 确认框上写的"发给谁"：和实际接收者一致（见 [`PendingPaste::recipients`]）。
 fn paste_target_line(pending: &PendingPaste) -> String {
     if pending.broadcast {
-        format!("会发送到 {} 个窗格（广播）", pending.recipients())
+        format!(
+            "{}{}{}",
+            crate::i18n::t(TermMsg::PasteTargetBroadcastPrefix),
+            pending.recipients(),
+            crate::i18n::t(TermMsg::PasteTargetBroadcastSuffix)
+        )
     } else {
-        "会发送到当前窗格".to_owned()
+        crate::i18n::t(TermMsg::PasteTargetCurrent).to_owned()
     }
 }
 
@@ -3979,15 +4172,15 @@ fn paste_dialog(
             .child(
                 v_flex()
                     .gap_2()
-                    .child(
-                        div()
-                            .typo(Role::GroupTitle, tokens)
-                            .child(format!("粘贴 {lines} 行内容？")),
-                    )
+                    .child(div().typo(Role::GroupTitle, tokens).child(format!(
+                        "{}{lines}{}",
+                        crate::i18n::t(TermMsg::PasteConfirmPrefix),
+                        crate::i18n::t(TermMsg::PasteConfirmSuffix)
+                    )))
                     .child(
                         div()
                             .typo(Role::Body, tokens)
-                            .child("内容带换行，对方 shell 没开括号粘贴模式时会直接执行。"),
+                            .child(crate::i18n::t(TermMsg::PasteWarning)),
                     )
                     .child(
                         div()
@@ -4008,11 +4201,11 @@ fn paste_dialog(
                             .child(preview),
                     )
                     .when(truncated, |d| {
-                        d.child(
-                            div()
-                                .typo(Role::Caption, tokens)
-                                .child(format!("共 {lines} 行，这里只显示前面一部分")),
-                        )
+                        d.child(div().typo(Role::Caption, tokens).child(format!(
+                            "{}{lines}{}",
+                            crate::i18n::t(TermMsg::PasteMorePrefix),
+                            crate::i18n::t(TermMsg::PasteMoreSuffix)
+                        )))
                     }),
             )
             .child(
@@ -4021,7 +4214,7 @@ fn paste_dialog(
                     .justify_end()
                     .child(text_button(
                         "paste-cancel",
-                        "取消",
+                        crate::i18n::t(TermMsg::Cancel),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             cancel.update(cx, |this, cx| this.cancel_paste(window, cx));
@@ -4029,7 +4222,7 @@ fn paste_dialog(
                     ))
                     .child(text_button(
                         "paste-ok",
-                        "粘贴",
+                        crate::i18n::t(TermMsg::Paste),
                         ButtonLook::Primary,
                         move |_, window, cx| {
                             confirm.update(cx, |this, cx| this.confirm_paste(window, cx));
@@ -4052,7 +4245,7 @@ fn disconnect_overlay(
 ) -> AnyElement {
     use crate::icons::Ico;
     let reason: ::gpui::SharedString = if reason.is_empty() {
-        "未知原因".into()
+        crate::i18n::t(TermMsg::UnknownReason).into()
     } else {
         reason.to_owned().into()
     };
@@ -4076,7 +4269,7 @@ fn disconnect_overlay(
                 .text_color(tokens.danger)
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(Icon::new(Ico::Unplug).size_4())
-                .child("已断开"),
+                .child(crate::i18n::t(TermMsg::DisconnectedBadge)),
         )
         .child(
             div()
@@ -4094,7 +4287,7 @@ fn disconnect_overlay(
                 .text_size(::gpui::px(12.0))
                 .text_color(foreground.alpha(0.8))
                 .child(Icon::new(Ico::RotateCcw).size_3())
-                .child("按 R 重连，或者点这里"),
+                .child(crate::i18n::t(TermMsg::ReconnectHint)),
         )
         .into_any_element()
 }
@@ -5015,7 +5208,10 @@ mod tab_tests {
 
     #[test]
     fn a_blank_tab_has_nothing_to_duplicate_or_reconnect() {
-        let tab = Tab::new("新标签".to_owned(), pane_in(PaneState::Empty, None));
+        let tab = Tab::new(
+            crate::i18n::t(super::TermMsg::NewTab).to_owned(),
+            pane_in(PaneState::Empty, None),
+        );
         assert!(tab.is_blank());
         let info = tab.info();
         assert_eq!(info.status, TabStatus::Empty);
@@ -5244,7 +5440,10 @@ mod tab_tests {
 
     #[test]
     fn a_blank_tab_that_was_split_becomes_one_pane_when_a_host_is_chosen() {
-        let mut tab = Tab::new("新标签".to_owned(), pane_in(PaneState::Empty, None));
+        let mut tab = Tab::new(
+            crate::i18n::t(super::TermMsg::NewTab).to_owned(),
+            pane_in(PaneState::Empty, None),
+        );
         tab.split_active(Axis::X, pane_in(PaneState::Empty, None));
         assert!(tab.is_blank() && tab.is_split());
         let replacement = pane_in(PaneState::Connecting, Some(3));
@@ -5677,7 +5876,7 @@ mod live_tests {
 
     /// B-1 的端到端验证：真实 russh 传输 + 核心流控，输出 6 MiB（高水位的 6 倍）
     /// 仍然全部显示，账本回到 0，之后还能交互；Ctrl+C 字节到达远端；
-    /// 远端退出和整条连接被断开都会让窗格显示"已断开"。
+    /// 远端退出和整条连接被断开都会让窗格显示crate::i18n::t(super::TermMsg::DisconnectedBadge)。
     #[test]
     fn local_server_flood_ctrl_c_exit_and_dropped_connection() {
         let factory = local_factory();
@@ -6151,7 +6350,10 @@ mod paste_tests {
         let (mut tab, logs) = tab_of(2);
         let pending = tab.capture_paste("a\nb".to_owned()).unwrap();
         assert_eq!(pending.recipients(), 1);
-        assert_eq!(paste_target_line(&pending), "会发送到当前窗格");
+        assert_eq!(
+            paste_target_line(&pending),
+            crate::i18n::t(super::TermMsg::PasteTargetCurrent)
+        );
 
         // 确认条出来之后点到了另一个分屏。
         tab.active_pane = 1;
@@ -6577,7 +6779,7 @@ mod overlay_tests {
         offline.close();
         offline.poll_events();
         assert_eq!(offline.overlay_reason(), None);
-        // 连接中：有"正在连接…"，不盖遮罩。
+        // 连接中：有crate::i18n::t(super::TermMsg::Connecting)，不盖遮罩。
         let pending = crate::ssh_backend::ready(Err("never read".to_owned()));
         let connecting = Pane::connecting(SIZE, 100, 1, Some(7), pending);
         assert_eq!(connecting.state, PaneState::Connecting);

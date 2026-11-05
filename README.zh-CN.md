@@ -1,78 +1,124 @@
-# ZeeTerm
+<p align="center">
+  <img src="native/zssh-gpui/assets/brand/zeeterm-logo.svg" width="88" height="88" alt="ZeeTerm 标志" />
+</p>
 
-[English](README.md) · **简体中文**
+<h1 align="center">ZeeTerm</h1>
 
-ZeeTerm 是面向 Windows 10/11（x64）的 SSH 客户端，集终端、SFTP 文件管理、远端编辑器和 AI 运维助手于一体。界面和终端完全用 Rust 原生实现（[GPUI](https://github.com/zed-industries/zed) + Alacritty 终端状态机），不依赖 Electron、WebView 或 Node.js 运行时。
+<p align="center">
+  <strong>Rust + GPUI 原生 SSH 工作区。</strong><br />
+  将终端、文件传输、远端编辑与 AI 助手整合在一个桌面应用中。
+</p>
 
-ZeeTerm 源自 [Z-SSH](https://github.com/MoeShinX/Z-SSH)（Tauri + React 版），沿用其核心库（SSH、SFTP、同步、AI 智能体驱动、本地存储），但是**独立的产品**：产品名、安装目录、卸载键、主程序名、默认数据目录都与 Z-SSH 不同，两者可以并存。
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-native-DEA584?style=flat-square" alt="Rust 原生实现" />
+  <img src="https://img.shields.io/badge/UI-GPUI-8B5CF6?style=flat-square" alt="GPUI 原生界面" />
+  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4?style=flat-square" alt="Windows 10 和 11 x64" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0--or--later-22C55E?style=flat-square" alt="GPL-3.0-or-later 许可证" /></a>
+</p>
 
-![ZeeTerm 主机管理界面](docs/images/workspace.png)
+<p align="center">
+  <a href="https://github.com/MoeShinX/ZeeTerm/releases/latest"><strong>下载</strong></a> ·
+  <a href="README.md">English</a> ·
+  <a href="https://t.me/ZeeTerm">Telegram 群</a> ·
+  <a href="https://zeeterm.app/">官网 · 筹备中</a> ·
+  <a href="CHANGELOG.md">更新日志</a>
+</p>
+
+## ⚡ 从 Z-SSH 到 GPUI 原生重构
+
+ZeeTerm 是 **[Z-SSH](https://github.com/MoeShinX/Z-SSH) 的 GPUI 原生重构版本**。桌面界面与终端绘制由 Rust 实现，GPUI 负责界面，Alacritty 终端引擎负责终端状态处理。
+
+**不依赖 Electron，不依赖 WebView2，不使用内嵌浏览器绘制界面。** 桌面程序无需 Node.js 运行时。ZeeTerm 保留共用的 SSH、SFTP、存储与同步核心，将原有 Tauri + React 前端替换为 GPUI 原生绘制。
+
+ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安装、使用。
+
+![ZeeTerm 工作区，展示示例会话](docs/images/workspace.png)
 
 *截图使用虚拟连接数据。*
 
-## 功能概览
+## 🧰 围绕远程工作组织功能
 
-以下只列当前代码里已经做出来、有自动化测试覆盖的部分。
+| 核心能力 | 可以做什么 |
+| :--- | :--- |
+| **终端工作区** | 多标签、分屏、标签拖出为独立窗口；可配置回滚行数，支持主题、终端配色和关键词高亮。 |
+| **会话与认证** | 用会话树、分组和搜索管理连接；支持密码、SSH 私钥与 SSH Agent，提供代理、跳板机和端口转发。 |
+| **SFTP 文件管理** | 浏览本地与远端文件，拖放传输，跟随终端目录，管理传输队列与断点续传。 |
+| **远端编辑器** | 在标签中直接编辑远端文件，提供语法高亮、保存冲突检查与草稿恢复。 |
+| **AI 运维助手** | 使用内置 **ZeePilot**，或接入已安装的 OpenCode、Codex、Claude Code；可选择逐条确认、只读自动或全部放行。 |
+| **加密同步与备份** | 支持 WebDAV、S3 兼容存储、GitHub Gist、OneDrive；提供本地加密备份与额外云端备份目标。 |
+| **服务器概览** | 在终端旁查看 CPU、内存、磁盘和网络信息。 |
+| **应用锁定** | 手动锁定或空闲自动锁定工作区，会话与文件传输继续在后台运行。 |
 
-- **终端**：多标签，分屏，可配置回滚行数，浅色 / 深色多套皮肤与终端配色，关键词高亮，标签可拖出成独立窗口或拖到别的窗口合并，中文输入法。
-- **主机管理**：主机树（分组、标签、搜索、排序）、快速连接（`user@host:port`）、凭据库（密码、私钥、口令，生成密钥、一键安装公钥）、代理与跳板机、端口转发，连接前核对主机指纹。
-- **SFTP**：主窗口里的文件栏，也可以开成独立文件窗口；复制 / 粘贴、拖放、跟随终端当前目录、传输队列与断点续传、压缩与解压。
-- **编辑器**：远端文件直接在标签里编辑，语法高亮，保存时检查版本冲突并原子写回，异常退出后可恢复草稿。
-- **AI 运维助手**：接入你自己安装并登录的 opencode、Codex、Claude Code；命令在你的终端里执行，可逐条确认、只读自动或全部放行；能读写远端文件；主机长期记忆与历史会话保存在本机。
-- **同步与备份**：主机库、凭据、代理、快捷命令和设置端到端加密后同步到 WebDAV、S3 兼容存储、GitHub Gist 或 OneDrive（一个主同步，双向合并）；另外可以再加最多 5 个云端备份目标——只单向上传、不往回合并，用同一个主密码加密，也可以从任一目标一键恢复，同步包和云端备份里都不含任何账号凭据；本地自动加密快照与离线备份文件（`.zsshbak`）里带着同步账号设置，恢复后不用重填（导出的文件里有登录信息，请妥善保管）。
-- **服务器概览**：连上后显示 CPU、内存、磁盘、网络等状态。
-- **锁屏**：底部栏的锁按钮（或 `Ctrl+Alt+L`）一键锁定所有窗口，会话和传输在后台照常运行；锁屏密码只存本机的 Argon2id 哈希，可设空闲自动锁定，也可设「启动时锁定」（每次打开程序先是锁屏页），忘记密码时用 Windows Hello / 凭据验证后重置。启用锁屏后，查看或复制已保存的密码（属性里的小眼睛、右键「复制密码」等）前还要再输一次锁屏密码，验证后 5 分钟内不再询问。锁屏防的是旁人看屏幕、顺手操作，不防本机上的恶意程序。
-- **打包与更新**：按用户安装的 NSIS 安装包，不需要管理员权限，不带 WebView2；在线更新先验签再安装。
+除 SSH 外，也支持 **Telnet 与串口连接**。外部 AI 工具为可选集成，需要满足各自的安装、账号及运行环境要求。
 
-### 隐私
+## 开始使用
 
-没有账号、没有统计、没有崩溃上报；数据默认存在 `%APPDATA%\ZeeTerm`（可用环境变量 `ZSSH_DATA_DIR` 改到别处）。密码、私钥口令和同步令牌用 Windows 数据保护接口（DPAPI）加密。程序只连接你自己添加的服务器、你配置的代理和同步存储、你启用的智能体需要的地址、检查更新用的 GitHub Release 地址，以及（可在设置里关掉的）模型资料库自动更新用的 models.dev。
+**当前支持：Windows 10 / 11，x64。**
 
-## 安装与更新
+1. 从 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载 `ZeeTerm-Setup-<版本>.exe`。
+2. 运行安装程序，按当前用户安装，无需管理员权限。
+3. 添加会话，选择认证方式并连接。首次连接 SSH 主机时，请核对服务器指纹。
 
-从 [Releases](https://github.com/MoeShinX/ZeeTerm/releases) 下载 `ZeeTerm-Setup-<版本>.exe` 运行即可：按当前用户安装，不需要管理员权限，数据在 `%APPDATA%\ZeeTerm`，覆盖安装不影响数据。
+数据默认保存在 `%APPDATA%\ZeeTerm`，也可以通过环境变量 `ZSSH_DATA_DIR` 指定其他目录。
 
-程序会在启动时（之后每 6 小时）检查是否有新版本，也可以在「设置 → 关于」里手动检查；这个自动检查可以在同一处关掉。发现新版本后更新窗口会列出更新说明，下载完成后**先校验发布者的签名（minisign）和签名里的版本号**，确认后才退出程序并运行安装包。联网走「设置 → 连接 → 软件网络」里的代理设置。发版（推 tag 由 GitHub Actions 编译、签名、发布）与签名的做法见 [docs/RELEASING.md](docs/RELEASING.md)。
+**从 Z-SSH 迁移？** 使用应用内的导入流程，先预览数据并创建备份，再应用变更。
 
-## 构建
+## 🔐 安全与数据管理
 
-需要：
+- **默认本地存储。** 会话和应用数据保存在本机，由你决定是否配置云同步或 AI 服务。
+- **保存的凭据受保护。** 密码、托管私钥、私钥口令及同步秘密使用 Windows DPAPI 加密，绑定 Windows 用户环境。
+- **同步包加密。** 使用主密码配合 **Argon2id + XChaCha20-Poly1305**；更换电脑时，通过加密导出或同步迁移凭据。
+- **SSH 主机指纹验证。** 连接未知主机或指纹发生变化时，先核对服务器身份。
+- **更新先验签。** 更新器校验发布签名及签名中的版本号，再运行安装程序。
 
-- Windows 10/11 x64
-- Rust 工具链（MSVC）。`rust-toolchain.toml` 固定了版本，`rustup` 会自动按它安装
-- Visual Studio 2022 C++ 生成工具
-- 打安装包还需要 [NSIS](https://nsis.sourceforge.io/)（`makensis.exe` 在 `PATH` 里，或装在 `Program Files\NSIS`）
+应用锁用于保护无人看守的工作区，不能替代操作系统安全防护。AI 服务会接收所启用操作需要的上下文，请按实际需要选择服务提供方与执行权限。
 
-构建**不需要** CMake 和 NASM（`russh` 关掉了默认特性，用 `ring` 后端）。
+## 技术架构
+
+| 层次 | 实现 |
+| :--- | :--- |
+| 桌面界面 | Rust · GPUI · GPUI Kit |
+| 终端状态 | Alacritty 终端引擎 |
+| SSH / SFTP | `russh` · `russh-sftp` |
+| 异步运行时 | Tokio |
+| 本地存储 | SQLite · Windows DPAPI |
+| 加密同步 | Argon2id · XChaCha20-Poly1305 |
+| 安装与更新 | NSIS 安装包 · minisign 更新验签 |
+
+仓库分为两个 Cargo 工作区：
+
+- **`crates/`**：共用核心库、应用运行层、Windows 平台能力与 MCP 工具桥。
+- **`native/`**：GPUI 应用、终端与会话组件、编辑器、高亮引擎、更新器及安装程序。
+
+## 从源码构建
+
+需要 **Windows 10/11 x64**、[rust-toolchain.toml](rust-toolchain.toml) 指定的 Rust MSVC 工具链，以及包含 Windows SDK 的 **Visual Studio 2022 C++ 生成工具**。打安装包还需要 [NSIS](https://nsis.sourceforge.io/)。SSH 使用 `ring` 后端，构建不需要 CMake 和 NASM。
 
 ```powershell
-# 编译程序（产物 native\target\release\zssh-gpui.exe）
+git clone https://github.com/MoeShinX/ZeeTerm.git
+cd ZeeTerm
+
+# 编译原生应用
 cargo build --manifest-path native/Cargo.toml --release --locked
 
-# 全部检查：fmt、clippy、测试、release 构建，逐条报告退出码和耗时
+# 运行格式、静态检查、测试及 gate 配置检查
 powershell -File scripts/gates.ps1
 
-# 打安装包（产物在 native\installer\out\）
-pwsh native/installer/build.ps1
+# 构建 Windows 安装包（PowerShell 7）
+pwsh -File native/installer/build.ps1
 ```
 
-依赖测试服务器的用例只在设置了 `ZSSH_TEST_HOST`、`ZSSH_TEST_PORT`、`ZSSH_TEST_USER` 以及密码或 `ZSSH_TEST_KEY_PATH` 时运行，没设置会跳过并打印原因。
+应用产物位于 `native/target/release/zssh-gpui.exe`，安装包位于 `native/installer/out/`。
 
-## 目录结构
+开发约定与独立测试数据要求见 [AGENTS.md](AGENTS.md)，发布及签名流程见 [docs/RELEASING.md](docs/RELEASING.md)。
 
-| 目录 | 内容 |
-| --- | --- |
-| `crates/zssh-core` | 核心库：SSH / SFTP、AI 智能体驱动与工具桥、同步与备份、本地存储。不依赖任何界面框架 |
-| `crates/zssh-app-runtime` | 应用运行层：任务登记 / 取消、类型化事件 |
-| `crates/zssh-platform-windows` | Windows 平台能力：剪贴板、输入法、单实例、系统主题 |
-| `crates/zssh-mcp` | AI 工具桥的 MCP 进程，随安装包一起分发 |
-| `native/zssh-gpui` | ZeeTerm 应用本体（GPUI 界面） |
-| `native/zssh-terminal`、`zssh-session`、`zssh-editor`、`zssh-regex`、`zssh-update` | 终端模型、会话泵、编辑器文件契约、高亮正则引擎、更新清单与验签（含发版用的 `release_tool` 示例） |
-| `native/installer` | NSIS 安装脚本、打包脚本和静默安装测试脚本 |
-| `scripts` | `gates.ps1`（全部检查）、`privacy-scan.ps1` 与它默认加载的放行清单 `privacy-allow.txt`（公开前的隐私扫描）、`native-shot.ps1`（调试构建的截图 / 驱动脚本，数据目录必须在 `C:\zssh-v2-data\` 或系统临时目录下且路径不含 Windows 用户名）、`updater-keygen.ps1`（生成更新签名密钥）、`bump-version.ps1`（发版第一步：改版本号、切 CHANGELOG）、`release-sign.ps1` 与 `release-lib.ps1`（签名、生成 `latest.json` / `SHA256SUMS.txt`，GitHub 发版工作流和本机共用）、`release.ps1`（本机备用发版）、`release-drill.ps1`（发版流程演练）；发版走 GitHub Actions（推 `v*` tag 自动编译、签名、发布），说明见 `docs/RELEASING.md` |
+## 💬 社区与项目入口
 
-`crates/` 是一个 Cargo 工作区，`native/` 是另一个（它用路径依赖引用 `crates/` 里的库），各有自己的 `Cargo.lock`。
+- **[Telegram · ZeeTerm 交流群](https://t.me/ZeeTerm)**：使用交流、问题反馈与建议。
+- **[zeeterm.app 官网](https://zeeterm.app/)**：目前筹备中，后续开发。现阶段请通过 GitHub 下载程序和查看项目文档。
+- **[GitHub Issues](https://github.com/MoeShinX/ZeeTerm/issues)**：提交问题或功能建议，请附上应用版本、复现步骤，以及已脱敏的截图或日志。
+- **[更新日志](CHANGELOG.md)**：查看版本历史与近期变化。
 
-## 许可
+## 许可与致谢
 
-GPL-3.0-or-later，全文见 `LICENSE`。项目移植和使用了其他开源项目的代码，署名与许可见 `NOTICE` 和 `native/NOTICE`（Netcatty 等）。
+ZeeTerm 以 **[GPL-3.0-or-later](LICENSE)** 开源。第三方组件、移植代码的来源与致谢见 [NOTICE](NOTICE) 和 [native/NOTICE](native/NOTICE)。

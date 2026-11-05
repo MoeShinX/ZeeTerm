@@ -53,6 +53,7 @@ enum TokenwayMsg {
     AuthorizationInvalidDetail,
     NotAuthorizedToken,
     NoStatusUrl,
+    RuntimeUnavailable,
 }
 
 impl Msg for TokenwayMsg {
@@ -70,6 +71,7 @@ impl Msg for TokenwayMsg {
             }
             Self::NotAuthorizedToken => "这个接口不是浏览器授权的 Tokenway 令牌",
             Self::NoStatusUrl => "清单里没有余额地址",
+            Self::RuntimeUnavailable => "后台运行时没起来",
         }
     }
 
@@ -87,6 +89,7 @@ impl Msg for TokenwayMsg {
             }
             Self::NotAuthorizedToken => "This endpoint is not a browser-authorized Tokenway token",
             Self::NoStatusUrl => "The manifest has no balance URL",
+            Self::RuntimeUnavailable => "the background runtime did not start",
         }
     }
 }
@@ -557,7 +560,10 @@ pub fn balance_poll(endpoint_id: i64) {
         return;
     }
     let Ok(runtime) = crate::ssh_backend::runtime() else {
-        book().finish(endpoint_id, Err(ApiError::network("后台运行时没起来")));
+        book().finish(
+            endpoint_id,
+            Err(ApiError::network(t(TokenwayMsg::RuntimeUnavailable))),
+        );
         return;
     };
     runtime.spawn(async move {

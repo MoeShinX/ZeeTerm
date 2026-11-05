@@ -78,16 +78,44 @@ pub fn has_public_ipv4(text: &str) -> bool {
 pub fn builtin_hits(text: &str) -> Vec<&'static str> {
     let mut hits = Vec::new();
     if has_public_ipv4(text) {
-        hits.push("公网 IP");
+        hits.push(crate::i18n::t(PrivacyMsg::PublicIp));
     }
     if text.contains("Last login") {
-        hits.push("登录提示 Last login");
+        hits.push(crate::i18n::t(PrivacyMsg::LoginBanner));
     }
     let lower = text.to_ascii_lowercase();
     if lower.contains("c:\\users\\") || lower.contains("c:/users/") {
-        hits.push("用户目录路径");
+        hits.push(crate::i18n::t(PrivacyMsg::UserHomePath));
     }
     hits
+}
+
+/// 截图隐私检查里命中的类别名。
+#[cfg(any(test, debug_assertions))]
+#[derive(Clone, Copy, Debug)]
+enum PrivacyMsg {
+    PublicIp,
+    LoginBanner,
+    UserHomePath,
+}
+
+#[cfg(any(test, debug_assertions))]
+impl crate::i18n::Msg for PrivacyMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::PublicIp => "公网 IP",
+            Self::LoginBanner => "登录提示 Last login",
+            Self::UserHomePath => "用户目录路径",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::PublicIp => "Public IP address",
+            Self::LoginBanner => "Login banner (Last login)",
+            Self::UserHomePath => "User home directory path",
+        }
+    }
 }
 
 #[cfg(test)]

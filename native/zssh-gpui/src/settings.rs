@@ -50,6 +50,32 @@ pub enum BracketedPaste {
     Off,
 }
 
+/// 括号粘贴三态在设置页上的名字。
+#[derive(Clone, Copy, Debug)]
+enum BracketedMsg {
+    Auto,
+    On,
+    Off,
+}
+
+impl crate::i18n::Msg for BracketedMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::Auto => "自动",
+            Self::On => "开",
+            Self::Off => "关",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::On => "On",
+            Self::Off => "Off",
+        }
+    }
+}
+
 impl BracketedPaste {
     pub fn next(self) -> Self {
         match self {
@@ -61,9 +87,9 @@ impl BracketedPaste {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Auto => "自动",
-            Self::On => "开",
-            Self::Off => "关",
+            Self::Auto => crate::i18n::t(BracketedMsg::Auto),
+            Self::On => crate::i18n::t(BracketedMsg::On),
+            Self::Off => crate::i18n::t(BracketedMsg::Off),
         }
     }
 

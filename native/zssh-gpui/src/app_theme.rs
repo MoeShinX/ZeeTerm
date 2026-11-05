@@ -39,6 +39,34 @@ pub struct TermPalette {
     pub ansi: [u32; 16],
 }
 
+/// 皮肤显示名里需要翻译的部分（拉丁名原样显示）。
+#[derive(Clone, Copy, Debug)]
+enum ThemeMsg {
+    PaperWhite,
+}
+
+impl crate::i18n::Msg for ThemeMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::PaperWhite => "纸白",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::PaperWhite => "Paper White",
+        }
+    }
+}
+
+/// 皮肤的显示名：中文名查 i18n 表，其余（拉丁名）原样。
+pub fn skin_name(skin: &Skin) -> &'static str {
+    match skin.name {
+        "纸白" => crate::i18n::t(ThemeMsg::PaperWhite), // i18n-allow: 皮肤名的数据匹配
+        other => other,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Skin {
     pub id: &'static str,
@@ -65,7 +93,7 @@ pub const SKINS: &[Skin] = &[
     Skin {
         // VS Code Light Modern
         id: "paper",
-        name: "纸白",
+        name: "纸白", // i18n-allow: 显示名走 skin_name()
         dark: false,
         ui: UiColors {
             background: 0xFFFFFF,
@@ -247,7 +275,7 @@ pub const SKINS: &[Skin] = &[
     Skin {
         // VS Code Dark Modern
         id: "graphite",
-        name: "石墨",
+        name: "石墨", // i18n-allow: 显示名走 skin_name()
         dark: true,
         ui: UiColors {
             background: 0x1F1F1F,

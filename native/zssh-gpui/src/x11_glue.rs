@@ -103,8 +103,12 @@ pub async fn open_shell(
         .open_shell_x11(cols, rows, DEFAULT_BUFFER_LIMIT, ring, x11)
         .await?;
     match outcome {
-        X11Outcome::Active { display: x_server } => tracing::info!(%x_server, "X11 转发已开启"),
-        X11Outcome::Skipped(failure) => tracing::info!(code = failure.code(), "X11 转发没有开启"),
+        X11Outcome::Active { display: x_server } => {
+            tracing::info!(%x_server, "X11 转发已开启");
+        }
+        X11Outcome::Skipped(failure) => {
+            tracing::info!(code = failure.code(), "X11 转发没有开启");
+        }
         X11Outcome::NotRequested => {}
     }
     Ok(shell)

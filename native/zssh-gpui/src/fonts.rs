@@ -91,6 +91,33 @@ pub fn stack_for_choice(name: &str) -> String {
     format!("{name}, Cascadia Mono, Consolas, monospace")
 }
 
+/// 字体回退提示的一句话。
+#[derive(Clone, Copy, Debug)]
+#[allow(clippy::enum_variant_names)]
+enum FontsMsg {
+    FallbackPrefix,
+    FallbackMid,
+    FallbackSuffix,
+}
+
+impl crate::i18n::Msg for FontsMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::FallbackPrefix => "本机没有「",
+            Self::FallbackMid => "」，现在用的是「",
+            Self::FallbackSuffix => "」。",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::FallbackPrefix => "This computer does not have “",
+            Self::FallbackMid => "”; using “",
+            Self::FallbackSuffix => "” instead.",
+        }
+    }
+}
+
 /// 设置的字体和实际用的字体不一样时给用户的一句话（栈里第一个字体本机没有）。
 pub fn fallback_note(stack: &str, installed: &[String], fallback: &str) -> Option<String> {
     let wanted = stack_families(stack)
@@ -100,7 +127,12 @@ pub fn fallback_note(stack: &str, installed: &[String], fallback: &str) -> Optio
     if used.eq_ignore_ascii_case(&wanted) {
         return None;
     }
-    Some(format!("本机没有「{wanted}」，现在用的是「{used}」。"))
+    Some(format!(
+        "{}{wanted}{}{used}{}",
+        crate::i18n::t(FontsMsg::FallbackPrefix),
+        crate::i18n::t(FontsMsg::FallbackMid),
+        crate::i18n::t(FontsMsg::FallbackSuffix)
+    ))
 }
 
 /// 界面西文字体的候选，按好看程度排：Windows 11 自带的 `Segoe UI Variable Text`（为正文大小调过的可变字体），

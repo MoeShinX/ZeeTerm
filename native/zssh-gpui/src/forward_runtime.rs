@@ -45,6 +45,7 @@ enum ForwardRuntimeMsg {
     RemoteMiddle,
     /// 本地转发的括号说明。
     LocalSuffix,
+    RegistryInitFailed,
 }
 
 impl Msg for ForwardRuntimeMsg {
@@ -54,6 +55,7 @@ impl Msg for ForwardRuntimeMsg {
             Self::RemotePrefix => "服务器 ",
             Self::RemoteMiddle => " → 本机这边 ",
             Self::LocalSuffix => "（经服务器）",
+            Self::RegistryInitFailed => "转发任务登记表初始化失败",
         }
     }
 
@@ -63,6 +65,7 @@ impl Msg for ForwardRuntimeMsg {
             Self::RemotePrefix => "Remote ",
             Self::RemoteMiddle => " → local ",
             Self::LocalSuffix => " (via server)",
+            Self::RegistryInitFailed => "Could not initialize the forwarding task registry",
         }
     }
 }
@@ -348,7 +351,7 @@ fn registry() -> Result<&'static Arc<TaskRegistry>, String> {
     let _ = REGISTRY.set(TaskRegistry::with_handle(handle));
     REGISTRY
         .get()
-        .ok_or_else(|| "转发任务登记表初始化失败".to_owned())
+        .ok_or_else(|| crate::i18n::t(ForwardRuntimeMsg::RegistryInitFailed).to_owned())
 }
 
 // ---- 一条规则的任务体 ----

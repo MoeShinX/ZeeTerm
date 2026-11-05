@@ -37,6 +37,11 @@ enum HostFormMsg {
     MismatchSuffix,
     PasswordKeep,
     PasswordNew,
+    /// `Debug` 里代替密码原文的占位。
+    SecretHidden,
+    /// 自动生成的密码凭据名后缀（`<主机名> 的密码`）。**存进库里的数据**，只读 `zh()`，
+    /// 不随界面语言变，所以不走 `t()`。
+    PasswordNameSuffix,
 }
 
 impl Msg for HostFormMsg {
@@ -56,6 +61,8 @@ impl Msg for HostFormMsg {
             Self::MismatchSuffix => "」和认证方式不配套，已取消选择",
             Self::PasswordKeep => "留空表示不改保险库里的密码",
             Self::PasswordNew => "留空表示不保存密码，连接时会提示",
+            Self::SecretHidden => "<已隐藏>",
+            Self::PasswordNameSuffix => " 的密码",
         }
     }
 
@@ -79,6 +86,9 @@ impl Msg for HostFormMsg {
             Self::PasswordNew => {
                 "Leave empty to not save a password; you will be prompted when connecting"
             }
+            Self::SecretHidden => "<hidden>",
+            // 只被 `zh()` 读到（存进库里的凭据名），英文界面下不会用到。
+            Self::PasswordNameSuffix => " (password)",
         }
     }
 }
@@ -263,7 +273,7 @@ impl std::fmt::Debug for IdentityDraftLite {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IdentityDraftLite")
             .field("name", &self.name)
-            .field("secret", &"<已隐藏>")
+            .field("secret", &t(HostFormMsg::SecretHidden))
             .finish()
     }
 }
@@ -292,8 +302,10 @@ pub struct SavePlan {
 }
 
 /// 主机密码身份的默认名。
+///
+/// 这个名字会存进库（凭据名），所以固定用中文原文，不随界面语言变。
 pub fn default_password_name(host_name: &str) -> String {
-    format!("{host_name} 的密码")
+    format!("{host_name}{}", HostFormMsg::PasswordNameSuffix.zh())
 }
 
 /// 已有主机现在关联的**密码**身份（关联的是密钥 / agent 或没有关联就是 `None`）。
@@ -602,7 +614,9 @@ pub fn apply_save(db: &Database, plan: SavePlan) -> Result<Host, String> {
         match db.identity_delete(id) {
             // 两步之间被别处引用了：保留，不算错误。
             Ok(()) | Err(zssh_core::error::ZsshError::IdentityInUse { .. }) => {}
-            Err(err) => tracing::warn!(%err, identity = id, "释放主机不再用的密码失败"),
+            Err(err) => {
+                tracing::warn!(%err, identity = id, "释放主机不再用的密码失败");
+            }
         }
     }
     Ok(saved)

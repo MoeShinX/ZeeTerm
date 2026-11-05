@@ -65,9 +65,229 @@ use drafts::{
     set_aside_locked,
 };
 // 恢复列表的「另存到本地」也要在界面上说明导出的是明文。
-pub(crate) use drafts::EXPORT_PLAINTEXT_NOTE;
+pub(crate) use drafts::export_plaintext_note;
 use language::Lang;
 use remote::{RemoteGlimpse, RemoteStamp, RemoteWatch};
+
+/// 编辑器状态栏 / 关闭确认的文案。
+#[derive(Clone, Copy, Debug)]
+enum StatusMsg {
+    ReadingInitial,
+    Reconnecting,
+    DisconnectedRead,
+    Reconnected,
+    RemoteDeletedRefused,
+    RemoteChangedRefused,
+    ConflictCloseSave,
+    OwnerChangeCloseSave,
+    DisconnectedKeepEditing,
+    RemoteChangedConflict,
+    ReloadConflictNote,
+    ReadingWaitSave,
+    ReadFailedNoSave,
+    NoRemoteVersion,
+    Saving,
+    ConflictParked,
+    DisconnectedCannotReadRemote,
+    ReadingRemoteNow,
+    DisconnectedNoSaveAs,
+    SavingAs,
+    ReadingWaitSaveAs,
+    ReadFailedNoSaveAs,
+    DraftSavingLocal,
+    DraftCopied,
+    OldDraftKept,
+    DraftDiscarded,
+    UnsavedKeptAsDraft,
+    GotoInvalid,
+    ConnectFailedPrefix,
+    ReadFailedPrefix,
+    SavedPrefix,
+    SavedClose,
+    SavedOwnerMid,
+    SavedOwnerTo,
+    OwnerChangePrefix,
+    OwnerChangeMid,
+    OwnerChangeSuffix,
+    DraftExportPrefix,
+    DraftExportMid,
+    DraftExportFailedPrefix,
+    SavedAsPrefix,
+    SavedAsEditingMid,
+    LoadedPrefix,
+    LoadedClose,
+    DiscardReloadPrefix,
+    DiscardReloadClose,
+    ReloadFailedPrefix,
+    KeptAsPrefix,
+    MoveAsideFailedPrefix,
+    MoveAsideFailedSuffix,
+    TooLargePrefix,
+    TooLargeMid,
+    TooLargeSaveSuffix,
+    TooLargeSaveAsSuffix,
+    SavingAsTargetPrefix,
+    DraftRestoredPrefix,
+    DraftRestoredSuffix,
+    GotoLinePrefix,
+    GotoLineSuffix,
+    SaveFailedPrefix,
+    SaveAsFailedPrefix,
+}
+
+impl crate::i18n::Msg for StatusMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::ReadingInitial => "正在读取…",
+            Self::Reconnecting => "正在重新连接…",
+            Self::DisconnectedRead => "连接已经断开，读不了文件",
+            Self::Reconnected => "已重新连接",
+            Self::RemoteDeletedRefused => "远端文件已经被删掉了，保存被拒绝",
+            Self::RemoteChangedRefused => "远端文件已被外部修改，保存被拒绝",
+            Self::ConflictCloseSave => "远端文件已被改过，有冲突要处理",
+            Self::OwnerChangeCloseSave => "保存会改变文件属主，要先决定",
+            Self::DisconnectedKeepEditing => "连接已经断开，内容还留在编辑器里；重新连接后再保存",
+            Self::RemoteChangedConflict => "远端文件已被外部修改；保存会冲突（内容不会被覆盖）",
+            Self::ReloadConflictNote => {
+                "重新载入期间内容有改动，没有覆盖；你输入的内容还在，冲突仍待处理"
+            }
+            Self::ReadingWaitSave => "文件还在读取，稍后再保存",
+            Self::ReadFailedNoSave => "文件没有读取成功，不能保存",
+            Self::NoRemoteVersion => "还没有读到远端版本，不能保存",
+            Self::Saving => "正在保存…",
+            Self::ConflictParked => "冲突先放着：编辑内容还在，再保存会重新核对远端",
+            Self::DisconnectedCannotReadRemote => "连接已经断开，读不了远端内容",
+            Self::ReadingRemoteNow => "正在读取远端现在的内容…",
+            Self::DisconnectedNoSaveAs => "连接已经断开，不能另存为",
+            Self::SavingAs => "正在另存为…",
+            Self::ReadingWaitSaveAs => "文件还在读取，稍后再另存为",
+            Self::ReadFailedNoSaveAs => "文件没有读取成功，不能另存为",
+            Self::DraftSavingLocal => "正在把草稿另存为本地文件…",
+            Self::DraftCopied => "草稿内容已复制到剪贴板",
+            Self::OldDraftKept => "旧格式草稿已保留在草稿目录里，没有删除",
+            Self::DraftDiscarded => "草稿已丢弃",
+            Self::UnsavedKeptAsDraft => "有未保存的修改：已存为草稿，下次启动可以恢复",
+            Self::GotoInvalid => "请输入行号（或 行:列）",
+            Self::ConnectFailedPrefix => "连接失败：",
+            Self::ReadFailedPrefix => "读取失败：",
+            Self::SavedPrefix => "已保存（",
+            Self::SavedClose => "）",
+            Self::SavedOwnerMid => "），属主从 ",
+            Self::SavedOwnerTo => " 变成了 ",
+            Self::OwnerChangePrefix => "保存会让属主从 ",
+            Self::OwnerChangeMid => " 变成 ",
+            Self::OwnerChangeSuffix => "，没有替换远端文件",
+            Self::DraftExportPrefix => "草稿已另存为本地文件（",
+            Self::DraftExportMid => "）：",
+            Self::DraftExportFailedPrefix => "草稿导出失败：",
+            Self::SavedAsPrefix => "已另存为 ",
+            Self::SavedAsEditingMid => "，现在编辑的是这个新文件",
+            Self::LoadedPrefix => "已加载（",
+            Self::LoadedClose => "）",
+            Self::DiscardReloadPrefix => "已放弃本地修改，换成了远端现在的内容（",
+            Self::DiscardReloadClose => "）",
+            Self::ReloadFailedPrefix => "没能重新载入远端内容：",
+            Self::KeptAsPrefix => "，已原样保留为 ",
+            Self::MoveAsideFailedPrefix => "（挪到一边失败：",
+            Self::MoveAsideFailedSuffix => "；继续编辑会覆盖它）",
+            Self::TooLargePrefix => "内容太大（",
+            Self::TooLargeMid => "，上限 ",
+            Self::TooLargeSaveSuffix => "），拒绝保存",
+            Self::TooLargeSaveAsSuffix => "），拒绝另存为",
+            Self::SavingAsTargetPrefix => "正在另存为 ",
+            Self::DraftRestoredPrefix => "已恢复草稿（",
+            Self::DraftRestoredSuffix => "），尚未保存",
+            Self::GotoLinePrefix => "已跳到第 ",
+            Self::GotoLineSuffix => " 行",
+            Self::SaveFailedPrefix => "保存失败：",
+            Self::SaveAsFailedPrefix => "另存为失败：",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::ReadingInitial => "Reading…",
+            Self::Reconnecting => "Reconnecting…",
+            Self::DisconnectedRead => "Connection lost — cannot read the file",
+            Self::Reconnected => "Reconnected",
+            Self::RemoteDeletedRefused => "The remote file was deleted; the save was refused",
+            Self::RemoteChangedRefused => {
+                "The remote file changed externally; the save was refused"
+            }
+            Self::ConflictCloseSave => "The remote file changed; resolve the conflict first",
+            Self::OwnerChangeCloseSave => "Saving would change the file owner; decide first",
+            Self::DisconnectedKeepEditing => {
+                "Connection lost; your content is still here — reconnect before saving"
+            }
+            Self::RemoteChangedConflict => {
+                "The remote file changed externally; saving would conflict (nothing was overwritten)"
+            }
+            Self::ReloadConflictNote => {
+                "Content changed during the reload; nothing was overwritten — your input is kept and the conflict remains"
+            }
+            Self::ReadingWaitSave => "The file is still loading — save later",
+            Self::ReadFailedNoSave => "The file could not be read; saving is not possible",
+            Self::NoRemoteVersion => "No remote version has been read yet; saving is not possible",
+            Self::Saving => "Saving…",
+            Self::ConflictParked => {
+                "The conflict is left open: your edits are kept and saving again re-checks the remote file"
+            }
+            Self::DisconnectedCannotReadRemote => {
+                "Connection lost — cannot read the remote content"
+            }
+            Self::ReadingRemoteNow => "Reading the current remote content…",
+            Self::DisconnectedNoSaveAs => "Connection lost — cannot save as",
+            Self::SavingAs => "Saving as…",
+            Self::ReadingWaitSaveAs => "The file is still loading — save as later",
+            Self::ReadFailedNoSaveAs => "The file could not be read; save as is not possible",
+            Self::DraftSavingLocal => "Saving the draft to a local file…",
+            Self::DraftCopied => "Draft content copied to the clipboard",
+            Self::OldDraftKept => {
+                "The old-format draft was kept in the drafts folder and not deleted"
+            }
+            Self::DraftDiscarded => "Draft discarded",
+            Self::UnsavedKeptAsDraft => {
+                "Unsaved changes were kept as a draft and can be recovered on the next launch"
+            }
+            Self::GotoInvalid => "Enter a line number (or line:column)",
+            Self::ConnectFailedPrefix => "Connection failed: ",
+            Self::ReadFailedPrefix => "Read failed: ",
+            Self::SavedPrefix => "Saved (",
+            Self::SavedClose => ")",
+            Self::SavedOwnerMid => "); owner changed from ",
+            Self::SavedOwnerTo => " to ",
+            Self::OwnerChangePrefix => "Saving would change the owner from ",
+            Self::OwnerChangeMid => " to ",
+            Self::OwnerChangeSuffix => "; the remote file was not replaced",
+            Self::DraftExportPrefix => "Draft saved to a local file (",
+            Self::DraftExportMid => "): ",
+            Self::DraftExportFailedPrefix => "Could not export the draft: ",
+            Self::SavedAsPrefix => "Saved as ",
+            Self::SavedAsEditingMid => " — you are now editing this new file",
+            Self::LoadedPrefix => "Loaded (",
+            Self::LoadedClose => ")",
+            Self::DiscardReloadPrefix => {
+                "Local changes discarded; the editor now shows the current remote content ("
+            }
+            Self::DiscardReloadClose => ")",
+            Self::ReloadFailedPrefix => "Could not reload the remote content: ",
+            Self::KeptAsPrefix => ", kept as ",
+            Self::MoveAsideFailedPrefix => " (could not move it aside: ",
+            Self::MoveAsideFailedSuffix => "; continuing to edit will overwrite it)",
+            Self::TooLargePrefix => "The content is too large (",
+            Self::TooLargeMid => ", limit ",
+            Self::TooLargeSaveSuffix => "); saving refused",
+            Self::TooLargeSaveAsSuffix => "); save as refused",
+            Self::SavingAsTargetPrefix => "Saving as ",
+            Self::DraftRestoredPrefix => "Restored draft (",
+            Self::DraftRestoredSuffix => "), not saved yet",
+            Self::GotoLinePrefix => "Jumped to line ",
+            Self::GotoLineSuffix => "",
+            Self::SaveFailedPrefix => "Save failed: ",
+            Self::SaveAsFailedPrefix => "Save as failed: ",
+        }
+    }
+}
 
 /// 界面事件轮询间隔；草稿自动保存也挂在这个节拍上。
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -223,6 +443,35 @@ pub(crate) struct CursorInfo {
     pub selected: usize,
 }
 
+/// 编辑器自己的文案（输入框占位、窗口标题）。
+#[derive(Clone, Copy, Debug)]
+enum EditorMsg {
+    PathPlaceholder,
+    GotoPlaceholder,
+    ConflictNamePlaceholder,
+    TitlePrefix,
+}
+
+impl crate::i18n::Msg for EditorMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::PathPlaceholder => "远端路径（可相对当前目录）",
+            Self::GotoPlaceholder => "行号，或 行:列",
+            Self::ConflictNamePlaceholder => "新文件名",
+            Self::TitlePrefix => "编辑 ",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::PathPlaceholder => "Remote path (relative to the current directory)",
+            Self::GotoPlaceholder => "Line, or line:column",
+            Self::ConflictNamePlaceholder => "New file name",
+            Self::TitlePrefix => "Editing ",
+        }
+    }
+}
+
 pub struct RemoteEditor {
     editor: Entity<EditorState>,
     path: String,
@@ -339,10 +588,16 @@ impl RemoteEditor {
                 // 0.2.14 的 CodeMirror 没开 closeBrackets：打 `(` 只出一个括号。
                 .auto_close(false)
         });
-        let save_as_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("远端路径（可相对当前目录）"));
-        let goto_input = cx.new(|cx| InputState::new(window, cx).placeholder("行号，或 行:列"));
-        let conflict_name = cx.new(|cx| InputState::new(window, cx).placeholder("新文件名"));
+        let save_as_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(crate::i18n::t(EditorMsg::PathPlaceholder))
+        });
+        let goto_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(crate::i18n::t(EditorMsg::GotoPlaceholder))
+        });
+        let conflict_name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(crate::i18n::t(EditorMsg::ConflictNamePlaceholder))
+        });
         let var = |name: &str| {
             crate::dev_hooks::var_os(name).map(|value| value.to_string_lossy().into_owned())
         };
@@ -399,7 +654,7 @@ impl RemoteEditor {
             lang,
             format: TextFormat::default(),
             version: None,
-            status: "正在读取…".to_owned(),
+            status: crate::i18n::t(StatusMsg::ReadingInitial).to_owned(),
             revision: 0,
             dirty_cache: None,
             baseline: String::new(),
@@ -617,7 +872,7 @@ impl RemoteEditor {
             Err(err) => {
                 self.reconnecting = false;
                 self.phase = Phase::Failed;
-                self.status = format!("连接失败：{err}");
+                self.status = format!("{}{err}", crate::i18n::t(StatusMsg::ConnectFailedPrefix));
             }
         }
         cx.notify();
@@ -628,7 +883,7 @@ impl RemoteEditor {
         if self.reconnecting {
             return;
         }
-        self.status = "正在重新连接…".to_owned();
+        self.status = crate::i18n::t(StatusMsg::Reconnecting).to_owned();
         self.dial(cx);
     }
 
@@ -636,7 +891,7 @@ impl RemoteEditor {
     fn start_loading(&mut self, cx: &mut Context<Self>) {
         let Some(channel) = self.channel.clone() else {
             self.phase = Phase::Failed;
-            self.status = "连接已经断开，读不了文件".to_owned();
+            self.status = crate::i18n::t(StatusMsg::DisconnectedRead).to_owned();
             self.disconnected = true;
             cx.notify();
             return;
@@ -658,7 +913,7 @@ impl RemoteEditor {
             }
             Err(err) => {
                 self.phase = Phase::Failed;
-                self.status = format!("读取失败：{err}");
+                self.status = format!("{}{err}", crate::i18n::t(StatusMsg::ReadFailedPrefix));
             }
         }
         cx.notify();
@@ -700,7 +955,7 @@ impl RemoteEditor {
                     // 断线后重连：换通道、换监视；有待重试的保存就再保存一次。
                     self.restart_watcher(&channel);
                     self.channel = Some(channel);
-                    self.status = "已重新连接".to_owned();
+                    self.status = crate::i18n::t(StatusMsg::Reconnected).to_owned();
                     if let Some(kind) = self.retry_save.take() {
                         self.start_save(kind, cx);
                     }
@@ -708,7 +963,10 @@ impl RemoteEditor {
             }
             RemoteEditEvent::ConnectFailed(message) => {
                 self.reconnecting = false;
-                self.status = format!("连接失败：{message}");
+                self.status = format!(
+                    "{}{message}",
+                    crate::i18n::t(StatusMsg::ConnectFailedPrefix)
+                );
                 self.disconnected = true;
                 if self.phase == Phase::Connecting {
                     self.phase = Phase::Failed;
@@ -720,7 +978,7 @@ impl RemoteEditor {
             RemoteEditEvent::LoadFailed(message) => {
                 self.phase = Phase::Failed;
                 self.disconnected = remote::is_disconnect(&message);
-                self.status = format!("读取失败：{message}");
+                self.status = format!("{}{message}", crate::i18n::t(StatusMsg::ReadFailedPrefix));
             }
             RemoteEditEvent::Saved {
                 save_id,
@@ -740,9 +998,19 @@ impl RemoteEditor {
                 self.retry_save = None;
                 self.external_changed = false;
                 self.version = Some(version);
+                let size_text = crate::i18n::count(size as u64, " 字节", "byte", "bytes");
                 self.status = match owner_changed {
-                    Some((from, to)) => format!("已保存（{size} 字节），属主从 {from} 变成了 {to}"),
-                    None => format!("已保存（{size} 字节）"),
+                    Some((from, to)) => format!(
+                        "{}{size_text}{}{from}{}{to}",
+                        crate::i18n::t(StatusMsg::SavedPrefix),
+                        crate::i18n::t(StatusMsg::SavedOwnerMid),
+                        crate::i18n::t(StatusMsg::SavedOwnerTo)
+                    ),
+                    None => format!(
+                        "{}{size_text}{}",
+                        crate::i18n::t(StatusMsg::SavedPrefix),
+                        crate::i18n::t(StatusMsg::SavedClose)
+                    ),
                 };
                 // 点保存那一刻的文本成了新基线；保存期间又打的字仍然算未保存。
                 self.baseline = active.text;
@@ -767,9 +1035,9 @@ impl RemoteEditor {
                 }
                 self.watch.set_saving(false);
                 self.status = if remote.gone {
-                    "远端文件已经被删掉了，保存被拒绝".to_owned()
+                    crate::i18n::t(StatusMsg::RemoteDeletedRefused).to_owned()
                 } else {
-                    "远端文件已被外部修改，保存被拒绝".to_owned()
+                    crate::i18n::t(StatusMsg::RemoteChangedRefused).to_owned()
                 };
                 self.conflict = Some(ConflictState {
                     remote,
@@ -778,15 +1046,20 @@ impl RemoteEditor {
                 let suggested = default_save_as_name(&self.path);
                 self.conflict_name
                     .update(cx, |state, cx| state.set_value(suggested, window, cx));
-                self.fail_close_save("远端文件已被改过，有冲突要处理");
+                self.fail_close_save(crate::i18n::t(StatusMsg::ConflictCloseSave));
             }
             RemoteEditEvent::OwnerWouldChange { save_id, from, to } => {
                 if self.active_save.take_if(|a| a.id == save_id).is_none() {
                     return;
                 }
                 self.watch.set_saving(false);
-                self.status = format!("保存会让属主从 {from} 变成 {to}，没有替换远端文件");
-                self.fail_close_save("保存会改变文件属主，要先决定");
+                self.status = format!(
+                    "{}{from}{}{to}{}",
+                    crate::i18n::t(StatusMsg::OwnerChangePrefix),
+                    crate::i18n::t(StatusMsg::OwnerChangeMid),
+                    crate::i18n::t(StatusMsg::OwnerChangeSuffix)
+                );
+                self.fail_close_save(crate::i18n::t(StatusMsg::OwnerChangeCloseSave));
                 self.owner_prompt = Some((from, to));
             }
             RemoteEditEvent::SaveFailed {
@@ -800,7 +1073,7 @@ impl RemoteEditor {
                 self.watch.set_saving(false);
                 if disconnected {
                     self.disconnected = true;
-                    self.status = "连接已经断开，内容还留在编辑器里；重新连接后再保存".to_owned();
+                    self.status = crate::i18n::t(StatusMsg::DisconnectedKeepEditing).to_owned();
                 } else {
                     self.status = message.clone();
                 }
@@ -809,21 +1082,27 @@ impl RemoteEditor {
             RemoteEditEvent::Exported(result) => {
                 self.status = match result {
                     Ok(path) => format!(
-                        "草稿已另存为本地文件（{EXPORT_PLAINTEXT_NOTE}）：{}",
+                        "{}{}{}{}",
+                        crate::i18n::t(StatusMsg::DraftExportPrefix),
+                        crate::remote_editor::export_plaintext_note(),
+                        crate::i18n::t(StatusMsg::DraftExportMid),
                         path.display()
                     ),
-                    Err(message) => format!("草稿导出失败：{message}"),
+                    Err(message) => format!(
+                        "{}{message}",
+                        crate::i18n::t(StatusMsg::DraftExportFailedPrefix)
+                    ),
                 };
             }
             RemoteEditEvent::ExternalChange => {
                 // 只提醒；编辑内容和版本都不动，保存时仍按哈希决定是否冲突。
                 self.external_changed = true;
-                self.status = "远端文件已被外部修改；保存会冲突（内容不会被覆盖）".to_owned();
+                self.status = crate::i18n::t(StatusMsg::RemoteChangedConflict).to_owned();
             }
             RemoteEditEvent::SavedAs { path } => {
                 self.saving_as = false;
                 // 另存为只是复制：`self.path` / `self.version` 保持指向原来那个文件。
-                self.status = format!("已另存为 {path}");
+                self.status = format!("{}{path}", crate::i18n::t(StatusMsg::SavedAsPrefix));
             }
             RemoteEditEvent::SaveAsFailed(message) => {
                 self.saving_as = false;
@@ -832,9 +1111,7 @@ impl RemoteEditor {
             RemoteEditEvent::Reloaded { revision, loaded } => {
                 if self.revision != revision {
                     // 读的时候用户又打了字：不覆盖（0.2.14 的「kept」）。
-                    self.status =
-                        "重新载入期间内容有改动，没有覆盖；你输入的内容还在，冲突仍待处理"
-                            .to_owned();
+                    self.status = crate::i18n::t(StatusMsg::ReloadConflictNote).to_owned();
                     return;
                 }
                 let remote::Loaded { opened, stamp } = *loaded;
@@ -850,13 +1127,15 @@ impl RemoteEditor {
                 self.discarded_text = None;
                 self.drafts.send(DraftJob::Delete(self.draft_path.clone()));
                 self.status = format!(
-                    "已放弃本地修改，换成了远端现在的内容（{} 字节）",
-                    opened.size
+                    "{}{}{}",
+                    crate::i18n::t(StatusMsg::DiscardReloadPrefix),
+                    crate::i18n::count(opened.size as u64, " 字节", "byte", "bytes"),
+                    crate::i18n::t(StatusMsg::DiscardReloadClose)
                 );
                 self.set_text(opened.text, window, cx);
             }
             RemoteEditEvent::ReloadFailed(message) => {
-                self.status = format!("没能重新载入远端内容：{message}");
+                self.status = format!("{}{message}", crate::i18n::t(StatusMsg::ReloadFailedPrefix));
             }
             RemoteEditEvent::Relocated {
                 path,
@@ -885,7 +1164,12 @@ impl RemoteEditor {
                     self.restart_watcher(&channel);
                     self.watch.set_stamp(stamp);
                 }
-                self.status = format!("已另存为 {}，现在编辑的是这个新文件", self.path);
+                self.status = format!(
+                    "{}{}{}",
+                    crate::i18n::t(StatusMsg::SavedAsPrefix),
+                    self.path,
+                    crate::i18n::t(StatusMsg::SavedAsEditingMid)
+                );
                 if self.close_save.is_some() {
                     self.close_save = Some(CloseSave::Done);
                 }
@@ -909,7 +1193,12 @@ impl RemoteEditor {
         self.format = opened.format;
         self.version = Some(opened.version);
         self.watch.set_stamp(stamp);
-        self.status = format!("已加载（{} 字节）", opened.size);
+        self.status = format!(
+            "{}{}{}",
+            crate::i18n::t(StatusMsg::LoadedPrefix),
+            crate::i18n::count(opened.size as u64, " 字节", "byte", "bytes"),
+            crate::i18n::t(StatusMsg::LoadedClose)
+        );
         self.baseline.clone_from(&opened.text);
         self.dirty_cache = None;
         // 文件名认不出语言时，第一行的 shebang 再补一刀。
@@ -927,9 +1216,19 @@ impl RemoteEditor {
                 let kept = match set_aside_locked(&locked) {
                     Ok(path) => path
                         .file_name()
-                        .map(|name| format!("，已原样保留为 {}", name.to_string_lossy()))
+                        .map(|name| {
+                            format!(
+                                "{}{}",
+                                crate::i18n::t(StatusMsg::KeptAsPrefix),
+                                name.to_string_lossy()
+                            )
+                        })
                         .unwrap_or_default(),
-                    Err(err) => format!("（挪到一边失败：{err}；继续编辑会覆盖它）"),
+                    Err(err) => format!(
+                        "{}{err}{}",
+                        crate::i18n::t(StatusMsg::MoveAsideFailedPrefix),
+                        crate::i18n::t(StatusMsg::MoveAsideFailedSuffix)
+                    ),
                 };
                 self.status = format!("{locked}{kept}");
                 None
@@ -997,8 +1296,10 @@ impl RemoteEditor {
         }
         if self.phase != Phase::Ready {
             self.status = match self.phase {
-                Phase::Connecting | Phase::Loading => "文件还在读取，稍后再保存".to_owned(),
-                _ => "文件没有读取成功，不能保存".to_owned(),
+                Phase::Connecting | Phase::Loading => {
+                    crate::i18n::t(StatusMsg::ReadingWaitSave).to_owned()
+                }
+                _ => crate::i18n::t(StatusMsg::ReadFailedNoSave).to_owned(),
             };
             cx.notify();
             return;
@@ -1006,12 +1307,12 @@ impl RemoteEditor {
         let Some(channel) = self.channel.clone() else {
             self.disconnected = true;
             self.retry_save = Some(kind);
-            self.status = "连接已经断开，内容还留在编辑器里；重新连接后再保存".to_owned();
+            self.status = crate::i18n::t(StatusMsg::DisconnectedKeepEditing).to_owned();
             cx.notify();
             return;
         };
         let Some(expected) = self.version else {
-            self.status = "还没有读到远端版本，不能保存".to_owned();
+            self.status = crate::i18n::t(StatusMsg::NoRemoteVersion).to_owned();
             cx.notify();
             return;
         };
@@ -1019,8 +1320,12 @@ impl RemoteEditor {
         let bytes = contract::encode(&text, &self.format);
         if bytes.len() > MAX_BYTES {
             self.status = format!(
-                "内容太大（{} 字节，上限 {MAX_BYTES} 字节），拒绝保存",
-                bytes.len()
+                "{}{}{}{}{}",
+                crate::i18n::t(StatusMsg::TooLargePrefix),
+                crate::i18n::count(bytes.len() as u64, " 字节", "byte", "bytes"),
+                crate::i18n::t(StatusMsg::TooLargeMid),
+                crate::i18n::count(MAX_BYTES as u64, " 字节", "byte", "bytes"),
+                crate::i18n::t(StatusMsg::TooLargeSaveSuffix)
             );
             cx.notify();
             return;
@@ -1033,7 +1338,7 @@ impl RemoteEditor {
             text,
         });
         self.watch.set_saving(true);
-        self.status = "正在保存…".to_owned();
+        self.status = crate::i18n::t(StatusMsg::Saving).to_owned();
         self.owner_prompt = None;
         self.retry_save = Some(kind);
         let expected = match kind {
@@ -1061,7 +1366,7 @@ impl RemoteEditor {
             Err(err) => {
                 self.active_save = None;
                 self.watch.set_saving(false);
-                self.status = format!("保存失败：{err}");
+                self.status = format!("{}{err}", crate::i18n::t(StatusMsg::SaveFailedPrefix));
             }
         }
         cx.emit(EditorEvent::Changed);
@@ -1081,7 +1386,7 @@ impl RemoteEditor {
     pub(crate) fn defer_conflict(&mut self, cx: &mut Context<Self>) {
         if let Some(conflict) = &mut self.conflict {
             conflict.later = true;
-            self.status = "冲突先放着：编辑内容还在，再保存会重新核对远端".to_owned();
+            self.status = crate::i18n::t(StatusMsg::ConflictParked).to_owned();
             cx.notify();
         }
     }
@@ -1097,7 +1402,7 @@ impl RemoteEditor {
     pub(crate) fn discard_my_changes(&mut self, cx: &mut Context<Self>) {
         let Some(channel) = self.channel.clone() else {
             self.disconnected = true;
-            self.status = "连接已经断开，读不了远端内容".to_owned();
+            self.status = crate::i18n::t(StatusMsg::DisconnectedCannotReadRemote).to_owned();
             cx.notify();
             return;
         };
@@ -1107,7 +1412,7 @@ impl RemoteEditor {
         let revision = self.revision;
         let path = self.path.clone();
         let sender = self.sender.clone();
-        self.status = "正在读取远端现在的内容…".to_owned();
+        self.status = crate::i18n::t(StatusMsg::ReadingRemoteNow).to_owned();
         match runtime() {
             Ok(runtime) => {
                 runtime.spawn(async move {
@@ -1121,7 +1426,9 @@ impl RemoteEditor {
                     let _ = sender.send(event);
                 });
             }
-            Err(err) => self.status = format!("读取失败：{err}"),
+            Err(err) => {
+                self.status = format!("{}{err}", crate::i18n::t(StatusMsg::ReadFailedPrefix))
+            }
         }
         cx.notify();
     }
@@ -1130,7 +1437,7 @@ impl RemoteEditor {
     pub(crate) fn save_conflict_as(&mut self, cx: &mut Context<Self>) {
         let Some(channel) = self.channel.clone() else {
             self.disconnected = true;
-            self.status = "连接已经断开，不能另存为".to_owned();
+            self.status = crate::i18n::t(StatusMsg::DisconnectedNoSaveAs).to_owned();
             cx.notify();
             return;
         };
@@ -1142,7 +1449,7 @@ impl RemoteEditor {
         let bytes = contract::encode(&text, &self.format);
         let original = self.path.clone();
         let sender = self.sender.clone();
-        self.status = "正在另存为…".to_owned();
+        self.status = crate::i18n::t(StatusMsg::SavingAs).to_owned();
         match runtime() {
             Ok(runtime) => {
                 runtime.spawn(async move {
@@ -1159,7 +1466,9 @@ impl RemoteEditor {
                     let _ = sender.send(event);
                 });
             }
-            Err(err) => self.status = format!("另存为失败：{err}"),
+            Err(err) => {
+                self.status = format!("{}{err}", crate::i18n::t(StatusMsg::SaveAsFailedPrefix))
+            }
         }
         cx.notify();
     }
@@ -1173,15 +1482,17 @@ impl RemoteEditor {
         }
         if self.phase != Phase::Ready {
             self.status = match self.phase {
-                Phase::Connecting | Phase::Loading => "文件还在读取，稍后再另存为".to_owned(),
-                _ => "文件没有读取成功，不能另存为".to_owned(),
+                Phase::Connecting | Phase::Loading => {
+                    crate::i18n::t(StatusMsg::ReadingWaitSaveAs).to_owned()
+                }
+                _ => crate::i18n::t(StatusMsg::ReadFailedNoSaveAs).to_owned(),
             };
             cx.notify();
             return;
         }
         let Some(channel) = self.channel.clone() else {
             self.disconnected = true;
-            self.status = "连接已经断开，不能另存为".to_owned();
+            self.status = crate::i18n::t(StatusMsg::DisconnectedNoSaveAs).to_owned();
             cx.notify();
             return;
         };
@@ -1198,15 +1509,22 @@ impl RemoteEditor {
         let bytes = contract::encode(&text, &self.format);
         if bytes.len() > MAX_BYTES {
             self.status = format!(
-                "内容太大（{} 字节，上限 {MAX_BYTES} 字节），拒绝另存为",
-                bytes.len()
+                "{}{}{}{}{}",
+                crate::i18n::t(StatusMsg::TooLargePrefix),
+                crate::i18n::count(bytes.len() as u64, " 字节", "byte", "bytes"),
+                crate::i18n::t(StatusMsg::TooLargeMid),
+                crate::i18n::count(MAX_BYTES as u64, " 字节", "byte", "bytes"),
+                crate::i18n::t(StatusMsg::TooLargeSaveAsSuffix)
             );
             cx.notify();
             return;
         }
 
         self.saving_as = true;
-        self.status = format!("正在另存为 {target}…");
+        self.status = format!(
+            "{}{target}…",
+            crate::i18n::t(StatusMsg::SavingAsTargetPrefix)
+        );
         let sender = self.sender.clone();
         match runtime() {
             Ok(runtime) => {
@@ -1217,7 +1535,7 @@ impl RemoteEditor {
             }
             Err(err) => {
                 self.saving_as = false;
-                self.status = format!("另存为失败：{err}");
+                self.status = format!("{}{err}", crate::i18n::t(StatusMsg::SaveAsFailedPrefix));
             }
         }
         cx.notify();
@@ -1314,7 +1632,7 @@ impl RemoteEditor {
             return;
         };
         self.spawn_export(notice.draft().clone());
-        self.status = "正在把草稿另存为本地文件…".to_owned();
+        self.status = crate::i18n::t(StatusMsg::DraftSavingLocal).to_owned();
         cx.notify();
     }
 
@@ -1324,7 +1642,7 @@ impl RemoteEditor {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(notice.draft().text.clone()));
-        self.status = "草稿内容已复制到剪贴板".to_owned();
+        self.status = crate::i18n::t(StatusMsg::DraftCopied).to_owned();
         cx.notify();
     }
 
@@ -1332,7 +1650,7 @@ impl RemoteEditor {
     pub(crate) fn dismiss_legacy_notice(&mut self, cx: &mut Context<Self>) {
         if matches!(self.draft, Some(DraftNotice::Legacy(_))) {
             self.draft = None;
-            self.status = "旧格式草稿已保留在草稿目录里，没有删除".to_owned();
+            self.status = crate::i18n::t(StatusMsg::OldDraftKept).to_owned();
             cx.notify();
         }
     }
@@ -1358,7 +1676,11 @@ impl RemoteEditor {
         self.draft_preserved = true;
         let label = draft_age_label(draft.saved_at_unix, now_unix());
         self.set_text(draft.text, window, cx);
-        self.status = format!("已恢复草稿（{label}），尚未保存");
+        self.status = format!(
+            "{}{label}{}",
+            crate::i18n::t(StatusMsg::DraftRestoredPrefix),
+            crate::i18n::t(StatusMsg::DraftRestoredSuffix)
+        );
         cx.notify();
     }
 
@@ -1376,7 +1698,7 @@ impl RemoteEditor {
         }
         self.drafts.send(DraftJob::Delete(self.draft_path.clone()));
         self.discarded_text = Some(self.editor.read(cx).value().to_string());
-        self.status = "草稿已丢弃".to_owned();
+        self.status = crate::i18n::t(StatusMsg::DraftDiscarded).to_owned();
         cx.notify();
     }
 
@@ -1445,7 +1767,7 @@ impl RemoteEditor {
         }
         self.autosave_draft(true, cx);
         self.close_prompt = true;
-        self.status = "有未保存的修改：已存为草稿，下次启动可以恢复".to_owned();
+        self.status = crate::i18n::t(StatusMsg::UnsavedKeptAsDraft).to_owned();
         cx.notify();
         false
     }
@@ -1761,10 +2083,15 @@ impl RemoteEditor {
                     );
                 });
                 self.goto_open = false;
-                self.status = format!("已跳到第 {} 行", line + 1);
+                self.status = format!(
+                    "{}{}{}",
+                    crate::i18n::t(StatusMsg::GotoLinePrefix),
+                    line + 1,
+                    crate::i18n::t(StatusMsg::GotoLineSuffix)
+                );
                 self.focus_editor(window, cx);
             }
-            None => self.status = "请输入行号（或 行:列）".to_owned(),
+            None => self.status = crate::i18n::t(StatusMsg::GotoInvalid).to_owned(),
         }
         cx.notify();
     }
@@ -1964,7 +2291,7 @@ pub fn open_remote_editor_window(
             source: ChannelSource::Ready(channel),
         };
         let view = cx.new(|cx| RemoteEditor::new(window, cx, spec, true));
-        window.set_window_title(&format!("编辑 {name}"));
+        window.set_window_title(&format!("{}{name}", crate::i18n::t(EditorMsg::TitlePrefix)));
         let close_view = view.clone();
         // 有未保存修改时这里返回 false，窗口里出现确认条；确认之后由编辑器发 `CloseNow`，下面关窗口。
         window.on_window_should_close(cx, move |_window, cx| {

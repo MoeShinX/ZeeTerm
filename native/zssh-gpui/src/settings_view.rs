@@ -676,7 +676,7 @@ fn skin_card(
                 .justify_between()
                 .typo(Role::Caption, tokens)
                 .text_color(tokens.text)
-                .child(skin.name)
+                .child(crate::app_theme::skin_name(skin))
                 .when(selected, |d| {
                     d.child(div().text_color(tokens.accent).child("\u{2713}"))
                 }),
@@ -705,7 +705,7 @@ fn terminal_theme_row(
         format!(
             "{}{}{}",
             t(SettingsViewMsg::FollowSkinNowPrefix),
-            current_skin.name,
+            crate::app_theme::skin_name(current_skin),
             t(SettingsViewMsg::CloseParen)
         ),
         following,
@@ -715,7 +715,7 @@ fn terminal_theme_row(
         choices.push(Choice::new(
             format!(
                 "{}{}{}{}",
-                skin.name,
+                crate::app_theme::skin_name(skin),
                 t(SettingsViewMsg::OpenParen),
                 mode_label(skin.dark),
                 t(SettingsViewMsg::CloseParen)
@@ -728,7 +728,7 @@ fn terminal_theme_row(
         format!(
             "{}{}{}",
             t(SettingsViewMsg::FollowSkinNowPrefix),
-            current_skin.name,
+            crate::app_theme::skin_name(current_skin),
             t(SettingsViewMsg::CloseParen)
         )
     } else {
@@ -737,7 +737,7 @@ fn terminal_theme_row(
             |skin| {
                 format!(
                     "{}{}{}{}",
-                    skin.name,
+                    crate::app_theme::skin_name(skin),
                     t(SettingsViewMsg::OpenParen),
                     mode_label(skin.dark),
                     t(SettingsViewMsg::CloseParen)

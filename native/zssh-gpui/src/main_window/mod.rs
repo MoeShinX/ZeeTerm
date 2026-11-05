@@ -209,6 +209,77 @@ pub enum CloseScope {
     All,
 }
 
+use crate::i18n::{Msg, t};
+
+/// 主窗口外壳自己的文案（搜索框占位、标签动作的提示、调试用的隐私检查说明）。
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // 有些键只在测试 / 调试构建里用到
+enum ShellMsg {
+    SearchHosts,
+    SearchVaultLong,
+    ManageSearch,
+    QuickTargetPlaceholder,
+    ConnSearch,
+    ProcSearch,
+    SerialDuplicateBlocked,
+    NothingToDuplicate,
+    BreakSent,
+    BreakNotConnected,
+    CopiedPrefix,
+    NoAddressToCopy,
+    NoHostRecord,
+    /// 隐私检查命中调用方给的禁用片段：本键 + 序号。
+    ForbiddenFragmentPrefix,
+    /// 隐私检查命中内置规则：本键 + 类别名。
+    BuiltinRulePrefix,
+}
+
+impl Msg for ShellMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::SearchHosts => "搜索主机",
+            Self::SearchVaultLong => "搜索主机名、地址、标签，回车连接",
+            Self::ManageSearch => "按名称、地址搜索",
+            Self::QuickTargetPlaceholder => "user@host 或 user@host:端口",
+            Self::ConnSearch => "按地址、端口、进程名搜索",
+            Self::ProcSearch => "按 PID、用户、命令搜索",
+            Self::SerialDuplicateBlocked => "串口同一时间只能开一个标签，不能复制",
+            Self::NothingToDuplicate => "这个标签还没连主机，没有可复制的",
+            Self::BreakSent => "已发送 Break",
+            Self::BreakNotConnected => "这个标签没有连着，不能发送 Break",
+            Self::CopiedPrefix => "已复制：",
+            Self::NoAddressToCopy => "这个标签没有可复制的地址",
+            Self::NoHostRecord => "这个标签没有对应的主机记录",
+            Self::ForbiddenFragmentPrefix => "禁用片段 #",
+            Self::BuiltinRulePrefix => "内置规则：",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::SearchHosts => "Search hosts",
+            Self::SearchVaultLong => "Search host name, address, or tag — press Enter to connect",
+            Self::ManageSearch => "Search by name or address",
+            Self::QuickTargetPlaceholder => "user@host or user@host:port",
+            Self::ConnSearch => "Search by address, port, or process name",
+            Self::ProcSearch => "Search by PID, user, or command",
+            Self::SerialDuplicateBlocked => {
+                "A serial port can only be open in one tab, so it cannot be duplicated"
+            }
+            Self::NothingToDuplicate => {
+                "This tab is not connected to a host yet, so there is nothing to duplicate"
+            }
+            Self::BreakSent => "Break sent",
+            Self::BreakNotConnected => "This tab is not connected, so Break cannot be sent",
+            Self::CopiedPrefix => "Copied: ",
+            Self::NoAddressToCopy => "This tab has no address to copy",
+            Self::NoHostRecord => "This tab has no matching host record",
+            Self::ForbiddenFragmentPrefix => "Forbidden fragment #",
+            Self::BuiltinRulePrefix => "Built-in rule: ",
+        }
+    }
+}
+
 pub struct MainWindow {
     pub(super) workspace: Entity<TerminalWorkspace>,
     /// SSH 提问（指纹确认、密码输入）的应用内对话框层（V2-U29）：盖在窗口最上面。
@@ -332,18 +403,20 @@ impl MainWindow {
         let workspace = cx.new(|cx| TerminalWorkspace::new(window, cx, "main".to_owned()));
         let ssh_prompt = cx.new(|cx| crate::ssh_prompt_ui::SshPromptLayer::new(window, cx, true));
         let layout: MainLayout = WindowState::load().layout;
-        let tree_query = cx.new(|cx| InputState::new(window, cx).placeholder("搜索主机"));
-        let vault_query = cx.new(|cx| InputState::new(window, cx).placeholder("搜索主机"));
-        let launcher_query = cx
-            .new(|cx| InputState::new(window, cx).placeholder("搜索主机名、地址、标签，回车连接"));
+        let tree_query =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t(ShellMsg::SearchHosts)));
+        let vault_query =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t(ShellMsg::SearchHosts)));
+        let launcher_query =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t(ShellMsg::SearchVaultLong)));
         let manage_search =
-            cx.new(|cx| InputState::new(window, cx).placeholder("按名称、地址搜索"));
-        let quick_target =
-            cx.new(|cx| InputState::new(window, cx).placeholder("user@host 或 user@host:端口"));
+            cx.new(|cx| InputState::new(window, cx).placeholder(t(ShellMsg::ManageSearch)));
+        let quick_target = cx
+            .new(|cx| InputState::new(window, cx).placeholder(t(ShellMsg::QuickTargetPlaceholder)));
         let conn_query =
-            cx.new(|cx| InputState::new(window, cx).placeholder("按地址、端口、进程名搜索"));
+            cx.new(|cx| InputState::new(window, cx).placeholder(t(ShellMsg::ConnSearch)));
         let proc_query =
-            cx.new(|cx| InputState::new(window, cx).placeholder("按 PID、用户、命令搜索"));
+            cx.new(|cx| InputState::new(window, cx).placeholder(t(ShellMsg::ProcSearch)));
         let saved_view = layout.view.as_deref().and_then(MainView::parse);
 
         let mut subs = Vec::new();
@@ -981,7 +1054,7 @@ impl MainWindow {
     ) {
         // 串口同一时间只能被一个标签打开：复制出来的标签只会报「被别的程序占用」。
         if self.tab_caps(index, cx).send_break {
-            self.notice("串口同一时间只能开一个标签，不能复制", window, cx);
+            self.notice(t(ShellMsg::SerialDuplicateBlocked), window, cx);
             return;
         }
         let done = self
@@ -990,7 +1063,7 @@ impl MainWindow {
         if done {
             self.show_view(MainView::Terminal, window, cx);
         } else {
-            self.notice("这个标签还没连主机，没有可复制的", window, cx);
+            self.notice(t(ShellMsg::NothingToDuplicate), window, cx);
         }
     }
 
@@ -1029,9 +1102,9 @@ impl MainWindow {
     ) {
         let sent = self.workspace.update(cx, |ws, _| ws.send_break_tab(index));
         if sent {
-            self.notice("已发送 Break", window, cx);
+            self.notice(t(ShellMsg::BreakSent), window, cx);
         } else {
-            self.notice("这个标签没有连着，不能发送 Break", window, cx);
+            self.notice(t(ShellMsg::BreakNotConnected), window, cx);
         }
     }
 
@@ -1043,9 +1116,9 @@ impl MainWindow {
         let sent = self.workspace.update(cx, |ws, _| ws.send_break_active());
         self.notice(
             if sent {
-                "已发送 Break"
+                t(ShellMsg::BreakSent)
             } else {
-                "这个标签没有连着，不能发送 Break"
+                t(ShellMsg::BreakNotConnected)
             },
             window,
             cx,
@@ -1071,9 +1144,13 @@ impl MainWindow {
         match address {
             Some(address) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(address.clone()));
-                self.notice(&format!("已复制：{address}"), window, cx);
+                self.notice(
+                    &format!("{}{address}", t(ShellMsg::CopiedPrefix)),
+                    window,
+                    cx,
+                );
             }
-            None => self.notice("这个标签没有可复制的地址", window, cx),
+            None => self.notice(t(ShellMsg::NoAddressToCopy), window, cx),
         }
     }
 
@@ -1086,7 +1163,7 @@ impl MainWindow {
     ) {
         match self.workspace.read(cx).tab_host_id(index) {
             Some(id) => self.copy_host_field(id, CopyField::Name, window, cx),
-            None => self.notice("这个标签没有对应的主机记录", window, cx),
+            None => self.notice(t(ShellMsg::NoHostRecord), window, cx),
         }
     }
 
@@ -1173,7 +1250,7 @@ impl MainWindow {
         };
         if let Some(text) = text {
             cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-            self.notice(&format!("已复制：{text}"), window, cx);
+            self.notice(&format!("{}{text}", t(ShellMsg::CopiedPrefix)), window, cx);
         }
     }
 
@@ -1615,12 +1692,12 @@ impl MainWindow {
                 .iter()
                 .any(|text| text.to_lowercase().contains(&needle.to_lowercase()))
             {
-                hits.push(format!("禁用片段 #{number}"));
+                hits.push(format!("{}{number}", t(ShellMsg::ForbiddenFragmentPrefix)));
             }
         }
         for text in &texts {
             for category in privacy::builtin_hits(text) {
-                let hit = format!("内置规则：{category}");
+                let hit = format!("{}{category}", t(ShellMsg::BuiltinRulePrefix));
                 if !hits.contains(&hit) {
                     hits.push(hit);
                 }

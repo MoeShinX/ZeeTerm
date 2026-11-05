@@ -55,7 +55,31 @@ pub fn snapshot() -> Vec<i64> {
 
 /// 主机行上的标记文字；没有 AI 在用时返回 `None`。
 pub fn activity_label(active: bool) -> Option<&'static str> {
-    if active { Some("AI 使用中") } else { None }
+    if active {
+        Some(crate::i18n::t(ActivityMsg::AiInUse))
+    } else {
+        None
+    }
+}
+
+/// 主机会话在用的标记。
+#[derive(Clone, Copy, Debug)]
+enum ActivityMsg {
+    AiInUse,
+}
+
+impl crate::i18n::Msg for ActivityMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::AiInUse => "AI 使用中",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::AiInUse => "AI in use",
+        }
+    }
 }
 
 /// AI 改了哪台主机的长期记忆（0.2.14 的 `host-memory-changed` 事件）：主机详情里开着的记忆框要刷新。

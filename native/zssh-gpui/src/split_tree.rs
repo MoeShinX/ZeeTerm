@@ -413,21 +413,23 @@ pub fn check_tiling(layout: &Layout, width: f32, height: f32) -> Result<(), Stri
         .chain(layout.dividers.iter().map(|divider| divider.rect))
         .collect();
     if let Some(bad) = rects.iter().find(|rect| !inside(rect)) {
-        return Err(format!("有矩形超出区域：{bad:?}"));
+        return Err(format!("a rect lies outside the area: {bad:?}"));
     }
     for (i, a) in rects.iter().enumerate() {
         for b in &rects[i + 1..] {
             let overlap_w = (a.x + a.w).min(b.x + b.w) - a.x.max(b.x);
             let overlap_h = (a.y + a.h).min(b.y + b.h) - a.y.max(b.y);
             if overlap_w > eps && overlap_h > eps {
-                return Err(format!("矩形重叠：{a:?} 和 {b:?}"));
+                return Err(format!("rects overlap: {a:?} and {b:?}"));
             }
         }
     }
     let covered: f32 = rects.iter().map(|rect| rect.w * rect.h).sum();
     let total = width * height;
     if (covered - total).abs() > total * 1e-3 + 1.0 {
-        return Err(format!("没有铺满：矩形面积 {covered}，区域面积 {total}"));
+        return Err(format!(
+            "not fully covered: rect area {covered}, area size {total}"
+        ));
     }
     Ok(())
 }

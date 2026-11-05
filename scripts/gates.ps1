@@ -41,6 +41,16 @@ $steps = @(
 $total = [System.Diagnostics.Stopwatch]::StartNew()
 $failed = @()
 try {
+    # 界面文案覆盖：写死的中文只能在 allow 清单里的文件里（按文件 burn-down）。
+    Write-Host '==> i18n 覆盖检查: scripts/check-i18n.ps1'
+    $i18nWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $hostExe = if (Get-Command pwsh -ErrorAction SilentlyContinue) { 'pwsh' } else { 'powershell' }
+    & $hostExe -NoProfile -File (Join-Path $PSScriptRoot 'check-i18n.ps1')
+    $i18nCode = $LASTEXITCODE
+    $i18nWatch.Stop()
+    Write-Host ("[i18n 覆盖检查] 退出码 {0}  耗时 {1} 秒" -f $i18nCode, [int]$i18nWatch.Elapsed.TotalSeconds)
+    if ($i18nCode -ne 0) { $failed += 'i18n 覆盖检查' }
+
     foreach ($step in $steps) {
         Write-Host ("==> {0}: cargo {1}" -f $step.Name, ($step.Args -join ' '))
         $watch = [System.Diagnostics.Stopwatch]::StartNew()

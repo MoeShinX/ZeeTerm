@@ -76,8 +76,12 @@ impl Msg for LockMsg {
             Self::Verifying => "验证中…",
             Self::ForgotQuestion => "忘记密码？",
             Self::ForgotReset => "验证 Windows 账户并重置…",
-            Self::ForgotText => FORGOT_TEXT,
-            Self::ForgotTextInline => FORGOT_TEXT_INLINE,
+            Self::ForgotText => {
+                "锁屏密码只保存在这台电脑上，无法找回。可以退出 ZeeTerm（会断开所有会话），重新打开后在 设置 → 锁屏 里用 Windows 账户验证重置。"
+            }
+            Self::ForgotTextInline => {
+                "锁屏密码只保存在这台电脑上，无法找回。可以用 Windows Hello / PIN（没有就用 Windows 登录密码）验证你是这台电脑的用户，然后设一个新密码，会话不受影响。"
+            }
             Self::WaitPrefix => "输错次数过多，请 ",
             Self::WaitSuffix => " 秒后再试",
             Self::VerifyMessage => "验证你的身份，以重置 ZeeTerm 的锁屏密码",
@@ -122,13 +126,6 @@ impl Msg for LockMsg {
         }
     }
 }
-
-/// 忘记密码的说明（卡里指定的原话）。
-pub const FORGOT_TEXT: &str = "锁屏密码只保存在这台电脑上，无法找回。可以退出 ZeeTerm（会断开所有会话），重新打开后在 设置 → 锁屏 里用 Windows 账户验证重置。";
-
-/// 锁屏页自带“验证 Windows 账户并重置”入口时的说明（主窗口有；开了“启动时锁定”时重新打开还是锁屏页，
-/// 到不了设置，所以重置必须能直接在锁屏页上做）。
-pub const FORGOT_TEXT_INLINE: &str = "锁屏密码只保存在这台电脑上，无法找回。可以用 Windows Hello / PIN（没有就用 Windows 登录密码）验证你是这台电脑的用户，然后设一个新密码，会话不受影响。";
 
 /// 锁屏页上“忘记密码”里那个按钮的回调（由主窗口给，其他窗口没有）。
 pub type ForgotHook = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -845,10 +842,9 @@ pub fn cover_with<T: 'static>(
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        FORGOT_TEXT, FORGOT_TEXT_INLINE, Job, JobOutcome, StubVerifier, dev_reset_backoff,
-        dev_reset_reveal, is_locked, lock_epoch, record_attempt, remaining_wait,
-        reveal_mark_verified, reveal_needs_verification, run_job, set_locked, wait_text,
-        wrong_count,
+        Job, JobOutcome, LockMsg, StubVerifier, dev_reset_backoff, dev_reset_reveal, is_locked,
+        lock_epoch, record_attempt, remaining_wait, reveal_mark_verified,
+        reveal_needs_verification, run_job, set_locked, wait_text, wrong_count,
     };
     use std::time::{Duration, Instant};
     use zssh_core::app_lock::{
@@ -1353,10 +1349,10 @@ mod tests {
 
     #[test]
     fn the_inline_forgot_text_points_at_windows_verification_not_at_restarting() {
-        assert!(FORGOT_TEXT_INLINE.contains("Windows"));
-        assert!(FORGOT_TEXT_INLINE.contains("无法找回"));
+        assert!(crate::i18n::t(LockMsg::ForgotTextInline).contains("Windows"));
+        assert!(crate::i18n::t(LockMsg::ForgotTextInline).contains("无法找回"));
         assert!(
-            !FORGOT_TEXT_INLINE.contains("重新打开"),
+            !crate::i18n::t(LockMsg::ForgotTextInline).contains("重新打开"),
             "开了启动时锁定，重新打开仍是锁屏页，不能再让人去重启"
         );
     }
@@ -1370,7 +1366,7 @@ mod tests {
             "断开所有会话",
             "Windows 账户",
         ] {
-            assert!(FORGOT_TEXT.contains(part), "{part}");
+            assert!(crate::i18n::t(LockMsg::ForgotText).contains(part), "{part}");
         }
     }
 }

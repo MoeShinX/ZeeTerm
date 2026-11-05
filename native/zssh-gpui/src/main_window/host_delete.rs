@@ -15,6 +15,8 @@
 use zssh_core::model::{Host, Identity, IdentityKind};
 use zssh_core::store::Database;
 
+use crate::i18n::{Msg, count, t};
+
 /// 一条会被一起删除的密码。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Removable {
@@ -88,22 +90,110 @@ pub fn confirm_lines(plan: &DeletePlan) -> Vec<String> {
             .iter()
             .map(|item| format!("「{}」", item.name))
             .collect();
+        // 英文要分单复数；中文两句一样。
+        let (prefix, suffix) = if names.len() > 1 {
+            (
+                t(HostDeleteMsg::RemovedPasswordsPrefixMany),
+                t(HostDeleteMsg::RemovedPasswordsSuffixMany),
+            )
+        } else {
+            (
+                t(HostDeleteMsg::RemovedPasswordsPrefixOne),
+                t(HostDeleteMsg::RemovedPasswordsSuffixOne),
+            )
+        };
         lines.push(format!(
-            "它的密码{}没有别的主机在用，会一起删除。",
-            names.join("、")
+            "{prefix}{}{suffix}",
+            names.join(t(HostDeleteMsg::NameJoiner))
         ));
     }
     for kept in &plan.keep {
         lines.push(format!(
-            "密码「{}」仍被 {} 台别的主机使用，保留。",
-            kept.name, kept.other_hosts
+            "{}{}{}{}{}",
+            t(HostDeleteMsg::KeptPasswordPrefix),
+            kept.name,
+            t(HostDeleteMsg::KeptPasswordMid),
+            count(
+                u64::try_from(kept.other_hosts).unwrap_or(u64::MAX),
+                t(HostDeleteMsg::HostCountSuffix),
+                "other host",
+                "other hosts"
+            ),
+            t(HostDeleteMsg::KeptPasswordSuffix),
         ));
     }
     if !plan.keys.is_empty() {
         let names: Vec<String> = plan.keys.iter().map(|name| format!("「{name}」")).collect();
-        lines.push(format!("它用的密钥{}不会被删除。", names.join("、")));
+        lines.push(format!(
+            "{}{}{}",
+            t(HostDeleteMsg::KeysKeptPrefix),
+            names.join(t(HostDeleteMsg::NameJoiner)),
+            t(HostDeleteMsg::KeysKeptSuffix)
+        ));
     }
     lines
+}
+
+/// 删除主机时确认框里的凭据说明。
+#[derive(Clone, Copy, Debug)]
+enum HostDeleteMsg {
+    RemovedPasswordsPrefixOne,
+    RemovedPasswordsSuffixOne,
+    RemovedPasswordsPrefixMany,
+    RemovedPasswordsSuffixMany,
+    NameJoiner,
+    KeptPasswordPrefix,
+    KeptPasswordMid,
+    KeptPasswordSuffix,
+    KeysKeptPrefix,
+    KeysKeptSuffix,
+    DeleteFailedPrefix,
+    DeleteFailedMid,
+    /// `count()` 的中文量词后缀；英文界面下 `count()` 不用它，`en` 只是占位。
+    HostCountSuffix,
+}
+
+impl Msg for HostDeleteMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::RemovedPasswordsPrefixOne | Self::RemovedPasswordsPrefixMany => "它的密码",
+            Self::RemovedPasswordsSuffixOne | Self::RemovedPasswordsSuffixMany => {
+                "没有别的主机在用，会一起删除。"
+            }
+            Self::NameJoiner => "、",
+            Self::KeptPasswordPrefix => "密码「",
+            Self::KeptPasswordMid => "」仍被 ",
+            Self::KeptPasswordSuffix => "使用，保留。",
+            Self::KeysKeptPrefix => "它用的密钥",
+            Self::KeysKeptSuffix => "不会被删除。",
+            Self::DeleteFailedPrefix => "密码「",
+            Self::DeleteFailedMid => "」没删掉：",
+            Self::HostCountSuffix => " 台别的主机",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::RemovedPasswordsPrefixOne => "Its password ",
+            Self::RemovedPasswordsSuffixOne => {
+                " is not used by any other host and will be deleted too."
+            }
+            Self::RemovedPasswordsPrefixMany => "Its passwords ",
+            Self::RemovedPasswordsSuffixMany => {
+                " are not used by any other host and will be deleted too."
+            }
+            Self::NameJoiner => ", ",
+            Self::KeptPasswordPrefix => "Password “",
+            Self::KeptPasswordMid => "” is still used by ",
+            Self::KeptPasswordSuffix => "; keeping it.",
+            Self::KeysKeptPrefix => "Its key(s) in use are not deleted: ",
+            Self::KeysKeptSuffix => ".",
+            Self::DeleteFailedPrefix => "Could not delete password “",
+            Self::DeleteFailedMid => "”: ",
+            // 英文界面下 `count()` 用后面的 one/many 参数，这个后缀不会出现。
+            Self::HostCountSuffix => " other host(s)",
+        }
+    }
 }
 
 /// 实际删除的结果。
@@ -127,9 +217,12 @@ pub fn delete_host_with_passwords(db: &Database, host_id: i64) -> Result<Deleted
             Ok(()) => deleted.passwords.push(item.name),
             // 两步之间被别处引用了：保留，不算错误。
             Err(zssh_core::error::ZsshError::IdentityInUse { .. }) => {}
-            Err(err) => deleted
-                .problems
-                .push(format!("密码「{}」没删掉：{err}", item.name)),
+            Err(err) => deleted.problems.push(format!(
+                "{}{}{}{err}",
+                t(HostDeleteMsg::DeleteFailedPrefix),
+                item.name,
+                t(HostDeleteMsg::DeleteFailedMid)
+            )),
         }
     }
     Ok(deleted)

@@ -51,9 +51,9 @@ pub(super) fn plan_mode_switch(current: ExecMode, target: ExecMode) -> ModeSwitc
 ///
 /// 对话窗口自己用 [`ChatMsg::AllowAllTitle`] / [`ChatMsg::AllowAllMessage`]；这两个中文常量
 /// 留给还没走 `i18n` 的调用方（`main_window::docks` 的确认框），两种语言都从这里的中文原文取词。
-pub(crate) const ALLOW_ALL_TITLE: &str = "切换到「全部放行」";
-pub(crate) const ALLOW_ALL_MESSAGE: &str =
-    "全部放行后，AI 在服务器上执行任何命令都不再问你。确定吗？";
+pub(crate) const ALLOW_ALL_TITLE: &str = "切换到「全部放行」"; // i18n-allow: 供未走 i18n 的调用方，界面走 ChatMsg
+pub(crate) const ALLOW_ALL_MESSAGE: &str = // i18n-allow: 供未走 i18n 的调用方，界面走 ChatMsg
+    "全部放行后，AI 在服务器上执行任何命令都不再问你。确定吗？"; // i18n-allow: 供未走 i18n 的调用方
 
 /// 独立窗口里的确认状态：问了还没答。答「取消」什么都不改，答「确定」才返回要写的模式。
 #[derive(Debug, Default)]

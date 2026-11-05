@@ -159,33 +159,40 @@ impl PartialEq<&str> for FieldError {
 
 /// 核心库保存时报的错（`ZsshError::InvalidInput` 的中文原因）该显示在哪个字段旁。
 /// 按关键词找：先找更具体的（自动登录的提示规则里也有"用户名"三个字）。
+///
+/// 注意：这里匹配的是 **core 侧的中文错误原文**——core 还没把校验错误改成「错误码 + 参数」，
+/// 所以关键词只能是中文，不能挪进 `Msg` 表。等 core 改了错误码，这些关键词连同每行行尾的
+/// `i18n-allow` 一起删掉，改成按错误码/字段码定位。
+// `#[rustfmt::skip]`：行尾的 `i18n-allow` 必须和关键词在同一行（检查脚本按行匹配），
+// rustfmt 会把行尾注释挪到下一行，所以这个函数不参与自动排版。
+#[rustfmt::skip]
 pub fn locate_error(message: &str) -> FormField {
     let has = |words: &[&str]| words.iter().any(|word| message.contains(word));
-    if has(&["自动登录", "用户名提示", "密码提示"]) {
+    if has(&["自动登录", "用户名提示", "密码提示"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
         FormField::AutoLogin
     } else if has(&["X11"]) {
         FormField::X11
-    } else if has(&["串口设备", "设备名"]) {
+    } else if has(&["串口设备", "设备名"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
         FormField::Device
-    } else if has(&["波特率"]) {
+    } else if has(&["波特率"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
         FormField::Baud
-    } else if has(&["数据位", "停止位"]) {
+    } else if has(&["数据位", "停止位"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
         FormField::Framing
-    } else if has(&["终端类型"]) {
+    } else if has(&["终端类型"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
         FormField::TerminalType
-    } else if has(&["跳板机"]) {
+    } else if has(&["跳板机"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
         FormField::Jump
-    } else if has(&["代理"]) {
+    } else if has(&["代理"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
         FormField::Proxy
-    } else if has(&["凭据", "密码认证", "密码凭据"]) {
+    } else if has(&["凭据", "密码认证", "密码凭据"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
         FormField::Identity
-    } else if has(&["主机名不能为空"]) {
+    } else if has(&["主机名不能为空"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
         FormField::Name
-    } else if has(&["用户名"]) {
+    } else if has(&["用户名"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
         FormField::Username
-    } else if has(&["端口"]) {
+    } else if has(&["端口"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
         FormField::Port
-    } else if has(&["地址"]) {
+    } else if has(&["地址"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
         FormField::Address
     } else {
         FormField::General
@@ -540,9 +547,9 @@ pub(crate) fn ssh_only_hint() -> &'static str {
     t(ProtocolMsg::SshOnlyHint)
 }
 
-/// 「仅 SSH 主机可用」的中文原文。`tab_menu` 的 `Msg::zh` 要一个编译期常量（那个文件不在本次
-/// 改动范围），它的英文由自己的 `Msg::en` 给；界面上的提示一律走 [`ssh_only_hint`]。
-pub const SSH_ONLY_HINT: &str = "仅 SSH 主机可用";
+/// 「仅 SSH 主机可用」的中文原文。`Msg::zh` 要的是编译期常量，`tab_menu` 和本文件的 zh 表共用
+/// 这一句（英文各自在自己的 `Msg::en` 里给）；界面上的提示一律走 [`ssh_only_hint`]。
+pub const SSH_ONLY_HINT: &str = "仅 SSH 主机可用"; // i18n-allow: 两张 zh 表共用的编译期常量，英文在各自的 en 表
 
 /// 一台主机上的各项功能是否可用（`None` = 主机不存在，按可用处理，由各入口自己报"找不到"）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

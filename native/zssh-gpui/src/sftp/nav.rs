@@ -41,9 +41,10 @@ impl SftpDemo {
         if !same {
             self.remote.scroll_to(0);
         }
+        let items = crate::i18n::count(count as u64, t(SftpMsg::ItemCountSuffix), "item", "items");
         let text = match notice {
-            Some(notice) => format!("{notice} · {count}{}", t(SftpMsg::ItemCountSuffix)),
-            None => format!("{count}{}", t(SftpMsg::ItemCountSuffix)),
+            Some(notice) => format!("{notice} · {items}"),
+            None => items,
         };
         self.say(text);
     }

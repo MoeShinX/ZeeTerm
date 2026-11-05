@@ -22,6 +22,8 @@ use gpui_kit::component::*;
 use gpui_kit::*;
 use zssh_core::app_lock::REVEAL_WINDOW;
 
+use crate::i18n::{Msg, count, t};
+
 use super::MainWindow;
 use super::modal::{ModalKey, modal_key};
 use super::widgets::{ButtonLook, error_note, field, modal_card, modal_scrim, note, text_button};
@@ -48,21 +50,28 @@ impl RevealAction {
     /// 对话框里写“要做什么”：查看，还是复制。
     pub fn purpose(self) -> &'static str {
         match self {
-            Self::HostDialogEye | Self::InfoEye(_) => "查看已保存的密码",
-            Self::InfoCopyPassword(_) | Self::CopyHostPassword(_) => "复制已保存的密码",
-            Self::CopyHostInfo(_) => "复制连接信息（含已保存的密码）",
+            Self::HostDialogEye | Self::InfoEye(_) => t(RevealMsg::ViewSavedPassword),
+            Self::InfoCopyPassword(_) | Self::CopyHostPassword(_) => {
+                t(RevealMsg::CopySavedPassword)
+            }
+            Self::CopyHostInfo(_) => t(RevealMsg::CopyConnectionInfo),
         }
     }
 }
 
-pub const ASK_TITLE: &str = "验证锁屏密码";
-
 /// 对话框的说明：要做什么、以及验证一次管多久。
 pub fn ask_description(action: RevealAction) -> String {
     format!(
-        "{}之前，先输入锁屏密码。验证通过后 {} 分钟内不再询问。",
+        "{}{}{}{}",
         action.purpose(),
-        REVEAL_WINDOW.as_secs() / 60
+        t(RevealMsg::DescriptionMid),
+        count(
+            REVEAL_WINDOW.as_secs() / 60,
+            t(RevealMsg::MinutesSuffix),
+            "minute",
+            "minutes"
+        ),
+        t(RevealMsg::DescriptionTail)
     )
 }
 
@@ -73,7 +82,7 @@ pub fn submit_precheck(waiting: Option<Duration>, password_is_empty: bool) -> Re
         return Err(lock_ui::wait_text(left));
     }
     if password_is_empty {
-        return Err("请输入锁屏密码".to_owned());
+        return Err(t(RevealMsg::EnterPassword).to_owned());
     }
     Ok(())
 }
@@ -81,9 +90,13 @@ pub fn submit_precheck(waiting: Option<Duration>, password_is_empty: bool) -> Re
 /// 密码错时对话框里的提示（后面接上退避的等待文字）。
 pub fn wrong_message(wait: Duration) -> String {
     if wait.is_zero() {
-        "密码错误".to_owned()
+        t(RevealMsg::WrongPassword).to_owned()
     } else {
-        format!("密码错误。{}", lock_ui::wait_text(wait))
+        format!(
+            "{}{}",
+            t(RevealMsg::WrongPasswordPrefix),
+            lock_ui::wait_text(wait)
+        )
     }
 }
 
@@ -283,10 +296,19 @@ impl MainWindow {
             .child(
                 v_flex()
                     .gap_1p5()
-                    .child(div().typo(Role::GroupTitle, tokens).child(ASK_TITLE))
+                    .child(
+                        div()
+                            .typo(Role::GroupTitle, tokens)
+                            .child(t(RevealMsg::AskTitle)),
+                    )
                     .child(note(ask_description(ask.action), tokens)),
             )
-            .child(field("锁屏密码", None, Input::new(&ask.input), tokens))
+            .child(field(
+                t(RevealMsg::PasswordLabel),
+                None,
+                Input::new(&ask.input),
+                tokens,
+            ))
             .children(
                 ask.error
                     .clone()
@@ -298,7 +320,7 @@ impl MainWindow {
                     .justify_end()
                     .child(text_button(
                         "reveal-cancel",
-                        "取消",
+                        t(RevealMsg::Cancel),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             cancel.update(cx, |this, cx| this.reveal_ask_cancel(window, cx));
@@ -306,7 +328,11 @@ impl MainWindow {
                     ))
                     .child(text_button(
                         "reveal-ok",
-                        if ask.busy { "验证中…" } else { "验证" },
+                        if ask.busy {
+                            t(RevealMsg::Verifying)
+                        } else {
+                            t(RevealMsg::Verify)
+                        },
                         ButtonLook::Primary,
                         move |_, window, cx| {
                             ok.update(cx, |this, cx| this.reveal_ask_submit(window, cx));
@@ -321,9 +347,69 @@ impl MainWindow {
     }
 }
 
+/// 查看 / 复制已保存密码前的验证框文案。
+#[derive(Clone, Copy, Debug)]
+enum RevealMsg {
+    ViewSavedPassword,
+    CopySavedPassword,
+    CopyConnectionInfo,
+    AskTitle,
+    DescriptionMid,
+    DescriptionTail,
+    MinutesSuffix,
+    EnterPassword,
+    WrongPassword,
+    WrongPasswordPrefix,
+    PasswordLabel,
+    Cancel,
+    Verify,
+    Verifying,
+}
+
+impl Msg for RevealMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::ViewSavedPassword => "查看已保存的密码",
+            Self::CopySavedPassword => "复制已保存的密码",
+            Self::CopyConnectionInfo => "复制连接信息（含已保存的密码）",
+            Self::AskTitle => "验证锁屏密码",
+            Self::DescriptionMid => "之前，先输入锁屏密码。验证通过后 ",
+            Self::DescriptionTail => "内不再询问。",
+            Self::MinutesSuffix => " 分钟",
+            Self::EnterPassword => "请输入锁屏密码",
+            Self::WrongPassword => "密码错误",
+            Self::WrongPasswordPrefix => "密码错误。",
+            Self::PasswordLabel => "锁屏密码",
+            Self::Cancel => "取消",
+            Self::Verify => "验证",
+            Self::Verifying => "验证中…",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::ViewSavedPassword => "view the saved password",
+            Self::CopySavedPassword => "copy the saved password",
+            Self::CopyConnectionInfo => "copy the connection info (including the saved password)",
+            Self::AskTitle => "Verify Lock-Screen Password",
+            Self::DescriptionMid => {
+                " requires your lock-screen password first. After that you will not be asked again for "
+            }
+            Self::DescriptionTail => ".",
+            Self::MinutesSuffix => " minutes",
+            Self::EnterPassword => "Enter your lock-screen password",
+            Self::WrongPassword => "Incorrect password",
+            Self::WrongPasswordPrefix => "Incorrect password. ",
+            Self::PasswordLabel => "Lock-screen password",
+            Self::Cancel => "Cancel",
+            Self::Verify => "Verify",
+            Self::Verifying => "Verifying…",
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
-    use super::{ASK_TITLE, RevealAction, ask_description, submit_precheck, wrong_message};
+    use super::{RevealAction, RevealMsg, ask_description, submit_precheck, wrong_message};
     use std::time::Duration;
 
     #[test]
@@ -335,7 +421,7 @@ mod tests {
         assert!(copy.contains("复制已保存的密码"), "{copy}");
         let info = ask_description(RevealAction::CopyHostInfo(3));
         assert!(info.contains("复制连接信息"), "{info}");
-        assert!(!ASK_TITLE.is_empty());
+        assert!(!crate::i18n::t(RevealMsg::AskTitle).is_empty());
     }
 
     #[test]

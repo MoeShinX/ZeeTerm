@@ -25,6 +25,82 @@ use super::RemoteEditEvent;
 use super::contract::{MAX_BYTES, Opened, RemoteVersion, open_bytes, too_large, version_of};
 use crate::ssh_backend::{factory_for_host, runtime};
 
+/// 远端编辑的错误文案。
+#[derive(Clone, Copy, Debug)]
+enum RemoteMsg {
+    OpenFailedPrefix,
+    OpenFailedMid,
+    OpenFailedClose,
+    NotRegular,
+    ReadFailedPrefix,
+    ChannelFailedPrefix,
+    Disconnected1,
+    Disconnected2,
+    TooLargePrefix,
+    TooLargeMid,
+    TooLargeSuffix,
+    SaveFailedPrefix,
+    ReadRemoteFailedPrefix,
+    ExistsSuffix,
+    CheckFailedPrefix,
+    SaveAsFailedPrefix,
+    SaveAsExists,
+    SaveAsEmpty,
+    ByteSuffix,
+}
+
+impl crate::i18n::Msg for RemoteMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::OpenFailedPrefix => "打开失败：",
+            Self::OpenFailedMid => "（",
+            Self::OpenFailedClose => "）",
+            Self::NotRegular => "这不是普通文件，不能编辑",
+            Self::ReadFailedPrefix => "读取失败：",
+            Self::ChannelFailedPrefix => "开 SFTP 通道失败：",
+            Self::Disconnected1 => "连接断了",
+            Self::Disconnected2 => "断开",
+            Self::TooLargePrefix => "内容太大（",
+            Self::TooLargeMid => "，上限 ",
+            Self::TooLargeSuffix => "），拒绝保存",
+            Self::SaveFailedPrefix => "保存失败：",
+            Self::ReadRemoteFailedPrefix => "保存失败：读取远端当前内容失败：",
+            Self::ExistsSuffix => " 已经存在，换个名字",
+            Self::CheckFailedPrefix => "检查目标失败：",
+            Self::SaveAsFailedPrefix => "另存为失败：",
+            Self::SaveAsExists => "目标已存在，另存为不会覆盖",
+            Self::SaveAsEmpty => "另存为路径不能为空",
+            Self::ByteSuffix => " 字节",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::OpenFailedPrefix => "Could not open: ",
+            Self::OpenFailedMid => " (",
+            Self::OpenFailedClose => ")",
+            Self::NotRegular => "This is not a regular file and cannot be edited",
+            Self::ReadFailedPrefix => "Read failed: ",
+            Self::ChannelFailedPrefix => "Could not open the SFTP channel: ",
+            Self::Disconnected1 => "Connection lost",
+            Self::Disconnected2 => "Disconnected",
+            Self::TooLargePrefix => "The content is too large (",
+            Self::TooLargeMid => ", limit ",
+            Self::TooLargeSuffix => "); saving refused",
+            Self::SaveFailedPrefix => "Save failed: ",
+            Self::ReadRemoteFailedPrefix => {
+                "Save failed: could not read the current remote content: "
+            }
+            Self::ExistsSuffix => " already exists — choose another name",
+            Self::CheckFailedPrefix => "Could not check the target: ",
+            Self::SaveAsFailedPrefix => "Save as failed: ",
+            Self::SaveAsExists => "The target already exists; Save as does not overwrite",
+            Self::SaveAsEmpty => "The save-as path cannot be empty",
+            Self::ByteSuffix => "bytes",
+        }
+    }
+}
+
 /// 外部修改轮询间隔：只发一次 `stat`，不读内容；2 秒一次够用，也不会压服务器。
 pub(super) const WATCH_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -106,12 +182,16 @@ pub(super) async fn fetch_bytes<B: EditBackend + ?Sized>(
     backend: &B,
     path: &str,
 ) -> Result<Vec<u8>, String> {
-    let (snapshot, is_dir) = backend
-        .stat(path)
-        .await
-        .map_err(|err| format!("打开失败：{path}（{err}）"))?;
+    let (snapshot, is_dir) = backend.stat(path).await.map_err(|err| {
+        format!(
+            "{}{path}{}{err}{}",
+            crate::i18n::t(RemoteMsg::OpenFailedPrefix),
+            crate::i18n::t(RemoteMsg::OpenFailedMid),
+            crate::i18n::t(RemoteMsg::OpenFailedClose)
+        )
+    })?;
     if is_dir {
-        return Err("这不是普通文件，不能编辑".to_owned());
+        return Err(crate::i18n::t(RemoteMsg::NotRegular).to_owned());
     }
     if snapshot.size > MAX_BYTES as u64 {
         return Err(too_large(snapshot.size as usize));
@@ -121,7 +201,7 @@ pub(super) async fn fetch_bytes<B: EditBackend + ?Sized>(
         .await
         .map_err(|err| match err {
             SftpError::TooLarge { size, .. } => too_large(size as usize),
-            other => format!("读取失败：{other}"),
+            other => format!("{}{other}", crate::i18n::t(RemoteMsg::ReadFailedPrefix)),
         })
 }
 
@@ -158,15 +238,22 @@ pub(crate) async fn dial_channel(host_id: i64) -> Result<Arc<SftpChannel>, Strin
     let factory = factory_for_host(host_id).await?;
     let channel = SftpChannel::open(&factory.connection())
         .await
-        .map_err(|err| format!("开 SFTP 通道失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", crate::i18n::t(RemoteMsg::ChannelFailedPrefix)))?;
     Ok(Arc::new(channel))
 }
 
 /// 这个错误是不是「连接没了」一类（重试要先重连）。
 pub(super) fn is_disconnect(message: &str) -> bool {
-    ["连接断了", "断开", "Disconnected"]
-        .iter()
-        .any(|needle| message.contains(needle))
+    [
+        crate::i18n::t(RemoteMsg::Disconnected1),
+        crate::i18n::t(RemoteMsg::Disconnected2),
+        "Disconnected",
+        "disconnected",
+        "Connection lost",
+        "connection lost",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
 }
 
 // ---------------------------------------------------------------------------
@@ -249,8 +336,22 @@ pub(super) async fn save_remote<B: EditBackend + ?Sized>(
 ) -> SaveOutcome {
     if bytes.len() > MAX_BYTES {
         return SaveOutcome::Failed(format!(
-            "内容太大（{} 字节，上限 {MAX_BYTES} 字节），拒绝保存",
-            bytes.len()
+            "{}{}{}{}{}",
+            crate::i18n::t(RemoteMsg::TooLargePrefix),
+            crate::i18n::count(
+                bytes.len() as u64,
+                crate::i18n::t(RemoteMsg::ByteSuffix),
+                "byte",
+                "bytes"
+            ),
+            crate::i18n::t(RemoteMsg::TooLargeMid),
+            crate::i18n::count(
+                MAX_BYTES as u64,
+                crate::i18n::t(RemoteMsg::ByteSuffix),
+                "byte",
+                "bytes"
+            ),
+            crate::i18n::t(RemoteMsg::TooLargeSuffix)
         ));
     }
     let _gate = write_gate(backend, path).await;
@@ -278,7 +379,10 @@ pub(super) async fn save_remote<B: EditBackend + ?Sized>(
                 });
             }
             Err(err) => {
-                return SaveOutcome::Failed(format!("保存失败：读取远端当前内容失败：{err}"));
+                return SaveOutcome::Failed(format!(
+                    "{}{err}",
+                    crate::i18n::t(RemoteMsg::ReadRemoteFailedPrefix)
+                ));
             }
         }
     }
@@ -293,7 +397,7 @@ pub(super) async fn save_remote<B: EditBackend + ?Sized>(
             to: change.to,
         },
         Err(OverwriteError::Failed(err)) => {
-            let message = format!("保存失败：{err}");
+            let message = format!("{}{err}", crate::i18n::t(RemoteMsg::SaveFailedPrefix));
             if matches!(err, SftpError::Disconnected(_)) {
                 SaveOutcome::Disconnected(message)
             } else {
@@ -358,14 +462,24 @@ pub(super) async fn save_beside<B: EditBackend + ?Sized>(
     let target = sibling_remote_path(original, name.trim());
     let _gate = write_gate(backend, &target).await;
     match backend.stat(&target).await {
-        Ok(_) => return Err(format!("{target} 已经存在，换个名字")),
+        Ok(_) => {
+            return Err(format!(
+                "{target}{}",
+                crate::i18n::t(RemoteMsg::ExistsSuffix)
+            ));
+        }
         Err(SftpError::NotFound { .. }) => {}
-        Err(err) => return Err(format!("检查目标失败：{err}")),
+        Err(err) => {
+            return Err(format!(
+                "{}{err}",
+                crate::i18n::t(RemoteMsg::CheckFailedPrefix)
+            ));
+        }
     }
     backend
         .write_all(&target, bytes)
         .await
-        .map_err(|err| format!("另存为失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", crate::i18n::t(RemoteMsg::SaveAsFailedPrefix)))?;
     Ok(target)
 }
 
@@ -376,16 +490,28 @@ pub(super) async fn save_as_remote(
     bytes: &[u8],
 ) -> RemoteEditEvent {
     match target_exists(channel, path).await {
-        Ok(true) => return RemoteEditEvent::SaveAsFailed("目标已存在，另存为不会覆盖".to_owned()),
+        Ok(true) => {
+            return RemoteEditEvent::SaveAsFailed(
+                crate::i18n::t(RemoteMsg::SaveAsExists).to_owned(),
+            );
+        }
         Ok(false) => {}
-        Err(message) => return RemoteEditEvent::SaveAsFailed(format!("另存为失败：{message}")),
+        Err(message) => {
+            return RemoteEditEvent::SaveAsFailed(format!(
+                "{}{message}",
+                crate::i18n::t(RemoteMsg::SaveAsFailedPrefix)
+            ));
+        }
     }
     // 目标原来不存在：核心在改名前会再确认一次它没有被别人刚刚建出来，建出来了就放弃。
     match channel.write_all(path, bytes).await {
         Ok(()) => RemoteEditEvent::SavedAs {
             path: path.to_owned(),
         },
-        Err(err) => RemoteEditEvent::SaveAsFailed(format!("另存为失败：{err}")),
+        Err(err) => RemoteEditEvent::SaveAsFailed(format!(
+            "{}{err}",
+            crate::i18n::t(RemoteMsg::SaveAsFailedPrefix)
+        )),
     }
 }
 
@@ -397,9 +523,15 @@ async fn target_exists(channel: &SftpChannel, path: &str) -> Result<bool, String
         Err(SftpError::NotFound { .. }) => match channel.lstat(path).await {
             Ok(_) => Ok(true),
             Err(SftpError::NotFound { .. }) => Ok(false),
-            Err(err) => Err(format!("检查目标失败：{err}")),
+            Err(err) => Err(format!(
+                "{}{err}",
+                crate::i18n::t(RemoteMsg::CheckFailedPrefix)
+            )),
         },
-        Err(err) => Err(format!("检查目标失败：{err}")),
+        Err(err) => Err(format!(
+            "{}{err}",
+            crate::i18n::t(RemoteMsg::CheckFailedPrefix)
+        )),
     }
 }
 
@@ -409,7 +541,7 @@ async fn target_exists(channel: &SftpChannel, path: &str) -> Result<bool, String
 pub(super) fn resolve_save_as(original: &str, typed: &str) -> Result<String, String> {
     let typed = typed.trim();
     if typed.is_empty() {
-        return Err("另存为路径不能为空".to_owned());
+        return Err(crate::i18n::t(RemoteMsg::SaveAsEmpty).to_owned());
     }
     if is_absolute(typed) {
         return Ok(normalize(typed));

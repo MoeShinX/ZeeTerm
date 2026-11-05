@@ -129,7 +129,12 @@ impl SftpDemo {
         let entries = self.drag_entries(side, anchor);
         match entries.as_slice() {
             [one] => one.name.clone(),
-            many => format!("{}{}", many.len(), t(super::SftpMsg::ItemCountSuffix)),
+            many => crate::i18n::count(
+                many.len() as u64,
+                t(super::SftpMsg::ItemCountSuffix),
+                "item",
+                "items",
+            ),
         }
     }
 

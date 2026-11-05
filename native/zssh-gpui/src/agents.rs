@@ -941,8 +941,12 @@ impl AgentsDemo {
     pub fn dev_text(&self, kind: AgentKind) -> String {
         let status = self.status.get(kind);
         let mut out = match &status.install {
-            InstallState::Checking => "检测中…".to_owned(),
-            InstallState::Missing | InstallState::Invalid(_) => "未找到或手动路径不可用".to_owned(),
+            InstallState::Checking => t(AgentsMsg::Checking).to_owned(),
+            InstallState::Missing | InstallState::Invalid(_) => format!(
+                "{} / {}",
+                t(AgentsMsg::NotFound),
+                t(AgentsMsg::ManualPathUnavailable)
+            ),
             InstallState::Found(install) => format!(
                 "{}（{}）",
                 install.version.trim(),
@@ -1078,7 +1082,7 @@ impl AgentsDemo {
             out.push_str(note);
         }
         if let Some(err) = &self.download_error {
-            out.push_str(&format!("下载失败：{err}"));
+            out.push_str(&format!("{}{err}", t(AgentsMsg::DownloadFailedPrefix)));
         }
         out
     }
@@ -1089,7 +1093,7 @@ impl AgentsDemo {
             "start" => self.start_download(cx),
             "confirm" => self.confirm_download(cx),
             "cancel" => self.cancel_download_confirm(cx),
-            _ => return Err("下载步骤只能是 start / confirm / cancel".to_owned()),
+            _ => return Err("download step must be start / confirm / cancel".to_owned()),
         }
         Ok(())
     }

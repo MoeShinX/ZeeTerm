@@ -656,15 +656,15 @@ impl Column {
         }
     }
 
-    /// 界面元素 id 用的稳定名字：不随语言变（id 是自动化脚本和样式认的坐标）。
+    /// 界面元素 id 用的稳定名字：不随语言变（id 是自动化脚本和样式认的坐标），所以固定用英文。
     pub(super) fn stable_id(self) -> &'static str {
         match self {
-            Self::Name => "名称",
-            Self::Size => "大小",
-            Self::Mtime => "修改时间",
-            Self::Kind => "类型",
-            Self::Perms => "权限",
-            Self::Owner => "所有者",
+            Self::Name => "name",
+            Self::Size => "size",
+            Self::Mtime => "mtime",
+            Self::Kind => "kind",
+            Self::Perms => "perms",
+            Self::Owner => "owner",
         }
     }
 

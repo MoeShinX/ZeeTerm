@@ -116,6 +116,44 @@ pub fn open_link(
     opener(url.as_str())
 }
 
+/// 终端右键菜单的文案。
+#[derive(Clone, Copy, Debug)]
+enum TerminalMenuMsg {
+    OpenLink,
+    CopyLink,
+    Copy,
+    Paste,
+    SelectAll,
+    SplitRight,
+    SplitDown,
+}
+
+impl crate::i18n::Msg for TerminalMenuMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::OpenLink => "打开链接",
+            Self::CopyLink => "复制链接",
+            Self::Copy => "复制",
+            Self::Paste => "粘贴",
+            Self::SelectAll => "全选",
+            Self::SplitRight => "左右分屏",
+            Self::SplitDown => "上下分屏",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::OpenLink => "Open Link",
+            Self::CopyLink => "Copy Link",
+            Self::Copy => "Copy",
+            Self::Paste => "Paste",
+            Self::SelectAll => "Select All",
+            Self::SplitRight => "Split Right",
+            Self::SplitDown => "Split Down",
+        }
+    }
+}
+
 /// 菜单从上到下的内容：
 /// （在链接上：打开链接、复制链接、分隔线）复制、粘贴、全选 | 左右分屏、上下分屏。
 ///
@@ -125,30 +163,50 @@ pub fn menu_entries(state: &MenuState) -> Vec<Entry> {
     if let Some(link) = &state.link {
         entries.push(Entry::new(
             MenuItem::OpenLink,
-            "打开链接",
+            crate::i18n::t(TerminalMenuMsg::OpenLink),
             link_is_openable(link),
             None,
         ));
-        entries.push(Entry::new(MenuItem::CopyLink, "复制链接", true, None));
+        entries.push(Entry::new(
+            MenuItem::CopyLink,
+            crate::i18n::t(TerminalMenuMsg::CopyLink),
+            true,
+            None,
+        ));
         entries.push(Entry::separator());
     }
     entries.extend([
         Entry::new(
             MenuItem::Copy,
-            "复制",
+            crate::i18n::t(TerminalMenuMsg::Copy),
             state.has_selection,
             Some("Ctrl+Shift+C"),
         ),
         Entry::new(
             MenuItem::Paste,
-            "粘贴",
+            crate::i18n::t(TerminalMenuMsg::Paste),
             state.clipboard_has_text,
             Some("Ctrl+Shift+V"),
         ),
-        Entry::new(MenuItem::SelectAll, "全选", true, None),
+        Entry::new(
+            MenuItem::SelectAll,
+            crate::i18n::t(TerminalMenuMsg::SelectAll),
+            true,
+            None,
+        ),
         Entry::separator(),
-        Entry::new(MenuItem::SplitRight, "左右分屏", true, Some("Ctrl+Shift+D")),
-        Entry::new(MenuItem::SplitDown, "上下分屏", true, Some("Ctrl+Shift+E")),
+        Entry::new(
+            MenuItem::SplitRight,
+            crate::i18n::t(TerminalMenuMsg::SplitRight),
+            true,
+            Some("Ctrl+Shift+D"),
+        ),
+        Entry::new(
+            MenuItem::SplitDown,
+            crate::i18n::t(TerminalMenuMsg::SplitDown),
+            true,
+            Some("Ctrl+Shift+E"),
+        ),
     ]);
     entries
 }

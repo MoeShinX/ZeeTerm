@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use zssh_core::ssh::{HostKeyDecision, HostKeyInfo, HostKeyStatus, PromptAnswers, PromptRequest};
 
+use crate::i18n::{Msg, t};
+
 /// 窗口的编号（每个窗口的提问层各取一个，进程内唯一）。
 pub type WindowKey = u64;
 
@@ -271,6 +273,78 @@ impl Hub {
 
 // ---- 指纹确认对话框的按钮与回答 ----
 
+/// 指纹确认对话框的文字：标题、说明、按钮。放在文案表里，两个语言各一份。
+#[derive(Clone, Copy, Debug)]
+enum PromptMsg {
+    ButtonTrustAndSave,
+    ButtonTrustOnce,
+    ButtonCancel,
+    ButtonUpdateAndConnect,
+    ButtonClose,
+    TitleConfirm,
+    IntroFirstTime,
+    TitleKeyTypeChanged,
+    IntroKeyTypeChanged,
+    TitleFingerprintChanged,
+    IntroFingerprintChanged,
+    IntroRevoked,
+    TitlePassword,
+    TitlePassphrase,
+    TitleServerAuth,
+}
+
+impl Msg for PromptMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::ButtonTrustAndSave => "信任并保存",
+            Self::ButtonTrustOnce => "仅本次",
+            Self::ButtonCancel => "取消",
+            Self::ButtonUpdateAndConnect => "更新指纹并连接",
+            Self::ButtonClose => "关闭",
+            Self::TitleConfirm => "确认主机指纹",
+            Self::IntroFirstTime => "第一次连接这台主机，请核对指纹。",
+            Self::TitleKeyTypeChanged => "主机密钥类型变了",
+            Self::IntroKeyTypeChanged => {
+                "这台主机以前保存的是别的类型的密钥。服务器可能升级了密钥，也可能有人在中间拦截。确认是你自己改过的再信任。"
+            }
+            Self::TitleFingerprintChanged => "主机指纹已变化",
+            Self::IntroFingerprintChanged => {
+                "可能是服务器重装，也可能有人在中间拦截。确认是你自己改过的再更新。"
+            }
+            Self::IntroRevoked => "这个密钥已被标记为吊销，不能连接。",
+            Self::TitlePassword => "输入密码",
+            Self::TitlePassphrase => "输入密钥口令",
+            Self::TitleServerAuth => "服务器验证",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::ButtonTrustAndSave => "Trust and Save",
+            Self::ButtonTrustOnce => "This Time Only",
+            Self::ButtonCancel => "Cancel",
+            Self::ButtonUpdateAndConnect => "Update Fingerprint and Connect",
+            Self::ButtonClose => "Close",
+            Self::TitleConfirm => "Verify Host Fingerprint",
+            Self::IntroFirstTime => {
+                "This is the first connection to this host. Check the fingerprint before continuing."
+            }
+            Self::TitleKeyTypeChanged => "Host Key Type Changed",
+            Self::IntroKeyTypeChanged => {
+                "This host previously stored a key of a different type. The server may have been upgraded, or someone may be intercepting the connection. Continue only if you changed it yourself."
+            }
+            Self::TitleFingerprintChanged => "Host Fingerprint Changed",
+            Self::IntroFingerprintChanged => {
+                "The server may have been reinstalled, or someone may be intercepting the connection. Continue only if you changed it yourself."
+            }
+            Self::IntroRevoked => "This key has been marked as revoked and cannot be used.",
+            Self::TitlePassword => "Enter Password",
+            Self::TitlePassphrase => "Enter Key Passphrase",
+            Self::TitleServerAuth => "Server Authentication",
+        }
+    }
+}
+
 /// 指纹确认对话框上可能出现的按钮。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostKeyButton {
@@ -285,13 +359,13 @@ pub enum HostKeyButton {
 
 impl HostKeyButton {
     pub fn label(self) -> &'static str {
-        match self {
-            Self::TrustAndSave => "信任并保存",
-            Self::TrustOnce => "仅本次",
-            Self::Cancel => "取消",
-            Self::UpdateAndConnect => "更新指纹并连接",
-            Self::Close => "关闭",
-        }
+        t(match self {
+            Self::TrustAndSave => PromptMsg::ButtonTrustAndSave,
+            Self::TrustOnce => PromptMsg::ButtonTrustOnce,
+            Self::Cancel => PromptMsg::ButtonCancel,
+            Self::UpdateAndConnect => PromptMsg::ButtonUpdateAndConnect,
+            Self::Close => PromptMsg::ButtonClose,
+        })
     }
 }
 
@@ -374,18 +448,22 @@ pub struct HostKeyText {
 
 pub fn host_key_text(info: &HostKeyInfo) -> HostKeyText {
     let (title, intro, danger) = match info.status {
-        HostKeyStatus::Unknown => ("确认主机指纹", "第一次连接这台主机，请核对指纹。", false),
+        HostKeyStatus::Unknown => (
+            t(PromptMsg::TitleConfirm),
+            t(PromptMsg::IntroFirstTime),
+            false,
+        ),
         HostKeyStatus::OtherKeyTypesSaved => (
-            "主机密钥类型变了",
-            "这台主机以前保存的是别的类型的密钥。服务器可能升级了密钥，也可能有人在中间拦截。确认是你自己改过的再信任。",
+            t(PromptMsg::TitleKeyTypeChanged),
+            t(PromptMsg::IntroKeyTypeChanged),
             true,
         ),
         HostKeyStatus::Changed => (
-            "主机指纹已变化",
-            "可能是服务器重装，也可能有人在中间拦截。确认是你自己改过的再更新。",
+            t(PromptMsg::TitleFingerprintChanged),
+            t(PromptMsg::IntroFingerprintChanged),
             true,
         ),
-        HostKeyStatus::Revoked => ("确认主机指纹", "这个密钥已被标记为吊销，不能连接。", true),
+        HostKeyStatus::Revoked => (t(PromptMsg::TitleConfirm), t(PromptMsg::IntroRevoked), true),
     };
     HostKeyText {
         title,
@@ -436,10 +514,10 @@ pub fn prompt_text(request: &PromptRequest) -> PromptText {
     use zssh_core::ssh::PromptKind;
     let name = clean_text(&request.name);
     let title = match request.kind {
-        PromptKind::Password => "输入密码".to_owned(),
-        PromptKind::Passphrase => "输入密钥口令".to_owned(),
+        PromptKind::Password => t(PromptMsg::TitlePassword).to_owned(),
+        PromptKind::Passphrase => t(PromptMsg::TitlePassphrase).to_owned(),
         PromptKind::KeyboardInteractive if !name.trim().is_empty() => name,
-        PromptKind::KeyboardInteractive => "服务器验证".to_owned(),
+        PromptKind::KeyboardInteractive => t(PromptMsg::TitleServerAuth).to_owned(),
     };
     PromptText {
         title,

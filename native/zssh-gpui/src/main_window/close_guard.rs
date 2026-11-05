@@ -4,7 +4,80 @@
 //!
 //! 关到托盘不算退出（进程和后台任务继续跑），不走这个确认。
 
+use crate::i18n::{Msg, count, is_en, t};
 use crate::install_state::PendingWork;
+
+/// 退出确认 / 关闭文件视图确认的文案。主机名、产品名是数据，不进这张表。
+#[derive(Clone, Copy, Debug)]
+enum CloseMsg {
+    /// `count` 的中文量词（英文走单复数，用不到它）。
+    SessionCountSuffix,
+    /// 同上（退出确认里的「N 个文件传输」）。
+    TransferCountSuffix,
+    /// 关闭文件视图时只数这个面板自己的传输（「N 个传输」）。
+    TransferUnitSuffix,
+    /// 同上。
+    AiTurnCountSuffix,
+    Sync,
+    Restore,
+    QuitTitlePrefix,
+    QuitTitleSuffix,
+    QuitBodyPrefix,
+    QuitBodySuffix,
+    CloseTitlePrefix,
+    CloseTitleSuffix,
+    TransferBodyPrefix,
+    TransferBodySuffix,
+}
+
+impl Msg for CloseMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::SessionCountSuffix => " 个已连接的会话",
+            Self::TransferCountSuffix => " 个文件传输",
+            Self::TransferUnitSuffix => " 个传输",
+            Self::AiTurnCountSuffix => " 个 AI 回合",
+            Self::Sync => "同步",
+            Self::Restore => "备份恢复",
+            Self::QuitTitlePrefix => "退出 ",
+            Self::QuitTitleSuffix => "？",
+            Self::QuitBodyPrefix => "还有 ",
+            Self::QuitBodySuffix => "在进行，现在退出会中断它们。",
+            Self::CloseTitlePrefix => "关闭「",
+            Self::CloseTitleSuffix => "」的文件视图？",
+            Self::TransferBodyPrefix => "还有 ",
+            Self::TransferBodySuffix => {
+                "没有结束，关闭会取消它们（已传的部分保留，可以稍后续传）。"
+            }
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::SessionCountSuffix => " ",
+            Self::TransferCountSuffix => " ",
+            Self::TransferUnitSuffix => " ",
+            Self::AiTurnCountSuffix => " ",
+            Self::Sync => "sync",
+            Self::Restore => "backup restore",
+            Self::QuitTitlePrefix => "Quit ",
+            Self::QuitTitleSuffix => "?",
+            Self::QuitBodyPrefix => "These are still running: ",
+            Self::QuitBodySuffix => ". Quitting now will interrupt them.",
+            Self::CloseTitlePrefix => "Close the file view for “",
+            Self::CloseTitleSuffix => "”?",
+            Self::TransferBodyPrefix => "",
+            Self::TransferBodySuffix => {
+                " not finished yet; closing cancels the remaining transfer work (bytes already sent are kept and can be resumed later)."
+            }
+        }
+    }
+}
+
+/// 列表的连接符跟着语言走（中文用顿号）。
+fn join_list(parts: &[String]) -> String {
+    parts.join(if is_en() { ", " } else { "、" })
+}
 
 /// 有进行中的工作就返回 `(标题, 正文)`，没有返回 `None`（可以直接退出）。
 #[cfg(any(test, debug_assertions))]
@@ -17,26 +90,51 @@ pub fn quit_prompt(work: PendingWork) -> Option<(String, String)> {
 pub fn quit_prompt_with_sessions(work: PendingWork, sessions: usize) -> Option<(String, String)> {
     let mut parts: Vec<String> = Vec::new();
     if sessions > 0 {
-        parts.push(format!("{sessions} 个已连接的会话"));
+        parts.push(count(
+            sessions as u64,
+            t(CloseMsg::SessionCountSuffix),
+            "connected session",
+            "connected sessions",
+        ));
     }
     if work.transfers > 0 {
-        parts.push(format!("{} 个文件传输", work.transfers));
+        parts.push(count(
+            work.transfers as u64,
+            t(CloseMsg::TransferCountSuffix),
+            "file transfer",
+            "file transfers",
+        ));
     }
     if work.ai_turns > 0 {
-        parts.push(format!("{} 个 AI 回合", work.ai_turns));
+        parts.push(count(
+            work.ai_turns as u64,
+            t(CloseMsg::AiTurnCountSuffix),
+            "AI turn",
+            "AI turns",
+        ));
     }
     if work.syncs > 0 {
-        parts.push("同步".to_owned());
+        parts.push(t(CloseMsg::Sync).to_owned());
     }
     if work.restores > 0 {
-        parts.push("备份恢复".to_owned());
+        parts.push(t(CloseMsg::Restore).to_owned());
     }
     if parts.is_empty() {
         return None;
     }
     Some((
-        format!("退出 {}？", crate::product::NAME),
-        format!("还有 {}在进行，现在退出会中断它们。", parts.join("、")),
+        format!(
+            "{}{}{}",
+            t(CloseMsg::QuitTitlePrefix),
+            crate::product::NAME,
+            t(CloseMsg::QuitTitleSuffix)
+        ),
+        format!(
+            "{}{}{}",
+            t(CloseMsg::QuitBodyPrefix),
+            join_list(&parts),
+            t(CloseMsg::QuitBodySuffix)
+        ),
     ))
 }
 
@@ -44,9 +142,21 @@ pub fn quit_prompt_with_sessions(work: PendingWork, sessions: usize) -> Option<(
 pub fn close_sftp_prompt(host: &str, unfinished: usize) -> Option<(String, String)> {
     (unfinished > 0).then(|| {
         (
-            format!("关闭「{host}」的文件视图？"),
             format!(
-                "还有 {unfinished} 个传输没有结束，关闭会取消它们（已传的部分保留，可以稍后续传）。"
+                "{}{host}{}",
+                t(CloseMsg::CloseTitlePrefix),
+                t(CloseMsg::CloseTitleSuffix)
+            ),
+            format!(
+                "{}{}{}",
+                t(CloseMsg::TransferBodyPrefix),
+                count(
+                    unfinished as u64,
+                    t(CloseMsg::TransferUnitSuffix),
+                    "transfer",
+                    "transfers",
+                ),
+                t(CloseMsg::TransferBodySuffix)
             ),
         )
     })

@@ -7,6 +7,8 @@
 
 use zssh_core::ai::agent::AgentModelCatalog;
 
+use crate::i18n::t;
+
 /// 没有智能体默认 id 时给「默认」那一项用的占位值：发送时不带模型。
 pub const DEFAULT_VALUE: &str = "__zssh_default__";
 
@@ -33,8 +35,12 @@ pub struct ModelPicker {
 /// 「默认」那一项的文字。
 pub fn default_text(actual: Option<&str>) -> String {
     match actual.map(str::trim).filter(|name| !name.is_empty()) {
-        Some(name) => format!("默认（{name}）"),
-        None => "默认模型".to_owned(),
+        Some(name) => format!(
+            "{}{name}{}",
+            t(ModelPickerMsg::DefaultWithPrefix),
+            t(ModelPickerMsg::DefaultWithSuffix)
+        ),
+        None => t(ModelPickerMsg::DefaultModel).to_owned(),
     }
 }
 
@@ -193,7 +199,7 @@ pub fn pick_effort(group: &ModelGroup, wanted: Option<&str>) -> Option<String> {
 /// 强度的显示文字。
 pub fn effort_label(effort: Option<&str>) -> String {
     match effort {
-        None => "默认强度".to_owned(),
+        None => t(ModelPickerMsg::DefaultEffort).to_owned(),
         Some("xhigh") => "XHigh".to_owned(),
         Some(effort) => {
             let mut chars = effort.chars();
@@ -201,6 +207,38 @@ pub fn effort_label(effort: Option<&str>) -> String {
                 Some(first) => first.to_uppercase().chain(chars).collect(),
                 None => String::new(),
             }
+        }
+    }
+}
+
+/// 模型 / 强度选择框里的「默认」文案。
+#[derive(Clone, Copy, Debug)]
+#[allow(clippy::enum_variant_names)]
+enum ModelPickerMsg {
+    /// 「默认（」这类前缀：中间夹模型名。
+    DefaultWithPrefix,
+    /// 模型名后面的右括号。
+    DefaultWithSuffix,
+    DefaultModel,
+    DefaultEffort,
+}
+
+impl crate::i18n::Msg for ModelPickerMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::DefaultWithPrefix => "默认（",
+            Self::DefaultWithSuffix => "）",
+            Self::DefaultModel => "默认模型",
+            Self::DefaultEffort => "默认强度",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::DefaultWithPrefix => "Default (",
+            Self::DefaultWithSuffix => ")",
+            Self::DefaultModel => "Default model",
+            Self::DefaultEffort => "Default effort",
         }
     }
 }

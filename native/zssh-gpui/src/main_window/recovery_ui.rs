@@ -21,6 +21,85 @@ use crate::app_theme::Tokens;
 use crate::remote_editor::recovery::{self, Action, Outcome, RecoveryItem};
 use crate::remote_editor::{ChannelSource, OpenSpec};
 
+/// 恢复提示自己的文案。
+#[derive(Clone, Copy, Debug)]
+enum RecoveryMsg {
+    RuntimeFailed,
+    SavedAsPrefix,
+    SavedAsMid,
+    SavedAsClose,
+    AllHandled,
+    Recover,
+    Reupload,
+    Overwrite,
+    SaveAs,
+    DiscardConfirm,
+    Discard,
+    DraftNote,
+    UnknownReason,
+    Processing,
+    Intro,
+    Later,
+    /// `i18n::count` 的中文量词；英文走单复数，用不到它。
+    ByteSuffix,
+}
+
+impl crate::i18n::Msg for RecoveryMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::RuntimeFailed => "后台运行时起不来",
+            Self::SavedAsPrefix => "已另存到 ",
+            Self::SavedAsMid => "（",
+            Self::SavedAsClose => "）",
+            Self::AllHandled => "上次留下的修改都处理完了",
+            Self::Recover => "打开并恢复",
+            Self::Reupload => "重新上传",
+            Self::Overwrite => "覆盖服务器上的文件",
+            Self::SaveAs => "另存到本地",
+            Self::DiscardConfirm => "确认放弃",
+            Self::Discard => "放弃",
+            Self::DraftNote => "这是编辑器里还没保存的内容（程序退出时来不及保存）。",
+            Self::UnknownReason => {
+                "没法确认这份文件有没有改过（读不了它，或者认不出对应的服务器文件），所以保险起见留下了。请先看一眼内容再决定。"
+            }
+            Self::Processing => "处理中…",
+            Self::Intro => {
+                "程序上次没有正常结束，这些文件在本地改过，但没来得及传到服务器。它们还保存着，选一种处理方式。"
+            }
+            Self::Later => "稍后处理",
+            Self::ByteSuffix => " 字节",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::RuntimeFailed => "The background runtime failed to start",
+            Self::SavedAsPrefix => "Saved to ",
+            Self::SavedAsMid => " (",
+            Self::SavedAsClose => ")",
+            Self::AllHandled => "All drafts from the previous session have been handled",
+            Self::Recover => "Open and Recover",
+            Self::Reupload => "Upload Again",
+            Self::Overwrite => "Overwrite the File on the Server",
+            Self::SaveAs => "Save to Local File",
+            Self::DiscardConfirm => "Confirm Discard",
+            Self::Discard => "Discard",
+            Self::DraftNote => {
+                "Unsaved editor content from the previous session (the app exited before it could be saved)."
+            }
+            Self::UnknownReason => {
+                "Could not tell whether this file changed (it cannot be read, or the matching server file is unknown), so it was kept just in case. Review the content before deciding."
+            }
+            Self::Processing => "Working…",
+            Self::Intro => {
+                "The app did not shut down cleanly last time. These files were edited locally but never uploaded; they are still saved. Choose how to handle them."
+            }
+            Self::Later => "Handle Later",
+            Self::ByteSuffix => " ",
+        }
+    }
+}
+
 /// 恢复提示的界面状态。
 pub struct RecoveryUi {
     pub items: Vec<RecoveryItem>,
@@ -105,7 +184,7 @@ impl MainWindow {
             self.recovery_result(
                 id,
                 action,
-                Outcome::Failed("后台运行时起不来".to_owned()),
+                Outcome::Failed(crate::i18n::t(RecoveryMsg::RuntimeFailed).to_owned()),
                 window,
                 cx,
             );
@@ -139,9 +218,12 @@ impl MainWindow {
                         (
                             false,
                             format!(
-                                "已另存到 {}（{}）",
+                                "{}{}{}{}{}",
+                                crate::i18n::t(RecoveryMsg::SavedAsPrefix),
                                 message.unwrap_or_default(),
-                                crate::remote_editor::EXPORT_PLAINTEXT_NOTE
+                                crate::i18n::t(RecoveryMsg::SavedAsMid),
+                                crate::remote_editor::export_plaintext_note(),
+                                crate::i18n::t(RecoveryMsg::SavedAsClose)
                             ),
                         ),
                     );
@@ -161,7 +243,7 @@ impl MainWindow {
         }
         if ui.items.is_empty() {
             self.modal = None;
-            self.notice("上次留下的修改都处理完了", window, cx);
+            self.notice(crate::i18n::t(RecoveryMsg::AllHandled), window, cx);
         }
         cx.notify();
     }
@@ -214,7 +296,7 @@ impl MainWindow {
                 buttons.push(
                     text_button(
                         SharedString::from(format!("recovery-open-{index}")),
-                        "打开并恢复",
+                        crate::i18n::t(RecoveryMsg::Recover),
                         ButtonLook::Primary,
                         move |_, window, cx| {
                             e.update(cx, |this, cx| this.recovery_open_in_editor(&id, window, cx));
@@ -228,7 +310,7 @@ impl MainWindow {
             buttons.push(
                 text_button(
                     SharedString::from(format!("recovery-reupload-{index}")),
-                    "重新上传",
+                    crate::i18n::t(RecoveryMsg::Reupload),
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         e.update(cx, |this, cx| {
@@ -244,7 +326,7 @@ impl MainWindow {
                 buttons.push(
                     text_button(
                         SharedString::from(format!("recovery-overwrite-{index}")),
-                        "覆盖服务器上的文件",
+                        crate::i18n::t(RecoveryMsg::Overwrite),
                         ButtonLook::Danger,
                         move |_, window, cx| {
                             e.update(cx, |this, cx| {
@@ -260,7 +342,7 @@ impl MainWindow {
             buttons.push(
                 text_button(
                     SharedString::from(format!("recovery-save-local-{index}")),
-                    "另存到本地",
+                    crate::i18n::t(RecoveryMsg::SaveAs),
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         e.update(cx, |this, cx| {
@@ -276,7 +358,11 @@ impl MainWindow {
             buttons.push(
                 text_button(
                     SharedString::from(format!("recovery-discard-{index}")),
-                    if confirming { "确认放弃" } else { "放弃" },
+                    if confirming {
+                        crate::i18n::t(RecoveryMsg::DiscardConfirm)
+                    } else {
+                        crate::i18n::t(RecoveryMsg::Discard)
+                    },
                     if confirming {
                         ButtonLook::Danger
                     } else {
@@ -291,14 +377,28 @@ impl MainWindow {
                 .disabled(busy)
                 .into_any_element(),
             );
-            let draft_note = Some("这是编辑器里还没保存的内容（程序退出时来不及保存）。");
-            let uncertain_note = item.uncertain.then_some(
-                "没法确认这份文件有没有改过（读不了它，或者认不出对应的服务器文件），所以保险起见留下了。请先看一眼内容再决定。",
-            );
+            let draft_note = Some(crate::i18n::t(RecoveryMsg::DraftNote));
+            let uncertain_note = item
+                .uncertain
+                .then_some(crate::i18n::t(RecoveryMsg::UnknownReason));
             let meta_line = if item.age.is_empty() {
-                format!("{} 字节", item.size)
+                crate::i18n::count(
+                    item.size,
+                    crate::i18n::t(RecoveryMsg::ByteSuffix),
+                    "byte",
+                    "bytes",
+                )
             } else {
-                format!("{} 字节 · {}", item.size, item.age)
+                format!(
+                    "{} · {}",
+                    crate::i18n::count(
+                        item.size,
+                        crate::i18n::t(RecoveryMsg::ByteSuffix),
+                        "byte",
+                        "bytes"
+                    ),
+                    item.age
+                )
             };
             v_flex()
                 .id(("recovery-item", index))
@@ -317,18 +417,14 @@ impl MainWindow {
                 .child(note(meta_line, tokens))
                 .children(draft_note.map(|text| note(text, tokens)))
                 .children(uncertain_note.map(|text| error_note(text, tokens.danger)))
-                .children(
-                    ui.notes
-                        .get(&item.id)
-                        .map(|(is_error, text)| {
-                            if *is_error {
-                                error_note(text.clone(), tokens.danger)
-                            } else {
-                                note(text.clone(), tokens)
-                            }
-                        }),
-                )
-                .children(running.then(|| note("处理中…", tokens)))
+                .children(ui.notes.get(&item.id).map(|(is_error, text)| {
+                    if *is_error {
+                        error_note(text.clone(), tokens.danger)
+                    } else {
+                        note(text.clone(), tokens)
+                    }
+                }))
+                .children(running.then(|| note(crate::i18n::t(RecoveryMsg::Processing), tokens)))
                 .child(h_flex().gap_2().flex_wrap().children(buttons))
                 .into_any_element()
         });
@@ -343,10 +439,7 @@ impl MainWindow {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(SharedString::from(recovery::recovery_title(ui.items.len()))),
                     )
-                    .child(note(
-                        "程序上次没有正常结束，这些文件在本地改过，但没来得及传到服务器。它们还保存着，选一种处理方式。",
-                        tokens,
-                    )),
+                    .child(note(crate::i18n::t(RecoveryMsg::Intro), tokens)),
             )
             .child(
                 v_flex()
@@ -356,16 +449,14 @@ impl MainWindow {
                     .overflow_y_scroll()
                     .children(rows),
             )
-            .child(
-                h_flex().justify_end().child(text_button(
-                    "recovery-later",
-                    "稍后处理",
-                    ButtonLook::Outline,
-                    move |_, window, cx| {
-                        later.update(cx, |this, cx| this.close_modal(window, cx));
-                    },
-                )),
-            )
+            .child(h_flex().justify_end().child(text_button(
+                "recovery-later",
+                crate::i18n::t(RecoveryMsg::Later),
+                ButtonLook::Outline,
+                move |_, window, cx| {
+                    later.update(cx, |this, cx| this.close_modal(window, cx));
+                },
+            )))
             .into_any_element()
     }
 }

@@ -7,12 +7,14 @@ use zssh_core::model::{Identity, IdentityDraft, IdentityKind};
 use crate::i18n::{Msg, t};
 
 /// 类型下拉里的四项，顺序同 0.2.14。名字按当前语言取（见 [`kind_label`]）。
-pub const KINDS: [(IdentityKind, &str); 4] = [
-    (IdentityKind::Password, "密码"),
-    (IdentityKind::KeyFile, "私钥文件"),
-    (IdentityKind::KeyInline, "导入的私钥"),
-    (IdentityKind::Agent, "ssh-agent"),
-];
+pub fn kinds() -> [(IdentityKind, &'static str); 4] {
+    [
+        (IdentityKind::Password, kind_label(IdentityKind::Password)),
+        (IdentityKind::KeyFile, kind_label(IdentityKind::KeyFile)),
+        (IdentityKind::KeyInline, kind_label(IdentityKind::KeyInline)),
+        (IdentityKind::Agent, kind_label(IdentityKind::Agent)),
+    ]
+}
 
 /// 凭据类型的界面名字。
 #[derive(Clone, Copy, Debug)]
@@ -301,7 +303,7 @@ mod tests {
 
     #[test]
     fn labels_cover_every_kind() {
-        for (kind, label) in KINDS {
+        for (kind, label) in kinds() {
             assert_eq!(kind_label(kind), label);
         }
     }

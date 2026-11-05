@@ -29,6 +29,143 @@ use zssh_core::store::Database;
 use crate::settings::data_dir;
 use crate::ssh_backend::{SshSessionFactory, factory_for_host, runtime};
 
+/// 服务器状态窗口的文案（时间格式走 *_in，中文分支用 i18n-allow 标注）。
+#[derive(Clone, Copy, Debug)]
+enum StatusMsg {
+    WindowTitle,
+    Stopped,
+    ConnectTimeoutPrefix,
+    ConnectTimeoutSuffix,
+    NoConnection,
+    SampleFailed,
+    RunStatusFailedPrefix,
+    NoSavedHosts,
+    RefreshRetrySuffix,
+    DbOpenFailedPrefix,
+    HostListFailedPrefix,
+    DbNotCreated,
+    Avg1m,
+    Load5mPrefix,
+    Load15mMid,
+    CoresSuffix,
+    UsedPrefix,
+    UsedFreeMid,
+    RootUsedPrefix,
+    UptimeSecondsPrefix,
+    SecondsSuffix,
+    NoHostsParen,
+    Disconnected,
+    Refreshing,
+    Polling,
+    NotPolling,
+    Load,
+    Memory,
+    DiskRoot,
+    Uptime,
+    CollectFailed,
+    NoData,
+    SwitchHost,
+    Refresh,
+    StopPolling,
+    StartPolling,
+    LastUpdatedPrefix,
+    LastUpdatedNever,
+}
+
+impl crate::i18n::Msg for StatusMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::WindowTitle => "服务器状态",
+            Self::Stopped => "已停止",
+            Self::ConnectTimeoutPrefix => "连接超过 ",
+            Self::ConnectTimeoutSuffix => " 秒没有完成",
+            Self::NoConnection => "没有可用的连接",
+            Self::SampleFailed => {
+                "这次没有采到：超过 5 秒没有结果，或者服务器返回的内容不像 Linux 系统信息"
+            }
+            Self::RunStatusFailedPrefix => "执行状态命令失败：",
+            Self::NoSavedHosts => "还没有保存的主机；先在「主机」窗口里添加",
+            Self::RefreshRetrySuffix => "；刷新列表后再试",
+            Self::DbOpenFailedPrefix => "打开主机库失败：",
+            Self::HostListFailedPrefix => "读取主机列表失败：",
+            Self::DbNotCreated => "主机库还没有创建",
+            Self::Avg1m => "1 分钟平均",
+            Self::Load5mPrefix => "5 分钟 ",
+            Self::Load15mMid => " · 15 分钟 ",
+            Self::CoresSuffix => " 核",
+            Self::UsedPrefix => "已用 ",
+            Self::UsedFreeMid => "% · 空闲 ",
+            Self::RootUsedPrefix => "根分区 / · 已用 ",
+            Self::UptimeSecondsPrefix => "开机 ",
+            Self::SecondsSuffix => " 秒",
+            Self::NoHostsParen => "（还没有主机）",
+            Self::Disconnected => "已断开",
+            Self::Refreshing => "刷新中…",
+            Self::Polling => "轮询中（每 2 秒）",
+            Self::NotPolling => "未轮询",
+            Self::Load => "负载",
+            Self::Memory => "内存",
+            Self::DiskRoot => "磁盘（/）",
+            Self::Uptime => "运行时间",
+            Self::CollectFailed => "采集失败：原因见下面",
+            Self::NoData => "还没有数据：点「刷新」采集一次，或点「开始轮询」每 2 秒采集",
+            Self::SwitchHost => "切换主机",
+            Self::Refresh => "刷新",
+            Self::StopPolling => "停止轮询",
+            Self::StartPolling => "开始轮询",
+            Self::LastUpdatedPrefix => "最后更新：",
+            Self::LastUpdatedNever => "最后更新：—",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::WindowTitle => "Server Status",
+            Self::Stopped => "Stopped",
+            Self::ConnectTimeoutPrefix => "The connection did not finish within ",
+            Self::ConnectTimeoutSuffix => " seconds",
+            Self::NoConnection => "No connection available",
+            Self::SampleFailed => {
+                "Nothing was collected this time: no result within 5 seconds, or the server output did not look like Linux system information"
+            }
+            Self::RunStatusFailedPrefix => "Running the status command failed: ",
+            Self::NoSavedHosts => "No saved hosts yet — add one in the Hosts window first",
+            Self::RefreshRetrySuffix => "; refresh the list and try again",
+            Self::DbOpenFailedPrefix => "Failed to open the host database: ",
+            Self::HostListFailedPrefix => "Failed to read the host list: ",
+            Self::DbNotCreated => "The host database has not been created yet",
+            Self::Avg1m => "1-minute average",
+            Self::Load5mPrefix => "5 minutes ",
+            Self::Load15mMid => " · 15 minutes ",
+            Self::CoresSuffix => "cores",
+            Self::UsedPrefix => "Used ",
+            Self::UsedFreeMid => "% · free ",
+            Self::RootUsedPrefix => "Root partition / · used ",
+            Self::UptimeSecondsPrefix => "Up for ",
+            Self::SecondsSuffix => "seconds",
+            Self::NoHostsParen => "(no hosts yet)",
+            Self::Disconnected => "Disconnected",
+            Self::Refreshing => "Refreshing…",
+            Self::Polling => "Polling (every 2 seconds)",
+            Self::NotPolling => "Not polling",
+            Self::Load => "Load",
+            Self::Memory => "Memory",
+            Self::DiskRoot => "Disk (/)",
+            Self::Uptime => "Uptime",
+            Self::CollectFailed => "Collection failed — see below",
+            Self::NoData => {
+                "No data yet: click Refresh to collect once, or Start Polling to collect every 2 seconds"
+            }
+            Self::SwitchHost => "Switch host",
+            Self::Refresh => "Refresh",
+            Self::StopPolling => "Stop Polling",
+            Self::StartPolling => "Start Polling",
+            Self::LastUpdatedPrefix => "Last updated: ",
+            Self::LastUpdatedNever => "Last updated: —",
+        }
+    }
+}
+
 /// 轮询间隔。
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -117,29 +254,72 @@ fn bar_fraction(percent: u8) -> f32 {
     f32::from(percent.min(100)) / 100.0
 }
 
-/// 运行时间：天 / 小时 / 分钟；不足一天不显示"0 天"。
+/// 运行时间：天 / 小时 / 分钟；不足一天不显示"0 天"。英文用紧凑写法（`3d 2h 5m`）。
 fn format_uptime(seconds: u64) -> String {
+    format_uptime_in(crate::i18n::current(), seconds)
+}
+
+fn format_uptime_in(lang: crate::i18n::Lang, seconds: u64) -> String {
     let minutes = seconds / 60;
     let days = minutes / (24 * 60);
     let hours = (minutes / 60) % 24;
     let minutes = minutes % 60;
-    if days > 0 {
-        format!("{days} 天 {hours} 小时 {minutes} 分钟")
-    } else if hours > 0 {
-        format!("{hours} 小时 {minutes} 分钟")
-    } else {
-        format!("{minutes} 分钟")
+    match lang {
+        crate::i18n::Lang::Zh => {
+            if days > 0 {
+                format!("{days} 天 {hours} 小时 {minutes} 分钟") // i18n-allow: 中文分支
+            } else if hours > 0 {
+                format!("{hours} 小时 {minutes} 分钟") // i18n-allow: 中文分支
+            } else {
+                format!("{minutes} 分钟") // i18n-allow: 中文分支
+            }
+        }
+        crate::i18n::Lang::En => {
+            if days > 0 {
+                format!("{days}d {hours}h {minutes}m")
+            } else if hours > 0 {
+                format!("{hours}h {minutes}m")
+            } else {
+                format!("{minutes}m")
+            }
+        }
     }
 }
 
 /// "最后更新"用相对时间：窗口里一直重绘，不需要再起一个格式化时钟。
 fn format_ago(elapsed: Duration) -> String {
+    format_ago_in(crate::i18n::current(), elapsed)
+}
+
+fn format_ago_in(lang: crate::i18n::Lang, elapsed: Duration) -> String {
     let seconds = elapsed.as_secs();
-    match seconds {
-        0 => "刚刚".to_owned(),
-        1..=59 => format!("{seconds} 秒前"),
-        60..=3599 => format!("{} 分 {} 秒前", seconds / 60, seconds % 60),
-        _ => format!("{} 小时 {} 分前", seconds / 3600, (seconds % 3600) / 60),
+    match lang {
+        crate::i18n::Lang::Zh => match seconds {
+            0 => "刚刚".to_owned(),              // i18n-allow: 中文分支
+            1..=59 => format!("{seconds} 秒前"), // i18n-allow: 中文分支
+            60..=3599 => format!("{} 分 {} 秒前", seconds / 60, seconds % 60), // i18n-allow: 中文分支
+            _ => format!("{} 小时 {} 分前", seconds / 3600, (seconds % 3600) / 60), // i18n-allow: 中文分支
+        },
+        crate::i18n::Lang::En => match seconds {
+            0 => "just now".to_owned(),
+            1..=59 => format!("{seconds}s ago"),
+            60..=3599 => {
+                let (m, s) = (seconds / 60, seconds % 60);
+                if s == 0 {
+                    format!("{m}m ago")
+                } else {
+                    format!("{m}m {s}s ago")
+                }
+            }
+            _ => {
+                let (h, m) = (seconds / 3600, (seconds % 3600) / 60);
+                if m == 0 {
+                    format!("{h}h ago")
+                } else {
+                    format!("{h}h {m}m ago")
+                }
+            }
+        },
     }
 }
 
@@ -460,11 +640,11 @@ pub(crate) fn uptime_label(seconds: u64) -> String {
     let hours = (seconds % 86_400) / 3_600;
     let minutes = (seconds % 3_600) / 60;
     if days > 0 {
-        format!("{days} 天 {hours} 小时")
+        format!("{days} 天 {hours} 小时") // i18n-allow: 中文分支
     } else if hours > 0 {
-        format!("{hours} 小时 {minutes} 分")
+        format!("{hours} 小时 {minutes} 分") // i18n-allow: 中文分支
     } else {
-        format!("{minutes} 分钟")
+        format!("{minutes} 分钟") // i18n-allow: 中文分支
     }
 }
 
@@ -657,18 +837,20 @@ async fn poll_with<L: StatusLink>(
         let dial = tokio::time::timeout(timing.connect_timeout, link.dial(host_id));
         let dialed = tokio::select! {
             dialed = dial => dialed,
-            () = wait_stopped(stop, timing.check) => return Err("已停止".to_owned()),
+            () = wait_stopped(stop, timing.check) => return Err(crate::i18n::t(StatusMsg::Stopped).to_owned()),
         };
         let fresh = dialed.map_err(|_| {
             format!(
-                "连接超过 {} 秒没有完成",
-                timing.connect_timeout.as_secs().max(1)
+                "{}{}{}",
+                crate::i18n::t(StatusMsg::ConnectTimeoutPrefix),
+                timing.connect_timeout.as_secs().max(1),
+                crate::i18n::t(StatusMsg::ConnectTimeoutSuffix)
             )
         })??;
         *conn = Some(fresh);
     }
     let Some(current) = conn.as_ref() else {
-        return Err("没有可用的连接".to_owned());
+        return Err(crate::i18n::t(StatusMsg::NoConnection).to_owned());
     };
     let result = link.collect(current).await;
     if result.is_err() && !link.is_alive(current) {
@@ -726,10 +908,11 @@ async fn collect_on(conn: &SshConn) -> Result<ServerStatus, String> {
             })
         }
         // core 把「超时」和「输出认不出」都当成「这次没采到」。
-        Ok(None) => Err(
-            "这次没有采到：超过 5 秒没有结果，或者服务器返回的内容不像 Linux 系统信息".to_owned(),
-        ),
-        Err(err) => Err(format!("执行状态命令失败：{err}")),
+        Ok(None) => Err(crate::i18n::t(StatusMsg::SampleFailed).to_owned()),
+        Err(err) => Err(format!(
+            "{}{err}",
+            crate::i18n::t(StatusMsg::RunStatusFailedPrefix)
+        )),
     }
 }
 
@@ -863,7 +1046,7 @@ impl StatusDemo {
             return;
         }
         let Some(host) = self.current_host().cloned() else {
-            self.load_error = Some("还没有保存的主机；先在「主机」窗口里添加".to_owned());
+            self.load_error = Some(crate::i18n::t(StatusMsg::NoSavedHosts).to_owned());
             cx.notify();
             return;
         };
@@ -875,7 +1058,10 @@ impl StatusDemo {
                 }
             }
             Err(err) => {
-                self.load_error = Some(format!("{err}；刷新列表后再试"));
+                self.load_error = Some(format!(
+                    "{err}{}",
+                    crate::i18n::t(StatusMsg::RefreshRetrySuffix)
+                ));
                 cx.notify();
                 return;
             }
@@ -997,7 +1183,8 @@ fn open_host_database() -> Result<Option<Database>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let db = Database::open(&path).map_err(|err| format!("打开主机库失败：{err}"))?;
+    let db = Database::open(&path)
+        .map_err(|err| format!("{}{err}", crate::i18n::t(StatusMsg::DbOpenFailedPrefix)))?;
     Ok(Some(db))
 }
 
@@ -1006,12 +1193,12 @@ fn load_hosts() -> Result<Vec<Host>, String> {
         return Ok(Vec::new());
     };
     db.host_list()
-        .map_err(|err| format!("读取主机列表失败：{err}"))
+        .map_err(|err| format!("{}{err}", crate::i18n::t(StatusMsg::HostListFailedPrefix)))
 }
 
 fn load_host(host_id: i64) -> Result<Host, String> {
     let Some(db) = open_host_database()? else {
-        return Err("主机库还没有创建".to_owned());
+        return Err(crate::i18n::t(StatusMsg::DbNotCreated).to_owned());
     };
     db.host_get(host_id).map_err(|err| err.to_string())
 }
@@ -1028,7 +1215,7 @@ pub fn open_status_window(cx: &mut App) {
     };
     let _ = cx.open_window(options, |window, cx| {
         let view = cx.new(|cx| StatusDemo::new(window, cx));
-        window.set_window_title("服务器状态");
+        window.set_window_title(crate::i18n::t(StatusMsg::WindowTitle));
         let weak = view.downgrade();
         window.on_window_should_close(cx, move |_window, cx| {
             if let Some(view) = weak.upgrade() {
@@ -1114,16 +1301,31 @@ fn load_card(data: &ServerStatus, colors: &CardColors) -> AnyElement {
                 .gap_2()
                 .items_center()
                 .child(div().text_2xl().child(load(stats.load_1m)))
-                .child(div().text_xs().text_color(colors.muted).child("1 分钟平均")),
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(colors.muted)
+                        .child(crate::i18n::t(StatusMsg::Avg1m)),
+                ),
         )
         .child(div().text_sm().child(format!(
-            "5 分钟 {} · 15 分钟 {}",
+            "{}{}{}{}",
+            crate::i18n::t(StatusMsg::Load5mPrefix),
             load(stats.load_5m),
+            crate::i18n::t(StatusMsg::Load15mMid),
             load(stats.load_15m)
         )))
         .child(div().text_xs().text_color(colors.muted).child(format!(
-            "CPU {} 核",
-            stats.cpu_cores.map_or_else(|| "--".to_owned(), |c| c.to_string())
+            "CPU {}",
+            stats.cpu_cores.map_or_else(
+                || "--".to_owned(),
+                |c| crate::i18n::count(
+                    c as u64,
+                    crate::i18n::t(StatusMsg::CoresSuffix),
+                    "core",
+                    "cores"
+                )
+            )
         )))
         .into_any_element()
 }
@@ -1144,7 +1346,9 @@ fn memory_card(data: &ServerStatus, colors: &CardColors) -> AnyElement {
             colors,
         ))
         .child(div().text_xs().text_color(colors.muted).child(format!(
-            "已用 {used_percent}% · 空闲 {}",
+            "{}{used_percent}%{}{}",
+            crate::i18n::t(StatusMsg::UsedPrefix),
+            crate::i18n::t(StatusMsg::UsedFreeMid),
             mib_gb_label(stats.mem_free_mib.map(|v| v as f64), 1)
         )))
         .into_any_element()
@@ -1165,12 +1369,10 @@ fn disk_card(data: &ServerStatus, colors: &CardColors) -> AnyElement {
             level_color(used_percent, colors),
             colors,
         ))
-        .child(
-            div()
-                .text_xs()
-                .text_color(colors.muted)
-                .child(format!("根分区 / · 已用 {used_percent}%")),
-        )
+        .child(div().text_xs().text_color(colors.muted).child(format!(
+            "{}{used_percent}%",
+            crate::i18n::t(StatusMsg::RootUsedPrefix)
+        )))
         .into_any_element()
 }
 
@@ -1179,12 +1381,16 @@ fn uptime_card(data: &ServerStatus, colors: &CardColors) -> AnyElement {
     v_flex()
         .gap_1()
         .child(div().text_lg().child(format_uptime(seconds)))
-        .child(
-            div()
-                .text_xs()
-                .text_color(colors.muted)
-                .child(format!("开机 {seconds} 秒")),
-        )
+        .child(div().text_xs().text_color(colors.muted).child(format!(
+            "{}{}",
+            crate::i18n::t(StatusMsg::UptimeSecondsPrefix),
+            crate::i18n::count(
+                seconds,
+                crate::i18n::t(StatusMsg::SecondsSuffix),
+                "second",
+                "seconds"
+            )
+        )))
         .into_any_element()
 }
 
@@ -1207,7 +1413,7 @@ impl Render for StatusDemo {
                 "{} · {}@{}:{}",
                 host.name, host.username, host.host, host.port
             ),
-            None => "（还没有主机）".to_owned(),
+            None => crate::i18n::t(StatusMsg::NoHostsParen).to_owned(),
         };
         let total_hosts = self.hosts.len();
         let position = if total_hosts == 0 {
@@ -1224,13 +1430,13 @@ impl Render for StatusDemo {
         let updated = self.updated_at.map(|at| format_ago(at.elapsed()));
 
         let (badge_text, badge_color) = if error.is_some() {
-            ("已断开", colors.danger)
+            (crate::i18n::t(StatusMsg::Disconnected), colors.danger)
         } else if one_shot {
-            ("刷新中…", colors.primary)
+            (crate::i18n::t(StatusMsg::Refreshing), colors.primary)
         } else if polling {
-            ("轮询中（每 2 秒）", colors.success)
+            (crate::i18n::t(StatusMsg::Polling), colors.success)
         } else {
-            ("未轮询", colors.muted)
+            (crate::i18n::t(StatusMsg::NotPolling), colors.muted)
         };
 
         let cycle_entity = entity.clone();
@@ -1243,15 +1449,27 @@ impl Render for StatusDemo {
                 .child(
                     h_flex()
                         .gap_3()
-                        .child(status_card("负载", load_card(&data, &colors), &colors))
-                        .child(status_card("内存", memory_card(&data, &colors), &colors)),
+                        .child(status_card(
+                            crate::i18n::t(StatusMsg::Load),
+                            load_card(&data, &colors),
+                            &colors,
+                        ))
+                        .child(status_card(
+                            crate::i18n::t(StatusMsg::Memory),
+                            memory_card(&data, &colors),
+                            &colors,
+                        )),
                 )
                 .child(
                     h_flex()
                         .gap_3()
-                        .child(status_card("磁盘（/）", disk_card(&data, &colors), &colors))
                         .child(status_card(
-                            "运行时间",
+                            crate::i18n::t(StatusMsg::DiskRoot),
+                            disk_card(&data, &colors),
+                            &colors,
+                        ))
+                        .child(status_card(
+                            crate::i18n::t(StatusMsg::Uptime),
                             uptime_card(&data, &colors),
                             &colors,
                         )),
@@ -1266,9 +1484,9 @@ impl Render for StatusDemo {
                         .text_sm()
                         .text_color(colors.muted)
                         .child(if error.is_some() {
-                            "采集失败：原因见下面"
+                            crate::i18n::t(StatusMsg::CollectFailed)
                         } else {
-                            "还没有数据：点「刷新」采集一次，或点「开始轮询」每 2 秒采集"
+                            crate::i18n::t(StatusMsg::NoData)
                         }),
                 )
                 .into_any_element(),
@@ -1288,7 +1506,7 @@ impl Render for StatusDemo {
                         div()
                             .text_lg()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("服务器状态"),
+                            .child(crate::i18n::t(StatusMsg::WindowTitle)),
                     )
                     .child(
                         div()
@@ -1302,7 +1520,7 @@ impl Render for StatusDemo {
                     .child(div().text_xs().text_color(colors.muted).child(position))
                     .child(
                         Button::new("status-cycle")
-                            .label("切换主机")
+                            .label(crate::i18n::t(StatusMsg::SwitchHost))
                             .disabled(total_hosts < 2)
                             .on_click(move |_, _, cx| {
                                 cycle_entity.update(cx, |this, cx| this.cycle_host(cx));
@@ -1310,7 +1528,7 @@ impl Render for StatusDemo {
                     )
                     .child(
                         Button::new("status-refresh")
-                            .label("刷新")
+                            .label(crate::i18n::t(StatusMsg::Refresh))
                             .on_click(move |_, _, cx| {
                                 refresh_entity.update(cx, |this, cx| this.refresh_clicked(cx));
                             }),
@@ -1318,9 +1536,9 @@ impl Render for StatusDemo {
                     .child(
                         Button::new("status-toggle")
                             .label(if polling {
-                                "停止轮询"
+                                crate::i18n::t(StatusMsg::StopPolling)
                             } else {
-                                "开始轮询"
+                                crate::i18n::t(StatusMsg::StartPolling)
                             })
                             .disabled(!has_host)
                             .on_click(move |_, _, cx| {
@@ -1342,7 +1560,7 @@ impl Render for StatusDemo {
                     div()
                         .text_sm()
                         .text_color(colors.muted)
-                        .child("还没有保存的主机；先在「主机」窗口里添加"),
+                        .child(crate::i18n::t(StatusMsg::NoSavedHosts)),
                 )
             })
             .child(cards)
@@ -1360,8 +1578,11 @@ impl Render for StatusDemo {
                             .child(div().text_xs().text_color(badge_color).child(badge_text))
                             .child(div().text_xs().text_color(colors.muted).child(
                                 match &updated {
-                                    Some(label) => format!("最后更新：{label}"),
-                                    None => "最后更新：—".to_owned(),
+                                    Some(label) => format!(
+                                        "{}{label}",
+                                        crate::i18n::t(StatusMsg::LastUpdatedPrefix)
+                                    ),
+                                    None => crate::i18n::t(StatusMsg::LastUpdatedNever).to_owned(),
                                 },
                             )),
                     )
@@ -1387,7 +1608,7 @@ mod tests {
     // 不 `use super::*`：那会把 `gpui_kit` 的 `test` 宏带进来，盖掉内建的 `#[test]`。
     use super::{
         PollHandle, Poller, ReportFn, ServerStatus, StatusHub, bar_fraction, format_ago,
-        format_uptime,
+        format_ago_in, format_uptime, format_uptime_in,
     };
 
     /// 假轮询器：只记录启动 / 停止和回调，不连网。
@@ -1479,16 +1700,54 @@ mod tests {
 
     #[test]
     fn formats_uptime_and_ago() {
-        assert_eq!(format_uptime(0), "0 分钟");
-        assert_eq!(format_uptime(59), "0 分钟");
-        assert_eq!(format_uptime(60), "1 分钟");
-        assert_eq!(format_uptime(3600), "1 小时 0 分钟");
-        assert_eq!(format_uptime(90_061), "1 天 1 小时 1 分钟");
+        use crate::i18n::Lang;
 
-        assert_eq!(format_ago(Duration::from_millis(300)), "刚刚");
-        assert_eq!(format_ago(Duration::from_secs(5)), "5 秒前");
-        assert_eq!(format_ago(Duration::from_secs(65)), "1 分 5 秒前");
-        assert_eq!(format_ago(Duration::from_secs(3700)), "1 小时 1 分前");
+        // 中文（默认语言）：保持原来的写法。
+        assert_eq!(format_uptime_in(Lang::Zh, 0), "0 分钟");
+        assert_eq!(format_uptime_in(Lang::Zh, 59), "0 分钟");
+        assert_eq!(format_uptime_in(Lang::Zh, 60), "1 分钟");
+        assert_eq!(format_uptime_in(Lang::Zh, 3600), "1 小时 0 分钟");
+        assert_eq!(format_uptime_in(Lang::Zh, 90_061), "1 天 1 小时 1 分钟");
+        assert_eq!(format_ago_in(Lang::Zh, Duration::from_millis(300)), "刚刚");
+        assert_eq!(format_ago_in(Lang::Zh, Duration::from_secs(5)), "5 秒前");
+        assert_eq!(
+            format_ago_in(Lang::Zh, Duration::from_secs(65)),
+            "1 分 5 秒前"
+        );
+        assert_eq!(
+            format_ago_in(Lang::Zh, Duration::from_secs(3700)),
+            "1 小时 1 分前"
+        );
+
+        // 英文：紧凑单位，不出现 "+1 items" 那种复数错。
+        assert_eq!(format_uptime_in(Lang::En, 0), "0m");
+        assert_eq!(format_uptime_in(Lang::En, 60), "1m");
+        assert_eq!(format_uptime_in(Lang::En, 3600), "1h 0m");
+        assert_eq!(format_uptime_in(Lang::En, 90_061), "1d 1h 1m");
+        assert_eq!(
+            format_ago_in(Lang::En, Duration::from_millis(300)),
+            "just now"
+        );
+        assert_eq!(format_ago_in(Lang::En, Duration::from_secs(5)), "5s ago");
+        assert_eq!(
+            format_ago_in(Lang::En, Duration::from_secs(65)),
+            "1m 5s ago"
+        );
+        assert_eq!(format_ago_in(Lang::En, Duration::from_secs(3600)), "1h ago");
+        assert_eq!(
+            format_ago_in(Lang::En, Duration::from_secs(3700)),
+            "1h 1m ago"
+        );
+
+        // 包一层：默认语言（测试里是中文）下公开函数和 _in 版本一致。
+        assert_eq!(
+            format_uptime(60),
+            format_uptime_in(crate::i18n::current(), 60)
+        );
+        assert_eq!(
+            format_ago(Duration::from_secs(5)),
+            format_ago_in(crate::i18n::current(), Duration::from_secs(5))
+        );
     }
 
     #[test]

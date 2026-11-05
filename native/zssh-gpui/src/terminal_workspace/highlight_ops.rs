@@ -2,6 +2,26 @@
 
 use super::*;
 
+/// 高亮面板底部那行提示的文案。
+#[derive(Clone, Copy, Debug)]
+enum HighlightOpsMsg {
+    RuleErrorPrefix,
+}
+
+impl crate::i18n::Msg for HighlightOpsMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::RuleErrorPrefix => "规则错误：",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::RuleErrorPrefix => "Rule error: ",
+        }
+    }
+}
+
 impl TerminalWorkspace {
     // ---- 高亮 ----
 
@@ -20,7 +40,12 @@ impl TerminalWorkspace {
             .statuses
             .iter()
             .find_map(|status| status.error.clone())
-            .map(|error| format!("规则错误：{error}"));
+            .map(|error| {
+                format!(
+                    "{}{error}",
+                    crate::i18n::t(HighlightOpsMsg::RuleErrorPrefix)
+                )
+            });
         self.highlight.status = notice.or(error);
         true
     }

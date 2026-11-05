@@ -69,14 +69,169 @@ pub struct GroupDialog {
     pub error: Option<String>,
 }
 
+/// 快速连接对话框和输入校验的文案。
+#[derive(Clone, Copy, Debug)]
+enum QuickMsg {
+    Empty,
+    Format,
+    Title,
+    Hint,
+    To,
+    NotePrefix,
+    NoteSuffix,
+    Password,
+    Cancel,
+    Next,
+    Connect,
+}
+
+impl crate::i18n::Msg for QuickMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::Empty => "请输入 用户名@主机地址",
+            Self::Format => "要写成 用户名@主机地址，比如 user@host:22",
+            Self::Title => "快速连接",
+            Self::Hint => "输入 用户名@主机地址（可以带 :端口），直接连，不会保存到主机库。",
+            Self::To => "连接到",
+            Self::NotePrefix => "直接连 ",
+            Self::NoteSuffix => "，不会保存到主机库。",
+            Self::Password => "密码",
+            Self::Cancel => "取消",
+            Self::Next => "下一步",
+            Self::Connect => "连接",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::Empty => "Enter user@host",
+            Self::Format => "Use user@host, for example user@host:22",
+            Self::Title => "Quick Connect",
+            Self::Hint => {
+                "Enter user@host (optionally with :port). It connects directly and is not saved to the host library."
+            }
+            Self::To => "Connect to",
+            Self::NotePrefix => "Connect directly to ",
+            Self::NoteSuffix => " — it is not saved to the host library.",
+            Self::Password => "Password",
+            Self::Cancel => "Cancel",
+            Self::Next => "Next",
+            Self::Connect => "Connect",
+        }
+    }
+}
+
+/// 删除确认、分组对话框的文案。
+#[derive(Clone, Copy, Debug)]
+enum ModalMsg {
+    DeleteHostTitlePrefix,
+    DeleteHostTitleSuffix,
+    DeleteGroupTitlePrefix,
+    DeleteGroupTitleSuffix,
+    DeleteHostBody,
+    DeleteConfirm,
+    GroupNameEmpty,
+    FlatFailedPrefix,
+    Cancel,
+    GotIt,
+    RenameGroup,
+    RenameUngrouped,
+    NewGroup,
+    TopLevel,
+    UngroupedNotePrefix,
+    UngroupedNoteMid,
+    UngroupedNoteSuffix,
+    NameLabel,
+    ParentLabel,
+    Save,
+    /// `i18n::count` 的中文量词（英文走单复数，用不到它）。
+    HostCountSuffix,
+    /// `i18n::count` 的中文量词（同上）。
+    ForwardCountSuffix,
+    /// 删除主机时「经它跳转的主机也会改成直连」那一段：`{n 台/ports}` + 本键 + 主机名 + 下一键。
+    ViaJumpMid,
+    ViaJumpSuffix,
+    /// 删除主机时「它的端口转发规则一起删」那一段。
+    ForwardPrefix,
+    ForwardSuffix,
+}
+
+impl crate::i18n::Msg for ModalMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::DeleteHostTitlePrefix => "删除主机「",
+            Self::DeleteHostTitleSuffix => "」？",
+            Self::DeleteGroupTitlePrefix => "删除分组「",
+            Self::DeleteGroupTitleSuffix => "」？",
+            Self::DeleteHostBody => "主机的记录会被删掉。",
+            Self::DeleteConfirm => "删除",
+            Self::GroupNameEmpty => "分组名称不能为空",
+            Self::FlatFailedPrefix => "没能记住「平铺」设置：",
+            Self::Cancel => "取消",
+            Self::GotIt => "知道了",
+            Self::RenameGroup => "重命名分组",
+            Self::RenameUngrouped => "重命名「未分组」",
+            Self::NewGroup => "新建分组",
+            Self::TopLevel => "（顶层）",
+            Self::UngroupedNotePrefix => {
+                "「未分组」不是一个真的分组，只是没分组的主机放在一起。这里会建一个这个名字的分组，把现在 "
+            }
+            Self::UngroupedNoteMid => " 台未分组的主机都移进去。",
+            Self::UngroupedNoteSuffix => "",
+            Self::NameLabel => "名称",
+            Self::ParentLabel => "上级分组",
+            Self::Save => "保存",
+            Self::HostCountSuffix => " 台",
+            Self::ForwardCountSuffix => " 条",
+            Self::ViaJumpMid => "经它跳转的主机（",
+            Self::ViaJumpSuffix => "）会改成直连目标地址。",
+            Self::ForwardPrefix => "\n它的 ",
+            Self::ForwardSuffix => "端口转发规则会一起删除。",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::DeleteHostTitlePrefix => "Delete host \"",
+            Self::DeleteHostTitleSuffix => "\"?",
+            Self::DeleteGroupTitlePrefix => "Delete group \"",
+            Self::DeleteGroupTitleSuffix => "\"?",
+            Self::DeleteHostBody => "The host record will be deleted.",
+            Self::DeleteConfirm => "Delete",
+            Self::GroupNameEmpty => "Group name cannot be empty",
+            Self::FlatFailedPrefix => "Could not save the \"flat layout\" setting: ",
+            Self::Cancel => "Cancel",
+            Self::GotIt => "Got it",
+            Self::RenameGroup => "Rename Group",
+            Self::RenameUngrouped => "Rename \"Ungrouped\"",
+            Self::NewGroup => "New Group",
+            Self::TopLevel => "(Top level)",
+            Self::UngroupedNotePrefix => {
+                "\"Ungrouped\" is not a real group — it is where hosts without a group are listed. Creating a group with this name will move all "
+            }
+            Self::UngroupedNoteMid => " ungrouped ",
+            Self::UngroupedNoteSuffix => " into it.",
+            Self::NameLabel => "Name",
+            Self::ParentLabel => "Parent group",
+            Self::Save => "Save",
+            Self::HostCountSuffix => " ",
+            Self::ForwardCountSuffix => " ",
+            Self::ViaJumpMid => " that use it as a jump host (",
+            Self::ViaJumpSuffix => ") will connect to their targets directly.",
+            Self::ForwardPrefix => "\nIts ",
+            Self::ForwardSuffix => " will be deleted too.",
+        }
+    }
+}
+
 /// 快速连接输入的检查：要写成 `user@host[:port]`，解析规则同主机页搜索框里回车（`parse_quick_target`）。
 pub fn quick_target_check(text: &str) -> Result<(), String> {
     let text = text.trim();
     if text.is_empty() {
-        return Err("请输入 用户名@主机地址".to_owned());
+        return Err(crate::i18n::t(QuickMsg::Empty).to_owned());
     }
     if !text.contains('@') {
-        return Err("要写成 用户名@主机地址，比如 user@host:22".to_owned());
+        return Err(crate::i18n::t(QuickMsg::Format).to_owned());
     }
     zssh_core::model::parse_quick_target(text)
         .map(|_| ())
@@ -242,28 +397,51 @@ impl MainWindow {
             &hosts,
             &identities,
         ));
-        let mut message = "主机的记录会被删掉。".to_owned();
+        let mut message = crate::i18n::t(ModalMsg::DeleteHostBody).to_owned();
         for line in credential_lines {
             message.push('\n');
             message.push_str(&line);
         }
         if !impact.via_jump.is_empty() {
+            let n = impact.via_jump.len();
+            // 名单的连接符跟着语言走（中文用顿号）。
+            let names = impact
+                .via_jump
+                .join(if crate::i18n::is_en() { ", " } else { "、" });
+            let count = crate::i18n::count(
+                n as u64,
+                crate::i18n::t(ModalMsg::HostCountSuffix),
+                "host",
+                "hosts",
+            );
             message.push_str(&format!(
-                "\n{} 台经它跳转的主机（{}）会改成直连目标地址。",
-                impact.via_jump.len(),
-                impact.via_jump.join("、")
+                "\n{count}{}{names}{}",
+                crate::i18n::t(ModalMsg::ViaJumpMid),
+                crate::i18n::t(ModalMsg::ViaJumpSuffix)
             ));
         }
         if impact.forwards > 0 {
+            let count = crate::i18n::count(
+                impact.forwards as u64,
+                crate::i18n::t(ModalMsg::ForwardCountSuffix),
+                "port forwarding rule",
+                "port forwarding rules",
+            );
             message.push_str(&format!(
-                "\n它的 {} 条端口转发规则会一起删除。",
-                impact.forwards
+                "{}{count}{}",
+                crate::i18n::t(ModalMsg::ForwardPrefix),
+                crate::i18n::t(ModalMsg::ForwardSuffix)
             ));
         }
         self.modal = Some(Modal::Confirm(Confirm {
-            title: format!("删除主机「{}」？", host.name),
+            title: format!(
+                "{}{}{}",
+                crate::i18n::t(ModalMsg::DeleteHostTitlePrefix),
+                host.name,
+                crate::i18n::t(ModalMsg::DeleteHostTitleSuffix)
+            ),
             message,
-            confirm_label: Some("删除".to_owned()),
+            confirm_label: Some(crate::i18n::t(ModalMsg::DeleteConfirm).to_owned()),
             destructive: true,
             action: ConfirmAction::DeleteHost(host_id),
         }));
@@ -281,9 +459,14 @@ impl MainWindow {
             return;
         };
         self.modal = Some(Modal::Confirm(Confirm {
-            title: format!("删除分组「{}」？", group.name),
+            title: format!(
+                "{}{}{}",
+                crate::i18n::t(ModalMsg::DeleteGroupTitlePrefix),
+                group.name,
+                crate::i18n::t(ModalMsg::DeleteGroupTitleSuffix)
+            ),
             message: delete_group_message(self.store.flat()).to_owned(),
-            confirm_label: Some("删除".to_owned()),
+            confirm_label: Some(crate::i18n::t(ModalMsg::DeleteConfirm).to_owned()),
             destructive: true,
             action: ConfirmAction::DeleteGroup(group_id),
         }));
@@ -449,7 +632,7 @@ impl MainWindow {
         };
         let name = dialog.name.read(cx).value().trim().to_owned();
         if name.is_empty() {
-            self.set_group_error("分组名称不能为空", cx);
+            self.set_group_error(crate::i18n::t(ModalMsg::GroupNameEmpty), cx);
             return;
         }
         let (existing, parent, adopt) =
@@ -482,7 +665,11 @@ impl MainWindow {
             // 「未分组」改名成功：树里不再有「未分组」这一行，之后不分组的主机直接排在树的根层。
             // 分组已经建好了，写开关失败只提示，不影响关窗口。
             if let Err(err) = self.store.set_flat(true) {
-                self.notice_error(&format!("没能记住「平铺」设置：{err}"), window, cx);
+                self.notice_error(
+                    &format!("{}{err}", crate::i18n::t(ModalMsg::FlatFailedPrefix)),
+                    window,
+                    cx,
+                );
             }
         }
         self.modal = None;
@@ -622,7 +809,7 @@ impl MainWindow {
                     .when(confirm.confirm_label.is_some(), |d| {
                         d.child(text_button(
                             "modal-cancel",
-                            "取消",
+                            crate::i18n::t(ModalMsg::Cancel),
                             ButtonLook::Outline,
                             move |_, window, cx| {
                                 entity_cancel.update(cx, |this, cx| this.close_modal(window, cx));
@@ -634,7 +821,7 @@ impl MainWindow {
                         confirm
                             .confirm_label
                             .clone()
-                            .unwrap_or_else(|| "知道了".to_owned()),
+                            .unwrap_or_else(|| crate::i18n::t(ModalMsg::GotIt).to_owned()),
                         look,
                         move |_, window, cx| {
                             entity_ok.update(cx, |this, cx| this.confirm_modal(window, cx));
@@ -652,11 +839,11 @@ impl MainWindow {
     ) -> AnyElement {
         let entity = cx.entity();
         let title = if dialog.group.is_some() {
-            "重命名分组"
+            crate::i18n::t(ModalMsg::RenameGroup)
         } else if dialog.adopt_ungrouped {
-            "重命名「未分组」"
+            crate::i18n::t(ModalMsg::RenameUngrouped)
         } else {
-            "新建分组"
+            crate::i18n::t(ModalMsg::NewGroup)
         };
         let groups = self.store.groups();
         let forbidden = dialog
@@ -665,7 +852,10 @@ impl MainWindow {
             .map(|g| forbidden_parents(groups, g.id))
             .unwrap_or_default();
         let ordered = flatten_groups(groups);
-        let mut choices = vec![Choice::new("（顶层）", dialog.parent.is_none())];
+        let mut choices = vec![Choice::new(
+            crate::i18n::t(ModalMsg::TopLevel),
+            dialog.parent.is_none(),
+        )];
         let mut targets: Vec<Option<i64>> = vec![None];
         for (group, depth) in &ordered {
             if forbidden.contains(&group.id) {
@@ -677,11 +867,11 @@ impl MainWindow {
             targets.push(Some(group.id));
         }
         let current = match dialog.parent {
-            None => "（顶层）".to_owned(),
-            Some(id) => groups
-                .iter()
-                .find(|g| g.id == id)
-                .map_or_else(|| "（顶层）".to_owned(), |g| g.name.clone()),
+            None => crate::i18n::t(ModalMsg::TopLevel).to_owned(),
+            Some(id) => groups.iter().find(|g| g.id == id).map_or_else(
+                || crate::i18n::t(ModalMsg::TopLevel).to_owned(),
+                |g| g.name.clone(),
+            ),
         };
         let pick = {
             let entity = entity.clone();
@@ -701,23 +891,34 @@ impl MainWindow {
         let save = entity.clone();
         v_flex()
             .gap_4()
-            .child(
-                div()
-                    .typo(Role::GroupTitle, tokens)
-                    .child(title),
-            )
+            .child(div().typo(Role::GroupTitle, tokens).child(title))
             .when(dialog.adopt_ungrouped, |d| {
-                d.child(note(
+                let n = dialog.ungrouped_count;
+                let text = if crate::i18n::is_en() {
                     format!(
-                        "「未分组」不是一个真的分组，只是没分组的主机放在一起。这里会建一个这个名字的分组，把现在 {} 台未分组的主机都移进去。",
-                        dialog.ungrouped_count
-                    ),
-                    tokens,
-                ))
+                        "{}{n}{}{}{}",
+                        crate::i18n::t(ModalMsg::UngroupedNotePrefix),
+                        crate::i18n::t(ModalMsg::UngroupedNoteMid),
+                        crate::i18n::plural(n as u64, "host", "hosts"),
+                        crate::i18n::t(ModalMsg::UngroupedNoteSuffix)
+                    )
+                } else {
+                    format!(
+                        "{}{n}{}",
+                        crate::i18n::t(ModalMsg::UngroupedNotePrefix),
+                        crate::i18n::t(ModalMsg::UngroupedNoteMid)
+                    )
+                };
+                d.child(note(text, tokens))
             })
-            .child(field("名称", None, Input::new(&dialog.name), tokens))
             .child(field(
-                "上级分组",
+                crate::i18n::t(ModalMsg::NameLabel),
+                None,
+                Input::new(&dialog.name),
+                tokens,
+            ))
+            .child(field(
+                crate::i18n::t(ModalMsg::ParentLabel),
                 None,
                 select("group-parent", current, choices, pick),
                 tokens,
@@ -734,7 +935,7 @@ impl MainWindow {
                     .justify_end()
                     .child(text_button(
                         "modal-cancel",
-                        "取消",
+                        crate::i18n::t(ModalMsg::Cancel),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             cancel.update(cx, |this, cx| this.close_modal(window, cx));
@@ -742,7 +943,7 @@ impl MainWindow {
                     ))
                     .child(text_button(
                         "modal-ok",
-                        "保存",
+                        crate::i18n::t(ModalMsg::Save),
                         ButtonLook::Primary,
                         move |_, window, cx| {
                             save.update(cx, |this, cx| this.confirm_modal(window, cx));
@@ -765,14 +966,15 @@ impl MainWindow {
             .child(
                 v_flex()
                     .gap_1p5()
-                    .child(div().typo(Role::GroupTitle, tokens).child("快速连接"))
-                    .child(note(
-                        "输入 用户名@主机地址（可以带 :端口），直接连，不会保存到主机库。",
-                        tokens,
-                    )),
+                    .child(
+                        div()
+                            .typo(Role::GroupTitle, tokens)
+                            .child(crate::i18n::t(QuickMsg::Title)),
+                    )
+                    .child(note(crate::i18n::t(QuickMsg::Hint), tokens)),
             )
             .child(field(
-                "连接到",
+                crate::i18n::t(QuickMsg::To),
                 None,
                 Input::new(&self.quick_target),
                 tokens,
@@ -789,7 +991,7 @@ impl MainWindow {
                     .justify_end()
                     .child(text_button(
                         "modal-cancel",
-                        "取消",
+                        crate::i18n::t(QuickMsg::Cancel),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             cancel.update(cx, |this, cx| this.close_modal(window, cx));
@@ -797,7 +999,7 @@ impl MainWindow {
                     ))
                     .child(text_button(
                         "modal-ok",
-                        "下一步",
+                        crate::i18n::t(QuickMsg::Next),
                         ButtonLook::Primary,
                         move |_, window, cx| {
                             next.update(cx, |this, cx| this.confirm_modal(window, cx));
@@ -820,20 +1022,34 @@ impl MainWindow {
             .child(
                 v_flex()
                     .gap_1p5()
-                    .child(div().typo(Role::GroupTitle, tokens).child("快速连接"))
+                    .child(
+                        div()
+                            .typo(Role::GroupTitle, tokens)
+                            .child(crate::i18n::t(QuickMsg::Title)),
+                    )
                     .child(note(
-                        format!("直接连 {}，不会保存到主机库。", dialog.target),
+                        format!(
+                            "{}{}{}",
+                            crate::i18n::t(QuickMsg::NotePrefix),
+                            dialog.target,
+                            crate::i18n::t(QuickMsg::NoteSuffix)
+                        ),
                         tokens,
                     )),
             )
-            .child(field("密码", None, Input::new(&dialog.password), tokens))
+            .child(field(
+                crate::i18n::t(QuickMsg::Password),
+                None,
+                Input::new(&dialog.password),
+                tokens,
+            ))
             .child(
                 h_flex()
                     .gap_2()
                     .justify_end()
                     .child(text_button(
                         "modal-cancel",
-                        "取消",
+                        crate::i18n::t(QuickMsg::Cancel),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             cancel.update(cx, |this, cx| this.close_modal(window, cx));
@@ -841,7 +1057,7 @@ impl MainWindow {
                     ))
                     .child(text_button(
                         "modal-ok",
-                        "连接",
+                        crate::i18n::t(QuickMsg::Connect),
                         ButtonLook::Primary,
                         move |_, window, cx| {
                             connect.update(cx, |this, cx| this.confirm_modal(window, cx));

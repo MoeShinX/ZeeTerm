@@ -32,6 +32,26 @@ use zssh_core::ssh::BoxFuture;
 /// 生产里的巡查间隔：对「到点关闭」的精度够用，一条连接每秒只加锁四次。
 pub const PRODUCTION_POLL: Duration = Duration::from_millis(250);
 
+/// 连接池自己的错误文案。
+#[derive(Clone, Copy, Debug)]
+enum ConnPoolMsg {
+    DialTaskEnded,
+}
+
+impl crate::i18n::Msg for ConnPoolMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::DialTaskEnded => "连接任务意外结束",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::DialTaskEnded => "The connection task ended unexpectedly",
+        }
+    }
+}
+
 /// 关闭一条空闲连接最多等多久：对端不回应也不能拖住后面的巡查。
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -331,7 +351,7 @@ impl<T: PoolItem> Joined<T> {
                 // 发送端没了而没有结果：握手任务被中止了或 panic 了。
                 return match receiver.borrow().clone() {
                     Some(result) => result,
-                    None => Err("连接任务意外结束".to_owned()),
+                    None => Err(crate::i18n::t(ConnPoolMsg::DialTaskEnded).to_owned()),
                 };
             }
         }

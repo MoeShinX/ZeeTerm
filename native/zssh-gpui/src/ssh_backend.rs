@@ -121,11 +121,44 @@ pub(crate) fn runtime() -> Result<&'static Runtime, String> {
         .enable_all()
         .thread_name("zssh-ssh")
         .build()
-        .map_err(|err| format!("创建 SSH 运行时失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(BackendMsg::RuntimeCreateFailedPrefix)))?;
     let _ = RUNTIME.set(runtime);
     RUNTIME
         .get()
-        .ok_or_else(|| "SSH 运行时初始化失败".to_owned())
+        .ok_or_else(|| t(BackendMsg::RuntimeInitFailed).to_owned())
+}
+
+use crate::i18n::{Msg, t};
+
+/// SSH 后端自己的文案（运行时失败、往终端里写的提示）。
+#[derive(Clone, Copy, Debug)]
+enum BackendMsg {
+    RuntimeCreateFailedPrefix,
+    RuntimeInitFailed,
+    InputDropped,
+    ConnectTaskEnded,
+}
+
+impl Msg for BackendMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::RuntimeCreateFailedPrefix => "创建 SSH 运行时失败：",
+            Self::RuntimeInitFailed => "SSH 运行时初始化失败",
+            Self::InputDropped => "\r\n\x1b[31m[远端暂时不接收输入，已丢弃部分按键]\x1b[0m\r\n",
+            Self::ConnectTaskEnded => "连接任务意外结束",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::RuntimeCreateFailedPrefix => "Failed to create the SSH runtime: ",
+            Self::RuntimeInitFailed => "SSH runtime initialization failed",
+            Self::InputDropped => {
+                "\r\n\x1b[31m[The remote side is not accepting input right now; some keystrokes were dropped]\x1b[0m\r\n"
+            }
+            Self::ConnectTaskEnded => "The connection task ended unexpectedly",
+        }
+    }
 }
 
 /// 真实会话写端：命令转给 SSH 会话任务。
@@ -202,8 +235,7 @@ impl SessionBackend for SshBackend {
                     self.warned = true;
                     let _ = self.notices.send(SessionEvent::Notice {
                         generation: self.generation,
-                        text: "\r\n\x1b[31m[远端暂时不接收输入，已丢弃部分按键]\x1b[0m\r\n"
-                            .to_owned(),
+                        text: t(BackendMsg::InputDropped).to_owned(),
                     });
                 }
             }
@@ -281,7 +313,7 @@ impl PendingOpen {
             Ok(result) => Some(result),
             Err(std::sync::mpsc::TryRecvError::Empty) => None,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Some(Err("连接任务意外结束".to_owned()))
+                Some(Err(t(BackendMsg::ConnectTaskEnded).to_owned()))
             }
         }
     }

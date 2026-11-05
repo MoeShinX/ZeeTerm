@@ -75,7 +75,7 @@ impl LiveSftp {
         let known_hosts =
             std::env::temp_dir().join(format!("zssh-live-kh-{}-{tag}", std::process::id()));
         let hop = ChainHop {
-            label: "测试服务器".to_owned(),
+            label: "test server".to_owned(),
             host,
             port,
             username: user,
@@ -92,12 +92,12 @@ impl LiveSftp {
             let connection = Arc::new(
                 Connection::connect_chain(vec![hop], Arc::new(TrustOnce))
                     .await
-                    .map_err(|err| format!("连接测试服务器失败：{err}"))?,
+                    .map_err(|err| format!("could not connect to the test server: {err}"))?,
             );
             let channel = Arc::new(
                 SftpChannel::open(&connection)
                     .await
-                    .map_err(|err| format!("开 SFTP 通道失败：{err}"))?,
+                    .map_err(|err| format!("could not open the SFTP channel: {err}"))?,
             );
             let dir = format!("/tmp/zssh-live-{tag}-{}", std::process::id());
             // 上一次异常退出可能留下同名目录：先清掉再建。
@@ -105,7 +105,7 @@ impl LiveSftp {
             channel
                 .create_dir(&dir)
                 .await
-                .map_err(|err| format!("建专用目录失败：{err}"))?;
+                .map_err(|err| format!("could not create the scratch directory: {err}"))?;
             Ok::<_, String>((connection, channel, dir))
         });
         match setup {
@@ -173,7 +173,7 @@ impl LiveShell {
         let known_hosts =
             std::env::temp_dir().join(format!("zssh-live-kh-{}-{tag}", std::process::id()));
         let hop = ChainHop {
-            label: "测试服务器".to_owned(),
+            label: "test server".to_owned(),
             host,
             port,
             username: user,
@@ -189,7 +189,7 @@ impl LiveShell {
         let connected = runtime.block_on(async {
             Connection::connect_chain(vec![hop], Arc::new(TrustOnce))
                 .await
-                .map_err(|err| format!("连接测试服务器失败：{err}"))
+                .map_err(|err| format!("could not connect to the test server: {err}"))
         });
         match connected {
             Ok(connection) => {

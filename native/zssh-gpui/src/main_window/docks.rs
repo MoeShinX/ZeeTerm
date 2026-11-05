@@ -50,6 +50,8 @@ enum DockMsg {
     SftpNotConnected,
     AiAssistant,
     FilePanelTitle,
+    /// 传给 `ssh_only_notice` 的功能名（后面直接接「仅 SSH 主机可用」）。
+    FilePanelFeature,
     ShowLocalBar,
     LocalBar,
     OpenInNewTab,
@@ -77,6 +79,7 @@ impl Msg for DockMsg {
             Self::SftpNotConnected => "这个 SFTP 还没连上，连上之后再移",
             Self::AiAssistant => "AI 助手",
             Self::FilePanelTitle => "文件",
+            Self::FilePanelFeature => "文件面板",
             Self::ShowLocalBar => "显示本地栏",
             Self::LocalBar => "本地",
             Self::OpenInNewTab => "在新标签中打开",
@@ -108,6 +111,7 @@ impl Msg for DockMsg {
             }
             Self::AiAssistant => "AI Assistant",
             Self::FilePanelTitle => "Files",
+            Self::FilePanelFeature => "File panel — ",
             Self::ShowLocalBar => "Show Local Pane",
             Self::LocalBar => "Local",
             Self::OpenInNewTab => "Open in New Tab",
@@ -330,7 +334,7 @@ impl MainWindow {
         let was_open = self.docks.sftp_open_for(Some(tab));
         if !was_open && !self.active_caps(cx).sftp {
             let host = self.workspace.read(cx).active_host_id();
-            self.ssh_only_notice(host, "文件面板", window, cx);
+            self.ssh_only_notice(host, t(DockMsg::FilePanelFeature), window, cx);
             return;
         }
         self.docks.set_sftp_open_for(tab, !was_open);

@@ -49,13 +49,162 @@ pub struct BarUi {
     pub compose_live: Option<f32>,
 }
 
+/// 撰写栏自己的文案（输入框占位）。
+#[derive(Clone, Copy, Debug)]
+enum ComposeMsg {
+    Placeholder,
+}
+
+impl crate::i18n::Msg for ComposeMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::Placeholder => {
+                "输入命令，Enter 发送到当前窗格，Ctrl+Enter 发到所有分屏，Shift+Enter 换行"
+            }
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::Placeholder => {
+                "Type a command. Enter sends to the active pane, Ctrl+Enter to all split panes, Shift+Enter for a new line"
+            }
+        }
+    }
+}
+
+/// 快捷命令栏和撰写栏的界面文案。
+#[derive(Clone, Copy, Debug)]
+enum BarsMsg {
+    ComposerName,
+    Send,
+    GroupAll,
+    ManageTip,
+    CreateTip,
+    GroupTip,
+    EmptyHint,
+    BroadcastOn,
+    BroadcastOff,
+    BroadcastDisabledTip,
+    BroadcastOnTip,
+    BroadcastOffTip,
+    EnterSuffix,
+    CtrlClickHint,
+    SendAll,
+    Edit,
+    Delete,
+    ComposeBroadcastTip,
+    ComposeDisabledTip,
+    ComposeAllTip,
+    ComposePaneTip,
+    AllPanes,
+    ThisPane,
+    SendAllTip,
+    SendPaneTip,
+    SaveFailedPrefix,
+    NoLivePane,
+    PaneNotConnected,
+}
+
+impl crate::i18n::Msg for BarsMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::ComposerName => "撰写栏",
+            Self::Send => "发送",
+            Self::GroupAll => "全部",
+            Self::ManageTip => "管理快捷命令",
+            Self::CreateTip => "新建快捷命令",
+            Self::GroupTip => "分组",
+            Self::EmptyHint => "还没有快捷命令，点这里添加常用命令（例如查看端口、系统更新）",
+            Self::BroadcastOn => "广播中",
+            Self::BroadcastOff => "广播",
+            Self::BroadcastDisabledTip => {
+                "输入广播：先分屏（Ctrl+Shift+D / E）再开，键盘输入会同时发到所有分屏"
+            }
+            Self::BroadcastOnTip => {
+                "正在广播：键盘输入同时发到这个标签的所有分屏（点一下关闭，Ctrl+Shift+B）"
+            }
+            Self::BroadcastOffTip => "输入广播：键盘输入同时发到这个标签的所有分屏（Ctrl+Shift+B）",
+            Self::EnterSuffix => "\n（只填入，不回车）",
+            Self::CtrlClickHint => "\nCtrl+单击：发到所有分屏",
+            Self::SendAll => "发到这个标签的所有分屏",
+            Self::Edit => "编辑",
+            Self::Delete => "删除",
+            Self::ComposeBroadcastTip => {
+                "这个标签正在广播输入，Enter 和发送按钮实际发到所有分屏（先关广播才能只发当前窗格）"
+            }
+            Self::ComposeDisabledTip => "发送目标：先分屏（Ctrl+Shift+D / E）才能选「所有分屏」",
+            Self::ComposeAllTip => {
+                "Enter 和发送按钮现在发到这个标签的所有分屏（点一下改回当前窗格）"
+            }
+            Self::ComposePaneTip => "Enter 和发送按钮现在发到当前窗格（点一下改成所有分屏）",
+            Self::AllPanes => "所有分屏",
+            Self::ThisPane => "当前窗格",
+            Self::SendAllTip => "发送到所有分屏（Enter）",
+            Self::SendPaneTip => "发送到当前窗格（Enter）；Ctrl+Enter 发到所有分屏",
+            Self::SaveFailedPrefix => "保存设置失败：",
+            Self::NoLivePane => "这个标签里还没有连上的窗格",
+            Self::PaneNotConnected => "当前窗格还没连上",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::ComposerName => "Composer",
+            Self::Send => "Send",
+            Self::GroupAll => "All",
+            Self::ManageTip => "Manage snippets",
+            Self::CreateTip => "New snippet",
+            Self::GroupTip => "Group",
+            Self::EmptyHint => {
+                "No snippets yet — click to add a frequent command (for example, check ports or system updates)"
+            }
+            Self::BroadcastOn => "Broadcasting",
+            Self::BroadcastOff => "Broadcast",
+            Self::BroadcastDisabledTip => {
+                "Input broadcast: split the pane first (Ctrl+Shift+D / E); keystrokes then go to every split pane"
+            }
+            Self::BroadcastOnTip => {
+                "Broadcasting: keystrokes go to every split pane in this tab (click to turn off, Ctrl+Shift+B)"
+            }
+            Self::BroadcastOffTip => {
+                "Input broadcast: send keystrokes to every split pane in this tab (Ctrl+Shift+B)"
+            }
+            Self::EnterSuffix => "\n(fills in without pressing Enter)",
+            Self::CtrlClickHint => "\nCtrl+Click: send to all split panes",
+            Self::SendAll => "Send to all split panes in this tab",
+            Self::Edit => "Edit",
+            Self::Delete => "Delete",
+            Self::ComposeBroadcastTip => {
+                "This tab is broadcasting input; Enter and the send button go to all split panes (turn broadcast off to send to the active pane only)"
+            }
+            Self::ComposeDisabledTip => {
+                "Send target: split the pane first (Ctrl+Shift+D / E) to choose “All panes”"
+            }
+            Self::ComposeAllTip => {
+                "Enter and the send button now go to all split panes in this tab (click to switch back to the active pane)"
+            }
+            Self::ComposePaneTip => {
+                "Enter and the send button now go to the active pane (click to send to all split panes)"
+            }
+            Self::AllPanes => "All panes",
+            Self::ThisPane => "Active pane",
+            Self::SendAllTip => "Send to all split panes (Enter)",
+            Self::SendPaneTip => {
+                "Send to the active pane (Enter); Ctrl+Enter sends to all split panes"
+            }
+            Self::SaveFailedPrefix => "Failed to save settings: ",
+            Self::NoLivePane => "No connected pane in this tab yet",
+            Self::PaneNotConnected => "The active pane is not connected yet",
+        }
+    }
+}
+
 impl BarUi {
     pub fn new(window: &mut Window, cx: &mut Context<MainWindow>) -> Self {
         let compose = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .placeholder(
-                    "输入命令，Enter 发送到当前窗格，Ctrl+Enter 发到所有分屏，Shift+Enter 换行",
-                )
+                .placeholder(crate::i18n::t(ComposeMsg::Placeholder))
                 .submit_on_enter(true)
                 .auto_grow(1, 5)
         });
@@ -147,7 +296,11 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         if let Err(err) = self.store.write_bar_setting(write) {
-            self.notice(&format!("保存设置失败：{err}"), window, cx);
+            self.notice(
+                &format!("{}{err}", crate::i18n::t(BarsMsg::SaveFailedPrefix)),
+                window,
+                cx,
+            );
         }
         cx.notify();
     }
@@ -240,7 +393,15 @@ impl MainWindow {
             return;
         }
         let all = ctrl || self.bars.compose_all || self.workspace.read(cx).broadcast_on();
-        self.send_text("撰写栏", &text, true, all, Some(text.clone()), window, cx);
+        self.send_text(
+            crate::i18n::t(BarsMsg::ComposerName),
+            &text,
+            true,
+            all,
+            Some(text.clone()),
+            window,
+            cx,
+        );
     }
 
     /// 快捷命令栏和撰写栏共用的发送流程（0.2.14 `sendCommandToTab`）。
@@ -263,7 +424,7 @@ impl MainWindow {
             self.modal = Some(Modal::Confirm(Confirm {
                 title,
                 message,
-                confirm_label: Some("发送".to_owned()),
+                confirm_label: Some(crate::i18n::t(BarsMsg::Send).to_owned()),
                 destructive: false,
                 action: ConfirmAction::SendCommand { data, all, compose },
             }));
@@ -286,9 +447,9 @@ impl MainWindow {
             .update(cx, |ws, cx| ws.send_to_tab(data, all, cx));
         if sent == 0 {
             let message = if all {
-                "这个标签里还没有连上的窗格"
+                crate::i18n::t(BarsMsg::NoLivePane)
             } else {
-                "当前窗格还没连上"
+                crate::i18n::t(BarsMsg::PaneNotConnected)
             };
             self.notice(message, window, cx);
         }
@@ -525,7 +686,7 @@ impl MainWindow {
                 .collect();
         let group_label: SharedString =
             if settings.group.is_empty() || !groups.contains(&settings.group) {
-                "全部".into()
+                crate::i18n::t(BarsMsg::GroupAll).into()
             } else {
                 settings.group.clone().into()
             };
@@ -554,7 +715,9 @@ impl MainWindow {
                 .text_color(if managing { text } else { muted })
                 .when(managing, |d| d.bg(hover))
                 .hover(move |style| style.bg(hover).text_color(text))
-                .tooltip(|window, cx| Tooltip::new("管理快捷命令").build(window, cx))
+                .tooltip(|window, cx| {
+                    Tooltip::new(crate::i18n::t(BarsMsg::ManageTip)).build(window, cx)
+                })
                 .child(Icon::new(Ico::ListChecks).size_4())
                 .on_click(move |_, window, cx| {
                     entity.update(cx, |this, cx| this.toggle_quick_panel(window, cx));
@@ -574,7 +737,9 @@ impl MainWindow {
                 .cursor_pointer()
                 .text_color(muted)
                 .hover(move |style| style.bg(hover).text_color(text))
-                .tooltip(|window, cx| Tooltip::new("新建快捷命令").build(window, cx))
+                .tooltip(|window, cx| {
+                    Tooltip::new(crate::i18n::t(BarsMsg::CreateTip)).build(window, cx)
+                })
                 .child(Icon::new(IconName::Plus).size_4())
                 .on_click(move |_, window, cx| {
                     entity.update(cx, |this, cx| this.open_quick_new(window, cx));
@@ -588,15 +753,18 @@ impl MainWindow {
                 .compact()
                 .label(group_label)
                 .dropdown_caret(true)
-                .tooltip("分组")
+                .tooltip(crate::i18n::t(BarsMsg::GroupTip))
                 .dropdown_menu(move |menu, _window, _cx| {
                     let mut menu = menu.min_w(px(140.0)).max_h(px(280.0)).scrollable(true);
                     let all = entity.clone();
                     menu = menu.item(
-                        menu_kit::choice("全部", current.is_empty() || !groups.contains(&current))
-                            .on_click(move |_: &ClickEvent, window, cx| {
-                                all.update(cx, |this, cx| this.set_quick_group("", window, cx));
-                            }),
+                        menu_kit::choice(
+                            crate::i18n::t(BarsMsg::GroupAll),
+                            current.is_empty() || !groups.contains(&current),
+                        )
+                        .on_click(move |_: &ClickEvent, window, cx| {
+                            all.update(cx, |this, cx| this.set_quick_group("", window, cx));
+                        }),
                     );
                     for name in &groups {
                         let target = entity.clone();
@@ -630,7 +798,7 @@ impl MainWindow {
                 .truncate()
                 .text_color(muted)
                 .hover(move |style| style.bg(hover).text_color(text))
-                .child("还没有快捷命令，点这里添加常用命令（例如查看端口、系统更新）")
+                .child(crate::i18n::t(BarsMsg::EmptyHint))
                 .on_click(move |_, window, cx| {
                     entity.update(cx, |this, cx| this.open_quick_new(window, cx));
                 })
@@ -681,16 +849,20 @@ impl MainWindow {
                 })
                 .tooltip(move |window, cx| {
                     Tooltip::new(if disabled {
-                        "输入广播：先分屏（Ctrl+Shift+D / E）再开，键盘输入会同时发到所有分屏"
+                        crate::i18n::t(BarsMsg::BroadcastDisabledTip)
                     } else if broadcast {
-                        "正在广播：键盘输入同时发到这个标签的所有分屏（点一下关闭，Ctrl+Shift+B）"
+                        crate::i18n::t(BarsMsg::BroadcastOnTip)
                     } else {
-                        "输入广播：键盘输入同时发到这个标签的所有分屏（Ctrl+Shift+B）"
+                        crate::i18n::t(BarsMsg::BroadcastOffTip)
                     })
                     .build(window, cx)
                 })
                 .child(Icon::new(Ico::Radio).size_3p5())
-                .child(if broadcast { "广播中" } else { "广播" })
+                .child(if broadcast {
+                    crate::i18n::t(BarsMsg::BroadcastOn)
+                } else {
+                    crate::i18n::t(BarsMsg::BroadcastOff)
+                })
                 .on_click(move |_, _window, cx| {
                     if !disabled {
                         entity.update(cx, |this, cx| {
@@ -743,13 +915,14 @@ impl MainWindow {
         let id = command.id.clone();
         let name: SharedString = command.name.clone().into();
         let tooltip: SharedString = format!(
-            "{}{}\nCtrl+单击：发到所有分屏",
+            "{}{}{}",
             command.command,
             if command.enter {
                 ""
             } else {
-                "\n（只填入，不回车）"
-            }
+                crate::i18n::t(BarsMsg::EnterSuffix)
+            },
+            crate::i18n::t(BarsMsg::CtrlClickHint)
         )
         .into();
         let run = entity.clone();
@@ -805,34 +978,34 @@ impl MainWindow {
                     menu_id.clone(),
                 );
                 menu.item(
-                    menu_kit::row(&tokens, "发送", Ico::SendHorizontal).on_click(
-                        move |_, window, cx| {
+                    menu_kit::row(&tokens, crate::i18n::t(BarsMsg::Send), Ico::SendHorizontal)
+                        .on_click(move |_, window, cx| {
                             let id = a.clone();
                             send.update(cx, |this, cx| {
                                 this.run_quick_command(&id, false, window, cx);
                             });
-                        },
-                    ),
+                        }),
                 )
                 .item(
-                    menu_kit::row(&tokens, "发到这个标签的所有分屏", Ico::Columns2).on_click(
-                        move |_, window, cx| {
+                    menu_kit::row(&tokens, crate::i18n::t(BarsMsg::SendAll), Ico::Columns2)
+                        .on_click(move |_, window, cx| {
                             let id = b.clone();
                             send_all.update(cx, |this, cx| {
                                 this.run_quick_command(&id, true, window, cx);
                             });
-                        },
-                    ),
+                        }),
                 )
                 .item(PopupMenuItem::separator())
                 .item(
-                    menu_kit::row(&tokens, "编辑", Ico::Pencil).on_click(move |_, window, cx| {
-                        let id = c.clone();
-                        edit.update(cx, |this, cx| this.open_quick_edit(&id, window, cx));
-                    }),
+                    menu_kit::row(&tokens, crate::i18n::t(BarsMsg::Edit), Ico::Pencil).on_click(
+                        move |_, window, cx| {
+                            let id = c.clone();
+                            edit.update(cx, |this, cx| this.open_quick_edit(&id, window, cx));
+                        },
+                    ),
                 )
                 .item(
-                    menu_kit::row(&tokens, "删除", Ico::Trash)
+                    menu_kit::row(&tokens, crate::i18n::t(BarsMsg::Delete), Ico::Trash)
                         .danger()
                         .on_click(move |_, _window, cx| {
                             let id = d.clone();
@@ -887,26 +1060,31 @@ impl MainWindow {
                 .rounded_md()
                 .when(toggle_disabled, |d| d.opacity(0.4))
                 .when(!toggle_disabled, |d| d.cursor_pointer())
-                .when(effective_all, |d| d.bg(tint(0xF59E0B, 0x33)).text_color(warn))
+                .when(effective_all, |d| {
+                    d.bg(tint(0xF59E0B, 0x33)).text_color(warn)
+                })
                 .when(!effective_all, |d| {
-                    d.text_color(muted)
-                        .when(!toggle_disabled, |d| {
-                            d.hover(move |style| style.bg(hover).text_color(text))
-                        })
+                    d.text_color(muted).when(!toggle_disabled, |d| {
+                        d.hover(move |style| style.bg(hover).text_color(text))
+                    })
                 })
                 .tooltip(move |window, cx| {
                     Tooltip::new(if broadcast {
-                        "这个标签正在广播输入，Enter 和发送按钮实际发到所有分屏（先关广播才能只发当前窗格）"
+                        crate::i18n::t(BarsMsg::ComposeBroadcastTip)
                     } else if toggle_disabled {
-                        "发送目标：先分屏（Ctrl+Shift+D / E）才能选「所有分屏」"
+                        crate::i18n::t(BarsMsg::ComposeDisabledTip)
                     } else if effective_all {
-                        "Enter 和发送按钮现在发到这个标签的所有分屏（点一下改回当前窗格）"
+                        crate::i18n::t(BarsMsg::ComposeAllTip)
                     } else {
-                        "Enter 和发送按钮现在发到当前窗格（点一下改成所有分屏）"
+                        crate::i18n::t(BarsMsg::ComposePaneTip)
                     })
                     .build(window, cx)
                 })
-                .child(if effective_all { "所有分屏" } else { "当前窗格" })
+                .child(if effective_all {
+                    crate::i18n::t(BarsMsg::AllPanes)
+                } else {
+                    crate::i18n::t(BarsMsg::ThisPane)
+                })
                 .on_click(move |_, _window, cx| {
                     if toggle_disabled {
                         return;
@@ -936,9 +1114,9 @@ impl MainWindow {
                 })
                 .tooltip(move |window, cx| {
                     Tooltip::new(if effective_all {
-                        "发送到所有分屏（Enter）"
+                        crate::i18n::t(BarsMsg::SendAllTip)
                     } else {
-                        "发送到当前窗格（Enter）；Ctrl+Enter 发到所有分屏"
+                        crate::i18n::t(BarsMsg::SendPaneTip)
                     })
                     .build(window, cx)
                 })

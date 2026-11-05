@@ -19,6 +19,224 @@ use super::{Phase, RemoteEditor};
 use crate::app_theme::Tokens;
 use crate::main_window::widgets::{ButtonLook, text_button};
 
+/// 编辑器视图的文案。
+#[derive(Clone, Copy, Debug)]
+enum ViewMsg {
+    PhaseConnecting,
+    PhaseLoading,
+    PhaseFailed,
+    WrapOn,
+    Wrap,
+    NoWrap,
+    Undo,
+    Redo,
+    Find,
+    Replace,
+    Goto,
+    SaveAs,
+    Saving,
+    Save,
+    Reconnecting,
+    DisconnectedKeep,
+    Reconnect,
+    ConflictPending,
+    HandleConflict,
+    RemoteDeleted,
+    RemoteChanged,
+    SaveAsNew,
+    DiscardMine,
+    OverwriteRemote,
+    Later,
+    WriteInPlace,
+    SaveAnyway,
+    Cancel,
+    CloseTip,
+    Discard,
+    Recover,
+    CopyToClipboard,
+    SaveAsLocal,
+    UnsavedKept,
+    SaveAndClose,
+    DontSave,
+    GotoTitle,
+    GotoHint,
+    SavingAs,
+    SaveAsHint,
+    Unsaved,
+    RemoteChangedSizePrefix,
+    RemoteChangedSizeClose,
+    SaveNotWrittenSuffix,
+    OwnerPrefix,
+    OwnerMid,
+    OwnerTail,
+    DraftFoundPrefix,
+    DraftFoundSuffix,
+    DraftOldPrefix,
+    DraftOldSuffix,
+    DraftUnknownPrefix,
+    DraftUnknownSuffix,
+    LineColPrefix,
+    LineColMid,
+    SelectedPrefix,
+    SelectedClose,
+    ByteSuffix,
+    CharSuffix,
+}
+
+impl crate::i18n::Msg for ViewMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::PhaseConnecting => "连接中",
+            Self::PhaseLoading => "读取中",
+            Self::PhaseFailed => "读取失败",
+            Self::WrapOn => "自动换行：开",
+            Self::Wrap => "自动换行",
+            Self::NoWrap => "不换行",
+            Self::Undo => "撤销",
+            Self::Redo => "重做",
+            Self::Find => "查找",
+            Self::Replace => "替换",
+            Self::Goto => "跳行",
+            Self::SaveAs => "另存为",
+            Self::Saving => "保存中…",
+            Self::Save => "保存",
+            Self::Reconnecting => "正在重新连接…",
+            Self::DisconnectedKeep => {
+                "这台主机的连接已经断开，内容还留在编辑器里；重新连接后再保存"
+            }
+            Self::Reconnect => "重新连接",
+            Self::ConflictPending => {
+                "有一个保存冲突还没处理：你的修改还在编辑器里，再按保存会重新核对远端"
+            }
+            Self::HandleConflict => "处理冲突",
+            Self::RemoteDeleted => "远端文件已经被删掉了",
+            Self::RemoteChanged => "远端文件在你打开之后被改过",
+            Self::SaveAsNew => "另存为（同目录新文件）",
+            Self::DiscardMine => "放弃我的修改",
+            Self::OverwriteRemote => "覆盖远端",
+            Self::Later => "稍后处理",
+            Self::WriteInPlace => "直接写入原文件",
+            Self::SaveAnyway => "仍然保存（属主改变）",
+            Self::Cancel => "取消",
+            Self::CloseTip => "关闭提示",
+            Self::Discard => "丢弃",
+            Self::Recover => "恢复",
+            Self::CopyToClipboard => "复制到剪贴板",
+            Self::SaveAsLocal => "另存为本地文件",
+            Self::UnsavedKept => "有未保存的修改（已存为草稿，下次启动可以恢复）",
+            Self::SaveAndClose => crate::i18n::t(ViewMsg::SaveAndClose),
+            Self::DontSave => "不保存",
+            Self::GotoTitle => "跳到行",
+            Self::GotoHint => "行号，或 行:列；回车跳转，Esc 关闭",
+            Self::SavingAs => "另存中…",
+            Self::SaveAsHint => "相对路径按当前文件所在目录解析；存的是副本，仍然编辑原文件",
+            Self::Unsaved => "未保存",
+            Self::RemoteChangedSizePrefix => "远端文件在你打开之后被改过（现在 ",
+            Self::RemoteChangedSizeClose => "）",
+            Self::SaveNotWrittenSuffix => {
+                "，所以这次保存没有写。你的修改还在编辑器里，选一种处理方式："
+            }
+            Self::OwnerPrefix => "保存后文件属主会从 ",
+            Self::OwnerMid => " 变成 ",
+            Self::OwnerTail => {
+                "（服务器不让改回去），远端文件还没有被替换。「仍然保存」用临时文件替换，中途断线不会弄残原文件，但属主会变；「直接写入原文件」属主和权限都不变，可写到一半断线会只剩半截文件"
+            }
+            Self::DraftFoundPrefix => "发现未保存的草稿（",
+            Self::DraftFoundSuffix => "）：恢复，还是丢弃？",
+            Self::DraftOldPrefix => "草稿基于旧版本（",
+            Self::DraftOldSuffix => "），不能自动恢复；可以复制或另存出来再丢弃",
+            Self::DraftUnknownPrefix => "发现旧格式草稿（",
+            Self::DraftUnknownSuffix => "，认不出属于哪台主机，已原样保留）；可以复制或另存出来",
+            Self::LineColPrefix => "行 ",
+            Self::LineColMid => "，列 ",
+            Self::SelectedPrefix => "（选中 ",
+            Self::SelectedClose => "）",
+            Self::ByteSuffix => " 字节",
+            Self::CharSuffix => " 个字符",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::PhaseConnecting => "Connecting",
+            Self::PhaseLoading => "Loading",
+            Self::PhaseFailed => "Load failed",
+            Self::WrapOn => "Word wrap: on",
+            Self::Wrap => "Word wrap",
+            Self::NoWrap => "No wrap",
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
+            Self::Find => "Find",
+            Self::Replace => "Replace",
+            Self::Goto => "Go to line",
+            Self::SaveAs => "Save as",
+            Self::Saving => "Saving…",
+            Self::Save => "Save",
+            Self::Reconnecting => "Reconnecting…",
+            Self::DisconnectedKeep => {
+                "The connection to this host is gone; your content is still here — reconnect before saving"
+            }
+            Self::Reconnect => "Reconnect",
+            Self::ConflictPending => {
+                "A save conflict is still unresolved: your edits are kept and pressing Save again re-checks the remote file"
+            }
+            Self::HandleConflict => "Resolve conflict",
+            Self::RemoteDeleted => "The remote file was deleted",
+            Self::RemoteChanged => "The remote file changed after you opened it",
+            Self::SaveAsNew => "Save as (new file in the same folder)",
+            Self::DiscardMine => "Discard my changes",
+            Self::OverwriteRemote => "Overwrite remote",
+            Self::Later => "Handle later",
+            Self::WriteInPlace => "Write directly into the original file",
+            Self::SaveAnyway => "Save anyway (owner changes)",
+            Self::Cancel => "Cancel",
+            Self::CloseTip => "Dismiss",
+            Self::Discard => "Discard",
+            Self::Recover => "Recover",
+            Self::CopyToClipboard => "Copy to clipboard",
+            Self::SaveAsLocal => "Save to a local file",
+            Self::UnsavedKept => {
+                "Unsaved changes (kept as a draft; recoverable on the next launch)"
+            }
+            Self::SaveAndClose => "Save and Close",
+            Self::DontSave => "Don't Save",
+            Self::GotoTitle => "Go to Line",
+            Self::GotoHint => "Line, or line:column; press Enter to jump, Esc to close",
+            Self::SavingAs => "Saving…",
+            Self::SaveAsHint => {
+                "Relative paths resolve against the current file's folder; a copy is written and you keep editing the original"
+            }
+            Self::Unsaved => "Unsaved",
+            Self::RemoteChangedSizePrefix => "The remote file changed after you opened it (now ",
+            Self::RemoteChangedSizeClose => ")",
+            Self::SaveNotWrittenSuffix => {
+                "; so nothing was written this time. Your edits are kept — choose how to proceed:"
+            }
+            Self::OwnerPrefix => "Saving will change the owner from ",
+            Self::OwnerMid => " to ",
+            Self::OwnerTail => {
+                " (the server will not let it change back), and the remote file has not been replaced yet. \"Save anyway\" replaces it through a temporary file: a dropped connection mid-write will not corrupt the original, but the owner changes. \"Write directly into the original\" keeps the owner and permissions unchanged, but a dropped connection mid-write can leave a partial file."
+            }
+            Self::DraftFoundPrefix => "Found an unsaved draft (",
+            Self::DraftFoundSuffix => "). Recover it or discard it?",
+            Self::DraftOldPrefix => "The draft is based on an older version (",
+            Self::DraftOldSuffix => {
+                "); it cannot be recovered automatically — copy or save it out, then discard"
+            }
+            Self::DraftUnknownPrefix => "Found an old-format draft (",
+            Self::DraftUnknownSuffix => {
+                "; it does not belong to a known host and was kept as-is) — copy or save it out"
+            }
+            Self::LineColPrefix => "Line ",
+            Self::LineColMid => ", column ",
+            Self::SelectedPrefix => " (",
+            Self::SelectedClose => ")",
+            Self::ByteSuffix => "bytes",
+            Self::CharSuffix => "characters",
+        }
+    }
+}
+
 /// 把「在编辑器上做一件事」包成按钮要的点击回调。
 fn act(
     entity: &Entity<RemoteEditor>,
@@ -77,10 +295,10 @@ impl Render for RemoteEditor {
 
         // ---- 工具条 ----
         let phase_text = match self.phase {
-            Phase::Connecting => "连接中",
-            Phase::Loading => "读取中",
+            Phase::Connecting => crate::i18n::t(ViewMsg::PhaseConnecting),
+            Phase::Loading => crate::i18n::t(ViewMsg::PhaseLoading),
             Phase::Ready => "",
-            Phase::Failed => "读取失败",
+            Phase::Failed => crate::i18n::t(ViewMsg::PhaseFailed),
         };
         let toolbar = h_flex()
             .id("remote-editor-toolbar")
@@ -114,9 +332,9 @@ impl Render for RemoteEditor {
                 d.child(text_button(
                     "remote-editor-wrap",
                     if self.wrap {
-                        "自动换行：开"
+                        crate::i18n::t(ViewMsg::WrapOn)
                     } else {
-                        "自动换行"
+                        crate::i18n::t(ViewMsg::Wrap)
                     },
                     if self.wrap {
                         ButtonLook::Outline
@@ -127,7 +345,7 @@ impl Render for RemoteEditor {
                 ))
                 .child(text_button(
                     "remote-editor-undo",
-                    "撤销",
+                    crate::i18n::t(ViewMsg::Undo),
                     ButtonLook::Ghost,
                     |_, window, cx| {
                         window.dispatch_action(Box::new(gpui_kit::component::input::Undo), cx);
@@ -135,7 +353,7 @@ impl Render for RemoteEditor {
                 ))
                 .child(text_button(
                     "remote-editor-redo",
-                    "重做",
+                    crate::i18n::t(ViewMsg::Redo),
                     ButtonLook::Ghost,
                     |_, window, cx| {
                         window.dispatch_action(Box::new(gpui_kit::component::input::Redo), cx);
@@ -143,7 +361,7 @@ impl Render for RemoteEditor {
                 ))
                 .child(text_button(
                     "remote-editor-search",
-                    "查找",
+                    crate::i18n::t(ViewMsg::Find),
                     if self.search_button_active(false, cx) {
                         ButtonLook::Outline
                     } else {
@@ -155,7 +373,7 @@ impl Render for RemoteEditor {
                 ))
                 .child(text_button(
                     "remote-editor-replace",
-                    "替换",
+                    crate::i18n::t(ViewMsg::Replace),
                     if self.search_button_active(true, cx) {
                         ButtonLook::Outline
                     } else {
@@ -167,13 +385,13 @@ impl Render for RemoteEditor {
                 ))
                 .child(text_button(
                     "remote-editor-goto",
-                    "跳行",
+                    crate::i18n::t(ViewMsg::Goto),
                     ButtonLook::Ghost,
                     act(&entity, |this, window, cx| this.toggle_goto(window, cx)),
                 ))
                 .child(text_button(
                     "remote-editor-save-as-toggle",
-                    "另存为",
+                    crate::i18n::t(ViewMsg::SaveAs),
                     if self.save_as_open {
                         ButtonLook::Outline
                     } else {
@@ -186,7 +404,11 @@ impl Render for RemoteEditor {
                 ))
                 .child(text_button(
                     "remote-editor-save",
-                    if saving { "保存中…" } else { "保存" },
+                    if saving {
+                        crate::i18n::t(ViewMsg::Saving)
+                    } else {
+                        crate::i18n::t(ViewMsg::Save)
+                    },
                     ButtonLook::Primary,
                     act(&entity, |this, _window, cx| this.save(cx)),
                 ))
@@ -201,14 +423,14 @@ impl Render for RemoteEditor {
                     "remote-editor-disconnected",
                     true,
                     if self.reconnecting {
-                        "正在重新连接…"
+                        crate::i18n::t(ViewMsg::Reconnecting)
                     } else {
-                        "这台主机的连接已经断开，内容还留在编辑器里；重新连接后再保存"
+                        crate::i18n::t(ViewMsg::DisconnectedKeep)
                     },
                     vec![
                         text_button(
                             "remote-editor-reconnect",
-                            "重新连接",
+                            crate::i18n::t(ViewMsg::Reconnect),
                             ButtonLook::Primary,
                             act(&entity, |this, _window, cx| this.reconnect(cx)),
                         )
@@ -226,11 +448,11 @@ impl Render for RemoteEditor {
                     bar(
                         "remote-editor-conflict-later",
                         true,
-                        "有一个保存冲突还没处理：你的修改还在编辑器里，再按保存会重新核对远端",
+                        crate::i18n::t(ViewMsg::ConflictPending),
                         vec![
                             text_button(
                                 "remote-editor-conflict-reopen",
-                                "处理冲突",
+                                crate::i18n::t(ViewMsg::HandleConflict),
                                 ButtonLook::Outline,
                                 act(&entity, |this, _window, cx| this.reopen_conflict(cx)),
                             )
@@ -242,11 +464,21 @@ impl Render for RemoteEditor {
                 );
             } else {
                 let what = if conflict.remote.gone {
-                    "远端文件已经被删掉了".to_owned()
+                    crate::i18n::t(ViewMsg::RemoteDeleted).to_owned()
                 } else {
                     match conflict.remote.size {
-                        Some(size) => format!("远端文件在你打开之后被改过（现在 {size} 字节）"),
-                        None => "远端文件在你打开之后被改过".to_owned(),
+                        Some(size) => format!(
+                            "{}{}{}",
+                            crate::i18n::t(ViewMsg::RemoteChangedSizePrefix),
+                            crate::i18n::count(
+                                size,
+                                crate::i18n::t(ViewMsg::ByteSuffix),
+                                "byte",
+                                "bytes"
+                            ),
+                            crate::i18n::t(ViewMsg::RemoteChangedSizeClose)
+                        ),
+                        None => crate::i18n::t(ViewMsg::RemoteChanged).to_owned(),
                     }
                 };
                 let mut tint = tokens.danger;
@@ -262,40 +494,42 @@ impl Render for RemoteEditor {
                         .border_b_1()
                         .border_color(tokens.border)
                         .bg(tint)
-                        .child(div().text_sm().text_color(tokens.text).child(SharedString::from(
-                            format!("{what}，所以这次保存没有写。你的修改还在编辑器里，选一种处理方式："),
-                        )))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(tokens.text)
+                                .child(SharedString::from(format!(
+                                    "{what}{}",
+                                    crate::i18n::t(ViewMsg::SaveNotWrittenSuffix)
+                                ))),
+                        )
                         .child(
                             h_flex()
                                 .gap_2()
                                 .items_center()
-                                .child(
-                                    div()
-                                        .w(px(260.0))
-                                        .child(Input::new(&self.conflict_name)),
-                                )
+                                .child(div().w(px(260.0)).child(Input::new(&self.conflict_name)))
                                 .child(text_button(
                                     "remote-editor-conflict-save-as",
-                                    "另存为（同目录新文件）",
+                                    crate::i18n::t(ViewMsg::SaveAsNew),
                                     ButtonLook::Outline,
                                     act(&entity, |this, _window, cx| this.save_conflict_as(cx)),
                                 ))
                                 .child(text_button(
                                     "remote-editor-conflict-discard",
-                                    "放弃我的修改",
+                                    crate::i18n::t(ViewMsg::DiscardMine),
                                     ButtonLook::Outline,
                                     act(&entity, |this, _window, cx| this.discard_my_changes(cx)),
                                 ))
                                 .child(text_button(
                                     "remote-editor-conflict-overwrite",
-                                    "覆盖远端",
+                                    crate::i18n::t(ViewMsg::OverwriteRemote),
                                     ButtonLook::Danger,
                                     act(&entity, |this, _window, cx| this.overwrite_remote(cx)),
                                 ))
                                 .child(div().flex_1())
                                 .child(text_button(
                                     "remote-editor-conflict-later-btn",
-                                    "稍后处理",
+                                    crate::i18n::t(ViewMsg::Later),
                                     ButtonLook::Ghost,
                                     act(&entity, |this, _window, cx| this.defer_conflict(cx)),
                                 )),
@@ -312,21 +546,22 @@ impl Render for RemoteEditor {
                     "remote-editor-owner",
                     true,
                     format!(
-                        "保存后文件属主会从 {from} 变成 {to}（服务器不让改回去），远端文件还没有被替换。\
-                         「仍然保存」用临时文件替换，中途断线不会弄残原文件，但属主会变；\
-                         「直接写入原文件」属主和权限都不变，可写到一半断线会只剩半截文件"
+                        "{}{from}{}{to}{}",
+                        crate::i18n::t(ViewMsg::OwnerPrefix),
+                        crate::i18n::t(ViewMsg::OwnerMid),
+                        crate::i18n::t(ViewMsg::OwnerTail)
                     ),
                     vec![
                         text_button(
                             "remote-editor-owner-in-place",
-                            "直接写入原文件",
+                            crate::i18n::t(ViewMsg::WriteInPlace),
                             ButtonLook::Outline,
                             act(&entity, |this, _window, cx| this.save_in_place(cx)),
                         )
                         .into_any_element(),
                         text_button(
                             "remote-editor-owner-allow",
-                            "仍然保存（属主改变）",
+                            crate::i18n::t(ViewMsg::SaveAnyway),
                             ButtonLook::Danger,
                             act(&entity, |this, _window, cx| {
                                 this.save_allowing_owner_change(cx)
@@ -335,7 +570,7 @@ impl Render for RemoteEditor {
                         .into_any_element(),
                         text_button(
                             "remote-editor-owner-cancel",
-                            "取消",
+                            crate::i18n::t(ViewMsg::Cancel),
                             ButtonLook::Ghost,
                             act(&entity, |this, _window, cx| {
                                 this.owner_prompt = None;
@@ -354,31 +589,42 @@ impl Render for RemoteEditor {
         if let Some(notice) = &self.draft {
             let age = draft_age_label(notice.draft().saved_at_unix, now_unix());
             let (message, restorable) = match notice {
-                DraftNotice::Restorable(_) => {
-                    (format!("发现未保存的草稿（{age}）：恢复，还是丢弃？"), true)
-                }
+                DraftNotice::Restorable(_) => (
+                    format!(
+                        "{}{age}{}",
+                        crate::i18n::t(ViewMsg::DraftFoundPrefix),
+                        crate::i18n::t(ViewMsg::DraftFoundSuffix)
+                    ),
+                    true,
+                ),
                 DraftNotice::Stale(_) => (
-                    format!("草稿基于旧版本（{age}），不能自动恢复；可以复制或另存出来再丢弃"),
+                    format!(
+                        "{}{age}{}",
+                        crate::i18n::t(ViewMsg::DraftOldPrefix),
+                        crate::i18n::t(ViewMsg::DraftOldSuffix)
+                    ),
                     false,
                 ),
                 DraftNotice::Legacy(_) => (
                     format!(
-                        "发现旧格式草稿（{age}，认不出属于哪台主机，已原样保留）；可以复制或另存出来"
+                        "{}{age}{}",
+                        crate::i18n::t(ViewMsg::DraftUnknownPrefix),
+                        crate::i18n::t(ViewMsg::DraftUnknownSuffix)
                     ),
                     false,
                 ),
             };
             let discard_label = if matches!(notice, DraftNotice::Legacy(_)) {
-                "关闭提示"
+                crate::i18n::t(ViewMsg::CloseTip)
             } else {
-                "丢弃"
+                crate::i18n::t(ViewMsg::Discard)
             };
             let mut buttons: Vec<AnyElement> = Vec::new();
             if restorable {
                 buttons.push(
                     text_button(
                         "remote-editor-draft-restore",
-                        "恢复",
+                        crate::i18n::t(ViewMsg::Recover),
                         ButtonLook::Primary,
                         act(&entity, |this, window, cx| this.restore_draft(window, cx)),
                     )
@@ -388,7 +634,7 @@ impl Render for RemoteEditor {
                 buttons.push(
                     text_button(
                         "remote-editor-draft-copy",
-                        "复制到剪贴板",
+                        crate::i18n::t(ViewMsg::CopyToClipboard),
                         ButtonLook::Outline,
                         act(&entity, |this, _window, cx| this.copy_notice(cx)),
                     )
@@ -397,7 +643,7 @@ impl Render for RemoteEditor {
                 buttons.push(
                     text_button(
                         "remote-editor-draft-export",
-                        "另存为本地文件",
+                        crate::i18n::t(ViewMsg::SaveAsLocal),
                         ButtonLook::Outline,
                         act(&entity, |this, _window, cx| this.export_notice(cx)),
                     )
@@ -424,25 +670,25 @@ impl Render for RemoteEditor {
                 bar(
                     "remote-editor-close",
                     false,
-                    "有未保存的修改（已存为草稿，下次启动可以恢复）",
+                    crate::i18n::t(ViewMsg::UnsavedKept),
                     vec![
                         text_button(
                             "remote-editor-close-save",
-                            "保存并关闭",
+                            crate::i18n::t(ViewMsg::SaveAndClose),
                             ButtonLook::Primary,
                             act(&entity, |this, _window, cx| this.save_then_close(cx)),
                         )
                         .into_any_element(),
                         text_button(
                             "remote-editor-close-discard",
-                            "不保存",
+                            crate::i18n::t(ViewMsg::DontSave),
                             ButtonLook::Danger,
                             act(&entity, |this, _window, cx| this.close_without_saving(cx)),
                         )
                         .into_any_element(),
                         text_button(
                             "remote-editor-close-cancel",
-                            "取消",
+                            crate::i18n::t(ViewMsg::Cancel),
                             ButtonLook::Ghost,
                             act(&entity, |this, _window, cx| {
                                 this.close_prompt = false;
@@ -474,13 +720,13 @@ impl Render for RemoteEditor {
                     .flex_none()
                     .border_b_1()
                     .border_color(tokens.border)
-                    .child(div().text_sm().child("跳到行"))
+                    .child(div().text_sm().child(crate::i18n::t(ViewMsg::GotoTitle)))
                     .child(div().w(px(160.0)).child(Input::new(&self.goto_input)))
                     .child(
                         div()
                             .text_xs()
                             .text_color(tokens.text_muted)
-                            .child("行号，或 行:列；回车跳转，Esc 关闭"),
+                            .child(crate::i18n::t(ViewMsg::GotoHint)),
                     )
                     .into_any_element(),
             );
@@ -499,14 +745,14 @@ impl Render for RemoteEditor {
                     .flex_none()
                     .border_b_1()
                     .border_color(tokens.border)
-                    .child(div().text_sm().child("另存为"))
+                    .child(div().text_sm().child(crate::i18n::t(ViewMsg::SaveAs)))
                     .child(div().w(px(360.0)).child(Input::new(&self.save_as_input)))
                     .child(text_button(
                         "remote-editor-save-as",
                         if self.saving_as {
-                            "另存中…"
+                            crate::i18n::t(ViewMsg::SavingAs)
                         } else {
-                            "另存为"
+                            crate::i18n::t(ViewMsg::SaveAs)
                         },
                         ButtonLook::Outline,
                         act(&entity, |this, _window, cx| this.save_as(cx)),
@@ -515,7 +761,7 @@ impl Render for RemoteEditor {
                         div()
                             .text_xs()
                             .text_color(tokens.text_muted)
-                            .child("相对路径按当前文件所在目录解析；存的是副本，仍然编辑原文件"),
+                            .child(crate::i18n::t(ViewMsg::SaveAsHint)),
                     )
                     .into_any_element(),
             );
@@ -550,9 +796,25 @@ impl Render for RemoteEditor {
 
         // ---- 状态栏 ----
         let cursor = self.cursor;
-        let position = format!("行 {}，列 {}", cursor.line, cursor.column);
+        let position = format!(
+            "{}{}{}{}",
+            crate::i18n::t(ViewMsg::LineColPrefix),
+            cursor.line,
+            crate::i18n::t(ViewMsg::LineColMid),
+            cursor.column
+        );
         let position = if cursor.selected > 0 {
-            format!("{position}（选中 {} 个字符）", cursor.selected)
+            format!(
+                "{position}{}{}{}",
+                crate::i18n::t(ViewMsg::SelectedPrefix),
+                crate::i18n::count(
+                    cursor.selected as u64,
+                    crate::i18n::t(ViewMsg::CharSuffix),
+                    "character",
+                    "characters"
+                ),
+                crate::i18n::t(ViewMsg::SelectedClose)
+            )
         } else {
             position
         };
@@ -579,9 +841,9 @@ impl Render for RemoteEditor {
             .child(segment(self.lang.display().to_owned()))
             .child(segment(
                 if self.wrap {
-                    "自动换行"
+                    crate::i18n::t(ViewMsg::Wrap)
                 } else {
-                    "不换行"
+                    crate::i18n::t(ViewMsg::NoWrap)
                 }
                 .to_owned(),
             ))
@@ -603,7 +865,7 @@ impl Render for RemoteEditor {
                     .flex_none()
                     .text_xs()
                     .text_color(tokens.accent)
-                    .child("未保存")
+                    .child(crate::i18n::t(ViewMsg::Unsaved))
             }));
 
         v_flex()

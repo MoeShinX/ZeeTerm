@@ -695,7 +695,7 @@ pub mod dev {
             "other" => HostKeyStatus::OtherKeyTypesSaved,
             "changed" => HostKeyStatus::Changed,
             "revoked" => HostKeyStatus::Revoked,
-            _ => return Err("参数要是 unknown / other / changed / revoked".to_owned()),
+            _ => return Err("kind must be unknown / other / changed / revoked".to_owned()),
         };
         let pending = hub().submit(Ask::HostKey(demo_info(status)));
         HELD.with(|held| held.borrow_mut().push(pending));
@@ -708,27 +708,30 @@ pub mod dev {
             "password" => PromptRequest::single(
                 PromptKind::Password,
                 "ops@demo.example.com:22",
-                "请输入密码",
+                "Enter your password",
                 true,
             ),
             "ki" => PromptRequest {
                 target: "ops@demo.example.com:22".to_owned(),
                 kind: PromptKind::KeyboardInteractive,
-                name: "两步验证".to_owned(),
-                instructions: "请输入登录密码和手机上的验证码。\n验证码 30 秒内有效。".to_owned(),
+                name: "Two-step verification".to_owned(),
+                instructions: {
+                    "Enter your login password and the code from your phone.\nThe code is valid for 30 seconds."
+                        .to_owned()
+                },
                 prompts: vec![
                     PromptItem {
-                        text: "密码: ".to_owned(),
+                        text: "Password: ".to_owned(),
                         echo: false,
                     },
                     PromptItem {
-                        text: "验证码: ".to_owned(),
+                        text: "Code: ".to_owned(),
                         echo: true,
                     },
                 ],
                 can_remember: false,
             },
-            _ => return Err("参数要是 password 或 ki".to_owned()),
+            _ => return Err("kind must be password or ki".to_owned()),
         };
         let pending = hub().submit(Ask::Prompt(request));
         HELD.with(|held| held.borrow_mut().push(pending));
@@ -772,13 +775,15 @@ pub mod dev {
         ) -> Result<(), String> {
             let status = match self.view.as_ref().map(|view| &view.body) {
                 Some(Body::HostKey(info)) => info.status,
-                _ => return Err("现在开着的不是指纹确认对话框".to_owned()),
+                _ => {
+                    return Err("the open dialog is not a host-key confirmation dialog".to_owned());
+                }
             };
             let button = host_key_buttons(status)
                 .iter()
                 .copied()
                 .find(|button| button.label() == label)
-                .ok_or_else(|| format!("对话框上没有「{label}」这个按钮"))?;
+                .ok_or_else(|| format!("the dialog has no button labeled {label}"))?;
             self.press_host_key(button, window, cx);
             Ok(())
         }
@@ -796,9 +801,9 @@ pub mod dev {
                 ..
             }) = &self.view
             else {
-                return Err("现在开着的不是输入对话框".to_owned());
+                return Err("the open dialog is not an input dialog".to_owned());
             };
-            let input = form.inputs.get(index).ok_or("没有这个输入框")?;
+            let input = form.inputs.get(index).ok_or("no such input field")?;
             input.update(cx, |state, cx| state.set_value(text, window, cx));
             Ok(())
         }

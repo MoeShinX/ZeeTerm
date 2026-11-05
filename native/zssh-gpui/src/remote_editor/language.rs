@@ -39,13 +39,36 @@ pub enum Comment {
     None,
 }
 
+/// 语言名里的两条中文文案（其余都是各语言自己的名字，两种语言下都一样）。
+#[derive(Clone, Copy, Debug)]
+enum LanguageMsg {
+    PlainText,
+    ConfigFile,
+}
+
+impl crate::i18n::Msg for LanguageMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::PlainText => "纯文本",
+            Self::ConfigFile => "配置文件",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::PlainText => "Plain Text",
+            Self::ConfigFile => "Config File",
+        }
+    }
+}
+
 impl Lang {
     /// 状态栏上的名字（同 0.2.14 `LANGUAGE_NAMES`）。
     pub fn display(self) -> &'static str {
         match self {
-            Self::Text => "纯文本",
+            Self::Text => crate::i18n::t(LanguageMsg::PlainText),
             Self::Shell => "Shell",
-            Self::Properties => "配置文件",
+            Self::Properties => crate::i18n::t(LanguageMsg::ConfigFile),
             Self::Yaml => "YAML",
             Self::Json => "JSON",
             Self::Xml => "XML",

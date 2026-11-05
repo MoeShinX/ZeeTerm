@@ -27,6 +27,74 @@ use crate::app_theme::Tokens;
 use crate::os_icons::{self, OsIconSize};
 use crate::typography::{Role, Typo as _};
 
+/// 主机库页面的文案。
+#[derive(Clone, Copy, Debug)]
+enum VaultMsg {
+    AllHosts,
+    Group,
+    CompactTip,
+    ComfortableTip,
+    GridView,
+    ListView,
+    NoMatchPrefix,
+    NoMatchSuffix,
+    NoHosts,
+    AddHint,
+    NewHost,
+    QuickHint,
+    Properties,
+    Connect,
+    OldAlgorithm,
+    /// `i18n::count` 的中文量词；英文走单复数，用不到它。
+    HostCountSuffix,
+}
+
+impl crate::i18n::Msg for VaultMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::AllHosts => "全部主机",
+            Self::Group => "分组",
+            Self::CompactTip => "紧凑（点击切换到舒适）",
+            Self::ComfortableTip => "舒适（点击切换到紧凑）",
+            Self::GridView => "网格视图",
+            Self::ListView => "列表视图",
+            Self::NoMatchPrefix => "没有匹配「",
+            Self::NoMatchSuffix => "」的主机",
+            Self::NoHosts => "还没有主机",
+            Self::AddHint => "添加一台主机，之后双击就能连接。",
+            Self::NewHost => "新建主机",
+            Self::QuickHint => "也可以直接在搜索框里输入 user@host:port 回车，不保存直接连。",
+            Self::Properties => "属性…",
+            Self::Connect => "连接",
+            Self::OldAlgorithm => "旧算法",
+            Self::HostCountSuffix => " 台",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::AllHosts => "All hosts",
+            Self::Group => "Group",
+            Self::CompactTip => "Compact (click for comfortable)",
+            Self::ComfortableTip => "Comfortable (click for compact)",
+            Self::GridView => "Grid view",
+            Self::ListView => "List view",
+            Self::NoMatchPrefix => "No hosts match \"",
+            Self::NoMatchSuffix => "",
+            Self::NoHosts => "No hosts yet",
+            Self::AddHint => "Add a host and double-click it to connect.",
+            Self::NewHost => "New Host",
+            Self::QuickHint => {
+                "You can also type user@host:port in the search box and press Enter to connect without saving."
+            }
+            Self::Properties => "Properties…",
+            Self::Connect => "Connect",
+            Self::OldAlgorithm => "Legacy algorithm",
+            Self::HostCountSuffix => " ",
+        }
+    }
+}
+
 /// 网格里一张卡片的最小宽度和间距（紧凑 / 舒适，同 0.2.14 的 `minmax(210px | 240px, 1fr)`）。
 fn grid_metrics(density: Density) -> (f32, f32) {
     match density {
@@ -74,15 +142,13 @@ impl MainWindow {
         let order = self.page_order(cx);
         let has_hosts = !self.store.hosts().is_empty();
         let title = match self.tree.selected_group {
-            GroupSel::All => "全部主机".to_owned(),
-            GroupSel::Ungrouped if flat => "全部主机".to_owned(),
+            GroupSel::All => crate::i18n::t(VaultMsg::AllHosts).to_owned(),
+            GroupSel::Ungrouped if flat => crate::i18n::t(VaultMsg::AllHosts).to_owned(),
             GroupSel::Ungrouped => ungrouped_label(false).to_owned(),
-            GroupSel::Group(id) => self
-                .store
-                .groups()
-                .iter()
-                .find(|g| g.id == id)
-                .map_or_else(|| "分组".to_owned(), |g| g.name.clone()),
+            GroupSel::Group(id) => self.store.groups().iter().find(|g| g.id == id).map_or_else(
+                || crate::i18n::t(VaultMsg::Group).to_owned(),
+                |g| g.name.clone(),
+            ),
         };
 
         let toggle_group = |left: AnyElement, right: AnyElement| -> AnyElement {
@@ -144,9 +210,9 @@ impl MainWindow {
                 })
                 .tooltip(move |window, cx| {
                     Tooltip::new(if compact {
-                        "紧凑（点击切换到舒适）"
+                        crate::i18n::t(VaultMsg::CompactTip)
                     } else {
-                        "舒适（点击切换到紧凑）"
+                        crate::i18n::t(VaultMsg::ComfortableTip)
                     })
                     .build(window, cx)
                 })
@@ -208,14 +274,14 @@ impl MainWindow {
                         mode_button(
                             "vault-grid",
                             Icon::new(crate::icons::Ico::LayoutGrid),
-                            "网格视图",
+                            crate::i18n::t(VaultMsg::GridView),
                             layout.view_mode == ViewMode::Grid,
                             ViewMode::Grid,
                         ),
                         mode_button(
                             "vault-list",
                             Icon::new(crate::icons::Ico::List),
-                            "列表视图",
+                            crate::i18n::t(VaultMsg::ListView),
                             layout.view_mode == ViewMode::List,
                             ViewMode::List,
                         ),
@@ -326,11 +392,14 @@ impl MainWindow {
                                             .typo(Role::GroupTitle, tokens)
                                             .child(SharedString::from(title)),
                                     )
-                                    .child(
-                                        div()
-                                            .typo(Role::Caption, tokens)
-                                            .child(SharedString::from(format!("{count} 台"))),
-                                    ),
+                                    .child(div().typo(Role::Caption, tokens).child(
+                                        SharedString::from(crate::i18n::count(
+                                            count as u64,
+                                            crate::i18n::t(VaultMsg::HostCountSuffix),
+                                            "host",
+                                            "hosts",
+                                        )),
+                                    )),
                             )
                             .child(body),
                     ),
@@ -366,7 +435,11 @@ impl MainWindow {
                     div()
                         .typo(Role::Body, tokens)
                         .text_color(tokens.text_muted)
-                        .child(SharedString::from(format!("没有匹配「{query}」的主机"))),
+                        .child(SharedString::from(format!(
+                            "{}{query}{}",
+                            crate::i18n::t(VaultMsg::NoMatchPrefix),
+                            crate::i18n::t(VaultMsg::NoMatchSuffix)
+                        ))),
                 )
                 .into_any_element();
         }
@@ -396,19 +469,23 @@ impl MainWindow {
                         v_flex()
                             .items_center()
                             .gap_1()
-                            .child(div().typo(Role::GroupTitle, tokens).child("还没有主机"))
+                            .child(
+                                div()
+                                    .typo(Role::GroupTitle, tokens)
+                                    .child(crate::i18n::t(VaultMsg::NoHosts)),
+                            )
                             .child(
                                 div()
                                     .typo(Role::Body, tokens)
                                     .text_color(tokens.text_muted)
-                                    .child("添加一台主机，之后双击就能连接。"),
+                                    .child(crate::i18n::t(VaultMsg::AddHint)),
                             ),
                     )
                     .child(
                         Button::new("vault-empty-new")
                             .primary()
                             .icon(IconName::Plus)
-                            .label("新建主机")
+                            .label(crate::i18n::t(VaultMsg::NewHost))
                             .on_click(act(&entity, |this, window, cx| this.new_host(window, cx))),
                     )
                     .child(
@@ -416,7 +493,7 @@ impl MainWindow {
                             .text_xs()
                             .text_center()
                             .text_color(tokens.text_muted)
-                            .child("也可以直接在搜索框里输入 user@host:port 回车，不保存直接连。"),
+                            .child(crate::i18n::t(VaultMsg::QuickHint)),
                     ),
             )
             .into_any_element()
@@ -441,7 +518,7 @@ impl MainWindow {
                     .compact()
                     .ghost()
                     .icon(crate::icons::Ico::Pencil)
-                    .tooltip("属性…")
+                    .tooltip(crate::i18n::t(VaultMsg::Properties))
                     .on_click({
                         let entity = entity.clone();
                         move |_, window, cx| {
@@ -455,9 +532,9 @@ impl MainWindow {
                     .compact()
                     .secondary()
                     .icon(IconName::Play)
-                    .tooltip("连接");
+                    .tooltip(crate::i18n::t(VaultMsg::Connect));
                 let button = if with_label {
-                    button.label("连接")
+                    button.label(crate::i18n::t(VaultMsg::Connect))
                 } else {
                     button
                 };
@@ -565,7 +642,11 @@ impl MainWindow {
                     .map(|tag| badge(tag.clone(), BadgeKind::Outline, tokens)),
             )
             .when(host.legacy_algorithms, |d| {
-                d.child(badge("旧算法", BadgeKind::Outline, tokens))
+                d.child(badge(
+                    crate::i18n::t(VaultMsg::OldAlgorithm),
+                    BadgeKind::Outline,
+                    tokens,
+                ))
             });
         let top = h_flex()
             .gap_2p5()
