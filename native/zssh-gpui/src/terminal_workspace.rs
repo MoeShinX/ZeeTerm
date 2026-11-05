@@ -4210,13 +4210,13 @@ fn pane_grid(
                             let block = run.cursor && cursor_shape == CursorShape::Block;
                             let underline = run.cursor && cursor_shape == CursorShape::Underline;
                             let bar = run.cursor && cursor_shape == CursorShape::Bar;
-                            let bg = if block {
-                                Some(cursor_color)
-                            } else if run.bg != background {
-                                Some(run.bg)
-                            } else {
-                                None
-                            };
+                            let bg = run_background(
+                                block,
+                                run.selected,
+                                run.bg,
+                                background,
+                                cursor_color,
+                            );
                             div()
                                 .font_family(mono.clone())
                                 .text_size(mono_size)
@@ -4273,6 +4273,26 @@ struct Run {
     strikethrough: bool,
     selected: bool,
     cursor: bool,
+}
+
+/// 一段文字自己要画的底色。
+///
+/// 选区底纹画在文字下面一层；被选中的格子如果再画自己的底色（htop / vim / tmux 状态栏、
+/// 带背景色的 `ls`），就会把选区盖掉、看不出选中了。所以选中时不画自己的底色，块光标照旧最上。
+fn run_background<C: PartialEq + Copy>(
+    block_cursor: bool,
+    selected: bool,
+    run_bg: C,
+    background: C,
+    cursor: C,
+) -> Option<C> {
+    if block_cursor {
+        Some(cursor)
+    } else if selected || run_bg == background {
+        None
+    } else {
+        Some(run_bg)
+    }
 }
 
 /// 这一行被选中的连续列区间（闭区间）：选区底纹按列区间整块画，避免逐字背景之间露缝。
@@ -4451,6 +4471,39 @@ fn indexed_color(index: u8, ansi: &[u32; 16]) -> Hsla {
         }
     };
     ::gpui::rgb(rgb).into()
+}
+
+#[cfg(test)]
+mod selection_paint_tests {
+    use super::{run_background, selection_spans};
+
+    #[test]
+    fn selected_cells_do_not_paint_their_own_background_over_the_selection() {
+        // 字符 0 是默认底色，1 是 htop 那种彩色底，9 是块光标。
+        assert_eq!(run_background(false, false, 0, 0, 9), None);
+        assert_eq!(run_background(false, false, 1, 0, 9), Some(1));
+        assert_eq!(
+            run_background(false, true, 1, 0, 9),
+            None,
+            "选中时让选区透出来"
+        );
+        assert_eq!(
+            run_background(true, true, 1, 0, 9),
+            Some(9),
+            "块光标照旧在最上"
+        );
+    }
+
+    #[test]
+    fn selection_spans_cover_contiguous_columns() {
+        assert!(selection_spans(None, 0, 10).is_empty());
+        // 同一行选第 2..=5 列。
+        assert_eq!(selection_spans(Some(((0, 2), (0, 5))), 0, 10), vec![(2, 5)]);
+        // 跨行选区的中间行整行都选中。
+        assert_eq!(selection_spans(Some(((0, 3), (2, 1))), 1, 8), vec![(0, 7)]);
+        // 不在选区里的行没有区间。
+        assert!(selection_spans(Some(((0, 3), (0, 4))), 1, 8).is_empty());
+    }
 }
 
 #[cfg(test)]
