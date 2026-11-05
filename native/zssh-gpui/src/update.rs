@@ -225,6 +225,8 @@ impl UpdateDemo {
         self.notes_markdown = None;
         self.phase = DownloadState::Idle;
         self.install = InstallState::Idle;
+        // 重新取清单可能拿到另一个版本：之前那次确认不算数。
+        self.install_confirmed = false;
         self.blocked = None;
         self.skip_error = None;
         match crate::ssh_backend::runtime() {
@@ -365,6 +367,7 @@ impl UpdateDemo {
         let cache_root = update_cache_dir();
         let args = current_exe_args();
         let restart = self.restart;
+        let confirmed = confirmed_after_click(&self.install, self.install_confirmed);
         let (state, launched) = advance_install(
             std::mem::take(&mut self.install),
             self.install_confirmed,
@@ -372,8 +375,7 @@ impl UpdateDemo {
             launch_installer,
         );
         self.install = state;
-        // 用户已经点过一次「安装」：之后的重试不再要求二次确认。
-        self.install_confirmed = true;
+        self.install_confirmed = confirmed;
         if launched {
             // 安装器已经立即启动了，退出回调里不能再启动一次排队的计划。
             clear_pending_install();
@@ -615,6 +617,14 @@ impl InstallState {
 /// `confirmed_before` 为真（这个窗口里已经确认过一次）时，重试直接生成计划并启动，
 /// 不再要第二遍确认——下载失败 / 启动失败后重来是同一个决定。
 /// `launch` 由调用方注入，测试里换成假实现，不会真的启动进程。
+/// 这一下点击之后，算不算"用户在这个窗口里确认过安装"。
+///
+/// 只有点的是「确认安装」（当前停在确认步骤）才算；第一下「安装」只是进入确认步骤，
+/// 那时用户还没看到"ZeeTerm 会退出"的提示——包括准备失败后重点的情况。
+fn confirmed_after_click(state: &InstallState, already: bool) -> bool {
+    already || matches!(state, InstallState::Confirming(_))
+}
+
 fn advance_install(
     state: InstallState,
     confirmed_before: bool,
@@ -1650,8 +1660,8 @@ mod tests {
     // `#[test]` 属性宏，展开时直接撞递归上限。
     use super::{
         DownloadState, InstallState, advance_install, build_install_plan, cache_path,
-        download_file_name, file_summary, progress_text, push_quoted_arg, queue_install,
-        quote_args, take_pending_install,
+        confirmed_after_click, download_file_name, file_summary, progress_text, push_quoted_arg,
+        queue_install, quote_args, take_pending_install,
     };
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard};
@@ -1895,6 +1905,23 @@ mod tests {
         assert!(launched);
         assert_eq!(launches, 1);
         assert_eq!(state, InstallState::Launched);
+    }
+
+    #[test]
+    fn only_clicking_confirm_counts_as_confirming() {
+        // 第一下「安装」（空闲、失败后重点）只是进入确认步骤，不算确认过。
+        assert!(!confirmed_after_click(&InstallState::Idle, false));
+        assert!(!confirmed_after_click(
+            &InstallState::Failed("准备安装失败：x".to_owned()),
+            false
+        ));
+        // 停在确认步骤时点的那一下才算。
+        assert!(confirmed_after_click(
+            &InstallState::Confirming(sample_plan()),
+            false
+        ));
+        // 确认过之后一直算（直到重新检查清单把它清掉）。
+        assert!(confirmed_after_click(&InstallState::Idle, true));
     }
 
     #[test]
