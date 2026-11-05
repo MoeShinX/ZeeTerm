@@ -1561,7 +1561,7 @@ fn verify_and_store(
     name: &str,
 ) -> Result<(PathBuf, u64, String), String> {
     zssh_update::verify_signature(bytes, &package.signature, pubkey, &package.version, true)
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| crate::update_text::update_error(&err))?;
     let sha256 = sha256_hex(bytes);
     // 哈希目录让不同版本 / 不同内容互不覆盖：排队等退出安装的那份不会被后来的下载截断。
     let dir = cache_root.join(&sha256[..16]);
@@ -1722,7 +1722,7 @@ fn build_install_plan(
         current_exe_args: current_exe_args.to_vec(),
         sha256: sha256.to_owned(),
     };
-    plan_install(&request).map_err(|err| err.to_string())
+    plan_install(&request).map_err(|err| crate::update_text::install_error(&err))
 }
 
 /// 等界面把「安装器已启动」画出来再退出应用；不碰安装器进程，它自己继续跑。
@@ -1821,8 +1821,13 @@ fn launch_if_unchanged(
     plan: &InstallPlan,
     launch: impl FnOnce(&InstallPlan) -> Result<(), String>,
 ) -> Result<(), String> {
-    let held = zssh_update::install::open_and_verify(plan)
-        .map_err(|err| format!("{}{err}", t(UpdateMsg::PackageChangedRefusedPrefix)))?;
+    let held = zssh_update::install::open_and_verify(plan).map_err(|err| {
+        format!(
+            "{}{}",
+            t(UpdateMsg::PackageChangedRefusedPrefix),
+            crate::update_text::install_error(&err)
+        )
+    })?;
     let result = launch(plan);
     drop(held);
     result
@@ -2092,7 +2097,11 @@ fn status_text(outcome: &Result<Option<Package>, UpdateError>, notes: Option<&st
                 package.platform_key
             )
         }
-        Err(err) => format!("{}{err}", t(UpdateMsg::CheckFailedPrefix)),
+        Err(err) => format!(
+            "{}{}",
+            t(UpdateMsg::CheckFailedPrefix),
+            crate::update_text::update_error(err)
+        ),
     }
 }
 

@@ -139,6 +139,41 @@ pub struct Package {
     pub signature: String,
 }
 
+/// 签名没验过的具体原因：类型 + 参数，界面按语言出词；`Display` 的中文留给日志和测试。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignatureProblem {
+    /// 安装包内容与签名对不上（被改动过，或下载不完整）。
+    Mismatch,
+    /// 签名不是用 ZeeTerm 的更新密钥签的。
+    WrongKey,
+    /// 签名或公钥的格式不对。
+    BadEncoding,
+    /// 不支持的签名算法。
+    UnsupportedAlgorithm,
+    /// 安装包地址不是 https（生成清单时拒绝）。
+    HttpsRequired { url: String },
+    /// 安装包文件名里有控制字符（生成签名注释时拒绝）。
+    ControlCharacters,
+    /// 签名库给的其他原因，原样带上（英文原文）。
+    Other(String),
+}
+
+impl std::fmt::Display for SignatureProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mismatch => {
+                f.write_str("安装包内容与签名对不上（文件可能被改动过，或下载不完整）")
+            }
+            Self::WrongKey => f.write_str("签名不是用 ZeeTerm 的更新密钥签的"),
+            Self::BadEncoding => f.write_str("签名或公钥的格式不对"),
+            Self::UnsupportedAlgorithm => f.write_str("不支持的签名算法"),
+            Self::HttpsRequired { url } => write!(f, "安装包地址必须是 https：{url}"),
+            Self::ControlCharacters => f.write_str("安装包文件名里有控制字符"),
+            Self::Other(text) => f.write_str(text),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum UpdateError {
     Json(serde_json::Error),
@@ -146,7 +181,7 @@ pub enum UpdateError {
     NoPlatform,
     MissingSignature,
     Base64(String),
-    Signature(String),
+    Signature(SignatureProblem),
     MissingSignedVersion,
     SignedVersionMismatch { signed: String, announced: String },
 }
@@ -244,10 +279,9 @@ pub fn build_latest_json(release: &ReleaseManifest<'_>) -> Result<String, Update
         return Err(UpdateError::MissingSignature);
     }
     if !release.url.starts_with("https://") {
-        return Err(UpdateError::Signature(format!(
-            "安装包地址必须是 https：{}",
-            release.url
-        )));
+        return Err(UpdateError::Signature(SignatureProblem::HttpsRequired {
+            url: release.url.to_owned(),
+        }));
     }
     let mut platforms = BTreeMap::new();
     platforms.insert(
@@ -278,9 +312,7 @@ pub fn trusted_comment(
         return Err(UpdateError::BadVersion(version.to_owned()));
     }
     if file_name.chars().any(|c| c.is_control()) {
-        return Err(UpdateError::Signature(
-            "安装包文件名里有控制字符".to_owned(),
-        ));
+        return Err(UpdateError::Signature(SignatureProblem::ControlCharacters));
     }
     Ok(format!(
         "timestamp:{timestamp}\tfile:{file_name}\tversion:{version}"
@@ -316,17 +348,17 @@ pub fn verify_signature(
     )
 }
 
-/// minisign-verify 的错误原文是英文；给用户看的原因换成中文（拿不准的原样带上）。
-fn describe(err: &minisign_verify::Error) -> String {
+/// minisign-verify 的错误原文是英文；这里归成几类（拿不准的原样带上）。
+fn describe(err: &minisign_verify::Error) -> SignatureProblem {
     use minisign_verify::Error;
     match err {
-        Error::InvalidSignature => {
-            "安装包内容与签名对不上（文件可能被改动过，或下载不完整）".to_owned()
+        Error::InvalidSignature => SignatureProblem::Mismatch,
+        Error::UnexpectedKeyId => SignatureProblem::WrongKey,
+        Error::InvalidEncoding => SignatureProblem::BadEncoding,
+        Error::UnexpectedAlgorithm | Error::UnsupportedAlgorithm => {
+            SignatureProblem::UnsupportedAlgorithm
         }
-        Error::UnexpectedKeyId => "签名不是用 ZeeTerm 的更新密钥签的".to_owned(),
-        Error::InvalidEncoding => "签名或公钥的格式不对".to_owned(),
-        Error::UnexpectedAlgorithm | Error::UnsupportedAlgorithm => "不支持的签名算法".to_owned(),
-        other => other.to_string(),
+        other => SignatureProblem::Other(other.to_string()),
     }
 }
 
