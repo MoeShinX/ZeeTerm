@@ -1266,14 +1266,19 @@ impl SyncDemo {
             .gap_1()
             .child(muted(t(SyncViewMsg::LastProbe), tokens))
             .children(text.lines().map(|line| {
-                let failed = line.contains(t(SyncMsg::CheckFailedMiddle));
-                let warn = line.starts_with(t(SyncMsg::ConcurrencyPrefix))
-                    && (line.contains(t(SyncMsg::ConcurrencyReadBeforeWrite))
-                        || line.contains(t(SyncMsg::ConcurrencyNotChecked)));
+                // 测试结果文字是生成那一刻的语言写的；之后切了语言，这里仍要认得出，所以中英两种写法都认。
+                let has = |key: SyncMsg| line.contains(key.zh()) || line.contains(key.en());
+                let begins =
+                    |key: SyncMsg| line.starts_with(key.zh()) || line.starts_with(key.en());
+                let is = |key: SyncMsg| line == key.zh() || line == key.en();
+                let failed = has(SyncMsg::CheckFailedMiddle);
+                let warn = begins(SyncMsg::ConcurrencyPrefix)
+                    && (has(SyncMsg::ConcurrencyReadBeforeWrite)
+                        || has(SyncMsg::ConcurrencyNotChecked));
                 // 缩进的说明行和「云端：…」不是检查项，不打勾也不上色。
-                let detail = line.starts_with(t(SyncMsg::ConcurrencyNotePrefix))
-                    || line == t(SyncMsg::CloudHasData)
-                    || line == t(SyncMsg::CloudEmpty);
+                let detail = begins(SyncMsg::ConcurrencyNotePrefix)
+                    || is(SyncMsg::CloudHasData)
+                    || is(SyncMsg::CloudEmpty);
                 let color = if failed {
                     tokens.danger
                 } else if warn {

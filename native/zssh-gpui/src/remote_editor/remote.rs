@@ -23,6 +23,8 @@ use zssh_core::sftp::path::{is_absolute, join, normalize, parent};
 
 use super::RemoteEditEvent;
 use super::contract::{MAX_BYTES, Opened, RemoteVersion, open_bytes, too_large, version_of};
+use crate::error_text::error_text_in;
+use crate::i18n::{Lang, current};
 use crate::ssh_backend::{factory_for_host, runtime};
 
 /// 远端编辑的错误文案。
@@ -34,8 +36,6 @@ enum RemoteMsg {
     NotRegular,
     ReadFailedPrefix,
     ChannelFailedPrefix,
-    Disconnected1,
-    Disconnected2,
     TooLargePrefix,
     TooLargeMid,
     TooLargeSuffix,
@@ -58,8 +58,6 @@ impl crate::i18n::Msg for RemoteMsg {
             Self::NotRegular => "这不是普通文件，不能编辑",
             Self::ReadFailedPrefix => "读取失败：",
             Self::ChannelFailedPrefix => "开 SFTP 通道失败：",
-            Self::Disconnected1 => "连接断了",
-            Self::Disconnected2 => "断开",
             Self::TooLargePrefix => "内容太大（",
             Self::TooLargeMid => "，上限 ",
             Self::TooLargeSuffix => "），拒绝保存",
@@ -82,8 +80,6 @@ impl crate::i18n::Msg for RemoteMsg {
             Self::NotRegular => "This is not a regular file and cannot be edited",
             Self::ReadFailedPrefix => "Read failed: ",
             Self::ChannelFailedPrefix => "Could not open the SFTP channel: ",
-            Self::Disconnected1 => "Connection lost",
-            Self::Disconnected2 => "Disconnected",
             Self::TooLargePrefix => "The content is too large (",
             Self::TooLargeMid => ", limit ",
             Self::TooLargeSuffix => "); saving refused",
@@ -177,38 +173,89 @@ pub(super) struct Loaded {
     pub(super) stamp: Option<RemoteStamp>,
 }
 
+/// 读取失败：给用户看的话，加上"是不是连接没了"（界面据此出「重新连接」）。
+///
+/// 断线与否在拿到 `SftpError` 的那一刻就判断（[`SftpError::is_disconnect`]），不靠事后在已经
+/// 翻译成当前语言的文案里找关键词——文案换语言就认不出了。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct LoadFailure {
+    pub(super) message: String,
+    pub(super) disconnected: bool,
+}
+
+impl LoadFailure {
+    /// 不是断线的失败（太大、不是普通文件、内容格式不对……）。
+    fn other(message: String) -> Self {
+        Self {
+            message,
+            disconnected: false,
+        }
+    }
+
+    /// 来自 SFTP 错误的失败：`prefix` + 指定语言的错误文案 + `suffix`。
+    fn from_sftp(lang: Lang, prefix: &str, err: &SftpError, suffix: &str) -> Self {
+        Self {
+            message: format!("{prefix}{}{suffix}", error_text_in(lang, err)),
+            disconnected: err.is_disconnect(),
+        }
+    }
+}
+
 /// 读远端字节：不是普通文件、超过上限都在这里拒绝（报的是人话）。
 pub(super) async fn fetch_bytes<B: EditBackend + ?Sized>(
     backend: &B,
     path: &str,
 ) -> Result<Vec<u8>, String> {
+    fetch_classified(backend, path)
+        .await
+        .map_err(|failure| failure.message)
+}
+
+/// 同 [`fetch_bytes`]，失败时带着"是不是断线"的判断。
+async fn fetch_classified<B: EditBackend + ?Sized>(
+    backend: &B,
+    path: &str,
+) -> Result<Vec<u8>, LoadFailure> {
+    let lang = current();
     let (snapshot, is_dir) = backend.stat(path).await.map_err(|err| {
-        format!(
-            "{}{path}{}{err}{}",
+        let prefix = format!(
+            "{}{path}{}",
             crate::i18n::t(RemoteMsg::OpenFailedPrefix),
             crate::i18n::t(RemoteMsg::OpenFailedMid),
-            crate::i18n::t(RemoteMsg::OpenFailedClose)
+        );
+        LoadFailure::from_sftp(
+            lang,
+            &prefix,
+            &err,
+            crate::i18n::t(RemoteMsg::OpenFailedClose),
         )
     })?;
     if is_dir {
-        return Err(crate::i18n::t(RemoteMsg::NotRegular).to_owned());
+        return Err(LoadFailure::other(
+            crate::i18n::t(RemoteMsg::NotRegular).to_owned(),
+        ));
     }
     if snapshot.size > MAX_BYTES as u64 {
-        return Err(too_large(snapshot.size as usize));
+        return Err(LoadFailure::other(too_large(snapshot.size as usize)));
     }
     backend
         .read_all(path, MAX_BYTES as u64)
         .await
         .map_err(|err| match err {
-            SftpError::TooLarge { size, .. } => too_large(size as usize),
-            other => format!("{}{other}", crate::i18n::t(RemoteMsg::ReadFailedPrefix)),
+            SftpError::TooLarge { size, .. } => LoadFailure::other(too_large(size as usize)),
+            other => LoadFailure::from_sftp(
+                lang,
+                crate::i18n::t(RemoteMsg::ReadFailedPrefix),
+                &other,
+                "",
+            ),
         })
 }
 
 /// 读远端文本：大小、二进制、编码、换行都按内置编辑器的契约检查。
-pub(super) async fn load_remote(channel: &SftpChannel, path: &str) -> Result<Loaded, String> {
-    let bytes = fetch_bytes(channel, path).await?;
-    let opened = open_bytes(&bytes)?;
+pub(super) async fn load_remote(channel: &SftpChannel, path: &str) -> Result<Loaded, LoadFailure> {
+    let bytes = fetch_classified(channel, path).await?;
+    let opened = open_bytes(&bytes).map_err(LoadFailure::other)?;
     // `stat` 失败不影响打开：只是这次没有基线，外部修改提醒暂时不启用。
     let stamp = read_stamp(channel, path).await.ok();
     Ok(Loaded { opened, stamp })
@@ -240,20 +287,6 @@ pub(crate) async fn dial_channel(host_id: i64) -> Result<Arc<SftpChannel>, Strin
         .await
         .map_err(|err| format!("{}{err}", crate::i18n::t(RemoteMsg::ChannelFailedPrefix)))?;
     Ok(Arc::new(channel))
-}
-
-/// 这个错误是不是「连接没了」一类（重试要先重连）。
-pub(super) fn is_disconnect(message: &str) -> bool {
-    [
-        crate::i18n::t(RemoteMsg::Disconnected1),
-        crate::i18n::t(RemoteMsg::Disconnected2),
-        "Disconnected",
-        "disconnected",
-        "Connection lost",
-        "connection lost",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
 }
 
 // ---------------------------------------------------------------------------
@@ -1357,9 +1390,30 @@ mod tests {
     }
 
     #[test]
-    fn disconnects_are_recognised_by_their_wording() {
-        assert!(is_disconnect("连接已经断开，读不了文件"));
-        assert!(is_disconnect("SFTP 连接断开：Disconnected"));
-        assert!(!is_disconnect("权限不够"));
+    fn disconnects_are_recognised_from_the_error_not_its_wording() {
+        // 断线在拿到错误的那一刻判断，中英文界面一样；文案本身随语言变。
+        let lost = SftpError::Disconnected("channel closed".to_owned());
+        let reset = SftpError::Local {
+            path: "/srv/app/a.txt".to_owned(),
+            message: "Connection reset by peer".to_owned(),
+        };
+        let denied = SftpError::PermissionDenied {
+            path: "/srv/app/a.txt".to_owned(),
+        };
+        for lang in [Lang::Zh, Lang::En] {
+            assert!(LoadFailure::from_sftp(lang, "p: ", &lost, "").disconnected);
+            assert!(LoadFailure::from_sftp(lang, "p: ", &reset, "").disconnected);
+            let failure = LoadFailure::from_sftp(lang, "p: ", &denied, "");
+            assert!(!failure.disconnected, "{lang:?}");
+            assert!(failure.message.starts_with("p: "), "{}", failure.message);
+        }
+        let english = LoadFailure::from_sftp(Lang::En, "", &lost, "").message;
+        assert!(
+            !english
+                .chars()
+                .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            "英文界面的断线文案里不能有中文：{english}"
+        );
+        assert!(!LoadFailure::other("太大".to_owned()).disconnected);
     }
 }

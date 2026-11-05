@@ -103,6 +103,8 @@ enum StatusMsg {
     ConnectFailedPrefix,
     ReadFailedPrefix,
     SavedPrefix,
+    /// `count()` 的中文量词后缀；英文界面下 `count()` 用 byte / bytes，这里只是占位。
+    ByteSuffix,
     SavedClose,
     SavedOwnerMid,
     SavedOwnerTo,
@@ -171,6 +173,7 @@ impl crate::i18n::Msg for StatusMsg {
             Self::ConnectFailedPrefix => "连接失败：",
             Self::ReadFailedPrefix => "读取失败：",
             Self::SavedPrefix => "已保存（",
+            Self::ByteSuffix => " 字节",
             Self::SavedClose => "）",
             Self::SavedOwnerMid => "），属主从 ",
             Self::SavedOwnerTo => " 变成了 ",
@@ -253,6 +256,7 @@ impl crate::i18n::Msg for StatusMsg {
             Self::ConnectFailedPrefix => "Connection failed: ",
             Self::ReadFailedPrefix => "Read failed: ",
             Self::SavedPrefix => "Saved (",
+            Self::ByteSuffix => " bytes",
             Self::SavedClose => ")",
             Self::SavedOwnerMid => "); owner changed from ",
             Self::SavedOwnerTo => " to ",
@@ -287,6 +291,11 @@ impl crate::i18n::Msg for StatusMsg {
             Self::SaveAsFailedPrefix => "Save as failed: ",
         }
     }
+}
+
+/// 字节数的说法：中文「数字 + 字节」，英文 `1 byte` / `2 bytes`。
+fn byte_count(n: u64) -> String {
+    crate::i18n::count(n, crate::i18n::t(StatusMsg::ByteSuffix), "byte", "bytes")
 }
 
 /// 界面事件轮询间隔；草稿自动保存也挂在这个节拍上。
@@ -341,7 +350,7 @@ enum RemoteEditEvent {
         opened: Opened,
         stamp: Option<RemoteStamp>,
     },
-    LoadFailed(String),
+    LoadFailed(remote::LoadFailure),
     Saved {
         save_id: u64,
         version: RemoteVersion,
@@ -906,7 +915,7 @@ impl RemoteEditor {
                             opened: loaded.opened,
                             stamp: loaded.stamp,
                         },
-                        Err(message) => RemoteEditEvent::LoadFailed(message),
+                        Err(failure) => RemoteEditEvent::LoadFailed(failure),
                     };
                     let _ = sender.send(event);
                 });
@@ -975,10 +984,14 @@ impl RemoteEditor {
             RemoteEditEvent::Loaded { opened, stamp } => {
                 self.apply_loaded(opened, stamp, window, cx);
             }
-            RemoteEditEvent::LoadFailed(message) => {
+            RemoteEditEvent::LoadFailed(failure) => {
                 self.phase = Phase::Failed;
-                self.disconnected = remote::is_disconnect(&message);
-                self.status = format!("{}{message}", crate::i18n::t(StatusMsg::ReadFailedPrefix));
+                self.disconnected = failure.disconnected;
+                self.status = format!(
+                    "{}{}",
+                    crate::i18n::t(StatusMsg::ReadFailedPrefix),
+                    failure.message
+                );
             }
             RemoteEditEvent::Saved {
                 save_id,
@@ -998,7 +1011,7 @@ impl RemoteEditor {
                 self.retry_save = None;
                 self.external_changed = false;
                 self.version = Some(version);
-                let size_text = crate::i18n::count(size as u64, " 字节", "byte", "bytes");
+                let size_text = byte_count(size as u64);
                 self.status = match owner_changed {
                     Some((from, to)) => format!(
                         "{}{size_text}{}{from}{}{to}",
@@ -1129,7 +1142,7 @@ impl RemoteEditor {
                 self.status = format!(
                     "{}{}{}",
                     crate::i18n::t(StatusMsg::DiscardReloadPrefix),
-                    crate::i18n::count(opened.size as u64, " 字节", "byte", "bytes"),
+                    byte_count(opened.size as u64),
                     crate::i18n::t(StatusMsg::DiscardReloadClose)
                 );
                 self.set_text(opened.text, window, cx);
@@ -1196,7 +1209,7 @@ impl RemoteEditor {
         self.status = format!(
             "{}{}{}",
             crate::i18n::t(StatusMsg::LoadedPrefix),
-            crate::i18n::count(opened.size as u64, " 字节", "byte", "bytes"),
+            byte_count(opened.size as u64),
             crate::i18n::t(StatusMsg::LoadedClose)
         );
         self.baseline.clone_from(&opened.text);
@@ -1322,9 +1335,9 @@ impl RemoteEditor {
             self.status = format!(
                 "{}{}{}{}{}",
                 crate::i18n::t(StatusMsg::TooLargePrefix),
-                crate::i18n::count(bytes.len() as u64, " 字节", "byte", "bytes"),
+                byte_count(bytes.len() as u64),
                 crate::i18n::t(StatusMsg::TooLargeMid),
-                crate::i18n::count(MAX_BYTES as u64, " 字节", "byte", "bytes"),
+                byte_count(MAX_BYTES as u64),
                 crate::i18n::t(StatusMsg::TooLargeSaveSuffix)
             );
             cx.notify();
@@ -1421,7 +1434,7 @@ impl RemoteEditor {
                             revision,
                             loaded: Box::new(loaded),
                         },
-                        Err(message) => RemoteEditEvent::ReloadFailed(message),
+                        Err(failure) => RemoteEditEvent::ReloadFailed(failure.message),
                     };
                     let _ = sender.send(event);
                 });
@@ -1511,9 +1524,9 @@ impl RemoteEditor {
             self.status = format!(
                 "{}{}{}{}{}",
                 crate::i18n::t(StatusMsg::TooLargePrefix),
-                crate::i18n::count(bytes.len() as u64, " 字节", "byte", "bytes"),
+                byte_count(bytes.len() as u64),
                 crate::i18n::t(StatusMsg::TooLargeMid),
-                crate::i18n::count(MAX_BYTES as u64, " 字节", "byte", "bytes"),
+                byte_count(MAX_BYTES as u64),
                 crate::i18n::t(StatusMsg::TooLargeSaveAsSuffix)
             );
             cx.notify();
@@ -2231,6 +2244,7 @@ fn word_at(text: &str, offset: usize) -> Option<std::ops::Range<usize>> {
 /// 不是数字返回 `None`。列不在这里夹（编辑器自己会夹到行尾）。
 fn parse_goto(typed: &str, total_lines: usize) -> Option<(usize, usize)> {
     let typed = typed.trim();
+    // i18n-allow: 用户输入的分隔符（中文冒号也认），不是界面文案
     let (line, column) = match typed.split_once([':', ',', '：']) {
         Some((line, column)) => (line.trim(), column.trim()),
         None => (typed, ""),

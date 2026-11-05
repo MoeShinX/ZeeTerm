@@ -724,11 +724,15 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // 前缀由 `error_text` 按界面语言拼进整句，所以只剥当前语言的写法。
-        let message = message
-            .strip_prefix(t(HostPanelMsg::InvalidInputPrefix))
-            .unwrap_or(message)
-            .to_owned();
+        // 前缀由 `error_text` 按界面语言拼进整句；中英两种写法都剥，免得切过语言后留下的旧消息认不出。
+        let message = [
+            HostPanelMsg::InvalidInputPrefix.zh(),
+            HostPanelMsg::InvalidInputPrefix.en(),
+        ]
+        .iter()
+        .find_map(|prefix| message.strip_prefix(prefix))
+        .unwrap_or(message)
+        .to_owned();
         let row = self
             .host_form
             .as_ref()
