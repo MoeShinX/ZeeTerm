@@ -37,6 +37,10 @@ use crate::sftp::SftpDemo;
 use crate::ssh_backend::SshSessionFactory;
 use crate::typography::{Role, Typo as _};
 
+/// 面板标题区（图标 + 标题）的最小宽度：英文标题比中文长，右边的余额条 / 用量一多，标题会被挤成
+/// "…"。有了这个下限，面板拖到最窄（`PANEL_MIN`）时也还能读到标题，不够的空间由右边的指示器让出来。
+const DOCK_TITLE_MIN_WIDTH: f32 = 112.0;
+
 /// 本文件（AI / 文件停靠面板、SFTP 标签）的界面文案。SFTP、AI 这类名字两个语言下写法相同；
 /// 主机名、协议名、文件名来自用户或远端，照原样显示。
 #[derive(Clone, Copy, Debug)]
@@ -1337,10 +1341,11 @@ impl MainWindow {
                     .border_b_1()
                     .border_color(tokens.divider)
                     .child(
-                        // 右边的指示器（余额、用量）多起来时，标题让位截断，而不是叠在它们上面（英文更长）。
+                        // 右边的指示器（余额、用量）多起来时，标题先让位截断，但不能只剩"…"：
+                        // 标题区有个最小宽度，再窄就轮到右边的指示器缩（见下面 `actions` 的容器）。
                         h_flex()
                             .flex_1()
-                            .min_w_0()
+                            .min_w(px(DOCK_TITLE_MIN_WIDTH))
                             .gap_2()
                             .items_center()
                             .child(icon.size_4().flex_none().text_color(tokens.accent))
@@ -1362,9 +1367,11 @@ impl MainWindow {
                     )
                     .child(
                         h_flex()
-                            .flex_none()
+                            .min_w_0()
+                            .overflow_hidden()
                             .gap_0p5()
                             .items_center()
+                            .justify_end()
                             .children(actions)
                             .child(close),
                     ),
