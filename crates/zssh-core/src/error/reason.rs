@@ -156,6 +156,18 @@ impl Reason {
         self.zh
     }
 
+    /// 一次加好几个参数。
+    #[must_use]
+    pub fn with_all(mut self, params: impl IntoIterator<Item = (&'static str, String)>) -> Self {
+        self.params.extend(params);
+        self
+    }
+
+    /// 中文原文是不是以这段开头（断言用）。
+    pub fn starts_with(&self, prefix: &str) -> bool {
+        self.zh.starts_with(prefix)
+    }
+
     /// 中文原文里有没有这段文字（断言和日志筛选用）。
     pub fn contains(&self, needle: &str) -> bool {
         self.zh.contains(needle)
@@ -176,6 +188,25 @@ impl ErrorWithCode for Reason {
 
     fn causes(&self) -> Vec<(&'static str, &dyn ErrorWithCode)> {
         Reason::causes(self)
+    }
+}
+
+/// 序列化成中文原文那一个字符串（和 `X11Failure` 以前的 `String` 字段在 JSON 里一模一样）。
+impl serde::Serialize for Reason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.zh)
+    }
+}
+
+impl PartialEq<str> for Reason {
+    fn eq(&self, other: &str) -> bool {
+        self.zh == other
+    }
+}
+
+impl PartialEq<&str> for Reason {
+    fn eq(&self, other: &&str) -> bool {
+        self.zh == *other
     }
 }
 
@@ -724,6 +755,65 @@ pub mod keys {
         SV_NEW_MASTER_SHORT = "service.new_master_short";
         BK_PASSWORD_SHORT = "backup.password_short";
         BT_TIMEOUT = "target.timeout";
+        X11_SEND_FAILED = "x11.send_failed";
+        X11_NO_FREE_DISPLAY = "x11.no_free_display";
+        X11_RANDOM = "x11.random_unavailable";
+        X11_WRITE_AUTH = "x11.write_auth_failed";
+        X11_EXITED = "x11.vcxsrv_exited";
+        X11_NO_LISTEN = "x11.vcxsrv_not_listening";
+        X11_NON_ASCII_PATH = "x11.non_ascii_path";
+        X11_CUSTOM_BAD = "x11.custom_display_bad";
+        X11_PREPARE_TASK = "x11.prepare_task_failed";
+        X11_MAX_REG = "x11.max_registrations";
+        X11_COOKIE_UNIQUE = "x11.cookie_unique_failed";
+        X11_WAIT_FAILED = "x11.wait_failed";
+        CT_JUMP_FORWARD = "conntest.jump_forward";
+        CT_LABELED = "conntest.labeled";
+        CT_JUMP_TIMEOUT = "conntest.jump_timeout";
+        CT_WRAPPED = "conntest.wrapped";
+        CT_PROXY_FAILED = "conntest.proxy_failed";
+        CT_PROXY_DNS = "conntest.proxy_dns";
+        CT_PROXY_TIMEOUT = "conntest.proxy_timeout";
+        CT_PROXY_CONNECT = "conntest.proxy_connect";
+        CT_DNS = "conntest.dns";
+        CT_TIMEOUT = "conntest.timeout";
+        CT_REFUSED = "conntest.refused";
+        CT_CONNECT_FAILED = "conntest.connect_failed";
+        CT_CONNECT_OTHER = "conntest.connect_other";
+        CT_KEY_CHANGED = "conntest.key_changed";
+        CT_KEY_REVOKED = "conntest.key_revoked";
+        CT_KEY_REJECTED = "conntest.key_rejected";
+        CT_KEY_REKEY = "conntest.key_rekey";
+        CT_AUTH_FAILED = "conntest.auth_failed";
+        CT_AUTH_ALL = "conntest.auth_all";
+        CT_AUTH_TIMEOUT = "conntest.auth_timeout";
+        CT_KEY_LOAD = "conntest.key_load";
+        CT_AGENT = "conntest.agent";
+        CT_RSA_SHA1 = "conntest.rsa_sha1";
+        CT_NEED_PASSWORD = "conntest.need_password";
+        CT_NEED_PASSPHRASE = "conntest.need_passphrase";
+        CT_NEED_INTERACTIVE = "conntest.need_interactive";
+        CT_CANCELLED = "conntest.cancelled";
+        CT_NO_ALGO = "conntest.no_algo";
+        CT_HANDSHAKE_TIMEOUT = "conntest.handshake_timeout";
+        CT_DISCONNECTED = "conntest.disconnected";
+        CT_HANDSHAKE_OTHER = "conntest.handshake_other";
+        CT_OK = "conntest.ok";
+        CT_OK_VERSION = "conntest.ok_version";
+        CT_UNTRUSTED = "conntest.untrusted";
+        CT_UNTRUSTED_OTHER = "conntest.untrusted_other";
+        CT_UNTRUSTED_HOP = "conntest.untrusted_hop";
+        CT_UNTRUSTED_OTHER_HOP = "conntest.untrusted_other_hop";
+        CT_TCP_DATA = "conntest.tcp_data";
+        CT_TCP_SILENT = "conntest.tcp_silent";
+        CT_TCP_CLOSED = "conntest.tcp_closed";
+        CT_SERIAL_OK = "conntest.serial_ok";
+        CT_CANCELLED_TEST = "conntest.cancelled_test";
+        CT_TIMEOUT_STAGE = "conntest.timeout_stage";
+        CT_NO_TARGET = "conntest.no_target";
+        CT_NO_JUMP = "conntest.no_jump";
+        CT_RESET_AFTER = "conntest.reset_after";
+        CT_READ_FAILED = "conntest.read_failed";
         // @generated-keys-end
     }
 }

@@ -369,7 +369,7 @@ mod real {
     ) -> Result<Outcome, String> {
         let version = "SSH-2.0-OpenSSH_9.6";
         let direct = FailurePhase::Connect { via_proxy: false };
-        let ok = |headline: String| TestOutcome {
+        let ok = |headline: zssh_core::error::Reason| TestOutcome {
             ok: true,
             headline,
             detail: "测试连接\n结果：成功".to_owned(),
@@ -444,6 +444,7 @@ mod real {
                     presented: "SHA256:nEwFiNgErPrInT".into(),
                     stored_in: "ZeeTerm 自己的 known_hosts".into(),
                     advice: String::new(),
+                    source: zssh_core::error::HostKeySource::Own,
                 })),
                 FailurePhase::Handshake,
                 HopRole::Target,

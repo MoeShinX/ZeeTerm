@@ -4,7 +4,23 @@
 //! 时显示"一键安装 VcXsrv"按钮）；终端里按 [`X11Failure::terminal_notice`] 显示一句中文，
 //! 告诉用户为什么这次没有图形转发、怎么办。X11 失败从来不是致命的：shell 照常打开。
 
+use std::sync::RwLock;
+
 use serde::Serialize;
+
+use crate::error::{ErrorWithCode, Reason};
+
+/// 界面装上的「终端提示」生成函数：核心不挑语言，终端里那一行由界面按当前语言出。
+/// 没装（测试、没有界面的用法）就用中文的 [`X11Failure::advice`]。
+type NoticeRenderer = fn(&X11Failure) -> String;
+static NOTICE_RENDERER: RwLock<Option<NoticeRenderer>> = RwLock::new(None);
+
+/// 装上终端提示的生成函数（界面启动时调一次）。
+pub fn set_notice_renderer(renderer: NoticeRenderer) {
+    if let Ok(mut slot) = NOTICE_RENDERER.write() {
+        *slot = Some(renderer);
+    }
+}
 
 /// 一次 X11 失败。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, thiserror::Error)]
@@ -15,7 +31,7 @@ pub enum X11Failure {
     ServerRefused,
     /// 服务器没有回复 X11 请求（超时 / 通道提前关闭 / 回复前塞来太多数据）。
     #[error("服务器没有回复 X11 转发请求：{detail}")]
-    ServerNoReply { detail: String },
+    ServerNoReply { detail: Reason },
     /// 本机没有可用的 X 服务器（没人监听那个端口，或者根本没装）。
     /// `installable`：能不能由 ZeeTerm 一键安装 VcXsrv（界面据此决定要不要显示安装入口）。
     #[error("本机没有可用的 X 服务器（{display}）")]
@@ -32,7 +48,7 @@ pub enum X11Failure {
     LocalXServerTimeout { display: String },
     /// 本机 X 服务器是 ZeeTerm 自己要拉起的，但没起来。
     #[error("没能启动本机 X 服务器：{reason}")]
-    LaunchFailed { reason: String },
+    LaunchFailed { reason: Reason },
     /// 远端送来的 X11 连接带的 cookie 不属于这条连接上任何一个终端（已拒绝）。
     #[error("收到一个 X11 连接，但它的认证信息不属于任何终端，已拒绝")]
     UnknownCookie,
@@ -44,7 +60,7 @@ pub enum X11Failure {
     TooManyChannels,
     /// 这条连接上同时开 X11 的终端太多，或没能生成随机 cookie。
     #[error("没能登记这个终端的 X11 转发：{reason}")]
-    NotRegistered { reason: String },
+    NotRegistered { reason: Reason },
 }
 
 impl X11Failure {
@@ -66,7 +82,12 @@ impl X11Failure {
 
     /// 写进终端的一句话（含颜色和换行）。
     pub fn terminal_notice(&self) -> String {
-        format!("\r\n\x1b[33m[ZeeTerm] X11：{}\x1b[0m\r\n", self.advice())
+        let line = NOTICE_RENDERER
+            .read()
+            .ok()
+            .and_then(|slot| *slot)
+            .map_or_else(|| format!("X11：{}", self.advice()), |render| render(self));
+        format!("\r\n\x1b[33m[ZeeTerm] {line}\x1b[0m\r\n")
     }
 
     /// 原因 + 怎么办。
@@ -119,6 +140,63 @@ impl X11Failure {
             Self::NotRegistered { reason } => {
                 format!("没能为这个终端开启 X11 转发：{reason}。已按普通终端打开。")
             }
+        }
+    }
+}
+
+/// 错误码与结构化参数：界面按它们出当前语言的整句（`Display` / `advice()` 的中文只留给日志和兜底）。
+impl ErrorWithCode for X11Failure {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::ServerRefused => "x11f.server_refused",
+            Self::ServerNoReply { .. } => "x11f.server_no_reply",
+            Self::NoLocalXServer { .. } => "x11f.no_local_x_server",
+            Self::LocalXServerRejected { .. } => "x11f.local_x_server_rejected",
+            Self::LocalXServerTimeout { .. } => "x11f.local_x_server_timeout",
+            Self::LaunchFailed { .. } => "x11f.launch_failed",
+            Self::UnknownCookie => "x11f.unknown_cookie",
+            Self::BadSetup => "x11f.bad_setup",
+            Self::TooManyChannels => "x11f.too_many_channels",
+            Self::NotRegistered { .. } => "x11f.not_registered",
+        }
+    }
+
+    fn params(&self) -> Vec<(&'static str, String)> {
+        match self {
+            Self::ServerRefused | Self::UnknownCookie | Self::BadSetup | Self::TooManyChannels => {
+                Vec::new()
+            }
+            Self::ServerNoReply { detail } => vec![("detail", detail.zh().to_owned())],
+            Self::NoLocalXServer {
+                display,
+                installable,
+            } => vec![
+                ("display", display.clone()),
+                ("installable", u8::from(*installable).to_string()),
+            ],
+            Self::LocalXServerRejected {
+                display,
+                reason,
+                passthrough,
+            } => vec![
+                ("display", display.clone()),
+                ("reason", reason.clone()),
+                ("passthrough", u8::from(*passthrough).to_string()),
+            ],
+            Self::LocalXServerTimeout { display } => vec![("display", display.clone())],
+            Self::LaunchFailed { reason } | Self::NotRegistered { reason } => {
+                vec![("detail", reason.zh().to_owned())]
+            }
+        }
+    }
+
+    fn causes(&self) -> Vec<(&'static str, &dyn ErrorWithCode)> {
+        match self {
+            Self::ServerNoReply { detail } => vec![("detail", detail as &dyn ErrorWithCode)],
+            Self::LaunchFailed { reason } | Self::NotRegistered { reason } => {
+                vec![("detail", reason as &dyn ErrorWithCode)]
+            }
+            _ => Vec::new(),
         }
     }
 }

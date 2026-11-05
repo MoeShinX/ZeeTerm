@@ -1071,8 +1071,16 @@ async fn run_exec(
 }
 
 /// 把"记录在哪儿"翻译成给人看的两段文字。
-fn describe_source(stored_in: &StoredIn, host: &str, port: u16) -> (String, String) {
-    (stored_in.describe(), stored_in.advice(host, port))
+fn describe_source(
+    stored_in: &StoredIn,
+    host: &str,
+    port: u16,
+) -> (String, String, crate::error::HostKeySource) {
+    (
+        stored_in.describe(),
+        stored_in.advice(host, port),
+        stored_in.source(host, port),
+    )
 }
 
 fn append_capped(buffer: &mut Vec<u8>, truncated: &mut u64, data: &[u8], cap: usize) {
@@ -1437,7 +1445,8 @@ impl client::Handler for ClientHandler {
                     return Ok(true);
                 }
                 warn!(host = %self.host, ?decision, "主机指纹变化，阻断连接");
-                let (stored_in, advice) = describe_source(&stored_in, &self.host, self.port);
+                let (stored_in, advice, source) =
+                    describe_source(&stored_in, &self.host, self.port);
                 Err(ZsshError::HostKeyChanged(Box::new(HostKeyMismatch {
                     host: self.host.clone(),
                     port: self.port,
@@ -1446,6 +1455,7 @@ impl client::Handler for ClientHandler {
                     presented: server_key.fingerprint,
                     stored_in,
                     advice,
+                    source,
                 })))
             }
 
@@ -1458,7 +1468,8 @@ impl client::Handler for ClientHandler {
                     .ask_about_changed_key(&server_key, HostKeyStatus::Revoked, &stored_fingerprint)
                     .await;
                 warn!(host = %self.host, ?decision, "主机密钥已被吊销，阻断连接");
-                let (stored_in, advice) = describe_source(&stored_in, &self.host, self.port);
+                let (stored_in, advice, source) =
+                    describe_source(&stored_in, &self.host, self.port);
                 Err(ZsshError::HostKeyRevoked(Box::new(
                     crate::error::HostKeyRevokedInfo {
                         host: self.host.clone(),
@@ -1467,6 +1478,7 @@ impl client::Handler for ClientHandler {
                         presented: server_key.fingerprint,
                         stored_in,
                         advice,
+                        source,
                     },
                 )))
             }

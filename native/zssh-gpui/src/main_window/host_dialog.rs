@@ -753,7 +753,9 @@ impl MainWindow {
                                     .min_w_0()
                                     .typo(Role::Body, tokens)
                                     .text_color(color)
-                                    .child(SharedString::from(outcome.headline.clone())),
+                                    .child(SharedString::from(crate::error_text::reason_text(
+                                        &outcome.headline,
+                                    ))),
                             )
                             .child(text_button(
                                 "host-test-copy",

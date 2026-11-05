@@ -18,7 +18,7 @@ pub(crate) mod relay;
 
 pub use cookie::MIT_MAGIC_COOKIE;
 pub use display::{parse_display, XEndpoint};
-pub use failure::X11Failure;
+pub use failure::{set_notice_renderer, X11Failure};
 pub use registry::{
     FailureSink, X11Hub, X11Registration, X11Request, X11Route, MAX_CHANNELS_PER_REGISTRATION,
     MAX_CHANNELS_TOTAL, MAX_REGISTRATIONS,

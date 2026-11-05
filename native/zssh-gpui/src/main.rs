@@ -124,6 +124,9 @@ fn main() {
         // 落盘和"跟随系统主题"的轮询也都归它。
         settings_store::AppSettings::init(cx);
 
+        // X11 失败写进终端的那一行跟随界面语言（核心库不挑语言）。
+        zssh_core::x11::set_notice_renderer(error_text::x11_notice_line);
+
         // 空闲自动锁定要知道“ZeeTerm 窗口里最近一次键盘 / 鼠标操作”（V2-U26）：给界面线程装消息钩子。
         if !zssh_platform_windows::activity::install_on_current_thread() {
             tracing::warn!("没能安装输入活动钩子，空闲自动锁定不会生效");

@@ -11,6 +11,7 @@
 //! 还在监听、授权文件还在，就直接沿用，不重复拉起。只有**本次运行亲手拉起**的进程才会被关闭；
 //! 沿用的、用户自己开的 X 服务器 ZeeTerm 都不碰。
 
+use crate::error::{reason_keys, Reason};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
@@ -167,16 +168,18 @@ pub fn reuse_owned(
 
 /// 授权文件路径要交给 VcXsrv（ANSI 命令行程序）：含非 ASCII 字符的用户目录会被截坏，
 /// 这时改用 8.3 短路径；两者都不行就报错而不是让它悄悄读不到文件。
-fn ascii_safe_path(sys: &dyn LocalSystem, path: &Path) -> Result<PathBuf, String> {
+fn ascii_safe_path(sys: &dyn LocalSystem, path: &Path) -> Result<PathBuf, Reason> {
     if path.to_string_lossy().is_ascii() {
         return Ok(path.to_path_buf());
     }
     sys.short_path(path)
         .filter(|short| short.to_string_lossy().is_ascii())
         .ok_or_else(|| {
-            "数据目录的路径含有非英文字符，VcXsrv 读不到授权文件，且系统没有提供短路径名。\
-             可以改用 ZSSH_DATA_DIR 指向纯英文路径，或在设置里改成指定显示"
-                .to_owned()
+            Reason::new(
+                reason_keys::X11_NON_ASCII_PATH,
+                "数据目录的路径含有非英文字符，VcXsrv 读不到授权文件，且系统没有提供短路径名。\
+                 可以改用 ZSSH_DATA_DIR 指向纯英文路径，或在设置里改成指定显示",
+            )
         })
 }
 
@@ -187,21 +190,34 @@ pub fn start_owned(
     x11_dir: &Path,
     install: &VcXsrvInstall,
 ) -> Result<OwnedServer, X11Failure> {
-    let fail = |reason: String| X11Failure::LaunchFailed { reason };
+    let fail = |reason: Reason| X11Failure::LaunchFailed { reason };
 
     let display = (OWNED_FIRST_DISPLAY..=OWNED_LAST_DISPLAY)
         .find(|display| !sys.tcp_listening(6000 + display))
-        .ok_or_else(|| fail("找不到空闲的显示号".to_owned()))?;
-    let cookie = random_cookie().ok_or_else(|| fail("系统随机数不可用".to_owned()))?;
+        .ok_or_else(|| {
+            fail(Reason::new(
+                reason_keys::X11_NO_FREE_DISPLAY,
+                "找不到空闲的显示号",
+            ))
+        })?;
+    let cookie = random_cookie()
+        .ok_or_else(|| fail(Reason::new(reason_keys::X11_RANDOM, "系统随机数不可用")))?;
 
     let auth_file = auth_file_path(x11_dir, display);
-    xauth::write_file(&auth_file, display, &cookie)
-        .map_err(|err| fail(format!("写授权文件失败：{err}")))?;
+    xauth::write_file(&auth_file, display, &cookie).map_err(|err| {
+        fail(
+            Reason::new(
+                reason_keys::X11_WRITE_AUTH,
+                format!("写授权文件失败：{err}"),
+            )
+            .with("cause", &err),
+        )
+    })?;
     let auth_arg = ascii_safe_path(sys, &auth_file).map_err(fail)?;
 
     let mut process = sys
         .spawn(&install.exe, &launch_args(display, &auth_arg))
-        .map_err(fail)?;
+        .map_err(|err| fail(Reason::text(err)))?;
 
     let mut ready = false;
     for _ in 0..READY_POLLS {
@@ -211,14 +227,20 @@ pub fn start_owned(
         }
         if process.has_exited() {
             let _ = std::fs::remove_file(&auth_file);
-            return Err(fail("VcXsrv 启动后立刻退出了".to_owned()));
+            return Err(fail(Reason::new(
+                reason_keys::X11_EXITED,
+                "VcXsrv 启动后立刻退出了",
+            )));
         }
         sys.sleep(READY_POLL_INTERVAL);
     }
     if !ready {
         process.kill();
         let _ = std::fs::remove_file(&auth_file);
-        return Err(fail("VcXsrv 启动后 10 秒内没有开始监听".to_owned()));
+        return Err(fail(Reason::new(
+            reason_keys::X11_NO_LISTEN,
+            "VcXsrv 启动后 10 秒内没有开始监听",
+        )));
     }
 
     // 记录写不进去不致命：只是下次运行没法沿用，会再拉起一个。

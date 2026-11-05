@@ -85,7 +85,8 @@ async fn request_pty_and_shell(
             .await
             .map_err(|err| {
                 ZsshError::X11(X11Failure::ServerNoReply {
-                    detail: format!("发送请求失败：{err}"),
+                    detail: Reason::new(rk::X11_SEND_FAILED, format!("发送请求失败：{err}"))
+                        .with("cause", &err),
                 })
             })?;
         match wait_reply(read_half, "X11", reply_timeout, &mut pending, data_limit).await {
@@ -93,8 +94,8 @@ async fn request_pty_and_shell(
             Ok(false) => return Err(ZsshError::X11(X11Failure::ServerRefused)),
             Err(err) => {
                 let detail = match err {
-                    ZsshError::Shell(message) => message.into_zh(),
-                    other => other.to_string(),
+                    ZsshError::Shell(reason) => reason,
+                    other => Reason::new(rk::X11_WAIT_FAILED, other.to_string()).caused_by(&other),
                 };
                 return Err(ZsshError::X11(X11Failure::ServerNoReply { detail }));
             }

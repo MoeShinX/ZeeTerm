@@ -375,6 +375,17 @@ impl StoredIn {
         }
     }
 
+    /// 结构化的来源：界面按语言说"自己的 known_hosts"还是"系统文件"。
+    pub fn source(&self, host: &str, port: u16) -> crate::error::HostKeySource {
+        match self {
+            Self::Our => crate::error::HostKeySource::Own,
+            Self::System(path) => crate::error::HostKeySource::System {
+                path: path.display().to_string(),
+                forget_hint: self.forget_hint(host, port).unwrap_or_default(),
+            },
+        }
+    }
+
     /// 旧记录在系统文件里时，给一条用户自己在命令行里能执行的删除命令。
     pub fn forget_hint(&self, host: &str, port: u16) -> Option<String> {
         match self {

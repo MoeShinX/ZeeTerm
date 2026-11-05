@@ -623,7 +623,7 @@ mod tests {
         assert_eq!(bad.stage, Some(TestStage::Auth));
         assert!(bad.headline.contains("认证失败"), "{}", bad.headline);
         // 结果和详情里都不能出现密码。
-        for text in [&bad.headline, &bad.detail] {
+        for text in [bad.headline.to_string(), bad.detail.clone()] {
             assert!(
                 !text.contains("wrong-pw") && !text.contains("right-pw"),
                 "{text}"

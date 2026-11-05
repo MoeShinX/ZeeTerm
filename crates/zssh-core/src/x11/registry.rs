@@ -8,6 +8,7 @@
 //! 上限都在这里：同时登记的终端数、每个终端同时开着的通道数、整条连接的通道总数。
 //! 终端关闭（[`X11Registration`] 被丢弃）时登记项消失，并通知它名下还在转发的任务退出。
 
+use crate::error::{reason_keys, Reason};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -125,13 +126,17 @@ impl X11Hub {
         let mut routes = lock(&self.inner.routes);
         if routes.len() >= MAX_REGISTRATIONS {
             return Err(X11Failure::NotRegistered {
-                reason: format!("这条连接上已经有 {MAX_REGISTRATIONS} 个终端在用 X11 转发"),
+                reason: Reason::new(
+                    reason_keys::X11_MAX_REG,
+                    format!("这条连接上已经有 {MAX_REGISTRATIONS} 个终端在用 X11 转发"),
+                )
+                .with("max", MAX_REGISTRATIONS),
             });
         }
         // 16 字节随机数撞车的概率可以忽略，仍然重试几次而不是覆盖别人的登记项。
         for _ in 0..4 {
             let cookie = random_cookie().ok_or_else(|| X11Failure::NotRegistered {
-                reason: "系统随机数不可用".to_owned(),
+                reason: Reason::new(reason_keys::X11_RANDOM, "系统随机数不可用"),
             })?;
             if routes.contains_key(&cookie[..]) {
                 continue;
@@ -153,7 +158,10 @@ impl X11Hub {
             });
         }
         Err(X11Failure::NotRegistered {
-            reason: "生成不重复的随机 cookie 失败".to_owned(),
+            reason: Reason::new(
+                reason_keys::X11_COOKIE_UNIQUE,
+                "生成不重复的随机 cookie 失败",
+            ),
         })
     }
 

@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use tokio::io::AsyncReadExt;
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys, Reason, ZsshError};
 use crate::ssh::connection::{ChainHop, Connection};
 use crate::ssh::dialer::{connect_direct, connect_via_proxy, BoxedStream, ProxyConfig};
 use crate::ssh::interact::{
@@ -55,6 +55,20 @@ pub enum TestStage {
 }
 
 impl TestStage {
+    /// 稳定的英文代码（界面据此出英文阶段名）。
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Resolve => "resolve",
+            Self::Connect => "connect",
+            Self::Proxy => "proxy",
+            Self::Jump => "jump",
+            Self::Handshake => "handshake",
+            Self::HostKey => "host_key",
+            Self::Auth => "auth",
+            Self::Open => "open",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Resolve => "域名解析",
@@ -74,7 +88,7 @@ impl TestStage {
 pub struct TestOutcome {
     pub ok: bool,
     /// 按钮栏上面那一行。
-    pub headline: String,
+    pub headline: Reason,
     /// 「复制详情」复制的多行文字（目标、路线、阶段、耗时、完整原因；没有密码）。
     pub detail: String,
     pub elapsed_ms: u64,
@@ -130,18 +144,26 @@ pub struct Interaction {
     pub prompted: Option<PromptKind>,
 }
 
-/// 分类之后的失败：阶段 + 一句中文原因。
+/// 分类之后的失败：阶段 + 一句原因（带稳定 key 和参数，界面按语言出整句）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
     pub stage: TestStage,
-    pub message: String,
+    pub message: Reason,
 }
 
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// 把一次失败分成阶段并写成中文。`label` 是这一跳在界面上的名字（「跳板机 web-1」「目标 db」）。
+/// 一条只有中文原文的失败（原文来自别处，已经是整句）。
+fn plain(stage: TestStage, message: String) -> Failure {
+    Failure {
+        stage,
+        message: Reason::text(message),
+    }
+}
+
+/// 把一次失败分成阶段并写成一条原因。`label` 是这一跳在界面上的名字（「跳板机 web-1」「目标 db」）。
 pub fn classify_failure(
     error: &ZsshError,
     phase: FailurePhase,
@@ -151,42 +173,71 @@ pub fn classify_failure(
 ) -> Failure {
     let inner = match phase {
         FailurePhase::Connect { via_proxy } => classify_connect(error, via_proxy),
-        FailurePhase::Forward => Failure {
-            stage: TestStage::Jump,
-            message: format!("跳板机转发失败：{}", forward_reason(error)),
-        },
+        FailurePhase::Forward => {
+            let reason = forward_reason(error);
+            Failure {
+                stage: TestStage::Jump,
+                message: Reason::new(
+                    reason_keys::CT_JUMP_FORWARD,
+                    format!("跳板机转发失败：{}", reason.zh()),
+                )
+                .caused_by_as("reason", &reason),
+            }
+        }
         FailurePhase::Handshake => classify_handshake(error, interaction),
     };
     // 跳板机那一跳的问题统一挂在「经跳板机」下，说清是哪台；代理失败保持原样（和是目标还是跳板无关）。
     if role == HopRole::Jump && !matches!(inner.stage, TestStage::Proxy | TestStage::Jump) {
         return Failure {
             stage: TestStage::Jump,
-            message: format!("{label}：{}", inner.message),
+            message: Reason::new(
+                reason_keys::CT_LABELED,
+                format!("{label}：{}", inner.message.zh()),
+            )
+            .with("label", label)
+            .caused_by_as("inner", &inner.message),
         };
     }
     inner
 }
 
-fn forward_reason(error: &ZsshError) -> String {
+fn forward_reason(error: &ZsshError) -> Reason {
     match error {
-        ZsshError::InvalidInput(message) => message.zh().to_owned(),
-        ZsshError::ConnectTimeout { host, seconds, .. } => {
-            format!("经跳板机连接 {host} 超过 {seconds} 秒没有响应")
-        }
-        other => one_line(&other.to_string()),
+        ZsshError::InvalidInput(reason) => reason.clone(),
+        ZsshError::ConnectTimeout { host, seconds, .. } => Reason::new(
+            reason_keys::CT_JUMP_TIMEOUT,
+            format!("经跳板机连接 {host} 超过 {seconds} 秒没有响应"),
+        )
+        .with("host", host)
+        .with("seconds", seconds),
+        other => wrapped(other),
     }
+}
+
+/// 把一个核心错误原样包成一条原因：中文是它的 `Display`（压成一行），英文由界面按它的码重新生成。
+fn wrapped(error: &ZsshError) -> Reason {
+    Reason::new(reason_keys::CT_WRAPPED, one_line(&error.to_string())).caused_by(error)
 }
 
 fn classify_connect(error: &ZsshError, via_proxy: bool) -> Failure {
     match error {
         ZsshError::Proxy { proxy, detail } => Failure {
             stage: TestStage::Proxy,
-            message: format!("代理失败（{proxy}）：{}", one_line(detail.zh())),
+            message: Reason::new(
+                reason_keys::CT_PROXY_FAILED,
+                format!("代理失败（{proxy}）：{}", one_line(detail.zh())),
+            )
+            .with("proxy", proxy)
+            .caused_by_as("detail", detail),
         },
         // 经代理时，能不能解析 / 连上的是代理地址本身。
         ZsshError::Dns { host, .. } if via_proxy => Failure {
             stage: TestStage::Proxy,
-            message: format!("代理失败：无法解析代理地址 {host}"),
+            message: Reason::new(
+                reason_keys::CT_PROXY_DNS,
+                format!("代理失败：无法解析代理地址 {host}"),
+            )
+            .with("host", host),
         },
         ZsshError::ConnectTimeout {
             host,
@@ -194,20 +245,36 @@ fn classify_connect(error: &ZsshError, via_proxy: bool) -> Failure {
             seconds,
         } if via_proxy => Failure {
             stage: TestStage::Proxy,
-            message: format!("代理失败：连接代理 {host}:{port} 超过 {seconds} 秒没有响应"),
+            message: Reason::new(
+                reason_keys::CT_PROXY_TIMEOUT,
+                format!("代理失败：连接代理 {host}:{port} 超过 {seconds} 秒没有响应"),
+            )
+            .with("host", host)
+            .with("port", port)
+            .with("seconds", seconds),
         },
         ZsshError::Connect {
             host, port, source, ..
-        } if via_proxy => Failure {
-            stage: TestStage::Proxy,
-            message: format!(
-                "代理失败：连不上代理 {host}:{port}（{}）",
-                io_reason(source)
-            ),
-        },
+        } if via_proxy => {
+            let (zh, io_reason) = io_reason(source);
+            Failure {
+                stage: TestStage::Proxy,
+                message: Reason::new(
+                    reason_keys::CT_PROXY_CONNECT,
+                    format!("代理失败：连不上代理 {host}:{port}（{zh}）"),
+                )
+                .with("host", host)
+                .with("port", port)
+                .with("io_reason", io_reason),
+            }
+        }
         ZsshError::Dns { host, .. } => Failure {
             stage: TestStage::Resolve,
-            message: format!("域名解析失败：{host}（检查地址有没有写对、本机 DNS 是否正常）"),
+            message: Reason::new(
+                reason_keys::CT_DNS,
+                format!("域名解析失败：{host}（检查地址有没有写对、本机 DNS 是否正常）"),
+            )
+            .with("host", host),
         },
         ZsshError::ConnectTimeout {
             host,
@@ -215,123 +282,237 @@ fn classify_connect(error: &ZsshError, via_proxy: bool) -> Failure {
             seconds,
         } => Failure {
             stage: TestStage::Connect,
-            message: format!("连接超时：{host}:{port} 超过 {seconds} 秒没有响应"),
+            message: Reason::new(
+                reason_keys::CT_TIMEOUT,
+                format!("连接超时：{host}:{port} 超过 {seconds} 秒没有响应"),
+            )
+            .with("host", host)
+            .with("port", port)
+            .with("seconds", seconds),
         },
         ZsshError::Connect {
             host, port, source, ..
         } => Failure {
             stage: TestStage::Connect,
             message: match source.kind() {
-                std::io::ErrorKind::ConnectionRefused => {
-                    format!("连接被拒绝：{host}:{port} 上没有程序在监听，或者被防火墙拒绝了")
+                std::io::ErrorKind::ConnectionRefused => Reason::new(
+                    reason_keys::CT_REFUSED,
+                    format!("连接被拒绝：{host}:{port} 上没有程序在监听，或者被防火墙拒绝了"),
+                )
+                .with("host", host)
+                .with("port", port),
+                _ => {
+                    let (zh, io_reason) = io_reason(source);
+                    Reason::new(
+                        reason_keys::CT_CONNECT_FAILED,
+                        format!("无法连接 {host}:{port}（{zh}）"),
+                    )
+                    .with("host", host)
+                    .with("port", port)
+                    .with("io_reason", io_reason)
                 }
-                _ => format!("无法连接 {host}:{port}（{}）", io_reason(source)),
             },
         },
         other => Failure {
             stage: TestStage::Connect,
-            message: format!("无法建立连接：{}", one_line(&other.to_string())),
+            message: Reason::new(
+                reason_keys::CT_CONNECT_OTHER,
+                format!("无法建立连接：{}", one_line(&other.to_string())),
+            )
+            .caused_by(other),
         },
     }
 }
 
-fn io_reason(source: &std::io::Error) -> String {
-    match source.kind() {
-        std::io::ErrorKind::ConnectionRefused => "连接被拒绝".to_owned(),
-        std::io::ErrorKind::TimedOut => "超时".to_owned(),
-        std::io::ErrorKind::HostUnreachable => "主机不可达".to_owned(),
-        std::io::ErrorKind::NetworkUnreachable => "网络不可达".to_owned(),
-        std::io::ErrorKind::ConnectionReset => "连接被重置".to_owned(),
-        _ => one_line(&source.to_string()),
-    }
+/// 网络层原因：返回（中文说法, 给界面的参数值）。常见的几种给稳定代码（`kind:<名>`），
+/// 其余是系统错误原文（跟系统语言，原样保留）。
+fn io_reason(source: &std::io::Error) -> (String, String) {
+    let (zh, code) = match source.kind() {
+        std::io::ErrorKind::ConnectionRefused => ("连接被拒绝", "kind:refused"),
+        std::io::ErrorKind::TimedOut => ("超时", "kind:timed_out"),
+        std::io::ErrorKind::HostUnreachable => ("主机不可达", "kind:host_unreachable"),
+        std::io::ErrorKind::NetworkUnreachable => ("网络不可达", "kind:network_unreachable"),
+        std::io::ErrorKind::ConnectionReset => ("连接被重置", "kind:reset"),
+        _ => {
+            let text = one_line(&source.to_string());
+            return (text.clone(), text);
+        }
+    };
+    (zh.to_owned(), code.to_owned())
 }
 
 fn classify_handshake(error: &ZsshError, interaction: Interaction) -> Failure {
-    let host_key = |message: String| Failure {
+    let host_key = |message: Reason| Failure {
         stage: TestStage::HostKey,
         message,
     };
-    let auth = |message: String| Failure {
+    let auth = |message: Reason| Failure {
         stage: TestStage::Auth,
         message,
     };
     match error {
-        ZsshError::HostKeyChanged(info) => host_key(format!(
-            "主机密钥与保存的不一致：已保存 {}，本次收到 {}（记录在 {}）",
-            info.stored, info.presented, info.stored_in
-        )),
-        ZsshError::HostKeyRevoked(info) => host_key(format!(
-            "主机密钥已被标记为吊销（@revoked）：记录 {}，本次收到 {}",
-            info.stored, info.presented
-        )),
-        ZsshError::HostKeyRejected { fingerprint, .. } => {
-            host_key(format!("主机密钥被拒绝（指纹 {fingerprint}）"))
-        }
-        ZsshError::HostKeyRekeyMismatch { first, again, .. } => host_key(format!(
-            "握手中途主机密钥变了：第一次 {first}，这次 {again}"
-        )),
-        ZsshError::HostKeyStore(message) => host_key(one_line(message.zh())),
-        ZsshError::AuthFailed => auth("认证失败：用户名或密码错误".to_owned()),
-        ZsshError::AllAuthFailed {
-            tried, remaining, ..
-        } => auth(format!(
-            "认证失败：试过 {}，服务器还支持 {}",
-            one_line(tried),
-            one_line(remaining)
-        )),
-        ZsshError::AuthTimeout { seconds } => auth(format!("认证超时（每一步最多 {seconds} 秒）")),
-        ZsshError::KeyLoad(message) => auth(format!("读私钥失败：{}", one_line(message.zh()))),
-        ZsshError::AgentUnavailable(message) => {
-            auth(format!("ssh-agent 用不了：{}", one_line(message.zh())))
-        }
-        ZsshError::RsaSha1Refused { .. } => auth(
-            "服务器只接受 SHA-1 的 ssh-rsa 签名：换 Ed25519 / ECDSA 密钥，或打开「旧算法兼容」"
-                .to_owned(),
+        ZsshError::HostKeyChanged(info) => host_key(
+            Reason::new(
+                reason_keys::CT_KEY_CHANGED,
+                format!(
+                    "主机密钥与保存的不一致：已保存 {}，本次收到 {}（记录在 {}）",
+                    info.stored, info.presented, info.stored_in
+                ),
+            )
+            .with("stored", &info.stored)
+            .with("presented", &info.presented)
+            .with("stored_in", &info.stored_in)
+            .with_all(info.source.params()),
         ),
+        ZsshError::HostKeyRevoked(info) => host_key(
+            Reason::new(
+                reason_keys::CT_KEY_REVOKED,
+                format!(
+                    "主机密钥已被标记为吊销（@revoked）：记录 {}，本次收到 {}",
+                    info.stored, info.presented
+                ),
+            )
+            .with("stored", &info.stored)
+            .with("presented", &info.presented),
+        ),
+        ZsshError::HostKeyRejected { fingerprint, .. } => host_key(
+            Reason::new(
+                reason_keys::CT_KEY_REJECTED,
+                format!("主机密钥被拒绝（指纹 {fingerprint}）"),
+            )
+            .with("fingerprint", fingerprint),
+        ),
+        ZsshError::HostKeyRekeyMismatch { first, again, .. } => host_key(
+            Reason::new(
+                reason_keys::CT_KEY_REKEY,
+                format!("握手中途主机密钥变了：第一次 {first}，这次 {again}"),
+            )
+            .with("first", first)
+            .with("again", again),
+        ),
+        ZsshError::HostKeyStore(reason) => host_key(
+            Reason::new(reason_keys::CT_WRAPPED, one_line(reason.zh())).caused_by(reason),
+        ),
+        ZsshError::AuthFailed => auth(Reason::new(
+            reason_keys::CT_AUTH_FAILED,
+            "认证失败：用户名或密码错误",
+        )),
+        ZsshError::AllAuthFailed {
+            tried,
+            remaining,
+            tried_codes,
+            remaining_codes,
+            agent_error,
+        } => {
+            let mut reason = Reason::new(
+                reason_keys::CT_AUTH_ALL,
+                format!(
+                    "认证失败：试过 {}，服务器还支持 {}",
+                    one_line(tried),
+                    one_line(remaining)
+                ),
+            )
+            .with("tried_codes", tried_codes)
+            .with("remaining_codes", remaining_codes);
+            if let Some(agent) = agent_error {
+                reason = reason.caused_by_as("agent", agent.as_ref());
+            }
+            auth(reason)
+        }
+        ZsshError::AuthTimeout { seconds } => auth(
+            Reason::new(
+                reason_keys::CT_AUTH_TIMEOUT,
+                format!("认证超时（每一步最多 {seconds} 秒）"),
+            )
+            .with("seconds", seconds),
+        ),
+        ZsshError::KeyLoad(reason) => auth(
+            Reason::new(
+                reason_keys::CT_KEY_LOAD,
+                format!("读私钥失败：{}", one_line(reason.zh())),
+            )
+            .caused_by_as("detail", reason),
+        ),
+        ZsshError::AgentUnavailable(reason) => auth(
+            Reason::new(
+                reason_keys::CT_AGENT,
+                format!("ssh-agent 用不了：{}", one_line(reason.zh())),
+            )
+            .caused_by_as("detail", reason),
+        ),
+        ZsshError::RsaSha1Refused { .. } => auth(Reason::new(
+            reason_keys::CT_RSA_SHA1,
+            "服务器只接受 SHA-1 的 ssh-rsa 签名：换 Ed25519 / ECDSA 密钥，或打开「旧算法兼容」",
+        )),
         ZsshError::Cancelled => match interaction.prompted {
-            Some(PromptKind::Password) => auth(
-                "认证失败：需要密码，但没有填写（测试连接不会弹窗询问）".to_owned(),
-            ),
-            Some(PromptKind::Passphrase) => auth(
-                "认证失败：私钥有口令，但没有可用的口令（测试连接不会弹窗询问）".to_owned(),
-            ),
-            Some(PromptKind::KeyboardInteractive) => auth(
-                "服务器要求交互式验证（例如动态口令），测试连接无法代替你回答；服务器本身是可以连通的"
-                    .to_owned(),
-            ),
-            None => auth("已取消".to_owned()),
+            Some(PromptKind::Password) => auth(Reason::new(
+                reason_keys::CT_NEED_PASSWORD,
+                "认证失败：需要密码，但没有填写（测试连接不会弹窗询问）",
+            )),
+            Some(PromptKind::Passphrase) => auth(Reason::new(
+                reason_keys::CT_NEED_PASSPHRASE,
+                "认证失败：私钥有口令，但没有可用的口令（测试连接不会弹窗询问）",
+            )),
+            Some(PromptKind::KeyboardInteractive) => auth(Reason::new(
+                reason_keys::CT_NEED_INTERACTIVE,
+                "服务器要求交互式验证（例如动态口令），测试连接无法代替你回答；服务器本身是可以连通的",
+            )),
+            None => auth(Reason::new(reason_keys::CT_CANCELLED, "已取消")),
         },
         ZsshError::NoCommonAlgorithm(info) => Failure {
             stage: TestStage::Handshake,
-            message: format!(
-                "和服务器协商不出共同的 {} 算法（老服务器可以试试「旧算法兼容」）",
-                info.kind
-            ),
+            message: Reason::new(
+                reason_keys::CT_NO_ALGO,
+                format!(
+                    "和服务器协商不出共同的 {} 算法（老服务器可以试试「旧算法兼容」）",
+                    info.kind
+                ),
+            )
+            .with("kind", &info.kind),
         },
         ZsshError::ConnectTimeout { seconds, .. } => Failure {
             stage: TestStage::Handshake,
-            message: format!("SSH 握手超过 {seconds} 秒没有完成"),
+            message: Reason::new(
+                reason_keys::CT_HANDSHAKE_TIMEOUT,
+                format!("SSH 握手超过 {seconds} 秒没有完成"),
+            )
+            .with("seconds", seconds),
         },
         ZsshError::Ssh(russh::Error::Disconnect) => Failure {
             stage: TestStage::Handshake,
-            message: "服务器在握手时断开了连接（地址 / 端口上跑的可能不是 SSH 服务）".to_owned(),
+            message: Reason::new(
+                reason_keys::CT_DISCONNECTED,
+                "服务器在握手时断开了连接（地址 / 端口上跑的可能不是 SSH 服务）",
+            ),
         },
         other => Failure {
             stage: TestStage::Handshake,
-            message: format!("SSH 握手失败：{}", one_line(&other.to_string())),
+            message: Reason::new(
+                reason_keys::CT_HANDSHAKE_OTHER,
+                format!("SSH 握手失败：{}", one_line(&other.to_string())),
+            )
+            .caused_by(other),
         },
     }
 }
 
 // ---- 结果文案（纯函数）----
 
-fn version_suffix(version: Option<&str>) -> String {
-    version.map_or_else(String::new, |v| format!("，服务器 {v}"))
-}
-
 /// SSH 成功的那一行（走到这里的主机指纹都已经信任，见 [`untrusted_stop_headline`]）。
-pub fn ssh_success_headline(elapsed_ms: u64, version: Option<&str>) -> String {
-    format!("连接成功，耗时 {elapsed_ms} ms{}", version_suffix(version))
+pub fn ssh_success_headline(elapsed_ms: u64, version: Option<&str>) -> Reason {
+    match version {
+        Some(version) => Reason::new(
+            reason_keys::CT_OK_VERSION,
+            format!("连接成功，耗时 {elapsed_ms} ms，服务器 {version}"),
+        )
+        .with("elapsed", elapsed_ms)
+        .with("version", version),
+        None => Reason::new(
+            reason_keys::CT_OK,
+            format!("连接成功，耗时 {elapsed_ms} ms"),
+        )
+        .with("elapsed", elapsed_ms),
+    }
 }
 
 /// 主机指纹没信任、测试停在认证之前的那一行。`other_types`：这台主机只保存过别种类型的密钥；
@@ -340,27 +521,50 @@ pub fn untrusted_stop_headline(
     fingerprint: &str,
     other_types: bool,
     hop_label: Option<&str>,
-) -> String {
+) -> Reason {
     let subject = if other_types {
         format!("这台主机只保存过别种类型的密钥，本次指纹 {fingerprint} 尚未信任")
     } else {
         format!("主机指纹 {fingerprint} 尚未信任")
     };
     let note = "没有测试登录；请先正式连接一次并核对指纹";
+    let (key, zh) = match (other_types, hop_label) {
+        (false, None) => (reason_keys::CT_UNTRUSTED, format!("{subject}，{note}")),
+        (true, None) => (
+            reason_keys::CT_UNTRUSTED_OTHER,
+            format!("{subject}，{note}"),
+        ),
+        (false, Some(label)) => (
+            reason_keys::CT_UNTRUSTED_HOP,
+            format!("{label}：{subject}，{note}"),
+        ),
+        (true, Some(label)) => (
+            reason_keys::CT_UNTRUSTED_OTHER_HOP,
+            format!("{label}：{subject}，{note}"),
+        ),
+    };
+    let reason = Reason::new(key, zh).with("fingerprint", fingerprint);
     match hop_label {
-        Some(label) => format!("{label}：{subject}，{note}"),
-        None => format!("{subject}，{note}"),
+        Some(label) => reason.with("label", label),
+        None => reason,
     }
 }
 
 /// Telnet 成功的那一行。
-pub fn tcp_success_headline(elapsed_ms: u64, first_byte: FirstByte) -> String {
-    let note = match first_byte {
-        FirstByte::Data => "对方已回应",
-        FirstByte::Silent => "对方 2 秒内没有主动发数据，Telnet 设备常见",
-        FirstByte::Closed => "但对方随即关闭了连接",
+pub fn tcp_success_headline(elapsed_ms: u64, first_byte: FirstByte) -> Reason {
+    let (key, note) = match first_byte {
+        FirstByte::Data => (reason_keys::CT_TCP_DATA, "对方已回应"),
+        FirstByte::Silent => (
+            reason_keys::CT_TCP_SILENT,
+            "对方 2 秒内没有主动发数据，Telnet 设备常见",
+        ),
+        FirstByte::Closed => (reason_keys::CT_TCP_CLOSED, "但对方随即关闭了连接"),
     };
-    format!("连接成功，耗时 {elapsed_ms} ms（TCP 已连通，未做登录；{note}）")
+    Reason::new(
+        key,
+        format!("连接成功，耗时 {elapsed_ms} ms（TCP 已连通，未做登录；{note}）"),
+    )
+    .with("elapsed", elapsed_ms)
 }
 
 /// Telnet 连上之后对方的表现。
@@ -371,7 +575,7 @@ pub enum FirstByte {
     Closed,
 }
 
-fn success(headline: String, detail: String, elapsed_ms: u64) -> TestOutcome {
+fn success(headline: Reason, detail: String, elapsed_ms: u64) -> TestOutcome {
     TestOutcome {
         ok: true,
         headline,
@@ -396,21 +600,23 @@ fn failure_outcome(failure: &Failure, detail: String, elapsed_ms: u64) -> TestOu
 
 /// 串口打开成功。
 pub fn serial_success(device: &str, elapsed_ms: u64) -> TestOutcome {
-    let headline = format!("串口 {device} 可以打开（已立即关闭），耗时 {elapsed_ms} ms");
+    let headline = Reason::new(
+        reason_keys::CT_SERIAL_OK,
+        format!("串口 {device} 可以打开（已立即关闭），耗时 {elapsed_ms} ms"),
+    )
+    .with("device", device)
+    .with("elapsed", elapsed_ms);
     let detail = format!("测试连接\n串口：{device}\n结果：可以打开\n耗时：{elapsed_ms} ms");
     success(headline, detail, elapsed_ms)
 }
 
 /// 串口打开失败：`reason` 是串口驱动层分类好的中文原因（「COM3 不存在…」「COM3 被别的程序占用…」）。
 pub fn serial_failure(device: &str, reason: &str, elapsed_ms: u64) -> TestOutcome {
-    let failure = Failure {
-        stage: TestStage::Open,
-        message: one_line(reason),
-    };
+    let failure = plain(TestStage::Open, one_line(reason));
     let detail = format!(
         "测试连接\n串口：{device}\n结果：失败（阶段：{}）\n原因：{}",
         failure.stage.label(),
-        failure.message
+        failure.message.zh()
     );
     failure_outcome(&failure, detail, elapsed_ms)
 }
@@ -419,7 +625,7 @@ pub fn serial_failure(device: &str, reason: &str, elapsed_ms: u64) -> TestOutcom
 pub fn cancelled() -> TestOutcome {
     TestOutcome {
         ok: false,
-        headline: "已取消测试".to_owned(),
+        headline: Reason::new(reason_keys::CT_CANCELLED_TEST, "已取消测试"),
         detail: "测试连接\n结果：已取消".to_owned(),
         elapsed_ms: 0,
         stage: None,
@@ -667,11 +873,16 @@ fn timeout_failure(timeout: Duration, interactor: &TestInteractor) -> Failure {
     let stage = interactor.lock().stage.unwrap_or(TestStage::Connect);
     Failure {
         stage,
-        message: format!(
-            "连接测试超过 {} 秒仍没有完成（卡在：{}）",
-            timeout.as_secs(),
-            stage.label()
-        ),
+        message: Reason::new(
+            reason_keys::CT_TIMEOUT_STAGE,
+            format!(
+                "连接测试超过 {} 秒仍没有完成（卡在：{}）",
+                timeout.as_secs(),
+                stage.label()
+            ),
+        )
+        .with("seconds", timeout.as_secs())
+        .with("stage", stage.code()),
     }
 }
 
@@ -703,7 +914,7 @@ pub async fn test_ssh_with(plan: SshTestPlan, timeout: Duration) -> TestOutcome 
     if plan.hops.is_empty() {
         let failure = Failure {
             stage: TestStage::Connect,
-            message: "没有要连接的目标".to_owned(),
+            message: Reason::new(reason_keys::CT_NO_TARGET, "没有要连接的目标"),
         };
         return failure_outcome(&failure, format!("{header}\n结果：失败"), 0);
     }
@@ -850,7 +1061,7 @@ pub async fn test_tcp_with(
                         return Err(fail(
                             Failure {
                                 stage: TestStage::Jump,
-                                message: "没有跳板机".to_owned(),
+                                message: Reason::new(reason_keys::CT_NO_JUMP, "没有跳板机"),
                             },
                             &err,
                         ));
@@ -867,9 +1078,13 @@ pub async fn test_tcp_with(
             Ok(Ok(_)) => FirstByte::Data,
             Ok(Err(err)) => {
                 let message = if err.kind() == std::io::ErrorKind::ConnectionReset {
-                    "连上之后被对方重置了连接".to_owned()
+                    Reason::new(reason_keys::CT_RESET_AFTER, "连上之后被对方重置了连接")
                 } else {
-                    format!("连上之后读取失败：{}", one_line(&err.to_string()))
+                    Reason::new(
+                        reason_keys::CT_READ_FAILED,
+                        format!("连上之后读取失败：{}", one_line(&err.to_string())),
+                    )
+                    .with("cause", one_line(&err.to_string()))
                 };
                 return Err((
                     Failure {
@@ -1039,6 +1254,7 @@ mod tests {
             presented: "SHA256:new".into(),
             stored_in: "ZeeTerm 自己的 known_hosts".into(),
             advice: "x".into(),
+            source: crate::error::HostKeySource::Own,
         }));
         let f = classify(&changed, FailurePhase::Handshake, HopRole::Target);
         assert_eq!(f.stage, TestStage::HostKey);
@@ -1051,6 +1267,7 @@ mod tests {
             presented: "SHA256:new".into(),
             stored_in: "f".into(),
             advice: "x".into(),
+            source: crate::error::HostKeySource::Own,
         }));
         assert!(classify(&revoked, FailurePhase::Handshake, HopRole::Target)
             .message
@@ -1071,6 +1288,7 @@ mod tests {
             remaining: "keyboard-interactive".into(),
             tried_codes: String::new(),
             remaining_codes: String::new(),
+            agent_error: None,
         };
         let f = classify(&all, FailurePhase::Handshake, HopRole::Target);
         assert!(

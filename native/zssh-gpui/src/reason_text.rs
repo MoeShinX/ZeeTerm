@@ -712,6 +712,123 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "target.timeout" => {
             "It did not finish within {minutes} minutes, so this attempt was abandoned"
         }
+        "x11.send_failed" => "Failed to send the request: {cause}",
+        "x11.no_free_display" => "No free display number was found",
+        "x11.random_unavailable" => "The system random number generator is unavailable",
+        "x11.write_auth_failed" => "Failed to write the authorization file: {cause}",
+        "x11.vcxsrv_exited" => "VcXsrv exited right after starting",
+        "x11.vcxsrv_not_listening" => "VcXsrv did not start listening within 10 seconds",
+        "x11.non_ascii_path" => {
+            "The data folder path contains non-ASCII characters, so VcXsrv cannot read the authorization file and the system gave no short path name. Point ZSSH_DATA_DIR at an ASCII-only path, or choose a custom display in settings"
+        }
+        "x11.custom_display_bad" => {
+            "The display address specified in settings is unusable: {cause}"
+        }
+        "x11.prepare_task_failed" => {
+            "The task that prepares the local X server ended abnormally: {cause}"
+        }
+        "x11.max_registrations" => {
+            "This connection already has {max} terminals using X11 forwarding"
+        }
+        "x11.cookie_unique_failed" => "Failed to generate a unique random cookie",
+        "x11.wait_failed" => "{cause}",
+        "conntest.jump_forward" => "Jump host forwarding failed: {reason}",
+        "conntest.labeled" => "{label}: {inner}",
+        "conntest.jump_timeout" => {
+            "Connecting to {host} through the jump host got no response within {seconds} seconds"
+        }
+        "conntest.wrapped" => "{cause}",
+        "conntest.proxy_failed" => "Proxy failed ({proxy}): {detail}",
+        "conntest.proxy_dns" => "Proxy failed: cannot resolve the proxy address {host}",
+        "conntest.proxy_timeout" => {
+            "Proxy failed: connecting to the proxy {host}:{port} got no response within {seconds} seconds"
+        }
+        "conntest.proxy_connect" => {
+            "Proxy failed: cannot connect to the proxy {host}:{port} ({io_reason})"
+        }
+        "conntest.dns" => {
+            "Name resolution failed: {host} (check that the address is right and the local DNS works)"
+        }
+        "conntest.timeout" => {
+            "Connection timed out: {host}:{port} did not respond within {seconds} seconds"
+        }
+        "conntest.refused" => {
+            "Connection refused: nothing is listening on {host}:{port}, or a firewall rejected it"
+        }
+        "conntest.connect_failed" => "Cannot connect to {host}:{port} ({io_reason})",
+        "conntest.connect_other" => "Cannot establish the connection: {cause}",
+        "conntest.key_changed" => {
+            "The host key does not match the saved one: saved {stored}, received {presented} (recorded in {stored_in})"
+        }
+        "conntest.key_revoked" => {
+            "The host key is marked as revoked (@revoked): recorded {stored}, received {presented}"
+        }
+        "conntest.key_rejected" => "The host key was rejected (fingerprint {fingerprint})",
+        "conntest.key_rekey" => {
+            "The host key changed during the handshake: first {first}, now {again}"
+        }
+        "conntest.auth_failed" => "Authentication failed: wrong user name or password",
+        "conntest.auth_all" => {
+            "Authentication failed: tried {tried}; the server also supports {remaining}"
+        }
+        "conntest.auth_timeout" => "Authentication timed out (at most {seconds}s per step)",
+        "conntest.key_load" => "Failed to read the private key: {detail}",
+        "conntest.agent" => "ssh-agent is unavailable: {detail}",
+        "conntest.rsa_sha1" => {
+            "The server only accepts SHA-1 ssh-rsa signatures: use an Ed25519 / ECDSA key, or turn on legacy algorithm support"
+        }
+        "conntest.need_password" => {
+            "Authentication failed: a password is needed but none was entered (Test Connection does not prompt)"
+        }
+        "conntest.need_passphrase" => {
+            "Authentication failed: the private key has a passphrase but none is available (Test Connection does not prompt)"
+        }
+        "conntest.need_interactive" => {
+            "The server asks for interactive verification (for example a one-time code), which Test Connection cannot answer for you; the server itself is reachable"
+        }
+        "conntest.cancelled" => "Cancelled",
+        "conntest.no_algo" => {
+            "Cannot negotiate a common {kind} algorithm with the server (for older servers, try legacy algorithm support)"
+        }
+        "conntest.handshake_timeout" => "The SSH handshake did not finish within {seconds} seconds",
+        "conntest.disconnected" => {
+            "The server disconnected during the handshake (the service on this address / port may not be SSH)"
+        }
+        "conntest.handshake_other" => "SSH handshake failed: {cause}",
+        "conntest.ok" => "Connected in {elapsed} ms",
+        "conntest.ok_version" => "Connected in {elapsed} ms, server {version}",
+        "conntest.untrusted" => {
+            "The host fingerprint {fingerprint} is not trusted yet; no login was tested. Connect once normally and verify the fingerprint first"
+        }
+        "conntest.untrusted_other" => {
+            "This host only has keys of other types saved, and the fingerprint {fingerprint} is not trusted yet; no login was tested. Connect once normally and verify the fingerprint first"
+        }
+        "conntest.untrusted_hop" => {
+            "{label}: the host fingerprint {fingerprint} is not trusted yet; no login was tested. Connect once normally and verify the fingerprint first"
+        }
+        "conntest.untrusted_other_hop" => {
+            "{label}: this host only has keys of other types saved, and the fingerprint {fingerprint} is not trusted yet; no login was tested. Connect once normally and verify the fingerprint first"
+        }
+        "conntest.tcp_data" => {
+            "Connected in {elapsed} ms (TCP is reachable, no login attempted; the peer responded)"
+        }
+        "conntest.tcp_silent" => {
+            "Connected in {elapsed} ms (TCP is reachable, no login attempted; the peer sent nothing for 2 seconds, which is common for Telnet devices)"
+        }
+        "conntest.tcp_closed" => {
+            "Connected in {elapsed} ms (TCP is reachable, no login attempted; but the peer closed the connection right away)"
+        }
+        "conntest.serial_ok" => {
+            "Serial port {device} can be opened (closed again right away), took {elapsed} ms"
+        }
+        "conntest.cancelled_test" => "Test cancelled",
+        "conntest.timeout_stage" => {
+            "The connection test did not finish within {seconds} seconds (stuck at: {stage})"
+        }
+        "conntest.no_target" => "There is no target to connect to",
+        "conntest.no_jump" => "There is no jump host",
+        "conntest.reset_after" => "The connection was reset by the peer right after connecting",
+        "conntest.read_failed" => "Reading failed after connecting: {cause}",
         _ => return None,
     })
 }
@@ -721,18 +838,50 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
 pub(crate) fn sentence(key: &str, params: &[(&'static str, String)]) -> Option<String> {
     // `fixes`（本地名字被改的原因们）核心给的是稳定代码，先换成英文说法再填模板。
     let mut expanded;
-    let params = if params
-        .iter()
-        .any(|(name, _)| matches!(*name, "fixes" | "action"))
-    {
+    let params = if params.iter().any(|(name, _)| {
+        matches!(
+            *name,
+            "fixes" | "action" | "stage" | "io_reason" | "source" | "tried_codes"
+        )
+    }) {
         expanded = params.to_vec();
+        let agent = expanded
+            .iter()
+            .find(|(name, _)| *name == "agent")
+            .map(|(_, value)| value.clone());
+        let mut extra: Vec<(&'static str, String)> = Vec::new();
         for (name, value) in &mut expanded {
             match *name {
                 "fixes" => *value = name_fixes_en(value),
                 "action" => *value = action_en(value),
+                "stage" => *value = stage_en(value),
+                "io_reason" => *value = io_reason_en(value),
+                "tried_codes" => extra.push((
+                    "tried",
+                    crate::error_text::tried_methods_en(value, agent.as_deref()),
+                )),
                 _ => {}
             }
         }
+        if let Some((_, source)) = expanded.iter().find(|(name, _)| *name == "source") {
+            let path = expanded
+                .iter()
+                .find(|(name, _)| *name == "source_path")
+                .map(|(_, value)| value.as_str())
+                .unwrap_or_default();
+            extra.push((
+                "stored_in",
+                if source == "system" {
+                    format!("the system file {path} (read-only for us)")
+                } else {
+                    "ZeeTerm's own known_hosts".to_owned()
+                },
+            ));
+        }
+        if let Some((_, codes)) = expanded.iter().find(|(name, _)| *name == "remaining_codes") {
+            extra.push(("remaining", crate::error_text::offered_methods_en(codes)));
+        }
+        expanded.extend(extra);
         expanded.as_slice()
     } else {
         params
@@ -786,6 +935,35 @@ fn action_en(code: &str) -> String {
         "upload" => "upload",
         "download" => "download",
         "session" => "create upload session",
+        other => other,
+    }
+    .to_owned()
+}
+
+/// 连接测试的阶段代码（`TestStage::code`）→ 英文阶段名。
+fn stage_en(code: &str) -> String {
+    match code {
+        "resolve" => "name resolution",
+        "connect" => "connecting",
+        "proxy" => "connecting through the proxy",
+        "jump" => "the jump host",
+        "handshake" => "SSH handshake",
+        "host_key" => "host key check",
+        "auth" => "authentication",
+        "open" => "opening the serial port",
+        other => other,
+    }
+    .to_owned()
+}
+
+/// 网络层原因：`kind:<名>` 是核心给的稳定代码，其余是系统错误原文（原样保留）。
+fn io_reason_en(value: &str) -> String {
+    match value {
+        "kind:refused" => "connection refused",
+        "kind:timed_out" => "timed out",
+        "kind:host_unreachable" => "host unreachable",
+        "kind:network_unreachable" => "network unreachable",
+        "kind:reset" => "connection reset",
         other => other,
     }
     .to_owned()

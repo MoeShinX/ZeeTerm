@@ -18,6 +18,7 @@ pub mod prefs;
 pub mod system;
 pub mod xauth;
 
+use crate::error::{reason_keys, Reason};
 use std::path::Path;
 
 pub use detect::VcXsrvInstall;
@@ -79,7 +80,11 @@ pub fn prepare_blocking(
 ) -> Result<Prepared, X11Failure> {
     if let DisplayMode::Custom(spec) = &prefs.mode {
         let endpoint = parse_display(spec).map_err(|reason| X11Failure::LaunchFailed {
-            reason: format!("设置里指定的显示地址不可用：{}", reason.zh()),
+            reason: Reason::new(
+                reason_keys::X11_CUSTOM_BAD,
+                format!("设置里指定的显示地址不可用：{}", reason.zh()),
+            )
+            .caused_by(&reason),
         })?;
         return Ok(Prepared {
             route: X11Route {
@@ -135,7 +140,11 @@ pub async fn prepare(prefs: X11Prefs, x11_dir: std::path::PathBuf) -> Result<Pre
     })
     .await
     .map_err(|err| X11Failure::LaunchFailed {
-        reason: format!("准备本机 X 服务器的任务异常结束：{err}"),
+        reason: Reason::new(
+            reason_keys::X11_PREPARE_TASK,
+            format!("准备本机 X 服务器的任务异常结束：{err}"),
+        )
+        .with("cause", &err),
     })?
 }
 

@@ -169,6 +169,7 @@ pub(crate) async fn authenticate(
 
     // （中文说法, 稳定代码）：代码给界面按语言重新生成，见 `ZsshError::AllAuthFailed`。
     let mut tried: Vec<(String, String)> = Vec::new();
+    let mut agent_failure: Option<Box<ZsshError>> = None;
 
     // 1. 私钥
     if config.method == AuthMethod::Key {
@@ -223,6 +224,7 @@ pub(crate) async fn authenticate(
                 Err(err) => {
                     warn!(%err, "ssh-agent 用不了，继续试后面的方法");
                     tried.push((format!("ssh-agent（{err}）"), "agent_error".to_owned()));
+                    agent_failure = Some(Box::new(err));
                 }
             }
         } else {
@@ -297,6 +299,7 @@ pub(crate) async fn authenticate(
             .collect::<Vec<_>>()
             .join("\u{1f}"),
         remaining_codes: method_codes(&supported),
+        agent_error: agent_failure,
     })
 }
 
@@ -683,6 +686,7 @@ async fn keyboard_interactive_auth(
         remaining: "keyboard-interactive".to_owned(),
         tried_codes: format!("keyboard_rounds:{MAX_KEYBOARD_ROUNDS}"),
         remaining_codes: "keyboard-interactive".to_owned(),
+        agent_error: None,
     })
 }
 

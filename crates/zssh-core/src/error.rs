@@ -4,6 +4,29 @@ mod reason;
 
 pub use reason::{keys as reason_keys, Entity, HopStage, Reason};
 
+/// 主机密钥的旧记录存在哪儿（结构化；界面按语言说"自己的 known_hosts"还是"系统文件"）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostKeySource {
+    /// 我们自己维护、可以清的那个 known_hosts。
+    Own,
+    /// 只读的系统文件：我们改不了，只能给用户一条命令。
+    System { path: String, forget_hint: String },
+}
+
+impl HostKeySource {
+    /// 作为界面参数：`source` / `source_path` / `forget_hint`。
+    pub fn params(&self) -> Vec<(&'static str, String)> {
+        match self {
+            Self::Own => vec![("source", "own".to_owned())],
+            Self::System { path, forget_hint } => vec![
+                ("source", "system".to_owned()),
+                ("source_path", path.clone()),
+                ("forget_hint", forget_hint.clone()),
+            ],
+        }
+    }
+}
+
 /// 错误的稳定标识：界面按错误码挑文案，不解析 `Display` 的中文原文。
 ///
 /// 错误码（`ssh.auth_failed`、`sftp.permission_denied` 这种）一旦发布就是契约：只能新增，
@@ -160,6 +183,9 @@ pub enum ZsshError {
         tried_codes: String,
         /// `remaining` 的稳定代码（`\u{1f}` 分隔）。
         remaining_codes: String,
+        /// ssh-agent 那一项出错的具体原因（`tried_codes` 里是 `agent_error`）：英文界面据此生成
+        /// 具体原因，不只写"用不了"。
+        agent_error: Option<Box<ZsshError>>,
     },
 
     #[error("读私钥失败：{0}")]
@@ -308,7 +334,7 @@ impl ErrorWithCode for ZsshError {
             ],
             ZsshError::Ssh(inner) => vec![("detail", inner.to_string())],
             ZsshError::Shell(reason) => reason_params(reason),
-            ZsshError::X11(failure) => vec![("detail", failure.to_string())],
+            ZsshError::X11(_) => Vec::new(),
             ZsshError::ChannelLimit(detail) => vec![("detail", detail.clone())],
             ZsshError::Database(err) => vec![("detail", err.to_string())],
             ZsshError::NotFound { entity, id } => {
@@ -329,6 +355,7 @@ impl ErrorWithCode for ZsshError {
                 remaining,
                 tried_codes,
                 remaining_codes,
+                ..
             } => vec![
                 ("tried", tried.clone()),
                 ("remaining", remaining.clone()),
@@ -345,23 +372,31 @@ impl ErrorWithCode for ZsshError {
                 ("port", port.to_string()),
                 ("fingerprint", fingerprint.clone()),
             ],
-            ZsshError::HostKeyChanged(info) => vec![
-                ("host", info.host.clone()),
-                ("port", info.port.to_string()),
-                ("key_type", info.key_type.clone()),
-                ("stored", info.stored.clone()),
-                ("presented", info.presented.clone()),
-                ("stored_in", info.stored_in.clone()),
-                ("advice", info.advice.clone()),
-            ],
-            ZsshError::HostKeyRevoked(info) => vec![
-                ("host", info.host.clone()),
-                ("port", info.port.to_string()),
-                ("stored", info.stored.clone()),
-                ("presented", info.presented.clone()),
-                ("stored_in", info.stored_in.clone()),
-                ("advice", info.advice.clone()),
-            ],
+            ZsshError::HostKeyChanged(info) => {
+                let mut out = vec![
+                    ("host", info.host.clone()),
+                    ("port", info.port.to_string()),
+                    ("key_type", info.key_type.clone()),
+                    ("stored", info.stored.clone()),
+                    ("presented", info.presented.clone()),
+                    ("stored_in", info.stored_in.clone()),
+                    ("advice", info.advice.clone()),
+                ];
+                out.extend(info.source.params());
+                out
+            }
+            ZsshError::HostKeyRevoked(info) => {
+                let mut out = vec![
+                    ("host", info.host.clone()),
+                    ("port", info.port.to_string()),
+                    ("stored", info.stored.clone()),
+                    ("presented", info.presented.clone()),
+                    ("stored_in", info.stored_in.clone()),
+                    ("advice", info.advice.clone()),
+                ];
+                out.extend(info.source.params());
+                out
+            }
             ZsshError::HostKeyRekeyMismatch {
                 host,
                 port,
@@ -389,6 +424,17 @@ impl ErrorWithCode for ZsshError {
             _ => None,
         }
     }
+
+    fn causes(&self) -> Vec<(&'static str, &dyn ErrorWithCode)> {
+        match self {
+            ZsshError::AllAuthFailed {
+                agent_error: Some(inner),
+                ..
+            } => vec![("agent", inner.as_ref() as &dyn ErrorWithCode)],
+            ZsshError::X11(failure) => vec![("detail", failure as &dyn ErrorWithCode)],
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// 带 [`Reason`] 的错误的参数：`reason` 是 key，`detail` 是中文原文（中文界面和兜底用），
@@ -411,6 +457,8 @@ pub struct HostKeyRevokedInfo {
     pub presented: String,
     pub stored_in: String,
     pub advice: String,
+    /// 同样的信息，结构化：英文界面据此重新生成 `stored_in` / `advice`。
+    pub source: HostKeySource,
 }
 
 impl std::fmt::Display for HostKeyRevokedInfo {
@@ -463,6 +511,8 @@ pub struct HostKeyMismatch {
     pub stored_in: String,
     /// 怎么处理：自己能清，还是在系统文件里、得用户自己执行命令
     pub advice: String,
+    /// 同样的信息，结构化：英文界面据此重新生成 `stored_in` / `advice`。
+    pub source: HostKeySource,
 }
 
 impl std::fmt::Display for HostKeyMismatch {
@@ -507,6 +557,7 @@ mod tests {
             presented: "SHA256:new".into(),
             stored_in: "own".into(),
             advice: "clear".into(),
+            source: crate::error::HostKeySource::Own,
         });
         let revoked = Box::new(HostKeyRevokedInfo {
             host: "web-1".into(),
@@ -515,6 +566,7 @@ mod tests {
             presented: "SHA256:new".into(),
             stored_in: "own".into(),
             advice: "clear".into(),
+            source: crate::error::HostKeySource::Own,
         });
         let no_common = Box::new(NoCommonAlgorithmInfo {
             host: "web-1".into(),
@@ -580,6 +632,7 @@ mod tests {
                 remaining: "publickey".into(),
                 tried_codes: "password".into(),
                 remaining_codes: "publickey".into(),
+                agent_error: None,
             },
             ZsshError::KeyLoad("load".into()),
             ZsshError::AgentUnavailable("agent".into()),

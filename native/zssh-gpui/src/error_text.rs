@@ -111,6 +111,16 @@ enum CoreErrorMsg {
     HistoryNotFound,
     HistoryCorrupt,
     HistoryIo,
+    X11Refused,
+    X11NoReply,
+    X11NoLocal,
+    X11Rejected,
+    X11Timeout,
+    X11Launch,
+    X11UnknownCookie,
+    X11BadSetup,
+    X11TooMany,
+    X11NotRegistered,
 }
 
 impl Msg for CoreErrorMsg {
@@ -236,6 +246,16 @@ impl Msg for CoreErrorMsg {
             Self::HistoryNotFound => "历史会话不存在",
             Self::HistoryCorrupt => "历史会话文件损坏：{detail}",
             Self::HistoryIo => "读写历史会话失败：{detail}",
+            Self::X11Refused => "服务器拒绝了 X11 转发请求",
+            Self::X11NoReply => "服务器没有回复 X11 转发请求：{detail}",
+            Self::X11NoLocal => "本机没有可用的 X 服务器（{display}）",
+            Self::X11Rejected => "本机 X 服务器（{display}）拒绝了连接：{reason}",
+            Self::X11Timeout => "连接本机 X 服务器（{display}）超时",
+            Self::X11Launch => "没能启动本机 X 服务器：{detail}",
+            Self::X11UnknownCookie => "收到一个 X11 连接，但它的认证信息不属于任何终端，已拒绝",
+            Self::X11BadSetup => "X11 连接的握手包不合法、太大或超时，已关闭",
+            Self::X11TooMany => "同时打开的 X11 连接太多，已拒绝新的连接",
+            Self::X11NotRegistered => "没能登记这个终端的 X11 转发：{detail}",
         }
     }
 
@@ -397,6 +417,24 @@ impl Msg for CoreErrorMsg {
             Self::HistoryNotFound => "The conversation history does not exist",
             Self::HistoryCorrupt => "The conversation history file is damaged: {detail}",
             Self::HistoryIo => "Failed to read or write the conversation history: {detail}",
+            Self::X11Refused => "The server refused the X11 forwarding request",
+            Self::X11NoReply => "The server did not reply to the X11 forwarding request: {detail}",
+            Self::X11NoLocal => "There is no usable X server on this computer ({display})",
+            Self::X11Rejected => "The local X server ({display}) rejected the connection: {reason}",
+            Self::X11Timeout => "Connecting to the local X server ({display}) timed out",
+            Self::X11Launch => "Could not start the local X server: {detail}",
+            Self::X11UnknownCookie => {
+                "Received an X11 connection whose authentication does not belong to any terminal; it was refused"
+            }
+            Self::X11BadSetup => {
+                "The X11 connection's setup packet was invalid, too large or timed out; it was closed"
+            }
+            Self::X11TooMany => {
+                "Too many X11 connections are open at once; the new connection was refused"
+            }
+            Self::X11NotRegistered => {
+                "Could not register X11 forwarding for this terminal: {detail}"
+            }
         }
     }
 }
@@ -498,6 +536,16 @@ fn message_for(code: &str) -> Option<CoreErrorMsg> {
         "history.not_found" => CoreErrorMsg::HistoryNotFound,
         "history.corrupt" => CoreErrorMsg::HistoryCorrupt,
         "history.io" => CoreErrorMsg::HistoryIo,
+        "x11f.server_refused" => CoreErrorMsg::X11Refused,
+        "x11f.server_no_reply" => CoreErrorMsg::X11NoReply,
+        "x11f.no_local_x_server" => CoreErrorMsg::X11NoLocal,
+        "x11f.local_x_server_rejected" => CoreErrorMsg::X11Rejected,
+        "x11f.local_x_server_timeout" => CoreErrorMsg::X11Timeout,
+        "x11f.launch_failed" => CoreErrorMsg::X11Launch,
+        "x11f.unknown_cookie" => CoreErrorMsg::X11UnknownCookie,
+        "x11f.bad_setup" => CoreErrorMsg::X11BadSetup,
+        "x11f.too_many_channels" => CoreErrorMsg::X11TooMany,
+        "x11f.not_registered" => CoreErrorMsg::X11NotRegistered,
 
         "storage.rate_limited" => CoreErrorMsg::SyncRateLimited,
         _ => return None,
@@ -572,7 +620,17 @@ fn localize_params<E: ErrorWithCode + ?Sized>(
     // 原因里的内层错误（`Reason::caused_by`）：按当前语言生成整句，英文模板里用 `{cause}` 等占位。
     for (name, inner) in err.causes() {
         let text = error_text_in(lang, inner);
-        params.push((name, text));
+        match params.iter_mut().find(|(key, _)| *key == name) {
+            Some(slot) => slot.1 = text,
+            None => params.push((name, text)),
+        }
+    }
+    if lang == Lang::En && matches!(err.code(), "ssh.host_key_changed" | "ssh.host_key_revoked") {
+        let source = get(params, "source").unwrap_or_default().to_owned();
+        let path = get(params, "source_path").unwrap_or_default().to_owned();
+        let hint = get(params, "forget_hint").unwrap_or_default().to_owned();
+        set(params, "stored_in", host_key_stored_in_en(&source, &path));
+        set(params, "advice", host_key_advice_en(&source, &hint));
     }
     if matches!(err.code(), "sync.rate_limited" | "storage.rate_limited")
         && let Some(secs) = get(params, "secs").and_then(|secs| secs.parse::<u64>().ok())
@@ -592,7 +650,11 @@ fn localize_params<E: ErrorWithCode + ?Sized>(
         set(params, "entity", noun);
     }
     if lang == Lang::En && err.code() == "ssh.all_auth_failed" {
-        let tried = tried_methods_en(get(params, "tried_codes").unwrap_or_default());
+        let agent = get(params, "agent").map(str::to_owned);
+        let tried = tried_methods_en(
+            get(params, "tried_codes").unwrap_or_default(),
+            agent.as_deref(),
+        );
         let offered = offered_methods_en(get(params, "remaining_codes").unwrap_or_default());
         set(params, "tried", tried);
         set(params, "remaining", offered);
@@ -637,6 +699,84 @@ fn wait_text(lang: Lang, secs: u64) -> String {
     }
 }
 
+/// 主机密钥旧记录在哪儿（`HostKeySource` 的参数 → 英文）。
+fn host_key_stored_in_en(source: &str, path: &str) -> String {
+    if source == "system" {
+        format!("the system file {path} (read-only for us)")
+    } else {
+        "ZeeTerm's own known_hosts".to_owned()
+    }
+}
+
+/// 主机密钥变化时的处理建议（英文）。
+fn host_key_advice_en(source: &str, hint: &str) -> String {
+    if source == "system" {
+        format!(
+            "This old record is in a read-only system file that we cannot change. After confirming the server changed its key, run this on the command line:\n  {hint}"
+        )
+    } else {
+        "If you are sure the server changed its key, open the host's Advanced settings and click \"Clear Saved Fingerprint\"".to_owned()
+    }
+}
+
+/// X11 失败写进终端的那一行（不含颜色）：`X11: <原因和怎么办>`，跟随界面语言。
+/// 启动时用 [`zssh_core::x11::set_notice_renderer`] 装给核心库。
+pub(crate) fn x11_notice_line(failure: &zssh_core::x11::X11Failure) -> String {
+    let lang = current();
+    match lang {
+        Lang::Zh => format!("X11：{}", failure.advice()),
+        Lang::En => format!("X11: {}", x11_advice_en(failure)),
+    }
+}
+
+fn x11_advice_en(failure: &zssh_core::x11::X11Failure) -> String {
+    let mut params = failure.params();
+    for (name, inner) in failure.causes() {
+        let text = error_text_in(Lang::En, inner);
+        match params.iter_mut().find(|(key, _)| *key == name) {
+            Some(slot) => slot.1 = text,
+            None => params.push((name, text)),
+        }
+    }
+    let get = |name: &str| {
+        params
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value.as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let detail = get("detail");
+    let display = get("display");
+    match ErrorWithCode::code(failure) {
+        "x11f.server_refused" => "The server did not agree to X11 forwarding. Set X11Forwarding yes in the server's sshd_config and install xauth; opened as a plain terminal.".to_owned(),
+        "x11f.server_no_reply" => format!("The server did not reply to the X11 forwarding request ({detail}); opened as a plain terminal."),
+        "x11f.no_local_x_server" => {
+            let tail = if get("installable") == "1" {
+                "You can install VcXsrv in one click in Settings, "
+            } else {
+                ""
+            };
+            format!("There is no usable X server on this computer (connecting to {display} failed). {tail}or start an X server such as X410 / MobaXterm first and reconnect.")
+        }
+        "x11f.local_x_server_rejected" => {
+            let hint = if get("passthrough") == "1" {
+                "This is an X server you started yourself, so ZeeTerm cannot get its authentication data: turn off access control in its settings (for example tick Disable access control in VcXsrv), or configure authentication and try again."
+            } else {
+                "Close it and let ZeeTerm start a new one."
+            };
+            format!("The local X server ({display}) rejected the connection ({}). {hint}", get("reason"))
+        }
+        "x11f.local_x_server_timeout" => format!("Connecting to the local X server ({display}) timed out; make sure it is running and not blocked by a firewall."),
+        "x11f.launch_failed" => format!("Could not start the local X server: {detail}. Opened as a plain terminal."),
+        "x11f.unknown_cookie" => "The authentication data of an X11 connection from the remote side is wrong, so it was refused (another terminal may have been closed).".to_owned(),
+        "x11f.bad_setup" => "An X11 connection from the remote side had an invalid setup or timed out, so it was closed.".to_owned(),
+        "x11f.too_many_channels" => "Too many X11 connections are open at once; the new connection was refused.".to_owned(),
+        "x11f.not_registered" => format!("Could not enable X11 forwarding for this terminal: {detail}. Opened as a plain terminal."),
+        _ => failure.advice(),
+    }
+}
+
 /// 在一张 `Msg` 表里按语言取词。
 fn pick(lang: Lang, msg: &impl Msg) -> &'static str {
     match lang {
@@ -646,7 +786,7 @@ fn pick(lang: Lang, msg: &impl Msg) -> &'static str {
 }
 
 /// `AllAuthFailed` 里"试过哪些方法"的英文（`\u{1f}` 分隔的稳定代码 → 一句话）；用户数据（私钥文件名）原样保留。
-fn tried_methods_en(codes: &str) -> String {
+pub(crate) fn tried_methods_en(codes: &str, agent: Option<&str>) -> String {
     if codes.is_empty() {
         return "no method could be tried".to_owned();
     }
@@ -663,7 +803,10 @@ fn tried_methods_en(codes: &str) -> String {
                 "key_missing" => "private key (none configured for this host)".to_owned(),
                 "agent_rejected" => "ssh-agent (none of its keys were accepted)".to_owned(),
                 "agent_no_keys" => "ssh-agent (no usable keys)".to_owned(),
-                "agent_error" => "ssh-agent (not usable)".to_owned(),
+                "agent_error" => match agent {
+                    Some(reason) => format!("ssh-agent ({reason})"),
+                    None => "ssh-agent (not usable)".to_owned(),
+                },
                 "password" => "password".to_owned(),
                 "keyboard_interactive" => "keyboard-interactive".to_owned(),
                 other => other.to_owned(),
@@ -674,7 +817,7 @@ fn tried_methods_en(codes: &str) -> String {
 }
 
 /// `AllAuthFailed` 里"服务器还支持哪些方法"的英文。
-fn offered_methods_en(codes: &str) -> String {
+pub(crate) fn offered_methods_en(codes: &str) -> String {
     if codes.is_empty() {
         return "none declared".to_owned();
     }
@@ -877,6 +1020,16 @@ mod tests {
             CoreErrorMsg::HistoryNotFound,
             CoreErrorMsg::HistoryCorrupt,
             CoreErrorMsg::HistoryIo,
+            CoreErrorMsg::X11Refused,
+            CoreErrorMsg::X11NoReply,
+            CoreErrorMsg::X11NoLocal,
+            CoreErrorMsg::X11Rejected,
+            CoreErrorMsg::X11Timeout,
+            CoreErrorMsg::X11Launch,
+            CoreErrorMsg::X11UnknownCookie,
+            CoreErrorMsg::X11BadSetup,
+            CoreErrorMsg::X11TooMany,
+            CoreErrorMsg::X11NotRegistered,
         ];
         for msg in all {
             assert!(!msg.zh().is_empty(), "{msg:?} 缺中文");
@@ -925,6 +1078,7 @@ mod tests {
             remaining: "keyboard-interactive".into(),
             tried_codes: "password\u{1f}key_vault".into(),
             remaining_codes: "keyboard-interactive".into(),
+            agent_error: None,
         };
         assert_eq!(error_text_in(Lang::Zh, &auth), auth.to_string());
 
@@ -941,6 +1095,7 @@ mod tests {
             presented: "SHA256:new".into(),
             stored_in: "own".into(),
             advice: "clear".into(),
+            source: zssh_core::error::HostKeySource::Own,
         }));
         assert_eq!(error_text_in(Lang::Zh, &changed), changed.to_string());
 
@@ -993,6 +1148,7 @@ mod tests {
             presented: "SHA256:new".into(),
             stored_in: "own".into(),
             advice: "clear".into(),
+            source: zssh_core::error::HostKeySource::Own,
         }));
         let text = error_text_in(Lang::En, &changed);
         assert!(
@@ -1387,6 +1543,7 @@ mod tests {
             remaining: "keyboard-interactive、公钥".into(),
             tried_codes: "key_file:id_ed25519\u{1f}password".into(),
             remaining_codes: "keyboard-interactive\u{1f}publickey".into(),
+            agent_error: None,
         };
         assert_eq!(error_text_in(Lang::Zh, &err), err.to_string());
         assert_eq!(
@@ -1398,6 +1555,7 @@ mod tests {
             remaining: "没有声明".into(),
             tried_codes: String::new(),
             remaining_codes: String::new(),
+            agent_error: None,
         };
         let en = error_text_in(Lang::En, &none);
         assert!(!has_cjk(&en), "{en}");
