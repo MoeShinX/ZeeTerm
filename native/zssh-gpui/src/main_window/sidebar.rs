@@ -1136,9 +1136,11 @@ fn guide_color(tokens: &Tokens) -> ::gpui::Hsla {
     color
 }
 
-/// 主机行的图标：探测出过系统的 SSH 主机是发行版图标，其余（没连过、认不出、Telnet / 串口）是协议图标。
+/// 主机行的图标：探测出过系统的 SSH 主机是发行版图标，没探测出的 SSH 主机是 ZeeTerm Logo，
+/// Telnet / 串口是协议图标。
 fn host_icon(os: Option<&str>, host: &Host, tokens: &Tokens) -> AnyElement {
     os.and_then(|os| os_icons::badge(os, OsIconSize::Row))
+        .or_else(|| os_icons::fallback_badge(host.protocol.protocol, OsIconSize::Row))
         .unwrap_or_else(|| {
             protocol_icon(host.protocol.protocol)
                 .size_4()

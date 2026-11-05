@@ -139,6 +139,38 @@ impl OsIconSize {
     }
 }
 
+/// ZeeTerm 自己的 Logo（彩色 PNG：GPUI 的 SVG 只按透明度着色，画不出两种紫）。
+static BRAND_LOGO: std::sync::OnceLock<std::sync::Arc<::gpui::Image>> = std::sync::OnceLock::new();
+
+fn brand_logo() -> std::sync::Arc<::gpui::Image> {
+    BRAND_LOGO
+        .get_or_init(|| {
+            std::sync::Arc::new(::gpui::Image::from_bytes(
+                ::gpui::ImageFormat::Png,
+                include_bytes!("../assets/brand/zeeterm-logo-64.png").to_vec(),
+            ))
+        })
+        .clone()
+}
+
+/// 还没探测出系统的主机的图标：SSH 主机和老版本一样显示自家 Logo，Telnet / 串口返回
+/// `None`（它们永远探测不到系统，由调用方继续画协议图标，好和 SSH 区分开）。
+pub fn fallback_badge(
+    protocol: zssh_core::model::Protocol,
+    size: OsIconSize,
+) -> Option<AnyElement> {
+    if protocol != zssh_core::model::Protocol::Ssh {
+        return None;
+    }
+    let (boxed, _, _) = size.dims();
+    Some(
+        ::gpui::img(brand_logo())
+            .size(px(boxed))
+            .flex_none()
+            .into_any_element(),
+    )
+}
+
 /// 发行版图标：品牌色圆角方块 + 白色标志。认不出来的 id 返回 `None`，由调用方画回协议图标。
 pub fn badge(os: &str, size: OsIconSize) -> Option<AnyElement> {
     let color = brand_color(os)?;
@@ -178,6 +210,15 @@ mod tests {
         assert_eq!(LOGOS.len(), OS_IDS.len());
         assert_eq!(BRAND_COLORS.len(), OS_IDS.len());
         assert_eq!(NAMES.len(), OS_IDS.len());
+    }
+
+    /// 没探测出系统：SSH 主机给自家 Logo，Telnet / 串口不给（调用方画协议图标）。
+    #[test]
+    fn only_ssh_hosts_fall_back_to_the_brand_logo() {
+        use zssh_core::model::Protocol;
+        assert!(fallback_badge(Protocol::Ssh, OsIconSize::Row).is_some());
+        assert!(fallback_badge(Protocol::Telnet, OsIconSize::Row).is_none());
+        assert!(fallback_badge(Protocol::Serial, OsIconSize::Card).is_none());
     }
 
     #[test]

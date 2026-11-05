@@ -135,9 +135,18 @@ impl MainWindow {
                     .when(at == cursor, |d| d.bg(tokens.accent_soft))
                     .when(at != cursor, |d| d.hover(move |style| style.bg(hover)))
                     .child(
-                        match self.store.os_icon_of(host).and_then(|os| {
-                            crate::os_icons::badge(os, crate::os_icons::OsIconSize::Row)
-                        }) {
+                        match self
+                            .store
+                            .os_icon_of(host)
+                            .and_then(|os| {
+                                crate::os_icons::badge(os, crate::os_icons::OsIconSize::Row)
+                            })
+                            .or_else(|| {
+                                crate::os_icons::fallback_badge(
+                                    host.protocol.protocol,
+                                    crate::os_icons::OsIconSize::Row,
+                                )
+                            }) {
                             Some(badge) => badge,
                             None => super::widgets::protocol_icon(host.protocol.protocol)
                                 .size_4()

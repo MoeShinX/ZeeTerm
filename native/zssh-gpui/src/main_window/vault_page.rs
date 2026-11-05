@@ -657,7 +657,9 @@ impl MainWindow {
                     .store
                     .os_icon_of(host)
                     .and_then(|os| os_icons::badge(os, card_icon_size(compact)))
-                {
+                    .or_else(|| {
+                        os_icons::fallback_badge(host.protocol.protocol, card_icon_size(compact))
+                    }) {
                     Some(badge) => badge,
                     None => div()
                         .flex()
@@ -825,6 +827,7 @@ impl MainWindow {
                     .store
                     .os_icon_of(host)
                     .and_then(|os| os_icons::badge(os, OsIconSize::Row))
+                    .or_else(|| os_icons::fallback_badge(host.protocol.protocol, OsIconSize::Row))
                 {
                     Some(badge) => badge,
                     None => protocol_icon(host.protocol.protocol)
