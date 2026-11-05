@@ -12,7 +12,6 @@ mod mock_cloud;
 mod mock_microsoft;
 
 use mock_microsoft::{MockMicrosoft, CLIENT_ID};
-use zssh_core::error::Reason;
 use zssh_core::sync::net::build_client;
 use zssh_core::sync::onedrive::oauth::{now_secs, TokenSet, REAUTH_MESSAGE};
 use zssh_core::sync::onedrive::tokens::{MemoryTokenStore, TokenManager, TokenStore};
