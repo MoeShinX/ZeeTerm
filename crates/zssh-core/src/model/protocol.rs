@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{AuthMethod, Identity, IdentityKind, ProxyMode, DEFAULT_SSH_PORT};
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Reason, ZsshError};
 
 /// Telnet 默认端口。
 pub const DEFAULT_TELNET_PORT: u16 = 23;
@@ -53,7 +53,10 @@ impl Protocol {
             "ssh" => Ok(Self::Ssh),
             "telnet" => Ok(Self::Telnet),
             "serial" => Ok(Self::Serial),
-            other => Err(ZsshError::InvalidInput(format!("未知的连接协议：{other}"))),
+            other => Err(ZsshError::InvalidInput(
+                Reason::new(rk::UNKNOWN_PROTOCOL, format!("未知的连接协议：{other}"))
+                    .with("value", other),
+            )),
         }
     }
 
@@ -375,19 +378,34 @@ impl ProtocolSettings {
     pub fn validated(mut self, facts: &HostFacts<'_>) -> Result<Self, ZsshError> {
         let protocol = self.protocol;
         if self.x11_forwarding && !protocol.supports_x11() {
-            return Err(invalid(format!(
-                "X11 转发只能用在 SSH 主机上，{} 主机不能开",
-                protocol.label()
-            )));
+            return Err(invalid(
+                Reason::new(
+                    rk::X11_SSH_ONLY,
+                    format!(
+                        "X11 转发只能用在 SSH 主机上，{} 主机不能开",
+                        protocol.label()
+                    ),
+                )
+                .with("protocol", protocol.as_str()),
+            ));
         }
         if protocol != Protocol::Telnet && self.telnet.is_some() {
-            return Err(invalid(format!(
-                "{} 主机不能带 Telnet 选项",
-                protocol.label()
-            )));
+            return Err(invalid(
+                Reason::new(
+                    rk::NO_TELNET_OPTIONS,
+                    format!("{} 主机不能带 Telnet 选项", protocol.label()),
+                )
+                .with("protocol", protocol.as_str()),
+            ));
         }
         if protocol != Protocol::Serial && self.serial.is_some() {
-            return Err(invalid(format!("{} 主机不能带串口选项", protocol.label())));
+            return Err(invalid(
+                Reason::new(
+                    rk::NO_SERIAL_OPTIONS,
+                    format!("{} 主机不能带串口选项", protocol.label()),
+                )
+                .with("protocol", protocol.as_str()),
+            ));
         }
 
         match protocol {
@@ -397,10 +415,13 @@ impl ProtocolSettings {
         }
         if let Some(jump) = facts.jump_host_protocol {
             if jump != Protocol::Ssh {
-                return Err(invalid(format!(
-                    "跳板机必须是 SSH 主机，当前选的是 {} 主机",
-                    jump.label()
-                )));
+                return Err(invalid(
+                    Reason::new(
+                        rk::JUMP_MUST_BE_SSH,
+                        format!("跳板机必须是 SSH 主机，当前选的是 {} 主机", jump.label()),
+                    )
+                    .with("protocol", jump.as_str()),
+                ));
             }
         }
 
@@ -429,9 +450,15 @@ impl ProtocolSettings {
             telnet: self.telnet.clone(),
             serial: self.serial.clone(),
         };
-        serde_json::to_string(&stored)
-            .map(Some)
-            .map_err(|err| invalid(format!("协议选项序列化失败：{err}")))
+        serde_json::to_string(&stored).map(Some).map_err(|err| {
+            invalid(
+                Reason::new(
+                    rk::PROTOCOL_OPTIONS_SERIALIZE,
+                    format!("协议选项序列化失败：{err}"),
+                )
+                .with("cause", &err),
+            )
+        })
     }
 
     /// 从三列还原。选项 JSON 读不了时按默认处理并记一条日志：不能因为一台主机的选项坏了
@@ -470,8 +497,8 @@ struct StoredOptions {
     serial: Option<SerialOptions>,
 }
 
-fn invalid(message: String) -> ZsshError {
-    ZsshError::InvalidInput(message)
+fn invalid(reason: Reason) -> ZsshError {
+    ZsshError::InvalidInput(reason)
 }
 
 /// 串口主机不连网络：凭据、代理、跳板机都没有意义，选了就报错（而不是悄悄忽略——
@@ -488,13 +515,22 @@ fn check_serial_has_no_network_refs(facts: &HostFacts<'_>) -> Result<(), ZsshErr
 /// 串口主机不能选凭据 / 代理 / 跳板机（存储层在查库之前先用它拦，错误信息比"凭据类型不对"清楚）。
 pub fn check_serial_refs(identity: bool, proxy: bool, jump_host: bool) -> Result<(), ZsshError> {
     if identity {
-        return Err(invalid("串口主机不能选凭据".to_owned()));
+        return Err(invalid(Reason::new(
+            rk::SERIAL_NO_IDENTITY,
+            "串口主机不能选凭据",
+        )));
     }
     if proxy {
-        return Err(invalid("串口主机不能选代理".to_owned()));
+        return Err(invalid(Reason::new(
+            rk::SERIAL_NO_PROXY,
+            "串口主机不能选代理",
+        )));
     }
     if jump_host {
-        return Err(invalid("串口主机不能选跳板机".to_owned()));
+        return Err(invalid(Reason::new(
+            rk::SERIAL_NO_JUMP,
+            "串口主机不能选跳板机",
+        )));
     }
     Ok(())
 }
@@ -502,18 +538,31 @@ pub fn check_serial_refs(identity: bool, proxy: bool, jump_host: bool) -> Result
 /// Telnet 的认证：不能用私钥 / agent，凭据只能是密码类。
 fn check_password_only(protocol: Protocol, facts: &HostFacts<'_>) -> Result<(), ZsshError> {
     if facts.auth_method != AuthMethod::Password {
-        return Err(invalid(format!(
-            "{} 主机只能用密码认证（可以不选凭据，连接时再问）",
-            protocol.label()
-        )));
+        return Err(invalid(
+            Reason::new(
+                rk::PASSWORD_ONLY,
+                format!(
+                    "{} 主机只能用密码认证（可以不选凭据，连接时再问）",
+                    protocol.label()
+                ),
+            )
+            .with("protocol", protocol.as_str()),
+        ));
     }
     if let Some(identity) = facts.identity {
         if identity.kind != IdentityKind::Password {
-            return Err(invalid(format!(
-                "凭据「{}」不是密码凭据，{} 主机只能选密码凭据",
-                identity.name,
-                protocol.label()
-            )));
+            return Err(invalid(
+                Reason::new(
+                    rk::PROTOCOL_CREDENTIAL_NOT_PASSWORD,
+                    format!(
+                        "凭据「{}」不是密码凭据，{} 主机只能选密码凭据",
+                        identity.name,
+                        protocol.label()
+                    ),
+                )
+                .with("name", &identity.name)
+                .with("protocol", protocol.as_str()),
+            ));
         }
     }
     Ok(())
@@ -525,23 +574,44 @@ fn validate_telnet(options: &mut TelnetOptions, facts: &HostFacts<'_>) -> Result
         || terminal_type.chars().count() > MAX_TERMINAL_TYPE_CHARS
         || !terminal_type.chars().all(|c| c.is_ascii_graphic())
     {
-        return Err(invalid(format!(
-            "终端类型要是 1-{MAX_TERMINAL_TYPE_CHARS} 个可见的 ASCII 字符（例如 {DEFAULT_TELNET_TERMINAL_TYPE}）"
-        )));
+        return Err(invalid(
+            Reason::new(
+                rk::TERMINAL_TYPE_BAD,
+                format!(
+                    "终端类型要是 1-{MAX_TERMINAL_TYPE_CHARS} 个可见的 ASCII 字符（例如 {DEFAULT_TELNET_TERMINAL_TYPE}）"
+                ),
+            )
+            .with("max", MAX_TERMINAL_TYPE_CHARS)
+            .with("example", DEFAULT_TELNET_TERMINAL_TYPE),
+        ));
     }
     options.terminal_type = terminal_type;
 
     let login = &mut options.auto_login;
-    login.username_patterns = clean_patterns("用户名提示", &login.username_patterns)?;
-    login.password_patterns = clean_patterns("密码提示", &login.password_patterns)?;
+    login.username_patterns = clean_patterns(
+        (
+            "用户名提示",
+            rk::USER_PATTERNS_TOO_MANY,
+            rk::USER_PATTERN_BAD,
+        ),
+        &login.username_patterns,
+    )?;
+    login.password_patterns = clean_patterns(
+        ("密码提示", rk::PASS_PATTERNS_TOO_MANY, rk::PASS_PATTERN_BAD),
+        &login.password_patterns,
+    )?;
     if login.enabled {
         if login.username_patterns.is_empty() || login.password_patterns.is_empty() {
-            return Err(invalid(
-                "开了自动登录，用户名提示和密码提示都至少要有一条匹配规则".to_owned(),
-            ));
+            return Err(invalid(Reason::new(
+                rk::AUTO_LOGIN_NEEDS_PATTERNS,
+                "开了自动登录，用户名提示和密码提示都至少要有一条匹配规则",
+            )));
         }
         if facts.username.trim().is_empty() {
-            return Err(invalid("开了自动登录，用户名不能为空".to_owned()));
+            return Err(invalid(Reason::new(
+                rk::AUTO_LOGIN_NEEDS_USER,
+                "开了自动登录，用户名不能为空",
+            )));
         }
     }
     Ok(())
@@ -550,36 +620,62 @@ fn validate_telnet(options: &mut TelnetOptions, facts: &HostFacts<'_>) -> Result
 fn validate_serial(options: &mut SerialOptions) -> Result<(), ZsshError> {
     let device = options.device.trim().to_owned();
     if device.is_empty() {
-        return Err(invalid("请填串口设备名（例如 COM3）".to_owned()));
+        return Err(invalid(Reason::new(
+            rk::SERIAL_DEVICE_EMPTY,
+            "请填串口设备名（例如 COM3）",
+        )));
     }
     if device.chars().count() > MAX_SERIAL_DEVICE_CHARS || device.chars().any(char::is_control) {
-        return Err(invalid(format!(
-            "串口设备名最多 {MAX_SERIAL_DEVICE_CHARS} 个字符，不能含控制字符"
-        )));
+        return Err(invalid(
+            Reason::new(
+                rk::SERIAL_DEVICE_BAD,
+                format!("串口设备名最多 {MAX_SERIAL_DEVICE_CHARS} 个字符，不能含控制字符"),
+            )
+            .with("max", MAX_SERIAL_DEVICE_CHARS),
+        ));
     }
     options.device = device;
 
     if !(MIN_SERIAL_BAUD_RATE..=MAX_SERIAL_BAUD_RATE).contains(&options.baud_rate) {
-        return Err(invalid(format!(
-            "波特率要在 {MIN_SERIAL_BAUD_RATE}-{MAX_SERIAL_BAUD_RATE} 之间"
-        )));
+        return Err(invalid(
+            Reason::new(
+                rk::BAUD_RANGE,
+                format!("波特率要在 {MIN_SERIAL_BAUD_RATE}-{MAX_SERIAL_BAUD_RATE} 之间"),
+            )
+            .with("min", MIN_SERIAL_BAUD_RATE)
+            .with("max", MAX_SERIAL_BAUD_RATE),
+        ));
     }
     // Win32 的 DCB：1.5 个停止位只配 5 位数据位，5 位数据位也不能配 2 个停止位。
     match (options.data_bits, options.stop_bits) {
         (SerialDataBits::Five, SerialStopBits::Two) => {
-            return Err(invalid("5 位数据位不能配 2 个停止位".to_owned()));
+            return Err(invalid(Reason::new(
+                rk::SERIAL_FIVE_TWO,
+                "5 位数据位不能配 2 个停止位",
+            )));
         }
         (bits, SerialStopBits::OnePointFive) if bits != SerialDataBits::Five => {
-            return Err(invalid("1.5 个停止位只能配 5 位数据位".to_owned()));
+            return Err(invalid(Reason::new(
+                rk::SERIAL_ONE_HALF,
+                "1.5 个停止位只能配 5 位数据位",
+            )));
         }
         _ => {}
     }
     Ok(())
 }
 
-fn clean_patterns(what: &str, patterns: &[String]) -> Result<Vec<String>, ZsshError> {
+/// `kind`：（中文名，条数超限的 key，单条不合法的 key）。
+fn clean_patterns(
+    kind: (&str, &'static str, &'static str),
+    patterns: &[String],
+) -> Result<Vec<String>, ZsshError> {
+    let (what, too_many, too_long) = kind;
     if patterns.len() > MAX_PATTERNS {
-        return Err(invalid(format!("{what}最多 {MAX_PATTERNS} 条")));
+        return Err(invalid(
+            Reason::new(too_many, format!("{what}最多 {MAX_PATTERNS} 条"))
+                .with("max", MAX_PATTERNS),
+        ));
     }
     let mut cleaned = Vec::with_capacity(patterns.len());
     for pattern in patterns {
@@ -588,9 +684,13 @@ fn clean_patterns(what: &str, patterns: &[String]) -> Result<Vec<String>, ZsshEr
             continue;
         }
         if pattern.chars().count() > MAX_PATTERN_CHARS || pattern.chars().any(char::is_control) {
-            return Err(invalid(format!(
-                "{what}每条最多 {MAX_PATTERN_CHARS} 个字符，不能含控制字符"
-            )));
+            return Err(invalid(
+                Reason::new(
+                    too_long,
+                    format!("{what}每条最多 {MAX_PATTERN_CHARS} 个字符，不能含控制字符"),
+                )
+                .with("max", MAX_PATTERN_CHARS),
+            ));
         }
         cleaned.push(pattern.to_owned());
     }

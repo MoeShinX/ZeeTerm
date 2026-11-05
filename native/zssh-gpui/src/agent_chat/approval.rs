@@ -125,15 +125,24 @@ pub(super) fn load_exec_mode(db: &Database) -> (ExecMode, Option<String>) {
         Ok(raw) => (ExecMode::from_setting(Some(&raw)), None),
         Err(err) => (
             ExecMode::Manual,
-            Some(format!("{}{err}", t(ChatMsg::ReadExecModeFailedPrefix))),
+            Some(format!(
+                "{}{}",
+                t(ChatMsg::ReadExecModeFailedPrefix),
+                crate::error_text::error_text(&err)
+            )),
         ),
     }
 }
 
 /// 保存执行模式；失败只返回给界面，不 panic。
 pub(super) fn save_exec_mode(db: &Database, mode: ExecMode) -> Result<(), String> {
-    db.set_ai_exec_mode(mode_setting(mode))
-        .map_err(|err| format!("{}{err}", t(ChatMsg::SaveExecModeFailedPrefix)))
+    db.set_ai_exec_mode(mode_setting(mode)).map_err(|err| {
+        format!(
+            "{}{}",
+            t(ChatMsg::SaveExecModeFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })
 }
 
 /// 打开 `<数据目录>/zssh.db`（和主机库、AI 智能体窗口同一个库）。
@@ -141,6 +150,11 @@ pub(super) fn open_settings_db() -> Result<Database, String> {
     let dir = crate::settings::data_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|err| format!("{}{err}", t(ChatMsg::CreateDataDirFailedPrefix)))?;
-    Database::open(&dir.join("zssh.db"))
-        .map_err(|err| format!("{}{err}", t(ChatMsg::OpenSettingsDbFailedPrefix)))
+    Database::open(&dir.join("zssh.db")).map_err(|err| {
+        format!(
+            "{}{}",
+            t(ChatMsg::OpenSettingsDbFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })
 }

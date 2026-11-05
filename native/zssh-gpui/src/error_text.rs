@@ -6,6 +6,10 @@
 //!
 //! 模板里的占位符和 `params()` 的键名一一对应；错误码是契约，见核心库的
 //! `ErrorWithCode::code()`。
+//!
+//! 带 `Reason` 的错误（`InvalidInput`、`KeyLoad`、`Shell`……）的 `detail` 不再是核心里写死的
+//! 中文：参数里有 `reason`（稳定 key），英文界面按 key 取 `reason_text` 里的整句；中文界面直接
+//! 用核心给的中文原文（和以前逐字相同）。拨号链的 `Hop` 带着内层错误，这里递归生成整句。
 
 use zssh_core::error::ErrorWithCode;
 
@@ -302,7 +306,7 @@ pub(crate) fn error_text<E: ErrorWithCode>(err: &E) -> String {
 }
 
 /// 指定语言生成文案（测试用；界面走 [`error_text`] 读当前语言）。
-pub(crate) fn error_text_in<E: ErrorWithCode>(lang: Lang, err: &E) -> String {
+pub(crate) fn error_text_in<E: ErrorWithCode + ?Sized>(lang: Lang, err: &E) -> String {
     let Some(msg) = message_for(err.code()) else {
         return err.to_string();
     };
@@ -310,14 +314,153 @@ pub(crate) fn error_text_in<E: ErrorWithCode>(lang: Lang, err: &E) -> String {
         Lang::Zh => msg.zh(),
         Lang::En => msg.en(),
     };
-    fill(template, &err.params()).unwrap_or_else(|| err.to_string())
+    let mut params = err.params();
+    localize_params(lang, err, &mut params);
+    fill(template, &params).unwrap_or_else(|| err.to_string())
+}
+
+/// 一条 [`Reason`] 当前语言的整句（不带"输入不合法："这类前缀）。表单旁边只显示原因时用。
+pub(crate) fn reason_text(reason: &zssh_core::error::Reason) -> String {
+    reason_text_in(current(), reason)
+}
+
+pub(crate) fn reason_text_in(lang: Lang, reason: &zssh_core::error::Reason) -> String {
+    if lang == Lang::En {
+        let mut params = vec![("reason", reason.key().to_owned())];
+        params.extend(reason.params().iter().cloned());
+        if let Some(sentence) = crate::reason_text::sentence(reason.key(), &params) {
+            return sentence;
+        }
+    }
+    reason.zh().to_owned()
+}
+
+/// 把参数里"要按语言出词"的几项换成当前语言：`Reason` 的整句、`NotFound` 的对象名、`Hop` 的
+/// 步骤和内层错误。用户数据（路径、主机名……）和第三方库 / 系统错误原文不动。
+fn localize_params<E: ErrorWithCode + ?Sized>(
+    lang: Lang,
+    err: &E,
+    params: &mut Vec<(&'static str, String)>,
+) {
+    fn get<'a>(params: &'a [(&'static str, String)], name: &str) -> Option<&'a str> {
+        params
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value.as_str())
+    }
+    fn set(params: &mut [(&'static str, String)], name: &str, value: String) {
+        if let Some(slot) = params.iter_mut().find(|(key, _)| *key == name) {
+            slot.1 = value;
+        }
+    }
+
+    if lang == Lang::En {
+        if let Some(key) = get(params, "reason") {
+            if let Some(sentence) = crate::reason_text::sentence(key, params) {
+                set(params, "detail", sentence);
+            }
+        }
+    }
+    if err.code() == "store.not_found" {
+        if let Some(noun) = get(params, "entity").map(|key| entity_noun(lang, key)) {
+            set(params, "entity", noun);
+        }
+    }
+    if let Some(cause) = err.cause() {
+        let inner = error_text_in(lang, cause);
+        let stage_msg = match get(params, "stage") {
+            Some("handshake") => ExtraMsg::StageHandshake,
+            Some("tunnel") => ExtraMsg::StageTunnel,
+            _ => ExtraMsg::StageConnect,
+        };
+        let stage = fill(
+            pick(lang, &stage_msg),
+            &[("via", get(params, "via").unwrap_or_default().to_owned())],
+        )
+        .unwrap_or_default();
+        let detail = fill(
+            pick(lang, &ExtraMsg::HopDetail),
+            &[("stage", stage), ("inner", inner)],
+        )
+        .unwrap_or_default();
+        set(params, "detail", detail);
+    }
+}
+
+/// 在一张 `Msg` 表里按语言取词。
+fn pick(lang: Lang, msg: &impl Msg) -> &'static str {
+    match lang {
+        Lang::Zh => msg.zh(),
+        Lang::En => msg.en(),
+    }
+}
+
+/// `NotFound` 的对象名（核心给的是稳定英文标识）。认不得的标识原样显示。
+fn entity_noun(lang: Lang, key: &str) -> String {
+    let msg = match key {
+        "group" => ExtraMsg::EntityGroup,
+        "host" => ExtraMsg::EntityHost,
+        "identity" => ExtraMsg::EntityIdentity,
+        "proxy" => ExtraMsg::EntityProxy,
+        "port_forward" => ExtraMsg::EntityPortForward,
+        "ai_endpoint" => ExtraMsg::EntityAiEndpoint,
+        other => return other.to_owned(),
+    };
+    pick(lang, &msg).to_owned()
+}
+
+/// 不属于某一个错误码的几段词：`NotFound` 的对象名、拨号链某一跳出错的步骤、整句的拼法。
+#[derive(Clone, Copy)]
+enum ExtraMsg {
+    EntityGroup,
+    EntityHost,
+    EntityIdentity,
+    EntityProxy,
+    EntityPortForward,
+    EntityAiEndpoint,
+    StageConnect,
+    StageHandshake,
+    StageTunnel,
+    HopDetail,
+}
+
+impl Msg for ExtraMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::EntityGroup => "分组",
+            Self::EntityHost => "主机",
+            Self::EntityIdentity => "凭据",
+            Self::EntityProxy => "代理",
+            Self::EntityPortForward => "端口转发",
+            Self::EntityAiEndpoint => "ZeePilot 接口",
+            Self::StageConnect => "连接",
+            Self::StageHandshake => "SSH 握手或认证",
+            Self::StageTunnel => "经跳板机 {via} 打开转发通道",
+            Self::HopDetail => "{stage}失败：{inner}",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::EntityGroup => "group",
+            Self::EntityHost => "host",
+            Self::EntityIdentity => "credential",
+            Self::EntityProxy => "proxy",
+            Self::EntityPortForward => "port forward",
+            Self::EntityAiEndpoint => "ZeePilot endpoint",
+            Self::StageConnect => "Connection",
+            Self::StageHandshake => "SSH handshake or authentication",
+            Self::StageTunnel => "Opening a forwarding channel through jump host {via}",
+            Self::HopDetail => "{stage} failed: {inner}",
+        }
+    }
 }
 
 /// 把 `{key}` 占位符换成参数值；有占位符对不上参数时返回 `None`。
 ///
 /// 参数值里允许出现 `{`（路径、远端消息都可能带），所以不能靠"替换后再看有没有花括号"
 /// 判断，而是按占位符逐个查表。
-fn fill(template: &str, params: &[(&'static str, String)]) -> Option<String> {
+pub(crate) fn fill(template: &str, params: &[(&'static str, String)]) -> Option<String> {
     let mut out = String::with_capacity(template.len() + params.len() * 16);
     let mut rest = template;
     while let Some(start) = rest.find('{') {
@@ -650,5 +793,252 @@ mod tests {
         for code in codes {
             assert!(message_for(code).is_some(), "{code} 缺模板");
         }
+    }
+    fn has_cjk(text: &str) -> bool {
+        text.chars()
+            .any(|ch| matches!(ch as u32, 0x4E00..=0x9FFF | 0x3000..=0x303F | 0xFF00..=0xFFEF))
+    }
+
+    /// 把参数值（第三方 / 系统错误原文，可能是系统语言的）拿掉后，整句不能再有汉字。
+    fn english_apart_from(text: &str, data: &[&str]) -> bool {
+        let mut rest = text.to_owned();
+        for piece in data {
+            rest = rest.replace(piece, "");
+        }
+        !has_cjk(&rest)
+    }
+
+    fn param(err: &ZsshError, name: &str) -> String {
+        err.params()
+            .into_iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value)
+            .unwrap_or_default()
+    }
+
+    /// 每个会上屏的原因 key 都要有英文整句（`TEXT` 是故意不上屏的内部诊断，不要求）。
+    #[test]
+    fn every_reason_key_has_an_english_sentence() {
+        for key in zssh_core::error::reason_keys::ALL {
+            if *key == zssh_core::error::reason_keys::TEXT {
+                continue;
+            }
+            let text = crate::reason_text::english(key).unwrap_or_else(|| panic!("{key} 缺英文"));
+            assert!(!text.is_empty() && !has_cjk(text), "{key}: {text}");
+        }
+    }
+
+    fn database_with_key_file(path: &str) -> (zssh_core::store::Database, i64) {
+        let db = zssh_core::store::Database::open_in_memory().expect("内存库");
+        let identity = db
+            .identity_save(&zssh_core::model::IdentityDraft {
+                id: None,
+                name: "deploy".to_owned(),
+                kind: zssh_core::model::IdentityKind::KeyFile,
+                key_path: Some(path.to_owned()),
+                secret: None,
+                passphrase: None,
+            })
+            .expect("存凭据");
+        (db, identity.id)
+    }
+
+    /// 公钥安装对话框：不存在的私钥文件，英文界面是完整英文句子，路径参数原样在。
+    #[test]
+    fn a_missing_private_key_file_reads_as_english_with_its_path() {
+        let path = r"C:\keys\no-such-key";
+        let (db, id) = database_with_key_file(path);
+        let err = db.identity_public_key(id).unwrap_err();
+        let text = error_text_in(Lang::En, &err);
+        assert!(
+            text.starts_with(&format!(
+                "Invalid input: Cannot read the private key file {path}: "
+            )),
+            "{text}"
+        );
+        // 后面的原因是系统给的错误文本（跟系统语言），不翻译。
+        assert!(
+            english_apart_from(&text, &[&param(&err, "cause")]),
+            "{text}"
+        );
+        // 中文界面和核心库的中文原文逐字相同。
+        assert_eq!(error_text_in(Lang::Zh, &err), err.to_string());
+    }
+
+    /// 不支持的私钥内容、错误口令：原因整句英文。
+    #[test]
+    fn unreadable_private_key_content_and_wrong_passphrase_read_as_english() {
+        let junk = zssh_core::ssh::keygen::public_key_of("not a private key", None).unwrap_err();
+        let generated = zssh_core::ssh::keygen::generate(
+            zssh_core::ssh::keygen::KeyAlgorithm::Ed25519,
+            "c",
+            Some("right"),
+        )
+        .expect("生成");
+        let wrong =
+            zssh_core::ssh::keygen::public_key_of(&generated.private_openssh, Some("wrong"))
+                .unwrap_err();
+        for err in [junk, wrong] {
+            let text = error_text_in(Lang::En, &err);
+            assert!(
+                text.starts_with(
+                    "Invalid input: Cannot read this private key (wrong passphrase, or not a supported private key format): "
+                ),
+                "{text}"
+            );
+            assert!(
+                english_apart_from(&text, &[&param(&err, "cause")]),
+                "{text}"
+            );
+            assert_eq!(error_text_in(Lang::Zh, &err), err.to_string());
+        }
+    }
+
+    /// 主机表单保存的校验：名称空、端口 0、地址带空格。
+    #[test]
+    fn host_form_validation_reads_as_english() {
+        use zssh_core::model::{AuthMethod, HostDraft, ProxyMode};
+        let db = zssh_core::store::Database::open_in_memory().expect("内存库");
+        let draft = |name: &str, host: &str, port: u16| HostDraft {
+            protocol: None,
+            id: None,
+            group_id: None,
+            name: name.to_owned(),
+            host: host.to_owned(),
+            port,
+            username: "ops".to_owned(),
+            auth_method: AuthMethod::Password,
+            identity_id: None,
+            proxy_id: None,
+            jump_host_id: None,
+            proxy_mode: ProxyMode::None,
+            tags: Vec::new(),
+            sort: 0,
+            legacy_algorithms: false,
+        };
+        let cases = [
+            (
+                draft("  ", "192.0.2.7", 22),
+                "Invalid input: The host's name cannot be empty",
+            ),
+            (
+                draft("a", "192.0.2.7", 0),
+                "Invalid input: The port must be between 1 and 65535",
+            ),
+            (
+                draft("a", "bad host", 22),
+                "Invalid input: The address cannot contain whitespace or control characters: only a domain name, IPv4 or IPv6 address is allowed",
+            ),
+        ];
+        for (request, want) in cases {
+            let err = db.host_save(&request).unwrap_err();
+            assert_eq!(error_text_in(Lang::En, &err), want);
+            assert_eq!(error_text_in(Lang::Zh, &err), err.to_string());
+        }
+    }
+
+    /// 带参数的原因：用户数据原样留着，其余是英文。
+    #[test]
+    fn reasons_with_params_keep_user_data_verbatim() {
+        use zssh_core::error::{Reason, reason_keys as rk};
+        let err = ZsshError::InvalidInput(
+            Reason::new(rk::IDENTITY_NOT_KEY, "（中文原文）").with("name", "生产密钥"),
+        );
+        assert_eq!(
+            error_text_in(Lang::En, &err),
+            "Invalid input: Credential \"生产密钥\" is not a private key credential and cannot be used for key authentication"
+        );
+        // 没有 key 的文字（内部诊断）：两种语言都原样。
+        let plain = ZsshError::Internal("内部断言".into());
+        assert_eq!(error_text_in(Lang::En, &plain), "Internal error: 内部断言");
+        // key 认得但参数对不上：退回中文原文，不露 `{name}`。
+        let broken = ZsshError::InvalidInput(Reason::new(rk::IDENTITY_NOT_KEY, "（中文原文）"));
+        assert_eq!(
+            error_text_in(Lang::En, &broken),
+            "Invalid input: （中文原文）"
+        );
+    }
+
+    #[test]
+    fn not_found_names_the_thing_in_each_language() {
+        use zssh_core::error::Entity;
+        for entity in [
+            Entity::Group,
+            Entity::Host,
+            Entity::Identity,
+            Entity::Proxy,
+            Entity::PortForward,
+            Entity::AiEndpoint,
+        ] {
+            let err = ZsshError::NotFound { entity, id: 3 };
+            assert_eq!(error_text_in(Lang::Zh, &err), err.to_string(), "{entity:?}");
+            let en = error_text_in(Lang::En, &err);
+            assert!(
+                en.starts_with("Cannot find ") && en.ends_with("(id=3)"),
+                "{en}"
+            );
+            assert!(!has_cjk(&en), "{en}");
+        }
+    }
+
+    /// 连接错误：跳点的内层错误按语言逐层生成，不再是预拼好的中文。
+    #[test]
+    fn hop_errors_are_composed_per_language() {
+        use zssh_core::error::HopStage;
+        let hop = |stage| ZsshError::Hop {
+            index: 1,
+            label: "Target web-1".into(),
+            stage,
+            source: Box::new(ZsshError::Connect {
+                host: "127.0.0.1".into(),
+                port: 1,
+                tried: "127.0.0.1:1".into(),
+                source: std::io::Error::other("refused"),
+            }),
+        };
+        let connect = hop(HopStage::Connect);
+        assert_eq!(error_text_in(Lang::Zh, &connect), connect.to_string());
+        assert_eq!(
+            error_text_in(Lang::En, &connect),
+            "Hop 1 (Target web-1): Connection failed: Failed to connect to 127.0.0.1:1 (tried 127.0.0.1:1): refused"
+        );
+        let tunnel = hop(HopStage::Tunnel {
+            via: "jump-1".into(),
+        });
+        assert_eq!(error_text_in(Lang::Zh, &tunnel), tunnel.to_string());
+        assert!(error_text_in(Lang::En, &tunnel).starts_with(
+            "Hop 1 (Target web-1): Opening a forwarding channel through jump host jump-1 failed: "
+        ));
+        let handshake = ZsshError::Hop {
+            index: 2,
+            label: "web-1".into(),
+            stage: HopStage::Handshake,
+            source: Box::new(ZsshError::AuthFailed),
+        };
+        assert_eq!(error_text_in(Lang::Zh, &handshake), handshake.to_string());
+        assert_eq!(
+            error_text_in(Lang::En, &handshake),
+            "Hop 2 (web-1): SSH handshake or authentication failed: Authentication failed: wrong user name or password"
+        );
+    }
+
+    /// 代理握手失败 + IPv6 提示：英文补一句出口提示。
+    #[test]
+    fn proxy_failures_with_the_ipv6_hint_read_as_english() {
+        use zssh_core::error::{Reason, reason_keys as rk};
+        let reason = Reason::new(rk::SOCKS_HOST_UNREACHABLE, "代理说目标主机不可达。（提示）")
+            .with("ipv6_hint", "1");
+        let err = ZsshError::Proxy {
+            proxy: "socks5 127.0.0.1:1080".into(),
+            detail: reason,
+        };
+        let text = error_text_in(Lang::En, &err);
+        assert!(
+            text.starts_with(
+                "Proxy socks5 127.0.0.1:1080: The proxy says the target host is unreachable. The target is an IPv6 address"
+            ),
+            "{text}"
+        );
+        assert!(!has_cjk(&text), "{text}");
     }
 }

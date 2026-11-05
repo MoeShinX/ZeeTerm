@@ -2579,9 +2579,13 @@ fn run_auto_sync_with(
 ) -> Result<SyncReport, SyncFailure> {
     let db = open_existing_db_at(data_dir)?;
     ensure_github_gist(handle, &db, sealer)?;
-    let device_id = db
-        .sync_device_id()
-        .map_err(|err| format!("{}{err}", t(SyncMsg::ReadDeviceIdFailedPrefix)))?;
+    let device_id = db.sync_device_id().map_err(|err| {
+        format!(
+            "{}{}",
+            t(SyncMsg::ReadDeviceIdFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     let context = SyncContext {
         db: &db,
         sealer,
@@ -3465,8 +3469,13 @@ fn load_saved_config(data_dir: &Path) -> Result<Option<StorageConfig>, String> {
     if !path.is_file() {
         return Ok(None);
     }
-    let db = Database::open(&path)
-        .map_err(|err| format!("{}{err}", t(SyncMsg::OpenDatabaseFailedPrefix)))?;
+    let db = Database::open(&path).map_err(|err| {
+        format!(
+            "{}{}",
+            t(SyncMsg::OpenDatabaseFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     service::load_config(&db, &DpapiSealer).map_err(|err| err.to_string())
 }
 
@@ -3476,9 +3485,13 @@ fn load_conflicts_at(data_dir: &Path) -> Result<Vec<ConflictView>, String> {
         return Ok(Vec::new());
     }
     let db = open_existing_db_at(data_dir)?;
-    let device_id = db
-        .sync_device_id()
-        .map_err(|err| format!("{}{err}", t(SyncMsg::ReadDeviceIdFailedPrefix)))?;
+    let device_id = db.sync_device_id().map_err(|err| {
+        format!(
+            "{}{}",
+            t(SyncMsg::ReadDeviceIdFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     conflicts::list(&db, &DpapiSealer, &device_id, now_secs()).map_err(|err| err.to_string())
 }
 
@@ -3488,9 +3501,13 @@ fn use_other_at(data_dir: &Path, id: i64) -> Result<(), String> {
     let _guard = SyncInFlight::acquire(ExclusiveKind::Restore)
         .map_err(|holder| exclusive_busy_message(ExclusiveKind::Restore, holder).to_owned())?;
     let db = open_existing_db_at(data_dir)?;
-    let device_id = db
-        .sync_device_id()
-        .map_err(|err| format!("{}{err}", t(SyncMsg::ReadDeviceIdFailedPrefix)))?;
+    let device_id = db.sync_device_id().map_err(|err| {
+        format!(
+            "{}{}",
+            t(SyncMsg::ReadDeviceIdFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     let known_hosts = data_dir.join("known_hosts");
     conflicts::use_other(
         &db,
@@ -3516,7 +3533,13 @@ fn open_existing_db_at(data_dir: &Path) -> Result<Database, String> {
     if !path.is_file() {
         return Err(t(SyncMsg::NoSyncDatabase).to_owned());
     }
-    Database::open(&path).map_err(|err| format!("{}{err}", t(SyncMsg::OpenDatabaseFailedPrefix)))
+    Database::open(&path).map_err(|err| {
+        format!(
+            "{}{}",
+            t(SyncMsg::OpenDatabaseFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })
 }
 
 /// 冲突的保留期按秒算，和核心用同一个时钟。
@@ -3610,8 +3633,13 @@ fn disconnect_onedrive_at(data_dir: &Path) -> Result<(), String> {
 fn open_db_at(data_dir: &Path) -> Result<Database, String> {
     std::fs::create_dir_all(data_dir)
         .map_err(|err| format!("{}{err}", t(SyncMsg::CreateDataDirFailedPrefix)))?;
-    Database::open(&data_dir.join("zssh.db"))
-        .map_err(|err| format!("{}{err}", t(SyncMsg::OpenDatabaseFailedPrefix)))
+    Database::open(&data_dir.join("zssh.db")).map_err(|err| {
+        format!(
+            "{}{}",
+            t(SyncMsg::OpenDatabaseFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })
 }
 
 /// OneDrive 的服务地址：生产是微软的；debug 构建里验收脚本可以换成本机的桩（不连真实服务）。
@@ -3734,9 +3762,13 @@ fn run_sync_inner(
     let db = open_db_at(data_dir)?;
     // GitHub 的 Gist ID 允许留空：第一次同步时新建，之后再同步都用这个。
     ensure_github_gist(handle, &db, sealer)?;
-    let device_id = db
-        .sync_device_id()
-        .map_err(|err| format!("{}{err}", t(SyncMsg::ReadDeviceIdFailedPrefix)))?;
+    let device_id = db.sync_device_id().map_err(|err| {
+        format!(
+            "{}{}",
+            t(SyncMsg::ReadDeviceIdFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     let context = SyncContext {
         db: &db,
         sealer,

@@ -3,7 +3,7 @@
 use rusqlite::{params, Row};
 use serde::{Deserialize, Serialize};
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Entity, Reason, ZsshError};
 use crate::store::db::Database;
 
 /// 转发方向。
@@ -28,7 +28,10 @@ impl ForwardKind {
         match text {
             "local" => Ok(Self::Local),
             "remote" => Ok(Self::Remote),
-            other => Err(ZsshError::InvalidInput(format!("未知的转发类型：{other}"))),
+            other => Err(ZsshError::InvalidInput(
+                Reason::new(rk::UNKNOWN_FORWARD_KIND, format!("未知的转发类型：{other}"))
+                    .with("value", other),
+            )),
         }
     }
 }
@@ -77,25 +80,33 @@ fn valid_address(text: &str) -> bool {
 fn validate(draft: &PortForwardDraft) -> Result<(String, String, String), ZsshError> {
     let name = draft.name.trim().to_owned();
     if name.chars().count() > 64 {
-        return Err(ZsshError::InvalidInput("名称最多 64 个字".to_owned()));
+        return Err(ZsshError::InvalidInput(Reason::new(
+            rk::NAME_TOO_LONG_64,
+            "名称最多 64 个字",
+        )));
     }
     let bind_host = match draft.bind_host.trim() {
         "" => DEFAULT_BIND_HOST.to_owned(),
         other => other.to_owned(),
     };
     if !valid_address(&bind_host) {
-        return Err(ZsshError::InvalidInput(format!(
-            "监听地址不对：{bind_host}"
-        )));
+        return Err(ZsshError::InvalidInput(
+            Reason::new(rk::FORWARD_BIND_BAD, format!("监听地址不对：{bind_host}"))
+                .with("value", &bind_host),
+        ));
     }
     let dest_host = draft.dest_host.trim().to_owned();
     if !valid_address(&dest_host) {
-        return Err(ZsshError::InvalidInput(
-            "目标地址不能为空，也不能带空格".to_owned(),
-        ));
+        return Err(ZsshError::InvalidInput(Reason::new(
+            rk::FORWARD_DEST_BAD,
+            "目标地址不能为空，也不能带空格",
+        )));
     }
     if draft.bind_port == 0 || draft.dest_port == 0 {
-        return Err(ZsshError::InvalidInput("端口要在 1-65535 之间".to_owned()));
+        return Err(ZsshError::InvalidInput(Reason::new(
+            rk::PORT_RANGE,
+            "端口要在 1-65535 之间",
+        )));
     }
     Ok((name, bind_host, dest_host))
 }
@@ -143,7 +154,7 @@ impl Database {
             )
             .map_err(|err| match err {
                 rusqlite::Error::QueryReturnedNoRows => ZsshError::NotFound {
-                    entity: "端口转发",
+                    entity: Entity::PortForward,
                     id,
                 },
                 other => other.into(),
@@ -164,10 +175,13 @@ impl Database {
                     && Some(rule.id) != draft.id
             });
             if clash {
-                return Err(ZsshError::InvalidInput(format!(
-                    "这台主机已经有一条远程转发监听端口 {}",
-                    draft.bind_port
-                )));
+                return Err(ZsshError::InvalidInput(
+                    Reason::new(
+                        rk::FORWARD_REMOTE_PORT_TAKEN,
+                        format!("这台主机已经有一条远程转发监听端口 {}", draft.bind_port),
+                    )
+                    .with("port", draft.bind_port),
+                ));
             }
         }
         let id = self.with_conn(|conn| {
@@ -193,7 +207,7 @@ impl Database {
                     )?;
                     if changed == 0 {
                         return Err(ZsshError::NotFound {
-                            entity: "端口转发",
+                            entity: Entity::PortForward,
                             id,
                         });
                     }

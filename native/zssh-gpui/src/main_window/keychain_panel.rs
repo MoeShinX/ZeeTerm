@@ -428,10 +428,10 @@ impl MainWindow {
                 return;
             }
         };
-        let saved = self
-            .store
-            .db()
-            .and_then(|db| db.identity_save(&draft).map_err(|err| err.to_string()));
+        let saved = self.store.db().and_then(|db| {
+            db.identity_save(&draft)
+                .map_err(|err| crate::error_text::error_text(&err))
+        });
         self.store.reload();
         match saved {
             Ok(_) => self.keychain_reset(window, cx),
@@ -452,11 +452,10 @@ impl MainWindow {
         else {
             return;
         };
-        let users = match self
-            .store
-            .db()
-            .and_then(|db| db.host_list().map_err(|e| e.to_string()))
-        {
+        let users = match self.store.db().and_then(|db| {
+            db.host_list()
+                .map_err(|e| crate::error_text::error_text(&e))
+        }) {
             Ok(hosts) => crate::identities::hosts_using_identity(&hosts, id),
             Err(err) => {
                 self.modal = Some(Modal::Confirm(Confirm {
@@ -505,10 +504,10 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let result = self
-            .store
-            .db()
-            .and_then(|db| db.identity_delete(id).map_err(|err| err.to_string()));
+        let result = self.store.db().and_then(|db| {
+            db.identity_delete(id)
+                .map_err(|err| crate::error_text::error_text(&err))
+        });
         self.store.reload();
         match result {
             Ok(()) => self.keychain_reset(window, cx),
@@ -576,10 +575,10 @@ impl MainWindow {
                 return;
             }
         };
-        let result = self
-            .store
-            .db()
-            .and_then(|db| db.identity_save(&draft).map_err(|err| err.to_string()));
+        let result = self.store.db().and_then(|db| {
+            db.identity_save(&draft)
+                .map_err(|err| crate::error_text::error_text(&err))
+        });
         self.store.reload();
         match result {
             Ok(_) => self.notice_success(
@@ -600,11 +599,10 @@ impl MainWindow {
         let Some(id) = self.keychain.selected else {
             return;
         };
-        match self
-            .store
-            .db()
-            .and_then(|db| db.identity_public_key(id).map_err(|err| err.to_string()))
-        {
+        match self.store.db().and_then(|db| {
+            db.identity_public_key(id)
+                .map_err(|err| crate::error_text::error_text(&err))
+        }) {
             Ok((public_key, _)) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(public_key));
                 self.notice(t(KeychainMsg::CopiedPublicKey), window, cx);

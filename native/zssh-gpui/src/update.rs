@@ -1677,15 +1677,25 @@ fn update_cache_dir() -> PathBuf {
 
 /// 把「跳过此版本」写进本机设置（`update_skipped_version`，不参与同步）。
 fn record_skipped_version(version: &str) -> Result<(), String> {
-    let db = crate::host_db::open_database()
-        .map_err(|err| format!("{}{err}", t(UpdateMsg::RememberSkipFailedPrefix)))?;
+    let db = crate::host_db::open_database().map_err(|err| {
+        format!(
+            "{}{}",
+            t(UpdateMsg::RememberSkipFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     skip_version_in(&db, version)
 }
 
 /// [`record_skipped_version`] 的可注入版本（测试用内存库）。
 fn skip_version_in(db: &zssh_core::store::Database, version: &str) -> Result<(), String> {
-    zssh_core::updater::skip_version(db, version)
-        .map_err(|err| format!("{}{err}", t(UpdateMsg::RememberSkipFailedPrefix)))
+    zssh_core::updater::skip_version(db, version).map_err(|err| {
+        format!(
+            "{}{}",
+            t(UpdateMsg::RememberSkipFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })
 }
 
 fn current_exe_args() -> Vec<String> {
@@ -1976,7 +1986,13 @@ fn update_proxy() -> Result<Option<String>, String> {
         return Ok(Some(hook));
     }
     let db = zssh_core::store::Database::open(&crate::settings::data_dir().join("zssh.db"))
-        .map_err(|err| format!("{}{err}", t(UpdateMsg::OpenSettingsDbFailedPrefix)))?;
+        .map_err(|err| {
+            format!(
+                "{}{}",
+                t(UpdateMsg::OpenSettingsDbFailedPrefix),
+                crate::error_text::error_text(&err)
+            )
+        })?;
     proxy_from_settings(&db)
 }
 

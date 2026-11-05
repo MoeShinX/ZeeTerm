@@ -376,7 +376,8 @@ impl MainWindow {
 
     pub(crate) fn x11_set_auto(&mut self, cx: &mut Context<Self>) {
         let result = self.store.db().and_then(|db| {
-            prefs::save_display_mode(db, &DisplayMode::Auto).map_err(|e| e.to_string())
+            prefs::save_display_mode(db, &DisplayMode::Auto)
+                .map_err(|e| crate::error_text::error_text(&e))
         });
         match result {
             Ok(()) => {
@@ -397,10 +398,15 @@ impl MainWindow {
             spec
         };
         let mode = DisplayMode::Custom(spec.clone());
-        let result = self
-            .store
-            .db()
-            .and_then(|db| prefs::save_display_mode(db, &mode).map_err(|e| e.to_string()));
+        let result = self.store.db().and_then(|db| {
+            prefs::save_display_mode(db, &mode).map_err(|err| match err {
+                // 输入框旁边只显示原因，不带"输入不合法："前缀。
+                zssh_core::error::ZsshError::InvalidInput(reason) => {
+                    crate::error_text::reason_text(&reason)
+                }
+                other => crate::error_text::error_text(&other),
+            })
+        });
         match result {
             Ok(()) => {
                 self.x11_ui.prefs.mode = mode;
@@ -412,20 +418,17 @@ impl MainWindow {
             Err(err) => {
                 // 先把界面切到「指定显示」让用户看到错误和输入框。
                 self.x11_ui.prefs.mode = mode;
-                // 只显示细节：前缀「输入不合法：」取自核心库自己的 `Display`，界面里不再硬编码一遍。
-                let prefix = zssh_core::error::ZsshError::InvalidInput(String::new()).to_string();
-                self.x11_ui.custom_error =
-                    Some(err.strip_prefix(&prefix).unwrap_or(&err).to_owned());
+                self.x11_ui.custom_error = Some(err);
             }
         }
         cx.notify();
     }
 
     pub(crate) fn x11_set_close_owned(&mut self, close: bool, cx: &mut Context<Self>) {
-        let result = self
-            .store
-            .db()
-            .and_then(|db| prefs::save_close_owned_on_exit(db, close).map_err(|e| e.to_string()));
+        let result = self.store.db().and_then(|db| {
+            prefs::save_close_owned_on_exit(db, close)
+                .map_err(|e| crate::error_text::error_text(&e))
+        });
         match result {
             Ok(()) => self.x11_ui.prefs.close_owned_on_exit = close,
             Err(err) => {

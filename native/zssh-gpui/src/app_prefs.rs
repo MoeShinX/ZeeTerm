@@ -410,7 +410,7 @@ pub fn session_log_problem_lines() -> Vec<String> {
 /// 写一个整数设置（夹进范围再写）。
 pub fn write_number(db: &Database, key: &str, value: u32, range: (u32, u32)) -> Result<(), String> {
     db.setting_set(key, &value.clamp(range.0, range.1).to_string())
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 pub fn write_flag(db: &Database, key: &str, value: bool) -> Result<(), String> {

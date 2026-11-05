@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::catalog::CapsOverride;
 use super::provider::{ApiKey, OpenAiOptions, ProviderConfig, ProviderKind, Switch};
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Reason, ZsshError};
 
 /// 接口类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,7 +36,13 @@ impl EndpointKind {
         match raw {
             "openai_chat" => Ok(Self::OpenAiChat),
             "anthropic" => Ok(Self::Anthropic),
-            other => Err(ZsshError::InvalidInput(format!("未知的接口类型：{other}"))),
+            other => Err(ZsshError::InvalidInput(
+                Reason::new(
+                    rk::UNKNOWN_ENDPOINT_KIND,
+                    format!("未知的接口类型：{other}"),
+                )
+                .with("value", other),
+            )),
         }
     }
 
@@ -238,15 +244,19 @@ pub fn valid_base_url(url: &str) -> bool {
 /// 保存前的整理和校验：名字、地址、模型清单、覆盖表都在这里过一遍。返回整理后的草稿
 /// （名字、地址去首尾空白，模型清单去重去空）。
 pub fn normalize_draft(draft: &AiEndpointDraft) -> Result<AiEndpointDraft, ZsshError> {
-    let invalid = |why: &str| ZsshError::InvalidInput(why.to_owned());
+    let invalid = |key: &'static str, why: &str| ZsshError::InvalidInput(Reason::new(key, why));
     let mut out = draft.clone();
     out.name = draft.name.trim().to_owned();
     if !plain(&out.name, NAME_MAX_CHARS) {
-        return Err(invalid("接口名不能为空，且不能超过 100 个字符"));
+        return Err(invalid(
+            rk::ENDPOINT_NAME_BAD,
+            "接口名不能为空，且不能超过 100 个字符",
+        ));
     }
     out.base_url = draft.base_url.trim().trim_end_matches('/').to_owned();
     if !valid_base_url(&out.base_url) {
         return Err(invalid(
+            rk::ENDPOINT_URL_BAD,
             "接口地址要以 http:// 或 https:// 开头，不能含空格或控制字符",
         ));
     }
@@ -258,7 +268,7 @@ pub fn normalize_draft(draft: &AiEndpointDraft) -> Result<AiEndpointDraft, ZsshE
         .map(str::to_owned);
     if let Some(model) = &out.default_model {
         if !plain(model, MODEL_MAX_CHARS) {
-            return Err(invalid("默认模型名不合法"));
+            return Err(invalid(rk::DEFAULT_MODEL_BAD, "默认模型名不合法"));
         }
     }
     let mut models: Vec<String> = Vec::new();
@@ -268,23 +278,38 @@ pub fn normalize_draft(draft: &AiEndpointDraft) -> Result<AiEndpointDraft, ZsshE
             continue;
         }
         if !plain(model, MODEL_MAX_CHARS) {
-            return Err(invalid("模型名不合法（太长或含控制字符）"));
+            return Err(invalid(
+                rk::MODEL_NAME_BAD,
+                "模型名不合法（太长或含控制字符）",
+            ));
         }
         models.push(model.to_owned());
     }
     if models.len() > MODELS_MAX {
-        return Err(invalid("手填的模型太多了（最多 200 个）"));
+        return Err(invalid(
+            rk::MODELS_TOO_MANY,
+            "手填的模型太多了（最多 200 个）",
+        ));
     }
     out.models = models;
     if draft.overrides.len() > OVERRIDES_MAX {
-        return Err(invalid("手动能力覆盖太多了（最多 200 个）"));
+        return Err(invalid(
+            rk::OVERRIDES_TOO_MANY,
+            "手动能力覆盖太多了（最多 200 个）",
+        ));
     }
     if draft.overrides.keys().any(|m| !plain(m, MODEL_MAX_CHARS)) {
-        return Err(invalid("手动能力覆盖里有不合法的模型名"));
+        return Err(invalid(
+            rk::OVERRIDE_MODEL_BAD,
+            "手动能力覆盖里有不合法的模型名",
+        ));
     }
     if out.openai_options.no_key {
         if out.kind != EndpointKind::OpenAiChat {
-            return Err(invalid("只有 OpenAI 兼容接口可以不填 API Key"));
+            return Err(invalid(
+                rk::NO_KEY_ONLY_OPENAI,
+                "只有 OpenAI 兼容接口可以不填 API Key",
+            ));
         }
         // 明确说了不需要 Key：已经存着的 Key 一起清掉，免得留一把没人用的密钥。
         out.api_key = Some(String::new());
@@ -297,7 +322,7 @@ pub fn normalize_draft(draft: &AiEndpointDraft) -> Result<AiEndpointDraft, ZsshE
         .map(str::to_owned);
     if let Some(preset) = &out.preset_id {
         if !plain(preset, PRESET_MAX_CHARS) {
-            return Err(invalid("预设标识不合法"));
+            return Err(invalid(rk::PRESET_ID_BAD, "预设标识不合法"));
         }
     }
     Ok(out)

@@ -96,11 +96,11 @@ pub(super) struct Dpapi;
 
 impl DraftCipher for Dpapi {
     fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, String> {
-        secrets::protect(plain).map_err(|err| err.to_string())
+        secrets::protect(plain).map_err(|err| crate::error_text::error_text(&err))
     }
 
     fn open(&self, sealed: &[u8]) -> Result<Vec<u8>, String> {
-        secrets::unprotect(sealed).map_err(|err| err.to_string())
+        secrets::unprotect(sealed).map_err(|err| crate::error_text::error_text(&err))
     }
 }
 

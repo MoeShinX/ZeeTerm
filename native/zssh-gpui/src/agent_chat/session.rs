@@ -889,7 +889,11 @@ pub(super) fn load_hosts(db: Option<&Database>) -> (Vec<HostChoice>, Option<Stri
         ),
         Err(err) => (
             Vec::new(),
-            Some(format!("{}{err}", t(ChatMsg::ReadHostsFailedPrefix))),
+            Some(format!(
+                "{}{}",
+                t(ChatMsg::ReadHostsFailedPrefix),
+                crate::error_text::error_text(&err)
+            )),
         ),
     }
 }

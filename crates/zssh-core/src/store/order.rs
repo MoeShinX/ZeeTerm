@@ -11,7 +11,7 @@ use std::collections::HashSet;
 
 use rusqlite::{params, OptionalExtension};
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Entity, Reason, ZsshError};
 use crate::store::db::Database;
 
 /// 检查没有重复的 id。
@@ -19,7 +19,10 @@ fn ensure_unique(ids: &[i64]) -> Result<(), ZsshError> {
     let mut seen = HashSet::new();
     for id in ids {
         if !seen.insert(*id) {
-            return Err(ZsshError::InvalidInput(format!("顺序里的 id {id} 重复了")));
+            return Err(ZsshError::InvalidInput(
+                Reason::new(rk::ORDER_DUPLICATE_ID, format!("顺序里的 id {id} 重复了"))
+                    .with("id", id),
+            ));
         }
     }
     Ok(())
@@ -48,16 +51,17 @@ impl Database {
                     .optional()?;
                 let Some((group_id, sort)) = row else {
                     return Err(ZsshError::NotFound {
-                        entity: "主机",
+                        entity: Entity::Host,
                         id: *id,
                     });
                 };
                 match layer {
                     None => layer = Some(group_id),
                     Some(expected) if expected != group_id => {
-                        return Err(ZsshError::InvalidInput(
-                            "只能调整同一个分组里的主机顺序".to_owned(),
-                        ));
+                        return Err(ZsshError::InvalidInput(Reason::new(
+                            rk::ORDER_HOSTS_SAME_GROUP,
+                            "只能调整同一个分组里的主机顺序",
+                        )));
                     }
                     Some(_) => {}
                 }
@@ -94,16 +98,17 @@ impl Database {
                     .optional()?;
                 let Some((parent_id, sort)) = row else {
                     return Err(ZsshError::NotFound {
-                        entity: "分组",
+                        entity: Entity::Group,
                         id: *id,
                     });
                 };
                 match layer {
                     None => layer = Some(parent_id),
                     Some(expected) if expected != parent_id => {
-                        return Err(ZsshError::InvalidInput(
-                            "只能调整同一个父分组下的分组顺序".to_owned(),
-                        ));
+                        return Err(ZsshError::InvalidInput(Reason::new(
+                            rk::ORDER_GROUPS_SAME_PARENT,
+                            "只能调整同一个父分组下的分组顺序",
+                        )));
                     }
                     Some(_) => {}
                 }

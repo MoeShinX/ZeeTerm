@@ -79,7 +79,7 @@ pub fn prepare_blocking(
 ) -> Result<Prepared, X11Failure> {
     if let DisplayMode::Custom(spec) = &prefs.mode {
         let endpoint = parse_display(spec).map_err(|reason| X11Failure::LaunchFailed {
-            reason: format!("设置里指定的显示地址不可用：{reason}"),
+            reason: format!("设置里指定的显示地址不可用：{}", reason.zh()),
         })?;
         return Ok(Prepared {
             route: X11Route {

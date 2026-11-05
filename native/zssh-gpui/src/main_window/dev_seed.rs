@@ -34,7 +34,7 @@ pub fn seed_from_env() -> Result<(), String> {
     if test_host.is_none() && !placeholders && !protocols && !nested && many.is_none() {
         return Ok(());
     }
-    let db = crate::host_db::open_database().map_err(|err| err.to_string())?;
+    let db = crate::host_db::open_database().map_err(|err| crate::error_text::error_text(&err))?;
     if let Some(name) = test_host {
         seed_test_host(&db, &name)?;
     }
@@ -55,7 +55,9 @@ pub fn seed_from_env() -> Result<(), String> {
 
 /// `node-01`… 共 `count` 台占位主机，已经有的同名主机跳过。
 fn seed_many(db: &Database, count: usize) -> Result<(), String> {
-    let existing = db.host_list().map_err(|err| err.to_string())?;
+    let existing = db
+        .host_list()
+        .map_err(|err| crate::error_text::error_text(&err))?;
     for n in 1..=count {
         let name = format!("node-{n:02}");
         if existing.iter().any(|host| host.name == name) {
@@ -63,14 +65,16 @@ fn seed_many(db: &Database, count: usize) -> Result<(), String> {
         }
         let address = format!("192.0.2.{}", 100 + n % 150);
         db.host_save(&host_draft(&name, &address, 22, "ops", None))
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| crate::error_text::error_text(&err))?;
     }
     Ok(())
 }
 
 /// 「生产环境」下面再建两层子分组（`数据库` > `边缘节点`），各放几台主机。已经建过就跳过。
 fn seed_nested_groups(db: &Database) -> Result<(), String> {
-    let groups = db.group_list().map_err(|err| err.to_string())?;
+    let groups = db
+        .group_list()
+        .map_err(|err| crate::error_text::error_text(&err))?;
     let Some(prod) = groups.iter().find(|group| group.name == "生产环境") else {
         return Err("ZSSH_SEED_NESTED 要先有占位主机的「生产环境」分组".to_owned());
     };
@@ -85,7 +89,7 @@ fn seed_nested_groups(db: &Database) -> Result<(), String> {
             sort: 0,
         })
         .map(|group| group.id)
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
     };
     let database = make_group("数据库", prod.id)?;
     let edge = make_group("边缘节点", database)?;
@@ -97,7 +101,7 @@ fn seed_nested_groups(db: &Database) -> Result<(), String> {
     ];
     for (name, address, group) in rows {
         db.host_save(&host_draft(name, address, 22, "ops", Some(group)))
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| crate::error_text::error_text(&err))?;
     }
     Ok(())
 }
@@ -105,7 +109,9 @@ fn seed_nested_groups(db: &Database) -> Result<(), String> {
 /// Telnet / 串口 / 开了 X11 的 SSH 主机各一台。已有同名主机就跳过（重复启动不叠加）。
 fn seed_protocol_hosts(db: &Database) -> Result<(), String> {
     use zssh_core::model::{Protocol, ProtocolSettings};
-    let existing = db.host_list().map_err(|err| err.to_string())?;
+    let existing = db
+        .host_list()
+        .map_err(|err| crate::error_text::error_text(&err))?;
     let add = |name: &str, mut draft: HostDraft, settings: ProtocolSettings| {
         if existing.iter().any(|host| host.name == name) {
             return Ok(());
@@ -113,7 +119,7 @@ fn seed_protocol_hosts(db: &Database) -> Result<(), String> {
         draft.protocol = Some(settings);
         db.host_save(&draft)
             .map(|_| ())
-            .map_err(|err| err.to_string())
+            .map_err(|err| crate::error_text::error_text(&err))
     };
     let mut telnet = host_draft("switch-1", "192.0.2.50", 23, "admin", None);
     telnet.proxy_mode = ProxyMode::None;
@@ -163,7 +169,7 @@ fn host_draft(name: &str, address: &str, port: u16, user: &str, group: Option<i6
 fn seed_test_host(db: &Database, name: &str) -> Result<(), String> {
     let exists = db
         .host_list()
-        .map_err(|err| err.to_string())?
+        .map_err(|err| crate::error_text::error_text(&err))?
         .iter()
         .any(|host| host.name == name);
     if exists {
@@ -188,7 +194,7 @@ fn seed_test_host(db: &Database, name: &str) -> Result<(), String> {
             secret: None,
             passphrase: None,
         })
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| crate::error_text::error_text(&err))?;
     let mut draft = host_draft(name, &address, port, &user, None);
     draft.auth_method = AuthMethod::Key;
     draft.identity_id = Some(identity.id);
@@ -207,18 +213,23 @@ fn seed_test_host(db: &Database, name: &str) -> Result<(), String> {
                 username: None,
                 secret: None,
             })
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| crate::error_text::error_text(&err))?;
         draft.proxy_mode = ProxyMode::Custom;
         draft.proxy_id = Some(proxy.id);
     }
-    db.host_save(&draft).map_err(|err| err.to_string())?;
+    db.host_save(&draft)
+        .map_err(|err| crate::error_text::error_text(&err))?;
     Ok(())
 }
 
 fn seed_placeholders(db: &Database) -> Result<(), String> {
-    let existing = db.host_list().map_err(|err| err.to_string())?;
+    let existing = db
+        .host_list()
+        .map_err(|err| crate::error_text::error_text(&err))?;
     // 已经有分组就不再建（重复启动不叠加）；同名的主机（比如先建好的测试主机）也跳过。
-    let existing_groups = db.group_list().map_err(|err| err.to_string())?;
+    let existing_groups = db
+        .group_list()
+        .map_err(|err| crate::error_text::error_text(&err))?;
     let group = |name: &str| -> Result<i64, String> {
         if let Some(found) = existing_groups.iter().find(|group| group.name == name) {
             return Ok(found.id);
@@ -230,7 +241,7 @@ fn seed_placeholders(db: &Database) -> Result<(), String> {
             sort: 0,
         })
         .map(|group| group.id)
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
     };
     let prod = group("生产环境")?;
     let staging = group("预发布")?;
@@ -249,7 +260,7 @@ fn seed_placeholders(db: &Database) -> Result<(), String> {
             continue;
         }
         db.host_save(&host_draft(name, address, 22, user, group_id))
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| crate::error_text::error_text(&err))?;
     }
     seed_placeholder_extras(db)
 }
@@ -258,7 +269,11 @@ fn seed_placeholders(db: &Database) -> Result<(), String> {
 /// 地址都是文档保留段，不会真的连出去。
 fn seed_placeholder_extras(db: &Database) -> Result<(), String> {
     // 已经有转发规则就是建过了（测试主机的凭据会先占着凭据表，不能拿它判断）。
-    if !db.forward_list().map_err(|err| err.to_string())?.is_empty() {
+    if !db
+        .forward_list()
+        .map_err(|err| crate::error_text::error_text(&err))?
+        .is_empty()
+    {
         return Ok(());
     }
     let password = db
@@ -270,7 +285,7 @@ fn seed_placeholder_extras(db: &Database) -> Result<(), String> {
             secret: Some("demo-pass".to_owned()),
             passphrase: None,
         })
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| crate::error_text::error_text(&err))?;
     db.identity_save(&IdentityDraft {
         id: None,
         name: "部署密钥".to_owned(),
@@ -279,7 +294,7 @@ fn seed_placeholder_extras(db: &Database) -> Result<(), String> {
         secret: None,
         passphrase: None,
     })
-    .map_err(|err| err.to_string())?;
+    .map_err(|err| crate::error_text::error_text(&err))?;
     db.identity_save(&IdentityDraft {
         id: None,
         name: "本机 agent".to_owned(),
@@ -288,7 +303,7 @@ fn seed_placeholder_extras(db: &Database) -> Result<(), String> {
         secret: None,
         passphrase: None,
     })
-    .map_err(|err| err.to_string())?;
+    .map_err(|err| crate::error_text::error_text(&err))?;
     let office = db
         .proxy_save(&ProxyDraft {
             id: None,
@@ -299,7 +314,7 @@ fn seed_placeholder_extras(db: &Database) -> Result<(), String> {
             username: None,
             secret: None,
         })
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| crate::error_text::error_text(&err))?;
     db.proxy_save(&ProxyDraft {
         id: None,
         name: "出口 HTTP 代理".to_owned(),
@@ -309,15 +324,18 @@ fn seed_placeholder_extras(db: &Database) -> Result<(), String> {
         username: Some("proxy-user".to_owned()),
         secret: Some("placeholder-proxy-secret".to_owned()),
     })
-    .map_err(|err| err.to_string())?;
+    .map_err(|err| crate::error_text::error_text(&err))?;
     // 让 web-1 用上密码凭据、db-1 走办公室代理，主机详情 / 属性面板里有东西可看。
-    let hosts = db.host_list().map_err(|err| err.to_string())?;
+    let hosts = db
+        .host_list()
+        .map_err(|err| crate::error_text::error_text(&err))?;
     if let Some(web) = hosts.iter().find(|host| host.name == "web-1") {
         let mut draft = host_draft(&web.name, &web.host, web.port, &web.username, web.group_id);
         draft.id = Some(web.id);
         draft.identity_id = Some(password.id);
         draft.tags = vec!["线上".to_owned(), "nginx".to_owned()];
-        db.host_save(&draft).map_err(|err| err.to_string())?;
+        db.host_save(&draft)
+            .map_err(|err| crate::error_text::error_text(&err))?;
         db.forward_save(&PortForwardDraft {
             id: None,
             host_id: web.id,
@@ -329,7 +347,7 @@ fn seed_placeholder_extras(db: &Database) -> Result<(), String> {
             dest_port: 80,
             auto_start: false,
         })
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| crate::error_text::error_text(&err))?;
     }
     if let Some(db1) = hosts.iter().find(|host| host.name == "db-1") {
         let mut draft = host_draft(&db1.name, &db1.host, db1.port, &db1.username, db1.group_id);
@@ -340,7 +358,8 @@ fn seed_placeholder_extras(db: &Database) -> Result<(), String> {
             .iter()
             .find(|host| host.name == "gateway")
             .map(|host| host.id);
-        db.host_save(&draft).map_err(|err| err.to_string())?;
+        db.host_save(&draft)
+            .map_err(|err| crate::error_text::error_text(&err))?;
         db.forward_save(&PortForwardDraft {
             id: None,
             host_id: db1.id,
@@ -352,7 +371,7 @@ fn seed_placeholder_extras(db: &Database) -> Result<(), String> {
             dest_port: 5432,
             auto_start: true,
         })
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| crate::error_text::error_text(&err))?;
         db.forward_save(&PortForwardDraft {
             id: None,
             host_id: db1.id,
@@ -364,7 +383,7 @@ fn seed_placeholder_extras(db: &Database) -> Result<(), String> {
             dest_port: 9000,
             auto_start: false,
         })
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| crate::error_text::error_text(&err))?;
     }
     Ok(())
 }

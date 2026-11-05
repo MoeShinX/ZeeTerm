@@ -648,9 +648,10 @@ impl MainWindow {
             secret: &secret,
         };
         let result = build_proxy_draft(&input, None).and_then(|draft| {
-            self.store
-                .db()
-                .and_then(|db| db.proxy_save(&draft).map_err(|err| err.to_string()))
+            self.store.db().and_then(|db| {
+                db.proxy_save(&draft)
+                    .map_err(|err| crate::error_text::error_text(&err))
+            })
         });
         match result {
             Ok(proxy) => {

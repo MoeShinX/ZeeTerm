@@ -568,7 +568,7 @@ pub fn plan_save(
 /// 主机没存成功时，刚新建的那条密码身份删掉（免得留下没人用的孤儿）；覆盖 / 改名没法回滚，
 /// 但它们都只动这台主机自己独占的身份。释放失败不算保存失败（主机已经存好了，只是留着一条没人用的
 /// 密码，用户能在凭据页看到并删除），只记日志；日志里没有密码。
-pub fn apply_save(db: &Database, plan: SavePlan) -> Result<Host, String> {
+pub fn apply_save(db: &Database, plan: SavePlan) -> Result<Host, FieldError> {
     let SavePlan {
         identity,
         release,
@@ -579,12 +579,14 @@ pub fn apply_save(db: &Database, plan: SavePlan) -> Result<Host, String> {
         IdentityAction::None => {}
         IdentityAction::Overwrite { id, draft: lite } => {
             db.identity_save(&lite.into_draft(Some(id)))
-                .map_err(|err| err.to_string())?;
+                .map_err(|err| {
+                    FieldError::new(FormField::General, crate::error_text::error_text(&err))
+                })?;
         }
         IdentityAction::Create { draft: lite } => {
-            let made = db
-                .identity_save(&lite.into_draft(None))
-                .map_err(|err| err.to_string())?;
+            let made = db.identity_save(&lite.into_draft(None)).map_err(|err| {
+                FieldError::new(FormField::General, crate::error_text::error_text(&err))
+            })?;
             draft.identity_id = Some(made.id);
             created = Some(made.id);
         }
@@ -598,7 +600,9 @@ pub fn apply_save(db: &Database, plan: SavePlan) -> Result<Host, String> {
                 secret: None,
                 passphrase: None,
             })
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| {
+                FieldError::new(FormField::General, crate::error_text::error_text(&err))
+            })?;
         }
     }
     let saved = match db.host_save(&draft) {
@@ -607,7 +611,11 @@ pub fn apply_save(db: &Database, plan: SavePlan) -> Result<Host, String> {
             if let Some(id) = created {
                 let _ = db.identity_delete(id);
             }
-            return Err(err.to_string());
+            // 字段按错误的稳定 key 找（和界面语言无关），文案按当前语言生成。
+            return Err(FieldError::new(
+                super::protocol_form::locate_error(&err),
+                crate::error_text::error_text(&err),
+            ));
         }
     };
     if let Some(id) = release {
@@ -1814,7 +1822,7 @@ mod tests {
         bad.name = "sw2";
         bad.telnet.auto_login = true;
         let draft = plan_save(&bad, None, &[], None).unwrap().draft;
-        let err = db.host_save(&draft).unwrap_err().to_string();
+        let err = db.host_save(&draft).unwrap_err();
         assert_eq!(locate_error(&err), FormField::AutoLogin, "{err}");
 
         // 编辑已有的 Telnet 主机改成 SSH：允许；改成串口：核心库拒绝。

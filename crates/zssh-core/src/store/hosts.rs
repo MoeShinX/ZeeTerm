@@ -2,7 +2,7 @@
 
 use rusqlite::{params, Connection, Row};
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Entity, Reason, ZsshError};
 use crate::model::{
     AuthMethod, Host, HostDraft, HostFacts, Identity, IdentityKind, Protocol, ProtocolSettings,
     ProxyMode,
@@ -112,7 +112,10 @@ impl Database {
             let mut jump_host_protocol = None;
             if let Some(jump_host_id) = draft.jump_host_id {
                 if Some(jump_host_id) == draft.id {
-                    return Err(ZsshError::InvalidInput("跳板机不能是主机自己".to_owned()));
+                    return Err(ZsshError::InvalidInput(Reason::new(
+                        rk::HOST_JUMP_SELF,
+                        "跳板机不能是主机自己",
+                    )));
                 }
                 host_get(conn, jump_host_id)?;
                 jump_host_protocol =
@@ -122,10 +125,16 @@ impl Database {
                 if settings.protocol != Protocol::Ssh {
                     let users = hosts_referencing(conn, "jump_host_id", id)?;
                     if !users.is_empty() {
-                        return Err(ZsshError::InvalidInput(format!(
-                            "这台主机正被 {} 用作跳板机，只有 SSH 主机能当跳板机",
-                            users.join("、")
-                        )));
+                        return Err(ZsshError::InvalidInput(
+                            Reason::new(
+                                rk::HOST_JUMP_NOT_SSH_IN_USE,
+                                format!(
+                                    "这台主机正被 {} 用作跳板机，只有 SSH 主机能当跳板机",
+                                    users.join("、")
+                                ),
+                            )
+                            .with("users", users.join(", ")),
+                        ));
                     }
                 }
             }
@@ -134,9 +143,10 @@ impl Database {
             if let (Some(id), Some(_)) = (draft.id, requested) {
                 let current = crate::store::protocols::protocol_get(conn, id)?.protocol;
                 if (current == Protocol::Serial) != (settings.protocol == Protocol::Serial) {
-                    return Err(ZsshError::InvalidInput(
-                        "串口主机和网络主机（SSH / Telnet）不能互相转换，请新建一台主机".to_owned(),
-                    ));
+                    return Err(ZsshError::InvalidInput(Reason::new(
+                        rk::HOST_TYPE_SWITCH,
+                        "串口主机和网络主机（SSH / Telnet）不能互相转换，请新建一台主机",
+                    )));
                 }
             }
             let settings = settings.clone().validated(&HostFacts {
@@ -149,7 +159,12 @@ impl Database {
             })?;
 
             let tags = serde_json::to_string(&draft.tags)
-                .map_err(|err| ZsshError::InvalidInput(format!("标签序列化失败：{err}")))?;
+                .map_err(|err| {
+                    ZsshError::InvalidInput(
+                        Reason::new(rk::HOST_TAGS_SERIALIZE, format!("标签序列化失败：{err}"))
+                            .with("cause", &err),
+                    )
+                })?;
             let legacy = i64::from(draft.legacy_algorithms);
             let now = now_unix();
 
@@ -166,7 +181,7 @@ impl Database {
                         )
                         .map_err(|err| match err {
                             rusqlite::Error::QueryReturnedNoRows => ZsshError::NotFound {
-                                entity: "主机",
+                                entity: Entity::Host,
                                 id,
                             },
                             other => other.into(),
@@ -197,7 +212,8 @@ impl Database {
                     )?;
                     if changed == 0 {
                         return Err(ZsshError::NotFound {
-                            entity: "主机", id
+                            entity: Entity::Host,
+                            id,
                         });
                     }
                     id
@@ -243,7 +259,8 @@ impl Database {
             let changed = conn.execute("DELETE FROM hosts WHERE id = ?1", [id])?;
             if changed == 0 {
                 return Err(ZsshError::NotFound {
-                    entity: "主机", id
+                    entity: Entity::Host,
+                    id,
                 });
             }
             Ok(())
@@ -263,25 +280,40 @@ impl Database {
 
             while let Some(jump_id) = upwards.last().and_then(|host| host.jump_host_id) {
                 if !seen.insert(jump_id) {
-                    return Err(ZsshError::InvalidInput(format!(
-                        "跳板机配置成环了：主机 id {jump_id} 重复出现"
-                    )));
+                    return Err(ZsshError::InvalidInput(
+                        Reason::new(
+                            rk::JUMP_CHAIN_CYCLE,
+                            format!("跳板机配置成环了：主机 id {jump_id} 重复出现"),
+                        )
+                        .with("id", jump_id),
+                    ));
                 }
                 let jump = host_get(conn, jump_id)?;
                 // 保存时已经拦了非 SSH 跳板机；这里再兜一道，防旧数据 / 同步来的数据绕过。
                 let protocol = crate::store::protocols::protocol_get(conn, jump_id)?.protocol;
                 if protocol != Protocol::Ssh {
-                    return Err(ZsshError::InvalidInput(format!(
-                        "跳板机「{}」是 {} 主机，跳板机必须是 SSH 主机",
-                        jump.name,
-                        protocol.label()
-                    )));
+                    return Err(ZsshError::InvalidInput(
+                        Reason::new(
+                            rk::JUMP_HOST_PROTOCOL,
+                            format!(
+                                "跳板机「{}」是 {} 主机，跳板机必须是 SSH 主机",
+                                jump.name,
+                                protocol.label()
+                            ),
+                        )
+                        .with("name", &jump.name)
+                        .with("protocol", protocol.as_str()),
+                    ));
                 }
                 upwards.push(jump);
                 if upwards.len() > MAX_CHAIN_HOPS {
-                    return Err(ZsshError::InvalidInput(format!(
-                        "跳板机最多 {MAX_CHAIN_HOPS} 级，这台主机配得太深了"
-                    )));
+                    return Err(ZsshError::InvalidInput(
+                        Reason::new(
+                            rk::JUMP_CHAIN_TOO_DEEP,
+                            format!("跳板机最多 {MAX_CHAIN_HOPS} 级，这台主机配得太深了"),
+                        )
+                        .with("max", MAX_CHAIN_HOPS),
+                    ));
                 }
             }
 
@@ -298,9 +330,10 @@ impl Database {
         self.with_conn(|conn| {
             let host = host_get(conn, id)?;
             if crate::store::protocols::protocol_get(conn, id)?.protocol == Protocol::Serial {
-                return Err(ZsshError::InvalidInput(
-                    "串口主机没有网络登录信息".to_owned(),
-                ));
+                return Err(ZsshError::InvalidInput(Reason::new(
+                    rk::SERIAL_NO_LOGIN_INFO,
+                    "串口主机没有网络登录信息",
+                )));
             }
 
             let auth = resolve_auth(conn, host.auth_method, host.identity_id, &host.name)?;
@@ -352,9 +385,10 @@ fn check_not_ai_key(
             return Ok(());
         }
     }
-    Err(ZsshError::InvalidInput(
-        "这条凭据是 ZeePilot 接口的 API Key，不能给主机用。".to_owned(),
-    ))
+    Err(ZsshError::InvalidInput(Reason::new(
+        rk::IDENTITY_IS_AI_KEY,
+        "这条凭据是 ZeePilot 接口的 API Key，不能给主机用。",
+    )))
 }
 
 fn resolve_auth(
@@ -380,7 +414,13 @@ fn resolve_auth(
 
         AuthMethod::Key => {
             let identity_id = identity_id.ok_or_else(|| {
-                ZsshError::InvalidInput(format!("主机「{label}」选了私钥认证但没选凭据"))
+                ZsshError::InvalidInput(
+                    Reason::new(
+                        rk::HOST_KEY_AUTH_NO_IDENTITY,
+                        format!("主机「{label}」选了私钥认证但没选凭据"),
+                    )
+                    .with("label", label),
+                )
             })?;
             let identity = crate::store::identities::identity_get(conn, identity_id)?;
             let secret = crate::store::identities::identity_secret(conn, identity_id)?;
@@ -392,10 +432,13 @@ fn resolve_auth(
                         .clone()
                         .filter(|path| !path.trim().is_empty())
                         .ok_or_else(|| {
-                            ZsshError::InvalidInput(format!(
-                                "凭据「{}」没有填私钥文件路径",
-                                identity.name
-                            ))
+                            ZsshError::InvalidInput(
+                                Reason::new(
+                                    rk::IDENTITY_NO_KEY_PATH,
+                                    format!("凭据「{}」没有填私钥文件路径", identity.name),
+                                )
+                                .with("name", &identity.name),
+                            )
                         })?;
                     KeySource::File {
                         path: path.into(),
@@ -407,10 +450,13 @@ fn resolve_auth(
                         secret.as_deref().unwrap_or_default(),
                     );
                     if inline.key.trim().is_empty() {
-                        return Err(ZsshError::InvalidInput(format!(
-                            "凭据「{}」里没有私钥内容",
-                            identity.name
-                        )));
+                        return Err(ZsshError::InvalidInput(
+                            Reason::new(
+                                rk::IDENTITY_NO_KEY_CONTENT,
+                                format!("凭据「{}」里没有私钥内容", identity.name),
+                            )
+                            .with("name", &identity.name),
+                        ));
                     }
                     KeySource::Inline {
                         pem: inline.key,
@@ -418,10 +464,7 @@ fn resolve_auth(
                     }
                 }
                 IdentityKind::Password | IdentityKind::Agent => {
-                    return Err(ZsshError::InvalidInput(format!(
-                        "凭据「{}」不是私钥凭据，不能用来做私钥认证",
-                        identity.name
-                    )))
+                    return Err(not_key_identity(&identity.name))
                 }
             };
 
@@ -472,7 +515,8 @@ pub(crate) fn host_get(conn: &Connection, id: i64) -> Result<Host, ZsshError> {
     )
     .map_err(|err| match err {
         rusqlite::Error::QueryReturnedNoRows => ZsshError::NotFound {
-            entity: "主机", id
+            entity: Entity::Host,
+            id,
         },
         other => other.into(),
     })
@@ -495,18 +539,37 @@ pub(crate) fn check_identity_matches(
     if ok {
         return Ok(());
     }
-    Err(ZsshError::InvalidInput(match method {
-        AuthMethod::Password => format!(
-            "凭据「{}」不是密码凭据，不能用来做密码认证（它的内容会被当成密码发给服务器）",
-            identity.name
+    Err(match method {
+        AuthMethod::Password => ZsshError::InvalidInput(
+            Reason::new(
+                rk::IDENTITY_NOT_PASSWORD,
+                format!(
+                    "凭据「{}」不是密码凭据，不能用来做密码认证（它的内容会被当成密码发给服务器）",
+                    identity.name
+                ),
+            )
+            .with("name", &identity.name),
         ),
-        _ => format!("凭据「{}」不是私钥凭据，不能用来做私钥认证", identity.name),
-    }))
+        _ => not_key_identity(&identity.name),
+    })
+}
+
+fn not_key_identity(name: &str) -> ZsshError {
+    ZsshError::InvalidInput(
+        Reason::new(
+            rk::IDENTITY_NOT_KEY,
+            format!("凭据「{name}」不是私钥凭据，不能用来做私钥认证"),
+        )
+        .with("name", name),
+    )
 }
 
 fn validate_host(draft: &HostDraft, protocol: Protocol) -> Result<(), ZsshError> {
     if draft.name.trim().is_empty() {
-        return Err(ZsshError::InvalidInput("主机名不能为空".to_owned()));
+        return Err(ZsshError::InvalidInput(Reason::new(
+            rk::HOST_NAME_EMPTY,
+            "主机名不能为空",
+        )));
     }
     if protocol == Protocol::Serial {
         return Ok(());
@@ -515,11 +578,17 @@ fn validate_host(draft: &HostDraft, protocol: Protocol) -> Result<(), ZsshError>
     crate::ssh::known_hosts::check_host_address(draft.host.trim())
         .map_err(ZsshError::InvalidInput)?;
     if draft.port == 0 {
-        return Err(ZsshError::InvalidInput("端口要在 1-65535 之间".to_owned()));
+        return Err(ZsshError::InvalidInput(Reason::new(
+            rk::PORT_RANGE,
+            "端口要在 1-65535 之间",
+        )));
     }
     // Telnet 可以不自动登录，允许不填用户名；SSH 一直要填。
     if protocol == Protocol::Ssh && draft.username.trim().is_empty() {
-        return Err(ZsshError::InvalidInput("用户名不能为空".to_owned()));
+        return Err(ZsshError::InvalidInput(Reason::new(
+            rk::USERNAME_EMPTY,
+            "用户名不能为空",
+        )));
     }
     Ok(())
 }

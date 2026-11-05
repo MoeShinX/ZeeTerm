@@ -828,25 +828,41 @@ impl HostsDemo {
                 self.hosts = hosts;
             }
             Err(err) => {
-                self.status = format!("{}{err}", t(HostsMsg::ReadHostsFailedPrefix));
+                self.status = format!(
+                    "{}{}",
+                    t(HostsMsg::ReadHostsFailedPrefix),
+                    crate::error_text::error_text(&err)
+                );
             }
         }
         match db.group_list() {
             Ok(groups) => self.groups = groups,
             Err(err) => {
-                self.status = format!("{}{err}", t(HostsMsg::ReadGroupsFailedPrefix));
+                self.status = format!(
+                    "{}{}",
+                    t(HostsMsg::ReadGroupsFailedPrefix),
+                    crate::error_text::error_text(&err)
+                );
             }
         }
         match db.proxy_list() {
             Ok(proxies) => self.proxies = proxies,
             Err(err) => {
-                self.status = format!("{}{err}", t(HostsMsg::ReadProxiesFailedPrefix));
+                self.status = format!(
+                    "{}{}",
+                    t(HostsMsg::ReadProxiesFailedPrefix),
+                    crate::error_text::error_text(&err)
+                );
             }
         }
         match db.identity_list() {
             Ok(identities) => self.identities = identities,
             Err(err) => {
-                self.status = format!("{}{err}", t(HostsMsg::ReadIdentitiesFailedPrefix));
+                self.status = format!(
+                    "{}{}",
+                    t(HostsMsg::ReadIdentitiesFailedPrefix),
+                    crate::error_text::error_text(&err)
+                );
             }
         }
         if self
@@ -1159,7 +1175,11 @@ impl HostsDemo {
             Some(id) => match db.host_get(id) {
                 Ok(host) => Some(host),
                 Err(err) => {
-                    self.status = format!("{}{err}", t(HostsMsg::ReadHostFailedNoSavePrefix));
+                    self.status = format!(
+                        "{}{}",
+                        t(HostsMsg::ReadHostFailedNoSavePrefix),
+                        crate::error_text::error_text(&err)
+                    );
                     cx.notify();
                     return;
                 }
@@ -1250,7 +1270,11 @@ impl HostsDemo {
             Ok(Some(memory)) => (memory.content, Some(memory.updated_at)),
             Ok(None) => (String::new(), None),
             Err(err) => {
-                self.status = format!("{}{err}", t(HostsMsg::ReadMemoryFailedPrefix));
+                self.status = format!(
+                    "{}{}",
+                    t(HostsMsg::ReadMemoryFailedPrefix),
+                    crate::error_text::error_text(&err)
+                );
                 cx.notify();
                 return;
             }

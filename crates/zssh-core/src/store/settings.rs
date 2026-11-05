@@ -2,7 +2,7 @@
 
 use rusqlite::{params, OptionalExtension};
 
-use crate::error::ZsshError;
+use crate::error::{Reason, ZsshError};
 use crate::store::db::Database;
 
 /// 连接池空闲多久断开（秒）。
@@ -74,7 +74,8 @@ impl Database {
     /// 写一个设置项。
     pub fn setting_set(&self, key: &str, value: &str) -> Result<(), ZsshError> {
         crate::sync::settings::validate_local_value(key, value).map_err(|reason| {
-            ZsshError::InvalidInput(format!("设置 {key} 的值不合格：{reason}"))
+            // 只有界面控件写设置，值由代码生成；这句是写给日志和开发者的。
+            ZsshError::InvalidInput(Reason::text(format!("设置 {key} 的值不合格：{reason}")))
         })?;
         self.with_conn(|conn| {
             conn.execute(
@@ -101,8 +102,9 @@ impl Database {
 
     /// 设置默认代理（`None` 表示不用默认代理）。
     pub fn set_default_proxy_id(&self, id: Option<i64>) -> Result<(), ZsshError> {
-        let value = serde_json::to_string(&id)
-            .map_err(|err| ZsshError::InvalidInput(format!("默认代理序列化失败：{err}")))?;
+        let value = serde_json::to_string(&id).map_err(|err| {
+            ZsshError::InvalidInput(Reason::text(format!("默认代理序列化失败：{err}")))
+        })?;
         self.setting_set(DEFAULT_PROXY_KEY, &value)
     }
 
@@ -118,8 +120,9 @@ impl Database {
 
     /// 设置 AI 执行模式。
     pub fn set_ai_exec_mode(&self, mode: &str) -> Result<(), ZsshError> {
-        let value = serde_json::to_string(mode)
-            .map_err(|err| ZsshError::InvalidInput(format!("AI 执行模式序列化失败：{err}")))?;
+        let value = serde_json::to_string(mode).map_err(|err| {
+            ZsshError::InvalidInput(Reason::text(format!("AI 执行模式序列化失败：{err}")))
+        })?;
         self.setting_set(AI_EXEC_MODE_KEY, &value)
     }
 
@@ -186,8 +189,9 @@ impl Database {
 
     /// 设置默认智能体（AI-3 界面用）。
     pub fn set_ai_default_agent(&self, agent: &str) -> Result<(), ZsshError> {
-        let value = serde_json::to_string(agent)
-            .map_err(|err| ZsshError::InvalidInput(format!("默认智能体序列化失败：{err}")))?;
+        let value = serde_json::to_string(agent).map_err(|err| {
+            ZsshError::InvalidInput(Reason::text(format!("默认智能体序列化失败：{err}")))
+        })?;
         self.setting_set(AI_DEFAULT_AGENT_KEY, &value)
     }
 
@@ -238,8 +242,9 @@ impl Database {
                 }
             }
             let id = crate::store::new_uid();
-            let value = serde_json::to_string(&id)
-                .map_err(|err| ZsshError::InvalidInput(format!("设备 ID 序列化失败：{err}")))?;
+            let value = serde_json::to_string(&id).map_err(|err| {
+                ZsshError::InvalidInput(Reason::text(format!("设备 ID 序列化失败：{err}")))
+            })?;
             conn.execute(
                 "INSERT INTO settings (key, value) VALUES (?1, ?2) \
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",

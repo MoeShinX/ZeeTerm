@@ -413,8 +413,13 @@ pub fn make_transport() -> Result<Arc<dyn Transport>, String> {
         let transport = ReqwestTransport::build(None).map_err(|err| err.to_string())?;
         return Ok(Arc::new(transport));
     }
-    let db = crate::host_db::open_database()
-        .map_err(|err| format!("{}{err}", t(BuiltinMsg::OpenSettingsDbFailedPrefix)))?;
+    let db = crate::host_db::open_database().map_err(|err| {
+        format!(
+            "{}{}",
+            t(BuiltinMsg::OpenSettingsDbFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     let proxy = zssh_core::sync::app_proxy::app_proxy(&db)
         .map_err(|err| format!("{}{err}", t(BuiltinMsg::ProxySettingsProblemPrefix)))?;
     let transport = ReqwestTransport::build(proxy.as_ref()).map_err(|err| err.to_string())?;
@@ -445,8 +450,13 @@ pub fn spawn_background_refresh(delay: std::time::Duration) {
 
 /// 拉一次资料库。`force` = 不管缓存新不新鲜（"立即更新"）。成功更新了返回 `true`。
 pub async fn refresh_catalog(force: bool) -> Result<bool, String> {
-    let db = crate::host_db::open_database()
-        .map_err(|err| format!("{}{err}", t(BuiltinMsg::OpenSettingsDbFailedPrefix)))?;
+    let db = crate::host_db::open_database().map_err(|err| {
+        format!(
+            "{}{}",
+            t(BuiltinMsg::OpenSettingsDbFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     let proxy = zssh_core::sync::app_proxy::app_proxy(&db)
         .map_err(|err| format!("{}{err}", t(BuiltinMsg::ProxySettingsProblemPrefix)))?;
     let http = ReqwestFetch::build(proxy.as_ref())?;

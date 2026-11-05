@@ -365,7 +365,13 @@ impl ProxiesDemo {
                 self.status = format!("{}{}", proxies.len(), t(ProxiesMsg::CountSuffix));
                 self.proxies = proxies;
             }
-            Err(err) => self.status = format!("{}{err}", t(ProxiesMsg::ReadFailedPrefix)),
+            Err(err) => {
+                self.status = format!(
+                    "{}{}",
+                    t(ProxiesMsg::ReadFailedPrefix),
+                    crate::error_text::error_text(&err)
+                )
+            }
         }
         cx.notify();
     }
@@ -442,7 +448,11 @@ impl ProxiesDemo {
             let users = match db.host_list() {
                 Ok(hosts) => hosts_using_proxy(&hosts, id),
                 Err(err) => {
-                    self.status = format!("{}{err}", t(ProxiesMsg::ReadHostsCheckFailedPrefix));
+                    self.status = format!(
+                        "{}{}",
+                        t(ProxiesMsg::ReadHostsCheckFailedPrefix),
+                        crate::error_text::error_text(&err)
+                    );
                     cx.notify();
                     return;
                 }

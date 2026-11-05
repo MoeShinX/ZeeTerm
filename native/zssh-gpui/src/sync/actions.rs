@@ -131,9 +131,13 @@ pub(super) fn change_password_with(
 ) -> Result<(), String> {
     validate_master_password(new)?;
     let db = open_existing_db_at(data_dir)?;
-    let device_id = db
-        .sync_device_id()
-        .map_err(|err| format!("{}{err}", t(SyncActionsMsg::ReadDeviceIdFailedPrefix)))?;
+    let device_id = db.sync_device_id().map_err(|err| {
+        format!(
+            "{}{}",
+            t(SyncActionsMsg::ReadDeviceIdFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     let context = SyncContext {
         db: &db,
         sealer,

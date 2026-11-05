@@ -643,7 +643,7 @@ impl MainWindow {
             }
             match self.store.db().and_then(|db| {
                 db.identity_saved_password(identity.id)
-                    .map_err(|err| err.to_string())
+                    .map_err(|err| crate::error_text::error_text(&err))
             }) {
                 Ok(value) => {
                     let text = value.as_str().to_owned();
@@ -973,11 +973,10 @@ impl MainWindow {
                 }
             }
             Err(err) => {
-                let field = protocol_form::locate_error(&err);
-                if field == FormField::General {
-                    self.notice_error(&err, window, cx);
+                if err.field == FormField::General {
+                    self.notice_error(&err.message, window, cx);
                 }
-                self.show_form_error(field, &err, window, cx);
+                self.show_form_error(err.field, &err.message, window, cx);
             }
         }
     }
@@ -1079,7 +1078,7 @@ impl MainWindow {
         };
         let written = self.store.db().and_then(|db| {
             db.host_memory_set(host_id, &content)
-                .map_err(|e| e.to_string())
+                .map_err(|e| crate::error_text::error_text(&e))
         });
         if let Err(err) = written {
             self.with_form(cx, |form| {

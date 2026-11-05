@@ -290,11 +290,17 @@ pub fn run_job(db: &Database, job: Job, cost: KdfCost) -> JobOutcome {
     let save = |password: &str| match PasswordRecord::create_with(password, cost) {
         Ok(record) => match zssh_core::app_lock::save_password(db, &record) {
             Ok(()) => JobOutcome::Done,
-            Err(err) => {
-                JobOutcome::Failed(format!("{}{err}", t(LockMsg::SavePasswordFailedPrefix)))
-            }
+            Err(err) => JobOutcome::Failed(format!(
+                "{}{}",
+                t(LockMsg::SavePasswordFailedPrefix),
+                crate::error_text::error_text(&err)
+            )),
         },
-        Err(err) => JobOutcome::Failed(format!("{}{err}", t(LockMsg::CreatePasswordFailedPrefix))),
+        Err(err) => JobOutcome::Failed(format!(
+            "{}{}",
+            t(LockMsg::CreatePasswordFailedPrefix),
+            crate::error_text::error_text(&err)
+        )),
     };
     match job {
         Job::Unlock { password } | Job::Verify { password } => match &config.status {
@@ -317,7 +323,11 @@ pub fn run_job(db: &Database, job: Job, cost: KdfCost) -> JobOutcome {
         Job::Disable { old } => match check_old(&config, &old) {
             Ok(()) => match zssh_core::app_lock::clear_password(db) {
                 Ok(()) => JobOutcome::Done,
-                Err(err) => JobOutcome::Failed(format!("{}{err}", t(LockMsg::DisableFailedPrefix))),
+                Err(err) => JobOutcome::Failed(format!(
+                    "{}{}",
+                    t(LockMsg::DisableFailedPrefix),
+                    crate::error_text::error_text(&err)
+                )),
             },
             Err(outcome) => outcome,
         },

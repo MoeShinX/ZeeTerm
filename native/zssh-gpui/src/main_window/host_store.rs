@@ -142,7 +142,11 @@ impl HostStore {
             Ok(db) => Self::with_db(Some(db), None),
             Err(err) => Self::with_db(
                 None,
-                Some(format!("{}{err}", t(StoreMsg::OpenFailedPrefix))),
+                Some(format!(
+                    "{}{}",
+                    t(StoreMsg::OpenFailedPrefix),
+                    crate::error_text::error_text(&err)
+                )),
             ),
         };
         store.reload();
@@ -287,7 +291,7 @@ impl HostStore {
     ) -> Result<T, String> {
         // 写失败也重读：库里的真实状态才是界面该显示的。
         self.reload();
-        result.map_err(|err| err.to_string())
+        result.map_err(|err| crate::error_text::error_text(&err))
     }
 
     pub fn save_host(&mut self, draft: &HostDraft) -> Result<Host, String> {
@@ -296,9 +300,14 @@ impl HostStore {
     }
 
     /// 按保存计划落库：主机的密码身份、主机本身、释放不再用的独占密码（见 `host_form::apply_save`）。
-    pub fn save_host_plan(&mut self, plan: super::host_form::SavePlan) -> Result<Host, String> {
+    pub fn save_host_plan(
+        &mut self,
+        plan: super::host_form::SavePlan,
+    ) -> Result<Host, super::protocol_form::FieldError> {
+        use super::protocol_form::{FieldError, FormField};
         let result = self
             .db()
+            .map_err(|message| FieldError::new(FormField::General, message))
             .and_then(|db| super::host_form::apply_save(db, plan));
         // 写失败也重读：库里的真实状态才是界面该显示的。
         self.reload();
@@ -307,7 +316,9 @@ impl HostStore {
 
     /// 读库里这台主机现在的样子（保存前合并未展示的字段用）。
     pub fn host_fresh(&self, id: i64) -> Result<Host, String> {
-        self.db()?.host_get(id).map_err(|err| err.to_string())
+        self.db()?
+            .host_get(id)
+            .map_err(|err| crate::error_text::error_text(&err))
     }
 
     /// 删主机，并一起删它独占的密码（密钥一律不动，被别的主机用着的密码保留）；见 `host_delete`。

@@ -3,6 +3,7 @@
 //!
 //! 不依赖 GPUI：单测直接盯这些规则（任务卡 V2-N4 的"状态测试"）。
 
+use zssh_core::error::ZsshError;
 use zssh_core::model::{
     Host, LocalEcho, Protocol, SerialDataBits, SerialFlowControl, SerialNewline, SerialParity,
     SerialStopBits, TelnetNewline, TextEncoding,
@@ -157,45 +158,59 @@ impl PartialEq<&str> for FieldError {
     }
 }
 
-/// 核心库保存时报的错（`ZsshError::InvalidInput` 的中文原因）该显示在哪个字段旁。
-/// 按关键词找：先找更具体的（自动登录的提示规则里也有"用户名"三个字）。
-///
-/// 注意：这里匹配的是 **core 侧的中文错误原文**——core 还没把校验错误改成「错误码 + 参数」，
-/// 所以关键词只能是中文，不能挪进 `Msg` 表。等 core 改了错误码，这些关键词连同每行行尾的
-/// `i18n-allow` 一起删掉，改成按错误码/字段码定位。
-// `#[rustfmt::skip]`：行尾的 `i18n-allow` 必须和关键词在同一行（检查脚本按行匹配），
-// rustfmt 会把行尾注释挪到下一行，所以这个函数不参与自动排版。
-#[rustfmt::skip]
-pub fn locate_error(message: &str) -> FormField {
-    let has = |words: &[&str]| words.iter().any(|word| message.contains(word));
-    if has(&["自动登录", "用户名提示", "密码提示"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
-        FormField::AutoLogin
-    } else if has(&["X11"]) {
-        FormField::X11
-    } else if has(&["串口设备", "设备名"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
-        FormField::Device
-    } else if has(&["波特率"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
-        FormField::Baud
-    } else if has(&["数据位", "停止位"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
-        FormField::Framing
-    } else if has(&["终端类型"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
-        FormField::TerminalType
-    } else if has(&["跳板机"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
-        FormField::Jump
-    } else if has(&["代理"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
-        FormField::Proxy
-    } else if has(&["凭据", "密码认证", "密码凭据"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
-        FormField::Identity
-    } else if has(&["主机名不能为空"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
-        FormField::Name
-    } else if has(&["用户名"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
-        FormField::Username
-    } else if has(&["端口"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
-        FormField::Port
-    } else if has(&["地址"]) { // i18n-allow: 匹配 core 中文错误（core 侧待改错误码）
-        FormField::Address
-    } else {
-        FormField::General
+/// 核心库保存时报的错该显示在哪个字段旁：按 `InvalidInput` 带的稳定原因 key 找，和界面语言无关
+/// （不再匹配中文原文）。认不得的 key、不是校验错误的，落在表单最下面。
+pub fn locate_error(err: &ZsshError) -> FormField {
+    use zssh_core::error::{Entity, reason_keys as rk};
+    let reason = match err {
+        ZsshError::InvalidInput(reason) => reason,
+        ZsshError::NotFound {
+            entity: Entity::Identity,
+            ..
+        } => return FormField::Identity,
+        ZsshError::NotFound {
+            entity: Entity::Proxy,
+            ..
+        } => return FormField::Proxy,
+        _ => return FormField::General,
+    };
+    match reason.key() {
+        rk::AUTO_LOGIN_NEEDS_PATTERNS
+        | rk::AUTO_LOGIN_NEEDS_USER
+        | rk::USER_PATTERNS_TOO_MANY
+        | rk::USER_PATTERN_BAD
+        | rk::PASS_PATTERNS_TOO_MANY
+        | rk::PASS_PATTERN_BAD => FormField::AutoLogin,
+        rk::X11_SSH_ONLY => FormField::X11,
+        rk::SERIAL_DEVICE_EMPTY | rk::SERIAL_DEVICE_BAD => FormField::Device,
+        rk::BAUD_RANGE => FormField::Baud,
+        rk::SERIAL_FIVE_TWO | rk::SERIAL_ONE_HALF => FormField::Framing,
+        rk::TERMINAL_TYPE_BAD => FormField::TerminalType,
+        rk::HOST_JUMP_SELF
+        | rk::HOST_JUMP_NOT_SSH_IN_USE
+        | rk::JUMP_CHAIN_CYCLE
+        | rk::JUMP_HOST_PROTOCOL
+        | rk::JUMP_CHAIN_TOO_DEEP
+        | rk::SERIAL_NO_JUMP
+        | rk::JUMP_MUST_BE_SSH => FormField::Jump,
+        rk::SERIAL_NO_PROXY => FormField::Proxy,
+        rk::SERIAL_NO_IDENTITY
+        | rk::PASSWORD_ONLY
+        | rk::PROTOCOL_CREDENTIAL_NOT_PASSWORD
+        | rk::IDENTITY_IS_AI_KEY
+        | rk::HOST_KEY_AUTH_NO_IDENTITY
+        | rk::IDENTITY_NO_KEY_PATH
+        | rk::IDENTITY_NO_KEY_CONTENT
+        | rk::IDENTITY_NOT_KEY
+        | rk::IDENTITY_NOT_PASSWORD => FormField::Identity,
+        rk::HOST_NAME_EMPTY => FormField::Name,
+        rk::USERNAME_EMPTY | rk::SSH_USER_REQUIRED => FormField::Username,
+        rk::PORT_RANGE => FormField::Port,
+        rk::ADDRESS_EMPTY
+        | rk::ADDRESS_TOO_LONG
+        | rk::ADDRESS_BAD_WHITESPACE
+        | rk::ADDRESS_BAD_CHAR => FormField::Address,
+        _ => FormField::General,
     }
 }
 
@@ -683,55 +698,40 @@ mod tests {
 
     #[test]
     fn core_errors_land_next_to_the_field_they_are_about() {
+        use zssh_core::error::{Reason, reason_keys as rk};
         let cases = [
-            ("主机名不能为空", FormField::Name),
-            ("地址不能为空", FormField::Address),
-            (
-                "地址里不能有空白或控制字符：只能是域名、IPv4 或 IPv6 地址",
-                FormField::Address,
-            ),
-            ("端口要在 1-65535 之间", FormField::Port),
-            ("用户名不能为空", FormField::Username),
-            ("开了自动登录，用户名不能为空", FormField::AutoLogin),
-            (
-                "开了自动登录，用户名提示和密码提示都至少要有一条匹配规则",
-                FormField::AutoLogin,
-            ),
-            ("用户名提示最多 8 条", FormField::AutoLogin),
-            (
-                "终端类型要是 1-64 个可见的 ASCII 字符（例如 xterm-256color）",
-                FormField::TerminalType,
-            ),
-            ("请填串口设备名（例如 COM3）", FormField::Device),
-            (
-                "串口设备名最多 256 个字符，不能含控制字符",
-                FormField::Device,
-            ),
-            ("波特率要在 50-4000000 之间", FormField::Baud),
-            ("5 位数据位不能配 2 个停止位", FormField::Framing),
-            ("1.5 个停止位只能配 5 位数据位", FormField::Framing),
-            (
-                "跳板机必须是 SSH 主机，当前选的是 Telnet 主机",
-                FormField::Jump,
-            ),
-            ("串口主机不能选代理", FormField::Proxy),
-            (
-                "凭据「x」不是密码凭据，Telnet 主机只能选密码凭据",
-                FormField::Identity,
-            ),
-            (
-                "Telnet 主机只能用密码认证（可以不选凭据，连接时再问）",
-                FormField::Identity,
-            ),
-            (
-                "X11 转发只能用在 SSH 主机上，Telnet 主机不能开",
-                FormField::X11,
-            ),
-            ("数据库坏了", FormField::General),
+            (rk::HOST_NAME_EMPTY, FormField::Name),
+            (rk::ADDRESS_EMPTY, FormField::Address),
+            (rk::ADDRESS_BAD_WHITESPACE, FormField::Address),
+            (rk::PORT_RANGE, FormField::Port),
+            (rk::USERNAME_EMPTY, FormField::Username),
+            (rk::AUTO_LOGIN_NEEDS_USER, FormField::AutoLogin),
+            (rk::AUTO_LOGIN_NEEDS_PATTERNS, FormField::AutoLogin),
+            (rk::USER_PATTERNS_TOO_MANY, FormField::AutoLogin),
+            (rk::TERMINAL_TYPE_BAD, FormField::TerminalType),
+            (rk::SERIAL_DEVICE_EMPTY, FormField::Device),
+            (rk::SERIAL_DEVICE_BAD, FormField::Device),
+            (rk::BAUD_RANGE, FormField::Baud),
+            (rk::SERIAL_FIVE_TWO, FormField::Framing),
+            (rk::SERIAL_ONE_HALF, FormField::Framing),
+            (rk::JUMP_MUST_BE_SSH, FormField::Jump),
+            (rk::SERIAL_NO_PROXY, FormField::Proxy),
+            (rk::PROTOCOL_CREDENTIAL_NOT_PASSWORD, FormField::Identity),
+            (rk::PASSWORD_ONLY, FormField::Identity),
+            (rk::X11_SSH_ONLY, FormField::X11),
+            // 没有对应字段的：落在表单最下面。
+            (rk::TEXT, FormField::General),
         ];
-        for (message, field) in cases {
-            assert_eq!(locate_error(message), field, "{message}");
+        for (key, field) in cases {
+            let err = ZsshError::InvalidInput(Reason::new(key, "x"));
+            assert_eq!(locate_error(&err), field, "{key}");
         }
+        // 不是校验错误也落在最下面。
+        assert_eq!(
+            locate_error(&ZsshError::Cancelled),
+            FormField::General,
+            "非校验错误"
+        );
     }
 
     /// 真的让核心库报错，确认它的原文都能被 `locate_error` 找到字段（不会因为改了措辞悄悄落到最下面）。
@@ -756,7 +756,7 @@ mod tests {
             sort: 0,
             legacy_algorithms: false,
         };
-        let err = |request: HostDraft| db.host_save(&request).unwrap_err().to_string();
+        let err = |request: HostDraft| db.host_save(&request).unwrap_err();
 
         let mut telnet = ProtocolSettings::new(Protocol::Telnet);
         telnet.telnet.as_mut().unwrap().terminal_type = "bad type".to_owned();

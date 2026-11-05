@@ -1215,10 +1215,10 @@ impl MainWindow {
     }
 
     fn set_lock_idle(&mut self, minutes: u32, window: &mut Window, cx: &mut Context<Self>) {
-        let result = self
-            .store
-            .db()
-            .and_then(|db| app_lock::save_idle_minutes(db, minutes).map_err(|err| err.to_string()));
+        let result = self.store.db().and_then(|db| {
+            app_lock::save_idle_minutes(db, minutes)
+                .map_err(|err| crate::error_text::error_text(&err))
+        });
         match result {
             Ok(()) => self.reload_lock_config(),
             Err(err) => self.notice_error(&err, window, cx),
@@ -1233,10 +1233,9 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let result = self
-            .store
-            .db()
-            .and_then(|db| app_lock::save_lock_on_start(db, on).map_err(|err| err.to_string()));
+        let result = self.store.db().and_then(|db| {
+            app_lock::save_lock_on_start(db, on).map_err(|err| crate::error_text::error_text(&err))
+        });
         match result {
             Ok(()) => self.reload_lock_config(),
             Err(err) => self.notice_error(&err, window, cx),
@@ -1245,10 +1244,9 @@ impl MainWindow {
     }
 
     fn set_lock_on_tray(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let result = self
-            .store
-            .db()
-            .and_then(|db| app_lock::save_lock_on_tray(db, on).map_err(|err| err.to_string()));
+        let result = self.store.db().and_then(|db| {
+            app_lock::save_lock_on_tray(db, on).map_err(|err| crate::error_text::error_text(&err))
+        });
         match result {
             Ok(()) => self.reload_lock_config(),
             Err(err) => self.notice_error(&err, window, cx),

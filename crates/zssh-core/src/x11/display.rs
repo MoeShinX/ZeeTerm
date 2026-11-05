@@ -5,6 +5,8 @@
 //! 写法和 nyaterm 的 `resolve_x11_display_spec` 保持一致（显示号 ≥ 100 直接当端口），
 //! 但这里自己重写、加了范围检查，并且遇到解析不了的写法报错而不是悄悄当成 0 号。
 
+use crate::error::{reason_keys as rk, Reason};
+
 /// X 服务器的 TCP 基准端口。
 pub const X_TCP_BASE: u16 = 6000;
 
@@ -49,18 +51,29 @@ impl XEndpoint {
 ///
 /// 支持：`:0`、`:0.1`、`unix:0`、`localhost:0`、`127.0.0.1:10.0`、`[::1]:0`、`主机:6000`
 /// （冒号后 ≥ 100 的数字直接当 TCP 端口）。Unix 套接字路径在 Windows 上没有意义，报错。
-pub fn parse_display(spec: &str) -> Result<XEndpoint, String> {
+pub fn parse_display(spec: &str) -> Result<XEndpoint, Reason> {
     let spec = spec.trim();
     let spec = if spec.is_empty() { "localhost:0" } else { spec };
     if spec.len() > 255 || spec.chars().any(|c| c.is_control() || c.is_whitespace()) {
-        return Err("显示地址里有空白或控制字符，或者太长".to_owned());
+        return Err(Reason::new(
+            rk::X11_DISPLAY_BAD_TEXT,
+            "显示地址里有空白或控制字符，或者太长",
+        ));
     }
     if spec.starts_with('/') {
-        return Err("Windows 上没有 Unix 套接字，请写成 localhost:0 这样的地址".to_owned());
+        return Err(Reason::new(
+            rk::X11_DISPLAY_UNIX_SOCKET,
+            "Windows 上没有 Unix 套接字，请写成 localhost:0 这样的地址",
+        ));
     }
 
-    let (host, tail) = split_host_and_tail(spec)
-        .ok_or_else(|| format!("显示地址 {spec} 的写法不对，应当像 localhost:0 或 :0"))?;
+    let (host, tail) = split_host_and_tail(spec).ok_or_else(|| {
+        Reason::new(
+            rk::X11_DISPLAY_FORMAT,
+            format!("显示地址 {spec} 的写法不对，应当像 localhost:0 或 :0"),
+        )
+        .with("spec", spec)
+    })?;
     let host = match host {
         "" | "unix" => "localhost",
         other => other,
@@ -70,17 +83,31 @@ pub fn parse_display(spec: &str) -> Result<XEndpoint, String> {
         Some((number, screen)) => (number, Some(screen)),
         None => (tail, None),
     };
-    let number: u32 = number
-        .parse()
-        .map_err(|_| format!("显示地址 {spec} 里的显示号不是数字"))?;
+    let number: u32 = number.parse().map_err(|_| {
+        Reason::new(
+            rk::X11_DISPLAY_NUMBER,
+            format!("显示地址 {spec} 里的显示号不是数字"),
+        )
+        .with("spec", spec)
+    })?;
     let screen: u32 = match screen {
         None => 0,
-        Some(text) => text
-            .parse()
-            .map_err(|_| format!("显示地址 {spec} 里的屏幕号不是数字"))?,
+        Some(text) => text.parse().map_err(|_| {
+            Reason::new(
+                rk::X11_SCREEN_NUMBER,
+                format!("显示地址 {spec} 里的屏幕号不是数字"),
+            )
+            .with("spec", spec)
+        })?,
     };
     let port = if number >= 100 {
-        u16::try_from(number).map_err(|_| format!("显示地址 {spec} 里的端口超出范围"))?
+        u16::try_from(number).map_err(|_| {
+            Reason::new(
+                rk::X11_PORT_RANGE,
+                format!("显示地址 {spec} 里的端口超出范围"),
+            )
+            .with("spec", spec)
+        })?
     } else {
         X_TCP_BASE + number as u16
     };

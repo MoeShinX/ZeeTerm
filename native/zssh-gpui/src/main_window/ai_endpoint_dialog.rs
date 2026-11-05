@@ -1501,7 +1501,10 @@ impl MainWindow {
         };
         let saved = crate::host_db::open_database()
             .map_err(|err| format!("{}{err}", crate::i18n::t(EndpointMsg::SettingsDbPrefix)))
-            .and_then(|db| db.ai_endpoint_save(&draft).map_err(|err| err.to_string()));
+            .and_then(|db| {
+                db.ai_endpoint_save(&draft)
+                    .map_err(|err| crate::error_text::error_text(&err))
+            });
         match saved {
             Ok(endpoint) => {
                 builtin::remote_forget(&endpoint.uid);

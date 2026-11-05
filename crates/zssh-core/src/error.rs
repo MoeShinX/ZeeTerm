@@ -1,5 +1,9 @@
 use std::io;
 
+mod reason;
+
+pub use reason::{keys as reason_keys, Entity, HopStage, Reason};
+
 /// 错误的稳定标识：界面按错误码挑文案，不解析 `Display` 的中文原文。
 ///
 /// 错误码（`ssh.auth_failed`、`sftp.permission_denied` 这种）一旦发布就是契约：只能新增，
@@ -14,6 +18,12 @@ pub trait ErrorWithCode: std::fmt::Display {
     /// 数字也转成十进制文本：界面只做"把值填进模板"，不做类型转换。
     fn params(&self) -> Vec<(&'static str, String)> {
         Vec::new()
+    }
+
+    /// 这个错误包着的内层错误（拨号链某一跳失败时是那一跳的具体原因）。
+    /// 界面据此按当前语言把内层也生成整句，不用拼好的中文。
+    fn cause(&self) -> Option<&dyn ErrorWithCode> {
+        None
     }
 }
 
@@ -33,7 +43,7 @@ pub enum ZsshError {
     QuickTargetBadPort(String),
 
     #[error("无法解析快速连接串：{0}")]
-    QuickTargetFormat(String),
+    QuickTargetFormat(Reason),
 
     /// 域名解析失败。单独一类，因为此时 TCP 根本没发出去。
     #[error("无法解析主机名 {host}: {source}")]
@@ -52,14 +62,16 @@ pub enum ZsshError {
 
     /// 代理握手失败（SOCKS5 或 HTTP CONNECT）。
     #[error("代理 {proxy}：{detail}")]
-    Proxy { proxy: String, detail: String },
+    Proxy { proxy: String, detail: Reason },
 
-    /// 拨号链里某一跳失败。报错必须写清是第几跳、连的是谁。
-    #[error("第 {index} 跳（{label}）：{detail}")]
+    /// 拨号链里某一跳失败。报错必须写清是第几跳、连的是谁、哪一步、内层是什么错。
+    #[error("第 {index} 跳（{label}）：{}失败：{source}", .stage.zh())]
     Hop {
         index: usize,
         label: String,
-        detail: String,
+        stage: HopStage,
+        #[source]
+        source: Box<ZsshError>,
     },
 
     #[error("连接 {host}:{port} 失败（试过 {tried}）：{source}")]
@@ -84,7 +96,7 @@ pub enum ZsshError {
     AuthFailed,
 
     #[error("打开 shell 失败：{0}")]
-    Shell(String),
+    Shell(Reason),
 
     /// 开 shell 时 X11 转发没成功（服务器拒绝或没回复）。只在核心库内部用来触发"换一条
     /// 普通通道继续"，不会作为开终端失败交给界面。
@@ -104,16 +116,16 @@ pub enum ZsshError {
     #[error("数据库错误：{0}")]
     Database(#[from] rusqlite::Error),
 
-    #[error("找不到{entity}（id={id}）")]
-    NotFound { entity: &'static str, id: i64 },
+    #[error("找不到{}（id={id}）", .entity.zh())]
+    NotFound { entity: Entity, id: i64 },
 
     #[error("输入不合法：{0}")]
-    InvalidInput(String),
+    InvalidInput(Reason),
 
     /// 我们自己代码里的不变量被打破了（正常不该发生）。库代码不能用
     /// `unwrap()` / `expect()`，这类"理论上到不了"的分支走这里。
     #[error("内部错误：{0}")]
-    Internal(String),
+    Internal(Reason),
 
     /// 删除凭据前要提示用户先改掉这些主机。
     #[error("凭据「{name}」还被这些主机引用：{hosts}")]
@@ -123,7 +135,7 @@ pub enum ZsshError {
     ProxyInUse { name: String, hosts: String },
 
     #[error("敏感信息处理失败：{0}")]
-    Secret(String),
+    Secret(Reason),
 
     /// 用户在弹窗里点了取消（或者超时没回答）
     #[error("已取消")]
@@ -139,10 +151,10 @@ pub enum ZsshError {
     AllAuthFailed { tried: String, remaining: String },
 
     #[error("读私钥失败：{0}")]
-    KeyLoad(String),
+    KeyLoad(Reason),
 
     #[error("ssh-agent 用不了：{0}")]
-    AgentUnavailable(String),
+    AgentUnavailable(Reason),
 
     /// 服务器只接受 SHA-1 的 ssh-rsa 签名，而主机没打开旧算法兼容。
     #[error(
@@ -151,7 +163,7 @@ pub enum ZsshError {
     RsaSha1Refused { key: String },
 
     #[error("known_hosts 读写失败：{0}")]
-    HostKeyStore(String),
+    HostKeyStore(Reason),
 
     #[error("主机 {host}:{port} 的密钥被拒绝（指纹 {fingerprint}）")]
     HostKeyRejected {
@@ -236,7 +248,7 @@ impl ErrorWithCode for ZsshError {
             | ZsshError::Cancelled => Vec::new(),
 
             ZsshError::QuickTargetBadPort(port) => vec![("port", port.clone())],
-            ZsshError::QuickTargetFormat(detail) => vec![("detail", detail.clone())],
+            ZsshError::QuickTargetFormat(reason) => reason_params(reason),
             ZsshError::Dns { host, source } => {
                 vec![("host", host.clone()), ("detail", source.to_string())]
             }
@@ -250,17 +262,27 @@ impl ErrorWithCode for ZsshError {
                 ("seconds", seconds.to_string()),
             ],
             ZsshError::Proxy { proxy, detail } => {
-                vec![("proxy", proxy.clone()), ("detail", detail.clone())]
+                let mut out = vec![("proxy", proxy.clone())];
+                out.extend(reason_params(detail));
+                out
             }
             ZsshError::Hop {
                 index,
                 label,
-                detail,
-            } => vec![
-                ("index", index.to_string()),
-                ("label", label.clone()),
-                ("detail", detail.clone()),
-            ],
+                stage,
+                source,
+            } => {
+                let mut out = vec![
+                    ("index", index.to_string()),
+                    ("label", label.clone()),
+                    ("stage", stage.key().to_owned()),
+                    ("detail", source.to_string()),
+                ];
+                if let HopStage::Tunnel { via } = stage {
+                    out.push(("via", via.clone()));
+                }
+                out
+            }
             ZsshError::Connect {
                 host,
                 port,
@@ -273,19 +295,19 @@ impl ErrorWithCode for ZsshError {
                 ("detail", source.to_string()),
             ],
             ZsshError::Ssh(inner) => vec![("detail", inner.to_string())],
-            ZsshError::Shell(detail) => vec![("detail", detail.clone())],
+            ZsshError::Shell(reason) => reason_params(reason),
             ZsshError::X11(failure) => vec![("detail", failure.to_string())],
             ZsshError::ChannelLimit(detail) => vec![("detail", detail.clone())],
             ZsshError::Database(err) => vec![("detail", err.to_string())],
             ZsshError::NotFound { entity, id } => {
-                vec![("entity", entity.to_string()), ("id", id.to_string())]
+                vec![("entity", entity.key().to_owned()), ("id", id.to_string())]
             }
-            ZsshError::InvalidInput(detail)
-            | ZsshError::Internal(detail)
-            | ZsshError::Secret(detail)
-            | ZsshError::KeyLoad(detail)
-            | ZsshError::AgentUnavailable(detail)
-            | ZsshError::HostKeyStore(detail) => vec![("detail", detail.clone())],
+            ZsshError::InvalidInput(reason)
+            | ZsshError::Internal(reason)
+            | ZsshError::Secret(reason)
+            | ZsshError::KeyLoad(reason)
+            | ZsshError::AgentUnavailable(reason)
+            | ZsshError::HostKeyStore(reason) => reason_params(reason),
             ZsshError::IdentityInUse { name, hosts } | ZsshError::ProxyInUse { name, hosts } => {
                 vec![("name", name.clone()), ("hosts", hosts.clone())]
             }
@@ -340,6 +362,24 @@ impl ErrorWithCode for ZsshError {
             ],
         }
     }
+
+    fn cause(&self) -> Option<&dyn ErrorWithCode> {
+        match self {
+            ZsshError::Hop { source, .. } => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+/// 带 [`Reason`] 的错误的参数：`reason` 是 key，`detail` 是中文原文（中文界面和兜底用），
+/// 后面跟这条原因自己的参数。
+fn reason_params(reason: &Reason) -> Vec<(&'static str, String)> {
+    let mut out = vec![
+        ("reason", reason.key().to_owned()),
+        ("detail", reason.zh().to_owned()),
+    ];
+    out.extend(reason.params().iter().cloned());
+    out
 }
 
 /// 主机密钥被标记为已吊销（@revoked）的详情。
@@ -484,7 +524,8 @@ mod tests {
             ZsshError::Hop {
                 index: 2,
                 label: "jump-1".into(),
-                detail: "refused".into(),
+                stage: HopStage::Connect,
+                source: Box::new(ZsshError::AuthFailed),
             },
             ZsshError::Connect {
                 host: "web-1".into(),
@@ -498,7 +539,7 @@ mod tests {
             ZsshError::SftpUnavailable,
             ZsshError::ChannelLimit("limit".into()),
             ZsshError::NotFound {
-                entity: "host",
+                entity: Entity::Host,
                 id: 3,
             },
             ZsshError::InvalidInput("input".into()),
@@ -613,6 +654,86 @@ mod tests {
                 ("port", "22".to_owned()),
                 ("fingerprint", "SHA256:x".to_owned()),
             ]
+        );
+    }
+    /// 带原因的错误：中文 `Display` 和以前逐字相同；界面要的 key 和参数在 `params()` 里。
+    #[test]
+    fn reasons_keep_the_chinese_display_and_expose_key_and_params() {
+        let err = ZsshError::InvalidInput(
+            Reason::new(reason_keys::PORT_RANGE, "端口要在 1-65535 之间").with("port", 0),
+        );
+        assert_eq!(err.to_string(), "输入不合法：端口要在 1-65535 之间");
+        assert_eq!(err.code(), "core.invalid_input");
+        assert_eq!(
+            err.params(),
+            vec![
+                ("reason", "input.port_range".to_owned()),
+                ("detail", "端口要在 1-65535 之间".to_owned()),
+                ("port", "0".to_owned()),
+            ]
+        );
+        // 没有 key 的文字（只给内部诊断用）也有 Display 和 params。
+        let plain = ZsshError::Internal("不变量".into());
+        assert_eq!(plain.to_string(), "内部错误：不变量");
+        assert_eq!(plain.params()[0], ("reason", reason_keys::TEXT.to_owned()));
+    }
+
+    #[test]
+    fn reason_keys_are_unique_and_stable_in_shape() {
+        let mut keys: Vec<&str> = reason_keys::ALL.to_vec();
+        let before = keys.len();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), before, "reason key 不能重复");
+        assert!(keys.iter().all(|key| {
+            key.chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '.' | '_'))
+        }));
+    }
+
+    /// 拨号链某一跳：Display 和以前预拼的中文逐字相同，内层错误能从 `cause()` 取到。
+    #[test]
+    fn a_hop_failure_carries_the_inner_error() {
+        let inner = ZsshError::AuthFailed;
+        let connect = ZsshError::Hop {
+            index: 1,
+            label: "目标 web-1".into(),
+            stage: HopStage::Connect,
+            source: Box::new(ZsshError::AuthFailed),
+        };
+        assert_eq!(
+            connect.to_string(),
+            format!("第 1 跳（目标 web-1）：连接失败：{inner}")
+        );
+        let tunnel = ZsshError::Hop {
+            index: 2,
+            label: "web-2".into(),
+            stage: HopStage::Tunnel {
+                via: "jump-1".into(),
+            },
+            source: Box::new(ZsshError::Cancelled),
+        };
+        assert_eq!(
+            tunnel.to_string(),
+            "第 2 跳（web-2）：经跳板机 jump-1 打开转发通道失败：已取消"
+        );
+        assert_eq!(connect.cause().map(|c| c.code()), Some("ssh.auth_failed"));
+        let params = tunnel.params();
+        assert!(params.contains(&("stage", "tunnel".to_owned())));
+        assert!(params.contains(&("via", "jump-1".to_owned())));
+        assert!(ZsshError::AuthFailed.cause().is_none());
+    }
+
+    #[test]
+    fn not_found_names_its_entity_by_a_stable_key() {
+        let err = ZsshError::NotFound {
+            entity: Entity::Host,
+            id: 3,
+        };
+        assert_eq!(err.to_string(), "找不到主机（id=3）");
+        assert_eq!(
+            err.params(),
+            vec![("entity", "host".to_owned()), ("id", "3".to_owned())]
         );
     }
 }

@@ -27,10 +27,11 @@ impl crate::i18n::Msg for HostDbMsg {
 pub(crate) fn open_database() -> Result<Database, zssh_core::error::ZsshError> {
     let dir = crate::settings::data_dir();
     std::fs::create_dir_all(&dir).map_err(|err| {
-        zssh_core::error::ZsshError::InvalidInput(format!(
+        // 前缀已经按界面语言生成，没有稳定 key，原样显示。
+        zssh_core::error::ZsshError::InvalidInput(zssh_core::error::Reason::text(format!(
             "{}{err}",
             crate::i18n::t(HostDbMsg::CreateDataDirFailedPrefix)
-        ))
+        )))
     })?;
     Database::open(&dir.join("zssh.db"))
 }

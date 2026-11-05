@@ -884,9 +884,13 @@ fn context_for<'a>(
     sealer: &'a dyn SecretSealer,
     data_dir: &Path,
 ) -> Result<SyncContext<'a>, String> {
-    let device_id = db
-        .sync_device_id()
-        .map_err(|err| format!("{}{err}", t(CloudBackupMsg::ReadDeviceIdFailedPrefix)))?;
+    let device_id = db.sync_device_id().map_err(|err| {
+        format!(
+            "{}{}",
+            t(CloudBackupMsg::ReadDeviceIdFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     Ok(SyncContext {
         db,
         sealer,

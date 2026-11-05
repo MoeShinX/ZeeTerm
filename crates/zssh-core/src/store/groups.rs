@@ -2,7 +2,7 @@
 
 use rusqlite::{params, Row};
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Entity, Reason, ZsshError};
 use crate::model::{Group, GroupDraft};
 use crate::store::db::Database;
 
@@ -25,7 +25,10 @@ impl Database {
     pub fn group_save(&self, draft: &GroupDraft) -> Result<Group, ZsshError> {
         let name = draft.name.trim();
         if name.is_empty() {
-            return Err(ZsshError::InvalidInput("分组名不能为空".to_owned()));
+            return Err(ZsshError::InvalidInput(Reason::new(
+                rk::GROUP_NAME_EMPTY,
+                "分组名不能为空",
+            )));
         }
         if draft.id.is_none() && draft.parent_id.is_some() {
             // 新建时父分组必须存在
@@ -36,15 +39,19 @@ impl Database {
                 ensure_group_exists(conn, parent_id)?;
                 if let Some(id) = draft.id {
                     if id == parent_id {
-                        return Err(ZsshError::InvalidInput("分组不能把自己当父分组".to_owned()));
+                        return Err(ZsshError::InvalidInput(Reason::new(
+                            rk::GROUP_OWN_PARENT,
+                            "分组不能把自己当父分组",
+                        )));
                     }
                     // 不能在子孙下面建父分组，否则树会成环
                     let mut ancestor = Some(parent_id);
                     while let Some(current) = ancestor {
                         if current == id {
-                            return Err(ZsshError::InvalidInput(
-                                "不能把分组移到它自己的子分组下面".to_owned(),
-                            ));
+                            return Err(ZsshError::InvalidInput(Reason::new(
+                                rk::GROUP_MOVE_INTO_CHILD,
+                                "不能把分组移到它自己的子分组下面",
+                            )));
                         }
                         ancestor = conn
                             .query_row(
@@ -71,7 +78,7 @@ impl Database {
                         )
                         .map_err(|err| match err {
                             rusqlite::Error::QueryReturnedNoRows => ZsshError::NotFound {
-                                entity: "分组",
+                                entity: Entity::Group,
                                 id,
                             },
                             other => other.into(),
@@ -113,7 +120,8 @@ impl Database {
             let changed = tx.execute("DELETE FROM groups WHERE id = ?1", [id])?;
             if changed == 0 {
                 return Err(ZsshError::NotFound {
-                    entity: "分组", id
+                    entity: Entity::Group,
+                    id,
                 });
             }
             // groups.parent_id 上还有 ON DELETE SET NULL 兜底，这两句是显式的意图
@@ -136,7 +144,8 @@ pub(crate) fn group_get(conn: &rusqlite::Connection, id: i64) -> Result<Group, Z
     )
     .map_err(|err| match err {
         rusqlite::Error::QueryReturnedNoRows => ZsshError::NotFound {
-            entity: "分组", id
+            entity: Entity::Group,
+            id,
         },
         other => other.into(),
     })
@@ -148,7 +157,8 @@ pub(crate) fn ensure_group_exists(conn: &rusqlite::Connection, id: i64) -> Resul
     })?;
     if exists == 0 {
         return Err(ZsshError::NotFound {
-            entity: "分组", id
+            entity: Entity::Group,
+            id,
         });
     }
     Ok(())

@@ -8,7 +8,7 @@ use russh::keys::{decode_secret_key, Algorithm, EcdsaCurve, HashAlg, PrivateKey}
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Reason, ZsshError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -55,6 +55,10 @@ pub fn sanitize_comment(comment: &str) -> String {
     }
 }
 
+fn keygen_error(key: &'static str, zh: String, cause: &dyn std::fmt::Display) -> ZsshError {
+    ZsshError::InvalidInput(Reason::new(key, zh).with("cause", cause))
+}
+
 /// 生成一把新密钥。`passphrase` 为空就不加密（私钥本来就存在 DPAPI 加密的凭据库里）。
 /// RSA 4096 要几秒，调用方放到阻塞线程里。
 pub fn generate(
@@ -63,23 +67,39 @@ pub fn generate(
     passphrase: Option<&str>,
 ) -> Result<GeneratedKey, ZsshError> {
     let mut rng = rand::rng();
-    let mut key = PrivateKey::random(&mut rng, algorithm.algorithm())
-        .map_err(|err| ZsshError::InvalidInput(format!("生成密钥失败：{err}")))?;
+    let mut key = PrivateKey::random(&mut rng, algorithm.algorithm()).map_err(|err| {
+        keygen_error(
+            rk::KEYGEN_GENERATE_FAILED,
+            format!("生成密钥失败：{err}"),
+            &err,
+        )
+    })?;
     key.set_comment(sanitize_comment(comment));
-    let public_openssh = key
-        .public_key()
-        .to_openssh()
-        .map_err(|err| ZsshError::InvalidInput(format!("导出公钥失败：{err}")))?;
+    let public_openssh = key.public_key().to_openssh().map_err(|err| {
+        keygen_error(
+            rk::KEYGEN_EXPORT_PUBLIC_FAILED,
+            format!("导出公钥失败：{err}"),
+            &err,
+        )
+    })?;
     let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
     let stored = match passphrase.filter(|p| !p.is_empty()) {
-        Some(passphrase) => key
-            .encrypt(&mut rng, passphrase)
-            .map_err(|err| ZsshError::InvalidInput(format!("加密私钥失败：{err}")))?,
+        Some(passphrase) => key.encrypt(&mut rng, passphrase).map_err(|err| {
+            keygen_error(
+                rk::KEYGEN_ENCRYPT_FAILED,
+                format!("加密私钥失败：{err}"),
+                &err,
+            )
+        })?,
         None => key,
     };
-    let private_openssh = stored
-        .to_openssh(LineEnding::LF)
-        .map_err(|err| ZsshError::InvalidInput(format!("导出私钥失败：{err}")))?;
+    let private_openssh = stored.to_openssh(LineEnding::LF).map_err(|err| {
+        keygen_error(
+            rk::KEYGEN_EXPORT_PRIVATE_FAILED,
+            format!("导出私钥失败：{err}"),
+            &err,
+        )
+    })?;
     Ok(GeneratedKey {
         private_openssh,
         public_openssh,
@@ -94,14 +114,21 @@ pub fn public_key_of(
 ) -> Result<(String, String), ZsshError> {
     let key =
         decode_secret_key(private_pem, passphrase.filter(|p| !p.is_empty())).map_err(|err| {
-            ZsshError::InvalidInput(format!(
-                "读不出这把私钥（口令不对，或者不是支持的私钥格式）：{err}"
-            ))
+            ZsshError::InvalidInput(
+                Reason::new(
+                    rk::PRIVATE_KEY_UNREADABLE,
+                    format!("读不出这把私钥（口令不对，或者不是支持的私钥格式）：{err}"),
+                )
+                .with("cause", &err),
+            )
         })?;
-    let public = key
-        .public_key()
-        .to_openssh()
-        .map_err(|err| ZsshError::InvalidInput(format!("导出公钥失败：{err}")))?;
+    let public = key.public_key().to_openssh().map_err(|err| {
+        keygen_error(
+            rk::KEYGEN_EXPORT_PUBLIC_FAILED,
+            format!("导出公钥失败：{err}"),
+            &err,
+        )
+    })?;
     Ok((public, key.fingerprint(HashAlg::Sha256).to_string()))
 }
 
@@ -127,7 +154,10 @@ pub fn install_command(public_openssh: &str) -> Result<String, ZsshError> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_' | '-' | '+' | ' '));
     if !(safe_kind && safe_data && safe_comment) || line.len() > 16 * 1024 {
-        return Err(ZsshError::InvalidInput("公钥格式不对".to_owned()));
+        return Err(ZsshError::InvalidInput(Reason::new(
+            rk::PUBLIC_KEY_FORMAT_BAD,
+            "公钥格式不对",
+        )));
     }
     Ok(format!(
         "umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && \
@@ -153,9 +183,10 @@ pub fn parse_install_output(output: &str) -> Result<InstallOutcome, ZsshError> {
     } else if output.contains("ZSSH_KEY_EXISTS") {
         Ok(InstallOutcome::AlreadyPresent)
     } else {
-        Err(ZsshError::Shell(
-            "服务器没有确认装好公钥（不是 POSIX shell，或者没有写 ~/.ssh 的权限）".to_owned(),
-        ))
+        Err(ZsshError::Shell(Reason::new(
+            rk::KEY_INSTALL_NOT_CONFIRMED,
+            "服务器没有确认装好公钥（不是 POSIX shell，或者没有写 ~/.ssh 的权限）",
+        )))
     }
 }
 

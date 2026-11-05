@@ -448,9 +448,14 @@ fn prepare_quick(
 ) -> Result<(String, Vec<ChainHop>), String> {
     let db = Database::open(&data_dir().join("zssh.db"))
         .map_err(|err| format!("{}{}", t(BackendMsg::OpenHostDbFailed), error_text(&err)))?;
-    let proxy = match db.default_proxy_id().map_err(|err| err.to_string())? {
+    let proxy = match db
+        .default_proxy_id()
+        .map_err(|err| crate::error_text::error_text(&err))?
+    {
         Some(id) => {
-            let login = db.proxy_login(id).map_err(|err| err.to_string())?;
+            let login = db
+                .proxy_login(id)
+                .map_err(|err| crate::error_text::error_text(&err))?;
             Some(ProxyConfig {
                 kind: login.kind,
                 host: login.host,
@@ -595,7 +600,7 @@ pub(crate) fn prepare_from_db(
     // SFTP 之类直接要 SSH 连接的入口也走这里：Telnet / 串口主机没有 SSH 连接可拿。
     let protocol = db
         .host_protocol_get(host_id)
-        .map_err(|err| err.to_string())?
+        .map_err(|err| crate::error_text::error_text(&err))?
         .protocol;
     if protocol != zssh_core::model::Protocol::Ssh {
         return Err(format!(
@@ -720,7 +725,7 @@ impl ShellIo for ShellWriter {
         Box::pin(async move {
             ShellWriter::write(self, &data)
                 .await
-                .map_err(|err| err.to_string())
+                .map_err(|err| crate::error_text::error_text(&err))
         })
     }
 
@@ -728,7 +733,7 @@ impl ShellIo for ShellWriter {
         Box::pin(async move {
             ShellWriter::resize(self, cols, rows)
                 .await
-                .map_err(|err| err.to_string())
+                .map_err(|err| crate::error_text::error_text(&err))
         })
     }
 
@@ -928,13 +933,19 @@ pub(crate) fn known_hosts() -> KnownHosts {
 
 /// 拨号链：跳板机从最外层到目标；代理只挂在第一跳。
 fn build_chain(db: &Database, host_id: i64) -> Result<Vec<ChainHop>, String> {
-    let hosts = db.host_chain(host_id).map_err(|err| err.to_string())?;
-    let default_proxy_id = db.default_proxy_id().map_err(|err| err.to_string())?;
+    let hosts = db
+        .host_chain(host_id)
+        .map_err(|err| crate::error_text::error_text(&err))?;
+    let default_proxy_id = db
+        .default_proxy_id()
+        .map_err(|err| crate::error_text::error_text(&err))?;
     let known_hosts = known_hosts();
     let total = hosts.len();
     let mut hops = Vec::with_capacity(total);
     for (index, host) in hosts.iter().enumerate() {
-        let login = db.host_login(host.id).map_err(|err| err.to_string())?;
+        let login = db
+            .host_login(host.id)
+            .map_err(|err| crate::error_text::error_text(&err))?;
         let proxy = resolve_proxy(db, host, default_proxy_id)?;
         let label = match (&proxy, index + 1 == total) {
             (Some(proxy), _) if index == 0 => {
@@ -977,7 +988,9 @@ pub(crate) fn resolve_proxy(
             )
         })?,
     };
-    let login = db.proxy_login(proxy_id).map_err(|err| err.to_string())?;
+    let login = db
+        .proxy_login(proxy_id)
+        .map_err(|err| crate::error_text::error_text(&err))?;
     Ok(Some(ProxyConfig {
         kind: login.kind,
         host: login.host,
@@ -1877,7 +1890,7 @@ mod tests {
         let outcome = runtime.block_on(async {
             let connection = Connection::connect_chain(hops, Arc::new(TrustOnce))
                 .await
-                .map_err(|err| err.to_string())?;
+                .map_err(|err| crate::error_text::error_text(&err))?;
             let factory = SshSessionFactory::from_connection(connection);
             let (backend, events, _gate) =
                 factory.open_async(Size { rows: 24, cols: 80 }, 1).await?;

@@ -1272,7 +1272,13 @@ fn write_keep(data_dir: &Path, keep: usize) -> Result<usize, String> {
         zssh_core::store::settings::SYNC_BACKUP_KEEP_KEY,
         &keep.to_string(),
     )
-    .map_err(|err| format!("{}{err}", t(BackupMsg::SaveKeepFailedPrefix)))?;
+    .map_err(|err| {
+        format!(
+            "{}{}",
+            t(BackupMsg::SaveKeepFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     Ok(keep)
 }
 
@@ -1303,9 +1309,13 @@ fn create_backup_with(
     app_version: &str,
 ) -> Result<BackupInfo, String> {
     let db = open_db_at(data_dir)?;
-    let device_id = db
-        .sync_device_id()
-        .map_err(|err| format!("{}{err}", t(BackupMsg::ReadDeviceIdFailedPrefix)))?;
+    let device_id = db.sync_device_id().map_err(|err| {
+        format!(
+            "{}{}",
+            t(BackupMsg::ReadDeviceIdFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     let keep = db.sync_backup_keep().unwrap_or(FALLBACK_KEEP);
     let known_hosts = data_dir.join("known_hosts");
     let now = now_secs();
@@ -1338,9 +1348,13 @@ fn restore_backup_with(
     sealer: &dyn SecretSealer,
 ) -> Result<RestoreReport, String> {
     let db = open_db_at(data_dir)?;
-    let device_id = db
-        .sync_device_id()
-        .map_err(|err| format!("{}{err}", t(BackupMsg::ReadDeviceIdFailedPrefix)))?;
+    let device_id = db.sync_device_id().map_err(|err| {
+        format!(
+            "{}{}",
+            t(BackupMsg::ReadDeviceIdFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     // 走引擎的入口而不是直接调 `BackupStore::restore`：引擎会先检查备份必须在备份目录内、
     // 文件名合法，并把同步基线里的删除记录一并带上，恢复出来的记录不会被基线墓碑再删掉。
     sync_engine(&db, sealer, device_id, data_dir)
@@ -1377,9 +1391,13 @@ fn export_offline_to(
     path: &Path,
 ) -> Result<usize, String> {
     let db = open_db_at(data_dir)?;
-    let device_id = db
-        .sync_device_id()
-        .map_err(|err| format!("{}{err}", t(BackupMsg::ReadDeviceIdFailedPrefix)))?;
+    let device_id = db.sync_device_id().map_err(|err| {
+        format!(
+            "{}{}",
+            t(BackupMsg::ReadDeviceIdFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     let engine = sync_engine(&db, sealer, device_id, data_dir);
     let bytes = engine
         .export_offline(password)
@@ -1429,9 +1447,13 @@ fn import_offline_from(
 ) -> Result<OfflineImportReport, String> {
     let bytes = zssh_core::sync::offline::read_offline_file(path)?;
     let db = open_db_at(data_dir)?;
-    let device_id = db
-        .sync_device_id()
-        .map_err(|err| format!("{}{err}", t(BackupMsg::ReadDeviceIdFailedPrefix)))?;
+    let device_id = db.sync_device_id().map_err(|err| {
+        format!(
+            "{}{}",
+            t(BackupMsg::ReadDeviceIdFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     sync_engine(&db, sealer, device_id, data_dir)
         .import_offline(&bytes, password, mode)
         .map_err(|err| err.to_string())
@@ -1447,8 +1469,13 @@ fn now_secs() -> i64 {
 fn open_db_at(data_dir: &Path) -> Result<Database, String> {
     std::fs::create_dir_all(data_dir)
         .map_err(|err| format!("{}{err}", t(BackupMsg::CreateDataDirFailedPrefix)))?;
-    Database::open(&data_dir.join("zssh.db"))
-        .map_err(|err| format!("{}{err}", t(BackupMsg::OpenDatabaseFailedPrefix)))
+    Database::open(&data_dir.join("zssh.db")).map_err(|err| {
+        format!(
+            "{}{}",
+            t(BackupMsg::OpenDatabaseFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })
 }
 
 #[cfg(test)]

@@ -418,8 +418,9 @@ async fn run(
 
 /// 读库里一条规则（任务线程里单开一条库连接：连接对象不能跨线程）。
 fn load_rule(id: i64) -> Result<PortForward, String> {
-    let db = crate::host_db::open_database().map_err(|err| err.to_string())?;
-    db.forward_get(id).map_err(|err| err.to_string())
+    let db = crate::host_db::open_database().map_err(|err| crate::error_text::error_text(&err))?;
+    db.forward_get(id)
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 // ---- 给界面用的入口（都不阻塞界面线程） ----
@@ -486,7 +487,9 @@ pub fn delete_rule(id: i64) -> Result<tokio::sync::oneshot::Receiver<Result<(), 
         let _serial = manager.lifecycle.lock().await;
         manager.stop(id);
         let result = match crate::host_db::open_database() {
-            Ok(db) => db.forward_delete(id).map_err(|err| err.to_string()),
+            Ok(db) => db
+                .forward_delete(id)
+                .map_err(|err| crate::error_text::error_text(&err)),
             Err(err) => Err(err.to_string()),
         };
         let _ = tx.send(result);

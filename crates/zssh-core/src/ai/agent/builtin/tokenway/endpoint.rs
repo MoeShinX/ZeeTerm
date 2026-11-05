@@ -12,7 +12,7 @@ use crate::ai::agent::builtin::config::{
     AiEndpoint, AiEndpointDraft, EndpointKind, OpenAiOptionsConfig,
 };
 use crate::ai::agent::builtin::provider::{ApiKey, Transport};
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Reason, ZsshError};
 use crate::store::Database;
 
 /// 浏览器授权拿到的 ZeeTerm 专用令牌所属的预设。
@@ -65,10 +65,18 @@ pub fn resolve_base_url(
         .openai_base
         .clone()
         .or_else(|| preset.openai_base.clone())
-        .ok_or_else(|| ZsshError::InvalidInput("预设里没有接入地址".to_owned()))?;
-    policy
-        .check(&base_url)
-        .map_err(|why| ZsshError::InvalidInput(format!("接入地址不合格：{why}")))?;
+        .ok_or_else(|| {
+            ZsshError::InvalidInput(Reason::new(rk::PRESET_NO_ENDPOINT, "预设里没有接入地址"))
+        })?;
+    policy.check(&base_url).map_err(|why| {
+        ZsshError::InvalidInput(
+            Reason::new(
+                rk::ENDPOINT_ADDRESS_REJECTED,
+                format!("接入地址不合格：{why}"),
+            )
+            .with("cause", &why),
+        )
+    })?;
     Ok(base_url)
 }
 

@@ -250,8 +250,13 @@ impl NativeBridgeHost {
     }
 
     fn open_db(&self) -> Result<Database, String> {
-        Database::open(&self.data_dir.join("zssh.db"))
-            .map_err(|err| format!("{}{err}", t(AgentHostMsg::OpenHostDbFailedPrefix)))
+        Database::open(&self.data_dir.join("zssh.db")).map_err(|err| {
+            format!(
+                "{}{}",
+                t(AgentHostMsg::OpenHostDbFailedPrefix),
+                crate::error_text::error_text(&err)
+            )
+        })
     }
 
     /// 目标对应主机库里的哪台主机：`host-<id>` 直接解析；终端编号看终端登记的主机。
@@ -345,7 +350,7 @@ impl BridgeHost for NativeBridgeHost {
             connection
                 .exec_capture(&command, wait, max_stream_bytes)
                 .await
-                .map_err(|err| err.to_string())
+                .map_err(|err| crate::error_text::error_text(&err))
         })
     }
 
@@ -411,9 +416,13 @@ impl BridgeHost for NativeBridgeHost {
                     .map_or_else(|| target_id.to_owned(), |entry| entry.id.clone()),
             )
             .await?;
-            let channel = SftpChannel::open(&connection)
-                .await
-                .map_err(|err| format!("{}{err}", t(AgentHostMsg::OpenSftpChannelFailedPrefix)))?;
+            let channel = SftpChannel::open(&connection).await.map_err(|err| {
+                format!(
+                    "{}{}",
+                    t(AgentHostMsg::OpenSftpChannelFailedPrefix),
+                    crate::error_text::error_text(&err)
+                )
+            })?;
             let fs: Arc<dyn RemoteFs> = Arc::new(SftpRemoteFs::new(Arc::new(channel)));
             Ok(fs)
         })
@@ -484,7 +493,7 @@ impl BridgeHost for NativeBridgeHost {
             let db = self.open_db()?;
             Ok(db
                 .host_memory_get(host_id)
-                .map_err(|err| err.to_string())?
+                .map_err(|err| crate::error_text::error_text(&err))?
                 .map(|memory| memory.content))
         })
     }
@@ -499,7 +508,7 @@ impl BridgeHost for NativeBridgeHost {
                 .ok_or_else(|| t(AgentHostMsg::CannotRememberQuickConnect).to_string())?;
             self.open_db()?
                 .host_memory_set(host_id, notes)
-                .map_err(|err| err.to_string())?;
+                .map_err(|err| crate::error_text::error_text(&err))?;
             // 主机详情里开着的记忆框要刷新（0.2.14 的 `host-memory-changed` 事件）。
             crate::host_activity::memory_changed(host_id);
             Ok(())
@@ -1847,8 +1856,13 @@ pub async fn start_builtin_agent(
 
 /// 读接口配置和它的 Key（Key 只在这里短暂出现，交给对话后由 `ApiKey` 的 `Debug` 挡住）。
 pub(crate) fn load_endpoint(endpoint_id: i64) -> Result<(AiEndpoint, ApiKey), String> {
-    let db = crate::host_db::open_database()
-        .map_err(|err| format!("{}{err}", t(AgentHostMsg::OpenSettingsDbFailedPrefix)))?;
+    let db = crate::host_db::open_database().map_err(|err| {
+        format!(
+            "{}{}",
+            t(AgentHostMsg::OpenSettingsDbFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     load_endpoint_from(&db, endpoint_id)
 }
 
@@ -1860,9 +1874,13 @@ pub(crate) fn load_endpoint_from(
     let endpoint = db
         .ai_endpoint_get(endpoint_id)
         .map_err(|_| t(AgentHostMsg::EndpointMissing).to_string())?;
-    let key = db
-        .ai_endpoint_api_key(endpoint_id)
-        .map_err(|err| format!("{}{err}", t(AgentHostMsg::ReadApiKeyFailedPrefix)))?;
+    let key = db.ai_endpoint_api_key(endpoint_id).map_err(|err| {
+        format!(
+            "{}{}",
+            t(AgentHostMsg::ReadApiKeyFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     let key = match key {
         Some(key) => key,
         // 明确设成"不需要 Key"的接口（Ollama 之类）：Key 为空，请求里就不带 Authorization 头。

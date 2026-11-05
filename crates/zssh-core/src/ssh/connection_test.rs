@@ -169,7 +169,7 @@ pub fn classify_failure(
 
 fn forward_reason(error: &ZsshError) -> String {
     match error {
-        ZsshError::InvalidInput(message) => message.clone(),
+        ZsshError::InvalidInput(message) => message.zh().to_owned(),
         ZsshError::ConnectTimeout { host, seconds, .. } => {
             format!("经跳板机连接 {host} 超过 {seconds} 秒没有响应")
         }
@@ -181,7 +181,7 @@ fn classify_connect(error: &ZsshError, via_proxy: bool) -> Failure {
     match error {
         ZsshError::Proxy { proxy, detail } => Failure {
             stage: TestStage::Proxy,
-            message: format!("代理失败（{proxy}）：{}", one_line(detail)),
+            message: format!("代理失败（{proxy}）：{}", one_line(detail.zh())),
         },
         // 经代理时，能不能解析 / 连上的是代理地址本身。
         ZsshError::Dns { host, .. } if via_proxy => Failure {
@@ -270,7 +270,7 @@ fn classify_handshake(error: &ZsshError, interaction: Interaction) -> Failure {
         ZsshError::HostKeyRekeyMismatch { first, again, .. } => host_key(format!(
             "握手中途主机密钥变了：第一次 {first}，这次 {again}"
         )),
-        ZsshError::HostKeyStore(message) => host_key(one_line(message)),
+        ZsshError::HostKeyStore(message) => host_key(one_line(message.zh())),
         ZsshError::AuthFailed => auth("认证失败：用户名或密码错误".to_owned()),
         ZsshError::AllAuthFailed { tried, remaining } => auth(format!(
             "认证失败：试过 {}，服务器还支持 {}",
@@ -278,9 +278,9 @@ fn classify_handshake(error: &ZsshError, interaction: Interaction) -> Failure {
             one_line(remaining)
         )),
         ZsshError::AuthTimeout { seconds } => auth(format!("认证超时（每一步最多 {seconds} 秒）")),
-        ZsshError::KeyLoad(message) => auth(format!("读私钥失败：{}", one_line(message))),
+        ZsshError::KeyLoad(message) => auth(format!("读私钥失败：{}", one_line(message.zh()))),
         ZsshError::AgentUnavailable(message) => {
-            auth(format!("ssh-agent 用不了：{}", one_line(message)))
+            auth(format!("ssh-agent 用不了：{}", one_line(message.zh())))
         }
         ZsshError::RsaSha1Refused { .. } => auth(
             "服务器只接受 SHA-1 的 ssh-rsa 签名：换 Ed25519 / ECDSA 密钥，或打开「旧算法兼容」"
@@ -844,7 +844,7 @@ pub async fn test_tcp_with(
                             )
                         })?,
                     None => {
-                        let err = ZsshError::InvalidInput("没有跳板机".to_owned());
+                        let err = ZsshError::InvalidInput("没有跳板机".into());
                         return Err(fail(
                             Failure {
                                 stage: TestStage::Jump,

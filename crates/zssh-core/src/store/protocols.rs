@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Entity, Reason, ZsshError};
 use crate::model::{HostFacts, Protocol, ProtocolSettings};
 use crate::store::db::Database;
 use crate::store::hosts::{host_get, hosts_referencing, now_unix};
@@ -55,9 +55,10 @@ impl Database {
             // 不合法的另一半，要换类型请新建主机。
             let current = protocol_get(conn, host_id)?.protocol;
             if (current == Protocol::Serial) != (settings.protocol == Protocol::Serial) {
-                return Err(ZsshError::InvalidInput(
-                    "串口主机和网络主机（SSH / Telnet）不能互相转换，请新建一台主机".to_owned(),
-                ));
+                return Err(ZsshError::InvalidInput(Reason::new(
+                    rk::HOST_TYPE_SWITCH,
+                    "串口主机和网络主机（SSH / Telnet）不能互相转换，请新建一台主机",
+                )));
             }
             let identity = match host.identity_id {
                 Some(id) => Some(crate::store::identities::identity_get(conn, id)?),
@@ -70,15 +71,22 @@ impl Database {
             if settings.protocol != Protocol::Ssh {
                 let users = hosts_referencing(conn, "jump_host_id", host_id)?;
                 if !users.is_empty() {
-                    return Err(ZsshError::InvalidInput(format!(
-                        "这台主机正被 {} 用作跳板机，只有 SSH 主机能当跳板机",
-                        users.join("、")
-                    )));
+                    return Err(ZsshError::InvalidInput(
+                        Reason::new(
+                            rk::HOST_JUMP_NOT_SSH_IN_USE,
+                            format!(
+                                "这台主机正被 {} 用作跳板机，只有 SSH 主机能当跳板机",
+                                users.join("、")
+                            ),
+                        )
+                        .with("users", users.join(", ")),
+                    ));
                 }
             } else if host.username.trim().is_empty() {
-                return Err(ZsshError::InvalidInput(
-                    "SSH 主机的用户名不能为空，请先填用户名".to_owned(),
-                ));
+                return Err(ZsshError::InvalidInput(Reason::new(
+                    rk::SSH_USER_REQUIRED,
+                    "SSH 主机的用户名不能为空，请先填用户名",
+                )));
             }
             let settings = settings.clone().validated(&HostFacts {
                 username: &host.username,
@@ -119,7 +127,7 @@ pub(crate) fn protocol_get(conn: &Connection, host_id: i64) -> Result<ProtocolSe
             ProtocolSettings::from_columns(&protocol, x11 != 0, options.as_deref())
         }
         None => Err(ZsshError::NotFound {
-            entity: "主机",
+            entity: Entity::Host,
             id: host_id,
         }),
     }
@@ -145,7 +153,7 @@ pub(crate) fn write_protocol(
     )?;
     if changed == 0 {
         return Err(ZsshError::NotFound {
-            entity: "主机",
+            entity: Entity::Host,
             id: host_id,
         });
     }

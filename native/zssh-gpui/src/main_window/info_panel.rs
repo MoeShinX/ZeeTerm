@@ -95,7 +95,7 @@ impl MainWindow {
         }
         let fetched = self.store.db().and_then(|db| {
             db.identity_saved_password(identity)
-                .map_err(|err| err.to_string())
+                .map_err(|err| crate::error_text::error_text(&err))
         });
         match fetched {
             Ok(value) => {

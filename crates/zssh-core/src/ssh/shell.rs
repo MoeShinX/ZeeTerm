@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{timeout, timeout_at, Instant};
 
 use crate::ai::terminal::SharedTerminalRing;
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Reason, ZsshError};
 use crate::ssh::flow::FlowGate;
 use crate::x11::{X11Failure, X11Registration, MIT_MAGIC_COOKIE};
 
@@ -93,7 +93,7 @@ async fn request_pty_and_shell(
             Ok(false) => return Err(ZsshError::X11(X11Failure::ServerRefused)),
             Err(err) => {
                 let detail = match err {
-                    ZsshError::Shell(message) => message,
+                    ZsshError::Shell(message) => message.into_zh(),
                     other => other.to_string(),
                 };
                 return Err(ZsshError::X11(X11Failure::ServerNoReply { detail }));
@@ -104,16 +104,29 @@ async fn request_pty_and_shell(
     write_half
         .request_pty(true, TERM, u32::from(cols), u32::from(rows), 0, 0, &[])
         .await
-        .map_err(|err| ZsshError::Shell(format!("请求 PTY 失败：{err}")))?;
+        .map_err(|err| {
+            ZsshError::Shell(
+                Reason::new(
+                    rk::SHELL_PTY_REQUEST_FAILED,
+                    format!("请求 PTY 失败：{err}"),
+                )
+                .with("cause", &err),
+            )
+        })?;
     let pty_accepted =
         wait_reply(read_half, "PTY", reply_timeout, &mut pending, data_limit).await?;
 
-    write_half
-        .request_shell(true)
-        .await
-        .map_err(|err| ZsshError::Shell(format!("请求 shell 失败：{err}")))?;
+    write_half.request_shell(true).await.map_err(|err| {
+        ZsshError::Shell(
+            Reason::new(rk::SHELL_REQUEST_FAILED, format!("请求 shell 失败：{err}"))
+                .with("cause", &err),
+        )
+    })?;
     if !wait_reply(read_half, "shell", reply_timeout, &mut pending, data_limit).await? {
-        return Err(ZsshError::Shell("服务器拒绝打开 shell".into()));
+        return Err(ZsshError::Shell(Reason::new(
+            rk::SHELL_REFUSED,
+            "服务器拒绝打开 shell",
+        )));
     }
 
     let mut items = pending.items;
@@ -136,13 +149,29 @@ struct Pending {
     data_bytes: usize,
 }
 
+fn shell_io(key: &'static str, zh: String, cause: &dyn std::fmt::Display) -> ZsshError {
+    ZsshError::Shell(Reason::new(key, zh).with("cause", cause))
+}
+
+/// 只有 disarm / close_now 会取走写半边，而它们都消耗 self：这条路径不可达，用户见不到。
+fn write_half_taken() -> ZsshError {
+    ZsshError::Shell(Reason::text("通道写半边已被取走"))
+}
+
 impl Pending {
     /// 暂存一条；超过条数上限就判定打开失败。
     fn push(&mut self, item: Item, what: &str) -> Result<(), ZsshError> {
         if self.items.len() >= PENDING_MAX_ITEMS {
-            return Err(ZsshError::Shell(format!(
-                "服务器在回复前发送了过多消息（等待 {what} 请求的回复时，超过 {PENDING_MAX_ITEMS} 条）"
-            )));
+            return Err(ZsshError::Shell(
+                Reason::new(
+                    rk::SHELL_TOO_MANY_MESSAGES,
+                    format!(
+                        "服务器在回复前发送了过多消息（等待 {what} 请求的回复时，超过 {PENDING_MAX_ITEMS} 条）"
+                    ),
+                )
+                .with("what", what)
+                .with("max", PENDING_MAX_ITEMS),
+            ));
         }
         self.items.push(item);
         Ok(())
@@ -169,9 +198,16 @@ async fn wait_reply(
                 Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
                     pending.data_bytes = pending.data_bytes.saturating_add(data.len());
                     if pending.data_bytes > data_limit {
-                        return Err(ZsshError::Shell(format!(
-                            "服务器在回复前发送了过多数据（等待 {what} 请求的回复时，超过 {data_limit} 字节）"
-                        )));
+                        return Err(ZsshError::Shell(
+                            Reason::new(
+                                rk::SHELL_TOO_MUCH_DATA,
+                                format!(
+                                    "服务器在回复前发送了过多数据（等待 {what} 请求的回复时，超过 {data_limit} 字节）"
+                                ),
+                            )
+                            .with("what", what)
+                            .with("max", data_limit),
+                        ));
                     }
                     pending.push(Item::Data(data.to_vec()), what)?;
                 }
@@ -180,9 +216,13 @@ async fn wait_reply(
                 }
                 Some(ChannelMsg::ExitSignal { .. }) => pending.push(Item::Exit(None), what)?,
                 Some(ChannelMsg::Close) | Some(ChannelMsg::Eof) | None => {
-                    return Err(ZsshError::Shell(format!(
-                        "服务器在打开终端时关闭了连接（等待 {what} 请求的回复时）"
-                    )));
+                    return Err(ZsshError::Shell(
+                        Reason::new(
+                            rk::SHELL_CLOSED_WHILE_OPENING,
+                            format!("服务器在打开终端时关闭了连接（等待 {what} 请求的回复时）"),
+                        )
+                        .with("what", what),
+                    ));
                 }
                 // 窗口调整等无关消息照常忽略。
                 Some(_) => {}
@@ -191,10 +231,17 @@ async fn wait_reply(
     };
     match timeout(reply_timeout, wait).await {
         Ok(result) => result,
-        Err(_) => Err(ZsshError::Shell(format!(
-            "等待服务器回复 {what} 请求超时（{} 秒）",
-            reply_timeout.as_secs_f32().ceil() as u64
-        ))),
+        Err(_) => {
+            let seconds = reply_timeout.as_secs_f32().ceil() as u64;
+            Err(ZsshError::Shell(
+                Reason::new(
+                    rk::SHELL_REPLY_TIMEOUT,
+                    format!("等待服务器回复 {what} 请求超时（{seconds} 秒）"),
+                )
+                .with("what", what)
+                .with("seconds", seconds),
+            ))
+        }
     }
 }
 
@@ -221,16 +268,12 @@ impl CloseOnDrop {
 
     /// 只有 disarm / close_now 会取走写半边，而它们都消耗 self，所以这里实际不会是 None。
     fn write_half(&self) -> Result<&ChannelWriteHalf<Msg>, ZsshError> {
-        self.write_half
-            .as_ref()
-            .ok_or_else(|| ZsshError::Shell("通道写半边已被取走".into()))
+        self.write_half.as_ref().ok_or_else(write_half_taken)
     }
 
     /// 解除守卫，把写半边交出去。
     fn disarm(mut self) -> Result<ChannelWriteHalf<Msg>, ZsshError> {
-        self.write_half
-            .take()
-            .ok_or_else(|| ZsshError::Shell("通道写半边已被取走".into()))
+        self.write_half.take().ok_or_else(write_half_taken)
     }
 
     /// 正常的失败路径：把通道关掉（有超时），等它关完再返回。
@@ -478,25 +521,40 @@ impl ShellWriter {
         self.write_half
             .data_bytes(data.to_vec())
             .await
-            .map_err(|err| ZsshError::Shell(format!("写入 shell 失败：{err}")))
+            .map_err(|err| {
+                shell_io(
+                    rk::SHELL_WRITE_FAILED,
+                    format!("写入 shell 失败：{err}"),
+                    &err,
+                )
+            })
     }
 
     pub async fn resize(&self, cols: u16, rows: u16) -> Result<(), ZsshError> {
         self.write_half
             .window_change(u32::from(cols), u32::from(rows), 0, 0)
             .await
-            .map_err(|err| ZsshError::Shell(format!("调整窗口大小失败：{err}")))
+            .map_err(|err| {
+                shell_io(
+                    rk::SHELL_RESIZE_FAILED,
+                    format!("调整窗口大小失败：{err}"),
+                    &err,
+                )
+            })
     }
 
     pub async fn close(&self) -> Result<(), ZsshError> {
         self.write_half
             .eof()
             .await
-            .map_err(|err| ZsshError::Shell(format!("发送 EOF 失败：{err}")))?;
-        self.write_half
-            .close()
-            .await
-            .map_err(|err| ZsshError::Shell(format!("关闭 shell 失败：{err}")))
+            .map_err(|err| shell_io(rk::SHELL_EOF_FAILED, format!("发送 EOF 失败：{err}"), &err))?;
+        self.write_half.close().await.map_err(|err| {
+            shell_io(
+                rk::SHELL_CLOSE_FAILED,
+                format!("关闭 shell 失败：{err}"),
+                &err,
+            )
+        })
     }
 
     /// 把前端的确认转给流控门。

@@ -477,15 +477,19 @@ impl AgentsDemo {
             }
             match db.ai_exec_mode() {
                 Ok(value) => exec_mode = value,
-                Err(err) => {
-                    problems.push(format!("{}{err}", t(AgentsMsg::ExecModeReadFailedPrefix)))
-                }
+                Err(err) => problems.push(format!(
+                    "{}{}",
+                    t(AgentsMsg::ExecModeReadFailedPrefix),
+                    crate::error_text::error_text(&err)
+                )),
             }
             match db.ai_write_backup_keep() {
                 Ok(value) => backup_keep = value,
-                Err(err) => {
-                    problems.push(format!("{}{err}", t(AgentsMsg::BackupKeepReadFailedPrefix)))
-                }
+                Err(err) => problems.push(format!(
+                    "{}{}",
+                    t(AgentsMsg::BackupKeepReadFailedPrefix),
+                    crate::error_text::error_text(&err)
+                )),
             }
             if !problems.is_empty() {
                 settings_error = Some(problems.join(t(AgentsMsg::ErrorJoin)));
@@ -692,8 +696,11 @@ impl AgentsDemo {
                     self.settings_error = None;
                 }
                 Err(err) => {
-                    self.settings_error =
-                        Some(format!("{}{err}", t(AgentsMsg::SaveExecModeFailedPrefix)))
+                    self.settings_error = Some(format!(
+                        "{}{}",
+                        t(AgentsMsg::SaveExecModeFailedPrefix),
+                        crate::error_text::error_text(&err)
+                    ))
                 }
             },
             None => self.settings_error = Some(self.db_unavailable()),
@@ -713,8 +720,11 @@ impl AgentsDemo {
                     self.settings_error = None;
                 }
                 Err(err) => {
-                    self.settings_error =
-                        Some(format!("{}{err}", t(AgentsMsg::SaveBackupKeepFailedPrefix)))
+                    self.settings_error = Some(format!(
+                        "{}{}",
+                        t(AgentsMsg::SaveBackupKeepFailedPrefix),
+                        crate::error_text::error_text(&err)
+                    ))
                 }
             },
             None => self.settings_error = Some(self.db_unavailable()),
@@ -1747,8 +1757,13 @@ fn open_settings_db() -> Result<Database, String> {
     let dir = crate::settings::data_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|err| format!("{}{err}", t(AgentsMsg::CreateDataDirFailedPrefix)))?;
-    Database::open(&dir.join("zssh.db"))
-        .map_err(|err| format!("{}{err}", t(AgentsMsg::OpenSettingsDbFailedPrefix)))
+    Database::open(&dir.join("zssh.db")).map_err(|err| {
+        format!(
+            "{}{}",
+            t(AgentsMsg::OpenSettingsDbFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })
 }
 
 /// 输入框内容 → 设置值：空白等于清除（`None`），否则是 JSON 编码后的字符串。
@@ -1766,13 +1781,23 @@ fn path_setting_value(input: &str) -> Result<Option<String>, String> {
 fn save_path_setting(db: &Database, key: &str, input: &str) -> Result<Option<String>, String> {
     match path_setting_value(input)? {
         None => {
-            db.setting_set(key, EMPTY_PATH_SETTING)
-                .map_err(|err| format!("{}{err}", t(AgentsMsg::ClearSavedPathFailedPrefix)))?;
+            db.setting_set(key, EMPTY_PATH_SETTING).map_err(|err| {
+                format!(
+                    "{}{}",
+                    t(AgentsMsg::ClearSavedPathFailedPrefix),
+                    crate::error_text::error_text(&err)
+                )
+            })?;
             Ok(None)
         }
         Some(encoded) => {
-            db.setting_set(key, &encoded)
-                .map_err(|err| format!("{}{err}", t(AgentsMsg::SavePathFailedPrefix)))?;
+            db.setting_set(key, &encoded).map_err(|err| {
+                format!(
+                    "{}{}",
+                    t(AgentsMsg::SavePathFailedPrefix),
+                    crate::error_text::error_text(&err)
+                )
+            })?;
             Ok(Some(input.trim().to_owned()))
         }
     }

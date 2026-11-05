@@ -17,7 +17,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Reason, ZsshError};
 use crate::store::Database;
 
 /// 密码记录（JSON 文本）。键存在且能解析 = 锁屏已启用。
@@ -180,12 +180,13 @@ fn derive(
         cost.parallelism,
         Some(HASH_BYTES),
     )
-    .map_err(|err| ZsshError::InvalidInput(format!("锁屏哈希参数不合法：{err}")))?;
+    // 参数来自代码里的常量，坏的话是开发错误，用户见不到。
+    .map_err(|err| ZsshError::InvalidInput(Reason::text(format!("锁屏哈希参数不合法：{err}"))))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut out = Zeroizing::new([0u8; HASH_BYTES]);
     argon
         .hash_password_into(password.as_bytes(), salt, out.as_mut())
-        .map_err(|err| ZsshError::InvalidInput(format!("锁屏哈希计算失败：{err}")))?;
+        .map_err(|err| ZsshError::InvalidInput(Reason::text(format!("锁屏哈希计算失败：{err}"))))?;
     Ok(out)
 }
 
@@ -210,11 +211,13 @@ impl PasswordRecord {
     /// 同 [`Self::create`]，参数可指定（测试用小参数省时间）。
     pub fn create_with(password: &str, cost: KdfCost) -> Result<Self, ZsshError> {
         if !cost.in_range() {
-            return Err(ZsshError::InvalidInput("锁屏哈希参数超出范围".to_owned()));
+            return Err(ZsshError::InvalidInput(Reason::text(
+                "锁屏哈希参数超出范围",
+            )));
         }
         let mut salt = [0u8; SALT_BYTES];
         getrandom::fill(&mut salt)
-            .map_err(|err| ZsshError::InvalidInput(format!("取不到随机数：{err}")))?;
+            .map_err(|err| ZsshError::InvalidInput(Reason::text(format!("取不到随机数：{err}"))))?;
         let hash = derive(password, &salt, cost)?;
         Ok(Self {
             version: FORMAT_VERSION,
@@ -244,8 +247,9 @@ impl PasswordRecord {
 
     /// 存进库的 JSON 文本。
     pub fn to_json(&self) -> Result<String, ZsshError> {
-        serde_json::to_string(self)
-            .map_err(|err| ZsshError::InvalidInput(format!("锁屏记录序列化失败：{err}")))
+        serde_json::to_string(self).map_err(|err| {
+            ZsshError::InvalidInput(Reason::text(format!("锁屏记录序列化失败：{err}")))
+        })
     }
 
     /// 从库里的 JSON 文本读回；格式不对返回 `None`。
@@ -379,9 +383,10 @@ pub fn save_lock_on_tray(db: &Database, on: bool) -> Result<(), ZsshError> {
 /// 也不该有这种状态。界面上开关会置灰，这里是最后一道防线。关闭随时可以。
 pub fn save_lock_on_start(db: &Database, on: bool) -> Result<(), ZsshError> {
     if on && !LockConfig::load(db).status.is_enabled() {
-        return Err(ZsshError::InvalidInput(
-            "请先设置锁屏密码，再打开“启动时锁定”".to_owned(),
-        ));
+        return Err(ZsshError::InvalidInput(Reason::new(
+            rk::LOCK_ON_START_NEEDS_PASSWORD,
+            "请先设置锁屏密码，再打开“启动时锁定”",
+        )));
     }
     db.setting_set(LOCK_ON_START_KEY, if on { "true" } else { "false" })
 }

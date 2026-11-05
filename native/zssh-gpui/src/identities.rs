@@ -366,7 +366,11 @@ impl IdentitiesDemo {
                 self.identities = identities;
             }
             Err(err) => {
-                self.status = format!("{}{err}", t(IdentitiesMsg::ReadIdentitiesFailedPrefix));
+                self.status = format!(
+                    "{}{}",
+                    t(IdentitiesMsg::ReadIdentitiesFailedPrefix),
+                    crate::error_text::error_text(&err)
+                );
             }
         }
         cx.notify();
@@ -448,7 +452,11 @@ impl IdentitiesDemo {
             let users = match db.host_list() {
                 Ok(hosts) => hosts_using_identity(&hosts, id),
                 Err(err) => {
-                    self.status = format!("{}{err}", t(IdentitiesMsg::ReadHostsCheckFailedPrefix));
+                    self.status = format!(
+                        "{}{}",
+                        t(IdentitiesMsg::ReadHostsCheckFailedPrefix),
+                        crate::error_text::error_text(&err)
+                    );
                     cx.notify();
                     return;
                 }

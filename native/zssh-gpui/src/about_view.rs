@@ -203,9 +203,10 @@ impl AboutView {
     pub fn toggle_auto_check(&mut self, cx: &mut Context<Self>) {
         let next = !self.auto_check;
         let saved = crate::host_db::open_database()
-            .map_err(|err| err.to_string())
+            .map_err(|err| crate::error_text::error_text(&err))
             .and_then(|db| {
-                zssh_core::updater::set_auto_check(&db, next).map_err(|err| err.to_string())
+                zssh_core::updater::set_auto_check(&db, next)
+                    .map_err(|err| crate::error_text::error_text(&err))
             });
         match saved {
             Ok(()) => {

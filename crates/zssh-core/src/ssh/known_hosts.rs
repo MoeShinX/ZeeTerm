@@ -15,7 +15,7 @@ use russh::keys::ssh_key::HashAlg;
 use russh::keys::PublicKey;
 use sha1::Sha1;
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Reason, ZsshError};
 use crate::ssh::interact::HostKeyStatus;
 
 /// 我们自己维护的 known_hosts 和只读加载的文件。
@@ -176,7 +176,10 @@ impl KnownHosts {
             "{} {}\n",
             host_pattern(host, port),
             key.to_openssh()
-                .map_err(|err| ZsshError::HostKeyStore(format!("公钥序列化失败：{err}")))?
+                // 公钥是刚解析出来的，序列化不会失败，用户见不到这句。
+                .map_err(|err| ZsshError::HostKeyStore(Reason::text(format!(
+                    "公钥序列化失败：{err}"
+                ))))?
         ))
     }
 
@@ -184,17 +187,33 @@ impl KnownHosts {
     fn append_locked(&self, line: &str) -> Result<(), ZsshError> {
         if let Some(parent) = self.our_file.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|err| ZsshError::HostKeyStore(format!("建目录失败：{err}")))?;
+                .map_err(|err| kh_error(rk::KH_MKDIR_FAILED, format!("建目录失败：{err}"), &err))?;
         }
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.our_file)
-            .map_err(|err| ZsshError::HostKeyStore(format!("打开 known_hosts 失败：{err}")))?;
-        file.write_all(line.as_bytes())
-            .map_err(|err| ZsshError::HostKeyStore(format!("写 known_hosts 失败：{err}")))?;
-        file.sync_all()
-            .map_err(|err| ZsshError::HostKeyStore(format!("刷新 known_hosts 失败：{err}")))?;
+            .map_err(|err| {
+                kh_error(
+                    rk::KH_OPEN_FAILED,
+                    format!("打开 known_hosts 失败：{err}"),
+                    &err,
+                )
+            })?;
+        file.write_all(line.as_bytes()).map_err(|err| {
+            kh_error(
+                rk::KH_WRITE_FAILED,
+                format!("写 known_hosts 失败：{err}"),
+                &err,
+            )
+        })?;
+        file.sync_all().map_err(|err| {
+            kh_error(
+                rk::KH_FLUSH_FAILED,
+                format!("刷新 known_hosts 失败：{err}"),
+                &err,
+            )
+        })?;
         Ok(())
     }
 
@@ -227,9 +246,11 @@ impl KnownHosts {
             Ok(None) => return Ok(0),
             // 读不了就不能说"没有可删的"：用户以为清掉了，下次连接照样按旧指纹拦。
             Err(err) => {
-                return Err(ZsshError::HostKeyStore(format!(
-                    "读 known_hosts 失败：{err}"
-                )))
+                return Err(kh_error(
+                    rk::KH_READ_FAILED,
+                    format!("读 known_hosts 失败：{err}"),
+                    &err,
+                ))
             }
         };
         let wanted = host_pattern(host, port);
@@ -258,8 +279,13 @@ impl KnownHosts {
         if removed > 0 {
             // 同目录临时文件 + 刷盘 + 原子替换：写到一半断电 / 磁盘满，原文件还是完整的旧版，
             // 不会剩下一个被截断的 known_hosts（那等于把所有主机的指纹都忘了）。
-            write_back(&self.our_file, kept.as_bytes())
-                .map_err(|err| ZsshError::HostKeyStore(format!("写 known_hosts 失败：{err}")))?;
+            write_back(&self.our_file, kept.as_bytes()).map_err(|err| {
+                kh_error(
+                    rk::KH_WRITE_FAILED,
+                    format!("写 known_hosts 失败：{err}"),
+                    &err,
+                )
+            })?;
         }
         Ok(removed)
     }
@@ -638,26 +664,33 @@ pub fn host_patterns_of(line: &str) -> BTreeSet<String> {
 
 /// 主机地址能不能用：域名、IPv4、IPv6（可带方括号和 %zone）。不收 known_hosts 里有特殊含义的
 /// 字符（`*` `?` `!` 通配、`,` 分隔多个主机、`|` 哈希、`#` 注释、`@` 标记）和空白、控制字符。
-pub fn check_host_address(host: &str) -> Result<(), String> {
+pub fn check_host_address(host: &str) -> Result<(), Reason> {
     if host.is_empty() {
-        return Err("地址不能为空".to_owned());
+        return Err(Reason::new(rk::ADDRESS_EMPTY, "地址不能为空"));
     }
     if host.len() > 255 {
-        return Err("地址太长".to_owned());
+        return Err(Reason::new(rk::ADDRESS_TOO_LONG, "地址太长"));
     }
     if let Some(bad) = host.chars().find(|c| {
         !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '%' | '[' | ']'))
     }) {
-        let shown = if bad.is_whitespace() || bad.is_control() {
-            "空白或控制字符".to_owned()
-        } else {
-            format!("「{bad}」")
-        };
-        return Err(format!(
-            "地址里不能有{shown}：只能是域名、IPv4 或 IPv6 地址"
-        ));
+        if bad.is_whitespace() || bad.is_control() {
+            return Err(Reason::new(
+                rk::ADDRESS_BAD_WHITESPACE,
+                "地址里不能有空白或控制字符：只能是域名、IPv4 或 IPv6 地址",
+            ));
+        }
+        return Err(Reason::new(
+            rk::ADDRESS_BAD_CHAR,
+            format!("地址里不能有「{bad}」：只能是域名、IPv4 或 IPv6 地址"),
+        )
+        .with("ch", bad));
     }
     Ok(())
+}
+
+fn kh_error(key: &'static str, zh: String, cause: &dyn std::fmt::Display) -> ZsshError {
+    ZsshError::HostKeyStore(Reason::new(key, zh).with("cause", cause))
 }
 
 #[cfg(test)]

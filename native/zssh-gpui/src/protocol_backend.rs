@@ -130,7 +130,7 @@ pub(crate) fn plan_for_host(host_id: i64) -> Result<HostPlan, String> {
 pub(crate) fn plan_from_db(db: &Database, host_id: i64) -> Result<HostPlan, String> {
     let settings = db
         .host_protocol_get(host_id)
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| crate::error_text::error_text(&err))?;
     match settings.protocol {
         Protocol::Ssh => Ok(HostPlan::Ssh),
         Protocol::Serial => {
@@ -144,14 +144,21 @@ pub(crate) fn plan_from_db(db: &Database, host_id: i64) -> Result<HostPlan, Stri
         }
         Protocol::Telnet => {
             let options = settings.telnet.unwrap_or_default();
-            let host = db.host_get(host_id).map_err(|err| err.to_string())?;
+            let host = db
+                .host_get(host_id)
+                .map_err(|err| crate::error_text::error_text(&err))?;
             // 跳板机链（含成环、非 SSH 跳板机）在这里一并校验，连接时才不会报莫名其妙的错。
-            db.host_chain(host_id).map_err(|err| err.to_string())?;
-            let login = db.host_login(host_id).map_err(|err| err.to_string())?;
+            db.host_chain(host_id)
+                .map_err(|err| crate::error_text::error_text(&err))?;
+            let login = db
+                .host_login(host_id)
+                .map_err(|err| crate::error_text::error_text(&err))?;
             let route = match host.jump_host_id {
                 Some(jump_id) => Route::Jump(jump_id),
                 None => {
-                    let default_proxy = db.default_proxy_id().map_err(|err| err.to_string())?;
+                    let default_proxy = db
+                        .default_proxy_id()
+                        .map_err(|err| crate::error_text::error_text(&err))?;
                     match resolve_proxy(db, &host, default_proxy)? {
                         Some(proxy) => Route::Proxy(proxy),
                         None => Route::Direct,
@@ -341,13 +348,13 @@ fn seed_dev_host(spec: &str, telnet: bool) -> Result<i64, String> {
     let mut draft = draft;
     draft.id = db
         .host_list()
-        .map_err(|err| err.to_string())?
+        .map_err(|err| crate::error_text::error_text(&err))?
         .into_iter()
         .find(|host| host.name == draft.name)
         .map(|host| host.id);
     let (host, _) = db
         .host_save_with_protocol(&draft, &settings)
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| crate::error_text::error_text(&err))?;
     Ok(host.id)
 }
 

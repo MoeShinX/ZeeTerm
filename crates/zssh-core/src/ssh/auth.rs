@@ -15,7 +15,7 @@ use russh::keys::{
 use russh::{MethodKind, MethodSet};
 use tracing::{debug, info, warn};
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Reason, ZsshError};
 use crate::model::AuthMethod;
 use crate::ssh::connection::ClientHandler;
 use crate::ssh::interact::{Interactor, PromptAnswers, PromptItem, PromptKind, PromptRequest};
@@ -447,8 +447,15 @@ async fn load_key(
                 .await
                 .ok_or(ZsshError::Cancelled)?;
             let secret = first_answer(&answers);
-            let key = load(Some(&secret))
-                .map_err(|err| ZsshError::KeyLoad(format!("用这个口令还是打不开私钥：{err}")))?;
+            let key = load(Some(&secret)).map_err(|err| {
+                ZsshError::KeyLoad(
+                    Reason::new(
+                        rk::KEY_PASSPHRASE_STILL_WRONG,
+                        format!("用这个口令还是打不开私钥：{err}"),
+                    )
+                    .with("cause", &err),
+                )
+            })?;
             // 私钥能读出来说明口令是对的，认证失败也值得记下来
             set_remembered(outcome, PromptKind::Passphrase, &answers);
             info!(algorithm = %key.algorithm(), "私钥已读入");
@@ -478,13 +485,21 @@ async fn agent_auth(
     legacy_algorithms: bool,
 ) -> Result<Option<AuthResult>, ZsshError> {
     let mut agent = connect_agent().await.ok_or_else(|| {
-        ZsshError::AgentUnavailable("没连上 OpenSSH agent 的命名管道，也没连上 Pageant".to_owned())
+        ZsshError::AgentUnavailable(Reason::new(
+            rk::AGENT_PIPE_UNREACHABLE,
+            "没连上 OpenSSH agent 的命名管道，也没连上 Pageant",
+        ))
     })?;
 
-    let identities = agent
-        .request_identities()
-        .await
-        .map_err(|err| ZsshError::AgentUnavailable(format!("列 agent 里的密钥失败：{err}")))?;
+    let identities = agent.request_identities().await.map_err(|err| {
+        ZsshError::AgentUnavailable(
+            Reason::new(
+                rk::AGENT_LIST_FAILED,
+                format!("列 agent 里的密钥失败：{err}"),
+            )
+            .with("cause", &err),
+        )
+    })?;
     if identities.is_empty() {
         return Ok(None);
     }
@@ -602,11 +617,18 @@ async fn keyboard_interactive_auth(
                     .await
                     .ok_or(ZsshError::Cancelled)?;
                 if answers.answers.len() != prompts.len() {
-                    return Err(ZsshError::InvalidInput(format!(
-                        "回答数（{}）和提问数（{}）对不上",
-                        answers.answers.len(),
-                        prompts.len()
-                    )));
+                    return Err(ZsshError::InvalidInput(
+                        Reason::new(
+                            rk::ANSWER_COUNT_MISMATCH,
+                            format!(
+                                "回答数（{}）和提问数（{}）对不上",
+                                answers.answers.len(),
+                                prompts.len()
+                            ),
+                        )
+                        .with("answers", answers.answers.len())
+                        .with("prompts", prompts.len()),
+                    ));
                 }
                 response =
                     step(handle.authenticate_keyboard_interactive_respond(answers.answers)).await?;
@@ -891,7 +913,7 @@ mod tests {
 
         match result {
             Err(ZsshError::KeyLoad(message)) => {
-                assert!(message.contains("口令"), "错误信息要提口令：{message}")
+                assert!(message.zh().contains("口令"), "错误信息要提口令：{message}")
             }
             other => panic!("应该是读私钥失败，实际 {other:?}"),
         }

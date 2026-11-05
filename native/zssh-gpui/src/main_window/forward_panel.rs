@@ -471,10 +471,10 @@ impl MainWindow {
                 return;
             }
         };
-        let saved = self
-            .store
-            .db()
-            .and_then(|db| db.forward_save(&draft).map_err(|err| err.to_string()));
+        let saved = self.store.db().and_then(|db| {
+            db.forward_save(&draft)
+                .map_err(|err| crate::error_text::error_text(&err))
+        });
         self.store.reload();
         match saved {
             Ok(rule) => {

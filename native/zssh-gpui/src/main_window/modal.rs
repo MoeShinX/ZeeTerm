@@ -235,7 +235,7 @@ pub fn quick_target_check(text: &str) -> Result<(), String> {
     }
     zssh_core::model::parse_quick_target(text)
         .map(|_| ())
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 pub struct QuickDialog {

@@ -11,7 +11,7 @@ use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 use crate::ai::terminal::SharedTerminalRing;
-use crate::error::{HostKeyMismatch, ZsshError};
+use crate::error::{reason_keys as rk, HopStage, HostKeyMismatch, Reason, ZsshError};
 use crate::ssh::auth::{self, AuthConfig, AuthOutcome, RememberedSecret};
 use crate::ssh::dialer::{self, BoxedStream, ProxyConfig, HOP_TIMEOUT};
 use crate::ssh::hostkey_order;
@@ -108,13 +108,27 @@ impl std::fmt::Debug for ChainHop {
     }
 }
 
-/// 把某一跳的失败包上"第几跳、连的是谁"。
-fn hop_failure(index: usize, label: &str, stage: &str, error: &ZsshError) -> ZsshError {
+/// 把某一跳的失败包上"第几跳、连的是谁、哪一步"，内层错误原样带着（界面按语言逐层生成整句）。
+fn hop_failure(index: usize, label: &str, stage: HopStage, error: ZsshError) -> ZsshError {
     ZsshError::Hop {
         index,
         label: label.to_owned(),
-        detail: format!("{stage}失败：{error}"),
+        stage,
+        source: Box::new(error),
     }
+}
+
+fn sftp_subsystem_timeout() -> ZsshError {
+    ZsshError::Shell(Reason::new(
+        rk::SFTP_SUBSYSTEM_TIMEOUT,
+        "等 sftp 子系统的应答超时",
+    ))
+}
+
+fn exec_failed(err: russh::Error) -> ZsshError {
+    ZsshError::Shell(
+        Reason::new(rk::EXEC_FAILED, format!("执行命令失败：{err}")).with("cause", &err),
+    )
 }
 
 /// 打开转发通道被拒时，把 russh 的错误码说成人话。
@@ -122,13 +136,17 @@ fn hop_failure(index: usize, label: &str, stage: &str, error: &ZsshError) -> Zss
 fn describe_channel_failure(error: russh::Error, target: &str) -> ZsshError {
     match error {
         russh::Error::ChannelOpenFailure(russh::ChannelOpenFailure::AdministrativelyProhibited) => {
-            ZsshError::InvalidInput(
-                "服务器禁止了 TCP 转发（administratively prohibited），跳板机用不了".to_owned(),
-            )
+            ZsshError::InvalidInput(Reason::new(
+                rk::JUMP_TCP_FORWARDING_PROHIBITED,
+                "服务器禁止了 TCP 转发（administratively prohibited），跳板机用不了",
+            ))
         }
         russh::Error::ChannelOpenFailure(russh::ChannelOpenFailure::ConnectFailed) => {
             ZsshError::InvalidInput(dialer::with_ipv6_hint(
-                "跳板机连不上目标地址（connect failed）".to_owned(),
+                Reason::new(
+                    rk::JUMP_CANNOT_REACH_TARGET,
+                    "跳板机连不上目标地址（connect failed）",
+                ),
                 target,
             ))
         }
@@ -224,7 +242,10 @@ impl Connection {
         interactor: Arc<dyn Interactor>,
     ) -> Result<Self, ZsshError> {
         if hops.is_empty() {
-            return Err(ZsshError::InvalidInput("拨号链至少要有一跳".to_owned()));
+            return Err(ZsshError::InvalidInput(Reason::new(
+                rk::CHAIN_EMPTY,
+                "拨号链至少要有一跳",
+            )));
         }
         let total = hops.len();
         // (显示名, 连接)：中间跳要留到最后一起关
@@ -252,12 +273,12 @@ impl Connection {
                 None => match &hop.proxy {
                     Some(proxy) => dialer::connect_via_proxy(proxy, &hop.host, hop.port)
                         .await
-                        .map_err(|err| hop_failure(number, &hop.label, "连接", &err))?,
-                    None => Box::new(
-                        dialer::connect_direct(&hop.host, hop.port)
-                            .await
-                            .map_err(|err| hop_failure(number, &hop.label, "连接", &err))?,
-                    ),
+                        .map_err(|err| hop_failure(number, &hop.label, HopStage::Connect, err))?,
+                    None => {
+                        Box::new(dialer::connect_direct(&hop.host, hop.port).await.map_err(
+                            |err| hop_failure(number, &hop.label, HopStage::Connect, err),
+                        )?)
+                    }
                 },
                 // 后面各跳：在上一跳的连接上开 direct-tcpip 通道
                 Some((previous_label, previous)) => {
@@ -265,10 +286,8 @@ impl Connection {
                     previous
                         .open_direct_tcpip(&hop.host, hop.port)
                         .await
-                        .map_err(|err| ZsshError::Hop {
-                            index: number,
-                            label: hop.label.clone(),
-                            detail: format!("经跳板机 {label} 打开转发通道失败：{err}"),
+                        .map_err(|err| {
+                            hop_failure(number, &hop.label, HopStage::Tunnel { via: label }, err)
                         })?
                 }
             };
@@ -284,14 +303,14 @@ impl Connection {
                 &interactor,
             )
             .await
-            .map_err(|err| hop_failure(number, &hop.label, "SSH 握手或认证", &err))?;
+            .map_err(|err| hop_failure(number, &hop.label, HopStage::Handshake, err))?;
 
             established.push((hop.label, connection));
         }
 
-        let (_, mut target) = established
-            .pop()
-            .ok_or_else(|| ZsshError::InvalidInput("拨号链至少要有一跳".to_owned()))?;
+        let (_, mut target) = established.pop().ok_or_else(|| {
+            ZsshError::InvalidInput(Reason::new(rk::CHAIN_EMPTY, "拨号链至少要有一跳"))
+        })?;
         target.jumps = established
             .into_iter()
             .map(|(_, connection)| connection)
@@ -433,14 +452,20 @@ impl Connection {
             Ok(Err(russh::Error::ChannelOpenFailure(
                 russh::ChannelOpenFailure::AdministrativelyProhibited,
             ))) => {
-                return Err(ZsshError::InvalidInput(
-                    "服务器禁止了 TCP 转发（AllowTcpForwarding no）".to_owned(),
-                ))
+                return Err(ZsshError::InvalidInput(Reason::new(
+                    rk::TCP_FORWARDING_PROHIBITED,
+                    "服务器禁止了 TCP 转发（AllowTcpForwarding no）",
+                )))
             }
             Ok(Err(russh::Error::ChannelOpenFailure(russh::ChannelOpenFailure::ConnectFailed))) => {
-                return Err(ZsshError::InvalidInput(format!(
-                    "服务器连不上 {host}:{port}（connect failed）"
-                )))
+                return Err(ZsshError::InvalidInput(
+                    Reason::new(
+                        rk::SERVER_CANNOT_REACH,
+                        format!("服务器连不上 {host}:{port}（connect failed）"),
+                    )
+                    .with("host", host)
+                    .with("port", port),
+                ))
             }
             Ok(Err(err)) => return Err(ZsshError::Ssh(err)),
             Err(_) => {
@@ -486,9 +511,16 @@ impl Connection {
             Ok(Err(err)) => {
                 release_remote_port(&self.remote_forwards, port, &sink);
                 Err(match err {
-                    russh::Error::RequestDenied => ZsshError::InvalidInput(format!(
-                        "服务器拒绝在 {bind_host}:{bind_port} 上监听（端口被占用，或者服务器关了转发）"
-                    )),
+                    russh::Error::RequestDenied => ZsshError::InvalidInput(
+                        Reason::new(
+                            rk::REMOTE_LISTEN_DENIED,
+                            format!(
+                                "服务器拒绝在 {bind_host}:{bind_port} 上监听（端口被占用，或者服务器关了转发）"
+                            ),
+                        )
+                        .with("host", bind_host)
+                        .with("port", bind_port),
+                    ),
                     other => ZsshError::Ssh(other),
                 })
             }
@@ -540,13 +572,19 @@ impl Connection {
     /// 连接已经没了是错误。
     pub async fn measure_rtt(&self, limit: Duration) -> Result<Option<Duration>, ZsshError> {
         if self.is_closed() {
-            return Err(ZsshError::Shell("连接已断开".to_owned()));
+            return Err(ZsshError::Shell(Reason::new(
+                rk::CONNECTION_CLOSED,
+                "连接已断开",
+            )));
         }
         let started = Instant::now();
         match timeout(limit, self.handle.send_ping()).await {
             // russh 在连接中途断掉时也会让 `send_ping` 正常返回（回复通道被丢弃），
             // 所以返回后再看一眼连接还在不在，别把断线算成一次很快的往返。
-            Ok(Ok(())) if self.is_closed() => Err(ZsshError::Shell("连接已断开".to_owned())),
+            Ok(Ok(())) if self.is_closed() => Err(ZsshError::Shell(Reason::new(
+                rk::CONNECTION_CLOSED,
+                "连接已断开",
+            ))),
             Ok(Ok(())) => Ok(Some(started.elapsed())),
             Ok(Err(err)) => Err(ZsshError::Ssh(err)),
             Err(_) => Ok(None),
@@ -742,7 +780,7 @@ impl Connection {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(ZsshError::Shell("等 sftp 子系统的应答超时".to_owned()));
+                return Err(sftp_subsystem_timeout());
             }
             match timeout(remaining, channel.wait()).await {
                 Ok(Some(russh::ChannelMsg::Success)) => break,
@@ -755,7 +793,7 @@ impl Connection {
                     early.extend_from_slice(&data)
                 }
                 Ok(Some(_)) => {}
-                Err(_) => return Err(ZsshError::Shell("等 sftp 子系统的应答超时".to_owned())),
+                Err(_) => return Err(sftp_subsystem_timeout()),
             }
         }
         let stream = channel.into_stream();
@@ -769,10 +807,7 @@ impl Connection {
     /// **独立通道**，最多卡死自己的 exec，卡不到别的）。
     pub async fn exec(&self, command: &str) -> Result<String, ZsshError> {
         let mut channel = self.open_session_channel().await?;
-        channel
-            .exec(true, command)
-            .await
-            .map_err(|err| ZsshError::Shell(format!("执行命令失败：{err}")))?;
+        channel.exec(true, command).await.map_err(exec_failed)?;
         let mut output = Vec::new();
         let mut stderr = Vec::new();
         let mut exit_ok = true;
@@ -792,10 +827,13 @@ impl Connection {
         }
         if !exit_ok {
             let stderr_text = String::from_utf8_lossy(&stderr);
-            return Err(ZsshError::Shell(format!(
-                "命令退出码非 0：{}",
-                stderr_text.trim()
-            )));
+            return Err(ZsshError::Shell(
+                Reason::new(
+                    rk::EXEC_NONZERO,
+                    format!("命令退出码非 0：{}", stderr_text.trim()),
+                )
+                .with("stderr", stderr_text.trim()),
+            ));
         }
         Ok(String::from_utf8_lossy(&output).into_owned())
     }
@@ -880,7 +918,10 @@ impl Connection {
         // 命令已经发出去了，快的命令在关通道之前就做完了（R-9 F12）。
         if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
             let _ = channel.close().await;
-            return Err(ZsshError::Shell("已取消，命令没有发出".to_owned()));
+            return Err(ZsshError::Shell(Reason::new(
+                rk::EXEC_CANCELLED,
+                "已取消，命令没有发出",
+            )));
         }
         match cancel {
             Some(flag) => {
@@ -966,10 +1007,7 @@ async fn run_exec(
     max_stream_bytes: usize,
     stopped: Option<&(dyn Fn() -> bool + Sync)>,
 ) -> Result<ExecCapture, ZsshError> {
-    channel
-        .exec(true, command)
-        .await
-        .map_err(|err| ZsshError::Shell(format!("执行命令失败：{err}")))?;
+    channel.exec(true, command).await.map_err(exec_failed)?;
 
     let started = Instant::now();
     let mut stdout = Vec::new();
@@ -1172,9 +1210,13 @@ fn claim_remote_port(
     sink: &tokio::sync::mpsc::UnboundedSender<ForwardedChannel>,
 ) -> Result<(), ZsshError> {
     match lock_table(table).entry(port) {
-        std::collections::hash_map::Entry::Occupied(_) => Err(ZsshError::InvalidInput(format!(
-            "这条连接上已经有一个远程转发在监听端口 {port}"
-        ))),
+        std::collections::hash_map::Entry::Occupied(_) => Err(ZsshError::InvalidInput(
+            Reason::new(
+                rk::REMOTE_PORT_CLAIMED,
+                format!("这条连接上已经有一个远程转发在监听端口 {port}"),
+            )
+            .with("port", port),
+        )),
         std::collections::hash_map::Entry::Vacant(slot) => {
             slot.insert(sink.clone());
             Ok(())
@@ -1433,11 +1475,18 @@ impl client::Handler for ClientHandler {
             // 不能退化成"没见过"去问用户信不信任（R-9 F10）。
             HostKeyLookup::Unreadable { path, error } => {
                 warn!(host = %self.host, %error, "known_hosts 读不了，拒绝连接");
-                Err(ZsshError::HostKeyStore(format!(
-                    "读不了 {}：{error}。无法确认这台主机的指纹是否已登记、是否被吊销，已拒绝连接；\
-                     请检查这个文件的权限后重试",
-                    path.display()
-                )))
+                Err(ZsshError::HostKeyStore(
+                    Reason::new(
+                        rk::KH_UNREADABLE,
+                        format!(
+                            "读不了 {}：{error}。无法确认这台主机的指纹是否已登记、是否被吊销，已拒绝连接；\
+                             请检查这个文件的权限后重试",
+                            path.display()
+                        ),
+                    )
+                    .with("path", path.display())
+                    .with("cause", &error),
+                ))
             }
         }
     }

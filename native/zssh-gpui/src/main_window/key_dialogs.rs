@@ -367,14 +367,21 @@ impl MainWindow {
         cx.notify();
         let work = super::bridge::on_blocking(move || -> Result<GeneratedView, String> {
             // 阻塞线程里单开一条库连接：连接对象不能跨线程。
-            let db = crate::host_db::open_database().map_err(|err| err.to_string())?;
+            let db = crate::host_db::open_database()
+                .map_err(|err| crate::error_text::error_text(&err))?;
             let passphrase = (!passphrase.is_empty()).then_some(passphrase.as_str());
             let identity = db
                 .identity_generate(name.trim(), algorithm, &comment, passphrase)
-                .map_err(|err| format!("{}{err}", t(KeyDialogMsg::GenerateFailedPrefix)))?;
+                .map_err(|err| {
+                    format!(
+                        "{}{}",
+                        t(KeyDialogMsg::GenerateFailedPrefix),
+                        crate::error_text::error_text(&err)
+                    )
+                })?;
             let (public_key, fingerprint) = db
                 .identity_public_key(identity.id)
-                .map_err(|err| err.to_string())?;
+                .map_err(|err| crate::error_text::error_text(&err))?;
             Ok(GeneratedView {
                 identity_id: identity.id,
                 public_key,
@@ -681,10 +688,10 @@ impl MainWindow {
             }
             return;
         };
-        let outcome = self
-            .store
-            .db()
-            .and_then(|db| db.identity_public_key(id).map_err(|err| err.to_string()));
+        let outcome = self.store.db().and_then(|db| {
+            db.identity_public_key(id)
+                .map_err(|err| crate::error_text::error_text(&err))
+        });
         if let Some(Modal::InstallKey(install)) = &mut self.modal {
             match outcome {
                 Ok(view) => {
@@ -723,7 +730,7 @@ impl MainWindow {
         cx.notify();
         let public_key = match self.store.db().and_then(|db| {
             db.identity_public_key(key_id)
-                .map_err(|err| err.to_string())
+                .map_err(|err| crate::error_text::error_text(&err))
         }) {
             Ok((public_key, _)) => public_key,
             Err(err) => {
@@ -733,15 +740,16 @@ impl MainWindow {
         };
         let work = super::bridge::on_ssh_runtime(async move {
             let command = zssh_core::ssh::keygen::install_command(&public_key)
-                .map_err(|err| err.to_string())?;
+                .map_err(|err| crate::error_text::error_text(&err))?;
             // 用这台主机现在的登录方式连上（池里有就复用；要密码 / 指纹确认照常弹提问）。
             let factory = crate::ssh_backend::factory_for_host(host_id).await?;
             let output = factory
                 .connection()
                 .exec(&command)
                 .await
-                .map_err(|err| err.to_string())?;
-            zssh_core::ssh::keygen::parse_install_output(&output).map_err(|err| err.to_string())
+                .map_err(|err| crate::error_text::error_text(&err))?;
+            zssh_core::ssh::keygen::parse_install_output(&output)
+                .map_err(|err| crate::error_text::error_text(&err))
         });
         match work {
             Ok(rx) => self.await_result(rx, window, cx, move |this, result, window, cx| {

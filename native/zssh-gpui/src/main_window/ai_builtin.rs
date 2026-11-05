@@ -545,14 +545,14 @@ impl MainWindow {
         cx: &mut gpui_kit::Context<Self>,
     ) {
         let done = crate::host_db::open_database()
-            .map_err(|err| err.to_string())
+            .map_err(|err| crate::error_text::error_text(&err))
             .and_then(|db| {
                 let model = db
                     .ai_endpoint_get(id)
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| crate::error_text::error_text(&e))?
                     .default_model;
                 db.set_ai_builtin_default(Some((id, model.as_deref())))
-                    .map_err(|err| err.to_string())
+                    .map_err(|err| crate::error_text::error_text(&err))
             });
         match done {
             Ok(()) => {
@@ -604,8 +604,11 @@ impl MainWindow {
             .and_then(|db| db.ai_endpoint_get(id).ok())
             .map(|endpoint| endpoint.uid);
         let done = crate::host_db::open_database()
-            .map_err(|err| err.to_string())
-            .and_then(|db| db.ai_endpoint_delete(id).map_err(|err| err.to_string()));
+            .map_err(|err| crate::error_text::error_text(&err))
+            .and_then(|db| {
+                db.ai_endpoint_delete(id)
+                    .map_err(|err| crate::error_text::error_text(&err))
+            });
         match done {
             Ok(()) => {
                 if let Some(uid) = uid {
@@ -631,10 +634,10 @@ impl MainWindow {
     ) {
         let next = !self.ai_builtin.auto_update;
         let saved = crate::host_db::open_database()
-            .map_err(|err| err.to_string())
+            .map_err(|err| crate::error_text::error_text(&err))
             .and_then(|db| {
                 db.set_ai_models_auto_update(next)
-                    .map_err(|err| err.to_string())
+                    .map_err(|err| crate::error_text::error_text(&err))
             });
         match saved {
             Ok(()) => {

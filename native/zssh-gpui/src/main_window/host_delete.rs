@@ -211,10 +211,15 @@ pub struct Deleted {
 
 /// 删主机，并一起删它独占的密码。主机删不掉就整体失败（什么也没动）。
 pub fn delete_host_with_passwords(db: &Database, host_id: i64) -> Result<Deleted, String> {
-    let hosts = db.host_list().map_err(|err| err.to_string())?;
-    let identities = db.identity_list().map_err(|err| err.to_string())?;
+    let hosts = db
+        .host_list()
+        .map_err(|err| crate::error_text::error_text(&err))?;
+    let identities = db
+        .identity_list()
+        .map_err(|err| crate::error_text::error_text(&err))?;
     let plan = plan(host_id, &hosts, &identities);
-    db.host_delete(host_id).map_err(|err| err.to_string())?;
+    db.host_delete(host_id)
+        .map_err(|err| crate::error_text::error_text(&err))?;
     let mut deleted = Deleted::default();
     for item in plan.remove {
         match db.identity_delete(item.id) {

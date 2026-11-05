@@ -119,7 +119,7 @@ fn snapshot_uses_uids_for_every_reference_and_includes_secrets() {
                 },
             ],
         )
-        .map_err(|err| crate::error::ZsshError::Internal(err.to_string()))?;
+        .map_err(|err| crate::error::ZsshError::Internal(err.to_string().into()))?;
         Ok(())
     })
     .expect("写墓碑");

@@ -407,7 +407,7 @@ pub fn finish_connect(
         connected.models.as_deref(),
         policy,
     )
-    .map_err(|err| err.to_string())?;
+    .map_err(|err| crate::error_text::error_text(&err))?;
     // 换了令牌：余额要重新取（立刻允许，不受上次时间限制）。
     book().forget(endpoint.id);
     BALANCE_VERSION.fetch_add(1, Ordering::SeqCst);
@@ -416,8 +416,13 @@ pub fn finish_connect(
 
 /// 断开：通知 Tokenway 停用（失败也继续）→ 删保险库里的 Key → 删接口配置。
 pub async fn disconnect_endpoint(endpoint_id: i64) -> Result<DisconnectReport, String> {
-    let db = crate::host_db::open_database()
-        .map_err(|err| format!("{}{err}", t(TokenwayMsg::OpenSettingsDbFailedPrefix)))?;
+    let db = crate::host_db::open_database().map_err(|err| {
+        format!(
+            "{}{}",
+            t(TokenwayMsg::OpenSettingsDbFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     let transport = transport()?;
     let revoke_url = tokenway_preset().and_then(|preset| preset.revoke_url);
     let uid = db.ai_endpoint_get(endpoint_id).ok().map(|e| e.uid);
@@ -429,7 +434,7 @@ pub async fn disconnect_endpoint(endpoint_id: i64) -> Result<DisconnectReport, S
         endpoint_id,
     )
     .await
-    .map_err(|err| err.to_string())?;
+    .map_err(|err| crate::error_text::error_text(&err))?;
     book().forget(endpoint_id);
     if let Some(uid) = uid {
         builtin::remote_forget(&uid);

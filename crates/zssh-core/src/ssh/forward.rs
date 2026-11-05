@@ -17,7 +17,7 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tracing::debug;
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Reason, ZsshError};
 use crate::ssh::connection::{Connection, ForwardedChannel};
 
 /// 多久看一次 SSH 连接还在不在。连接断了转发就没用了，要让界面知道。
@@ -72,11 +72,31 @@ pub async fn bind_local(bind_host: &str, bind_port: u16) -> Result<TcpListener, 
         .await
         .map_err(|err| {
             if err.kind() == std::io::ErrorKind::AddrInUse {
-                ZsshError::InvalidInput(format!("本机端口 {bind_port} 已经被别的程序占用"))
+                ZsshError::InvalidInput(
+                    Reason::new(
+                        rk::LOCAL_PORT_IN_USE,
+                        format!("本机端口 {bind_port} 已经被别的程序占用"),
+                    )
+                    .with("port", bind_port),
+                )
             } else if err.kind() == std::io::ErrorKind::PermissionDenied {
-                ZsshError::InvalidInput(format!("没有权限监听本机端口 {bind_port}"))
+                ZsshError::InvalidInput(
+                    Reason::new(
+                        rk::LOCAL_PORT_DENIED,
+                        format!("没有权限监听本机端口 {bind_port}"),
+                    )
+                    .with("port", bind_port),
+                )
             } else {
-                ZsshError::InvalidInput(format!("监听 {bind_host}:{bind_port} 失败：{err}"))
+                ZsshError::InvalidInput(
+                    Reason::new(
+                        rk::LOCAL_LISTEN_FAILED,
+                        format!("监听 {bind_host}:{bind_port} 失败：{err}"),
+                    )
+                    .with("host", bind_host)
+                    .with("port", bind_port)
+                    .with("cause", &err),
+                )
             }
         })
 }
@@ -101,7 +121,7 @@ where
 }
 
 fn connection_lost() -> ZsshError {
-    ZsshError::Shell("SSH 连接断开了".to_owned())
+    ZsshError::Shell(Reason::new(rk::CONNECTION_LOST, "SSH 连接断开了"))
 }
 
 /// 本地转发：接受本机连接，每条都经 SSH 开一个 direct-tcpip 通道连到目标。

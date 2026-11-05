@@ -928,35 +928,43 @@ pub(crate) fn peer_run_at(
     match name {
         "hosts" => {
             let count: usize = arg.parse().map_err(|_| "hosts:<个数>".to_owned())?;
-            let existing = db.host_list().map_err(|err| err.to_string())?.len();
+            let existing = db
+                .host_list()
+                .map_err(|err| crate::error_text::error_text(&err))?
+                .len();
             for index in 1..=count {
                 db.host_save(&draft(&format!("peer-{}", existing + index), None))
-                    .map_err(|err| err.to_string())?;
+                    .map_err(|err| crate::error_text::error_text(&err))?;
             }
         }
         "delete" => {
             let count: usize = arg.parse().map_err(|_| "delete:<个数>".to_owned())?;
-            let mut hosts = db.host_list().map_err(|err| err.to_string())?;
+            let mut hosts = db
+                .host_list()
+                .map_err(|err| crate::error_text::error_text(&err))?;
             hosts.sort_by_key(|host| host.id);
             for host in hosts.into_iter().take(count) {
-                db.host_delete(host.id).map_err(|err| err.to_string())?;
+                db.host_delete(host.id)
+                    .map_err(|err| crate::error_text::error_text(&err))?;
             }
         }
         "rename" => {
             let (old, new) = arg.split_once(':').ok_or("rename:<旧名>:<新名>")?;
             let host = db
                 .host_list()
-                .map_err(|err| err.to_string())?
+                .map_err(|err| crate::error_text::error_text(&err))?
                 .into_iter()
                 .find(|host| host.name == old)
                 .ok_or("另一台电脑上没有这台主机")?;
             db.host_save(&draft(new, Some(host.id)))
-                .map_err(|err| err.to_string())?;
+                .map_err(|err| crate::error_text::error_text(&err))?;
         }
         "sync" => {}
         _ => return Err(format!("不认识的操作：{name}")),
     }
-    let device_id = db.sync_device_id().map_err(|err| err.to_string())?;
+    let device_id = db
+        .sync_device_id()
+        .map_err(|err| crate::error_text::error_text(&err))?;
     let context = SyncContext {
         db: &db,
         sealer,
@@ -1003,7 +1011,7 @@ pub(crate) fn draft_for_tests(name: &str) -> HostDraft {
 fn local_db() -> Result<Database, String> {
     let dir = crate::settings::data_dir();
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
-    Database::open(&dir.join("zssh.db")).map_err(|err| err.to_string())
+    Database::open(&dir.join("zssh.db")).map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 在界面这台电脑的库里改一台主机的名字（造「两边改了同一条记录」的冲突）。
@@ -1011,12 +1019,12 @@ pub(crate) fn local_rename(old: &str, new: &str) -> Result<(), String> {
     let db = local_db()?;
     let host = db
         .host_list()
-        .map_err(|err| err.to_string())?
+        .map_err(|err| crate::error_text::error_text(&err))?
         .into_iter()
         .find(|host| host.name == old)
         .ok_or("本机没有这台主机")?;
     db.host_save(&draft(new, Some(host.id)))
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| crate::error_text::error_text(&err))?;
     Ok(())
 }
 
@@ -1033,7 +1041,7 @@ pub(crate) fn corrupt_baseline() -> Result<(), String> {
 pub(crate) fn local_host_count() -> Result<usize, String> {
     Ok(local_db()?
         .host_list()
-        .map_err(|err| err.to_string())?
+        .map_err(|err| crate::error_text::error_text(&err))?
         .len())
 }
 
@@ -1041,7 +1049,7 @@ pub(crate) fn local_host_count() -> Result<usize, String> {
 pub(crate) fn local_has_host(name: &str) -> Result<bool, String> {
     Ok(local_db()?
         .host_list()
-        .map_err(|err| err.to_string())?
+        .map_err(|err| crate::error_text::error_text(&err))?
         .iter()
         .any(|host| host.name == name))
 }
@@ -1049,10 +1057,13 @@ pub(crate) fn local_has_host(name: &str) -> Result<bool, String> {
 /// 在本机库里造 n 台主机（`local-1`…）。
 pub(crate) fn local_hosts(count: usize) -> Result<(), String> {
     let db = local_db()?;
-    let existing = db.host_list().map_err(|err| err.to_string())?.len();
+    let existing = db
+        .host_list()
+        .map_err(|err| crate::error_text::error_text(&err))?
+        .len();
     for index in 1..=count {
         db.host_save(&draft(&format!("local-{}", existing + index), None))
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| crate::error_text::error_text(&err))?;
     }
     Ok(())
 }

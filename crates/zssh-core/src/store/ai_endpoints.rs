@@ -13,7 +13,7 @@ use crate::ai::agent::builtin::config::{
     key_identity_name, normalize_draft, AiEndpoint, AiEndpointDraft, BuiltinDefault, EndpointKind,
     OpenAiOptionsConfig,
 };
-use crate::error::ZsshError;
+use crate::error::{Entity, Reason, ZsshError};
 use crate::store::db::Database;
 use crate::store::identities::identity_secret;
 use crate::store::settings::AI_BUILTIN_DEFAULT_KEY;
@@ -64,7 +64,7 @@ impl Database {
                     )
                     .optional()?
                     .ok_or(ZsshError::NotFound {
-                        entity: "ZeePilot 接口",
+                        entity: Entity::AiEndpoint,
                         id,
                     })?,
                 ),
@@ -217,7 +217,7 @@ impl Database {
                 )
                 .optional()?
                 .ok_or(ZsshError::NotFound {
-                    entity: "ZeePilot 接口",
+                    entity: Entity::AiEndpoint,
                     id,
                 })?;
             match key_id {
@@ -264,7 +264,8 @@ impl Database {
 
 fn to_json<T: serde::Serialize>(value: &T, what: &str) -> Result<String, ZsshError> {
     serde_json::to_string(value)
-        .map_err(|err| ZsshError::InvalidInput(format!("{what}序列化失败：{err}")))
+        // 序列化只含字符串 / 数字的结构体不会失败，用户见不到这句。
+        .map_err(|err| ZsshError::InvalidInput(Reason::text(format!("{what}序列化失败：{err}"))))
 }
 
 /// 删接口的 Key 凭据；还被主机引用时保留（只是不再属于这个接口）。
@@ -288,7 +289,7 @@ fn endpoint_get(conn: &Connection, id: i64) -> Result<AiEndpoint, ZsshError> {
     )
     .map_err(|err| match err {
         rusqlite::Error::QueryReturnedNoRows => ZsshError::NotFound {
-            entity: "ZeePilot 接口",
+            entity: Entity::AiEndpoint,
             id,
         },
         other => other.into(),

@@ -2,7 +2,7 @@
 
 use rusqlite::{params, Connection, Row};
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Entity, Reason, ZsshError};
 use crate::model::{Proxy, ProxyDraft, ProxyKind};
 use crate::store::db::Database;
 
@@ -42,7 +42,13 @@ impl Database {
                 Some(blob) if !blob.is_empty() => {
                     let plaintext = crate::store::secrets::unprotect(&blob)?;
                     Some(String::from_utf8(plaintext).map_err(|err| {
-                        ZsshError::Secret(format!("解出来的代理密码不是 UTF-8：{err}"))
+                        ZsshError::Secret(
+                            Reason::new(
+                                rk::PROXY_PASSWORD_NOT_UTF8,
+                                format!("解出来的代理密码不是 UTF-8：{err}"),
+                            )
+                            .with("cause", &err),
+                        )
                     })?)
                 }
                 _ => None,
@@ -78,13 +84,22 @@ impl Database {
     pub fn proxy_save(&self, draft: &ProxyDraft) -> Result<Proxy, ZsshError> {
         let name = draft.name.trim();
         if name.is_empty() {
-            return Err(ZsshError::InvalidInput("代理名不能为空".to_owned()));
+            return Err(ZsshError::InvalidInput(Reason::new(
+                rk::PROXY_NAME_EMPTY,
+                "代理名不能为空",
+            )));
         }
         if draft.host.trim().is_empty() {
-            return Err(ZsshError::InvalidInput("代理地址不能为空".to_owned()));
+            return Err(ZsshError::InvalidInput(Reason::new(
+                rk::PROXY_ADDRESS_EMPTY,
+                "代理地址不能为空",
+            )));
         }
         if draft.port == 0 {
-            return Err(ZsshError::InvalidInput("端口要在 1-65535 之间".to_owned()));
+            return Err(ZsshError::InvalidInput(Reason::new(
+                rk::PORT_RANGE,
+                "端口要在 1-65535 之间",
+            )));
         }
 
         let secret_blob = match draft.secret.as_deref() {
@@ -128,7 +143,8 @@ impl Database {
                     };
                     if changed == 0 {
                         return Err(ZsshError::NotFound {
-                            entity: "代理", id
+                            entity: Entity::Proxy,
+                            id,
                         });
                     }
                     id
@@ -194,7 +210,8 @@ pub(crate) fn proxy_get(conn: &Connection, id: i64) -> Result<Proxy, ZsshError> 
     )
     .map_err(|err| match err {
         rusqlite::Error::QueryReturnedNoRows => ZsshError::NotFound {
-            entity: "代理", id
+            entity: Entity::Proxy,
+            id,
         },
         other => other.into(),
     })

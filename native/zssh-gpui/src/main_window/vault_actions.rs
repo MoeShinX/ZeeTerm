@@ -232,7 +232,7 @@ impl MainWindow {
             .db()
             .and_then(|db| {
                 db.host_saved_password(host_id)
-                    .map_err(|err| err.to_string())
+                    .map_err(|err| crate::error_text::error_text(&err))
             })
             // 经 `chat_copy` 写：和聊天复制同一个可替换的写入口，测试里不碰系统剪贴板。
             .and_then(|password| crate::chat_copy::write_sensitive(password.as_str(), cx));
@@ -255,7 +255,7 @@ impl MainWindow {
     ) {
         let info = self.store.db().and_then(|db| {
             db.host_connection_info(host_id)
-                .map_err(|err| err.to_string())
+                .map_err(|err| crate::error_text::error_text(&err))
         });
         // 连接信息里带着密码才要验证锁屏密码（V2-U35）；不带密码的主机照旧直接复制。
         // 上面取到的明文还在内存里（`Zeroizing`），没验证通过就原样丢掉，不会显示、不会复制。

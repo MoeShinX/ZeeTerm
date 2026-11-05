@@ -18,7 +18,7 @@ use tokio_socks::tcp::Socks5Stream;
 use tokio_socks::TargetAddr;
 use tracing::debug;
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Reason, ZsshError};
 use crate::model::ProxyKind;
 
 /// 这一跳（TCP 或代理握手）的超时。跳板机那一跳的 SSH 握手另有自己的超时。
@@ -165,7 +165,11 @@ pub async fn connect_via_proxy(
         Ok(result) => result,
         Err(_) => Err(ZsshError::Proxy {
             proxy: proxy.label(),
-            detail: format!("握手超过 {} 秒", HOP_TIMEOUT.as_secs()),
+            detail: Reason::new(
+                rk::PROXY_HANDSHAKE_TIMEOUT,
+                format!("握手超过 {} 秒", HOP_TIMEOUT.as_secs()),
+            )
+            .with("seconds", HOP_TIMEOUT.as_secs()),
         }),
     }
 }
@@ -224,13 +228,19 @@ pub(crate) fn is_ipv6_literal(host: &str) -> bool {
     without_zone.parse::<std::net::Ipv6Addr>().is_ok()
 }
 
-/// 目标是 IPv6 地址时在报错后面补上 [`IPV6_EGRESS_HINT`]。
-pub(crate) fn with_ipv6_hint(detail: String, host: &str) -> String {
+/// 目标是 IPv6 地址时在报错后面补上 [`IPV6_EGRESS_HINT`]。英文由界面看 `ipv6_hint` 参数补一句。
+pub(crate) fn with_ipv6_hint(reason: Reason, host: &str) -> Reason {
     if is_ipv6_literal(host) {
-        format!("{detail}。{IPV6_EGRESS_HINT}")
+        reason
+            .append_zh(&format!("。{IPV6_EGRESS_HINT}"))
+            .with("ipv6_hint", "1")
     } else {
-        detail
+        reason
     }
+}
+
+fn http_status_reason(status_line: &str) -> Reason {
+    Reason::new(rk::HTTP_STATUS, format!("代理返回 {status_line}")).with("status", status_line)
 }
 
 /// 代理回的这几种错误，目标是 IPv6 时多半是代理没有 IPv6 出口。
@@ -251,7 +261,7 @@ fn socks_error_may_be_missing_ipv6(error: &tokio_socks::Error) -> bool {
 /// 不能拼成 `host:port` 字符串交给 tokio-socks：它对字符串先按 `SocketAddr` 解析，
 /// 失败再从最后一个冒号切开当域名，`2001:db8::1:22` 这样的 IPv6 就被当成域名
 /// `2001:db8::1` 发出去，代理多半解析不了。这里自己判断类型。
-fn socks5_target(host: &str, port: u16) -> Result<TargetAddr<'_>, String> {
+fn socks5_target(host: &str, port: u16) -> Result<TargetAddr<'_>, Reason> {
     let bare = host
         .strip_prefix('[')
         .and_then(|rest| rest.strip_suffix(']'))
@@ -260,35 +270,50 @@ fn socks5_target(host: &str, port: u16) -> Result<TargetAddr<'_>, String> {
         return Ok(TargetAddr::Ip(SocketAddr::new(ip, port)));
     }
     if bare.is_empty() {
-        return Err("目标主机为空".to_owned());
+        return Err(Reason::new(rk::PROXY_TARGET_EMPTY, "目标主机为空"));
     }
     // 域名不会有冒号；到这里还有冒号，多半是带 zone id 的 IPv6（`fe80::1%eth0`），
     // SOCKS5 的地址字段放不下 zone，当域名发出去也只会让代理困惑，直接说清楚。
     if bare.contains(':') {
-        return Err(format!(
-            "目标主机 {host:?} 不是合法的 IPv6 地址，SOCKS5 也无法携带带 zone id 的地址"
-        ));
+        return Err(Reason::new(
+            rk::PROXY_TARGET_BAD_IPV6,
+            format!("目标主机 {host:?} 不是合法的 IPv6 地址，SOCKS5 也无法携带带 zone id 的地址"),
+        )
+        .with("host", host));
     }
     Ok(TargetAddr::Domain(Cow::Borrowed(bare), port))
 }
 
 /// 把 tokio-socks 的错误换成能看懂的中文。
-fn describe_socks_error(error: &tokio_socks::Error) -> String {
+fn describe_socks_error(error: &tokio_socks::Error) -> Reason {
     use tokio_socks::Error;
     match error {
-        Error::ProxyServerUnreachable => "连不上代理服务器".to_owned(),
-        Error::PasswordAuthFailure(code) => {
-            format!("用户名或密码不被代理接受（子协商返回 {code}）")
+        Error::ProxyServerUnreachable => Reason::new(rk::SOCKS_UNREACHABLE, "连不上代理服务器"),
+        Error::PasswordAuthFailure(code) => Reason::new(
+            rk::SOCKS_PASSWORD_REJECTED,
+            format!("用户名或密码不被代理接受（子协商返回 {code}）"),
+        )
+        .with("code", code),
+        Error::NoAcceptableAuthMethods => {
+            Reason::new(rk::SOCKS_NO_AUTH_METHOD, "代理不接受我们提供的认证方式")
         }
-        Error::NoAcceptableAuthMethods => "代理不接受我们提供的认证方式".to_owned(),
-        Error::AuthorizationRequired => "代理要求认证".to_owned(),
-        Error::ConnectionRefused => "代理拒绝了这个目标（连接被拒绝）".to_owned(),
-        Error::HostUnreachable => "代理说目标主机不可达".to_owned(),
-        Error::NetworkUnreachable => "代理说网络不可达".to_owned(),
-        Error::ConnectionNotAllowedByRuleset => "代理的规则不允许连这个目标".to_owned(),
-        Error::CommandNotSupported => "代理不支持 CONNECT".to_owned(),
-        Error::AddressTypeNotSupported => "代理不支持这种地址类型".to_owned(),
-        other => format!("{other}"),
+        Error::AuthorizationRequired => Reason::new(rk::SOCKS_AUTH_REQUIRED, "代理要求认证"),
+        Error::ConnectionRefused => Reason::new(
+            rk::SOCKS_CONNECTION_REFUSED,
+            "代理拒绝了这个目标（连接被拒绝）",
+        ),
+        Error::HostUnreachable => Reason::new(rk::SOCKS_HOST_UNREACHABLE, "代理说目标主机不可达"),
+        Error::NetworkUnreachable => Reason::new(rk::SOCKS_NETWORK_UNREACHABLE, "代理说网络不可达"),
+        Error::ConnectionNotAllowedByRuleset => {
+            Reason::new(rk::SOCKS_RULESET, "代理的规则不允许连这个目标")
+        }
+        Error::CommandNotSupported => {
+            Reason::new(rk::SOCKS_COMMAND_UNSUPPORTED, "代理不支持 CONNECT")
+        }
+        Error::AddressTypeNotSupported => {
+            Reason::new(rk::SOCKS_ADDRESS_TYPE, "代理不支持这种地址类型")
+        }
+        other => Reason::new(rk::PROXY_OTHER, format!("{other}")).with("cause", other),
     }
 }
 
@@ -317,7 +342,11 @@ async fn http_connect_handshake(
         .await
         .map_err(|error| ZsshError::Proxy {
             proxy: proxy.label(),
-            detail: format!("发送 CONNECT 请求失败：{error}"),
+            detail: Reason::new(
+                rk::HTTP_CONNECT_SEND_FAILED,
+                format!("发送 CONNECT 请求失败：{error}"),
+            )
+            .with("cause", &error),
         })?;
 
     let (head, leftover) = read_http_head(&mut socket, proxy).await?;
@@ -337,15 +366,23 @@ async fn http_connect_handshake(
         proxy: proxy.label(),
         detail: if status_line.contains("407") {
             if proxy.username.is_some() {
-                format!("代理要求认证（{status_line}）：用户名或密码不对")
+                Reason::new(
+                    rk::HTTP_AUTH_BAD,
+                    format!("代理要求认证（{status_line}）：用户名或密码不对"),
+                )
+                .with("status", &status_line)
             } else {
-                format!("代理要求认证（{status_line}）：这个代理需要填用户名和密码")
+                Reason::new(
+                    rk::HTTP_AUTH_NEEDED,
+                    format!("代理要求认证（{status_line}）：这个代理需要填用户名和密码"),
+                )
+                .with("status", &status_line)
             }
         } else if is_gateway_failure(&status_line) {
             // 502/503/504：代理自己连不上目标；目标是 IPv6 时多半是代理没有 IPv6 出口
-            with_ipv6_hint(format!("代理返回 {status_line}"), host)
+            with_ipv6_hint(http_status_reason(&status_line), host)
         } else {
-            format!("代理返回 {status_line}")
+            http_status_reason(&status_line)
         },
     })
 }
@@ -355,14 +392,16 @@ async fn http_connect_handshake(
 /// IPv6 字面量本身带冒号，不加方括号代理就分不清哪段是端口（RFC 9110 的
 /// authority 写法要求 `[addr]:port`）。主机名原样拼进请求行，里面要是有换行或
 /// 空白，就能截断请求行、注入额外的请求头，所以直接拒绝。
-fn http_connect_authority(host: &str, port: u16) -> Result<String, String> {
+fn http_connect_authority(host: &str, port: u16) -> Result<String, Reason> {
     if host.is_empty() {
-        return Err("目标主机为空".to_owned());
+        return Err(Reason::new(rk::PROXY_TARGET_EMPTY, "目标主机为空"));
     }
     if host.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
-        return Err(format!(
-            "目标主机 {host:?} 里有空白或控制字符，不能放进 CONNECT 请求"
-        ));
+        return Err(Reason::new(
+            rk::PROXY_TARGET_BAD_CHAR,
+            format!("目标主机 {host:?} 里有空白或控制字符，不能放进 CONNECT 请求"),
+        )
+        .with("host", host));
     }
 
     let already_bracketed = host.starts_with('[') && host.ends_with(']');
@@ -370,7 +409,11 @@ fn http_connect_authority(host: &str, port: u16) -> Result<String, String> {
     // `Ipv6Addr` 解析不了 zone，所以按冒号判断而不是按能否解析）。
     if !already_bracketed && host.contains(':') {
         if host.contains('[') || host.contains(']') {
-            return Err(format!("目标主机 {host:?} 的方括号不成对"));
+            return Err(Reason::new(
+                rk::PROXY_TARGET_BRACKETS,
+                format!("目标主机 {host:?} 的方括号不成对"),
+            )
+            .with("host", host));
         }
         return Ok(format!("[{host}]:{port}"));
     }
@@ -484,7 +527,7 @@ async fn read_http_head(
         if buffer.len() > MAX_HTTP_HEAD {
             return Err(ZsshError::Proxy {
                 proxy: proxy.label(),
-                detail: "代理回的响应头太长".to_owned(),
+                detail: Reason::new(rk::HTTP_HEAD_TOO_LONG, "代理回的响应头太长"),
             });
         }
         let read = socket
@@ -492,7 +535,8 @@ async fn read_http_head(
             .await
             .map_err(|error| ZsshError::Proxy {
                 proxy: proxy.label(),
-                detail: format!("读代理响应失败：{error}"),
+                detail: Reason::new(rk::HTTP_READ_FAILED, format!("读代理响应失败：{error}"))
+                    .with("cause", &error),
             })?;
         if read == 0 {
             break None;
@@ -503,7 +547,7 @@ async fn read_http_head(
     if buffer.is_empty() {
         return Err(ZsshError::Proxy {
             proxy: proxy.label(),
-            detail: "代理没有回任何东西就断开了".to_owned(),
+            detail: Reason::new(rk::HTTP_CLOSED_EMPTY, "代理没有回任何东西就断开了"),
         });
     }
     let leftover = match head_end {
@@ -1283,17 +1327,16 @@ mod tests {
 
     #[test]
     fn ipv6_hint_only_for_ipv6_targets() {
-        let hinted = with_ipv6_hint("代理说目标主机不可达".to_owned(), "2001:db8::1");
-        assert!(hinted.starts_with("代理说目标主机不可达。"));
-        assert!(hinted.contains(IPV6_EGRESS_HINT));
-        assert_eq!(
-            with_ipv6_hint("代理说目标主机不可达".to_owned(), "10.0.0.1"),
-            "代理说目标主机不可达"
-        );
-        assert_eq!(
-            with_ipv6_hint("代理说目标主机不可达".to_owned(), "example.com"),
-            "代理说目标主机不可达"
-        );
+        let base = || Reason::new(rk::SOCKS_HOST_UNREACHABLE, "代理说目标主机不可达");
+        let hinted = with_ipv6_hint(base(), "2001:db8::1");
+        assert!(hinted.zh().starts_with("代理说目标主机不可达。"));
+        assert!(hinted.zh().contains(IPV6_EGRESS_HINT));
+        assert!(hinted
+            .params()
+            .iter()
+            .any(|(k, v)| *k == "ipv6_hint" && v == "1"));
+        assert_eq!(with_ipv6_hint(base(), "10.0.0.1"), base());
+        assert_eq!(with_ipv6_hint(base(), "example.com"), base());
     }
 
     #[test]

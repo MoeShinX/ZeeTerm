@@ -38,7 +38,9 @@ pub fn record_output(db: &Database, host_id: i64, output: &str) -> Result<Record
     let Some(os) = classify(output) else {
         return Ok(Recorded::Unknown);
     };
-    let changed = db.host_os_set(host_id, os).map_err(|err| err.to_string())?;
+    let changed = db
+        .host_os_set(host_id, os)
+        .map_err(|err| crate::error_text::error_text(&err))?;
     Ok(if changed {
         Recorded::Changed(os)
     } else {

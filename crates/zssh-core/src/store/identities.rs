@@ -2,7 +2,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Entity, Reason, ZsshError};
 use crate::model::{Identity, IdentityDraft, IdentityKind};
 use crate::store::db::Database;
 
@@ -30,12 +30,18 @@ impl Database {
     pub fn identity_save(&self, draft: &IdentityDraft) -> Result<Identity, ZsshError> {
         let name = draft.name.trim();
         if name.is_empty() {
-            return Err(ZsshError::InvalidInput("凭据名不能为空".to_owned()));
+            return Err(ZsshError::InvalidInput(Reason::new(
+                rk::IDENTITY_NAME_EMPTY,
+                "凭据名不能为空",
+            )));
         }
         if draft.kind == IdentityKind::KeyFile
             && draft.key_path.as_deref().unwrap_or("").trim().is_empty()
         {
-            return Err(ZsshError::InvalidInput("私钥文件凭据要填路径".to_owned()));
+            return Err(ZsshError::InvalidInput(Reason::new(
+                rk::KEYFILE_NEEDS_PATH,
+                "私钥文件凭据要填路径",
+            )));
         }
 
         self.with_conn_write(|conn| {
@@ -62,10 +68,10 @@ impl Database {
             // 会被新类型继续使用，密码认证时就会把它当 SSH 密码发给服务器（R7-01）。
             // 要么同时给新秘密（空串表示清掉），要么类型不变。
             if existing.is_some() && !same_kind && had_secret && draft.secret.is_none() {
-                return Err(ZsshError::InvalidInput(
-                    "改凭据类型时要同时重新填写密码或私钥，原来保存的内容不会带到新类型里"
-                        .to_owned(),
-                ));
+                return Err(ZsshError::InvalidInput(Reason::new(
+                    rk::IDENTITY_KIND_CHANGE_NEEDS_SECRET,
+                    "改凭据类型时要同时重新填写密码或私钥，原来保存的内容不会带到新类型里",
+                )));
             }
 
             let secret_blob = match draft.kind {
@@ -114,7 +120,7 @@ impl Database {
                     };
                     if changed == 0 {
                         return Err(ZsshError::NotFound {
-                            entity: "凭据",
+                            entity: Entity::Identity,
                             id,
                         });
                     }
@@ -173,16 +179,28 @@ impl Database {
                     .key_path
                     .filter(|path| !path.trim().is_empty())
                     .ok_or_else(|| {
-                        ZsshError::InvalidInput("这条凭据没有填私钥文件路径".to_owned())
+                        ZsshError::InvalidInput(Reason::new(
+                            rk::THIS_IDENTITY_NO_KEY_PATH,
+                            "这条凭据没有填私钥文件路径",
+                        ))
                     })?;
                 let pem = std::fs::read_to_string(crate::sftp::local::long_path(
                     std::path::Path::new(&path),
                 ))
-                .map_err(|err| ZsshError::InvalidInput(format!("读不了私钥文件：{err}")))?;
+                .map_err(|err| {
+                    ZsshError::InvalidInput(
+                        Reason::new(
+                            rk::PRIVATE_KEY_FILE_UNREADABLE,
+                            format!("读不了私钥文件：{err}"),
+                        )
+                        .with("path", &path)
+                        .with("cause", &err),
+                    )
+                })?;
                 crate::ssh::keygen::public_key_of(&pem, secret.as_deref())
             }
             IdentityKind::Password | IdentityKind::Agent => Err(ZsshError::InvalidInput(
-                "这条凭据不是私钥，没有公钥".to_owned(),
+                Reason::new(rk::IDENTITY_NO_PUBLIC_KEY, "这条凭据不是私钥，没有公钥"),
             )),
         }
     }
@@ -199,10 +217,13 @@ impl Database {
         self.with_conn_write(|conn| {
             let identity = identity_get(conn, id)?;
             if identity.kind != IdentityKind::KeyInline {
-                return Err(ZsshError::InvalidInput(format!(
-                    "凭据「{}」不是导入的私钥，存不了口令",
-                    identity.name
-                )));
+                return Err(ZsshError::InvalidInput(
+                    Reason::new(
+                        rk::IDENTITY_NOT_IMPORTED_KEY,
+                        format!("凭据「{}」不是导入的私钥，存不了口令", identity.name),
+                    )
+                    .with("name", &identity.name),
+                ));
             }
 
             let secret = identity_secret(conn, id)?;
@@ -272,7 +293,8 @@ impl InlineKey {
     /// 序列化成要加密的文本。
     pub fn to_secret(&self) -> Result<String, ZsshError> {
         serde_json::to_string(self)
-            .map_err(|err| ZsshError::Secret(format!("私钥内容序列化失败：{err}")))
+            // 只含字符串字段的结构体序列化不会失败，用户见不到这句。
+            .map_err(|err| ZsshError::Secret(Reason::text(format!("私钥内容序列化失败：{err}"))))
     }
 }
 
@@ -317,9 +339,10 @@ pub(crate) fn inline_key_update(
         (None, Some(old)) if !old.key.trim().is_empty() => old.key.clone(),
         // 只改口令却没有私钥内容：口令没有地方放，不能假装保存成功
         (None, _) => {
-            return Err(ZsshError::InvalidInput(
-                "这条凭据还没有导入私钥内容，先粘贴私钥再设置口令".to_owned(),
-            ))
+            return Err(ZsshError::InvalidInput(Reason::new(
+                rk::IDENTITY_NO_KEY_CONTENT_YET,
+                "这条凭据还没有导入私钥内容，先粘贴私钥再设置口令",
+            )))
         }
     };
     let passphrase = match passphrase {
@@ -339,7 +362,8 @@ pub(crate) fn identity_get(conn: &Connection, id: i64) -> Result<Identity, ZsshE
     )
     .map_err(|err| match err {
         rusqlite::Error::QueryReturnedNoRows => ZsshError::NotFound {
-            entity: "凭据", id
+            entity: Entity::Identity,
+            id,
         },
         other => other.into(),
     })
@@ -355,7 +379,8 @@ pub(crate) fn identity_secret(conn: &Connection, id: i64) -> Result<Option<Strin
         )
         .map_err(|err| match err {
             rusqlite::Error::QueryReturnedNoRows => ZsshError::NotFound {
-                entity: "凭据", id
+                entity: Entity::Identity,
+                id,
             },
             other => other.into(),
         })?;
@@ -363,9 +388,15 @@ pub(crate) fn identity_secret(conn: &Connection, id: i64) -> Result<Option<Strin
     match blob {
         Some(blob) if !blob.is_empty() => {
             let plaintext = crate::store::secrets::unprotect(&blob)?;
-            String::from_utf8(plaintext)
-                .map(Some)
-                .map_err(|err| ZsshError::Secret(format!("解出来的凭据不是 UTF-8：{err}")))
+            String::from_utf8(plaintext).map(Some).map_err(|err| {
+                ZsshError::Secret(
+                    Reason::new(
+                        rk::IDENTITY_SECRET_NOT_UTF8,
+                        format!("解出来的凭据不是 UTF-8：{err}"),
+                    )
+                    .with("cause", &err),
+                )
+            })
         }
         _ => Ok(None),
     }

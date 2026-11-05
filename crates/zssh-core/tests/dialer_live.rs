@@ -102,7 +102,7 @@ async fn proxy_is_listening(proxy: &ProxyConfig) -> bool {
 fn is_forwarding_refused(err: &ZsshError) -> bool {
     matches!(
         err,
-        ZsshError::Hop { detail, .. } if detail.contains("administratively prohibited")
+        ZsshError::Hop { source, .. } if source.to_string().contains("administratively prohibited")
     )
 }
 

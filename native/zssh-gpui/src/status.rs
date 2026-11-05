@@ -1200,7 +1200,8 @@ fn load_host(host_id: i64) -> Result<Host, String> {
     let Some(db) = open_host_database()? else {
         return Err(crate::i18n::t(StatusMsg::DbNotCreated).to_owned());
     };
-    db.host_get(host_id).map_err(|err| err.to_string())
+    db.host_get(host_id)
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 打开服务器状态窗口；同一个进程可以开多个，采集由进程级 hub 去重。

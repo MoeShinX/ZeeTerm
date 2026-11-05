@@ -199,7 +199,13 @@ pub fn is_dismissed(db: &Database) -> bool {
 
 pub fn set_dismissed(db: &Database) -> Result<(), String> {
     db.setting_set(MIGRATE_DISMISSED_KEY, "true")
-        .map_err(|err| format!("{}{err}", t(MigrateMsg::SaveFailedPrefix)))
+        .map_err(|err| {
+            format!(
+                "{}{}",
+                t(MigrateMsg::SaveFailedPrefix),
+                crate::error_text::error_text(&err)
+            )
+        })
 }
 
 // ---- 读取 / 预览 / 导入（后台线程里跑）----
@@ -263,8 +269,13 @@ pub struct Loaded {
 fn open_db(data_dir: &Path) -> Result<Database, String> {
     std::fs::create_dir_all(data_dir)
         .map_err(|err| format!("{}{err}", t(MigrateMsg::CreateDataDirFailedPrefix)))?;
-    Database::open(&data_dir.join("zssh.db"))
-        .map_err(|err| format!("{}{err}", t(MigrateMsg::OpenDatabaseFailedPrefix)))
+    Database::open(&data_dir.join("zssh.db")).map_err(|err| {
+        format!(
+            "{}{}",
+            t(MigrateMsg::OpenDatabaseFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })
 }
 
 /// 和备份页同一种引擎：同一个数据目录、同一份 known_hosts。
@@ -273,9 +284,13 @@ fn engine<'a>(
     sealer: &'a dyn SecretSealer,
     data_dir: &Path,
 ) -> Result<SyncEngine<'a>, String> {
-    let device_id = db
-        .sync_device_id()
-        .map_err(|err| format!("{}{err}", t(MigrateMsg::ReadSyncDeviceIdFailedPrefix)))?;
+    let device_id = db.sync_device_id().map_err(|err| {
+        format!(
+            "{}{}",
+            t(MigrateMsg::ReadSyncDeviceIdFailedPrefix),
+            crate::error_text::error_text(&err)
+        )
+    })?;
     Ok(SyncEngine::new(
         db,
         sealer,

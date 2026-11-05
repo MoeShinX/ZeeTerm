@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Reason, ZsshError};
 
 mod protocol;
 pub use protocol::*;
@@ -41,9 +41,10 @@ pub fn parse_quick_target(s: &str) -> Result<QuickTarget, ZsshError> {
         return Err(ZsshError::QuickTargetMissingUser);
     }
     if trimmed.chars().any(char::is_whitespace) {
-        return Err(ZsshError::QuickTargetFormat(
-            "地址中不能包含空白字符".to_owned(),
-        ));
+        return Err(ZsshError::QuickTargetFormat(Reason::new(
+            rk::QUICK_NO_WHITESPACE,
+            "地址中不能包含空白字符",
+        )));
     }
 
     let (user, rest) = match trimmed.split_once('@') {
@@ -74,14 +75,23 @@ pub fn parse_quick_target(s: &str) -> Result<QuickTarget, ZsshError> {
 fn split_host_port(rest: &str) -> Result<(String, Option<String>), ZsshError> {
     if let Some(stripped) = rest.strip_prefix('[') {
         // [::1] 或 [::1]:2222
-        let (inner, after) = stripped
-            .split_once(']')
-            .ok_or_else(|| ZsshError::QuickTargetFormat("IPv6 地址缺少右方括号 ']'".to_owned()))?;
+        let (inner, after) = stripped.split_once(']').ok_or_else(|| {
+            ZsshError::QuickTargetFormat(Reason::new(
+                rk::QUICK_IPV6_NO_BRACKET,
+                "IPv6 地址缺少右方括号 ']'",
+            ))
+        })?;
         let port = match after {
             "" => None,
             _ => {
                 let port = after.strip_prefix(':').ok_or_else(|| {
-                    ZsshError::QuickTargetFormat(format!("']' 之后只能是端口号，收到 '{after}'"))
+                    ZsshError::QuickTargetFormat(
+                        Reason::new(
+                            rk::QUICK_AFTER_BRACKET,
+                            format!("']' 之后只能是端口号，收到 '{after}'"),
+                        )
+                        .with("after", after),
+                    )
                 })?;
                 Some(port.to_owned())
             }
@@ -92,9 +102,10 @@ fn split_host_port(rest: &str) -> Result<(String, Option<String>), ZsshError> {
     // 不加方括号时冒号只能有一个，两个及以上说明是没加括号的 IPv6。
     match rest.split_once(':') {
         None => Ok((rest.to_owned(), None)),
-        Some(_) if rest.matches(':').count() > 1 => Err(ZsshError::QuickTargetFormat(
-            "IPv6 地址必须加方括号，例如 root@[::1]:2222".to_owned(),
-        )),
+        Some(_) if rest.matches(':').count() > 1 => Err(ZsshError::QuickTargetFormat(Reason::new(
+            rk::QUICK_IPV6_NEEDS_BRACKET,
+            "IPv6 地址必须加方括号，例如 root@[::1]:2222",
+        ))),
         Some((host, port)) => Ok((host.to_owned(), Some(port.to_owned()))),
     }
 }
@@ -132,7 +143,10 @@ impl AuthMethod {
             "password" => Ok(Self::Password),
             "key" => Ok(Self::Key),
             "agent" => Ok(Self::Agent),
-            other => Err(ZsshError::InvalidInput(format!("未知的认证方式：{other}"))),
+            other => Err(ZsshError::InvalidInput(
+                Reason::new(rk::UNKNOWN_AUTH_METHOD, format!("未知的认证方式：{other}"))
+                    .with("value", other),
+            )),
         }
     }
 }
@@ -163,7 +177,13 @@ impl IdentityKind {
             "key_file" => Ok(Self::KeyFile),
             "key_inline" => Ok(Self::KeyInline),
             "agent" => Ok(Self::Agent),
-            other => Err(ZsshError::InvalidInput(format!("未知的凭据类型：{other}"))),
+            other => Err(ZsshError::InvalidInput(
+                Reason::new(
+                    rk::UNKNOWN_IDENTITY_KIND,
+                    format!("未知的凭据类型：{other}"),
+                )
+                .with("value", other),
+            )),
         }
     }
 
@@ -199,7 +219,13 @@ impl ProxyMode {
             "default" => Ok(Self::Default),
             "none" => Ok(Self::None),
             "custom" => Ok(Self::Custom),
-            other => Err(ZsshError::InvalidInput(format!("未知的代理策略：{other}"))),
+            other => Err(ZsshError::InvalidInput(
+                Reason::new(
+                    rk::UNKNOWN_PROXY_STRATEGY,
+                    format!("未知的代理策略：{other}"),
+                )
+                .with("value", other),
+            )),
         }
     }
 }
@@ -224,7 +250,10 @@ impl ProxyKind {
         match raw {
             "socks5" => Ok(Self::Socks5),
             "http" => Ok(Self::Http),
-            other => Err(ZsshError::InvalidInput(format!("未知的代理类型：{other}"))),
+            other => Err(ZsshError::InvalidInput(
+                Reason::new(rk::UNKNOWN_PROXY_KIND, format!("未知的代理类型：{other}"))
+                    .with("value", other),
+            )),
         }
     }
 }

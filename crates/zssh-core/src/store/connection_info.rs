@@ -6,11 +6,13 @@
 
 use zeroize::Zeroizing;
 
-use crate::error::ZsshError;
+use crate::error::{reason_keys as rk, Reason, ZsshError};
 use crate::model::{AuthMethod, Host, Identity, ProxyMode};
 use crate::store::db::Database;
 
-const NO_SAVED_PASSWORD: &str = "这台主机没有保存密码";
+fn no_saved_password() -> ZsshError {
+    ZsshError::InvalidInput(Reason::new(rk::NO_SAVED_PASSWORD, "这台主机没有保存密码"))
+}
 
 /// 按「复制密码」的规则取这台主机保存的密码。
 ///
@@ -23,25 +25,27 @@ pub(crate) fn resolve_saved_password(
 ) -> Result<Zeroizing<String>, ZsshError> {
     match host.auth_method {
         AuthMethod::Key => {
-            return Err(ZsshError::InvalidInput(
-                "这台主机用的是密钥登录，没有密码可复制".to_owned(),
-            ))
+            return Err(ZsshError::InvalidInput(Reason::new(
+                rk::KEY_LOGIN_NO_PASSWORD,
+                "这台主机用的是密钥登录，没有密码可复制",
+            )))
         }
         AuthMethod::Agent => {
-            return Err(ZsshError::InvalidInput(
-                "这台主机用的是 SSH agent 登录，没有密码可复制".to_owned(),
-            ))
+            return Err(ZsshError::InvalidInput(Reason::new(
+                rk::AGENT_LOGIN_NO_PASSWORD,
+                "这台主机用的是 SSH agent 登录，没有密码可复制",
+            )))
         }
         AuthMethod::Password => {}
     }
-    let identity = identity.ok_or_else(|| ZsshError::InvalidInput(NO_SAVED_PASSWORD.to_owned()))?;
+    let identity = identity.ok_or_else(no_saved_password)?;
     crate::store::hosts::check_identity_matches(AuthMethod::Password, identity)?;
     if !identity.has_secret {
-        return Err(ZsshError::InvalidInput(NO_SAVED_PASSWORD.to_owned()));
+        return Err(no_saved_password());
     }
     match secret()? {
         Some(password) if !password.is_empty() => Ok(Zeroizing::new(password)),
-        _ => Err(ZsshError::InvalidInput(NO_SAVED_PASSWORD.to_owned())),
+        _ => Err(no_saved_password()),
     }
 }
 
@@ -189,11 +193,11 @@ impl Database {
             let identity = crate::store::identities::identity_get(conn, id)?;
             crate::store::hosts::check_identity_matches(AuthMethod::Password, &identity)?;
             if !identity.has_secret {
-                return Err(ZsshError::InvalidInput(NO_SAVED_PASSWORD.to_owned()));
+                return Err(no_saved_password());
             }
             match crate::store::identities::identity_secret(conn, id)? {
                 Some(password) if !password.is_empty() => Ok(Zeroizing::new(password)),
-                _ => Err(ZsshError::InvalidInput(NO_SAVED_PASSWORD.to_owned())),
+                _ => Err(no_saved_password()),
             }
         })
     }
@@ -295,7 +299,7 @@ mod tests {
 
     fn message(err: ZsshError) -> String {
         match err {
-            ZsshError::InvalidInput(message) => message,
+            ZsshError::InvalidInput(message) => message.into_zh(),
             other => other.to_string(),
         }
     }
@@ -374,7 +378,7 @@ mod tests {
     fn a_decrypt_failure_is_reported_not_swallowed() {
         let id = identity(IdentityKind::Password, true);
         let err = resolve_saved_password(&host(AuthMethod::Password, Some(7)), Some(&id), || {
-            Err(ZsshError::Secret("解密失败".to_owned()))
+            Err(ZsshError::Secret("解密失败".into()))
         })
         .expect_err("解密失败要报出来");
         assert!(matches!(err, ZsshError::Secret(_)));

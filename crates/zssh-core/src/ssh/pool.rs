@@ -20,7 +20,7 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 use tracing::debug;
 
-use crate::error::ZsshError;
+use crate::error::{Reason, ZsshError};
 use crate::ssh::connection::{ChainHop, Connection};
 use crate::ssh::interact::{BoxFuture, Interactor};
 
@@ -360,7 +360,10 @@ impl<C: Pooled> ConnectionPool<C> {
 
             // 只有走到新建这一步才会用到连接工厂，所以它只建一次。
             let Some(connect) = connect.take() else {
-                return Err(ZsshError::Internal("连接池一次只该建一次连接".to_owned()));
+                // 不变量被打破才会到这里（同一次取连接只建一次），用户碰不到。
+                return Err(ZsshError::Internal(Reason::text(
+                    "连接池一次只该建一次连接",
+                )));
             };
             // 占位已经插进去了：如果这个 future 在中途被 select 掉（用户取消连接），
             // Drop 会把占位摘掉并叫醒等待者，不留下一个永远的坑。
@@ -754,7 +757,7 @@ mod tests {
 
         let result = pool
             .acquire_with(11, "v1", || async {
-                Err(ZsshError::InvalidInput("装出来的失败".to_owned()))
+                Err(ZsshError::InvalidInput("装出来的失败".into()))
             })
             .await;
         assert!(result.is_err());

@@ -357,10 +357,10 @@ impl MainWindow {
                 return;
             }
         };
-        let saved = self
-            .store
-            .db()
-            .and_then(|db| db.proxy_save(&draft).map_err(|err| err.to_string()));
+        let saved = self.store.db().and_then(|db| {
+            db.proxy_save(&draft)
+                .map_err(|err| crate::error_text::error_text(&err))
+        });
         self.store.reload();
         match saved {
             Ok(_) => {
@@ -381,11 +381,10 @@ impl MainWindow {
         else {
             return;
         };
-        let users = match self
-            .store
-            .db()
-            .and_then(|db| db.host_list().map_err(|e| e.to_string()))
-        {
+        let users = match self.store.db().and_then(|db| {
+            db.host_list()
+                .map_err(|e| crate::error_text::error_text(&e))
+        }) {
             Ok(hosts) => crate::proxies::hosts_using_proxy(&hosts, proxy_id),
             Err(err) => {
                 self.modal = Some(Modal::Confirm(Confirm {
@@ -436,10 +435,10 @@ impl MainWindow {
     }
 
     pub(crate) fn do_delete_proxy(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
-        let result = self
-            .store
-            .db()
-            .and_then(|db| db.proxy_delete(id).map_err(|err| err.to_string()));
+        let result = self.store.db().and_then(|db| {
+            db.proxy_delete(id)
+                .map_err(|err| crate::error_text::error_text(&err))
+        });
         self.store.reload();
         match result {
             Ok(()) => {
@@ -508,10 +507,10 @@ impl MainWindow {
                 return;
             }
         };
-        let result = self
-            .store
-            .db()
-            .and_then(|db| db.proxy_save(&draft).map_err(|err| err.to_string()));
+        let result = self.store.db().and_then(|db| {
+            db.proxy_save(&draft)
+                .map_err(|err| crate::error_text::error_text(&err))
+        });
         self.store.reload();
         match result {
             Ok(_) => self.notice_success(
@@ -534,10 +533,10 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let result = self
-            .store
-            .db()
-            .and_then(|db| db.set_default_proxy_id(id).map_err(|err| err.to_string()));
+        let result = self.store.db().and_then(|db| {
+            db.set_default_proxy_id(id)
+                .map_err(|err| crate::error_text::error_text(&err))
+        });
         if let Err(err) = result {
             self.notice_error(&err, window, cx);
         }

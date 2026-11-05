@@ -125,8 +125,9 @@ pub(crate) fn snapshot_from_conn(
                 rows.push(row?);
             }
             for (id, uid, name, kind, key_path, secret_blob, updated_at) in rows {
-                let secret = decrypt_secret(sealer, secret_blob, "凭据", &name)
-                    .map_err(|err| crate::error::ZsshError::Internal(err.to_string()))?;
+                let secret = decrypt_secret(sealer, secret_blob, "凭据", &name).map_err(|err| {
+                    crate::error::ZsshError::Internal(crate::error::Reason::text(err.to_string()))
+                })?;
                 identity_ids.insert(id, uid.clone());
                 snapshot.identities.push(IdentityRecord {
                     uid,
@@ -164,8 +165,9 @@ pub(crate) fn snapshot_from_conn(
                 rows.push(row?);
             }
             for (id, uid, name, kind, host, port, username, secret_blob, updated_at) in rows {
-                let secret = decrypt_secret(sealer, secret_blob, "代理", &name)
-                    .map_err(|err| crate::error::ZsshError::Internal(err.to_string()))?;
+                let secret = decrypt_secret(sealer, secret_blob, "代理", &name).map_err(|err| {
+                    crate::error::ZsshError::Internal(crate::error::Reason::text(err.to_string()))
+                })?;
                 proxy_ids.insert(id, uid.clone());
                 snapshot.proxies.push(ProxyRecord {
                     uid,

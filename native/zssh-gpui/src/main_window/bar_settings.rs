@@ -107,17 +107,17 @@ impl BarSettings {
 
 pub fn write_bool(db: &Database, key: &str, value: bool) -> Result<(), String> {
     db.setting_set(key, if value { "true" } else { "false" })
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 pub fn write_number(db: &Database, key: &str, value: f32) -> Result<(), String> {
     db.setting_set(key, &format!("{}", value.round() as i64))
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 pub fn write_text(db: &Database, key: &str, value: &str) -> Result<(), String> {
     db.setting_set(key, &setting_json(value))
-        .map_err(|err| err.to_string())
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 pub fn write_commands(db: &Database, list: &[QuickCommand]) -> Result<(), String> {
