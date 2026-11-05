@@ -7,6 +7,8 @@
 use zssh_core::store::Database;
 use zssh_core::store::settings::{KEEPALIVE_INTERVAL_KEY, POOL_IDLE_TIMEOUT_KEY};
 
+use crate::i18n::{Msg, t};
+
 pub const STATS_SHOW_KEY: &str = "stats_show";
 pub const STATS_REFRESH_KEY: &str = "stats_refresh_secs";
 pub const SFTP_CONCURRENCY_KEY: &str = "sftp_concurrency";
@@ -296,22 +298,77 @@ pub fn start_session_log(
 /// 退出时让所有会话日志把排着的写完，最多等这么久（磁盘慢时不能让退出无限期卡住）。
 pub const SESSION_LOG_EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// 会话日志的退出提示和问题清单里的界面文案（只在显示时取词；写库的是当时生成的那句话）。
+///
+/// 文件名、目录、底层错误的原因都来自本机，原样显示，不进这张表；带数量的句子保留 `format!`，
+/// 这里只提供固定片段。
+#[derive(Clone, Copy, Debug)]
+enum PrefsMsg {
+    UnfinishedLead,
+    UnfinishedTail,
+    MoreLead,
+    MoreTail,
+    ProblemSeparator,
+    NoteJoin,
+}
+
+impl Msg for PrefsMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::UnfinishedLead => "退出时有 ",
+            Self::UnfinishedTail => " 个会话日志还没写完（磁盘太慢？），它们的结尾可能不完整",
+            Self::MoreLead => "另有 ",
+            Self::MoreTail => " 条",
+            Self::ProblemSeparator => "：",
+            Self::NoteJoin => "；",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::UnfinishedLead => "Still writing at exit: ",
+            Self::UnfinishedTail => " session log(s) (slow disk?); their endings may be incomplete",
+            Self::MoreLead => "and ",
+            Self::MoreTail => " more",
+            Self::ProblemSeparator => ": ",
+            Self::NoteJoin => "; ",
+        }
+    }
+}
+
 /// 把 [`zssh_core::ssh::session_log::FinishReport`] 写成一句话（设置页显示）；一切正常返回空串。
 pub fn exit_note(report: &zssh_core::ssh::session_log::FinishReport) -> String {
     let mut parts = Vec::new();
     if report.unfinished > 0 {
         parts.push(format!(
-            "退出时有 {} 个会话日志还没写完（磁盘太慢？），它们的结尾可能不完整",
-            report.unfinished
+            "{}{}{}",
+            t(PrefsMsg::UnfinishedLead),
+            report.unfinished,
+            t(PrefsMsg::UnfinishedTail)
         ));
     }
     for problem in report.problems.iter().take(3) {
-        parts.push(format!("{}：{}", problem.file, problem.message));
+        parts.push(file_message(problem));
     }
     if report.problems.len() > 3 {
-        parts.push(format!("另有 {} 条", report.problems.len() - 3));
+        parts.push(format!(
+            "{}{}{}",
+            t(PrefsMsg::MoreLead),
+            report.problems.len() - 3,
+            t(PrefsMsg::MoreTail)
+        ));
     }
-    parts.join("；")
+    parts.join(t(PrefsMsg::NoteJoin))
+}
+
+/// 「文件：原因」一条。文件名和原因都来自本机（用户填的目录 / 底层错误），原样显示。
+fn file_message(problem: &zssh_core::ssh::session_log::LogProblem) -> String {
+    format!(
+        "{}{}{}",
+        problem.file,
+        t(PrefsMsg::ProblemSeparator),
+        problem.message
+    )
 }
 
 /// 程序退出时调用：让会话日志收尾（有限等待），并把状况记进设置，下次打开会话日志设置时看得到。
@@ -345,8 +402,8 @@ fn record_exit_note(db: &Database, note: &str) {
 /// 设置页显示用：本次运行里会话日志出过的问题，一条一行。
 pub fn session_log_problem_lines() -> Vec<String> {
     zssh_core::ssh::session_log::problems()
-        .into_iter()
-        .map(|problem| format!("{}：{}", problem.file, problem.message))
+        .iter()
+        .map(file_message)
         .collect()
 }
 

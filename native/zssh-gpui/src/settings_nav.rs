@@ -3,8 +3,10 @@
 //! 记住上次的分类，以及每个偏好分类里有哪些设置项（清单，测试对照 0.2.14 用）和快捷键表。
 //!
 //! 偏好 8 类的顺序取自 0.2.14 的 `SettingsPage.tsx`；「管理」组是 V2-U3 把原来散在标题栏 / 主机页 /
-//! 侧面板里的管理入口收进来的，只搬现有功能。这里只放纯数据和规则，不碰界面框架，状态测试不用起窗口。
+//! 侧面板里的管理入口收进来的，只搬现有功能。这里只放纯数据和规则，不碰界面布局（唯一的界面依赖是
+//! 快捷键作用文案「按键 → 当前语言的文字」那个渲染转换，见 [`ShortcutMsg`]），状态测试不用起窗口。
 
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 
 /// 统一页的分类。
@@ -253,10 +255,104 @@ impl SettingsSection {
     }
 }
 
+/// 快捷键表里一行的作用文案（键名固定，切语言即时生效）。
+///
+/// 只放应用自己的说明；键位组合（`Shortcut::keys`）是固定的按键写法，不走这里。
+#[derive(Clone, Copy, Debug)]
+pub enum ShortcutMsg {
+    NewTab,
+    ClosePane,
+    SplitRight,
+    SplitDown,
+    SwitchTabs,
+    OpenSettings,
+    ReconnectPane,
+    ToggleBroadcast,
+    ToggleAiPanel,
+    ToggleFilePanel,
+    SendBreak,
+    FontZoom,
+    CopyPaste,
+    ScrollPages,
+    CloseSettings,
+    LockApp,
+}
+
+impl Msg for ShortcutMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::NewTab => "新标签",
+            Self::ClosePane => "关闭当前窗格（只剩一个时关掉整个标签）",
+            Self::SplitRight => "左右分屏（复用连接）",
+            Self::SplitDown => "上下分屏",
+            Self::SwitchTabs => "切换标签",
+            Self::OpenSettings => "打开 / 关闭设置与管理页",
+            Self::ReconnectPane => "重连断线的窗格",
+            Self::ToggleBroadcast => "开关广播输入",
+            Self::ToggleAiPanel => "开关 AI 面板",
+            Self::ToggleFilePanel => "开关文件（SFTP）面板（仅 SSH 主机）",
+            Self::SendBreak => "发送 Break（串口标签；右键标签也有）",
+            Self::FontZoom => "终端字号放大 / 缩小 / 恢复默认",
+            Self::CopyPaste => "有选区时复制；粘贴（Ctrl+Shift+V、Shift+Insert 同）",
+            Self::ScrollPages => "终端翻页（Shift+Home / End 到顶 / 到底）",
+            Self::CloseSettings => "关闭设置与管理页，回到原来的页面",
+            Self::LockApp => "锁定 ZeeTerm（要先在 设置 → 锁屏 里启用并设密码）",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::NewTab => "New tab",
+            Self::ClosePane => {
+                "Close the current pane (closes the whole tab when it is the last one)"
+            }
+            Self::SplitRight => "Split left/right (reuses the connection)",
+            Self::SplitDown => "Split top/bottom",
+            Self::SwitchTabs => "Switch tabs",
+            Self::OpenSettings => "Open / close Settings & Manage",
+            Self::ReconnectPane => "Reconnect a disconnected pane",
+            Self::ToggleBroadcast => "Toggle broadcast input",
+            Self::ToggleAiPanel => "Toggle the AI panel",
+            Self::ToggleFilePanel => "Toggle the file (SFTP) panel (SSH hosts only)",
+            Self::SendBreak => "Send Break (serial tabs; also on the tab's right-click menu)",
+            Self::FontZoom => "Enlarge / shrink / reset the terminal font size",
+            Self::CopyPaste => {
+                "Copy when there is a selection; paste (also Ctrl+Shift+V, Shift+Insert)"
+            }
+            Self::ScrollPages => {
+                "Page through the terminal (Shift+Home / End to jump to the top / bottom)"
+            }
+            Self::CloseSettings => "Close Settings & Manage and return to the previous page",
+            Self::LockApp => {
+                "Lock ZeeTerm (enable it and set a password under Settings → App Lock first)"
+            }
+        }
+    }
+}
+
+/// 快捷键行在界面上直接当文字用（`main_window::settings_page` 里 `.child(shortcut.what)`）：
+/// 取词发生在绘制时，切语言后下一帧就是新文案。
+impl ::gpui::IntoElement for ShortcutMsg {
+    type Element = ::gpui::SharedString;
+
+    fn into_element(self) -> Self::Element {
+        ::gpui::SharedString::new_static(t(self))
+    }
+}
+
+/// 同一个键也能当 `&str` 读（`shortcut.what.contains(..)` 这类只读判断），同样是当前语言的文案。
+impl std::ops::Deref for ShortcutMsg {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        t(*self)
+    }
+}
+
 /// 快捷键表里的一行：按键、作用。
 pub struct Shortcut {
     pub keys: &'static str,
-    pub what: &'static str,
+    pub what: ShortcutMsg,
 }
 
 /// 快捷键分类的内容：前七行是 0.2.14 的清单（按键以 ZeeTerm 代码里真正生效的为准，
@@ -265,68 +361,68 @@ pub struct Shortcut {
 pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut {
         keys: "Ctrl+Shift+T",
-        what: "新标签",
+        what: ShortcutMsg::NewTab,
     },
     Shortcut {
         keys: "Ctrl+Shift+W",
-        what: "关闭当前窗格（只剩一个时关掉整个标签）",
+        what: ShortcutMsg::ClosePane,
     },
     Shortcut {
         keys: "Ctrl+Shift+D",
-        what: "左右分屏（复用连接）",
+        what: ShortcutMsg::SplitRight,
     },
     Shortcut {
         keys: "Ctrl+Shift+E",
-        what: "上下分屏",
+        what: ShortcutMsg::SplitDown,
     },
     Shortcut {
         keys: "Ctrl+Tab / Ctrl+Shift+Tab",
-        what: "切换标签",
+        what: ShortcutMsg::SwitchTabs,
     },
     Shortcut {
         keys: "Ctrl+,",
-        what: "打开 / 关闭设置与管理页",
+        what: ShortcutMsg::OpenSettings,
     },
     Shortcut {
         keys: "Ctrl+Shift+R",
-        what: "重连断线的窗格",
+        what: ShortcutMsg::ReconnectPane,
     },
     Shortcut {
         keys: "Ctrl+Shift+B",
-        what: "开关广播输入",
+        what: ShortcutMsg::ToggleBroadcast,
     },
     Shortcut {
         keys: "Ctrl+Shift+A",
-        what: "开关 AI 面板",
+        what: ShortcutMsg::ToggleAiPanel,
     },
     Shortcut {
         keys: "Ctrl+Shift+F",
-        what: "开关文件（SFTP）面板（仅 SSH 主机）",
+        what: ShortcutMsg::ToggleFilePanel,
     },
     Shortcut {
         keys: "Ctrl+Shift+K",
-        what: "发送 Break（串口标签；右键标签也有）",
+        what: ShortcutMsg::SendBreak,
     },
     Shortcut {
         keys: "Ctrl+= / Ctrl+- / Ctrl+0",
-        what: "终端字号放大 / 缩小 / 恢复默认",
+        what: ShortcutMsg::FontZoom,
     },
     Shortcut {
         keys: "Ctrl+C / Ctrl+V",
-        what: "有选区时复制；粘贴（Ctrl+Shift+V、Shift+Insert 同）",
+        what: ShortcutMsg::CopyPaste,
     },
     Shortcut {
         keys: "Shift+PageUp / PageDown",
-        what: "终端翻页（Shift+Home / End 到顶 / 到底）",
+        what: ShortcutMsg::ScrollPages,
     },
     Shortcut {
         keys: "Esc",
-        what: "关闭设置与管理页，回到原来的页面",
+        what: ShortcutMsg::CloseSettings,
     },
     // 放在表尾：快捷键分组（`settings_page::SHORTCUT_GROUPS`）按下标引用这张表。
     Shortcut {
         keys: "Ctrl+Alt+L",
-        what: "锁定 ZeeTerm（要先在 设置 → 锁屏 里启用并设密码）",
+        what: ShortcutMsg::LockApp,
     },
 ];
 

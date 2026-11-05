@@ -15,11 +15,243 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::main_window::widgets::{Choice, select};
 use crate::settings::{CursorShape, UiSettings};
 use crate::terminal_workspace::TerminalWorkspace;
 use crate::typography::{Role, Typo as _};
+
+/// 「外观」「终端」两个分类的界面文案（切语言即时生效）。
+///
+/// 只放应用自己的固定文案；皮肤名、字体名这些来自本机的数据照原样显示，不进这张表。
+/// 带运行时数值的句子保留 `format!`，这里只提供固定片段（全角括号、标点也各算一段）。
+#[derive(Clone, Copy, Debug)]
+enum SettingsViewMsg {
+    // ---- 外观 · 主题 ----
+    Theme,
+    Light,
+    Dark,
+    FollowSystem,
+    AppearanceTitle,
+    AppearanceDescription,
+    // ---- 外观 · 应用皮肤 ----
+    SkinsTitle,
+    SkinsDescription,
+    LightSkin,
+    DarkSkin,
+    // ---- 外观 · 终端配色 ----
+    TerminalColorsTitle,
+    FollowSkinNowPrefix,
+    OpenParen,
+    CloseParen,
+    SchemeTitle,
+    SchemeDescription,
+    MismatchLead,
+    MismatchMid,
+    MismatchEnd,
+    FollowSkinButton,
+    ResetDefaults,
+    // ---- 终端 · 字体与显示 ----
+    ShowLatencyTitle,
+    ShowLatencyDescription,
+    FontDisplayTitle,
+    FontDisplayDescription,
+    CustomOption,
+    FontFamilyTitle,
+    FontFamilyDescription,
+    FontSizeTitle,
+    FontSizeDescription,
+    LineHeightTitle,
+    LineHeightDescription,
+    ScrollbackTitle,
+    ScrollbackDescription,
+    // ---- 终端 · 光标 ----
+    CursorTitle,
+    CursorBlinkTitle,
+    CursorBlinkDescription,
+    CursorShapeTitle,
+    CursorBlock,
+    CursorUnderline,
+    CursorBar,
+    // ---- 终端 · 输入与剪贴板 ----
+    InputTitle,
+    ImeTitle,
+    ImeDescription,
+    CopyOnSelectTitle,
+    CopyOnSelectDescription,
+    RightClickPasteTitle,
+    RightClickPasteDescription,
+    ConfirmMultilineTitle,
+    ConfirmMultilineDescription,
+    BracketedPasteTitle,
+    BracketedPasteDescription,
+}
+
+impl Msg for SettingsViewMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::Theme => "主题",
+            Self::Light => "浅色",
+            Self::Dark => "深色",
+            Self::FollowSystem => "跟随系统",
+            Self::AppearanceTitle => "应用外观",
+            Self::AppearanceDescription => {
+                "选「跟随系统」时，Windows 切换浅色 / 深色模式，界面跟着变。"
+            }
+            Self::SkinsTitle => "应用皮肤",
+            Self::SkinsDescription => "浅色和深色皮肤分别保存，随明暗模式生效。",
+            Self::LightSkin => "浅色皮肤",
+            Self::DarkSkin => "深色皮肤",
+            Self::TerminalColorsTitle => "终端配色",
+            Self::FollowSkinNowPrefix => "跟随皮肤（现在是 ",
+            Self::OpenParen => "（",
+            Self::CloseParen => "）",
+            Self::SchemeTitle => "配色方案",
+            Self::SchemeDescription => "跟随皮肤时，换皮肤终端也跟着换",
+            Self::MismatchLead => "终端配色固定为 ",
+            Self::MismatchMid => "，现在是",
+            Self::MismatchEnd => "主题，所以终端和界面明暗不一样。",
+            Self::FollowSkinButton => "改回跟随皮肤",
+            Self::ResetDefaults => "恢复默认",
+            Self::ShowLatencyTitle => "在终端右上角显示延迟",
+            Self::ShowLatencyDescription => {
+                "SSH 标签显示到服务器的往返延迟（Telnet、串口不显示）。关掉后也不再发测量请求。"
+            }
+            Self::FontDisplayTitle => "字体与显示",
+            Self::FontDisplayDescription => "已经打开的终端也会立刻跟着变。",
+            Self::CustomOption => "自定义…",
+            Self::FontFamilyTitle => "字体",
+            Self::FontFamilyDescription => {
+                "从本机已装的常见等宽字体里选；需要别的字体栈就选「自定义」自己填"
+            }
+            Self::FontSizeTitle => "字号",
+            Self::FontSizeDescription => "10～24，也可以在终端里按 Ctrl+= / Ctrl+- / Ctrl+0",
+            Self::LineHeightTitle => "行高",
+            Self::LineHeightDescription => "1.0～1.6",
+            Self::ScrollbackTitle => "回滚行数",
+            Self::ScrollbackDescription => {
+                "1000～100000，松手后对已开的和新开的终端都生效；调小会丢掉最旧的行"
+            }
+            Self::CursorTitle => "光标",
+            Self::CursorBlinkTitle => "光标闪烁",
+            Self::CursorBlinkDescription => "终端有焦点时光标一闪一闪；打字时先亮着。",
+            Self::CursorShapeTitle => "光标样式",
+            Self::CursorBlock => "方块",
+            Self::CursorUnderline => "下划线",
+            Self::CursorBar => "竖线",
+            Self::InputTitle => "输入与剪贴板",
+            Self::ImeTitle => "终端里自动切到英文输入",
+            Self::ImeDescription => {
+                "焦点进终端时关闭输入法（直接打英文），离开终端回到其他输入框（AI 对话框、搜索框、编辑器等）时重新打开；要在终端里打中文，按 Ctrl+空格 或点输入法图标打开。"
+            }
+            Self::CopyOnSelectTitle => "选中即复制",
+            Self::CopyOnSelectDescription => "选中文字之后自动复制到剪贴板。",
+            Self::RightClickPasteTitle => "右键粘贴",
+            Self::RightClickPasteDescription => {
+                "开着时右键直接粘贴（在链接上右键仍然弹出链接菜单）；关着时右键弹出菜单。"
+            }
+            Self::ConfirmMultilineTitle => "多行粘贴前确认",
+            Self::ConfirmMultilineDescription => {
+                "粘贴的内容带换行时先问一下：对方 shell 没开括号粘贴模式时，换行会让命令直接执行。"
+            }
+            Self::BracketedPasteTitle => "括号粘贴",
+            Self::BracketedPasteDescription => "自动：跟随远端终端的设置；开/关：强制",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::Theme => "Theme",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+            Self::FollowSystem => "Follow System",
+            Self::AppearanceTitle => "App Appearance",
+            Self::AppearanceDescription => {
+                "When “Follow System” is selected, the interface follows Windows as it switches between light and dark mode."
+            }
+            Self::SkinsTitle => "App Skins",
+            Self::SkinsDescription => {
+                "Light and dark skins are saved separately and apply with the light/dark mode."
+            }
+            Self::LightSkin => "Light Skin",
+            Self::DarkSkin => "Dark Skin",
+            Self::TerminalColorsTitle => "Terminal Colors",
+            Self::FollowSkinNowPrefix => "Follow skin (currently ",
+            Self::OpenParen => " (",
+            Self::CloseParen => ")",
+            Self::SchemeTitle => "Color Scheme",
+            Self::SchemeDescription => {
+                "When following the skin, the terminal colors change with the skin"
+            }
+            Self::MismatchLead => "Terminal colors are fixed to ",
+            Self::MismatchMid => ", but the app is currently in ",
+            Self::MismatchEnd => " mode, so the terminal and the interface differ in light/dark.",
+            Self::FollowSkinButton => "Follow Skin Again",
+            Self::ResetDefaults => "Restore Defaults",
+            Self::ShowLatencyTitle => "Show latency in the top-right corner of the terminal",
+            Self::ShowLatencyDescription => {
+                "SSH tabs show the round-trip latency to the server (not shown for Telnet or serial). When off, no measurement requests are sent either."
+            }
+            Self::FontDisplayTitle => "Font & Display",
+            Self::FontDisplayDescription => {
+                "Terminals that are already open update immediately too."
+            }
+            Self::CustomOption => "Custom…",
+            Self::FontFamilyTitle => "Font",
+            Self::FontFamilyDescription => {
+                "Choose from common monospace fonts installed on this computer; for another font stack, choose “Custom” and enter it yourself"
+            }
+            Self::FontSizeTitle => "Font Size",
+            Self::FontSizeDescription => "10–24, or press Ctrl+= / Ctrl+- / Ctrl+0 in the terminal",
+            Self::LineHeightTitle => "Line Height",
+            Self::LineHeightDescription => "1.0–1.6",
+            Self::ScrollbackTitle => "Scrollback Lines",
+            Self::ScrollbackDescription => {
+                "1000–100000; applies to open and new terminals when you release the slider; lowering it discards the oldest lines"
+            }
+            Self::CursorTitle => "Cursor",
+            Self::CursorBlinkTitle => "Blinking cursor",
+            Self::CursorBlinkDescription => {
+                "The cursor blinks while the terminal has focus and stays lit while you type."
+            }
+            Self::CursorShapeTitle => "Cursor Style",
+            Self::CursorBlock => "Block",
+            Self::CursorUnderline => "Underline",
+            Self::CursorBar => "Bar",
+            Self::InputTitle => "Input & Clipboard",
+            Self::ImeTitle => "Switch to English input automatically in the terminal",
+            Self::ImeDescription => {
+                "Turn the IME off when the terminal gains focus (so you type English directly) and back on when you leave the terminal for other input fields (AI chat box, search field, editor, and so on); to type Chinese in the terminal, press Ctrl+Space or turn the IME on from its icon."
+            }
+            Self::CopyOnSelectTitle => "Copy on select",
+            Self::CopyOnSelectDescription => {
+                "Copy the selected text to the clipboard automatically."
+            }
+            Self::RightClickPasteTitle => "Paste on right-click",
+            Self::RightClickPasteDescription => {
+                "When on, right-click pastes directly (right-clicking a link still opens the link menu); when off, right-click opens a menu."
+            }
+            Self::ConfirmMultilineTitle => "Confirm before pasting multiple lines",
+            Self::ConfirmMultilineDescription => {
+                "Ask first when the pasted text contains line breaks: when the remote shell has not enabled bracketed paste, a line break runs the command immediately."
+            }
+            Self::BracketedPasteTitle => "Bracketed paste",
+            Self::BracketedPasteDescription => {
+                "Auto: follow the remote terminal's setting; On/Off: force it"
+            }
+        }
+    }
+}
+
+/// 明暗两色在句子里的说法（「深色」/「浅色」）。
+fn mode_label(dark: bool) -> &'static str {
+    if dark {
+        t(SettingsViewMsg::Dark)
+    } else {
+        t(SettingsViewMsg::Light)
+    }
+}
 
 /// 设置页里的一组（V2-U4 版式）：分组标题（可带一句说明）在卡片**外面**上方，卡片里一行一项，
 /// 行与行之间一条细分隔线。每个 `rows` 元素占一行（通常是 [`row`] 做出来的「名称 + 说明 | 控件」）。
@@ -243,7 +475,7 @@ pub(crate) fn reset_row(ws: &Entity<TerminalWorkspace>) -> AnyElement {
         .justify_end()
         .child(
             Button::new("settings-reset")
-                .label("恢复默认")
+                .label(t(SettingsViewMsg::ResetDefaults))
                 .compact()
                 .on_click(move |_, window, cx| {
                     reset.update(cx, |this, cx| this.reset_settings(window, cx));
@@ -257,7 +489,7 @@ pub(crate) fn reset_row(ws: &Entity<TerminalWorkspace>) -> AnyElement {
 fn theme_card(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
     card(
         "settings-theme",
-        "主题",
+        t(SettingsViewMsg::Theme),
         None,
         tokens,
         vec![theme_row(ws, s, tokens)],
@@ -269,12 +501,12 @@ fn theme_card(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -
 fn skin_card_group(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
     card(
         "settings-skins",
-        "应用皮肤",
-        Some("浅色和深色皮肤分别保存，随明暗模式生效。"),
+        t(SettingsViewMsg::SkinsTitle),
+        Some(t(SettingsViewMsg::SkinsDescription)),
         tokens,
         vec![
-            skin_group("浅色皮肤", false, ws, s, tokens),
-            skin_group("深色皮肤", true, ws, s, tokens),
+            skin_group(t(SettingsViewMsg::LightSkin), false, ws, s, tokens),
+            skin_group(t(SettingsViewMsg::DarkSkin), true, ws, s, tokens),
         ],
     )
 }
@@ -290,7 +522,13 @@ fn terminal_theme_card(
     if let Some(hint) = terminal_mismatch_hint(ws, s, tokens) {
         rows.push(hint);
     }
-    card("settings-terminal-theme", "终端配色", None, tokens, rows)
+    card(
+        "settings-terminal-theme",
+        t(SettingsViewMsg::TerminalColorsTitle),
+        None,
+        tokens,
+        rows,
+    )
 }
 
 #[inline(never)]
@@ -299,26 +537,26 @@ fn theme_row(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) ->
     let segments = vec![
         Segment {
             id: "theme-light".into(),
-            label: "浅色",
+            label: t(SettingsViewMsg::Light),
             icon: Some(Icon::new(IconName::Sun)),
             selected: !s.follow_system && !s.dark,
         },
         Segment {
             id: "theme-dark".into(),
-            label: "深色",
+            label: t(SettingsViewMsg::Dark),
             icon: Some(Icon::new(IconName::Moon)),
             selected: !s.follow_system && s.dark,
         },
         Segment {
             id: "theme-auto".into(),
-            label: "跟随系统",
+            label: t(SettingsViewMsg::FollowSystem),
             icon: Some(Icon::new(Ico::Monitor)),
             selected: s.follow_system,
         },
     ];
     row(
-        "应用外观",
-        Some("选「跟随系统」时，Windows 切换浅色 / 深色模式，界面跟着变。"),
+        t(SettingsViewMsg::AppearanceTitle),
+        Some(t(SettingsViewMsg::AppearanceDescription)),
         choice_group(segments, tokens, move |index, _, cx| {
             ws.update(cx, |this, cx| match index {
                 0 => this.set_theme(false, cx),
@@ -463,31 +701,54 @@ fn terminal_theme_row(
             &s.skin_light
         },
     );
-    let mode_label = |dark: bool| if dark { "深色" } else { "浅色" };
     let mut choices = vec![Choice::new(
-        format!("跟随皮肤（现在是 {}）", current_skin.name),
+        format!(
+            "{}{}{}",
+            t(SettingsViewMsg::FollowSkinNowPrefix),
+            current_skin.name,
+            t(SettingsViewMsg::CloseParen)
+        ),
         following,
     )];
     let mut ids: Vec<&'static str> = vec![TERMINAL_FOLLOW_SKIN];
     for skin in SKINS {
         choices.push(Choice::new(
-            format!("{}（{}）", skin.name, mode_label(skin.dark)),
+            format!(
+                "{}{}{}{}",
+                skin.name,
+                t(SettingsViewMsg::OpenParen),
+                mode_label(skin.dark),
+                t(SettingsViewMsg::CloseParen)
+            ),
             !following && skin.id == s.terminal_theme,
         ));
         ids.push(skin.id);
     }
     let label = if following {
-        format!("跟随皮肤（现在是 {}）", current_skin.name)
+        format!(
+            "{}{}{}",
+            t(SettingsViewMsg::FollowSkinNowPrefix),
+            current_skin.name,
+            t(SettingsViewMsg::CloseParen)
+        )
     } else {
         crate::app_theme::skin(&s.terminal_theme).map_or_else(
             || s.terminal_theme.clone(),
-            |skin| format!("{}（{}）", skin.name, mode_label(skin.dark)),
+            |skin| {
+                format!(
+                    "{}{}{}{}",
+                    skin.name,
+                    t(SettingsViewMsg::OpenParen),
+                    mode_label(skin.dark),
+                    t(SettingsViewMsg::CloseParen)
+                )
+            },
         )
     };
     let ws = ws.clone();
     row(
-        "配色方案",
-        Some("跟随皮肤时，换皮肤终端也跟着换"),
+        t(SettingsViewMsg::SchemeTitle),
+        Some(t(SettingsViewMsg::SchemeDescription)),
         div().w(::gpui::px(260.0)).child(select(
             "terminal-theme",
             label,
@@ -524,14 +785,19 @@ fn terminal_mismatch_hint(
             .text_xs()
             .text_color(tokens.caution)
             .child(format!(
-                "终端配色固定为 {}（{}），现在是{}主题，所以终端和界面明暗不一样。",
+                "{}{}{}{}{}{}{}{}",
+                t(SettingsViewMsg::MismatchLead),
                 fixed.name,
-                if fixed.dark { "深色" } else { "浅色" },
-                if tokens.dark { "深色" } else { "浅色" },
+                t(SettingsViewMsg::OpenParen),
+                mode_label(fixed.dark),
+                t(SettingsViewMsg::CloseParen),
+                t(SettingsViewMsg::MismatchMid),
+                mode_label(tokens.dark),
+                t(SettingsViewMsg::MismatchEnd),
             ))
             .child(
                 Button::new("terminal-follow-skin")
-                    .label("改回跟随皮肤")
+                    .label(t(SettingsViewMsg::FollowSkinButton))
                     .compact()
                     .on_click(move |_, _, cx| {
                         ws.update(cx, |this, cx| {
@@ -600,8 +866,8 @@ fn display_section(
         scrollback_row(ws, s, tokens, cx),
         switch_row(
             "show-latency",
-            "在终端右上角显示延迟",
-            "SSH 标签显示到服务器的往返延迟（Telnet、串口不显示）。关掉后也不再发测量请求。",
+            t(SettingsViewMsg::ShowLatencyTitle),
+            t(SettingsViewMsg::ShowLatencyDescription),
             s.show_latency,
             |this, cx| this.toggle_show_latency(cx),
             ws,
@@ -610,8 +876,8 @@ fn display_section(
     ]);
     card(
         "settings-terminal",
-        "字体与显示",
-        Some("已经打开的终端也会立刻跟着变。"),
+        t(SettingsViewMsg::FontDisplayTitle),
+        Some(t(SettingsViewMsg::FontDisplayDescription)),
         tokens,
         rows,
     )
@@ -622,15 +888,15 @@ fn display_section(
 fn cursor_section(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
     card(
         "settings-terminal-cursor",
-        "光标",
+        t(SettingsViewMsg::CursorTitle),
         None,
         tokens,
         vec![
             cursor_row(ws, s, tokens),
             switch_row(
                 "cursor-blink",
-                "光标闪烁",
-                "终端有焦点时光标一闪一闪；打字时先亮着。",
+                t(SettingsViewMsg::CursorBlinkTitle),
+                t(SettingsViewMsg::CursorBlinkDescription),
                 s.cursor_blink,
                 |this, cx| this.toggle_cursor_blink(cx),
                 ws,
@@ -646,8 +912,8 @@ fn input_section(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens
     let rows = vec![
         switch_row(
             "ime-english",
-            "终端里自动切到英文输入",
-            "焦点进终端时关闭输入法（直接打英文），离开终端回到其他输入框（AI 对话框、搜索框、编辑器等）时重新打开；要在终端里打中文，按 Ctrl+空格 或点输入法图标打开。",
+            t(SettingsViewMsg::ImeTitle),
+            t(SettingsViewMsg::ImeDescription),
             s.ime_english,
             |this, cx| this.toggle_ime_english(cx),
             ws,
@@ -655,8 +921,8 @@ fn input_section(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens
         ),
         switch_row(
             "copy-on-select",
-            "选中即复制",
-            "选中文字之后自动复制到剪贴板。",
+            t(SettingsViewMsg::CopyOnSelectTitle),
+            t(SettingsViewMsg::CopyOnSelectDescription),
             s.copy_on_select,
             |this, cx| this.toggle_copy_on_select(cx),
             ws,
@@ -664,8 +930,8 @@ fn input_section(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens
         ),
         switch_row(
             "right-click-paste",
-            "右键粘贴",
-            "开着时右键直接粘贴（在链接上右键仍然弹出链接菜单）；关着时右键弹出菜单。",
+            t(SettingsViewMsg::RightClickPasteTitle),
+            t(SettingsViewMsg::RightClickPasteDescription),
             s.right_click_paste,
             |this, cx| this.toggle_right_click_paste(cx),
             ws,
@@ -673,8 +939,8 @@ fn input_section(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens
         ),
         switch_row(
             "confirm-multiline",
-            "多行粘贴前确认",
-            "粘贴的内容带换行时先问一下：对方 shell 没开括号粘贴模式时，换行会让命令直接执行。",
+            t(SettingsViewMsg::ConfirmMultilineTitle),
+            t(SettingsViewMsg::ConfirmMultilineDescription),
             s.confirm_multiline,
             |this, cx| this.toggle_confirm_multiline(cx),
             ws,
@@ -684,7 +950,7 @@ fn input_section(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens
     ];
     card(
         "settings-terminal-input",
-        "输入与剪贴板",
+        t(SettingsViewMsg::InputTitle),
         None,
         tokens,
         rows,
@@ -707,16 +973,16 @@ fn font_family_row(
         .iter()
         .map(|name| Choice::new(*name, !custom && name.eq_ignore_ascii_case(&leading)))
         .collect();
-    choices.push(Choice::new("自定义…", custom));
+    choices.push(Choice::new(t(SettingsViewMsg::CustomOption), custom));
     let label = if custom {
-        "自定义…".to_owned()
+        t(SettingsViewMsg::CustomOption).to_owned()
     } else {
         leading
     };
     let ws = ws.clone();
     row(
-        "字体",
-        Some("从本机已装的常见等宽字体里选；需要别的字体栈就选「自定义」自己填"),
+        t(SettingsViewMsg::FontFamilyTitle),
+        Some(t(SettingsViewMsg::FontFamilyDescription)),
         div().w(::gpui::px(220.0)).child(select(
             "terminal-font",
             label,
@@ -744,8 +1010,8 @@ fn font_fallback_note(s: &UiSettings, cx: &App) -> Option<String> {
 fn font_row(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
     let (minus, plus) = (ws.clone(), ws.clone());
     row(
-        "字号",
-        Some("10～24，也可以在终端里按 Ctrl+= / Ctrl+- / Ctrl+0"),
+        t(SettingsViewMsg::FontSizeTitle),
+        Some(t(SettingsViewMsg::FontSizeDescription)),
         stepper(
             "font",
             format!("{:.0}", s.font_size),
@@ -761,8 +1027,8 @@ fn font_row(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> 
 fn line_height_row(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
     let (minus, plus) = (ws.clone(), ws.clone());
     row(
-        "行高",
-        Some("1.0～1.6"),
+        t(SettingsViewMsg::LineHeightTitle),
+        Some(t(SettingsViewMsg::LineHeightDescription)),
         stepper(
             "line",
             format!("{:.2}", s.line_height),
@@ -786,8 +1052,8 @@ fn scrollback_row(
     let shown = slider.read(cx).value().end().round() as usize;
     let pending = shown != s.scrollback;
     row(
-        "回滚行数",
-        Some("1000～100000，松手后对已开的和新开的终端都生效；调小会丢掉最旧的行"),
+        t(SettingsViewMsg::ScrollbackTitle),
+        Some(t(SettingsViewMsg::ScrollbackDescription)),
         h_flex()
             .gap_3()
             .items_center()
@@ -795,7 +1061,7 @@ fn scrollback_row(
                 div().w(::gpui::px(150.0)).child(
                     Slider::new(&slider)
                         .horizontal()
-                        .accessibility_label("回滚行数"),
+                        .accessibility_label(t(SettingsViewMsg::ScrollbackTitle)),
                 ),
             )
             .child(
@@ -817,23 +1083,31 @@ fn scrollback_row(
 
 #[inline(never)]
 fn cursor_row(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
-    const SHAPES: [(&str, &str, CursorShape); 3] = [
-        ("cursor-block", "方块", CursorShape::Block),
-        ("cursor-underline", "下划线", CursorShape::Underline),
-        ("cursor-bar", "竖线", CursorShape::Bar),
+    const SHAPES: [(&str, SettingsViewMsg, CursorShape); 3] = [
+        (
+            "cursor-block",
+            SettingsViewMsg::CursorBlock,
+            CursorShape::Block,
+        ),
+        (
+            "cursor-underline",
+            SettingsViewMsg::CursorUnderline,
+            CursorShape::Underline,
+        ),
+        ("cursor-bar", SettingsViewMsg::CursorBar, CursorShape::Bar),
     ];
     let segments = SHAPES
         .iter()
         .map(|(id, label, shape)| Segment {
             id: (*id).into(),
-            label,
+            label: t(*label),
             icon: None,
             selected: s.cursor == *shape,
         })
         .collect();
     let ws = ws.clone();
     row(
-        "光标样式",
+        t(SettingsViewMsg::CursorShapeTitle),
         None,
         choice_group(segments, tokens, move |index, _, cx| {
             if let Some((_, _, shape)) = SHAPES.get(index) {
@@ -852,8 +1126,8 @@ fn bracketed_paste_row(
 ) -> AnyElement {
     let bracket = ws.clone();
     row(
-        "括号粘贴",
-        Some("自动：跟随远端终端的设置；开/关：强制"),
+        t(SettingsViewMsg::BracketedPasteTitle),
+        Some(t(SettingsViewMsg::BracketedPasteDescription)),
         Button::new("bracketed-paste")
             .label(s.bracketed_paste.label())
             .compact()
