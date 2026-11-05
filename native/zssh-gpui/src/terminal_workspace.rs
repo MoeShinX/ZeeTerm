@@ -78,6 +78,7 @@ enum TermMsg {
     OfflineDemo,
     SettingsSaveFailedPrefix,
     HiddenPassword,
+    Reconnected,
 }
 
 impl crate::i18n::Msg for TermMsg {
@@ -107,6 +108,7 @@ impl crate::i18n::Msg for TermMsg {
             Self::OfflineDemo => "离线演示",
             Self::SettingsSaveFailedPrefix => "设置没能保存（会自动重试）：",
             Self::HiddenPassword => "<已隐藏>",
+            Self::Reconnected => "已重新连接",
         }
     }
 
@@ -140,6 +142,7 @@ impl crate::i18n::Msg for TermMsg {
                 "Settings could not be saved (will retry automatically): "
             }
             Self::HiddenPassword => "<hidden>",
+            Self::Reconnected => "Reconnected",
         }
     }
 }
@@ -154,6 +157,7 @@ const DEFAULT_SIZE: Size = Size {
 };
 mod dev_tools;
 mod highlight_ops;
+mod search_ops;
 mod settings_ops;
 
 /// 窗格的会话状态。
@@ -244,6 +248,26 @@ impl Msg for ConnMsg {
             Self::LogFailedPrefix => "Could not start logging: ",
         }
     }
+}
+
+/// 本机时间 `HH:MM:SS`（重连分隔行用）。
+fn local_clock() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
+        + crate::datetime::local_utc_offset();
+    let day = secs.rem_euclid(86_400);
+    format!("{:02}:{:02}:{:02}", day / 3600, day % 3600 / 60, day % 60)
+}
+
+/// 重连后插在旧输出和新会话输出之间的暗色分隔行（本地写入，不发给远端）。光标不在行首时先换行。
+fn reconnect_marker(at_line_start: bool, clock: &str) -> String {
+    let lead = if at_line_start { "" } else { "\r\n" };
+    format!(
+        "{lead}\x1b[90m── {} {clock} ──\x1b[0m\r\n",
+        t(TermMsg::Reconnected)
+    )
 }
 
 /// 用户主动断开时窗格里显示的文字。
@@ -339,6 +363,8 @@ pub(crate) struct Pane {
     log_mode: LogMode,
     /// 断开 / 连接失败的原因（只有 `Disconnected` 时有值），断线遮罩上显示；重连会换掉整个窗格，所以不用手动清。
     disconnect_reason: Option<String>,
+    /// 这个窗格是重连出来的：连上时终端（屏幕 + 回滚）沿用重连前的，只换连接。连上（或放弃）后清掉。
+    carry_terminal: bool,
 }
 
 /// 窗格会话日志的来源。写入位置只有一个——设置里的会话日志目录；区别只在谁开的：
@@ -464,6 +490,7 @@ impl Pane {
             latency: None,
             log_mode: LogMode::Off,
             disconnect_reason: None,
+            carry_terminal: false,
         }
     }
 
@@ -603,6 +630,12 @@ impl Pane {
         let log = self.pump_mut().take_plain_log();
         let mut pump =
             SessionPump::new(size, self.history, gate, CoreFilter::new(), self.generation);
+        if std::mem::take(&mut self.carry_terminal) {
+            // 重连：新泵接过旧终端，分隔行写在旧输出和新会话的输出之间（连上了才写，失败的尝试不留"已重新连接"）。
+            pump.adopt_terminal(self.pump_mut());
+            let at_line_start = pump.snapshot().cursor_col == 0;
+            pump.feed_local(reconnect_marker(at_line_start, &local_clock()).as_bytes());
+        }
         if let Some(log) = log {
             // 连接期间手动开的日志接着用，不再另开。
             pump.set_plain_log(log);
@@ -694,15 +727,40 @@ impl Pane {
         // 手动开的日志重连后接着记；设置里自动开的，新连接上时会按设置重新开。
         let logging = self.log_mode == LogMode::Manual;
         // 分屏树的叶子认窗格编号：换掉整个窗格时沿用旧编号，位置和比例都不变。
-        let id = self.id;
-        self.close();
-        *self = match quick {
+        self.reconnect_with(|| match quick {
             Some(spec) => Pane::start_quick(spec, factory, size, history, next_generation()),
             None => Pane::start_ssh(factory, host_id, size, history, next_generation()),
-        };
-        self.id = id;
-        self.refresh();
+        });
         Some(logging)
+    }
+
+    /// 先收旧通道（串口之类独占的资源要先放掉，新连接才拿得到），再用 `open` 开出的新窗格顶替。
+    fn reconnect_with(&mut self, open: impl FnOnce() -> Pane) {
+        self.close();
+        let fresh = open();
+        self.replace_connection(fresh);
+    }
+
+    /// 用刚开始连接的 `fresh` 顶掉这个窗格的连接：窗格编号沿用（分屏树认它），终端内容（屏幕 + 回滚缓冲）
+    /// 也沿用，只换后端、泵、工厂、代次这些跟连接有关的东西；旧的随这次赋值一起丢掉（通道在调用前已收尾）。
+    /// 旧终端里远端程序遗留的状态（备用屏幕、鼠标上报、隐藏光标……）先复位，新会话从干净的模式开始。
+    fn replace_connection(&mut self, mut fresh: Pane) {
+        fresh.id = self.id;
+        fresh.pump_mut().adopt_terminal(self.pump_mut());
+        fresh.pump_mut().reset_terminal_for_new_session();
+        // 新窗格自己的"正在连接…"写在了被换走的空终端里，这里在旧输出后面重写一遍。
+        if fresh.state == PaneState::Connecting {
+            let lead = if fresh.pump().snapshot().cursor_col == 0 {
+                ""
+            } else {
+                "\r\n"
+            };
+            let text = format!("{lead}{}\r\n", crate::i18n::t(TermMsg::Connecting));
+            fresh.pump_mut().feed_local(text.as_bytes());
+        }
+        fresh.carry_terminal = true;
+        *self = fresh;
+        self.refresh();
     }
 
     /// 接上延迟监视器（`None` 就是这个窗格不显示延迟）。
@@ -1317,6 +1375,10 @@ pub struct TerminalWorkspace {
     _settings_subs: Vec<Subscription>,
     /// 弹着的终端右键菜单（V2-U25）；关掉（点外面、Esc、点了某项）时清空。
     context_menu: Option<ContextMenu>,
+    /// 开着的搜索条（右键菜单「搜索」打开，V2-TERM-UX1）；同一时间只有一个窗格有。
+    search: Option<search_ops::SearchState>,
+    /// 搜索条的输入框（工作区拥有，开关搜索条时复用同一个）。
+    search_input: Entity<InputState>,
     /// 远端已接管本次左/中/右键按下，松开时要补一条上报。
     mouse_pressed: bool,
     /// 上一次上报的格子；移动事件只在跨格时发。
@@ -1343,6 +1405,9 @@ pub struct TerminalWorkspace {
 /// 弹着的右键菜单：菜单实体、弹出的位置（窗口坐标）、弹出时的条目（调试断言读它）。
 struct ContextMenu {
     menu: Entity<PopupMenu>,
+    /// 右键点中的窗格：「关闭窗格」「搜索」「清屏」都作用在它身上（弹出后焦点可能又换了）。
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    pane: PaneId,
     position: ::gpui::Point<Pixels>,
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
     entries: Vec<crate::terminal_menu::Entry>,
@@ -1435,7 +1500,20 @@ impl TerminalWorkspace {
                 .step(crate::settings::SCROLLBACK_STEP as f32)
                 .default_value(settings.scrollback as f32)
         });
+        let search_input = cx.new(|cx| InputState::new(window, cx));
         let mut settings_subs = Vec::new();
+        // 搜索框：文字变了就重搜，Enter 下一个，Shift+Enter 上一个。输入框是工作区自己画出来的元素，
+        // 它的状态（光标、选区）一变工作区也要重画。
+        settings_subs.push(cx.subscribe_in(
+            &search_input,
+            window,
+            |this, _input, event: &InputEvent, _window, cx| match event {
+                InputEvent::Change => this.search_text_changed(cx),
+                InputEvent::PressEnter { shift, .. } => this.search_step(!*shift, cx),
+                _ => {}
+            },
+        ));
+        settings_subs.push(cx.observe(&search_input, |_, _, cx| cx.notify()));
         settings_subs.push(cx.subscribe_in(
             &font_input,
             window,
@@ -1489,6 +1567,8 @@ impl TerminalWorkspace {
             scrollback_slider,
             _settings_subs: settings_subs,
             context_menu: None,
+            search: None,
+            search_input,
             mouse_pressed: false,
             last_mouse_cell: None,
             highlight,
@@ -1519,7 +1599,9 @@ impl TerminalWorkspace {
                         && this.cursor_blink.changed();
                     let latency = this.sync_latency(window);
                     let save_failed = this.note_settings_save_failure(cx);
+                    let search = this.tick_search();
                     if this.poll_highlight()
+                        || search
                         || sessions
                         || relayout
                         || blink
@@ -2054,6 +2136,19 @@ impl TerminalWorkspace {
         true
     }
 
+    /// 关掉活动标签里编号为 `pane_id` 的窗格（右键菜单「关闭窗格」）：和 Ctrl+Shift+W 关聚焦窗格是同一条
+    /// 路径（`close_pane_index`，兄弟顶上、焦点规则不变），只是目标是右键点中的窗格。只剩一个窗格时不动。
+    pub(crate) fn close_pane_by_id(&mut self, pane_id: PaneId, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self
+            .tabs
+            .active()
+            .and_then(|tab| tab.panes.iter().position(|pane| pane.id == pane_id))
+        else {
+            return false;
+        };
+        self.close_pane_index(index, cx)
+    }
+
     /// 按标签编号取出一个标签（拖出窗口 / 合并到别的窗口用）：同一个 `Tab` 交出去，会话不断、不重连。
     /// 和 `take_active_tab` 不同，最后一个标签也能取（主窗口没有终端标签时显示主机页）。
     pub(crate) fn take_tab_by_id(
@@ -2196,6 +2291,14 @@ impl TerminalWorkspace {
         None
     }
 
+    /// 调试驱动用：搜索条现在的查询和计数（没开是 `None`）。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_search_state(&self) -> Option<(String, String)> {
+        self.search
+            .as_ref()
+            .map(|state| (state.query.clone(), state.count_label()))
+    }
+
     /// 调试驱动用：弹着的右键菜单的条目（没弹是 `None`）。
     #[cfg(debug_assertions)]
     pub(crate) fn dev_menu_entries(&self) -> Option<Vec<crate::terminal_menu::Entry>> {
@@ -2219,9 +2322,9 @@ impl TerminalWorkspace {
         if !entry.enabled {
             return Err("这一项是置灰的".to_owned()); // i18n-allow: 调试钩子
         }
-        let (item, link) = (entry.item, open.link.clone());
+        let (item, link, pane) = (entry.item, open.link.clone(), open.pane);
         self.context_menu = None;
-        self.run_menu_item(item, link.as_deref(), window, cx);
+        self.run_menu_item(item, pane, link.as_deref(), window, cx);
         Ok(())
     }
 
@@ -3391,7 +3494,10 @@ impl TerminalWorkspace {
                 .read_from_clipboard()
                 .and_then(|item| item.text())
                 .is_some_and(|text| !text.is_empty()),
+            split: self.tabs.active().is_some_and(Tab::is_split),
         };
+        // 菜单上的动作都作用在右键点中的这个窗格（按下时已经聚焦了它）。
+        let pane = self.tabs.active().map_or(0, |tab| tab.active().id);
         let entries = crate::terminal_menu::menu_entries(&state);
         let tokens = crate::app_theme::Tokens::current(cx);
         let entity = cx.entity();
@@ -3399,7 +3505,7 @@ impl TerminalWorkspace {
             let link = link.clone();
             Rc::new(move |item, window, cx| {
                 entity.update(cx, |this, cx| {
-                    this.run_menu_item(item, link.as_deref(), window, cx)
+                    this.run_menu_item(item, pane, link.as_deref(), window, cx)
                 });
             })
         };
@@ -3432,6 +3538,7 @@ impl TerminalWorkspace {
         });
         self.context_menu = Some(ContextMenu {
             menu,
+            pane,
             position,
             entries,
             link,
@@ -3444,6 +3551,7 @@ impl TerminalWorkspace {
     fn run_menu_item(
         &mut self,
         item: crate::terminal_menu::MenuItem,
+        pane: PaneId,
         link: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -3472,6 +3580,15 @@ impl TerminalWorkspace {
             }
             MenuItem::SplitDown => {
                 self.split_active(Axis::Y, cx);
+            }
+            MenuItem::Search => {
+                // 焦点要留给搜索框：不走下面还给终端的那一步。
+                self.open_search(pane, window, cx);
+                return;
+            }
+            MenuItem::Clear => self.clear_pane_screen(pane, cx),
+            MenuItem::ClosePane => {
+                self.close_pane_by_id(pane, cx);
             }
             MenuItem::Separator => {}
         }
@@ -3902,6 +4019,13 @@ impl Render for TerminalWorkspace {
         });
 
         let area_cell = Rc::clone(&self.area);
+        // 搜索条画在被搜的窗格里（不在当前标签就不画，`tick_search` 随后会把它收起来）。
+        let search_pane = self
+            .search
+            .as_ref()
+            .map(|state| state.pane_id)
+            .filter(|id| active.panes.iter().any(|pane| pane.id == *id));
+        let mut search_bar = search_pane.and_then(|_| self.search_bar(&tokens, cx));
         let mut children: Vec<AnyElement> = Vec::new();
         for (index, pane) in active.panes.iter().enumerate() {
             let rect = layout.rect_of(pane.id).unwrap_or(split_tree::Rect {
@@ -3912,9 +4036,36 @@ impl Render for TerminalWorkspace {
             });
             let focused = index == active_pane;
             let pane_selection = if focused { selection } else { None };
-            let pane_highlights: &[Vec<Span>] = match (&self.highlight.current_view, focused) {
+            let rule_spans: &[Vec<Span>] = match (&self.highlight.current_view, focused) {
                 (Some(view), true) => self.highlight.scheduler.spans(view),
                 _ => &[],
+            };
+            // 搜索命中的底色叠在高亮规则之上（后面的盖前面的）。
+            let merged_spans: Vec<Vec<Span>>;
+            let pane_highlights: &[Vec<Span>] = match self
+                .search
+                .as_ref()
+                .filter(|state| state.pane_id == pane.id)
+            {
+                Some(state) => {
+                    let found = state.visible_spans(&pane.snapshot);
+                    merged_spans = found
+                        .into_iter()
+                        .enumerate()
+                        .map(|(row, mut spans)| {
+                            let mut all = rule_spans.get(row).cloned().unwrap_or_default();
+                            all.append(&mut spans);
+                            all
+                        })
+                        .collect();
+                    &merged_spans
+                }
+                None => rule_spans,
+            };
+            let bar = if search_pane == Some(pane.id) {
+                search_bar.take()
+            } else {
+                None
             };
             let accepts_drop = pane.state == PaneState::Live;
             let drop_border = tokens.accent;
@@ -3991,6 +4142,8 @@ impl Render for TerminalWorkspace {
                             self.settings.font_size,
                         ))
                     })
+                    // 搜索条最后画，盖在延迟徽标上面。
+                    .children(bar)
                     .into_any_element(),
             );
         }
@@ -4826,6 +4979,249 @@ mod pane_tests {
         // 失败后键入的内容（比如密码）不能回显到屏幕上。
         pane.write(b"hunter2\r");
         assert!(!screen(&pane).contains("hunter2"));
+    }
+
+    // ---- 重连保留终端历史（V2-TERM-UX1） ----
+
+    fn send(tx: &std::sync::mpsc::Sender<SessionEvent>, generation: u64, text: &str) {
+        tx.send(SessionEvent::Data {
+            generation,
+            bytes: text.as_bytes().to_vec(),
+        })
+        .unwrap();
+    }
+
+    /// 一条"新连接"：返回开新窗格的闭包要用的东西（事件发送端、写端收到的命令）。
+    fn new_connection(
+        generation: u64,
+    ) -> (
+        Pane,
+        std::sync::mpsc::Sender<SessionEvent>,
+        Arc<Mutex<Vec<SessionCommand>>>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let pending = crate::ssh_backend::ready(Ok(crate::ssh_backend::Opened {
+            factory: None,
+            backend: Box::new(Recorder(Arc::clone(&sent))),
+            events: rx,
+            gate: Arc::new(FlowGate::new()),
+            latency: None,
+        }));
+        (
+            Pane::connecting(SIZE, 100, generation, Some(7), pending),
+            tx,
+            sent,
+        )
+    }
+
+    /// 在整个终端（回滚 + 屏幕）里数一段文字出现了几处。
+    fn count_in_terminal(pane: &Pane, text: &str) -> usize {
+        pane.pump().search(text, false).len()
+    }
+
+    fn position_in_terminal(pane: &Pane, text: &str) -> (i32, usize) {
+        pane.pump().search(text, false)[0].start
+    }
+
+    #[test]
+    fn reconnecting_keeps_the_scrollback_and_marks_where_the_new_session_starts() {
+        let (mut pane, tx, old_sent) = remote_pane();
+        for i in 0..30 {
+            send(&tx, 1, &format!("old line {i}\r\n"));
+        }
+        tx.send(SessionEvent::Exit {
+            generation: 1,
+            code: Some(255),
+        })
+        .unwrap();
+        pane.poll_events();
+        assert_eq!(pane.state, PaneState::Disconnected);
+        assert!(pane.pump().history_size() > 0, "旧输出已经滚进回滚缓冲");
+        let id = pane.id;
+
+        let (fresh, new_tx, new_sent) = new_connection(2);
+        pane.reconnect_with(|| fresh);
+
+        // 旧通道收到 Close；旧事件通道的接收端已经丢掉，旧会话再发什么都进不来。
+        assert!(old_sent.lock().unwrap().contains(&SessionCommand::Close));
+        assert!(
+            tx.send(SessionEvent::Exit {
+                generation: 1,
+                code: None
+            })
+            .is_err()
+        );
+        // 窗格编号不变，遮罩消失，回滚里的旧输出还在。
+        assert_eq!(pane.id, id);
+        assert_eq!(pane.state, PaneState::Connecting);
+        assert_eq!(pane.overlay_reason(), None);
+        assert_eq!(count_in_terminal(&pane, "old line 0"), 1);
+        assert_eq!(count_in_terminal(&pane, "old line 29"), 1);
+        assert!(screen(&pane).contains("正在连接"), "{}", screen(&pane));
+        // 连上之前还没有"已重新连接"：失败的尝试不留这一行。
+        assert_eq!(count_in_terminal(&pane, "已重新连接"), 0);
+
+        pane.poll_events();
+        assert_eq!(pane.state, PaneState::Live);
+        send(&new_tx, 2, "new session output\r\n");
+        pane.poll_events();
+
+        assert_eq!(count_in_terminal(&pane, "已重新连接"), 1);
+        assert_eq!(count_in_terminal(&pane, "old line 0"), 1, "最旧的一行没丢");
+        let old_last = position_in_terminal(&pane, "old line 29");
+        let marker = position_in_terminal(&pane, "已重新连接");
+        let fresh_output = position_in_terminal(&pane, "new session output");
+        assert!(
+            old_last < marker && marker < fresh_output,
+            "顺序：旧输出 < 分隔行 < 新输出"
+        );
+        assert_eq!(marker.1, 3, "分隔行从行首的 \"── \" 开始，\"已\" 在第 4 格");
+        // 时间是 HH:MM:SS。
+        let line = pane
+            .pump()
+            .search("已重新连接 ", false)
+            .first()
+            .map(|found| found.start);
+        assert!(line.is_some());
+
+        // 之后的输入只进新通道，旧通道除了那条 Close 什么也没有。
+        pane.write(b"ls\r");
+        assert!(
+            new_sent
+                .lock()
+                .unwrap()
+                .contains(&SessionCommand::Write(b"ls\r".to_vec()))
+        );
+        assert_eq!(*old_sent.lock().unwrap(), [SessionCommand::Close]);
+    }
+
+    #[test]
+    fn reconnecting_resets_what_a_dead_remote_program_left_behind() {
+        let (mut pane, tx, _) = remote_pane();
+        send(&tx, 1, "before\r\n");
+        // vim 之类：备用屏幕、隐藏光标、鼠标上报、括号粘贴、应用光标键，然后连接断了。
+        send(
+            &tx,
+            1,
+            "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[?1hvim",
+        );
+        tx.send(SessionEvent::Exit {
+            generation: 1,
+            code: None,
+        })
+        .unwrap();
+        pane.poll_events();
+        assert_eq!(pane.state, PaneState::Disconnected);
+        assert!(pane.pump().alt_screen());
+        assert!(pane.pump().mouse_mode().reports_buttons());
+
+        let (fresh, new_tx, _) = new_connection(2);
+        pane.reconnect_with(|| fresh);
+        pane.poll_events();
+        send(&new_tx, 2, "$ ");
+        pane.poll_events();
+
+        assert!(!pane.pump().alt_screen(), "退回主屏幕");
+        assert!(!pane.pump().mouse_mode().reports_buttons());
+        assert!(!pane.pump().mouse_mode().sgr);
+        assert!(!pane.pump().bracketed_paste());
+        assert!(!pane.pump().app_cursor());
+        assert!(pane.pump().cursor_visible().is_some(), "光标重新可见");
+        // 主屏幕上重连之前的内容没动。
+        assert_eq!(count_in_terminal(&pane, "before"), 1);
+        assert_eq!(
+            count_in_terminal(&pane, "vim"),
+            0,
+            "备用屏幕的内容不属于主屏幕"
+        );
+        assert_eq!(count_in_terminal(&pane, "已重新连接"), 1);
+    }
+
+    #[test]
+    fn a_failed_reconnect_keeps_the_history_and_leaves_no_reconnected_line() {
+        let (mut pane, tx, _) = remote_pane();
+        send(&tx, 1, "kept output\r\n");
+        tx.send(SessionEvent::Exit {
+            generation: 1,
+            code: None,
+        })
+        .unwrap();
+        pane.poll_events();
+
+        pane.reconnect_with(|| {
+            let pending = crate::ssh_backend::ready(Err("连接失败：refused".to_owned()));
+            Pane::connecting(SIZE, 100, 2, Some(7), pending)
+        });
+        pane.poll_events();
+
+        assert_eq!(pane.state, PaneState::Disconnected);
+        assert_eq!(pane.overlay_reason(), Some("连接失败：refused"));
+        assert_eq!(count_in_terminal(&pane, "kept output"), 1);
+        assert_eq!(count_in_terminal(&pane, "连接失败：refused"), 1);
+        assert_eq!(count_in_terminal(&pane, "已重新连接"), 0);
+
+        // 失败之后再重连一次：历史仍然只有一份，连上时才写分隔行。
+        let (fresh, _new_tx, _) = new_connection(3);
+        pane.reconnect_with(|| fresh);
+        pane.poll_events();
+        assert_eq!(pane.state, PaneState::Live);
+        assert_eq!(count_in_terminal(&pane, "kept output"), 1);
+        assert_eq!(count_in_terminal(&pane, "已重新连接"), 1);
+    }
+
+    #[test]
+    fn the_first_connection_of_a_pane_does_not_inherit_or_mark_anything() {
+        let (mut pane, new_tx, _) = new_connection(1);
+        assert!(!pane.carry_terminal);
+        pane.poll_events();
+        send(&new_tx, 1, "hello\r\n");
+        pane.poll_events();
+        assert_eq!(count_in_terminal(&pane, "已重新连接"), 0);
+        assert_eq!(
+            count_in_terminal(&pane, "正在连接"),
+            0,
+            "首次连上后连接中的提示被新终端替换"
+        );
+    }
+
+    #[test]
+    fn the_reconnect_marker_is_a_dim_line_that_starts_on_its_own_row() {
+        let at_start = super::reconnect_marker(true, "14:05:31");
+        assert_eq!(at_start, "\x1b[90m── 已重新连接 14:05:31 ──\x1b[0m\r\n");
+        let mid_line = super::reconnect_marker(false, "14:05:31");
+        assert!(mid_line.starts_with("\r\n\x1b[90m── "), "{mid_line:?}");
+        // 本地时间 HH:MM:SS。
+        let clock = super::local_clock();
+        let parts: Vec<_> = clock.split(':').collect();
+        assert_eq!(parts.len(), 3, "{clock}");
+        assert!(
+            parts
+                .iter()
+                .all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_digit()))
+        );
+    }
+
+    #[test]
+    fn the_reconnect_marker_starts_on_a_fresh_row_after_a_half_written_line() {
+        let (mut pane, tx, _) = remote_pane();
+        send(&tx, 1, "user@web-1:~$ partial");
+        tx.send(SessionEvent::Exit {
+            generation: 1,
+            code: None,
+        })
+        .unwrap();
+        pane.poll_events();
+        let (fresh, _new_tx, _) = new_connection(2);
+        pane.reconnect_with(|| fresh);
+        pane.poll_events();
+        let marker = position_in_terminal(&pane, "已重新连接");
+        assert_eq!(marker.1, 3);
+        assert_eq!(count_in_terminal(&pane, "partial"), 1);
+        // 分隔行不和别的文字挤在一行。
+        let text = screen(&pane);
+        let line = text.lines().find(|l| l.contains("已重新连接")).unwrap();
+        assert!(line.starts_with("── 已重新连接"), "{line}");
     }
 
     #[test]

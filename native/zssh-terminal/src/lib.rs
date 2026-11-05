@@ -11,8 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::search::{RegexIter, RegexSearch};
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, Processor};
 
@@ -189,6 +190,31 @@ pub struct TerminalModel {
     replies: Arc<Mutex<ReplyQueue>>,
     /// 见 [`Snapshot::revision`]。
     revision: u64,
+    /// 文字内容的修订号：和 `revision` 的区别是滚动不算。搜索靠它认出"该重新找一遍"。
+    content_revision: u64,
+}
+
+/// 一处搜索命中：起止都是网格坐标（行号为负表示在回滚缓冲里，0 是当前屏幕第一行），
+/// 起止都含。跨软换行的命中起止在不同行。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SearchMatch {
+    pub start: (i32, usize),
+    pub end: (i32, usize),
+}
+
+/// 搜索最多收集的命中数：再多就是 `.` 之类的无意义查询，界面也画不下。
+pub const MAX_SEARCH_MATCHES: usize = 10_000;
+
+/// 把输入转成正则里的字面量。
+fn escape_literal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 8);
+    for ch in text.chars() {
+        if r"\.+*?()|[]{}^$#&-~".contains(ch) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 impl TerminalModel {
@@ -203,6 +229,7 @@ impl TerminalModel {
             history_limit: history,
             replies,
             revision: 0,
+            content_revision: 0,
         }
     }
 
@@ -234,6 +261,7 @@ impl TerminalModel {
         };
         self.processor.advance(&mut self.term, bytes);
         self.revision += 1;
+        self.content_revision += 1;
         let mut queue = self
             .replies
             .lock()
@@ -246,13 +274,135 @@ impl TerminalModel {
         self.processor.advance(&mut self.term, bytes);
         if !bytes.is_empty() {
             self.revision += 1;
+            self.content_revision += 1;
         }
         bytes.len()
+    }
+
+    /// 文字内容的修订号（滚动不算），见 [`SearchMatch`] 的用法：变了就该重新搜索。
+    pub fn content_revision(&self) -> u64 {
+        self.content_revision
+    }
+
+    /// 现在是不是在备用屏幕（vim、less、tmux 之类）。
+    pub fn alt_screen(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    /// 在屏幕 + 回滚缓冲里找 `query`（按字面量，不是正则），结果按位置从旧到新排。
+    /// 跨软换行的命中也能找到；备用屏幕上只搜得到备用屏幕的内容（主屏幕的回滚此时不在网格里）。
+    /// 命中数封顶 [`MAX_SEARCH_MATCHES`]。空查询没有命中。
+    pub fn search(&self, query: &str, case_sensitive: bool) -> Vec<SearchMatch> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        // alacritty 默认"全小写就不分大小写"（智能大小写）；用内联标志把它改成由开关决定。
+        let flag = if case_sensitive { "(?-i)" } else { "(?i)" };
+        let pattern = format!("{flag}{}", escape_literal(query));
+        let Ok(mut regex) = RegexSearch::new(&pattern) else {
+            return Vec::new();
+        };
+        let grid = self.term.grid();
+        let last_col = grid.columns().saturating_sub(1);
+        let start = Point::new(grid.topmost_line(), Column(0));
+        let end = Point::new(grid.bottommost_line(), Column(last_col));
+        RegexIter::new(start, end, Direction::Right, &self.term, &mut regex)
+            .take(MAX_SEARCH_MATCHES)
+            .map(|found| SearchMatch {
+                start: (found.start().line.0, found.start().column.0),
+                end: (found.end().line.0, found.end().column.0),
+            })
+            .collect()
+    }
+
+    /// 让网格行 `line`（负数在回滚里）出现在可见区；本来就看得见就不动，否则把它放到大约居中的位置。
+    pub fn scroll_to_line(&mut self, line: i32) {
+        let rows = self.term.grid().screen_lines() as i32;
+        let offset = self.term.grid().display_offset() as i32;
+        let top = -offset;
+        if line >= top && line < top + rows {
+            return;
+        }
+        let history = self.term.grid().history_size() as i32;
+        let wanted = (rows / 2 - line).clamp(0, history);
+        self.term.scroll_display(Scroll::Delta(wanted - offset));
+        self.revision += 1;
+    }
+
+    /// 清屏：丢掉整个回滚缓冲，屏幕只留光标所在的那一行（通常是提示符），挪到第一行，光标跟着它。
+    /// 和老版本 xterm.js 的 `clear()` 一样；纯本地操作，不碰远端。备用屏幕上什么也不做
+    /// （全屏程序下清掉本地画面只会留下一块空白，程序要等下次重绘才恢复）。
+    pub fn clear_keep_cursor_line(&mut self) {
+        if self.alt_screen() {
+            return;
+        }
+        let rows = self.term.grid().screen_lines();
+        let cursor_line = self.term.grid().cursor.point.line.0.max(0) as usize;
+        let grid = self.term.grid_mut();
+        grid.clear_history();
+        if cursor_line > 0 {
+            // 整屏上卷 cursor_line 行：光标行到了第一行，被卷走的行进回滚（下面一并清掉）。
+            grid.scroll_up::<Color>(&(Line(0)..Line(rows as i32)), cursor_line);
+            grid.clear_history();
+        }
+        // 第一行以外全部清空：上卷后下面残留的是原来光标行之后的旧内容。
+        if rows > 1 {
+            grid.reset_region::<Color, _>(Line(1)..Line(rows as i32));
+        }
+        grid.cursor.point.line = Line(0);
+        self.revision += 1;
+        self.content_revision += 1;
+    }
+
+    /// 接新会话之前把远端可能留下的终端状态复位：备用屏幕、光标隐藏、鼠标上报、括号粘贴、
+    /// 应用光标键 / 小键盘、滚动区域、插入模式、SGR 颜色、字符集、光标样式、解析器的半截转义序列。
+    /// 不清屏、不清回滚，光标留在原处（若在备用屏幕上则回到主屏幕的光标）。
+    /// 还没取走的协议回复也作废：那是旧会话的查询产生的。
+    pub fn reset_for_new_session(&mut self) {
+        // 断线时可能正卡在半截转义序列（比如 OSC 字符串）里，不换掉解析器的话后面的文字都会被吞。
+        self.processor = Processor::new();
+        let _ = self.take_replies();
+        if self.alt_screen() {
+            self.processor.advance(&mut self.term, b"\x1b[?1049l");
+        }
+        let cursor = self.term.grid().cursor.point;
+        self.processor.advance(
+            &mut self.term,
+            concat!(
+                "\x1b[?25h",   // 显示光标
+                "\x1b[?1l",    // 光标键回到普通模式
+                "\x1b[?1000l", // 鼠标上报全部关
+                "\x1b[?1002l",
+                "\x1b[?1003l",
+                "\x1b[?1005l",
+                "\x1b[?1006l",
+                "\x1b[?1004l", // 焦点上报
+                "\x1b[?2004l", // 括号粘贴
+                "\x1b[?6l",    // 原点模式
+                "\x1b[?7h",    // 自动换行
+                "\x1b[?1007h", // 备用屏滚轮（默认开）
+                "\x1b>",       // 小键盘回到数字模式
+                "\x1b[4l",     // 插入模式
+                "\x1b[20l",    // 换行模式
+                "\x1b[<99u",   // 键盘增强协议栈清空
+                "\x1b[0 q",    // 光标样式回默认
+                "\x1b(B",      // 字符集回 ASCII
+                "\x0f",        // SI：用 G0
+                "\x1b[0m",     // 颜色和属性
+                "\x1b[r",      // 滚动区域（会把光标挪到左上角，下面再放回去）
+            )
+            .as_bytes(),
+        );
+        let restore = format!("\x1b[{};{}H", cursor.line.0.max(0) + 1, cursor.column.0 + 1);
+        self.processor.advance(&mut self.term, restore.as_bytes());
+        self.revision += 1;
+        self.content_revision += 1;
     }
 
     pub fn resize(&mut self, size: Size) {
         self.term.resize(size);
         self.revision += 1;
+        self.content_revision += 1;
     }
 
     /// 改回滚上限，对已经在用的终端立刻生效（0.2.14 里改设置会同步给已开的 xterm）：
@@ -261,6 +411,7 @@ impl TerminalModel {
         self.term.set_options(model_config(history));
         self.history_limit = history;
         self.revision += 1;
+        self.content_revision += 1;
     }
 
     /// 当前的回滚上限。
@@ -858,6 +1009,257 @@ mod tests {
         let mut term = model(4, 20, 10);
         term.set_history(50);
         term.feed(b"\x1b]52;c;?\x07\x1b]52;c;aGk=\x07");
+        assert!(term.take_replies().is_empty());
+    }
+
+    fn screen_text(term: &TerminalModel) -> Vec<String> {
+        term.snapshot()
+            .rows
+            .iter()
+            .map(|row| row.text.clone())
+            .collect()
+    }
+
+    #[test]
+    fn search_finds_matches_in_the_scrollback_oldest_first() {
+        let mut term = model(4, 40, 100);
+        for i in 0..20 {
+            term.feed(format!("row {i} needle\r\n").as_bytes());
+        }
+        let found = term.search("needle", false);
+        assert_eq!(found.len(), 20);
+        assert!(found.windows(2).all(|pair| pair[0].start < pair[1].start));
+        // 最老的一个已经在回滚缓冲里（行号为负）。
+        assert!(found[0].start.0 < 0);
+        assert_eq!(found[0].start.1, 6);
+        assert_eq!(found[0].end.1, 11);
+        assert!(term.search("", false).is_empty());
+        assert!(term.search("absent", false).is_empty());
+    }
+
+    #[test]
+    fn the_case_switch_decides_not_the_smart_case_default() {
+        let mut term = model(4, 40, 100);
+        term.feed(b"Error error ERROR\r\n");
+        assert_eq!(term.search("error", false).len(), 3);
+        // 全小写的查询在 alacritty 里默认不分大小写；开关打开后必须分。
+        assert_eq!(term.search("error", true).len(), 1);
+        assert_eq!(term.search("Error", true).len(), 1);
+        assert_eq!(term.search("Error", false).len(), 3);
+    }
+
+    #[test]
+    fn regex_characters_in_the_query_are_literals() {
+        let mut term = model(4, 40, 100);
+        term.feed(b"a.b a+b (x) [y] a\\b\r\n");
+        assert_eq!(term.search("a.b", false).len(), 1);
+        assert_eq!(term.search("a+b", false).len(), 1);
+        assert_eq!(term.search("(x)", false).len(), 1);
+        assert_eq!(term.search("[y]", false).len(), 1);
+        assert_eq!(term.search("a\\b", false).len(), 1);
+        assert_eq!(term.search(".*", false).len(), 0);
+    }
+
+    #[test]
+    fn a_match_that_wraps_over_the_soft_line_break_is_found() {
+        let mut term = model(4, 10, 100);
+        // 15 个字符在 10 列的屏幕上软换行，"fghijkl" 跨两行。
+        term.feed(b"abcdefghijklmno\r\n");
+        let found = term.search("fghijkl", false);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].start, (0, 5));
+        assert_eq!(found[0].end, (1, 1));
+    }
+
+    #[test]
+    fn wide_characters_can_be_searched() {
+        let mut term = model(4, 20, 100);
+        term.feed("你好世界 你好\r\n".as_bytes());
+        assert_eq!(term.search("你好", false).len(), 2);
+    }
+
+    #[test]
+    fn the_match_count_is_capped() {
+        let mut term = model(4, 80, 100_000);
+        let line = "a ".repeat(40);
+        for _ in 0..400 {
+            term.feed(format!("{line}\r\n").as_bytes());
+        }
+        assert_eq!(term.search("a", false).len(), MAX_SEARCH_MATCHES);
+    }
+
+    #[test]
+    fn scrolling_to_a_line_in_the_history_makes_it_visible_and_leaves_visible_ones_alone() {
+        let mut term = model(4, 20, 100);
+        for i in 0..30 {
+            term.feed(format!("line {i}\r\n").as_bytes());
+        }
+        let found = term.search("line 3", false);
+        let first = found[0].start.0;
+        assert!(first < 0);
+        term.scroll_to_line(first);
+        let offset = term.display_offset();
+        assert!(term.snapshot().rows.iter().any(|row| row.text == "line 3"));
+        // 已经看得见：不再动。
+        term.scroll_to_line(first);
+        assert_eq!(term.display_offset(), offset);
+        // 当前屏幕上的行：不需要滚。
+        term.scroll_to_bottom();
+        term.scroll_to_line(0);
+        assert_eq!(term.display_offset(), 0);
+    }
+
+    #[test]
+    fn the_content_revision_ignores_scrolling_but_follows_text() {
+        let mut term = model(4, 20, 100);
+        for i in 0..20 {
+            term.feed(format!("l{i}\r\n").as_bytes());
+        }
+        let before = term.content_revision();
+        term.scroll(3);
+        term.scroll_to_bottom();
+        assert_eq!(term.content_revision(), before);
+        term.feed(b"x");
+        assert!(term.content_revision() > before);
+    }
+
+    #[test]
+    fn clearing_keeps_only_the_cursor_line_on_the_first_row() {
+        let mut term = model(5, 30, 100);
+        for i in 0..20 {
+            term.feed(format!("old {i}\r\n").as_bytes());
+        }
+        term.feed(b"user@web-1:~$ ls");
+        assert!(term.history_size() > 0);
+        assert!(term.snapshot().cursor_row > 0, "光标在屏幕下半部分");
+        term.clear_keep_cursor_line();
+
+        let after = term.snapshot();
+        assert_eq!(term.history_size(), 0, "回滚清空");
+        assert_eq!(after.rows[0].text, "user@web-1:~$ ls");
+        assert!(after.rows[1..].iter().all(|row| row.text.is_empty()));
+        assert_eq!((after.cursor_row, after.cursor_col), (0, 16));
+        assert_eq!(after.display_offset, 0);
+
+        // 之后的输出接在光标处。
+        term.feed(b"\r\nnext line");
+        let again = screen_text(&term);
+        assert_eq!(again[0], "user@web-1:~$ ls");
+        assert_eq!(again[1], "next line");
+    }
+
+    #[test]
+    fn clearing_while_scrolled_back_returns_to_the_bottom() {
+        let mut term = model(4, 20, 100);
+        for i in 0..30 {
+            term.feed(format!("l{i}\r\n").as_bytes());
+        }
+        term.feed(b"$ ");
+        term.scroll(10);
+        term.clear_keep_cursor_line();
+        assert_eq!(term.display_offset(), 0);
+        assert_eq!(term.snapshot().rows[0].text, "$");
+        assert_eq!(term.history_size(), 0);
+    }
+
+    #[test]
+    fn clearing_when_the_cursor_is_on_the_first_row_drops_everything_below() {
+        let mut term = model(4, 20, 100);
+        term.feed(b"prompt");
+        term.clear_keep_cursor_line();
+        assert_eq!(screen_text(&term)[0], "prompt");
+        assert_eq!(term.snapshot().cursor_row, 0);
+        // 光标在第一行、下面有内容（程序画过的）：下面的清掉。
+        let mut term = model(4, 20, 100);
+        term.feed(b"a\r\nb\r\nc\x1b[1;3H");
+        term.clear_keep_cursor_line();
+        assert_eq!(screen_text(&term), ["a", "", "", ""]);
+    }
+
+    #[test]
+    fn clearing_does_nothing_on_the_alternate_screen() {
+        let mut term = model(4, 20, 100);
+        term.feed(b"main\r\n\x1b[?1049hfull screen");
+        term.clear_keep_cursor_line();
+        assert!(screen_text(&term).iter().any(|row| row == "full screen"));
+        term.feed(b"\x1b[?1049l");
+        assert_eq!(screen_text(&term)[0], "main");
+    }
+
+    #[test]
+    fn a_new_session_resets_the_modes_a_dead_remote_left_behind() {
+        let mut term = model(5, 30, 100);
+        term.feed(b"history 1\r\nhistory 2\r\n");
+        // 远端程序（vim 之类）开了一堆模式然后断线。
+        term.feed(
+            b"\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?1h\x1b[2;4r\x1b[1;31mfull",
+        );
+        assert!(term.alt_screen());
+        assert!(term.mouse_mode().reports_buttons() && term.mouse_mode().sgr);
+        assert!(term.bracketed_paste() && term.app_cursor());
+        assert!(term.cursor_visible().is_none());
+
+        term.reset_for_new_session();
+
+        assert!(!term.alt_screen());
+        assert!(!term.mouse_mode().reports_buttons());
+        assert!(!term.mouse_mode().sgr);
+        assert!(!term.bracketed_paste());
+        assert!(!term.app_cursor());
+        assert!(term.cursor_visible().is_some(), "光标重新显示");
+        // 回到主屏幕：历史还在。
+        assert_eq!(screen_text(&term)[0], "history 1");
+        assert_eq!(screen_text(&term)[1], "history 2");
+        // 滚动区域和颜色也复位了：接着写的字是默认前景色，换行能一路到屏幕底。
+        term.feed(b"\r\nplain\r\n\r\n\r\n\r\nlast");
+        let rows = screen_text(&term);
+        assert_eq!(rows[4], "last");
+        let plain_at = rows.iter().position(|row| row == "plain");
+        if let Some(at) = plain_at {
+            assert_eq!(term.cell(at, 0).fg, Color::Named(NamedColor::Foreground));
+        }
+    }
+
+    #[test]
+    fn resetting_for_a_new_session_keeps_the_screen_and_the_scrollback() {
+        let mut term = model(4, 20, 100);
+        for i in 0..10 {
+            term.feed(format!("line {i}\r\n").as_bytes());
+        }
+        term.feed(b"tail");
+        let before = term.snapshot();
+        term.reset_for_new_session();
+        let after = term.snapshot();
+        assert_eq!(screen_text(&term), {
+            before
+                .rows
+                .iter()
+                .map(|row| row.text.clone())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(after.history_size, before.history_size);
+        assert_eq!(
+            (after.cursor_row, after.cursor_col),
+            (before.cursor_row, before.cursor_col)
+        );
+    }
+
+    #[test]
+    fn a_half_finished_escape_sequence_does_not_eat_the_next_session() {
+        let mut term = model(4, 40, 100);
+        // 断线时正卡在 OSC 字符串中间：不换解析器，后面的文字都会被当成标题吞掉。
+        term.feed(b"before\r\n\x1b]0;half a title");
+        term.reset_for_new_session();
+        term.feed(b"after");
+        let rows = screen_text(&term);
+        assert!(rows.iter().any(|row| row == "after"), "{rows:?}");
+    }
+
+    #[test]
+    fn reset_drops_replies_owed_to_the_old_session() {
+        let mut term = model(4, 20, 100);
+        term.feed(b"\x1b[5n");
+        term.reset_for_new_session();
         assert!(term.take_replies().is_empty());
     }
 
