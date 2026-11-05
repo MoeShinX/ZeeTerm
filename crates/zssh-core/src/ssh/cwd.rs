@@ -21,6 +21,8 @@
 use std::time::Duration;
 
 use super::connection::Connection;
+/// POSIX 单引号转义（本体在 `sftp::server_copy`，这里转出去给 ssh 这边的命令构造用）：`'` → `'\''`。
+pub(crate) use crate::sftp::server_copy::shell_quote;
 
 /// 探测超时：服务器不回就放弃，不卡住面板。
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -67,11 +69,6 @@ exit 0"#;
 /// `$PPID` 就是 sshd，也不用担心登录 shell 自己解析不了 POSIX 语法。
 pub fn probe_command() -> String {
     format!("exec sh -c {}", shell_quote(PROBE_SCRIPT))
-}
-
-/// POSIX 单引号转义：`'` → `'\''`。
-pub(crate) fn shell_quote(text: &str) -> String {
-    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 /// 解析脚本输出，按登录 shell 的 pid 升序（≈ 打开顺序）。

@@ -8,7 +8,7 @@
 //!   `unsavedPrompt`）：一个确认框列出所有有改动的文件，退出时还带上传输、AI 回合这些别的后果；
 //! - 编辑器自己带着通道，关掉终端标签 / SFTP 标签不会让它断线；真断了会出现「重新连接」。
 //!
-//! 编辑器本身在 `remote_editor_demo`。
+//! 编辑器本身在 `remote_editor`。
 
 use ::gpui::{App, MouseButton, SharedString, Subscription, Window, px};
 use gpui_kit::component::menu::ContextMenuExt as _;
@@ -22,7 +22,7 @@ use super::modal::Modal;
 use super::nav::MainView;
 use crate::app_theme::Tokens;
 use crate::icons::Ico;
-use crate::remote_editor_demo::{CloseSave, EditorEvent, OpenSpec, Phase, RemoteEditor};
+use crate::remote_editor::{CloseSave, EditorEvent, OpenSpec, Phase, RemoteEditor};
 
 /// 主视图里的一个编辑器标签。
 pub struct EditorTab {

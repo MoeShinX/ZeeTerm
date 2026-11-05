@@ -425,18 +425,3 @@ tcp        0      0 192.0.2.10:8081         198.51.100.30:50000     CLOSE_WAIT  
 pub use real::is_known;
 #[cfg(debug_assertions)]
 pub(super) use real::run;
-
-#[cfg(not(debug_assertions))]
-pub fn is_known(_name: &str) -> bool {
-    false
-}
-
-#[cfg(not(debug_assertions))]
-pub(super) fn run(
-    _this: &mut super::MainWindow,
-    _spec: &str,
-    _window: &mut ::gpui::Window,
-    _cx: &mut gpui_kit::Context<super::MainWindow>,
-) -> Option<Result<super::dev_script::Outcome, String>> {
-    None
-}

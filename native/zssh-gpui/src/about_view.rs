@@ -1,7 +1,7 @@
 //! 设置页的「关于」一节（G12，R1 起是正式版的样子）：版本、检查更新、启动时自动检查、数据目录、
 //! known_hosts、第三方组件与许可。
 //!
-//! 「检查更新」打开更新窗口（`update_demo`）：读 `latest.json`、下载、校验签名、确认后安装。
+//! 「检查更新」打开更新窗口（`update`）：读 `latest.json`、下载、校验签名、确认后安装。
 //! 「启动时自动检查」默认开，存在本机设置里（`zssh_core::updater::AUTO_CHECK_KEY`，不参与同步）；
 //! 它只管后台自动检查（`update_auto`），手动「检查更新」不受影响。
 //! 更新签名公钥还是占位值时（`zssh_update::is_placeholder_pubkey`）这一行改成提示"更新签名未配置"。
@@ -56,13 +56,13 @@ pub fn update_description(signing_configured: bool) -> &'static str {
     if signing_configured {
         "点「检查更新」打开更新窗口，检查、下载并校验新版本。"
     } else {
-        crate::update_demo::SIGNING_UNCONFIGURED
+        crate::update::SIGNING_UNCONFIGURED
     }
 }
 
 /// 更新签名公钥是不是已经配置好（占位值、内置配置读不出来都算没配；调试构建里钩子给的公钥也算）。
 pub fn signing_configured() -> bool {
-    crate::update_demo::update_pubkey().is_ok()
+    crate::update::update_pubkey().is_ok()
 }
 
 /// 「启动时自动检查」一行的说明。
@@ -81,7 +81,7 @@ pub fn releases_url() -> Option<String> {
 
 /// 读「启动时自动检查」偏好；设置库打不开或值读不懂就按缺省（开）。
 fn load_auto_check() -> bool {
-    crate::hosts_demo::open_database()
+    crate::host_db::open_database()
         .ok()
         .and_then(|db| zssh_core::updater::load_prefs(&db).ok())
         .is_none_or(|prefs| zssh_core::updater::should_auto_check(&prefs))
@@ -99,7 +99,7 @@ impl AboutView {
     /// 「检查更新」：打开更新窗口（手动检查，不受「启动时自动检查」开关影响）。
     pub fn check_update(&mut self, cx: &mut Context<Self>) {
         if product::AUTO_UPDATE_ENABLED {
-            crate::update_demo::open_update_window(cx);
+            crate::update::open_update_window(cx);
         }
         cx.notify();
     }
@@ -107,7 +107,7 @@ impl AboutView {
     /// 切换「启动时自动检查」并写回设置库；写失败就保持原值并给出原因。
     pub fn toggle_auto_check(&mut self, cx: &mut Context<Self>) {
         let next = !self.auto_check;
-        let saved = crate::hosts_demo::open_database()
+        let saved = crate::host_db::open_database()
             .map_err(|err| err.to_string())
             .and_then(|db| {
                 zssh_core::updater::set_auto_check(&db, next).map_err(|err| err.to_string())
@@ -377,13 +377,10 @@ mod tests {
     #[test]
     fn an_unconfigured_update_key_is_called_out_instead_of_promising_updates() {
         let text = update_description(false);
-        assert_eq!(text, crate::update_demo::SIGNING_UNCONFIGURED);
+        assert_eq!(text, crate::update::SIGNING_UNCONFIGURED);
         assert!(text.contains("更新签名未配置"));
         // 界面上"配没配"和更新流程里拿不拿得到公钥是同一个判断。
-        assert_eq!(
-            signing_configured(),
-            crate::update_demo::update_pubkey().is_ok()
-        );
+        assert_eq!(signing_configured(), crate::update::update_pubkey().is_ok());
     }
 
     #[test]

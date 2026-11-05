@@ -7,35 +7,41 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod about_view;
-mod agent_chat_demo;
+mod agent_chat;
 #[cfg(test)]
 mod agent_flow_tests;
 mod agent_host;
 mod agent_setup;
 mod agent_text;
 mod agent_tools;
-mod agents_demo;
+mod agents;
 mod ai_terminals;
 mod app_lock;
 mod app_prefs;
 mod app_theme;
-mod backup_demo;
+mod armed;
+mod backup;
 mod chat_copy;
 mod conn_pool;
+mod datetime;
 mod dev_hooks;
+// 编辑器演示窗口只有 dev 钩子开得到（ZSSH_OPEN_EDITOR / terminal_demo 内部），release 不编译。
+#[cfg(debug_assertions)]
 mod editor_demo;
 #[cfg(debug_assertions)]
 mod fake_telnet;
 mod file_window;
 mod fonts;
+mod format;
 mod forward_runtime;
 mod highlight;
 mod highlight_editor;
 mod host_activity;
+mod host_db;
 mod host_os;
-mod hosts_demo;
+mod hosts;
 mod icons;
-mod identities_demo;
+mod identities;
 mod ime;
 mod install_state;
 #[cfg(test)]
@@ -45,30 +51,33 @@ mod links;
 mod live_support;
 mod main_window;
 mod menu_kit;
-mod migrate_demo;
+mod migrate;
 mod os_icons;
 mod product;
 mod protocol_backend;
-mod proxies_demo;
-mod remote_editor_demo;
+mod proxies;
+mod remote_editor;
 mod selection;
 mod settings;
 mod settings_nav;
 mod settings_store;
 mod settings_view;
-mod sftp_demo;
+mod sftp;
 mod split_tree;
 mod ssh_backend;
 mod ssh_interact;
 mod ssh_prompt;
 mod ssh_prompt_ui;
-mod status_demo;
-mod sync_demo;
+mod status;
+mod sync;
 #[cfg(debug_assertions)]
 mod sync_stub;
 mod tab_drag;
 mod tab_set;
 mod term_window;
+// 旧的终端演示窗口只有 dev 钩子开得到（ZSSH_DEMO_TERMINAL / ZSSH_CONNECT_HOST_WINDOW /
+// ZSSH_EXTRA_TERMINAL / hosts 演示窗的连接按钮），release 不编译。
+#[cfg(debug_assertions)]
 mod terminal_demo;
 mod terminal_menu;
 mod terminal_workspace;
@@ -78,8 +87,8 @@ mod test_sftp_server;
 mod test_ssh_server;
 mod tray;
 mod typography;
+mod update;
 mod update_auto;
-mod update_demo;
 mod window_state;
 mod x11_glue;
 
@@ -88,6 +97,7 @@ use gpui_kit::*;
 use main_window::MainWindow;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::sync::Mutex;
+#[cfg(debug_assertions)]
 use terminal_demo::TerminalDemo;
 use zssh_platform_windows::single_instance::{self, InstanceGuard};
 
@@ -102,7 +112,7 @@ fn main() {
     app.run(move |cx| {
         gpui_kit::init(cx);
         // 编辑器的快捷键要在组件的键位之后注册，同深度的绑定后注册的优先。
-        remote_editor_demo::init_commands(cx);
+        remote_editor::init_commands(cx);
 
         // 应用级设置：全进程一份，开任何窗口之前建好（主题在这里定下来：`Theme::change` 会把颜色
         // 重置成组件库默认值，之后统一由 `app_theme` 写入自己的色板）。主窗口、独立终端窗口都共用它，
@@ -139,21 +149,25 @@ fn main() {
             // 会话日志的写线程各自在收尾；这里有限等一下（最多 2 秒）让排着的写完，超时 / 写失败
             // 记进设置，下次打开设置里的会话日志时看得到。
             app_prefs::finish_session_logs_at_exit();
-            update_demo::run_pending_install();
+            update::run_pending_install();
             // 设置要求时，一并关掉本次运行拉起的 X 服务器（用户自己开的不动）。
             x11_glue::shutdown_owned();
         }));
 
         // 自动同步的调度器：一个进程一个，和同步设置窗口的开关无关。
-        sync_demo::spawn_auto_sync(cx);
+        sync::spawn_auto_sync(cx);
         // 后台自动检查更新：启动后延迟一会儿查一次，之后每 6 小时一次（设置里可关）。
         update_auto::spawn(cx);
         // 底部同步状态条的数据：每 2 秒读一次本机的同步设置（0.2.14 的 `SyncStatusBar`）。
-        sync_demo::spawn_status_refresher(cx);
+        sync::spawn_status_refresher(cx);
 
         // 调试用：往（独立的）数据目录里写种子主机，必须在主窗口读主机库之前。
-        if let Err(err) = main_window::dev_seed::seed_from_env() {
-            tracing::warn!(%err, "写种子主机失败");
+        // dev_seed 整个模块只编进 debug 构建，入口一起门掉。
+        #[cfg(debug_assertions)]
+        {
+            if let Err(err) = main_window::dev_seed::seed_from_env() {
+                tracing::warn!(%err, "写种子主机失败");
+            }
         }
 
         // 无边框窗口：标题栏自己画（`TitleBar::title_bar_options` 让系统不画标题栏）。
@@ -273,83 +287,92 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
         });
     }
     // 程序内驱动：按 ZSSH_MAIN_SCRIPT 里的步骤在主窗口里依次操作（见 `main_window::dev_script`）。
+    // 驱动脚本整套（dev_script + dev_acts_*）只编进 debug 构建。
+    #[cfg(debug_assertions)]
     main_window::dev_script::spawn_from_env(view.clone(), handle, cx);
 
     // 手动验证用：再开旧的终端演示窗口（原来的主窗口），它带着原来那一批演示钩子。
-    if dev_hooks::var_os("ZSSH_DEMO_TERMINAL").is_some() {
-        open_demo_terminal(cx);
-    }
+    // 演示窗口（terminal_demo）只编进 debug 构建。
+    #[cfg(debug_assertions)]
+    {
+        if dev_hooks::var_os("ZSSH_DEMO_TERMINAL").is_some() {
+            open_demo_terminal(cx);
+        }
 
-    // 手动验证用：带一个主机库 id 时启动就开独立的终端窗口（旧的 `ZSSH_CONNECT_HOST` 行为）。
-    if let Some(raw) = dev_hooks::var("ZSSH_CONNECT_HOST_WINDOW") {
-        for part in raw.split(',') {
-            if let Ok(host_id) = part.trim().parse::<i64>() {
-                terminal_demo::open_ssh_window(cx, host_id);
+        // 手动验证用：带一个主机库 id 时启动就开独立的终端窗口（旧的 `ZSSH_CONNECT_HOST` 行为）。
+        if let Some(raw) = dev_hooks::var("ZSSH_CONNECT_HOST_WINDOW") {
+            for part in raw.split(',') {
+                if let Ok(host_id) = part.trim().parse::<i64>() {
+                    terminal_demo::open_ssh_window(cx, host_id);
+                }
             }
         }
     }
 
     // 手动验证用：直接打开主机库窗口。
     if dev_hooks::var_os("ZSSH_HOSTS").is_some() {
-        hosts_demo::open_hosts_window(cx);
+        hosts::open_hosts_window(cx);
     }
 
     // 手动/截图验证用：带一个主机库 id 时启动就开 SFTP 浏览窗口。
     if let Some(raw) = dev_hooks::var("ZSSH_SFTP_HOST")
         && let Ok(host_id) = raw.trim().parse::<i64>()
     {
-        sftp_demo::open_sftp_window(cx, host_id);
+        sftp::open_sftp_window(cx, host_id);
     }
 
-    // 手动/截图验证用：带这个环境变量启动时再开一个独立终端窗口。
-    if dev_hooks::var_os("ZSSH_EXTRA_TERMINAL").is_some() {
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(1100.), px(760.)), cx)),
-            ..Default::default()
-        };
-        let _ = cx.open_window(options, |window, cx| {
-            let view = cx.new(|cx| TerminalDemo::new(window, cx, "terminal-1".to_owned()));
-            window.focus(&view.read(cx).focus_handle(), cx);
-            view
-        });
-    }
+    // 手动/截图验证用：带这个环境变量启动时再开一个独立终端窗口（terminal_demo 只编进 debug）。
+    #[cfg(debug_assertions)]
+    {
+        if dev_hooks::var_os("ZSSH_EXTRA_TERMINAL").is_some() {
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::centered(size(px(1100.), px(760.)), cx)),
+                ..Default::default()
+            };
+            let _ = cx.open_window(options, |window, cx| {
+                let view = cx.new(|cx| TerminalDemo::new(window, cx, "terminal-1".to_owned()));
+                window.focus(&view.read(cx).focus_handle(), cx);
+                view
+            });
+        }
 
-    // 手动/截图验证用：带这个环境变量启动时直接开一个编辑器窗口。
-    if dev_hooks::var_os("ZSSH_OPEN_EDITOR").is_some() {
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(900.), px(620.)), cx)),
-            ..Default::default()
-        };
-        let _ = cx.open_window(options, |window, cx| {
-            let view = cx.new(|cx| editor_demo::EditorDemo::new(window, cx));
-            window.focus(&view.read(cx).focus_handle(), cx);
-            view
-        });
+        // 手动/截图验证用：带这个环境变量启动时直接开一个编辑器窗口（editor_demo 只编进 debug）。
+        if dev_hooks::var_os("ZSSH_OPEN_EDITOR").is_some() {
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::centered(size(px(900.), px(620.)), cx)),
+                ..Default::default()
+            };
+            let _ = cx.open_window(options, |window, cx| {
+                let view = cx.new(|cx| editor_demo::EditorDemo::new(window, cx));
+                window.focus(&view.read(cx).focus_handle(), cx);
+                view
+            });
+        }
     }
 
     // 手动验证用：带这个环境变量启动时直接打开更新检查窗口。
     if dev_hooks::var_os("ZSSH_UPDATE").is_some() {
-        update_demo::open_update_window(cx);
+        update::open_update_window(cx);
     }
 
     // 手动验证用：带这个环境变量启动时直接打开备份与恢复窗口。
     if dev_hooks::var_os("ZSSH_BACKUP").is_some() {
-        backup_demo::open_backup_window(cx);
+        backup::open_backup_window(cx);
     }
 
     // 手动验证用：带这个环境变量启动时直接打开同步设置窗口。
     if dev_hooks::var_os("ZSSH_SYNC").is_some() {
-        sync_demo::open_sync_window(cx);
+        sync::open_sync_window(cx);
     }
 
     // 手动验证用：带这个环境变量启动时直接打开服务器状态窗口。
     if dev_hooks::var_os("ZSSH_STATUS").is_some() {
-        status_demo::open_status_window(cx);
+        status::open_status_window(cx);
     }
 
     // 手动验证用：带这个环境变量启动时直接打开 AI 智能体窗口。
     if dev_hooks::var_os("ZSSH_AGENTS").is_some() {
-        agents_demo::open_agents_window(cx);
+        agents::open_agents_window(cx);
     }
 
     // 手动验证用（只在调试版）：带 ZSSH_AGENT_CHAT=1 启动时直接打开 AI 对话窗口；
@@ -357,12 +380,13 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
     if dev_hooks::var_os("ZSSH_AGENT_CHAT").is_some()
         || dev_hooks::var_os("ZSSH_AGENT_DEMO").is_some()
     {
-        agent_chat_demo::open_agent_chat_window(cx);
+        agent_chat::open_agent_chat_window(cx);
     }
 }
 
 /// 旧的终端演示窗口（原来的主窗口）：只在 `ZSSH_DEMO_TERMINAL` 钩子下打开，
 /// 带着它原来的那一批演示钩子（预开标签、分屏、鼠标上报、高亮、设置面板）。
+#[cfg(debug_assertions)]
 fn open_demo_terminal(cx: &mut App) {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(1100.), px(760.)), cx)),

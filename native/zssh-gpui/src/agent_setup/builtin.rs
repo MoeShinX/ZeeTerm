@@ -1,7 +1,7 @@
 //! ZeeTerm 内置助手在 `agent_setup` 里的那一份（V2-A4）：接口清单的进程级状态、"配好了没有"的判定、
 //! 模型下拉要的目录（含思考强度变体）、用量信号翻译、模型资料库（models.dev）的加载与后台更新。
 //!
-//! 面板（`agent_chat_demo`）和设置页读同一份进程级状态；设置页保存 / 删除接口后调
+//! 面板（`agent_chat`）和设置页读同一份进程级状态；设置页保存 / 删除接口后调
 //! [`reload`]，面板下一个节拍据 [`version`] 变了就重读。业务判定（能力识别、映射、对话循环）
 //! 全是 core 的，这里只拼装。
 
@@ -161,7 +161,7 @@ fn state() -> MutexGuard<'static, State> {
 }
 
 fn load_from_disk() -> BuiltinInfo {
-    match crate::hosts_demo::open_database() {
+    match crate::host_db::open_database() {
         Ok(db) => read_info(&db),
         Err(err) => {
             tracing::warn!(error = %err, "打开设置库失败，ZeePilot 按没配置处理");
@@ -285,7 +285,7 @@ pub fn make_transport() -> Result<Arc<dyn Transport>, String> {
         let transport = ReqwestTransport::build(None).map_err(|err| err.to_string())?;
         return Ok(Arc::new(transport));
     }
-    let db = crate::hosts_demo::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
+    let db = crate::host_db::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
     let proxy = zssh_core::sync::app_proxy::app_proxy(&db)
         .map_err(|err| format!("软件网络的代理设置有问题：{err}"))?;
     let transport = ReqwestTransport::build(proxy.as_ref()).map_err(|err| err.to_string())?;
@@ -299,7 +299,7 @@ pub fn spawn_background_refresh(delay: std::time::Duration) {
     };
     runtime.spawn(async move {
         tokio::time::sleep(delay).await;
-        let enabled = crate::hosts_demo::open_database()
+        let enabled = crate::host_db::open_database()
             .ok()
             .and_then(|db| db.ai_models_auto_update().ok())
             .unwrap_or(true);
@@ -316,7 +316,7 @@ pub fn spawn_background_refresh(delay: std::time::Duration) {
 
 /// 拉一次资料库。`force` = 不管缓存新不新鲜（"立即更新"）。成功更新了返回 `true`。
 pub async fn refresh_catalog(force: bool) -> Result<bool, String> {
-    let db = crate::hosts_demo::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
+    let db = crate::host_db::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
     let proxy = zssh_core::sync::app_proxy::app_proxy(&db)
         .map_err(|err| format!("软件网络的代理设置有问题：{err}"))?;
     let http = ReqwestFetch::build(proxy.as_ref())?;

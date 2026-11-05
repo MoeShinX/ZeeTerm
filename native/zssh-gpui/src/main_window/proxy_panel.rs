@@ -69,7 +69,7 @@ pub fn proxy_matches(proxy: &Proxy, query: &str) -> bool {
     query.is_empty()
         || proxy.name.to_lowercase().contains(&query)
         || proxy.host.to_lowercase().contains(&query)
-        || crate::proxies_demo::kind_label(proxy.kind)
+        || crate::proxies::kind_label(proxy.kind)
             .to_lowercase()
             .contains(&query)
 }
@@ -221,7 +221,7 @@ impl MainWindow {
             .db()
             .and_then(|db| db.host_list().map_err(|e| e.to_string()))
         {
-            Ok(hosts) => crate::proxies_demo::hosts_using_proxy(&hosts, proxy_id),
+            Ok(hosts) => crate::proxies::hosts_using_proxy(&hosts, proxy_id),
             Err(err) => {
                 self.modal = Some(Modal::Confirm(Confirm {
                     title: "不能确认有没有主机在用它".to_owned(),
@@ -241,7 +241,7 @@ impl MainWindow {
             .and_then(|db| db.default_proxy_id().ok().flatten())
             == Some(proxy_id);
         let (text, can_delete) =
-            crate::proxies_demo::proxy_delete_prompt(&proxy.name, &users, is_default);
+            crate::proxies::proxy_delete_prompt(&proxy.name, &users, is_default);
         self.modal = Some(Modal::Confirm(Confirm {
             title: if can_delete {
                 format!("删除代理「{}」？", proxy.name)
@@ -292,7 +292,7 @@ impl MainWindow {
             return;
         };
         self.modal = Some(Modal::Confirm(
-            match crate::proxies_demo::clear_secret_draft(&proxy) {
+            match crate::proxies::clear_secret_draft(&proxy) {
                 Ok(_) => Confirm {
                     title: format!("清除代理「{}」已存的密码？", proxy.name),
                     message: "只清掉保存的密码，其余不动；不能恢复。".to_owned(),
@@ -321,7 +321,7 @@ impl MainWindow {
         let Some(proxy) = self.store.proxies().iter().find(|p| p.id == id).cloned() else {
             return;
         };
-        let draft = match crate::proxies_demo::clear_secret_draft(&proxy) {
+        let draft = match crate::proxies::clear_secret_draft(&proxy) {
             Ok(draft) => draft,
             Err(message) => {
                 self.notice_error(&message, window, cx);
@@ -385,7 +385,7 @@ impl MainWindow {
                 format!(
                     "{}（{}）",
                     proxy.name,
-                    crate::proxies_demo::kind_label(proxy.kind)
+                    crate::proxies::kind_label(proxy.kind)
                 ),
                 default_id == Some(proxy.id),
             ));
@@ -395,7 +395,7 @@ impl MainWindow {
             .and_then(|id| proxies.iter().find(|p| p.id == id))
             .map_or_else(
                 || "不使用默认代理".to_owned(),
-                |p| format!("{}（{}）", p.name, crate::proxies_demo::kind_label(p.kind)),
+                |p| format!("{}（{}）", p.name, crate::proxies::kind_label(p.kind)),
             );
         let default_section = section(
             "默认代理",
@@ -477,7 +477,7 @@ impl MainWindow {
                                     ),
                             )
                             .child(badge(
-                                crate::proxies_demo::kind_label(proxy.kind),
+                                crate::proxies::kind_label(proxy.kind),
                                 BadgeKind::Neutral,
                                 tokens,
                             ))
@@ -782,7 +782,7 @@ mod tests {
             .expect("改");
         assert!(kept.has_secret, "留空 = 不改");
         let cleared = db
-            .proxy_save(&crate::proxies_demo::clear_secret_draft(&kept).expect("能清"))
+            .proxy_save(&crate::proxies::clear_secret_draft(&kept).expect("能清"))
             .expect("清除");
         assert!(!cleared.has_secret, "「清除密码」才真的清掉");
     }

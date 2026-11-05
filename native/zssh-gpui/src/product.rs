@@ -15,7 +15,7 @@ pub const DATA_DIR_NAME: &str = "ZeeTerm";
 /// 开着时：启动后和程序开着的时候按间隔自动检查更新（设置里「启动时自动检查」可关），手动「检查更新」
 /// 打开更新窗口；下载的安装包必须通过 minisign 验签、且签名里的版本与清单一致才会安装。
 /// 更新签名公钥（`native/zssh-update/updater.json`）还是占位值时，更新窗口只显示"更新签名未配置"，
-/// 不请求、不下载、不安装（见 `update_demo`），所以没配公钥的构建不会装上任何东西。
+/// 不请求、不下载、不安装（见 `update`），所以没配公钥的构建不会装上任何东西。
 pub const AUTO_UPDATE_ENABLED: bool = true;
 
 /// 仓库根的第三方声明原文。

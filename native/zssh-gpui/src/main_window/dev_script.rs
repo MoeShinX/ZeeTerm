@@ -26,19 +26,31 @@
 //!
 //! 日志里只写步骤名、结果和标签标题 / 状态，不写屏幕内容，也不写任何禁用片段的原文。
 
+// 本模块只有 Outcome 留在 release（U12/U18/U21 的空壳签名引用它）；其余解析、执行、
+// 日志全部只在 debug 构建里编译，入口 main.rs 的调用一起门掉。
+#[cfg(debug_assertions)]
 use std::io::Write as _;
+#[cfg(debug_assertions)]
 use std::path::PathBuf;
+#[cfg(debug_assertions)]
 use std::time::{Duration, Instant};
 
+#[cfg(debug_assertions)]
 use ::gpui::{AnyWindowHandle, App, Entity, Window};
+#[cfg(debug_assertions)]
 use gpui_kit::*;
 
+#[cfg(debug_assertions)]
 use super::MainWindow;
+#[cfg(debug_assertions)]
 use super::nav::MainView;
+#[cfg(debug_assertions)]
 use crate::split_tree::Axis;
+#[cfg(debug_assertions)]
 use crate::terminal_workspace::TabStatus;
 
 /// 一个步骤。
+#[cfg(debug_assertions)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
     Open(i64),
@@ -120,6 +132,7 @@ pub enum Step {
 }
 
 /// 解析脚本；任何一步写错都整体拒绝，免得跑到一半才发现。
+#[cfg(debug_assertions)]
 pub fn parse_script(raw: &str) -> Result<Vec<Step>, String> {
     let mut steps = Vec::new();
     for part in raw.split(';').map(str::trim).filter(|p| !p.is_empty()) {
@@ -423,6 +436,7 @@ pub fn parse_script(raw: &str) -> Result<Vec<Step>, String> {
 }
 
 /// `\r`、`\n`、`\t`、`\e`（ESC）、`\s`（空格）、`\\` 转义；别的反斜杠原样保留。
+#[cfg(debug_assertions)]
 pub(super) fn unescape(raw: &str) -> String {
     let mut out = String::new();
     let mut chars = raw.chars();
@@ -450,6 +464,8 @@ pub(super) fn unescape(raw: &str) -> String {
     out
 }
 
+// release 里 U12/U18/U21 的空壳签名不再引用它（空壳已删），整个模块回到 debug 门禁内。
+#[cfg(debug_assertions)]
 pub(super) enum Outcome {
     Done,
     /// 条件还没成立，稍后再看。
@@ -458,10 +474,13 @@ pub(super) enum Outcome {
 }
 
 /// 单步等待的上限。
+#[cfg(debug_assertions)]
 const STEP_TIMEOUT: Duration = Duration::from_secs(40);
 /// 等外面截图的上限。
+#[cfg(debug_assertions)]
 const SHOT_TIMEOUT: Duration = Duration::from_secs(180);
 
+#[cfg(debug_assertions)]
 pub(super) fn log_line(path: &Option<PathBuf>, line: &str) {
     if let Some(path) = path
         && let Ok(mut file) = std::fs::OpenOptions::new()
@@ -474,6 +493,7 @@ pub(super) fn log_line(path: &Option<PathBuf>, line: &str) {
 }
 
 /// 读环境变量并启动驱动；没设 `ZSSH_MAIN_SCRIPT`（或 release 构建）什么都不做。
+#[cfg(debug_assertions)]
 pub fn spawn_from_env(view: Entity<MainWindow>, handle: AnyWindowHandle, cx: &mut App) {
     let Some(raw) = crate::dev_hooks::var("ZSSH_MAIN_SCRIPT") else {
         return;
@@ -656,6 +676,7 @@ pub fn spawn_from_env(view: Entity<MainWindow>, handle: AnyWindowHandle, cx: &mu
     .detach();
 }
 
+#[cfg(debug_assertions)]
 fn run_step(
     this: &mut MainWindow,
     step: &Step,
@@ -822,7 +843,7 @@ fn run_step(
         | Step::TermWin(_) => Outcome::Done,
         Step::Act(spec) => super::dev_acts::run(this, spec, window, cx),
         Step::OpenHosts => {
-            crate::hosts_demo::open_hosts_window(cx);
+            crate::hosts::open_hosts_window(cx);
             Outcome::Done
         }
         Step::AssertView(view) => {
@@ -918,6 +939,7 @@ fn run_step(
 
 /// 先把指针移到那里，再按下抬起 `count` 次（和真实鼠标点击同一条分发路径）。
 #[allow(clippy::too_many_arguments)]
+#[cfg(debug_assertions)]
 fn click(
     window: &mut Window,
     cx: &mut App,
@@ -975,6 +997,7 @@ fn click(
 }
 
 /// `termwin:` 步骤：同样的按键 / 点击 / 鼠标，发给第一个独立终端窗口。
+#[cfg(debug_assertions)]
 fn to_term_window(step: &Step, cx: &mut App) -> Outcome {
     let Some(handle) = crate::term_window::handles(cx).into_iter().next() else {
         return Outcome::Failed("没有独立终端窗口".to_owned());
@@ -1012,6 +1035,7 @@ fn to_term_window(step: &Step, cx: &mut App) -> Outcome {
 }
 
 /// `files:` 步骤：同样的按键 / 点击 / 鼠标 / 文件拖放，发给独立文件窗口。
+#[cfg(debug_assertions)]
 fn to_file_window(step: &Step, cx: &mut App) -> Outcome {
     let Some(handle) = crate::file_window::window_handle(cx) else {
         return Outcome::Failed("文件窗口没有开".to_owned());
@@ -1060,6 +1084,7 @@ fn to_file_window(step: &Step, cx: &mut App) -> Outcome {
 
 /// 资源管理器拖文件进来：和系统给 gpui 的事件同一个入口（`FileDrop`），经 gpui 翻译成"带着外部路径的
 /// 拖动"，落点上的 `on_drop::<ExternalPaths>` 照常触发。没法模拟的只有 Windows 自己的 OLE 拖放。
+#[cfg(debug_assertions)]
 fn file_drop(window: &mut Window, cx: &mut App, x: f32, y: f32, paths: &[String], cancel: bool) {
     use ::gpui::{ExternalPaths, FileDropEvent, PlatformInput, point, px};
     let position = point(px(x), px(y));
@@ -1088,6 +1113,7 @@ fn file_drop(window: &mut Window, cx: &mut App, x: f32, y: f32, paths: &[String]
 }
 
 /// 在 (x, y) 滚鼠标滚轮：先移过去，再发一个 `ScrollWheel`（行数为正 = 向上滚）。
+#[cfg(debug_assertions)]
 fn wheel(window: &mut Window, cx: &mut App, x: f32, y: f32, lines: f32) {
     use ::gpui::{
         Modifiers, MouseMoveEvent, PlatformInput, ScrollDelta, ScrollEvent, ScrollSource,
@@ -1115,9 +1141,11 @@ fn wheel(window: &mut Window, cx: &mut App, x: f32, y: f32, lines: f32) {
 }
 
 /// 有没有按着左键（`down` 之后的 `move` 要带着左键）。
+#[cfg(debug_assertions)]
 static LEFT_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// 分步的鼠标：`d` 先移到那里再按下，`m` 移动（按下过就带着左键，拖放靠它），`u` 在那里抬起。
+#[cfg(debug_assertions)]
 fn mouse(window: &mut Window, cx: &mut App, kind: char, x: f32, y: f32) {
     use ::gpui::{
         Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, point,
@@ -1173,7 +1201,8 @@ fn mouse(window: &mut Window, cx: &mut App, kind: char, x: f32, y: f32) {
     }
 }
 
-#[cfg(test)]
+// gate profile 下跑测试时 debug_assertions 是关的，引用了 debug 专属项的测试也要一起门掉。
+#[cfg(all(test, debug_assertions))]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{Step, parse_script, unescape};

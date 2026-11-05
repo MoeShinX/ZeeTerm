@@ -386,9 +386,9 @@ mod tests {
             ("main_window/widgets.rs", 1),
             ("main_window/processes_ui.rs", 1),
             ("main_window/bars.rs", 2),
-            ("sftp_demo/view.rs", 4),
-            ("sftp_demo/view_dialogs.rs", 1),
-            ("sync_demo/view.rs", 4),
+            ("sftp/view.rs", 4),
+            ("sftp/view_dialogs.rs", 1),
+            ("sync/view.rs", 4),
         ];
         for (name, text) in source_files() {
             if name.ends_with("app_theme.rs") || name.contains("/dev_") {

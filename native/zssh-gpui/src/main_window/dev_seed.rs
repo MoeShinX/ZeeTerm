@@ -34,7 +34,7 @@ pub fn seed_from_env() -> Result<(), String> {
     if test_host.is_none() && !placeholders && !protocols && !nested && many.is_none() {
         return Ok(());
     }
-    let db = crate::hosts_demo::open_database().map_err(|err| err.to_string())?;
+    let db = crate::host_db::open_database().map_err(|err| err.to_string())?;
     if let Some(name) = test_host {
         seed_test_host(&db, &name)?;
     }

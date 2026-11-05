@@ -1,7 +1,7 @@
 //! 底部同步状态条（0.2.14 `SyncStatusBar.tsx`）：连接了存储才出现，一行小字 + 一个状态点；
 //! 失败原因只在这里和设置页的同步一节显示，不弹窗；点一下打开设置页并滚到「同步」那一节。
 //!
-//! 文案和颜色的规则在 `sync_demo::status`（纯函数，有单测），这里只画和接线。
+//! 文案和颜色的规则在 `sync::status`（纯函数，有单测），这里只画和接线。
 
 use ::gpui::{Hsla, px};
 use gpui_kit::component::*;
@@ -10,7 +10,7 @@ use gpui_kit::*;
 use super::MainWindow;
 use super::nav::MainView;
 use crate::app_theme::Tokens;
-use crate::sync_demo::SyncTone;
+use crate::sync::SyncTone;
 use crate::typography::{Role, Typo as _};
 
 fn dot_color(tone: SyncTone, tokens: &Tokens) -> Hsla {
@@ -26,7 +26,7 @@ fn dot_color(tone: SyncTone, tokens: &Tokens) -> Hsla {
 impl MainWindow {
     /// 每个节拍看一眼同步状态有没有变；变了就要重绘。
     pub(super) fn sync_sync_bar(&mut self) -> bool {
-        let latest = crate::sync_demo::bar_model();
+        let latest = crate::sync::bar_model();
         if latest == self.sync_bar {
             return false;
         }

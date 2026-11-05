@@ -28,11 +28,11 @@ use super::dock_layout::{self, DockLayout};
 use super::modal::{Confirm, ConfirmAction, Modal};
 use super::nav::MainView;
 use super::panel_width::{self, DragStart, PanelKind};
-use crate::agent_chat_demo::{AgentChatDemo, AgentChatEvent, EmbedContext};
+use crate::agent_chat::{AgentChatDemo, AgentChatEvent, EmbedContext};
 use crate::agent_host::HostTarget;
 use crate::app_theme::Tokens;
 use crate::icons::Ico;
-use crate::sftp_demo::SftpDemo;
+use crate::sftp::SftpDemo;
 use crate::ssh_backend::SshSessionFactory;
 use crate::typography::{Role, Typo as _};
 
@@ -544,8 +544,8 @@ impl MainWindow {
     /// AI 面板要切到「全部放行」：先弹确认框，确认才真的写设置。
     fn ask_allow_all_commands(&mut self, cx: &mut Context<Self>) {
         self.modal = Some(Modal::Confirm(Confirm {
-            title: crate::agent_chat_demo::ALLOW_ALL_TITLE.to_owned(),
-            message: crate::agent_chat_demo::ALLOW_ALL_MESSAGE.to_owned(),
+            title: crate::agent_chat::ALLOW_ALL_TITLE.to_owned(),
+            message: crate::agent_chat::ALLOW_ALL_MESSAGE.to_owned(),
             confirm_label: Some("全部放行".to_owned()),
             destructive: true,
             action: ConfirmAction::AllowAllCommands,
@@ -596,7 +596,7 @@ impl MainWindow {
             return;
         }
         let due = self.docks.follow_last.is_none_or(|last| {
-            last.elapsed() >= std::time::Duration::from_millis(crate::sftp_demo::FOLLOW_POLL_MS)
+            last.elapsed() >= std::time::Duration::from_millis(crate::sftp::FOLLOW_POLL_MS)
         });
         if !due {
             return;

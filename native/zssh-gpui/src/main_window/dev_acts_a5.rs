@@ -292,7 +292,7 @@ mod real {
                     fields.next().unwrap_or(""),
                     fields.next().unwrap_or("yes"),
                 );
-                let db = crate::hosts_demo::open_database().map_err(|e| e.to_string())?;
+                let db = crate::host_db::open_database().map_err(|e| e.to_string())?;
                 let found = db
                     .ai_endpoint_list()
                     .map_err(|e| e.to_string())?
@@ -305,7 +305,7 @@ mod real {
                 verdict(ok, format!("接口 {name} 现在是 {found:?}"), wait)
             }
             "key_matches_fake" => {
-                let db = crate::hosts_demo::open_database().map_err(|e| e.to_string())?;
+                let db = crate::host_db::open_database().map_err(|e| e.to_string())?;
                 let id = db
                     .ai_endpoint_list()
                     .map_err(|e| e.to_string())?

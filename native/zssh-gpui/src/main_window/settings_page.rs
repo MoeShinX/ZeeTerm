@@ -195,7 +195,7 @@ impl MainWindow {
     pub(super) fn apply_prefs(&self) {
         zssh_core::ssh::set_keepalive_interval(u64::from(self.prefs.keepalive_secs));
         self.prefs.apply_pool_idle();
-        crate::status_demo::set_refresh_secs(u64::from(self.prefs.stats_refresh_secs));
+        crate::status::set_refresh_secs(u64::from(self.prefs.stats_refresh_secs));
     }
 
     /// 重读这几项设置（进设置页时调：别处，比如配置同步，可能改过库）。
@@ -487,7 +487,7 @@ impl MainWindow {
         let agents = match &self.agent_settings {
             Some(agents) => agents.clone(),
             None => {
-                let agents = cx.new(|cx| crate::agents_demo::AgentsDemo::new_embedded(window, cx));
+                let agents = cx.new(|cx| crate::agents::AgentsDemo::new_embedded(window, cx));
                 self.agent_settings = Some(agents.clone());
                 agents
             }
@@ -495,7 +495,7 @@ impl MainWindow {
         let sync = match &self.sync_settings {
             Some(sync) => sync.clone(),
             None => {
-                let sync = cx.new(|cx| crate::sync_demo::SyncDemo::new_embedded(window, cx));
+                let sync = cx.new(|cx| crate::sync::SyncDemo::new_embedded(window, cx));
                 self.sync_settings = Some(sync.clone());
                 sync
             }
@@ -503,7 +503,7 @@ impl MainWindow {
         let backup = match &self.backup_settings {
             Some(backup) => backup.clone(),
             None => {
-                let backup = cx.new(|cx| crate::backup_demo::BackupDemo::new_embedded(window, cx));
+                let backup = cx.new(|cx| crate::backup::BackupDemo::new_embedded(window, cx));
                 self.backup_settings = Some(backup.clone());
                 backup
             }
@@ -1240,7 +1240,7 @@ impl MainWindow {
                 .as_deref(),
         );
         let proxy_label = |p: &zssh_core::model::Proxy| {
-            format!("{}（{}）", p.name, crate::proxies_demo::kind_label(p.kind))
+            format!("{}（{}）", p.name, crate::proxies::kind_label(p.kind))
         };
 
         // SSH 默认代理

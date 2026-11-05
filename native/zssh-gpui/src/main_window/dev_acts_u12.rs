@@ -16,7 +16,7 @@ use zssh_core::ssh::ConnectionsError;
 #[derive(Default)]
 pub struct DevFake {
     #[cfg(debug_assertions)]
-    pub status: Option<(i64, crate::status_demo::HostStatus)>,
+    pub status: Option<(i64, crate::status::HostStatus)>,
     /// 下一次采集要拿到的：`Ok(脚本输出)` 或一个失败原因。
     #[cfg(debug_assertions)]
     pub connections: Option<Result<String, ConnectionsError>>,
@@ -67,7 +67,7 @@ mod real {
     use super::super::modal::Modal;
     use super::super::overview;
     use super::super::panel_width::PanelKind;
-    use crate::status_demo::{HostStatus, StatusSummary};
+    use crate::status::{HostStatus, StatusSummary};
 
     const KNOWN: &[&str] = &[
         "fake_status",
@@ -615,18 +615,3 @@ udp6       0      0 fe80::1:546             :::*                                
 pub use real::is_known;
 #[cfg(debug_assertions)]
 pub(super) use real::run;
-
-#[cfg(not(debug_assertions))]
-pub fn is_known(_name: &str) -> bool {
-    false
-}
-
-#[cfg(not(debug_assertions))]
-pub(super) fn run(
-    _this: &mut super::MainWindow,
-    _spec: &str,
-    _window: &mut ::gpui::Window,
-    _cx: &mut gpui_kit::Context<super::MainWindow>,
-) -> Option<Result<super::dev_script::Outcome, String>> {
-    None
-}

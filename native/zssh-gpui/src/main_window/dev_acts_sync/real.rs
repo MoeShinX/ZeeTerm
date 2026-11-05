@@ -11,7 +11,7 @@
 //!   `assert_local_host:<名字>:yes|no`；
 //! - 底部同步条：`sync_bar:<项>:<值>`（等到成立）、`sync_bar_click`。
 //!
-//! 查询项的含义见 `sync_demo/dev.rs` / `backup_demo/dev.rs`。比较规则：项名以 `_has` 结尾的是「包含」，
+//! 查询项的含义见 `sync/dev.rs` / `backup/dev.rs`。比较规则：项名以 `_has` 结尾的是「包含」，
 //! 其余是「相等」；项名以 `_not` 结尾的取反。
 
 use std::sync::Mutex;
@@ -129,13 +129,13 @@ fn run_inner(
         // 记下现在的拨号 / 采集次数，之后用 assert_status_polls 看这段时间新增了多少。
         "status_mark" => {
             *MARK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                crate::status_demo::poll_counters();
+                crate::status::poll_counters();
         }
         // assert_status_polls:<最少采集>:<最多采集>:<最多拨号>：同一台主机不管开了几个窗格，
         // 状态栏背后只该有一个轮询器（2 秒一次）、一条连接。
         "assert_status_polls" => {
             let (min_collects, max_collects, max_dials) = polls_args(a, b)?;
-            let (dials, collects) = crate::status_demo::poll_counters();
+            let (dials, collects) = crate::status::poll_counters();
             let (mark_dials, mark_collects) =
                 *MARK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             let (dials, collects) = (
@@ -261,7 +261,7 @@ fn run_inner(
         }
         // sync_bar:visible:true|false / has:<文字> / tone:<idle|ok|busy|warn|error>：等到成立。
         "sync_bar" => {
-            let (_, model) = crate::sync_demo::bar_model();
+            let (_, model) = crate::sync::bar_model();
             let ok = match a {
                 "visible" => model.visible.to_string() == b,
                 "has" => model.visible && model.text.contains(b),

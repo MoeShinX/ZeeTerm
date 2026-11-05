@@ -103,8 +103,8 @@ pub fn counters_line(status: &ForwardStatus, bind_port: u16) -> String {
         "{actual}当前 {} 条连接 · 共 {} 条 · ↑{} ↓{}",
         c.active,
         c.total,
-        forward_runtime::format_bytes(c.bytes_sent),
-        forward_runtime::format_bytes(c.bytes_received)
+        crate::format::size(c.bytes_sent),
+        crate::format::size(c.bytes_received)
     )
 }
 

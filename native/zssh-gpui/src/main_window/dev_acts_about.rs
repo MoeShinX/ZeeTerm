@@ -61,7 +61,7 @@ mod real {
         }
         if name == "about_update_open" {
             // 直接打开更新窗口（和点「检查更新」同一个入口），截图脚本再按标题截它。
-            crate::update_demo::open_update_window(cx);
+            crate::update::open_update_window(cx);
             return Ok(Outcome::Done);
         }
         // 关于一节第一次画出来之后才有实体：还没有就等下一拍。

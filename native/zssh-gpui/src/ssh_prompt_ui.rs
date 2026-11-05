@@ -92,6 +92,7 @@ impl SshPromptLayer {
     }
 
     /// 对话框上会出现的文字（截图前的隐私检查要把它们算进画面）。
+    #[cfg(debug_assertions)]
     pub fn privacy_texts(&self) -> Vec<String> {
         match self.view.as_ref().map(|view| &view.body) {
             Some(Body::HostKey(info)) => {

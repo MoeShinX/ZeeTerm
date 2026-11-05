@@ -7,6 +7,7 @@
 use crate::install_state::PendingWork;
 
 /// 有进行中的工作就返回 `(标题, 正文)`，没有返回 `None`（可以直接退出）。
+#[cfg(any(test, debug_assertions))]
 pub fn quit_prompt(work: PendingWork) -> Option<(String, String)> {
     quit_prompt_with_sessions(work, 0)
 }

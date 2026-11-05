@@ -9,7 +9,7 @@
 //! - `u19_dismissed:<yes|no>`：检查库里「不再提示」的标记；
 //! - `migrate_open[:start]`：打开设置 → 同步并滚到最上面（带 `start` 就顺手读本机 Z-SSH 并预览）；
 //! - `migrate_do:<动作>[:<参数>]`、`migrate_wait:<项>:<值>`、`migrate_assert:<项>:<值>`：操作和检查迁移块
-//!   （项名以 `_has` 结尾是「包含」，`_not` 取反；见 `migrate_demo/dev.rs`）。
+//!   （项名以 `_has` 结尾是「包含」，`_not` 取反；见 `migrate/dev.rs`）。
 
 #[cfg(debug_assertions)]
 mod real {
@@ -120,7 +120,7 @@ mod real {
                 let have = this
                     .store
                     .db()
-                    .map(crate::migrate_demo::is_dismissed)
+                    .map(crate::migrate::is_dismissed)
                     .map_err(|err| err.to_string())?;
                 if have != want {
                     return Err(format!("「不再提示」标记是 {have}，预期 {want}"));
@@ -173,7 +173,7 @@ mod real {
         }
     }
 
-    fn migrate(this: &MainWindow) -> Result<Entity<crate::migrate_demo::MigrateDemo>, String> {
+    fn migrate(this: &MainWindow) -> Result<Entity<crate::migrate::MigrateDemo>, String> {
         this.migrate_settings
             .clone()
             .ok_or_else(|| "迁移块还没有建（先 act:migrate_open）".to_owned())

@@ -865,6 +865,7 @@ fn bracketed_paste_row(
 }
 
 /// 调试窗口把外观和终端的卡摞在一起显示的页面体（产品里它们分在设置页的两个分类里）。
+#[cfg(debug_assertions)]
 pub(crate) fn settings_body(ws: &Entity<TerminalWorkspace>, cx: &App) -> impl IntoElement {
     let mut cards = appearance_cards(ws, cx);
     cards.extend(terminal_cards(ws, cx));

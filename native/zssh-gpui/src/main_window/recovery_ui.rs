@@ -1,6 +1,6 @@
 //! 启动时的恢复提示：上次程序没有正常结束（崩溃、被结束进程），有文件的修改没来得及传到服务器。
 //! 列出来，每一项可以 打开编辑器接着改 / 重新上传 / 另存到本地 / 放弃（0.2.14 `EditRecoveryDialog` +
-//! `EditRecoveryHost` 的语义）。数据来自 `remote_editor_demo::recovery`（编辑草稿 + 外部编辑留下的临时目录）。
+//! `EditRecoveryHost` 的语义）。数据来自 `remote_editor::recovery`（编辑草稿 + 外部编辑留下的临时目录）。
 //!
 //! - 「重新上传」先核对服务器上的文件在这期间有没有被改过（或删了）：改过就不传，列出原因，
 //!   这一项多出一个「覆盖服务器上的文件」让用户看过之后再决定；
@@ -18,8 +18,8 @@ use super::bridge::{on_blocking, on_ssh_runtime};
 use super::modal::Modal;
 use super::widgets::{ButtonLook, error_note, note, text_button};
 use crate::app_theme::Tokens;
-use crate::remote_editor_demo::recovery::{self, Action, Outcome, RecoveryItem};
-use crate::remote_editor_demo::{ChannelSource, OpenSpec};
+use crate::remote_editor::recovery::{self, Action, Outcome, RecoveryItem};
+use crate::remote_editor::{ChannelSource, OpenSpec};
 
 /// 恢复提示的界面状态。
 pub struct RecoveryUi {
@@ -141,7 +141,7 @@ impl MainWindow {
                             format!(
                                 "已另存到 {}（{}）",
                                 message.unwrap_or_default(),
-                                crate::remote_editor_demo::EXPORT_PLAINTEXT_NOTE
+                                crate::remote_editor::EXPORT_PLAINTEXT_NOTE
                             ),
                         ),
                     );

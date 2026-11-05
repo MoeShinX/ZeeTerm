@@ -140,15 +140,15 @@ pub async fn tails_match(
 ///
 /// 高延迟链路上真正决定吞吐的是"同时在途的请求数"：只把读叠起来、写还一次一块地等，
 /// 链路照样被 RTT 卡住（实测：读开 8 个、写串行时吞吐和完全不流水线一样，约 chunk/RTT）。
+/// 拿走 `pieces`（消费掉）：每个数据块直接 move 给写任务，不再整份克隆一次；
+/// 调用方要推进度只需要每块的末尾，自己另存。
 async fn write_batch(
     writer: &Arc<dyn WriteAt>,
-    pieces: &[(u64, Vec<u8>)],
+    pieces: Vec<(u64, Vec<u8>)>,
 ) -> Result<(), SftpError> {
     let mut set: JoinSet<Result<(), SftpError>> = JoinSet::new();
     for (offset, data) in pieces {
         let writer = Arc::clone(writer);
-        let offset = *offset;
-        let data = data.clone();
         set.spawn(async move { writer.write_at(offset, data).await });
     }
     while let Some(joined) = set.join_next().await {
@@ -293,7 +293,11 @@ pub async fn copy_file(
             }
         }
         // 校验通过之后，整批**一起**写出去（慢网络下决定吞吐的是在途请求数）。
-        if let Err(err) = write_batch(&writer, &pieces).await {
+        // 写之前先记下这一批的末尾（写完用它推进度）；数据块整个 move 给写任务。
+        let batch_end = pieces
+            .last()
+            .map(|(offset, data)| offset + data.len() as u64);
+        if let Err(err) = write_batch(&writer, pieces).await {
             // 一批里失败时，后面的块可能已经落盘了：截回"确认写好的前缀"，
             // 否则续传会在文件中间留一个洞（`partial_len` 不再是连续前缀）。
             // 截不动就把临时文件删掉（下次从头传，慢但不会错）。
@@ -304,9 +308,7 @@ pub async fn copy_file(
             break 'outer;
         }
         // 到这里整批都读满、写好了，且从 `done` 开始首尾相接：已确认的连续前缀又往前走了这一批。
-        done = pieces
-            .last()
-            .map_or(done, |(offset, data)| offset + data.len() as u64);
+        done = batch_end.unwrap_or(done);
         on_progress(done, total);
     }
 

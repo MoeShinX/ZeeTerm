@@ -213,7 +213,7 @@ pub fn spawn(
                 }
                 Command::RestartInstall | Command::Quit => {
                     if matches!(command, Command::RestartInstall) {
-                        crate::update_demo::arm_pending_restart();
+                        crate::update::arm_pending_restart();
                     }
                     // 有进行中的传输 / AI 回合：先把主窗口叫出来问一下，确认后由主窗口自己退出。
                     let main = main.clone();
@@ -351,7 +351,7 @@ pub fn spawn(
                         sync_dynamic_items(
                             &menu,
                             &mut restart_item,
-                            crate::update_demo::pending_install_version(),
+                            crate::update::pending_install_version(),
                             lock_now,
                         );
                         continue;

@@ -1244,11 +1244,7 @@ impl MainWindow {
         let mut proxy_targets: Vec<Option<i64>> = vec![None];
         for item in proxies {
             proxy_choices.push(Choice::new(
-                format!(
-                    "{}（{}）",
-                    item.name,
-                    crate::proxies_demo::kind_label(item.kind)
-                ),
+                format!("{}（{}）", item.name, crate::proxies::kind_label(item.kind)),
                 form.proxy == Some(item.id),
             ));
             proxy_targets.push(Some(item.id));
@@ -1258,7 +1254,7 @@ impl MainWindow {
             .and_then(|id| proxies.iter().find(|p| p.id == id))
             .map_or_else(
                 || "（请选择）".to_owned(),
-                |p| format!("{}（{}）", p.name, crate::proxies_demo::kind_label(p.kind)),
+                |p| format!("{}（{}）", p.name, crate::proxies::kind_label(p.kind)),
             );
         // 「跟随默认代理」下面说清现在到底走不走代理。
         let default_id = self
@@ -1749,7 +1745,7 @@ impl MainWindow {
         let length = current.chars().count();
         let stamp = memory
             .updated_at
-            .map(|at| crate::hosts_demo::memory_summary(Some(at), crate::hosts_demo::now_unix()))
+            .map(|at| crate::hosts::memory_summary(Some(at), crate::hosts::now_unix()))
             .unwrap_or_default();
         vec![
             v_flex()

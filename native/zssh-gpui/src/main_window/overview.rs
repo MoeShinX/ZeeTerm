@@ -18,9 +18,7 @@ use super::MainWindow;
 use super::panel_width::{self, DragStart, PanelKind};
 use crate::app_theme::Tokens;
 use crate::icons::Ico;
-use crate::status_demo::{
-    Level, StatusSummary, level_of, mib_gb_label, net_speed_label, traffic_label, uptime_label,
-};
+use crate::status::{Level, StatusSummary, level_of, mib_gb_label, uptime_label};
 use crate::typography::{Role, Typo as _};
 
 /// 网速曲线最多记这么多个点（3 秒一次 ≈ 6 分钟）。
@@ -466,14 +464,16 @@ fn interfaces_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
                                         .child(::gpui::SharedString::from(iface.name.clone())),
                                 )
                                 .child(
-                                    div()
-                                        .text_color(tokens.dot_connected)
-                                        .child(format!("↓ {}", net_speed_label(iface.rx_speed))),
+                                    div().text_color(tokens.dot_connected).child(format!(
+                                        "↓ {}",
+                                        crate::format::speed(iface.rx_speed)
+                                    )),
                                 )
                                 .child(
-                                    div()
-                                        .text_color(tokens.accent)
-                                        .child(format!("↑ {}", net_speed_label(iface.tx_speed))),
+                                    div().text_color(tokens.accent).child(format!(
+                                        "↑ {}",
+                                        crate::format::speed(iface.tx_speed)
+                                    )),
                                 ),
                         )
                         .child(
@@ -485,8 +485,8 @@ fn interfaces_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
                                 .child("开机以来")
                                 .child(format!(
                                     "↓ {} · ↑ {}",
-                                    traffic_label(iface.rx_total),
-                                    traffic_label(iface.tx_total)
+                                    crate::format::traffic(iface.rx_total),
+                                    crate::format::traffic(iface.tx_total)
                                 )),
                         )
                 }),
@@ -797,9 +797,13 @@ fn overview_body(
     tokens: &Tokens,
 ) -> AnyElement {
     let stats = &s.stats;
-    let net_extra = s
-        .net_rate
-        .map(|(rx, tx)| format!("↓ {}  ↑ {}", net_speed_label(rx), net_speed_label(tx)));
+    let net_extra = s.net_rate.map(|(rx, tx)| {
+        format!(
+            "↓ {}  ↑ {}",
+            crate::format::speed(rx),
+            crate::format::speed(tx)
+        )
+    });
     let mut body = v_flex()
         .id("overview-scroll")
         .flex_1()

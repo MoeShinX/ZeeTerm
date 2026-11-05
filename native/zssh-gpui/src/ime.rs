@@ -5,6 +5,8 @@
 
 use std::sync::Mutex;
 
+use ::gpui::{Context, FocusHandle, Subscription, Window};
+
 use zssh_platform_windows::ime::{SharedIme, Win32Ime};
 
 static STATE: Mutex<Option<SharedIme>> = Mutex::new(None);
@@ -27,4 +29,24 @@ pub fn window_destroyed(window: &str) -> bool {
     state
         .as_mut()
         .is_some_and(|shared| shared.window_destroyed(window, &mut Win32Ime))
+}
+
+/// 给带焦点句柄的视图接上输入法接线：`key` 是这个视图在英文区名单里的键。
+/// 返回的两个订阅要留在视图里（订阅被丢弃即注销，绑定名带下划线让它们活到视图销毁）。
+/// 焦进焦点还要做别的判断的视图（如终端的「自动切英文」开关）自己写 `on_focus`，只借用这里的 `apply`。
+pub(crate) fn attach<T: 'static>(
+    cx: &mut Context<T>,
+    focus: &FocusHandle,
+    window: &mut Window,
+    key: &str,
+) -> (Subscription, Subscription) {
+    let focus_key = key.to_owned();
+    let on_focus = cx.on_focus(focus, window, move |_this, _window, _cx| {
+        apply(&focus_key, true);
+    });
+    let blur_key = key.to_owned();
+    let on_blur = cx.on_blur(focus, window, move |_this, _window, _cx| {
+        apply(&blur_key, false);
+    });
+    (on_focus, on_blur)
 }

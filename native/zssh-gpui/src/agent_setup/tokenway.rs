@@ -3,7 +3,7 @@
 //!
 //! 业务（验签、白名单、PKCE、回环监听、换令牌、余额解析、错误分类）全是 core 的
 //! （`zssh_core::ai::agent::builtin::tokenway`），这里只拼装；界面在 `main_window/ai_presets.rs`
-//! 和 AI 面板（`agent_chat_demo`）。
+//! 和 AI 面板（`agent_chat`）。
 //!
 //! 不加任何使用统计 / 遥测：只请求预设清单、授权相关接口、余额状态、模型与对话接口。
 
@@ -332,7 +332,7 @@ pub fn finish_connect(
 
 /// 断开：通知 Tokenway 停用（失败也继续）→ 删保险库里的 Key → 删接口配置。
 pub async fn disconnect_endpoint(endpoint_id: i64) -> Result<DisconnectReport, String> {
-    let db = crate::hosts_demo::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
+    let db = crate::host_db::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
     let transport = transport()?;
     let revoke_url = tokenway_preset().and_then(|preset| preset.revoke_url);
     let uid = db.ai_endpoint_get(endpoint_id).ok().map(|e| e.uid);
@@ -516,7 +516,7 @@ async fn fetch_balance(endpoint_id: i64) -> Result<Balance, ApiError> {
         code: None,
     };
     let (endpoint, key) = {
-        let db = crate::hosts_demo::open_database()
+        let db = crate::host_db::open_database()
             .map_err(|err| failed(format!("打开设置库失败：{err}")))?;
         crate::agent_host::load_endpoint_from(&db, endpoint_id).map_err(failed)?
     };

@@ -19,6 +19,8 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
+use crate::ai::bridge::now_millis;
+
 use super::retry::friendly_retry_reason;
 use super::usage::from_opencode;
 use super::AgentEvent;
@@ -96,16 +98,11 @@ fn session_status(props: &Value) -> Vec<AgentEvent> {
     vec![AgentEvent::Retrying {
         attempt,
         reason: friendly_retry_reason(message),
-        next_in_secs: next_in_secs(&status["next"], now_millis()),
+        next_in_secs: next_in_secs(
+            &status["next"],
+            u64::try_from(now_millis()).unwrap_or(u64::MAX),
+        ),
     }]
-}
-
-/// 当前时间（毫秒时间戳）。
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
 }
 
 /// 把 `next` 换算成「还有几秒」。

@@ -229,7 +229,7 @@ impl MainWindow {
             .ok()
             .and_then(|db| db.forward_list().ok())
             .unwrap_or_default();
-        let impact = crate::hosts_demo::host_delete_impact(&hosts, &forwards, host_id);
+        let impact = crate::hosts::host_delete_impact(&hosts, &forwards, host_id);
         // 它的密码：独占的一起删，共用的保留，密钥不动（V2-U1 第 8 条，规则见 `host_delete`）。
         let identities = self
             .store

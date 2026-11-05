@@ -378,7 +378,7 @@ async fn run(
 
 /// 读库里一条规则（任务线程里单开一条库连接：连接对象不能跨线程）。
 fn load_rule(id: i64) -> Result<PortForward, String> {
-    let db = crate::hosts_demo::open_database().map_err(|err| err.to_string())?;
+    let db = crate::host_db::open_database().map_err(|err| err.to_string())?;
     db.forward_get(id).map_err(|err| err.to_string())
 }
 
@@ -440,7 +440,7 @@ pub fn delete_rule(id: i64) -> Result<tokio::sync::oneshot::Receiver<Result<(), 
         let manager = manager();
         let _serial = manager.lifecycle.lock().await;
         manager.stop(id);
-        let result = match crate::hosts_demo::open_database() {
+        let result = match crate::host_db::open_database() {
             Ok(db) => db.forward_delete(id).map_err(|err| err.to_string()),
             Err(err) => Err(err.to_string()),
         };
@@ -482,20 +482,6 @@ pub fn describe(rule: &PortForward) -> String {
     match rule.kind {
         ForwardKind::Local => format!("本机 {bind} → {dest}（经服务器）"),
         ForwardKind::Remote => format!("服务器 {bind} → 本机这边 {dest}"),
-    }
-}
-
-pub fn format_bytes(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    let value = bytes as f64;
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if value < KB * KB {
-        format!("{:.1} KB", value / KB)
-    } else if value < KB * KB * KB {
-        format!("{:.1} MB", value / KB / KB)
-    } else {
-        format!("{:.2} GB", value / KB / KB / KB)
     }
 }
 
@@ -766,11 +752,11 @@ mod tests {
 
     #[test]
     fn byte_counts_use_the_same_units_as_the_old_panel() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(1023), "1023 B");
-        assert_eq!(format_bytes(1024), "1.0 KB");
-        assert_eq!(format_bytes(1536), "1.5 KB");
-        assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MB");
-        assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.00 GB");
+        assert_eq!(crate::format::size(0), "0 B");
+        assert_eq!(crate::format::size(1023), "1023 B");
+        assert_eq!(crate::format::size(1024), "1.0 KB");
+        assert_eq!(crate::format::size(1536), "1.5 KB");
+        assert_eq!(crate::format::size(5 * 1024 * 1024), "5.0 MB");
+        assert_eq!(crate::format::size(3 * 1024 * 1024 * 1024), "3.0 GB");
     }
 }

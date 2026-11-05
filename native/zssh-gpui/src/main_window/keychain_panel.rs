@@ -254,7 +254,7 @@ impl MainWindow {
             .db()
             .and_then(|db| db.host_list().map_err(|e| e.to_string()))
         {
-            Ok(hosts) => crate::identities_demo::hosts_using_identity(&hosts, id),
+            Ok(hosts) => crate::identities::hosts_using_identity(&hosts, id),
             Err(err) => {
                 self.modal = Some(Modal::Confirm(Confirm {
                     title: "不能确认有没有主机在用它".to_owned(),
@@ -267,8 +267,7 @@ impl MainWindow {
                 return;
             }
         };
-        let (text, can_delete) =
-            crate::identities_demo::identity_delete_prompt(&identity.name, &users);
+        let (text, can_delete) = crate::identities::identity_delete_prompt(&identity.name, &users);
         self.modal = Some(Modal::Confirm(Confirm {
             title: if can_delete {
                 format!("删除凭据「{}」？", identity.name)
@@ -317,7 +316,7 @@ impl MainWindow {
         else {
             return;
         };
-        if let Err(message) = crate::identities_demo::clear_secret_draft(&identity) {
+        if let Err(message) = crate::identities::clear_secret_draft(&identity) {
             self.modal = Some(Modal::Confirm(Confirm {
                 title: "不能清除".to_owned(),
                 message,
@@ -352,7 +351,7 @@ impl MainWindow {
         else {
             return;
         };
-        let draft = match crate::identities_demo::clear_secret_draft(&identity) {
+        let draft = match crate::identities::clear_secret_draft(&identity) {
             Ok(draft) => draft,
             Err(message) => {
                 self.notice_error(&message, window, cx);

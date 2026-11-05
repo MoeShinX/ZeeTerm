@@ -1733,7 +1733,7 @@ pub async fn start_builtin_agent(
 
 /// 读接口配置和它的 Key（Key 只在这里短暂出现，交给对话后由 `ApiKey` 的 `Debug` 挡住）。
 pub(crate) fn load_endpoint(endpoint_id: i64) -> Result<(AiEndpoint, ApiKey), String> {
-    let db = crate::hosts_demo::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
+    let db = crate::host_db::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
     load_endpoint_from(&db, endpoint_id)
 }
 
@@ -2918,7 +2918,7 @@ mod tests {
     }
 
     /// 端到端（本机假 Tokenway，不联网）：连接 → 存保险库 → 对话 → 余额显示 → 需充值 → 授权失效 → 重新连接 → 断开。
-    /// 界面上这些提示卡 / 按钮的状态测试在 `agent_chat_demo::builtin_ui`，窗口版见截图场景。
+    /// 界面上这些提示卡 / 按钮的状态测试在 `agent_chat::builtin_ui`，窗口版见截图场景。
     #[tokio::test]
     async fn the_whole_tokenway_flow_works_without_a_window_connect_chat_balance_topup_revoke_disconnect()
      {

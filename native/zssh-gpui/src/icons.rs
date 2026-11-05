@@ -296,7 +296,7 @@ mod tests {
         // 主机树的分组、SFTP 列表里的文件夹不能再用组件库的线框 Folder / FolderOpen 图标。
         for (name, text) in [
             ("sidebar.rs", include_str!("main_window/sidebar.rs")),
-            ("sftp_demo/view.rs", include_str!("sftp_demo/view.rs")),
+            ("sftp/view.rs", include_str!("sftp/view.rs")),
         ] {
             let code = text.split("#[cfg(test)]").next().unwrap_or(text);
             assert!(

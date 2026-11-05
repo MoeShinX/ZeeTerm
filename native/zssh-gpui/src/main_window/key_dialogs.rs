@@ -181,7 +181,7 @@ impl MainWindow {
         cx.notify();
         let work = super::bridge::on_blocking(move || -> Result<GeneratedView, String> {
             // 阻塞线程里单开一条库连接：连接对象不能跨线程。
-            let db = crate::hosts_demo::open_database().map_err(|err| err.to_string())?;
+            let db = crate::host_db::open_database().map_err(|err| err.to_string())?;
             let passphrase = (!passphrase.is_empty()).then_some(passphrase.as_str());
             let identity = db
                 .identity_generate(name.trim(), algorithm, &comment, passphrase)

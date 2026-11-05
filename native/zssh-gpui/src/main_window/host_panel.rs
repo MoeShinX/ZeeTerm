@@ -725,6 +725,7 @@ impl MainWindow {
     }
 
     /// 「确定」：保存并关掉对话框。
+    #[cfg(debug_assertions)]
     pub(crate) fn host_form_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.host_form_commit(false, window, cx);
     }
@@ -938,7 +939,7 @@ impl MainWindow {
             memory.input.read(cx).value().to_string()
         };
         let input = memory.input.clone();
-        let action = match crate::hosts_demo::memory_action(&text) {
+        let action = match crate::hosts::memory_action(&text) {
             Ok(action) => action,
             Err(err) => {
                 self.with_form(cx, |form| {
@@ -950,8 +951,8 @@ impl MainWindow {
             }
         };
         let content = match &action {
-            crate::hosts_demo::MemoryAction::Save(content) => content.clone(),
-            crate::hosts_demo::MemoryAction::Clear => String::new(),
+            crate::hosts::MemoryAction::Save(content) => content.clone(),
+            crate::hosts::MemoryAction::Clear => String::new(),
         };
         let written = self.store.db().and_then(|db| {
             db.host_memory_set(host_id, &content)

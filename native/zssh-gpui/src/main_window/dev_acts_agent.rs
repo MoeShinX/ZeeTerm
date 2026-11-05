@@ -10,7 +10,7 @@ use gpui_kit::*;
 use super::MainWindow;
 use super::dev_script::{Outcome, log_line};
 use crate::agent_setup::AgentKind;
-use crate::agents_demo::AgentsDemo;
+use crate::agents::AgentsDemo;
 
 const KNOWN: &[&str] = &[
     // ai_agent:<id> / ai_model:<名字> / ai_effort:<名字> / ai_reset_agent_check
@@ -68,7 +68,7 @@ fn kind_of(raw: &str) -> Result<AgentKind, String> {
 fn active_ai(
     this: &MainWindow,
     cx: &::gpui::App,
-) -> Result<Entity<crate::agent_chat_demo::AgentChatDemo>, String> {
+) -> Result<Entity<crate::agent_chat::AgentChatDemo>, String> {
     let _ = cx;
     this.docks
         .ai

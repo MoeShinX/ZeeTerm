@@ -727,7 +727,7 @@ impl AiEndpointDialog {
             return ApiKey::new(typed);
         }
         let stored = self.id.and_then(|id| {
-            crate::hosts_demo::open_database()
+            crate::host_db::open_database()
                 .ok()
                 .and_then(|db| db.ai_endpoint_api_key(id).ok().flatten())
         });
@@ -841,7 +841,7 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         let endpoint = existing.and_then(|id| {
-            crate::hosts_demo::open_database()
+            crate::host_db::open_database()
                 .ok()
                 .and_then(|db| db.ai_endpoint_get(id).ok())
         });
@@ -1023,7 +1023,7 @@ impl MainWindow {
                 return;
             }
         };
-        let saved = crate::hosts_demo::open_database()
+        let saved = crate::host_db::open_database()
             .map_err(|err| format!("打开设置库失败：{err}"))
             .and_then(|db| db.ai_endpoint_save(&draft).map_err(|err| err.to_string()));
         match saved {

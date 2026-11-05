@@ -2,7 +2,7 @@
 //!
 //! 只在设置里「启动时自动检查」开着时才查（`zssh_core::updater::AUTO_CHECK_KEY`，每轮重新读，
 //! 关掉马上生效）；手动「检查更新」不受这个开关影响。查到比当前新的版本，并且用户没对它选过「跳过」，
-//! 就打开更新窗口（`update_demo`）——**不抢焦点**：用户可能正在终端里打字。同一个版本一次运行里只
+//! 就打开更新窗口（`update`）——**不抢焦点**：用户可能正在终端里打字。同一个版本一次运行里只
 //! 提示一次。下载和安装仍然要用户在窗口里点；后台只做"检查"这一件事。
 //!
 //! 更新签名公钥是占位值时 `check_for_update` 直接返回"更新签名未配置"，这里什么也不会发生，
@@ -15,7 +15,7 @@ use std::time::Duration;
 use ::gpui::App;
 use zssh_update::Package;
 
-use crate::{product, update_demo};
+use crate::{product, update};
 
 /// 启动后多久做第一次检查：让界面先起来、避开启动高峰。
 pub const STARTUP_DELAY: Duration = Duration::from_secs(45);
@@ -62,28 +62,28 @@ fn now_secs() -> i64 {
 
 /// 读更新偏好；设置库打不开按缺省（自动检查开）。
 fn load_prefs() -> zssh_core::updater::UpdatePrefs {
-    crate::hosts_demo::open_database()
+    crate::host_db::open_database()
         .ok()
         .and_then(|db| zssh_core::updater::load_prefs(&db).ok())
         .unwrap_or_default()
 }
 
 /// 做一轮：开关关着就什么都不做；开着就查一次，返回需要提示的结果。
-async fn check_once() -> Option<update_demo::Checked> {
+async fn check_once() -> Option<update::Checked> {
     let prefs = load_prefs();
     if !zssh_core::updater::should_auto_check(&prefs) {
         return None;
     }
     let runtime = crate::ssh_backend::runtime().ok()?;
-    let current = update_demo::current_version();
+    let current = update::current_version();
     let checked = {
         let current = current.clone();
         runtime
-            .spawn(async move { update_demo::check_for_update(&current).await })
+            .spawn(async move { update::check_for_update(&current).await })
             .await
             .ok()?
     };
-    if let Ok(db) = crate::hosts_demo::open_database() {
+    if let Ok(db) = crate::host_db::open_database() {
         let _ = zssh_core::updater::record_check(&db, now_secs());
     }
     let package = checked.package.clone()?;
@@ -104,7 +104,7 @@ pub fn spawn(cx: &mut App) {
         cx.background_executor().timer(startup_delay()).await;
         loop {
             if let Some(checked) = check_once().await {
-                cx.update(|app| update_demo::open_update_window_for_found(app, checked));
+                cx.update(|app| update::open_update_window_for_found(app, checked));
             }
             cx.background_executor().timer(check_interval()).await;
         }

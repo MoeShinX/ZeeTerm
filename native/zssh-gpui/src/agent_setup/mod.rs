@@ -1,6 +1,6 @@
 //! 智能体的发现、版本、登录、模型目录和一键下载（G10a）。
 //!
-//! 面板（`agent_chat_demo`）和设置页（`agents_demo`）读同一份进程级状态，业务判定全部是 core 的，
+//! 面板（`agent_chat`）和设置页（`agents`）读同一份进程级状态，业务判定全部是 core 的，
 //! 这里只拼装；对应 0.2.14 的 `src-tauri/src/commands/agent.rs`（发现 / 登录 / 目录 / 下载那几条命令）。
 
 pub mod builtin;

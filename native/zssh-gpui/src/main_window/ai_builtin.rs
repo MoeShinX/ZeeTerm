@@ -71,7 +71,7 @@ pub struct AiBuiltinUi {
 impl AiBuiltinUi {
     /// 从设置库重读接口行（保存 / 删除 / 改默认之后，或进程级清单变了）。
     pub fn reload_rows(&mut self) {
-        let Ok(db) = crate::hosts_demo::open_database() else {
+        let Ok(db) = crate::host_db::open_database() else {
             self.rows.clear();
             return;
         };
@@ -390,7 +390,7 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut gpui_kit::Context<Self>,
     ) {
-        let done = crate::hosts_demo::open_database()
+        let done = crate::host_db::open_database()
             .map_err(|err| err.to_string())
             .and_then(|db| {
                 let model = db
@@ -433,11 +433,11 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut gpui_kit::Context<Self>,
     ) {
-        let uid = crate::hosts_demo::open_database()
+        let uid = crate::host_db::open_database()
             .ok()
             .and_then(|db| db.ai_endpoint_get(id).ok())
             .map(|endpoint| endpoint.uid);
-        let done = crate::hosts_demo::open_database()
+        let done = crate::host_db::open_database()
             .map_err(|err| err.to_string())
             .and_then(|db| db.ai_endpoint_delete(id).map_err(|err| err.to_string()));
         match done {
@@ -460,7 +460,7 @@ impl MainWindow {
         cx: &mut gpui_kit::Context<Self>,
     ) {
         let next = !self.ai_builtin.auto_update;
-        let saved = crate::hosts_demo::open_database()
+        let saved = crate::host_db::open_database()
             .map_err(|err| err.to_string())
             .and_then(|db| {
                 db.set_ai_models_auto_update(next)

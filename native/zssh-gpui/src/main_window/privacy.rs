@@ -5,6 +5,7 @@
 //! 「不认识的地址也不能漏」：登录提示里会带出用户本机的公网 IP，那个 IP 不会出现在任何环境变量里。
 
 /// 文档保留段（RFC 5737）和回环：演示数据用它们，不算泄露。
+#[cfg(any(test, debug_assertions))]
 fn is_reserved(ip: [u8; 4]) -> bool {
     matches!(
         ip,
@@ -13,6 +14,7 @@ fn is_reserved(ip: [u8; 4]) -> bool {
 }
 
 /// 从文字里找点分十进制 IPv4（四段、每段 0..=255）。
+#[cfg(any(test, debug_assertions))]
 fn ipv4_candidates(text: &str) -> Vec<[u8; 4]> {
     let bytes = text.as_bytes();
     let mut found = Vec::new();
@@ -66,11 +68,13 @@ fn ipv4_candidates(text: &str) -> Vec<[u8; 4]> {
 }
 
 /// 文字里有没有公网（非保留段）IPv4。
+#[cfg(any(test, debug_assertions))]
 pub fn has_public_ipv4(text: &str) -> bool {
     ipv4_candidates(text).into_iter().any(|ip| !is_reserved(ip))
 }
 
 /// 内置规则命中的类别名（不返回原文）。
+#[cfg(any(test, debug_assertions))]
 pub fn builtin_hits(text: &str) -> Vec<&'static str> {
     let mut hits = Vec::new();
     if has_public_ipv4(text) {

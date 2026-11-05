@@ -287,8 +287,8 @@ impl MainWindow {
     ) {
         let saved = (|| {
             let preset = tokenway::tokenway_preset().ok_or("没有可用的 Tokenway 预设")?;
-            let db = crate::hosts_demo::open_database()
-                .map_err(|err| format!("打开设置库失败：{err}"))?;
+            let db =
+                crate::host_db::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
             tokenway::finish_connect(&db, &preset, &connected, &tokenway::policy())
         })();
         match saved {

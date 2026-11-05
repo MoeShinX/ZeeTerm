@@ -85,7 +85,7 @@ pub struct HostStore {
 impl HostStore {
     /// 打开数据目录里的库并读一遍。打不开不是致命的：显示原因，主机列表是空的。
     pub fn open() -> Self {
-        let mut store = match crate::hosts_demo::open_database() {
+        let mut store = match crate::host_db::open_database() {
             Ok(db) => Self::with_db(Some(db), None),
             Err(err) => Self::with_db(None, Some(format!("打开主机库失败：{err}"))),
         };

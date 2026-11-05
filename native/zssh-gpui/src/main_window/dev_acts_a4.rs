@@ -155,7 +155,7 @@ mod real {
                 seed(this, &fields, cx)
             }
             "aib_clear" => {
-                let db = crate::hosts_demo::open_database().map_err(|e| e.to_string())?;
+                let db = crate::host_db::open_database().map_err(|e| e.to_string())?;
                 for endpoint in db.ai_endpoint_list().map_err(|e| e.to_string())? {
                     db.ai_endpoint_delete(endpoint.id)
                         .map_err(|e| e.to_string())?;
@@ -433,7 +433,7 @@ mod real {
             openai_options: OpenAiOptionsConfig::default(),
             preset_id: None,
         };
-        let db = crate::hosts_demo::open_database().map_err(|e| e.to_string())?;
+        let db = crate::host_db::open_database().map_err(|e| e.to_string())?;
         let mut draft = draft;
         let mut make_default = false;
         for extra in fields.iter().skip(5) {

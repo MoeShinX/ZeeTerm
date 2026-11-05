@@ -120,7 +120,7 @@ pub(crate) struct StubServer {
 }
 
 static GLOBAL: OnceLock<StubServer> = OnceLock::new();
-/// OneDrive 的桩是不是接进了登录流程（`sync_demo` 里换端点 / 换打开方式时看它）。
+/// OneDrive 的桩是不是接进了登录流程（`sync` 里换端点 / 换打开方式时看它）。
 static OD_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 impl StubServer {

@@ -23,8 +23,8 @@ use gpui_kit::*;
 use super::MainWindow;
 use super::dev_script::Outcome;
 use super::modal::Modal;
-use crate::remote_editor_demo::recovery::Action;
-use crate::remote_editor_demo::{ChannelSource, OpenSpec, Phase};
+use crate::remote_editor::recovery::Action;
+use crate::remote_editor::{ChannelSource, OpenSpec, Phase};
 
 const KNOWN: &[&str] = &[
     "edit_open",
@@ -124,7 +124,7 @@ pub(super) fn run(
 /// 当前显示的编辑器（没有就失败）。
 fn active_editor(
     this: &MainWindow,
-) -> Result<::gpui::Entity<crate::remote_editor_demo::RemoteEditor>, String> {
+) -> Result<::gpui::Entity<crate::remote_editor::RemoteEditor>, String> {
     this.active_editor_view()
         .ok_or_else(|| "当前没有显示编辑器标签".to_owned())
 }

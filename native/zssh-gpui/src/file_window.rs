@@ -31,7 +31,7 @@ use crate::main_window::titlebar::{
     back_button, back_button_shows_text, back_button_visible, window_controls,
 };
 use crate::settings::data_dir;
-use crate::sftp_demo::SftpDemo;
+use crate::sftp::SftpDemo;
 use crate::typography::{Role, Typo as _, UiFontStyled as _};
 use zssh_core::store::Database;
 
@@ -357,6 +357,7 @@ impl FileWindow {
     }
 
     /// 这个窗口里每个标签的（主机 id，标题，还没结束的任务数）：驱动脚本和测试用。
+    #[cfg(debug_assertions)]
     pub fn tab_summary(&self, cx: &App) -> Vec<(i64, String, usize)> {
         self.tabs
             .iter()
@@ -380,22 +381,26 @@ impl FileWindow {
     }
 
     /// 现在显示的标签的编号（驱动脚本用）。
+    #[cfg(debug_assertions)]
     pub fn active_id(&self) -> Option<u64> {
         self.active
     }
 
     /// 现在显示的标签是第几个（从 0 数；驱动脚本用）。
+    #[cfg(debug_assertions)]
     pub fn active_index(&self) -> Option<usize> {
         let id = self.active?;
         self.tabs.iter().position(|tab| tab.id == id)
     }
 
     /// 第 `index` 个标签的编号（驱动脚本用）。
+    #[cfg(debug_assertions)]
     pub fn id_at(&self, index: usize) -> Option<u64> {
         self.tabs.get(index).map(|tab| tab.id)
     }
 
     /// 每个标签现在的远端目录，按标签顺序（驱动脚本用）。
+    #[cfg(debug_assertions)]
     pub fn tab_remote_dirs(&self, cx: &App) -> Vec<String> {
         self.tabs
             .iter()
@@ -404,6 +409,7 @@ impl FileWindow {
     }
 
     /// 现在显示的标签状态栏上的话（驱动脚本用）。
+    #[cfg(debug_assertions)]
     pub fn active_status(&self, cx: &App) -> Option<String> {
         self.active_view()
             .map(|view| view.read(cx).status_text().to_owned())

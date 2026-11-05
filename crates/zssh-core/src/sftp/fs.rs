@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use russh_sftp::protocol::{FileAttributes, FileType};
+use tokio::task::JoinSet;
 
 use super::error::SftpError;
 use super::path;
@@ -80,14 +81,21 @@ pub struct DirEntry {
 }
 
 /// 从协议层的条目列表构造 [`DirEntry`]（解析符号链接目标 + 标记非 UTF-8 名字）。
+///
+/// 符号链接要 read_link + 跟随 stat（2 个往返）、可疑名字要 lstat（1 个往返）；高延迟
+/// 链路上逐条串行会放大成 2N 个 RTT，所以先攒起来分批并发发出去（一条通道上的请求按
+/// 请求号复用，并发安全）。
 pub async fn entries_from_protocol(
     channel: &SftpChannel,
     dir: &str,
     files: Vec<russh_sftp::protocol::File>,
 ) -> Result<Vec<DirEntry>, SftpError> {
-    let mut out = Vec::with_capacity(files.len());
+    // 第一遍只做本地计算：拼路径、取静态字段，把需要额外往返的攒进两张表。
+    let mut rows: Vec<Row> = Vec::with_capacity(files.len());
+    let mut links: Vec<(usize, String)> = Vec::new();
+    let mut suspicious: Vec<(usize, String)> = Vec::new();
     for file in files {
-        let name = file.filename.clone();
+        let name = file.filename;
         // `.` / `..` 不列（POSIX 惯例，界面也不需要）。
         if name == "." || name == ".." {
             continue;
@@ -95,23 +103,18 @@ pub async fn entries_from_protocol(
         let entry_path = path::join(dir, &name);
         let attrs = file.attrs;
         let longname_owner = owner_from_longname(&file.longname);
-        let mut link_target = None;
-        let mut kind = kind_of(&attrs);
-        if kind.is_symlink() {
-            link_target = channel.read_link(&entry_path).await.ok();
-            // 目标的类型：跟随链接 stat 一次；断链就留 None（不报错）。
-            let target = match channel.stat(&entry_path).await {
-                Ok(attrs) => Some(Box::new(kind_of(&attrs))),
-                Err(_) => None,
-            };
-            kind = FileKind::Symlink { target };
+        if kind_of(&attrs).is_symlink() {
+            links.push((rows.len(), entry_path.clone()));
         }
-        out.push(DirEntry {
-            name_is_utf8: name_is_clean_utf8(channel, dir, &name).await,
+        if name.contains(char::REPLACEMENT_CHARACTER) {
+            suspicious.push((rows.len(), entry_path.clone()));
+        }
+        rows.push(Row {
+            name_is_utf8: !name.contains(char::REPLACEMENT_CHARACTER),
             name,
             path: entry_path,
-            kind,
-            link_target,
+            kind: kind_of(&attrs),
+            link_target: None,
             size: attrs.size,
             mtime: attrs.mtime,
             permissions: attrs.permissions,
@@ -122,11 +125,92 @@ pub async fn entries_from_protocol(
                 .or_else(|| attrs.uid.map(|uid| uid.to_string())),
         });
     }
+
+    // 符号链接的目标：每条 2 个往返，一批 [`RESOLVE_CONCURRENCY`] 个并发。
+    for chunk in links.chunks(RESOLVE_CONCURRENCY) {
+        let mut set: JoinSet<(usize, Option<String>, Option<Box<FileKind>>)> = JoinSet::new();
+        for (row, path) in chunk {
+            let channel = channel.clone();
+            let path = path.clone();
+            let row = *row;
+            set.spawn(async move {
+                let link_target = channel.read_link(&path).await.ok();
+                // 目标的类型：跟随链接 stat 一次；断链就留 None（不报错）。
+                let target = channel
+                    .stat(&path)
+                    .await
+                    .ok()
+                    .map(|attrs| Box::new(kind_of(&attrs)));
+                (row, link_target, target)
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            let (row, link_target, target) =
+                joined.map_err(|err| SftpError::Internal(format!("解析符号链接崩了：{err}")))?;
+            rows[row].link_target = link_target;
+            rows[row].kind = FileKind::Symlink { target };
+        }
+    }
+
+    // 可疑名字（含 U+FFFD）：用有损名字 lstat 一次分辨真假，一批并发。
+    for chunk in suspicious.chunks(RESOLVE_CONCURRENCY) {
+        let mut set: JoinSet<(usize, bool)> = JoinSet::new();
+        for (row, candidate) in chunk {
+            let channel = channel.clone();
+            let candidate = candidate.clone();
+            let row = *row;
+            set.spawn(async move {
+                let clean = match channel.lstat(&candidate).await {
+                    Ok(_) => true,
+                    Err(SftpError::NotFound { .. }) => false,
+                    // 别的错误（没权限等）：不敢下结论，按"能操作"处理，让真正的操作去报错。
+                    Err(_) => true,
+                };
+                (row, clean)
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            let (row, clean) =
+                joined.map_err(|err| SftpError::Internal(format!("检查文件名崩了：{err}")))?;
+            rows[row].name_is_utf8 = clean;
+        }
+    }
+
     // 目录在前、同类按名字排（和资源管理器一致）。每个名字只转一次小写（不在比较里反复转），
     // 几万条的目录也排得快；结果和逐对比较完全一样（都是稳定排序）。
+    let mut out: Vec<DirEntry> = rows
+        .into_iter()
+        .map(|row| DirEntry {
+            name_is_utf8: row.name_is_utf8,
+            name: row.name,
+            path: row.path,
+            kind: row.kind,
+            link_target: row.link_target,
+            size: row.size,
+            mtime: row.mtime,
+            permissions: row.permissions,
+            owner: row.owner,
+        })
+        .collect();
     out.sort_by_cached_key(|entry| (!entry.kind.is_dir(), entry.name.to_lowercase()));
     Ok(out)
 }
+
+/// 第一遍本地拼装时的中间行；额外的网络往返结果最后填回来。
+struct Row {
+    name: String,
+    path: String,
+    kind: FileKind,
+    link_target: Option<String>,
+    size: Option<u64>,
+    mtime: Option<u32>,
+    permissions: Option<u32>,
+    owner: Option<String>,
+    name_is_utf8: bool,
+}
+
+/// 符号链接 / 可疑名字额外往返的并发数：和传输流水线的窗口一致，避免大目录把通道灌满。
+const RESOLVE_CONCURRENCY: usize = 8;
 
 /// 从 SFTP v3 的 `longname`（`ls -l` 的一行）里取所有者名字。
 ///
@@ -151,23 +235,6 @@ pub fn owner_from_longname(longname: &str) -> Option<String> {
         return None;
     }
     Some(owner.to_owned())
-}
-
-/// 名字里出现替换字符（U+FFFD）时，它可能来自"原始字节不是 UTF-8"的有损解码，
-/// 也可能服务器上真的有这个字符。**只在可疑时**多做一次 `lstat` 来分辨：
-/// 用有损名字能 stat 到，就说明服务器上真有这个字符；stat 不到（不存在）就说明
-/// 真实名字不是 UTF-8（我们操作不了它）。
-async fn name_is_clean_utf8(channel: &SftpChannel, dir: &str, name: &str) -> bool {
-    if !name.contains(char::REPLACEMENT_CHARACTER) {
-        return true;
-    }
-    let candidate = path::join(dir, name);
-    match channel.lstat(&candidate).await {
-        Ok(_) => true,
-        Err(SftpError::NotFound { .. }) => false,
-        // 别的错误（没权限等）：不敢下结论，按"能操作"处理，让真正的操作去报错。
-        Err(_) => true,
-    }
 }
 
 /// 协议层的属性 → 我们的类型。

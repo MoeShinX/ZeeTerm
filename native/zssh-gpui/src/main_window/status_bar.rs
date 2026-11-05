@@ -1,7 +1,7 @@
 //! 终端页底部的状态栏：左边是当前活动会话的服务器状态（CPU / 内存 / 磁盘 / 运行时间），右边常驻
 //! 快捷命令栏、撰写栏两个开关（V2-U6 从标题栏挪来；任何终端标签都有，SSH / Telnet / 串口一样）。
 //!
-//! 服务器状态的数据来自 `status_demo` 的进程级 hub，和状态窗口共用同一个轮询器，所以同一台主机不会因为
+//! 服务器状态的数据来自 `status` 的进程级 hub，和状态窗口共用同一个轮询器，所以同一台主机不会因为
 //! 开了状态栏又多一条采集；Telnet / 串口、没有活动会话或设置里关掉时左边是空的，条本身照常画。
 //! 网速由 hub 用前后两次 `/proc/net/dev` 的累计流量算出来，刚连上还没有第二个样本时显示「—」。
 
@@ -17,9 +17,7 @@ use super::app_lock_ui::{LOCK_TOOLTIP, build_lock_menu};
 use super::nav::MainView;
 use crate::app_theme::Tokens;
 use crate::icons::Ico;
-use crate::status_demo::{
-    Level, StatusSummary, level_of, mib_gb_label, net_speed_label, uptime_label,
-};
+use crate::status::{Level, StatusSummary, level_of, mib_gb_label, uptime_label};
 use crate::typography::{Role, Typo as _};
 
 /// 数值颜色：80% 黄、95% 红，其余用次级文字色（同 0.2.14 的 `usageClass`）。
@@ -69,7 +67,7 @@ fn metric(icon: Icon, value: String, percent: Option<u8>, tokens: &Tokens) -> im
 /// 网速一项的文字：收 / 发；还没有两个样本（刚连上）显示「—」。
 fn net_label(summary: &StatusSummary) -> (String, String) {
     match summary.net_rate {
-        Some((rx, tx)) => (net_speed_label(rx), net_speed_label(tx)),
+        Some((rx, tx)) => (crate::format::speed(rx), crate::format::speed(tx)),
         None => ("—".to_owned(), "—".to_owned()),
     }
 }

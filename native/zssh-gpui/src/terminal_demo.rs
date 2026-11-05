@@ -326,7 +326,7 @@ impl TerminalDemo {
 
     /// 打开主机库窗口；同一个进程可以开多个，IME 按窗口 key 管理。
     pub(crate) fn open_hosts_window(&mut self, cx: &mut Context<Self>) {
-        crate::hosts_demo::open_hosts_window(cx);
+        crate::hosts::open_hosts_window(cx);
     }
 
     /// 从当前 SSH 窗格打开 SFTP 窗口，直接复用这条已认证连接。
@@ -336,7 +336,7 @@ impl TerminalDemo {
                 .update(cx, |ws, cx| ws.set_status_text("当前标签不是 SSH 会话", cx));
             return;
         };
-        crate::sftp_demo::open_sftp_window_with_factory(cx, host_id, factory);
+        crate::sftp::open_sftp_window_with_factory(cx, host_id, factory);
     }
 
     /// 「新建终端」：当前是 SSH 会话就复用它的连接开新窗口，否则保持原来的离线演示窗口。
@@ -766,42 +766,42 @@ impl Render for TerminalDemo {
                         Button::new("backup")
                             .label("\u{5907}\u{4efd}")
                             .on_click(|_, _, cx| {
-                                crate::backup_demo::open_backup_window(cx);
+                                crate::backup::open_backup_window(cx);
                             }),
                     )
                     .child(
                         Button::new("sync")
                             .label("\u{540c}\u{6b65}")
                             .on_click(|_, _, cx| {
-                                crate::sync_demo::open_sync_window(cx);
+                                crate::sync::open_sync_window(cx);
                             }),
                     )
                     .child(
                         Button::new("status")
                             .label("\u{72b6}\u{6001}")
                             .on_click(|_, _, cx| {
-                                crate::status_demo::open_status_window(cx);
+                                crate::status::open_status_window(cx);
                             }),
                     )
                     .child(
                         Button::new("update")
                             .label("\u{66f4}\u{65b0}")
                             .on_click(|_, _, cx| {
-                                crate::update_demo::open_update_window(cx);
+                                crate::update::open_update_window(cx);
                             }),
                     )
                     .child(
                         Button::new("agents")
                             .label("AI 智能体")
                             .on_click(|_, _, cx| {
-                                crate::agents_demo::open_agents_window(cx);
+                                crate::agents::open_agents_window(cx);
                             }),
                     )
                     .child(
                         Button::new("agent-chat")
                             .label("AI 对话")
                             .on_click(|_, _, cx| {
-                                crate::agent_chat_demo::open_agent_chat_window(cx);
+                                crate::agent_chat::open_agent_chat_window(cx);
                             }),
                     ),
             )

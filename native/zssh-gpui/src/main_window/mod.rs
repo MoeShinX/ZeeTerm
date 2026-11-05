@@ -27,37 +27,73 @@ mod close_guard;
 pub mod collation;
 pub mod compose_history;
 mod connections_ui;
+// 调试驱动整套（`ZSSH_MAIN_SCRIPT` 步骤脚本 + 每张任务卡的动作实现 + 种子数据）只在
+// debug 构建里编译：release 里这些模块不存在，`dev_script::spawn_from_env` 这类入口
+// 也一起从 main.rs 门掉。给自动化加新动作时放这里，别放无门禁的模块。
+#[cfg(debug_assertions)]
 mod dev_acts;
+#[cfg(debug_assertions)]
 mod dev_acts_a4;
+#[cfg(debug_assertions)]
 mod dev_acts_a5;
+#[cfg(debug_assertions)]
 mod dev_acts_about;
+#[cfg(debug_assertions)]
 mod dev_acts_agent;
+#[cfg(debug_assertions)]
 mod dev_acts_c1;
+#[cfg(debug_assertions)]
 mod dev_acts_dock;
+#[cfg(debug_assertions)]
 mod dev_acts_edit;
+#[cfg(debug_assertions)]
 mod dev_acts_n4;
+#[cfg(debug_assertions)]
 mod dev_acts_pane;
+#[cfg(debug_assertions)]
 mod dev_acts_sync;
+#[cfg(debug_assertions)]
 mod dev_acts_tcp;
+#[cfg(debug_assertions)]
 mod dev_acts_u1;
-mod dev_acts_u12;
+#[cfg(debug_assertions)]
 mod dev_acts_u13;
-mod dev_acts_u18;
+#[cfg(debug_assertions)]
 mod dev_acts_u19;
+#[cfg(debug_assertions)]
 mod dev_acts_u2;
+#[cfg(debug_assertions)]
 mod dev_acts_u20;
-mod dev_acts_u21;
+#[cfg(debug_assertions)]
 mod dev_acts_u25;
+#[cfg(debug_assertions)]
 mod dev_acts_u26;
+#[cfg(debug_assertions)]
 mod dev_acts_u28;
+#[cfg(debug_assertions)]
 mod dev_acts_u29;
+#[cfg(debug_assertions)]
 mod dev_acts_u30;
+#[cfg(debug_assertions)]
 mod dev_acts_u34;
+#[cfg(debug_assertions)]
 mod dev_acts_u35;
+#[cfg(debug_assertions)]
 mod dev_acts_u4;
+#[cfg(debug_assertions)]
 mod dev_acts_u6;
+#[cfg(debug_assertions)]
 mod dev_acts_u7;
+// U12 / U18 / U21 是双模式：MainWindow 上挂着 `DevFake` 假数据槽，生产 UI（connections_ui /
+// processes_ui）在 release 里调它的 always-None 查询，所以这三个模块无门禁（假数据逻辑和
+// 其余动作实现只在 debug 编译，release 里只剩空槽和 always-None 查询）。
+mod dev_acts_u12;
+mod dev_acts_u18;
+mod dev_acts_u21;
+// 脚本解析器整套只编进 debug 构建；入口 main.rs 的调用一起门掉。
+#[cfg(debug_assertions)]
 pub mod dev_script;
+#[cfg(debug_assertions)]
 pub mod dev_seed;
 pub mod dock_layout;
 mod docks;
@@ -202,18 +238,18 @@ pub struct MainWindow {
     /// 空白标签里选主机的光标位置。
     pub(super) launcher_cursor: usize,
     /// 设置页 AI 一节（智能体检测 / 路径 / 下载）：第一次打开设置页时才建。
-    pub(super) agent_settings: Option<Entity<crate::agents_demo::AgentsDemo>>,
+    pub(super) agent_settings: Option<Entity<crate::agents::AgentsDemo>>,
     /// 设置页同步一节（连接存储 / 主密码 / 同步 / 冲突）和备份一节：第一次打开设置页时建。
-    pub(super) sync_settings: Option<Entity<crate::sync_demo::SyncDemo>>,
-    pub(super) backup_settings: Option<Entity<crate::backup_demo::BackupDemo>>,
+    pub(super) sync_settings: Option<Entity<crate::sync::SyncDemo>>,
+    pub(super) backup_settings: Option<Entity<crate::backup::BackupDemo>>,
     /// 设置页同步一节最上面的「从 Z-SSH 迁移」（V2-U19）：欢迎页的入口也会建它。
-    pub(super) migrate_settings: Option<Entity<crate::migrate_demo::MigrateDemo>>,
+    pub(super) migrate_settings: Option<Entity<crate::migrate::MigrateDemo>>,
     /// 欢迎页「检测到 Z-SSH 的数据」提示卡的状态。
     pub(super) migrate_hint: migrate_ui::MigrateHint,
     /// 设置页「关于」一节（版本 / 检查更新 / 数据目录 / 开源许可）：第一次打开设置页时建。
     pub(super) about_settings: Option<Entity<crate::about_view::AboutView>>,
     /// 底部同步状态条现在画的内容（版本号用来判断要不要重绘）。
-    pub(super) sync_bar: (u64, crate::sync_demo::SyncBarModel),
+    pub(super) sync_bar: (u64, crate::sync::SyncBarModel),
     /// 设置页的滚动位置（驱动脚本要把某一块滚到可见处截图）。
     pub(super) settings_scroll: ::gpui::ScrollHandle,
     /// 设置页现在显示哪个分类（记在窗口状态里，重启后恢复）。
@@ -234,7 +270,7 @@ pub struct MainWindow {
     pub(super) ai_dots: Vec<(u64, bool)>,
     /// 状态栏正在订阅哪台主机的采集。
     pub(super) status_host: Option<i64>,
-    pub(super) status: Option<crate::status_demo::HostStatus>,
+    pub(super) status: Option<crate::status::HostStatus>,
     pub(super) window_width: f32,
     pub(super) window_height: f32,
     tick_count: u64,
@@ -470,7 +506,7 @@ impl MainWindow {
             migrate_settings: None,
             migrate_hint: migrate_ui::MigrateHint::default(),
             about_settings: None,
-            sync_bar: crate::sync_demo::bar_model(),
+            sync_bar: crate::sync::bar_model(),
             settings_scroll: ::gpui::ScrollHandle::new(),
             settings_section: crate::settings_nav::SettingsSection::restored(
                 layout.settings_section.as_deref(),
@@ -696,7 +732,7 @@ impl MainWindow {
             let mut changed = false;
             if self.status_host != Some(host) {
                 if let Some(old) = self.status_host.take() {
-                    crate::status_demo::unsubscribe_host(old);
+                    crate::status::unsubscribe_host(old);
                 }
                 self.status_host = Some(host);
                 changed = true;
@@ -710,17 +746,17 @@ impl MainWindow {
         let mut changed = false;
         if wanted != self.status_host {
             if let Some(old) = self.status_host.take() {
-                crate::status_demo::unsubscribe_host(old);
+                crate::status::unsubscribe_host(old);
             }
             if let Some(new) = wanted {
-                crate::status_demo::subscribe_host(new);
+                crate::status::subscribe_host(new);
             }
             self.status_host = wanted;
             self.status = None;
             changed = true;
         }
         if let Some(host_id) = self.status_host {
-            let latest = crate::status_demo::host_status(host_id);
+            let latest = crate::status::host_status(host_id);
             if latest != self.status {
                 self.status = latest;
                 changed = true;
@@ -763,7 +799,7 @@ impl MainWindow {
         self.shutdown_editors(cx);
         crate::forward_runtime::shutdown();
         if let Some(old) = self.status_host.take() {
-            crate::status_demo::unsubscribe_host(old);
+            crate::status::unsubscribe_host(old);
         }
         self.save_state(window);
     }
@@ -819,7 +855,7 @@ impl MainWindow {
 
     /// 托盘菜单和「设置 → 关于」共用的「检查更新」入口：打开更新窗口（读清单、下载、验签、确认后安装）。
     pub(crate) fn check_for_updates(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        crate::update_demo::open_update_window(cx);
+        crate::update::open_update_window(cx);
     }
 
     pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1518,6 +1554,7 @@ impl MainWindow {
     // ---- 调试钩子（只在 debug 构建里从 main.rs 调） ----
 
     /// 主机树现在画了几行（搜索后的结果也算）：驱动脚本断言搜索过滤用。
+    #[cfg(debug_assertions)]
     pub(crate) fn tree_row_count(&self, cx: &App) -> usize {
         let query = self.tree_query.read(cx).value().to_string();
         let filter = host_tree::tree_filter(
@@ -1538,6 +1575,7 @@ impl MainWindow {
 
     /// 截图前的隐私检查：收集窗口上会出现的文字（标签标题、主机树和主机页的名字、终端屏幕），
     /// 命中任何一个禁用片段就返回它。片段只来自环境变量，不写进代码。
+    #[cfg(debug_assertions)]
     pub(crate) fn privacy_hits(&self, forbidden: &[String], cx: &App) -> Vec<String> {
         let ws = self.workspace.read(cx);
         let mut texts: Vec<String> = Vec::new();

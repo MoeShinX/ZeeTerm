@@ -170,18 +170,21 @@ impl SftpCaps {
 /// 一条 SFTP 通道（= 一个子系统会话）。
 ///
 /// `RawSftpSession` 把底层通道的读写拆成多个请求复用同一条通道（响应按请求号归位），
-/// 所以浏览目录、读属性、小文件操作共用这一条就够了。
+/// 所以浏览目录、读属性、小文件操作共用这一条就够了；克隆出来的句柄也共用同一条
+/// 会话，给「一批小请求并发发」用（见 [`super::fs::entries_from_protocol`]）。
+#[derive(Clone)]
 pub struct SftpChannel {
     raw: Arc<RawSftpSession>,
     caps: SftpCaps,
     connection_id: usize,
     /// 这条通道连的是哪台服务器（用户名@主机:端口），开通道时从连接上取。远端目标锁的键里要用。
     server_key: String,
-    /// 通道活着，它所在的 SSH 连接就算「有人在用」：连接池按谁还握着这条连接的 `Arc` 判断能不能做
+    /// 这条通道活着，它所在的 SSH 连接就算「有人在用」：连接池按谁还握着这条连接的 `Arc` 判断能不能做
     /// 空闲回收，只拿着通道（比如远端编辑器）而不握工厂的使用者不能被漏掉，否则编辑到一半连接被关。
     _connection: Arc<Connection>,
-    /// 正在等「服务器端长请求」应答的个数（见 [`LongRequestGuard`]）。
-    long_requests: AtomicUsize,
+    /// 正在等「服务器端长请求」应答的个数（见 [`LongRequestGuard`]）。用 `Arc` 计数：
+    /// 克隆句柄共享同一个数，放宽 / 恢复超时才不会互相打架。
+    long_requests: Arc<AtomicUsize>,
 }
 
 /// 服务器端长请求期间把这条通道的请求超时放宽，结束（含被取消）时恢复。
@@ -248,7 +251,7 @@ impl SftpChannel {
             connection_id: Arc::as_ptr(connection) as usize,
             server_key: identity_of(connection),
             _connection: Arc::clone(connection),
-            long_requests: AtomicUsize::new(0),
+            long_requests: Arc::new(AtomicUsize::new(0)),
         })
     }
 

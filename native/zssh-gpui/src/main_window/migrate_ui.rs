@@ -1,7 +1,7 @@
 //! 从 Z-SSH 迁移的入口（V2-U19）：欢迎页上方的提示卡、按钮行下面的文字链接，以及设置页「同步」
-//! 最上面那一块的创建和打开。迁移本身的逻辑和画法在 `crate::migrate_demo`，这里只管入口和主窗口的接线。
+//! 最上面那一块的创建和打开。迁移本身的逻辑和画法在 `crate::migrate`，这里只管入口和主窗口的接线。
 //!
-//! 提示卡的出现条件见 [`crate::migrate_demo::tip_visible`]：本机有 Z-SSH 数据、ZeeTerm 的主机库还是空的、
+//! 提示卡的出现条件见 [`crate::migrate::tip_visible`]：本机有 Z-SSH 数据、ZeeTerm 的主机库还是空的、
 //! 没点过「不再提示」。找 Z-SSH 数据只看文件在不在（后台线程里 stat），不打开库。
 
 use std::rc::Rc;
@@ -15,7 +15,7 @@ use super::bridge::on_blocking;
 use super::nav::MainView;
 use super::widgets::{ButtonLook, act, text_button};
 use crate::app_theme::Tokens;
-use crate::migrate_demo::{self, MigrateDemo, MigrateNotice};
+use crate::migrate::{self, MigrateDemo, MigrateNotice};
 use crate::typography::{Role, Typo as _};
 
 /// 提示卡的标题和说明。
@@ -43,12 +43,8 @@ impl MainWindow {
         }
         self.migrate_hint.scanned = true;
         // 读不到标记（库没打开）时按"点过不再提示"处理：宁可不提示，也不在读不了数据的时候弹卡。
-        self.migrate_hint.dismissed = self
-            .store
-            .db()
-            .map(migrate_demo::is_dismissed)
-            .unwrap_or(true);
-        let Ok(rx) = on_blocking(|| migrate_demo::detect_zssh(None).is_some()) else {
+        self.migrate_hint.dismissed = self.store.db().map(migrate::is_dismissed).unwrap_or(true);
+        let Ok(rx) = on_blocking(|| migrate::detect_zssh(None).is_some()) else {
             return;
         };
         self.await_result(rx, window, cx, |this, found, _window, cx| {
@@ -59,7 +55,7 @@ impl MainWindow {
 
     /// 欢迎页现在要不要画提示卡。
     pub(super) fn zssh_tip_visible(&self) -> bool {
-        migrate_demo::tip_visible(
+        migrate::tip_visible(
             self.migrate_hint.found,
             self.store.hosts().is_empty(),
             self.migrate_hint.dismissed,
@@ -77,7 +73,7 @@ impl MainWindow {
         }
         let weak = cx.entity().downgrade();
         // 延后到当前这次更新结束再动主窗口：驱动脚本是在主窗口的更新里调用迁移块的，直接 update 会重入。
-        let notice: migrate_demo::NoticeFn = Rc::new(move |notice, window, cx| {
+        let notice: migrate::NoticeFn = Rc::new(move |notice, window, cx| {
             let weak = weak.clone();
             window.defer(cx, move |window, cx| {
                 let _ = weak.update(cx, |this, cx| match notice {
@@ -117,7 +113,7 @@ impl MainWindow {
         self.migrate_hint.dismissed = true;
         if let Ok(db) = self.store.db() {
             // 记不上就只在这次运行里不再出现。
-            let _ = migrate_demo::set_dismissed(db);
+            let _ = migrate::set_dismissed(db);
         }
         cx.notify();
     }

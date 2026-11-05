@@ -473,12 +473,12 @@ pub fn is_known(name: &str) -> bool {
 fn active_ai(
     this: &MainWindow,
     _cx: &App,
-) -> Option<::gpui::Entity<crate::agent_chat_demo::AgentChatDemo>> {
+) -> Option<::gpui::Entity<crate::agent_chat::AgentChatDemo>> {
     this.docks.ai.clone()
 }
 
 /// 文件视图：先看当前显示的 SFTP 标签，再看当前终端标签主机的停靠视图。
-fn active_sftp(this: &MainWindow, cx: &App) -> Option<::gpui::Entity<crate::sftp_demo::SftpDemo>> {
+fn active_sftp(this: &MainWindow, cx: &App) -> Option<::gpui::Entity<crate::sftp::SftpDemo>> {
     if let Some(view) = this.active_sftp_view() {
         return Some(view);
     }
@@ -823,7 +823,7 @@ pub(super) fn run_dock(
                 view.script_local_dir(std::path::Path::new(&path), cx);
             });
         }
-        // sftp_ui:<命令>:<参数…>：文件视图的界面动作和检查，见 `sftp_demo/script.rs`。
+        // sftp_ui:<命令>:<参数…>：文件视图的界面动作和检查，见 `sftp/script.rs`。
         "sftp_ui" => {
             let Some(view) = active_sftp(this, cx) else {
                 return Ok(Outcome::Pending);
