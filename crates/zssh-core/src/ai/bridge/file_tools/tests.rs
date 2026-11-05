@@ -1033,8 +1033,7 @@ async fn while_locked_file_tools_ask_even_in_full_access_mode_and_resume_after_u
     assert_eq!(requests.len(), 4, "锁屏时四个文件工具都要问");
     assert!(requests.iter().all(|r| r
         .reasons
-        .iter()
-        .any(|reason| *reason == crate::ai::reason::ApprovalReason::Locked)));
+        .contains(&crate::ai::reason::ApprovalReason::Locked)));
     assert_eq!(rig.fs.get("/home/u/a.txt").unwrap(), b"hello\n", "没有写成");
 
     lock.locked.store(false, Ordering::SeqCst);
