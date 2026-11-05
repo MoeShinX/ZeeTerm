@@ -124,7 +124,7 @@ impl crate::i18n::Msg for ViewMsg {
             Self::CopyToClipboard => "复制到剪贴板",
             Self::SaveAsLocal => "另存为本地文件",
             Self::UnsavedKept => "有未保存的修改（已存为草稿，下次启动可以恢复）",
-            Self::SaveAndClose => crate::i18n::t(ViewMsg::SaveAndClose),
+            Self::SaveAndClose => "保存并关闭",
             Self::DontSave => "不保存",
             Self::GotoTitle => "跳到行",
             Self::GotoHint => "行号，或 行:列；回车跳转，Esc 关闭",

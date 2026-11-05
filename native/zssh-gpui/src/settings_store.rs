@@ -362,7 +362,7 @@ impl AppSettings {
         if let Some(handle) = cx.try_global::<SettingsHandle>() {
             return handle.0.clone();
         }
-        let settings = UiSettings::load();
+        let mut settings = UiSettings::load();
         let writer = SettingsWriter::to_file(crate::settings::settings_path());
         let _ = WRITER.set(Arc::clone(&writer));
         // 主题要在开任何窗口之前定下来：`Theme::change` 会把颜色重置成组件库默认值，
@@ -379,6 +379,9 @@ impl AppSettings {
         let pref = if crate::settings::settings_path().exists() {
             settings.language_pref()
         } else {
+            // 内存里的设置也要记成"跟随系统"：否则用户第一次改任何设置（主题、字体……）落盘时，
+            // 默认值里的 "zh" 会一起写进去，下次启动英文系统的用户就变成了中文界面。
+            settings.language = crate::i18n::LangPref::System.as_str().to_owned();
             crate::i18n::LangPref::System
         };
         crate::i18n::set(
