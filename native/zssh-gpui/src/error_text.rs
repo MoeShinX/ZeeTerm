@@ -354,17 +354,16 @@ fn localize_params<E: ErrorWithCode + ?Sized>(
         }
     }
 
-    if lang == Lang::En {
-        if let Some(key) = get(params, "reason") {
-            if let Some(sentence) = crate::reason_text::sentence(key, params) {
-                set(params, "detail", sentence);
-            }
-        }
+    if lang == Lang::En
+        && let Some(key) = get(params, "reason")
+        && let Some(sentence) = crate::reason_text::sentence(key, params)
+    {
+        set(params, "detail", sentence);
     }
-    if err.code() == "store.not_found" {
-        if let Some(noun) = get(params, "entity").map(|key| entity_noun(lang, key)) {
-            set(params, "entity", noun);
-        }
+    if err.code() == "store.not_found"
+        && let Some(noun) = get(params, "entity").map(|key| entity_noun(lang, key))
+    {
+        set(params, "entity", noun);
     }
     if lang == Lang::En && err.code() == "ssh.all_auth_failed" {
         let tried = tried_methods_en(get(params, "tried_codes").unwrap_or_default());
