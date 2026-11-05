@@ -161,7 +161,9 @@ impl Msg for SftpDialogViewMsg {
             Self::Execute => "Execute",
             Self::PermissionsTitle => "Change Permissions",
             Self::Octal => "Octal",
-            Self::OctalError => "Permissions must be written as 3-4 octal digits (for example 644 or 0644)",
+            Self::OctalError => {
+                "Permissions must be written as 3-4 octal digits (for example 644 or 0644)"
+            }
             Self::RecursiveLabel => {
                 "Apply recursively to everything inside the folder (symbolic links are left unchanged)"
             }
@@ -469,7 +471,9 @@ impl SftpDemo {
             .child(note(desc, tokens))
             .child(Input::new(&d.input))
             .children(match &check {
-                NameCheck::Bad(reason) if !name.trim().is_empty() || reason != t(SftpMsg::DialogNameEmpty) => {
+                NameCheck::Bad(reason)
+                    if !name.trim().is_empty() || reason != t(SftpMsg::DialogNameEmpty) =>
+                {
                     Some(error_note(reason.clone(), tokens.danger))
                 }
                 _ => None,
@@ -595,8 +599,8 @@ impl SftpDemo {
                     t(SftpDialogViewMsg::Write),
                     t(SftpDialogViewMsg::Execute),
                 ]
-                    .into_iter()
-                    .map(|label| div().flex_1().text_center().child(label).into_any_element()),
+                .into_iter()
+                .map(|label| div().flex_1().text_center().child(label).into_any_element()),
             );
         let rows = roles.into_iter().map(|(label, bits)| {
             h_flex()
@@ -646,9 +650,7 @@ impl SftpDemo {
                     .child(div().w(px(96.0)).child(Input::new(&d.octal))),
             )
             .children(
-                (!octal_ok).then(|| {
-                    error_note(t(SftpDialogViewMsg::OctalError), tokens.danger)
-                }),
+                (!octal_ok).then(|| error_note(t(SftpDialogViewMsg::OctalError), tokens.danger)),
             )
             .children(is_dir.then(|| {
                 Checkbox::new("sftp-perm-recursive")
@@ -782,7 +784,8 @@ impl SftpDemo {
                         t(SftpDialogViewMsg::FileSize),
                         bytes_text(file_bytes),
                         "sftp-prop-row",
-                    ).into_any_element(),
+                    )
+                    .into_any_element(),
                 );
             }
         }
@@ -912,7 +915,10 @@ impl SftpDemo {
                     .as_ref()
                     .map(|err| error_note(err.clone(), tokens.danger)),
             )
-            .children(d.checking.then(|| note(t(SftpDialogViewMsg::CheckingDir), tokens)))
+            .children(
+                d.checking
+                    .then(|| note(t(SftpDialogViewMsg::CheckingDir), tokens)),
+            )
             .child(buttons(vec![
                 text_button(
                     "sftp-download-cancel",

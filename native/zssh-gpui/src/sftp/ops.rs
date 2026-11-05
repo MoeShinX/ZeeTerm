@@ -468,11 +468,7 @@ impl SftpDemo {
         self.say(format!("{}{subject}", verb.start()));
         let sender = self.sender.clone();
         let done = format!("{}{subject}", verb.done());
-        let failed = format!(
-            "{}{subject}{}",
-            verb.fail(),
-            t(SftpMsg::OpsFailedSuffix)
-        );
+        let failed = format!("{}{subject}{}", verb.fail(), t(SftpMsg::OpsFailedSuffix));
         runtime.spawn(async move {
             let event = match tokio::task::spawn_blocking(work).await {
                 Ok(Ok(())) => SftpEvent::OpDone {
@@ -528,17 +524,14 @@ impl SftpDemo {
                         ));
                     }
                 }
-                channel
-                    .create_file(&target)
-                    .await
-                    .map_err(|err| {
-                        format!(
-                            "{}{target}{}{err}{}",
-                            t(SftpMsg::OpsCreateFileFailedPrefix),
-                            t(SftpMsg::ParenOpen),
-                            t(SftpMsg::ParenClose)
-                        )
-                    })?;
+                channel.create_file(&target).await.map_err(|err| {
+                    format!(
+                        "{}{target}{}{err}{}",
+                        t(SftpMsg::OpsCreateFileFailedPrefix),
+                        t(SftpMsg::ParenOpen),
+                        t(SftpMsg::ParenClose)
+                    )
+                })?;
                 Ok(format!("{}{target}", t(SftpMsg::OpsCreatedFilePrefix)))
             },
             Some(Side::Remote),
@@ -597,10 +590,7 @@ impl SftpDemo {
             let event = match channel.rename(&old_path, &target, false).await {
                 Ok(_) => SftpEvent::OpDone {
                     ok: true,
-                    message: format!(
-                        "{}{old_name} → {new_name}",
-                        t(SftpMsg::OpsRenamedPrefix)
-                    ),
+                    message: format!("{}{old_name} → {new_name}", t(SftpMsg::OpsRenamedPrefix)),
                     refresh: Some(Side::Remote),
                 },
                 Err(SftpError::AlreadyExists { .. }) if ask_on_exists => SftpEvent::RenameExists {
@@ -801,10 +791,7 @@ impl SftpDemo {
     /// 本地删除：目录可能很大，放到阻塞线程里做；链接只删链接。
     fn start_local_delete(&mut self, paths: Vec<String>, subject: String) -> Result<(), String> {
         let runtime = runtime()?;
-        self.say(format!(
-            "{}{subject}",
-            t(SftpMsg::OpsDeletingLocalPrefix)
-        ));
+        self.say(format!("{}{subject}", t(SftpMsg::OpsDeletingLocalPrefix)));
         let sender = self.sender.clone();
         runtime.spawn(async move {
             let results = tokio::task::spawn_blocking(move || local_ops::delete(&paths)).await;
@@ -815,10 +802,7 @@ impl SftpDemo {
                     if failed.is_empty() {
                         SftpEvent::OpDone {
                             ok: true,
-                            message: format!(
-                                "{}{subject}",
-                                t(SftpMsg::OpsDeletedLocalPrefix)
-                            ),
+                            message: format!("{}{subject}", t(SftpMsg::OpsDeletedLocalPrefix)),
                             refresh: Some(Side::Local),
                         }
                     } else {
@@ -857,10 +841,7 @@ impl SftpDemo {
                 }
                 Err(err) => SftpEvent::OpDone {
                     ok: false,
-                    message: format!(
-                        "{}{err}",
-                        t(SftpMsg::OpsDeleteThreadFailedPrefix)
-                    ),
+                    message: format!("{}{err}", t(SftpMsg::OpsDeleteThreadFailedPrefix)),
                     refresh: Some(Side::Local),
                 },
             };
@@ -1003,17 +984,14 @@ impl SftpDemo {
             ));
             self.run_remote_op(
                 async move {
-                    channel
-                        .set_permissions(&path, mode)
-                        .await
-                        .map_err(|err| {
-                            format!(
-                                "{}{name}{}{err}{}",
-                                t(SftpMsg::OpsChmodFailedPrefix),
-                                t(SftpMsg::ParenOpen),
-                                t(SftpMsg::ParenClose)
-                            )
-                        })?;
+                    channel.set_permissions(&path, mode).await.map_err(|err| {
+                        format!(
+                            "{}{name}{}{err}{}",
+                            t(SftpMsg::OpsChmodFailedPrefix),
+                            t(SftpMsg::ParenOpen),
+                            t(SftpMsg::ParenClose)
+                        )
+                    })?;
                     Ok(format!(
                         "{}{name} → {label}",
                         t(SftpMsg::OpsChmodDonePrefix)
@@ -1264,12 +1242,7 @@ impl SftpDemo {
         } else {
             self.local.path.clone()
         };
-        let input = self.dialog_input(
-            &initial,
-            t(SftpMsg::OpsDownloadDirPlaceholder),
-            window,
-            cx,
-        );
+        let input = self.dialog_input(&initial, t(SftpMsg::OpsDownloadDirPlaceholder), window, cx);
         let subscriptions = vec![
             cx.observe(&input, |_this, _input, cx| cx.notify()),
             cx.subscribe_in(
@@ -1350,9 +1323,7 @@ impl SftpDemo {
             move |seq, outcome| {
                 let result = match outcome {
                     Ok(Ok(())) => Ok(()),
-                    Ok(Err(ScanError::NotDir)) => {
-                        Err(t(SftpMsg::OpsNotADirectory).to_owned())
-                    }
+                    Ok(Err(ScanError::NotDir)) => Err(t(SftpMsg::OpsNotADirectory).to_owned()),
                     Ok(Err(ScanError::Failed(err))) | Err(err) => Err(err),
                 };
                 let _ = sender.send(SftpEvent::DownloadDirChecked {
@@ -1390,10 +1361,7 @@ impl SftpDemo {
         }
         dialog.checking = false;
         if let Err(err) = result {
-            dialog.error = Some(format!(
-                "{}{err}",
-                t(SftpMsg::OpsDirUnusablePrefix)
-            ));
+            dialog.error = Some(format!("{}{err}", t(SftpMsg::OpsDirUnusablePrefix)));
             cx.notify();
             return;
         }
@@ -1814,7 +1782,12 @@ impl SftpDemo {
         self.queue_open = true;
     }
 
-    fn report_started(&mut self, started: usize, first_error: Option<String>, direction: Direction) {
+    fn report_started(
+        &mut self,
+        started: usize,
+        first_error: Option<String>,
+        direction: Direction,
+    ) {
         let (queued, empty) = match direction {
             Direction::Upload => (SftpMsg::OpsQueuedUploadPrefix, SftpMsg::OpsNoItemsUpload),
             _ => (
@@ -1830,14 +1803,12 @@ impl SftpDemo {
                 t(queued),
                 t(SftpMsg::ItemCountSuffix)
             )),
-            (count, Some(err)) => {
-                self.warn(format!(
-                    "{}{count}{}{}{err}",
-                    t(queued),
-                    t(SftpMsg::ItemCountSuffix),
-                    t(SftpMsg::OpsQueuedSomeSuffix)
-                ))
-            }
+            (count, Some(err)) => self.warn(format!(
+                "{}{count}{}{}{err}",
+                t(queued),
+                t(SftpMsg::ItemCountSuffix),
+                t(SftpMsg::OpsQueuedSomeSuffix)
+            )),
         }
     }
 

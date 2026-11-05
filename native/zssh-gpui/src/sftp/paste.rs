@@ -505,10 +505,7 @@ async fn paste_remote(
                     results.push(ItemResult::new(
                         item,
                         ItemState::Queued,
-                        Some(format!(
-                            "{reason}{}",
-                            t(SftpMsg::PasteRelaySuffix)
-                        )),
+                        Some(format!("{reason}{}", t(SftpMsg::PasteRelaySuffix))),
                     ));
                     continue;
                 }
@@ -539,13 +536,14 @@ async fn paste_remote(
                     Ok(stats) => results.push(ItemResult::new(
                         item,
                         ItemState::Ok,
-                        (!stats.skipped_links.is_empty())
-                            .then(|| format!(
-                            "{}{}{}",
-                            t(SftpMsg::PasteSkippedLinksPrefix),
-                            stats.skipped_links.len(),
-                            t(SftpMsg::PasteSkippedLinksSuffix)
-                        )),
+                        (!stats.skipped_links.is_empty()).then(|| {
+                            format!(
+                                "{}{}{}",
+                                t(SftpMsg::PasteSkippedLinksPrefix),
+                                stats.skipped_links.len(),
+                                t(SftpMsg::PasteSkippedLinksSuffix)
+                            )
+                        }),
                     )),
                     Err(SftpError::Cancelled) => {
                         results.push(ItemResult::new(item, ItemState::Cancelled, None))
@@ -553,10 +551,7 @@ async fn paste_remote(
                     Err(err) => results.push(ItemResult::new(
                         item,
                         ItemState::Failed,
-                        Some(format!(
-                            "{}{err}",
-                            t(SftpMsg::PasteServerCopyFailedPrefix)
-                        )),
+                        Some(format!("{}{err}", t(SftpMsg::PasteServerCopyFailedPrefix))),
                     )),
                 }
             }
@@ -583,10 +578,7 @@ async fn paste_remote(
                         results.push(ItemResult::new(
                             item,
                             ItemState::Queued,
-                            Some(format!(
-                            "{reason}{}",
-                            t(SftpMsg::PasteRelaySuffix)
-                        )),
+                            Some(format!("{reason}{}", t(SftpMsg::PasteRelaySuffix))),
                         ));
                     }
                     Err(CpFailure::Failed(message)) => {
@@ -668,11 +660,11 @@ async fn resolve_remote_dest(
             };
             if ctx.browse.lstat(&chosen).await.is_ok() {
                 return Err(format!(
-                "{}{}{}",
-                t(SftpMsg::PasteAlreadyExistsPrefix),
-                name_of(&chosen),
-                t(SftpMsg::PasteAlreadyExistsSuffix)
-            ));
+                    "{}{}{}",
+                    t(SftpMsg::PasteAlreadyExistsPrefix),
+                    name_of(&chosen),
+                    t(SftpMsg::PasteAlreadyExistsSuffix)
+                ));
             }
             Ok(Dest::Free(chosen))
         }

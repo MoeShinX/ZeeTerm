@@ -380,7 +380,10 @@ pub(super) fn calc_text(state: &CalcState) -> String {
     match state.phase {
         CalcPhase::Idle => t(super::SftpMsg::PropsNotComputed).to_owned(),
         CalcPhase::Running => {
-            format!("{}{base}{suffix}", t(super::SftpMsg::PropsCalcRunningPrefix))
+            format!(
+                "{}{base}{suffix}",
+                t(super::SftpMsg::PropsCalcRunningPrefix)
+            )
         }
         CalcPhase::Cancelled => format!(
             "{}{base}{suffix}{}",

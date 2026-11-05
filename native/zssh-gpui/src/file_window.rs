@@ -696,17 +696,22 @@ impl FileWindow {
                     ),
                 )
                 .item(
-                    crate::menu_kit::row(&tokens, t(FileWindowMsg::MoveToMain), Ico::SquareArrowDownLeft).on_click(
+                    crate::menu_kit::row(
+                        &tokens,
+                        t(FileWindowMsg::MoveToMain),
+                        Ico::SquareArrowDownLeft,
+                    )
+                    .on_click(move |_, window, cx| {
+                        back.update(cx, |this, cx| this.move_to_main(id, window, cx));
+                    }),
+                )
+                .item(
+                    crate::menu_kit::row(&tokens, t(FileWindowMsg::Close), Ico::X).on_click(
                         move |_, window, cx| {
-                            back.update(cx, |this, cx| this.move_to_main(id, window, cx));
+                            close.update(cx, |this, cx| this.close_tab(id, window, cx));
                         },
                     ),
                 )
-                .item(crate::menu_kit::row(&tokens, t(FileWindowMsg::Close), Ico::X).on_click(
-                    move |_, window, cx| {
-                        close.update(cx, |this, cx| this.close_tab(id, window, cx));
-                    },
-                ))
             })
             .into_any_element()
     }
@@ -775,16 +780,11 @@ impl FileWindow {
                 .items_center()
                 .border_t_1()
                 .border_color(tokens.border)
-                .child(
-                    div()
-                        .flex_1()
-                        .typo(Role::Body, tokens)
-                        .child(format!(
-                        "{}{busy}{}{message}",
-                        t(FileWindowMsg::BusyPrefix),
-                        t(FileWindowMsg::BusyMiddle)
-                    )),
-                )
+                .child(div().flex_1().typo(Role::Body, tokens).child(format!(
+                    "{}{busy}{}{message}",
+                    t(FileWindowMsg::BusyPrefix),
+                    t(FileWindowMsg::BusyMiddle)
+                )))
                 .child(
                     Button::new("file-window-keep")
                         .label(t(FileWindowMsg::KeepTransferring))

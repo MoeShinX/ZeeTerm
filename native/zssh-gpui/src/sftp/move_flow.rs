@@ -65,7 +65,8 @@ impl SftpDemo {
         if operable.len() < entries.len() {
             self.warn(t(SftpMsg::OpsSkippedNonUtf8));
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::MoveTargetPlaceholder)));
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::MoveTargetPlaceholder)));
         input.update(cx, |state, cx| state.set_value(start.clone(), window, cx));
         let subscriptions = vec![
             cx.observe(&input, |_this, _input, cx| cx.notify()),
@@ -215,15 +216,9 @@ impl SftpDemo {
             }
             Err(err) => {
                 d.browse.pending_select = None;
-                d.browse.error = Some(format!(
-                    "{}{err}",
-                    t(SftpMsg::MoveBrowseFailedPrefix)
-                ));
+                d.browse.error = Some(format!("{}{err}", t(SftpMsg::MoveBrowseFailedPrefix)));
                 if was_confirming {
-                    d.error = Some(format!(
-                    "{}{err}",
-                    t(SftpMsg::MoveDestUnavailablePrefix)
-                ));
+                    d.error = Some(format!("{}{err}", t(SftpMsg::MoveDestUnavailablePrefix)));
                 }
             }
         }
@@ -339,7 +334,9 @@ impl SftpDemo {
         if d.browse.dir.is_empty() {
             return;
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::MoveNewFolderPlaceholder)));
+        let input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t(SftpMsg::MoveNewFolderPlaceholder))
+        });
         input.update(cx, |state, cx| state.focus(window, cx));
         d.new_folder = Some(input.clone());
         d.new_folder_error = None;
@@ -502,11 +499,7 @@ impl SftpDemo {
             && let Some(open) = open_files::open_at_or_under(self.host_id, &entry.path)
         {
             return Some(if same_path(side, &open, &entry.path) {
-                format!(
-                    "{}{}",
-                    entry.name,
-                    t(SftpMsg::MoveBlockedEditingSuffix)
-                )
+                format!("{}{}", entry.name, t(SftpMsg::MoveBlockedEditingSuffix))
             } else {
                 format!(
                     "{}{}{}{}",
@@ -523,13 +516,7 @@ impl SftpDemo {
                 !row.state.is_terminal()
                     && transfer_blocks(side, &entry.path, row.direction, &row.source, &row.target)
             })
-            .then(|| {
-                format!(
-                    "{}{}",
-                    entry.name,
-                    t(SftpMsg::MoveTransferringSuffix)
-                )
-            })
+            .then(|| format!("{}{}", entry.name, t(SftpMsg::MoveTransferringSuffix)))
     }
 
     /// 把任务取出来问状态机“下一步”，再执行它说的。

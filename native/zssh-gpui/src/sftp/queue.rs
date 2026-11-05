@@ -89,11 +89,7 @@ pub(super) fn reconcile_summary(row: &RowFacts<'_>, elapsed: Option<Duration>) -
     let mut parts = Vec::new();
     if row.total_files > 1 {
         parts.push(if row.done_files == row.total_files {
-            format!(
-                "{}{}",
-                row.total_files,
-                t(super::SftpMsg::QueueFilesSuffix)
-            )
+            format!("{}{}", row.total_files, t(super::SftpMsg::QueueFilesSuffix))
         } else {
             format!(
                 "{}{}{}{}",

@@ -811,10 +811,7 @@ impl SftpDemo {
             .border_t_1()
             .border_color(tokens.border)
             .typo(Role::Caption, tokens)
-            .child(format!(
-                "{count}{}",
-                t(SftpMsg::ItemCountSuffix)
-            ))
+            .child(format!("{count}{}", t(SftpMsg::ItemCountSuffix)))
             .when(selected_count > 0, |bar| {
                 bar.child(format!(
                     "{}{selected_count}{}",
@@ -974,7 +971,11 @@ impl SftpDemo {
                     })
             };
         if crumbs.is_empty() {
-            let root = if is_remote { "/" } else { t(SftpViewMsg::ThisComputer) };
+            let root = if is_remote {
+                "/"
+            } else {
+                t(SftpViewMsg::ThisComputer)
+            };
             let target = if is_remote { "/" } else { "" };
             bar = bar.child(crumb_button(
                 SharedString::from(format!("crumb-root-{id_suffix}")),
@@ -1391,24 +1392,16 @@ impl SftpDemo {
                         .px_2()
                         .gap_2()
                         .items_center()
-                        .child(
-                            div()
-                                .typo(Role::ItemName, tokens)
-                                .child(format!(
-                                    "{}{target_name}",
-                                    t(SftpViewMsg::ConflictTitlePrefix)
-                                )),
-                        )
+                        .child(div().typo(Role::ItemName, tokens).child(format!(
+                            "{}{target_name}",
+                            t(SftpViewMsg::ConflictTitlePrefix)
+                        )))
                         .when(waiting > 0, |line| {
-                            line.child(
-                                div()
-                                    .typo(Role::Caption, tokens)
-                                    .child(format!(
-                                        "{}{waiting}{}",
-                                        t(SftpViewMsg::ConflictWaitingPrefix),
-                                        t(SftpViewMsg::ConflictWaitingSuffix)
-                                    )),
-                            )
+                            line.child(div().typo(Role::Caption, tokens).child(format!(
+                                "{}{waiting}{}",
+                                t(SftpViewMsg::ConflictWaitingPrefix),
+                                t(SftpViewMsg::ConflictWaitingSuffix)
+                            )))
                         })
                         .child(
                             div()
@@ -1582,9 +1575,7 @@ impl SftpDemo {
                         .py_3()
                         .typo(Role::Body, tokens)
                         .text_color(tokens.text_muted)
-                        .child(
-                            t(SftpViewMsg::QueueEmpty),
-                        )
+                        .child(t(SftpViewMsg::QueueEmpty))
                         .into_any_element()
                 } else {
                     v_flex()
@@ -1675,31 +1666,45 @@ impl SftpDemo {
         if super::menu::transfer_can_pause(&state) {
             let e = entity.clone();
             buttons = buttons.child(
-                button("xfer-pause", Icon::new(IconName::Pause), t(SftpViewMsg::Pause))
-                    .on_click(move |_, _, cx| e.update(cx, |this, cx| this.pause_transfer(id, cx))),
+                button(
+                    "xfer-pause",
+                    Icon::new(IconName::Pause),
+                    t(SftpViewMsg::Pause),
+                )
+                .on_click(move |_, _, cx| e.update(cx, |this, cx| this.pause_transfer(id, cx))),
             );
         }
         if state == TransferState::Paused {
             let e = entity.clone();
             buttons = buttons.child(
-                button("xfer-resume", Icon::new(IconName::Play), t(SftpViewMsg::ResumeTransfer)).on_click(
-                    move |_, _, cx| e.update(cx, |this, cx| this.resume_transfer(id, cx)),
-                ),
+                button(
+                    "xfer-resume",
+                    Icon::new(IconName::Play),
+                    t(SftpViewMsg::ResumeTransfer),
+                )
+                .on_click(move |_, _, cx| e.update(cx, |this, cx| this.resume_transfer(id, cx))),
             );
         }
         if super::menu::transfer_can_retry(&state) {
             let e = entity.clone();
             buttons = buttons.child(
-                button("xfer-retry", Icon::new(Ico::RotateCcw), t(SftpViewMsg::Retry))
-                    .on_click(move |_, _, cx| e.update(cx, |this, cx| this.retry_transfer(id, cx))),
+                button(
+                    "xfer-retry",
+                    Icon::new(Ico::RotateCcw),
+                    t(SftpViewMsg::Retry),
+                )
+                .on_click(move |_, _, cx| e.update(cx, |this, cx| this.retry_transfer(id, cx))),
             );
         }
         if live {
             let e = entity.clone();
             buttons = buttons.child(
-                button("xfer-cancel", Icon::new(IconName::Close), t(SftpViewMsg::CancelTransfer)).on_click(
-                    move |_, _, cx| e.update(cx, |this, cx| this.cancel_transfer(id, cx)),
-                ),
+                button(
+                    "xfer-cancel",
+                    Icon::new(IconName::Close),
+                    t(SftpViewMsg::CancelTransfer),
+                )
+                .on_click(move |_, _, cx| e.update(cx, |this, cx| this.cancel_transfer(id, cx))),
             );
         }
         let state_color = match &state {

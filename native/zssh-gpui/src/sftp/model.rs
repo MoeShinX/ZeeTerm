@@ -12,8 +12,8 @@ use std::collections::HashSet;
 
 use zssh_core::sftp::{DirEntry, FileKind};
 
-use crate::main_window::collation;
 use crate::i18n::t;
+use crate::main_window::collation;
 
 /// 条目类型（本地栏多一种“盘符”）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

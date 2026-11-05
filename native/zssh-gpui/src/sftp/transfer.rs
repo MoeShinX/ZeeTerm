@@ -55,10 +55,10 @@ impl SftpDemo {
             }
         }
         self.say(format!(
-                "{}{}",
-                t(SftpMsg::TransferOpeningPrefix),
-                file_name(&path)
-            ));
+            "{}{}",
+            t(SftpMsg::TransferOpeningPrefix),
+            file_name(&path)
+        ));
         // 正式界面：主窗口里开一个编辑器标签（同一个文件不重复开）；没有主窗口（调试用的独立 SFTP 窗口）
         // 才退回独立的编辑窗口。
         let spec = crate::remote_editor::OpenSpec {
@@ -169,10 +169,7 @@ impl SftpDemo {
                 TestHook::Invalid(message) => Err(message),
             };
             if let Err(err) = result {
-                self.warn(format!(
-                    "{}{err}",
-                    t(SftpMsg::OpsAutoOpNotStartedPrefix)
-                ));
+                self.warn(format!("{}{err}", t(SftpMsg::OpsAutoOpNotStartedPrefix)));
             }
         }
         self.run_next_hook_op(cx);
@@ -207,24 +204,27 @@ impl SftpDemo {
         self.forget_finished_batches();
         let label = direction_label(report.direction);
         let (text, failed) = match &report.state {
-            TransferState::Done => (format!(
-                "{label}{}{name}",
-                t(SftpMsg::TransferDoneSuffix)
-            ), false),
-            TransferState::Failed(reason) => (format!(
-                "{label}{}{name}{}{reason}{}",
-                t(SftpMsg::TransferFailedSuffix),
-                t(SftpMsg::ParenOpen),
-                t(SftpMsg::ParenClose)
-            ), true),
-            TransferState::Cancelled => (format!(
-                "{label}{}{name}",
-                t(SftpMsg::TransferCancelledSuffix)
-            ), false),
-            TransferState::Skipped => (format!(
-                "{label}{}{name}",
-                t(SftpMsg::TransferSkippedSuffix)
-            ), false),
+            TransferState::Done => (
+                format!("{label}{}{name}", t(SftpMsg::TransferDoneSuffix)),
+                false,
+            ),
+            TransferState::Failed(reason) => (
+                format!(
+                    "{label}{}{name}{}{reason}{}",
+                    t(SftpMsg::TransferFailedSuffix),
+                    t(SftpMsg::ParenOpen),
+                    t(SftpMsg::ParenClose)
+                ),
+                true,
+            ),
+            TransferState::Cancelled => (
+                format!("{label}{}{name}", t(SftpMsg::TransferCancelledSuffix)),
+                false,
+            ),
+            TransferState::Skipped => (
+                format!("{label}{}{name}", t(SftpMsg::TransferSkippedSuffix)),
+                false,
+            ),
             _ => return,
         };
         let downloaded = matches!(report.direction, Direction::Download | Direction::LocalCopy)
@@ -314,10 +314,9 @@ impl SftpDemo {
             let result = match classify_dropped_path(path) {
                 DropKind::File => self.start_upload_to(&local, &remote_dir),
                 DropKind::Dir => self.start_dir_upload_to(&local, &remote_dir),
-                DropKind::Missing => Err(format!(
-                    "{}{local}",
-                    t(SftpMsg::TransferDropMissingPrefix)
-                )),
+                DropKind::Missing => {
+                    Err(format!("{}{local}", t(SftpMsg::TransferDropMissingPrefix)))
+                }
             };
             match result {
                 Ok(()) => started += 1,
@@ -378,16 +377,15 @@ impl SftpDemo {
         if remote.is_empty() {
             return Err(t(SftpMsg::TransferRemotePathEmpty).to_owned());
         }
-        std::fs::create_dir_all(local_dir)
-            .map_err(|err| {
-                format!(
-                    "{}{}{}{err}{}",
-                    t(SftpMsg::TransferCreateLocalDirFailedPrefix),
-                    local_dir.display(),
-                    t(SftpMsg::ParenOpen),
-                    t(SftpMsg::ParenClose)
-                )
-            })?;
+        std::fs::create_dir_all(local_dir).map_err(|err| {
+            format!(
+                "{}{}{}{err}{}",
+                t(SftpMsg::TransferCreateLocalDirFailedPrefix),
+                local_dir.display(),
+                t(SftpMsg::ParenOpen),
+                t(SftpMsg::ParenClose)
+            )
+        })?;
         let target = download_target(local_dir, remote).map_err(|err| err.to_string())?;
         let name = file_name(remote);
         self.submit_job(
@@ -420,10 +418,7 @@ impl SftpDemo {
         }
         let path = Path::new(local);
         if path.is_dir() {
-            return Err(format!(
-                "{local}{}",
-                t(SftpMsg::TransferIsDirectorySuffix)
-            ));
+            return Err(format!("{local}{}", t(SftpMsg::TransferIsDirectorySuffix)));
         }
         if !path.is_file() {
             return Err(format!(
@@ -672,9 +667,9 @@ impl SftpDemo {
             Ok(decision) => decision,
             Err(message) => {
                 self.warn(format!(
-                "{}{message}",
-                t(SftpMsg::TransferRenameInvalidPrefix)
-            ));
+                    "{}{message}",
+                    t(SftpMsg::TransferRenameInvalidPrefix)
+                ));
                 cx.notify();
                 return;
             }
@@ -692,16 +687,16 @@ impl SftpDemo {
         let waiting = self.conflicts.len();
         self.say(if waiting == 0 {
             format!(
-            "{}{label} {target_name}",
-            t(SftpMsg::TransferConflictPrefix)
-        )
+                "{}{label} {target_name}",
+                t(SftpMsg::TransferConflictPrefix)
+            )
         } else {
             format!(
-            "{}{label} {target_name}{}{waiting}{}",
-            t(SftpMsg::TransferConflictPrefix),
-            t(SftpMsg::TransferConflictMorePrefix),
-            t(SftpMsg::TransferConflictMoreSuffix)
-        )
+                "{}{label} {target_name}{}{waiting}{}",
+                t(SftpMsg::TransferConflictPrefix),
+                t(SftpMsg::TransferConflictMorePrefix),
+                t(SftpMsg::TransferConflictMoreSuffix)
+            )
         });
         cx.notify();
     }
@@ -797,16 +792,16 @@ impl SftpDemo {
         }
         self.say(if pause {
             format!(
-            "{}{accepted}{}",
-            t(SftpMsg::TransferAutoPausePrefix),
-            t(SftpMsg::TransferAutoCountSuffix)
-        )
+                "{}{accepted}{}",
+                t(SftpMsg::TransferAutoPausePrefix),
+                t(SftpMsg::TransferAutoCountSuffix)
+            )
         } else {
             format!(
-            "{}{accepted}{}",
-            t(SftpMsg::TransferAutoResumePrefix),
-            t(SftpMsg::TransferAutoCountSuffix)
-        )
+                "{}{accepted}{}",
+                t(SftpMsg::TransferAutoResumePrefix),
+                t(SftpMsg::TransferAutoCountSuffix)
+            )
         });
         cx.notify();
     }

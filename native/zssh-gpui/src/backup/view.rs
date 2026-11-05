@@ -174,7 +174,9 @@ impl Msg for BackupViewMsg {
                  removed at the next backup; changing this setting deletes nothing by itself."
             }
             Self::KeepUnit => "files",
-            Self::NoBackups => "No backups yet. One is made automatically before the first merge from the cloud.",
+            Self::NoBackups => {
+                "No backups yet. One is made automatically before the first merge from the cloud."
+            }
             Self::Loading => "Reading…",
             Self::Restore => "Restore",
             Self::ConfirmRestore => "Confirm Restore",
@@ -215,8 +217,12 @@ impl Msg for BackupViewMsg {
             Self::Export => "Export",
             Self::ConfirmOverwrite => "Confirm Overwrite",
             Self::NoPrimarySync => "No primary sync",
-            Self::AccountsPromptTitle => "Replace this computer's sync settings with the ones from the backup?",
-            Self::AccountsPromptPrefix => "The backup carries sync account settings (primary sync: ",
+            Self::AccountsPromptTitle => {
+                "Replace this computer's sync settings with the ones from the backup?"
+            }
+            Self::AccountsPromptPrefix => {
+                "The backup carries sync account settings (primary sync: "
+            }
             Self::AccountsPromptMiddle => ", cloud backup targets ",
             Self::AccountsPromptSuffix => {
                 "), and this computer already has sync configured. Replacing swaps this computer's storage connection, sign-in info, remembered master password and cloud backup targets; keeping keeps this computer's current ones."
@@ -425,11 +431,12 @@ impl BackupDemo {
                 v_flex()
                     .min_w_0()
                     .gap_0p5()
-                    .child(div().typo(Role::ItemName, tokens).child(t(BackupViewMsg::KeepTitle)))
-                    .child(muted(
-                        t(BackupViewMsg::KeepDescription),
-                        tokens,
-                    ))
+                    .child(
+                        div()
+                            .typo(Role::ItemName, tokens)
+                            .child(t(BackupViewMsg::KeepTitle)),
+                    )
+                    .child(muted(t(BackupViewMsg::KeepDescription), tokens))
                     .when_some(self.keep_error.clone(), |col, message| {
                         col.child(
                             div()
@@ -526,7 +533,7 @@ impl BackupDemo {
                     format!("{}{name}", t(BackupViewMsg::RestoreWillPrefix)),
                     tokens,
                 ))
-                    .child(colored(t(BackupMsg::ConfirmWarning), tokens.danger))
+                .child(colored(t(BackupMsg::ConfirmWarning), tokens.danger))
             })
             .into_any_element()
     }
@@ -658,12 +665,8 @@ impl BackupDemo {
                 ))
                 .child(muted(
                     match mode {
-                        OfflineImportMode::Merge => {
-                            t(BackupViewMsg::MergeDescription)
-                        }
-                        OfflineImportMode::Replace => {
-                            t(BackupViewMsg::ReplaceDescription)
-                        }
+                        OfflineImportMode::Merge => t(BackupViewMsg::MergeDescription),
+                        OfflineImportMode::Replace => t(BackupViewMsg::ReplaceDescription),
                     },
                     tokens,
                 ))

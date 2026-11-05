@@ -12,7 +12,7 @@ use zssh_core::sftp::path::{join, normalize};
 
 use super::engine::resolve_local_path;
 use super::local_listing::{LocalReply, LocalRequest, ScanError, accepts, request_listing};
-use super::menu::{not_utf8_reason, Side};
+use super::menu::{Side, not_utf8_reason};
 use super::model::{Entry, NavMode, SortKey, local_parent, remote_parent};
 use super::pane::PathEdit;
 use super::{SftpDemo, SftpEvent, SftpMsg};
@@ -41,10 +41,7 @@ impl SftpDemo {
             self.remote.scroll_to(0);
         }
         let text = match notice {
-            Some(notice) => format!(
-                "{notice} · {count}{}",
-                t(SftpMsg::ItemCountSuffix)
-            ),
+            Some(notice) => format!("{notice} · {count}{}", t(SftpMsg::ItemCountSuffix)),
             None => format!("{count}{}", t(SftpMsg::ItemCountSuffix)),
         };
         self.say(text);
@@ -225,10 +222,9 @@ impl SftpDemo {
                     self.local.scroll_to(0);
                 }
                 match notice {
-                    Some(notice) => self.say(format!(
-                        "{notice} · {count}{}",
-                        t(SftpMsg::ItemCountSuffix)
-                    )),
+                    Some(notice) => {
+                        self.say(format!("{notice} · {count}{}", t(SftpMsg::ItemCountSuffix)))
+                    }
                     None => self.say(format!(
                         "{}{count}{}",
                         t(SftpMsg::NavLocalCountPrefix),
@@ -246,14 +242,12 @@ impl SftpDemo {
                     self.local.path = target.clone();
                 }
                 match error {
-                    ScanError::NotDir => self.warn(format!(
-                        "{}{target}",
-                        t(SftpMsg::NavNotADirectoryPrefix)
-                    )),
-                    ScanError::Failed(err) => self.warn(format!(
-                        "{}{err}",
-                        t(SftpMsg::NavLocalReadFailedPrefix)
-                    )),
+                    ScanError::NotDir => {
+                        self.warn(format!("{}{target}", t(SftpMsg::NavNotADirectoryPrefix)))
+                    }
+                    ScanError::Failed(err) => {
+                        self.warn(format!("{}{err}", t(SftpMsg::NavLocalReadFailedPrefix)))
+                    }
                 }
             }
         }
@@ -371,7 +365,8 @@ impl SftpDemo {
             return;
         }
         let current = self.pane(side).path.clone();
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::NavPathPlaceholder)));
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::NavPathPlaceholder)));
         input.update(cx, |state, cx| state.set_value(current, window, cx));
         let subscriptions = vec![
             cx.observe(&input, |_this, _input, cx| cx.notify()),

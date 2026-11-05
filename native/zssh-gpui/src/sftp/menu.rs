@@ -570,10 +570,16 @@ pub(super) fn build_transfer_menu(state: &TransferState) -> Vec<MenuNode> {
     let mut nodes = Vec::new();
     let mut add = |action, label: &str| nodes.push(item(action, label, None, None));
     if transfer_can_retry(state) {
-        add(MenuAction::TransferRetry, t(super::SftpMsg::MenuTransferRetry));
+        add(
+            MenuAction::TransferRetry,
+            t(super::SftpMsg::MenuTransferRetry),
+        );
     }
     if transfer_can_pause(state) {
-        add(MenuAction::TransferPause, t(super::SftpMsg::MenuTransferPause));
+        add(
+            MenuAction::TransferPause,
+            t(super::SftpMsg::MenuTransferPause),
+        );
     }
     if *state == TransferState::Paused {
         add(
@@ -597,9 +603,9 @@ mod tests {
 
     use super::super::model::{Entry, EntryKind, TargetKind};
     use super::{
-        archive_pending_reason, ArchiveMenuState, EDIT_MAX_BYTES, MenuAction, MenuContext,
-        MenuFeatures, MenuNode, not_utf8_reason, Side, build_menu, build_transfer_menu,
-        paste_reason, tidy_separators,
+        ArchiveMenuState, EDIT_MAX_BYTES, MenuAction, MenuContext, MenuFeatures, MenuNode, Side,
+        archive_pending_reason, build_menu, build_transfer_menu, not_utf8_reason, paste_reason,
+        tidy_separators,
     };
 
     const FEATURES: MenuFeatures = MenuFeatures {

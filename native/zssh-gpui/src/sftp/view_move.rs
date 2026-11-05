@@ -512,13 +512,11 @@ impl SftpDemo {
                     .text_xs()
                     .children(shown.into_iter().map(|line| div().child(line)))
                     .children((more > 0).then(|| {
-                        div()
-                            .text_color(tokens.text_muted)
-                            .child(format!(
-                                "{}{more}{}",
-                                t(SftpMoveViewMsg::MorePrefix),
-                                t(SftpMoveViewMsg::MoreSuffix)
-                            ))
+                        div().text_color(tokens.text_muted).child(format!(
+                            "{}{more}{}",
+                            t(SftpMoveViewMsg::MorePrefix),
+                            t(SftpMoveViewMsg::MoreSuffix)
+                        ))
                     })),
             )
             .child(button_row(vec![

@@ -154,8 +154,16 @@ pub(super) fn conflict_compare(info: &ConflictInfo) -> (String, String, String) 
             )
         }
     }
-    let source = side(t(super::SftpMsg::ConflictSource), info.source_size, info.source_mtime);
-    let target = side(t(super::SftpMsg::ConflictTarget), info.target_size, info.target_mtime);
+    let source = side(
+        t(super::SftpMsg::ConflictSource),
+        info.source_size,
+        info.source_mtime,
+    );
+    let target = side(
+        t(super::SftpMsg::ConflictTarget),
+        info.target_size,
+        info.target_mtime,
+    );
     let mut hints = Vec::new();
     if let (Some(source_size), Some(target_size)) = (info.source_size, info.target_size) {
         hints.push(match source_size.cmp(&target_size) {
@@ -626,12 +634,8 @@ pub(super) fn parse_octal_mode(text: &str) -> Result<u32, String> {
     } else {
         trimmed
     };
-    u32::from_str_radix(digits, 8).map_err(|_| {
-        format!(
-            "{}{trimmed:?}",
-            t(super::SftpMsg::OctalErrorPrefix)
-        )
-    })
+    u32::from_str_radix(digits, 8)
+        .map_err(|_| format!("{}{trimmed:?}", t(super::SftpMsg::OctalErrorPrefix)))
 }
 
 /// Unix 秒 → `YYYY-MM-DD HH:MM UTC`。只为了在属性行里看清时间，
@@ -815,17 +819,14 @@ pub(super) async fn create_remote_dir(
     channel: &SftpChannel,
     target: &str,
 ) -> Result<String, String> {
-    channel
-        .create_dir(target)
-        .await
-        .map_err(|err| {
-            format!(
-                "{}{target}{}{err}{}",
-                t(super::SftpMsg::MkdirFailedPrefix),
-                t(super::SftpMsg::MkdirFailedMiddle),
-                t(super::SftpMsg::ParenClose)
-            )
-        })?;
+    channel.create_dir(target).await.map_err(|err| {
+        format!(
+            "{}{target}{}{err}{}",
+            t(super::SftpMsg::MkdirFailedPrefix),
+            t(super::SftpMsg::MkdirFailedMiddle),
+            t(super::SftpMsg::ParenClose)
+        )
+    })?;
     Ok(format!("{}{target}", t(super::SftpMsg::MkdirDonePrefix)))
 }
 

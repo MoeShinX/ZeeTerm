@@ -585,8 +585,7 @@ impl MoveJob {
                 name: entry.name.clone(),
                 target: target.clone(),
                 can_replace: *can_replace,
-                why_not: (!can_replace)
-                    .then(|| t(super::SftpMsg::MoveSkipFolderOnly).to_owned()),
+                why_not: (!can_replace).then(|| t(super::SftpMsg::MoveSkipFolderOnly).to_owned()),
                 remaining: self.queue.len(),
             }),
             _ => Next::Done(Tally::default()),
@@ -691,8 +690,8 @@ pub(super) fn local_step(from: &str, to: &str, overwrite: bool) -> StepResult {
 mod tests {
     use super::super::model::{Entry, EntryKind};
     use super::{
-        Choice, DestCheck, into_self_note, MoveJob, Next, same_folder_note, Side, StepResult,
-        Tally, check_destination, dialog_title, folders_only, related, same_or_inside, target_path,
+        Choice, DestCheck, MoveJob, Next, Side, StepResult, Tally, check_destination, dialog_title,
+        folders_only, into_self_note, related, same_folder_note, same_or_inside, target_path,
     };
 
     fn entry(side: Side, dir: &str, name: &str, kind: EntryKind) -> Entry {

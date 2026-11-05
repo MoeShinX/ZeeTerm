@@ -297,11 +297,7 @@ pub(super) fn delete_names(entries: &[Entry]) -> (Vec<String>, Option<String>) {
 pub(super) fn delete_subject(entries: &[Entry]) -> String {
     match entries {
         [only] => only.name.clone(),
-        _ => format!(
-            "{}{}",
-            entries.len(),
-            t(super::SftpMsg::ItemCountSuffix)
-        ),
+        _ => format!("{}{}", entries.len(), t(super::SftpMsg::ItemCountSuffix)),
     }
 }
 

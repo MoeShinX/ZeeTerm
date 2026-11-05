@@ -765,9 +765,7 @@ impl Msg for SftpMsg {
             Self::DialogDeleteTitleMiddle => "的 ",
             Self::DialogDeleteTitleSuffix => " 项？",
             Self::DialogDeleteDescFolder => "选中的里有文件夹，将递归删除其中所有内容，不能恢复。",
-            Self::DialogDeleteDescLinks => {
-                "选中的都是符号链接：只删链接本身，不动它指向的内容。"
-            }
+            Self::DialogDeleteDescLinks => "选中的都是符号链接：只删链接本身，不动它指向的内容。",
             Self::DialogDeleteDescFiles => "选中的都是文件，删除后无法恢复。",
             Self::DialogDeleteMorePrefix => "…等另外 ",
             Self::DialogDeleteMoreSuffix => " 项",
@@ -881,9 +879,7 @@ impl Msg for SftpMsg {
             Self::PasteRenameEmpty => "新名字不能为空，也不能含有 /",
             Self::PasteAlreadyExistsPrefix => "「",
             Self::PasteAlreadyExistsSuffix => "」也已经存在",
-            Self::PasteSourceClosed => {
-                "复制的源所在的连接已经关闭，请重新打开那个标签再复制"
-            }
+            Self::PasteSourceClosed => "复制的源所在的连接已经关闭，请重新打开那个标签再复制",
             Self::PasteTargetUnavailablePrefix => "目标文件夹不可用：",
             Self::PasteNotAFolderSuffix => " 不是文件夹",
             Self::PasteIntoSelfLinkSuffix => {
@@ -1103,9 +1099,7 @@ impl Msg for SftpMsg {
             Self::CloneNotConnected => "Not connected yet — copy after connecting",
             Self::CloneDisconnected => "Connection lost — cannot copy",
             Self::LocalReadInternalError => "Internal error while reading the local directory",
-            Self::LocalReadQueueFull => {
-                "Too many local directory reads queued — try again later"
-            }
+            Self::LocalReadQueueFull => "Too many local directory reads queued — try again later",
             Self::LocalDiskPrefix => "Local Disk (",
             Self::LocalDiskSuffix => ":)",
             Self::DirNameEmpty => "Directory name cannot be empty",
@@ -1116,9 +1110,7 @@ impl Msg for SftpMsg {
             Self::DragControlChars => {
                 "The file name contains control characters and cannot be inserted into the terminal"
             }
-            Self::DragNotUtf8 => {
-                "Dragged items cannot be transferred now (file name is not UTF-8)"
-            }
+            Self::DragNotUtf8 => "Dragged items cannot be transferred now (file name is not UTF-8)",
             Self::ChmodCancelledPrefix => "Permission change cancelled: ",
             Self::ChmodCancelledMiddle => " (",
             Self::ChmodCancelledSuffix => " changed; the rest were left unchanged)",
@@ -1188,7 +1180,9 @@ impl Msg for SftpMsg {
             Self::NoUsableDirName => " has no usable directory name",
             Self::NameEmpty => "The name is empty",
             Self::NameCannotBePrefix => "The name cannot be ",
-            Self::RemoteDirNotReady => "The remote directory is not ready yet — please wait a moment",
+            Self::RemoteDirNotReady => {
+                "The remote directory is not ready yet — please wait a moment"
+            }
             Self::OnlyRelativeNamesPrefix => {
                 "Only names under the current directory are accepted; do not pass an absolute path: "
             }
@@ -1200,9 +1194,7 @@ impl Msg for SftpMsg {
                 "ZSSH_SFTP_RENAME must be written as old-name:new-name; got "
             }
             Self::HookRenameNameEmptyPrefix => "ZSSH_SFTP_RENAME name cannot be empty: ",
-            Self::HookChmodFormatPrefix => {
-                "ZSSH_SFTP_CHMOD must be written as name:mode; got "
-            }
+            Self::HookChmodFormatPrefix => "ZSSH_SFTP_CHMOD must be written as name:mode; got ",
             Self::HookChmodNameEmptyPrefix => "ZSSH_SFTP_CHMOD name cannot be empty: ",
             Self::HookChmodModeInvalidPrefix => "ZSSH_SFTP_CHMOD has an invalid mode: ",
             Self::HookConflictInvalidPrefix => {
@@ -1222,9 +1214,7 @@ impl Msg for SftpMsg {
             Self::MenuFileTooBigPrefix => "The file exceeds ",
             Self::MenuFileTooBigSuffix => " MB; download it to view it",
             Self::MenuClipboardEmpty => "The clipboard is empty",
-            Self::MenuCrossSidePaste => {
-                "Use upload / download between the remote and local panes"
-            }
+            Self::MenuCrossSidePaste => "Use upload / download between the remote and local panes",
             Self::MenuEnterFolder => "Enter a folder first",
             Self::MenuEnterDir => "Enter a directory first",
             Self::MenuNoUnzip => "The server has no unzip command",
@@ -1311,7 +1301,9 @@ impl Msg for SftpMsg {
             Self::OpsFailRename => "Rename ",
             Self::OpsFailedSuffix => " failed",
             Self::OpsErrorJoin => ": ",
-            Self::OpsRuntimeUnavailable => "Background runtime unavailable; the operation was not run",
+            Self::OpsRuntimeUnavailable => {
+                "Background runtime unavailable; the operation was not run"
+            }
             Self::OpsCreatingFilePrefix => "Creating file ",
             Self::OpsCreateFileFailedPrefix => "Failed to create file: ",
             Self::OpsCreatedFilePrefix => "File created: ",
@@ -1322,9 +1314,7 @@ impl Msg for SftpMsg {
             Self::OpsOverwriteRenamingPrefix => "Renaming with overwrite ",
             Self::OpsRenamedOverwritePrefix => "Renamed (overwrote the existing file): ",
             Self::OpsDeletingWaitPrefix => "Deleting ",
-            Self::OpsDeletingWaitSuffix => {
-                "; wait for it to finish or press \"Cancel delete\""
-            }
+            Self::OpsDeletingWaitSuffix => "; wait for it to finish or press \"Cancel delete\"",
             Self::OpsDeletingWaitNextSuffix => "; wait for it to finish before deleting more",
             Self::OpsDeletingPrefix => "Deleting ",
             Self::OpsDeletingLocalPrefix => "Deleting local ",
@@ -1421,7 +1411,9 @@ impl Msg for SftpMsg {
             Self::PasteOverwriteSelf => {
                 "An item cannot overwrite itself (you can rename it instead)"
             }
-            Self::PasteTargetIsFolder => "The target is a folder and cannot be overwritten by a file",
+            Self::PasteTargetIsFolder => {
+                "The target is a folder and cannot be overwritten by a file"
+            }
             Self::PasteTargetIsFile => "The target is a file and cannot be overwritten by a folder",
             Self::PasteKindsDiffer => {
                 "One of the target and source is a file and the other is a folder; cannot overwrite"
@@ -1430,7 +1422,9 @@ impl Msg for SftpMsg {
             Self::MoveIntoSelf => "A folder cannot be moved into itself",
             Self::MoveCrossDevice => "Cannot move across disks; use copy and delete instead",
             Self::MoveDestNeedAbsoluteRemote => "The target must be a full path (starting with /)",
-            Self::MoveDestNeedAbsoluteLocal => "The target must be a full path (for example D:\\folder)",
+            Self::MoveDestNeedAbsoluteLocal => {
+                "The target must be a full path (for example D:\\folder)"
+            }
             Self::MoveSelectItems => "Select the items to move first",
             Self::MoveDialogOnePrefix => "Move \"",
             Self::MoveDialogOneSuffix => "\" to…",
@@ -1463,20 +1457,18 @@ impl Msg for SftpMsg {
             Self::MoveSkipTargetExists => {
                 "An item with that name already exists in the target; skipped"
             }
-            Self::MoveReplaceFailed => {
-                "Replacement did not succeed: the target still exists"
-            }
+            Self::MoveReplaceFailed => "Replacement did not succeed: the target still exists",
             Self::MoveSkipFolderOnly => {
                 "The existing item is a folder, or the item being moved is a folder; skipping"
             }
             Self::MoveSkipCancelled => "Cancelled",
-            Self::MoveBlockedEditingSuffix => {
-                " is being edited; save and close it before moving"
-            }
+            Self::MoveBlockedEditingSuffix => " is being edited; save and close it before moving",
             Self::MoveTargetAlreadyExistsDetail => {
                 "Replacing it removes the target's previous contents."
             }
-            Self::MoveBusy => "A move is already running; wait for it to finish before moving again",
+            Self::MoveBusy => {
+                "A move is already running; wait for it to finish before moving again"
+            }
             Self::MoveTargetPlaceholder => "Full path of the target folder",
             Self::MoveNewFolderPlaceholder => "Name of the new folder",
             Self::MoveBrowseFailedPrefix => "Cannot read this folder: ",
@@ -1506,9 +1498,7 @@ impl Msg for SftpMsg {
             Self::TransferRemotePathEmpty => "The remote path is empty",
             Self::TransferCreateLocalDirFailedPrefix => "Failed to create the local directory: ",
             Self::TransferUploadFilePrompt => "Enter the local file path to upload first",
-            Self::TransferIsDirectorySuffix => {
-                " is a directory; only single files can be uploaded"
-            }
+            Self::TransferIsDirectorySuffix => " is a directory; only single files can be uploaded",
             Self::TransferLocalFileMissingPrefix => "Local file not found: ",
             Self::TransferUploadDirPrompt => "Enter the local directory path to upload first",
             Self::TransferLocalDirMissingPrefix => "Local directory not found: ",
@@ -1632,7 +1622,6 @@ impl Msg for SftpMsg {
         }
     }
 }
-
 
 /// 新 SFTP 窗口的编号（每台主机可以有多个窗口）。
 static NEXT_SFTP: AtomicU64 = AtomicU64::new(1);
@@ -2056,10 +2045,12 @@ impl SftpDemo {
         let host_label = host_label(host_id);
         let show_hidden = default_show_hidden();
 
-        let remote_filter = cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::FilterPlaceholder)));
-        let local_filter = cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::FilterPlaceholder)));
-        let conflict_name_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::ConflictNamePlaceholder)));
+        let remote_filter =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::FilterPlaceholder)));
+        let local_filter =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::FilterPlaceholder)));
+        let conflict_name_input = cx
+            .new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::ConflictNamePlaceholder)));
         let remote = Pane::new(show_hidden, remote_filter, cx.focus_handle());
         let mut local = Pane::new(show_hidden, local_filter, cx.focus_handle());
         // 本地栏的落点和首屏列表都在后台线程里定、读（`is_dir`、建临时目录、`read_dir` 都可能很慢）：
@@ -2089,7 +2080,10 @@ impl SftpDemo {
                     runtime.spawn(async move {
                         let _ = sender.send(load_first(host_id, factory, start_remote).await);
                     });
-                    (Phase::Connecting, format!("{}{host_label}", t(SftpMsg::ConnectingPrefix)))
+                    (
+                        Phase::Connecting,
+                        format!("{}{host_label}", t(SftpMsg::ConnectingPrefix)),
+                    )
                 }
                 Err(err) => (
                     Phase::Failed,
@@ -2257,14 +2251,15 @@ impl SftpDemo {
         self.ime_key = format!("sftp-embedded-{n}");
         for side in [Side::Remote, Side::Local] {
             let text = self.pane(side).filter.text.clone();
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::FilterPlaceholder)));
+            let input =
+                cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::FilterPlaceholder)));
             input.update(cx, |state, cx| state.set_value(text, window, cx));
             let pane = self.pane_mut(side);
             pane.filter_input = input;
             pane.path_edit = None;
         }
-        self.conflict_name_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::ConflictNamePlaceholder)));
+        self.conflict_name_input = cx
+            .new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::ConflictNamePlaceholder)));
         self.prefill_conflict_name(window, cx);
         // 换了窗口，旧窗口里的同名询问没了：停在询问上的移动不会再有人回答，放弃它。
         if matches!(self.dialog, Some(Dialog::MoveConflict(_))) {
