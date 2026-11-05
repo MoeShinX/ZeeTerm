@@ -42,6 +42,7 @@ use super::clip::{
 };
 use super::engine::UiConflictResolver;
 use super::menu::Side;
+use crate::error_text::error_text;
 use crate::i18n::t;
 
 /// 服务器上的 `cp` 最多等多久（大目录可能要几分钟；界面显示"服务器上复制中"和已用时间）。
@@ -329,11 +330,13 @@ async fn paste_remote(
         .as_deref()
         .is_none_or(|key| key == ctx.browse.server_key());
 
-    let target_attrs = ctx
-        .browse
-        .stat(&request.target_dir)
-        .await
-        .map_err(|err| format!("{}{err}", t(SftpMsg::PasteTargetUnavailablePrefix)))?;
+    let target_attrs = ctx.browse.stat(&request.target_dir).await.map_err(|err| {
+        format!(
+            "{}{}",
+            t(SftpMsg::PasteTargetUnavailablePrefix),
+            error_text(&err)
+        )
+    })?;
     if !target_attrs.is_dir() {
         return Err(format!(
             "{}{}",
@@ -358,7 +361,7 @@ async fn paste_remote(
                             name_of(&item.path),
                             t(SftpMsg::PasteIntoSelfLinkSuffix)
                         ),
-                        other => other.to_string(),
+                        other => error_text(&other),
                     })?;
             }
         }
@@ -551,7 +554,11 @@ async fn paste_remote(
                     Err(err) => results.push(ItemResult::new(
                         item,
                         ItemState::Failed,
-                        Some(format!("{}{err}", t(SftpMsg::PasteServerCopyFailedPrefix))),
+                        Some(format!(
+                            "{}{}",
+                            t(SftpMsg::PasteServerCopyFailedPrefix),
+                            error_text(&err)
+                        )),
                     )),
                 }
             }
@@ -834,11 +841,11 @@ async fn resolve_local_dest(
                     // 必须原样是合法的 Windows 文件名：`C:evil.txt` 会让 `with_file_name` 丢掉所在
                     // 目录，`a:b` 会写进备用数据流。拼好之后再核对一次仍在原目录里。
                     let name = zssh_core::sftp::local::check_child_name(&name)
-                        .map_err(|err| err.to_string())?;
+                        .map_err(|err| error_text(&err))?;
                     let chosen = dest.with_file_name(&name);
                     if let Some(parent) = dest.parent() {
                         zssh_core::sftp::local::ensure_inside(parent, &chosen)
-                            .map_err(|err| err.to_string())?;
+                            .map_err(|err| error_text(&err))?;
                     }
                     chosen
                 }

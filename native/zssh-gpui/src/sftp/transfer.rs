@@ -24,6 +24,7 @@ use super::local_listing::{LocalRequest, request_listing};
 use super::menu::MenuAction;
 use super::model::NavMode;
 use super::{RemoteOp, SftpDemo, SftpEvent, SftpMsg, TestHook, TransferRow};
+use crate::error_text::error_text;
 use crate::i18n::t;
 use crate::ssh_backend::runtime;
 
@@ -386,7 +387,7 @@ impl SftpDemo {
                 t(SftpMsg::ParenClose)
             )
         })?;
-        let target = download_target(local_dir, remote).map_err(|err| err.to_string())?;
+        let target = download_target(local_dir, remote).map_err(|err| error_text(&err))?;
         let name = file_name(remote);
         self.submit_job(
             TransferJob {

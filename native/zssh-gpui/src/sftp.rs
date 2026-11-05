@@ -52,6 +52,7 @@ use zssh_core::sftp::transfer::{
 use zssh_core::sftp::{DirEntry, SftpChannel};
 use zssh_core::store::Database;
 
+use crate::error_text::error_text;
 use crate::i18n::{Msg, t};
 use crate::install_state;
 use crate::settings::data_dir;
@@ -2664,7 +2665,7 @@ async fn load_first(
         let connection = factory.connection();
         let channel = SftpChannel::open(&connection)
             .await
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| error_text(&err))?;
         let (cwd, entries) = first_listing(&channel, start_remote.as_deref()).await?;
         Ok::<_, String>((factory, channel, cwd, entries))
     }
@@ -2698,7 +2699,7 @@ async fn first_listing(
     let entries = channel
         .read_dir(&cwd)
         .await
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| error_text(&err))?;
     Ok((cwd, entries))
 }
 

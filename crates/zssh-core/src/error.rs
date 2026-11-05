@@ -1,5 +1,22 @@
 use std::io;
 
+/// 错误的稳定标识：界面按错误码挑文案，不解析 `Display` 的中文原文。
+///
+/// 错误码（`ssh.auth_failed`、`sftp.permission_denied` 这种）一旦发布就是契约：只能新增，
+/// 不能改名——改了会让已经按旧码写好的界面文案对不上，英文界面又退回中文。
+/// 参数键名同样是契约，含义和这里给的值对应（路径、主机、端口、秒数……）。
+pub trait ErrorWithCode: std::fmt::Display {
+    /// 稳定的错误码，形如 `sftp.permission_denied`。
+    fn code(&self) -> &'static str;
+
+    /// 结构化参数：键名稳定、顺序固定，没有参数时返回空表。
+    ///
+    /// 数字也转成十进制文本：界面只做"把值填进模板"，不做类型转换。
+    fn params(&self) -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
+}
+
 /// `zssh-core` 的统一错误类型。
 ///
 /// 连接失败的原因要能区分开（DNS、超时、拒绝连接、认证），因为界面要按原因
@@ -165,6 +182,166 @@ pub enum ZsshError {
     NoCommonAlgorithm(Box<NoCommonAlgorithmInfo>),
 }
 
+/// 错误码与结构化参数（界面按这两个来做文案，见 [trait `ErrorWithCode`](ErrorWithCode)）。
+///
+/// 代码只负责"这个错是什么、有哪些参数"；怎么措辞、用哪种语言，交给界面层。
+impl ErrorWithCode for ZsshError {
+    fn code(&self) -> &'static str {
+        match self {
+            ZsshError::QuickTargetMissingUser => "ssh.quick_target_missing_user",
+            ZsshError::QuickTargetEmptyHost => "ssh.quick_target_empty_host",
+            ZsshError::QuickTargetBadPort(_) => "ssh.quick_target_bad_port",
+            ZsshError::QuickTargetFormat(_) => "ssh.quick_target_format",
+            ZsshError::Dns { .. } => "ssh.dns_failed",
+            ZsshError::ConnectTimeout { .. } => "ssh.connect_timeout",
+            ZsshError::Proxy { .. } => "ssh.proxy_failed",
+            ZsshError::Hop { .. } => "ssh.hop_failed",
+            ZsshError::Connect { .. } => "ssh.connect_failed",
+            ZsshError::Ssh(_) => "ssh.protocol_error",
+            ZsshError::MissingServerKey => "ssh.missing_host_key",
+            ZsshError::AuthFailed => "ssh.auth_failed",
+            ZsshError::Shell(_) => "ssh.shell_failed",
+            ZsshError::X11(_) => "ssh.x11_forward_failed",
+            ZsshError::SftpUnavailable => "ssh.sftp_unavailable",
+            ZsshError::ChannelLimit(_) => "ssh.channel_limit",
+            ZsshError::Database(_) => "store.database_error",
+            ZsshError::NotFound { .. } => "store.not_found",
+            ZsshError::InvalidInput(_) => "core.invalid_input",
+            ZsshError::Internal(_) => "core.internal",
+            ZsshError::IdentityInUse { .. } => "store.identity_in_use",
+            ZsshError::ProxyInUse { .. } => "store.proxy_in_use",
+            ZsshError::Secret(_) => "store.secret_error",
+            ZsshError::Cancelled => "core.cancelled",
+            ZsshError::AuthTimeout { .. } => "ssh.auth_timeout",
+            ZsshError::AllAuthFailed { .. } => "ssh.all_auth_failed",
+            ZsshError::KeyLoad(_) => "ssh.key_load_failed",
+            ZsshError::AgentUnavailable(_) => "ssh.agent_unavailable",
+            ZsshError::RsaSha1Refused { .. } => "ssh.rsa_sha1_refused",
+            ZsshError::HostKeyStore(_) => "ssh.known_hosts_failed",
+            ZsshError::HostKeyRejected { .. } => "ssh.host_key_rejected",
+            ZsshError::HostKeyChanged(_) => "ssh.host_key_changed",
+            ZsshError::HostKeyRevoked(_) => "ssh.host_key_revoked",
+            ZsshError::HostKeyRekeyMismatch { .. } => "ssh.host_key_rekey_mismatch",
+            ZsshError::NoCommonAlgorithm(_) => "ssh.no_common_algorithm",
+        }
+    }
+
+    fn params(&self) -> Vec<(&'static str, String)> {
+        match self {
+            ZsshError::QuickTargetMissingUser
+            | ZsshError::QuickTargetEmptyHost
+            | ZsshError::MissingServerKey
+            | ZsshError::AuthFailed
+            | ZsshError::SftpUnavailable
+            | ZsshError::Cancelled => Vec::new(),
+
+            ZsshError::QuickTargetBadPort(port) => vec![("port", port.clone())],
+            ZsshError::QuickTargetFormat(detail) => vec![("detail", detail.clone())],
+            ZsshError::Dns { host, source } => {
+                vec![("host", host.clone()), ("detail", source.to_string())]
+            }
+            ZsshError::ConnectTimeout {
+                host,
+                port,
+                seconds,
+            } => vec![
+                ("host", host.clone()),
+                ("port", port.to_string()),
+                ("seconds", seconds.to_string()),
+            ],
+            ZsshError::Proxy { proxy, detail } => {
+                vec![("proxy", proxy.clone()), ("detail", detail.clone())]
+            }
+            ZsshError::Hop {
+                index,
+                label,
+                detail,
+            } => vec![
+                ("index", index.to_string()),
+                ("label", label.clone()),
+                ("detail", detail.clone()),
+            ],
+            ZsshError::Connect {
+                host,
+                port,
+                tried,
+                source,
+            } => vec![
+                ("host", host.clone()),
+                ("port", port.to_string()),
+                ("tried", tried.clone()),
+                ("detail", source.to_string()),
+            ],
+            ZsshError::Ssh(inner) => vec![("detail", inner.to_string())],
+            ZsshError::Shell(detail) => vec![("detail", detail.clone())],
+            ZsshError::X11(failure) => vec![("detail", failure.to_string())],
+            ZsshError::ChannelLimit(detail) => vec![("detail", detail.clone())],
+            ZsshError::Database(err) => vec![("detail", err.to_string())],
+            ZsshError::NotFound { entity, id } => {
+                vec![("entity", entity.to_string()), ("id", id.to_string())]
+            }
+            ZsshError::InvalidInput(detail)
+            | ZsshError::Internal(detail)
+            | ZsshError::Secret(detail)
+            | ZsshError::KeyLoad(detail)
+            | ZsshError::AgentUnavailable(detail)
+            | ZsshError::HostKeyStore(detail) => vec![("detail", detail.clone())],
+            ZsshError::IdentityInUse { name, hosts } | ZsshError::ProxyInUse { name, hosts } => {
+                vec![("name", name.clone()), ("hosts", hosts.clone())]
+            }
+            ZsshError::AuthTimeout { seconds } => vec![("seconds", seconds.to_string())],
+            ZsshError::AllAuthFailed { tried, remaining } => {
+                vec![("tried", tried.clone()), ("remaining", remaining.clone())]
+            }
+            ZsshError::RsaSha1Refused { key } => vec![("key", key.clone())],
+            ZsshError::HostKeyRejected {
+                host,
+                port,
+                fingerprint,
+            } => vec![
+                ("host", host.clone()),
+                ("port", port.to_string()),
+                ("fingerprint", fingerprint.clone()),
+            ],
+            ZsshError::HostKeyChanged(info) => vec![
+                ("host", info.host.clone()),
+                ("port", info.port.to_string()),
+                ("key_type", info.key_type.clone()),
+                ("stored", info.stored.clone()),
+                ("presented", info.presented.clone()),
+                ("stored_in", info.stored_in.clone()),
+                ("advice", info.advice.clone()),
+            ],
+            ZsshError::HostKeyRevoked(info) => vec![
+                ("host", info.host.clone()),
+                ("port", info.port.to_string()),
+                ("stored", info.stored.clone()),
+                ("presented", info.presented.clone()),
+                ("stored_in", info.stored_in.clone()),
+                ("advice", info.advice.clone()),
+            ],
+            ZsshError::HostKeyRekeyMismatch {
+                host,
+                port,
+                first,
+                again,
+            } => vec![
+                ("host", host.clone()),
+                ("port", port.to_string()),
+                ("first", first.clone()),
+                ("again", again.clone()),
+            ],
+            ZsshError::NoCommonAlgorithm(info) => vec![
+                ("host", info.host.clone()),
+                ("port", info.port.to_string()),
+                ("kind", info.kind.clone()),
+                ("ours", info.ours.clone()),
+                ("theirs", info.theirs.clone()),
+            ],
+        }
+    }
+}
+
 /// 主机密钥被标记为已吊销（@revoked）的详情。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostKeyRevokedInfo {
@@ -255,5 +432,187 @@ mod tests {
     fn error_type_stays_below_the_large_err_threshold() {
         let size = std::mem::size_of::<ZsshError>();
         assert!(size < 128, "ZsshError 已经 {size} 字节：大的成员要装箱");
+    }
+
+    /// 错误码是界面文案的契约：这里把**能直接构造**的变体都列出来，既守住具体取值，
+    /// 也顺手查一遍不会两个变体撞同一个码（撞了界面就会挑错文案）。
+    ///（`Ssh` / `Database` / `X11` 要借外部错误类型，不在这张表里。）
+    #[test]
+    fn every_error_variant_has_a_unique_stable_code() {
+        let changed = Box::new(HostKeyMismatch {
+            host: "web-1".into(),
+            port: 22,
+            key_type: "ssh-ed25519".into(),
+            stored: "SHA256:old".into(),
+            presented: "SHA256:new".into(),
+            stored_in: "own".into(),
+            advice: "clear".into(),
+        });
+        let revoked = Box::new(HostKeyRevokedInfo {
+            host: "web-1".into(),
+            port: 22,
+            stored: "SHA256:old".into(),
+            presented: "SHA256:new".into(),
+            stored_in: "own".into(),
+            advice: "clear".into(),
+        });
+        let no_common = Box::new(NoCommonAlgorithmInfo {
+            host: "web-1".into(),
+            port: 22,
+            kind: "kex".into(),
+            ours: "a".into(),
+            theirs: "b".into(),
+        });
+        let samples: Vec<ZsshError> = vec![
+            ZsshError::QuickTargetMissingUser,
+            ZsshError::QuickTargetEmptyHost,
+            ZsshError::QuickTargetBadPort("0".into()),
+            ZsshError::QuickTargetFormat("bad".into()),
+            ZsshError::Dns {
+                host: "web-1".into(),
+                source: io::Error::other("dns"),
+            },
+            ZsshError::ConnectTimeout {
+                host: "web-1".into(),
+                port: 22,
+                seconds: 10,
+            },
+            ZsshError::Proxy {
+                proxy: "socks5".into(),
+                detail: "refused".into(),
+            },
+            ZsshError::Hop {
+                index: 2,
+                label: "jump-1".into(),
+                detail: "refused".into(),
+            },
+            ZsshError::Connect {
+                host: "web-1".into(),
+                port: 22,
+                tried: "10.0.0.1".into(),
+                source: io::Error::other("refused"),
+            },
+            ZsshError::MissingServerKey,
+            ZsshError::AuthFailed,
+            ZsshError::Shell("closed".into()),
+            ZsshError::SftpUnavailable,
+            ZsshError::ChannelLimit("limit".into()),
+            ZsshError::NotFound {
+                entity: "host",
+                id: 3,
+            },
+            ZsshError::InvalidInput("input".into()),
+            ZsshError::Internal("bug".into()),
+            ZsshError::IdentityInUse {
+                name: "id".into(),
+                hosts: "web-1".into(),
+            },
+            ZsshError::ProxyInUse {
+                name: "proxy".into(),
+                hosts: "web-1".into(),
+            },
+            ZsshError::Secret("secret".into()),
+            ZsshError::Cancelled,
+            ZsshError::AuthTimeout { seconds: 15 },
+            ZsshError::AllAuthFailed {
+                tried: "password".into(),
+                remaining: "publickey".into(),
+            },
+            ZsshError::KeyLoad("load".into()),
+            ZsshError::AgentUnavailable("agent".into()),
+            ZsshError::RsaSha1Refused {
+                key: "ssh-rsa".into(),
+            },
+            ZsshError::HostKeyStore("store".into()),
+            ZsshError::HostKeyRejected {
+                host: "web-1".into(),
+                port: 22,
+                fingerprint: "SHA256:x".into(),
+            },
+            ZsshError::HostKeyChanged(changed),
+            ZsshError::HostKeyRevoked(revoked),
+            ZsshError::HostKeyRekeyMismatch {
+                host: "web-1".into(),
+                port: 22,
+                first: "SHA256:1".into(),
+                again: "SHA256:2".into(),
+            },
+            ZsshError::NoCommonAlgorithm(no_common),
+        ];
+        let expected = [
+            "ssh.quick_target_missing_user",
+            "ssh.quick_target_empty_host",
+            "ssh.quick_target_bad_port",
+            "ssh.quick_target_format",
+            "ssh.dns_failed",
+            "ssh.connect_timeout",
+            "ssh.proxy_failed",
+            "ssh.hop_failed",
+            "ssh.connect_failed",
+            "ssh.missing_host_key",
+            "ssh.auth_failed",
+            "ssh.shell_failed",
+            "ssh.sftp_unavailable",
+            "ssh.channel_limit",
+            "store.not_found",
+            "core.invalid_input",
+            "core.internal",
+            "store.identity_in_use",
+            "store.proxy_in_use",
+            "store.secret_error",
+            "core.cancelled",
+            "ssh.auth_timeout",
+            "ssh.all_auth_failed",
+            "ssh.key_load_failed",
+            "ssh.agent_unavailable",
+            "ssh.rsa_sha1_refused",
+            "ssh.known_hosts_failed",
+            "ssh.host_key_rejected",
+            "ssh.host_key_changed",
+            "ssh.host_key_revoked",
+            "ssh.host_key_rekey_mismatch",
+            "ssh.no_common_algorithm",
+        ];
+        assert_eq!(samples.len(), expected.len(), "每个变体都要有断言");
+        for (err, want) in samples.iter().zip(expected) {
+            assert_eq!(err.code(), want, "{err:?}");
+        }
+        let mut codes: Vec<&str> = samples.iter().map(|err| err.code()).collect();
+        let before = codes.len();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), before, "错误码不能重复");
+    }
+
+    /// 带参数的错误要给界面留下结构化入口（不是让界面去解析中文）。
+    #[test]
+    fn parameterized_errors_expose_stable_params() {
+        let err = ZsshError::ConnectTimeout {
+            host: "web-1".into(),
+            port: 2222,
+            seconds: 8,
+        };
+        assert_eq!(
+            err.params(),
+            vec![
+                ("host", "web-1".to_owned()),
+                ("port", "2222".to_owned()),
+                ("seconds", "8".to_owned()),
+            ]
+        );
+        assert!(ZsshError::AuthFailed.params().is_empty());
+        assert_eq!(
+            ZsshError::HostKeyRejected {
+                host: "web-1".into(),
+                port: 22,
+                fingerprint: "SHA256:x".into(),
+            }
+            .params(),
+            vec![
+                ("host", "web-1".to_owned()),
+                ("port", "22".to_owned()),
+                ("fingerprint", "SHA256:x".to_owned()),
+            ]
+        );
     }
 }

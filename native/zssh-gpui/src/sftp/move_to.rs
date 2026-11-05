@@ -19,6 +19,7 @@ use zssh_core::sftp::transfer::Direction;
 use super::dialogs::{NameCheck, validate_local_dir};
 use super::menu::Side;
 use super::model::{Entry, EntryKind, local_parent};
+use crate::error_text::error_text;
 use crate::i18n::t;
 
 pub(super) fn same_folder_note() -> &'static str {
@@ -660,13 +661,16 @@ pub(super) async fn remote_step(
                 .is_ok_and(|stat| stat.is_dir());
             StepResult::Exists { target_is_dir }
         }
-        Err(err) => StepResult::Failed(err.to_string()),
+        Err(err) => StepResult::Failed(error_text(&err)),
     }
 }
 
 /// 远端：列出一个目录里能进去的子文件夹。
 pub(super) async fn remote_folders(channel: &SftpChannel, dir: &str) -> Result<Vec<Entry>, String> {
-    let entries = channel.read_dir(dir).await.map_err(|err| err.to_string())?;
+    let entries = channel
+        .read_dir(dir)
+        .await
+        .map_err(|err| error_text(&err))?;
     Ok(folders_only(
         entries.iter().map(Entry::from_remote).collect(),
     ))

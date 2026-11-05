@@ -16,6 +16,7 @@ use super::menu::Side;
 use super::model::{Entry, EntryKind};
 use super::move_to::MoveAsk;
 use super::props::{CalcState, PermMatrix, PropTarget};
+use crate::error_text::error_text;
 use crate::i18n::t;
 
 /// 同一时间只有一个对话框，盖在整个文件视图上。
@@ -210,7 +211,7 @@ pub(super) fn validate_name(name: &str, side: Side) -> NameCheck {
             }
             match check_child_name(name.trim()) {
                 Ok(_) => NameCheck::Ok,
-                Err(err) => NameCheck::Bad(err.to_string()),
+                Err(err) => NameCheck::Bad(error_text(&err)),
             }
         }
     }

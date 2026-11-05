@@ -39,6 +39,7 @@ use super::props::{
     properties_targets,
 };
 use super::{ArchiveCapsState, Busy, RemoteOp, SftpDemo, SftpEvent, SftpMsg, local_ops};
+use crate::error_text::error_text;
 use crate::i18n::t;
 use crate::ssh_backend::runtime;
 
@@ -517,18 +518,20 @@ impl SftpDemo {
                     Err(SftpError::NotFound { .. }) => {}
                     Err(err) => {
                         return Err(format!(
-                            "{}{target}{}{err}{}",
+                            "{}{target}{}{}{}",
                             t(SftpMsg::OpsCreateFileFailedPrefix),
                             t(SftpMsg::ParenOpen),
+                            error_text(&err),
                             t(SftpMsg::ParenClose)
                         ));
                     }
                 }
                 channel.create_file(&target).await.map_err(|err| {
                     format!(
-                        "{}{target}{}{err}{}",
+                        "{}{target}{}{}{}",
                         t(SftpMsg::OpsCreateFileFailedPrefix),
                         t(SftpMsg::ParenOpen),
+                        error_text(&err),
                         t(SftpMsg::ParenClose)
                     )
                 })?;
@@ -601,9 +604,10 @@ impl SftpDemo {
                 Err(err) => SftpEvent::OpDone {
                     ok: false,
                     message: format!(
-                        "{}{old_name}{}{err}{}",
+                        "{}{old_name}{}{}{}",
                         t(SftpMsg::OpsRenameFailedPrefix),
                         t(SftpMsg::ParenOpen),
+                        error_text(&err),
                         t(SftpMsg::ParenClose)
                     ),
                     refresh: None,
@@ -652,9 +656,10 @@ impl SftpDemo {
                     .await
                     .map_err(|err| {
                         format!(
-                            "{}{old_name}{}{err}{}",
+                            "{}{old_name}{}{}{}",
                             t(SftpMsg::OpsRenameFailedPrefix),
                             t(SftpMsg::ParenOpen),
+                            error_text(&err),
                             t(SftpMsg::ParenClose)
                         )
                     })?;
@@ -986,9 +991,10 @@ impl SftpDemo {
                 async move {
                     channel.set_permissions(&path, mode).await.map_err(|err| {
                         format!(
-                            "{}{name}{}{err}{}",
+                            "{}{name}{}{}{}",
                             t(SftpMsg::OpsChmodFailedPrefix),
                             t(SftpMsg::ParenOpen),
+                            error_text(&err),
                             t(SftpMsg::ParenClose)
                         )
                     })?;
@@ -1150,7 +1156,7 @@ impl SftpDemo {
                         request,
                         phase: CalcPhase::Failed,
                         totals: seen,
-                        error: Some(err.to_string()),
+                        error: Some(error_text(&err)),
                     },
                 };
                 let _ = sender.send(event);

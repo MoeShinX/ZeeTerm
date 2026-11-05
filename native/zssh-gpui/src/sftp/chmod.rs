@@ -13,6 +13,7 @@ use zssh_core::sftp::fs;
 use zssh_core::sftp::{FileKind, SftpChannel};
 use zssh_core::ssh::BoxFuture;
 
+use crate::error_text::error_text;
 use crate::i18n::t;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +43,7 @@ impl ChmodFs for SftpChannel {
         Box::pin(async move {
             let stat = fs::stat(self, path, false)
                 .await
-                .map_err(|err| err.to_string())?;
+                .map_err(|err| error_text(&err))?;
             Ok(match stat.kind {
                 FileKind::Dir => NodeKind::Dir,
                 FileKind::Symlink { .. } => NodeKind::Symlink,
@@ -53,7 +54,7 @@ impl ChmodFs for SftpChannel {
 
     fn children<'a>(&'a self, dir: &'a str) -> BoxFuture<'a, Result<Vec<Child>, String>> {
         Box::pin(async move {
-            let entries = self.read_dir(dir).await.map_err(|err| err.to_string())?;
+            let entries = self.read_dir(dir).await.map_err(|err| error_text(&err))?;
             Ok(entries
                 .into_iter()
                 .map(|entry| Child {
@@ -73,7 +74,7 @@ impl ChmodFs for SftpChannel {
         Box::pin(async move {
             self.set_permissions(path, mode)
                 .await
-                .map_err(|err| err.to_string())
+                .map_err(|err| error_text(&err))
         })
     }
 }

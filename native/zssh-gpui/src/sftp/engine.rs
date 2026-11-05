@@ -21,6 +21,7 @@ use zssh_core::ssh::BoxFuture;
 use zssh_core::store::Database;
 
 use super::{SftpEvent, TestHook};
+use crate::error_text::error_text;
 use crate::i18n::t;
 use crate::settings::data_dir;
 
@@ -111,7 +112,7 @@ pub(super) fn conflict_rename_name(
     match direction {
         Direction::Download | Direction::LocalCopy => check_child_name(typed)
             .map(Some)
-            .map_err(|err| err.to_string()),
+            .map_err(|err| error_text(&err)),
         Direction::Upload | Direction::RemoteCopy => {
             if typed.contains('\0') {
                 return Err(t(super::SftpMsg::ConflictNameNullChar).to_owned());
@@ -508,7 +509,7 @@ pub(super) async fn run_delete(
         },
         Err(err) => DeleteOutcome::Failed {
             deleted,
-            message: err.to_string(),
+            message: error_text(&err),
         },
     }
 }
@@ -821,9 +822,10 @@ pub(super) async fn create_remote_dir(
 ) -> Result<String, String> {
     channel.create_dir(target).await.map_err(|err| {
         format!(
-            "{}{target}{}{err}{}",
+            "{}{target}{}{}{}",
             t(super::SftpMsg::MkdirFailedPrefix),
             t(super::SftpMsg::MkdirFailedMiddle),
+            error_text(&err),
             t(super::SftpMsg::ParenClose)
         )
     })?;

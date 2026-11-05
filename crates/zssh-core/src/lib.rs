@@ -19,7 +19,7 @@ pub(crate) mod test_util;
 pub mod updater;
 pub mod x11;
 
-pub use error::ZsshError;
+pub use error::{ErrorWithCode, ZsshError};
 pub use model::{
     parse_quick_target, AuthMethod, Group, GroupDraft, Host, HostDraft, Identity, IdentityDraft,
     IdentityKind, Proxy, ProxyDraft, ProxyKind, ProxyMode, QuickTarget,

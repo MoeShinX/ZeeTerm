@@ -9,7 +9,7 @@ use std::io;
 use russh_sftp::client::error::Error as SftpClientError;
 use russh_sftp::protocol::StatusCode;
 
-use crate::error::ZsshError;
+use crate::error::{ErrorWithCode, ZsshError};
 
 /// 覆盖改名失败之后，服务器上是什么状态（决定调用方能不能删临时文件）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +135,72 @@ impl SftpError {
             | SftpError::LocalNoSpace { path }
             | SftpError::Local { path, .. } => Some(path),
             _ => None,
+        }
+    }
+}
+
+/// 错误码与结构化参数：界面按两者生成文案，`Display` 的中文只留给日志和兜底。
+///
+/// `sftp.*` 是契约，只能新增、不能改名（见 [`crate::error::ErrorWithCode`]）。
+impl ErrorWithCode for SftpError {
+    fn code(&self) -> &'static str {
+        match self {
+            SftpError::ReplaceFailed { .. } => "sftp.replace_failed",
+            SftpError::NoSubsystem(_) => "sftp.no_subsystem",
+            SftpError::ChannelLimit(_) => "sftp.channel_limit",
+            SftpError::PermissionDenied { .. } => "sftp.permission_denied",
+            SftpError::NotFound { .. } => "sftp.not_found",
+            SftpError::AlreadyExists { .. } => "sftp.already_exists",
+            SftpError::RemoteNoSpace { .. } => "sftp.remote_no_space",
+            SftpError::LocalNoSpace { .. } => "sftp.local_no_space",
+            SftpError::Disconnected(_) => "sftp.disconnected",
+            SftpError::NonUtf8Name { .. } => "sftp.non_utf8_name",
+            SftpError::TooLarge { .. } => "sftp.too_large",
+            SftpError::RemoteStatus { .. } => "sftp.remote_status",
+            SftpError::Remote(_) => "sftp.remote_error",
+            SftpError::Local { .. } => "sftp.local_error",
+            SftpError::TargetBusy { .. } => "sftp.target_busy",
+            SftpError::RenameTargetExists { .. } => "sftp.rename_target_exists",
+            SftpError::NoFreeName { .. } => "sftp.no_free_name",
+            SftpError::Cancelled => "sftp.cancelled",
+            SftpError::InvalidInput(_) => "sftp.invalid_input",
+            SftpError::Internal(_) => "sftp.internal",
+        }
+    }
+
+    fn params(&self) -> Vec<(&'static str, String)> {
+        match self {
+            SftpError::ReplaceFailed { message, .. } => vec![("message", message.clone())],
+            SftpError::NoSubsystem(detail)
+            | SftpError::ChannelLimit(detail)
+            | SftpError::Disconnected(detail)
+            | SftpError::Remote(detail)
+            | SftpError::InvalidInput(detail)
+            | SftpError::Internal(detail) => vec![("detail", detail.clone())],
+            SftpError::PermissionDenied { path }
+            | SftpError::NotFound { path }
+            | SftpError::AlreadyExists { path }
+            | SftpError::RemoteNoSpace { path }
+            | SftpError::LocalNoSpace { path }
+            | SftpError::TargetBusy { path } => vec![("path", path.clone())],
+            SftpError::NonUtf8Name { name } | SftpError::RenameTargetExists { name } => {
+                vec![("name", name.clone())]
+            }
+            SftpError::TooLarge { path, size, limit } => vec![
+                ("path", path.clone()),
+                ("size", size.to_string()),
+                ("limit", limit.to_string()),
+            ],
+            SftpError::RemoteStatus { code, message } => {
+                vec![("code", code.to_string()), ("message", message.clone())]
+            }
+            SftpError::Local { path, message } => {
+                vec![("path", path.clone()), ("message", message.clone())]
+            }
+            SftpError::NoFreeName { path, tried } => {
+                vec![("path", path.clone()), ("tried", tried.to_string())]
+            }
+            SftpError::Cancelled => Vec::new(),
         }
     }
 }
@@ -405,5 +471,132 @@ mod tests {
         assert!(name_is_utf8(b"report.txt"));
         // GBK 的"报"= 0xB1 0xA8
         assert!(!name_is_utf8(&[0xB1, 0xA8]));
+    }
+
+    /// 错误码是界面文案的契约：取值固定、互不重复；参数键名也是契约。
+    #[test]
+    fn every_error_variant_has_a_unique_stable_code() {
+        let samples: Vec<(SftpError, &'static str)> = vec![
+            (
+                SftpError::ReplaceFailed {
+                    state: ReplaceState::Uncertain,
+                    message: "replace".into(),
+                },
+                "sftp.replace_failed",
+            ),
+            (SftpError::NoSubsystem("sfpd".into()), "sftp.no_subsystem"),
+            (
+                SftpError::ChannelLimit("limit".into()),
+                "sftp.channel_limit",
+            ),
+            (
+                SftpError::PermissionDenied {
+                    path: "/etc".into(),
+                },
+                "sftp.permission_denied",
+            ),
+            (
+                SftpError::NotFound {
+                    path: "/nope".into(),
+                },
+                "sftp.not_found",
+            ),
+            (
+                SftpError::AlreadyExists {
+                    path: "/tmp/a".into(),
+                },
+                "sftp.already_exists",
+            ),
+            (
+                SftpError::RemoteNoSpace {
+                    path: "/tmp/a".into(),
+                },
+                "sftp.remote_no_space",
+            ),
+            (
+                SftpError::LocalNoSpace {
+                    path: "C:\\a".into(),
+                },
+                "sftp.local_no_space",
+            ),
+            (SftpError::Disconnected("lost".into()), "sftp.disconnected"),
+            (
+                SftpError::NonUtf8Name { name: "a".into() },
+                "sftp.non_utf8_name",
+            ),
+            (
+                SftpError::TooLarge {
+                    path: "/a".into(),
+                    size: 10,
+                    limit: 5,
+                },
+                "sftp.too_large",
+            ),
+            (
+                SftpError::RemoteStatus {
+                    code: 4,
+                    message: "odd".into(),
+                },
+                "sftp.remote_status",
+            ),
+            (SftpError::Remote("remote".into()), "sftp.remote_error"),
+            (
+                SftpError::Local {
+                    path: "C:\\a".into(),
+                    message: "io".into(),
+                },
+                "sftp.local_error",
+            ),
+            (
+                SftpError::TargetBusy { path: "/a".into() },
+                "sftp.target_busy",
+            ),
+            (
+                SftpError::RenameTargetExists {
+                    name: "b.txt".into(),
+                },
+                "sftp.rename_target_exists",
+            ),
+            (
+                SftpError::NoFreeName {
+                    path: "/a".into(),
+                    tried: 9,
+                },
+                "sftp.no_free_name",
+            ),
+            (SftpError::Cancelled, "sftp.cancelled"),
+            (SftpError::InvalidInput("bad".into()), "sftp.invalid_input"),
+            (SftpError::Internal("bug".into()), "sftp.internal"),
+        ];
+        for (err, want) in &samples {
+            assert_eq!(err.code(), *want, "{err:?}");
+        }
+        let mut codes: Vec<&str> = samples.iter().map(|(err, _)| err.code()).collect();
+        let before = codes.len();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), before, "错误码不能重复");
+    }
+
+    #[test]
+    fn parameterized_errors_expose_stable_params() {
+        let denied = SftpError::PermissionDenied {
+            path: "/etc/shadow".into(),
+        };
+        assert_eq!(denied.params(), vec![("path", "/etc/shadow".to_owned())]);
+        assert!(SftpError::Cancelled.params().is_empty());
+        assert_eq!(
+            SftpError::TooLarge {
+                path: "/big".into(),
+                size: 4096,
+                limit: 1024,
+            }
+            .params(),
+            vec![
+                ("path", "/big".to_owned()),
+                ("size", "4096".to_owned()),
+                ("limit", "1024".to_owned()),
+            ]
+        );
     }
 }

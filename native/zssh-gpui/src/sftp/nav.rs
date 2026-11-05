@@ -16,6 +16,7 @@ use super::menu::{Side, not_utf8_reason};
 use super::model::{Entry, NavMode, SortKey, local_parent, remote_parent};
 use super::pane::PathEdit;
 use super::{SftpDemo, SftpEvent, SftpMsg};
+use crate::error_text::error_text;
 use crate::i18n::t;
 use crate::ssh_backend::runtime;
 
@@ -112,7 +113,7 @@ impl SftpDemo {
                             seq,
                             path: target,
                             mode,
-                            message: err.to_string(),
+                            message: error_text(&err),
                         },
                     };
                     let _ = sender.send(event);
