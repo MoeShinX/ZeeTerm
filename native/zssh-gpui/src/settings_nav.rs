@@ -100,22 +100,23 @@ impl SettingsSection {
         Self::ALL.into_iter().find(|section| section.id() == raw)
     }
 
-    /// 导航栏上的名字。
+    /// 导航栏上的名字（走文案表：切语言即时生效）。
     pub fn label(self) -> &'static str {
+        use crate::i18n::{Key, t};
         match self {
-            Self::Credentials => "凭据",
-            Self::QuickCommands => "快捷命令",
-            Self::Proxies => "代理",
-            Self::Forwards => "端口转发",
-            Self::Appearance => "外观",
-            Self::Terminal => "终端",
-            Self::Connection => "连接",
-            Self::Sftp => "SFTP",
-            Self::Ai => "AI",
-            Self::Sync => "同步",
-            Self::Lock => "锁屏",
-            Self::Shortcuts => "快捷键",
-            Self::About => "关于",
+            Self::Credentials => t(Key::NavCredentials),
+            Self::QuickCommands => t(Key::NavQuickCommands),
+            Self::Proxies => t(Key::NavProxies),
+            Self::Forwards => t(Key::NavForwards),
+            Self::Appearance => t(Key::NavAppearance),
+            Self::Terminal => t(Key::NavTerminal),
+            Self::Connection => t(Key::NavConnection),
+            Self::Sftp => t(Key::NavSftp),
+            Self::Ai => t(Key::NavAi),
+            Self::Sync => t(Key::NavSync),
+            Self::Lock => t(Key::NavLock),
+            Self::Shortcuts => t(Key::NavShortcuts),
+            Self::About => t(Key::NavAbout),
         }
     }
 

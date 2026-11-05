@@ -141,6 +141,20 @@ pub(crate) enum Key {
     LanguageZh,
     LanguageEn,
     LanguageRestartHint,
+    // ---- 设置页导航 ----
+    NavCredentials,
+    NavQuickCommands,
+    NavProxies,
+    NavForwards,
+    NavAppearance,
+    NavTerminal,
+    NavConnection,
+    NavSftp,
+    NavAi,
+    NavSync,
+    NavLock,
+    NavShortcuts,
+    NavAbout,
 }
 
 impl Key {
@@ -173,6 +187,19 @@ impl Key {
             Self::LanguageRestartHint => {
                 "部分已打开的内容（例如系统托盘菜单）要重启程序后才会换语言。"
             }
+            Self::NavCredentials => "凭据",
+            Self::NavQuickCommands => "快捷命令",
+            Self::NavProxies => "代理",
+            Self::NavForwards => "端口转发",
+            Self::NavAppearance => "外观",
+            Self::NavTerminal => "终端",
+            Self::NavConnection => "连接",
+            Self::NavSftp => "SFTP",
+            Self::NavAi => "AI",
+            Self::NavSync => "同步",
+            Self::NavLock => "锁屏",
+            Self::NavShortcuts => "快捷键",
+            Self::NavAbout => "关于",
         }
     }
 
@@ -205,6 +232,19 @@ impl Key {
             Self::LanguageRestartHint => {
                 "Some already-open surfaces (such as the system tray menu) switch after you restart the app."
             }
+            Self::NavCredentials => "Credentials",
+            Self::NavQuickCommands => "Snippets",
+            Self::NavProxies => "Proxies",
+            Self::NavForwards => "Port Forwarding",
+            Self::NavAppearance => "Appearance",
+            Self::NavTerminal => "Terminal",
+            Self::NavConnection => "Connection",
+            Self::NavSftp => "SFTP",
+            Self::NavAi => "AI",
+            Self::NavSync => "Sync",
+            Self::NavLock => "App Lock",
+            Self::NavShortcuts => "Shortcuts",
+            Self::NavAbout => "About",
         }
     }
 }
@@ -279,6 +319,19 @@ mod tests {
             Key::LanguageZh,
             Key::LanguageEn,
             Key::LanguageRestartHint,
+            Key::NavCredentials,
+            Key::NavQuickCommands,
+            Key::NavProxies,
+            Key::NavForwards,
+            Key::NavAppearance,
+            Key::NavTerminal,
+            Key::NavConnection,
+            Key::NavSftp,
+            Key::NavAi,
+            Key::NavSync,
+            Key::NavLock,
+            Key::NavShortcuts,
+            Key::NavAbout,
         ] {
             assert!(!key.zh().is_empty(), "{key:?} 缺中文");
             assert!(!key.en().is_empty(), "{key:?} 缺英文");
