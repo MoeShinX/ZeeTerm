@@ -69,9 +69,13 @@ enum ChatEmbedMsg {
     ModelTooltipPrefix,
     AgentUnavailable,
     LoadingModels,
+    #[cfg(debug_assertions)]
     ModelItemMissing,
+    #[cfg(debug_assertions)]
     ModelGroupMissing,
+    #[cfg(debug_assertions)]
     NoCatalogYet,
+    #[cfg(debug_assertions)]
     NoSuchEffort,
     EffortTooltip,
     EffortTooltipPrefix,
@@ -114,30 +118,54 @@ enum ChatEmbedMsg {
     SendEnter,
     BackToBottom,
     // ---- 调试 / 内部状态（界面上的提示） ----
+    #[cfg(debug_assertions)]
     NotEmbedded,
+    #[cfg(debug_assertions)]
     UnknownAgent,
+    #[cfg(debug_assertions)]
     NoZeePilotEndpoint,
+    #[cfg(debug_assertions)]
     NotSelectablePrefix,
+    #[cfg(debug_assertions)]
     HistoryMissing,
+    #[cfg(debug_assertions)]
     NoPendingApproval,
+    #[cfg(debug_assertions)]
     NoMessages,
+    #[cfg(debug_assertions)]
     LastNotAssistant,
+    #[cfg(debug_assertions)]
     NoSuchGroup,
+    #[cfg(debug_assertions)]
     NoExecCard,
     // ---- 卡片文字（调试断言和分组摘要共用） ----
+    #[cfg(debug_assertions)]
     GroupPrefix,
+    #[cfg(debug_assertions)]
     ViewTerminalMark,
+    #[cfg(debug_assertions)]
     TargetUnknown,
+    #[cfg(debug_assertions)]
     NeedsConfirm,
+    #[cfg(debug_assertions)]
     Allowed,
+    #[cfg(debug_assertions)]
     Denied,
+    #[cfg(debug_assertions)]
     Danger,
+    #[cfg(debug_assertions)]
     CommandLinePrefix,
+    #[cfg(debug_assertions)]
     PathLinePrefix,
+    #[cfg(debug_assertions)]
     FileLinePrefix,
+    #[cfg(debug_assertions)]
     ErrorLinePrefix,
+    #[cfg(debug_assertions)]
     OutputLinePrefix,
+    #[cfg(debug_assertions)]
     NewFile,
+    #[cfg(debug_assertions)]
     AutoBackup,
 }
 
@@ -153,9 +181,13 @@ impl Msg for ChatEmbedMsg {
             Self::ModelTooltipPrefix => "模型：",
             Self::AgentUnavailable => "这个智能体现在不能用",
             Self::LoadingModels => "正在读取模型目录",
+            #[cfg(debug_assertions)]
             Self::ModelItemMissing => "模型下拉里没有这一项",
+            #[cfg(debug_assertions)]
             Self::ModelGroupMissing => "模型下拉没有这一项",
+            #[cfg(debug_assertions)]
             Self::NoCatalogYet => "还没有模型目录",
+            #[cfg(debug_assertions)]
             Self::NoSuchEffort => "这个模型没有这档强度",
             Self::EffortTooltip => "思考强度",
             Self::EffortTooltipPrefix => "思考强度：",
@@ -194,29 +226,53 @@ impl Msg for ChatEmbedMsg {
             Self::Stop => "停止",
             Self::SendEnter => "发送（Enter）",
             Self::BackToBottom => "回到底部",
+            #[cfg(debug_assertions)]
             Self::NotEmbedded => "不是面板形态",
+            #[cfg(debug_assertions)]
             Self::UnknownAgent => "不认识的智能体",
+            #[cfg(debug_assertions)]
             Self::NoZeePilotEndpoint => "没有这个 ZeePilot 接口，或它没配 Key",
+            #[cfg(debug_assertions)]
             Self::NotSelectablePrefix => " 不可选：",
+            #[cfg(debug_assertions)]
             Self::HistoryMissing => "历史里没有这一条",
+            #[cfg(debug_assertions)]
             Self::NoPendingApproval => "没有等批准的确认卡片",
+            #[cfg(debug_assertions)]
             Self::NoMessages => "没有消息",
+            #[cfg(debug_assertions)]
             Self::LastNotAssistant => "最后一条不是助手消息",
+            #[cfg(debug_assertions)]
             Self::NoSuchGroup => "没有这个分组",
+            #[cfg(debug_assertions)]
             Self::NoExecCard => "没有带执行位置的卡片",
+            #[cfg(debug_assertions)]
             Self::GroupPrefix => "[组] ",
+            #[cfg(debug_assertions)]
             Self::ViewTerminalMark => "[查看终端]",
+            #[cfg(debug_assertions)]
             Self::TargetUnknown => "执行目标未确定",
+            #[cfg(debug_assertions)]
             Self::NeedsConfirm => "需要确认",
+            #[cfg(debug_assertions)]
             Self::Allowed => "已允许",
+            #[cfg(debug_assertions)]
             Self::Denied => "已拒绝",
+            #[cfg(debug_assertions)]
             Self::Danger => "危险",
+            #[cfg(debug_assertions)]
             Self::CommandLinePrefix => "\n命令：",
+            #[cfg(debug_assertions)]
             Self::PathLinePrefix => "\n路径：",
+            #[cfg(debug_assertions)]
             Self::FileLinePrefix => "\n文件：",
+            #[cfg(debug_assertions)]
             Self::ErrorLinePrefix => "\n错误：",
+            #[cfg(debug_assertions)]
             Self::OutputLinePrefix => "\n输出：",
+            #[cfg(debug_assertions)]
             Self::NewFile => "新建",
+            #[cfg(debug_assertions)]
             Self::AutoBackup => "覆盖前自动备份",
         }
     }
@@ -232,9 +288,13 @@ impl Msg for ChatEmbedMsg {
             Self::ModelTooltipPrefix => "Model: ",
             Self::AgentUnavailable => "This agent is unavailable right now",
             Self::LoadingModels => "Loading model catalog",
+            #[cfg(debug_assertions)]
             Self::ModelItemMissing => "No such item in the model list",
+            #[cfg(debug_assertions)]
             Self::ModelGroupMissing => "No such item in the model list",
+            #[cfg(debug_assertions)]
             Self::NoCatalogYet => "No model catalog yet",
+            #[cfg(debug_assertions)]
             Self::NoSuchEffort => "This model has no such effort level",
             Self::EffortTooltip => "Reasoning Effort",
             Self::EffortTooltipPrefix => "Reasoning Effort: ",
@@ -279,29 +339,53 @@ impl Msg for ChatEmbedMsg {
             Self::Stop => "Stop",
             Self::SendEnter => "Send (Enter)",
             Self::BackToBottom => "Back to Bottom",
+            #[cfg(debug_assertions)]
             Self::NotEmbedded => "Not in panel form",
+            #[cfg(debug_assertions)]
             Self::UnknownAgent => "Unknown agent",
+            #[cfg(debug_assertions)]
             Self::NoZeePilotEndpoint => "No such ZeePilot endpoint, or it has no key configured",
+            #[cfg(debug_assertions)]
             Self::NotSelectablePrefix => " cannot be selected: ",
+            #[cfg(debug_assertions)]
             Self::HistoryMissing => "No such entry in history",
+            #[cfg(debug_assertions)]
             Self::NoPendingApproval => "No approval card is waiting",
+            #[cfg(debug_assertions)]
             Self::NoMessages => "No messages",
+            #[cfg(debug_assertions)]
             Self::LastNotAssistant => "The last message is not from the assistant",
+            #[cfg(debug_assertions)]
             Self::NoSuchGroup => "No such group",
+            #[cfg(debug_assertions)]
             Self::NoExecCard => "No card with an execution target",
+            #[cfg(debug_assertions)]
             Self::GroupPrefix => "[group] ",
+            #[cfg(debug_assertions)]
             Self::ViewTerminalMark => "[View Terminal]",
+            #[cfg(debug_assertions)]
             Self::TargetUnknown => "Execution target undetermined",
+            #[cfg(debug_assertions)]
             Self::NeedsConfirm => "Needs approval",
+            #[cfg(debug_assertions)]
             Self::Allowed => "Allowed",
+            #[cfg(debug_assertions)]
             Self::Denied => "Denied",
+            #[cfg(debug_assertions)]
             Self::Danger => "Danger",
+            #[cfg(debug_assertions)]
             Self::CommandLinePrefix => "\nCommand: ",
+            #[cfg(debug_assertions)]
             Self::PathLinePrefix => "\nPath: ",
+            #[cfg(debug_assertions)]
             Self::FileLinePrefix => "\nFile: ",
+            #[cfg(debug_assertions)]
             Self::ErrorLinePrefix => "\nError: ",
+            #[cfg(debug_assertions)]
             Self::OutputLinePrefix => "\nOutput: ",
+            #[cfg(debug_assertions)]
             Self::NewFile => "New file",
+            #[cfg(debug_assertions)]
             Self::AutoBackup => "Auto-backup before overwrite",
         }
     }

@@ -28,9 +28,13 @@ enum QueueMsg {
     Save,
     Delete,
     Cancel,
+    #[cfg(debug_assertions)]
     CannotInterrupt,
+    #[cfg(debug_assertions)]
     EditorNotOpen,
+    #[cfg(debug_assertions)]
     MissingPrefix,
+    #[cfg(debug_assertions)]
     MissingSuffix,
 }
 
@@ -51,9 +55,13 @@ impl Msg for QueueMsg {
             Self::Save => "保存",
             Self::Delete => "删除",
             Self::Cancel => "取消",
+            #[cfg(debug_assertions)]
             Self::CannotInterrupt => "现在不能打断并发送（没有在跑的回合或队列是空的）",
+            #[cfg(debug_assertions)]
             Self::EditorNotOpen => "编辑框没有打开",
+            #[cfg(debug_assertions)]
             Self::MissingPrefix => "队列里没有第 ",
+            #[cfg(debug_assertions)]
             Self::MissingSuffix => " 条",
         }
     }
@@ -74,11 +82,15 @@ impl Msg for QueueMsg {
             Self::Save => "Save",
             Self::Delete => "Delete",
             Self::Cancel => "Cancel",
+            #[cfg(debug_assertions)]
             Self::CannotInterrupt => {
                 "Cannot interrupt and send now (no running turn, or the queue is empty)"
             }
+            #[cfg(debug_assertions)]
             Self::EditorNotOpen => "The editor is not open",
+            #[cfg(debug_assertions)]
             Self::MissingPrefix => "No item #",
+            #[cfg(debug_assertions)]
             Self::MissingSuffix => " in the queue",
         }
     }
