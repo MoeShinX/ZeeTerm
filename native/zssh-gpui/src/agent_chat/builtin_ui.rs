@@ -202,15 +202,17 @@ impl AgentChatDemo {
             tokens.text
         };
         let detail = SharedString::from(view.detail.clone());
+        // 面板窄的时候余额文字先被截断（按钮和上下文指示器不动）。
         let label = div()
             .id("ai-balance")
-            .flex_none()
+            .min_w_0()
+            .truncate()
             .text_xs()
             .text_color(color)
             .child(SharedString::from(view.label.clone()))
             .tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx));
         let mut chip = h_flex()
-            .flex_none()
+            .min_w_0()
             .items_center()
             .gap_1()
             .ml_2()

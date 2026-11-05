@@ -1366,15 +1366,16 @@ impl MainWindow {
                             })),
                     )
                     .child(
+                        // 指示器（余额、用量）在标题让到下限之后先缩（余额文字截断），关闭按钮始终留着。
                         h_flex()
                             .min_w_0()
                             .overflow_hidden()
                             .gap_0p5()
                             .items_center()
                             .justify_end()
-                            .children(actions)
-                            .child(close),
-                    ),
+                            .children(actions),
+                    )
+                    .child(h_flex().flex_none().items_center().child(close)),
             )
             .child(div().flex_1().min_h_0().w_full().child(body))
             .into_any_element()
