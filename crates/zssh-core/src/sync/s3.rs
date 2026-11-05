@@ -71,7 +71,7 @@ pub fn object_location(
                 reason_keys::S3_ENDPOINT_BAD,
                 format!("S3 Endpoint 不合法：{err}"),
             )
-            .with("cause", &err),
+            .with("cause", err),
         )
     })?;
     let scheme = endpoint.scheme();
@@ -133,7 +133,7 @@ pub fn object_location(
                 reason_keys::S3_URL_FAILED,
                 format!("S3 地址拼接失败：{err}"),
             )
-            .with("cause", &err),
+            .with("cause", err),
         )
     })?;
     Ok((url, canonical_path))

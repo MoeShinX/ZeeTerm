@@ -115,7 +115,7 @@ impl KdfParams {
                     reason_keys::SYNC_ARGON2_PARAMS,
                     format!("Argon2 参数不合法：{err}"),
                 )
-                .with("cause", &err),
+                .with("cause", err),
             )
         })?;
         let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
@@ -128,7 +128,7 @@ impl KdfParams {
                         reason_keys::SYNC_ARGON2_FAILED,
                         format!("Argon2 派生失败：{err}"),
                     )
-                    .with("cause", &err),
+                    .with("cause", err),
                 )
             })?;
         Ok(key)
@@ -265,7 +265,7 @@ fn random_unavailable(err: getrandom::Error) -> SyncError {
             reason_keys::SYNC_RANDOM_UNAVAILABLE,
             format!("系统随机数不可用：{err}"),
         )
-        .with("cause", &err),
+        .with("cause", err),
     )
 }
 

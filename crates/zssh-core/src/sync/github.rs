@@ -140,7 +140,7 @@ impl GithubApi {
                     reason_keys::GH_API_URL_BAD,
                     format!("GitHub 接口地址不合法：{err}"),
                 )
-                .with("cause", &err),
+                .with("cause", err),
             )
         })?;
         match url.scheme() {

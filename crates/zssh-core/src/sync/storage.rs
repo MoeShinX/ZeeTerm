@@ -220,6 +220,45 @@ impl SyncStorage for MemoryStorage {
     }
 }
 
+/// 错误码与结构化参数：界面按它们出当前语言的整句。
+impl ErrorWithCode for StorageError {
+    fn code(&self) -> &'static str {
+        match self {
+            StorageError::Conflict => "storage.conflict",
+            StorageError::Timeout => "storage.timeout",
+            StorageError::Unavailable(_) => "storage.unavailable",
+            StorageError::RateLimited { .. } => "storage.rate_limited",
+            StorageError::Io(_) => "storage.io",
+            StorageError::AuthFailed(_) => "storage.auth_failed",
+        }
+    }
+
+    fn params(&self) -> Vec<(&'static str, String)> {
+        match self {
+            StorageError::Conflict | StorageError::Timeout => Vec::new(),
+            StorageError::Unavailable(reason)
+            | StorageError::Io(reason)
+            | StorageError::AuthFailed(reason) => reason_params(reason),
+            StorageError::RateLimited {
+                service,
+                retry_after_secs,
+            } => vec![
+                ("service", service.clone()),
+                ("secs", retry_after_secs.to_string()),
+            ],
+        }
+    }
+
+    fn causes(&self) -> Vec<(&'static str, &dyn ErrorWithCode)> {
+        match self {
+            StorageError::Unavailable(reason)
+            | StorageError::Io(reason)
+            | StorageError::AuthFailed(reason) => reason.causes(),
+            _ => Vec::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,44 +314,5 @@ mod tests {
         );
         block_on(storage.delete(Some("1"))).expect("版本对，删掉");
         assert!(storage.bytes().is_none());
-    }
-}
-
-/// 错误码与结构化参数：界面按它们出当前语言的整句。
-impl ErrorWithCode for StorageError {
-    fn code(&self) -> &'static str {
-        match self {
-            StorageError::Conflict => "storage.conflict",
-            StorageError::Timeout => "storage.timeout",
-            StorageError::Unavailable(_) => "storage.unavailable",
-            StorageError::RateLimited { .. } => "storage.rate_limited",
-            StorageError::Io(_) => "storage.io",
-            StorageError::AuthFailed(_) => "storage.auth_failed",
-        }
-    }
-
-    fn params(&self) -> Vec<(&'static str, String)> {
-        match self {
-            StorageError::Conflict | StorageError::Timeout => Vec::new(),
-            StorageError::Unavailable(reason)
-            | StorageError::Io(reason)
-            | StorageError::AuthFailed(reason) => reason_params(reason),
-            StorageError::RateLimited {
-                service,
-                retry_after_secs,
-            } => vec![
-                ("service", service.clone()),
-                ("secs", retry_after_secs.to_string()),
-            ],
-        }
-    }
-
-    fn causes(&self) -> Vec<(&'static str, &dyn ErrorWithCode)> {
-        match self {
-            StorageError::Unavailable(reason)
-            | StorageError::Io(reason)
-            | StorageError::AuthFailed(reason) => reason.causes(),
-            _ => Vec::new(),
-        }
     }
 }

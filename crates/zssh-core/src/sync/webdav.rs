@@ -84,7 +84,7 @@ impl WebDavRaw {
                     reason_keys::DAV_URL_BAD,
                     format!("WebDAV 地址不合法：{err}"),
                 )
-                .with("cause", &err),
+                .with("cause", err),
             )
         })?;
         match base.scheme() {

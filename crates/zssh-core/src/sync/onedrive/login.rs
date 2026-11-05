@@ -158,6 +158,36 @@ pub async fn login(
     Ok(success)
 }
 
+/// 错误码与结构化参数：界面按它们出当前语言的整句。
+impl crate::error::ErrorWithCode for LoginError {
+    fn code(&self) -> &'static str {
+        match self {
+            LoginError::Denied => "login.denied",
+            LoginError::Provider(_) => "login.provider",
+            LoginError::Timeout => "login.timeout",
+            LoginError::Cancelled => "login.cancelled",
+            LoginError::Listen(_) => "login.listen",
+            LoginError::Browser(_) => "login.browser",
+            LoginError::Network(_) => "login.network",
+            LoginError::Exchange(_) => "login.exchange",
+            LoginError::Internal(_) => "login.internal",
+            LoginError::InvalidClientId => "login.invalid_client_id",
+        }
+    }
+
+    fn params(&self) -> Vec<(&'static str, String)> {
+        match self {
+            LoginError::Provider(detail)
+            | LoginError::Listen(detail)
+            | LoginError::Browser(detail)
+            | LoginError::Network(detail)
+            | LoginError::Exchange(detail)
+            | LoginError::Internal(detail) => vec![("detail", detail.clone())],
+            _ => Vec::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,35 +226,5 @@ mod tests {
             assert!(text.chars().any(|c| c as u32 > 0x4e00), "{text}");
         }
         assert!(LoginError::Timeout.to_string().contains("5 分钟"));
-    }
-}
-
-/// 错误码与结构化参数：界面按它们出当前语言的整句。
-impl crate::error::ErrorWithCode for LoginError {
-    fn code(&self) -> &'static str {
-        match self {
-            LoginError::Denied => "login.denied",
-            LoginError::Provider(_) => "login.provider",
-            LoginError::Timeout => "login.timeout",
-            LoginError::Cancelled => "login.cancelled",
-            LoginError::Listen(_) => "login.listen",
-            LoginError::Browser(_) => "login.browser",
-            LoginError::Network(_) => "login.network",
-            LoginError::Exchange(_) => "login.exchange",
-            LoginError::Internal(_) => "login.internal",
-            LoginError::InvalidClientId => "login.invalid_client_id",
-        }
-    }
-
-    fn params(&self) -> Vec<(&'static str, String)> {
-        match self {
-            LoginError::Provider(detail)
-            | LoginError::Listen(detail)
-            | LoginError::Browser(detail)
-            | LoginError::Network(detail)
-            | LoginError::Exchange(detail)
-            | LoginError::Internal(detail) => vec![("detail", detail.clone())],
-            _ => Vec::new(),
-        }
     }
 }

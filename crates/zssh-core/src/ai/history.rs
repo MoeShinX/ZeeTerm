@@ -704,6 +704,28 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// 错误码与结构化参数：界面按它们出当前语言的整句。
+impl crate::error::ErrorWithCode for HistoryError {
+    fn code(&self) -> &'static str {
+        match self {
+            HistoryError::InvalidAgent(_) => "history.invalid_agent",
+            HistoryError::InvalidId => "history.invalid_id",
+            HistoryError::NotFound => "history.not_found",
+            HistoryError::Corrupt(_) => "history.corrupt",
+            HistoryError::Io(_) => "history.io",
+        }
+    }
+
+    fn params(&self) -> Vec<(&'static str, String)> {
+        match self {
+            HistoryError::InvalidAgent(detail)
+            | HistoryError::Corrupt(detail)
+            | HistoryError::Io(detail) => vec![("detail", detail.clone())],
+            HistoryError::InvalidId | HistoryError::NotFound => Vec::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1331,27 +1353,5 @@ mod tests {
         store.delete("builtin", "h2").unwrap();
         store.delete("builtin", "h1").unwrap();
         assert_eq!(store.transcript_load("builtin", "bi_a").unwrap(), None);
-    }
-}
-
-/// 错误码与结构化参数：界面按它们出当前语言的整句。
-impl crate::error::ErrorWithCode for HistoryError {
-    fn code(&self) -> &'static str {
-        match self {
-            HistoryError::InvalidAgent(_) => "history.invalid_agent",
-            HistoryError::InvalidId => "history.invalid_id",
-            HistoryError::NotFound => "history.not_found",
-            HistoryError::Corrupt(_) => "history.corrupt",
-            HistoryError::Io(_) => "history.io",
-        }
-    }
-
-    fn params(&self) -> Vec<(&'static str, String)> {
-        match self {
-            HistoryError::InvalidAgent(detail)
-            | HistoryError::Corrupt(detail)
-            | HistoryError::Io(detail) => vec![("detail", detail.clone())],
-            HistoryError::InvalidId | HistoryError::NotFound => Vec::new(),
-        }
     }
 }
