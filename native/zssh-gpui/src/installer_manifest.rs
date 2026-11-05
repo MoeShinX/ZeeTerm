@@ -41,7 +41,7 @@ fn uninstall_section(text: &str) -> String {
 }
 
 fn install_section(text: &str) -> String {
-    let start = text.find("Section \"安装").expect("有安装段");
+    let start = text.find("Section \"Install").expect("有安装段");
     let rest = &text[start..];
     let end = rest.find("SectionEnd").expect("安装段有结尾");
     rest[..end].to_owned()

@@ -63,29 +63,22 @@ ShowUninstDetails show
 SetCompressor /SOLID lzma
 SetCompressorDictSize 64
 
-VIProductVersion "${APP_VERSION_QUAD}"
-VIAddVersionKey "ProductName" "${APP_NAME}"
-VIAddVersionKey "FileDescription" "${APP_NAME} 安装程序"
-VIAddVersionKey "FileVersion" "${APP_VERSION}"
-VIAddVersionKey "ProductVersion" "${APP_VERSION}"
-VIAddVersionKey "LegalCopyright" "GPL-3.0-or-later"
-
 ; ---------------- 界面 ----------------
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "${STAGE_DIR}\${APP_ICON}"
 !define MUI_UNICON "${STAGE_DIR}\${APP_ICON}"
 
-!define MUI_WELCOMEPAGE_TITLE "欢迎安装 ${APP_NAME}"
-!define MUI_WELCOMEPAGE_TEXT "ZeeTerm 是面向 Windows 的 SSH 客户端，可以和 Z-SSH（Tauri 版）同时安装。$\r$\n$\r$\n版本：${APP_VERSION}$\r$\n$\r$\n本安装程序只写入当前用户目录，不需要管理员权限；不会安装 WebView2、Edge、Node 或其他共享运行时。$\r$\n$\r$\n点击「下一步」选择安装目录。"
+!define MUI_WELCOMEPAGE_TITLE "$(STR_WELCOME_TITLE)"
+!define MUI_WELCOMEPAGE_TEXT "$(STR_WELCOME_TEXT)"
 
-!define MUI_DIRECTORYPAGE_TEXT_TOP "请选择 ${APP_NAME} 的安装目录。安装程序只需要当前用户的写入权限，默认放在本地应用数据目录下。"
-!define MUI_DIRECTORYPAGE_TEXT_DESTINATION "安装目录"
+!define MUI_DIRECTORYPAGE_TEXT_TOP "$(STR_DIR_TOP)"
+!define MUI_DIRECTORYPAGE_TEXT_DESTINATION "$(STR_DIR_DEST)"
 
-!define MUI_FINISHPAGE_TITLE "${APP_NAME} 安装完成"
-!define MUI_FINISHPAGE_TEXT "${APP_NAME} ${APP_VERSION} 已安装到：$\r$\n$INSTDIR$\r$\n$\r$\n可以勾选下面的选项立即运行程序，也可以稍后从开始菜单启动。"
+!define MUI_FINISHPAGE_TITLE "$(STR_FINISH_TITLE)"
+!define MUI_FINISHPAGE_TEXT "$(STR_FINISH_TEXT)"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
-!define MUI_FINISHPAGE_RUN_TEXT "立即运行 ${APP_NAME}"
+!define MUI_FINISHPAGE_RUN_TEXT "$(STR_FINISH_RUN)"
 !define MUI_FINISHPAGE_NOREBOOTSUPPORT
 
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
@@ -100,8 +93,54 @@ Page custom OptionsPageCreate OptionsPageLeave
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 
-; 安装程序界面全部使用简体中文。
+; 安装 / 卸载向导有英文和简体中文两套：NSIS 按系统界面语言挑（中文系统用中文，其他一律英文），
+; 不弹语言选择框。English 必须排第一：没有匹配的系统语言时，NSIS 用第一个语言。
+!insertmacro MUI_LANGUAGE "English"
 !insertmacro MUI_LANGUAGE "SimpChinese"
+
+; 版本资源按语言各写一份（多语言安装包里 VIAddVersionKey 必须带 /LANG）。
+VIProductVersion "${APP_VERSION_QUAD}"
+!macro ZSSH_VERSION_INFO LANGID DESC
+  VIAddVersionKey /LANG=${LANGID} "ProductName" "${APP_NAME}"
+  VIAddVersionKey /LANG=${LANGID} "FileDescription" "${DESC}"
+  VIAddVersionKey /LANG=${LANGID} "FileVersion" "${APP_VERSION}"
+  VIAddVersionKey /LANG=${LANGID} "ProductVersion" "${APP_VERSION}"
+  VIAddVersionKey /LANG=${LANGID} "LegalCopyright" "GPL-3.0-or-later"
+!macroend
+!insertmacro ZSSH_VERSION_INFO ${LANG_ENGLISH} "${APP_NAME} Setup"
+!insertmacro ZSSH_VERSION_INFO ${LANG_SIMPCHINESE} "${APP_NAME} 安装程序"
+
+; 脚本里自己写的提示，两种语言各一份。
+LangString STR_WELCOME_TITLE ${LANG_ENGLISH} "Welcome to ${APP_NAME} Setup"
+LangString STR_WELCOME_TITLE ${LANG_SIMPCHINESE} "欢迎安装 ${APP_NAME}"
+LangString STR_WELCOME_TEXT ${LANG_ENGLISH} "ZeeTerm is an SSH client for Windows. It can be installed alongside Z-SSH (the Tauri edition).$\r$\n$\r$\nVersion: ${APP_VERSION}$\r$\n$\r$\nThis installer only writes to your user folders and does not need administrator rights. It does not install WebView2, Edge, Node or any other shared runtime.$\r$\n$\r$\nClick Next to choose the install folder."
+LangString STR_WELCOME_TEXT ${LANG_SIMPCHINESE} "ZeeTerm 是面向 Windows 的 SSH 客户端，可以和 Z-SSH（Tauri 版）同时安装。$\r$\n$\r$\n版本：${APP_VERSION}$\r$\n$\r$\n本安装程序只写入当前用户目录，不需要管理员权限；不会安装 WebView2、Edge、Node 或其他共享运行时。$\r$\n$\r$\n点击「下一步」选择安装目录。"
+LangString STR_DIR_TOP ${LANG_ENGLISH} "Choose the folder to install ${APP_NAME} into. Setup only needs write access for the current user; the default is under your local application data folder."
+LangString STR_DIR_TOP ${LANG_SIMPCHINESE} "请选择 ${APP_NAME} 的安装目录。安装程序只需要当前用户的写入权限，默认放在本地应用数据目录下。"
+LangString STR_DIR_DEST ${LANG_ENGLISH} "Install folder"
+LangString STR_DIR_DEST ${LANG_SIMPCHINESE} "安装目录"
+LangString STR_FINISH_TITLE ${LANG_ENGLISH} "${APP_NAME} is installed"
+LangString STR_FINISH_TITLE ${LANG_SIMPCHINESE} "${APP_NAME} 安装完成"
+LangString STR_FINISH_TEXT ${LANG_ENGLISH} "${APP_NAME} ${APP_VERSION} was installed to:$\r$\n$INSTDIR$\r$\n$\r$\nTick the option below to run it now, or start it later from the Start menu."
+LangString STR_FINISH_TEXT ${LANG_SIMPCHINESE} "${APP_NAME} ${APP_VERSION} 已安装到：$\r$\n$INSTDIR$\r$\n$\r$\n可以勾选下面的选项立即运行程序，也可以稍后从开始菜单启动。"
+LangString STR_FINISH_RUN ${LANG_ENGLISH} "Run ${APP_NAME} now"
+LangString STR_FINISH_RUN ${LANG_SIMPCHINESE} "立即运行 ${APP_NAME}"
+LangString STR_STILL_RUNNING ${LANG_ENGLISH} "${APP_NAME} or its AI tool bridge is still running, so Setup cannot continue.$\r$\n$\r$\nPlease quit them first (including the tray icon and any agent that is using the AI tools), then click Retry."
+LangString STR_STILL_RUNNING ${LANG_SIMPCHINESE} "${APP_NAME} 或它的 AI 工具桥仍在运行，无法继续。$\r$\n$\r$\n请先退出它们（包括托盘图标和正在使用 AI 工具的智能体），再点「重试」。"
+LangString STR_ABORT_RUNNING ${LANG_ENGLISH} "The program is still running; cancelled."
+LangString STR_ABORT_RUNNING ${LANG_SIMPCHINESE} "程序仍在运行，已取消。"
+LangString STR_OPT_HEADER ${LANG_ENGLISH} "Install options"
+LangString STR_OPT_HEADER ${LANG_SIMPCHINESE} "安装选项"
+LangString STR_OPT_SUBHEADER ${LANG_ENGLISH} "Check the version, install folder and shortcuts"
+LangString STR_OPT_SUBHEADER ${LANG_SIMPCHINESE} "确认版本、安装目录和快捷方式"
+LangString STR_OPT_VERSION ${LANG_ENGLISH} "Version: ${APP_VERSION}"
+LangString STR_OPT_VERSION ${LANG_SIMPCHINESE} "版本：${APP_VERSION}"
+LangString STR_OPT_DIR ${LANG_ENGLISH} "Install folder: $INSTDIR"
+LangString STR_OPT_DIR ${LANG_SIMPCHINESE} "安装目录：$INSTDIR"
+LangString STR_OPT_NOTE ${LANG_ENGLISH} "Setup only writes to your user folders and does not need administrator rights. It does not install WebView2, Edge, Node or any other shared runtime."
+LangString STR_OPT_NOTE ${LANG_SIMPCHINESE} "安装程序只写入当前用户目录，不需要管理员权限；不会安装 WebView2、Edge、Node 或其他共享运行时。"
+LangString STR_OPT_DESKTOP ${LANG_ENGLISH} "Create a desktop shortcut"
+LangString STR_OPT_DESKTOP ${LANG_SIMPCHINESE} "在桌面创建快捷方式"
 
 Var DesktopShortcutCheckbox
 Var DesktopShortcutState
@@ -110,7 +149,7 @@ Var UpdateMode
 
 ; ---------------- 安装 ----------------
 
-Section "安装 ${APP_NAME}" SEC_MAIN
+Section "Install" SEC_MAIN
   SectionIn RO
   SetShellVarContext current
 
@@ -268,9 +307,9 @@ Function ${PFX}WaitForAppExit
     Sleep 500
     Goto zssh_check
   ${EndIf}
-  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${APP_NAME} 或它的 AI 工具桥仍在运行，无法继续。$\r$\n$\r$\n请先退出它们（包括托盘图标和正在使用 AI 工具的智能体），再点「重试」。" /SD IDCANCEL IDRETRY zssh_start
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(STR_STILL_RUNNING)" /SD IDCANCEL IDRETRY zssh_start
   SetErrorLevel 5
-  Abort "程序仍在运行，已取消。"
+  Abort "$(STR_ABORT_RUNNING)"
   zssh_done:
   Pop $R3
   Pop $R2
@@ -286,7 +325,7 @@ Function un.onInit
 FunctionEnd
 
 Function OptionsPageCreate
-  !insertmacro MUI_HEADER_TEXT "安装选项" "确认版本、安装目录和快捷方式"
+  !insertmacro MUI_HEADER_TEXT "$(STR_OPT_HEADER)" "$(STR_OPT_SUBHEADER)"
 
   nsDialogs::Create 1018
   Pop $0
@@ -294,13 +333,13 @@ Function OptionsPageCreate
     Abort
   ${EndIf}
 
-  ${NSD_CreateLabel} 0 0 100% 14u "版本：${APP_VERSION}"
+  ${NSD_CreateLabel} 0 0 100% 14u "$(STR_OPT_VERSION)"
   Pop $1
-  ${NSD_CreateLabel} 0 18u 100% 14u "安装目录：$INSTDIR"
+  ${NSD_CreateLabel} 0 18u 100% 14u "$(STR_OPT_DIR)"
   Pop $1
-  ${NSD_CreateLabel} 0 42u 100% 34u "安装程序只写入当前用户目录，不需要管理员权限；不会安装 WebView2、Edge、Node 或其他共享运行时。"
+  ${NSD_CreateLabel} 0 42u 100% 34u "$(STR_OPT_NOTE)"
   Pop $1
-  ${NSD_CreateCheckbox} 0 88u 100% 12u "在桌面创建快捷方式"
+  ${NSD_CreateCheckbox} 0 88u 100% 12u "$(STR_OPT_DESKTOP)"
   Pop $DesktopShortcutCheckbox
   ${NSD_SetState} $DesktopShortcutCheckbox $DesktopShortcutState
 
