@@ -142,8 +142,8 @@ pub struct UiSettings {
     pub highlight_rules: Option<Vec<HighlightRule>>,
     /// 括号粘贴模式。
     pub bracketed_paste: BracketedPaste,
-    /// 界面语言偏好：`system` / `zh` / `en`。老设置文件里没有这个字段，默认按中文
-    /// （升级后保留原来的习惯）；全新安装由启动时按「设置文件是否存在」判成跟随系统。
+    /// 界面语言偏好：`system` / `zh` / `en`。没选过（全新安装、老设置文件里没有这个字段）
+    /// 一律跟随系统：系统主语言是中文（简体、繁体都算）用中文，其他语言一律英文。
     pub language: String,
 }
 
@@ -170,7 +170,7 @@ impl Default for UiSettings {
             start_hidden: false,
             highlight_rules: None,
             bracketed_paste: BracketedPaste::Auto,
-            language: "zh".to_owned(),
+            language: "system".to_owned(),
         }
     }
 }
@@ -292,6 +292,28 @@ pub fn resolve_dark(follow_system: bool, fallback_dark: bool, system_light: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 没选过语言（全新安装、老设置文件里没有这个字段）一律跟随系统；选过的照旧。
+    #[test]
+    fn language_follows_the_system_unless_chosen() {
+        assert_eq!(
+            UiSettings::default().language_pref(),
+            crate::i18n::LangPref::System
+        );
+        let old: UiSettings = serde_json::from_str(r#"{"dark":true}"#).expect("老设置文件");
+        assert_eq!(old.language_pref(), crate::i18n::LangPref::System);
+        let chosen: UiSettings = serde_json::from_str(r#"{"language":"zh"}"#).expect("选过中文");
+        assert_eq!(chosen.language_pref(), crate::i18n::LangPref::Zh);
+        // 非中文系统一律英文。
+        assert_eq!(
+            crate::i18n::LangPref::System.resolve(false),
+            crate::i18n::Lang::En
+        );
+        assert_eq!(
+            crate::i18n::LangPref::System.resolve(true),
+            crate::i18n::Lang::Zh
+        );
+    }
 
     #[test]
     fn the_default_data_dir_is_zeeterm_under_appdata() {
