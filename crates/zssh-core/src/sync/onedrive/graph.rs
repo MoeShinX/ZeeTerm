@@ -656,11 +656,9 @@ mod tests {
             "{message}"
         );
         let other = status_error(StatusCode::BAD_REQUEST, &none, "invalidRequest", "写入");
-        assert_eq!(
-            other,
-            StorageError::Io(Reason::text(
-                "OneDrive 写入失败：服务器返回 400（invalidRequest）".to_owned()
-            ))
+        assert!(
+            matches!(&other, StorageError::Io(m) if m == "OneDrive 写入失败：服务器返回 400（invalidRequest）"),
+            "{other:?}"
         );
     }
 
