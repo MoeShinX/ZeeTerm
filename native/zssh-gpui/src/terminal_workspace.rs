@@ -250,7 +250,6 @@ impl Msg for ConnMsg {
     }
 }
 
-/// 用户主动断开时窗格里显示的文字。
 /// 本机时间 `HH:MM:SS`（重连分隔行用）。
 fn local_clock() -> String {
     let secs = std::time::SystemTime::now()
@@ -271,6 +270,7 @@ fn reconnect_marker(at_line_start: bool, clock: &str) -> String {
     )
 }
 
+/// 用户主动断开时窗格里显示的文字。
 fn user_disconnect_notice() -> String {
     format!("\r\n\x1b[33m{}\x1b[0m\r\n", t(ConnMsg::ManualNotice))
 }
