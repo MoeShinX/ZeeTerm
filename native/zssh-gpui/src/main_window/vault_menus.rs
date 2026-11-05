@@ -9,11 +9,47 @@ use gpui_kit::component::*;
 use gpui_kit::*;
 
 use super::page_logic::{OrderState, flatten_groups, ungrouped_move_label};
-use super::protocol_form::{Caps, SSH_ONLY_HINT};
+use super::protocol_form::{Caps, ssh_only_hint};
 use super::{CopyField, MainWindow};
 use crate::app_theme::Tokens;
+use crate::i18n::{Key, Msg, t};
 use crate::icons::Ico;
 use crate::menu_kit;
+
+/// 本文件里分组 / 「未分组」右键菜单的文案（主机菜单那部分用 [`crate::i18n::Key`]）。
+#[derive(Clone, Copy, Debug)]
+enum VaultMenuMsg {
+    NewSubgroup,
+    Rename,
+    DeleteGroup,
+    NewGroup,
+    AdoptUngrouped,
+    SortByName,
+}
+
+impl Msg for VaultMenuMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::NewSubgroup => "新建子分组",
+            Self::Rename => "重命名",
+            Self::DeleteGroup => "删除分组",
+            Self::NewGroup => "新建分组",
+            Self::AdoptUngrouped => "重命名（建成分组）…",
+            Self::SortByName => "按名字重新排序",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::NewSubgroup => "New Subgroup",
+            Self::Rename => "Rename",
+            Self::DeleteGroup => "Delete Group",
+            Self::NewGroup => "New Group",
+            Self::AdoptUngrouped => "Rename (Create Group)…",
+            Self::SortByName => "Sort by Name",
+        }
+    }
+}
 
 /// 「移动到分组」子菜单里的一项。
 #[derive(Clone)]
@@ -204,7 +240,7 @@ pub fn host_menu(
         // 只有 SSH 主机能用的项：Telnet / 串口主机上置灰，悬停说明「仅 SSH 主机可用」。
         let ssh_only = |enabled: bool, line: menu_kit::MenuRow| {
             line.disabled(!enabled)
-                .tooltip((!enabled).then_some(SSH_ONLY_HINT))
+                .tooltip((!enabled).then(ssh_only_hint))
         };
         menu = match item {
             HostMenuItem::Connect => menu.item(
@@ -356,14 +392,15 @@ pub enum GroupMenuItem {
 }
 
 impl GroupMenuItem {
+    /// 菜单上写的字（分隔线没有字）。走 `i18n`：切语言即时生效。
     pub fn label(self) -> &'static str {
         match self {
-            Self::NewSub => "新建子分组",
-            Self::Rename => "重命名",
-            Self::MoveUp => "上移",
-            Self::MoveDown => "下移",
-            Self::Reorder => "按名字重新排序",
-            Self::Delete => "删除分组",
+            Self::NewSub => t(VaultMenuMsg::NewSubgroup),
+            Self::Rename => t(VaultMenuMsg::Rename),
+            Self::MoveUp => t(Key::MenuMoveUp),
+            Self::MoveDown => t(Key::MenuMoveDown),
+            Self::Reorder => t(VaultMenuMsg::SortByName),
+            Self::Delete => t(VaultMenuMsg::DeleteGroup),
             Self::Separator => "",
         }
     }
@@ -436,20 +473,20 @@ pub fn group_menu(
 /// 「未分组」行的右键菜单。
 pub fn ungrouped_menu(menu: PopupMenu, entity: &Entity<MainWindow>, tokens: &Tokens) -> PopupMenu {
     menu.item(
-        menu_kit::row(tokens, "新建分组", Ico::FolderPlus)
+        menu_kit::row(tokens, t(VaultMenuMsg::NewGroup), Ico::FolderPlus)
             .on_click(run(entity, |this, window, cx| {
                 this.new_group(None, window, cx)
             })),
     )
     .item(
-        menu_kit::row(tokens, "重命名（建成分组）…", Ico::Pencil)
+        menu_kit::row(tokens, t(VaultMenuMsg::AdoptUngrouped), Ico::Pencil)
             .on_click(run(entity, |this, window, cx| {
                 this.adopt_ungrouped(window, cx)
             })),
     )
     .separator()
     .item(
-        menu_kit::row(tokens, "按名字重新排序", Ico::ArrowDownAZ)
+        menu_kit::row(tokens, t(VaultMenuMsg::SortByName), Ico::ArrowDownAZ)
             .on_click(run(entity, |this, window, cx| {
                 this.reset_layer_order(None, window, cx)
             })),

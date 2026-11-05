@@ -7,6 +7,112 @@
 
 use serde_json::{Value, json};
 
+use crate::i18n::{Msg, t};
+
+/// 本文件（快捷命令的数据与规则）自己的界面文案。
+///
+/// 只放应用自己的固定文案；命令内容、名称、分组名都是用户数据，照原样显示。颜色 id
+/// （`red`、`blue`……）是存进配置的稳定标识，不进这张表；显示用的颜色名才在这里。
+#[derive(Clone, Copy, Debug)]
+enum QuickCmdMsg {
+    // ---- 预设颜色名 ----
+    ColorRed,
+    ColorOrange,
+    ColorYellow,
+    ColorGreen,
+    ColorTeal,
+    ColorBlue,
+    ColorPurple,
+    ColorPink,
+    // ---- 对话框标题 ----
+    DialogEditTitle,
+    DialogNewTitle,
+    // ---- 校验原因 ----
+    NameEmpty,
+    NameTooLongPrefix,
+    NameControlChars,
+    CommandEmpty,
+    CommandTooLongPrefix,
+    CommandControlChars,
+    GroupTooLongPrefix,
+    GroupControlChars,
+    LengthSuffix,
+    TooManyCommandsPrefix,
+    TooManyCommandsSuffix,
+    // ---- 多行发送确认 ----
+    MultiTitlePrefix,
+    MultiTitleSuffix,
+    MultiLinesSuffix,
+    MultiAllPanes,
+    SentenceEnd,
+}
+
+impl Msg for QuickCmdMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::ColorRed => "红",
+            Self::ColorOrange => "橙",
+            Self::ColorYellow => "黄",
+            Self::ColorGreen => "绿",
+            Self::ColorTeal => "青",
+            Self::ColorBlue => "蓝",
+            Self::ColorPurple => "紫",
+            Self::ColorPink => "粉",
+            Self::DialogEditTitle => "编辑命令",
+            Self::DialogNewTitle => "新建命令",
+            Self::NameEmpty => "名称不能为空",
+            Self::NameTooLongPrefix => "名称不能超过 ",
+            Self::NameControlChars => "名称里不能有控制字符",
+            Self::CommandEmpty => "命令不能为空",
+            Self::CommandTooLongPrefix => "命令不能超过 ",
+            Self::CommandControlChars => "命令里只能有换行和 Tab 这两种控制字符",
+            Self::GroupTooLongPrefix => "分组名不能超过 ",
+            Self::GroupControlChars => "分组名里不能有控制字符",
+            Self::LengthSuffix => " 个字",
+            Self::TooManyCommandsPrefix => "快捷命令最多 ",
+            Self::TooManyCommandsSuffix => " 条",
+            Self::MultiTitlePrefix => "发送多行命令「",
+            Self::MultiTitleSuffix => "」？",
+            Self::MultiLinesSuffix => " 行，每一行都会回车执行",
+            Self::MultiAllPanes => "，发到这个标签的所有分屏",
+            Self::SentenceEnd => "。",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::ColorRed => "Red",
+            Self::ColorOrange => "Orange",
+            Self::ColorYellow => "Yellow",
+            Self::ColorGreen => "Green",
+            Self::ColorTeal => "Teal",
+            Self::ColorBlue => "Blue",
+            Self::ColorPurple => "Purple",
+            Self::ColorPink => "Pink",
+            Self::DialogEditTitle => "Edit Command",
+            Self::DialogNewTitle => "New Command",
+            Self::NameEmpty => "Name cannot be empty",
+            Self::NameTooLongPrefix => "Name must be at most ",
+            Self::NameControlChars => "Name cannot contain control characters",
+            Self::CommandEmpty => "Command cannot be empty",
+            Self::CommandTooLongPrefix => "Command must be at most ",
+            Self::CommandControlChars => {
+                "Only line breaks and Tab are allowed as control characters in the command"
+            }
+            Self::GroupTooLongPrefix => "Group name must be at most ",
+            Self::GroupControlChars => "Group name cannot contain control characters",
+            Self::LengthSuffix => " characters",
+            Self::TooManyCommandsPrefix => "At most ",
+            Self::TooManyCommandsSuffix => " quick commands",
+            Self::MultiTitlePrefix => "Send multi-line command \"",
+            Self::MultiTitleSuffix => "\"?",
+            Self::MultiLinesSuffix => " lines, each will be executed with Enter",
+            Self::MultiAllPanes => ", sent to all panes in this tab",
+            Self::SentenceEnd => ".",
+        }
+    }
+}
+
 /// 预设颜色 id（固定这 8 个；存进同步配置里，别改名）。
 pub const COLORS: [&str; 8] = [
     "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink",
@@ -30,17 +136,17 @@ pub struct QuickCommand {
     pub color: Option<String>,
 }
 
-/// 预设颜色的中文名和 RGB（淡底色 / 细边 / 小图标共用同一色相）。
+/// 预设颜色的名字（跟随界面语言）和 RGB（淡底色 / 细边 / 小图标共用同一色相）。
 pub fn color_style(id: &str) -> Option<(&'static str, u32)> {
     Some(match id {
-        "red" => ("红", 0xEF4444),
-        "orange" => ("橙", 0xF97316),
-        "yellow" => ("黄", 0xEAB308),
-        "green" => ("绿", 0x22C55E),
-        "teal" => ("青", 0x14B8A6),
-        "blue" => ("蓝", 0x3B82F6),
-        "purple" => ("紫", 0xA855F7),
-        "pink" => ("粉", 0xEC4899),
+        "red" => (t(QuickCmdMsg::ColorRed), 0xEF4444),
+        "orange" => (t(QuickCmdMsg::ColorOrange), 0xF97316),
+        "yellow" => (t(QuickCmdMsg::ColorYellow), 0xEAB308),
+        "green" => (t(QuickCmdMsg::ColorGreen), 0x22C55E),
+        "teal" => (t(QuickCmdMsg::ColorTeal), 0x14B8A6),
+        "blue" => (t(QuickCmdMsg::ColorBlue), 0x3B82F6),
+        "purple" => (t(QuickCmdMsg::ColorPurple), 0xA855F7),
+        "pink" => (t(QuickCmdMsg::ColorPink), 0xEC4899),
         _ => return None,
     })
 }
@@ -147,31 +253,55 @@ pub enum Field {
 pub fn validate_field(name: &str, command: &str, group: &str) -> Option<(Field, String)> {
     let name = name.trim();
     if name.is_empty() {
-        return Some((Field::Name, "名称不能为空".into()));
+        return Some((Field::Name, t(QuickCmdMsg::NameEmpty).to_owned()));
     }
     if name.chars().count() > NAME_MAX {
-        return Some((Field::Name, format!("名称不能超过 {NAME_MAX} 个字")));
+        return Some((
+            Field::Name,
+            format!(
+                "{}{}{}",
+                t(QuickCmdMsg::NameTooLongPrefix),
+                NAME_MAX,
+                t(QuickCmdMsg::LengthSuffix)
+            ),
+        ));
     }
     if has_bad_control(name) {
-        return Some((Field::Name, "名称里不能有控制字符".into()));
+        return Some((Field::Name, t(QuickCmdMsg::NameControlChars).to_owned()));
     }
     if command.trim().is_empty() {
-        return Some((Field::Command, "命令不能为空".into()));
+        return Some((Field::Command, t(QuickCmdMsg::CommandEmpty).to_owned()));
     }
     if command.chars().count() > COMMAND_MAX {
-        return Some((Field::Command, format!("命令不能超过 {COMMAND_MAX} 个字")));
+        return Some((
+            Field::Command,
+            format!(
+                "{}{}{}",
+                t(QuickCmdMsg::CommandTooLongPrefix),
+                COMMAND_MAX,
+                t(QuickCmdMsg::LengthSuffix)
+            ),
+        ));
     }
     if has_bad_control(command) {
         return Some((
             Field::Command,
-            "命令里只能有换行和 Tab 这两种控制字符".into(),
+            t(QuickCmdMsg::CommandControlChars).to_owned(),
         ));
     }
     if group.trim().chars().count() > GROUP_MAX {
-        return Some((Field::Group, format!("分组名不能超过 {GROUP_MAX} 个字")));
+        return Some((
+            Field::Group,
+            format!(
+                "{}{}{}",
+                t(QuickCmdMsg::GroupTooLongPrefix),
+                GROUP_MAX,
+                t(QuickCmdMsg::LengthSuffix)
+            ),
+        ));
     }
     if has_bad_control(group) {
-        return Some((Field::Group, "分组名里不能有控制字符".into()));
+        return Some((Field::Group, t(QuickCmdMsg::GroupControlChars).to_owned()));
     }
     None
 }
@@ -230,9 +360,9 @@ impl Seed {
 /// 对话框标题。
 pub fn dialog_title(editing: bool) -> &'static str {
     if editing {
-        "编辑命令"
+        t(QuickCmdMsg::DialogEditTitle)
     } else {
-        "新建命令"
+        t(QuickCmdMsg::DialogNewTitle)
     }
 }
 
@@ -257,7 +387,15 @@ pub fn build_item(
         return Err(problem);
     }
     if filled.id.is_none() && existing.len() >= COMMANDS_MAX {
-        return Err((Field::Form, format!("快捷命令最多 {COMMANDS_MAX} 条")));
+        return Err((
+            Field::Form,
+            format!(
+                "{}{}{}",
+                t(QuickCmdMsg::TooManyCommandsPrefix),
+                COMMANDS_MAX,
+                t(QuickCmdMsg::TooManyCommandsSuffix)
+            ),
+        ));
     }
     let group = filled.group.trim();
     Ok(QuickCommand {
@@ -290,14 +428,22 @@ pub fn is_multiline(text: &str) -> bool {
 pub fn multiline_confirm_text(name: &str, text: &str, all: bool) -> (String, String) {
     let lines = text.trim().split(['\n']).count();
     (
-        format!("发送多行命令「{name}」？"),
         format!(
-            "{lines} 行，每一行都会回车执行{}。",
+            "{}{}{}",
+            t(QuickCmdMsg::MultiTitlePrefix),
+            name,
+            t(QuickCmdMsg::MultiTitleSuffix)
+        ),
+        format!(
+            "{}{}{}{}",
+            lines,
+            t(QuickCmdMsg::MultiLinesSuffix),
             if all {
-                "，发到这个标签的所有分屏"
+                t(QuickCmdMsg::MultiAllPanes)
             } else {
                 ""
-            }
+            },
+            t(QuickCmdMsg::SentenceEnd)
         ),
     )
 }

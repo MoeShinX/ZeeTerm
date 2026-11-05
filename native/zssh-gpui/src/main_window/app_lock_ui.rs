@@ -29,14 +29,18 @@ use crate::settings_nav::SettingsSection;
 use crate::settings_view::{card, row};
 use crate::typography::{Role, Typo as _, UiFontStyled as _};
 
-/// 锁按钮的悬停说明。
-pub const LOCK_TOOLTIP: &str = "锁定 ZeeTerm（Ctrl+Alt+L）";
+/// 锁按钮的悬停说明。快捷键部分（Ctrl+Alt+L）两个语言下都不译，只译「锁定 ZeeTerm」。
+pub(crate) fn lock_tooltip() -> &'static str {
+    t(LockUiMsg::LockTooltip)
+}
 
 /// 主窗口里和锁屏有关的界面文案（右键菜单、对话框、设置页「锁屏」一节）。
 ///
 /// 只放应用自己的固定文案；产品名、分钟数、等待秒数由 `format!` 带进来。
 #[derive(Clone, Copy, Debug)]
 enum LockUiMsg {
+    // ---- 锁按钮悬停说明 ----
+    LockTooltip,
     // ---- 锁按钮右键菜单 ----
     MenuLockNow,
     MenuChangePassword,
@@ -110,6 +114,7 @@ enum LockUiMsg {
 impl Msg for LockUiMsg {
     fn zh(&self) -> &'static str {
         match *self {
+            Self::LockTooltip => "锁定 ZeeTerm（Ctrl+Alt+L）",
             Self::MenuLockNow => "立即锁定",
             Self::MenuChangePassword => "修改锁屏密码…",
             Self::MenuSettings => "锁屏设置…",
@@ -190,6 +195,7 @@ impl Msg for LockUiMsg {
 
     fn en(&self) -> &'static str {
         match *self {
+            Self::LockTooltip => "Lock ZeeTerm (Ctrl+Alt+L)",
             Self::MenuLockNow => "Lock Now",
             Self::MenuChangePassword => "Change Lock Password…",
             Self::MenuSettings => "App Lock Settings…",

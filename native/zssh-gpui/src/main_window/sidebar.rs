@@ -926,10 +926,10 @@ impl MainWindow {
                     )
                     .child(crate::icons::folder_icon(*expanded, 16.0))
                     .child(match term {
-                        Some(term) => highlighted(host_tree::UNGROUPED_LABEL, term, tokens),
+                        Some(term) => highlighted(host_tree::ungrouped_label(), term, tokens),
                         None => div()
                             .truncate()
-                            .child(host_tree::UNGROUPED_LABEL)
+                            .child(host_tree::ungrouped_label())
                             .into_any_element(),
                     })
                     .child(div().flex_1())

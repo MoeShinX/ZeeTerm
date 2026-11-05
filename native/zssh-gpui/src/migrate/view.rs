@@ -14,20 +14,315 @@ use zssh_core::sync::zssh_import::ZsshSource;
 
 use super::{Busy, Done, Failure, FailureKind, Found, Loaded, MigrateDemo, Origin, Stage};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::settings_view::card;
 use crate::sync::format_stamp;
 use crate::typography::{Role, Typo as _};
+
+/// 本文件（「从 Z-SSH 迁移」一块）自己的界面文案。
+///
+/// 只放应用自己的固定文案；主机名、文件夹、时间、数量这些来自数据或由 `format!` 带进来的
+/// 内容不进这张表。带参数的句子拆成固定片段，数字和用户数据留在 `format!` 里。
+#[derive(Clone, Copy, Debug)]
+enum MigrateViewMsg {
+    // ---- 直接导入：查找结果 ----
+    CheckingLocal,
+    NotFoundLocal,
+    LastUsedPrefix,
+    FoundYesPrefix,
+    FoundYesMiddle,
+    // ---- 预览：数字 ----
+    AddedPrefix,
+    UpdatedMiddle,
+    DeletedMiddle,
+    HostsUnit,
+    ItemsUnit,
+    RecordsUnit,
+    SkippedMiddle,
+    SkippedRecordsSuffix,
+    QuickCommandsSuffix,
+    SettingsCountMiddle,
+    SettingsCountSuffix,
+    PreviewConflictsSuffix,
+    // ---- 预览 / 结果的标签 ----
+    Hosts,
+    Groups,
+    Credentials,
+    Proxies,
+    TrustedHostKeys,
+    QuickCommands,
+    SyncableSettings,
+    Conflicts,
+    Settings,
+    ClearedReferences,
+    BackupBeforeImport,
+    // ---- 预览：提醒 ----
+    DuplicateHostsPrefix,
+    DuplicateHostsSuffix,
+    ReplaceDeletesPrefix,
+    ReplaceDeletesGroups,
+    ReplaceDeletesCredentials,
+    ReplaceDeletesProxies,
+    ReplaceDeletesSuffix,
+    NulledReferencesPrefix,
+    NulledReferencesSuffix,
+    DirectNote,
+    FileNote,
+    // ---- 结果 ----
+    DoneSkippedMiddle,
+    KnownKeysAddedSuffix,
+    KnownKeysSkippedSuffix,
+    SettingsChangedPrefix,
+    SettingsChangedMiddle,
+    SettingsChangedSuffix,
+    DoneConflictsSuffix,
+    DoneNulledRefsSuffix,
+    BackupSuffix,
+    // ---- 画：卡片 / 两条路 ----
+    CardTitle,
+    CardDescription,
+    DirectTitle,
+    PickFolder,
+    ReadAndPreview,
+    FileTitle,
+    FileDescription,
+    FileLabel,
+    PickFile,
+    PasswordLabel,
+    ExitZsshHint,
+    ExitedRetry,
+    // ---- 画：预览 / 结果 ----
+    PreviewDirectTitle,
+    PreviewFileTitle,
+    ImportMerge,
+    ImportConfirmReplace,
+    ImportReplace,
+    ImportMode,
+    ModeMerge,
+    ModeMergeHint,
+    ModeReplace,
+    ModeReplaceHint,
+    Cancel,
+    ReplaceArmedWarning,
+    BackupNote,
+    ImportDone,
+    OpenHosts,
+}
+
+impl Msg for MigrateViewMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::CheckingLocal => "正在查找本机的 Z-SSH 数据…",
+            Self::NotFoundLocal => {
+                "本机没有找到 Z-SSH 的数据。如果装在别处、或者自定义过数据文件夹，点「指定文件夹…」选它（里面应该有 data.db）。"
+            }
+            Self::LastUsedPrefix => "，最后使用 ",
+            Self::FoundYesPrefix => "已找到 Z-SSH 的数据（数据库 ",
+            Self::FoundYesMiddle => "）。只读取，不会改动它。\n文件夹：",
+            Self::AddedPrefix => "新增 ",
+            Self::UpdatedMiddle => "，更新 ",
+            Self::DeletedMiddle => "，删除 ",
+            Self::HostsUnit => " 台：",
+            Self::ItemsUnit => " 个：",
+            Self::RecordsUnit => " 条：",
+            Self::SkippedMiddle => "，跳过 ",
+            Self::SkippedRecordsSuffix => " 条可疑记录",
+            Self::QuickCommandsSuffix => " 条（随可同步的设置一起导入）",
+            Self::SettingsCountMiddle => " 项，其中 ",
+            Self::SettingsCountSuffix => " 项和现在不同",
+            Self::PreviewConflictsSuffix => " 条（同一条记录两边都改过：取较新的，另一份进冲突页）",
+            Self::Hosts => "主机",
+            Self::Groups => "分组",
+            Self::Credentials => "凭据（含密码和私钥）",
+            Self::Proxies => "代理",
+            Self::TrustedHostKeys => "已信任的主机指纹",
+            Self::QuickCommands => "快捷命令",
+            Self::SyncableSettings => "可同步的设置",
+            Self::Conflicts => "冲突",
+            Self::Settings => "设置",
+            Self::ClearedReferences => "清空的引用",
+            Self::BackupBeforeImport => "导入前的备份",
+            Self::DuplicateHostsPrefix => "其中 ",
+            Self::DuplicateHostsSuffix => {
+                " 台主机的名称、地址、端口、用户名和 ZeeTerm 里已有的完全一样：合并后两边各留一份（删掉不要的那份即可）。"
+            }
+            Self::ReplaceDeletesPrefix => {
+                "替换会让 ZeeTerm 和这份数据一模一样：ZeeTerm 里有、这里没有的会被删除（主机 "
+            }
+            Self::ReplaceDeletesGroups => "、分组 ",
+            Self::ReplaceDeletesCredentials => "、凭据 ",
+            Self::ReplaceDeletesProxies => "、代理 ",
+            Self::ReplaceDeletesSuffix => "）。",
+            Self::NulledReferencesPrefix => "有 ",
+            Self::NulledReferencesSuffix => " 处引用指向不存在的记录，导入时会清空。",
+            Self::DirectNote => "端口转发规则和主机备注不会导入（Z-SSH 的备份文件里也没有它们）。",
+            Self::FileNote => "端口转发规则不在备份文件里，不会导入。",
+            Self::DoneSkippedMiddle => "，已有且相同而跳过 ",
+            Self::KnownKeysAddedSuffix => " 条",
+            Self::KnownKeysSkippedSuffix => " 条可疑主机密钥记录",
+            Self::SettingsChangedPrefix => "改动 ",
+            Self::SettingsChangedMiddle => " 项（含快捷命令 ",
+            Self::SettingsChangedSuffix => " 条）",
+            Self::DoneConflictsSuffix => " 条（两边都改过，保留了较新的，另一份在冲突页）",
+            Self::DoneNulledRefsSuffix => " 处（指向的记录不存在）",
+            Self::BackupSuffix => "（导错了可以在「本地备份」里恢复）",
+            Self::CardTitle => "从 Z-SSH 迁移",
+            Self::CardDescription => {
+                "把 Z-SSH 里的主机、分组、凭据（含密码和私钥）、代理、已信任的主机指纹、快捷命令和可同步的设置搬到 ZeeTerm。导入前会先预览，并自动备份 ZeeTerm 现在的数据。"
+            }
+            Self::DirectTitle => "直接导入本机的 Z-SSH 数据（推荐）",
+            Self::PickFolder => "指定文件夹…",
+            Self::ReadAndPreview => "读取并预览",
+            Self::FileTitle => "导入 Z-SSH 导出的备份文件",
+            Self::FileDescription => {
+                "在 Z-SSH 的「设置 → 同步 → 离线备份文件」里导出的 .zsshbak。格式和 ZeeTerm 的离线备份相同，选好文件、输入当时设的密码就能导入。"
+            }
+            Self::FileLabel => "文件",
+            Self::PickFile => "选择文件…",
+            Self::PasswordLabel => "密码",
+            Self::ExitZsshHint => "退出 Z-SSH（包括托盘里的图标）后点「重试」。",
+            Self::ExitedRetry => "我已退出 Z-SSH，重试",
+            Self::PreviewDirectTitle => "预览：本机 Z-SSH 的数据",
+            Self::PreviewFileTitle => "预览：备份文件里的数据",
+            Self::ImportMerge => "合并导入",
+            Self::ImportConfirmReplace => "确认替换导入",
+            Self::ImportReplace => "替换导入",
+            Self::ImportMode => "导入方式",
+            Self::ModeMerge => "合并（推荐）",
+            Self::ModeMergeHint => "两边都留。同一条记录两边都改过时取较新的，另一份进冲突页。",
+            Self::ModeReplace => "替换",
+            Self::ModeReplaceHint => {
+                "ZeeTerm 变成和这份数据一模一样，这里没有的主机、凭据会被删掉。"
+            }
+            Self::Cancel => "取消",
+            Self::ReplaceArmedWarning => {
+                "替换会删除 ZeeTerm 里这份数据没有的记录，再点一次「确认替换导入」才会执行。"
+            }
+            Self::BackupNote => {
+                "导入前会自动给 ZeeTerm 现在的数据做一份本地备份，导错了可以在下面的「本地备份」里恢复。"
+            }
+            Self::ImportDone => "导入完成",
+            Self::OpenHosts => "打开主机页",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::CheckingLocal => "Looking for Z-SSH data on this computer…",
+            Self::NotFoundLocal => {
+                "No Z-SSH data was found on this computer. If it is installed elsewhere or you changed its data folder, click \"Choose Folder…\" and select it (it should contain data.db)."
+            }
+            Self::LastUsedPrefix => ", last used ",
+            Self::FoundYesPrefix => "Found Z-SSH data (database ",
+            Self::FoundYesMiddle => "). Read-only; nothing is changed.\nFolder: ",
+            Self::AddedPrefix => "Added ",
+            Self::UpdatedMiddle => ", updated ",
+            Self::DeletedMiddle => ", deleted ",
+            Self::HostsUnit => " host(s): ",
+            Self::ItemsUnit => " item(s): ",
+            Self::RecordsUnit => " item(s): ",
+            Self::SkippedMiddle => ", skipped ",
+            Self::SkippedRecordsSuffix => " suspicious record(s)",
+            Self::QuickCommandsSuffix => " item(s) (imported with syncable settings)",
+            Self::SettingsCountMiddle => " item(s), ",
+            Self::SettingsCountSuffix => " differ from the current settings",
+            Self::PreviewConflictsSuffix => {
+                " item(s) (the same record changed on both sides: the newer one is kept, the other goes to the conflicts page)"
+            }
+            Self::Hosts => "Hosts",
+            Self::Groups => "Groups",
+            Self::Credentials => "Credentials (passwords and private keys)",
+            Self::Proxies => "Proxies",
+            Self::TrustedHostKeys => "Trusted host keys",
+            Self::QuickCommands => "Quick commands",
+            Self::SyncableSettings => "Syncable settings",
+            Self::Conflicts => "Conflicts",
+            Self::Settings => "Settings",
+            Self::ClearedReferences => "Cleared references",
+            Self::BackupBeforeImport => "Backup before import",
+            Self::DuplicateHostsPrefix => "",
+            Self::DuplicateHostsSuffix => {
+                " host(s) have the same name, address, port, and username as existing ZeeTerm entries: after merging both are kept (delete the one you do not want)."
+            }
+            Self::ReplaceDeletesPrefix => {
+                "Replace makes ZeeTerm identical to this data: anything in ZeeTerm that is not here will be deleted (hosts "
+            }
+            Self::ReplaceDeletesGroups => ", groups ",
+            Self::ReplaceDeletesCredentials => ", credentials ",
+            Self::ReplaceDeletesProxies => ", proxies ",
+            Self::ReplaceDeletesSuffix => ").",
+            Self::NulledReferencesPrefix => "",
+            Self::NulledReferencesSuffix => {
+                " references point to records that do not exist; they will be cleared on import."
+            }
+            Self::DirectNote => {
+                "Port forwarding rules and host notes are not imported (they are not in Z-SSH backups either)."
+            }
+            Self::FileNote => {
+                "Port forwarding rules are not in the backup file and are not imported."
+            }
+            Self::DoneSkippedMiddle => ", already present and unchanged, skipped ",
+            Self::KnownKeysAddedSuffix => " item(s)",
+            Self::KnownKeysSkippedSuffix => " suspicious host key record(s)",
+            Self::SettingsChangedPrefix => "Changed ",
+            Self::SettingsChangedMiddle => " item(s) (including ",
+            Self::SettingsChangedSuffix => " quick commands)",
+            Self::DoneConflictsSuffix => {
+                " item(s) (changed on both sides; the newer one was kept and the other is on the conflicts page)"
+            }
+            Self::DoneNulledRefsSuffix => " references (targets do not exist)",
+            Self::BackupSuffix => " (if something went wrong, restore it from Local Backups)",
+            Self::CardTitle => "Migrate from Z-SSH",
+            Self::CardDescription => {
+                "Move hosts, groups, credentials (passwords and private keys), proxies, trusted host keys, quick commands, and syncable settings from Z-SSH to ZeeTerm. You will see a preview before importing, and ZeeTerm's current data is backed up automatically."
+            }
+            Self::DirectTitle => "Import Z-SSH data from this computer (recommended)",
+            Self::PickFolder => "Choose Folder…",
+            Self::ReadAndPreview => "Read and Preview",
+            Self::FileTitle => "Import a backup file exported by Z-SSH",
+            Self::FileDescription => {
+                "The .zsshbak exported from Z-SSH under \"Settings → Sync → Offline Backup File\". The format is the same as ZeeTerm's offline backups; pick the file and enter the password you set then."
+            }
+            Self::FileLabel => "File",
+            Self::PickFile => "Choose File…",
+            Self::PasswordLabel => "Password",
+            Self::ExitZsshHint => "Quit Z-SSH (including its tray icon), then click \"Retry\".",
+            Self::ExitedRetry => "I Quit Z-SSH, Retry",
+            Self::PreviewDirectTitle => "Preview: Z-SSH data on this computer",
+            Self::PreviewFileTitle => "Preview: data in the backup file",
+            Self::ImportMerge => "Import (Merge)",
+            Self::ImportConfirmReplace => "Confirm Replace Import",
+            Self::ImportReplace => "Replace Import",
+            Self::ImportMode => "Import mode",
+            Self::ModeMerge => "Merge (recommended)",
+            Self::ModeMergeHint => {
+                "Keep both sides. When the same record changed on both sides, the newer one wins and the other goes to the conflicts page."
+            }
+            Self::ModeReplace => "Replace",
+            Self::ModeReplaceHint => {
+                "ZeeTerm becomes identical to this data; hosts and credentials that are not here will be deleted."
+            }
+            Self::Cancel => "Cancel",
+            Self::ReplaceArmedWarning => {
+                "Replace deletes records in ZeeTerm that are not in this data. Click \"Confirm Replace Import\" again to proceed."
+            }
+            Self::BackupNote => {
+                "ZeeTerm's current data is backed up locally before importing; if something went wrong, restore it from Local Backups below."
+            }
+            Self::ImportDone => "Import complete",
+            Self::OpenHosts => "Open Hosts Page",
+        }
+    }
+}
 
 // ---- 文字 ----
 
 /// 直接导入那一行的说明：找没找到、在哪、什么时候用过。
 pub(super) fn found_text(found: &Found, folder_error: Option<&str>) -> String {
     let base = match found {
-        Found::Checking => "正在查找本机的 Z-SSH 数据…".to_owned(),
+        Found::Checking => t(MigrateViewMsg::CheckingLocal).to_owned(),
         Found::Yes(source) => found_yes_text(source),
-        Found::No => "本机没有找到 Z-SSH 的数据。如果装在别处、或者自定义过数据文件夹，\
-                      点「指定文件夹…」选它（里面应该有 data.db）。"
-            .to_owned(),
+        Found::No => t(MigrateViewMsg::NotFoundLocal).to_owned(),
     };
     match folder_error {
         Some(error) => format!("{base}\n{error}"),
@@ -38,20 +333,32 @@ pub(super) fn found_text(found: &Found, folder_error: Option<&str>) -> String {
 fn found_yes_text(source: &ZsshSource) -> String {
     let used = source
         .modified_at
-        .map(|at| format!("，最后使用 {}", format_stamp(at)))
+        .map(|at| format!("{}{}", t(MigrateViewMsg::LastUsedPrefix), format_stamp(at)))
         .unwrap_or_default();
     format!(
-        "已找到 Z-SSH 的数据（数据库 {}{used}）。只读取，不会改动它。
-文件夹：{}",
+        "{}{}{}{}{}",
+        t(MigrateViewMsg::FoundYesPrefix),
         crate::format::size(source.db_bytes),
+        used,
+        t(MigrateViewMsg::FoundYesMiddle),
         source.data_dir.display()
     )
 }
 
 fn changes(counts: &ChangeCounts, replace: bool) -> String {
-    let mut text = format!("新增 {}，更新 {}", counts.inserted, counts.updated);
+    let mut text = format!(
+        "{}{}{}{}",
+        t(MigrateViewMsg::AddedPrefix),
+        counts.inserted,
+        t(MigrateViewMsg::UpdatedMiddle),
+        counts.updated
+    );
     if replace && counts.deleted > 0 {
-        text.push_str(&format!("，删除 {}", counts.deleted));
+        text.push_str(&format!(
+            "{}{}",
+            t(MigrateViewMsg::DeletedMiddle),
+            counts.deleted
+        ));
     }
     text
 }
@@ -62,63 +369,88 @@ pub(super) fn preview_rows(preview: &ImportPreview) -> Vec<(&'static str, String
     let source = &preview.source;
     vec![
         (
-            "主机",
-            format!("{} 台：{}", source.hosts, changes(&preview.hosts, replace)),
+            t(MigrateViewMsg::Hosts),
+            format!(
+                "{}{}{}",
+                source.hosts,
+                t(MigrateViewMsg::HostsUnit),
+                changes(&preview.hosts, replace)
+            ),
         ),
         (
-            "分组",
+            t(MigrateViewMsg::Groups),
             format!(
-                "{} 个：{}",
+                "{}{}{}",
                 source.groups,
+                t(MigrateViewMsg::ItemsUnit),
                 changes(&preview.groups, replace)
             ),
         ),
         (
-            "凭据（含密码和私钥）",
+            t(MigrateViewMsg::Credentials),
             format!(
-                "{} 条：{}",
+                "{}{}{}",
                 source.identities,
+                t(MigrateViewMsg::RecordsUnit),
                 changes(&preview.identities, replace)
             ),
         ),
         (
-            "代理",
+            t(MigrateViewMsg::Proxies),
             format!(
-                "{} 个：{}",
+                "{}{}{}",
                 source.proxies,
+                t(MigrateViewMsg::ItemsUnit),
                 changes(&preview.proxies, replace)
             ),
         ),
         (
-            "已信任的主机指纹",
+            t(MigrateViewMsg::TrustedHostKeys),
             if preview.known_hosts_skipped > 0 {
                 format!(
-                    "{} 条：新增 {}，跳过 {} 条可疑记录",
-                    source.known_hosts, preview.known_hosts_added, preview.known_hosts_skipped
+                    "{}{}{}{}{}{}{}",
+                    source.known_hosts,
+                    t(MigrateViewMsg::RecordsUnit),
+                    t(MigrateViewMsg::AddedPrefix),
+                    preview.known_hosts_added,
+                    t(MigrateViewMsg::SkippedMiddle),
+                    preview.known_hosts_skipped,
+                    t(MigrateViewMsg::SkippedRecordsSuffix)
                 )
             } else {
                 format!(
-                    "{} 条：新增 {}",
-                    source.known_hosts, preview.known_hosts_added
+                    "{}{}{}{}",
+                    source.known_hosts,
+                    t(MigrateViewMsg::RecordsUnit),
+                    t(MigrateViewMsg::AddedPrefix),
+                    preview.known_hosts_added
                 )
             },
         ),
         (
-            "快捷命令",
-            format!("{} 条（随可同步的设置一起导入）", source.quick_commands),
-        ),
-        (
-            "可同步的设置",
+            t(MigrateViewMsg::QuickCommands),
             format!(
-                "{} 项，其中 {} 项和现在不同",
-                source.settings, preview.settings_changed
+                "{}{}",
+                source.quick_commands,
+                t(MigrateViewMsg::QuickCommandsSuffix)
             ),
         ),
         (
-            "冲突",
+            t(MigrateViewMsg::SyncableSettings),
             format!(
-                "{} 条（同一条记录两边都改过：取较新的，另一份进冲突页）",
-                preview.conflicts
+                "{}{}{}{}",
+                source.settings,
+                t(MigrateViewMsg::SettingsCountMiddle),
+                preview.settings_changed,
+                t(MigrateViewMsg::SettingsCountSuffix)
+            ),
+        ),
+        (
+            t(MigrateViewMsg::Conflicts),
+            format!(
+                "{}{}",
+                preview.conflicts,
+                t(MigrateViewMsg::PreviewConflictsSuffix)
             ),
         ),
     ]
@@ -129,32 +461,37 @@ pub(super) fn preview_warnings(preview: &ImportPreview, origin: &Origin) -> Vec<
     let mut lines = Vec::new();
     if preview.duplicate_hosts > 0 {
         lines.push(format!(
-            "其中 {} 台主机的名称、地址、端口、用户名和 ZeeTerm 里已有的完全一样：\
-             合并后两边各留一份（删掉不要的那份即可）。",
-            preview.duplicate_hosts
+            "{}{}{}",
+            t(MigrateViewMsg::DuplicateHostsPrefix),
+            preview.duplicate_hosts,
+            t(MigrateViewMsg::DuplicateHostsSuffix)
         ));
     }
     if preview.mode == OfflineImportMode::Replace {
         lines.push(format!(
-            "替换会让 ZeeTerm 和这份数据一模一样：ZeeTerm 里有、这里没有的会被删除\
-             （主机 {}、分组 {}、凭据 {}、代理 {}）。",
+            "{}{}{}{}{}{}{}{}{}",
+            t(MigrateViewMsg::ReplaceDeletesPrefix),
             preview.hosts.deleted,
+            t(MigrateViewMsg::ReplaceDeletesGroups),
             preview.groups.deleted,
+            t(MigrateViewMsg::ReplaceDeletesCredentials),
             preview.identities.deleted,
-            preview.proxies.deleted
+            t(MigrateViewMsg::ReplaceDeletesProxies),
+            preview.proxies.deleted,
+            t(MigrateViewMsg::ReplaceDeletesSuffix)
         ));
     }
     if preview.nulled_references > 0 {
         lines.push(format!(
-            "有 {} 处引用指向不存在的记录，导入时会清空。",
-            preview.nulled_references
+            "{}{}{}",
+            t(MigrateViewMsg::NulledReferencesPrefix),
+            preview.nulled_references,
+            t(MigrateViewMsg::NulledReferencesSuffix)
         ));
     }
     lines.push(match origin {
-        Origin::Direct => {
-            "端口转发规则和主机备注不会导入（Z-SSH 的备份文件里也没有它们）。".to_owned()
-        }
-        Origin::File => "端口转发规则不在备份文件里，不会导入。".to_owned(),
+        Origin::Direct => t(MigrateViewMsg::DirectNote).to_owned(),
+        Origin::File => t(MigrateViewMsg::FileNote).to_owned(),
     });
     lines
 }
@@ -171,68 +508,96 @@ pub(super) fn done_rows(
     let line = |total: usize, counts: &ChangeCounts| {
         let skipped = total.saturating_sub(counts.inserted + counts.updated);
         let mut text = format!(
-            "新增 {}，更新 {}，已有且相同而跳过 {}",
-            counts.inserted, counts.updated, skipped
+            "{}{}{}{}{}{}",
+            t(MigrateViewMsg::AddedPrefix),
+            counts.inserted,
+            t(MigrateViewMsg::UpdatedMiddle),
+            counts.updated,
+            t(MigrateViewMsg::DoneSkippedMiddle),
+            skipped
         );
         if replace && counts.deleted > 0 {
-            text.push_str(&format!("，删除 {}", counts.deleted));
+            text.push_str(&format!(
+                "{}{}",
+                t(MigrateViewMsg::DeletedMiddle),
+                counts.deleted
+            ));
         }
         text
     };
     let mut rows = vec![
         (
-            "主机".to_owned(),
+            t(MigrateViewMsg::Hosts).to_owned(),
             line(preview.source.hosts, &preview.hosts),
         ),
         (
-            "分组".to_owned(),
+            t(MigrateViewMsg::Groups).to_owned(),
             line(preview.source.groups, &preview.groups),
         ),
         (
-            "凭据".to_owned(),
+            t(MigrateViewMsg::Credentials).to_owned(),
             line(preview.source.identities, &preview.identities),
         ),
         (
-            "代理".to_owned(),
+            t(MigrateViewMsg::Proxies).to_owned(),
             line(preview.source.proxies, &preview.proxies),
         ),
         (
-            "已信任的主机指纹".to_owned(),
+            t(MigrateViewMsg::TrustedHostKeys).to_owned(),
             if applied.known_hosts_skipped > 0 {
                 format!(
-                    "新增 {} 条，跳过 {} 条可疑主机密钥记录",
-                    applied.known_hosts_added, applied.known_hosts_skipped
+                    "{}{}{}{}{}",
+                    t(MigrateViewMsg::AddedPrefix),
+                    applied.known_hosts_added,
+                    t(MigrateViewMsg::SkippedMiddle),
+                    applied.known_hosts_skipped,
+                    t(MigrateViewMsg::KnownKeysSkippedSuffix)
                 )
             } else {
-                format!("新增 {} 条", applied.known_hosts_added)
+                format!(
+                    "{}{}{}",
+                    t(MigrateViewMsg::AddedPrefix),
+                    applied.known_hosts_added,
+                    t(MigrateViewMsg::KnownKeysAddedSuffix)
+                )
             },
         ),
         (
-            "设置".to_owned(),
+            t(MigrateViewMsg::Settings).to_owned(),
             format!(
-                "改动 {} 项（含快捷命令 {} 条）",
-                preview.settings_changed, preview.source.quick_commands
+                "{}{}{}{}{}",
+                t(MigrateViewMsg::SettingsChangedPrefix),
+                preview.settings_changed,
+                t(MigrateViewMsg::SettingsChangedMiddle),
+                preview.source.quick_commands,
+                t(MigrateViewMsg::SettingsChangedSuffix)
             ),
         ),
         (
-            "冲突".to_owned(),
+            t(MigrateViewMsg::Conflicts).to_owned(),
             format!(
-                "{} 条（两边都改过，保留了较新的，另一份在冲突页）",
-                report.conflicts
+                "{}{}",
+                report.conflicts,
+                t(MigrateViewMsg::DoneConflictsSuffix)
             ),
         ),
     ];
     if !report.nulled_references.is_empty() {
         rows.push((
-            "清空的引用".to_owned(),
-            format!("{} 处（指向的记录不存在）", report.nulled_references.len()),
+            t(MigrateViewMsg::ClearedReferences).to_owned(),
+            format!(
+                "{}{}",
+                report.nulled_references.len(),
+                t(MigrateViewMsg::DoneNulledRefsSuffix)
+            ),
         ));
     }
     rows.push((
-        "导入前的备份".to_owned(),
+        t(MigrateViewMsg::BackupBeforeImport).to_owned(),
         format!(
-            "{}（导错了可以在「本地备份」里恢复）",
-            report.safety_backup.name
+            "{}{}",
+            report.safety_backup.name,
+            t(MigrateViewMsg::BackupSuffix)
         ),
     ));
     rows
@@ -300,11 +665,8 @@ impl Render for MigrateDemo {
         }
         card(
             "migrate-zssh",
-            "从 Z-SSH 迁移",
-            Some(
-                "把 Z-SSH 里的主机、分组、凭据（含密码和私钥）、代理、已信任的主机指纹、快捷命令和\
-                 可同步的设置搬到 ZeeTerm。导入前会先预览，并自动备份 ZeeTerm 现在的数据。",
-            ),
+            t(MigrateViewMsg::CardTitle),
+            Some(t(MigrateViewMsg::CardDescription)),
             &tokens,
             rows,
         )
@@ -328,7 +690,7 @@ impl MigrateDemo {
                     .child(
                         div()
                             .typo(Role::ItemName, tokens)
-                            .child("直接导入本机的 Z-SSH 数据（推荐）"),
+                            .child(t(MigrateViewMsg::DirectTitle)),
                     )
                     .child(muted(
                         found_text(&self.state.found, self.state.folder_error.as_deref()),
@@ -341,7 +703,7 @@ impl MigrateDemo {
                     .gap_2()
                     .child(act_button(
                         "migrate-pick-folder",
-                        "指定文件夹…",
+                        t(MigrateViewMsg::PickFolder),
                         entity,
                         busy,
                         |this, window, cx| this.browse_folder(window, cx),
@@ -349,7 +711,7 @@ impl MigrateDemo {
                     .child(
                         act_button(
                             "migrate-direct-read",
-                            "读取并预览",
+                            t(MigrateViewMsg::ReadAndPreview),
                             entity,
                             busy || !found,
                             |this, _, cx| this.start_direct(cx),
@@ -372,24 +734,20 @@ impl MigrateDemo {
                     .child(
                         div()
                             .typo(Role::ItemName, tokens)
-                            .child("导入 Z-SSH 导出的备份文件"),
+                            .child(t(MigrateViewMsg::FileTitle)),
                     )
-                    .child(muted(
-                        "在 Z-SSH 的「设置 → 同步 → 离线备份文件」里导出的 .zsshbak。\
-                         格式和 ZeeTerm 的离线备份相同，选好文件、输入当时设的密码就能导入。",
-                        tokens,
-                    )),
+                    .child(muted(t(MigrateViewMsg::FileDescription), tokens)),
             )
             .child(
                 h_flex()
                     .w_full()
                     .gap_2()
                     .items_center()
-                    .child(label_cell("文件"))
+                    .child(label_cell(t(MigrateViewMsg::FileLabel)))
                     .child(Input::new(&self.file_path).flex_1())
                     .child(act_button(
                         "migrate-pick-file",
-                        "选择文件…",
+                        t(MigrateViewMsg::PickFile),
                         entity,
                         busy,
                         |this, window, cx| this.browse_file(window, cx),
@@ -400,7 +758,7 @@ impl MigrateDemo {
                     .w_full()
                     .gap_2()
                     .items_center()
-                    .child(label_cell("密码"))
+                    .child(label_cell(t(MigrateViewMsg::PasswordLabel)))
                     .child(
                         Input::new(&self.file_password)
                             .flex_1()
@@ -409,7 +767,7 @@ impl MigrateDemo {
                     .child(
                         act_button(
                             "migrate-file-read",
-                            "读取并预览",
+                            t(MigrateViewMsg::ReadAndPreview),
                             entity,
                             busy,
                             |this, _, cx| this.start_file(cx),
@@ -463,15 +821,12 @@ impl MigrateDemo {
                 .id("migrate-in-use")
                 .gap_2()
                 .child(colored(failure.message.clone(), tokens.caution))
-                .child(muted(
-                    "退出 Z-SSH（包括托盘里的图标）后点「重试」。",
-                    tokens,
-                ))
+                .child(muted(t(MigrateViewMsg::ExitZsshHint), tokens))
                 .child(
                     h_flex().child(
                         act_button(
                             "migrate-retry",
-                            "我已退出 Z-SSH，重试",
+                            t(MigrateViewMsg::ExitedRetry),
                             entity,
                             busy,
                             |this, _, cx| this.start_direct(cx),
@@ -497,8 +852,8 @@ impl MigrateDemo {
     ) -> AnyElement {
         let mode = self.state.mode;
         let title = match loaded.origin {
-            Origin::Direct => "预览：本机 Z-SSH 的数据",
-            Origin::File => "预览：备份文件里的数据",
+            Origin::Direct => t(MigrateViewMsg::PreviewDirectTitle),
+            Origin::File => t(MigrateViewMsg::PreviewFileTitle),
         };
         let mode_button = |id: &'static str,
                            label: &'static str,
@@ -528,9 +883,11 @@ impl MigrateDemo {
                 .child(muted(hint, tokens))
         };
         let import_label = match mode {
-            OfflineImportMode::Merge => "合并导入",
-            OfflineImportMode::Replace if self.state.replace_armed => "确认替换导入",
-            OfflineImportMode::Replace => "替换导入",
+            OfflineImportMode::Merge => t(MigrateViewMsg::ImportMerge),
+            OfflineImportMode::Replace if self.state.replace_armed => {
+                t(MigrateViewMsg::ImportConfirmReplace)
+            }
+            OfflineImportMode::Replace => t(MigrateViewMsg::ImportReplace),
         };
         let import_button = {
             let button = act_button(
@@ -567,18 +924,18 @@ impl MigrateDemo {
                     .w_full()
                     .gap_4()
                     .items_start()
-                    .child(label_cell("导入方式"))
+                    .child(label_cell(t(MigrateViewMsg::ImportMode)))
                     .child(mode_button(
                         "migrate-mode-merge",
-                        "合并（推荐）",
+                        t(MigrateViewMsg::ModeMerge),
                         OfflineImportMode::Merge,
-                        "两边都留。同一条记录两边都改过时取较新的，另一份进冲突页。",
+                        t(MigrateViewMsg::ModeMergeHint),
                     ))
                     .child(mode_button(
                         "migrate-mode-replace",
-                        "替换",
+                        t(MigrateViewMsg::ModeReplace),
                         OfflineImportMode::Replace,
-                        "ZeeTerm 变成和这份数据一模一样，这里没有的主机、凭据会被删掉。",
+                        t(MigrateViewMsg::ModeReplaceHint),
                     )),
             )
             .child(
@@ -588,22 +945,22 @@ impl MigrateDemo {
                     .child(import_button)
                     .child(act_button(
                         "migrate-cancel",
-                        "取消",
+                        t(MigrateViewMsg::Cancel),
                         entity,
                         busy,
                         |this, _, cx| this.cancel(cx),
                     )),
             )
-            .when(mode == OfflineImportMode::Replace && self.state.replace_armed, |col| {
-                col.child(colored(
-                    "替换会删除 ZeeTerm 里这份数据没有的记录，再点一次「确认替换导入」才会执行。",
-                    tokens.danger,
-                ))
-            })
-            .child(muted(
-                "导入前会自动给 ZeeTerm 现在的数据做一份本地备份，导错了可以在下面的「本地备份」里恢复。",
-                tokens,
-            ))
+            .when(
+                mode == OfflineImportMode::Replace && self.state.replace_armed,
+                |col| {
+                    col.child(colored(
+                        t(MigrateViewMsg::ReplaceArmedWarning),
+                        tokens.danger,
+                    ))
+                },
+            )
+            .child(muted(t(MigrateViewMsg::BackupNote), tokens))
             .into_any_element()
     }
 
@@ -616,7 +973,7 @@ impl MigrateDemo {
                 div()
                     .typo(Role::ItemName, tokens)
                     .text_color(tokens.dot_connected)
-                    .child("导入完成"),
+                    .child(t(MigrateViewMsg::ImportDone)),
             )
             .children(
                 done_rows(&done.preview, &done.report)
@@ -627,7 +984,7 @@ impl MigrateDemo {
                 h_flex().child(
                     act_button(
                         "migrate-open-hosts",
-                        "打开主机页",
+                        t(MigrateViewMsg::OpenHosts),
                         entity,
                         false,
                         |this, window, cx| this.open_hosts(window, cx),

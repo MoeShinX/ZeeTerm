@@ -13,7 +13,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::MainWindow;
-use super::app_lock_ui::{LOCK_TOOLTIP, build_lock_menu};
+use super::app_lock_ui::{build_lock_menu, lock_tooltip};
 use super::nav::MainView;
 use crate::app_theme::Tokens;
 use crate::i18n::{Msg, t};
@@ -248,7 +248,7 @@ impl MainWindow {
                 // 锁屏（V2-U26）：左键锁定（没启用时去设置里设密码），右键菜单。锁着的时候这条栏本身不画，
                 // 所以这个按钮恒为不高亮。
                 .child(
-                    switch_button("lock-switch", Ico::Lock, LOCK_TOOLTIP, false, tokens)
+                    switch_button("lock-switch", Ico::Lock, lock_tooltip(), false, tokens)
                         .on_click(move |_, window, cx| {
                             lock_entity.update(cx, |this, cx| this.lock_button_clicked(window, cx));
                         })

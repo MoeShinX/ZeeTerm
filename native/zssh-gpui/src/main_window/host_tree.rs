@@ -24,7 +24,7 @@ enum HostTreeMsg {
 impl Msg for HostTreeMsg {
     fn zh(&self) -> &'static str {
         match self {
-            Self::Ungrouped => UNGROUPED_LABEL,
+            Self::Ungrouped => "未分组",
         }
     }
 
@@ -35,16 +35,13 @@ impl Msg for HostTreeMsg {
     }
 }
 
-/// 「未分组」那一行现在的名字（搜索时按它匹配）：跟随界面语言。
+/// 「未分组」那一行的名字（渲染和搜索匹配都按它）：跟随界面语言。
 pub fn ungrouped_label() -> &'static str {
     t(HostTreeMsg::Ungrouped)
 }
 
 /// 「未分组」在展开状态里的键；分组的键是 `g<id>`。
 pub const UNGROUPED_KEY: &str = "ungrouped";
-
-/// 「未分组」那一行的中文名（渲染在 `sidebar`，那边仍用这个常量）。
-pub const UNGROUPED_LABEL: &str = "未分组";
 
 pub fn group_key(group_id: Option<i64>) -> String {
     match group_id {

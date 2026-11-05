@@ -13,6 +13,59 @@ use std::thread;
 use zssh_regex::{CompiledRule, DEFAULT_MATCH_LIMIT, Engine, MatchError, compile};
 use zssh_terminal::RowSnapshot;
 
+use crate::i18n::{Msg, t};
+
+/// 本文件（高亮规则）自己的界面文案。
+///
+/// 只放应用自己的固定文案；规则的正则 / 关键词是用户数据，颜色值是数字，都不进这张表。
+#[derive(Clone, Copy, Debug)]
+enum HighlightMsg {
+    ColorRed,
+    ColorOrange,
+    ColorYellow,
+    ColorGreen,
+    ColorTeal,
+    ColorBlue,
+    ColorPurple,
+    /// 不在预设里的颜色（旧规则、同步来的）。
+    Custom,
+    /// 匹配超预算暂停的提示：`规则 {label} 匹配超出预算，已暂停到下次修改`。
+    SuspendedPrefix,
+    SuspendedSuffix,
+}
+
+impl Msg for HighlightMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::ColorRed => "红",
+            Self::ColorOrange => "橙",
+            Self::ColorYellow => "黄",
+            Self::ColorGreen => "绿",
+            Self::ColorTeal => "青",
+            Self::ColorBlue => "蓝",
+            Self::ColorPurple => "紫",
+            Self::Custom => "自定义",
+            Self::SuspendedPrefix => "规则 ",
+            Self::SuspendedSuffix => " 匹配超出预算，已暂停到下次修改",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::ColorRed => "Red",
+            Self::ColorOrange => "Orange",
+            Self::ColorYellow => "Yellow",
+            Self::ColorGreen => "Green",
+            Self::ColorTeal => "Teal",
+            Self::ColorBlue => "Blue",
+            Self::ColorPurple => "Purple",
+            Self::Custom => "Custom",
+            Self::SuspendedPrefix => "Rule ",
+            Self::SuspendedSuffix => " exceeded its match budget and is paused until the next edit",
+        }
+    }
+}
+
 /// 规则最多这么多条（和配置同步的校验一致，对方的包超过就不收）。
 pub const MAX_RULES: usize = zssh_core::sync::settings::HIGHLIGHT_RULES_MAX;
 
@@ -111,15 +164,55 @@ impl HighlightRule {
     }
 }
 
+/// 预设颜色的名字（存的是键，显示时按当前语言取）。
+///
+/// 单独成类型是为了让 `HIGHLIGHT_COLORS` 仍能直接放进 `Choice::new`（实现 `Into<String>`），
+/// 设置页规则编辑器那边不用改。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HighlightColor {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Teal,
+    Blue,
+    Purple,
+}
+
+impl HighlightColor {
+    fn msg(self) -> HighlightMsg {
+        match self {
+            Self::Red => HighlightMsg::ColorRed,
+            Self::Orange => HighlightMsg::ColorOrange,
+            Self::Yellow => HighlightMsg::ColorYellow,
+            Self::Green => HighlightMsg::ColorGreen,
+            Self::Teal => HighlightMsg::ColorTeal,
+            Self::Blue => HighlightMsg::ColorBlue,
+            Self::Purple => HighlightMsg::ColorPurple,
+        }
+    }
+
+    /// 这个颜色在界面上的名字，跟随界面语言。
+    pub fn name(self) -> &'static str {
+        t(self.msg())
+    }
+}
+
+impl From<HighlightColor> for String {
+    fn from(color: HighlightColor) -> Self {
+        color.name().to_owned()
+    }
+}
+
 /// 设置页规则编辑器里的颜色（同 0.2.14 的 `HIGHLIGHT_COLORS`）。
-pub const HIGHLIGHT_COLORS: [(u32, &str); 7] = [
-    (0xef4444, "红"),
-    (0xf59e0b, "橙"),
-    (0xeab308, "黄"),
-    (0x22c55e, "绿"),
-    (0x06b6d4, "青"),
-    (0x3b82f6, "蓝"),
-    (0xa855f7, "紫"),
+pub const HIGHLIGHT_COLORS: [(u32, HighlightColor); 7] = [
+    (0xef4444, HighlightColor::Red),
+    (0xf59e0b, HighlightColor::Orange),
+    (0xeab308, HighlightColor::Yellow),
+    (0x22c55e, HighlightColor::Green),
+    (0x06b6d4, HighlightColor::Teal),
+    (0x3b82f6, HighlightColor::Blue),
+    (0xa855f7, HighlightColor::Purple),
 ];
 
 /// 颜色的名字；不在预设里（旧规则、同步来的）显示「自定义」。
@@ -127,7 +220,7 @@ pub fn color_label(color: u32) -> &'static str {
     HIGHLIGHT_COLORS
         .iter()
         .find(|(value, _)| *value == color)
-        .map_or("自定义", |(_, label)| label)
+        .map_or(t(HighlightMsg::Custom), |(_, name)| name.name())
 }
 
 /// 涂背景时文字用黑还是白：按背景亮度挑反差大的。
@@ -285,8 +378,10 @@ pub fn scan(
                 Err(MatchError::BudgetExceeded) => {
                     if suspended.insert(rule.id) {
                         outcome.notices.push(format!(
-                            "规则 {} 匹配超出预算，已暂停到下次修改",
-                            rule.label()
+                            "{}{}{}",
+                            t(HighlightMsg::SuspendedPrefix),
+                            rule.label(),
+                            t(HighlightMsg::SuspendedSuffix)
                         ));
                         if let Some(status) = outcome.statuses.iter_mut().find(|s| s.id == rule.id)
                         {

@@ -30,6 +30,43 @@ use zssh_core::ssh::connection::Connection;
 use zssh_core::ssh::forward::{self, ForwardCounters, ForwardStats};
 use zssh_core::store::forwards::{ForwardKind, PortForward};
 
+use crate::i18n::{Msg, t};
+
+/// 本文件（端口转发运行时）自己的界面文案。
+///
+/// 只放应用自己的固定文案；地址、端口是数据，由 `format!` 带进来。
+#[derive(Clone, Copy, Debug)]
+enum ForwardRuntimeMsg {
+    /// 本地转发：`本机 {bind} → {dest}（经服务器）` 的前半句。
+    LocalPrefix,
+    /// 远程转发：`服务器 {bind} → 本机这边 {dest}` 的前半句。
+    RemotePrefix,
+    /// 远程转发的中间那段（箭头 + 本机这边）。
+    RemoteMiddle,
+    /// 本地转发的括号说明。
+    LocalSuffix,
+}
+
+impl Msg for ForwardRuntimeMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::LocalPrefix => "本机 ",
+            Self::RemotePrefix => "服务器 ",
+            Self::RemoteMiddle => " → 本机这边 ",
+            Self::LocalSuffix => "（经服务器）",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::LocalPrefix => "Local ",
+            Self::RemotePrefix => "Remote ",
+            Self::RemoteMiddle => " → local ",
+            Self::LocalSuffix => " (via server)",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     /// 正在连 SSH（可能在等用户输密码 / 确认指纹）。
@@ -485,8 +522,20 @@ pub fn describe(rule: &PortForward) -> String {
     let bind = format!("{}:{}", rule.bind_host, rule.bind_port);
     let dest = format!("{}:{}", rule.dest_host, rule.dest_port);
     match rule.kind {
-        ForwardKind::Local => format!("本机 {bind} → {dest}（经服务器）"),
-        ForwardKind::Remote => format!("服务器 {bind} → 本机这边 {dest}"),
+        ForwardKind::Local => format!(
+            "{}{} → {}{}",
+            t(ForwardRuntimeMsg::LocalPrefix),
+            bind,
+            dest,
+            t(ForwardRuntimeMsg::LocalSuffix)
+        ),
+        ForwardKind::Remote => format!(
+            "{}{}{}{}",
+            t(ForwardRuntimeMsg::RemotePrefix),
+            bind,
+            t(ForwardRuntimeMsg::RemoteMiddle),
+            dest
+        ),
     }
 }
 

@@ -3,8 +3,41 @@
 //! 主机库和标签上，并统一提示文案（"仅 SSH 主机可用"）。
 
 use super::MainWindow;
-use super::protocol_form::{Caps, SSH_ONLY_HINT};
+use super::protocol_form::{Caps, protocol_tag, ssh_only_hint};
+use crate::i18n::{Msg, t};
 use gpui_kit::*;
+
+/// 本文件（SSH-only 提示）自己的界面文案。
+///
+/// 提示句是「某功能 + 仅 SSH 主机可用 +（「主机」是协议 主机）」，前半句的「某功能」由调用方
+/// 给（各自的入口名），这里只放本文件拼的那几段固定片段。主机名和协议名是数据，不进这张表。
+#[derive(Clone, Copy, Debug)]
+enum ProtocolCapsMsg {
+    /// 括号 + 左引号。
+    Open,
+    /// 右引号 + 「是」。
+    Is,
+    /// 「主机」+ 右括号。
+    Close,
+}
+
+impl Msg for ProtocolCapsMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::Open => "（「",
+            Self::Is => "」是 ",
+            Self::Close => " 主机）",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::Open => " (\"",
+            Self::Is => "\" is a ",
+            Self::Close => " host)",
+        }
+    }
+}
 
 impl MainWindow {
     /// 这台主机的能力；主机库里找不到按全部可用（各入口自己会报"找不到主机"）。
@@ -31,6 +64,8 @@ impl MainWindow {
     }
 
     /// 主机是 Telnet / 串口时，说一句"某功能仅 SSH 主机可用"（带上主机名和它的协议）。
+    ///
+    /// `what` 是各入口自己的功能名，由调用方按自己的文案表给。
     pub(crate) fn ssh_only_notice(
         &mut self,
         host_id: Option<i64>,
@@ -42,12 +77,15 @@ impl MainWindow {
             .and_then(|id| self.store.host(id))
             .map(|host| {
                 format!(
-                    "（「{}」是 {} 主机）",
+                    "{}{}{}{}{}",
+                    t(ProtocolCapsMsg::Open),
                     host.name,
-                    host.protocol.protocol.label()
+                    t(ProtocolCapsMsg::Is),
+                    protocol_tag(host.protocol.protocol),
+                    t(ProtocolCapsMsg::Close)
                 )
             })
             .unwrap_or_default();
-        self.notice(&format!("{what}{SSH_ONLY_HINT}{detail}"), window, cx);
+        self.notice(&format!("{what}{}{detail}", ssh_only_hint()), window, cx);
     }
 }

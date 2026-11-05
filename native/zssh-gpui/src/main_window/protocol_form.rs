@@ -43,6 +43,8 @@ enum ProtocolMsg {
     DeviceNotDetectedSuffix,
     SerialTag,
     SerialUnselected,
+    // ---- SSH-only 能力 ----
+    SshOnlyHint,
 }
 
 impl Msg for ProtocolMsg {
@@ -71,6 +73,7 @@ impl Msg for ProtocolMsg {
             Self::DeviceNotDetectedSuffix => "（当前未检测到）",
             Self::SerialTag => "串口",
             Self::SerialUnselected => "未选择串口",
+            Self::SshOnlyHint => SSH_ONLY_HINT,
         }
     }
 
@@ -99,6 +102,7 @@ impl Msg for ProtocolMsg {
             Self::DeviceNotDetectedSuffix => " (not detected right now)",
             Self::SerialTag => "Serial",
             Self::SerialUnselected => "No serial port selected",
+            Self::SshOnlyHint => "Only available for SSH hosts",
         }
     }
 }
@@ -531,7 +535,13 @@ pub fn host_search_address(host: &Host) -> String {
 
 // ---- SSH-only 能力 ----
 
-/// 悬停说明：这一项只有 SSH 主机能用。
+/// 悬停说明：这一项只有 SSH 主机能用。跟随界面语言，画菜单 / 提示时现取。
+pub(crate) fn ssh_only_hint() -> &'static str {
+    t(ProtocolMsg::SshOnlyHint)
+}
+
+/// 「仅 SSH 主机可用」的中文原文。`tab_menu` 的 `Msg::zh` 要一个编译期常量（那个文件不在本次
+/// 改动范围），它的英文由自己的 `Msg::en` 给；界面上的提示一律走 [`ssh_only_hint`]。
 pub const SSH_ONLY_HINT: &str = "仅 SSH 主机可用";
 
 /// 一台主机上的各项功能是否可用（`None` = 主机不存在，按可用处理，由各入口自己报"找不到"）。
@@ -886,6 +896,7 @@ mod tests {
         assert!(Caps::of(Protocol::Serial).send_break);
         assert!(!Caps::of(Protocol::Telnet).send_break);
         assert_eq!(SSH_ONLY_HINT, "仅 SSH 主机可用");
+        assert_eq!(ssh_only_hint(), "仅 SSH 主机可用");
     }
 
     #[cfg(debug_assertions)]
