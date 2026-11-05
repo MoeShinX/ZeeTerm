@@ -362,7 +362,7 @@ impl AppSettings {
         if let Some(handle) = cx.try_global::<SettingsHandle>() {
             return handle.0.clone();
         }
-        let mut settings = UiSettings::load();
+        let settings = UiSettings::load();
         let writer = SettingsWriter::to_file(crate::settings::settings_path());
         let _ = WRITER.set(Arc::clone(&writer));
         // 主题要在开任何窗口之前定下来：`Theme::change` 会把颜色重置成组件库默认值，
@@ -374,16 +374,9 @@ impl AppSettings {
         );
         // 皮肤和终端配色的选择先记下，`init_mode` 写主题时才取得到。
         cx.set_global(settings.look());
-        // 界面语言要在开窗口之前定下来。设置文件里没有语言字段 = 升级上来的老用户 → 中文
-        // （`UiSettings::default` 给的）；根本没有设置文件 = 全新安装 → 跟随系统。
-        let pref = if crate::settings::settings_path().exists() {
-            settings.language_pref()
-        } else {
-            // 内存里的设置也要记成"跟随系统"：否则用户第一次改任何设置（主题、字体……）落盘时，
-            // 默认值里的 "zh" 会一起写进去，下次启动英文系统的用户就变成了中文界面。
-            settings.language = crate::i18n::LangPref::System.as_str().to_owned();
-            crate::i18n::LangPref::System
-        };
+        // 界面语言要在开窗口之前定下来。没选过（全新安装、老设置文件里没有这个字段）时
+        // `UiSettings::default` 给的就是"跟随系统"，只有在设置里明确选过中文 / 英文才固定。
+        let pref = settings.language_pref();
         crate::i18n::set(
             pref.resolve(zssh_platform_windows::locale::system_is_chinese()),
             cx,
