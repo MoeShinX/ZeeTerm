@@ -1156,7 +1156,7 @@ async fn copying_into_a_link_that_points_back_into_the_source_is_refused() {
         .expect("和源不相干的目标");
     let result = ensure_not_into_itself(fs.as_ref(), "/src", "/nowhere/copy").await;
     assert!(
-        matches!(result, Err(SftpError::Remote(ref message)) if message.contains("无法确认")),
+        matches!(result, Err(SftpError::RemoteReason(ref message)) if message.contains("无法确认")),
         "{result:?}"
     );
 }
@@ -1210,7 +1210,7 @@ async fn copying_stops_at_the_depth_limit() {
     let cancel = no_cancel();
     let result = copy_with_copy_data(&fs, "/src", "/dst", &options("c21-depth", &cancel)).await;
     assert!(
-        matches!(result, Err(SftpError::Remote(ref message)) if message.contains("层")),
+        matches!(result, Err(SftpError::RemoteReason(ref message)) if message.contains("层")),
         "{result:?}"
     );
     assert!(!fs.exists("/dst"));

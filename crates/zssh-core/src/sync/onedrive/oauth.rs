@@ -402,7 +402,10 @@ mod tests {
         let reauth = StorageError::from(OAuthError::Reauth("AADSTS70008".to_owned()));
         assert_eq!(
             reauth,
-            StorageError::AuthFailed(Reason::text(REAUTH_MESSAGE.to_owned()))
+            StorageError::AuthFailed(Reason::new(
+                crate::error::reason_keys::OD_REAUTH,
+                REAUTH_MESSAGE
+            ))
         );
         assert!(matches!(
             StorageError::from(OAuthError::Unavailable("x".to_owned())),

@@ -633,7 +633,10 @@ mod tests {
         let none = HeaderMap::new();
         assert_eq!(
             status_error(StatusCode::UNAUTHORIZED, &none, "", "读取"),
-            StorageError::AuthFailed(Reason::text(REAUTH_MESSAGE.to_owned()))
+            StorageError::AuthFailed(Reason::new(
+                crate::error::reason_keys::OD_REAUTH,
+                REAUTH_MESSAGE
+            ))
         );
         assert!(matches!(
             status_error(StatusCode::FORBIDDEN, &none, "accessDenied", "写入"),
