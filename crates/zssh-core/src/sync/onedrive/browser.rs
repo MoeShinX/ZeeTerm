@@ -59,12 +59,47 @@ impl BrowserOpener for SystemBrowser {
     }
 }
 
+/// 打开浏览器最多等这么久；超时按"已经交给系统"处理（后台线程会自己跑完）。
+#[cfg(windows)]
+const SHELL_OPEN_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 用系统默认浏览器打开网址。
+///
+/// `ShellExecuteW` **不能在界面线程上直接调**：它内部会转消息循环（DDE、外壳扩展），
+/// 界面框架的窗口过程会在一次状态更新还没结束时被重新进入，panic 跨过 Windows 回调就是
+/// 进程直接被终止（0xc0000409，终端右键「打开链接」就这样闪退过）。所以放到一个专门的线程里
+/// 调（按文档先初始化单线程套间的 COM），界面线程只等结果，不转消息。
 #[cfg(windows)]
 pub(crate) fn shell_open(url: &str) -> Result<(), String> {
+    let url = url.to_owned();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("shell-open".to_owned())
+        .spawn(move || {
+            let _ = sender.send(shell_open_on_this_thread(&url));
+        })
+        .map_err(|err| format!("没能启动打开浏览器的线程：{err}"))?;
+    match receiver.recv_timeout(SHELL_OPEN_WAIT) {
+        Ok(result) => result,
+        // 系统迟迟不返回（浏览器启动慢、外壳扩展卡住）：不再让界面干等，结果交给后台线程。
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(()),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("打开浏览器的线程异常结束".to_owned())
+        }
+    }
+}
+
+#[cfg(windows)]
+fn shell_open_on_this_thread(url: &str) -> Result<(), String> {
     use windows::core::{w, PCWSTR};
+    use windows::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+    };
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
+    // SAFETY: 这个线程是新开的、专门用来调 ShellExecuteW；初始化成功才配对反初始化。
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
     let wide: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
     // SAFETY: `wide` 以 0 结尾并且在调用期间一直存活；其余参数是空指针 / 常量字符串。
     let result = unsafe {
@@ -77,6 +112,10 @@ pub(crate) fn shell_open(url: &str) -> Result<(), String> {
             SW_SHOWNORMAL,
         )
     };
+    if com.is_ok() {
+        // SAFETY: 和上面成功的 CoInitializeEx 配对，同一线程。
+        unsafe { CoUninitialize() };
+    }
     // 文档：返回值大于 32 表示成功，否则是错误码。
     let code = result.0 as isize;
     if code > 32 {
