@@ -12,4 +12,4 @@ pub mod codec;
 pub mod negotiate;
 pub mod session;
 
-pub use session::{PLAINTEXT_NOTICE, RAW_TCP_NOTICE, TelnetParams, spawn_telnet};
+pub use session::{TelnetParams, spawn_telnet};

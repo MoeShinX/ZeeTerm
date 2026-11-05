@@ -25,12 +25,6 @@ use crate::backend::{BackendCommand, BackendEnds, COMMAND_QUEUE, EventOut, Strea
 use crate::input::{InputFilter, telnet_enter_bytes};
 use crate::text::{TextDecoder, TextEncoder};
 
-/// 会话开头提示一次：Telnet 是明文协议。
-pub const PLAINTEXT_NOTICE: &str = "\x1b[33m[提示] Telnet 不加密：用户名、密码和所有内容都以明文在网络上传输，请只在可信的网络里使用。\x1b[0m\r\n";
-/// 纯 TCP 模式的提示。
-pub const RAW_TCP_NOTICE: &str =
-    "\x1b[33m[提示] 纯 TCP 连接：不做 Telnet 协商，也不加密，内容以明文传输。\x1b[0m\r\n";
-
 /// 空闲多久发一个 NOP 保活。
 pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// 发送缓冲超过这个大小就先不收新命令。
@@ -239,10 +233,11 @@ where
     let raw = options.raw_tcp;
     let enter = telnet_enter_bytes(options.newline);
 
-    out.notice(if raw {
-        RAW_TCP_NOTICE
+    let language = crate::lang::language();
+    out.notice(&if raw {
+        crate::lang::raw_tcp_notice_in(language)
     } else {
-        PLAINTEXT_NOTICE
+        crate::lang::plaintext_notice_in(language)
     });
 
     let (negotiator, initial) = Negotiator::new(NegotiatorConfig {
@@ -292,7 +287,7 @@ where
             written = writer.write(&session.outbox), if !session.outbox.is_empty() => {
                 match written {
                     Ok(0) => {
-                        session.out.error("写入远端失败：连接已关闭".to_owned());
+                        session.out.error(crate::lang::remote_write_failed(None));
                         break;
                     }
                     Ok(count) => {
@@ -300,7 +295,7 @@ where
                         session.last_write = Instant::now();
                     }
                     Err(error) => {
-                        session.out.error(format!("写入远端失败：{error}"));
+                        session.out.error(crate::lang::remote_write_failed(Some(&error.to_string())));
                         break;
                     }
                 }
@@ -318,7 +313,7 @@ where
                         }
                     }
                     ReadOutcome::Read(Err(error)) => {
-                        session.out.error(format!("读取远端失败：{error}"));
+                        session.out.error(crate::lang::remote_read_failed(&error.to_string()));
                         break;
                     }
                 }

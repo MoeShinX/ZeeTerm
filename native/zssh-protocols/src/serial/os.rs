@@ -155,7 +155,7 @@ impl CommHandle {
                 device,
                 OpenStage::Create,
                 last_error(),
-                "打开失败",
+                &crate::lang::serial_open_failed(),
             ));
         }
         // 从这里开始句柄归 `CommHandle`，任何一步失败都会随它关闭。
@@ -346,7 +346,7 @@ pub fn list_ports() -> Result<Vec<SerialPortEntry>, SerialError> {
             DIGCF_PRESENT,
         )
         .map_err(|error| SerialError::Os {
-            device: "串口列表".to_owned(),
+            device: crate::lang::serial_list_label(),
             code: win32_code(&error),
             what: error.message(),
         })?;

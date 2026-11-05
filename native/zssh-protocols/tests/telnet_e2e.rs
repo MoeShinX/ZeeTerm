@@ -12,11 +12,12 @@ use zssh_core::model::{LocalEcho, TelnetOptions, TextEncoding};
 use zssh_core::ssh::FlowGate;
 use zssh_core::ssh::flow::HIGH_WATERMARK;
 use zssh_protocols::StreamBackend;
+use zssh_protocols::lang::{Language, plaintext_notice_in, raw_tcp_notice_in};
 use zssh_protocols::telnet::codec::{
     DO, DONT, IAC, NOP, OPT_BINARY, OPT_ECHO, OPT_NAWS, OPT_SGA, OPT_TTYPE, SB, SE, WILL, WONT,
     naws_frame,
 };
-use zssh_protocols::telnet::{PLAINTEXT_NOTICE, RAW_TCP_NOTICE, TelnetParams, spawn_telnet};
+use zssh_protocols::telnet::{TelnetParams, spawn_telnet};
 use zssh_session::{
     CoreFilter, SessionBackend, SessionCommand, SessionDriver, SessionEvent, SessionPump,
 };
@@ -116,7 +117,7 @@ async fn the_session_starts_with_the_plaintext_warning_and_offers_options() {
         first,
         SessionEvent::Notice {
             generation: 1,
-            text: PLAINTEXT_NOTICE.to_owned()
+            text: plaintext_notice_in(Language::Zh)
         }
     );
     // 连接后主动提供：NAWS、TTYPE、SGA，并要求对端 SGA。
@@ -505,7 +506,7 @@ async fn raw_tcp_mode_does_no_telnet_processing_at_all() {
         first,
         SessionEvent::Notice {
             generation: 1,
-            text: RAW_TCP_NOTICE.to_owned()
+            text: raw_tcp_notice_in(Language::Zh)
         }
     );
     // 对端发来的 IAC 序列原样交给终端，也不回任何协商。

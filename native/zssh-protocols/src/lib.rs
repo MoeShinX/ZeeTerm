@@ -9,8 +9,10 @@
 
 pub mod backend;
 pub mod input;
+pub mod lang;
 pub mod serial;
 pub mod telnet;
 pub mod text;
 
 pub use backend::StreamBackend;
+pub use lang::{Language, language, set_language};

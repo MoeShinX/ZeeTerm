@@ -65,7 +65,7 @@ pub fn probe_serial(options: &zssh_core::model::SerialOptions) -> Result<(), Ser
     Err(SerialError::Os {
         device: options.device.clone(),
         code: 0,
-        what: "串口只在 Windows 上支持".to_owned(),
+        what: crate::lang::serial_windows_only(),
     })
 }
 
@@ -91,7 +91,7 @@ pub fn open_serial(
     Err(SerialError::Os {
         device: options.device.clone(),
         code: 0,
-        what: "串口只在 Windows 上支持".to_owned(),
+        what: crate::lang::serial_windows_only(),
     })
 }
 

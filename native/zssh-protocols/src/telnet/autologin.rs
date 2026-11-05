@@ -24,8 +24,9 @@ const FAILURE_PHRASES: &[&str] = &[
     "login incorrect",
     "authentication failed",
     "access denied",
-    "密码错误",
-    "认证失败",
+    // 对端用中文报登录失败时的说法：这是在匹配服务器输出的数据，不是我们自己的界面文案。
+    "密码错误", // i18n-allow: 匹配对端输出
+    "认证失败", // i18n-allow: 匹配对端输出
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

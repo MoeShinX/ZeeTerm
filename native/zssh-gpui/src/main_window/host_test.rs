@@ -221,7 +221,11 @@ async fn run_serial(options: SerialOptions) -> TestOutcome {
     let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     match result {
         Ok(Ok(Ok(()))) => connection_test::serial_success(&device, elapsed),
-        Ok(Ok(Err(err))) => connection_test::serial_failure(&device, &err.to_string(), elapsed),
+        Ok(Ok(Err(err))) => connection_test::serial_failure(
+            &device,
+            &err.message(zssh_protocols::language()),
+            elapsed,
+        ),
         Ok(Err(_)) => {
             connection_test::serial_failure(&device, t(HostTestMsg::TaskEndedUnexpectedly), elapsed)
         }

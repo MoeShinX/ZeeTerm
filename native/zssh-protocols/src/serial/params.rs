@@ -4,6 +4,8 @@
 
 use std::fmt;
 
+use crate::lang::{FlowWord, Language};
+
 use zssh_core::model::{
     SerialDataBits, SerialFlowControl, SerialOptions, SerialParity, SerialStopBits,
 };
@@ -157,7 +159,7 @@ pub fn normalize_device(raw: &str) -> Result<(String, String), SerialError> {
     Ok((format!(r"\\.\{short}"), short))
 }
 
-/// 串口的错误，信息是给用户看的中文。
+/// 串口的错误。`Display` 是中文（日志和测试用）；界面上的文案走 [`SerialError::message`]，按语言生成。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SerialError {
     InvalidName(String),
@@ -173,9 +175,9 @@ pub enum SerialError {
     NotASerialPort {
         device: String,
     },
+    /// 驱动拒绝了波特率或帧格式。
     UnsupportedSettings {
         device: String,
-        detail: String,
     },
     Os {
         device: String,
@@ -184,35 +186,39 @@ pub enum SerialError {
     },
 }
 
-impl fmt::Display for SerialError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl SerialError {
+    /// 当前语言的整句。设备名、系统错误原文（`Os` 的 `what`）原样保留。
+    pub fn message(&self, lang: Language) -> String {
+        use crate::lang::{Text, render};
         match self {
-            Self::InvalidName(name) => write!(
-                f,
-                "串口设备名「{name}」不合法：请填 COM 口的名字，例如 COM3"
-            ),
-            Self::NotFound { device } => write!(
-                f,
-                "{device} 不存在：设备没有插好，或者设备名写错了（可以在设备管理器的“端口”里查看当前的 COM 口）"
-            ),
-            Self::Busy { device } => write!(
-                f,
-                "{device} 被别的程序占用（或者没有访问权限）：请先关闭正在使用它的程序，再重新连接"
-            ),
+            Self::InvalidName(name) => render(lang, Text::ErrInvalidName, &[("name", name)]),
+            Self::NotFound { device } => render(lang, Text::ErrNotFound, &[("device", device)]),
+            Self::Busy { device } => render(lang, Text::ErrBusy, &[("device", device)]),
             Self::Disconnected { device } => {
-                write!(f, "{device} 已断开：设备可能被拔出了，或者驱动出了故障")
+                render(lang, Text::ErrDisconnected, &[("device", device)])
             }
             Self::NotASerialPort { device } => {
-                write!(f, "{device} 不是串口设备，不能用串口方式打开")
+                render(lang, Text::ErrNotASerialPort, &[("device", device)])
             }
-            Self::UnsupportedSettings { device, detail } => write!(
-                f,
-                "{device} 不接受这组串口参数（{detail}）：请换一个波特率 / 数据位 / 校验 / 停止位组合"
+            Self::UnsupportedSettings { device } => {
+                render(lang, Text::ErrUnsupportedSettings, &[("device", device)])
+            }
+            Self::Os { device, code, what } => render(
+                lang,
+                Text::ErrOs,
+                &[
+                    ("device", device),
+                    ("what", what),
+                    ("code", &code.to_string()),
+                ],
             ),
-            Self::Os { device, code, what } => {
-                write!(f, "无法使用 {device}：{what}（系统错误码 {code}）")
-            }
         }
+    }
+}
+
+impl fmt::Display for SerialError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message(Language::Zh))
     }
 }
 
@@ -257,10 +263,9 @@ pub fn classify_open_error(device: &str, stage: OpenStage, code: u32, what: &str
         (OpenStage::Configure, ERROR_INVALID_FUNCTION | ERROR_NOT_SUPPORTED) => {
             SerialError::NotASerialPort { device }
         }
-        (OpenStage::Configure, ERROR_INVALID_PARAMETER) => SerialError::UnsupportedSettings {
-            device,
-            detail: "驱动拒绝了波特率或帧格式".to_owned(),
-        },
+        (OpenStage::Configure, ERROR_INVALID_PARAMETER) => {
+            SerialError::UnsupportedSettings { device }
+        }
         _ => SerialError::Os {
             device,
             code,
@@ -480,8 +485,13 @@ mod tests {
     }
 }
 
-/// 打开成功后在终端里提示的一句：`115200 8N1，无流控`。
+/// 打开成功后在终端里提示的一句：`115200 8N1，无流控`（中文，日志和测试用）。
 pub fn describe_framing(options: &SerialOptions) -> String {
+    describe_framing_in(Language::Zh, options)
+}
+
+/// 同 [`describe_framing`]，指定语言：`115200 8N1, no flow control`。
+pub fn describe_framing_in(lang: Language, options: &SerialOptions) -> String {
     let bits = match options.data_bits {
         SerialDataBits::Five => '5',
         SerialDataBits::Six => '6',
@@ -501,11 +511,15 @@ pub fn describe_framing(options: &SerialOptions) -> String {
         SerialStopBits::Two => "2",
     };
     let flow = match options.flow_control {
-        SerialFlowControl::None => "无流控",
-        SerialFlowControl::Software => "XON/XOFF 流控",
-        SerialFlowControl::Hardware => "RTS/CTS 流控",
+        SerialFlowControl::None => FlowWord::None,
+        SerialFlowControl::Software => FlowWord::Software,
+        SerialFlowControl::Hardware => FlowWord::Hardware,
     };
-    format!("{} {bits}{parity}{stop}，{flow}", options.baud_rate)
+    crate::lang::framing_in(
+        lang,
+        &format!("{} {bits}{parity}{stop}", options.baud_rate),
+        flow,
+    )
 }
 
 #[cfg(test)]
@@ -527,5 +541,71 @@ mod framing_tests {
             ..Default::default()
         };
         assert_eq!(describe_framing(&options), "9600 7E2，RTS/CTS 流控");
+    }
+}
+
+#[cfg(test)]
+mod localized_tests {
+    use super::*;
+
+    fn has_cjk(text: &str) -> bool {
+        text.chars()
+            .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch))
+    }
+
+    /// 中文和 `Display` 逐字相同；英文整句没有汉字，设备名和系统错误原文原样在。
+    #[test]
+    fn serial_errors_read_in_both_languages() {
+        let errors = [
+            SerialError::InvalidName("X1".into()),
+            SerialError::NotFound {
+                device: "COM3".into(),
+            },
+            SerialError::Busy {
+                device: "COM3".into(),
+            },
+            SerialError::Disconnected {
+                device: "COM3".into(),
+            },
+            SerialError::NotASerialPort {
+                device: "COM3".into(),
+            },
+            SerialError::UnsupportedSettings {
+                device: "COM3".into(),
+            },
+            SerialError::Os {
+                device: "COM3".into(),
+                code: 1234,
+                what: "boom".into(),
+            },
+        ];
+        for err in errors {
+            assert_eq!(err.message(Language::Zh), err.to_string());
+            let en = err.message(Language::En);
+            assert!(!has_cjk(&en), "{err:?} → {en}");
+            if !matches!(err, SerialError::InvalidName(_)) {
+                assert!(en.contains("COM3"), "{en}");
+            }
+        }
+        assert!(
+            SerialError::Os {
+                device: "COM3".into(),
+                code: 5,
+                what: "拒绝访问。".into()
+            }
+            .message(Language::En)
+            .contains("拒绝访问。"),
+            "系统错误原文原样保留"
+        );
+    }
+
+    #[test]
+    fn the_framing_line_follows_the_language() {
+        let options = SerialOptions::default();
+        assert_eq!(
+            describe_framing(&options),
+            describe_framing_in(Language::Zh, &options)
+        );
+        assert!(!has_cjk(&describe_framing_in(Language::En, &options)));
     }
 }

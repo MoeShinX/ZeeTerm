@@ -18,7 +18,7 @@ use zssh_session::{SessionCommand, SessionEvent};
 
 use super::os::{CommHandle, IoEvent, ReadOutcome, WriteOutcome};
 use super::params::{
-    OpenStage, SerialError, classify_open_error, describe_framing, io_error_means_disconnected,
+    OpenStage, SerialError, classify_open_error, describe_framing_in, io_error_means_disconnected,
     normalize_device,
 };
 use crate::backend::{BackendCommand, BackendEnds, COMMAND_QUEUE, EventOut, StreamBackend};
@@ -70,10 +70,10 @@ pub(super) fn start(
         generation,
         gate: Arc::clone(&gate),
     };
-    out.notice(&format!(
-        "[90m[已打开 {label}：{}][0m
-",
-        describe_framing(options)
+    out.notice(&crate::lang::serial_opened_in(
+        crate::lang::language(),
+        &label,
+        &describe_framing_in(crate::lang::language(), options),
     ));
     // 用户主动关闭 / 对端消失：读线程据此知道要不要报错。
     let closed = Arc::new(AtomicBool::new(false));
@@ -124,7 +124,7 @@ fn read_loop(
     runtime: &Handle,
 ) {
     let Ok(event) = IoEvent::new() else {
-        out.error(format!("无法使用 {label}：创建读事件失败"));
+        out.error(crate::lang::serial_event_failed(label, true));
         return;
     };
     let mut decoder = TextDecoder::new(encoding);
@@ -144,7 +144,7 @@ fn read_loop(
             Ok(ReadOutcome::Stopped) => return,
             Err(error) => {
                 if !closed.load(Ordering::Acquire) {
-                    out.error(io_failure_message(label, &error, "读取"));
+                    out.error(io_failure_message(label, &error, false));
                 }
                 return;
             }
@@ -170,7 +170,7 @@ fn write_loop(
         ..
     } = ends;
     let Ok(event) = IoEvent::new() else {
-        out.error(format!("无法使用 {label}：创建写事件失败"));
+        out.error(crate::lang::serial_event_failed(label, false));
         closed.store(true, Ordering::Release);
         return;
     };
@@ -201,14 +201,12 @@ fn write_loop(
                     Ok(WriteOutcome::TimedOut) => {
                         if !warned_timeout {
                             warned_timeout = true;
-                            out.notice(&format!(
-                                "\r\n\x1b[31m[{label} 写入超时：设备一直没有放行（流控设置对吗？）]\x1b[0m\r\n"
-                            ));
+                            out.notice(&crate::lang::serial_write_timeout(label));
                         }
                     }
                     Err(error) => {
                         if !closed.load(Ordering::Acquire) {
-                            out.error(io_failure_message(label, &error, "写入"));
+                            out.error(io_failure_message(label, &error, true));
                         }
                         break;
                     }
@@ -223,7 +221,7 @@ fn write_loop(
                     Ok(WriteOutcome::Stopped) => break,
                     Err(error) => {
                         if !closed.load(Ordering::Acquire) {
-                            out.error(io_failure_message(label, &error, "写入"));
+                            out.error(io_failure_message(label, &error, true));
                         }
                         break;
                     }
@@ -231,9 +229,7 @@ fn write_loop(
             }
             Some(BackendCommand::Break) => {
                 if let Err(error) = comm.send_break(BREAK_HOLD) {
-                    out.notice(&format!(
-                        "\r\n\x1b[31m[{label} 发送 Break 失败：{error}]\x1b[0m\r\n"
-                    ));
+                    out.notice(&crate::lang::serial_break_failed(label, &error.to_string()));
                 }
             }
             // 串口没有窗口大小；Close 走关闭信号。
@@ -244,21 +240,21 @@ fn write_loop(
     closed.store(true, Ordering::Release);
 }
 
-fn io_failure_message(label: &str, error: &std::io::Error, what: &str) -> String {
+fn io_failure_message(label: &str, error: &std::io::Error, writing: bool) -> String {
     let code = error.raw_os_error().unwrap_or(0) as u32;
     if io_error_means_disconnected(code) {
         return SerialError::Disconnected {
             device: label.to_owned(),
         }
-        .to_string();
+        .message(crate::lang::language());
     }
     classify_open_error(
         label,
         OpenStage::Configure,
         code,
-        &format!("{what}失败：{error}"),
+        &crate::lang::serial_io_failed(writing, &error.to_string()),
     )
-    .to_string()
+    .message(crate::lang::language())
 }
 
 #[cfg(test)]

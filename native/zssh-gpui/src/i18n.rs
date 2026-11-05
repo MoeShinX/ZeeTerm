@@ -96,6 +96,11 @@ pub(crate) fn current() -> Lang {
 /// 已开着的窗口下一帧就是新文案；托盘菜单在下次构建时用新文案。
 pub(crate) fn set(lang: Lang, cx: &mut App) {
     CURRENT.store(lang.as_u8(), Relaxed);
+    // Telnet / 串口会话往终端写的提示在 zssh-protocols 里生成，那个 crate 不依赖界面层：语言变了就告诉它。
+    zssh_protocols::set_language(match lang {
+        Lang::Zh => zssh_protocols::Language::Zh,
+        Lang::En => zssh_protocols::Language::En,
+    });
     cx.set_global(I18n);
     // 借用主题切换那条「所有窗口重绘」的路径，明暗保持当前值不变。
     crate::app_theme::set_mode(crate::app_theme::is_dark(cx), cx);

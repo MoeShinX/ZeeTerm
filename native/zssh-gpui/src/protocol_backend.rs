@@ -300,7 +300,7 @@ pub(crate) async fn open_serial_host(
     let opened = tokio::task::spawn_blocking(move || open_serial(&options, generation, runtime))
         .await
         .map_err(|_| crate::i18n::t(ProtocolMsg::SerialTaskEnded).to_owned())?
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| err.message(zssh_protocols::language()))?;
     let (backend, events, gate) = opened;
     Ok(Opened {
         factory: None,

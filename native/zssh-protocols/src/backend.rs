@@ -125,8 +125,7 @@ impl StreamBackend {
                     self.warned = true;
                     let _ = self.notices.send(SessionEvent::Notice {
                         generation: self.generation,
-                        text: "\r\n\x1b[31m[远端暂时不接收输入，已丢弃部分按键]\x1b[0m\r\n"
-                            .to_owned(),
+                        text: crate::lang::input_dropped_notice(),
                     });
                 }
             }
