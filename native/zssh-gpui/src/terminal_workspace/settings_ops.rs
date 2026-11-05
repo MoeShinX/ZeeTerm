@@ -5,6 +5,16 @@
 use super::*;
 
 impl TerminalWorkspace {
+    /// 界面语言偏好：写进设置（和别的字段同一条落盘路径）并立刻生效。
+    pub(crate) fn set_language(&mut self, pref: crate::i18n::LangPref, cx: &mut Context<Self>) {
+        self.update_settings(cx, move |s| s.language = pref.as_str().to_owned());
+        crate::i18n::set(
+            pref.resolve(zssh_platform_windows::locale::system_is_chinese()),
+            cx,
+        );
+        cx.notify();
+    }
+
     // ---- 主题与设置（外壳的设置页和调试窗口共用） ----
     //
     // 设置是应用级的，只有一份（`settings_store::AppSettings`）：这里的 `self.settings` 只是读缓存，

@@ -888,9 +888,50 @@ impl MainWindow {
     ) -> Vec<::gpui::AnyElement> {
         let mut blocks = crate::settings_view::appearance_cards(&self.workspace, cx);
         blocks.push(self.host_tree_card(tokens, cx));
+        blocks.push(self.language_card(tokens, cx));
         blocks.push(self.window_card(tokens, cx));
         blocks.push(crate::settings_view::reset_row(&self.workspace));
         blocks
+    }
+
+    /// 界面语言：跟随系统 / 简体中文 / English。切换即时生效；已缓存文案的面（系统托盘菜单）
+    /// 要重启程序才会换，所以下面直接写明这一点，不让它悄悄半中半英。
+    fn language_card(&self, tokens: &Tokens, cx: &mut Context<Self>) -> ::gpui::AnyElement {
+        use crate::i18n::{Key, LangPref, pref_label, t};
+        let current = LangPref::parse(&self.workspace.read(cx).settings().language);
+        let entity = cx.entity();
+        card(
+            "settings-language",
+            t(Key::LanguageCardTitle),
+            None,
+            tokens,
+            vec![row(
+                t(Key::LanguageCardTitle),
+                Some(t(Key::LanguageRestartHint)),
+                div().w(px(224.0)).child(select(
+                    "interface-language",
+                    pref_label(current),
+                    vec![
+                        Choice::new(pref_label(LangPref::System), current == LangPref::System),
+                        Choice::new(pref_label(LangPref::Zh), current == LangPref::Zh),
+                        Choice::new(pref_label(LangPref::En), current == LangPref::En),
+                    ],
+                    move |index, _window, cx| {
+                        let pref = match index {
+                            0 => LangPref::System,
+                            1 => LangPref::Zh,
+                            _ => LangPref::En,
+                        };
+                        entity.update(cx, |this, cx| {
+                            let ws = this.workspace.clone();
+                            ws.update(cx, |ws, cx| ws.set_language(pref, cx));
+                            cx.notify();
+                        });
+                    },
+                )),
+                tokens,
+            )],
+        )
     }
 
     /// 主机树：不显示「未分组」文件夹（0.2.14 的 `HostTreeCard`，写同步键 `vault_ungrouped_flat`）。

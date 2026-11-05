@@ -145,7 +145,7 @@ impl HostMenuItem {
             Self::CopyAddress => t(Key::MenuCopyAddress),
             Self::CopyPassword => t(Key::MenuCopyPassword),
             Self::CopyInfo => t(Key::MenuCopyInfo),
-            Self::InstallKey => t(Key::MenuInstallPublicKey),
+            Self::InstallKey => t(Key::MenuInstallPubkey),
             Self::Forwards => t(Key::MenuForwards),
             Self::MoveToGroup => t(Key::MenuMoveToGroup),
             Self::MoveUp => t(Key::MenuMoveUp),
