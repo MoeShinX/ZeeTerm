@@ -29,6 +29,7 @@ use crate::app_prefs::{
     POOL_IDLE_RANGE, POOL_IDLE_STEP, SFTP_CONCURRENCY_RANGE, STATS_REFRESH_RANGE,
 };
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::settings_nav::{SHORTCUTS, SettingsSection};
 use crate::settings_view::{card, row, row_with};
 use crate::typography::{Role, Typo as _};
@@ -42,6 +43,343 @@ pub const BACKUP_ITEM: usize = 2;
 const NAV_WIDTH: f32 = 208.0;
 /// 管理组内容区的限宽（列表 + 表单的阅读宽度）。
 const MANAGE_WIDTH: f32 = 880.0;
+
+/// 本文件（设置页）自己的界面文案：各模块自带文案枚举即可，不用全塞进 `i18n::Key`。
+///
+/// 只放应用自己的固定文案；主机名、路径、目录、日志内容这些来自用户或远端的数据照原样显示，
+/// 带参数的句子保留 `format!`，这里只提供固定片段。id（`settings-host-tree`、`close-action`、
+/// `ungrouped-flat`……）是稳定标识，不进这张表。
+#[derive(Clone, Copy, Debug)]
+enum SettingsMsg {
+    // ---- 左侧导航 ----
+    NavBackTooltip,
+    NavBack,
+    NavGroupManage,
+    NavGroupPreferences,
+    // ---- 管理页筛选 ----
+    FilterAllKinds,
+    FilterAllHosts,
+    // ---- 外观 · 主机树 ----
+    HostTree,
+    HostTreeFlatTitle,
+    HostTreeFlatDescription,
+    HostInfoPanelTitle,
+    HostInfoPanelDescription,
+    HostTreeGuidesTitle,
+    HostTreeGuidesDescription,
+    // ---- 外观 · 窗口 ----
+    Window,
+    CloseMainTitle,
+    CloseMainDescription,
+    CloseToTray,
+    QuitApp,
+    CloseFileTitle,
+    CloseFileDescription,
+    FileWindowDisconnect,
+    FileWindowMerge,
+    StartHiddenTitle,
+    StartHiddenDescription,
+    // ---- 终端 · 会话日志 ----
+    SessionLog,
+    SessionLogDescription,
+    SessionLogEnabledTitle,
+    SessionLogEnabledDescription,
+    SessionLogDir,
+    SessionLogRestoreDefault,
+    SessionLogChoose,
+    SessionLogOpenDir,
+    SessionLogProblems,
+    SessionLogExitNotePrefix,
+    SessionLogChooseDialog,
+    SessionLogCreateDirFailed,
+    SessionLogOpenExplorerFailed,
+    // ---- 连接 · 代理 ----
+    ProxyLabelOpen,
+    ProxyLabelClose,
+    NoDefaultProxy,
+    NoProxiesHint,
+    ManageProxies,
+    AppProxySshDefault,
+    AppProxySystem,
+    AppProxyDirect,
+    Proxy,
+    SshDefaultProxy,
+    SshDefaultProxyDescription,
+    AppNetwork,
+    AppNetworkDescription,
+    // ---- 连接 · 连接保持 ----
+    KeepConnection,
+    PoolIdleTitle,
+    PoolIdleDescription,
+    KeepaliveTitle,
+    KeepaliveDescription,
+    // ---- 连接 · 服务器状态栏 ----
+    ServerStats,
+    ServerStatsShowTitle,
+    ServerStatsShowDescription,
+    ServerStatsRefreshTitle,
+    ServerStatsRefreshDescription,
+    // ---- 系统代理提示 ----
+    SystemProxyPrefix,
+    SystemProxyPac,
+    SystemProxyNone,
+    // ---- SFTP · 传输 ----
+    Transfers,
+    TransfersDescription,
+    SftpConcurrencyTitle,
+    SftpConcurrencyDescription,
+    SftpConcurrencySuffix,
+    PreserveMtimeTitle,
+    PreserveMtimeDescription,
+    PreservePermissionsTitle,
+    PreservePermissionsDescription,
+    ShowHiddenTitle,
+    ShowHiddenDescription,
+    // ---- 快捷键 ----
+    ShortcutsTabsWindows,
+    ShortcutsTerminalSplits,
+    ShortcutsEditing,
+    ShortcutsPanels,
+    ShortcutsFixed,
+}
+
+impl Msg for SettingsMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::NavBackTooltip => "返回应用 (Esc)",
+            Self::NavBack => "返回应用",
+            Self::NavGroupManage => "管理",
+            Self::NavGroupPreferences => "偏好",
+            Self::FilterAllKinds => "全部类型",
+            Self::FilterAllHosts => "全部主机",
+            Self::HostTree => "主机树",
+            Self::HostTreeFlatTitle => "主机树里不显示「未分组」文件夹，不分组的主机直接放在最下面",
+            Self::HostTreeFlatDescription => {
+                "打开后，没有分组的主机排在所有分组下面，中间用一条线隔开。"
+            }
+            Self::HostInfoPanelTitle => "在侧栏显示主机属性面板",
+            Self::HostInfoPanelDescription => {
+                "选中主机时，在侧栏底部显示名称、主机、用户名、协议、端口。默认关。"
+            }
+            Self::HostTreeGuidesTitle => "主机树显示连接线",
+            Self::HostTreeGuidesDescription => {
+                "每一层子项左边画一条竖向的小虚线，横向连到子项，看得出谁属于哪个分组。只影响这台电脑。"
+            }
+            Self::Window => "窗口",
+            Self::CloseMainTitle => "关闭主窗口时",
+            Self::CloseMainDescription => {
+                "缩到托盘后会话、端口转发、AI 命令都继续运行，右键托盘图标选「退出」才真正退出。最小化仍然缩到任务栏。"
+            }
+            Self::CloseToTray => "缩到托盘",
+            Self::QuitApp => "退出程序",
+            Self::CloseFileTitle => "关闭文件窗口时",
+            Self::CloseFileDescription => {
+                "断开并关闭：窗口里的 SFTP 全部断开（有传输在跑会先问）。合并回主窗口：标签原样交回主窗口，连接和传输都不中断。单个标签上的 × 始终是断开。"
+            }
+            Self::FileWindowDisconnect => "断开并关闭",
+            Self::FileWindowMerge => "合并回主窗口",
+            Self::StartHiddenTitle => "启动时隐藏到托盘",
+            Self::StartHiddenDescription => "下次启动不显示主窗口，从托盘图标打开",
+            Self::SessionLog => "会话日志",
+            Self::SessionLogDescription => {
+                "把每个终端会话里显示的内容存成纯文本文件（去掉颜色和光标控制），对之后新打开的会话生效。日志里会有终端上显示过的一切，可能包括敏感信息，只存在本机。"
+            }
+            Self::SessionLogEnabledTitle => "记录会话日志",
+            Self::SessionLogEnabledDescription => "默认关。",
+            Self::SessionLogDir => "日志目录",
+            Self::SessionLogRestoreDefault => "恢复默认",
+            Self::SessionLogChoose => "选择…",
+            Self::SessionLogOpenDir => "打开目录",
+            Self::SessionLogProblems => "日志有问题",
+            Self::SessionLogExitNotePrefix => "上次退出时：",
+            Self::SessionLogChooseDialog => "选择会话日志目录",
+            Self::SessionLogCreateDirFailed => "建不了目录：",
+            Self::SessionLogOpenExplorerFailed => "打不开资源管理器：",
+            Self::ProxyLabelOpen => "（",
+            Self::ProxyLabelClose => "）",
+            Self::NoDefaultProxy => "不使用默认代理",
+            Self::NoProxiesHint => "还没有代理，点下面的「新建 / 管理代理」添加一个。",
+            Self::ManageProxies => "新建 / 管理代理",
+            Self::AppProxySshDefault => "使用 SSH 默认代理",
+            Self::AppProxySystem => "跟随系统代理",
+            Self::AppProxyDirect => "不使用代理",
+            Self::Proxy => "代理",
+            Self::SshDefaultProxy => "SSH 默认代理",
+            Self::SshDefaultProxyDescription => {
+                "只管 SSH 连接：「跟随默认代理」的主机和快速连接走这一个。"
+            }
+            Self::AppNetwork => "软件网络",
+            Self::AppNetworkDescription => {
+                "检查和下载更新、配置同步、下载 opencode 走这里，和 SSH 的代理分开。"
+            }
+            Self::KeepConnection => "连接保持",
+            Self::PoolIdleTitle => "连接空闲断开",
+            Self::PoolIdleDescription => {
+                "终端、SFTP、端口转发等都不再使用这条连接之后，再空转多久断开；0 = 立刻断开。改动对已经空闲的连接也生效，从改动那一刻起重新计时。"
+            }
+            Self::KeepaliveTitle => "保活间隔",
+            Self::KeepaliveDescription => {
+                "多久发一次 keepalive 探测断线；0 = 关闭。改完对之后新建的连接生效。"
+            }
+            Self::ServerStats => "服务器状态栏",
+            Self::ServerStatsShowTitle => "显示服务器状态栏",
+            Self::ServerStatsShowDescription => "连上后在终端底部显示 CPU / 内存 / 磁盘 / 网速。",
+            Self::ServerStatsRefreshTitle => "状态栏刷新间隔",
+            Self::ServerStatsRefreshDescription => {
+                "多久采一次服务器状态；状态栏关掉时这项不起作用。"
+            }
+            Self::SystemProxyPrefix => "系统代理：",
+            Self::SystemProxyPac => "系统用的是自动配置脚本（PAC），暂不支持，按直连处理",
+            Self::SystemProxyNone => "系统没有设置代理，按直连处理",
+            Self::Transfers => "传输",
+            Self::TransfersDescription => {
+                "传输参数对之后打开的 SFTP 标签生效（正在传的任务不受影响）。"
+            }
+            Self::SftpConcurrencyTitle => "同时传输的文件数",
+            Self::SftpConcurrencyDescription => "1～8，默认 3",
+            Self::SftpConcurrencySuffix => " 个",
+            Self::PreserveMtimeTitle => "保留修改时间",
+            Self::PreserveMtimeDescription => {
+                "传完之后把源文件的修改时间设到目标上（远端走 setstat，本地按文件时间）。"
+            }
+            Self::PreservePermissionsTitle => "保留权限",
+            Self::PreservePermissionsDescription => {
+                "远端按源的权限位设置；本地只有只读一位有意义。"
+            }
+            Self::ShowHiddenTitle => "默认显示隐藏文件",
+            Self::ShowHiddenDescription => {
+                "两栏的初始开关；每个目录的隐藏文件按系统属性（远端按名字加点）判断。"
+            }
+            Self::ShortcutsTabsWindows => "标签与窗口",
+            Self::ShortcutsTerminalSplits => "终端与分屏",
+            Self::ShortcutsEditing => "终端显示与操作",
+            Self::ShortcutsPanels => "面板",
+            Self::ShortcutsFixed => "当前快捷键不可自定义。",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::NavBackTooltip => "Back to App (Esc)",
+            Self::NavBack => "Back to App",
+            Self::NavGroupManage => "Manage",
+            Self::NavGroupPreferences => "Preferences",
+            Self::FilterAllKinds => "All Types",
+            Self::FilterAllHosts => "All Hosts",
+            Self::HostTree => "Host Tree",
+            Self::HostTreeFlatTitle => {
+                "Hide the “Ungrouped” folder in the host tree; ungrouped hosts go at the bottom"
+            }
+            Self::HostTreeFlatDescription => {
+                "When on, hosts without a group are listed below all groups, separated by a line."
+            }
+            Self::HostInfoPanelTitle => "Show the host details panel in the sidebar",
+            Self::HostInfoPanelDescription => {
+                "When a host is selected, show its name, host, user, protocol, and port at the bottom of the sidebar. Off by default."
+            }
+            Self::HostTreeGuidesTitle => "Show guide lines in the host tree",
+            Self::HostTreeGuidesDescription => {
+                "Draw a short vertical dashed line to the left of each nesting level and a horizontal line to the child, so group membership is visible. Affects this computer only."
+            }
+            Self::Window => "Window",
+            Self::CloseMainTitle => "When closing the main window",
+            Self::CloseMainDescription => {
+                "Minimizing to the tray keeps sessions, port forwarding, and AI commands running; choose “Quit” from the tray icon menu to exit for real. Minimizing still goes to the taskbar."
+            }
+            Self::CloseToTray => "Minimize to Tray",
+            Self::QuitApp => "Quit App",
+            Self::CloseFileTitle => "When closing a file window",
+            Self::CloseFileDescription => {
+                "Disconnect and close: every SFTP connection in the window is disconnected (you are asked first if transfers are running). Merge into main window: tabs return to the main window as-is; connections and transfers are not interrupted. The × on an individual tab always disconnects."
+            }
+            Self::FileWindowDisconnect => "Disconnect and Close",
+            Self::FileWindowMerge => "Merge into Main Window",
+            Self::StartHiddenTitle => "Hide to tray on startup",
+            Self::StartHiddenDescription => {
+                "Don't show the main window on the next launch; open it from the tray icon"
+            }
+            Self::SessionLog => "Session Log",
+            Self::SessionLogDescription => {
+                "Save what each terminal session displays to plain-text files (with colors and cursor control removed); applies to sessions opened afterwards. Logs contain everything shown in the terminal, possibly including sensitive information, and stay on this computer."
+            }
+            Self::SessionLogEnabledTitle => "Record session logs",
+            Self::SessionLogEnabledDescription => "Off by default.",
+            Self::SessionLogDir => "Log directory",
+            Self::SessionLogRestoreDefault => "Restore Default",
+            Self::SessionLogChoose => "Choose…",
+            Self::SessionLogOpenDir => "Open Folder",
+            Self::SessionLogProblems => "Log problems",
+            Self::SessionLogExitNotePrefix => "At the last exit: ",
+            Self::SessionLogChooseDialog => "Choose Session Log Directory",
+            Self::SessionLogCreateDirFailed => "Cannot create the directory: ",
+            Self::SessionLogOpenExplorerFailed => "Cannot open File Explorer: ",
+            Self::ProxyLabelOpen => " (",
+            Self::ProxyLabelClose => ")",
+            Self::NoDefaultProxy => "No default proxy",
+            Self::NoProxiesHint => "No proxies yet. Click “New / Manage Proxies” below to add one.",
+            Self::ManageProxies => "New / Manage Proxies",
+            Self::AppProxySshDefault => "Use SSH default proxy",
+            Self::AppProxySystem => "Follow system proxy",
+            Self::AppProxyDirect => "No proxy",
+            Self::Proxy => "Proxy",
+            Self::SshDefaultProxy => "Default SSH proxy",
+            Self::SshDefaultProxyDescription => {
+                "Applies to SSH connections only: hosts set to “follow default proxy” and quick connections use this one."
+            }
+            Self::AppNetwork => "App Network",
+            Self::AppNetworkDescription => {
+                "Update checks and downloads, config sync, and opencode downloads go through here, separate from the SSH proxy."
+            }
+            Self::KeepConnection => "Connection Keep-Alive",
+            Self::PoolIdleTitle => "Idle disconnect",
+            Self::PoolIdleDescription => {
+                "How long to keep an idle connection after terminals, SFTP, and port forwarding stop using it; 0 = disconnect immediately. Changes also apply to already-idle connections, and the timer restarts at the moment of the change."
+            }
+            Self::KeepaliveTitle => "Keep-alive interval",
+            Self::KeepaliveDescription => {
+                "How often to send a keepalive probe to detect dropped connections; 0 = off. Applies to connections created after the change."
+            }
+            Self::ServerStats => "Server Status Bar",
+            Self::ServerStatsShowTitle => "Show server status bar",
+            Self::ServerStatsShowDescription => {
+                "After connecting, show CPU / memory / disk / network speed at the bottom of the terminal."
+            }
+            Self::ServerStatsRefreshTitle => "Status bar refresh interval",
+            Self::ServerStatsRefreshDescription => {
+                "How often to sample server status; has no effect when the status bar is off."
+            }
+            Self::SystemProxyPrefix => "System proxy: ",
+            Self::SystemProxyPac => {
+                "The system uses an auto-config script (PAC), which isn't supported yet; treating it as a direct connection"
+            }
+            Self::SystemProxyNone => "No system proxy is set; treating it as a direct connection",
+            Self::Transfers => "Transfers",
+            Self::TransfersDescription => {
+                "Transfer settings apply to SFTP tabs opened afterwards (running transfers are unaffected)."
+            }
+            Self::SftpConcurrencyTitle => "Concurrent file transfers",
+            Self::SftpConcurrencyDescription => "1–8, default 3",
+            Self::SftpConcurrencySuffix => " files",
+            Self::PreserveMtimeTitle => "Preserve modification time",
+            Self::PreserveMtimeDescription => {
+                "After a transfer, set the destination file's modification time to the source's (setstat on remote; file times locally)."
+            }
+            Self::PreservePermissionsTitle => "Preserve permissions",
+            Self::PreservePermissionsDescription => {
+                "On remote, set the source's permission bits; locally only the read-only bit is meaningful."
+            }
+            Self::ShowHiddenTitle => "Show hidden files by default",
+            Self::ShowHiddenDescription => {
+                "The initial state of both panes; hidden files are determined per directory by system attributes (on remote, by a leading dot in the name)."
+            }
+            Self::ShortcutsTabsWindows => "Tabs & Windows",
+            Self::ShortcutsTerminalSplits => "Terminal & Splits",
+            Self::ShortcutsEditing => "Terminal Display & Actions",
+            Self::ShortcutsPanels => "Panels",
+            Self::ShortcutsFixed => "Shortcuts cannot be customized yet.",
+        }
+    }
+}
 
 /// 页面右侧最上面一行：大标题（可带灰色的数量）+ 靠右的一排按钮；宽度和下面的内容对齐。
 fn page_header(
@@ -661,13 +999,19 @@ impl MainWindow {
             SettingsSection::Credentials => {
                 let current = self.keychain.kind_filter;
                 let kinds = super::identity_form::KINDS;
-                let mut choices = vec![Choice::new("全部类型", current.is_none())];
+                let mut choices = vec![Choice::new(
+                    t(SettingsMsg::FilterAllKinds),
+                    current.is_none(),
+                )];
                 choices.extend(
                     kinds
                         .iter()
                         .map(|(kind, label)| Choice::new(*label, current == Some(*kind))),
                 );
-                let label = current.map_or("全部类型", super::identity_form::kind_label);
+                let label = current.map_or(
+                    t(SettingsMsg::FilterAllKinds),
+                    super::identity_form::kind_label,
+                );
                 (
                     !self.store.identities().is_empty(),
                     Some(
@@ -701,16 +1045,20 @@ impl MainWindow {
                     .iter()
                     .filter(|host| host.protocol.supports_port_forward())
                     .collect();
-                let mut choices = vec![Choice::new("全部主机", current.is_none())];
+                let mut choices = vec![Choice::new(
+                    t(SettingsMsg::FilterAllHosts),
+                    current.is_none(),
+                )];
                 choices.extend(
                     ssh_hosts
                         .iter()
                         .map(|host| Choice::new(host.name.clone(), current == Some(host.id))),
                 );
                 let ids: Vec<i64> = ssh_hosts.iter().map(|host| host.id).collect();
-                let label = current
-                    .and_then(|id| self.store.host(id))
-                    .map_or_else(|| "全部主机".to_owned(), |host| host.name.clone());
+                let label = current.and_then(|id| self.store.host(id)).map_or_else(
+                    || t(SettingsMsg::FilterAllHosts).to_owned(),
+                    |host| host.name.clone(),
+                );
                 (
                     !self.store.forwards().is_empty(),
                     Some(
@@ -842,10 +1190,11 @@ impl MainWindow {
                 .cursor_pointer()
                 .hover(move |style| style.bg(hover))
                 .tooltip(|window, cx| {
-                    gpui_kit::component::tooltip::Tooltip::new("返回应用 (Esc)").build(window, cx)
+                    gpui_kit::component::tooltip::Tooltip::new(t(SettingsMsg::NavBackTooltip))
+                        .build(window, cx)
                 })
                 .child(Icon::new(IconName::ArrowLeft).size_4())
-                .child("返回应用")
+                .child(t(SettingsMsg::NavBack))
                 .on_click(move |_, window, cx| {
                     entity.update(cx, |this, cx| this.close_settings(window, cx));
                 })
@@ -863,14 +1212,14 @@ impl MainWindow {
             .border_color(tokens.divider)
             .overflow_y_scroll()
             .child(back)
-            .child(group_label("管理"))
+            .child(group_label(t(SettingsMsg::NavGroupManage)))
             .children(
                 SettingsSection::MANAGE
                     .into_iter()
                     .enumerate()
                     .map(|(index, section)| item(index, section)),
             )
-            .child(group_label("偏好"))
+            .child(group_label(t(SettingsMsg::NavGroupPreferences)))
             .children(
                 SettingsSection::PREFERENCES
                     .into_iter()
@@ -941,14 +1290,14 @@ impl MainWindow {
         let guides_entity = entity.clone();
         card(
             "settings-host-tree",
-            "主机树",
+            t(SettingsMsg::HostTree),
             None,
             tokens,
             vec![
                 pref_switch(
                     "ungrouped-flat",
-                    "主机树里不显示「未分组」文件夹，不分组的主机直接放在最下面",
-                    "打开后，没有分组的主机排在所有分组下面，中间用一条线隔开。",
+                    t(SettingsMsg::HostTreeFlatTitle),
+                    t(SettingsMsg::HostTreeFlatDescription),
                     self.store.flat(),
                     tokens,
                     move |checked, window, cx| {
@@ -957,8 +1306,8 @@ impl MainWindow {
                 ),
                 pref_switch(
                     "host-info-panel",
-                    "在侧栏显示主机属性面板",
-                    "选中主机时，在侧栏底部显示名称、主机、用户名、协议、端口。默认关。",
+                    t(SettingsMsg::HostInfoPanelTitle),
+                    t(SettingsMsg::HostInfoPanelDescription),
                     self.prefs.host_info_panel,
                     tokens,
                     move |checked, window, cx| {
@@ -969,8 +1318,8 @@ impl MainWindow {
                 ),
                 pref_switch(
                     "host-tree-guides",
-                    "主机树显示连接线",
-                    "每一层子项左边画一条竖向的小虚线，横向连到子项，看得出谁属于哪个分组。只影响这台电脑。",
+                    t(SettingsMsg::HostTreeGuidesTitle),
+                    t(SettingsMsg::HostTreeGuidesDescription),
                     self.store.tree_guides(),
                     tokens,
                     move |checked, window, cx| {
@@ -993,24 +1342,22 @@ impl MainWindow {
         let ws = self.workspace.clone();
         card(
             "settings-window",
-            "窗口",
+            t(SettingsMsg::Window),
             None,
             tokens,
             vec![
                 row(
-                    "关闭主窗口时",
-                    Some(
-                        "缩到托盘后会话、端口转发、AI 命令都继续运行，右键托盘图标选「退出」才真正退出。最小化仍然缩到任务栏。",
-                    ),
+                    t(SettingsMsg::CloseMainTitle),
+                    Some(t(SettingsMsg::CloseMainDescription)),
                     div().w(px(224.0)).child(select(
                         "close-action",
                         match close {
-                            CloseChoice::Tray => "缩到托盘",
-                            CloseChoice::Quit => "退出程序",
+                            CloseChoice::Tray => t(SettingsMsg::CloseToTray),
+                            CloseChoice::Quit => t(SettingsMsg::QuitApp),
                         },
                         vec![
-                            Choice::new("缩到托盘", close == CloseChoice::Tray),
-                            Choice::new("退出程序", close == CloseChoice::Quit),
+                            Choice::new(t(SettingsMsg::CloseToTray), close == CloseChoice::Tray),
+                            Choice::new(t(SettingsMsg::QuitApp), close == CloseChoice::Quit),
                         ],
                         move |index, window, cx| {
                             let choice = if index == 0 {
@@ -1025,19 +1372,23 @@ impl MainWindow {
                     tokens,
                 ),
                 row(
-                    "关闭文件窗口时",
-                    Some(
-                        "断开并关闭：窗口里的 SFTP 全部断开（有传输在跑会先问）。合并回主窗口：标签原样交回主窗口，连接和传输都不中断。单个标签上的 × 始终是断开。",
-                    ),
+                    t(SettingsMsg::CloseFileTitle),
+                    Some(t(SettingsMsg::CloseFileDescription)),
                     div().w(px(224.0)).child(select(
                         "file-window-close",
                         match file_close {
-                            FileWindowChoice::Close => "断开并关闭",
-                            FileWindowChoice::Merge => "合并回主窗口",
+                            FileWindowChoice::Close => t(SettingsMsg::FileWindowDisconnect),
+                            FileWindowChoice::Merge => t(SettingsMsg::FileWindowMerge),
                         },
                         vec![
-                            Choice::new("断开并关闭", file_close == FileWindowChoice::Close),
-                            Choice::new("合并回主窗口", file_close == FileWindowChoice::Merge),
+                            Choice::new(
+                                t(SettingsMsg::FileWindowDisconnect),
+                                file_close == FileWindowChoice::Close,
+                            ),
+                            Choice::new(
+                                t(SettingsMsg::FileWindowMerge),
+                                file_close == FileWindowChoice::Merge,
+                            ),
                         ],
                         move |index, window, cx| {
                             let choice = if index == 0 {
@@ -1054,8 +1405,8 @@ impl MainWindow {
                 ),
                 crate::settings_view::switch_row(
                     "start-hidden",
-                    "启动时隐藏到托盘",
-                    "下次启动不显示主窗口，从托盘图标打开",
+                    t(SettingsMsg::StartHiddenTitle),
+                    t(SettingsMsg::StartHiddenDescription),
                     start_hidden,
                     |this, cx| this.toggle_start_hidden(cx),
                     &ws,
@@ -1100,20 +1451,22 @@ impl MainWindow {
         // 日志出过的问题：本次运行里的（写失败、建不成文件、磁盘跟不上）加上上次退出时留下的。
         let mut problems = crate::app_prefs::session_log_problem_lines();
         if !self.prefs.session_log_exit_note.is_empty() {
-            problems.push(format!("上次退出时：{}", self.prefs.session_log_exit_note));
+            problems.push(format!(
+                "{}{}",
+                t(SettingsMsg::SessionLogExitNotePrefix),
+                self.prefs.session_log_exit_note
+            ));
         }
         card(
             "settings-session-log",
-            "会话日志",
-            Some(
-                "把每个终端会话里显示的内容存成纯文本文件（去掉颜色和光标控制），对之后新打开的会话生效。日志里会有终端上显示过的一切，可能包括敏感信息，只存在本机。",
-            ),
+            t(SettingsMsg::SessionLog),
+            Some(t(SettingsMsg::SessionLogDescription)),
             tokens,
             vec![
                 pref_switch(
                     "session-log-enabled",
-                    "记录会话日志",
-                    "默认关。",
+                    t(SettingsMsg::SessionLogEnabledTitle),
+                    t(SettingsMsg::SessionLogEnabledDescription),
                     self.prefs.session_log_enabled,
                     tokens,
                     move |checked, window, cx| {
@@ -1123,7 +1476,7 @@ impl MainWindow {
                     },
                 ),
                 row_with(
-                    "日志目录",
+                    t(SettingsMsg::SessionLogDir),
                     Some(SharedString::from(shown_dir)),
                     h_flex()
                         .gap_1()
@@ -1132,7 +1485,7 @@ impl MainWindow {
                                 Button::new("session-log-reset")
                                     .ghost()
                                     .compact()
-                                    .label("恢复默认")
+                                    .label(t(SettingsMsg::SessionLogRestoreDefault))
                                     .on_click(move |_, window, cx| {
                                         reset_entity.update(cx, |this, cx| {
                                             this.set_session_log_dir(String::new(), window, cx);
@@ -1144,7 +1497,7 @@ impl MainWindow {
                             Button::new("session-log-pick")
                                 .outline()
                                 .compact()
-                                .label("选择…")
+                                .label(t(SettingsMsg::SessionLogChoose))
                                 .on_click(move |_, window, cx| {
                                     pick_entity.update(cx, |this, cx| {
                                         this.pick_session_log_dir(window, cx);
@@ -1155,7 +1508,7 @@ impl MainWindow {
                             Button::new("session-log-open")
                                 .outline()
                                 .compact()
-                                .label("打开目录")
+                                .label(t(SettingsMsg::SessionLogOpenDir))
                                 .on_click(move |_, window, cx| {
                                     open_entity.update(cx, |this, cx| {
                                         this.open_session_log_dir(window, cx);
@@ -1168,7 +1521,7 @@ impl MainWindow {
             .into_iter()
             .chain((!problems.is_empty()).then(|| {
                 row_with(
-                    "日志有问题",
+                    t(SettingsMsg::SessionLogProblems),
                     Some(SharedString::from(problems.join(
                         "
 ",
@@ -1243,7 +1596,7 @@ impl MainWindow {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("选择会话日志目录".into()),
+            prompt: Some(t(SettingsMsg::SessionLogChooseDialog).into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else {
@@ -1263,11 +1616,19 @@ impl MainWindow {
     fn open_session_log_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let dir = self.prefs.session_log_dir_path();
         if let Err(err) = std::fs::create_dir_all(&dir) {
-            self.notice_error(&format!("建不了目录：{err}"), window, cx);
+            self.notice_error(
+                &format!("{}{err}", t(SettingsMsg::SessionLogCreateDirFailed)),
+                window,
+                cx,
+            );
             return;
         }
         if let Err(err) = std::process::Command::new("explorer").arg(&dir).spawn() {
-            self.notice_error(&format!("打不开资源管理器：{err}"), window, cx);
+            self.notice_error(
+                &format!("{}{err}", t(SettingsMsg::SessionLogOpenExplorerFailed)),
+                window,
+                cx,
+            );
         }
     }
 
@@ -1289,11 +1650,20 @@ impl MainWindow {
                 .as_deref(),
         );
         let proxy_label = |p: &zssh_core::model::Proxy| {
-            format!("{}（{}）", p.name, crate::proxies::kind_label(p.kind))
+            format!(
+                "{}{}{}{}",
+                p.name,
+                t(SettingsMsg::ProxyLabelOpen),
+                crate::proxies::kind_label(p.kind),
+                t(SettingsMsg::ProxyLabelClose)
+            )
         };
 
         // SSH 默认代理
-        let mut default_choices = vec![Choice::new("不使用默认代理", default_id.is_none())];
+        let mut default_choices = vec![Choice::new(
+            t(SettingsMsg::NoDefaultProxy),
+            default_id.is_none(),
+        )];
         let mut default_targets: Vec<Option<i64>> = vec![None];
         for proxy in proxies {
             default_choices.push(Choice::new(
@@ -1304,7 +1674,7 @@ impl MainWindow {
         }
         let default_label = default_id
             .and_then(|id| proxies.iter().find(|p| p.id == id))
-            .map_or_else(|| "不使用默认代理".to_owned(), proxy_label);
+            .map_or_else(|| t(SettingsMsg::NoDefaultProxy).to_owned(), proxy_label);
         let default_entity = entity.clone();
         let manage_entity = entity.clone();
         let mut default_control =
@@ -1328,7 +1698,7 @@ impl MainWindow {
                 div()
                     .w_full()
                     .typo(Role::Caption, tokens)
-                    .child("还没有代理，点下面的「新建 / 管理代理」添加一个。"),
+                    .child(t(SettingsMsg::NoProxiesHint)),
             );
         }
         default_control = default_control.child(
@@ -1336,7 +1706,7 @@ impl MainWindow {
                 .outline()
                 .compact()
                 .icon(IconName::Network)
-                .label("新建 / 管理代理")
+                .label(t(SettingsMsg::ManageProxies))
                 .w_full()
                 .on_click(move |_, _, cx| {
                     manage_entity.update(cx, |this, cx| {
@@ -1347,9 +1717,18 @@ impl MainWindow {
 
         // 软件网络
         let mut app_choices = vec![
-            Choice::new("使用 SSH 默认代理", app_mode == AppProxyMode::SshDefault),
-            Choice::new("跟随系统代理", app_mode == AppProxyMode::System),
-            Choice::new("不使用代理", app_mode == AppProxyMode::Direct),
+            Choice::new(
+                t(SettingsMsg::AppProxySshDefault),
+                app_mode == AppProxyMode::SshDefault,
+            ),
+            Choice::new(
+                t(SettingsMsg::AppProxySystem),
+                app_mode == AppProxyMode::System,
+            ),
+            Choice::new(
+                t(SettingsMsg::AppProxyDirect),
+                app_mode == AppProxyMode::Direct,
+            ),
         ];
         // 存的值和 `AppProxyMode::parse` 读的是同一套：选「使用 SSH 默认代理」就明确存 `ssh_default`，
         // 没有值才是从没选过（读作「跟随系统代理」）。
@@ -1370,13 +1749,13 @@ impl MainWindow {
         }
         // 选中的代理被删了：先显示成「使用 SSH 默认代理」，免得下拉框是空的（同 0.2.14 的 `appProxyChoice`）。
         let app_label = match &app_mode {
-            AppProxyMode::System => "跟随系统代理".to_owned(),
-            AppProxyMode::Direct => "不使用代理".to_owned(),
-            AppProxyMode::Proxy(id) => proxies
-                .iter()
-                .find(|p| p.id == *id)
-                .map_or_else(|| "使用 SSH 默认代理".to_owned(), proxy_label),
-            AppProxyMode::SshDefault => "使用 SSH 默认代理".to_owned(),
+            AppProxyMode::System => t(SettingsMsg::AppProxySystem).to_owned(),
+            AppProxyMode::Direct => t(SettingsMsg::AppProxyDirect).to_owned(),
+            AppProxyMode::Proxy(id) => proxies.iter().find(|p| p.id == *id).map_or_else(
+                || t(SettingsMsg::AppProxySshDefault).to_owned(),
+                proxy_label,
+            ),
+            AppProxyMode::SshDefault => t(SettingsMsg::AppProxySshDefault).to_owned(),
         };
         let app_entity = entity.clone();
         let mut app_control = v_flex().w(px(224.0)).gap_1p5().child(select(
@@ -1402,21 +1781,19 @@ impl MainWindow {
         vec![
             card(
                 "settings-connection",
-                "代理",
+                t(SettingsMsg::Proxy),
                 None,
                 tokens,
                 vec![
                     row(
-                        "SSH 默认代理",
-                        Some("只管 SSH 连接：「跟随默认代理」的主机和快速连接走这一个。"),
+                        t(SettingsMsg::SshDefaultProxy),
+                        Some(t(SettingsMsg::SshDefaultProxyDescription)),
                         default_control,
                         tokens,
                     ),
                     row(
-                        "软件网络",
-                        Some(
-                            "检查和下载更新、配置同步、下载 opencode 走这里，和 SSH 的代理分开。",
-                        ),
+                        t(SettingsMsg::AppNetwork),
+                        Some(t(SettingsMsg::AppNetworkDescription)),
                         app_control,
                         tokens,
                     ),
@@ -1424,54 +1801,54 @@ impl MainWindow {
             ),
             card(
                 "settings-connection-keep",
-                "连接保持",
+                t(SettingsMsg::KeepConnection),
                 None,
                 tokens,
                 vec![
-                self.number_row(
-                    PrefNumber::PoolIdle,
-                    "连接空闲断开",
-                    "终端、SFTP、端口转发等都不再使用这条连接之后，再空转多久断开；0 = 立刻断开。改动对已经空闲的连接也生效，从改动那一刻起重新计时。",
-                    "s",
-                    tokens,
-                    cx,
-                ),
-                self.number_row(
-                    PrefNumber::Keepalive,
-                    "保活间隔",
-                    "多久发一次 keepalive 探测断线；0 = 关闭。改完对之后新建的连接生效。",
-                    "s",
-                    tokens,
-                    cx,
-                ),
+                    self.number_row(
+                        PrefNumber::PoolIdle,
+                        t(SettingsMsg::PoolIdleTitle),
+                        t(SettingsMsg::PoolIdleDescription),
+                        "s",
+                        tokens,
+                        cx,
+                    ),
+                    self.number_row(
+                        PrefNumber::Keepalive,
+                        t(SettingsMsg::KeepaliveTitle),
+                        t(SettingsMsg::KeepaliveDescription),
+                        "s",
+                        tokens,
+                        cx,
+                    ),
                 ],
             ),
             card(
                 "settings-connection-stats",
-                "服务器状态栏",
+                t(SettingsMsg::ServerStats),
                 None,
                 tokens,
                 vec![
-                pref_switch(
-                    "stats-show",
-                    "显示服务器状态栏",
-                    "连上后在终端底部显示 CPU / 内存 / 磁盘 / 网速。",
-                    self.prefs.stats_show,
-                    tokens,
-                    move |checked, window, cx| {
-                        stats_entity.update(cx, |this, cx| {
-                            this.set_pref_flag(PrefFlag::StatsShow, checked, window, cx);
-                        });
-                    },
-                ),
-                self.number_row(
-                    PrefNumber::StatsRefresh,
-                    "状态栏刷新间隔",
-                    "多久采一次服务器状态；状态栏关掉时这项不起作用。",
-                    "s",
-                    tokens,
-                    cx,
-                ),
+                    pref_switch(
+                        "stats-show",
+                        t(SettingsMsg::ServerStatsShowTitle),
+                        t(SettingsMsg::ServerStatsShowDescription),
+                        self.prefs.stats_show,
+                        tokens,
+                        move |checked, window, cx| {
+                            stats_entity.update(cx, |this, cx| {
+                                this.set_pref_flag(PrefFlag::StatsShow, checked, window, cx);
+                            });
+                        },
+                    ),
+                    self.number_row(
+                        PrefNumber::StatsRefresh,
+                        t(SettingsMsg::ServerStatsRefreshTitle),
+                        t(SettingsMsg::ServerStatsRefreshDescription),
+                        "s",
+                        tokens,
+                        cx,
+                    ),
                 ],
             ),
         ]
@@ -1500,37 +1877,37 @@ impl MainWindow {
         };
         card(
             "settings-sftp",
-            "传输",
-            Some("传输参数对之后打开的 SFTP 标签生效（正在传的任务不受影响）。"),
+            t(SettingsMsg::Transfers),
+            Some(t(SettingsMsg::TransfersDescription)),
             tokens,
             vec![
                 self.number_row(
                     PrefNumber::SftpConcurrency,
-                    "同时传输的文件数",
-                    "1～8，默认 3",
-                    " 个",
+                    t(SettingsMsg::SftpConcurrencyTitle),
+                    t(SettingsMsg::SftpConcurrencyDescription),
+                    t(SettingsMsg::SftpConcurrencySuffix),
                     tokens,
                     cx,
                 ),
                 flag(
                     PrefFlag::SftpPreserveMtime,
                     "sftp-preserve-mtime",
-                    "保留修改时间",
-                    "传完之后把源文件的修改时间设到目标上（远端走 setstat，本地按文件时间）。",
+                    t(SettingsMsg::PreserveMtimeTitle),
+                    t(SettingsMsg::PreserveMtimeDescription),
                     self.prefs.sftp_preserve_mtime,
                 ),
                 flag(
                     PrefFlag::SftpPreservePermissions,
                     "sftp-preserve-permissions",
-                    "保留权限",
-                    "远端按源的权限位设置；本地只有只读一位有意义。",
+                    t(SettingsMsg::PreservePermissionsTitle),
+                    t(SettingsMsg::PreservePermissionsDescription),
                     self.prefs.sftp_preserve_permissions,
                 ),
                 flag(
                     PrefFlag::SftpShowHidden,
                     "sftp-show-hidden",
-                    "默认显示隐藏文件",
-                    "两栏的初始开关；每个目录的隐藏文件按系统属性（远端按名字加点）判断。",
+                    t(SettingsMsg::ShowHiddenTitle),
+                    t(SettingsMsg::ShowHiddenDescription),
                     self.prefs.sftp_show_hidden,
                 ),
             ],
@@ -1619,22 +1996,21 @@ fn system_proxy_now() -> SystemProxy {
 fn system_proxy_text(proxy: &SystemProxy) -> String {
     match proxy {
         SystemProxy::Manual { scheme, host, port } => format!(
-            "系统代理：{}{host}:{port}",
+            "{}{}{host}:{port}",
+            t(SettingsMsg::SystemProxyPrefix),
             if scheme == "socks5" { "SOCKS5 " } else { "" }
         ),
-        SystemProxy::AutoConfig { .. } => {
-            "系统用的是自动配置脚本（PAC），暂不支持，按直连处理".to_owned()
-        }
-        SystemProxy::None => "系统没有设置代理，按直连处理".to_owned(),
+        SystemProxy::AutoConfig { .. } => t(SettingsMsg::SystemProxyPac).to_owned(),
+        SystemProxy::None => t(SettingsMsg::SystemProxyNone).to_owned(),
     }
 }
 
 /// 按用途展示原有只读快捷键，索引仍指向唯一的数据清单。
-const SHORTCUT_GROUPS: &[(&str, &[usize])] = &[
-    ("标签与窗口", &[0, 1, 4, 5, 14, 15]),
-    ("终端与分屏", &[2, 3, 6, 7, 10]),
-    ("终端显示与操作", &[11, 12, 13]),
-    ("面板", &[8, 9]),
+const SHORTCUT_GROUPS: &[(SettingsMsg, &[usize])] = &[
+    (SettingsMsg::ShortcutsTabsWindows, &[0, 1, 4, 5, 14, 15]),
+    (SettingsMsg::ShortcutsTerminalSplits, &[2, 3, 6, 7, 10]),
+    (SettingsMsg::ShortcutsEditing, &[11, 12, 13]),
+    (SettingsMsg::ShortcutsPanels, &[8, 9]),
 ];
 
 fn shortcuts_cards(tokens: &Tokens) -> Vec<::gpui::AnyElement> {
@@ -1686,8 +2062,8 @@ fn shortcuts_cards(tokens: &Tokens) -> Vec<::gpui::AnyElement> {
             };
             card(
                 id,
-                title,
-                (group_index == 0).then_some("当前快捷键不可自定义。"),
+                t(*title),
+                (group_index == 0).then_some(t(SettingsMsg::ShortcutsFixed)),
                 tokens,
                 rows,
             )
