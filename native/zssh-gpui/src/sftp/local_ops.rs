@@ -12,6 +12,7 @@ use zssh_core::sftp::local::{
 };
 
 use super::model::{Entry, EntryKind};
+use crate::i18n::t;
 
 /// 列一个本地目录；空路径是“此电脑”（盘符）。
 pub(super) fn list_dir(path: &str) -> Result<Vec<Entry>, String> {
@@ -118,7 +119,11 @@ fn drives() -> Vec<Entry> {
     letters
         .into_iter()
         .map(|letter| Entry {
-            name: format!("本地磁盘 ({letter}:)"),
+            name: format!(
+                "{}{letter}{}",
+                t(super::SftpMsg::LocalDiskPrefix),
+                t(super::SftpMsg::LocalDiskSuffix)
+            ),
             path: format!("{letter}:\\"),
             kind: EntryKind::Drive,
             target_kind: None,
@@ -135,12 +140,12 @@ fn drives() -> Vec<Entry> {
 
 pub(super) fn mkdir(path: &str) -> Result<(), String> {
     if path.trim().is_empty() {
-        return Err("目录名不能为空".to_owned());
+        return Err(t(super::SftpMsg::DirNameEmpty).to_owned());
     }
     // 不用 create_dir_all：已经有同名的就报错，不静悄悄当成功。
     std::fs::create_dir(long_path(Path::new(path))).map_err(|err| {
         if err.kind() == std::io::ErrorKind::AlreadyExists {
-            "已经有同名的条目".to_owned()
+            t(super::SftpMsg::AlreadyExists).to_owned()
         } else {
             err.to_string()
         }
@@ -149,12 +154,12 @@ pub(super) fn mkdir(path: &str) -> Result<(), String> {
 
 pub(super) fn create_file(path: &str) -> Result<(), String> {
     if path.trim().is_empty() {
-        return Err("文件名不能为空".to_owned());
+        return Err(t(super::SftpMsg::FileNameEmpty).to_owned());
     }
     // 不先查再建：由系统在创建那一刻判断，已存在的同名文件不会被截断。
     create_new_file(Path::new(path)).map_err(|err| {
         if err.kind() == std::io::ErrorKind::AlreadyExists {
-            "已经有同名的文件".to_owned()
+            t(super::SftpMsg::SameNameFile).to_owned()
         } else {
             err.to_string()
         }
@@ -163,15 +168,15 @@ pub(super) fn create_file(path: &str) -> Result<(), String> {
 
 pub(super) fn rename(from: &str, to: &str) -> Result<(), String> {
     if from.trim().is_empty() || to.trim().is_empty() {
-        return Err("路径不能为空".to_owned());
+        return Err(t(super::SftpMsg::PathEmpty).to_owned());
     }
     if std::fs::symlink_metadata(to).is_ok() {
-        return Err("已经有同名的条目".to_owned());
+        return Err(t(super::SftpMsg::AlreadyExists).to_owned());
     }
     // 系统在改名那一刻判断目标是否存在（上面的检查只是为了给出好读的提示，不能代替它）。
     move_no_replace(&long_path(Path::new(from)), &long_path(Path::new(to))).map_err(|err| {
         if err.kind() == std::io::ErrorKind::AlreadyExists {
-            "已经有同名的条目".to_owned()
+            t(super::SftpMsg::AlreadyExists).to_owned()
         } else {
             err.to_string()
         }
@@ -181,9 +186,10 @@ pub(super) fn rename(from: &str, to: &str) -> Result<(), String> {
 /// 「移动到…」用的本地移动（V2-U23）：`overwrite` 为假时目标存在就报 `Exists`，绝不替换（由系统在改名那
 /// 一刻判断）；为真时只用于“文件替换文件”（调用方保证目标不是文件夹）。跨磁盘不做复制，只说清楚。
 pub(super) fn move_item(from: &Path, to: &Path, overwrite: bool) -> super::move_to::StepResult {
-    use super::move_to::{CROSS_DEVICE_NOTE, StepResult};
+    use super::move_to::{StepResult, cross_device_note};
+
     if from.as_os_str().is_empty() || to.as_os_str().is_empty() {
-        return StepResult::Failed("路径不能为空".to_owned());
+        return StepResult::Failed(t(super::SftpMsg::PathEmpty).to_owned());
     }
     let (long_from, long_to) = (long_path(from), long_path(to));
     let result = if overwrite {
@@ -198,7 +204,7 @@ pub(super) fn move_item(from: &Path, to: &Path, overwrite: bool) -> super::move_
                 target_is_dir: std::fs::symlink_metadata(&long_to).is_ok_and(|meta| meta.is_dir()),
             }
         }
-        Err(err) if is_cross_device(&err) => StepResult::Failed(CROSS_DEVICE_NOTE.to_owned()),
+        Err(err) if is_cross_device(&err) => StepResult::Failed(cross_device_note().to_owned()),
         Err(err) => StepResult::Failed(err.to_string()),
     }
 }

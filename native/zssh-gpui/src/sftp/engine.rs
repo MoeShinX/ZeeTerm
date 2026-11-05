@@ -21,6 +21,7 @@ use zssh_core::ssh::BoxFuture;
 use zssh_core::store::Database;
 
 use super::{SftpEvent, TestHook};
+use crate::i18n::t;
 use crate::settings::data_dir;
 
 /// `ZSSH_SFTP_CONFLICT` 的取值：自动化时由 resolver 直接回答，不弹面板。
@@ -102,7 +103,10 @@ pub(super) fn conflict_rename_name(
         return Ok(None);
     }
     if typed.contains(['/', '\\']) {
-        return Err(format!("名字里不能带路径分隔符：{typed}"));
+        return Err(format!(
+            "{}{typed}",
+            t(super::SftpMsg::NamePathSeparatorPrefix)
+        ));
     }
     match direction {
         Direction::Download | Direction::LocalCopy => check_child_name(typed)
@@ -110,7 +114,7 @@ pub(super) fn conflict_rename_name(
             .map_err(|err| err.to_string()),
         Direction::Upload | Direction::RemoteCopy => {
             if typed.contains('\0') {
-                return Err("名字里不能有空字符".to_owned());
+                return Err(t(super::SftpMsg::ConflictNameNullChar).to_owned());
             }
             valid_remote_name(typed).map(Some)
         }
@@ -119,10 +123,10 @@ pub(super) fn conflict_rename_name(
 
 pub(super) fn conflict_action_label(action: ConflictAction) -> &'static str {
     match action {
-        ConflictAction::Overwrite => "覆盖",
-        ConflictAction::Skip => "跳过",
-        ConflictAction::Rename => "重命名",
-        ConflictAction::Resume => "续传",
+        ConflictAction::Overwrite => t(super::SftpMsg::ConflictActionOverwrite),
+        ConflictAction::Skip => t(super::SftpMsg::ConflictActionSkip),
+        ConflictAction::Rename => t(super::SftpMsg::ConflictActionRename),
+        ConflictAction::Resume => t(super::SftpMsg::ConflictActionResume),
     }
 }
 
@@ -137,30 +141,38 @@ pub(super) fn conflict_compare(info: &ConflictInfo) -> (String, String, String) 
             parts.push(format_mtime(mtime));
         }
         if parts.is_empty() {
-            format!("{label}：大小和时间未知")
+            format!(
+                "{label}{}{}",
+                t(super::SftpMsg::ConflictSideMiddle),
+                t(super::SftpMsg::ConflictUnknownSizeTime)
+            )
         } else {
-            format!("{label}：{}", parts.join(" · "))
+            format!(
+                "{label}{}{}",
+                t(super::SftpMsg::ConflictSideMiddle),
+                parts.join(" · ")
+            )
         }
     }
-    let source = side("源", info.source_size, info.source_mtime);
-    let target = side("目标", info.target_size, info.target_mtime);
+    let source = side(t(super::SftpMsg::ConflictSource), info.source_size, info.source_mtime);
+    let target = side(t(super::SftpMsg::ConflictTarget), info.target_size, info.target_mtime);
     let mut hints = Vec::new();
     if let (Some(source_size), Some(target_size)) = (info.source_size, info.target_size) {
         hints.push(match source_size.cmp(&target_size) {
-            std::cmp::Ordering::Equal => "两边大小相同".to_owned(),
-            std::cmp::Ordering::Greater => "目标比源小".to_owned(),
-            std::cmp::Ordering::Less => "目标比源大".to_owned(),
+            std::cmp::Ordering::Equal => t(super::SftpMsg::ConflictSizeEqual).to_owned(),
+            std::cmp::Ordering::Greater => t(super::SftpMsg::ConflictTargetSmaller).to_owned(),
+            std::cmp::Ordering::Less => t(super::SftpMsg::ConflictTargetBigger).to_owned(),
         });
     }
     if let (Some(source_mtime), Some(target_mtime)) = (info.source_mtime, info.target_mtime) {
         hints.push(match source_mtime.cmp(&target_mtime) {
-            std::cmp::Ordering::Equal => "修改时间相同".to_owned(),
-            std::cmp::Ordering::Greater => "源更新".to_owned(),
-            std::cmp::Ordering::Less => "目标更新".to_owned(),
+            std::cmp::Ordering::Equal => t(super::SftpMsg::ConflictMtimeEqual).to_owned(),
+            std::cmp::Ordering::Greater => t(super::SftpMsg::ConflictSourceNewer).to_owned(),
+            std::cmp::Ordering::Less => t(super::SftpMsg::ConflictTargetNewer).to_owned(),
         });
     }
     if info.can_resume {
-        hints.push("可以从目标现有长度处续传".to_owned());
+        hints.push(t(super::SftpMsg::ConflictResumeHint).to_owned());
     }
     (source, target, hints.join(" · "))
 }
@@ -424,20 +436,42 @@ pub(super) enum DeleteOutcome {
 /// 结局 → 状态栏上的话。
 pub(super) fn delete_outcome_text(name: &str, outcome: &DeleteOutcome) -> String {
     match outcome {
-        DeleteOutcome::Done(count) if *count > 1 => format!("已删除：{name}（{count} 项）"),
-        DeleteOutcome::Done(_) => format!("已删除：{name}"),
+        DeleteOutcome::Done(count) if *count > 1 => format!(
+            "{}{name}{}{count}{}",
+            t(super::SftpMsg::DeleteDonePrefix),
+            t(super::SftpMsg::DeleteCountOpen),
+            t(super::SftpMsg::DeleteCountClose)
+        ),
+        DeleteOutcome::Done(_) => format!("{}{name}", t(super::SftpMsg::DeleteDonePrefix)),
         DeleteOutcome::Cancelled { deleted, remaining } => match remaining {
             Some(remaining) if *remaining >= REMAINING_COUNT_CAP => format!(
-                "已取消删除 {name}：已删 {deleted} 项（不回滚），还剩至少 {remaining} 项没删"
+                "{}{name}{}{deleted}{}{remaining}{}",
+                t(super::SftpMsg::DeleteCancelledPrefix),
+                t(super::SftpMsg::DeleteProgressMiddle),
+                t(super::SftpMsg::DeleteCancelAtLeastMiddle),
+                t(super::SftpMsg::DeleteCancelExactSuffix)
             ),
-            Some(remaining) => {
-                format!("已取消删除 {name}：已删 {deleted} 项（不回滚），还剩 {remaining} 项没删")
-            }
-            None => format!("已取消删除 {name}：已删 {deleted} 项（不回滚），剩余项数没能数出来"),
+            Some(remaining) => format!(
+                "{}{name}{}{deleted}{}{remaining}{}",
+                t(super::SftpMsg::DeleteCancelledPrefix),
+                t(super::SftpMsg::DeleteProgressMiddle),
+                t(super::SftpMsg::DeleteCancelExactMiddle),
+                t(super::SftpMsg::DeleteCancelExactSuffix)
+            ),
+            None => format!(
+                "{}{name}{}{deleted}{}",
+                t(super::SftpMsg::DeleteCancelledPrefix),
+                t(super::SftpMsg::DeleteProgressMiddle),
+                t(super::SftpMsg::DeleteCancelUnknownSuffix)
+            ),
         },
-        DeleteOutcome::Failed { deleted, message } => {
-            format!("删除失败：{name}（已删 {deleted} 项；{message}）")
-        }
+        DeleteOutcome::Failed { deleted, message } => format!(
+            "{}{name}{}{deleted}{}{message}{}",
+            t(super::SftpMsg::DeleteFailedPrefix),
+            t(super::SftpMsg::DeleteFailedCountOpen),
+            t(super::SftpMsg::DeleteFailedCountClose),
+            t(super::SftpMsg::ParenClose)
+        ),
     }
 }
 
@@ -508,7 +542,11 @@ pub(super) async fn run_delete_many(
                 return DeleteOutcome::Failed {
                     deleted: base + deleted,
                     message: if paths.len() > 1 {
-                        format!("{message}；{} 没删掉", path)
+                        format!(
+                            "{message}{}{path}{}",
+                            t(super::SftpMsg::DeleteNotRemovedMiddle),
+                            t(super::SftpMsg::DeleteNotRemovedSuffix)
+                        )
                     } else {
                         message
                     },
@@ -563,7 +601,7 @@ pub(super) fn host_label(host_id: i64) -> String {
         .ok()
         .and_then(|db| db.host_get(host_id).ok())
         .map(|host| super::header::display_name(&host.name, &host.host, host_id))
-        .unwrap_or_else(|| format!("主机 #{host_id}"))
+        .unwrap_or_else(|| format!("{}{host_id}", t(super::SftpMsg::HostFallback)))
 }
 
 /// 权限位 → `0644`（固定四位，去掉文件类型位）。
@@ -579,7 +617,8 @@ pub(super) fn parse_octal_mode(text: &str) -> Result<u32, String> {
         (3..=4).contains(&trimmed.len()) && trimmed.bytes().all(|byte| matches!(byte, b'0'..=b'7'));
     if !valid {
         return Err(format!(
-            "权限要写成 3-4 位八进制（例如 644 或 0644），实际是 {trimmed:?}"
+            "{}{trimmed:?}",
+            t(super::SftpMsg::OctalErrorPrefix)
         ));
     }
     let digits = if trimmed.len() == 4 {
@@ -587,8 +626,12 @@ pub(super) fn parse_octal_mode(text: &str) -> Result<u32, String> {
     } else {
         trimmed
     };
-    u32::from_str_radix(digits, 8)
-        .map_err(|_| format!("权限要写成 3-4 位八进制（例如 644 或 0644），实际是 {trimmed:?}"))
+    u32::from_str_radix(digits, 8).map_err(|_| {
+        format!(
+            "{}{trimmed:?}",
+            t(super::SftpMsg::OctalErrorPrefix)
+        )
+    })
 }
 
 /// Unix 秒 → `YYYY-MM-DD HH:MM UTC`。只为了在属性行里看清时间，
@@ -620,25 +663,27 @@ pub(super) fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 pub(super) fn direction_label(direction: Direction) -> &'static str {
     match direction {
-        Direction::Upload => "上传",
-        Direction::Download => "下载",
-        Direction::RemoteCopy => "远端复制",
-        Direction::LocalCopy => "本地复制",
+        Direction::Upload => t(super::SftpMsg::DirectionUpload),
+        Direction::Download => t(super::SftpMsg::DirectionDownload),
+        Direction::RemoteCopy => t(super::SftpMsg::DirectionRemoteCopy),
+        Direction::LocalCopy => t(super::SftpMsg::DirectionLocalCopy),
     }
 }
 
 pub(super) fn state_label(state: &TransferState) -> String {
     let label = match state {
-        TransferState::Queued => "排队中",
-        TransferState::Planning => "准备中",
-        TransferState::Running => "传输中",
-        TransferState::Paused => "已暂停",
-        TransferState::WaitingReconnect => "等待重连",
-        TransferState::WaitingConflict => "等待处理同名文件",
-        TransferState::Done => "已完成",
-        TransferState::Failed(reason) => return format!("失败：{reason}"),
-        TransferState::Cancelled => "已取消",
-        TransferState::Skipped => "已跳过",
+        TransferState::Queued => t(super::SftpMsg::StateQueued),
+        TransferState::Planning => t(super::SftpMsg::StatePlanning),
+        TransferState::Running => t(super::SftpMsg::StateRunning),
+        TransferState::Paused => t(super::SftpMsg::StatePaused),
+        TransferState::WaitingReconnect => t(super::SftpMsg::StateWaitingReconnect),
+        TransferState::WaitingConflict => t(super::SftpMsg::StateWaitingConflict),
+        TransferState::Done => t(super::SftpMsg::StateDone),
+        TransferState::Failed(reason) => {
+            return format!("{}{reason}", t(super::SftpMsg::StateFailedPrefix));
+        }
+        TransferState::Cancelled => t(super::SftpMsg::StateCancelled),
+        TransferState::Skipped => t(super::SftpMsg::StateSkipped),
     };
     label.to_owned()
 }
@@ -660,7 +705,10 @@ pub(super) fn can_pause(state: &TransferState) -> bool {
 pub(super) fn upload_target(cwd: &str, local_path: &str) -> Result<String, String> {
     let name = local_file_name(local_path);
     if name.is_empty() {
-        return Err(format!("{local_path:?} 没有可用的文件名"));
+        return Err(format!(
+            "{local_path:?}{}",
+            t(super::SftpMsg::NoUsableFileName)
+        ));
     }
     Ok(join(cwd, &name))
 }
@@ -672,7 +720,10 @@ pub(super) fn upload_target(cwd: &str, local_path: &str) -> Result<String, Strin
 pub(super) fn upload_dir_target(cwd: &str, local_dir: &str) -> Result<String, String> {
     let name = local_file_name(local_dir);
     if name.is_empty() || name == "." || name == ".." || name.contains([':', '\\', '/']) {
-        return Err(format!("{local_dir:?} 没有可用的目录名"));
+        return Err(format!(
+            "{local_dir:?}{}",
+            t(super::SftpMsg::NoUsableDirName)
+        ));
     }
     Ok(join(cwd, &name))
 }
@@ -705,13 +756,16 @@ pub(super) fn classify_dropped_path(path: &Path) -> DropKind {
 pub(super) fn valid_remote_name(raw: &str) -> Result<String, String> {
     let name = raw.trim();
     if name.is_empty() {
-        return Err("名字是空的".to_owned());
+        return Err(t(super::SftpMsg::NameEmpty).to_owned());
     }
     if name.contains(['/', '\\']) {
-        return Err(format!("名字里不能带路径分隔符：{name}"));
+        return Err(format!(
+            "{}{name}",
+            t(super::SftpMsg::NamePathSeparatorPrefix)
+        ));
     }
     if name == "." || name == ".." {
-        return Err(format!("名字不能是 {name}"));
+        return Err(format!("{}{name}", t(super::SftpMsg::NameCannotBePrefix)));
     }
     Ok(name.to_owned())
 }
@@ -719,7 +773,7 @@ pub(super) fn valid_remote_name(raw: &str) -> Result<String, String> {
 /// 新建目录的落点：远端当前目录 + 名字。
 pub(super) fn mkdir_target(cwd: &str, raw_name: &str) -> Result<String, String> {
     if cwd.trim().is_empty() {
-        return Err("远端目录还没读出来，稍等一下".to_owned());
+        return Err(t(super::SftpMsg::RemoteDirNotReady).to_owned());
     }
     Ok(join(cwd, &valid_remote_name(raw_name)?))
 }
@@ -735,18 +789,24 @@ pub(super) fn rename_target(old_path: &str, raw_name: &str) -> Result<String, St
 pub(super) fn resolve_remote_child(cwd: &str, raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("名字是空的".to_owned());
+        return Err(t(super::SftpMsg::NameEmpty).to_owned());
     }
     if trimmed.starts_with('/') {
-        return Err(format!("只接受当前目录下的名字，不要给绝对路径：{trimmed}"));
+        return Err(format!(
+            "{}{trimmed}",
+            t(super::SftpMsg::OnlyRelativeNamesPrefix)
+        ));
     }
     if cwd.trim().is_empty() {
-        return Err("远端目录还没读出来，稍等一下".to_owned());
+        return Err(t(super::SftpMsg::RemoteDirNotReady).to_owned());
     }
     let target = normalize(&join(cwd, trimmed));
     match relative(cwd, &target) {
         Some(rest) if !rest.is_empty() => Ok(target),
-        _ => Err(format!("{trimmed} 不在当前目录下面")),
+        _ => Err(format!(
+            "{trimmed}{}",
+            t(super::SftpMsg::NotUnderCurrentDirSuffix)
+        )),
     }
 }
 
@@ -758,8 +818,15 @@ pub(super) async fn create_remote_dir(
     channel
         .create_dir(target)
         .await
-        .map_err(|err| format!("新建目录失败：{target}（{err}）"))?;
-    Ok(format!("已新建目录：{target}"))
+        .map_err(|err| {
+            format!(
+                "{}{target}{}{err}{}",
+                t(super::SftpMsg::MkdirFailedPrefix),
+                t(super::SftpMsg::MkdirFailedMiddle),
+                t(super::SftpMsg::ParenClose)
+            )
+        })?;
+    Ok(format!("{}{target}", t(super::SftpMsg::MkdirDonePrefix)))
 }
 
 /// 本地栏的初始目录：`ZSSH_SFTP_LOCAL` 指到哪就是哪（**必须已经存在**），
@@ -859,12 +926,16 @@ pub(super) fn test_hooks() -> Vec<TestHook> {
 pub(super) fn parse_rename_hook(value: &str) -> Result<(String, String), String> {
     let Some((old, new)) = value.split_once(':') else {
         return Err(format!(
-            "ZSSH_SFTP_RENAME 要写成 旧名:新名，实际是 {value:?}"
+            "{}{value:?}",
+            t(super::SftpMsg::HookRenameFormatPrefix)
         ));
     };
     let (old, new) = (old.trim(), new.trim());
     if old.is_empty() || new.is_empty() {
-        return Err(format!("ZSSH_SFTP_RENAME 的名字不能是空的：{value:?}"));
+        return Err(format!(
+            "{}{value:?}",
+            t(super::SftpMsg::HookRenameNameEmptyPrefix)
+        ));
     }
     Ok((old.to_owned(), new.to_owned()))
 }
@@ -873,15 +944,25 @@ pub(super) fn parse_rename_hook(value: &str) -> Result<(String, String), String>
 pub(super) fn parse_chmod_hook(value: &str) -> Result<(String, u32), String> {
     let Some((name, mode)) = value.split_once(':') else {
         return Err(format!(
-            "ZSSH_SFTP_CHMOD 要写成 名字:权限，实际是 {value:?}"
+            "{}{value:?}",
+            t(super::SftpMsg::HookChmodFormatPrefix)
         ));
     };
     let name = name.trim();
     if name.is_empty() {
-        return Err(format!("ZSSH_SFTP_CHMOD 的名字不能是空的：{value:?}"));
+        return Err(format!(
+            "{}{value:?}",
+            t(super::SftpMsg::HookChmodNameEmptyPrefix)
+        ));
     }
-    let mode = parse_octal_mode(mode)
-        .map_err(|err| format!("ZSSH_SFTP_CHMOD 的权限不对：{value:?}（{err}）"))?;
+    let mode = parse_octal_mode(mode).map_err(|err| {
+        format!(
+            "{}{value:?}{}{err}{}",
+            t(super::SftpMsg::HookChmodModeInvalidPrefix),
+            t(super::SftpMsg::MkdirFailedMiddle),
+            t(super::SftpMsg::ParenClose)
+        )
+    })?;
     Ok((name.to_owned(), mode))
 }
 
@@ -913,7 +994,8 @@ pub(super) fn parse_conflict_hook(value: &str) -> Result<ConflictAutomation, Str
         "overwrite-all" => Ok(ConflictAutomation::OverwriteAll),
         "skip-all" => Ok(ConflictAutomation::SkipAll),
         _ => Err(format!(
-            "ZSSH_SFTP_CONFLICT 只能是 overwrite / skip / rename / overwrite-all / skip-all，实际是 {trimmed:?}"
+            "{}{trimmed:?}",
+            t(super::SftpMsg::HookConflictInvalidPrefix)
         )),
     }
 }

@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use zssh_core::sftp::{DirEntry, FileKind};
 
 use crate::main_window::collation;
+use crate::i18n::t;
 
 /// 条目类型（本地栏多一种“盘符”）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,11 +158,11 @@ impl LinkInfo {
     /// 悬停提示：「链接到：<目标>」；断链再写一句原因。
     pub(super) fn tooltip(&self) -> String {
         let mut text = match &self.target {
-            Some(target) => format!("链接到：{target}"),
-            None => "链接".to_owned(),
+            Some(target) => format!("{}{target}", t(super::SftpMsg::LinkToPrefix)),
+            None => t(super::SftpMsg::LinkLabel).to_owned(),
         };
         if self.broken {
-            text.push_str("\n目标不存在或读不了（断链）");
+            text.push_str(t(super::SftpMsg::LinkBrokenSuffix));
         }
         text
     }
@@ -646,6 +647,18 @@ pub(super) enum Column {
 impl Column {
     pub(super) fn label(self) -> &'static str {
         match self {
+            Self::Name => t(super::SftpMsg::ColumnName),
+            Self::Size => t(super::SftpMsg::ColumnSize),
+            Self::Mtime => t(super::SftpMsg::ColumnMtime),
+            Self::Kind => t(super::SftpMsg::ColumnKind),
+            Self::Perms => t(super::SftpMsg::ColumnPerms),
+            Self::Owner => t(super::SftpMsg::ColumnOwner),
+        }
+    }
+
+    /// 界面元素 id 用的稳定名字：不随语言变（id 是自动化脚本和样式认的坐标）。
+    pub(super) fn stable_id(self) -> &'static str {
+        match self {
             Self::Name => "名称",
             Self::Size => "大小",
             Self::Mtime => "修改时间",
@@ -810,10 +823,10 @@ pub(super) fn cell_text(column: Column, entry: &Entry, now_year: i64, offset: i6
         }
         Column::Mtime => time_short(entry.mtime, now_year, offset),
         Column::Kind => match entry.kind {
-            EntryKind::Dir => "目录",
-            EntryKind::Symlink => "链接",
-            EntryKind::Drive => "盘符",
-            _ => "文件",
+            EntryKind::Dir => t(super::SftpMsg::KindDir),
+            EntryKind::Symlink => t(super::SftpMsg::KindLink),
+            EntryKind::Drive => t(super::SftpMsg::KindDrive),
+            _ => t(super::SftpMsg::KindFile),
         }
         .to_owned(),
         Column::Perms => entry

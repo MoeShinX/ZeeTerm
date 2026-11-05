@@ -9,6 +9,7 @@ use ::gpui::Window;
 use gpui_kit::*;
 
 use super::{NEXT_SFTP, Phase, SftpDemo, StartDirs};
+use crate::i18n::t;
 use crate::ssh_backend::SshSessionFactory;
 use std::sync::atomic::Ordering;
 
@@ -25,8 +26,8 @@ impl CloneRefusal {
     /// 给用户看的一句话。
     pub fn message(self) -> &'static str {
         match self {
-            Self::Connecting => "还没连上，连上之后再复制",
-            Self::Disconnected => "连接已断开，不能复制",
+            Self::Connecting => t(super::SftpMsg::CloneNotConnected),
+            Self::Disconnected => t(super::SftpMsg::CloneDisconnected),
         }
     }
 }

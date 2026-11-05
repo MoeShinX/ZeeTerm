@@ -15,8 +15,92 @@ use super::menu::Side;
 use super::model::{Crumb, local_crumbs, remote_crumbs};
 use super::move_to::{Choice, check_destination, dialog_title as move_title};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::main_window::widgets::{ButtonLook, error_note, note, text_button};
 use crate::typography::{Role, Typo as _};
+
+/// 本文件（移动对话框画面）自己的文案。
+#[derive(Clone, Copy, Debug)]
+enum SftpMoveViewMsg {
+    ThisComputer,
+    UpLevel,
+    NewFolder,
+    Reading,
+    NoSubfolders,
+    Create,
+    Cancel,
+    TargetFolder,
+    Checking,
+    Move,
+    CancelMove,
+    Skip,
+    Replace,
+    ConflictTitle,
+    ExistsPrefix,
+    ExistsMiddle,
+    ApplyRestPrefix,
+    ApplyRestSuffix,
+    SummaryTitle,
+    MorePrefix,
+    MoreSuffix,
+    GotIt,
+}
+
+impl Msg for SftpMoveViewMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::ThisComputer => "此电脑",
+            Self::UpLevel => "上一级",
+            Self::NewFolder => "新建文件夹",
+            Self::Reading => "正在读取…",
+            Self::NoSubfolders => "这里面没有子文件夹",
+            Self::Create => "创建",
+            Self::Cancel => "取消",
+            Self::TargetFolder => "目标文件夹",
+            Self::Checking => "检查中…",
+            Self::Move => "移动",
+            Self::CancelMove => "取消移动",
+            Self::Skip => "跳过",
+            Self::Replace => "替换",
+            Self::ConflictTitle => "目标里已有同名项",
+            Self::ExistsPrefix => "「",
+            Self::ExistsMiddle => "」在目标文件夹里已经存在。",
+            Self::ApplyRestPrefix => "对其余同名项都这样做（后面还有 ",
+            Self::ApplyRestSuffix => " 项）",
+            Self::SummaryTitle => "移动结果",
+            Self::MorePrefix => "…等另外 ",
+            Self::MoreSuffix => " 项",
+            Self::GotIt => "知道了",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::ThisComputer => "This PC",
+            Self::UpLevel => "Up One Level",
+            Self::NewFolder => "New Folder",
+            Self::Reading => "Reading…",
+            Self::NoSubfolders => "No subfolders here",
+            Self::Create => "Create",
+            Self::Cancel => "Cancel",
+            Self::TargetFolder => "Target folder",
+            Self::Checking => "Checking…",
+            Self::Move => "Move",
+            Self::CancelMove => "Cancel Move",
+            Self::Skip => "Skip",
+            Self::Replace => "Replace",
+            Self::ConflictTitle => "The target already contains an item with the same name",
+            Self::ExistsPrefix => "\"",
+            Self::ExistsMiddle => "\" already exists in the target folder.",
+            Self::ApplyRestPrefix => "Do the same for the remaining conflicts (",
+            Self::ApplyRestSuffix => " more)",
+            Self::SummaryTitle => "Move Results",
+            Self::MorePrefix => "…and ",
+            Self::MoreSuffix => " more",
+            Self::GotIt => "Got It",
+        }
+    }
+}
 
 /// 面包屑最多显示几级（再长的前面折成 …）。
 const MAX_CRUMBS: usize = 3;
@@ -42,7 +126,7 @@ fn browse_crumbs(side: Side, dir: &str) -> Vec<Crumb> {
             path: "/".to_owned(),
         }],
         Side::Local => vec![Crumb {
-            name: "此电脑".to_owned(),
+            name: t(SftpMoveViewMsg::ThisComputer).to_owned(),
             path: String::new(),
         }],
     };
@@ -122,7 +206,7 @@ impl SftpDemo {
                     .ghost()
                     .compact()
                     .icon(IconName::ArrowUp)
-                    .tooltip("上一级")
+                    .tooltip(t(SftpMoveViewMsg::UpLevel))
                     .disabled(at_top)
                     .on_click(move |_, window, cx| {
                         up.update(cx, |this, cx| this.move_up(window, cx));
@@ -132,7 +216,7 @@ impl SftpDemo {
             .child(
                 text_button(
                     "sftp-move-new-folder",
-                    "新建文件夹",
+                    t(SftpMoveViewMsg::NewFolder),
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         new_folder.update(cx, |this, cx| this.toggle_new_folder(window, cx));
@@ -160,7 +244,7 @@ impl SftpDemo {
                     .p_2()
                     .text_sm()
                     .text_color(tokens.text_muted)
-                    .child("正在读取…"),
+                    .child(t(SftpMoveViewMsg::Reading)),
             );
         } else if let Some(err) = &d.browse.error {
             list = list.child(div().p_2().child(error_note(err.clone(), tokens.danger)));
@@ -170,7 +254,7 @@ impl SftpDemo {
                     .p_2()
                     .text_sm()
                     .text_color(tokens.text_muted)
-                    .child("这里面没有子文件夹"),
+                    .child(t(SftpMoveViewMsg::NoSubfolders)),
             );
         }
         let accent = tokens.accent_soft;
@@ -231,7 +315,7 @@ impl SftpDemo {
                         .child(
                             text_button(
                                 "sftp-move-folder-create",
-                                "创建",
+                                t(SftpMoveViewMsg::Create),
                                 ButtonLook::Primary,
                                 move |_, window, cx| {
                                     create
@@ -242,7 +326,7 @@ impl SftpDemo {
                         )
                         .child(text_button(
                             "sftp-move-folder-close",
-                            "取消",
+                            t(SftpMoveViewMsg::Cancel),
                             ButtonLook::Outline,
                             move |_, window, cx| {
                                 close.update(cx, |this, cx| this.toggle_new_folder(window, cx));
@@ -261,7 +345,7 @@ impl SftpDemo {
         v_flex()
             .gap_3()
             .child(title(move_title(&d.entries)))
-            .child(note("目标文件夹", tokens))
+            .child(note(t(SftpMoveViewMsg::TargetFolder), tokens))
             .child(nav_bar)
             .child(Input::new(&d.input))
             .child(list)
@@ -275,7 +359,7 @@ impl SftpDemo {
             .child(button_row(vec![
                 text_button(
                     "sftp-move-cancel",
-                    "取消",
+                    t(SftpMoveViewMsg::Cancel),
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         cancel.update(cx, |this, cx| this.close_dialog(window, cx));
@@ -285,9 +369,9 @@ impl SftpDemo {
                 text_button(
                     "sftp-move-ok",
                     if d.confirming {
-                        "检查中…"
+                        t(SftpMoveViewMsg::Checking)
                     } else {
-                        "移动"
+                        t(SftpMoveViewMsg::Move)
                     },
                     ButtonLook::Primary,
                     move |_, window, cx| {
@@ -318,12 +402,12 @@ impl SftpDemo {
         let ask = &c.ask;
         let detail = match &ask.why_not {
             Some(why) => why.clone(),
-            None => "替换后目标里原来的内容就没有了。".to_owned(),
+            None => t(super::SftpMsg::MoveTargetAlreadyExistsDetail).to_owned(),
         };
         let mut buttons = vec![
             text_button(
                 "sftp-move-abort",
-                "取消移动",
+                t(SftpMoveViewMsg::CancelMove),
                 ButtonLook::Outline,
                 move |_, window, cx| {
                     abort.update(cx, |this, cx| this.abort_move(window, cx));
@@ -332,7 +416,7 @@ impl SftpDemo {
             .into_any_element(),
             text_button(
                 "sftp-move-skip",
-                "跳过",
+                t(SftpMoveViewMsg::Skip),
                 if ask.can_replace {
                     ButtonLook::Outline
                 } else {
@@ -350,7 +434,7 @@ impl SftpDemo {
             buttons.push(
                 text_button(
                     "sftp-move-replace",
-                    "替换",
+                    t(SftpMoveViewMsg::Replace),
                     ButtonLook::Danger,
                     move |_, window, cx| {
                         replace.update(cx, |this, cx| {
@@ -363,17 +447,24 @@ impl SftpDemo {
         }
         v_flex()
             .gap_3()
-            .child(title("目标里已有同名项"))
+            .child(title(t(SftpMoveViewMsg::ConflictTitle)))
             .child(note(
-                format!("「{}」在目标文件夹里已经存在。{detail}", ask.name),
+                format!(
+                    "{}{}{}{detail}",
+                    t(SftpMoveViewMsg::ExistsPrefix),
+                    ask.name,
+                    t(SftpMoveViewMsg::ExistsMiddle)
+                ),
                 tokens,
             ))
             .children((ask.remaining > 0).then(|| {
                 Checkbox::new("sftp-move-apply-rest")
                     .checked(c.apply_rest)
                     .label(format!(
-                        "对其余同名项都这样做（后面还有 {} 项）",
-                        ask.remaining
+                        "{}{}{}",
+                        t(SftpMoveViewMsg::ApplyRestPrefix),
+                        ask.remaining,
+                        t(SftpMoveViewMsg::ApplyRestSuffix)
                     ))
                     .on_click(move |checked, _, cx| {
                         let checked = *checked;
@@ -405,7 +496,7 @@ impl SftpDemo {
             .collect();
         v_flex()
             .gap_3()
-            .child(title("移动结果"))
+            .child(title(t(SftpMoveViewMsg::SummaryTitle)))
             .child(note(r.summary.clone(), tokens))
             .child(
                 v_flex()
@@ -423,13 +514,17 @@ impl SftpDemo {
                     .children((more > 0).then(|| {
                         div()
                             .text_color(tokens.text_muted)
-                            .child(format!("…等另外 {more} 项"))
+                            .child(format!(
+                                "{}{more}{}",
+                                t(SftpMoveViewMsg::MorePrefix),
+                                t(SftpMoveViewMsg::MoreSuffix)
+                            ))
                     })),
             )
             .child(button_row(vec![
                 text_button(
                     "sftp-move-summary-close",
-                    "知道了",
+                    t(SftpMoveViewMsg::GotIt),
                     ButtonLook::Primary,
                     move |_, window, cx| {
                         entity.update(cx, |this, cx| this.close_dialog(window, cx));

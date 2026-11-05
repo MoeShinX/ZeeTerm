@@ -25,6 +25,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::main_window::MainWindow;
 use crate::main_window::titlebar::{
@@ -42,7 +43,61 @@ use zssh_core::store::Database;
 pub const STRIP_HEIGHT: f32 = 40.0;
 
 pub fn window_title() -> String {
-    format!("{} 文件", crate::product::NAME)
+    format!("{}{}", crate::product::NAME, t(FileWindowMsg::TitleSuffix))
+}
+
+/// 文件窗口自己的界面文案（标题、标签右键菜单、关闭确认条）。
+#[derive(Clone, Copy, Debug)]
+enum FileWindowMsg {
+    TitleSuffix,
+    CopyTab,
+    MoveToMain,
+    Close,
+    ConfirmCloseTab,
+    ConfirmCloseWindow,
+    CloseAndCancel,
+    KeepTransferring,
+    BusyPrefix,
+    BusyMiddle,
+    Opening,
+}
+
+impl Msg for FileWindowMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::TitleSuffix => " 文件",
+            Self::CopyTab => "复制标签",
+            Self::MoveToMain => "移回主窗口",
+            Self::Close => "关闭",
+            Self::ConfirmCloseTab => "关闭这个标签会取消它们，并断开这个 SFTP",
+            Self::ConfirmCloseWindow => "关闭窗口会取消它们，并断开这个窗口里的 SFTP",
+            Self::CloseAndCancel => "关闭并取消",
+            Self::KeepTransferring => "继续传输",
+            Self::BusyPrefix => "还有 ",
+            Self::BusyMiddle => " 个传输在进行，",
+            Self::Opening => "正在打开…",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::TitleSuffix => " Files",
+            Self::CopyTab => "Duplicate Tab",
+            Self::MoveToMain => "Move Back to Main Window",
+            Self::Close => "Close",
+            Self::ConfirmCloseTab => {
+                "Closing this tab will cancel them and disconnect this SFTP session"
+            }
+            Self::ConfirmCloseWindow => {
+                "Closing the window will cancel them and disconnect the SFTP sessions in this window"
+            }
+            Self::CloseAndCancel => "Close and Cancel",
+            Self::KeepTransferring => "Keep Transferring",
+            Self::BusyPrefix => "There are still ",
+            Self::BusyMiddle => " transfers running; ",
+            Self::Opening => "Opening…",
+        }
+    }
 }
 
 /// 设置 `file_window_close` 的取值：关文件窗口时把标签合并回主窗口。
@@ -634,20 +689,20 @@ impl FileWindow {
                 let close = menu_close.clone();
                 let copy = menu_copy.clone();
                 menu.item(
-                    crate::menu_kit::row(&tokens, "复制标签", Ico::Copy).on_click(
+                    crate::menu_kit::row(&tokens, t(FileWindowMsg::CopyTab), Ico::Copy).on_click(
                         move |_, window, cx| {
                             copy.update(cx, |this, cx| this.duplicate_tab(id, window, cx));
                         },
                     ),
                 )
                 .item(
-                    crate::menu_kit::row(&tokens, "移回主窗口", Ico::SquareArrowDownLeft).on_click(
+                    crate::menu_kit::row(&tokens, t(FileWindowMsg::MoveToMain), Ico::SquareArrowDownLeft).on_click(
                         move |_, window, cx| {
                             back.update(cx, |this, cx| this.move_to_main(id, window, cx));
                         },
                     ),
                 )
-                .item(crate::menu_kit::row(&tokens, "关闭", Ico::X).on_click(
+                .item(crate::menu_kit::row(&tokens, t(FileWindowMsg::Close), Ico::X).on_click(
                     move |_, window, cx| {
                         close.update(cx, |this, cx| this.close_tab(id, window, cx));
                     },
@@ -696,13 +751,13 @@ impl FileWindow {
         let (busy, message, ok_label) = match confirm {
             Confirm::CloseTab(id) => (
                 self.unfinished_of(*id, cx),
-                "关闭这个标签会取消它们，并断开这个 SFTP",
-                "关闭并取消",
+                t(FileWindowMsg::ConfirmCloseTab),
+                t(FileWindowMsg::CloseAndCancel),
             ),
             Confirm::CloseWindow => (
                 self.unfinished_all(cx),
-                "关闭窗口会取消它们，并断开这个窗口里的 SFTP",
-                "关闭并取消",
+                t(FileWindowMsg::ConfirmCloseWindow),
+                t(FileWindowMsg::CloseAndCancel),
             ),
         };
         let keep = cx.entity();
@@ -724,11 +779,15 @@ impl FileWindow {
                     div()
                         .flex_1()
                         .typo(Role::Body, tokens)
-                        .child(format!("还有 {busy} 个传输在进行，{message}")),
+                        .child(format!(
+                        "{}{busy}{}{message}",
+                        t(FileWindowMsg::BusyPrefix),
+                        t(FileWindowMsg::BusyMiddle)
+                    )),
                 )
                 .child(
                     Button::new("file-window-keep")
-                        .label("继续传输")
+                        .label(t(FileWindowMsg::KeepTransferring))
                         .compact()
                         .on_click(move |_, _, cx| {
                             keep.update(cx, |this, cx| {
@@ -780,7 +839,7 @@ impl FileWindow {
                 .justify_center()
                 .typo(Role::Body, &tokens)
                 .text_color(tokens.text_muted)
-                .child("正在打开…")
+                .child(t(FileWindowMsg::Opening))
                 .into_any_element(),
         };
         let me_entity = cx.entity();

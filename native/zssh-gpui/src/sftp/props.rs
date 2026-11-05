@@ -6,6 +6,7 @@ use zssh_core::sftp::size::SizeTotals;
 
 use super::menu::Side;
 use super::model::{Entry, EntryKind, TargetKind, time_full};
+use crate::i18n::t;
 
 // ---------------------------------------------------------------------------
 // 权限：勾选框 <-> 八进制
@@ -181,16 +182,16 @@ pub(super) fn can_calculate(target: &PropTarget) -> bool {
 
 pub(super) fn kind_label(target: &PropTarget) -> String {
     match target.kind {
-        EntryKind::Dir => "文件夹".to_owned(),
-        EntryKind::File => "文件".to_owned(),
+        EntryKind::Dir => t(super::SftpMsg::PropsKindFolder).to_owned(),
+        EntryKind::File => t(super::SftpMsg::PropsKindFile).to_owned(),
         // 目标路径在单独的「链接到」一行里（V2-U1 第 9 条），类型这一行只说它是什么链接。
         EntryKind::Symlink => match target.target_kind {
-            Some(TargetKind::Dir) => "符号链接（指向文件夹）".to_owned(),
-            Some(TargetKind::File) => "符号链接（指向文件）".to_owned(),
-            None => "符号链接（断链）".to_owned(),
+            Some(TargetKind::Dir) => t(super::SftpMsg::PropsKindSymlinkDir).to_owned(),
+            Some(TargetKind::File) => t(super::SftpMsg::PropsKindSymlinkFile).to_owned(),
+            None => t(super::SftpMsg::PropsKindSymlinkBroken).to_owned(),
         },
-        EntryKind::Drive => "磁盘".to_owned(),
-        EntryKind::Other => "其他".to_owned(),
+        EntryKind::Drive => t(super::SftpMsg::PropsKindDrive).to_owned(),
+        EntryKind::Other => t(super::SftpMsg::PropsKindOther).to_owned(),
     }
 }
 
@@ -204,7 +205,7 @@ pub(super) fn link_row(target: &PropTarget) -> Option<String> {
         _ => true,
     };
     Some(if broken {
-        format!("{link}（目标不存在或读不了）")
+        format!("{link}{}", t(super::SftpMsg::PropsLinkBrokenSuffix))
     } else {
         link.clone()
     })
@@ -246,16 +247,28 @@ fn thousands(n: u64) -> String {
 /// 字节数的完整写法：`1.5 MB（1,572,864 字节）`；不到 1 KB 就只写字节。
 pub(super) fn bytes_text(bytes: u64) -> String {
     if bytes < 1024 {
-        format!("{bytes} 字节")
+        format!("{bytes}{}", t(super::SftpMsg::PropsBytesSuffix))
     } else {
-        format!("{}（{} 字节）", size_long(bytes), thousands(bytes))
+        format!(
+            "{}{}{}{}",
+            size_long(bytes),
+            t(super::SftpMsg::PropsBytesParenOpen),
+            thousands(bytes),
+            t(super::SftpMsg::PropsBytesParenClose)
+        )
     }
 }
 
 /// `3 个文件，2 个文件夹`（根目录自己不算在里面）。
 pub(super) fn counts_text(totals: &SizeTotals) -> String {
     let folders = totals.dirs.saturating_sub(1);
-    format!("{} 个文件，{folders} 个文件夹", totals.files)
+    format!(
+        "{}{}{}{}",
+        totals.files,
+        t(super::SftpMsg::PropsFilesCount),
+        folders,
+        t(super::SftpMsg::PropsFoldersCount)
+    )
 }
 
 /// 多个对象的合计。
@@ -340,21 +353,48 @@ pub(super) fn calc_text(state: &CalcState) -> String {
     );
     let mut extras = Vec::new();
     if state.totals.links > 0 {
-        extras.push(format!("跳过 {} 个符号链接", state.totals.links));
+        extras.push(format!(
+            "{}{}{}",
+            t(super::SftpMsg::PropsSkippedLinksPrefix),
+            state.totals.links,
+            t(super::SftpMsg::PropsSkippedLinksSuffix)
+        ));
     }
     if state.totals.unreadable > 0 {
-        extras.push(format!("{} 个文件夹读不了", state.totals.unreadable));
+        extras.push(format!(
+            "{}{}",
+            state.totals.unreadable,
+            t(super::SftpMsg::PropsUnreadableFoldersSuffix)
+        ));
     }
     let suffix = if extras.is_empty() {
         String::new()
     } else {
-        format!("（{}）", extras.join("，"))
+        format!(
+            "{}{}{}",
+            t(super::SftpMsg::ParenOpen),
+            extras.join(t(super::SftpMsg::PropsComma)),
+            t(super::SftpMsg::ParenClose)
+        )
     };
     match state.phase {
-        CalcPhase::Idle => "未计算".to_owned(),
-        CalcPhase::Running => format!("计算中…已数到 {base}{suffix}"),
-        CalcPhase::Cancelled => format!("已取消，取消前数到 {base}{suffix}（不是完整结果）"),
-        CalcPhase::Failed => format!("计算失败：{}", state.error.as_deref().unwrap_or("未知错误")),
+        CalcPhase::Idle => t(super::SftpMsg::PropsNotComputed).to_owned(),
+        CalcPhase::Running => {
+            format!("{}{base}{suffix}", t(super::SftpMsg::PropsCalcRunningPrefix))
+        }
+        CalcPhase::Cancelled => format!(
+            "{}{base}{suffix}{}",
+            t(super::SftpMsg::PropsCalcCancelledPrefix),
+            t(super::SftpMsg::PropsCalcCancelledSuffix)
+        ),
+        CalcPhase::Failed => format!(
+            "{}{}",
+            t(super::SftpMsg::PropsCalcFailedPrefix),
+            state
+                .error
+                .as_deref()
+                .unwrap_or(t(super::SftpMsg::PropsUnknownError))
+        ),
         CalcPhase::Done => format!("{base}{suffix}"),
     }
 }
@@ -388,28 +428,31 @@ pub(super) fn info_rows(
     utc_offset_secs: i64,
 ) -> Vec<(&'static str, String)> {
     let mut rows = vec![
-        ("名称", target.name.clone()),
-        ("位置", target.path.clone()),
-        ("类型", kind_label(target)),
+        (t(super::SftpMsg::PropsRowName), target.name.clone()),
+        (t(super::SftpMsg::PropsRowLocation), target.path.clone()),
+        (t(super::SftpMsg::PropsRowType), kind_label(target)),
     ];
     if let Some(link) = link_row(target) {
-        rows.push(("链接到", link));
+        rows.push((t(super::SftpMsg::PropsRowLinkTo), link));
     }
     if target.kind == EntryKind::File
         && let Some(size) = target.size
     {
-        rows.push(("大小", bytes_text(size)));
+        rows.push((t(super::SftpMsg::PropsRowSize), bytes_text(size)));
     }
-    rows.push(("修改时间", time_full(target.mtime, utc_offset_secs)));
+    rows.push((
+        t(super::SftpMsg::PropsRowMtime),
+        time_full(target.mtime, utc_offset_secs),
+    ));
     if side == Side::Remote {
         rows.push((
-            "权限",
+            t(super::SftpMsg::PropsRowPerms),
             target
                 .permissions
                 .map_or_else(|| "—".to_owned(), |mode| format!("{:04o}", mode & 0o7777)),
         ));
         if let Some(owner) = &target.owner {
-            rows.push(("所有者", owner.clone()));
+            rows.push((t(super::SftpMsg::PropsRowOwner), owner.clone()));
         }
     }
     rows

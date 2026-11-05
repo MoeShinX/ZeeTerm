@@ -19,10 +19,17 @@ use zssh_core::sftp::transfer::Direction;
 use super::dialogs::{NameCheck, validate_local_dir};
 use super::menu::Side;
 use super::model::{Entry, EntryKind, local_parent};
+use crate::i18n::t;
 
-pub(super) const SAME_FOLDER_NOTE: &str = "已经在这个文件夹里";
-pub(super) const INTO_SELF_NOTE: &str = "不能把文件夹移到它自己里面";
-pub(super) const CROSS_DEVICE_NOTE: &str = "不能跨磁盘移动，请用复制 + 删除";
+pub(super) fn same_folder_note() -> &'static str {
+    t(super::SftpMsg::MoveSameFolder)
+}
+pub(super) fn into_self_note() -> &'static str {
+    t(super::SftpMsg::MoveIntoSelf)
+}
+pub(super) fn cross_device_note() -> &'static str {
+    t(super::SftpMsg::MoveCrossDevice)
+}
 
 // ---------------------------------------------------------------------------
 // 路径比较
@@ -141,8 +148,8 @@ impl DestCheck {
         match self {
             Self::Ok(_) => None,
             Self::Invalid(reason) => Some(reason.clone()).filter(|r| !r.is_empty()),
-            Self::SameFolder => Some(SAME_FOLDER_NOTE.to_owned()),
-            Self::IntoSelf => Some(INTO_SELF_NOTE.to_owned()),
+            Self::SameFolder => Some(same_folder_note().to_owned()),
+            Self::IntoSelf => Some(into_self_note().to_owned()),
         }
     }
 
@@ -160,7 +167,7 @@ fn dest_shape(side: Side, raw: &str) -> Result<String, String> {
     match side {
         Side::Remote => {
             if !text.starts_with('/') {
-                return Err("目标要写成完整路径（以 / 开头）".to_owned());
+                return Err(t(super::SftpMsg::MoveDestNeedAbsoluteRemote).to_owned());
             }
             Ok(normalize(text))
         }
@@ -173,7 +180,7 @@ fn dest_shape(side: Side, raw: &str) -> Result<String, String> {
                 && normalized.as_bytes()[1] == b':'
                 && normalized.as_bytes()[0].is_ascii_alphabetic();
             if !(drive || normalized.starts_with("\\\\")) {
-                return Err("目标要写成完整路径（例如 D:\\文件夹）".to_owned());
+                return Err(t(super::SftpMsg::MoveDestNeedAbsoluteLocal).to_owned());
             }
             // 盘符根写成 `D:` 时补上 `\`（不补的话 `D:` 指的是那个盘的当前目录）。
             if normalized.len() == 2 {
@@ -192,10 +199,10 @@ fn dest_shape(side: Side, raw: &str) -> Result<String, String> {
 /// 一个条目放进 `dest` 有没有问题：已经在里面 / 文件夹放进自己里面。
 pub(super) fn entry_problem(side: Side, entry: &Entry, dest: &str) -> Option<&'static str> {
     if path_key(side, &parent_of(side, &entry.path)) == path_key(side, dest) {
-        return Some(SAME_FOLDER_NOTE);
+        return Some(same_folder_note());
     }
     if entry.kind == EntryKind::Dir && same_or_inside(side, dest, &entry.path) {
-        return Some(INTO_SELF_NOTE);
+        return Some(into_self_note());
     }
     None
 }
@@ -207,7 +214,7 @@ pub(super) fn check_destination(side: Side, entries: &[Entry], raw: &str) -> Des
         Err(reason) => return DestCheck::Invalid(reason),
     };
     if entries.is_empty() {
-        return DestCheck::Invalid("先选中要移动的条目".to_owned());
+        return DestCheck::Invalid(t(super::SftpMsg::MoveSelectItems).to_owned());
     }
     let problems: Vec<&'static str> = entries
         .iter()
@@ -216,7 +223,7 @@ pub(super) fn check_destination(side: Side, entries: &[Entry], raw: &str) -> Des
         .unwrap_or_default();
     // 每一项都有问题才置灰；只有部分有问题的，那几项在执行时跳过并写进汇总。
     if problems.len() == entries.len() {
-        if problems.contains(&INTO_SELF_NOTE) {
+        if problems.contains(&into_self_note()) {
             return DestCheck::IntoSelf;
         }
         return DestCheck::SameFolder;
@@ -227,8 +234,18 @@ pub(super) fn check_destination(side: Side, entries: &[Entry], raw: &str) -> Des
 /// 对话框标题。
 pub(super) fn dialog_title(entries: &[Entry]) -> String {
     match entries {
-        [only] => format!("移动「{}」到…", only.name),
-        _ => format!("移动 {} 项到…", entries.len()),
+        [only] => format!(
+            "{}{}{}",
+            t(super::SftpMsg::MoveDialogOnePrefix),
+            only.name,
+            t(super::SftpMsg::MoveDialogOneSuffix)
+        ),
+        _ => format!(
+            "{}{}{}",
+            t(super::SftpMsg::MoveDialogManyPrefix),
+            entries.len(),
+            t(super::SftpMsg::MoveDialogManySuffix)
+        ),
     }
 }
 
@@ -301,37 +318,75 @@ impl Tally {
         let mut parts: Vec<String> = Vec::new();
         match self.moved.as_slice() {
             [] => {}
-            [only] => parts.push(format!("已移动 {only} 到「{dest_name}」")),
-            many => parts.push(format!("已移动 {} 项到「{dest_name}」", many.len())),
+            [only] => parts.push(format!(
+                "{}{only}{}{dest_name}{}",
+                t(super::SftpMsg::MoveSummaryMovedOnePrefix),
+                t(super::SftpMsg::MoveSummaryMovedToMiddle),
+                t(super::SftpMsg::MoveSummaryMovedToClose)
+            )),
+            many => parts.push(format!(
+                "{}{}{}{dest_name}{}",
+                t(super::SftpMsg::MoveSummaryMovedManyPrefix),
+                many.len(),
+                t(super::SftpMsg::MoveSummaryMovedManyMiddle),
+                t(super::SftpMsg::MoveSummaryMovedToClose)
+            )),
         }
         if !self.skipped.is_empty() {
-            parts.push(format!("跳过 {} 项", self.skipped.len()));
-        }
-        if let Some(first) = self.failed.first() {
-            let more = if self.failed.len() > 1 { " 等" } else { "" };
             parts.push(format!(
-                "失败 {} 项：{}（{}）{more}",
-                self.failed.len(),
-                first.name,
-                first.reason
+                "{}{}{}",
+                t(super::SftpMsg::MoveSummarySkippedPrefix),
+                self.skipped.len(),
+                t(super::SftpMsg::MoveSummarySkippedSuffix)
             ));
         }
-        if parts.is_empty() {
-            return "没有移动任何项".to_owned();
+        if let Some(first) = self.failed.first() {
+            let more = if self.failed.len() > 1 {
+                t(super::SftpMsg::MoveSummaryFailedMore)
+            } else {
+                ""
+            };
+            let mut text = format!(
+                "{}{}{}{}{}",
+                t(super::SftpMsg::MoveSummaryFailedPrefix),
+                self.failed.len(),
+                t(super::SftpMsg::MoveSummaryFailedMiddle),
+                first.name,
+                t(super::SftpMsg::ParenOpen)
+            );
+            text.push_str(&first.reason);
+            text.push_str(t(super::SftpMsg::ParenClose));
+            text.push_str(more);
+            parts.push(text);
         }
-        parts.join("，")
+        if parts.is_empty() {
+            return t(super::SftpMsg::MoveNoItemsMoved).to_owned();
+        }
+        parts.join(t(super::SftpMsg::MoveSummarySeparator))
     }
 
     /// 汇总对话框里一行一项的明细（跳过的在前，失败的在后）。
     pub(super) fn detail_lines(&self) -> Vec<String> {
         self.skipped
             .iter()
-            .map(|note| format!("跳过 {}：{}", note.name, note.reason))
-            .chain(
-                self.failed
-                    .iter()
-                    .map(|note| format!("失败 {}：{}", note.name, note.reason)),
-            )
+            .map(|note| {
+                format!(
+                    "{}{}{}{}",
+                    t(super::SftpMsg::MoveDetailSkippedPrefix),
+                    note.name,
+                    t(super::SftpMsg::MoveDetailMiddle),
+                    note.reason
+                )
+            })
+            .chain(self.failed.iter().map(|note| {
+                format!(
+                    "{}{}{}{}",
+                    t(super::SftpMsg::MoveDetailFailedPrefix),
+                    note.name,
+                    t(super::SftpMsg::MoveDetailMiddle),
+                    note.reason
+                )
+            }))
             .collect()
     }
 }
@@ -386,9 +441,9 @@ pub(super) struct MoveJob {
 /// 为什么这一项不能替换同名的东西；`None` = 可以替换。
 fn replace_blocker(source_is_dir: bool, target_is_dir: bool) -> Option<&'static str> {
     match (source_is_dir, target_is_dir) {
-        (true, true) => Some("同名文件夹不会合并，只能跳过"),
-        (true, false) => Some("同名的是文件，不能用文件夹替换，只能跳过"),
-        (false, true) => Some("同名的是文件夹，不能用文件替换，只能跳过"),
+        (true, true) => Some(t(super::SftpMsg::MoveWhyFolderMerge)),
+        (true, false) => Some(t(super::SftpMsg::MoveWhyTargetFile)),
+        (false, true) => Some(t(super::SftpMsg::MoveWhyTargetFolder)),
         (false, false) => None,
     }
 }
@@ -481,7 +536,7 @@ impl MoveJob {
                             self.advance(blocked)
                         }
                         (Some(Choice::Skip), _) => {
-                            self.skip(&entry.name, "目标里已有同名项，已跳过");
+                            self.skip(&entry.name, t(super::SftpMsg::MoveSkipTargetExists));
                             self.advance(blocked)
                         }
                         (None, blocker) => {
@@ -506,7 +561,7 @@ impl MoveJob {
                     StepResult::Moved => self.tally.moved.push(entry.name),
                     StepResult::Failed(reason) => self.fail(&entry.name, reason),
                     StepResult::Exists { .. } => {
-                        self.fail(&entry.name, "替换没有成功：目标仍然存在")
+                        self.fail(&entry.name, t(super::SftpMsg::MoveReplaceFailed))
                     }
                 }
                 self.advance(blocked)
@@ -531,7 +586,7 @@ impl MoveJob {
                 target: target.clone(),
                 can_replace: *can_replace,
                 why_not: (!can_replace)
-                    .then(|| "同名项是文件夹或要移动的是文件夹，只能跳过".to_owned()),
+                    .then(|| t(super::SftpMsg::MoveSkipFolderOnly).to_owned()),
                 remaining: self.queue.len(),
             }),
             _ => Next::Done(Tally::default()),
@@ -569,7 +624,7 @@ impl MoveJob {
                 }
             }
             Choice::Skip => {
-                self.skip(&entry.name, "目标里已有同名项，已跳过");
+                self.skip(&entry.name, t(super::SftpMsg::MoveSkipTargetExists));
                 self.advance(blocked)
             }
         }
@@ -578,10 +633,10 @@ impl MoveJob {
     /// 用户关掉了同名对话框 / 取消：这一项和后面没处理的都跳过，不再动任何东西。
     pub(super) fn abort(&mut self) -> Next {
         if let Phase::Asking { entry, .. } = std::mem::replace(&mut self.phase, Phase::Idle) {
-            self.skip(&entry.name, "已取消");
+            self.skip(&entry.name, t(super::SftpMsg::MoveSkipCancelled));
         }
         while let Some(entry) = self.queue.pop_front() {
-            self.skip(&entry.name, "已取消");
+            self.skip(&entry.name, t(super::SftpMsg::MoveSkipCancelled));
         }
         Next::Done(std::mem::take(&mut self.tally))
     }
@@ -636,7 +691,7 @@ pub(super) fn local_step(from: &str, to: &str, overwrite: bool) -> StepResult {
 mod tests {
     use super::super::model::{Entry, EntryKind};
     use super::{
-        Choice, DestCheck, INTO_SELF_NOTE, MoveJob, Next, SAME_FOLDER_NOTE, Side, StepResult,
+        Choice, DestCheck, into_self_note, MoveJob, Next, same_folder_note, Side, StepResult,
         Tally, check_destination, dialog_title, folders_only, related, same_or_inside, target_path,
     };
 
@@ -814,9 +869,9 @@ mod tests {
         );
         assert_eq!(
             DestCheck::SameFolder.note().as_deref(),
-            Some(SAME_FOLDER_NOTE)
+            Some(same_folder_note())
         );
-        assert_eq!(SAME_FOLDER_NOTE, "已经在这个文件夹里");
+        assert_eq!(same_folder_note(), "已经在这个文件夹里");
         let local_entries = [local("a.txt", EntryKind::File)];
         assert_eq!(
             check_destination(Side::Local, &local_entries, "d:/WORK/"),
@@ -838,7 +893,7 @@ mod tests {
                 "{dest}"
             );
         }
-        assert_eq!(INTO_SELF_NOTE, "不能把文件夹移到它自己里面");
+        assert_eq!(into_self_note(), "不能把文件夹移到它自己里面");
         // 兄弟目录和上级目录都可以（上级就是“已经在里面”以外的别的目录）。
         assert!(check_destination(Side::Remote, &entries, "/srv/app/data2").is_ok());
         assert!(check_destination(Side::Remote, &entries, "/srv").is_ok());
@@ -1027,7 +1082,7 @@ mod tests {
         };
         assert_eq!(tally.moved, ["ok.txt"]);
         let reasons: Vec<&str> = tally.skipped.iter().map(|n| n.reason.as_str()).collect();
-        assert_eq!(reasons, [INTO_SELF_NOTE, SAME_FOLDER_NOTE]);
+        assert_eq!(reasons, [into_self_note(), same_folder_note()]);
     }
 
     #[test]

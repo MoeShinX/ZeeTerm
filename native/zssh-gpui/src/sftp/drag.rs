@@ -17,6 +17,7 @@ use super::SftpDemo;
 use super::menu::Side;
 use super::model::Entry;
 use crate::app_theme::Tokens;
+use crate::i18n::t;
 
 /// 正在拖的文件栏条目。条目本身不放在载荷里：松手时按"按下时的选择"现取，所以多选拖动拖的是整个选择。
 #[derive(Clone)]
@@ -54,7 +55,7 @@ impl SftpDrag {
 /// 路径里有终端控制字符时给出原因。
 pub fn terminal_insert_text(paths: &[String]) -> Result<String, &'static str> {
     if paths.iter().any(|path| has_control_chars(path)) {
-        return Err("文件名里有控制字符，不能插进终端");
+        return Err(t(super::SftpMsg::DragControlChars));
     }
     Ok(paths
         .iter()
@@ -128,7 +129,7 @@ impl SftpDemo {
         let entries = self.drag_entries(side, anchor);
         match entries.as_slice() {
             [one] => one.name.clone(),
-            many => format!("{} 项", many.len()),
+            many => format!("{}{}", many.len(), t(super::SftpMsg::ItemCountSuffix)),
         }
     }
 
@@ -147,7 +148,7 @@ impl SftpDemo {
         }
         let entries = self.drag_entries(drag.side, &drag.anchor);
         if entries.is_empty() {
-            self.warn("拖动的条目现在不能传（文件名编码不是 UTF-8）");
+            self.warn(t(super::SftpMsg::DragNotUtf8));
             cx.notify();
             return;
         }

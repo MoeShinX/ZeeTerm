@@ -26,10 +26,179 @@ use super::model::{Entry, EntryKind};
 use super::props::{
     CalcPhase, PermBit, aggregate, bytes_text, calc_text, can_calculate, info_rows,
 };
-use super::{SftpDemo, props};
+use super::{SftpDemo, SftpMsg, props};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::main_window::widgets::{ButtonLook, error_note, note, text_button};
 use crate::menu_kit;
+
+/// 本文件（对话框画面）自己的文案。
+#[derive(Clone, Copy, Debug)]
+enum SftpDialogViewMsg {
+    NewFolder,
+    NewFile,
+    Rename,
+    NameTakenRemoteWillAsk,
+    NameTakenWillFail,
+    Cancel,
+    Ok,
+    Delete,
+    Owner,
+    Group,
+    Others,
+    Read,
+    Write,
+    Execute,
+    PermissionsTitle,
+    Octal,
+    OctalError,
+    RecursiveLabel,
+    Apply,
+    PropertySuffix,
+    PropertyManySuffix,
+    Selected,
+    SelectedSummaryMiddle,
+    FolderCountMiddle,
+    FileCountSuffix,
+    FileSize,
+    Contains,
+    FolderTotal,
+    EditPermissions,
+    CancelCalc,
+    CalcSize,
+    Recalc,
+    Close,
+    DownloadTitle,
+    DownloadSummaryPrefix,
+    DownloadSummarySuffix,
+    ChooseFolder,
+    CheckingDir,
+    Download,
+    ExtractConflictTitle,
+    ExtractConflictPrefix,
+    ExtractConflictMiddle,
+    ExtractConflictAfter,
+    ExtractConflictCountSuffix,
+    SkipExisting,
+    Overwrite,
+    OverwriteTitle,
+    OverwriteBodyPrefix,
+    OverwriteBodyMiddle,
+}
+
+impl Msg for SftpDialogViewMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::NewFolder => "新建文件夹",
+            Self::NewFile => "新建文件",
+            Self::Rename => "重命名",
+            Self::NameTakenRemoteWillAsk => "已经有同名的条目，确定后会问是否覆盖",
+            Self::NameTakenWillFail => "已经有同名的条目，确定会失败",
+            Self::Cancel => "取消",
+            Self::Ok => "确定",
+            Self::Delete => "删除",
+            Self::Owner => "所有者",
+            Self::Group => "组",
+            Self::Others => "其他",
+            Self::Read => "读",
+            Self::Write => "写",
+            Self::Execute => "执行",
+            Self::PermissionsTitle => "修改权限",
+            Self::Octal => "八进制",
+            Self::OctalError => "权限要写成 3-4 位八进制（例如 644 或 0644）",
+            Self::RecursiveLabel => "递归应用到文件夹里面的所有内容（符号链接不改）",
+            Self::Apply => "应用",
+            Self::PropertySuffix => " 属性",
+            Self::PropertyManySuffix => " 项的属性",
+            Self::Selected => "选中",
+            Self::SelectedSummaryMiddle => " 项（",
+            Self::FolderCountMiddle => " 个文件夹，",
+            Self::FileCountSuffix => " 个文件）",
+            Self::FileSize => "文件大小",
+            Self::Contains => "包含",
+            Self::FolderTotal => "文件夹合计",
+            Self::EditPermissions => "修改权限…",
+            Self::CancelCalc => "取消计算",
+            Self::CalcSize => "计算大小",
+            Self::Recalc => "重新计算",
+            Self::Close => "关闭",
+            Self::DownloadTitle => "下载到…",
+            Self::DownloadSummaryPrefix => "把选中的 ",
+            Self::DownloadSummarySuffix => " 项下载到这台电脑的哪个目录",
+            Self::ChooseFolder => "选择文件夹…",
+            Self::CheckingDir => "正在检查目录…",
+            Self::Download => "下载",
+            Self::ExtractConflictTitle => "目标里已有同名文件",
+            Self::ExtractConflictPrefix => "解压「",
+            Self::ExtractConflictMiddle => "」到「",
+            Self::ExtractConflictAfter => "」时，有 ",
+            Self::ExtractConflictCountSuffix => " 个文件在里面已经存在。",
+            Self::SkipExisting => "跳过已有文件",
+            Self::Overwrite => "覆盖",
+            Self::OverwriteTitle => "覆盖服务器上的同名文件？",
+            Self::OverwriteBodyPrefix => "服务器上已经有一个叫 ",
+            Self::OverwriteBodyMiddle => " 的文件，覆盖后原来的内容就没有了。",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::NewFolder => "New Folder",
+            Self::NewFile => "New File",
+            Self::Rename => "Rename",
+            Self::NameTakenRemoteWillAsk => {
+                "An entry with that name already exists; you will be asked whether to overwrite"
+            }
+            Self::NameTakenWillFail => "An entry with that name already exists; this will fail",
+            Self::Cancel => "Cancel",
+            Self::Ok => "OK",
+            Self::Delete => "Delete",
+            Self::Owner => "Owner",
+            Self::Group => "Group",
+            Self::Others => "Others",
+            Self::Read => "Read",
+            Self::Write => "Write",
+            Self::Execute => "Execute",
+            Self::PermissionsTitle => "Change Permissions",
+            Self::Octal => "Octal",
+            Self::OctalError => "Permissions must be written as 3-4 octal digits (for example 644 or 0644)",
+            Self::RecursiveLabel => {
+                "Apply recursively to everything inside the folder (symbolic links are left unchanged)"
+            }
+            Self::Apply => "Apply",
+            Self::PropertySuffix => " properties",
+            Self::PropertyManySuffix => " items' properties",
+            Self::Selected => "Selected",
+            Self::SelectedSummaryMiddle => " items (",
+            Self::FolderCountMiddle => " folders, ",
+            Self::FileCountSuffix => " files)",
+            Self::FileSize => "File size",
+            Self::Contains => "Contains",
+            Self::FolderTotal => "Folder total",
+            Self::EditPermissions => "Change Permissions…",
+            Self::CancelCalc => "Cancel Calculation",
+            Self::CalcSize => "Calculate Size",
+            Self::Recalc => "Recalculate",
+            Self::Close => "Close",
+            Self::DownloadTitle => "Download To…",
+            Self::DownloadSummaryPrefix => "Download the selected ",
+            Self::DownloadSummarySuffix => " items to which folder on this computer?",
+            Self::ChooseFolder => "Choose Folder…",
+            Self::CheckingDir => "Checking directory…",
+            Self::Download => "Download",
+            Self::ExtractConflictTitle => "The target already contains files with the same names",
+            Self::ExtractConflictPrefix => "Extracting \"",
+            Self::ExtractConflictMiddle => "\" to \"",
+            Self::ExtractConflictAfter => "\": ",
+            Self::ExtractConflictCountSuffix => " files already exist there.",
+            Self::SkipExisting => "Skip Existing Files",
+            Self::Overwrite => "Overwrite",
+            Self::OverwriteTitle => "Overwrite the file with the same name on the server?",
+            Self::OverwriteBodyPrefix => "The server already has a file named ",
+            Self::OverwriteBodyMiddle => "; overwriting it will discard its current contents.",
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 右键菜单
@@ -286,10 +455,10 @@ impl SftpDemo {
             && !(d.kind == NameKind::Rename
                 && d.from.as_ref().is_some_and(|f| f.name == name.trim()));
         let (title, desc) = match d.kind {
-            NameKind::Mkdir => ("新建文件夹", d.dir.clone()),
-            NameKind::Create => ("新建文件", d.dir.clone()),
+            NameKind::Mkdir => (t(SftpDialogViewMsg::NewFolder), d.dir.clone()),
+            NameKind::Create => (t(SftpDialogViewMsg::NewFile), d.dir.clone()),
             NameKind::Rename => (
-                "重命名",
+                t(SftpDialogViewMsg::Rename),
                 d.from.as_ref().map(|f| f.path.clone()).unwrap_or_default(),
             ),
         };
@@ -300,7 +469,7 @@ impl SftpDemo {
             .child(note(desc, tokens))
             .child(Input::new(&d.input))
             .children(match &check {
-                NameCheck::Bad(reason) if !name.trim().is_empty() || reason != "名字不能为空" => {
+                NameCheck::Bad(reason) if !name.trim().is_empty() || reason != t(SftpMsg::DialogNameEmpty) => {
                     Some(error_note(reason.clone(), tokens.danger))
                 }
                 _ => None,
@@ -308,9 +477,9 @@ impl SftpDemo {
             .children((valid && taken).then(|| {
                 error_note(
                     if d.side == Side::Remote && d.kind == NameKind::Rename {
-                        "已经有同名的条目，确定后会问是否覆盖"
+                        t(SftpDialogViewMsg::NameTakenRemoteWillAsk)
                     } else {
-                        "已经有同名的条目，确定会失败"
+                        t(SftpDialogViewMsg::NameTakenWillFail)
                     },
                     tokens.caution,
                 )
@@ -318,7 +487,7 @@ impl SftpDemo {
             .child(buttons(vec![
                 text_button(
                     "sftp-dialog-cancel",
-                    "取消",
+                    t(SftpDialogViewMsg::Cancel),
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         cancel.update(cx, |this, cx| this.close_dialog(window, cx));
@@ -327,7 +496,7 @@ impl SftpDemo {
                 .into_any_element(),
                 text_button(
                     "sftp-dialog-ok",
-                    "确定",
+                    t(SftpDialogViewMsg::Ok),
                     ButtonLook::Primary,
                     move |_, window, cx| {
                         ok.update(cx, |this, cx| this.dialog_enter(window, cx));
@@ -354,7 +523,7 @@ impl SftpDemo {
             .child(buttons(vec![
                 text_button(
                     "sftp-delete-no",
-                    "取消",
+                    t(SftpDialogViewMsg::Cancel),
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         cancel.update(cx, |this, cx| this.close_dialog(window, cx));
@@ -363,7 +532,7 @@ impl SftpDemo {
                 .into_any_element(),
                 text_button(
                     "sftp-delete-yes",
-                    "删除",
+                    t(SftpDialogViewMsg::Delete),
                     ButtonLook::Danger,
                     move |_, window, cx| {
                         ok.update(cx, |this, cx| this.confirm_delete(window, cx));
@@ -389,7 +558,7 @@ impl SftpDemo {
         let octal_ok = super::engine::parse_octal_mode(&text).is_ok();
         let roles: [(&str, [PermBit; 3]); 3] = [
             (
-                "所有者",
+                t(SftpDialogViewMsg::Owner),
                 [
                     PermBit::OwnerRead,
                     PermBit::OwnerWrite,
@@ -397,7 +566,7 @@ impl SftpDemo {
                 ],
             ),
             (
-                "组",
+                t(SftpDialogViewMsg::Group),
                 [
                     PermBit::GroupRead,
                     PermBit::GroupWrite,
@@ -405,7 +574,7 @@ impl SftpDemo {
                 ],
             ),
             (
-                "其他",
+                t(SftpDialogViewMsg::Others),
                 [
                     PermBit::OthersRead,
                     PermBit::OthersWrite,
@@ -421,7 +590,11 @@ impl SftpDemo {
             .text_color(tokens.text_muted)
             .child(div().w(px(64.0)).flex_none())
             .children(
-                ["读", "写", "执行"]
+                [
+                    t(SftpDialogViewMsg::Read),
+                    t(SftpDialogViewMsg::Write),
+                    t(SftpDialogViewMsg::Execute),
+                ]
                     .into_iter()
                     .map(|label| div().flex_1().text_center().child(label).into_any_element()),
             );
@@ -458,7 +631,7 @@ impl SftpDemo {
         let is_dir = d.entry.kind == EntryKind::Dir;
         v_flex()
             .gap_3()
-            .child(dialog_title("修改权限"))
+            .child(dialog_title(t(SftpDialogViewMsg::PermissionsTitle)))
             .child(note(d.entry.name.clone(), tokens).truncate())
             .child(grid_head)
             .children(rows)
@@ -469,18 +642,18 @@ impl SftpDemo {
                     .border_color(tokens.border)
                     .items_center()
                     .justify_between()
-                    .child(note("八进制", tokens))
+                    .child(note(t(SftpDialogViewMsg::Octal), tokens))
                     .child(div().w(px(96.0)).child(Input::new(&d.octal))),
             )
             .children(
                 (!octal_ok).then(|| {
-                    error_note("权限要写成 3-4 位八进制（例如 644 或 0644）", tokens.danger)
+                    error_note(t(SftpDialogViewMsg::OctalError), tokens.danger)
                 }),
             )
             .children(is_dir.then(|| {
                 Checkbox::new("sftp-perm-recursive")
                     .checked(d.recursive)
-                    .label("递归应用到文件夹里面的所有内容（符号链接不改）")
+                    .label(t(SftpDialogViewMsg::RecursiveLabel))
                     .on_click(move |checked, _, cx| {
                         let checked = *checked;
                         recursive_entity.update(cx, |this, cx| {
@@ -494,7 +667,7 @@ impl SftpDemo {
             .child(buttons(vec![
                 text_button(
                     "sftp-perm-cancel",
-                    "取消",
+                    t(SftpDialogViewMsg::Cancel),
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         cancel.update(cx, |this, cx| this.close_dialog(window, cx));
@@ -503,7 +676,7 @@ impl SftpDemo {
                 .into_any_element(),
                 text_button(
                     "sftp-perm-apply",
-                    "应用",
+                    t(SftpDialogViewMsg::Apply),
                     ButtonLook::Primary,
                     move |_, window, cx| {
                         ok.update(cx, |this, cx| this.dialog_enter(window, cx));
@@ -539,9 +712,17 @@ impl SftpDemo {
             .map(|t| t.size.unwrap_or(0))
             .sum();
         let title = if single {
-            format!("{} 属性", d.targets[0].name)
+            format!(
+                "{}{}",
+                d.targets[0].name,
+                t(SftpDialogViewMsg::PropertySuffix)
+            )
         } else {
-            format!("{} 项的属性", d.targets.len())
+            format!(
+                "{}{}",
+                d.targets.len(),
+                t(SftpDialogViewMsg::PropertyManySuffix)
+            )
         };
         let line = |label: &str, value: String, id: &'static str| {
             h_flex()
@@ -583,22 +764,36 @@ impl SftpDemo {
                 .count();
             rows.push(
                 line(
-                    "选中",
-                    format!("{} 项（{dirs} 个文件夹，{files} 个文件）", d.targets.len()),
+                    t(SftpDialogViewMsg::Selected),
+                    format!(
+                        "{}{}{dirs}{}{files}{}",
+                        d.targets.len(),
+                        t(SftpDialogViewMsg::SelectedSummaryMiddle),
+                        t(SftpDialogViewMsg::FolderCountMiddle),
+                        t(SftpDialogViewMsg::FileCountSuffix)
+                    ),
                     "sftp-prop-row",
                 )
                 .into_any_element(),
             );
             if file_bytes > 0 {
                 rows.push(
-                    line("文件大小", bytes_text(file_bytes), "sftp-prop-row").into_any_element(),
+                    line(
+                        t(SftpDialogViewMsg::FileSize),
+                        bytes_text(file_bytes),
+                        "sftp-prop-row",
+                    ).into_any_element(),
                 );
             }
         }
         if !folders.is_empty() {
             rows.push(
                 line(
-                    if single { "包含" } else { "文件夹合计" },
+                    if single {
+                        t(SftpDialogViewMsg::Contains)
+                    } else {
+                        t(SftpDialogViewMsg::FolderTotal)
+                    },
                     calc_text(&total),
                     "sftp-prop-calc",
                 )
@@ -612,7 +807,7 @@ impl SftpDemo {
             footer.push(
                 text_button(
                     "sftp-prop-perm",
-                    "修改权限…",
+                    t(SftpDialogViewMsg::EditPermissions),
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         perm_entity
@@ -624,11 +819,11 @@ impl SftpDemo {
         }
         if !folders.is_empty() {
             let label = if running {
-                "取消计算"
+                t(SftpDialogViewMsg::CancelCalc)
             } else if total.phase == CalcPhase::Idle {
-                "计算大小"
+                t(SftpDialogViewMsg::CalcSize)
             } else {
-                "重新计算"
+                t(SftpDialogViewMsg::Recalc)
             };
             footer.push(
                 text_button(
@@ -655,7 +850,7 @@ impl SftpDemo {
         footer.push(
             text_button(
                 "sftp-prop-close",
-                "关闭",
+                t(SftpDialogViewMsg::Close),
                 ButtonLook::Primary,
                 move |_, window, cx| {
                     close_entity.update(cx, |this, cx| this.close_dialog(window, cx));
@@ -685,9 +880,14 @@ impl SftpDemo {
         let check = validate_local_dir(&text);
         v_flex()
             .gap_3()
-            .child(dialog_title("下载到…"))
+            .child(dialog_title(t(SftpDialogViewMsg::DownloadTitle)))
             .child(note(
-                format!("把选中的 {} 项下载到这台电脑的哪个目录", d.entries.len()),
+                format!(
+                    "{}{}{}",
+                    t(SftpDialogViewMsg::DownloadSummaryPrefix),
+                    d.entries.len(),
+                    t(SftpDialogViewMsg::DownloadSummarySuffix)
+                ),
                 tokens,
             ))
             .child(
@@ -696,7 +896,7 @@ impl SftpDemo {
                     .child(div().flex_1().min_w_0().child(Input::new(&d.input)))
                     .child(text_button(
                         "sftp-download-pick",
-                        "选择文件夹…",
+                        t(SftpDialogViewMsg::ChooseFolder),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             pick.update(cx, |this, cx| this.pick_download_folder(window, cx));
@@ -712,11 +912,11 @@ impl SftpDemo {
                     .as_ref()
                     .map(|err| error_note(err.clone(), tokens.danger)),
             )
-            .children(d.checking.then(|| note("正在检查目录…", tokens)))
+            .children(d.checking.then(|| note(t(SftpDialogViewMsg::CheckingDir), tokens)))
             .child(buttons(vec![
                 text_button(
                     "sftp-download-cancel",
-                    "取消",
+                    t(SftpDialogViewMsg::Cancel),
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         cancel.update(cx, |this, cx| this.close_dialog(window, cx));
@@ -725,7 +925,7 @@ impl SftpDemo {
                 .into_any_element(),
                 text_button(
                     "sftp-download-ok",
-                    "下载",
+                    t(SftpDialogViewMsg::Download),
                     ButtonLook::Primary,
                     move |_, window, cx| {
                         ok.update(cx, |this, cx| this.confirm_download_to(window, cx));
@@ -746,11 +946,17 @@ impl SftpDemo {
             .map(|text| format!("…{text}"));
         v_flex()
             .gap_3()
-            .child(dialog_title("目标里已有同名文件"))
+            .child(dialog_title(t(SftpDialogViewMsg::ExtractConflictTitle)))
             .child(note(
                 format!(
-                    "解压「{}」到「{}」时，有 {} 个文件在里面已经存在。",
-                    a.target.archive_name, a.target.dest_name, a.plan.conflict_count
+                    "{}{}{}{}{}{}{}",
+                    t(SftpDialogViewMsg::ExtractConflictPrefix),
+                    a.target.archive_name,
+                    t(SftpDialogViewMsg::ExtractConflictMiddle),
+                    a.target.dest_name,
+                    t(SftpDialogViewMsg::ExtractConflictAfter),
+                    a.plan.conflict_count,
+                    t(SftpDialogViewMsg::ExtractConflictCountSuffix)
                 ),
                 tokens,
             ))
@@ -758,7 +964,7 @@ impl SftpDemo {
             .child(buttons(vec![
                 text_button(
                     "sftp-extract-cancel",
-                    "取消",
+                    t(SftpDialogViewMsg::Cancel),
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         cancel.update(cx, |this, cx| this.cancel_extract_choice(window, cx));
@@ -767,7 +973,7 @@ impl SftpDemo {
                 .into_any_element(),
                 text_button(
                     "sftp-extract-skip",
-                    "跳过已有文件",
+                    t(SftpDialogViewMsg::SkipExisting),
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         skip.update(cx, |this, cx| {
@@ -778,7 +984,7 @@ impl SftpDemo {
                 .into_any_element(),
                 text_button(
                     "sftp-extract-overwrite",
-                    "覆盖",
+                    t(SftpDialogViewMsg::Overwrite),
                     ButtonLook::Primary,
                     move |_, window, cx| {
                         overwrite.update(cx, |this, cx| {
@@ -803,18 +1009,20 @@ impl SftpDemo {
         let (cancel, ok) = (entity.clone(), entity.clone());
         v_flex()
             .gap_3()
-            .child(dialog_title("覆盖服务器上的同名文件？"))
+            .child(dialog_title(t(SftpDialogViewMsg::OverwriteTitle)))
             .child(note(
                 format!(
-                    "服务器上已经有一个叫 {} 的文件，覆盖后原来的内容就没有了。",
-                    a.name
+                    "{}{}{}",
+                    t(SftpDialogViewMsg::OverwriteBodyPrefix),
+                    a.name,
+                    t(SftpDialogViewMsg::OverwriteBodyMiddle)
                 ),
                 tokens,
             ))
             .child(buttons(vec![
                 text_button(
                     "sftp-overwrite-no",
-                    "取消",
+                    t(SftpDialogViewMsg::Cancel),
                     ButtonLook::Outline,
                     move |_, window, cx| {
                         cancel.update(cx, |this, cx| this.close_dialog(window, cx));
@@ -823,7 +1031,7 @@ impl SftpDemo {
                 .into_any_element(),
                 text_button(
                     "sftp-overwrite-yes",
-                    "覆盖",
+                    t(SftpDialogViewMsg::Overwrite),
                     ButtonLook::Danger,
                     move |_, window, cx| {
                         ok.update(cx, |this, cx| this.confirm_overwrite_rename(window, cx));

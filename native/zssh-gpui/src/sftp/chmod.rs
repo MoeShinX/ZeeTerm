@@ -13,6 +13,8 @@ use zssh_core::sftp::fs;
 use zssh_core::sftp::{FileKind, SftpChannel};
 use zssh_core::ssh::BoxFuture;
 
+use crate::i18n::t;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NodeKind {
     Dir,
@@ -93,26 +95,45 @@ impl ChmodSummary {
     pub(super) fn message(&self, name: &str, mode_text: &str) -> String {
         let mut text = if self.cancelled {
             format!(
-                "已取消改权限：{name} → {mode_text}（已改 {} 项，剩下的保持原样）",
-                self.changed
+                "{}{name} → {mode_text}{}{}{}",
+                t(super::SftpMsg::ChmodCancelledPrefix),
+                t(super::SftpMsg::ChmodCancelledMiddle),
+                self.changed,
+                t(super::SftpMsg::ChmodCancelledSuffix)
             )
         } else {
-            format!("已递归改权限：{name} → {mode_text}（{} 项）", self.changed)
+            format!(
+                "{}{name} → {mode_text}{}{}{}",
+                t(super::SftpMsg::ChmodDonePrefix),
+                t(super::SftpMsg::ChmodDoneMiddle),
+                self.changed,
+                t(super::SftpMsg::ChmodDoneSuffix)
+            )
         };
         let mut notes = Vec::new();
         if self.skipped_links > 0 {
-            notes.push(format!("跳过 {} 个符号链接", self.skipped_links));
+            notes.push(format!(
+                "{}{}{}",
+                t(super::SftpMsg::ChmodSkippedLinksPrefix),
+                self.skipped_links,
+                t(super::SftpMsg::ChmodSkippedLinksSuffix)
+            ));
         }
         if self.skipped_names > 0 {
             notes.push(format!(
-                "跳过 {} 个名字不是 UTF-8 的条目",
-                self.skipped_names
+                "{}{}{}",
+                t(super::SftpMsg::ChmodSkippedNonUtf8Prefix),
+                self.skipped_names,
+                t(super::SftpMsg::ChmodSkippedNonUtf8Suffix)
             ));
         }
         if let Some((path, reason)) = &self.first_failure {
             notes.push(format!(
-                "{} 项没改成，第一个是 {path}：{reason}",
-                self.failed
+                "{}{}{}{path}{}{reason}",
+                t(super::SftpMsg::ChmodFailedPrefix),
+                self.failed,
+                t(super::SftpMsg::ChmodFailedMiddle),
+                t(super::SftpMsg::ChmodFailedSuffix)
             ));
         }
         if !notes.is_empty() {
@@ -139,7 +160,7 @@ pub(super) async fn recursive_chmod(
     let mut summary = ChmodSummary::default();
     // 根本身读不了或者改不了就是整个失败（用户明确选的就是它）。
     if fs.kind(root).await? == NodeKind::Symlink {
-        return Err("选中的是符号链接，递归改权限不会跟进链接里面".to_owned());
+        return Err(t(super::SftpMsg::ChmodSymlinkRefused).to_owned());
     }
     let mut pending = vec![root.to_owned()];
     while let Some(dir) = pending.pop() {

@@ -21,6 +21,7 @@ use zssh_core::sftp::archive::{
 use zssh_core::sftp::fs::RecursiveDelete;
 use zssh_core::sftp::path::file_name;
 use zssh_core::sftp::size::{SizeTotals, local_size, remote_size};
+use zssh_core::sftp::transfer::Direction;
 
 use super::archive_ui::{self, BusyKind};
 use super::chmod::recursive_chmod;
@@ -31,17 +32,52 @@ use super::dialogs::{
 };
 use super::engine::{DeleteJob, parse_octal_mode, run_delete_many};
 use super::local_listing::{ScanError, scan};
-use super::menu::{ArchiveMenuState, MenuAction, MenuContext, MenuFeatures, NOT_UTF8_REASON, Side};
+use super::menu::{ArchiveMenuState, MenuAction, MenuContext, MenuFeatures, Side};
 use super::model::{Entry, EntryKind};
 use super::props::{
     CalcPhase, CalcState, PermMatrix, can_calculate, initial_permission_bits, octal_text,
     properties_targets,
 };
-use super::{ArchiveCapsState, Busy, RemoteOp, SftpDemo, SftpEvent, local_ops};
+use super::{ArchiveCapsState, Busy, RemoteOp, SftpDemo, SftpEvent, SftpMsg, local_ops};
+use crate::i18n::t;
 use crate::ssh_backend::runtime;
 
 /// 进度事件最多这么久发一次。
 const REPORT_INTERVAL: Duration = Duration::from_millis(150);
+
+/// 本地新建 / 改名的状态栏动词（开始 / 完成 / 失败三种形式）。
+#[derive(Clone, Copy)]
+enum LocalOpVerb {
+    NewFolder,
+    NewFile,
+    Rename,
+}
+
+impl LocalOpVerb {
+    fn start(self) -> &'static str {
+        match self {
+            Self::NewFolder => t(SftpMsg::OpsStartNewFolder),
+            Self::NewFile => t(SftpMsg::OpsStartNewFile),
+            Self::Rename => t(SftpMsg::OpsStartRename),
+        }
+    }
+
+    fn done(self) -> &'static str {
+        match self {
+            Self::NewFolder => t(SftpMsg::OpsDoneNewFolder),
+            Self::NewFile => t(SftpMsg::OpsDoneNewFile),
+            Self::Rename => t(SftpMsg::OpsDoneRename),
+        }
+    }
+
+    fn fail(self) -> &'static str {
+        match self {
+            Self::NewFolder => t(SftpMsg::OpsFailNewFolder),
+            Self::NewFile => t(SftpMsg::OpsFailNewFile),
+            Self::Rename => t(SftpMsg::OpsFailRename),
+        }
+    }
+}
 
 /// 临时文件名里的任务标识：一次操作一个，不会和别的任务撞。
 fn make_owner() -> String {
@@ -58,16 +94,16 @@ fn make_owner() -> String {
 /// 能不能用这些命令压缩 / 解压：不是 POSIX shell 或缺命令就给出要告诉用户的原因。
 fn require_tools(caps: &ArchiveCaps, tar: bool, zip: bool, unzip: bool) -> Result<(), String> {
     if !caps.posix {
-        return Err("这台服务器的登录 shell 不是 POSIX，不支持远端压缩 / 解压".to_owned());
+        return Err(t(SftpMsg::OpsShellNotPosix).to_owned());
     }
     if tar && !caps.tar {
-        return Err("服务器上没有 tar 命令".to_owned());
+        return Err(t(SftpMsg::MenuNoTar).to_owned());
     }
     if zip && !caps.zip {
-        return Err("服务器上没有 zip 命令".to_owned());
+        return Err(t(SftpMsg::MenuNoZip).to_owned());
     }
     if unzip && !caps.unzip {
-        return Err("服务器上没有 unzip 命令".to_owned());
+        return Err(t(SftpMsg::MenuNoUnzip).to_owned());
     }
     Ok(())
 }
@@ -167,7 +203,7 @@ impl SftpDemo {
                     .collect::<Vec<_>>()
                     .join("\n");
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
-                self.say("路径已复制");
+                self.say(t(SftpMsg::OpsPathCopied));
             }
             MenuAction::Rename => {
                 if let [entry] = entries.as_slice() {
@@ -239,10 +275,19 @@ impl SftpDemo {
         // 撤销类的对话框取消了：状态栏别还停在“正在……”上。
         match self.dialog.take() {
             Some(Dialog::OverwriteRename(ask)) => {
-                self.say(format!("已取消：没有覆盖 {}，也没有重命名", ask.name));
+                self.say(format!(
+                    "{}{}{}",
+                    t(SftpMsg::OpsCancelNoOverwritePrefix),
+                    ask.name,
+                    t(SftpMsg::OpsCancelNoOverwriteSuffix)
+                ));
             }
             Some(Dialog::Delete(dialog)) => {
-                self.say(format!("已取消删除 {}", delete_subject(&dialog.entries)));
+                self.say(format!(
+                    "{}{}",
+                    t(SftpMsg::DeleteCancelledPrefix),
+                    delete_subject(&dialog.entries)
+                ));
             }
             // 同名询问上按 Esc / 点遮罩 = 取消移动：这一项和后面没处理的都不动。
             Some(Dialog::MoveConflict(conflict)) => {
@@ -283,11 +328,11 @@ impl SftpDemo {
         cx: &mut Context<Self>,
     ) {
         if !entry.name_is_utf8 {
-            self.warn(NOT_UTF8_REASON);
+            self.warn(super::menu::not_utf8_reason());
             return;
         }
         if entry.is_drive() {
-            self.warn("盘符不能这样操作");
+            self.warn(t(SftpMsg::MenuDriveNotAllowed));
             return;
         }
         self.open_name_dialog(NameKind::Rename, side, Some(entry), window, cx);
@@ -304,8 +349,8 @@ impl SftpDemo {
         let pane = self.pane(side);
         if kind != NameKind::Rename && pane.path.is_empty() {
             self.warn(match side {
-                Side::Local => "先进入一个文件夹",
-                Side::Remote => "先进入一个目录",
+                Side::Local => t(SftpMsg::MenuEnterFolder),
+                Side::Remote => t(SftpMsg::MenuEnterDir),
             });
             return;
         }
@@ -318,9 +363,9 @@ impl SftpDemo {
         let dir = pane.path.clone();
         let initial = from.as_ref().map_or("", |entry| entry.name.as_str());
         let placeholder = match kind {
-            NameKind::Mkdir => "文件夹名",
-            NameKind::Create => "文件名",
-            NameKind::Rename => "新名字",
+            NameKind::Mkdir => t(SftpMsg::OpsNameFolder),
+            NameKind::Create => t(SftpMsg::OpsNameFile),
+            NameKind::Rename => t(SftpMsg::OpsNameNewName),
         };
         let input = self.dialog_input(initial, placeholder, window, cx);
         let subscriptions = vec![
@@ -378,12 +423,14 @@ impl SftpDemo {
             },
             (Side::Local, NameKind::Mkdir) => {
                 let path = PathBuf::from(&dir).join(&name).display().to_string();
-                self.start_local_op("新建文件夹 ", &name, move || local_ops::mkdir(&path));
+                self.start_local_op(LocalOpVerb::NewFolder, &name, move || {
+                    local_ops::mkdir(&path)
+                });
                 Ok(())
             }
             (Side::Local, NameKind::Create) => {
                 let path = PathBuf::from(&dir).join(&name).display().to_string();
-                self.start_local_op("新建文件 ", &name, move || {
+                self.start_local_op(LocalOpVerb::NewFile, &name, move || {
                     local_ops::create_file(&path)
                 });
                 Ok(())
@@ -393,7 +440,7 @@ impl SftpDemo {
                     let to = PathBuf::from(&dir).join(&name).display().to_string();
                     let from_path = entry.path.clone();
                     let shown = format!("{} → {name}", entry.name);
-                    self.start_local_op("重命名 ", &shown, move || {
+                    self.start_local_op(LocalOpVerb::Rename, &shown, move || {
                         local_ops::rename(&from_path, &to)
                     });
                     Ok(())
@@ -410,18 +457,22 @@ impl SftpDemo {
 
     /// 本地新建 / 改名：写盘可能卡在慢盘、断开的映射盘上，放到阻塞线程里做，
     /// 做完以事件回填（和本地删除同一条路径），界面线程不碰文件系统。
-    fn start_local_op<F>(&mut self, verb: &str, subject: &str, work: F)
+    fn start_local_op<F>(&mut self, verb: LocalOpVerb, subject: &str, work: F)
     where
         F: FnOnce() -> Result<(), String> + Send + 'static,
     {
         let Ok(runtime) = runtime() else {
-            self.warn("后台运行时不可用，操作没有执行".to_owned());
+            self.warn(t(SftpMsg::OpsRuntimeUnavailable).to_owned());
             return;
         };
-        self.say(format!("正在{verb}{subject}"));
+        self.say(format!("{}{subject}", verb.start()));
         let sender = self.sender.clone();
-        let done = format!("已{verb}{subject}");
-        let failed = format!("{verb}{subject} 失败");
+        let done = format!("{}{subject}", verb.done());
+        let failed = format!(
+            "{}{subject}{}",
+            verb.fail(),
+            t(SftpMsg::OpsFailedSuffix)
+        );
         runtime.spawn(async move {
             let event = match tokio::task::spawn_blocking(work).await {
                 Ok(Ok(())) => SftpEvent::OpDone {
@@ -431,12 +482,17 @@ impl SftpDemo {
                 },
                 Ok(Err(err)) => SftpEvent::OpDone {
                     ok: false,
-                    message: format!("{failed}：{err}"),
+                    message: format!("{failed}{}{err}", t(SftpMsg::OpsErrorJoin)),
                     refresh: Some(Side::Local),
                 },
                 Err(err) => SftpEvent::OpDone {
                     ok: false,
-                    message: format!("{failed}：操作线程异常结束（{err}）"),
+                    message: format!(
+                        "{failed}{}{}{err}{}",
+                        t(SftpMsg::OpsErrorJoin),
+                        t(SftpMsg::OpsThreadEndedPrefix),
+                        t(SftpMsg::ParenClose)
+                    ),
                     refresh: Some(Side::Local),
                 },
             };
@@ -449,19 +505,41 @@ impl SftpDemo {
     pub(super) fn start_create(&mut self, raw_name: &str) -> Result<(), String> {
         let channel = self.connected_channel()?;
         let target = super::engine::mkdir_target(&self.remote.path, raw_name)?;
-        self.say(format!("正在新建文件 {target}"));
+        self.say(format!("{}{target}", t(SftpMsg::OpsCreatingFilePrefix)));
         self.run_remote_op(
             async move {
                 match channel.lstat(&target).await {
-                    Ok(_) => return Err(format!("新建文件失败：{target}（已经有同名的条目）")),
+                    Ok(_) => {
+                        return Err(format!(
+                            "{}{target}{}{}{}",
+                            t(SftpMsg::OpsCreateFileFailedPrefix),
+                            t(SftpMsg::ParenOpen),
+                            t(SftpMsg::AlreadyExists),
+                            t(SftpMsg::ParenClose)
+                        ));
+                    }
                     Err(SftpError::NotFound { .. }) => {}
-                    Err(err) => return Err(format!("新建文件失败：{target}（{err}）")),
+                    Err(err) => {
+                        return Err(format!(
+                            "{}{target}{}{err}{}",
+                            t(SftpMsg::OpsCreateFileFailedPrefix),
+                            t(SftpMsg::ParenOpen),
+                            t(SftpMsg::ParenClose)
+                        ));
+                    }
                 }
                 channel
                     .create_file(&target)
                     .await
-                    .map_err(|err| format!("新建文件失败：{target}（{err}）"))?;
-                Ok(format!("已新建文件：{target}"))
+                    .map_err(|err| {
+                        format!(
+                            "{}{target}{}{err}{}",
+                            t(SftpMsg::OpsCreateFileFailedPrefix),
+                            t(SftpMsg::ParenOpen),
+                            t(SftpMsg::ParenClose)
+                        )
+                    })?;
+                Ok(format!("{}{target}", t(SftpMsg::OpsCreatedFilePrefix)))
             },
             Some(Side::Remote),
         );
@@ -472,7 +550,7 @@ impl SftpDemo {
     pub(super) fn start_mkdir(&mut self, raw_name: &str) -> Result<(), String> {
         let channel = self.connected_channel()?;
         let target = super::engine::mkdir_target(&self.remote.path, raw_name)?;
-        self.say(format!("正在新建目录 {target}"));
+        self.say(format!("{}{target}", t(SftpMsg::OpsCreatingDirPrefix)));
         self.run_remote_op(
             async move { super::engine::create_remote_dir(&channel, &target).await },
             Some(Side::Remote),
@@ -510,13 +588,19 @@ impl SftpDemo {
         let old_path = old_path.to_owned();
         let old_name = file_name(&old_path);
         let new_name = file_name(&target);
-        self.say(format!("正在重命名 {old_name} → {new_name}"));
+        self.say(format!(
+            "{}{old_name} → {new_name}",
+            t(SftpMsg::OpsRenamingPrefix)
+        ));
         let sender = self.sender.clone();
         runtime.spawn(async move {
             let event = match channel.rename(&old_path, &target, false).await {
                 Ok(_) => SftpEvent::OpDone {
                     ok: true,
-                    message: format!("已重命名：{old_name} → {new_name}"),
+                    message: format!(
+                        "{}{old_name} → {new_name}",
+                        t(SftpMsg::OpsRenamedPrefix)
+                    ),
                     refresh: Some(Side::Remote),
                 },
                 Err(SftpError::AlreadyExists { .. }) if ask_on_exists => SftpEvent::RenameExists {
@@ -526,7 +610,12 @@ impl SftpDemo {
                 },
                 Err(err) => SftpEvent::OpDone {
                     ok: false,
-                    message: format!("重命名失败：{old_name}（{err}）"),
+                    message: format!(
+                        "{}{old_name}{}{err}{}",
+                        t(SftpMsg::OpsRenameFailedPrefix),
+                        t(SftpMsg::ParenOpen),
+                        t(SftpMsg::ParenClose)
+                    ),
                     refresh: None,
                 },
             };
@@ -561,15 +650,27 @@ impl SftpDemo {
             }
         };
         let old_name = file_name(&ask.from);
-        self.say(format!("正在覆盖式重命名 {old_name} → {}", ask.name));
+        self.say(format!(
+            "{}{old_name} → {}",
+            t(SftpMsg::OpsOverwriteRenamingPrefix),
+            ask.name
+        ));
         self.run_remote_op(
             async move {
                 channel
                     .rename(&ask.from, &ask.to, true)
                     .await
-                    .map_err(|err| format!("重命名失败：{old_name}（{err}）"))?;
+                    .map_err(|err| {
+                        format!(
+                            "{}{old_name}{}{err}{}",
+                            t(SftpMsg::OpsRenameFailedPrefix),
+                            t(SftpMsg::ParenOpen),
+                            t(SftpMsg::ParenClose)
+                        )
+                    })?;
                 Ok(format!(
-                    "已重命名（覆盖了同名文件）：{old_name} → {}",
+                    "{}{old_name} → {}",
+                    t(SftpMsg::OpsRenamedOverwritePrefix),
                     ask.name
                 ))
             },
@@ -596,9 +697,9 @@ impl SftpDemo {
             .collect();
         if operable.is_empty() {
             self.warn(if entries.is_empty() {
-                "先选中一个条目"
+                t(SftpMsg::MenuSelectOne)
             } else {
-                NOT_UTF8_REASON
+                super::menu::not_utf8_reason()
             });
             cx.notify();
             return;
@@ -606,13 +707,18 @@ impl SftpDemo {
         if side == Side::Remote
             && let Some(job) = &self.deleting
         {
-            let text = format!("正在删除 {}，先等它结束或点「取消删除」", job.name);
+            let text = format!(
+                "{}{}{}",
+                t(SftpMsg::OpsDeletingWaitPrefix),
+                job.name,
+                t(SftpMsg::OpsDeletingWaitSuffix)
+            );
             self.warn(text);
             cx.notify();
             return;
         }
         if operable.len() < entries.len() {
-            self.warn("名字不是 UTF-8 的条目已跳过");
+            self.warn(t(SftpMsg::OpsSkippedNonUtf8));
         }
         self.dialog = Some(Dialog::Delete(DeleteDialog {
             side,
@@ -648,7 +754,12 @@ impl SftpDemo {
     /// 取消标志置位后在下一项之前停下。同一时间只跑一个删除。
     fn start_delete_many(&mut self, paths: Vec<String>, subject: String) -> Result<(), String> {
         if let Some(job) = &self.deleting {
-            return Err(format!("正在删除 {}，等它结束再删下一个", job.name));
+            return Err(format!(
+                "{}{}{}",
+                t(SftpMsg::OpsDeletingWaitPrefix),
+                job.name,
+                t(SftpMsg::OpsDeletingWaitNextSuffix)
+            ));
         }
         let channel = self.connected_channel()?;
         let runtime = runtime()?;
@@ -663,7 +774,7 @@ impl SftpDemo {
             current: String::new(),
             cancelling: false,
         });
-        self.say(format!("正在删除 {subject}"));
+        self.say(format!("{}{subject}", t(SftpMsg::OpsDeletingPrefix)));
         let sender = self.sender.clone();
         runtime.spawn(async move {
             let mut last_sent = Instant::now();
@@ -690,7 +801,10 @@ impl SftpDemo {
     /// 本地删除：目录可能很大，放到阻塞线程里做；链接只删链接。
     fn start_local_delete(&mut self, paths: Vec<String>, subject: String) -> Result<(), String> {
         let runtime = runtime()?;
-        self.say(format!("正在删除本地的 {subject}"));
+        self.say(format!(
+            "{}{subject}",
+            t(SftpMsg::OpsDeletingLocalPrefix)
+        ));
         let sender = self.sender.clone();
         runtime.spawn(async move {
             let results = tokio::task::spawn_blocking(move || local_ops::delete(&paths)).await;
@@ -701,7 +815,10 @@ impl SftpDemo {
                     if failed.is_empty() {
                         SftpEvent::OpDone {
                             ok: true,
-                            message: format!("已删除本地的 {subject}"),
+                            message: format!(
+                                "{}{subject}",
+                                t(SftpMsg::OpsDeletedLocalPrefix)
+                            ),
                             refresh: Some(Side::Local),
                         }
                     } else {
@@ -711,25 +828,39 @@ impl SftpDemo {
                             .take(3)
                             .map(|(path, err)| {
                                 format!(
-                                    "{}（{}）",
+                                    "{}{}{}{}",
                                     file_name(path),
-                                    err.as_deref().unwrap_or("未知原因")
+                                    t(SftpMsg::ParenOpen),
+                                    err.as_deref().unwrap_or(t(SftpMsg::OpsUnknownReason)),
+                                    t(SftpMsg::ParenClose)
                                 )
                             })
                             .collect();
                         if failed.len() > shown.len() {
-                            shown.push(format!("等 {} 项", failed.len()));
+                            shown.push(format!(
+                                "{}{}{}",
+                                t(SftpMsg::OpsMoreFailuresPrefix),
+                                failed.len(),
+                                t(SftpMsg::OpsMoreFailuresSuffix)
+                            ));
                         }
                         SftpEvent::OpDone {
                             ok: false,
-                            message: format!("删除失败：{}", shown.join("、")),
+                            message: format!(
+                                "{}{}",
+                                t(SftpMsg::DeleteFailedPrefix),
+                                shown.join(t(SftpMsg::OpsListSeparator))
+                            ),
                             refresh: Some(Side::Local),
                         }
                     }
                 }
                 Err(err) => SftpEvent::OpDone {
                     ok: false,
-                    message: format!("删除的线程异常结束：{err}"),
+                    message: format!(
+                        "{}{err}",
+                        t(SftpMsg::OpsDeleteThreadFailedPrefix)
+                    ),
                     refresh: Some(Side::Local),
                 },
             };
@@ -743,7 +874,12 @@ impl SftpDemo {
         if let Some(job) = self.deleting.as_mut() {
             job.cancel.cancel();
             job.cancelling = true;
-            let text = format!("正在取消删除 {}…", job.name);
+            let text = format!(
+                "{}{}{}",
+                t(SftpMsg::OpsCancellingDeletePrefix),
+                job.name,
+                t(SftpMsg::OpsEllipsis)
+            );
             self.say(text);
             cx.notify();
         }
@@ -758,12 +894,17 @@ impl SftpDemo {
         cx: &mut Context<Self>,
     ) {
         if !entry.name_is_utf8 {
-            self.warn(NOT_UTF8_REASON);
+            self.warn(super::menu::not_utf8_reason());
             return;
         }
         let bits = initial_permission_bits(entry.permissions);
         let matrix = PermMatrix::from_mode(bits).unwrap_or_default();
-        let octal = self.dialog_input(&octal_text(bits), "如 644", window, cx);
+        let octal = self.dialog_input(
+            &octal_text(bits),
+            t(SftpMsg::OpsOctalPlaceholder),
+            window,
+            cx,
+        );
         let subscriptions = vec![
             cx.observe(&octal, |_this, _input, cx| cx.notify()),
             cx.subscribe_in(
@@ -856,14 +997,27 @@ impl SftpDemo {
         let name = file_name(&path);
         let label = super::engine::format_mode(mode);
         if !recursive {
-            self.say(format!("正在改权限 {name} → {label}"));
+            self.say(format!(
+                "{}{name} → {label}",
+                t(SftpMsg::OpsChmodRunningPrefix)
+            ));
             self.run_remote_op(
                 async move {
                     channel
                         .set_permissions(&path, mode)
                         .await
-                        .map_err(|err| format!("改权限失败：{name}（{err}）"))?;
-                    Ok(format!("已改权限：{name} → {label}"))
+                        .map_err(|err| {
+                            format!(
+                                "{}{name}{}{err}{}",
+                                t(SftpMsg::OpsChmodFailedPrefix),
+                                t(SftpMsg::ParenOpen),
+                                t(SftpMsg::ParenClose)
+                            )
+                        })?;
+                    Ok(format!(
+                        "{}{name} → {label}",
+                        t(SftpMsg::OpsChmodDonePrefix)
+                    ))
                 },
                 Some(Side::Remote),
             );
@@ -873,7 +1027,11 @@ impl SftpDemo {
         let cancel = Arc::new(AtomicBool::new(false));
         self.chmod_cancel = Some(Arc::clone(&cancel));
         self.chmod_running = Some(0);
-        self.say(format!("正在递归改权限 {name} → {label}…"));
+        self.say(format!(
+            "{}{name} → {label}{}",
+            t(SftpMsg::OpsChmodRecursivePrefix),
+            t(SftpMsg::OpsEllipsis)
+        ));
         let sender = self.sender.clone();
         runtime.spawn(async move {
             let mut last = Instant::now();
@@ -893,7 +1051,12 @@ impl SftpDemo {
                 },
                 Err(message) => SftpEvent::OpDone {
                     ok: false,
-                    message: format!("递归改权限失败：{name}（{message}）"),
+                    message: format!(
+                        "{}{name}{}{message}{}",
+                        t(SftpMsg::OpsChmodRecursiveFailedPrefix),
+                        t(SftpMsg::ParenOpen),
+                        t(SftpMsg::ParenClose)
+                    ),
                     refresh: None,
                 },
             };
@@ -915,8 +1078,8 @@ impl SftpDemo {
         let targets = properties_targets(&entries, &self.pane(side).path);
         if targets.is_empty() {
             self.warn(match side {
-                Side::Local => "先进入一个文件夹",
-                Side::Remote => "先进入一个目录",
+                Side::Local => t(SftpMsg::MenuEnterFolder),
+                Side::Remote => t(SftpMsg::MenuEnterDir),
             });
             cx.notify();
             return;
@@ -1093,7 +1256,7 @@ impl SftpDemo {
         cx: &mut Context<Self>,
     ) {
         if entries.is_empty() {
-            self.warn("先选中要下载的条目");
+            self.warn(t(SftpMsg::OpsSelectItemsToTransfer));
             return;
         }
         let initial = if self.local.path.is_empty() {
@@ -1101,7 +1264,12 @@ impl SftpDemo {
         } else {
             self.local.path.clone()
         };
-        let input = self.dialog_input(&initial, "例如 D:\\下载", window, cx);
+        let input = self.dialog_input(
+            &initial,
+            t(SftpMsg::OpsDownloadDirPlaceholder),
+            window,
+            cx,
+        );
         let subscriptions = vec![
             cx.observe(&input, |_this, _input, cx| cx.notify()),
             cx.subscribe_in(
@@ -1136,7 +1304,7 @@ impl SftpDemo {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("选择下载到的文件夹".into()),
+            prompt: Some(t(SftpMsg::OpsChooseDownloadFolder).into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else {
@@ -1182,7 +1350,9 @@ impl SftpDemo {
             move |seq, outcome| {
                 let result = match outcome {
                     Ok(Ok(())) => Ok(()),
-                    Ok(Err(ScanError::NotDir)) => Err("不是一个目录".to_owned()),
+                    Ok(Err(ScanError::NotDir)) => {
+                        Err(t(SftpMsg::OpsNotADirectory).to_owned())
+                    }
                     Ok(Err(ScanError::Failed(err))) | Err(err) => Err(err),
                 };
                 let _ = sender.send(SftpEvent::DownloadDirChecked {
@@ -1196,7 +1366,7 @@ impl SftpDemo {
             Ok(seq) => dialog.check_request = seq,
             Err(_) => {
                 dialog.checking = false;
-                dialog.error = Some("本地目录读取排队太多，稍后再试".to_owned());
+                dialog.error = Some(t(SftpMsg::LocalReadQueueFull).to_owned());
             }
         }
         cx.notify();
@@ -1220,7 +1390,10 @@ impl SftpDemo {
         }
         dialog.checking = false;
         if let Err(err) = result {
-            dialog.error = Some(format!("这个目录用不了：{err}"));
+            dialog.error = Some(format!(
+                "{}{err}",
+                t(SftpMsg::OpsDirUnusablePrefix)
+            ));
             cx.notify();
             return;
         }
@@ -1236,7 +1409,7 @@ impl SftpDemo {
     /// 同一时间只做一件（提示条只有一条）。返回任务号和取消开关；已有任务在跑返回 `None`。
     pub(super) fn begin_busy(&mut self, kind: BusyKind) -> Option<(u64, Arc<AtomicBool>)> {
         if self.busy.is_some() {
-            self.say("服务器上已有一个任务在进行，请等它结束再试");
+            self.say(t(SftpMsg::OpsServerBusy));
             return None;
         }
         let op = self.next_op;
@@ -1267,7 +1440,7 @@ impl SftpDemo {
     fn ready_caps(&self) -> Result<ArchiveCaps, String> {
         match self.archive_caps {
             ArchiveCapsState::Ready(caps) => Ok(caps),
-            _ => Err("正在检测服务器上的压缩工具…".to_owned()),
+            _ => Err(t(SftpMsg::MenuArchivePending).to_owned()),
         }
     }
 
@@ -1293,7 +1466,7 @@ impl SftpDemo {
             return self.warn(err);
         }
         let (Some(factory), Some(channel)) = (self.factory.clone(), self.channel.clone()) else {
-            return self.warn("还没连上，稍等一下");
+            return self.warn(t(SftpMsg::NotConnectedYet));
         };
         let Ok(runtime) = runtime() else { return };
         let Some((op, cancel)) = self.begin_busy(BusyKind::Compress) else {
@@ -1351,7 +1524,7 @@ impl SftpDemo {
                 self.remote.select_request = Some(vec![outcome.path]);
             }
             Ok(None) => self.say(archive_ui::compress_notice(true, "", None).text),
-            Err(err) => self.warn(format!("压缩失败：{err}")),
+            Err(err) => self.warn(format!("{}{err}", t(SftpMsg::OpsCompressFailedPrefix))),
         }
         // 刷新回来时把这句结果留在状态栏里（不然马上被“N 项”顶掉）。
         let notice = self.status.clone();
@@ -1381,7 +1554,7 @@ impl SftpDemo {
             return self.warn(err);
         }
         let (Some(factory), Some(channel)) = (self.factory.clone(), self.channel.clone()) else {
-            return self.warn("还没连上，稍等一下");
+            return self.warn(t(SftpMsg::NotConnectedYet));
         };
         let Ok(runtime) = runtime() else { return };
         let base = self.remote.path.trim_end_matches('/').to_owned();
@@ -1438,8 +1611,8 @@ impl SftpDemo {
             self.busy = None;
         }
         match result {
-            Ok(None) => self.say("已取消解压"),
-            Err(err) => self.warn(format!("没有解压：{err}")),
+            Ok(None) => self.say(t(SftpMsg::OpsExtractCancelled)),
+            Err(err) => self.warn(format!("{}{err}", t(SftpMsg::OpsNotExtractedPrefix))),
             Ok(Some(plan)) => {
                 let ask = ExtractAsk { target, plan };
                 if ask.plan.conflict_count > 0 {
@@ -1472,7 +1645,7 @@ impl SftpDemo {
 
     pub(super) fn cancel_extract_choice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.dialog, Some(Dialog::ExtractConflict(_))) {
-            self.say("已取消解压");
+            self.say(t(SftpMsg::OpsExtractCancelled));
             self.close_dialog(window, cx);
         }
     }
@@ -1480,7 +1653,7 @@ impl SftpDemo {
     /// 真正解压（检查过、冲突也问过了）。
     fn start_extract(&mut self, ask: ExtractAsk, policy: ConflictPolicy) {
         let (Some(factory), Some(channel)) = (self.factory.clone(), self.channel.clone()) else {
-            return self.warn("还没连上，稍等一下");
+            return self.warn(t(SftpMsg::NotConnectedYet));
         };
         let Ok(runtime) = runtime() else { return };
         let Some((op, cancel)) = self.begin_busy(BusyKind::Extract) else {
@@ -1552,7 +1725,7 @@ impl SftpDemo {
                 );
                 self.say(notice.text);
             }
-            Err(err) => self.warn(format!("解压失败：{err}")),
+            Err(err) => self.warn(format!("{}{err}", t(SftpMsg::OpsExtractFailedPrefix))),
         }
         // 刷新回来时把这句结果留在状态栏里（不然马上被“N 项”顶掉）。
         let notice = self.status.clone();
@@ -1584,10 +1757,10 @@ impl SftpDemo {
     /// 把远端的条目下载进本地目录 `dir`（一个批次）。
     pub(super) fn download_entries(&mut self, entries: &[Entry], dir: PathBuf) {
         if entries.is_empty() {
-            return self.warn("先选中要传的条目");
+            return self.warn(t(SftpMsg::OpsSelectItemsToTransfer));
         }
         if dir.as_os_str().is_empty() {
-            return self.warn("先在本地栏进入一个文件夹，或者用“下载到…”选个目录");
+            return self.warn(t(SftpMsg::OpsLocalDirHint));
         }
         let (started, first_error) = self.in_new_batch(|this| {
             let mut started = 0usize;
@@ -1607,17 +1780,17 @@ impl SftpDemo {
             }
             (started, first_error)
         });
-        self.report_started(started, first_error, "下载");
+        self.report_started(started, first_error, Direction::Download);
         self.queue_open = true;
     }
 
     /// 把本地的条目上传进远端目录 `remote_dir`（一个批次）。
     pub(super) fn upload_entries(&mut self, entries: &[Entry], remote_dir: &str) {
         if entries.is_empty() {
-            return self.warn("先选中要传的条目");
+            return self.warn(t(SftpMsg::OpsSelectItemsToTransfer));
         }
         if remote_dir.is_empty() {
-            return self.warn("先在远端栏进入一个目录");
+            return self.warn(t(SftpMsg::OpsRemoteDirHint));
         }
         let (started, first_error) = self.in_new_batch(|this| {
             let mut started = 0usize;
@@ -1637,17 +1810,33 @@ impl SftpDemo {
             }
             (started, first_error)
         });
-        self.report_started(started, first_error, "上传");
+        self.report_started(started, first_error, Direction::Upload);
         self.queue_open = true;
     }
 
-    fn report_started(&mut self, started: usize, first_error: Option<String>, verb: &str) {
+    fn report_started(&mut self, started: usize, first_error: Option<String>, direction: Direction) {
+        let (queued, empty) = match direction {
+            Direction::Upload => (SftpMsg::OpsQueuedUploadPrefix, SftpMsg::OpsNoItemsUpload),
+            _ => (
+                SftpMsg::OpsQueuedDownloadPrefix,
+                SftpMsg::OpsNoItemsDownload,
+            ),
+        };
         match (started, first_error) {
             (0, Some(err)) => self.warn(err),
-            (0, None) => self.warn(format!("没有可{verb}的条目")),
-            (count, None) => self.say(format!("已加入{verb}队列：{count} 项")),
+            (0, None) => self.warn(t(empty)),
+            (count, None) => self.say(format!(
+                "{}{count}{}",
+                t(queued),
+                t(SftpMsg::ItemCountSuffix)
+            )),
             (count, Some(err)) => {
-                self.warn(format!("已加入{verb}队列 {count} 项，其余没有开始：{err}"))
+                self.warn(format!(
+                    "{}{count}{}{}{err}",
+                    t(queued),
+                    t(SftpMsg::ItemCountSuffix),
+                    t(SftpMsg::OpsQueuedSomeSuffix)
+                ))
             }
         }
     }
@@ -1670,7 +1859,7 @@ impl SftpDemo {
                 // 排上了，等它的结果回来再排下一个。
                 Ok(()) => break,
                 // 没排上（名字不合法等）：报出来，接着排下一个，别让一个坏钩子堵住后面。
-                Err(err) => self.warn(format!("自动操作没有开始：{err}")),
+                Err(err) => self.warn(format!("{}{err}", t(SftpMsg::OpsAutoOpNotStartedPrefix))),
             }
         }
         cx.notify();

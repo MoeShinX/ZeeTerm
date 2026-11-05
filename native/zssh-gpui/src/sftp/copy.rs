@@ -13,7 +13,8 @@ use super::clip::{self, ClipContent, ClipItem, ClipSource, NoticeKind, Outcome};
 use super::menu::{MenuContext, MenuFeatures, Side, paste_reason};
 use super::model::Entry;
 use super::paste::{PasteCtx, PasteRequest, PastedJob, run_paste};
-use super::{SftpDemo, SftpEvent, TransferRow};
+use super::{SftpDemo, SftpEvent, SftpMsg, TransferRow};
+use crate::i18n::t;
 use crate::ssh_backend::runtime;
 
 /// `cp` 失败后的"改为经本机中转重试"：条上显示原因和两个按钮。
@@ -54,7 +55,7 @@ impl SftpDemo {
     pub(super) fn copy_selection(&mut self, side: Side, entries: &[Entry]) {
         let items = clip::items_from(entries);
         if items.is_empty() {
-            return self.warn("选中的项目现在不能复制（文件名编码不是 UTF-8）");
+            return self.warn(t(SftpMsg::CopySelectionNotUtf8));
         }
         let remote = side == Side::Remote;
         let source = ClipSource {
@@ -72,7 +73,11 @@ impl SftpDemo {
             items,
             source,
         });
-        self.say(format!("已复制 {count} 项"));
+        self.say(format!(
+            "{}{count}{}",
+            t(SftpMsg::ClipCopiedPrefix),
+            t(SftpMsg::ItemCountSuffix)
+        ));
     }
 
     /// Ctrl+V / 菜单「粘贴」：粘贴进这一栏的当前目录。
@@ -87,7 +92,7 @@ impl SftpDemo {
             return self.warn(reason);
         }
         let Some(content) = clip::get() else {
-            return self.warn("剪贴板是空的");
+            return self.warn(t(SftpMsg::MenuClipboardEmpty));
         };
         self.start_paste(content.items, side, target_dir, content.source, false, cx);
     }
@@ -104,7 +109,7 @@ impl SftpDemo {
     ) {
         if self.busy.is_some() {
             // 提示条只有一条：服务器上正在压缩 / 解压 / 复制时不再开始，免得盖掉它的取消按钮。
-            return self.warn("服务器上已有一个任务在进行，请等它结束再试");
+            return self.warn(t(SftpMsg::OpsServerBusy));
         }
         let (Some(browse), Some(factory), Some(engine), Some(endpoints), Some(resolver)) = (
             self.channel.clone(),
@@ -113,10 +118,10 @@ impl SftpDemo {
             self.endpoints.clone(),
             self.resolver.clone(),
         ) else {
-            return self.warn("还没连上，稍等一下");
+            return self.warn(t(SftpMsg::NotConnectedYet));
         };
         let Ok(runtime) = runtime() else {
-            return self.warn("没有可用的运行时");
+            return self.warn(t(SftpMsg::OpsNoRuntime));
         };
         let Some((op, cancel)) = self.begin_busy(BusyKind::Paste) else {
             return;
@@ -175,7 +180,7 @@ impl SftpDemo {
         let (outcome, jobs) = match result {
             Ok(done) => done,
             Err(message) => {
-                self.warn(format!("粘贴失败：{message}"));
+                self.warn(format!("{}{message}", t(SftpMsg::OpsPasteFailedPrefix)));
                 return;
             }
         };

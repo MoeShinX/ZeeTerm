@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use super::local_ops;
 use super::model::Entry;
+use crate::i18n::t;
 
 /// 工作线程数。不同请求互不排队的前提是总有空闲线程：一个线程卡在失联的网络路径上时，其余线程
 /// 还能服务别的目录。不设太大，免得连点时把系统线程耗光。
@@ -208,7 +209,7 @@ impl LocalLister {
             stale: Box::new(move || !stale_gate.is_latest(seq)),
             run: Box::new(move || {
                 let outcome = catch_unwind(AssertUnwindSafe(|| work(&*fs)))
-                    .map_err(|_| "读取本地目录时程序内部出错".to_owned());
+                    .map_err(|_| t(super::SftpMsg::LocalReadInternalError).to_owned());
                 deliver(seq, outcome);
             }),
         };
@@ -273,7 +274,7 @@ pub(super) fn request_listing(
                 deliver(reply);
             },
         )
-        .map_err(|Busy| "本地目录读取排队太多，稍后再试".to_owned())
+        .map_err(|Busy| t(super::SftpMsg::LocalReadQueueFull).to_owned())
 }
 
 /// 界面一侧决定“这个回复算不算数”：只有最新一次请求的结果才用。

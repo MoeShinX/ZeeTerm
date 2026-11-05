@@ -35,12 +35,14 @@ use zssh_core::sftp::{SftpChannel, SftpError};
 use zssh_core::ssh::{BoxFuture, Connection};
 
 use super::SftpEvent;
+use super::SftpMsg;
 use super::clip::{
     ClipItem, ClipSource, ItemResult, ItemState, Method, Outcome, first_free_copy_path, name_of,
     refuse_into_self, remote_dest,
 };
 use super::engine::UiConflictResolver;
 use super::menu::Side;
+use crate::i18n::t;
 
 /// 服务器上的 `cp` 最多等多久（大目录可能要几分钟；界面显示"服务器上复制中"和已用时间）。
 const CP_WAIT: Duration = Duration::from_secs(60 * 60);
@@ -118,10 +120,10 @@ pub(super) async fn run_paste(
     request: PasteRequest,
 ) -> Result<(Outcome, Vec<PastedJob>), String> {
     if request.items.is_empty() {
-        return Err("剪贴板是空的".to_owned());
+        return Err(t(SftpMsg::MenuClipboardEmpty).to_owned());
     }
     if request.target_dir.trim().is_empty() {
-        return Err("没有目标文件夹".to_owned());
+        return Err(t(SftpMsg::PasteNoTargetFolder).to_owned());
     }
     let started = Instant::now();
     let (mut outcome, jobs) = match request.side {
@@ -160,7 +162,7 @@ impl MergeConflictBridge<'_> {
         let chosen = match name {
             Some(name) => {
                 if name.contains('/') {
-                    return Err("新名字不能为空，也不能含有 /".to_owned());
+                    return Err(t(SftpMsg::PasteRenameEmpty).to_owned());
                 }
                 with_file_name(target, name)
             }
@@ -176,7 +178,12 @@ impl MergeConflictBridge<'_> {
             }
         };
         if self.browse.lstat(&chosen).await.is_ok() {
-            return Err(format!("「{}」也已经存在", name_of(&chosen)));
+            return Err(format!(
+                "{}{}{}",
+                t(SftpMsg::PasteAlreadyExistsPrefix),
+                name_of(&chosen),
+                t(SftpMsg::PasteAlreadyExistsSuffix)
+            ));
         }
         Ok(chosen)
     }
@@ -309,10 +316,10 @@ async fn paste_remote(
     let source_provider = match (&request.source.provider, other_view) {
         (Some(weak), true) => Some(
             weak.upgrade()
-                .ok_or_else(|| "复制的源所在的连接已经关闭，请重新打开那个标签再复制".to_owned())?,
+                .ok_or_else(|| t(SftpMsg::PasteSourceClosed).to_owned())?,
         ),
         (None, true) => {
-            return Err("复制的源所在的连接已经关闭，请重新打开那个标签再复制".to_owned());
+            return Err(t(SftpMsg::PasteSourceClosed).to_owned());
         }
         _ => None,
     };
@@ -326,9 +333,13 @@ async fn paste_remote(
         .browse
         .stat(&request.target_dir)
         .await
-        .map_err(|err| format!("目标文件夹不可用：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(SftpMsg::PasteTargetUnavailablePrefix)))?;
     if !target_attrs.is_dir() {
-        return Err(format!("{} 不是文件夹", request.target_dir));
+        return Err(format!(
+            "{}{}",
+            request.target_dir,
+            t(SftpMsg::PasteNotAFolderSuffix)
+        ));
     }
     if same_host {
         for item in &request.items {
@@ -342,8 +353,10 @@ async fn paste_remote(
                     .await
                     .map_err(|err| match err {
                         SftpError::InvalidInput(_) => format!(
-                            "不能把文件夹「{}」粘贴到它自己或它的子文件夹里（目标经符号链接指回了它）",
-                            name_of(&item.path)
+                            "{}{}{}",
+                            t(SftpMsg::ClipIntoSelfPrefix),
+                            name_of(&item.path),
+                            t(SftpMsg::PasteIntoSelfLinkSuffix)
                         ),
                         other => other.to_string(),
                     })?;
@@ -459,7 +472,7 @@ async fn paste_remote(
             results.push(ItemResult::new(
                 item,
                 ItemState::Queued,
-                Some("合并要逐个文件确认，服务器不支持 copy-data，改经本机中转".to_owned()),
+                Some(t(SftpMsg::PasteMergeNeedsRelay).to_owned()),
             ));
             continue;
         }
@@ -478,16 +491,24 @@ async fn paste_remote(
                 let chosen = choose_server_copy(has_copy_data, request.force_relay, shell);
                 if chosen == CopyMethod::Relay {
                     let reason = if request.force_relay {
-                        "按你的选择".to_owned()
+                        t(SftpMsg::PasteAsYouChose).to_owned()
                     } else {
-                        format!("远端的登录 shell 不是 POSIX（{}）", shell_kind_label(shell))
+                        format!(
+                            "{}{}{}",
+                            t(SftpMsg::PasteShellNotPosixPrefix),
+                            shell_kind_label(shell),
+                            t(SftpMsg::ParenClose)
+                        )
                     };
                     method = Some(CopyMethod::Relay);
                     submit(&ctx.engine, &batch, relay_job(item, &dest), &mut jobs);
                     results.push(ItemResult::new(
                         item,
                         ItemState::Queued,
-                        Some(format!("{reason}，改经本机中转")),
+                        Some(format!(
+                            "{reason}{}",
+                            t(SftpMsg::PasteRelaySuffix)
+                        )),
                     ));
                     continue;
                 }
@@ -519,7 +540,12 @@ async fn paste_remote(
                         item,
                         ItemState::Ok,
                         (!stats.skipped_links.is_empty())
-                            .then(|| format!("跳过了 {} 个符号链接", stats.skipped_links.len())),
+                            .then(|| format!(
+                            "{}{}{}",
+                            t(SftpMsg::PasteSkippedLinksPrefix),
+                            stats.skipped_links.len(),
+                            t(SftpMsg::PasteSkippedLinksSuffix)
+                        )),
                     )),
                     Err(SftpError::Cancelled) => {
                         results.push(ItemResult::new(item, ItemState::Cancelled, None))
@@ -527,7 +553,10 @@ async fn paste_remote(
                     Err(err) => results.push(ItemResult::new(
                         item,
                         ItemState::Failed,
-                        Some(format!("服务器端复制失败：{err}")),
+                        Some(format!(
+                            "{}{err}",
+                            t(SftpMsg::PasteServerCopyFailedPrefix)
+                        )),
                     )),
                 }
             }
@@ -554,7 +583,10 @@ async fn paste_remote(
                         results.push(ItemResult::new(
                             item,
                             ItemState::Queued,
-                            Some(format!("{reason}，改经本机中转")),
+                            Some(format!(
+                            "{reason}{}",
+                            t(SftpMsg::PasteRelaySuffix)
+                        )),
                         ));
                     }
                     Err(CpFailure::Failed(message)) => {
@@ -620,7 +652,7 @@ async fn resolve_remote_dest(
             let chosen = match decision.rename_to {
                 Some(name) => {
                     if name.contains('/') || name.trim().is_empty() {
-                        return Err("新名字不能为空，也不能含有 /".to_owned());
+                        return Err(t(SftpMsg::PasteRenameEmpty).to_owned());
                     }
                     with_file_name(&dest, &name)
                 }
@@ -635,19 +667,24 @@ async fn resolve_remote_dest(
                 }
             };
             if ctx.browse.lstat(&chosen).await.is_ok() {
-                return Err(format!("「{}」也已经存在", name_of(&chosen)));
+                return Err(format!(
+                "{}{}{}",
+                t(SftpMsg::PasteAlreadyExistsPrefix),
+                name_of(&chosen),
+                t(SftpMsg::PasteAlreadyExistsSuffix)
+            ));
             }
             Ok(Dest::Free(chosen))
         }
         ConflictAction::Overwrite | ConflictAction::Resume => {
             if same_entry {
-                return Err("不能用它自己覆盖自己（可以选择改名）".to_owned());
+                return Err(t(SftpMsg::PasteOverwriteSelf).to_owned());
             }
             if existing.is_dir() != item.is_dir {
                 return Err(if existing.is_dir() {
-                    "目标是个文件夹，不能用文件覆盖它".to_owned()
+                    t(SftpMsg::PasteTargetIsFolder).to_owned()
                 } else {
-                    "目标是个文件，不能用文件夹覆盖它".to_owned()
+                    t(SftpMsg::PasteTargetIsFile).to_owned()
                 });
             }
             if existing.is_dir() {
@@ -694,7 +731,11 @@ pub(super) async fn paste_local(
 ) -> Result<(Outcome, Vec<PastedJob>), String> {
     let target_dir = PathBuf::from(&request.target_dir);
     if !target_dir.is_dir() {
-        return Err(format!("{} 不是文件夹", request.target_dir));
+        return Err(format!(
+            "{}{}",
+            request.target_dir,
+            t(SftpMsg::PasteNotAFolderSuffix)
+        ));
     }
     for item in &request.items {
         if let Some(reason) = refuse_into_self(false, item, &request.target_dir) {
@@ -816,18 +857,20 @@ async fn resolve_local_dest(
             };
             if std::fs::symlink_metadata(&chosen).is_ok() {
                 return Err(format!(
-                    "「{}」也已经存在",
-                    name_of(&chosen.display().to_string())
+                    "{}{}{}",
+                    t(SftpMsg::PasteAlreadyExistsPrefix),
+                    name_of(&chosen.display().to_string()),
+                    t(SftpMsg::PasteAlreadyExistsSuffix)
                 ));
             }
             Ok(Some(chosen))
         }
         ConflictAction::Overwrite | ConflictAction::Resume => {
             if same_entry {
-                return Err("不能用它自己覆盖自己（可以选择改名）".to_owned());
+                return Err(t(SftpMsg::PasteOverwriteSelf).to_owned());
             }
             if existing.is_dir() != item.is_dir {
-                return Err("目标和源一个是文件一个是文件夹，不能覆盖".to_owned());
+                return Err(t(SftpMsg::PasteKindsDiffer).to_owned());
             }
             Ok(Some(dest))
         }

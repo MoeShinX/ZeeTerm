@@ -10,6 +10,7 @@ use gpui_kit::*;
 
 use super::SftpDemo;
 use super::model::NavMode;
+use crate::i18n::t;
 
 /// 轮询终端目录的间隔：够快，又不会给服务器添负担（每次只是一条 exec 通道跑一下）。
 pub(crate) const FOLLOW_POLL_MS: u64 = 1500;
@@ -43,9 +44,9 @@ impl SftpDemo {
         }
         self.follow = on;
         self.say(if on {
-            "跟随终端目录：已开启"
+            t(super::SftpMsg::FollowOn)
         } else {
-            "跟随终端目录：已关闭"
+            t(super::SftpMsg::FollowOff)
         });
         cx.notify();
     }
@@ -64,7 +65,7 @@ impl SftpDemo {
     pub(super) fn manual_remote_navigation(&mut self) {
         if self.follow {
             self.follow = false;
-            self.say("已停止跟随终端目录（手动换了目录）");
+            self.say(t(super::SftpMsg::FollowStopped));
         }
     }
 }

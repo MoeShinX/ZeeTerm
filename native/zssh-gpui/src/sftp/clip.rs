@@ -14,6 +14,7 @@ use zssh_core::sftp::transfer::copy_path;
 
 use super::menu::Side;
 use super::model::{Entry, EntryKind, TargetKind};
+use crate::i18n::t;
 
 /// 剪贴板里的一个条目：只有路径和是不是文件夹（粘贴时服务器上再看真实情况）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,8 +110,10 @@ pub(super) fn refuse_into_self(remote: bool, item: &ClipItem, target_dir: &str) 
     };
     inside.then(|| {
         format!(
-            "不能把文件夹「{}」粘贴到它自己或它的子文件夹里",
-            name_of(&item.path)
+            "{}{}{}",
+            t(super::SftpMsg::ClipIntoSelfPrefix),
+            name_of(&item.path),
+            t(super::SftpMsg::ClipIntoSelfSuffix)
         )
     })
 }
@@ -191,10 +194,10 @@ pub(super) enum Method {
 impl Method {
     pub(super) fn label(self) -> &'static str {
         match self {
-            Self::CopyData => "服务器端复制（copy-data）",
-            Self::ServerCp => "服务器端复制（cp）",
-            Self::Relay => "经本机中转",
-            Self::Local => "本地复制",
+            Self::CopyData => t(super::SftpMsg::ClipMethodCopyData),
+            Self::ServerCp => t(super::SftpMsg::ClipMethodServerCp),
+            Self::Relay => t(super::SftpMsg::ClipMethodRelay),
+            Self::Local => t(super::SftpMsg::ClipMethodLocal),
         }
     }
 }
@@ -222,13 +225,28 @@ pub(super) struct PasteNotice {
 /// 服务器上复制中……（第 N 个文件 · 已 N 秒）。本地复制没有"服务器"，只说在准备。
 pub(super) fn copying_text(local: bool, elapsed_seconds: u64, done_files: Option<u64>) -> String {
     if local {
-        return format!("正在准备复制…（已 {elapsed_seconds} 秒）");
+        return format!(
+            "{}{elapsed_seconds}{}",
+            t(super::SftpMsg::ClipPreparingPrefix),
+            t(super::SftpMsg::ClipPreparingSuffix)
+        );
     }
     let progress = match done_files {
-        Some(done) => format!("第 {} 个文件 · ", done + 1),
+        Some(done) => format!(
+            "{}{}{}",
+            t(super::SftpMsg::ClipFileIndexPrefix),
+            done + 1,
+            t(super::SftpMsg::ClipFileIndexSuffix)
+        ),
         None => String::new(),
     };
-    format!("服务器上复制中…（{progress}已 {elapsed_seconds} 秒）")
+    format!(
+        "{}{progress}{}{elapsed_seconds}{}{}",
+        t(super::SftpMsg::ClipCopyingPrefix),
+        t(super::SftpMsg::ArchiveElapsedPrefix),
+        t(super::SftpMsg::ArchiveElapsedSuffix),
+        t(super::SftpMsg::ParenClose)
+    )
 }
 
 /// 粘贴结束后给用户看的一句话；失败的条目逐个写出原因（最多三个）。
@@ -251,36 +269,67 @@ pub(super) fn notice(outcome: &Outcome) -> PasteNotice {
     let mut parts: Vec<String> = Vec::new();
     if ok > 0 {
         let took = if outcome.elapsed_ms < 1000 {
-            "不到 1".to_owned()
+            t(super::SftpMsg::ClipLessThanOne).to_owned()
         } else {
             seconds.to_string()
         };
-        parts.push(format!("已复制 {ok} 项（{label}，用时 {took} 秒）"));
+        parts.push(format!(
+            "{}{ok}{}{label}{}{took}{}",
+            t(super::SftpMsg::ClipCopiedPrefix),
+            t(super::SftpMsg::ClipCopiedMiddle),
+            t(super::SftpMsg::ClipCopiedTookMiddle),
+            t(super::SftpMsg::ClipCopiedTookSuffix)
+        ));
     }
     if queued > 0 {
-        parts.push(format!("{queued} 项已加入传输队列（{label}）"));
+        parts.push(format!(
+            "{queued}{}{label}{}",
+            t(super::SftpMsg::ClipQueuedMiddle),
+            t(super::SftpMsg::ParenClose)
+        ));
     }
     if skipped > 0 {
-        parts.push(format!("跳过 {skipped} 项"));
+        parts.push(format!(
+            "{}{skipped}{}",
+            t(super::SftpMsg::ClipSkippedPrefix),
+            t(super::SftpMsg::ClipSkippedSuffix)
+        ));
     }
     if cancelled > 0 {
-        parts.push(format!("已取消 {cancelled} 项"));
+        parts.push(format!(
+            "{}{cancelled}{}",
+            t(super::SftpMsg::ClipCancelledPrefix),
+            t(super::SftpMsg::ClipSkippedSuffix)
+        ));
     }
     if !failed.is_empty() {
         let shown: Vec<String> = failed
             .iter()
             .take(3)
-            .map(|item| format!("「{}」{}", item.name, item.message.as_deref().unwrap_or("")))
+            .map(|item| {
+                format!(
+                    "{}{}{}{}",
+                    t(super::SftpMsg::ClipFailedItemOpen),
+                    item.name,
+                    t(super::SftpMsg::ClipFailedItemClose),
+                    item.message.as_deref().unwrap_or("")
+                )
+            })
             .collect();
         parts.push(format!(
-            "{} 项失败：{}{}",
+            "{}{}{}{}",
             failed.len(),
-            shown.join("；"),
-            if failed.len() > 3 { "……" } else { "" }
+            t(super::SftpMsg::ClipFailedMiddle),
+            shown.join(t(super::SftpMsg::ClipSeparator)),
+            if failed.len() > 3 {
+                t(super::SftpMsg::ClipFailedEllipsis)
+            } else {
+                ""
+            }
         ));
     }
     if parts.is_empty() {
-        parts.push("没有可粘贴的内容".to_owned());
+        parts.push(t(super::SftpMsg::ClipNothingToPaste).to_owned());
     }
     PasteNotice {
         kind: if !failed.is_empty() {
@@ -290,7 +339,7 @@ pub(super) fn notice(outcome: &Outcome) -> PasteNotice {
         } else {
             NoticeKind::Info
         },
-        text: parts.join("；"),
+        text: parts.join(t(super::SftpMsg::ClipSeparator)),
     }
 }
 

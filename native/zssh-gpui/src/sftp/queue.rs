@@ -6,6 +6,7 @@ use std::time::Duration;
 use zssh_core::sftp::transfer::TransferState;
 
 use super::props::size_long;
+use crate::i18n::t;
 
 /// 一行传输的显示数据（从 `TransferRow` 取出来，方便单测）。
 #[derive(Debug, Clone)]
@@ -34,7 +35,11 @@ pub(super) fn queue_summary(rows: &[RowFacts<'_>]) -> Option<(usize, u32, String
     Some((
         active.len(),
         percent,
-        format!("{} 个任务进行中 {percent}%", active.len()),
+        format!(
+            "{}{}{percent}%",
+            active.len(),
+            t(super::SftpMsg::QueueActiveSuffix)
+        ),
     ))
 }
 
@@ -57,9 +62,21 @@ pub(super) fn speed_text(bytes_per_second: u64) -> String {
 pub(super) fn eta_text(seconds: Option<u64>) -> String {
     match seconds {
         None => "—".to_owned(),
-        Some(s) if s < 60 => format!("{} 秒", s.max(1)),
-        Some(s) if s < 3600 => format!("{} 分 {} 秒", s / 60, s % 60),
-        Some(s) => format!("{} 时 {} 分", s / 3600, s % 3600 / 60),
+        Some(s) if s < 60 => format!("{}{}", s.max(1), t(super::SftpMsg::EtaSecondUnit)),
+        Some(s) if s < 3600 => format!(
+            "{}{}{}{}",
+            s / 60,
+            t(super::SftpMsg::EtaMinuteUnit),
+            s % 60,
+            t(super::SftpMsg::EtaSecondUnit)
+        ),
+        Some(s) => format!(
+            "{}{}{}{}",
+            s / 3600,
+            t(super::SftpMsg::EtaHourUnit),
+            s % 3600 / 60,
+            t(super::SftpMsg::EtaMinuteTail)
+        ),
     }
 }
 
@@ -72,42 +89,63 @@ pub(super) fn reconcile_summary(row: &RowFacts<'_>, elapsed: Option<Duration>) -
     let mut parts = Vec::new();
     if row.total_files > 1 {
         parts.push(if row.done_files == row.total_files {
-            format!("{} 个文件", row.total_files)
+            format!(
+                "{}{}",
+                row.total_files,
+                t(super::SftpMsg::QueueFilesSuffix)
+            )
         } else {
             format!(
-                "文件数对不上：完成 {} / 共 {}",
-                row.done_files, row.total_files
+                "{}{}{}{}",
+                t(super::SftpMsg::QueueFilesMismatchPrefix),
+                row.done_files,
+                t(super::SftpMsg::QueueFilesMismatchMiddle),
+                row.total_files
             )
         });
     }
     let bytes_ok = row.total_bytes == 0 || row.done_bytes == row.total_bytes;
     parts.push(if bytes_ok {
         format!(
-            "{}，字节数与源一致",
-            size_long(row.done_bytes.max(row.total_bytes))
+            "{}{}",
+            size_long(row.done_bytes.max(row.total_bytes)),
+            t(super::SftpMsg::QueueBytesMatchSuffix)
         )
     } else {
         format!(
-            "字节数对不上：已传 {} / 源 {}",
+            "{}{}{}{}",
+            t(super::SftpMsg::QueueBytesMismatchPrefix),
             size_long(row.done_bytes),
+            t(super::SftpMsg::QueueBytesMismatchMiddle),
             size_long(row.total_bytes)
         )
     });
     if let Some(elapsed) = elapsed {
         let seconds = elapsed.as_secs_f64();
         if seconds < 1.0 {
-            parts.push("用时 不到 1 秒".to_owned());
+            parts.push(t(super::SftpMsg::QueueTimeUnderOneSecond).to_owned());
         } else if row.done_bytes > 0 {
             parts.push(format!(
-                "用时 {} 秒，平均 {}",
+                "{}{}{}{}",
+                t(super::SftpMsg::QueueTimePrefix),
                 seconds.round() as u64,
+                t(super::SftpMsg::QueueTimeAvgMiddle),
                 speed_text((row.done_bytes as f64 / seconds) as u64)
             ));
         } else {
-            parts.push(format!("用时 {} 秒", seconds.round() as u64));
+            parts.push(format!(
+                "{}{}{}",
+                t(super::SftpMsg::QueueTimePrefix),
+                seconds.round() as u64,
+                t(super::SftpMsg::QueueTimeSuffix)
+            ));
         }
     }
-    Some(format!("已核对：{}", parts.join("；")))
+    Some(format!(
+        "{}{}",
+        t(super::SftpMsg::QueueReconciledPrefix),
+        parts.join(t(super::SftpMsg::QueuePartSeparator))
+    ))
 }
 
 /// 对账有没有出问题（界面用警示色画）。

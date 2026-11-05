@@ -16,6 +16,7 @@ use super::menu::Side;
 use super::model::{Entry, EntryKind};
 use super::move_to::MoveAsk;
 use super::props::{CalcState, PermMatrix, PropTarget};
+use crate::i18n::t;
 
 /// 同一时间只有一个对话框，盖在整个文件视图上。
 pub(super) enum Dialog {
@@ -176,28 +177,35 @@ pub(super) enum NameCheck {
 /// 本地名字另外过 Windows 规则：保留名、非法字符、尾部点等）。
 pub(super) fn validate_name(name: &str, side: Side) -> NameCheck {
     if name.trim().is_empty() {
-        return NameCheck::Bad("名字不能为空".to_owned());
+        return NameCheck::Bad(t(super::SftpMsg::DialogNameEmpty).to_owned());
     }
     if name.contains('/') {
-        return NameCheck::Bad("名字里不能有 /".to_owned());
+        return NameCheck::Bad(t(super::SftpMsg::DialogNameSlash).to_owned());
     }
     if matches!(name.trim(), "." | "..") {
-        return NameCheck::Bad(format!("名字不能是 {}", name.trim()));
+        return NameCheck::Bad(format!(
+            "{}{}",
+            t(super::SftpMsg::NameCannotBePrefix),
+            name.trim()
+        ));
     }
     match side {
         Side::Remote => {
             if name.contains('\\') {
-                return NameCheck::Bad("名字里不能有 \\".to_owned());
+                return NameCheck::Bad(t(super::SftpMsg::DialogNameBackslash).to_owned());
             }
             NameCheck::Ok
         }
         Side::Local => {
             if name.contains('\\') {
-                return NameCheck::Bad("名字里不能有 \\".to_owned());
+                return NameCheck::Bad(t(super::SftpMsg::DialogNameBackslash).to_owned());
             }
             for bad in [':', '*', '?', '"', '<', '>', '|'] {
                 if name.contains(bad) {
-                    return NameCheck::Bad(format!("名字里不能有 {bad}"));
+                    return NameCheck::Bad(format!(
+                        "{}{bad}",
+                        t(super::SftpMsg::DialogNameBadCharPrefix)
+                    ));
                 }
             }
             match check_child_name(name.trim()) {
@@ -218,7 +226,7 @@ pub(super) fn name_taken(name: &str, existing: &[String]) -> bool {
 pub(super) fn validate_local_dir(raw: &str) -> NameCheck {
     let value = raw.trim();
     if value.is_empty() {
-        return NameCheck::Bad("请输入一个本地目录".to_owned());
+        return NameCheck::Bad(t(super::SftpMsg::DialogLocalDirRequired).to_owned());
     }
     // 盘符后面的冒号是合法的，其余位置不许有 Windows 不允许的字符。
     let rest = match value.as_bytes() {
@@ -226,7 +234,7 @@ pub(super) fn validate_local_dir(raw: &str) -> NameCheck {
         _ => value,
     };
     if rest.contains(['<', '>', '"', '|', '?', '*']) {
-        return NameCheck::Bad("路径里有 Windows 不允许的字符".to_owned());
+        return NameCheck::Bad(t(super::SftpMsg::DialogWindowsBadChars).to_owned());
     }
     NameCheck::Ok
 }
@@ -240,10 +248,15 @@ pub(super) const DELETE_NAMES_SHOWN: usize = 8;
 
 pub(super) fn delete_title(side: Side, count: usize) -> String {
     let place = match side {
-        Side::Remote => "远端",
-        Side::Local => "本地",
+        Side::Remote => t(super::SftpMsg::DialogPlaceRemote),
+        Side::Local => t(super::SftpMsg::DialogPlaceLocal),
     };
-    format!("删除{place}的 {count} 项？")
+    format!(
+        "{}{place}{}{count}{}",
+        t(super::SftpMsg::DialogDeleteTitlePrefix),
+        t(super::SftpMsg::DialogDeleteTitleMiddle),
+        t(super::SftpMsg::DialogDeleteTitleSuffix)
+    )
 }
 
 /// 说明文字：有文件夹要写明会连同里面的全部内容一起删（目录递归删除不能恢复）；
@@ -254,11 +267,11 @@ pub(super) fn delete_description(entries: &[Entry]) -> String {
         .any(|e| matches!(e.kind, EntryKind::Dir | EntryKind::Drive));
     let only_links = !entries.is_empty() && entries.iter().all(|e| e.kind == EntryKind::Symlink);
     if has_folder {
-        "选中的里有文件夹，将递归删除其中所有内容，不能恢复。".to_owned()
+        t(super::SftpMsg::DialogDeleteDescFolder).to_owned()
     } else if only_links {
-        "选中的都是符号链接：只删链接本身，不动它指向的内容。".to_owned()
+        t(super::SftpMsg::DialogDeleteDescLinks).to_owned()
     } else {
-        "选中的都是文件，删除后无法恢复。".to_owned()
+        t(super::SftpMsg::DialogDeleteDescFiles).to_owned()
     }
 }
 
@@ -269,8 +282,14 @@ pub(super) fn delete_names(entries: &[Entry]) -> (Vec<String>, Option<String>) {
         .take(DELETE_NAMES_SHOWN)
         .map(|e| e.name.clone())
         .collect();
-    let more = (entries.len() > DELETE_NAMES_SHOWN)
-        .then(|| format!("…等另外 {} 项", entries.len() - DELETE_NAMES_SHOWN));
+    let more = (entries.len() > DELETE_NAMES_SHOWN).then(|| {
+        format!(
+            "{}{}{}",
+            t(super::SftpMsg::DialogDeleteMorePrefix),
+            entries.len() - DELETE_NAMES_SHOWN,
+            t(super::SftpMsg::DialogDeleteMoreSuffix)
+        )
+    });
     (shown, more)
 }
 
@@ -278,7 +297,11 @@ pub(super) fn delete_names(entries: &[Entry]) -> (Vec<String>, Option<String>) {
 pub(super) fn delete_subject(entries: &[Entry]) -> String {
     match entries {
         [only] => only.name.clone(),
-        _ => format!("{} 项", entries.len()),
+        _ => format!(
+            "{}{}",
+            entries.len(),
+            t(super::SftpMsg::ItemCountSuffix)
+        ),
     }
 }
 

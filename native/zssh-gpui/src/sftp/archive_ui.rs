@@ -2,6 +2,7 @@
 //! 冲突对话框里“…等 N 个”那一行。
 
 use super::props::size_long;
+use crate::i18n::t;
 
 /// 提示条里正在做什么。复制粘贴（G08b）以后也共用这一条。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,15 +16,42 @@ pub(super) enum BusyKind {
 
 /// 压缩 / 检查 / 解压的提示条文案。
 pub(super) fn busy_text(kind: BusyKind, elapsed_seconds: u64, bytes: Option<u64>) -> String {
-    let elapsed = format!("已 {elapsed_seconds} 秒");
+    let elapsed = format!(
+        "{}{elapsed_seconds}{}",
+        t(super::SftpMsg::ArchiveElapsedPrefix),
+        t(super::SftpMsg::ArchiveElapsedSuffix)
+    );
     match kind {
         BusyKind::Compress => match bytes {
-            Some(bytes) => format!("压缩中…（已写入 {} · {elapsed}）", size_long(bytes)),
-            None => format!("压缩中…（{elapsed}）"),
+            Some(bytes) => format!(
+                "{}{}{}{}{}",
+                t(super::SftpMsg::ArchiveCompressingWrittenPrefix),
+                size_long(bytes),
+                t(super::SftpMsg::ArchiveCompressingMiddle),
+                elapsed,
+                t(super::SftpMsg::ArchiveCompressingSuffix)
+            ),
+            None => format!(
+                "{}{elapsed}{}",
+                t(super::SftpMsg::ArchiveCompressingPrefix),
+                t(super::SftpMsg::ArchiveCompressingSuffix)
+            ),
         },
-        BusyKind::Scan => format!("检查压缩包中…（{elapsed}）"),
-        BusyKind::Extract => format!("解压中…（{elapsed}）"),
-        BusyKind::Paste => format!("复制中…（{elapsed}）"),
+        BusyKind::Scan => format!(
+            "{}{elapsed}{}",
+            t(super::SftpMsg::ArchiveScanningPrefix),
+            t(super::SftpMsg::ArchiveCompressingSuffix)
+        ),
+        BusyKind::Extract => format!(
+            "{}{elapsed}{}",
+            t(super::SftpMsg::ArchiveExtractingPrefix),
+            t(super::SftpMsg::ArchiveCompressingSuffix)
+        ),
+        BusyKind::Paste => format!(
+            "{}{elapsed}{}",
+            t(super::SftpMsg::ArchivePastingPrefix),
+            t(super::SftpMsg::ArchiveCompressingSuffix)
+        ),
     }
 }
 
@@ -38,14 +66,22 @@ pub(super) fn compress_notice(cancelled: bool, name: &str, warning: Option<&str>
     if cancelled {
         return Notice {
             success: false,
-            text: "已取消压缩，没有留下临时文件".to_owned(),
+            text: t(super::SftpMsg::ArchiveCompressCancelled).to_owned(),
         };
     }
-    let base = format!("已压缩为「{name}」");
+    let base = format!(
+        "{}{name}{}",
+        t(super::SftpMsg::ArchiveCompressedPrefix),
+        t(super::SftpMsg::ArchiveCompressedSuffix)
+    );
     Notice {
         success: true,
         text: match warning {
-            Some(warning) => format!("{base}（{warning}）"),
+            Some(warning) => format!(
+                "{base}{}{warning}{}",
+                t(super::SftpMsg::ParenOpen),
+                t(super::SftpMsg::ParenClose)
+            ),
             None => base,
         },
     }
@@ -65,20 +101,37 @@ pub(super) fn extract_notice(
         return Notice {
             success: false,
             text: if in_place {
-                format!("已取消解压，已经解出的文件保留在「{dest_name}」里")
+                format!(
+                    "{}{dest_name}{}",
+                    t(super::SftpMsg::ArchiveExtractCancelledInPlacePrefix),
+                    t(super::SftpMsg::ArchiveExtractCancelledInPlaceSuffix)
+                )
             } else {
-                "已取消解压，没有留下半成品".to_owned()
+                t(super::SftpMsg::ArchiveExtractCancelled).to_owned()
             },
         };
     }
-    let mut text = format!("已解压到「{dest_name}」：解出 {extracted} 个文件");
+    let mut text = format!(
+        "{}{dest_name}{}{extracted}{}",
+        t(super::SftpMsg::ArchiveExtractedPrefix),
+        t(super::SftpMsg::ArchiveExtractedMiddle),
+        t(super::SftpMsg::ArchiveExtractedSuffix)
+    );
     if skipped > 0 {
-        text.push_str(&format!("，跳过 {skipped} 个已有文件"));
+        text.push_str(&format!(
+            "{}{skipped}{}",
+            t(super::SftpMsg::ArchiveSkippedPrefix),
+            t(super::SftpMsg::ArchiveSkippedSuffix)
+        ));
     }
     Notice {
         success: true,
         text: match warning {
-            Some(warning) => format!("{text}（{warning}）"),
+            Some(warning) => format!(
+                "{text}{}{warning}{}",
+                t(super::SftpMsg::ParenOpen),
+                t(super::SftpMsg::ParenClose)
+            ),
             None => text,
         },
     }
@@ -86,7 +139,13 @@ pub(super) fn extract_notice(
 
 /// 冲突对话框里「…等 N 个」那一行；名字全列出来了就没有。
 pub(super) fn conflict_more_text(conflict_count: u64, sample_len: usize) -> Option<String> {
-    (conflict_count > sample_len as u64).then(|| format!("等 {conflict_count} 个"))
+    (conflict_count > sample_len as u64).then(|| {
+        format!(
+            "{}{conflict_count}{}",
+            t(super::SftpMsg::ArchiveConflictMorePrefix),
+            t(super::SftpMsg::ArchiveConflictMoreSuffix)
+        )
+    })
 }
 
 #[cfg(test)]

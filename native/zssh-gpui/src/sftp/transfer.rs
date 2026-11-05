@@ -23,7 +23,8 @@ use super::engine::{
 use super::local_listing::{LocalRequest, request_listing};
 use super::menu::MenuAction;
 use super::model::NavMode;
-use super::{RemoteOp, SftpDemo, SftpEvent, TestHook, TransferRow};
+use super::{RemoteOp, SftpDemo, SftpEvent, SftpMsg, TestHook, TransferRow};
+use crate::i18n::t;
 use crate::ssh_backend::runtime;
 
 impl SftpDemo {
@@ -38,14 +39,26 @@ impl SftpDemo {
         let channel = self.connected_channel()?;
         if let Some(entry) = self.remote.raw.iter().find(|entry| entry.path == path) {
             if entry.is_enterable() {
-                return Err(format!("{} 是目录，不能编辑", entry.name));
+                return Err(format!(
+                    "{}{}",
+                    entry.name,
+                    t(SftpMsg::TransferDirCannotEditSuffix)
+                ));
             }
             // 有损解码出来的名字不能拿去操作：服务器上的原名不是这个。
             if !entry.name_is_utf8 {
-                return Err(format!("{} 的名字不是 UTF-8，不能编辑", entry.name));
+                return Err(format!(
+                    "{}{}",
+                    entry.name,
+                    t(SftpMsg::TransferNotUtf8CannotEditSuffix)
+                ));
             }
         }
-        self.say(format!("正在打开 {}", file_name(&path)));
+        self.say(format!(
+                "{}{}",
+                t(SftpMsg::TransferOpeningPrefix),
+                file_name(&path)
+            ));
         // 正式界面：主窗口里开一个编辑器标签（同一个文件不重复开）；没有主窗口（调试用的独立 SFTP 窗口）
         // 才退回独立的编辑窗口。
         let spec = crate::remote_editor::OpenSpec {
@@ -156,7 +169,10 @@ impl SftpDemo {
                 TestHook::Invalid(message) => Err(message),
             };
             if let Err(err) = result {
-                self.warn(format!("自动操作没有开始：{err}"));
+                self.warn(format!(
+                    "{}{err}",
+                    t(SftpMsg::OpsAutoOpNotStartedPrefix)
+                ));
             }
         }
         self.run_next_hook_op(cx);
@@ -191,10 +207,24 @@ impl SftpDemo {
         self.forget_finished_batches();
         let label = direction_label(report.direction);
         let (text, failed) = match &report.state {
-            TransferState::Done => (format!("{label}完成：{name}"), false),
-            TransferState::Failed(reason) => (format!("{label}失败：{name}（{reason}）"), true),
-            TransferState::Cancelled => (format!("{label}已取消：{name}"), false),
-            TransferState::Skipped => (format!("{label}已跳过：{name}"), false),
+            TransferState::Done => (format!(
+                "{label}{}{name}",
+                t(SftpMsg::TransferDoneSuffix)
+            ), false),
+            TransferState::Failed(reason) => (format!(
+                "{label}{}{name}{}{reason}{}",
+                t(SftpMsg::TransferFailedSuffix),
+                t(SftpMsg::ParenOpen),
+                t(SftpMsg::ParenClose)
+            ), true),
+            TransferState::Cancelled => (format!(
+                "{label}{}{name}",
+                t(SftpMsg::TransferCancelledSuffix)
+            ), false),
+            TransferState::Skipped => (format!(
+                "{label}{}{name}",
+                t(SftpMsg::TransferSkippedSuffix)
+            ), false),
             _ => return,
         };
         let downloaded = matches!(report.direction, Direction::Download | Direction::LocalCopy)
@@ -284,7 +314,10 @@ impl SftpDemo {
             let result = match classify_dropped_path(path) {
                 DropKind::File => self.start_upload_to(&local, &remote_dir),
                 DropKind::Dir => self.start_dir_upload_to(&local, &remote_dir),
-                DropKind::Missing => Err(format!("拖入的路径不存在或不是文件 / 目录：{local}")),
+                DropKind::Missing => Err(format!(
+                    "{}{local}",
+                    t(SftpMsg::TransferDropMissingPrefix)
+                )),
             };
             match result {
                 Ok(()) => started += 1,
@@ -298,9 +331,18 @@ impl SftpDemo {
         self.batch_scope = None;
         match (started, first_error) {
             (0, Some(err)) => self.warn(err),
-            (0, None) => self.warn("拖入的内容里没有可以上传的文件"),
-            (count, None) => self.say(format!("拖入上传 {count} 项")),
-            (count, Some(err)) => self.warn(format!("拖入上传 {count} 项，其余没有开始：{err}")),
+            (0, None) => self.warn(t(SftpMsg::TransferDropNone)),
+            (count, None) => self.say(format!(
+                "{}{count}{}",
+                t(SftpMsg::TransferDropCountPrefix),
+                t(SftpMsg::ItemCountSuffix)
+            )),
+            (count, Some(err)) => self.warn(format!(
+                "{}{count}{}{}{err}",
+                t(SftpMsg::TransferDropCountPrefix),
+                t(SftpMsg::ItemCountSuffix),
+                t(SftpMsg::OpsQueuedSomeSuffix)
+            )),
         }
         self.queue_open = true;
         cx.notify();
@@ -334,10 +376,18 @@ impl SftpDemo {
     ) -> Result<(), String> {
         let remote = remote.trim();
         if remote.is_empty() {
-            return Err("远端路径是空的".to_owned());
+            return Err(t(SftpMsg::TransferRemotePathEmpty).to_owned());
         }
         std::fs::create_dir_all(local_dir)
-            .map_err(|err| format!("创建本地目录失败：{}（{err}）", local_dir.display()))?;
+            .map_err(|err| {
+                format!(
+                    "{}{}{}{err}{}",
+                    t(SftpMsg::TransferCreateLocalDirFailedPrefix),
+                    local_dir.display(),
+                    t(SftpMsg::ParenOpen),
+                    t(SftpMsg::ParenClose)
+                )
+            })?;
         let target = download_target(local_dir, remote).map_err(|err| err.to_string())?;
         let name = file_name(remote);
         self.submit_job(
@@ -366,17 +416,23 @@ impl SftpDemo {
     ) -> Result<(), String> {
         let local = local_path.trim();
         if local.is_empty() {
-            return Err("先填要上传的本地文件路径".to_owned());
+            return Err(t(SftpMsg::TransferUploadFilePrompt).to_owned());
         }
         let path = Path::new(local);
         if path.is_dir() {
-            return Err(format!("{local} 是目录，只能上传单个文件"));
+            return Err(format!(
+                "{local}{}",
+                t(SftpMsg::TransferIsDirectorySuffix)
+            ));
         }
         if !path.is_file() {
-            return Err(format!("本地文件不存在：{local}"));
+            return Err(format!(
+                "{}{local}",
+                t(SftpMsg::TransferLocalFileMissingPrefix)
+            ));
         }
         if remote_dir.is_empty() {
-            return Err("远端目录还没读出来，稍等一下".to_owned());
+            return Err(t(SftpMsg::RemoteDirNotReady).to_owned());
         }
         let target = upload_target(remote_dir, local)?;
         self.submit_job(
@@ -405,13 +461,16 @@ impl SftpDemo {
     ) -> Result<(), String> {
         let local = local_path.trim();
         if local.is_empty() {
-            return Err("先填要上传的本地目录路径".to_owned());
+            return Err(t(SftpMsg::TransferUploadDirPrompt).to_owned());
         }
         if !Path::new(local).is_dir() {
-            return Err(format!("本地目录不存在：{local}"));
+            return Err(format!(
+                "{}{local}",
+                t(SftpMsg::TransferLocalDirMissingPrefix)
+            ));
         }
         if remote_dir.is_empty() {
-            return Err("远端目录还没读出来，稍等一下".to_owned());
+            return Err(t(SftpMsg::RemoteDirNotReady).to_owned());
         }
         let target = upload_dir_target(remote_dir, local)?;
         self.submit_job(
@@ -441,7 +500,7 @@ impl SftpDemo {
         let engine = Arc::clone(
             self.engine
                 .as_ref()
-                .ok_or_else(|| "传输引擎还没准备好（等连接建立）".to_owned())?,
+                .ok_or_else(|| t(SftpMsg::TransferEngineNotReady).to_owned())?,
         );
         let runtime = runtime()?;
         let direction = job.direction;
@@ -463,7 +522,12 @@ impl SftpDemo {
             target,
         ));
         self.sync_install_state();
-        self.say(format!("已加入{}队列：{name}", direction_label(direction)));
+        self.say(format!(
+            "{}{}{}{name}",
+            t(SftpMsg::TransferQueuedPrefix),
+            direction_label(direction),
+            t(SftpMsg::TransferQueuedMiddle)
+        ));
         Ok(())
     }
 
@@ -474,9 +538,9 @@ impl SftpDemo {
             return;
         };
         let text = if engine.cancel(id) {
-            "正在取消…"
+            t(SftpMsg::TransferCancelling)
         } else {
-            "这个任务已经结束了"
+            t(SftpMsg::TransferAlreadyFinished)
         };
         self.say(text);
         // 取消请求不立刻改行状态（要等 `ProgressReport`），但这里顺手同步一次，
@@ -494,9 +558,9 @@ impl SftpDemo {
             return;
         };
         let text = if engine.pause(id) {
-            "正在暂停…"
+            t(SftpMsg::TransferPausing)
         } else {
-            "这个任务已经结束了"
+            t(SftpMsg::TransferAlreadyFinished)
         };
         self.say(text);
         cx.notify();
@@ -508,9 +572,9 @@ impl SftpDemo {
             return;
         };
         let text = if engine.resume(id) {
-            "正在继续…"
+            t(SftpMsg::TransferResuming)
         } else {
-            "这个任务已经结束了"
+            t(SftpMsg::TransferAlreadyFinished)
         };
         self.say(text);
         cx.notify();
@@ -523,14 +587,14 @@ impl SftpDemo {
         };
         // `retry` 里面会 `tokio::spawn`：和 `submit` 一样要在 runtime 上下文里调。
         let Ok(runtime) = runtime() else {
-            self.warn("没有可用的运行时");
+            self.warn(t(SftpMsg::OpsNoRuntime));
             return;
         };
         let _guard = runtime.enter();
         let text = if engine.retry(id) {
-            "正在重试…"
+            t(SftpMsg::TransferRetrying)
         } else {
-            "这个任务现在不能重试"
+            t(SftpMsg::TransferCannotRetry)
         };
         self.say(text);
         cx.notify();
@@ -563,9 +627,13 @@ impl SftpDemo {
         self.forget_finished_batches();
         let removed = before - self.transfers.len();
         self.say(if removed > 0 {
-            format!("清除了 {removed} 个已结束的任务")
+            format!(
+                "{}{removed}{}",
+                t(SftpMsg::TransferClearedPrefix),
+                t(SftpMsg::TransferClearedSuffix)
+            )
         } else {
-            "没有已结束的任务".to_owned()
+            t(SftpMsg::TransferNothingCleared).to_owned()
         });
         cx.notify();
     }
@@ -595,7 +663,7 @@ impl SftpDemo {
             return;
         };
         if action == ConflictAction::Resume && !prompt.info.can_resume {
-            self.warn("这一对文件不能续传（目标不比源小）");
+            self.warn(t(SftpMsg::TransferCannotResume));
             cx.notify();
             return;
         }
@@ -603,7 +671,10 @@ impl SftpDemo {
         let decision = match conflict_decision(action, prompt.info.direction, &typed) {
             Ok(decision) => decision,
             Err(message) => {
-                self.warn(format!("重命名的新名字不能用：{message}"));
+                self.warn(format!(
+                "{}{message}",
+                t(SftpMsg::TransferRenameInvalidPrefix)
+            ));
                 cx.notify();
                 return;
             }
@@ -620,9 +691,17 @@ impl SftpDemo {
         let label = conflict_action_label(action);
         let waiting = self.conflicts.len();
         self.say(if waiting == 0 {
-            format!("同名文件处理：{label} {target_name}")
+            format!(
+            "{}{label} {target_name}",
+            t(SftpMsg::TransferConflictPrefix)
+        )
         } else {
-            format!("同名文件处理：{label} {target_name}（还有 {waiting} 个）")
+            format!(
+            "{}{label} {target_name}{}{waiting}{}",
+            t(SftpMsg::TransferConflictPrefix),
+            t(SftpMsg::TransferConflictMorePrefix),
+            t(SftpMsg::TransferConflictMoreSuffix)
+        )
         });
         cx.notify();
     }
@@ -648,8 +727,11 @@ impl SftpDemo {
         let count = before - self.conflicts.len();
         self.prefill_conflict_name(window, cx);
         self.say(format!(
-            "同名文件处理：{}（本次提交的 {count} 个，后面的同样处理）",
-            conflict_action_label(action)
+            "{}{}{}{count}{}",
+            t(SftpMsg::TransferConflictPrefix),
+            conflict_action_label(action),
+            t(SftpMsg::TransferConflictApplyAllMiddle),
+            t(SftpMsg::TransferConflictApplyAllSuffix)
         ));
         cx.notify();
     }
@@ -714,9 +796,17 @@ impl SftpDemo {
             }
         }
         self.say(if pause {
-            format!("自动测试：已请求暂停 {accepted} 个任务")
+            format!(
+            "{}{accepted}{}",
+            t(SftpMsg::TransferAutoPausePrefix),
+            t(SftpMsg::TransferAutoCountSuffix)
+        )
         } else {
-            format!("自动测试：已请求继续 {accepted} 个任务")
+            format!(
+            "{}{accepted}{}",
+            t(SftpMsg::TransferAutoResumePrefix),
+            t(SftpMsg::TransferAutoCountSuffix)
+        )
         });
         cx.notify();
     }

@@ -26,10 +26,185 @@ use super::model::{
     Column, Entry, EntryKind, LinkBase, LinkInfo, adaptive_columns, cell_text, collapse_crumbs,
     compact_columns, local_crumbs, remote_crumbs,
 };
-use super::{Phase, SftpDemo, queue};
+use super::{Phase, SftpDemo, SftpMsg, queue};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::typography::{Role, Typo as _};
+
+/// 本文件（文件视图的界面外壳）自己的文案。
+#[derive(Clone, Copy, Debug)]
+enum SftpViewMsg {
+    CloseBusyPrefix,
+    CloseBusySuffix,
+    KeepTransferring,
+    CancelAndClose,
+    FollowCwd,
+    FollowCwdTooltip,
+    Back,
+    Forward,
+    Up,
+    Refresh,
+    HideHidden,
+    ShowHidden,
+    Filter,
+    CloseLocalPane,
+    ReadingDir,
+    NoMatches,
+    NotConnected,
+    EmptyDir,
+    ThisComputer,
+    NotUtf8Badge,
+    Cancelling,
+    Cancel,
+    RelayRetry,
+    Close,
+    CancelDelete,
+    ConflictTitlePrefix,
+    ConflictWaitingPrefix,
+    ConflictWaitingSuffix,
+    SourcePrefix,
+    TargetPrefix,
+    Overwrite,
+    Skip,
+    Resume,
+    Rename,
+    OverwriteAll,
+    SkipAll,
+    QueueTitle,
+    ActiveSuffix,
+    Collapse,
+    QueueTotalPrefix,
+    QueueTotalSuffix,
+    QueueEmpty,
+    ClearFinished,
+    Pause,
+    ResumeTransfer,
+    Retry,
+    CancelTransfer,
+    Failed,
+    SelectedPrefix,
+}
+
+impl Msg for SftpViewMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::CloseBusyPrefix => "还有 ",
+            Self::CloseBusySuffix => " 项传输 / 删除没完成，关闭窗口会取消它们",
+            Self::KeepTransferring => "继续传输",
+            Self::CancelAndClose => "取消并关闭",
+            Self::FollowCwd => "跟随终端目录",
+            Self::FollowCwdTooltip => {
+                "终端里 cd 之后，远端栏跟着换目录；在面板里手动换目录会自动关掉"
+            }
+            Self::Back => "后退 (Alt+←)",
+            Self::Forward => "前进 (Alt+→)",
+            Self::Up => "返回上级 (Backspace)",
+            Self::Refresh => "刷新 (F5)",
+            Self::HideHidden => "隐藏隐藏文件",
+            Self::ShowHidden => "显示隐藏文件",
+            Self::Filter => "过滤",
+            Self::CloseLocalPane => "关闭本地栏",
+            Self::ReadingDir => "读取目录中…",
+            Self::NoMatches => "没有匹配的条目",
+            Self::NotConnected => "还没连上",
+            Self::EmptyDir => "空目录",
+            Self::ThisComputer => "此电脑",
+            Self::NotUtf8Badge => "非 UTF-8 名字",
+            Self::Cancelling => "取消中…",
+            Self::Cancel => "取消",
+            Self::RelayRetry => "改为经本机中转重试",
+            Self::Close => "关闭",
+            Self::CancelDelete => "取消删除",
+            Self::ConflictTitlePrefix => "同名文件：",
+            Self::ConflictWaitingPrefix => "另有 ",
+            Self::ConflictWaitingSuffix => " 个在等",
+            Self::SourcePrefix => "源 ",
+            Self::TargetPrefix => "目标 ",
+            Self::Overwrite => "覆盖",
+            Self::Skip => "跳过",
+            Self::Resume => "续传",
+            Self::Rename => "重命名",
+            Self::OverwriteAll => "全部覆盖",
+            Self::SkipAll => "全部跳过",
+            Self::QueueTitle => "传输队列",
+            Self::ActiveSuffix => " 个进行中",
+            Self::Collapse => "收起",
+            Self::QueueTotalPrefix => "共 ",
+            Self::QueueTotalSuffix => " 个任务",
+            Self::QueueEmpty => {
+                "还没有传输任务。右键选“上传到远端 / 下载到本地”，或者把文件拖进来。"
+            }
+            Self::ClearFinished => "清除已完成",
+            Self::Pause => "暂停",
+            Self::ResumeTransfer => "继续",
+            Self::Retry => "重试",
+            Self::CancelTransfer => "取消",
+            Self::Failed => "失败",
+            Self::SelectedPrefix => "选中 ",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::CloseBusyPrefix => "",
+            Self::CloseBusySuffix => {
+                " transfer / delete tasks are unfinished; closing the window will cancel them"
+            }
+            Self::KeepTransferring => "Keep Transferring",
+            Self::CancelAndClose => "Cancel and Close",
+            Self::FollowCwd => "Follow Terminal Directory",
+            Self::FollowCwdTooltip => {
+                "After cd in the terminal, the remote pane follows; changing it manually in the pane turns this off"
+            }
+            Self::Back => "Back (Alt+←)",
+            Self::Forward => "Forward (Alt+→)",
+            Self::Up => "Up (Backspace)",
+            Self::Refresh => "Refresh (F5)",
+            Self::HideHidden => "Hide Hidden Files",
+            Self::ShowHidden => "Show Hidden Files",
+            Self::Filter => "Filter",
+            Self::CloseLocalPane => "Close Local Pane",
+            Self::ReadingDir => "Reading directory…",
+            Self::NoMatches => "No matching entries",
+            Self::NotConnected => "Not connected",
+            Self::EmptyDir => "Empty directory",
+            Self::ThisComputer => "This PC",
+            Self::NotUtf8Badge => "Non-UTF-8 name",
+            Self::Cancelling => "Cancelling…",
+            Self::Cancel => "Cancel",
+            Self::RelayRetry => "Retry via This Computer",
+            Self::Close => "Close",
+            Self::CancelDelete => "Cancel Delete",
+            Self::ConflictTitlePrefix => "Name conflict: ",
+            Self::ConflictWaitingPrefix => "",
+            Self::ConflictWaitingSuffix => " more waiting",
+            Self::SourcePrefix => "Source ",
+            Self::TargetPrefix => "Target ",
+            Self::Overwrite => "Overwrite",
+            Self::Skip => "Skip",
+            Self::Resume => "Resume",
+            Self::Rename => "Rename",
+            Self::OverwriteAll => "Overwrite All",
+            Self::SkipAll => "Skip All",
+            Self::QueueTitle => "Transfer Queue",
+            Self::ActiveSuffix => " active",
+            Self::Collapse => "Collapse",
+            Self::QueueTotalPrefix => "",
+            Self::QueueTotalSuffix => " tasks total",
+            Self::QueueEmpty => {
+                "No transfers yet. Right-click and choose \"Upload to Remote / Download to Local\", or drag files in."
+            }
+            Self::ClearFinished => "Clear Finished",
+            Self::Pause => "Pause",
+            Self::ResumeTransfer => "Resume",
+            Self::Retry => "Retry",
+            Self::CancelTransfer => "Cancel",
+            Self::Failed => "Failed",
+            Self::SelectedPrefix => "Selected ",
+        }
+    }
+}
 
 /// 顶部信息行的高度：和标签条、列头同高（32），不比它们高。
 const HEADER_HEIGHT: f32 = 32.0;
@@ -229,12 +404,14 @@ impl Render for SftpDemo {
                 .border_t_1()
                 .border_color(tokens.border)
                 .child(div().flex_1().typo(Role::Body, &tokens).child(format!(
-                    "还有 {} 项传输 / 删除没完成，关闭窗口会取消它们",
-                    self.unfinished_work()
+                    "{}{}{}",
+                    t(SftpViewMsg::CloseBusyPrefix),
+                    self.unfinished_work(),
+                    t(SftpViewMsg::CloseBusySuffix)
                 )))
                 .child(
                     Button::new("sftp-close-keep")
-                        .label("继续传输")
+                        .label(t(SftpViewMsg::KeepTransferring))
                         .compact()
                         .on_click(move |_, _, cx| {
                             keep_entity.update(cx, |this, cx| {
@@ -245,7 +422,7 @@ impl Render for SftpDemo {
                 )
                 .child(
                     Button::new("sftp-close-now")
-                        .label("取消并关闭")
+                        .label(t(SftpViewMsg::CancelAndClose))
                         .compact()
                         .on_click(move |_, window, cx| {
                             close_entity.update(cx, |this, _cx| {
@@ -271,8 +448,8 @@ impl Render for SftpDemo {
                 .child(
                     Checkbox::new("sftp-follow-cwd")
                         .checked(self.follow)
-                        .label("跟随终端目录")
-                        .tooltip("终端里 cd 之后，远端栏跟着换目录；在面板里手动换目录会自动关掉")
+                        .label(t(SftpViewMsg::FollowCwd))
+                        .tooltip(t(SftpViewMsg::FollowCwdTooltip))
                         .on_click(move |checked, _, cx| {
                             let checked = *checked;
                             follow_entity.update(cx, |this, cx| this.set_follow(checked, cx));
@@ -383,7 +560,7 @@ impl SftpDemo {
                     tool_button(
                         SharedString::from(format!("sftp-back-{id_suffix}")),
                         IconName::ArrowLeft,
-                        "后退 (Alt+←)",
+                        t(SftpViewMsg::Back),
                         !can_back,
                     )
                     .on_click(move |_, _, cx| {
@@ -396,7 +573,7 @@ impl SftpDemo {
                         tool_button(
                             SharedString::from(format!("sftp-forward-{id_suffix}")),
                             IconName::ArrowRight,
-                            "前进 (Alt+→)",
+                            t(SftpViewMsg::Forward),
                             !can_forward,
                         )
                         .on_click(move |_, _, cx| {
@@ -408,7 +585,7 @@ impl SftpDemo {
                     tool_button(
                         SharedString::from(format!("sftp-up-{id_suffix}")),
                         IconName::ArrowUp,
-                        "返回上级 (Backspace)",
+                        t(SftpViewMsg::Up),
                         at_top,
                     )
                     .on_click(move |_, _, cx| {
@@ -420,7 +597,7 @@ impl SftpDemo {
                     tool_button(
                         SharedString::from(format!("sftp-refresh-{id_suffix}")),
                         IconName::RefreshCw,
-                        "刷新 (F5)",
+                        t(SftpViewMsg::Refresh),
                         false,
                     )
                     .loading(loading)
@@ -437,9 +614,9 @@ impl SftpDemo {
                             IconName::EyeOff
                         },
                         if show_hidden {
-                            "隐藏隐藏文件"
+                            t(SftpViewMsg::HideHidden)
                         } else {
-                            "显示隐藏文件"
+                            t(SftpViewMsg::ShowHidden)
                         },
                         false,
                     )
@@ -457,7 +634,7 @@ impl SftpDemo {
                             tool_button(
                                 SharedString::from(format!("sftp-filter-open-{id_suffix}")),
                                 IconName::Search,
-                                "过滤",
+                                t(SftpViewMsg::Filter),
                                 false,
                             )
                             .on_click(move |_, window, cx| {
@@ -489,7 +666,7 @@ impl SftpDemo {
                         tool_button(
                             "sftp-close-local-pane",
                             IconName::Close,
-                            "关闭本地栏",
+                            t(SftpViewMsg::CloseLocalPane),
                             false,
                         )
                         .on_click(move |_, _, cx| {
@@ -525,7 +702,7 @@ impl SftpDemo {
                     let cell = h_flex()
                         .id(SharedString::from(format!(
                             "sftp-col-{id_suffix}-{}",
-                            column.label()
+                            column.stable_id()
                         )))
                         .gap_0p5()
                         .items_center()
@@ -558,13 +735,13 @@ impl SftpDemo {
         let count = pane.rows.len();
         let empty_text = pane.rows.is_empty().then(|| {
             if pane.loading && pane.raw.is_empty() {
-                "读取目录中…"
+                t(SftpViewMsg::ReadingDir)
             } else if !pane.filter.text.trim().is_empty() {
-                "没有匹配的条目"
+                t(SftpViewMsg::NoMatches)
             } else if is_remote && self.phase != Phase::Ready {
-                "还没连上"
+                t(SftpViewMsg::NotConnected)
             } else {
-                "空目录"
+                t(SftpViewMsg::EmptyDir)
             }
         });
         let list_columns = columns.clone();
@@ -634,9 +811,16 @@ impl SftpDemo {
             .border_t_1()
             .border_color(tokens.border)
             .typo(Role::Caption, tokens)
-            .child(format!("{count} 项"))
+            .child(format!(
+                "{count}{}",
+                t(SftpMsg::ItemCountSuffix)
+            ))
             .when(selected_count > 0, |bar| {
-                bar.child(format!("选中 {selected_count} 项"))
+                bar.child(format!(
+                    "{}{selected_count}{}",
+                    t(SftpViewMsg::SelectedPrefix),
+                    t(SftpMsg::ItemCountSuffix)
+                ))
             });
 
         let drop_entity = entity.clone();
@@ -790,7 +974,7 @@ impl SftpDemo {
                     })
             };
         if crumbs.is_empty() {
-            let root = if is_remote { "/" } else { "此电脑" };
+            let root = if is_remote { "/" } else { t(SftpViewMsg::ThisComputer) };
             let target = if is_remote { "/" } else { "" };
             bar = bar.child(crumb_button(
                 SharedString::from(format!("crumb-root-{id_suffix}")),
@@ -906,7 +1090,7 @@ impl SftpDemo {
                         div()
                             .flex_none()
                             .typo(Role::Caption, tokens)
-                            .child("非 UTF-8 名字")
+                            .child(t(SftpViewMsg::NotUtf8Badge))
                     }));
                 let cells = columns
                     .iter()
@@ -1054,9 +1238,9 @@ impl SftpDemo {
                     bar.child(
                         Button::new("sftp-busy-cancel")
                             .label(if busy.cancelling {
-                                "取消中…"
+                                t(SftpViewMsg::Cancelling)
                             } else {
-                                "取消"
+                                t(SftpViewMsg::Cancel)
                             })
                             .compact()
                             .disabled(busy.cancelling)
@@ -1097,7 +1281,7 @@ impl SftpDemo {
                 )
                 .child(
                     Button::new("sftp-paste-relay")
-                        .label("改为经本机中转重试")
+                        .label(t(SftpViewMsg::RelayRetry))
                         .compact()
                         .on_click(move |_, _, cx| {
                             relay_entity.update(cx, |this, cx| this.retry_paste_via_relay(cx));
@@ -1105,7 +1289,7 @@ impl SftpDemo {
                 )
                 .child(
                     Button::new("sftp-paste-retry-close")
-                        .label("关闭")
+                        .label(t(SftpViewMsg::Close))
                         .compact()
                         .on_click(move |_, _, cx| {
                             close_entity.update(cx, |this, cx| this.dismiss_paste_retry(cx));
@@ -1133,24 +1317,31 @@ impl SftpDemo {
                         .truncate()
                         .typo(Role::Body, tokens)
                         .child(format!(
-                            "{} {}：已删 {} 项{}",
+                            "{}{} {}{}{}{}",
                             if job.cancelling {
-                                "正在取消删除"
+                                t(SftpMsg::CancelDeleting)
                             } else {
-                                "正在删除"
+                                t(SftpMsg::Deleting)
                             },
                             job.name,
+                            t(SftpMsg::DeleteProgressMiddle),
                             job.deleted,
+                            t(SftpMsg::DeleteProgressSuffix),
                             if job.current.is_empty() {
                                 String::new()
                             } else {
-                                format!("（{}）", file_name(&job.current))
+                                format!(
+                                    "{}{}{}",
+                                    t(SftpMsg::ParenOpen),
+                                    file_name(&job.current),
+                                    t(SftpMsg::ParenClose)
+                                )
                             }
                         )),
                 )
                 .child(
                     Button::new("sftp-delete-cancel")
-                        .label("取消删除")
+                        .label(t(SftpViewMsg::CancelDelete))
                         .compact()
                         .on_click(move |_, _, cx| {
                             entity.update(cx, |this, cx| this.cancel_delete(cx));
@@ -1203,13 +1394,20 @@ impl SftpDemo {
                         .child(
                             div()
                                 .typo(Role::ItemName, tokens)
-                                .child(format!("同名文件：{target_name}")),
+                                .child(format!(
+                                    "{}{target_name}",
+                                    t(SftpViewMsg::ConflictTitlePrefix)
+                                )),
                         )
                         .when(waiting > 0, |line| {
                             line.child(
                                 div()
                                     .typo(Role::Caption, tokens)
-                                    .child(format!("另有 {waiting} 个在等")),
+                                    .child(format!(
+                                        "{}{waiting}{}",
+                                        t(SftpViewMsg::ConflictWaitingPrefix),
+                                        t(SftpViewMsg::ConflictWaitingSuffix)
+                                    )),
                             )
                         })
                         .child(
@@ -1217,14 +1415,14 @@ impl SftpDemo {
                                 .flex_1()
                                 .truncate()
                                 .typo(Role::Caption, tokens)
-                                .child(format!("源 {source}")),
+                                .child(format!("{}{source}", t(SftpViewMsg::SourcePrefix))),
                         )
                         .child(
                             div()
                                 .flex_1()
                                 .truncate()
                                 .typo(Role::Caption, tokens)
-                                .child(format!("目标 {target}")),
+                                .child(format!("{}{target}", t(SftpViewMsg::TargetPrefix))),
                         ),
                 )
                 .child(
@@ -1267,39 +1465,39 @@ impl SftpDemo {
                         )
                         .child(action(
                             "sftp-conflict-overwrite",
-                            "覆盖",
+                            t(SftpViewMsg::Overwrite),
                             ConflictAction::Overwrite,
                             false,
                         ))
                         .child(action(
                             "sftp-conflict-skip",
-                            "跳过",
+                            t(SftpViewMsg::Skip),
                             ConflictAction::Skip,
                             false,
                         ))
                         .when(can_resume_here, |row| {
                             row.child(action(
                                 "sftp-conflict-resume",
-                                "续传",
+                                t(SftpViewMsg::Resume),
                                 ConflictAction::Resume,
                                 false,
                             ))
                         })
                         .child(action(
                             "sftp-conflict-rename",
-                            "重命名",
+                            t(SftpViewMsg::Rename),
                             ConflictAction::Rename,
                             false,
                         ))
                         .child(action(
                             "sftp-conflict-overwrite-all",
-                            "全部覆盖",
+                            t(SftpViewMsg::OverwriteAll),
                             ConflictAction::Overwrite,
                             true,
                         ))
                         .child(action(
                             "sftp-conflict-skip-all",
-                            "全部跳过",
+                            t(SftpViewMsg::SkipAll),
                             ConflictAction::Skip,
                             true,
                         )),
@@ -1333,7 +1531,7 @@ impl SftpDemo {
             .cursor_pointer()
             .hover(move |style| style.bg(hover))
             .child(Icon::new(Ico::FolderTree).size_3p5())
-            .child("传输队列")
+            .child(t(SftpViewMsg::QueueTitle))
             .children(summary.as_ref().map(|(count, _, text)| {
                 div()
                     .px_1p5()
@@ -1344,14 +1542,18 @@ impl SftpDemo {
                     .child(if dock {
                         text.clone()
                     } else {
-                        format!("{count} 个进行中")
+                        format!("{count}{}", t(SftpViewMsg::ActiveSuffix))
                     })
             }))
             .child(div().flex_1())
             .child(div().typo(Role::Caption, tokens).child(if self.queue_open {
-                "收起".to_owned()
+                t(SftpViewMsg::Collapse).to_owned()
             } else {
-                format!("共 {total} 个任务")
+                format!(
+                    "{}{total}{}",
+                    t(SftpViewMsg::QueueTotalPrefix),
+                    t(SftpViewMsg::QueueTotalSuffix)
+                )
             }))
             .on_click(move |_, _, cx| {
                 toggle_entity.update(cx, |this, cx| {
@@ -1381,7 +1583,7 @@ impl SftpDemo {
                         .typo(Role::Body, tokens)
                         .text_color(tokens.text_muted)
                         .child(
-                            "还没有传输任务。右键选“上传到远端 / 下载到本地”，或者把文件拖进来。",
+                            t(SftpViewMsg::QueueEmpty),
                         )
                         .into_any_element()
                 } else {
@@ -1408,7 +1610,7 @@ impl SftpDemo {
                                         .ghost()
                                         .compact()
                                         .icon(Icon::new(Ico::ListRestart))
-                                        .label("清除已完成")
+                                        .label(t(SftpViewMsg::ClearFinished))
                                         .on_click(move |_, _, cx| {
                                             clear_entity
                                                 .update(cx, |this, cx| this.clear_finished(cx));
@@ -1473,14 +1675,14 @@ impl SftpDemo {
         if super::menu::transfer_can_pause(&state) {
             let e = entity.clone();
             buttons = buttons.child(
-                button("xfer-pause", Icon::new(IconName::Pause), "暂停")
+                button("xfer-pause", Icon::new(IconName::Pause), t(SftpViewMsg::Pause))
                     .on_click(move |_, _, cx| e.update(cx, |this, cx| this.pause_transfer(id, cx))),
             );
         }
         if state == TransferState::Paused {
             let e = entity.clone();
             buttons = buttons.child(
-                button("xfer-resume", Icon::new(IconName::Play), "继续").on_click(
+                button("xfer-resume", Icon::new(IconName::Play), t(SftpViewMsg::ResumeTransfer)).on_click(
                     move |_, _, cx| e.update(cx, |this, cx| this.resume_transfer(id, cx)),
                 ),
             );
@@ -1488,14 +1690,14 @@ impl SftpDemo {
         if super::menu::transfer_can_retry(&state) {
             let e = entity.clone();
             buttons = buttons.child(
-                button("xfer-retry", Icon::new(Ico::RotateCcw), "重试")
+                button("xfer-retry", Icon::new(Ico::RotateCcw), t(SftpViewMsg::Retry))
                     .on_click(move |_, _, cx| e.update(cx, |this, cx| this.retry_transfer(id, cx))),
             );
         }
         if live {
             let e = entity.clone();
             buttons = buttons.child(
-                button("xfer-cancel", Icon::new(IconName::Close), "取消").on_click(
+                button("xfer-cancel", Icon::new(IconName::Close), t(SftpViewMsg::CancelTransfer)).on_click(
                     move |_, _, cx| e.update(cx, |this, cx| this.cancel_transfer(id, cx)),
                 ),
             );
@@ -1507,7 +1709,7 @@ impl SftpDemo {
         };
         let state_text = match &state {
             // 失败原因另起一行完整显示，状态列只写“失败”。
-            TransferState::Failed(_) => "失败".to_owned(),
+            TransferState::Failed(_) => t(SftpViewMsg::Failed).to_owned(),
             other => state_label(other),
         };
         let facts = row.facts();

@@ -12,10 +12,11 @@ use zssh_core::sftp::path::{join, normalize};
 
 use super::engine::resolve_local_path;
 use super::local_listing::{LocalReply, LocalRequest, ScanError, accepts, request_listing};
-use super::menu::{NOT_UTF8_REASON, Side};
+use super::menu::{not_utf8_reason, Side};
 use super::model::{Entry, NavMode, SortKey, local_parent, remote_parent};
 use super::pane::PathEdit;
-use super::{SftpDemo, SftpEvent};
+use super::{SftpDemo, SftpEvent, SftpMsg};
+use crate::i18n::t;
 use crate::ssh_backend::runtime;
 
 impl SftpDemo {
@@ -40,8 +41,11 @@ impl SftpDemo {
             self.remote.scroll_to(0);
         }
         let text = match notice {
-            Some(notice) => format!("{notice} · {count} 项"),
-            None => format!("{count} 项"),
+            Some(notice) => format!(
+                "{notice} · {count}{}",
+                t(SftpMsg::ItemCountSuffix)
+            ),
+            None => format!("{count}{}", t(SftpMsg::ItemCountSuffix)),
         };
         self.say(text);
     }
@@ -80,18 +84,18 @@ impl SftpDemo {
             return;
         }
         let Some(channel) = self.channel.clone() else {
-            self.warn("还没连上，稍等一下");
+            self.warn(t(SftpMsg::NotConnectedYet));
             cx.notify();
             return;
         };
         let trimmed = path.trim();
         if trimmed.is_empty() {
-            self.warn("路径是空的");
+            self.warn(t(SftpMsg::NavPathEmptyWait));
             cx.notify();
             return;
         }
         let target = normalize(&join(&self.remote.path, trimmed));
-        self.say(format!("正在读取 {target}"));
+        self.say(format!("{}{target}", t(SftpMsg::NavReadingPrefix)));
         self.remote.loading = true;
         // 每次读取取一个新序号：之前还没回来的读取从这一刻起作废。
         let seq = self.listing.next();
@@ -141,9 +145,9 @@ impl SftpDemo {
             simplify_verbatim(PathBuf::from(path)).display().to_string()
         };
         self.say(if target.is_empty() {
-            "正在读取 此电脑".to_owned()
+            t(SftpMsg::NavReadingThisComputer).to_owned()
         } else {
-            format!("正在读取 {target}")
+            format!("{}{target}", t(SftpMsg::NavReadingPrefix))
         });
         self.local.loading = true;
         let request = LocalRequest::Dir(target);
@@ -165,7 +169,7 @@ impl SftpDemo {
             true,
         ) {
             self.local.loading = false;
-            self.warn(format!("本地：{message}"));
+            self.warn(format!("{}{message}", t(SftpMsg::NavLocalPrefix)));
         }
     }
 
@@ -221,8 +225,15 @@ impl SftpDemo {
                     self.local.scroll_to(0);
                 }
                 match notice {
-                    Some(notice) => self.say(format!("{notice} · {count} 项")),
-                    None => self.say(format!("本地 {count} 项")),
+                    Some(notice) => self.say(format!(
+                        "{notice} · {count}{}",
+                        t(SftpMsg::ItemCountSuffix)
+                    )),
+                    None => self.say(format!(
+                        "{}{count}{}",
+                        t(SftpMsg::NavLocalCountPrefix),
+                        t(SftpMsg::ItemCountSuffix)
+                    )),
                 }
             }
             Err(error) => {
@@ -235,8 +246,14 @@ impl SftpDemo {
                     self.local.path = target.clone();
                 }
                 match error {
-                    ScanError::NotDir => self.warn(format!("不是目录：{target}")),
-                    ScanError::Failed(err) => self.warn(format!("读取本地目录失败：{err}")),
+                    ScanError::NotDir => self.warn(format!(
+                        "{}{target}",
+                        t(SftpMsg::NavNotADirectoryPrefix)
+                    )),
+                    ScanError::Failed(err) => self.warn(format!(
+                        "{}{err}",
+                        t(SftpMsg::NavLocalReadFailedPrefix)
+                    )),
                 }
             }
         }
@@ -311,7 +328,7 @@ impl SftpDemo {
                         self.navigate(side, &dir.display().to_string(), NavMode::Visit, cx)
                     }
                     None => {
-                        self.warn("本地路径是空的");
+                        self.warn(t(SftpMsg::NavLocalPathEmpty));
                         cx.notify();
                     }
                 }
@@ -354,7 +371,7 @@ impl SftpDemo {
             return;
         }
         let current = self.pane(side).path.clone();
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("路径"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::NavPathPlaceholder)));
         input.update(cx, |state, cx| state.set_value(current, window, cx));
         let subscriptions = vec![
             cx.observe(&input, |_this, _input, cx| cx.notify()),
@@ -521,7 +538,7 @@ impl SftpDemo {
         cx: &mut Context<Self>,
     ) {
         if !entry.name_is_utf8 {
-            self.warn(NOT_UTF8_REASON);
+            self.warn(not_utf8_reason());
             return;
         }
         // 目录直接进；符号链接看它指向的类型（断链不动）。
@@ -543,7 +560,7 @@ impl SftpDemo {
                     self.warn(err);
                 }
             }
-            Side::Local => self.warn("本地文件的内置编辑器还没接入"),
+            Side::Local => self.warn(t(SftpMsg::NavLocalEditorNotReady)),
         }
     }
 

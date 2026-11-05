@@ -8,6 +8,7 @@ use zssh_core::sftp::archive::{ArchiveCaps, ArchiveFormat, extract_folder_name};
 use zssh_core::sftp::transfer::TransferState;
 
 use super::model::{Entry, EntryKind, TargetKind};
+use crate::i18n::t;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Side {
@@ -83,9 +84,10 @@ impl MenuAction {
 /// 子菜单行的图标（按名字，子菜单只有「新建」和「压缩为」两个）。
 pub(super) fn submenu_icon(label: &str) -> gpui_kit::component::Icon {
     use crate::icons::Ico;
-    match label {
-        "压缩为" => Ico::FileArchive.into(),
-        _ => gpui_kit::component::IconName::Plus.into(),
+    if label == t(super::SftpMsg::MenuCompressAs) {
+        Ico::FileArchive.into()
+    } else {
+        gpui_kit::component::IconName::Plus.into()
     }
 }
 
@@ -140,9 +142,15 @@ pub(super) enum ArchiveMenuState {
     Ready(ArchiveCaps),
 }
 
-pub(super) const ARCHIVE_PENDING_REASON: &str = "正在检测服务器上的压缩工具…";
-pub(super) const NOT_UTF8_REASON: &str = "文件名编码不是 UTF-8，暂不支持操作";
-const FEATURE_PENDING: &str = "这个功能还在做";
+pub(super) fn archive_pending_reason() -> &'static str {
+    t(super::SftpMsg::MenuArchivePending)
+}
+pub(super) fn not_utf8_reason() -> &'static str {
+    t(super::SftpMsg::MenuNotUtf8)
+}
+fn feature_pending() -> &'static str {
+    t(super::SftpMsg::MenuFeaturePending)
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct MenuContext {
@@ -197,16 +205,16 @@ enum Need {
 /// 为什么不能对这些条目做某类操作；`None` = 可以。
 fn selection_reason(entries: &[Entry], need: Need, forbid_drives: bool) -> Option<String> {
     if entries.is_empty() {
-        return Some("先选中一个条目".to_owned());
+        return Some(t(super::SftpMsg::MenuSelectOne).to_owned());
     }
     if need == Need::One && entries.len() != 1 {
-        return Some("只能对单个条目操作".to_owned());
+        return Some(t(super::SftpMsg::MenuSingleOnly).to_owned());
     }
     if entries.iter().any(|e| !e.name_is_utf8) {
-        return Some(NOT_UTF8_REASON.to_owned());
+        return Some(not_utf8_reason().to_owned());
     }
     if forbid_drives && entries.iter().any(Entry::is_drive) {
-        return Some("盘符不能这样操作".to_owned());
+        return Some(t(super::SftpMsg::MenuDriveNotAllowed).to_owned());
     }
     None
 }
@@ -214,29 +222,31 @@ fn selection_reason(entries: &[Entry], need: Need, forbid_drives: bool) -> Optio
 /// 编辑类动作（内置编辑器）为什么不可用；`None` = 可以。
 fn edit_reason(entries: &[Entry]) -> Option<String> {
     if entries.is_empty() {
-        return Some("先选中一个文件".to_owned());
+        return Some(t(super::SftpMsg::MenuSelectFile).to_owned());
     }
     if entries.len() != 1 {
-        return Some("编辑只能对单个文件".to_owned());
+        return Some(t(super::SftpMsg::MenuEditSingle).to_owned());
     }
     let entry = &entries[0];
     if !entry.name_is_utf8 {
-        return Some(NOT_UTF8_REASON.to_owned());
+        return Some(not_utf8_reason().to_owned());
     }
     if entry.is_enterable() || entry.target_kind == Some(TargetKind::Dir) {
         return Some(if entry.is_drive() {
-            "盘符不能编辑".to_owned()
+            t(super::SftpMsg::MenuDriveEdit).to_owned()
         } else {
-            "文件夹不能用编辑器打开".to_owned()
+            t(super::SftpMsg::MenuFolderEdit).to_owned()
         });
     }
     if entry.kind == EntryKind::Other {
-        return Some("这种特殊文件不能编辑".to_owned());
+        return Some(t(super::SftpMsg::MenuSpecialEdit).to_owned());
     }
     if entry.size.is_some_and(|size| size > EDIT_MAX_BYTES) {
         return Some(format!(
-            "文件超过 {} MB，请下载后再看",
-            EDIT_MAX_BYTES / 1024 / 1024
+            "{}{}{}",
+            t(super::SftpMsg::MenuFileTooBigPrefix),
+            EDIT_MAX_BYTES / 1024 / 1024,
+            t(super::SftpMsg::MenuFileTooBigSuffix)
         ));
     }
     None
@@ -245,11 +255,13 @@ fn edit_reason(entries: &[Entry]) -> Option<String> {
 /// 粘贴为什么不可用；`None` = 可以。
 pub(super) fn paste_reason(context: &MenuContext) -> Option<String> {
     if !context.features.clipboard {
-        return Some(FEATURE_PENDING.to_owned());
+        return Some(feature_pending().to_owned());
     }
     match context.clipboard {
-        None | Some((_, 0)) => Some("剪贴板是空的".to_owned()),
-        Some((side, _)) if side != context.side => Some("远端和本地之间请用上传 / 下载".to_owned()),
+        None | Some((_, 0)) => Some(t(super::SftpMsg::MenuClipboardEmpty).to_owned()),
+        Some((side, _)) if side != context.side => {
+            Some(t(super::SftpMsg::MenuCrossSidePaste).to_owned())
+        }
         _ if context.current_dir.is_empty() => Some(dir_missing(context.side)),
         _ => None,
     }
@@ -257,8 +269,8 @@ pub(super) fn paste_reason(context: &MenuContext) -> Option<String> {
 
 fn dir_missing(side: Side) -> String {
     match side {
-        Side::Local => "先进入一个文件夹",
-        Side::Remote => "先进入一个目录",
+        Side::Local => t(super::SftpMsg::MenuEnterFolder),
+        Side::Remote => t(super::SftpMsg::MenuEnterDir),
     }
     .to_owned()
 }
@@ -274,18 +286,18 @@ fn dir_reason(context: &MenuContext) -> Option<String> {
 /// 解压这种格式服务器上要有什么命令；缺了返回原因。
 pub(super) fn extract_tool_reason(format: ArchiveFormat, caps: &ArchiveCaps) -> Option<String> {
     if format.is_zip() {
-        (!caps.unzip).then(|| "服务器上没有 unzip 命令".to_owned())
+        (!caps.unzip).then(|| t(super::SftpMsg::MenuNoUnzip).to_owned())
     } else {
-        (!caps.tar).then(|| "服务器上没有 tar 命令".to_owned())
+        (!caps.tar).then(|| t(super::SftpMsg::MenuNoTar).to_owned())
     }
 }
 
 /// 压缩成这种格式服务器上要有什么命令。
 pub(super) fn compress_tool_reason(zip: bool, caps: &ArchiveCaps) -> Option<String> {
     if zip {
-        (!caps.zip).then(|| "服务器上没有 zip 命令".to_owned())
+        (!caps.zip).then(|| t(super::SftpMsg::MenuNoZip).to_owned())
     } else {
-        (!caps.tar).then(|| "服务器上没有 tar 命令".to_owned())
+        (!caps.tar).then(|| t(super::SftpMsg::MenuNoTar).to_owned())
     }
 }
 
@@ -306,7 +318,7 @@ fn archive_nodes(context: &MenuContext) -> Vec<MenuNode> {
         ArchiveMenuState::Ready(caps) if !caps.posix => return Vec::new(),
         ArchiveMenuState::Ready(caps) => Some(caps),
     };
-    let pending = || Some(ARCHIVE_PENDING_REASON.to_owned());
+    let pending = || Some(archive_pending_reason().to_owned());
     let mut nodes = Vec::new();
 
     if context.entries.len() == 1 && is_extractable(&context.entries[0]) {
@@ -319,14 +331,18 @@ fn archive_nodes(context: &MenuContext) -> Vec<MenuNode> {
             if let Some(folder) = extract_folder_name(name) {
                 nodes.push(item(
                     MenuAction::ExtractFolder,
-                    &format!("解压到「{folder}」"),
+                    &format!(
+                        "{}{folder}{}",
+                        t(super::SftpMsg::MenuExtractToPrefix),
+                        t(super::SftpMsg::MenuExtractToSuffix)
+                    ),
                     reason.clone(),
                     None,
                 ));
             }
             nodes.push(item(
                 MenuAction::ExtractHere,
-                "解压到当前目录",
+                t(super::SftpMsg::MenuExtractHere),
                 reason,
                 None,
             ));
@@ -335,7 +351,7 @@ fn archive_nodes(context: &MenuContext) -> Vec<MenuNode> {
 
     let selection = selection_reason(&context.entries, Need::Some, true);
     let submenu_reason =
-        selection.or_else(|| caps.is_none().then(|| ARCHIVE_PENDING_REASON.to_owned()));
+        selection.or_else(|| caps.is_none().then(|| archive_pending_reason().to_owned()));
     let child = |action, label: &str, zip: bool| {
         let reason = match &caps {
             Some(caps) => compress_tool_reason(zip, caps),
@@ -344,7 +360,7 @@ fn archive_nodes(context: &MenuContext) -> Vec<MenuNode> {
         item(action, label, reason, None)
     };
     nodes.push(MenuNode::Submenu {
-        label: "压缩为",
+        label: t(super::SftpMsg::MenuCompressAs),
         reason: submenu_reason.clone(),
         children: vec![
             child(MenuAction::CompressTarGz, ".tar.gz", false),
@@ -361,25 +377,40 @@ pub(super) fn build_menu(context: &MenuContext) -> Vec<MenuNode> {
     let new_dir_reason = dir_reason(context);
 
     let new_menu = MenuNode::Submenu {
-        label: "新建",
+        label: t(super::SftpMsg::MenuNew),
         reason: new_dir_reason.clone(),
         children: vec![
-            item(MenuAction::Mkdir, "文件夹", new_dir_reason.clone(), None),
-            item(MenuAction::Create, "文件", new_dir_reason.clone(), None),
+            item(
+                MenuAction::Mkdir,
+                t(super::SftpMsg::MenuFolder),
+                new_dir_reason.clone(),
+                None,
+            ),
+            item(
+                MenuAction::Create,
+                t(super::SftpMsg::MenuFile),
+                new_dir_reason.clone(),
+                None,
+            ),
         ],
     };
     let paste = item(
         MenuAction::Paste,
-        "粘贴",
+        t(super::SftpMsg::MenuPaste),
         paste_reason(context),
         Some("Ctrl+V"),
     );
-    let refresh = item(MenuAction::Refresh, "刷新", None, Some("F5"));
+    let refresh = item(
+        MenuAction::Refresh,
+        t(super::SftpMsg::MenuRefresh),
+        None,
+        Some("F5"),
+    );
     let properties = item(
         MenuAction::Properties,
-        "属性",
+        t(super::SftpMsg::MenuProperties),
         if !context.features.properties {
-            Some(FEATURE_PENDING.to_owned())
+            Some(feature_pending().to_owned())
         } else if context.blank {
             new_dir_reason.clone()
         } else {
@@ -402,13 +433,13 @@ pub(super) fn build_menu(context: &MenuContext) -> Vec<MenuNode> {
     let builtin = if context.features.builtin_editor {
         edit_reason(entries)
     } else {
-        Some(FEATURE_PENDING.to_owned())
+        Some(feature_pending().to_owned())
     };
     let transfer_reason = selection_reason(entries, Need::Some, true);
     let copy_reason = if context.features.clipboard {
         selection_reason(entries, Need::Some, true)
     } else {
-        Some(FEATURE_PENDING.to_owned())
+        Some(feature_pending().to_owned())
     };
     let open_reason = selection_reason(entries, Need::One, false);
 
@@ -416,9 +447,19 @@ pub(super) fn build_menu(context: &MenuContext) -> Vec<MenuNode> {
     // 选中的全是可进入的目录（含指向目录的链接、本地盘符）→ 「打开」；其它情况 → 「编辑」。
     let all_enterable = !entries.is_empty() && entries.iter().all(Entry::is_enterable);
     let open_or_edit = if all_enterable {
-        item(MenuAction::Open, "打开", open_reason, None)
+        item(
+            MenuAction::Open,
+            t(super::SftpMsg::MenuOpen),
+            open_reason,
+            None,
+        )
     } else {
-        item(MenuAction::EditBuiltin, "用内置编辑器编辑", builtin, None)
+        item(
+            MenuAction::EditBuiltin,
+            t(super::SftpMsg::MenuEditBuiltin),
+            builtin,
+            None,
+        )
     };
 
     let mut nodes = vec![
@@ -427,9 +468,9 @@ pub(super) fn build_menu(context: &MenuContext) -> Vec<MenuNode> {
         item(
             MenuAction::Transfer,
             if is_remote {
-                "下载到本地"
+                t(super::SftpMsg::MenuDownloadToLocal)
             } else {
-                "上传到远端"
+                t(super::SftpMsg::MenuUploadToRemote)
             },
             transfer_reason.clone(),
             None,
@@ -438,7 +479,7 @@ pub(super) fn build_menu(context: &MenuContext) -> Vec<MenuNode> {
     if is_remote {
         nodes.push(item(
             MenuAction::DownloadTo,
-            "下载到…",
+            t(super::SftpMsg::MenuDownloadTo),
             transfer_reason,
             None,
         ));
@@ -447,30 +488,37 @@ pub(super) fn build_menu(context: &MenuContext) -> Vec<MenuNode> {
     nodes.extend(archive_nodes(context));
     nodes.push(MenuNode::Separator);
     nodes.extend([
-        item(MenuAction::Copy, "复制", copy_reason, Some("Ctrl+C")),
+        item(
+            MenuAction::Copy,
+            t(super::SftpMsg::MenuCopy),
+            copy_reason,
+            Some("Ctrl+C"),
+        ),
         paste,
         item(
             MenuAction::CopyPath,
-            "复制路径",
-            entries.is_empty().then(|| "先选中一个条目".to_owned()),
+            t(super::SftpMsg::MenuCopyPath),
+            entries
+                .is_empty()
+                .then(|| t(super::SftpMsg::MenuSelectOne).to_owned()),
             None,
         ),
         MenuNode::Separator,
         item(
             MenuAction::Rename,
-            "重命名",
+            t(super::SftpMsg::MenuRename),
             selection_reason(entries, Need::One, true),
             Some("F2"),
         ),
         item(
             MenuAction::MoveTo,
-            "移动到…",
+            t(super::SftpMsg::MenuMoveTo),
             selection_reason(entries, Need::Some, true),
             None,
         ),
         item(
             MenuAction::Delete,
-            "删除",
+            t(super::SftpMsg::MenuDelete),
             selection_reason(entries, Need::Some, true),
             Some("Del"),
         ),
@@ -480,7 +528,7 @@ pub(super) fn build_menu(context: &MenuContext) -> Vec<MenuNode> {
     if is_remote {
         nodes.push(item(
             MenuAction::Permissions,
-            "修改权限",
+            t(super::SftpMsg::MenuPermissions),
             selection_reason(entries, Need::One, false),
             None,
         ));
@@ -522,16 +570,22 @@ pub(super) fn build_transfer_menu(state: &TransferState) -> Vec<MenuNode> {
     let mut nodes = Vec::new();
     let mut add = |action, label: &str| nodes.push(item(action, label, None, None));
     if transfer_can_retry(state) {
-        add(MenuAction::TransferRetry, "重试");
+        add(MenuAction::TransferRetry, t(super::SftpMsg::MenuTransferRetry));
     }
     if transfer_can_pause(state) {
-        add(MenuAction::TransferPause, "暂停");
+        add(MenuAction::TransferPause, t(super::SftpMsg::MenuTransferPause));
     }
     if *state == TransferState::Paused {
-        add(MenuAction::TransferResume, "继续");
+        add(
+            MenuAction::TransferResume,
+            t(super::SftpMsg::MenuTransferResume),
+        );
     }
     if transfer_is_live(state) {
-        add(MenuAction::TransferCancel, "取消");
+        add(
+            MenuAction::TransferCancel,
+            t(super::SftpMsg::MenuTransferCancel),
+        );
     }
     nodes
 }
@@ -543,8 +597,8 @@ mod tests {
 
     use super::super::model::{Entry, EntryKind, TargetKind};
     use super::{
-        ARCHIVE_PENDING_REASON, ArchiveMenuState, EDIT_MAX_BYTES, MenuAction, MenuContext,
-        MenuFeatures, MenuNode, NOT_UTF8_REASON, Side, build_menu, build_transfer_menu,
+        archive_pending_reason, ArchiveMenuState, EDIT_MAX_BYTES, MenuAction, MenuContext,
+        MenuFeatures, MenuNode, not_utf8_reason, Side, build_menu, build_transfer_menu,
         paste_reason, tidy_separators,
     };
 
@@ -816,7 +870,7 @@ mod tests {
         let nodes = build_menu(&context(Side::Remote, false, vec![bad]));
         assert_eq!(
             reason(&nodes, MenuAction::MoveTo).as_deref(),
-            Some(NOT_UTF8_REASON)
+            Some(not_utf8_reason())
         );
         // 空白处的菜单没有「移动到」。
         let nodes = build_menu(&context(Side::Remote, true, vec![]));
@@ -903,7 +957,7 @@ mod tests {
         ] {
             assert_eq!(
                 reason(&nodes, action).as_deref(),
-                Some(NOT_UTF8_REASON),
+                Some(not_utf8_reason()),
                 "{action:?}"
             );
         }
@@ -996,7 +1050,7 @@ mod tests {
         ] {
             assert_eq!(
                 reason(&nodes, action).as_deref(),
-                Some(ARCHIVE_PENDING_REASON),
+                Some(archive_pending_reason()),
                 "{action:?}"
             );
         }

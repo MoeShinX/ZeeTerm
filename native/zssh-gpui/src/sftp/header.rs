@@ -3,9 +3,11 @@
 //! 只放不依赖界面的规则（有单测）；怎么画在 `view.rs`，字号字重走 `typography::Role`。
 
 use crate::app_theme::Tokens;
+use crate::i18n::t;
 use gpui_kit::Hsla;
 
 use super::Phase;
+use super::SftpMsg;
 
 /// 主机的显示名：有名字用名字，名字是空的才退到地址，都没有就用编号。
 /// 名字和地址两头的空白不算（用户可能留着空格）。
@@ -18,15 +20,15 @@ pub(super) fn display_name(name: &str, address: &str, host_id: i64) -> String {
     if !address.is_empty() {
         return address.to_owned();
     }
-    format!("主机 #{host_id}")
+    format!("{}{host_id}", t(SftpMsg::HostFallback))
 }
 
 /// 状态小点旁边的字。
 pub(super) fn phase_label(phase: Phase) -> &'static str {
     match phase {
-        Phase::Connecting => "连接中…",
-        Phase::Ready => "已连接",
-        Phase::Failed => "连接失败",
+        Phase::Connecting => t(SftpMsg::PhaseConnecting),
+        Phase::Ready => t(SftpMsg::PhaseReady),
+        Phase::Failed => t(SftpMsg::PhaseFailed),
     }
 }
 

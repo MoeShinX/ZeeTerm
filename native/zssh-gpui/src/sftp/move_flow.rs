@@ -21,7 +21,8 @@ use super::move_to::{
     Choice, DestCheck, MoveJob, Next, StepResult, check_destination, local_folders, local_step,
     remote_folders, remote_step, same_path, target_path, transfer_blocks,
 };
-use super::{SftpDemo, SftpEvent};
+use super::{SftpDemo, SftpEvent, SftpMsg};
+use crate::i18n::t;
 use crate::remote_editor::open_files;
 use crate::ssh_backend::runtime;
 
@@ -43,28 +44,28 @@ impl SftpDemo {
             .collect();
         if operable.is_empty() {
             self.warn(if entries.is_empty() {
-                "先选中要移动的条目"
+                t(SftpMsg::MoveSelectItems)
             } else {
-                super::menu::NOT_UTF8_REASON
+                super::menu::not_utf8_reason()
             });
             return;
         }
         if self.moving.is_some() {
-            self.warn("正在移动，等它结束再移动下一批");
+            self.warn(t(SftpMsg::MoveBusy));
             return;
         }
         let start = self.pane(side).path.clone();
         if start.is_empty() {
             self.warn(match side {
-                Side::Local => "先进入一个文件夹",
-                Side::Remote => "先进入一个目录",
+                Side::Local => t(SftpMsg::MenuEnterFolder),
+                Side::Remote => t(SftpMsg::MenuEnterDir),
             });
             return;
         }
         if operable.len() < entries.len() {
-            self.warn("名字不是 UTF-8 的条目已跳过");
+            self.warn(t(SftpMsg::OpsSkippedNonUtf8));
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("目标文件夹的完整路径"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::MoveTargetPlaceholder)));
         input.update(cx, |state, cx| state.set_value(start.clone(), window, cx));
         let subscriptions = vec![
             cx.observe(&input, |_this, _input, cx| cx.notify()),
@@ -161,7 +162,7 @@ impl SftpDemo {
                         },
                     )
                     .map(|seq| request = seq)
-                    .map_err(|_| "本地目录读取排队太多，稍后再试".to_owned())
+                    .map_err(|_| t(SftpMsg::LocalReadQueueFull).to_owned())
             }
         };
         if let Some(Dialog::MoveTo(d)) = &mut self.dialog {
@@ -214,9 +215,15 @@ impl SftpDemo {
             }
             Err(err) => {
                 d.browse.pending_select = None;
-                d.browse.error = Some(format!("读不了这个文件夹：{err}"));
+                d.browse.error = Some(format!(
+                    "{}{err}",
+                    t(SftpMsg::MoveBrowseFailedPrefix)
+                ));
                 if was_confirming {
-                    d.error = Some(format!("目标文件夹用不了：{err}"));
+                    d.error = Some(format!(
+                    "{}{err}",
+                    t(SftpMsg::MoveDestUnavailablePrefix)
+                ));
                 }
             }
         }
@@ -332,7 +339,7 @@ impl SftpDemo {
         if d.browse.dir.is_empty() {
             return;
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("新文件夹的名字"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t(SftpMsg::MoveNewFolderPlaceholder)));
         input.update(cx, |state, cx| state.focus(window, cx));
         d.new_folder = Some(input.clone());
         d.new_folder_error = None;
@@ -495,12 +502,18 @@ impl SftpDemo {
             && let Some(open) = open_files::open_at_or_under(self.host_id, &entry.path)
         {
             return Some(if same_path(side, &open, &entry.path) {
-                format!("{} 正在编辑，先保存并关闭再移动", entry.name)
+                format!(
+                    "{}{}",
+                    entry.name,
+                    t(SftpMsg::MoveBlockedEditingSuffix)
+                )
             } else {
                 format!(
-                    "{} 里的 {} 正在编辑，先保存并关闭再移动",
+                    "{}{}{}{}",
                     entry.name,
-                    file_name(&open)
+                    t(SftpMsg::MoveEditingInsideMiddle),
+                    file_name(&open),
+                    t(SftpMsg::MoveBlockedEditingSuffix)
                 )
             });
         }
@@ -510,7 +523,13 @@ impl SftpDemo {
                 !row.state.is_terminal()
                     && transfer_blocks(side, &entry.path, row.direction, &row.source, &row.target)
             })
-            .then(|| format!("{} 正在传输，等传输结束再移动", entry.name))
+            .then(|| {
+                format!(
+                    "{}{}",
+                    entry.name,
+                    t(SftpMsg::MoveTransferringSuffix)
+                )
+            })
     }
 
     /// 把任务取出来问状态机“下一步”，再执行它说的。
@@ -549,7 +568,12 @@ impl SftpDemo {
             } => {
                 let side = job.side;
                 self.moving = Some(job);
-                self.say(format!("正在移动 {}…", entry.name));
+                self.say(format!(
+                    "{}{}{}",
+                    t(SftpMsg::MoveInProgressPrefix),
+                    entry.name,
+                    t(SftpMsg::OpsEllipsis)
+                ));
                 if let Err(err) =
                     self.spawn_move_step(side, id, entry.path.clone(), target, overwrite)
                 {
@@ -559,7 +583,11 @@ impl SftpDemo {
             }
             Next::Ask(ask) => {
                 self.moving = Some(job);
-                self.say(format!("{} 在目标里已有同名项，等你选择", ask.name));
+                self.say(format!(
+                    "{}{}",
+                    ask.name,
+                    t(SftpMsg::MoveWaitingChoiceSuffix)
+                ));
                 self.dialog = Some(Dialog::MoveConflict(MoveConflict {
                     ask,
                     apply_rest: false,
