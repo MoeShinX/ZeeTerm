@@ -145,6 +145,71 @@ pub fn verify_plan_file(plan: &InstallPlan) -> Result<(), InstallError> {
     check_file_hash(&plan.program, &plan.sha256)
 }
 
+/// 已经复验过、并且**持有打开句柄**的安装包。
+///
+/// 打开时只共享读（Windows 上不给 `FILE_SHARE_WRITE | FILE_SHARE_DELETE`），所以这个值
+/// 活着的时候，同用户的其它进程改不了、删不掉这个文件；等到 `ShellExecuteW` 启动完再 drop，
+/// "复验 → 启动"之间被替换的窗口就不存在了（审查 M-18）。
+#[derive(Debug)]
+pub struct HeldInstaller {
+    /// 安装器的绝对路径（启动时用）。
+    pub path: PathBuf,
+    /// 保持打开；drop 时关闭句柄，其他进程才能改 / 删这个文件。
+    _file: std::fs::File,
+}
+
+/// 打开安装包并复验 SHA-256，返回持有句柄的安装包。
+///
+/// 调用方必须让返回值活到安装器启动完成（`ShellExecuteW` 返回）之后再 drop。
+pub fn open_and_verify(plan: &InstallPlan) -> Result<HeldInstaller, InstallError> {
+    let mut file =
+        open_read_share(&plan.program).map_err(|err| InstallError::Unreadable(err.to_string()))?;
+    let actual = sha256_of(&mut file).map_err(|err| InstallError::Unreadable(err.to_string()))?;
+    if !actual.eq_ignore_ascii_case(plan.sha256.trim()) {
+        return Err(InstallError::HashMismatch);
+    }
+    Ok(HeldInstaller {
+        path: plan.program.clone(),
+        _file: file,
+    })
+}
+
+/// 从已打开的句柄从头算 SHA-256（不重新开文件）。
+fn sha256_of(file: &mut std::fs::File) -> std::io::Result<String> {
+    use std::io::Seek as _;
+
+    file.seek(std::io::SeekFrom::Start(0))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex(&hasher.finalize()))
+}
+
+/// 只共享读地打开：别的进程不能写、不能删。
+#[cfg(windows)]
+fn open_read_share(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    /// `FILE_SHARE_READ`：允许别的句柄读，不允许写 / 删除。
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+}
+
+/// 产品只发 Windows；非 Windows（测试环境）按普通只读打开。
+#[cfg(not(windows))]
+fn open_read_share(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
 fn check_file_hash(path: &Path, expected: &str) -> Result<(), InstallError> {
     let actual = file_sha256_hex(path).map_err(|err| InstallError::Unreadable(err.to_string()))?;
     if actual.eq_ignore_ascii_case(expected.trim()) {
@@ -316,5 +381,48 @@ mod tests {
             verify_plan_file(&plan),
             Err(InstallError::Unreadable(_))
         ));
+    }
+
+    #[test]
+    fn open_and_verify_rejects_bytes_that_changed_after_planning() {
+        let root = temp_cache("held-swapped");
+        let req = request(&root, false);
+        let plan = plan_install(&req).expect("计划应通过");
+        fs::write(&req.installer, b"swapped after verification").unwrap();
+        assert!(matches!(
+            open_and_verify(&plan),
+            Err(InstallError::HashMismatch)
+        ));
+    }
+
+    /// 审查 M-18：复验之后、启动之前，别的进程不能改也不能删这个安装包。
+    #[cfg(windows)]
+    #[test]
+    fn held_installer_cannot_be_replaced_until_dropped() {
+        let root = temp_cache("held-lock");
+        let plan = plan_install(&request(&root, false)).expect("计划应通过");
+        let held = open_and_verify(&plan).expect("内容一致应通过");
+        assert_eq!(held.path, plan.program);
+
+        // 持有期间：写打开、删除都必须失败（共享模式只给了 FILE_SHARE_READ）。
+        assert!(
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&plan.program)
+                .is_err(),
+            "持有句柄期间不应允许别人写"
+        );
+        assert!(
+            fs::remove_file(&plan.program).is_err(),
+            "持有句柄期间不应允许别人删"
+        );
+
+        drop(held);
+        // 放掉之后恢复可写、可删。
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&plan.program)
+            .expect("放掉之后应允许写");
+        fs::remove_file(&plan.program).expect("放掉之后应允许删");
     }
 }

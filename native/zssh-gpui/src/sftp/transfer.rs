@@ -20,8 +20,10 @@ use super::engine::{
     conflict_action_label, conflict_decision, direction_label, local_file_name,
     resolve_remote_child, same_scope, upload_dir_target, upload_target,
 };
+use super::local_listing::{LocalRequest, request_listing};
 use super::menu::MenuAction;
-use super::{RemoteOp, SftpDemo, TestHook, TransferRow, local_ops};
+use super::model::NavMode;
+use super::{RemoteOp, SftpDemo, SftpEvent, TestHook, TransferRow};
 use crate::ssh_backend::runtime;
 
 impl SftpDemo {
@@ -208,11 +210,30 @@ impl SftpDemo {
     }
 
     /// 下载完成后刷新本地栏，刚落地文件立刻能看见（状态栏不动）。
+    ///
+    /// 本地目录可能在慢盘 / 网络盘上，同步读目录会把界面卡住（审查 M-15）：
+    /// 交给后台线程池，读完以 `LocalListed` 事件回到界面。
     fn reload_local(&mut self) {
         let path = self.local.path.clone();
-        if let Ok(rows) = local_ops::list_dir(&path) {
-            self.local.set_listing(path, rows, true);
+        if path.is_empty() {
+            return;
         }
+        let sender = self.sender.clone();
+        let requested = path.clone();
+        let _ = request_listing(
+            &self.local_lister,
+            &self.local_gate,
+            LocalRequest::Dir(path),
+            move |reply| {
+                let _ = sender.send(SftpEvent::LocalListed {
+                    reply,
+                    requested,
+                    mode: NavMode::Refresh,
+                    notice: None,
+                    initial: false,
+                });
+            },
+        );
     }
 
     /// 任务取消 / 结束：它在面板上等回答的提问一并撤掉，引擎那边按跳过收尾。

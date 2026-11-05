@@ -71,10 +71,21 @@ Cargo.lock), all used unmodified from crates.io:
   built-in tray fallback PNG; PNG feature only) - MIT or Apache-2.0 (russh:
   Apache-2.0). The whole resolved tree of native/Cargo.lock was checked: besides
   the project's own GPL-3.0-or-later crates it is MIT, Apache-2.0, BSD-2/3-Clause,
-  ISC, Zlib, Unicode-3.0, Unlicense, CC0-1.0, 0BSD and, for the single crate
-  option-ext 0.2.0, MPL-2.0 (file-level copyleft, compatible with
-  GPL-3.0-or-later); none is incompatible with distribution under
-  GPL-3.0-or-later.
+  ISC, Zlib, NCSA, BSL-1.0, Unicode-3.0, Unlicense, CC0-1.0, 0BSD and MPL-2.0.
+  MPL-2.0 (file-level copyleft, compatible with GPL-3.0-or-later) appears in
+  three crates: option-ext 0.2.0 and dwrote 0.11.5 are runtime dependencies
+  (dwrote is part of the GPUI font stack, so it ships in the executable),
+  cbindgen 0.28.0 is build-time only; the source of those files is the published
+  crate versions above. None of the licenses in the tree is incompatible with
+  distribution under GPL-3.0-or-later.
+
+SQLite (database engine, compiled into executable)
+  https://sqlite.org/
+  The bundled SQLite amalgamation (enabled by libsqlite3-sys's "bundled"
+  feature) is in the public domain: https://sqlite.org/copyright.html .
+  The Rust wrapper crates rusqlite 0.40.2 and libsqlite3-sys 0.38.2 are MIT.
+  SQLite stores the host library, sealed credentials, settings and the AI
+  audit trail in the local database file.
 
 Tokenway preset verification (built-in assistant, crates/zssh-core/src/ai/agent/builtin/tokenway/)
   The ed25519 signature check on the downloaded preset list uses ring 0.17

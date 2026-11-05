@@ -7,6 +7,14 @@ use std::sync::Mutex;
 
 use super::*;
 
+/// 解压命令现在是"先在同一命令里复核条目，再真正解压"（见 [`validate_list_command`]）。
+fn with_recheck(format: ArchiveFormat, archive: &str, worker: &str) -> String {
+    guarded(&format!(
+        "{} && {worker}",
+        validate_list_command(format, archive)
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // 内存实现
 // ---------------------------------------------------------------------------
@@ -382,6 +390,34 @@ fn extract_commands_carry_the_right_flags_per_format() {
         ),
         "mkdir '/d/.o.zssh-part' && cd '/d/.o.zssh-part' && exec tar -xzf '/d/a.x'"
     );
+}
+
+#[test]
+fn validate_command_relists_before_extracting_without_a_predictable_temp_file() {
+    let tar = validate_list_command(ArchiveFormat::TarGz, "/d/a b.tar.gz");
+    assert!(tar.contains("mktemp"), "{tar}");
+    assert!(!tar.contains("/tmp/"), "不能退到固定临时名：{tar}");
+    assert!(tar.contains("tar -tzf '/d/a b.tar.gz'"), "{tar}");
+    assert!(tar.contains("awk"), "{tar}");
+
+    let zip = validate_list_command(ArchiveFormat::Zip, "/d/a.zip");
+    assert!(zip.contains("unzip -Z1 '/d/a.zip'"), "{zip}");
+    // zip 的条目先把反斜杠换成斜杠，再查 `..`，和 `entry_escapes_dir` 的规则一致。
+    assert!(zip.contains(r"tr '\\' '/'"), "{zip}");
+}
+
+#[test]
+fn validate_command_rejects_the_same_unsafe_paths_as_the_plan() {
+    for format in [ArchiveFormat::TarGz, ArchiveFormat::Zip] {
+        let script = validate_list_command(format, "/d/a");
+        assert!(script.contains(r"/^\//"), "要拒绝绝对路径：{script}");
+        assert!(
+            script.contains(r"(^|\/)\.\.(\/|$)"),
+            "要拒绝 .. 段：{script}"
+        );
+        // 校验失败要报明确原因、退出码非 0（extract 会按解压失败处理）。
+        assert!(script.contains("已拒绝解压"), "{script}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1154,7 +1190,11 @@ async fn overwrite_into_an_existing_folder_extracts_in_place() {
     assert_eq!((outcome.extracted, outcome.skipped), (10, 0));
     assert_eq!(
         runner.commands(),
-        [guarded("cd '/d/site' && exec tar -xzf '/d/site.tar.gz'")]
+        [with_recheck(
+            ArchiveFormat::TarGz,
+            "/d/site.tar.gz",
+            "cd '/d/site' && exec tar -xzf '/d/site.tar.gz'"
+        )]
     );
     assert!(fs.renames.lock().unwrap().is_empty(), "就地解压不改名");
 }
@@ -1175,7 +1215,9 @@ async fn skip_uses_skip_old_files_and_counts_the_planned_conflicts() {
     assert_eq!((outcome.extracted, outcome.skipped), (7, 3));
     assert_eq!(
         runner.commands(),
-        [guarded(
+        [with_recheck(
+            ArchiveFormat::TarGz,
+            "/d/site.tar.gz",
             "cd '/d/site' && exec tar --skip-old-files -xzf '/d/site.tar.gz'"
         )]
     );
@@ -1275,8 +1317,16 @@ async fn skip_for_zip_uses_unzip_n_and_overwrite_uses_unzip_o() {
     assert_eq!(
         runner.commands(),
         [
-            guarded("exec unzip -q -n '/d/pack.zip' -d '/d/pack'"),
-            guarded("exec unzip -q -o '/d/pack.zip' -d '/d/pack'")
+            with_recheck(
+                ArchiveFormat::Zip,
+                "/d/pack.zip",
+                "exec unzip -q -n '/d/pack.zip' -d '/d/pack'"
+            ),
+            with_recheck(
+                ArchiveFormat::Zip,
+                "/d/pack.zip",
+                "exec unzip -q -o '/d/pack.zip' -d '/d/pack'"
+            )
         ]
     );
 }

@@ -68,17 +68,29 @@ pub async fn probe_and_record(
     host_id: i64,
 ) -> Option<Recorded> {
     let output = probe_output(connection).await?;
-    let db = match Database::open(db_path) {
-        Ok(db) => db,
-        Err(err) => {
-            tracing::warn!(%err, "记录系统类型：打开主机库失败");
-            return None;
+    // 开库 + 写库是同步 IO：放到阻塞线程池，别占 SSH runtime 的 worker（审查 M-13）。
+    let db_path = db_path.to_path_buf();
+    let recorded = tokio::task::spawn_blocking(move || {
+        let db = match Database::open(&db_path) {
+            Ok(db) => db,
+            Err(err) => {
+                tracing::warn!(%err, "记录系统类型：打开主机库失败");
+                return None;
+            }
+        };
+        match record_output(&db, host_id, &output) {
+            Ok(outcome) => Some(outcome),
+            Err(err) => {
+                tracing::warn!(%err, "记录系统类型失败");
+                None
+            }
         }
-    };
-    match record_output(&db, host_id, &output) {
-        Ok(outcome) => Some(outcome),
+    })
+    .await;
+    match recorded {
+        Ok(outcome) => outcome,
         Err(err) => {
-            tracing::warn!(%err, "记录系统类型失败");
+            tracing::warn!(%err, "记录系统类型的线程异常结束");
             None
         }
     }

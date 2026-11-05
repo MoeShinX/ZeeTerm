@@ -1,6 +1,6 @@
-﻿[package]
+[package]
 name = "zssh-gpui"
-description = "ZeeTerm (the native GPUI app of Z-SSH) entry (prototype, no production data)"
+description = "ZeeTerm: native (GPUI) SSH client application for Windows"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

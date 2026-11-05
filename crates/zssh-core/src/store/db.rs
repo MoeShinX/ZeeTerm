@@ -96,6 +96,14 @@ impl Database {
         self.with_conn(|conn| current_version(conn))
     }
 
+    /// SQLite 的 `PRAGMA data_version`：**别的连接**提交过写操作时这个值会变。
+    ///
+    /// 主窗口拿它判断"主机库要不要重读"，不用再每隔几秒无条件跑一遍 12 条查询
+    /// （审查 M-14）。同一个连接自己的写不会让它变，所以自己的写操作还是写完直接重读。
+    pub fn data_version(&self) -> Result<i64, ZsshError> {
+        self.with_conn(|conn| Ok(conn.query_row("PRAGMA data_version", [], |row| row.get(0))?))
+    }
+
     /// 借连接用一下。锁里只做 SQLite 操作，不会 panic。
     pub(crate) fn with_conn<T>(
         &self,

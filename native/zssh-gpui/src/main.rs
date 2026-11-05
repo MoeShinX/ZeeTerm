@@ -101,8 +101,8 @@ use std::sync::Mutex;
 use terminal_demo::TerminalDemo;
 use zssh_platform_windows::single_instance::{self, InstanceGuard};
 
-const INSTANCE_NAME: &str = "Z-SSH-native-instance";
-const MAIN_WINDOW_PROP: &str = "Z-SSH-native-main";
+const INSTANCE_NAME: &str = "ZeeTerm-instance";
+const MAIN_WINDOW_PROP: &str = "ZeeTerm-main";
 
 static INSTANCE: Mutex<Option<InstanceGuard>> = Mutex::new(None);
 

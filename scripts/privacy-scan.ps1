@@ -51,8 +51,8 @@ foreach ($id in @($env:USERPROFILE, $(if ($env:USERNAME) { "\users\" + $env:USER
     $realIdentities.Add((($id.Trim() -replace '/', '\').TrimEnd('\')).ToLowerInvariant())
 }
 
-# 不公开的东西：开发过程记录、被替换的旧清单。
-$excludedPrefixes = @("docs/tasks/", "docs/reports/", "docs/M1-manual-test.md", ".claude/")
+# 不公开的东西：开发过程记录、发版产物。
+$excludedPrefixes = @("docs/internal/", "dist/", ".claude/")
 
 function Get-Needles {
     $needles = New-Object System.Collections.Generic.List[object]
@@ -147,7 +147,13 @@ function Get-FileList {
     if ($Root) {
         $base = (Resolve-Path $Root).Path
         return @(Get-ChildItem -LiteralPath $base -Recurse -File -Force | Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' } | ForEach-Object {
-            [pscustomobject]@{ Rel = $_.FullName.Substring($base.Length).TrimStart('\', '/').Replace('\', '/'); Full = $_.FullName }
+            $rel = $_.FullName.Substring($base.Length).TrimStart('\', '/').Replace('\', '/')
+            [pscustomobject]@{ Rel = $rel; Full = $_.FullName }
+        } | Where-Object {
+            $n = $_.Rel
+            $skip = $false
+            foreach ($p in $excludedPrefixes) { if ($n.StartsWith($p)) { $skip = $true; break } }
+            -not $skip
         })
     }
     Push-Location $repo

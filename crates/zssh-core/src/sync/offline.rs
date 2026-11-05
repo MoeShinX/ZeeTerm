@@ -28,6 +28,37 @@ use super::snapshot::snapshot_local_with;
 /// 导出密码最短几个字符：文件可能被拷到 U 盘、网盘，弱密码等于明文。
 pub const MIN_PASSWORD_CHARS: usize = 8;
 
+/// 读一个离线备份文件，超过同步包上限就直接拒绝。
+///
+/// 文件是用户从外面拿来的：不能先整份读进内存再判断大小（一个几 GB 的文件会先吃光
+/// 内存，紧接着 Argon2id 还要上百 MiB）。先用元数据挡一次，再用 `take` 兜住
+/// "读完之前文件又变大"的情况。
+pub fn read_offline_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+
+    let limit = super::net::MAX_PACKAGE_BYTES;
+    let meta = std::fs::metadata(path).map_err(|err| format!("读取备份文件失败：{err}"))?;
+    if !meta.is_file() {
+        return Err("选中的不是普通文件".to_owned());
+    }
+    if meta.len() > limit {
+        return Err(format!(
+            "备份文件有 {} MiB，超过上限 {} MiB，已拒绝导入",
+            meta.len() / (1024 * 1024),
+            limit / (1024 * 1024)
+        ));
+    }
+    let file = std::fs::File::open(path).map_err(|err| format!("读取备份文件失败：{err}"))?;
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| format!("读取备份文件失败：{err}"))?;
+    if bytes.len() as u64 > limit {
+        return Err("备份文件比它声明的大小还大，已拒绝导入".to_owned());
+    }
+    Ok(bytes)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OfflineImportMode {
@@ -491,5 +522,28 @@ mod tests {
             (forwards[0].host_id, forwards[0].bind_port),
             (local.id, 15432)
         );
+    }
+
+    /// 比上限大一个字节的文件：必须在读进内存之前就拒绝。
+    #[test]
+    fn oversized_backup_file_is_rejected_before_reading() {
+        let dir = crate::test_util::TestDir::new("offline-read-cap");
+        let path = dir.join("big.zsshbak");
+        // 稀疏文件：只设长度，不真占 64 MiB 磁盘。
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(super::super::net::MAX_PACKAGE_BYTES + 1)
+            .unwrap();
+        drop(file);
+
+        let err = read_offline_file(&path).expect_err("超大文件要拒绝");
+        assert!(err.contains("超过上限"), "错误要说明原因：{err}");
+    }
+
+    #[test]
+    fn normal_backup_file_is_read_back() {
+        let dir = crate::test_util::TestDir::new("offline-read-ok");
+        let path = dir.join("small.zsshbak");
+        std::fs::write(&path, b"package").unwrap();
+        assert_eq!(read_offline_file(&path).unwrap(), b"package");
     }
 }

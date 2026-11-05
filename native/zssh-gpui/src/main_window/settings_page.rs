@@ -1151,7 +1151,11 @@ impl MainWindow {
             .db()
             .and_then(|db| app_prefs::write_flag(db, app_prefs::SESSION_LOG_ENABLED_KEY, enabled));
         match result {
-            Ok(()) => self.prefs.session_log_enabled = enabled,
+            Ok(()) => {
+                self.prefs.session_log_enabled = enabled;
+                // 连接时读的是缓存的设置（不在 UI 线程开库），改完要刷新。
+                crate::app_prefs::refresh_cached(self.prefs.clone());
+            }
             Err(err) => self.notice_error(&err, window, cx),
         }
         cx.notify();
@@ -1182,7 +1186,11 @@ impl MainWindow {
             .db()
             .and_then(|db| app_prefs::write_text(db, app_prefs::SESSION_LOG_DIR_KEY, &dir));
         match result {
-            Ok(()) => self.prefs.session_log_dir = dir,
+            Ok(()) => {
+                self.prefs.session_log_dir = dir;
+                // 连接时读的是缓存的设置（不在 UI 线程开库），改完要刷新。
+                crate::app_prefs::refresh_cached(self.prefs.clone());
+            }
             Err(err) => self.notice_error(&err, window, cx),
         }
         cx.notify();

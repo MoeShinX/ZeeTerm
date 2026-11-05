@@ -87,7 +87,7 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn build_client(proxy: Option<&SyncProxy>) -> Result<reqwest::Client, StorageError> {
     let mut builder = reqwest::Client::builder()
-        .user_agent(concat!("Z-SSH/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("ZeeTerm/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         // 不跟随 https → http 的重定向（会把密码明文送出去）。

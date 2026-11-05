@@ -11,6 +11,7 @@ pub mod display;
 pub mod files;
 pub mod history;
 pub mod host_memory;
+pub mod lines;
 pub mod protocol;
 pub mod pty;
 pub mod readonly;

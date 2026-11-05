@@ -129,6 +129,13 @@ impl HostStore {
         store
     }
 
+    /// 库有没有被别的连接改过（SQLite `PRAGMA data_version`）；读不出来时 `None`。
+    ///
+    /// 主窗口用它决定要不要重读，不再每 2 秒无条件跑 12 条查询（审查 M-14）。
+    pub fn data_version(&self) -> Option<i64> {
+        self.db.as_ref()?.data_version().ok()
+    }
+
     /// 从库里重读；返回内容有没有变（界面据此决定要不要重绘）。读不出来时保留旧内容。
     pub fn reload(&mut self) -> bool {
         let Some(db) = &self.db else {

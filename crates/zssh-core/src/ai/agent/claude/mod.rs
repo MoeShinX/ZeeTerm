@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 use tokio::task::JoinHandle;
 
@@ -510,13 +510,24 @@ impl ClaudeConversation {
         if let Some(stdout) = stdout {
             let weak = self.this.lock().unwrap_or_else(|p| p.into_inner()).clone();
             let task = tokio::spawn(async move {
-                let mut lines = BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
+                let mut reader = BufReader::new(stdout);
+                // 按行读，但单行有上限、非 UTF-8 不报错（见 `ai::lines`）。
+                while let Ok(Some(line)) = crate::ai::lines::read_bounded_line(
+                    &mut reader,
+                    crate::ai::lines::MAX_AGENT_LINE_BYTES,
+                )
+                .await
+                {
                     let Some(conversation) = weak.upgrade() else {
                         return;
                     };
-                    conversation.record_stdout(gen, &line);
-                    conversation.handle_line(gen, &line).await;
+                    let text = if line.truncated {
+                        format!("{} …（这一行超过上限，已截断）", line.text)
+                    } else {
+                        line.text
+                    };
+                    conversation.record_stdout(gen, &text);
+                    conversation.handle_line(gen, &text).await;
                 }
                 if let Some(conversation) = weak.upgrade() {
                     conversation.on_process_gone(gen);

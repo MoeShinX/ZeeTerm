@@ -1108,7 +1108,7 @@ fn import_offline_from(
     password: &str,
     mode: OfflineImportMode,
 ) -> Result<OfflineImportReport, String> {
-    let bytes = std::fs::read(path).map_err(|err| format!("读取离线包失败：{err}"))?;
+    let bytes = zssh_core::sync::offline::read_offline_file(path)?;
     let db = open_db_at(data_dir)?;
     let device_id = db
         .sync_device_id()

@@ -210,7 +210,6 @@ impl AppPrefs {
             Err(_) => Self::default(),
         }
     }
-
     /// SFTP 传输引擎的参数：同时传输数、保留修改时间 / 权限（对之后打开的 SFTP 标签生效，
     /// 同 0.2.14 设置页的说明）。
     pub fn transfer_options(&self) -> zssh_core::sftp::transfer::TransferOptions {
@@ -223,17 +222,47 @@ impl AppPrefs {
     }
 }
 
+// ---- 进程级缓存 ----
+//
+// 连上一个终端要判断"设置里开没开会话日志"，这发生在 UI 线程的附着路径上
+// （审查 M-11）。每次都 `Database::open` + 读十几条设置太贵，所以进程里缓存一份；
+// 设置页改会话日志相关的项之后调用 [`refresh_cached`] 刷新。
+
+static CACHED_PREFS: std::sync::OnceLock<std::sync::Mutex<Option<std::sync::Arc<AppPrefs>>>> =
+    std::sync::OnceLock::new();
+
+fn prefs_cache() -> &'static std::sync::Mutex<Option<std::sync::Arc<AppPrefs>>> {
+    CACHED_PREFS.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 取一份缓存的设置。缓存空的时候从库里读一次（进程里最多一次）。
+pub fn cached() -> std::sync::Arc<AppPrefs> {
+    let mut slot = prefs_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(prefs) = slot.as_ref() {
+        return std::sync::Arc::clone(prefs);
+    }
+    let prefs = std::sync::Arc::new(AppPrefs::load_default_db());
+    *slot = Some(std::sync::Arc::clone(&prefs));
+    prefs
+}
+
+/// 设置页保存了会话日志相关设置：把缓存换成新值（其它设置项不走这个缓存）。
+pub fn refresh_cached(prefs: AppPrefs) {
+    let mut slot = prefs_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *slot = Some(std::sync::Arc::new(prefs));
+}
+
 /// 开了会话日志就为这个会话建一个日志文件（纯文本，去掉颜色和光标控制）；没开就返回 `None`，
 /// 会话照常。每个会话一个文件，只对新打开的会话生效。
 ///
-/// 建目录和开文件在日志的写线程里做，这里立刻返回（调用者常常在界面线程上）；目录建不了
-/// （没权限、路径失效、慢盘出错）时这个会话没有日志，原因记在
+/// 设置由调用方给（界面里用进程缓存 [`cached`]，不在 UI 线程开库——审查 M-11）。
+/// 建目录和开文件在日志的写线程里做，这里立刻返回；目录建不了（没权限、路径失效、
+/// 慢盘出错）时这个会话没有日志，原因记在
 /// [`zssh_core::ssh::session_log::problems`] 里，设置页的会话日志一栏会显示。
-pub fn open_session_log(label: &str) -> Option<zssh_core::ssh::session_log::SessionLog> {
-    open_session_log_with(&AppPrefs::load_default_db(), label)
-}
-
-/// 同 [`open_session_log`]，设置由调用方给（测试用）。
 pub fn open_session_log_with(
     prefs: &AppPrefs,
     label: &str,

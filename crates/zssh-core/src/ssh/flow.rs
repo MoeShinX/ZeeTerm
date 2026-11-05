@@ -11,7 +11,9 @@
 //!   靠 `paused` 标记维持滞回，避免在高水位附近反复抖。
 //! - [`FlowGate::close`] 让正在等的任务立刻醒过来，会话关闭时不留下挂住的任务。
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 use tokio::sync::Notify;
 
@@ -19,6 +21,9 @@ use tokio::sync::Notify;
 pub const HIGH_WATERMARK: usize = 1024 * 1024;
 /// 暂停之后要降到这个值以下才恢复读。
 pub const LOW_WATERMARK: usize = 256 * 1024;
+/// 暂停之后最多等这么久：跨层漏 ack（或前端实现有 bug）时，宁可多显示一点，
+/// 也不能让这个终端永久停住。超时按"已确认"处理并记一条 warn。
+pub const PAUSE_QUIET_LIMIT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Default)]
 struct GateState {
@@ -36,6 +41,8 @@ struct GateState {
 pub struct FlowGate {
     state: Mutex<GateState>,
     notify: Notify,
+    /// 因为等不到 ack 而由看门狗放行的次数（诊断用，正常应为 0）。
+    watchdog_recoveries: AtomicUsize,
 }
 
 impl FlowGate {
@@ -69,6 +76,11 @@ impl FlowGate {
     /// 未确认量没超高水位就直接放行；超了就在这里等，等到降到低水位以下
     /// （或者门被关掉）。返回 `false` 表示门已经关了，调用方应该收工。
     pub async fn wait_ready(&self) -> bool {
+        self.wait_ready_with_limit(PAUSE_QUIET_LIMIT).await
+    }
+
+    /// 同 [`Self::wait_ready`]，但暂停最多等 `limit`（测试用短超时，生产用默认值）。
+    async fn wait_ready_with_limit(&self, limit: Duration) -> bool {
         loop {
             // 先把通知注册上再看状态，否则"读完状态到开始等"之间会丢掉唤醒。
             let notified = self.notify.notified();
@@ -90,7 +102,28 @@ impl FlowGate {
                 state.paused = true;
             }
 
-            notified.await;
+            // 暂停期间等 ack，但等不到也要能自己恢复：跨层漏 ack 时终端不能永久停住。
+            if tokio::time::timeout(limit, notified.as_mut()).await.is_ok() {
+                continue;
+            }
+            let stale = {
+                let mut state = self.lock();
+                if state.closed {
+                    return false;
+                }
+                let stale = state.unacked;
+                state.unacked = 0;
+                state.paused = false;
+                stale
+            };
+            self.watchdog_recoveries.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                bytes = stale,
+                "流控超过 {limit:?} 没收到 ack，按已确认处理（终端不会冻死）"
+            );
+            // 别的等待者也该重新判断一次。
+            self.notify.notify_waiters();
+            return true;
         }
     }
 
@@ -114,6 +147,11 @@ impl FlowGate {
     /// 未确认字节数的历史峰值。
     pub fn peak_unacked(&self) -> usize {
         self.lock().peak_unacked
+    }
+
+    /// 因为等不到 ack、被看门狗放行的次数（正常应为 0）。
+    pub fn watchdog_recoveries(&self) -> usize {
+        self.watchdog_recoveries.load(Ordering::Relaxed)
     }
 
     pub fn is_closed(&self) -> bool {
@@ -218,6 +256,44 @@ mod tests {
             .expect("close 之后应该马上醒来")
             .expect("任务不该 panic");
         assert!(!ready, "门关了应该返回 false");
+    }
+
+    /// 等不到 ack 时看门狗要放行，不能让终端永久停住。
+    #[tokio::test]
+    async fn pause_recovers_when_ack_never_arrives() {
+        let gate = FlowGate::new();
+        gate.on_sent(HIGH_WATERMARK + 1024);
+        let started = std::time::Instant::now();
+        assert!(
+            gate.wait_ready_with_limit(Duration::from_millis(20)).await,
+            "等不到 ack 时看门狗应该放行"
+        );
+        assert!(started.elapsed() >= Duration::from_millis(20));
+        assert_eq!(gate.unacked(), 0, "看门狗按已确认清零");
+        assert_eq!(gate.watchdog_recoveries(), 1);
+        // 恢复之后照常放行，不会反复触发。
+        assert!(gate.wait_ready_with_limit(Duration::from_millis(20)).await);
+        assert_eq!(gate.watchdog_recoveries(), 1);
+    }
+
+    /// 正常 ack 到达时看门狗不该插手。
+    #[tokio::test]
+    async fn watchdog_does_not_fire_when_ack_arrives_in_time() {
+        let gate = Arc::new(FlowGate::new());
+        gate.on_sent(HIGH_WATERMARK + 1);
+        let waiting = {
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move { gate.wait_ready_with_limit(Duration::from_secs(5)).await })
+        };
+        tokio::task::yield_now().await;
+
+        gate.on_ack(HIGH_WATERMARK);
+        let ready = timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("ack 之后应该马上醒来")
+            .expect("任务不该 panic");
+        assert!(ready);
+        assert_eq!(gate.watchdog_recoveries(), 0);
     }
 
     #[tokio::test]

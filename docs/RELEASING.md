@@ -145,7 +145,7 @@ GitHub 工作流**只认** `docs/release-notes/<版本>.md`（没有或是空的
 | --- | --- |
 | `Cargo.toml` 的 `[workspace.package] version` | 核心库工作区 |
 | `native/Cargo.toml` 的 `[workspace.package] version` | 原生应用工作区；程序里显示的版本、更新比较用的"当前版本"都来自它（编译时写入） |
-| `Cargo.lock`、`native/Cargo.lock` | 跟随工作区版本的本仓库包（`zssh-*`），否则 `--locked` 构建失败 |
+| `Cargo.lock`、`native/Cargo.lock` | 跟随工作区版本的本仓库包（`zssh-gpui` 与 `crates/` 下的 4 个 crate）。`native/` 下的辅助 crate（`zssh-editor` / `zssh-protocols` / `zssh-regex` / `zssh-session` / `zssh-terminal` / `zssh-update` / `zssh-icons`）版本固定为 `0.0.0`，**不随发版号改**；它们不参与更新比较，`--locked` 构建也照常通过 |
 | 安装包文件名、版本资源、"应用和功能"里的显示版本 | `build.ps1` 读 `native/Cargo.toml`，安装脚本里不写死版本 |
 
 有单元测试（`every_place_that_carries_the_version_agrees`）核对这几处一致。

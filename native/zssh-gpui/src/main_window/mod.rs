@@ -217,6 +217,8 @@ pub struct MainWindow {
     pub(super) focus: FocusHandle,
     pub(super) nav: ViewNav,
     pub(super) store: HostStore,
+    /// 上一次看到的库版本（`PRAGMA data_version`）：变了才重读主机库（审查 M-14）。
+    pub(super) db_version: Option<i64>,
     pub(super) tree: TreeState,
     pub(super) tree_query: Entity<InputState>,
     pub(super) vault_query: Entity<InputState>,
@@ -479,6 +481,7 @@ impl MainWindow {
             focus: cx.focus_handle(),
             nav: ViewNav::restored(saved_view),
             store,
+            db_version: None,
             tree: TreeState {
                 width: window_state::clamp_tree_width(layout.tree_width, width_now),
                 collapsed: layout.tree_collapsed,
@@ -597,16 +600,21 @@ impl MainWindow {
         self.tick_count += 1;
         self.lock_tick(window, cx);
         let mut changed = false;
-        // 主机库每 2 秒重读一次（500ms × 4）。
-        if self.tick_count.is_multiple_of(4) && self.store.reload() {
-            self.drop_stale_state();
-            changed = true;
-        }
-        // 内置助手的接口清单也一起跟：同步下来的、别的窗口改的接口，面板的智能体下拉里要能看到。
-        if self.tick_count.is_multiple_of(4)
-            && let Ok(db) = self.store.db()
-        {
-            crate::agent_setup::builtin::reload_with(db);
+        // 主机库：别的连接（其它窗口、同步、备份恢复）改过才重读，不再每 2 秒无条件跑 12 条 SQL；
+        // 每 15 秒兜底一次，防止个别环境下 `PRAGMA data_version` 不翻（审查 M-14）。
+        let version = self.store.data_version();
+        let moved = version != self.db_version;
+        let fallback = self.tick_count.is_multiple_of(30);
+        if moved || fallback {
+            self.db_version = version;
+            if self.store.reload() {
+                self.drop_stale_state();
+                changed = true;
+            }
+            // 内置助手的接口清单也一起跟：同步下来的、别的窗口改的接口，面板的智能体下拉里要能看到。
+            if let Ok(db) = self.store.db() {
+                crate::agent_setup::builtin::reload_with(db);
+            }
         }
         changed |= self.sync_status(cx);
         changed |= self.tokenway_tick(window, cx);

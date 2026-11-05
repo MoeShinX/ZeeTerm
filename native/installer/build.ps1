@@ -68,19 +68,21 @@ function Copy-Notice([string]$RootSource, [string]$NativeSource, [string]$Destin
 }
 
 # 版本号只从 native 工作区的 [workspace.package] 段读取（zssh-gpui 继承它），
-# 避免匹配到依赖项里的 version。
-$version = '0.0.0'
+# 避免匹配到依赖项里的 version。解析不出来就必须失败：以前静默退成 0.0.0，
+# 打出来的包"应用和功能"里显示 0.0.0、更新器的版本比较也跟着错。
 if (-not (Test-Path -LiteralPath $nativeManifest -PathType Leaf)) {
     Stop-WithError "缺少必要文件：$nativeManifest"
 }
 $nativeManifestText = Get-Content -LiteralPath $nativeManifest -Raw -Encoding UTF8
 $sectionMatch = [regex]::Match($nativeManifestText, '(?ms)^\[workspace\.package\](.*?)(?=^\[|\z)')
-if ($sectionMatch.Success) {
-    $versionMatch = [regex]::Match($sectionMatch.Groups[1].Value, '(?m)^\s*version\s*=\s*"([^"]+)"')
-    if ($versionMatch.Success -and -not [string]::IsNullOrWhiteSpace($versionMatch.Groups[1].Value)) {
-        $version = $versionMatch.Groups[1].Value.Trim()
-    }
+if (-not $sectionMatch.Success) {
+    Stop-WithError "读不到 native/Cargo.toml 的 [workspace.package] 段，没法确定安装包版本。"
 }
+$versionMatch = [regex]::Match($sectionMatch.Groups[1].Value, '(?m)^\s*version\s*=\s*"([^"]+)"')
+if (-not $versionMatch.Success -or [string]::IsNullOrWhiteSpace($versionMatch.Groups[1].Value)) {
+    Stop-WithError "读不到 native/Cargo.toml 里的 workspace.package version，没法确定安装包版本。"
+}
+$version = $versionMatch.Groups[1].Value.Trim()
 if ($TestVersion) {
     if ($TestVersion -notmatch '^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$') {
         Stop-WithError "-TestVersion 要写成 X.Y.Z（可带 -预发布 / +构建 后缀）：$TestVersion"
@@ -91,11 +93,10 @@ if ($TestVersion) {
 
 # NSIS 的 VIProductVersion 只接受四段数字，这里把语义化版本压成 X.X.X.0。
 $quadMatch = [regex]::Match($version, '^(\d+)\.(\d+)\.(\d+)')
-if ($quadMatch.Success) {
-    $versionQuad = "$($quadMatch.Groups[1].Value).$($quadMatch.Groups[2].Value).$($quadMatch.Groups[3].Value).0"
-} else {
-    $versionQuad = '0.0.0.0'
+if (-not $quadMatch.Success) {
+    Stop-WithError "版本号不是 X.Y.Z 形式，没法写进安装包：$version"
 }
+$versionQuad = "$($quadMatch.Groups[1].Value).$($quadMatch.Groups[2].Value).$($quadMatch.Groups[3].Value).0"
 
 foreach ($required in @($nativeManifest, $rootManifest, $nsiFile)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {

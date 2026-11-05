@@ -249,7 +249,7 @@ pub fn load_file(
     mode: OfflineImportMode,
 ) -> Result<Loaded, Failure> {
     let fail = |message: String| Failure::other(Origin::File, message);
-    let bytes = std::fs::read(path).map_err(|err| fail(format!("读取备份文件失败：{err}")))?;
+    let bytes = zssh_core::sync::offline::read_offline_file(path).map_err(fail)?;
     let snapshot = SyncSnapshot::open(&bytes, password).map_err(|err| {
         fail(match err {
             SyncError::WrongPassword => {

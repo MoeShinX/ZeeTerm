@@ -374,19 +374,41 @@ impl Pane {
         pane
     }
 
-    /// 会话日志文件名里用的名字：主机库里的主机用它的名字，快速连接用它的标签。
+    /// 会话日志文件名 / 延迟提示里用的名字：主机库里的主机用它的名字，快速连接用它的标签。
+    ///
+    /// 名字会随库变化，但附着、延迟标签这些路径会反复问（审查 M-11：同步开库会把
+    /// 界面卡住），所以按主机 id 缓存一份，进程里每台主机只查一次。
     fn log_label(&self) -> String {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock};
+
+        static HOST_NAMES: OnceLock<Mutex<HashMap<i64, String>>> = OnceLock::new();
+
         if let Some(spec) = &self.quick {
             return spec.label.clone();
         }
-        self.host_id
-            .and_then(|id| {
-                zssh_core::store::Database::open(&crate::settings::data_dir().join("zssh.db"))
-                    .ok()
-                    .and_then(|db| db.host_get(id).ok())
-            })
+        let Some(id) = self.host_id else {
+            return "session".to_owned();
+        };
+        let cache = HOST_NAMES.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some(name) = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&id)
+            .cloned()
+        {
+            return name;
+        }
+        let name = zssh_core::store::Database::open(&crate::settings::data_dir().join("zssh.db"))
+            .ok()
+            .and_then(|db| db.host_get(id).ok())
             .map(|host| host.name)
-            .unwrap_or_else(|| "session".to_owned())
+            .unwrap_or_else(|| "session".to_owned());
+        cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id, name.clone());
+        name
     }
 
     /// 这个窗格是不是一个会话（主机库里的主机，或者快速连接）。
@@ -409,12 +431,15 @@ impl Pane {
         if let Some(log) = log {
             // 连接期间手动开的日志接着用，不再另开。
             pump.set_plain_log(log);
-        } else if self.is_session()
-            && let Some(plain) = crate::app_prefs::open_session_log(&self.log_label())
-        {
-            // 设置里开了会话日志：这个会话一个文件（每次连上 / 重连各一个）。
-            pump.set_plain_log(plain);
-            self.log_mode = LogMode::Auto;
+        } else if self.is_session() {
+            // 设置从进程缓存拿：附着路径在 UI 线程上，不能每次开库（审查 M-11）。
+            let prefs = crate::app_prefs::cached();
+            if let Some(plain) = crate::app_prefs::open_session_log_with(&prefs, &self.log_label())
+            {
+                // 设置里开了会话日志：这个会话一个文件（每次连上 / 重连各一个）。
+                pump.set_plain_log(plain);
+                self.log_mode = LogMode::Auto;
+            }
         }
         self.driver = SessionDriver::new(pump, events);
         // 告诉 AI 终端登记表：这个 shell 属于哪台主机（快速连接没有主机记录，登记表里就没有主机）。
@@ -2524,7 +2549,7 @@ impl TerminalWorkspace {
         if let Some(logging) = pane.reconnect_in_place(history, None)
             && logging
         {
-            let prefs = crate::app_prefs::AppPrefs::load_default_db();
+            let prefs = crate::app_prefs::cached();
             self.status_text = pane.toggle_log_with(&prefs).status_text();
         }
     }
@@ -3289,7 +3314,7 @@ impl TerminalWorkspace {
     /// 会话自动记录时，显示「正在记录（自动）」并打开日志文件夹，不再另开一份。
     #[cfg(debug_assertions)]
     pub(crate) fn toggle_log(&mut self, cx: &mut Context<Self>) {
-        let prefs = crate::app_prefs::AppPrefs::load_default_db();
+        let prefs = crate::app_prefs::cached();
         let Some(pane) = self.pane_mut() else {
             return;
         };

@@ -279,7 +279,7 @@ impl GithubApi {
         let mut request = self
             .client
             .get(url.clone())
-            .header("User-Agent", concat!("Z-SSH/", env!("CARGO_PKG_VERSION")));
+            .header("User-Agent", concat!("ZeeTerm/", env!("CARGO_PKG_VERSION")));
         // 令牌只发给接口所在的主机。api.github.com 的 raw_url 在 gist.githubusercontent.com，
         // 那里不需要令牌（secret Gist 拿到链接就能读）。
         if url.host_str() == Some(self.host.as_str()) {

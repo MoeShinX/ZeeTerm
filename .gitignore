@@ -1,6 +1,5 @@
 target/
 node_modules/
-ui/dist/
 .env*
 
 # 安装包（target/ 之外误放时也不进 git）
@@ -19,3 +18,6 @@ docs/reports/**/scenarios/*.log
 
 # 发版产物（scripts/release.ps1 和 GitHub 发版工作流的输出）
 /dist/
+
+# 品牌与官网素材（设计源文件和大图，只留在本机）
+/ZeeTerm-品牌与官网/

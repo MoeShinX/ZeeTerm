@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
@@ -1176,8 +1176,13 @@ pub fn map_models(raw: &[Value]) -> AgentModelCatalog {
 
 /// 读 stdout：分发应答 / 服务端请求 / 通知。
 async fn read_loop(shared: Arc<Shared>, stdout: tokio::process::ChildStdout) {
-    let mut lines = BufReader::new(stdout).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
+    let mut reader = BufReader::new(stdout);
+    // 单行有上限、非 UTF-8 不报错（见 `ai::lines`）：否则一条怪行会被当成"进程退出了"。
+    while let Ok(Some(line)) =
+        crate::ai::lines::read_bounded_line(&mut reader, crate::ai::lines::MAX_AGENT_LINE_BYTES)
+            .await
+    {
+        let line = line.text;
         match Incoming::parse(&line) {
             Ok(Incoming::Response { id, result }) => {
                 if let Ok(mut map) = shared.pending.lock() {

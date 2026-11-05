@@ -349,7 +349,10 @@ pub fn begin_connect_quick(
 ) -> PendingOpen {
     let target = target.clone();
     spawn_open(async move {
-        let (key, hops) = prepare_quick(&target, password)?;
+        // 读库是同步 IO：放到阻塞线程池（审查 M-13）。
+        let (key, hops) = tokio::task::spawn_blocking(move || prepare_quick(&target, password))
+            .await
+            .map_err(|err| format!("准备连接失败：{err}"))??;
         let Acquired {
             item: factory,
             reused: _,
@@ -559,7 +562,10 @@ async fn acquire_factory(
 
 /// 连接一台已保存的主机并开一个终端会话（池里有同配置的活连接就复用）。
 async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult {
-    let (key, hops) = prepare(host_id)?;
+    // 读库是同步 IO：放到阻塞线程池，别占住只有 2 个 worker 的 SSH runtime（审查 M-13）。
+    let (key, hops) = tokio::task::spawn_blocking(move || prepare(host_id))
+        .await
+        .map_err(|err| format!("准备连接失败：{err}"))??;
     // 这台主机开了 X11 转发时，连上之后、开 shell 之前才准备本机 X 服务器（连不上就不白拉起）。
     let x11_wanted = crate::x11_glue::wanted(host_id);
     let Acquired {
@@ -608,7 +614,10 @@ async fn connect_async(host_id: i64, size: Size, generation: u64) -> OpenResult 
 ///
 /// 池里已经有同配置的活连接就直接复用；同时来的请求合并成一次握手；否则拨号链重新握手。
 pub async fn factory_for_host(host_id: i64) -> Result<Arc<SshSessionFactory>, String> {
-    let (key, hops) = prepare(host_id)?;
+    // 同 `connect_async`：同步读库不能占 SSH runtime 的 worker（审查 M-13）。
+    let (key, hops) = tokio::task::spawn_blocking(move || prepare(host_id))
+        .await
+        .map_err(|err| format!("准备连接失败：{err}"))??;
     acquire_factory(
         pool(),
         crate::ssh_interact::interactor(),

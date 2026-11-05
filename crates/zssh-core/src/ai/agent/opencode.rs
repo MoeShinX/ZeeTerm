@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
@@ -819,16 +819,23 @@ impl<R: tokio::io::AsyncRead + Unpin> Lines<R> {
         if self.eof {
             return Ok(None);
         }
-        let mut buf = String::new();
-        let n = self.inner.read_line(&mut buf).await?;
-        if n == 0 {
+        let Some(line) = crate::ai::lines::read_bounded_line(
+            &mut self.inner,
+            crate::ai::lines::MAX_AGENT_LINE_BYTES,
+        )
+        .await?
+        else {
             self.eof = true;
             return Ok(None);
-        }
-        let line = buf.trim_end_matches(['\r', '\n']).to_string();
+        };
+        let text = if line.truncated {
+            format!("{} …（这一行超过上限，已截断）", line.text)
+        } else {
+            line.text
+        };
         // 和 claude / codex 共用同一套：进缓冲前脱敏、限长（缓冲会进错误提示）。
-        push_tail(&self.tail, &line, 20);
-        Ok(Some(line))
+        push_tail(&self.tail, &text, 20);
+        Ok(Some(text))
     }
 }
 

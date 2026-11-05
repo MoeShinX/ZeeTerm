@@ -87,13 +87,14 @@ if ((Compare-Version $Version $currentVersion) -le 0) {
 # ---------- 1. 工作区检查 ----------
 Step '检查分支和工作区'
 $branch = (& git rev-parse --abbrev-ref HEAD).Trim()
-$dirty = @(& git status --porcelain --untracked-files=no)
+# 未跟踪文件也要查：重构里新增的模块如果忘了 `git add`，发出去的包会缺文件。
+$dirty = @(& git status --porcelain --untracked-files=all)
 if ($DryRun) {
     if ($branch -ne 'main') { Write-Host "（演练）当前分支是 $branch，正式发版要求在 main。" -ForegroundColor Yellow }
     if ($dirty.Count -gt 0) { Write-Host '（演练）工作区有未提交的改动，正式发版要求干净。' -ForegroundColor Yellow }
 } else {
     if ($branch -ne 'main') { Stop-WithError "必须在 main 分支发版，当前是 $branch。" }
-    if ($dirty.Count -gt 0) { Stop-WithError "工作区有未提交的改动（已跟踪文件），先提交或还原：`n$($dirty -join "`n")" }
+    if ($dirty.Count -gt 0) { Stop-WithError "工作区有未提交/未跟踪的改动，先提交或还原：`n$($dirty -join "`n")" }
     if (@(& git tag --list "v$Version").Count -gt 0) { Stop-WithError "tag v$Version 已经存在。" }
 }
 

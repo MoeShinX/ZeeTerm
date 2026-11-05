@@ -92,29 +92,15 @@ Netcatty
   public/distro/, components/DistroAvatar.tsx and domain/host.ts. The
   logos are trademarks of their respective owners.
 
-CodeMirror 6 (built-in text editor, ui/src/components/editor/)
-  https://codemirror.net/
-  Copyright (C) Marijn Haverbeke and others
-  License: MIT (all 34 packages: @codemirror/*, @lezer/*, @marijn/find-cluster-break,
-  crelt, style-mod, w3c-keyname)
+The earlier Tauri application this product is derived from (see above) used npm
+packages for its web interface, including CodeMirror 6 (text editor) and
+react-markdown + remark-gfm (Markdown rendering). Those packages are **not**
+part of this repository and **nothing from them is built into or distributed
+with ZeeTerm's native binaries**; they are mentioned only for the historical
+record, together with their MIT / ISC licenses.
 
-  Used unmodified as npm dependencies. MIT is compatible with distribution
-  under GPL-3.0-or-later; the packages' own license texts are kept in
-  node_modules/<package>/LICENSE and in ui/package-lock.json.
-
-react-markdown 10.1.0 + remark-gfm 4.0.1 (AI reply Markdown rendering,
-ui/src/components/ai/Markdown.tsx)
-  https://github.com/remarkjs/react-markdown
-  https://github.com/remarkjs/remark-gfm
-  Copyright (c) Espen Hovlandsdal, Titus Wormer and others
-  License: MIT for all 99 packages pulled in with them (the unified / remark /
-  micromark / mdast / hast / vfile / unist families and their small helpers),
-  except @ungap/structured-clone (ISC, Andrea Giammarchi). Raw HTML rendering
-  (rehype-raw) is deliberately not used.
-
-  Used unmodified as npm dependencies. MIT and ISC are compatible with
-  distribution under GPL-3.0-or-later; each package's own license text is kept
-  in node_modules/<package>/LICENSE and in ui/package-lock.json.
-
-Other third-party dependencies are listed with their licenses in Cargo.lock
-and ui/package-lock.json.
+The Rust crates that ZeeTerm actually links into its executables are pinned,
+with their licenses, in `Cargo.lock` and `native/Cargo.lock` (MIT,
+Apache-2.0, BSD, ISC, Zlib, MPL-2.0, public domain; all compatible with
+distribution under GPL-3.0-or-later). The components that ship inside the
+installer are enumerated in `native/NOTICE`.

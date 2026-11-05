@@ -219,12 +219,19 @@ pub fn drain_tail_lines<R>(
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    use tokio::io::AsyncBufReadExt;
     tokio::spawn(async move {
-        let mut lines = tokio::io::BufReader::new(reader).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            tracing::trace!(target: "agent", len = line.len(), "{tag}: 一行输出");
-            push_tail(&tail, &line, keep);
+        let mut reader = tokio::io::BufReader::new(reader);
+        while let Ok(Some(line)) =
+            crate::ai::lines::read_bounded_line(&mut reader, crate::ai::lines::MAX_AGENT_LINE_BYTES)
+                .await
+        {
+            tracing::trace!(
+                target: "agent",
+                len = line.text.len(),
+                truncated = line.truncated,
+                "{tag}: 一行输出"
+            );
+            push_tail(&tail, &line.text, keep);
         }
     })
 }

@@ -1358,13 +1358,19 @@ fn launch_installer(plan: &InstallPlan) -> Result<(), String> {
 
 /// 复验通过才调用 `launch`；不一致或读不到文件就拒绝，一个字节的安装器都不启动。
 /// `launch` 由调用方注入，测试里换成假实现。
+///
+/// 复验用 [`zssh_update::install::open_and_verify`]：它以"只共享读"打开安装包并把句柄
+/// 一直持有到 `launch` 返回，所以复验和启动之间别的进程替换不了这个文件
+/// （审查 M-18：以前只是"读完哈希再启动"，中间留了一个毫秒级窗口）。
 fn launch_if_unchanged(
     plan: &InstallPlan,
     launch: impl FnOnce(&InstallPlan) -> Result<(), String>,
 ) -> Result<(), String> {
-    zssh_update::verify_plan_file(plan)
+    let held = zssh_update::install::open_and_verify(plan)
         .map_err(|err| format!("安装包与验签时不一致，已拒绝启动：{err}"))?;
-    launch(plan)
+    let result = launch(plan);
+    drop(held);
+    result
 }
 
 /// 用 `ShellExecuteW` 启动已校验的安装器。

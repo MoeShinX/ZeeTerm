@@ -308,6 +308,36 @@ pub fn plan_command(format: ArchiveFormat, archive: &str, dest: &str, literal: b
         .replace("@FEED@", feed)
 }
 
+/// 解压前在**同一条命令里**再列一次条目并检查路径安全。
+///
+/// `plan_extract` 之后压缩包可能被换掉（压缩包所在目录可被同用户的其他进程写入，
+/// 指纹只有 size + 秒级 mtime），所以真正执行 `tar -x` / `unzip` 之前，在同一个 shell
+/// 进程里重新列一遍条目、按同样的规则（绝对路径、`..` 段）拒绝——检查与解压之间只隔
+/// 几条命令，窗口从"两次两次 exec 之间（秒级）"缩到同一进程内的几条命令。
+///
+/// 用 `mktemp` 落临时清单；没有 `mktemp` 就拒绝（不退到 `/tmp` 下的固定名字：多用户
+/// 服务器上别人可以抢先放同名符号链接）。
+pub fn validate_list_command(format: ArchiveFormat, archive: &str) -> String {
+    // 同一套规则：空行、以 `/` 开头、含 `..` 段的条目一律拒绝；zip 的条目先把 `\` 换成 `/`。
+    const AWK_CHECK: &str = r#"'{
+        if ($0 == "") exit 1
+        if ($0 ~ /^\//) exit 1
+        n = $0
+        gsub(/\\/, "/", n)
+        if (n ~ /(^|\/)\.\.(\/|$)/) exit 1
+    }'"#;
+    let check = if format.is_zip() {
+        r#"tr '\\' '/' <"$V" | awk @AWK@"#
+    } else {
+        r#"awk @AWK@ "$V""#
+    };
+    const SCRIPT: &str = r#"V=$(mktemp 2>/dev/null) || { echo "服务器上没有 mktemp 命令，没法复核压缩包" >&2; exit 1; }; ( @LIST@ ) >"$V" </dev/null || { rm -f "$V"; echo "解压前复核：列条目失败" >&2; exit 1; }; @CHECK@ || { rm -f "$V"; echo "压缩包在检查之后被改动过，或者含有不安全的路径，已拒绝解压" >&2; exit 1; }; rm -f "$V""#;
+    SCRIPT
+        .replace("@LIST@", &list_command(format, archive, false))
+        .replace("@CHECK@", check)
+        .replace("@AWK@", AWK_CHECK)
+}
+
 /// 同名文件的处理方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1123,7 +1153,12 @@ async fn run_extract(
     } else {
         TarMode::Overwrite
     };
-    let command = guarded(&extract_command(format, archive, dir, new_dir, mode, skip));
+    // 检查和执行之间可能隔了很久（也可能被人换包）：在同一个 shell 里先复核条目再解压。
+    let validate = validate_list_command(format, archive);
+    let command = guarded(&format!(
+        "{validate} && {}",
+        extract_command(format, archive, dir, new_dir, mode, skip)
+    ));
     let mut output = runner.exec(&command, SMALL_MAX_BYTES, cancel).await?;
     let mut counted_skips = None;
     let mut used_keep_old = false;
@@ -1133,13 +1168,10 @@ async fn run_extract(
         && is_unsupported_option(&output.stderr)
     {
         // 老版本 tar 不认识 --skip-old-files：参数解析阶段就失败了，什么都没解出，可以改用 -k 重来。
-        let command = guarded(&extract_command(
-            format,
-            archive,
-            dir,
-            new_dir,
-            TarMode::KeepOld,
-            true,
+        let validate = validate_list_command(format, archive);
+        let command = guarded(&format!(
+            "{validate} && {}",
+            extract_command(format, archive, dir, new_dir, TarMode::KeepOld, true)
         ));
         output = runner.exec(&command, SMALL_MAX_BYTES, cancel).await?;
         used_keep_old = true;
@@ -1193,6 +1225,11 @@ async fn run_extract(
 
 /// 解压。目标是新建的文件夹时先解到临时文件夹再改名到位；目标已存在时就地解压，
 /// 同名文件按 `policy` 处理（取消 / 失败时已经解出的文件无法区分是新的还是原来就有的，保留不动）。
+///
+/// 真正解压前会在**同一条命令里**重新列一遍条目并按同样的规则拒绝（见
+/// [`validate_list_command`]）：`plan_extract` 与执行之间压缩包可能被换掉，而指纹只有
+/// size + 秒级 mtime。残留窗口只剩"同一 shell 内复核之后、tar/unzip 开始读之前"；
+/// 要彻底消除得靠服务端提供内容哈希或按文件描述符解压，本轮不做。
 pub async fn extract(
     runner: &dyn ExecRunner,
     fs: &dyn ArchiveFs,

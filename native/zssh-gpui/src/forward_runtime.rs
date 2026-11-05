@@ -419,15 +419,20 @@ pub fn restart_if_running(id: i64) {
     };
     let registry = Arc::clone(registry);
     runtime.spawn(async move {
+        // 读规则是同步读库：放到阻塞线程池（审查 M-13）。
+        let loaded = match tokio::task::spawn_blocking(move || load_rule(id)).await {
+            Ok(Ok(rule)) => Some(rule),
+            Ok(Err(err)) => {
+                tracing::warn!(%err, id, "读刚保存的转发规则失败，不重开");
+                None
+            }
+            Err(err) => {
+                tracing::warn!(%err, id, "读转发规则的线程异常结束，不重开");
+                None
+            }
+        };
         manager()
-            .restart(&registry, id, || match load_rule(id) {
-                // 排队等锁的时候可能又被改过：按库里最新的一份重开。
-                Ok(rule) => Some(forward_body(rule)),
-                Err(err) => {
-                    tracing::warn!(%err, id, "读刚保存的转发规则失败，不重开");
-                    None
-                }
-            })
+            .restart(&registry, id, move || loaded.map(forward_body))
             .await;
     });
 }

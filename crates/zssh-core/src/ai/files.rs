@@ -1146,7 +1146,7 @@ pub async fn prepare_write(
             old = Some(bytes);
         }
         None => {
-            let (dir, _) = split_dir_name(&requested);
+            let (dir, name) = split_dir_name(&requested);
             match fs.stat(&dir).await? {
                 Some(parent) if parent.kind == FsKind::Dir => {}
                 Some(_) => return Err(format!("{dir} 不是目录")),
@@ -1154,6 +1154,30 @@ pub async fn prepare_write(
                     return Err(format!(
                         "上级目录不存在：{dir}（write_file 不会自动建目录）"
                     ))
+                }
+            }
+            // 新建文件也要看父目录的真实路径：`~/cfg -> /etc` 时，光看文本路径会把
+            // /etc/motd 当成"家目录下的普通文件"。解析不了不拒绝（有的服务端不支持
+            // realpath），但按"可能危险"处理，让确认卡标红。
+            match fs.realpath(&dir).await {
+                Ok(real) => {
+                    danger = merge_verdicts(danger, assess_absolute_path(&real));
+                    if real != dir && !name.is_empty() {
+                        target = if real.ends_with('/') {
+                            format!("{real}{name}")
+                        } else {
+                            format!("{real}/{name}")
+                        };
+                    }
+                }
+                Err(_) => {
+                    danger = merge_verdicts(
+                        danger,
+                        PathVerdict {
+                            dangerous: true,
+                            reasons: vec!["无法解析上级目录的真实路径（可能有符号链接）".to_owned()],
+                        },
+                    );
                 }
             }
         }

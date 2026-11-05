@@ -494,6 +494,22 @@ async fn prepare_write_follows_symlinks_and_checks_the_real_path_too() {
     );
 }
 
+/// 新建文件时父目录是符号链接：危险标记要按真实位置算，落点也要落到真实目录。
+#[tokio::test]
+async fn new_file_under_a_symlinked_parent_is_assessed_by_its_real_path() {
+    let fs = MemFs::new();
+    fs.put_dir("/etc");
+    fs.links
+        .lock()
+        .unwrap()
+        .insert("/home/u/cfg".to_owned(), "/etc".to_owned());
+    let plan = prepare_write(&fs, "cfg/motd", "hello\n", false)
+        .await
+        .unwrap();
+    assert!(plan.danger.dangerous, "父目录链接到 /etc，危险标记要带出来");
+    assert_eq!(plan.target, "/etc/motd", "写到链接指向的真实目录");
+}
+
 // ---------- 写文件：执行 ----------
 
 #[tokio::test]

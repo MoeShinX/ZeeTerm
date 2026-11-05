@@ -82,7 +82,7 @@ async fn creating_a_gist_makes_a_secret_gist_with_only_the_placeholder_file() {
         .user_agent
         .as_deref()
         .unwrap_or("")
-        .starts_with("Z-SSH/"));
+        .starts_with("ZeeTerm/"));
 
     // 占位内容 = 还没有同步数据，不会被当成坏掉的同步包。
     assert!(storage(&gh, &id).read().await.expect("读").is_none());

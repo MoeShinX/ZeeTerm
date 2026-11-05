@@ -377,16 +377,26 @@ impl SftpDemo {
                 None => Ok(()),
             },
             (Side::Local, NameKind::Mkdir) => {
-                self.local_op(&dir, &name, local_ops::mkdir, "已新建文件夹", cx)
+                let path = PathBuf::from(&dir).join(&name).display().to_string();
+                self.start_local_op("新建文件夹 ", &name, move || local_ops::mkdir(&path));
+                Ok(())
             }
             (Side::Local, NameKind::Create) => {
-                self.local_op(&dir, &name, local_ops::create_file, "已新建文件", cx)
+                let path = PathBuf::from(&dir).join(&name).display().to_string();
+                self.start_local_op("新建文件 ", &name, move || {
+                    local_ops::create_file(&path)
+                });
+                Ok(())
             }
             (Side::Local, NameKind::Rename) => match &from {
                 Some(entry) => {
                     let to = PathBuf::from(&dir).join(&name).display().to_string();
-                    let result = local_ops::rename(&entry.path, &to);
-                    self.finish_local_op(result, &format!("已重命名：{} → {name}", entry.name), cx)
+                    let from_path = entry.path.clone();
+                    let shown = format!("{} → {name}", entry.name);
+                    self.start_local_op("重命名 ", &shown, move || {
+                        local_ops::rename(&from_path, &to)
+                    });
+                    Ok(())
                 }
                 None => Ok(()),
             },
@@ -398,29 +408,40 @@ impl SftpDemo {
         cx.notify();
     }
 
-    /// 本地新建：目录 / 文件名拼好后调 `op`，成功刷新本地栏。
-    fn local_op(
-        &mut self,
-        dir: &str,
-        name: &str,
-        op: fn(&str) -> Result<(), String>,
-        done: &str,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        let path = PathBuf::from(dir).join(name).display().to_string();
-        let result = op(&path);
-        self.finish_local_op(result, &format!("{done}：{name}"), cx)
-    }
-
-    fn finish_local_op(
-        &mut self,
-        result: Result<(), String>,
-        done: &str,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        result?;
-        self.refresh_with_notice(Side::Local, done.to_owned(), cx);
-        Ok(())
+    /// 本地新建 / 改名：写盘可能卡在慢盘、断开的映射盘上，放到阻塞线程里做，
+    /// 做完以事件回填（和本地删除同一条路径），界面线程不碰文件系统。
+    fn start_local_op<F>(&mut self, verb: &str, subject: &str, work: F)
+    where
+        F: FnOnce() -> Result<(), String> + Send + 'static,
+    {
+        let Ok(runtime) = runtime() else {
+            self.warn("后台运行时不可用，操作没有执行".to_owned());
+            return;
+        };
+        self.say(format!("正在{verb}{subject}"));
+        let sender = self.sender.clone();
+        let done = format!("已{verb}{subject}");
+        let failed = format!("{verb}{subject} 失败");
+        runtime.spawn(async move {
+            let event = match tokio::task::spawn_blocking(work).await {
+                Ok(Ok(())) => SftpEvent::OpDone {
+                    ok: true,
+                    message: done,
+                    refresh: Some(Side::Local),
+                },
+                Ok(Err(err)) => SftpEvent::OpDone {
+                    ok: false,
+                    message: format!("{failed}：{err}"),
+                    refresh: Some(Side::Local),
+                },
+                Err(err) => SftpEvent::OpDone {
+                    ok: false,
+                    message: format!("{failed}：操作线程异常结束（{err}）"),
+                    refresh: Some(Side::Local),
+                },
+            };
+            let _ = sender.send(event);
+        });
     }
 
     /// 新建文件（对话框和钩子共用）。不覆盖：先看一眼，已经有同名的就报错（核心的 `create_file`
@@ -677,22 +698,33 @@ impl SftpDemo {
                 Ok(results) => {
                     let failed: Vec<&(String, Option<String>)> =
                         results.iter().filter(|(_, err)| err.is_some()).collect();
-                    match failed.first() {
-                        None => SftpEvent::OpDone {
+                    if failed.is_empty() {
+                        SftpEvent::OpDone {
                             ok: true,
                             message: format!("已删除本地的 {subject}"),
                             refresh: Some(Side::Local),
-                        },
-                        Some((path, err)) => SftpEvent::OpDone {
+                        }
+                    } else {
+                        // 只报第一个会把"哪几项没删掉"丢掉：列前三个，剩下的说总数。
+                        let mut shown: Vec<String> = failed
+                            .iter()
+                            .take(3)
+                            .map(|(path, err)| {
+                                format!(
+                                    "{}（{}）",
+                                    file_name(path),
+                                    err.as_deref().unwrap_or("未知原因")
+                                )
+                            })
+                            .collect();
+                        if failed.len() > shown.len() {
+                            shown.push(format!("等 {} 项", failed.len()));
+                        }
+                        SftpEvent::OpDone {
                             ok: false,
-                            message: format!(
-                                "删除失败：{}（{}）；{} 项没删掉",
-                                file_name(path),
-                                err.as_deref().unwrap_or(""),
-                                failed.len()
-                            ),
+                            message: format!("删除失败：{}", shown.join("、")),
                             refresh: Some(Side::Local),
-                        },
+                        }
                     }
                 }
                 Err(err) => SftpEvent::OpDone {
