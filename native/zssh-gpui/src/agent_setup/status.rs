@@ -21,6 +21,7 @@ use zssh_core::ai::agent::discovery::{self, AgentInstall};
 use zssh_core::store::Database;
 
 use super::AgentKind;
+use crate::i18n::{Msg, t};
 
 /// 登录状态。`logged_in` 为 `None` = 判断不了（读不出配置），或者这个智能体没有"登录"这个概念
 /// （opencode 的登录在它自己的界面里做）。
@@ -117,9 +118,9 @@ impl Availability {
     /// 智能体下拉里这一项的备注；`None` = 可选。
     pub fn selector_note(self) -> Option<&'static str> {
         match self {
-            Availability::Missing => Some("未安装"),
-            Availability::NeedsLogin => Some("未登录"),
-            Availability::TooOld => Some("版本过低"),
+            Availability::Missing => Some(t(SetupStatusMsg::NotInstalled)),
+            Availability::NeedsLogin => Some(t(SetupStatusMsg::NotLoggedIn)),
+            Availability::TooOld => Some(t(SetupStatusMsg::TooOld)),
             Availability::Checking | Availability::Ready => None,
         }
     }
@@ -129,27 +130,171 @@ impl Availability {
 // 提示文案（与 0.2.14 的 AIChatPanel / SettingsPage 逐字一致）
 // ---------------------------------------------------------------------------
 
+/// 本文件（智能体的安装 / 登录状态提示）自己的界面文案。
+///
+/// 只放应用自己的固定文案；版本号、安装路径、登录命令、核心库返回的原因和主机名一律原样
+/// 显示，不进这张表。带参数的句子保留 `format!`，这里只提供固定片段。
+#[derive(Clone, Copy, Debug)]
+enum SetupStatusMsg {
+    // ---- 可用性 ----
+    NotInstalled,
+    NotLoggedIn,
+    TooOld,
+    // ---- 没找到 ----
+    MissingOpenCode,
+    MissingCodex,
+    MissingClaude,
+    // ---- 没登录 ----
+    LoginRequiredCodexHead,
+    LoginRequiredClaudeHead,
+    LoginCommandCodex,
+    LoginCommandClaude,
+    LoginCommandCodexDone,
+    LoginCommandClaudeDone,
+    // ---- 登录状态 ----
+    LoggedIn,
+    LoginUnknown,
+    UnknownLoginHead,
+    UnknownLoginPrefix,
+    UnknownLoginSuffix,
+    FollowupSeparator,
+    // ---- 正在检测 ----
+    CheckingPrefix,
+    CheckingSuffix,
+    // ---- 版本过低 ----
+    TooOldOpenCode,
+    TooOldCodexPrefix,
+    TooOldCodexSuffix,
+    TooOldClaudePrefix,
+    TooOldClaudeSuffix,
+    // ---- 来源 ----
+    SourceManual,
+    SourceDownloaded,
+    SourceFound,
+    SourceKnownLocation,
+    SourceDataDir,
+    SourcePath,
+    // ---- 跳过的旧版本 ----
+    SkippedOlderMiddle,
+    SkippedOlderSuffix,
+}
+
+impl Msg for SetupStatusMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::NotInstalled => "未安装",
+            Self::NotLoggedIn => "未登录",
+            Self::TooOld => "版本过低",
+            Self::MissingOpenCode => "没有找到 opencode。去设置页指定路径，或者一键下载。",
+            Self::MissingCodex => {
+                "没有找到 codex。安装方法：npm i -g @openai/codex（也可以在设置页指定路径）。"
+            }
+            Self::MissingClaude => {
+                "没有找到 Claude Code。安装方法：npm i -g @anthropic-ai/claude-code（也可以在设置页指定路径）。"
+            }
+            Self::LoginRequiredCodexHead => "codex 还没有登录。",
+            Self::LoginRequiredClaudeHead => "Claude Code 还没有登录。",
+            Self::LoginCommandCodex => "请先在终端里运行 `codex login`",
+            Self::LoginCommandClaude => "请先在终端里运行 `claude` 完成登录",
+            Self::LoginCommandCodexDone => "请先在终端里运行 `codex login` 完成登录",
+            Self::LoginCommandClaudeDone => "请先在终端里运行 `claude` 完成登录",
+            Self::LoggedIn => "已登录",
+            Self::LoginUnknown => "不确定",
+            Self::UnknownLoginHead => "登录状态不确定",
+            Self::UnknownLoginPrefix => "没能确认登录状态（",
+            Self::UnknownLoginSuffix => {
+                "）。已经登录过就能直接用；不行就在终端里跑一次 `codex login`"
+            }
+            Self::FollowupSeparator => "：",
+            Self::CheckingPrefix => "正在检测 ",
+            Self::CheckingSuffix => "，请稍后再发送。",
+            Self::TooOldOpenCode => "版本过低，建议升级（低于 1.19 在共享数据目录上有已知问题）。",
+            Self::TooOldCodexPrefix => "版本过低，建议升级（codex 需要 ",
+            Self::TooOldCodexSuffix => " 及以上，可 `codex update`）。",
+            Self::TooOldClaudePrefix => "版本过低，建议升级（Claude Code 需要 ",
+            Self::TooOldClaudeSuffix => " 及以上，可 `claude update`）。",
+            Self::SourceManual => "手动指定",
+            Self::SourceDownloaded => "已下载",
+            Self::SourceFound => "已找到",
+            Self::SourceKnownLocation => "常见安装位置",
+            Self::SourceDataDir => "数据目录",
+            Self::SourcePath => "PATH",
+            Self::SkippedOlderMiddle => " 上还有一个旧版本 ",
+            Self::SkippedOlderSuffix => "（低于最低要求，没有用它）",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::NotInstalled => "Not installed",
+            Self::NotLoggedIn => "Not signed in",
+            Self::TooOld => "Version too old",
+            Self::MissingOpenCode => {
+                "opencode was not found. Specify its path in Settings, or use the one-click download."
+            }
+            Self::MissingCodex => {
+                "codex was not found. Install it with npm i -g @openai/codex (you can also specify its path in Settings)."
+            }
+            Self::MissingClaude => {
+                "Claude Code was not found. Install it with npm i -g @anthropic-ai/claude-code (you can also specify its path in Settings)."
+            }
+            Self::LoginRequiredCodexHead => "codex is not signed in yet.",
+            Self::LoginRequiredClaudeHead => "Claude Code is not signed in yet.",
+            Self::LoginCommandCodex => "run `codex login` in a terminal first",
+            Self::LoginCommandClaude => "run `claude` in a terminal to sign in first",
+            Self::LoginCommandCodexDone => "run `codex login` in a terminal to finish signing in",
+            Self::LoginCommandClaudeDone => "run `claude` in a terminal to finish signing in",
+            Self::LoggedIn => "Signed in",
+            Self::LoginUnknown => "Unknown",
+            Self::UnknownLoginHead => "Login status unknown",
+            Self::UnknownLoginPrefix => "Could not confirm the login status (",
+            Self::UnknownLoginSuffix => {
+                "). If it is already signed in you can use it directly; otherwise run `codex login` once in a terminal"
+            }
+            Self::FollowupSeparator => ": ",
+            Self::CheckingPrefix => "Still checking ",
+            Self::CheckingSuffix => "; please try sending again in a moment.",
+            Self::TooOldOpenCode => {
+                "Version too old; consider upgrading (versions below 1.19 have known issues with the shared data directory)."
+            }
+            Self::TooOldCodexPrefix => "Version too old; consider upgrading (codex requires ",
+            Self::TooOldCodexSuffix => " or later; try `codex update`).",
+            Self::TooOldClaudePrefix => {
+                "Version too old; consider upgrading (Claude Code requires "
+            }
+            Self::TooOldClaudeSuffix => " or later; try `claude update`).",
+            Self::SourceManual => "Manual",
+            Self::SourceDownloaded => "Downloaded",
+            Self::SourceFound => "Found",
+            Self::SourceKnownLocation => "Common install location",
+            Self::SourceDataDir => "Data directory",
+            Self::SourcePath => "PATH",
+            Self::SkippedOlderMiddle => " also has an older version ",
+            Self::SkippedOlderSuffix => " (below the minimum requirement, not used)",
+        }
+    }
+}
+
 /// 没找到时面板里的整段说明。
 pub fn missing_text(kind: AgentKind) -> &'static str {
     match kind {
-        AgentKind::OpenCode => "没有找到 opencode。去设置页指定路径，或者一键下载。",
-        AgentKind::Codex => {
-            "没有找到 codex。安装方法：npm i -g @openai/codex（也可以在设置页指定路径）。"
-        }
-        AgentKind::Claude => {
-            "没有找到 Claude Code。安装方法：npm i -g @anthropic-ai/claude-code（也可以在设置页指定路径）。"
-        }
-        AgentKind::Builtin => super::builtin::MISSING_TEXT,
+        AgentKind::OpenCode => t(SetupStatusMsg::MissingOpenCode),
+        AgentKind::Codex => t(SetupStatusMsg::MissingCodex),
+        AgentKind::Claude => t(SetupStatusMsg::MissingClaude),
+        AgentKind::Builtin => super::builtin::missing_text(),
     }
 }
 
 /// 没登录时面板里的两行（说明 + 命令）。opencode 没有登录概念，不会走到这里。
 pub fn login_required_lines(kind: AgentKind) -> (&'static str, &'static str) {
     match kind {
-        AgentKind::Codex => ("codex 还没有登录。", "请先在终端里运行 `codex login`"),
+        AgentKind::Codex => (
+            t(SetupStatusMsg::LoginRequiredCodexHead),
+            t(SetupStatusMsg::LoginCommandCodex),
+        ),
         _ => (
-            "Claude Code 还没有登录。",
-            "请先在终端里运行 `claude` 完成登录",
+            t(SetupStatusMsg::LoginRequiredClaudeHead),
+            t(SetupStatusMsg::LoginCommandClaude),
         ),
     }
 }
@@ -158,7 +303,12 @@ pub fn login_required_lines(kind: AgentKind) -> (&'static str, &'static str) {
 pub fn blocked_reason(kind: AgentKind, status: &AgentStatus) -> Option<String> {
     match status.availability() {
         Availability::Ready | Availability::TooOld => None,
-        Availability::Checking => Some(format!("正在检测 {}，请稍后再发送。", kind.label())),
+        Availability::Checking => Some(format!(
+            "{}{}{}",
+            t(SetupStatusMsg::CheckingPrefix),
+            kind.label(),
+            t(SetupStatusMsg::CheckingSuffix)
+        )),
         Availability::Missing => Some(missing_text(kind).to_owned()),
         Availability::NeedsLogin => {
             let (head, command) = login_required_lines(kind);
@@ -170,9 +320,9 @@ pub fn blocked_reason(kind: AgentKind, status: &AgentStatus) -> Option<String> {
 /// 设置页里登录状态的说法。
 pub fn login_text(logged_in: Option<bool>) -> &'static str {
     match logged_in {
-        Some(true) => "已登录",
-        Some(false) => "未登录",
-        None => "不确定",
+        Some(true) => t(SetupStatusMsg::LoggedIn),
+        Some(false) => t(SetupStatusMsg::NotLoggedIn),
+        None => t(SetupStatusMsg::LoginUnknown),
     }
 }
 
@@ -182,16 +332,19 @@ pub fn login_followup(kind: AgentKind, login: &LoginStatus) -> Option<String> {
         return None;
     }
     let head = if login.logged_in == Some(false) {
-        "未登录"
+        t(SetupStatusMsg::NotLoggedIn)
     } else {
-        "登录状态不确定"
+        t(SetupStatusMsg::UnknownLoginHead)
     };
     let tail = match login.hint.as_deref().filter(|hint| !hint.is_empty()) {
         Some(hint) => hint.to_owned(),
-        None if kind == AgentKind::Codex => "请先在终端里运行 `codex login`".to_owned(),
-        None => "请先在终端里运行 `claude` 完成登录".to_owned(),
+        None if kind == AgentKind::Codex => t(SetupStatusMsg::LoginCommandCodex).to_owned(),
+        None => t(SetupStatusMsg::LoginCommandClaude).to_owned(),
     };
-    Some(format!("{head}：{tail}"))
+    Some(format!(
+        "{head}{}{tail}",
+        t(SetupStatusMsg::FollowupSeparator)
+    ))
 }
 
 /// 版本过低时设置页里的补充（最低版本取自发现规则，不另写一份）。
@@ -202,15 +355,17 @@ pub fn too_old_note(kind: AgentKind) -> String {
         .map(|(a, b, c)| format!("{a}.{b}.{c}"))
         .unwrap_or_default();
     match kind {
-        AgentKind::OpenCode => {
-            "版本过低，建议升级（低于 1.19 在共享数据目录上有已知问题）。".to_owned()
-        }
-        AgentKind::Codex => {
-            format!("版本过低，建议升级（codex 需要 {minimum} 及以上，可 `codex update`）。")
-        }
-        AgentKind::Claude => {
-            format!("版本过低，建议升级（Claude Code 需要 {minimum} 及以上，可 `claude update`）。")
-        }
+        AgentKind::OpenCode => t(SetupStatusMsg::TooOldOpenCode).to_owned(),
+        AgentKind::Codex => format!(
+            "{}{minimum}{}",
+            t(SetupStatusMsg::TooOldCodexPrefix),
+            t(SetupStatusMsg::TooOldCodexSuffix)
+        ),
+        AgentKind::Claude => format!(
+            "{}{minimum}{}",
+            t(SetupStatusMsg::TooOldClaudePrefix),
+            t(SetupStatusMsg::TooOldClaudeSuffix)
+        ),
         // 内置助手没有版本这回事。
         AgentKind::Builtin => String::new(),
     }
@@ -221,16 +376,16 @@ pub fn too_old_note(kind: AgentKind) -> String {
 pub fn source_label(kind: AgentKind, source: discovery::DiscoverySource) -> &'static str {
     use discovery::DiscoverySource::*;
     match source {
-        Setting => "手动指定",
+        Setting => t(SetupStatusMsg::SourceManual),
         ToolsDir => {
             if kind == AgentKind::OpenCode {
-                "已下载"
+                t(SetupStatusMsg::SourceDownloaded)
             } else {
-                "已找到"
+                t(SetupStatusMsg::SourceFound)
             }
         }
-        KnownLocation => "常见安装位置",
-        Path => "PATH",
+        KnownLocation => t(SetupStatusMsg::SourceKnownLocation),
+        Path => t(SetupStatusMsg::SourcePath),
     }
 }
 
@@ -238,10 +393,10 @@ pub fn source_label(kind: AgentKind, source: discovery::DiscoverySource) -> &'st
 pub fn plain_source_label(source: discovery::DiscoverySource) -> &'static str {
     use discovery::DiscoverySource::*;
     match source {
-        Setting => "手动指定",
-        ToolsDir => "数据目录",
-        KnownLocation => "常见安装位置",
-        Path => "PATH",
+        Setting => t(SetupStatusMsg::SourceManual),
+        ToolsDir => t(SetupStatusMsg::SourceDataDir),
+        KnownLocation => t(SetupStatusMsg::SourceKnownLocation),
+        Path => t(SetupStatusMsg::SourcePath),
     }
 }
 
@@ -249,9 +404,11 @@ pub fn plain_source_label(source: discovery::DiscoverySource) -> &'static str {
 pub fn skipped_older_note(install: &AgentInstall) -> Option<String> {
     let older = install.skipped_older.as_ref()?;
     Some(format!(
-        "{} 上还有一个旧版本 {}（低于最低要求，没有用它）",
+        "{}{}{version}{}",
         plain_source_label(older.source),
-        older.version.trim()
+        t(SetupStatusMsg::SkippedOlderMiddle),
+        t(SetupStatusMsg::SkippedOlderSuffix),
+        version = older.version.trim()
     ))
 }
 
@@ -347,7 +504,7 @@ async fn claude_login(install: &AgentInstall) -> LoginStatus {
     }
     LoginStatus {
         logged_in: Some(false),
-        hint: Some("请先在终端里运行 `claude` 完成登录".to_owned()),
+        hint: Some(t(SetupStatusMsg::LoginCommandClaudeDone).to_owned()),
     }
 }
 
@@ -363,7 +520,7 @@ async fn codex_login(install: &AgentInstall) -> Option<LoginStatus> {
             }),
             Ok(false) => Some(LoginStatus {
                 logged_in: Some(false),
-                hint: Some("请先在终端里运行 `codex login` 完成登录".to_owned()),
+                hint: Some(t(SetupStatusMsg::LoginCommandCodexDone).to_owned()),
             }),
             Err(_) => None,
         };
@@ -393,7 +550,9 @@ async fn codex_login(install: &AgentInstall) -> Option<LoginStatus> {
             return Some(LoginStatus {
                 logged_in: None,
                 hint: Some(format!(
-                    "没能确认登录状态（{reason}）。已经登录过就能直接用；不行就在终端里跑一次 `codex login`"
+                    "{}{reason}{}",
+                    t(SetupStatusMsg::UnknownLoginPrefix),
+                    t(SetupStatusMsg::UnknownLoginSuffix)
                 )),
             });
         }
@@ -401,7 +560,7 @@ async fn codex_login(install: &AgentInstall) -> Option<LoginStatus> {
     }
     Some(LoginStatus {
         logged_in: Some(false),
-        hint: Some("请先在终端里运行 `codex login` 完成登录".to_owned()),
+        hint: Some(t(SetupStatusMsg::LoginCommandCodexDone).to_owned()),
     })
 }
 
@@ -1042,5 +1201,47 @@ mod tests {
             blocked_reason(AgentKind::Claude, &logged_out).as_deref(),
             Some("Claude Code 还没有登录。请先在终端里运行 `claude` 完成登录")
         );
+    }
+
+    #[test]
+    fn every_status_message_has_both_languages() {
+        for key in [
+            SetupStatusMsg::NotInstalled,
+            SetupStatusMsg::NotLoggedIn,
+            SetupStatusMsg::TooOld,
+            SetupStatusMsg::MissingOpenCode,
+            SetupStatusMsg::MissingCodex,
+            SetupStatusMsg::MissingClaude,
+            SetupStatusMsg::LoginRequiredCodexHead,
+            SetupStatusMsg::LoginRequiredClaudeHead,
+            SetupStatusMsg::LoginCommandCodex,
+            SetupStatusMsg::LoginCommandClaude,
+            SetupStatusMsg::LoginCommandCodexDone,
+            SetupStatusMsg::LoginCommandClaudeDone,
+            SetupStatusMsg::LoggedIn,
+            SetupStatusMsg::LoginUnknown,
+            SetupStatusMsg::UnknownLoginHead,
+            SetupStatusMsg::UnknownLoginPrefix,
+            SetupStatusMsg::UnknownLoginSuffix,
+            SetupStatusMsg::FollowupSeparator,
+            SetupStatusMsg::CheckingPrefix,
+            SetupStatusMsg::CheckingSuffix,
+            SetupStatusMsg::TooOldOpenCode,
+            SetupStatusMsg::TooOldCodexPrefix,
+            SetupStatusMsg::TooOldCodexSuffix,
+            SetupStatusMsg::TooOldClaudePrefix,
+            SetupStatusMsg::TooOldClaudeSuffix,
+            SetupStatusMsg::SourceManual,
+            SetupStatusMsg::SourceDownloaded,
+            SetupStatusMsg::SourceFound,
+            SetupStatusMsg::SourceKnownLocation,
+            SetupStatusMsg::SourceDataDir,
+            SetupStatusMsg::SourcePath,
+            SetupStatusMsg::SkippedOlderMiddle,
+            SetupStatusMsg::SkippedOlderSuffix,
+        ] {
+            assert!(!key.zh().is_empty(), "{key:?} 缺中文");
+            assert!(!key.en().is_empty(), "{key:?} 缺英文");
+        }
     }
 }

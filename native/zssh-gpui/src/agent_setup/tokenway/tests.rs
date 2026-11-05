@@ -262,3 +262,23 @@ fn without_the_debug_fake_the_production_policy_and_the_builtin_manifest_are_in_
         "清单里的地址通过产品规则"
     );
 }
+
+#[test]
+fn every_tokenway_message_has_both_languages() {
+    use crate::i18n::Msg as _;
+    for key in [
+        TokenwayMsg::UrlNotAllowedPrefix,
+        TokenwayMsg::UrlNotAllowedSuffix,
+        TokenwayMsg::NoTopupUrl,
+        TokenwayMsg::NoRegisterUrl,
+        TokenwayMsg::NoOneClickAuth,
+        TokenwayMsg::OpenSettingsDbFailedPrefix,
+        TokenwayMsg::AuthorizationInvalidLabel,
+        TokenwayMsg::AuthorizationInvalidDetail,
+        TokenwayMsg::NotAuthorizedToken,
+        TokenwayMsg::NoStatusUrl,
+    ] {
+        assert!(!key.zh().is_empty(), "{key:?} 缺中文");
+        assert!(!key.en().is_empty(), "{key:?} 缺英文");
+    }
+}

@@ -33,6 +33,7 @@ use crate::agent_setup::status::{
 use crate::agent_setup::{self, AgentKind, InstallState};
 use crate::agent_text::redact_paths;
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::ssh_backend::runtime;
 use crate::typography::{Role, Typo as _};
 
@@ -43,37 +44,318 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const EMPTY_PATH_SETTING: &str = "\"\"";
 
 /// 执行模式的设置值、界面标签和说明（0.2.14 `EXEC_MODE_OPTIONS`）。
-const EXEC_MODES: [(&str, &str, &str); 3] = [
-    ("manual", "逐条确认", "每条命令都要你点确认。"),
+const EXEC_MODES: [(&str, AgentsMsg, AgentsMsg); 3] = [
+    (
+        "manual",
+        AgentsMsg::ExecModeManual,
+        AgentsMsg::ExecModeManualHint,
+    ),
     (
         "readonly",
-        "只读自动",
-        "查看类命令（ls、cat、systemctl status 等）直接执行，会改动系统的命令和写文件要确认。",
+        AgentsMsg::ExecModeReadonly,
+        AgentsMsg::ExecModeReadonlyHint,
     ),
-    (
-        "auto",
-        "全部放行",
-        "所有命令直接执行，不再确认（危险命令也一样）。",
-    ),
+    ("auto", AgentsMsg::ExecModeAuto, AgentsMsg::ExecModeAutoHint),
 ];
 
 /// 写文件备份份数的范围（0.2.14 的滑块 1～20，设置库默认值见 core）。
 const BACKUP_KEEP_MIN: usize = 1;
 const BACKUP_KEEP_MAX: usize = 20;
 
+/// 本文件（设置页的 AI 智能体一节）自己的界面文案。
+///
+/// 只放应用自己的固定文案；智能体名、版本号、安装路径、来源里由核心返回的原文一律原样显示，
+/// 不进这张表。带参数的句子保留 `format!`，这里只提供固定片段；控件 id 是稳定标识，也不进表。
+#[derive(Clone, Copy, Debug)]
+enum AgentsMsg {
+    // ---- 执行模式 ----
+    ExecModeManual,
+    ExecModeReadonly,
+    ExecModeAuto,
+    ExecModeManualHint,
+    ExecModeReadonlyHint,
+    ExecModeAutoHint,
+    // ---- 智能体块的说明 ----
+    BlockDescriptionOpenCode,
+    BlockDescriptionCodex,
+    BlockDescriptionBuiltin,
+    BlockDescriptionClaude,
+    // ---- 各行标题 / 说明 ----
+    DefaultAgentTitle,
+    DefaultAgentDescription,
+    ExecModeTitle,
+    BackupKeepTitle,
+    BackupKeepDescription,
+    BackupKeepSuffix,
+    HistoryTitle,
+    HistoryDescription,
+    ClearHistory,
+    ConfirmClear,
+    Cancel,
+    // ---- 智能体块的状态行 ----
+    Checking,
+    ManualPathUnavailable,
+    NotFound,
+    CurrentPrefix,
+    LoginSuffixPrefix,
+    AutoDiscoveredPrefix,
+    RecheckNoteSuffix,
+    Recheck,
+    Downloading,
+    DownloadOpenCode,
+    AutoLabel,
+    ManualLabel,
+    ManualSwitchSuffix,
+    ProbeAndSave,
+    OpenParen,
+    CloseParen,
+    // ---- 一键下载 ----
+    FetchingVersion,
+    SourcePrefix,
+    VersionPrefix,
+    SizePrefix,
+    StartDownload,
+    DownloadProgressPrefix,
+    DownloadFailedPrefix,
+    DownloadedOpenCodePrefix,
+    // ---- 操作结果提示 ----
+    UsablePrefix,
+    HistoryClearedPrefix,
+    HistoryClearedSuffix,
+    HistoryClearFailedPrefix,
+    PathRequired,
+    BackgroundTaskFailedPrefix,
+    // ---- 设置读写失败 ----
+    PathReadPrefix,
+    PathReadSuffix,
+    DefaultAgentReadFailedPrefix,
+    ExecModeReadFailedPrefix,
+    BackupKeepReadFailedPrefix,
+    ErrorJoin,
+    LabelSeparator,
+    DbUnavailablePrefix,
+    DbUnavailableSuffix,
+    StorageUnavailableSuffix,
+    OpenFailed,
+    SaveDefaultAgentFailedPrefix,
+    SaveExecModeFailedPrefix,
+    SaveBackupKeepFailedPrefix,
+    CreateDataDirFailedPrefix,
+    OpenSettingsDbFailedPrefix,
+    PathSerializeFailedPrefix,
+    ClearSavedPathFailedPrefix,
+    SavePathFailedPrefix,
+    // ---- 卡片 / 窗口 ----
+    SectionTitle,
+    SectionDescription,
+    WindowTitle,
+}
+
+impl Msg for AgentsMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::ExecModeManual => "逐条确认",
+            Self::ExecModeReadonly => "只读自动",
+            Self::ExecModeAuto => "全部放行",
+            Self::ExecModeManualHint => "每条命令都要你点确认。",
+            Self::ExecModeReadonlyHint => {
+                "查看类命令（ls、cat、systemctl status 等）直接执行，会改动系统的命令和写文件要确认。"
+            }
+            Self::ExecModeAutoHint => "所有命令直接执行，不再确认（危险命令也一样）。",
+            Self::BlockDescriptionOpenCode => {
+                "发现方式：自动按 数据目录 tools → PATH → 常见安装位置 的顺序找；手动只用指定路径（坏了就报错，不回退）。"
+            }
+            Self::BlockDescriptionCodex => {
+                "codex 不提供一键下载：先 `npm i -g @openai/codex`，或在这里手动指定路径。发现方式同上；模型和登录用 codex 自己的配置。"
+            }
+            Self::BlockDescriptionBuiltin => {
+                "ZeePilot 不需要安装：在上面的\"ZeePilot\"里添加接口即可。"
+            }
+            Self::BlockDescriptionClaude => {
+                "Claude Code 不提供一键下载：先 `npm i -g @anthropic-ai/claude-code`（或官方安装脚本，装到 ~/.local/bin），也可以在这里手动指定路径。发现方式同上；登录和模型用 Claude Code 自己的配置（不改 CLAUDE_CONFIG_DIR / HOME）。"
+            }
+            Self::DefaultAgentTitle => "默认智能体",
+            Self::DefaultAgentDescription => {
+                "打开 AI 面板时默认用哪一个（面板顶部还能按对话切换）。"
+            }
+            Self::ExecModeTitle => "执行模式",
+            Self::BackupKeepTitle => "写文件备份份数",
+            Self::BackupKeepDescription => {
+                "AI 覆盖服务器文件时，每个文件只保留最近几份 .zssh-bak-* 备份，更早的删掉。"
+            }
+            Self::BackupKeepSuffix => " 份",
+            Self::HistoryTitle => "AI 历史",
+            Self::HistoryDescription => {
+                "AI 面板的历史会话保存在本机数据目录里（每种智能体最多 50 个），是未加密的明文，\
+                 包括命令输出的摘要（每条最多 4 KB）——如果让 AI 看过 .env、密钥之类的文件，内容可能在里面。\
+                 不需要时可以清空，清空后不能恢复。"
+            }
+            Self::ClearHistory => "清空 AI 历史",
+            Self::ConfirmClear => "确认清空",
+            Self::Cancel => "取消",
+            Self::Checking => "检测中…",
+            Self::ManualPathUnavailable => "手动路径不可用",
+            Self::NotFound => "未找到",
+            Self::CurrentPrefix => "当前：",
+            Self::LoginSuffixPrefix => "；登录：",
+            Self::AutoDiscoveredPrefix => "已自动发现：",
+            Self::RecheckNoteSuffix => "（点「重新检测」重试）",
+            Self::Recheck => "重新检测",
+            Self::Downloading => "下载中…",
+            Self::DownloadOpenCode => "下载 opencode",
+            Self::AutoLabel => "自动",
+            Self::ManualLabel => "手动指定",
+            Self::ManualSwitchSuffix => " 手动指定路径",
+            Self::ProbeAndSave => "检测并保存",
+            Self::OpenParen => "（",
+            Self::CloseParen => "）",
+            Self::FetchingVersion => "正在查询最新版本…",
+            Self::SourcePrefix => "来源：",
+            Self::VersionPrefix => "版本：",
+            Self::SizePrefix => "大小：",
+            Self::StartDownload => "开始下载",
+            Self::DownloadProgressPrefix => "下载进度 ",
+            Self::DownloadFailedPrefix => "下载失败：",
+            Self::DownloadedOpenCodePrefix => "已下载 opencode ",
+            Self::UsablePrefix => "可用：",
+            Self::HistoryClearedPrefix => "已清空 AI 历史（",
+            Self::HistoryClearedSuffix => " 个会话）",
+            Self::HistoryClearFailedPrefix => "清空 AI 历史失败：",
+            Self::PathRequired => "请填可执行文件的完整路径",
+            Self::BackgroundTaskFailedPrefix => "后台任务失败：",
+            Self::PathReadPrefix => "读取 ",
+            Self::PathReadSuffix => " 的路径失败：",
+            Self::DefaultAgentReadFailedPrefix => "读取默认智能体失败：",
+            Self::ExecModeReadFailedPrefix => "读取执行模式失败：",
+            Self::BackupKeepReadFailedPrefix => "读取备份份数失败：",
+            Self::ErrorJoin => "；",
+            Self::LabelSeparator => "：",
+            Self::DbUnavailablePrefix => "设置库不可用：",
+            Self::DbUnavailableSuffix => "；改动不会保存。",
+            Self::StorageUnavailableSuffix => "；路径和设置的改动不会保存。",
+            Self::OpenFailed => "打开失败",
+            Self::SaveDefaultAgentFailedPrefix => "保存默认智能体失败：",
+            Self::SaveExecModeFailedPrefix => "保存执行模式失败：",
+            Self::SaveBackupKeepFailedPrefix => "保存备份份数失败：",
+            Self::CreateDataDirFailedPrefix => "创建数据目录失败：",
+            Self::OpenSettingsDbFailedPrefix => "打开设置库失败：",
+            Self::PathSerializeFailedPrefix => "路径序列化失败：",
+            Self::ClearSavedPathFailedPrefix => "清除保存的路径失败：",
+            Self::SavePathFailedPrefix => "保存路径失败：",
+            Self::SectionTitle => "智能体与执行模式",
+            Self::SectionDescription => {
+                "AI 助手通过外部智能体在服务器上执行命令，遵守下面的执行模式。"
+            }
+            Self::WindowTitle => "AI 智能体",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::ExecModeManual => "Step-by-step",
+            Self::ExecModeReadonly => "Read-only Auto",
+            Self::ExecModeAuto => "Allow All",
+            Self::ExecModeManualHint => "Every command waits for your confirmation.",
+            Self::ExecModeReadonlyHint => {
+                "View-only commands (ls, cat, systemctl status, etc.) run directly; commands that change the system and file writes still need confirmation."
+            }
+            Self::ExecModeAutoHint => {
+                "Every command runs immediately without confirmation (dangerous commands included)."
+            }
+            Self::BlockDescriptionOpenCode => {
+                "Discovery: automatically checks the data directory tools → PATH → common install locations; Manual uses only the path you specify (it errors when broken and never falls back)."
+            }
+            Self::BlockDescriptionCodex => {
+                "codex has no one-click download: run `npm i -g @openai/codex` first, or specify the path manually here. Discovery works the same way; models and login use codex's own configuration."
+            }
+            Self::BlockDescriptionBuiltin => {
+                "ZeePilot needs no installation: add an endpoint under \"ZeePilot\" above."
+            }
+            Self::BlockDescriptionClaude => {
+                "Claude Code has no one-click download: run `npm i -g @anthropic-ai/claude-code` first (or the official install script, which installs to ~/.local/bin), or specify the path manually here. Discovery works the same way; login and models use Claude Code's own configuration (CLAUDE_CONFIG_DIR / HOME are left alone)."
+            }
+            Self::DefaultAgentTitle => "Default Agent",
+            Self::DefaultAgentDescription => {
+                "Which agent the AI panel starts with (you can still switch per conversation at the top of the panel)."
+            }
+            Self::ExecModeTitle => "Execution Mode",
+            Self::BackupKeepTitle => "File Backup Copies",
+            Self::BackupKeepDescription => {
+                "When the AI overwrites files on the server, only the most recent .zssh-bak-* backups of each file are kept; older ones are deleted."
+            }
+            Self::BackupKeepSuffix => " copies",
+            Self::HistoryTitle => "AI History",
+            Self::HistoryDescription => {
+                "The AI panel's past conversations are stored in the local data directory (up to 50 per agent) as unencrypted plain text, including summaries of command output (up to 4 KB each). If you let the AI read files such as .env or key files, their contents may be in there. Clear it when you no longer need it; cleared history cannot be recovered."
+            }
+            Self::ClearHistory => "Clear AI History",
+            Self::ConfirmClear => "Confirm Clear",
+            Self::Cancel => "Cancel",
+            Self::Checking => "Checking…",
+            Self::ManualPathUnavailable => "Manual path unavailable",
+            Self::NotFound => "Not found",
+            Self::CurrentPrefix => "Current: ",
+            Self::LoginSuffixPrefix => "; login: ",
+            Self::AutoDiscoveredPrefix => "Found automatically: ",
+            Self::RecheckNoteSuffix => " (click \"Recheck\" to retry)",
+            Self::Recheck => "Recheck",
+            Self::Downloading => "Downloading…",
+            Self::DownloadOpenCode => "Download opencode",
+            Self::AutoLabel => "Auto",
+            Self::ManualLabel => "Manual",
+            Self::ManualSwitchSuffix => " manual path",
+            Self::ProbeAndSave => "Check and Save",
+            Self::OpenParen => " (",
+            Self::CloseParen => ")",
+            Self::FetchingVersion => "Looking up the latest version…",
+            Self::SourcePrefix => "Source: ",
+            Self::VersionPrefix => "Version: ",
+            Self::SizePrefix => "Size: ",
+            Self::StartDownload => "Start Download",
+            Self::DownloadProgressPrefix => "Download progress ",
+            Self::DownloadFailedPrefix => "Download failed: ",
+            Self::DownloadedOpenCodePrefix => "Downloaded opencode ",
+            Self::UsablePrefix => "Usable: ",
+            Self::HistoryClearedPrefix => "AI history cleared (",
+            Self::HistoryClearedSuffix => " conversations)",
+            Self::HistoryClearFailedPrefix => "Failed to clear AI history: ",
+            Self::PathRequired => "Enter the full path to the executable",
+            Self::BackgroundTaskFailedPrefix => "Background task failed: ",
+            Self::PathReadPrefix => "Failed to read the path for ",
+            Self::PathReadSuffix => ": ",
+            Self::DefaultAgentReadFailedPrefix => "Failed to read the default agent: ",
+            Self::ExecModeReadFailedPrefix => "Failed to read the execution mode: ",
+            Self::BackupKeepReadFailedPrefix => "Failed to read the backup count: ",
+            Self::ErrorJoin => "; ",
+            Self::LabelSeparator => ": ",
+            Self::DbUnavailablePrefix => "Settings database unavailable: ",
+            Self::DbUnavailableSuffix => "; changes won't be saved.",
+            Self::StorageUnavailableSuffix => "; changes to paths and settings won't be saved.",
+            Self::OpenFailed => "failed to open",
+            Self::SaveDefaultAgentFailedPrefix => "Failed to save the default agent: ",
+            Self::SaveExecModeFailedPrefix => "Failed to save the execution mode: ",
+            Self::SaveBackupKeepFailedPrefix => "Failed to save the backup count: ",
+            Self::CreateDataDirFailedPrefix => "Failed to create the data directory: ",
+            Self::OpenSettingsDbFailedPrefix => "Failed to open the settings database: ",
+            Self::PathSerializeFailedPrefix => "Failed to serialize the path: ",
+            Self::ClearSavedPathFailedPrefix => "Failed to clear the saved path: ",
+            Self::SavePathFailedPrefix => "Failed to save the path: ",
+            Self::SectionTitle => "Agents and Execution Mode",
+            Self::SectionDescription => {
+                "The AI assistant runs commands on servers through external agents and follows the execution mode below."
+            }
+            Self::WindowTitle => "AI Agents",
+        }
+    }
+}
+
 /// 每个智能体块下面的"发现方式 / 安装方法"说明（0.2.14 逐字）。
 fn block_description(kind: AgentKind) -> &'static str {
     match kind {
-        AgentKind::OpenCode => {
-            "发现方式：自动按 数据目录 tools → PATH → 常见安装位置 的顺序找；手动只用指定路径（坏了就报错，不回退）。"
-        }
-        AgentKind::Codex => {
-            "codex 不提供一键下载：先 `npm i -g @openai/codex`，或在这里手动指定路径。发现方式同上；模型和登录用 codex 自己的配置。"
-        }
-        AgentKind::Builtin => "ZeePilot 不需要安装：在上面的\"ZeePilot\"里添加接口即可。",
-        AgentKind::Claude => {
-            "Claude Code 不提供一键下载：先 `npm i -g @anthropic-ai/claude-code`（或官方安装脚本，装到 ~/.local/bin），也可以在这里手动指定路径。发现方式同上；登录和模型用 Claude Code 自己的配置（不改 CLAUDE_CONFIG_DIR / HOME）。"
-        }
+        AgentKind::OpenCode => t(AgentsMsg::BlockDescriptionOpenCode),
+        AgentKind::Codex => t(AgentsMsg::BlockDescriptionCodex),
+        AgentKind::Builtin => t(AgentsMsg::BlockDescriptionBuiltin),
+        AgentKind::Claude => t(AgentsMsg::BlockDescriptionClaude),
     }
 }
 
@@ -177,24 +459,36 @@ impl AgentsDemo {
             for kind in AgentKind::ALL {
                 match kind.saved_path(db) {
                     Ok(path) => saved[kind.index()] = path,
-                    Err(err) => problems.push(format!("读取 {} 的路径失败：{err}", kind.label())),
+                    Err(err) => problems.push(format!(
+                        "{}{}{}{err}",
+                        t(AgentsMsg::PathReadPrefix),
+                        kind.label(),
+                        t(AgentsMsg::PathReadSuffix)
+                    )),
                 }
             }
             // 用户选过的以用户为准；没选过默认就是 ZeePilot（V2-U32），不管配没配好。
             match db.ai_default_agent() {
                 Ok(_) => default_agent = agent_setup::default_agent(Some(db)),
-                Err(err) => problems.push(format!("读取默认智能体失败：{err}")),
+                Err(err) => problems.push(format!(
+                    "{}{err}",
+                    t(AgentsMsg::DefaultAgentReadFailedPrefix)
+                )),
             }
             match db.ai_exec_mode() {
                 Ok(value) => exec_mode = value,
-                Err(err) => problems.push(format!("读取执行模式失败：{err}")),
+                Err(err) => {
+                    problems.push(format!("{}{err}", t(AgentsMsg::ExecModeReadFailedPrefix)))
+                }
             }
             match db.ai_write_backup_keep() {
                 Ok(value) => backup_keep = value,
-                Err(err) => problems.push(format!("读取备份份数失败：{err}")),
+                Err(err) => {
+                    problems.push(format!("{}{err}", t(AgentsMsg::BackupKeepReadFailedPrefix)))
+                }
             }
             if !problems.is_empty() {
-                settings_error = Some(problems.join("；"));
+                settings_error = Some(problems.join(t(AgentsMsg::ErrorJoin)));
             }
         }
         let blocks = std::array::from_fn(|index| {
@@ -260,8 +554,12 @@ impl AgentsDemo {
 
     fn db_unavailable(&self) -> String {
         format!(
-            "设置库不可用：{}；改动不会保存。",
-            self.storage_error.as_deref().unwrap_or("打开失败")
+            "{}{}{}",
+            t(AgentsMsg::DbUnavailablePrefix),
+            self.storage_error
+                .as_deref()
+                .unwrap_or(t(AgentsMsg::OpenFailed)),
+            t(AgentsMsg::DbUnavailableSuffix)
         )
     }
 
@@ -302,7 +600,10 @@ impl AgentsDemo {
                             Ok(()) => {
                                 let block = &mut self.blocks[kind.index()];
                                 block.manual_pending = false;
-                                block.note = Some((format!("可用：{version}"), false));
+                                block.note = Some((
+                                    format!("{}{version}", t(AgentsMsg::UsablePrefix)),
+                                    false,
+                                ));
                                 agent_setup::refresh(kind);
                             }
                             // 保存失败：设置没变，输入框里的草稿留着。
@@ -330,8 +631,11 @@ impl AgentsDemo {
                 self.download = DownloadUi::Idle;
                 match result {
                     Ok(install) => {
-                        self.download_note =
-                            Some(format!("已下载 opencode {}", install.version.trim()));
+                        self.download_note = Some(format!(
+                            "{}{}",
+                            t(AgentsMsg::DownloadedOpenCodePrefix),
+                            install.version.trim()
+                        ));
                         // 下载结果不一定就是发现会选中的那一个：按同样的规则重新检测，显示的才是
                         // AI 面板实际会用的。
                         agent_setup::refresh(AgentKind::OpenCode);
@@ -342,8 +646,18 @@ impl AgentsDemo {
             Event::HistoryCleared(result) => {
                 self.clear_confirming = false;
                 self.clear_note = Some(match result {
-                    Ok(removed) => (format!("已清空 AI 历史（{removed} 个会话）"), false),
-                    Err(err) => (format!("清空 AI 历史失败：{err}"), true),
+                    Ok(removed) => (
+                        format!(
+                            "{}{removed}{}",
+                            t(AgentsMsg::HistoryClearedPrefix),
+                            t(AgentsMsg::HistoryClearedSuffix)
+                        ),
+                        false,
+                    ),
+                    Err(err) => (
+                        format!("{}{err}", t(AgentsMsg::HistoryClearFailedPrefix)),
+                        true,
+                    ),
                 });
             }
         }
@@ -358,7 +672,12 @@ impl AgentsDemo {
                     self.default_agent = kind;
                     self.settings_error = None;
                 }
-                Err(err) => self.settings_error = Some(format!("保存默认智能体失败：{err}")),
+                Err(err) => {
+                    self.settings_error = Some(format!(
+                        "{}{err}",
+                        t(AgentsMsg::SaveDefaultAgentFailedPrefix)
+                    ))
+                }
             },
             None => self.settings_error = Some(self.db_unavailable()),
         }
@@ -372,7 +691,10 @@ impl AgentsDemo {
                     self.exec_mode = mode.to_owned();
                     self.settings_error = None;
                 }
-                Err(err) => self.settings_error = Some(format!("保存执行模式失败：{err}")),
+                Err(err) => {
+                    self.settings_error =
+                        Some(format!("{}{err}", t(AgentsMsg::SaveExecModeFailedPrefix)))
+                }
             },
             None => self.settings_error = Some(self.db_unavailable()),
         }
@@ -390,7 +712,10 @@ impl AgentsDemo {
                     self.backup_keep = keep;
                     self.settings_error = None;
                 }
-                Err(err) => self.settings_error = Some(format!("保存备份份数失败：{err}")),
+                Err(err) => {
+                    self.settings_error =
+                        Some(format!("{}{err}", t(AgentsMsg::SaveBackupKeepFailedPrefix)))
+                }
             },
             None => self.settings_error = Some(self.db_unavailable()),
         }
@@ -452,7 +777,7 @@ impl AgentsDemo {
         let value = value.trim().to_owned();
         let block = &mut self.blocks[kind.index()];
         if value.is_empty() {
-            block.note = Some(("请填可执行文件的完整路径".to_owned(), true));
+            block.note = Some((t(AgentsMsg::PathRequired).to_owned(), true));
             cx.notify();
             return;
         }
@@ -596,7 +921,9 @@ impl AgentsDemo {
                             .map_err(|err| err.to_string())
                     })
                     .await
-                    .unwrap_or_else(|err| Err(format!("后台任务失败：{err}")));
+                    .unwrap_or_else(|err| {
+                        Err(format!("{}{err}", t(AgentsMsg::BackgroundTaskFailedPrefix)))
+                    });
                     let _ = sender.send(Event::HistoryCleared(result));
                 });
             }
@@ -839,8 +1166,8 @@ impl AgentsDemo {
             .collect();
         let entity = entity.clone();
         setting_row(
-            "默认智能体",
-            Some("打开 AI 面板时默认用哪一个（面板顶部还能按对话切换）。".to_owned()),
+            t(AgentsMsg::DefaultAgentTitle),
+            Some(t(AgentsMsg::DefaultAgentDescription).to_owned()),
             crate::settings_view::choice_group(segments, tokens, move |index, _, cx| {
                 if let Some(kind) = AgentKind::SELECTABLE.get(index).copied() {
                     entity.update(cx, |this, cx| this.set_default_agent(kind, cx));
@@ -859,7 +1186,7 @@ impl AgentsDemo {
             .iter()
             .map(|(value, label, _)| crate::settings_view::Segment {
                 id: format!("ai-exec-mode-{value}").into(),
-                label,
+                label: t(*label),
                 icon: None,
                 selected: current == *value,
             })
@@ -867,11 +1194,13 @@ impl AgentsDemo {
         let entity = entity.clone();
         let description = EXEC_MODES
             .iter()
-            .map(|(_, label, hint)| format!("{label}：{hint}"))
+            .map(|(_, label, hint)| {
+                format!("{}{}{}", t(*label), t(AgentsMsg::LabelSeparator), t(*hint))
+            })
             .collect::<Vec<_>>()
             .join(" ");
         setting_row(
-            "执行模式",
+            t(AgentsMsg::ExecModeTitle),
             Some(description),
             crate::settings_view::choice_group(segments, tokens, move |index, _, cx| {
                 if let Some((value, _, _)) = EXEC_MODES.get(index).copied() {
@@ -886,11 +1215,8 @@ impl AgentsDemo {
         let (minus, plus) = (entity.clone(), entity.clone());
         let keep = self.backup_keep;
         setting_row(
-            "写文件备份份数",
-            Some(
-                "AI 覆盖服务器文件时，每个文件只保留最近几份 .zssh-bak-* 备份，更早的删掉。"
-                    .to_owned(),
-            ),
+            t(AgentsMsg::BackupKeepTitle),
+            Some(t(AgentsMsg::BackupKeepDescription).to_owned()),
             h_flex()
                 .gap_1()
                 .items_center()
@@ -910,7 +1236,7 @@ impl AgentsDemo {
                         .text_sm()
                         .text_center()
                         .text_color(tokens.text)
-                        .child(format!("{keep} 份")),
+                        .child(format!("{keep}{}", t(AgentsMsg::BackupKeepSuffix))),
                 )
                 .child(Button::new("ai-backup-plus").label("+").compact().on_click(
                     move |_, _, cx| {
@@ -931,7 +1257,7 @@ impl AgentsDemo {
                 .gap_1()
                 .child(
                     Button::new("ai-history-clear-cancel")
-                        .label("取消")
+                        .label(t(AgentsMsg::Cancel))
                         .compact()
                         .on_click(move |_, _, cx| {
                             cancel.update(cx, |this, cx| {
@@ -942,7 +1268,7 @@ impl AgentsDemo {
                 )
                 .child(
                     Button::new("ai-history-clear")
-                        .label("确认清空")
+                        .label(t(AgentsMsg::ConfirmClear))
                         .compact()
                         .danger()
                         .on_click(move |_, _, cx| {
@@ -952,23 +1278,24 @@ impl AgentsDemo {
                 .into_any_element()
         } else {
             Button::new("ai-history-clear")
-                .label("清空 AI 历史")
+                .label(t(AgentsMsg::ClearHistory))
                 .compact()
                 .on_click(move |_, _, cx| {
                     click.update(cx, |this, cx| this.clear_history(cx));
                 })
                 .into_any_element()
         };
-        let mut description = String::from(
-            "AI 面板的历史会话保存在本机数据目录里（每种智能体最多 50 个），是未加密的明文，\
-             包括命令输出的摘要（每条最多 4 KB）——如果让 AI 看过 .env、密钥之类的文件，内容可能在里面。\
-             不需要时可以清空，清空后不能恢复。",
-        );
+        let mut description = String::from(t(AgentsMsg::HistoryDescription));
         if let Some((note, _)) = &self.clear_note {
             description.push('\n');
             description.push_str(note);
         }
-        setting_row("AI 历史", Some(description), button, tokens)
+        setting_row(
+            t(AgentsMsg::HistoryTitle),
+            Some(description),
+            button,
+            tokens,
+        )
     }
 
     /// 一个智能体的块：当前版本和来源、登录、按钮行、自动 / 手动开关、各种提示、手动路径输入。
@@ -982,25 +1309,29 @@ impl AgentsDemo {
         let found = status.found();
 
         let detected_line = match &status.install {
-            InstallState::Checking => "检测中…".to_owned(),
+            InstallState::Checking => t(AgentsMsg::Checking).to_owned(),
             InstallState::Missing => {
                 if manual {
-                    "手动路径不可用".to_owned()
+                    t(AgentsMsg::ManualPathUnavailable).to_owned()
                 } else {
-                    "未找到".to_owned()
+                    t(AgentsMsg::NotFound).to_owned()
                 }
             }
-            InstallState::Invalid(_) => "手动路径不可用".to_owned(),
+            InstallState::Invalid(_) => t(AgentsMsg::ManualPathUnavailable).to_owned(),
             InstallState::Found(install) => format!(
-                "{}（{}）",
+                "{}{}{}{}",
                 install.version.trim(),
-                source_label(kind, install.source)
+                t(AgentsMsg::OpenParen),
+                source_label(kind, install.source),
+                t(AgentsMsg::CloseParen)
             ),
         };
         let login_part = match &status.login {
-            Some(login) if kind != AgentKind::OpenCode => {
-                format!("；登录：{}", login_text(login.logged_in))
-            }
+            Some(login) if kind != AgentKind::OpenCode => format!(
+                "{}{}",
+                t(AgentsMsg::LoginSuffixPrefix),
+                login_text(login.logged_in)
+            ),
             _ => String::new(),
         };
 
@@ -1012,9 +1343,12 @@ impl AgentsDemo {
                 lines.push(
                     small(
                         format!(
-                            "已自动发现：{}（{}）",
+                            "{}{}{}{}{}",
+                            t(AgentsMsg::AutoDiscoveredPrefix),
                             redact_paths(&install.path),
-                            install.version.trim()
+                            t(AgentsMsg::OpenParen),
+                            install.version.trim(),
+                            t(AgentsMsg::CloseParen)
                         ),
                         muted,
                     )
@@ -1048,7 +1382,7 @@ impl AgentsDemo {
         if let Some(guard) = &status.guard {
             lines.push(
                 small(
-                    format!("{}（点「重新检测」重试）", redact_paths(guard)),
+                    format!("{}{}", redact_paths(guard), t(AgentsMsg::RecheckNoteSuffix)),
                     danger,
                 )
                 .into_any_element(),
@@ -1069,9 +1403,9 @@ impl AgentsDemo {
             let entity = entity.clone();
             Button::new(("agent-recheck", kind.index()))
                 .label(if block.probing {
-                    "检测中…"
+                    t(AgentsMsg::Checking)
                 } else {
-                    "重新检测"
+                    t(AgentsMsg::Recheck)
                 })
                 .compact()
                 .disabled(block.probing)
@@ -1084,9 +1418,9 @@ impl AgentsDemo {
             let busy = !matches!(self.download, DownloadUi::Idle);
             Button::new("agent-download")
                 .label(if busy {
-                    "下载中…"
+                    t(AgentsMsg::Downloading)
                 } else {
-                    "下载 opencode"
+                    t(AgentsMsg::DownloadOpenCode)
                 })
                 .compact()
                 .primary()
@@ -1104,12 +1438,16 @@ impl AgentsDemo {
                 .child(
                     div()
                         .text_color(if manual { muted } else { tokens.text })
-                        .child("自动"),
+                        .child(t(AgentsMsg::AutoLabel)),
                 )
                 .child(
                     Switch::new(("agent-manual", kind.index()))
                         .checked(manual)
-                        .accessibility_label(format!("{} 手动指定路径", kind.label()))
+                        .accessibility_label(format!(
+                            "{}{}",
+                            kind.label(),
+                            t(AgentsMsg::ManualSwitchSuffix)
+                        ))
                         .on_click(move |checked, window, cx| {
                             let manual = *checked;
                             entity.update(cx, |this, cx| {
@@ -1120,7 +1458,7 @@ impl AgentsDemo {
                 .child(
                     div()
                         .text_color(if manual { tokens.text } else { muted })
-                        .child("手动指定"),
+                        .child(t(AgentsMsg::ManualLabel)),
                 )
         };
 
@@ -1132,12 +1470,10 @@ impl AgentsDemo {
                 v_flex()
                     .gap_0p5()
                     .child(div().typo(Role::ItemName, tokens).child(kind.label()))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(format!("当前：{detected_line}{login_part}")),
-                    ),
+                    .child(div().text_xs().text_color(muted).child(format!(
+                        "{}{detected_line}{login_part}",
+                        t(AgentsMsg::CurrentPrefix)
+                    ))),
             )
             .children(lines)
             .child(
@@ -1160,7 +1496,7 @@ impl AgentsDemo {
                     .child(Input::new(&block.path).flex_1())
                     .child(
                         Button::new(("agent-probe", kind.index()))
-                            .label("检测并保存")
+                            .label(t(AgentsMsg::ProbeAndSave))
                             .compact()
                             .disabled(block.probing)
                             .on_click(move |_, _, cx| {
@@ -1184,7 +1520,7 @@ impl AgentsDemo {
             DownloadUi::Fetching => out.push(
                 div()
                     .typo(Role::Caption, tokens)
-                    .child("正在查询最新版本…")
+                    .child(t(AgentsMsg::FetchingVersion))
                     .into_any_element(),
             ),
             DownloadUi::Confirm(info) => {
@@ -1208,32 +1544,36 @@ impl AgentsDemo {
                             div()
                                 .text_sm()
                                 .font_weight(FontWeight::MEDIUM)
-                                .child("下载 opencode"),
+                                .child(t(AgentsMsg::DownloadOpenCode)),
                         )
-                        .child(div().typo(Role::Caption, tokens).child("来源："))
+                        .child(
+                            div()
+                                .typo(Role::Caption, tokens)
+                                .child(t(AgentsMsg::SourcePrefix)),
+                        )
                         .child(
                             div()
                                 .typo(Role::Caption, tokens)
                                 .font_family("Consolas")
                                 .child(source),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .child(format!("版本：{}", info.version.trim())),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .child(format!("大小：{}", format_bytes(info.size))),
-                        )
+                        .child(div().text_xs().child(format!(
+                            "{}{}",
+                            t(AgentsMsg::VersionPrefix),
+                            info.version.trim()
+                        )))
+                        .child(div().text_xs().child(format!(
+                            "{}{}",
+                            t(AgentsMsg::SizePrefix),
+                            format_bytes(info.size)
+                        )))
                         .child(
                             h_flex()
                                 .gap_2()
                                 .justify_end()
                                 .child(
                                     Button::new("agent-download-cancel")
-                                        .label("取消")
+                                        .label(t(AgentsMsg::Cancel))
                                         .compact()
                                         .on_click(move |_, _, cx| {
                                             cancel.update(cx, |this, cx| {
@@ -1243,7 +1583,7 @@ impl AgentsDemo {
                                 )
                                 .child(
                                     Button::new("agent-download-start")
-                                        .label("开始下载")
+                                        .label(t(AgentsMsg::StartDownload))
                                         .compact()
                                         .primary()
                                         .on_click(move |_, _, cx| {
@@ -1264,7 +1604,7 @@ impl AgentsDemo {
                         .child(
                             div()
                                 .typo(Role::Caption, tokens)
-                                .child(format!("下载进度 {pct}%")),
+                                .child(format!("{}{pct}%", t(AgentsMsg::DownloadProgressPrefix))),
                         )
                         .child(
                             div()
@@ -1292,7 +1632,7 @@ impl AgentsDemo {
                     .id("agent-download-error")
                     .text_xs()
                     .text_color(tokens.danger)
-                    .child(format!("下载失败：{err}"))
+                    .child(format!("{}{err}", t(AgentsMsg::DownloadFailedPrefix)))
                     .into_any_element(),
             );
         }
@@ -1338,15 +1678,17 @@ impl AgentsDemo {
                     .text_xs()
                     .text_color(tokens.danger)
                     .child(redact_paths(&format!(
-                        "设置库不可用：{err}；路径和设置的改动不会保存。"
+                        "{}{err}{}",
+                        t(AgentsMsg::DbUnavailablePrefix),
+                        t(AgentsMsg::StorageUnavailableSuffix)
                     )))
                     .into_any_element(),
             );
         }
         crate::settings_view::card(
             "ai-settings",
-            "智能体与执行模式",
-            Some("AI 助手通过外部智能体在服务器上执行命令，遵守下面的执行模式。"),
+            t(AgentsMsg::SectionTitle),
+            Some(t(AgentsMsg::SectionDescription)),
             &tokens,
             rows,
         )
@@ -1390,7 +1732,7 @@ pub fn open_agents_window(cx: &mut App) {
     };
     let _ = cx.open_window(options, |window, cx| {
         let view = cx.new(|cx| AgentsDemo::new(window, cx));
-        window.set_window_title("AI 智能体");
+        window.set_window_title(t(AgentsMsg::WindowTitle));
         window.focus(&view.read(cx).focus_handle(), cx);
         view
     });
@@ -1399,8 +1741,10 @@ pub fn open_agents_window(cx: &mut App) {
 /// 打开 `<数据目录>/zssh.db`（和主机库、Tauri 版同一个库）。
 fn open_settings_db() -> Result<Database, String> {
     let dir = crate::settings::data_dir();
-    std::fs::create_dir_all(&dir).map_err(|err| format!("创建数据目录失败：{err}"))?;
-    Database::open(&dir.join("zssh.db")).map_err(|err| format!("打开设置库失败：{err}"))
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| format!("{}{err}", t(AgentsMsg::CreateDataDirFailedPrefix)))?;
+    Database::open(&dir.join("zssh.db"))
+        .map_err(|err| format!("{}{err}", t(AgentsMsg::OpenSettingsDbFailedPrefix)))
 }
 
 /// 输入框内容 → 设置值：空白等于清除（`None`），否则是 JSON 编码后的字符串。
@@ -1411,7 +1755,7 @@ fn path_setting_value(input: &str) -> Result<Option<String>, String> {
     }
     serde_json::to_string(trimmed)
         .map(Some)
-        .map_err(|err| format!("路径序列化失败：{err}"))
+        .map_err(|err| format!("{}{err}", t(AgentsMsg::PathSerializeFailedPrefix)))
 }
 
 /// 把手动路径的输入写进设置库；返回生效的路径（`None` 表示已清除）。
@@ -1419,12 +1763,12 @@ fn save_path_setting(db: &Database, key: &str, input: &str) -> Result<Option<Str
     match path_setting_value(input)? {
         None => {
             db.setting_set(key, EMPTY_PATH_SETTING)
-                .map_err(|err| format!("清除保存的路径失败：{err}"))?;
+                .map_err(|err| format!("{}{err}", t(AgentsMsg::ClearSavedPathFailedPrefix)))?;
             Ok(None)
         }
         Some(encoded) => {
             db.setting_set(key, &encoded)
-                .map_err(|err| format!("保存路径失败：{err}"))?;
+                .map_err(|err| format!("{}{err}", t(AgentsMsg::SavePathFailedPrefix)))?;
             Ok(Some(input.trim().to_owned()))
         }
     }
@@ -1434,8 +1778,9 @@ fn save_path_setting(db: &Database, key: &str, input: &str) -> Result<Option<Str
 mod tests {
     // 不写 `use super::*`：父模块 glob 进来的 `gpui_kit::test` 会盖掉内置的
     // `#[test]` 属性宏，展开时直接撞递归上限。
-    use super::{EXEC_MODES, block_description, path_setting_value, save_path_setting};
+    use super::{AgentsMsg, EXEC_MODES, block_description, path_setting_value, save_path_setting};
     use crate::agent_setup::AgentKind;
+    use crate::i18n::Msg as _;
     use zssh_core::store::Database;
     use zssh_core::store::settings::AI_OPENCODE_PATH_KEY;
 
@@ -1487,5 +1832,87 @@ mod tests {
         assert!(
             block_description(AgentKind::Claude).contains("npm i -g @anthropic-ai/claude-code")
         );
+    }
+
+    #[test]
+    fn every_message_has_both_languages() {
+        for key in [
+            AgentsMsg::ExecModeManual,
+            AgentsMsg::ExecModeReadonly,
+            AgentsMsg::ExecModeAuto,
+            AgentsMsg::ExecModeManualHint,
+            AgentsMsg::ExecModeReadonlyHint,
+            AgentsMsg::ExecModeAutoHint,
+            AgentsMsg::BlockDescriptionOpenCode,
+            AgentsMsg::BlockDescriptionCodex,
+            AgentsMsg::BlockDescriptionBuiltin,
+            AgentsMsg::BlockDescriptionClaude,
+            AgentsMsg::DefaultAgentTitle,
+            AgentsMsg::DefaultAgentDescription,
+            AgentsMsg::ExecModeTitle,
+            AgentsMsg::BackupKeepTitle,
+            AgentsMsg::BackupKeepDescription,
+            AgentsMsg::BackupKeepSuffix,
+            AgentsMsg::HistoryTitle,
+            AgentsMsg::HistoryDescription,
+            AgentsMsg::ClearHistory,
+            AgentsMsg::ConfirmClear,
+            AgentsMsg::Cancel,
+            AgentsMsg::Checking,
+            AgentsMsg::ManualPathUnavailable,
+            AgentsMsg::NotFound,
+            AgentsMsg::CurrentPrefix,
+            AgentsMsg::LoginSuffixPrefix,
+            AgentsMsg::AutoDiscoveredPrefix,
+            AgentsMsg::RecheckNoteSuffix,
+            AgentsMsg::Recheck,
+            AgentsMsg::Downloading,
+            AgentsMsg::DownloadOpenCode,
+            AgentsMsg::AutoLabel,
+            AgentsMsg::ManualLabel,
+            AgentsMsg::ManualSwitchSuffix,
+            AgentsMsg::ProbeAndSave,
+            AgentsMsg::OpenParen,
+            AgentsMsg::CloseParen,
+            AgentsMsg::FetchingVersion,
+            AgentsMsg::SourcePrefix,
+            AgentsMsg::VersionPrefix,
+            AgentsMsg::SizePrefix,
+            AgentsMsg::StartDownload,
+            AgentsMsg::DownloadProgressPrefix,
+            AgentsMsg::DownloadFailedPrefix,
+            AgentsMsg::DownloadedOpenCodePrefix,
+            AgentsMsg::UsablePrefix,
+            AgentsMsg::HistoryClearedPrefix,
+            AgentsMsg::HistoryClearedSuffix,
+            AgentsMsg::HistoryClearFailedPrefix,
+            AgentsMsg::PathRequired,
+            AgentsMsg::BackgroundTaskFailedPrefix,
+            AgentsMsg::PathReadPrefix,
+            AgentsMsg::PathReadSuffix,
+            AgentsMsg::DefaultAgentReadFailedPrefix,
+            AgentsMsg::ExecModeReadFailedPrefix,
+            AgentsMsg::BackupKeepReadFailedPrefix,
+            AgentsMsg::ErrorJoin,
+            AgentsMsg::LabelSeparator,
+            AgentsMsg::DbUnavailablePrefix,
+            AgentsMsg::DbUnavailableSuffix,
+            AgentsMsg::StorageUnavailableSuffix,
+            AgentsMsg::OpenFailed,
+            AgentsMsg::SaveDefaultAgentFailedPrefix,
+            AgentsMsg::SaveExecModeFailedPrefix,
+            AgentsMsg::SaveBackupKeepFailedPrefix,
+            AgentsMsg::CreateDataDirFailedPrefix,
+            AgentsMsg::OpenSettingsDbFailedPrefix,
+            AgentsMsg::PathSerializeFailedPrefix,
+            AgentsMsg::ClearSavedPathFailedPrefix,
+            AgentsMsg::SavePathFailedPrefix,
+            AgentsMsg::SectionTitle,
+            AgentsMsg::SectionDescription,
+            AgentsMsg::WindowTitle,
+        ] {
+            assert!(!key.zh().is_empty(), "{key:?} 缺中文");
+            assert!(!key.en().is_empty(), "{key:?} 缺英文");
+        }
     }
 }

@@ -22,6 +22,7 @@ use zssh_core::ai::agent::{AgentModel, AgentModelCatalog};
 use zssh_core::store::Database;
 
 use super::status::{AgentStatus, InstallState};
+use crate::i18n::{Msg, t};
 
 /// 模型资料库缓存放在数据目录下的这个子目录。
 pub const CATALOG_DIR: &str = "ai-models";
@@ -233,7 +234,121 @@ pub fn status() -> AgentStatus {
 }
 
 /// 面板里内置助手没配置时的整段说明。
+///
+/// 保留成常量给还没走 `i18n` 的调用方；本模块自己的两语言版本是
+/// [`BuiltinMsg::MissingText`]，中文原句就是这里。
 pub const MISSING_TEXT: &str = "还没有配置 ZeePilot：到 设置 → AI → ZeePilot 添加一个接口并填好 API Key（本机的 Ollama 之类可以勾选「不需要 Key」），就能直接对话，不用安装别的工具。";
+
+/// 面板里内置助手没配置时的整段说明，按当前语言取。
+pub fn missing_text() -> &'static str {
+    t(BuiltinMsg::MissingText)
+}
+
+/// 本文件（ZeePilot 接口清单与模型资料）自己的界面文案。
+///
+/// 只放应用自己的固定文案；接口名、模型名、日期、地址和核心库返回的原始原因一律原样显示，
+/// 不进这张表。带参数的句子保留 `format!`，这里只提供固定片段。
+#[derive(Clone, Copy, Debug)]
+enum BuiltinMsg {
+    MissingText,
+    // ---- 模型资料那一行 ----
+    CatalogUpdatedPrefix,
+    CatalogSnapshotPrefix,
+    CatalogSnapshot,
+    CatalogUpdated,
+    CatalogEmpty,
+    // ---- 设置库 / 代理失败 ----
+    OpenSettingsDbFailedPrefix,
+    ProxySettingsProblemPrefix,
+    // ---- 模型能力摘要 ----
+    CapsContextWindow,
+    CapsMaxOutput,
+    CapsThinking,
+    CapsToolCall,
+    CapsImageInput,
+    TokenSuffix,
+    ThinkingNone,
+    ThinkingToggle,
+    ThinkingLevelsPrefix,
+    ThinkingBudgetPrefix,
+    ThinkingBudgetMiddle,
+    ThinkingBudgetSuffix,
+    Supported,
+    NotSupported,
+    // ---- 能力来源 ----
+    SourceManual,
+    SourceEndpoint,
+    SourceBuiltinSnapshot,
+    SourceEstimated,
+}
+
+impl Msg for BuiltinMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::MissingText => MISSING_TEXT,
+            Self::CatalogUpdatedPrefix => "模型资料：已更新于 ",
+            Self::CatalogSnapshotPrefix => "模型资料：内置快照 ",
+            Self::CatalogSnapshot => "模型资料：内置快照",
+            Self::CatalogUpdated => "模型资料：已更新",
+            Self::CatalogEmpty => "模型资料：没有加载到（按名字估计）",
+            Self::OpenSettingsDbFailedPrefix => "打开设置库失败：",
+            Self::ProxySettingsProblemPrefix => "软件网络的代理设置有问题：",
+            Self::CapsContextWindow => "上下文窗口",
+            Self::CapsMaxOutput => "最大输出",
+            Self::CapsThinking => "思考",
+            Self::CapsToolCall => "工具调用",
+            Self::CapsImageInput => "图片输入",
+            Self::TokenSuffix => " token",
+            Self::ThinkingNone => "不支持调节",
+            Self::ThinkingToggle => "开关",
+            Self::ThinkingLevelsPrefix => "等级：",
+            Self::ThinkingBudgetPrefix => "预算 ",
+            Self::ThinkingBudgetMiddle => " 到 ",
+            Self::ThinkingBudgetSuffix => " token",
+            Self::Supported => "支持",
+            Self::NotSupported => "不支持",
+            Self::SourceManual => "手动",
+            Self::SourceEndpoint => "接口",
+            Self::SourceBuiltinSnapshot => "内置快照",
+            Self::SourceEstimated => "估计",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::MissingText => {
+                "ZeePilot is not configured yet: open Settings → AI → ZeePilot, add an endpoint and fill in the API key (local services such as Ollama can be marked \"No key needed\") to start chatting without installing anything else."
+            }
+            Self::CatalogUpdatedPrefix => "Model info: updated on ",
+            Self::CatalogSnapshotPrefix => "Model info: built-in snapshot ",
+            Self::CatalogSnapshot => "Model info: built-in snapshot",
+            Self::CatalogUpdated => "Model info: updated",
+            Self::CatalogEmpty => "Model info: not loaded (estimated from model names)",
+            Self::OpenSettingsDbFailedPrefix => "Failed to open the settings database: ",
+            Self::ProxySettingsProblemPrefix => {
+                "There is a problem with the app network proxy settings: "
+            }
+            Self::CapsContextWindow => "Context window",
+            Self::CapsMaxOutput => "Max output",
+            Self::CapsThinking => "Thinking",
+            Self::CapsToolCall => "Tool calls",
+            Self::CapsImageInput => "Image input",
+            Self::TokenSuffix => " tokens",
+            Self::ThinkingNone => "Not adjustable",
+            Self::ThinkingToggle => "Toggle",
+            Self::ThinkingLevelsPrefix => "Levels: ",
+            Self::ThinkingBudgetPrefix => "Budget ",
+            Self::ThinkingBudgetMiddle => " to ",
+            Self::ThinkingBudgetSuffix => " tokens",
+            Self::Supported => "Supported",
+            Self::NotSupported => "Not supported",
+            Self::SourceManual => "Manual",
+            Self::SourceEndpoint => "Endpoint",
+            Self::SourceBuiltinSnapshot => "Built-in snapshot",
+            Self::SourceEstimated => "Estimated",
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 模型资料库（models.dev）
@@ -267,11 +382,15 @@ pub fn reload_catalog() {
 pub fn describe_catalog(catalog: &Catalog) -> String {
     let date = catalog.timestamp().map(unix_to_date);
     match (catalog.origin(), date) {
-        (CatalogOrigin::Cache, Some(date)) => format!("模型资料：已更新于 {date}"),
-        (CatalogOrigin::Snapshot, Some(date)) => format!("模型资料：内置快照 {date}"),
-        (CatalogOrigin::Snapshot, None) => "模型资料：内置快照".to_owned(),
-        (CatalogOrigin::Cache, None) => "模型资料：已更新".to_owned(),
-        (CatalogOrigin::Empty, _) => "模型资料：没有加载到（按名字估计）".to_owned(),
+        (CatalogOrigin::Cache, Some(date)) => {
+            format!("{}{date}", t(BuiltinMsg::CatalogUpdatedPrefix))
+        }
+        (CatalogOrigin::Snapshot, Some(date)) => {
+            format!("{}{date}", t(BuiltinMsg::CatalogSnapshotPrefix))
+        }
+        (CatalogOrigin::Snapshot, None) => t(BuiltinMsg::CatalogSnapshot).to_owned(),
+        (CatalogOrigin::Cache, None) => t(BuiltinMsg::CatalogUpdated).to_owned(),
+        (CatalogOrigin::Empty, _) => t(BuiltinMsg::CatalogEmpty).to_owned(),
     }
 }
 
@@ -285,9 +404,10 @@ pub fn make_transport() -> Result<Arc<dyn Transport>, String> {
         let transport = ReqwestTransport::build(None).map_err(|err| err.to_string())?;
         return Ok(Arc::new(transport));
     }
-    let db = crate::host_db::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
+    let db = crate::host_db::open_database()
+        .map_err(|err| format!("{}{err}", t(BuiltinMsg::OpenSettingsDbFailedPrefix)))?;
     let proxy = zssh_core::sync::app_proxy::app_proxy(&db)
-        .map_err(|err| format!("软件网络的代理设置有问题：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(BuiltinMsg::ProxySettingsProblemPrefix)))?;
     let transport = ReqwestTransport::build(proxy.as_ref()).map_err(|err| err.to_string())?;
     Ok(Arc::new(transport))
 }
@@ -316,9 +436,10 @@ pub fn spawn_background_refresh(delay: std::time::Duration) {
 
 /// 拉一次资料库。`force` = 不管缓存新不新鲜（"立即更新"）。成功更新了返回 `true`。
 pub async fn refresh_catalog(force: bool) -> Result<bool, String> {
-    let db = crate::host_db::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
+    let db = crate::host_db::open_database()
+        .map_err(|err| format!("{}{err}", t(BuiltinMsg::OpenSettingsDbFailedPrefix)))?;
     let proxy = zssh_core::sync::app_proxy::app_proxy(&db)
-        .map_err(|err| format!("软件网络的代理设置有问题：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(BuiltinMsg::ProxySettingsProblemPrefix)))?;
     let http = ReqwestFetch::build(proxy.as_ref())?;
     let dir = catalog_dir();
     let now = unix_now();
@@ -559,23 +680,46 @@ pub fn caps_summary(caps: &ModelCaps) -> Vec<(&'static str, String)> {
         }
     };
     let thinking = match &caps.reasoning {
-        ReasoningSupport::None => "不支持调节".to_owned(),
-        ReasoningSupport::Toggle => "开关".to_owned(),
-        ReasoningSupport::Levels(levels) => format!("等级：{}", levels.join(" / ")),
-        ReasoningSupport::Budget { min, max } => {
-            format!("预算 {} 到 {} token", tokens(*min), tokens(*max))
-        }
+        ReasoningSupport::None => t(BuiltinMsg::ThinkingNone).to_owned(),
+        ReasoningSupport::Toggle => t(BuiltinMsg::ThinkingToggle).to_owned(),
+        ReasoningSupport::Levels(levels) => format!(
+            "{}{}",
+            t(BuiltinMsg::ThinkingLevelsPrefix),
+            levels.join(" / ")
+        ),
+        ReasoningSupport::Budget { min, max } => format!(
+            "{}{}{}{}{}",
+            t(BuiltinMsg::ThinkingBudgetPrefix),
+            tokens(*min),
+            t(BuiltinMsg::ThinkingBudgetMiddle),
+            tokens(*max),
+            t(BuiltinMsg::ThinkingBudgetSuffix)
+        ),
     };
-    let yes = |value: bool| if value { "支持" } else { "不支持" }.to_owned();
+    let yes = |value: bool| {
+        if value {
+            t(BuiltinMsg::Supported)
+        } else {
+            t(BuiltinMsg::NotSupported)
+        }
+        .to_owned()
+    };
     vec![
         (
-            "上下文窗口",
-            format!("{} token", tokens(caps.context_window)),
+            t(BuiltinMsg::CapsContextWindow),
+            format!(
+                "{}{}",
+                tokens(caps.context_window),
+                t(BuiltinMsg::TokenSuffix)
+            ),
         ),
-        ("最大输出", format!("{} token", tokens(caps.max_output))),
-        ("思考", thinking),
-        ("工具调用", yes(caps.tool_call)),
-        ("图片输入", yes(caps.image_input)),
+        (
+            t(BuiltinMsg::CapsMaxOutput),
+            format!("{}{}", tokens(caps.max_output), t(BuiltinMsg::TokenSuffix)),
+        ),
+        (t(BuiltinMsg::CapsThinking), thinking),
+        (t(BuiltinMsg::CapsToolCall), yes(caps.tool_call)),
+        (t(BuiltinMsg::CapsImageInput), yes(caps.image_input)),
     ]
 }
 
@@ -587,11 +731,11 @@ fn trim_zero(value: f64) -> String {
 /// 能力来源的中文名（设置页"来源：……"）。
 pub fn source_label(source: CapsSource) -> &'static str {
     match source {
-        CapsSource::Manual => "手动",
-        CapsSource::Endpoint => "接口",
+        CapsSource::Manual => t(BuiltinMsg::SourceManual),
+        CapsSource::Endpoint => t(BuiltinMsg::SourceEndpoint),
         CapsSource::ModelsDev => "models.dev",
-        CapsSource::Builtin => "内置快照",
-        CapsSource::Heuristic => "估计",
+        CapsSource::Builtin => t(BuiltinMsg::SourceBuiltinSnapshot),
+        CapsSource::Heuristic => t(BuiltinMsg::SourceEstimated),
     }
 }
 
@@ -862,5 +1006,42 @@ mod tests {
         remote_forget("uid-remote-test");
         assert!(remote_get("uid-remote-test|2").is_none());
         assert!(remote_claim(&key));
+    }
+
+    #[test]
+    fn every_builtin_message_has_both_languages() {
+        use crate::i18n::Msg as _;
+        for key in [
+            BuiltinMsg::MissingText,
+            BuiltinMsg::CatalogUpdatedPrefix,
+            BuiltinMsg::CatalogSnapshotPrefix,
+            BuiltinMsg::CatalogSnapshot,
+            BuiltinMsg::CatalogUpdated,
+            BuiltinMsg::CatalogEmpty,
+            BuiltinMsg::OpenSettingsDbFailedPrefix,
+            BuiltinMsg::ProxySettingsProblemPrefix,
+            BuiltinMsg::CapsContextWindow,
+            BuiltinMsg::CapsMaxOutput,
+            BuiltinMsg::CapsThinking,
+            BuiltinMsg::CapsToolCall,
+            BuiltinMsg::CapsImageInput,
+            BuiltinMsg::TokenSuffix,
+            BuiltinMsg::ThinkingNone,
+            BuiltinMsg::ThinkingToggle,
+            BuiltinMsg::ThinkingLevelsPrefix,
+            BuiltinMsg::ThinkingBudgetPrefix,
+            BuiltinMsg::ThinkingBudgetMiddle,
+            BuiltinMsg::ThinkingBudgetSuffix,
+            BuiltinMsg::Supported,
+            BuiltinMsg::NotSupported,
+            BuiltinMsg::SourceManual,
+            BuiltinMsg::SourceEndpoint,
+            BuiltinMsg::SourceBuiltinSnapshot,
+            BuiltinMsg::SourceEstimated,
+        ] {
+            assert!(!key.zh().is_empty(), "{key:?} 缺中文");
+            assert!(!key.en().is_empty(), "{key:?} 缺英文");
+        }
+        assert_eq!(BuiltinMsg::MissingText.zh(), MISSING_TEXT);
     }
 }

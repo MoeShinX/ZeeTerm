@@ -9,6 +9,129 @@
 use serde_json::Value;
 use zssh_core::ai::bridge::ExecTargetReport;
 
+use crate::i18n::{Msg, t};
+
+/// 本文件（工具卡片与思考指示）自己的界面文案。
+///
+/// 只放应用自己的固定文案；工具 id、命令原文、路径、智能体返回的原因一律原样显示，不进这张表。
+/// 带参数的句子保留 `format!`，这里只提供固定片段。
+#[derive(Clone, Copy, Debug)]
+enum AgentToolsMsg {
+    // ---- 工具名 ----
+    ToolListServers,
+    ToolRunCommand,
+    ToolReadTerminal,
+    ToolListDir,
+    ToolReadFile,
+    ToolWriteFile,
+    ToolStat,
+    ToolRememberHost,
+    ToolCall,
+    // ---- 一组调用的摘要 ----
+    SummaryCommandsPrefix,
+    SummaryCommandsSuffix,
+    SummaryReadsPrefix,
+    SummaryReadsSuffix,
+    SummaryWritesPrefix,
+    SummaryWritesSuffix,
+    SummaryLooksPrefix,
+    SummaryLooksSuffix,
+    SummaryOthersSuffix,
+    SummaryJoin,
+    // ---- 正在执行 ----
+    RunningPrefix,
+    // ---- 思考指示 ----
+    ElapsedSecondsSuffix,
+    ElapsedMinutesSuffix,
+    // ---- 重试提示 ----
+    RetryHead,
+    RetryAttemptMiddle,
+    RetryAttemptSuffix,
+    RetryReasonPrefix,
+    RetryInSecondsPrefix,
+    RetryInSecondsSuffix,
+    RetryInMinutesPrefix,
+    RetryInMinutesSuffix,
+    RetryInHoursPrefix,
+    RetryInHoursSuffix,
+}
+
+impl Msg for AgentToolsMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::ToolListServers => "列出服务器",
+            Self::ToolRunCommand => "执行命令",
+            Self::ToolReadTerminal => "读取终端",
+            Self::ToolListDir => "列出目录",
+            Self::ToolReadFile => "读取文件",
+            Self::ToolWriteFile => "写入文件",
+            Self::ToolStat => "查看文件信息",
+            Self::ToolRememberHost => "记住主机信息",
+            Self::ToolCall => "工具调用",
+            Self::SummaryCommandsPrefix => "执行了 ",
+            Self::SummaryCommandsSuffix => " 条命令",
+            Self::SummaryReadsPrefix => "读了 ",
+            Self::SummaryReadsSuffix => " 个文件",
+            Self::SummaryWritesPrefix => "写了 ",
+            Self::SummaryWritesSuffix => " 个文件",
+            Self::SummaryLooksPrefix => "查看了 ",
+            Self::SummaryLooksSuffix => " 处目录或文件信息",
+            Self::SummaryOthersSuffix => " 次其他查询",
+            Self::SummaryJoin => "、",
+            Self::RunningPrefix => "正在执行：",
+            Self::ElapsedSecondsSuffix => "秒",
+            Self::ElapsedMinutesSuffix => "分",
+            Self::RetryHead => "遇到问题，正在重试（第 ",
+            Self::RetryAttemptMiddle => " 次，最多 ",
+            Self::RetryAttemptSuffix => " 次）",
+            Self::RetryReasonPrefix => "：",
+            Self::RetryInSecondsPrefix => "，约 ",
+            Self::RetryInSecondsSuffix => " 秒后重试",
+            Self::RetryInMinutesPrefix => "，约 ",
+            Self::RetryInMinutesSuffix => " 分钟后重试",
+            Self::RetryInHoursPrefix => "，约 ",
+            Self::RetryInHoursSuffix => " 小时后重试",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::ToolListServers => "List servers",
+            Self::ToolRunCommand => "Run command",
+            Self::ToolReadTerminal => "Read terminal",
+            Self::ToolListDir => "List directory",
+            Self::ToolReadFile => "Read file",
+            Self::ToolWriteFile => "Write file",
+            Self::ToolStat => "File info",
+            Self::ToolRememberHost => "Remember host info",
+            Self::ToolCall => "Tool call",
+            Self::SummaryCommandsPrefix => "Ran ",
+            Self::SummaryCommandsSuffix => " commands",
+            Self::SummaryReadsPrefix => "Read ",
+            Self::SummaryReadsSuffix => " files",
+            Self::SummaryWritesPrefix => "Wrote ",
+            Self::SummaryWritesSuffix => " files",
+            Self::SummaryLooksPrefix => "Inspected ",
+            Self::SummaryLooksSuffix => " directories or file infos",
+            Self::SummaryOthersSuffix => " other lookups",
+            Self::SummaryJoin => ", ",
+            Self::RunningPrefix => "Running: ",
+            Self::ElapsedSecondsSuffix => "s",
+            Self::ElapsedMinutesSuffix => "m ",
+            Self::RetryHead => "Something went wrong; retrying (attempt ",
+            Self::RetryAttemptMiddle => " of ",
+            Self::RetryAttemptSuffix => ")",
+            Self::RetryReasonPrefix => ": ",
+            Self::RetryInSecondsPrefix => ", retrying in about ",
+            Self::RetryInSecondsSuffix => "s",
+            Self::RetryInMinutesPrefix => ", retrying in about ",
+            Self::RetryInMinutesSuffix => " min",
+            Self::RetryInHoursPrefix => ", retrying in about ",
+            Self::RetryInHoursSuffix => " h",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 工具名与输入
 // ---------------------------------------------------------------------------
@@ -34,15 +157,15 @@ pub fn bare_tool_name(tool: &str) -> String {
 /// 这里先按 [`bare_tool_name`] 去掉所有智能体前缀，三种智能体显示一致。
 pub fn friendly_tool_name(tool: &str) -> String {
     match bare_tool_name(tool).as_str() {
-        "list_sessions" | "list_targets" => "列出服务器".to_owned(),
-        "run_command" => "执行命令".to_owned(),
-        "read_terminal" => "读取终端".to_owned(),
-        "list_dir" => "列出目录".to_owned(),
-        "read_file" => "读取文件".to_owned(),
-        "write_file" => "写入文件".to_owned(),
-        "stat" => "查看文件信息".to_owned(),
-        "remember_host" => "记住主机信息".to_owned(),
-        _ if tool.is_empty() => "工具调用".to_owned(),
+        "list_sessions" | "list_targets" => t(AgentToolsMsg::ToolListServers).to_owned(),
+        "run_command" => t(AgentToolsMsg::ToolRunCommand).to_owned(),
+        "read_terminal" => t(AgentToolsMsg::ToolReadTerminal).to_owned(),
+        "list_dir" => t(AgentToolsMsg::ToolListDir).to_owned(),
+        "read_file" => t(AgentToolsMsg::ToolReadFile).to_owned(),
+        "write_file" => t(AgentToolsMsg::ToolWriteFile).to_owned(),
+        "stat" => t(AgentToolsMsg::ToolStat).to_owned(),
+        "remember_host" => t(AgentToolsMsg::ToolRememberHost).to_owned(),
+        _ if tool.is_empty() => t(AgentToolsMsg::ToolCall).to_owned(),
         _ => tool.to_owned(),
     }
 }
@@ -507,34 +630,51 @@ pub fn summarize_calls(tools: &[&str]) -> String {
     }
     let mut parts = Vec::new();
     if commands > 0 {
-        parts.push(format!("执行了 {commands} 条命令"));
+        parts.push(format!(
+            "{}{commands}{}",
+            t(AgentToolsMsg::SummaryCommandsPrefix),
+            t(AgentToolsMsg::SummaryCommandsSuffix)
+        ));
     }
     if reads > 0 {
-        parts.push(format!("读了 {reads} 个文件"));
+        parts.push(format!(
+            "{}{reads}{}",
+            t(AgentToolsMsg::SummaryReadsPrefix),
+            t(AgentToolsMsg::SummaryReadsSuffix)
+        ));
     }
     if writes > 0 {
-        parts.push(format!("写了 {writes} 个文件"));
+        parts.push(format!(
+            "{}{writes}{}",
+            t(AgentToolsMsg::SummaryWritesPrefix),
+            t(AgentToolsMsg::SummaryWritesSuffix)
+        ));
     }
     if looks > 0 {
-        parts.push(format!("查看了 {looks} 处目录或文件信息"));
+        parts.push(format!(
+            "{}{looks}{}",
+            t(AgentToolsMsg::SummaryLooksPrefix),
+            t(AgentToolsMsg::SummaryLooksSuffix)
+        ));
     }
     if others > 0 {
-        parts.push(format!("{others} 次其他查询"));
+        parts.push(format!("{others}{}", t(AgentToolsMsg::SummaryOthersSuffix)));
     }
-    parts.join("、")
+    parts.join(t(AgentToolsMsg::SummaryJoin))
 }
 
 /// 正在执行的一行文字：「正在执行：<命令前 60 个字符>…」。
 pub fn progress_text(tool: &str, input: &Value) -> String {
+    let prefix = t(AgentToolsMsg::RunningPrefix);
     let Some(detail) = command_of(input).or_else(|| path_of(input)) else {
-        return format!("正在执行：{}", friendly_tool_name(tool));
+        return format!("{prefix}{}", friendly_tool_name(tool));
     };
     let flat = detail.split_whitespace().collect::<Vec<_>>().join(" ");
     let chars: Vec<char> = flat.chars().collect();
     if chars.len() > 60 {
-        format!("正在执行：{}…", chars[..60].iter().collect::<String>())
+        format!("{prefix}{}…", chars[..60].iter().collect::<String>())
     } else {
-        format!("正在执行：{flat}")
+        format!("{prefix}{flat}")
     }
 }
 
@@ -573,9 +713,15 @@ pub fn show_thinking(running: bool, last: LastItem, approvals_pending: bool) -> 
 pub fn elapsed_text(ms: u64) -> String {
     let secs = ms / 1000;
     if secs < 60 {
-        format!("{secs}秒")
+        format!("{secs}{}", t(AgentToolsMsg::ElapsedSecondsSuffix))
     } else {
-        format!("{}分{}秒", secs / 60, secs % 60)
+        format!(
+            "{}{}{secs}{}",
+            secs / 60,
+            t(AgentToolsMsg::ElapsedMinutesSuffix),
+            t(AgentToolsMsg::ElapsedSecondsSuffix),
+            secs = secs % 60
+        )
     }
 }
 
@@ -594,9 +740,23 @@ pub struct RetryNotice {
 fn next_text(secs: Option<u64>) -> String {
     match secs {
         None | Some(0) => String::new(),
-        Some(secs) if secs < 60 => format!("，约 {secs} 秒后重试"),
-        Some(secs) if secs < 3600 => format!("，约 {} 分钟后重试", secs.div_ceil(60)),
-        Some(secs) => format!("，约 {} 小时后重试", secs.div_ceil(3600)),
+        Some(secs) if secs < 60 => format!(
+            "{}{secs}{}",
+            t(AgentToolsMsg::RetryInSecondsPrefix),
+            t(AgentToolsMsg::RetryInSecondsSuffix)
+        ),
+        Some(secs) if secs < 3600 => format!(
+            "{}{}{}",
+            t(AgentToolsMsg::RetryInMinutesPrefix),
+            secs.div_ceil(60),
+            t(AgentToolsMsg::RetryInMinutesSuffix)
+        ),
+        Some(secs) => format!(
+            "{}{}{}",
+            t(AgentToolsMsg::RetryInHoursPrefix),
+            secs.div_ceil(3600),
+            t(AgentToolsMsg::RetryInHoursSuffix)
+        ),
     }
 }
 
@@ -607,10 +767,13 @@ pub fn retry_text(notice: &RetryNotice) -> String {
     let reason = if reason.is_empty() {
         String::new()
     } else {
-        format!("：{reason}")
+        format!("{}{reason}", t(AgentToolsMsg::RetryReasonPrefix))
     };
     format!(
-        "遇到问题，正在重试（第 {attempt} 次，最多 {MAX_RETRIES} 次）{reason}{}",
+        "{}{attempt}{}{MAX_RETRIES}{}{reason}{}",
+        t(AgentToolsMsg::RetryHead),
+        t(AgentToolsMsg::RetryAttemptMiddle),
+        t(AgentToolsMsg::RetryAttemptSuffix),
         next_text(notice.next_in_secs)
     )
 }
@@ -903,5 +1066,47 @@ mod tests {
             "遇到问题，正在重试（第 1 次，最多 3 次）：x"
         );
         assert!(retry_text(&notice(1, "x", Some(7200))).ends_with("约 2 小时后重试"));
+    }
+
+    #[test]
+    fn every_tool_message_has_both_languages() {
+        use crate::i18n::Msg as _;
+        for key in [
+            AgentToolsMsg::ToolListServers,
+            AgentToolsMsg::ToolRunCommand,
+            AgentToolsMsg::ToolReadTerminal,
+            AgentToolsMsg::ToolListDir,
+            AgentToolsMsg::ToolReadFile,
+            AgentToolsMsg::ToolWriteFile,
+            AgentToolsMsg::ToolStat,
+            AgentToolsMsg::ToolRememberHost,
+            AgentToolsMsg::ToolCall,
+            AgentToolsMsg::SummaryCommandsPrefix,
+            AgentToolsMsg::SummaryCommandsSuffix,
+            AgentToolsMsg::SummaryReadsPrefix,
+            AgentToolsMsg::SummaryReadsSuffix,
+            AgentToolsMsg::SummaryWritesPrefix,
+            AgentToolsMsg::SummaryWritesSuffix,
+            AgentToolsMsg::SummaryLooksPrefix,
+            AgentToolsMsg::SummaryLooksSuffix,
+            AgentToolsMsg::SummaryOthersSuffix,
+            AgentToolsMsg::SummaryJoin,
+            AgentToolsMsg::RunningPrefix,
+            AgentToolsMsg::ElapsedSecondsSuffix,
+            AgentToolsMsg::ElapsedMinutesSuffix,
+            AgentToolsMsg::RetryHead,
+            AgentToolsMsg::RetryAttemptMiddle,
+            AgentToolsMsg::RetryAttemptSuffix,
+            AgentToolsMsg::RetryReasonPrefix,
+            AgentToolsMsg::RetryInSecondsPrefix,
+            AgentToolsMsg::RetryInSecondsSuffix,
+            AgentToolsMsg::RetryInMinutesPrefix,
+            AgentToolsMsg::RetryInMinutesSuffix,
+            AgentToolsMsg::RetryInHoursPrefix,
+            AgentToolsMsg::RetryInHoursSuffix,
+        ] {
+            assert!(!key.zh().is_empty(), "{key:?} 缺中文");
+            assert!(!key.en().is_empty(), "{key:?} 缺英文");
+        }
     }
 }

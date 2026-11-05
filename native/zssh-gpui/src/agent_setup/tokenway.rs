@@ -32,9 +32,64 @@ use zssh_core::ai::agent::builtin::tokenway::{
 use zssh_core::store::Database;
 
 use super::builtin;
+use crate::i18n::{Msg, t};
 
 /// 预设清单的缓存放在数据目录下的这个子目录。
 pub const PRESETS_DIR: &str = "ai-presets";
+
+/// 本文件（Tokenway 一键连接与余额）自己的界面文案。
+///
+/// 只放应用自己的固定文案；预设名、网址、余额数额和设备名一律原样显示，不进这张表。
+/// 带参数的句子保留 `format!`，这里只提供固定片段。
+#[derive(Clone, Copy, Debug)]
+enum TokenwayMsg {
+    UrlNotAllowedPrefix,
+    UrlNotAllowedSuffix,
+    NoTopupUrl,
+    NoRegisterUrl,
+    NoOneClickAuth,
+    OpenSettingsDbFailedPrefix,
+    AuthorizationInvalidLabel,
+    AuthorizationInvalidDetail,
+    NotAuthorizedToken,
+    NoStatusUrl,
+}
+
+impl Msg for TokenwayMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::UrlNotAllowedPrefix => "这个地址不在允许打开的名单里（",
+            Self::UrlNotAllowedSuffix => "）",
+            Self::NoTopupUrl => "清单里没有充值地址",
+            Self::NoRegisterUrl => "清单里没有注册地址",
+            Self::NoOneClickAuth => "这份预设不支持一键授权",
+            Self::OpenSettingsDbFailedPrefix => "打开设置库失败：",
+            Self::AuthorizationInvalidLabel => "授权失效",
+            Self::AuthorizationInvalidDetail => {
+                "Tokenway 授权已失效（可能在网站上改过密码或停用了授权），请重新连接"
+            }
+            Self::NotAuthorizedToken => "这个接口不是浏览器授权的 Tokenway 令牌",
+            Self::NoStatusUrl => "清单里没有余额地址",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::UrlNotAllowedPrefix => "This address is not on the allowed list (",
+            Self::UrlNotAllowedSuffix => ")",
+            Self::NoTopupUrl => "The manifest has no top-up URL",
+            Self::NoRegisterUrl => "The manifest has no registration URL",
+            Self::NoOneClickAuth => "This preset does not support one-click authorization",
+            Self::OpenSettingsDbFailedPrefix => "Failed to open the settings database: ",
+            Self::AuthorizationInvalidLabel => "Authorization invalid",
+            Self::AuthorizationInvalidDetail => {
+                "The Tokenway authorization is no longer valid (the password may have been changed or the authorization disabled on the website). Please reconnect."
+            }
+            Self::NotAuthorizedToken => "This endpoint is not a browser-authorized Tokenway token",
+            Self::NoStatusUrl => "The manifest has no balance URL",
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 调试版的本机假 Tokenway
@@ -202,9 +257,13 @@ pub fn opener() -> Arc<dyn UrlOpener> {
 
 /// 打开注册页 / 充值页：地址必须通过白名单；假 Tokenway 在跑时只记下来、不真的打开。
 pub fn open_page(url: &str) -> Result<(), String> {
-    policy()
-        .check(url)
-        .map_err(|why| format!("这个地址不在允许打开的名单里（{why}）"))?;
+    policy().check(url).map_err(|why| {
+        format!(
+            "{}{why}{}",
+            t(TokenwayMsg::UrlNotAllowedPrefix),
+            t(TokenwayMsg::UrlNotAllowedSuffix)
+        )
+    })?;
     if let Some(fake) = fake() {
         fake.opened
             .lock()
@@ -218,14 +277,14 @@ pub fn open_page(url: &str) -> Result<(), String> {
 pub fn open_topup() -> Result<(), String> {
     let url = tokenway_preset()
         .and_then(|preset| preset.topup_url)
-        .ok_or_else(|| "清单里没有充值地址".to_owned())?;
+        .ok_or_else(|| t(TokenwayMsg::NoTopupUrl).to_owned())?;
     open_page(&url)
 }
 
 pub fn open_register() -> Result<(), String> {
     let url = tokenway_preset()
         .and_then(|preset| preset.register_url)
-        .ok_or_else(|| "清单里没有注册地址".to_owned())?;
+        .ok_or_else(|| t(TokenwayMsg::NoRegisterUrl).to_owned())?;
     open_page(&url)
 }
 
@@ -276,7 +335,7 @@ pub async fn run_connect(
     let urls = preset.authorize_urls().ok_or_else(|| {
         ConnectError::Api(ApiError {
             kind: ApiErrorKind::Refused,
-            message: "这份预设不支持一键授权".to_owned(),
+            message: t(TokenwayMsg::NoOneClickAuth).to_owned(),
             status: None,
             code: None,
         })
@@ -332,7 +391,8 @@ pub fn finish_connect(
 
 /// 断开：通知 Tokenway 停用（失败也继续）→ 删保险库里的 Key → 删接口配置。
 pub async fn disconnect_endpoint(endpoint_id: i64) -> Result<DisconnectReport, String> {
-    let db = crate::host_db::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
+    let db = crate::host_db::open_database()
+        .map_err(|err| format!("{}{err}", t(TokenwayMsg::OpenSettingsDbFailedPrefix)))?;
     let transport = transport()?;
     let revoke_url = tokenway_preset().and_then(|preset| preset.revoke_url);
     let uid = db.ai_endpoint_get(endpoint_id).ok().map(|e| e.uid);
@@ -452,9 +512,8 @@ impl BalanceBook {
         let entry = self.entries.get(&endpoint_id)?;
         match (&entry.balance, &entry.problem) {
             (_, Some(BalanceProblem::AuthorizationInvalid)) => Some(BalanceView {
-                label: "授权失效".to_owned(),
-                detail: "Tokenway 授权已失效（可能在网站上改过密码或停用了授权），请重新连接"
-                    .to_owned(),
+                label: t(TokenwayMsg::AuthorizationInvalidLabel).to_owned(),
+                detail: t(TokenwayMsg::AuthorizationInvalidDetail).to_owned(),
                 needs_topup: false,
                 problem: entry.problem.clone(),
             }),
@@ -516,16 +575,20 @@ async fn fetch_balance(endpoint_id: i64) -> Result<Balance, ApiError> {
         code: None,
     };
     let (endpoint, key) = {
-        let db = crate::host_db::open_database()
-            .map_err(|err| failed(format!("打开设置库失败：{err}")))?;
+        let db = crate::host_db::open_database().map_err(|err| {
+            failed(format!(
+                "{}{err}",
+                t(TokenwayMsg::OpenSettingsDbFailedPrefix)
+            ))
+        })?;
         crate::agent_host::load_endpoint_from(&db, endpoint_id).map_err(failed)?
     };
     if !is_authorized_token(endpoint.preset_id.as_deref()) {
-        return Err(failed("这个接口不是浏览器授权的 Tokenway 令牌".to_owned()));
+        return Err(failed(t(TokenwayMsg::NotAuthorizedToken).to_owned()));
     }
     let status_url = tokenway_preset()
         .and_then(|preset| preset.status_url)
-        .ok_or_else(|| failed("清单里没有余额地址".to_owned()))?;
+        .ok_or_else(|| failed(t(TokenwayMsg::NoStatusUrl).to_owned()))?;
     let transport = transport().map_err(failed)?;
     fetch_status(transport.as_ref(), &policy(), &status_url, &key).await
 }

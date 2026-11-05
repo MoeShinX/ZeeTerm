@@ -7,6 +7,53 @@
 use zssh_core::ai::agent::builtin::config::EndpointKind;
 use zssh_core::ai::agent::builtin::tokenway::Preset;
 
+use crate::i18n::{Msg, t};
+
+/// 本文件（添加接口时的预设列表）自己的界面文案。
+///
+/// 只放应用自己的固定文案；服务商名、地址和清单里带来的介绍一律原样显示，不进这张表。
+#[derive(Clone, Copy, Debug)]
+enum PresetsMsg {
+    Custom,
+    TaglineOpenAi,
+    TaglineAnthropic,
+    TaglineDeepSeek,
+    TaglineOpenRouter,
+    TaglineOllama,
+    TaglineCustom,
+    TaglineTokenwayFallback,
+}
+
+impl Msg for PresetsMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::Custom => "自定义",
+            Self::TaglineOpenAi => "OpenAI 官方接口",
+            Self::TaglineAnthropic => "Claude 官方接口（Messages）",
+            Self::TaglineDeepSeek => "DeepSeek 官方接口",
+            Self::TaglineOpenRouter => "一个 Key 用很多家的模型",
+            Self::TaglineOllama => "本机运行的模型，不需要 Key",
+            Self::TaglineCustom => "OpenAI 兼容或 Anthropic 接口，地址自己填",
+            Self::TaglineTokenwayFallback => "浏览器一键授权，不用复制 Key",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::Custom => "Custom",
+            Self::TaglineOpenAi => "Official OpenAI API",
+            Self::TaglineAnthropic => "Official Claude API (Messages)",
+            Self::TaglineDeepSeek => "Official DeepSeek API",
+            Self::TaglineOpenRouter => "Many providers' models with one key",
+            Self::TaglineOllama => "Models running locally; no key needed",
+            Self::TaglineCustom => "OpenAI-compatible or Anthropic API with your own URL",
+            Self::TaglineTokenwayFallback => {
+                "One-click authorization in the browser; no key to copy"
+            }
+        }
+    }
+}
+
 /// 非 Tokenway 的预设：预填表单用。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalPreset {
@@ -27,7 +74,7 @@ pub fn local_presets() -> Vec<LocalPreset> {
         LocalPreset {
             id: Some("openai"),
             name: "OpenAI",
-            tagline: "OpenAI 官方接口",
+            tagline: t(PresetsMsg::TaglineOpenAi),
             kind: EndpointKind::OpenAiChat,
             base_url: "https://api.openai.com/v1",
             no_key: false,
@@ -35,7 +82,7 @@ pub fn local_presets() -> Vec<LocalPreset> {
         LocalPreset {
             id: Some("anthropic"),
             name: "Anthropic",
-            tagline: "Claude 官方接口（Messages）",
+            tagline: t(PresetsMsg::TaglineAnthropic),
             kind: EndpointKind::Anthropic,
             base_url: "https://api.anthropic.com",
             no_key: false,
@@ -43,7 +90,7 @@ pub fn local_presets() -> Vec<LocalPreset> {
         LocalPreset {
             id: Some("deepseek"),
             name: "DeepSeek",
-            tagline: "DeepSeek 官方接口",
+            tagline: t(PresetsMsg::TaglineDeepSeek),
             kind: EndpointKind::OpenAiChat,
             base_url: "https://api.deepseek.com/v1",
             no_key: false,
@@ -51,7 +98,7 @@ pub fn local_presets() -> Vec<LocalPreset> {
         LocalPreset {
             id: Some("openrouter"),
             name: "OpenRouter",
-            tagline: "一个 Key 用很多家的模型",
+            tagline: t(PresetsMsg::TaglineOpenRouter),
             kind: EndpointKind::OpenAiChat,
             base_url: "https://openrouter.ai/api/v1",
             no_key: false,
@@ -59,15 +106,15 @@ pub fn local_presets() -> Vec<LocalPreset> {
         LocalPreset {
             id: Some("ollama"),
             name: "Ollama",
-            tagline: "本机运行的模型，不需要 Key",
+            tagline: t(PresetsMsg::TaglineOllama),
             kind: EndpointKind::OpenAiChat,
             base_url: "http://localhost:11434/v1",
             no_key: true,
         },
         LocalPreset {
             id: None,
-            name: "自定义",
-            tagline: "OpenAI 兼容或 Anthropic 接口，地址自己填",
+            name: t(PresetsMsg::Custom),
+            tagline: t(PresetsMsg::TaglineCustom),
             kind: EndpointKind::OpenAiChat,
             base_url: "",
             no_key: false,
@@ -122,7 +169,7 @@ pub fn preset_rows(tokenway: Option<&Preset>) -> Vec<PresetRow> {
             tagline: preset
                 .tagline
                 .clone()
-                .unwrap_or_else(|| "浏览器一键授权，不用复制 Key".to_owned()),
+                .unwrap_or_else(|| t(PresetsMsg::TaglineTokenwayFallback).to_owned()),
             recommended: preset.recommended,
         });
     }
@@ -200,5 +247,23 @@ mod tests {
         let rows = preset_rows(Some(&preset));
         assert!(!rows[0].tagline().is_empty());
         assert!(!rows[0].recommended());
+    }
+
+    #[test]
+    fn every_preset_message_has_both_languages() {
+        use crate::i18n::Msg as _;
+        for key in [
+            PresetsMsg::Custom,
+            PresetsMsg::TaglineOpenAi,
+            PresetsMsg::TaglineAnthropic,
+            PresetsMsg::TaglineDeepSeek,
+            PresetsMsg::TaglineOpenRouter,
+            PresetsMsg::TaglineOllama,
+            PresetsMsg::TaglineCustom,
+            PresetsMsg::TaglineTokenwayFallback,
+        ] {
+            assert!(!key.zh().is_empty(), "{key:?} 缺中文");
+            assert!(!key.en().is_empty(), "{key:?} 缺英文");
+        }
     }
 }

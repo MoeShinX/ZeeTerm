@@ -60,9 +60,112 @@ use zssh_session::SessionCommand;
 
 use crate::agent_setup::{AgentKind, fake};
 use crate::ai_terminals::{TermCommand, TermEntry, terminals};
+use crate::i18n::{Msg, t};
 
 /// Claude Code 对话的空闲关闭时间：10 分钟（和驱动默认值一致）。
 const CLAUDE_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// 本文件（智能体宿主的执行 / 文件 / 记忆接线）自己的界面文案。
+///
+/// 只放应用自己的固定文案；主机名、终端编号、路径、命令和核心库返回的原文一律原样显示，
+/// 不进这张表。带参数的句子保留 `format!`，这里只提供固定片段。只有产品里会到界面 / 模型
+/// 的提示才在这里；不可能的内部控制流断言（「共用进程类型不对」之类）保持原样。
+#[derive(Clone, Copy, Debug)]
+enum AgentHostMsg {
+    OpenHostDbFailedPrefix,
+    HostTargetOnlyPrefix,
+    NoTerminal,
+    TerminalBufferLockUnavailable,
+    OpenSftpChannelFailedPrefix,
+    NoTerminalUseBackground,
+    CannotRememberQuickConnect,
+    SessionNotConnectedPrefix,
+    SessionClosedBeforeCommandEnd,
+    CurrentExeFailedPrefix,
+    NoExeParentDir,
+    ToolBridgeBindFailedPrefix,
+    ToolBridgeNonblockingFailedPrefix,
+    ToolBridgePortFailedPrefix,
+    McpBinaryMissingPrefix,
+    McpBinaryMissingSuffix,
+    OpenSettingsDbFailedPrefix,
+    EndpointMissing,
+    ReadApiKeyFailedPrefix,
+    MissingApiKeyPrefix,
+    MissingApiKeySuffix,
+}
+
+impl Msg for AgentHostMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::OpenHostDbFailedPrefix => "打开主机库失败：",
+            Self::HostTargetOnlyPrefix => "原生窗口只支持主机库里的主机（host-<id>）作为执行目标：",
+            Self::NoTerminal => "这台主机现在没有打开的终端标签",
+            Self::TerminalBufferLockUnavailable => "终端缓冲锁不可用",
+            Self::OpenSftpChannelFailedPrefix => "打开 SFTP 通道失败：",
+            Self::NoTerminalUseBackground => "这台主机还没有打开的终端，先走后台通道",
+            Self::CannotRememberQuickConnect => "这个目标不在主机库里（快速连接），不能保存记忆",
+            Self::SessionNotConnectedPrefix => "会话不存在或者还没连上：",
+            Self::SessionClosedBeforeCommandEnd => "会话在命令结束前断开了",
+            Self::CurrentExeFailedPrefix => "拿不到主程序路径：",
+            Self::NoExeParentDir => "主程序没有父目录",
+            Self::ToolBridgeBindFailedPrefix => "工具桥监听失败：",
+            Self::ToolBridgeNonblockingFailedPrefix => "工具桥监听设置非阻塞失败：",
+            Self::ToolBridgePortFailedPrefix => "工具桥取端口失败：",
+            Self::McpBinaryMissingPrefix => "没有找到 zssh-mcp.exe（应当和主程序放在同一个目录：",
+            Self::McpBinaryMissingSuffix => "）",
+            Self::OpenSettingsDbFailedPrefix => "打开设置库失败：",
+            Self::EndpointMissing => "这个接口已经不存在了，请在智能体下拉里重新选一个。",
+            Self::ReadApiKeyFailedPrefix => "读取 API Key 失败：",
+            Self::MissingApiKeyPrefix => "接口「",
+            Self::MissingApiKeySuffix => "」还没有 API Key：到 设置 → AI → ZeePilot 里补上。",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::OpenHostDbFailedPrefix => "Failed to open the host database: ",
+            Self::HostTargetOnlyPrefix => {
+                "The native window only supports hosts from the host database (host-<id>) as execution targets: "
+            }
+            Self::NoTerminal => "This host has no open terminal tab right now",
+            Self::TerminalBufferLockUnavailable => "The terminal buffer lock is unavailable",
+            Self::OpenSftpChannelFailedPrefix => "Failed to open the SFTP channel: ",
+            Self::NoTerminalUseBackground => {
+                "This host has no open terminal yet; using the background channel"
+            }
+            Self::CannotRememberQuickConnect => {
+                "This target is not in the host database (quick connect), so notes cannot be saved"
+            }
+            Self::SessionNotConnectedPrefix => {
+                "The session does not exist or is not connected yet: "
+            }
+            Self::SessionClosedBeforeCommandEnd => {
+                "The session disconnected before the command finished"
+            }
+            Self::CurrentExeFailedPrefix => "Failed to locate the main executable: ",
+            Self::NoExeParentDir => "The main executable has no parent directory",
+            Self::ToolBridgeBindFailedPrefix => "Failed to bind the tool bridge listener: ",
+            Self::ToolBridgeNonblockingFailedPrefix => {
+                "Failed to set the tool bridge listener non-blocking: "
+            }
+            Self::ToolBridgePortFailedPrefix => "Failed to read the tool bridge port: ",
+            Self::McpBinaryMissingPrefix => {
+                "zssh-mcp.exe was not found (it should be in the same directory as the main executable: "
+            }
+            Self::McpBinaryMissingSuffix => ")",
+            Self::OpenSettingsDbFailedPrefix => "Failed to open the settings database: ",
+            Self::EndpointMissing => {
+                "This endpoint no longer exists; pick another one in the agent dropdown."
+            }
+            Self::ReadApiKeyFailedPrefix => "Failed to read the API key: ",
+            Self::MissingApiKeyPrefix => "Endpoint \"",
+            Self::MissingApiKeySuffix => {
+                "\" has no API key yet: add one under Settings → AI → ZeePilot."
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 执行宿主
@@ -148,7 +251,7 @@ impl NativeBridgeHost {
 
     fn open_db(&self) -> Result<Database, String> {
         Database::open(&self.data_dir.join("zssh.db"))
-            .map_err(|err| format!("打开主机库失败：{err}"))
+            .map_err(|err| format!("{}{err}", t(AgentHostMsg::OpenHostDbFailedPrefix)))
     }
 
     /// 目标对应主机库里的哪台主机：`host-<id>` 直接解析；终端编号看终端登记的主机。
@@ -166,7 +269,7 @@ impl Default for NativeBridgeHost {
 
 /// 目标不是 `host-<id>` 时给模型 / 界面的原因。
 fn host_target_error(target_id: &str) -> String {
-    format!("原生窗口只支持主机库里的主机（host-<id>）作为执行目标：{target_id}")
+    format!("{}{target_id}", t(AgentHostMsg::HostTargetOnlyPrefix))
 }
 
 /// 解析 `host-<id>`；别的目标返回中文原因（不 panic，也不去连任何东西）。
@@ -191,8 +294,6 @@ async fn connection_for(target_id: &str) -> Result<Arc<zssh_core::ssh::Connectio
         .await?
         .connection())
 }
-
-const NO_TERMINAL: &str = "这台主机现在没有打开的终端标签";
 
 impl BridgeHost for NativeBridgeHost {
     /// Telnet / 串口主机不能让 AI 执行命令：按主机库里的协议判断。不在主机库里的目标
@@ -280,11 +381,12 @@ impl BridgeHost for NativeBridgeHost {
         max_lines: usize,
     ) -> BoxFuture<'a, Result<Vec<String>, String>> {
         Box::pin(async move {
-            let entry = terminal_for(target_id).ok_or_else(|| NO_TERMINAL.to_owned())?;
+            let entry =
+                terminal_for(target_id).ok_or_else(|| t(AgentHostMsg::NoTerminal).to_owned())?;
             let lines = entry
                 .ring
                 .lock()
-                .map_err(|_| "终端缓冲锁不可用".to_owned())?
+                .map_err(|_| t(AgentHostMsg::TerminalBufferLockUnavailable).to_owned())?
                 .recent_lines(max_lines);
             Ok(lines)
         })
@@ -311,7 +413,7 @@ impl BridgeHost for NativeBridgeHost {
             .await?;
             let channel = SftpChannel::open(&connection)
                 .await
-                .map_err(|err| format!("打开 SFTP 通道失败：{err}"))?;
+                .map_err(|err| format!("{}{err}", t(AgentHostMsg::OpenSftpChannelFailedPrefix)))?;
             let fs: Arc<dyn RemoteFs> = Arc::new(SftpRemoteFs::new(Arc::new(channel)));
             Ok(fs)
         })
@@ -321,7 +423,7 @@ impl BridgeHost for NativeBridgeHost {
         Box::pin(async move {
             let Some(entry) = terminal_for(target_id) else {
                 return ExecPlacement::Background {
-                    reason: "这台主机还没有打开的终端，先走后台通道".to_string(),
+                    reason: t(AgentHostMsg::NoTerminalUseBackground).to_string(),
                 };
             };
             // 第一次需要在终端里执行之前，用后台 exec 通道静默探测一次远端登录 shell 的类型
@@ -394,7 +496,7 @@ impl BridgeHost for NativeBridgeHost {
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             let host_id = Self::host_id_of(target_id)
-                .ok_or_else(|| "这个目标不在主机库里（快速连接），不能保存记忆".to_string())?;
+                .ok_or_else(|| t(AgentHostMsg::CannotRememberQuickConnect).to_string())?;
             self.open_db()?
                 .host_memory_set(host_id, notes)
                 .map_err(|err| err.to_string())?;
@@ -426,7 +528,11 @@ impl BridgeHost for NativeBridgeHost {
 /// 登记一条记录：停止按钮据此知道「这个对话有条命令正在这个终端里跑」，然后才发 Ctrl+C。
 async fn run_in_terminal_on(request: TerminalExecRequest) -> Result<TerminalExecCapture, String> {
     let Some(entry) = terminal_for(&request.target_id) else {
-        return Err(format!("会话不存在或者还没连上：{}", request.target_id));
+        return Err(format!(
+            "{}{}",
+            t(AgentHostMsg::SessionNotConnectedPrefix),
+            request.target_id
+        ));
     };
     let runs = terminals().runs();
     runs.register(&request.scope_id, &entry.id, &request.marker);
@@ -499,7 +605,7 @@ async fn run_in_terminal_on(request: TerminalExecRequest) -> Result<TerminalExec
             duration_ms,
             timed_out: true,
         }),
-        MarkerOutcome::Gone => Err("会话在命令结束前断开了".to_string()),
+        MarkerOutcome::Gone => Err(t(AgentHostMsg::SessionClosedBeforeCommandEnd).to_string()),
     }
 }
 
@@ -1237,8 +1343,11 @@ pub async fn send_unless_cancelled(
 
 /// `zssh-mcp.exe` 应该在的位置：和主程序放在同一个目录。
 fn mcp_binary_location() -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|err| format!("拿不到主程序路径：{err}"))?;
-    let dir = exe.parent().ok_or_else(|| "主程序没有父目录".to_string())?;
+    let exe = std::env::current_exe()
+        .map_err(|err| format!("{}{err}", t(AgentHostMsg::CurrentExeFailedPrefix)))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| t(AgentHostMsg::NoExeParentDir).to_string())?;
     Ok(dir.join("zssh-mcp.exe"))
 }
 
@@ -1375,13 +1484,16 @@ impl AgentHub {
     ) -> Result<Arc<Self>, String> {
         // 先同步绑定拿端口（和 Tauri 版一致），异步运行时只负责 accept。
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
-            .map_err(|err| format!("工具桥监听失败：{err}"))?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|err| format!("工具桥监听设置非阻塞失败：{err}"))?;
+            .map_err(|err| format!("{}{err}", t(AgentHostMsg::ToolBridgeBindFailedPrefix)))?;
+        listener.set_nonblocking(true).map_err(|err| {
+            format!(
+                "{}{err}",
+                t(AgentHostMsg::ToolBridgeNonblockingFailedPrefix)
+            )
+        })?;
         let port = listener
             .local_addr()
-            .map_err(|err| format!("工具桥取端口失败：{err}"))?
+            .map_err(|err| format!("{}{err}", t(AgentHostMsg::ToolBridgePortFailedPrefix)))?
             .port();
         let approver = Arc::new(NativeApprover::routed());
         let bridge = Arc::new(Bridge::new(
@@ -1433,8 +1545,10 @@ impl AgentHub {
             return Ok(());
         }
         Err(format!(
-            "没有找到 zssh-mcp.exe（应当和主程序放在同一个目录：{}）",
-            self.mcp_binary.display()
+            "{}{}{}",
+            t(AgentHostMsg::McpBinaryMissingPrefix),
+            self.mcp_binary.display(),
+            t(AgentHostMsg::McpBinaryMissingSuffix)
         ))
     }
 
@@ -1733,7 +1847,8 @@ pub async fn start_builtin_agent(
 
 /// 读接口配置和它的 Key（Key 只在这里短暂出现，交给对话后由 `ApiKey` 的 `Debug` 挡住）。
 pub(crate) fn load_endpoint(endpoint_id: i64) -> Result<(AiEndpoint, ApiKey), String> {
-    let db = crate::host_db::open_database().map_err(|err| format!("打开设置库失败：{err}"))?;
+    let db = crate::host_db::open_database()
+        .map_err(|err| format!("{}{err}", t(AgentHostMsg::OpenSettingsDbFailedPrefix)))?;
     load_endpoint_from(&db, endpoint_id)
 }
 
@@ -1744,18 +1859,20 @@ pub(crate) fn load_endpoint_from(
 ) -> Result<(AiEndpoint, ApiKey), String> {
     let endpoint = db
         .ai_endpoint_get(endpoint_id)
-        .map_err(|_| "这个接口已经不存在了，请在智能体下拉里重新选一个。".to_string())?;
+        .map_err(|_| t(AgentHostMsg::EndpointMissing).to_string())?;
     let key = db
         .ai_endpoint_api_key(endpoint_id)
-        .map_err(|err| format!("读取 API Key 失败：{err}"))?;
+        .map_err(|err| format!("{}{err}", t(AgentHostMsg::ReadApiKeyFailedPrefix)))?;
     let key = match key {
         Some(key) => key,
         // 明确设成"不需要 Key"的接口（Ollama 之类）：Key 为空，请求里就不带 Authorization 头。
         None if endpoint.key_not_needed() => String::new(),
         None => {
             return Err(format!(
-                "接口「{}」还没有 API Key：到 设置 → AI → ZeePilot 里补上。",
-                endpoint.name
+                "{}{}{}",
+                t(AgentHostMsg::MissingApiKeyPrefix),
+                endpoint.name,
+                t(AgentHostMsg::MissingApiKeySuffix)
             ));
         }
     };
@@ -3565,5 +3682,36 @@ mod tests {
         // 无论成败都删掉复制进去的登录文件。
         let _ = std::fs::remove_dir_all(&home);
         report("real_codex_round_trip", outcome);
+    }
+
+    #[test]
+    fn every_host_message_has_both_languages() {
+        use crate::i18n::Msg as _;
+        for key in [
+            AgentHostMsg::OpenHostDbFailedPrefix,
+            AgentHostMsg::HostTargetOnlyPrefix,
+            AgentHostMsg::NoTerminal,
+            AgentHostMsg::TerminalBufferLockUnavailable,
+            AgentHostMsg::OpenSftpChannelFailedPrefix,
+            AgentHostMsg::NoTerminalUseBackground,
+            AgentHostMsg::CannotRememberQuickConnect,
+            AgentHostMsg::SessionNotConnectedPrefix,
+            AgentHostMsg::SessionClosedBeforeCommandEnd,
+            AgentHostMsg::CurrentExeFailedPrefix,
+            AgentHostMsg::NoExeParentDir,
+            AgentHostMsg::ToolBridgeBindFailedPrefix,
+            AgentHostMsg::ToolBridgeNonblockingFailedPrefix,
+            AgentHostMsg::ToolBridgePortFailedPrefix,
+            AgentHostMsg::McpBinaryMissingPrefix,
+            AgentHostMsg::McpBinaryMissingSuffix,
+            AgentHostMsg::OpenSettingsDbFailedPrefix,
+            AgentHostMsg::EndpointMissing,
+            AgentHostMsg::ReadApiKeyFailedPrefix,
+            AgentHostMsg::MissingApiKeyPrefix,
+            AgentHostMsg::MissingApiKeySuffix,
+        ] {
+            assert!(!key.zh().is_empty(), "{key:?} 缺中文");
+            assert!(!key.en().is_empty(), "{key:?} 缺英文");
+        }
     }
 }

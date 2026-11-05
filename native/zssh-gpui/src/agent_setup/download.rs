@@ -16,6 +16,39 @@ use zssh_core::ai::agent::discovery::{self, AgentInstall, OPENCODE};
 use zssh_core::ai::agent::download::{self, DownloadError, ReleaseInfo};
 use zssh_core::store::Database;
 
+use crate::i18n::{Msg, t};
+
+/// 本文件（opencode 一键下载）自己的界面文案。
+///
+/// 只放应用自己的固定文案；版本号、URL、文件名、路径和核心库返回的错误原文一律原样显示，
+/// 不进这张表。带参数的句子保留 `format!`，这里只提供固定片段。
+#[derive(Clone, Copy, Debug)]
+enum DownloadMsg {
+    CreateDirFailedPrefix,
+    ProbeAfterDownloadFailedPrefix,
+    UnknownSize,
+}
+
+impl Msg for DownloadMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::CreateDirFailedPrefix => "创建目录失败：",
+            Self::ProbeAfterDownloadFailedPrefix => "下载完成但运行 --version 失败：",
+            Self::UnknownSize => "未知",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::CreateDirFailedPrefix => "Failed to create the directory: ",
+            Self::ProbeAfterDownloadFailedPrefix => {
+                "Download finished but running --version failed: "
+            }
+            Self::UnknownSize => "Unknown",
+        }
+    }
+}
+
 /// 软件网络代理的 URL（带账号密码，**不能打印**）；没有设置或读不出来就是直连。
 pub fn proxy_url(data_dir: &Path) -> Option<String> {
     let db = Database::open(&data_dir.join("zssh.db")).ok()?;
@@ -44,7 +77,8 @@ pub async fn install_release(
     on_progress: impl FnMut(u64, u64) + Send,
     cancel: &AtomicBool,
 ) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(tools_dir).map_err(|e| format!("创建目录失败：{e}"))?;
+    std::fs::create_dir_all(tools_dir)
+        .map_err(|e| format!("{}{e}", t(DownloadMsg::CreateDirFailedPrefix)))?;
     let zip_path = tools_dir.join("opencode-download.zip");
     download::download_to(
         client,
@@ -83,13 +117,13 @@ pub async fn download_and_probe(
     let exe = install_release(&client, release, &tools_dir, on_progress, cancel).await?;
     discovery::probe_path(&OPENCODE, &exe)
         .await
-        .map_err(|e| format!("下载完成但运行 --version 失败：{e}"))
+        .map_err(|e| format!("{}{e}", t(DownloadMsg::ProbeAfterDownloadFailedPrefix)))
 }
 
 /// 大小的显示（确认框里）：0 字节显示"未知"。
 pub fn format_bytes(bytes: u64) -> String {
     if bytes == 0 {
-        return "未知".to_owned();
+        return t(DownloadMsg::UnknownSize).to_owned();
     }
     if bytes < 1024 * 1024 {
         return format!("{} KB", (bytes as f64 / 1024.0).round() as u64);
@@ -303,5 +337,19 @@ mod tests {
         });
         let err = download::parse_release(&body).expect_err("没有摘要必须拒绝");
         assert!(err.contains("SHA-256"), "{err}");
+    }
+
+    #[test]
+    fn every_download_message_has_both_languages() {
+        use crate::i18n::Msg as _;
+        for key in [
+            DownloadMsg::CreateDirFailedPrefix,
+            DownloadMsg::ProbeAfterDownloadFailedPrefix,
+            DownloadMsg::UnknownSize,
+        ] {
+            assert!(!key.zh().is_empty(), "{key:?} 缺中文");
+            assert!(!key.en().is_empty(), "{key:?} 缺英文");
+        }
+        assert_eq!(format_bytes(0), DownloadMsg::UnknownSize.zh());
     }
 }
