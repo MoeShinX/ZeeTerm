@@ -1314,6 +1314,63 @@ impl AgentChatDemo {
         cx.notify();
     }
 
+    /// 往对话里放一张带指定"确认原因"的确认卡（只给截图 / 原因文案验证用：不经过工具桥，
+    /// 没有真实的请求在等，所以点「允许」「拒绝」什么也不会发生）。
+    #[cfg(debug_assertions)]
+    pub fn dev_show_reason_approval(
+        &mut self,
+        kind: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        use zssh_core::ai::bridge::ApprovalRequest;
+        use zssh_core::ai::reason::{ApprovalReason, SystemDirKind};
+        use zssh_core::ai::safety::DangerLevel;
+
+        let (command, reasons, danger) = match kind {
+            "sensitive" => (
+                "read_file ~/.ssh/id_ed25519",
+                vec![ApprovalReason::SensitiveRead {
+                    path: "~/.ssh/id_ed25519".to_owned(),
+                    exact: true,
+                }],
+                DangerLevel::Safe,
+            ),
+            "wildcard" => (
+                "cat ~/.ssh/*",
+                vec![ApprovalReason::SensitiveRead {
+                    path: "~/.ssh/*".to_owned(),
+                    exact: false,
+                }],
+                DangerLevel::Safe,
+            ),
+            "system" => (
+                "write_file /etc/hosts",
+                vec![ApprovalReason::SystemPath {
+                    kind: SystemDirKind::Config,
+                    dir: "/etc".to_owned(),
+                }],
+                DangerLevel::Dangerous,
+            ),
+            _ => return Err("ai_reason_card 只能是 sensitive / wildcard / system".to_owned()),
+        };
+        let id = 9000 + self.chat.approvals.len() as u64;
+        let request = ApprovalRequest {
+            scope: "dev".to_owned(),
+            exec_id: format!("dev-{id}"),
+            target_id: String::new(),
+            session_id: None,
+            host_label: "web-1".to_owned(),
+            command: command.to_owned(),
+            danger,
+            reasons,
+            file: None,
+        };
+        self.chat.approval_prompt(id, &request);
+        self.scroll.scroll_to_bottom();
+        cx.notify();
+        Ok(())
+    }
+
     /// 等着用户批准的确认卡片个数。
     #[cfg(debug_assertions)]
     pub fn dev_pending_approvals(&self) -> usize {

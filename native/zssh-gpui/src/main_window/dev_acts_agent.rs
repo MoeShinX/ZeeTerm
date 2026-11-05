@@ -34,6 +34,7 @@ const KNOWN: &[&str] = &[
     "ai_wait",
     "ai_answer",
     "ai_card",
+    "ai_reason_card",
     "ai_thinking",
     "tab_ai_dot",
     "form_memory_has",
@@ -281,6 +282,11 @@ fn run_inner(
                 }
                 _ => return fail("ai_queue 的子命令不认识"),
             }
+        }
+        // ai_reason_card:sensitive|wildcard|system：放一张带这种"确认原因"的确认卡（截图验证原因文案）。
+        "ai_reason_card" => {
+            let chat = active_ai(this, cx)?;
+            chat.update(cx, |chat, cx| chat.dev_show_reason_approval(a, cx))?;
         }
         // ai_scroll：消息区滚到最新（截图前用）。
         "ai_scroll" => {
