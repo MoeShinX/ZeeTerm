@@ -1,8 +1,8 @@
 //! 确认卡上"为什么要确认"的原因文案。
 //!
 //! 核心库给出结构化原因（类型 + 参数，见 [`ApprovalReason`]），这里按当前界面语言生成整句；
-//! 路径、目录名这类参数原样拼进去。命令危险规则那一类还没结构化的原因只有中文原文
-//! （[`ApprovalReason::Text`]），原样显示。
+//! 路径、目录名这类参数原样拼进去。命令危险规则（[`ApprovalReason::Command`]）按规则 key 取
+//! `reason_text` 里的英文整句；没有 key 的（[`ApprovalReason::Text`]）原样显示。
 
 use zssh_core::ai::reason::{ApprovalReason, SystemDirKind};
 
@@ -134,6 +134,12 @@ pub(super) fn reason_text_in(lang: Lang, reason: &ApprovalReason) -> String {
         ApprovalReason::ParentEscape => pick(lang, ReasonMsg::ParentEscape).to_owned(),
         ApprovalReason::ParentUnresolved => pick(lang, ReasonMsg::ParentUnresolved).to_owned(),
         ApprovalReason::Locked => pick(lang, ReasonMsg::Locked).to_owned(),
+        ApprovalReason::Command { rule, text } => match lang {
+            Lang::En => {
+                crate::reason_text::english(rule).map_or_else(|| text.clone(), str::to_owned)
+            }
+            Lang::Zh => text.clone(),
+        },
         ApprovalReason::Text { text } => text.clone(),
     }
 }
@@ -228,6 +234,43 @@ mod tests {
             ),
             "Writes to a system path: system configuration directory /etc"
         );
+    }
+
+    /// 真的让命令危险规则跑一遍：每条命中的规则都有英文整句，中文和核心给的原文逐字相同。
+    #[test]
+    fn command_rules_read_as_whole_english_sentences() {
+        let commands = [
+            "rm -rf /",
+            ":(){ :|:& };:",
+            "mkfs.ext4 /dev/sda1",
+            "shutdown -h now",
+            "iptables -F",
+            "python3 -c 'print(1)'",
+            "dd if=/dev/zero of=/dev/sda",
+            "echo x > /etc/passwd",
+            "su - root",
+            "systemctl stop sshd",
+        ];
+        let mut seen = 0;
+        for command in commands {
+            let verdict = zssh_core::ai::safety::assess(command);
+            assert_eq!(verdict.reasons.len(), verdict.rules.len(), "{command}");
+            for (text, rule) in verdict.reasons.iter().zip(&verdict.rules) {
+                let reason = ApprovalReason::command(rule, text.clone());
+                assert_eq!(reason_text_in(Lang::Zh, &reason), *text);
+                let en = reason_text_in(Lang::En, &reason);
+                assert_ne!(en, *text, "{rule} 没有英文");
+                assert!(
+                    !en.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                    "{rule}: {en}"
+                );
+                seen += 1;
+            }
+        }
+        assert!(seen >= 8, "命令例子要真的命中规则：{seen}");
+        // 认不得的规则 key 退回中文原文。
+        let unknown = ApprovalReason::command("cmd.from_the_future", "新规则");
+        assert_eq!(reason_text_in(Lang::En, &unknown), "新规则");
     }
 
     #[test]

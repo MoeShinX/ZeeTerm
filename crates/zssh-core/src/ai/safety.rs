@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::reason_keys as rk;
+
 pub fn assess(command: &str) -> SafetyVerdict {
     let mut reasons = Vec::new();
     assess_into(command, 0, &mut reasons);
@@ -13,17 +15,21 @@ pub fn assess(command: &str) -> SafetyVerdict {
     } else {
         DangerLevel::Dangerous
     };
-    SafetyVerdict { level, reasons }
+    SafetyVerdict {
+        level,
+        reasons: reasons.iter().map(|rule| rule.zh.to_owned()).collect(),
+        rules: reasons.iter().map(|rule| rule.key).collect(),
+    }
 }
 
-fn assess_into(command: &str, depth: u8, reasons: &mut Vec<String>) {
+fn assess_into(command: &str, depth: u8, reasons: &mut Vec<Rule>) {
     if depth > 6 {
-        push_reason(reasons, "命令嵌套过深，无法确认安全性");
+        push_reason(reasons, NESTED_TOO_DEEP);
         return;
     }
     let dense: String = command.chars().filter(|c| !c.is_whitespace()).collect();
     if is_fork_bomb(&dense) {
-        push_reason(reasons, "检测到 fork 炸弹写法");
+        push_reason(reasons, FORK_BOMB);
         return;
     }
     match find_substitutions(command) {
@@ -33,7 +39,7 @@ fn assess_into(command: &str, depth: u8, reasons: &mut Vec<String>) {
             }
         }
         Err(()) => {
-            push_reason(reasons, "命令包含不配对的结构（$() 或反引号），无法解析");
+            push_reason(reasons, UNPAIRED_SUBSTITUTION);
             return;
         }
     }
@@ -42,11 +48,11 @@ fn assess_into(command: &str, depth: u8, reasons: &mut Vec<String>) {
     }
 }
 
-fn assess_segment(segment: &str, depth: u8, reasons: &mut Vec<String>) {
+fn assess_segment(segment: &str, depth: u8, reasons: &mut Vec<Rule>) {
     let mut tokens = match tokenize(segment) {
         Ok(tokens) => tokens,
         Err(()) => {
-            push_reason(reasons, "命令里引号不配对，无法解析");
+            push_reason(reasons, UNPAIRED_QUOTES);
             return;
         }
     };
@@ -66,7 +72,7 @@ fn assess_segment(segment: &str, depth: u8, reasons: &mut Vec<String>) {
     apply_head_rules(&tokens, depth, reasons);
 }
 
-fn apply_head_rules(tokens: &[String], depth: u8, reasons: &mut Vec<String>) {
+fn apply_head_rules(tokens: &[String], depth: u8, reasons: &mut Vec<Rule>) {
     let head = basename(&tokens[0]);
     let args: Vec<&str> = tokens[1..]
         .iter()
@@ -74,51 +80,51 @@ fn apply_head_rules(tokens: &[String], depth: u8, reasons: &mut Vec<String>) {
         .map(|t| t.as_str())
         .collect();
     if tokens.iter().any(|t| t.contains("sudoers")) {
-        push_reason(reasons, "命令涉及 sudo 授权文件");
+        push_reason(reasons, SUDOERS_FILE);
     }
     if tokens.iter().any(|t| t.contains("sysrq")) {
-        push_reason(reasons, "会触发 SysRq，可能直接让系统崩溃");
+        push_reason(reasons, SYSRQ);
     }
     match head {
         "rm" => assess_rm(tokens, reasons),
         "find" => {
             if tokens.iter().any(|t| t == "-delete") {
-                push_reason(reasons, "find -delete 会直接删除匹配到的文件");
+                push_reason(reasons, FIND_DELETE);
             } else if find_execs_destructive(tokens) {
-                push_reason(reasons, "find -exec 批量执行删除或覆写类命令");
+                push_reason(reasons, FIND_EXEC);
             }
         }
-        "shred" => push_reason(reasons, "shred 会不可恢复地覆写文件或设备内容"),
-        "truncate" => push_reason(reasons, "truncate 会截断或改写文件内容"),
-        h if h.starts_with("mkfs") => push_reason(reasons, "会格式化文件系统"),
+        "shred" => push_reason(reasons, SHRED),
+        "truncate" => push_reason(reasons, TRUNCATE),
+        h if h.starts_with("mkfs") => push_reason(reasons, MKFS),
         "dd" => {
             if tokens.iter().any(|t| t.starts_with("of=/dev/")) {
-                push_reason(reasons, "直接写块设备，可能破坏数据");
+                push_reason(reasons, WRITE_BLOCK_DEVICE);
             }
         }
-        "wipefs" => push_reason(reasons, "会擦除文件系统签名"),
+        "wipefs" => push_reason(reasons, WIPEFS),
         "fdisk" | "parted" | "sfdisk" | "cfdisk" => {
             if !tokens.iter().any(|t| t == "-l" || t == "--list") {
-                push_reason(reasons, "分区表写操作");
+                push_reason(reasons, PARTITION_WRITE);
             }
         }
-        "shutdown" | "reboot" | "poweroff" | "halt" => push_reason(reasons, "关机 / 重启类命令"),
+        "shutdown" | "reboot" | "poweroff" | "halt" => push_reason(reasons, POWER),
         "init" | "telinit" => {
             if args
                 .iter()
                 .any(|a| matches!(*a, "0" | "1" | "6" | "s" | "S"))
             {
-                push_reason(reasons, "切换到断电 / 重启 / 单用户运行级别");
+                push_reason(reasons, RUNLEVEL);
             }
         }
         "systemctl" => match args.first().copied() {
             Some("poweroff" | "reboot" | "halt" | "kexec") => {
-                push_reason(reasons, "关机 / 重启类命令");
+                push_reason(reasons, POWER);
             }
             Some("stop" | "restart" | "disable" | "mask")
                 if args.get(1).is_some_and(|s| s.starts_with("ssh")) =>
             {
-                push_reason(reasons, "会影响 SSH 服务，可能把自己锁在门外");
+                push_reason(reasons, SSH_SERVICE);
             }
             _ => {}
         },
@@ -130,22 +136,22 @@ fn apply_head_rules(tokens: &[String], depth: u8, reasons: &mut Vec<String>) {
                 .get(1)
                 .is_some_and(|s| matches!(*s, "stop" | "restart" | "disable"));
             if service_is_ssh && action_hurts {
-                push_reason(reasons, "会影响 SSH 服务，可能把自己锁在门外");
+                push_reason(reasons, SSH_SERVICE);
             }
         }
         "chmod" => {
             if args.iter().any(|a| is_critical_path(a)) {
-                push_reason(reasons, "修改系统路径的权限，可能把自己锁在门外");
+                push_reason(reasons, CHMOD_SYSTEM);
             }
         }
         "chown" | "chgrp" => {
             if args.iter().any(|a| is_critical_path(a)) {
-                push_reason(reasons, "修改系统路径的属主，可能把自己锁在门外");
+                push_reason(reasons, CHOWN_SYSTEM);
             }
         }
         "userdel" | "deluser" => {
             if args.iter().any(|a| is_system_account(a)) {
-                push_reason(reasons, "删除系统账户会破坏服务或直接锁死登录");
+                push_reason(reasons, USERDEL);
             }
         }
         "passwd" => {
@@ -153,50 +159,50 @@ fn apply_head_rules(tokens: &[String], depth: u8, reasons: &mut Vec<String>) {
                 .iter()
                 .any(|t| matches!(t.as_str(), "-d" | "-l" | "--delete" | "--lock"));
             if changes_status && (args.is_empty() || args.iter().any(|a| is_system_account(a))) {
-                push_reason(reasons, "清掉或锁死系统账户的密码，可能把自己锁在门外");
+                push_reason(reasons, PASSWD_CLEAR);
             }
         }
         "usermod" => {
             let locks = tokens.iter().any(|t| t == "-L" || t == "--lock");
             if locks && (args.is_empty() || args.iter().any(|a| is_system_account(a))) {
-                push_reason(reasons, "锁死系统账户，可能把自己锁在门外");
+                push_reason(reasons, ACCOUNT_LOCK);
             }
         }
-        "visudo" => push_reason(reasons, "会改动 sudo 授权文件"),
+        "visudo" => push_reason(reasons, VISUDO),
         "iptables" | "ip6tables" => {
             if tokens.iter().any(|t| t == "-F" || t == "--flush") {
-                push_reason(reasons, "会清空防火墙规则");
+                push_reason(reasons, FIREWALL_FLUSH);
             }
             let sets_policy = tokens.iter().any(|t| t == "-P" || t == "--policy");
             let drops = tokens
                 .iter()
                 .any(|t| matches!(t.as_str(), "DROP" | "REJECT" | "drop" | "reject"));
             if sets_policy && drops {
-                push_reason(reasons, "把防火墙默认策略改成拒绝，可能把自己锁在门外");
+                push_reason(reasons, FIREWALL_DEFAULT_DENY);
             }
         }
         "nft" => {
             let has_flush = tokens.iter().any(|t| t == "flush");
             let has_ruleset = tokens.iter().any(|t| t == "ruleset");
             if has_flush && has_ruleset {
-                push_reason(reasons, "会清空防火墙规则");
+                push_reason(reasons, FIREWALL_FLUSH);
             }
             let has_policy = tokens.iter().any(|t| t.contains("policy"));
             let drops = tokens
                 .iter()
                 .any(|t| t.contains("drop") || t.contains("reject"));
             if has_policy && drops {
-                push_reason(reasons, "把防火墙默认策略改成拒绝，可能把自己锁在门外");
+                push_reason(reasons, FIREWALL_DEFAULT_DENY);
             }
         }
         "ufw" => {
             if args.first() == Some(&"disable") {
-                push_reason(reasons, "会关闭防火墙");
+                push_reason(reasons, FIREWALL_DISABLE);
             }
             if args.first() == Some(&"default")
                 && args.get(1).is_some_and(|a| matches!(*a, "deny" | "reject"))
             {
-                push_reason(reasons, "把防火墙默认策略改成拒绝，可能把自己锁在门外");
+                push_reason(reasons, FIREWALL_DEFAULT_DENY);
             }
         }
         "firewall-cmd" => {
@@ -204,19 +210,19 @@ fn apply_head_rules(tokens: &[String], depth: u8, reasons: &mut Vec<String>) {
                 .iter()
                 .any(|t| t == "--panic-on" || t.starts_with("--set-default-zone=drop"))
             {
-                push_reason(reasons, "把防火墙默认策略改成拒绝，可能把自己锁在门外");
+                push_reason(reasons, FIREWALL_DEFAULT_DENY);
             }
         }
         "ip" => {
             let link_set = tokens.iter().any(|t| t == "link") && tokens.iter().any(|t| t == "set");
             if link_set && tokens.iter().any(|t| t == "down") {
-                push_reason(reasons, "会关闭网络接口，可能把自己锁在门外");
+                push_reason(reasons, NETWORK_DOWN);
             }
         }
-        "ifdown" => push_reason(reasons, "会关闭网络接口，可能把自己锁在门外"),
+        "ifdown" => push_reason(reasons, NETWORK_DOWN),
         "ifconfig" => {
             if tokens.iter().skip(1).any(|t| t == "down") {
-                push_reason(reasons, "会关闭网络接口，可能把自己锁在门外");
+                push_reason(reasons, NETWORK_DOWN);
             }
         }
         "nmcli" => {
@@ -225,16 +231,16 @@ fn apply_head_rules(tokens: &[String], depth: u8, reasons: &mut Vec<String>) {
                 .skip(1)
                 .any(|t| matches!(t.as_str(), "down" | "disconnect" | "off"))
             {
-                push_reason(reasons, "会关闭网络接口，可能把自己锁在门外");
+                push_reason(reasons, NETWORK_DOWN);
             }
         }
-        "eval" => push_reason(reasons, "eval 会再次解析动态内容"),
+        "eval" => push_reason(reasons, EVAL),
         "kill" => {
             if args.contains(&"1") || tokens.iter().any(|t| t == "-1") {
-                push_reason(reasons, "结束 init（PID 1）或全部进程会直接导致宕机");
+                push_reason(reasons, KILL_INIT);
             }
         }
-        "killall5" => push_reason(reasons, "killall5 会结束所有进程，导致宕机"),
+        "killall5" => push_reason(reasons, KILLALL5),
         "killall" | "pkill" => {
             let kills_critical = tokens
                 .iter()
@@ -242,12 +248,12 @@ fn apply_head_rules(tokens: &[String], depth: u8, reasons: &mut Vec<String>) {
                 .filter(|t| !t.starts_with('-'))
                 .any(|t| is_critical_process(t));
             if kills_critical {
-                push_reason(reasons, "结束了关键系统进程，可能把自己锁在门外");
+                push_reason(reasons, KILL_CRITICAL);
             }
         }
         "crontab" => {
             if tokens.iter().any(|t| short_flag_cluster_contains(t, "r")) {
-                push_reason(reasons, "crontab -r 会清掉当前用户的计划任务");
+                push_reason(reasons, CRONTAB_REMOVE);
             }
         }
         "sysctl" => {
@@ -255,39 +261,39 @@ fn apply_head_rules(tokens: &[String], depth: u8, reasons: &mut Vec<String>) {
                 .iter()
                 .any(|a| a.starts_with("kernel.panic") || a.starts_with("kernel.sysrq"))
             {
-                push_reason(reasons, "改内核 panic / SysRq 行为，可能直接让系统崩溃");
+                push_reason(reasons, KERNEL_PANIC);
             }
         }
         "swapoff" => {
             if tokens.iter().any(|t| t == "-a" || t == "--all") {
-                push_reason(reasons, "关掉全部交换分区会影响系统稳定性");
+                push_reason(reasons, SWAPOFF_ALL);
             }
         }
         "umount" => {
             if tokens.iter().any(|t| t == "-a" || t == "--all")
                 || args.iter().any(|a| is_critical_path(a))
             {
-                push_reason(reasons, "卸载系统路径会破坏运行中的系统");
+                push_reason(reasons, UMOUNT_SYSTEM);
             }
         }
         "mv" => {
             if args.first().is_some_and(|a| is_critical_path(a)) {
-                push_reason(reasons, "会移动系统路径");
+                push_reason(reasons, MOVE_SYSTEM);
             }
         }
         h if h.starts_with("python") || h.starts_with("pypy") => {
             if tokens.iter().any(|t| short_flag_cluster_contains(t, "c")) {
-                push_reason(reasons, "Python 用 -c 内联执行代码，无法可靠分析");
+                push_reason(reasons, PYTHON_INLINE);
             }
         }
         h if h.starts_with("perl") => {
             if tokens.iter().any(|t| short_flag_cluster_contains(t, "eE")) {
-                push_reason(reasons, "Perl 用 -e 内联执行代码，无法可靠分析");
+                push_reason(reasons, PERL_INLINE);
             }
         }
         h if h.starts_with("ruby") => {
             if tokens.iter().any(|t| short_flag_cluster_contains(t, "e")) {
-                push_reason(reasons, "Ruby 用 -e 内联执行代码，无法可靠分析");
+                push_reason(reasons, RUBY_INLINE);
             }
         }
         "node" | "nodejs" => {
@@ -297,17 +303,17 @@ fn apply_head_rules(tokens: &[String], depth: u8, reasons: &mut Vec<String>) {
                     || t.starts_with("--print")
             });
             if inline {
-                push_reason(reasons, "Node 用 -e/-p 内联执行代码，无法可靠分析");
+                push_reason(reasons, NODE_INLINE);
             }
         }
         h if h.starts_with("php") => {
             if tokens.iter().any(|t| short_flag_cluster_contains(t, "r")) {
-                push_reason(reasons, "PHP 用 -r 内联执行代码，无法可靠分析");
+                push_reason(reasons, PHP_INLINE);
             }
         }
         h if h.starts_with("lua") => {
             if tokens.iter().any(|t| short_flag_cluster_contains(t, "e")) {
-                push_reason(reasons, "Lua 用 -e 内联执行代码，无法可靠分析");
+                push_reason(reasons, LUA_INLINE);
             }
         }
         "awk" | "gawk" | "mawk" | "nawk" => {
@@ -315,7 +321,7 @@ fn apply_head_rules(tokens: &[String], depth: u8, reasons: &mut Vec<String>) {
                 .iter()
                 .any(|t| t.contains("system(") || t.contains("system ("))
             {
-                push_reason(reasons, "awk 里调用 system()，无法可靠分析");
+                push_reason(reasons, AWK_SYSTEM);
             }
         }
         "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" => assess_shell(tokens, depth, reasons),
@@ -323,7 +329,7 @@ fn apply_head_rules(tokens: &[String], depth: u8, reasons: &mut Vec<String>) {
     }
 }
 
-fn assess_shell(tokens: &[String], depth: u8, reasons: &mut Vec<String>) {
+fn assess_shell(tokens: &[String], depth: u8, reasons: &mut Vec<Rule>) {
     let mut content = None;
     for (i, t) in tokens.iter().enumerate().skip(1) {
         let is_short_flags = t.len() > 1
@@ -339,15 +345,12 @@ fn assess_shell(tokens: &[String], depth: u8, reasons: &mut Vec<String>) {
         break;
     }
     match content {
-        None => push_reason(
-            reasons,
-            "启动了交互式 shell 或未知名脚本，工具桥里不应该发生",
-        ),
+        None => push_reason(reasons, INTERACTIVE_SHELL),
         Some(inner) => assess_into(&inner, depth + 1, reasons),
     }
 }
 
-fn assess_rm(tokens: &[String], reasons: &mut Vec<String>) {
+fn assess_rm(tokens: &[String], reasons: &mut Vec<Rule>) {
     let mut recursive = false;
     let mut force = false;
     let mut targets = Vec::new();
@@ -378,12 +381,12 @@ fn assess_rm(tokens: &[String], reasons: &mut Vec<String>) {
         return;
     }
     if targets.is_empty() {
-        push_reason(reasons, "递归强制删除没有指定目标，无法确认影响范围");
+        push_reason(reasons, RM_NO_TARGET);
         return;
     }
     for target in targets {
         if is_critical_path(target) {
-            push_reason(reasons, "递归强制删除会命中系统路径或通配符");
+            push_reason(reasons, RM_SYSTEM);
         }
     }
 }
@@ -513,7 +516,7 @@ fn is_critical_path(path: &str) -> bool {
     false
 }
 
-fn strip_wrappers(tokens: &mut Vec<String>, reasons: &mut Vec<String>) -> bool {
+fn strip_wrappers(tokens: &mut Vec<String>, reasons: &mut Vec<Rule>) -> bool {
     loop {
         let Some(first) = tokens.first().cloned() else {
             return true;
@@ -538,7 +541,7 @@ fn strip_wrappers(tokens: &mut Vec<String>, reasons: &mut Vec<String>) -> bool {
                 loop {
                     match tokens.first().cloned() {
                         None => {
-                            push_reason(reasons, "提权命令后面没有要执行的命令");
+                            push_reason(reasons, PRIVILEGE_NO_COMMAND);
                             return false;
                         }
                         Some(t) if t == "--" => {
@@ -575,12 +578,12 @@ fn strip_wrappers(tokens: &mut Vec<String>, reasons: &mut Vec<String>) -> bool {
                     }
                 }
                 if tokens.is_empty() {
-                    push_reason(reasons, "提权命令后面没有要执行的命令");
+                    push_reason(reasons, PRIVILEGE_NO_COMMAND);
                     return false;
                 }
             }
             "su" => {
-                push_reason(reasons, "su 会切换到另一个用户，执行环境不可控");
+                push_reason(reasons, SU);
                 return false;
             }
             "command" | "builtin" | "busybox" | "nohup" | "setsid" | "time" | "stdbuf" => {
@@ -680,7 +683,7 @@ fn strip_wrappers(tokens: &mut Vec<String>, reasons: &mut Vec<String>) -> bool {
     }
 }
 
-fn scan_redirects(text: &str, reasons: &mut Vec<String>) {
+fn scan_redirects(text: &str, reasons: &mut Vec<Rule>) {
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
     let mut in_single = false;
@@ -744,11 +747,11 @@ fn scan_redirects(text: &str, reasons: &mut Vec<String>) {
                 .iter()
                 .any(|p| dev.starts_with(p));
             if is_block {
-                push_reason(reasons, "重定向会写入块设备，可能破坏数据");
+                push_reason(reasons, REDIRECT_BLOCK_DEVICE);
             }
         }
         if is_system_write_path(&path) {
-            push_reason(reasons, "重定向会覆盖系统路径下的文件");
+            push_reason(reasons, REDIRECT_SYSTEM_FILE);
         }
         i = j;
     }
@@ -1161,9 +1164,217 @@ fn basename(token: &str) -> &str {
     token.rsplit('/').next().unwrap_or(token)
 }
 
-fn push_reason(reasons: &mut Vec<String>, reason: &str) {
-    if !reasons.iter().any(|r| r == reason) {
-        reasons.push(reason.to_string());
+/// 一条命令危险规则：稳定 key（界面按它出各语言的整句）+ 中文原文（给模型、日志和测试）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Rule {
+    key: &'static str,
+    zh: &'static str,
+}
+
+const NESTED_TOO_DEEP: Rule = Rule {
+    key: rk::CMD_NESTED_TOO_DEEP,
+    zh: "命令嵌套过深，无法确认安全性",
+};
+const FORK_BOMB: Rule = Rule {
+    key: rk::CMD_FORK_BOMB,
+    zh: "检测到 fork 炸弹写法",
+};
+const UNPAIRED_SUBSTITUTION: Rule = Rule {
+    key: rk::CMD_UNPAIRED_SUBSTITUTION,
+    zh: "命令包含不配对的结构（$() 或反引号），无法解析",
+};
+const UNPAIRED_QUOTES: Rule = Rule {
+    key: rk::CMD_UNPAIRED_QUOTES,
+    zh: "命令里引号不配对，无法解析",
+};
+const SUDOERS_FILE: Rule = Rule {
+    key: rk::CMD_SUDOERS_FILE,
+    zh: "命令涉及 sudo 授权文件",
+};
+const SYSRQ: Rule = Rule {
+    key: rk::CMD_SYSRQ,
+    zh: "会触发 SysRq，可能直接让系统崩溃",
+};
+const FIND_DELETE: Rule = Rule {
+    key: rk::CMD_FIND_DELETE,
+    zh: "find -delete 会直接删除匹配到的文件",
+};
+const FIND_EXEC: Rule = Rule {
+    key: rk::CMD_FIND_EXEC,
+    zh: "find -exec 批量执行删除或覆写类命令",
+};
+const SHRED: Rule = Rule {
+    key: rk::CMD_SHRED,
+    zh: "shred 会不可恢复地覆写文件或设备内容",
+};
+const TRUNCATE: Rule = Rule {
+    key: rk::CMD_TRUNCATE,
+    zh: "truncate 会截断或改写文件内容",
+};
+const MKFS: Rule = Rule {
+    key: rk::CMD_MKFS,
+    zh: "会格式化文件系统",
+};
+const WRITE_BLOCK_DEVICE: Rule = Rule {
+    key: rk::CMD_WRITE_BLOCK_DEVICE,
+    zh: "直接写块设备，可能破坏数据",
+};
+const WIPEFS: Rule = Rule {
+    key: rk::CMD_WIPEFS,
+    zh: "会擦除文件系统签名",
+};
+const PARTITION_WRITE: Rule = Rule {
+    key: rk::CMD_PARTITION_WRITE,
+    zh: "分区表写操作",
+};
+const POWER: Rule = Rule {
+    key: rk::CMD_POWER,
+    zh: "关机 / 重启类命令",
+};
+const RUNLEVEL: Rule = Rule {
+    key: rk::CMD_RUNLEVEL,
+    zh: "切换到断电 / 重启 / 单用户运行级别",
+};
+const SSH_SERVICE: Rule = Rule {
+    key: rk::CMD_SSH_SERVICE,
+    zh: "会影响 SSH 服务，可能把自己锁在门外",
+};
+const CHMOD_SYSTEM: Rule = Rule {
+    key: rk::CMD_CHMOD_SYSTEM,
+    zh: "修改系统路径的权限，可能把自己锁在门外",
+};
+const CHOWN_SYSTEM: Rule = Rule {
+    key: rk::CMD_CHOWN_SYSTEM,
+    zh: "修改系统路径的属主，可能把自己锁在门外",
+};
+const USERDEL: Rule = Rule {
+    key: rk::CMD_USERDEL,
+    zh: "删除系统账户会破坏服务或直接锁死登录",
+};
+const PASSWD_CLEAR: Rule = Rule {
+    key: rk::CMD_PASSWD_CLEAR,
+    zh: "清掉或锁死系统账户的密码，可能把自己锁在门外",
+};
+const ACCOUNT_LOCK: Rule = Rule {
+    key: rk::CMD_ACCOUNT_LOCK,
+    zh: "锁死系统账户，可能把自己锁在门外",
+};
+const VISUDO: Rule = Rule {
+    key: rk::CMD_VISUDO,
+    zh: "会改动 sudo 授权文件",
+};
+const FIREWALL_FLUSH: Rule = Rule {
+    key: rk::CMD_FIREWALL_FLUSH,
+    zh: "会清空防火墙规则",
+};
+const FIREWALL_DEFAULT_DENY: Rule = Rule {
+    key: rk::CMD_FIREWALL_DEFAULT_DENY,
+    zh: "把防火墙默认策略改成拒绝，可能把自己锁在门外",
+};
+const FIREWALL_DISABLE: Rule = Rule {
+    key: rk::CMD_FIREWALL_DISABLE,
+    zh: "会关闭防火墙",
+};
+const NETWORK_DOWN: Rule = Rule {
+    key: rk::CMD_NETWORK_DOWN,
+    zh: "会关闭网络接口，可能把自己锁在门外",
+};
+const EVAL: Rule = Rule {
+    key: rk::CMD_EVAL,
+    zh: "eval 会再次解析动态内容",
+};
+const KILL_INIT: Rule = Rule {
+    key: rk::CMD_KILL_INIT,
+    zh: "结束 init（PID 1）或全部进程会直接导致宕机",
+};
+const KILLALL5: Rule = Rule {
+    key: rk::CMD_KILLALL5,
+    zh: "killall5 会结束所有进程，导致宕机",
+};
+const KILL_CRITICAL: Rule = Rule {
+    key: rk::CMD_KILL_CRITICAL,
+    zh: "结束了关键系统进程，可能把自己锁在门外",
+};
+const CRONTAB_REMOVE: Rule = Rule {
+    key: rk::CMD_CRONTAB_REMOVE,
+    zh: "crontab -r 会清掉当前用户的计划任务",
+};
+const KERNEL_PANIC: Rule = Rule {
+    key: rk::CMD_KERNEL_PANIC,
+    zh: "改内核 panic / SysRq 行为，可能直接让系统崩溃",
+};
+const SWAPOFF_ALL: Rule = Rule {
+    key: rk::CMD_SWAPOFF_ALL,
+    zh: "关掉全部交换分区会影响系统稳定性",
+};
+const UMOUNT_SYSTEM: Rule = Rule {
+    key: rk::CMD_UMOUNT_SYSTEM,
+    zh: "卸载系统路径会破坏运行中的系统",
+};
+const MOVE_SYSTEM: Rule = Rule {
+    key: rk::CMD_MOVE_SYSTEM,
+    zh: "会移动系统路径",
+};
+const PYTHON_INLINE: Rule = Rule {
+    key: rk::CMD_PYTHON_INLINE,
+    zh: "Python 用 -c 内联执行代码，无法可靠分析",
+};
+const PERL_INLINE: Rule = Rule {
+    key: rk::CMD_PERL_INLINE,
+    zh: "Perl 用 -e 内联执行代码，无法可靠分析",
+};
+const RUBY_INLINE: Rule = Rule {
+    key: rk::CMD_RUBY_INLINE,
+    zh: "Ruby 用 -e 内联执行代码，无法可靠分析",
+};
+const NODE_INLINE: Rule = Rule {
+    key: rk::CMD_NODE_INLINE,
+    zh: "Node 用 -e/-p 内联执行代码，无法可靠分析",
+};
+const PHP_INLINE: Rule = Rule {
+    key: rk::CMD_PHP_INLINE,
+    zh: "PHP 用 -r 内联执行代码，无法可靠分析",
+};
+const LUA_INLINE: Rule = Rule {
+    key: rk::CMD_LUA_INLINE,
+    zh: "Lua 用 -e 内联执行代码，无法可靠分析",
+};
+const AWK_SYSTEM: Rule = Rule {
+    key: rk::CMD_AWK_SYSTEM,
+    zh: "awk 里调用 system()，无法可靠分析",
+};
+const INTERACTIVE_SHELL: Rule = Rule {
+    key: rk::CMD_INTERACTIVE_SHELL,
+    zh: "启动了交互式 shell 或未知名脚本，工具桥里不应该发生",
+};
+const RM_NO_TARGET: Rule = Rule {
+    key: rk::CMD_RM_NO_TARGET,
+    zh: "递归强制删除没有指定目标，无法确认影响范围",
+};
+const RM_SYSTEM: Rule = Rule {
+    key: rk::CMD_RM_SYSTEM,
+    zh: "递归强制删除会命中系统路径或通配符",
+};
+const PRIVILEGE_NO_COMMAND: Rule = Rule {
+    key: rk::CMD_PRIVILEGE_NO_COMMAND,
+    zh: "提权命令后面没有要执行的命令",
+};
+const SU: Rule = Rule {
+    key: rk::CMD_SU,
+    zh: "su 会切换到另一个用户，执行环境不可控",
+};
+const REDIRECT_BLOCK_DEVICE: Rule = Rule {
+    key: rk::CMD_REDIRECT_BLOCK_DEVICE,
+    zh: "重定向会写入块设备，可能破坏数据",
+};
+const REDIRECT_SYSTEM_FILE: Rule = Rule {
+    key: rk::CMD_REDIRECT_SYSTEM_FILE,
+    zh: "重定向会覆盖系统路径下的文件",
+};
+
+fn push_reason(reasons: &mut Vec<Rule>, rule: Rule) {
+    if !reasons.contains(&rule) {
+        reasons.push(rule);
     }
 }
 
@@ -1186,7 +1397,10 @@ impl DangerLevel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SafetyVerdict {
     pub level: DangerLevel,
+    /// 中文原文（给模型的工具结果、日志和测试），和 `rules` 一一对应。
     pub reasons: Vec<String>,
+    /// 每条原因的稳定 key（`reason_keys::CMD_*`），界面按它出各语言的整句。
+    pub rules: Vec<&'static str>,
 }
 
 impl SafetyVerdict {
@@ -1516,5 +1730,28 @@ mod tests {
     #[test]
     fn arithmetic_expansion_is_safe() {
         assert_eq!(assess("echo $((1+1))").level, DangerLevel::Safe);
+    }
+    /// 每条命中的规则都带着登记过的稳定 key，和中文原文一一对应。
+    #[test]
+    fn every_rule_carries_a_registered_key() {
+        let commands = [
+            "rm -rf /",
+            ":(){ :|:& };:",
+            "mkfs.ext4 /dev/sda1",
+            "shutdown -h now",
+            "iptables -F",
+            "python3 -c 'print(1)'",
+            "echo x > /etc/passwd",
+            "su - root",
+        ];
+        for command in commands {
+            let verdict = assess(command);
+            assert!(!verdict.reasons.is_empty(), "{command}");
+            assert_eq!(verdict.reasons.len(), verdict.rules.len(), "{command}");
+            for rule in &verdict.rules {
+                assert!(rk::ALL.contains(rule), "{rule} 没登记");
+                assert!(rule.starts_with("cmd."), "{rule}");
+            }
+        }
     }
 }

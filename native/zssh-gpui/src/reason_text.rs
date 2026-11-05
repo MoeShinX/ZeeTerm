@@ -292,6 +292,66 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "x11.display_number" => "The display number in the display address {spec} is not a number",
         "x11.screen_number" => "The screen number in the display address {spec} is not a number",
         "x11.port_range" => "The port in the display address {spec} is out of range",
+        "cmd.nested_too_deep" => "The command is nested too deeply to confirm it is safe",
+        "cmd.fork_bomb" => "A fork bomb pattern was detected",
+        "cmd.unpaired_substitution" => {
+            "The command has an unpaired construct ($() or backticks) and cannot be parsed"
+        }
+        "cmd.unpaired_quotes" => "The command has unpaired quotes and cannot be parsed",
+        "cmd.sudoers_file" => "The command touches the sudo authorization files",
+        "cmd.sysrq_trigger" => "It triggers SysRq and may crash the system outright",
+        "cmd.find_delete" => "find -delete deletes the matched files directly",
+        "cmd.find_exec" => "find -exec runs delete or overwrite style commands in bulk",
+        "cmd.shred" => "shred irrecoverably overwrites file or device contents",
+        "cmd.truncate" => "truncate cuts or rewrites file contents",
+        "cmd.mkfs" => "It formats a filesystem",
+        "cmd.write_block_device" => "It writes straight to a block device and may destroy data",
+        "cmd.wipefs" => "It erases filesystem signatures",
+        "cmd.partition_write" => "It writes the partition table",
+        "cmd.power" => "A shutdown / reboot command",
+        "cmd.runlevel" => "It switches to a power-off / reboot / single-user runlevel",
+        "cmd.ssh_service" => "It affects the SSH service and may lock you out",
+        "cmd.chmod_system" => "It changes the permissions of a system path and may lock you out",
+        "cmd.chown_system" => "It changes the owner of a system path and may lock you out",
+        "cmd.userdel" => "Deleting a system account breaks services or locks logins outright",
+        "cmd.passwd_clear" => "It clears or locks a system account's password and may lock you out",
+        "cmd.account_lock" => "It locks a system account and may lock you out",
+        "cmd.visudo" => "It edits the sudo authorization files",
+        "cmd.firewall_flush" => "It flushes the firewall rules",
+        "cmd.firewall_default_deny" => {
+            "It sets the firewall default policy to deny and may lock you out"
+        }
+        "cmd.firewall_disable" => "It turns the firewall off",
+        "cmd.network_down" => "It brings a network interface down and may lock you out",
+        "cmd.eval" => "eval parses dynamic content again",
+        "cmd.kill_init" => "Killing init (PID 1) or all processes crashes the system",
+        "cmd.killall5" => "killall5 kills every process and crashes the system",
+        "cmd.kill_critical" => "It killed a critical system process and may lock you out",
+        "cmd.crontab_remove" => "crontab -r wipes the current user's scheduled jobs",
+        "cmd.kernel_panic" => {
+            "It changes kernel panic / SysRq behavior and may crash the system outright"
+        }
+        "cmd.swapoff_all" => "Turning off all swap affects system stability",
+        "cmd.umount_system" => "Unmounting a system path breaks the running system",
+        "cmd.move_system" => "It moves a system path",
+        "cmd.python_inline" => "Python runs inline code with -c, which cannot be analysed reliably",
+        "cmd.perl_inline" => "Perl runs inline code with -e, which cannot be analysed reliably",
+        "cmd.ruby_inline" => "Ruby runs inline code with -e, which cannot be analysed reliably",
+        "cmd.node_inline" => "Node runs inline code with -e/-p, which cannot be analysed reliably",
+        "cmd.php_inline" => "PHP runs inline code with -r, which cannot be analysed reliably",
+        "cmd.lua_inline" => "Lua runs inline code with -e, which cannot be analysed reliably",
+        "cmd.awk_system" => "awk calls system(), which cannot be analysed reliably",
+        "cmd.interactive_shell" => {
+            "It started an interactive shell or an unknown script, which should not happen in the tool bridge"
+        }
+        "cmd.rm_no_target" => {
+            "Recursive forced delete with no target; the impact cannot be determined"
+        }
+        "cmd.rm_system" => "Recursive forced delete would hit system paths or wildcards",
+        "cmd.privilege_no_command" => "The privilege command is not followed by a command to run",
+        "cmd.su" => "su switches to another user, so the execution environment is not controlled",
+        "cmd.redirect_block_device" => "The redirect writes to a block device and may destroy data",
+        "cmd.redirect_system_file" => "The redirect overwrites files under a system path",
         _ => return None,
     })
 }

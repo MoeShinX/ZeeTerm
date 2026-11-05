@@ -68,11 +68,22 @@ pub enum ApprovalReason {
     ParentUnresolved,
     /// 应用已锁屏。
     Locked,
-    /// 还没有结构化的原因（命令危险规则等）：只有中文原文。
+    /// 命令危险规则命中：稳定的规则 key（`reason_keys::CMD_*`）+ 中文原文。界面按 key 出各语言的整句，
+    /// 认不得的 key 显示中文原文。
+    Command { rule: String, text: String },
+    /// 没有结构化 key 的原因：只有中文原文，原样显示。
     Text { text: String },
 }
 
 impl ApprovalReason {
+    /// 命令危险规则命中的原因。
+    pub fn command(rule: &str, text: impl Into<String>) -> Self {
+        Self::Command {
+            rule: rule.to_owned(),
+            text: text.into(),
+        }
+    }
+
     /// 还没结构化的中文原因。
     pub fn text_only(text: impl Into<String>) -> Self {
         Self::Text { text: text.into() }
@@ -94,7 +105,7 @@ impl ApprovalReason {
             Self::ParentEscape => "路径里有 ..，又无法确定起点，可能落在系统目录".to_owned(),
             Self::ParentUnresolved => "无法解析上级目录的真实路径（可能有符号链接）".to_owned(),
             Self::Locked => LOCKED_REASON.to_owned(),
-            Self::Text { text } => text.clone(),
+            Self::Command { text, .. } | Self::Text { text } => text.clone(),
         }
     }
 }

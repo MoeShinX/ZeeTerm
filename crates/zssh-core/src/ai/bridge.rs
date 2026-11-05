@@ -1379,8 +1379,8 @@ impl Bridge {
                     reasons: verdict
                         .reasons
                         .iter()
-                        .cloned()
-                        .map(ApprovalReason::text_only)
+                        .zip(&verdict.rules)
+                        .map(|(text, rule)| ApprovalReason::command(rule, text.clone()))
                         .collect(),
                     file: None,
                 },
