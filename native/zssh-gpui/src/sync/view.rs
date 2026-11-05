@@ -175,7 +175,9 @@ impl Msg for SyncViewMsg {
             Self::ConcurrencyNotProbed => {
                 "还没有检测这个存储是否支持并发保护，同步会按「写之前再读一次」处理。点「测试连接」检测。"
             }
-            Self::ConcurrencyUnsupported => "这个服务不支持并发保护，多台电脑同时同步时有很小的概率覆盖。",
+            Self::ConcurrencyUnsupported => {
+                "这个服务不支持并发保护，多台电脑同时同步时有很小的概率覆盖。"
+            }
             Self::ConcurrencySupported => "支持并发保护（多台电脑同时同步不会互相覆盖）。",
             Self::ConnectionCardTitle => "连接存储",
             Self::ConnectionCardDescription => {
@@ -196,7 +198,9 @@ impl Msg for SyncViewMsg {
                  只在可信的内网里这样用。"
             }
             Self::PlainHttpCheck => "我了解密码会以明文发送，仍然使用 http://",
-            Self::S3EndpointExample => "例如 https://s3.us-east-1.amazonaws.com、http://127.0.0.1:9000",
+            Self::S3EndpointExample => {
+                "例如 https://s3.us-east-1.amazonaws.com、http://127.0.0.1:9000"
+            }
             Self::S3Prefix => "对象路径前缀（可选）",
             Self::AddressStyle => "地址风格",
             Self::PathStyle => "路径风格（endpoint/bucket/key）",
@@ -205,7 +209,9 @@ impl Msg for SyncViewMsg {
             Self::ApiBase => "接口地址",
             Self::ApiBaseHint => "留空 = https://api.github.com（GitHub Enterprise 填自己的）",
             Self::Token => "个人访问令牌",
-            Self::TokenHint => "需要 gist 权限。令牌只用本机的 Windows 账户加密保存，不会进同步包。",
+            Self::TokenHint => {
+                "需要 gist 权限。令牌只用本机的 Windows 账户加密保存，不会进同步包。"
+            }
             Self::GistIdHint => {
                 "留空 = 第一次同步时自动新建一个 secret Gist。第二台电脑上填同一个 Gist ID 和一个有 \
                  Gist 权限的令牌。secret Gist 拿到链接的人都能打开，但里面是密文。"
@@ -221,7 +227,9 @@ impl Msg for SyncViewMsg {
                  （outlook.com、hotmail.com 等），工作或学校账号暂不支持。"
             }
             Self::Account => "账号",
-            Self::OneDriveTokenHint => "登录信息（令牌）用本机的 Windows 账户加密保存，不会进同步包。",
+            Self::OneDriveTokenHint => {
+                "登录信息（令牌）用本机的 Windows 账户加密保存，不会进同步包。"
+            }
             Self::OneDriveExpired => {
                 "OneDrive 登录已失效，请重新登录。自动同步已暂停，重新登录之后恢复。"
             }
@@ -270,7 +278,9 @@ impl Msg for SyncViewMsg {
             Self::RememberTitle => "在这台电脑上记住主密码",
             Self::RememberDescriptionPrefix => "用 Windows 账户加密保存，下次不用再输入。",
             Self::RememberA11y => "在这台电脑上记住主密码",
-            Self::MasterPasswordHint => "主密码用来解开云端同步包，至少 8 个字符；不上传、不写日志。",
+            Self::MasterPasswordHint => {
+                "主密码用来解开云端同步包，至少 8 个字符；不上传、不写日志。"
+            }
             Self::MasterPasswordCardTitle => "主密码",
             Self::MasterPasswordCardDescription => {
                 "同步包用主密码加密后才上传，云端（和存储服务商）看不到你的任何内容。"
@@ -346,7 +356,9 @@ impl Msg for SyncViewMsg {
             Self::SyncedOkSuffix => " synced successfully",
             Self::StoppedForConfirmationSuffix => " stopped at the deletion confirmation",
             Self::CancelledSuffix => " cancelled",
-            Self::LocalChangedSuffix => " local changes during the sync; it retries automatically later",
+            Self::LocalChangedSuffix => {
+                " local changes during the sync; it retries automatically later"
+            }
             Self::FailedSuffix => " failed: ",
             Self::ConcurrencyNotProbed => {
                 "It is not known yet whether this storage supports concurrency protection; the sync reads again before writing. Click “Test Connection” to check."
@@ -365,11 +377,15 @@ impl Msg for SyncViewMsg {
             }
             Self::StorageType => "Storage Type",
             Self::WebdavAddress => "WebDAV URL",
-            Self::WebdavAddressExample => "For example https://dav.example.com/remote.php/dav/files/me/",
+            Self::WebdavAddressExample => {
+                "For example https://dav.example.com/remote.php/dav/files/me/"
+            }
             Self::Username => "Username",
             Self::Password => "Password",
             Self::Directory => "Directory (optional)",
-            Self::DirectoryHint => "The sync package goes into this subdirectory; it is created if missing.",
+            Self::DirectoryHint => {
+                "The sync package goes into this subdirectory; it is created if missing."
+            }
             Self::SavedPasswordHint => "Password saved; leave empty to keep using it",
             Self::PlainHttpTitle => "The URL is http://, so the password is sent in clear text",
             Self::PlainHttpBody => {
@@ -450,7 +466,9 @@ impl Msg for SyncViewMsg {
             Self::Testing => "Testing…",
             Self::TestConnection => "Test Connection",
             Self::LastProbe => "Result of the last connection test:",
-            Self::ForgotWarningTitle => "If you forget the master password, the cloud data cannot be recovered.",
+            Self::ForgotWarningTitle => {
+                "If you forget the master password, the cloud data cannot be recovered."
+            }
             Self::ForgotWarningBody => {
                 "The master password is never uploaded and there is no password recovery — if you forget it, the \
                  only option is to delete the cloud data and start over. Keep it somewhere safe."
@@ -494,7 +512,9 @@ impl Msg for SyncViewMsg {
             Self::SyncNow => "Sync Now",
             Self::SyncResults => "Sync Results",
             Self::SyncCardTitle => "Sync",
-            Self::SyncCardDescription => "Sync manually, or let it run automatically in the background.",
+            Self::SyncCardDescription => {
+                "Sync manually, or let it run automatically in the background."
+            }
             Self::DeleteManyTitle => "This sync would delete many records",
             Self::NothingChangedYet => "Nothing has been changed yet.",
             Self::DeletionChoices => {
@@ -564,7 +584,11 @@ pub(super) fn last_result_text(last: Option<&LastResult>) -> String {
         return t(SyncViewMsg::NeverSynced).to_owned();
     };
     let when = format_stamp(last.at);
-    let how = if last.auto { t(SyncViewMsg::AutoSuffix) } else { "" };
+    let how = if last.auto {
+        t(SyncViewMsg::AutoSuffix)
+    } else {
+        ""
+    };
     match last.status.as_str() {
         "completed" => {
             let version = last
@@ -586,12 +610,13 @@ pub(super) fn last_result_text(last: Option<&LastResult>) -> String {
         }
         "cancelled" => format!("{when}{}", t(SyncViewMsg::CancelledSuffix)),
         "local_changed" => {
-            format!(
-                "{when}{how}{}",
-                t(SyncViewMsg::LocalChangedSuffix)
-            )
+            format!("{when}{how}{}", t(SyncViewMsg::LocalChangedSuffix))
         }
-        "error" => format!("{when}{how}{}{}", t(SyncViewMsg::FailedSuffix), last.summary),
+        "error" => format!(
+            "{when}{how}{}{}",
+            t(SyncViewMsg::FailedSuffix),
+            last.summary
+        ),
         other => format!("{when}{how} {other}"),
     }
 }
@@ -608,9 +633,7 @@ pub(super) fn concurrency_notice(
     }
     Some(match record.map(|record| record.mode) {
         None => (false, t(SyncViewMsg::ConcurrencyNotProbed)),
-        Some(ConcurrencyMode::ReadBeforeWrite) => {
-            (false, t(SyncViewMsg::ConcurrencyUnsupported))
-        }
+        Some(ConcurrencyMode::ReadBeforeWrite) => (false, t(SyncViewMsg::ConcurrencyUnsupported)),
         Some(ConcurrencyMode::Conditional) => (true, t(SyncViewMsg::ConcurrencySupported)),
     })
 }
@@ -1374,8 +1397,16 @@ impl SyncDemo {
         }
         let new_text = self.change_pw.new.read(cx).value().to_string();
         let mut form: Vec<AnyElement> = vec![
-            password_field(t(SyncViewMsg::OldMasterPassword), &self.change_pw.old, tokens),
-            password_field(t(SyncViewMsg::NewMasterPassword), &self.change_pw.new, tokens),
+            password_field(
+                t(SyncViewMsg::OldMasterPassword),
+                &self.change_pw.old,
+                tokens,
+            ),
+            password_field(
+                t(SyncViewMsg::NewMasterPassword),
+                &self.change_pw.new,
+                tokens,
+            ),
         ];
         form.extend(strength_bar(&new_text, tokens));
         form.push(password_field(

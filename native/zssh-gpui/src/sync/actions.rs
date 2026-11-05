@@ -231,8 +231,7 @@ impl SyncDemo {
         self.change_pw.busy = false;
         self.master_password
             .update(cx, |state, cx| state.set_value(new, window, cx));
-        let mut note =
-            t(SyncActionsMsg::PasswordChanged).to_owned();
+        let mut note = t(SyncActionsMsg::PasswordChanged).to_owned();
         if self.remember.saved
             && let Err(message) = save_master_password_at(&crate::settings::data_dir(), new)
         {

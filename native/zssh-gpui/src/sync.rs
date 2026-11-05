@@ -503,12 +503,8 @@ impl Msg for SyncMsg {
             Self::OpenDatabaseFailedPrefix => "Could not open the database: ",
             Self::CreateDataDirFailedPrefix => "Could not create the data directory: ",
             Self::SyncAlreadyRunning => "A sync is already running, please try again later",
-            Self::BusyRestoring => {
-                "A restore or offline import is running; sync when it finishes"
-            }
-            Self::BusySyncing => {
-                "A sync is running; restore or import when it finishes"
-            }
+            Self::BusyRestoring => "A restore or offline import is running; sync when it finishes",
+            Self::BusySyncing => "A sync is running; restore or import when it finishes",
             Self::BusyOtherRestore => {
                 "Another restore or import is running, please try again later"
             }
@@ -895,9 +891,7 @@ impl SyncDemo {
         let s3_endpoint_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(s3_form.endpoint.clone())
-                .placeholder(
-                    t(SyncMsg::S3EndpointPlaceholder),
-                )
+                .placeholder(t(SyncMsg::S3EndpointPlaceholder))
         });
         let s3_region_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -1138,10 +1132,8 @@ impl SyncDemo {
                     }
                 }
                 Err(message) => {
-                    self.status = format!(
-                        "{}{message}",
-                        t(SyncMsg::SyncCompletedRememberFailedPrefix)
-                    );
+                    self.status =
+                        format!("{}{message}", t(SyncMsg::SyncCompletedRememberFailedPrefix));
                 }
             },
             RememberAction::Clear => match clear_master_password_at(&data_dir) {
@@ -1152,10 +1144,8 @@ impl SyncDemo {
                     }
                 }
                 Err(message) => {
-                    self.status = format!(
-                        "{}{message}",
-                        t(SyncMsg::SyncCompletedClearFailedPrefix)
-                    );
+                    self.status =
+                        format!("{}{message}", t(SyncMsg::SyncCompletedClearFailedPrefix));
                 }
             },
             // 取消、失败和需要确认不改变本机是否保存；footer 也保留原来的内容。
@@ -1339,9 +1329,7 @@ impl SyncDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => {
-                self.status = format!("{}{err}", t(SyncMsg::StartTestFailedPrefix))
-            }
+            Err(err) => self.status = format!("{}{err}", t(SyncMsg::StartTestFailedPrefix)),
         }
         cx.notify();
     }
@@ -1370,7 +1358,8 @@ impl SyncDemo {
             return;
         }
         if self.baseline_broken {
-            self.sync_state.fail(t(SyncMsg::BaselineBrokenMessage).to_owned());
+            self.sync_state
+                .fail(t(SyncMsg::BaselineBrokenMessage).to_owned());
             cx.notify();
             return;
         }
@@ -1387,7 +1376,8 @@ impl SyncDemo {
         }
         // 第一次设置主密码还要勾「我知道忘记主密码就无法恢复云端数据」（0.2.14 没勾按钮就点不了）。
         if confirm.is_some() && !self.understood {
-            self.sync_state.fail(t(SyncMsg::UnderstoodRequired).to_owned());
+            self.sync_state
+                .fail(t(SyncMsg::UnderstoodRequired).to_owned());
             cx.notify();
             return;
         }
@@ -1618,9 +1608,7 @@ impl SyncDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => {
-                self.status = format!("{}{err}", t(SyncMsg::StartLoginFailedPrefix))
-            }
+            Err(err) => self.status = format!("{}{err}", t(SyncMsg::StartLoginFailedPrefix)),
         }
         cx.notify();
     }
@@ -2304,9 +2292,7 @@ impl SyncGuardState {
                 t(SyncMsg::AuthRejectedPrefix),
                 t(SyncMsg::AuthRejectedSuffix)
             )),
-            Some(AutoPause::WrongPassword) => {
-                Some(t(SyncMsg::WrongMasterPassword).to_owned())
-            }
+            Some(AutoPause::WrongPassword) => Some(t(SyncMsg::WrongMasterPassword).to_owned()),
             None => None,
         }
     }
@@ -3530,8 +3516,7 @@ fn open_existing_db_at(data_dir: &Path) -> Result<Database, String> {
     if !path.is_file() {
         return Err(t(SyncMsg::NoSyncDatabase).to_owned());
     }
-    Database::open(&path)
-        .map_err(|err| format!("{}{err}", t(SyncMsg::OpenDatabaseFailedPrefix)))
+    Database::open(&path).map_err(|err| format!("{}{err}", t(SyncMsg::OpenDatabaseFailedPrefix)))
 }
 
 /// 冲突的保留期按秒算，和核心用同一个时钟。
@@ -3786,14 +3771,13 @@ fn ensure_github_gist(
         .map_err(|err| format!("{}{err}", t(SyncMsg::CreateGistFailedPrefix)))?;
     config.gist_id = id.clone();
     // 同步包只写这个 Gist；先存下来，中途失败也不会每点一次就多建一个。
-    service::save_config(db, sealer, &StorageConfig::Github(config))
-        .map_err(|err| {
-            format!(
-                "{}{id}{}{err}",
-                t(SyncMsg::SaveGistIdFailedPrefix),
-                t(SyncMsg::SaveGistIdFailedSuffix)
-            )
-        })
+    service::save_config(db, sealer, &StorageConfig::Github(config)).map_err(|err| {
+        format!(
+            "{}{id}{}{err}",
+            t(SyncMsg::SaveGistIdFailedPrefix),
+            t(SyncMsg::SaveGistIdFailedSuffix)
+        )
+    })
 }
 
 /// 主密码长度按核心的 [`service::MIN_MASTER_PASSWORD_CHARS`] 校验；按字符数
@@ -3829,11 +3813,7 @@ fn sync_report_lines(report: &SyncReport) -> Vec<String> {
         lines.push(applied_text(applied));
     }
     if let Some(backup) = report.backup.as_ref() {
-        lines.push(format!(
-            "{}{}",
-            t(SyncMsg::BackupPrefix),
-            backup.name
-        ));
+        lines.push(format!("{}{}", t(SyncMsg::BackupPrefix), backup.name));
     }
     if !report.conflicts.is_empty() {
         lines.push(format!(
@@ -4002,9 +3982,9 @@ mod tests {
     use super::{
         AutoBackoff, AutoClock, ClearConfirm, ConflictPanel, GithubForm, LogoutConfirm,
         OneDriveForm, ProviderChoice, ProviderDrafts, RememberAction, RememberPassword, S3Form,
-        SyncState, WebDavForm, auto_due, auto_pause_reason, build_github,
-        build_onedrive, build_s3, build_webdav, clamp_interval, conflict_row, form_from_view,
-        github_form_from_view, last_result_error, last_result_from_report, onedrive_account_label,
+        SyncState, WebDavForm, auto_due, auto_pause_reason, build_github, build_onedrive, build_s3,
+        build_webdav, clamp_interval, conflict_row, form_from_view, github_form_from_view,
+        last_result_error, last_result_from_report, onedrive_account_label,
         onedrive_form_from_view, parse_interval, probe_text, remember_action, remember_footer,
         s3_form_from_view, sync_guard, sync_report_lines, sync_status_label,
         validate_master_password,
@@ -5027,10 +5007,7 @@ mod tests {
             Some("已清除记住的主密码")
         );
         assert_eq!(remember_footer(RememberAction::Keep), None);
-        assert_eq!(
-            remember_footer(RememberAction::Save),
-            Some("已记住主密码")
-        );
+        assert_eq!(remember_footer(RememberAction::Save), Some("已记住主密码"));
         assert_eq!(
             remember_footer(RememberAction::Clear),
             Some("已清除记住的主密码")
@@ -5470,8 +5447,14 @@ mod tests {
     #[test]
     fn auto_pause_reasons() {
         assert_eq!(auto_pause_reason(false, true, true), Some("自动同步未开启"));
-        assert_eq!(auto_pause_reason(true, true, false), Some("还没有保存同步存储"));
-        assert_eq!(auto_pause_reason(true, false, true), Some("还没有记住主密码"));
+        assert_eq!(
+            auto_pause_reason(true, true, false),
+            Some("还没有保存同步存储")
+        );
+        assert_eq!(
+            auto_pause_reason(true, false, true),
+            Some("还没有记住主密码")
+        );
         assert_eq!(
             auto_pause_reason(true, false, false),
             Some("还没有保存同步存储"),
@@ -5536,12 +5519,11 @@ mod protection_tests {
     use zssh_core::sync::webdav::WebDavConfig;
 
     use super::{
-        AutoClock, AutoPause, ExclusiveKind, FailureKind,
-        SyncGuardState, SyncInFlight, SyncOutcome, WebDavForm, auto_block_reason, auto_tick_with,
-        baseline_broken_with, build_webdav, check_master_password_entry, classify_failure,
-        deletion_lines, exclusive_busy_message, load_ready_at, probe_connection_with,
-        reset_baseline_at, run_sync_with, save_probed_concurrency, with_auto_clock,
-        with_sync_guard,
+        AutoClock, AutoPause, ExclusiveKind, FailureKind, SyncGuardState, SyncInFlight,
+        SyncOutcome, WebDavForm, auto_block_reason, auto_tick_with, baseline_broken_with,
+        build_webdav, check_master_password_entry, classify_failure, deletion_lines,
+        exclusive_busy_message, load_ready_at, probe_connection_with, reset_baseline_at,
+        run_sync_with, save_probed_concurrency, with_auto_clock, with_sync_guard,
     };
 
     const PASSWORD: &str = "protection-test-password";
@@ -6048,7 +6030,10 @@ mod protection_tests {
             auto_block_reason(true, true, true, ready, broken, guard.map(str::to_owned))
         };
         assert_eq!(go(true, false, None), None);
-        assert_eq!(go(false, false, None).as_deref(), Some("还没有成功同步过，先手动同步一次"));
+        assert_eq!(
+            go(false, false, None).as_deref(),
+            Some("还没有成功同步过，先手动同步一次")
+        );
         assert_eq!(
             go(true, true, None).as_deref(),
             Some("同步基线损坏，请先重建基线")

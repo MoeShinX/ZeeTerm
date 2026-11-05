@@ -207,7 +207,9 @@ impl Msg for CloudBackupMsg {
             Self::RestoreDoneSafetyPrefix => "。恢复前的状态已自动备份为 ",
             Self::RestoreDoneSafetySuffix => "，可以在「备份与恢复」里恢复回去",
             Self::SavedEdited => "已保存。上次备份结果已清空，下一次备份会重新上传",
-            Self::SavedAdded => "已添加。主同步下一次成功之后会自动备份到这里，也可以点「立即备份」",
+            Self::SavedAdded => {
+                "已添加。主同步下一次成功之后会自动备份到这里，也可以点「立即备份」"
+            }
             Self::DeleteConfirmHint => {
                 "再点一次「确认删除」会删掉本机保存的这个备份目标和它的登录信息（云端已经上传的备份文件不动）"
             }
@@ -301,7 +303,9 @@ impl Msg for CloudBackupMsg {
             Self::UnnamedTarget => "this backup target",
             Self::EnableLabel => "Enabled",
             Self::EnableA11y => "Enable this backup target",
-            Self::DisabledHint => "Disabled: nothing is uploaded here after a successful primary sync",
+            Self::DisabledHint => {
+                "Disabled: nothing is uploaded here after a successful primary sync"
+            }
             Self::NeverBackedUp => "never backed up",
             Self::LastOkPrefix => "Last backup ",
             Self::LastOkSuffix => " succeeded",
@@ -334,9 +338,13 @@ impl Msg for CloudBackupMsg {
             Self::RestoreDoneDeleted => " / deleted ",
             Self::RestoreDoneIdentities => ", credentials added ",
             Self::RestoreDoneProxies => ", proxies added ",
-            Self::RestoreDoneSafetyPrefix => ". The state before restoring was backed up automatically as ",
+            Self::RestoreDoneSafetyPrefix => {
+                ". The state before restoring was backed up automatically as "
+            }
             Self::RestoreDoneSafetySuffix => ", which you can restore from “Backup & Restore”",
-            Self::SavedEdited => "Saved. The last backup result was cleared; the next backup uploads again",
+            Self::SavedEdited => {
+                "Saved. The last backup result was cleared; the next backup uploads again"
+            }
             Self::SavedAdded => {
                 "Added. It backs up here automatically after the next successful primary sync, or click “Back Up Now”"
             }
@@ -349,7 +357,9 @@ impl Msg for CloudBackupMsg {
             Self::ResetDone => {
                 "Cleared the cloud backup settings saved on this computer (cloud backup files are untouched)"
             }
-            Self::LoadErrorPrefix => "Could not read the cloud backup settings saved on this computer: ",
+            Self::LoadErrorPrefix => {
+                "Could not read the cloud backup settings saved on this computer: "
+            }
             Self::LoadErrorHint => {
                 "This may be a different Windows account, or the settings were damaged. Clear them and add the backup targets again (existing cloud backup files are not deleted)."
             }
@@ -365,7 +375,9 @@ impl Msg for CloudBackupMsg {
             Self::NoPrimarySyncHint => {
                 "No primary sync is configured, so the automatic backup after a successful primary sync never runs; click “Back Up Now” on each target to back up manually."
             }
-            Self::PasswordMissing => "Please enter the master password (used to encrypt / unlock cloud backups)",
+            Self::PasswordMissing => {
+                "Please enter the master password (used to encrypt / unlock cloud backups)"
+            }
             Self::PasswordMismatch => "The two master passwords do not match",
             Self::EditTarget => "Edit Backup Target",
             Self::StorageType => "Storage Type",
@@ -666,7 +678,10 @@ impl TargetForm {
                 window,
                 cx,
                 "",
-                secret_hint(t(SyncMsg::GithubTokenEmpty), secret_of(ProviderChoice::Github)),
+                secret_hint(
+                    t(SyncMsg::GithubTokenEmpty),
+                    secret_of(ProviderChoice::Github),
+                ),
                 true,
             ),
             gh_gist_id: make(
@@ -1213,10 +1228,7 @@ impl SyncDemo {
         if self.cloud.delete_armed.as_deref() != Some(id) {
             self.cloud.disarm();
             self.cloud.delete_armed = Some(id.to_owned());
-            self.cloud_notice(
-                false,
-                t(CloudBackupMsg::DeleteConfirmHint),
-            );
+            self.cloud_notice(false, t(CloudBackupMsg::DeleteConfirmHint));
             cx.notify();
             return;
         }
@@ -1242,9 +1254,7 @@ impl SyncDemo {
         }
         self.cloud.disarm();
         match reset_targets_at(&crate::settings::data_dir()) {
-            Ok(()) => {
-                self.cloud_notice(true, t(CloudBackupMsg::ResetDone))
-            }
+            Ok(()) => self.cloud_notice(true, t(CloudBackupMsg::ResetDone)),
             Err(message) => self.cloud_notice(false, message),
         }
         self.reload_targets();
@@ -1614,10 +1624,7 @@ impl SyncDemo {
                     format!("{}{error}", t(CloudBackupMsg::LoadErrorPrefix)),
                     tokens.danger,
                 ),
-                muted(
-                    t(CloudBackupMsg::LoadErrorHint),
-                    tokens,
-                ),
+                muted(t(CloudBackupMsg::LoadErrorHint), tokens),
                 Button::new("cloud-reset")
                     .label(if self.cloud.reset_armed {
                         t(CloudBackupMsg::ConfirmClearAgain)
@@ -1635,22 +1642,20 @@ impl SyncDemo {
 
     fn cloud_password_rows(&self, tokens: &Tokens) -> AnyElement {
         let mut rows = vec![
-            password_field(t(CloudBackupMsg::MasterPasswordLabel), &self.master_password, tokens),
+            password_field(
+                t(CloudBackupMsg::MasterPasswordLabel),
+                &self.master_password,
+                tokens,
+            ),
             password_field(
                 t(CloudBackupMsg::PasswordAgainLabel),
                 &self.master_password_confirm,
                 tokens,
             ),
-            muted(
-                t(CloudBackupMsg::PasswordHint),
-                tokens,
-            ),
+            muted(t(CloudBackupMsg::PasswordHint), tokens),
         ];
         if !self.remember.saved {
-            rows.push(muted(
-                t(CloudBackupMsg::NoPrimarySyncHint),
-                tokens,
-            ));
+            rows.push(muted(t(CloudBackupMsg::NoPrimarySyncHint), tokens));
         }
         v_flex()
             .id("cloud-password")
@@ -1850,9 +1855,7 @@ impl SyncDemo {
                         ))
                         .into_any_element(),
                     div()
-                        .child(
-                            t(CloudBackupMsg::RestoreWarningBody),
-                        )
+                        .child(t(CloudBackupMsg::RestoreWarningBody))
                         .into_any_element(),
                     h_flex()
                         .gap_2()
@@ -1910,7 +1913,11 @@ impl SyncDemo {
             v_flex()
                 .w_full()
                 .gap_1()
-                .child(div().typo(Role::FieldLabel, tokens).child(t(CloudBackupMsg::StorageType)))
+                .child(
+                    div()
+                        .typo(Role::FieldLabel, tokens)
+                        .child(t(CloudBackupMsg::StorageType)),
+                )
                 .child(crate::main_window::widgets::segmented_bar(
                     "cloud-provider",
                     CHOICES
@@ -1988,10 +1995,7 @@ impl SyncDemo {
             field(t(SyncMsg::UsernamePlaceholder), &form.username, tokens),
             password_field(t(SyncMsg::PasswordEmpty), &form.password, tokens),
             field(t(CloudBackupMsg::Directory), &form.directory, tokens),
-            muted(
-                t(CloudBackupMsg::DirectoryHint),
-                tokens,
-            ),
+            muted(t(CloudBackupMsg::DirectoryHint), tokens),
         ];
         if form.has_secret && form.provider == ProviderChoice::WebDav {
             rows.push(muted(t(CloudBackupMsg::SavedPasswordHint), tokens));
@@ -2031,7 +2035,11 @@ impl SyncDemo {
             v_flex()
                 .w_full()
                 .gap_1()
-                .child(div().typo(Role::FieldLabel, tokens).child(t(CloudBackupMsg::AddressStyle)))
+                .child(
+                    div()
+                        .typo(Role::FieldLabel, tokens)
+                        .child(t(CloudBackupMsg::AddressStyle)),
+                )
                 .child(
                     Button::new("cloud-s3-path-style")
                         .label(if form.s3_path_style {
@@ -2063,10 +2071,7 @@ impl SyncDemo {
             field(t(CloudBackupMsg::ApiBase), &form.gh_api_base, tokens),
             password_field(t(CloudBackupMsg::Token), &form.gh_token, tokens),
             field("Gist ID", &form.gh_gist_id, tokens),
-            muted(
-                t(CloudBackupMsg::GithubHint),
-                tokens,
-            ),
+            muted(t(CloudBackupMsg::GithubHint), tokens),
         ];
         if form.has_secret && form.provider == ProviderChoice::Github {
             rows.push(muted(t(CloudBackupMsg::SavedTokenHint), tokens));
@@ -2110,10 +2115,7 @@ impl SyncDemo {
             None => t(CloudBackupMsg::NotSignedIn).to_owned(),
         };
         let mut rows: Vec<AnyElement> = vec![
-            muted(
-                t(CloudBackupMsg::OneDriveIntro),
-                tokens,
-            ),
+            muted(t(CloudBackupMsg::OneDriveIntro), tokens),
             h_flex()
                 .gap_2()
                 .child(muted(t(CloudBackupMsg::Account), tokens))
@@ -2130,9 +2132,7 @@ impl SyncDemo {
                         .font_weight(FontWeight::MEDIUM)
                         .child(t(CloudBackupMsg::LoggingInBrowser))
                         .into_any_element(),
-                    div()
-                        .child(t(CloudBackupMsg::LoginHint))
-                        .into_any_element(),
+                    div().child(t(CloudBackupMsg::LoginHint)).into_any_element(),
                     Button::new("cloud-od-login-cancel")
                         .label(t(CloudBackupMsg::CancelLogin))
                         .compact()
@@ -2188,7 +2188,11 @@ impl SyncDemo {
                     ),
                 )
                 .when(form.od_advanced, |col| {
-                    col.child(field(t(CloudBackupMsg::OwnClientId), &form.od_client_id, tokens))
+                    col.child(field(
+                        t(CloudBackupMsg::OwnClientId),
+                        &form.od_client_id,
+                        tokens,
+                    ))
                 })
                 .into_any_element(),
         );

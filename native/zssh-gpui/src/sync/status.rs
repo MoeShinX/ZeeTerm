@@ -190,7 +190,11 @@ pub(super) fn model_for(input: &BarInput) -> SyncBarModel {
     }
     if input.pending {
         let auto = input.last.as_ref().is_some_and(|last| last.auto);
-        let prefix = if auto { t(SyncStatusMsg::AutoPausedPrefix) } else { "" };
+        let prefix = if auto {
+            t(SyncStatusMsg::AutoPausedPrefix)
+        } else {
+            ""
+        };
         let detail = input
             .last
             .as_ref()

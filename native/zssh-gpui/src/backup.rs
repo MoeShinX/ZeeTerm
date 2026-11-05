@@ -249,7 +249,9 @@ impl Msg for BackupMsg {
             Self::AccountsNeedsConfirmationLine => {
                 "\nThis backup carries sync account settings and this computer already has sync configured; waiting for you to decide whether to replace them"
             }
-            Self::AccountsWriteBackFailedPrefix => "\nThe sync account settings in this backup could not be written back: ",
+            Self::AccountsWriteBackFailedPrefix => {
+                "\nThe sync account settings in this backup could not be written back: "
+            }
             Self::AccountsReplaced => {
                 "Replaced this computer's sync account settings with the ones from the backup"
             }
@@ -280,7 +282,9 @@ impl Msg for BackupMsg {
             Self::NulledReferencesSuffix => {
                 " references pointed at records that no longer exist and were cleared."
             }
-            Self::SafetyBackupPrefix => "The state before importing was backed up automatically as ",
+            Self::SafetyBackupPrefix => {
+                "The state before importing was backed up automatically as "
+            }
             Self::AppliedPrefix => "Applied: hosts added ",
             Self::AppliedUpdated => "/updated",
             Self::AppliedDeleted => "/deleted",
@@ -300,7 +304,9 @@ impl Msg for BackupMsg {
             Self::RestoreSummarySafetyBackupPrefix => " entries\nSafety backup before restoring: ",
             Self::SaveKeepFailedPrefix => "Could not save how many backups to keep: ",
             Self::ReadDeviceIdFailedPrefix => "Could not read the sync device ID: ",
-            Self::CreatePackageDirFailedPrefix => "Could not create the offline package directory: ",
+            Self::CreatePackageDirFailedPrefix => {
+                "Could not create the offline package directory: "
+            }
             Self::WritePackageFailedPrefix => "Could not write the offline package: ",
             Self::CreateDataDirFailedPrefix => "Could not create the data directory: ",
             Self::OpenDatabaseFailedPrefix => "Could not open the database: ",
@@ -496,9 +502,7 @@ impl BackupDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => {
-                self.status = format!("{}{err}", t(BackupMsg::StartLoadFailedPrefix))
-            }
+            Err(err) => self.status = format!("{}{err}", t(BackupMsg::StartLoadFailedPrefix)),
         }
         cx.notify();
     }
@@ -522,9 +526,7 @@ impl BackupDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => {
-                self.status = format!("{}{err}", t(BackupMsg::StartCreateFailedPrefix))
-            }
+            Err(err) => self.status = format!("{}{err}", t(BackupMsg::StartCreateFailedPrefix)),
         }
         cx.notify();
     }
@@ -558,9 +560,7 @@ impl BackupDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => {
-                self.status = format!("{}{err}", t(BackupMsg::StartRestoreFailedPrefix))
-            }
+            Err(err) => self.status = format!("{}{err}", t(BackupMsg::StartRestoreFailedPrefix)),
         }
         cx.notify();
     }
@@ -666,9 +666,7 @@ impl BackupDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => {
-                self.status = format!("{}{err}", t(BackupMsg::StartExportFailedPrefix))
-            }
+            Err(err) => self.status = format!("{}{err}", t(BackupMsg::StartExportFailedPrefix)),
         }
         cx.notify();
     }
@@ -745,9 +743,7 @@ impl BackupDemo {
                     let _ = sender.send(event);
                 }));
             }
-            Err(err) => {
-                self.status = format!("{}{err}", t(BackupMsg::StartImportFailedPrefix))
-            }
+            Err(err) => self.status = format!("{}{err}", t(BackupMsg::StartImportFailedPrefix)),
         }
         cx.notify();
     }
@@ -1391,9 +1387,11 @@ fn export_offline_to(
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent).map_err(|err| format!("{}{err}", t(BackupMsg::CreatePackageDirFailedPrefix)))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("{}{err}", t(BackupMsg::CreatePackageDirFailedPrefix)))?;
     }
-    write_atomic(path, &bytes).map_err(|err| format!("{}{err}", t(BackupMsg::WritePackageFailedPrefix)))?;
+    write_atomic(path, &bytes)
+        .map_err(|err| format!("{}{err}", t(BackupMsg::WritePackageFailedPrefix)))?;
     Ok(bytes.len())
 }
 
@@ -1447,8 +1445,10 @@ fn now_secs() -> i64 {
 
 /// 后台任务自己开库；不复用界面里的连接，免得跨线程持有 SQLite 连接。
 fn open_db_at(data_dir: &Path) -> Result<Database, String> {
-    std::fs::create_dir_all(data_dir).map_err(|err| format!("{}{err}", t(BackupMsg::CreateDataDirFailedPrefix)))?;
-    Database::open(&data_dir.join("zssh.db")).map_err(|err| format!("{}{err}", t(BackupMsg::OpenDatabaseFailedPrefix)))
+    std::fs::create_dir_all(data_dir)
+        .map_err(|err| format!("{}{err}", t(BackupMsg::CreateDataDirFailedPrefix)))?;
+    Database::open(&data_dir.join("zssh.db"))
+        .map_err(|err| format!("{}{err}", t(BackupMsg::OpenDatabaseFailedPrefix)))
 }
 
 #[cfg(test)]
