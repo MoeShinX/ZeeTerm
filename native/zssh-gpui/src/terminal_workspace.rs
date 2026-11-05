@@ -3762,6 +3762,7 @@ impl Render for TerminalWorkspace {
                                 focused,
                                 &mono,
                                 self.settings.font_size,
+                                self.cell_width,
                                 self.settings.line_height,
                                 self.settings.cursor,
                                 !self.settings.cursor_blink || self.cursor_blink.visible(),
@@ -4148,6 +4149,8 @@ fn pane_grid(
     focused: bool,
     mono: &::gpui::SharedString,
     font_size: f32,
+    // 一个栅格列的宽度：选区底纹按「列区间 × 列宽」整块画，不留缝。
+    cell_width: f32,
     line_height: f32,
     cursor_shape: CursorShape,
     cursor_lit: bool,
@@ -4169,56 +4172,76 @@ fn pane_grid(
         .children(pane.snapshot.rows.iter().enumerate().map(|(row_ix, row)| {
             let plain_links = crate::links::find_plain_links(row);
             let row_spans = highlights.get(row_ix).map(Vec::as_slice).unwrap_or(&[]);
-            h_flex().h(::gpui::px(font_size * line_height)).children(
-                runs(
-                    row,
-                    foreground,
-                    background,
-                    selection,
-                    row_ix,
-                    cursor,
-                    &plain_links,
-                    row_spans,
-                    ansi,
+            let row_h = ::gpui::px(font_size * line_height);
+            // 选区底纹按「连续的列区间」整块画在文字下面：逐字 div 的背景宽度取字形 advance，
+            // 非整数像素时相邻背景之间会露缝；按 列宽 × 列数 画整块矩形就没有缝。
+            div()
+                .relative()
+                .h(row_h)
+                .w_full()
+                .children(
+                    selection_spans(selection, row_ix, row.cells.len())
+                        .into_iter()
+                        .map(|(start, end)| {
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left(::gpui::px(start as f32 * cell_width))
+                                .w(::gpui::px((end - start + 1) as f32 * cell_width))
+                                .bg(selection_color)
+                        }),
                 )
-                .into_iter()
-                .map(|run| {
-                    let block = run.cursor && cursor_shape == CursorShape::Block;
-                    let underline = run.cursor && cursor_shape == CursorShape::Underline;
-                    let bar = run.cursor && cursor_shape == CursorShape::Bar;
-                    let bg = if block {
-                        Some(cursor_color)
-                    } else if run.selected {
-                        Some(selection_color)
-                    } else if run.bg != background {
-                        Some(run.bg)
-                    } else {
-                        None
-                    };
-                    div()
-                        .font_family(mono.clone())
-                        .text_size(mono_size)
-                        .text_color(if block { background } else { run.fg })
-                        .when_some(bg, |d, bg| d.bg(bg))
-                        .when(run.underline || underline, |d| d.underline())
-                        .when(run.strikethrough, |d| d.line_through())
-                        .when(run.bold, |d| d.font_weight(FontWeight::BOLD))
-                        .when(run.italic, |d| d.italic())
-                        .child(run.text)
-                        // 竖线光标：压在格子左边的 2 px 细条，不占宽度，后面的字不会被挤开。
-                        .when(bar, |d| {
-                            d.relative().child(
-                                div()
-                                    .absolute()
-                                    .top_0()
-                                    .bottom_0()
-                                    .left_0()
-                                    .w(::gpui::px(2.0))
-                                    .bg(cursor_color),
-                            )
-                        })
-                }),
-            )
+                .child(
+                    h_flex().h(row_h).children(
+                        runs(
+                            row,
+                            foreground,
+                            background,
+                            selection,
+                            row_ix,
+                            cursor,
+                            &plain_links,
+                            row_spans,
+                            ansi,
+                        )
+                        .into_iter()
+                        .map(|run| {
+                            let block = run.cursor && cursor_shape == CursorShape::Block;
+                            let underline = run.cursor && cursor_shape == CursorShape::Underline;
+                            let bar = run.cursor && cursor_shape == CursorShape::Bar;
+                            let bg = if block {
+                                Some(cursor_color)
+                            } else if run.bg != background {
+                                Some(run.bg)
+                            } else {
+                                None
+                            };
+                            div()
+                                .font_family(mono.clone())
+                                .text_size(mono_size)
+                                .text_color(if block { background } else { run.fg })
+                                .when_some(bg, |d, bg| d.bg(bg))
+                                .when(run.underline || underline, |d| d.underline())
+                                .when(run.strikethrough, |d| d.line_through())
+                                .when(run.bold, |d| d.font_weight(FontWeight::BOLD))
+                                .when(run.italic, |d| d.italic())
+                                .child(run.text)
+                                // 竖线光标：压在格子左边的 2 px 细条，不占宽度，后面的字不会被挤开。
+                                .when(bar, |d| {
+                                    d.relative().child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .bottom_0()
+                                            .left_0()
+                                            .w(::gpui::px(2.0))
+                                            .bg(cursor_color),
+                                    )
+                                })
+                        }),
+                    ),
+                )
         }))
 }
 
@@ -4250,6 +4273,30 @@ struct Run {
     strikethrough: bool,
     selected: bool,
     cursor: bool,
+}
+
+/// 这一行被选中的连续列区间（闭区间）：选区底纹按列区间整块画，避免逐字背景之间露缝。
+fn selection_spans(
+    selection: Option<((usize, usize), (usize, usize))>,
+    row_ix: usize,
+    cols: usize,
+) -> Vec<(usize, usize)> {
+    if selection.is_none() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut start: Option<usize> = None;
+    for col in 0..cols {
+        if is_selected(selection, row_ix, col) {
+            start.get_or_insert(col);
+        } else if let Some(from) = start.take() {
+            out.push((from, col - 1));
+        }
+    }
+    if let Some(from) = start {
+        out.push((from, cols.saturating_sub(1)));
+    }
+    out
 }
 
 #[allow(clippy::too_many_arguments)]
