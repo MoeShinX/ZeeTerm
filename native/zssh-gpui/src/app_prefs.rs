@@ -37,7 +37,7 @@ pub const STATS_REFRESH_RANGE: (u32, u32) = (1, 30);
 pub const STATS_REFRESH_DEFAULT: u32 = 3;
 /// SFTP 同时传输的文件数：1～8。
 pub const SFTP_CONCURRENCY_RANGE: (u32, u32) = (1, 8);
-pub const SFTP_CONCURRENCY_DEFAULT: u32 = 3;
+pub const SFTP_CONCURRENCY_DEFAULT: u32 = 5;
 
 /// 关闭主窗口时：缩到托盘（默认）或退出程序。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -384,7 +384,7 @@ mod tests {
         assert_eq!(p.pool_idle_secs, 60);
         assert!(p.stats_show);
         assert_eq!(p.stats_refresh_secs, 3);
-        assert_eq!(p.sftp_concurrency, 3);
+        assert_eq!(p.sftp_concurrency, 5);
         assert!(!p.sftp_preserve_mtime);
         assert!(!p.sftp_preserve_permissions);
         assert!(!p.sftp_show_hidden);
@@ -621,7 +621,7 @@ mod tests {
         assert_eq!(options.concurrency, 5);
         assert!(options.preserve_mtime && options.preserve_permissions);
         let defaults = AppPrefs::default().transfer_options();
-        assert_eq!(defaults.concurrency, 3);
+        assert_eq!(defaults.concurrency, 5);
         assert!(!defaults.preserve_mtime && !defaults.preserve_permissions);
     }
 }

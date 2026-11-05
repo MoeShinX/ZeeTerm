@@ -157,8 +157,8 @@ impl HostMenuItem {
     }
 }
 
-/// 这台主机的右键菜单有哪些项、什么次序：「属性…」在「删除」正上方（两者和上面的移动 / 排序之间
-/// 一条分隔线），其余项的次序不变；没法复制密码的主机没有「复制密码」，平铺模式下顶层主机多一项
+/// 这台主机的右键菜单有哪些项、什么次序：「删除」紧跟在「安装公钥…」下面（都是对这台主机的
+/// 动作），「属性…」放最下面；没法复制密码的主机没有「复制密码」，平铺模式下顶层主机多一项
 /// 「按名字重新排序」。
 pub fn host_menu_items(spec: &HostMenuSpec) -> Vec<HostMenuItem> {
     use HostMenuItem::*;
@@ -169,6 +169,7 @@ pub fn host_menu_items(spec: &HostMenuSpec) -> Vec<HostMenuItem> {
     items.extend([
         CopyInfo,
         InstallKey,
+        Delete,
         Forwards,
         MoveToGroup,
         MoveUp,
@@ -177,7 +178,7 @@ pub fn host_menu_items(spec: &HostMenuSpec) -> Vec<HostMenuItem> {
     if spec.reset_top {
         items.push(ResetTopOrder);
     }
-    items.extend([Separator, Properties, Delete]);
+    items.extend([Separator, Properties]);
     items
 }
 /// 主机的右键菜单。
@@ -481,14 +482,24 @@ mod tests {
     }
 
     #[test]
-    fn properties_sits_right_above_delete_and_edit_is_gone() {
+    fn delete_sits_right_below_install_key_and_properties_is_last() {
         let items = labels(&spec());
-        assert_eq!(items[items.len() - 2..], ["属性…", "删除"]);
+        assert_eq!(items.last(), Some(&"属性…"), "「属性…」在最下面");
+        let install = items
+            .iter()
+            .position(|label| *label == "安装公钥…")
+            .expect("有安装公钥");
+        assert_eq!(items[install + 1], "删除", "「删除」紧跟在安装公钥下面");
         assert!(!items.contains(&"编辑"), "「编辑」改名成了「属性…」");
         assert_eq!(
             items.iter().filter(|label| **label == "属性…").count(),
             1,
             "只有一个入口"
+        );
+        assert_eq!(
+            items.iter().filter(|label| **label == "删除").count(),
+            1,
+            "删除也只有一个入口"
         );
     }
 
@@ -505,13 +516,13 @@ mod tests {
                 "复制密码",
                 "复制连接信息",
                 "安装公钥…",
+                "删除",
                 "端口转发…",
                 "移动到分组",
                 "上移",
                 "下移",
                 "",
-                "属性…",
-                "删除"
+                "属性…"
             ]
         );
     }
@@ -534,10 +545,11 @@ mod tests {
         host.reset_top = true;
         let items = labels(&host);
         assert!(items.contains(&"按名字重新排序（顶层主机）"));
+        assert_eq!(items.last(), Some(&"属性…"), "属性仍在最下面");
         assert_eq!(
-            items[items.len() - 2..],
-            ["属性…", "删除"],
-            "属性仍在删除正上方"
+            items.iter().filter(|label| **label == "删除").count(),
+            1,
+            "排序项加进来也不会多出删除"
         );
     }
 }
