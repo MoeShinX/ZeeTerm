@@ -15,6 +15,7 @@ use zssh_core::ai::agent::usage::ContextUsage;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::*;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use zssh_core::ai::agent::builtin::tokenway::endpoint::is_authorized_token;
 use zssh_core::ai::agent::builtin::tokenway::{ChatFailureAction, classify_chat_failure};
@@ -191,7 +192,10 @@ impl AgentChatDemo {
 
     /// 标题栏上上下文指示器旁边的余额（V2-A5）：「余额 ¥12.34」；没有可用的充值余额时是「需充值」+「充值」按钮；
     /// 授权被服务端停用时是「授权已失效」+「重新连接」按钮。还没取到余额（或不是 Tokenway）就不显示。
-    pub fn balance_chip(&self, tokens: &Tokens) -> Option<AnyElement> {
+    ///
+    /// `narrow`：面板很窄时，需要充值 / 授权失效的提示只留按钮（按钮本身就是醒目的红色提示，
+    /// 说明文字放进悬停提示），余额文字不再挤占别的指示器。
+    pub fn balance_chip(&self, tokens: &Tokens, narrow: bool) -> Option<AnyElement> {
         let id = self.tokenway_endpoint()?;
         let view = crate::agent_setup::tokenway::balance_view(id)?;
         let invalid = view.problem
@@ -202,6 +206,7 @@ impl AgentChatDemo {
             tokens.text
         };
         let detail = SharedString::from(view.detail.clone());
+        let hide_label = narrow && (invalid || view.needs_topup);
         // 面板窄的时候余额文字先被截断（按钮和上下文指示器不动）。
         let label = div()
             .id("ai-balance")
@@ -216,13 +221,15 @@ impl AgentChatDemo {
             .items_center()
             .gap_1()
             .ml_2()
-            .child(label);
+            .when(!hide_label, |d| d.child(label));
         if invalid {
             chip = chip.child(
                 Button::new("ai-balance-reconnect")
                     .label(t(ChatBuiltinMsg::Reconnect))
                     .ghost()
                     .compact()
+                    .text_color(tokens.danger)
+                    .tooltip(view.detail.clone())
                     .on_click(|_, _, _| crate::agent_setup::tokenway::request_reconnect()),
             );
         } else if view.needs_topup {
@@ -231,6 +238,8 @@ impl AgentChatDemo {
                     .label(t(ChatBuiltinMsg::TopUp))
                     .ghost()
                     .compact()
+                    .text_color(tokens.danger)
+                    .tooltip(view.detail.clone())
                     .on_click(|_, _, _| {
                         let _ = crate::agent_setup::tokenway::open_topup();
                     }),

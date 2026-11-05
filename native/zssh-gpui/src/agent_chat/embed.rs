@@ -694,7 +694,8 @@ impl AgentChatDemo {
 
     /// 面板标题栏右侧的「上下文 ▬ 12% ∨」：主窗口画标题栏时放进去，点一下开 / 关明细卡片。
     /// 没有用量数据时写「上下文 —」，不能点开。
-    pub fn usage_meter(&self, entity: Entity<Self>, tokens: &Tokens) -> AnyElement {
+    /// `compact`：标题栏里空间紧，只留百分比（或词元数）和箭头，「上下文」三个字放进悬停提示。
+    pub fn usage_meter(&self, entity: Entity<Self>, tokens: &Tokens, compact: bool) -> AnyElement {
         let view = usage_view::meter(self.display_usage().as_ref());
         let open = self.embed.as_ref().is_some_and(|embed| embed.usage_open);
         let (muted, text, hover) = (tokens.text_muted, tokens.text, tokens.hover);
@@ -715,7 +716,7 @@ impl AgentChatDemo {
             .text_xs()
             .text_color(muted)
             .when(open, |d| d.bg(hover))
-            .child(t(ChatEmbedMsg::ContextLabel));
+            .when(!compact, |d| d.child(t(ChatEmbedMsg::ContextLabel)));
         let clickable = view != MeterView::Empty;
         let body = match view {
             MeterView::Empty => base.child("—"),
@@ -731,25 +732,27 @@ impl AgentChatDemo {
                 percent_text,
                 level,
             } => base
-                .child(
-                    div()
-                        .relative()
-                        .flex_none()
-                        .w(px(44.0))
-                        .h(px(4.0))
-                        .rounded_full()
-                        .bg(muted.opacity(0.3))
-                        .child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .top_0()
-                                .h_full()
-                                .w(::gpui::relative(fraction.max(0.03)))
-                                .rounded_full()
-                                .bg(fill(level)),
-                        ),
-                )
+                .when(!compact, |d| {
+                    d.child(
+                        div()
+                            .relative()
+                            .flex_none()
+                            .w(px(44.0))
+                            .h(px(4.0))
+                            .rounded_full()
+                            .bg(muted.opacity(0.3))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .top_0()
+                                    .h_full()
+                                    .w(::gpui::relative(fraction.max(0.03)))
+                                    .rounded_full()
+                                    .bg(fill(level)),
+                            ),
+                    )
+                })
                 .child(
                     div()
                         .text_color(text)

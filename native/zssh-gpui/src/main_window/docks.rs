@@ -40,6 +40,8 @@ use crate::typography::{Role, Typo as _};
 /// 面板标题区（图标 + 标题）的最小宽度：英文标题比中文长，右边的余额条 / 用量一多，标题会被挤成
 /// "…"。有了这个下限，面板拖到最窄（`PANEL_MIN`）时也还能读到标题，不够的空间由右边的指示器让出来。
 const DOCK_TITLE_MIN_WIDTH: f32 = 112.0;
+/// AI 面板窄于这个宽度时，标题栏的余额提示只留按钮（文字放进悬停提示）。
+const AI_HEADER_NARROW_WIDTH: f32 = 360.0;
 
 /// 本文件（AI / 文件停靠面板、SFTP 标签）的界面文案。SFTP、AI 这类名字两个语言下写法相同；
 /// 主机名、协议名、文件名来自用户或远端，照原样显示。
@@ -1059,6 +1061,7 @@ impl MainWindow {
             let close = cx.entity();
             // 刚打开面板、对话实体还没建：下一个节拍会补上，这半秒里先把壳子（宽度）留着，布局不跳。
             let chat = self.docks.ai.clone();
+            let narrow = layout.ai_width < AI_HEADER_NARROW_WIDTH;
             // 标题栏右侧（关闭按钮左边）：上下文用量指示器（V2-U15）。
             let actions: Vec<AnyElement> = chat
                 .as_ref()
@@ -1066,8 +1069,9 @@ impl MainWindow {
                     let panel = chat.read(cx);
                     // Tokenway 的余额（V2-A5）在上下文指示器左边。
                     let mut items: Vec<AnyElement> =
-                        panel.balance_chip(tokens).into_iter().collect();
-                    items.push(panel.usage_meter(chat.clone(), tokens));
+                        panel.balance_chip(tokens, narrow).into_iter().collect();
+                    // 标题栏里空间紧：上下文指示器只留百分比和箭头（「上下文」在悬停提示里）。
+                    items.push(panel.usage_meter(chat.clone(), tokens, true));
                     items
                 })
                 .unwrap_or_default();
@@ -1163,7 +1167,7 @@ impl MainWindow {
         let non_ssh = host_id
             .and_then(|id| self.store.host(id))
             .filter(|host| !host.protocol.supports_sftp())
-            .map(|host| host.protocol.protocol.label());
+            .map(|host| crate::ops_text::protocol_label(host.protocol.protocol));
         let body: AnyElement = match (host_id, view) {
             _ if non_ssh.is_some() => div()
                 .p_4()
