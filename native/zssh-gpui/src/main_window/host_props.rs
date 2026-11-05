@@ -15,6 +15,30 @@ use zssh_core::model::Protocol;
 
 use super::host_form::ConnMode;
 use super::protocol_form::FormField;
+use crate::i18n::{Msg, t};
+
+/// 本文件（主机属性对话框标题）的界面文案。主机名是用户数据，照原样显示。
+#[derive(Clone, Copy, Debug)]
+enum HostPropsMsg {
+    TitleSuffix,
+    NewHost,
+}
+
+impl Msg for HostPropsMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::TitleSuffix => " 属性",
+            Self::NewHost => "新建主机",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::TitleSuffix => " Properties",
+            Self::NewHost => "New Host",
+        }
+    }
+}
 
 /// 高级设置里的一行。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,8 +228,8 @@ pub fn index_of(state: LayoutState, row: Row) -> Option<usize> {
 /// 对话框标题：新建是「新建主机」，编辑是「<主机名> 属性」。
 pub fn dialog_title(existing_name: Option<&str>) -> String {
     match existing_name {
-        Some(name) => format!("{name} 属性"),
-        None => "新建主机".to_owned(),
+        Some(name) => format!("{name}{}", t(HostPropsMsg::TitleSuffix)),
+        None => t(HostPropsMsg::NewHost).to_owned(),
     }
 }
 

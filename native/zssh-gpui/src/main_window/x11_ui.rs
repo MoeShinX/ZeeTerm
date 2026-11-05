@@ -24,9 +24,181 @@ use super::modal::Modal;
 use super::nav::MainView;
 use super::widgets::{ButtonLook, error_note, note, text_button};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::settings_nav::SettingsSection;
 use crate::settings_view::{Segment, card, choice_group, row, row_with};
 use crate::typography::{Role, Typo as _};
+
+/// 本文件（X11 设置、VcXsrv 安装、X 显示程序提示）的界面文案。X11、VcXsrv、DISPLAY、
+/// UAC、SHA-256 这类名字两个语言下写法相同；显示号、版本号、主机名来自系统或用户，照原样显示。
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum X11Msg {
+    // ---- 状态 ----
+    RunningOwnedPrefix,
+    RunningOwnedSuffix,
+    RunningPrefix,
+    RunningSuffix,
+    InstalledPrefix,
+    InstalledBare,
+    NotInstalled,
+    // ---- 安装进度 ----
+    DownloadPrefix,
+    DownloadParenOpen,
+    DownloadPercentSuffix,
+    DownloadNoSize,
+    VerifyThenUac,
+    CancelledInstall,
+    CancelledInstallPeriod,
+    // ---- 提示框 ----
+    Placeholder,
+    NeedsXServer,
+    HostQuoteOpen,
+    PromptSuffix,
+    InstallNow,
+    InstallNotePrompt,
+    AlreadyInstalledSettings,
+    SkipOnce,
+    Cancel,
+    // ---- 设置页 ----
+    Auto,
+    CustomDisplay,
+    Save,
+    CloseOwnedTitle,
+    CloseOwnedDescription,
+    Detecting,
+    Recheck,
+    StatusPrefix,
+    InstallFailedPrefix,
+    InstallNotePrefix,
+    InstallNoteSuffix,
+    X11Forwarding,
+    X11CardDescription,
+    SourceTitle,
+    SourceDescription,
+    InstalledNotice,
+}
+
+impl Msg for X11Msg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::RunningOwnedPrefix => "运行中（ZeeTerm 启动的，显示 :",
+            Self::RunningOwnedSuffix => "）",
+            Self::RunningPrefix => "运行中（显示 :",
+            Self::RunningSuffix => "）",
+            Self::InstalledPrefix => "已安装 ",
+            Self::InstalledBare => "已安装",
+            Self::NotInstalled => "未安装",
+            Self::DownloadPrefix => "正在下载 VcXsrv：",
+            Self::DownloadParenOpen => "（",
+            Self::DownloadPercentSuffix => "%）",
+            Self::DownloadNoSize => "正在下载 VcXsrv…",
+            Self::VerifyThenUac => {
+                "已下载并校验。请在 Windows 弹出的「用户账户控制」里点「是」，然后等安装完成…"
+            }
+            Self::CancelledInstall => "已取消安装",
+            Self::CancelledInstallPeriod => "已取消安装。",
+            Self::Placeholder => "例如 localhost:0",
+            Self::NeedsXServer => "需要 X 显示程序",
+            Self::HostQuoteOpen => "「",
+            Self::PromptSuffix => {
+                "」开了 X11 转发，但这台电脑上没有可用的 X 服务器（如 VcXsrv）。没有它，远程的图形程序显示不出来。"
+            }
+            Self::InstallNow => "一键安装 VcXsrv",
+            Self::InstallNotePrompt => {
+                "从官方发布页下载并校验后安装；安装时 Windows 会弹出权限确认（UAC），需要点「是」。"
+            }
+            Self::AlreadyInstalledSettings => "我已安装其他 X 服务器，去设置",
+            Self::SkipOnce => "这次不用 X11 继续连接",
+            Self::Cancel => "取消",
+            Self::Auto => "自动",
+            Self::CustomDisplay => "指定显示",
+            Self::Save => "保存",
+            Self::CloseOwnedTitle => "ZeeTerm 退出时关闭自己启动的 X 服务器",
+            Self::CloseOwnedDescription => {
+                "只关这一次 ZeeTerm 自己拉起的 VcXsrv；你自己开的 X 服务器永远不碰。"
+            }
+            Self::Detecting => "正在检测…",
+            Self::Recheck => "重新检测",
+            Self::StatusPrefix => "状态：",
+            Self::InstallFailedPrefix => "安装失败：",
+            Self::InstallNotePrefix => "一键安装会从 VcXsrv 官方发布页下载安装包（约 ",
+            Self::InstallNoteSuffix => {
+                "），校验固定的 SHA-256 之后才运行；安装时 Windows 会弹出「用户账户控制」（UAC）窗口，需要你点「是」。ZeeTerm 不随程序分发 VcXsrv。"
+            }
+            Self::X11Forwarding => "X11 转发",
+            Self::X11CardDescription => {
+                "连接开了 X11 转发的 SSH 主机时，把远程的图形程序显示在本机的 X 服务器上。主机上的开关在「主机属性 → 连接」里。"
+            }
+            Self::SourceTitle => "X 显示来源",
+            Self::SourceDescription => {
+                "自动：先用已经在运行的 X 服务器，没有就启动 VcXsrv。指定显示：连到你自己管理的 X 服务器（X410、MobaXterm 等）。"
+            }
+            Self::InstalledNotice => "VcXsrv 已安装好，现在可以连接开了 X11 的主机了",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::RunningOwnedPrefix => "Running (started by ZeeTerm, display :",
+            Self::RunningOwnedSuffix => ")",
+            Self::RunningPrefix => "Running (display :",
+            Self::RunningSuffix => ")",
+            Self::InstalledPrefix => "Installed ",
+            Self::InstalledBare => "Installed",
+            Self::NotInstalled => "Not installed",
+            Self::DownloadPrefix => "Downloading VcXsrv: ",
+            Self::DownloadParenOpen => " (",
+            Self::DownloadPercentSuffix => "%)",
+            Self::DownloadNoSize => "Downloading VcXsrv…",
+            Self::VerifyThenUac => {
+                "Downloaded and verified. Click “Yes” in the Windows User Account Control prompt, then wait for the installation to finish…"
+            }
+            Self::CancelledInstall => "Installation cancelled",
+            Self::CancelledInstallPeriod => "Installation cancelled.",
+            Self::Placeholder => "for example localhost:0",
+            Self::NeedsXServer => "An X display program is required",
+            Self::HostQuoteOpen => "“",
+            Self::PromptSuffix => {
+                "” has X11 forwarding enabled, but this computer has no usable X server (such as VcXsrv). Without one, remote graphical programs cannot be displayed."
+            }
+            Self::InstallNow => "Install VcXsrv",
+            Self::InstallNotePrompt => {
+                "Downloads from the official release page, verifies it, then installs; Windows shows a permission prompt (UAC), where you need to click “Yes”."
+            }
+            Self::AlreadyInstalledSettings => "I already have another X server; open the settings",
+            Self::SkipOnce => "Continue without X11 this time",
+            Self::Cancel => "Cancel",
+            Self::Auto => "Automatic",
+            Self::CustomDisplay => "Specific Display",
+            Self::Save => "Save",
+            Self::CloseOwnedTitle => "Close the X server ZeeTerm started when ZeeTerm exits",
+            Self::CloseOwnedDescription => {
+                "Closes only the VcXsrv that this ZeeTerm run started; X servers you started yourself are never touched."
+            }
+            Self::Detecting => "Detecting…",
+            Self::Recheck => "Check Again",
+            Self::StatusPrefix => "Status: ",
+            Self::InstallFailedPrefix => "Installation failed: ",
+            Self::InstallNotePrefix => {
+                "The one-click install downloads the installer from the official VcXsrv release page (about "
+            }
+            Self::InstallNoteSuffix => {
+                "), verifies its pinned SHA-256 and only then runs it; Windows shows a User Account Control (UAC) prompt, where you need to click “Yes”. ZeeTerm does not bundle VcXsrv."
+            }
+            Self::X11Forwarding => "X11 Forwarding",
+            Self::X11CardDescription => {
+                "When connecting to SSH hosts with X11 forwarding, show remote graphical programs on this machine's X server. The per-host switch is under Host Properties → Connection."
+            }
+            Self::SourceTitle => "X Display Source",
+            Self::SourceDescription => {
+                "Automatic: use an already running X server, or start VcXsrv if there is none. Specific display: connect to an X server you manage yourself (X410, MobaXterm, and so on)."
+            }
+            Self::InstalledNotice => {
+                "VcXsrv is installed; you can now connect to hosts with X11 enabled"
+            }
+        }
+    }
+}
 
 // ---- 纯逻辑 ----
 
@@ -66,17 +238,25 @@ pub fn server_available(prefs: &X11Prefs, status: &LocalXStatus) -> bool {
 /// VcXsrv 状态一行的文字：`未安装` / `已安装 21.1.16` / `运行中（显示 :0）`。
 pub fn status_headline(status: &LocalXStatus) -> String {
     if let Some(display) = status.owned_display {
-        return format!("运行中（ZeeTerm 启动的，显示 :{display}）");
+        return format!(
+            "{}{display}{}",
+            t(X11Msg::RunningOwnedPrefix),
+            t(X11Msg::RunningOwnedSuffix)
+        );
     }
     if let Some(display) = status.running_displays.first() {
-        return format!("运行中（显示 :{display}）");
+        return format!(
+            "{}{display}{}",
+            t(X11Msg::RunningPrefix),
+            t(X11Msg::RunningSuffix)
+        );
     }
     match &status.vcxsrv {
         Some(install) => match &install.version {
-            Some(version) => format!("已安装 {version}"),
-            None => "已安装".to_owned(),
+            Some(version) => format!("{}{version}", t(X11Msg::InstalledPrefix)),
+            None => t(X11Msg::InstalledBare).to_owned(),
         },
-        None => "未安装".to_owned(),
+        None => t(X11Msg::NotInstalled).to_owned(),
     }
 }
 
@@ -89,16 +269,16 @@ pub fn format_mb(bytes: u64) -> String {
 pub fn progress_text(phase: &InstallPhase) -> Option<String> {
     match phase {
         InstallPhase::Downloading { done, total } if *total > 0 => Some(format!(
-            "正在下载 VcXsrv：{} / {}（{}%）",
+            "{}{} / {}{}{}{}",
+            t(X11Msg::DownloadPrefix),
             format_mb(*done),
             format_mb(*total),
-            (done.saturating_mul(100) / total).min(100)
+            t(X11Msg::DownloadParenOpen),
+            (done.saturating_mul(100) / total).min(100),
+            t(X11Msg::DownloadPercentSuffix)
         )),
-        InstallPhase::Downloading { .. } => Some("正在下载 VcXsrv…".to_owned()),
-        InstallPhase::Installing => Some(
-            "已下载并校验。请在 Windows 弹出的「用户账户控制」里点「是」，然后等安装完成…"
-                .to_owned(),
-        ),
+        InstallPhase::Downloading { .. } => Some(t(X11Msg::DownloadNoSize).to_owned()),
+        InstallPhase::Installing => Some(t(X11Msg::VerifyThenUac).to_owned()),
         _ => None,
     }
 }
@@ -106,7 +286,7 @@ pub fn progress_text(phase: &InstallPhase) -> Option<String> {
 /// 安装失败 / 取消的原因（给用户看）。
 pub fn failure_text(error: &InstallError) -> String {
     match error {
-        InstallError::Cancelled => "已取消安装".to_owned(),
+        InstallError::Cancelled => t(X11Msg::CancelledInstall).to_owned(),
         other => other.to_string(),
     }
 }
@@ -129,7 +309,7 @@ pub struct X11Ui {
 impl X11Ui {
     pub fn new(window: &mut Window, cx: &mut Context<MainWindow>) -> Self {
         Self {
-            custom: cx.new(|cx| InputState::new(window, cx).placeholder("例如 localhost:0")),
+            custom: cx.new(|cx| InputState::new(window, cx).placeholder(t(X11Msg::Placeholder))),
             custom_error: None,
             status: None,
             prefs: X11Prefs::default(),
@@ -326,7 +506,7 @@ impl MainWindow {
         self.x11_ui.shown = now;
         if finished {
             self.x11_reload(window, cx);
-            self.notice("VcXsrv 已安装好，现在可以连接开了 X11 的主机了", window, cx);
+            self.notice(t(X11Msg::InstalledNotice), window, cx);
         }
         true
     }
@@ -425,17 +605,16 @@ impl MainWindow {
                     .child(
                         div()
                             .typo(Role::GroupTitle, tokens)
-                            .child("需要 X 显示程序"),
+                            .child(t(X11Msg::NeedsXServer)),
                     )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(tokens.text_muted)
-                            .child(SharedString::from(format!(
-                                "「{}」开了 X11 转发，但这台电脑上没有可用的 X 服务器（如 VcXsrv）。没有它，远程的图形程序显示不出来。",
-                                prompt.host_name
-                            ))),
-                    ),
+                    .child(div().text_sm().text_color(tokens.text_muted).child(
+                        SharedString::from(format!(
+                            "{}{}{}",
+                            t(X11Msg::HostQuoteOpen),
+                            prompt.host_name,
+                            t(X11Msg::PromptSuffix)
+                        )),
+                    )),
             )
             .child(
                 v_flex()
@@ -444,7 +623,7 @@ impl MainWindow {
                         d.child(
                             Button::new("x11-install")
                                 .primary()
-                                .label("一键安装 VcXsrv")
+                                .label(t(X11Msg::InstallNow))
                                 .w_full()
                                 .on_click(move |_, window, cx| {
                                     install_entity.update(cx, |this, cx| {
@@ -452,15 +631,12 @@ impl MainWindow {
                                     });
                                 }),
                         )
-                        .child(note(
-                            "从官方发布页下载并校验后安装；安装时 Windows 会弹出权限确认（UAC），需要点「是」。",
-                            tokens,
-                        ))
+                        .child(note(t(X11Msg::InstallNotePrompt), tokens))
                     })
                     .child(
                         Button::new("x11-settings")
                             .outline()
-                            .label("我已安装其他 X 服务器，去设置")
+                            .label(t(X11Msg::AlreadyInstalledSettings))
                             .w_full()
                             .on_click(move |_, window, cx| {
                                 settings_entity.update(cx, |this, cx| {
@@ -471,7 +647,7 @@ impl MainWindow {
                     .child(
                         Button::new("x11-skip")
                             .outline()
-                            .label("这次不用 X11 继续连接")
+                            .label(t(X11Msg::SkipOnce))
                             .w_full()
                             .on_click(move |_, window, cx| {
                                 skip_entity.update(cx, |this, cx| {
@@ -480,16 +656,14 @@ impl MainWindow {
                             }),
                     ),
             )
-            .child(
-                h_flex().justify_end().child(text_button(
-                    "modal-cancel",
-                    "取消",
-                    ButtonLook::Ghost,
-                    move |_, window, cx| {
-                        cancel_entity.update(cx, |this, cx| this.close_modal(window, cx));
-                    },
-                )),
-            )
+            .child(h_flex().justify_end().child(text_button(
+                "modal-cancel",
+                t(X11Msg::Cancel),
+                ButtonLook::Ghost,
+                move |_, window, cx| {
+                    cancel_entity.update(cx, |this, cx| this.close_modal(window, cx));
+                },
+            )))
             .into_any_element()
     }
 
@@ -510,13 +684,13 @@ impl MainWindow {
                 vec![
                     Segment {
                         id: "x11-source-auto".into(),
-                        label: "自动",
+                        label: t(X11Msg::Auto),
                         icon: None,
                         selected: !custom,
                     },
                     Segment {
                         id: "x11-source-custom".into(),
-                        label: "指定显示",
+                        label: t(X11Msg::CustomDisplay),
                         icon: None,
                         selected: custom,
                     },
@@ -550,7 +724,7 @@ impl MainWindow {
                             Button::new("x11-custom-save")
                                 .outline()
                                 .compact()
-                                .label("保存")
+                                .label(t(X11Msg::Save))
                                 .on_click(move |_, window, cx| {
                                     save_entity
                                         .update(cx, |this, cx| this.x11_set_custom(window, cx));
@@ -568,11 +742,11 @@ impl MainWindow {
         // ---- 退出时关闭 ----
         let close_entity = entity.clone();
         let close_row = row(
-            "ZeeTerm 退出时关闭自己启动的 X 服务器",
-            Some("只关这一次 ZeeTerm 自己拉起的 VcXsrv；你自己开的 X 服务器永远不碰。"),
+            t(X11Msg::CloseOwnedTitle),
+            Some(t(X11Msg::CloseOwnedDescription)),
             Switch::new("x11-close-owned")
                 .checked(prefs.close_owned_on_exit)
-                .accessibility_label("ZeeTerm 退出时关闭自己启动的 X 服务器")
+                .accessibility_label(t(X11Msg::CloseOwnedTitle))
                 .on_click(move |checked: &bool, _window, cx| {
                     let checked = *checked;
                     close_entity.update(cx, |this, cx| this.x11_set_close_owned(checked, cx));
@@ -585,7 +759,7 @@ impl MainWindow {
         let status = self.x11_ui.status.clone();
         let headline = status
             .as_ref()
-            .map_or_else(|| "正在检测…".to_owned(), status_headline);
+            .map_or_else(|| t(X11Msg::Detecting).to_owned(), status_headline);
         let installed = status
             .as_ref()
             .is_some_and(|status| status.vcxsrv.is_some() || !status.running_displays.is_empty());
@@ -599,7 +773,7 @@ impl MainWindow {
                 Button::new("x11-cancel-install")
                     .outline()
                     .compact()
-                    .label("取消")
+                    .label(t(X11Msg::Cancel))
                     .disabled(matches!(phase, InstallPhase::Installing))
                     .on_click(move |_, _window, cx| {
                         cancel_entity.update(cx, |this, cx| this.x11_cancel_install(cx));
@@ -611,7 +785,7 @@ impl MainWindow {
                     Button::new("x11-recheck")
                         .ghost()
                         .compact()
-                        .label("重新检测")
+                        .label(t(X11Msg::Recheck))
                         .on_click(move |_, window, cx| {
                             recheck_entity.update(cx, |this, cx| this.x11_reload(window, cx));
                         }),
@@ -621,7 +795,7 @@ impl MainWindow {
                         Button::new("x11-install-button")
                             .primary()
                             .compact()
-                            .label("一键安装 VcXsrv")
+                            .label(t(X11Msg::InstallNow))
                             .on_click(move |_, _window, cx| {
                                 install_entity.update(cx, |this, cx| this.x11_start_install(cx));
                             }),
@@ -630,7 +804,10 @@ impl MainWindow {
         }
         let status_row = row_with(
             "VcXsrv",
-            Some(SharedString::from(format!("状态：{headline}"))),
+            Some(SharedString::from(format!(
+                "{}{headline}",
+                t(X11Msg::StatusPrefix)
+            ))),
             controls,
             tokens,
         );
@@ -646,10 +823,15 @@ impl MainWindow {
             );
         }
         match &phase {
-            InstallPhase::Failed(reason) => notes
-                .push(error_note(format!("安装失败：{reason}"), tokens.danger).into_any_element()),
+            InstallPhase::Failed(reason) => notes.push(
+                error_note(
+                    format!("{}{reason}", t(X11Msg::InstallFailedPrefix)),
+                    tokens.danger,
+                )
+                .into_any_element(),
+            ),
             InstallPhase::Cancelled => {
-                notes.push(note("已取消安装。", tokens).into_any_element());
+                notes.push(note(t(X11Msg::CancelledInstallPeriod), tokens).into_any_element());
             }
             _ => {}
         }
@@ -658,8 +840,10 @@ impl MainWindow {
             notes.push(
                 note(
                     format!(
-                        "一键安装会从 VcXsrv 官方发布页下载安装包（约 {}），校验固定的 SHA-256 之后才运行；安装时 Windows 会弹出「用户账户控制」（UAC）窗口，需要你点「是」。ZeeTerm 不随程序分发 VcXsrv。",
-                        format_mb(size)
+                        "{}{}{}",
+                        t(X11Msg::InstallNotePrefix),
+                        format_mb(size),
+                        t(X11Msg::InstallNoteSuffix)
                     ),
                     tokens,
                 )
@@ -669,18 +853,14 @@ impl MainWindow {
 
         card(
             "settings-x11",
-            "X11 转发",
-            Some(
-                "连接开了 X11 转发的 SSH 主机时，把远程的图形程序显示在本机的 X 服务器上。主机上的开关在「主机属性 → 连接」里。",
-            ),
+            t(X11Msg::X11Forwarding),
+            Some(t(X11Msg::X11CardDescription)),
             tokens,
             {
                 let mut rows = vec![
                     row(
-                        "X 显示来源",
-                        Some(
-                            "自动：先用已经在运行的 X 服务器，没有就启动 VcXsrv。指定显示：连到你自己管理的 X 服务器（X410、MobaXterm 等）。",
-                        ),
+                        t(X11Msg::SourceTitle),
+                        Some(t(X11Msg::SourceDescription)),
                         source,
                         tokens,
                     ),

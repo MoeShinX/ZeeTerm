@@ -8,7 +8,67 @@ use gpui_kit::*;
 use super::protocol_form::{Caps, SSH_ONLY_HINT};
 use super::{CloseScope, MainWindow};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
+
+/// 本文件（终端标签右键菜单）的界面文案。SFTP 是协议名，两个语言下都写 `SFTP`。
+#[derive(Clone, Copy, Debug)]
+enum TabMsg {
+    DuplicateSession,
+    DuplicateSerial,
+    CopyHostName,
+    CopyAddress,
+    Sftp,
+    Reconnect,
+    Disconnect,
+    SendBreak,
+    Close,
+    CloseLeft,
+    CloseRight,
+    CloseOthers,
+    CloseAll,
+    SshOnlyHint,
+}
+
+impl Msg for TabMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::DuplicateSession => "复制会话",
+            Self::DuplicateSerial => SERIAL_DUPLICATE_LABEL,
+            Self::CopyHostName => "复制主机名",
+            Self::CopyAddress => "复制地址",
+            Self::Sftp => "SFTP",
+            Self::Reconnect => "重新连接",
+            Self::Disconnect => "断开连接",
+            Self::SendBreak => "发送 Break",
+            Self::Close => "关闭",
+            Self::CloseLeft => "关闭左侧",
+            Self::CloseRight => "关闭右侧",
+            Self::CloseOthers => "关闭其他",
+            Self::CloseAll => "关闭全部",
+            Self::SshOnlyHint => SSH_ONLY_HINT,
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::DuplicateSession => "Duplicate Session",
+            Self::DuplicateSerial => "Duplicate Session (only one serial session is allowed)",
+            Self::CopyHostName => "Copy Host Name",
+            Self::CopyAddress => "Copy Address",
+            Self::Sftp => "SFTP",
+            Self::Reconnect => "Reconnect",
+            Self::Disconnect => "Disconnect",
+            Self::SendBreak => "Send Break",
+            Self::Close => "Close",
+            Self::CloseLeft => "Close Left",
+            Self::CloseRight => "Close Right",
+            Self::CloseOthers => "Close Others",
+            Self::CloseAll => "Close All",
+            Self::SshOnlyHint => "Only available for SSH hosts",
+        }
+    }
+}
 
 /// 菜单里的一项（从上到下的次序就是 [`tab_menu`] 返回的次序）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,42 +137,50 @@ pub fn tab_menu(spec: &TabMenuSpec) -> Vec<TabMenuEntry> {
         TabMenuEntry::new(
             DuplicateSession,
             if serial {
-                SERIAL_DUPLICATE_LABEL
+                t(TabMsg::DuplicateSerial)
             } else {
-                "复制会话"
+                t(TabMsg::DuplicateSession)
             },
             !serial,
         ),
         TabMenuEntry::new(Separator, "", false),
-        TabMenuEntry::new(CopyHostName, "复制主机名", spec.host_record),
-        TabMenuEntry::new(CopyAddress, "复制地址", spec.has_address),
+        TabMenuEntry::new(CopyHostName, t(TabMsg::CopyHostName), spec.host_record),
+        TabMenuEntry::new(CopyAddress, t(TabMsg::CopyAddress), spec.has_address),
     ];
     // Telnet / 串口标签：SFTP 置灰并说明原因；没有主机的标签只是置灰。
-    let mut sftp = TabMenuEntry::new(Sftp, "SFTP", spec.has_host && spec.caps.sftp);
+    let mut sftp = TabMenuEntry::new(Sftp, t(TabMsg::Sftp), spec.has_host && spec.caps.sftp);
     if spec.has_host && !spec.caps.sftp {
-        sftp.hint = Some(SSH_ONLY_HINT);
+        sftp.hint = Some(t(TabMsg::SshOnlyHint));
     }
     entries.push(sftp);
-    entries.push(TabMenuEntry::new(Reconnect, "重新连接", spec.can_reconnect));
+    entries.push(TabMenuEntry::new(
+        Reconnect,
+        t(TabMsg::Reconnect),
+        spec.can_reconnect,
+    ));
     entries.push(TabMenuEntry::new(
         Disconnect,
-        "断开连接",
+        t(TabMsg::Disconnect),
         spec.can_disconnect,
     ));
     if serial {
         entries.push(TabMenuEntry::new(
             SendBreak,
-            "发送 Break",
+            t(TabMsg::SendBreak),
             spec.can_disconnect,
         ));
     }
     entries.extend([
         TabMenuEntry::new(Separator, "", false),
-        TabMenuEntry::new(Close, "关闭", true),
-        TabMenuEntry::new(CloseLeft, "关闭左侧", spec.index > 0),
-        TabMenuEntry::new(CloseRight, "关闭右侧", spec.index + 1 < spec.tab_count),
-        TabMenuEntry::new(CloseOthers, "关闭其他", spec.tab_count >= 2),
-        TabMenuEntry::new(CloseAll, "关闭全部", true),
+        TabMenuEntry::new(Close, t(TabMsg::Close), true),
+        TabMenuEntry::new(CloseLeft, t(TabMsg::CloseLeft), spec.index > 0),
+        TabMenuEntry::new(
+            CloseRight,
+            t(TabMsg::CloseRight),
+            spec.index + 1 < spec.tab_count,
+        ),
+        TabMenuEntry::new(CloseOthers, t(TabMsg::CloseOthers), spec.tab_count >= 2),
+        TabMenuEntry::new(CloseAll, t(TabMsg::CloseAll), true),
     ]);
     entries
 }

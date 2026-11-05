@@ -33,8 +33,309 @@ use super::bridge::on_ssh_runtime;
 use super::modal::Modal;
 use super::widgets::{ButtonLook, segmented, text_button};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::typography::{Role, Typo as _};
+
+/// 本文件（进程管理对话框、结束进程确认框）的界面文案。PID、CPU%、RSS、SIGTERM / SIGKILL、
+/// ps 这类技术名两个语言下写法相同；进程名、用户名、命令行、主机名来自远端或用户，照原样显示。
+#[derive(Clone, Copy, Debug)]
+enum ProcessMsg {
+    // ---- 确认框 ----
+    EffectTerm,
+    EffectKill,
+    RiskInit,
+    RiskSshSession,
+    ZombieParentPrefix,
+    ZombieParentSuffix,
+    ZombieWarningPrefix,
+    ZombieWarningSuffix,
+    NowYouArePrefix,
+    NowNotRoot,
+    OtherOwnerPrefix,
+    Comma,
+    OtherOwnerSuffix,
+    EndProcess,
+    ForceEndTitle,
+    ForceEndConfirm,
+    WhoPrefix,
+    WhoUserPrefix,
+    NoCommand,
+    Cancel,
+    Ending,
+    // ---- 结果提示 ----
+    SentPrefix,
+    SentMiddle,
+    SentSuffix,
+    KilledPrefix,
+    KilledMiddle,
+    KilledSuffix,
+    ZombieVerdictPrefix,
+    ZombieVerdictMiddle,
+    ZombieVerdictSuffix,
+    TermStillPrefix,
+    TermStillSuffix,
+    KillStillPrefix,
+    KillStillMiddle,
+    KillStillSuffix,
+    // ---- 表格提示 ----
+    ReportSimple,
+    ReportNoCpu,
+    // ---- 工具栏 / 表头 ----
+    ProcCpu,
+    ProcMem,
+    User,
+    CpuPercent,
+    MemPercent,
+    Rss,
+    State,
+    Elapsed,
+    Command,
+    SortTip,
+    CpuSortTip,
+    RssSortTip,
+    Retry,
+    Loading,
+    Empty,
+    Title,
+    AutoRefresh,
+    Refreshing,
+    Refresh,
+    SummarySuffix,
+    SourcePrefix,
+    FetchedPrefix,
+    CpuAverage,
+    TooManyPrefix,
+    TooManySuffix,
+    RefreshFailedPrefix,
+    // ---- 动作与选中 ----
+    NoConnection,
+    KillRefreshFailedPrefix,
+    KillRefreshFailedMiddle,
+    WrongServer,
+    ProtectedPrefix,
+    SelectedPrefix,
+    DotSep,
+    ProtectedSuffixOpen,
+    ProtectedSuffixClose,
+    SelectHint,
+    TermTip,
+    KillTip,
+}
+
+impl Msg for ProcessMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::EffectTerm => {
+                "这会结束服务器上的这个进程：向它发送 SIGTERM，请它自行退出（进程可以不理会）。"
+            }
+            Self::EffectKill => {
+                "这会强制结束服务器上的这个进程：发送 SIGKILL，立即终止，来不及保存数据或清理。"
+            }
+            Self::RiskInit => "这是 PID 1（系统的初始化进程），结束它可能让服务器崩溃或重启。",
+            Self::RiskSshSession => {
+                "这是承载你当前 SSH 连接的进程，结束它会断开现在的连接（也可能让 sshd 不再接受新的登录）。"
+            }
+            Self::ZombieParentPrefix => "，需要处理它的父进程（PID ",
+            Self::ZombieParentSuffix => "）",
+            Self::ZombieWarningPrefix => {
+                "这是僵尸进程（已经结束，只等父进程回收），再结束它不会有任何效果"
+            }
+            Self::ZombieWarningSuffix => "。",
+            Self::NowYouArePrefix => "你现在是 ",
+            Self::NowNotRoot => "你现在不是 root",
+            Self::OtherOwnerPrefix => "这个进程属于 ",
+            Self::Comma => "，",
+            Self::OtherOwnerSuffix => "，可能没有权限结束它（不会自动使用 sudo）。",
+            Self::EndProcess => "结束进程",
+            Self::ForceEndTitle => "强制结束进程",
+            Self::ForceEndConfirm => "强制结束",
+            Self::WhoPrefix => "PID ",
+            Self::WhoUserPrefix => " · 用户 ",
+            Self::NoCommand => "（没有命令行）",
+            Self::Cancel => "取消",
+            Self::Ending => "正在结束…",
+            Self::SentPrefix => "已向 PID ",
+            Self::SentMiddle => " 发送 SIG",
+            Self::SentSuffix => "，正在确认结果…",
+            Self::KilledPrefix => "已结束：PID ",
+            Self::KilledMiddle => "（",
+            Self::KilledSuffix => "）。",
+            Self::ZombieVerdictPrefix => "PID ",
+            Self::ZombieVerdictMiddle => " 已经结束，现在是僵尸进程，等它的父进程回收",
+            Self::ZombieVerdictSuffix => "。",
+            Self::TermStillPrefix => "已发送 SIGTERM，但 PID ",
+            Self::TermStillSuffix => {
+                " 仍在运行（它可能忽略了信号，或还在退出）。可以稍后刷新，或使用「强制结束」。"
+            }
+            Self::KillStillPrefix => "已发送 SIGKILL，但 PID ",
+            Self::KillStillMiddle => " 仍在运行（可能卡在内核里等待，状态 ",
+            Self::KillStillSuffix => "）。",
+            Self::ReportSimple => {
+                "这台服务器的 ps 比较简单，没有 CPU / 内存占用，只能看到进程列表。"
+            }
+            Self::ReportNoCpu => "这台服务器的 ps 不提供 CPU 占用，CPU 列显示为「—」。",
+            Self::ProcCpu => "CPU",
+            Self::ProcMem => "内存",
+            Self::User => "用户",
+            Self::CpuPercent => "CPU%",
+            Self::MemPercent => "内存%",
+            Self::Rss => "RSS",
+            Self::State => "状态",
+            Self::Elapsed => "运行时长",
+            Self::Command => "命令",
+            Self::SortTip => "点一下排序，再点反向，第三次恢复默认",
+            Self::CpuSortTip => {
+                "进程启动以来的平均 CPU 占用（ps 的口径）。点一下排序，再点反向，第三次恢复默认"
+            }
+            Self::RssSortTip => "常驻内存（MB）。点一下排序，再点反向，第三次恢复默认",
+            Self::Retry => "重试",
+            Self::Loading => "正在读取进程列表…",
+            Self::Empty => "没有符合条件的进程",
+            Self::Title => "进程管理",
+            Self::AutoRefresh => "每 3 秒自动刷新",
+            Self::Refreshing => "刷新中…",
+            Self::Refresh => "刷新",
+            Self::SummarySuffix => " 个进程",
+            Self::SourcePrefix => " · 来源 ",
+            Self::FetchedPrefix => " · 采集于 ",
+            Self::CpuAverage => "CPU% 是进程启动以来的平均值（ps 的口径），不是此刻的瞬时占用。",
+            Self::TooManyPrefix => "进程太多，只显示前 ",
+            Self::TooManySuffix => " 个。",
+            Self::RefreshFailedPrefix => "刷新失败：",
+            Self::NoConnection => "当前标签没有可用的 SSH 连接（还没连上或已断开）",
+            Self::KillRefreshFailedPrefix => "已向 PID ",
+            Self::KillRefreshFailedMiddle => " 发出结束请求，但刷新列表失败：",
+            Self::WrongServer => {
+                "当前连接已经不是打开这个窗口时的服务器，已取消，请重新打开进程管理。"
+            }
+            Self::ProtectedPrefix => "受保护的系统进程不能结束：",
+            Self::SelectedPrefix => "已选中：PID ",
+            Self::DotSep => " · ",
+            Self::ProtectedSuffixOpen => "（受保护：",
+            Self::ProtectedSuffixClose => "，不能结束）",
+            Self::SelectHint => "点一行选中进程（也可以右键）",
+            Self::TermTip => "向选中的进程发送 SIGTERM，请它退出（会先确认）",
+            Self::KillTip => "向选中的进程发送 SIGKILL，立即终止（会先确认）",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::EffectTerm => {
+                "This ends this process on the server: it sends SIGTERM and asks the process to exit on its own (the process may ignore it)."
+            }
+            Self::EffectKill => {
+                "This force-ends this process on the server: it sends SIGKILL, terminating it immediately with no chance to save data or clean up."
+            }
+            Self::RiskInit => {
+                "This is PID 1 (the system init process); ending it may crash or reboot the server."
+            }
+            Self::RiskSshSession => {
+                "This process carries your current SSH connection; ending it drops the current connection (and may also stop sshd from accepting new logins)."
+            }
+            Self::ZombieParentPrefix => " (handle its parent process, PID ",
+            Self::ZombieParentSuffix => ")",
+            Self::ZombieWarningPrefix => {
+                "This is a zombie process (already exited, only waiting for its parent to reap it); ending it again has no effect"
+            }
+            Self::ZombieWarningSuffix => ".",
+            Self::NowYouArePrefix => "You are now ",
+            Self::NowNotRoot => "You are not root",
+            Self::OtherOwnerPrefix => "This process belongs to ",
+            Self::Comma => ", ",
+            Self::OtherOwnerSuffix => {
+                ", so you may not have permission to end it (sudo is never used automatically)."
+            }
+            Self::EndProcess => "End Process",
+            Self::ForceEndTitle => "Force End Process",
+            Self::ForceEndConfirm => "Force End",
+            Self::WhoPrefix => "PID ",
+            Self::WhoUserPrefix => " · user ",
+            Self::NoCommand => "(no command line)",
+            Self::Cancel => "Cancel",
+            Self::Ending => "Ending…",
+            Self::SentPrefix => "PID ",
+            Self::SentMiddle => ": sent SIG",
+            Self::SentSuffix => ", confirming the result…",
+            Self::KilledPrefix => "Ended: PID ",
+            Self::KilledMiddle => " (",
+            Self::KilledSuffix => ").",
+            Self::ZombieVerdictPrefix => "PID ",
+            Self::ZombieVerdictMiddle => {
+                " has exited and is now a zombie; waiting for its parent to reap it"
+            }
+            Self::ZombieVerdictSuffix => ".",
+            Self::TermStillPrefix => "Sent SIGTERM, but PID ",
+            Self::TermStillSuffix => {
+                " is still running (it may have ignored the signal or is still exiting). Refresh later, or use “Force End”."
+            }
+            Self::KillStillPrefix => "Sent SIGKILL, but PID ",
+            Self::KillStillMiddle => " is still running (it may be stuck in the kernel, state ",
+            Self::KillStillSuffix => ").",
+            Self::ReportSimple => {
+                "This server's ps is limited: no CPU / memory usage, only the process list."
+            }
+            Self::ReportNoCpu => {
+                "This server's ps does not provide CPU usage, so the CPU column shows “—”."
+            }
+            Self::ProcCpu => "CPU",
+            Self::ProcMem => "Memory",
+            Self::User => "User",
+            Self::CpuPercent => "CPU%",
+            Self::MemPercent => "Memory%",
+            Self::Rss => "RSS",
+            Self::State => "State",
+            Self::Elapsed => "Elapsed",
+            Self::Command => "Command",
+            Self::SortTip => {
+                "Click to sort, click again to reverse, click a third time to restore the default"
+            }
+            Self::CpuSortTip => {
+                "Average CPU usage since process start (ps's metric). Click to sort, click again to reverse, click a third time to restore the default"
+            }
+            Self::RssSortTip => {
+                "Resident memory (MB). Click to sort, click again to reverse, click a third time to restore the default"
+            }
+            Self::Retry => "Retry",
+            Self::Loading => "Reading process list…",
+            Self::Empty => "No matching processes",
+            Self::Title => "Process Manager",
+            Self::AutoRefresh => "Auto-refresh every 3 seconds",
+            Self::Refreshing => "Refreshing…",
+            Self::Refresh => "Refresh",
+            Self::SummarySuffix => " processes",
+            Self::SourcePrefix => " · source ",
+            Self::FetchedPrefix => " · fetched at ",
+            Self::CpuAverage => {
+                "CPU% is the average since process start (ps's metric), not the instantaneous usage right now."
+            }
+            Self::TooManyPrefix => "Too many processes; showing only the first ",
+            Self::TooManySuffix => ".",
+            Self::RefreshFailedPrefix => "Refresh failed: ",
+            Self::NoConnection => {
+                "The current tab has no usable SSH connection (not connected yet or already disconnected)"
+            }
+            Self::KillRefreshFailedPrefix => "Sent an end request to PID ",
+            Self::KillRefreshFailedMiddle => ", but refreshing the list failed: ",
+            Self::WrongServer => {
+                "The current connection is no longer the server this window was opened for. Cancelled; reopen Process Manager."
+            }
+            Self::ProtectedPrefix => "Protected system processes cannot be ended: ",
+            Self::SelectedPrefix => "Selected: PID ",
+            Self::DotSep => " · ",
+            Self::ProtectedSuffixOpen => " (protected: ",
+            Self::ProtectedSuffixClose => ", cannot be ended)",
+            Self::SelectHint => "Click a row to select a process (or right-click)",
+            Self::TermTip => {
+                "Send SIGTERM to the selected process, asking it to exit (confirmation first)"
+            }
+            Self::KillTip => {
+                "Send SIGKILL to the selected process, terminating it immediately (confirmation first)"
+            }
+        }
+    }
+}
 
 /// 对话框卡片的宽度。
 pub const DIALOG_WIDTH: f32 = 1060.0;
@@ -87,64 +388,75 @@ pub fn ask_text(
     uid: Option<u32>,
 ) -> AskText {
     let effect = match signal {
-        KillSignal::Term => {
-            "这会结束服务器上的这个进程：向它发送 SIGTERM，请它自行退出（进程可以不理会）。"
-        }
-        KillSignal::Kill => {
-            "这会强制结束服务器上的这个进程：发送 SIGKILL，立即终止，来不及保存数据或清理。"
-        }
+        KillSignal::Term => t(ProcessMsg::EffectTerm),
+        KillSignal::Kill => t(ProcessMsg::EffectKill),
     };
     let mut warnings = Vec::new();
     match risk {
-        ProcRisk::Init => warnings.push((
-            Warn::Danger,
-            "这是 PID 1（系统的初始化进程），结束它可能让服务器崩溃或重启。".to_owned(),
-        )),
-        ProcRisk::SshSession => warnings.push((
-            Warn::Danger,
-            "这是承载你当前 SSH 连接的进程，结束它会断开现在的连接（也可能让 sshd 不再接受新的登录）。"
-                .to_owned(),
-        )),
+        ProcRisk::Init => warnings.push((Warn::Danger, t(ProcessMsg::RiskInit).to_owned())),
+        ProcRisk::SshSession => {
+            warnings.push((Warn::Danger, t(ProcessMsg::RiskSshSession).to_owned()));
+        }
         ProcRisk::Normal => {}
     }
     if row.is_zombie() {
-        let parent = row
-            .ppid
-            .map(|p| format!("，需要处理它的父进程（PID {p}）"))
-            .unwrap_or_default();
+        let parent = row.ppid.map_or_else(String::new, |p| {
+            format!(
+                "{}{p}{}",
+                t(ProcessMsg::ZombieParentPrefix),
+                t(ProcessMsg::ZombieParentSuffix)
+            )
+        });
         warnings.push((
             Warn::Caution,
-            format!("这是僵尸进程（已经结束，只等父进程回收），再结束它不会有任何效果{parent}。"),
+            format!(
+                "{}{parent}{}",
+                t(ProcessMsg::ZombieWarningPrefix),
+                t(ProcessMsg::ZombieWarningSuffix)
+            ),
         ));
     }
     let not_root = uid.is_some_and(|uid| uid != 0);
     let other_owner = login_user.is_none_or(|me| me != row.user);
     if not_root && other_owner && !row.user.is_empty() {
-        let me = login_user
-            .map(|me| format!("你现在是 {me}"))
-            .unwrap_or_else(|| "你现在不是 root".to_owned());
+        let me = login_user.map_or_else(
+            || t(ProcessMsg::NowNotRoot).to_owned(),
+            |me| format!("{}{me}", t(ProcessMsg::NowYouArePrefix)),
+        );
         warnings.push((
             Warn::Caution,
             format!(
-                "这个进程属于 {}，{me}，可能没有权限结束它（不会自动使用 sudo）。",
-                row.user
+                "{}{}{}{me}{}",
+                t(ProcessMsg::OtherOwnerPrefix),
+                row.user,
+                t(ProcessMsg::Comma),
+                t(ProcessMsg::OtherOwnerSuffix)
             ),
         ));
     }
     AskText {
         title: match signal {
-            KillSignal::Term => "结束进程",
-            KillSignal::Kill => "强制结束进程",
+            KillSignal::Term => t(ProcessMsg::EndProcess),
+            KillSignal::Kill => t(ProcessMsg::ForceEndTitle),
         },
-        who: format!("PID {} · 用户 {}", row.pid, row.user),
+        who: format!(
+            "{}{}{}{}",
+            t(ProcessMsg::WhoPrefix),
+            row.pid,
+            t(ProcessMsg::WhoUserPrefix),
+            row.user
+        ),
         command: if row.command.is_empty() {
-            "（没有命令行）".to_owned()
+            t(ProcessMsg::NoCommand).to_owned()
         } else {
             row.command.clone()
         },
         effect: effect.to_owned(),
         warnings,
-        confirm_label: signal.label(),
+        confirm_label: match signal {
+            KillSignal::Term => t(ProcessMsg::EndProcess),
+            KillSignal::Kill => t(ProcessMsg::ForceEndConfirm),
+        },
     }
 }
 
@@ -187,9 +499,12 @@ pub fn sent_notice(target: &ProcRow, signal: KillSignal) -> KillNotice {
     KillNotice {
         level: NoticeLevel::Info,
         text: format!(
-            "已向 PID {} 发送 SIG{}，正在确认结果…",
+            "{}{}{}{}{}",
+            t(ProcessMsg::SentPrefix),
             target.pid,
-            signal.name()
+            t(ProcessMsg::SentMiddle),
+            signal.name(),
+            t(ProcessMsg::SentSuffix)
         ),
     }
 }
@@ -217,29 +532,47 @@ pub fn verdict_notice(
     match verdict {
         KillVerdict::Gone => KillNotice {
             level: NoticeLevel::Success,
-            text: format!("已结束：PID {}（{name}）。", target.pid),
+            text: format!(
+                "{}{}{}{name}{}",
+                t(ProcessMsg::KilledPrefix),
+                target.pid,
+                t(ProcessMsg::KilledMiddle),
+                t(ProcessMsg::KilledSuffix)
+            ),
         },
         KillVerdict::Zombie => KillNotice {
             level: NoticeLevel::Warn,
             text: format!(
-                "PID {} 已经结束，现在是僵尸进程，等它的父进程回收{}。",
+                "{}{}{}{}{}",
+                t(ProcessMsg::ZombieVerdictPrefix),
                 target.pid,
+                t(ProcessMsg::ZombieVerdictMiddle),
                 now.and_then(|r| r.ppid)
-                    .map(|p| format!("（PID {p}）"))
-                    .unwrap_or_default()
+                    .map(|p| format!(
+                        "{}{p}{}",
+                        t(ProcessMsg::ZombieParentPrefix),
+                        t(ProcessMsg::ZombieParentSuffix)
+                    ))
+                    .unwrap_or_default(),
+                t(ProcessMsg::ZombieVerdictSuffix)
             ),
         },
         KillVerdict::StillRunning => KillNotice {
             level: NoticeLevel::Warn,
             text: match signal {
                 KillSignal::Term => format!(
-                    "已发送 SIGTERM，但 PID {} 仍在运行（它可能忽略了信号，或还在退出）。可以稍后刷新，或使用「强制结束」。",
-                    target.pid
+                    "{}{}{}",
+                    t(ProcessMsg::TermStillPrefix),
+                    target.pid,
+                    t(ProcessMsg::TermStillSuffix)
                 ),
                 KillSignal::Kill => format!(
-                    "已发送 SIGKILL，但 PID {} 仍在运行（可能卡在内核里等待，状态 {}）。",
+                    "{}{}{}{}{}",
+                    t(ProcessMsg::KillStillPrefix),
                     target.pid,
-                    now.map_or("?", |r| r.state.as_str())
+                    t(ProcessMsg::KillStillMiddle),
+                    now.map_or("?", |r| r.state.as_str()),
+                    t(ProcessMsg::KillStillSuffix)
                 ),
             },
         },
@@ -417,9 +750,9 @@ pub fn rss_label(kb: Option<u64>) -> String {
 /// 表格上方的淡色提示（这台服务器给不出 CPU / 内存时）。
 pub fn report_hint(report: &ProcessReport) -> Option<&'static str> {
     if !report.cpu_available() && !report.mem_available() {
-        Some("这台服务器的 ps 比较简单，没有 CPU / 内存占用，只能看到进程列表。")
+        Some(t(ProcessMsg::ReportSimple))
     } else if !report.cpu_available() {
-        Some("这台服务器的 ps 不提供 CPU 占用，CPU 列显示为「—」。")
+        Some(t(ProcessMsg::ReportNoCpu))
     } else {
         None
     }
@@ -518,7 +851,7 @@ pub(super) fn confirm_overlay(
                 .child(
                     text_button(
                         "proc-confirm-cancel",
-                        "取消",
+                        t(ProcessMsg::Cancel),
                         ButtonLook::Outline,
                         move |_, window, cx| on_cancel(window, cx),
                     )
@@ -537,7 +870,7 @@ pub(super) fn confirm_overlay(
                     text_button(
                         "proc-confirm-ok",
                         if busy {
-                            "正在结束…"
+                            t(ProcessMsg::Ending)
                         } else {
                             text.confirm_label
                         },
@@ -638,9 +971,7 @@ impl MainWindow {
         let Some((connection, _, _)) = self.workspace.read(cx).active_shell_position() else {
             self.processes_loaded(
                 generation,
-                Err(ProcessesError::Exec(
-                    "当前标签没有可用的 SSH 连接（还没连上或已断开）".to_owned(),
-                )),
+                Err(ProcessesError::Exec(t(ProcessMsg::NoConnection).to_owned())),
                 cx,
             );
             return;
@@ -699,8 +1030,10 @@ impl MainWindow {
                     dialog.notice = Some(KillNotice {
                         level: NoticeLevel::Warn,
                         text: format!(
-                            "已向 PID {} 发出结束请求，但刷新列表失败：{err}",
-                            verify.target.pid
+                            "{}{}{}{err}",
+                            t(ProcessMsg::KillRefreshFailedPrefix),
+                            verify.target.pid,
+                            t(ProcessMsg::KillRefreshFailedMiddle)
                         ),
                     });
                 }
@@ -830,8 +1163,7 @@ impl MainWindow {
             dialog.ask = None;
             dialog.notice = Some(KillNotice {
                 level: NoticeLevel::Error,
-                text: "当前连接已经不是打开这个窗口时的服务器，已取消，请重新打开进程管理。"
-                    .to_owned(),
+                text: t(ProcessMsg::WrongServer).to_owned(),
             });
             cx.notify();
             return;
@@ -850,9 +1182,7 @@ impl MainWindow {
                 generation,
                 target,
                 signal,
-                Err(KillError::Failed(
-                    "当前标签没有可用的 SSH 连接（还没连上或已断开）".to_owned(),
-                )),
+                Err(KillError::Failed(t(ProcessMsg::NoConnection).to_owned())),
                 cx,
             );
             return;
@@ -933,7 +1263,11 @@ impl MainWindow {
                     .size_4()
                     .text_color(tokens.accent),
             )
-            .child(div().typo(Role::GroupTitle, tokens).child("进程管理"))
+            .child(
+                div()
+                    .typo(Role::GroupTitle, tokens)
+                    .child(t(ProcessMsg::Title)),
+            )
             .child(
                 div()
                     .flex_1()
@@ -968,7 +1302,13 @@ impl MainWindow {
             "proc-mode",
             ProcMode::ALL
                 .iter()
-                .map(|m| (m.label().to_owned(), *m == mode_now, None))
+                .map(|m| {
+                    let label = match m {
+                        ProcMode::Cpu => t(ProcessMsg::ProcCpu),
+                        ProcMode::Mem => t(ProcessMsg::ProcMem),
+                    };
+                    (label.to_owned(), *m == mode_now, None)
+                })
                 .collect(),
             {
                 let entity = entity.clone();
@@ -1001,16 +1341,20 @@ impl MainWindow {
                             entity.update(cx, |this, cx| this.processes_set_auto(on, cx));
                         }
                     }))
-                    .child(div().typo(Role::Caption, tokens).child("每 3 秒自动刷新")),
+                    .child(
+                        div()
+                            .typo(Role::Caption, tokens)
+                            .child(t(ProcessMsg::AutoRefresh)),
+                    ),
             )
             .child({
                 let entity = entity.clone();
                 text_button(
                     "proc-refresh",
                     if dialog.loading {
-                        "刷新中…"
+                        t(ProcessMsg::Refreshing)
                     } else {
-                        "刷新"
+                        t(ProcessMsg::Refresh)
                     },
                     ButtonLook::Outline,
                     move |_, window, cx| {
@@ -1022,12 +1366,21 @@ impl MainWindow {
         // 状态行：条数、来源、采集时间。
         let summary = {
             let total = dialog.report.as_ref().map_or(0, |r| r.rows.len());
-            let mut text = format!("{} / {} 个进程", dialog.shown.len(), total);
+            let mut text = format!(
+                "{} / {}{}",
+                dialog.shown.len(),
+                total,
+                t(ProcessMsg::SummarySuffix)
+            );
             if let Some(report) = &dialog.report {
-                text.push_str(&format!(" · 来源 {}", report.source.label()));
+                text.push_str(&format!(
+                    "{}{}",
+                    t(ProcessMsg::SourcePrefix),
+                    report.source.label()
+                ));
             }
             if let Some(at) = &dialog.fetched {
-                text.push_str(&format!(" · 采集于 {at}"));
+                text.push_str(&format!("{}{at}", t(ProcessMsg::FetchedPrefix)));
             }
             text
         };
@@ -1035,7 +1388,7 @@ impl MainWindow {
             .report
             .as_ref()
             .and_then(report_hint)
-            .unwrap_or("CPU% 是进程启动以来的平均值（ps 的口径），不是此刻的瞬时占用。");
+            .unwrap_or(t(ProcessMsg::CpuAverage));
         let info = v_flex()
             .gap_0p5()
             .child(
@@ -1062,8 +1415,10 @@ impl MainWindow {
                     .typo(Role::Caption, tokens)
                     .text_color(tokens.caution)
                     .child(format!(
-                        "进程太多，只显示前 {} 个。",
-                        zssh_core::ssh::PROCESSES_MAX_ROWS
+                        "{}{}{}",
+                        t(ProcessMsg::TooManyPrefix),
+                        zssh_core::ssh::PROCESSES_MAX_ROWS,
+                        t(ProcessMsg::TooManySuffix)
                     ))
             }))
             .children(
@@ -1075,7 +1430,10 @@ impl MainWindow {
                         div()
                             .typo(Role::Caption, tokens)
                             .text_color(tokens.danger)
-                            .child(SharedString::from(format!("刷新失败：{error}")))
+                            .child(SharedString::from(format!(
+                                "{}{error}",
+                                t(ProcessMsg::RefreshFailedPrefix)
+                            )))
                     }),
             )
             .children(
@@ -1119,7 +1477,7 @@ impl MainWindow {
                         entity.update(cx, |this, cx| this.processes_sort_by(key, cx));
                     })
             };
-            const TIP: &str = "点一下排序，再点反向，第三次恢复默认";
+            let tip_text = t(ProcessMsg::SortTip);
             h_flex()
                 .flex_none()
                 .h(px(28.0))
@@ -1135,63 +1493,63 @@ impl MainWindow {
                     ProcSortKey::Pid,
                     Some(COL_PID),
                     true,
-                    TIP,
+                    tip_text,
                 ))
                 .child(cell(
                     "proc-h-user",
-                    "用户",
+                    t(ProcessMsg::User),
                     ProcSortKey::User,
                     Some(COL_USER),
                     false,
-                    TIP,
+                    tip_text,
                 ))
                 .child(cell(
                     "proc-h-cpu",
-                    "CPU%",
+                    t(ProcessMsg::CpuPercent),
                     ProcSortKey::Cpu,
                     Some(COL_CPU),
                     true,
-                    "进程启动以来的平均 CPU 占用（ps 的口径）。点一下排序，再点反向，第三次恢复默认",
+                    t(ProcessMsg::CpuSortTip),
                 ))
                 .child(cell(
                     "proc-h-mem",
-                    "内存%",
+                    t(ProcessMsg::MemPercent),
                     ProcSortKey::Mem,
                     Some(COL_MEM),
                     true,
-                    TIP,
+                    tip_text,
                 ))
                 .child(cell(
                     "proc-h-rss",
-                    "RSS",
+                    t(ProcessMsg::Rss),
                     ProcSortKey::Rss,
                     Some(COL_RSS),
                     true,
-                    "常驻内存（MB）。点一下排序，再点反向，第三次恢复默认",
+                    t(ProcessMsg::RssSortTip),
                 ))
                 .child(cell(
                     "proc-h-state",
-                    "状态",
+                    t(ProcessMsg::State),
                     ProcSortKey::State,
                     Some(COL_STATE),
                     false,
-                    TIP,
+                    tip_text,
                 ))
                 .child(cell(
                     "proc-h-time",
-                    "运行时长",
+                    t(ProcessMsg::Elapsed),
                     ProcSortKey::Elapsed,
                     Some(COL_TIME),
                     true,
-                    TIP,
+                    tip_text,
                 ))
                 .child(cell(
                     "proc-h-cmd",
-                    "命令",
+                    t(ProcessMsg::Command),
                     ProcSortKey::Command,
                     None,
                     false,
-                    TIP,
+                    tip_text,
                 ))
         };
 
@@ -1225,7 +1583,7 @@ impl MainWindow {
                     let entity = entity.clone();
                     text_button(
                         "proc-retry",
-                        "重试",
+                        t(ProcessMsg::Retry),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             entity.update(cx, |this, cx| this.refresh_processes(window, cx));
@@ -1233,9 +1591,9 @@ impl MainWindow {
                     )
                 })
                 .into_any_element(),
-            (None, None) => placeholder("正在读取进程列表…".to_owned(), tokens.text_muted),
+            (None, None) => placeholder(t(ProcessMsg::Loading).to_owned(), tokens.text_muted),
             (Some(_), _) if dialog.shown.is_empty() => {
-                placeholder("没有符合条件的进程".to_owned(), tokens.text_muted)
+                placeholder(t(ProcessMsg::Empty).to_owned(), tokens.text_muted)
             }
             (Some(_), _) => {
                 let row_tokens = *tokens;
@@ -1267,7 +1625,7 @@ impl MainWindow {
         let blocked = dialog.selected_protection();
         let tip = |normal: &'static str| -> SharedString {
             match blocked {
-                Some(p) => format!("受保护的系统进程不能结束：{}", p.reason()).into(),
+                Some(p) => format!("{}{}", t(ProcessMsg::ProtectedPrefix), p.reason()).into(),
                 None => normal.into(),
             }
         };
@@ -1283,22 +1641,30 @@ impl MainWindow {
                     .typo(Role::Caption, tokens)
                     .child(SharedString::from(match selected {
                         Some(row) => format!(
-                            "已选中：PID {} · {} · {}{}",
+                            "{}{}{}{}{}{}{}",
+                            t(ProcessMsg::SelectedPrefix),
                             row.pid,
+                            t(ProcessMsg::DotSep),
                             row.user,
+                            t(ProcessMsg::DotSep),
                             short(&row.command),
                             blocked
-                                .map(|p| format!("（受保护：{}，不能结束）", p.reason()))
+                                .map(|p| format!(
+                                    "{}{}{}",
+                                    t(ProcessMsg::ProtectedSuffixOpen),
+                                    p.reason(),
+                                    t(ProcessMsg::ProtectedSuffixClose)
+                                ))
                                 .unwrap_or_default()
                         ),
-                        None => "点一行选中进程（也可以右键）".to_owned(),
+                        None => t(ProcessMsg::SelectHint).to_owned(),
                     })),
             )
             .child({
                 let entity = entity.clone();
                 text_button(
                     "proc-kill-term",
-                    KillSignal::Term.label(),
+                    t(ProcessMsg::EndProcess),
                     ButtonLook::Outline,
                     move |_, _window, cx| {
                         if let Some(pid) = pid {
@@ -1309,13 +1675,13 @@ impl MainWindow {
                     },
                 )
                 .disabled(pid.is_none() || blocked.is_some())
-                .tooltip(tip("向选中的进程发送 SIGTERM，请它退出（会先确认）"))
+                .tooltip(tip(t(ProcessMsg::TermTip)))
             })
             .child({
                 let entity = entity.clone();
                 text_button(
                     "proc-kill-kill",
-                    KillSignal::Kill.label(),
+                    t(ProcessMsg::ForceEndConfirm),
                     ButtonLook::Danger,
                     move |_, _window, cx| {
                         if let Some(pid) = pid {
@@ -1326,7 +1692,7 @@ impl MainWindow {
                     },
                 )
                 .disabled(pid.is_none() || blocked.is_some())
-                .tooltip(tip("向选中的进程发送 SIGKILL，立即终止（会先确认）"))
+                .tooltip(tip(t(ProcessMsg::KillTip)))
             });
 
         let confirm = dialog

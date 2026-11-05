@@ -8,6 +8,101 @@ use zssh_core::model::{
     SerialStopBits, TelnetNewline, TextEncoding,
 };
 
+use crate::i18n::{Msg, t};
+
+/// 本文件（协议表单、主机列表标识）的界面文案。协议名 / 编码名（SSH、Telnet、SFTP、UTF-8、
+/// GBK……）和数值选项（数据位、停止位）两个语言下写法相同，不进这张表。
+#[derive(Clone, Copy, Debug)]
+enum ProtocolMsg {
+    // ---- Telnet 换行 ----
+    TelnetNewlineCrLf,
+    TelnetNewlineCr,
+    TelnetNewlineLf,
+    // ---- 本地回显 ----
+    LocalEchoAuto,
+    LocalEchoOn,
+    LocalEchoOff,
+    // ---- 串口校验位 ----
+    ParityNone,
+    ParityOdd,
+    ParityEven,
+    ParityMark,
+    ParitySpace,
+    // ---- 串口流控 ----
+    FlowNone,
+    FlowSoftware,
+    FlowHardware,
+    // ---- 串口换行 ----
+    SerialNewlineCr,
+    SerialNewlineLf,
+    SerialNewlineCrLf,
+    // ---- 串口设备 ----
+    BaudNeedsNumber,
+    NoSerialPorts,
+    ChooseSerialPort,
+    DeviceNotDetectedSuffix,
+    SerialTag,
+    SerialUnselected,
+}
+
+impl Msg for ProtocolMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::TelnetNewlineCrLf => "CR LF（回车 + 换行）",
+            Self::TelnetNewlineCr => "CR（回车）",
+            Self::TelnetNewlineLf => "LF（换行）",
+            Self::LocalEchoAuto => "自动（跟随服务器协商）",
+            Self::LocalEchoOn => "开",
+            Self::LocalEchoOff => "关",
+            Self::ParityNone => "无",
+            Self::ParityOdd => "奇校验",
+            Self::ParityEven => "偶校验",
+            Self::ParityMark => "标记（Mark）",
+            Self::ParitySpace => "空格（Space）",
+            Self::FlowNone => "无",
+            Self::FlowSoftware => "软件（XON/XOFF）",
+            Self::FlowHardware => "硬件（RTS/CTS）",
+            Self::SerialNewlineCr => "CR（回车）",
+            Self::SerialNewlineLf => "LF（换行）",
+            Self::SerialNewlineCrLf => "CR LF（回车 + 换行）",
+            Self::BaudNeedsNumber => "波特率要填数字（例如 115200）",
+            Self::NoSerialPorts => "未检测到串口",
+            Self::ChooseSerialPort => "（请选择串口）",
+            Self::DeviceNotDetectedSuffix => "（当前未检测到）",
+            Self::SerialTag => "串口",
+            Self::SerialUnselected => "未选择串口",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::TelnetNewlineCrLf => "CR LF (carriage return + line feed)",
+            Self::TelnetNewlineCr => "CR (carriage return)",
+            Self::TelnetNewlineLf => "LF (line feed)",
+            Self::LocalEchoAuto => "Auto (follow server negotiation)",
+            Self::LocalEchoOn => "On",
+            Self::LocalEchoOff => "Off",
+            Self::ParityNone => "None",
+            Self::ParityOdd => "Odd",
+            Self::ParityEven => "Even",
+            Self::ParityMark => "Mark",
+            Self::ParitySpace => "Space",
+            Self::FlowNone => "None",
+            Self::FlowSoftware => "Software (XON/XOFF)",
+            Self::FlowHardware => "Hardware (RTS/CTS)",
+            Self::SerialNewlineCr => "CR (carriage return)",
+            Self::SerialNewlineLf => "LF (line feed)",
+            Self::SerialNewlineCrLf => "CR LF (carriage return + line feed)",
+            Self::BaudNeedsNumber => "Baud rate must be a number (for example 115200)",
+            Self::NoSerialPorts => "No serial ports detected",
+            Self::ChooseSerialPort => "(Select a serial port)",
+            Self::DeviceNotDetectedSuffix => " (not detected right now)",
+            Self::SerialTag => "Serial",
+            Self::SerialUnselected => "No serial port selected",
+        }
+    }
+}
+
 /// 表单里能挂错误提示的位置。核心库只给一句中文原因，靠 [`locate_error`] 找到该落在哪。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FormField {
@@ -180,9 +275,9 @@ pub const TELNET_NEWLINES: [TelnetNewline; 3] =
 
 pub fn telnet_newline_label(value: TelnetNewline) -> &'static str {
     match value {
-        TelnetNewline::CrLf => "CR LF（回车 + 换行）",
-        TelnetNewline::Cr => "CR（回车）",
-        TelnetNewline::Lf => "LF（换行）",
+        TelnetNewline::CrLf => t(ProtocolMsg::TelnetNewlineCrLf),
+        TelnetNewline::Cr => t(ProtocolMsg::TelnetNewlineCr),
+        TelnetNewline::Lf => t(ProtocolMsg::TelnetNewlineLf),
     }
 }
 
@@ -190,9 +285,9 @@ pub const LOCAL_ECHOES: [LocalEcho; 3] = [LocalEcho::Auto, LocalEcho::On, LocalE
 
 pub fn local_echo_label(value: LocalEcho) -> &'static str {
     match value {
-        LocalEcho::Auto => "自动（跟随服务器协商）",
-        LocalEcho::On => "开",
-        LocalEcho::Off => "关",
+        LocalEcho::Auto => t(ProtocolMsg::LocalEchoAuto),
+        LocalEcho::On => t(ProtocolMsg::LocalEchoOn),
+        LocalEcho::Off => t(ProtocolMsg::LocalEchoOff),
     }
 }
 
@@ -242,11 +337,11 @@ pub const PARITIES: [SerialParity; 5] = [
 
 pub fn parity_label(value: SerialParity) -> &'static str {
     match value {
-        SerialParity::None => "无",
-        SerialParity::Odd => "奇校验",
-        SerialParity::Even => "偶校验",
-        SerialParity::Mark => "标记（Mark）",
-        SerialParity::Space => "空格（Space）",
+        SerialParity::None => t(ProtocolMsg::ParityNone),
+        SerialParity::Odd => t(ProtocolMsg::ParityOdd),
+        SerialParity::Even => t(ProtocolMsg::ParityEven),
+        SerialParity::Mark => t(ProtocolMsg::ParityMark),
+        SerialParity::Space => t(ProtocolMsg::ParitySpace),
     }
 }
 
@@ -272,9 +367,9 @@ pub const FLOW_CONTROLS: [SerialFlowControl; 3] = [
 
 pub fn flow_control_label(value: SerialFlowControl) -> &'static str {
     match value {
-        SerialFlowControl::None => "无",
-        SerialFlowControl::Software => "软件（XON/XOFF）",
-        SerialFlowControl::Hardware => "硬件（RTS/CTS）",
+        SerialFlowControl::None => t(ProtocolMsg::FlowNone),
+        SerialFlowControl::Software => t(ProtocolMsg::FlowSoftware),
+        SerialFlowControl::Hardware => t(ProtocolMsg::FlowHardware),
     }
 }
 
@@ -283,9 +378,9 @@ pub const SERIAL_NEWLINES: [SerialNewline; 3] =
 
 pub fn serial_newline_label(value: SerialNewline) -> &'static str {
     match value {
-        SerialNewline::Cr => "CR（回车）",
-        SerialNewline::Lf => "LF（换行）",
-        SerialNewline::CrLf => "CR LF（回车 + 换行）",
+        SerialNewline::Cr => t(ProtocolMsg::SerialNewlineCr),
+        SerialNewline::Lf => t(ProtocolMsg::SerialNewlineLf),
+        SerialNewline::CrLf => t(ProtocolMsg::SerialNewlineCrLf),
     }
 }
 
@@ -315,7 +410,7 @@ pub const COMMON_BAUD_RATES: [u32; 11] = [
 pub fn parse_baud(text: &str) -> Result<u32, String> {
     text.trim()
         .parse::<u32>()
-        .map_err(|_| "波特率要填数字（例如 115200）".to_owned())
+        .map_err(|_| t(ProtocolMsg::BaudNeedsNumber).to_owned())
 }
 
 /// 下拉里的一个串口。
@@ -371,9 +466,9 @@ pub fn device_button_label(device: &str, ports: &[PortChoice]) -> String {
     let device = device.trim();
     if device.is_empty() {
         return if ports.is_empty() {
-            "未检测到串口".to_owned()
+            t(ProtocolMsg::NoSerialPorts).to_owned()
         } else {
-            "（请选择串口）".to_owned()
+            t(ProtocolMsg::ChooseSerialPort).to_owned()
         };
     }
     match ports
@@ -381,7 +476,7 @@ pub fn device_button_label(device: &str, ports: &[PortChoice]) -> String {
         .find(|port| port.device.eq_ignore_ascii_case(device))
     {
         Some(port) => port.label.clone(),
-        None => format!("{device}（当前未检测到）"),
+        None => format!("{device}{}", t(ProtocolMsg::DeviceNotDetectedSuffix)),
     }
 }
 
@@ -392,7 +487,7 @@ pub fn protocol_tag(protocol: Protocol) -> &'static str {
     match protocol {
         Protocol::Ssh => "SSH",
         Protocol::Telnet => "Telnet",
-        Protocol::Serial => "串口",
+        Protocol::Serial => t(ProtocolMsg::SerialTag),
     }
 }
 
@@ -403,7 +498,11 @@ pub fn host_detail(host: &Host) -> String {
         Protocol::Serial => {
             let options = host.protocol.serial.clone().unwrap_or_default();
             if options.device.trim().is_empty() {
-                format!("未选择串口 · {}", options.baud_rate)
+                format!(
+                    "{} · {}",
+                    t(ProtocolMsg::SerialUnselected),
+                    options.baud_rate
+                )
             } else {
                 format!("{} · {}", options.device, options.baud_rate)
             }

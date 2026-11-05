@@ -23,7 +23,34 @@ use super::MainWindow;
 use super::nav::MainView;
 use super::titlebar::BAR_HEIGHT;
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::terminal_workspace::{TabInfo, TabStatus};
+
+/// 本文件（标签条溢出按钮、标签列表）的界面文案。
+#[derive(Clone, Copy, Debug)]
+enum TabStripMsg {
+    OverflowPrefix,
+    OverflowSuffix,
+    CloseTab,
+}
+
+impl Msg for TabStripMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::OverflowPrefix => "还有 ",
+            Self::OverflowSuffix => " 个标签没显示全，点开看全部",
+            Self::CloseTab => "关闭标签",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::OverflowPrefix => "",
+            Self::OverflowSuffix => " more tabs are not shown in full. Open the list to see all.",
+            Self::CloseTab => "Close Tab",
+        }
+    }
+}
 
 /// 标签最小宽度：缩到这里就不再缩，改成溢出。
 pub const TAB_MIN_WIDTH: f32 = 112.0;
@@ -231,8 +258,12 @@ impl MainWindow {
                 .cursor_pointer()
                 .hover(move |style| style.bg(hover).text_color(text))
                 .tooltip(move |window, cx| {
-                    Tooltip::new(format!("还有 {hidden} 个标签没显示全，点开看全部"))
-                        .build(window, cx)
+                    Tooltip::new(format!(
+                        "{}{hidden}{}",
+                        t(TabStripMsg::OverflowPrefix),
+                        t(TabStripMsg::OverflowSuffix)
+                    ))
+                    .build(window, cx)
                 })
                 .child(
                     canvas(move |bounds, _, _| cell.set(Some(bounds)), |_, _, _, _| {})
@@ -334,7 +365,9 @@ impl MainWindow {
                         .rounded_sm()
                         .cursor_pointer()
                         .hover(move |style| style.bg(hover).text_color(text))
-                        .tooltip(|window, cx| Tooltip::new("关闭标签").build(window, cx))
+                        .tooltip(|window, cx| {
+                            Tooltip::new(t(TabStripMsg::CloseTab)).build(window, cx)
+                        })
                         .child(Icon::new(IconName::Close).size_3())
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(move |_, window, cx| {

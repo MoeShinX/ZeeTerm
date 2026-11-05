@@ -13,10 +13,37 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use zssh_core::model::{Group, Host};
 
+use crate::i18n::{Msg, t};
+
+/// 本文件（主机树逻辑）的界面文案。
+#[derive(Clone, Copy, Debug)]
+enum HostTreeMsg {
+    Ungrouped,
+}
+
+impl Msg for HostTreeMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::Ungrouped => UNGROUPED_LABEL,
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::Ungrouped => "Ungrouped",
+        }
+    }
+}
+
+/// 「未分组」那一行现在的名字（搜索时按它匹配）：跟随界面语言。
+pub fn ungrouped_label() -> &'static str {
+    t(HostTreeMsg::Ungrouped)
+}
+
 /// 「未分组」在展开状态里的键；分组的键是 `g<id>`。
 pub const UNGROUPED_KEY: &str = "ungrouped";
 
-/// 搜索时「未分组」那一行的名字（名字本身也能被搜到）。
+/// 「未分组」那一行的中文名（渲染在 `sidebar`，那边仍用这个常量）。
 pub const UNGROUPED_LABEL: &str = "未分组";
 
 pub fn group_key(group_id: Option<i64>) -> String {
@@ -153,7 +180,7 @@ pub fn tree_filter(
             .iter()
             .any(|id| name_of.get(id).is_some_and(|name| name.contains(&text)))
     };
-    let ungrouped_name_hit = !flat && UNGROUPED_LABEL.contains(&text);
+    let ungrouped_name_hit = !flat && ungrouped_label().contains(&text);
 
     let mut host_ids = HashSet::new();
     let mut group_ids = HashSet::new();

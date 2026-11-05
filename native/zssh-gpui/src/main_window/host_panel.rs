@@ -27,6 +27,89 @@ use super::host_props::{self, LayoutState, Row};
 use super::host_test::TestState;
 use super::modal::Modal;
 use super::protocol_form::{self, FormField, PortChoice};
+use crate::i18n::{Msg, t};
+
+/// 本文件（主机属性表单的状态与动作）的界面文案。主机名、用户名、地址、凭据名来自用户，
+/// 照原样显示；核心库返回的错误原文不在这里翻译。
+#[derive(Clone, Copy, Debug)]
+enum HostPanelMsg {
+    MemoryPlaceholder,
+    DevicePlaceholder,
+    CannotSwitchSerial,
+    FingerprintsClearedPrefix,
+    FingerprintsClearedSuffix,
+    NoFingerprints,
+    ChooseJump,
+    ReadHostFailedPrefix,
+    HostSavedPrefix,
+    HostSavedSuffix,
+    HostDeletedPrefix,
+    HostDeletedSuffix,
+    PasswordNamesPrefix,
+    NameSeparator,
+    QuoteOpen,
+    QuoteClose,
+    DeleteFailedPrefix,
+    MemoryConflict,
+}
+
+impl Msg for HostPanelMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::MemoryPlaceholder => "还没有记忆。和 AI 聊这台主机时，它会把有用的事实记在这里。",
+            Self::DevicePlaceholder => "例如 COM3",
+            Self::CannotSwitchSerial => "串口主机和网络主机不能互相转换，要换类型请新建一台主机",
+            Self::FingerprintsClearedPrefix => "已清除 ",
+            Self::FingerprintsClearedSuffix => " 条指纹记录，下次连接会重新询问",
+            Self::NoFingerprints => "本来就没有保存过这台主机的指纹",
+            Self::ChooseJump => "请选择跳板机",
+            Self::ReadHostFailedPrefix => "读取主机失败，没有保存：",
+            Self::HostSavedPrefix => "已保存主机「",
+            Self::HostSavedSuffix => "」",
+            Self::HostDeletedPrefix => "已删除「",
+            Self::HostDeletedSuffix => "」",
+            Self::PasswordNamesPrefix => "，并删除了它的密码",
+            Self::NameSeparator => "、",
+            Self::QuoteOpen => "「",
+            Self::QuoteClose => "」",
+            Self::DeleteFailedPrefix => "删除失败：",
+            Self::MemoryConflict => {
+                "AI 刚刚更新了这台主机的记忆；你正在编辑的内容没有被覆盖，保存会替换 AI 写的。"
+            }
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::MemoryPlaceholder => {
+                "No notes yet. When you chat with the AI about this host, useful facts are recorded here."
+            }
+            Self::DevicePlaceholder => "for example COM3",
+            Self::CannotSwitchSerial => {
+                "Serial hosts and network hosts cannot be converted into each other; create a new host to change the type"
+            }
+            Self::FingerprintsClearedPrefix => "Cleared ",
+            Self::FingerprintsClearedSuffix => {
+                " fingerprint record(s); you will be asked again on the next connection"
+            }
+            Self::NoFingerprints => "No fingerprint was saved for this host",
+            Self::ChooseJump => "Select a jump host",
+            Self::ReadHostFailedPrefix => "Failed to read the host; nothing was saved: ",
+            Self::HostSavedPrefix => "Saved host “",
+            Self::HostSavedSuffix => "”",
+            Self::HostDeletedPrefix => "Deleted “",
+            Self::HostDeletedSuffix => "”",
+            Self::PasswordNamesPrefix => "; also deleted its password(s) ",
+            Self::NameSeparator => ", ",
+            Self::QuoteOpen => "“",
+            Self::QuoteClose => "”",
+            Self::DeleteFailedPrefix => "Delete failed: ",
+            Self::MemoryConflict => {
+                "The AI just updated this host's notes. Your edits were not overwritten; saving will replace what the AI wrote."
+            }
+        }
+    }
+}
 
 /// AI 记忆小节的状态。
 pub struct MemoryForm {
@@ -142,7 +225,7 @@ impl HostForm {
         let memory = memory.map(|(content, updated_at)| MemoryForm {
             input: cx.new(|cx| {
                 TextareaState::new(window, cx)
-                    .placeholder("还没有记忆。和 AI 聊这台主机时，它会把有用的事实记在这里。")
+                    .placeholder(t(HostPanelMsg::MemoryPlaceholder))
                     .auto_grow(4, 10)
                     .default_value(content.clone())
             }),
@@ -173,7 +256,7 @@ impl HostForm {
         };
         let device = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("例如 COM3")
+                .placeholder(t(HostPanelMsg::DevicePlaceholder))
                 .default_value(serial_options.device.clone())
         });
         let serial = SerialForm {
@@ -419,11 +502,7 @@ impl MainWindow {
         }
         let editing = form.existing.as_ref().map(|host| host.protocol.protocol);
         if !protocol_form::can_switch_to(editing, protocol) {
-            self.notice(
-                "串口主机和网络主机不能互相转换，要换类型请新建一台主机",
-                window,
-                cx,
-            );
+            self.notice(t(HostPanelMsg::CannotSwitchSerial), window, cx);
             return;
         }
         form.protocol = protocol;
@@ -616,9 +695,13 @@ impl MainWindow {
             Ok(removed) => {
                 self.with_form(cx, |form| form.fingerprint = None);
                 let message = if removed > 0 {
-                    format!("已清除 {removed} 条指纹记录，下次连接会重新询问")
+                    format!(
+                        "{}{removed}{}",
+                        t(HostPanelMsg::FingerprintsClearedPrefix),
+                        t(HostPanelMsg::FingerprintsClearedSuffix)
+                    )
                 } else {
-                    "本来就没有保存过这台主机的指纹".to_owned()
+                    t(HostPanelMsg::NoFingerprints).to_owned()
                 };
                 self.notice(&message, window, cx);
             }
@@ -785,7 +868,7 @@ impl MainWindow {
             && form.conn_mode == ConnMode::Jump
             && routing.jump.is_none()
         {
-            self.show_form_error(FormField::Jump, "请选择跳板机", window, cx);
+            self.show_form_error(FormField::Jump, t(HostPanelMsg::ChooseJump), window, cx);
             return;
         }
         let input = FormInput {
@@ -831,7 +914,11 @@ impl MainWindow {
             Some(id) => match self.store.host_fresh(id) {
                 Ok(host) => Some(host),
                 Err(err) => {
-                    self.notice_error(&format!("读取主机失败，没有保存：{err}"), window, cx);
+                    self.notice_error(
+                        &format!("{}{err}", t(HostPanelMsg::ReadHostFailedPrefix)),
+                        window,
+                        cx,
+                    );
                     return;
                 }
             },
@@ -860,7 +947,16 @@ impl MainWindow {
                 self.close_host_props_now();
                 self.focus_content(window, cx);
                 self.tree.selected_host = Some(saved.id);
-                self.notice_success(&format!("已保存主机「{}」", saved.name), window, cx);
+                self.notice_success(
+                    &format!(
+                        "{}{}{}",
+                        t(HostPanelMsg::HostSavedPrefix),
+                        saved.name,
+                        t(HostPanelMsg::HostSavedSuffix)
+                    ),
+                    window,
+                    cx,
+                );
                 cx.notify();
                 // 「连接」：保存成功之后立刻连（走和双击一样的入口，X11 提示、密码询问都照常）。
                 if connect {
@@ -900,21 +996,39 @@ impl MainWindow {
                 if self.info_host == Some(id) {
                     self.info_host = None;
                 }
-                let mut text = format!("已删除「{name}」");
+                let mut text = format!(
+                    "{}{name}{}",
+                    t(HostPanelMsg::HostDeletedPrefix),
+                    t(HostPanelMsg::HostDeletedSuffix)
+                );
                 if !deleted.passwords.is_empty() {
                     let names: Vec<String> = deleted
                         .passwords
                         .iter()
-                        .map(|name| format!("「{name}」"))
+                        .map(|name| {
+                            format!(
+                                "{}{name}{}",
+                                t(HostPanelMsg::QuoteOpen),
+                                t(HostPanelMsg::QuoteClose)
+                            )
+                        })
                         .collect();
-                    text.push_str(&format!("，并删除了它的密码{}", names.join("、")));
+                    text.push_str(&format!(
+                        "{}{}",
+                        t(HostPanelMsg::PasswordNamesPrefix),
+                        names.join(t(HostPanelMsg::NameSeparator))
+                    ));
                 }
                 self.notice_success(&text, window, cx);
                 if let Some(problem) = deleted.problems.first() {
                     self.notice_error(problem, window, cx);
                 }
             }
-            Err(err) => self.notice_error(&format!("删除失败：{err}"), window, cx),
+            Err(err) => self.notice_error(
+                &format!("{}{err}", t(HostPanelMsg::DeleteFailedPrefix)),
+                window,
+                cx,
+            ),
         }
         cx.notify();
     }
@@ -999,10 +1113,7 @@ impl MainWindow {
         if dirty {
             self.with_form(cx, |form| {
                 if let Some(memory) = &mut form.memory {
-                    memory.error = Some(
-                        "AI 刚刚更新了这台主机的记忆；你正在编辑的内容没有被覆盖，保存会替换 AI 写的。"
-                            .to_owned(),
-                    );
+                    memory.error = Some(t(HostPanelMsg::MemoryConflict).to_owned());
                 }
             });
             return;

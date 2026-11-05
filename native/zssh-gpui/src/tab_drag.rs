@@ -17,6 +17,34 @@
 
 use ::gpui::{AnyWindowHandle, App, Global, Window, WindowId};
 
+use crate::i18n::{Msg, t};
+
+/// 本文件（标签拖拽）的界面文案。
+#[derive(Clone, Copy, Debug)]
+enum TabDragMsg {
+    PopOut,
+    IntoFileWindow,
+    MergeIntoWindow,
+}
+
+impl Msg for TabDragMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::PopOut => "松开鼠标：弹出成独立窗口 · Esc 取消",
+            Self::IntoFileWindow => "松开鼠标：放进文件窗口 · Esc 取消",
+            Self::MergeIntoWindow => "松开鼠标：合并到那个窗口 · Esc 取消",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::PopOut => "Release to open in its own window · Esc to cancel",
+            Self::IntoFileWindow => "Release to move into the file window · Esc to cancel",
+            Self::MergeIntoWindow => "Release to merge into that window · Esc to cancel",
+        }
+    }
+}
+
 /// 指针离按下的地方超过这么多像素才算拖动（再小是手抖的点击）。
 pub const START_DISTANCE: f32 = 6.0;
 
@@ -363,9 +391,9 @@ pub fn screen_point(window: &Window, local: (f32, f32)) -> (f32, f32) {
 pub fn hint_text(view: &DragView) -> Option<&'static str> {
     match (view.hover, view.key.kind()) {
         (Hover::Inside, _) => None,
-        (Hover::Outside, TabKind::Terminal) => Some("松开鼠标：弹出成独立窗口 · Esc 取消"),
-        (Hover::Outside, TabKind::Sftp) => Some("松开鼠标：放进文件窗口 · Esc 取消"),
-        (Hover::Over(_), _) => Some("松开鼠标：合并到那个窗口 · Esc 取消"),
+        (Hover::Outside, TabKind::Terminal) => Some(t(TabDragMsg::PopOut)),
+        (Hover::Outside, TabKind::Sftp) => Some(t(TabDragMsg::IntoFileWindow)),
+        (Hover::Over(_), _) => Some(t(TabDragMsg::MergeIntoWindow)),
     }
 }
 

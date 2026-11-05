@@ -44,8 +44,224 @@ use super::processes_ui::{
 };
 use super::widgets::{ButtonLook, segmented, text_button};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::typography::{Role, Typo as _};
+
+/// 本文件（「所有网络连接」对话框）的界面文案。TCP / UDP、ss、netstat、/proc/net、PID 这类
+/// 技术名两个语言下写法相同；地址、端口、进程名、主机名来自远端，照原样显示。
+#[derive(Clone, Copy, Debug)]
+enum ConnMsg {
+    // ---- 进程列提示 ----
+    HintNotRoot,
+    HintNoProcessSource,
+    // ---- 右键菜单 ----
+    CopyLocal,
+    CopyRemote,
+    CopyRow,
+    DisconnectRow,
+    KillProcess,
+    KillProcessPrefix,
+    KillProcessMiddle,
+    KillProcessSuffix,
+    ViewRestPrefix,
+    ViewRestSuffix,
+    ViewInManager,
+    // ---- 确认框 ----
+    SshWarning,
+    NotRootWarning,
+    DisconnectAskTitle,
+    DotSep,
+    WhoProcessPrefix,
+    DisconnectEffect,
+    ConfirmDisconnect,
+    ForceEndExtra,
+    ForceEnd,
+    // ---- 结果提示 ----
+    DisconnectedPrefix,
+    DisconnectedSuffix,
+    NoConnection,
+    DisconnectRefreshFailedPrefix,
+    KillRefreshFailedPrefix,
+    KillRefreshFailedMiddle,
+    KillRefreshProcsFailedMiddle,
+    WrongServer,
+    // ---- 工具栏 / 筛选 ----
+    Title,
+    AutoRefresh,
+    Refreshing,
+    Refresh,
+    FilterAll,
+    FilterListen,
+    FilterEstablished,
+    SummarySuffix,
+    SourcePrefix,
+    FetchedPrefix,
+    TooManyPrefix,
+    TooManySuffix,
+    RefreshFailedPrefix,
+    // ---- 表头 / 表体 ----
+    SortTip,
+    HeaderProto,
+    HeaderLocal,
+    HeaderRemote,
+    HeaderState,
+    HeaderProcess,
+    Retry,
+    Loading,
+    Empty,
+    // ---- 自己的连接 ----
+    OwnConnectionPrefix,
+    OwnConnectionTip,
+}
+
+impl Msg for ConnMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::HintNotRoot => {
+                "以非 root 用户登录时看不到其他用户进程的信息，进程列显示为「—」。"
+            }
+            Self::HintNoProcessSource => {
+                "服务器上没有 ss / netstat，只能读 /proc/net，这种来源不含进程信息。"
+            }
+            Self::CopyLocal => "复制本地地址",
+            Self::CopyRemote => "复制远端地址",
+            Self::CopyRow => "复制整行",
+            Self::DisconnectRow => "断开这条连接",
+            Self::KillProcess => "结束进程…",
+            Self::KillProcessPrefix => "结束 ",
+            Self::KillProcessMiddle => "（PID ",
+            Self::KillProcessSuffix => "）",
+            Self::ViewRestPrefix => "在进程管理里查看其余 ",
+            Self::ViewRestSuffix => " 个…",
+            Self::ViewInManager => "在进程管理中查看",
+            Self::SshWarning => "这是一条 SSH 连接，断开后对方的终端会掉线。",
+            Self::NotRootWarning => "你现在不是 root，可能没有权限断开连接（不会自动使用 sudo）。",
+            Self::DisconnectAskTitle => "断开这条连接？",
+            Self::DotSep => " · ",
+            Self::WhoProcessPrefix => " · 进程 ",
+            Self::DisconnectEffect => "服务器会立即关闭这条 TCP 连接，对方会收到连接被重置。",
+            Self::ConfirmDisconnect => "断开连接",
+            Self::ForceEndExtra => {
+                "也可以直接点「强制结束」：发送 SIGKILL，立即终止，来不及保存数据或清理。"
+            }
+            Self::ForceEnd => "强制结束",
+            Self::DisconnectedPrefix => "已断开：",
+            Self::DisconnectedSuffix => "。",
+            Self::NoConnection => "当前标签没有可用的 SSH 连接（还没连上或已断开）",
+            Self::DisconnectRefreshFailedPrefix => "已发出断开请求，但刷新列表失败：",
+            Self::KillRefreshFailedPrefix => "已向 PID ",
+            Self::KillRefreshFailedMiddle => " 发出结束请求，但刷新列表失败：",
+            Self::KillRefreshProcsFailedMiddle => " 发出结束请求，但刷新进程列表失败：",
+            Self::WrongServer => {
+                "当前连接已经不是打开这个窗口时的服务器，已取消，请重新打开所有网络连接。"
+            }
+            Self::Title => "所有网络连接",
+            Self::AutoRefresh => "每 5 秒自动刷新",
+            Self::Refreshing => "刷新中…",
+            Self::Refresh => "刷新",
+            Self::FilterAll => "全部",
+            Self::FilterListen => "监听",
+            Self::FilterEstablished => "已建立",
+            Self::SummarySuffix => " 条",
+            Self::SourcePrefix => " · 来源 ",
+            Self::FetchedPrefix => " · 采集于 ",
+            Self::TooManyPrefix => "连接太多，只显示前 ",
+            Self::TooManySuffix => " 条。",
+            Self::RefreshFailedPrefix => "刷新失败：",
+            Self::SortTip => "点一下升序，再点降序，第三次恢复",
+            Self::HeaderProto => "协议",
+            Self::HeaderLocal => "本地地址",
+            Self::HeaderRemote => "远端地址",
+            Self::HeaderState => "状态",
+            Self::HeaderProcess => "进程",
+            Self::Retry => "重试",
+            Self::Loading => "正在读取网络连接…",
+            Self::Empty => "没有符合条件的连接",
+            Self::OwnConnectionPrefix => "ZeeTerm 正在使用这条连接：",
+            Self::OwnConnectionTip => "ZeeTerm 正在使用这条连接",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::HintNotRoot => {
+                "When signed in as a non-root user, other users' process information is not visible; the process column shows “—”."
+            }
+            Self::HintNoProcessSource => {
+                "The server has no ss / netstat, so only /proc/net can be read; that source carries no process information."
+            }
+            Self::CopyLocal => "Copy Local Address",
+            Self::CopyRemote => "Copy Remote Address",
+            Self::CopyRow => "Copy Row",
+            Self::DisconnectRow => "Disconnect This Connection",
+            Self::KillProcess => "End Process…",
+            Self::KillProcessPrefix => "End ",
+            Self::KillProcessMiddle => " (PID ",
+            Self::KillProcessSuffix => ")",
+            Self::ViewRestPrefix => "View the other ",
+            Self::ViewRestSuffix => " in Process Manager…",
+            Self::ViewInManager => "View in Process Manager",
+            Self::SshWarning => {
+                "This is an SSH connection; disconnecting drops the other side's terminal."
+            }
+            Self::NotRootWarning => {
+                "You are not root and may not have permission to disconnect (sudo is never used automatically)."
+            }
+            Self::DisconnectAskTitle => "Disconnect this connection?",
+            Self::DotSep => " · ",
+            Self::WhoProcessPrefix => " · process ",
+            Self::DisconnectEffect => {
+                "The server closes this TCP connection immediately; the other side sees the connection reset."
+            }
+            Self::ConfirmDisconnect => "Disconnect",
+            Self::ForceEndExtra => {
+                "You can also click “Force End”: it sends SIGKILL, terminating immediately with no chance to save data or clean up."
+            }
+            Self::ForceEnd => "Force End",
+            Self::DisconnectedPrefix => "Disconnected: ",
+            Self::DisconnectedSuffix => ".",
+            Self::NoConnection => {
+                "The current tab has no usable SSH connection (not connected yet or already disconnected)"
+            }
+            Self::DisconnectRefreshFailedPrefix => {
+                "Disconnect request sent, but refreshing the list failed: "
+            }
+            Self::KillRefreshFailedPrefix => "Sent an end request to PID ",
+            Self::KillRefreshFailedMiddle => ", but refreshing the list failed: ",
+            Self::KillRefreshProcsFailedMiddle => ", but refreshing the process list failed: ",
+            Self::WrongServer => {
+                "The current connection is no longer the server this window was opened for. Cancelled; reopen All Network Connections."
+            }
+            Self::Title => "All Network Connections",
+            Self::AutoRefresh => "Auto-refresh every 5 seconds",
+            Self::Refreshing => "Refreshing…",
+            Self::Refresh => "Refresh",
+            Self::FilterAll => "All",
+            Self::FilterListen => "Listen",
+            Self::FilterEstablished => "Established",
+            Self::SummarySuffix => " connections",
+            Self::SourcePrefix => " · source ",
+            Self::FetchedPrefix => " · fetched at ",
+            Self::TooManyPrefix => "Too many connections; showing only the first ",
+            Self::TooManySuffix => ".",
+            Self::RefreshFailedPrefix => "Refresh failed: ",
+            Self::SortTip => {
+                "Click to sort ascending, click again for descending, a third click restores the default"
+            }
+            Self::HeaderProto => "Protocol",
+            Self::HeaderLocal => "Local Address",
+            Self::HeaderRemote => "Remote Address",
+            Self::HeaderState => "State",
+            Self::HeaderProcess => "Process",
+            Self::Retry => "Retry",
+            Self::Loading => "Reading network connections…",
+            Self::Empty => "No matching connections",
+            Self::OwnConnectionPrefix => "ZeeTerm is using this connection: ",
+            Self::OwnConnectionTip => "ZeeTerm is using this connection",
+        }
+    }
+}
 
 /// 对话框卡片的宽度。
 pub const DIALOG_WIDTH: f32 = 940.0;
@@ -255,10 +471,8 @@ fn clock_now() -> String {
 /// 进程列为空时表格上方的淡色提示。
 pub fn hint_text(hint: ProcessHint) -> &'static str {
     match hint {
-        ProcessHint::NotRoot => "以非 root 用户登录时看不到其他用户进程的信息，进程列显示为「—」。",
-        ProcessHint::NoProcessSource => {
-            "服务器上没有 ss / netstat，只能读 /proc/net，这种来源不含进程信息。"
-        }
+        ProcessHint::NotRoot => t(ConnMsg::HintNotRoot),
+        ProcessHint::NoProcessSource => t(ConnMsg::HintNoProcessSource),
     }
 }
 
@@ -316,21 +530,24 @@ pub fn row_menu(
     let mut entries = vec![
         Some(MenuItem::on(
             MenuAct::Copy(row.local.display()),
-            "复制本地地址",
+            t(ConnMsg::CopyLocal),
         )),
         Some(MenuItem::on(
             MenuAct::Copy(row.remote.display()),
-            "复制远端地址",
+            t(ConnMsg::CopyRemote),
         )),
-        Some(MenuItem::on(MenuAct::Copy(row.tsv_line()), "复制整行")),
+        Some(MenuItem::on(
+            MenuAct::Copy(row.tsv_line()),
+            t(ConnMsg::CopyRow),
+        )),
         None,
     ];
     // 断开这条连接。
     entries.push(Some(match disconnect_check(report, row) {
-        Ok(()) => MenuItem::on(MenuAct::Disconnect, "断开这条连接"),
+        Ok(()) => MenuItem::on(MenuAct::Disconnect, t(ConnMsg::DisconnectRow)),
         Err(block) => MenuItem::off(
             MenuAct::Disconnect,
-            "断开这条连接",
+            t(ConnMsg::DisconnectRow),
             block.reason().to_owned(),
             block.reason(),
         ),
@@ -345,13 +562,20 @@ pub fn row_menu(
         };
         entries.push(Some(MenuItem::off(
             MenuAct::KillNone,
-            "结束进程…",
+            t(ConnMsg::KillProcess),
             block.reason(),
             block.short(),
         )));
     }
     for proc in &listed {
-        let label = format!("结束 {}（PID {}）", proc.name, proc.pid);
+        let label = format!(
+            "{}{}{}{}{}",
+            t(ConnMsg::KillProcessPrefix),
+            proc.name,
+            t(ConnMsg::KillProcessMiddle),
+            proc.pid,
+            t(ConnMsg::KillProcessSuffix)
+        );
         entries.push(Some(match kill_check(report, row, procs, proc.pid) {
             Ok(()) => MenuItem::on(MenuAct::Kill(proc.pid), label),
             Err(block) => MenuItem::off(
@@ -368,18 +592,22 @@ pub fn row_menu(
     {
         entries.push(Some(MenuItem::on(
             MenuAct::ShowProcess(first_hidden.pid),
-            format!("在进程管理里查看其余 {hidden} 个…"),
+            format!(
+                "{}{hidden}{}",
+                t(ConnMsg::ViewRestPrefix),
+                t(ConnMsg::ViewRestSuffix)
+            ),
         )));
     }
     entries.push(None);
     // 在进程管理中查看：多个 PID 时取第一个。
     entries.push(Some(match row.unique_processes().first() {
-        Some(first) => MenuItem::on(MenuAct::ShowProcess(first.pid), "在进程管理中查看"),
+        Some(first) => MenuItem::on(MenuAct::ShowProcess(first.pid), t(ConnMsg::ViewInManager)),
         None => {
             let block = zssh_core::ssh::KillBlock::NoProcessInfo;
             MenuItem::off(
                 MenuAct::ShowProcess(0),
-                "在进程管理中查看",
+                t(ConnMsg::ViewInManager),
                 block.reason(),
                 block.short(),
             )
@@ -398,29 +626,25 @@ pub fn disconnect_ask_text(row: &NetConn, uid: Option<u32>) -> AskText {
         .iter()
         .any(|p| p.name.starts_with("sshd") || p.name == "dropbear")
     {
-        warnings.push((
-            Warn::Caution,
-            "这是一条 SSH 连接，断开后对方的终端会掉线。".to_owned(),
-        ));
+        warnings.push((Warn::Caution, t(ConnMsg::SshWarning).to_owned()));
     }
     if uid.is_some_and(|uid| uid != 0) {
-        warnings.push((
-            Warn::Caution,
-            "你现在不是 root，可能没有权限断开连接（不会自动使用 sudo）。".to_owned(),
-        ));
+        warnings.push((Warn::Caution, t(ConnMsg::NotRootWarning).to_owned()));
     }
     AskText {
-        title: "断开这条连接？",
+        title: t(ConnMsg::DisconnectAskTitle),
         who: format!(
-            "{} · {} · 进程 {}",
+            "{}{}{}{}{}",
             row.proto_label(),
+            t(ConnMsg::DotSep),
             row.state.label(),
+            t(ConnMsg::WhoProcessPrefix),
             row.process_label()
         ),
         command: format!("{}  ↔  {}", row.local.display(), row.remote.display()),
-        effect: "服务器会立即关闭这条 TCP 连接，对方会收到连接被重置。".to_owned(),
+        effect: t(ConnMsg::DisconnectEffect).to_owned(),
         warnings,
-        confirm_label: "断开连接",
+        confirm_label: t(ConnMsg::ConfirmDisconnect),
     }
 }
 
@@ -432,10 +656,8 @@ pub fn kill_ask_text(
     uid: Option<u32>,
 ) -> AskText {
     let mut text = ask_text(target, KillSignal::Term, risk, login_user, uid);
-    text.warnings.push((
-        Warn::Note,
-        "也可以直接点「强制结束」：发送 SIGKILL，立即终止，来不及保存数据或清理。".to_owned(),
-    ));
+    text.warnings
+        .push((Warn::Note, t(ConnMsg::ForceEndExtra).to_owned()));
     text
 }
 
@@ -444,9 +666,11 @@ pub fn disconnected_notice(row: &NetConn) -> KillNotice {
     KillNotice {
         level: NoticeLevel::Success,
         text: format!(
-            "已断开：{} ↔ {}。",
+            "{}{} ↔ {}{}",
+            t(ConnMsg::DisconnectedPrefix),
             row.local.display(),
-            row.remote.display()
+            row.remote.display(),
+            t(ConnMsg::DisconnectedSuffix)
         ),
     }
 }
@@ -516,9 +740,7 @@ impl MainWindow {
         let Some((connection, _, _)) = self.workspace.read(cx).active_shell_position() else {
             self.connections_loaded(
                 generation,
-                Err(ConnectionsError::Exec(
-                    "当前标签没有可用的 SSH 连接（还没连上或已断开）".to_owned(),
-                )),
+                Err(ConnectionsError::Exec(t(ConnMsg::NoConnection).to_owned())),
                 window,
                 cx,
             );
@@ -590,11 +812,13 @@ impl MainWindow {
                         level: NoticeLevel::Warn,
                         text: match verify.kind {
                             ConnVerifyKind::Disconnect => {
-                                format!("已发出断开请求，但刷新列表失败：{err}")
+                                format!("{}{err}", t(ConnMsg::DisconnectRefreshFailedPrefix))
                             }
                             ConnVerifyKind::Kill { target, .. } => format!(
-                                "已向 PID {} 发出结束请求，但刷新列表失败：{err}",
-                                target.pid
+                                "{}{}{}{err}",
+                                t(ConnMsg::KillRefreshFailedPrefix),
+                                target.pid,
+                                t(ConnMsg::KillRefreshFailedMiddle)
                             ),
                         },
                     });
@@ -627,9 +851,7 @@ impl MainWindow {
         let Some((connection, _, _)) = self.workspace.read(cx).active_shell_position() else {
             self.conn_procs_loaded(
                 generation,
-                Err(ProcessesError::Exec(
-                    "当前标签没有可用的 SSH 连接（还没连上或已断开）".to_owned(),
-                )),
+                Err(ProcessesError::Exec(t(ConnMsg::NoConnection).to_owned())),
                 cx,
             );
             return;
@@ -691,8 +913,10 @@ impl MainWindow {
                     dialog.notice = Some(KillNotice {
                         level: NoticeLevel::Warn,
                         text: format!(
-                            "已向 PID {} 发出结束请求，但刷新进程列表失败：{err}",
-                            target.pid
+                            "{}{}{}{err}",
+                            t(ConnMsg::KillRefreshFailedPrefix),
+                            target.pid,
+                            t(ConnMsg::KillRefreshProcsFailedMiddle)
                         ),
                     });
                 }
@@ -856,8 +1080,7 @@ impl MainWindow {
             dialog.ask = None;
             dialog.notice = Some(KillNotice {
                 level: NoticeLevel::Error,
-                text: "当前连接已经不是打开这个窗口时的服务器，已取消，请重新打开所有网络连接。"
-                    .to_owned(),
+                text: t(ConnMsg::WrongServer).to_owned(),
             });
             cx.notify();
             return;
@@ -880,7 +1103,7 @@ impl MainWindow {
             .read(cx)
             .active_shell_position()
             .map(|(connection, _, _)| connection);
-        let no_connection = || "当前标签没有可用的 SSH 连接（还没连上或已断开）".to_owned();
+        let no_connection = || t(ConnMsg::NoConnection).to_owned();
 
         match kind {
             Ok(row) => {
@@ -1043,7 +1266,11 @@ impl MainWindow {
                     .size_4()
                     .text_color(tokens.accent),
             )
-            .child(div().typo(Role::GroupTitle, tokens).child("所有网络连接"))
+            .child(
+                div()
+                    .typo(Role::GroupTitle, tokens)
+                    .child(t(ConnMsg::Title)),
+            )
             .child(
                 div()
                     .flex_1()
@@ -1078,7 +1305,16 @@ impl MainWindow {
             "conn-filter",
             ConnFilter::ALL
                 .iter()
-                .map(|f| (f.label().to_owned(), *f == filter_now, None))
+                .map(|f| {
+                    let label = match f {
+                        ConnFilter::All => t(ConnMsg::FilterAll),
+                        ConnFilter::Tcp => "TCP",
+                        ConnFilter::Udp => "UDP",
+                        ConnFilter::Listen => t(ConnMsg::FilterListen),
+                        ConnFilter::Established => t(ConnMsg::FilterEstablished),
+                    };
+                    (label.to_owned(), *f == filter_now, None)
+                })
                 .collect(),
             {
                 let entity = entity.clone();
@@ -1111,16 +1347,20 @@ impl MainWindow {
                             entity.update(cx, |this, cx| this.connections_set_auto(on, cx));
                         }
                     }))
-                    .child(div().typo(Role::Caption, tokens).child("每 5 秒自动刷新")),
+                    .child(
+                        div()
+                            .typo(Role::Caption, tokens)
+                            .child(t(ConnMsg::AutoRefresh)),
+                    ),
             )
             .child({
                 let entity = entity.clone();
                 text_button(
                     "conn-refresh",
                     if dialog.loading {
-                        "刷新中…"
+                        t(ConnMsg::Refreshing)
                     } else {
-                        "刷新"
+                        t(ConnMsg::Refresh)
                     },
                     ButtonLook::Outline,
                     move |_, window, cx| {
@@ -1132,12 +1372,21 @@ impl MainWindow {
         // 状态行：条数、来源、采集时间。
         let summary = {
             let total = dialog.report.as_ref().map_or(0, |r| r.rows.len());
-            let mut text = format!("{} / {} 条", dialog.shown.len(), total);
+            let mut text = format!(
+                "{} / {}{}",
+                dialog.shown.len(),
+                total,
+                t(ConnMsg::SummarySuffix)
+            );
             if let Some(report) = &dialog.report {
-                text.push_str(&format!(" · 来源 {}", report.source.label()));
+                text.push_str(&format!(
+                    "{}{}",
+                    t(ConnMsg::SourcePrefix),
+                    report.source.label()
+                ));
             }
             if let Some(at) = &dialog.fetched {
-                text.push_str(&format!(" · 采集于 {at}"));
+                text.push_str(&format!("{}{at}", t(ConnMsg::FetchedPrefix)));
             }
             text
         };
@@ -1172,8 +1421,10 @@ impl MainWindow {
                     .typo(Role::Caption, tokens)
                     .text_color(tokens.caution)
                     .child(format!(
-                        "连接太多，只显示前 {} 条。",
-                        zssh_core::ssh::CONNECTIONS_MAX_ROWS
+                        "{}{}{}",
+                        t(ConnMsg::TooManyPrefix),
+                        zssh_core::ssh::CONNECTIONS_MAX_ROWS,
+                        t(ConnMsg::TooManySuffix)
                     ))
             }))
             .children(
@@ -1185,7 +1436,10 @@ impl MainWindow {
                         div()
                             .typo(Role::Caption, tokens)
                             .text_color(tokens.danger)
-                            .child(SharedString::from(format!("刷新失败：{error}")))
+                            .child(SharedString::from(format!(
+                                "{}{error}",
+                                t(ConnMsg::RefreshFailedPrefix)
+                            )))
                     }),
             )
             .children(
@@ -1216,9 +1470,7 @@ impl MainWindow {
                     .when_some(width, |d, w| d.w(px(w)).flex_none())
                     .when(width.is_none(), |d| d.flex_1().min_w_0())
                     .hover(move |style| style.bg(hover))
-                    .tooltip(|window, cx| {
-                        Tooltip::new("点一下升序，再点降序，第三次恢复").build(window, cx)
-                    })
+                    .tooltip(|window, cx| Tooltip::new(t(ConnMsg::SortTip)).build(window, cx))
                     .child(div().child(label))
                     .children(arrow.map(|icon| Icon::new(icon).size_3()))
                     .on_click(move |_, _window, cx| {
@@ -1236,29 +1488,34 @@ impl MainWindow {
                 .text_color(tokens.text_muted)
                 .child(cell(
                     "conn-h-proto",
-                    "协议",
+                    t(ConnMsg::HeaderProto),
                     SortKey::Proto,
                     Some(COL_PROTO),
                 ))
                 .child(cell(
                     "conn-h-local",
-                    "本地地址",
+                    t(ConnMsg::HeaderLocal),
                     SortKey::Local,
                     Some(COL_LOCAL),
                 ))
                 .child(cell(
                     "conn-h-remote",
-                    "远端地址",
+                    t(ConnMsg::HeaderRemote),
                     SortKey::Remote,
                     Some(COL_REMOTE),
                 ))
                 .child(cell(
                     "conn-h-state",
-                    "状态",
+                    t(ConnMsg::HeaderState),
                     SortKey::State,
                     Some(COL_STATE),
                 ))
-                .child(cell("conn-h-proc", "进程", SortKey::Process, None))
+                .child(cell(
+                    "conn-h-proc",
+                    t(ConnMsg::HeaderProcess),
+                    SortKey::Process,
+                    None,
+                ))
         };
 
         // 表体：没数据 / 失败 / 没有符合条件的 / 虚拟列表。
@@ -1291,7 +1548,7 @@ impl MainWindow {
                     let entity = entity.clone();
                     text_button(
                         "conn-retry",
-                        "重试",
+                        t(ConnMsg::Retry),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             entity.update(cx, |this, cx| this.refresh_connections(window, cx));
@@ -1299,9 +1556,9 @@ impl MainWindow {
                     )
                 })
                 .into_any_element(),
-            (None, None) => placeholder("正在读取网络连接…".to_owned(), tokens.text_muted),
+            (None, None) => placeholder(t(ConnMsg::Loading).to_owned(), tokens.text_muted),
             (Some(_), _) if dialog.shown.is_empty() => {
-                placeholder("没有符合条件的连接".to_owned(), tokens.text_muted)
+                placeholder(t(ConnMsg::Empty).to_owned(), tokens.text_muted)
             }
             (Some(_), _) => {
                 let row_tokens = *tokens;
@@ -1396,7 +1653,7 @@ impl MainWindow {
                     move |window, cx| {
                         ok.update(cx, |this, cx| this.connections_confirm(false, window, cx));
                     },
-                    Some((KillSignal::Kill.label(), force)),
+                    Some((t(ConnMsg::ForceEnd), force)),
                 )
             }
         }
@@ -1454,7 +1711,7 @@ impl MainWindow {
                 let menu_entity = entity.clone();
                 let menu_key = key.clone();
                 let proc_tip = if own {
-                    format!("ZeeTerm 正在使用这条连接：{process}")
+                    format!("{}{process}", t(ConnMsg::OwnConnectionPrefix))
                 } else {
                     process.clone()
                 };
@@ -1497,7 +1754,7 @@ impl MainWindow {
                                         .flex_none()
                                         .text_color(tokens.caution)
                                         .tooltip(|window, cx| {
-                                            Tooltip::new("ZeeTerm 正在使用这条连接")
+                                            Tooltip::new(t(ConnMsg::OwnConnectionTip))
                                                 .build(window, cx)
                                         })
                                         .child(Icon::new(Ico::Lock).size_3())

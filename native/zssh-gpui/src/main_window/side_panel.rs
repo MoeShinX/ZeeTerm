@@ -18,7 +18,28 @@ use super::nav::MainView;
 use super::panel_width::{self, DragStart, PanelKind};
 use super::widgets::icon_button;
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::typography::{Role, Typo as _};
+
+/// 本文件（侧面板外框）的界面文案。
+#[derive(Clone, Copy, Debug)]
+enum SidePanelMsg {
+    Close,
+}
+
+impl Msg for SidePanelMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::Close => "关闭",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::Close => "Close",
+        }
+    }
+}
 
 /// 面板编号。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,7 +147,7 @@ impl MainWindow {
             icon_button(
                 "panel-close",
                 IconName::Close,
-                "关闭",
+                t(SidePanelMsg::Close),
                 move |_, window, cx| {
                     entity.update(cx, |this, cx| this.close_panel(window, cx));
                 },

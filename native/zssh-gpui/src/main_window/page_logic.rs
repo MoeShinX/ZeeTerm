@@ -17,6 +17,105 @@ use super::host_tree::{
     TreeFilter, compare_names, compare_order, filtered_host_order, groups_under, host_matches,
     hosts_under,
 };
+use crate::i18n::{Msg, t};
+
+/// 本文件（主机页 / 主机树共用逻辑）的界面文案。主机名、用户名、地址、分组名这些来自用户或
+/// 远端的数据照原样显示，不进这张表。
+#[derive(Clone, Copy, Debug)]
+enum PageMsg {
+    // ---- 排序方式 ----
+    SortManual,
+    SortRecent,
+    SortName,
+    SortPrefix,
+    SortCycleHint,
+    // ---- 排序置灰的原因 ----
+    OrderModeHint,
+    OrderSearchHint,
+    // ---- 未分组 / 顶层 ----
+    TopLevel,
+    Ungrouped,
+    TopLevelOption,
+    TopLevelMove,
+    UngroupedMove,
+    DeleteGroupTop,
+    DeleteGroupUngrouped,
+    // ---- 属性面板字段 ----
+    FieldProtocol,
+    FieldName,
+    FieldDevice,
+    FieldBaud,
+    FieldAddress,
+    FieldUsername,
+    FieldPassword,
+    FieldPort,
+    FieldJump,
+    FieldProxy,
+}
+
+impl Msg for PageMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::SortManual => "手动",
+            Self::SortRecent => "最近打开",
+            Self::SortName => "名称",
+            Self::SortPrefix => "排序：",
+            Self::SortCycleHint => "（点击切换：手动 / 最近打开 / 名称）",
+            Self::OrderModeHint => "切到手动排序才能调整",
+            Self::OrderSearchHint => "清空搜索后才能调整",
+            Self::TopLevel => "顶层",
+            Self::Ungrouped => "未分组",
+            Self::TopLevelOption => "（顶层）",
+            Self::TopLevelMove => "顶层（不分组）",
+            Self::UngroupedMove => "未分组",
+            Self::DeleteGroupTop => "分组下的主机会移到顶层，不会被删。",
+            Self::DeleteGroupUngrouped => "分组下的主机会变成未分组，不会被删。",
+            Self::FieldProtocol => "协议",
+            Self::FieldName => "名称",
+            Self::FieldDevice => "设备",
+            Self::FieldBaud => "波特率",
+            Self::FieldAddress => "主机",
+            Self::FieldUsername => "用户名",
+            Self::FieldPassword => "密码",
+            Self::FieldPort => "端口",
+            Self::FieldJump => "跳板机",
+            Self::FieldProxy => "代理",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::SortManual => "Manual",
+            Self::SortRecent => "Recent",
+            Self::SortName => "Name",
+            Self::SortPrefix => "Sort: ",
+            Self::SortCycleHint => " (click to cycle: Manual / Recent / Name)",
+            Self::OrderModeHint => "Switch to Manual order to reorder",
+            Self::OrderSearchHint => "Clear the search to reorder",
+            Self::TopLevel => "Top level",
+            Self::Ungrouped => "Ungrouped",
+            Self::TopLevelOption => "(Top level)",
+            Self::TopLevelMove => "Top level (no group)",
+            Self::UngroupedMove => "Ungrouped",
+            Self::DeleteGroupTop => {
+                "Hosts in this group move to the top level and are not deleted."
+            }
+            Self::DeleteGroupUngrouped => {
+                "Hosts in this group become ungrouped and are not deleted."
+            }
+            Self::FieldProtocol => "Protocol",
+            Self::FieldName => "Name",
+            Self::FieldDevice => "Device",
+            Self::FieldBaud => "Baud rate",
+            Self::FieldAddress => "Host",
+            Self::FieldUsername => "Username",
+            Self::FieldPassword => "Password",
+            Self::FieldPort => "Port",
+            Self::FieldJump => "Jump host",
+            Self::FieldProxy => "Proxy",
+        }
+    }
+}
 
 // ---- 显示选项（本机布局设置，键名和 0.2.14 一致） ----
 
@@ -107,15 +206,20 @@ impl SortMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Manual => "手动",
-            Self::Recent => "最近打开",
-            Self::Name => "名称",
+            Self::Manual => t(PageMsg::SortManual),
+            Self::Recent => t(PageMsg::SortRecent),
+            Self::Name => t(PageMsg::SortName),
         }
     }
 
     /// 主机页上纯图标的排序按钮的悬停提示：当前方式写在里面。
     pub fn tooltip(self) -> String {
-        format!("排序：{}（点击切换：手动 / 最近打开 / 名称）", self.label())
+        format!(
+            "{}{}{}",
+            t(PageMsg::SortPrefix),
+            self.label(),
+            t(PageMsg::SortCycleHint)
+        )
     }
 
     /// 排序按钮点一下：手动 → 最近打开 → 名称 → 手动。
@@ -303,8 +407,8 @@ impl OrderState {
     pub fn hint(self) -> Option<&'static str> {
         match self {
             Self::Manual => None,
-            Self::Mode => Some("切到手动排序才能调整"),
-            Self::Search => Some("清空搜索后才能调整"),
+            Self::Mode => Some(t(PageMsg::OrderModeHint)),
+            Self::Search => Some(t(PageMsg::OrderSearchHint)),
         }
     }
 }
@@ -478,29 +582,37 @@ pub fn forbidden_parents(groups: &[Group], group_id: i64) -> HashSet<i64> {
 
 /// 提示 / 列表里「没有分组」的叫法。
 pub fn ungrouped_label(flat: bool) -> &'static str {
-    if flat { "顶层" } else { "未分组" }
+    if flat {
+        t(PageMsg::TopLevel)
+    } else {
+        t(PageMsg::Ungrouped)
+    }
 }
 
 /// 主机属性对话框里分组下拉的第一项。
 pub fn ungrouped_option_label(flat: bool) -> &'static str {
-    if flat { "（顶层）" } else { "未分组" }
+    if flat {
+        t(PageMsg::TopLevelOption)
+    } else {
+        t(PageMsg::Ungrouped)
+    }
 }
 
 /// 右键「移动到分组」子菜单的第一项。
 pub fn ungrouped_move_label(flat: bool) -> &'static str {
     if flat {
-        "顶层（不分组）"
+        t(PageMsg::TopLevelMove)
     } else {
-        "未分组"
+        t(PageMsg::UngroupedMove)
     }
 }
 
 /// 删除分组的确认文案：分组下的主机去哪儿。
 pub fn delete_group_message(flat: bool) -> &'static str {
     if flat {
-        "分组下的主机会移到顶层，不会被删。"
+        t(PageMsg::DeleteGroupTop)
     } else {
-        "分组下的主机会变成未分组，不会被删。"
+        t(PageMsg::DeleteGroupUngrouped)
     }
 }
 
@@ -549,7 +661,7 @@ pub fn host_info_rows(
 ) -> Vec<InfoRow> {
     let protocol = InfoRow {
         key: "protocol",
-        label: "协议",
+        label: t(PageMsg::FieldProtocol),
         value: super::protocol_form::protocol_tag(host.protocol.protocol).to_owned(),
     };
     // 串口没有地址、端口、用户名、代理、跳板机：显示设备和波特率。
@@ -558,18 +670,18 @@ pub fn host_info_rows(
         return vec![
             InfoRow {
                 key: "name",
-                label: "名称",
+                label: t(PageMsg::FieldName),
                 value: host.name.clone(),
             },
             protocol,
             InfoRow {
                 key: "device",
-                label: "设备",
+                label: t(PageMsg::FieldDevice),
                 value: options.device,
             },
             InfoRow {
                 key: "baud",
-                label: "波特率",
+                label: t(PageMsg::FieldBaud),
                 value: options.baud_rate.to_string(),
             },
         ];
@@ -577,31 +689,31 @@ pub fn host_info_rows(
     let mut rows = vec![
         InfoRow {
             key: "name",
-            label: "名称",
+            label: t(PageMsg::FieldName),
             value: host.name.clone(),
         },
         InfoRow {
             key: "address",
-            label: "主机",
+            label: t(PageMsg::FieldAddress),
             value: normalize_address(&host.host),
         },
         InfoRow {
             key: "user",
-            label: "用户名",
+            label: t(PageMsg::FieldUsername),
             value: host.username.clone(),
         },
     ];
     if info_password_identity(host, identities).is_some() {
         rows.push(InfoRow {
             key: "password",
-            label: "密码",
+            label: t(PageMsg::FieldPassword),
             value: String::new(),
         });
     }
     rows.push(protocol);
     rows.push(InfoRow {
         key: "port",
-        label: "端口",
+        label: t(PageMsg::FieldPort),
         value: host.port.to_string(),
     });
     if let Some(jump) = host
@@ -610,7 +722,7 @@ pub fn host_info_rows(
     {
         rows.push(InfoRow {
             key: "jump",
-            label: "跳板机",
+            label: t(PageMsg::FieldJump),
             value: jump.name.clone(),
         });
     }
@@ -621,7 +733,7 @@ pub fn host_info_rows(
     {
         rows.push(InfoRow {
             key: "proxy",
-            label: "代理",
+            label: t(PageMsg::FieldProxy),
             value: proxy.name.clone(),
         });
     }

@@ -12,6 +12,36 @@ use zeroize::Zeroizing;
 use super::MainWindow;
 use super::page_logic::info_password_identity;
 use super::reveal_ui::RevealAction;
+use crate::i18n::{Msg, t};
+
+/// 本文件（属性面板的复制 / 显示密码提示）的界面文案。
+#[derive(Clone, Copy, Debug)]
+enum InfoPanelMsg {
+    CopiedPrefix,
+    RevealFirst,
+    PasswordCopied,
+    PasswordCopyFailedPrefix,
+}
+
+impl Msg for InfoPanelMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::CopiedPrefix => "已复制：",
+            Self::RevealFirst => "先点眼睛显示密码",
+            Self::PasswordCopied => "已复制密码，30 秒后自动清除",
+            Self::PasswordCopyFailedPrefix => "复制密码失败：",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::CopiedPrefix => "Copied: ",
+            Self::RevealFirst => "Click the eye to show the password first",
+            Self::PasswordCopied => "Password copied; it will be cleared after 30 seconds",
+            Self::PasswordCopyFailedPrefix => "Failed to copy password: ",
+        }
+    }
+}
 
 /// 取回来的明文密码，只属于 `host_id` 这一台主机；丢弃时内存清零。
 pub(crate) struct InfoSecret {
@@ -116,7 +146,11 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         crate::chat_copy::write(text.clone(), cx);
-        self.notice(&format!("已复制：{text}"), window, cx);
+        self.notice(
+            &format!("{}{text}", t(InfoPanelMsg::CopiedPrefix)),
+            window,
+            cx,
+        );
     }
 
     /// 右键「复制」密码行：只有明文已显示才复制；走和「复制密码」一样的敏感写入，30 秒后自动清除。
@@ -130,7 +164,7 @@ impl MainWindow {
             .info_revealed(host_id)
             .map(|text| Zeroizing::new(text.to_owned()))
         else {
-            self.notice("先点眼睛显示密码", window, cx);
+            self.notice(t(InfoPanelMsg::RevealFirst), window, cx);
             return;
         };
         // 明文可能早就显示着、5 分钟窗口期已过：复制前再问一次（V2-U35）。
@@ -138,8 +172,12 @@ impl MainWindow {
             return;
         }
         match crate::chat_copy::write_sensitive(secret.as_str(), cx) {
-            Ok(()) => self.notice("已复制密码，30 秒后自动清除", window, cx),
-            Err(err) => self.notice_error(&format!("复制密码失败：{err}"), window, cx),
+            Ok(()) => self.notice(t(InfoPanelMsg::PasswordCopied), window, cx),
+            Err(err) => self.notice_error(
+                &format!("{}{err}", t(InfoPanelMsg::PasswordCopyFailedPrefix)),
+                window,
+                cx,
+            ),
         }
     }
 }

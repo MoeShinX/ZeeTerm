@@ -17,9 +17,118 @@ use zssh_core::ssh::ProcMode;
 use super::MainWindow;
 use super::panel_width::{self, DragStart, PanelKind};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::status::{Level, StatusSummary, level_of, mib_gb_label, uptime_label};
 use crate::typography::{Role, Typo as _};
+
+/// 本文件（服务器概览面板）的界面文案。CPU / PID 这类通用缩写两个语言下写法相同；主机名、
+/// 内核版本、进程名、命令、挂载点、网卡名这些来自远端的数据照原样显示。
+#[derive(Clone, Copy, Debug)]
+enum OverviewMsg {
+    Accumulating,
+    SinceBoot,
+    ProcCpu,
+    ProcMem,
+    NoCpuRanking,
+    NoMemRanking,
+    Command,
+    Pid,
+    ViewAllProcessesTip,
+    ProcessManager,
+    System,
+    Kernel,
+    Uptime,
+    LoadTitle,
+    Swap,
+    CoresSuffix,
+    Memory,
+    Disk,
+    Load,
+    ViewAllConnectionsTip,
+    AllConnections,
+    Network,
+    Cores,
+    Storage,
+    NoNicData,
+    Nics,
+    Processes,
+    ServerOverview,
+    StatusFailedPrefix,
+    StatusWaiting,
+}
+
+impl Msg for OverviewMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::Accumulating => "正在积累数据…",
+            Self::SinceBoot => "开机以来",
+            Self::ProcCpu => "CPU",
+            Self::ProcMem => "内存",
+            Self::NoCpuRanking => "这台服务器的 ps 不提供 CPU 占用排行",
+            Self::NoMemRanking => "没有读到内存占用排行",
+            Self::Command => "命令",
+            Self::Pid => "PID",
+            Self::ViewAllProcessesTip => "查看全部进程，可以结束进程",
+            Self::ProcessManager => "进程管理",
+            Self::System => "系统",
+            Self::Kernel => "内核",
+            Self::Uptime => "运行时间",
+            Self::LoadTitle => "负载 1 / 5 / 15m",
+            Self::Swap => "交换空间",
+            Self::CoresSuffix => " 核",
+            Self::Memory => "内存",
+            Self::Disk => "磁盘",
+            Self::Load => "负载",
+            Self::ViewAllConnectionsTip => "查看所有网络连接",
+            Self::AllConnections => "所有连接",
+            Self::Network => "网络",
+            Self::Cores => "核心",
+            Self::Storage => "存储",
+            Self::NoNicData => "没有读到网卡数据",
+            Self::Nics => "网卡",
+            Self::Processes => "进程",
+            Self::ServerOverview => "服务器概览",
+            Self::StatusFailedPrefix => "状态采集失败：",
+            Self::StatusWaiting => "状态采集等待中…",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::Accumulating => "Collecting data…",
+            Self::SinceBoot => "Since boot",
+            Self::ProcCpu => "CPU",
+            Self::ProcMem => "Memory",
+            Self::NoCpuRanking => "This server's ps does not provide a CPU usage ranking",
+            Self::NoMemRanking => "No memory usage ranking was read",
+            Self::Command => "Command",
+            Self::Pid => "PID",
+            Self::ViewAllProcessesTip => "View all processes and end them",
+            Self::ProcessManager => "Process Manager",
+            Self::System => "System",
+            Self::Kernel => "Kernel",
+            Self::Uptime => "Uptime",
+            Self::LoadTitle => "Load 1 / 5 / 15m",
+            Self::Swap => "Swap",
+            Self::CoresSuffix => " cores",
+            Self::Memory => "Memory",
+            Self::Disk => "Disk",
+            Self::Load => "Load",
+            Self::ViewAllConnectionsTip => "View all network connections",
+            Self::AllConnections => "All Connections",
+            Self::Network => "Network",
+            Self::Cores => "Cores",
+            Self::Storage => "Storage",
+            Self::NoNicData => "No network interface data was read",
+            Self::Nics => "Interfaces",
+            Self::Processes => "Processes",
+            Self::ServerOverview => "Server Overview",
+            Self::StatusFailedPrefix => "Failed to collect status: ",
+            Self::StatusWaiting => "Waiting for status collection…",
+        }
+    }
+}
 
 /// 网速曲线最多记这么多个点（3 秒一次 ≈ 6 分钟）。
 pub const NET_HISTORY_MAX: usize = 120;
@@ -182,7 +291,7 @@ fn net_chart(history: &VecDeque<(f64, f64)>, tokens: &Tokens) -> AnyElement {
             .flex()
             .items_center()
             .typo(Role::Caption, tokens)
-            .child("正在积累数据…")
+            .child(t(OverviewMsg::Accumulating))
             .into_any_element();
     }
     let points: Vec<(f64, f64)> = history.iter().copied().collect();
@@ -482,7 +591,7 @@ fn interfaces_section(summary: &StatusSummary, tokens: &Tokens) -> AnyElement {
                                 .pl(px(14.0))
                                 .text_size(px(10.0))
                                 .text_color(tokens.text_muted)
-                                .child("开机以来")
+                                .child(t(OverviewMsg::SinceBoot))
                                 .child(format!(
                                     "↓ {} · ↑ {}",
                                     crate::format::traffic(iface.rx_total),
@@ -499,7 +608,7 @@ fn processes_section(summary: &StatusSummary, mode: ProcMode, tokens: &Tokens) -
     let stats = &summary.stats;
     let (label, items): (&str, Vec<(String, String, f64)>) = match mode {
         ProcMode::Mem => (
-            "内存",
+            t(OverviewMsg::Memory),
             stats
                 .top_processes
                 .iter()
@@ -507,7 +616,7 @@ fn processes_section(summary: &StatusSummary, mode: ProcMode, tokens: &Tokens) -
                 .collect(),
         ),
         ProcMode::Cpu => (
-            "CPU",
+            t(OverviewMsg::ProcCpu),
             stats
                 .top_cpu_processes
                 .iter()
@@ -519,8 +628,8 @@ fn processes_section(summary: &StatusSummary, mode: ProcMode, tokens: &Tokens) -
         return div()
             .typo(Role::Caption, tokens)
             .child(match mode {
-                ProcMode::Cpu => "这台服务器的 ps 不提供 CPU 占用排行",
-                ProcMode::Mem => "没有读到内存占用排行",
+                ProcMode::Cpu => t(OverviewMsg::NoCpuRanking),
+                ProcMode::Mem => t(OverviewMsg::NoMemRanking),
             })
             .into_any_element();
     }
@@ -529,8 +638,8 @@ fn processes_section(summary: &StatusSummary, mode: ProcMode, tokens: &Tokens) -
         .gap_2()
         .text_size(px(11.0))
         .text_color(tokens.text_muted)
-        .child(div().w(px(56.0)).child("PID"))
-        .child(div().flex_1().child("命令"))
+        .child(div().w(px(56.0)).child(t(OverviewMsg::Pid)))
+        .child(div().flex_1().child(t(OverviewMsg::Command)))
         .child(div().w(px(64.0)).flex_none().text_right().child(label));
     v_flex()
         .child(head)
@@ -623,7 +732,10 @@ fn proc_mode_switch(entity: &Entity<MainWindow>, mode: ProcMode, tokens: &Tokens
                 .cursor_pointer()
                 .when(selected, move |d| d.bg(accent).text_color(on_accent))
                 .when(!selected, move |d| d.hover(move |style| style.bg(hover)))
-                .child(option.label())
+                .child(match option {
+                    ProcMode::Cpu => t(OverviewMsg::ProcCpu),
+                    ProcMode::Mem => t(OverviewMsg::ProcMem),
+                })
                 .on_click(move |_, _window, cx| {
                     entity.update(cx, |this, cx| {
                         this.docks.overview_procs = option;
@@ -650,9 +762,9 @@ fn process_manager_button(entity: Entity<MainWindow>, tokens: &Tokens) -> AnyEle
         .text_xs()
         .text_color(tokens.accent)
         .hover(move |style| style.bg(hover))
-        .tooltip(|window, cx| Tooltip::new("查看全部进程，可以结束进程").build(window, cx))
+        .tooltip(|window, cx| Tooltip::new(t(OverviewMsg::ViewAllProcessesTip)).build(window, cx))
         .child(Icon::new(Ico::ListChecks).size_3p5())
-        .child("进程管理")
+        .child(t(OverviewMsg::ProcessManager))
         .on_click(move |_, window, cx| {
             entity.update(cx, |this, cx| this.open_processes_dialog(window, cx));
         })
@@ -681,17 +793,17 @@ fn system_section(s: &StatusSummary, layout: OverviewLayout, tokens: &Tokens) ->
         .grid_cols(layout.system_columns as u16)
         .gap_x_3()
         .gap_y_2()
-        .child(field("系统", dash(&stats.os_name), tokens))
-        .child(field("内核", dash(&stats.kernel), tokens))
+        .child(field(t(OverviewMsg::System), dash(&stats.os_name), tokens))
+        .child(field(t(OverviewMsg::Kernel), dash(&stats.kernel), tokens))
         .child(field(
-            "运行时间",
+            t(OverviewMsg::Uptime),
             stats
                 .uptime_secs
                 .map_or_else(|| "--".to_owned(), uptime_label),
             tokens,
         ))
         .child(field(
-            "负载 1 / 5 / 15m",
+            t(OverviewMsg::LoadTitle),
             format!(
                 "{} / {} / {}",
                 load(stats.load_1m),
@@ -700,14 +812,14 @@ fn system_section(s: &StatusSummary, layout: OverviewLayout, tokens: &Tokens) ->
             ),
             tokens,
         ))
-        .child(field("交换空间", swap, tokens));
+        .child(field(t(OverviewMsg::Swap), swap, tokens));
     if let Some(model) = stats
         .cpu_model
         .as_deref()
         .map(|m| m.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|m| !m.is_empty())
     {
-        grid = grid.child(field("CPU", model, tokens));
+        grid = grid.child(field(t(OverviewMsg::ProcCpu), model, tokens));
     }
     grid.into_any_element()
 }
@@ -723,16 +835,16 @@ fn rings_section(s: &StatusSummary, layout: OverviewLayout, tokens: &Tokens) -> 
         .px_3()
         .py_4()
         .child(ring(
-            "CPU",
+            t(OverviewMsg::ProcCpu),
             stats.cpu_percent,
-            stats
-                .cpu_cores
-                .map_or_else(String::new, |cores| format!("{cores} 核")),
+            stats.cpu_cores.map_or_else(String::new, |cores| {
+                format!("{cores}{}", t(OverviewMsg::CoresSuffix))
+            }),
             layout.ring_cell,
             tokens,
         ))
         .child(ring(
-            "内存",
+            t(OverviewMsg::Memory),
             s.mem_percent(),
             usage_text(
                 stats.mem_used_mib.map(|v| v as f64),
@@ -743,14 +855,14 @@ fn rings_section(s: &StatusSummary, layout: OverviewLayout, tokens: &Tokens) -> 
             tokens,
         ))
         .child(ring(
-            "磁盘",
+            t(OverviewMsg::Disk),
             stats.disk_percent,
             usage_text(stats.disk_used_mib, stats.disk_total_mib, 0),
             layout.ring_cell,
             tokens,
         ))
         .child(ring(
-            "负载",
+            t(OverviewMsg::Load),
             s.load_percent(),
             stats
                 .load_1m
@@ -777,9 +889,9 @@ fn connections_button(entity: Entity<MainWindow>, tokens: &Tokens) -> AnyElement
         .text_xs()
         .text_color(tokens.accent)
         .hover(move |style| style.bg(hover))
-        .tooltip(|window, cx| Tooltip::new("查看所有网络连接").build(window, cx))
+        .tooltip(|window, cx| Tooltip::new(t(OverviewMsg::ViewAllConnectionsTip)).build(window, cx))
         .child(Icon::new(IconName::Network).size_3p5())
-        .child("所有连接")
+        .child(t(OverviewMsg::AllConnections))
         .on_click(move |_, window, cx| {
             entity.update(cx, |this, cx| this.open_connections_dialog(window, cx));
         })
@@ -812,7 +924,7 @@ fn overview_body(
         .track_scroll(scroll)
         .child(rings_section(s, layout, tokens))
         .child(section(
-            "网络",
+            t(OverviewMsg::Network),
             net_extra,
             None,
             net_chart(history, tokens),
@@ -820,7 +932,7 @@ fn overview_body(
         ));
     if !stats.per_core_percent.is_empty() {
         body = body.child(section(
-            "核心",
+            t(OverviewMsg::Cores),
             Some(stats.per_core_percent.len().to_string()),
             None,
             cores_section(&stats.per_core_percent, tokens),
@@ -828,7 +940,7 @@ fn overview_body(
         ));
     }
     body = body.child(section(
-        "系统",
+        t(OverviewMsg::System),
         None,
         None,
         system_section(s, layout, tokens),
@@ -836,7 +948,7 @@ fn overview_body(
     ));
     if !stats.mounts.is_empty() {
         body = body.child(section(
-            "存储",
+            t(OverviewMsg::Storage),
             Some(stats.mounts.len().to_string()),
             None,
             mounts_section(s, tokens),
@@ -847,13 +959,13 @@ fn overview_body(
     let nics = if stats.net_interfaces.is_empty() {
         div()
             .typo(Role::Caption, tokens)
-            .child("没有读到网卡数据")
+            .child(t(OverviewMsg::NoNicData))
             .into_any_element()
     } else {
         interfaces_section(s, tokens)
     };
     body = body.child(section(
-        "网卡",
+        t(OverviewMsg::Nics),
         None,
         Some(connections_button(entity.clone(), tokens)),
         nics,
@@ -861,7 +973,7 @@ fn overview_body(
     ));
     if !stats.top_processes.is_empty() || !stats.top_cpu_processes.is_empty() {
         body = body.child(section(
-            "进程",
+            t(OverviewMsg::Processes),
             None,
             Some(
                 h_flex()
@@ -982,7 +1094,7 @@ impl MainWindow {
             .store
             .host(host_id)
             .map(|host| host.name.clone())
-            .unwrap_or_else(|| "服务器概览".to_owned());
+            .unwrap_or_else(|| t(OverviewMsg::ServerOverview).to_owned());
         let entity = cx.entity();
         let summary: Option<StatusSummary> = self
             .status
@@ -1044,8 +1156,8 @@ impl MainWindow {
                     tokens.text_muted
                 })
                 .child(match error {
-                    Some(error) => format!("状态采集失败：{error}"),
-                    None => "状态采集等待中…".to_owned(),
+                    Some(error) => format!("{}{error}", t(OverviewMsg::StatusFailedPrefix)),
+                    None => t(OverviewMsg::StatusWaiting).to_owned(),
                 })
                 .into_any_element(),
             Some(s) => overview_body(

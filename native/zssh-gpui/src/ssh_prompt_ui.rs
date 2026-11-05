@@ -19,6 +19,7 @@ use gpui_kit::*;
 use zssh_core::ssh::{HostKeyInfo, PromptAnswers, PromptRequest};
 
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::main_window::widgets::{ButtonLook, field, modal_card, modal_scrim, text_button};
 use crate::ssh_prompt::{
@@ -26,6 +27,51 @@ use crate::ssh_prompt::{
     enter_button, host_key_buttons, host_key_text, hub, prompt_text,
 };
 use crate::typography::{Role, Typo as _};
+
+/// 本文件（应用内 SSH 提问对话框）的界面文案。标题、说明、按钮文字来自 `ssh_prompt`；
+/// 这里只有详情栏的字段名和底部按钮。主机名、密钥类型、指纹来自远端，照原样显示。
+#[derive(Clone, Copy, Debug)]
+enum SshPromptMsg {
+    Host,
+    KeyType,
+    SavedType,
+    SavedFingerprint,
+    CurrentType,
+    CurrentFingerprint,
+    Sha256Fingerprint,
+    Cancel,
+    Ok,
+}
+
+impl Msg for SshPromptMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::Host => "主机",
+            Self::KeyType => "密钥类型",
+            Self::SavedType => "已保存的类型",
+            Self::SavedFingerprint => "已保存的指纹",
+            Self::CurrentType => "现在的类型",
+            Self::CurrentFingerprint => "现在的指纹",
+            Self::Sha256Fingerprint => "SHA256 指纹",
+            Self::Cancel => "取消",
+            Self::Ok => "确定",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::Host => "Host",
+            Self::KeyType => "Key Type",
+            Self::SavedType => "Saved Type",
+            Self::SavedFingerprint => "Saved Fingerprint",
+            Self::CurrentType => "Current Type",
+            Self::CurrentFingerprint => "Current Fingerprint",
+            Self::Sha256Fingerprint => "SHA256 Fingerprint",
+            Self::Cancel => "Cancel",
+            Self::Ok => "OK",
+        }
+    }
+}
 
 /// 轮询间隔：对话框最迟这么久之后出现 / 收起。
 const POLL: Duration = Duration::from_millis(100);
@@ -311,10 +357,14 @@ impl SshPromptLayer {
         let entity = cx.entity();
 
         let mut details = details_box(tokens);
-        details = details.child(detail_row("主机", plain_value(text.host, tokens), tokens));
+        details = details.child(detail_row(
+            t(SshPromptMsg::Host),
+            plain_value(text.host, tokens),
+            tokens,
+        ));
         if text.saved.is_empty() {
             details = details.child(detail_row(
-                "密钥类型",
+                t(SshPromptMsg::KeyType),
                 plain_value(text.key_type.clone(), tokens),
                 tokens,
             ));
@@ -324,12 +374,12 @@ impl SshPromptLayer {
             for (index, (key_type, fingerprint)) in text.saved.iter().enumerate() {
                 details = details
                     .child(detail_row(
-                        "已保存的类型",
+                        t(SshPromptMsg::SavedType),
                         plain_value(key_type.clone(), tokens),
                         tokens,
                     ))
                     .child(detail_row(
-                        "已保存的指纹",
+                        t(SshPromptMsg::SavedFingerprint),
                         fingerprint_value(
                             ("ssh-fp-old", id * 16 + index as u64),
                             fingerprint,
@@ -340,30 +390,30 @@ impl SshPromptLayer {
             }
             details = details
                 .child(detail_row(
-                    "现在的类型",
+                    t(SshPromptMsg::CurrentType),
                     plain_value(text.key_type.clone(), tokens),
                     tokens,
                 ))
                 .child(detail_row(
-                    "现在的指纹",
+                    t(SshPromptMsg::CurrentFingerprint),
                     fingerprint_value(("ssh-fp-new", id), &text.fingerprint, tokens),
                     tokens,
                 ));
         } else if let Some(stored) = text.stored {
             details = details
                 .child(detail_row(
-                    "已保存的指纹",
+                    t(SshPromptMsg::SavedFingerprint),
                     fingerprint_value(("ssh-fp-old", id), &stored, tokens),
                     tokens,
                 ))
                 .child(detail_row(
-                    "现在的指纹",
+                    t(SshPromptMsg::CurrentFingerprint),
                     fingerprint_value(("ssh-fp-new", id), &text.fingerprint, tokens),
                     tokens,
                 ));
         } else {
             details = details.child(detail_row(
-                "SHA256 指纹",
+                t(SshPromptMsg::Sha256Fingerprint),
                 fingerprint_value(("ssh-fp-new", id), &text.fingerprint, tokens),
                 tokens,
             ));
@@ -453,7 +503,7 @@ impl SshPromptLayer {
             )
             .when(!text.target.is_empty(), |d| {
                 d.child(details_box(tokens).child(detail_row(
-                    "主机",
+                    t(SshPromptMsg::Host),
                     plain_value(text.target.clone(), tokens),
                     tokens,
                 )))
@@ -475,7 +525,7 @@ impl SshPromptLayer {
                     .justify_end()
                     .child(text_button(
                         "ssh-prompt-cancel",
-                        "取消",
+                        t(SshPromptMsg::Cancel),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             cancel.update(cx, |this, cx| this.cancel(window, cx));
@@ -483,7 +533,7 @@ impl SshPromptLayer {
                     ))
                     .child(text_button(
                         "ssh-prompt-ok",
-                        "确定",
+                        t(SshPromptMsg::Ok),
                         ButtonLook::Primary,
                         move |_, window, cx| {
                             submit.update(cx, |this, cx| this.submit_prompt(window, cx));

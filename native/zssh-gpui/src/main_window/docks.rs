@@ -31,10 +31,101 @@ use super::panel_width::{self, DragStart, PanelKind};
 use crate::agent_chat::{AgentChatDemo, AgentChatEvent, EmbedContext};
 use crate::agent_host::HostTarget;
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::sftp::SftpDemo;
 use crate::ssh_backend::SshSessionFactory;
 use crate::typography::{Role, Typo as _};
+
+/// 本文件（AI / 文件停靠面板、SFTP 标签）的界面文案。SFTP、AI 这类名字两个语言下写法相同；
+/// 主机名、协议名、文件名来自用户或远端，照原样显示。
+#[derive(Clone, Copy, Debug)]
+enum DockMsg {
+    AiOnlyInTerminal,
+    FileOnlyInTerminal,
+    TooNarrow,
+    AllowAll,
+    CancelAndClose,
+    Quit,
+    SftpNotConnected,
+    AiAssistant,
+    FilePanelTitle,
+    ShowLocalBar,
+    LocalBar,
+    OpenInNewTab,
+    NonSshPrefix,
+    NonSshSuffix,
+    NoHostRecord,
+    OpeningSftp,
+    SaveSettingFailedPrefix,
+    CloseAiPanel,
+    CloseFilePanel,
+    CloseTab,
+    MoveToFileWindow,
+    Close,
+}
+
+impl Msg for DockMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::AiOnlyInTerminal => "AI 面板只在终端标签下可用",
+            Self::FileOnlyInTerminal => "文件面板只在终端标签下可用",
+            Self::TooNarrow => "窗口太窄，放不下两个面板：已收起 AI 面板",
+            Self::AllowAll => "全部放行",
+            Self::CancelAndClose => "取消并关闭",
+            Self::Quit => "退出",
+            Self::SftpNotConnected => "这个 SFTP 还没连上，连上之后再移",
+            Self::AiAssistant => "AI 助手",
+            Self::FilePanelTitle => "文件",
+            Self::ShowLocalBar => "显示本地栏",
+            Self::LocalBar => "本地",
+            Self::OpenInNewTab => "在新标签中打开",
+            Self::NonSshPrefix => "这是一台 ",
+            Self::NonSshSuffix => " 主机，文件面板仅 SSH 主机可用。",
+            Self::NoHostRecord => "这个终端没有主机记录（快速连接）或还没连主机，不能用文件面板。",
+            Self::OpeningSftp => "正在打开 SFTP…",
+            Self::SaveSettingFailedPrefix => "保存设置失败：",
+            Self::CloseAiPanel => "关闭 AI 面板",
+            Self::CloseFilePanel => "关闭文件面板",
+            Self::CloseTab => "关闭标签",
+            Self::MoveToFileWindow => "移到文件窗口",
+            Self::Close => "关闭",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::AiOnlyInTerminal => "The AI panel is only available in terminal tabs",
+            Self::FileOnlyInTerminal => "The file panel is only available in terminal tabs",
+            Self::TooNarrow => {
+                "The window is too narrow for both panels; the AI panel was collapsed"
+            }
+            Self::AllowAll => "Allow All",
+            Self::CancelAndClose => "Cancel and Close",
+            Self::Quit => "Quit",
+            Self::SftpNotConnected => {
+                "This SFTP session is not connected yet; move it after it connects"
+            }
+            Self::AiAssistant => "AI Assistant",
+            Self::FilePanelTitle => "Files",
+            Self::ShowLocalBar => "Show Local Pane",
+            Self::LocalBar => "Local",
+            Self::OpenInNewTab => "Open in New Tab",
+            Self::NonSshPrefix => "This is a ",
+            Self::NonSshSuffix => " host; the file panel is only available for SSH hosts.",
+            Self::NoHostRecord => {
+                "This terminal has no host record (quick connect) or is not connected to a host, so the file panel is unavailable."
+            }
+            Self::OpeningSftp => "Opening SFTP…",
+            Self::SaveSettingFailedPrefix => "Failed to save settings: ",
+            Self::CloseAiPanel => "Close AI Panel",
+            Self::CloseFilePanel => "Close File Panel",
+            Self::CloseTab => "Close Tab",
+            Self::MoveToFileWindow => "Move to File Window",
+            Self::Close => "Close",
+        }
+    }
+}
 
 /// 主视图里的一个 SFTP 标签。
 pub struct SftpTab {
@@ -214,7 +305,7 @@ impl MainWindow {
 
     pub(crate) fn toggle_ai_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.docks_available(cx) {
-            self.notice("AI 面板只在终端标签下可用", window, cx);
+            self.notice(t(DockMsg::AiOnlyInTerminal), window, cx);
             return;
         }
         self.docks.ai_open = !self.docks.ai_open;
@@ -229,7 +320,7 @@ impl MainWindow {
 
     pub(crate) fn toggle_sftp_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.docks_available(cx) {
-            self.notice("文件面板只在终端标签下可用", window, cx);
+            self.notice(t(DockMsg::FileOnlyInTerminal), window, cx);
             return;
         }
         // Telnet / 串口主机没有 SFTP：打开面板之前拦下来说明（已经开着的面板随时可以关）。
@@ -293,7 +384,7 @@ impl MainWindow {
         let layout = self.dock_layout_now(cx);
         if layout.collapse_ai && self.docks.ai_open {
             self.docks.ai_open = false;
-            self.notice("窗口太窄，放不下两个面板：已收起 AI 面板", window, cx);
+            self.notice(t(DockMsg::TooNarrow), window, cx);
         }
     }
 
@@ -546,7 +637,7 @@ impl MainWindow {
         self.modal = Some(Modal::Confirm(Confirm {
             title: crate::agent_chat::ALLOW_ALL_TITLE.to_owned(),
             message: crate::agent_chat::ALLOW_ALL_MESSAGE.to_owned(),
-            confirm_label: Some("全部放行".to_owned()),
+            confirm_label: Some(t(DockMsg::AllowAll).to_owned()),
             destructive: true,
             action: ConfirmAction::AllowAllCommands,
         }));
@@ -795,7 +886,7 @@ impl MainWindow {
             self.modal = Some(Modal::Confirm(Confirm {
                 title,
                 message,
-                confirm_label: Some("取消并关闭".to_owned()),
+                confirm_label: Some(t(DockMsg::CancelAndClose).to_owned()),
                 destructive: true,
                 action: ConfirmAction::CloseSftpTab(id),
             }));
@@ -857,7 +948,7 @@ impl MainWindow {
             return;
         };
         if !self.docks.sftp_tabs[index].view.read(cx).is_ready() {
-            self.notice("这个 SFTP 还没连上，连上之后再移", window, cx);
+            self.notice(t(DockMsg::SftpNotConnected), window, cx);
             return;
         }
         let tab = self.docks.sftp_tabs.remove(index);
@@ -917,7 +1008,7 @@ impl MainWindow {
         self.modal = Some(Modal::Confirm(Confirm {
             title,
             message,
-            confirm_label: Some("退出".to_owned()),
+            confirm_label: Some(t(DockMsg::Quit).to_owned()),
             destructive: true,
             action: ConfirmAction::QuitApp,
         }));
@@ -979,7 +1070,7 @@ impl MainWindow {
             out.push(self.dock_shell(
                 DockKind::Ai,
                 layout.ai_width,
-                "AI 助手".into(),
+                t(DockMsg::AiAssistant).into(),
                 None,
                 actions,
                 body,
@@ -1037,9 +1128,9 @@ impl MainWindow {
                         let hover = tokens.hover;
                         move |style| style.bg(hover)
                     })
-                    .tooltip(|window, cx| Tooltip::new("显示本地栏").build(window, cx))
+                    .tooltip(|window, cx| Tooltip::new(t(DockMsg::ShowLocalBar)).build(window, cx))
                     .child(Icon::new(Ico::Monitor).size_3p5())
-                    .child("本地")
+                    .child(t(DockMsg::LocalBar))
                     .on_click(move |_, _window, cx| {
                         view.update(cx, |view, cx| view.set_local_hidden(false, cx));
                     })
@@ -1052,7 +1143,7 @@ impl MainWindow {
                 dock_icon_button(
                     "sftp-undock",
                     Icon::new(IconName::ExternalLink),
-                    "在新标签中打开",
+                    t(DockMsg::OpenInNewTab),
                     tokens,
                 )
                 .on_click(move |_, window, cx| {
@@ -1071,29 +1162,31 @@ impl MainWindow {
                 .text_sm()
                 .text_color(tokens.text_muted)
                 .child(SharedString::from(format!(
-                    "这是一台 {} 主机，文件面板仅 SSH 主机可用。",
-                    non_ssh.unwrap_or_default()
+                    "{}{}{}",
+                    t(DockMsg::NonSshPrefix),
+                    non_ssh.unwrap_or_default(),
+                    t(DockMsg::NonSshSuffix)
                 )))
                 .into_any_element(),
             (None, _) => div()
                 .p_4()
                 .text_sm()
                 .text_color(tokens.text_muted)
-                .child("这个终端没有主机记录（快速连接）或还没连主机，不能用文件面板。")
+                .child(t(DockMsg::NoHostRecord))
                 .into_any_element(),
             (Some(_), Some(view)) => view.into_any_element(),
             (Some(_), None) => div()
                 .p_4()
                 .text_sm()
                 .text_color(tokens.text_muted)
-                .child("正在打开 SFTP…")
+                .child(t(DockMsg::OpeningSftp))
                 .into_any_element(),
         };
         let close = entity.clone();
         self.dock_shell(
             DockKind::Sftp,
             width,
-            "文件".into(),
+            t(DockMsg::FilePanelTitle).into(),
             Some(label),
             actions,
             body,
@@ -1145,7 +1238,11 @@ impl MainWindow {
             bar_settings::write_bool(db, bar_settings::SFTP_LOCAL_HIDDEN, hidden)
         });
         if let Err(err) = result {
-            self.notice(&format!("保存设置失败：{err}"), window, cx);
+            self.notice(
+                &format!("{}{err}", t(DockMsg::SaveSettingFailedPrefix)),
+                window,
+                cx,
+            );
         }
     }
 
@@ -1201,8 +1298,8 @@ impl MainWindow {
             },
             Icon::new(IconName::Close),
             match kind {
-                DockKind::Ai => "关闭 AI 面板",
-                DockKind::Sftp => "关闭文件面板",
+                DockKind::Ai => t(DockMsg::CloseAiPanel),
+                DockKind::Sftp => t(DockMsg::CloseFilePanel),
             },
             tokens,
         )
@@ -1347,7 +1444,7 @@ impl MainWindow {
                     .text_color(muted)
                     .cursor_pointer()
                     .hover(move |style| style.bg(hover).text_color(text))
-                    .tooltip(|window, cx| Tooltip::new("关闭标签").build(window, cx))
+                    .tooltip(|window, cx| Tooltip::new(t(DockMsg::CloseTab)).build(window, cx))
                     .child(Icon::new(IconName::Close).size_3())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(move |_, window, cx| {
@@ -1377,18 +1474,24 @@ impl MainWindow {
                 let to_files = menu_move.clone();
                 let close = menu_close.clone();
                 menu.item(
-                    crate::menu_kit::row(&tokens, "移到文件窗口", Ico::SquareArrowOutUpRight)
-                        .on_click(move |_, window, cx| {
-                            to_files.update(cx, |this, cx| {
-                                this.move_sftp_tab_to_file_window(id, window, cx);
-                            });
-                        }),
+                    crate::menu_kit::row(
+                        &tokens,
+                        t(DockMsg::MoveToFileWindow),
+                        Ico::SquareArrowOutUpRight,
+                    )
+                    .on_click(move |_, window, cx| {
+                        to_files.update(cx, |this, cx| {
+                            this.move_sftp_tab_to_file_window(id, window, cx);
+                        });
+                    }),
                 )
-                .item(crate::menu_kit::row(&tokens, "关闭", Ico::X).on_click(
-                    move |_, window, cx| {
-                        close.update(cx, |this, cx| this.close_sftp_tab(id, window, cx));
-                    },
-                ))
+                .item(
+                    crate::menu_kit::row(&tokens, t(DockMsg::Close), Ico::X).on_click(
+                        move |_, window, cx| {
+                            close.update(cx, |this, cx| this.close_sftp_tab(id, window, cx));
+                        },
+                    ),
+                )
             })
             .into_any_element()
     }

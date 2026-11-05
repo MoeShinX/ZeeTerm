@@ -17,6 +17,71 @@ use zssh_core::store::Database;
 
 use super::host_store::normalize_address;
 use super::protocol_form::{FieldError, FormField, parse_baud, parse_patterns};
+use crate::i18n::{Msg, t};
+
+/// 本文件（主机表单的校验与文案）的界面文案。主机名、用户名、地址、凭据名来自用户，照原样显示；
+/// 自动生成的密码凭据名（`<主机名> 的密码`）是存进库里的数据，不随界面语言变。
+#[derive(Clone, Copy, Debug)]
+enum HostFormMsg {
+    AuthPassword,
+    AuthKey,
+    RequiredSsh,
+    RequiredTelnet,
+    RequiredSerial,
+    PortRange,
+    ChooseSerialDevice,
+    ConnDirect,
+    ConnJump,
+    ConnProxy,
+    MismatchPrefix,
+    MismatchSuffix,
+    PasswordKeep,
+    PasswordNew,
+}
+
+impl Msg for HostFormMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::AuthPassword => "密码",
+            Self::AuthKey => "私钥",
+            Self::RequiredSsh => "名称、地址、用户名都不能为空",
+            Self::RequiredTelnet => "名称、地址都不能为空",
+            Self::RequiredSerial => "名称不能为空",
+            Self::PortRange => "端口要在 1-65535 之间",
+            Self::ChooseSerialDevice => "请选择或填写串口设备",
+            Self::ConnDirect => "直接连接",
+            Self::ConnJump => "SSH 跳板",
+            Self::ConnProxy => "代理访问",
+            Self::MismatchPrefix => "凭据「",
+            Self::MismatchSuffix => "」和认证方式不配套，已取消选择",
+            Self::PasswordKeep => "留空表示不改保险库里的密码",
+            Self::PasswordNew => "留空表示不保存密码，连接时会提示",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::AuthPassword => "Password",
+            Self::AuthKey => "Private Key",
+            Self::RequiredSsh => "Name, address, and username are required",
+            Self::RequiredTelnet => "Name and address are required",
+            Self::RequiredSerial => "Name is required",
+            Self::PortRange => "Port must be between 1 and 65535",
+            Self::ChooseSerialDevice => "Select or enter a serial device",
+            Self::ConnDirect => "Direct",
+            Self::ConnJump => "SSH Jump",
+            Self::ConnProxy => "Via Proxy",
+            Self::MismatchPrefix => "Credential “",
+            Self::MismatchSuffix => {
+                "” does not match the authentication method; the selection was cleared"
+            }
+            Self::PasswordKeep => "Leave empty to keep the password in the vault",
+            Self::PasswordNew => {
+                "Leave empty to not save a password; you will be prompted when connecting"
+            }
+        }
+    }
+}
 
 /// 这种凭据能不能配这种认证方式（同 `identityFitsAuth`，和后端 `check_identity_matches` 一致）。
 ///
@@ -32,8 +97,8 @@ pub fn identity_fits_auth(kind: IdentityKind, method: AuthMethod) -> bool {
 
 pub fn auth_label(method: AuthMethod) -> &'static str {
     match method {
-        AuthMethod::Password => "密码",
-        AuthMethod::Key => "私钥",
+        AuthMethod::Password => t(HostFormMsg::AuthPassword),
+        AuthMethod::Key => t(HostFormMsg::AuthKey),
         AuthMethod::Agent => "ssh-agent",
     }
 }
@@ -343,9 +408,9 @@ pub fn plan_save(
     let username = input.username.trim();
     let serial = protocol == Protocol::Serial;
     let required = match protocol {
-        Protocol::Ssh => "名称、地址、用户名都不能为空",
-        Protocol::Telnet => "名称、地址都不能为空",
-        Protocol::Serial => "名称不能为空",
+        Protocol::Ssh => t(HostFormMsg::RequiredSsh),
+        Protocol::Telnet => t(HostFormMsg::RequiredTelnet),
+        Protocol::Serial => t(HostFormMsg::RequiredSerial),
     };
     if name.is_empty() {
         return Err(FieldError::new(FormField::Name, required));
@@ -365,11 +430,14 @@ pub fn plan_save(
             .parse::<u32>()
             .ok()
             .filter(|port| (1..=65535).contains(port))
-            .ok_or_else(|| FieldError::new(FormField::Port, "端口要在 1-65535 之间"))?
+            .ok_or_else(|| FieldError::new(FormField::Port, t(HostFormMsg::PortRange)))?
             as u16
     };
     if serial && input.serial.device.trim().is_empty() {
-        return Err(FieldError::new(FormField::Device, "请选择或填写串口设备"));
+        return Err(FieldError::new(
+            FormField::Device,
+            t(HostFormMsg::ChooseSerialDevice),
+        ));
     }
     let settings = input.protocol_settings()?;
 
@@ -571,9 +639,9 @@ impl ConnMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Direct => "直接连接",
-            Self::Jump => "SSH 跳板",
-            Self::Proxy => "代理访问",
+            Self::Direct => t(HostFormMsg::ConnDirect),
+            Self::Jump => t(HostFormMsg::ConnJump),
+            Self::Proxy => t(HostFormMsg::ConnProxy),
         }
     }
 
@@ -655,16 +723,22 @@ pub fn effective_routing(
 
 /// 原来存的组合就不配套（旧数据或同步来的）：返回要取消选择的原因。
 pub fn mismatch_note(identity: &Identity, method: AuthMethod) -> Option<String> {
-    (!identity_fits_auth(identity.kind, method))
-        .then(|| format!("凭据「{}」和认证方式不配套，已取消选择", identity.name))
+    (!identity_fits_auth(identity.kind, method)).then(|| {
+        format!(
+            "{}{}{}",
+            t(HostFormMsg::MismatchPrefix),
+            identity.name,
+            t(HostFormMsg::MismatchSuffix)
+        )
+    })
 }
 
 /// 密码框旁边的提示。
 pub fn password_hint(editing: bool, identity_has_secret: bool) -> &'static str {
     if editing && identity_has_secret {
-        "留空表示不改保险库里的密码"
+        t(HostFormMsg::PasswordKeep)
     } else {
-        "留空表示不保存密码，连接时会提示"
+        t(HostFormMsg::PasswordNew)
     }
 }
 

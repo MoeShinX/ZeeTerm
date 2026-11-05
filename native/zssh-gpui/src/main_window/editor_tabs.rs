@@ -21,8 +21,102 @@ use super::MainWindow;
 use super::modal::Modal;
 use super::nav::MainView;
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::remote_editor::{CloseSave, EditorEvent, OpenSpec, Phase, RemoteEditor};
+
+/// 本文件（编辑器标签、未保存修改确认）的界面文案。文件名、主机名、路径、保存失败原因来自
+/// 用户、远端或核心库，照原样显示。
+#[derive(Clone, Copy, Debug)]
+enum EditorTabMsg {
+    ReasonCloseTab,
+    ReasonQuit,
+    ExtraPrefix,
+    ExtraMiddle,
+    ExtraSuffix,
+    QuoteOpen,
+    QuoteClose,
+    TitleSuffix,
+    SingleSavePrompt,
+    MultiSavePrompt,
+    NameSeparator,
+    EtcPrefix,
+    FileCountSuffix,
+    Ellipsis,
+    SentenceEnd,
+    SaveFailedSuffix,
+    PathSeparator,
+    CloseTab,
+    Close,
+    Cancel,
+    DontSave,
+    Saving,
+    Save,
+}
+
+impl Msg for EditorTabMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::ReasonCloseTab => "关闭这个标签",
+            Self::ReasonQuit => "退出程序",
+            Self::ExtraPrefix => "\n\n",
+            Self::ExtraMiddle => "\n",
+            Self::ExtraSuffix => "选「保存」或「不保存」都会继续退出，选「取消」留下。",
+            Self::QuoteOpen => "「",
+            Self::QuoteClose => "」",
+            Self::TitleSuffix => "的修改还没有保存",
+            Self::SingleSavePrompt => "之前要先保存吗？选「不保存」会丢掉这次的修改。",
+            Self::MultiSavePrompt => "之前要先保存吗？选「不保存」会丢掉这些修改。",
+            Self::NameSeparator => "、",
+            Self::EtcPrefix => "等 ",
+            Self::FileCountSuffix => " 个文件",
+            Self::Ellipsis => "……",
+            Self::SentenceEnd => "。",
+            Self::SaveFailedSuffix => "没有保存：",
+            Self::PathSeparator => "：",
+            Self::CloseTab => "关闭标签",
+            Self::Close => "关闭",
+            Self::Cancel => "取消",
+            Self::DontSave => "不保存",
+            Self::Saving => "保存中…",
+            Self::Save => "保存",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::ReasonCloseTab => "Closing this tab",
+            Self::ReasonQuit => "Quitting the app",
+            Self::ExtraPrefix => "\n\n",
+            Self::ExtraMiddle => "\n",
+            Self::ExtraSuffix => {
+                "Choosing “Save” or “Don't Save” continues quitting; choosing “Cancel” stays."
+            }
+            Self::QuoteOpen => "“",
+            Self::QuoteClose => "”",
+            Self::TitleSuffix => " — unsaved changes",
+            Self::SingleSavePrompt => {
+                " — save before continuing? Choosing “Don't Save” discards this change."
+            }
+            Self::MultiSavePrompt => {
+                " — save before continuing? Choosing “Don't Save” discards these changes."
+            }
+            Self::NameSeparator => ", ",
+            Self::EtcPrefix => "",
+            Self::FileCountSuffix => " files",
+            Self::Ellipsis => "",
+            Self::SentenceEnd => ". ",
+            Self::SaveFailedSuffix => " was not saved: ",
+            Self::PathSeparator => ": ",
+            Self::CloseTab => "Close Tab",
+            Self::Close => "Close",
+            Self::Cancel => "Cancel",
+            Self::DontSave => "Don't Save",
+            Self::Saving => "Saving…",
+            Self::Save => "Save",
+        }
+    }
+}
 
 /// 主视图里的一个编辑器标签。
 pub struct EditorTab {
@@ -72,33 +166,66 @@ pub fn unsaved_prompt(
     extra: Option<&str>,
 ) -> (String, String) {
     let what = match reason {
-        UnsavedReason::CloseTab => "关闭这个标签",
-        UnsavedReason::Quit => "退出程序",
+        UnsavedReason::CloseTab => t(EditorTabMsg::ReasonCloseTab),
+        UnsavedReason::Quit => t(EditorTabMsg::ReasonQuit),
     };
     let tail = extra
-        .map(|extra| format!("\n\n{extra}\n选「保存」或「不保存」都会继续退出，选「取消」留下。"))
+        .map(|extra| {
+            format!(
+                "{}{extra}{}{}",
+                t(EditorTabMsg::ExtraPrefix),
+                t(EditorTabMsg::ExtraMiddle),
+                t(EditorTabMsg::ExtraSuffix)
+            )
+        })
         .unwrap_or_default();
     if let [only] = files {
         return (
-            format!("「{}」的修改还没有保存", only.name),
-            format!("{what}之前要先保存吗？选「不保存」会丢掉这次的修改。{tail}"),
+            format!(
+                "{}{}{}{}",
+                t(EditorTabMsg::QuoteOpen),
+                only.name,
+                t(EditorTabMsg::QuoteClose),
+                t(EditorTabMsg::TitleSuffix)
+            ),
+            format!("{what}{}{tail}", t(EditorTabMsg::SingleSavePrompt)),
         );
     }
     let names = files
         .iter()
         .take(6)
-        .map(|file| format!("「{}」", file.name))
+        .map(|file| {
+            format!(
+                "{}{}{}",
+                t(EditorTabMsg::QuoteOpen),
+                file.name,
+                t(EditorTabMsg::QuoteClose)
+            )
+        })
         .collect::<Vec<_>>()
-        .join("、");
+        .join(t(EditorTabMsg::NameSeparator));
     let more = if files.len() > 6 {
-        format!("等 {} 个文件", files.len())
+        format!(
+            "{}{}{}",
+            t(EditorTabMsg::EtcPrefix),
+            files.len(),
+            t(EditorTabMsg::FileCountSuffix)
+        )
     } else {
-        format!("{} 个文件", files.len())
+        format!("{}{}", files.len(), t(EditorTabMsg::FileCountSuffix))
     };
-    let ellipsis = if files.len() > 6 { "……" } else { "" };
+    let ellipsis = if files.len() > 6 {
+        t(EditorTabMsg::Ellipsis)
+    } else {
+        ""
+    };
     (
-        format!("{more}的修改还没有保存"),
-        format!("{names}{ellipsis}。{what}之前要先保存吗？选「不保存」会丢掉这些修改。{tail}"),
+        format!("{more}{}", t(EditorTabMsg::TitleSuffix)),
+        format!(
+            "{names}{ellipsis}{}{what}{}{tail}",
+            t(EditorTabMsg::SentenceEnd),
+            t(EditorTabMsg::MultiSavePrompt)
+        ),
     )
 }
 
@@ -410,7 +537,13 @@ impl MainWindow {
                 Some(CloseSave::Done) | None => {}
                 Some(CloseSave::Saving) => waiting = true,
                 Some(CloseSave::Failed(reason)) => {
-                    failure = Some(format!("「{}」没有保存：{reason}", view.file_name()));
+                    failure = Some(format!(
+                        "{}{}{}{}{reason}",
+                        t(EditorTabMsg::QuoteOpen),
+                        view.file_name(),
+                        t(EditorTabMsg::QuoteClose),
+                        t(EditorTabMsg::SaveFailedSuffix)
+                    ));
                 }
             }
         }
@@ -475,7 +608,12 @@ impl MainWindow {
             let view = tab.view.read(cx);
             (
                 view.file_name(),
-                format!("{}：{}", view.host_label(), view.path()),
+                format!(
+                    "{}{}{}",
+                    view.host_label(),
+                    t(EditorTabMsg::PathSeparator),
+                    view.path()
+                ),
                 view.unsaved_hint(),
                 view.phase() != Phase::Ready,
             )
@@ -539,7 +677,7 @@ impl MainWindow {
                     .text_color(muted)
                     .cursor_pointer()
                     .hover(move |style| style.bg(hover).text_color(text))
-                    .tooltip(|window, cx| Tooltip::new("关闭标签").build(window, cx))
+                    .tooltip(|window, cx| Tooltip::new(t(EditorTabMsg::CloseTab)).build(window, cx))
                     .child(Icon::new(IconName::Close).size_3())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(move |_, window, cx| {
@@ -556,11 +694,13 @@ impl MainWindow {
             .context_menu(move |menu, _window, cx| {
                 let tokens = Tokens::current(cx);
                 let close = menu_close.clone();
-                menu.item(crate::menu_kit::row(&tokens, "关闭", Ico::X).on_click(
-                    move |_, window, cx| {
-                        close.update(cx, |this, cx| this.close_editor_tab(id, window, cx));
-                    },
-                ))
+                menu.item(
+                    crate::menu_kit::row(&tokens, t(EditorTabMsg::Close), Ico::X).on_click(
+                        move |_, window, cx| {
+                            close.update(cx, |this, cx| this.close_editor_tab(id, window, cx));
+                        },
+                    ),
+                )
             })
             .into_any_element()
     }
@@ -606,7 +746,7 @@ impl MainWindow {
                     .justify_end()
                     .child(text_button(
                         "unsaved-cancel",
-                        "取消",
+                        t(EditorTabMsg::Cancel),
                         ButtonLook::Outline,
                         move |_, window, cx| {
                             cancel.update(cx, |this, cx| this.close_modal(window, cx));
@@ -614,7 +754,7 @@ impl MainWindow {
                     ))
                     .child(text_button(
                         "unsaved-discard",
-                        "不保存",
+                        t(EditorTabMsg::DontSave),
                         ButtonLook::Danger,
                         move |_, window, cx| {
                             discard.update(cx, |this, cx| this.answer_unsaved(false, window, cx));
@@ -622,7 +762,11 @@ impl MainWindow {
                     ))
                     .child(text_button(
                         "unsaved-save",
-                        if ask.busy { "保存中…" } else { "保存" },
+                        if ask.busy {
+                            t(EditorTabMsg::Saving)
+                        } else {
+                            t(EditorTabMsg::Save)
+                        },
                         ButtonLook::Primary,
                         move |_, window, cx| {
                             save.update(cx, |this, cx| this.answer_unsaved(true, window, cx));

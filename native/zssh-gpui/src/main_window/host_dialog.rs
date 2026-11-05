@@ -36,7 +36,337 @@ use super::widgets::{
     required_label, segmented_bar, select, text_button,
 };
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::typography::{Role, Typo as _};
+
+/// 本文件（主机属性对话框、新建代理浮层）的界面文案。协议名（SSH / Telnet / SFTP / X11）、
+/// 编码名（UTF-8、GBK……）、算法名（SHA1、CBC、NAWS）两个语言下写法相同；主机名、分组名、
+/// 凭据名、地址、指纹这些来自用户或远端的数据照原样显示。
+#[derive(Clone, Copy, Debug)]
+enum HostDialogMsg {
+    // ---- 底部按钮 ----
+    CopyDetails,
+    Testing,
+    TestConnection,
+    Cancel,
+    Connect,
+    Ok,
+    // ---- 放弃修改 ----
+    DiscardTitle,
+    DiscardBody,
+    KeepEditing,
+    DiscardChanges,
+    // ---- 新建代理 ----
+    NewProxy,
+    FieldType,
+    FieldAddress,
+    FieldPort,
+    FieldUsernameOptional,
+    Save,
+    // ---- 表单字段 ----
+    FieldName,
+    FieldPassword,
+    FieldUsername,
+    FieldProtocol,
+    FieldGroup,
+    FieldAuthMethod,
+    FieldRouting,
+    FieldJump,
+    FieldProxy,
+    FieldDevice,
+    FieldBaud,
+    FieldKey,
+    FieldAgentIdentity,
+    FieldTerminalType,
+    FieldEncoding,
+    FieldDataBits,
+    FieldParity,
+    FieldStopBits,
+    FieldFlowControl,
+    FieldSerialNewline,
+    FieldTelnetNewline,
+    FieldLocalEcho,
+    FieldUsernamePrompts,
+    FieldPasswordPrompts,
+    // ---- 提示 / 选项 ----
+    CommaHint,
+    Optional,
+    OptionalShort,
+    ChooseOption,
+    DontUse,
+    EmptyContentSuffix,
+    // ---- 折叠标题 ----
+    Advanced,
+    MemoryTitle,
+    CharsSuffix,
+    // ---- 串口 ----
+    SerialMixedHint,
+    ManualInput,
+    NoSerialPorts,
+    RefreshPorts,
+    NoPortsHint,
+    CommonValues,
+    // ---- 认证 ----
+    HidePassword,
+    ShowPassword,
+    NoKeysHint,
+    // ---- 自动登录 ----
+    AutoLogin,
+    AutoLoginHint,
+    // ---- 连接方式 ----
+    ProxyFollowDefault,
+    ProxyNone,
+    ProxyCustom,
+    JumpOnlySsh,
+    JumpKeepsProxy,
+    DefaultProxyPrefix,
+    DefaultProxySuffix,
+    NoDefaultProxy,
+    WhichProxy,
+    NewProxyHint,
+    NewProxyEllipsis,
+    // ---- 高级设置 ----
+    X11Forward,
+    X11Hint,
+    LegacyTitle,
+    LegacyHint,
+    NawsHint,
+    RawTcp,
+    RawTcpHint,
+    SerialEchoHint,
+    // ---- 指纹 ----
+    SavedFingerprint,
+    NoFingerprint,
+    ClearFingerprint,
+    FingerprintHint,
+    FingerprintAfterSave,
+    // ---- AI 记忆 ----
+    MemoryHint,
+    Clear,
+    SaveMemory,
+}
+
+impl Msg for HostDialogMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::CopyDetails => "复制详情",
+            Self::Testing => "测试中…",
+            Self::TestConnection => "测试连接",
+            Self::Cancel => "取消",
+            Self::Connect => "连接",
+            Self::Ok => "确定",
+            Self::DiscardTitle => "放弃未保存的修改？",
+            Self::DiscardBody => "关掉以后这次的修改不会保存。",
+            Self::KeepEditing => "继续编辑",
+            Self::DiscardChanges => "放弃修改",
+            Self::NewProxy => "新建代理",
+            Self::FieldType => "类型",
+            Self::FieldAddress => "地址",
+            Self::FieldPort => "端口",
+            Self::FieldUsernameOptional => "用户名（可选）",
+            Self::Save => "保存",
+            Self::FieldName => "名称",
+            Self::FieldPassword => "密码",
+            Self::FieldUsername => "用户名",
+            Self::FieldProtocol => "协议",
+            Self::FieldGroup => "分组",
+            Self::FieldAuthMethod => "认证方式",
+            Self::FieldRouting => "连接方式",
+            Self::FieldJump => "跳板机",
+            Self::FieldProxy => "代理",
+            Self::FieldDevice => "设备",
+            Self::FieldBaud => "波特率",
+            Self::FieldKey => "密钥",
+            Self::FieldAgentIdentity => "ssh-agent 凭据",
+            Self::FieldTerminalType => "终端类型",
+            Self::FieldEncoding => "编码",
+            Self::FieldDataBits => "数据位",
+            Self::FieldParity => "校验位",
+            Self::FieldStopBits => "停止位",
+            Self::FieldFlowControl => "流控",
+            Self::FieldSerialNewline => "换行发送模式",
+            Self::FieldTelnetNewline => "回车模式",
+            Self::FieldLocalEcho => "本地回显",
+            Self::FieldUsernamePrompts => "用户名提示",
+            Self::FieldPasswordPrompts => "密码提示",
+            Self::CommaHint => "逗号分隔，不区分大小写",
+            Self::Optional => "可以不填",
+            Self::OptionalShort => "可选",
+            Self::ChooseOption => "（请选择）",
+            Self::DontUse => "不用",
+            Self::EmptyContentSuffix => "（没有内容）",
+            Self::Advanced => "高级设置",
+            Self::MemoryTitle => "AI 记忆",
+            Self::CharsSuffix => " 字",
+            Self::SerialMixedHint => "串口主机和网络主机不能互相转换，要换类型请新建一台主机",
+            Self::ManualInput => "手动输入…",
+            Self::NoSerialPorts => "未检测到串口",
+            Self::RefreshPorts => "刷新串口列表",
+            Self::NoPortsHint => {
+                "没有检测到串口，可以直接填设备名（例如 COM3）；插上设备后点右边的刷新。"
+            }
+            Self::CommonValues => "常用值",
+            Self::HidePassword => "隐藏密码",
+            Self::ShowPassword => "显示密码",
+            Self::NoKeysHint => "凭据库里还没有密钥：先到「管理 → 凭据」导入或生成一把",
+            Self::AutoLogin => "自动登录",
+            Self::AutoLoginHint => "看到用户名 / 密码提示就自动发送，用上面填的用户名和密码",
+            Self::ProxyFollowDefault => "跟随默认代理",
+            Self::ProxyNone => "不用代理",
+            Self::ProxyCustom => "指定代理",
+            Self::JumpOnlySsh => "只能选 SSH 主机",
+            Self::JumpKeepsProxy => {
+                "这台主机原来同时设了代理，保存时照旧保留；经跳板机连接时只有第一跳（跳板机自己）的代理生效。"
+            }
+            Self::DefaultProxyPrefix => "现在的默认代理：",
+            Self::DefaultProxySuffix => "（在「管理 → 代理」里设置）。",
+            Self::NoDefaultProxy => {
+                "现在还没有设置默认代理，连接时等于直接连接（在「管理 → 代理」里设置）。"
+            }
+            Self::WhichProxy => "用哪个代理",
+            Self::NewProxyHint => "还没有代理，点下面的「新建代理…」添加一个。",
+            Self::NewProxyEllipsis => "新建代理…",
+            Self::X11Forward => "X11 转发",
+            Self::X11Hint => {
+                "把远程图形程序显示在本机的 X 服务器上（如 VcXsrv）；本机没有时连接会提示安装。"
+            }
+            Self::LegacyTitle => "旧算法兼容",
+            Self::LegacyHint => {
+                "仅用于老服务器：允许 SHA1 的 ssh-rsa、老的密钥交换和 CBC 加密。安全性较低，只在这台机器连不上、并且确认对方是老系统时才打开。"
+            }
+            Self::NawsHint => "把窗口大小告诉服务器",
+            Self::RawTcp => "纯 TCP 模式",
+            Self::RawTcpHint => "不做任何 Telnet 协商，连的是裸 TCP 服务（设备调试口、netcat）时用",
+            Self::SerialEchoHint => "设备自己不回显键入的字符时打开",
+            Self::SavedFingerprint => "已保存的主机指纹",
+            Self::NoFingerprint => "（没有保存，下次连接会问）",
+            Self::ClearFingerprint => "清除已保存的指纹",
+            Self::FingerprintHint => {
+                "服务器换过密钥（比如重装系统）时用；如果是被人冒充，先查清楚原因再清。"
+            }
+            Self::FingerprintAfterSave => "保存之后才能看到。",
+            Self::MemoryHint => {
+                "AI 排查这台主机时记下的笔记（服务、配置位置、处理过的问题、待办），下次对话会带上。「全部放行」模式下不带。只存在这台电脑上。"
+            }
+            Self::Clear => "清空",
+            Self::SaveMemory => "保存记忆",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::CopyDetails => "Copy Details",
+            Self::Testing => "Testing…",
+            Self::TestConnection => "Test Connection",
+            Self::Cancel => "Cancel",
+            Self::Connect => "Connect",
+            Self::Ok => "OK",
+            Self::DiscardTitle => "Discard unsaved changes?",
+            Self::DiscardBody => "These changes will not be saved after closing.",
+            Self::KeepEditing => "Keep Editing",
+            Self::DiscardChanges => "Discard Changes",
+            Self::NewProxy => "New Proxy",
+            Self::FieldType => "Type",
+            Self::FieldAddress => "Address",
+            Self::FieldPort => "Port",
+            Self::FieldUsernameOptional => "Username (optional)",
+            Self::Save => "Save",
+            Self::FieldName => "Name",
+            Self::FieldPassword => "Password",
+            Self::FieldUsername => "Username",
+            Self::FieldProtocol => "Protocol",
+            Self::FieldGroup => "Group",
+            Self::FieldAuthMethod => "Authentication",
+            Self::FieldRouting => "Connection Method",
+            Self::FieldJump => "Jump Host",
+            Self::FieldProxy => "Proxy",
+            Self::FieldDevice => "Device",
+            Self::FieldBaud => "Baud Rate",
+            Self::FieldKey => "Key",
+            Self::FieldAgentIdentity => "ssh-agent Credential",
+            Self::FieldTerminalType => "Terminal Type",
+            Self::FieldEncoding => "Encoding",
+            Self::FieldDataBits => "Data Bits",
+            Self::FieldParity => "Parity",
+            Self::FieldStopBits => "Stop Bits",
+            Self::FieldFlowControl => "Flow Control",
+            Self::FieldSerialNewline => "Send Line Ending",
+            Self::FieldTelnetNewline => "Line Ending",
+            Self::FieldLocalEcho => "Local Echo",
+            Self::FieldUsernamePrompts => "Username Prompt",
+            Self::FieldPasswordPrompts => "Password Prompt",
+            Self::CommaHint => "Comma-separated, case-insensitive",
+            Self::Optional => "Optional",
+            Self::OptionalShort => "Optional",
+            Self::ChooseOption => "(Select)",
+            Self::DontUse => "None",
+            Self::EmptyContentSuffix => " (empty)",
+            Self::Advanced => "Advanced",
+            Self::MemoryTitle => "AI Notes",
+            Self::CharsSuffix => " chars",
+            Self::SerialMixedHint => {
+                "Serial hosts and network hosts cannot be converted into each other; create a new host to change the type"
+            }
+            Self::ManualInput => "Enter manually…",
+            Self::NoSerialPorts => "No serial ports detected",
+            Self::RefreshPorts => "Refresh serial port list",
+            Self::NoPortsHint => {
+                "No serial ports detected; you can enter the device name directly (for example COM3). Plug in the device, then click Refresh on the right."
+            }
+            Self::CommonValues => "Common Values",
+            Self::HidePassword => "Hide Password",
+            Self::ShowPassword => "Show Password",
+            Self::NoKeysHint => {
+                "No keys in the vault yet: import or generate one under Manage → Credentials first"
+            }
+            Self::AutoLogin => "Auto Login",
+            Self::AutoLoginHint => {
+                "Send the username and password above automatically when a username / password prompt appears"
+            }
+            Self::ProxyFollowDefault => "Follow Default Proxy",
+            Self::ProxyNone => "No Proxy",
+            Self::ProxyCustom => "Custom Proxy",
+            Self::JumpOnlySsh => "Only SSH hosts can be selected",
+            Self::JumpKeepsProxy => {
+                "This host also had a proxy configured, which is preserved on save; when connecting through the jump host, only the first hop's (the jump host's own) proxy applies."
+            }
+            Self::DefaultProxyPrefix => "Current default proxy: ",
+            Self::DefaultProxySuffix => " (configured under Manage → Proxies).",
+            Self::NoDefaultProxy => {
+                "No default proxy is configured yet, so connecting is effectively direct (configure under Manage → Proxies)."
+            }
+            Self::WhichProxy => "Which Proxy",
+            Self::NewProxyHint => "No proxies yet; click “New Proxy…” below to add one.",
+            Self::NewProxyEllipsis => "New Proxy…",
+            Self::X11Forward => "X11 Forwarding",
+            Self::X11Hint => {
+                "Show remote graphical programs on this machine's X server (such as VcXsrv); when none is available, connecting prompts you to install one."
+            }
+            Self::LegacyTitle => "Legacy Algorithms",
+            Self::LegacyHint => {
+                "Only for old servers: allows SHA1 ssh-rsa, old key exchange, and CBC encryption. Less secure; enable it only when this machine cannot connect and you have confirmed the other side is an old system."
+            }
+            Self::NawsHint => "Tell the server the window size",
+            Self::RawTcp => "Raw TCP Mode",
+            Self::RawTcpHint => {
+                "Skips all Telnet negotiation; use it for bare TCP services (device debug ports, netcat)"
+            }
+            Self::SerialEchoHint => "Turn on when the device does not echo typed characters itself",
+            Self::SavedFingerprint => "Saved Host Fingerprint",
+            Self::NoFingerprint => "(not saved; you will be asked on the next connection)",
+            Self::ClearFingerprint => "Clear Saved Fingerprint",
+            Self::FingerprintHint => {
+                "Use this when the server's key changed (for example after a reinstall); if someone is impersonating it, find out why before clearing."
+            }
+            Self::FingerprintAfterSave => "Visible after saving.",
+            Self::MemoryHint => {
+                "Notes recorded while the AI investigated this host (services, config locations, issues handled, TODOs) and included in the next conversation. Not included in “Allow All” mode. Stored only on this computer."
+            }
+            Self::Clear => "Clear",
+            Self::SaveMemory => "Save Notes",
+        }
+    }
+}
 
 /// 对话框卡片的宽度（单栏表单：约 560–600）。
 pub const DIALOG_WIDTH: f32 = 580.0;
@@ -79,9 +409,9 @@ impl HostPropsDialog {
 
 fn proxy_mode_label(mode: ProxyMode) -> &'static str {
     match mode {
-        ProxyMode::Default => "跟随默认代理",
-        ProxyMode::None => "不用代理",
-        ProxyMode::Custom => "指定代理",
+        ProxyMode::Default => t(HostDialogMsg::ProxyFollowDefault),
+        ProxyMode::None => t(HostDialogMsg::ProxyNone),
+        ProxyMode::Custom => t(HostDialogMsg::ProxyCustom),
     }
 }
 
@@ -426,7 +756,7 @@ impl MainWindow {
                             )
                             .child(text_button(
                                 "host-test-copy",
-                                "复制详情",
+                                t(HostDialogMsg::CopyDetails),
                                 ButtonLook::Ghost,
                                 move |_, window, cx| {
                                     copy.update(cx, |this, cx| this.host_test_copy(window, cx));
@@ -464,9 +794,9 @@ impl MainWindow {
                         text_button(
                             "host-test",
                             if running {
-                                "测试中…"
+                                t(HostDialogMsg::Testing)
                             } else {
-                                "测试连接"
+                                t(HostDialogMsg::TestConnection)
                             },
                             ButtonLook::Outline,
                             move |_, window, cx| {
@@ -478,7 +808,7 @@ impl MainWindow {
                     .when(running, |d| {
                         d.child(text_button(
                             "host-test-cancel",
-                            "取消",
+                            t(HostDialogMsg::Cancel),
                             ButtonLook::Ghost,
                             move |_, _window, cx| {
                                 stop.update(cx, |this, cx| this.host_test_cancel(cx));
@@ -489,7 +819,7 @@ impl MainWindow {
             .child(div().flex_1())
             .child(text_button(
                 "host-cancel",
-                "取消",
+                t(HostDialogMsg::Cancel),
                 ButtonLook::Outline,
                 move |_, window, cx| {
                     cancel.update(cx, |this, cx| this.host_props_cancel(window, cx));
@@ -497,7 +827,7 @@ impl MainWindow {
             ))
             .child(text_button(
                 "host-connect",
-                "连接",
+                t(HostDialogMsg::Connect),
                 ButtonLook::Outline,
                 move |_, window, cx| {
                     connect.update(cx, |this, cx| this.host_form_commit(true, window, cx));
@@ -505,7 +835,7 @@ impl MainWindow {
             ))
             .child(text_button(
                 "host-ok",
-                "确定",
+                t(HostDialogMsg::Ok),
                 ButtonLook::Primary,
                 move |_, window, cx| {
                     ok.update(cx, |this, cx| this.host_form_commit(false, window, cx));
@@ -583,13 +913,13 @@ impl MainWindow {
                                 .child(
                                     div()
                                         .typo(Role::GroupTitle, tokens)
-                                        .child("放弃未保存的修改？"),
+                                        .child(t(HostDialogMsg::DiscardTitle)),
                                 )
                                 .child(
                                     div()
                                         .typo(Role::Body, tokens)
                                         .text_color(tokens.text_muted)
-                                        .child("关掉以后这次的修改不会保存。"),
+                                        .child(t(HostDialogMsg::DiscardBody)),
                                 ),
                         )
                         .child(
@@ -598,7 +928,7 @@ impl MainWindow {
                                 .justify_end()
                                 .child(text_button(
                                     "host-discard-keep",
-                                    "继续编辑",
+                                    t(HostDialogMsg::KeepEditing),
                                     ButtonLook::Outline,
                                     move |_, window, cx| {
                                         keep.update(cx, |this, cx| {
@@ -608,7 +938,7 @@ impl MainWindow {
                                 ))
                                 .child(text_button(
                                     "host-discard-drop",
-                                    "放弃修改",
+                                    t(HostDialogMsg::DiscardChanges),
                                     ButtonLook::Danger,
                                     move |_, window, cx| {
                                         drop.update(cx, |this, cx| {
@@ -633,10 +963,19 @@ impl MainWindow {
                 Some(card(
                     v_flex()
                         .gap_3()
-                        .child(div().typo(Role::GroupTitle, tokens).child("新建代理"))
-                        .child(field("名称", None, Input::new(&form.name), tokens))
+                        .child(
+                            div()
+                                .typo(Role::GroupTitle, tokens)
+                                .child(t(HostDialogMsg::NewProxy)),
+                        )
                         .child(field(
-                            "类型",
+                            t(HostDialogMsg::FieldName),
+                            None,
+                            Input::new(&form.name),
+                            tokens,
+                        ))
+                        .child(field(
+                            t(HostDialogMsg::FieldType),
                             None,
                             select(
                                 "host-new-proxy-kind",
@@ -661,25 +1000,30 @@ impl MainWindow {
                                 .gap_2()
                                 .items_start()
                                 .child(div().flex_1().min_w_0().child(field(
-                                    "地址",
+                                    t(HostDialogMsg::FieldAddress),
                                     None,
                                     Input::new(&form.host),
                                     tokens,
                                 )))
                                 .child(div().w(px(88.0)).flex_none().child(field(
-                                    "端口",
+                                    t(HostDialogMsg::FieldPort),
                                     None,
                                     Input::new(&form.port),
                                     tokens,
                                 ))),
                         )
                         .child(field(
-                            "用户名（可选）",
+                            t(HostDialogMsg::FieldUsernameOptional),
                             None,
                             Input::new(&form.username),
                             tokens,
                         ))
-                        .child(field("密码", None, Input::new(&form.secret), tokens))
+                        .child(field(
+                            t(HostDialogMsg::FieldPassword),
+                            None,
+                            Input::new(&form.secret),
+                            tokens,
+                        ))
                         .children(
                             form.error
                                 .clone()
@@ -691,7 +1035,7 @@ impl MainWindow {
                                 .justify_end()
                                 .child(text_button(
                                     "host-new-proxy-cancel",
-                                    "取消",
+                                    t(HostDialogMsg::Cancel),
                                     ButtonLook::Outline,
                                     move |_, window, cx| {
                                         cancel.update(cx, |this, cx| {
@@ -701,7 +1045,7 @@ impl MainWindow {
                                 ))
                                 .child(text_button(
                                     "host-new-proxy-save",
-                                    "保存",
+                                    t(HostDialogMsg::Save),
                                     ButtonLook::Primary,
                                     move |_, window, cx| {
                                         save.update(cx, |this, cx| {
@@ -728,7 +1072,7 @@ impl MainWindow {
     ) -> AnyElement {
         match row {
             Row::Name => labelled(
-                required_label("名称", tokens),
+                required_label(t(HostDialogMsg::FieldName), tokens),
                 Input::new(&form.name),
                 form.error_of(FormField::Name),
                 tokens,
@@ -743,14 +1087,14 @@ impl MainWindow {
                 .gap_3()
                 .items_start()
                 .child(div().flex_1().min_w_0().child(field(
-                    "用户名提示",
-                    Some("逗号分隔，不区分大小写".to_owned()),
+                    t(HostDialogMsg::FieldUsernamePrompts),
+                    Some(t(HostDialogMsg::CommaHint).to_owned()),
                     Input::new(&form.telnet.username_prompts),
                     tokens,
                 )))
                 .child(div().flex_1().min_w_0().child(field(
-                    "密码提示",
-                    Some("逗号分隔，不区分大小写".to_owned()),
+                    t(HostDialogMsg::FieldPasswordPrompts),
+                    Some(t(HostDialogMsg::CommaHint).to_owned()),
                     Input::new(&form.telnet.password_prompts),
                     tokens,
                 )))
@@ -762,7 +1106,7 @@ impl MainWindow {
                 let toggle = entity.clone();
                 fold_header(
                     "host-advanced-toggle",
-                    "高级设置",
+                    t(HostDialogMsg::Advanced),
                     None,
                     form.advanced_open,
                     tokens,
@@ -780,8 +1124,8 @@ impl MainWindow {
                     .map_or(0, |memory| memory.input.read(cx).value().chars().count());
                 fold_header(
                     "host-memory-toggle",
-                    "AI 记忆",
-                    (length > 0).then(|| format!("{length} 字")),
+                    t(HostDialogMsg::MemoryTitle),
+                    (length > 0).then(|| format!("{length}{}", t(HostDialogMsg::CharsSuffix))),
                     form.memory_open,
                     tokens,
                     move |_window, cx| {
@@ -812,12 +1156,12 @@ impl MainWindow {
                     protocol.label().to_owned(),
                     *protocol == form.protocol,
                     (!protocol_form::can_switch_to(editing, *protocol))
-                        .then_some("串口主机和网络主机不能互相转换，要换类型请新建一台主机"),
+                        .then_some(t(HostDialogMsg::SerialMixedHint)),
                 )
             })
             .collect();
         field(
-            "协议",
+            t(HostDialogMsg::FieldProtocol),
             None,
             segmented_bar(
                 "host-protocol",
@@ -860,13 +1204,13 @@ impl MainWindow {
             .gap_3()
             .items_start()
             .child(div().flex_1().min_w_0().child(labelled(
-                required_label("地址", tokens),
+                required_label(t(HostDialogMsg::FieldAddress), tokens),
                 Input::new(&form.address),
                 form.error_of(FormField::Address),
                 tokens,
             )))
             .child(div().w(px(110.0)).flex_none().child(field_with_error(
-                "端口",
+                t(HostDialogMsg::FieldPort),
                 None,
                 Input::new(&form.port),
                 form.error_of(FormField::Port),
@@ -903,7 +1247,7 @@ impl MainWindow {
                 |g| g.name.clone(),
             );
         field(
-            "分组",
+            t(HostDialogMsg::FieldGroup),
             None,
             select(
                 "host-group",
@@ -933,7 +1277,7 @@ impl MainWindow {
             .map(|method| (auth_label(*method).to_owned(), *method == form.auth, None))
             .collect();
         field(
-            "认证方式",
+            t(HostDialogMsg::FieldAuthMethod),
             None,
             segmented_bar(
                 "host-auth",
@@ -983,8 +1327,8 @@ impl MainWindow {
             .gap_3()
             .items_start()
             .child(div().flex_1().min_w_0().child(field_with_error(
-                "用户名",
-                telnet.then(|| "可以不填".to_owned()),
+                t(HostDialogMsg::FieldUsername),
+                telnet.then(|| t(HostDialogMsg::Optional).to_owned()),
                 Input::new(&form.username),
                 form.error_of(FormField::Username),
                 tokens,
@@ -1015,9 +1359,9 @@ impl MainWindow {
                     IconName::Eye
                 })
                 .tooltip(if form.password_shown {
-                    "隐藏密码"
+                    t(HostDialogMsg::HidePassword)
                 } else {
-                    "显示密码"
+                    t(HostDialogMsg::ShowPassword)
                 })
                 .on_click(act(entity, |this, window, cx| {
                     this.host_toggle_password(window, cx)
@@ -1030,7 +1374,7 @@ impl MainWindow {
         v_flex()
             .gap_1p5()
             .child(field_with_error(
-                "密码",
+                t(HostDialogMsg::FieldPassword),
                 None,
                 h_flex()
                     .w_full()
@@ -1064,10 +1408,14 @@ impl MainWindow {
             if item.kind == IdentityKind::Agent || item.has_secret || item.key_path.is_some() {
                 item.name.clone()
             } else {
-                format!("{}（没有内容）", item.name)
+                format!("{}{}", item.name, t(HostDialogMsg::EmptyContentSuffix))
             }
         };
-        let empty_label = if key { "（请选择）" } else { "不用" };
+        let empty_label = if key {
+            t(HostDialogMsg::ChooseOption)
+        } else {
+            t(HostDialogMsg::DontUse)
+        };
         let mut choices = vec![Choice::new(empty_label, form.identity.is_none())];
         let mut targets: Vec<Option<i64>> = vec![None];
         for item in &fitting {
@@ -1081,14 +1429,18 @@ impl MainWindow {
         let hint = if key {
             fitting
                 .is_empty()
-                .then(|| "凭据库里还没有密钥：先到「管理 → 凭据」导入或生成一把".to_owned())
+                .then(|| t(HostDialogMsg::NoKeysHint).to_owned())
         } else {
-            Some("可选".to_owned())
+            Some(t(HostDialogMsg::OptionalShort).to_owned())
         };
         v_flex()
             .gap_1p5()
             .child(field_with_error(
-                if key { "密钥" } else { "ssh-agent 凭据" },
+                if key {
+                    t(HostDialogMsg::FieldKey)
+                } else {
+                    t(HostDialogMsg::FieldAgentIdentity)
+                },
                 None,
                 select(
                     "host-identity",
@@ -1125,8 +1477,8 @@ impl MainWindow {
             .child(toggle_card(
                 entity,
                 "telnet-auto-login",
-                "自动登录",
-                Some("看到用户名 / 密码提示就自动发送，用上面填的用户名和密码"),
+                t(HostDialogMsg::AutoLogin),
+                Some(t(HostDialogMsg::AutoLoginHint)),
                 form.telnet.auto_login,
                 |form, value| form.telnet.auto_login = value,
                 tokens,
@@ -1150,7 +1502,7 @@ impl MainWindow {
             .map(|mode| (mode.label().to_owned(), *mode == form.conn_mode, None))
             .collect();
         field(
-            "连接方式",
+            t(HostDialogMsg::FieldRouting),
             None,
             segmented_bar(
                 "host-routing",
@@ -1187,7 +1539,10 @@ impl MainWindow {
                         Some(item.id) != form.host_id && item.protocol.protocol == Protocol::Ssh
                     })
                     .collect();
-                let mut jump_choices = vec![Choice::new("（请选择）", form.jump.is_none())];
+                let mut jump_choices = vec![Choice::new(
+                    t(HostDialogMsg::ChooseOption),
+                    form.jump.is_none(),
+                )];
                 let mut jump_targets: Vec<Option<i64>> = vec![None];
                 for item in &others {
                     jump_choices.push(Choice::new(item.name.clone(), form.jump == Some(item.id)));
@@ -1196,13 +1551,16 @@ impl MainWindow {
                 let jump_label = form
                     .jump
                     .and_then(|id| others.iter().find(|h| h.id == id))
-                    .map_or_else(|| "（请选择）".to_owned(), |h| h.name.clone());
+                    .map_or_else(
+                        || t(HostDialogMsg::ChooseOption).to_owned(),
+                        |h| h.name.clone(),
+                    );
                 v_flex()
                     .w_full()
                     .gap_3()
                     .child(field_with_error(
-                        "跳板机",
-                        Some("只能选 SSH 主机".to_owned()),
+                        t(HostDialogMsg::FieldJump),
+                        Some(t(HostDialogMsg::JumpOnlySsh).to_owned()),
                         select(
                             "host-jump",
                             jump_label,
@@ -1217,10 +1575,8 @@ impl MainWindow {
                         tokens,
                     ))
                     .when(form.jump_keeps_proxy, |d| {
-                        d.child(self.proxy_block(form, entity, tokens)).child(note(
-                            "这台主机原来同时设了代理，保存时照旧保留；经跳板机连接时只有第一跳（跳板机自己）的代理生效。",
-                            tokens,
-                        ))
+                        d.child(self.proxy_block(form, entity, tokens))
+                            .child(note(t(HostDialogMsg::JumpKeepsProxy), tokens))
                     })
                     .into_any_element()
             }
@@ -1240,7 +1596,10 @@ impl MainWindow {
             .iter()
             .map(|m| Choice::new(proxy_mode_label(*m), *m == form.proxy_mode))
             .collect();
-        let mut proxy_choices = vec![Choice::new("（请选择）", form.proxy.is_none())];
+        let mut proxy_choices = vec![Choice::new(
+            t(HostDialogMsg::ChooseOption),
+            form.proxy.is_none(),
+        )];
         let mut proxy_targets: Vec<Option<i64>> = vec![None];
         for item in proxies {
             proxy_choices.push(Choice::new(
@@ -1253,7 +1612,7 @@ impl MainWindow {
             .proxy
             .and_then(|id| proxies.iter().find(|p| p.id == id))
             .map_or_else(
-                || "（请选择）".to_owned(),
+                || t(HostDialogMsg::ChooseOption).to_owned(),
                 |p| format!("{}（{}）", p.name, crate::proxies::kind_label(p.kind)),
             );
         // 「跟随默认代理」下面说清现在到底走不走代理。
@@ -1264,15 +1623,15 @@ impl MainWindow {
             .and_then(|db| db.default_proxy_id().ok().flatten());
         let default_note = match default_id.and_then(|id| proxies.iter().find(|p| p.id == id)) {
             Some(proxy) => format!(
-                "现在的默认代理：{}（在「管理 → 代理」里设置）。",
-                proxy.name
+                "{}{}{}",
+                t(HostDialogMsg::DefaultProxyPrefix),
+                proxy.name,
+                t(HostDialogMsg::DefaultProxySuffix)
             ),
-            None => {
-                "现在还没有设置默认代理，连接时等于直接连接（在「管理 → 代理」里设置）。".to_owned()
-            }
+            None => t(HostDialogMsg::NoDefaultProxy).to_owned(),
         };
         let mut block = v_flex().w_full().gap_3().child(field_with_error(
-            "代理",
+            t(HostDialogMsg::FieldProxy),
             None,
             select(
                 "host-proxy-mode",
@@ -1294,7 +1653,7 @@ impl MainWindow {
         if form.proxy_mode == ProxyMode::Custom {
             block = block
                 .child(field(
-                    "用哪个代理",
+                    t(HostDialogMsg::WhichProxy),
                     None,
                     select(
                         "host-proxy",
@@ -1309,7 +1668,7 @@ impl MainWindow {
                     tokens,
                 ))
                 .when(proxies.is_empty(), |d| {
-                    d.child(note("还没有代理，点下面的「新建代理…」添加一个。", tokens))
+                    d.child(note(t(HostDialogMsg::NewProxyHint), tokens))
                 })
                 .child(
                     div().flex().child(
@@ -1317,7 +1676,7 @@ impl MainWindow {
                             .outline()
                             .compact()
                             .icon(IconName::Plus)
-                            .label("新建代理…")
+                            .label(t(HostDialogMsg::NewProxyEllipsis))
                             .on_click(act(entity, |this, window, cx| {
                                 this.host_open_new_proxy(window, cx);
                             })),
@@ -1355,8 +1714,8 @@ impl MainWindow {
                 .child(toggle_card(
                     entity,
                     "host-x11",
-                    "X11 转发",
-                    Some("把远程图形程序显示在本机的 X 服务器上（如 VcXsrv）；本机没有时连接会提示安装。"),
+                    t(HostDialogMsg::X11Forward),
+                    Some(t(HostDialogMsg::X11Hint)),
                     form.x11,
                     |form, value| form.x11 = value,
                     tokens,
@@ -1369,8 +1728,8 @@ impl MainWindow {
             AdvRow::Legacy => toggle_card(
                 entity,
                 "host-legacy",
-                "旧算法兼容",
-                Some("仅用于老服务器：允许 SHA1 的 ssh-rsa、老的密钥交换和 CBC 加密。安全性较低，只在这台机器连不上、并且确认对方是老系统时才打开。"),
+                t(HostDialogMsg::LegacyTitle),
+                Some(t(HostDialogMsg::LegacyHint)),
                 form.legacy,
                 |form, value| form.legacy = value,
                 tokens,
@@ -1378,7 +1737,7 @@ impl MainWindow {
             AdvRow::Fingerprint => self.fingerprint_box(form, entity, tokens),
             AdvRow::TelnetKeys => two(
                 field(
-                    "回车模式",
+                    t(HostDialogMsg::FieldTelnetNewline),
                     None,
                     enum_select(
                         "telnet-newline",
@@ -1392,7 +1751,7 @@ impl MainWindow {
                 )
                 .into_any_element(),
                 field(
-                    "本地回显",
+                    t(HostDialogMsg::FieldLocalEcho),
                     None,
                     enum_select(
                         "telnet-echo",
@@ -1408,7 +1767,7 @@ impl MainWindow {
             ),
             AdvRow::TelnetTerm => two(
                 field_with_error(
-                    "终端类型",
+                    t(HostDialogMsg::FieldTerminalType),
                     None,
                     Input::new(&telnet.terminal_type),
                     form.error_of(FormField::TerminalType),
@@ -1416,7 +1775,7 @@ impl MainWindow {
                 )
                 .into_any_element(),
                 field(
-                    "编码",
+                    t(HostDialogMsg::FieldEncoding),
                     None,
                     enum_select(
                         "telnet-encoding",
@@ -1434,7 +1793,7 @@ impl MainWindow {
                 entity,
                 "telnet-naws",
                 "NAWS",
-                Some("把窗口大小告诉服务器"),
+                Some(t(HostDialogMsg::NawsHint)),
                 telnet.naws,
                 |form, value| form.telnet.naws = value,
                 tokens,
@@ -1442,8 +1801,8 @@ impl MainWindow {
             AdvRow::TelnetRaw => toggle_card(
                 entity,
                 "telnet-raw-tcp",
-                "纯 TCP 模式",
-                Some("不做任何 Telnet 协商，连的是裸 TCP 服务（设备调试口、netcat）时用"),
+                t(HostDialogMsg::RawTcp),
+                Some(t(HostDialogMsg::RawTcpHint)),
                 telnet.raw_tcp,
                 |form, value| form.telnet.raw_tcp = value,
                 tokens,
@@ -1457,7 +1816,7 @@ impl MainWindow {
                         .gap_2()
                         .items_start()
                         .child(div().flex_1().min_w_0().child(field(
-                            "数据位",
+                            t(HostDialogMsg::FieldDataBits),
                             None,
                             enum_select(
                                 "serial-data-bits",
@@ -1470,7 +1829,7 @@ impl MainWindow {
                             tokens,
                         )))
                         .child(div().flex_1().min_w_0().child(field(
-                            "校验位",
+                            t(HostDialogMsg::FieldParity),
                             None,
                             enum_select(
                                 "serial-parity",
@@ -1483,7 +1842,7 @@ impl MainWindow {
                             tokens,
                         )))
                         .child(div().flex_1().min_w_0().child(field(
-                            "停止位",
+                            t(HostDialogMsg::FieldStopBits),
                             None,
                             enum_select(
                                 "serial-stop-bits",
@@ -1503,7 +1862,7 @@ impl MainWindow {
                 .into_any_element(),
             AdvRow::SerialFlow => two(
                 field(
-                    "流控",
+                    t(HostDialogMsg::FieldFlowControl),
                     None,
                     enum_select(
                         "serial-flow",
@@ -1517,7 +1876,7 @@ impl MainWindow {
                 )
                 .into_any_element(),
                 field(
-                    "换行发送模式",
+                    t(HostDialogMsg::FieldSerialNewline),
                     None,
                     enum_select(
                         "serial-newline",
@@ -1532,7 +1891,7 @@ impl MainWindow {
                 .into_any_element(),
             ),
             AdvRow::SerialEncoding => field(
-                "编码",
+                t(HostDialogMsg::FieldEncoding),
                 None,
                 enum_select(
                     "serial-encoding",
@@ -1548,8 +1907,8 @@ impl MainWindow {
             AdvRow::SerialEcho => toggle_card(
                 entity,
                 "serial-echo",
-                "本地回显",
-                Some("设备自己不回显键入的字符时打开"),
+                t(HostDialogMsg::FieldLocalEcho),
+                Some(t(HostDialogMsg::SerialEchoHint)),
                 serial.local_echo,
                 |form, value| form.serial.local_echo = value,
                 tokens,
@@ -1584,11 +1943,14 @@ impl MainWindow {
                 )
             })
             .collect();
-        choices.push(Choice::new("手动输入…", manual && !ports.is_empty()));
+        choices.push(Choice::new(
+            t(HostDialogMsg::ManualInput),
+            manual && !ports.is_empty(),
+        ));
         let picker: AnyElement = if ports.is_empty() {
             Button::new("serial-device-none")
                 .outline()
-                .label("未检测到串口")
+                .label(t(HostDialogMsg::NoSerialPorts))
                 .w_full()
                 .disabled(true)
                 .into_any_element()
@@ -1621,16 +1983,13 @@ impl MainWindow {
                             .outline()
                             .compact()
                             .icon(IconName::RefreshCw)
-                            .tooltip("刷新串口列表")
+                            .tooltip(t(HostDialogMsg::RefreshPorts))
                             .on_click(act(entity, |this, _window, cx| this.host_refresh_ports(cx))),
                     ),
             )
             .when(manual, |d| d.child(Input::new(&serial.device)))
             .when(ports.is_empty(), |d| {
-                d.child(note(
-                    "没有检测到串口，可以直接填设备名（例如 COM3）；插上设备后点右边的刷新。",
-                    tokens,
-                ))
+                d.child(note(t(HostDialogMsg::NoPortsHint), tokens))
             });
         let baud_choices: Vec<Choice> = COMMON_BAUD_RATES
             .iter()
@@ -1643,7 +2002,7 @@ impl MainWindow {
             .child(div().flex_1().min_w_0().child(Input::new(&serial.baud)))
             .child(div().w(px(104.0)).flex_none().child(select(
                 "serial-baud-common",
-                "常用值",
+                t(HostDialogMsg::CommonValues),
                 baud_choices,
                 pick(entity, move |this, index, window, cx| {
                     if let Some(rate) = COMMON_BAUD_RATES.get(index).copied() {
@@ -1653,7 +2012,7 @@ impl MainWindow {
             )));
         vec![
             field_with_error(
-                "设备",
+                t(HostDialogMsg::FieldDevice),
                 None,
                 device_control,
                 form.error_of(FormField::Device),
@@ -1661,7 +2020,7 @@ impl MainWindow {
             )
             .into_any_element(),
             field_with_error(
-                "波特率",
+                t(HostDialogMsg::FieldBaud),
                 None,
                 baud_control,
                 form.error_of(FormField::Baud),
@@ -1688,7 +2047,7 @@ impl MainWindow {
             .child(
                 div()
                     .typo(Role::FieldLabel, tokens)
-                    .child("已保存的主机指纹"),
+                    .child(t(HostDialogMsg::SavedFingerprint)),
             )
             .child(match form.existing.as_ref() {
                 Some(_) => v_flex()
@@ -1705,7 +2064,7 @@ impl MainWindow {
                             .child(SharedString::from(
                                 form.fingerprint
                                     .clone()
-                                    .unwrap_or_else(|| "（没有保存，下次连接会问）".to_owned()),
+                                    .unwrap_or_else(|| t(HostDialogMsg::NoFingerprint).to_owned()),
                             )),
                     )
                     .child(
@@ -1713,18 +2072,15 @@ impl MainWindow {
                             Button::new("host-forget-fingerprint")
                                 .outline()
                                 .compact()
-                                .label("清除已保存的指纹")
+                                .label(t(HostDialogMsg::ClearFingerprint))
                                 .on_click(act(entity, |this, window, cx| {
                                     this.host_forget_fingerprint(window, cx);
                                 })),
                         ),
                     )
-                    .child(note(
-                        "服务器换过密钥（比如重装系统）时用；如果是被人冒充，先查清楚原因再清。",
-                        tokens,
-                    ))
+                    .child(note(t(HostDialogMsg::FingerprintHint), tokens))
                     .into_any_element(),
-                None => note("保存之后才能看到。", tokens).into_any_element(),
+                None => note(t(HostDialogMsg::FingerprintAfterSave), tokens).into_any_element(),
             })
             .into_any_element()
     }
@@ -1750,10 +2106,7 @@ impl MainWindow {
         vec![
             v_flex()
                 .gap_2()
-                .child(note(
-                    "AI 排查这台主机时记下的笔记（服务、配置位置、处理过的问题、待办），下次对话会带上。「全部放行」模式下不带。只存在这台电脑上。",
-                    tokens,
-                ))
+                .child(note(t(HostDialogMsg::MemoryHint), tokens))
                 .child(Textarea::new(&memory.input))
                 .children(memory.error.clone().map(|e| error_note(e, tokens.danger)))
                 .child(
@@ -1782,7 +2135,7 @@ impl MainWindow {
                         .when(!memory.saved.is_empty(), |d| {
                             d.child(text_button(
                                 "host-memory-clear",
-                                "清空",
+                                t(HostDialogMsg::Clear),
                                 ButtonLook::Ghost,
                                 act(entity, |this, window, cx| {
                                     this.host_memory_save(window, cx, true)
@@ -1792,7 +2145,7 @@ impl MainWindow {
                         .child(
                             text_button(
                                 "host-memory-save",
-                                "保存记忆",
+                                t(HostDialogMsg::SaveMemory),
                                 ButtonLook::Outline,
                                 act(entity, |this, window, cx| {
                                     this.host_memory_save(window, cx, false)
