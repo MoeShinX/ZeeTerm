@@ -65,6 +65,7 @@ use crate::agent_tools::{
 use crate::ai_terminals::terminals;
 use crate::app_theme::Tokens;
 use crate::host_activity;
+use crate::i18n::{Msg, t};
 use crate::install_state;
 use crate::menu_kit;
 use crate::ssh_backend::runtime;
@@ -80,43 +81,584 @@ const COPIED_FLASH: Duration = Duration::from_millis(1500);
 /// 调试版里让窗口从离线演示开始的钩子（走 `dev_hooks`，发行版读不到）。
 const DEMO_ENV: &str = "ZSSH_AGENT_DEMO";
 
-/// 模型循环里第一项的显示文字：选它时 `send` 的模型 id 传 `None`。
-const DEFAULT_MODEL: &str = "默认";
+/// AI 对话窗口自己的界面文案：独立窗口和嵌在主窗口右侧的面板共用。
+///
+/// 只放**应用自己的**文字；智能体的输出、模型名、工具名、命令、路径、主机名、用户名和历史
+/// 记录里的正文都原样显示，不经过这里。离线演示脚本和测试的固定文案也不在这里。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChatMsg {
+    // ---- 窗口 / 工具栏 ----
+    WindowTitle,
+    OfflineDemo,
+    RealAgent,
+    MarkdownSample,
+    NewConversation,
+    HistoryTab,
+    Send,
+    Stop,
+    AgentPrefix,
+    ModePrefix,
+    TargetHostPrefix,
+    NoHostsInLibrary,
+    /// 没有选主机时给用户的提示。
+    NoHostHint,
+    // ---- 执行模式 ----
+    ModeManual,
+    ModeReadOnly,
+    ModeAuto,
+    // ---- 助手消息 ----
+    AssistantRole,
+    BodyRaw,
+    BodyRendered,
+    StopBadge,
+    ReasoningExpanded,
+    ReasoningCollapsed,
+    Thinking,
+    /// 原文模式下正文还是空的：明确写一句，空代码块看起来像渲染失败。
+    NoBody,
+    // ---- 工具卡片 ----
+    StatusAwaitingApproval,
+    StatusRunning,
+    StatusAnswered,
+    StatusDone,
+    StatusFailed,
+    StatusStopped,
+    ExitCodePrefix,
+    WroteSystemPathPrefix,
+    BackupPathPrefix,
+    OwnerChangedPrefix,
+    OwnerChangedMiddle,
+    OwnerChangedSuffix,
+    RanInTerminal,
+    RanInBackground,
+    ParenLeft,
+    ParenRight,
+    TargetUnknown,
+    ViewTerminal,
+    ParamsPrefix,
+    PathPrefix,
+    ErrorPrefix,
+    DeniedByUser,
+    HiddenSecret,
+    // ---- 确认 ----
+    NeedsConfirm,
+    Allow,
+    Deny,
+    Allowed,
+    Denied,
+    DangerBadge,
+    HostPrefix,
+    SeqSeparator,
+    ReasonSeparator,
+    NewFile,
+    AutoBackup,
+    // ---- 折叠 / 展开 ----
+    ExpandAll,
+    Collapse,
+    ExpandAllPrefix,
+    ExpandAllSuffix,
+    ShowAll,
+    OutputExpanded,
+    OutputCollapsed,
+    DiffMorePrefix,
+    DiffMoreSuffix,
+    DiffOmittedPrefix,
+    DiffOmittedSuffix,
+    BodyLongPrefix,
+    BodyLongAllSuffix,
+    BodyLongPartialMiddle,
+    BodyLongPartialSuffix,
+    AllLinesPrefix,
+    AllLinesSuffix,
+    OutputLongPrefix,
+    OutputLongMiddle,
+    OutputLongSuffix,
+    OutputLongShortPrefix,
+    OutputLongShortMiddle,
+    OutputLongShortSuffix,
+    // ---- 复制 ----
+    Copy,
+    CopySelected,
+    CopyTable,
+    Copied,
+    // ---- 历史 ----
+    HistoryPanelTitle,
+    Refresh,
+    Close,
+    HistoryEmpty,
+    Resumable,
+    ConfirmDelete,
+    ResumeSelected,
+    ResumeAnchored,
+    ResumeUnanchored,
+    NoSession,
+    NoMessages,
+    SavedToHistory,
+    SaveHistoryFailedPrefix,
+    Delete,
+    Cancel,
+    View,
+    Continue,
+    BackToList,
+    ShowEarlier,
+    EarlierPrefix,
+    EarlierSuffix,
+    JustNow,
+    MinutesAgoSuffix,
+    HoursAgoSuffix,
+    DaysAgoSuffix,
+    MessageCountSuffix,
+    Untitled,
+    HistoryRunning,
+    HistoryUnknown,
+    // ---- 提示 / 错误 ----
+    ResumeFailedNewSession,
+    LinkCopiedPrefix,
+    LinkCopyFailedPrefix,
+    SendFailedPrefix,
+    StartFailedPrefix,
+    StartFailedMiddle,
+    AgentNotFoundPrefix,
+    AgentNotFoundSuffix,
+    BackgroundTaskFailedPrefix,
+    CloseSessionFailedPrefix,
+    CloseSessionFailedMiddle,
+    StopFailedPrefix,
+    ReadHistoryFailedPrefix,
+    OpenHistoryFailedPrefix,
+    DeleteHistoryFailedPrefix,
+    ReadExecModeFailedPrefix,
+    SaveExecModeFailedPrefix,
+    CreateDataDirFailedPrefix,
+    OpenSettingsDbFailedPrefix,
+    ReadHostsFailedPrefix,
+    ReadModelListFailedPrefix,
+    ReadModelListFailedMiddle,
+    ReadModelListFailedSuffix,
+    SettingsUnavailablePrefix,
+    SettingsUnavailableNoSaveSuffix,
+    SettingsUnavailableModeSuffix,
+    SettingsOpenFailed,
+    SwitchedToPrefix,
+    SwitchedToNewSuffix,
+    // ---- 全部放行 ----
+    AllowAllTitle,
+    AllowAllMessage,
+    // ---- 输入区 / 空状态 ----
+    InputPlaceholder,
+    InputPlaceholderRunning,
+    EmptyRealPrefix,
+    EmptyRealSuffix,
+    EmptyDemo,
+    // ---- 提示卡 ----
+    TopUp,
+    Reconnect,
+    TopUpOpened,
+    TopUpOpenFailedPrefix,
+    // ---- 底部说明 ----
+    FooterRealIntro,
+    FooterRealModes,
+    FooterDemoIntro,
+    FooterDemoModes,
+    // ---- 其他 ----
+    /// 回合结束时还在跑的工具：卡片标成已停止，不能一直显示「运行中」。
+    TurnEnded,
+    /// 回合结束时还没回答的确认：卡片标成失败，不能看起来像已完成。
+    ApprovalExpired,
+    /// 确认在等待期间失效（超时、停止、目标被取消选择）。
+    ApprovalGone,
+    ProcessedApprovalsSuffix,
+    GroupFailedPrefix,
+    GroupFailedSuffix,
+    ModelPrefix,
+    /// 模型循环里第一项的显示文字：选它时 `send` 的模型 id 传 `None`。
+    DefaultModel,
+}
 
-/// 没有选主机时给用户的提示。
-const NO_HOST_HINT: &str = "未选择目标主机：AI 只能对话，不能在任何服务器上执行命令。";
+impl Msg for ChatMsg {
+    fn zh(&self) -> &'static str {
+        let key = *self;
+        match key {
+            Self::WindowTitle => "AI 对话",
+            Self::OfflineDemo => "离线演示",
+            Self::RealAgent => "真实智能体",
+            Self::MarkdownSample => "Markdown 示例",
+            Self::NewConversation => "新对话",
+            Self::HistoryTab => "历史",
+            Self::Send => "发送",
+            Self::Stop => "停止",
+            Self::AgentPrefix => "智能体：",
+            Self::ModePrefix => "执行模式：",
+            Self::TargetHostPrefix => "目标主机：",
+            Self::NoHostsInLibrary => "主机库里还没有主机：先在主机库添加一台。",
+            Self::NoHostHint => "未选择目标主机：AI 只能对话，不能在任何服务器上执行命令。",
+            Self::ModeManual => "逐条确认",
+            Self::ModeReadOnly => "只读自动",
+            Self::ModeAuto => "全部放行",
+            Self::AssistantRole => "助手",
+            Self::BodyRaw => "原文",
+            Self::BodyRendered => "渲染",
+            Self::StopBadge => "已停止",
+            Self::ReasoningExpanded => "思考 ▾",
+            Self::ReasoningCollapsed => "思考 ▸",
+            Self::Thinking => "思考中",
+            Self::NoBody => "（无正文）",
+            Self::StatusAwaitingApproval => "等待确认",
+            Self::StatusRunning => "运行中…",
+            Self::StatusAnswered => "已确认",
+            Self::StatusDone => "完成",
+            Self::StatusFailed => "失败",
+            Self::StatusStopped => "已停止",
+            Self::ExitCodePrefix => "退出码 ",
+            Self::WroteSystemPathPrefix => "写入系统路径：",
+            Self::BackupPathPrefix => "原文件已备份到服务器：",
+            Self::OwnerChangedPrefix => "属主从 ",
+            Self::OwnerChangedMiddle => " 变成了 ",
+            Self::OwnerChangedSuffix => "（权限不够，没能改回去）",
+            Self::RanInTerminal => "已在终端里执行",
+            Self::RanInBackground => "已在后台执行",
+            Self::ParenLeft => "（",
+            Self::ParenRight => "）",
+            Self::TargetUnknown => "执行目标未确定",
+            Self::ViewTerminal => "查看终端",
+            Self::ParamsPrefix => "参数：",
+            Self::PathPrefix => "路径：",
+            Self::ErrorPrefix => "错误：",
+            Self::DeniedByUser => "用户拒绝执行",
+            Self::HiddenSecret => "[已隐藏]",
+            Self::NeedsConfirm => "需要确认：请看清上面的完整内容再决定",
+            Self::Allow => "允许",
+            Self::Deny => "拒绝",
+            Self::Allowed => "已允许",
+            Self::Denied => "已拒绝",
+            Self::DangerBadge => "危险",
+            Self::HostPrefix => "主机：",
+            Self::SeqSeparator => "、",
+            Self::ReasonSeparator => "；",
+            Self::NewFile => "新建",
+            Self::AutoBackup => "覆盖前自动备份",
+            Self::ExpandAll => "展开全文",
+            Self::Collapse => "收起",
+            Self::ExpandAllPrefix => "展开全文（",
+            Self::ExpandAllSuffix => " 行）",
+            Self::ShowAll => "显示全部",
+            Self::OutputExpanded => "输出 ▾",
+            Self::OutputCollapsed => "输出 ▸",
+            Self::DiffMorePrefix => "还有 ",
+            Self::DiffMoreSuffix => " 行，点击展开",
+            Self::DiffOmittedPrefix => "差异太长，后面还有 ",
+            Self::DiffOmittedSuffix => " 行没有显示",
+            Self::BodyLongPrefix => "正文很长（",
+            Self::BodyLongAllSuffix => " 个字符），已全部显示。",
+            Self::BodyLongPartialMiddle => " 个字符），只渲染了前 ",
+            Self::BodyLongPartialSuffix => " 个。",
+            Self::AllLinesPrefix => "已显示全部 ",
+            Self::AllLinesSuffix => " 行",
+            Self::OutputLongPrefix => "输出较长，只显示前面一部分（共 ",
+            Self::OutputLongMiddle => " 行、",
+            Self::OutputLongSuffix => " 个字符）",
+            Self::OutputLongShortPrefix => "输出较长（共 ",
+            Self::OutputLongShortMiddle => " 行、",
+            Self::OutputLongShortSuffix => " 个字符）",
+            Self::Copy => "复制",
+            Self::CopySelected => "复制选中文字",
+            Self::CopyTable => "复制表格",
+            Self::Copied => "已复制",
+            Self::HistoryPanelTitle => "历史会话",
+            Self::Refresh => "刷新",
+            Self::Close => "关闭",
+            Self::HistoryEmpty => "还没有历史会话",
+            Self::Resumable => "可续接",
+            Self::ConfirmDelete => "再次点击「确认删除」",
+            Self::ResumeSelected => "已打开历史会话，发送消息后继续；目标主机需要重新选择",
+            Self::ResumeAnchored => "已打开历史会话，发送消息后继续；目标仍是它当初绑定的主机",
+            Self::ResumeUnanchored => "已打开历史会话，发送消息后继续；目标主机按当前标签重新确定",
+            Self::NoSession => "这条历史会话不能续接：没有智能体会话标识。",
+            Self::NoMessages => "这条历史会话没有消息。",
+            Self::SavedToHistory => "已保存到历史",
+            Self::SaveHistoryFailedPrefix => "保存到历史失败：",
+            Self::Delete => "删除",
+            Self::Cancel => "取消",
+            Self::View => "查看",
+            Self::Continue => "继续",
+            Self::BackToList => "返回列表",
+            Self::ShowEarlier => "显示更早的消息",
+            Self::EarlierPrefix => "较早的 ",
+            Self::EarlierSuffix => " 条消息没有显示",
+            Self::JustNow => "刚刚",
+            Self::MinutesAgoSuffix => " 分钟前",
+            Self::HoursAgoSuffix => " 小时前",
+            Self::DaysAgoSuffix => " 天前",
+            Self::MessageCountSuffix => " 条消息",
+            Self::Untitled => "（无标题）",
+            Self::HistoryRunning => "运行中",
+            Self::HistoryUnknown => "未知",
+            Self::ResumeFailedNewSession => {
+                "续接之前的会话失败，已经改成新会话继续：之前的上下文没有带给 AI。"
+            }
+            Self::LinkCopiedPrefix => "已复制链接：",
+            Self::LinkCopyFailedPrefix => "链接没有复制：",
+            Self::SendFailedPrefix => "发送失败：",
+            Self::StartFailedPrefix => "启动 ",
+            Self::StartFailedMiddle => " 失败：",
+            Self::AgentNotFoundPrefix => "没有找到 ",
+            Self::AgentNotFoundSuffix => "。",
+            Self::BackgroundTaskFailedPrefix => "后台任务失败：",
+            Self::CloseSessionFailedPrefix => "关闭 ",
+            Self::CloseSessionFailedMiddle => " 会话失败：",
+            Self::StopFailedPrefix => "停止失败：",
+            Self::ReadHistoryFailedPrefix => "读取历史失败：",
+            Self::OpenHistoryFailedPrefix => "打开历史会话失败：",
+            Self::DeleteHistoryFailedPrefix => "删除历史会话失败：",
+            Self::ReadExecModeFailedPrefix => "读取执行模式失败：",
+            Self::SaveExecModeFailedPrefix => "保存执行模式失败：",
+            Self::CreateDataDirFailedPrefix => "创建数据目录失败：",
+            Self::OpenSettingsDbFailedPrefix => "打开设置库失败：",
+            Self::ReadHostsFailedPrefix => "读取主机列表失败：",
+            Self::ReadModelListFailedPrefix => "读取模型列表失败：",
+            Self::ReadModelListFailedMiddle => "；仍按「",
+            Self::ReadModelListFailedSuffix => "」发送。",
+            Self::SettingsUnavailablePrefix => "设置库不可用：",
+            Self::SettingsUnavailableNoSaveSuffix => "；执行模式改动不会保存。",
+            Self::SettingsUnavailableModeSuffix => "；执行模式不会保存。",
+            Self::SettingsOpenFailed => "打开失败",
+            Self::SwitchedToPrefix => "已切换到 ",
+            Self::SwitchedToNewSuffix => "，开始新对话",
+            Self::AllowAllTitle => "切换到「全部放行」",
+            Self::AllowAllMessage => "全部放行后，AI 在服务器上执行任何命令都不再问你。确定吗？",
+            Self::InputPlaceholder => "输入消息；Enter 发送，Shift+Enter 换行",
+            Self::InputPlaceholderRunning => "AI 正在回答：Enter 把消息加入待发送队列",
+            Self::EmptyRealPrefix => "输入一条消息，开始与 ",
+            Self::EmptyRealSuffix => " 对话。",
+            Self::EmptyDemo => "输入一条消息，开始离线演示。",
+            Self::TopUp => "去充值",
+            Self::Reconnect => "重新连接",
+            Self::TopUpOpened => "已用浏览器打开充值页，充值后几秒内就能继续用",
+            Self::TopUpOpenFailedPrefix => "没能打开充值页：",
+            Self::FooterRealIntro => {
+                "第一条消息发出时才启动智能体；需要确认的命令会出现在对话里，看清全文后点「允许」或「拒绝」。"
+            }
+            Self::FooterRealModes => {
+                "执行模式由工具桥读取设置库：逐条确认 = 每条命令都确认；只读自动 = 只读命令直接执行；全部放行 = 不再确认。"
+            }
+            Self::FooterDemoIntro => {
+                "离线脚本演示（调试版）：不启动智能体、不调用模型、不发起网络请求。"
+            }
+            Self::FooterDemoModes => {
+                "执行模式只影响本窗口的演示脚本，不会写设置库：逐条确认 = 每个工具都确认；只读自动 = 只读命令直接执行；全部放行 = 不再确认。"
+            }
+            Self::TurnEnded => "回合已结束",
+            Self::ApprovalExpired => "回合结束时仍未确认",
+            Self::ApprovalGone => "这条确认已失效，没有执行",
+            Self::ProcessedApprovalsSuffix => " 条已处理的确认",
+            Self::GroupFailedPrefix => "（其中 ",
+            Self::GroupFailedSuffix => " 条失败）",
+            Self::ModelPrefix => "模型：",
+            Self::DefaultModel => "默认",
+        }
+    }
 
-/// 回合结束时还没回答的确认：卡片标成失败，不能看起来像已完成。
-const APPROVAL_EXPIRED: &str = "回合结束时仍未确认";
-
-/// 确认在等待期间失效（超时、停止、目标被取消选择）。
-const APPROVAL_GONE: &str = "这条确认已失效，没有执行";
-
-/// 回合结束时还在跑的工具：卡片标成已停止，不能一直显示「运行中」。
-const TURN_ENDED: &str = "回合已结束";
+    fn en(&self) -> &'static str {
+        let key = *self;
+        match key {
+            Self::WindowTitle => "AI Chat",
+            Self::OfflineDemo => "Offline Demo",
+            Self::RealAgent => "Real Agent",
+            Self::MarkdownSample => "Markdown Sample",
+            Self::NewConversation => "New Chat",
+            Self::HistoryTab => "History",
+            Self::Send => "Send",
+            Self::Stop => "Stop",
+            Self::AgentPrefix => "Agent: ",
+            Self::ModePrefix => "Mode: ",
+            Self::TargetHostPrefix => "Target hosts: ",
+            Self::NoHostsInLibrary => "No hosts in the host library yet: add one first.",
+            Self::NoHostHint => {
+                "No target host selected: the AI can chat, but cannot run commands on any server."
+            }
+            Self::ModeManual => "Confirm Each",
+            Self::ModeReadOnly => "Auto Read-Only",
+            Self::ModeAuto => "Allow All",
+            Self::AssistantRole => "Assistant",
+            Self::BodyRaw => "Raw",
+            Self::BodyRendered => "Rendered",
+            Self::StopBadge => "Stopped",
+            Self::ReasoningExpanded => "Thinking ▾",
+            Self::ReasoningCollapsed => "Thinking ▸",
+            Self::Thinking => "Thinking",
+            Self::NoBody => "(no content)",
+            Self::StatusAwaitingApproval => "Awaiting Approval",
+            Self::StatusRunning => "Running…",
+            Self::StatusAnswered => "Approved",
+            Self::StatusDone => "Done",
+            Self::StatusFailed => "Failed",
+            Self::StatusStopped => "Stopped",
+            Self::ExitCodePrefix => "Exit code ",
+            Self::WroteSystemPathPrefix => "Wrote to a system path: ",
+            Self::BackupPathPrefix => "Original file backed up on the server: ",
+            Self::OwnerChangedPrefix => "Owner changed from ",
+            Self::OwnerChangedMiddle => " to ",
+            Self::OwnerChangedSuffix => " (not enough permission to change it back)",
+            Self::RanInTerminal => "Ran in the terminal",
+            Self::RanInBackground => "Ran in the background",
+            Self::ParenLeft => " (",
+            Self::ParenRight => ")",
+            Self::TargetUnknown => "Execution target undetermined",
+            Self::ViewTerminal => "View Terminal",
+            Self::ParamsPrefix => "Arguments: ",
+            Self::PathPrefix => "Path: ",
+            Self::ErrorPrefix => "Error: ",
+            Self::DeniedByUser => "Denied by the user",
+            Self::HiddenSecret => "[hidden]",
+            Self::NeedsConfirm => "Needs approval: review the full content above before deciding",
+            Self::Allow => "Allow",
+            Self::Deny => "Deny",
+            Self::Allowed => "Allowed",
+            Self::Denied => "Denied",
+            Self::DangerBadge => "Danger",
+            Self::HostPrefix => "Host: ",
+            Self::SeqSeparator => ", ",
+            Self::ReasonSeparator => "; ",
+            Self::NewFile => "New file",
+            Self::AutoBackup => "Auto-backup before overwrite",
+            Self::ExpandAll => "Expand All",
+            Self::Collapse => "Collapse",
+            Self::ExpandAllPrefix => "Expand All (",
+            Self::ExpandAllSuffix => " lines)",
+            Self::ShowAll => "Show All",
+            Self::OutputExpanded => "Output ▾",
+            Self::OutputCollapsed => "Output ▸",
+            Self::DiffMorePrefix => "Show ",
+            Self::DiffMoreSuffix => " more lines",
+            Self::DiffOmittedPrefix => "Diff too long; ",
+            Self::DiffOmittedSuffix => " more lines are hidden",
+            Self::BodyLongPrefix => "This message is long (",
+            Self::BodyLongAllSuffix => " characters); everything is shown.",
+            Self::BodyLongPartialMiddle => " characters); only the first ",
+            Self::BodyLongPartialSuffix => " are rendered.",
+            Self::AllLinesPrefix => "Showing all ",
+            Self::AllLinesSuffix => " lines",
+            Self::OutputLongPrefix => "Output is long; showing only the beginning (",
+            Self::OutputLongMiddle => " lines, ",
+            Self::OutputLongSuffix => " characters)",
+            Self::OutputLongShortPrefix => "Output is long (",
+            Self::OutputLongShortMiddle => " lines, ",
+            Self::OutputLongShortSuffix => " characters)",
+            Self::Copy => "Copy",
+            Self::CopySelected => "Copy Selection",
+            Self::CopyTable => "Copy Table",
+            Self::Copied => "Copied",
+            Self::HistoryPanelTitle => "Saved Conversations",
+            Self::Refresh => "Refresh",
+            Self::Close => "Close",
+            Self::HistoryEmpty => "No saved conversations yet",
+            Self::Resumable => "Resumable",
+            Self::ConfirmDelete => "Click \"Delete\" again to confirm",
+            Self::ResumeSelected => {
+                "Saved conversation opened; send a message to continue. Pick the target host again."
+            }
+            Self::ResumeAnchored => {
+                "Saved conversation opened; send a message to continue. The target is still the host it was bound to."
+            }
+            Self::ResumeUnanchored => {
+                "Saved conversation opened; send a message to continue. The target host is taken from the current tab."
+            }
+            Self::NoSession => {
+                "This saved conversation cannot be resumed: it has no agent session id."
+            }
+            Self::NoMessages => "This saved conversation has no messages.",
+            Self::SavedToHistory => "Saved to history",
+            Self::SaveHistoryFailedPrefix => "Failed to save to history: ",
+            Self::Delete => "Delete",
+            Self::Cancel => "Cancel",
+            Self::View => "View",
+            Self::Continue => "Continue",
+            Self::BackToList => "Back to List",
+            Self::ShowEarlier => "Show Earlier Messages",
+            Self::EarlierPrefix => "The earliest ",
+            Self::EarlierSuffix => " messages are hidden",
+            Self::JustNow => "Just now",
+            Self::MinutesAgoSuffix => " minutes ago",
+            Self::HoursAgoSuffix => " hours ago",
+            Self::DaysAgoSuffix => " days ago",
+            Self::MessageCountSuffix => " messages",
+            Self::Untitled => "(Untitled)",
+            Self::HistoryRunning => "Running",
+            Self::HistoryUnknown => "Unknown",
+            Self::ResumeFailedNewSession => {
+                "Failed to resume the previous session; continuing in a new one: the earlier context was not given to the AI."
+            }
+            Self::LinkCopiedPrefix => "Link copied: ",
+            Self::LinkCopyFailedPrefix => "Link not copied: ",
+            Self::SendFailedPrefix => "Send failed: ",
+            Self::StartFailedPrefix => "Failed to start ",
+            Self::StartFailedMiddle => ": ",
+            Self::AgentNotFoundPrefix => "Could not find ",
+            Self::AgentNotFoundSuffix => ".",
+            Self::BackgroundTaskFailedPrefix => "Background task failed: ",
+            Self::CloseSessionFailedPrefix => "Failed to close the ",
+            Self::CloseSessionFailedMiddle => " session: ",
+            Self::StopFailedPrefix => "Failed to stop: ",
+            Self::ReadHistoryFailedPrefix => "Failed to read history: ",
+            Self::OpenHistoryFailedPrefix => "Failed to open the saved conversation: ",
+            Self::DeleteHistoryFailedPrefix => "Failed to delete the saved conversation: ",
+            Self::ReadExecModeFailedPrefix => "Failed to read the execution mode: ",
+            Self::SaveExecModeFailedPrefix => "Failed to save the execution mode: ",
+            Self::CreateDataDirFailedPrefix => "Failed to create the data directory: ",
+            Self::OpenSettingsDbFailedPrefix => "Failed to open the settings database: ",
+            Self::ReadHostsFailedPrefix => "Failed to read the host list: ",
+            Self::ReadModelListFailedPrefix => "Failed to read the model list: ",
+            Self::ReadModelListFailedMiddle => "; sending with \"",
+            Self::ReadModelListFailedSuffix => "\" anyway.",
+            Self::SettingsUnavailablePrefix => "Settings database unavailable: ",
+            Self::SettingsUnavailableNoSaveSuffix => "; execution mode changes will not be saved.",
+            Self::SettingsUnavailableModeSuffix => "; the execution mode will not be saved.",
+            Self::SettingsOpenFailed => "failed to open",
+            Self::SwitchedToPrefix => "Switched to ",
+            Self::SwitchedToNewSuffix => " and started a new conversation",
+            Self::AllowAllTitle => "Switch to \"Allow All\"",
+            Self::AllowAllMessage => {
+                "With Allow All, the AI runs any command on the server without asking you again. Continue?"
+            }
+            Self::InputPlaceholder => "Type a message; Enter to send, Shift+Enter for a new line",
+            Self::InputPlaceholderRunning => {
+                "The AI is replying: Enter adds your message to the send queue"
+            }
+            Self::EmptyRealPrefix => "Type a message to start chatting with ",
+            Self::EmptyRealSuffix => ".",
+            Self::EmptyDemo => "Type a message to start the offline demo.",
+            Self::TopUp => "Top Up",
+            Self::Reconnect => "Reconnect",
+            Self::TopUpOpened => {
+                "Opened the top-up page in your browser; you can continue a few seconds after topping up"
+            }
+            Self::TopUpOpenFailedPrefix => "Could not open the top-up page: ",
+            Self::FooterRealIntro => {
+                "The agent starts when you send the first message. Commands that need approval appear in the conversation; review the full text, then click Allow or Deny."
+            }
+            Self::FooterRealModes => {
+                "The tool bridge reads the execution mode from the settings database: Confirm Each = every command needs approval; Auto Read-Only = read-only commands run directly; Allow All = no more approvals."
+            }
+            Self::FooterDemoIntro => {
+                "Offline scripted demo (debug build): starts no agent, calls no model, makes no network requests."
+            }
+            Self::FooterDemoModes => {
+                "The execution mode only affects this window's demo script and is never written to the settings database: Confirm Each = every tool needs approval; Auto Read-Only = read-only commands run directly; Allow All = no more approvals."
+            }
+            Self::TurnEnded => "Turn ended",
+            Self::ApprovalExpired => "Not approved when the turn ended",
+            Self::ApprovalGone => "This approval is no longer valid; nothing was run",
+            Self::ProcessedApprovalsSuffix => " processed approvals",
+            Self::GroupFailedPrefix => " (",
+            Self::GroupFailedSuffix => " failed)",
+            Self::ModelPrefix => "Model: ",
+            Self::DefaultModel => "Default",
+        }
+    }
+}
 
 /// 内容预览最多显示多少个字符（转义之后）。
 const PREVIEW_LIMIT: usize = 80;
-
-/// 原文模式下正文还是空的：明确写一句，空代码块看起来像渲染失败。
-const RAW_NO_BODY: &str = "（无正文）";
-
-/// 历史面板里的固定文案；测试和界面都从这里取。
-const HISTORY_EMPTY: &str = "还没有历史会话";
-const HISTORY_RESUMABLE: &str = "可续接";
-const HISTORY_CONFIRM_DELETE: &str = "再次点击「确认删除」";
-const HISTORY_RESUME_SELECTED: &str = "已打开历史会话，发送消息后继续；目标主机需要重新选择";
-/// 面板形态：这条历史记着它当初绑定的主机，续上之后目标回到那台。
-const HISTORY_RESUME_ANCHORED: &str = "已打开历史会话，发送消息后继续；目标仍是它当初绑定的主机";
-/// 面板形态：旧历史没有记绑定的主机，发第一条消息时按当时的标签重新绑定。
-const HISTORY_RESUME_UNANCHORED: &str =
-    "已打开历史会话，发送消息后继续；目标主机按当前标签重新确定";
-const HISTORY_NO_SESSION: &str = "这条历史会话不能续接：没有智能体会话标识。";
-const HISTORY_NO_MESSAGES: &str = "这条历史会话没有消息。";
-/// 一轮对话写进历史之后底部的提示。
-const HISTORY_SAVED: &str = "已保存到历史";
-/// 存历史失败时底部提示的前缀；后面跟 `HistoryError` 的文字。
-const HISTORY_SAVE_FAILED: &str = "保存到历史失败：";
 
 /// 脚本里的固定文案。测试和界面都从这里取，避免两处各写一份。
 const REASONING: &str = "先确认当前目录，再决定是否写入。";
@@ -171,9 +713,9 @@ fn mode_setting(mode: ExecMode) -> &'static str {
 
 fn mode_label(mode: ExecMode) -> &'static str {
     match mode {
-        ExecMode::Manual => "逐条确认",
-        ExecMode::ReadOnly => "只读自动",
-        ExecMode::Auto => "全部放行",
+        ExecMode::Manual => t(ChatMsg::ModeManual),
+        ExecMode::ReadOnly => t(ChatMsg::ModeReadOnly),
+        ExecMode::Auto => t(ChatMsg::ModeAuto),
     }
 }
 
@@ -202,7 +744,10 @@ fn plan_mode_switch(current: ExecMode, target: ExecMode) -> ModeSwitch {
     }
 }
 
-/// 「全部放行」确认框的标题和正文，主窗口的确认框和独立窗口的确认框共用。
+/// 「全部放行」确认框的标题和正文。
+///
+/// 对话窗口自己用 [`ChatMsg::AllowAllTitle`] / [`ChatMsg::AllowAllMessage`]；这两个中文常量
+/// 留给还没走 `i18n` 的调用方（`main_window::docks` 的确认框），两种语言都从这里的中文原文取词。
 pub(crate) const ALLOW_ALL_TITLE: &str = "切换到「全部放行」";
 pub(crate) const ALLOW_ALL_MESSAGE: &str =
     "全部放行后，AI 在服务器上执行任何命令都不再问你。确定吗？";
@@ -249,7 +794,7 @@ fn redact_tool_input(value: &Value) -> Value {
             map.iter()
                 .map(|(key, value)| {
                     let value = if is_secret_key(key) {
-                        json!("[已隐藏]")
+                        json!(t(ChatMsg::HiddenSecret))
                     } else {
                         redact_tool_input(value)
                     };
@@ -432,12 +977,12 @@ enum ToolStatus {
 impl ToolStatus {
     fn label(self) -> &'static str {
         match self {
-            Self::AwaitingApproval => "等待确认",
-            Self::Running => "运行中…",
-            Self::Answered => "已确认",
-            Self::Done => "完成",
-            Self::Failed => "失败",
-            Self::Stopped => "已停止",
+            Self::AwaitingApproval => t(ChatMsg::StatusAwaitingApproval),
+            Self::Running => t(ChatMsg::StatusRunning),
+            Self::Answered => t(ChatMsg::StatusAnswered),
+            Self::Done => t(ChatMsg::StatusDone),
+            Self::Failed => t(ChatMsg::StatusFailed),
+            Self::Stopped => t(ChatMsg::StatusStopped),
         }
     }
 }
@@ -447,7 +992,7 @@ fn card_status_text(card: &ToolCard) -> String {
     match (card.status, card.output.as_deref()) {
         (ToolStatus::Done, Some(output)) => agent_tools::exit_code_of(output).map_or_else(
             || card.status.label().to_owned(),
-            |code| format!("退出码 {code}"),
+            |code| format!("{}{code}", t(ChatMsg::ExitCodePrefix)),
         ),
         _ => card.status.label().to_owned(),
     }
@@ -464,25 +1009,39 @@ fn card_detail_lines(card: &ToolCard) -> Vec<(String, bool)> {
     if tool == "write_file"
         && let Some(reason) = file_danger_reason(output)
     {
-        lines.push((format!("写入系统路径：{reason}"), true));
+        lines.push((
+            format!("{}{reason}", t(ChatMsg::WroteSystemPathPrefix)),
+            true,
+        ));
     }
     if let Some(backup) = agent_tools::backup_path_of(output) {
-        lines.push((format!("原文件已备份到服务器：{backup}"), false));
+        lines.push((format!("{}{backup}", t(ChatMsg::BackupPathPrefix)), false));
     }
     if let Some((from, to)) = agent_tools::owner_change_of(output) {
         lines.push((
-            format!("属主从 {from} 变成了 {to}（权限不够，没能改回去）"),
+            format!(
+                "{}{from}{}{to}{}",
+                t(ChatMsg::OwnerChangedPrefix),
+                t(ChatMsg::OwnerChangedMiddle),
+                t(ChatMsg::OwnerChangedSuffix)
+            ),
             true,
         ));
     }
     if tool == "run_command" {
         match agent_tools::location_of(output) {
-            Some(Location::Terminal) => lines.push(("已在终端里执行".to_owned(), false)),
+            Some(Location::Terminal) => lines.push((t(ChatMsg::RanInTerminal).to_owned(), false)),
             Some(Location::Background) => {
                 let reason = agent_tools::fallback_reason_of(output)
-                    .map(|reason| format!("（{reason}）"))
+                    .map(|reason| {
+                        format!(
+                            "{}{reason}{}",
+                            t(ChatMsg::ParenLeft),
+                            t(ChatMsg::ParenRight)
+                        )
+                    })
                     .unwrap_or_default();
-                lines.push((format!("已在后台执行{reason}"), false));
+                lines.push((format!("{}{reason}", t(ChatMsg::RanInBackground)), false));
             }
             None => {}
         }
@@ -678,8 +1237,8 @@ impl BodyMode {
     /// 切换按钮上的文字：当前是渲染就让用户看原文，反之亦然。
     fn toggle_label(self) -> &'static str {
         match self {
-            Self::Rendered => "原文",
-            Self::Raw => "渲染",
+            Self::Rendered => t(ChatMsg::BodyRaw),
+            Self::Raw => t(ChatMsg::BodyRendered),
         }
     }
 }
@@ -715,7 +1274,7 @@ fn body_markdown(message: &AssistantMessage, mode: BodyMode) -> Option<String> {
     let (text, _) = clipped_body(&message.text, message.body_expanded);
     match mode {
         BodyMode::Rendered => (!text.is_empty()).then_some(text),
-        BodyMode::Raw if text.is_empty() => Some(RAW_NO_BODY.to_owned()),
+        BodyMode::Raw if text.is_empty() => Some(t(ChatMsg::NoBody).to_owned()),
         BodyMode::Raw => Some(raw_markdown_block(&text)),
     }
 }
@@ -734,9 +1293,9 @@ fn notice_copy_text(notice: &Notice) -> String {
 /// 右键菜单「复制」的名字和内容：此刻有选中文字就复制选中的，没有就复制整块。
 fn copy_menu_choice(selected: &str, whole: &str) -> (&'static str, String) {
     if selected.trim().is_empty() {
-        ("复制", whole.to_owned())
+        (t(ChatMsg::Copy), whole.to_owned())
     } else {
-        ("复制选中文字", selected.to_owned())
+        (t(ChatMsg::CopySelected), selected.to_owned())
     }
 }
 
@@ -1278,7 +1837,11 @@ impl ChatState {
                     return;
                 }
                 let shown = redact_tool_input(&input);
-                let summary = format!("参数：{}", content_preview(&shown.to_string()));
+                let summary = format!(
+                    "{}{}",
+                    t(ChatMsg::ParamsPrefix),
+                    content_preview(&shown.to_string())
+                );
                 let tracked = agent_tools::track_call(&call_id, &tool, &input);
                 if let Some(message) = self.ensure_assistant() {
                     message.tools.push(ToolCard::new(
@@ -1348,7 +1911,7 @@ impl ChatState {
                 self.finish_real_turn();
             }
             AgentEvent::Error { message } => {
-                self.push_notice(format!("错误：{message}"), true);
+                self.push_notice(format!("{}{message}", t(ChatMsg::ErrorPrefix)), true);
             }
             AgentEvent::Retrying {
                 attempt,
@@ -1364,10 +1927,7 @@ impl ChatState {
             }
             // 只改指示器，不碰回合状态。
             AgentEvent::Usage { usage } => self.usage = Some(usage),
-            AgentEvent::ResumeFailed => self.push_notice(
-                "续接之前的会话失败，已经改成新会话继续：之前的上下文没有带给 AI。",
-                false,
-            ),
+            AgentEvent::ResumeFailed => self.push_notice(t(ChatMsg::ResumeFailedNewSession), false),
         }
     }
 
@@ -1487,7 +2047,7 @@ impl ChatState {
             if let Some(card) = self.card_mut(&approval.call_id) {
                 card.approval = ApprovalState::Denied;
                 card.status = ToolStatus::Failed;
-                card.error = Some(APPROVAL_GONE.to_owned());
+                card.error = Some(t(ChatMsg::ApprovalGone).to_owned());
             }
         }
         true
@@ -1518,7 +2078,7 @@ impl ChatState {
             // 请求已经超时 / 被销毁：卡片不能停在「等待确认」，也不能显示成完成。
             card.approval = ApprovalState::Denied;
             card.status = ToolStatus::Failed;
-            card.error = Some(APPROVAL_EXPIRED.to_owned());
+            card.error = Some(t(ChatMsg::ApprovalExpired).to_owned());
         } else if allow {
             card.approval = ApprovalState::Allowed;
             // 确认卡片的职责到此为止；命令本身的结果在驱动的工具卡片上。
@@ -1547,7 +2107,7 @@ impl ChatState {
                 {
                     card.approval = ApprovalState::Denied;
                     card.status = ToolStatus::Failed;
-                    card.error = Some(APPROVAL_EXPIRED.to_owned());
+                    card.error = Some(t(ChatMsg::ApprovalExpired).to_owned());
                 } else if matches!(
                     card.status,
                     ToolStatus::Running | ToolStatus::AwaitingApproval
@@ -1555,7 +2115,7 @@ impl ChatState {
                     // 工具没等到结果回合就结束了：不能一直显示「运行中」。
                     card.status = ToolStatus::Stopped;
                     if card.error.is_none() {
-                        card.error = Some(TURN_ENDED.to_owned());
+                        card.error = Some(t(ChatMsg::TurnEnded).to_owned());
                     }
                 }
             }
@@ -1867,7 +2427,7 @@ fn tool_history_status(status: ToolStatus, approval: ApprovalState) -> &'static 
 /// 工具卡片的结果：有输出写输出，只有错误写错误，两个都有就都留下。
 fn tool_output_text(card: &ToolCard) -> String {
     match (&card.output, &card.error) {
-        (Some(output), Some(error)) => format!("{output}\n错误：{error}"),
+        (Some(output), Some(error)) => format!("{output}\n{}{error}", t(ChatMsg::ErrorPrefix)),
         (Some(output), None) => output.clone(),
         (None, Some(error)) => error.clone(),
         (None, None) => String::new(),
@@ -1880,7 +2440,11 @@ fn history_tool_card(tool: &str, input: &Value, output: &str, status: &str) -> T
     let summary = if shown.is_null() {
         String::new()
     } else {
-        format!("参数：{}", content_preview(&shown.to_string()))
+        format!(
+            "{}{}",
+            t(ChatMsg::ParamsPrefix),
+            content_preview(&shown.to_string())
+        )
     };
     let mut card = ToolCard::new(
         "history".to_owned(),
@@ -1899,21 +2463,21 @@ fn history_tool_card(tool: &str, input: &Value, output: &str, status: &str) -> T
         }
         "error" => {
             card.status = ToolStatus::Failed;
-            card.error = Some(text.unwrap_or_else(|| "失败".to_owned()));
+            card.error = Some(text.unwrap_or_else(|| t(ChatMsg::StatusFailed).to_owned()));
         }
         "rejected" => {
             card.status = ToolStatus::Failed;
             card.approval = ApprovalState::Denied;
-            card.error = Some(text.unwrap_or_else(|| DENIED_ERROR.to_owned()));
+            card.error = Some(text.unwrap_or_else(|| t(ChatMsg::DeniedByUser).to_owned()));
         }
         "stopped" => {
             card.status = ToolStatus::Stopped;
-            card.error = Some(text.unwrap_or_else(|| STOPPED_ERROR.to_owned()));
+            card.error = Some(text.unwrap_or_else(|| t(ChatMsg::StatusStopped).to_owned()));
         }
         // 存的时候还在跑（异常退出 / 旧文件）：回看时不能一直显示"运行中"。
         _ => {
             card.status = ToolStatus::Stopped;
-            card.error = Some(text.unwrap_or_else(|| TURN_ENDED.to_owned()));
+            card.error = Some(text.unwrap_or_else(|| t(ChatMsg::TurnEnded).to_owned()));
         }
     }
     card
@@ -1933,14 +2497,14 @@ fn link_click_notice(raw: &str) -> (Notice, Option<String>) {
     match link_action(raw) {
         LinkAction::Copy(url) => (
             Notice {
-                text: format!("已复制链接：{url}"),
+                text: format!("{}{url}", t(ChatMsg::LinkCopiedPrefix)),
                 error: false,
             },
             Some(url),
         ),
         LinkAction::Refuse(reason) => (
             Notice {
-                text: format!("链接没有复制：{reason}"),
+                text: format!("{}{reason}", t(ChatMsg::LinkCopyFailedPrefix)),
                 error: true,
             },
             None,
@@ -2046,7 +2610,7 @@ fn delete_history_record(agent: AgentKind, id: &str) -> Result<(), String> {
 fn resume_session_id(record: &HistoryRecord) -> Result<String, String> {
     match record.agent_session_id.as_deref().map(str::trim) {
         Some(id) if !id.is_empty() => Ok(id.to_owned()),
-        _ => Err(HISTORY_NO_SESSION.to_owned()),
+        _ => Err(t(ChatMsg::NoSession).to_owned()),
     }
 }
 
@@ -2072,10 +2636,10 @@ fn continue_conversation(
 fn format_history_time(updated_at: u64, now: u64) -> String {
     let seconds = now.saturating_sub(updated_at) / 1000;
     match seconds {
-        0..=59 => "刚刚".to_owned(),
-        60..=3_599 => format!("{} 分钟前", seconds / 60),
-        3_600..=86_399 => format!("{} 小时前", seconds / 3_600),
-        86_400..=2_591_999 => format!("{} 天前", seconds / 86_400),
+        0..=59 => t(ChatMsg::JustNow).to_owned(),
+        60..=3_599 => format!("{}{}", seconds / 60, t(ChatMsg::MinutesAgoSuffix)),
+        3_600..=86_399 => format!("{}{}", seconds / 3_600, t(ChatMsg::HoursAgoSuffix)),
+        86_400..=2_591_999 => format!("{}{}", seconds / 86_400, t(ChatMsg::DaysAgoSuffix)),
         _ => format!(
             "{} UTC",
             zssh_core::ai::files::display_timestamp((updated_at / 1000) as i64)
@@ -2101,7 +2665,7 @@ fn history_meta(
     if let Some(host) = host_label.map(str::trim).filter(|host| !host.is_empty()) {
         parts.push(host.to_owned());
     }
-    parts.push(format!("{message_count} 条消息"));
+    parts.push(format!("{message_count}{}", t(ChatMsg::MessageCountSuffix)));
     parts.join(" · ")
 }
 
@@ -2109,7 +2673,7 @@ fn history_meta(
 fn history_title(title: &str) -> &str {
     let title = title.trim();
     if title.is_empty() {
-        "（无标题）"
+        t(ChatMsg::Untitled)
     } else {
         title
     }
@@ -2118,12 +2682,12 @@ fn history_title(title: &str) -> &str {
 /// 历史里的工具状态（文件里存的是英文状态）。
 fn history_tool_status(status: &str) -> String {
     match status {
-        "done" => "完成".to_owned(),
-        "error" => "失败".to_owned(),
-        "rejected" => "已拒绝".to_owned(),
-        "stopped" => "已停止".to_owned(),
-        "running" => "运行中".to_owned(),
-        "" => "未知".to_owned(),
+        "done" => t(ChatMsg::StatusDone).to_owned(),
+        "error" => t(ChatMsg::StatusFailed).to_owned(),
+        "rejected" => t(ChatMsg::Denied).to_owned(),
+        "stopped" => t(ChatMsg::StatusStopped).to_owned(),
+        "running" => t(ChatMsg::HistoryRunning).to_owned(),
+        "" => t(ChatMsg::HistoryUnknown).to_owned(),
         other => other.to_owned(),
     }
 }
@@ -2139,9 +2703,6 @@ mod usage_view;
 pub use embed::EmbedContext;
 
 type HostChoice = HostTarget;
-
-const INPUT_PLACEHOLDER: &str = "输入消息；Enter 发送，Shift+Enter 换行";
-const INPUT_PLACEHOLDER_RUNNING: &str = "AI 正在回答：Enter 把消息加入待发送队列";
 
 /// 点一台主机：选中就取消，没选中就加上。默认一台都不选（和 0.2.14 一致：没有 @ 选过的
 /// 主机就没有目标）。返回点完之后这台主机是不是选中。
@@ -2174,7 +2735,7 @@ fn host_names_label(targets: &[HostTarget]) -> Option<String> {
                 .iter()
                 .map(|host| host.name.as_str())
                 .collect::<Vec<_>>()
-                .join("、"),
+                .join(t(ChatMsg::SeqSeparator)),
         )
     }
 }
@@ -2190,7 +2751,7 @@ impl Default for ModelChoice {
     fn default() -> Self {
         Self {
             id: None,
-            label: DEFAULT_MODEL.to_owned(),
+            label: t(ChatMsg::DefaultModel).to_owned(),
         }
     }
 }
@@ -2210,8 +2771,8 @@ fn model_label(models: &[ModelChoice], index: usize) -> String {
     let name = models
         .get(index)
         .map(|model| model.label.as_str())
-        .unwrap_or(DEFAULT_MODEL);
-    format!("模型：{name}")
+        .unwrap_or(t(ChatMsg::DefaultModel));
+    format!("{}{name}", t(ChatMsg::ModelPrefix))
 }
 
 /// 模型循环的下一个下标；只有「默认」一项时不动。
@@ -2228,7 +2789,7 @@ fn approval_input(request: &ApprovalRequest) -> (String, ToolInput) {
         "run_command"
     };
     let summary = match &request.file {
-        Some(file) => format!("路径：{}", redact_paths(&file.path)),
+        Some(file) => format!("{}{}", t(ChatMsg::PathPrefix), redact_paths(&file.path)),
         None => format!("$ {}", one_line_summary(&request.command, PREVIEW_LIMIT)),
     };
     // 确认卡片本身也是一张工具卡片；存历史时把命令和主机带上（凭据类字段由 core 抹掉）。
@@ -2251,21 +2812,26 @@ fn approval_input(request: &ApprovalRequest) -> (String, ToolInput) {
 fn load_exec_mode(db: &Database) -> (ExecMode, Option<String>) {
     match db.ai_exec_mode() {
         Ok(raw) => (ExecMode::from_setting(Some(&raw)), None),
-        Err(err) => (ExecMode::Manual, Some(format!("读取执行模式失败：{err}"))),
+        Err(err) => (
+            ExecMode::Manual,
+            Some(format!("{}{err}", t(ChatMsg::ReadExecModeFailedPrefix))),
+        ),
     }
 }
 
 /// 保存执行模式；失败只返回给界面，不 panic。
 fn save_exec_mode(db: &Database, mode: ExecMode) -> Result<(), String> {
     db.set_ai_exec_mode(mode_setting(mode))
-        .map_err(|err| format!("保存执行模式失败：{err}"))
+        .map_err(|err| format!("{}{err}", t(ChatMsg::SaveExecModeFailedPrefix)))
 }
 
 /// 打开 `<数据目录>/zssh.db`（和主机库、AI 智能体窗口同一个库）。
 fn open_settings_db() -> Result<Database, String> {
     let dir = crate::settings::data_dir();
-    std::fs::create_dir_all(&dir).map_err(|err| format!("创建数据目录失败：{err}"))?;
-    Database::open(&dir.join("zssh.db")).map_err(|err| format!("打开设置库失败：{err}"))
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| format!("{}{err}", t(ChatMsg::CreateDataDirFailedPrefix)))?;
+    Database::open(&dir.join("zssh.db"))
+        .map_err(|err| format!("{}{err}", t(ChatMsg::OpenSettingsDbFailedPrefix)))
 }
 
 /// 后台任务 → 界面的消息（100ms tick 取走）。
@@ -2310,7 +2876,10 @@ fn load_hosts(db: Option<&Database>) -> (Vec<HostChoice>, Option<String>) {
                 .collect(),
             None,
         ),
-        Err(err) => (Vec::new(), Some(format!("读取主机列表失败：{err}"))),
+        Err(err) => (
+            Vec::new(),
+            Some(format!("{}{err}", t(ChatMsg::ReadHostsFailedPrefix))),
+        ),
     }
 }
 
@@ -2438,7 +3007,7 @@ impl AgentChatDemo {
 
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .placeholder(INPUT_PLACEHOLDER)
+                .placeholder(t(ChatMsg::InputPlaceholder))
                 .submit_on_enter(true)
                 .auto_grow(1, 4)
         });
@@ -2680,9 +3249,14 @@ impl AgentChatDemo {
         }
         self.link_notice = Some(Notice {
             text: if started {
-                format!("已切换到 {}，开始新对话", next.label())
+                format!(
+                    "{}{}{}",
+                    t(ChatMsg::SwitchedToPrefix),
+                    next.label(),
+                    t(ChatMsg::SwitchedToNewSuffix)
+                )
             } else {
-                format!("已切换到 {}", next.label())
+                format!("{}{}", t(ChatMsg::SwitchedToPrefix), next.label())
             },
             error: false,
         });
@@ -2878,7 +3452,7 @@ impl AgentChatDemo {
                         let _ = sender.send(HostEvent::Sent(result));
                     });
                 }
-                Err(err) => self.fail_turn(format!("发送失败：{err}"), cx),
+                Err(err) => self.fail_turn(format!("{}{err}", t(ChatMsg::SendFailedPrefix)), cx),
             }
             return;
         }
@@ -2905,14 +3479,30 @@ impl AgentChatDemo {
         // 启动失败时要把这条消息放回输入框（0.2.14 同：失败不丢字）。
         self.unsent_text = Some(text.clone());
         let Some(install) = self.status.get(kind).found().cloned() else {
-            self.start_failed(format!("没有找到 {}。", kind.label()), cx);
+            self.start_failed(
+                format!(
+                    "{}{}{}",
+                    t(ChatMsg::AgentNotFoundPrefix),
+                    kind.label(),
+                    t(ChatMsg::AgentNotFoundSuffix)
+                ),
+                cx,
+            );
             return;
         };
         let sender = self.host_tx.clone();
         let runtime = match runtime() {
             Ok(runtime) => runtime,
             Err(err) => {
-                self.start_failed(format!("启动 {} 失败：{err}", kind.label()), cx);
+                self.start_failed(
+                    format!(
+                        "{}{}{}{err}",
+                        t(ChatMsg::StartFailedPrefix),
+                        kind.label(),
+                        t(ChatMsg::StartFailedMiddle)
+                    ),
+                    cx,
+                );
                 return;
             }
         };
@@ -3010,7 +3600,7 @@ impl AgentChatDemo {
                         }
                         self.session = Some(*session);
                         if let Err(err) = sent {
-                            self.fail_turn(format!("发送失败：{err}"), cx);
+                            self.fail_turn(format!("{}{err}", t(ChatMsg::SendFailedPrefix)), cx);
                         }
                     }
                 }
@@ -3048,7 +3638,11 @@ impl AgentChatDemo {
                         if agent == self.agent && (self.session.is_some() || self.chat.is_running())
                         {
                             self.footer_error = Some(format!(
-                                "读取模型列表失败：{err}；仍按「{DEFAULT_MODEL}」发送。"
+                                "{}{err}{}{}{}",
+                                t(ChatMsg::ReadModelListFailedPrefix),
+                                t(ChatMsg::ReadModelListFailedMiddle),
+                                t(ChatMsg::DefaultModel),
+                                t(ChatMsg::ReadModelListFailedSuffix)
                             ));
                         }
                     }
@@ -3061,7 +3655,7 @@ impl AgentChatDemo {
                 HostEvent::Sent(Err(err)) => {
                     // 已经点了停止 / 新对话：迟到的发送错误不再往对话里写。
                     if self.chat.is_running() {
-                        self.fail_turn(format!("发送失败：{err}"), cx);
+                        self.fail_turn(format!("{}{err}", t(ChatMsg::SendFailedPrefix)), cx);
                     }
                 }
                 HostEvent::HistorySaved { id, result } => {
@@ -3070,7 +3664,7 @@ impl AgentChatDemo {
                         match result {
                             Ok(()) => {
                                 self.history_save = Some(Notice {
-                                    text: HISTORY_SAVED.to_owned(),
+                                    text: t(ChatMsg::SavedToHistory).to_owned(),
                                     error: false,
                                 });
                                 // 面板正开着（后台写完时用户点开了历史）：列表要跟着变。
@@ -3080,7 +3674,7 @@ impl AgentChatDemo {
                             }
                             Err(err) => {
                                 self.history_save = Some(Notice {
-                                    text: format!("{HISTORY_SAVE_FAILED}{err}"),
+                                    text: format!("{}{err}", t(ChatMsg::SaveHistoryFailedPrefix)),
                                     error: true,
                                 });
                             }
@@ -3209,7 +3803,7 @@ impl AgentChatDemo {
             Ok(runtime) => runtime,
             Err(err) => {
                 self.history_save = Some(Notice {
-                    text: format!("{HISTORY_SAVE_FAILED}{err}"),
+                    text: format!("{}{err}", t(ChatMsg::SaveHistoryFailedPrefix)),
                     error: true,
                 });
                 return;
@@ -3238,7 +3832,7 @@ impl AgentChatDemo {
             .await;
             let result = match saved {
                 Ok(result) => result,
-                Err(err) => Err(format!("后台任务失败：{err}")),
+                Err(err) => Err(format!("{}{err}", t(ChatMsg::BackgroundTaskFailedPrefix))),
             };
             let _ = sender.send(HostEvent::HistorySaved { id, result });
         });
@@ -3259,7 +3853,12 @@ impl AgentChatDemo {
             Err(err) => {
                 // 运行时不可用：至少丢掉句柄（Drop 会停工具桥），进程靠驱动自己收尾。
                 drop(session);
-                self.footer_error = Some(format!("关闭 {} 会话失败：{err}", session_label));
+                self.footer_error = Some(format!(
+                    "{}{}{}{err}",
+                    t(ChatMsg::CloseSessionFailedPrefix),
+                    session_label,
+                    t(ChatMsg::CloseSessionFailedMiddle)
+                ));
                 cx.notify();
             }
         }
@@ -3342,7 +3941,9 @@ impl AgentChatDemo {
                         }
                     });
                 }
-                Err(err) => self.footer_error = Some(format!("停止失败：{err}")),
+                Err(err) => {
+                    self.footer_error = Some(format!("{}{err}", t(ChatMsg::StopFailedPrefix)))
+                }
             }
         } else if self.starting {
             // 进程还在起：起来之后立刻关掉。
@@ -3440,9 +4041,9 @@ impl AgentChatDemo {
         }
         self.placeholder_queueing = queueing;
         let text = if queueing {
-            INPUT_PLACEHOLDER_RUNNING
+            t(ChatMsg::InputPlaceholderRunning)
         } else {
-            INPUT_PLACEHOLDER
+            t(ChatMsg::InputPlaceholder)
         };
         self.input
             .update(cx, |state, cx| state.set_placeholder(text, window, cx));
@@ -3532,7 +4133,7 @@ impl AgentChatDemo {
             }
             Err(err) => {
                 self.history_rows.clear();
-                self.history_error = Some(format!("读取历史失败：{err}"));
+                self.history_error = Some(format!("{}{err}", t(ChatMsg::ReadHistoryFailedPrefix)));
             }
         }
     }
@@ -3549,7 +4150,7 @@ impl AgentChatDemo {
             }
             Err(err) => {
                 self.history = HistoryPanel::List;
-                self.history_error = Some(format!("打开历史会话失败：{err}"));
+                self.history_error = Some(format!("{}{err}", t(ChatMsg::OpenHistoryFailedPrefix)));
             }
         }
         cx.notify();
@@ -3574,7 +4175,8 @@ impl AgentChatDemo {
             }
             Err(err) => {
                 self.history_armed = None;
-                self.history_error = Some(format!("删除历史会话失败：{err}"));
+                self.history_error =
+                    Some(format!("{}{err}", t(ChatMsg::DeleteHistoryFailedPrefix)));
             }
         }
         cx.notify();
@@ -3597,7 +4199,7 @@ impl AgentChatDemo {
             Ok(record) => record,
             Err(err) => {
                 self.history = HistoryPanel::List;
-                self.history_error = Some(format!("打开历史会话失败：{err}"));
+                self.history_error = Some(format!("{}{err}", t(ChatMsg::OpenHistoryFailedPrefix)));
                 cx.notify();
                 return;
             }
@@ -3635,9 +4237,9 @@ impl AgentChatDemo {
         self.footer_error = None;
         self.resume_notice = Some(
             match (self.embed.is_some(), record.anchor.is_some()) {
-                (false, _) => HISTORY_RESUME_SELECTED,
-                (true, true) => HISTORY_RESUME_ANCHORED,
-                (true, false) => HISTORY_RESUME_UNANCHORED,
+                (false, _) => t(ChatMsg::ResumeSelected),
+                (true, true) => t(ChatMsg::ResumeAnchored),
+                (true, false) => t(ChatMsg::ResumeUnanchored),
             }
             .to_owned(),
         );
@@ -3725,8 +4327,12 @@ impl AgentChatDemo {
         match &self.db {
             Some(db) => save_exec_mode(db, mode),
             None => Err(format!(
-                "设置库不可用：{}；执行模式不会保存。",
-                self.storage_error.as_deref().unwrap_or("打开失败")
+                "{}{}{}",
+                t(ChatMsg::SettingsUnavailablePrefix),
+                self.storage_error
+                    .as_deref()
+                    .unwrap_or(t(ChatMsg::SettingsOpenFailed)),
+                t(ChatMsg::SettingsUnavailableModeSuffix)
             )),
         }
     }
@@ -3809,7 +4415,11 @@ impl AgentChatDemo {
             } else {
                 IconName::Copy
             })
-            .tooltip(if copied { "已复制" } else { "复制" })
+            .tooltip(if copied {
+                t(ChatMsg::Copied)
+            } else {
+                t(ChatMsg::Copy)
+            })
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 let text = click_text.clone();
@@ -3829,7 +4439,7 @@ impl AgentChatDemo {
                         .pl_1()
                         .text_xs()
                         .text_color(cx.theme().success)
-                        .child("已复制"),
+                        .child(t(ChatMsg::Copied)),
                 )
             })
             .when(!copied, |row| {
@@ -3937,7 +4547,7 @@ impl AgentChatDemo {
             .code_block_actions(move |code_block, _, _| {
                 let code = code_block_copy_text(&code_block.code());
                 Button::new(format!("agent-chat-copy-code-{index}"))
-                    .label("复制")
+                    .label(t(ChatMsg::Copy))
                     .compact()
                     .on_click(move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
@@ -3947,7 +4557,7 @@ impl AgentChatDemo {
                 let tsv = table_tsv(&table.headers, &table.rows);
                 h_flex().justify_end().child(
                     Button::new(format!("agent-chat-copy-table-{index}"))
-                        .label("复制表格")
+                        .label(t(ChatMsg::CopyTable))
                         .compact()
                         .on_click(move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(tsv.clone()));
@@ -3969,20 +4579,27 @@ impl AgentChatDemo {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(
-                            div()
-                                .text_xs()
-                                .child(if expanded {
-                                    format!("正文很长（{total_chars} 个字符），已全部显示。")
-                                } else {
-                                    format!(
-                                        "正文很长（{total_chars} 个字符），只渲染了前 {BODY_PREVIEW_CHARS} 个。"
-                                    )
-                                }),
-                        )
+                        .child(div().text_xs().child(if expanded {
+                            format!(
+                                "{}{total_chars}{}",
+                                t(ChatMsg::BodyLongPrefix),
+                                t(ChatMsg::BodyLongAllSuffix)
+                            )
+                        } else {
+                            format!(
+                                "{}{total_chars}{}{BODY_PREVIEW_CHARS}{}",
+                                t(ChatMsg::BodyLongPrefix),
+                                t(ChatMsg::BodyLongPartialMiddle),
+                                t(ChatMsg::BodyLongPartialSuffix)
+                            )
+                        }))
                         .child(
                             Button::new(format!("agent-chat-body-more-{index}"))
-                                .label(if expanded { "收起" } else { "展开全文" })
+                                .label(if expanded {
+                                    t(ChatMsg::Collapse)
+                                } else {
+                                    t(ChatMsg::ExpandAll)
+                                })
                                 .compact()
                                 .on_click(move |_, _, cx| {
                                     toggle_entity.update(cx, |this, cx| {
@@ -4054,9 +4671,13 @@ impl AgentChatDemo {
                         row.child(
                             Button::new(format!("{id}-expand"))
                                 .label(if expanded {
-                                    "收起".to_owned()
+                                    t(ChatMsg::Collapse).to_owned()
                                 } else {
-                                    format!("展开全文（{line_count} 行）")
+                                    format!(
+                                        "{}{line_count}{}",
+                                        t(ChatMsg::ExpandAllPrefix),
+                                        t(ChatMsg::ExpandAllSuffix)
+                                    )
                                 })
                                 .compact()
                                 .on_click(move |_, _, cx| {
@@ -4070,7 +4691,7 @@ impl AgentChatDemo {
                     })
                     .child(
                         Button::new(format!("{id}-copy"))
-                            .label("复制")
+                            .label(t(ChatMsg::Copy))
                             .compact()
                             .on_click(move |_, _, cx| {
                                 copy_entity.update(cx, |this, cx| {
@@ -4101,7 +4722,11 @@ impl AgentChatDemo {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(format!("主机：{}", redact_paths(&request.host_label))),
+                    .child(format!(
+                        "{}{}",
+                        t(ChatMsg::HostPrefix),
+                        redact_paths(&request.host_label)
+                    )),
             ),
         );
         if !request.reasons.is_empty() {
@@ -4110,7 +4735,7 @@ impl AgentChatDemo {
                     .text_xs()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(cx.theme().danger)
-                    .child(request.reasons.join("；")),
+                    .child(request.reasons.join(t(ChatMsg::ReasonSeparator))),
             );
         }
         if let Some(command) = detail.command_text() {
@@ -4156,9 +4781,9 @@ impl AgentChatDemo {
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(if file.is_new {
-                                    "新建"
+                                    t(ChatMsg::NewFile)
                                 } else {
-                                    "覆盖前自动备份"
+                                    t(ChatMsg::AutoBackup)
                                 }),
                         ),
                 );
@@ -4197,7 +4822,11 @@ impl AgentChatDemo {
             if hidden > 0 {
                 view = view.child(
                     Button::new(format!("{base}-diff-more"))
-                        .label(format!("还有 {hidden} 行，点击展开"))
+                        .label(format!(
+                            "{}{hidden}{}",
+                            t(ChatMsg::DiffMorePrefix),
+                            t(ChatMsg::DiffMoreSuffix)
+                        ))
                         .compact()
                         .on_click(move |_, _, cx| {
                             diff_entity.update(cx, |this, cx| {
@@ -4209,7 +4838,7 @@ impl AgentChatDemo {
             } else if detail.diff_expanded && total > crate::agent_text::DIFF_FOLD_LIMIT {
                 view = view.child(
                     Button::new(format!("{base}-diff-less"))
-                        .label("收起")
+                        .label(t(ChatMsg::Collapse))
                         .compact()
                         .on_click(move |_, _, cx| {
                             fold_entity.update(cx, |this, cx| {
@@ -4225,8 +4854,10 @@ impl AgentChatDemo {
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .child(format!(
-                            "差异太长，后面还有 {} 行没有显示",
-                            file.diff.omitted_lines
+                            "{}{}{}",
+                            t(ChatMsg::DiffOmittedPrefix),
+                            file.diff.omitted_lines,
+                            t(ChatMsg::DiffOmittedSuffix)
                         )),
                 );
             }
@@ -4301,7 +4932,7 @@ impl AgentChatDemo {
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().warning)
-                                .child("执行目标未确定"),
+                                .child(t(ChatMsg::TargetUnknown)),
                         )
                     })
                     .when_some(view_exec, |row, exec| {
@@ -4309,7 +4940,7 @@ impl AgentChatDemo {
                             Button::new(format!(
                                 "agent-chat-view-terminal-{message_index}-{tool_index}"
                             ))
-                            .label("查看终端")
+                            .label(t(ChatMsg::ViewTerminal))
                             .compact()
                             .on_click(move |_, _, cx| {
                                 view_entity.update(cx, |this, cx| this.view_terminal(&exec, cx));
@@ -4324,7 +4955,7 @@ impl AgentChatDemo {
                                 .bg(cx.theme().danger)
                                 .text_xs()
                                 .text_color(cx.theme().background)
-                                .child("危险"),
+                                .child(t(ChatMsg::DangerBadge)),
                         )
                     })
                     .child(div().text_xs().text_color(status_color).child(status_text))
@@ -4337,9 +4968,9 @@ impl AgentChatDemo {
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(if card.output_expanded {
-                                    "输出 ▾"
+                                    t(ChatMsg::OutputExpanded)
                                 } else {
-                                    "输出 ▸"
+                                    t(ChatMsg::OutputCollapsed)
                                 })
                                 .on_click(move |_, _, cx| {
                                     output_entity.update(cx, |this, cx| {
@@ -4416,7 +5047,7 @@ impl AgentChatDemo {
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(cx.theme().warning)
-                            .child("需要确认：请看清上面的完整内容再决定"),
+                            .child(t(ChatMsg::NeedsConfirm)),
                     )
                     .child(
                         h_flex()
@@ -4426,7 +5057,7 @@ impl AgentChatDemo {
                                 Button::new(format!(
                                     "agent-chat-allow-{message_index}-{tool_index}"
                                 ))
-                                .label("允许")
+                                .label(t(ChatMsg::Allow))
                                 .compact()
                                 .on_click(move |_, _, cx| {
                                     allow_entity.update(cx, |this, cx| {
@@ -4438,7 +5069,7 @@ impl AgentChatDemo {
                                 Button::new(format!(
                                     "agent-chat-deny-{message_index}-{tool_index}"
                                 ))
-                                .label("拒绝")
+                                .label(t(ChatMsg::Deny))
                                 .compact()
                                 .on_click(move |_, _, cx| {
                                     deny_entity.update(cx, |this, cx| {
@@ -4453,24 +5084,23 @@ impl AgentChatDemo {
                 div()
                     .text_xs()
                     .text_color(cx.theme().success)
-                    .child("已允许"),
+                    .child(t(ChatMsg::Allowed)),
             );
         } else if card.approval == ApprovalState::Denied {
             element = element.child(
                 div()
                     .text_xs()
                     .text_color(cx.theme().danger)
-                    .child("已拒绝"),
+                    .child(t(ChatMsg::Denied)),
             );
         }
 
         if let Some(error) = &card.error {
-            element = element.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().danger)
-                    .child(format!("错误：{}", redact_paths(error))),
-            );
+            element = element.child(div().text_xs().text_color(cx.theme().danger).child(format!(
+                "{}{}",
+                t(ChatMsg::ErrorPrefix),
+                redact_paths(error)
+            )));
         }
 
         if let Some(output) = &card.output
@@ -4512,11 +5142,20 @@ impl AgentChatDemo {
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(if full {
-                                    format!("已显示全部 {} 行", clip.total_lines)
+                                    format!(
+                                        "{}{}{}",
+                                        t(ChatMsg::AllLinesPrefix),
+                                        clip.total_lines,
+                                        t(ChatMsg::AllLinesSuffix)
+                                    )
                                 } else {
                                     format!(
-                                        "输出较长，只显示前面一部分（共 {} 行、{} 个字符）",
-                                        clip.total_lines, clip.total_chars
+                                        "{}{}{}{}{}",
+                                        t(ChatMsg::OutputLongPrefix),
+                                        clip.total_lines,
+                                        t(ChatMsg::OutputLongMiddle),
+                                        clip.total_chars,
+                                        t(ChatMsg::OutputLongSuffix)
                                     )
                                 }),
                         )
@@ -4524,7 +5163,11 @@ impl AgentChatDemo {
                             Button::new(format!(
                                 "agent-chat-output-more-{message_index}-{tool_index}"
                             ))
-                            .label(if full { "收起" } else { "显示全部" })
+                            .label(if full {
+                                t(ChatMsg::Collapse)
+                            } else {
+                                t(ChatMsg::ShowAll)
+                            })
                             .compact()
                             .on_click(move |_, _, cx| {
                                 more_entity.update(cx, |this, cx| {
@@ -4560,12 +5203,16 @@ impl AgentChatDemo {
         let tools: Vec<&str> = counted.iter().map(|card| card.tool.as_str()).collect();
         let failed = counted.iter().filter(|card| card.view().failed).count();
         let mut summary = if tools.is_empty() {
-            format!("{} 条已处理的确认", ids.len())
+            format!("{}{}", ids.len(), t(ChatMsg::ProcessedApprovalsSuffix))
         } else {
             agent_tools::summarize_calls(&tools)
         };
         if failed > 0 {
-            summary.push_str(&format!("（其中 {failed} 条失败）"));
+            summary.push_str(&format!(
+                "{}{failed}{}",
+                t(ChatMsg::GroupFailedPrefix),
+                t(ChatMsg::GroupFailedSuffix)
+            ));
         }
         let toggle_entity = entity.clone();
         let mut group = v_flex().w_full().gap_1().child(
@@ -4656,7 +5303,7 @@ impl AgentChatDemo {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child(format!("· · ·  {elapsed} · 思考中")),
+                        .child(format!("· · ·  {elapsed} · {}", t(ChatMsg::Thinking))),
                 )
                 .when_some(retry, |column, text| {
                     column.child(
@@ -4707,7 +5354,7 @@ impl AgentChatDemo {
                         div()
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("历史会话"),
+                            .child(t(ChatMsg::HistoryPanelTitle)),
                     )
                     .child(
                         div()
@@ -4718,7 +5365,7 @@ impl AgentChatDemo {
                     .child(div().flex_1())
                     .child(
                         Button::new("agent-chat-history-refresh")
-                            .label("刷新")
+                            .label(t(ChatMsg::Refresh))
                             .compact()
                             .on_click(move |_, _, cx| {
                                 refresh_entity.update(cx, |this, cx| {
@@ -4729,7 +5376,7 @@ impl AgentChatDemo {
                     )
                     .child(
                         Button::new("agent-chat-history-close")
-                            .label("关闭")
+                            .label(t(ChatMsg::Close))
                             .compact()
                             .on_click(move |_, _, cx| {
                                 close_entity.update(cx, |this, cx| {
@@ -4753,7 +5400,7 @@ impl AgentChatDemo {
                     .p_2()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child(HISTORY_EMPTY),
+                    .child(t(ChatMsg::HistoryEmpty)),
             );
         }
         panel.children(rows).into_any_element()
@@ -4820,13 +5467,13 @@ impl AgentChatDemo {
                                         .bg(cx.theme().muted)
                                         .text_xs()
                                         .text_color(cx.theme().success)
-                                        .child(HISTORY_RESUMABLE),
+                                        .child(t(ChatMsg::Resumable)),
                                 )
                             }),
                     )
                     .child(
                         Button::new(format!("agent-chat-history-view-{button_suffix}"))
-                            .label("查看")
+                            .label(t(ChatMsg::View))
                             .compact()
                             .on_click(move |_, _, cx| {
                                 view_entity.update(cx, |this, cx| {
@@ -4836,7 +5483,7 @@ impl AgentChatDemo {
                     )
                     .child(
                         Button::new(format!("agent-chat-history-continue-{button_suffix}"))
-                            .label("继续")
+                            .label(t(ChatMsg::Continue))
                             .compact()
                             .disabled(!summary.resumable)
                             .on_click(move |_, _, cx| {
@@ -4848,9 +5495,9 @@ impl AgentChatDemo {
                     .child(
                         Button::new(format!("agent-chat-history-delete-{button_suffix}"))
                             .label(if armed {
-                                HISTORY_CONFIRM_DELETE
+                                t(ChatMsg::ConfirmDelete)
                             } else {
-                                "删除"
+                                t(ChatMsg::Delete)
                             })
                             .compact()
                             .on_click(move |_, _, cx| {
@@ -4862,7 +5509,7 @@ impl AgentChatDemo {
                     .when(armed, |row| {
                         row.child(
                             Button::new(format!("agent-chat-history-cancel-{button_suffix}"))
-                                .label("取消")
+                                .label(t(ChatMsg::Cancel))
                                 .compact()
                                 .on_click(move |_, _, cx| {
                                     cancel_entity.update(cx, |this, cx| {
@@ -4920,7 +5567,7 @@ impl AgentChatDemo {
                     .items_center()
                     .child(
                         Button::new("agent-chat-history-back")
-                            .label("返回列表")
+                            .label(t(ChatMsg::BackToList))
                             .compact()
                             .on_click(move |_, _, cx| {
                                 back_entity.update(cx, |this, cx| {
@@ -4954,7 +5601,7 @@ impl AgentChatDemo {
                                         .bg(cx.theme().muted)
                                         .text_xs()
                                         .text_color(cx.theme().success)
-                                        .child(HISTORY_RESUMABLE),
+                                        .child(t(ChatMsg::Resumable)),
                                 )
                             }),
                     ),
@@ -4971,7 +5618,7 @@ impl AgentChatDemo {
                     .p_2()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child(HISTORY_NO_MESSAGES),
+                    .child(t(ChatMsg::NoMessages)),
             );
         }
         let start = visible_start(record.messages.len(), self.history_shown);
@@ -4985,11 +5632,15 @@ impl AgentChatDemo {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!("较早的 {start} 条消息没有显示")),
+                            .child(format!(
+                                "{}{start}{}",
+                                t(ChatMsg::EarlierPrefix),
+                                t(ChatMsg::EarlierSuffix)
+                            )),
                     )
                     .child(
                         Button::new("agent-chat-history-older")
-                            .label("显示更早的消息")
+                            .label(t(ChatMsg::ShowEarlier))
                             .compact()
                             .on_click(move |_, _, cx| {
                                 more_entity.update(cx, |this, cx| {
@@ -5052,7 +5703,7 @@ impl AgentChatDemo {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child("助手"),
+                        .child(t(ChatMsg::AssistantRole)),
                 )
                 .child(
                     TextView::markdown(("agent-chat-history-markdown", index), text.clone())
@@ -5078,7 +5729,7 @@ impl AgentChatDemo {
                         .code_block_actions(move |code_block, _, _| {
                             let code = code_block_copy_text(&code_block.code());
                             Button::new(format!("agent-chat-history-copy-code-{index}"))
-                                .label("复制")
+                                .label(t(ChatMsg::Copy))
                                 .compact()
                                 .on_click(move |_, _, cx| {
                                     cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
@@ -5088,7 +5739,7 @@ impl AgentChatDemo {
                             let tsv = table_tsv(&table.headers, &table.rows);
                             h_flex().justify_end().child(
                                 Button::new(format!("agent-chat-history-copy-table-{index}"))
-                                    .label("复制表格")
+                                    .label(t(ChatMsg::CopyTable))
                                     .compact()
                                     .on_click(move |_, _, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
@@ -5141,7 +5792,7 @@ impl AgentChatDemo {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!("参数：{summary}")),
+                            .child(format!("{}{summary}", t(ChatMsg::ParamsPrefix))),
                     );
                 }
                 if !output.trim().is_empty() {
@@ -5177,13 +5828,21 @@ impl AgentChatDemo {
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
                                         .child(format!(
-                                            "输出较长（共 {} 行、{} 个字符）",
-                                            clip.total_lines, clip.total_chars
+                                            "{}{}{}{}{}",
+                                            t(ChatMsg::OutputLongShortPrefix),
+                                            clip.total_lines,
+                                            t(ChatMsg::OutputLongShortMiddle),
+                                            clip.total_chars,
+                                            t(ChatMsg::OutputLongShortSuffix)
                                         )),
                                 )
                                 .child(
                                     Button::new(format!("agent-chat-history-output-more-{index}"))
-                                        .label(if full { "收起" } else { "显示全部" })
+                                        .label(if full {
+                                            t(ChatMsg::Collapse)
+                                        } else {
+                                            t(ChatMsg::ShowAll)
+                                        })
                                         .compact()
                                         .on_click(move |_, _, cx| {
                                             toggle_entity.update(cx, |this, cx| {
@@ -5213,12 +5872,12 @@ fn tokenway_card(
     let (text, label, id) = match card {
         CardKind::TopUp => (
             agent_setup::builtin::REQUIRES_TOPUP_TEXT,
-            "去充值",
+            t(ChatMsg::TopUp),
             "agent-chat-card-topup",
         ),
         CardKind::Reconnect => (
             agent_setup::builtin::AUTHORIZATION_INVALID_TEXT,
-            "重新连接",
+            t(ChatMsg::Reconnect),
             "agent-chat-card-reconnect",
         ),
     };
@@ -5251,11 +5910,11 @@ fn tokenway_card(
                         entity.update(cx, |this, cx| {
                             this.link_notice = Some(match opened {
                                 Ok(()) => Notice {
-                                    text: "已用浏览器打开充值页，充值后几秒内就能继续用".to_owned(),
+                                    text: t(ChatMsg::TopUpOpened).to_owned(),
                                     error: false,
                                 },
                                 Err(reason) => Notice {
-                                    text: format!("没能打开充值页：{reason}"),
+                                    text: format!("{}{reason}", t(ChatMsg::TopUpOpenFailedPrefix)),
                                     error: true,
                                 },
                             });
@@ -5349,14 +6008,14 @@ impl AgentChatDemo {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("助手"),
+                                    .child(t(ChatMsg::AssistantRole)),
                             )
                             .when(message.stopped, |row| {
                                 row.child(
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().danger)
-                                        .child("已停止"),
+                                        .child(t(ChatMsg::StopBadge)),
                                 )
                             })
                             .child(
@@ -5423,9 +6082,9 @@ impl AgentChatDemo {
                                                 .text_xs()
                                                 .text_color(cx.theme().muted_foreground)
                                                 .child(if expanded {
-                                                    "思考 ▾"
+                                                    t(ChatMsg::ReasoningExpanded)
                                                 } else {
-                                                    "思考 ▸"
+                                                    t(ChatMsg::ReasoningCollapsed)
                                                 }),
                                         )
                                         .on_click(move |_, _, cx| {
@@ -5530,9 +6189,14 @@ impl AgentChatDemo {
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
                         .child(if self.real {
-                            format!("输入一条消息，开始与 {} 对话。", self.agent.label())
+                            format!(
+                                "{}{}{}",
+                                t(ChatMsg::EmptyRealPrefix),
+                                self.agent.label(),
+                                t(ChatMsg::EmptyRealSuffix)
+                            )
                         } else {
-                            "输入一条消息，开始离线演示。".to_owned()
+                            t(ChatMsg::EmptyDemo).to_owned()
                         }),
                 )
             })
@@ -5546,11 +6210,15 @@ impl AgentChatDemo {
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(format!("较早的 {first_shown} 条消息没有显示")),
+                                .child(format!(
+                                    "{}{first_shown}{}",
+                                    t(ChatMsg::EarlierPrefix),
+                                    t(ChatMsg::EarlierSuffix)
+                                )),
                         )
                         .child(
                             Button::new("agent-chat-older")
-                                .label("显示更早的消息")
+                                .label(t(ChatMsg::ShowEarlier))
                                 .compact()
                                 .on_click(move |_, _, cx| {
                                     older_entity.update(cx, |this, cx| {
@@ -5611,8 +6279,16 @@ fn allow_all_dialog(entity: &Entity<AgentChatDemo>, window: &Window, cx: &App) -
             .child(
                 v_flex()
                     .gap_2()
-                    .child(div().typo(Role::GroupTitle, &tokens).child(ALLOW_ALL_TITLE))
-                    .child(div().typo(Role::Body, &tokens).child(ALLOW_ALL_MESSAGE)),
+                    .child(
+                        div()
+                            .typo(Role::GroupTitle, &tokens)
+                            .child(t(ChatMsg::AllowAllTitle)),
+                    )
+                    .child(
+                        div()
+                            .typo(Role::Body, &tokens)
+                            .child(t(ChatMsg::AllowAllMessage)),
+                    ),
             )
             .child(
                 h_flex()
@@ -5620,7 +6296,7 @@ fn allow_all_dialog(entity: &Entity<AgentChatDemo>, window: &Window, cx: &App) -
                     .justify_end()
                     .child(text_button(
                         "allow-all-cancel",
-                        "取消",
+                        t(ChatMsg::Cancel),
                         ButtonLook::Outline,
                         move |_, _, cx| {
                             cancel.update(cx, |this, cx| this.cancel_allow_all(cx));
@@ -5628,7 +6304,7 @@ fn allow_all_dialog(entity: &Entity<AgentChatDemo>, window: &Window, cx: &App) -
                     ))
                     .child(text_button(
                         "allow-all-ok",
-                        "全部放行",
+                        t(ChatMsg::ModeAuto),
                         ButtonLook::Danger,
                         move |_, _, cx| {
                             confirm.update(cx, |this, cx| this.confirm_allow_all(cx));
@@ -5703,7 +6379,7 @@ impl AgentChatDemo {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().text_lg().child("AI 对话"))
+                    .child(div().text_lg().child(t(ChatMsg::WindowTitle)))
                     .when(!self.real, |row| {
                         row.child(
                             div()
@@ -5715,16 +6391,16 @@ impl AgentChatDemo {
                                 .bg(cx.theme().muted)
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child("离线演示"),
+                                .child(t(ChatMsg::OfflineDemo)),
                         )
                     })
                     .when(demo_toggle_available(), |row| {
                         row.child(
                             Button::new("agent-chat-real")
                                 .label(if self.real {
-                                    "离线演示"
+                                    t(ChatMsg::OfflineDemo)
                                 } else {
-                                    "真实智能体"
+                                    t(ChatMsg::RealAgent)
                                 })
                                 .compact()
                                 .on_click(move |_, _, cx| {
@@ -5735,7 +6411,7 @@ impl AgentChatDemo {
                     .when(self.real, |row| {
                         row.child(
                             Button::new("agent-chat-agent")
-                                .label(format!("智能体：{}", self.agent.label()))
+                                .label(format!("{}{}", t(ChatMsg::AgentPrefix), self.agent.label()))
                                 .compact()
                                 .on_click(move |_, _, cx| {
                                     agent_entity.update(cx, |this, cx| this.cycle_agent(cx));
@@ -5754,7 +6430,7 @@ impl AgentChatDemo {
                     .child({
                         let current = self.current_mode();
                         Button::new("agent-chat-mode")
-                            .label(format!("执行模式：{}", mode_label(current)))
+                            .label(format!("{}{}", t(ChatMsg::ModePrefix), mode_label(current)))
                             .compact()
                             .dropdown_caret(true)
                             .dropdown_menu_with_anchor(
@@ -5766,17 +6442,12 @@ impl AgentChatDemo {
                                     {
                                         let entity = mode_entity.clone();
                                         menu = menu.item(
-                                            menu_kit::choice(
-                                                mode_label(mode),
-                                                current == mode,
-                                            )
-                                            .on_click(
-                                                move |_: &ClickEvent, _window, cx| {
+                                            menu_kit::choice(mode_label(mode), current == mode)
+                                                .on_click(move |_: &ClickEvent, _window, cx| {
                                                     entity.update(cx, |this, cx| {
                                                         this.request_mode(mode, cx);
                                                     });
-                                                },
-                                            ),
+                                                }),
                                         );
                                     }
                                     menu
@@ -5785,7 +6456,7 @@ impl AgentChatDemo {
                     })
                     .child(
                         Button::new("agent-chat-new")
-                            .label("新对话")
+                            .label(t(ChatMsg::NewConversation))
                             .compact()
                             .on_click(move |_, _, cx| {
                                 new_entity.update(cx, |this, cx| this.new_conversation(cx));
@@ -5793,7 +6464,7 @@ impl AgentChatDemo {
                     )
                     .child(
                         Button::new("agent-chat-markdown-sample")
-                            .label("Markdown 示例")
+                            .label(t(ChatMsg::MarkdownSample))
                             .compact()
                             .on_click(move |_, _, cx| {
                                 sample_entity.update(cx, |this, cx| {
@@ -5803,7 +6474,7 @@ impl AgentChatDemo {
                     )
                     .child(
                         Button::new("agent-chat-history")
-                            .label("历史")
+                            .label(t(ChatMsg::HistoryTab))
                             .compact()
                             .toggled(self.history != HistoryPanel::Closed)
                             .on_click(move |_, _, cx| {
@@ -5812,7 +6483,7 @@ impl AgentChatDemo {
                     )
                     .child(
                         Button::new("agent-chat-stop")
-                            .label("停止")
+                            .label(t(ChatMsg::Stop))
                             .compact()
                             .disabled(!running)
                             .on_click(move |_, _, cx| {
@@ -5830,7 +6501,7 @@ impl AgentChatDemo {
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child("目标主机："),
+                                .child(t(ChatMsg::TargetHostPrefix)),
                         )
                         .children(host_chips)
                         .when(self.hosts.is_empty(), |row| {
@@ -5838,7 +6509,7 @@ impl AgentChatDemo {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().warning)
-                                    .child("主机库里还没有主机：先在主机库添加一台。"),
+                                    .child(t(ChatMsg::NoHostsInLibrary)),
                             )
                         })
                         .when(!self.hosts.is_empty() && no_hosts_selected, |row| {
@@ -5846,7 +6517,7 @@ impl AgentChatDemo {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().warning)
-                                    .child(NO_HOST_HINT),
+                                    .child(t(ChatMsg::NoHostHint)),
                             )
                         }),
                 )
@@ -5865,7 +6536,7 @@ impl AgentChatDemo {
                     )
                     .child(
                         Button::new("agent-chat-send")
-                            .label("发送")
+                            .label(t(ChatMsg::Send))
                             .disabled(running || blocked)
                             .on_click(move |_, window, cx| {
                                 send_entity.update(cx, |this, cx| this.send(window, cx));
@@ -5881,19 +6552,13 @@ impl AgentChatDemo {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(
-                                        "第一条消息发出时才启动智能体；\
-                                         需要确认的命令会出现在对话里，看清全文后点「允许」或「拒绝」。",
-                                    ),
+                                    .child(t(ChatMsg::FooterRealIntro)),
                             )
                             .child(
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(
-                                        "执行模式由工具桥读取设置库：逐条确认 = 每条命令都确认；\
-                                         只读自动 = 只读命令直接执行；全部放行 = 不再确认。",
-                                    ),
+                                    .child(t(ChatMsg::FooterRealModes)),
                             )
                     })
                     .when(!self.real, |footer| {
@@ -5902,27 +6567,17 @@ impl AgentChatDemo {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(
-                                        "离线脚本演示（调试版）：不启动智能体、不调用模型、不发起网络请求。",
-                                    ),
+                                    .child(t(ChatMsg::FooterDemoIntro)),
                             )
                             .child(
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(
-                                        "执行模式只影响本窗口的演示脚本，不会写设置库：逐条确认 = 每个工具都确认；\
-                                         只读自动 = 只读命令直接执行；全部放行 = 不再确认。",
-                                    ),
+                                    .child(t(ChatMsg::FooterDemoModes)),
                             )
                     })
                     .when_some(self.resume_notice.clone(), |footer, notice| {
-                        footer.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().success)
-                                .child(notice),
-                        )
+                        footer.child(div().text_xs().text_color(cx.theme().success).child(notice))
                     })
                     .when_some(self.link_notice.clone(), |footer, notice| {
                         footer.child(
@@ -5965,14 +6620,13 @@ impl AgentChatDemo {
                         )
                     })
                     .when_some(self.storage_error.clone(), |footer, err| {
-                        footer.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().danger)
-                                .child(redact_paths(&format!(
-                                    "设置库不可用：{err}；执行模式改动不会保存。"
-                                ))),
-                        )
+                        footer.child(div().text_xs().text_color(cx.theme().danger).child(
+                            redact_paths(&format!(
+                                "{}{err}{}",
+                                t(ChatMsg::SettingsUnavailablePrefix),
+                                t(ChatMsg::SettingsUnavailableNoSaveSuffix)
+                            )),
+                        ))
                     }),
             )
     }
@@ -5997,7 +6651,7 @@ pub fn open_agent_chat_window(cx: &mut App) {
     };
     let _ = cx.open_window(options, |window, cx| {
         let view = cx.new(|cx| AgentChatDemo::new(window, cx));
-        window.set_window_title("AI 对话");
+        window.set_window_title(t(ChatMsg::WindowTitle));
         window.focus(&view.read(cx).input_focus_handle(cx), cx);
         view
     });
@@ -6008,20 +6662,20 @@ mod tests {
     // 不写 `use super::*`：父模块 glob 进来的 `gpui_kit::test` 会盖掉内置的
     // `#[test]` 属性宏，展开时直接撞递归上限。
     use super::{
-        ApprovalDetail, ApprovalState, AssistantMessage, BodyMode, ChatMessage, ChatState,
-        DemoInput, DemoTool, ExecMode, HISTORY_RESUMABLE, HistoryAnchor, HistoryMessage,
-        HistoryRecord, HistoryStore, HostChoice, MARKDOWN_SAMPLE, ModelChoice, RAW_NO_BODY,
-        ToolCard, ToolInput, ToolStatus, body_markdown, body_mode, clipped_body,
-        code_block_copy_text, content_preview, continue_conversation, demo_toggle_available,
-        format_history_time, history_host, history_id_for_turn, history_meta, history_title,
-        history_tool_status, host_names_label, link_click_notice, load_exec_mode,
-        mode_is_persisted, mode_label, mode_setting, model_choices, model_label, new_history_id,
-        next_model_index, raw_markdown_block, redact_tool_input, requires_approval,
+        ApprovalDetail, ApprovalState, AssistantMessage, BodyMode, ChatMessage, ChatMsg, ChatState,
+        DemoInput, DemoTool, ExecMode, HistoryAnchor, HistoryMessage, HistoryRecord, HistoryStore,
+        HostChoice, MARKDOWN_SAMPLE, ModelChoice, ToolCard, ToolInput, ToolStatus, body_markdown,
+        body_mode, clipped_body, code_block_copy_text, content_preview, continue_conversation,
+        demo_toggle_available, format_history_time, history_host, history_id_for_turn,
+        history_meta, history_title, history_tool_status, host_names_label, link_click_notice,
+        load_exec_mode, mode_is_persisted, mode_label, mode_setting, model_choices, model_label,
+        new_history_id, next_model_index, raw_markdown_block, redact_tool_input, requires_approval,
         resume_session_id, save_exec_mode, selected_targets, start_in_real_mode, table_tsv,
         toggle_host_selection, tool_history_status,
     };
     use crate::agent_text::{BODY_PREVIEW_CHARS, DIFF_FOLD_LIMIT, fold_diff};
     use crate::agent_tools::{self, ToolRow};
+    use crate::i18n::t;
     use serde_json::json;
     use zssh_core::ai::agent::discovery::CLAUDE;
     use zssh_core::ai::agent::{AgentEvent, AgentModel, AgentModelCatalog};
@@ -7412,7 +8066,7 @@ mod tests {
         assert_eq!(body_markdown(&message, BodyMode::Rendered), None);
         assert_eq!(
             body_markdown(&message, BodyMode::Raw).as_deref(),
-            Some(RAW_NO_BODY)
+            Some(t(ChatMsg::NoBody))
         );
 
         message.text = "**粗体**\n第二行".to_owned();
@@ -7563,7 +8217,7 @@ mod tests {
         assert_eq!(history_title("  看一下磁盘  "), "看一下磁盘");
         assert_eq!(history_title(""), "（无标题）");
         assert_eq!(history_title("   "), "（无标题）");
-        assert_eq!(HISTORY_RESUMABLE, "可续接");
+        assert_eq!(t(ChatMsg::Resumable), "可续接");
     }
 
     #[test]

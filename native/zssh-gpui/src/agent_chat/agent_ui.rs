@@ -13,6 +13,48 @@ use super::{AgentChatDemo, redact_paths};
 use crate::agent_setup::{self, AgentKind, Availability, InstallState};
 use crate::menu_kit;
 
+use crate::i18n::{Msg, t};
+
+/// 智能体下拉和状态提示自己的文案。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentUiMsg {
+    Tooltip,
+    NotConfigured,
+    CheckingPrefix,
+    GoToSettings,
+    Download,
+    TooOldPrefix,
+    TooOldSuffix,
+}
+
+impl Msg for AgentUiMsg {
+    fn zh(&self) -> &'static str {
+        let key = *self;
+        match key {
+            Self::Tooltip => "智能体",
+            Self::NotConfigured => "  ·  未配置",
+            Self::CheckingPrefix => "正在检测 ",
+            Self::GoToSettings => "去设置",
+            Self::Download => "下载",
+            Self::TooOldPrefix => "版本过低（",
+            Self::TooOldSuffix => "），建议升级",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        let key = *self;
+        match key {
+            Self::Tooltip => "Agent",
+            Self::NotConfigured => "  ·  Not configured",
+            Self::CheckingPrefix => "Checking ",
+            Self::GoToSettings => "Go to Settings",
+            Self::Download => "Download",
+            Self::TooOldPrefix => "Version too old (",
+            Self::TooOldSuffix => "); upgrading is recommended",
+        }
+    }
+}
+
 impl AgentChatDemo {
     /// 智能体下拉（面板顶部）：每项带"未安装 / 未登录 / 版本过低"的备注，不可用的灰掉点不了；
     /// 对话开始后换智能体 = 新开一个对话（见 [`AgentChatDemo::switch_agent`]）。
@@ -30,13 +72,17 @@ impl AgentChatDemo {
             .compact()
             .label(self.agent_label_now())
             .dropdown_caret(true)
-            .tooltip("智能体")
+            .tooltip(t(AgentUiMsg::Tooltip))
             .dropdown_menu(move |menu, _window, _cx| {
                 let mut menu = menu.min_w(::gpui::px(180.0));
                 if builtin_items.is_empty() {
                     menu = menu.item(
                         menu_kit::choice(
-                            format!("{}  ·  未配置", AgentKind::Builtin.label()),
+                            format!(
+                                "{}{}",
+                                AgentKind::Builtin.label(),
+                                t(AgentUiMsg::NotConfigured)
+                            ),
                             false,
                         )
                         .disabled(true),
@@ -98,7 +144,11 @@ impl AgentChatDemo {
                 div()
                     .text_sm()
                     .text_color(muted)
-                    .child(format!("正在检测 {}…", self.agent.label()))
+                    .child(format!(
+                        "{}{}…",
+                        t(AgentUiMsg::CheckingPrefix),
+                        self.agent.label()
+                    ))
                     .into_any_element(),
             ])),
             Availability::Missing => {
@@ -121,7 +171,7 @@ impl AgentChatDemo {
                 }
                 children.push(
                     Button::new("ai-open-settings")
-                        .label("去设置")
+                        .label(t(AgentUiMsg::GoToSettings))
                         .compact()
                         .on_click(|_, _, _| agent_setup::request_settings())
                         .into_any_element(),
@@ -166,9 +216,9 @@ impl AgentChatDemo {
             && let Some(install) = status.found()
         {
             let action = if self.agent == AgentKind::OpenCode {
-                "下载"
+                t(AgentUiMsg::Download)
             } else {
-                "去设置"
+                t(AgentUiMsg::GoToSettings)
             };
             out.push(
                 h_flex()
@@ -181,7 +231,12 @@ impl AgentChatDemo {
                     .justify_between()
                     .text_xs()
                     .text_color(warning)
-                    .child(format!("版本过低（{}），建议升级", install.version.trim()))
+                    .child(format!(
+                        "{}{}{}",
+                        t(AgentUiMsg::TooOldPrefix),
+                        install.version.trim(),
+                        t(AgentUiMsg::TooOldSuffix)
+                    ))
                     .child(
                         Button::new("ai-banner-settings")
                             .label(action)

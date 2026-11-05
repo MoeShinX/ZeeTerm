@@ -6,6 +6,49 @@
 
 use zssh_core::ai::agent::usage::{ContextUsage, UsageLevel};
 
+use super::ChatMsg;
+use crate::i18n::{Msg, t};
+
+/// 上下文用量明细里的行名和「估计」标记。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum UsageMsg {
+    Window,
+    Input,
+    Output,
+    CacheRead,
+    CacheWrite,
+    Model,
+    Estimated,
+}
+
+impl Msg for UsageMsg {
+    fn zh(&self) -> &'static str {
+        let key = *self;
+        match key {
+            Self::Window => "已用 / 窗口",
+            Self::Input => "输入",
+            Self::Output => "输出",
+            Self::CacheRead => "缓存读",
+            Self::CacheWrite => "缓存写",
+            Self::Model => "模型",
+            Self::Estimated => " 估计",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        let key = *self;
+        match key {
+            Self::Window => "Used / Window",
+            Self::Input => "Input",
+            Self::Output => "Output",
+            Self::CacheRead => "Cache Read",
+            Self::CacheWrite => "Cache Write",
+            Self::Model => "Model",
+            Self::Estimated => " est.",
+        }
+    }
+}
+
 /// 标题栏指示器的内容。
 #[derive(Clone, Debug, PartialEq)]
 pub enum MeterView {
@@ -83,24 +126,26 @@ pub fn detail_lines(
     let mut out = Vec::new();
     let used = match (usage.window, usage.percent()) {
         (Some(window), Some(percent)) => format!(
-            "{} / {}{}（{}）",
+            "{} / {}{}{}{}{}",
             full(usage.used),
             full(window),
             if usage.window_estimated {
-                " 估计"
+                t(UsageMsg::Estimated)
             } else {
                 ""
             },
-            percent_text(percent)
+            t(ChatMsg::ParenLeft),
+            percent_text(percent),
+            t(ChatMsg::ParenRight)
         ),
         _ => full(usage.used),
     };
-    out.push(("已用 / 窗口", used));
+    out.push((t(UsageMsg::Window), used));
     for (name, value) in [
-        ("输入", usage.input),
-        ("输出", usage.output),
-        ("缓存读", usage.cache_read),
-        ("缓存写", usage.cache_write),
+        (t(UsageMsg::Input), usage.input),
+        (t(UsageMsg::Output), usage.output),
+        (t(UsageMsg::CacheRead), usage.cache_read),
+        (t(UsageMsg::CacheWrite), usage.cache_write),
     ] {
         if let Some(value) = value {
             out.push((name, full(value)));
@@ -112,7 +157,7 @@ pub fn detail_lines(
         .or(fallback_model)
         .filter(|model| !model.is_empty())
     {
-        out.push(("模型", model.to_owned()));
+        out.push((t(UsageMsg::Model), model.to_owned()));
     }
     out
 }

@@ -10,6 +10,80 @@ use gpui_kit::*;
 
 use super::AgentChatDemo;
 
+use crate::i18n::{Msg, t};
+
+/// 「待发送」队列自己的文案。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueueMsg {
+    Prefix,
+    Suffix,
+    WindDownSuffix,
+    WaitingSuffix,
+    EditingSuffix,
+    StoppedSuffix,
+    InterruptAndSend,
+    StopTurnTip,
+    SendNow,
+    Edit,
+    Save,
+    Delete,
+    Cancel,
+    CannotInterrupt,
+    EditorNotOpen,
+    MissingPrefix,
+    MissingSuffix,
+}
+
+impl Msg for QueueMsg {
+    fn zh(&self) -> &'static str {
+        let key = *self;
+        match key {
+            Self::Prefix => "待发送 ",
+            Self::Suffix => " 条",
+            Self::WindDownSuffix => " · 正在打断当前回合，马上发出",
+            Self::WaitingSuffix => " · 等当前回合结束后发给 AI",
+            Self::EditingSuffix => " · 保存或取消编辑后发出",
+            Self::StoppedSuffix => " · 已停止，这些还没有发出",
+            Self::InterruptAndSend => "打断并发送",
+            Self::StopTurnTip => "停止当前回合，马上把这些发给 AI",
+            Self::SendNow => "现在发送",
+            Self::Edit => "编辑",
+            Self::Save => "保存",
+            Self::Delete => "删除",
+            Self::Cancel => "取消",
+            Self::CannotInterrupt => "现在不能打断并发送（没有在跑的回合或队列是空的）",
+            Self::EditorNotOpen => "编辑框没有打开",
+            Self::MissingPrefix => "队列里没有第 ",
+            Self::MissingSuffix => " 条",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        let key = *self;
+        match key {
+            Self::Prefix => "Pending ",
+            Self::Suffix => " messages",
+            Self::WindDownSuffix => " · interrupting the current turn; sending right away",
+            Self::WaitingSuffix => " · sent to the AI after the current turn ends",
+            Self::EditingSuffix => " · sent after you save or cancel the edit",
+            Self::StoppedSuffix => " · stopped; these have not been sent",
+            Self::InterruptAndSend => "Interrupt & Send",
+            Self::StopTurnTip => "Stop the current turn and send these to the AI now",
+            Self::SendNow => "Send Now",
+            Self::Edit => "Edit",
+            Self::Save => "Save",
+            Self::Delete => "Delete",
+            Self::Cancel => "Cancel",
+            Self::CannotInterrupt => {
+                "Cannot interrupt and send now (no running turn, or the queue is empty)"
+            }
+            Self::EditorNotOpen => "The editor is not open",
+            Self::MissingPrefix => "No item #",
+            Self::MissingSuffix => " in the queue",
+        }
+    }
+}
+
 impl AgentChatDemo {
     /// 队列里有话就画一块；没有就不画。回合进行中说「等当前回合结束后发给 AI」，
     /// 停掉之后（队列被扣住）说「已停止，没有发出」并给「现在发送」。
@@ -27,15 +101,39 @@ impl AgentChatDemo {
         let can_interrupt = running && self.session.is_some();
 
         let heading: SharedString = if self.chat.queue.is_winding_down() {
-            format!("待发送 {count} 条 · 正在打断当前回合，马上发出").into()
+            format!(
+                "{}{count}{}{}",
+                t(QueueMsg::Prefix),
+                t(QueueMsg::Suffix),
+                t(QueueMsg::WindDownSuffix)
+            )
+            .into()
         } else if running {
-            format!("待发送 {count} 条 · 等当前回合结束后发给 AI").into()
+            format!(
+                "{}{count}{}{}",
+                t(QueueMsg::Prefix),
+                t(QueueMsg::Suffix),
+                t(QueueMsg::WaitingSuffix)
+            )
+            .into()
         } else if editing.is_some() {
-            format!("待发送 {count} 条 · 保存或取消编辑后发出").into()
+            format!(
+                "{}{count}{}{}",
+                t(QueueMsg::Prefix),
+                t(QueueMsg::Suffix),
+                t(QueueMsg::EditingSuffix)
+            )
+            .into()
         } else if held {
-            format!("待发送 {count} 条 · 已停止，这些还没有发出").into()
+            format!(
+                "{}{count}{}{}",
+                t(QueueMsg::Prefix),
+                t(QueueMsg::Suffix),
+                t(QueueMsg::StoppedSuffix)
+            )
+            .into()
         } else {
-            format!("待发送 {count} 条").into()
+            format!("{}{count}{}", t(QueueMsg::Prefix), t(QueueMsg::Suffix)).into()
         };
 
         let action = if can_interrupt {
@@ -44,8 +142,8 @@ impl AgentChatDemo {
                 Button::new("ai-queue-interrupt")
                     .compact()
                     .outline()
-                    .label("打断并发送")
-                    .tooltip("停止当前回合，马上把这些发给 AI")
+                    .label(t(QueueMsg::InterruptAndSend))
+                    .tooltip(t(QueueMsg::StopTurnTip))
                     .on_click(move |_, _window, cx| {
                         entity.update(cx, |this, cx| this.interrupt_and_send(cx));
                     })
@@ -57,7 +155,7 @@ impl AgentChatDemo {
                 Button::new("ai-queue-send-now")
                     .compact()
                     .primary()
-                    .label("现在发送")
+                    .label(t(QueueMsg::SendNow))
                     .on_click(move |_, _window, cx| {
                         entity.update(cx, |this, cx| this.queue_send_now(cx));
                     })
@@ -91,7 +189,7 @@ impl AgentChatDemo {
                                     Button::new(("ai-queue-cancel", id))
                                         .compact()
                                         .ghost()
-                                        .label("取消")
+                                        .label(t(QueueMsg::Cancel))
                                         .on_click(move |_, _window, cx| {
                                             cancel.update(cx, |this, cx| {
                                                 this.queue_cancel_edit(cx);
@@ -102,7 +200,7 @@ impl AgentChatDemo {
                                     Button::new(("ai-queue-save", id))
                                         .compact()
                                         .primary()
-                                        .label("保存")
+                                        .label(t(QueueMsg::Save))
                                         .on_click(move |_, _window, cx| {
                                             save.update(cx, |this, cx| this.queue_save_edit(cx));
                                         }),
@@ -131,7 +229,7 @@ impl AgentChatDemo {
                                 Button::new(("ai-queue-edit", id))
                                     .compact()
                                     .ghost()
-                                    .label("编辑")
+                                    .label(t(QueueMsg::Edit))
                                     .on_click(move |_, window, cx| {
                                         edit.update(cx, |this, cx| {
                                             this.queue_begin_edit(id, window, cx);
@@ -142,7 +240,7 @@ impl AgentChatDemo {
                                 Button::new(("ai-queue-remove", id))
                                     .compact()
                                     .ghost()
-                                    .label("删除")
+                                    .label(t(QueueMsg::Delete))
                                     .on_click(move |_, _window, cx| {
                                         remove.update(cx, |this, cx| this.queue_remove(id, cx));
                                     }),
@@ -212,7 +310,13 @@ impl AgentChatDemo {
             .items()
             .get(nth)
             .map(|item| item.id)
-            .ok_or_else(|| format!("队列里没有第 {nth} 条"))
+            .ok_or_else(|| {
+                format!(
+                    "{}{nth}{}",
+                    t(QueueMsg::MissingPrefix),
+                    t(QueueMsg::MissingSuffix)
+                )
+            })
     }
 
     #[cfg(debug_assertions)]
@@ -238,7 +342,7 @@ impl AgentChatDemo {
     ) -> Result<(), String> {
         self.dev_queue_begin_edit(nth, window, cx)?;
         let Some((_, state)) = self.queue_edit.as_ref() else {
-            return Err("编辑框没有打开".to_owned());
+            return Err(t(QueueMsg::EditorNotOpen).to_owned());
         };
         let text = text.to_owned();
         state.update(cx, |state, cx| state.set_value(text, window, cx));
@@ -261,7 +365,7 @@ impl AgentChatDemo {
     #[cfg(debug_assertions)]
     pub fn dev_queue_interrupt(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
         if !self.chat.queue_can_interrupt() || self.session.is_none() {
-            return Err("现在不能打断并发送（没有在跑的回合或队列是空的）".to_owned());
+            return Err(t(QueueMsg::CannotInterrupt).to_owned());
         }
         self.interrupt_and_send(cx);
         Ok(())

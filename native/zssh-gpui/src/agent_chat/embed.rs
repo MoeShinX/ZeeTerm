@@ -31,8 +31,7 @@ use zssh_core::ai::bridge::ExecMode;
 use super::composer::{self, ActionKind, ComposerItem, EffortStyle, ModeTone};
 use super::usage_view::{self, MeterView};
 use super::{
-    AgentChatDemo, HistoryPanel, HostChoice, NO_HOST_HINT, mode_is_persisted, mode_label,
-    redact_paths,
+    AgentChatDemo, ChatMsg, HistoryPanel, HostChoice, mode_is_persisted, mode_label, redact_paths,
 };
 // 下面这一组只被 dev 断言方法（usage_text、dev_* 等，见 impl 里的 cfg）用。
 #[cfg(debug_assertions)]
@@ -44,6 +43,7 @@ use crate::agent_host::HostTarget;
 #[cfg(debug_assertions)]
 use crate::agent_tools::{self, ToolRow};
 use crate::app_theme::Tokens;
+use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::main_window::anchor::{
     self, Banner, Binding, Focus, Key, LockOutcome, Open, Pin, Target,
@@ -53,6 +53,259 @@ use crate::main_window::bar_settings;
 use crate::main_window::model_picker::{self, ModelPicker};
 use crate::main_window::scope_targets;
 use crate::menu_kit;
+
+/// 面板形态自己的界面文案（目标主机栏、模型 / 强度 / 执行模式按钮、底部提示）。
+///
+/// 只放**应用自己的**文字；主机名、模型名、工具名、命令和路径原样显示。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChatEmbedMsg {
+    // ---- 上下文用量 ----
+    ContextLabel,
+    ContextTip,
+    ContextUsageTitle,
+    ThisTurn,
+    // ---- 模型 / 强度 / 执行模式 ----
+    DefaultModel,
+    ModelTooltipPrefix,
+    AgentUnavailable,
+    LoadingModels,
+    ModelItemMissing,
+    ModelGroupMissing,
+    NoCatalogYet,
+    NoSuchEffort,
+    EffortTooltip,
+    EffortTooltipPrefix,
+    ModeTooltip,
+    ModeManualHint,
+    ModeReadOnlyHint,
+    ModeAutoHint,
+    // ---- 顶部按钮 ----
+    HistoryTitle,
+    NewChat,
+    NewChatTip,
+    // ---- 目标主机栏 ----
+    TargetHostsPrefix,
+    AddHostButton,
+    AddTargetTip,
+    RemoveTargetTip,
+    NoHostsToAdd,
+    UseCurrent,
+    UseNamedPrefix,
+    ReconnectPrefix,
+    ChipDisconnected,
+    ChipCurrentUnavailable,
+    ChipBound,
+    ChipCurrent,
+    ChipUnavailable,
+    SshOnly,
+    NoTerminalSuffix,
+    NoOpenTerminalSuffix,
+    BannerMismatchPrefix,
+    BannerMismatchMiddle,
+    BannerDanglingSuffix,
+    RebindWhileRunning,
+    ReboundPrefix,
+    CornerLeft,
+    CornerRight,
+    CannotAddMiddle,
+    AlreadyPinnedSuffix,
+    // ---- 输入 / 发送 ----
+    Stop,
+    SendEnter,
+    BackToBottom,
+    // ---- 调试 / 内部状态（界面上的提示） ----
+    NotEmbedded,
+    UnknownAgent,
+    NoZeePilotEndpoint,
+    NotSelectablePrefix,
+    HistoryMissing,
+    NoPendingApproval,
+    NoMessages,
+    LastNotAssistant,
+    NoSuchGroup,
+    NoExecCard,
+    // ---- 卡片文字（调试断言和分组摘要共用） ----
+    GroupPrefix,
+    ViewTerminalMark,
+    TargetUnknown,
+    NeedsConfirm,
+    Allowed,
+    Denied,
+    Danger,
+    CommandLinePrefix,
+    PathLinePrefix,
+    FileLinePrefix,
+    ErrorLinePrefix,
+    OutputLinePrefix,
+    NewFile,
+    AutoBackup,
+}
+
+impl Msg for ChatEmbedMsg {
+    fn zh(&self) -> &'static str {
+        let key = *self;
+        match key {
+            Self::ContextLabel => "上下文",
+            Self::ContextTip => "最近一轮的上下文用量（已用 / 模型上下文窗口）",
+            Self::ContextUsageTitle => "上下文用量",
+            Self::ThisTurn => "本轮",
+            Self::DefaultModel => "默认模型",
+            Self::ModelTooltipPrefix => "模型：",
+            Self::AgentUnavailable => "这个智能体现在不能用",
+            Self::LoadingModels => "正在读取模型目录",
+            Self::ModelItemMissing => "模型下拉里没有这一项",
+            Self::ModelGroupMissing => "模型下拉没有这一项",
+            Self::NoCatalogYet => "还没有模型目录",
+            Self::NoSuchEffort => "这个模型没有这档强度",
+            Self::EffortTooltip => "思考强度",
+            Self::EffortTooltipPrefix => "思考强度：",
+            Self::ModeTooltip => "执行模式",
+            Self::ModeManualHint => "每条命令都要你点确认",
+            Self::ModeReadOnlyHint => "查看类命令直接执行，改动系统的要确认",
+            Self::ModeAutoHint => "所有命令直接执行，不再确认",
+            Self::HistoryTitle => "历史会话",
+            Self::NewChat => "新对话",
+            Self::NewChatTip => "新对话（清空当前对话）",
+            Self::TargetHostsPrefix => "目标主机：",
+            Self::AddHostButton => "@ 主机",
+            Self::AddTargetTip => "把主机库里的另一台主机加进目标",
+            Self::RemoveTargetTip => "从这次对话的目标里去掉",
+            Self::NoHostsToAdd => "没有可以加入的主机",
+            Self::UseCurrent => "改用当前主机",
+            Self::UseNamedPrefix => "改用 ",
+            Self::ReconnectPrefix => "重新连接 ",
+            Self::ChipDisconnected => "（未连接）",
+            Self::ChipCurrentUnavailable => "（当前，不可用）",
+            Self::ChipBound => "（已绑定）",
+            Self::ChipCurrent => "（当前）",
+            Self::ChipUnavailable => "（不可用）",
+            Self::SshOnly => "（仅 SSH 主机可用）",
+            Self::NoTerminalSuffix => " 没有打开的终端",
+            Self::NoOpenTerminalSuffix => "没有打开的终端，先重新连接或改用当前主机",
+            Self::BannerMismatchPrefix => "对话绑定在 ",
+            Self::BannerMismatchMiddle => "；当前标签是 ",
+            Self::BannerDanglingSuffix => " 没有打开的终端，对话先停在这里",
+            Self::RebindWhileRunning => "AI 正在回答，等这一轮结束再改用当前主机",
+            Self::ReboundPrefix => "已改绑到 ",
+            Self::CornerLeft => "「",
+            Self::CornerRight => "」",
+            Self::CannotAddMiddle => "不能加进目标：",
+            Self::AlreadyPinnedSuffix => "已经在这次对话的目标里了",
+            Self::Stop => "停止",
+            Self::SendEnter => "发送（Enter）",
+            Self::BackToBottom => "回到底部",
+            Self::NotEmbedded => "不是面板形态",
+            Self::UnknownAgent => "不认识的智能体",
+            Self::NoZeePilotEndpoint => "没有这个 ZeePilot 接口，或它没配 Key",
+            Self::NotSelectablePrefix => " 不可选：",
+            Self::HistoryMissing => "历史里没有这一条",
+            Self::NoPendingApproval => "没有等批准的确认卡片",
+            Self::NoMessages => "没有消息",
+            Self::LastNotAssistant => "最后一条不是助手消息",
+            Self::NoSuchGroup => "没有这个分组",
+            Self::NoExecCard => "没有带执行位置的卡片",
+            Self::GroupPrefix => "[组] ",
+            Self::ViewTerminalMark => "[查看终端]",
+            Self::TargetUnknown => "执行目标未确定",
+            Self::NeedsConfirm => "需要确认",
+            Self::Allowed => "已允许",
+            Self::Denied => "已拒绝",
+            Self::Danger => "危险",
+            Self::CommandLinePrefix => "\n命令：",
+            Self::PathLinePrefix => "\n路径：",
+            Self::FileLinePrefix => "\n文件：",
+            Self::ErrorLinePrefix => "\n错误：",
+            Self::OutputLinePrefix => "\n输出：",
+            Self::NewFile => "新建",
+            Self::AutoBackup => "覆盖前自动备份",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        let key = *self;
+        match key {
+            Self::ContextLabel => "Context",
+            Self::ContextTip => "Context usage of the latest turn (used / model context window)",
+            Self::ContextUsageTitle => "Context Usage",
+            Self::ThisTurn => "This Turn",
+            Self::DefaultModel => "Default Model",
+            Self::ModelTooltipPrefix => "Model: ",
+            Self::AgentUnavailable => "This agent is unavailable right now",
+            Self::LoadingModels => "Loading model catalog",
+            Self::ModelItemMissing => "No such item in the model list",
+            Self::ModelGroupMissing => "No such item in the model list",
+            Self::NoCatalogYet => "No model catalog yet",
+            Self::NoSuchEffort => "This model has no such effort level",
+            Self::EffortTooltip => "Reasoning Effort",
+            Self::EffortTooltipPrefix => "Reasoning Effort: ",
+            Self::ModeTooltip => "Execution Mode",
+            Self::ModeManualHint => "Every command needs your approval",
+            Self::ModeReadOnlyHint => {
+                "Read-only commands run directly; changes to the system need approval"
+            }
+            Self::ModeAutoHint => "All commands run directly without approval",
+            Self::HistoryTitle => "Saved Conversations",
+            Self::NewChat => "New Chat",
+            Self::NewChatTip => "New Chat (clear the current conversation)",
+            Self::TargetHostsPrefix => "Target hosts: ",
+            Self::AddHostButton => "@ Host",
+            Self::AddTargetTip => "Add another host from the host library to the targets",
+            Self::RemoveTargetTip => "Remove from this conversation's targets",
+            Self::NoHostsToAdd => "No hosts available to add",
+            Self::UseCurrent => "Use Current Host",
+            Self::UseNamedPrefix => "Use ",
+            Self::ReconnectPrefix => "Reconnect ",
+            Self::ChipDisconnected => " (not connected)",
+            Self::ChipCurrentUnavailable => " (current, unavailable)",
+            Self::ChipBound => " (bound)",
+            Self::ChipCurrent => " (current)",
+            Self::ChipUnavailable => " (unavailable)",
+            Self::SshOnly => " (SSH hosts only)",
+            Self::NoTerminalSuffix => " has no open terminal",
+            Self::NoOpenTerminalSuffix => {
+                " has no open terminal; reconnect it or use the current host"
+            }
+            Self::BannerMismatchPrefix => "This conversation is bound to ",
+            Self::BannerMismatchMiddle => "; the current tab is ",
+            Self::BannerDanglingSuffix => " has no open terminal; the conversation is paused here",
+            Self::RebindWhileRunning => {
+                "The AI is replying; wait for this turn to end before switching to the current host"
+            }
+            Self::ReboundPrefix => "Rebound to ",
+            Self::CornerLeft => "\"",
+            Self::CornerRight => "\"",
+            Self::CannotAddMiddle => " cannot be added to the targets: ",
+            Self::AlreadyPinnedSuffix => " is already one of this conversation's targets",
+            Self::Stop => "Stop",
+            Self::SendEnter => "Send (Enter)",
+            Self::BackToBottom => "Back to Bottom",
+            Self::NotEmbedded => "Not in panel form",
+            Self::UnknownAgent => "Unknown agent",
+            Self::NoZeePilotEndpoint => "No such ZeePilot endpoint, or it has no key configured",
+            Self::NotSelectablePrefix => " cannot be selected: ",
+            Self::HistoryMissing => "No such entry in history",
+            Self::NoPendingApproval => "No approval card is waiting",
+            Self::NoMessages => "No messages",
+            Self::LastNotAssistant => "The last message is not from the assistant",
+            Self::NoSuchGroup => "No such group",
+            Self::NoExecCard => "No card with an execution target",
+            Self::GroupPrefix => "[group] ",
+            Self::ViewTerminalMark => "[View Terminal]",
+            Self::TargetUnknown => "Execution target undetermined",
+            Self::NeedsConfirm => "Needs approval",
+            Self::Allowed => "Allowed",
+            Self::Denied => "Denied",
+            Self::Danger => "Danger",
+            Self::CommandLinePrefix => "\nCommand: ",
+            Self::PathLinePrefix => "\nPath: ",
+            Self::FileLinePrefix => "\nFile: ",
+            Self::ErrorLinePrefix => "\nError: ",
+            Self::OutputLinePrefix => "\nOutput: ",
+            Self::NewFile => "New file",
+            Self::AutoBackup => "Auto-backup before overwrite",
+        }
+    }
+}
 
 /// 主窗口每个节拍告诉面板的上下文：当前标签聚焦窗格、还开着终端的主机和终端、主机库里的主机。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -219,13 +472,13 @@ impl Embed {
 fn chip_label(target: &Target, refused: bool) -> String {
     let name = &target.name;
     if target.dangling {
-        return format!("{name}（未连接）");
+        return format!("{name}{}", t(ChatEmbedMsg::ChipDisconnected));
     }
     match (target.current, target.locked, refused) {
-        (true, _, true) => format!("{name}（当前，不可用）"),
-        (true, true, false) => format!("{name}（已绑定）"),
-        (true, false, false) => format!("{name}（当前）"),
-        (false, _, true) => format!("{name}（不可用）"),
+        (true, _, true) => format!("{name}{}", t(ChatEmbedMsg::ChipCurrentUnavailable)),
+        (true, true, false) => format!("{name}{}", t(ChatEmbedMsg::ChipBound)),
+        (true, false, false) => format!("{name}{}", t(ChatEmbedMsg::ChipCurrent)),
+        (false, _, true) => format!("{name}{}", t(ChatEmbedMsg::ChipUnavailable)),
         (false, _, false) => name.clone(),
     }
 }
@@ -315,7 +568,12 @@ impl AgentChatDemo {
         if let Some(reason) = host.refusal.clone() {
             embed.picker_open = false;
             self.link_notice = Some(super::Notice {
-                text: format!("「{name}」不能加进目标：{reason}"),
+                text: format!(
+                    "{}{name}{}{}{reason}",
+                    t(ChatEmbedMsg::CornerLeft),
+                    t(ChatEmbedMsg::CornerRight),
+                    t(ChatEmbedMsg::CannotAddMiddle)
+                ),
                 error: true,
             });
             cx.notify();
@@ -327,7 +585,12 @@ impl AgentChatDemo {
         embed.picker_open = false;
         if already {
             self.link_notice = Some(super::Notice {
-                text: format!("「{name}」已经在这次对话的目标里了"),
+                text: format!(
+                    "{}{name}{}{}",
+                    t(ChatEmbedMsg::CornerLeft),
+                    t(ChatEmbedMsg::CornerRight),
+                    t(ChatEmbedMsg::AlreadyPinnedSuffix)
+                ),
                 error: false,
             });
         }
@@ -368,7 +631,7 @@ impl AgentChatDemo {
             .text_xs()
             .text_color(muted)
             .when(open, |d| d.bg(hover))
-            .child("上下文");
+            .child(t(ChatEmbedMsg::ContextLabel));
         let clickable = view != MeterView::Empty;
         let body = match view {
             MeterView::Empty => base.child("—"),
@@ -413,9 +676,7 @@ impl AgentChatDemo {
         body.when(clickable, |d| {
             d.cursor_pointer()
                 .hover(move |style| style.bg(hover).text_color(text))
-                .tooltip(|window, cx| {
-                    Tooltip::new("最近一轮的上下文用量（已用 / 模型上下文窗口）").build(window, cx)
-                })
+                .tooltip(|window, cx| Tooltip::new(t(ChatEmbedMsg::ContextTip)).build(window, cx))
                 .on_click(move |_, _window, cx| {
                     entity.update(cx, |this, cx| {
                         if let Some(embed) = this.embed.as_mut() {
@@ -432,9 +693,11 @@ impl AgentChatDemo {
     #[cfg(debug_assertions)]
     pub fn usage_text(&self) -> String {
         match usage_view::meter(self.display_usage().as_ref()) {
-            MeterView::Empty => "上下文 —".to_owned(),
-            MeterView::Tokens { text } => format!("上下文 {text}"),
-            MeterView::Bar { percent_text, .. } => format!("上下文 {percent_text}"),
+            MeterView::Empty => format!("{}—", t(ChatEmbedMsg::ContextLabel)),
+            MeterView::Tokens { text } => format!("{}{text}", t(ChatEmbedMsg::ContextLabel)),
+            MeterView::Bar { percent_text, .. } => {
+                format!("{}{percent_text}", t(ChatEmbedMsg::ContextLabel))
+            }
         }
     }
 
@@ -473,8 +736,11 @@ impl AgentChatDemo {
         }
         let reason = match &embed.binding {
             Binding::Locked(anchor) if !anchor::is_alive(anchor, &embed.open()) => Some(format!(
-                "「{}」没有打开的终端，先重新连接或改用当前主机",
-                anchor.name
+                "{}{}{}{}",
+                t(ChatEmbedMsg::CornerLeft),
+                anchor.name,
+                t(ChatEmbedMsg::CornerRight),
+                t(ChatEmbedMsg::NoOpenTerminalSuffix)
             )),
             _ => None,
         };
@@ -527,7 +793,7 @@ impl AgentChatDemo {
     pub fn rebind_to_current(&mut self, cx: &mut Context<Self>) {
         if self.chat.is_running() {
             self.link_notice = Some(super::Notice {
-                text: "AI 正在回答，等这一轮结束再改用当前主机".to_owned(),
+                text: t(ChatEmbedMsg::RebindWhileRunning).to_owned(),
                 error: false,
             });
             cx.notify();
@@ -548,7 +814,8 @@ impl AgentChatDemo {
                 let name = anchor.name.clone();
                 embed.binding = Binding::Locked(anchor);
                 // 对话里留一条记录：之后的命令跑在哪台主机上，翻回去看得明白。
-                self.chat.push_system_line(format!("已改绑到 {name}"));
+                self.chat
+                    .push_system_line(format!("{}{name}", t(ChatEmbedMsg::ReboundPrefix)));
                 self.link_notice = None;
                 self.recompute_targets();
                 // 历史里的锚定跟着改（对话已经存过的话）。
@@ -584,8 +851,14 @@ impl AgentChatDemo {
                     anchor_name,
                     current_name,
                     ..
-                } => format!("对话绑定在 {anchor_name}；当前标签是 {current_name}"),
-                Banner::Dangling { anchor_name, .. } => format!("{anchor_name} 没有打开的终端"),
+                } => format!(
+                    "{}{anchor_name}{}{current_name}",
+                    t(ChatEmbedMsg::BannerMismatchPrefix),
+                    t(ChatEmbedMsg::BannerMismatchMiddle)
+                ),
+                Banner::Dangling { anchor_name, .. } => {
+                    format!("{anchor_name}{}", t(ChatEmbedMsg::NoTerminalSuffix))
+                }
             }
         })
     }
@@ -720,13 +993,17 @@ impl AgentChatDemo {
                 .selectable()
                 .into_iter()
                 .find(|endpoint| endpoint.name == name)
-                .ok_or("没有这个 ZeePilot 接口，或它没配 Key")?;
+                .ok_or(t(ChatEmbedMsg::NoZeePilotEndpoint))?;
             self.switch_builtin_endpoint(endpoint.id, cx);
             return Ok(());
         }
-        let kind = crate::agent_setup::AgentKind::parse(id).ok_or("不认识的智能体")?;
+        let kind = crate::agent_setup::AgentKind::parse(id).ok_or(t(ChatEmbedMsg::UnknownAgent))?;
         if let Some(note) = self.status.get(kind).availability().selector_note() {
-            return Err(format!("{} 不可选：{note}", kind.label()));
+            return Err(format!(
+                "{}{}{note}",
+                kind.label(),
+                t(ChatEmbedMsg::NotSelectablePrefix)
+            ));
         }
         self.switch_agent(kind, cx);
         Ok(())
@@ -794,7 +1071,10 @@ impl AgentChatDemo {
         embed
             .selected()
             .and_then(|(index, _)| embed.picker.groups.get(index))
-            .map_or_else(|| "默认模型".to_owned(), |g| g.label.clone())
+            .map_or_else(
+                || t(ChatEmbedMsg::DefaultModel).to_owned(),
+                |g| g.label.clone(),
+            )
     }
 
     /// 强度下拉里的各项文字（模型不支持强度时是空的）。
@@ -845,7 +1125,7 @@ impl AgentChatDemo {
             .embed
             .as_ref()
             .and_then(|e| e.picker.groups.iter().position(|g| g.label == label))
-            .ok_or("模型下拉里没有这一项")?;
+            .ok_or(t(ChatEmbedMsg::ModelItemMissing))?;
         self.pick_model(index, cx);
         Ok(())
     }
@@ -856,13 +1136,17 @@ impl AgentChatDemo {
         label: &str,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let embed = self.embed.as_ref().ok_or("不是面板形态")?;
-        let (index, _) = embed.selected().ok_or("还没有模型目录")?;
-        let group = embed.picker.groups.get(index).ok_or("模型下拉没有这一项")?;
+        let embed = self.embed.as_ref().ok_or(t(ChatEmbedMsg::NotEmbedded))?;
+        let (index, _) = embed.selected().ok_or(t(ChatEmbedMsg::NoCatalogYet))?;
+        let group = embed
+            .picker
+            .groups
+            .get(index)
+            .ok_or(t(ChatEmbedMsg::ModelGroupMissing))?;
         let effort = model_picker::effort_choices(group)
             .into_iter()
             .find(|c| model_picker::effort_label(c.as_deref()) == label)
-            .ok_or("这个模型没有这档强度")?;
+            .ok_or(t(ChatEmbedMsg::NoSuchEffort))?;
         self.pick_effort(effort, cx);
         Ok(())
     }
@@ -903,7 +1187,7 @@ impl AgentChatDemo {
             .history_rows
             .get(index)
             .map(|row| row.id.clone())
-            .ok_or("历史里没有这一条")?;
+            .ok_or(t(ChatEmbedMsg::HistoryMissing))?;
         self.continue_history(&id, cx);
         Ok(())
     }
@@ -964,7 +1248,7 @@ impl AgentChatDemo {
             .approvals
             .first()
             .map(|approval| approval.call_id.clone())
-            .ok_or_else(|| "没有等批准的确认卡片".to_owned())?;
+            .ok_or_else(|| t(ChatEmbedMsg::NoPendingApproval).to_owned())?;
         self.answer_approval(&call_id, allow, cx);
         Ok(())
     }
@@ -991,9 +1275,14 @@ impl AgentChatDemo {
     /// 展开 / 收起第 `nth` 个折叠分组（从 0 数）。
     #[cfg(debug_assertions)]
     pub fn dev_toggle_group(&mut self, nth: usize, cx: &mut Context<Self>) -> Result<(), String> {
-        let message_index = self.chat.messages.len().checked_sub(1).ok_or("没有消息")?;
+        let message_index = self
+            .chat
+            .messages
+            .len()
+            .checked_sub(1)
+            .ok_or(t(ChatEmbedMsg::NoMessages))?;
         let Some(ChatMessage::Assistant(message)) = self.chat.messages.last() else {
-            return Err("最后一条不是助手消息".to_owned());
+            return Err(t(ChatEmbedMsg::LastNotAssistant).to_owned());
         };
         let views: Vec<_> = message.tools.iter().map(ToolCard::view).collect();
         let first = agent_tools::group_calls(&views)
@@ -1003,7 +1292,7 @@ impl AgentChatDemo {
                 _ => None,
             })
             .nth(nth)
-            .ok_or_else(|| "没有这个分组".to_owned())?;
+            .ok_or_else(|| t(ChatEmbedMsg::NoSuchGroup).to_owned())?;
         self.chat.toggle_group(message_index, first);
         // 调试断言 / 截图用：展开后看最新的一屏。
         self.scroll.scroll_to_bottom();
@@ -1041,9 +1330,13 @@ impl AgentChatDemo {
                         let failed = counted.iter().filter(|c| c.view().failed).count();
                         let mut line = agent_tools::summarize_calls(&tools);
                         if failed > 0 {
-                            line.push_str(&format!("（其中 {failed} 条失败）"));
+                            line.push_str(&format!(
+                                "{}{failed}{}",
+                                t(ChatMsg::GroupFailedPrefix),
+                                t(ChatMsg::GroupFailedSuffix)
+                            ));
                         }
-                        out.push(format!("[组] {line}"));
+                        out.push(format!("{}{line}", t(ChatEmbedMsg::GroupPrefix)));
                         if ids
                             .first()
                             .is_some_and(|first| message.open_groups.contains(first))
@@ -1069,48 +1362,55 @@ impl AgentChatDemo {
             parts.push(format!("@{}", exec.label));
         }
         if self.chat.target_unknown(card) {
-            parts.push("执行目标未确定".to_owned());
+            parts.push(t(ChatEmbedMsg::TargetUnknown).to_owned());
         }
         if card.exec.is_some() && self.embed.is_some() {
-            parts.push("[查看终端]".to_owned());
+            parts.push(t(ChatEmbedMsg::ViewTerminalMark).to_owned());
         }
         parts.push(card_status_text(card));
         match card.approval {
-            ApprovalState::Pending => parts.push("需要确认".to_owned()),
-            ApprovalState::Allowed => parts.push("已允许".to_owned()),
-            ApprovalState::Denied => parts.push("已拒绝".to_owned()),
+            ApprovalState::Pending => parts.push(t(ChatEmbedMsg::NeedsConfirm).to_owned()),
+            ApprovalState::Allowed => parts.push(t(ChatEmbedMsg::Allowed).to_owned()),
+            ApprovalState::Denied => parts.push(t(ChatEmbedMsg::Denied).to_owned()),
             ApprovalState::NotRequired => {}
         }
         if card.dangerous() {
-            parts.push("危险".to_owned());
+            parts.push(t(ChatEmbedMsg::Danger).to_owned());
         }
         let mut text = parts.join(" | ");
         if let Some(command) = card.detail.as_ref().and_then(ApprovalDetail::command_text) {
-            text.push_str(&format!("\n命令：{command}"));
+            text.push_str(&format!("{}{command}", t(ChatEmbedMsg::CommandLinePrefix)));
         } else if let Some(command) = card.input.command() {
-            text.push_str(&format!("\n命令：{command}"));
+            text.push_str(&format!("{}{command}", t(ChatEmbedMsg::CommandLinePrefix)));
         } else if let Some(path) = agent_tools::path_of(&card.input_json()) {
-            text.push_str(&format!("\n路径：{path}"));
+            text.push_str(&format!("{}{path}", t(ChatEmbedMsg::PathLinePrefix)));
         }
         if let Some(file) = card.detail.as_ref().and_then(|d| d.request.file.as_ref()) {
             text.push_str(&format!(
-                "\n文件：{}（{}）",
+                "{}{}{}{}{}",
+                t(ChatEmbedMsg::FileLinePrefix),
                 file.path,
+                t(ChatMsg::ParenLeft),
                 if file.is_new {
-                    "新建"
+                    t(ChatEmbedMsg::NewFile)
                 } else {
-                    "覆盖前自动备份"
-                }
+                    t(ChatEmbedMsg::AutoBackup)
+                },
+                t(ChatMsg::ParenRight)
             ));
         }
         if let Some(error) = &card.error {
-            text.push_str(&format!("\n错误：{error}"));
+            text.push_str(&format!("{}{error}", t(ChatEmbedMsg::ErrorLinePrefix)));
         }
         for (line, _) in card_detail_lines(card) {
             text.push_str(&format!("\n{line}"));
         }
         if let Some(output) = &card.output {
-            text.push_str(&format!("\n输出：{}", agent_tools::readable_output(output)));
+            text.push_str(&format!(
+                "{}{}",
+                t(ChatEmbedMsg::OutputLinePrefix),
+                agent_tools::readable_output(output)
+            ));
         }
         text
     }
@@ -1128,7 +1428,7 @@ impl AgentChatDemo {
             })
             .flat_map(|message| message.tools.iter())
             .find_map(|card| card.exec.clone())
-            .ok_or_else(|| "没有带执行位置的卡片".to_owned())?;
+            .ok_or_else(|| t(ChatEmbedMsg::NoExecCard).to_owned())?;
         self.view_terminal(&exec, cx);
         Ok(())
     }
@@ -1240,7 +1540,7 @@ impl AgentChatDemo {
             .as_ref()
             .and_then(|(index, _)| picker.groups.get(*index))
             .map(|group| group.label.clone())
-            .unwrap_or_else(|| "默认模型".to_owned())
+            .unwrap_or_else(|| t(ChatEmbedMsg::DefaultModel).to_owned())
             .into();
         let effort_label: SharedString =
             model_picker::effort_label(selected.as_ref().and_then(|(_, effort)| effort.as_deref()))
@@ -1281,11 +1581,11 @@ impl AgentChatDemo {
                 // 模型名先省略（Button 的标签自带省略号），悬停显示全名。
                 .max_w(px(model_max))
                 .tooltip(if has_catalog {
-                    format!("模型：{model_label}")
+                    format!("{}{model_label}", t(ChatEmbedMsg::ModelTooltipPrefix))
                 } else if blocked {
-                    "这个智能体现在不能用".to_owned()
+                    t(ChatEmbedMsg::AgentUnavailable).to_owned()
                 } else {
-                    "正在读取模型目录".to_owned()
+                    t(ChatEmbedMsg::LoadingModels).to_owned()
                 })
                 .disabled(!has_catalog || blocked)
                 .dropdown_menu_with_anchor(::gpui::Anchor::BottomLeft, move |menu, _window, _cx| {
@@ -1294,7 +1594,7 @@ impl AgentChatDemo {
                         let entity = entity.clone();
                         let mut label = group.label.clone();
                         if group.unavailable {
-                            label.push_str("（不可用）");
+                            label.push_str(t(ChatEmbedMsg::ChipUnavailable));
                         }
                         menu = menu.item(
                             menu_kit::choice(label, current_group == Some(index)).on_click(
@@ -1315,11 +1615,12 @@ impl AgentChatDemo {
                 EffortStyle::Full => button
                     .label(effort_label.clone())
                     .dropdown_caret(true)
-                    .tooltip("思考强度"),
+                    .tooltip(t(ChatEmbedMsg::EffortTooltip)),
                 // 窄面板：只剩图标，悬停显示当前值。
-                EffortStyle::IconOnly => button
-                    .icon(Ico::Brain)
-                    .tooltip(format!("思考强度：{effort_label}")),
+                EffortStyle::IconOnly => button.icon(Ico::Brain).tooltip(format!(
+                    "{}{effort_label}",
+                    t(ChatEmbedMsg::EffortTooltipPrefix)
+                )),
             };
             button.dropdown_menu_with_anchor(
                 ::gpui::Anchor::BottomLeft,
@@ -1364,13 +1665,13 @@ impl AgentChatDemo {
                 .label(mode_text)
                 .dropdown_caret(true)
                 .when(tone == ModeTone::Caution, |b| b.text_color(caution))
-                .tooltip("执行模式")
+                .tooltip(t(ChatEmbedMsg::ModeTooltip))
                 .dropdown_menu_with_anchor(::gpui::Anchor::BottomLeft, move |menu, _window, _cx| {
                     let mut menu = menu.min_w(px(200.0));
                     for (mode, hint) in [
-                        (ExecMode::Manual, "每条命令都要你点确认"),
-                        (ExecMode::ReadOnly, "查看类命令直接执行，改动系统的要确认"),
-                        (ExecMode::Auto, "所有命令直接执行，不再确认"),
+                        (ExecMode::Manual, t(ChatEmbedMsg::ModeManualHint)),
+                        (ExecMode::ReadOnly, t(ChatEmbedMsg::ModeReadOnlyHint)),
+                        (ExecMode::Auto, t(ChatEmbedMsg::ModeAutoHint)),
                     ] {
                         let entity = entity.clone();
                         menu = menu.item(
@@ -1411,7 +1712,7 @@ impl AgentChatDemo {
             icon_button(
                 "ai-history",
                 Icon::new(Ico::Clock),
-                "历史会话",
+                t(ChatEmbedMsg::HistoryTitle),
                 self.history != HistoryPanel::Closed,
             )
             .on_click(move |_, _window, cx| {
@@ -1423,7 +1724,7 @@ impl AgentChatDemo {
             icon_button(
                 "ai-clear",
                 Icon::new(IconName::Plus),
-                "新对话（清空当前对话）",
+                t(ChatEmbedMsg::NewChatTip),
                 false,
             )
             .on_click(move |_, _window, cx| {
@@ -1463,9 +1764,9 @@ impl AgentChatDemo {
             let dangling = target.dangling;
             let grayed = refusal.is_some() || dangling;
             let label: SharedString = chip_label(target, refusal.is_some()).into();
-            let tip: Option<String> = refusal
-                .clone()
-                .or_else(|| dangling.then(|| format!("{} 没有打开的终端", target.name)));
+            let tip: Option<String> = refusal.clone().or_else(|| {
+                dangling.then(|| format!("{}{}", target.name, t(ChatEmbedMsg::NoTerminalSuffix)))
+            });
             h_flex()
                 .id(("ai-target", index))
                 .items_center()
@@ -1490,7 +1791,7 @@ impl AgentChatDemo {
                             .text_color(muted)
                             .hover(move |style| style.text_color(text))
                             .tooltip(|window, cx| {
-                                Tooltip::new("从这次对话的目标里去掉").build(window, cx)
+                                Tooltip::new(t(ChatEmbedMsg::RemoveTargetTip)).build(window, cx)
                             })
                             .child(Icon::new(IconName::Close).size_3())
                             .on_click(move |_, _window, cx| {
@@ -1510,10 +1811,8 @@ impl AgentChatDemo {
                 .cursor_pointer()
                 .text_color(muted)
                 .hover(move |style| style.bg(hover).text_color(text))
-                .tooltip(|window, cx| {
-                    Tooltip::new("把主机库里的另一台主机加进目标").build(window, cx)
-                })
-                .child("@ 主机")
+                .tooltip(|window, cx| Tooltip::new(t(ChatEmbedMsg::AddTargetTip)).build(window, cx))
+                .child(t(ChatEmbedMsg::AddHostButton))
                 .on_click(move |_, _window, cx| {
                     entity.update(cx, |this, cx| {
                         if let Some(embed) = this.embed.as_mut() {
@@ -1544,9 +1843,11 @@ impl AgentChatDemo {
         let banner_row = banner.map(|banner| {
             let new_convo = {
                 let entity = entity.clone();
-                small_button("ai-banner-new", "新对话".to_owned()).on_click(move |_, _w, cx| {
-                    entity.update(cx, |this, cx| this.new_conversation(cx));
-                })
+                small_button("ai-banner-new", t(ChatEmbedMsg::NewChat).to_owned()).on_click(
+                    move |_, _w, cx| {
+                        entity.update(cx, |this, cx| this.new_conversation(cx));
+                    },
+                )
             };
             let row = h_flex()
                 .id("ai-anchor-banner")
@@ -1562,16 +1863,20 @@ impl AgentChatDemo {
                 } => row
                     .text_color(muted)
                     .child(SharedString::from(format!(
-                        "对话绑定在 {anchor_name}；当前标签是 {current_name}"
+                        "{}{anchor_name}{}{current_name}",
+                        t(ChatEmbedMsg::BannerMismatchPrefix),
+                        t(ChatEmbedMsg::BannerMismatchMiddle)
                     )))
                     .when(can_rebind, |d| {
                         let entity = entity.clone();
                         d.child(
-                            small_button("ai-rebind", format!("改用 {current_name}")).on_click(
-                                move |_, _w, cx| {
-                                    entity.update(cx, |this, cx| this.rebind_to_current(cx));
-                                },
-                            ),
+                            small_button(
+                                "ai-rebind",
+                                format!("{}{current_name}", t(ChatEmbedMsg::UseNamedPrefix)),
+                            )
+                            .on_click(move |_, _w, cx| {
+                                entity.update(cx, |this, cx| this.rebind_to_current(cx));
+                            }),
                         )
                     })
                     .child(new_convo),
@@ -1582,25 +1887,28 @@ impl AgentChatDemo {
                 } => row
                     .text_color(warn)
                     .child(SharedString::from(format!(
-                        "{anchor_name} 没有打开的终端，对话先停在这里"
+                        "{anchor_name}{}",
+                        t(ChatEmbedMsg::BannerDanglingSuffix)
                     )))
                     .when(can_reconnect, |d| {
                         let entity = entity.clone();
                         d.child(
-                            small_button("ai-reconnect", format!("重新连接 {anchor_name}"))
-                                .on_click(move |_, _w, cx| {
-                                    entity.update(cx, |this, cx| this.reopen_anchor_host(cx));
-                                }),
+                            small_button(
+                                "ai-reconnect",
+                                format!("{}{anchor_name}", t(ChatEmbedMsg::ReconnectPrefix)),
+                            )
+                            .on_click(move |_, _w, cx| {
+                                entity.update(cx, |this, cx| this.reopen_anchor_host(cx));
+                            }),
                         )
                     })
                     .when(can_use_current, |d| {
                         let entity = entity.clone();
                         d.child(
-                            small_button("ai-use-current", "改用当前主机".to_owned()).on_click(
-                                move |_, _w, cx| {
+                            small_button("ai-use-current", t(ChatEmbedMsg::UseCurrent).to_owned())
+                                .on_click(move |_, _w, cx| {
                                     entity.update(cx, |this, cx| this.rebind_to_current(cx));
-                                },
-                            ),
+                                }),
                         )
                     })
                     .child(new_convo),
@@ -1619,7 +1927,12 @@ impl AgentChatDemo {
                     .gap_1()
                     .flex_wrap()
                     .items_center()
-                    .child(div().text_xs().text_color(muted).child("目标主机："))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(t(ChatEmbedMsg::TargetHostsPrefix)),
+                    )
                     .children(target_chips)
                     .child(add_target),
             )
@@ -1628,7 +1941,7 @@ impl AgentChatDemo {
                     div()
                         .text_xs()
                         .text_color(tokens.caution)
-                        .child(NO_HOST_HINT),
+                        .child(t(ChatMsg::NoHostHint)),
                 )
             })
             .children(refused_reason.map(|reason| {
@@ -1676,7 +1989,7 @@ impl AgentChatDemo {
                             .py_1()
                             .text_xs()
                             .text_color(muted)
-                            .child("没有可以加入的主机"),
+                            .child(t(ChatEmbedMsg::NoHostsToAdd)),
                     )
                 })
                 .children(candidates.iter().enumerate().map(|(index, (id, name))| {
@@ -1699,7 +2012,7 @@ impl AgentChatDemo {
                             })
                         })
                         .child(SharedString::from(if refusal.is_some() {
-                            format!("{name}（仅 SSH 主机可用）")
+                            format!("{name}{}", t(ChatEmbedMsg::SshOnly))
                         } else {
                             name.clone()
                         }))
@@ -1763,9 +2076,9 @@ impl AgentChatDemo {
                 .when(stopping, |b| b.outline().icon(Ico::Square))
                 .when(!stopping, |b| b.primary().icon(IconName::ArrowUp))
                 .tooltip(if stopping {
-                    "停止"
+                    t(ChatEmbedMsg::Stop)
                 } else {
-                    "发送（Enter）"
+                    t(ChatEmbedMsg::SendEnter)
                 })
                 .disabled(blocked && !stopping)
                 .on_click(move |_, window, cx| {
@@ -1930,7 +2243,11 @@ impl AgentChatDemo {
             if let Some(text) = self.storage_error.clone() {
                 lines.push(
                     notice(
-                        format!("设置库不可用：{text}；执行模式改动不会保存。"),
+                        format!(
+                            "{}{text}{}",
+                            t(ChatMsg::SettingsUnavailablePrefix),
+                            t(ChatMsg::SettingsUnavailableNoSaveSuffix)
+                        ),
                         true,
                     )
                     .into_any_element(),
@@ -1964,7 +2281,7 @@ impl AgentChatDemo {
                 .border_color(tokens.border)
                 .bg(tokens.surface)
                 .cursor_pointer()
-                .tooltip(|window, cx| Tooltip::new("回到底部").build(window, cx))
+                .tooltip(|window, cx| Tooltip::new(t(ChatEmbedMsg::BackToBottom)).build(window, cx))
                 .child(Icon::new(IconName::ArrowDown).size_4())
                 .on_click(move |_, _window, cx| {
                     entity.update(cx, |this, cx| {
@@ -1980,8 +2297,8 @@ impl AgentChatDemo {
             .filter(|e| e.usage_open)
             .and(shown_usage.as_ref())
             .map(|usage| {
-                let fallback =
-                    (model_label.as_ref() != "默认模型").then(|| model_label.to_string());
+                let fallback = (model_label.as_ref() != t(ChatEmbedMsg::DefaultModel))
+                    .then(|| model_label.to_string());
                 let lines = usage_view::detail_lines(usage, fallback.as_deref());
                 let close = entity.clone();
                 let mut card = v_flex()
@@ -2003,14 +2320,21 @@ impl AgentChatDemo {
                         div()
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("上下文用量"),
+                            .child(t(ChatEmbedMsg::ContextUsageTitle)),
                     );
                 for (index, (name, value)) in lines.into_iter().enumerate() {
                     // 「已用 / 窗口」是总览，下面几行是本轮的明细：中间留一条小标题。
                     if index == 1 {
-                        card = card.child(div().pt_1().text_xs().text_color(muted).child("本轮"));
+                        card = card.child(
+                            div()
+                                .pt_1()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(t(ChatEmbedMsg::ThisTurn)),
+                        );
                     }
-                    let stacked = name == "已用 / 窗口" || name == "模型";
+                    let stacked = name == t(usage_view::UsageMsg::Window)
+                        || name == t(usage_view::UsageMsg::Model);
                     card = card.child(if stacked {
                         v_flex()
                             .gap_0p5()

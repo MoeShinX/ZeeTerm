@@ -21,13 +21,46 @@ use zssh_core::ai::agent::builtin::tokenway::{ChatFailureAction, classify_chat_f
 
 use crate::app_theme::Tokens;
 
+use super::ChatMsg;
 use super::{
     AgentChatDemo, AgentSession, CardKind, ChatMessage, ChatState, HostEvent, ModelChoice,
     start_builtin_agent,
 };
 use crate::agent_setup::AgentKind;
 use crate::agent_setup::builtin::{self, RemoteModels};
+use crate::i18n::{Msg, t};
 use crate::ssh_backend::runtime;
+
+/// 内置助手自己的按钮 / 提示文案。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChatBuiltinMsg {
+    Reconnect,
+    TopUp,
+    StartFailedPrefix,
+    NoToolsHint,
+}
+
+impl Msg for ChatBuiltinMsg {
+    fn zh(&self) -> &'static str {
+        let key = *self;
+        match key {
+            Self::Reconnect => "重新连接",
+            Self::TopUp => "充值",
+            Self::StartFailedPrefix => "启动 ZeePilot 失败：",
+            Self::NoToolsHint => "该模型不支持工具调用，只能聊天",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        let key = *self;
+        match key {
+            Self::Reconnect => "Reconnect",
+            Self::TopUp => "Top Up",
+            Self::StartFailedPrefix => "Failed to start ZeePilot: ",
+            Self::NoToolsHint => "This model does not support tool calls; it can only chat",
+        }
+    }
+}
 
 /// 面板里内置助手的状态。
 #[derive(Default)]
@@ -131,9 +164,13 @@ impl AgentChatDemo {
         let label = info.label_for(id);
         self.link_notice = Some(super::Notice {
             text: if started {
-                format!("已切换到 {label}，开始新对话")
+                format!(
+                    "{}{label}{}",
+                    t(ChatMsg::SwitchedToPrefix),
+                    t(ChatMsg::SwitchedToNewSuffix)
+                )
             } else {
-                format!("已切换到 {label}")
+                format!("{}{label}", t(ChatMsg::SwitchedToPrefix))
             },
             error: false,
         });
@@ -181,7 +218,7 @@ impl AgentChatDemo {
         if invalid {
             chip = chip.child(
                 Button::new("ai-balance-reconnect")
-                    .label("重新连接")
+                    .label(t(ChatBuiltinMsg::Reconnect))
                     .ghost()
                     .compact()
                     .on_click(|_, _, _| crate::agent_setup::tokenway::request_reconnect()),
@@ -189,7 +226,7 @@ impl AgentChatDemo {
         } else if view.needs_topup {
             chip = chip.child(
                 Button::new("ai-balance-topup")
-                    .label("充值")
+                    .label(t(ChatBuiltinMsg::TopUp))
                     .ghost()
                     .compact()
                     .on_click(|_, _, _| {
@@ -425,7 +462,7 @@ impl AgentChatDemo {
             return None;
         }
         let (_, caps) = self.builtin_caps_now()?;
-        builtin::lacks_tools(&caps).then_some(NO_TOOLS_HINT)
+        builtin::lacks_tools(&caps).then_some(t(ChatBuiltinMsg::NoToolsHint))
     }
 
     /// 第一次发送：后台建内置助手对话（读 Key、建传输层、加载资料库），然后发第一条消息。
@@ -447,7 +484,7 @@ impl AgentChatDemo {
         let runtime = match runtime() {
             Ok(runtime) => runtime,
             Err(err) => {
-                self.start_failed(format!("启动 ZeePilot 失败：{err}"), cx);
+                self.start_failed(format!("{}{err}", t(ChatBuiltinMsg::StartFailedPrefix)), cx);
                 return;
             }
         };
@@ -505,9 +542,6 @@ impl AgentChatDemo {
         changed
     }
 }
-
-/// 输入框上方的提示文字。
-pub(super) const NO_TOOLS_HINT: &str = "该模型不支持工具调用，只能聊天";
 
 impl ChatState {
     /// 内置助手的旁路信号。
