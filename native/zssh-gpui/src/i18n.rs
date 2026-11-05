@@ -100,13 +100,20 @@ pub(crate) fn set(lang: Lang, cx: &mut App) {
     crate::app_theme::set_mode(crate::app_theme::is_dark(cx), cx);
 }
 
+/// 一条界面文案：两个语言各一句。各功能模块可以在自己的文件里定义枚举并实现它，
+/// 不用把全应用的文案堆在一个大表里（也避免多人同时改一个文件）。
+pub(crate) trait Msg {
+    fn zh(&self) -> &'static str;
+    fn en(&self) -> &'static str;
+}
+
 /// 取一句界面文案。键是稳定标识，不是中文原文——以后加语言只加表，不改调用点。
 ///
 /// 只放**应用自己的**文案：远端输出、用户名、路径、命令、用户自定义名称都不经这里。
-pub(crate) fn t(key: Key) -> &'static str {
+pub(crate) fn t<M: Msg>(key: M) -> &'static str {
     match current() {
-        Lang::Zh => key.zh(),
-        Lang::En => key.en(),
+        Lang::Zh => Msg::zh(&key),
+        Lang::En => Msg::en(&key),
     }
 }
 
@@ -157,9 +164,10 @@ pub(crate) enum Key {
     NavAbout,
 }
 
-impl Key {
-    fn zh(self) -> &'static str {
-        match self {
+impl Msg for Key {
+    fn zh(&self) -> &'static str {
+        let key = *self;
+        match key {
             Self::TrayShowPrefix => "显示 ",
             Self::TrayLock => "锁定",
             Self::TrayCheckUpdate => "检查更新",
@@ -203,8 +211,9 @@ impl Key {
         }
     }
 
-    fn en(self) -> &'static str {
-        match self {
+    fn en(&self) -> &'static str {
+        let key = *self;
+        match key {
             Self::TrayShowPrefix => "Show ",
             Self::TrayLock => "Lock",
             Self::TrayCheckUpdate => "Check for Updates",
