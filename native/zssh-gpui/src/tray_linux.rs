@@ -8,15 +8,21 @@
 //! 托盘服务已建好 **并且** StatusNotifierWatcher 在线（[`available`]）。
 //! - [`close_action`]：不可用时一律退出，不管设置里选的是什么；
 //! - [`hide`]：不可用时什么都不做（窗口留在屏幕上）；
+//! - 宿主是否在线**一开始是未知的**，按"没有托盘"处理：ksni 只在宿主**下线 / 重新上线**时回调
+//!   `watcher_offline` / `watcher_online`，启动时宿主本来就在是不回调的；所以以 `spawn()` 返回为界——
+//!   它返回前如果没有收到 `watcher_offline`（初次登记失败会在返回前同步回调），才确认在线。
+//!   在这之前"启动时隐藏"和"关窗口"都不会把窗口藏起来；
 //! - 宿主后来出现 / 消失：ksni 在 `org.kde.StatusNotifierWatcher` 上线 / 下线时回调
 //!   `watcher_online` / `watcher_offline`，这里据此更新可用状态并通知界面（设置页的提示跟着变）；
-//!   窗口正被收在托盘里时宿主消失了，立刻把窗口叫出来，免得用户找不回来。
+//!   窗口正被收在托盘里时宿主消失了，立刻把窗口叫出来，免得用户找不回来；
+//! - 左键点图标（[`toggle_action`]）：窗口被收在托盘里、不可见（最小化）或不在前台，一律叫到前台，
+//!   只有"可见且在前台"才收起——否则用户自己最小化的窗口，第一次点托盘会"再收一次"（还可能顺带锁屏）。
 //!
 //! 收起主窗口 = 最小化（GPUI 没有"隐藏窗口"，Wayland 本身也没有）。从托盘点回来用 `activate_window`；
 //! Wayland 下激活请求可能被合成器当作抢焦点而拒绝（GNOME 会弹"ZeeTerm 已就绪"通知），
 //! 这是协议层面的限制，窗口仍在概览 / 任务切换里。
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -70,6 +76,25 @@ pub fn hide(window: &mut gpui::Window) {
     window.minimize_window();
 }
 
+/// 左键点托盘图标之后该做什么。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToggleAction {
+    BringToFront,
+    Hide,
+}
+
+/// 窗口收在托盘里（`hidden`）、不可见（GPUI 的 `is_visible()` 在最小化时为假）或不在前台（`active` 为假）时，
+/// 都叫到前台；只有"可见且在前台"才收起。GPUI 没有单独的"是否最小化"接口，这两项合起来够用：
+/// 用户自己点标题栏最小化的窗口，`hidden` 仍是假，但它不可见也不在前台。
+/// 代价：窗口可见但被别的窗口盖住时点托盘，也是"叫到前面"而不是收起，和多数 SNI 应用一致。
+fn toggle_action(hidden: bool, visible: bool, active: bool) -> ToggleAction {
+    if hidden || !visible || !active {
+        ToggleAction::BringToFront
+    } else {
+        ToggleAction::Hide
+    }
+}
+
 /// 把窗口放到最前面（GNOME/Wayland 下由合成器决定，激活请求可能被忽略）。
 pub fn bring_to_front(window: &mut gpui::Window) {
     state().hidden.store(false, Ordering::Release);
@@ -79,12 +104,58 @@ pub fn bring_to_front(window: &mut gpui::Window) {
 // ---------------------------------------------------------------------------------------------
 // 状态
 
+/// `org.kde.StatusNotifierWatcher` 的在线状态。三态：启动时还没确认的"未知"不能当成在线。
+struct Watcher(AtomicU8);
+
+impl Watcher {
+    const UNKNOWN: u8 = 0;
+    const UP: u8 = 1;
+    const DOWN: u8 = 2;
+
+    const fn new() -> Self {
+        Self(AtomicU8::new(Self::UNKNOWN))
+    }
+
+    fn is_up(&self) -> bool {
+        self.0.load(Ordering::Acquire) == Self::UP
+    }
+
+    /// 已经明确收到过"下线"（只给测试等它用；"未知"不算）。
+    #[cfg(test)]
+    fn is_down(&self) -> bool {
+        self.0.load(Ordering::Acquire) == Self::DOWN
+    }
+
+    /// ksni 的回调：宿主上线了。
+    fn set_up(&self) {
+        self.0.store(Self::UP, Ordering::Release);
+    }
+
+    /// ksni 的回调：宿主下线了。
+    fn set_down(&self) {
+        self.0.store(Self::DOWN, Ordering::Release);
+    }
+
+    /// 重新建服务之前：之前的结论作废。
+    fn reset(&self) {
+        self.0.store(Self::UNKNOWN, Ordering::Release);
+    }
+
+    /// `spawn()` 返回后：期间没有收到过任何回调（还是"未知"）就确认在线；已经收到下线 / 上线回调的不动。
+    /// 用比较交换而不是先读后写，避免把紧跟着到的 `watcher_offline` 覆盖掉。
+    fn confirm_up_if_unknown(&self) {
+        let _ =
+            self.0
+                .compare_exchange(Self::UNKNOWN, Self::UP, Ordering::AcqRel, Ordering::Acquire);
+    }
+}
+
 /// 托盘相关的进程级状态。全是原子量：ksni 的回调在它自己的线程里，界面线程随时要读。
 struct State {
     /// 托盘服务已建好（`ksni` 的 `spawn` 成功）。
     spawned: AtomicBool,
     /// `org.kde.StatusNotifierWatcher` 在线（没有它，图标没地方显示）。
-    watcher_up: AtomicBool,
+    watcher: Watcher,
     /// 主窗口是被我们收进托盘的（最小化了）。
     hidden: AtomicBool,
     /// 锁屏启用了没有，决定菜单里有没有「锁定」。
@@ -95,14 +166,14 @@ impl State {
     const fn new() -> Self {
         Self {
             spawned: AtomicBool::new(false),
-            watcher_up: AtomicBool::new(true),
+            watcher: Watcher::new(),
             hidden: AtomicBool::new(false),
             lock_menu: AtomicBool::new(false),
         }
     }
 
     fn available(&self) -> bool {
-        self.spawned.load(Ordering::Acquire) && self.watcher_up.load(Ordering::Acquire)
+        self.spawned.load(Ordering::Acquire) && self.watcher.is_up()
     }
 }
 
@@ -176,7 +247,7 @@ impl ksni::Tray for ZeeTray {
     }
 
     fn watcher_online(&self) {
-        self.state.watcher_up.store(true, Ordering::Release);
+        self.state.watcher.set_up();
         self.send(Command::AvailabilityChanged);
     }
 
@@ -185,7 +256,7 @@ impl ksni::Tray for ZeeTray {
             ?reason,
             "StatusNotifierWatcher is offline, the tray icon is not shown"
         );
-        self.state.watcher_up.store(false, Ordering::Release);
+        self.state.watcher.set_down();
         self.send(Command::AvailabilityChanged);
         // 服务继续留着：宿主回来时 ksni 会自动重新登记
         true
@@ -273,8 +344,9 @@ fn try_spawn(
     tx: &Sender,
     lock_on: bool,
 ) -> Result<ksni::blocking::Handle<ZeeTray>, ksni::Error> {
-    // spawn 期间可能就回调 watcher_offline（没有 watcher），所以先假定在线
-    state.watcher_up.store(true, Ordering::Release);
+    // 宿主在不在线要等 `spawn()` 的结果才知道：先标成"未知"（按没有托盘处理），
+    // 初次登记失败时 ksni 会在 `spawn()` 返回前同步回调 `watcher_offline`。
+    state.watcher.reset();
     let handle = ZeeTray {
         state: Arc::clone(state),
         tx: tx.clone(),
@@ -283,6 +355,8 @@ fn try_spawn(
     .assume_sni_available(true)
     .spawn()?;
     state.spawned.store(true, Ordering::Release);
+    // `spawn()` 成功返回、期间没有 `watcher_offline`：宿主在线（启动时就在的宿主不会触发 `watcher_online`）。
+    state.watcher.confirm_up_if_unknown();
     let _ = tx.unbounded_send(Command::AvailabilityChanged);
     Ok(handle)
 }
@@ -346,19 +420,26 @@ pub fn spawn(cx: &mut App, window: AnyWindowHandle, main: Entity<crate::main_win
                     let _ = window.update(cx, |_, window, _| bring_to_front(window));
                 }
                 Command::Toggle => {
-                    if state_hidden().load(Ordering::Acquire) {
-                        let _ = window.update(cx, |_, window, _| bring_to_front(window));
-                    } else {
-                        // 和点关闭按钮收进托盘走同一套：记住位置布局，需要的话先锁定
-                        let main = main.clone();
-                        let _ = window.update(cx, move |_, window, cx| {
-                            main.update(cx, |this, cx| {
-                                this.save_state(window);
-                                this.lock_for_tray(cx);
-                            });
-                            hide(window);
-                        });
-                    }
+                    // 窗口的真实状态要在界面线程上读：收在托盘里 / 不可见（最小化）/ 不在前台 -> 叫出来。
+                    let main = main.clone();
+                    let _ = window.update(cx, move |_, window, cx| {
+                        let action = toggle_action(
+                            state_hidden().load(Ordering::Acquire),
+                            window.is_visible(),
+                            window.is_window_active(),
+                        );
+                        match action {
+                            ToggleAction::BringToFront => bring_to_front(window),
+                            ToggleAction::Hide => {
+                                // 和点关闭按钮收进托盘走同一套：记住位置布局，需要的话先锁定
+                                main.update(cx, |this, cx| {
+                                    this.save_state(window);
+                                    this.lock_for_tray(cx);
+                                });
+                                hide(window);
+                            }
+                        }
+                    });
                 }
                 Command::Lock => {
                     let main = main.clone();
@@ -433,11 +514,50 @@ mod tests {
         let state = State::new();
         assert!(!state.available(), "服务还没建好");
         state.spawned.store(true, Ordering::Release);
+        assert!(!state.available(), "宿主在不在线还没确认：按没有托盘处理");
+        state.watcher.set_up();
         assert!(state.available());
-        state.watcher_up.store(false, Ordering::Release);
+        state.watcher.set_down();
         assert!(!state.available(), "宿主(StatusNotifierWatcher)离线");
-        state.watcher_up.store(true, Ordering::Release);
+        state.watcher.set_up();
         assert!(state.available(), "宿主回来了");
+    }
+
+    #[test]
+    fn the_watcher_is_unknown_at_first_and_only_confirmed_when_no_callback_came() {
+        // 初始未知，不是在线：确认之前"启动时隐藏"和"关窗口"都当没有托盘。
+        let state = State::new();
+        state.spawned.store(true, Ordering::Release);
+        assert!(!state.available());
+        // spawn 返回、期间没有任何回调：确认在线。
+        state.watcher.confirm_up_if_unknown();
+        assert!(state.available());
+
+        // spawn 期间收到了 watcher_offline（原版 GNOME，没有宿主）：不能被"确认在线"覆盖。
+        let state = State::new();
+        state.spawned.store(true, Ordering::Release);
+        state.watcher.set_down();
+        state.watcher.confirm_up_if_unknown();
+        assert!(!state.available());
+
+        // 重新建服务之前，旧结论作废。
+        state.watcher.reset();
+        assert!(!state.available());
+    }
+
+    #[test]
+    fn clicking_the_icon_only_hides_a_visible_foreground_window() {
+        use ToggleAction::{BringToFront, Hide};
+        // 收在托盘里 -> 叫出来
+        assert_eq!(toggle_action(true, false, false), BringToFront);
+        assert_eq!(toggle_action(true, true, true), BringToFront);
+        // 用户自己最小化的（hidden 还是假，但不可见）-> 叫出来，不能再收一次
+        assert_eq!(toggle_action(false, false, false), BringToFront);
+        assert_eq!(toggle_action(false, false, true), BringToFront);
+        // 可见但不在前台 -> 叫到前台
+        assert_eq!(toggle_action(false, true, false), BringToFront);
+        // 可见且在前台 -> 收起
+        assert_eq!(toggle_action(false, true, true), Hide);
     }
 
     #[test]
@@ -606,9 +726,7 @@ mod dbus_tests {
         // 1. 先起托盘，此时还没有 watcher（原版 GNOME 的情形）：服务建好了，但不可用
         let handle = try_spawn(&state, &tx, false).expect("tray service starts without a watcher");
         assert!(state.spawned.load(Ordering::Acquire));
-        wait_until("watcher_offline", || {
-            !state.watcher_up.load(Ordering::Acquire)
-        });
+        wait_until("watcher_offline", || state.watcher.is_down());
         assert!(!state.available(), "没有宿主时不可用");
 
         // 2. 宿主出现（用户装上 / 启用了 AppIndicator 扩展）：自动登记，变为可用，并通知界面
