@@ -490,14 +490,26 @@ mod vault {
                 .send(Box::new(move || {
                     let _ = tx.send(call());
                 }))
-                .map_err(|_| ZsshError::Secret(Reason::text("钥匙串线程已经退出")))?;
+                .map_err(|_| {
+                    ZsshError::Secret(Reason::new("vault_key_thread_exited", "钥匙串线程已经退出"))
+                })?;
             // 60 秒超时：首次授权对话框可能需要用户交互，但不应该无限等待
-            rx.recv_timeout(std::time::Duration::from_secs(60))
+            let seconds = 60;
+            rx.recv_timeout(std::time::Duration::from_secs(seconds))
                 .map_err(|err| {
                     if err == std::sync::mpsc::RecvTimeoutError::Timeout {
-                        ZsshError::Secret(Reason::text("钥匙串操作超时（60 秒）"))
+                        ZsshError::Secret(
+                            Reason::new(
+                                "vault_key_timeout",
+                                format!("钥匙串操作超时（{seconds} 秒）"),
+                            )
+                            .with_all([("seconds", seconds.to_string())]),
+                        )
                     } else {
-                        ZsshError::Secret(Reason::text("钥匙串线程没有返回结果"))
+                        ZsshError::Secret(Reason::new(
+                            "vault_key_no_reply",
+                            "钥匙串线程没有返回结果",
+                        ))
                     }
                 })?
                 .map_err(key_error)
@@ -541,18 +553,38 @@ mod vault {
             return Err(ZsshError::Secret(Reason::text("本机信封不完整")));
         }
         let (nonce, ciphertext) = rest.split_at(NONCE_LEN);
+        let account = vault_account();
+        let legacy = account.starts_with("db-");
+        let decrypt = |key: &Zeroizing<[u8; 32]>| -> Result<Vec<u8>, ZsshError> {
+            XChaCha20Poly1305::new((&**key).into())
+                .decrypt(
+                    XNonce::from_slice(nonce),
+                    Payload {
+                        msg: ciphertext,
+                        aad: MAGIC,
+                    },
+                )
+                .map_err(|_| ZsshError::Secret(Reason::text("本机密文校验失败")))
+        };
         // 解密只读取已有密钥：缺失时失败，不新建一把把旧密文变成解不开的。
-        let key = vault_key(false)?;
-        let cipher = XChaCha20Poly1305::new((&*key).into());
-        cipher
-            .decrypt(
-                XNonce::from_slice(nonce),
-                Payload {
-                    msg: ciphertext,
-                    aad: MAGIC,
-                },
-            )
-            .map_err(|_| ZsshError::Secret(Reason::text("本机密文校验失败")))
+        let key = vault_key(false);
+        match key {
+            Ok(key) => match decrypt(&key) {
+                Ok(plain) => Ok(plain),
+                Err(_) if legacy => {
+                    // 旧路径身份的资料库在账户绑定之前把所有秘密写在 database-key 下。
+                    // 只对这种明确命名的旧库做一次只读回退；新库绝不回退。
+                    let _scope = VaultScope::new("database-key");
+                    decrypt(&vault_key(false)?)
+                }
+                Err(err) => Err(err),
+            },
+            Err(err) if legacy && is_key_missing(&err) => {
+                let _scope = VaultScope::new("database-key");
+                decrypt(&vault_key(false)?)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// `create` 为真且钥匙串里还没有密钥时，生成一把并保存。
@@ -1117,6 +1149,30 @@ mod macos_tests {
         let err = unprotect(b"not-a-vault-blob").unwrap_err();
         let text = err.to_string();
         assert!(text.contains("不是本机信封"), "{text}");
+    }
+
+    #[test]
+    fn only_legacy_path_accounts_may_read_the_old_default_key() {
+        let _serial = serial();
+        install();
+        vault::clear_cache_for_test();
+        // 旧版本把秘密写在 database-key 下。
+        initialize_vault("database-key").unwrap();
+        let blob = {
+            let _scope = VaultScope::new("database-key");
+            protect(b"legacy-secret").unwrap()
+        };
+
+        // 旧路径哈希账户（db-…）可以只读回退。
+        {
+            let _scope = VaultScope::new("db-legacy-path");
+            assert_eq!(unprotect(&blob).unwrap(), b"legacy-secret");
+        }
+        // 新的随机身份绝不回退到默认密钥。
+        {
+            let _scope = VaultScope::new("vault-new-account");
+            assert!(unprotect(&blob).is_err());
+        }
     }
 }
 

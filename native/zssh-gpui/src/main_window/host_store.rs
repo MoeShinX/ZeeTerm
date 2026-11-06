@@ -133,24 +133,46 @@ pub struct HostStore {
     tree_guides: bool,
     /// 打不开库或读失败的原因（界面原样显示，不崩）。
     error: Option<String>,
+    /// macOS 首次打开资料库可能要等 Keychain 授权。放到后台线程，界面先起来，
+    /// 节拍里的 `reload` 再接手；超时/取消只会变成一条错误，不会冻住窗口。
+    #[cfg(target_os = "macos")]
+    pending_open: Option<std::sync::mpsc::Receiver<Result<Database, String>>>,
 }
 
 impl HostStore {
     /// 打开数据目录里的库并读一遍。打不开不是致命的：显示原因，主机列表是空的。
     pub fn open() -> Self {
-        let mut store = match crate::host_db::open_database() {
-            Ok(db) => Self::with_db(Some(db), None),
-            Err(err) => Self::with_db(
-                None,
-                Some(format!(
-                    "{}{}",
-                    t(StoreMsg::OpenFailedPrefix),
-                    crate::error_text::error_text(&err)
-                )),
-            ),
-        };
-        store.reload();
-        store
+        #[cfg(target_os = "macos")]
+        {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let _ = std::thread::Builder::new()
+                .name("zssh-host-db-open".to_owned())
+                .spawn(move || {
+                    let result = crate::host_db::open_database()
+                        .map_err(|err| crate::error_text::error_text(&err));
+                    let _ = sender.send(result);
+                });
+            let mut store = Self::with_db(None, None);
+            store.pending_open = Some(receiver);
+            store.reload();
+            store
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut store = match crate::host_db::open_database() {
+                Ok(db) => Self::with_db(Some(db), None),
+                Err(err) => Self::with_db(
+                    None,
+                    Some(format!(
+                        "{}{}",
+                        t(StoreMsg::OpenFailedPrefix),
+                        crate::error_text::error_text(&err)
+                    )),
+                ),
+            };
+            store.reload();
+            store
+        }
     }
 
     fn with_db(db: Option<Database>, error: Option<String>) -> Self {
@@ -167,6 +189,8 @@ impl HostStore {
             host_os: BTreeMap::new(),
             tree_guides: true,
             error,
+            #[cfg(target_os = "macos")]
+            pending_open: None,
         }
     }
 
@@ -198,8 +222,29 @@ impl HostStore {
 
     /// 从库里重读；返回内容有没有变（界面据此决定要不要重绘）。读不出来时保留旧内容。
     pub fn reload(&mut self) -> bool {
+        let mut adopted = false;
+        #[cfg(target_os = "macos")]
+        if let Some(receiver) = self.pending_open.take() {
+            match receiver.try_recv() {
+                Ok(Ok(db)) => {
+                    self.db = Some(db);
+                    adopted = true;
+                }
+                Ok(Err(err)) => {
+                    self.error = Some(format!("{}{}", t(StoreMsg::OpenFailedPrefix), err));
+                    return true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.pending_open = Some(receiver);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.error = Some(t(StoreMsg::DbNotOpen).to_owned());
+                    return true;
+                }
+            }
+        }
         let Some(db) = &self.db else {
-            return false;
+            return adopted;
         };
         let mut error = None;
         fn read<T>(
@@ -271,7 +316,7 @@ impl HostStore {
         replace(&mut self.flat, Some(flat), &mut changed);
         replace(&mut self.host_os, host_os, &mut changed);
         replace(&mut self.tree_guides, Some(tree_guides), &mut changed);
-        changed
+        changed || adopted
     }
 
     // ---- 写操作：每一步写完立刻重读 ----
@@ -651,6 +696,32 @@ mod tests {
         assert!(!store.reload());
         assert_eq!(store.hosts().len(), 1);
         assert!(store.flat());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_background_database_open_is_adopted_by_the_next_reload() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut store = HostStore::with_db(None, None);
+        store.pending_open = Some(receiver);
+        assert!(!store.reload(), "还没打开时不假装有数据");
+        assert!(store.db().is_err());
+        sender
+            .send(Ok(Database::open_in_memory().expect("内存库")))
+            .unwrap();
+        assert!(store.reload(), "接手新库要通知界面重画");
+        assert!(store.db().is_ok());
+
+        // 后台打开失败也必须变成界面错误，而不是永远空白。
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut store = HostStore::with_db(None, None);
+        store.pending_open = Some(receiver);
+        sender.send(Err("授权失败".to_owned())).unwrap();
+        assert!(store.reload());
+        match store.db() {
+            Ok(_) => panic!("失败的后台打开不能变成可用库"),
+            Err(message) => assert!(message.contains("授权失败")),
+        }
     }
 
     #[test]

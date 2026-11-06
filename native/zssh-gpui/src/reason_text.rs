@@ -44,6 +44,9 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "vault_key_cancelled" => "Keychain authorization was cancelled; the key was not accessed",
         "vault_key_locked" => "The keychain is locked; the key was not accessed",
         "vault_key_failed" => "Failed to access the keychain (status {status})",
+        "vault_key_timeout" => "Timed out waiting for the keychain after {seconds} seconds",
+        "vault_key_thread_exited" => "The keychain worker stopped before handling the request",
+        "vault_key_no_reply" => "The keychain worker did not return a result",
         "vault_key_exists" => {
             "The database key already exists in the keychain and was not overwritten"
         }
