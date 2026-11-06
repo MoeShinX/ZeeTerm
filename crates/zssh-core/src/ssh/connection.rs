@@ -170,9 +170,11 @@ pub struct ServerKey {
 /// 这上面开多个 shell / SFTP 通道（见设计文档 4.1）。
 pub struct Connection {
     /// 字段顺序是有意的：drop 时先关目标这条连接，再关跳板机。
-    handle: Handle<ClientHandler>,
+    handle: Arc<Handle<ClientHandler>>,
     /// 远程转发（ssh -R）：服务器监听的端口 → 把连进来的通道交给谁处理。
     remote_forwards: RemoteForwardTable,
+    /// 取消请求与撤销登记串行完成，旧任务不能取消同端口的新监听。
+    remote_cleanup: Arc<tokio::sync::Mutex<()>>,
     /// X11 转发的分发表：服务器开的 X11 通道按握手包里的假 cookie 找到对应的终端。
     x11: X11Hub,
     server_key: ServerKey,
@@ -397,8 +399,9 @@ impl Connection {
         let identity = (!host.trim().is_empty() && !username.trim().is_empty())
             .then(|| server_identity(host, port, username));
         Ok(Self {
-            handle,
+            handle: Arc::new(handle),
             remote_forwards,
+            remote_cleanup: Arc::new(tokio::sync::Mutex::new(())),
             x11,
             server_key,
             auth_outcome,
@@ -489,55 +492,52 @@ impl Connection {
         sink: tokio::sync::mpsc::UnboundedSender<ForwardedChannel>,
     ) -> Result<u32, ZsshError> {
         let port = u32::from(bind_port);
-        // 先登记再发请求：服务器回复之前就可能有连接进来。端口已经有人登记了就直接拒绝，
-        // 不碰原来那条（复审 F3：以前直接覆盖，失败后又删掉，原来的转发跟着坏了）。
-        claim_remote_port(&self.remote_forwards, port, &sink)?;
-        match timeout(HOP_TIMEOUT, self.handle.tcpip_forward(bind_host, port)).await {
-            Ok(Ok(actual)) => {
-                if actual != 0 && actual != port {
-                    release_remote_port(&self.remote_forwards, port, &sink);
-                    if let Err(err) = claim_remote_port(&self.remote_forwards, actual, &sink) {
-                        let _ = timeout(
-                            HOP_TIMEOUT,
-                            self.handle.cancel_tcpip_forward(bind_host, actual),
-                        )
-                        .await;
-                        return Err(err);
-                    }
-                    return Ok(actual);
-                }
-                Ok(port)
-            }
-            Ok(Err(err)) => {
-                release_remote_port(&self.remote_forwards, port, &sink);
-                Err(match err {
+        let handle = Arc::clone(&self.handle);
+        let host = bind_host.to_owned();
+        let cancel_handle = Arc::clone(&self.handle);
+        let cancel_host = host.clone();
+        let result = spawn_remote_forward(
+            Arc::clone(&self.remote_forwards),
+            Arc::clone(&self.remote_cleanup),
+            port,
+            sink,
+            async move {
+                handle.tcpip_forward(&host, port).await.map_err(|err| match err {
                     russh::Error::RequestDenied => ZsshError::InvalidInput(
-                        Reason::new(
-                            rk::REMOTE_LISTEN_DENIED,
-                            format!(
-                                "服务器拒绝在 {bind_host}:{bind_port} 上监听（端口被占用，或者服务器关了转发）"
-                            ),
-                        )
-                        .with("host", bind_host)
-                        .with("port", bind_port),
+                        Reason::new(rk::REMOTE_LISTEN_DENIED,
+                            format!("服务器拒绝在 {host}:{bind_port} 上监听（端口被占用，或者服务器关了转发）"))
+                            .with("host", &host).with("port", bind_port),
                     ),
                     other => ZsshError::Ssh(other),
                 })
-            }
-            Err(_) => {
-                release_remote_port(&self.remote_forwards, port, &sink);
-                Err(ZsshError::ConnectTimeout {
-                    host: bind_host.to_owned(),
-                    port: bind_port,
-                    seconds: HOP_TIMEOUT.as_secs(),
-                })
-            }
+            },
+            move |actual| async move {
+                let _ = timeout(
+                    HOP_TIMEOUT,
+                    cancel_handle.cancel_tcpip_forward(&cancel_host, actual),
+                )
+                .await;
+            },
+        );
+        // 超时只结束调用方等待；已发出的请求仍须读完回复，才能取消服务器分配的端口。
+        match timeout(HOP_TIMEOUT, result).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(ZsshError::Ssh(russh::Error::Disconnect)),
+            Err(_) => Err(ZsshError::ConnectTimeout {
+                host: bind_host.to_owned(),
+                port: bind_port,
+                seconds: HOP_TIMEOUT.as_secs(),
+            }),
         }
     }
 
     /// 取消远程转发。连接已经断了也不算错。
     pub async fn stop_remote_forward(&self, bind_host: &str, port: u32) {
-        lock_table(&self.remote_forwards).remove(&port);
+        let _cleanup = self.remote_cleanup.lock().await;
+        let sink = lock_table(&self.remote_forwards).get(&port).cloned();
+        let Some(sink) = sink else {
+            return;
+        };
         if !self.is_closed() {
             let _ = timeout(
                 HOP_TIMEOUT,
@@ -545,6 +545,7 @@ impl Connection {
             )
             .await;
         }
+        release_remote_port(&self.remote_forwards, port, &sink);
     }
 
     /// 这条连接实际连到的服务器身份（用户名@主机:端口）；主机或用户名是空的时是 `None`。
@@ -1211,6 +1212,64 @@ pub struct ForwardedChannel {
 type RemoteForwardTable =
     Arc<std::sync::Mutex<HashMap<u32, tokio::sync::mpsc::UnboundedSender<ForwardedChannel>>>>;
 
+/// 请求任务独立于调用方存活；结果无人接收或 incoming 被丢弃时收回服务器监听。
+fn spawn_remote_forward<Request, Cancel, Cleanup>(
+    table: RemoteForwardTable,
+    cleanup_lock: Arc<tokio::sync::Mutex<()>>,
+    port: u32,
+    sink: tokio::sync::mpsc::UnboundedSender<ForwardedChannel>,
+    request: Request,
+    cancel: Cancel,
+) -> tokio::sync::oneshot::Receiver<Result<u32, ZsshError>>
+where
+    Request: std::future::Future<Output = Result<u32, ZsshError>> + Send + 'static,
+    Cancel: FnOnce(u32) -> Cleanup + Send + 'static,
+    Cleanup: std::future::Future<Output = ()> + Send + 'static,
+{
+    let (reply, result) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        if reply.is_closed() || sink.is_closed() {
+            return;
+        }
+        if let Err(err) = claim_remote_port(&table, port, &sink) {
+            let _ = reply.send(Err(err));
+            return;
+        }
+        let actual = match request.await {
+            Ok(0) => port,
+            Ok(actual) => actual,
+            Err(err) => {
+                release_remote_port(&table, port, &sink);
+                let _ = reply.send(Err(err));
+                return;
+            }
+        };
+        if actual != port {
+            if let Err(err) = claim_remote_port(&table, actual, &sink) {
+                let _cleanup = cleanup_lock.lock().await;
+                cancel(actual).await;
+                release_remote_port(&table, port, &sink);
+                let _ = reply.send(Err(err));
+                return;
+            }
+            release_remote_port(&table, port, &sink);
+        }
+        if reply.send(Ok(actual)).is_ok() {
+            sink.closed().await;
+        }
+        let _cleanup = cleanup_lock.lock().await;
+        let owned = lock_table(&table)
+            .get(&actual)
+            .is_some_and(|existing| existing.same_channel(&sink));
+        if owned {
+            // 取消完成前不腾出端口，防止迟到取消误伤新一代监听。
+            cancel(actual).await;
+            release_remote_port(&table, actual, &sink);
+        }
+    });
+    result
+}
+
 /// 登记一个远程转发端口；已经有别的转发登记了这个端口就报错，原来的不动。
 fn claim_remote_port(
     table: &RemoteForwardTable,
@@ -1506,6 +1565,129 @@ impl client::Handler for ClientHandler {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn remote_cancelled_start_cleans_late_allocated_port() {
+        let table = RemoteForwardTable::default();
+        let (sink, incoming) = tokio::sync::mpsc::unbounded_channel();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (finish, response) = tokio::sync::oneshot::channel();
+        let (stopped, stopped_rx) = tokio::sync::oneshot::channel();
+        let result = spawn_remote_forward(
+            Arc::clone(&table),
+            Arc::default(),
+            0,
+            sink,
+            async move {
+                started.send(()).unwrap();
+                Ok(response.await.unwrap())
+            },
+            move |port| async move {
+                stopped.send(port).unwrap();
+            },
+        );
+        ready.await.unwrap();
+        drop(result);
+        drop(incoming);
+        assert!(
+            lock_table(&table).contains_key(&0),
+            "请求尚未回复时保留占位"
+        );
+        finish.send(23456).unwrap();
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(1), stopped_rx)
+                .await
+                .unwrap()
+                .unwrap(),
+            23456
+        );
+        // 取消回调返回之后才释放登记。
+        tokio::task::yield_now().await;
+        assert!(lock_table(&table).is_empty());
+    }
+
+    #[tokio::test]
+    async fn remote_delivered_start_cleans_when_incoming_is_dropped() {
+        let table = RemoteForwardTable::default();
+        let (sink, incoming) = tokio::sync::mpsc::unbounded_channel();
+        let (stopped, stopped_rx) = tokio::sync::oneshot::channel();
+        let (finish_cancel, cancel_done) = tokio::sync::oneshot::channel();
+        let result = spawn_remote_forward(
+            Arc::clone(&table),
+            Arc::default(),
+            23456,
+            sink,
+            async { Ok(23456) },
+            move |port| async move {
+                stopped.send(port).unwrap();
+                cancel_done.await.unwrap();
+            },
+        );
+        assert_eq!(result.await.unwrap().unwrap(), 23456);
+        drop(incoming);
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(1), stopped_rx)
+                .await
+                .unwrap()
+                .unwrap(),
+            23456
+        );
+        let (next, _next_rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(
+            claim_remote_port(&table, 23456, &next).is_err(),
+            "取消完成前不能重用端口"
+        );
+        finish_cancel.send(()).unwrap();
+        // 同一任务内释放表项；以端口再次可登记作为确定性完成条件。
+        timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if claim_remote_port(&table, 23456, &next).is_ok() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(lock_table(&table).get(&23456).unwrap().same_channel(&next));
+    }
+
+    #[tokio::test]
+    async fn remote_start_reply_buffered_before_abort_still_cleans() {
+        let table = RemoteForwardTable::default();
+        let (sink, incoming) = tokio::sync::mpsc::unbounded_channel();
+        let observed = sink.clone();
+        let (stopped, stopped_rx) = tokio::sync::oneshot::channel();
+        let mut result = spawn_remote_forward(
+            Arc::clone(&table),
+            Arc::default(),
+            0,
+            sink,
+            async { Ok(23456) },
+            move |port| async move {
+                stopped.send(port).unwrap();
+            },
+        );
+        // close 不丢弃已缓冲回复；确定请求完成但调用方还没取走结果。
+        timeout(std::time::Duration::from_secs(1), async {
+            while !lock_table(&table).contains_key(&23456) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        result.close();
+        drop(result);
+        drop(incoming);
+        observed.closed().await;
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(1), stopped_rx)
+                .await
+                .unwrap()
+                .unwrap(),
+            23456
+        );
+    }
 
     #[test]
     fn a_second_remote_forward_on_the_same_port_leaves_the_first_alone() {

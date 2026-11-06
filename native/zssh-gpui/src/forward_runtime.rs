@@ -26,7 +26,6 @@ use std::time::Duration;
 use tokio::task::AbortHandle;
 use zssh_app_runtime::TaskRegistry;
 use zssh_core::ssh::BoxFuture;
-use zssh_core::ssh::connection::Connection;
 use zssh_core::ssh::forward::{self, ForwardCounters, ForwardStats};
 use zssh_core::store::forwards::{ForwardKind, PortForward};
 
@@ -98,24 +97,19 @@ impl ForwardStatus {
 /// 阶段、出错原因、远程转发实际监听的端口。
 type PhaseState = (Phase, Option<String>, Option<u32>);
 
-/// 远程转发停掉时要告诉服务器取消监听：任务被 abort 时跑不了异步清理，记在外面。
-type RemoteCleanup = Option<(Arc<Connection>, String, u32)>;
-
 struct Running {
     /// 这一次启动在运行层登记表里的 key（带代次）。
     key: String,
     phase: Arc<Mutex<PhaseState>>,
     stats: Arc<ForwardStats>,
     task: AbortHandle,
-    remote: Arc<Mutex<RemoteCleanup>>,
 }
 
-/// 交给转发任务的共享状态：任务把阶段、计数、远程清理信息写在这里，界面通过
+/// 交给转发任务的共享状态：任务把阶段和计数写在这里，界面通过
 /// [`ForwardManager`] 读同一份。
 struct LaunchCtx {
     phase: Arc<Mutex<PhaseState>>,
     stats: Arc<ForwardStats>,
-    remote: Arc<Mutex<RemoteCleanup>>,
 }
 
 /// 等旧任务真正结束（放掉监听端口、连接引用）的上限；到点还没结束就照常往下走，
@@ -145,13 +139,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// 返回它的登记 key（任务要稍后才真正结束）。
 fn shut_down(running: Running) -> String {
     running.task.abort();
-    let remote = lock(&running.remote).take();
-    if let Some((connection, bind_host, port)) = remote {
-        // 运行时已经没了（进程在退出）就不告诉服务器了，和 0.2.14 一样。
-        if let Ok(runtime) = crate::ssh_backend::runtime() {
-            runtime.spawn(async move { connection.stop_remote_forward(&bind_host, port).await });
-        }
-    }
+    // incoming 的接收端随任务释放；核心层会读完启动回复，再取消实际监听端口。
     running.key
 }
 
@@ -213,11 +201,9 @@ impl ForwardManager {
 
         let phase = Arc::new(Mutex::new((Phase::Starting, None, None)));
         let stats = Arc::new(ForwardStats::default());
-        let remote = Arc::new(Mutex::new(None));
         let ctx = LaunchCtx {
             phase: Arc::clone(&phase),
             stats: Arc::clone(&stats),
-            remote: Arc::clone(&remote),
         };
         // 先登记再起任务：任务很快失败时，它写的 Failed 状态要落在已登记的那一份上。
         let key = format!(
@@ -244,7 +230,6 @@ impl ForwardManager {
                 phase,
                 stats,
                 task,
-                remote,
             },
         );
         drop(running);
@@ -360,7 +345,7 @@ fn registry() -> Result<&'static Arc<TaskRegistry>, String> {
 fn forward_body(rule: PortForward) -> impl FnOnce(LaunchCtx) -> BoxFuture<'static, ()> {
     move |ctx| {
         Box::pin(async move {
-            let reason = run(rule, &ctx.phase, ctx.stats, &ctx.remote).await;
+            let reason = run(rule, &ctx.phase, ctx.stats).await;
             *lock(&ctx.phase) = (Phase::Failed, Some(reason), None);
             manager().bump();
         })
@@ -368,12 +353,7 @@ fn forward_body(rule: PortForward) -> impl FnOnce(LaunchCtx) -> BoxFuture<'stati
 }
 
 /// 跑一条规则，返回停下来的原因（只有出错才会停；用户点停止是直接 abort）。
-async fn run(
-    rule: PortForward,
-    phase: &Mutex<PhaseState>,
-    stats: Arc<ForwardStats>,
-    remote_slot: &Mutex<RemoteCleanup>,
-) -> String {
+async fn run(rule: PortForward, phase: &Mutex<PhaseState>, stats: Arc<ForwardStats>) -> String {
     // 本地转发先占端口：端口被占用时不用白连一次 SSH。
     let listener = match rule.kind {
         ForwardKind::Local => match forward::bind_local(&rule.bind_host, rule.bind_port).await {
@@ -405,7 +385,6 @@ async fn run(
                 Ok(port) => port,
                 Err(err) => return err.to_string(),
             };
-            *lock(remote_slot) = Some((Arc::clone(&connection), rule.bind_host.clone(), port));
             *lock(phase) = (Phase::Running, None, Some(port));
             manager().bump();
             forward::run_remote(connection, incoming, rule.dest_host, rule.dest_port, stats).await
@@ -555,7 +534,6 @@ mod tests {
             phase: Arc::new(Mutex::new((Phase::Running, None, None))),
             stats: Arc::new(ForwardStats::default()),
             task: tokio::spawn(std::future::pending::<()>()).abort_handle(),
-            remote: Arc::new(Mutex::new(None)),
         }
     }
 
