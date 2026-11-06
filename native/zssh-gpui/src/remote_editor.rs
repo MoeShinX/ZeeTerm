@@ -2356,7 +2356,7 @@ pub fn open_remote_editor_window(
             size(::gpui::px(900.), ::gpui::px(620.)),
             cx,
         )),
-        ..Default::default()
+        ..crate::window_frame::app_options()
     };
     let _ = cx.open_window(options, move |window, cx| {
         let spec = OpenSpec {

@@ -432,7 +432,7 @@ pub fn open_agent_chat_window(cx: &mut App) {
             cx,
         )),
         focus: true,
-        ..Default::default()
+        ..crate::window_frame::app_options()
     };
     let _ = cx.open_window(options, |window, cx| {
         let view = cx.new(|cx| AgentChatDemo::new(window, cx));

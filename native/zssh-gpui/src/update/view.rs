@@ -61,7 +61,7 @@ impl Render for UpdateDemo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 锁屏（V2-U26）：锁着时整个窗口只画锁屏页；这个窗口是自绘标题栏，锁屏页自己带窗口按钮。
         if let Some(cover) = crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
-            return cover;
+            return crate::window_frame::frame(cover);
         }
         let tokens = Tokens::current(cx);
         let screen = self.screen();
@@ -77,7 +77,7 @@ impl Render for UpdateDemo {
         let title = layout::title(screen, &version);
         let subtitle = layout::subtitle(screen, &self.current, published.as_deref());
 
-        v_flex()
+        let content = v_flex()
             .size_full()
             .track_focus(&self.focus)
             .bg(cx.theme().background)
@@ -87,7 +87,9 @@ impl Render for UpdateDemo {
             .child(self.header(title, subtitle, &tokens, cx))
             .child(self.body(screen, &tokens))
             .child(self.footer(screen, &tokens, cx))
-            .into_any_element()
+            .into_any_element();
+        // Linux 客户端装饰：细边框、阴影和边缘缩放（其他平台原样）。
+        crate::window_frame::frame(content)
     }
 }
 
@@ -113,15 +115,16 @@ fn titlebar(tokens: &Tokens, window: &Window) -> AnyElement {
                 .items_center()
                 .gap_2()
                 .pl_3()
-                .window_control_area(WindowControlArea::Drag)
+                .map(crate::window_frame::drag_region)
                 .child(img(logo()).size(px(16.)).flex_none())
                 .child(div().typo(Role::ItemName, tokens).child(window_title())),
         )
-        .child(div().h_full().flex_none().child(window_controls_with(
-            tokens,
-            window.is_maximized(),
-            false,
-        )))
+        .child(
+            div()
+                .h_full()
+                .flex_none()
+                .child(window_controls_with(tokens, window, false)),
+        )
         .into_any_element()
 }
 
@@ -560,10 +563,10 @@ mod tests {
     #[test]
     fn the_title_bar_is_self_drawn_from_theme_tokens_with_minimize_and_close_only() {
         let body = production_source();
-        // 第三个参数 false = 不放最大化按钮（rustfmt 会把调用拆成多行，所以去掉空白再比）。
+        // 第三个参数 false = 不放最大化按钮（去掉空白再比，不怕 rustfmt 换行）。
         let squeezed: String = body.split_whitespace().collect();
-        assert!(squeezed.contains("window_controls_with(tokens,window.is_maximized(),false,)"));
-        assert!(body.contains("WindowControlArea::Drag"));
+        assert!(squeezed.contains("window_controls_with(tokens,window,false)"));
+        assert!(body.contains("window_frame::drag_region"));
         assert!(body.contains(".bg(tokens.background)"));
         // 系统标题栏要关掉：窗口选项里走和文件窗口同一个 `title_bar_options`。
         let window_options = include_str!("../../src/update.rs");
