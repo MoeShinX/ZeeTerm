@@ -112,6 +112,8 @@ const MAIN_WINDOW_PROP: &str = "ZeeTerm-main";
 static INSTANCE: Mutex<Option<InstanceGuard>> = Mutex::new(None);
 
 fn main() {
+    // 先确认有正式的数据目录：拿不到就提示退出，不让凭据库、主机库落进会被清理的临时目录。
+    settings::ensure_data_dir_or_exit();
     let app = gpui_kit::application().with_assets(icons::AppAssets);
 
     app.run(move |cx| {
