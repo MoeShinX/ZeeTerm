@@ -43,6 +43,13 @@ enum KeyStoreMsg {
     LoadingDetail,
     Failed,
     FailedDetail,
+    KeyMissing,
+    KeyMissingDetail,
+    ResetButton,
+    ResetConfirmTitle,
+    ResetConfirmBody,
+    ResetConfirmOk,
+    ResetDone,
 }
 
 #[cfg(target_os = "linux")]
@@ -65,6 +72,17 @@ impl Msg for KeyStoreMsg {
             Self::FailedDetail => {
                 "没能取得加密密钥（钥匙串被锁住、解锁被取消或服务出错）。保存和查看密码会失败，请解锁系统钥匙串后重试；不会自动改用本机文件。"
             }
+            Self::KeyMissing => "钥匙串里找不到密钥",
+            Self::KeyMissingDetail => {
+                "系统钥匙串里找不到 ZeeTerm 的密钥——可能换了桌面环境、换了用户，或重置过钥匙串。已保存的密码解不开。如果换回原来的桌面环境 / 用户就能找回，请先试试；确认找不回了，可以重置已保存的密码，之后重新输入。"
+            }
+            Self::ResetButton => "重置已保存的密码",
+            Self::ResetConfirmTitle => "重置已保存的密码？",
+            Self::ResetConfirmBody => {
+                "会删除本机所有已加密保存的密码、私钥口令、导入的私钥内容、代理密码和 AI 接口的 API Key（凭据、主机、代理本身会保留），之后需要重新输入。此操作不能撤销。"
+            }
+            Self::ResetConfirmOk => "重置",
+            Self::ResetDone => "已重置，请重新输入需要的密码",
         }
     }
 
@@ -86,6 +104,17 @@ impl Msg for KeyStoreMsg {
             Self::FailedDetail => {
                 "The encryption key could not be obtained (the keyring is locked, unlocking was cancelled, or the service failed). Saving and viewing passwords will fail until you unlock the system keyring and retry; ZeeTerm will not switch to a local file by itself."
             }
+            Self::KeyMissing => "Key not found in the keyring",
+            Self::KeyMissingDetail => {
+                "ZeeTerm's key is not in the system keyring (the desktop environment or user may have changed, or the keyring was reset), so saved passwords cannot be decrypted. If switching back to the original desktop environment or user brings it back, try that first; if it is really gone, you can reset the saved passwords and enter them again."
+            }
+            Self::ResetButton => "Reset saved passwords",
+            Self::ResetConfirmTitle => "Reset saved passwords?",
+            Self::ResetConfirmBody => {
+                "This deletes every locally saved encrypted password, key passphrase, imported private key, proxy password and AI endpoint API key (the credentials, hosts and proxies themselves stay), and you will need to enter them again. This cannot be undone."
+            }
+            Self::ResetConfirmOk => "Reset",
+            Self::ResetDone => "Reset. Please enter the passwords you need again",
         }
     }
 }
@@ -522,30 +551,87 @@ pub fn forgot_step(check: OsCheck) -> ForgotStep {
 
 /// Linux：「密码保管方式」一块——加密已保存密码的密钥现在放在系统钥匙串还是本机文件里。
 /// 状态来自启动时的后台预热（见 `zssh_core::store::secrets::warm_up_vault`），这里只读不触发加载。
+/// 钥匙串里找不到密钥时多一行「重置已保存的密码」（确认之后才会清）。
 #[cfg(target_os = "linux")]
-fn key_store_card(tokens: &Tokens) -> AnyElement {
+fn key_store_card(tokens: &Tokens, entity: &Entity<MainWindow>) -> AnyElement {
     use zssh_core::store::secrets::{KeyBackend, KeyState, key_state};
 
-    let (status, detail) = match key_state() {
+    let state = key_state();
+    let (status, detail) = match state {
         KeyState::Ready(KeyBackend::SystemKeyring) => {
             (KeyStoreMsg::InKeyring, KeyStoreMsg::InKeyringDetail)
         }
         KeyState::Ready(KeyBackend::LocalFile) => (KeyStoreMsg::InFile, KeyStoreMsg::InFileDetail),
         KeyState::Loading => (KeyStoreMsg::Loading, KeyStoreMsg::LoadingDetail),
         KeyState::Failed => (KeyStoreMsg::Failed, KeyStoreMsg::FailedDetail),
+        KeyState::KeyMissing => (KeyStoreMsg::KeyMissing, KeyStoreMsg::KeyMissingDetail),
     };
+    let mut rows = vec![row(
+        t(KeyStoreMsg::RowTitle),
+        Some(t(detail)),
+        note(t(status), tokens),
+        tokens,
+    )];
+    if state == KeyState::KeyMissing {
+        let ask = entity.clone();
+        rows.push(row(
+            t(KeyStoreMsg::ResetButton),
+            None,
+            text_button(
+                "settings-key-store-reset",
+                t(KeyStoreMsg::ResetButton),
+                ButtonLook::Danger,
+                move |_, _window, cx| {
+                    ask.update(cx, |this, cx| this.ask_reset_saved_credentials(cx));
+                },
+            ),
+            tokens,
+        ));
+    }
     card(
         "settings-key-store",
         t(KeyStoreMsg::CardTitle),
         None,
         tokens,
-        vec![row(
-            t(KeyStoreMsg::RowTitle),
-            Some(t(detail)),
-            note(t(status), tokens),
-            tokens,
-        )],
+        rows,
     )
+}
+
+#[cfg(target_os = "linux")]
+impl MainWindow {
+    /// 弹确认框；确认后才真的清（见 [`Self::do_reset_saved_credentials`]）。
+    pub(super) fn ask_reset_saved_credentials(&mut self, cx: &mut Context<Self>) {
+        self.modal = Some(Modal::Confirm(super::modal::Confirm {
+            title: t(KeyStoreMsg::ResetConfirmTitle).to_owned(),
+            message: t(KeyStoreMsg::ResetConfirmBody).to_owned(),
+            confirm_label: Some(t(KeyStoreMsg::ResetConfirmOk).to_owned()),
+            destructive: true,
+            action: ConfirmAction::ResetSavedCredentials,
+        }));
+        cx.notify();
+    }
+
+    pub(super) fn do_reset_saved_credentials(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let result = self.store.db().and_then(|db| {
+            zssh_core::store::secrets::reset_saved_credentials(db)
+                .map_err(|err| crate::error_text::error_text(&err))
+        });
+        // 无论成败都重读：清掉的凭据要从界面上的"已保存密码"标记里消失。
+        self.store.reload();
+        match result {
+            Ok(()) => {
+                // 马上在后台把新密钥建好，设置页的状态随之变成「系统钥匙串」。
+                zssh_core::store::secrets::warm_up_vault();
+                self.notice_success(t(KeyStoreMsg::ResetDone), window, cx);
+            }
+            Err(err) => self.notice_error(&err, window, cx),
+        }
+        cx.notify();
+    }
 }
 
 // ---- 纯数据：对话框 ----
@@ -1332,7 +1418,7 @@ impl MainWindow {
             ),
         ];
         #[cfg(target_os = "linux")]
-        blocks.push(key_store_card(tokens));
+        blocks.push(key_store_card(tokens, &entity));
         blocks
     }
 
@@ -1743,6 +1829,13 @@ mod tests {
             super::KeyStoreMsg::LoadingDetail,
             super::KeyStoreMsg::Failed,
             super::KeyStoreMsg::FailedDetail,
+            super::KeyStoreMsg::KeyMissing,
+            super::KeyStoreMsg::KeyMissingDetail,
+            super::KeyStoreMsg::ResetButton,
+            super::KeyStoreMsg::ResetConfirmTitle,
+            super::KeyStoreMsg::ResetConfirmBody,
+            super::KeyStoreMsg::ResetConfirmOk,
+            super::KeyStoreMsg::ResetDone,
         ] {
             assert!(!msg.zh().is_empty() && !msg.en().is_empty());
             assert_ne!(msg.zh(), msg.en());

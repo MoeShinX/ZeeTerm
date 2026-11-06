@@ -411,6 +411,7 @@ pub mod keys {
         VAULT_TIMEOUT = "store.vault_timeout";
         VAULT_KEY_FILE_INVALID = "store.vault_key_file_invalid";
         VAULT_KEYRING_GONE = "store.vault_keyring_gone";
+        VAULT_KEY_MISSING = "store.vault_key_missing";
         DATA_TOO_LONG = "store.data_too_long";
         NO_SAVED_PASSWORD = "store.no_saved_password";
         KEY_LOGIN_NO_PASSWORD = "store.key_login_no_password";

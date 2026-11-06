@@ -11,6 +11,9 @@
 //!   4. Secret Service **不存在**（没有 D-Bus 会话 / 没人提供这个服务）→ 在数据目录建 `vault.key`
 //!      （0600，原子写入），并把"密钥在本机文件里"记下来给界面显示。
 //!
+//! 整段"读文件 → 读钥匙串 → 必要时新建写入"在数据目录里的 `vault.lock` 排他锁下进行：两个进程同时
+//! 第一次启动时，后拿到锁的会读到先写进去的密钥，而不是各建一把、后写的覆盖先写的。
+//!
 //! 钥匙串**被锁住 / 用户拒绝 / 超时 / 别的错误**一律明确报错，绝不降级到文件：否则用户在解锁
 //! 对话框里点一次"取消"，应用就悄悄把密钥换成一份弱保护的文件，之后又和钥匙串里那把分叉。
 //! 单元测试用固定测试密钥验证加解密本身；生产路径始终走 `load_or_create`。
@@ -28,6 +31,7 @@ use rand::RngExt as _;
 use zeroize::Zeroizing;
 
 use crate::error::{reason_keys as rk, Reason, ZsshError};
+use crate::store::db::Database;
 
 /// 密文头：8 字节 magic（含格式版本）。
 const MAGIC: &[u8; 8] = b"ZSVLT01\n";
@@ -45,6 +49,8 @@ const KEY_FILE: &str = "vault.key";
 /// "不存在"。如果这时照常建 `vault.key`，以后文件优先，钥匙串里那把加密的所有旧密码就再也解不开了。
 /// 有这个标记时，钥匙串连不上一律报错，不建文件。
 const KEYRING_MARKER: &str = "vault.keyring";
+/// 数据目录里的锁文件：`load_or_create` 整段持有它的排他 `flock`（内容恒为空）。
+const LOCK_FILE: &str = "vault.lock";
 /// Secret Service 里的产品命名空间与条目名。
 #[cfg(not(test))]
 const SERVICE: &str = "app.zeeterm";
@@ -65,6 +71,9 @@ pub enum KeyState {
     Ready(KeyBackend),
     /// 最近一次取密钥失败了（钥匙串被锁住 / 授权被取消 / 服务出错）；下次用到时会重试。
     Failed,
+    /// 钥匙串在，但里面找不到 ZeeTerm 的密钥（换了桌面环境 / 换了用户 / 重置过钥匙串）；
+    /// 已保存的密码解不开。只有用户明确"重置已保存的密码"才会再建一把。
+    KeyMissing,
 }
 type LoadResult = Result<(Key, KeyBackend), Reason>;
 
@@ -114,6 +123,57 @@ pub fn warm_up() {
     if let Err(err) = spawned {
         tracing::warn!(%err, "启动资料库密钥预热线程失败");
     }
+}
+
+/// 重置本机已保存的密码：清掉所有凭据 / 代理（含 AI 接口 API Key）的密文和 `vault.keyring` 标记，
+/// 下次取密钥时在钥匙串里新建一把。给 [`KeyState::KeyMissing`] 时界面上的「重置已保存的密码」用。
+///
+/// 只清 SQLite 里的 `secret_blob`——这些是原来密钥的密文，没有密钥也读不出来，所以全程不解密、不记日志。
+/// 同步账号、备份文件、远程编辑草稿等也用资料库密钥加密，但它们解不开时各自有"损坏 / 无法解密"的提示，
+/// 不在这里清。
+pub fn reset_saved_credentials(db: &Database) -> Result<(), ZsshError> {
+    reset_in(current_data_dir().as_deref(), db)?;
+    // 失败有 5 秒冷却：不清掉的话，用户刚点完重置、马上用到密钥时还会拿到旧的"找不到"错误。
+    loader().forget_failure();
+    Ok(())
+}
+
+fn current_data_dir() -> Option<std::path::PathBuf> {
+    #[cfg(not(test))]
+    {
+        lock(&DATA_DIR).clone()
+    }
+    #[cfg(test)]
+    {
+        None
+    }
+}
+
+fn reset_in(dir: Option<&Path>, db: &Database) -> Result<(), ZsshError> {
+    // 和 `load_or_create` 同一把锁：重置途中，另一个刚启动的实例不能插进来建密钥。
+    let _lock = dir.and_then(lock_data_dir);
+    db.with_conn_write(|conn| {
+        for table in ["identities", "proxies"] {
+            conn.execute(
+                &format!("UPDATE {table} SET secret_blob = NULL WHERE secret_blob IS NOT NULL"),
+                [],
+            )?;
+        }
+        Ok(())
+    })?;
+    if let Some(dir) = dir {
+        match std::fs::remove_file(dir.join(KEYRING_MARKER)) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(ZsshError::Secret(
+                    Reason::new(rk::VAULT_UNAVAILABLE, format!("删除钥匙串标记失败：{err}"))
+                        .with("cause", err),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 加密一段敏感信息。
@@ -261,10 +321,18 @@ impl KeyLoader {
         }
     }
 
+    /// 忘掉最近一次失败：下一次调用马上重新加载，不等冷却期（重置已保存的密码之后用）。
+    fn forget_failure(&self) {
+        lock(&self.state).failed = None;
+    }
+
     fn state(&self) -> KeyState {
         let state = lock(&self.state);
         match (&state.key, &state.failed) {
             (Some((_, backend)), _) => KeyState::Ready(*backend),
+            (None, Some((_, reason))) if reason.key() == rk::VAULT_KEY_MISSING => {
+                KeyState::KeyMissing
+            }
             (None, Some(_)) => KeyState::Failed,
             (None, None) => KeyState::Loading,
         }
@@ -391,6 +459,47 @@ trait KeyringStore {
 }
 
 fn load_or_create(dir: Option<&Path>, store: &dyn KeyringStore) -> LoadResult {
+    // 持锁到本函数结束：读到"没有"和写进去之间不能让别的进程插进来。
+    let _lock = dir.and_then(lock_data_dir);
+    load_or_create_locked(dir, store)
+}
+
+/// 拿数据目录里 `vault.lock` 的排他锁，已被别的进程拿着就阻塞等待。返回的文件离开作用域（关闭）即释放，
+/// 进程崩溃时由内核释放。拿不到（目录建不了 / 只读文件系统……）时只记日志、
+/// 退回到没有锁的行为：这时后备文件路径本来也写不了，不值得为锁让整个资料库不可用。
+fn lock_data_dir(dir: &Path) -> Option<std::fs::File> {
+    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+
+    let opened = std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .and_then(|()| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(dir.join(LOCK_FILE))
+        });
+    let file = match opened {
+        Ok(file) => file,
+        Err(err) => {
+            tracing::warn!(%err, "无法创建资料库锁文件，继续（没有跨进程互斥）");
+            return None;
+        }
+    };
+    match file.lock() {
+        Ok(()) => Some(file),
+        Err(err) => {
+            tracing::warn!(%err, "无法锁定资料库锁文件，继续（没有跨进程互斥）");
+            None
+        }
+    }
+}
+
+fn load_or_create_locked(dir: Option<&Path>, store: &dyn KeyringStore) -> LoadResult {
     // 1. 数据目录里已有密钥文件：一直用它。
     if let Some(dir) = dir {
         if let Some(key) = read_key_file(dir)? {
@@ -404,6 +513,13 @@ fn load_or_create(dir: Option<&Path>, store: &dyn KeyringStore) -> LoadResult {
             mark_keyring(dir);
             Ok((key, KeyBackend::SystemKeyring))
         }
+        // 钥匙串在、条目不见了，而这个数据目录以前明明把密钥放进过钥匙串：不能悄悄新建一把——
+        // 新建的那把解不开旧密文，回到原来的桌面环境时又会各自损坏一部分。让用户明确决定要不要重置。
+        Ok(None) if dir.is_some_and(|dir| dir.join(KEYRING_MARKER).exists()) => Err(Reason::new(
+            rk::VAULT_KEY_MISSING,
+            "系统钥匙串里找不到 ZeeTerm 的密钥（可能换了桌面环境、换了用户，或重置过钥匙串），\
+             已保存的密码解不开。为了不再造成分叉，没有自动新建密钥；需要的话可以在设置里重置已保存的密码",
+        )),
         Ok(None) => {
             let mut key = Zeroizing::new([0u8; KEY_LEN]);
             rand::rng().fill(&mut *key);
@@ -439,19 +555,27 @@ fn load_or_create(dir: Option<&Path>, store: &dyn KeyringStore) -> LoadResult {
 /// 记下"这个数据目录的密钥在系统钥匙串里"（见 [`KEYRING_MARKER`]）。尽力而为：写不了只记日志——
 /// 最坏情况退回到没有标记时的行为，不影响这次取到的密钥。
 fn mark_keyring(dir: Option<&Path>) {
-    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 
     let Some(dir) = dir else { return };
     let path = dir.join(KEYRING_MARKER);
     if path.exists() {
         return;
     }
-    let created = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(&path)
+    // 实际启动时数据目录早已建好；目录不在时（`ZSSH_DATA_DIR` 指到还没建的地方）先建，
+    // 否则标记写不下去，以后一次无桌面会话的启动会建出 vault.key，把钥匙串里那把永远盖住。
+    let created = std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .and_then(|()| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(&path)
+        })
         .and_then(|file| file.sync_all());
     if let Err(err) = created {
         tracing::warn!(%err, "记录「密钥在系统钥匙串里」失败");
@@ -792,7 +916,8 @@ mod tests {
         let leftovers: Vec<_> = std::fs::read_dir(dir.path())
             .expect("读目录")
             .filter_map(Result::ok)
-            .filter(|entry| entry.file_name() != KEY_FILE)
+            // 锁文件是故意留在那里的（见 `lock_data_dir`），不算残留。
+            .filter(|entry| entry.file_name() != KEY_FILE && entry.file_name() != LOCK_FILE)
             .collect();
         assert!(leftovers.is_empty(), "不该留临时文件：{leftovers:?}");
     }
@@ -1011,6 +1136,161 @@ mod tests {
             classify_bus_error("Failure(\"disk full\")"),
             FailureKind::Other
         );
+    }
+
+    // ---- 首次创建竞态（跨进程靠数据目录里的 flock；各线程各自打开锁文件，flock 照样互斥） ----
+
+    /// 几个"进程"共用的钥匙串替身：`get` 之后故意拖一会儿，没有锁时各方都会读到"空"。
+    struct SharedStore {
+        stored: Arc<Mutex<Option<String>>>,
+    }
+
+    impl KeyringStore for SharedStore {
+        fn get(&self) -> Result<Option<String>, StoreError> {
+            let seen = lock(&self.stored).clone();
+            std::thread::sleep(Duration::from_millis(80));
+            Ok(seen)
+        }
+
+        fn set(&self, value: &str) -> Result<(), StoreError> {
+            *lock(&self.stored) = Some(value.to_owned());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn several_first_starts_on_one_data_dir_end_up_with_the_same_key() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let stored = Arc::new(Mutex::new(None));
+        let keys: Vec<_> = (0..4)
+            .map(|_| {
+                let path = dir.path().to_path_buf();
+                let store = SharedStore {
+                    stored: Arc::clone(&stored),
+                };
+                std::thread::spawn(move || {
+                    load_or_create(Some(&path), &store).map(|(key, _)| key.to_vec())
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().expect("线程").expect("加载"))
+            .collect();
+        assert!(
+            keys.windows(2).all(|pair| pair[0] == pair[1]),
+            "各进程拿到的必须是同一把密钥"
+        );
+        let in_keyring = lock(&stored).clone().expect("钥匙串里应有条目");
+        assert_eq!(
+            in_keyring,
+            base64::engine::general_purpose::STANDARD.encode(&keys[0])
+        );
+        let mode = std::fs::metadata(dir.path().join(LOCK_FILE))
+            .expect("锁文件")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "锁文件必须是 0600");
+    }
+
+    // ---- 标记在、条目没了 ----
+
+    #[test]
+    fn a_marker_with_a_missing_entry_is_an_error_not_a_new_key() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        std::fs::write(dir.path().join(KEYRING_MARKER), b"").expect("写标记");
+        let store = MockStore::new(Mock::Empty);
+        let err = load_or_create(Some(dir.path()), &store)
+            .err()
+            .unwrap_or_else(|| panic!("必须报错"));
+        assert_eq!(err.key(), rk::VAULT_KEY_MISSING);
+        assert!(lock(&store.stored).is_none(), "不能往钥匙串里写新密钥");
+        assert!(!dir.path().join(KEY_FILE).exists(), "也不能建密钥文件");
+    }
+
+    #[test]
+    fn the_key_missing_error_shows_up_as_its_own_key_state() {
+        let loader = leaked_loader();
+        let err = loader
+            .get(Duration::from_secs(10), || {
+                Err(Reason::new(rk::VAULT_KEY_MISSING, "gone"))
+            })
+            .err()
+            .unwrap_or_else(|| panic!("失败"));
+        assert_eq!(err.key(), rk::VAULT_KEY_MISSING);
+        assert_eq!(loader.state(), KeyState::KeyMissing);
+        loader.forget_failure();
+        assert_eq!(loader.state(), KeyState::Loading);
+    }
+
+    fn insert_secret_rows(db: &Database) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO identities (name, kind, secret_blob) VALUES ('a', 'password', x'01020304')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO identities (name, kind, key_path) VALUES ('b', 'key_file', '/k')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO proxies (name, kind, host, port, username, secret_blob) \
+                 VALUES ('p', 'socks5', '127.0.0.1', 1080, 'u', x'0a0b')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap_or_else(|err| panic!("插数据：{err}"));
+    }
+
+    fn count(db: &Database, sql: &str) -> i64 {
+        db.with_conn(|conn| Ok(conn.query_row(sql, [], |row| row.get(0))?))
+            .unwrap_or_else(|err| panic!("查数据：{err}"))
+    }
+
+    #[test]
+    fn resetting_clears_the_secrets_and_the_marker_and_then_a_new_key_is_created() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        std::fs::write(dir.path().join(KEYRING_MARKER), b"").expect("写标记");
+        let db = Database::open_in_memory().expect("内存库");
+        insert_secret_rows(&db);
+        let with_secret = "SELECT (SELECT count(*) FROM identities WHERE secret_blob IS NOT NULL) \
+                           + (SELECT count(*) FROM proxies WHERE secret_blob IS NOT NULL)";
+        assert_eq!(count(&db, with_secret), 2);
+
+        // 重置前：报"找不到"。
+        let store = MockStore::new(Mock::Empty);
+        assert!(load_or_create(Some(dir.path()), &store).is_err());
+
+        reset_in(Some(dir.path()), &db).expect("重置");
+        assert_eq!(count(&db, with_secret), 0, "密文必须全部清掉");
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM identities"),
+            2,
+            "只清密文，凭据记录本身还在"
+        );
+        assert!(!dir.path().join(KEYRING_MARKER).exists(), "标记必须删掉");
+
+        // 重置后：新建成功，并重新留下标记。
+        let (_, backend) = load_or_create(Some(dir.path()), &store).expect("应新建密钥");
+        assert_eq!(backend, KeyBackend::SystemKeyring);
+        assert!(lock(&store.stored).is_some());
+        assert!(dir.path().join(KEYRING_MARKER).exists());
+
+        // 标记不在时再重置一次也不报错。
+        std::fs::remove_file(dir.path().join(KEYRING_MARKER)).expect("删标记");
+        reset_in(Some(dir.path()), &db).expect("幂等");
+    }
+
+    #[test]
+    fn the_marker_is_written_even_if_the_data_dir_does_not_exist_yet() {
+        let parent = tempfile::tempdir().expect("临时目录");
+        let dir = parent.path().join("not-yet");
+        let (_, backend) =
+            load_or_create(Some(&dir), &MockStore::new(Mock::Empty)).expect("建条目");
+        assert_eq!(backend, KeyBackend::SystemKeyring);
+        assert!(dir.join(KEYRING_MARKER).exists());
+        let mode = std::fs::metadata(&dir).expect("目录").permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "兜底建的目录必须是 0700");
     }
 
     // ---- 串行化 ----
