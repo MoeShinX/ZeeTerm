@@ -178,7 +178,8 @@ pub fn shutdown_owned_if_configured(prefs: &X11Prefs, x11_dir: &Path) -> bool {
     prefs.close_owned_on_exit && OwnedRegistry::global().shutdown(x11_dir)
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod tests {
     use std::path::PathBuf;
 
@@ -322,7 +323,8 @@ mod tests {
 }
 
 /// Unix（Linux）上的入口：本机 X 服务器是桌面会话的 `$DISPLAY`，没有 VcXsrv 可检测 / 安装 / 拉起。
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod unix_tests {
     use std::path::PathBuf;
 

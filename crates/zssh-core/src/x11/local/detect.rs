@@ -181,7 +181,8 @@ pub(crate) mod fake {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod tests {
     use super::fake::FakeSystem;
     use super::*;
