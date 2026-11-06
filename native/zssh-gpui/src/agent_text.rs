@@ -30,11 +30,12 @@ fn fold(c: char) -> char {
 
 /// 用户目录后面紧跟什么才算"目录名到此为止"：路径分隔符、空白、引号括号和常见标点。
 /// 防止 `C:\Users\demo` 误伤 `C:\Users\demo2\x`。
-fn ends_home_component(next: Option<char>) -> bool {
+fn ends_home_component(next: Option<char>, backslash_separates: bool) -> bool {
     match next {
         None => true,
         Some(c) => {
-            matches!(c, '\\' | '/')
+            c == '/'
+                || (backslash_separates && c == '\\')
                 || c.is_whitespace()
                 || "\"'`()[]{}<>,;:|".contains(c)
                 || "，。；：！？（）【】「」、".contains(c) // i18n-allow: 判断路径结尾的中文标点，是数据不是界面文案
@@ -71,6 +72,8 @@ fn redact_home_with(text: &str, home: &str, placeholder: &str, fold: fn(char) ->
     if home.is_empty() || !home.contains(['\\', '/']) {
         return text.to_owned();
     }
+    // `/` 与 `\` 折叠成同一个字符的是 Windows 规则；Unix 上反斜杠只是文件名里的普通字符。
+    let backslash_separates = fold('/') == fold('\\');
     let needle: Vec<char> = home.chars().map(fold).collect();
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -82,7 +85,7 @@ fn redact_home_with(text: &str, home: &str, placeholder: &str, fold: fn(char) ->
                 .iter()
                 .zip(&needle)
                 .all(|(have, want)| fold(*have) == *want)
-            && ends_home_component(chars.get(end).copied());
+            && ends_home_component(chars.get(end).copied(), backslash_separates);
         if hit {
             out.push_str(placeholder);
             index = end;
