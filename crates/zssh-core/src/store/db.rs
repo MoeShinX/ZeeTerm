@@ -46,6 +46,54 @@ pub struct Database {
 
 type ChangeListener = std::sync::Arc<dyn Fn() + Send + Sync>;
 
+/// 收集所有可能由旧默认密钥加密的库内值：凭据、代理、冲突和设置密文。
+///
+/// 只用于“这个库是否曾经用过旧 database-key”的判定；无法识别的值不参与，
+/// 由调用方保守地放弃启用回退。
+#[cfg(target_os = "macos")]
+fn collect_legacy_candidates(conn: &Connection) -> Result<Vec<Vec<u8>>, ZsshError> {
+    use base64::Engine as _;
+    let mut out = Vec::new();
+    for table in ["identities", "proxies"] {
+        let mut statement = conn.prepare(&format!(
+            "SELECT secret_blob FROM {table} WHERE secret_blob IS NOT NULL"
+        ))?;
+        let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+        for row in rows {
+            out.push(row?);
+        }
+    }
+    let mut statement = conn.prepare("SELECT kept, other FROM sync_conflicts")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (kept, other) = row?;
+        for value in [kept, other] {
+            if let Some(encoded) = value.strip_prefix("enc1:") {
+                if let Ok(blob) = base64::engine::general_purpose::STANDARD.decode(encoded) {
+                    out.push(blob);
+                }
+            }
+        }
+    }
+    let mut statement = conn.prepare("SELECT value FROM settings")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        let value = row?;
+        let Ok(encoded) = serde_json::from_str::<String>(&value) else {
+            continue;
+        };
+        let Ok(blob) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+            continue;
+        };
+        if blob.starts_with(b"ZTVAULT1") {
+            out.push(blob);
+        }
+    }
+    Ok(out)
+}
+
 impl Database {
     /// 打开（或新建）指定路径的库，并把迁移跑到最新。
     pub fn open(path: &Path) -> Result<Self, ZsshError> {
@@ -133,16 +181,31 @@ impl Database {
             // local_vault 只记录“这把密钥在本机钥匙串里的身份”，不进迁移、也不进同步快照。
             // 它随数据库文件一起被拷到另一台机器时，那边的钥匙串里没有对应密钥，密文解不开，
             // 这是预期：密钥不出本机。换机恢复要单独迁移钥匙串条目，不能靠复制这个文件。
-            conn.execute_batch("CREATE TABLE IF NOT EXISTS local_vault (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), account TEXT NOT NULL, initialized INTEGER NOT NULL)")?;
-            let saved: Option<(String, bool)> = conn
-                .query_row(
-                    "SELECT account, initialized FROM local_vault WHERE singleton = 1",
+            conn.execute_batch("CREATE TABLE IF NOT EXISTS local_vault (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), account TEXT NOT NULL, initialized INTEGER NOT NULL, legacy_default INTEGER NOT NULL DEFAULT 0)")?;
+            let has_legacy_column = {
+                let mut statement = conn.prepare("PRAGMA table_info(local_vault)")?;
+                let names: Vec<String> = statement
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .collect::<Result<_, _>>()?;
+                names.iter().any(|name| name == "legacy_default")
+            };
+            if !has_legacy_column {
+                conn.execute(
+                    "ALTER TABLE local_vault ADD COLUMN legacy_default INTEGER NOT NULL DEFAULT 0",
                     [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+            }
+            let saved: Option<(String, bool, bool)> = conn
+                .query_row(
+                    "SELECT account, initialized, legacy_default FROM local_vault WHERE singleton = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()?;
-            let (account, initialized) = match saved {
-                Some((account, initialized)) if !account.is_empty() => (account, initialized),
+            let (account, initialized, legacy_default) = match saved {
+                Some((account, initialized, legacy)) if !account.is_empty() => {
+                    (account, initialized, legacy)
+                }
                 Some(_) => {
                     return Err(ZsshError::Secret(crate::error::Reason::text(
                         "资料库密钥身份损坏",
@@ -156,10 +219,11 @@ impl Database {
                         database.vault_account.clone()
                     };
                     conn.execute(
-                        "INSERT INTO local_vault (singleton, account, initialized) VALUES (1, ?1, ?2)",
+                        "INSERT INTO local_vault (singleton, account, initialized, legacy_default) \
+                         VALUES (1, ?1, ?2, 0)",
                         rusqlite::params![account, !fresh],
                     )?;
-                    (account, !fresh)
+                    (account, !fresh, false)
                 }
             };
             conn.commit()?;
@@ -172,6 +236,41 @@ impl Database {
                 )?;
             }
             drop(guard);
+            if account.starts_with("vault-") {
+                let mut needs_legacy_fallback = legacy_default;
+                if !needs_legacy_fallback {
+                    let candidates = {
+                        let conn = database.lock();
+                        collect_legacy_candidates(&conn)?
+                    };
+                    if !candidates.is_empty() {
+                        let _scope = crate::store::secrets::VaultScope::new(&account);
+                        let mut saw_legacy = false;
+                        let mut unsure = false;
+                        for blob in candidates {
+                            match crate::store::secrets::probe_legacy(&blob) {
+                                crate::store::secrets::LegacyProbe::Current => {}
+                                crate::store::secrets::LegacyProbe::Legacy => saw_legacy = true,
+                                crate::store::secrets::LegacyProbe::Unknown
+                                | crate::store::secrets::LegacyProbe::KeyUnavailable => {
+                                    unsure = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if saw_legacy && !unsure {
+                            database.lock().execute(
+                                "UPDATE local_vault SET legacy_default = 1 WHERE singleton = 1",
+                                [],
+                            )?;
+                            needs_legacy_fallback = true;
+                        }
+                    }
+                }
+                if needs_legacy_fallback {
+                    crate::store::secrets::register_legacy_fallback(&account);
+                }
+            }
             database.vault_account = account;
         }
         Ok(database)

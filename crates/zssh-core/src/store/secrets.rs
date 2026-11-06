@@ -338,6 +338,8 @@ fn is_key_missing(err: &ZsshError) -> bool {
 
 #[cfg(target_os = "macos")]
 pub use vault::set_thread_vault;
+#[cfg(target_os = "macos")]
+pub(crate) use vault::{probe_legacy, register_legacy_fallback, LegacyProbe};
 
 /// 在一段代码里把秘密操作绑定到某个资料库身份，离开作用域自动恢复。
 /// 后台线程（同步、备份）不经过数据库连接，必须自己带上这份身份。
@@ -439,6 +441,79 @@ mod vault {
             .flatten()
             .or_else(|| std::env::var("ZSSH_VAULT_ACCOUNT").ok())
             .unwrap_or_else(|| "database-key".to_owned())
+    }
+
+    /// 早期 Mac 版本给库分配了 `vault-*` 身份，但部分设置/基线/草稿仍写在
+    /// `database-key` 下。只有本库确认存在这种密文时才登记，不能让所有新库
+    /// 都回退到全局默认密钥。
+    static LEGACY_FALLBACK: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+        std::sync::Mutex::new(None);
+
+    pub(crate) fn register_legacy_fallback(account: &str) {
+        LEGACY_FALLBACK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_or_insert_with(std::collections::HashSet::new)
+            .insert(account.to_owned());
+    }
+
+    fn legacy_fallback_allowed(account: &str) -> bool {
+        LEGACY_FALLBACK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(|accounts| accounts.contains(account))
+    }
+
+    /// 判断一段密文属于当前库密钥、旧默认密钥，还是无法判断。
+    pub(crate) enum LegacyProbe {
+        Current,
+        Legacy,
+        Unknown,
+        KeyUnavailable,
+    }
+
+    pub(crate) fn probe_legacy(blob: &[u8]) -> LegacyProbe {
+        let rest = match blob.strip_prefix(MAGIC) {
+            Some(rest) if rest.len() >= NONCE_LEN => rest,
+            _ => return LegacyProbe::Unknown,
+        };
+        let (nonce, ciphertext) = rest.split_at(NONCE_LEN);
+        let decrypt = |key: &Zeroizing<[u8; 32]>| {
+            XChaCha20Poly1305::new((&**key).into())
+                .decrypt(
+                    XNonce::from_slice(nonce),
+                    Payload {
+                        msg: ciphertext,
+                        aad: MAGIC,
+                    },
+                )
+                .is_ok()
+        };
+        let key = match vault_key(false) {
+            Ok(key) => key,
+            Err(err) => {
+                let key = match &err {
+                    ZsshError::Secret(reason) => reason.key(),
+                    _ => "",
+                };
+                if super::is_key_missing(&err)
+                    || key == "vault_key_cancelled"
+                    || key == "vault_key_locked"
+                {
+                    return LegacyProbe::KeyUnavailable;
+                }
+                return LegacyProbe::Unknown;
+            }
+        };
+        if decrypt(&key) {
+            return LegacyProbe::Current;
+        }
+        let _scope = VaultScope::new("database-key");
+        match vault_key(false) {
+            Ok(key) if decrypt(&key) => LegacyProbe::Legacy,
+            _ => LegacyProbe::Unknown,
+        }
     }
 
     thread_local! {
@@ -554,7 +629,7 @@ mod vault {
         }
         let (nonce, ciphertext) = rest.split_at(NONCE_LEN);
         let account = vault_account();
-        let legacy = account.starts_with("db-");
+        let legacy = account.starts_with("db-") || legacy_fallback_allowed(&account);
         let decrypt = |key: &Zeroizing<[u8; 32]>| -> Result<Vec<u8>, ZsshError> {
             XChaCha20Poly1305::new((&**key).into())
                 .decrypt(
@@ -1149,6 +1224,50 @@ mod macos_tests {
         let err = unprotect(b"not-a-vault-blob").unwrap_err();
         let text = err.to_string();
         assert!(text.contains("不是本机信封"), "{text}");
+    }
+
+    #[test]
+    fn an_early_vault_library_detects_and_reads_default_key_ciphertext() {
+        use base64::Engine as _;
+
+        let _serial = serial();
+        install();
+        vault::clear_cache_for_test();
+        let dir = crate::test_util::TestDir::new("early-vault-fallback");
+        let path = dir.join("early.db");
+
+        // 早期版本用全局默认密钥写过设置；这里模拟一段这样的密文。
+        initialize_vault("database-key").unwrap();
+        let blob = {
+            let _scope = VaultScope::new("database-key");
+            protect(b"old-setting").unwrap()
+        };
+
+        let db = crate::store::Database::open(&path).unwrap();
+        assert!(db.vault_account().starts_with("vault-"));
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&blob);
+        db.setting_set("legacy_probe", &serde_json::to_string(&encoded).unwrap())
+            .unwrap();
+        drop(db);
+
+        // 重新打开时发现旧密文，只登记本库回退，不创建新密钥、不改原密文。
+        let db = crate::store::Database::open(&path).unwrap();
+        assert_eq!(db.unprotect_secret(&blob).unwrap(), b"old-setting");
+        let marker: i64 = db
+            .with_conn_as(|conn| {
+                conn.query_row(
+                    "SELECT legacy_default FROM local_vault WHERE singleton = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(crate::error::ZsshError::from)
+            })
+            .unwrap();
+        assert_eq!(marker, 1);
+        assert_eq!(
+            db.setting_get("legacy_probe").unwrap().as_deref(),
+            Some(serde_json::to_string(&encoded).unwrap().as_str())
+        );
     }
 
     #[test]
