@@ -203,7 +203,11 @@ impl Msg for HostDialogMsg {
             Self::NoSerialPorts => "未检测到串口",
             Self::RefreshPorts => "刷新串口列表",
             Self::NoPortsHint => {
-                "没有检测到串口，可以直接填设备名（例如 COM3）；插上设备后点右边的刷新。"
+                if cfg!(windows) {
+                    "没有检测到串口，可以直接填设备名（例如 COM3）；插上设备后点右边的刷新。"
+                } else {
+                    "没有检测到串口，可以直接填设备路径（例如 /dev/ttyUSB0）；插上设备后点右边的刷新。"
+                }
             }
             Self::CommonValues => "常用值",
             Self::HidePassword => "隐藏密码",
@@ -311,7 +315,11 @@ impl Msg for HostDialogMsg {
             Self::NoSerialPorts => "No serial ports detected",
             Self::RefreshPorts => "Refresh serial port list",
             Self::NoPortsHint => {
-                "No serial ports detected; you can enter the device name directly (for example COM3). Plug in the device, then click Refresh on the right."
+                if cfg!(windows) {
+                    "No serial ports detected; you can enter the device name directly (for example COM3). Plug in the device, then click Refresh on the right."
+                } else {
+                    "No serial ports detected; you can enter the device path directly (for example /dev/ttyUSB0). Plug in the device, then click Refresh on the right."
+                }
             }
             Self::CommonValues => "Common Values",
             Self::HidePassword => "Hide Password",

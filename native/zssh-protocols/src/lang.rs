@@ -62,6 +62,10 @@ pub(crate) enum Text {
     ErrNotASerialPort,
     ErrUnsupportedSettings,
     ErrOs,
+    ErrInvalidNameUnix,
+    ErrNotFoundUnix,
+    ErrBusyUnix,
+    ErrPermission,
     WindowsOnly,
     RemoteWriteClosed,
     RemoteWriteFailed,
@@ -106,7 +110,19 @@ impl Text {
                 "{device} 不接受这组串口参数（驱动拒绝了波特率或帧格式）：请换一个波特率 / 数据位 / 校验 / 停止位组合"
             }
             Self::ErrOs => "无法使用 {device}：{what}（系统错误码 {code}）",
-            Self::WindowsOnly => "串口只在 Windows 上支持",
+            Self::ErrInvalidNameUnix => {
+                "串口设备名「{name}」不合法：请填设备路径，例如 /dev/ttyUSB0"
+            }
+            Self::ErrNotFoundUnix => {
+                "{device} 不存在：设备没有插好，或者设备名写错了（可以在终端里运行 ls /dev/tty* 查看当前的串口设备）"
+            }
+            Self::ErrBusyUnix => {
+                "{device} 被别的程序占用：请先关闭正在使用它的程序（例如另一个串口终端，或者 ModemManager），再重新连接"
+            }
+            Self::ErrPermission => {
+                "没有权限打开 {device}：当前用户需要加入 {group} 组。在终端里运行 sudo usermod -aG {group} $USER，然后注销并重新登录才会生效"
+            }
+            Self::WindowsOnly => "串口只在 Windows 和 Linux 上支持",
             Self::RemoteWriteClosed => "写入远端失败：连接已关闭",
             Self::RemoteWriteFailed => "写入远端失败：{error}",
             Self::RemoteReadFailed => "读取远端失败：{error}",
@@ -158,7 +174,19 @@ impl Text {
                 "{device} does not accept these serial settings (the driver rejected the baud rate or framing): try another baud rate / data bits / parity / stop bits combination"
             }
             Self::ErrOs => "Cannot use {device}: {what} (system error code {code})",
-            Self::WindowsOnly => "Serial ports are only supported on Windows",
+            Self::ErrInvalidNameUnix => {
+                "Serial device name \"{name}\" is not valid: enter a device path such as /dev/ttyUSB0"
+            }
+            Self::ErrNotFoundUnix => {
+                "{device} does not exist: the device is not plugged in, or the name is wrong (run ls /dev/tty* in a terminal to see the current serial devices)"
+            }
+            Self::ErrBusyUnix => {
+                "{device} is in use by another program: close the program that is using it (for example another serial terminal, or ModemManager), then connect again"
+            }
+            Self::ErrPermission => {
+                "No permission to open {device}: your user must be in the {group} group. Run sudo usermod -aG {group} $USER in a terminal, then log out and back in for it to take effect"
+            }
+            Self::WindowsOnly => "Serial ports are only supported on Windows and Linux",
             Self::RemoteWriteClosed => {
                 "Failed to write to the remote end: the connection is closed"
             }
