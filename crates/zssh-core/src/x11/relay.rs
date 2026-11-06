@@ -65,9 +65,13 @@ pub(crate) async fn serve(hub: X11Hub, mut channel: Channel<Msg>, permit: OwnedS
     }
 
     let endpoint = &entry.route.endpoint;
-    let local = match connect_local(endpoint).await {
-        Ok(local) => local,
-        Err(failure) => {
+    let local = match until_cancelled(&mut cancelled, connect_local(endpoint)).await {
+        None => {
+            let _ = channel.close().await;
+            return;
+        }
+        Some(Ok(local)) => local,
+        Some(Err(failure)) => {
             entry.report(&failure);
             let _ = channel.close().await;
             return;
@@ -85,12 +89,11 @@ pub(crate) async fn serve(hub: X11Hub, mut channel: Channel<Msg>, permit: OwnedS
     }
 
     let (mut local_read, mut local_write) = local.into_split();
-    if local_write.write_all(&packet).await.is_err()
-        || local_write
-            .write_all(&buffered[packet_len..])
-            .await
-            .is_err()
-    {
+    let setup = async {
+        local_write.write_all(&packet).await?;
+        local_write.write_all(&buffered[packet_len..]).await
+    };
+    if !matches!(until_cancelled(&mut cancelled, setup).await, Some(Ok(()))) {
         let _ = channel.close().await;
         return;
     }
@@ -131,9 +134,18 @@ pub(crate) async fn serve(hub: X11Hub, mut channel: Channel<Msg>, permit: OwnedS
             _ = &mut down => { let _ = timeout(GRACE, &mut up).await; }
         }
     };
+    until_cancelled(&mut cancelled, pump).await;
+}
+
+// 每个阶段先检查持久状态；同时就绪时取消优先，避免已取消后仍连接或发送握手。
+async fn until_cancelled<T>(
+    cancelled: &mut watch::Receiver<bool>,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
     tokio::select! {
-        _ = pump => {}
-        _ = wait_cancelled(&mut cancelled) => {}
+        biased;
+        _ = wait_cancelled(cancelled) => None,
+        result = work => Some(result),
     }
 }
 
@@ -225,6 +237,62 @@ mod tests {
     use super::*;
     use crate::x11::cookie::test_setup_packet;
     use crate::x11::registry::X11Route;
+
+    #[tokio::test]
+    async fn cancellation_prevents_polling_a_late_connect() {
+        let (cancel, mut cancelled) = watch::channel(false);
+        cancel.send_replace(true);
+        let result = until_cancelled(&mut cancelled, async {
+            panic!("取消后不能再轮询连接");
+        })
+        .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_pending_connect() {
+        let (cancel, mut cancelled) = watch::channel(false);
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            until_cancelled(&mut cancelled, async move {
+                started.send(()).unwrap();
+                std::future::pending::<()>().await;
+            })
+            .await
+        });
+        ready.await.unwrap();
+        cancel.send_replace(true);
+        assert!(timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_blocked_setup_write() {
+        let (cancel, mut cancelled) = watch::channel(false);
+        // 容量为 1 且对端不读：首字节之后的握手写入必然挂起。
+        let (mut writer, mut reader) = tokio::io::duplex(1);
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            until_cancelled(&mut cancelled, async {
+                started.send(()).unwrap();
+                writer.write_all(&[1; 48]).await
+            })
+            .await
+        });
+        ready.await.unwrap();
+        cancel.send_replace(true);
+        assert!(timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_none());
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await.unwrap();
+        assert!(bytes.len() < 48);
+    }
 
     #[test]
     fn rejection_reasons_are_read_from_the_first_reply() {

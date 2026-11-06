@@ -238,8 +238,8 @@ impl X11Registration {
 impl Drop for X11Registration {
     fn drop(&mut self) {
         self.hub.remove(&self.cookie);
-        // 没人订阅时 send 会返回 Err，不用管。
-        let _ = self.entry.cancel.send(true);
+        // lookup 已取走 entry、但 relay 尚未订阅时也必须保留取消状态。
+        self.entry.cancel.send_replace(true);
     }
 }
 
@@ -284,6 +284,16 @@ mod tests {
         assert!(hub.lookup(&cookie).is_none());
         assert_eq!(hub.registration_count(), 0);
         assert!(*cancelled.borrow_and_update(), "名下的转发任务要收到取消");
+    }
+
+    #[test]
+    fn cancellation_survives_registration_drop_before_subscription() {
+        let hub = X11Hub::default();
+        let reg = hub.register(route(1)).expect("登记");
+        let entry = hub.lookup(&reg.cookie).expect("先查表，尚未订阅");
+        drop(reg);
+        assert!(*entry.cancelled().borrow(), "迟到订阅仍须看到取消");
+        assert_eq!(hub.registration_count(), 0);
     }
 
     #[test]
