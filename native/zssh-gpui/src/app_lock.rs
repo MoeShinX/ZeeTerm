@@ -77,7 +77,7 @@ impl Msg for LockMsg {
             Self::ForgotQuestion => "忘记密码？",
             Self::ForgotReset => "验证 Windows 账户并重置…",
             Self::ForgotText => {
-                "锁屏密码只保存在这台电脑上，无法找回。可以退出 ZeeTerm（会断开所有会话），重新打开后在 设置 → 锁屏 里用 Windows 账户验证重置。"
+                "锁屏密码只保存在这台电脑上，无法找回。可以退出 ZeeTerm（会断开所有会话），重新打开后在 设置 → 安全与锁定 里用 Windows 账户验证重置。"
             }
             Self::ForgotTextInline => {
                 "锁屏密码只保存在这台电脑上，无法找回。可以用 Windows Hello / PIN（没有就用 Windows 登录密码）验证你是这台电脑的用户，然后设一个新密码，会话不受影响。"
@@ -109,7 +109,7 @@ impl Msg for LockMsg {
             Self::ForgotQuestion => "Forgot password?",
             Self::ForgotReset => "Verify Windows account and reset…",
             Self::ForgotText => {
-                "The lock password is stored only on this computer and cannot be recovered. You can quit ZeeTerm (this disconnects all sessions), reopen it, and reset the password with Windows account verification under Settings → App Lock."
+                "The lock password is stored only on this computer and cannot be recovered. You can quit ZeeTerm (this disconnects all sessions), reopen it, and reset the password with Windows account verification under Settings → Security & Lock."
             }
             Self::ForgotTextInline => {
                 "The lock password is stored only on this computer and cannot be recovered. You can verify that you are a user of this computer with Windows Hello / PIN (or your Windows sign-in password), then set a new password; sessions are not affected."

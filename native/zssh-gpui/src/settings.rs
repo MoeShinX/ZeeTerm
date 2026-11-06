@@ -206,6 +206,38 @@ impl UiSettings {
         self
     }
 
+    /// 「外观」页「恢复本页默认设置」负责的字段：明暗模式、跟随系统、浅色 / 深色皮肤、终端配色。
+    /// 逐个字段显式写出来（不用整份 `Self::default()` 覆盖），别的页的值、高亮规则一律不碰；
+    /// 以后给 [`UiSettings`] 加了字段，要在这里或 [`Self::reset_terminal_page`] 里认领，
+    /// 测试 `every_field_has_an_owner_or_is_deliberately_left_alone` 会逼着你做这个决定。
+    pub fn reset_appearance_page(&mut self) {
+        let d = Self::default();
+        self.dark = d.dark;
+        self.follow_system = d.follow_system;
+        self.skin_light = d.skin_light;
+        self.skin_dark = d.skin_dark;
+        self.terminal_theme = d.terminal_theme;
+    }
+
+    /// 「终端」页「恢复本页默认设置」负责的字段：字体、字号、行高、回滚行数、延迟徽标、光标、
+    /// 输入与剪贴板、括号粘贴、高亮总开关。高亮规则是用户自己的数据，不在其中。
+    pub fn reset_terminal_page(&mut self) {
+        let d = Self::default();
+        self.font_family = d.font_family;
+        self.font_size = d.font_size;
+        self.line_height = d.line_height;
+        self.scrollback = d.scrollback;
+        self.show_latency = d.show_latency;
+        self.cursor = d.cursor;
+        self.cursor_blink = d.cursor_blink;
+        self.ime_english = d.ime_english;
+        self.copy_on_select = d.copy_on_select;
+        self.right_click_paste = d.right_click_paste;
+        self.confirm_multiline = d.confirm_multiline;
+        self.bracketed_paste = d.bracketed_paste;
+        self.highlight_enabled = d.highlight_enabled;
+    }
+
     /// 这份设置对应的外观选择（给 `app_theme::set_look`）。
     pub fn look(&self) -> crate::app_theme::Look {
         crate::app_theme::Look {
@@ -292,6 +324,107 @@ pub fn resolve_dark(follow_system: bool, fallback_dark: bool, system_light: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 每个字段都不是默认值的一份设置。故意不写 `..Default::default()`：以后给 `UiSettings` 加字段，
+    /// 这里编译不过，逼着加字段的人决定它归哪一页重置（或明确不重置）。
+    fn all_changed() -> UiSettings {
+        UiSettings {
+            dark: false,
+            follow_system: false,
+            skin_light: "x-light".to_owned(),
+            skin_dark: "x-dark".to_owned(),
+            terminal_theme: "x-term".to_owned(),
+            font_family: "X Mono".to_owned(),
+            font_size: 20.0,
+            line_height: 1.5,
+            scrollback: 12345,
+            cursor: CursorShape::Bar,
+            cursor_blink: false,
+            ime_english: false,
+            copy_on_select: true,
+            right_click_paste: true,
+            confirm_multiline: false,
+            highlight_enabled: false,
+            show_latency: false,
+            start_hidden: true,
+            highlight_rules: Some(Vec::new()),
+            bracketed_paste: BracketedPaste::On,
+            language: "en".to_owned(),
+        }
+    }
+
+    #[test]
+    fn resetting_the_appearance_page_only_touches_appearance_fields() {
+        let mut s = all_changed();
+        s.reset_appearance_page();
+        let d = UiSettings::default();
+        let mut expected = all_changed();
+        expected.dark = d.dark;
+        expected.follow_system = d.follow_system;
+        expected.skin_light = d.skin_light;
+        expected.skin_dark = d.skin_dark;
+        expected.terminal_theme = d.terminal_theme;
+        assert_eq!(s, expected);
+        // 语言、终端字体、启动行为、高亮规则都还是改过的值。
+        assert_eq!(s.language, "en");
+        assert_eq!(s.font_family, "X Mono");
+        assert!(s.start_hidden);
+        assert!(s.highlight_rules.is_some());
+    }
+
+    #[test]
+    fn resetting_the_terminal_page_only_touches_terminal_fields() {
+        let mut s = all_changed();
+        s.reset_terminal_page();
+        let d = UiSettings::default();
+        let mut expected = all_changed();
+        expected.font_family = d.font_family;
+        expected.font_size = d.font_size;
+        expected.line_height = d.line_height;
+        expected.scrollback = d.scrollback;
+        expected.show_latency = d.show_latency;
+        expected.cursor = d.cursor;
+        expected.cursor_blink = d.cursor_blink;
+        expected.ime_english = d.ime_english;
+        expected.copy_on_select = d.copy_on_select;
+        expected.right_click_paste = d.right_click_paste;
+        expected.confirm_multiline = d.confirm_multiline;
+        expected.bracketed_paste = d.bracketed_paste;
+        expected.highlight_enabled = d.highlight_enabled;
+        assert_eq!(s, expected);
+        // 主题 / 皮肤 / 终端配色（外观页的）、语言、启动行为、高亮规则都没动。
+        assert!(!s.dark && !s.follow_system);
+        assert_eq!(s.terminal_theme, "x-term");
+        assert_eq!(s.language, "en");
+        assert!(s.start_hidden);
+        assert!(s.highlight_rules.is_some());
+    }
+
+    #[test]
+    fn every_field_has_an_owner_or_is_deliberately_left_alone() {
+        // 两页都重置一遍之后，和默认值还不一样的字段，必须正是「故意不重置」的那三个：
+        // 语言和启动时隐藏（常规页，没有重置按钮）、高亮规则（用户自己的数据）。
+        let mut s = all_changed();
+        s.reset_appearance_page();
+        s.reset_terminal_page();
+        let d = UiSettings::default();
+        let mut left = Vec::new();
+        if s.language != d.language {
+            left.push("language");
+        }
+        if s.start_hidden != d.start_hidden {
+            left.push("start_hidden");
+        }
+        if s.highlight_rules != d.highlight_rules {
+            left.push("highlight_rules");
+        }
+        assert_eq!(left, ["language", "start_hidden", "highlight_rules"]);
+        let mut rest = s.clone();
+        rest.language = d.language.clone();
+        rest.start_hidden = d.start_hidden;
+        rest.highlight_rules = d.highlight_rules.clone();
+        assert_eq!(rest, d, "其余字段两页合起来必须全部回到默认");
+    }
 
     /// 没选过语言（全新安装、老设置文件里没有这个字段）一律跟随系统；选过的照旧。
     #[test]

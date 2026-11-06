@@ -72,7 +72,7 @@ pub fn clamp_tree_width(width: f32, window_width: f32) -> f32 {
 pub struct MainLayout {
     /// 上次退出时在哪一页（`vault` / `terminal` / `settings`）；不认识的值读成 `None`。
     pub view: Option<String>,
-    /// 设置页上次停在哪个分类（`appearance` / `terminal` / ...）；不认识的值读成 `None`（回默认的外观）。
+    /// 设置页上次停在哪个分类（`general` / `appearance` / `terminal` / ...）；不认识的值读成 `None`（回默认的常规）。
     pub settings_section: Option<String>,
     pub tree_width: f32,
     pub tree_collapsed: bool,
@@ -437,6 +437,33 @@ mod tests {
             let layout = WindowState::load_from(&path).unwrap().layout;
             assert_eq!(layout.view.as_deref(), Some(view));
             assert_eq!(layout.settings_section.as_deref(), Some(section));
+        }
+    }
+
+    #[test]
+    fn a_missing_section_opens_general_and_every_recorded_one_is_restored() {
+        use crate::settings_nav::SettingsSection;
+        let dir = temp_dir("section-restore");
+        let path = dir.join("window-state.json");
+        // 没有记录（全新安装 / 旧文件里没有这个字段）：进「常规」。
+        std::fs::write(&path, br#"{"layout":{"view":"settings"}}"#).unwrap();
+        let layout = WindowState::load_from(&path).unwrap().layout;
+        assert_eq!(
+            SettingsSection::restored(layout.settings_section.as_deref()),
+            SettingsSection::General
+        );
+        // 旧版本记下的分类 id 和新增的 general 都照常恢复，不会被默认值盖掉。
+        for section in SettingsSection::ALL {
+            std::fs::write(
+                &path,
+                format!(r#"{{"layout":{{"settings_section":"{}"}}}}"#, section.id()),
+            )
+            .unwrap();
+            let layout = WindowState::load_from(&path).unwrap().layout;
+            assert_eq!(
+                SettingsSection::restored(layout.settings_section.as_deref()),
+                section
+            );
         }
     }
 

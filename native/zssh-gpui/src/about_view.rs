@@ -1,5 +1,6 @@
-//! 设置页的「关于」一节（G12，R1 起是正式版的样子）：版本、检查更新、启动时自动检查、数据目录、
-//! known_hosts、第三方组件与许可。
+//! 设置页的「关于」一节（G12，R1 起是正式版的样子）：版本、检查更新、启动时自动检查、
+//! known_hosts、第三方组件与许可。数据目录从 V2-SETTINGS-1 起放在「常规」页（[`data_dir_rows`]），
+//! 「常规」页的检查更新入口和这里共用同一份实现（[`check_update_now`]、[`update_buttons`]）。
 //!
 //! 「检查更新」打开更新窗口（`update`）：读 `latest.json`、下载、校验签名、确认后安装。
 //! 「启动时自动检查」默认开，存在本机设置里（`zssh_core::updater::AUTO_CHECK_KEY`，不参与同步）；
@@ -155,6 +156,38 @@ pub fn update_description(signing_configured: bool) -> &'static str {
     }
 }
 
+/// 「检查更新」：打开更新窗口（读清单、下载、验签、确认后安装）。关于页、常规页、托盘菜单共用这一个入口。
+pub fn check_update_now(cx: &mut ::gpui::App) {
+    if product::AUTO_UPDATE_ENABLED {
+        crate::update::open_update_window(cx);
+    }
+}
+
+/// 「检查更新」一行右边的按钮们：发布页（推得出地址才有）+ 检查更新。关于页和常规页各放一份，
+/// 区别只在按钮 id 和点「检查更新」之后调谁。
+pub fn update_buttons(
+    releases_id: &'static str,
+    check_id: &'static str,
+    on_check: impl Fn(&mut Window, &mut ::gpui::App) + 'static,
+) -> ::gpui::Div {
+    let mut buttons = h_flex().gap_2().items_center();
+    // 发布页是网络不通、签名没配置时手动下载的退路，正式版也留着。
+    if let Some(url) = releases_url() {
+        buttons = buttons.child(
+            Button::new(releases_id)
+                .label(crate::i18n::t(AboutMsg::OpenReleases))
+                .compact()
+                .on_click(move |_, _, cx| cx.open_url(&url)),
+        );
+    }
+    buttons.child(
+        Button::new(check_id)
+            .label(crate::i18n::t(AboutMsg::CheckUpdate))
+            .compact()
+            .on_click(move |_, window, cx| on_check(window, cx)),
+    )
+}
+
 /// 更新签名公钥是不是已经配置好（占位值、内置配置读不出来都算没配；调试构建里钩子给的公钥也算）。
 pub fn signing_configured() -> bool {
     crate::update::update_pubkey().is_ok()
@@ -193,9 +226,7 @@ impl AboutView {
 
     /// 「检查更新」：打开更新窗口（手动检查，不受「启动时自动检查」开关影响）。
     pub fn check_update(&mut self, cx: &mut Context<Self>) {
-        if product::AUTO_UPDATE_ENABLED {
-            crate::update::open_update_window(cx);
-        }
+        check_update_now(cx);
         cx.notify();
     }
 
@@ -245,7 +276,6 @@ impl AboutView {
                     AboutMsg::Off
                 })
             ),
-            data_dir_text(),
             known_hosts_text(),
         ]
         .join("\n")
@@ -284,13 +314,15 @@ fn setting(
 ) -> AnyElement {
     h_flex()
         .w_full()
+        .flex_wrap()
         .min_h(px(28.0))
-        .gap_4()
+        .gap_3()
         .items_center()
         .justify_between()
         .child(
             v_flex()
-                .min_w_0()
+                .flex_1()
+                .min_w(px(220.0))
                 .gap_0p5()
                 .child(div().typo(Role::ItemName, tokens).child(title.into()))
                 .child(muted(description, tokens)),
@@ -315,29 +347,36 @@ fn path_box(text: String, tokens: &Tokens) -> AnyElement {
         .into_any_element()
 }
 
+/// 「常规」页的数据位置：数据目录的说明 + 打开按钮，下面一行是（已脱敏的）路径。
+pub(crate) fn data_dir_rows(tokens: &Tokens) -> Vec<AnyElement> {
+    let open = Button::new("general-open-data-dir")
+        .label(crate::i18n::t(AboutMsg::OpenFolder))
+        .compact()
+        .on_click(move |_, _, cx| {
+            let dir = crate::settings::data_dir();
+            // 还没写过任何数据时目录可能不存在：先建出来，资源管理器才打得开。
+            let _ = std::fs::create_dir_all(&dir);
+            cx.reveal_path(&dir);
+        });
+    vec![
+        setting(
+            crate::i18n::t(AboutMsg::DataDir),
+            crate::i18n::t(AboutMsg::DataDirNote),
+            open,
+            tokens,
+        ),
+        path_box(data_dir_text(), tokens),
+    ]
+}
+
 impl AboutView {
     #[inline(never)]
     fn update_rows(&self, tokens: &Tokens, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let check = cx.entity();
         let toggle = cx.entity();
-        let mut buttons = h_flex().gap_2().items_center();
-        // 发布页是网络不通、签名没配置时手动下载的退路，正式版也留着。
-        if let Some(url) = releases_url() {
-            buttons = buttons.child(
-                Button::new("about-open-releases")
-                    .label(crate::i18n::t(AboutMsg::OpenReleases))
-                    .compact()
-                    .on_click(move |_, _, cx| cx.open_url(&url)),
-            );
-        }
-        buttons = buttons.child(
-            Button::new("about-check-update")
-                .label(crate::i18n::t(AboutMsg::CheckUpdate))
-                .compact()
-                .on_click(move |_, _, cx| {
-                    check.update(cx, |this, cx| this.check_update(cx));
-                }),
-        );
+        let buttons = update_buttons("about-open-releases", "about-check-update", move |_, cx| {
+            check.update(cx, |this, cx| this.check_update(cx));
+        });
         let auto_note = match &self.save_error {
             Some(error) => crate::i18n::paren(auto_check_description(), error),
             None => auto_check_description().to_owned(),
@@ -365,23 +404,7 @@ impl AboutView {
 
     #[inline(never)]
     fn path_rows(tokens: &Tokens) -> Vec<AnyElement> {
-        let open = Button::new("about-open-data-dir")
-            .label(crate::i18n::t(AboutMsg::OpenFolder))
-            .compact()
-            .on_click(move |_, _, cx| {
-                let dir = crate::settings::data_dir();
-                // 还没写过任何数据时目录可能不存在：先建出来，资源管理器才打得开。
-                let _ = std::fs::create_dir_all(&dir);
-                cx.reveal_path(&dir);
-            });
         vec![
-            setting(
-                crate::i18n::t(AboutMsg::DataDir),
-                crate::i18n::t(AboutMsg::DataDirNote),
-                open,
-                tokens,
-            ),
-            path_box(data_dir_text(), tokens),
             setting(
                 "known_hosts",
                 crate::i18n::t(AboutMsg::KnownHostsNote),

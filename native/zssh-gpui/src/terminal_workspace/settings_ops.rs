@@ -290,13 +290,17 @@ impl TerminalWorkspace {
         cx.notify();
     }
 
-    pub(crate) fn reset_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 高亮规则是用户自己的数据，恢复默认设置不动它。
-        let rules = self.highlight.rules.clone();
-        self.update_settings(cx, move |s| {
-            *s = UiSettings::default();
-            s.highlight_rules = Some(rules);
-        });
+    /// 「外观」页的「恢复本页默认设置」：只还原这一页负责的字段（见 [`UiSettings::reset_appearance_page`]），
+    /// 语言、终端字体、启动行为、高亮规则都不动。
+    pub(crate) fn reset_appearance_settings(&mut self, cx: &mut Context<Self>) {
+        self.update_settings(cx, UiSettings::reset_appearance_page);
+        cx.notify();
+    }
+
+    /// 「终端」页的「恢复本页默认设置」：只还原这一页负责的字段（见 [`UiSettings::reset_terminal_page`]），
+    /// 主题、语言、启动行为、高亮规则都不动。字体输入框和回滚滑块要跟着新值走。
+    pub(crate) fn reset_terminal_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_settings(cx, UiSettings::reset_terminal_page);
         self.font_cache = None;
         self.font_custom = false;
         let stack = self.settings.font_family.clone();

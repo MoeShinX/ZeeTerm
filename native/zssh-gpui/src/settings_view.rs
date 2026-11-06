@@ -1,5 +1,6 @@
 //! 设置页的内容：把原来调试窗口里那条两行的设置面板（主题、字号、行高、光标、
-//! 选中即复制、右键粘贴、多行确认、高亮、括号粘贴、启动隐藏、恢复默认）排成分组的页面。
+//! 选中即复制、右键粘贴、多行确认、高亮、括号粘贴）排成分组的页面；外观页和终端页各有一个只还原自己字段的
+//! 「恢复本页默认设置」。
 //!
 //! 主窗口把它当主视图之一显示（外面套标题和「返回」），调试窗口把它嵌在面板里。
 //! 所有改动都走 `TerminalWorkspace` 的设置方法（保存、通知、套用主题都在那边），
@@ -36,7 +37,6 @@ enum SettingsViewMsg {
     AppearanceTitle,
     AppearanceDescription,
     // ---- 外观 · 应用皮肤 ----
-    SkinsTitle,
     SkinsDescription,
     LightSkin,
     DarkSkin,
@@ -51,7 +51,10 @@ enum SettingsViewMsg {
     MismatchMid,
     MismatchEnd,
     FollowSkinButton,
-    ResetDefaults,
+    ResetPageButton,
+    ResetRowTitle,
+    ResetAppearanceScope,
+    ResetTerminalScope,
     // ---- 终端 · 字体与显示 ----
     ShowLatencyTitle,
     ShowLatencyDescription,
@@ -91,7 +94,7 @@ enum SettingsViewMsg {
 impl Msg for SettingsViewMsg {
     fn zh(&self) -> &'static str {
         match *self {
-            Self::Theme => "主题",
+            Self::Theme => "主题与皮肤",
             Self::Light => "浅色",
             Self::Dark => "深色",
             Self::FollowSystem => "跟随系统",
@@ -99,7 +102,6 @@ impl Msg for SettingsViewMsg {
             Self::AppearanceDescription => {
                 "选「跟随系统」时，Windows 切换浅色 / 深色模式，界面跟着变。"
             }
-            Self::SkinsTitle => "应用皮肤",
             Self::SkinsDescription => "浅色和深色皮肤分别保存，随明暗模式生效。",
             Self::LightSkin => "浅色皮肤",
             Self::DarkSkin => "深色皮肤",
@@ -113,7 +115,14 @@ impl Msg for SettingsViewMsg {
             Self::MismatchMid => "，现在是",
             Self::MismatchEnd => "主题，所以终端和界面明暗不一样。",
             Self::FollowSkinButton => "改回跟随皮肤",
-            Self::ResetDefaults => "恢复默认",
+            Self::ResetPageButton => "恢复本页默认设置",
+            Self::ResetRowTitle => "恢复默认",
+            Self::ResetAppearanceScope => {
+                "只恢复本页的主题、应用皮肤和终端配色；主机树选项、语言、终端字体等其他设置不变。"
+            }
+            Self::ResetTerminalScope => {
+                "只恢复本页的字体与显示、光标、输入与剪贴板、括号粘贴和高亮开关；高亮规则、会话日志、主题和其他页的设置不变。"
+            }
             Self::ShowLatencyTitle => "在终端右上角显示延迟",
             Self::ShowLatencyDescription => {
                 "SSH 标签显示到服务器的往返延迟（Telnet、串口不显示）。关掉后也不再发测量请求。"
@@ -162,7 +171,7 @@ impl Msg for SettingsViewMsg {
 
     fn en(&self) -> &'static str {
         match *self {
-            Self::Theme => "Theme",
+            Self::Theme => "Theme & Skins",
             Self::Light => "Light",
             Self::Dark => "Dark",
             Self::FollowSystem => "Follow System",
@@ -170,7 +179,6 @@ impl Msg for SettingsViewMsg {
             Self::AppearanceDescription => {
                 "When “Follow System” is selected, the interface follows Windows as it switches between light and dark mode."
             }
-            Self::SkinsTitle => "App Skins",
             Self::SkinsDescription => {
                 "Light and dark skins are saved separately and apply with the light/dark mode."
             }
@@ -188,7 +196,14 @@ impl Msg for SettingsViewMsg {
             Self::MismatchMid => ", but the app is currently in ",
             Self::MismatchEnd => " mode, so the terminal and the interface differ in light/dark.",
             Self::FollowSkinButton => "Follow Skin Again",
-            Self::ResetDefaults => "Restore Defaults",
+            Self::ResetPageButton => "Restore Page Defaults",
+            Self::ResetRowTitle => "Restore Defaults",
+            Self::ResetAppearanceScope => {
+                "Restores only this page's theme, app skins, and terminal colors. Host tree options, language, terminal font, and all other settings stay as they are."
+            }
+            Self::ResetTerminalScope => {
+                "Restores only this page's font & display, cursor, input & clipboard, bracketed paste, and highlight switch. Highlight rules, the session log, the theme, and settings on other pages stay as they are."
+            }
             Self::ShowLatencyTitle => "Show latency in the top-right corner of the terminal",
             Self::ShowLatencyDescription => {
                 "SSH tabs show the round-trip latency to the server (not shown for Telnet or serial). When off, no measurement requests are sent either."
@@ -267,15 +282,18 @@ pub(crate) fn card(
         .id(id)
         .w_full()
         .gap_2p5()
-        .child(
-            v_flex()
-                .px_1()
-                .gap_1()
-                .child(div().typo(Role::GroupTitle, tokens).child(title))
-                .when_some(description, |d, text| {
-                    d.child(div().typo(Role::Caption, tokens).child(text))
-                }),
-        )
+        // 标题留空的组（只有一行的小块，比如「恢复默认」）不画标题。
+        .when(!title.is_empty(), |d| {
+            d.child(
+                v_flex()
+                    .px_1()
+                    .gap_1()
+                    .child(div().typo(Role::GroupTitle, tokens).child(title))
+                    .when_some(description, |d, text| {
+                        d.child(div().typo(Role::Caption, tokens).child(text))
+                    }),
+            )
+        })
         .child(
             v_flex()
                 .w_full()
@@ -461,50 +479,70 @@ pub(crate) fn appearance_cards(ws: &Entity<TerminalWorkspace>, cx: &App) -> Vec<
     let s: UiSettings = ws.read(cx).settings().clone();
     vec![
         theme_card(ws, &s, &tokens),
-        skin_card_group(ws, &s, &tokens),
         terminal_theme_card(ws, &s, &tokens),
     ]
 }
 
-/// 「恢复默认」：把外观和终端的设置（`ui-settings.json` 里那一份）全部还原。0.2.14 没有这个按钮。
-pub(crate) fn reset_row(ws: &Entity<TerminalWorkspace>) -> AnyElement {
-    let reset = ws.clone();
-    h_flex()
-        .id("settings-reset-row")
-        .w_full()
-        .justify_end()
-        .child(
-            Button::new("settings-reset")
-                .label(t(SettingsViewMsg::ResetDefaults))
+/// 「恢复本页默认设置」那一小块的样子：一行，左边写清楚恢复哪些，右边是按钮。
+fn reset_block(
+    id: &'static str,
+    button_id: &'static str,
+    scope: &'static str,
+    on_click: impl Fn(&mut ::gpui::Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
+    let tokens = Tokens::current(cx);
+    card(
+        id,
+        "",
+        None,
+        &tokens,
+        vec![row(
+            t(SettingsViewMsg::ResetRowTitle),
+            Some(scope),
+            Button::new(button_id)
+                .label(t(SettingsViewMsg::ResetPageButton))
                 .compact()
-                .on_click(move |_, window, cx| {
-                    reset.update(cx, |this, cx| this.reset_settings(window, cx));
-                }),
-        )
-        .into_any_element()
+                .on_click(move |_, window, cx| on_click(window, cx)),
+            &tokens,
+        )],
+    )
 }
 
-/// 主题：系统 / 浅色 / 深色。
+/// 外观页末尾的「恢复本页默认设置」：只还原外观页自己的字段（见 `UiSettings::reset_appearance_page`）。
+pub(crate) fn reset_appearance_block(ws: &Entity<TerminalWorkspace>, cx: &App) -> AnyElement {
+    let reset = ws.clone();
+    reset_block(
+        "settings-reset-appearance",
+        "settings-reset-appearance-button",
+        t(SettingsViewMsg::ResetAppearanceScope),
+        move |_, cx| reset.update(cx, |this, cx| this.reset_appearance_settings(cx)),
+        cx,
+    )
+}
+
+/// 终端页末尾的「恢复本页默认设置」：只还原终端页自己的字段（见 `UiSettings::reset_terminal_page`）。
+pub(crate) fn reset_terminal_block(ws: &Entity<TerminalWorkspace>, cx: &App) -> AnyElement {
+    let reset = ws.clone();
+    reset_block(
+        "settings-reset-terminal",
+        "settings-reset-terminal-button",
+        t(SettingsViewMsg::ResetTerminalScope),
+        move |window, cx| reset.update(cx, |this, cx| this.reset_terminal_settings(window, cx)),
+        cx,
+    )
+}
+
+/// 主题与皮肤：明暗模式（系统 / 浅色 / 深色），下面是浅色、深色各一排皮肤。
 #[inline(never)]
 fn theme_card(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
     card(
         "settings-theme",
         t(SettingsViewMsg::Theme),
-        None,
-        tokens,
-        vec![theme_row(ws, s, tokens)],
-    )
-}
-
-/// 应用皮肤：浅色、深色各一排。
-#[inline(never)]
-fn skin_card_group(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
-    card(
-        "settings-skins",
-        t(SettingsViewMsg::SkinsTitle),
         Some(t(SettingsViewMsg::SkinsDescription)),
         tokens,
         vec![
+            theme_row(ws, s, tokens),
             skin_group(t(SettingsViewMsg::LightSkin), false, ws, s, tokens),
             skin_group(t(SettingsViewMsg::DarkSkin), true, ws, s, tokens),
         ],
@@ -1142,7 +1180,8 @@ fn bracketed_paste_row(
 #[cfg(debug_assertions)]
 pub(crate) fn settings_body(ws: &Entity<TerminalWorkspace>, cx: &App) -> impl IntoElement {
     let mut cards = appearance_cards(ws, cx);
+    cards.push(reset_appearance_block(ws, cx));
     cards.extend(terminal_cards(ws, cx));
-    cards.push(reset_row(ws));
+    cards.push(reset_terminal_block(ws, cx));
     v_flex().w_full().gap_3().children(cards)
 }

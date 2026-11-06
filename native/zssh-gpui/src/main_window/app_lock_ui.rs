@@ -102,6 +102,7 @@ enum LockUiMsg {
     ForgotRowButton,
     SectionTitle,
     SectionDescription,
+    AutoLockGroup,
     // ---- 输入校验（核心只给类型，文字在界面这一层出） ----
     PasswordTooShortPrefix,
     PasswordTooLongPrefix,
@@ -180,7 +181,8 @@ impl Msg for LockUiMsg {
             }
             Self::ForgotBusy => "验证中…",
             Self::ForgotRowButton => "验证 Windows 账户并重置…",
-            Self::SectionTitle => "锁屏",
+            Self::SectionTitle => "应用锁",
+            Self::AutoLockGroup => "自动锁定",
             Self::SectionDescription => {
                 "锁屏密码和这些选项只保存在这台电脑上，不同步，也不进备份。"
             }
@@ -276,6 +278,7 @@ impl Msg for LockUiMsg {
             Self::ForgotBusy => "Verifying…",
             Self::ForgotRowButton => "Verify Windows Account and Reset…",
             Self::SectionTitle => "App Lock",
+            Self::AutoLockGroup => "Auto-Lock",
             Self::SectionDescription => {
                 "The lock password and these options are stored only on this computer; they are not synced or included in backups."
             }
@@ -1131,7 +1134,9 @@ impl MainWindow {
 
         let idle_entity = entity.clone();
         let idle_current = config.idle_minutes;
-        rows.push(row(
+        // 自动锁定（空闲、缩到托盘）单独一组；上面是应用锁本身（启用、密码、启动时锁定、忘记密码）。
+        let mut auto_rows = Vec::new();
+        auto_rows.push(row(
             t(LockUiMsg::IdleRowTitle),
             Some(t(LockUiMsg::IdleRowDescription)),
             div().w(::gpui::px(160.0)).child(select(
@@ -1150,7 +1155,7 @@ impl MainWindow {
         ));
 
         let tray_entity = entity.clone();
-        rows.push(row(
+        auto_rows.push(row(
             t(LockUiMsg::TrayRowTitle),
             Some(t(LockUiMsg::TrayRowDescription)),
             Switch::new("lock-on-tray")
@@ -1205,13 +1210,22 @@ impl MainWindow {
             ));
         }
 
-        vec![card(
-            "settings-lock",
-            t(LockUiMsg::SectionTitle),
-            Some(t(LockUiMsg::SectionDescription)),
-            tokens,
-            rows,
-        )]
+        vec![
+            card(
+                "settings-lock",
+                t(LockUiMsg::SectionTitle),
+                Some(t(LockUiMsg::SectionDescription)),
+                tokens,
+                rows,
+            ),
+            card(
+                "settings-lock-auto",
+                t(LockUiMsg::AutoLockGroup),
+                None,
+                tokens,
+                auto_rows,
+            ),
+        ]
     }
 
     fn set_lock_idle(&mut self, minutes: u32, window: &mut Window, cx: &mut Context<Self>) {

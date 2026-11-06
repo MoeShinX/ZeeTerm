@@ -1,10 +1,10 @@
-//! 「管理 + 设置」统一页：左侧导航（顶部「← 返回应用」、「管理」组、「偏好」组）+ 右侧只显示当前分类
-//! （偏好 8 类对齐 0.2.14 的 `SettingsPage.tsx`；管理 4 类是 V2-U3 把标题栏 / 主机页 / 侧面板里的
-//! 管理入口收进来的）。
+//! 「资源管理 + 应用设置」统一页：左侧导航（顶部「← 返回应用」、两个不可点的组标题「资源管理」「应用设置」），
+//! 右侧只显示当前分类（原有的设置分类对齐 0.2.14 的 `SettingsPage.tsx`，V2-SETTINGS-1 起新增「常规」并
+//! 重排；资源管理 4 类是 V2-U3 把标题栏 / 主机页 / 侧面板里的管理入口收进来的）。
 //!
 //! 分类、顺序、图标、默认值和「记住上次的分类」的规则在 `settings_nav`（纯数据，有状态测试）；
-//! 这里负责画导航栏、把各张设置卡放进对应分类，以及「连接」「SFTP」和外观里「主机树」「窗口」
-//! 这几张读写数据库设置的卡（键名和取值范围见 `app_prefs`）。
+//! 这里负责画导航栏、把各张设置卡放进对应分类，以及「常规」的启动与退出 / 更新 / 数据位置、「连接与网络」
+//! 「文件传输」和外观里「主机树」这几张读写数据库设置的卡（键名和取值范围见 `app_prefs`）。
 //!
 //! 管理组不重写业务：凭据 / 快捷命令 / 代理 / 端口转发各自仍由 `keychain_panel` / `quick_panel` /
 //! `proxy_panel` / `forward_panel` 交出一份 [`PanelContent`]（标题、右上角按钮、列表 + 表单、底部按钮），
@@ -35,14 +35,16 @@ use crate::settings_view::{card, row, row_with};
 use crate::typography::{Role, Typo as _};
 use zssh_core::sync::app_proxy::{APP_NETWORK_PROXY_KEY, AppProxyMode, SystemProxy};
 
-/// 备份那一块在「同步」分类滚动容器里的下标（驱动脚本滚到备份一节用）：最上面是「从 Z-SSH 迁移」，然后是同步、备份。
+/// 备份那一块在「同步与备份」分类滚动容器里的下标（驱动脚本滚到备份一节用）：同步、备份、最后是「从 Z-SSH 迁移」。
 #[cfg_attr(not(debug_assertions), allow(dead_code))]
-pub const BACKUP_ITEM: usize = 2;
+pub const BACKUP_ITEM: usize = 1;
 
-/// 左侧导航栏宽度（比 0.2.14 的 `w-44` 宽一点，放得下「← 返回应用」和 12 个分类名）。
+/// 左侧导航栏宽度（比 0.2.14 的 `w-44` 宽一点，放得下「← 返回应用」和 14 个分类名）。
 const NAV_WIDTH: f32 = 208.0;
-/// 管理组内容区的限宽（列表 + 表单的阅读宽度）。
-const MANAGE_WIDTH: f32 = 880.0;
+/// 导航项行高。
+const NAV_ITEM_HEIGHT: f32 = 34.0;
+/// 内容区的限宽（设置卡片、管理页列表 + 表单的阅读宽度）；窗口窄时随可用宽度收缩。
+const CONTENT_WIDTH: f32 = 960.0;
 
 /// 本文件（设置页）自己的界面文案：各模块自带文案枚举即可，不用全塞进 `i18n::Key`。
 ///
@@ -56,6 +58,17 @@ enum SettingsMsg {
     NavBack,
     NavGroupManage,
     NavGroupPreferences,
+    // ---- 各设置页顶部的一句说明 ----
+    PageGeneral,
+    PageAppearance,
+    PageTerminal,
+    PageConnection,
+    PageSftp,
+    PageAi,
+    PageLock,
+    PageSync,
+    PageShortcuts,
+    PageAbout,
     // ---- 管理页筛选 ----
     FilterAllKinds,
     FilterAllHosts,
@@ -67,8 +80,9 @@ enum SettingsMsg {
     HostInfoPanelDescription,
     HostTreeGuidesTitle,
     HostTreeGuidesDescription,
-    // ---- 外观 · 窗口 ----
-    Window,
+    // ---- 常规 · 语言 / 启动与退出 ----
+    LanguageGroup,
+    StartupExit,
     CloseMainTitle,
     CloseMainDescription,
     CloseToTray,
@@ -79,6 +93,10 @@ enum SettingsMsg {
     FileWindowMerge,
     StartHiddenTitle,
     StartHiddenDescription,
+    // ---- 常规 · 更新 / 数据位置 ----
+    UpdatesGroup,
+    UpdateCheckTitle,
+    DataLocation,
     // ---- 终端 · 会话日志 ----
     SessionLog,
     SessionLogDescription,
@@ -93,7 +111,7 @@ enum SettingsMsg {
     SessionLogChooseDialog,
     SessionLogCreateDirFailed,
     SessionLogOpenExplorerFailed,
-    // ---- 连接 · 代理 ----
+    // ---- 连接与网络 · 代理 ----
     ProxyLabelOpen,
     ProxyLabelClose,
     NoDefaultProxy,
@@ -102,18 +120,21 @@ enum SettingsMsg {
     AppProxySshDefault,
     AppProxySystem,
     AppProxyDirect,
-    Proxy,
+    SshDefaultGroup,
+    SshDefaultGroupDescription,
     SshDefaultProxy,
     SshDefaultProxyDescription,
+    AppNetworkGroup,
+    AppNetworkGroupDescription,
     AppNetwork,
     AppNetworkDescription,
-    // ---- 连接 · 连接保持 ----
+    // ---- 连接与网络 · 连接维护 ----
     KeepConnection,
     PoolIdleTitle,
     PoolIdleDescription,
     KeepaliveTitle,
     KeepaliveDescription,
-    // ---- 连接 · 服务器状态栏 ----
+    // ---- 连接与网络 · 服务器监控 ----
     ServerStats,
     ServerStatsShowTitle,
     ServerStatsShowDescription,
@@ -123,9 +144,10 @@ enum SettingsMsg {
     SystemProxyPrefix,
     SystemProxyPac,
     SystemProxyNone,
-    // ---- SFTP · 传输 ----
+    // ---- 文件传输 ----
     Transfers,
     TransfersDescription,
+    FileBrowsing,
     SftpConcurrencyTitle,
     SftpConcurrencyDescription,
     SftpConcurrencySuffix,
@@ -148,8 +170,20 @@ impl Msg for SettingsMsg {
         match *self {
             Self::NavBackTooltip => "返回应用 (Esc)",
             Self::NavBack => "返回应用",
-            Self::NavGroupManage => "管理",
-            Self::NavGroupPreferences => "偏好",
+            Self::NavGroupManage => "资源管理",
+            Self::NavGroupPreferences => "应用设置",
+            Self::PageGeneral => "语言、启动与退出行为、检查更新和数据位置。",
+            Self::PageAppearance => "主题与皮肤、终端配色，以及主机树的显示方式。",
+            Self::PageTerminal => "字体与显示、光标、输入与剪贴板、关键词高亮和会话日志。",
+            Self::PageConnection => {
+                "连接服务器和软件自己联网使用的代理、连接维护，以及服务器监控。"
+            }
+            Self::PageSftp => "文件传输的并发数、保留属性和文件浏览选项。",
+            Self::PageAi => "AI 助手使用的接口、外部工具和执行权限。",
+            Self::PageLock => "应用锁和自动锁定；密码只保存在这台电脑上。",
+            Self::PageSync => "配置同步、本地与云端备份，以及导入、导出和恢复。",
+            Self::PageShortcuts => "按功能分组列出当前可用的快捷键。",
+            Self::PageAbout => "版本、更新、已知主机文件和开源许可。",
             Self::FilterAllKinds => "全部类型",
             Self::FilterAllHosts => "全部主机",
             Self::HostTree => "主机树",
@@ -165,7 +199,8 @@ impl Msg for SettingsMsg {
             Self::HostTreeGuidesDescription => {
                 "每一层子项左边画一条竖向的小虚线，横向连到子项，看得出谁属于哪个分组。只影响这台电脑。"
             }
-            Self::Window => "窗口",
+            Self::LanguageGroup => "语言",
+            Self::StartupExit => "启动与退出",
             Self::CloseMainTitle => "关闭主窗口时",
             Self::CloseMainDescription => {
                 "缩到托盘后会话、端口转发、AI 命令都继续运行，右键托盘图标选「退出」才真正退出。最小化仍然缩到任务栏。"
@@ -180,6 +215,9 @@ impl Msg for SettingsMsg {
             Self::FileWindowMerge => "合并回主窗口",
             Self::StartHiddenTitle => "启动时隐藏到托盘",
             Self::StartHiddenDescription => "下次启动不显示主窗口，从托盘图标打开",
+            Self::UpdatesGroup => "更新",
+            Self::UpdateCheckTitle => "检查更新",
+            Self::DataLocation => "数据位置",
             Self::SessionLog => "会话日志",
             Self::SessionLogDescription => {
                 "把每个终端会话里显示的内容存成纯文本文件（去掉颜色和光标控制），对之后新打开的会话生效。日志里会有终端上显示过的一切，可能包括敏感信息，只存在本机。"
@@ -203,16 +241,23 @@ impl Msg for SettingsMsg {
             Self::AppProxySshDefault => "使用 SSH 默认代理",
             Self::AppProxySystem => "跟随系统代理",
             Self::AppProxyDirect => "不使用代理",
-            Self::Proxy => "代理",
+            Self::SshDefaultGroup => "SSH 默认连接",
+            Self::SshDefaultGroupDescription => {
+                "连接服务器（SSH）时默认使用的代理；软件自己联网用的代理在下面的「软件网络」里设置。"
+            }
             Self::SshDefaultProxy => "SSH 默认代理",
             Self::SshDefaultProxyDescription => {
                 "只管 SSH 连接：「跟随默认代理」的主机和快速连接走这一个。"
             }
-            Self::AppNetwork => "软件网络",
+            Self::AppNetworkGroup => "软件网络",
+            Self::AppNetworkGroupDescription => {
+                "更新、同步、AI 等软件自己联网时使用的代理，和上面连接服务器用的代理互不影响。"
+            }
+            Self::AppNetwork => "软件联网使用的代理",
             Self::AppNetworkDescription => {
                 "检查和下载更新、配置同步、下载 opencode 走这里，和 SSH 的代理分开。"
             }
-            Self::KeepConnection => "连接保持",
+            Self::KeepConnection => "连接维护",
             Self::PoolIdleTitle => "连接空闲断开",
             Self::PoolIdleDescription => {
                 "终端、SFTP、端口转发等都不再使用这条连接之后，再空转多久断开；0 = 立刻断开。改动对已经空闲的连接也生效，从改动那一刻起重新计时。"
@@ -221,7 +266,7 @@ impl Msg for SettingsMsg {
             Self::KeepaliveDescription => {
                 "多久发一次 keepalive 探测断线；0 = 关闭。改完对之后新建的连接生效。"
             }
-            Self::ServerStats => "服务器状态栏",
+            Self::ServerStats => "服务器监控",
             Self::ServerStatsShowTitle => "显示服务器状态栏",
             Self::ServerStatsShowDescription => "连上后在终端底部显示 CPU / 内存 / 磁盘 / 网速。",
             Self::ServerStatsRefreshTitle => "状态栏刷新间隔",
@@ -231,7 +276,8 @@ impl Msg for SettingsMsg {
             Self::SystemProxyPrefix => "系统代理：",
             Self::SystemProxyPac => "系统用的是自动配置脚本（PAC），暂不支持，按直连处理",
             Self::SystemProxyNone => "系统没有设置代理，按直连处理",
-            Self::Transfers => "传输",
+            Self::Transfers => "传输行为",
+            Self::FileBrowsing => "文件浏览",
             Self::TransfersDescription => {
                 "传输参数对之后打开的 SFTP 标签生效（正在传的任务不受影响）。"
             }
@@ -262,8 +308,34 @@ impl Msg for SettingsMsg {
         match *self {
             Self::NavBackTooltip => "Back to App (Esc)",
             Self::NavBack => "Back to App",
-            Self::NavGroupManage => "Manage",
-            Self::NavGroupPreferences => "Preferences",
+            Self::NavGroupManage => "Resources",
+            Self::NavGroupPreferences => "Settings",
+            Self::PageGeneral => "Language, startup and exit behavior, updates, and data location.",
+            Self::PageAppearance => {
+                "Theme and skins, terminal colors, and how the host tree looks."
+            }
+            Self::PageTerminal => {
+                "Font & display, cursor, input & clipboard, keyword highlighting, and session logs."
+            }
+            Self::PageConnection => {
+                "Proxies for connecting to servers and for the app's own network access, connection maintenance, and server monitoring."
+            }
+            Self::PageSftp => {
+                "Transfer concurrency, attribute preservation, and file browsing options."
+            }
+            Self::PageAi => {
+                "Endpoints, external tools, and execution permissions for the AI assistant."
+            }
+            Self::PageLock => {
+                "App lock and auto-lock; the password is stored only on this computer."
+            }
+            Self::PageSync => {
+                "Config sync, local and cloud backups, and import, export, and restore."
+            }
+            Self::PageShortcuts => {
+                "The shortcuts that are currently available, grouped by feature."
+            }
+            Self::PageAbout => "Version, updates, the known-hosts file, and open-source licenses.",
             Self::FilterAllKinds => "All Types",
             Self::FilterAllHosts => "All Hosts",
             Self::HostTree => "Host Tree",
@@ -281,7 +353,8 @@ impl Msg for SettingsMsg {
             Self::HostTreeGuidesDescription => {
                 "Draw a short vertical dashed line to the left of each nesting level and a horizontal line to the child, so group membership is visible. Affects this computer only."
             }
-            Self::Window => "Window",
+            Self::LanguageGroup => "Language",
+            Self::StartupExit => "Startup & Exit",
             Self::CloseMainTitle => "When closing the main window",
             Self::CloseMainDescription => {
                 "Minimizing to the tray keeps sessions, port forwarding, and AI commands running; choose “Quit” from the tray icon menu to exit for real. Minimizing still goes to the taskbar."
@@ -298,6 +371,9 @@ impl Msg for SettingsMsg {
             Self::StartHiddenDescription => {
                 "Don't show the main window on the next launch; open it from the tray icon"
             }
+            Self::UpdatesGroup => "Updates",
+            Self::UpdateCheckTitle => "Check for Updates",
+            Self::DataLocation => "Data Location",
             Self::SessionLog => "Session Log",
             Self::SessionLogDescription => {
                 "Save what each terminal session displays to plain-text files (with colors and cursor control removed); applies to sessions opened afterwards. Logs contain everything shown in the terminal, possibly including sensitive information, and stay on this computer."
@@ -321,16 +397,23 @@ impl Msg for SettingsMsg {
             Self::AppProxySshDefault => "Use SSH default proxy",
             Self::AppProxySystem => "Follow system proxy",
             Self::AppProxyDirect => "No proxy",
-            Self::Proxy => "Proxy",
+            Self::SshDefaultGroup => "SSH Default Connection",
+            Self::SshDefaultGroupDescription => {
+                "The proxy used by default when connecting to servers (SSH); the proxy for the app's own network access is set under “App Network” below."
+            }
             Self::SshDefaultProxy => "Default SSH proxy",
             Self::SshDefaultProxyDescription => {
                 "Applies to SSH connections only: hosts set to “follow default proxy” and quick connections use this one."
             }
-            Self::AppNetwork => "App Network",
+            Self::AppNetworkGroup => "App Network",
+            Self::AppNetworkGroupDescription => {
+                "The proxy the app uses for its own network access (updates, sync, AI, and so on); it does not affect the proxy used to connect to servers above."
+            }
+            Self::AppNetwork => "Proxy for app network access",
             Self::AppNetworkDescription => {
                 "Update checks and downloads, config sync, and opencode downloads go through here, separate from the SSH proxy."
             }
-            Self::KeepConnection => "Connection Keep-Alive",
+            Self::KeepConnection => "Connection Maintenance",
             Self::PoolIdleTitle => "Idle disconnect",
             Self::PoolIdleDescription => {
                 "How long to keep an idle connection after terminals, SFTP, and port forwarding stop using it; 0 = disconnect immediately. Changes also apply to already-idle connections, and the timer restarts at the moment of the change."
@@ -339,7 +422,7 @@ impl Msg for SettingsMsg {
             Self::KeepaliveDescription => {
                 "How often to send a keepalive probe to detect dropped connections; 0 = off. Applies to connections created after the change."
             }
-            Self::ServerStats => "Server Status Bar",
+            Self::ServerStats => "Server Monitoring",
             Self::ServerStatsShowTitle => "Show server status bar",
             Self::ServerStatsShowDescription => {
                 "After connecting, show CPU / memory / disk / network speed at the bottom of the terminal."
@@ -353,7 +436,8 @@ impl Msg for SettingsMsg {
                 "The system uses an auto-config script (PAC), which isn't supported yet; treating it as a direct connection"
             }
             Self::SystemProxyNone => "No system proxy is set; treating it as a direct connection",
-            Self::Transfers => "Transfers",
+            Self::Transfers => "Transfer Behavior",
+            Self::FileBrowsing => "File Browsing",
             Self::TransfersDescription => {
                 "Transfer settings apply to SFTP tabs opened afterwards (running transfers are unaffected)."
             }
@@ -381,48 +465,77 @@ impl Msg for SettingsMsg {
     }
 }
 
-/// 页面右侧最上面一行：大标题（可带灰色的数量）+ 靠右的一排按钮；宽度和下面的内容对齐。
+/// 页面右侧最上面：大标题（可带灰色的数量）+ 靠右的一排按钮，下面可以有一句说明；宽度和下面的内容对齐。
 fn page_header(
     title: &str,
     subtitle: Option<SharedString>,
+    description: Option<&'static str>,
     actions: Vec<::gpui::AnyElement>,
     max_width: f32,
     tokens: &Tokens,
 ) -> impl IntoElement {
     div().w_full().flex_none().child(
-        h_flex()
+        v_flex()
             .w_full()
-            .flex_wrap()
             .max_w(px(max_width))
             .mx_auto()
             .px_6()
             .pt_6()
             .pb_4()
-            .gap_3()
-            .items_center()
-            .justify_between()
+            .gap_1()
             .child(
                 h_flex()
-                    .min_w_0()
-                    .gap_3()
-                    .items_baseline()
-                    .child(
-                        div()
-                            .typo(Role::PageTitle, tokens)
-                            .child(SharedString::from(title.to_owned())),
-                    )
-                    .children(subtitle.map(|text| div().typo(Role::Caption, tokens).child(text))),
-            )
-            .child(
-                h_flex()
-                    .flex_shrink(1.0)
-                    .min_w_0()
+                    .w_full()
                     .flex_wrap()
-                    .justify_end()
-                    .gap_2()
-                    .children(actions),
-            ),
+                    .gap_3()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        h_flex()
+                            .min_w_0()
+                            .gap_3()
+                            .items_baseline()
+                            .child(
+                                div()
+                                    .typo(Role::PageTitle, tokens)
+                                    .child(SharedString::from(title.to_owned())),
+                            )
+                            .children(
+                                subtitle.map(|text| div().typo(Role::Caption, tokens).child(text)),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_shrink(1.0)
+                            .min_w_0()
+                            .flex_wrap()
+                            .justify_end()
+                            .gap_2()
+                            .children(actions),
+                    ),
+            )
+            .children(description.map(|text| div().typo(Role::Caption, tokens).child(text))),
     )
+}
+
+/// 各设置页标题下面的一句说明（资源管理的四页不用）。
+fn page_description(section: SettingsSection) -> Option<&'static str> {
+    Some(t(match section {
+        SettingsSection::General => SettingsMsg::PageGeneral,
+        SettingsSection::Appearance => SettingsMsg::PageAppearance,
+        SettingsSection::Terminal => SettingsMsg::PageTerminal,
+        SettingsSection::Connection => SettingsMsg::PageConnection,
+        SettingsSection::Sftp => SettingsMsg::PageSftp,
+        SettingsSection::Ai => SettingsMsg::PageAi,
+        SettingsSection::Lock => SettingsMsg::PageLock,
+        SettingsSection::Sync => SettingsMsg::PageSync,
+        SettingsSection::Shortcuts => SettingsMsg::PageShortcuts,
+        SettingsSection::About => SettingsMsg::PageAbout,
+        SettingsSection::Credentials
+        | SettingsSection::QuickCommands
+        | SettingsSection::Proxies
+        | SettingsSection::Forwards => return None,
+    }))
 }
 
 /// 设置页里的一块：与管理页保持相同阅读宽度和对齐方式。
@@ -430,7 +543,7 @@ fn settings_block(content: impl IntoElement, first: bool) -> impl IntoElement {
     div()
         .w_full()
         .flex_none()
-        .max_w(px(MANAGE_WIDTH))
+        .max_w(px(CONTENT_WIDTH))
         .mx_auto()
         .px_6()
         .pb_6()
@@ -866,6 +979,7 @@ impl MainWindow {
             self.manage_section(section, tokens, window, cx)
         } else {
             let blocks: Vec<::gpui::AnyElement> = match section {
+                SettingsSection::General => self.general_blocks(tokens, cx),
                 SettingsSection::Appearance => self.appearance_blocks(tokens, cx),
                 SettingsSection::Terminal => self.terminal_blocks(tokens, cx),
                 SettingsSection::Connection => {
@@ -874,16 +988,17 @@ impl MainWindow {
                     blocks.push(self.x11_card(tokens, cx));
                     blocks
                 }
-                SettingsSection::Sftp => vec![self.sftp_card(tokens, cx)],
+                SettingsSection::Sftp => self.sftp_cards(tokens, cx),
                 SettingsSection::Ai => vec![
                     self.ai_builtin_block(tokens, window, cx),
                     agents.into_any_element(),
                 ],
                 SettingsSection::Sync => {
+                    // 同步在前，备份其次，从 Z-SSH 导入旧备份放最后（`BACKUP_ITEM` 按这个顺序数）。
                     vec![
-                        migrate.into_any_element(),
                         sync.into_any_element(),
                         backup.into_any_element(),
+                        migrate.into_any_element(),
                     ]
                 }
                 SettingsSection::Lock => self.lock_blocks(tokens, cx),
@@ -896,8 +1011,9 @@ impl MainWindow {
                 .child(page_header(
                     section.label(),
                     None,
+                    page_description(section),
                     Vec::new(),
-                    MANAGE_WIDTH,
+                    CONTENT_WIDTH,
                     tokens,
                 ))
                 .child(
@@ -951,8 +1067,9 @@ impl MainWindow {
             .child(page_header(
                 section.label(),
                 content.subtitle,
+                None,
                 content.actions,
-                MANAGE_WIDTH,
+                CONTENT_WIDTH,
                 tokens,
             ))
             .children(filter)
@@ -968,7 +1085,7 @@ impl MainWindow {
                     .child(
                         v_flex()
                             .w_full()
-                            .max_w(px(MANAGE_WIDTH))
+                            .max_w(px(CONTENT_WIDTH))
                             .mx_auto()
                             .px_6()
                             .pb_8()
@@ -1102,7 +1219,7 @@ impl MainWindow {
                 .child(
                     h_flex()
                         .w_full()
-                        .max_w(px(MANAGE_WIDTH))
+                        .max_w(px(CONTENT_WIDTH))
                         .mx_auto()
                         .px_6()
                         .pb_3()
@@ -1125,12 +1242,17 @@ impl MainWindow {
         )
     }
 
-    /// 左侧导航：顶部「← 返回应用」，「管理」组 4 项，「偏好」组 8 项；选中的有底色和加粗。
+    /// 左侧导航：顶部固定「← 返回应用」，下面可以单独滚动：「资源管理」组 4 项、「应用设置」组 10 项。
+    /// 组标题只是灰色小字，不能点。选中的有强调色浅底 + 强调色文字，悬停的只有淡灰底，一眼分得出。
     fn settings_nav(&self, tokens: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let current = self.settings_section;
-        let (hover, selected_bg, text, muted) =
-            (tokens.hover, tokens.subtle, tokens.text, tokens.text_muted);
+        let (hover, selected_bg, accent, muted) = (
+            tokens.hover,
+            tokens.accent_soft,
+            tokens.accent,
+            tokens.text_muted,
+        );
         let item = {
             let entity = entity.clone();
             let tokens = *tokens;
@@ -1140,10 +1262,11 @@ impl MainWindow {
                 h_flex()
                     .id(("settings-nav-item", index))
                     .w_full()
+                    .h(px(NAV_ITEM_HEIGHT))
+                    .flex_none()
                     .gap_2()
                     .items_center()
                     .px_2()
-                    .py(px(6.0))
                     .rounded_md()
                     .cursor_pointer()
                     .typo(
@@ -1154,14 +1277,27 @@ impl MainWindow {
                         },
                         &tokens,
                     )
-                    .when(is_current, |d| d.bg(selected_bg))
+                    .when(is_current, |d| d.bg(selected_bg).text_color(accent))
                     .when(!is_current, |d| d.hover(move |style| style.bg(hover)))
                     .child(
                         Icon::new(section.icon())
                             .size_4()
-                            .text_color(if is_current { text } else { muted }),
+                            .text_color(if is_current { accent } else { muted }),
                     )
-                    .child(section.label())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(section.nav_label()),
+                    )
+                    // 导航里写了短名字的（英文 Network）悬停时给出完整名字。
+                    .when(section.nav_label() != section.label(), |d| {
+                        d.tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(section.label())
+                                .build(window, cx)
+                        })
+                    })
                     .on_click(move |_, _, cx| {
                         entity.update(cx, |this, cx| this.set_settings_section(section, cx));
                     })
@@ -1180,10 +1316,10 @@ impl MainWindow {
             h_flex()
                 .id("settings-back")
                 .w_full()
+                .h(px(NAV_ITEM_HEIGHT))
                 .gap_2()
                 .items_center()
                 .px_2()
-                .py(px(7.0))
                 .rounded_md()
                 .typo(Role::Nav, tokens)
                 .text_color(muted)
@@ -1205,31 +1341,87 @@ impl MainWindow {
             .w(px(NAV_WIDTH))
             .h_full()
             .flex_none()
-            .p_3()
-            .gap_0p5()
             .bg(tokens.background)
             .border_r_1()
             .border_color(tokens.divider)
-            .overflow_y_scroll()
-            .child(back)
-            .child(group_label(t(SettingsMsg::NavGroupManage)))
-            .children(
-                SettingsSection::MANAGE
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, section)| item(index, section)),
+            // 「返回应用」钉在最上面；分类多、窗口矮时只有下面这段滚动。
+            .child(div().flex_none().px_3().pt_3().pb_1().child(back))
+            .child(
+                v_flex()
+                    .id("settings-nav-list")
+                    .flex_1()
+                    .min_h_0()
+                    .px_3()
+                    .pb_3()
+                    .gap_0p5()
+                    .overflow_y_scroll()
+                    .child(group_label(t(SettingsMsg::NavGroupManage)))
+                    .children(
+                        SettingsSection::MANAGE
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, section)| item(index, section)),
+                    )
+                    .child(group_label(t(SettingsMsg::NavGroupPreferences)))
+                    .children(
+                        SettingsSection::PREFERENCES
+                            .into_iter()
+                            .enumerate()
+                            .map(move |(index, section)| item(manage_count + index, section)),
+                    ),
             )
-            .child(group_label(t(SettingsMsg::NavGroupPreferences)))
-            .children(
-                SettingsSection::PREFERENCES
-                    .into_iter()
-                    .enumerate()
-                    .map(move |(index, section)| item(manage_count + index, section)),
-            )
+    }
+
+    // ---- 常规 ----
+
+    /// 常规：语言、启动与退出、更新、数据位置。
+    fn general_blocks(
+        &mut self,
+        tokens: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> Vec<::gpui::AnyElement> {
+        vec![
+            self.language_card(tokens, cx),
+            self.startup_exit_card(tokens, cx),
+            self.update_card(tokens, cx),
+            crate::settings_view::card(
+                "settings-data-location",
+                t(SettingsMsg::DataLocation),
+                None,
+                tokens,
+                crate::about_view::data_dir_rows(tokens),
+            ),
+        ]
+    }
+
+    /// 更新：只有「检查更新」（和关于页、托盘共用一个入口），不新增自动检查开关。
+    fn update_card(&self, tokens: &Tokens, cx: &mut Context<Self>) -> ::gpui::AnyElement {
+        let entity = cx.entity();
+        card(
+            "settings-updates",
+            t(SettingsMsg::UpdatesGroup),
+            None,
+            tokens,
+            vec![row(
+                t(SettingsMsg::UpdateCheckTitle),
+                Some(crate::about_view::update_description(
+                    crate::about_view::signing_configured(),
+                )),
+                crate::about_view::update_buttons(
+                    "general-open-releases",
+                    "general-check-update",
+                    move |window, cx| {
+                        entity.update(cx, |this, cx| this.check_for_updates(window, cx));
+                    },
+                ),
+                tokens,
+            )],
+        )
     }
 
     // ---- 外观 ----
 
+    /// 外观：主题与皮肤、终端配色、主机树；末尾是只还原这一页的「恢复本页默认设置」。
     fn appearance_blocks(
         &mut self,
         tokens: &Tokens,
@@ -1237,13 +1429,14 @@ impl MainWindow {
     ) -> Vec<::gpui::AnyElement> {
         let mut blocks = crate::settings_view::appearance_cards(&self.workspace, cx);
         blocks.push(self.host_tree_card(tokens, cx));
-        blocks.push(self.language_card(tokens, cx));
-        blocks.push(self.window_card(tokens, cx));
-        blocks.push(crate::settings_view::reset_row(&self.workspace));
+        blocks.push(crate::settings_view::reset_appearance_block(
+            &self.workspace,
+            cx,
+        ));
         blocks
     }
 
-    /// 界面语言：跟随系统 / 简体中文 / English。切换即时生效；已缓存文案的面（系统托盘菜单）
+    /// 界面语言（常规页）：跟随系统 / 简体中文 / English。切换即时生效；已缓存文案的面（系统托盘菜单）
     /// 要重启程序才会换，所以下面直接写明这一点，不让它悄悄半中半英。
     fn language_card(&self, tokens: &Tokens, cx: &mut Context<Self>) -> ::gpui::AnyElement {
         use crate::i18n::{Key, LangPref, pref_label, t};
@@ -1251,7 +1444,7 @@ impl MainWindow {
         let entity = cx.entity();
         card(
             "settings-language",
-            t(Key::LanguageCardTitle),
+            t(SettingsMsg::LanguageGroup),
             None,
             tokens,
             vec![row(
@@ -1331,8 +1524,8 @@ impl MainWindow {
         )
     }
 
-    /// 窗口：关闭主窗口 / 文件窗口时做什么（0.2.14 的 `WindowCard`），外加 ZeeTerm 的「启动时隐藏到托盘」。
-    fn window_card(&self, tokens: &Tokens, cx: &mut Context<Self>) -> ::gpui::AnyElement {
+    /// 启动与退出（常规页）：关闭主窗口 / 文件窗口时做什么（0.2.14 的 `WindowCard`），外加 ZeeTerm 的「启动时隐藏到托盘」。
+    fn startup_exit_card(&self, tokens: &Tokens, cx: &mut Context<Self>) -> ::gpui::AnyElement {
         let entity = cx.entity();
         let close = self.prefs.close_action;
         let file_close = self.prefs.file_window_close;
@@ -1342,7 +1535,7 @@ impl MainWindow {
         let ws = self.workspace.clone();
         card(
             "settings-window",
-            t(SettingsMsg::Window),
+            t(SettingsMsg::StartupExit),
             None,
             tokens,
             vec![
@@ -1436,6 +1629,10 @@ impl MainWindow {
         let mut blocks = crate::settings_view::terminal_cards(&self.workspace, cx);
         blocks.push(editor.into_any_element());
         blocks.push(self.session_log_card(tokens, cx));
+        blocks.push(crate::settings_view::reset_terminal_block(
+            &self.workspace,
+            cx,
+        ));
         blocks
     }
 
@@ -1632,9 +1829,10 @@ impl MainWindow {
         }
     }
 
-    // ---- 连接 ----
+    // ---- 连接与网络 ----
 
-    /// 连接分类的三组：代理、连接保持（空闲断开、保活）、服务器状态栏。
+    /// 连接与网络分类的四组：SSH 默认连接、软件网络、连接维护（空闲断开、保活）、服务器监控；
+    /// 最后一组「高级连接」（X11 转发）由 `x11_card` 另外画。
     fn connection_cards(
         &self,
         tokens: &Tokens,
@@ -1781,23 +1979,27 @@ impl MainWindow {
         vec![
             card(
                 "settings-connection",
-                t(SettingsMsg::Proxy),
-                None,
+                t(SettingsMsg::SshDefaultGroup),
+                Some(t(SettingsMsg::SshDefaultGroupDescription)),
                 tokens,
-                vec![
-                    row(
-                        t(SettingsMsg::SshDefaultProxy),
-                        Some(t(SettingsMsg::SshDefaultProxyDescription)),
-                        default_control,
-                        tokens,
-                    ),
-                    row(
-                        t(SettingsMsg::AppNetwork),
-                        Some(t(SettingsMsg::AppNetworkDescription)),
-                        app_control,
-                        tokens,
-                    ),
-                ],
+                vec![row(
+                    t(SettingsMsg::SshDefaultProxy),
+                    Some(t(SettingsMsg::SshDefaultProxyDescription)),
+                    default_control,
+                    tokens,
+                )],
+            ),
+            card(
+                "settings-connection-app",
+                t(SettingsMsg::AppNetworkGroup),
+                Some(t(SettingsMsg::AppNetworkGroupDescription)),
+                tokens,
+                vec![row(
+                    t(SettingsMsg::AppNetwork),
+                    Some(t(SettingsMsg::AppNetworkDescription)),
+                    app_control,
+                    tokens,
+                )],
             ),
             card(
                 "settings-connection-keep",
@@ -1854,9 +2056,10 @@ impl MainWindow {
         ]
     }
 
-    // ---- SFTP ----
+    // ---- 文件传输 ----
 
-    fn sftp_card(&self, tokens: &Tokens, cx: &mut Context<Self>) -> ::gpui::AnyElement {
+    /// 文件传输的两组：传输行为（并发数、保留修改时间 / 权限）、文件浏览（默认显示隐藏文件）。
+    fn sftp_cards(&self, tokens: &Tokens, cx: &mut Context<Self>) -> Vec<::gpui::AnyElement> {
         let entity = cx.entity();
         let flag = |kind: PrefFlag,
                     id: &'static str,
@@ -1875,43 +2078,51 @@ impl MainWindow {
                 },
             )
         };
-        card(
-            "settings-sftp",
-            t(SettingsMsg::Transfers),
-            Some(t(SettingsMsg::TransfersDescription)),
-            tokens,
-            vec![
-                self.number_row(
-                    PrefNumber::SftpConcurrency,
-                    t(SettingsMsg::SftpConcurrencyTitle),
-                    t(SettingsMsg::SftpConcurrencyDescription),
-                    t(SettingsMsg::SftpConcurrencySuffix),
-                    tokens,
-                    cx,
-                ),
-                flag(
-                    PrefFlag::SftpPreserveMtime,
-                    "sftp-preserve-mtime",
-                    t(SettingsMsg::PreserveMtimeTitle),
-                    t(SettingsMsg::PreserveMtimeDescription),
-                    self.prefs.sftp_preserve_mtime,
-                ),
-                flag(
-                    PrefFlag::SftpPreservePermissions,
-                    "sftp-preserve-permissions",
-                    t(SettingsMsg::PreservePermissionsTitle),
-                    t(SettingsMsg::PreservePermissionsDescription),
-                    self.prefs.sftp_preserve_permissions,
-                ),
-                flag(
+        vec![
+            card(
+                "settings-sftp",
+                t(SettingsMsg::Transfers),
+                Some(t(SettingsMsg::TransfersDescription)),
+                tokens,
+                vec![
+                    self.number_row(
+                        PrefNumber::SftpConcurrency,
+                        t(SettingsMsg::SftpConcurrencyTitle),
+                        t(SettingsMsg::SftpConcurrencyDescription),
+                        t(SettingsMsg::SftpConcurrencySuffix),
+                        tokens,
+                        cx,
+                    ),
+                    flag(
+                        PrefFlag::SftpPreserveMtime,
+                        "sftp-preserve-mtime",
+                        t(SettingsMsg::PreserveMtimeTitle),
+                        t(SettingsMsg::PreserveMtimeDescription),
+                        self.prefs.sftp_preserve_mtime,
+                    ),
+                    flag(
+                        PrefFlag::SftpPreservePermissions,
+                        "sftp-preserve-permissions",
+                        t(SettingsMsg::PreservePermissionsTitle),
+                        t(SettingsMsg::PreservePermissionsDescription),
+                        self.prefs.sftp_preserve_permissions,
+                    ),
+                ],
+            ),
+            card(
+                "settings-sftp-browse",
+                t(SettingsMsg::FileBrowsing),
+                None,
+                tokens,
+                vec![flag(
                     PrefFlag::SftpShowHidden,
                     "sftp-show-hidden",
                     t(SettingsMsg::ShowHiddenTitle),
                     t(SettingsMsg::ShowHiddenDescription),
                     self.prefs.sftp_show_hidden,
-                ),
-            ],
-        )
+                )],
+            ),
+        ]
     }
 
     /// 一行滑块设置：左边名字和说明，右边滑块 + 当前值。

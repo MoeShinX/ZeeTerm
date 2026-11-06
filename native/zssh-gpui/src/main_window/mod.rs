@@ -934,9 +934,10 @@ impl MainWindow {
         self.set_settings_section(section, cx);
     }
 
-    /// 托盘菜单和「设置 → 关于」共用的「检查更新」入口：打开更新窗口（读清单、下载、验签、确认后安装）。
+    /// 托盘菜单、「设置 → 常规 → 更新」和「设置 → 关于」共用的「检查更新」入口：打开更新窗口
+    /// （读清单、下载、验签、确认后安装）。
     pub(crate) fn check_for_updates(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        crate::update::open_update_window(cx);
+        crate::about_view::check_update_now(cx);
     }
 
     pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {

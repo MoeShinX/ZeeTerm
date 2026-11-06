@@ -118,7 +118,7 @@ impl Msg for AgentHostMsg {
             Self::EndpointMissing => "这个接口已经不存在了，请在智能体下拉里重新选一个。",
             Self::ReadApiKeyFailedPrefix => "读取 API Key 失败：",
             Self::MissingApiKeyPrefix => "接口「",
-            Self::MissingApiKeySuffix => "」还没有 API Key：到 设置 → AI → ZeePilot 里补上。",
+            Self::MissingApiKeySuffix => "」还没有 API Key：到 设置 → AI 助手 → ZeePilot 里补上。",
         }
     }
 
@@ -161,7 +161,7 @@ impl Msg for AgentHostMsg {
             Self::ReadApiKeyFailedPrefix => "Failed to read the API key: ",
             Self::MissingApiKeyPrefix => "Endpoint \"",
             Self::MissingApiKeySuffix => {
-                "\" has no API key yet: add one under Settings → AI → ZeePilot."
+                "\" has no API key yet: add one under Settings → AI Assistant → ZeePilot."
             }
         }
     }

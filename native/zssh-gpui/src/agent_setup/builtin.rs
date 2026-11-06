@@ -283,7 +283,7 @@ impl Msg for BuiltinMsg {
     fn zh(&self) -> &'static str {
         match *self {
             Self::MissingText => {
-                "还没有配置 ZeePilot：到 设置 → AI → ZeePilot 添加一个接口并填好 API Key（本机的 Ollama 之类可以勾选「不需要 Key」），就能直接对话，不用安装别的工具。"
+                "还没有配置 ZeePilot：到 设置 → AI 助手 → ZeePilot 添加一个接口并填好 API Key（本机的 Ollama 之类可以勾选「不需要 Key」），就能直接对话，不用安装别的工具。"
             }
             Self::RequiresTopup => "ZeePilot 需要充值后使用，赠送额度可在网页和其他客户端试用",
             Self::AuthorizationInvalid => {
@@ -320,7 +320,7 @@ impl Msg for BuiltinMsg {
     fn en(&self) -> &'static str {
         match *self {
             Self::MissingText => {
-                "ZeePilot is not configured yet: open Settings → AI → ZeePilot, add an endpoint and fill in the API key (local services such as Ollama can be marked \"No key needed\") to start chatting without installing anything else."
+                "ZeePilot is not configured yet: open Settings → AI Assistant → ZeePilot, add an endpoint and fill in the API key (local services such as Ollama can be marked \"No key needed\") to start chatting without installing anything else."
             }
             Self::RequiresTopup => {
                 "ZeePilot needs a top-up before it can be used; the bonus credit can be tried on the web and in other clients"
