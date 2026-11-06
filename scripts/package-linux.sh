@@ -28,7 +28,7 @@ cd "$root"
 APP_ID="app.zeeterm.ZeeTerm"
 ARCH_NAME="linux-x86_64"
 GLIBC_BASELINE="2.35"
-MAINTAINER="MoeShinX <MoeShinX@users.noreply.github.com>"
+MAINTAINER="ZeeTerm contributors <noreply@users.noreply.github.com>"
 HOMEPAGE="https://github.com/MoeShinX/ZeeTerm"
 linux_src="$root/native/installer/linux"
 brand="$root/native/zssh-gpui/assets/brand"
@@ -359,7 +359,8 @@ if (
         desktop-file-validate "$prefix/share/applications/$APP_ID.desktop"
     fi
     "$prefix/share/zeeterm/uninstall.sh" >/dev/null
-    leftover=$(find "$prefix" -type f)
+    # update-desktop-database / gtk-update-icon-cache 生成的缓存是共用的，不算我们的文件。
+    leftover=$(find "$prefix" -type f ! -name mimeinfo.cache ! -name icon-theme.cache)
     [ -z "$leftover" ] || { echo "卸载后还剩文件：$leftover" >&2; exit 1; }
 ); then
     echo "install.sh / uninstall.sh 自检通过"

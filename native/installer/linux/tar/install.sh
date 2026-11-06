@@ -95,7 +95,7 @@ put 755 "$here/zssh-mcp" "$bin_dir/zssh-mcp"
 exe="$bin_dir/zeeterm"
 case "$exe" in
     *[!A-Za-z0-9/._+-]*)
-        esc=$(printf '%s' "$exe" | sed -e 's/\/\\\\/g' -e 's/"/\\\\"/g' -e 's/`/\\`/g' -e 's/\$/\\$/g' -e 's/%/%%/g')
+        esc=$(printf '%s' "$exe" | sed -e 's/\\/\\\\\\\\/g' -e 's/"/\\\\"/g' -e 's/`/\\\\`/g' -e 's/\$/\\\\$/g' -e 's/%/%%/g')
         exec_value="\"$esc\""
         ;;
     *)
@@ -103,7 +103,8 @@ case "$exe" in
         ;;
 esac
 desktop_tmp="$state_dir/.desktop.$$"
-awk -v exec_value="$exec_value" '/^Exec=/ { print "Exec=" exec_value; next } { print }' \
+# 用环境变量传值：awk -v 会解释反斜杠转义，破坏上面转义好的路径。
+EXEC_VALUE=$exec_value awk '/^Exec=/ { print "Exec=" ENVIRON["EXEC_VALUE"]; next } { print }' \
     "$here/$APP_ID.desktop" > "$desktop_tmp"
 put 644 "$desktop_tmp" "$app_dir/$APP_ID.desktop"
 rm -f "$desktop_tmp"
