@@ -93,6 +93,9 @@ enum SettingsMsg {
     FileWindowMerge,
     StartHiddenTitle,
     StartHiddenDescription,
+    // 没有系统托盘（Linux 上缺 StatusNotifier 宿主）时，这两项显示为不可用并说明原因
+    CloseMainNoTray,
+    StartHiddenNoTray,
     // ---- 常规 · 更新 / 数据位置 ----
     UpdatesGroup,
     UpdateCheckTitle,
@@ -242,6 +245,10 @@ impl Msg for SettingsMsg {
             Self::FileWindowMerge => "合并回主窗口",
             Self::StartHiddenTitle => "启动时隐藏到托盘",
             Self::StartHiddenDescription => "下次启动不显示主窗口，从托盘图标打开",
+            Self::CloseMainNoTray => {
+                "没有检测到系统托盘，关闭主窗口会直接退出程序。GNOME 需要先启用 AppIndicator 扩展；托盘出现后这里会自动恢复。"
+            }
+            Self::StartHiddenNoTray => "没有检测到系统托盘，启动时不会隐藏主窗口",
             Self::UpdatesGroup => "更新",
             Self::UpdateCheckTitle => "检查更新",
             Self::DataLocation => "数据位置",
@@ -435,6 +442,12 @@ impl Msg for SettingsMsg {
             Self::StartHiddenTitle => "Hide to tray on startup",
             Self::StartHiddenDescription => {
                 "Don't show the main window on the next launch; open it from the tray icon"
+            }
+            Self::CloseMainNoTray => {
+                "No system tray was detected, so closing the main window quits the app. On GNOME, enable the AppIndicator extension first; this setting comes back once a tray appears."
+            }
+            Self::StartHiddenNoTray => {
+                "No system tray was detected, so the main window is not hidden on startup"
             }
             Self::UpdatesGroup => "Updates",
             Self::UpdateCheckTitle => "Check for Updates",
@@ -1644,37 +1657,59 @@ impl MainWindow {
         let file_entity = entity.clone();
         let start_hidden = self.workspace.read(cx).settings().start_hidden;
         let ws = self.workspace.clone();
+        // Linux 上没有 StatusNotifier 宿主（原版 GNOME）时托盘用不了；Windows 的托盘总是可用。
+        #[cfg(not(windows))]
+        let tray_missing = !crate::tray::available();
+        #[cfg(windows)]
+        let tray_missing = false;
         card(
             "settings-window",
             t(SettingsMsg::StartupExit),
             None,
             tokens,
             vec![
-                row(
-                    t(SettingsMsg::CloseMainTitle),
-                    Some(t(SettingsMsg::CloseMainDescription)),
-                    div().w(px(224.0)).child(select(
-                        "close-action",
-                        match close {
-                            CloseChoice::Tray => t(SettingsMsg::CloseToTray),
-                            CloseChoice::Quit => t(SettingsMsg::QuitApp),
-                        },
-                        vec![
-                            Choice::new(t(SettingsMsg::CloseToTray), close == CloseChoice::Tray),
-                            Choice::new(t(SettingsMsg::QuitApp), close == CloseChoice::Quit),
-                        ],
-                        move |index, window, cx| {
-                            let choice = if index == 0 {
-                                CloseChoice::Tray
-                            } else {
-                                CloseChoice::Quit
-                            };
-                            close_entity
-                                .update(cx, |this, cx| this.set_close_choice(choice, window, cx));
-                        },
-                    )),
-                    tokens,
-                ),
+                if tray_missing {
+                    // 没有托盘宿主：选项不可选，显示实际效果（直接退出）和原因
+                    row(
+                        t(SettingsMsg::CloseMainTitle),
+                        Some(t(SettingsMsg::CloseMainNoTray)),
+                        div()
+                            .w(px(224.0))
+                            .typo(Role::Caption, tokens)
+                            .child(t(SettingsMsg::QuitApp)),
+                        tokens,
+                    )
+                } else {
+                    row(
+                        t(SettingsMsg::CloseMainTitle),
+                        Some(t(SettingsMsg::CloseMainDescription)),
+                        div().w(px(224.0)).child(select(
+                            "close-action",
+                            match close {
+                                CloseChoice::Tray => t(SettingsMsg::CloseToTray),
+                                CloseChoice::Quit => t(SettingsMsg::QuitApp),
+                            },
+                            vec![
+                                Choice::new(
+                                    t(SettingsMsg::CloseToTray),
+                                    close == CloseChoice::Tray,
+                                ),
+                                Choice::new(t(SettingsMsg::QuitApp), close == CloseChoice::Quit),
+                            ],
+                            move |index, window, cx| {
+                                let choice = if index == 0 {
+                                    CloseChoice::Tray
+                                } else {
+                                    CloseChoice::Quit
+                                };
+                                close_entity.update(cx, |this, cx| {
+                                    this.set_close_choice(choice, window, cx)
+                                });
+                            },
+                        )),
+                        tokens,
+                    )
+                },
                 row(
                     t(SettingsMsg::CloseFileTitle),
                     Some(t(SettingsMsg::CloseFileDescription)),
@@ -1710,7 +1745,11 @@ impl MainWindow {
                 crate::settings_view::switch_row(
                     "start-hidden",
                     t(SettingsMsg::StartHiddenTitle),
-                    t(SettingsMsg::StartHiddenDescription),
+                    if tray_missing {
+                        t(SettingsMsg::StartHiddenNoTray)
+                    } else {
+                        t(SettingsMsg::StartHiddenDescription)
+                    },
                     start_hidden,
                     |this, cx| this.toggle_start_hidden(cx),
                     &ws,

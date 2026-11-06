@@ -6,6 +6,11 @@
 //! 做法：给界面线程装一个 `WH_GETMESSAGE` 线程钩子。这个进程所有窗口（主窗口、文件窗口、
 //! 更新窗口……）的消息都从这条线程的消息队列过，钩子在消息被取出时看一眼：是键盘 / 鼠标 / 指针类
 //! 就记下时间。钩子只读消息、不改、不拦，一律交给下一个处理者。
+//!
+//! Unix 没有这种消息钩子：本模块只管记时（[`touch`] / [`idle_for`]），谁来调 `touch` 由界面层负责——
+//! GPUI 入口（`native/zssh-gpui/src/input_activity.rs`）把所有本应用窗口的键盘 / 鼠标事件喂给它，
+//! 语义和 Windows 一致（只算本应用窗口里的输入）。没人喂的话 `idle_for` 会从启动那一刻一直涨，
+//! 应用锁的"空闲 N 分钟"就会在启动 N 分钟后无条件触发，所以界面层必须接。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -82,7 +87,7 @@ pub fn install_on_current_thread() -> bool {
         };
         hook.is_ok()
     }
-    // Unix 没有消息钩子；空闲检测由界面层自己调用 touch()（待接 GPUI 输入事件）。
+    // Unix 没有消息钩子，返回 false；输入事件由界面层调用 touch() 喂进来（见模块说明）。
     #[cfg(not(windows))]
     false
 }

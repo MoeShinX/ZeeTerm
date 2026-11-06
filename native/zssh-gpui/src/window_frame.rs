@@ -117,6 +117,8 @@ pub fn frame(content: impl IntoElement) -> AnyElement {
     use ::gpui::ParentElement as _;
     gpui_kit::component::window_border()
         .child(content)
+        // 空闲自动锁定要统计这个窗口里的鼠标操作（见 `input_activity`）
+        .children(crate::input_activity::probe())
         .into_any_element()
 }
 

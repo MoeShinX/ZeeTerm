@@ -48,6 +48,7 @@ mod i18n;
 mod icons;
 mod identities;
 mod ime;
+mod input_activity;
 mod install_state;
 #[cfg(test)]
 mod installer_manifest;
@@ -95,6 +96,7 @@ mod tray;
 #[cfg(not(windows))]
 #[path = "tray_linux.rs"]
 mod tray;
+mod tray_menu;
 mod typography;
 mod update;
 mod update_auto;
@@ -142,10 +144,14 @@ fn main() {
         // X11 失败写进终端的那一行跟随界面语言（核心库不挑语言）。
         zssh_core::x11::set_notice_renderer(error_text::x11_notice_line);
 
-        // 空闲自动锁定要知道“ZeeTerm 窗口里最近一次键盘 / 鼠标操作”（V2-U26）：给界面线程装消息钩子。
+        // 空闲自动锁定要知道“ZeeTerm 窗口里最近一次键盘 / 鼠标操作”（V2-U26）：Windows 给界面线程装消息钩子；
+        // Unix 没有钩子，由 GPUI 层把键盘 / 鼠标事件喂给 `activity::touch()`。
+        #[cfg(windows)]
         if !zssh_platform_windows::activity::install_on_current_thread() {
             tracing::warn!("没能安装输入活动钩子，空闲自动锁定不会生效");
         }
+        #[cfg(not(windows))]
+        input_activity::install(cx);
 
         // 单实例：已有实例就把它的主窗口带到前台，然后退出自己。
         // 调试构建里自动化可以用 `ZSSH_INSTANCE_NAME` 换一个互斥体名：用户自己开着的 ZeeTerm
@@ -283,6 +289,18 @@ fn main() {
 
         tray::spawn(cx, handle, view.clone());
 
+        // 跟随系统主题：Linux 上 GPUI 在后台读 xdg-desktop-portal 的 color-scheme，系统切换明暗时窗口的外观
+        // 随之变化，这里立刻对齐一次（定时轮询仍在，作后备，也负责启动时门户的第一次回答）。
+        #[cfg(not(windows))]
+        let _ = handle.update(cx, |_, window, _| {
+            window
+                .observe_window_appearance(|_window, cx| {
+                    settings_store::AppSettings::global(cx)
+                        .update(cx, |settings, cx| settings.sync_system_theme(cx));
+                })
+                .detach();
+        });
+
         // 再次启动 ZeeTerm 时把这个窗口叫到前台（在界面线程上做；窗口收起 / 最小化时由
         // `activate_window` 请求合成器 / 窗口管理器恢复）。
         #[cfg(unix)]
@@ -302,6 +320,17 @@ fn main() {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(250))
                     .await;
+                // Linux 的托盘要先在 D-Bus 上登记好才算可用；等不到（没有托盘宿主）时 `tray::hide`
+                // 什么都不做，窗口留在屏幕上，不会让用户找不到它。
+                #[cfg(not(windows))]
+                for _ in 0..16 {
+                    if tray::available() {
+                        break;
+                    }
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(250))
+                        .await;
+                }
                 let _ = handle.update(cx, |_, window, _| tray::hide(window));
             })
             .detach();
