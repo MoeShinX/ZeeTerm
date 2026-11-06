@@ -100,7 +100,13 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
             "With auto-login on, both the user name prompt and the password prompt need at least one match rule"
         }
         "protocol.auto_login_needs_user" => "With auto-login on, the user name cannot be empty",
-        "protocol.serial_device_empty" => "Enter the serial device name (for example COM3)",
+        "protocol.serial_device_empty" => {
+            if cfg!(windows) {
+                "Enter the serial device name (for example COM3)"
+            } else {
+                "Enter the serial device path (for example /dev/ttyUSB0)"
+            }
+        }
         "protocol.serial_device_bad" => {
             "The serial device name can be at most {max} characters and cannot contain control characters"
         }
