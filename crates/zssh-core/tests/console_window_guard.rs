@@ -17,6 +17,10 @@ const ALLOWED_GUI_LAUNCHES: &[(&str, &str)] = &[
         "native/zssh-gpui/src/main_window/settings_page.rs",
         "用 explorer 打开日志目录：用户就是要看到资源管理器窗口",
     ),
+    (
+        "native/zssh-update/src/linux.rs",
+        "Linux 的应用内更新（dpkg / pkexec / tar / sh / 新程序的 --version）：只有 Linux 版会走到，Windows 上不会启动它们",
+    ),
 ];
 
 /// 只给测试用的文件（对应的 `mod` 带 `#[cfg(test)]`）。

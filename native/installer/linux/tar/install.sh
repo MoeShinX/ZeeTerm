@@ -1,8 +1,12 @@
 #!/bin/sh
 # ZeeTerm 免 root 安装脚本（tar.gz 包里的 install.sh）。
 #
-#   ./install.sh                 装到 ~/.local（bin、share/applications、share/icons、share/metainfo）
-#   ./install.sh --prefix DIR    装到 DIR（DIR/bin、DIR/share/...）
+#   ./install.sh                 装到 ~/.local（lib/zeeterm、bin、share/applications、share/icons、share/metainfo）
+#   ./install.sh --prefix DIR    装到 DIR（DIR/lib/zeeterm、DIR/bin、DIR/share/...）
+#
+# 布局和 deb 一致：程序放在 <prefix>/lib/zeeterm/{zeeterm,zssh-mcp}（zssh-mcp 是内部辅助程序，必须和主程序同目录），
+# <prefix>/bin/zeeterm 是指向 ../lib/zeeterm/zeeterm 的相对软链接，只有它占用户 PATH 里的命令名。
+# 应用内更新认这个布局：程序在 <prefix>/lib/zeeterm 下，且 <prefix>/share/zeeterm/install-manifest 在。
 #
 # 装了什么记在 <prefix>/share/zeeterm/install-manifest，卸载用同目录下的 uninstall.sh。
 # 不需要 root，不碰你的数据目录（~/.local/share/ZeeTerm）。可以重复运行（覆盖旧版）。
@@ -67,6 +71,7 @@ for required in zeeterm zssh-mcp "$APP_ID.desktop" icons/hicolor; do
 done
 
 bin_dir="$prefix/bin"
+lib_dir="$prefix/lib/zeeterm"
 app_dir="$prefix/share/applications"
 icon_root="$prefix/share/icons/hicolor"
 meta_dir="$prefix/share/metainfo"
@@ -74,7 +79,7 @@ state_dir="$prefix/share/zeeterm"
 manifest="$state_dir/install-manifest"
 
 # 先在 state_dir 里写新的清单草稿，装完再换上；中途失败不会留下指向不存在文件的清单。
-mkdir -p "$bin_dir" "$app_dir" "$state_dir"
+mkdir -p "$bin_dir" "$lib_dir" "$app_dir" "$state_dir"
 draft="$state_dir/.install-manifest.$$"
 trap 'rm -f "$draft"' EXIT INT TERM
 : > "$draft"
@@ -88,10 +93,18 @@ put() { # put <模式> <源文件> <目标文件>
     printf '%s\n' "$3" >> "$draft"
 }
 
-put 755 "$here/zeeterm" "$bin_dir/zeeterm"
-put 755 "$here/zssh-mcp" "$bin_dir/zssh-mcp"
+put 755 "$here/zeeterm" "$lib_dir/zeeterm"
+put 755 "$here/zssh-mcp" "$lib_dir/zssh-mcp"
 
-# Exec 里写绝对路径：桌面会话的 PATH 里不一定有 ~/.local/bin。路径里有空格等字符时按桌面文件规范加引号转义。
+# bin/zeeterm：相对软链接。先建临时名再 mv：已有旧版（软链接或文件）时原子替换，不会有一瞬间没有这个命令。
+link_tmp="$bin_dir/zeeterm.new.$$"
+rm -f "$link_tmp"
+ln -s ../lib/zeeterm/zeeterm "$link_tmp"
+mv -f "$link_tmp" "$bin_dir/zeeterm"
+printf '%s\n' "$bin_dir/zeeterm" >> "$draft"
+
+# Exec / TryExec 里写绝对路径：桌面会话的 PATH 里不一定有 ~/.local/bin。Exec 的路径里有空格等字符时按桌面文件规范
+# 加引号转义；TryExec 是不带引号的普通路径。
 exe="$bin_dir/zeeterm"
 case "$exe" in
     *[!A-Za-z0-9/._+-]*)
@@ -104,7 +117,7 @@ case "$exe" in
 esac
 desktop_tmp="$state_dir/.desktop.$$"
 # 用环境变量传值：awk -v 会解释反斜杠转义，破坏上面转义好的路径。
-EXEC_VALUE=$exec_value awk '/^Exec=/ { print "Exec=" ENVIRON["EXEC_VALUE"]; next } { print }' \
+EXEC_VALUE=$exec_value TRYEXEC_VALUE=$exe awk '/^Exec=/ { print "Exec=" ENVIRON["EXEC_VALUE"]; next } /^TryExec=/ { print "TryExec=" ENVIRON["TRYEXEC_VALUE"]; next } { print }' \
     "$here/$APP_ID.desktop" > "$desktop_tmp"
 put 644 "$desktop_tmp" "$app_dir/$APP_ID.desktop"
 rm -f "$desktop_tmp"

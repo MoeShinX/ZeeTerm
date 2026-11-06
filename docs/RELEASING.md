@@ -102,8 +102,8 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
 | 文件 | 内容 | `latest.json` 平台 key |
 | --- | --- | --- |
-| `ZeeTerm-<版本>-linux-x86_64.deb` | `/usr/bin/zeeterm`、`/usr/bin/zssh-mcp`（AI 工具桥，必须和主程序在同一目录）、`.desktop`、hicolor 图标（16 到 512）、AppStream metainfo、man 手册、`copyright`（GPL-3.0-or-later 加第三方声明） | `linux-x86_64-deb` |
-| `ZeeTerm-<版本>-linux-x86_64.tar.gz` | 解压后一个同名目录：`zeeterm`、`zssh-mcp`、`install.sh`（免 root，默认装 `~/.local`，`--prefix` 可改）、`uninstall.sh`、图标、`.desktop`、`LICENSE`、`NOTICE`、`README` | `linux-x86_64-tar` |
+| `ZeeTerm-<版本>-linux-x86_64.deb` | `/usr/lib/zeeterm/zeeterm`、`/usr/lib/zeeterm/zssh-mcp`（AI 工具桥，内部辅助程序，必须和主程序在同一目录，所以不放进 `/usr/bin`）、`/usr/bin/zeeterm`（指向 `../lib/zeeterm/zeeterm` 的相对软链接，`.desktop` 的 `Exec` / `TryExec` 用它）、`.desktop`、hicolor 图标（16 到 512）、AppStream metainfo、man 手册、`copyright`（GPL-3.0-or-later 加第三方声明） | `linux-x86_64-deb` |
+| `ZeeTerm-<版本>-linux-x86_64.tar.gz` | 解压后一个同名目录：`zeeterm`、`zssh-mcp`、`install.sh`（免 root，默认装 `~/.local`，`--prefix` 可改；程序装到 `<前缀>/lib/zeeterm/`，`<前缀>/bin/zeeterm` 是软链接，布局和 deb 一致）、`uninstall.sh`、图标、`.desktop`、`LICENSE`、`NOTICE`、`README` | `linux-x86_64-tar` |
 
 应用标识是 `app.zeeterm.ZeeTerm`：`.desktop` 文件名、`Icon=`、`StartupWMClass=`、图标文件名、AppStream 的 `<id>` 都是它，和窗口的 app_id / WM_CLASS（`native/zssh-gpui/src/window_frame.rs` 的 `APP_ID`）一致，有测试（`installer_manifest.rs`）核对。可执行文件名是 `zeeterm`（`zeeterm --version` 只打印版本，在任何窗口、数据目录、钥匙串初始化之前处理，装好后用来冒烟）。
 
@@ -116,6 +116,8 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 **测试环境**：Linux 的测试必须在一次性的 D-Bus 会话 + 临时解锁的 `gnome-keyring` 里跑（本机秘密的密钥走 Secret Service），用 `scripts/linux-keyring-session.sh <命令>`；`scripts/gates.sh` 是 Linux 门禁（对应 `gates.ps1`，末行「Linux 门禁全部通过。」），i18n 检查需要 `pwsh`（CI 里设 `ZEETERM_REQUIRE_I18N=1`，没有就失败）。
 
 **签名与 `latest.json`**：Linux 包由 Windows 任务里的 `release-sign.ps1` 用同一把更新私钥签名（和 Windows 安装包一样的 minisign 格式，受信注释里绑 `version:` 和文件名），`latest.json` 的 `platforms` 增加 `linux-x86_64-deb` 和 `linux-x86_64-tar` 两个条目（各自带 `url` 和 `signature`），`SHA256SUMS.txt` 列出三个文件。Windows 的条目一个字不变：老版本 Windows 客户端读这份清单，选中的仍是 `windows-x86_64-nsis` / `windows-x86_64`，Linux 条目被忽略（`native/zssh-update` 有测试钉住）。
+
+**应用内更新（Linux）**：更新窗口认出 ZeeTerm 是 deb 装的（程序在 `/usr/` 下且 `dpkg -S` 认得）还是 tar.gz 装的，只选对应的 `latest.json` 条目（`native/zssh-update/src/linux.rs`，流程说明在 `native/zssh-gpui/src/update.rs` 顶部）。deb 经 `pkexec apt-get install` 安装；tar.gz 在程序所在目录可写时解压、核对新程序的 `--version`、原子替换 `lib/zeeterm` 下的两个程序（`install.sh` 布局另外更新图标、桌面文件和安装清单），失败整体回滚。**改打包布局时**，`TarLayout::detect`、`install.sh` / `uninstall.sh`、`scripts/package-linux.sh` 要一起改，`installer_manifest.rs` 里的 `the_tar_installer_and_the_in_app_updater_agree_on_the_layout` 会拦住不一致。
 
 > 本机备用路径 `scripts/release.ps1` 在 Windows 上跑，**不带 Linux 包**：用它发版得到的 `latest.json` 没有 Linux 条目，Linux 客户端读到后按"没有适用的包"处理（提示去发布页下载），Windows 不受影响。需要 Linux 包时，用 GitHub 路径，或把别处打好的两个包用 `release-sign.ps1 -LinuxDebPath ... -LinuxTarPath ...` 签名并手动上传。
 

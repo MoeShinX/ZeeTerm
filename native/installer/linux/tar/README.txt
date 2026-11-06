@@ -10,9 +10,11 @@ Install / 安装
     ./install.sh                  install into ~/.local   装到 ~/.local
     ./install.sh --prefix DIR     install into DIR        装到 DIR
 
-No root needed.  The app menu entry and the icon are installed too; the
-command line program is  <prefix>/bin/zeeterm .  不需要 root；会同时装上应用菜单
-项和图标，命令行程序是 <prefix>/bin/zeeterm。
+No root needed.  The app menu entry and the icon are installed too.  The
+programs go to <prefix>/lib/zeeterm/ (zeeterm and the internal helper zssh-mcp);
+the only command on your PATH is the symlink  <prefix>/bin/zeeterm .
+不需要 root；会同时装上应用菜单项和图标。程序放在 <prefix>/lib/zeeterm/（zeeterm 和内部辅助程序
+zssh-mcp），PATH 里只有软链接 <prefix>/bin/zeeterm。
 
 You can also run it without installing:  ./zeeterm
 也可以不安装，直接运行：./zeeterm
@@ -27,8 +29,10 @@ ZSSH_DATA_DIR).  你的数据不会被删除。
 
 Notes / 说明
 ------------
-* zssh-mcp must stay in the same directory as zeeterm (the AI tool bridge).
-  zssh-mcp 必须和 zeeterm 放在同一个目录（AI 工具桥）。
+* zssh-mcp (the AI tool bridge) must stay in the same directory as the real
+  zeeterm program, so do not move one without the other.  The built-in updater
+  replaces both together.
+  zssh-mcp（AI 工具桥）必须和真正的 zeeterm 程序在同一个目录，不要只移动其中一个；应用内更新会把两者一起替换。
 * Saved passwords and keys are protected by the desktop keyring (Secret
   Service: GNOME Keyring, KeePassXC, KWallet ...).  When no such service is
   running at all, ZeeTerm keeps its key in a file in the data directory

@@ -57,6 +57,8 @@ pub enum InstallError {
     MissingInstaller,
     NotAFile,
     NotExe,
+    /// Linux：安装包的扩展名和要装的格式（.deb / .tar.gz）对不上。
+    NotLinuxPackage,
     OutsideCache,
     Path(String),
     /// 读不到文件，没法确认内容。
@@ -72,6 +74,7 @@ impl std::fmt::Display for InstallError {
             Self::MissingInstaller => write!(f, "安装包不存在"),
             Self::NotAFile => write!(f, "安装包不是文件"),
             Self::NotExe => write!(f, "安装包不是 .exe"),
+            Self::NotLinuxPackage => write!(f, "安装包不是 .deb / .tar.gz"),
             Self::OutsideCache => write!(f, "安装包不在更新缓存目录内，拒绝执行"),
             Self::Path(err) => write!(f, "安装包路径无法解析：{err}"),
             Self::Unreadable(err) => write!(f, "读取安装包失败：{err}"),
@@ -210,7 +213,7 @@ fn open_read_share(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::File::open(path)
 }
 
-fn check_file_hash(path: &Path, expected: &str) -> Result<(), InstallError> {
+pub(crate) fn check_file_hash(path: &Path, expected: &str) -> Result<(), InstallError> {
     let actual = file_sha256_hex(path).map_err(|err| InstallError::Unreadable(err.to_string()))?;
     if actual.eq_ignore_ascii_case(expected.trim()) {
         Ok(())

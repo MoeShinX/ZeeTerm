@@ -25,6 +25,14 @@ pub(super) enum Screen {
     Verified,
     /// 下载 / 校验失败（含签名对不上）。
     DownloadFailed,
+    /// Linux：有新版本但清单里没有适用于本机安装方式的包，引导到发布页。
+    NoPackage,
+    /// Linux：正在安装（deb 等系统授权框和 apt，tar.gz 在替换文件）。
+    Installing,
+    /// Linux：已经装好，等用户重启。
+    Installed,
+    /// Linux：不能自动装，包已下载并校验，给出手动安装的方法。
+    ManualInstall,
 }
 
 /// 底部按钮的动作；`view.rs` 把它们接到窗口的方法上。
@@ -43,6 +51,12 @@ pub(super) enum Action {
     Download,
     Cancel,
     Install,
+    /// Linux：用系统浏览器打开发布页。
+    OpenReleasePage,
+    /// Linux：重启 ZeeTerm（装好之后）。
+    Restart,
+    /// Linux：在文件管理器里显示下载好的安装包。
+    RevealFile,
 }
 
 /// 一个按钮的外观。
@@ -91,6 +105,7 @@ pub(super) fn screen(check: Option<CheckKind>, phase: &DownloadState) -> Screen 
         None => Screen::Checking,
         Some(CheckKind::Failed) => Screen::CheckFailed,
         Some(CheckKind::Latest) => Screen::Latest,
+        Some(CheckKind::FoundManual) => Screen::NoPackage,
         Some(CheckKind::Found) => match phase {
             DownloadState::Idle | DownloadState::Cancelled => Screen::Found,
             DownloadState::Downloading { .. } => Screen::Downloading,
@@ -110,6 +125,10 @@ pub(super) fn shows_notes(screen: Screen) -> bool {
             | Screen::Verifying
             | Screen::Verified
             | Screen::DownloadFailed
+            | Screen::NoPackage
+            | Screen::Installing
+            | Screen::Installed
+            | Screen::ManualInstall
     )
 }
 
@@ -124,10 +143,15 @@ pub(super) fn title(screen: Screen, version: &str) -> String {
         Screen::Checking => t(UpdateMsg::CheckingTitle).to_owned(),
         Screen::CheckFailed => t(UpdateMsg::CheckFailedTitle).to_owned(),
         Screen::Latest => t(UpdateMsg::LatestVersion).to_owned(),
-        Screen::Found => format!("{}{version}", t(UpdateMsg::FoundVersionPrefix)),
+        Screen::Found | Screen::NoPackage => {
+            format!("{}{version}", t(UpdateMsg::FoundVersionPrefix))
+        }
         Screen::Downloading => format!("{}{version}", t(UpdateMsg::DownloadingTitlePrefix)),
         Screen::Verifying => t(UpdateMsg::VerifyingSignature).to_owned(),
         Screen::Verified => format!("{}{version}", t(UpdateMsg::ReadyToInstallPrefix)),
+        Screen::Installing => t(UpdateMsg::InstallingTitle).to_owned(),
+        Screen::Installed => format!("{}{version}", t(UpdateMsg::InstalledTitlePrefix)),
+        Screen::ManualInstall => format!("{}{version}", t(UpdateMsg::ManualTitlePrefix)),
         Screen::DownloadFailed => format!(
             "{}{version}{}",
             t(UpdateMsg::UpdateToVersionPrefix),
@@ -188,6 +212,21 @@ pub(super) fn buttons(screen: Screen) -> Vec<ButtonSpec> {
         Screen::DownloadFailed => vec![
             ButtonSpec::plain(Action::Close, t(UpdateMsg::CloseButton)),
             ButtonSpec::primary(Action::RetryDownload, t(UpdateMsg::RetryButton)),
+        ],
+        Screen::NoPackage => vec![
+            ButtonSpec::text(Action::Skip, t(UpdateMsg::SkipVersionButton)),
+            ButtonSpec::plain(Action::Close, t(UpdateMsg::CloseButton)),
+            ButtonSpec::primary(Action::OpenReleasePage, t(UpdateMsg::OpenReleasePageButton)),
+        ],
+        // 安装在后台跑（系统授权框 / 替换文件），中途没有可点的东西。
+        Screen::Installing => Vec::new(),
+        Screen::Installed => vec![
+            ButtonSpec::plain(Action::Close, t(UpdateMsg::RestartLaterButton)),
+            ButtonSpec::primary(Action::Restart, t(UpdateMsg::RestartNowButton)),
+        ],
+        Screen::ManualInstall => vec![
+            ButtonSpec::plain(Action::Close, t(UpdateMsg::CloseButton)),
+            ButtonSpec::primary(Action::RevealFile, t(UpdateMsg::RevealFileButton)),
         ],
     }
 }
@@ -428,6 +467,56 @@ mod tests {
         for screen in [Screen::Latest, Screen::CheckFailed, Screen::Checking] {
             assert!(!shows_restart_choice(screen), "{screen:?}");
             assert!(!shows_notes(screen), "{screen:?} 不画空卡片");
+        }
+    }
+
+    #[test]
+    fn the_linux_screens_have_their_own_titles_and_buttons() {
+        // 清单里没有适用于本机的包：只能跳过 / 关闭 / 去发布页。
+        assert_eq!(
+            screen(Some(CheckKind::FoundManual), &DownloadState::Idle),
+            Screen::NoPackage
+        );
+        assert_eq!(title(Screen::NoPackage, "0.3.1"), "发现新版本 0.3.1");
+        assert_eq!(
+            labels(Screen::NoPackage),
+            vec!["跳过此版本", "关闭", "打开发布页"]
+        );
+        assert_eq!(
+            actions(Screen::NoPackage),
+            vec![Action::Skip, Action::Close, Action::OpenReleasePage]
+        );
+        assert!(buttons(Screen::NoPackage)[2].primary);
+        // 安装中：授权框 / 替换文件期间没有可点的东西。
+        assert_eq!(title(Screen::Installing, "0.3.1"), "正在安装更新…");
+        assert!(buttons(Screen::Installing).is_empty());
+        // 装好：稍后重启 / 立即重启。
+        assert_eq!(title(Screen::Installed, "0.3.1"), "已安装 0.3.1");
+        assert_eq!(labels(Screen::Installed), vec!["稍后重启", "立即重启"]);
+        assert_eq!(
+            actions(Screen::Installed),
+            vec![Action::Close, Action::Restart]
+        );
+        assert!(buttons(Screen::Installed)[1].primary);
+        // 手动安装：关闭 / 在文件管理器中显示。
+        assert_eq!(title(Screen::ManualInstall, "0.3.1"), "已下载 0.3.1");
+        assert_eq!(
+            labels(Screen::ManualInstall),
+            vec!["关闭", "在文件管理器中显示"]
+        );
+        assert_eq!(
+            actions(Screen::ManualInstall),
+            vec![Action::Close, Action::RevealFile]
+        );
+        // 这几屏都带着更新说明，但不画 Windows 安装器才有的"安装后重启"复选框。
+        for screen in [
+            Screen::NoPackage,
+            Screen::Installing,
+            Screen::Installed,
+            Screen::ManualInstall,
+        ] {
+            assert!(shows_notes(screen), "{screen:?}");
+            assert!(!shows_restart_choice(screen), "{screen:?}");
         }
     }
 
