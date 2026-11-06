@@ -18,7 +18,7 @@ apt-get update -qq
 # 不装 Recommends：验证 Depends 本身就够程序加载起来。
 apt-get install -y -qq --no-install-recommends "$deb" desktop-file-utils >/dev/null
 
-for exe in /usr/bin/zeeterm /usr/bin/zssh-mcp; do
+for exe in /usr/lib/zeeterm/zeeterm /usr/lib/zeeterm/zssh-mcp; do
     [ -x "$exe" ] || fail "$exe 不存在或不可执行"
     missing=$(ldd "$exe" 2>&1 | grep 'not found' || true)
     [ -z "$missing" ] || fail "$exe 有缺失的动态库: $missing"
@@ -45,7 +45,7 @@ echo "桌面文件校验通过"
 
 dpkg -s zeeterm | sed -n '1,12p'
 apt-get remove -y -qq zeeterm >/dev/null
-for gone in /usr/bin/zeeterm /usr/bin/zssh-mcp "/usr/share/applications/$app_id.desktop" "/usr/share/icons/hicolor/256x256/apps/$app_id.png"; do
+for gone in /usr/bin/zeeterm /usr/lib/zeeterm/zeeterm /usr/lib/zeeterm/zssh-mcp "/usr/share/applications/$app_id.desktop" "/usr/share/icons/hicolor/256x256/apps/$app_id.png"; do
     [ ! -e "$gone" ] || fail "卸载后还留着 $gone"
 done
 echo "卸载干净"

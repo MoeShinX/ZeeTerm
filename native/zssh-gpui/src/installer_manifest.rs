@@ -382,7 +382,9 @@ fn the_desktop_entry_matches_the_window_identity() {
     // 窗口的 app_id / WM_CLASS 就是图标名和 StartupWMClass：任务栏靠它把窗口和这个 .desktop 对上。
     assert_eq!(desktop_value(&desktop, "Icon"), app_id);
     assert_eq!(desktop_value(&desktop, "StartupWMClass"), app_id);
-    assert_eq!(desktop_value(&desktop, "Exec"), "zeeterm");
+    // deb 把命令装在 /usr/bin/zeeterm（指向 /usr/lib/zeeterm/zeeterm 的软链接）；Exec 和 TryExec 写绝对路径，不依赖 PATH。
+    assert_eq!(desktop_value(&desktop, "Exec"), "/usr/bin/zeeterm");
+    assert_eq!(desktop_value(&desktop, "TryExec"), "/usr/bin/zeeterm");
     assert_eq!(desktop_value(&desktop, "Type"), "Application");
     assert_eq!(desktop_value(&desktop, "Terminal"), "false");
     assert_eq!(
@@ -416,6 +418,46 @@ fn the_icon_tool_writes_the_icon_name_the_desktop_entry_uses() {
 }
 
 #[test]
+fn the_tar_installer_and_the_in_app_updater_agree_on_the_layout() {
+    use zssh_update::linux::{APP_ID, DEB_COMMAND, HELPER_BIN, MAIN_BIN};
+    assert_eq!(APP_ID, crate::window_frame::APP_ID);
+    let install = linux_file("tar/install.sh");
+    let uninstall = linux_file("tar/uninstall.sh");
+    // 程序在 <prefix>/lib/zeeterm，bin/zeeterm 是相对软链接；清单在 <prefix>/share/zeeterm/install-manifest——
+    // 应用内更新（zssh_update::linux::TarLayout）靠这几处认出 install.sh 的布局。
+    assert!(install.contains("lib_dir=\"$prefix/lib/zeeterm\""));
+    assert!(install.contains("state_dir=\"$prefix/share/zeeterm\""));
+    assert!(install.contains("manifest=\"$state_dir/install-manifest\""));
+    for name in [MAIN_BIN, HELPER_BIN] {
+        assert!(
+            install.contains(&format!("put 755 \"$here/{name}\" \"$lib_dir/{name}\"")),
+            "{name} 要装进 lib/zeeterm"
+        );
+    }
+    assert!(install.contains(&format!("ln -s ../lib/zeeterm/{MAIN_BIN} \"$link_tmp\"")));
+    assert!(
+        !install.contains("\"$bin_dir/zssh-mcp\""),
+        "zssh-mcp 不进用户 PATH 里的 bin"
+    );
+    assert!(uninstall.contains("rmdir \"$prefix/lib/zeeterm\""));
+    // 图标沿用打包脚本的目录结构：icons/hicolor/<尺寸>/apps/<应用标识>.png。
+    assert!(
+        repo_file("scripts/package-linux.sh")
+            .contains("install -D -m 644 \"$work/$png\" \"$tar_root/icons/$png\"")
+    );
+    // deb 的命令位置和桌面文件的 Exec 是同一个。
+    let desktop = linux_file(&format!("{APP_ID}.desktop"));
+    assert_eq!(desktop_value(&desktop, "Exec"), DEB_COMMAND);
+    assert_eq!(desktop_value(&desktop, "TryExec"), DEB_COMMAND);
+    assert!(
+        repo_file("scripts/package-linux.sh")
+            .contains("ln -s ../lib/zeeterm/zeeterm \"$bin_dir/zeeterm\"")
+    );
+    // install.sh 把装好的路径写进 Exec 和 TryExec 两行。
+    assert!(install.contains("/^Exec=/") && install.contains("/^TryExec=/"));
+}
+
+#[test]
 fn the_appstream_template_matches_the_desktop_entry_and_license() {
     let app_id = crate::window_frame::APP_ID;
     let xml = linux_file(&format!("{app_id}.metainfo.xml.in"));
@@ -445,8 +487,17 @@ fn linux_package_names_agree_between_the_script_and_the_release_pipeline() {
     for dlopened in ["libvulkan1", "libwayland-client0", "libegl1"] {
         assert!(script.contains(dlopened), "{dlopened}");
     }
-    // zssh-mcp 必须和主程序放在同一个目录（AI 工具桥按主程序旁边找它）。
-    assert!(script.contains("install -m 755 \"$mcp_bin\" \"$bin_dir/zssh-mcp\""));
+    // zssh-mcp 必须和主程序放在同一个目录（AI 工具桥按主程序旁边找它），而且是内部辅助程序，不占 PATH 里的命令名：
+    // deb 把两个程序都装进 /usr/lib/zeeterm，/usr/bin/zeeterm 是指向 ../lib/zeeterm/zeeterm 的相对软链接。
+    assert!(script.contains("install -m 755 \"$gpui_bin\" \"$lib_dir/zeeterm\""));
+    assert!(script.contains("install -m 755 \"$mcp_bin\" \"$lib_dir/zssh-mcp\""));
+    assert!(script.contains("lib_dir=\"$stage/usr/lib/zeeterm\""));
+    assert!(script.contains("ln -s ../lib/zeeterm/zeeterm \"$bin_dir/zeeterm\""));
+    assert!(
+        !script.contains("\"$bin_dir/zssh-mcp\""),
+        "zssh-mcp 不进 /usr/bin"
+    );
+    // tar.gz 包里是平铺的（解压即可运行），install.sh 才按 deb 的布局装到 <prefix>/lib/zeeterm。
     assert!(script.contains("install -m 755 \"$mcp_bin\" \"$tar_root/zssh-mcp\""));
 
     let sign = repo_file("scripts/release-sign.ps1");

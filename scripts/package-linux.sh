@@ -144,10 +144,14 @@ if grep -q '@[A-Z_]*@' "$work/$APP_ID.metainfo.xml"; then die "metainfo 里还�
 step "deb：暂存目录树"
 stage="$work/deb"
 bin_dir="$stage/usr/bin"
-install -d -m 755 "$bin_dir" "$stage/usr/share/applications" "$stage/usr/share/metainfo" \
+lib_dir="$stage/usr/lib/zeeterm"
+install -d -m 755 "$bin_dir" "$lib_dir" "$stage/usr/share/applications" "$stage/usr/share/metainfo" \
     "$stage/usr/share/doc/zeeterm" "$stage/usr/share/man/man1" "$stage/DEBIAN"
-install -m 755 "$gpui_bin" "$bin_dir/zeeterm"
-install -m 755 "$mcp_bin" "$bin_dir/zssh-mcp"
+# 真正的程序放在 /usr/lib/zeeterm：zssh-mcp 是内部辅助程序（必须和主程序同目录），不该占用户 PATH 里的命令名；
+# /usr/bin/zeeterm 是相对软链接（current_exe 会解析它，zssh-mcp 照样在同目录找到）。
+install -m 755 "$gpui_bin" "$lib_dir/zeeterm"
+install -m 755 "$mcp_bin" "$lib_dir/zssh-mcp"
+ln -s ../lib/zeeterm/zeeterm "$bin_dir/zeeterm"
 install -m 644 "$linux_src/$APP_ID.desktop" "$stage/usr/share/applications/$APP_ID.desktop"
 install -m 644 "$work/$APP_ID.metainfo.xml" "$stage/usr/share/metainfo/$APP_ID.metainfo.xml"
 (cd "$work" && find hicolor -name "$APP_ID.png" -print0 | sort -z) | while IFS= read -r -d '' png; do
@@ -203,7 +207,7 @@ command -v dpkg-shlibdeps >/dev/null 2>&1 || die "找不到 dpkg-shlibdeps（装
 shlibs_dir="$work/shlibs"
 mkdir -p "$shlibs_dir/debian"
 printf 'Source: zeeterm\n\nPackage: zeeterm\nArchitecture: amd64\n' > "$shlibs_dir/debian/control"
-shlibs_line=$(cd "$shlibs_dir" && dpkg-shlibdeps -O -e"$bin_dir/zeeterm" -e"$bin_dir/zssh-mcp")
+shlibs_line=$(cd "$shlibs_dir" && dpkg-shlibdeps -O -e"$lib_dir/zeeterm" -e"$lib_dir/zssh-mcp")
 shlibs=${shlibs_line#shlibs:Depends=}
 if [ -z "$shlibs" ] || [ "$shlibs" = "$shlibs_line" ]; then die "dpkg-shlibdeps 没有给出依赖：$shlibs_line"; fi
 echo "shlibs:Depends=$shlibs"
@@ -280,7 +284,7 @@ step "自检：deb 元数据和文件布局"
 dpkg-deb -I "$deb_file" | sed -n '1,40p'
 deb_listing=$(dpkg-deb -c "$deb_file")
 for expected in \
-    "./usr/bin/zeeterm" "./usr/bin/zssh-mcp" \
+    "./usr/lib/zeeterm/zeeterm" "./usr/lib/zeeterm/zssh-mcp" "./usr/bin/zeeterm" \
     "./usr/share/applications/$APP_ID.desktop" \
     "./usr/share/metainfo/$APP_ID.metainfo.xml" \
     "./usr/share/doc/zeeterm/copyright" \
@@ -290,9 +294,13 @@ for expected in \
 done
 # 全部属主 root/root；可执行文件 755。
 if printf '%s\n' "$deb_listing" | awk '{ print $2 }' | grep -vqx 'root/root'; then fail_check "deb 里有不是 root/root 的文件"; fi
-if printf '%s\n' "$deb_listing" | grep -E ' \./usr/bin/(zeeterm|zssh-mcp)$' | grep -qv '^-rwxr-xr-x'; then
-    fail_check "usr/bin 下的程序权限不是 755"
+if printf '%s\n' "$deb_listing" | grep -E ' \./usr/lib/zeeterm/(zeeterm|zssh-mcp)$' | grep -qv '^-rwxr-xr-x'; then
+    fail_check "usr/lib/zeeterm 下的程序权限不是 755"
 fi
+# /usr/bin/zeeterm 必须是指向 ../lib/zeeterm/zeeterm 的相对软链接；zssh-mcp 是内部辅助程序，不能出现在 PATH 的目录里。
+printf '%s\n' "$deb_listing" | grep -qE '^lrwxrwxrwx root/root .* \./usr/bin/zeeterm -> \.\./lib/zeeterm/zeeterm$' \
+    || fail_check "usr/bin/zeeterm 不是指向 ../lib/zeeterm/zeeterm 的软链接"
+if printf '%s\n' "$deb_listing" | grep -qE ' \./usr/bin/zssh-mcp'; then fail_check "zssh-mcp 不该出现在 usr/bin"; fi
 [ "$(dpkg-deb -f "$deb_file" Package)" = zeeterm ] || fail_check "包名不对"
 [ "$(dpkg-deb -f "$deb_file" Version)" = "$deb_version" ] || fail_check "包版本不对"
 
@@ -314,11 +322,11 @@ else
 fi
 
 step "自检：动态库依赖和 glibc 基线"
-for bin in "$bin_dir/zeeterm" "$bin_dir/zssh-mcp"; do
+for bin in "$lib_dir/zeeterm" "$lib_dir/zssh-mcp"; do
     missing=$(ldd "$bin" 2>&1 | grep -F 'not found' || true)
     [ -z "$missing" ] || fail_check "$(basename "$bin") 有缺失的动态库：$missing"
 done
-max_glibc=$(objdump -T "$bin_dir/zeeterm" "$bin_dir/zssh-mcp" 2>/dev/null | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1 || true)
+max_glibc=$(objdump -T "$lib_dir/zeeterm" "$lib_dir/zssh-mcp" 2>/dev/null | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1 || true)
 echo "二进制用到的最高 glibc 符号版本：${max_glibc:-无}（基线 $GLIBC_BASELINE）"
 if [ -n "$max_glibc" ] && [ "$(printf '%s\n%s\n' "$max_glibc" "$GLIBC_BASELINE" | sort -V | tail -1)" != "$GLIBC_BASELINE" ]; then
     if [ "$require_checks" = 1 ]; then
@@ -331,7 +339,7 @@ fi
 step "自检：zeeterm --version"
 if [ "$version" = "$repo_version" ]; then
     # 没有显示环境、没有家目录也要能跑：参数在任何初始化之前处理。
-    got=$(env -i PATH=/usr/bin:/bin "$bin_dir/zeeterm" --version) || fail_check "zeeterm --version 运行失败"
+    got=$(env -i PATH=/usr/bin:/bin "$lib_dir/zeeterm" --version) || fail_check "zeeterm --version 运行失败"
     [ "$got" = "ZeeTerm $repo_version" ] || fail_check "zeeterm --version 输出 '$got'，期望 'ZeeTerm $repo_version'"
     echo "$got"
 else
@@ -347,20 +355,26 @@ if (
     cd "$verify_dir/extract/$base_name"
     prefix="$verify_dir/prefix with space"
     ./install.sh --prefix "$prefix" >/dev/null
-    for f in bin/zeeterm bin/zssh-mcp "share/applications/$APP_ID.desktop" \
+    for f in lib/zeeterm/zeeterm lib/zeeterm/zssh-mcp "share/applications/$APP_ID.desktop" \
         "share/icons/hicolor/256x256/apps/$APP_ID.png" "share/metainfo/$APP_ID.metainfo.xml" \
         share/zeeterm/install-manifest share/zeeterm/uninstall.sh; do
         [ -e "$prefix/$f" ] || { echo "安装后缺少 $f" >&2; exit 1; }
     done
-    # Exec 指向装好的程序（路径里有空格，所以必须带引号），且装好的 .desktop 能通过校验。
+    # bin/zeeterm 是指向 ../lib/zeeterm/zeeterm 的相对软链接；zssh-mcp 是内部辅助程序，不放进 bin。
+    [ -L "$prefix/bin/zeeterm" ] && [ "$(readlink "$prefix/bin/zeeterm")" = "../lib/zeeterm/zeeterm" ] \
+        || { echo "bin/zeeterm 不是指向 ../lib/zeeterm/zeeterm 的相对软链接" >&2; exit 1; }
+    [ ! -e "$prefix/bin/zssh-mcp" ] || { echo "zssh-mcp 不该装进 bin" >&2; exit 1; }
+    # Exec 指向装好的程序（路径里有空格，所以必须带引号），TryExec 是不带引号的同一个路径，且装好的 .desktop 能通过校验。
     exec_line=$(grep '^Exec=' "$prefix/share/applications/$APP_ID.desktop")
     [ "$exec_line" = "Exec=\"$prefix/bin/zeeterm\"" ] || { echo "Exec 行不对：$exec_line" >&2; exit 1; }
+    try_line=$(grep '^TryExec=' "$prefix/share/applications/$APP_ID.desktop")
+    [ "$try_line" = "TryExec=$prefix/bin/zeeterm" ] || { echo "TryExec 行不对：$try_line" >&2; exit 1; }
     if command -v desktop-file-validate >/dev/null 2>&1; then
         desktop-file-validate "$prefix/share/applications/$APP_ID.desktop"
     fi
     "$prefix/share/zeeterm/uninstall.sh" >/dev/null
     # update-desktop-database / gtk-update-icon-cache 生成的缓存是共用的，不算我们的文件。
-    leftover=$(find "$prefix" -type f ! -name mimeinfo.cache ! -name icon-theme.cache)
+    leftover=$(find "$prefix" ! -type d ! -name mimeinfo.cache ! -name icon-theme.cache)
     [ -z "$leftover" ] || { echo "卸载后还剩文件：$leftover" >&2; exit 1; }
 ); then
     echo "install.sh / uninstall.sh 自检通过"

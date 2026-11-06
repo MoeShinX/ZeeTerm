@@ -91,6 +91,8 @@ for dir in "$prefix"/share/icons/hicolor/*/apps; do
     rmdir "$(dirname "$dir")" 2>/dev/null || true
 done
 rmdir "$state_dir" 2>/dev/null || true
+# lib/zeeterm 是我们自己建的目录（程序所在）；lib 本身是共用目录，不动。
+rmdir "$prefix/lib/zeeterm" 2>/dev/null || true
 
 if command -v update-desktop-database >/dev/null 2>&1 && [ -d "$prefix/share/applications" ]; then
     update-desktop-database -q "$prefix/share/applications" 2>/dev/null || true
