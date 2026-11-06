@@ -370,6 +370,15 @@ fn devices_that_are_not_serial_ports_are_classified() {
         open("/dev/null"),
         Some(SerialError::NotASerialPort { .. })
     ));
+    // 不是字符设备（目录、普通文件）：打开之前就拒绝，不去碰它。
+    assert!(matches!(
+        open("/dev"),
+        Some(SerialError::NotASerialPort { .. })
+    ));
+    assert!(matches!(
+        open("/etc/hostname"),
+        Some(SerialError::NotASerialPort { .. }) | Some(SerialError::NotFound { .. })
+    ));
     assert!(matches!(
         open("/dev/zeeterm-no-such-device"),
         Some(SerialError::NotFound { .. })

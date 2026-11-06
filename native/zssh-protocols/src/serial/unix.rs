@@ -221,6 +221,16 @@ impl CommHandle {
             what: error.to_string(),
         };
         let c_path = CString::new(path).map_err(|_| SerialError::InvalidName(device.to_owned()))?;
+        // 先查后开：有的 `/dev` 设备「打开」这个动作本身就有副作用，不能等打开了才发现不是串口。
+        // 查不到（不存在、没权限）不在这里判：交给下面的 open，错误分类沿用原来的。
+        if let Ok(meta) = std::fs::metadata(path) {
+            use std::os::unix::fs::FileTypeExt as _;
+            if !meta.file_type().is_char_device() {
+                return Err(SerialError::NotASerialPort {
+                    device: device.to_owned(),
+                });
+            }
+        }
         // `O_NOCTTY`：别让串口变成本进程的控制终端；`O_NONBLOCK`：打开不等载波，读写靠 poll。
         let raw = unsafe {
             libc::open(
