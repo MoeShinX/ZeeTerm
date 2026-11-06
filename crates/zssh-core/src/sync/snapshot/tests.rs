@@ -20,7 +20,6 @@ fn raw_uid(db: &Database, table: &str, id: i64) -> String {
     .expect("读 uid")
 }
 
-#[cfg(windows)]
 #[test]
 fn snapshot_uses_uids_for_every_reference_and_includes_secrets() {
     let db = Database::open_in_memory().expect("内存库");

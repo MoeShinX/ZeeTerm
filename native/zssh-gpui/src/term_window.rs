@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ::gpui::{
     App, Entity, FocusHandle, Global, Hsla, MouseButton, SharedString, TitlebarOptions, Window,
-    WindowBounds, WindowControlArea, WindowHandle, WindowOptions, point, px,
+    WindowBounds, WindowHandle, WindowOptions, point, px,
 };
 use gpui_kit::component::TitleBar;
 use gpui_kit::component::menu::ContextMenuExt as _;
@@ -123,14 +123,14 @@ pub fn open(
         }),
         window_bounds: Some(bounds),
         window_min_size: Some(::gpui::size(px(480.0), px(320.0))),
-        ..Default::default()
+        ..crate::window_frame::client_options()
     };
     let opened = cx.open_window(options, move |window, cx| {
         window.set_window_title(&window_title());
         let tab = taken.borrow_mut().take();
         let view = cx.new(|cx| TermWindow::new(window, cx, key.clone(), tab));
         let close_view = view.clone();
-        window.on_window_should_close(cx, move |_window, cx| {
+        crate::window_frame::on_should_close(window, cx, move |_window, cx| {
             close_view.update(cx, |this, cx| this.close_all(cx));
             true
         });
@@ -487,10 +487,12 @@ impl TermWindow {
 impl Render for TermWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 锁屏（V2-U26）：锁着时整个窗口只画锁屏页，里面的内容这一帧不进元素树。
-        if let Some(cover) = crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
-            return cover;
-        }
-        self.render_unlocked(window, cx).into_any_element()
+        let content = match crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
+            Some(cover) => cover,
+            None => self.render_unlocked(window, cx).into_any_element(),
+        };
+        // Linux 客户端装饰：细边框、阴影和边缘缩放（其他平台原样）。
+        crate::window_frame::frame(content)
     }
 }
 
@@ -582,7 +584,7 @@ impl TermWindow {
                             .gap_0p5()
                             .pl_3()
                             .overflow_hidden()
-                            .window_control_area(WindowControlArea::Drag)
+                            .map(crate::window_frame::drag_region)
                             .child(
                                 h_flex()
                                     .mb_2()
@@ -607,7 +609,7 @@ impl TermWindow {
                         div()
                             .h_full()
                             .flex_none()
-                            .child(window_controls(&tokens, window.is_maximized())),
+                            .child(window_controls(&tokens, window)),
                     ),
             )
             .child(div().flex_1().min_h_0().child(self.workspace.clone()))

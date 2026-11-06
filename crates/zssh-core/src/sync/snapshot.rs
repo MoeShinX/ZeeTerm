@@ -472,5 +472,5 @@ pub fn entities() -> [&'static str; 6] {
     ]
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests;
