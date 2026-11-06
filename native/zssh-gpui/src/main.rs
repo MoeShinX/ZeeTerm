@@ -98,6 +98,7 @@ mod tray;
 mod typography;
 mod update;
 mod update_auto;
+mod window_frame;
 mod window_state;
 mod x11_glue;
 
@@ -197,7 +198,7 @@ fn main() {
                     .unwrap_or_else(|| WindowBounds::centered(size(px(1180.), px(780.)), cx)),
             ),
             window_min_size: Some(size(px(720.), px(480.))),
-            ..Default::default()
+            ..window_frame::client_options()
         };
 
         let opened = gpui_kit::open_window(window_options, cx, |window, cx| {
@@ -216,24 +217,26 @@ fn main() {
             // 关闭按钮收进托盘，进程和后台任务继续跑；托盘没建起来时没有入口能叫回窗口，
             // 这时必须真正退出。两种情况都记住窗口位置和布局。
             let close_view = view.clone();
-            window.on_window_should_close(cx, move |window, cx| match tray::close_action() {
-                tray::CloseAction::HideToTray => {
-                    close_view.update(cx, |this, cx| {
-                        this.save_state(window);
-                        // 设置里选了“关到托盘时锁定”：从托盘再打开时先看到锁屏页。
-                        this.lock_for_tray(cx);
-                    });
-                    tray::hide(window);
-                    false
-                }
-                tray::CloseAction::Quit => {
-                    // 有进行中的传输 / AI 回合先问一下；确认后由主窗口自己退出。
-                    if !close_view.update(cx, |this, cx| this.request_quit(cx)) {
-                        return false;
+            window_frame::on_should_close(window, cx, move |window, cx| {
+                match tray::close_action() {
+                    tray::CloseAction::HideToTray => {
+                        close_view.update(cx, |this, cx| {
+                            this.save_state(window);
+                            // 设置里选了“关到托盘时锁定”：从托盘再打开时先看到锁屏页。
+                            this.lock_for_tray(cx);
+                        });
+                        tray::hide(window);
+                        false
                     }
-                    close_view.update(cx, |this, cx| this.on_close(window, cx));
-                    cx.quit();
-                    true
+                    tray::CloseAction::Quit => {
+                        // 有进行中的传输 / AI 回合先问一下；确认后由主窗口自己退出。
+                        if !close_view.update(cx, |this, cx| this.request_quit(cx)) {
+                            return false;
+                        }
+                        close_view.update(cx, |this, cx| this.on_close(window, cx));
+                        cx.quit();
+                        true
+                    }
                 }
             });
             view
@@ -345,7 +348,7 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
         if dev_hooks::var_os("ZSSH_EXTRA_TERMINAL").is_some() {
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::centered(size(px(1100.), px(760.)), cx)),
-                ..Default::default()
+                ..crate::window_frame::app_options()
             };
             let _ = cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| TerminalDemo::new(window, cx, "terminal-1".to_owned()));
@@ -358,7 +361,7 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
         if dev_hooks::var_os("ZSSH_OPEN_EDITOR").is_some() {
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::centered(size(px(900.), px(620.)), cx)),
-                ..Default::default()
+                ..crate::window_frame::app_options()
             };
             let _ = cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| editor_demo::EditorDemo::new(window, cx));
@@ -408,7 +411,7 @@ fn debug_hooks(cx: &mut App, view: gpui::Entity<MainWindow>, handle: gpui::AnyWi
 fn open_demo_terminal(cx: &mut App) {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(1100.), px(760.)), cx)),
-        ..Default::default()
+        ..crate::window_frame::app_options()
     };
     let _ = cx.open_window(options, |window, cx| {
         let view = cx.new(|cx| {
