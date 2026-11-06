@@ -13,4 +13,5 @@ native/zssh-editor/src/lib.rs
 # 这两个文件里剩下的中文是它们的 `Display`（只给日志和单测用，界面不读）和"内嵌更新配置被改坏"的开发期错误。
 native/zssh-update/src/install.rs
 native/zssh-update/src/lib.rs
+native/zssh-update/src/linux.rs
 

@@ -18,6 +18,7 @@ use semver::Version;
 use serde::Deserialize;
 
 pub mod install;
+pub mod linux;
 
 pub use install::{
     InstallError, InstallPlan, InstallRequest, command_line, plan_install, sha256_hex,
@@ -221,8 +222,15 @@ pub fn parse_manifest(json: &str) -> Result<Manifest, UpdateError> {
 }
 
 impl Manifest {
-    /// 公告版本必须严格高于当前版本，才返回可下载的包。
+    /// 公告版本必须严格高于当前版本，才返回可下载的包（Windows 的平台 key）。
     pub fn select(&self, current: &str) -> Result<Option<Package>, UpdateError> {
+        self.select_for(current, PLATFORM_KEYS)
+    }
+
+    /// 和 [`Manifest::select`] 一样，只是由调用方给出本机认的平台 key（按顺序试，第一个有的算数）。
+    /// Linux 按安装方式只认 deb 或只认 tar.gz（见 [`linux`] 模块），不会拿一个格式去装另一种安装。
+    /// 公告版本更高、但清单里没有这些 key 的条目时返回 [`UpdateError::NoPlatform`]。
+    pub fn select_for(&self, current: &str, keys: &[&str]) -> Result<Option<Package>, UpdateError> {
         let announced = Version::parse(self.version.trim_start_matches('v'))
             .map_err(|_| UpdateError::BadVersion(self.version.clone()))?;
         let current = Version::parse(current.trim_start_matches('v'))
@@ -231,7 +239,7 @@ impl Manifest {
             return Ok(None);
         }
 
-        for key in PLATFORM_KEYS {
+        for key in keys {
             let Some(asset) = self.platforms.get(*key) else {
                 continue;
             };
