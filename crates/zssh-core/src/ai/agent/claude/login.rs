@@ -39,19 +39,25 @@ pub const AUTH_ENV_KEYS: [&str; 3] = [
     "ANTHROPIC_AUTH_TOKEN",
 ];
 
-/// 用户的配置目录：`CLAUDE_CONFIG_DIR`（用户自己设了就按它找）→ `~\.claude`。
+/// 用户的配置目录：`CLAUDE_CONFIG_DIR`（用户自己设了就按它找）→ `<家目录>/.claude`。
 ///
 /// 注意这里只是**顺应用户的设置去读**，驱动自己不会改这个环境变量（登录和模型都用
 /// 用户自己的配置，见 AI-4 第 4 节）。
 pub fn config_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+    // 家目录一律问标准库：Windows 上读 USERPROFILE，Unix 上读 HOME（再退到用户数据库）。
+    config_dir_from(std::env::var_os("CLAUDE_CONFIG_DIR"), std::env::home_dir())
+}
+
+/// [`config_dir`] 的纯函数版（环境和家目录由调用方给，方便单测）。
+fn config_dir_from(explicit: Option<std::ffi::OsString>, home: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(dir) = explicit {
         let dir = PathBuf::from(dir);
         if !dir.as_os_str().is_empty() {
             return Some(dir);
         }
     }
-    let home = std::env::var_os("USERPROFILE")?;
-    Some(PathBuf::from(home).join(".claude"))
+    let home = home.filter(|home| !home.as_os_str().is_empty())?;
+    Some(home.join(".claude"))
 }
 
 /// 跑 `claude auth status` 判断（拿不到 / 解析不出返回 `None`，交给兜底）。
@@ -260,5 +266,23 @@ mod tests {
     #[test]
     fn missing_config_dir_is_not_a_crash() {
         assert!(login_status_from_local(&|_| false, None).is_none());
+    }
+
+    /// 配置目录：`CLAUDE_CONFIG_DIR` 优先，空串当没设，否则是 `<家目录>/.claude`（用 `join`，不手拼分隔符）。
+    #[test]
+    fn config_dir_follows_the_env_then_the_home_directory() {
+        let home = PathBuf::from("home-base").join("张 三");
+        assert_eq!(
+            config_dir_from(Some("custom dir".into()), Some(home.clone())),
+            Some(PathBuf::from("custom dir"))
+        );
+        for unset in [None, Some(std::ffi::OsString::new())] {
+            assert_eq!(
+                config_dir_from(unset, Some(home.clone())),
+                Some(home.join(".claude"))
+            );
+        }
+        assert_eq!(config_dir_from(None, None), None);
+        assert_eq!(config_dir_from(None, Some(PathBuf::new())), None);
     }
 }

@@ -120,6 +120,13 @@ static INSTANCE: Mutex<Option<InstanceGuard>> = Mutex::new(None);
 fn main() {
     // 先确认有正式的数据目录：拿不到就提示退出，不让凭据库、主机库落进会被清理的临时目录。
     settings::ensure_data_dir_or_exit();
+    // Linux 的本机密钥：后备密钥文件放进数据目录，并在后台先把密钥取出来缓存好，
+    // 免得界面线程上第一次保存 / 查看密码时去等钥匙串（见 `zssh_core::store::secrets`）。
+    #[cfg(target_os = "linux")]
+    {
+        zssh_core::store::secrets::init_vault(&settings::data_dir());
+        zssh_core::store::secrets::warm_up_vault();
+    }
     let app = gpui_kit::application().with_assets(icons::AppAssets);
 
     app.run(move |cx| {
@@ -145,14 +152,34 @@ fn main() {
         // 占着默认名时，自动化起的程序不然会把用户的窗口拉到前台再退出（release 里读不到这个变量）。
         let instance_name =
             dev_hooks::var("ZSSH_INSTANCE_NAME").unwrap_or_else(|| INSTANCE_NAME.to_owned());
+        // Unix：第二个实例通过套接字叫醒这里；监听线程只负责转发，真正动窗口要回到界面线程。
+        #[cfg(unix)]
+        let mut activation_rx = None;
         match single_instance::acquire(&instance_name) {
             Some(guard) => {
+                #[cfg(unix)]
+                let guard = {
+                    let mut guard = guard;
+                    let (tx, rx) = futures::channel::mpsc::unbounded::<()>();
+                    match guard.listen_for_activation(move || {
+                        let _ = tx.unbounded_send(());
+                    }) {
+                        Ok(()) => activation_rx = Some(rx),
+                        Err(err) => {
+                            tracing::warn!(%err, "没能监听激活请求，再次启动时叫不醒这个窗口")
+                        }
+                    }
+                    guard
+                };
                 if let Ok(mut slot) = INSTANCE.lock() {
                     *slot = Some(guard);
                 }
             }
             None => {
+                #[cfg(windows)]
                 single_instance::focus_existing(MAIN_WINDOW_PROP);
+                #[cfg(unix)]
+                single_instance::activate_existing(&instance_name);
                 // 还没建窗口和托盘，直接退出；cx.quit() 在空事件循环里不一定收得住。
                 std::process::exit(0);
             }
@@ -255,6 +282,19 @@ fn main() {
         file_window::register_main(cx, handle, view.downgrade());
 
         tray::spawn(cx, handle, view.clone());
+
+        // 再次启动 ZeeTerm 时把这个窗口叫到前台（在界面线程上做；窗口收起 / 最小化时由
+        // `activate_window` 请求合成器 / 窗口管理器恢复）。
+        #[cfg(unix)]
+        if let Some(mut rx) = activation_rx {
+            use futures::StreamExt as _;
+            cx.spawn(async move |cx| {
+                while rx.next().await.is_some() {
+                    let _ = handle.update(cx, |_, window, _| tray::bring_to_front(window));
+                }
+            })
+            .detach();
+        }
 
         // 启动隐藏：等窗口真正显示后再收进托盘，否则会被平台的首次显示覆盖。
         if settings_store::snapshot(cx).start_hidden {

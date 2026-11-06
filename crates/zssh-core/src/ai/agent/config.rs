@@ -52,11 +52,22 @@ pub fn extract_model_config(user_config: &Value) -> Value {
 
 /// opencode 认的用户全局配置位置（按顺序，第一个存在的就用）。
 ///
-/// 参照 opencode 1.19 的 `debug paths`：config 目录是 `%USERPROFILE%\.config\opencode`。
+/// 参照 opencode 1.19 的 `debug paths`：config 目录是 `<家目录>/.config/opencode`
+/// （Linux 上同样；`$XDG_CONFIG_HOME` 设了的话排在前面）。
 pub fn user_config_candidates() -> Vec<std::path::PathBuf> {
+    user_config_candidates_from(
+        std::env::home_dir(),
+        std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from),
+    )
+}
+
+/// [`user_config_candidates`] 的纯函数版（家目录和 `XDG_CONFIG_HOME` 由调用方给，方便单测）。
+fn user_config_candidates_from(
+    home: Option<std::path::PathBuf>,
+    xdg: Option<std::path::PathBuf>,
+) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
-    let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
-    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from);
+    let home = home.filter(|home| !home.as_os_str().is_empty());
     if let Some(xdg) = xdg {
         out.push(xdg.join("opencode").join("opencode.jsonc"));
         out.push(xdg.join("opencode").join("opencode.json"));
@@ -499,5 +510,24 @@ mod tests {
         let v: Value = serde_json::from_str(&cleaned).expect("剥掉注释后是合法 JSON");
         assert_eq!(v["a"], "http://x//y", "字符串里的 // 不能被当注释");
         assert_eq!(v["b"], 1);
+    }
+
+    /// opencode 全局配置的候选位置：`$XDG_CONFIG_HOME` 在前，然后是 `<家目录>/.config/opencode`。
+    #[test]
+    fn user_config_candidates_use_xdg_then_the_home_config_dir() {
+        let home = std::path::PathBuf::from("home-base").join("张 三");
+        let xdg = std::path::PathBuf::from("xdg 配置");
+        let found = user_config_candidates_from(Some(home.clone()), Some(xdg.clone()));
+        assert_eq!(
+            found,
+            vec![
+                xdg.join("opencode").join("opencode.jsonc"),
+                xdg.join("opencode").join("opencode.json"),
+                home.join(".config").join("opencode").join("opencode.jsonc"),
+                home.join(".config").join("opencode").join("opencode.json"),
+            ]
+        );
+        assert!(user_config_candidates_from(None, None).is_empty());
+        assert_eq!(user_config_candidates_from(Some(home), None).len(), 2);
     }
 }

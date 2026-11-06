@@ -129,7 +129,13 @@ fn to_u32(len: usize) -> Result<u32, ZsshError> {
     })
 }
 
-/// Linux 没有 DPAPI：用资料库密钥 + XChaCha20-Poly1305，密钥放系统钥匙串。
+/// Linux 的资料库密钥管理（数据目录、后台预热、密钥放在哪）；见 `vault.rs`。
+#[cfg(target_os = "linux")]
+pub use super::vault::{
+    init as init_vault, key_state, warm_up as warm_up_vault, KeyBackend, KeyState,
+};
+
+/// Linux 没有 DPAPI：用资料库密钥 + XChaCha20-Poly1305，密钥放系统钥匙串（没有钥匙串时放数据目录里的文件）。
 #[cfg(target_os = "linux")]
 pub fn protect(plaintext: &[u8]) -> Result<Vec<u8>, ZsshError> {
     super::vault::protect(plaintext)

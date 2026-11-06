@@ -1,7 +1,8 @@
 //! opencode 的一键下载（0.2.14 的 `ai_agent_download_info` / `ai_agent_download` /
 //! `ai_agent_download_cancel` 加设置页的确认框）。
 //!
-//! 来源、校验、解压全是 core 的 `ai::agent::download`：只认 GitHub Release 的 Windows x64 资产，
+//! 来源、校验、解压全是 core 的 `ai::agent::download`：只认 GitHub Release 的当前平台资产
+//! （Windows x64 的 zip、Linux x64 的 tar.gz），
 //! 没有 SHA-256 摘要就不下，跳转只能去 GitHub 自己的域名，下完先核对大小和摘要才解压、才运行。
 //! 代理走"软件网络代理"设置（`app_proxy`），和更新检查、配置同步同一个。只有 opencode 提供下载，
 //! codex 和 Claude Code 在 0.2.14 里也没有，这里不新增。
@@ -64,7 +65,8 @@ pub async fn fetch_info(proxy: Option<&str>) -> Result<ReleaseInfo, String> {
     download::latest_release(&client).await
 }
 
-/// 把 Release 里的 zip 下载到 `tools_dir`，核对大小和 SHA-256，解出 `opencode.exe`，删掉压缩包。
+/// 把 Release 里的压缩包下载到 `tools_dir`，核对大小和 SHA-256，解出可执行文件
+/// （Windows `opencode.exe`，Linux `opencode` 并设成可执行），删掉压缩包。
 ///
 /// - `on_progress(已下载, 总量)`：core 按 1 MiB 节流；
 /// - `cancel` 置位就中断并删掉半截文件，返回「用户取消」；
@@ -79,7 +81,7 @@ pub async fn install_release(
 ) -> Result<PathBuf, String> {
     std::fs::create_dir_all(tools_dir)
         .map_err(|e| format!("{}{e}", t(DownloadMsg::CreateDirFailedPrefix)))?;
-    let zip_path = tools_dir.join("opencode-download.zip");
+    let zip_path = tools_dir.join(download::archive_file_name(&release.asset_name));
     download::download_to(
         client,
         &release.download_url,
@@ -98,7 +100,7 @@ pub async fn install_release(
     })?;
     // 先核对大小和 SHA-256，一致才解压、才运行；不一致时文件已经删掉。
     download::verify_download(&zip_path, release.size, &release.sha256)?;
-    let extracted = download::extract_exe(&zip_path, tools_dir);
+    let extracted = download::extract_binary(&zip_path, tools_dir);
     let _ = std::fs::remove_file(&zip_path);
     extracted
 }
@@ -309,6 +311,68 @@ mod tests {
             "半截文件要删掉"
         );
         assert!(!dir.join("opencode.exe").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 只有一个 `opencode` 条目的小 `.tar.gz`（脚本内容，不是真的程序）。
+    const STUB_TAR_GZ: &[u8] = include_bytes!("fixtures/opencode-stub.tar.gz");
+    /// `STUB_TAR_GZ` 的 SHA-256。
+    const STUB_TAR_GZ_SHA256: &str =
+        "e27a015ad0df56eaaac6764cf0f3a9f6f03e65432a5cccb46f7caf5dc62623db";
+
+    /// Linux 资产（`.tar.gz`）：下载、核对、解出 `opencode`、删掉压缩包。
+    /// 解压是平台无关的，所以 Windows 上也跑；"设成可执行并真的跑起来"只在 Unix 上验证。
+    #[tokio::test]
+    async fn a_matching_tar_gz_download_is_verified_extracted_and_removed() {
+        let (url, server) = serve_once(STUB_TAR_GZ.to_vec(), false).await;
+        let dir = temp_dir("targz-ok");
+        let cancel = AtomicBool::new(false);
+        let mut linux = release(&url, STUB_TAR_GZ.len() as u64, STUB_TAR_GZ_SHA256);
+        linux.asset_name = download::LINUX_X64_ASSET.to_owned();
+        let exe = install_release(&client(), &linux, &dir, |_, _| {}, &cancel)
+            .await
+            .expect("下载并解压");
+        server.abort();
+        assert_eq!(exe, dir.join("opencode"));
+        assert!(
+            !dir.join("opencode-download.tar.gz").exists(),
+            "压缩包要删掉"
+        );
+        assert!(!dir.join("opencode-download.zip").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&exe)
+                .expect("元数据")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o755, "下载的可执行文件要能直接运行");
+            // 装好就能被发现逻辑探测出版本（脚本冒充程序，只验证链路）。
+            let install = discovery::probe_path(&OPENCODE, &exe)
+                .await
+                .expect("装好的文件能跑 --version");
+            assert_eq!(install.version, "opencode 9.9.9");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_wrong_digest_on_a_tar_gz_stops_before_extraction() {
+        let (url, server) = serve_once(STUB_TAR_GZ.to_vec(), false).await;
+        let dir = temp_dir("targz-bad-digest");
+        let cancel = AtomicBool::new(false);
+        let mut linux = release(&url, STUB_TAR_GZ.len() as u64, &"0".repeat(64));
+        linux.asset_name = download::LINUX_X64_ASSET.to_owned();
+        let err = install_release(&client(), &linux, &dir, |_, _| {}, &cancel)
+            .await
+            .expect_err("摘要不一致必须失败");
+        server.abort();
+        assert!(err.contains("SHA-256"), "{err}");
+        assert!(!dir.join("opencode").exists(), "不能解压");
+        assert!(
+            !dir.join("opencode-download.tar.gz").exists(),
+            "校验失败要删掉下载的文件"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

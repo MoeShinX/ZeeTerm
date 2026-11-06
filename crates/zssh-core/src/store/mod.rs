@@ -1,4 +1,4 @@
-//! 存储层：SQLite、DPAPI 加解密，以及各实体的数据访问。
+//! 存储层：SQLite、本机秘密加解密（Windows DPAPI / Linux 资料库密钥），以及各实体的数据访问。
 
 pub mod ai_endpoints;
 pub mod audit;

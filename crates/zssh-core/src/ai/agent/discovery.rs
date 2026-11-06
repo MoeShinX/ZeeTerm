@@ -12,6 +12,17 @@
 //!
 //! 模块做成通用的：AI-3（codex）、AI-4（Claude Code）各提供自己的 [`AgentSpec`]。
 //! opencode 自己那份在 [`OPENCODE`]。
+//!
+//! # Linux / Unix
+//!
+//! 顺序相同：设置里手动指定 → 数据目录 `tools/<智能体>/` → `PATH` → 各家官方安装位置
+//! （[`AgentSpec::unix_extra_bins`]）→ npm / pnpm / yarn / bun / volta 的全局目录。
+//! 区别只在"什么算可运行"：Unix 没有扩展名，只认**可执行的普通文件**（`mode & 0o111`，
+//! 符号链接跟到目标上判断）；npm 的全局 bin 是指向包内脚本 / 二进制的符号链接，
+//! 解析符号链接之后如果落在 Node 脚本（shebang 是 node）上，就顺着包目录找真正的
+//! 原生二进制直接启动——和 Windows 上"拆 `.cmd` 找 `codex.exe`"同一个目的：
+//! 从桌面启动的 ZeeTerm 的 `PATH` 里常常没有 nvm / volta 的 `node`，
+//! 经 `#!/usr/bin/env node` 启动会失败；绕开 node 外壳也少一层要转发信号的中间进程。
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -36,8 +47,19 @@ pub struct AgentSpec {
     /// 子路径为空表示**环境变量本身就是那个目录**（例如 codex 的
     /// `$CODEX_INSTALL_DIR`）。环境变量没设就跳过这一条。
     pub extra_bins: &'static [(&'static str, &'static str)],
+    /// Unix 上的官方安装位置：`(基准, 相对子路径)`，子路径用 `/` 分隔，空表示基准本身。
+    pub unix_extra_bins: &'static [(UnixBase, &'static str)],
     /// 最低可用版本；低于它时提示"版本过低，建议下载新版"。
     pub minimum_version: Option<(u64, u64, u64)>,
+}
+
+/// [`AgentSpec::unix_extra_bins`] 的基准目录。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnixBase {
+    /// 用户家目录（`std::env::home_dir()`）。
+    Home,
+    /// 某个环境变量指向的目录（没设就跳过）。
+    Env(&'static str),
 }
 
 /// opencode 的发现规则。
@@ -46,6 +68,8 @@ pub const OPENCODE: AgentSpec = AgentSpec {
     tools_subdir: "opencode",
     // 官方安装脚本装到 `~\.opencode\bin`（设计 2.5）。
     extra_bins: &[("USERPROFILE", ".opencode\\bin")],
+    // 官方安装脚本（`opencode.ai/install`）装到 `~/.opencode/bin`。
+    unix_extra_bins: &[(UnixBase::Home, ".opencode/bin")],
     // 1.17.x 在共享数据目录上有 SQLite 外键 bug，1.19.0 没有（见 AI-2 报告）。
     minimum_version: Some((1, 19, 0)),
 };
@@ -59,6 +83,11 @@ pub const CLAUDE: AgentSpec = AgentSpec {
     command: "claude",
     tools_subdir: "claude",
     extra_bins: &[("USERPROFILE", ".local\\bin")],
+    // 原生安装器放 `~/.local/bin/claude`（符号链接）；老的"本地安装"在 `~/.claude/local/`。
+    unix_extra_bins: &[
+        (UnixBase::Home, ".local/bin"),
+        (UnixBase::Home, ".claude/local"),
+    ],
     minimum_version: Some(crate::ai::agent::claude::config::MIN_VERSION),
 };
 
@@ -75,6 +104,11 @@ pub const CODEX: AgentSpec = AgentSpec {
     extra_bins: &[
         ("CODEX_INSTALL_DIR", ""),
         ("LOCALAPPDATA", "Programs\\OpenAI\\Codex\\bin"),
+    ],
+    // 独立安装包装到 `$CODEX_INSTALL_DIR`，没设就是 `~/.local/bin`。
+    unix_extra_bins: &[
+        (UnixBase::Env("CODEX_INSTALL_DIR"), ""),
+        (UnixBase::Home, ".local/bin"),
     ],
     minimum_version: Some(crate::ai::agent::codex::startup::MIN_VERSION),
 };
@@ -210,6 +244,9 @@ pub struct EnvView {
     vars: Vec<(String, String)>,
     /// 问包管理器要来的全局目录（`npm config get prefix` 这类命令的结果）。
     manager_dirs: Vec<PathBuf>,
+    /// 用户家目录（Unix 上的官方安装位置和各家默认全局目录都挂在它下面）。
+    #[cfg(unix)]
+    home: Option<PathBuf>,
 }
 
 impl EnvView {
@@ -220,6 +257,8 @@ impl EnvView {
                 .map(|(name, value)| (name.to_ascii_uppercase(), value))
                 .collect(),
             manager_dirs: package_manager_dirs().await.clone(),
+            #[cfg(unix)]
+            home: std::env::home_dir().filter(|home| !home.as_os_str().is_empty()),
         }
     }
 
@@ -231,6 +270,12 @@ impl EnvView {
                 .map(|(name, value)| (name.to_ascii_uppercase(), (*value).to_string()))
                 .collect(),
             manager_dirs: manager_dirs.iter().map(PathBuf::from).collect(),
+            // 假环境里家目录就是 `HOME` 变量（没给就没有家目录）。
+            #[cfg(unix)]
+            home: vars
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("HOME"))
+                .map(|(_, value)| PathBuf::from(value)),
         }
     }
 
@@ -251,9 +296,30 @@ impl EnvView {
     }
 
     /// `%LOCALAPPDATA%` / `%APPDATA%` / `%USERPROFILE%` 下的一个子目录。
+    #[cfg(windows)]
     fn local_dir(&self, name: &str, sub: &str) -> Option<PathBuf> {
         self.dir_of(name, sub)
     }
+
+    /// 家目录下的一个子目录（`sub` 用 `/` 分隔）。
+    #[cfg(unix)]
+    fn home_dir(&self, sub: &str) -> Option<PathBuf> {
+        let home = self.home.as_ref()?;
+        Some(join_slashed(home, sub))
+    }
+}
+
+/// 把 `/` 分隔的相对子路径拼到 `base` 上（子路径为空就是 `base` 本身）。
+///
+/// 用 `join` 一段一段拼，不手写分隔符——别处的路径常量都是 `/` 写法，
+/// 这样在哪个平台上都得到那个平台的写法。
+#[cfg(unix)]
+fn join_slashed(base: &Path, sub: &str) -> PathBuf {
+    let mut out = base.to_path_buf();
+    for part in sub.split('/').filter(|part| !part.is_empty()) {
+        out.push(part);
+    }
+    out
 }
 
 /// 问包管理器要全局目录（npm / pnpm / yarn / bun），**进程内只问一次**。
@@ -274,6 +340,12 @@ async fn package_manager_dirs() -> &'static Vec<PathBuf> {
         ("bun", &["pm", "bin", "-g"][..]),
     ] {
         if let Some(dir) = query_dir(program, args).await {
+            // npm 问到的是前缀：Windows 上可执行文件就在前缀里，Unix 上在前缀下的 `bin/`。
+            let dir = if cfg!(unix) && program == "npm" {
+                dir.join("bin")
+            } else {
+                dir
+            };
             if !found.contains(&dir) {
                 found.push(dir);
             }
@@ -339,9 +411,9 @@ fn auto_candidates(spec: &AgentSpec, data_dir: &Path, env: &EnvView) -> Vec<Cand
 
     // 1. 数据目录下的 tools\<智能体>\（一键下载装的位置）。
     let tools = tools_dir(data_dir, spec);
-    for ext in ["exe", "cmd", "bat", "com"] {
+    for path in tools_candidate_names(spec, &tools) {
         out.push(Candidate {
-            path: tools.join(format!("{}.{}", spec.command, ext)),
+            path,
             source: DiscoverySource::ToolsDir,
         });
     }
@@ -352,6 +424,12 @@ fn auto_candidates(spec: &AgentSpec, data_dir: &Path, env: &EnvView) -> Vec<Cand
     }
     if let Some(paths) = env.var("PATH") {
         for dir in std::env::split_paths(std::ffi::OsStr::new(paths)) {
+            // Unix 的 PATH 里空项 / 相对项意思是"当前目录"：GUI 应用的工作目录不可控，
+            // 在那里找到的"智能体"不能拿来运行，一律跳过。
+            #[cfg(unix)]
+            if !dir.is_absolute() {
+                continue;
+            }
             for path in runnable_names(spec, &dir) {
                 out.push(Candidate {
                     path,
@@ -371,11 +449,14 @@ fn auto_candidates(spec: &AgentSpec, data_dir: &Path, env: &EnvView) -> Vec<Cand
         }
     }
     // 3b. winget 的包目录（`Packages\<包>\...`）：包名带版本和哈希，只能扫。
-    for path in winget_package_exes(spec, env) {
-        out.push(Candidate {
-            path,
-            source: DiscoverySource::KnownLocation,
-        });
+    #[cfg(windows)]
+    {
+        for path in winget_package_exes(spec, env) {
+            out.push(Candidate {
+                path,
+                source: DiscoverySource::KnownLocation,
+            });
+        }
     }
 
     out
@@ -396,10 +477,32 @@ fn hide_local_with(enabled: bool, is_set: impl FnOnce(&str) -> bool) -> bool {
     enabled && is_set("ZSSH_AGENT_HIDE_LOCAL")
 }
 
+/// 数据目录 tools 下的候选文件名（一键下载装的位置）。
+#[cfg(windows)]
+fn tools_candidate_names(spec: &AgentSpec, tools: &Path) -> Vec<PathBuf> {
+    ["exe", "cmd", "bat", "com"]
+        .iter()
+        .map(|ext| tools.join(format!("{}.{}", spec.command, ext)))
+        .collect()
+}
+
+/// 数据目录 tools 下的候选文件名：Unix 上没有扩展名，就是命令名本身。
+#[cfg(unix)]
+fn tools_candidate_names(spec: &AgentSpec, tools: &Path) -> Vec<PathBuf> {
+    vec![tools.join(spec.command)]
+}
+
+/// 一个目录里的候选文件名（Unix：只有命令名本身）。
+#[cfg(unix)]
+fn runnable_names(spec: &AgentSpec, dir: &Path) -> Vec<PathBuf> {
+    vec![dir.join(spec.command)]
+}
+
 /// 一个目录里，按扩展名优先级给出候选文件名。
 ///
 /// 同一目录里同时有无扩展名的 shim（npm 的 POSIX 版）和 `.cmd` 时，**先用 `.cmd`**
 /// ——裸 shim 在 Windows 上 `cmd /c` 跑不了。
+#[cfg(windows)]
 fn runnable_names(spec: &AgentSpec, dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for ext in ["exe", "cmd", "bat", "com"] {
@@ -416,6 +519,7 @@ fn runnable_names(spec: &AgentSpec, dir: &Path) -> Vec<PathBuf> {
 ///    `yarn global bin` / `bun pm bin -g`）——问不到时下面还有默认路径兜底；
 /// 2. 各家默认目录（含 Node 版本管理器、scoop、chocolatey、winget）；
 /// 3. 每个智能体自己的官方安装位置（[`AgentSpec::extra_bins`]）。
+#[cfg(windows)]
 fn known_dirs(spec: &AgentSpec, env: &EnvView) -> Vec<PathBuf> {
     let mut out = env.manager_dirs.clone();
 
@@ -497,9 +601,49 @@ fn known_dirs(spec: &AgentSpec, env: &EnvView) -> Vec<PathBuf> {
     out
 }
 
+/// Unix 上的其他常见安装位置（按顺序），分类和 Windows 那份一致：
+/// 1. 包管理器问出来的真实全局目录（npm 是 `<prefix>/bin`）；
+/// 2. 各家默认全局目录：npm 的 `~/.npm-global/bin`（官方文档推荐的免 sudo 前缀）和
+///    `$NPM_CONFIG_PREFIX/bin`、pnpm、yarn、bun、volta；
+/// 3. 每个智能体自己的官方安装位置（[`AgentSpec::unix_extra_bins`]）。
+///
+/// nvm / fnm 切 Node 版本是靠改 `PATH` 实现的，没有固定目录可猜，只认当前 `PATH`
+/// 里有的（`PATH` 那一档已经覆盖）。
+#[cfg(unix)]
+fn known_dirs(spec: &AgentSpec, env: &EnvView) -> Vec<PathBuf> {
+    let mut out = env.manager_dirs.clone();
+
+    // npm：用户在环境里指了前缀、以及免 sudo 配置的惯用目录。
+    out.extend(env.dir_of("NPM_CONFIG_PREFIX", "bin"));
+    out.extend(env.home_dir(".npm-global/bin"));
+    // pnpm：`PNPM_HOME` 本身就是全局 bin；默认在 `$XDG_DATA_HOME/pnpm`，没设是 `~/.local/share/pnpm`。
+    out.extend(env.dir_of("PNPM_HOME", ""));
+    out.extend(env.dir_of("XDG_DATA_HOME", "pnpm"));
+    out.extend(env.home_dir(".local/share/pnpm"));
+    // yarn（classic）/ bun / volta。
+    out.extend(env.home_dir(".yarn/bin"));
+    out.extend(env.dir_of("BUN_INSTALL", "bin"));
+    out.extend(env.home_dir(".bun/bin"));
+    out.extend(env.dir_of("VOLTA_HOME", "bin"));
+    out.extend(env.home_dir(".volta/bin"));
+
+    // 官方安装脚本 / 独立安装包（每个智能体自己的位置）。
+    for (base, sub) in spec.unix_extra_bins {
+        let dir = match base {
+            UnixBase::Home => env.home_dir(sub),
+            UnixBase::Env(name) => env.dir_of(name, sub),
+        };
+        out.extend(dir);
+    }
+
+    out.retain(|dir| !dir.as_os_str().is_empty());
+    out
+}
+
 /// winget 装的包在 `%LOCALAPPDATA%\Microsoft\WinGet\Packages\<包>\` 下面，
 /// 包名带版本和哈希（例如 `Anthropic.Claude_1.0.0_x64__8wekyb3d8bbwe` 这种样子），
 /// 猜不出来，只能逐个包目录里找同名 exe（深度受限）。
+#[cfg(windows)]
 fn winget_package_exes(spec: &AgentSpec, env: &EnvView) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Some(root) = env.local_dir("LOCALAPPDATA", "Microsoft\\WinGet\\Packages") else {
@@ -531,11 +675,20 @@ async fn probe(
 ) -> Result<AgentInstall, ProbeError> {
     // `.cmd` / `.bat` / `.ps1` 先拆出里面引用的真实 exe，直接启动 exe。
     let launch = resolve_launch_path(path);
+    #[cfg(windows)]
     if is_powershell_shim(&launch) {
         // `.ps1` 不能当可执行文件启动（AI-3 第 5 节），拆不出真实 exe 就是不能用。
         return Err(ProbeError::Reject(
             "不能直接启动 .ps1 包装脚本，也没有从里面拆出真实可执行文件（换 .cmd 或 exe 的路径）"
                 .to_string(),
+        ));
+    }
+    // Unix：没有执行权限（或根本不是普通文件）的直接拒绝，比起让 spawn 报一个
+    // "Permission denied" 更容易看懂，也不会去执行一个目录或数据文件。
+    #[cfg(unix)]
+    if !is_runnable_file(&launch) {
+        return Err(ProbeError::Reject(
+            "不是可执行文件（缺少执行权限，或者不是普通文件）".to_string(),
         ));
     }
     let version = probe_version(&launch).await?;
@@ -566,6 +719,7 @@ async fn probe(
 ///
 /// 最后再把符号链接解析到目标（winget 的 `Links\` 是指向真实 exe 的 reparse point，
 /// bun 之类的全局 bin 也可能是链接）。
+#[cfg(windows)]
 pub fn resolve_launch_path(path: &Path) -> PathBuf {
     let wrapper = if is_wrapper(path) {
         resolve_shim_exe(path)
@@ -585,6 +739,7 @@ pub fn resolve_launch_path(path: &Path) -> PathBuf {
 /// path = C:\Program Files\Some App\some-app.exe
 /// args = --flag
 /// ```
+#[cfg(windows)]
 fn resolve_scoop_shim(path: &Path) -> Option<PathBuf> {
     let is_exe = path
         .extension()
@@ -647,6 +802,154 @@ fn simplify_verbatim(path: PathBuf) -> PathBuf {
     path
 }
 
+/// Unix：包装脚本 / 符号链接里的真实可执行文件。
+///
+/// 1. 先解析符号链接：npm 的全局 bin（`<前缀>/bin/codex`）是指向包内文件的链接，
+///    Claude Code 的原生安装器放的 `~/.local/bin/claude` 也是链接；
+/// 2. 落到的文件如果是 Node 脚本（第一行是 `#!/usr/bin/env node` 之类），再顺着包目录
+///    找同名的原生二进制直接启动。理由见模块文档：桌面启动的应用 `PATH` 里常常没有 `node`，
+///    而且少一层 node 外壳就少一个要转发信号的中间进程；
+/// 3. 找不到原生二进制就老实用脚本本身（`node` 在 `PATH` 里时它是能跑的，不行由探测报出来）。
+///
+/// 查找的名字取"调用者给的路径的文件名"和"链接目标的文件名"各自去掉扩展名：
+/// `bin/codex -> .../bin/codex.js` 两个都是 `codex`。
+#[cfg(unix)]
+pub fn resolve_launch_path(path: &Path) -> PathBuf {
+    let target = resolve_link_target(path);
+    if !is_node_script(&target) {
+        return target;
+    }
+    let mut names: Vec<String> = Vec::new();
+    for source in [path, target.as_path()] {
+        if let Some(stem) = source.file_stem().and_then(|name| name.to_str()) {
+            if !stem.is_empty() && !names.iter().any(|known| known == stem) {
+                names.push(stem.to_string());
+            }
+        }
+    }
+    native_binary_for_node_script(&target, &names).unwrap_or(target)
+}
+
+/// 文件是不是"可运行的普通文件"：符号链接跟到目标上，普通文件，任何一个执行位（`0o111`）。
+#[cfg(unix)]
+pub fn is_runnable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+/// 文件开头是不是 `#!`。
+#[cfg(unix)]
+fn starts_with_shebang(path: &Path) -> bool {
+    shebang_line(path).is_some()
+}
+
+/// 读出 `#!` 开头的第一行（没有 shebang、读不了都是 `None`）。
+#[cfg(unix)]
+fn shebang_line(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut head = [0u8; 256];
+    let read = file.read(&mut head).ok()?;
+    let head = &head[..read];
+    if !head.starts_with(b"#!") {
+        return None;
+    }
+    let line = head.split(|byte| *byte == b'\n').next().unwrap_or(&[]);
+    Some(String::from_utf8_lossy(line).trim().to_string())
+}
+
+/// 是不是用 node 解释的脚本（`#!/usr/bin/env node`、`#!/usr/bin/node`、`nodejs` 都算）。
+#[cfg(unix)]
+fn is_node_script(path: &Path) -> bool {
+    let Some(line) = shebang_line(path) else {
+        return false;
+    };
+    line.split(|c: char| c.is_whitespace() || c == '/')
+        .any(|part| part == "node" || part == "nodejs")
+}
+
+/// 从一个 Node 脚本出发，找它所在 npm 包里同名的原生二进制。
+///
+/// 两处找：包目录自己的整棵树（npm 把平台包装在包自己的 `node_modules/` 下，
+/// codex 就是 `node_modules/@openai/codex-linux-x64/vendor/.../codex`），
+/// 以及和包目录并排的、名字以 `<包名>-` 开头的兄弟目录（pnpm 的符号链接农场和
+/// 被提升到同一层的布局）。
+#[cfg(unix)]
+fn native_binary_for_node_script(script: &Path, names: &[String]) -> Option<PathBuf> {
+    let package_root = script
+        .parent()?
+        .ancestors()
+        .take(5)
+        .find(|dir| dir.join("package.json").is_file())?
+        .to_path_buf();
+    if let Some(found) = find_native_binary(&package_root, names, script) {
+        return Some(found);
+    }
+    let parent = package_root.parent()?;
+    let prefix = format!("{}-", package_root.file_name()?.to_str()?);
+    let mut siblings: Vec<PathBuf> = std::fs::read_dir(parent)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
+        })
+        .collect();
+    siblings.sort();
+    siblings
+        .iter()
+        .find_map(|sibling| find_native_binary(sibling, names, script))
+}
+
+/// 一次查找最多看多少个目录项（包树里什么都可能有，别被一个巨大的目录拖住）。
+#[cfg(unix)]
+const NATIVE_SEARCH_MAX_ENTRIES: usize = 5000;
+
+/// 在目录树里找名字等于 `names` 之一、可执行、不是脚本（不以 `#!` 开头）的文件。
+///
+/// 广度优先、深度 ≤ 8、同一层按名字排序，所以结果稳定；读不动的目录跳过继续找。
+#[cfg(unix)]
+fn find_native_binary(root: &Path, names: &[String], skip: &Path) -> Option<PathBuf> {
+    let mut queue = std::collections::VecDeque::from([(root.to_path_buf(), 0usize)]);
+    let mut seen = 0usize;
+    while let Some((dir, depth)) = queue.pop_front() {
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut entries: Vec<PathBuf> = read
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .collect();
+        entries.sort();
+        seen += entries.len();
+        if seen > NATIVE_SEARCH_MAX_ENTRIES {
+            return None;
+        }
+        for entry in &entries {
+            let wanted = entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| names.iter().any(|known| known == name));
+            if wanted && entry != skip && is_runnable_file(entry) && !starts_with_shebang(entry) {
+                return Some(entry.clone());
+            }
+        }
+        if depth < 8 {
+            for entry in entries {
+                if entry.is_dir() {
+                    queue.push_back((entry, depth + 1));
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
 fn resolve_shim_exe(path: &Path) -> Option<PathBuf> {
     let contents = crate::ai::agent::text::read_text_lossy(path)?;
     let dir = path.parent()?;
@@ -700,16 +1003,19 @@ fn extract_refs_for(contents: &str, needle: &str, out: &mut Vec<String>) {
     }
 }
 pub fn needs_shell(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("cmd") | Some("bat")
-    )
+    // 只有 Windows 的批处理脚本才要经 cmd.exe；Unix 上 `.cmd` 只是个普通文件名。
+    cfg!(windows)
+        && matches!(
+            path.extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("cmd") | Some("bat")
+        )
 }
 
 /// 需要拆包装的脚本（`.cmd` / `.bat` 能经 `cmd /c` 跑，`.ps1` 不能直接启动）。
+#[cfg(windows)]
 fn is_wrapper(path: &Path) -> bool {
     matches!(
         path.extension()
@@ -721,6 +1027,7 @@ fn is_wrapper(path: &Path) -> bool {
 }
 
 /// 是不是 PowerShell 脚本（拆不出真实 exe 就不能用）。
+#[cfg(windows)]
 fn is_powershell_shim(path: &Path) -> bool {
     matches!(
         path.extension()
@@ -755,6 +1062,7 @@ pub fn extract_node_script_ref(contents: &str) -> Option<String> {
 }
 
 /// 顺着 node 包装脚本找到包里的真实 exe：包根下按名字找 `<命令>.exe`。
+#[cfg(windows)]
 fn resolve_node_shim_exe(path: &Path) -> Option<PathBuf> {
     let contents = std::fs::read_to_string(path).ok()?;
     let dir = path.parent()?;
@@ -773,6 +1081,7 @@ fn resolve_node_shim_exe(path: &Path) -> Option<PathBuf> {
 ///
 /// 读不动的子目录**跳过继续找**：winget 的包目录和用户自己的安装目录里什么都有
 /// （没权限的、正在被别的程序占着的），一个读不动不能把整次查找废掉。
+#[cfg(windows)]
 fn find_named_file(root: &Path, name: &str, max_depth: usize) -> Option<PathBuf> {
     let mut queue = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = queue.pop() {
@@ -860,6 +1169,9 @@ pub fn build_command(path: &Path) -> tokio::process::Command {
     // 发行版是 GUI 子系统：不隐藏的话每启动一个智能体就弹一个控制台窗口。
     let mut cmd = tokio::process::Command::new(path);
     hide_console(&mut cmd);
+    // Unix：自成进程组（结束时整组一起杀）并在 ZeeTerm 被强杀时跟着走，见 `process.rs`。
+    #[cfg(unix)]
+    super::process::isolate_process_group(&mut cmd);
     cmd
 }
 
@@ -911,582 +1223,1156 @@ fn first_meaningful_line(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-#[cfg(all(test, windows))]
+// 外层只写 `cfg(test)`：clippy 靠它认出测试代码、放行 unwrap / expect；平台门控放在里面一层的子模块上。
+#[cfg(test)]
 mod tests {
-    use super::*;
-    use std::fs;
+    #[cfg(windows)]
+    mod windows {
+        use super::super::*;
+        use std::fs;
 
-    #[test]
-    fn hide_local_hook_is_inert_when_disabled() {
-        // release 配置：开关关着时，哪怕环境变量「已设置」也不生效，连读取闭包都不调用。
-        let mut asked = false;
-        assert!(!hide_local_with(false, |_| {
-            asked = true;
-            true
-        }));
-        assert!(!asked, "关闭时不应该去读环境变量");
-        // debug 配置：按变量是否设置。
-        assert!(hide_local_with(true, |name| name == "ZSSH_AGENT_HIDE_LOCAL"));
-        assert!(!hide_local_with(true, |_| false));
-    }
+        #[test]
+        fn hide_local_hook_is_inert_when_disabled() {
+            // release 配置：开关关着时，哪怕环境变量「已设置」也不生效，连读取闭包都不调用。
+            let mut asked = false;
+            assert!(!hide_local_with(false, |_| {
+                asked = true;
+                true
+            }));
+            assert!(!asked, "关闭时不应该去读环境变量");
+            // debug 配置：按变量是否设置。
+            assert!(hide_local_with(true, |name| name == "ZSSH_AGENT_HIDE_LOCAL"));
+            assert!(!hide_local_with(true, |_| false));
+        }
 
-    /// 造一个假安装布局用的根目录。
-    ///
-    /// 路径里**故意带空格和中文**（R-2 第 2 节：别人的用户名可能就是这样，
-    /// `C:\Users\张 三\...`），所有布局用例都建在它下面。
-    fn layout_root(name: &str) -> crate::test_util::TestDir {
-        crate::test_util::TestDir::new(&format!("zssh 发现测试 {name}"))
-    }
+        /// 造一个假安装布局用的根目录。
+        ///
+        /// 路径里**故意带空格和中文**（R-2 第 2 节：别人的用户名可能就是这样，
+        /// `C:\Users\张 三\...`），所有布局用例都建在它下面。
+        fn layout_root(name: &str) -> crate::test_util::TestDir {
+            crate::test_util::TestDir::new(&format!("zssh 发现测试 {name}"))
+        }
 
-    /// 比较规范化之后的路径：程序解析出来的是长路径，测试里的目录可能是 8.3 短路径。
-    fn assert_same_path(actual: &Path, expected: &Path) {
-        assert!(
-            crate::pathnorm::same_path(actual, expected),
-            "路径不是同一个位置：
+        /// 比较规范化之后的路径：程序解析出来的是长路径，测试里的目录可能是 8.3 短路径。
+        fn assert_same_path(actual: &Path, expected: &Path) {
+            assert!(
+                crate::pathnorm::same_path(actual, expected),
+                "路径不是同一个位置：
   实际 {}
   期望 {}",
-            actual.display(),
-            expected.display()
-        );
-    }
-
-    /// 这个目录的 8.3 短路径写法（GitHub 的 Windows 机器上 `%TEMP%` 就是这样）。
-    /// 卷上没有 8.3 短名字时退回原路径并打印原因。
-    fn short_form(dir: &Path) -> PathBuf {
-        #[cfg(windows)]
-        if let Some(short) = crate::pathnorm::short_path(dir) {
-            return short;
+                actual.display(),
+                expected.display()
+            );
         }
-        eprintln!("注意：这个卷上没有 8.3 短名字，用原路径代替短路径写法");
-        dir.to_path_buf()
-    }
 
-    /// npm 风格的全局安装：`<dir>\<命令>.cmd` 里 `%~dp0` 指向包里的真 exe。
-    fn npm_layout(dir: &Path, command: &str) -> PathBuf {
-        let bin = dir
-            .join("node_modules")
-            .join(format!("{command}-package"))
-            .join("bin");
-        fs::create_dir_all(&bin).unwrap();
-        let exe = bin.join(format!("{command}.exe"));
-        fs::write(&exe, b"fake exe").unwrap();
-        fs::write(
-            dir.join(format!("{command}.cmd")),
-            format!(
+        /// 这个目录的 8.3 短路径写法（GitHub 的 Windows 机器上 `%TEMP%` 就是这样）。
+        /// 卷上没有 8.3 短名字时退回原路径并打印原因。
+        fn short_form(dir: &Path) -> PathBuf {
+            #[cfg(windows)]
+            if let Some(short) = crate::pathnorm::short_path(dir) {
+                return short;
+            }
+            eprintln!("注意：这个卷上没有 8.3 短名字，用原路径代替短路径写法");
+            dir.to_path_buf()
+        }
+
+        /// npm 风格的全局安装：`<dir>\<命令>.cmd` 里 `%~dp0` 指向包里的真 exe。
+        fn npm_layout(dir: &Path, command: &str) -> PathBuf {
+            let bin = dir
+                .join("node_modules")
+                .join(format!("{command}-package"))
+                .join("bin");
+            fs::create_dir_all(&bin).unwrap();
+            let exe = bin.join(format!("{command}.exe"));
+            fs::write(&exe, b"fake exe").unwrap();
+            fs::write(
+                dir.join(format!("{command}.cmd")),
+                format!(
                 "@ECHO off\r\n\"%~dp0\\node_modules\\{command}-package\\bin\\{command}.exe\" %*\r\n"
             ),
-        )
-        .unwrap();
-        exe
-    }
-
-    /// 一个直接放的 exe（scoop / chocolatey / 官方安装包那种布局）。
-    fn plain_exe(dir: &Path, command: &str) -> PathBuf {
-        fs::create_dir_all(dir).unwrap();
-        let exe = dir.join(format!("{command}.exe"));
-        fs::write(&exe, b"fake exe").unwrap();
-        exe
-    }
-
-    /// 自动发现的候选路径（字符串形式，方便断言）。
-    fn candidates(spec: &AgentSpec, data_dir: &Path, env: &EnvView) -> Vec<String> {
-        auto_candidates(spec, data_dir, env)
-            .iter()
-            .map(|candidate| candidate.path.display().to_string())
-            .collect()
-    }
-
-    /// 把测试里的 `(&str, String)` 变量表转成 [`EnvView::fake`] 要的形状。
-    fn env_pairs<'a>(vars: &'a [(&'a str, String)]) -> Vec<(&'a str, &'a str)> {
-        vars.iter()
-            .map(|(key, value)| (*key, value.as_str()))
-            .collect()
-    }
-
-    #[test]
-    fn tools_dir_layout() {
-        let dir = tools_dir(Path::new("C:\\data"), &OPENCODE);
-        assert_eq!(dir, PathBuf::from("C:\\data\\tools\\opencode"));
-    }
-
-    #[test]
-    fn shell_wrappers_are_detected() {
-        assert!(needs_shell(Path::new("C:\\npm\\opencode.cmd")));
-        assert!(needs_shell(Path::new("C:\\npm\\opencode.BAT")));
-        assert!(!needs_shell(Path::new("C:\\bin\\opencode.exe")));
-    }
-
-    /// 包管理器：npm / pnpm / yarn / bun 的全局目录都要能找到。
-    ///
-    /// npm 的真实全局目录**问命令**（`npm config get prefix`）拿到，所以这里既
-    /// 验证"问到的目录"进候选，也验证各家默认目录兜底。`%APPDATA%\npm` 那种是
-    /// 常见情况，pnpm / yarn / bun 的默认位置各家不同。
-    #[test]
-    fn package_manager_global_dirs_are_all_candidates() {
-        let root = layout_root("managers");
-        let spec = &OPENCODE;
-        let appdata = root.join("AppData\\Roaming");
-        let local = root.join("AppData\\Local");
-        let home = root.join("Users\\张 三");
-
-        // ① 问命令要来的全局目录（npm 改过 prefix 的情况）：npm 是 shim 布局。
-        let queried = root.join("D 盘\\自定义 npm 前缀");
-        npm_layout(&queried, "opencode");
-        // ② npm 的默认位置。
-        npm_layout(&appdata.join("npm"), "opencode");
-        // ③ pnpm（含受管理的 bin）、yarn、bun、`PNPM_HOME`：直接放 exe。
-        let direct_dirs = [
-            local.join("pnpm"),
-            local.join("pnpm\\bin"),
-            local.join("Yarn\\bin"),
-            home.join(".bun\\bin"),
-            root.join("pnpm 主目录"),
-        ];
-        let mut expected = vec![
-            queried.join("opencode.cmd"),
-            appdata.join("npm").join("opencode.cmd"),
-        ];
-        for dir in &direct_dirs {
-            expected.push(plain_exe(dir, "opencode"));
+            )
+            .unwrap();
+            exe
         }
 
-        let vars = [
-            ("APPDATA", appdata.display().to_string()),
-            ("LOCALAPPDATA", local.display().to_string()),
-            ("USERPROFILE", home.display().to_string()),
-            ("PNPM_HOME", root.join("pnpm 主目录").display().to_string()),
-        ];
-        let queried_text = queried.display().to_string();
-        let env = EnvView::fake(&env_pairs(&vars), &[queried_text.as_str()]);
-
-        let found = candidates(spec, &root.join("数据 目录"), &env);
-        for path in &expected {
-            let text = path.display().to_string();
-            assert!(found.contains(&text), "候选里没有 {text}");
+        /// 一个直接放的 exe（scoop / chocolatey / 官方安装包那种布局）。
+        fn plain_exe(dir: &Path, command: &str) -> PathBuf {
+            fs::create_dir_all(dir).unwrap();
+            let exe = dir.join(format!("{command}.exe"));
+            fs::write(&exe, b"fake exe").unwrap();
+            exe
         }
-    }
 
-    /// Node 版本管理器：nvm-windows（`NVM_SYMLINK`）/ fnm（别名目录）/ volta。
-    #[test]
-    fn node_version_manager_dirs_are_candidates() {
-        let root = layout_root("node-managers");
-        let spec = &CLAUDE;
-        let appdata = root.join("AppData\\Roaming");
-
-        let nvm = root.join("nvm 软链接");
-        let fnm = appdata.join("fnm\\aliases\\default");
-        npm_layout(&nvm, "claude");
-        npm_layout(&fnm, "claude");
-        let volta = root.join("volta 家目录\\bin");
-        let volta_exe = plain_exe(&volta, "claude");
-
-        let vars = [
-            ("NVM_SYMLINK", nvm.display().to_string()),
-            ("APPDATA", appdata.display().to_string()),
-            (
-                "VOLTA_HOME",
-                root.join("volta 家目录").display().to_string(),
-            ),
-            (
-                "USERPROFILE",
-                root.join("Users\\张 三").display().to_string(),
-            ),
-        ];
-        let env = EnvView::fake(&env_pairs(&vars), &[]);
-        let found = candidates(spec, &root.join("数据 目录"), &env);
-        for path in [nvm.join("claude.cmd"), fnm.join("claude.cmd"), volta_exe] {
-            let text = path.display().to_string();
-            assert!(found.contains(&text), "候选里没有 {text}");
+        /// 自动发现的候选路径（字符串形式，方便断言）。
+        fn candidates(spec: &AgentSpec, data_dir: &Path, env: &EnvView) -> Vec<String> {
+            auto_candidates(spec, data_dir, env)
+                .iter()
+                .map(|candidate| candidate.path.display().to_string())
+                .collect()
         }
-    }
 
-    /// winget（Links + Packages）/ scoop（SCOOP 指到别处 + `.shim`）/ chocolatey。
-    #[test]
-    fn winget_scoop_and_chocolatey_layouts_are_candidates() {
-        let guard = layout_root("windows-managers-a-rather-long-name");
-        let root = short_form(&guard);
-        let spec = &CODEX;
-        let local = root.join("AppData\\Local");
-
-        let links = local.join("Microsoft\\WinGet\\Links");
-        let link_exe = plain_exe(&links, "codex");
-        let package_dir =
-            local.join("Microsoft\\WinGet\\Packages\\OpenAI.Codex_1.0.0_x64__abc123\\bin");
-        let package_exe = plain_exe(&package_dir, "codex");
-
-        let scoop_shims = root.join("SCOOP 自定义\\shims");
-        let real_dir = root.join("SCOOP 自定义\\apps\\codex\\current\\bin");
-        let real_exe = plain_exe(&real_dir, "codex");
-        fs::create_dir_all(&scoop_shims).unwrap();
-        fs::write(
-            scoop_shims.join("codex.shim"),
-            format!("path = {}\r\nargs = --flag\r\n", real_exe.display()),
-        )
-        .unwrap();
-        fs::write(scoop_shims.join("codex.exe"), b"shim launcher").unwrap();
-
-        let choco = root.join("ProgramData\\chocolatey\\bin");
-        let choco_exe = plain_exe(&choco, "codex");
-
-        let vars = [
-            ("LOCALAPPDATA", local.display().to_string()),
-            ("SCOOP", root.join("SCOOP 自定义").display().to_string()),
-            (
-                "ChocolateyInstall",
-                root.join("ProgramData\\chocolatey").display().to_string(),
-            ),
-            (
-                "USERPROFILE",
-                root.join("Users\\张 三").display().to_string(),
-            ),
-        ];
-        let env = EnvView::fake(&env_pairs(&vars), &[]);
-        let found = candidates(spec, &root.join("数据 目录"), &env);
-        for exe in [&link_exe, &package_exe, &choco_exe] {
-            let text = exe.display().to_string();
-            assert!(found.contains(&text), "候选里没有 {text}");
+        /// 把测试里的 `(&str, String)` 变量表转成 [`EnvView::fake`] 要的形状。
+        fn env_pairs<'a>(vars: &'a [(&'a str, String)]) -> Vec<(&'a str, &'a str)> {
+            vars.iter()
+                .map(|(key, value)| (*key, value.as_str()))
+                .collect()
         }
-        // scoop：先看到的是 shim 启动器，解析后要落到真实 exe。
-        assert!(found
-            .iter()
-            .any(|path| path == &scoop_shims.join("codex.exe").display().to_string()));
-        assert_same_path(
-            &resolve_launch_path(&scoop_shims.join("codex.exe")),
-            &real_exe,
-        );
-    }
 
-    /// 官方安装脚本 / 独立安装包：opencode / Claude Code / codex 三家各自的位置。
-    #[test]
-    fn official_installer_dirs_are_candidates() {
-        let root = layout_root("official");
-        let local = root.join("AppData\\Local");
-        let home = root.join("Users\\张 三");
-
-        let opencode_exe = plain_exe(&home.join(".opencode\\bin"), "opencode");
-        let claude_exe = plain_exe(&home.join(".local\\bin"), "claude");
-        let codex_default = plain_exe(&local.join("Programs\\OpenAI\\Codex\\bin"), "codex");
-        let codex_custom_dir = root.join("另装 的 Codex 目录");
-        let codex_custom = plain_exe(&codex_custom_dir, "codex");
-
-        let vars = [
-            ("USERPROFILE", home.display().to_string()),
-            ("LOCALAPPDATA", local.display().to_string()),
-            ("CODEX_INSTALL_DIR", codex_custom_dir.display().to_string()),
-        ];
-        let env = EnvView::fake(&env_pairs(&vars), &[]);
-        let data_dir = root.join("数据 目录");
-
-        for (spec, exe) in [
-            (&OPENCODE, &opencode_exe),
-            (&CLAUDE, &claude_exe),
-            (&CODEX, &codex_default),
-            (&CODEX, &codex_custom),
-        ] {
-            let text = exe.display().to_string();
-            let found = candidates(spec, &data_dir, &env);
-            assert!(found.contains(&text), "候选里没有 {text}");
+        #[test]
+        fn tools_dir_layout() {
+            let dir = tools_dir(Path::new("C:\\data"), &OPENCODE);
+            assert_eq!(dir, PathBuf::from("C:\\data\\tools\\opencode"));
         }
-    }
 
-    /// K05：`.cmd` 包装脚本的参数里有 cmd 的元字符时，原样传给脚本，不能被当成命令执行。
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn batch_wrapper_arguments_are_not_interpreted_by_cmd() {
-        let root = layout_root("batch-args");
-        let dir = root.join("带 空格 的目录");
-        fs::create_dir_all(&dir).unwrap();
-        let shim = dir.join("agent.cmd");
-        // 和 npm 的包装脚本一样用 %* 原样转交参数（保留引号）；被注入的话会多出一行
-        // INJECTED。脚本自己怎么用参数（比如 %~1 去掉引号再拼命令）不归启动方管。
-        fs::write(&shim, "@ECHO off\r\necho ARG=[%*]\r\n").unwrap();
-        // 引号先把 MSVC 式转义（\"）的引号区间提前闭合，后面的 & 就落到引号外面了
-        let payload = "x\" & echo INJECTED & rem \"";
-        let mut cmd = build_command(&shim);
-        cmd.arg(payload)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        // 标准库对转义不了的参数会拒绝启动：那也算安全
-        if let Ok(child) = cmd.spawn() {
-            let output = child.wait_with_output().await.unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                !stdout.lines().any(|line| line.trim() == "INJECTED"),
-                "参数里的 & 被 cmd 当成了命令分隔符：{stdout}"
+        #[test]
+        fn shell_wrappers_are_detected() {
+            assert!(needs_shell(Path::new("C:\\npm\\opencode.cmd")));
+            assert!(needs_shell(Path::new("C:\\npm\\opencode.BAT")));
+            assert!(!needs_shell(Path::new("C:\\bin\\opencode.exe")));
+        }
+
+        /// 包管理器：npm / pnpm / yarn / bun 的全局目录都要能找到。
+        ///
+        /// npm 的真实全局目录**问命令**（`npm config get prefix`）拿到，所以这里既
+        /// 验证"问到的目录"进候选，也验证各家默认目录兜底。`%APPDATA%\npm` 那种是
+        /// 常见情况，pnpm / yarn / bun 的默认位置各家不同。
+        #[test]
+        fn package_manager_global_dirs_are_all_candidates() {
+            let root = layout_root("managers");
+            let spec = &OPENCODE;
+            let appdata = root.join("AppData\\Roaming");
+            let local = root.join("AppData\\Local");
+            let home = root.join("Users\\张 三");
+
+            // ① 问命令要来的全局目录（npm 改过 prefix 的情况）：npm 是 shim 布局。
+            let queried = root.join("D 盘\\自定义 npm 前缀");
+            npm_layout(&queried, "opencode");
+            // ② npm 的默认位置。
+            npm_layout(&appdata.join("npm"), "opencode");
+            // ③ pnpm（含受管理的 bin）、yarn、bun、`PNPM_HOME`：直接放 exe。
+            let direct_dirs = [
+                local.join("pnpm"),
+                local.join("pnpm\\bin"),
+                local.join("Yarn\\bin"),
+                home.join(".bun\\bin"),
+                root.join("pnpm 主目录"),
+            ];
+            let mut expected = vec![
+                queried.join("opencode.cmd"),
+                appdata.join("npm").join("opencode.cmd"),
+            ];
+            for dir in &direct_dirs {
+                expected.push(plain_exe(dir, "opencode"));
+            }
+
+            let vars = [
+                ("APPDATA", appdata.display().to_string()),
+                ("LOCALAPPDATA", local.display().to_string()),
+                ("USERPROFILE", home.display().to_string()),
+                ("PNPM_HOME", root.join("pnpm 主目录").display().to_string()),
+            ];
+            let queried_text = queried.display().to_string();
+            let env = EnvView::fake(&env_pairs(&vars), &[queried_text.as_str()]);
+
+            let found = candidates(spec, &root.join("数据 目录"), &env);
+            for path in &expected {
+                let text = path.display().to_string();
+                assert!(found.contains(&text), "候选里没有 {text}");
+            }
+        }
+
+        /// Node 版本管理器：nvm-windows（`NVM_SYMLINK`）/ fnm（别名目录）/ volta。
+        #[test]
+        fn node_version_manager_dirs_are_candidates() {
+            let root = layout_root("node-managers");
+            let spec = &CLAUDE;
+            let appdata = root.join("AppData\\Roaming");
+
+            let nvm = root.join("nvm 软链接");
+            let fnm = appdata.join("fnm\\aliases\\default");
+            npm_layout(&nvm, "claude");
+            npm_layout(&fnm, "claude");
+            let volta = root.join("volta 家目录\\bin");
+            let volta_exe = plain_exe(&volta, "claude");
+
+            let vars = [
+                ("NVM_SYMLINK", nvm.display().to_string()),
+                ("APPDATA", appdata.display().to_string()),
+                (
+                    "VOLTA_HOME",
+                    root.join("volta 家目录").display().to_string(),
+                ),
+                (
+                    "USERPROFILE",
+                    root.join("Users\\张 三").display().to_string(),
+                ),
+            ];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            let found = candidates(spec, &root.join("数据 目录"), &env);
+            for path in [nvm.join("claude.cmd"), fnm.join("claude.cmd"), volta_exe] {
+                let text = path.display().to_string();
+                assert!(found.contains(&text), "候选里没有 {text}");
+            }
+        }
+
+        /// winget（Links + Packages）/ scoop（SCOOP 指到别处 + `.shim`）/ chocolatey。
+        #[test]
+        fn winget_scoop_and_chocolatey_layouts_are_candidates() {
+            let guard = layout_root("windows-managers-a-rather-long-name");
+            let root = short_form(&guard);
+            let spec = &CODEX;
+            let local = root.join("AppData\\Local");
+
+            let links = local.join("Microsoft\\WinGet\\Links");
+            let link_exe = plain_exe(&links, "codex");
+            let package_dir =
+                local.join("Microsoft\\WinGet\\Packages\\OpenAI.Codex_1.0.0_x64__abc123\\bin");
+            let package_exe = plain_exe(&package_dir, "codex");
+
+            let scoop_shims = root.join("SCOOP 自定义\\shims");
+            let real_dir = root.join("SCOOP 自定义\\apps\\codex\\current\\bin");
+            let real_exe = plain_exe(&real_dir, "codex");
+            fs::create_dir_all(&scoop_shims).unwrap();
+            fs::write(
+                scoop_shims.join("codex.shim"),
+                format!("path = {}\r\nargs = --flag\r\n", real_exe.display()),
+            )
+            .unwrap();
+            fs::write(scoop_shims.join("codex.exe"), b"shim launcher").unwrap();
+
+            let choco = root.join("ProgramData\\chocolatey\\bin");
+            let choco_exe = plain_exe(&choco, "codex");
+
+            let vars = [
+                ("LOCALAPPDATA", local.display().to_string()),
+                ("SCOOP", root.join("SCOOP 自定义").display().to_string()),
+                (
+                    "ChocolateyInstall",
+                    root.join("ProgramData\\chocolatey").display().to_string(),
+                ),
+                (
+                    "USERPROFILE",
+                    root.join("Users\\张 三").display().to_string(),
+                ),
+            ];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            let found = candidates(spec, &root.join("数据 目录"), &env);
+            for exe in [&link_exe, &package_exe, &choco_exe] {
+                let text = exe.display().to_string();
+                assert!(found.contains(&text), "候选里没有 {text}");
+            }
+            // scoop：先看到的是 shim 启动器，解析后要落到真实 exe。
+            assert!(found
+                .iter()
+                .any(|path| path == &scoop_shims.join("codex.exe").display().to_string()));
+            assert_same_path(
+                &resolve_launch_path(&scoop_shims.join("codex.exe")),
+                &real_exe,
             );
-            assert!(stdout.contains("ARG=["), "脚本应该照常运行：{stdout}");
         }
-    }
 
-    /// 探测：`.cmd` 包装脚本（真实可运行）→ 版本和"版本过低"的判定。
-    #[tokio::test]
-    async fn probe_reads_version_from_a_fake_install() {
-        let root = layout_root("probe");
-        let dir = root.join("npm 全局 目录");
-        fs::create_dir_all(&dir).unwrap();
+        /// 官方安装脚本 / 独立安装包：opencode / Claude Code / codex 三家各自的位置。
+        #[test]
+        fn official_installer_dirs_are_candidates() {
+            let root = layout_root("official");
+            let local = root.join("AppData\\Local");
+            let home = root.join("Users\\张 三");
 
-        let shim = dir.join("opencode.cmd");
-        fs::write(&shim, "@ECHO off\r\necho opencode 1.19.1\r\n").unwrap();
-        let install = probe(&OPENCODE, &shim, DiscoverySource::Path, true)
-            .await
-            .expect("要探到版本");
-        assert_eq!(install.version, "opencode 1.19.1");
-        assert!(!install.too_old);
-        assert!(install.needs_shell, ".cmd 要经 cmd.exe 启动");
-        assert!(install.auto);
+            let opencode_exe = plain_exe(&home.join(".opencode\\bin"), "opencode");
+            let claude_exe = plain_exe(&home.join(".local\\bin"), "claude");
+            let codex_default = plain_exe(&local.join("Programs\\OpenAI\\Codex\\bin"), "codex");
+            let codex_custom_dir = root.join("另装 的 Codex 目录");
+            let codex_custom = plain_exe(&codex_custom_dir, "codex");
 
-        // 老版本：标版本过低（不拦，只提示）。
-        fs::write(&shim, "@ECHO off\r\necho 1.17.3\r\n").unwrap();
-        let install = probe(&OPENCODE, &shim, DiscoverySource::Path, true)
-            .await
-            .expect("要探到版本");
-        assert!(install.too_old, "1.17.3 低于 1.19.0");
+            let vars = [
+                ("USERPROFILE", home.display().to_string()),
+                ("LOCALAPPDATA", local.display().to_string()),
+                ("CODEX_INSTALL_DIR", codex_custom_dir.display().to_string()),
+            ];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            let data_dir = root.join("数据 目录");
 
-        // 报错退出：探不通（发现流程里跳过它继续找下一个候选）。
-        fs::write(&shim, "@ECHO off\r\nexit /b 3\r\n").unwrap();
-        assert!(probe(&OPENCODE, &shim, DiscoverySource::Path, true)
-            .await
-            .is_err());
-    }
+            for (spec, exe) in [
+                (&OPENCODE, &opencode_exe),
+                (&CLAUDE, &claude_exe),
+                (&CODEX, &codex_default),
+                (&CODEX, &codex_custom),
+            ] {
+                let text = exe.display().to_string();
+                let found = candidates(spec, &data_dir, &env);
+                assert!(found.contains(&text), "候选里没有 {text}");
+            }
+        }
 
-    #[tokio::test]
-    async fn probe_missing_path_reports_not_found() {
-        let err = probe_path(&OPENCODE, Path::new("C:\\不存在的目录\\opencode.exe")).await;
-        assert!(err.unwrap_err().contains("不存在"));
-    }
+        /// K05：`.cmd` 包装脚本的参数里有 cmd 的元字符时，原样传给脚本，不能被当成命令执行。
+        #[cfg(windows)]
+        #[tokio::test]
+        async fn batch_wrapper_arguments_are_not_interpreted_by_cmd() {
+            let root = layout_root("batch-args");
+            let dir = root.join("带 空格 的目录");
+            fs::create_dir_all(&dir).unwrap();
+            let shim = dir.join("agent.cmd");
+            // 和 npm 的包装脚本一样用 %* 原样转交参数（保留引号）；被注入的话会多出一行
+            // INJECTED。脚本自己怎么用参数（比如 %~1 去掉引号再拼命令）不归启动方管。
+            fs::write(&shim, "@ECHO off\r\necho ARG=[%*]\r\n").unwrap();
+            // 引号先把 MSVC 式转义（\"）的引号区间提前闭合，后面的 & 就落到引号外面了
+            let payload = "x\" & echo INJECTED & rem \"";
+            let mut cmd = build_command(&shim);
+            cmd.arg(payload)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            // 标准库对转义不了的参数会拒绝启动：那也算安全
+            if let Ok(child) = cmd.spawn() {
+                let output = child.wait_with_output().await.unwrap();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    !stdout.lines().any(|line| line.trim() == "INJECTED"),
+                    "参数里的 & 被 cmd 当成了命令分隔符：{stdout}"
+                );
+                assert!(stdout.contains("ARG=["), "脚本应该照常运行：{stdout}");
+            }
+        }
 
-    #[tokio::test]
-    async fn manual_mode_with_bad_path_errors_and_does_not_fall_back() {
-        let tmp = crate::test_util::TestDir::new("discovery-test-bad");
-        let err = discover(&OPENCODE, Some("C:\\不存在的\\opencode.exe"), &tmp)
-            .await
-            .expect_err("手动指定坏了要报出来");
-        assert!(err.contains("手动指定"));
-    }
+        /// 探测：`.cmd` 包装脚本（真实可运行）→ 版本和"版本过低"的判定。
+        #[tokio::test]
+        async fn probe_reads_version_from_a_fake_install() {
+            let root = layout_root("probe");
+            let dir = root.join("npm 全局 目录");
+            fs::create_dir_all(&dir).unwrap();
 
-    #[tokio::test]
-    async fn auto_mode_with_blank_setting_does_not_error() {
-        // 设置里是空白：跳过设置、走自动。找到找不到都行（本机 PATH 上可能有 opencode）。
-        let tmp = crate::test_util::TestDir::new("discovery-test-none");
-        let found = discover(&OPENCODE, Some("   "), &tmp)
-            .await
-            .expect("空白设置不算错误");
-        drop(found);
-    }
+            let shim = dir.join("opencode.cmd");
+            fs::write(&shim, "@ECHO off\r\necho opencode 1.19.1\r\n").unwrap();
+            let install = probe(&OPENCODE, &shim, DiscoverySource::Path, true)
+                .await
+                .expect("要探到版本");
+            assert_eq!(install.version, "opencode 1.19.1");
+            assert!(!install.too_old);
+            assert!(install.needs_shell, ".cmd 要经 cmd.exe 启动");
+            assert!(install.auto);
 
-    /// 造一个能跑 `--version` 的假安装：`.cmd` 里 echo 一个版本号。
-    fn versioned_cmd(dir: &Path, command: &str, version: &str) -> PathBuf {
-        fs::create_dir_all(dir).unwrap();
-        let path = dir.join(format!("{command}.cmd"));
-        fs::write(&path, format!("@ECHO off\r\necho {version}\r\n")).unwrap();
-        path
-    }
+            // 老版本：标版本过低（不拦，只提示）。
+            fs::write(&shim, "@ECHO off\r\necho 1.17.3\r\n").unwrap();
+            let install = probe(&OPENCODE, &shim, DiscoverySource::Path, true)
+                .await
+                .expect("要探到版本");
+            assert!(install.too_old, "1.17.3 低于 1.19.0");
 
-    /// R-2 遗留 3 / M3-1 第 0 节：PATH 上的旧版本**不能拦住**后面满足最低版本的安装。
-    #[tokio::test]
-    async fn too_old_on_path_does_not_block_a_newer_install() {
-        let root = layout_root("old-path");
-        let old_dir = root.join("PATH 上的 旧版本");
-        versioned_cmd(&old_dir, "opencode", "1.17.3"); // 低于 1.19.0
-                                                       // 后面那个位置上的可用版本：pnpm 的默认全局目录里就是直接放 .cmd 的布局。
-        let new_dir = root.join("AppData\\Local\\pnpm");
-        versioned_cmd(&new_dir, "opencode", "1.19.1");
+            // 报错退出：探不通（发现流程里跳过它继续找下一个候选）。
+            fs::write(&shim, "@ECHO off\r\nexit /b 3\r\n").unwrap();
+            assert!(probe(&OPENCODE, &shim, DiscoverySource::Path, true)
+                .await
+                .is_err());
+        }
 
-        let vars = [
-            ("PATH", old_dir.display().to_string()),
-            (
-                "LOCALAPPDATA",
-                root.join("AppData\\Local").display().to_string(),
-            ),
-            (
-                "USERPROFILE",
-                root.join("Users\\张 三").display().to_string(),
-            ),
-        ];
-        let env = EnvView::fake(&env_pairs(&vars), &[]);
-        let data_dir = root.join("数据 目录");
+        #[tokio::test]
+        async fn probe_missing_path_reports_not_found() {
+            let err = probe_path(&OPENCODE, Path::new("C:\\不存在的目录\\opencode.exe")).await;
+            assert!(err.unwrap_err().contains("不存在"));
+        }
 
-        let install = discover_with_env(&OPENCODE, None, &data_dir, &env)
-            .await
-            .expect("发现不该报错")
-            .expect("要找到可用的那个");
-        assert!(!install.too_old, "1.19.1 满足最低版本");
-        assert!(
-            install.version.contains("1.19.1"),
-            "用的应该是新版本：{}",
-            install.version
-        );
-        // PATH 上那个旧版本要记下来（设置页据此提示）。
-        let skipped = install.skipped_older.expect("要记下被跳过的旧版本");
-        assert!(skipped.version.contains("1.17.3"), "{}", skipped.version);
-        assert_eq!(skipped.source, DiscoverySource::Path);
-    }
+        #[tokio::test]
+        async fn manual_mode_with_bad_path_errors_and_does_not_fall_back() {
+            let tmp = crate::test_util::TestDir::new("discovery-test-bad");
+            let err = discover(&OPENCODE, Some("C:\\不存在的\\opencode.exe"), &tmp)
+                .await
+                .expect_err("手动指定坏了要报出来");
+            assert!(err.contains("手动指定"));
+        }
 
-    /// R-6b：PATH 里写的是数据目录 tools 的 8.3 短路径，也要认出它在 tools 下（界面显示"已下载"）。
-    #[tokio::test]
-    async fn a_path_entry_inside_the_tools_dir_is_reported_as_downloaded_even_in_short_form() {
-        let guard = layout_root("tools-short-a-rather-long-name");
-        let data_dir = crate::pathnorm::normalize(&guard);
-        let tools = tools_dir(&data_dir, &OPENCODE);
-        versioned_cmd(&tools, "opencode", "1.19.1");
-        let short_tools = short_form(&tools);
+        #[tokio::test]
+        async fn auto_mode_with_blank_setting_does_not_error() {
+            // 设置里是空白：跳过设置、走自动。找到找不到都行（本机 PATH 上可能有 opencode）。
+            let tmp = crate::test_util::TestDir::new("discovery-test-none");
+            let found = discover(&OPENCODE, Some("   "), &tmp)
+                .await
+                .expect("空白设置不算错误");
+            drop(found);
+        }
 
-        let vars = [("PATH", short_tools.display().to_string())];
-        let env = EnvView::fake(&env_pairs(&vars), &[]);
-        // 候选里 tools 自己那份排在最前，所以让 tools 里没有 .cmd 以外的位置也行：
-        // 直接用 `probe` 之前的分类函数验证。
-        assert_eq!(
-            classify_source(&tools, &data_dir, &OPENCODE, DiscoverySource::Path),
-            DiscoverySource::ToolsDir
-        );
-        assert_eq!(
-            classify_source(
-                &short_tools.join("opencode.cmd"),
-                &data_dir,
-                &OPENCODE,
+        /// 造一个能跑 `--version` 的假安装：`.cmd` 里 echo 一个版本号。
+        fn versioned_cmd(dir: &Path, command: &str, version: &str) -> PathBuf {
+            fs::create_dir_all(dir).unwrap();
+            let path = dir.join(format!("{command}.cmd"));
+            fs::write(&path, format!("@ECHO off\r\necho {version}\r\n")).unwrap();
+            path
+        }
+
+        /// R-2 遗留 3 / M3-1 第 0 节：PATH 上的旧版本**不能拦住**后面满足最低版本的安装。
+        #[tokio::test]
+        async fn too_old_on_path_does_not_block_a_newer_install() {
+            let root = layout_root("old-path");
+            let old_dir = root.join("PATH 上的 旧版本");
+            versioned_cmd(&old_dir, "opencode", "1.17.3"); // 低于 1.19.0
+                                                           // 后面那个位置上的可用版本：pnpm 的默认全局目录里就是直接放 .cmd 的布局。
+            let new_dir = root.join("AppData\\Local\\pnpm");
+            versioned_cmd(&new_dir, "opencode", "1.19.1");
+
+            let vars = [
+                ("PATH", old_dir.display().to_string()),
+                (
+                    "LOCALAPPDATA",
+                    root.join("AppData\\Local").display().to_string(),
+                ),
+                (
+                    "USERPROFILE",
+                    root.join("Users\\张 三").display().to_string(),
+                ),
+            ];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            let data_dir = root.join("数据 目录");
+
+            let install = discover_with_env(&OPENCODE, None, &data_dir, &env)
+                .await
+                .expect("发现不该报错")
+                .expect("要找到可用的那个");
+            assert!(!install.too_old, "1.19.1 满足最低版本");
+            assert!(
+                install.version.contains("1.19.1"),
+                "用的应该是新版本：{}",
+                install.version
+            );
+            // PATH 上那个旧版本要记下来（设置页据此提示）。
+            let skipped = install.skipped_older.expect("要记下被跳过的旧版本");
+            assert!(skipped.version.contains("1.17.3"), "{}", skipped.version);
+            assert_eq!(skipped.source, DiscoverySource::Path);
+        }
+
+        /// R-6b：PATH 里写的是数据目录 tools 的 8.3 短路径，也要认出它在 tools 下（界面显示"已下载"）。
+        #[tokio::test]
+        async fn a_path_entry_inside_the_tools_dir_is_reported_as_downloaded_even_in_short_form() {
+            let guard = layout_root("tools-short-a-rather-long-name");
+            let data_dir = crate::pathnorm::normalize(&guard);
+            let tools = tools_dir(&data_dir, &OPENCODE);
+            versioned_cmd(&tools, "opencode", "1.19.1");
+            let short_tools = short_form(&tools);
+
+            let vars = [("PATH", short_tools.display().to_string())];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            // 候选里 tools 自己那份排在最前，所以让 tools 里没有 .cmd 以外的位置也行：
+            // 直接用 `probe` 之前的分类函数验证。
+            assert_eq!(
+                classify_source(&tools, &data_dir, &OPENCODE, DiscoverySource::Path),
+                DiscoverySource::ToolsDir
+            );
+            assert_eq!(
+                classify_source(
+                    &short_tools.join("opencode.cmd"),
+                    &data_dir,
+                    &OPENCODE,
+                    DiscoverySource::Path
+                ),
+                DiscoverySource::ToolsDir
+            );
+            assert_eq!(
+                classify_source(
+                    &guard.join("elsewhere").join("opencode.cmd"),
+                    &data_dir,
+                    &OPENCODE,
+                    DiscoverySource::Path
+                ),
                 DiscoverySource::Path
-            ),
-            DiscoverySource::ToolsDir
-        );
-        assert_eq!(
-            classify_source(
-                &guard.join("elsewhere").join("opencode.cmd"),
-                &data_dir,
-                &OPENCODE,
-                DiscoverySource::Path
-            ),
-            DiscoverySource::Path
-        );
-        drop(env);
-    }
+            );
+            drop(env);
+        }
 
-    /// 所有候选都太旧时才标"版本过低"（返回第一个旧版本，没有 skipped_older）。
-    #[tokio::test]
-    async fn all_candidates_too_old_falls_back_to_the_old_one() {
-        let root = layout_root("all-old");
-        let old_dir = root.join("PATH 上的 旧版本");
-        versioned_cmd(&old_dir, "opencode", "1.17.3");
-        let also_old = root.join("AppData\\Local\\pnpm");
-        versioned_cmd(&also_old, "opencode", "1.18.0");
+        /// 所有候选都太旧时才标"版本过低"（返回第一个旧版本，没有 skipped_older）。
+        #[tokio::test]
+        async fn all_candidates_too_old_falls_back_to_the_old_one() {
+            let root = layout_root("all-old");
+            let old_dir = root.join("PATH 上的 旧版本");
+            versioned_cmd(&old_dir, "opencode", "1.17.3");
+            let also_old = root.join("AppData\\Local\\pnpm");
+            versioned_cmd(&also_old, "opencode", "1.18.0");
 
-        let vars = [
-            ("PATH", old_dir.display().to_string()),
-            (
-                "LOCALAPPDATA",
-                root.join("AppData\\Local").display().to_string(),
-            ),
-        ];
-        let env = EnvView::fake(&env_pairs(&vars), &[]);
-        let install = discover_with_env(&OPENCODE, None, &root.join("数据 目录"), &env)
-            .await
-            .expect("发现不该报错")
-            .expect("都太旧时要把第一个返回去，给界面标「版本过低」");
-        assert!(install.too_old);
-        assert!(install.version.contains("1.17.3"));
-        assert!(install.skipped_older.is_none(), "没有可用的就别提旧版本");
-    }
+            let vars = [
+                ("PATH", old_dir.display().to_string()),
+                (
+                    "LOCALAPPDATA",
+                    root.join("AppData\\Local").display().to_string(),
+                ),
+            ];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            let install = discover_with_env(&OPENCODE, None, &root.join("数据 目录"), &env)
+                .await
+                .expect("发现不该报错")
+                .expect("都太旧时要把第一个返回去，给界面标「版本过低」");
+            assert!(install.too_old);
+            assert!(install.version.contains("1.17.3"));
+            assert!(install.skipped_older.is_none(), "没有可用的就别提旧版本");
+        }
 
-    /// 候选都没有：返回 None（不是错误）。
-    #[tokio::test]
-    async fn nothing_found_is_none() {
-        let root = layout_root("none");
-        let vars = [
-            ("PATH", root.join("空的 PATH").display().to_string()),
-            (
-                "LOCALAPPDATA",
-                root.join("AppData\\Local").display().to_string(),
-            ),
-        ];
-        let env = EnvView::fake(&env_pairs(&vars), &[]);
-        let found = discover_with_env(&CODEX, None, &root.join("数据 目录"), &env)
-            .await
-            .expect("发现不该报错");
-        assert!(found.is_none());
-    }
+        /// 候选都没有：返回 None（不是错误）。
+        #[tokio::test]
+        async fn nothing_found_is_none() {
+            let root = layout_root("none");
+            let vars = [
+                ("PATH", root.join("空的 PATH").display().to_string()),
+                (
+                    "LOCALAPPDATA",
+                    root.join("AppData\\Local").display().to_string(),
+                ),
+            ];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            let found = discover_with_env(&CODEX, None, &root.join("数据 目录"), &env)
+                .await
+                .expect("发现不该报错");
+            assert!(found.is_none());
+        }
 
-    /// 拆 `.cmd`：写一个假 shim 指到假 exe，确认解析到 exe。
-    #[test]
-    fn resolves_shim_to_exe_on_disk() {
-        let guard = crate::test_util::TestDir::new("discovery-shim-a-rather-long-name");
-        let tmp = short_form(&guard);
-        let bin = tmp.join("node_modules").join("opencode-ai").join("bin");
-        fs::create_dir_all(&bin).unwrap();
-        let real_exe = bin.join("opencode.exe");
-        fs::write(&real_exe, b"x").unwrap();
-        let shim = tmp.join("opencode.cmd");
-        fs::write(
-            &shim,
-            "@ECHO off\r\n\"%~dp0\\node_modules\\opencode-ai\\bin\\opencode.exe\" %*\r\n",
-        )
-        .unwrap();
+        /// 拆 `.cmd`：写一个假 shim 指到假 exe，确认解析到 exe。
+        #[test]
+        fn resolves_shim_to_exe_on_disk() {
+            let guard = crate::test_util::TestDir::new("discovery-shim-a-rather-long-name");
+            let tmp = short_form(&guard);
+            let bin = tmp.join("node_modules").join("opencode-ai").join("bin");
+            fs::create_dir_all(&bin).unwrap();
+            let real_exe = bin.join("opencode.exe");
+            fs::write(&real_exe, b"x").unwrap();
+            let shim = tmp.join("opencode.cmd");
+            fs::write(
+                &shim,
+                "@ECHO off\r\n\"%~dp0\\node_modules\\opencode-ai\\bin\\opencode.exe\" %*\r\n",
+            )
+            .unwrap();
 
-        let resolved = resolve_launch_path(&shim);
-        assert_same_path(&resolved, &real_exe);
-    }
+            let resolved = resolve_launch_path(&shim);
+            assert_same_path(&resolved, &real_exe);
+        }
 
-    /// codex 的 npm 布局（AI-3 第 5 节）：shim 转发 node + 包里的 .js，
-    /// 要顺着包目录找到 `codex.exe`。
-    #[test]
-    fn resolves_codex_npm_shims_to_the_vendored_exe() {
-        let guard = crate::test_util::TestDir::new("discovery-codex-shim-a-rather-long-name");
-        let tmp = short_form(&guard);
-        let real_exe = tmp
-            .join("node_modules")
-            .join("@openai")
-            .join("codex")
-            .join("node_modules")
-            .join("@openai")
-            .join("codex-win32-x64")
-            .join("vendor")
-            .join("x86_64-pc-windows-msvc")
-            .join("bin")
-            .join("codex.exe");
-        fs::create_dir_all(real_exe.parent().unwrap()).unwrap();
-        fs::write(&real_exe, b"x").unwrap();
-        let bin = tmp
-            .join("node_modules")
-            .join("@openai")
-            .join("codex")
-            .join("bin");
-        fs::create_dir_all(&bin).unwrap();
-        fs::write(bin.join("codex.js"), b"// wrapper").unwrap();
+        /// codex 的 npm 布局（AI-3 第 5 节）：shim 转发 node + 包里的 .js，
+        /// 要顺着包目录找到 `codex.exe`。
+        #[test]
+        fn resolves_codex_npm_shims_to_the_vendored_exe() {
+            let guard = crate::test_util::TestDir::new("discovery-codex-shim-a-rather-long-name");
+            let tmp = short_form(&guard);
+            let real_exe = tmp
+                .join("node_modules")
+                .join("@openai")
+                .join("codex")
+                .join("node_modules")
+                .join("@openai")
+                .join("codex-win32-x64")
+                .join("vendor")
+                .join("x86_64-pc-windows-msvc")
+                .join("bin")
+                .join("codex.exe");
+            fs::create_dir_all(real_exe.parent().unwrap()).unwrap();
+            fs::write(&real_exe, b"x").unwrap();
+            let bin = tmp
+                .join("node_modules")
+                .join("@openai")
+                .join("codex")
+                .join("bin");
+            fs::create_dir_all(&bin).unwrap();
+            fs::write(bin.join("codex.js"), b"// wrapper").unwrap();
 
-        // .cmd 写法（%dp0%）。
-        let cmd = tmp.join("codex.cmd");
-        fs::write(
+            // .cmd 写法（%dp0%）。
+            let cmd = tmp.join("codex.cmd");
+            fs::write(
             &cmd,
             "@ECHO off\r\nGOTO start\r\n:start\r\n\"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js\" %*\r\n",
         )
         .unwrap();
-        assert_same_path(&resolve_launch_path(&cmd), &real_exe);
+            assert_same_path(&resolve_launch_path(&cmd), &real_exe);
 
-        // .ps1 写法（$basedir，正斜杠）。
-        let ps1 = tmp.join("codex.ps1");
-        fs::write(
+            // .ps1 写法（$basedir，正斜杠）。
+            let ps1 = tmp.join("codex.ps1");
+            fs::write(
             &ps1,
             "#!/usr/bin/env pwsh\n$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n& \"$basedir/node_modules/@openai/codex/bin/codex.js\" $args\n",
         )
         .unwrap();
-        assert_same_path(&resolve_launch_path(&ps1), &real_exe);
+            assert_same_path(&resolve_launch_path(&ps1), &real_exe);
 
-        // 拆不出真实 exe 的 .ps1 不能当可执行文件用。
-        let broken = tmp.join("broken.ps1");
-        fs::write(&broken, "Write-Host 'hello'\n").unwrap();
-        assert!(is_powershell_shim(&resolve_launch_path(&broken)));
+            // 拆不出真实 exe 的 .ps1 不能当可执行文件用。
+            let broken = tmp.join("broken.ps1");
+            fs::write(&broken, "Write-Host 'hello'\n").unwrap();
+            assert!(is_powershell_shim(&resolve_launch_path(&broken)));
+        }
+
+        #[test]
+        fn extracts_node_script_refs_from_all_shim_styles() {
+            let cmd = "\"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js\"   %*";
+            assert_eq!(
+                extract_node_script_ref(cmd).as_deref(),
+                Some("node_modules\\@openai\\codex\\bin\\codex.js")
+            );
+            let ps1 = "& \"$basedir/node_modules/@openai/codex/bin/codex.js\" $args";
+            assert_eq!(
+                extract_node_script_ref(ps1).as_deref(),
+                Some("node_modules/@openai/codex/bin/codex.js")
+            );
+            assert!(extract_node_script_ref("no reference here").is_none());
+        }
     }
+}
 
-    #[test]
-    fn extracts_node_script_refs_from_all_shim_styles() {
-        let cmd = "\"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js\"   %*";
-        assert_eq!(
-            extract_node_script_ref(cmd).as_deref(),
-            Some("node_modules\\@openai\\codex\\bin\\codex.js")
-        );
-        let ps1 = "& \"$basedir/node_modules/@openai/codex/bin/codex.js\" $args";
-        assert_eq!(
-            extract_node_script_ref(ps1).as_deref(),
-            Some("node_modules/@openai/codex/bin/codex.js")
-        );
-        assert!(extract_node_script_ref("no reference here").is_none());
+/// Unix 版的发现测试：对应上面 Windows 那一套，用构造出来的目录树 + 假环境（`EnvView::fake`）
+/// 验证候选顺序、可执行位、符号链接和 npm 包布局，目录名里照样带空格和中文。
+// 外层只写 `cfg(test)`：clippy 靠它认出测试代码、放行 unwrap / expect；平台门控放在里面一层的子模块上。
+#[cfg(test)]
+mod unix_tests {
+    #[cfg(unix)]
+    mod unix {
+        use super::super::*;
+        use std::fs;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        fn layout_root(name: &str) -> crate::test_util::TestDir {
+            crate::test_util::TestDir::new(&format!("zssh 发现测试 {name}"))
+        }
+
+        fn set_mode(path: &Path, mode: u32) {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        }
+
+        /// 写一个可执行的 shell 脚本（冒充智能体，`--version` 打印 `version`）。
+        fn versioned(dir: &Path, command: &str, version: &str) -> PathBuf {
+            fs::create_dir_all(dir).unwrap();
+            let path = dir.join(command);
+            fs::write(&path, format!("#!/bin/sh\necho {version}\n")).unwrap();
+            set_mode(&path, 0o755);
+            path
+        }
+
+        /// 写一个"原生二进制"：不以 `#!` 开头的可执行文件（内容是 ELF 魔数，不用真的能跑）。
+        fn fake_native(path: &Path) {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"\x7fELF fake native binary").unwrap();
+            set_mode(path, 0o755);
+        }
+
+        fn env_pairs<'a>(vars: &'a [(&'a str, String)]) -> Vec<(&'a str, &'a str)> {
+            vars.iter().map(|(k, v)| (*k, v.as_str())).collect()
+        }
+
+        fn candidates(spec: &AgentSpec, data_dir: &Path, env: &EnvView) -> Vec<PathBuf> {
+            auto_candidates(spec, data_dir, env)
+                .into_iter()
+                .map(|candidate| candidate.path)
+                .collect()
+        }
+
+        fn position(found: &[PathBuf], wanted: &Path) -> usize {
+            found
+                .iter()
+                .position(|path| path == wanted)
+                .unwrap_or_else(|| panic!("候选里没有 {}", wanted.display()))
+        }
+
+        #[test]
+        fn hide_local_hook_is_inert_when_disabled() {
+            let mut asked = false;
+            assert!(!hide_local_with(false, |_| {
+                asked = true;
+                true
+            }));
+            assert!(!asked, "关闭时不应该去读环境变量");
+            assert!(hide_local_with(true, |name| name == "ZSSH_AGENT_HIDE_LOCAL"));
+        }
+
+        #[test]
+        fn tools_dir_uses_plain_path_joins() {
+            let dir = tools_dir(Path::new("/data/ZeeTerm"), &OPENCODE);
+            assert_eq!(dir, PathBuf::from("/data/ZeeTerm/tools/opencode"));
+            assert!(!needs_shell(Path::new("/usr/bin/opencode")));
+            assert!(
+                !needs_shell(Path::new("/tmp/odd/name.cmd")),
+                ".cmd 在 Unix 上只是文件名"
+            );
+        }
+
+        /// 候选顺序：数据目录 tools → PATH（按 PATH 里的顺序）→ 官方安装位置 → 各家全局目录。
+        #[test]
+        fn candidate_order_is_tools_then_path_then_known_locations() {
+            let root = layout_root("order");
+            let home = root.join("home/张 三");
+            let data = root.join("数据 目录");
+            let path_a = root.join("path a");
+            let path_b = root.join("path b");
+            let path_value = std::env::join_paths([&path_a, &path_b])
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            let vars = [("HOME", home.display().to_string()), ("PATH", path_value)];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            let found = candidates(&CLAUDE, &data, &env);
+
+            let tools = data.join("tools/claude/claude");
+            let official_local = home.join(".local/bin/claude");
+            let official_old = home.join(".claude/local/claude");
+            let npm_global = home.join(".npm-global/bin/claude");
+            assert_eq!(found[0], tools, "一键下载的位置排第一");
+            assert!(position(&found, &tools) < position(&found, &path_a.join("claude")));
+            assert!(
+                position(&found, &path_a.join("claude")) < position(&found, &path_b.join("claude"))
+            );
+            assert!(position(&found, &path_b.join("claude")) < position(&found, &official_local));
+            assert!(position(&found, &official_local) < position(&found, &official_old));
+            assert!(found.contains(&npm_global));
+            // Windows 的扩展名候选一个都不该出现。
+            assert!(
+                found.iter().all(|path| path.extension().is_none()),
+                "{found:?}"
+            );
+        }
+
+        /// 各家官方安装位置和 npm / pnpm / yarn / bun / volta 的全局目录都在候选里。
+        #[test]
+        fn official_and_package_manager_dirs_are_candidates() {
+            let root = layout_root("known");
+            let home = root.join("home/用户 一");
+            let codex_dir = root.join("另装 的 Codex");
+            let queried = root.join("自定义 npm 前缀/bin");
+            let queried_text = queried.display().to_string();
+            let vars = [
+                ("HOME", home.display().to_string()),
+                ("CODEX_INSTALL_DIR", codex_dir.display().to_string()),
+                ("PNPM_HOME", root.join("pnpm 主目录").display().to_string()),
+                ("BUN_INSTALL", root.join("bun 安装").display().to_string()),
+                ("VOLTA_HOME", root.join("volta 家").display().to_string()),
+                (
+                    "NPM_CONFIG_PREFIX",
+                    root.join("npmrc 前缀").display().to_string(),
+                ),
+                ("XDG_DATA_HOME", root.join("xdg 数据").display().to_string()),
+            ];
+            let env = EnvView::fake(&env_pairs(&vars), &[queried_text.as_str()]);
+            let data = root.join("data");
+
+            let opencode = candidates(&OPENCODE, &data, &env);
+            assert!(opencode.contains(&home.join(".opencode/bin/opencode")));
+
+            let codex = candidates(&CODEX, &data, &env);
+            assert!(
+                codex.contains(&codex_dir.join("codex")),
+                "$CODEX_INSTALL_DIR"
+            );
+            assert!(codex.contains(&home.join(".local/bin/codex")));
+            assert!(
+                position(&codex, &codex_dir.join("codex"))
+                    < position(&codex, &home.join(".local/bin/codex")),
+                "$CODEX_INSTALL_DIR 比 ~/.local/bin 优先"
+            );
+
+            for expected in [
+                queried.join("codex"),
+                root.join("npmrc 前缀/bin/codex"),
+                home.join(".npm-global/bin/codex"),
+                root.join("pnpm 主目录/codex"),
+                root.join("xdg 数据/pnpm/codex"),
+                home.join(".local/share/pnpm/codex"),
+                home.join(".yarn/bin/codex"),
+                root.join("bun 安装/bin/codex"),
+                home.join(".bun/bin/codex"),
+                root.join("volta 家/bin/codex"),
+                home.join(".volta/bin/codex"),
+            ] {
+                assert!(
+                    codex.contains(&expected),
+                    "候选里没有 {}",
+                    expected.display()
+                );
+            }
+            // 问包管理器问到的目录排在猜出来的默认目录前面。
+            assert!(
+                position(&codex, &queried.join("codex"))
+                    < position(&codex, &home.join(".npm-global/bin/codex"))
+            );
+        }
+
+        #[test]
+        fn without_a_home_directory_only_env_based_locations_remain() {
+            let root = layout_root("no-home");
+            let codex_dir = root.join("codex bin");
+            let vars = [("CODEX_INSTALL_DIR", codex_dir.display().to_string())];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            let found = candidates(&CODEX, &root.join("data"), &env);
+            assert!(found.contains(&codex_dir.join("codex")));
+            assert!(found.iter().all(|path| !path.ends_with(".local/bin/codex")));
+        }
+
+        /// 探测：可执行脚本读版本；没有执行位、目录、空文件、报错退出都被拒绝。
+        #[tokio::test]
+        async fn probe_reads_versions_and_refuses_non_executables() {
+            let root = layout_root("probe");
+            let dir = root.join("全局 bin");
+            let ok = versioned(&dir, "opencode", "opencode 1.19.1");
+            let install = probe(&OPENCODE, &ok, DiscoverySource::Path, true)
+                .await
+                .expect("要探到版本");
+            assert_eq!(install.version, "opencode 1.19.1");
+            assert!(!install.too_old && !install.needs_shell && install.auto);
+
+            // 老版本只标记，不拦。
+            fs::write(&ok, "#!/bin/sh\necho 1.17.3\n").unwrap();
+            let install = probe(&OPENCODE, &ok, DiscoverySource::Path, true)
+                .await
+                .unwrap();
+            assert!(install.too_old);
+
+            // 没有执行位。
+            set_mode(&ok, 0o644);
+            let err = probe(&OPENCODE, &ok, DiscoverySource::Path, true)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("不是可执行文件"), "{err}");
+
+            // 目录（哪怕有 x 位）不是可执行文件。
+            let as_dir = dir.join("claude");
+            fs::create_dir_all(&as_dir).unwrap();
+            assert!(probe(&CLAUDE, &as_dir, DiscoverySource::Path, true)
+                .await
+                .is_err());
+
+            // 报错退出。
+            fs::write(&ok, "#!/bin/sh\nexit 3\n").unwrap();
+            set_mode(&ok, 0o755);
+            assert!(probe(&OPENCODE, &ok, DiscoverySource::Path, true)
+                .await
+                .is_err());
+        }
+
+        /// PATH 上不可执行的同名文件、同名目录都要跳过，继续找后面能用的。
+        #[tokio::test]
+        async fn non_executable_and_directory_entries_on_path_are_skipped() {
+            let root = layout_root("skip");
+            let bad_dir = root.join("坏的 bin");
+            fs::create_dir_all(&bad_dir).unwrap();
+            fs::write(bad_dir.join("opencode"), "#!/bin/sh\necho 9.9.9\n").unwrap(); // 0o644
+            let dir_dir = root.join("目录 bin");
+            fs::create_dir_all(dir_dir.join("opencode")).unwrap();
+            let good_dir = root.join("好的 bin");
+            versioned(&good_dir, "opencode", "opencode 1.19.2");
+
+            let path_value = std::env::join_paths([&bad_dir, &dir_dir, &good_dir])
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            let vars = [
+                ("PATH", path_value),
+                ("HOME", root.join("home").display().to_string()),
+            ];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            let install = discover_with_env(&OPENCODE, None, &root.join("data"), &env)
+                .await
+                .unwrap()
+                .expect("要找到好的那个");
+            assert_eq!(install.version, "opencode 1.19.2");
+            assert_eq!(install.source, DiscoverySource::Path);
+            assert!(
+                install.path.ends_with("好的 bin/opencode"),
+                "{}",
+                install.path
+            );
+        }
+
+        /// 符号链接：PATH 里放的是链接，探测和展示用链接指向的真实文件。
+        #[tokio::test]
+        async fn symlinks_are_resolved_to_the_real_executable() {
+            let root = layout_root("symlink");
+            let real = versioned(&root.join("真实 位置"), "claude", "2.1.300");
+            let bin = root.join("link bin");
+            fs::create_dir_all(&bin).unwrap();
+            symlink(&real, bin.join("claude")).unwrap();
+
+            let resolved = resolve_launch_path(&bin.join("claude"));
+            assert_eq!(resolved, fs::canonicalize(&real).unwrap());
+
+            let vars = [("PATH", bin.display().to_string())];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            let install = discover_with_env(&CLAUDE, None, &root.join("data"), &env)
+                .await
+                .unwrap()
+                .expect("要找到");
+            assert_eq!(install.version, "2.1.300");
+            assert_eq!(
+                PathBuf::from(&install.path),
+                fs::canonicalize(&real).unwrap()
+            );
+
+            // 指向不存在目标的断链：跳过，不报错。
+            let broken = root.join("broken bin");
+            fs::create_dir_all(&broken).unwrap();
+            symlink(root.join("不存在"), broken.join("claude")).unwrap();
+            let vars = [("PATH", broken.display().to_string())];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            assert!(discover_with_env(&CLAUDE, None, &root.join("data"), &env)
+                .await
+                .unwrap()
+                .is_none());
+        }
+
+        /// npm 全局布局：`<前缀>/bin/codex` → 包里的 Node 脚本；旁边有平台包里的原生二进制，要直接启动它。
+        #[test]
+        fn npm_global_node_shim_resolves_to_the_vendored_native_binary() {
+            let root = layout_root("npm-codex");
+            let prefix = root.join("npm 前缀");
+            let package = prefix.join("lib/node_modules/@openai/codex");
+            fs::create_dir_all(package.join("bin")).unwrap();
+            fs::write(package.join("package.json"), "{}").unwrap();
+            let script = package.join("bin/codex.js");
+            fs::write(&script, "#!/usr/bin/env node\nconsole.log('wrapper')\n").unwrap();
+            set_mode(&script, 0o755);
+            let native = package.join(
+                "node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex/codex",
+            );
+            fake_native(&native);
+            // 干扰项：同名但是脚本的、没执行位的，都不能被选中。
+            let decoy_dir = package.join("node_modules/@openai/codex-linux-x64/vendor/aaa");
+            fs::create_dir_all(&decoy_dir).unwrap();
+            fs::write(decoy_dir.join("codex"), b"\x7fELF but not executable").unwrap();
+
+            fs::create_dir_all(prefix.join("bin")).unwrap();
+            symlink(
+                "../lib/node_modules/@openai/codex/bin/codex.js",
+                prefix.join("bin/codex"),
+            )
+            .unwrap();
+
+            let resolved = resolve_launch_path(&prefix.join("bin/codex"));
+            assert_eq!(resolved, fs::canonicalize(&native).unwrap());
+            // 直接给脚本路径也一样（链接目标的文件名 codex.js 去掉扩展名就是 codex）。
+            assert_eq!(
+                resolve_launch_path(&script),
+                fs::canonicalize(&native).unwrap()
+            );
+        }
+
+        /// pnpm 的布局：平台包是并排的兄弟目录，不在主包里面。
+        #[test]
+        fn pnpm_style_sibling_platform_package_is_found() {
+            let root = layout_root("pnpm-codex");
+            let scope = root.join("store/.pnpm/@openai+codex@1.0.0/node_modules/@openai");
+            let package = scope.join("codex");
+            fs::create_dir_all(package.join("bin")).unwrap();
+            fs::write(package.join("package.json"), "{}").unwrap();
+            let script = package.join("bin/codex.js");
+            fs::write(&script, "#!/usr/bin/env node\n").unwrap();
+            set_mode(&script, 0o755);
+            let native = scope.join("codex-linux-x64/vendor/x/codex/codex");
+            fake_native(&native);
+
+            let bin = root.join("pnpm home");
+            fs::create_dir_all(&bin).unwrap();
+            symlink(&script, bin.join("codex")).unwrap();
+            assert_eq!(
+                resolve_launch_path(&bin.join("codex")),
+                fs::canonicalize(&native).unwrap()
+            );
+        }
+
+        /// 找不到原生二进制时，退回 Node 脚本本身（`node` 在 PATH 里它仍然能跑）。
+        #[test]
+        fn a_node_script_without_a_native_binary_is_used_as_is() {
+            let root = layout_root("node-only");
+            let package = root.join("lib/node_modules/@anthropic-ai/claude-code");
+            fs::create_dir_all(package.join("bin")).unwrap();
+            fs::write(package.join("package.json"), "{}").unwrap();
+            let script = package.join("cli.js");
+            fs::write(&script, "#!/usr/bin/env node\n").unwrap();
+            set_mode(&script, 0o755);
+            let bin = root.join("bin");
+            fs::create_dir_all(&bin).unwrap();
+            symlink(&script, bin.join("claude")).unwrap();
+            assert_eq!(
+                resolve_launch_path(&bin.join("claude")),
+                fs::canonicalize(&script).unwrap()
+            );
+        }
+
+        /// npm 新版 Claude Code：bin 链接直接指向一个叫 `claude.exe` 的原生二进制（文件名里的 .exe 不影响）。
+        #[test]
+        fn a_link_straight_to_a_native_binary_is_kept() {
+            let root = layout_root("claude-native");
+            let native = root.join("lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe");
+            fake_native(&native);
+            let bin = root.join("bin");
+            fs::create_dir_all(&bin).unwrap();
+            symlink(&native, bin.join("claude")).unwrap();
+            assert_eq!(
+                resolve_launch_path(&bin.join("claude")),
+                fs::canonicalize(&native).unwrap()
+            );
+        }
+
+        #[test]
+        fn node_scripts_are_recognised_by_their_shebang() {
+            let root = layout_root("shebang");
+            let write = |name: &str, body: &str| {
+                let path = root.join(name);
+                fs::write(&path, body).unwrap();
+                path
+            };
+            assert!(is_node_script(&write("a", "#!/usr/bin/env node\nx")));
+            assert!(is_node_script(&write("b", "#!/usr/bin/node\nx")));
+            assert!(is_node_script(&write(
+                "c",
+                "#!/usr/bin/env -S node --flag\nx"
+            )));
+            assert!(is_node_script(&write("d", "#!/usr/local/bin/nodejs\nx")));
+            assert!(
+                !is_node_script(&write("e", "#!/bin/sh\nnode\n")),
+                "只看第一行"
+            );
+            assert!(!is_node_script(&write("f", "#!/usr/bin/env python3\n")));
+            assert!(!is_node_script(&write("g", "console.log('no shebang')")));
+            assert!(!is_node_script(&root.join("不存在")));
+        }
+
+        /// 手动指定：只用它；没执行权限 / 不存在都报错、不回退到自动。
+        #[tokio::test]
+        async fn manual_path_must_be_executable_and_never_falls_back() {
+            let root = layout_root("manual");
+            let data = root.join("data");
+            let path_dir = root.join("path bin");
+            versioned(&path_dir, "opencode", "opencode 1.19.3");
+            let vars = [("PATH", path_dir.display().to_string())];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+
+            let manual = root.join("手动 目录");
+            fs::create_dir_all(&manual).unwrap();
+            let not_exec = manual.join("opencode");
+            fs::write(&not_exec, "#!/bin/sh\necho 1.19.9\n").unwrap();
+            let err = discover_with_env(
+                &OPENCODE,
+                Some(&not_exec.display().to_string()),
+                &data,
+                &env,
+            )
+            .await
+            .expect_err("没有执行权限要报错，不能偷偷改用 PATH 里的");
+            assert!(err.contains("手动指定"), "{err}");
+
+            let missing = manual.join("没有这个");
+            let err =
+                discover_with_env(&OPENCODE, Some(&missing.display().to_string()), &data, &env)
+                    .await
+                    .unwrap_err();
+            assert!(err.contains("不存在"), "{err}");
+
+            set_mode(&not_exec, 0o755);
+            let install = discover_with_env(
+                &OPENCODE,
+                Some(&not_exec.display().to_string()),
+                &data,
+                &env,
+            )
+            .await
+            .unwrap()
+            .expect("装好了");
+            assert_eq!(install.source, DiscoverySource::Setting);
+            assert!(!install.auto);
+        }
+
+        /// 旧版本不拦路：PATH 上的 1.17 排在前面，后面官方位置里有 1.19 就用后者并记下被跳过的。
+        #[tokio::test]
+        async fn too_old_on_path_does_not_block_a_newer_install() {
+            let root = layout_root("old-path");
+            let home = root.join("home");
+            let old_dir = root.join("PATH 上的 旧版本");
+            versioned(&old_dir, "opencode", "1.17.3");
+            versioned(&home.join(".opencode/bin"), "opencode", "1.19.1");
+            let vars = [
+                ("PATH", old_dir.display().to_string()),
+                ("HOME", home.display().to_string()),
+            ];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            let install = discover_with_env(&OPENCODE, None, &root.join("data"), &env)
+                .await
+                .unwrap()
+                .expect("要找到可用的那个");
+            assert!(!install.too_old);
+            assert!(install.version.contains("1.19.1"));
+            let skipped = install.skipped_older.expect("要记下被跳过的旧版本");
+            assert!(skipped.version.contains("1.17.3"));
+            assert_eq!(skipped.source, DiscoverySource::Path);
+            assert_eq!(install.source, DiscoverySource::KnownLocation);
+        }
+
+        /// 数据目录 tools 里的优先于 PATH，并且来源标成"已下载"。
+        #[tokio::test]
+        async fn the_downloaded_copy_in_the_tools_dir_wins_over_path() {
+            let root = layout_root("tools-first");
+            let data = root.join("数据");
+            versioned(&data.join("tools/opencode"), "opencode", "opencode 1.19.5");
+            let path_dir = root.join("path bin");
+            versioned(&path_dir, "opencode", "opencode 1.19.9");
+            let vars = [("PATH", path_dir.display().to_string())];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            let install = discover_with_env(&OPENCODE, None, &data, &env)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(install.version, "opencode 1.19.5");
+            assert_eq!(install.source, DiscoverySource::ToolsDir);
+
+            // PATH 里写的是 tools 目录时也认成"已下载"。
+            assert_eq!(
+                classify_source(
+                    &data.join("tools/opencode/opencode"),
+                    &data,
+                    &OPENCODE,
+                    DiscoverySource::Path
+                ),
+                DiscoverySource::ToolsDir
+            );
+            assert_eq!(
+                classify_source(
+                    &path_dir.join("opencode"),
+                    &data,
+                    &OPENCODE,
+                    DiscoverySource::Path
+                ),
+                DiscoverySource::Path
+            );
+        }
+
+        #[tokio::test]
+        async fn nothing_found_is_none() {
+            let root = layout_root("none");
+            let vars = [
+                ("PATH", root.join("空的 PATH").display().to_string()),
+                ("HOME", root.join("home").display().to_string()),
+            ];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            assert!(discover_with_env(&CODEX, None, &root.join("data"), &env)
+                .await
+                .unwrap()
+                .is_none());
+        }
+
+        /// 子进程自成一个进程组：`build_command` 起的进程，组号等于它自己的进程号。
+        #[tokio::test]
+        async fn commands_are_started_in_their_own_process_group() {
+            let mut cmd = build_command(Path::new("/bin/sleep"));
+            cmd.arg("30")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let mut child = cmd.spawn().expect("起 sleep");
+            let pid = child.id().expect("pid");
+            // SAFETY: 只读取进程组号。
+            let group = unsafe { libc::getpgid(pid as libc::pid_t) };
+            assert_eq!(group, pid as libc::pid_t, "应该是自己进程组的组长");
+            // SAFETY: 只读取本进程的进程组号。
+            assert_ne!(group, unsafe { libc::getpgrp() }, "不能和 ZeeTerm 同组");
+            crate::ai::agent::process::kill_process_tree(&mut child)
+                .await
+                .expect("结束");
+        }
+
+        /// PATH 里的空项和相对路径在 Unix 上指"当前目录"：GUI 应用的工作目录不可控，不能拿来找智能体。
+        #[test]
+        fn empty_and_relative_path_entries_are_ignored() {
+            let root = layout_root("relative-path");
+            let good = root.join("绝对 bin");
+            let path_value = format!("::relative/bin:.:{}", good.display());
+            let vars = [("PATH", path_value)];
+            let env = EnvView::fake(&env_pairs(&vars), &[]);
+            let found = candidates(&OPENCODE, &root.join("data"), &env);
+            assert!(found.contains(&good.join("opencode")));
+            assert!(found.iter().all(|path| path.is_absolute()), "{found:?}");
+        }
     }
 }

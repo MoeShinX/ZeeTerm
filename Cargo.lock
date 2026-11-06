@@ -4234,6 +4234,7 @@ dependencies = [
  "argon2 0.5.3",
  "base64 0.21.7",
  "chacha20poly1305",
+ "flate2",
  "getrandom 0.4.3",
  "hmac 0.13.0",
  "keyring",
@@ -4245,6 +4246,7 @@ dependencies = [
  "rusqlite",
  "russh",
  "russh-sftp",
+ "secret-service",
  "serde",
  "serde_json",
  "sha1 0.11.0",
@@ -4280,6 +4282,8 @@ dependencies = [
 name = "zssh-platform-windows"
 version = "0.3.5"
 dependencies = [
+ "libc",
+ "tempfile",
  "tracing",
  "windows",
  "zeroize",
