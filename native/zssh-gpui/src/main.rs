@@ -128,6 +128,15 @@ fn main() {
         println!("{line}");
         return;
     }
+    // 没有图形显示时 GPUI 会进无头模式、永远不出窗口：直接说清楚再退出，别让人以为卡住了。
+    #[cfg(target_os = "linux")]
+    if !cli_args::has_display(
+        std::env::var_os("WAYLAND_DISPLAY"),
+        std::env::var_os("DISPLAY"),
+    ) {
+        eprintln!("{}", cli_args::no_display_message());
+        std::process::exit(1);
+    }
     // 先确认有正式的数据目录：拿不到就提示退出，不让凭据库、主机库落进会被清理的临时目录。
     settings::ensure_data_dir_or_exit();
     // Linux 的本机密钥：后备密钥文件放进数据目录，并在后台先把密钥取出来缓存好，
