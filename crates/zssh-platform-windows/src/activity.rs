@@ -77,8 +77,9 @@ pub fn install_on_current_thread() -> bool {
     #[cfg(windows)]
     {
         // SAFETY: 线程钩子（dwThreadId = 当前线程），回调是上面的 extern "system" 函数，不引用任何会失效的东西。
-        let hook: windows::core::Result<HHOOK> =
-            unsafe { SetWindowsHookExW(WH_GETMESSAGE, Some(hook_proc), None, GetCurrentThreadId()) };
+        let hook: windows::core::Result<HHOOK> = unsafe {
+            SetWindowsHookExW(WH_GETMESSAGE, Some(hook_proc), None, GetCurrentThreadId())
+        };
         return hook.is_ok();
     }
     // Unix 没有消息钩子；空闲检测由界面层自己调用 touch()（待接 GPUI 输入事件）。

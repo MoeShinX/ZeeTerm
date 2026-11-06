@@ -45,8 +45,11 @@ pub fn protect(plaintext: &[u8]) -> Result<Vec<u8>, ZsshError> {
     let key = vault_key()?;
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_ref()).map_err(|err| {
         ZsshError::Secret(
-            Reason::new(rk::VAULT_CRYPTO_FAILED, format!("初始化资料库密钥失败：{err}"))
-                .with("cause", err),
+            Reason::new(
+                rk::VAULT_CRYPTO_FAILED,
+                format!("初始化资料库密钥失败：{err}"),
+            )
+            .with("cause", err),
         )
     })?;
     let mut nonce = [0u8; NONCE_LEN];
@@ -61,8 +64,7 @@ pub fn protect(plaintext: &[u8]) -> Result<Vec<u8>, ZsshError> {
         )
         .map_err(|err| {
             ZsshError::Secret(
-                Reason::new(rk::VAULT_CRYPTO_FAILED, format!("加密失败：{err}"))
-                    .with("cause", err),
+                Reason::new(rk::VAULT_CRYPTO_FAILED, format!("加密失败：{err}")).with("cause", err),
             )
         })?;
     let mut out = Vec::with_capacity(MAGIC.len() + NONCE_LEN + sealed.len());
@@ -83,8 +85,11 @@ pub fn unprotect(blob: &[u8]) -> Result<Vec<u8>, ZsshError> {
     let key = vault_key()?;
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_ref()).map_err(|err| {
         ZsshError::Secret(
-            Reason::new(rk::VAULT_CRYPTO_FAILED, format!("初始化资料库密钥失败：{err}"))
-                .with("cause", err),
+            Reason::new(
+                rk::VAULT_CRYPTO_FAILED,
+                format!("初始化资料库密钥失败：{err}"),
+            )
+            .with("cause", err),
         )
     })?;
     let nonce = XNonce::from_slice(&blob[MAGIC.len()..MAGIC.len() + NONCE_LEN]);
@@ -195,11 +200,8 @@ fn load_or_create_key_blocking() -> Result<Zeroizing<[u8; 32]>, ZsshError> {
             Ok(Zeroizing::new(key))
         }
         Err(err) => Err(ZsshError::Secret(
-            Reason::new(
-                rk::VAULT_UNAVAILABLE,
-                format!("读取系统钥匙串失败：{err}"),
-            )
-            .with("cause", err),
+            Reason::new(rk::VAULT_UNAVAILABLE, format!("读取系统钥匙串失败：{err}"))
+                .with("cause", err),
         )),
     }
 }
@@ -222,7 +224,10 @@ mod tests {
         let last = blob.len() - 1;
         blob[last] ^= 1;
         assert!(unprotect(&blob).is_err(), "改动密文必须解不开");
-        assert!(unprotect(b"not-a-vault-blob").is_err(), "旧格式/垃圾要明确拒绝");
+        assert!(
+            unprotect(b"not-a-vault-blob").is_err(),
+            "旧格式/垃圾要明确拒绝"
+        );
     }
 
     #[test]

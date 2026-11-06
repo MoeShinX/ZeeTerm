@@ -143,9 +143,7 @@ fn lock_path(name: &str) -> std::path::PathBuf {
 
 #[cfg(unix)]
 fn process_alive(pid: u32) -> bool {
-    std::path::Path::new("/proc")
-        .join(pid.to_string())
-        .exists()
+    std::path::Path::new("/proc").join(pid.to_string()).exists()
 }
 
 /// 拿到锁文件；已有实例返回 `None`。创建失败时不阻止启动。
@@ -177,12 +175,7 @@ pub fn acquire(name: &str) -> Option<InstanceGuard> {
                 // 上次异常退出留下的锁：清掉再试一次。
                 let _ = std::fs::remove_file(&path);
             }
-            Err(_) => {
-                return Some(InstanceGuard {
-                    path,
-                    _file: None,
-                })
-            }
+            Err(_) => return Some(InstanceGuard { path, _file: None }),
         }
     }
     None
