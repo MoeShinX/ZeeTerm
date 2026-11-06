@@ -411,6 +411,19 @@ struct ActiveSave {
     text: String,
 }
 
+/// 只接受当前保存的回调；先换基线再判断剩余修改，撤销回旧基线也不能漏掉。
+fn apply_saved_snapshot(
+    active_save: &mut Option<ActiveSave>,
+    save_id: u64,
+    baseline: &mut String,
+    dirty_cache: &mut Option<(u64, bool)>,
+) -> Option<u64> {
+    let active = active_save.take_if(|active| active.id == save_id)?;
+    *baseline = active.text;
+    *dirty_cache = None;
+    Some(active.revision)
+}
+
 /// 保存怎么写。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SaveKind {
@@ -441,6 +454,42 @@ pub(crate) enum CloseSave {
     Saving,
     Done,
     Failed(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CloseSaveStep {
+    Idle,
+    Wait,
+    Save,
+    Done,
+}
+
+impl CloseSave {
+    /// 失败或取消后不能被迟到的成功回调重新变成自动关闭。
+    fn advance(state: &mut Option<Self>, active: bool, unsaved: bool) -> CloseSaveStep {
+        if *state != Some(Self::Saving) {
+            return CloseSaveStep::Idle;
+        }
+        if active {
+            CloseSaveStep::Wait
+        } else if unsaved {
+            CloseSaveStep::Save
+        } else {
+            *state = Some(Self::Done);
+            CloseSaveStep::Done
+        }
+    }
+
+    fn fail(state: &mut Option<Self>, reason: &str) {
+        if *state == Some(Self::Saving) {
+            *state = Some(Self::Failed(reason.to_owned()));
+        }
+    }
+}
+
+/// 在途快照可能马上改变远端；即使当前文本退回旧基线，也需要草稿兜底。
+fn needs_draft(text: &str, baseline: &str, active: Option<&ActiveSave>) -> bool {
+    text != baseline || active.is_some_and(|save| save.text != text)
 }
 
 /// 状态栏用的光标信息（节拍里算好缓存，渲染时不再扫文本）。
@@ -1000,7 +1049,12 @@ impl RemoteEditor {
                 stamp,
                 owner_changed,
             } => {
-                let Some(active) = self.active_save.take_if(|active| active.id == save_id) else {
+                let Some(saved_revision) = apply_saved_snapshot(
+                    &mut self.active_save,
+                    save_id,
+                    &mut self.baseline,
+                    &mut self.dirty_cache,
+                ) else {
                     return;
                 };
                 self.watch.set_stamp(stamp);
@@ -1025,22 +1079,13 @@ impl RemoteEditor {
                         crate::i18n::t(StatusMsg::SavedClose)
                     ),
                 };
-                // 点保存那一刻的文本成了新基线；保存期间又打的字仍然算未保存。
-                self.baseline = active.text;
-                self.dirty_cache = None;
                 self.draft = None;
                 // 只删「不晚于这次保存」的草稿：保存期间打字产生的更新草稿留着。
                 self.drafts.send(DraftJob::DeleteUpTo(
                     self.draft_path.clone(),
-                    active.revision,
+                    saved_revision,
                 ));
-                if self.close_save.is_some() {
-                    self.close_save = Some(CloseSave::Done);
-                    if self.standalone {
-                        self.close_confirmed = true;
-                        cx.emit(EditorEvent::CloseNow);
-                    }
-                }
+                self.advance_close_save(cx);
             }
             RemoteEditEvent::Conflict { save_id, remote } => {
                 if self.active_save.take_if(|a| a.id == save_id).is_none() {
@@ -1183,9 +1228,7 @@ impl RemoteEditor {
                     self.path,
                     crate::i18n::t(StatusMsg::SavedAsEditingMid)
                 );
-                if self.close_save.is_some() {
-                    self.close_save = Some(CloseSave::Done);
-                }
+                self.advance_close_save(cx);
             }
             RemoteEditEvent::RelocateFailed(message) => {
                 self.status = message;
@@ -1388,9 +1431,7 @@ impl RemoteEditor {
 
     /// 「保存并关闭」途中保存没成功：把原因交给宿主的确认框。
     fn fail_close_save(&mut self, reason: &str) {
-        if self.close_save == Some(CloseSave::Saving) {
-            self.close_save = Some(CloseSave::Failed(reason.to_owned()));
-        }
+        CloseSave::fail(&mut self.close_save, reason);
     }
 
     // ---- 冲突 ----
@@ -1573,7 +1614,7 @@ impl RemoteEditor {
             return;
         }
         self.discarded_text = None;
-        if text == self.baseline {
+        if !needs_draft(&text, &self.baseline, self.active_save.as_ref()) {
             // 没有未保存的改动。会被我们写进同一个文件的旧草稿还在提示条里时不能删——
             // 用户可能正要恢复它。
             let guards_same_file = matches!(
@@ -1733,15 +1774,35 @@ impl RemoteEditor {
     /// 「保存并关闭」：宿主的确认框选了保存。保存完成与否从 [`Self::close_save_state`] 看。
     pub(crate) fn begin_close_save(&mut self, cx: &mut Context<Self>) {
         self.close_save = Some(CloseSave::Saving);
-        if self.active_save.is_some() {
-            // 已经有一次保存在跑：等它的结果，别重复发。
+        self.advance_close_save(cx);
+    }
+
+    /// 每轮成功后都以新基线核对当前内容，直到最新输入也已落到远端。
+    fn advance_close_save(&mut self, cx: &mut Context<Self>) {
+        if self.close_save != Some(CloseSave::Saving) {
             return;
         }
+        if self.phase != Phase::Ready {
+            self.save_for_close(cx);
+            return;
+        }
+        let unsaved = self.has_unsaved(cx);
+        match CloseSave::advance(&mut self.close_save, self.active_save.is_some(), unsaved) {
+            CloseSaveStep::Save => self.save_for_close(cx),
+            CloseSaveStep::Done if self.standalone => {
+                self.close_confirmed = true;
+                cx.emit(EditorEvent::CloseNow);
+            }
+            _ => {}
+        }
+    }
+
+    fn save_for_close(&mut self, cx: &mut Context<Self>) {
         self.save(cx);
-        if self.active_save.is_none() && self.close_save == Some(CloseSave::Saving) {
-            // 没能开始保存（还在读取、断线等）：别留着一个永远等不到的「关闭」。
+        if self.active_save.is_none() {
+            // 续存也可能被大小上限、缺少通道或 runtime 错误拒绝，不能一直等。
             let reason = self.status.clone();
-            self.close_save = Some(CloseSave::Failed(reason));
+            self.fail_close_save(&reason);
         }
     }
 
@@ -2328,7 +2389,166 @@ pub fn open_remote_editor_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{CloseDecision, close_decision, parse_goto, search_button_closes, word_at};
+    use super::{
+        ActiveSave, CloseDecision, CloseSave, CloseSaveStep, apply_saved_snapshot, close_decision,
+        needs_draft, parse_goto, search_button_closes, word_at,
+    };
+
+    fn snapshot(id: u64, revision: u64, text: &str) -> Option<ActiveSave> {
+        Some(ActiveSave {
+            id,
+            revision,
+            text: text.to_owned(),
+        })
+    }
+
+    #[test]
+    fn close_waits_for_old_save_then_saves_latest_revision() {
+        let mut close = Some(CloseSave::Saving);
+        let mut active = snapshot(1, 10, "first");
+        let mut baseline = "original".to_owned();
+        let mut cache = Some((11, true));
+        assert_eq!(
+            CloseSave::advance(&mut close, true, true),
+            CloseSaveStep::Wait
+        );
+        assert_eq!(
+            apply_saved_snapshot(&mut active, 1, &mut baseline, &mut cache),
+            Some(10)
+        );
+        assert_eq!(baseline, "first");
+        assert_eq!(cache, None);
+        assert_eq!(
+            CloseSave::advance(&mut close, false, "latest" != baseline),
+            CloseSaveStep::Save
+        );
+        assert_eq!(close, Some(CloseSave::Saving));
+        active = snapshot(2, 11, "latest");
+        assert_eq!(
+            apply_saved_snapshot(&mut active, 2, &mut baseline, &mut cache),
+            Some(11)
+        );
+        assert_eq!(
+            CloseSave::advance(&mut close, false, "latest" != baseline),
+            CloseSaveStep::Done
+        );
+        assert_eq!(close, Some(CloseSave::Done));
+    }
+
+    #[test]
+    fn reverting_to_old_baseline_still_needs_save_and_draft() {
+        let mut active = snapshot(1, 10, "changed");
+        let mut baseline = "original".to_owned();
+        let current = "original";
+        let mut cache = Some((11, false));
+        let mut close = Some(CloseSave::Saving);
+        assert!(needs_draft(current, &baseline, active.as_ref()));
+        assert_eq!(
+            apply_saved_snapshot(&mut active, 1, &mut baseline, &mut cache),
+            Some(10)
+        );
+        assert_eq!(cache, None);
+        assert!(needs_draft(current, &baseline, None));
+        assert_eq!(
+            CloseSave::advance(&mut close, false, current != baseline),
+            CloseSaveStep::Save
+        );
+        active = snapshot(2, 11, current);
+        apply_saved_snapshot(&mut active, 2, &mut baseline, &mut cache);
+        assert_eq!(
+            CloseSave::advance(&mut close, false, current != baseline),
+            CloseSaveStep::Done
+        );
+        assert!(!needs_draft(current, &baseline, None));
+    }
+
+    #[test]
+    fn reverting_to_saved_snapshot_can_finish_without_another_write() {
+        let mut close = Some(CloseSave::Saving);
+        let mut active = snapshot(1, 10, "saved");
+        let mut baseline = "original".to_owned();
+        let mut cache = Some((12, true));
+        // revision 12 已改过又撤销，内容恰好等于 revision 10 的在途快照。
+        apply_saved_snapshot(&mut active, 1, &mut baseline, &mut cache);
+        assert_eq!(
+            CloseSave::advance(&mut close, false, "saved" != baseline),
+            CloseSaveStep::Done
+        );
+    }
+
+    #[test]
+    fn stale_success_cannot_finish_or_replace_current_save() {
+        let mut active = snapshot(2, 11, "latest");
+        let mut baseline = "first".to_owned();
+        let mut cache = Some((11, true));
+        assert_eq!(
+            apply_saved_snapshot(&mut active, 1, &mut baseline, &mut cache),
+            None
+        );
+        assert_eq!(active.as_ref().unwrap().id, 2);
+        assert_eq!(baseline, "first");
+        assert_eq!(cache, Some((11, true)));
+    }
+
+    #[test]
+    fn ordinary_save_keeps_new_input_without_chaining_or_closing() {
+        let mut close = None;
+        let mut active = snapshot(1, 10, "first");
+        let mut baseline = "original".to_owned();
+        let mut cache = Some((11, true));
+        apply_saved_snapshot(&mut active, 1, &mut baseline, &mut cache);
+        assert!(needs_draft("latest", &baseline, None));
+        assert_eq!(
+            CloseSave::advance(&mut close, false, "latest" != baseline),
+            CloseSaveStep::Idle
+        );
+        assert_eq!(close, None);
+    }
+
+    #[test]
+    fn failed_followup_and_cancelled_close_stay_open() {
+        for reason in [
+            "too large",
+            "disconnected",
+            "conflict",
+            "owner change",
+            "runtime",
+        ] {
+            let mut close = Some(CloseSave::Saving);
+            assert_eq!(
+                CloseSave::advance(&mut close, false, true),
+                CloseSaveStep::Save
+            );
+            CloseSave::fail(&mut close, reason);
+            assert_eq!(
+                CloseSave::advance(&mut close, false, false),
+                CloseSaveStep::Idle
+            );
+            assert_eq!(close, Some(CloseSave::Failed(reason.to_owned())));
+        }
+        let mut cancelled = None;
+        CloseSave::fail(&mut cancelled, "late failure");
+        assert_eq!(
+            CloseSave::advance(&mut cancelled, false, false),
+            CloseSaveStep::Idle
+        );
+        assert_eq!(cancelled, None);
+    }
+
+    #[test]
+    fn empty_content_is_a_valid_draft_and_save_target() {
+        let mut close = Some(CloseSave::Saving);
+        assert!(needs_draft("", "nonempty", None));
+        assert_eq!(
+            CloseSave::advance(&mut close, false, true),
+            CloseSaveStep::Save
+        );
+        assert!(!needs_draft("", "", None));
+        assert_eq!(
+            CloseSave::advance(&mut close, false, false),
+            CloseSaveStep::Done
+        );
+    }
 
     #[test]
     fn search_buttons_toggle_their_own_mode_and_switch_the_other() {

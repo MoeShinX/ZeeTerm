@@ -361,9 +361,12 @@ impl MainWindow {
             return;
         };
         let tab = self.docks.editor_tabs.remove(index);
-        tab.view.update(cx, |view, _| {
+        tab.view.update(cx, |view, cx| {
             if discard {
                 view.discard_unsaved_state();
+            } else if view.has_unsaved(cx) {
+                // 不依赖两秒一次的自动草稿，关标签前保住最后一次输入。
+                view.persist_draft_now(cx);
             }
             view.shutdown();
         });
@@ -532,6 +535,14 @@ impl MainWindow {
             let Some(tab) = self.docks.editor_tabs.iter().find(|tab| tab.id == *id) else {
                 continue;
             };
+            // 等待其他标签期间，已完成的标签也可能又被编辑；不能只信旧的 Done。
+            tab.view.update(cx, |view, cx| {
+                if matches!(view.close_save_state(), Some(CloseSave::Done) | None)
+                    && view.has_unsaved(cx)
+                {
+                    view.begin_close_save(cx);
+                }
+            });
             let view = tab.view.read(cx);
             match view.close_save_state() {
                 Some(CloseSave::Done) | None => {}
