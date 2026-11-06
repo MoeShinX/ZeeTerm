@@ -39,6 +39,12 @@ const TAG_LEN: usize = 16;
 const KEY_LEN: usize = 32;
 /// 后备密钥文件名（放在应用数据目录里）。
 const KEY_FILE: &str = "vault.key";
+/// 标记文件：这个数据目录的密钥曾经放在系统钥匙串里（空文件，只看存在与否）。
+///
+/// 为什么需要：平时用钥匙串的用户，哪天从 SSH 登录、没有桌面会话时启动了 ZeeTerm，Secret Service
+/// "不存在"。如果这时照常建 `vault.key`，以后文件优先，钥匙串里那把加密的所有旧密码就再也解不开了。
+/// 有这个标记时，钥匙串连不上一律报错，不建文件。
+const KEYRING_MARKER: &str = "vault.keyring";
 /// Secret Service 里的产品命名空间与条目名。
 #[cfg(not(test))]
 const SERVICE: &str = "app.zeeterm";
@@ -393,23 +399,62 @@ fn load_or_create(dir: Option<&Path>, store: &dyn KeyringStore) -> LoadResult {
     }
     // 2/3. Secret Service。
     match store.get() {
-        Ok(Some(encoded)) => Ok((decode_stored_key(&encoded)?, KeyBackend::SystemKeyring)),
+        Ok(Some(encoded)) => {
+            let key = decode_stored_key(&encoded)?;
+            mark_keyring(dir);
+            Ok((key, KeyBackend::SystemKeyring))
+        }
         Ok(None) => {
             let mut key = Zeroizing::new([0u8; KEY_LEN]);
             rand::rng().fill(&mut *key);
             let encoded = Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(*key));
             match store.set(&encoded) {
-                Ok(()) => Ok((key, KeyBackend::SystemKeyring)),
+                Ok(()) => {
+                    mark_keyring(dir);
+                    Ok((key, KeyBackend::SystemKeyring))
+                }
                 // 已经读到过"条目为空"，说明服务在；这时写失败不是"没有服务"，不降级。
                 Err(err) => Err(store_failure(err, false)),
             }
         }
         Err(err) if err.kind == FailureKind::Absent => match dir {
+            // 以前用过钥匙串：现在只是这次连不上（SSH 登录、没有桌面会话），不能另起一把密钥。
+            Some(dir) if dir.join(KEYRING_MARKER).exists() => Err(Reason::new(
+                rk::VAULT_KEYRING_GONE,
+                format!(
+                    "已保存的密码由系统钥匙串里的密钥保护，但现在连不上钥匙串（例如通过 SSH 登录、没有桌面会话）。\
+                     为了不让它们再也解不开，没有改用本机文件：{}",
+                    err.detail
+                ),
+            )
+            .with("cause", err.detail)),
             // 4. 没有 Secret Service：在数据目录建后备密钥文件。
             Some(dir) => Ok((create_key_file(dir)?, KeyBackend::LocalFile)),
             None => Err(store_failure(err, true)),
         },
         Err(err) => Err(store_failure(err, false)),
+    }
+}
+
+/// 记下"这个数据目录的密钥在系统钥匙串里"（见 [`KEYRING_MARKER`]）。尽力而为：写不了只记日志——
+/// 最坏情况退回到没有标记时的行为，不影响这次取到的密钥。
+fn mark_keyring(dir: Option<&Path>) {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let Some(dir) = dir else { return };
+    let path = dir.join(KEYRING_MARKER);
+    if path.exists() {
+        return;
+    }
+    let created = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)
+        .and_then(|file| file.sync_all());
+    if let Err(err) = created {
+        tracing::warn!(%err, "记录「密钥在系统钥匙串里」失败");
     }
 }
 
@@ -854,6 +899,31 @@ mod tests {
         let store = MockStore::new(Mock::SetFails(FailureKind::Absent));
         assert!(load_or_create(Some(dir.path()), &store).is_err());
         assert!(!dir.path().join(KEY_FILE).exists());
+    }
+
+    #[test]
+    fn once_the_keyring_was_used_a_missing_service_never_creates_a_key_file() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        // 先在有钥匙串的会话里用过（读到已有条目、或新建条目都会留下标记）。
+        let existing = MockStore::new(Mock::Has(encoded(4)));
+        load_or_create(Some(dir.path()), &existing).expect("读条目");
+        assert!(
+            dir.path().join(KEYRING_MARKER).exists(),
+            "用过钥匙串要留标记"
+        );
+
+        // 之后某次没有 Secret Service（SSH 登录）：报错，不建文件，旧密文还能等钥匙串回来再解。
+        let absent = MockStore::new(Mock::GetFails(FailureKind::Absent));
+        let err = load_or_create(Some(dir.path()), &absent)
+            .err()
+            .unwrap_or_else(|| panic!("必须报错"));
+        assert_eq!(err.key(), rk::VAULT_KEYRING_GONE);
+        assert!(!dir.path().join(KEY_FILE).exists(), "不能另起一把密钥");
+
+        // 新建条目同样留标记。
+        let fresh = tempfile::tempdir().expect("临时目录");
+        load_or_create(Some(fresh.path()), &MockStore::new(Mock::Empty)).expect("建条目");
+        assert!(fresh.path().join(KEYRING_MARKER).exists());
     }
 
     #[test]

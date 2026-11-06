@@ -174,6 +174,9 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "store.vault_timeout" => {
             "Timed out waiting for the system keyring (it may be waiting for you to enter the unlock password, or not responding)"
         }
+        "store.vault_keyring_gone" => {
+            "Saved passwords are protected by a key in the system keyring, but the keyring cannot be reached right now (for example over SSH without a desktop session). ZeeTerm did not switch to a local file, so they stay recoverable: {cause}"
+        }
         "store.vault_key_file_invalid" => {
             "The local key file {file} is damaged (it must be exactly {len} bytes). ZeeTerm did not recreate it, because that would make saved passwords unrecoverable"
         }
