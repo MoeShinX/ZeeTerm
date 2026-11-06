@@ -5,11 +5,51 @@
 
 use zssh_terminal::{CellSnapshot, RowSnapshot};
 
-/// 词字符：字母、数字，加上常出现在主机名 / IP / 路径 / 邮箱里的 `_ - . / : @ ~`。
-/// 这样 `user@host:/tmp/file.txt`、`10-7-46-164`、`~/work` 都能整段选中；
-/// 空格、引号、括号、逗号、`=`、`;` 等仍然断开（`a=b` 双击只选 `a` 或 `b`）。
+/// 词字符：不是分隔符的都算。分隔符和 VS Code / xterm.js 系终端（Tabby、Hyper 等）的默认一致：
+/// 空白，以及 `( ) [ ] { } ' , " `` ` `` ─ ‘ ’ “ ” |`；`< >`、`;`、`=`、`+`、`!`、`#` 等都不是分隔符。
+/// 这样 `user@host:/tmp/file.txt`、`key=value`、带符号的密码 / 令牌（`X4sLk+1k6=/abc!#`）都能整段选中，
+/// `(abc)`、`"abc",` 只选 `abc`。
+///
+/// 全角 / CJK 标点（`，`、`：`、`（`、`）`、`。`……）也断开：它们不是 ASCII，上面那份默认清单没列，但
+/// 中文输出里把它们和前后的词连在一起没有任何用处。
 fn is_word_char(ch: char) -> bool {
-    ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '@' | '~')
+    if ch.is_whitespace() || ch.is_control() {
+        return false;
+    }
+    if matches!(
+        ch,
+        '(' | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '\''
+            | ','
+            | '"'
+            | '`'
+            | '─'
+            | '‘'
+            | '’'
+            | '“'
+            | '”'
+            | '|'
+    ) {
+        return false;
+    }
+    !is_cjk_punctuation(ch)
+}
+
+/// CJK 符号和标点（U+3000–303F）、全角形式里的标点（U+FF01–FF0F、FF1A–FF20、FF3B–FF40、FF5B–FF65）。
+/// 全角字母和数字（U+FF10–FF19、FF21–FF3A、FF41–FF5A）仍是词字符。
+fn is_cjk_punctuation(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3000}'..='\u{303f}'
+            | '\u{ff01}'..='\u{ff0f}'
+            | '\u{ff1a}'..='\u{ff20}'
+            | '\u{ff3b}'..='\u{ff40}'
+            | '\u{ff5b}'..='\u{ff65}'
+    )
 }
 
 /// 词尾的句末标点（`ping 10.0.0.1.`、`error:`）：词里有别的字符时从选区里去掉，
@@ -199,13 +239,47 @@ mod tests {
     }
 
     #[test]
-    fn equals_quotes_brackets_and_commas_break_words() {
-        assert_eq!(word_at("set a=b now", "a=").as_deref(), Some("a"));
-        assert_eq!(word_at("set a=b now", "b now").as_deref(), Some("b"));
+    fn quotes_brackets_commas_and_pipes_break_words_like_other_terminals() {
         assert_eq!(word_at("x=\"v1\" y", "v1").as_deref(), Some("v1"));
         assert_eq!(word_at("f(a, b)", "a,").as_deref(), Some("a"));
         assert_eq!(word_at("[abc] d", "abc").as_deref(), Some("abc"));
-        assert_eq!(word_at("a;b", "b").as_deref(), Some("b"));
+        assert_eq!(word_at("(abc)", "abc").as_deref(), Some("abc"));
+        assert_eq!(word_at("\"abc\",", "abc").as_deref(), Some("abc"));
+        assert_eq!(word_at("{abc}", "abc").as_deref(), Some("abc"));
+        assert_eq!(word_at("`abc` x", "abc").as_deref(), Some("abc"));
+        assert_eq!(word_at("'abc'", "abc").as_deref(), Some("abc"));
+        assert_eq!(word_at("“abc” x", "abc").as_deref(), Some("abc"));
+        assert_eq!(word_at("a|b", "b").as_deref(), Some("b"));
+        assert_eq!(word_at("─abc─", "abc").as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn symbols_that_are_not_separators_stay_inside_the_word() {
+        // 带符号的密码 / 令牌整段选中，点在中间或两端都一样。
+        for needle in ["X4sLk", "+1k6", "=/abc", "!#"] {
+            assert_eq!(
+                word_at("pw X4sLk+1k6=/abc!# end", needle).as_deref(),
+                Some("X4sLk+1k6=/abc!#"),
+                "{needle}"
+            );
+        }
+        assert_eq!(
+            word_at("set key=value now", "key").as_deref(),
+            Some("key=value")
+        );
+        assert_eq!(
+            word_at("set key=value now", "value").as_deref(),
+            Some("key=value")
+        );
+        // `<`、`>`、`;` 不是分隔符（和 VS Code 默认一致）。
+        assert_eq!(word_at("a;b c", "b").as_deref(), Some("a;b"));
+        assert_eq!(word_at("<tag> c", "tag").as_deref(), Some("<tag>"));
+        assert_eq!(word_at("a&&b c", "b").as_deref(), Some("a&&b"));
+        // 句末的 . 和 : 仍然剥掉。
+        assert_eq!(
+            word_at("pw X4sLk+1k6=/abc!#. ok", "X4sLk").as_deref(),
+            Some("X4sLk+1k6=/abc!#")
+        );
     }
 
     #[test]
