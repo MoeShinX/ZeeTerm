@@ -574,10 +574,18 @@ pub(super) fn scan_ports(sys_tty: &Path, dev: &Path) -> Vec<SerialPortEntry> {
         if !is_real_port(sys_tty, dev, &name) {
             continue;
         }
-        let device = dev.join(&name).to_string_lossy().into_owned();
-        let display_name = match by_id.iter().find(|(tty, _)| *tty == name) {
-            Some((_, id)) => format!("{} ({device})", friendly_name_from_by_id(id)),
-            None => device.clone(),
+        let node = dev.join(&name).to_string_lossy().into_owned();
+        // 有 `/dev/serial/by-id/` 稳定名字时存它：`ttyUSB0` / `ttyUSB1` 由插入顺序决定，
+        // 重启或换个插拔顺序就会指到另一只适配器上；by-id 名字跟着设备本身（型号 + 序列号）走。
+        let (device, display_name) = match by_id.iter().find(|(tty, _)| *tty == name) {
+            Some((_, id)) => (
+                dev.join("serial/by-id")
+                    .join(id)
+                    .to_string_lossy()
+                    .into_owned(),
+                format!("{} ({node})", friendly_name_from_by_id(id)),
+            ),
+            None => (node.clone(), node),
         };
         entries.push(SerialPortEntry {
             device,

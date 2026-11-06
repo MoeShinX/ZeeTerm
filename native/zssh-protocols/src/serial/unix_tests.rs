@@ -685,16 +685,32 @@ fn scanning_a_constructed_sysfs_tree_lists_only_real_ports() {
         .collect();
     assert_eq!(
         devices,
-        ["ttyACM0", "ttyAMA0", "ttyS1", "ttyS2", "ttyS10", "ttyUSB0"],
+        [
+            "ttyACM0",
+            "ttyAMA0",
+            "ttyS1",
+            "ttyS2",
+            "ttyS10",
+            "usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0"
+        ],
         "{ports:?}"
     );
+    // 有稳定名字的存 by-id 路径（插拔顺序变了也指向同一只适配器），显示里带上当前的 tty 名。
     let usb = ports
         .iter()
-        .find(|port| port.device.ends_with("/ttyUSB0"))
+        .find(|port| port.device.ends_with("-port0"))
         .unwrap();
     assert_eq!(
+        usb.device,
+        dev.join("serial/by-id/usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0")
+            .to_string_lossy()
+    );
+    assert_eq!(
         usb.display_name,
-        format!("FTDI FT232R USB UART A50285BI ({})", usb.device)
+        format!(
+            "FTDI FT232R USB UART A50285BI ({})",
+            dev.join("ttyUSB0").to_string_lossy()
+        )
     );
     // 没有 by-id 别名的，友好名就是设备路径。
     let acm = ports
@@ -769,8 +785,8 @@ fn listing_ports_works_with_or_without_hardware() {
     let ports = super::list_ports().expect("枚举不该失败");
     eprintln!("本机串口数：{}", ports.len());
     for port in &ports {
-        assert!(port.device.starts_with("/dev/tty"), "{port:?}");
-        assert!(port.display_name.contains(&port.device), "{port:?}");
+        assert!(port.device.starts_with("/dev/"), "{port:?}");
+        assert!(port.display_name.contains("/dev/tty"), "{port:?}");
     }
 }
 
