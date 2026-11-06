@@ -164,6 +164,8 @@ fn stamp_at(unix_secs: i64, offset_secs: i64) -> String {
 /// 免得 Linux 上的时间永远是 UTC。`localtime_r` 和修改环境变量的 `setenv` 不能同时进行，
 /// 而 ZeeTerm 启动之后不会再改 `TZ`，所以这里不加锁。
 #[cfg(unix)]
+// x86_64 上 `time_t` 和 `tm_gmtoff` 都已经是 i64，转换看起来多余；32 位目标上不是，所以保留。
+#[allow(clippy::useless_conversion, irrefutable_let_patterns)]
 pub fn local_utc_offset_secs(unix_secs: i64) -> i64 {
     let Ok(at) = libc::time_t::try_from(unix_secs) else {
         return 0;
