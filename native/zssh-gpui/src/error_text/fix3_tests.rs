@@ -23,11 +23,19 @@ fn assert_english(text: &str) {
 #[test]
 fn sftp_invalid_input_names_are_english_with_parameters() {
     // 保留名：核心给的是 `NameFix` 代码，英文界面重新生成说明。
-    let err = check_child_name("CON").expect_err("保留名不能直接用");
+    // 保留名只有 Windows 的名字规则才有；Linux 上 `CON` 是普通名字，改用 `a/b`（`/` 在哪里都不能进名字）。
+    #[cfg(windows)]
+    let (bad_name, reason) = ("CON", "reserved Windows name");
+    #[cfg(not(windows))]
+    let (bad_name, reason) = ("a/b", "illegal character / replaced with _");
+    let err = check_child_name(bad_name).expect_err("这个名字不能直接用");
     let en = error_text_in(Lang::En, &err);
     assert_english(&en);
-    assert!(en.contains("\"CON\" cannot be used as a file name"), "{en}");
-    assert!(en.contains("reserved Windows name"), "{en}");
+    assert!(
+        en.contains(&format!("\"{bad_name}\" cannot be used as a file name")),
+        "{en}"
+    );
+    assert!(en.contains(reason), "{en}");
     // 中文逐字等于核心的 Display。
     assert_eq!(error_text_in(Lang::Zh, &err), err.to_string());
 

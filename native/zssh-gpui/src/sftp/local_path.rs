@@ -62,14 +62,10 @@ pub(super) fn posix_parent(path: &str) -> String {
 // 手敲的路径
 // ---------------------------------------------------------------------------
 
-/// 交给系统接口的路径：Windows 上加 `\\?\` 长路径前缀；Linux 上原样（核心的 `long_path` 是按
-/// Windows 的盘符 / UNC 形状写的，会把 `//x` 这种合法的 POSIX 路径改成 `\\?\UNC\x`）。
+/// 交给系统接口的路径：Windows 上加 `\\?\` 长路径前缀；Linux 上原样（核心的 `long_path` 自己
+/// 按平台选：非 Windows 一律原样返回，`//x` 这种合法的 POSIX 路径不会被改写）。
 pub(super) fn sys_path(path: &Path) -> PathBuf {
-    if cfg!(windows) {
-        long_path(path)
-    } else {
-        path.to_path_buf()
-    }
+    long_path(path)
 }
 
 /// 给界面看的路径：Windows 上去掉 `\\?\` 前缀；Linux 上原样（那个前缀在 Linux 上只是个普通名字）。

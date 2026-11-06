@@ -1281,12 +1281,13 @@ impl TransferEngine {
                 // 目标换个名字：用户给过就用用户的，没给就 `name (2).ext`。
                 // 对话框传回来的只是一个**文件名**（不是路径）：要接在原目标所在的
                 // 目录后面，不然会写到相对路径上（远端是家目录、本地是工作目录）。
-                // 带路径分隔符的名字不接受，退回自动名字。
+                // 带路径分隔符的名字不接受，退回自动名字（Windows 上 `\` 也是分隔符，
+                // Linux 上它是名字里的普通字符）。
                 let manual = decision
                     .rename_to
                     .as_deref()
                     .map(str::trim)
-                    .filter(|name| !name.is_empty() && !name.contains(['/', '\\']))
+                    .filter(|name| !name.is_empty() && !name.contains(is_path_separator))
                     .map(|name| with_file_name(target_path, name));
                 let (renamed, guard) = match manual {
                     Some(path) => self.claim_manual_name(state, planned, path).await?,
@@ -1584,10 +1585,11 @@ pub fn backoff_delay(attempt: u32) -> Duration {
 
 /// 目标改名：`/a/photo.jpg` + 2 → `/a/photo (2).jpg`。
 ///
-/// 目录分隔符 `/` 和 `\` 都认（本地 Windows 路径是反斜杠）：只认 `/` 的话，
+/// 目录分隔符：Windows 上 `/` 和 `\` 都认（本地 Windows 路径是反斜杠）：只认 `/` 的话，
 /// `C:\my.dir\file` 这种"目录名里有点、文件没扩展名"的路径会被改在目录名上。
+/// Linux 上只认 `/`，`\` 是文件名里的普通字符（`a\b.txt` 是一个名字）。
 pub fn renamed_path(path: &str, index: usize) -> String {
-    let name_start = path.rfind(['/', '\\']).map(|slash| slash + 1).unwrap_or(0);
+    let name_start = name_start(path);
     match path.rfind('.') {
         Some(dot) if dot > name_start => {
             format!("{} ({index}){}", &path[..dot], &path[dot..])
@@ -1598,7 +1600,7 @@ pub fn renamed_path(path: &str, index: usize) -> String {
 
 /// 复制粘贴的"副本"名：`/a/b.txt` → `/a/b - 副本.txt`；`index` 大于 1 时是 `b - 副本 2.txt`。
 pub fn copy_path(path: &str, index: usize) -> String {
-    let name_start = path.rfind(['/', '\\']).map(|slash| slash + 1).unwrap_or(0);
+    let name_start = name_start(path);
     let suffix = if index <= 1 {
         " - 副本".to_owned()
     } else {
@@ -1613,8 +1615,19 @@ pub fn copy_path(path: &str, index: usize) -> String {
 /// 把路径的最后一段换成 `name`：`/a/b.txt` + `c.txt` → `/a/c.txt`
 /// （`C:\a\b.txt` 同理）。冲突对话框里用户改的新名字只是个文件名。
 pub fn with_file_name(path: &str, name: &str) -> String {
-    let name_start = path.rfind(['/', '\\']).map(|slash| slash + 1).unwrap_or(0);
-    format!("{}{name}", &path[..name_start])
+    format!("{}{name}", &path[..name_start(path)])
+}
+
+/// 是不是路径分隔符：Windows 上 `/` 和 `\` 都是，其他系统只有 `/`。
+fn is_path_separator(c: char) -> bool {
+    c == '/' || (cfg!(windows) && c == '\\')
+}
+
+/// 路径最后一段（文件名）从第几个字节开始。
+fn name_start(path: &str) -> usize {
+    path.rfind(is_path_separator)
+        .map(|separator| separator + 1)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
