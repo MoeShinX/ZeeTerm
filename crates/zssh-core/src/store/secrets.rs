@@ -297,27 +297,31 @@ pub fn set_vault_backend(backend: &'static dyn VaultBackend) {
 
 #[cfg(target_os = "macos")]
 fn key_error(err: VaultKeyError) -> ZsshError {
-    let (key, text) = match err {
-        VaultKeyError::Missing => (
+    use crate::error::Reason;
+    match err {
+        VaultKeyError::Missing => ZsshError::Secret(Reason::new(
             "vault_key_missing",
             "钥匙串里没有这把资料库密钥，已有密文保持原样".to_owned(),
-        ),
-        VaultKeyError::Cancelled => (
+        )),
+        VaultKeyError::Cancelled => ZsshError::Secret(Reason::new(
             "vault_key_cancelled",
             "钥匙串授权已取消，没有读写密钥".to_owned(),
-        ),
-        VaultKeyError::Locked => ("vault_key_locked", "钥匙串已锁定，没有读写密钥".to_owned()),
-        VaultKeyError::Failed { status } => (
-            "vault_key_failed",
-            format!("钥匙串读写失败（状态 {status}）"),
-        ),
-        // 正常路径在回读确认后就消化了这个状态，走到这里说明没有确认就放弃了。
-        VaultKeyError::Exists => (
+        )),
+        VaultKeyError::Locked => ZsshError::Secret(Reason::new(
+            "vault_key_locked",
+            "钥匙串已锁定，没有读写密钥".to_owned(),
+        )),
+        VaultKeyError::Failed { status } => {
+            let text = format!("钥匙串读写失败（状态 {status}）");
+            let mut reason = Reason::new("vault_key_failed", text);
+            reason = reason.with_param("status", status.to_string());
+            ZsshError::Secret(reason)
+        }
+        VaultKeyError::Exists => ZsshError::Secret(Reason::new(
             "vault_key_exists",
             "钥匙串里已经有这把资料库密钥，没有覆盖".to_owned(),
-        ),
-    };
-    ZsshError::Secret(Reason::new(key, text))
+        )),
+    }
 }
 
 /// 是不是”条目已存在、没有覆盖”的那一种失败。调用方据此回读已有密钥。

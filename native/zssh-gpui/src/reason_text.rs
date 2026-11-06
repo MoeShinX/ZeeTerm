@@ -41,7 +41,7 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "vault_key_missing" => "The database key is not in the keychain; existing encrypted data is kept as is",
         "vault_key_cancelled" => "Keychain authorization was cancelled; the key was not accessed",
         "vault_key_locked" => "The keychain is locked; the key was not accessed",
-        "vault_key_failed" => "Failed to access the keychain: {cause}",
+        "vault_key_failed" => "Failed to access the keychain (status {status})",
         "vault_key_exists" => "The database key already exists in the keychain and was not overwritten",
         "input.port_range" => "The port must be between 1 and 65535",
         "input.username_empty" => "The user name cannot be empty",
