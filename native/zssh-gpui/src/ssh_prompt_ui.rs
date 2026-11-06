@@ -609,7 +609,7 @@ fn fingerprint_value(id: (&'static str, u64), fingerprint: &str, tokens: &Tokens
         .text_color(tokens.text)
         .inline_code_style(
             StyleRefinement::default()
-                .font_family("Consolas")
+                .font_family(crate::fonts::mono_text_family())
                 .text_color(tokens.text)
                 // 去掉行内代码默认的底色和内边距：这里只是要等宽字体，不是要一块高亮。
                 .bg(::gpui::Hsla::transparent_black())

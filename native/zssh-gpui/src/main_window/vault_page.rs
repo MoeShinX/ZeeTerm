@@ -697,7 +697,7 @@ impl MainWindow {
                         div()
                             .truncate()
                             .typo(Role::Caption, tokens)
-                            .font_family("Consolas")
+                            .font_family(crate::fonts::mono_text_family())
                             .child(detail),
                     ),
             )
@@ -854,7 +854,7 @@ impl MainWindow {
                     .min_w_0()
                     .truncate()
                     .typo(Role::Caption, tokens)
-                    .font_family("Consolas")
+                    .font_family(crate::fonts::mono_text_family())
                     .child(SharedString::from(protocol_form::host_detail(host))),
             )
             .child(div().w(px(56.0)).flex_none().child(badge(

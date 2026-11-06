@@ -135,8 +135,17 @@ pub type NoticeFn = Rc<dyn Fn(MigrateNotice, &mut Window, &mut App)>;
 
 // ---- 探测 ----
 
-/// 本机的 Z-SSH 数据（找到才有）。
+/// 迁移入口在这个系统上有没有意义：旧版 Z-SSH 只有 Windows 版，数据在 `%APPDATA%\Z-ssh`，
+/// Linux 上没有东西可迁，界面里不显示入口（欢迎页的提示卡 / 链接、设置里的迁移块）。
+pub const fn available() -> bool {
+    cfg!(windows)
+}
+
+/// 本机的 Z-SSH 数据（找到才有；不支持迁移的系统上恒为 `None`）。
 pub fn detect_zssh(explicit: Option<PathBuf>) -> Option<ZsshSource> {
+    if !available() {
+        return None;
+    }
     detect(&detect_env(explicit))
 }
 

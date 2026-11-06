@@ -922,10 +922,7 @@ fn user_known_hosts(home: Option<PathBuf>) -> Option<PathBuf> {
 pub(crate) fn known_hosts() -> KnownHosts {
     let mut known_hosts = KnownHosts::new(data_dir().join("known_hosts"));
     let isolated = cfg!(debug_assertions) && std::env::var_os("ZSSH_DATA_DIR").is_some();
-    if !isolated
-        && let Some(user_file) =
-            user_known_hosts(std::env::var_os("USERPROFILE").map(PathBuf::from))
-    {
+    if !isolated && let Some(user_file) = user_known_hosts(std::env::home_dir()) {
         known_hosts = known_hosts.with_read_only(user_file);
     }
     known_hosts

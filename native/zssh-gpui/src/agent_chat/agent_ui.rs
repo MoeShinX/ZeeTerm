@@ -188,7 +188,7 @@ impl AgentChatDemo {
                         .into_any_element(),
                     div()
                         .text_xs()
-                        .font_family("Consolas")
+                        .font_family(crate::fonts::mono_text_family())
                         .text_color(muted)
                         .child(command)
                         .into_any_element(),

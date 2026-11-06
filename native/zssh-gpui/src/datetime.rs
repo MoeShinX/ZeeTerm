@@ -17,9 +17,14 @@ pub(crate) fn local_utc_offset() -> i64 {
         };
         -(i64::from(info.Bias) + i64::from(extra)) * 60
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        0
+        // 此刻生效的偏移（含夏令时）；libc 的细节放在 core 里，这里不重复写 unsafe。
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs() as i64)
+            .unwrap_or_default();
+        zssh_core::ssh::session_log::local_utc_offset_secs(now)
     }
 }
 
@@ -40,6 +45,13 @@ pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_local_offset_is_a_real_time_zone_offset() {
+        // 地球上的时区在 UTC-12 到 UTC+14 之间；具体值取决于运行机器的时区，所以只看范围。
+        let offset = local_utc_offset();
+        assert!((-12 * 3600..=14 * 3600).contains(&offset), "{offset}");
+    }
 
     #[test]
     fn days_convert_to_civil_dates() {

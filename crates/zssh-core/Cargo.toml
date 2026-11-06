@@ -44,6 +44,7 @@ sha2 = "0.10"
 # Tokenway 预设清单的 ed25519 验签（V2-A5）。russh 的 ring 后端本来就在依赖树里，不引新的编译产物。
 ring = "0.17"
 
+# 本地时区偏移（localtime_r）、renameat2 也用它。
 # Unix 上智能体子进程的进程组 / 信号 / 父进程退出信号（killpg、PR_SET_PDEATHSIG），已在依赖树里。
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

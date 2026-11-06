@@ -616,7 +616,7 @@ impl MainWindow {
                     .border_color(tokens.border)
                     .bg(tokens.surface)
                     .text_xs()
-                    .font_family("Consolas")
+                    .font_family(crate::fonts::mono_text_family())
                     .child(SharedString::from(public_key.to_owned())),
             )
             .child(

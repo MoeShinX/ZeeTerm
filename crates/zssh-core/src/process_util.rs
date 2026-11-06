@@ -59,3 +59,30 @@ mod tests {
         assert!(String::from_utf8_lossy(&out.stdout).contains("hidden-ok"));
     }
 }
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+
+    /// 非 Windows 上 `hide_console` 什么都不做，管道照常通：stdout 能读到、退出码能拿到。
+    #[test]
+    fn piped_output_works_through_the_no_op_helper() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "echo hidden-ok"]);
+        let out = hide_console(&mut cmd).output().expect("sh 能跑");
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("hidden-ok"));
+    }
+
+    #[tokio::test]
+    async fn piped_output_works_through_the_no_op_helper_async() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "echo hidden-ok"]);
+        let out = hide_console_async(&mut cmd)
+            .output()
+            .await
+            .expect("sh 能跑");
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("hidden-ok"));
+    }
+}
