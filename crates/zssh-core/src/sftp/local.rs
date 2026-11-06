@@ -554,9 +554,57 @@ pub fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::rename(from, to)
 }
 
-#[cfg(not(windows))]
+/// Linux：`renameat2(RENAME_NOREPLACE)`，文件和文件夹都行，由内核在改名那一刻判断目标在不在
+/// （同 Windows 的 `MoveFileExW` 不带替换标志）。直接发系统调用，不依赖 libc 里有没有这个封装；
+/// 文件系统不支持（`EINVAL`）或内核太老（`ENOSYS`）时退到 [`move_no_replace_fallback`]。
+#[cfg(target_os = "linux")]
 pub fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
-    // 硬链接在目标存在时失败，成功后再删掉原名：同样没有"先检查再改名"的空窗。
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    // `<linux/fs.h>` 里的 RENAME_NOREPLACE。
+    const RENAME_NOREPLACE: libc::c_uint = 1;
+    let as_c = |path: &Path| {
+        CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
+    };
+    let (c_from, c_to) = (as_c(from)?, as_c(to)?);
+    // SAFETY: 两个路径都是以 0 结尾的 C 字符串，调用期间一直活着；其余参数是常量。
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            c_from.as_ptr(),
+            libc::AT_FDCWD,
+            c_to.as_ptr(),
+            RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::EINVAL | libc::ENOSYS) => move_no_replace_fallback(from, to),
+        _ => Err(err),
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    move_no_replace_fallback(from, to)
+}
+
+/// 没有 `renameat2` 时的做法。文件：硬链接在目标存在时失败，成功后再删掉原名，没有"先检查再改名"的空窗。
+/// 文件夹不能硬链接，只能先看一眼目标在不在再改名——这中间有个很窄的空窗，
+/// 但 POSIX 的 `rename` 对「空文件夹目标」会直接替换、对非空的才失败，所以先看是必须的。
+#[cfg(unix)]
+fn move_no_replace_fallback(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(from)?.is_dir() {
+        if std::fs::symlink_metadata(to).is_ok() {
+            return Err(std::io::ErrorKind::AlreadyExists.into());
+        }
+        return std::fs::rename(from, to);
+    }
     std::fs::hard_link(from, to)?;
     std::fs::remove_file(from)
 }
@@ -962,6 +1010,76 @@ mod tests {
             "{:?}",
             tree.skipped_links
         );
+    }
+
+    /// 移动不覆盖：文件和整个文件夹都能移，目标已存在（文件、文件夹、空文件夹）就失败而且两边都不动。
+    #[cfg(unix)]
+    #[test]
+    fn move_no_replace_moves_files_and_folders_but_never_replaces() {
+        let dir = crate::test_util::TestDir::new("move-noreplace");
+        let dest = dir.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"A").unwrap();
+        move_no_replace(&file, &dest.join("a.txt")).expect("文件能移");
+        assert!(!file.exists());
+        assert_eq!(std::fs::read(dest.join("a.txt")).unwrap(), b"A");
+
+        let tree = dir.join("tree");
+        std::fs::create_dir_all(tree.join("inner/deeper")).unwrap();
+        std::fs::write(tree.join("inner/deeper/x.txt"), b"x").unwrap();
+        move_no_replace(&tree, &dest.join("tree")).expect("整个文件夹能移");
+        assert!(!tree.exists());
+        assert_eq!(
+            std::fs::read(dest.join("tree/inner/deeper/x.txt")).unwrap(),
+            b"x"
+        );
+
+        // 目标已有同名文件：失败，源和目标都原样。
+        let again = dir.join("a.txt");
+        std::fs::write(&again, b"new").unwrap();
+        let err = move_no_replace(&again, &dest.join("a.txt")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&again).unwrap(), b"new");
+        assert_eq!(std::fs::read(dest.join("a.txt")).unwrap(), b"A");
+
+        // 目标已有同名文件夹（非空和空的都不能被替换）。
+        let folder = dir.join("tree");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("keep.txt"), b"k").unwrap();
+        let err = move_no_replace(&folder, &dest.join("tree")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(folder.join("keep.txt").exists());
+        std::fs::create_dir(dest.join("empty")).unwrap();
+        let other = dir.join("empty");
+        std::fs::create_dir(&other).unwrap();
+        let err = move_no_replace(&other, &dest.join("empty")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(other.exists());
+    }
+
+    /// 内核 / 文件系统不支持 `renameat2` 时的退路同样不替换、同样能移文件夹。
+    #[cfg(unix)]
+    #[test]
+    fn the_fallback_also_refuses_to_replace_and_moves_folders() {
+        let dir = crate::test_util::TestDir::new("move-fallback");
+        let src = dir.join("src");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub/f"), b"f").unwrap();
+        move_no_replace_fallback(&src, &dir.join("moved")).expect("文件夹能移");
+        assert!(!src.exists());
+        assert_eq!(std::fs::read(dir.join("moved/sub/f")).unwrap(), b"f");
+        let f = dir.join("f.txt");
+        std::fs::write(&f, b"1").unwrap();
+        std::fs::write(dir.join("g.txt"), b"2").unwrap();
+        let err = move_no_replace_fallback(&f, &dir.join("g.txt")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&f).unwrap(), b"1");
+        assert_eq!(std::fs::read(dir.join("g.txt")).unwrap(), b"2");
+        let again = dir.join("moved");
+        let err = move_no_replace_fallback(&again, &dir.join("moved")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
     }
 
     #[test]
