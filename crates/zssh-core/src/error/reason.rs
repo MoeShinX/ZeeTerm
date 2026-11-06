@@ -407,6 +407,9 @@ pub mod keys {
         VAULT_UNAVAILABLE = "store.vault_unavailable";
         VAULT_CORRUPT = "store.vault_corrupt";
         VAULT_CRYPTO_FAILED = "store.vault_crypto_failed";
+        VAULT_LOCKED = "store.vault_locked";
+        VAULT_TIMEOUT = "store.vault_timeout";
+        VAULT_KEY_FILE_INVALID = "store.vault_key_file_invalid";
         DATA_TOO_LONG = "store.data_too_long";
         NO_SAVED_PASSWORD = "store.no_saved_password";
         KEY_LOGIN_NO_PASSWORD = "store.key_login_no_password";

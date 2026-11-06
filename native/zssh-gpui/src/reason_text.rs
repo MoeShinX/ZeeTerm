@@ -155,6 +155,22 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         }
         "store.dpapi_protect_failed" => "CryptProtectData failed: {cause}",
         "store.dpapi_unprotect_failed" => "CryptUnprotectData failed: {cause}",
+        "store.vault_unavailable" => {
+            "The system keyring (or the local key file) cannot be used right now, so saved passwords cannot be encrypted or decrypted: {cause}"
+        }
+        "store.vault_corrupt" => {
+            "The stored password-encryption key or ciphertext is damaged or does not match: {cause}"
+        }
+        "store.vault_crypto_failed" => "Password encryption failed: {cause}",
+        "store.vault_locked" => {
+            "The system keyring is locked, or unlocking it was cancelled. ZeeTerm did not switch to a local file, to keep saved passwords protected: {cause}"
+        }
+        "store.vault_timeout" => {
+            "Timed out waiting for the system keyring (it may be waiting for you to enter the unlock password, or not responding)"
+        }
+        "store.vault_key_file_invalid" => {
+            "The local key file {file} is damaged (it must be exactly {len} bytes). ZeeTerm did not recreate it, because that would make saved passwords unrecoverable"
+        }
         "store.data_too_long" => "The data is too long: {len} bytes",
         "store.no_saved_password" => "This host has no saved password",
         "store.key_login_no_password" => {
