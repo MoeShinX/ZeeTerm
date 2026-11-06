@@ -10689,6 +10689,7 @@ dependencies = [
  "rusqlite",
  "russh",
  "russh-sftp",
+ "secret-service",
  "serde",
  "serde_json",
  "sha1 0.11.0",
@@ -10756,6 +10757,7 @@ dependencies = [
 name = "zssh-platform-windows"
 version = "0.3.5"
 dependencies = [
+ "libc",
  "tracing",
  "windows 0.62.2",
  "zeroize",

@@ -10,6 +10,10 @@ publish = false
 tracing.workspace = true
 zeroize = "1"
 
+[target.'cfg(unix)'.dependencies]
+# 单实例的激活套接字要核对对端 uid（SO_PEERCRED），标准库还没有稳定的接口。
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",
@@ -21,6 +25,9 @@ windows = { workspace = true, features = [
     "Win32_UI_Input_Ime",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
