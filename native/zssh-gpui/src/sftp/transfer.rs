@@ -67,6 +67,7 @@ impl SftpDemo {
             host_label: self.host_label.clone(),
             path: path.clone(),
             source: crate::remote_editor::ChannelSource::Ready(channel.clone()),
+            vault_account: None,
         };
         if !crate::main_window::editor_tabs::open_in_main_window(cx, spec) {
             crate::remote_editor::open_remote_editor_window(

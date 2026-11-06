@@ -272,6 +272,7 @@ impl MainWindow {
                 host_label,
                 path,
                 source: ChannelSource::Dial,
+                vault_account: None,
             },
             window,
             cx,

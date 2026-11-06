@@ -251,10 +251,13 @@ impl MainWindow {
     /// 开一个编辑器标签；同一个文件已经开着就切过去。
     pub(crate) fn open_editor_tab(
         &mut self,
-        spec: OpenSpec,
+        mut spec: OpenSpec,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if spec.vault_account.is_none() {
+            spec.vault_account = self.store.db().ok().map(|db| db.vault_account().to_owned());
+        }
         let identity = (spec.host_id, zssh_core::sftp::path::normalize(&spec.path));
         let existing = self
             .docks

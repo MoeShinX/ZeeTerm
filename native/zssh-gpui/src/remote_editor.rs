@@ -327,6 +327,9 @@ pub(crate) struct OpenSpec {
     pub host_label: String,
     pub path: String,
     pub source: ChannelSource,
+    /// 打开这个编辑器的资料库身份。由主窗口在已打开的 HostStore 上取，
+    /// 避免编辑器在界面线程里再开一次库、再等一次 Keychain。
+    pub vault_account: Option<String>,
 }
 
 /// 编辑器告诉宿主（主窗口 / 独立窗口）的事。
@@ -635,6 +638,7 @@ impl RemoteEditor {
             host_label,
             path,
             source,
+            vault_account,
         } = spec;
         let (sender, events) = std::sync::mpsc::channel();
         let lang = language::language_for(&path);
@@ -665,13 +669,8 @@ impl RemoteEditor {
         let watch = Arc::new(RemoteWatch::default());
         // 数据目录只取一次：草稿路径和写线程用的是同一份，运行中改环境变量不会拆开它们。
         let data_dir = crate::settings::data_dir();
-        let draft_account = match crate::host_db::open_database() {
-            Ok(db) => Some(db.vault_account().to_owned()),
-            Err(err) => {
-                tracing::warn!(%err, "没有资料库身份，编辑器草稿已禁用");
-                None
-            }
-        };
+        // 资料库已经由主窗口打开；这里只接收身份，不在界面线程重新开库。
+        let draft_account = vault_account;
         let draft_path = draft_file_in(&data_dir, host_id, &path);
         let open_file = open_files::OpenFile::register(host_id, &path);
 
@@ -2384,6 +2383,7 @@ pub fn open_remote_editor_window(
             host_label,
             path,
             source: ChannelSource::Ready(channel),
+            vault_account: None,
         };
         let view = cx.new(|cx| RemoteEditor::new(window, cx, spec, true));
         window.set_window_title(&format!("{}{name}", crate::i18n::t(EditorMsg::TitlePrefix)));

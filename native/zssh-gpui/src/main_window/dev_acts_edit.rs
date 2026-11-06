@@ -157,6 +157,7 @@ fn run_inner(
                     host_label,
                     path: path.to_owned(),
                     source: ChannelSource::Dial,
+                    vault_account: None,
                 },
                 window,
                 cx,
