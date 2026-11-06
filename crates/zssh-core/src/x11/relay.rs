@@ -10,13 +10,13 @@ use std::time::Duration;
 
 use russh::client::Msg;
 use russh::{Channel, ChannelMsg};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{watch, OwnedSemaphorePermit};
 use tokio::time::timeout;
 
 use super::cookie::{replace_cookie, setup_auth, setup_packet_len, SetupLen, MIT_MAGIC_COOKIE};
-use super::display::XEndpoint;
+use super::display::{UnixSocket, XEndpoint};
 use super::failure::X11Failure;
 use super::registry::{RouteEntry, X11Hub};
 
@@ -88,7 +88,7 @@ pub(crate) async fn serve(hub: X11Hub, mut channel: Channel<Msg>, permit: OwnedS
         }
     }
 
-    let (mut local_read, mut local_write) = local.into_split();
+    let (mut local_read, mut local_write) = tokio::io::split(local);
     let setup = async {
         local_write.write_all(&packet).await?;
         local_write.write_all(&buffered[packet_len..]).await
@@ -191,19 +191,21 @@ fn lookup_entry(hub: &X11Hub, packet: &[u8]) -> Option<std::sync::Arc<RouteEntry
     hub.lookup(data)
 }
 
-async fn connect_local(endpoint: &XEndpoint) -> Result<TcpStream, X11Failure> {
+/// 到本机 X 服务器的连接：TCP（Windows 的 VcXsrv 等）或 Unix 套接字（Linux 的 Xorg / Xwayland）。
+trait LocalIo: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> LocalIo for T {}
+type LocalStream = Box<dyn LocalIo>;
+
+async fn connect_local(endpoint: &XEndpoint) -> Result<LocalStream, X11Failure> {
     let shown = endpoint.describe();
-    match timeout(
-        LOCAL_CONNECT_TIMEOUT,
-        TcpStream::connect((endpoint.host.as_str(), endpoint.port)),
-    )
-    .await
-    {
-        Ok(Ok(stream)) => {
-            // X 协议是小包来回，别让 Nagle 攒包拖慢交互。
-            let _ = stream.set_nodelay(true);
-            Ok(stream)
+    let connecting = async {
+        match &endpoint.unix {
+            Some(socket) => connect_unix(socket).await,
+            None => connect_tcp(endpoint).await,
         }
+    };
+    match timeout(LOCAL_CONNECT_TIMEOUT, connecting).await {
+        Ok(Ok(stream)) => Ok(stream),
         Ok(Err(error)) => {
             tracing::debug!(%error, x_server = %shown, "连接本机 X 服务器失败");
             Err(X11Failure::NoLocalXServer {
@@ -213,6 +215,54 @@ async fn connect_local(endpoint: &XEndpoint) -> Result<TcpStream, X11Failure> {
         }
         Err(_) => Err(X11Failure::LocalXServerTimeout { display: shown }),
     }
+}
+
+async fn connect_tcp(endpoint: &XEndpoint) -> std::io::Result<LocalStream> {
+    let stream = TcpStream::connect((endpoint.host.as_str(), endpoint.port)).await?;
+    // X 协议是小包来回，别让 Nagle 攒包拖慢交互。
+    let _ = stream.set_nodelay(true);
+    Ok(Box::new(stream))
+}
+
+/// Unix 套接字：Linux 先试抽象命名空间（Xorg、Xwayland 默认同时监听 `@/tmp/.X11-unix/XN` 和
+/// 文件路径，libxcb 也是这个顺序），再试文件路径。
+#[cfg(unix)]
+async fn connect_unix(socket: &UnixSocket) -> std::io::Result<LocalStream> {
+    #[cfg(target_os = "linux")]
+    match connect_abstract(&socket.path).await {
+        Ok(stream) => return Ok(Box::new(stream)),
+        Err(error) => {
+            tracing::debug!(%error, display = socket.display, "抽象命名空间里没有 X 套接字，改试文件路径");
+        }
+    }
+    Ok(Box::new(
+        tokio::net::UnixStream::connect(&socket.path).await?,
+    ))
+}
+
+#[cfg(not(unix))]
+async fn connect_unix(_socket: &UnixSocket) -> std::io::Result<LocalStream> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "这个系统没有 Unix 套接字",
+    ))
+}
+
+/// 连抽象命名空间里的套接字（名字就是路径文本，不带前导的 NUL）。tokio 的 `UnixStream::connect`
+/// 只认文件路径，所以用标准库连好再交给 tokio；连本机套接字几乎瞬间完成，放在阻塞线程里以防
+/// 对端的等待队列满了卡住异步线程。
+#[cfg(target_os = "linux")]
+async fn connect_abstract(path: &std::path::Path) -> std::io::Result<tokio::net::UnixStream> {
+    use std::os::linux::net::SocketAddrExt as _;
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::net::{SocketAddr, UnixStream};
+
+    let address = SocketAddr::from_abstract_name(path.as_os_str().as_bytes())?;
+    let stream = tokio::task::spawn_blocking(move || UnixStream::connect_addr(&address))
+        .await
+        .map_err(std::io::Error::other)??;
+    stream.set_nonblocking(true)?;
+    tokio::net::UnixStream::from_std(stream)
 }
 
 /// X 服务器对握手包的第一个回复：首字节 0 = 失败（后面带原因），2 = 要求进一步认证，1 = 成功。
@@ -352,6 +402,7 @@ mod tests {
             host: "127.0.0.1".into(),
             port,
             screen: 0,
+            unix: None,
         };
         match connect_local(&endpoint).await {
             Err(X11Failure::NoLocalXServer { display, .. }) => {

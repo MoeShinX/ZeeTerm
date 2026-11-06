@@ -320,6 +320,23 @@ fn x11_failures_are_english_in_errors_and_in_the_terminal_notice() {
         "{line}"
     );
     assert!(line.contains("install VcXsrv in one click"), "{line}");
+    // 没有 VcXsrv 可装（installable 为假）时：Linux 提示检查桌面会话的 X 服务器，Windows 提示换别的 X 服务器。
+    let line = super::x11_advice_en(&X11Failure::NoLocalXServer {
+        display: ":0".into(),
+        installable: false,
+    });
+    if cfg!(unix) {
+        assert!(
+            !line.contains("VcXsrv") && line.contains("Xwayland"),
+            "{line}"
+        );
+    } else {
+        assert!(line.contains("X410"), "{line}");
+    }
+    let line = super::x11_advice_en(&X11Failure::NoXDisplay);
+    assert_english(&line);
+    assert!(line.contains("Xwayland") && line.contains("Xorg"), "{line}");
+    assert!(!line.contains("VcXsrv"), "{line}");
     let line = super::x11_advice_en(&failure);
     assert!(
         line.contains("Failed to send the request: channel closed"),

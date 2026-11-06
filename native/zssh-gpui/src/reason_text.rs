@@ -299,6 +299,9 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "x11.display_unix_socket" => {
             "Windows has no Unix sockets; write an address like localhost:0"
         }
+        "x11.display_socket_path" => {
+            "Writing a socket path directly is not supported; use an address like :0 or localhost:0"
+        }
         "x11.display_format" => {
             "The display address {spec} is not valid; it should look like localhost:0 or :0"
         }
@@ -736,6 +739,9 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         }
         "x11.custom_display_bad" => {
             "The display address specified in settings is unusable: {cause}"
+        }
+        "x11.session_display_bad" => {
+            "The DISPLAY environment variable of this session is unusable: {cause}"
         }
         "x11.prepare_task_failed" => {
             "The task that prepares the local X server ended abnormally: {cause}"

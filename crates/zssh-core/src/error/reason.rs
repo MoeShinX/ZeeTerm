@@ -484,6 +484,7 @@ pub mod keys {
         ENDPOINT_ADDRESS_REJECTED = "ai.endpoint_address_rejected";
         X11_DISPLAY_BAD_TEXT = "x11.display_bad_text";
         X11_DISPLAY_UNIX_SOCKET = "x11.display_unix_socket";
+        X11_DISPLAY_SOCKET_PATH = "x11.display_socket_path";
         X11_DISPLAY_FORMAT = "x11.display_format";
         X11_DISPLAY_NUMBER = "x11.display_number";
         X11_SCREEN_NUMBER = "x11.screen_number";
@@ -766,6 +767,7 @@ pub mod keys {
         X11_NO_LISTEN = "x11.vcxsrv_not_listening";
         X11_NON_ASCII_PATH = "x11.non_ascii_path";
         X11_CUSTOM_BAD = "x11.custom_display_bad";
+        X11_SESSION_DISPLAY_BAD = "x11.session_display_bad";
         X11_PREPARE_TASK = "x11.prepare_task_failed";
         X11_MAX_REG = "x11.max_registrations";
         X11_COOKIE_UNIQUE = "x11.cookie_unique_failed";
