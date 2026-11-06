@@ -2976,12 +2976,16 @@ mod download_permissions {
         assert_eq!(mode_of(&dir.join("key (2).pem")), 0o600);
     }
 
-    #[tokio::test]
-    async fn a_local_copy_still_ends_with_the_default_mode() {
-        let root = temp_root("perm-localcopy");
-        let from = root.join("from.txt");
-        std::fs::write(&from, b"data").unwrap();
-        let to = root.join("to.txt");
+    /// 本地复制一个文件，源文件先设成 `source_mode`，返回复制出来的文件。
+    async fn local_copy_of(
+        tag: &str,
+        source_mode: u32,
+    ) -> (crate::test_util::TestDir, std::path::PathBuf) {
+        let root = temp_root(tag);
+        let from = root.join("from.sh");
+        std::fs::write(&from, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&from, std::fs::Permissions::from_mode(source_mode)).unwrap();
+        let to = root.join("to.sh");
         let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
         let (engine, mut events) = TransferEngine::new(
             endpoints,
@@ -2997,7 +3001,82 @@ mod download_permissions {
         });
         let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
         assert_eq!(report.state, TransferState::Done, "{report:?}");
-        assert_eq!(mode_of(&to), download_mode(None, process_umask()));
+        (root, to)
+    }
+
+    /// 本地复制和下载走同一套规则：执行位保留，不比源宽、不比 umask 宽（以前一律是默认的 0644）。
+    #[tokio::test]
+    async fn a_local_copy_keeps_the_source_permissions() {
+        for source in [0o755, 0o700, 0o600, 0o644, 0o4755] {
+            let (_root, to) = local_copy_of("perm-localcopy", source).await;
+            assert_eq!(
+                mode_of(&to),
+                download_mode(Some(source), process_umask()),
+                "{source:o}"
+            );
+        }
+        // 与 umask 无关的几个确定值（测试进程的 umask 一般是 022）：脚本仍然可以运行，私密文件仍然私密。
+        let umask = process_umask();
+        let (_root, exec) = local_copy_of("perm-localcopy-exec", 0o755).await;
+        assert_eq!(mode_of(&exec) & 0o100, 0o100, "属主执行位必须保住");
+        assert_eq!(mode_of(&exec), 0o755 & !umask);
+        let (_root, private) = local_copy_of("perm-localcopy-private", 0o600).await;
+        assert_eq!(mode_of(&private), 0o600);
+    }
+
+    /// 临时文件名可预测：别人预先放一个同名软链接，下载不能写到链接指向的文件里。
+    #[tokio::test]
+    async fn a_symlinked_partial_file_is_replaced_not_followed() {
+        let root = temp_root("perm-part-symlink");
+        let victim = root.join("victim.txt");
+        std::fs::write(&victim, b"keep me").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let target = root.join("key.pem");
+        let endpoint = LocalEndpoint::with_owner(&target, "t4");
+        let part = endpoint.part_path();
+        std::os::unix::fs::symlink(&victim, &part).unwrap();
+
+        let writer = endpoint.open_write(0).await.unwrap();
+        writer.write_at(0, b"remote data".to_vec()).await.unwrap();
+        writer.finish().await.unwrap();
+
+        assert_eq!(
+            std::fs::read(&victim).unwrap(),
+            b"keep me",
+            "链接目标不能被写"
+        );
+        assert_eq!(mode_of(&victim), 0o640);
+        let meta = std::fs::symlink_metadata(&part).unwrap();
+        assert!(meta.file_type().is_file(), "临时文件应是新建的普通文件");
+        assert_eq!(std::fs::read(&part).unwrap(), b"remote data");
+        assert_eq!(mode_of(&part), 0o600);
+    }
+
+    /// 续传不能打开软链接（也就不会往里续写）。
+    #[tokio::test]
+    async fn resuming_into_a_symlinked_partial_file_is_refused() {
+        let root = temp_root("perm-part-symlink-resume");
+        let victim = root.join("victim.txt");
+        std::fs::write(&victim, b"keep me").unwrap();
+        let endpoint = LocalEndpoint::with_owner(root.join("key.pem"), "t5");
+        std::os::unix::fs::symlink(&victim, endpoint.part_path()).unwrap();
+
+        assert!(endpoint.open_write(4).await.is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep me");
+    }
+
+    /// 收尾改权限用的是句柄：临时文件被换成软链接时不能去改链接目标的权限。
+    #[tokio::test]
+    async fn preparing_the_commit_never_chmods_a_symlink_target() {
+        let root = temp_root("perm-part-symlink-chmod");
+        let victim = root.join("victim.txt");
+        std::fs::write(&victim, b"keep me").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o664)).unwrap();
+        let endpoint = LocalEndpoint::with_owner(root.join("key.pem"), "t6");
+        std::os::unix::fs::symlink(&victim, endpoint.part_path()).unwrap();
+
+        assert!(endpoint.prepare_commit(Some(0o100600)).await.is_err());
+        assert_eq!(mode_of(&victim), 0o664);
     }
 
     /// 续传：上一次（旧版本）留下的临时文件是 0664，收尾时也要收窄。

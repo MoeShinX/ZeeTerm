@@ -24,6 +24,9 @@ pub struct PlannedFile {
     pub size: Option<u64>,
     /// 这个文件的名字被改过（下载时的 Windows 名字处理）。
     pub note: Option<String>,
+    /// 下载：展开计划时服务端已经给出的远端权限位（目录列表 / stat 带的），收尾时直接用，
+    /// 省得每个文件再问一次；服务端没给、或不是下载计划就是 `None`。
+    pub permissions: Option<u32>,
 }
 
 /// 一份展开好的传输计划。
@@ -63,6 +66,7 @@ pub fn plan_upload(
             target: remote_target.to_owned(),
             size,
             note: None,
+            permissions: None,
         });
         return Ok(plan);
     }
@@ -108,6 +112,7 @@ pub fn plan_upload(
             target: remote_path::join(remote_target, &file.relative),
             size: Some(file.size),
             note: None,
+            permissions: None,
         });
     }
     plan.notes.push(file_count_note(plan.files.len()));
@@ -183,6 +188,7 @@ pub async fn plan_download(
             target: local_target.display().to_string(),
             size: attrs.size,
             note: None,
+            permissions: attrs.permissions,
         });
         return Ok(plan);
     }
@@ -222,13 +228,18 @@ pub async fn plan_download(
             if entry.kind.is_dir() {
                 sub_dirs.push((entry.path.clone(), entry.name.clone()));
             } else {
-                names.push((entry.path.clone(), entry.name.clone(), entry.size));
+                names.push((
+                    entry.path.clone(),
+                    entry.name.clone(),
+                    entry.size,
+                    entry.permissions,
+                ));
             }
         }
         let existing = local_dir_entries(&local_dir);
         let remote_names: Vec<(String, bool)> = names
             .iter()
-            .map(|(_, name, _)| (name.clone(), false))
+            .map(|(_, name, _, _)| (name.clone(), false))
             .chain(sub_dirs.iter().map(|(_, name)| (name.clone(), true)))
             .collect();
         let name_plan = LocalNamePlan::plan_with_kinds(&remote_names, &existing);
@@ -237,7 +248,7 @@ pub async fn plan_download(
             local_for.insert(remote_name.clone(), assigned.clone());
         }
 
-        for (remote_file, remote_name, size) in names {
+        for (remote_file, remote_name, size, permissions) in names {
             let assigned = local_for
                 .get(&remote_name)
                 .cloned()
@@ -250,6 +261,7 @@ pub async fn plan_download(
                 target: local_file.display().to_string(),
                 size,
                 note: assigned.note.clone(),
+                permissions,
             });
         }
         for (remote_dir, remote_name) in sub_dirs {
@@ -290,6 +302,7 @@ pub async fn plan_remote_copy(
             target: target.to_owned(),
             size: attrs.size,
             note: None,
+            permissions: None,
         });
         return Ok(plan);
     }
@@ -314,6 +327,7 @@ pub async fn plan_remote_copy(
                     target: child,
                     size: entry.size,
                     note: None,
+                    permissions: None,
                 });
             }
         }
@@ -338,6 +352,7 @@ pub fn plan_local_copy(
             target: target.display().to_string(),
             size,
             note: None,
+            permissions: None,
         });
         return Ok(plan);
     }
@@ -378,6 +393,7 @@ pub fn plan_local_copy(
             target: join(&file.relative).display().to_string(),
             size: Some(file.size),
             note: None,
+            permissions: None,
         });
     }
     plan.notes.push(file_count_note(plan.files.len()));
@@ -519,6 +535,48 @@ mod tests {
                 })
             })
         }
+    }
+
+    /// 展开下载计划时服务端给的权限位（目录列表 / stat 带的）随计划走，收尾时不必每个文件再问一次。
+    #[tokio::test]
+    async fn download_plans_carry_the_permissions_the_server_already_listed() {
+        use crate::sftp::transfer::memory::MemoryEndpoints;
+
+        let remote = MemoryEndpoints::new("/remote");
+        remote.put_remote("/remote/dir/run.sh", b"#!/bin/sh\n".to_vec());
+        remote.put_remote("/remote/dir/key.pem", b"k".to_vec());
+        remote.set_remote_permissions("/remote/dir/run.sh", 0o100755);
+        remote.set_remote_permissions("/remote/dir/key.pem", 0o100600);
+        let root = crate::test_util::TestDir::new("plan-permissions");
+
+        // 递归：每个文件带自己目录列表里的权限。
+        let plan = plan_download(&remote, "/remote/dir", &root.join("out"), true)
+            .await
+            .unwrap();
+        let mut seen: Vec<(String, Option<u32>)> = plan
+            .files
+            .iter()
+            .map(|file| (file.source.clone(), file.permissions))
+            .collect();
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![
+                ("/remote/dir/key.pem".to_owned(), Some(0o100600)),
+                ("/remote/dir/run.sh".to_owned(), Some(0o100755)),
+            ]
+        );
+
+        // 单个文件：stat 带的权限。
+        let single = plan_download(&remote, "/remote/dir/run.sh", &root.join("run.sh"), false)
+            .await
+            .unwrap();
+        assert_eq!(single.files[0].permissions, Some(0o100755));
+
+        // 上传 / 本地复制的计划没有「远端权限」。
+        std::fs::write(root.join("a.txt"), b"x").unwrap();
+        let local = plan_local_copy(&root.join("a.txt"), &root.join("b.txt"), false).unwrap();
+        assert!(local.files.iter().all(|file| file.permissions.is_none()));
     }
 
     #[tokio::test]

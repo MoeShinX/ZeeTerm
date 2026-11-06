@@ -703,7 +703,16 @@ impl crate::sftp::transfer::backend::RemoteLister for MemoryEndpoints {
                     link_target: None,
                     size: files.get(&full).map(|data| data.len() as u64),
                     mtime: Some(1_700_000_000),
-                    permissions: Some(0o644),
+                    permissions: Some(
+                        self.remote
+                            .fs
+                            .modes
+                            .lock()
+                            .expect("锁")
+                            .get(&full)
+                            .copied()
+                            .unwrap_or(0o644),
+                    ),
                     owner: Some("1000".to_owned()),
                     name_is_utf8: true,
                 });
@@ -722,7 +731,16 @@ impl crate::sftp::transfer::backend::RemoteLister for MemoryEndpoints {
             if let Some(data) = files.get(path) {
                 attrs.size = Some(data.len() as u64);
                 attrs.mtime = Some(1_700_000_000);
-                attrs.permissions = Some(0o644);
+                attrs.permissions = Some(
+                    self.remote
+                        .fs
+                        .modes
+                        .lock()
+                        .expect("锁")
+                        .get(path)
+                        .copied()
+                        .unwrap_or(0o644),
+                );
                 attrs.set_regular(true);
                 return Ok(attrs);
             }

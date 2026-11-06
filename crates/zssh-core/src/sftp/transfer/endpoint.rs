@@ -504,16 +504,36 @@ impl FileEndpoint for LocalEndpoint {
             let display = self.part_path().display().to_string();
             let file = tokio::task::spawn_blocking(move || {
                 let mut options = std::fs::OpenOptions::new();
-                options.write(true).create(true);
-                if resume_len == 0 {
-                    options.truncate(true);
-                }
-                // 传输中的临时文件只有自己能读写：源文件权限要到收尾才知道对应成什么（见
-                // `prepare_commit`），之前不能先按默认的 0664 暴露给同组 / 其他用户。
+                options.write(true);
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::OpenOptionsExt;
+                    // 传输中的临时文件只有自己能读写：源文件权限要到收尾才知道对应成什么（见
+                    // `prepare_commit`），之前不能先按默认的 0664 暴露给同组 / 其他用户。
                     options.mode(0o600);
+                    // 临时文件名是可预测的：别人（在 /tmp 这类公共可写目录里）预先放一个同名软链接，
+                    // 不能让下载把内容写到链接指向的文件里。
+                    options.custom_flags(libc::O_NOFOLLOW);
+                }
+                #[cfg(unix)]
+                if resume_len == 0 {
+                    // 不续传：已有的临时文件（含软链接本身，remove 不会跟随）先删掉再独占创建；
+                    // `O_EXCL` 遇到删除后又被换上的软链接也会失败，不会跟随。
+                    match std::fs::remove_file(&part) {
+                        Ok(()) => {}
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(err) => return Err(err),
+                    }
+                    options.create_new(true);
+                } else {
+                    options.create(true);
+                }
+                #[cfg(not(unix))]
+                {
+                    options.create(true);
+                    if resume_len == 0 {
+                        options.truncate(true);
+                    }
                 }
                 options.open(part)
             })
@@ -688,10 +708,18 @@ impl FileEndpoint for LocalEndpoint {
         Box::pin(async move {
             #[cfg(unix)]
             {
+                use std::os::unix::fs::OpenOptionsExt as _;
+
                 let part = self.part_path();
                 let display = part.display().to_string();
                 let mode = local::download_mode(source_permissions, local::process_umask());
-                std::fs::set_permissions(&part, std::fs::Permissions::from_mode(mode))
+                // 用打开的句柄改权限（fchmod）而不是按路径：路径可能在这期间被换成软链接。
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(&part)
+                    .map_err(|err| from_io(err, &display))?;
+                file.set_permissions(std::fs::Permissions::from_mode(mode))
                     .map_err(|err| from_io(err, &display))?;
             }
             #[cfg(not(unix))]

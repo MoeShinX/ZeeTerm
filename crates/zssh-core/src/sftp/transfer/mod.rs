@@ -987,17 +987,23 @@ impl TransferEngine {
                     }
                     // Unix 上下载的新文件权限不能比远端宽：临时文件在改名成最终名字之前定好权限
                     // （无论是否开了「保留权限」；续传来的旧临时文件、覆盖、改名下载也一样）。
-                    // Windows 没有对应概念，不多发这一次属性查询。本地到本地的复制没有「远端权限」可参照，
-                    // 临时文件创建时是私有的，这里补成默认权限（和以前一样）。
+                    // Windows 没有对应概念，不多发这一次属性查询。下载的远端权限位在展开计划时就已经拿到
+                    // （目录列表 / 单文件的 stat 都带着），有就直接用，不再为每个文件多问一次服务端；
+                    // 服务端没给时才补一次 `attributes()`。本地到本地的复制读源文件自己的权限位
+                    // （保住执行位），和下载走同一套规则。
                     if cfg!(unix) {
                         match state.job.direction {
                             Direction::Download => {
-                                let permissions =
-                                    source.attributes().await.ok().and_then(|(_, p)| p);
+                                let permissions = match planned.permissions {
+                                    Some(mode) => Some(mode & 0o7777),
+                                    None => source.attributes().await.ok().and_then(|(_, p)| p),
+                                };
                                 let _ = target_endpoint.prepare_commit(permissions).await;
                             }
                             Direction::LocalCopy => {
-                                let _ = target_endpoint.prepare_commit(None).await;
+                                let _ = target_endpoint
+                                    .prepare_commit(local_source_mode(&planned.source))
+                                    .await;
                             }
                             Direction::Upload | Direction::RemoteCopy => {}
                         }
@@ -1645,6 +1651,21 @@ fn name_start(path: &str) -> usize {
     path.rfind(is_path_separator)
         .map(|separator| separator + 1)
         .unwrap_or(0)
+}
+
+/// 本地复制的源文件权限位（跟随符号链接，读的是链接指向的文件）；读不到就 `None`（按默认权限）。
+#[cfg(unix)]
+fn local_source_mode(path: &str) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::metadata(path)
+        .ok()
+        .map(|meta| meta.permissions().mode() & 0o7777)
+}
+
+#[cfg(not(unix))]
+fn local_source_mode(_path: &str) -> Option<u32> {
+    None
 }
 
 #[cfg(test)]
