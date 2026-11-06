@@ -177,7 +177,8 @@ fn remote_source_size(
     path: &str,
     attrs: &russh_sftp::protocol::FileAttributes,
 ) -> Result<Option<u64>, SftpError> {
-    // 计划之后源也可能变成链接，不能把链接文本的长度用作目标内容的复制上限。
+    // `stat` 跟随链接，正常情况下不会再是链接；万一服务器回了链接本身的属性，它的大小是
+    // 链接文本的长度，不能拿来当复制上限（会把文件截短），宁可拒绝。
     if attrs.is_symlink() {
         return Err(SftpError::InvalidInput(
             Reason::new(
@@ -197,7 +198,8 @@ impl FileEndpoint for RemoteEndpoint {
 
     fn size<'a>(&'a self) -> EndpointFuture<'a, Result<Option<u64>, SftpError>> {
         Box::pin(async move {
-            match self.channel.lstat(&self.path).await {
+            // 跟随链接（`stat`）：`open_read` 读的是链接指向的内容，大小也必须按它算。
+            match self.channel.stat(&self.path).await {
                 Ok(attrs) => remote_source_size(&self.path, &attrs),
                 Err(SftpError::NotFound { .. }) => Ok(None),
                 Err(err) => Err(err),
@@ -858,7 +860,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remote_source_size_rejects_a_link_instead_of_copying_its_length() {
+    fn remote_source_size_never_uses_a_link_text_length() {
         let mut attrs = russh_sftp::protocol::FileAttributes {
             size: Some(11),
             permissions: Some(0o120777),

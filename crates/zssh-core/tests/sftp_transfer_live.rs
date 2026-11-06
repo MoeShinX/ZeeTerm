@@ -678,6 +678,12 @@ mod c05 {
         ) -> BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>> {
             self.inner.stat_remote(path)
         }
+        fn stat_follow<'a>(
+            &'a self,
+            path: &'a str,
+        ) -> BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>> {
+            self.inner.stat_follow(path)
+        }
     }
 
     impl TransferEndpoints for AppearBeforeCommit {

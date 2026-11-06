@@ -167,9 +167,15 @@ pub async fn plan_download(
     recursive: bool,
 ) -> Result<TransferPlan, SftpError> {
     let mut plan = TransferPlan::default();
-    let attrs = lister.stat_remote(remote_source).await?;
+    let mut attrs = lister.stat_remote(remote_source).await?;
     if attrs.is_symlink() {
-        return Err(SftpError::InvalidInput(skipped_symlink_note(remote_source)));
+        // 用户直接选中的符号链接：下载它指向的文件 / 目录（和 `scp`、系统文件管理器一样）。
+        // 大小按目标算——`lstat` 的大小是链接文本的长度，用它当复制上限会把文件截短。
+        // 目录里遇到的链接仍然跳过（不跟随，免得绕圈或带出目录外的东西）。
+        attrs = lister.stat_follow(remote_source).await?;
+        if attrs.is_symlink() {
+            return Err(SftpError::InvalidInput(skipped_symlink_note(remote_source)));
+        }
     }
     if !attrs.is_dir() {
         plan.files.push(PlannedFile {
@@ -456,43 +462,93 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn downloading_a_top_level_symlink_never_schedules_target_contents() {
-        struct Symlink;
-        impl super::super::backend::RemoteLister for Symlink {
-            fn list_dir<'a>(
-                &'a self,
-                _path: &'a str,
-            ) -> crate::ssh::BoxFuture<'a, Result<Vec<crate::sftp::fs::DirEntry>, SftpError>>
-            {
-                Box::pin(async { panic!("链接不能作为目录展开") })
-            }
+    /// 顶层符号链接：跟随到目标，大小按目标算；链接到目录时按目录展开（要递归）。
+    struct Linked {
+        /// 链接指向的是目录还是 1024 字节的普通文件。
+        to_dir: bool,
+    }
 
-            fn stat_remote<'a>(
-                &'a self,
-                _path: &'a str,
-            ) -> crate::ssh::BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>>
-            {
-                Box::pin(async {
-                    Ok(russh_sftp::protocol::FileAttributes {
-                        size: Some(11),
-                        permissions: Some(0o120777),
-                        ..Default::default()
-                    })
+    impl super::super::backend::RemoteLister for Linked {
+        fn list_dir<'a>(
+            &'a self,
+            path: &'a str,
+        ) -> crate::ssh::BoxFuture<'a, Result<Vec<crate::sftp::fs::DirEntry>, SftpError>> {
+            assert!(self.to_dir, "指向文件的链接不能当目录展开");
+            let path = path.to_owned();
+            Box::pin(async move {
+                Ok(vec![crate::sftp::fs::DirEntry {
+                    name: "app.conf".to_owned(),
+                    path: format!("{path}/app.conf"),
+                    kind: crate::sftp::fs::FileKind::File,
+                    link_target: None,
+                    size: Some(5),
+                    mtime: None,
+                    permissions: None,
+                    owner: None,
+                    name_is_utf8: true,
+                }])
+            })
+        }
+
+        fn stat_remote<'a>(
+            &'a self,
+            _path: &'a str,
+        ) -> crate::ssh::BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>>
+        {
+            // lstat：链接本身，大小是链接文本的长度。
+            Box::pin(async {
+                Ok(russh_sftp::protocol::FileAttributes {
+                    size: Some(11),
+                    permissions: Some(0o120777),
+                    ..Default::default()
                 })
-            }
+            })
         }
 
-        let root = crate::test_util::TestDir::new("plan-symlink");
-        let target = root.join("existing.txt");
-        std::fs::write(&target, b"keep original").unwrap();
-        for recursive in [false, true] {
-            let err = plan_download(&Symlink, "/link", &target, recursive)
-                .await
-                .expect_err("顶层链接必须拒绝，不能按链接长度复制目标");
-            assert!(matches!(err, SftpError::InvalidInput(_)));
-            assert_eq!(std::fs::read(&target).unwrap(), b"keep original");
+        fn stat_follow<'a>(
+            &'a self,
+            _path: &'a str,
+        ) -> crate::ssh::BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>>
+        {
+            let to_dir = self.to_dir;
+            Box::pin(async move {
+                Ok(russh_sftp::protocol::FileAttributes {
+                    size: Some(if to_dir { 4096 } else { 1024 }),
+                    permissions: Some(if to_dir { 0o040755 } else { 0o100644 }),
+                    ..Default::default()
+                })
+            })
         }
+    }
+
+    #[tokio::test]
+    async fn a_top_level_symlink_downloads_its_target_with_the_target_size() {
+        let root = crate::test_util::TestDir::new("plan-symlink-file");
+        let target = root.join("default.conf");
+        for recursive in [false, true] {
+            let plan = plan_download(&Linked { to_dir: false }, "/link", &target, recursive)
+                .await
+                .unwrap();
+            assert_eq!(plan.files.len(), 1);
+            assert_eq!(plan.files[0].source, "/link");
+            // 不是链接文本的 11 字节，而是目标文件的 1024 字节。
+            assert_eq!(plan.files[0].size, Some(1024));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_top_level_symlink_to_a_directory_is_expanded_like_the_directory() {
+        let root = crate::test_util::TestDir::new("plan-symlink-dir");
+        let target = root.join("current");
+        let err = plan_download(&Linked { to_dir: true }, "/srv/current", &target, false)
+            .await
+            .expect_err("指向目录的链接和目录一样要递归");
+        assert!(!matches!(err, SftpError::Cancelled));
+        let plan = plan_download(&Linked { to_dir: true }, "/srv/current", &target, true)
+            .await
+            .unwrap();
+        assert_eq!(plan.files.len(), 1);
+        assert_eq!(plan.files[0].source, "/srv/current/app.conf");
     }
 
     /// F02：递归下载时远端子项的名字再怪，也只能落在目标目录里面。

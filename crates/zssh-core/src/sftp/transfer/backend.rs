@@ -33,6 +33,14 @@ pub trait RemoteLister: Send + Sync {
         &'a self,
         path: &'a str,
     ) -> BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>>;
+    /// 读链接指向的目标的属性（`stat`）。用户直接选中一个符号链接下载时，下载的是它指向的
+    /// 文件 / 目录，大小和类型都要按目标算。没有符号链接的实现（内存夹具）用默认的 `lstat` 即可。
+    fn stat_follow<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>> {
+        self.stat_remote(path)
+    }
 }
 
 /// 传输用得到的数据面。
@@ -280,6 +288,13 @@ impl RemoteLister for ProviderLister {
     ) -> BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>> {
         Box::pin(async move { self.0.channel().await?.lstat(path).await })
     }
+
+    fn stat_follow<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>> {
+        Box::pin(async move { self.0.channel().await?.stat(path).await })
+    }
 }
 
 impl RemoteLister for SftpEndpoints {
@@ -297,6 +312,16 @@ impl RemoteLister for SftpEndpoints {
         Box::pin(async move {
             let channel = self.provider.channel().await?;
             channel.lstat(path).await
+        })
+    }
+
+    fn stat_follow<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>> {
+        Box::pin(async move {
+            let channel = self.provider.channel().await?;
+            channel.stat(path).await
         })
     }
 }
