@@ -18,12 +18,14 @@ use std::time::Duration;
 use russh::keys::{Algorithm, PrivateKey};
 use russh::server::{self, Auth, Msg, Session};
 use russh::{Channel, ChannelId, MethodKind, MethodSet};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout, Instant};
 use zssh_core::ssh::{Connection, ShellEvent, ShellSession, DEFAULT_BUFFER_LIMIT};
 use zssh_core::x11::cookie::{decode_hex, setup_packet_len, SetupLen, MIT_MAGIC_COOKIE};
-use zssh_core::x11::{FailureSink, X11Failure, X11Outcome, X11Request, X11Route, XEndpoint};
+use zssh_core::x11::{
+    FailureSink, UnixSocket, X11Failure, X11Outcome, X11Request, X11Route, XEndpoint,
+};
 
 use common::{TempKnownHosts, TestServer};
 
@@ -244,6 +246,8 @@ enum XMode {
 
 struct FakeX {
     port: u16,
+    /// 监听的是 Unix 套接字时的端点（`port` 此时没有意义）。
+    socket: Option<UnixSocket>,
     /// 每个连接握手包里的 cookie。
     cookies: Arc<Mutex<Vec<Vec<u8>>>>,
     /// 已经结束的连接数（对端关了或读到 EOF）。
@@ -257,61 +261,75 @@ async fn fake_x(mode: XMode) -> FakeX {
     let finished = Arc::new(AtomicUsize::new(0));
     let (c, f) = (Arc::clone(&cookies), Arc::clone(&finished));
     tokio::spawn(async move {
-        while let Ok((mut socket, _)) = listener.accept().await {
+        while let Ok((socket, _)) = listener.accept().await {
             let (c, f) = (Arc::clone(&c), Arc::clone(&f));
-            tokio::spawn(async move {
-                let mut buffered = Vec::new();
-                let mut chunk = [0u8; 4096];
-                let len = loop {
-                    match setup_packet_len(&buffered) {
-                        SetupLen::Total(len) if buffered.len() >= len => break len,
-                        SetupLen::Invalid => {
-                            f.fetch_add(1, Ordering::SeqCst);
-                            return;
-                        }
-                        _ => {}
-                    }
-                    match socket.read(&mut chunk).await {
-                        Ok(0) | Err(_) => {
-                            f.fetch_add(1, Ordering::SeqCst);
-                            return;
-                        }
-                        Ok(n) => buffered.extend_from_slice(&chunk[..n]),
-                    }
-                };
-                let (_, data) = zssh_core::x11::cookie::setup_auth(&buffered[..len]).unwrap();
-                c.lock().unwrap().push(data.to_vec());
-                let reply: &[u8] = match mode {
-                    XMode::Accept => &[1, 0, 11, 0, 0, 0, 0, 0],
-                    XMode::Reject => &[0, 4, 11, 0, 0, 0, 1, 0, b'n', b'o', b'p', b'e'],
-                };
-                if socket.write_all(reply).await.is_err() {
-                    f.fetch_add(1, Ordering::SeqCst);
-                    return;
-                }
-                // 握手包后面如果跟着数据，也回显。
-                if buffered.len() > len && socket.write_all(&buffered[len..]).await.is_err() {
-                    f.fetch_add(1, Ordering::SeqCst);
-                    return;
-                }
-                loop {
-                    match socket.read(&mut chunk).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            if socket.write_all(&chunk[..n]).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-                f.fetch_add(1, Ordering::SeqCst);
-            });
+            tokio::spawn(serve_fake_x(Box::new(socket), mode, c, f));
         }
     });
     FakeX {
         port,
+        socket: None,
         cookies,
         finished,
+    }
+}
+
+trait FakeXIo: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> FakeXIo for T {}
+
+/// 假 X 服务器对一个连接的处理：读握手包、记下 cookie、回复、之后回显（TCP 和 Unix 套接字共用）。
+async fn serve_fake_x(
+    mut socket: Box<dyn FakeXIo>,
+    mode: XMode,
+    c: Arc<Mutex<Vec<Vec<u8>>>>,
+    f: Arc<AtomicUsize>,
+) {
+    {
+        let mut buffered = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let len = loop {
+            match setup_packet_len(&buffered) {
+                SetupLen::Total(len) if buffered.len() >= len => break len,
+                SetupLen::Invalid => {
+                    f.fetch_add(1, Ordering::SeqCst);
+                    return;
+                }
+                _ => {}
+            }
+            match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => {
+                    f.fetch_add(1, Ordering::SeqCst);
+                    return;
+                }
+                Ok(n) => buffered.extend_from_slice(&chunk[..n]),
+            }
+        };
+        let (_, data) = zssh_core::x11::cookie::setup_auth(&buffered[..len]).unwrap();
+        c.lock().unwrap().push(data.to_vec());
+        let reply: &[u8] = match mode {
+            XMode::Accept => &[1, 0, 11, 0, 0, 0, 0, 0],
+            XMode::Reject => &[0, 4, 11, 0, 0, 0, 1, 0, b'n', b'o', b'p', b'e'],
+        };
+        if socket.write_all(reply).await.is_err() {
+            f.fetch_add(1, Ordering::SeqCst);
+            return;
+        }
+        // 握手包后面如果跟着数据，也回显。
+        if buffered.len() > len && socket.write_all(&buffered[len..]).await.is_err() {
+            f.fetch_add(1, Ordering::SeqCst);
+            return;
+        }
+        loop {
+            match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if socket.write_all(&chunk[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        f.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -322,6 +340,7 @@ impl FakeX {
                 host: "127.0.0.1".to_owned(),
                 port: self.port,
                 screen: 0,
+                unix: self.socket.clone(),
             },
             real_cookie: real,
         }
@@ -634,6 +653,7 @@ async fn a_missing_local_x_server_is_reported_once_in_the_terminal_and_to_the_ui
             host: "127.0.0.1".into(),
             port: closed_port,
             screen: 0,
+            unix: None,
         },
         real_cookie: Some(vec![5; 16]),
     };
@@ -687,7 +707,13 @@ async fn a_local_x_server_that_rejects_the_connection_is_classified_with_advice(
     // 拒绝的回复照样转给远端程序，让它自己报错。
     assert_eq!(read_exact(&mut stream, 8).await[0], 0);
 
-    let text = read_until(&mut shell, "关闭访问控制").await;
+    // 拿不到真 cookie 时的建议因系统而异：Windows 让用户关访问控制，Unix 让用户检查授权文件。
+    let needle = if cfg!(unix) {
+        "XAUTHORITY"
+    } else {
+        "关闭访问控制"
+    };
+    let text = read_until(&mut shell, needle).await;
     assert!(text.contains("nope"), "原因要带上：{text:?}");
     let reported = reported.lock().unwrap();
     match &reported[0] {
@@ -738,4 +764,442 @@ async fn x11_channels_are_refused_when_no_terminal_uses_x11() {
         opened.is_err(),
         "没有任何 X11 登记时，服务器开 X11 通道要被拒绝"
     );
+}
+
+// ---------------------------------------------------------------- Unix 套接字（Linux 的本机 X 服务器）
+
+/// 在 `path` 上起一个假 X 服务器（文件路径上的 Unix 套接字）。
+#[cfg(unix)]
+async fn fake_x_file(mode: XMode, path: &std::path::Path, display: u32) -> FakeX {
+    let listener = tokio::net::UnixListener::bind(path).expect("绑定套接字文件");
+    let (cookies, finished) = (
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let (c, f) = (Arc::clone(&cookies), Arc::clone(&finished));
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            tokio::spawn(serve_fake_x(
+                Box::new(socket),
+                mode,
+                Arc::clone(&c),
+                Arc::clone(&f),
+            ));
+        }
+    });
+    FakeX {
+        port: 0,
+        socket: Some(UnixSocket {
+            display,
+            path: path.to_path_buf(),
+        }),
+        cookies,
+        finished,
+    }
+}
+
+/// 在抽象命名空间里起一个假 X 服务器，名字就是 `path` 的文本（Xorg / Xwayland 的 `@/tmp/.X11-unix/XN`）。
+#[cfg(target_os = "linux")]
+async fn fake_x_abstract(mode: XMode, path: &std::path::Path, display: u32) -> FakeX {
+    use std::os::linux::net::SocketAddrExt as _;
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::net::{SocketAddr, UnixListener};
+
+    let address = SocketAddr::from_abstract_name(path.as_os_str().as_bytes()).expect("抽象地址");
+    let std_listener = UnixListener::bind_addr(&address).expect("绑定抽象套接字");
+    std_listener.set_nonblocking(true).unwrap();
+    let listener = tokio::net::UnixListener::from_std(std_listener).unwrap();
+    let (cookies, finished) = (
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let (c, f) = (Arc::clone(&cookies), Arc::clone(&finished));
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            tokio::spawn(serve_fake_x(
+                Box::new(socket),
+                mode,
+                Arc::clone(&c),
+                Arc::clone(&f),
+            ));
+        }
+    });
+    FakeX {
+        port: 0,
+        socket: Some(UnixSocket {
+            display,
+            path: path.to_path_buf(),
+        }),
+        cookies,
+        finished,
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn over_a_unix_socket_the_fake_cookie_is_replaced_and_data_flows_both_ways() {
+    for order in *b"lB" {
+        let harness = start(X11Reply::Accept).await;
+        let dir = tempfile::tempdir().unwrap();
+        // 只有文件路径上有套接字：先试抽象命名空间会落空，再退回文件路径。
+        let x = fake_x_file(XMode::Accept, &dir.path().join("X7"), 7).await;
+        let real = vec![0xCD; 16];
+        let (mut shell, outcome) = open_x11(&harness, x.route(Some(real.clone())), None).await;
+        assert_eq!(
+            outcome,
+            X11Outcome::Active {
+                display: ":7".to_owned()
+            }
+        );
+        read_until(&mut shell, "SHELL_READY").await;
+
+        let fake = harness.fake_cookie(0).await;
+        assert_ne!(decode_hex(&fake).unwrap(), real, "给服务器的必须是假值");
+        let mut stream = harness.x_client(&fake, order).await;
+        // 握手回复、之后的 X 协议字节都能来回。
+        assert_eq!(read_exact(&mut stream, 8).await, [1, 0, 11, 0, 0, 0, 0, 0]);
+        stream.write_all(b"hello-unix-x").await.unwrap();
+        assert_eq!(read_exact(&mut stream, 12).await, b"hello-unix-x");
+        // 本机 X 服务器收到的是真 cookie，假的没有漏过去。
+        assert_eq!(x.seen(), vec![real]);
+        drop(shell);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn over_a_unix_socket_without_a_real_cookie_the_setup_is_passed_through() {
+    let harness = start(X11Reply::Accept).await;
+    let dir = tempfile::tempdir().unwrap();
+    let x = fake_x_file(XMode::Accept, &dir.path().join("X3"), 3).await;
+    let (_shell, _) = open_x11(&harness, x.route(None), None).await;
+    let fake = harness.fake_cookie(0).await;
+    let mut stream = harness.x_client(&fake, b'l').await;
+    assert_eq!(read_exact(&mut stream, 8).await, [1, 0, 11, 0, 0, 0, 0, 0]);
+    assert_eq!(x.seen(), vec![decode_hex(&fake).unwrap()]);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_abstract_socket_is_used_when_there_is_no_file() {
+    let harness = start(X11Reply::Accept).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("X8");
+    let x = fake_x_abstract(XMode::Accept, &path, 8).await;
+    assert!(!path.exists(), "只有抽象套接字，文件系统里什么都没有");
+    let real = vec![0x5A; 16];
+    let (_shell, _) = open_x11(&harness, x.route(Some(real.clone())), None).await;
+    let fake = harness.fake_cookie(0).await;
+    let mut stream = harness.x_client(&fake, b'l').await;
+    assert_eq!(read_exact(&mut stream, 8).await, [1, 0, 11, 0, 0, 0, 0, 0]);
+    stream.write_all(b"abstract").await.unwrap();
+    assert_eq!(read_exact(&mut stream, 8).await, b"abstract");
+    assert_eq!(x.seen(), vec![real]);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_abstract_socket_is_tried_before_the_file_path() {
+    let harness = start(X11Reply::Accept).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("X9");
+    let abstract_x = fake_x_abstract(XMode::Accept, &path, 9).await;
+    let file_x = fake_x_file(XMode::Accept, &path, 9).await;
+    let real = vec![0x77; 16];
+    let (_shell, _) = open_x11(&harness, abstract_x.route(Some(real.clone())), None).await;
+    let fake = harness.fake_cookie(0).await;
+    let mut stream = harness.x_client(&fake, b'l').await;
+    assert_eq!(read_exact(&mut stream, 8).await, [1, 0, 11, 0, 0, 0, 0, 0]);
+    assert_eq!(abstract_x.seen(), vec![real]);
+    assert!(file_x.seen().is_empty(), "两边都有时先连抽象命名空间");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_missing_unix_socket_is_reported_as_no_local_x_server_with_the_display() {
+    let harness = start(X11Reply::Accept).await;
+    let dir = tempfile::tempdir().unwrap();
+    let route = X11Route {
+        endpoint: XEndpoint {
+            host: "localhost".into(),
+            port: 0,
+            screen: 0,
+            unix: Some(UnixSocket {
+                display: 4,
+                path: dir.path().join("X4"),
+            }),
+        },
+        real_cookie: Some(vec![5; 16]),
+    };
+    let reported: Arc<Mutex<Vec<X11Failure>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&reported);
+    let observer: FailureSink = Arc::new(move |failure: &X11Failure| {
+        sink.lock().unwrap().push(failure.clone());
+    });
+    let (mut shell, _) = open_x11(&harness, route, Some(observer)).await;
+    read_until(&mut shell, "SHELL_READY").await;
+    let fake = harness.fake_cookie(0).await;
+    let mut stream = harness.x_client(&fake, b'l').await;
+    assert!(closes_soon(&mut stream).await);
+    let text = read_until(&mut shell, "本机没有可用的 X 服务器").await;
+    assert!(text.contains(":4"), "{text:?}");
+    assert!(
+        !text.contains("X410") && !text.contains("VcXsrv"),
+        "Linux 上不能提示 Windows 的 X 服务器：{text:?}"
+    );
+    let reported = reported.lock().unwrap();
+    assert_eq!(reported.len(), 1);
+    match &reported[0] {
+        X11Failure::NoLocalXServer { display, .. } => assert_eq!(display, ":4"),
+        other => panic!("预期 NoLocalXServer：{other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------- 真 X 服务器（Linux：Xvfb 私有显示）
+
+/// 在 Linux 上用 Xvfb 起一个带 cookie 的私有显示，让转发任务走 Unix 套接字连上它，跑真实的 X 协议握手。
+///
+/// 需要机器上有 `Xvfb` 和 `xauth`（打包 / CI 要装 `xvfb`、`xauth`）；没有就跳过并打印原因。
+/// 显示号从 600 起找一个没人用的，不碰桌面会话的 `:0` / `:1`。
+#[cfg(target_os = "linux")]
+mod xvfb {
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, Stdio};
+
+    use zssh_core::x11::local::system::{OwnedProcess, RegistryInstall};
+    use zssh_core::x11::local::{session, DisplayMode, LocalSystem, RealSystem, X11Prefs};
+
+    /// 退出时结束 Xvfb 并清理文件。
+    pub struct Xvfb {
+        child: Child,
+        pub display: u32,
+        pub auth_file: PathBuf,
+        pub cookie: Vec<u8>,
+        _dir: tempfile::TempDir,
+    }
+
+    impl Drop for Xvfb {
+        fn drop(&mut self) {
+            // 先发 SIGTERM，让 Xvfb 自己删掉套接字和锁文件；等不到再强杀，并补删这两个文件。
+            let _ = Command::new("kill")
+                .args(["-TERM", &self.child.id().to_string()])
+                .status();
+            for _ in 0..40 {
+                if matches!(self.child.try_wait(), Ok(Some(_))) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = std::fs::remove_file(format!("/tmp/.X11-unix/X{}", self.display));
+            let _ = std::fs::remove_file(format!("/tmp/.X{}-lock", self.display));
+        }
+    }
+
+    fn have(program: &str, arg: &str) -> bool {
+        Command::new(program)
+            .arg(arg)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok()
+    }
+
+    /// 起一个要求 cookie 的 Xvfb。工具缺失返回 `None`。
+    pub fn start() -> Option<Xvfb> {
+        if !have("Xvfb", "-help") || !have("xauth", "-V") {
+            eprintln!("跳过：这台机器没有 Xvfb / xauth");
+            return None;
+        }
+        let mut cookie = [0u8; 16];
+        getrandom::fill(&mut cookie).ok()?;
+        let hex: String = cookie.iter().map(|b| format!("{b:02x}")).collect();
+        // 同一个测试程序里的几条测试并行跑：用进程内计数器错开，别挑到同一个显示号。
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let first =
+            std::process::id() % 300 + NEXT.fetch_add(7, std::sync::atomic::Ordering::SeqCst);
+        for attempt in 0..300u32 {
+            let display = 600 + (first + attempt) % 300;
+            if Path::new(&format!("/tmp/.X11-unix/X{display}")).exists() {
+                continue;
+            }
+            let dir = tempfile::tempdir().ok()?;
+            let auth_file = dir.path().join("xauthority");
+            // 用 xauth 写授权文件：和用户会话里的 ~/.Xauthority 同一种记录（FamilyLocal + 本机主机名）。
+            let added = Command::new("xauth")
+                .arg("-f")
+                .arg(&auth_file)
+                .args(["add", &format!(":{display}"), ".", &hex])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .ok()?;
+            assert!(added.success(), "xauth add 失败");
+            let child = Command::new("Xvfb")
+                .arg(format!(":{display}"))
+                .args(["-screen", "0", "320x200x8", "-nolisten", "tcp", "-auth"])
+                .arg(&auth_file)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok()?;
+            let mut server = Xvfb {
+                child,
+                display,
+                auth_file,
+                cookie: cookie.to_vec(),
+                _dir: dir,
+            };
+            // 等套接字出现；Xvfb 起不来（显示号被占）就换一个。
+            for _ in 0..100 {
+                // 先看进程是否还活着：显示号被别人占着时，我们的 Xvfb 会马上退出，而套接字是别人的。
+                if matches!(server.child.try_wait(), Ok(Some(_))) {
+                    break;
+                }
+                if Path::new(&format!("/tmp/.X11-unix/X{display}")).exists() {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    if matches!(server.child.try_wait(), Ok(None)) {
+                        return Some(server);
+                    }
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+        None
+    }
+
+    /// 只把 `XAUTHORITY` 指向测试文件，其余照用真实本机环境。
+    pub struct WithAuthority(pub PathBuf);
+
+    impl LocalSystem for WithAuthority {
+        fn tcp_listening(&self, port: u16) -> bool {
+            RealSystem.tcp_listening(port)
+        }
+        fn env_var(&self, name: &str) -> Option<String> {
+            match name {
+                "XAUTHORITY" => Some(self.0.to_string_lossy().into_owned()),
+                other => RealSystem.env_var(other),
+            }
+        }
+        fn path_is_file(&self, path: &Path) -> bool {
+            RealSystem.path_is_file(path)
+        }
+        fn read_file(&self, path: &Path) -> Option<Vec<u8>> {
+            RealSystem.read_file(path)
+        }
+        fn hostname(&self) -> Option<String> {
+            RealSystem.hostname()
+        }
+        fn home_dir(&self) -> Option<PathBuf> {
+            RealSystem.home_dir()
+        }
+        fn registry_installs(&self) -> Vec<RegistryInstall> {
+            RealSystem.registry_installs()
+        }
+        fn short_path(&self, path: &Path) -> Option<PathBuf> {
+            RealSystem.short_path(path)
+        }
+        fn spawn(&self, exe: &Path, args: &[String]) -> Result<Box<dyn OwnedProcess>, String> {
+            RealSystem.spawn(exe, args)
+        }
+        fn sleep(&self, duration: std::time::Duration) {
+            RealSystem.sleep(duration)
+        }
+    }
+
+    /// 按"指定显示 :N"走会话的准备流程（真读授权文件、真取主机名）。
+    pub fn prepare(server: &Xvfb) -> zssh_core::x11::local::Prepared {
+        let prefs = X11Prefs {
+            mode: DisplayMode::Custom(format!(":{}", server.display)),
+            ..X11Prefs::default()
+        };
+        session::prepare(&prefs, &WithAuthority(server.auth_file.clone())).expect("准备本机显示")
+    }
+}
+
+/// 读 X 服务器对握手包的回复（8 字节头 + 附加数据），返回整段。
+#[cfg(target_os = "linux")]
+async fn read_setup_reply(stream: &mut russh::ChannelStream<Msg>) -> Vec<u8> {
+    let mut head = read_exact(stream, 8).await;
+    // 附加数据长度（4 字节为单位）在第 6、7 字节，小端。
+    let extra = u16::from_le_bytes([head[6], head[7]]) as usize * 4;
+    head.extend(read_exact(stream, extra).await);
+    head
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_real_xvfb_with_a_cookie_accepts_the_relayed_handshake_and_answers_a_request() {
+    let Some(server) = xvfb::start() else { return };
+    let prepared = xvfb::prepare(&server);
+    assert_eq!(
+        prepared.route.real_cookie.as_deref(),
+        Some(&server.cookie[..]),
+        "要从授权文件里按显示号和本机主机名找到 xauth 写下的 cookie"
+    );
+
+    let harness = start(X11Reply::Accept).await;
+    let (mut shell, outcome) = open_x11(&harness, prepared.route, None).await;
+    assert_eq!(
+        outcome,
+        X11Outcome::Active {
+            display: format!(":{}", server.display)
+        }
+    );
+    read_until(&mut shell, "SHELL_READY").await;
+    let fake = harness.fake_cookie(0).await;
+    assert_ne!(decode_hex(&fake).unwrap(), server.cookie);
+
+    let mut stream = harness.x_client(&fake, b'l').await;
+    let reply = read_setup_reply(&mut stream).await;
+    assert_eq!(reply[0], 1, "握手应当成功：{reply:?}");
+    assert_eq!(u16::from_le_bytes([reply[2], reply[3]]), 11, "X 协议主版本");
+
+    // 握手之后的请求原样转发：GetInputFocus（操作码 43，长度 1）一定有 32 字节的回复。
+    stream.write_all(&[43, 0, 1, 0]).await.unwrap();
+    let focus = read_exact(&mut stream, 32).await;
+    assert_eq!(focus[0], 1, "回复的首字节是 1：{focus:?}");
+    drop(shell);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_real_xvfb_refuses_a_wrong_or_missing_cookie_and_says_why() {
+    let Some(server) = xvfb::start() else { return };
+    // 两种情况：手里有一个错的真 cookie（授权文件和显示对不上），和拿不到真 cookie（透传假的）。
+    for (real, passthrough) in [(Some(vec![0x42; 16]), false), (None, true)] {
+        let harness = start(X11Reply::Accept).await;
+        let mut route = xvfb::prepare(&server).route;
+        route.real_cookie = real;
+        let reported: Arc<Mutex<Vec<X11Failure>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&reported);
+        let observer: FailureSink = Arc::new(move |failure: &X11Failure| {
+            sink.lock().unwrap().push(failure.clone());
+        });
+        let (mut shell, _) = open_x11(&harness, route, Some(observer)).await;
+        let fake = harness.fake_cookie(0).await;
+        let mut stream = harness.x_client(&fake, b'l').await;
+        let reply = read_setup_reply(&mut stream).await;
+        assert_eq!(reply[0], 0, "认证不对应当被拒绝：{reply:?}");
+
+        let text = read_until(&mut shell, "XAUTHORITY").await;
+        assert!(text.contains(&format!(":{}", server.display)), "{text:?}");
+        let reported = reported.lock().unwrap();
+        match &reported[0] {
+            X11Failure::LocalXServerRejected {
+                display,
+                passthrough: got,
+                ..
+            } => {
+                assert_eq!(display, &format!(":{}", server.display));
+                assert_eq!(*got, passthrough);
+            }
+            other => panic!("预期 LocalXServerRejected：{other:?}"),
+        }
+    }
 }

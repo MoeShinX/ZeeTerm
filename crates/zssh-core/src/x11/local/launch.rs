@@ -270,6 +270,7 @@ mod tests {
                 host: "127.0.0.1".to_owned(),
                 port: 6000,
                 screen: 0,
+                unix: None,
             },
             cookie: vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02],
             reused: false,

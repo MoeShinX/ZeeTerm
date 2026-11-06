@@ -85,6 +85,10 @@ pub(crate) mod fake {
         pub listening: HashSet<u16>,
         pub env: HashMap<String, String>,
         pub files: HashSet<PathBuf>,
+        /// 能读出内容的文件（`read_file`）。
+        pub contents: HashMap<PathBuf, Vec<u8>>,
+        pub hostname: Option<String>,
+        pub home: Option<PathBuf>,
         pub registry: Vec<RegistryInstall>,
         pub short_paths: HashMap<PathBuf, PathBuf>,
         pub spawned: Vec<(PathBuf, Vec<String>)>,
@@ -132,6 +136,18 @@ pub(crate) mod fake {
 
         fn path_is_file(&self, path: &Path) -> bool {
             self.with(|s| s.files.contains(path))
+        }
+
+        fn read_file(&self, path: &Path) -> Option<Vec<u8>> {
+            self.with(|s| s.contents.get(path).cloned())
+        }
+
+        fn hostname(&self) -> Option<String> {
+            self.with(|s| s.hostname.clone())
+        }
+
+        fn home_dir(&self) -> Option<PathBuf> {
+            self.with(|s| s.home.clone())
         }
 
         fn registry_installs(&self) -> Vec<RegistryInstall> {

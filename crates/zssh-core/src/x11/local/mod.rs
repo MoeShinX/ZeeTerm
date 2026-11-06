@@ -8,6 +8,8 @@
 //! 4. 再看有没有装 VcXsrv，有就由 ZeeTerm 拉起（带随机 cookie，不用 `-ac`）；
 //! 5. 都没有：返回 [`X11Failure::NoLocalXServer`]（`installable` 告诉界面能不能一键安装）。
 //!
+//! Unix（Linux）上不走上面这套：本机 X 服务器就是桌面会话的 `$DISPLAY`（见 [`session`]）。
+//!
 //! 本模块不碰界面。界面入口（一键安装按钮、设置页）在后续卡，调用 [`install::install_vcxsrv`]、
 //! [`status`]、[`prefs`] 里的函数即可。
 
@@ -15,6 +17,7 @@ pub mod detect;
 pub mod install;
 pub mod launch;
 pub mod prefs;
+pub mod session;
 pub mod system;
 pub mod xauth;
 
@@ -41,6 +44,8 @@ pub enum XSource {
     OwnedReused,
     /// 这次由 ZeeTerm 拉起的 VcXsrv。
     OwnedStarted,
+    /// Unix（Linux）：当前桌面会话的 `DISPLAY`。
+    Session,
 }
 
 /// [`prepare`] 的结果。
@@ -60,14 +65,28 @@ pub struct LocalXStatus {
     pub owned_display: Option<u16>,
     /// 能不能由 ZeeTerm 一键安装（目前只有 Windows）。
     pub can_install: bool,
+    /// Unix（Linux）：当前会话的 `DISPLAY`（桌面会话自己的 X 服务器：Xorg / Xwayland），没有就是 `None`。
+    /// Windows 上永远是 `None`。
+    pub session_display: Option<String>,
 }
 
 pub fn status(sys: &dyn LocalSystem, owned: &OwnedRegistry) -> LocalXStatus {
+    if cfg!(unix) {
+        // 桌面会话自己的 X 服务器：没有 VcXsrv 可找，也不去探 6000～6010（Xorg / Xwayland 不开 TCP）。
+        return LocalXStatus {
+            vcxsrv: None,
+            running_displays: Vec::new(),
+            owned_display: None,
+            can_install: false,
+            session_display: session::session_display(sys),
+        };
+    }
     LocalXStatus {
         vcxsrv: detect::find_vcxsrv(sys),
         running_displays: detect::running_displays(sys),
         owned_display: owned.current_display(),
         can_install: cfg!(windows),
+        session_display: None,
     }
 }
 
@@ -78,6 +97,11 @@ pub fn prepare_blocking(
     sys: &dyn LocalSystem,
     owned: &OwnedRegistry,
 ) -> Result<Prepared, X11Failure> {
+    if cfg!(unix) {
+        // Linux 等：本机 X 服务器就是桌面会话的 DISPLAY，没有 VcXsrv 可拉起。
+        return session::prepare(prefs, sys);
+    }
+
     if let DisplayMode::Custom(spec) = &prefs.mode {
         let endpoint = parse_display(spec).map_err(|reason| X11Failure::LaunchFailed {
             reason: Reason::new(
@@ -294,5 +318,69 @@ mod tests {
         assert!(after.vcxsrv.is_some());
         assert_eq!(after.owned_display, Some(20));
         assert_eq!(after.can_install, cfg!(windows));
+    }
+}
+
+/// Unix（Linux）上的入口：本机 X 服务器是桌面会话的 `$DISPLAY`，没有 VcXsrv 可检测 / 安装 / 拉起。
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use std::path::PathBuf;
+
+    use super::detect::fake::FakeSystem;
+    use super::*;
+    use crate::x11::display::UnixSocket;
+
+    fn session(display: Option<&str>) -> FakeSystem {
+        let sys = FakeSystem::default();
+        sys.with(|s| {
+            if let Some(display) = display {
+                s.env.insert("DISPLAY".into(), display.into());
+            }
+            // 就算环境里有 Windows 的东西也不能被用上。
+            s.env
+                .insert("ProgramFiles".into(), "/nonexistent/Program Files".into());
+            s.listening.insert(6000);
+        });
+        sys
+    }
+
+    #[test]
+    fn prepare_follows_the_session_display_and_never_launches_or_probes_tcp() {
+        let sys = session(Some(":4"));
+        let prepared = prepare_blocking(
+            &X11Prefs::default(),
+            &PathBuf::from("/nonexistent/x11"),
+            &sys,
+            &OwnedRegistry::default(),
+        )
+        .expect("跟随 DISPLAY");
+        assert_eq!(prepared.source, XSource::Session);
+        assert_eq!(prepared.route.endpoint.unix, Some(UnixSocket::standard(4)));
+        assert!(sys.with(|s| s.spawned.is_empty()), "不拉起任何东西");
+    }
+
+    #[test]
+    fn prepare_without_display_says_there_is_no_x_server_and_does_not_offer_installing() {
+        let err = prepare_blocking(
+            &X11Prefs::default(),
+            &PathBuf::from("/nonexistent/x11"),
+            &session(None),
+            &OwnedRegistry::default(),
+        )
+        .unwrap_err();
+        assert_eq!(err, X11Failure::NoXDisplay);
+        let advice = err.advice();
+        assert!(!advice.contains("VcXsrv"), "{advice}");
+    }
+
+    #[test]
+    fn status_reports_the_session_display_and_cannot_install_anything() {
+        let owned = OwnedRegistry::default();
+        let with = status(&session(Some(":2")), &owned);
+        assert_eq!(with.session_display.as_deref(), Some(":2"));
+        assert!(!with.can_install);
+        assert!(with.vcxsrv.is_none() && with.running_displays.is_empty());
+        let without = status(&session(None), &owned);
+        assert_eq!(without.session_display, None);
     }
 }
