@@ -776,7 +776,7 @@ mod tests {
             let store = MockStore::new(Mock::GetFails(FailureKind::Absent));
             let err = load_or_create(Some(dir.path()), &store)
                 .err()
-                .expect("损坏文件必须报错");
+                .unwrap_or_else(|| panic!("损坏文件必须报错"));
             assert_eq!(err.key(), rk::VAULT_KEY_FILE_INVALID);
             assert_eq!(std::fs::read(&path).expect("读回"), bad, "不能覆盖坏文件");
             assert_eq!(store.gets.load(Ordering::SeqCst), 0, "不能悄悄改用钥匙串");
@@ -837,7 +837,7 @@ mod tests {
             let store = MockStore::new(Mock::GetFails(kind));
             let err = load_or_create(Some(dir.path()), &store)
                 .err()
-                .expect("必须报错");
+                .unwrap_or_else(|| panic!("必须报错"));
             let expected = if kind == FailureKind::Locked {
                 rk::VAULT_LOCKED
             } else {
@@ -859,7 +859,9 @@ mod tests {
     #[test]
     fn without_a_data_dir_a_missing_service_is_an_error() {
         let store = MockStore::new(Mock::GetFails(FailureKind::Absent));
-        let err = load_or_create(None, &store).err().expect("必须报错");
+        let err = load_or_create(None, &store)
+            .err()
+            .unwrap_or_else(|| panic!("必须报错"));
         assert_eq!(err.key(), rk::VAULT_UNAVAILABLE);
     }
 
@@ -883,14 +885,20 @@ mod tests {
 
         let broken = MockStore::new(Mock::Has("!!!".to_owned()));
         assert_eq!(
-            load_or_create(None, &broken).err().expect("坏编码").key(),
+            load_or_create(None, &broken)
+                .err()
+                .unwrap_or_else(|| panic!("坏编码"))
+                .key(),
             rk::VAULT_CORRUPT
         );
         let short = MockStore::new(Mock::Has(
             base64::engine::general_purpose::STANDARD.encode([1u8; 5]),
         ));
         assert_eq!(
-            load_or_create(None, &short).err().expect("太短").key(),
+            load_or_create(None, &short)
+                .err()
+                .unwrap_or_else(|| panic!("太短"))
+                .key(),
             rk::VAULT_CORRUPT
         );
     }
@@ -954,7 +962,7 @@ mod tests {
                     Err(Reason::new(rk::VAULT_LOCKED, "locked"))
                 })
                 .err()
-                .expect("失败");
+                .unwrap_or_else(|| panic!("失败"));
             assert_eq!(err.key(), rk::VAULT_LOCKED);
         }
         assert_eq!(
@@ -1004,7 +1012,7 @@ mod tests {
         let err = loader
             .get(Duration::from_millis(50), slow)
             .err()
-            .expect("应超时");
+            .unwrap_or_else(|| panic!("应超时"));
         assert_eq!(err.key(), rk::VAULT_TIMEOUT);
         // 工作线程还在跑：再来的调用接着等它，不再起新的。
         let key = loader
@@ -1025,7 +1033,7 @@ mod tests {
                 Err(Reason::new(rk::VAULT_LOCKED, "locked"))
             })
             .err()
-            .expect("失败");
+            .unwrap_or_else(|| panic!("失败"));
         assert_eq!(err.key(), rk::VAULT_LOCKED);
         assert_eq!(loader.state(), KeyState::Failed);
         let key = loader
