@@ -44,6 +44,7 @@ sha2 = "0.10"
 # Tokenway 预设清单的 ed25519 验签（V2-A5）。russh 的 ring 后端本来就在依赖树里，不引新的编译产物。
 ring = "0.17"
 
+# 本地时区偏移（localtime_r）、renameat2 也用它。
 # Unix 上智能体子进程的进程组 / 信号 / 父进程退出信号（killpg、PR_SET_PDEATHSIG），已在依赖树里。
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -59,10 +60,6 @@ keyring = { version = "=3.6.3", default-features = false, features = [
 # 只为了按错误变体区分"没有钥匙串服务"和"钥匙串被锁住"：keyring 把它的错误装在盒子里，
 # 要向下转型才分得出来。版本由 keyring 决定（同一个 crate，不引入新的编译产物）。
 secret-service = { version = "4", default-features = false }
-
-# 本地时区偏移（localtime_r）。
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 # DPAPI（CryptProtectData / CryptUnprotectData）
