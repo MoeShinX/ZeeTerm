@@ -402,11 +402,7 @@ impl Drop for AgentRuntime {
         let child = self.shared.child.lock().ok().and_then(|mut c| c.take());
         if let Some(child) = child {
             if let Some(pid) = child.id() {
-                let mut kill = std::process::Command::new("taskkill");
-                kill.args(["/PID", &pid.to_string(), "/T", "/F"])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null());
-                let _ = crate::process_util::hide_console(&mut kill).status();
+                super::process::kill_tree_now(pid);
             }
         }
     }
@@ -2575,5 +2571,16 @@ pub(crate) mod tests {
             drain(&mut rx)[..],
             [AgentEvent::Retrying { attempt: 1, .. }]
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_home_lives_under_the_workspace_unix() {
+        // 和 Windows 那条同一个约束：隔离用的配置目录在我们的工作目录下，碰不到 ~/.config/opencode。
+        let home = default_config_home(std::path::Path::new("/data/agent-workspace"));
+        assert_eq!(
+            home,
+            std::path::PathBuf::from("/data/agent-workspace/opencode-config")
+        );
     }
 }
