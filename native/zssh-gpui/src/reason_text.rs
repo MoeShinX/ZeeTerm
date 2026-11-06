@@ -145,9 +145,6 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
             "This credential has no imported private key content yet; paste the private key before setting a passphrase"
         }
         "store.identity_secret_not_utf8" => "The decrypted credential is not UTF-8: {cause}",
-        "store.vault_unavailable" => "The system keychain is unavailable: {cause}",
-        "store.vault_corrupt" => "The vault key data is damaged: {cause}",
-        "store.vault_crypto_failed" => "The vault key could not be processed: {cause}",
         "store.order_duplicate_id" => "The order list contains id {id} twice",
         "store.order_hosts_same_group" => "Hosts can only be reordered within the same group",
         "store.order_groups_same_parent" => {

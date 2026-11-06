@@ -433,10 +433,10 @@ pub fn window_hwnd(window: &Window) -> Option<isize> {
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         // `Window` 自己也有一个返回 gpui 窗口句柄的 `window_handle()`：这里要的是系统的那个，写明白。
-        match HasWindowHandle::window_handle(window).ok()?.as_raw() {
+        return match HasWindowHandle::window_handle(window).ok()?.as_raw() {
             RawWindowHandle::Win32(win32) => Some(win32.hwnd.get()),
             _ => None,
-        }
+        };
     }
     #[cfg(not(windows))]
     {
