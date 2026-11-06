@@ -469,12 +469,15 @@ fn show_fatal(text: &str) {
     let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
     for (program, args) in fatal_dialog_commands(text, &desktop) {
         // 没有图形会话时这些程序会马上失败退出；弹出来的会等用户点掉再返回。
-        let shown = std::process::Command::new(program)
+        let mut command = std::process::Command::new(program);
+        command
             .args(&args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+            .stderr(std::process::Stdio::null());
+        // 非 Windows 上这是空操作；留着是为了让「子进程都隐藏控制台窗口」的守卫一视同仁。
+        zssh_core::process_util::hide_console(&mut command);
+        let shown = command.status();
         if shown.is_ok_and(|status| status.success()) {
             return;
         }

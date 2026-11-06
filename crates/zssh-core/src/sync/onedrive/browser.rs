@@ -139,20 +139,22 @@ pub(crate) fn shell_open(url: &str) -> Result<(), String> {
 #[cfg(not(windows))]
 fn spawn_detached(program: &std::ffi::OsStr, args: &[&str]) -> Result<(), String> {
     use std::process::{Command, Stdio};
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|err| {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                // 这个函数返回纯文本错误，和上面 Windows 那几条一样；调用方原样显示。
-                "没有找到 xdg-open，请安装 xdg-utils 后再试".to_owned()
-            } else {
-                format!("没能启动 xdg-open：{err}")
-            }
-        })?;
+        .stderr(Stdio::null());
+    // 非 Windows 上这是空操作；留着是为了让「子进程都隐藏控制台窗口」的守卫一视同仁。
+    crate::process_util::hide_console(&mut command);
+    let mut child = command.spawn().map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            // 这个函数返回纯文本错误，和上面 Windows 那几条一样；调用方原样显示。
+            "没有找到 xdg-open，请安装 xdg-utils 后再试".to_owned()
+        } else {
+            format!("没能启动 xdg-open：{err}")
+        }
+    })?;
     let _ = std::thread::Builder::new()
         .name("xdg-open-reaper".to_owned())
         .spawn(move || {
