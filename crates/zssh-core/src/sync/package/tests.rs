@@ -15,6 +15,7 @@ fn group(uid: &str, name: &str) -> GroupRecord {
 fn package_roundtrips_and_rejects_newer_schema_version() {
     let mut snapshot = SyncSnapshot::empty("dev-a", 1_760_000_000);
     snapshot.groups.push(group("g1", "生产"));
+    snapshot.sort_canonical();
     let bytes = snapshot.to_json().expect("序列化");
     assert_eq!(SyncSnapshot::parse(&bytes).expect("解析"), snapshot);
 
@@ -65,6 +66,7 @@ fn local_key_paths_bump_the_version_and_are_not_put_on_the_wire() {
 fn snapshot_seals_and_opens_with_the_master_password() {
     let mut snapshot = SyncSnapshot::empty("dev-a", 1_760_000_000);
     snapshot.groups.push(group("g1", "生产"));
+    snapshot.sort_canonical();
     let sealed = snapshot.seal("master-password").expect("加密");
     assert_eq!(
         SyncSnapshot::open(&sealed, "master-password").expect("解密"),

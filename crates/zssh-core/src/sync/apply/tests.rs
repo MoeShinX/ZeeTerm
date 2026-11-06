@@ -353,7 +353,10 @@ fn protocol_fields_are_written_and_read_back_with_unknown_option_keys_intact() {
         exported.hosts[0].protocol_options,
         snapshot.hosts[0].protocol_options
     );
-    assert_eq!(exported.schema_version, 2);
+    assert_eq!(
+        exported.schema_version,
+        crate::sync::package::MAX_SNAPSHOT_VERSION
+    );
 }
 
 #[test]

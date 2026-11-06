@@ -103,15 +103,16 @@ struct Exported<'a> {
 }
 
 /// 从导出文件的明文里取本机私钥路径。损坏或没有都按空处理。
-fn parse_identity_paths(plaintext: &[u8]) -> Vec<super::local_extras::IdentityPathRecord> {
+fn parse_identity_paths(plaintext: &[u8]) -> Option<Vec<super::local_extras::IdentityPathRecord>> {
     #[derive(Deserialize)]
     struct Extras {
         #[serde(default)]
-        zeeterm_identity_paths: Vec<super::local_extras::IdentityPathRecord>,
+        zeeterm_identity_paths: Option<Vec<super::local_extras::IdentityPathRecord>>,
     }
+    // `None` 表示旧格式：路径还在 identities[].key_path 里，不能覆盖。
     serde_json::from_slice::<Extras>(plaintext)
-        .map(|extras| extras.zeeterm_identity_paths)
-        .unwrap_or_default()
+        .ok()
+        .and_then(|extras| extras.zeeterm_identity_paths)
 }
 
 /// 从导出文件的明文里取同步账号设置。没有、或者格式认不出来都当没有（不让导入因此失败）。
@@ -204,17 +205,21 @@ impl SyncEngine<'_> {
         let mut incoming = SyncSnapshot::parse(&plaintext)?;
         let accounts = parse_accounts(&plaintext);
         let local_paths = parse_identity_paths(&plaintext);
-        for identity in &mut incoming.identities {
-            identity.key_path = local_paths
-                .iter()
-                .find(|record| record.uid == identity.uid)
-                .map(|record| record.key_path.clone());
+        // 旧离线包没有附加字段：保留 identities[].key_path 里原本的路径。
+        // 新格式才用附加记录覆盖（新格式的 key_path 本身不序列化）。
+        if let Some(paths) = &local_paths {
+            for identity in &mut incoming.identities {
+                identity.key_path = paths
+                    .iter()
+                    .find(|record| record.uid == identity.uid)
+                    .map(|record| record.key_path.clone());
+            }
         }
         drop(plaintext);
         let mut report = self.import_snapshot(incoming, mode)?;
         // 快照新建的记录已经把路径带进来；已有记录只补空路径，不覆盖用户改过的值。
         let _ = super::local_extras::LocalExtras {
-            identity_paths: local_paths,
+            identity_paths: local_paths.unwrap_or_default(),
             ..Default::default()
         }
         .restore(self.db, &BTreeMap::new())?;
@@ -429,6 +434,58 @@ mod tests {
             .export_offline_with(PASSWORD, fast())
             .unwrap();
         (source, bytes)
+    }
+
+    #[test]
+    fn an_old_offline_package_keeps_the_key_path_embedded_in_the_identity() {
+        let sealer = TestSealer(1);
+        let source = Machine::new("old-path-source");
+        source
+            .db
+            .identity_save(&IdentityDraft {
+                id: None,
+                name: "部署密钥".to_owned(),
+                kind: IdentityKind::KeyFile,
+                key_path: Some("/synthetic/keys/id_ed25519".to_owned()),
+                secret: None,
+                passphrase: None,
+            })
+            .unwrap();
+        let bytes = source
+            .engine(&sealer, "dev-a")
+            .export_offline_with(PASSWORD, fast())
+            .unwrap();
+
+        // 模拟旧版离线包：路径在 identities[].key_path 里，没有附加字段。
+        let plaintext = crate::sync::crypto::open(&bytes, PASSWORD).unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&plaintext).unwrap();
+        // 去掉新版附加字段，模拟旧包：路径只嵌在 identity 里。
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("zeeterm_identity_paths");
+        value["identities"][0]["key_path"] = serde_json::json!("/synthetic/keys/id_ed25519");
+        let legacy_plaintext = serde_json::to_vec(&value).unwrap();
+        let legacy = crate::sync::crypto::seal_with(
+            &legacy_plaintext,
+            PASSWORD,
+            fast(),
+            &[7u8; crate::sync::crypto::SALT_BYTES],
+            &[9u8; crate::sync::crypto::NONCE_BYTES],
+        )
+        .unwrap();
+
+        let target = Machine::new("old-path-target");
+        target
+            .engine(&sealer, "dev-b")
+            .import_offline(&legacy, PASSWORD, OfflineImportMode::Merge)
+            .unwrap();
+        let identity = target.db.identity_list().unwrap().pop().expect("导入凭据");
+        assert_eq!(
+            identity.key_path.as_deref(),
+            Some("/synthetic/keys/id_ed25519"),
+            "旧离线包嵌入的路径不能被空附加列表覆盖"
+        );
     }
 
     #[test]

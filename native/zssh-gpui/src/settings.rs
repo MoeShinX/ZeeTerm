@@ -428,10 +428,12 @@ fn show_fatal(text: &str) {
     eprintln!("{text}");
 }
 
+#[cfg(target_os = "macos")]
 enum AlreadyRunningMsg {
     Message,
 }
 
+#[cfg(target_os = "macos")]
 impl crate::i18n::Msg for AlreadyRunningMsg {
     fn zh(&self) -> &'static str {
         match self {

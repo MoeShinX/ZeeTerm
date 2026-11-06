@@ -172,11 +172,15 @@ fn legacy_client_refuses_every_package_that_carries_new_fields() {
     ] {
         let snapshot = snapshot_with(hosts);
         let bytes = snapshot.to_json().unwrap();
-        assert_eq!(json_of(&snapshot)["schema_version"], 2, "{label}");
+        assert_eq!(
+            json_of(&snapshot)["schema_version"],
+            crate::sync::package::SNAPSHOT_VERSION_LOCAL_KEY_PATH,
+            "{label}"
+        );
         assert_eq!(
             legacy_0214::parse(&bytes),
             Err(legacy_0214::ParseError::TooNew {
-                found: 2,
+                found: crate::sync::package::SNAPSHOT_VERSION_LOCAL_KEY_PATH,
                 supported: 1
             }),
             "{label}：0.2.14 必须拒绝，而不是丢字段"
@@ -191,7 +195,7 @@ fn legacy_client_refuses_every_package_that_carries_new_fields() {
 }
 
 #[test]
-fn plain_ssh_packages_stay_version_one_and_legacy_reads_them_losslessly() {
+fn plain_ssh_packages_use_the_local_path_boundary_and_old_clients_refuse() {
     let mut snapshot = snapshot_with(vec![host("h1", "web-1"), host("h2", "web-2")]);
     snapshot.groups.push(GroupRecord {
         uid: "g1".to_owned(),
@@ -203,18 +207,23 @@ fn plain_ssh_packages_stay_version_one_and_legacy_reads_them_losslessly() {
     });
     snapshot.sort_canonical();
     let value = json_of(&snapshot);
-    assert_eq!(value["schema_version"], 1, "只有普通 SSH 主机就仍写旧版本");
+    assert_eq!(
+        value["schema_version"],
+        crate::sync::package::SNAPSHOT_VERSION_LOCAL_KEY_PATH,
+        "新版统一写 local-path 边界，不能让旧客户端误读缺路径的包"
+    );
     for host in value["hosts"].as_array().unwrap() {
         for key in NEW_KEYS {
-            assert!(host.get(key).is_none(), "旧格式的主机记录不该出现 {key}");
+            assert!(host.get(key).is_none(), "普通 SSH 主机不该出现 {key}");
         }
     }
 
-    let legacy = legacy_0214::parse(&snapshot.to_json().unwrap()).expect("0.2.14 照常能读");
-    assert_eq!(legacy.hosts.len(), 2);
-    // 0.2.14 读进去再原样写回：和新版写的一模一样，什么都没丢。
-    let rewritten = serde_json::to_value(&legacy).unwrap();
-    assert_eq!(rewritten, value);
+    // 旧客户端必须拒绝，而不是把缺失的 v4 字段当成不存在再写回。
+    assert!(matches!(
+        legacy_0214::parse(&snapshot.to_json().unwrap()),
+        Err(legacy_0214::ParseError::TooNew { found, supported })
+            if found == crate::sync::package::SNAPSHOT_VERSION_LOCAL_KEY_PATH && supported == 1
+    ));
 }
 
 #[test]
@@ -274,7 +283,11 @@ fn new_client_reads_packages_written_by_the_legacy_client() {
     assert_eq!(host.protocol_options, None);
     assert!(host.legacy_algorithms, "老字段原样");
     assert!(!host.needs_protocol_format());
-    assert_eq!(parsed.required_version(), 1);
+    // 读入旧包后，新版再写会统一升到 local-path 边界。
+    assert_eq!(
+        parsed.required_version(),
+        crate::sync::package::SNAPSHOT_VERSION_LOCAL_KEY_PATH
+    );
 }
 
 #[test]
@@ -288,7 +301,10 @@ fn new_to_new_roundtrip_keeps_every_field_including_unknown_option_keys() {
     let bytes = snapshot.to_json().unwrap();
     let parsed = SyncSnapshot::parse(&bytes).unwrap();
     assert_eq!(parsed, snapshot);
-    assert_eq!(parsed.schema_version, 2);
+    assert_eq!(
+        parsed.schema_version,
+        crate::sync::package::SNAPSHOT_VERSION_LOCAL_KEY_PATH
+    );
     let telnet = parsed.hosts.iter().find(|h| h.uid == "h-telnet").unwrap();
     assert_eq!(
         telnet.protocol_options.as_ref().unwrap()["telnet"]["future_key"],
@@ -299,19 +315,31 @@ fn new_to_new_roundtrip_keeps_every_field_including_unknown_option_keys() {
 }
 
 #[test]
-fn the_version_follows_the_content_so_legacy_clients_recover_when_it_goes_away() {
+fn the_version_never_drops_below_the_local_path_boundary() {
+    // 私钥路径不在线上传输，解析后字段就是 None；版本不能因此降回旧值，
+    // 否则旧客户端会重新接受缺路径的包。这里模拟“内容变少”也必须保持 v4。
     let mut snapshot = snapshot_with(vec![host("h1", "web-1"), telnet_host()]);
-    assert_eq!(snapshot.required_version(), 2);
+    assert_eq!(
+        snapshot.required_version(),
+        crate::sync::package::SNAPSHOT_VERSION_LOCAL_KEY_PATH
+    );
     snapshot.hosts.retain(|h| h.protocol == "ssh");
     snapshot.sort_canonical();
-    assert_eq!(snapshot.schema_version, 1);
-    assert!(legacy_0214::parse(&snapshot.to_json().unwrap()).is_ok());
+    assert_eq!(
+        snapshot.schema_version,
+        crate::sync::package::SNAPSHOT_VERSION_LOCAL_KEY_PATH
+    );
+    assert!(matches!(
+        legacy_0214::parse(&snapshot.to_json().unwrap()),
+        Err(legacy_0214::ParseError::TooNew { .. })
+    ));
 
-    // 在 SSH 主机上关掉 X11 也一样。
     let mut snapshot = snapshot_with(vec![x11_host()]);
-    assert_eq!(snapshot.required_version(), 2);
     snapshot.hosts[0].x11_forwarding = false;
-    assert_eq!(snapshot.required_version(), 1);
+    assert_eq!(
+        snapshot.required_version(),
+        crate::sync::package::SNAPSHOT_VERSION_LOCAL_KEY_PATH
+    );
 }
 
 #[test]
@@ -370,11 +398,15 @@ fn legacy_client_refuses_a_package_with_builtin_assistant_content() {
     ] {
         snapshot.sort_canonical();
         let bytes = snapshot.to_json().unwrap();
-        assert_eq!(json_of(&snapshot)["schema_version"], 3, "{label}");
+        assert_eq!(
+            json_of(&snapshot)["schema_version"],
+            crate::sync::package::SNAPSHOT_VERSION_LOCAL_KEY_PATH,
+            "{label}"
+        );
         assert_eq!(
             legacy_0214::parse(&bytes),
             Err(legacy_0214::ParseError::TooNew {
-                found: 3,
+                found: crate::sync::package::SNAPSHOT_VERSION_LOCAL_KEY_PATH,
                 supported: 1
             }),
             "{label}：0.2.14 必须拒绝，而不是丢数据"
@@ -409,10 +441,15 @@ fn without_the_version_bump_the_legacy_client_would_drop_the_endpoints() {
 fn plain_packages_stay_byte_identical_to_the_old_format() {
     let snapshot = snapshot_with(vec![host("h1", "web-1")]);
     let value = json_of(&snapshot);
-    assert_eq!(value["schema_version"], 1);
+    assert_eq!(
+        value["schema_version"],
+        crate::sync::package::SNAPSHOT_VERSION_LOCAL_KEY_PATH
+    );
     assert!(value.get("ai_endpoints").is_none());
-    let legacy = legacy_0214::parse(&snapshot.to_json().unwrap()).expect("0.2.14 照常能读");
-    assert_eq!(serde_json::to_value(&legacy).unwrap(), value);
+    assert!(matches!(
+        legacy_0214::parse(&snapshot.to_json().unwrap()),
+        Err(legacy_0214::ParseError::TooNew { .. })
+    ));
 }
 
 #[test]
@@ -423,8 +460,9 @@ fn builtin_content_roundtrips_and_keeps_unknown_option_keys() {
     snapshot.ai_endpoints.push(endpoint);
     snapshot.sort_canonical();
     assert_eq!(
-        snapshot.schema_version, 3,
-        "ZeePilot + 协议字段同时有，取更高的版本"
+        snapshot.schema_version,
+        crate::sync::package::SNAPSHOT_VERSION_LOCAL_KEY_PATH,
+        "新版统一写 local-path 边界"
     );
     let bytes = snapshot.to_json().unwrap();
     let parsed = SyncSnapshot::parse(&bytes).unwrap();

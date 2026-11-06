@@ -212,6 +212,25 @@ pub enum CloseScope {
 
 use crate::i18n::{Msg, t};
 
+/// 启动时资料库还没打开：只画这一页，主机、会话、恢复提示都不进元素树。
+enum StartupMsg {
+    Opening,
+}
+
+impl Msg for StartupMsg {
+    fn zh(&self) -> &'static str {
+        match self {
+            Self::Opening => "正在打开资料库…",
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match self {
+            Self::Opening => "Opening the data store…",
+        }
+    }
+}
+
 /// 主窗口外壳自己的文案（搜索框占位、标签动作的提示、调试用的隐私检查说明）。
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)] // 有些键只在测试 / 调试构建里用到
@@ -291,6 +310,8 @@ pub struct MainWindow {
     pub(super) store: HostStore,
     /// 上一次看到的库版本（`PRAGMA data_version`）：变了才重读主机库（审查 M-14）。
     pub(super) db_version: Option<i64>,
+    /// 资料库还没就绪时只显示加载/错误页；启动锁和偏好要等库打开后再应用。
+    startup_ready: bool,
     pub(super) tree: TreeState,
     pub(super) tree_query: Entity<InputState>,
     pub(super) vault_query: Entity<InputState>,
@@ -511,6 +532,7 @@ impl MainWindow {
 
         let width_now = f32::from(window.viewport_size().width);
         let store = HostStore::open();
+        let startup_ready = !store.is_pending_open();
         let aside_width = panel_width::sanitize_stored(
             store
                 .db()
@@ -530,9 +552,12 @@ impl MainWindow {
         let pref_sliders = settings_page::PrefSliders::new(&prefs, cx);
         let app_lock = app_lock_ui::AppLockUi::load(store.db().ok());
         crate::tray::set_lock_menu(app_lock.config.status.is_enabled());
-        // “启动时锁定”：第一帧就是锁屏页（V2-U35）。这时窗口还没画过，托盘和单实例唤起也只会看到
-        // 锁屏页；会话、传输没有任何东西在启动时自动开，恢复提示等也等解锁后再出（见 `tick`）。
-        app_lock_ui::apply_start_lock(&app_lock.config);
+        // “启动时锁定”：第一帧就是锁屏页（V2-U35）。资料库在后台打开时先显示加载页，
+        // 等库就绪后在 `finish_startup` 里读到真实锁配置再决定是否上锁，绝不能拿默认配置
+        // 当成“没开启动锁”直接放行。
+        if startup_ready {
+            app_lock_ui::apply_start_lock(&app_lock.config);
+        }
         let keychain = KeychainUi::new(window, cx);
         let proxy_ui = ProxyUi::new(window, cx);
         let bars = bars::BarUi::new(window, cx);
@@ -556,6 +581,7 @@ impl MainWindow {
             nav: ViewNav::restored(saved_view),
             store,
             db_version: None,
+            startup_ready,
             tree: TreeState {
                 width: window_state::clamp_tree_width(layout.tree_width, width_now),
                 collapsed: layout.tree_collapsed,
@@ -670,8 +696,45 @@ impl MainWindow {
 
     // ---- 节拍 ----
 
+    /// 资料库首次就绪：先应用启动锁和启动偏好，再让正常节拍开放内容。
+    /// 只在启动时调用一次；后续配置重读不会再把已解锁的用户锁回去。
+    fn finish_startup(&mut self, cx: &mut Context<Self>) {
+        self.startup_ready = true;
+        self.reload_lock_config();
+        crate::tray::set_lock_menu(self.app_lock.config.status.is_enabled());
+        app_lock_ui::apply_start_lock(&self.app_lock.config);
+        self.reload_prefs();
+        if let Ok(db) = self.store.db() {
+            self.aside_width = panel_width::sanitize_stored(
+                db.setting_get(panel_width::PanelKind::Aside.setting_key())
+                    .ok()
+                    .flatten()
+                    .and_then(|raw| panel_width::parse_stored(Some(&raw))),
+                panel_width::ASIDE_DEFAULT,
+            );
+        }
+        self.db_version = self.store.data_version();
+        self.store.reload();
+        cx.notify();
+    }
+
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.tick_count += 1;
+        // 后台开库期间每个节拍只做一次低成本轮询；库就绪后先应用启动锁和偏好，
+        // 再让下面的正常节拍接触主机、恢复和自动连接。
+        if !self.startup_ready {
+            let adopted = self.store.reload();
+            if adopted || !self.store.is_pending_open() {
+                self.finish_startup(cx);
+                // 启动锁如果生效，这一拍只守锁屏页；主机、恢复和自动连接都等解锁后的节拍。
+                if crate::app_lock::is_locked() {
+                    self.lock_tick(window, cx);
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
         self.lock_tick(window, cx);
         let mut changed = false;
         // 主机库：别的连接（其它窗口、同步、备份恢复）改过才重读，不再每 2 秒无条件跑 12 条 SQL；
@@ -1773,6 +1836,21 @@ pub enum CopyField {
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 资料库还在后台打开：只画加载页。主机树、恢复提示、终端和启动锁配置都不在这一帧里。
+        if !self.startup_ready {
+            let tokens = Tokens::current(cx);
+            return div()
+                .id("main-window-startup")
+                .flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .bg(tokens.background)
+                .text_color(tokens.text)
+                .ui_font_fallbacks(cx)
+                .child(t(StartupMsg::Opening))
+                .into_any_element();
+        }
         // 锁着：整个窗口只画一页不透明的锁屏页，下面的终端、主机树、AI 面板这一帧根本不进元素树（V2-U26）。
         if crate::app_lock::is_locked() {
             self.window_width = f32::from(window.viewport_size().width);

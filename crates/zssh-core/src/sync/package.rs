@@ -492,23 +492,14 @@ impl SyncSnapshot {
                 == Some("builtin")
     }
 
-    /// 按内容算出写这份快照该用的明文格式版本：带内置助手内容用 [`SNAPSHOT_VERSION_BUILTIN_AI`]，
-    /// 其次有任何带新字段的主机用 [`SNAPSHOT_VERSION_PROTOCOLS`]，否则用 [`SNAPSHOT_VERSION`]
-    /// （旧版本照常能读）。
+    /// 新版写出的快照统一至少 [`SNAPSHOT_VERSION_LOCAL_KEY_PATH`]。
+    ///
+    /// 私钥路径被 skip_serializing，解析或合并后的快照里这个字段已经是 None；
+    /// 如果版本再按内容降回 v1–v3，旧客户端就会重新接受缺路径的包并可能清空本机绑定。
+    /// 因此“路径属于本机、不在云端传输”必须是稳定的协议能力，不能靠一个不序列化的字段推断。
+    /// 旧客户端读到 v4 会明确拒绝，而不是静默丢字段。
     pub fn required_version(&self) -> u32 {
-        if self
-            .identities
-            .iter()
-            .any(|identity| identity.key_path.is_some())
-        {
-            SNAPSHOT_VERSION_LOCAL_KEY_PATH
-        } else if self.needs_builtin_ai_format() {
-            SNAPSHOT_VERSION_BUILTIN_AI
-        } else if self.hosts.iter().any(HostRecord::needs_protocol_format) {
-            SNAPSHOT_VERSION_PROTOCOLS
-        } else {
-            SNAPSHOT_VERSION
-        }
+        SNAPSHOT_VERSION_LOCAL_KEY_PATH
     }
 
     pub fn to_json(&self) -> Result<Vec<u8>, SyncError> {

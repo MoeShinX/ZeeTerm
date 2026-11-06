@@ -213,6 +213,18 @@ impl HostStore {
         store
     }
 
+    /// 后台开库还在进行：主窗口据此显示加载页，不提前展示主机或恢复提示。
+    pub fn is_pending_open(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.pending_open.is_some()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
     /// 库有没有被别的连接改过（SQLite `PRAGMA data_version`）；读不出来时 `None`。
     ///
     /// 主窗口用它决定要不要重读，不再每 2 秒无条件跑 12 条查询（审查 M-14）。
@@ -222,7 +234,10 @@ impl HostStore {
 
     /// 从库里重读；返回内容有没有变（界面据此决定要不要重绘）。读不出来时保留旧内容。
     pub fn reload(&mut self) -> bool {
+        #[cfg(target_os = "macos")]
         let mut adopted = false;
+        #[cfg(not(target_os = "macos"))]
+        let adopted = false;
         #[cfg(target_os = "macos")]
         if let Some(receiver) = self.pending_open.take() {
             match receiver.try_recv() {

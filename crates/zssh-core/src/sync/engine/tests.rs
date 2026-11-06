@@ -1651,7 +1651,10 @@ async fn protocol_hosts_sync_between_computers_and_the_package_version_follows_t
         .sync(&storage, PASSWORD, None)
         .await
         .expect("A 同步");
-    assert_eq!(package_version(&storage), 1);
+    assert_eq!(
+        package_version(&storage),
+        u64::from(crate::sync::package::MAX_SNAPSHOT_VERSION)
+    );
 
     // 加 Telnet 主机、串口主机，再给一台 SSH 主机开 X11：包升到 2。
     let mut telnet = ProtocolSettings::new(Protocol::Telnet);
@@ -1683,8 +1686,8 @@ async fn protocol_hosts_sync_between_computers_and_the_package_version_follows_t
         .expect("A 再同步");
     assert_eq!(
         package_version(&storage),
-        2,
-        "有新字段就用新版本，旧客户端会拒绝"
+        u64::from(crate::sync::package::MAX_SNAPSHOT_VERSION),
+        "新版本统一使用 local-path 边界，旧客户端会拒绝"
     );
 
     // B 拿到的协议设置一个字段不少。
@@ -1730,7 +1733,10 @@ async fn protocol_hosts_sync_between_computers_and_the_package_version_follows_t
         .sync(&storage, PASSWORD, None)
         .await
         .expect("A 第三次同步");
-    assert_eq!(package_version(&storage), 1);
+    assert_eq!(
+        package_version(&storage),
+        u64::from(crate::sync::package::MAX_SNAPSHOT_VERSION)
+    );
 }
 
 #[tokio::test]
@@ -1750,7 +1756,10 @@ async fn a_package_from_the_legacy_client_does_not_touch_local_protocol_settings
         .sync(&storage, PASSWORD, None)
         .await
         .expect("旧客户端上传");
-    assert_eq!(package_version(&storage), 1);
+    assert_eq!(
+        package_version(&storage),
+        u64::from(crate::sync::package::MAX_SNAPSHOT_VERSION)
+    );
 
     let engine_new = SyncEngine::new(&db_new, &sealer_new, "new", &dir_new, None, None);
     engine_new
@@ -1770,7 +1779,10 @@ async fn a_package_from_the_legacy_client_does_not_touch_local_protocol_settings
         .sync(&storage, PASSWORD, None)
         .await
         .expect("新客户端上传");
-    assert_eq!(package_version(&storage), 2);
+    assert_eq!(
+        package_version(&storage),
+        u64::from(crate::sync::package::MAX_SNAPSHOT_VERSION)
+    );
 
     // 旧客户端（这里的 0.2.14 逻辑见 package::compat_tests）读到它会被拒绝；
     // 新客户端自己再同步一次不会把 Telnet 主机变回 SSH。

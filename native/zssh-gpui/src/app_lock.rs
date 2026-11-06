@@ -416,10 +416,10 @@ pub fn verify_windows_user(window: Option<isize>) -> OsCheck {
     }
     #[cfg(windows)]
     {
-        return zssh_core::app_lock::verify_os_user(
+        zssh_core::app_lock::verify_os_user(
             &zssh_core::app_lock::WindowsVerifier::new(window),
             message,
-        );
+        )
     }
     #[cfg(not(windows))]
     {

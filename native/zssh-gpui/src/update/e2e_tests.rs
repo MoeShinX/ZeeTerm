@@ -6,6 +6,8 @@
 //! 以及签名不对、版本不符、包被改、下载中断、清单 404、已是最新、公钥未配置、取消 这些该拒绝的情形：
 //! 每一种都有清楚的中文提示，缓存目录里一个文件都不留，启动桩一次都不被调用。
 
+#![allow(clippy::expect_used)]
+
 // 不写 `use super::*`：父模块 glob 进来的 `gpui_kit::test` 会盖掉内置的 `#[test]` 属性宏。
 use super::{
     CheckKind, Checked, DownloadContext, DownloadEvent, DownloadFailure, InstallState,

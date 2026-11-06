@@ -14,7 +14,7 @@ use super::guard::{deletion_plan, DeletionDecision};
 use super::merge::merge;
 use super::package::{
     AiEndpointRecord, IdentityRecord, SyncSnapshot, Tombstone, ENTITY_AI_ENDPOINT,
-    MAX_SNAPSHOT_VERSION, SNAPSHOT_VERSION_BUILTIN_AI,
+    MAX_SNAPSHOT_VERSION,
 };
 use super::sealer::DpapiSealer;
 use super::settings::validate_value;
@@ -106,7 +106,7 @@ async fn endpoints_and_keys_sync_to_the_other_computer_and_the_version_follows_t
     db_a.setting_set("ai_default_agent", "\"claude\"").unwrap();
     engine_a.sync(&storage, PASSWORD, None).await.unwrap();
     let before = package_json(&storage);
-    assert_eq!(before["schema_version"], 1);
+    assert_eq!(before["schema_version"], MAX_SNAPSHOT_VERSION);
     assert!(before.get("ai_endpoints").is_none(), "没有接口就不写这个键");
 
     // 加接口 + Key + 默认接口：包升到 3，B 拿到的一个字段不少，Key 能解出来。
@@ -119,7 +119,7 @@ async fn endpoints_and_keys_sync_to_the_other_computer_and_the_version_follows_t
     let report = engine_a.sync(&storage, PASSWORD, None).await.unwrap();
     assert_eq!(report.status, SyncStatus::Completed);
     let after = package_json(&storage);
-    assert_eq!(after["schema_version"], SNAPSHOT_VERSION_BUILTIN_AI);
+    assert_eq!(after["schema_version"], MAX_SNAPSHOT_VERSION);
     assert_eq!(after["ai_endpoints"][0]["name"], "主力");
     // Key 不在接口记录里，在凭据记录里（和主机密码同一套加密）。
     assert!(!after["ai_endpoints"].to_string().contains("sk-sync-0001"));
@@ -175,9 +175,9 @@ async fn endpoints_and_keys_sync_to_the_other_computer_and_the_version_follows_t
     assert!(db_b.identity_list().unwrap().is_empty(), "Key 凭据跟着删");
     assert_eq!(db_b.ai_builtin_default().unwrap(), None);
 
-    // 内容没了，包回到旧格式（Z-SSH 0.2.14 又能同步）。
+    // 内容没了，但协议边界仍保持 v4；旧客户端不能因此重新读取。
     let back = package_json(&storage);
-    assert_eq!(back["schema_version"], 1);
+    assert_eq!(back["schema_version"], MAX_SNAPSHOT_VERSION);
     assert!(back.get("ai_endpoints").is_none());
 }
 
@@ -198,7 +198,10 @@ async fn a_package_from_an_older_client_has_no_endpoints_and_leaves_local_ones_a
     engine_new.sync(&storage, PASSWORD, None).await.unwrap();
     db_new.ai_endpoint_save(&draft("本机", None)).unwrap();
     engine_new.sync(&storage, PASSWORD, None).await.unwrap();
-    assert_eq!(package_json(&storage)["schema_version"], 3);
+    assert_eq!(
+        package_json(&storage)["schema_version"],
+        MAX_SNAPSHOT_VERSION
+    );
     engine_new.sync(&storage, PASSWORD, None).await.unwrap();
     assert_eq!(db_new.ai_endpoint_list().unwrap().len(), 1);
 }
@@ -212,10 +215,11 @@ fn parsing_a_v1_package_without_the_key_gives_no_endpoints() {
     });
     let snapshot = SyncSnapshot::parse(&serde_json::to_vec(&raw).unwrap()).unwrap();
     assert!(snapshot.ai_endpoints.is_empty());
-    assert_eq!(snapshot.required_version(), 1);
-    // 写回去仍然没有这个键，字节级和老格式一致。
+    assert_eq!(snapshot.required_version(), MAX_SNAPSHOT_VERSION);
+    // 写回去仍然没有这个键，但协议边界统一提升到 v4。
     let rewritten: Value = serde_json::from_slice(&snapshot.to_json().unwrap()).unwrap();
-    assert_eq!(rewritten, raw);
+    assert!(rewritten.get("ai_endpoints").is_none());
+    assert_eq!(rewritten["schema_version"], MAX_SNAPSHOT_VERSION);
 }
 
 #[test]
@@ -239,30 +243,26 @@ fn a_newer_package_than_this_version_is_still_refused() {
 }
 
 #[test]
-fn any_builtin_content_raises_the_version() {
+fn every_new_snapshot_stays_at_the_local_path_boundary() {
     let mut snapshot = SyncSnapshot::empty("dev-a", NOW);
-    assert_eq!(snapshot.required_version(), 1);
+    assert_eq!(snapshot.required_version(), MAX_SNAPSHOT_VERSION);
     snapshot
         .settings
         .insert("ai_default_agent".to_owned(), json!("claude"));
-    assert_eq!(snapshot.required_version(), 1);
+    assert_eq!(snapshot.required_version(), MAX_SNAPSHOT_VERSION);
     snapshot
         .settings
         .insert("ai_default_agent".to_owned(), json!("builtin"));
-    assert_eq!(
-        snapshot.required_version(),
-        3,
-        "默认智能体是 builtin 老客户端不认识"
-    );
+    assert_eq!(snapshot.required_version(), MAX_SNAPSHOT_VERSION);
     snapshot.settings.clear();
     snapshot.ai_endpoints.push(record("e1", "甲", 10, "dev-a"));
-    assert_eq!(snapshot.required_version(), 3);
+    assert_eq!(snapshot.required_version(), MAX_SNAPSHOT_VERSION);
     snapshot.ai_endpoints.clear();
     snapshot.settings.insert(
         "ai_builtin_default".to_owned(),
         json!({"endpoint_uid": "e1", "model": null}),
     );
-    assert_eq!(snapshot.required_version(), 3);
+    assert_eq!(snapshot.required_version(), MAX_SNAPSHOT_VERSION);
 }
 
 #[test]
