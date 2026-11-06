@@ -821,12 +821,12 @@ fn open_window_with(cx: &mut App, focus: bool, preset: Option<Checked>) {
             title: Some(window_title().into()),
             ..gpui_kit::component::TitleBar::title_bar_options()
         }),
-        ..Default::default()
+        ..crate::window_frame::client_options()
     };
     let _ = cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| UpdateDemo::new(window, cx, ime_key, preset));
         window.set_window_title(window_title());
-        window.on_window_should_close(cx, move |_window, _cx| {
+        crate::window_frame::on_should_close(window, cx, move |_window, _cx| {
             crate::ime::window_destroyed(&close_key);
             true
         });
