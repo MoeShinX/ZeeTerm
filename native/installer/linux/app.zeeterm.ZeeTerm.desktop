@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=ZeeTerm
+GenericName=SSH Client
+GenericName[zh_CN]=SSH 客户端
+Comment=SSH, SFTP and serial terminal client
+Comment[zh_CN]=SSH、SFTP 与串口终端客户端
+Exec=zeeterm
+Icon=app.zeeterm.ZeeTerm
+Terminal=false
+Categories=System;TerminalEmulator;Network;
+Keywords=ssh;sftp;terminal;telnet;serial;remote;shell;console;
+Keywords[zh_CN]=ssh;sftp;终端;串口;远程;
+StartupNotify=true
+StartupWMClass=app.zeeterm.ZeeTerm
