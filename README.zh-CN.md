@@ -71,7 +71,9 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 - **Debian / Ubuntu（`.deb`）：** 从 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载 `ZeeTerm-<版本>-linux-x86_64.deb`，执行 `sudo apt install ./ZeeTerm-<版本>-linux-x86_64.deb`；卸载用 `sudo apt remove zeeterm`。
 - **其他发行版（`.tar.gz`）：** 下载 `ZeeTerm-<版本>-linux-x86_64.tar.gz`，解压后在目录里运行 `./install.sh`。默认装到 `~/.local`，不需要 root（`--prefix <目录>` 可改位置）；卸载运行 `~/.local/share/zeeterm/uninstall.sh`。也可以不安装，直接在解压目录里运行 `./zeeterm`。
 
-两种包都会装上应用菜单项和图标（应用标识 `app.zeeterm.ZeeTerm`）。`zeeterm --version` 打印已安装的版本。`zssh-mcp` 必须和 `zeeterm` 放在同一个目录，两种包都已经这样放好。
+两种包都会装上应用菜单项和图标（应用标识 `app.zeeterm.ZeeTerm`）。`zeeterm --version` 打印已安装的版本。程序放在 `lib/zeeterm/` 下（`.deb` 是 `/usr/lib/zeeterm`，`install.sh` 是 `<前缀>/lib/zeeterm`），用户 `PATH` 里只有 `bin/` 下的 `zeeterm` 软链接。`zssh-mcp` 是内部辅助程序，必须和真正的 `zeeterm` 程序放在同一个目录，两种包都已经这样放好。
+
+应用内更新：更新窗口会认出 ZeeTerm 是怎么装的。`.deb` 安装的会下载并校验新包，再通过系统授权框申请管理员权限（`pkexec apt-get install`）；`.tar.gz` 安装的，安装目录可写时直接原地替换程序文件。没有 `pkexec`、授权框被取消、目录不可写时，已校验的安装包会留着，窗口里告诉你怎么手动安装。装好后重启 ZeeTerm（窗口里有按钮）。
 
 数据默认保存在 `$XDG_DATA_HOME/ZeeTerm`（通常是 `~/.local/share/ZeeTerm`），目录权限仅限本人；`ZSSH_DATA_DIR` 仍然优先。保存的密码和密钥通过桌面钥匙串（Secret Service：GNOME Keyring、KeePassXC、KWallet 等）保护，建议安装并解锁其中一个。完全没有钥匙串服务时，密钥改存数据目录里的文件，设置页会提示。
 

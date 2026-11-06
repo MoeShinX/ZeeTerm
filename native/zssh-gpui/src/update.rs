@@ -5,7 +5,9 @@
 //! 下载有大小上限和总时长上限，重定向只跟到 https。联网走「软件网络」代理设置。
 //! 公钥还是占位值时（见 [`SIGNING_UNCONFIGURED`]）不请求、不下载、不安装。
 //! 调试版额外认 `ZSSH_UPDATE_MANIFEST`（本地清单路径或 URL）、`ZSSH_CURRENT_VERSION`、
-//! `ZSSH_UPDATE_PUBKEY`、`ZSSH_UPDATE_PROXY`，并放开 `http://` / `file://`；这些变量
+//! `ZSSH_UPDATE_PUBKEY`、`ZSSH_UPDATE_PROXY`，并放开 `http://` / `file://`；Linux 另有 `ZSSH_UPDATE_FLAVOR`
+//! （`deb` / `tar` / `windows`，盖掉对安装方式的探测）、`ZSSH_UPDATE_AUTODOWNLOAD` / `ZSSH_UPDATE_AUTOINSTALL` /
+//! `ZSSH_UPDATE_AUTORESTART`（查到新版本就下载、验签后就安装、装好就重启，自动化真机验证用）；这些变量
 //! 经 `dev_hooks` 读取，release 里恒为未设置。
 //!
 //! 安装包先整个下到内存、在内存里验签，通过后才以独占方式写进
@@ -20,6 +22,12 @@
 //! 「退出后安装」只把计划排进进程级队列，界面不退出；真正的 `ShellExecuteW`
 //! 放在 `App::on_app_quit` 注册的回调里，等程序退出时再启动。
 //!
+//! Linux（`linux.rs` 和 `zssh_update::linux`）：检查时先判断本机怎么装的（`dpkg -S` 认得 → deb，否则 tar.gz），
+//! 只选清单里对应的 `linux-x86_64-deb` / `linux-x86_64-tar`；没有适用条目时给 `CheckKind::FoundManual`，
+//! 界面引导到发布页。下载、验签、版本绑定与 Windows 是同一套（`download_with`）。点「立即安装」后在后台线程里
+//! 安装：deb 经 `pkexec apt-get install`，tar.gz 解压后核对新程序的版本再原子替换程序文件；没有 `pkexec`、授权
+//! 被取消、目录不可写时不报错，保留已校验的包并显示手动安装的方法。装好后由用户点「立即重启」（Linux 没有"退出后安装"）。
+//!
 //! 界面（V2-U22 重做，只动版式，流程不变）：每种状态都是"顶部信息区 / 中间内容区 / 底部按钮区"三段。
 //! 画哪一屏、标题和按钮集合见 `layout`，更新说明（Markdown）先经 `notes` 改写成安全的版本再渲染，
 //! `view` 是 `Render`。「跳过此版本」把版本号写进本机设置 `update_skipped_version`，自动检查据此不再提示它。
@@ -33,6 +41,7 @@ use std::time::{Duration, Instant};
 use ::gpui::{App, FocusHandle, Subscription, Task, Window, WindowBounds, WindowOptions};
 use gpui_kit::*;
 use tokio::io::AsyncReadExt as _;
+use zssh_update::linux::{Flavor, ManualReason};
 use zssh_update::{InstallPlan, InstallRequest, Package, UpdateError, plan_install, sha256_hex};
 
 use crate::i18n::{Msg, t};
@@ -41,8 +50,11 @@ use crate::install_state;
 // 界面分三块：`layout` 决定画哪一屏、标题和按钮（纯函数），`notes` 处理更新说明（Markdown 安全改写），
 // `view` 是 `Render`。验签 / 下载 / 安装的流程都在本文件，界面改版不碰它们。
 mod layout;
+mod linux;
 mod notes;
 mod view;
+
+use linux::{Platform, host_platform};
 
 /// 更新检查窗口的编号；IME 按窗口 key 管理。
 static NEXT_UPDATE: AtomicU64 = AtomicU64::new(1);
@@ -183,6 +195,26 @@ enum UpdateMsg {
     NoReleaseNotes,
     PackageLabel,
     PlatformLabel,
+    // ---- Linux：按钮 / 标题 / 正文 / 失败原因 ----
+    RestartNowButton,
+    RestartLaterButton,
+    OpenReleasePageButton,
+    RevealFileButton,
+    InstallingTitle,
+    InstalledTitlePrefix,
+    ManualTitlePrefix,
+    InstallingDebMessage,
+    InstallingTarMessage,
+    InstalledMessage,
+    NoPackageMessage,
+    ManualReasonNoPkexec,
+    ManualReasonNotAuthorized,
+    ManualReasonNotWritable,
+    ManualDebHowTo,
+    ManualTarHowTo,
+    LinuxInstallFailedPrefix,
+    DebInstallFailedPrefix,
+    RestartFailedPrefix,
 }
 
 impl Msg for UpdateMsg {
@@ -283,6 +315,33 @@ impl Msg for UpdateMsg {
             Self::NoReleaseNotes => "（无更新说明）",
             Self::PackageLabel => "安装包：",
             Self::PlatformLabel => "平台：",
+            Self::RestartNowButton => "立即重启",
+            Self::RestartLaterButton => "稍后重启",
+            Self::OpenReleasePageButton => "打开发布页",
+            Self::RevealFileButton => "在文件管理器中显示",
+            Self::InstallingTitle => "正在安装更新…",
+            Self::InstalledTitlePrefix => "已安装 ",
+            Self::ManualTitlePrefix => "已下载 ",
+            Self::InstallingDebMessage => {
+                "正在通过系统软件包管理器安装。请在系统弹出的授权窗口里确认。"
+            }
+            Self::InstallingTarMessage => "正在替换程序文件…",
+            Self::InstalledMessage => "更新已安装。重启 ZeeTerm 后生效。",
+            Self::NoPackageMessage => "这个版本没有适用于本机安装方式的安装包，请到发布页下载。",
+            Self::ManualReasonNoPkexec => "这台电脑上没有 pkexec，没法弹出系统授权框。",
+            Self::ManualReasonNotAuthorized => {
+                "没有取得系统授权（授权框被取消，或者没有可用的授权代理）。"
+            }
+            Self::ManualReasonNotWritable => {
+                "ZeeTerm 所在的目录没有写入权限，没法直接替换程序文件。"
+            }
+            Self::ManualDebHowTo => "安装包已下载并校验。双击它安装，或在终端运行：",
+            Self::ManualTarHowTo => {
+                "安装包已下载并校验。解压后运行其中的 install.sh，或自行替换程序文件："
+            }
+            Self::LinuxInstallFailedPrefix => "安装更新失败：",
+            Self::DebInstallFailedPrefix => "安装失败，apt 的输出：\n",
+            Self::RestartFailedPrefix => "没能重启：",
         }
     }
 
@@ -395,6 +454,39 @@ impl Msg for UpdateMsg {
             Self::NoReleaseNotes => "(no release notes)",
             Self::PackageLabel => "Package: ",
             Self::PlatformLabel => "Platform: ",
+            Self::RestartNowButton => "Restart now",
+            Self::RestartLaterButton => "Restart later",
+            Self::OpenReleasePageButton => "Open release page",
+            Self::RevealFileButton => "Show in file manager",
+            Self::InstallingTitle => "Installing the update…",
+            Self::InstalledTitlePrefix => "Installed ",
+            Self::ManualTitlePrefix => "Downloaded ",
+            Self::InstallingDebMessage => {
+                "Installing through the system package manager. Please confirm in the system authorization prompt."
+            }
+            Self::InstallingTarMessage => "Replacing the program files…",
+            Self::InstalledMessage => "The update is installed. Restart ZeeTerm to use it.",
+            Self::NoPackageMessage => {
+                "This release has no package for the way ZeeTerm is installed here. Please download it from the release page."
+            }
+            Self::ManualReasonNoPkexec => {
+                "pkexec is not available on this computer, so the system authorization prompt cannot be shown."
+            }
+            Self::ManualReasonNotAuthorized => {
+                "System authorization was not granted (the prompt was cancelled, or no authentication agent is available)."
+            }
+            Self::ManualReasonNotWritable => {
+                "ZeeTerm's install folder is not writable, so the program files cannot be replaced directly."
+            }
+            Self::ManualDebHowTo => {
+                "The package is downloaded and verified. Double-click it to install, or run in a terminal:"
+            }
+            Self::ManualTarHowTo => {
+                "The package is downloaded and verified. Extract it and run its install.sh, or replace the program files yourself:"
+            }
+            Self::LinuxInstallFailedPrefix => "Failed to install the update: ",
+            Self::DebInstallFailedPrefix => "Installation failed. apt said:\n",
+            Self::RestartFailedPrefix => "Could not restart: ",
         }
     }
 }
@@ -406,6 +498,9 @@ pub(crate) enum CheckKind {
     Latest,
     /// 有新版本（`package` 一定有值）。
     Found,
+    /// Linux：有新版本，但发布的清单里没有适用于本机安装方式的包（老版本发布 / 只发了另一种包）。
+    /// 不下载、不安装，界面引导到发布页（`package` 为空，版本号在 `release_version`）。
+    FoundManual,
     /// 没查成：网络、清单格式、选不出包、更新签名未配置……（`status` 里是中文原因）。
     Failed,
 }
@@ -421,6 +516,8 @@ pub(crate) struct Checked {
     pub notes: Option<String>,
     /// 清单里的发布时间（RFC 3339 原文）。
     pub published: Option<String>,
+    /// 清单公告的新版本号（`Found` 和 `FoundManual` 有值，不带 `v`）。
+    pub release_version: Option<String>,
 }
 
 impl Checked {
@@ -431,6 +528,7 @@ impl Checked {
             package: None,
             notes: None,
             published: None,
+            release_version: None,
         }
     }
 
@@ -541,6 +639,10 @@ impl UpdateDemo {
 
     /// 重新取一次清单；界面上的「重新检查」也走这里。网络请求在后台跑，结果经事件回来。
     fn reload(&mut self, cx: &mut Context<Self>) {
+        // Linux：安装正在后台跑（授权框、apt、替换文件），这时重新检查会丢掉它的结果。
+        if matches!(self.install, InstallState::Installing(_)) {
+            return;
+        }
         self.cancel_job();
         self.current = current_version();
         self.package = None;
@@ -576,12 +678,36 @@ impl UpdateDemo {
         self.checked = Some(checked);
     }
 
-    /// 当前画哪一屏。
+    /// 当前画哪一屏。Linux 的安装过程（安装中 / 已装好 / 手动安装）盖在"已验证"之上。
     fn screen(&self) -> layout::Screen {
-        layout::screen(
-            self.checked.as_ref().map(|checked| checked.kind),
-            &self.phase,
-        )
+        match &self.install {
+            InstallState::Installing(_) => layout::Screen::Installing,
+            InstallState::Installed { .. } => layout::Screen::Installed,
+            InstallState::Manual { .. } => layout::Screen::ManualInstall,
+            _ => layout::screen(
+                self.checked.as_ref().map(|checked| checked.kind),
+                &self.phase,
+            ),
+        }
+    }
+
+    /// 清单公告的新版本号：有可下载的包时是包的版本，Linux 上没有适用的包时是清单里的版本。
+    fn announced_version(&self) -> Option<String> {
+        self.package
+            .as_ref()
+            .map(|package| package.version.clone())
+            .or_else(|| {
+                self.checked
+                    .as_ref()
+                    .and_then(|checked| checked.release_version.clone())
+            })
+    }
+
+    /// 选中的包是不是 Linux 的包（决定安装走 pkexec / 替换文件，而不是 Windows 的安装器）。
+    fn linux_flavor(&self) -> Option<Flavor> {
+        self.package
+            .as_ref()
+            .and_then(|package| Flavor::from_platform_key(&package.platform_key))
     }
 
     /// 关掉这个窗口（程序自己关：要把 IME 的窗口记录还回去，和用户点关闭按钮走的收尾一致）。
@@ -592,10 +718,10 @@ impl UpdateDemo {
 
     /// 「跳过此版本」：记下版本号（之后的自动检查不再提示它，更新的版本照常提示），然后关窗口。
     fn skip_version(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(package) = &self.package else {
+        let Some(version) = self.announced_version() else {
             return;
         };
-        match record_skipped_version(&package.version) {
+        match record_skipped_version(&version) {
             Ok(()) => self.close_window(window),
             Err(err) => {
                 self.skip_error = Some(err);
@@ -606,7 +732,11 @@ impl UpdateDemo {
 
     /// 「稍后」：发现新版本时只关窗口；已验证时先排队"退出后安装"（没排上就留在窗口里说原因）再关。
     fn later(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.phase, DownloadState::Verified { .. }) && !self.click_queue_install(cx) {
+        // "退出后安装"只有 Windows 有（安装器可以等程序退出时再启动）；Linux 的安装要用户在场（授权框），稍后就只是关窗口。
+        if matches!(self.phase, DownloadState::Verified { .. })
+            && self.linux_flavor().is_none()
+            && !self.click_queue_install(cx)
+        {
             return;
         }
         self.close_window(window);
@@ -676,6 +806,9 @@ impl UpdateDemo {
     ///
     /// 返回是否已经启动；调用方据此安排退出。
     fn click_install(&mut self, cx: &mut Context<Self>) -> bool {
+        if let Some(flavor) = self.linux_flavor() {
+            return self.click_install_linux(flavor, cx);
+        }
         let (installer, version, sha256) = match (&self.phase, &self.package) {
             (DownloadState::Verified { path, sha256, .. }, Some(package)) => {
                 (path.clone(), package.version.clone(), sha256.clone())
@@ -700,6 +833,120 @@ impl UpdateDemo {
         }
         cx.notify();
         launched
+    }
+
+    /// Linux 的「立即安装」：点一下就开始（不再二次确认）。安装在后台线程里跑——deb 要等系统授权框和 apt，
+    /// tar.gz 要解压、校验、替换文件，都不能卡住界面；结果经 [`DownloadEvent::LinuxInstall`] 回来。
+    /// 安装本身不退出程序，所以总是返回 `false`；重启是装好之后用户另点的。
+    fn click_install_linux(&mut self, flavor: Flavor, cx: &mut Context<Self>) -> bool {
+        if !matches!(self.install, InstallState::Idle | InstallState::Failed(_)) {
+            return false;
+        }
+        let (package, version, sha256) = match (&self.phase, &self.package) {
+            (DownloadState::Verified { path, sha256, .. }, Some(package)) => {
+                (path.clone(), package.version.clone(), sha256.clone())
+            }
+            _ => return false,
+        };
+        let runtime = match crate::ssh_backend::runtime() {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                self.install = InstallState::Failed(format!(
+                    "{}{err}",
+                    t(UpdateMsg::LinuxInstallFailedPrefix)
+                ));
+                cx.notify();
+                return false;
+            }
+        };
+        let job = linux::Job {
+            flavor,
+            package,
+            cache_root: update_cache_dir(),
+            version,
+            sha256,
+            exe: linux::running_exe(),
+        };
+        self.install = InstallState::Installing(flavor);
+        self.blocked = None;
+        self.queued = None;
+        let (generation, sender) = (self.generation, self.sender.clone());
+        runtime.spawn_blocking(move || {
+            let outcome = linux::run_system(&job);
+            let _ = sender.send(DownloadEvent::LinuxInstall {
+                generation,
+                outcome,
+            });
+        });
+        cx.notify();
+        false
+    }
+
+    /// 收下后台安装的结果。手动安装时顺手在文件管理器里显示那个文件（用户多半要双击它）。
+    fn apply_linux_outcome(&mut self, outcome: linux::Outcome, cx: &mut Context<Self>) {
+        match outcome {
+            linux::Outcome::Installed { restart } => {
+                self.install = InstallState::Installed { restart };
+            }
+            linux::Outcome::Manual(reason) => {
+                let (Some(flavor), DownloadState::Verified { path, .. }) =
+                    (self.linux_flavor(), &self.phase)
+                else {
+                    return;
+                };
+                let path = path.clone();
+                cx.reveal_path(&path);
+                self.install = InstallState::Manual {
+                    flavor,
+                    reason,
+                    path,
+                };
+            }
+            linux::Outcome::Failed(message) => self.install = InstallState::Failed(message),
+        }
+    }
+
+    /// Linux 装好之后的「立即重启」：安排新程序在本进程退出后启动，返回是否已安排好，调用方随后退出界面。
+    /// 还有传输 / AI 回合在跑时不重启，原因显示在窗口里。
+    fn click_restart(&mut self, cx: &mut Context<Self>) -> bool {
+        let InstallState::Installed { restart } = &self.install else {
+            return false;
+        };
+        if let Some(reason) = install_state::blocking_reason() {
+            self.blocked = Some(reason);
+            cx.notify();
+            return false;
+        }
+        let started = match linux::restart(restart, &current_exe_args()) {
+            Ok(()) => {
+                self.blocked = None;
+                true
+            }
+            Err(err) => {
+                self.blocked = Some(err);
+                false
+            }
+        };
+        cx.notify();
+        started
+    }
+
+    /// 手动安装时「在文件管理器中显示」。
+    fn reveal_file(&mut self, cx: &mut Context<Self>) {
+        if let InstallState::Manual { path, .. } = &self.install {
+            cx.reveal_path(path);
+        }
+    }
+
+    /// 「打开发布页」：用系统浏览器打开（只认 https，过 core 的网址检查）；打不开时把原因显示出来。
+    fn open_release_page(&mut self, cx: &mut Context<Self>) {
+        let Some(url) = linux::release_page_url() else {
+            return;
+        };
+        if let Err(err) = zssh_core::external_url::open_external_url(&url) {
+            self.skip_error = Some(err);
+            cx.notify();
+        }
     }
 
     /// 「退出后安装」：生成计划并排队，界面不退出，等进程结束时再启动安装器。
@@ -738,6 +985,8 @@ impl UpdateDemo {
     fn poll_events(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
         let mut auto_download = false;
+        let mut auto_install = false;
+        let mut auto_restart = false;
         while let Ok(event) = self.events.try_recv() {
             if event.generation() != self.generation {
                 continue;
@@ -755,6 +1004,16 @@ impl UpdateDemo {
                 } => {
                     self.phase.verified(path, size, sha256);
                     self.job = None;
+                    // 调试钩子：验签通过就直接点「立即安装」（只对 Linux 的包生效；自动化 / 真机验证用）。
+                    auto_install = self.linux_flavor().is_some()
+                        && crate::dev_hooks::var_os("ZSSH_UPDATE_AUTOINSTALL").is_some();
+                }
+                DownloadEvent::LinuxInstall { outcome, .. } => {
+                    let installed = matches!(outcome, linux::Outcome::Installed { .. });
+                    self.apply_linux_outcome(outcome, cx);
+                    // 调试钩子：装好就直接重启。
+                    auto_restart =
+                        installed && crate::dev_hooks::var_os("ZSSH_UPDATE_AUTORESTART").is_some();
                 }
                 DownloadEvent::Checked { checked, .. } => {
                     self.apply_checked(checked);
@@ -775,6 +1034,12 @@ impl UpdateDemo {
         }
         if auto_download {
             self.start_download(cx);
+        }
+        if auto_install {
+            self.click_install(cx);
+        }
+        if auto_restart && self.click_restart(cx) {
+            quit_after_paint(cx);
         }
         if changed {
             cx.notify();
@@ -922,6 +1187,18 @@ enum InstallState {
     /// 安装器已交给系统，界面即将退出。
     Launched,
     Failed(String),
+    /// Linux：后台正在安装（deb 是系统授权框和 apt 在跑，tar.gz 是在替换文件）。
+    Installing(Flavor),
+    /// Linux：已经装好，等用户重启；`restart` 是要启动的新程序。
+    Installed {
+        restart: PathBuf,
+    },
+    /// Linux：不能自动装（没有 pkexec、授权被取消、目录不可写），包已下载并校验，请用户手动装。
+    Manual {
+        flavor: Flavor,
+        reason: ManualReason,
+        path: PathBuf,
+    },
 }
 
 /// 点「立即安装」时的纯状态迁移：生成计划并启动。
@@ -1006,6 +1283,11 @@ enum DownloadEvent {
         generation: u64,
         checked: Checked,
     },
+    /// Linux：后台安装任务的结果。
+    LinuxInstall {
+        generation: u64,
+        outcome: linux::Outcome,
+    },
 }
 
 impl DownloadEvent {
@@ -1016,7 +1298,8 @@ impl DownloadEvent {
             | Self::Verified { generation, .. }
             | Self::Failed { generation, .. }
             | Self::Cancelled { generation }
-            | Self::Checked { generation, .. } => *generation,
+            | Self::Checked { generation, .. }
+            | Self::LinuxInstall { generation, .. } => *generation,
         }
     }
 }
@@ -1329,6 +1612,10 @@ async fn load_manifest_text(
 ///
 /// 更新签名公钥是占位值时直接返回"更新签名未配置"，一个请求都不发。
 pub(crate) async fn check_for_update(current: &str) -> Checked {
+    // 本机是怎么装的（Linux 上要问 dpkg，别占着界面线程，也别堵住 async 工作线程）。
+    let platform = tokio::task::spawn_blocking(host_platform)
+        .await
+        .unwrap_or(Platform::Windows);
     let pubkey = update_pubkey();
     // 公钥不可用时先不建客户端（建客户端要读设置库）：下面 `check_with` 会原样返回原因。
     let client = if pubkey.is_ok() {
@@ -1347,6 +1634,7 @@ pub(crate) async fn check_for_update(current: &str) -> Checked {
         &client,
         allow_insecure_sources(),
         pubkey.as_deref(),
+        &platform,
     )
     .await
 }
@@ -1358,6 +1646,7 @@ async fn check_with(
     client: &reqwest::Client,
     allow_insecure: bool,
     pubkey: Result<&str, &String>,
+    platform: &Platform,
 ) -> Checked {
     // 没有可用的验签公钥（占位值、内置配置坏了）就不发任何请求：后面下的包也验不了。
     match pubkey {
@@ -1373,7 +1662,7 @@ async fn check_with(
     let mut last_error = String::new();
     for source in sources {
         match load_manifest_text(source, client, allow_insecure).await {
-            Ok(text) => return evaluate_manifest(&text, current, allow_insecure),
+            Ok(text) => return evaluate_manifest_for(&text, current, allow_insecure, platform),
             Err(err) => last_error = err,
         }
     }
@@ -2004,11 +2293,43 @@ fn resolve_current_version(hook: Option<String>) -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned())
 }
 
-/// 解析清单并选包；选出的安装包地址也要过协议检查。
+/// 解析清单并按 Windows 的平台 key 选包（Windows 更新的测试入口；产品代码走 [`evaluate_manifest_for`]）。
+#[cfg(test)]
 fn evaluate_manifest(text: &str, current: &str, allow_insecure: bool) -> Checked {
+    evaluate_manifest_for(text, current, allow_insecure, &Platform::Windows)
+}
+
+/// 解析清单并按本机平台选包；选出的安装包地址也要过协议检查。
+///
+/// Linux 上公告的新版本如果没有适用于本机安装方式的条目（老版本发布的清单只有 Windows 条目，
+/// 或者 deb 安装的机器遇到只有 tar.gz 的清单），不算失败：给 [`CheckKind::FoundManual`]，界面引导到发布页。
+/// Windows 上选不出包仍然是失败，行为和以前一样。
+fn evaluate_manifest_for(
+    text: &str,
+    current: &str,
+    allow_insecure: bool,
+    platform: &Platform,
+) -> Checked {
     match zssh_update::parse_manifest(text) {
         Ok(manifest) => {
-            let outcome = manifest.select(current);
+            let outcome = manifest.select_for(current, platform.keys());
+            if matches!(platform, Platform::Linux(_))
+                && matches!(outcome, Err(UpdateError::NoPlatform))
+            {
+                let version = manifest.version.trim_start_matches('v').to_owned();
+                return Checked {
+                    kind: CheckKind::FoundManual,
+                    status: format!(
+                        "{}{version}\n{}",
+                        t(UpdateMsg::FoundVersionPrefix),
+                        t(UpdateMsg::NoPackageMessage)
+                    ),
+                    package: None,
+                    notes: manifest.notes,
+                    published: manifest.date,
+                    release_version: Some(version),
+                };
+            }
             if let Ok(Some(package)) = &outcome
                 && let Err(err) = check_update_url(&package.url, allow_insecure)
             {
@@ -2019,6 +2340,7 @@ fn evaluate_manifest(text: &str, current: &str, allow_insecure: bool) -> Checked
                 Ok(Some(package)) => Checked {
                     kind: CheckKind::Found,
                     status,
+                    release_version: Some(package.version.clone()),
                     package: Some(package),
                     notes: manifest.notes,
                     published: manifest.date,
@@ -2029,6 +2351,7 @@ fn evaluate_manifest(text: &str, current: &str, allow_insecure: bool) -> Checked
                     package: None,
                     notes: None,
                     published: None,
+                    release_version: None,
                 },
                 Err(_) => Checked::failed(status),
             }
@@ -3035,6 +3358,113 @@ mod tests {
         let failed = evaluate_manifest(no_platform, "0.2.14", false);
         assert_eq!(failed.kind, CheckKind::Failed);
         assert!(failed.status.contains("没有适用于当前平台"));
+    }
+
+    const LINUX_MANIFEST: &str = r####"{
+        "version": "0.3.1",
+        "notes": "Linux 版",
+        "pub_date": "2026-11-06T08:00:00Z",
+        "platforms": {
+            "windows-x86_64": { "url": "https://example.com/a.exe", "signature": "sig" },
+            "linux-x86_64-deb": { "url": "https://example.com/a.deb", "signature": "sig" },
+            "linux-x86_64-tar": { "url": "https://example.com/a.tar.gz", "signature": "sig" }
+        }
+    }"####;
+
+    #[test]
+    fn linux_checks_pick_the_entry_matching_how_zeeterm_is_installed() {
+        use super::{Platform, evaluate_manifest_for};
+        use zssh_update::linux::Flavor;
+
+        for (platform, key, url) in [
+            (
+                Platform::Linux(Flavor::Deb),
+                "linux-x86_64-deb",
+                "https://example.com/a.deb",
+            ),
+            (
+                Platform::Linux(Flavor::Tar),
+                "linux-x86_64-tar",
+                "https://example.com/a.tar.gz",
+            ),
+            (
+                Platform::Windows,
+                "windows-x86_64",
+                "https://example.com/a.exe",
+            ),
+        ] {
+            let checked = evaluate_manifest_for(LINUX_MANIFEST, "0.2.14", false, &platform);
+            assert_eq!(checked.kind, CheckKind::Found, "{platform:?}");
+            let package = checked.package.expect("应选出包");
+            assert_eq!(package.platform_key, key);
+            assert_eq!(package.url, url);
+            assert_eq!(checked.release_version.as_deref(), Some("0.3.1"));
+        }
+        // 已是最新：Linux 也一样。
+        let latest = evaluate_manifest_for(
+            LINUX_MANIFEST,
+            "0.3.1",
+            false,
+            &Platform::Linux(Flavor::Tar),
+        );
+        assert_eq!(latest.kind, CheckKind::Latest);
+        assert!(latest.release_version.is_none());
+    }
+
+    #[test]
+    fn linux_without_a_matching_entry_is_a_release_page_hint_while_windows_still_fails() {
+        use super::{Platform, evaluate_manifest_for};
+        use zssh_update::linux::Flavor;
+
+        for platform in [Platform::Linux(Flavor::Deb), Platform::Linux(Flavor::Tar)] {
+            // 老版本发布的清单：只有 Windows 条目。
+            let checked = evaluate_manifest_for(FOUND_MANIFEST, "0.2.14", false, &platform);
+            assert_eq!(checked.kind, CheckKind::FoundManual, "{platform:?}");
+            assert!(checked.package.is_none());
+            assert_eq!(checked.release_version.as_deref(), Some("0.3.1"));
+            assert_eq!(
+                checked.notes.as_deref(),
+                Some("### 新增\n- 更新窗口有了版式")
+            );
+            assert_eq!(checked.published.as_deref(), Some("2026-11-03T08:00:00Z"));
+            assert!(
+                checked.status.contains("发现新版本 0.3.1"),
+                "{}",
+                checked.status
+            );
+            assert!(checked.status.contains("发布页"), "{}", checked.status);
+        }
+        // 清单版本带 v 前缀也行。
+        let prefixed = r#"{ "version": "v0.3.1", "platforms": {} }"#;
+        let checked =
+            evaluate_manifest_for(prefixed, "0.2.14", false, &Platform::Linux(Flavor::Tar));
+        assert_eq!(checked.release_version.as_deref(), Some("0.3.1"));
+        // Windows：没有适用条目仍然是失败，文字和以前一样。
+        let failed = evaluate_manifest_for(prefixed, "0.2.14", false, &Platform::Windows);
+        assert_eq!(failed.kind, CheckKind::Failed);
+        assert!(
+            failed.status.contains("没有适用于当前平台"),
+            "{}",
+            failed.status
+        );
+    }
+
+    #[test]
+    fn a_linux_entry_without_a_signature_or_with_a_plain_http_address_is_an_error_not_a_hint() {
+        use super::{Platform, evaluate_manifest_for};
+        use zssh_update::linux::Flavor;
+
+        let platform = Platform::Linux(Flavor::Deb);
+        let unsigned = r#"{ "version": "0.3.1", "platforms": { "linux-x86_64-deb": { "url": "https://example.com/a.deb" } } }"#;
+        let checked = evaluate_manifest_for(unsigned, "0.2.14", false, &platform);
+        assert_eq!(checked.kind, CheckKind::Failed);
+        assert!(checked.status.contains("缺少签名"), "{}", checked.status);
+        let insecure = r#"{ "version": "0.3.1", "platforms": { "linux-x86_64-deb": { "url": "http://example.com/a.deb", "signature": "sig" } } }"#;
+        let checked = evaluate_manifest_for(insecure, "0.2.14", false, &platform);
+        assert_eq!(checked.kind, CheckKind::Failed);
+        // 调试构建放开 http 之后才选得出来。
+        let allowed = evaluate_manifest_for(insecure, "0.2.14", true, &platform);
+        assert_eq!(allowed.kind, CheckKind::Found);
     }
 
     #[test]

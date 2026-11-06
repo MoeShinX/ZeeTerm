@@ -9,8 +9,8 @@
 // 不写 `use super::*`：父模块 glob 进来的 `gpui_kit::test` 会盖掉内置的 `#[test]` 属性宏。
 use super::{
     CheckKind, Checked, DownloadContext, DownloadEvent, DownloadFailure, InstallState,
-    ManifestSource, SIGNING_UNCONFIGURED, advance_install, build_install_plan, check_with,
-    download_with, launch_if_unchanged, proxy_from_settings, update_client_builder,
+    ManifestSource, Platform, SIGNING_UNCONFIGURED, advance_install, build_install_plan,
+    check_with, download_with, launch_if_unchanged, proxy_from_settings, update_client_builder,
 };
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -231,7 +231,14 @@ fn publish(
 
 fn check_full(fixture: &Fixture, current: &str, pubkey: &str) -> Checked {
     let sources = [ManifestSource::Url(fixture.url("/latest.json"))];
-    block_on(check_with(current, &sources, &client(), true, Ok(pubkey)))
+    block_on(check_with(
+        current,
+        &sources,
+        &client(),
+        true,
+        Ok(pubkey),
+        &Platform::Windows,
+    ))
 }
 
 fn check(fixture: &Fixture, current: &str, pubkey: &str) -> (String, Option<Package>) {
@@ -540,6 +547,7 @@ fn a_placeholder_key_refuses_before_any_request_and_before_any_download() {
         &client(),
         true,
         Ok("PLACEHOLDER-run-the-keygen-script"),
+        &Platform::Windows,
     ));
     assert_eq!(unconfigured.status, SIGNING_UNCONFIGURED);
     assert!(unconfigured.status.contains("更新签名未配置"));
@@ -547,7 +555,14 @@ fn a_placeholder_key_refuses_before_any_request_and_before_any_download() {
     assert_eq!(unconfigured.kind, CheckKind::Failed);
     // 公钥拿不到（配置坏了）同理：原样给出原因，不联网。
     let reason = "内置的更新公钥不可用，无法校验更新包：坏了".to_owned();
-    let broken = block_on(check_with("1.3.0", &sources, &client(), true, Err(&reason)));
+    let broken = block_on(check_with(
+        "1.3.0",
+        &sources,
+        &client(),
+        true,
+        Err(&reason),
+        &Platform::Windows,
+    ));
     assert_eq!(broken.status, reason);
     assert!(broken.package.is_none());
     assert_eq!(broken.kind, CheckKind::Failed);
@@ -640,4 +655,508 @@ fn updates_use_the_software_network_proxy_setting_and_report_a_broken_one() {
         .expect("写设置");
     let err = proxy_from_settings(&db).expect_err("该报错");
     assert!(err.starts_with("软件网络的代理设置有问题"), "{err}");
+}
+
+/// Linux：同一套"取清单 → 下载 → 验签 → 安装"，只是最后一步是 pkexec / 替换文件，而且**全部用桩**：
+/// deb 的命令执行器是假的（不弹授权框、不碰系统），tar.gz 只在临时目录里换文件。
+mod linux_chain {
+    use super::{
+        CheckKind, Checked, DownloadEvent, Fixture, InstallState, Keys, ManifestSource, Platform,
+        Route, block_on, check_with, client, download, failure, file_count, keys, publish,
+        sign_installer, temp_dir,
+    };
+    use crate::update::linux::{self as glue, Job, Outcome};
+    use std::cell::RefCell;
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+    use zssh_update::linux::{
+        CommandOutput, CommandRunner, DebTools, Flavor, ManualReason, TarLayout,
+    };
+    use zssh_update::{
+        PLATFORM_LINUX_DEB, PLATFORM_LINUX_TAR, PlatformAsset, ReleaseManifest,
+        build_latest_json_with_platforms,
+    };
+
+    /// 清单里的一个 Linux 包：平台 key、文件名、夹具实际提供的字节、签名时用的字节。
+    struct Asset<'a> {
+        key: &'static str,
+        file: &'a str,
+        served: Vec<u8>,
+        signed: Vec<u8>,
+    }
+
+    /// 发布一个同时带 Windows 和 Linux 条目的版本（和发版流水线生成 latest.json 用的是同一个函数）。
+    fn publish_linux(keys: &Keys, announced: &str, assets: &[Asset<'_>]) -> Fixture {
+        let fixture = Fixture::start();
+        let windows_name = format!("ZeeTerm-Setup-{announced}.exe");
+        let windows_signature =
+            sign_installer(keys, b"windows installer", announced, &windows_name);
+        let urls: Vec<String> = assets
+            .iter()
+            .map(|asset| {
+                format!(
+                    "https://fixture.invalid/download/v{announced}/{}",
+                    asset.file
+                )
+            })
+            .collect();
+        let signatures: Vec<String> = assets
+            .iter()
+            .map(|asset| sign_installer(keys, &asset.signed, announced, asset.file))
+            .collect();
+        let extra: Vec<PlatformAsset<'_>> = assets
+            .iter()
+            .zip(urls.iter().zip(signatures.iter()))
+            .map(|(asset, (url, signature))| PlatformAsset {
+                key: asset.key,
+                url,
+                signature,
+            })
+            .collect();
+        let json = build_latest_json_with_platforms(
+            &ReleaseManifest {
+                version: announced,
+                notes: "新增 Linux 版",
+                pub_date: "2026-11-06T08:00:00Z",
+                url: &format!("https://fixture.invalid/download/v{announced}/{windows_name}"),
+                signature: &windows_signature,
+            },
+            &extra,
+        )
+        .expect("生成 latest.json")
+        .replace("https://fixture.invalid", &fixture.base);
+        fixture.set("/latest.json", Route::Ok(json.into_bytes()));
+        for asset in assets {
+            fixture.set(
+                &format!("/download/v{announced}/{}", asset.file),
+                Route::Ok(asset.served.clone()),
+            );
+        }
+        fixture
+    }
+
+    fn check_on(fixture: &Fixture, current: &str, pubkey: &str, platform: &Platform) -> Checked {
+        let sources = [ManifestSource::Url(fixture.url("/latest.json"))];
+        block_on(check_with(
+            current,
+            &sources,
+            &client(),
+            true,
+            Ok(pubkey),
+            platform,
+        ))
+    }
+
+    /// 记录 pkexec 调用、按预设退出码回答的假执行器。
+    struct FakePkexec {
+        code: i32,
+        calls: RefCell<Vec<Vec<OsString>>>,
+    }
+
+    impl FakePkexec {
+        fn exits(code: i32) -> Self {
+            Self {
+                code,
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl CommandRunner for FakePkexec {
+        fn run(&self, _program: &Path, args: &[OsString]) -> std::io::Result<CommandOutput> {
+            self.calls.borrow_mut().push(args.to_vec());
+            Ok(CommandOutput {
+                code: Some(self.code),
+                ..CommandOutput::default()
+            })
+        }
+    }
+
+    fn deb_tools() -> DebTools {
+        DebTools {
+            pkexec: Some(PathBuf::from("/usr/bin/pkexec")),
+            apt_get: PathBuf::from("/usr/bin/apt-get"),
+        }
+    }
+
+    fn unused_tar(_: &Path, _: &TarLayout, _: &str) -> Result<(), zssh_update::linux::TarError> {
+        panic!("deb 路径不该走 tar.gz 更新");
+    }
+
+    #[test]
+    fn a_deb_install_goes_from_manifest_to_a_verified_package_and_a_single_pkexec_call() {
+        let keys = keys();
+        let deb = b"fake deb bytes".to_vec();
+        let fixture = publish_linux(
+            &keys,
+            "1.4.0",
+            &[Asset {
+                key: PLATFORM_LINUX_DEB,
+                file: "ZeeTerm-1.4.0-linux-x86_64.deb",
+                served: deb.clone(),
+                signed: deb.clone(),
+            }],
+        );
+        let platform = Platform::Linux(Flavor::Deb);
+
+        let checked = check_on(&fixture, "1.3.0", &keys.pubkey_b64, &platform);
+        assert_eq!(checked.kind, CheckKind::Found, "{}", checked.status);
+        let package = checked.package.expect("应选出 deb");
+        assert_eq!(package.platform_key, "linux-x86_64-deb");
+        assert_eq!(checked.release_version.as_deref(), Some("1.4.0"));
+
+        let cache = temp_dir("linux-deb");
+        let (result, _) = download(&package, &keys.pubkey_b64, &cache);
+        let (path, size, sha256) = result.unwrap_or_else(|_| panic!("下载并验签应通过"));
+        assert_eq!(size, deb.len() as u64);
+        assert!(path.starts_with(&cache));
+
+        let job = Job {
+            flavor: Flavor::Deb,
+            package: path.clone(),
+            cache_root: cache.clone(),
+            version: "1.4.0".to_owned(),
+            sha256,
+            exe: PathBuf::from("/usr/lib/zeeterm/zeeterm"),
+        };
+        // 装成功：apt 拿到的是缓存里那个已验签的文件；重启走 /usr/bin/zeeterm。
+        let ok = FakePkexec::exits(0);
+        assert_eq!(
+            glue::run(&job, &ok, &deb_tools(), &unused_tar),
+            Outcome::Installed {
+                restart: PathBuf::from("/usr/bin/zeeterm")
+            }
+        );
+        assert_eq!(ok.calls.borrow().len(), 1);
+        assert_eq!(
+            ok.calls.borrow()[0].last().map(PathBuf::from),
+            Some(path.canonicalize().expect("规范化"))
+        );
+
+        // 授权框被取消：不报错，改成手动安装，文件还在缓存里。
+        assert_eq!(
+            glue::run(&job, &FakePkexec::exits(126), &deb_tools(), &unused_tar),
+            Outcome::Manual(ManualReason::NotAuthorized)
+        );
+        assert!(path.exists());
+
+        // 验签之后包被动过：pkexec 不会被叫起来。
+        std::fs::write(&path, b"tampered").expect("改包");
+        let untouched = FakePkexec::exits(0);
+        assert!(matches!(
+            glue::run(&job, &untouched, &deb_tools(), &unused_tar),
+            Outcome::Failed(_)
+        ));
+        assert!(untouched.calls.borrow().is_empty());
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn a_bad_signature_never_reaches_the_installer() {
+        let keys = keys();
+        let fixture = publish_linux(
+            &keys,
+            "1.4.0",
+            &[Asset {
+                key: PLATFORM_LINUX_DEB,
+                file: "ZeeTerm-1.4.0-linux-x86_64.deb",
+                served: b"swapped on the server".to_vec(),
+                signed: b"good deb".to_vec(),
+            }],
+        );
+        let checked = check_on(
+            &fixture,
+            "1.3.0",
+            &keys.pubkey_b64,
+            &Platform::Linux(Flavor::Deb),
+        );
+        let package = checked.package.expect("清单本身没问题");
+        let cache = temp_dir("linux-bad-sig");
+        let (result, events) = download(&package, &keys.pubkey_b64, &cache);
+        let message = failure(result);
+        assert!(message.contains("签名校验未通过"), "{message}");
+        assert_eq!(file_count(&cache), 0, "验不过的包一个字节都不能落盘");
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, DownloadEvent::Verified { .. }))
+        );
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn a_manifest_without_a_matching_linux_entry_points_to_the_release_page_and_windows_is_unchanged()
+     {
+        let keys = keys();
+        // 老版本发布的清单：只有 Windows 条目。
+        let installer = b"installer".to_vec();
+        let (fixture, _) = publish(
+            &keys,
+            "1.4.0",
+            "1.4.0",
+            &installer,
+            Route::Ok(installer.clone()),
+        );
+        for flavor in [Flavor::Deb, Flavor::Tar] {
+            let checked = check_on(
+                &fixture,
+                "1.3.0",
+                &keys.pubkey_b64,
+                &Platform::Linux(flavor),
+            );
+            assert_eq!(checked.kind, CheckKind::FoundManual, "{}", checked.status);
+            assert!(checked.package.is_none());
+            assert_eq!(checked.release_version.as_deref(), Some("1.4.0"));
+            assert_eq!(checked.notes.as_deref(), Some("修复若干问题\n新增在线更新"));
+            assert!(
+                checked.status.contains("发现新版本 1.4.0"),
+                "{}",
+                checked.status
+            );
+        }
+        // Windows：同一份清单，选中的包和以前完全一样。
+        let windows = check_on(&fixture, "1.3.0", &keys.pubkey_b64, &Platform::Windows);
+        assert_eq!(windows.kind, CheckKind::Found);
+        assert_eq!(
+            windows.package.map(|package| package.platform_key),
+            Some("windows-x86_64".to_owned())
+        );
+        // 已是最新：Linux 也不提示。
+        let latest = check_on(
+            &fixture,
+            "1.4.0",
+            &keys.pubkey_b64,
+            &Platform::Linux(Flavor::Tar),
+        );
+        assert_eq!(latest.kind, CheckKind::Latest);
+    }
+
+    #[test]
+    fn a_tar_gz_install_does_not_pick_the_deb_and_the_other_way_round() {
+        let keys = keys();
+        let fixture = publish_linux(
+            &keys,
+            "1.4.0",
+            &[
+                Asset {
+                    key: PLATFORM_LINUX_DEB,
+                    file: "ZeeTerm-1.4.0-linux-x86_64.deb",
+                    served: b"deb".to_vec(),
+                    signed: b"deb".to_vec(),
+                },
+                Asset {
+                    key: PLATFORM_LINUX_TAR,
+                    file: "ZeeTerm-1.4.0-linux-x86_64.tar.gz",
+                    served: b"tar".to_vec(),
+                    signed: b"tar".to_vec(),
+                },
+            ],
+        );
+        for (flavor, key) in [
+            (Flavor::Deb, "linux-x86_64-deb"),
+            (Flavor::Tar, "linux-x86_64-tar"),
+        ] {
+            let checked = check_on(
+                &fixture,
+                "1.3.0",
+                &keys.pubkey_b64,
+                &Platform::Linux(flavor),
+            );
+            assert_eq!(
+                checked.package.map(|package| package.platform_key),
+                Some(key.to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn the_windows_install_transition_is_unchanged_and_the_linux_states_are_distinct() {
+        // Windows 的状态迁移没变：启动成功 → Launched。
+        let (state, launched) = crate::update::advance_install(
+            InstallState::Idle,
+            || {
+                Ok(zssh_update::InstallPlan {
+                    program: PathBuf::from("setup.exe"),
+                    args: Vec::new(),
+                    restart: false,
+                    version: "1.4.0".to_owned(),
+                    sha256: "0".repeat(64),
+                })
+            },
+            |_| Ok(()),
+        );
+        assert!(launched);
+        assert_eq!(state, InstallState::Launched);
+        let installed = InstallState::Installed {
+            restart: PathBuf::from("/usr/bin/zeeterm"),
+        };
+        assert_ne!(installed, InstallState::Idle);
+        assert_ne!(installed, InstallState::Installing(Flavor::Deb));
+    }
+
+    #[cfg(unix)]
+    mod tar_gz {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::process::Command;
+        use zssh_update::linux::apply_tar_update_system;
+
+        /// 做一个 tar.gz：顶层目录里放会报告指定版本的 `zeeterm` 和 `zssh-mcp`。
+        fn tarball(version: &str) -> Vec<u8> {
+            let root = temp_dir(&format!("linux-tarball-{version}"));
+            let top = root.join(format!("ZeeTerm-{version}-linux-x86_64"));
+            std::fs::create_dir_all(&top).expect("建目录");
+            for (name, body) in [
+                ("zeeterm", format!("#!/bin/sh\necho 'ZeeTerm {version}'\n")),
+                ("zssh-mcp", format!("#!/bin/sh\necho 'mcp {version}'\n")),
+            ] {
+                let path = top.join(name);
+                std::fs::write(&path, body).expect("写程序");
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .expect("权限");
+            }
+            let out = root.join("package.tar.gz");
+            let status = Command::new("tar")
+                .arg("-czf")
+                .arg(&out)
+                .arg("-C")
+                .arg(&root)
+                .arg(top.file_name().expect("名字"))
+                .status()
+                .expect("需要系统 tar");
+            assert!(status.success());
+            let bytes = std::fs::read(&out).expect("读包");
+            let _ = std::fs::remove_dir_all(&root);
+            bytes
+        }
+
+        /// 模拟手动解压的旧版本。
+        fn old_install(name: &str, version: &str) -> PathBuf {
+            let dir = temp_dir(name);
+            for (file, body) in [
+                ("zeeterm", format!("#!/bin/sh\necho 'ZeeTerm {version}'\n")),
+                ("zssh-mcp", format!("#!/bin/sh\necho 'mcp {version}'\n")),
+            ] {
+                let target = dir.join(file);
+                std::fs::write(&target, body).expect("写旧程序");
+                std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))
+                    .expect("权限");
+            }
+            dir
+        }
+
+        fn read(path: &Path) -> String {
+            std::fs::read_to_string(path).expect("读文件")
+        }
+
+        fn run_tar(job: &Job) -> Outcome {
+            glue::run(
+                job,
+                &zssh_update::linux::SystemRunner,
+                &deb_tools(),
+                &|archive, layout, version| apply_tar_update_system(archive, layout, version),
+            )
+        }
+
+        #[test]
+        fn a_tar_gz_goes_from_manifest_through_signature_check_to_replaced_programs() {
+            let keys = keys();
+            let tar = tarball("1.4.0");
+            let fixture = publish_linux(
+                &keys,
+                "1.4.0",
+                &[Asset {
+                    key: PLATFORM_LINUX_TAR,
+                    file: "ZeeTerm-1.4.0-linux-x86_64.tar.gz",
+                    served: tar.clone(),
+                    signed: tar,
+                }],
+            );
+            let checked = check_on(
+                &fixture,
+                "1.3.0",
+                &keys.pubkey_b64,
+                &Platform::Linux(Flavor::Tar),
+            );
+            let package = checked.package.expect("应选出 tar.gz");
+            assert_eq!(package.platform_key, "linux-x86_64-tar");
+
+            let cache = temp_dir("linux-tar-cache");
+            let (result, _) = download(&package, &keys.pubkey_b64, &cache);
+            let (path, _, sha256) = result.unwrap_or_else(|_| panic!("下载并验签应通过"));
+
+            let install = old_install("linux-tar-install", "1.3.0");
+            let exe = install.join("zeeterm");
+            let outcome = run_tar(&Job {
+                flavor: Flavor::Tar,
+                package: path,
+                cache_root: cache.clone(),
+                version: "1.4.0".to_owned(),
+                sha256,
+                exe: exe.clone(),
+            });
+            assert_eq!(
+                outcome,
+                Outcome::Installed {
+                    restart: exe.clone()
+                }
+            );
+            assert_eq!(read(&exe), "#!/bin/sh\necho 'ZeeTerm 1.4.0'\n");
+            assert_eq!(
+                read(&install.join("zssh-mcp")),
+                "#!/bin/sh\necho 'mcp 1.4.0'\n"
+            );
+            let _ = std::fs::remove_dir_all(&cache);
+            let _ = std::fs::remove_dir_all(&install);
+        }
+
+        #[test]
+        fn a_package_whose_version_differs_from_the_announcement_is_signed_but_still_refused() {
+            // 清单公告 1.4.0，包里的程序却报告 1.3.9（比如把旧包重新签了名）：验签通过，替换这一步拒绝。
+            let keys = keys();
+            let tar = tarball("1.3.9");
+            let fixture = publish_linux(
+                &keys,
+                "1.4.0",
+                &[Asset {
+                    key: PLATFORM_LINUX_TAR,
+                    file: "ZeeTerm-1.4.0-linux-x86_64.tar.gz",
+                    served: tar.clone(),
+                    signed: tar,
+                }],
+            );
+            let checked = check_on(
+                &fixture,
+                "1.3.0",
+                &keys.pubkey_b64,
+                &Platform::Linux(Flavor::Tar),
+            );
+            let package = checked.package.expect("选包");
+            let cache = temp_dir("linux-tar-mismatch-cache");
+            let (result, _) = download(&package, &keys.pubkey_b64, &cache);
+            let (path, _, sha256) = result.unwrap_or_else(|_| panic!("验签应通过"));
+            let install = old_install("linux-tar-mismatch-install", "1.3.0");
+            let exe = install.join("zeeterm");
+            let outcome = run_tar(&Job {
+                flavor: Flavor::Tar,
+                package: path,
+                cache_root: cache.clone(),
+                version: "1.4.0".to_owned(),
+                sha256,
+                exe: exe.clone(),
+            });
+            assert!(matches!(outcome, Outcome::Failed(_)), "{outcome:?}");
+            assert_eq!(
+                read(&exe),
+                "#!/bin/sh\necho 'ZeeTerm 1.3.0'\n",
+                "旧版本原样留着"
+            );
+            assert_eq!(
+                read(&install.join("zssh-mcp")),
+                "#!/bin/sh\necho 'mcp 1.3.0'\n"
+            );
+            let _ = std::fs::remove_dir_all(&cache);
+            let _ = std::fs::remove_dir_all(&install);
+        }
+    }
 }

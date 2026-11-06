@@ -5,6 +5,7 @@
 //! 原样带上。
 
 use zssh_update::install::InstallError;
+use zssh_update::linux::{IoStep, TarError};
 use zssh_update::{SignatureProblem, UpdateError};
 
 use crate::i18n::{Lang, Msg, current};
@@ -29,10 +30,22 @@ enum UpdateTextMsg {
     MissingInstaller,
     NotAFile,
     NotExe,
+    NotLinuxPackage,
     OutsideCache,
     Path,
     Unreadable,
     HashMismatch,
+    TarNotWritable,
+    TarExtractFailed,
+    TarUnsafeEntry,
+    TarMissingFile,
+    TarNotRegular,
+    TarWrongVersion,
+    TarProbeFailed,
+    TarIoPrepare,
+    TarIoBackup,
+    TarIoReplace,
+    TarIoMetadata,
 }
 
 impl Msg for UpdateTextMsg {
@@ -56,10 +69,22 @@ impl Msg for UpdateTextMsg {
             Self::MissingInstaller => "安装包不存在",
             Self::NotAFile => "安装包不是文件",
             Self::NotExe => "安装包不是 .exe",
+            Self::NotLinuxPackage => "安装包不是 .deb / .tar.gz",
             Self::OutsideCache => "安装包不在更新缓存目录内，拒绝执行",
             Self::Path => "安装包路径无法解析：{err}",
             Self::Unreadable => "读取安装包失败：{err}",
             Self::HashMismatch => "安装包内容与验签时不一致",
+            Self::TarNotWritable => "程序所在目录不可写：{err}",
+            Self::TarExtractFailed => "解压失败：{err}",
+            Self::TarUnsafeEntry => "压缩包里有不安全的条目：{name}",
+            Self::TarMissingFile => "压缩包里没有 {name}",
+            Self::TarNotRegular => "{name} 不是普通文件，或者是空的",
+            Self::TarWrongVersion => "新程序报告的版本是“{found}”，期望“{expected}”",
+            Self::TarProbeFailed => "新程序没能运行：{err}",
+            Self::TarIoPrepare => "准备新文件失败：{err}",
+            Self::TarIoBackup => "备份旧文件失败：{err}",
+            Self::TarIoReplace => "替换程序文件失败（已恢复成旧版本）：{err}",
+            Self::TarIoMetadata => "更新安装清单失败：{err}",
         }
     }
 
@@ -89,12 +114,28 @@ impl Msg for UpdateTextMsg {
             Self::MissingInstaller => "The installer does not exist",
             Self::NotAFile => "The installer is not a file",
             Self::NotExe => "The installer is not an .exe",
+            Self::NotLinuxPackage => "The installer is not a .deb or .tar.gz file",
             Self::OutsideCache => {
                 "The installer is outside the update cache folder, so it will not be run"
             }
             Self::Path => "Cannot resolve the installer path: {err}",
             Self::Unreadable => "Failed to read the installer: {err}",
             Self::HashMismatch => "The installer contents differ from what was verified",
+            Self::TarNotWritable => "The folder ZeeTerm runs from is not writable: {err}",
+            Self::TarExtractFailed => "Could not extract the archive: {err}",
+            Self::TarUnsafeEntry => "The archive contains an unsafe entry: {name}",
+            Self::TarMissingFile => "The archive does not contain {name}",
+            Self::TarNotRegular => "{name} is not a regular file, or it is empty",
+            Self::TarWrongVersion => {
+                "The new program reports version \"{found}\" instead of \"{expected}\""
+            }
+            Self::TarProbeFailed => "The new program could not be run: {err}",
+            Self::TarIoPrepare => "Could not prepare the new files: {err}",
+            Self::TarIoBackup => "Could not back up the old files: {err}",
+            Self::TarIoReplace => {
+                "Could not replace the program files (the old version was restored): {err}"
+            }
+            Self::TarIoMetadata => "Could not update the install record: {err}",
         }
     }
 }
@@ -168,10 +209,47 @@ pub(crate) fn install_error_in(lang: Lang, err: &InstallError) -> String {
         InstallError::MissingInstaller => plain(UpdateTextMsg::MissingInstaller),
         InstallError::NotAFile => plain(UpdateTextMsg::NotAFile),
         InstallError::NotExe => plain(UpdateTextMsg::NotExe),
+        InstallError::NotLinuxPackage => plain(UpdateTextMsg::NotLinuxPackage),
         InstallError::OutsideCache => plain(UpdateTextMsg::OutsideCache),
         InstallError::Path(inner) => fill(lang, UpdateTextMsg::Path, &[("err", inner)]),
         InstallError::Unreadable(inner) => fill(lang, UpdateTextMsg::Unreadable, &[("err", inner)]),
         InstallError::HashMismatch => plain(UpdateTextMsg::HashMismatch),
+    }
+}
+
+/// tar.gz 更新（解压、校验、替换）的错误。
+pub(crate) fn tar_error(err: &TarError) -> String {
+    tar_error_in(current(), err)
+}
+
+pub(crate) fn tar_error_in(lang: Lang, err: &TarError) -> String {
+    match err {
+        TarError::NotWritable(inner) => {
+            fill(lang, UpdateTextMsg::TarNotWritable, &[("err", inner)])
+        }
+        TarError::ExtractFailed(inner) => {
+            fill(lang, UpdateTextMsg::TarExtractFailed, &[("err", inner)])
+        }
+        TarError::UnsafeEntry(name) => fill(lang, UpdateTextMsg::TarUnsafeEntry, &[("name", name)]),
+        TarError::MissingFile(name) => fill(lang, UpdateTextMsg::TarMissingFile, &[("name", name)]),
+        TarError::NotRegular(name) => fill(lang, UpdateTextMsg::TarNotRegular, &[("name", name)]),
+        TarError::WrongVersion { found, expected } => fill(
+            lang,
+            UpdateTextMsg::TarWrongVersion,
+            &[("found", found), ("expected", expected)],
+        ),
+        TarError::ProbeFailed(inner) => {
+            fill(lang, UpdateTextMsg::TarProbeFailed, &[("err", inner)])
+        }
+        TarError::Io(step, inner) => {
+            let msg = match step {
+                IoStep::Prepare => UpdateTextMsg::TarIoPrepare,
+                IoStep::Backup => UpdateTextMsg::TarIoBackup,
+                IoStep::Replace => UpdateTextMsg::TarIoReplace,
+                IoStep::Metadata => UpdateTextMsg::TarIoMetadata,
+            };
+            fill(lang, msg, &[("err", inner)])
+        }
     }
 }
 
@@ -223,6 +301,7 @@ mod tests {
             InstallError::MissingInstaller,
             InstallError::NotAFile,
             InstallError::NotExe,
+            InstallError::NotLinuxPackage,
             InstallError::OutsideCache,
             InstallError::Path(r"C:\cache\x".into()),
             InstallError::Unreadable("access is denied".into()),
@@ -235,5 +314,31 @@ mod tests {
         }
         let path = install_error_in(Lang::En, &InstallError::Path(r"C:\cache\x".into()));
         assert_eq!(path, r"Cannot resolve the installer path: C:\cache\x");
+    }
+
+    #[test]
+    fn tar_errors_match_the_core_in_chinese_and_are_english_otherwise() {
+        let errors = [
+            TarError::NotWritable("read-only file system".into()),
+            TarError::ExtractFailed("tar: unexpected EOF".into()),
+            TarError::UnsafeEntry("../etc/passwd".into()),
+            TarError::MissingFile("zssh-mcp".into()),
+            TarError::NotRegular("zeeterm".into()),
+            TarError::WrongVersion {
+                found: "ZeeTerm 1.0.0".into(),
+                expected: "ZeeTerm 2.0.0".into(),
+            },
+            TarError::ProbeFailed("no such file".into()),
+            TarError::Io(IoStep::Prepare, "disk full".into()),
+            TarError::Io(IoStep::Backup, "disk full".into()),
+            TarError::Io(IoStep::Replace, "disk full".into()),
+            TarError::Io(IoStep::Metadata, "disk full".into()),
+        ];
+        for err in errors {
+            assert_eq!(tar_error_in(Lang::Zh, &err), err.to_string(), "{err:?}");
+            let en = tar_error_in(Lang::En, &err);
+            assert!(!has_cjk(&en), "{err:?} → {en}");
+            assert!(!en.contains('{'), "占位符没替换：{en}");
+        }
     }
 }

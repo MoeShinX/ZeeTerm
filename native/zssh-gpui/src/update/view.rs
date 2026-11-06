@@ -22,13 +22,14 @@ use gpui_kit::*;
 
 use super::layout::{self, Action, Screen};
 use super::{
-    DownloadState, InstallState, UpdateDemo, UpdateMsg, file_summary, notes, quit_after_paint,
-    source_label, window_title,
+    DownloadState, InstallState, UpdateDemo, UpdateMsg, file_summary, linux, notes,
+    quit_after_paint, source_label, window_title,
 };
 use crate::app_theme::Tokens;
 use crate::i18n::t;
 use crate::main_window::titlebar::window_controls_with;
 use crate::typography::{Role, Typo as _};
+use zssh_update::linux::Flavor;
 
 /// 自绘标题栏高度（和文件窗口一致）。
 const TITLEBAR_HEIGHT: f32 = 40.0;
@@ -65,11 +66,7 @@ impl Render for UpdateDemo {
         }
         let tokens = Tokens::current(cx);
         let screen = self.screen();
-        let version = self
-            .package
-            .as_ref()
-            .map(|package| package.version.clone())
-            .unwrap_or_default();
+        let version = self.announced_version().unwrap_or_default();
         let published = self
             .checked
             .as_ref()
@@ -240,7 +237,11 @@ impl UpdateDemo {
             | Screen::Downloading
             | Screen::Verifying
             | Screen::Verified
-            | Screen::DownloadFailed => body
+            | Screen::DownloadFailed
+            | Screen::NoPackage
+            | Screen::Installing
+            | Screen::Installed
+            | Screen::ManualInstall => body
                 .children(self.status_block(screen, tokens))
                 .children(self.notices(tokens))
                 .child(self.notes_section(tokens))
@@ -281,25 +282,48 @@ impl UpdateDemo {
             (Screen::Verified, DownloadState::Verified { path, size, .. }) => {
                 let summary = SharedString::from(file_summary(path, *size));
                 Some(
-                    h_flex()
-                        .id("update-verified")
+                    ok_row(
+                        "update-verified",
+                        t(UpdateMsg::SignatureVerifiedLabel),
+                        tokens,
+                    )
+                    .tooltip(move |window, cx| Tooltip::new(summary.clone()).build(window, cx))
+                    .into_any_element(),
+                )
+            }
+            (Screen::NoPackage, _) => Some(
+                div()
+                    .flex_none()
+                    .typo(Role::Body, tokens)
+                    .child(t(UpdateMsg::NoPackageMessage))
+                    .into_any_element(),
+            ),
+            (Screen::Installing, _) => {
+                let message = match self.install {
+                    InstallState::Installing(Flavor::Deb) => UpdateMsg::InstallingDebMessage,
+                    _ => UpdateMsg::InstallingTarMessage,
+                };
+                Some(
+                    v_flex()
                         .flex_none()
                         .gap_2()
-                        .items_center()
-                        .tooltip(move |window, cx| Tooltip::new(summary.clone()).build(window, cx))
-                        .child(
-                            Icon::new(IconName::CircleCheck)
-                                .size_4()
-                                .text_color(tokens.dot_connected),
-                        )
-                        .child(
-                            div()
-                                .typo(Role::ItemName, tokens)
-                                .child(t(UpdateMsg::SignatureVerifiedLabel)),
-                        )
+                        .child(progress_bar(None, tokens))
+                        .child(div().typo(Role::Caption, tokens).child(t(message)))
                         .into_any_element(),
                 )
             }
+            (Screen::Installed, _) => Some(
+                ok_row("update-installed", t(UpdateMsg::InstalledMessage), tokens)
+                    .into_any_element(),
+            ),
+            (Screen::ManualInstall, _) => Some(
+                ok_row(
+                    "update-verified",
+                    t(UpdateMsg::SignatureVerifiedLabel),
+                    tokens,
+                )
+                .into_any_element(),
+            ),
             (Screen::DownloadFailed, DownloadState::Failed(message)) => {
                 Some(danger_card(message.clone(), tokens))
             }
@@ -332,6 +356,23 @@ impl UpdateDemo {
                 tokens.text_muted,
             )),
             InstallState::Failed(err) => notices.push(line(err.clone(), tokens.danger)),
+            // 这几种在 Linux 上由各自那一屏的状态块表达（见 `status_block`），这里只补手动安装的说明。
+            InstallState::Installing(_) | InstallState::Installed { .. } => {}
+            InstallState::Manual {
+                flavor,
+                reason,
+                path,
+            } => {
+                let mut lines = linux::manual_lines(*flavor, *reason, path);
+                // 最后一项是要运行的命令 / 包的位置：做成可选中复制的等宽块。
+                let command = lines.pop();
+                for text in lines {
+                    notices.push(line(text, tokens.text_muted));
+                }
+                if let Some(command) = command {
+                    notices.push(command_block(command, tokens));
+                }
+            }
         }
         if let Some(text) = &self.queued {
             notices.push(line(text.clone(), tokens.text_muted));
@@ -400,16 +441,20 @@ impl UpdateDemo {
             .py_3()
             .border_t_1()
             .border_color(tokens.divider)
-            .when(layout::shows_restart_choice(screen) && !launched, |row| {
-                row.child(
-                    Checkbox::new("update-restart")
-                        .label(t(UpdateMsg::RestartAfterInstallCheckbox))
-                        .checked(restart)
-                        .on_click(move |_, _, cx| {
-                            toggle.update(cx, |this, cx| this.toggle_restart(cx));
-                        }),
-                )
-            })
+            // "安装后重启"是 Windows 安装器的参数；Linux 装好后单独问一次「立即重启」。
+            .when(
+                layout::shows_restart_choice(screen) && !launched && self.linux_flavor().is_none(),
+                |row| {
+                    row.child(
+                        Checkbox::new("update-restart")
+                            .label(t(UpdateMsg::RestartAfterInstallCheckbox))
+                            .checked(restart)
+                            .on_click(move |_, _, cx| {
+                                toggle.update(cx, |this, cx| this.toggle_restart(cx));
+                            }),
+                    )
+                },
+            )
             .child(div().flex_1());
 
         for (index, spec) in specs.into_iter().enumerate() {
@@ -446,9 +491,56 @@ impl UpdateDemo {
             Action::Later => self.later(window, cx),
             Action::Cancel => self.cancel_download(cx),
             Action::Install => return self.click_install(cx),
+            Action::OpenReleasePage => self.open_release_page(cx),
+            Action::Restart => return self.click_restart(cx),
+            Action::RevealFile => self.reveal_file(cx),
         }
         false
     }
+}
+
+/// 一行"成功"提示：绿色对勾 + 文字。
+fn ok_row(id: &'static str, text: &'static str, tokens: &Tokens) -> ::gpui::Stateful<::gpui::Div> {
+    h_flex()
+        .id(id)
+        .flex_none()
+        .gap_2()
+        .items_center()
+        .child(
+            Icon::new(IconName::CircleCheck)
+                .size_4()
+                .text_color(tokens.dot_connected),
+        )
+        .child(div().typo(Role::ItemName, tokens).child(text))
+}
+
+/// 手动安装要运行的命令 / 要找的文件：圆角块里的等宽文字，可以选中复制。
+fn command_block(command: String, tokens: &Tokens) -> AnyElement {
+    div()
+        .flex_none()
+        .w_full()
+        .rounded_lg()
+        .border_1()
+        .border_color(tokens.border)
+        .bg(tokens.surface)
+        .px_3()
+        .py_2()
+        .child(
+            TextView::markdown(
+                "update-manual-command",
+                SharedString::from(format!("```\n{command}\n```")),
+            )
+            .text_size(px(NOTES_TEXT_SIZE))
+            .text_color(tokens.text)
+            .selectable(true)
+            .selection_format(SelectionFormat::Source)
+            // 内容只有一条命令 / 一个路径，但和更新说明一样不给图片和链接任何出路。
+            .image_source(|_| {
+                ImageSource::Resource(Resource::Embedded("zssh-no-remote-images".into()))
+            })
+            .on_link_click(|_, _, _, _| {}),
+        )
+        .into_any_element()
 }
 
 /// 进度条；总大小未知时画"不确定进度"的来回滑动。
