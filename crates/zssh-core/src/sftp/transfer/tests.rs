@@ -57,6 +57,7 @@ fn backoff_grows_and_is_capped() {
     assert_eq!(backoff_delay(20), Duration::from_secs(5), "有上限");
 }
 
+#[cfg(windows)]
 #[test]
 fn renamed_path_and_with_file_name_know_both_kinds_of_separators() {
     // Windows 本地路径：目录名里有点、文件没扩展名，不能改在目录名上。
@@ -69,6 +70,87 @@ fn renamed_path_and_with_file_name_know_both_kinds_of_separators() {
     assert_eq!(with_file_name("/a/b.txt", "c.txt"), "/a/c.txt");
     assert_eq!(with_file_name(r"C:\a\b.txt", "c.txt"), r"C:\a\c.txt");
     assert_eq!(with_file_name("b.txt", "c.txt"), "c.txt");
+}
+
+/// Linux：分隔符只有 `/`，`\` 是文件名里的普通字符。
+#[cfg(unix)]
+#[test]
+fn renamed_path_and_with_file_name_only_split_on_slashes() {
+    assert_eq!(renamed_path("/a/b.txt", 2), "/a/b (2).txt");
+    assert_eq!(renamed_path("/my.dir/file", 2), "/my.dir/file (2)");
+    // `a\b.txt` 是一个名字，扩展名在最后；`my.dir\file` 里的点也是名字的一部分，序号照常加在
+    // 最后一个点前面（Windows 上反斜杠是目录，结果不一样）。
+    assert_eq!(renamed_path("/d/a\\b.txt", 2), "/d/a\\b (2).txt");
+    assert_eq!(renamed_path("/d/my.dir\\file", 2), "/d/my (2).dir\\file");
+    assert_eq!(renamed_path(r"C:\my.dir\file", 2), r"C:\my (2).dir\file");
+
+    assert_eq!(with_file_name("/a/b.txt", "c.txt"), "/a/c.txt");
+    assert_eq!(with_file_name("b.txt", "c.txt"), "c.txt");
+    // 最后一段整个被换掉，里面的反斜杠不是目录。
+    assert_eq!(with_file_name("/a/x\\y.txt", "c.txt"), "/a/c.txt");
+    assert_eq!(with_file_name("/a/b.txt", "p\\q.txt"), "/a/p\\q.txt");
+    assert_eq!(with_file_name(r"C:\a\b.txt", "c.txt"), "c.txt");
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_names_on_linux_treat_backslash_as_part_of_the_name() {
+    assert_eq!(copy_path("/a/report.txt", 1), "/a/report - 副本.txt");
+    assert_eq!(copy_path("/a/report.txt", 2), "/a/report - 副本 2.txt");
+    assert_eq!(copy_path("/a/noext", 1), "/a/noext - 副本");
+    assert_eq!(copy_path("/a/.bashrc", 1), "/a/.bashrc - 副本");
+    assert_eq!(copy_path("/a/my.dir/file", 1), "/a/my.dir/file - 副本");
+    assert_eq!(copy_path("/a/a\\b.txt", 1), "/a/a\\b - 副本.txt");
+    assert_eq!(copy_path("/a/a\\b.txt", 3), "/a/a\\b - 副本 3.txt");
+    assert_eq!(copy_path("/a/my.dir\\file", 1), "/a/my - 副本.dir\\file");
+}
+
+/// Linux：冲突里改的新名字带反斜杠是合法名字，要用上，不能当成路径分隔符退回自动名字。
+#[cfg(unix)]
+#[tokio::test]
+async fn conflict_rename_accepts_a_backslash_name_on_linux() {
+    struct RenameTo(&'static str);
+    impl ConflictResolver for RenameTo {
+        fn decide<'a>(&'a self, _info: ConflictInfo) -> BoxFuture<'a, ConflictDecision> {
+            let name = self.0;
+            Box::pin(async move {
+                ConflictDecision {
+                    action: ConflictAction::Rename,
+                    apply_to_all: false,
+                    rename_to: Some(name.to_owned()),
+                }
+            })
+        }
+    }
+
+    let root = temp_root("rename-backslash");
+    let source = root.join("data.bin");
+    std::fs::write(&source, vec![8u8; 2048]).unwrap();
+    let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+    endpoints.put_remote("/remote/sub/data.bin", vec![1u8; 100]);
+    let (engine, mut events) = TransferEngine::new(
+        endpoints.clone(),
+        Arc::new(RenameTo("a\\b.bin")),
+        local_options(),
+    );
+    let id = engine.submit(TransferJob {
+        direction: Direction::Upload,
+        source: source.display().to_string(),
+        target: "/remote/sub/data.bin".to_owned(),
+        recursive: false,
+        peer: None,
+    });
+    let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    assert_eq!(
+        endpoints.remote_contents("/remote/sub/a\\b.bin"),
+        vec![8u8; 2048]
+    );
+    assert_eq!(
+        endpoints.remote_contents("/remote/sub/data.bin"),
+        vec![1u8; 100],
+        "原来的文件不能被动"
+    );
 }
 
 #[test]
@@ -468,6 +550,7 @@ async fn empty_files_are_transferred() {
 }
 
 /// 下载方向：远端（内存）→ 本地目录，内容一致；名字按 Windows 规则处理。
+#[cfg(windows)]
 #[tokio::test]
 async fn download_writes_local_files_with_clean_names() {
     let root = temp_root("download");
@@ -498,6 +581,79 @@ async fn download_writes_local_files_with_clean_names() {
     );
     assert!(
         report.notes.iter().any(|note| note.contains("非法字符")),
+        "{:?}",
+        report.notes
+    );
+}
+
+/// 下载方向（Linux）：Windows 才有的限制不适用，这些名字原样落盘；只有控制字符被换掉并注明；
+/// 只差大小写的两个文件是两个文件。
+#[cfg(unix)]
+#[tokio::test]
+async fn download_keeps_posix_file_names_as_they_are() {
+    let root = temp_root("download-posix");
+    let local_dir = root.join("downloads");
+    std::fs::create_dir_all(&local_dir).unwrap();
+
+    let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+    for (name, body) in [
+        ("a.txt", &b"aaa"[..]),
+        ("weird:name?.txt", b"bbb"),
+        ("CON.txt", b"ccc"),
+        ("trailing. ", b"ddd"),
+        ("back\\slash.log", b"eee"),
+        ("File", b"upper"),
+        ("file", b"lower"),
+        ("bell\u{7}.txt", b"fff"),
+    ] {
+        endpoints.put_remote(&format!("/remote/dir/{name}"), body.to_vec());
+    }
+
+    let (engine, mut events) =
+        TransferEngine::new(endpoints.clone(), Arc::new(OverwriteAll), local_options());
+    let id = engine.submit(TransferJob {
+        direction: Direction::Download,
+        source: "/remote/dir".to_owned(),
+        target: local_dir.display().to_string(),
+        recursive: true,
+        peer: None,
+    });
+    let report = drain_until_finished(&mut events, id, Duration::from_secs(20)).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    for (name, body) in [
+        ("a.txt", &b"aaa"[..]),
+        ("weird:name?.txt", b"bbb"),
+        ("CON.txt", b"ccc"),
+        ("trailing. ", b"ddd"),
+        ("back\\slash.log", b"eee"),
+        ("File", b"upper"),
+        ("file", b"lower"),
+        ("bell_.txt", b"fff"),
+    ] {
+        assert_eq!(
+            std::fs::read(local_dir.join(name)).unwrap(),
+            body,
+            "{name:?}"
+        );
+    }
+    let mut on_disk: Vec<String> = std::fs::read_dir(&local_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    on_disk.sort();
+    assert_eq!(on_disk.len(), 8, "不该多出带序号的改名文件：{on_disk:?}");
+    // 说明里只有控制字符那一条；没有保留名 / 冲突之类的。
+    let renamed: Vec<_> = report
+        .notes
+        .iter()
+        .filter(|note| note.contains("非法字符"))
+        .collect();
+    assert_eq!(renamed.len(), 1, "{:?}", report.notes);
+    assert!(
+        !report
+            .notes
+            .iter()
+            .any(|note| note.contains("保留名") || note.contains("只差大小写")),
         "{:?}",
         report.notes
     );
@@ -1218,6 +1374,7 @@ async fn engines_on_separate_endpoints_share_the_lock_when_the_server_identity_m
 
 // ---------- 复制粘贴的两个方向（M3-5 第 3 节） ----------
 
+#[cfg(windows)]
 #[test]
 fn copy_names_put_the_suffix_before_the_extension() {
     assert_eq!(copy_path("/a/report.txt", 1), "/a/report - 副本.txt");
@@ -1226,6 +1383,14 @@ fn copy_names_put_the_suffix_before_the_extension() {
     assert_eq!(copy_path("/a/.bashrc", 1), "/a/.bashrc - 副本");
     assert_eq!(copy_path(r"C:\my.dir\file", 1), r"C:\my.dir\file - 副本");
     assert_eq!(copy_path(r"C:\d\p.jpg", 1), r"C:\d\p - 副本.jpg");
+}
+
+#[test]
+fn copy_names_with_posix_slashes_are_the_same_everywhere() {
+    assert_eq!(copy_path("/a/report.txt", 1), "/a/report - 副本.txt");
+    assert_eq!(copy_path("/a/my.dir/file", 2), "/a/my.dir/file - 副本 2");
+    assert_eq!(renamed_path("/a/b.txt", 2), "/a/b (2).txt");
+    assert_eq!(with_file_name("/a/b.txt", "c.txt"), "/a/c.txt");
 }
 
 /// 远端到远端：整棵目录（含子目录）经引擎复制到新位置，内容一致，源不动。
