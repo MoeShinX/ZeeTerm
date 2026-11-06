@@ -718,8 +718,19 @@ pub fn default_save_as_name_with(remote_path: &str, copy_word: &str) -> String {
 }
 
 /// 临时文件的名字：保留原名（编辑器标题栏、扩展名决定语法高亮和默认程序），
-/// 但去掉 Windows 不允许的字符和保留名。
+/// 只改本机文件系统放不下的部分——和下载同一套规则（[`super::local::local_name`]）：
+/// Windows 去掉不允许的字符和保留名，Linux / 其他 Unix 只换掉 `/` 和控制字符。
 pub fn sanitize_local_name(name: &str) -> String {
+    if cfg!(windows) {
+        sanitize_windows_name(name)
+    } else {
+        super::local::local_name(name).name
+    }
+}
+
+/// Windows 文件名规则的清理（`<>:"/\|?*`、控制字符、结尾的点和空格、`CON` 等保留名）。
+/// 两个系统上都编译，Linux 上只有测试在用。
+fn sanitize_windows_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| {
