@@ -83,7 +83,7 @@ pub enum CopyOutcome {
     Completed { bytes: u64 },
     /// 用户暂停（临时文件留着，下次从 `resume_len` 接着传）。
     Paused { bytes: u64, resume_len: u64 },
-    /// 用户取消（临时文件已删）。
+    /// 用户取消（句柄已关，临时文件由队列层删除）。
     Cancelled { bytes: u64 },
 }
 
@@ -335,10 +335,22 @@ pub async fn copy_file(
     // `finish` 自己保证 fsync 失败也会继续关句柄；错误以最先发生的为准，
     // 所以只有"本来是成功完成"时 fsync 的错才会变成结果，其余路径上的关闭错误一律丢掉。
     let finished = writer.finish().await;
+    // 最后一批（包括空文件 / 已传满的续传）不会再进循环，收尾期间也可能取消。
+    // 先保留取消结果，避免把取消后的 fsync 失败当作可重试的传输错误。
+    if result.is_ok() && control.state() == ControlState::Cancelled {
+        result = Ok(CopyOutcome::Cancelled {
+            bytes: done - resume_len,
+        });
+    }
     if let (Ok(CopyOutcome::Completed { .. }), Err(err)) = (&result, finished) {
         result = Err(err);
     }
     let _ = reader.close().await;
+    if result.is_ok() && control.state() == ControlState::Cancelled {
+        return Ok(CopyOutcome::Cancelled {
+            bytes: done - resume_len,
+        });
+    }
 
     match result {
         Ok(CopyOutcome::Completed { .. }) => Ok(CopyOutcome::Completed {
@@ -464,6 +476,74 @@ mod tests {
             matches!(outcome, CopyOutcome::Cancelled { .. }),
             "{outcome:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn cancel_at_final_progress_never_completes() {
+        // 最后一批、空文件、已经传满的续传都没有下一次循环检查点。
+        for (total, resume_len) in [(8, 0), (0, 0), (8, 8)] {
+            let pair = tracked_pair(&vec![7; total as usize]);
+            if resume_len > 0 {
+                let writer = pair.raw_target.open_write(0).await.unwrap();
+                writer
+                    .write_at(0, vec![7; resume_len as usize])
+                    .await
+                    .unwrap();
+                writer.finish().await.unwrap();
+            }
+            let control = ControlFlag::new();
+            let outcome = copy_file(
+                Arc::clone(&pair.source),
+                Arc::clone(&pair.target),
+                total,
+                resume_len,
+                tuning(4, 2),
+                &control,
+                |done, total| {
+                    if done == total {
+                        control.cancel();
+                    }
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                outcome,
+                CopyOutcome::Cancelled {
+                    bytes: total - resume_len
+                }
+            );
+            assert_eq!(Handles::count(&pair.source_handles.reads_closed), 1);
+            assert_eq!(Handles::count(&pair.target_handles.writes_finished), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_during_finish_never_completes() {
+        let source = MemoryEndpoint::new("source", vec![7; 8]);
+        let target = MemoryEndpoint::new("target", Vec::new());
+        let gate = target.block_next_finish();
+        let control = ControlFlag::new();
+        let copy = copy_file(
+            source.as_endpoint(),
+            target.as_endpoint(),
+            8,
+            0,
+            tuning(4, 2),
+            &control,
+            |_, _| {},
+        );
+        let cancel = async {
+            gate.entered.notified().await;
+            control.cancel();
+            gate.release.notify_one();
+        };
+        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(copy, cancel)
+        })
+        .await
+        .expect("收尾握手不能挂起");
+        assert_eq!(outcome.unwrap(), CopyOutcome::Cancelled { bytes: 8 });
     }
 
     #[tokio::test]

@@ -173,6 +173,23 @@ impl RemoteEndpoint {
     }
 }
 
+fn remote_source_size(
+    path: &str,
+    attrs: &russh_sftp::protocol::FileAttributes,
+) -> Result<Option<u64>, SftpError> {
+    // 计划之后源也可能变成链接，不能把链接文本的长度用作目标内容的复制上限。
+    if attrs.is_symlink() {
+        return Err(SftpError::InvalidInput(
+            Reason::new(
+                reason_keys::XFER_NOTE_SKIPPED_SYMLINK,
+                format!("跳过符号链接：{path}"),
+            )
+            .with("path", path),
+        ));
+    }
+    Ok(attrs.size)
+}
+
 impl FileEndpoint for RemoteEndpoint {
     fn describe(&self) -> String {
         self.path.clone()
@@ -181,7 +198,7 @@ impl FileEndpoint for RemoteEndpoint {
     fn size<'a>(&'a self) -> EndpointFuture<'a, Result<Option<u64>, SftpError>> {
         Box::pin(async move {
             match self.channel.lstat(&self.path).await {
-                Ok(attrs) => Ok(attrs.size),
+                Ok(attrs) => remote_source_size(&self.path, &attrs),
                 Err(SftpError::NotFound { .. }) => Ok(None),
                 Err(err) => Err(err),
             }
@@ -839,6 +856,22 @@ fn write_file_at(file: &std::fs::File, offset: u64, data: &[u8]) -> std::io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_source_size_rejects_a_link_instead_of_copying_its_length() {
+        let mut attrs = russh_sftp::protocol::FileAttributes {
+            size: Some(11),
+            permissions: Some(0o120777),
+            ..Default::default()
+        };
+        assert!(matches!(
+            remote_source_size("/link", &attrs),
+            Err(SftpError::InvalidInput(_))
+        ));
+        attrs.permissions = Some(0o100644);
+        attrs.size = Some(1024);
+        assert_eq!(remote_source_size("/file", &attrs).unwrap(), Some(1024));
+    }
 
     #[tokio::test]
     async fn local_endpoint_round_trips_through_a_part_file() {

@@ -336,6 +336,22 @@ struct JobState {
 }
 
 impl JobState {
+    async fn wait_while_paused(&self, mut on_paused: impl FnMut() + Send) -> file::ControlState {
+        loop {
+            // 先登记再读状态，避免 resume / cancel 在读到 Paused 后发出的广播丢失。
+            let notified = self.resume_signal.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            match self.control.state() {
+                file::ControlState::Paused => {
+                    on_paused();
+                    notified.await;
+                }
+                state => return state,
+            }
+        }
+    }
+
     fn confirmed_prefix(&self, target: &str) -> Option<u64> {
         self.confirmed
             .lock()
@@ -654,24 +670,19 @@ impl TransferEngine {
         while index < plan.files.len() {
             let planned = plan.files[index].clone();
             // 暂停：等 resume；取消：收尾。
-            loop {
-                match state.control.state() {
-                    file::ControlState::Running => break,
-                    file::ControlState::Paused => {
-                        self.set_state(&state, TransferState::Paused);
-                        self.emit(&state, true);
-                        state.resume_signal.notified().await;
-                        // 唤醒之后再看一次状态（可能是 resume，也可能是 cancel）。
-                    }
-                    file::ControlState::Cancelled => {
-                        // 暂停中被取消：临时文件还留在目标端，和"传输中取消"一样要清掉
-                        // （那条路径在 run_one_file 里清；这里是另一条路径，没人清）。
-                        self.discard_partial(&state, &planned).await;
-                        self.set_state(&state, TransferState::Cancelled);
-                        self.emit(&state, true);
-                        return;
-                    }
-                }
+            if state
+                .wait_while_paused(|| {
+                    self.set_state(&state, TransferState::Paused);
+                    self.emit(&state, true);
+                })
+                .await
+                == file::ControlState::Cancelled
+            {
+                // 暂停中被取消：临时文件还留在目标端，也要清掉。
+                self.discard_partial(&state, &planned).await;
+                self.set_state(&state, TransferState::Cancelled);
+                self.emit(&state, true);
+                return;
             }
 
             // 文件级并发许可。
@@ -962,6 +973,12 @@ impl TransferEngine {
                     // 收尾：把临时文件改名成最终名字。只有用户同意过覆盖才允许替换；
                     // 其余情况由系统在改名那一刻判断目标是否存在（不是先查再改）。
                     let overwrite = renamed_target.is_none() && overwrite_authorized;
+                    // 这是提交的取消边界；进入 commit 后不能中途丢弃改名请求，
+                    // 否则无法判断最终文件是否已经替换成功。
+                    if state.control.state() == file::ControlState::Cancelled {
+                        let _ = target_endpoint.remove_partial().await;
+                        return Err(SftpError::Cancelled);
+                    }
                     if let Err(err) = target_endpoint.commit(source_size, overwrite).await {
                         if !overwrite
                             && renamed_target.is_none()

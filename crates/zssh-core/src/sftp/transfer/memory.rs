@@ -38,6 +38,16 @@ pub(crate) struct MemoryFs {
     /// 为真时 `truncate_partial` / `remove_partial` 都报断线：模拟「写失败的同时连接已经断了」，
     /// 收尾时把临时文件截回已确认前缀（或删掉）也做不到。
     pub(crate) cleanup_fails: AtomicBool,
+    #[cfg(test)]
+    finish_gate: Mutex<Option<Arc<FinishGate>>>,
+}
+
+/// 用握手卡住收尾，确定性覆盖最后一批写完后的取消窗口。
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct FinishGate {
+    pub(crate) entered: tokio::sync::Notify,
+    pub(crate) release: tokio::sync::Notify,
 }
 
 /// 一个内存端点（源或目标）。
@@ -167,6 +177,13 @@ impl MemoryEndpoint {
     /// 这个端点的临时文件路径。
     fn part_key(&self) -> String {
         part_name(&self.path, &self.owner)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn block_next_finish(&self) -> Arc<FinishGate> {
+        let gate = Arc::new(FinishGate::default());
+        *self.fs.finish_gate.lock().expect("锁") = Some(Arc::clone(&gate));
+        gate
     }
 
     /// 设置"写到第 N 字节就断线"（只断一次）。
@@ -507,7 +524,17 @@ impl WriteAt for MemoryWriter {
     }
 
     fn finish<'a>(&'a self) -> EndpointFuture<'a, Result<(), SftpError>> {
-        Box::pin(async move { Ok(()) })
+        Box::pin(async move {
+            #[cfg(test)]
+            {
+                let gate = self.fs.finish_gate.lock().expect("锁").take();
+                if let Some(gate) = gate {
+                    gate.entered.notify_one();
+                    gate.release.notified().await;
+                }
+            }
+            Ok(())
+        })
     }
 }
 

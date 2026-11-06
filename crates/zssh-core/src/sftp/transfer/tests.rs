@@ -2599,6 +2599,91 @@ async fn resume_without_a_confirmed_prefix_record_restarts_from_scratch() {
     assert_eq!(endpoints.remote_contents("/remote/hole.bin"), data);
 }
 
+#[tokio::test]
+async fn paused_wait_cannot_lose_resume_or_cancel_before_await() {
+    for cancel in [false, true] {
+        let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+        let (engine, _events) =
+            TransferEngine::new(endpoints, Arc::new(OverwriteAll), local_options());
+        let state = Arc::new(JobState {
+            id: 1,
+            job: TransferJob {
+                direction: Direction::RemoteCopy,
+                source: "/remote/source".to_owned(),
+                target: "/remote/target".to_owned(),
+                recursive: false,
+                peer: None,
+            },
+            control: ControlFlag::new(),
+            batch: Mutex::new(None),
+            resume_signal: Notify::new(),
+            progress: Mutex::new(JobProgress::new()),
+            state: Mutex::new(TransferState::Paused),
+            confirmed: Mutex::new(HashMap::new()),
+        });
+        engine
+            .jobs
+            .lock()
+            .unwrap()
+            .insert(state.id, Arc::clone(&state));
+        state.control.pause();
+        let mut observed_paused = 0;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            state.wait_while_paused(|| {
+                // 正好在读到 Paused 之后、首次 await 之前广播；不依赖调度运气。
+                observed_paused += 1;
+                if cancel {
+                    assert!(engine.cancel(state.id));
+                } else {
+                    assert!(engine.resume(state.id));
+                }
+            }),
+        )
+        .await
+        .expect("resume / cancel 广播不能丢失");
+        assert_eq!(observed_paused, 1);
+        assert_eq!(
+            outcome,
+            if cancel {
+                file::ControlState::Cancelled
+            } else {
+                file::ControlState::Running
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancel_during_finish_does_not_commit_or_replace_target() {
+    for total in [0, 8] {
+        let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+        endpoints.put_remote("/remote/source", vec![7; total]);
+        endpoints.put_remote("/remote/target", b"original".to_vec());
+        let gate = endpoints.remote.block_next_finish();
+        let (engine, mut events) =
+            TransferEngine::new(endpoints.clone(), Arc::new(OverwriteAll), local_options());
+        let id = engine.submit(TransferJob {
+            direction: Direction::RemoteCopy,
+            source: "/remote/source".to_owned(),
+            target: "/remote/target".to_owned(),
+            recursive: false,
+            peer: None,
+        });
+        tokio::time::timeout(Duration::from_secs(2), gate.entered.notified())
+            .await
+            .expect("必须进入 finish 后再取消");
+        assert_eq!(endpoints.remote_part_files("/remote/target").len(), 1);
+        assert!(engine.cancel(id));
+        gate.release.notify_one();
+        let report = drain_until_finished(&mut events, id, Duration::from_secs(2)).await;
+        assert_eq!(report.state, TransferState::Cancelled);
+        assert_eq!(report.done_files, 0);
+        assert_eq!(endpoints.remote_contents("/remote/target"), b"original");
+        assert!(endpoints.remote_part_files("/remote/target").is_empty());
+    }
+}
+
 #[test]
 fn resume_point_is_the_smaller_of_actual_length_and_confirmed_prefix() {
     assert_eq!(

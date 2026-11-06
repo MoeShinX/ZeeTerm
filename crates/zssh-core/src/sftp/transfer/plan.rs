@@ -168,6 +168,9 @@ pub async fn plan_download(
 ) -> Result<TransferPlan, SftpError> {
     let mut plan = TransferPlan::default();
     let attrs = lister.stat_remote(remote_source).await?;
+    if attrs.is_symlink() {
+        return Err(SftpError::InvalidInput(skipped_symlink_note(remote_source)));
+    }
     if !attrs.is_dir() {
         plan.files.push(PlannedFile {
             source: remote_source.to_owned(),
@@ -451,6 +454,45 @@ mod tests {
             parent_of_relative("sub/deep/a.txt").as_deref(),
             Some("sub/deep")
         );
+    }
+
+    #[tokio::test]
+    async fn downloading_a_top_level_symlink_never_schedules_target_contents() {
+        struct Symlink;
+        impl super::super::backend::RemoteLister for Symlink {
+            fn list_dir<'a>(
+                &'a self,
+                _path: &'a str,
+            ) -> crate::ssh::BoxFuture<'a, Result<Vec<crate::sftp::fs::DirEntry>, SftpError>>
+            {
+                Box::pin(async { panic!("链接不能作为目录展开") })
+            }
+
+            fn stat_remote<'a>(
+                &'a self,
+                _path: &'a str,
+            ) -> crate::ssh::BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>>
+            {
+                Box::pin(async {
+                    Ok(russh_sftp::protocol::FileAttributes {
+                        size: Some(11),
+                        permissions: Some(0o120777),
+                        ..Default::default()
+                    })
+                })
+            }
+        }
+
+        let root = crate::test_util::TestDir::new("plan-symlink");
+        let target = root.join("existing.txt");
+        std::fs::write(&target, b"keep original").unwrap();
+        for recursive in [false, true] {
+            let err = plan_download(&Symlink, "/link", &target, recursive)
+                .await
+                .expect_err("顶层链接必须拒绝，不能按链接长度复制目标");
+            assert!(matches!(err, SftpError::InvalidInput(_)));
+            assert_eq!(std::fs::read(&target).unwrap(), b"keep original");
+        }
     }
 
     /// F02：递归下载时远端子项的名字再怪，也只能落在目标目录里面。
