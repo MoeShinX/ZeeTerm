@@ -113,8 +113,8 @@ pub fn set_window_prop(hwnd: isize, prop: &str) -> bool {
 // （删了反而有竞态：别的进程刚打开旧文件、我们删掉、第三个进程新建同名文件又拿到锁，就成了两个实例）。
 //
 // 激活：第二个实例连第一个实例在同目录里监听的套接字，发一行 `activate`，由第一个实例自己把窗口提前。
-// 套接字文件权限 0600、放在 0700 的运行目录里，并且监听方再用 `SO_PEERCRED` 核对对端 uid，
-// 只认同一用户。
+// 套接字文件权限 0600、放在 0700 的运行目录里，并且监听方再核对对端 uid
+// （Linux 用 `SO_PEERCRED`，BSD 系 / macOS 用 `getpeereid`），只认同一用户。
 
 #[cfg(unix)]
 use std::io::{Read as _, Write as _};
@@ -226,7 +226,10 @@ fn serve(listener: UnixListener, stop: &AtomicBool, on_activate: impl Fn()) {
 }
 
 /// 对端进程的有效 uid 是否和自己一样。取不到凭据一律当作不是。
-#[cfg(unix)]
+///
+/// `SO_PEERCRED` / `ucred` 只有 Linux（和 Android）有，BSD 系（含 macOS）要用 `getpeereid`，
+/// 所以按系统分三份；认不出的 Unix 一律拒绝（不放行比放行安全）。
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn peer_is_same_user(stream: &UnixStream) -> bool {
     use std::os::fd::AsRawFd as _;
 
@@ -248,6 +251,40 @@ fn peer_is_same_user(stream: &UnixStream) -> bool {
     };
     // SAFETY: geteuid 没有前置条件。
     status == 0 && cred.uid == unsafe { libc::geteuid() }
+}
+
+#[cfg(any(
+    target_vendor = "apple",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+fn peer_is_same_user(stream: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd as _;
+
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    // SAFETY: fd 属于存活的 `stream`；`uid` / `gid` 是本地变量，`getpeereid` 只往里写各一个值。
+    let status = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
+    // SAFETY: geteuid 没有前置条件。
+    status == 0 && uid == unsafe { libc::geteuid() }
+}
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))
+))]
+fn peer_is_same_user(_stream: &UnixStream) -> bool {
+    false
 }
 
 #[cfg(unix)]
