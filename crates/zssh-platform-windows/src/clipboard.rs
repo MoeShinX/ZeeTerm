@@ -15,7 +15,9 @@
 //!
 //! 不带密码的连接信息只是普通文字，照常写入，不做排除、不自动清除。
 //!
-//! 其他平台没有对应实现，返回「当前平台不支持」。
+//! 其他平台（Linux）：这里的 `write_plain` / `write_sensitive` 仍返回「当前平台不支持」——
+//! 写剪贴板要在界面线程用 GPUI 的剪贴板（`native/zssh-gpui/src/chat_copy.rs`），这个不依赖界面的
+//! crate 只提供到点清除要用的、与平台无关的判断：[`Fingerprint`] 和 [`clear_verdict`]。
 
 use std::time::Duration;
 
@@ -80,6 +82,67 @@ fn write_holding_clipboard<C>(
     }
     drop(clipboard);
     result
+}
+
+// ---------------------------------------------------------------------------------------------
+// 没有私有剪贴板格式的平台（Linux）：用内容的指纹认出「还是我们写的那份」
+
+/// 一段敏感文字的指纹：只留长度和带随机密钥的哈希，不留明文。
+///
+/// 密钥是进程启动后第一次用到时随机生成的（标准库的 `RandomState`，不对外暴露），所以指纹
+/// 离开这个进程就没有意义，也不能拿去离线撞库。到点时拿剪贴板里现在的文字再算一次对比：
+/// 一致才说明用户这期间没有复制过别的东西。
+#[cfg(any(not(windows), test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fingerprint {
+    len: usize,
+    hash: u64,
+}
+
+#[cfg(any(not(windows), test))]
+impl Fingerprint {
+    pub fn of(text: &str) -> Self {
+        use std::hash::{BuildHasher, Hasher};
+        use std::sync::OnceLock;
+        static KEYED: OnceLock<std::collections::hash_map::RandomState> = OnceLock::new();
+        let mut hasher = KEYED
+            .get_or_init(std::collections::hash_map::RandomState::new)
+            .build_hasher();
+        hasher.write(text.as_bytes());
+        Self {
+            len: text.len(),
+            hash: hasher.finish(),
+        }
+    }
+
+    /// 这段文字是不是当初记下指纹的那一份。
+    pub fn matches(&self, text: &str) -> bool {
+        text.len() == self.len && Self::of(text) == *self
+    }
+}
+
+/// 到点时对剪贴板的判断结果。
+#[cfg(any(not(windows), test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClearVerdict {
+    /// 还是我们写的那份：清掉。
+    Clear,
+    /// 剪贴板上是别的内容（用户后来复制过东西，或者是图片等非文字）：不动，也不用再看了。
+    Foreign,
+    /// 读不到（失去焦点的 Wayland 窗口读不了、对方应用没响应……）：不能当作"是我们的"去清，
+    /// 以免误清用户后来复制的内容；调用方稍后再试。
+    Unreadable,
+}
+
+/// `on_clipboard`：`None` = 读不到，`Some(None)` = 读到了但不是文字，`Some(Some(text))` = 读到的文字。
+#[cfg(any(not(windows), test))]
+pub fn clear_verdict(on_clipboard: Option<Option<&str>>, ours: &Fingerprint) -> ClearVerdict {
+    match on_clipboard {
+        None => ClearVerdict::Unreadable,
+        Some(None) => ClearVerdict::Foreign,
+        Some(Some(text)) if ours.matches(text) => ClearVerdict::Clear,
+        Some(Some(_)) => ClearVerdict::Foreign,
+    }
 }
 
 /// 后台等 30 秒再清；不阻塞调用方。
@@ -310,6 +373,42 @@ mod tests {
         assert!(!token_matches(None, &token));
         assert!(!token_matches(Some(&[8u8; TOKEN_LEN]), &token));
         assert!(!token_matches(Some(&token[..4]), &token));
+    }
+
+    #[test]
+    fn a_fingerprint_recognizes_only_the_same_text() {
+        let ours = Fingerprint::of("p@ss word");
+        assert!(ours.matches("p@ss word"));
+        assert!(!ours.matches("p@ss word "));
+        assert!(!ours.matches("P@ss word"));
+        assert!(!ours.matches(""));
+        // 空串也有自己的指纹，不会和非空的串混
+        assert!(Fingerprint::of("").matches(""));
+        assert!(!Fingerprint::of("").matches("x"));
+    }
+
+    #[test]
+    fn a_fingerprint_does_not_contain_the_text() {
+        // 结构里只有长度和 64 位哈希：没有任何能还原明文的字段
+        let debug = format!("{:?}", Fingerprint::of("hunter2-secret"));
+        assert!(!debug.contains("hunter2"));
+    }
+
+    #[test]
+    fn only_our_own_text_is_cleared() {
+        let ours = Fingerprint::of("secret");
+        assert_eq!(
+            clear_verdict(Some(Some("secret")), &ours),
+            ClearVerdict::Clear
+        );
+        // 用户后来复制了别的文字、或者复制了图片：不清
+        assert_eq!(
+            clear_verdict(Some(Some("later copy")), &ours),
+            ClearVerdict::Foreign
+        );
+        assert_eq!(clear_verdict(Some(None), &ours), ClearVerdict::Foreign);
+        // 读不到：不能当作是我们的
+        assert_eq!(clear_verdict(None, &ours), ClearVerdict::Unreadable);
     }
 
     /// 记录事件顺序的剪贴板句柄：丢弃时记下「关闭」。
