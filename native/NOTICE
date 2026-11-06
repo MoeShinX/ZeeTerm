@@ -79,6 +79,15 @@ Cargo.lock), all used unmodified from crates.io:
   crate versions above. None of the licenses in the tree is incompatible with
   distribution under GPL-3.0-or-later.
 
+Linux-only dependencies (ZeeTerm for Linux, including those that
+crates/zssh-core pulls in when built for Linux), all used unmodified from
+crates.io:
+  ksni 0.3.7 (system tray via StatusNotifierItem) - Unlicense;
+  keyring 3.6.3 and secret-service (local vault key in the Secret Service),
+  zbus (D-Bus), libc, flate2 (unpacking the opencode Linux download) - MIT or
+  Apache-2.0. Unlicense is a public-domain dedication and is compatible with
+  distribution under GPL-3.0-or-later.
+
 SQLite (database engine, compiled into executable)
   https://sqlite.org/
   The bundled SQLite amalgamation (enabled by libsqlite3-sys's "bundled"
