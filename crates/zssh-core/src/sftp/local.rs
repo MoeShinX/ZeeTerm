@@ -747,6 +747,41 @@ pub fn write_atomic(target: &Path, data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// 下载到本地（Unix）的文件应该有的权限位。
+///
+/// 为什么：新建文件的默认权限是 `0666 & !umask`（常见的 0664），远端 `0600` 的私钥落到本地就比远端宽了。
+/// 规则：取远端权限位与「umask 之后的默认权限」的交集；执行位是例外，远端有、umask 也放行才保留
+/// （下载下来的脚本还能运行），除此之外不比远端、也不比用户的 umask 更宽。远端没给权限信息
+/// （或是符号链接自己的 `0777`，那不是文件内容的权限）时用默认权限。setuid / setgid / sticky 一律不带。
+pub fn download_mode(remote: Option<u32>, umask: u32) -> u32 {
+    const SYMLINK: u32 = 0o120000;
+    let umask = umask & 0o777;
+    let default = 0o666 & !umask;
+    match remote {
+        Some(mode) if mode & 0o170000 != SYMLINK => (mode & 0o777) & (0o777 & !umask),
+        _ => default,
+    }
+}
+
+/// 当前进程的 umask（Linux 读 `/proc/self/status` 的 `Umask:` 行；读不到按最常见的 `022`）。
+/// 不用 `umask(2)`：它只能「设置并取回旧值」，进程里别的线程此刻建的文件会被短暂改写权限。
+#[cfg(unix)]
+pub fn process_umask() -> u32 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| parse_umask(&status))
+        .unwrap_or(0o022)
+}
+
+/// 从 `/proc/self/status` 的内容里找 `Umask:\t0022`。
+#[cfg(unix)]
+fn parse_umask(status: &str) -> Option<u32> {
+    let value = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Umask:"))?;
+    u32::from_str_radix(value.trim(), 8).ok().map(|m| m & 0o777)
+}
+
 /// 已分配的盘符（"此电脑"列出来用），一次系统调用拿全。
 ///
 /// 只说明盘符存在，不保证此刻能访问（光驱没盘、网络盘断开）：不在这里逐个探测——
@@ -1460,5 +1495,56 @@ mod tests {
             assert!(seen.insert(target));
         }
         assert_eq!(std::fs::read_dir(&*root).unwrap().count(), 4);
+    }
+
+    #[test]
+    fn download_mode_is_never_wider_than_the_remote_or_the_umask() {
+        // 私钥：远端 0600，umask 再宽松也只给 0600。
+        assert_eq!(download_mode(Some(0o100600), 0o002), 0o600);
+        assert_eq!(download_mode(Some(0o600), 0o022), 0o600);
+        // 远端比 umask 默认值宽：被 umask 收窄。
+        assert_eq!(download_mode(Some(0o666), 0o022), 0o644);
+        assert_eq!(download_mode(Some(0o666), 0o077), 0o600);
+        assert_eq!(download_mode(Some(0o664), 0o002), 0o664);
+        // 远端比默认值窄：保留窄的（不是默认的 0644）。
+        assert_eq!(download_mode(Some(0o400), 0o022), 0o400);
+        assert_eq!(download_mode(Some(0o000), 0o022), 0o000);
+        // 执行位：远端有、umask 放行就保留；没有就不加。
+        assert_eq!(download_mode(Some(0o100755), 0o022), 0o755);
+        assert_eq!(download_mode(Some(0o755), 0o077), 0o700);
+        assert_eq!(download_mode(Some(0o644), 0o022), 0o644);
+        // 特殊位（setuid / setgid / sticky）不带过来。
+        assert_eq!(download_mode(Some(0o104755), 0o022), 0o755);
+        assert_eq!(download_mode(Some(0o107777), 0o000), 0o777);
+        // 没有权限信息：默认权限（不含执行位）。
+        assert_eq!(download_mode(None, 0o022), 0o644);
+        assert_eq!(download_mode(None, 0o077), 0o600);
+        assert_eq!(download_mode(None, 0o000), 0o666);
+        // 符号链接自己的 0777 不是文件内容的权限，按没有信息处理。
+        assert_eq!(download_mode(Some(0o120777), 0o022), 0o644);
+        // umask 里多余的高位被忽略。
+        assert_eq!(download_mode(None, 0o10022), 0o644);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn umask_is_read_from_proc_status_text() {
+        assert_eq!(
+            parse_umask("Name:\tx\nUmask:\t0022\nState:\tS\n"),
+            Some(0o022)
+        );
+        assert_eq!(parse_umask("Umask:\t077"), Some(0o077));
+        assert_eq!(parse_umask("Name:\tx\n"), None);
+        assert_eq!(parse_umask("Umask:\tzzz"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn this_process_reports_a_plausible_umask() {
+        // 不去改进程的 umask（会影响别的测试线程）：只确认能读到、落在权限位范围内。
+        let mask = process_umask();
+        assert!(mask <= 0o777);
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        assert_eq!(parse_umask(&status), Some(mask));
     }
 }

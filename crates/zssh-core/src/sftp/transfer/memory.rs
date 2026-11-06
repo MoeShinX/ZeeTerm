@@ -32,6 +32,8 @@ fn write_into(fs: &MemoryFs, path: &str, offset: u64, data: &[u8]) {
 #[derive(Default)]
 pub(crate) struct MemoryFs {
     pub(crate) files: Mutex<HashMap<String, Vec<u8>>>,
+    /// 文件的权限位（`attributes()` 返回；没登记的是 0o644）。
+    pub(crate) modes: Mutex<HashMap<String, u32>>,
     /// 下一次收尾（commit）之前，"别的程序"先在这个路径建出这份内容（一次性）：
     /// 模拟传输期间目标位置冒出同名文件（C05）。
     pub(crate) appear_on_commit: Mutex<Option<(String, Vec<u8>)>>,
@@ -445,7 +447,17 @@ impl FileEndpoint for MemoryEndpoint {
     fn attributes<'a>(
         &'a self,
     ) -> EndpointFuture<'a, Result<(Option<u32>, Option<u32>), SftpError>> {
-        Box::pin(async move { Ok((Some(1_700_000_000), Some(0o644))) })
+        Box::pin(async move {
+            let mode = self
+                .fs
+                .modes
+                .lock()
+                .expect("锁")
+                .get(&self.path)
+                .copied()
+                .unwrap_or(0o644);
+            Ok((Some(1_700_000_000), Some(mode)))
+        })
     }
 }
 
@@ -575,6 +587,16 @@ impl MemoryEndpoints {
     /// 直接往"远端"放一个文件（造测试数据用）。
     pub fn put_remote(&self, path: &str, contents: Vec<u8>) {
         write_into(&self.remote.fs, path, 0, &contents);
+    }
+
+    /// 给"远端"的一个文件指定权限位（下载时引擎读到的源权限）。
+    pub fn set_remote_permissions(&self, path: &str, mode: u32) {
+        self.remote
+            .fs
+            .modes
+            .lock()
+            .expect("锁")
+            .insert(path.to_owned(), mode);
     }
 
     /// 读"远端"的一个文件。

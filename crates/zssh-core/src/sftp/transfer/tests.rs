@@ -2861,3 +2861,181 @@ fn resume_point_is_the_smaller_of_actual_length_and_confirmed_prefix() {
     assert_eq!(resume_point(32_768, None), 0, "没有记录：不可续传");
     assert_eq!(resume_point(0, Some(4_096)), 0);
 }
+
+/// 下载到 Unix 本地的新文件权限不比远端宽（真实磁盘上的文件）。
+#[cfg(unix)]
+mod download_permissions {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+    use crate::sftp::local::{download_mode, process_umask};
+
+    fn mode_of(path: &std::path::Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    /// 下载 `/remote/<name>`（权限 `remote_mode`）到临时目录，返回目录。
+    async fn download(
+        tag: &str,
+        remote_mode: u32,
+        preserve_permissions: bool,
+        prepare: impl FnOnce(&std::path::Path),
+        action: ConflictAction,
+    ) -> (crate::test_util::TestDir, std::path::PathBuf) {
+        let root = temp_root(tag);
+        let local_dir = root.join("out");
+        std::fs::create_dir_all(&local_dir).unwrap();
+        prepare(&local_dir);
+        let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+        endpoints.put_remote("/remote/key.pem", vec![9u8; 5000]);
+        endpoints.set_remote_permissions("/remote/key.pem", remote_mode);
+        let options = TransferOptions {
+            preserve_permissions,
+            ..local_options()
+        };
+        let resolver = ScriptedResolver::new(action);
+        let (engine, mut events) = TransferEngine::new(endpoints.clone(), resolver, options);
+        let id = engine.submit(TransferJob {
+            direction: Direction::Download,
+            source: "/remote/key.pem".to_owned(),
+            target: local_dir.join("key.pem").display().to_string(),
+            recursive: false,
+            peer: None,
+        });
+        let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+        assert_eq!(report.state, TransferState::Done, "{report:?}");
+        (root, local_dir)
+    }
+
+    #[tokio::test]
+    async fn a_private_remote_file_stays_private_locally() {
+        // 不管用户开没开「保留权限」，0600 的私钥都不能变成 0664。
+        for preserve in [false, true] {
+            let (_root, dir) = download(
+                "perm-private",
+                0o100600,
+                preserve,
+                |_| {},
+                ConflictAction::Overwrite,
+            )
+            .await;
+            assert_eq!(mode_of(&dir.join("key.pem")), 0o600, "preserve={preserve}");
+            assert_eq!(std::fs::read(dir.join("key.pem")).unwrap(), vec![9u8; 5000]);
+            // 没有留下临时文件。
+            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn other_modes_follow_the_remote_bits_and_the_umask() {
+        for remote in [0o100644, 0o100664, 0o100755, 0o100400, 0o100777] {
+            let (_root, dir) = download(
+                "perm-follow",
+                remote,
+                false,
+                |_| {},
+                ConflictAction::Overwrite,
+            )
+            .await;
+            let expected = download_mode(Some(remote), process_umask());
+            assert_eq!(mode_of(&dir.join("key.pem")), expected, "{remote:o}");
+            // 永远不比远端的权限位多出任何一位（执行位是远端有的才会有）。
+            assert_eq!(expected & !(remote & 0o777), 0, "{remote:o}");
+        }
+    }
+
+    #[tokio::test]
+    async fn overwriting_an_existing_wide_file_gives_the_new_file_the_narrow_mode() {
+        let (_root, dir) = download(
+            "perm-overwrite",
+            0o100600,
+            false,
+            |dir| {
+                let old = dir.join("key.pem");
+                std::fs::write(&old, b"old").unwrap();
+                std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o666)).unwrap();
+            },
+            ConflictAction::Overwrite,
+        )
+        .await;
+        assert_eq!(mode_of(&dir.join("key.pem")), 0o600);
+        assert_eq!(std::fs::read(dir.join("key.pem")).unwrap().len(), 5000);
+    }
+
+    #[tokio::test]
+    async fn a_renamed_download_is_also_narrow() {
+        let (_root, dir) = download(
+            "perm-rename",
+            0o100600,
+            false,
+            |dir| std::fs::write(dir.join("key.pem"), b"mine").unwrap(),
+            ConflictAction::Rename,
+        )
+        .await;
+        assert_eq!(std::fs::read(dir.join("key.pem")).unwrap(), b"mine");
+        assert_eq!(mode_of(&dir.join("key (2).pem")), 0o600);
+    }
+
+    #[tokio::test]
+    async fn a_local_copy_still_ends_with_the_default_mode() {
+        let root = temp_root("perm-localcopy");
+        let from = root.join("from.txt");
+        std::fs::write(&from, b"data").unwrap();
+        let to = root.join("to.txt");
+        let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+        let (engine, mut events) = TransferEngine::new(
+            endpoints,
+            ScriptedResolver::new(ConflictAction::Overwrite),
+            local_options(),
+        );
+        let id = engine.submit(TransferJob {
+            direction: Direction::LocalCopy,
+            source: from.display().to_string(),
+            target: to.display().to_string(),
+            recursive: false,
+            peer: None,
+        });
+        let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+        assert_eq!(report.state, TransferState::Done, "{report:?}");
+        assert_eq!(mode_of(&to), download_mode(None, process_umask()));
+    }
+
+    /// 续传：上一次（旧版本）留下的临时文件是 0664，收尾时也要收窄。
+    #[tokio::test]
+    async fn a_resumed_partial_file_is_narrowed_before_it_is_committed() {
+        let root = temp_root("perm-resume");
+        let target = root.join("key.pem");
+        let endpoint = LocalEndpoint::with_owner(&target, "t1");
+        let part = root.join(format!("key.pem.t1{}", endpoint::PART_SUFFIX));
+        std::fs::write(&part, b"partial").unwrap();
+        std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o664)).unwrap();
+        endpoint.prepare_commit(Some(0o100600)).await.unwrap();
+        assert_eq!(mode_of(&part), 0o600);
+        endpoint.commit(7, false).await.unwrap();
+        assert_eq!(mode_of(&target), 0o600);
+        assert_eq!(std::fs::read(&target).unwrap(), b"partial");
+    }
+
+    /// 传输中的临时文件只有自己能访问。
+    #[tokio::test]
+    async fn the_partial_file_is_private_while_it_is_being_written() {
+        let root = temp_root("perm-part");
+        let target = root.join("key.pem");
+        let endpoint = LocalEndpoint::with_owner(&target, "t2");
+        let _writer = endpoint.open_write(0).await.unwrap();
+        let part = root.join(format!("key.pem.t2{}", endpoint::PART_SUFFIX));
+        assert_eq!(mode_of(&part), 0o600);
+    }
+
+    /// 远端没给权限信息：用默认权限（`0666 & !umask`）。
+    #[tokio::test]
+    async fn unknown_remote_permissions_fall_back_to_the_default() {
+        let root = temp_root("perm-unknown");
+        let target = root.join("a.bin");
+        let endpoint = LocalEndpoint::with_owner(&target, "t3");
+        drop(endpoint.open_write(0).await.unwrap());
+        endpoint.prepare_commit(None).await.unwrap();
+        endpoint.commit(0, false).await.unwrap();
+        assert_eq!(mode_of(&target), download_mode(None, process_umask()));
+    }
+}
