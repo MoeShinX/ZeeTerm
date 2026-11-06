@@ -29,6 +29,67 @@ use crate::settings_nav::SettingsSection;
 use crate::settings_view::{card, row};
 use crate::typography::{Role, Typo as _, UiFontStyled as _};
 
+/// Linux：设置页「安全与锁定」里那一块"密码保管方式"的文案（Windows 用 DPAPI，没有这一块）。
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+enum KeyStoreMsg {
+    CardTitle,
+    RowTitle,
+    InKeyring,
+    InKeyringDetail,
+    InFile,
+    InFileDetail,
+    Loading,
+    LoadingDetail,
+    Failed,
+    FailedDetail,
+}
+
+#[cfg(target_os = "linux")]
+impl Msg for KeyStoreMsg {
+    fn zh(&self) -> &'static str {
+        match *self {
+            Self::CardTitle => "已保存密码的保管方式",
+            Self::RowTitle => "加密密钥保存在",
+            Self::InKeyring => "系统钥匙串",
+            Self::InKeyringDetail => {
+                "已保存的密码和私钥口令用一把本机密钥加密；这把密钥放在系统钥匙串（Secret Service）里，由钥匙串保护。"
+            }
+            Self::InFile => "本机文件",
+            Self::InFileDetail => {
+                "没有找到系统钥匙串服务，加密密钥放在数据目录的 vault.key 文件里，只靠文件权限（仅当前用户可读）保护，比系统钥匙串弱。之后即使装上钥匙串服务，也会继续使用这个文件。"
+            }
+            Self::Loading => "正在检查…",
+            Self::LoadingDetail => "正在向系统钥匙串确认加密密钥。",
+            Self::Failed => "暂时读不到",
+            Self::FailedDetail => {
+                "没能取得加密密钥（钥匙串被锁住、解锁被取消或服务出错）。保存和查看密码会失败，请解锁系统钥匙串后重试；不会自动改用本机文件。"
+            }
+        }
+    }
+
+    fn en(&self) -> &'static str {
+        match *self {
+            Self::CardTitle => "Saved-password storage",
+            Self::RowTitle => "Encryption key is kept in",
+            Self::InKeyring => "System keyring",
+            Self::InKeyringDetail => {
+                "Saved passwords and key passphrases are encrypted with a local key. That key is kept in the system keyring (Secret Service), which protects it."
+            }
+            Self::InFile => "Local file",
+            Self::InFileDetail => {
+                "No system keyring service was found, so the encryption key is kept in the vault.key file in the data folder. It is protected only by file permissions (readable by the current user only), which is weaker than the system keyring. The file keeps being used even if a keyring service is installed later."
+            }
+            Self::Loading => "Checking…",
+            Self::LoadingDetail => "Checking the encryption key with the system keyring.",
+            Self::Failed => "Not readable right now",
+            Self::FailedDetail => {
+                "The encryption key could not be obtained (the keyring is locked, unlocking was cancelled, or the service failed). Saving and viewing passwords will fail until you unlock the system keyring and retry; ZeeTerm will not switch to a local file by itself."
+            }
+        }
+    }
+}
+
 /// 锁按钮的悬停说明。快捷键部分（Ctrl+Alt+L）两个语言下都不译，只译「锁定 ZeeTerm」。
 pub(crate) fn lock_tooltip() -> &'static str {
     t(LockUiMsg::LockTooltip)
@@ -98,6 +159,7 @@ enum LockUiMsg {
     StartDescriptionDisabled,
     ForgotRowTitle,
     ForgotRowDescription,
+    ForgotRowDescriptionNoOs,
     ForgotBusy,
     ForgotRowButton,
     SectionTitle,
@@ -178,6 +240,9 @@ impl Msg for LockUiMsg {
             Self::ForgotRowTitle => "忘记密码",
             Self::ForgotRowDescription => {
                 "密码无法找回。可以用 Windows Hello / PIN（没有就用 Windows 登录密码）验证你是这台电脑的用户，然后设一个新密码。"
+            }
+            Self::ForgotRowDescriptionNoOs => {
+                "密码无法找回，这个系统上也没有可用来重置的系统身份验证。确实忘记时，退出 ZeeTerm，把数据目录里的 zssh.db（连同 zssh.db-wal、zssh.db-shm）改名或删除后重新打开；本机保存的主机、凭据等会一起清空，有同步或备份的可以再恢复。"
             }
             Self::ForgotBusy => "验证中…",
             Self::ForgotRowButton => "验证 Windows 账户并重置…",
@@ -274,6 +339,9 @@ impl Msg for LockUiMsg {
             Self::ForgotRowTitle => "Forgot password",
             Self::ForgotRowDescription => {
                 "The password cannot be recovered. You can verify that you are a user of this computer with Windows Hello / PIN (or your Windows sign-in password), then set a new password."
+            }
+            Self::ForgotRowDescriptionNoOs => {
+                "The password cannot be recovered, and this system has no OS identity verification that could reset it. If you really forgot it, quit ZeeTerm, rename or delete zssh.db (with zssh.db-wal and zssh.db-shm) in the data folder, and reopen; saved hosts, credentials and other local data are cleared with it, and can be restored from sync or a backup."
             }
             Self::ForgotBusy => "Verifying…",
             Self::ForgotRowButton => "Verify Windows Account and Reset…",
@@ -450,6 +518,34 @@ pub fn forgot_step(check: OsCheck) -> ForgotStep {
         OsCheck::Cancelled => ForgotStep::Nothing,
         OsCheck::Unavailable => ForgotStep::Notice(t(LockUiMsg::WindowsVerifyUnavailable)),
     }
+}
+
+/// Linux：「密码保管方式」一块——加密已保存密码的密钥现在放在系统钥匙串还是本机文件里。
+/// 状态来自启动时的后台预热（见 `zssh_core::store::secrets::warm_up_vault`），这里只读不触发加载。
+#[cfg(target_os = "linux")]
+fn key_store_card(tokens: &Tokens) -> AnyElement {
+    use zssh_core::store::secrets::{KeyBackend, KeyState, key_state};
+
+    let (status, detail) = match key_state() {
+        KeyState::Ready(KeyBackend::SystemKeyring) => {
+            (KeyStoreMsg::InKeyring, KeyStoreMsg::InKeyringDetail)
+        }
+        KeyState::Ready(KeyBackend::LocalFile) => (KeyStoreMsg::InFile, KeyStoreMsg::InFileDetail),
+        KeyState::Loading => (KeyStoreMsg::Loading, KeyStoreMsg::LoadingDetail),
+        KeyState::Failed => (KeyStoreMsg::Failed, KeyStoreMsg::FailedDetail),
+    };
+    card(
+        "settings-key-store",
+        t(KeyStoreMsg::CardTitle),
+        None,
+        tokens,
+        vec![row(
+            t(KeyStoreMsg::RowTitle),
+            Some(t(detail)),
+            note(t(status), tokens),
+            tokens,
+        )],
+    )
 }
 
 // ---- 纯数据：对话框 ----
@@ -1187,7 +1283,15 @@ impl MainWindow {
             tokens,
         ));
 
-        if enabled {
+        if enabled && !lock_ui::os_verification_available() {
+            // 没有系统身份验证的平台（Linux）：只讲清楚事实，不放一个点了只会报错的按钮。
+            rows.push(row(
+                t(LockUiMsg::ForgotRowTitle),
+                Some(t(LockUiMsg::ForgotRowDescriptionNoOs)),
+                div(),
+                tokens,
+            ));
+        } else if enabled {
             let forgot = entity.clone();
             let busy = self.app_lock.os_busy;
             rows.push(row(
@@ -1210,7 +1314,8 @@ impl MainWindow {
             ));
         }
 
-        vec![
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        let mut blocks = vec![
             card(
                 "settings-lock",
                 t(LockUiMsg::SectionTitle),
@@ -1225,7 +1330,10 @@ impl MainWindow {
                 tokens,
                 auto_rows,
             ),
-        ]
+        ];
+        #[cfg(target_os = "linux")]
+        blocks.push(key_store_card(tokens));
+        blocks
     }
 
     fn set_lock_idle(&mut self, minutes: u32, window: &mut Window, cx: &mut Context<Self>) {
@@ -1598,5 +1706,53 @@ mod tests {
         ] {
             assert!(!modal_visible_while_locked(&lock_dialog(kind, true)));
         }
+    }
+    /// 没有系统身份验证的平台（Linux）：设置页和锁屏页讲的是事实，不提 Windows、不指向不存在的按钮。
+    #[test]
+    fn the_forgot_texts_without_os_verification_do_not_mention_windows() {
+        use crate::app_lock::LockMsg;
+        use crate::i18n::Msg as _;
+        for text in [
+            super::LockUiMsg::ForgotRowDescriptionNoOs.zh(),
+            super::LockUiMsg::ForgotRowDescriptionNoOs.en(),
+            LockMsg::ForgotTextNoOs.zh(),
+            LockMsg::ForgotTextNoOs.en(),
+        ] {
+            assert!(!text.contains("Windows"), "{text}");
+            assert!(text.contains("zssh.db"), "{text}");
+        }
+        assert!(
+            super::LockUiMsg::ForgotRowDescriptionNoOs
+                .zh()
+                .contains("无法找回")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_key_store_card_texts_exist_in_both_languages() {
+        use crate::i18n::Msg as _;
+        for msg in [
+            super::KeyStoreMsg::CardTitle,
+            super::KeyStoreMsg::RowTitle,
+            super::KeyStoreMsg::InKeyring,
+            super::KeyStoreMsg::InKeyringDetail,
+            super::KeyStoreMsg::InFile,
+            super::KeyStoreMsg::InFileDetail,
+            super::KeyStoreMsg::Loading,
+            super::KeyStoreMsg::LoadingDetail,
+            super::KeyStoreMsg::Failed,
+            super::KeyStoreMsg::FailedDetail,
+        ] {
+            assert!(!msg.zh().is_empty() && !msg.en().is_empty());
+            assert_ne!(msg.zh(), msg.en());
+        }
+        // 文件方式要讲清楚比钥匙串弱。
+        assert!(
+            super::KeyStoreMsg::InFileDetail
+                .zh()
+                .contains("比系统钥匙串弱")
+        );
+        assert!(super::KeyStoreMsg::InFileDetail.en().contains("weaker"));
     }
 }
