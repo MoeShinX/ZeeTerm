@@ -341,6 +341,17 @@ pub use vault::set_thread_vault;
 #[cfg(target_os = "macos")]
 pub(crate) use vault::{probe_legacy, register_legacy_fallback, LegacyProbe};
 
+/// 打开资料库时预热密钥缓存。主窗口在后台线程开库，首次授权提示发生在加载页期间；
+/// 之后的凭据保存命中缓存，不会在界面线程再等一次系统对话框。
+/// 密钥缺失/取消不阻止打开（旧库可能暂时没有密钥），由具体读写再报明确错误。
+#[cfg(target_os = "macos")]
+pub(crate) fn preload_vault_key(account: &str) {
+    let _scope = VaultScope::new(account);
+    if let Err(err) = vault::vault_key(false) {
+        tracing::debug!(%err, "资料库密钥未预热，后续读写会再尝试");
+    }
+}
+
 /// 在一段代码里把秘密操作绑定到某个资料库身份，离开作用域自动恢复。
 /// 后台线程（同步、备份）不经过数据库连接，必须自己带上这份身份。
 #[cfg(target_os = "macos")]

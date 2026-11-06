@@ -271,6 +271,10 @@ impl Database {
                     crate::store::secrets::register_legacy_fallback(&account);
                 }
             }
+            if initialized {
+                // 主窗口在后台线程完成这一步；把系统授权挡在加载页期间，而不是第一次保存时。
+                crate::store::secrets::preload_vault_key(&account);
+            }
             database.vault_account = account;
         }
         Ok(database)
