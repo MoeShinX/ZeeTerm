@@ -752,15 +752,22 @@ pub fn write_atomic(target: &Path, data: &[u8]) -> std::io::Result<()> {
 /// 为什么：新建文件的默认权限是 `0666 & !umask`（常见的 0664），远端 `0600` 的私钥落到本地就比远端宽了。
 /// 规则：取远端权限位与「umask 之后的默认权限」的交集；执行位是例外，远端有、umask 也放行才保留
 /// （下载下来的脚本还能运行），除此之外不比远端、也不比用户的 umask 更宽。远端没给权限信息
-/// （或是符号链接自己的 `0777`，那不是文件内容的权限）时用默认权限。setuid / setgid / sticky 一律不带。
+/// （或是符号链接自己的 `0777`，那不是文件内容的权限，或是只有类型位、权限位全 0——一些网关 / 对象存储
+/// 型的 SFTP 服务端就这样报）时用默认权限。setuid / setgid / sticky 一律不带。
+///
+/// 结果属主一定可读（`| 0o400`）：下载的人就是本地文件的属主，不能让他打不开自己刚下载的东西
+/// （远端 `0o044` 这类「属主不可读」的模式会得到 `0o444`，不是 `0o044`）。
 pub fn download_mode(remote: Option<u32>, umask: u32) -> u32 {
     const SYMLINK: u32 = 0o120000;
     let umask = umask & 0o777;
     let default = 0o666 & !umask;
-    match remote {
-        Some(mode) if mode & 0o170000 != SYMLINK => (mode & 0o777) & (0o777 & !umask),
+    let mode = match remote {
+        Some(mode) if mode & 0o170000 != SYMLINK && mode & 0o777 != 0 => {
+            (mode & 0o777) & (0o777 & !umask)
+        }
         _ => default,
-    }
+    };
+    mode | 0o400
 }
 
 /// 当前进程的 umask（Linux 读 `/proc/self/status` 的 `Umask:` 行；读不到按最常见的 `022`）。
@@ -1508,7 +1515,17 @@ mod tests {
         assert_eq!(download_mode(Some(0o664), 0o002), 0o664);
         // 远端比默认值窄：保留窄的（不是默认的 0644）。
         assert_eq!(download_mode(Some(0o400), 0o022), 0o400);
-        assert_eq!(download_mode(Some(0o000), 0o022), 0o000);
+        // 权限位全 0（只有类型位，或者真的 000）：当作没有权限信息，用默认权限。
+        assert_eq!(download_mode(Some(0o000), 0o022), 0o644);
+        assert_eq!(download_mode(Some(0o100000), 0o022), 0o644);
+        assert_eq!(download_mode(Some(0o100000), 0o077), 0o600);
+        // 属主不可读的远端模式：本地属主至少可读。
+        assert_eq!(download_mode(Some(0o100044), 0o022), 0o444);
+        assert_eq!(download_mode(Some(0o200), 0o022), 0o600);
+        assert_eq!(download_mode(Some(0o100010), 0o022), 0o410);
+        // umask 把默认权限的属主读位也抹掉时，仍保证属主可读。
+        assert_eq!(download_mode(None, 0o777), 0o400);
+        assert_eq!(download_mode(None, 0o577), 0o600);
         // 执行位：远端有、umask 放行就保留；没有就不加。
         assert_eq!(download_mode(Some(0o100755), 0o022), 0o755);
         assert_eq!(download_mode(Some(0o755), 0o077), 0o700);
