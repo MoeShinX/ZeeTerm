@@ -1,8 +1,8 @@
 use super::{
-    CommandOutput, CommandRunner, DEB_COMMAND, DebResult, DebTools, Flavor, LinuxInstallRequest,
-    ManualReason, TarError, TarLayout, desktop_keeping_exec, detect_flavor, install_deb,
-    list_archive_safely, manual_deb_command, merge_manifest, plan_linux_install, restart_command,
-    shell_quote, strip_deleted_suffix,
+    CommandOutput, CommandRunner, DEB_COMMAND, DEB_INSTALL_SCRIPT, DebResult, DebTools, Flavor,
+    LinuxInstallRequest, ManualReason, TarError, TarLayout, desktop_keeping_exec, detect_flavor,
+    install_deb, list_archive_safely, manual_deb_command, merge_manifest, plan_linux_install,
+    restart_command, shell_quote, strip_deleted_suffix,
 };
 use crate::install::InstallError;
 use crate::{PLATFORM_LINUX_DEB, PLATFORM_LINUX_TAR, parse_manifest, sha256_hex};
@@ -282,24 +282,108 @@ fn tools() -> DebTools {
     }
 }
 
+const GOOD_SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 #[test]
-fn the_deb_is_installed_through_pkexec_apt_get_with_an_absolute_path() {
+fn the_deb_goes_to_a_fixed_root_script_with_the_path_hash_and_apt_get_as_positional_arguments() {
     let runner = FakeRunner::exits(0);
     let deb =
         Path::new("/home/u/.local/share/ZeeTerm/update-cache/ab/ZeeTerm-2.0.0-linux-x86_64.deb");
-    assert_eq!(install_deb(&runner, &tools(), deb), DebResult::Installed);
+    assert_eq!(
+        install_deb(&runner, &tools(), deb, GOOD_SHA),
+        DebResult::Installed
+    );
     let calls = runner.calls.borrow();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0, Path::new("/usr/bin/pkexec"));
+    // 程序 / 参数一个不差：脚本文本是固定常量，路径、哈希、apt-get 只出现在后面的位置参数里。
     assert_eq!(
         calls[0].1,
         [
+            OsString::from("/bin/sh"),
+            OsString::from("-c"),
+            OsString::from(DEB_INSTALL_SCRIPT),
+            OsString::from("zeeterm-update"),
+            deb.as_os_str().to_owned(),
+            OsString::from(GOOD_SHA),
             OsString::from("/usr/bin/apt-get"),
-            OsString::from("install"),
-            OsString::from("-y"),
-            deb.as_os_str().to_owned()
         ]
     );
+    let script = DEB_INSTALL_SCRIPT;
+    for variable in [deb.to_str().unwrap_or_default(), GOOD_SHA] {
+        assert!(!script.contains(variable), "脚本文本里不能拼进 {variable}");
+    }
+    // 复核脚本的要点：root 自己的临时目录、对复制品核对哈希和包名、复核通过才叫 apt。
+    for needle in [
+        "mktemp -d /tmp/zeeterm-update.XXXXXX",
+        "trap 'rm -rf \"$dir\"' EXIT",
+        "cp -- \"$1\" \"$dir/package.deb\"",
+        "sha256sum -c -",
+        "dpkg-deb -f \"$dir/package.deb\" Package",
+        "chmod 755 \"$dir\"",
+        "chmod 644 \"$dir/package.deb\"",
+        "\"$3\" install -y \"$dir/package.deb\"",
+    ] {
+        assert!(script.contains(needle), "脚本里缺 {needle}");
+    }
+    assert!(
+        script
+            .find("sha256sum")
+            .is_some_and(|hash| script.find("\"$3\" install").is_some_and(|apt| hash < apt)),
+        "先核对再安装"
+    );
+}
+
+#[test]
+fn a_bad_hash_is_refused_before_anything_runs_and_the_hash_is_passed_in_lower_case() {
+    for bad in ["", "abc", &"g".repeat(64), &"a".repeat(63), "x; rm -rf /"] {
+        let runner = FakeRunner::exits(0);
+        assert!(
+            matches!(
+                install_deb(&runner, &tools(), Path::new("/c/x.deb"), bad),
+                DebResult::Failed(_)
+            ),
+            "{bad}"
+        );
+        assert_eq!(runner.call_count(), 0, "坏哈希不能起 pkexec：{bad}");
+    }
+    let runner = FakeRunner::exits(0);
+    install_deb(
+        &runner,
+        &tools(),
+        Path::new("/c/x.deb"),
+        &GOOD_SHA.to_uppercase(),
+    );
+    assert_eq!(runner.calls.borrow()[0].1[5], OsString::from(GOOD_SHA));
+}
+
+#[test]
+fn the_root_side_checks_map_to_their_own_results_and_never_to_not_authorized() {
+    let deb = Path::new("/c/x.deb");
+    assert_eq!(
+        install_deb(&FakeRunner::exits(83), &tools(), deb, GOOD_SHA),
+        DebResult::HashChanged
+    );
+    assert_eq!(
+        install_deb(&FakeRunner::exits(84), &tools(), deb, GOOD_SHA),
+        DebResult::WrongPackage
+    );
+    // 126 / 127 仍是 pkexec 的含义；别的退出码（比如 apt 的 100、以前顺手用的 3 / 4）是普通失败。
+    for code in [126, 127] {
+        assert_eq!(
+            install_deb(&FakeRunner::exits(code), &tools(), deb, GOOD_SHA),
+            DebResult::Manual(ManualReason::NotAuthorized)
+        );
+    }
+    for code in [1, 3, 4, 100] {
+        assert!(
+            matches!(
+                install_deb(&FakeRunner::exits(code), &tools(), deb, GOOD_SHA),
+                DebResult::Failed(_)
+            ),
+            "{code}"
+        );
+    }
 }
 
 #[test]
@@ -311,14 +395,14 @@ fn a_missing_pkexec_or_a_declined_prompt_falls_back_to_manual_install_not_an_err
     };
     let runner = FakeRunner::exits(0);
     assert_eq!(
-        install_deb(&runner, &no_tool, deb),
+        install_deb(&runner, &no_tool, deb, GOOD_SHA),
         DebResult::Manual(ManualReason::NoPkexec)
     );
     assert_eq!(runner.call_count(), 0, "没有 pkexec 时什么都不运行");
     // 126 = 关掉了授权框 / 没有授权；127 = 没法执行（没有授权代理）。
     for code in [126, 127] {
         assert_eq!(
-            install_deb(&FakeRunner::exits(code), &tools(), deb),
+            install_deb(&FakeRunner::exits(code), &tools(), deb, GOOD_SHA),
             DebResult::Manual(ManualReason::NotAuthorized),
             "{code}"
         );
@@ -326,7 +410,7 @@ fn a_missing_pkexec_or_a_declined_prompt_falls_back_to_manual_install_not_an_err
     // 路径上找到的 pkexec 运行时消失了。
     let vanished = FakeRunner::new(|_, _| Err(io::Error::from(io::ErrorKind::NotFound)));
     assert_eq!(
-        install_deb(&vanished, &tools(), deb),
+        install_deb(&vanished, &tools(), deb, GOOD_SHA),
         DebResult::Manual(ManualReason::NoPkexec)
     );
 }
@@ -342,7 +426,7 @@ fn an_apt_failure_is_an_error_with_the_tail_of_its_output() {
                     .to_owned(),
         })
     });
-    match install_deb(&runner, &tools(), Path::new("/c/x.deb")) {
+    match install_deb(&runner, &tools(), Path::new("/c/x.deb"), GOOD_SHA) {
         DebResult::Failed(text) => {
             assert!(text.contains("dpkg frontend lock"), "{text}");
             assert!(
@@ -353,7 +437,12 @@ fn an_apt_failure_is_an_error_with_the_tail_of_its_output() {
         other => panic!("应是失败：{other:?}"),
     }
     // 没有任何输出时给退出码。
-    match install_deb(&FakeRunner::exits(100), &tools(), Path::new("/c/x.deb")) {
+    match install_deb(
+        &FakeRunner::exits(100),
+        &tools(),
+        Path::new("/c/x.deb"),
+        GOOD_SHA,
+    ) {
         DebResult::Failed(text) => assert!(text.contains("100"), "{text}"),
         other => panic!("应是失败：{other:?}"),
     }
@@ -1045,5 +1134,143 @@ mod on_disk {
             "{:?}",
             leftovers(&layout.dir)
         );
+    }
+    // ---- deb 的 root 侧复核脚本：在编译机上用假的 apt-get 真跑（脚本本身，不经 pkexec，以当前用户运行）----
+
+    /// 造一个只有 `Package` 字段的最小 deb；没有 `dpkg-deb` 的机器上返回 `None`（测试跳过并说明）。
+    fn tiny_deb(dir: &Path, package: &str) -> Option<PathBuf> {
+        let tree = dir.join(format!("tree-{package}"));
+        std::fs::create_dir_all(tree.join("DEBIAN")).expect("建目录");
+        std::fs::write(
+            tree.join("DEBIAN/control"),
+            format!(
+                "Package: {package}\nVersion: 1.0\nArchitecture: all\nMaintainer: x <x@example.invalid>\nDescription: t\n"
+            ),
+        )
+        .expect("写 control");
+        let out = dir.join(format!("{package}.deb"));
+        let built = Command::new("dpkg-deb")
+            .args(["--build"])
+            .arg(&tree)
+            .arg(&out)
+            .output()
+            .ok()?;
+        built.status.success().then_some(out)
+    }
+
+    /// 假 apt-get：把收到的参数和"包文件的权限、目录的权限"写进记录文件，然后退出 0。
+    fn fake_apt(dir: &Path) -> (PathBuf, PathBuf) {
+        let log = dir.join("apt.log");
+        let apt = dir.join("fake-apt-get");
+        write_exec(
+            &apt,
+            &format!(
+                "#!/bin/sh\necho \"args: $*\" >> '{log}'\nfor last; do :; done\necho \"file-mode: $(stat -c %a \"$last\")\" >> '{log}'\necho \"dir-mode: $(stat -c %a \"$(dirname \"$last\")\")\" >> '{log}'\necho \"dir: $(dirname \"$last\")\" >> '{log}'\ncmp -s \"$last\" '{orig}' && echo same-bytes >> '{log}'\nexit 0\n",
+                log = log.display(),
+                orig = dir.join("zeeterm.deb").display(),
+            ),
+        );
+        (apt, log)
+    }
+
+    fn run_script(deb: &Path, sha256: &str, apt: &Path) -> std::process::Output {
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(DEB_INSTALL_SCRIPT)
+            .arg("zeeterm-update")
+            .arg(deb)
+            .arg(sha256)
+            .arg(apt)
+            .output()
+            .expect("运行脚本")
+    }
+
+    fn sha256_of(path: &Path) -> String {
+        crate::sha256_hex(&std::fs::read(path).expect("读包"))
+    }
+
+    #[test]
+    fn the_root_script_installs_only_a_private_copy_whose_hash_and_package_name_match() {
+        let dir = temp_dir("root-script");
+        let Some(deb) = tiny_deb(&dir, "zeeterm") else {
+            println!("跳过：没有 dpkg-deb，没法造测试用的 deb");
+            return;
+        };
+        let (apt, log) = fake_apt(&dir);
+        let good = sha256_of(&deb);
+
+        // 对得上：apt 只被叫一次，装的是 /tmp 下 root 自己的复制品（不是传进来的路径），内容相同，目录 755、文件 644。
+        let output = run_script(&deb, &good, &apt);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let recorded = std::fs::read_to_string(&log).expect("apt 记录");
+        assert!(
+            recorded.contains("args: install -y /tmp/zeeterm-update."),
+            "{recorded}"
+        );
+        assert!(
+            !recorded.contains(&deb.display().to_string()),
+            "不能直接装用户给的路径：{recorded}"
+        );
+        assert!(
+            recorded.contains("same-bytes"),
+            "复制品内容要和原包一致：{recorded}"
+        );
+        assert!(recorded.contains("file-mode: 644"), "{recorded}");
+        assert!(recorded.contains("dir-mode: 755"), "{recorded}");
+        assert_eq!(recorded.matches("args:").count(), 1);
+        let copy_dir = recorded
+            .lines()
+            .find_map(|line| line.strip_prefix("dir: "))
+            .expect("复制品目录");
+        assert!(
+            !Path::new(copy_dir).exists(),
+            "退出后临时目录要删掉：{copy_dir}"
+        );
+
+        // 验签之后包被换掉（哈希还是验签时的）：83，apt 不会被叫起来。
+        let _ = std::fs::remove_file(&log);
+        std::fs::write(&deb, b"swapped after verification").expect("换包");
+        let output = run_script(&deb, &good, &apt);
+        assert_eq!(output.status.code(), Some(83), "{output:?}");
+        assert!(!log.exists(), "哈希不对时 apt 一次都不能被叫起来");
+
+        // 换成另一个包名的 deb（哈希是它自己的，核对能过）：84。
+        let Some(other) = tiny_deb(&dir, "not-zeeterm") else {
+            return;
+        };
+        let output = run_script(&other, &sha256_of(&other), &apt);
+        assert_eq!(output.status.code(), Some(84), "{output:?}");
+        assert!(!log.exists(), "包名不对时 apt 一次都不能被叫起来");
+
+        // 传进来的文件不存在：普通失败（不是 83 / 84），也不留临时目录。
+        let output = run_script(&dir.join("missing.deb"), &good, &apt);
+        assert!(
+            !matches!(output.status.code(), Some(0 | 83 | 84)),
+            "{output:?}"
+        );
+        assert!(!log.exists());
+    }
+
+    #[test]
+    fn the_root_script_survives_hostile_looking_arguments_because_they_are_never_parsed() {
+        let dir = temp_dir("root-script-hostile");
+        let Some(deb) = tiny_deb(&dir, "zeeterm") else {
+            println!("跳过：没有 dpkg-deb，没法造测试用的 deb");
+            return;
+        };
+        let (apt, log) = fake_apt(&dir);
+        // 带空格、引号、分号、$ 的路径：作为位置参数照常复制，不会被当成命令。
+        let odd = dir.join("a b; touch pwned $(id) 'q'.deb");
+        std::fs::copy(&deb, &odd).expect("复制");
+        let output = run_script(&odd, &sha256_of(&odd), &apt);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(!dir.join("pwned").exists());
+        assert!(log.exists());
+        // 哈希参数里塞东西：核对不过（83），同样不会执行。
+        let _ = std::fs::remove_file(&log);
+        let output = run_script(&deb, "0 ; touch pwned2 ;", &apt);
+        assert_eq!(output.status.code(), Some(83), "{output:?}");
+        assert!(!dir.join("pwned2").exists());
+        assert!(!log.exists());
     }
 }

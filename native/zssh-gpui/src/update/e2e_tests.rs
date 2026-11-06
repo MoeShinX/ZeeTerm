@@ -816,7 +816,7 @@ mod linux_chain {
             package: path.clone(),
             cache_root: cache.clone(),
             version: "1.4.0".to_owned(),
-            sha256,
+            sha256: sha256.clone(),
             exe: PathBuf::from("/usr/lib/zeeterm/zeeterm"),
         };
         // 装成功：apt 拿到的是缓存里那个已验签的文件；重启走 /usr/bin/zeeterm。
@@ -828,10 +828,17 @@ mod linux_chain {
             }
         );
         assert_eq!(ok.calls.borrow().len(), 1);
-        assert_eq!(
-            ok.calls.borrow()[0].last().map(PathBuf::from),
-            Some(path.canonicalize().expect("规范化"))
-        );
+        // 位置参数：验签时的哈希（sha256）原样传给 root 侧脚本，由它对复制品核对。
+        {
+            let calls = ok.calls.borrow();
+            assert_eq!(
+                calls[0][4..6],
+                [
+                    OsString::from(path.canonicalize().expect("规范化")),
+                    OsString::from(sha256.as_str())
+                ]
+            );
+        }
 
         // 授权框被取消：不报错，改成手动安装，文件还在缓存里。
         assert_eq!(

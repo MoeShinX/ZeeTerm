@@ -214,6 +214,8 @@ enum UpdateMsg {
     ManualTarHowTo,
     LinuxInstallFailedPrefix,
     DebInstallFailedPrefix,
+    DebHashChanged,
+    DebWrongPackage,
     RestartFailedPrefix,
 }
 
@@ -341,6 +343,12 @@ impl Msg for UpdateMsg {
             }
             Self::LinuxInstallFailedPrefix => "安装更新失败：",
             Self::DebInstallFailedPrefix => "安装失败，apt 的输出：\n",
+            Self::DebHashChanged => {
+                "安装包在验证之后被改动了，已拒绝安装（没有安装任何东西）。请重新下载。"
+            }
+            Self::DebWrongPackage => {
+                "这个文件不是 ZeeTerm 的安装包，已拒绝安装（没有安装任何东西）。请重新下载。"
+            }
             Self::RestartFailedPrefix => "没能重启：",
         }
     }
@@ -486,6 +494,12 @@ impl Msg for UpdateMsg {
             }
             Self::LinuxInstallFailedPrefix => "Failed to install the update: ",
             Self::DebInstallFailedPrefix => "Installation failed. apt said:\n",
+            Self::DebHashChanged => {
+                "The package was modified after it was verified, so installation was refused (nothing was installed). Please download it again."
+            }
+            Self::DebWrongPackage => {
+                "This file is not a ZeeTerm package, so installation was refused (nothing was installed). Please download it again."
+            }
             Self::RestartFailedPrefix => "Could not restart: ",
         }
     }

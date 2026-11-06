@@ -133,11 +133,14 @@ pub(super) fn run(
         }
     };
     match job.flavor {
-        Flavor::Deb => match lx::install_deb(runner, tools, &plan.package) {
+        // 传进去的是验签时算出的哈希（plan.sha256 就是请求里那个值，不是这里重读磁盘算的）：root 侧复制后对复制品核对它。
+        Flavor::Deb => match lx::install_deb(runner, tools, &plan.package, &plan.sha256) {
             DebResult::Installed => Outcome::Installed {
                 restart: PathBuf::from(lx::DEB_COMMAND),
             },
             DebResult::Manual(reason) => Outcome::Manual(reason),
+            DebResult::HashChanged => Outcome::Failed(t(UpdateMsg::DebHashChanged).to_owned()),
+            DebResult::WrongPackage => Outcome::Failed(t(UpdateMsg::DebWrongPackage).to_owned()),
             DebResult::Failed(output) => {
                 Outcome::Failed(format!("{}{output}", t(UpdateMsg::DebInstallFailedPrefix)))
             }
@@ -201,6 +204,7 @@ pub(super) fn release_page_url() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Msg as _;
     use std::cell::RefCell;
     use zssh_update::linux::CommandOutput;
 
@@ -317,10 +321,46 @@ mod tests {
         );
         let calls = runner.calls.borrow();
         assert_eq!(calls.len(), 1);
-        // apt 拿到的是规范化后的缓存里的那个文件。
+        // 位置参数：缓存里（规范化后）的 deb、验签时的哈希（就是 job.sha256，不是重新读磁盘算的）、固定的 apt-get。
         assert_eq!(
-            calls[0].last().map(PathBuf::from),
-            Some(package.canonicalize().expect("规范化"))
+            calls[0][4..],
+            [
+                OsString::from(package.canonicalize().expect("规范化")),
+                OsString::from(sha.as_str()),
+                OsString::from("/usr/bin/apt-get"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_root_side_check_is_a_clear_error_not_a_missing_authorization() {
+        let (root, package, sha) =
+            cached_package("deb-root-check", "ZeeTerm-2.0.0-linux-x86_64.deb");
+        for (code, wording) in [(83, "验证之后被改动"), (84, "不是 ZeeTerm 的安装包")]
+        {
+            match run(
+                &job(Flavor::Deb, &root, &package, &sha),
+                &scripted(code, ""),
+                &tools(),
+                &never_called,
+            ) {
+                Outcome::Failed(text) => {
+                    assert!(text.contains(wording), "{code}：{text}");
+                    assert!(text.contains("没有安装任何东西"), "{text}");
+                }
+                other => panic!("{code} 应是明确的错误：{other:?}"),
+            }
+        }
+        // 英文也有（i18n 两份）。
+        assert!(
+            UpdateMsg::DebHashChanged
+                .en()
+                .contains("modified after it was verified")
+        );
+        assert!(
+            UpdateMsg::DebWrongPackage
+                .en()
+                .contains("not a ZeeTerm package")
         );
     }
 

@@ -249,9 +249,16 @@ pub enum ManualReason {
 pub enum DebResult {
     Installed,
     Manual(ManualReason),
+    /// root 侧复核没过：复制出来的包的 SHA-256 和验签时的不一致（包在验签之后被换过）。没有安装任何东西。
+    HashChanged,
+    /// root 侧复核没过：包的 `Package` 字段不是 `zeeterm`。没有安装任何东西。
+    WrongPackage,
     /// `apt-get` 跑了但失败；带它输出的末尾几行（系统原文，不翻译）。
     Failed(String),
 }
+
+/// root 侧装包用的 apt-get：固定路径，不从 `PATH` 里找（`PATH` 是用户可控的）。
+pub const APT_GET: &str = "/usr/bin/apt-get";
 
 /// 起 `pkexec` 需要的程序位置。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,8 +269,7 @@ pub struct DebTools {
 }
 
 impl DebTools {
-    /// 在 `PATH`（再加上 `/usr/bin`、`/bin`）里找 `pkexec` 和 `apt-get`。
-    /// `apt-get` 优先用绝对路径：授权框里显示的就是"以管理员身份运行 /usr/bin/apt-get"。
+    /// 在 `PATH`（再加上 `/usr/bin`、`/bin`）里找 `pkexec`；`apt-get` 固定是 [`APT_GET`]（root 侧用的程序不由用户的 `PATH` 决定）。
     pub fn discover(path_var: Option<&OsStr>) -> Self {
         let mut dirs: Vec<PathBuf> = path_var
             .map(|value| std::env::split_paths(value).collect())
@@ -279,7 +285,7 @@ impl DebTools {
         };
         Self {
             pkexec: find("pkexec"),
-            apt_get: find("apt-get").unwrap_or_else(|| PathBuf::from("apt-get")),
+            apt_get: PathBuf::from(APT_GET),
         }
     }
 }
@@ -296,24 +302,71 @@ fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
-/// `pkexec apt-get install -y <deb>`。
+/// root 侧脚本的退出码：复制品的 SHA-256 和传进来的（验签时算出的）不一致。选了 apt / pkexec 都不会用到的值。
+pub const EXIT_HASH_CHANGED: i32 = 83;
+/// root 侧脚本的退出码：复制品的 `Package` 字段不是 `zeeterm`。
+pub const EXIT_WRONG_PACKAGE: i32 = 84;
+
+/// pkexec 以 root 身份运行的**固定脚本**（经 `/bin/sh -c`）。路径、哈希、apt-get 都走位置参数，不拼进脚本文本：
+/// `$1` 缓存里的 deb，`$2` 验签时算出的 SHA-256，`$3` apt-get 的路径（产品里固定是 `/usr/bin/apt-get`，测试里换成假的）。
+///
+/// 为什么：缓存目录归普通用户，验签之后、root 读文件之前，同一用户的别的进程可以把文件换掉；用户在授权框里同意的是
+/// "装 ZeeTerm 更新"，装的却可能是别的包。所以 root 先把文件复制进自己的临时目录（0700，root 所有，别人换不了），
+/// 对**复制品**核对哈希和包名，再从复制品安装。目录 0755、文件 0644，`_apt` 也读得了（不再有沙盒提示）。
+/// 退出时临时目录一定删掉。哈希或包名不对分别用 [`EXIT_HASH_CHANGED`] / [`EXIT_WRONG_PACKAGE`] 退出，apt 一次都不会被叫起来。
+pub const DEB_INSTALL_SCRIPT: &str = r#"set -eu
+umask 022
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+dir=$(mktemp -d /tmp/zeeterm-update.XXXXXX)
+trap 'rm -rf "$dir"' EXIT
+cp -- "$1" "$dir/package.deb"
+printf '%s  %s\n' "$2" "$dir/package.deb" | sha256sum -c - >/dev/null 2>&1 || exit 83
+[ "$(dpkg-deb -f "$dir/package.deb" Package)" = zeeterm ] || exit 84
+chmod 755 "$dir"
+chmod 644 "$dir/package.deb"
+"$3" install -y "$dir/package.deb"
+"#;
+
+/// 验签时算出的 SHA-256 必须是 64 位十六进制（它是位置参数，不会被 shell 解释，这里只是早点拒绝坏值）。
+fn is_sha256_hex(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// `pkexec /bin/sh -c <固定脚本> zeeterm-update <deb> <sha256> <apt-get>`（脚本见 [`DEB_INSTALL_SCRIPT`]）。
+///
+/// `sha256` 必须是验签时对同一份字节算出来的值（不要在安装前重新读磁盘去算：那样换包就能一并"通过"）。
 ///
 /// pkexec 的退出码：126 = 用户关掉了授权框或没有授权，127 = 没法执行（没有授权代理、命令不存在……）；
-/// 这两种都不算错误，交给调用方显示手动安装的说明。0 = 装好了；其他非 0 是 apt 自己失败了，带上它的输出。
-pub fn install_deb(runner: &dyn CommandRunner, tools: &DebTools, deb: &Path) -> DebResult {
+/// 这两种都不算错误，交给调用方显示手动安装的说明。83 / 84 = root 侧复核没过（包被改过 / 不是 zeeterm 包），
+/// 是明确的错误，不能落到"未授权"。0 = 装好了；其他非 0 是 apt 自己失败了，带上它的输出。
+pub fn install_deb(
+    runner: &dyn CommandRunner,
+    tools: &DebTools,
+    deb: &Path,
+    sha256: &str,
+) -> DebResult {
     let Some(pkexec) = &tools.pkexec else {
         return DebResult::Manual(ManualReason::NoPkexec);
     };
+    if !is_sha256_hex(sha256) {
+        return DebResult::Failed("invalid SHA-256 for the package".to_owned());
+    }
     let args = [
-        tools.apt_get.as_os_str().to_owned(),
-        OsString::from("install"),
-        OsString::from("-y"),
+        OsString::from("/bin/sh"),
+        OsString::from("-c"),
+        OsString::from(DEB_INSTALL_SCRIPT),
+        OsString::from("zeeterm-update"),
         deb.as_os_str().to_owned(),
+        OsString::from(sha256.to_ascii_lowercase()),
+        tools.apt_get.as_os_str().to_owned(),
     ];
     match runner.run(pkexec, &args) {
         Ok(output) => match output.code {
             Some(0) => DebResult::Installed,
             Some(126 | 127) => DebResult::Manual(ManualReason::NotAuthorized),
+            Some(EXIT_HASH_CHANGED) => DebResult::HashChanged,
+            Some(EXIT_WRONG_PACKAGE) => DebResult::WrongPackage,
             code => {
                 let tail = tail_text(if output.stderr.trim().is_empty() {
                     &output.stdout
