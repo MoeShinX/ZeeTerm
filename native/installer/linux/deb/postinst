@@ -1,0 +1,22 @@
+#!/bin/sh
+# 安装 / 升级后只刷新桌面数据库和图标缓存（让应用菜单和图标立刻出现）；失败不影响安装。
+set -e
+
+case "$1" in
+    configure|triggered)
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications || true
+        fi
+        if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -d /usr/share/icons/hicolor ]; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        echo "postinst called with unknown argument '$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

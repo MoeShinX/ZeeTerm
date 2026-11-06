@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 打包时由 scripts/package-linux.sh 把 @VERSION@ / @RELEASE_TYPE@ / @DATE@ 换成这次发布的值。 -->
+<component type="desktop-application">
+  <id>app.zeeterm.ZeeTerm</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>ZeeTerm</name>
+  <summary>SSH, SFTP and serial terminal client</summary>
+  <summary xml:lang="zh-CN">SSH、SFTP 与串口终端客户端</summary>
+  <description>
+    <p>ZeeTerm is a native SSH client with a terminal workspace, SFTP file management, remote editing, port forwarding and X11 forwarding. Telnet and serial connections are also supported.</p>
+    <p>Saved credentials are kept in the desktop keyring, and synchronization and backups are encrypted. An optional AI assistant can work in your terminal with the permissions you choose.</p>
+  </description>
+  <description xml:lang="zh-CN">
+    <p>ZeeTerm 是原生渲染的 SSH 客户端：终端工作区、SFTP 文件管理、远程编辑、端口转发和 X11 转发，也支持 Telnet 与串口连接。</p>
+    <p>保存的凭据存放在桌面钥匙串里，同步和备份都经过加密。可选的 AI 助手只在你授权的范围内操作终端。</p>
+  </description>
+  <launchable type="desktop-id">app.zeeterm.ZeeTerm.desktop</launchable>
+  <url type="homepage">https://github.com/MoeShinX/ZeeTerm</url>
+  <url type="bugtracker">https://github.com/MoeShinX/ZeeTerm/issues</url>
+  <url type="vcs-browser">https://github.com/MoeShinX/ZeeTerm</url>
+  <provides>
+    <binary>zeeterm</binary>
+  </provides>
+  <keywords>
+    <keyword>ssh</keyword>
+    <keyword>sftp</keyword>
+    <keyword>terminal</keyword>
+    <keyword>serial</keyword>
+  </keywords>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="@VERSION@" date="@DATE@" @RELEASE_TYPE@>
+      <url type="details">https://github.com/MoeShinX/ZeeTerm/releases/tag/v@TAG_VERSION@</url>
+    </release>
+  </releases>
+</component>

@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 新增
+
+- Linux 版（x86_64，glibc 2.35 及以上，Wayland 与 X11）的安装包与发布流水线：每个版本发 `ZeeTerm-<版本>-linux-x86_64.deb`（`sudo apt install ./….deb`；`/usr/bin/zeeterm`，同目录带 `zssh-mcp`；桌面文件、hicolor 图标、AppStream 元数据、man 手册；依赖由 `dpkg-shlibdeps` 计算，另补 Vulkan 加载器等运行时库）和 `.tar.gz`（`install.sh` 免 root 装到 `~/.local`，`--prefix` 可改，`uninstall.sh` 按安装清单卸载）。应用标识 `app.zeeterm.ZeeTerm`；`zeeterm --version` 在任何初始化之前打印版本。`scripts/package-linux.sh` 本机和 CI 通用，自检含 `desktop-file-validate`、`appstreamcli`、`lintian`、`ldd`、glibc 基线和 tar.gz 的安装 / 卸载；`scripts/linux-container-check.sh` 在 `debian:12`、`ubuntu:22.04` 容器里装一遍。
+- CI 增加 ubuntu-22.04 的核心库与原生应用两个任务（fmt / clippy / test / release 构建 / 打包）；测试在一次性的 D-Bus 会话 + 临时解锁的 gnome-keyring 里跑（`scripts/linux-keyring-session.sh`）；系统依赖清单只在 `scripts/linux-build-deps.sh`；本地 Linux 门禁 `scripts/gates.sh`。
+- 发版：Linux 任务（ubuntu-22.04，不接触私钥）先编包并上传，Windows 任务取回后用同一把更新私钥签名；`latest.json` 增加 `linux-x86_64-deb` 与 `linux-x86_64-tar` 两个平台条目（Windows 条目不变，老版本 Windows 客户端照常更新），`SHA256SUMS.txt` 和 Release 正文含全部文件。`release_tool manifest` 与 `release-sign.ps1` 支持 Linux 资产，`release-drill.ps1` 覆盖其签名与清单生成。
+
 ### 改进
 
 - 更新窗口去掉「确认安装」这一步：签名验证通过后点一下「立即安装」就启动安装程序，窗口里也不再显示安装器命令行。

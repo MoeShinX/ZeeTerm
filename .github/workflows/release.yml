@@ -1,13 +1,15 @@
 # ZeeTerm 发版：推 v* tag 后在 GitHub 上编译、签名、发布 Release。
 #
-# 流程：校验 tag -> 门禁（和本机 scripts/gates.ps1 同一份）-> 打安装包 -> 用更新私钥签名并自检 ->
-#       生成 latest.json / SHA256SUMS.txt / Release 正文 -> gh release create。
+# 流程：Linux 任务（ubuntu-22.04：Linux 门禁 -> deb + tar.gz，上传为 artifact）成功后，Windows 任务才开始：
+#       校验 tag -> 门禁（和本机 scripts/gates.ps1 同一份）-> 打安装包 -> 取回 Linux 的两个包 ->
+#       用更新私钥给安装包、deb、tar.gz 签名并自检 -> 生成 latest.json（含 linux-x86_64-deb / linux-x86_64-tar）/
+#       SHA256SUMS.txt / Release 正文 -> gh release create。Linux 任务不接触私钥，也不在 release 环境里。
 # 改版本号、写更新说明、打 tag 的步骤见 docs/RELEASING.md（先 scripts/bump-version.ps1，提交推 main，再推 tag）。
 #
 # 密钥：更新签名私钥和口令放在仓库的 `release` 环境（Settings -> Environments -> release）里，
 #   ZEETERM_UPDATER_KEY            私钥文件全文
 #   ZEETERM_UPDATER_KEY_PASSWORD   私钥口令
-# 只有本工作流的这个 job 拿得到；而且只暴露给"写私钥文件"和"签名"两个步骤，编译、跑测试的步骤环境里没有它们。
+# 只有本工作流的 release 这个 job 拿得到；而且只暴露给"写私钥文件"和"签名"两个步骤，编译、跑测试的步骤环境里没有它们。
 # 日志里不打印私钥和口令（GitHub 会对 Secret 打码，这里也不 echo，签名工具不开详细输出）。
 #
 # 第三方 action 一律钉 commit SHA；能用 gh 做的事不引入新的 action。
@@ -38,8 +40,106 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  # Linux 包在 ubuntu-22.04 上编（glibc 2.35 基线）。这个任务只读代码、不使用环境和密钥；它产出的两个文件由下面的
+  # release 任务取回后签名。任何一步失败，release 任务不会开始，也就不会发布任何东西。
+  linux:
+    name: 编译 Linux 包（ubuntu-22.04）
+    # 同 release：手动触发只接受从 main 触发。
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+
+    steps:
+      - name: 取代码（要完整历史，用来核对 tag 在 main 上）
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ format('refs/tags/{0}', inputs.tag || github.ref_name) }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # release 任务里的校验中"早失败"的那几条；更新说明、公钥、Release 是否已存在由 release 任务检查。
+      - name: 校验 tag 和版本号
+        run: |
+          set -euo pipefail
+          re='^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?)$'
+          if [[ ! $TAG =~ $re ]]; then
+            echo "tag 要写成 vX.Y.Z（可带 -rc.1 这类后缀）：$TAG" >&2
+            exit 1
+          fi
+          version=${BASH_REMATCH[1]}
+          for manifest in native/Cargo.toml Cargo.toml; do
+            declared=$(awk '
+              /^\[workspace\.package\]/ { in_section = 1; next }
+              /^\[/ { in_section = 0 }
+              in_section && /^[[:space:]]*version[[:space:]]*=/ { gsub(/^[^"]*"|"[^"]*$/, ""); print; exit }
+            ' "$manifest")
+            if [ "$declared" != "$version" ]; then
+              echo "tag 是 $TAG，但 $manifest 的版本是 $declared。" >&2
+              exit 1
+            fi
+          done
+          head=$(git rev-parse HEAD)
+          tag_commit=$(git rev-parse "refs/tags/$TAG^{commit}")
+          if [ "$head" != "$tag_commit" ]; then
+            echo "检出的提交 $head 不是 tag $TAG 指向的提交 $tag_commit。" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$head" origin/main; then
+            echo "tag $TAG 指向的提交不在 main 上。" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "tag $TAG，版本 $version，提交 $head：校验通过。"
+
+      - name: 装系统依赖（scripts/linux-build-deps.sh）
+        run: ./scripts/linux-build-deps.sh
+
+      - name: 装 Rust（按 rust-toolchain.toml）
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo clippy --version
+
+      - name: 缓存 cargo 的编译产物
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> target
+            native -> target
+          key: release-linux
+
+      # Linux 门禁（scripts/gates.sh，对应 scripts/gates.ps1）；没有 pwsh 时 i18n 检查按失败处理。
+      - name: 门禁（scripts/gates.sh）
+        env:
+          ZEETERM_REQUIRE_I18N: "1"
+        run: ./scripts/gates.sh
+
+      - name: 打 deb + tar.gz（完整 release 编译）
+        env:
+          ZEETERM_PKG_REQUIRE_CHECKS: "1"
+        run: |
+          ./scripts/package-linux.sh --out-dir "dist/linux/$VERSION"
+          test -f "dist/linux/$VERSION/ZeeTerm-$VERSION-linux-x86_64.deb"
+          test -f "dist/linux/$VERSION/ZeeTerm-$VERSION-linux-x86_64.tar.gz"
+
+      - name: 容器里装一遍（debian:12、ubuntu:22.04）
+        run: ./scripts/linux-container-check.sh "dist/linux/$VERSION/ZeeTerm-$VERSION-linux-x86_64.deb"
+
+      - name: 上传 Linux 包（给 release 任务签名用）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zeeterm-linux-release
+          path: |
+            dist/linux/${{ env.VERSION }}/ZeeTerm-${{ env.VERSION }}-linux-x86_64.deb
+            dist/linux/${{ env.VERSION }}/ZeeTerm-${{ env.VERSION }}-linux-x86_64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     name: 编译、签名、发布（windows-latest）
+    needs: linux
     # 手动触发只接受从 main 触发：别的分支上的工作流文件可能被改过，不能让它碰到私钥。
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     runs-on: windows-latest
@@ -146,6 +246,31 @@ jobs:
           $installer = Join-Path $out "ZeeTerm-Setup-$env:VERSION.exe"
           if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "没有找到预期的安装包：$installer" }
 
+      # Linux 任务打好的 deb 和 tar.gz：在私钥写出来之前取回并核对文件名，签名那一步一并签。
+      - name: 取回 Linux 包
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: zeeterm-linux-release
+          path: linux-dist
+
+      - name: 核对 Linux 包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $linux = Join-Path $env:GITHUB_WORKSPACE 'linux-dist'
+          $dist = Join-Path $env:GITHUB_WORKSPACE "dist\$env:VERSION"
+          $expected = @("ZeeTerm-$env:VERSION-linux-x86_64.deb", "ZeeTerm-$env:VERSION-linux-x86_64.tar.gz")
+          $actual = @(Get-ChildItem -LiteralPath $linux -Recurse -File | ForEach-Object { $_.Name }) | Sort-Object
+          if (($actual -join '|') -ne (($expected | Sort-Object) -join '|')) {
+            throw "Linux 包的文件清单不对：期望 [$($expected -join ', ')]，实际 [$($actual -join ', ')]。"
+          }
+          foreach ($name in $expected) {
+            $file = Get-ChildItem -LiteralPath $linux -Recurse -File -Filter $name | Select-Object -First 1
+            if ($file.Length -le 0) { throw "$name 是空文件。" }
+            Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $dist $name) -Force
+          }
+          Write-Host "已取回 Linux 包：$($expected -join '、')"
+
       # 私钥只在"写文件"到"清理"之间存在于磁盘，文件放在 runner 的临时目录；下面的清理步骤 always() 一定会删。
       - name: 写出更新私钥（临时文件）
         shell: pwsh
@@ -159,7 +284,7 @@ jobs:
           $path = Join-Path $env:RUNNER_TEMP 'zeeterm-updater.key'
           [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
 
-      - name: 签名并生成 latest.json、SHA256SUMS.txt、Release 正文
+      - name: 签名并生成 latest.json、SHA256SUMS.txt、Release 正文（含 Linux 包）
         shell: pwsh
         env:
           ZEETERM_UPDATER_KEY_PASSWORD: ${{ secrets.ZEETERM_UPDATER_KEY_PASSWORD }}
@@ -169,6 +294,8 @@ jobs:
             -Version $env:VERSION `
             -InstallerPath (Join-Path $dist "ZeeTerm-Setup-$env:VERSION.exe") `
             -KeyPath (Join-Path $env:RUNNER_TEMP 'zeeterm-updater.key') `
+            -LinuxDebPath (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.deb") `
+            -LinuxTarPath (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.tar.gz") `
             -OutDir $dist `
             -Repo $env:GITHUB_REPOSITORY
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -194,6 +321,8 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw "tag $env:TAG 的 Release 已经存在，不会覆盖。" }
           gh release create $env:TAG `
             (Join-Path $dist "ZeeTerm-Setup-$env:VERSION.exe") `
+            (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.deb") `
+            (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.tar.gz") `
             (Join-Path $dist 'latest.json') `
             (Join-Path $dist 'SHA256SUMS.txt') `
             --verify-tag `

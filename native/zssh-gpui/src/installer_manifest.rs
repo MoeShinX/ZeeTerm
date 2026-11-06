@@ -358,3 +358,231 @@ version = "1.0.0"
         vec![("zssh-core".to_owned(), "1.2.3".to_owned())]
     );
 }
+
+// ---- Linux 打包：桌面文件、图标名、包文件名、发布流水线彼此对得上 ----
+
+fn linux_file(relative: &str) -> String {
+    repo_file(&format!("native/installer/linux/{relative}"))
+}
+
+/// `.desktop` 里 `Key=值` 的值（只看主段，忽略带语言后缀的 `Key[xx]=`）。
+fn desktop_value(text: &str, key: &str) -> String {
+    let prefix = format!("{key}=");
+    text.lines()
+        .find_map(|line| line.strip_prefix(&prefix).map(str::to_owned))
+        .unwrap_or_else(|| panic!(".desktop 里没有 {key}="))
+}
+
+#[test]
+fn the_desktop_entry_matches_the_window_identity() {
+    let app_id = crate::window_frame::APP_ID;
+    let desktop = linux_file(&format!("{app_id}.desktop"));
+    assert!(desktop.starts_with("[Desktop Entry]\n"));
+    assert_eq!(desktop_value(&desktop, "Name"), product::NAME);
+    // 窗口的 app_id / WM_CLASS 就是图标名和 StartupWMClass：任务栏靠它把窗口和这个 .desktop 对上。
+    assert_eq!(desktop_value(&desktop, "Icon"), app_id);
+    assert_eq!(desktop_value(&desktop, "StartupWMClass"), app_id);
+    assert_eq!(desktop_value(&desktop, "Exec"), "zeeterm");
+    assert_eq!(desktop_value(&desktop, "Type"), "Application");
+    assert_eq!(desktop_value(&desktop, "Terminal"), "false");
+    assert_eq!(
+        desktop_value(&desktop, "Categories"),
+        "System;TerminalEmulator;Network;"
+    );
+    // 多语言：中文说明和关键词在，列表值都以分号结尾。
+    assert!(desktop.contains("\nComment[zh_CN]="));
+    assert!(desktop.contains("\nKeywords[zh_CN]="));
+    for key in ["Categories", "Keywords"] {
+        assert!(desktop_value(&desktop, key).ends_with(';'), "{key}");
+    }
+}
+
+#[test]
+fn the_icon_tool_writes_the_icon_name_the_desktop_entry_uses() {
+    let app_id = crate::window_frame::APP_ID;
+    let tool = repo_file("native/tools/icons/src/main.rs");
+    assert!(
+        tool.contains(&format!("const LINUX_ICON_NAME: &str = \"{app_id}\";")),
+        "出图工具的 Linux 图标名要等于应用标识"
+    );
+    let script = repo_file("scripts/package-linux.sh");
+    assert!(script.contains(&format!("APP_ID=\"{app_id}\"")));
+    for name in ["install.sh", "uninstall.sh"] {
+        let text = linux_file(&format!("tar/{name}"));
+        assert!(text.contains(&format!("APP_ID=\"{app_id}\"")), "{name}");
+    }
+    let verify = linux_file("verify-in-container.sh");
+    assert!(verify.contains(&format!("app_id=\"{app_id}\"")));
+}
+
+#[test]
+fn the_appstream_template_matches_the_desktop_entry_and_license() {
+    let app_id = crate::window_frame::APP_ID;
+    let xml = linux_file(&format!("{app_id}.metainfo.xml.in"));
+    assert!(xml.contains(&format!("<id>{app_id}</id>")));
+    assert!(xml.contains(&format!(
+        "<launchable type=\"desktop-id\">{app_id}.desktop</launchable>"
+    )));
+    assert!(xml.contains("<project_license>GPL-3.0-or-later</project_license>"));
+    assert!(xml.contains("<binary>zeeterm</binary>"));
+    // 版本、日期、类型由打包脚本填；模板里必须留着这些占位符，脚本才替换得到。
+    let script = repo_file("scripts/package-linux.sh");
+    for placeholder in ["@VERSION@", "@TAG_VERSION@", "@DATE@", "@RELEASE_TYPE@"] {
+        assert!(xml.contains(placeholder), "{placeholder}");
+        assert!(script.contains(placeholder), "脚本没有替换 {placeholder}");
+    }
+}
+
+#[test]
+fn linux_package_names_agree_between_the_script_and_the_release_pipeline() {
+    let script = repo_file("scripts/package-linux.sh");
+    assert!(script.contains("ARCH_NAME=\"linux-x86_64\""));
+    assert!(script.contains("base_name=\"ZeeTerm-${version}-${ARCH_NAME}\""));
+    assert!(script.contains("deb_file=\"$out_dir/$base_name.deb\""));
+    assert!(script.contains("tar_file=\"$out_dir/$base_name.tar.gz\""));
+    // glibc 2.35（Ubuntu 22.04）基线，deb 的 Depends 补上 dlopen 的运行时库。
+    assert!(script.contains("GLIBC_BASELINE=\"2.35\""));
+    for dlopened in ["libvulkan1", "libwayland-client0", "libegl1"] {
+        assert!(script.contains(dlopened), "{dlopened}");
+    }
+    // zssh-mcp 必须和主程序放在同一个目录（AI 工具桥按主程序旁边找它）。
+    assert!(script.contains("install -m 755 \"$mcp_bin\" \"$bin_dir/zssh-mcp\""));
+    assert!(script.contains("install -m 755 \"$mcp_bin\" \"$tar_root/zssh-mcp\""));
+
+    let sign = repo_file("scripts/release-sign.ps1");
+    assert!(sign.contains("ZeeTerm-$Version-linux-x86_64.deb"));
+    assert!(sign.contains("ZeeTerm-$Version-linux-x86_64.tar.gz"));
+    let lib = repo_file("scripts/release-lib.ps1");
+    assert!(lib.contains(&format!(
+        "'{}' = 'linux-deb'",
+        zssh_update::PLATFORM_LINUX_DEB
+    )));
+    assert!(lib.contains(&format!(
+        "'{}' = 'linux-tar'",
+        zssh_update::PLATFORM_LINUX_TAR
+    )));
+    assert_eq!(zssh_update::PLATFORM_LINUX_DEB, "linux-x86_64-deb");
+    assert_eq!(zssh_update::PLATFORM_LINUX_TAR, "linux-x86_64-tar");
+
+    let release = repo_file(".github/workflows/release.yml");
+    assert!(release.contains("ZeeTerm-$env:VERSION-linux-x86_64.deb"));
+    assert!(release.contains("ZeeTerm-$env:VERSION-linux-x86_64.tar.gz"));
+    assert!(release.contains("ZeeTerm-$VERSION-linux-x86_64.deb"));
+    assert!(release.contains("ZeeTerm-$VERSION-linux-x86_64.tar.gz"));
+}
+
+#[test]
+fn the_linux_release_job_never_touches_the_signing_key() {
+    let release = repo_file(".github/workflows/release.yml");
+    let start = release.find("\n  linux:\n").expect("有 linux 任务");
+    let end = release.find("\n  release:\n").expect("有 release 任务");
+    assert!(start < end, "linux 任务在 release 任务前面");
+    let linux_job = &release[start..end];
+    for forbidden in [
+        "secrets.",
+        "ZEETERM_UPDATER_KEY",
+        "environment:",
+        "contents: write",
+        "gh release",
+        "release-sign",
+    ] {
+        assert!(
+            !linux_job.contains(forbidden),
+            "linux 任务里不能有 {forbidden}"
+        );
+    }
+    assert!(linux_job.contains("contents: read"));
+    assert!(linux_job.contains("runs-on: ubuntu-22.04"));
+    assert!(linux_job.contains("./scripts/gates.sh"));
+    assert!(linux_job.contains("./scripts/package-linux.sh"));
+    // 签名、发布只在 release 任务里，而且要等 Linux 任务成功。
+    let release_job = &release[end..];
+    assert!(release_job.contains("needs: linux"));
+    assert!(release_job.contains("-LinuxDebPath"));
+    assert!(release_job.contains("-LinuxTarPath"));
+    assert!(release_job.contains("environment: release"));
+    // 私钥文件在取回 Linux 包之后才写出来。
+    let fetch = release_job.find("取回 Linux 包").expect("取回步骤");
+    let write_key = release_job.find("写出更新私钥").expect("写私钥步骤");
+    assert!(fetch < write_key);
+}
+
+#[test]
+fn linux_scripts_are_lf_shell_scripts_with_a_shebang() {
+    for relative in [
+        "scripts/gates.sh",
+        "scripts/package-linux.sh",
+        "scripts/linux-build-deps.sh",
+        "scripts/linux-keyring-session.sh",
+        "scripts/linux-container-check.sh",
+        "native/installer/linux/verify-in-container.sh",
+        "native/installer/linux/tar/install.sh",
+        "native/installer/linux/tar/uninstall.sh",
+        "native/installer/linux/deb/postinst",
+        "native/installer/linux/deb/postrm",
+        "native/installer/linux/app.zeeterm.ZeeTerm.desktop",
+    ] {
+        let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "..", relative]
+            .iter()
+            .collect();
+        let bytes = std::fs::read(&path).unwrap_or_else(|err| panic!("读不了 {relative}：{err}"));
+        if !relative.ends_with(".desktop") {
+            assert!(bytes.starts_with(b"#!"), "{relative} 要有 shebang");
+        }
+        assert!(!bytes.contains(&b'\r'), "{relative} 必须是 LF 换行");
+    }
+}
+
+#[test]
+fn the_maintainer_scripts_only_refresh_desktop_caches() {
+    for name in ["postinst", "postrm"] {
+        let text = linux_file(&format!("deb/{name}"));
+        assert!(text.starts_with("#!/bin/sh\n"), "{name}");
+        assert!(text.contains("\nset -e\n"), "{name}");
+        // 只能调这两个刷新命令，而且都是"有才调、失败不挡安装"。
+        for command in ["update-desktop-database", "gtk-update-icon-cache"] {
+            assert!(
+                text.contains(&format!("command -v {command}")),
+                "{name}: {command}"
+            );
+        }
+        for forbidden in [
+            "\nrm ",
+            "rm -",
+            "useradd",
+            "systemctl",
+            "chmod",
+            "chown",
+            "curl",
+            "wget",
+        ] {
+            assert!(!text.contains(forbidden), "{name} 不该有 {forbidden}");
+        }
+        assert!(text.contains("|| true"));
+    }
+}
+
+#[test]
+fn the_ci_builds_and_packages_on_ubuntu_with_the_shared_dependency_list() {
+    let ci = repo_file(".github/workflows/ci.yml");
+    assert!(ci.contains("runs-on: ubuntu-22.04"));
+    assert!(ci.contains("./scripts/linux-build-deps.sh"));
+    assert!(ci.contains("./scripts/linux-keyring-session.sh cargo test"));
+    assert!(ci.contains("./scripts/package-linux.sh"));
+    assert!(ci.contains("./scripts/linux-container-check.sh"));
+    // 系统依赖只有 scripts/linux-build-deps.sh 一份清单，工作流里不再自己 apt-get install。
+    assert!(!ci.contains("apt-get install"));
+    let release = repo_file(".github/workflows/release.yml");
+    assert!(!release.contains("apt-get install"));
+    let deps = repo_file("scripts/linux-build-deps.sh");
+    for needed in [
+        "xvfb",
+        "xauth",
+        "gnome-keyring",
+        "dpkg-dev",
+        "libxkbcommon-x11-dev",
+        "libssl-dev",
+    ] {
+        assert!(deps.contains(needed), "{needed}");
+    }
+}

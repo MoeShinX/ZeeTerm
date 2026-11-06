@@ -1,6 +1,6 @@
 # 发版说明
 
-ZeeTerm 的发布物放在 GitHub Release：Windows 安装包 `ZeeTerm-Setup-<版本>.exe`、更新清单 `latest.json` 和校验文件 `SHA256SUMS.txt`。已安装的程序启动时（以及开着时每 6 小时）读取最新 Release 里的 `latest.json`，发现新版本后下载安装包，**用发布者的更新签名公钥验签通过才会安装**。这份文档说明怎么发版、签名密钥怎么管、怎么回滚、更新失败怎么查。
+ZeeTerm 的发布物放在 GitHub Release：Windows 安装包 `ZeeTerm-Setup-<版本>.exe`、Linux 的 `ZeeTerm-<版本>-linux-x86_64.deb` 和 `ZeeTerm-<版本>-linux-x86_64.tar.gz`、更新清单 `latest.json` 和校验文件 `SHA256SUMS.txt`。已安装的程序启动时（以及开着时每 6 小时）读取最新 Release 里的 `latest.json`，发现新版本后下载安装包，**用发布者的更新签名公钥验签通过才会安装**。这份文档说明怎么发版、签名密钥怎么管、怎么回滚、更新失败怎么查。
 
 **发版的主路径是 GitHub Actions**：改好版本号、推上 main，再推一个 `v*` tag，工作流（`.github/workflows/release.yml`）自己编译、跑门禁、签名、发布 Release。更新签名私钥和口令存在 GitHub 的 `release` 环境 Secrets 里，发版人的电脑上不需要私钥，也不用输口令。本机的 `scripts/release.ps1` 保留作备用（GitHub 出问题时手动发版）。
 
@@ -76,13 +76,14 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
    tag 必须叫 `v<版本>`，并且指向已经在 `main` 上的提交。
 5. **看 Actions 页**的 Release 工作流。它依次做：
+   0. **Linux 任务先跑**（`linux`，ubuntu-22.04，不接触私钥，也不在 `release` 环境里）：校验 tag 和版本号 → Linux 门禁 `scripts/gates.sh` → `scripts/package-linux.sh` 做完整 release 编译并打出 deb + tar.gz（带 lintian、appstreamcli、`desktop-file-validate`、`ldd`、glibc 基线等自检）→ 在 `debian:12` 和 `ubuntu:22.04` 的干净容器里装一遍 deb → 上传为 artifact。它失败，下面的 Windows 任务不会开始，也就不会发布任何东西。详情见"Linux 包"一节。
    1. 校验：tag 去掉 `v` 等于两个 `Cargo.toml` 的版本；检出的提交就是 tag 指向的提交且在 `main` 上；`docs/release-notes/<版本>.md` 存在；`updater.json` 的公钥不是占位值；这个 tag 的 Release 还不存在。
    2. 装 Rust（按 `rust-toolchain.toml`），跑 `scripts/gates.ps1`（和本机同一套门禁；runner 上没有 `ZSSH_TEST_*`，联网用例会自己跳过）。门禁里 release 类的两步用 `gate` 配置（`Cargo.toml` 里 `inherits = "release"`，只差 LTO / 并行代码生成单元，`debug-assertions` 同为 false，测试钩子行为一致），为的是省编译时间；**安装包本身仍由第 3 步用完整的 release 编译**。
-   3. 装 NSIS，打安装包 `native/installer/build.ps1`。
-   4. 把 Secret 里的私钥写到 runner 临时目录的一个文件，调 `scripts/release-sign.ps1`：核对 `updater.json` 的公钥与私钥是一对（对不上直接失败）→ 签名（签名里带 `version:`）→ 生成 `latest.json` → 用公钥按应用里的验签代码再验一遍 → 算 SHA-256，写 `SHA256SUMS.txt` 和 Release 正文。
+   3. 装 NSIS，打安装包 `native/installer/build.ps1`；再取回 Linux 任务上传的 deb 和 tar.gz（核对文件名正好是这两个、不是空文件）。
+   4. 把 Secret 里的私钥写到 runner 临时目录的一个文件，调 `scripts/release-sign.ps1`（带 `-LinuxDebPath`、`-LinuxTarPath`）：核对 `updater.json` 的公钥与私钥是一对（对不上直接失败）→ 用**同一把私钥**给安装包、deb、tar.gz 各签一份名（签名里带 `version:` 和文件名）→ 生成 `latest.json`（`windows-x86_64` 加上 `linux-x86_64-deb`、`linux-x86_64-tar`）→ 用公钥按应用里的验签代码再验一遍 → 算 SHA-256，写 `SHA256SUMS.txt`（三个文件）和 Release 正文。
    5. **无论成败都删掉临时私钥文件**（`if: always()` 的清理步骤）。
-   6. `gh release create`：上传安装包、`latest.json`、`SHA256SUMS.txt`，标题 `ZeeTerm <版本>`，正文是更新说明加安装包 SHA-256。同名 Release 已存在时失败，不覆盖。
-6. **下载核对**：从 Release 页下载安装包，`Get-FileHash` 对一下 `SHA256SUMS.txt`；再用一个旧版本程序点「设置 → 关于 → 检查更新」，确认能发现、下载并校验通过（不必点安装）。
+   6. `gh release create`：上传安装包、deb、tar.gz、`latest.json`、`SHA256SUMS.txt`，标题 `ZeeTerm <版本>`，正文是更新说明加三个包各自的 SHA-256。同名 Release 已存在时失败，不覆盖。
+6. **下载核对**：从 Release 页下载安装包，`Get-FileHash` 对一下 `SHA256SUMS.txt`（Linux 包用 `sha256sum -c SHA256SUMS.txt --ignore-missing`）；再用一个旧版本程序点「设置 → 关于 → 检查更新」，确认能发现、下载并校验通过（不必点安装）。
 
 `latest.json` 里的下载地址是 `https://github.com/MoeShinX/ZeeTerm/releases/download/v<版本>/<安装包文件名>`，所以 tag 必须叫 `v<版本>`、安装包文件名不能改。程序读的更新源是 `https://github.com/MoeShinX/ZeeTerm/releases/latest/download/latest.json`（`native/zssh-update/updater.json` 的 `endpoints`），即最新 Release 里的 `latest.json`。
 
@@ -90,9 +91,33 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
 ### 失败了怎么办
 
+- **Linux 任务失败**：Windows 任务没有开始，什么都没发布。看日志里是门禁、打包自检（lintian、appstreamcli、glibc 基线）还是容器检查；修好合进 main 发补丁版本，或不改代码的话 *Re-run* 即可。
 - **工作流在"创建 Release"之前失败**：还没有发布任何东西。代码有问题就修好合进 main，**发新的补丁版本**（最稳，不用动 tag）；只是 runner 抽风、Secrets 没设好之类，不改代码的话，在 Actions 页对该次运行点 *Re-run*，或者 *Run workflow*（从 `main` 触发，输入已有的 tag，如 `v1.0.0`）。
 - **"创建 Release"失败或半途中断**：先到 Releases 页看有没有残留的 Release（含草稿）。有就整个删掉（附件一起），再重跑；没有就直接重跑。
 - **Release 已经发布了才发现有问题**：见下面"回滚与事故"，不要在同一版本号下替换附件，发新的补丁版本。
+
+## Linux 包
+
+每个版本发两个 Linux 包（x86_64，glibc 2.35 及以上，Wayland / X11），文件名固定，`latest.json` 里的下载地址按它拼，所以不能改：
+
+| 文件 | 内容 | `latest.json` 平台 key |
+| --- | --- | --- |
+| `ZeeTerm-<版本>-linux-x86_64.deb` | `/usr/bin/zeeterm`、`/usr/bin/zssh-mcp`（AI 工具桥，必须和主程序在同一目录）、`.desktop`、hicolor 图标（16 到 512）、AppStream metainfo、man 手册、`copyright`（GPL-3.0-or-later 加第三方声明） | `linux-x86_64-deb` |
+| `ZeeTerm-<版本>-linux-x86_64.tar.gz` | 解压后一个同名目录：`zeeterm`、`zssh-mcp`、`install.sh`（免 root，默认装 `~/.local`，`--prefix` 可改）、`uninstall.sh`、图标、`.desktop`、`LICENSE`、`NOTICE`、`README` | `linux-x86_64-tar` |
+
+应用标识是 `app.zeeterm.ZeeTerm`：`.desktop` 文件名、`Icon=`、`StartupWMClass=`、图标文件名、AppStream 的 `<id>` 都是它，和窗口的 app_id / WM_CLASS（`native/zssh-gpui/src/window_frame.rs` 的 `APP_ID`）一致，有测试（`installer_manifest.rs`）核对。可执行文件名是 `zeeterm`（`zeeterm --version` 只打印版本，在任何窗口、数据目录、钥匙串初始化之前处理，装好后用来冒烟）。
+
+**怎么打**：`scripts/package-linux.sh`（CI、`release.yml` 的 Linux 任务和本机都用它；`--out-dir` 指产物目录，`--profile gate` 本机试打包省编译时间，`--skip-build` 用已经编好的二进制）。它做完整 release 编译（native 工作区和根工作区的 `zssh-mcp`）、用 `zssh-icons --hicolor` 从品牌 SVG 渲染图标、用 `dpkg-shlibdeps` 算 deb 的 `Depends`（再补上运行时 dlopen、shlibdeps 看不出来的 `libvulkan1`、`libwayland-client0`、`libegl1`；`mesa-vulkan-drivers`、钥匙串提供者、`xdg-utils` 放 `Recommends`）、`dpkg-deb --root-owner-group` 打包，tar.gz 用固定排序和时间戳，最后自检：文件布局和元数据、`desktop-file-validate`、`appstreamcli validate`、`lintian --fail-on error`、`ldd` 无 `not found`、glibc 符号不超过 2.35、`zeeterm --version`、tar.gz 里的 `install.sh` / `uninstall.sh` 在临时前缀里装一遍再卸干净。CI 里设 `ZEETERM_PKG_REQUIRE_CHECKS=1`，lintian 等工具缺失也按失败处理；本机缺工具只提示。
+
+**依赖基线**：`scripts/linux-container-check.sh <deb>` 在 `debian:12` 和 `ubuntu:22.04` 的干净容器里装 deb（不装 Recommends），确认 `ldd` 无 `not found`、`zeeterm --version` 能跑、桌面文件校验通过、卸载干净。发布包必须在 ubuntu-22.04 上编（glibc 2.35）；在更新的系统（例如 Debian 13）上本地试打包可以，产物不能发布。
+
+**系统依赖**只有一份清单：`scripts/linux-build-deps.sh`（`build` 编译、`test` 测试需要的 xvfb、xauth、gnome-keyring、socat、dbus，`package` 打包检查工具）。CI 和 README 都引用它，改依赖只改这里。
+
+**测试环境**：Linux 的测试必须在一次性的 D-Bus 会话 + 临时解锁的 `gnome-keyring` 里跑（本机秘密的密钥走 Secret Service），用 `scripts/linux-keyring-session.sh <命令>`；`scripts/gates.sh` 是 Linux 门禁（对应 `gates.ps1`，末行「Linux 门禁全部通过。」），i18n 检查需要 `pwsh`（CI 里设 `ZEETERM_REQUIRE_I18N=1`，没有就失败）。
+
+**签名与 `latest.json`**：Linux 包由 Windows 任务里的 `release-sign.ps1` 用同一把更新私钥签名（和 Windows 安装包一样的 minisign 格式，受信注释里绑 `version:` 和文件名），`latest.json` 的 `platforms` 增加 `linux-x86_64-deb` 和 `linux-x86_64-tar` 两个条目（各自带 `url` 和 `signature`），`SHA256SUMS.txt` 列出三个文件。Windows 的条目一个字不变：老版本 Windows 客户端读这份清单，选中的仍是 `windows-x86_64-nsis` / `windows-x86_64`，Linux 条目被忽略（`native/zssh-update` 有测试钉住）。
+
+> 本机备用路径 `scripts/release.ps1` 在 Windows 上跑，**不带 Linux 包**：用它发版得到的 `latest.json` 没有 Linux 条目，Linux 客户端读到后按"没有适用的包"处理（提示去发布页下载），Windows 不受影响。需要 Linux 包时，用 GitHub 路径，或把别处打好的两个包用 `release-sign.ps1 -LinuxDebPath ... -LinuxTarPath ...` 签名并手动上传。
 
 ## 备用路径：本机发版
 
@@ -114,7 +139,7 @@ powershell -File scripts/release.ps1 -Version 1.0.0
 powershell -File scripts/release-drill.ps1
 ```
 
-用现生成的测试密钥（带随机口令，放 `C:\zssh-v2-data\r2-keys\`，跑完自动删）和一个充数文件，把 GitHub 路径的签名步骤（`release-sign.ps1`）和本机路径（`release.ps1 -DryRun`）各跑一遍，核对两边 `latest.json` / `SHA256SUMS.txt` / Release 正文的格式一致，再做几个反例（私钥与公钥对不上、口令不对、公钥是占位值、安装包被改……）确认都会失败。不读 `%USERPROFILE%\.zeeterm` 下的任何东西，也不会改仓库（`release.ps1 -DryRun` 改的版本号会原样还原）。
+用现生成的测试密钥（带随机口令，放 `C:\zssh-v2-data\r2-keys\`，跑完自动删）和一个充数文件，把 GitHub 路径的签名步骤（`release-sign.ps1`）和本机路径（`release.ps1 -DryRun`）各跑一遍，核对两边 `latest.json` / `SHA256SUMS.txt` / Release 正文的格式一致，再做几个反例（私钥与公钥对不上、口令不对、公钥是占位值、安装包被改……）确认都会失败。**Linux 资产也在里面演练**：用充数的 deb 和 tar.gz 走一遍带 `-LinuxDebPath` / `-LinuxTarPath` 的签名，核对 `latest.json` 恰好多出 `linux-x86_64-deb`、`linux-x86_64-tar` 两项而 Windows 项不变、三个文件各自验签通过（张冠李戴、改动、换私钥都验不过）、`SHA256SUMS.txt` 和 Release 正文含全部文件，并确认只给一个包、文件名不对、文件不存在都会失败。不读 `%USERPROFILE%\.zeeterm` 下的任何东西，也不会改仓库（`release.ps1 -DryRun` 改的版本号会原样还原）。
 
 单跑本机路径的演练：
 
@@ -145,6 +170,7 @@ GitHub 工作流**只认** `docs/release-notes/<版本>.md`（没有或是空的
 | --- | --- |
 | `Cargo.toml` 的 `[workspace.package] version` | 核心库工作区 |
 | `native/Cargo.toml` 的 `[workspace.package] version` | 原生应用工作区；程序里显示的版本、更新比较用的"当前版本"都来自它（编译时写入） |
+| Linux 包的版本 | `scripts/package-linux.sh` 读 `native/Cargo.toml`（deb 的 `Version`、文件名、AppStream 的 `<release>` 都由它生成，模板 `native/installer/linux/app.zeeterm.ZeeTerm.metainfo.xml.in` 里只有占位符），不用手改；预发布版本 `-rc.1` 在 deb 里写成 `~rc.1` |
 | `Cargo.lock`、`native/Cargo.lock` | 跟随工作区版本的本仓库包（`zssh-gpui` 与 `crates/` 下的 4 个 crate）。`native/` 下的辅助 crate（`zssh-editor` / `zssh-protocols` / `zssh-regex` / `zssh-session` / `zssh-terminal` / `zssh-update` / `zssh-icons`）版本固定为 `0.0.0`，**不随发版号改**；它们不参与更新比较，`--locked` 构建也照常通过 |
 | 安装包文件名、版本资源、"应用和功能"里的显示版本 | `build.ps1` 读 `native/Cargo.toml`，安装脚本里不写死版本 |
 
@@ -182,6 +208,6 @@ GitHub 工作流**只认** `docs/release-notes/<版本>.md`（没有或是空的
 | 签名校验未通过 | 安装包被改过或下载不完整，或不是用这把密钥签的；确认用的是发版产出的那份文件（GitHub Release 或 `release.ps1` 的产物） |
 | 签名版本 X 与公告版本 Y 不一致 | `latest.json` 的 `version` 与签名里的 `version:` 不同（手动改过清单，或把别的版本的签名搬了过来） |
 | 下载失败 | 网络中断、被限流，或附件被删；重试即可 |
-| 没有适用于当前平台的安装包 | `latest.json` 的 `platforms` 里没有 `windows-x86_64` |
+| 没有适用于当前平台的安装包 | `latest.json` 的 `platforms` 里没有 `windows-x86_64`（Linux 上是没有 `linux-x86_64-deb` / `linux-x86_64-tar`，例如用本机备用路径发的版本） |
 
 用户端永远不会安装验签没通过的包：包先整个下到内存、验签通过后才落盘，启动安装器前还会再核对一次文件哈希。

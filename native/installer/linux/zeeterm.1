@@ -1,0 +1,31 @@
+.TH ZEETERM 1 "" "ZeeTerm" "User Commands"
+.SH NAME
+zeeterm \- SSH, SFTP and serial terminal client
+.SH SYNOPSIS
+.B zeeterm
+.RB [ \-\-version | \-V ]
+.SH DESCRIPTION
+.B ZeeTerm
+is a native graphical SSH client with a terminal workspace, SFTP file management, remote editing, port forwarding and X11 forwarding.
+Telnet and serial connections are also supported.
+.PP
+Without arguments the application window opens.
+.SH OPTIONS
+.TP
+.BR \-\-version ", " \-V
+Print the program name and version, then exit.
+.SH ENVIRONMENT
+.TP
+.B ZSSH_DATA_DIR
+Directory for hosts, settings and the credential store.
+Default: \fB$XDG_DATA_HOME/ZeeTerm\fR (usually \fB~/.local/share/ZeeTerm\fR).
+.SH FILES
+.TP
+.I /usr/bin/zssh-mcp
+Tool bridge for external AI agents.
+It must stay in the same directory as
+.BR zeeterm .
+.SH SEE ALSO
+Project page: https://github.com/MoeShinX/ZeeTerm
+.SH LICENSE
+GPL-3.0-or-later.

@@ -10,6 +10,10 @@
 //! - 48 / 64 / 128 / 256：用 `assets/brand/zeeterm-logo.svg` 直接渲染。
 //!
 //! 用法：`zssh-icons <brand 目录> <安装包图标路径> [--check]`。`--check` 只比对不写入，有差异就以非 0 退出。
+//!
+//! Linux 打包另有一个模式：`zssh-icons --hicolor <brand 目录> <输出目录>`，按 freedesktop 的 hicolor 图标主题布局
+//! 写出 `<输出目录>/<N>x<N>/apps/app.zeeterm.ZeeTerm.png`（N 见 [`HICOLOR_SIZES`]），同一套渲染、同样逐字节可复现；
+//! 由 `scripts/package-linux.sh` 调用，不碰 brand 目录和安装包图标。
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -22,6 +26,10 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const ICO_SIZES: [u32; 8] = [16, 20, 24, 32, 48, 64, 128, 256];
 /// 这些尺寸及以下用像素对齐的小图 SVG。
 const SMALL_MAX: u32 = 32;
+/// Linux hicolor 图标主题里提供的尺寸（`.deb` 和 `.tar.gz` 都装这一套）。
+const HICOLOR_SIZES: [u32; 8] = [16, 24, 32, 48, 64, 128, 256, 512];
+/// Linux 上的图标名 = 应用标识（`.desktop` 的 `Icon=`、窗口的 app_id 都是它；打包脚本和测试核对）。
+const LINUX_ICON_NAME: &str = "app.zeeterm.ZeeTerm";
 
 /// 一个待写出的文件：目标路径 + 内容。
 struct Output {
@@ -31,6 +39,19 @@ struct Output {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--hicolor") {
+        let (Some(brand), Some(out_dir), 3) = (args.get(1), args.get(2), args.len()) else {
+            eprintln!("用法：zssh-icons --hicolor <brand 目录> <输出目录>");
+            return ExitCode::from(2);
+        };
+        return match write_hicolor(Path::new(brand), Path::new(out_dir)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("错误：{err}");
+                ExitCode::from(2)
+            }
+        };
+    }
     let check = args.iter().any(|a| a == "--check");
     let paths: Vec<&String> = args.iter().filter(|a| *a != "--check").collect();
     let (Some(brand), Some(installer_icon), 2) = (paths.first(), paths.get(1), paths.len()) else {
@@ -67,6 +88,33 @@ fn run(brand: &Path, installer_icon: &Path, check: bool) -> Result<bool> {
         }
     }
     Ok(same)
+}
+
+/// 渲染 hicolor 主题用的全部尺寸，返回（相对输出目录的路径，PNG 字节）。
+fn hicolor_outputs(brand: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>> {
+    let big_svg = std::fs::read_to_string(brand.join("zeeterm-logo.svg"))?;
+    HICOLOR_SIZES
+        .iter()
+        .map(|&size| {
+            let svg = svg_for(brand, &big_svg, size)?;
+            let path = PathBuf::from(format!("{size}x{size}"))
+                .join("apps")
+                .join(format!("{LINUX_ICON_NAME}.png"));
+            Ok((path, render_png(&svg, size)?))
+        })
+        .collect()
+}
+
+fn write_hicolor(brand: &Path, out_dir: &Path) -> Result<()> {
+    for (relative, bytes) in hicolor_outputs(brand)? {
+        let path = out_dir.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, bytes)?;
+        println!("已写入 {}", path.display());
+    }
+    Ok(())
 }
 
 fn build_outputs(brand: &Path, installer_icon: &Path) -> Result<Vec<Output>> {
@@ -177,6 +225,25 @@ mod tests {
         assert_eq!(a, b);
         let img = tiny_skia::Pixmap::decode_png(&a).unwrap();
         assert_eq!((img.width(), img.height()), (16, 16));
+    }
+
+    #[test]
+    fn hicolor_layout_covers_every_size_from_the_brand_sources() {
+        let brand = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../zssh-gpui/assets/brand");
+        let outputs = hicolor_outputs(&brand).unwrap();
+        assert_eq!(outputs.len(), HICOLOR_SIZES.len());
+        for ((path, bytes), size) in outputs.iter().zip(HICOLOR_SIZES) {
+            let expected = format!("{size}x{size}/apps/app.zeeterm.ZeeTerm.png");
+            assert_eq!(path.to_string_lossy().replace('\\', "/"), expected);
+            let img = tiny_skia::Pixmap::decode_png(bytes).unwrap();
+            assert_eq!((img.width(), img.height()), (size, size));
+            assert!(
+                img.pixels().iter().any(|p| p.alpha() > 0),
+                "{size} 像素的图标是空的"
+            );
+        }
+        // 可复现：再渲染一遍逐字节相同。
+        assert_eq!(outputs, hicolor_outputs(&brand).unwrap());
     }
 
     #[test]

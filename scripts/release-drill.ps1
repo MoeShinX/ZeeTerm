@@ -1,6 +1,8 @@
 ﻿# 发版流程演练（本机，不联网，不碰真实私钥）：用临时生成的测试密钥 + 一个充数的"安装包"，
 # 把 GitHub 发版用的签名步骤（release-sign.ps1）和本机备用路径（release.ps1 -DryRun）各跑一遍，
 # 核对两边的产物格式一致，再做几个反例（私钥与公钥对不上、安装包被改、口令不对）确认会失败。
+# 另外演练 Linux 资产：release-sign.ps1 带上 deb 和 tar.gz（用充数文件），核对它们被同一把私钥签名、latest.json 多出
+# linux-x86_64-deb / linux-x86_64-tar 两个条目而 Windows 条目不变、SHA256SUMS.txt 与 Release 正文包含全部文件，再做反例。
 #
 # 用法：
 #   powershell -File scripts/release-drill.ps1                    # 测试密钥放 C:\zssh-v2-data\r2-keys\，用完删除
@@ -118,6 +120,7 @@ try {
     $expectedFiles = @($installerName, "$installerName.sig", 'latest.json', 'RELEASE_NOTES.md', 'SHA256SUMS.txt') | Sort-Object
     $filesA = @(Get-ChildItem -LiteralPath $outA | ForEach-Object Name) | Sort-Object
     Check '产物文件清单一致（安装包、.sig、latest.json、RELEASE_NOTES.md、SHA256SUMS.txt）' (($filesA -join '|') -eq ($expectedFiles -join '|'))
+    Check '不带 Linux 包时 latest.json 只有 windows-x86_64 一项' ((($latestA.platforms.PSObject.Properties.Name | Sort-Object) -join ',') -eq 'windows-x86_64')
 
     Step 'D. 独立验签（release_tool verify，等同应用里的验签）'
     $sigA = Join-Path $outA "$installerName.sig"
@@ -152,6 +155,83 @@ try {
     $code = Invoke-Script @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', '0.0.1', '-InstallerPath', (Join-Path $outE 'ZeeTerm-Setup-0.0.1.exe'),
         '-KeyPath', $keyPath, '-OutDir', $outE, '-UpdaterJson', $updaterJson)
     Check '安装包不存在 -> 失败' ($code -ne 0)
+    Step 'F. Linux 资产：release-sign.ps1 带 -LinuxDebPath / -LinuxTarPath'
+    $debName = "ZeeTerm-$version-linux-x86_64.deb"
+    $tarName = "ZeeTerm-$version-linux-x86_64.tar.gz"
+    $outF = Join-Path $runDir 'F'
+    New-Item -ItemType Directory -Force -Path $outF | Out-Null
+    Copy-Item -LiteralPath $fake -Destination (Join-Path $outF $installerName)
+    # 同一个 Random 对象连续取：每次 New-Object System.Random 在 Windows PowerShell 5.1 里按时钟取种子，
+    # 连着创建会得到完全相同的字节，deb 和 tar.gz 就成了同一份内容，"拿 A 的签名验 B"的反例就没意义了。
+    $rngLinux = New-Object System.Random
+    foreach ($name in @($debName, $tarName)) {
+        $bytesLinux = New-Object byte[] 2048
+        $rngLinux.NextBytes($bytesLinux)
+        [System.IO.File]::WriteAllBytes((Join-Path $outF $name), $bytesLinux)
+    }
+    $signF = @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $outF $installerName),
+        '-KeyPath', $keyPath, '-OutDir', $outF, '-Repo', 'MoeShinX/ZeeTerm', '-UpdaterJson', $updaterJson)
+    $code = Invoke-Script ($signF + @('-LinuxDebPath', (Join-Path $outF $debName), '-LinuxTarPath', (Join-Path $outF $tarName)))
+    Check 'release-sign.ps1（带 Linux 包）退出码 0' ($code -eq 0) "(退出码 $code)"
+    $latestF = Get-Content -LiteralPath (Join-Path $outF 'latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Check 'platforms 恰好是 linux-x86_64-deb、linux-x86_64-tar、windows-x86_64' ((($latestF.platforms.PSObject.Properties.Name | Sort-Object) -join ',') -eq 'linux-x86_64-deb,linux-x86_64-tar,windows-x86_64')
+    Check 'Windows 条目不变：地址和字段都和没有 Linux 包时一样' (($latestF.platforms.'windows-x86_64'.url -eq $latestA.platforms.'windows-x86_64'.url) -and
+        ((($latestF.platforms.'windows-x86_64'.PSObject.Properties.Name | Sort-Object) -join ',') -eq 'signature,url') -and ($latestF.version -eq $latestA.version) -and ($latestF.notes -eq $latestA.notes))
+    $debEntry = $latestF.platforms.'linux-x86_64-deb'
+    $tarEntry = $latestF.platforms.'linux-x86_64-tar'
+    Check 'deb 条目：地址按 tag 和文件名拼，字段是 signature、url' (($debEntry.url -eq "https://github.com/MoeShinX/ZeeTerm/releases/download/v$version/$debName") -and ((($debEntry.PSObject.Properties.Name | Sort-Object) -join ',') -eq 'signature,url') -and $debEntry.signature)
+    Check 'tar 条目：地址按 tag 和文件名拼，字段是 signature、url' (($tarEntry.url -eq "https://github.com/MoeShinX/ZeeTerm/releases/download/v$version/$tarName") -and ((($tarEntry.PSObject.Properties.Name | Sort-Object) -join ',') -eq 'signature,url') -and $tarEntry.signature)
+    Check '三个签名互不相同（各签各的文件）' ((@($latestF.platforms.'windows-x86_64'.signature, $debEntry.signature, $tarEntry.signature) | Sort-Object -Unique).Count -eq 3)
+    $shaInstaller = (Get-FileHash -LiteralPath (Join-Path $outF $installerName) -Algorithm SHA256).Hash.ToLowerInvariant()
+    $shaDeb = (Get-FileHash -LiteralPath (Join-Path $outF $debName) -Algorithm SHA256).Hash.ToLowerInvariant()
+    $shaTar = (Get-FileHash -LiteralPath (Join-Path $outF $tarName) -Algorithm SHA256).Hash.ToLowerInvariant()
+    $sumsF = [System.IO.File]::ReadAllText((Join-Path $outF 'SHA256SUMS.txt'))
+    Check 'SHA256SUMS.txt 含全部三个文件（安装包、deb、tar.gz，各一行，格式同 sha256sum）' ($sumsF -ceq "$shaInstaller  $installerName`n$shaDeb  $debName`n$shaTar  $tarName`n")
+    $relF = [System.IO.File]::ReadAllText((Join-Path $outF 'RELEASE_NOTES.md'))
+    $tailF = "`n`n安装包 SHA-256：" + [char]96 + $shaInstaller + [char]96 + "`n`n$debName SHA-256：" + [char]96 + $shaDeb + [char]96 + "`n`n$tarName SHA-256：" + [char]96 + $shaTar + [char]96 + "`n"
+    Check 'Release 正文：更新说明 + 安装包一行（格式不变）+ deb 一行 + tar.gz 一行' ($relF -ceq ($notesText + $tailF))
+    $expectedF = @($installerName, "$installerName.sig", $debName, "$debName.sig", $tarName, "$tarName.sig", 'latest.json', 'RELEASE_NOTES.md', 'SHA256SUMS.txt') | Sort-Object
+    $filesF = @(Get-ChildItem -LiteralPath $outF | ForEach-Object Name) | Sort-Object
+    Check '产物文件清单：安装包、deb、tar.gz 各带 .sig，加 latest.json、RELEASE_NOTES.md、SHA256SUMS.txt' (($filesF -join '|') -eq ($expectedF -join '|'))
+
+    Step 'G. Linux 包的独立验签（release_tool verify）'
+    $sigDeb = Join-Path $outF "$debName.sig"
+    $sigTar = Join-Path $outF "$tarName.sig"
+    Check 'deb + 签名 + 版本验过' ((Invoke-Verify $pubkey (Join-Path $outF $debName) $sigDeb $version) -eq 0)
+    Check 'tar.gz + 签名 + 版本验过' ((Invoke-Verify $pubkey (Join-Path $outF $tarName) $sigTar $version) -eq 0)
+    Check 'latest.json 里的签名就是 .sig 文件的内容（deb、tar.gz）' (($debEntry.signature -eq (Get-Content -LiteralPath $sigDeb -Raw).Trim()) -and ($tarEntry.signature -eq (Get-Content -LiteralPath $sigTar -Raw).Trim()))
+    Check '拿 deb 的签名去验 tar.gz 失败' ((Invoke-Verify $pubkey (Join-Path $outF $tarName) $sigDeb $version) -ne 0)
+    Check '版本对不上验签失败（deb）' ((Invoke-Verify $pubkey (Join-Path $outF $debName) $sigDeb '9.9.8') -ne 0)
+    $tamperedDeb = Join-Path $runDir 'tampered.deb'
+    $bytesDeb = [System.IO.File]::ReadAllBytes((Join-Path $outF $debName)); $bytesDeb[0] = $bytesDeb[0] -bxor 0xFF
+    [System.IO.File]::WriteAllBytes($tamperedDeb, $bytesDeb)
+    Check 'deb 被改过验签失败' ((Invoke-Verify $pubkey $tamperedDeb $sigDeb $version) -ne 0)
+    Check '另一把私钥的公钥验不过（deb）' ((Invoke-Verify (Get-DerivedPubkey $repoRoot $otherKey) (Join-Path $outF $debName) $sigDeb $version) -ne 0)
+
+    Step 'H. 反例：这些 Linux 资产的情况 release-sign.ps1 必须失败'
+    $outH = Join-Path $runDir 'H'
+    New-Item -ItemType Directory -Force -Path $outH | Out-Null
+    Copy-Item -LiteralPath $fake -Destination (Join-Path $outH $installerName)
+    Copy-Item -LiteralPath (Join-Path $outF $debName) -Destination (Join-Path $outH $debName)
+    Copy-Item -LiteralPath (Join-Path $outF $tarName) -Destination (Join-Path $outH $tarName)
+    $signH = @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $outH $installerName),
+        '-KeyPath', $keyPath, '-OutDir', $outH, '-UpdaterJson', $updaterJson)
+    $code = Invoke-Script ($signH + @('-LinuxDebPath', (Join-Path $outH $debName)))
+    Check '只给 deb 不给 tar.gz -> 失败' ($code -ne 0)
+    $code = Invoke-Script ($signH + @('-LinuxTarPath', (Join-Path $outH $tarName)))
+    Check '只给 tar.gz 不给 deb -> 失败' ($code -ne 0)
+    Check '……且没有产出 latest.json' (-not (Test-Path -LiteralPath (Join-Path $outH 'latest.json')))
+    $wrongName = Join-Path $outH 'renamed.deb'
+    Copy-Item -LiteralPath (Join-Path $outH $debName) -Destination $wrongName
+    $code = Invoke-Script ($signH + @('-LinuxDebPath', $wrongName, '-LinuxTarPath', (Join-Path $outH $tarName)))
+    Check 'deb 文件名与版本不符 -> 失败' ($code -ne 0)
+    $code = Invoke-Script ($signH + @('-LinuxDebPath', (Join-Path $outH $debName), '-LinuxTarPath', (Join-Path $outH 'missing.tar.gz')))
+    Check 'tar.gz 不存在 -> 失败' ($code -ne 0)
+    $signHOther = @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $outH $installerName),
+        '-KeyPath', $otherKey, '-OutDir', $outH, '-UpdaterJson', $updaterJson)
+    $code = Invoke-Script ($signHOther + @('-LinuxDebPath', (Join-Path $outH $debName), '-LinuxTarPath', (Join-Path $outH $tarName)))
+    Check '私钥与 updater.json 公钥不是一对（带 Linux 包）-> 失败' ($code -ne 0)
+    Check '……且仍然没有产出 latest.json' (-not (Test-Path -LiteralPath (Join-Path $outH 'latest.json')))
 } finally {
     [Environment]::SetEnvironmentVariable($passwordEnv, $previousPassword, 'Process')
     if (-not $KeepFiles -and (Test-Path -LiteralPath $runDir)) { Remove-Item -LiteralPath $runDir -Recurse -Force -ErrorAction SilentlyContinue }

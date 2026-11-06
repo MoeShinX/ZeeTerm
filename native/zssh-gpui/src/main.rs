@@ -22,6 +22,8 @@ mod app_theme;
 mod armed;
 mod backup;
 mod chat_copy;
+#[cfg(unix)]
+mod cli_args;
 mod conn_pool;
 mod datetime;
 mod dev_hooks;
@@ -120,6 +122,12 @@ const MAIN_WINDOW_PROP: &str = "ZeeTerm-main";
 static INSTANCE: Mutex<Option<InstanceGuard>> = Mutex::new(None);
 
 fn main() {
+    // `--version`：打印版本就退出，放在任何初始化（数据目录、钥匙串、窗口）之前。
+    #[cfg(unix)]
+    if let Some(line) = cli_args::version_line(std::env::args_os()) {
+        println!("{line}");
+        return;
+    }
     // 先确认有正式的数据目录：拿不到就提示退出，不让凭据库、主机库落进会被清理的临时目录。
     settings::ensure_data_dir_or_exit();
     // Linux 的本机密钥：后备密钥文件放进数据目录，并在后台先把密钥取出来缓存好，

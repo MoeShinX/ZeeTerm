@@ -190,6 +190,10 @@ function Get-DerivedPubkey([string]$RepoRoot, [string]$KeyPath) {
 # 格式的约定（用户端读 latest.json、下载的人读 SHA256SUMS.txt，不能随便改）：
 #   - latest.json 的 notes 不带 SHA-256 那一行（更新窗口里显示它），Release 正文才带；
 #   - SHA256SUMS.txt 是 `<小写 sha256>  <文件名>`，两个空格，和 sha256sum 同格式。
+# -ExtraAssets：Windows 安装包以外一起发布的文件（Linux 的 deb / tar.gz），每项是 @{ Key = 平台 key; Path = 文件路径 }，
+#   key 只能是 linux-x86_64-deb / linux-x86_64-tar。它们用同一把私钥、同样的签名格式（受信注释里绑版本和文件名）签名，
+#   写进 latest.json 的 platforms 和 SHA256SUMS.txt，Release 正文各加一行 SHA-256；Windows 那一项一个字不变。
+#   不传时产物和以前逐字节一致。
 function New-ReleaseArtifacts {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
@@ -199,21 +203,50 @@ function New-ReleaseArtifacts {
         [Parameter(Mandatory = $true)][string]$ConfiguredPubkey,
         [Parameter(Mandatory = $true)][string]$NotesOut,
         [Parameter(Mandatory = $true)][string]$OutDir,
-        [Parameter(Mandatory = $true)][string]$Repo
+        [Parameter(Mandatory = $true)][string]$Repo,
+        [object[]]$ExtraAssets = @()
     )
     $toolArgs = Get-ReleaseToolArgs $RepoRoot
     $installerName = Split-Path -Leaf $Installer
+    # 平台 key -> release_tool manifest 的参数前缀；也限定了能发布哪些额外文件。
+    $extraFlagPrefix = @{ 'linux-x86_64-deb' = 'linux-deb'; 'linux-x86_64-tar' = 'linux-tar' }
+    $seenKeys = @{}
+    foreach ($asset in $ExtraAssets) {
+        if (-not $extraFlagPrefix.ContainsKey([string]$asset.Key)) { Stop-WithError "不认识的平台 key：$($asset.Key)" }
+        if ($seenKeys.ContainsKey([string]$asset.Key)) { Stop-WithError "平台 key 重复：$($asset.Key)" }
+        $seenKeys[[string]$asset.Key] = $true
+        if (-not (Test-Path -LiteralPath $asset.Path -PathType Leaf)) { Stop-WithError "找不到文件：$($asset.Path)" }
+    }
 
     Step '用更新私钥签名（签名里带 version，签完用配置里的公钥自检）'
     $sigFile = "$Installer.sig"
     & cargo @toolArgs sign --key $KeyPath --file $Installer --version $Version --pubkey $ConfiguredPubkey --out $sigFile
     if ($LASTEXITCODE -ne 0) { Stop-WithError '签名失败。' }
 
+    # 额外的包（Linux）：同一把私钥、同样的签名格式，签完立刻用配置里的公钥自检。
+    $extras = @()
+    foreach ($asset in $ExtraAssets) {
+        $assetName = Split-Path -Leaf $asset.Path
+        Step "签名 $assetName"
+        $assetSig = "$($asset.Path).sig"
+        & cargo @toolArgs sign --key $KeyPath --file $asset.Path --version $Version --pubkey $ConfiguredPubkey --out $assetSig
+        if ($LASTEXITCODE -ne 0) { Stop-WithError "签名 $assetName 失败。" }
+        $extras += [pscustomobject]@{
+            Key = [string]$asset.Key; Name = $assetName; Path = $asset.Path; Signature = $assetSig
+            Url = "https://github.com/$Repo/releases/download/v$Version/$assetName"
+        }
+    }
+
     Step '生成 latest.json'
     $url = "https://github.com/$Repo/releases/download/v$Version/$installerName"
     $latest = Join-Path $OutDir 'latest.json'
     $pubDate = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
-    & cargo @toolArgs manifest --version $Version --notes-file $NotesOut --pub-date $pubDate --url $url --signature-file $sigFile --out $latest
+    $manifestArgs = @('manifest', '--version', $Version, '--notes-file', $NotesOut, '--pub-date', $pubDate, '--url', $url, '--signature-file', $sigFile, '--out', $latest)
+    foreach ($extra in $extras) {
+        $prefix = $extraFlagPrefix[$extra.Key]
+        $manifestArgs += @("--$prefix-url", $extra.Url, "--$prefix-signature-file", $extra.Signature)
+    }
+    & cargo @toolArgs @manifestArgs
     if ($LASTEXITCODE -ne 0) { Stop-WithError '生成 latest.json 失败。' }
 
     # 自检：按应用里验签的同一套代码，再验一遍成品。
@@ -222,14 +255,27 @@ function New-ReleaseArtifacts {
     if ($LASTEXITCODE -ne 0) { Stop-WithError '自检没通过，产物不能发布。' }
     $parsed = Get-Content -LiteralPath $latest -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($parsed.version -ne $Version -or $parsed.platforms.'windows-x86_64'.url -ne $url) { Stop-WithError 'latest.json 的内容与预期不符。' }
+    foreach ($extra in $extras) {
+        & cargo @toolArgs verify --pubkey $ConfiguredPubkey --file $extra.Path --signature-file $extra.Signature --version $Version
+        if ($LASTEXITCODE -ne 0) { Stop-WithError "自检没通过（$($extra.Name)），产物不能发布。" }
+        $entry = $parsed.platforms.($extra.Key)
+        if (-not $entry -or $entry.url -ne $extra.Url -or -not $entry.signature) { Stop-WithError "latest.json 里 $($extra.Key) 的内容与预期不符。" }
+    }
 
     # 安装包的 SHA-256：写进 SHA256SUMS.txt，也附在 Release 正文末尾，让下载的人能自己核对。
     # 放在 latest.json 生成之后追加：更新窗口里显示的更新说明（latest.json 的 notes）不带这一行。
     $sha = (Get-FileHash -LiteralPath $Installer -Algorithm SHA256).Hash.ToLowerInvariant()
     $sums = Join-Path $OutDir 'SHA256SUMS.txt'
-    Write-Text $sums ("$sha  $installerName`n") $false
+    $sumsText = "$sha  $installerName`n"
+    $notesTail = "`n`n安装包 SHA-256：" + [char]96 + $sha + [char]96
+    foreach ($extra in $extras) {
+        $extraSha = (Get-FileHash -LiteralPath $extra.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $sumsText += "$extraSha  $($extra.Name)`n"
+        $notesTail += "`n`n$($extra.Name) SHA-256：" + [char]96 + $extraSha + [char]96
+    }
+    Write-Text $sums $sumsText $false
     $notesText = (Read-Text $NotesOut).Text.TrimEnd()
-    Write-Text $NotesOut ($notesText + "`n`n安装包 SHA-256：" + [char]96 + $sha + [char]96 + "`n") $false
+    Write-Text $NotesOut ($notesText + $notesTail + "`n") $false
 
-    return [pscustomobject]@{ Installer = $Installer; Signature = $sigFile; Latest = $latest; Sums = $sums; Notes = $NotesOut; Sha256 = $sha; Url = $url }
+    return [pscustomobject]@{ Installer = $Installer; Signature = $sigFile; Latest = $latest; Sums = $sums; Notes = $NotesOut; Sha256 = $sha; Url = $url; Extras = $extras }
 }
