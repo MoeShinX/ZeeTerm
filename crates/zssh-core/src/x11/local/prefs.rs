@@ -16,8 +16,8 @@ pub const X11_DISPLAY_CUSTOM_KEY: &str = "x11_display_custom";
 /// 按"默认把它关掉"理解，写进报告请用户确认）。
 pub const X11_CLOSE_OWNED_KEY: &str = "x11_close_owned_on_exit";
 
-/// 指定显示的默认写法（X410、MobaXterm 的 X 服务常用）。
-pub const DEFAULT_CUSTOM_DISPLAY: &str = "localhost:0";
+/// 指定显示的默认写法：Windows 上 X410、MobaXterm 的 X 服务常用 `localhost:0`，Linux 上是本机第一个显示 `:0`。
+pub const DEFAULT_CUSTOM_DISPLAY: &str = if cfg!(unix) { ":0" } else { "localhost:0" };
 
 /// X 显示来源。
 #[derive(Debug, Clone, PartialEq, Eq)]

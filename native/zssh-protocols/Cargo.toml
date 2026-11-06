@@ -17,6 +17,10 @@ encoding_rs = "0.8"
 zeroize = "1"
 tracing = "0.1"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux 串口直接用 termios + poll + eventfd（见 src/serial/unix.rs 顶部的取舍说明）；libc 早已在依赖树里。
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 # 串口直接用 Win32（CreateFileW + 重叠 I/O + SetCommState）：见 src/serial/os.rs 顶部的取舍说明。
 windows = { version = "0.62", features = [

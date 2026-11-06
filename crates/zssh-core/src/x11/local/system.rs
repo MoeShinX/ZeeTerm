@@ -26,6 +26,12 @@ pub trait LocalSystem: Send + Sync {
     fn tcp_listening(&self, port: u16) -> bool;
     fn env_var(&self, name: &str) -> Option<String>;
     fn path_is_file(&self, path: &Path) -> bool;
+    /// 读文件的全部内容（Xauthority 之类很小的文件）。读不了就是 `None`。
+    fn read_file(&self, path: &Path) -> Option<Vec<u8>>;
+    /// 本机主机名（Xauthority 里 FamilyLocal 记录的地址）。拿不到是 `None`。
+    fn hostname(&self) -> Option<String>;
+    /// 当前用户的家目录。
+    fn home_dir(&self) -> Option<PathBuf>;
     /// 注册表（安装目录项、卸载项）里记着的 VcXsrv 安装位置。读不到就是空。
     fn registry_installs(&self) -> Vec<RegistryInstall>;
     /// Windows 8.3 短路径（路径含非 ASCII 字符时给只认 ANSI 参数的程序用）。拿不到是 `None`。
@@ -65,6 +71,39 @@ impl LocalSystem for RealSystem {
 
     fn path_is_file(&self, path: &Path) -> bool {
         path.is_file()
+    }
+
+    fn read_file(&self, path: &Path) -> Option<Vec<u8>> {
+        // 授权文件正常只有几十到几百字节；上限防止被指向一个巨大的文件。
+        use std::io::Read as _;
+        const MAX_BYTES: u64 = 1 << 20;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .ok()?
+            .take(MAX_BYTES)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        Some(bytes)
+    }
+
+    fn hostname(&self) -> Option<String> {
+        #[cfg(unix)]
+        {
+            // 和 gethostname() 一样的值；libxcb / libX11 用它在授权文件里找 FamilyLocal 记录。
+            ["/proc/sys/kernel/hostname", "/etc/hostname"]
+                .iter()
+                .filter_map(|path| std::fs::read_to_string(path).ok())
+                .map(|text| text.trim().to_owned())
+                .find(|name| !name.is_empty())
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+
+    fn home_dir(&self) -> Option<PathBuf> {
+        std::env::home_dir()
     }
 
     fn registry_installs(&self) -> Vec<RegistryInstall> {
@@ -234,7 +273,8 @@ mod registry {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod tests {
     use super::*;
 

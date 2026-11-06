@@ -36,6 +36,9 @@ pub enum X11Failure {
     /// `installable`：能不能由 ZeeTerm 一键安装 VcXsrv（界面据此决定要不要显示安装入口）。
     #[error("本机没有可用的 X 服务器（{display}）")]
     NoLocalXServer { display: String, installable: bool },
+    /// 环境里没有 `DISPLAY`（纯 Wayland 又没有 Xwayland、或者 SSH 登录的无界面环境）：Unix 上本机没有 X 服务器可用。
+    #[error("本机没有 X 服务器（环境里没有 DISPLAY）")]
+    NoXDisplay,
     /// 本机 X 服务器接受了连接但拒绝了认证。`passthrough`：我们手里没有真 cookie（用户自己的 X 服务器）。
     #[error("本机 X 服务器（{display}）拒绝了连接：{reason}")]
     LocalXServerRejected {
@@ -70,6 +73,7 @@ impl X11Failure {
             Self::ServerRefused => "server_refused",
             Self::ServerNoReply { .. } => "server_no_reply",
             Self::NoLocalXServer { .. } => "no_local_x_server",
+            Self::NoXDisplay => "no_x_display",
             Self::LocalXServerRejected { .. } => "local_x_server_rejected",
             Self::LocalXServerTimeout { .. } => "local_x_server_timeout",
             Self::LaunchFailed { .. } => "launch_failed",
@@ -108,21 +112,41 @@ impl X11Failure {
                 } else {
                     ""
                 };
-                format!(
-                    "本机没有可用的 X 服务器（连接 {display} 失败）。{tail}\
-                     或者先启动 X410 / MobaXterm 等 X 服务器再重新连接。"
-                )
+                if cfg!(unix) {
+                    format!(
+                        "本机没有可用的 X 服务器（连接 {display} 失败）。{tail}请确认当前桌面会话的 X 服务器\
+                         （Xorg 或 Xwayland）在运行、DISPLAY 环境变量指向它，然后重新连接。"
+                    )
+                } else {
+                    format!(
+                        "本机没有可用的 X 服务器（连接 {display} 失败）。{tail}\
+                         或者先启动 X410 / MobaXterm 等 X 服务器再重新连接。"
+                    )
+                }
             }
+            Self::NoXDisplay => "本机没有 X 服务器（环境里没有 DISPLAY）。Linux 下需要 Xwayland\
+                （Wayland 桌面）或 Xorg 提供 X 服务器；纯 Wayland 且没有 Xwayland、或通过 SSH 登录\
+                的无界面环境没有它。已按普通终端打开。"
+                .to_owned(),
             Self::LocalXServerRejected {
                 display,
                 reason,
                 passthrough,
             } => {
-                let hint = if *passthrough {
-                    "这是你自己启动的 X 服务器，ZeeTerm 拿不到它的认证信息：请在它的设置里\
-                     关闭访问控制（例如 VcXsrv 勾选 Disable access control），或配置认证后再试。"
-                } else {
-                    "请关闭它再让 ZeeTerm 重新启动一个。"
+                let hint = match (cfg!(unix), *passthrough) {
+                    (true, true) => {
+                        "ZeeTerm 没有在授权文件（XAUTHORITY 或 ~/.Xauthority）里找到这个显示的认证信息：\
+                         请确认 XAUTHORITY 指向当前会话的授权文件，或用 xhost 允许当前用户连接\
+                         （例如 xhost +SI:localuser:$USER）。"
+                    }
+                    (true, false) => {
+                        "授权文件里这个显示的认证信息被拒绝了：请确认 XAUTHORITY 指向当前会话的授权文件。"
+                    }
+                    (false, true) => {
+                        "这是你自己启动的 X 服务器，ZeeTerm 拿不到它的认证信息：请在它的设置里\
+                         关闭访问控制（例如 VcXsrv 勾选 Disable access control），或配置认证后再试。"
+                    }
+                    (false, false) => "请关闭它再让 ZeeTerm 重新启动一个。",
                 };
                 format!("本机 X 服务器（{display}）拒绝了连接（{reason}）。{hint}")
             }
@@ -151,6 +175,7 @@ impl ErrorWithCode for X11Failure {
             Self::ServerRefused => "x11f.server_refused",
             Self::ServerNoReply { .. } => "x11f.server_no_reply",
             Self::NoLocalXServer { .. } => "x11f.no_local_x_server",
+            Self::NoXDisplay => "x11f.no_x_display",
             Self::LocalXServerRejected { .. } => "x11f.local_x_server_rejected",
             Self::LocalXServerTimeout { .. } => "x11f.local_x_server_timeout",
             Self::LaunchFailed { .. } => "x11f.launch_failed",
@@ -163,9 +188,11 @@ impl ErrorWithCode for X11Failure {
 
     fn params(&self) -> Vec<(&'static str, String)> {
         match self {
-            Self::ServerRefused | Self::UnknownCookie | Self::BadSetup | Self::TooManyChannels => {
-                Vec::new()
-            }
+            Self::ServerRefused
+            | Self::NoXDisplay
+            | Self::UnknownCookie
+            | Self::BadSetup
+            | Self::TooManyChannels => Vec::new(),
             Self::ServerNoReply { detail } => vec![("detail", detail.zh().to_owned())],
             Self::NoLocalXServer {
                 display,
@@ -215,6 +242,7 @@ mod tests {
                 display: "127.0.0.1:6020".into(),
                 installable: true,
             },
+            X11Failure::NoXDisplay,
             X11Failure::LocalXServerRejected {
                 display: "localhost:6000".into(),
                 reason: "Authorization required".into(),
@@ -270,13 +298,53 @@ mod tests {
             reason: "r".into(),
             passthrough: true,
         };
-        assert!(own.advice().contains("关闭访问控制"));
+        // 授权信息拿不到时的建议因系统而异：Windows 是关闭 X 服务器的访问控制，Unix 是检查授权文件。
+        if cfg!(unix) {
+            assert!(own.advice().contains("XAUTHORITY"));
+            assert!(own.advice().contains("xhost"));
+        } else {
+            assert!(own.advice().contains("关闭访问控制"));
+        }
         let ours = X11Failure::LocalXServerRejected {
             display: "x".into(),
             reason: "r".into(),
             passthrough: false,
         };
         assert!(!ours.advice().contains("关闭访问控制"));
+    }
+
+    #[test]
+    fn a_missing_display_variable_explains_what_linux_needs() {
+        let failure = X11Failure::NoXDisplay;
+        let advice = failure.advice();
+        assert!(
+            advice.contains("Xwayland") && advice.contains("Xorg"),
+            "{advice}"
+        );
+        assert!(advice.contains("DISPLAY"), "{advice}");
+        assert!(!advice.contains("VcXsrv"), "不能提示装 VcXsrv：{advice}");
+        assert_eq!(failure.code(), "no_x_display");
+        assert_eq!(ErrorWithCode::code(&failure), "x11f.no_x_display");
+        assert!(ErrorWithCode::params(&failure).is_empty());
+        let json = serde_json::to_value(&failure).unwrap();
+        assert_eq!(json["kind"], "no_x_display");
+    }
+
+    #[test]
+    fn the_unreachable_server_advice_matches_the_system() {
+        let advice = X11Failure::NoLocalXServer {
+            display: ":0".into(),
+            installable: false,
+        }
+        .advice();
+        if cfg!(unix) {
+            assert!(
+                advice.contains("Xwayland") && !advice.contains("X410"),
+                "{advice}"
+            );
+        } else {
+            assert!(advice.contains("X410"), "{advice}");
+        }
     }
 
     #[test]

@@ -76,6 +76,14 @@ pub(crate) enum X11Msg {
     SourceTitle,
     SourceDescription,
     InstalledNotice,
+    // ---- Linux：本机 X 服务器就是桌面会话的 DISPLAY，没有 VcXsrv 可装 ----
+    PlaceholderLinux,
+    PromptSuffixLinux,
+    SpecifyDisplaySettings,
+    SourceDescriptionLinux,
+    SessionServerTitle,
+    SessionDisplayPrefix,
+    NoSessionDisplay,
 }
 
 impl Msg for X11Msg {
@@ -134,6 +142,17 @@ impl Msg for X11Msg {
                 "自动：先用已经在运行的 X 服务器，没有就启动 VcXsrv。指定显示：连到你自己管理的 X 服务器（X410、MobaXterm 等）。"
             }
             Self::InstalledNotice => "VcXsrv 已安装好，现在可以连接开了 X11 的主机了",
+            Self::PlaceholderLinux => "例如 :0 或 localhost:10",
+            Self::PromptSuffixLinux => {
+                "」开了 X11 转发，但这台电脑上没有可用的 X 服务器（环境里没有 DISPLAY）。Linux 下需要 Xwayland（Wayland 桌面）或 Xorg；没有它，远程的图形程序显示不出来。"
+            }
+            Self::SpecifyDisplaySettings => "去设置里指定显示",
+            Self::SourceDescriptionLinux => {
+                "自动：使用当前桌面会话的 X 服务器（环境变量 DISPLAY；Wayland 桌面需要 Xwayland，Xorg 桌面自带）。指定显示：连到你写的显示，例如 :1 或 localhost:10。"
+            }
+            Self::SessionServerTitle => "本机 X 服务器",
+            Self::SessionDisplayPrefix => "使用当前会话的显示 ",
+            Self::NoSessionDisplay => "没有（环境里没有 DISPLAY，需要 Xwayland 或 Xorg）",
         }
     }
 
@@ -196,6 +215,19 @@ impl Msg for X11Msg {
             Self::InstalledNotice => {
                 "VcXsrv is installed; you can now connect to hosts with X11 enabled"
             }
+            Self::PlaceholderLinux => "for example :0 or localhost:10",
+            Self::PromptSuffixLinux => {
+                "” has X11 forwarding enabled, but this computer has no usable X server (the DISPLAY variable is not set). On Linux an X server comes from Xwayland (Wayland desktops) or Xorg; without one, remote graphical programs cannot be displayed."
+            }
+            Self::SpecifyDisplaySettings => "Specify a display in settings",
+            Self::SourceDescriptionLinux => {
+                "Automatic: use the X server of the current desktop session (the DISPLAY variable; Wayland desktops need Xwayland, Xorg desktops have one built in). Specific display: connect to the display you give, such as :1 or localhost:10."
+            }
+            Self::SessionServerTitle => "Local X Server",
+            Self::SessionDisplayPrefix => "Using the current session's display ",
+            Self::NoSessionDisplay => {
+                "None (the DISPLAY variable is not set; Xwayland or Xorg is required)"
+            }
         }
     }
 }
@@ -233,6 +265,7 @@ pub fn server_available(prefs: &X11Prefs, status: &LocalXStatus) -> bool {
         || !status.running_displays.is_empty()
         || status.owned_display.is_some()
         || status.vcxsrv.is_some()
+        || status.session_display.is_some()
 }
 
 /// VcXsrv 状态一行的文字：`未安装` / `已安装 21.1.16` / `运行中（显示 :0）`。
@@ -257,6 +290,14 @@ pub fn status_headline(status: &LocalXStatus) -> String {
             None => t(X11Msg::InstalledBare).to_owned(),
         },
         None => t(X11Msg::NotInstalled).to_owned(),
+    }
+}
+
+/// Linux 上"本机 X 服务器"一行的状态文字：当前会话的 `DISPLAY`，或者说明没有。
+pub fn session_headline(status: &LocalXStatus) -> String {
+    match &status.session_display {
+        Some(display) => format!("{}{display}", t(X11Msg::SessionDisplayPrefix)),
+        None => t(X11Msg::NoSessionDisplay).to_owned(),
     }
 }
 
@@ -309,7 +350,14 @@ pub struct X11Ui {
 impl X11Ui {
     pub fn new(window: &mut Window, cx: &mut Context<MainWindow>) -> Self {
         Self {
-            custom: cx.new(|cx| InputState::new(window, cx).placeholder(t(X11Msg::Placeholder))),
+            custom: cx.new(|cx| {
+                let placeholder = if cfg!(unix) {
+                    X11Msg::PlaceholderLinux
+                } else {
+                    X11Msg::Placeholder
+                };
+                InputState::new(window, cx).placeholder(t(placeholder))
+            }),
             custom_error: None,
             status: None,
             prefs: X11Prefs::default(),
@@ -619,7 +667,11 @@ impl MainWindow {
                             "{}{}{}",
                             t(X11Msg::HostQuoteOpen),
                             prompt.host_name,
-                            t(X11Msg::PromptSuffix)
+                            t(if cfg!(unix) {
+                                X11Msg::PromptSuffixLinux
+                            } else {
+                                X11Msg::PromptSuffix
+                            })
                         )),
                     )),
             )
@@ -643,7 +695,11 @@ impl MainWindow {
                     .child(
                         Button::new("x11-settings")
                             .outline()
-                            .label(t(X11Msg::AlreadyInstalledSettings))
+                            .label(t(if cfg!(unix) {
+                                X11Msg::SpecifyDisplaySettings
+                            } else {
+                                X11Msg::AlreadyInstalledSettings
+                            }))
                             .w_full()
                             .on_click(move |_, window, cx| {
                                 settings_entity.update(cx, |this, cx| {
@@ -744,6 +800,11 @@ impl MainWindow {
                         .clone()
                         .map(|text| error_note(text, tokens.danger)),
                 );
+        }
+
+        // Linux：本机 X 服务器就是桌面会话的 DISPLAY，没有 VcXsrv 可装、可拉起，只留"显示来源"和一行状态。
+        if cfg!(unix) {
+            return self.x11_card_session(source, tokens, cx);
         }
 
         // ---- 退出时关闭 ----
@@ -879,6 +940,51 @@ impl MainWindow {
             },
         )
     }
+
+    /// Linux 上的 X11 一节：X 显示来源 + 当前会话的显示状态（没有 VcXsrv 的检测 / 安装 / 退出时关闭）。
+    fn x11_card_session(
+        &self,
+        source: impl IntoElement,
+        tokens: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> ::gpui::AnyElement {
+        let recheck_entity = cx.entity();
+        let headline = self
+            .x11_ui
+            .status
+            .as_ref()
+            .map_or_else(|| t(X11Msg::Detecting).to_owned(), session_headline);
+        let status_row = row_with(
+            t(X11Msg::SessionServerTitle),
+            Some(SharedString::from(format!(
+                "{}{headline}",
+                t(X11Msg::StatusPrefix)
+            ))),
+            Button::new("x11-recheck")
+                .ghost()
+                .compact()
+                .label(t(X11Msg::Recheck))
+                .on_click(move |_, window, cx| {
+                    recheck_entity.update(cx, |this, cx| this.x11_reload(window, cx));
+                }),
+            tokens,
+        );
+        card(
+            "settings-x11",
+            t(X11Msg::X11Forwarding),
+            Some(t(X11Msg::X11CardDescription)),
+            tokens,
+            vec![
+                row(
+                    t(X11Msg::SourceTitle),
+                    Some(t(X11Msg::SourceDescriptionLinux)),
+                    source,
+                    tokens,
+                ),
+                status_row,
+            ],
+        )
+    }
 }
 
 #[cfg(test)]
@@ -889,7 +995,7 @@ mod tests {
 
     use super::{
         DisplayMode, InstallError, InstallPhase, LocalXStatus, X11Prefs, failure_text,
-        progress_text, server_available, status_headline,
+        progress_text, server_available, session_headline, status_headline,
     };
 
     fn status(installed: Option<&str>, running: &[u16], owned: Option<u16>) -> LocalXStatus {
@@ -901,6 +1007,7 @@ mod tests {
             running_displays: running.to_vec(),
             owned_display: owned,
             can_install: true,
+            session_display: None,
         }
     }
 
@@ -919,6 +1026,26 @@ mod tests {
             ..X11Prefs::default()
         };
         assert!(server_available(&custom, &status(None, &[], None)));
+    }
+
+    #[test]
+    fn a_session_display_counts_as_a_usable_server_and_is_named_in_the_status_line() {
+        let none = status(None, &[], None);
+        let session = LocalXStatus {
+            session_display: Some(":1".to_owned()),
+            can_install: false,
+            ..none.clone()
+        };
+        let auto = X11Prefs::default();
+        assert!(!server_available(&auto, &none));
+        assert!(server_available(&auto, &session));
+        assert!(session_headline(&session).ends_with(":1"));
+        assert!(session_headline(&session).contains("当前会话"));
+        let missing = session_headline(&none);
+        assert!(
+            missing.contains("DISPLAY") && missing.contains("Xwayland"),
+            "{missing}"
+        );
     }
 
     #[test]
