@@ -30,7 +30,7 @@ pub fn validate_external_url(raw: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-/// 用系统默认浏览器打开（先过 [`validate_external_url`]）。非 Windows 返回“不支持”。
+/// 用系统默认浏览器打开（先过 [`validate_external_url`]）。Windows 走 ShellExecute，Linux 走 xdg-open。
 pub fn open_external_url(raw: &str) -> Result<(), String> {
     let url = validate_external_url(raw)?;
     shell_open(url.as_str())

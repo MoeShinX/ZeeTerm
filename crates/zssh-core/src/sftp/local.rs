@@ -936,16 +936,20 @@ mod tests {
         std::fs::write(root.join("inside.txt"), b"in").unwrap();
         std::fs::write(outside.join("outside.txt"), b"out").unwrap();
 
-        // 目录联接（junction）：Windows 上不需要管理员权限就能建。
+        // Windows：目录联接（junction）不需要管理员权限就能建；Unix：符号链接。
         let junction = root.join("link-to-outside");
-        let made = std::process::Command::new("cmd")
+        #[cfg(windows)]
+        let created = std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J"])
             .arg(&junction)
             .arg(&outside)
-            .output();
-        let created = made.map(|out| out.status.success()).unwrap_or(false);
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false);
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink(&*outside, &junction).is_ok();
         if !created {
-            println!("跳过：这台机器建不了 junction");
+            println!("跳过：这台机器建不了 junction / 符号链接");
             return;
         }
 

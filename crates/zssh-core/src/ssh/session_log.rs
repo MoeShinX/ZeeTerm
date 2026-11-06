@@ -148,7 +148,34 @@ pub fn local_stamp() -> String {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|elapsed| elapsed.as_secs() as i64)
             .unwrap_or_default();
-        crate::ai::files::compact_timestamp(secs)
+        stamp_at(secs, local_utc_offset_secs(secs))
+    }
+}
+
+/// `unix_secs` 加上时区偏移后写成 `YYYYMMDD-HHMMSS`（偏移单独传进来，方便不依赖本机时区地测）。
+#[cfg(not(windows))]
+fn stamp_at(unix_secs: i64, offset_secs: i64) -> String {
+    crate::ai::files::compact_timestamp(unix_secs + offset_secs)
+}
+
+/// 本机时区在 `unix_secs` 那一刻相对 UTC 的偏移（秒，东为正，含夏令时）；系统答不出来就当 UTC。
+///
+/// 走 libc 的 `localtime_r`（读 `TZ` 和系统时区文件），界面里的修改时间、日志文件名都用它，
+/// 免得 Linux 上的时间永远是 UTC。`localtime_r` 和修改环境变量的 `setenv` 不能同时进行，
+/// 而 ZeeTerm 启动之后不会再改 `TZ`，所以这里不加锁。
+#[cfg(unix)]
+pub fn local_utc_offset_secs(unix_secs: i64) -> i64 {
+    let Ok(at) = libc::time_t::try_from(unix_secs) else {
+        return 0;
+    };
+    // SAFETY: `tm` 是全零的合法 `libc::tm`（指针字段是空指针，调用者不会读）；`localtime_r` 只读 `at`、
+    // 只写 `tm`，两者在调用期间都有效，返回空指针时不去读 `tm`。
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&at, &mut tm).is_null() {
+            return 0;
+        }
+        i64::from(tm.tm_gmtoff)
     }
 }
 
@@ -787,6 +814,58 @@ mod tests {
         let stamp = local_stamp();
         assert_eq!(stamp.len(), 15, "{stamp}");
         assert_eq!(&stamp[8..9], "-");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_stamp_is_the_utc_time_shifted_by_the_offset() {
+        // 2024-02-29 12:34:56 UTC。
+        let at = 1_709_210_096;
+        assert_eq!(stamp_at(at, 0), "20240229-123456");
+        assert_eq!(stamp_at(at, 8 * 3600), "20240229-203456");
+        assert_eq!(stamp_at(at, -5 * 3600), "20240229-073456");
+        // 偏移跨过午夜时日期跟着变。
+        assert_eq!(stamp_at(at, 12 * 3600), "20240301-003456");
+    }
+
+    /// 在子进程里设 `TZ`（POSIX 写法，不依赖系统有没有时区数据库）再问本地偏移：
+    /// 测试进程自己的环境不动，别的测试线程不会被影响。
+    #[cfg(unix)]
+    #[test]
+    fn the_local_offset_follows_the_tz_variable() {
+        const PROBE_AT: &str = "ZT_TZ_PROBE_AT";
+        if let Ok(at) = std::env::var(PROBE_AT) {
+            // 子进程：只打印结果。
+            let at: i64 = at.parse().expect("时间戳");
+            println!("OFFSET={}", local_utc_offset_secs(at));
+            return;
+        }
+        let exe = std::env::current_exe().expect("测试程序路径");
+        let test_name = module_path!()
+            .split_once("::")
+            .map(|(_, rest)| format!("{rest}::the_local_offset_follows_the_tz_variable"))
+            .expect("模块路径");
+        let probe = |tz: &str, at: i64| -> Option<i64> {
+            let out = std::process::Command::new(&exe)
+                .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
+                .env("TZ", tz)
+                .env(PROBE_AT, at.to_string())
+                .output()
+                .ok()?;
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .find_map(|line| line.split_once("OFFSET=")?.1.trim().parse().ok())
+        };
+        let winter = 1_709_210_096; // 2024-02-29
+        let summer = 1_721_000_000; // 2024-07-14
+        assert_eq!(probe("UTC0", winter), Some(0));
+        assert_eq!(probe("CST-8", winter), Some(8 * 3600));
+        assert_eq!(probe("NST3:30", winter), Some(-(3 * 3600 + 1800)));
+        assert_eq!(probe("<+0545>-5:45", winter), Some(5 * 3600 + 45 * 60));
+        // 有夏令时规则的：冬天标准时间，夏天夏令时。
+        let eastern = "EST5EDT,M3.2.0,M11.1.0";
+        assert_eq!(probe(eastern, winter), Some(-5 * 3600));
+        assert_eq!(probe(eastern, summer), Some(-4 * 3600));
     }
 
     #[test]

@@ -4237,6 +4237,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hmac 0.13.0",
  "keyring",
+ "libc",
  "rand 0.10.3",
  "reqwest",
  "ring",
