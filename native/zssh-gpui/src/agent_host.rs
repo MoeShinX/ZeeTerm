@@ -112,7 +112,14 @@ impl Msg for AgentHostMsg {
             Self::ToolBridgeBindFailedPrefix => "工具桥监听失败：",
             Self::ToolBridgeNonblockingFailedPrefix => "工具桥监听设置非阻塞失败：",
             Self::ToolBridgePortFailedPrefix => "工具桥取端口失败：",
-            Self::McpBinaryMissingPrefix => "没有找到 zssh-mcp.exe（应当和主程序放在同一个目录：",
+            Self::McpBinaryMissingPrefix => {
+                // 文件名跟平台走：Windows 带 .exe，Linux 不带。
+                if cfg!(windows) {
+                    "没有找到 zssh-mcp.exe（应当和主程序放在同一个目录："
+                } else {
+                    "没有找到 zssh-mcp（应当和主程序放在同一个目录："
+                }
+            }
             Self::McpBinaryMissingSuffix => "）",
             Self::OpenSettingsDbFailedPrefix => "打开设置库失败：",
             Self::EndpointMissing => "这个接口已经不存在了，请在智能体下拉里重新选一个。",
@@ -151,7 +158,11 @@ impl Msg for AgentHostMsg {
             }
             Self::ToolBridgePortFailedPrefix => "Failed to read the tool bridge port: ",
             Self::McpBinaryMissingPrefix => {
-                "zssh-mcp.exe was not found (it should be in the same directory as the main executable: "
+                if cfg!(windows) {
+                    "zssh-mcp.exe was not found (it should be in the same directory as the main executable: "
+                } else {
+                    "zssh-mcp was not found (it should be in the same directory as the main executable: "
+                }
             }
             Self::McpBinaryMissingSuffix => ")",
             Self::OpenSettingsDbFailedPrefix => "Failed to open the settings database: ",
@@ -1350,14 +1361,14 @@ pub async fn send_unless_cancelled(
     Ok(true)
 }
 
-/// `zssh-mcp.exe` 应该在的位置：和主程序放在同一个目录。
+/// `zssh-mcp`（Windows 上是 `zssh-mcp.exe`）应该在的位置：和主程序放在同一个目录。
 fn mcp_binary_location() -> Result<PathBuf, String> {
     let exe = std::env::current_exe()
         .map_err(|err| format!("{}{err}", t(AgentHostMsg::CurrentExeFailedPrefix)))?;
     let dir = exe
         .parent()
         .ok_or_else(|| t(AgentHostMsg::NoExeParentDir).to_string())?;
-    Ok(dir.join("zssh-mcp.exe"))
+    Ok(dir.join(format!("zssh-mcp{}", std::env::consts::EXE_SUFFIX)))
 }
 
 /// 驱动的启动参数。
@@ -3446,10 +3457,11 @@ mod tests {
     /// 找一个能用的 `zssh-mcp.exe`（工具桥那一头；纯对话不会调用它，但智能体启动时要能拉起）。
     fn find_zssh_mcp() -> Option<PathBuf> {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let name = format!("zssh-mcp{}", std::env::consts::EXE_SUFFIX);
         [
-            manifest.join("../target/debug/zssh-mcp.exe"),
-            manifest.join("../../target/debug/zssh-mcp.exe"),
-            manifest.join("../target/release/zssh-mcp.exe"),
+            manifest.join("../target/debug").join(&name),
+            manifest.join("../../target/debug").join(&name),
+            manifest.join("../target/release").join(&name),
         ]
         .into_iter()
         .find(|path| path.is_file())
@@ -3653,8 +3665,8 @@ mod tests {
                 Ok(Some(install)) if !install.too_old => install,
                 _ => return Err("条件缺失：本机没有可用的 codex".to_owned()),
             };
-            let Some(real_home) = std::env::var_os("USERPROFILE").map(PathBuf::from) else {
-                return Err("条件缺失：没有 USERPROFILE，找不到登录文件".to_owned());
+            let Some(real_home) = std::env::home_dir() else {
+                return Err("条件缺失：找不到家目录，找不到登录文件".to_owned());
             };
             let source = std::env::var_os("CODEX_HOME")
                 .map(PathBuf::from)

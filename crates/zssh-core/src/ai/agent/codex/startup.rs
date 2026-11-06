@@ -264,7 +264,7 @@ pub struct CommandProbes {
     /// 已解析的真实可执行文件（`.cmd` 拆过包装之后的）。
     pub install_path: PathBuf,
     /// 覆盖的配置目录（联网测试用独立副本时设置；`None` = 用户自己的
-    /// `$CODEX_HOME` / `%USERPROFILE%\.codex`，扫 config.toml 看的就是它这份）。
+    /// `$CODEX_HOME` / `<家目录>/.codex`，扫 config.toml 看的就是它这份）。
     pub codex_home: Option<PathBuf>,
 }
 
@@ -345,7 +345,7 @@ pub enum ConfigRead {
 }
 
 /// 用户配置文件的位置：`$CODEX_HOME/config.toml`，没设就是
-/// `%USERPROFILE%\.codex\config.toml`（`home` 是测试用的显式覆盖）。
+/// `<家目录>/.codex/config.toml`（`home` 是测试用的显式覆盖）。
 fn config_toml_path_in(home: Option<&Path>) -> Option<std::path::PathBuf> {
     match home {
         Some(home) => Some(home.join("config.toml")),
@@ -383,13 +383,19 @@ pub fn read_config_toml_mcp_names(home: Option<&Path>) -> Result<Vec<String>, St
 
 /// codex 配置文件的路径（只读）。
 pub fn config_toml_path() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("CODEX_HOME") {
-        if !home.is_empty() {
-            return Some(PathBuf::from(home).join("config.toml"));
-        }
+    config_toml_path_from(std::env::var_os("CODEX_HOME"), std::env::home_dir())
+}
+
+/// [`config_toml_path`] 的纯函数版（环境和家目录由调用方给，方便单测）。
+fn config_toml_path_from(
+    codex_home: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(codex_home) = codex_home.filter(|dir| !dir.is_empty()) {
+        return Some(PathBuf::from(codex_home).join("config.toml"));
     }
-    let profile = std::env::var_os("USERPROFILE")?;
-    Some(PathBuf::from(profile).join(".codex").join("config.toml"))
+    let home = home.filter(|home| !home.as_os_str().is_empty())?;
+    Some(home.join(".codex").join("config.toml"))
 }
 
 /// 建 `StartOptions` 时用的默认探测（真命令；用户默认配置目录）。
@@ -944,5 +950,22 @@ base_url = \"https://example.com/v1\"\n";
                 .unwrap()
                 .logged_in
         );
+    }
+
+    /// `config.toml` 的位置：`CODEX_HOME` 优先，没设就是 `<家目录>/.codex/config.toml`。
+    #[test]
+    fn config_toml_path_follows_codex_home_then_the_home_directory() {
+        let home = PathBuf::from("home-base").join("张 三");
+        assert_eq!(
+            config_toml_path_from(Some("codex 数据".into()), Some(home.clone())),
+            Some(PathBuf::from("codex 数据").join("config.toml"))
+        );
+        for unset in [None, Some(std::ffi::OsString::new())] {
+            assert_eq!(
+                config_toml_path_from(unset, Some(home.clone())),
+                Some(home.join(".codex").join("config.toml"))
+            );
+        }
+        assert_eq!(config_toml_path_from(None, None), None);
     }
 }

@@ -7,14 +7,15 @@
 use serde_json::Value;
 use zssh_core::external_url::validate_external_url;
 
-/// 用户目录在界面上显示成什么。
-pub const HOME_PLACEHOLDER: &str = "%USERPROFILE%";
+/// 用户目录在界面上显示成什么：Windows 是 `%USERPROFILE%`，Linux 是 shell 里同样意思的 `~`。
+pub const HOME_PLACEHOLDER: &str = if cfg!(windows) { "%USERPROFILE%" } else { "~" };
 
 // ---------------------------------------------------------------------------
 // 路径脱敏
 // ---------------------------------------------------------------------------
 
 /// 比较路径时的"折叠"：`/` 和 `\` 视为同一个，字母不分大小写（含非 ASCII 字母）。
+#[cfg(any(windows, test))]
 fn fold(c: char) -> char {
     if c == '/' {
         return '\\';
@@ -47,7 +48,25 @@ fn ends_home_component(next: Option<char>) -> bool {
 /// - 不区分大小写，`/` 和 `\` 等价；
 /// - 整段文本里出现几次换几次（错误信息里常常夹着路径），不只处理开头；
 /// - `home` 太短（没有目录层级，比如 `C:`）或为空时原样返回，免得把别的东西替换掉。
+#[cfg(windows)]
 pub fn redact_home(text: &str, home: &str) -> String {
+    redact_home_with(text, home, HOME_PLACEHOLDER, fold)
+}
+
+/// Linux 上只有测试要用 Windows 规则的这一份（验证 Windows 路径的脱敏逻辑不随平台变）。
+#[cfg(all(test, unix))]
+pub fn redact_home(text: &str, home: &str) -> String {
+    redact_home_with(text, home, "%USERPROFILE%", fold)
+}
+
+/// Unix 的折叠：什么都不折（文件名区分大小写，`\` 是合法的文件名字符）。
+#[cfg(unix)]
+fn fold_exact(c: char) -> char {
+    c
+}
+
+/// 同 [`redact_home`]，但换成什么、怎么比较字符由调用方定（Windows 与 Unix 的路径规则不同）。
+fn redact_home_with(text: &str, home: &str, placeholder: &str, fold: fn(char) -> char) -> String {
     let home = home.trim().trim_end_matches(['\\', '/']);
     if home.is_empty() || !home.contains(['\\', '/']) {
         return text.to_owned();
@@ -65,7 +84,7 @@ pub fn redact_home(text: &str, home: &str) -> String {
                 .all(|(have, want)| fold(*have) == *want)
             && ends_home_component(chars.get(end).copied());
         if hit {
-            out.push_str(HOME_PLACEHOLDER);
+            out.push_str(placeholder);
             index = end;
         } else {
             out.push(chars[index]);
@@ -77,14 +96,24 @@ pub fn redact_home(text: &str, home: &str) -> String {
 
 /// 当前用户的目录（读不到返回空串）。
 fn current_home() -> String {
-    std::env::var_os("USERPROFILE")
+    std::env::home_dir()
         .map(|home| home.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
 
 /// 界面上任何可能带出本机路径的文字（安装路径、错误信息、数据目录）都过这一个函数。
+///
+/// Windows 上的规则和以前完全一致（`%USERPROFILE%`、不分大小写、`/` 等同 `\`）；
+/// Linux 上家目录换成 `~`，按字符精确比较。
 pub fn redact_paths(text: &str) -> String {
-    redact_home(text, &current_home())
+    #[cfg(windows)]
+    {
+        redact_home(text, &current_home())
+    }
+    #[cfg(unix)]
+    {
+        redact_home_with(text, &current_home(), HOME_PLACEHOLDER, fold_exact)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -594,5 +623,35 @@ mod tests {
             None,
             "缺少 danger: 前缀"
         );
+    }
+
+    /// Linux 上用户目录显示成 `~`，按字符精确比较（文件名区分大小写）。
+    #[cfg(unix)]
+    #[test]
+    fn unix_home_is_shown_as_a_tilde_and_matched_exactly() {
+        let redact =
+            |text: &str, home: &str| redact_home_with(text, home, HOME_PLACEHOLDER, fold_exact);
+        assert_eq!(HOME_PLACEHOLDER, "~");
+        assert_eq!(
+            redact("/home/alice/.local/bin/claude", "/home/alice"),
+            "~/.local/bin/claude"
+        );
+        // 区分大小写、必须是完整的目录名。
+        assert_eq!(redact("/home/Alice/x", "/home/alice"), "/home/Alice/x");
+        assert_eq!(redact("/home/alice2/x", "/home/alice"), "/home/alice2/x");
+        assert_eq!(redact("/home/alice", "/home/alice"), "~");
+        // 句子里出现几次换几次，中文目录名、空格都不影响。
+        assert_eq!(
+            redact(
+                "没有找到 /home/张 三/app/zssh-mcp（另见 '/home/张 三/x'）",
+                "/home/张 三"
+            ),
+            "没有找到 ~/app/zssh-mcp（另见 '~/x'）"
+        );
+        // 反斜杠在 Linux 上只是普通字符，不当分隔符。
+        assert_eq!(redact(r"/home/alice\x", "/home/alice"), r"/home/alice\x");
+        // 根目录或空的家目录不替换（会把所有路径都改掉）。
+        assert_eq!(redact("/etc/passwd", "/"), "/etc/passwd");
+        assert_eq!(redact("/etc/passwd", ""), "/etc/passwd");
     }
 }

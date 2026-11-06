@@ -124,7 +124,8 @@ pub fn configured_model_label(
     })
 }
 
-/// 管理员配置文件的候选路径（Windows 上 Claude Code 认的位置；按环境变量拼，不写死盘符）。
+/// 管理员配置文件的候选路径（Claude Code 认的位置；Windows 上按环境变量拼，不写死盘符）。
+#[cfg(windows)]
 pub fn managed_settings_paths() -> Vec<PathBuf> {
     ["ProgramFiles", "ProgramData"]
         .iter()
@@ -136,6 +137,12 @@ pub fn managed_settings_paths() -> Vec<PathBuf> {
                 .join("managed-settings.json")
         })
         .collect()
+}
+
+/// 管理员配置文件的位置：Linux 上 Claude Code 读 `/etc/claude-code/managed-settings.json`。
+#[cfg(unix)]
+pub fn managed_settings_paths() -> Vec<PathBuf> {
+    vec![PathBuf::from("/etc/claude-code/managed-settings.json")]
 }
 
 /// 用本机的真实环境和配置算一次。
@@ -269,5 +276,15 @@ mod tests {
         let dir = dir_with(None);
         std::fs::write(dir.join(".credentials.json"), r#"{"model":"opus"}"#).unwrap();
         assert_eq!(configured_model_label(&env_of(&[]), Some(&*dir), &[]), None);
+    }
+
+    /// Linux 上 Claude Code 读 `/etc/claude-code/managed-settings.json`，不依赖任何环境变量。
+    #[cfg(unix)]
+    #[test]
+    fn managed_settings_live_under_etc_on_linux() {
+        assert_eq!(
+            managed_settings_paths(),
+            vec![PathBuf::from("/etc/claude-code/managed-settings.json")]
+        );
     }
 }
