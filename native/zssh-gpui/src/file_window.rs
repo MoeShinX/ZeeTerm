@@ -15,7 +15,7 @@
 
 use ::gpui::{
     AnyWindowHandle, App, FocusHandle, Global, SharedString, TitlebarOptions, WeakEntity, Window,
-    WindowBounds, WindowControlArea, WindowHandle, WindowOptions, px,
+    WindowBounds, WindowHandle, WindowOptions, px,
 };
 use gpui_kit::component::TitleBar;
 use gpui_kit::component::button::Button;
@@ -227,7 +227,7 @@ fn open_window(cx: &mut App, host_id: i64, title: String, view: Entity<SftpDemo>
         // 上次用户手动调的大小位置（最大化也记）；位置已经不在任何显示器上就退回居中的默认大小。
         window_bounds: Some(initial_bounds(cx)),
         window_min_size: Some(size(::gpui::px(MIN_SIZE.0), ::gpui::px(MIN_SIZE.1))),
-        ..Default::default()
+        ..crate::window_frame::client_options()
     };
     let opened = cx.open_window(options, move |window, cx| {
         window.set_window_title(&window_title());
@@ -238,7 +238,7 @@ fn open_window(cx: &mut App, host_id: i64, title: String, view: Entity<SftpDemo>
         });
         let close_view = file_window.clone();
         // 有传输时这里返回 false，窗口里出现确认条；确认之后由按钮自己关窗口。
-        window.on_window_should_close(cx, move |window, cx| {
+        crate::window_frame::on_should_close(window, cx, move |window, cx| {
             close_view.update(cx, |this, cx| this.should_close(window, cx))
         });
         file_window
@@ -850,10 +850,12 @@ impl FileWindow {
 impl Render for FileWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 锁屏（V2-U26）：锁着时整个窗口只画锁屏页，里面的内容这一帧不进元素树。
-        if let Some(cover) = crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
-            return cover;
-        }
-        self.render_unlocked(window, cx).into_any_element()
+        let content = match crate::app_lock::cover(&mut self.lock_screen, true, window, cx) {
+            Some(cover) => cover,
+            None => self.render_unlocked(window, cx).into_any_element(),
+        };
+        // Linux 客户端装饰：细边框、阴影和边缘缩放（其他平台原样）。
+        crate::window_frame::frame(content)
     }
 }
 
@@ -948,7 +950,7 @@ impl FileWindow {
                             .items_end()
                             .gap_0p5()
                             .pl_3()
-                            .window_control_area(WindowControlArea::Drag)
+                            .map(crate::window_frame::drag_region)
                             .child(
                                 h_flex()
                                     .mb_2()
@@ -974,7 +976,7 @@ impl FileWindow {
                         div()
                             .h_full()
                             .flex_none()
-                            .child(window_controls(&tokens, window.is_maximized())),
+                            .child(window_controls(&tokens, window)),
                     ),
             )
             .child(div().flex_1().min_h_0().child(content))
