@@ -47,6 +47,17 @@ pub struct CommHandle {
     stop: OwnedFd,
 }
 
+impl Drop for CommHandle {
+    fn drop(&mut self) {
+        // 撤掉打开时设的 TIOCEXCL。独占标志挂在 tty 上而不是这个 fd 上：只要设备还被别处开着
+        // （伪终端的主端、别的进程），关掉我们的 fd 并不会清掉它，之后普通用户再打开就一直是 EBUSY。
+        // 没设过或驱动不支持时这一步什么也不做，失败也无所谓。
+        unsafe {
+            libc::ioctl(self.fd.as_raw_fd(), libc::TIOCNXCL);
+        }
+    }
+}
+
 /// 读到了什么。
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReadOutcome {
