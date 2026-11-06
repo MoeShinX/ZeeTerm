@@ -66,6 +66,7 @@ fn clip_tail(text: &str) -> String {
 }
 
 /// 杀掉整个进程树（智能体底下挂着 zssh-mcp 等子进程）。
+#[cfg(windows)]
 pub async fn kill_process_tree(child: &mut tokio::process::Child) -> std::io::Result<()> {
     let Some(pid) = child.id() else {
         // 已经退出了，收尸。
@@ -82,6 +83,160 @@ pub async fn kill_process_tree(child: &mut tokio::process::Child) -> std::io::Re
         .await;
     let _ = child.wait().await;
     status.map(|_| ())
+}
+
+/// 杀掉整个进程树（智能体底下挂着 zssh-mcp 等子进程）。
+///
+/// Unix 上智能体启动时就放进了独立的进程组（[`isolate_process_group`]，组号 = 子进程号），
+/// 所以这里对整组发信号：先 `SIGTERM` 让它们体面收尾，等 [`TERM_GRACE`]，组里还有人
+/// 就 `SIGKILL`。返回时直接子进程已经收尸；孙子进程被 `SIGKILL` 之后由内核结束，最多再等
+/// [`GROUP_GONE_WAIT`] 让它们被收走（容器里没有 init 收尸时僵尸会一直留着，所以不无限等）。
+#[cfg(unix)]
+pub async fn kill_process_tree(child: &mut tokio::process::Child) -> std::io::Result<()> {
+    let Some(pid) = child.id() else {
+        // 已经退出了，收尸。
+        let _ = child.wait().await;
+        return Ok(());
+    };
+    let Some(pgid) = own_group_id(pid) else {
+        // 不是独立进程组的组长（没走 build_command 启动的）：只能杀这一个进程，不能误伤别的组。
+        let _ = child.start_kill();
+        return child.wait().await.map(|_| ());
+    };
+
+    let _ = signal_group(pgid, libc::SIGTERM);
+    wait_until_group_gone(child, pgid, TERM_GRACE).await;
+    if group_exists(pgid) {
+        let _ = signal_group(pgid, libc::SIGKILL);
+    }
+    let waited = child.wait().await;
+    wait_until_group_gone(child, pgid, GROUP_GONE_WAIT).await;
+    waited.map(|_| ())
+}
+
+/// `SIGTERM` 之后给整组多久自己收尾，超过就 `SIGKILL`。
+#[cfg(unix)]
+const TERM_GRACE: Duration = Duration::from_millis(1500);
+
+/// `SIGKILL` 之后最多再等多久让整组被收走。
+#[cfg(unix)]
+const GROUP_GONE_WAIT: Duration = Duration::from_millis(1000);
+
+/// 轮询到整个进程组都没人了（或超时）。顺便给直接子进程收尸：僵尸也算组员，不收的话组永远"在"。
+#[cfg(unix)]
+async fn wait_until_group_gone(
+    child: &mut tokio::process::Child,
+    pgid: libc::pid_t,
+    limit: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        let _ = child.try_wait();
+        if !group_exists(pgid) || tokio::time::Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// 子进程号对应的进程组号；只有"确实是自己组长"的才返回（pid > 1 且不是本进程所在的组）。
+///
+/// 为什么要查：`killpg(1, ..)` 或本进程自己的组会误杀不该杀的东西。
+#[cfg(unix)]
+fn own_group_id(pid: u32) -> Option<libc::pid_t> {
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    if pid <= 1 {
+        return None;
+    }
+    // SAFETY: getpgid / getpgrp 只读取进程组信息，没有内存副作用。
+    let (child_group, own_group) = unsafe { (libc::getpgid(pid), libc::getpgrp()) };
+    (child_group == pid && child_group != own_group).then_some(pid)
+}
+
+/// 给进程组发信号。组已经没有成员（`ESRCH`）不算错。
+#[cfg(unix)]
+fn signal_group(pgid: libc::pid_t, signal: libc::c_int) -> std::io::Result<()> {
+    // SAFETY: killpg 只发信号；调用方保证 pgid 通过了 `own_group_id` 的检查。
+    if unsafe { libc::killpg(pgid, signal) } == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(err)
+    }
+}
+
+/// 进程组里还有没有成员（信号 0 只做检查，不发信号）。
+#[cfg(unix)]
+fn group_exists(pgid: libc::pid_t) -> bool {
+    // SAFETY: 信号 0 不会真的发信号。
+    if unsafe { libc::killpg(pgid, 0) } == 0 {
+        return true;
+    }
+    // EPERM = 组在，只是不归我们管：当它还在。
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// `Drop` 里的同步兜底：马上结束整棵树，不等、不体面收尾（等同于 Windows 的 `taskkill /T /F`）。
+///
+/// 没走 `shutdown` 就丢了句柄时才会到这里；正常收尾走 [`kill_process_tree`]。
+pub fn kill_tree_now(pid: u32) {
+    #[cfg(windows)]
+    {
+        let mut kill = std::process::Command::new("taskkill");
+        kill.args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let _ = crate::process_util::hide_console(&mut kill).status();
+    }
+    #[cfg(unix)]
+    {
+        if let Some(pgid) = own_group_id(pid) {
+            let _ = signal_group(pgid, libc::SIGKILL);
+        }
+    }
+}
+
+/// 让智能体子进程在 Unix 上自成一个进程组，Linux 上再保证 ZeeTerm 被强杀时它跟着走。
+///
+/// - `process_group(0)`：组号 = 子进程号，[`kill_process_tree`] 才能一次结束整棵树
+///   （含它派生的 MCP 助手等孙子进程）；
+/// - Linux 的 `PR_SET_PDEATHSIG(SIGKILL)`：父进程没了内核就杀它。注意这个信号跟的是**创建
+///   子进程的那个线程**，不是整个进程——线程退出也会触发。这里够用，因为智能体都在应用常驻的
+///   tokio 运行时的工作线程上启动，工作线程和运行时同寿；如果有人在会提前退出的线程上（比如
+///   `spawn_blocking` 池里的）启动，子进程会跟着那个线程一起被杀。
+///   只杀直接子进程；它派生的孙子进程靠正常收尾的 `killpg` 清理，崩溃时则靠它们自己的
+///   标准输入关闭（MCP 助手读到 EOF 就退出）。
+#[cfg(unix)]
+pub fn isolate_process_group(cmd: &mut tokio::process::Command) {
+    cmd.process_group(0);
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: pre_exec 闭包在 fork 之后、exec 之前运行，里面只调用异步信号安全的
+        // prctl / getppid，不分配内存、不加锁。
+        let expected_parent = std::process::id() as libc::pid_t;
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::prctl(
+                    libc::PR_SET_PDEATHSIG,
+                    libc::SIGKILL as libc::c_ulong,
+                    0,
+                    0,
+                    0,
+                ) != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // 设置信号之前父进程就没了的话信号不会补发：自己检查，别留孤儿。
+                if libc::getppid() != expected_parent {
+                    return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                }
+                Ok(())
+            });
+        }
+    }
 }
 
 /// 一个"句柄关掉就结束里面全部进程"的 Job Object（K06）。
@@ -168,6 +323,7 @@ pub fn bind_to_app_lifetime(child: &tokio::process::Child) {
             }
         }
     }
+    // Unix 上这件事在启动时就做了（见 `isolate_process_group` 的 PDEATHSIG），这里没有可做的。
     #[cfg(not(windows))]
     {
         let _ = child;
@@ -199,11 +355,36 @@ pub fn process_is_alive(pid: u32) -> Option<bool> {
         queried.ok()?;
         Some(code == STILL_ACTIVE.0 as u32)
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        let _ = pid;
-        None
+        let pid = libc::pid_t::try_from(pid).ok()?;
+        // SAFETY: 信号 0 只检查进程存不存在，不发信号。
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return match std::io::Error::last_os_error().raw_os_error() {
+                Some(libc::ESRCH) => Some(false),
+                _ => None,
+            };
+        }
+        // 已经退出但还没被收尸的僵尸，`kill(pid, 0)` 也成功：按"不在了"算，
+        // 和 Windows 上"退出码不是 STILL_ACTIVE"一致（Linux 看 /proc 里的状态位）。
+        #[cfg(target_os = "linux")]
+        if is_zombie(pid) {
+            return Some(false);
+        }
+        Some(true)
     }
+}
+
+/// `/proc/<pid>/stat` 里的状态位是不是 `Z`（僵尸）。读不出来按"不是"算。
+#[cfg(target_os = "linux")]
+fn is_zombie(pid: libc::pid_t) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    // 格式：`pid (comm) S ...`，comm 里可能有空格和括号，所以从最后一个 `)` 往后找状态位。
+    stat.rsplit_once(')')
+        .and_then(|(_, rest)| rest.trim_start().chars().next())
+        == Some('Z')
 }
 
 /// 起一个任务把 reader 逐行读空、塞进尾巴缓冲。
@@ -395,6 +576,214 @@ last words
         assert_eq!(process_is_alive(pid), Some(false), "根进程要已经结束");
         tokio::time::sleep(Duration::from_secs(5)).await;
         assert!(!marker.exists(), "孙子进程也该被结束");
+    }
+
+    /// 启动一个跑 `script` 的 `sh`，放进独立进程组（和产品里 `build_command` 的做法一致）。
+    #[cfg(unix)]
+    fn spawn_isolated_sh(script: &str) -> tokio::process::Child {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg(script)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        isolate_process_group(&mut cmd);
+        cmd.spawn().expect("起 sh")
+    }
+
+    /// 等文件里出现一个进程号（脚本先把孙子进程号写进去）。
+    #[cfg(unix)]
+    async fn read_pid_file(path: &std::path::Path) -> u32 {
+        for _ in 0..200 {
+            if let Some(pid) = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+            {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("等不到进程号文件 {}", path.display());
+    }
+
+    /// 对应 Windows 的同名测试：`kill_process_tree` 返回时孙子进程也已经结束。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_process_tree_ends_grandchildren_before_returning_unix() {
+        let dir = crate::test_util::TestDir::new("zssh kill tree 测试");
+        let pid_file = dir.join("grandchild.pid");
+        let script = format!("sleep 60 & echo $! > '{}'; wait", pid_file.display());
+        let mut child = spawn_isolated_sh(&script);
+        let pid = child.id().expect("pid");
+        let grandchild = read_pid_file(&pid_file).await;
+        assert_eq!(process_is_alive(pid), Some(true));
+        assert_eq!(process_is_alive(grandchild), Some(true));
+
+        let started = std::time::Instant::now();
+        kill_process_tree(&mut child).await.expect("杀进程树");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "只用 SIGTERM 就能收尾的，不该等满宽限期：{:?}",
+            started.elapsed()
+        );
+        assert_eq!(process_is_alive(pid), Some(false), "根进程要已经结束");
+        assert_eq!(
+            process_is_alive(grandchild),
+            Some(false),
+            "孙子进程也该被结束"
+        );
+    }
+
+    /// 忽略 SIGTERM 的整棵树要被 SIGKILL 补刀，而且是等满宽限期之后。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_process_tree_escalates_to_sigkill_when_sigterm_is_ignored() {
+        let dir = crate::test_util::TestDir::new("zssh kill 忽略 term");
+        let pid_file = dir.join("grandchild.pid");
+        // 忽略 TERM 的设置会被 exec 出来的 sleep 继承，孙子也不会死于 SIGTERM。
+        let script = format!(
+            "trap '' TERM; sleep 60 & echo $! > '{}'; while :; do sleep 1; done",
+            pid_file.display()
+        );
+        let mut child = spawn_isolated_sh(&script);
+        let pid = child.id().expect("pid");
+        let grandchild = read_pid_file(&pid_file).await;
+
+        let started = std::time::Instant::now();
+        kill_process_tree(&mut child).await.expect("杀进程树");
+        assert!(
+            started.elapsed() >= TERM_GRACE,
+            "SIGTERM 被忽略时应该等满宽限期再 SIGKILL：{:?}",
+            started.elapsed()
+        );
+        assert!(started.elapsed() < Duration::from_secs(6));
+        assert_eq!(process_is_alive(pid), Some(false));
+        assert_eq!(process_is_alive(grandchild), Some(false));
+    }
+
+    /// 不是自己进程组组长的子进程（没走 `isolate_process_group`）：只杀它自己，绝不 killpg 别的组。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_process_tree_only_kills_the_child_when_it_has_no_group_of_its_own() {
+        let mut cmd = tokio::process::Command::new("sleep");
+        cmd.arg("60")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let mut child = cmd.spawn().expect("起 sleep");
+        let pid = child.id().expect("pid");
+        assert!(own_group_id(pid).is_none(), "没独立成组，不该被当成组长");
+        kill_process_tree(&mut child).await.expect("杀进程");
+        assert_eq!(process_is_alive(pid), Some(false));
+        // 测试进程自己当然还在。
+        assert_eq!(process_is_alive(std::process::id()), Some(true));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn group_ids_that_could_hurt_bystanders_are_refused() {
+        assert!(own_group_id(0).is_none());
+        assert!(own_group_id(1).is_none());
+        // 本进程自己所在的组（不管本进程是不是组长）永远不能 killpg。
+        assert!(own_group_id(std::process::id()).is_none());
+        assert!(own_group_id(u32::MAX).is_none());
+        // 同步兜底对这些也不动手（动手了测试进程就没了）。
+        kill_tree_now(0);
+        kill_tree_now(1);
+        kill_tree_now(std::process::id());
+    }
+
+    /// `Drop` 里的同步兜底：马上结束整组，包括孙子进程。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_tree_now_ends_the_whole_group() {
+        let dir = crate::test_util::TestDir::new("zssh kill now");
+        let pid_file = dir.join("grandchild.pid");
+        let script = format!("sleep 60 & echo $! > '{}'; wait", pid_file.display());
+        let mut child = spawn_isolated_sh(&script);
+        let pid = child.id().expect("pid");
+        let grandchild = read_pid_file(&pid_file).await;
+        kill_tree_now(pid);
+        tokio::time::timeout(Duration::from_secs(5), child.wait())
+            .await
+            .expect("根进程应该很快结束")
+            .expect("收尸");
+        for _ in 0..100 {
+            if process_is_alive(grandchild) == Some(false) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("孙子进程没有被结束");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_is_alive_knows_itself_and_missing_pids() {
+        assert_eq!(process_is_alive(std::process::id()), Some(true));
+        // 超出 pid_max 的号一定不存在。
+        assert_eq!(process_is_alive(0x7fff_fff0), Some(false));
+    }
+
+    /// 被 `PR_SET_PDEATHSIG` 保护的子进程，在 ZeeTerm 被强杀（SIGKILL，走不到任何收尾代码）后也要消失。
+    ///
+    /// 下面 `pdeathsig_parent_helper` 在自己的进程里扮演"ZeeTerm"：用产品的
+    /// `isolate_process_group` 起一个子进程、把子进程号写进文件，然后等着被杀。
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_killed_parent_takes_its_isolated_child_with_it() {
+        const HELPER: &str = "ai::agent::process::tests::pdeathsig_parent_helper";
+        let dir = crate::test_util::TestDir::new("zssh pdeathsig 测试");
+        let pid_file = dir.join("child.pid");
+        let exe = std::env::current_exe().expect("测试程序路径");
+        let mut parent = tokio::process::Command::new(exe)
+            .args(["--exact", HELPER, "--nocapture", "--test-threads=1"])
+            .env("ZT_PDEATHSIG_CHILD_PID_FILE", &pid_file)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("起扮演 ZeeTerm 的进程");
+        let child_pid = read_pid_file(&pid_file).await;
+        assert_eq!(process_is_alive(child_pid), Some(true));
+
+        parent.kill().await.expect("强杀扮演 ZeeTerm 的进程");
+        for _ in 0..200 {
+            if process_is_alive(child_pid) == Some(false) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("父进程被强杀后，子进程 {child_pid} 还活着");
+    }
+
+    /// 只有被上面那条测试用环境变量拉起时才干活；平时一跑就过。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pdeathsig_parent_helper() {
+        let Some(pid_file) = std::env::var_os("ZT_PDEATHSIG_CHILD_PID_FILE") else {
+            return;
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("运行时");
+        runtime.block_on(async {
+            let mut cmd = tokio::process::Command::new("sleep");
+            cmd.arg("120")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            isolate_process_group(&mut cmd);
+            let child = cmd.spawn().expect("起 sleep");
+            let pid = child.id().expect("pid");
+            // 先写临时文件再改名，读的一方不会读到半截。
+            let tmp = std::path::PathBuf::from(&pid_file).with_extension("tmp");
+            std::fs::write(&tmp, pid.to_string()).expect("写进程号");
+            std::fs::rename(&tmp, &pid_file).expect("改名");
+            tokio::time::sleep(Duration::from_secs(120)).await;
+            drop(child);
+        });
     }
 
     #[cfg(windows)]

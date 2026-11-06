@@ -114,11 +114,23 @@ impl AgentKind {
     }
 
     /// 手动路径输入框里的占位示例（0.2.14 设置页同款）。
+    #[cfg(windows)]
     pub fn path_placeholder(self) -> &'static str {
         match self {
             AgentKind::OpenCode => r"C:\path\to\opencode.exe",
             AgentKind::Codex => r"C:\path\to\codex.exe",
             AgentKind::Claude => r"C:\path\to\claude.exe",
+            AgentKind::Builtin => "",
+        }
+    }
+
+    /// 手动路径输入框里的占位示例（Linux 写法）。
+    #[cfg(unix)]
+    pub fn path_placeholder(self) -> &'static str {
+        match self {
+            AgentKind::OpenCode => "/path/to/opencode",
+            AgentKind::Codex => "/path/to/codex",
+            AgentKind::Claude => "/path/to/claude",
             AgentKind::Builtin => "",
         }
     }

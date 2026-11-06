@@ -1064,8 +1064,22 @@ mod tests {
         let db = Database::open(&data_dir.join("zssh.db")).expect("设置库");
 
         let shim = |name: &str, output: &str| {
-            let path = tool_dir.join(name);
-            std::fs::write(&path, format!("@echo off\r\necho {output}\r\n")).expect("写垫片");
+            // Windows：`.cmd` 垫片。Linux：同名去掉 `.cmd` 的可执行 shell 脚本。
+            #[cfg(windows)]
+            let path = {
+                let path = tool_dir.join(name);
+                std::fs::write(&path, format!("@echo off\r\necho {output}\r\n")).expect("写垫片");
+                path
+            };
+            #[cfg(unix)]
+            let path = {
+                use std::os::unix::fs::PermissionsExt;
+                let path = tool_dir.join(name.trim_end_matches(".cmd"));
+                std::fs::write(&path, format!("#!/bin/sh\necho '{output}'\n")).expect("写垫片");
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .expect("设可执行位");
+                path
+            };
             path.to_string_lossy().into_owned()
         };
         let cases = [

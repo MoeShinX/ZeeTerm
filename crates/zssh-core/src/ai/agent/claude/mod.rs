@@ -968,11 +968,7 @@ impl Drop for ClaudeConversation {
             .and_then(|mut inner| inner.child.take());
         if let Some(child) = child {
             if let Some(pid) = child.id() {
-                let mut kill = std::process::Command::new("taskkill");
-                kill.args(["/PID", &pid.to_string(), "/T", "/F"])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null());
-                let _ = crate::process_util::hide_console(&mut kill).status();
+                super::process::kill_tree_now(pid);
             }
         }
         let _ = std::fs::remove_file(&self.mcp_config_path);
