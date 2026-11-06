@@ -1284,6 +1284,7 @@ fn write_keep(data_dir: &Path, keep: usize) -> Result<usize, String> {
 
 /// 读备份列表；界面路径用生产 DPAPI。
 fn list_backups(data_dir: &Path) -> Result<Vec<BackupDetail>, String> {
+    let db = open_db_at(data_dir)?;
     list_backups_with(data_dir, &DpapiSealer::new(db.vault_account().to_owned()))
 }
 
@@ -1299,6 +1300,7 @@ fn list_backups_with(
 
 /// 新建备份；界面路径用生产 DPAPI。
 fn create_backup(data_dir: &Path) -> Result<BackupInfo, String> {
+    let db = open_db_at(data_dir)?;
     create_backup_with(data_dir, &DpapiSealer::new(db.vault_account().to_owned()), env!("CARGO_PKG_VERSION"))
 }
 
@@ -1339,6 +1341,7 @@ fn create_backup_with(
 
 /// 恢复备份；界面路径用生产 DPAPI。
 fn restore_backup(data_dir: &Path, path: &Path) -> Result<RestoreReport, String> {
+    let db = open_db_at(data_dir)?;
     restore_backup_with(data_dir, path, &DpapiSealer::new(db.vault_account().to_owned()))
 }
 

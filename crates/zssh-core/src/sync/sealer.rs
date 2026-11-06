@@ -24,8 +24,7 @@ impl DpapiSealer {
     }
 
     /// 测试用：不绑定资料库账户，使用默认密钥。
-    #[cfg(test)]
-    pub(crate) fn for_test() -> Self {
+    pub fn for_test() -> Self {
         Self {
             vault_account: None,
         }

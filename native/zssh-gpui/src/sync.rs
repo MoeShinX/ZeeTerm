@@ -2026,6 +2026,8 @@ enum SyncEvent {
     TargetSignedIn(Result<zssh_core::sync::onedrive::config::OneDriveConfig, String>),
     /// 手动同步成功之后顺带做的云端备份跑完了（每个目标的结果已经写进它自己的状态）。
     PostSyncBackupsDone,
+    /// 手动同步成功之后顺带做的云端备份失败。
+    PostSyncBackupError(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -2506,7 +2508,9 @@ fn auto_sync_tick() {
 /// 需要用户处理的状态下一律不跑：开关关了、没保存存储、没记住主密码、还没到间隔、
 /// 或者手动同步正在跑（同一个同步开关）。
 fn auto_tick_at(handle: &tokio::runtime::Handle, data_dir: &Path, now: i64) -> Option<LastResult> {
-    auto_tick_with(handle, data_dir, now, &DpapiSealer::for_test())
+    let db = open_db_at(data_dir)?;
+    let sealer = DpapiSealer::new(db.vault_account().to_owned());
+    auto_tick_with(handle, data_dir, now, &sealer)
 }
 
 /// 同 [`auto_tick_at`]，加密实现由调用方给，测试用它绕开 DPAPI。
@@ -3755,7 +3759,9 @@ fn run_sync_at(
     password: &str,
     decision: Option<DeletionDecision>,
 ) -> Result<SyncReport, SyncFailure> {
-    run_sync_with(handle, data_dir, &DpapiSealer::for_test(), password, decision)
+    let db = open_db_at(data_dir)?;
+    let sealer = DpapiSealer::new(db.vault_account().to_owned());
+    run_sync_with(handle, data_dir, &sealer, password, decision)
 }
 
 /// 同 [`run_sync_at`]，加密实现由调用方给，测试用它绕开 DPAPI。
