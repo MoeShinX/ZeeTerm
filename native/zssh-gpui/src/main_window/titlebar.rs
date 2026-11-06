@@ -822,6 +822,49 @@ pub(crate) fn back_button(
     )
 }
 
+/// 文件窗口标题栏上「移回主窗口」旁边的「并排到终端」按钮：同样的幽灵样式。`reason` 是 `Some` 时按钮置灰，
+/// 悬停提示改成这句原因（这台主机没有终端标签等）；没有原因时提示是功能说明。
+pub(crate) fn dock_button(
+    tokens: &Tokens,
+    show_text: bool,
+    reason: Option<&'static str>,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let hover = tokens.hover;
+    let text = tokens.text;
+    let enabled = reason.is_none();
+    let tip = reason.unwrap_or_else(super::docks::dock_tip);
+    h_flex().h_full().flex_none().items_center().px_1().child(
+        div()
+            .id("dock-beside-terminal")
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap_1p5()
+            .h(px(BACK_BUTTON_SIZE))
+            .when(show_text, |d| d.px_2p5())
+            .when(!show_text, |d| d.w(px(BACK_BUTTON_SIZE)))
+            .flex_none()
+            .rounded_md()
+            .typo(Role::FieldLabel, tokens)
+            .text_color(if enabled { text } else { tokens.text_muted })
+            .when(enabled, |d| {
+                d.cursor_pointer().hover(move |style| style.bg(hover))
+            })
+            .when(!enabled, |d| d.opacity(0.5))
+            .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+            .child(Icon::new(crate::icons::Ico::Columns2).size_3p5())
+            .when(show_text, |d| d.child(super::docks::dock_label()))
+            .when(enabled, |d| {
+                d.on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    on_click(window, cx);
+                })
+            }),
+    )
+}
+
 /// 最小化 / 最大化（还原）/ 关闭。Windows 上点击由系统按 `WindowControlArea` 处理；Linux 客户端装饰下
 /// 用点击事件实现（见 `window_frame`），合成器不支持的按钮不画，服务端装饰时整组都不画。
 /// 关闭都走窗口的 `on_window_should_close`（关到托盘或退出，见 `main.rs`）。

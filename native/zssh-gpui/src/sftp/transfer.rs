@@ -3,6 +3,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use ::gpui::{ExternalPaths, Window};
@@ -104,8 +105,15 @@ impl SftpDemo {
         match runtime() {
             Ok(runtime) => {
                 let sender = self.sender.clone();
+                // 新引擎的代号：旧引擎的转发任务看到代号变了就退出（断线后重建引擎时，旧任务号的事件
+                // 不能落到新引擎的行上）。
+                let generation = self.engine_gen.fetch_add(1, Ordering::SeqCst) + 1;
+                let current = Arc::clone(&self.engine_gen);
                 runtime.spawn(async move {
                     while let Some(event) = events.recv().await {
+                        if current.load(Ordering::SeqCst) != generation {
+                            break;
+                        }
                         // 窗口关掉之后接收端已经没了，转发任务自己退出。
                         if sender.send(super::SftpEvent::Transfer(event)).is_err() {
                             break;
@@ -581,22 +589,50 @@ impl SftpDemo {
 
     /// "重试"：失败 / 已取消 / 已跳过的任务用同一个任务号重跑（续传对账把着关；跳过的会重新问同名文件）。
     pub(super) fn retry_transfer(&mut self, id: TransferId, cx: &mut Context<Self>) {
-        let Some(engine) = &self.engine else {
-            return;
-        };
         // `retry` 里面会 `tokio::spawn`：和 `submit` 一样要在 runtime 上下文里调。
         let Ok(runtime) = runtime() else {
             self.warn(t(SftpMsg::OpsNoRuntime));
             return;
         };
         let _guard = runtime.enter();
-        let text = if engine.retry(id) {
+        let retried = self.engine.as_ref().is_some_and(|engine| engine.retry(id));
+        // 引擎不认这个任务号（断线时旧引擎已经停了，重连后是新引擎）：失败的行按原来的来源 / 目标重新排一个。
+        let text = if retried || self.resubmit_failed(id) {
             t(SftpMsg::TransferRetrying)
         } else {
             t(SftpMsg::TransferCannotRetry)
         };
         self.say(text);
         cx.notify();
+    }
+
+    /// 失败的行在当前引擎里已经没有对应的任务（旧引擎在断线时停了）：按它的方向 / 来源 / 目标重新提交，
+    /// 旧行换成新行。只处理 `Failed` 的行；没排上返回 `false`（行原样保留）。
+    pub(super) fn resubmit_failed(&mut self, id: TransferId) -> bool {
+        if self.engine.is_none() {
+            return false;
+        }
+        let Some(position) = self
+            .transfers
+            .iter()
+            .position(|row| row.id == id && matches!(row.state, TransferState::Failed(_)))
+        else {
+            return false;
+        };
+        let row = self.transfers.remove(position);
+        let job = TransferJob {
+            direction: row.direction,
+            source: row.source.clone(),
+            target: row.target.clone(),
+            recursive: true,
+            peer: None,
+        };
+        if self.submit_job(job, row.name.clone()).is_err() {
+            self.transfers
+                .insert(position.min(self.transfers.len()), row);
+            return false;
+        }
+        true
     }
 
     /// 队列里一行的右键菜单项被点了。

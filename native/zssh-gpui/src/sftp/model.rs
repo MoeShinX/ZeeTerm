@@ -294,7 +294,7 @@ pub(super) fn hidden_count(raw: &[Entry], filter: &Filter) -> usize {
 /// 自动排列：视图宽度不小于这个值就左右排两栏，否则上下排。
 pub(super) const SIDE_BY_SIDE_MIN_WIDTH: f32 = 640.0;
 
-/// 本地栏和远端栏是不是上下排（本地在上、远端在下）。
+/// 本地栏和远端栏是不是上下排（远端在上、本地在下）。
 /// 「自动」按量到的视图宽度定；还没量到（第一帧，宽度是 0）时沿用停靠面板默认上下、标签默认左右。
 pub(super) fn local_stacked(
     layout: crate::settings::SftpLocalLayout,

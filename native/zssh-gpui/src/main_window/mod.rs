@@ -97,6 +97,7 @@ pub mod dev_script;
 pub mod dev_seed;
 pub mod dock_layout;
 mod docks;
+pub(crate) use docks::{DockRefusal, dock_label, reconnect_label};
 mod drag;
 mod drag_scroll;
 pub(crate) mod editor_tabs;

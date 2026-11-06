@@ -1341,3 +1341,28 @@ fn live_rename_reports_an_existing_target_and_only_overwrites_when_told_to() {
         ));
     });
 }
+
+/// 关掉本地栏 -> 设置里 `sftp_show_local` 变 false -> 之后新建的视图一上来就是收起的；再打开则相反。
+#[gpui::test]
+fn closing_the_local_pane_is_saved_and_new_views_start_hidden(cx: &mut gpui::TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::settings_store::AppSettings::init_for_test(cx);
+        let before = crate::settings_store::snapshot(cx);
+        assert!(before.sftp_show_local, "默认显示本地栏");
+        assert!(!super::local_hidden_initial(&before));
+
+        super::save_show_local(false, cx);
+        let saved = crate::settings_store::snapshot(cx);
+        assert!(!saved.sftp_show_local);
+        assert!(
+            super::local_hidden_initial(&saved),
+            "新建的视图要收起本地栏"
+        );
+
+        super::save_show_local(true, cx);
+        let reopened = crate::settings_store::snapshot(cx);
+        assert!(reopened.sftp_show_local);
+        assert!(!super::local_hidden_initial(&reopened));
+    });
+}

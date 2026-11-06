@@ -29,6 +29,7 @@ pub(super) fn phase_label(phase: Phase) -> &'static str {
         Phase::Connecting => t(SftpMsg::PhaseConnecting),
         Phase::Ready => t(SftpMsg::PhaseReady),
         Phase::Failed => t(SftpMsg::PhaseFailed),
+        Phase::Disconnected => t(SftpMsg::PhaseDisconnected),
     }
 }
 
@@ -37,7 +38,7 @@ pub(super) fn phase_color(phase: Phase, tokens: &Tokens) -> Hsla {
     match phase {
         Phase::Connecting => tokens.dot_connecting,
         Phase::Ready => tokens.dot_connected,
-        Phase::Failed => tokens.dot_disconnected,
+        Phase::Failed | Phase::Disconnected => tokens.dot_disconnected,
     }
 }
 
@@ -64,6 +65,7 @@ mod tests {
         assert_eq!(phase_label(Phase::Connecting), "连接中…");
         assert_eq!(phase_label(Phase::Ready), "已连接");
         assert_eq!(phase_label(Phase::Failed), "连接失败");
+        assert_eq!(phase_label(Phase::Disconnected), "已断开");
         for skin in SKINS {
             let t = Tokens::for_skin(skin);
             let dots = [

@@ -344,7 +344,7 @@ impl Msg for SettingsMsg {
             }
             Self::LayoutTitle => "本地栏排列",
             Self::LayoutDescription => {
-                "自动：视图够宽时左右排列，否则上下排列（本地在上、远端在下）。"
+                "自动：视图够宽时左右排列，否则上下排列（远端在上、本地在下）。"
             }
             Self::LayoutAuto => "自动",
             Self::LayoutSide => "左右",
@@ -548,7 +548,7 @@ impl Msg for SettingsMsg {
             }
             Self::LayoutTitle => "Pane layout",
             Self::LayoutDescription => {
-                "Auto: side by side when the view is wide enough, otherwise stacked (local on top, remote below)."
+                "Auto: side by side when the view is wide enough, otherwise stacked (remote on top, local below)."
             }
             Self::LayoutAuto => "Auto",
             Self::LayoutSide => "Side by side",

@@ -29,7 +29,7 @@ use crate::i18n::{Msg, t};
 use crate::icons::Ico;
 use crate::main_window::MainWindow;
 use crate::main_window::titlebar::{
-    back_button, back_button_shows_text, back_button_visible, window_controls,
+    back_button, back_button_shows_text, back_button_visible, dock_button, window_controls,
 };
 use crate::settings::data_dir;
 use crate::sftp::SftpDemo;
@@ -579,6 +579,69 @@ impl FileWindow {
         cx.notify();
     }
 
+    /// 这个标签现在能不能并排到终端：`Ok` 能，`Err` 是不能的原因（没有这台主机的终端标签、面板被占着）。
+    /// 主窗口不在了（登记已失效）按没有终端标签算。
+    fn dock_state(&self, tab: &FileTab, cx: &App) -> Result<(), crate::main_window::DockRefusal> {
+        let Some(main) = cx
+            .try_global::<Registry>()
+            .and_then(|registry| registry.main.clone())
+            .and_then(|main| main.view.upgrade())
+        else {
+            return Err(crate::main_window::DockRefusal::NoTerminal);
+        };
+        main.read(cx)
+            .dock_check(tab.host_id, &tab.view, cx)
+            .map(|_| ())
+    }
+
+    /// 标签右键 / 标题栏的「并排到终端」：把同一个视图实体交给主窗口，挂到这台主机的终端标签的停靠面板上
+    /// （连接、目录、传输都不断）。先问主窗口能不能挂，不能就什么都不动（按钮本来就是灰的 / 菜单项不显示）。
+    pub fn dock_to_terminal(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab_ref) = self.tabs.iter().find(|tab| tab.id == id) else {
+            return;
+        };
+        if self.dock_state(tab_ref, cx).is_err() {
+            return;
+        }
+        let Some(tab) = self.take_tab(id) else {
+            return;
+        };
+        let Some(main) = cx
+            .try_global::<Registry>()
+            .and_then(|registry| registry.main.clone())
+        else {
+            self.restore_tab(tab, cx);
+            return;
+        };
+        let (host_id, view) = (tab.host_id, tab.view.clone());
+        let handed = main.handle.update(cx, move |_, main_window, cx| {
+            main.view
+                .update(cx, |main_view, cx| {
+                    main_view
+                        .dock_sftp_view(host_id, view, main_window, cx)
+                        .is_ok()
+                })
+                .unwrap_or(false)
+        });
+        if !matches!(handed, Ok(true)) {
+            // 主窗口不在了 / 临时拒绝了：标签留在这里，不丢。
+            self.restore_tab(tab, cx);
+            return;
+        }
+        if self.tabs.is_empty() {
+            crate::window_state::save_files_window(window);
+            window.remove_window();
+        }
+        cx.notify();
+    }
+
+    /// 标题栏上的「并排到终端」按钮：对当前选中的标签。
+    pub fn dock_active_to_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.active {
+            self.dock_to_terminal(id, window, cx);
+        }
+    }
+
     /// 标题栏上的「移回主窗口」按钮：对当前选中的标签，和标签右键「移回主窗口」是同一个 `move_to_main`。
     pub fn move_active_to_main(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.active {
@@ -639,6 +702,11 @@ impl FileWindow {
         let menu_back = entity.clone();
         let menu_close = entity.clone();
         let menu_copy = entity.clone();
+        let menu_dock = entity.clone();
+        // 这台主机没有终端标签（或面板被占着）时右键菜单里不显示「并排到终端」。
+        let can_dock = self.dock_state(tab, cx).is_ok();
+        // 连不上 / 断了才有右键「重新连接」。
+        let reconnect_view = tab.view.read(cx).is_down().then(|| tab.view.clone());
         let copy = entity.clone();
         let label: SharedString = tab_label(&tab.title).into();
         let press = entity.clone();
@@ -723,24 +791,54 @@ impl FileWindow {
                 let back = menu_back.clone();
                 let close = menu_close.clone();
                 let copy = menu_copy.clone();
-                menu.item(
-                    crate::menu_kit::row(&tokens, t(FileWindowMsg::CopyTab), Ico::Copy).on_click(
-                        move |_, window, cx| {
-                            copy.update(cx, |this, cx| this.duplicate_tab(id, window, cx));
-                        },
-                    ),
-                )
-                .item(
-                    crate::menu_kit::row(
-                        &tokens,
-                        t(FileWindowMsg::MoveToMain),
-                        Ico::SquareArrowDownLeft,
+                let menu = menu
+                    .item(
+                        crate::menu_kit::row(&tokens, t(FileWindowMsg::CopyTab), Ico::Copy)
+                            .on_click(move |_, window, cx| {
+                                copy.update(cx, |this, cx| this.duplicate_tab(id, window, cx));
+                            }),
                     )
-                    .on_click(move |_, window, cx| {
-                        back.update(cx, |this, cx| this.move_to_main(id, window, cx));
-                    }),
-                )
-                .item(
+                    .item(
+                        crate::menu_kit::row(
+                            &tokens,
+                            t(FileWindowMsg::MoveToMain),
+                            Ico::SquareArrowDownLeft,
+                        )
+                        .on_click(move |_, window, cx| {
+                            back.update(cx, |this, cx| this.move_to_main(id, window, cx));
+                        }),
+                    );
+                let menu = match reconnect_view.clone() {
+                    Some(view) => menu.item(
+                        crate::menu_kit::row(
+                            &tokens,
+                            crate::main_window::reconnect_label(),
+                            Ico::RotateCcw,
+                        )
+                        .on_click(move |_, _window, cx| {
+                            view.update(cx, |view, cx| {
+                                view.reconnect(cx);
+                            });
+                        }),
+                    ),
+                    None => menu,
+                };
+                let menu = if can_dock {
+                    let dock = menu_dock.clone();
+                    menu.item(
+                        crate::menu_kit::row(
+                            &tokens,
+                            crate::main_window::dock_label(),
+                            Ico::Columns2,
+                        )
+                        .on_click(move |_, window, cx| {
+                            dock.update(cx, |this, cx| this.dock_to_terminal(id, window, cx));
+                        }),
+                    )
+                } else {
+                    menu
+                };
+                menu.item(
                     crate::menu_kit::row(&tokens, t(FileWindowMsg::Close), Ico::X).on_click(
                         move |_, window, cx| {
                             close.update(cx, |this, cx| this.close_tab(id, window, cx));
@@ -905,6 +1003,23 @@ impl FileWindow {
                 move |window, cx| me.update(cx, |this, cx| this.move_active_to_main(window, cx)),
             )
         });
+        // 「移回主窗口」左边的「并排到终端」：这台主机没有终端标签时置灰，悬停说明原因。
+        let dock = back_button_visible(self.tabs.len()).then(|| {
+            let me = cx.entity();
+            let reason = self
+                .active
+                .and_then(|id| self.tabs.iter().find(|tab| tab.id == id))
+                .and_then(|tab| self.dock_state(tab, cx).err())
+                .map(crate::main_window::DockRefusal::text);
+            dock_button(
+                &tokens,
+                back_button_shows_text(f32::from(window.viewport_size().width)),
+                reason,
+                move |window, cx| {
+                    me.update(cx, |this, cx| this.dock_active_to_terminal(window, cx))
+                },
+            )
+        });
         v_flex()
             .id("file-window")
             .relative()
@@ -970,7 +1085,8 @@ impl FileWindow {
                             .children(tabs)
                             .children(hint),
                     )
-                    // 最小化按钮左边：把当前标签移回主窗口（没有标签时不画）。
+                    // 最小化按钮左边：并排到终端、把当前标签移回主窗口（没有标签时不画）。
+                    .children(dock)
                     .children(back)
                     .child(
                         div()

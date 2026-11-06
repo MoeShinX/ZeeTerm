@@ -70,6 +70,11 @@ pub(super) enum DockMsg {
     CloseFilePanel,
     CloseTab,
     MoveToFileWindow,
+    Reconnect,
+    DockBesideTerminal,
+    DockTip,
+    DockNoTerminal,
+    DockPanelBusy,
     Close,
 }
 
@@ -98,6 +103,15 @@ impl Msg for DockMsg {
             Self::CloseFilePanel => "关闭文件面板",
             Self::CloseTab => "关闭标签",
             Self::MoveToFileWindow => "移到文件窗口",
+            Self::Reconnect => "重新连接",
+            Self::DockBesideTerminal => "并排到终端",
+            Self::DockTip => "把当前标签并排到这台主机的终端右侧（连接和传输不中断）",
+            Self::DockNoTerminal => {
+                "这台主机没有打开的终端标签，没法并排（面板必须挂在终端标签上）"
+            }
+            Self::DockPanelBusy => {
+                "这台主机的终端标签右侧的文件面板里还有传输在进行，先等它们结束再并排"
+            }
             Self::Close => "关闭",
         }
     }
@@ -132,8 +146,80 @@ impl Msg for DockMsg {
             Self::CloseFilePanel => "Close File Panel",
             Self::CloseTab => "Close Tab",
             Self::MoveToFileWindow => "Move to File Window",
+            Self::Reconnect => "Reconnect",
+            Self::DockBesideTerminal => "Dock Beside Terminal",
+            Self::DockTip => {
+                "Dock this tab beside this host's terminal (the connection and transfers keep running)"
+            }
+            Self::DockNoTerminal => {
+                "This host has no open terminal tab to dock beside (the panel has to sit on a terminal tab)"
+            }
+            Self::DockPanelBusy => {
+                "The file panel beside this host's terminal still has transfers running; wait for them to finish first"
+            }
             Self::Close => "Close",
         }
+    }
+}
+
+/// 「并排到终端」被拒绝的原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DockRefusal {
+    /// 这台主机没有终端标签（面板必须挂在终端标签上；不会自己开新终端）。
+    NoTerminal,
+    /// 那个终端标签的面板里已经有这台主机的另一个视图，而且还有传输在跑。
+    PanelBusy,
+}
+
+impl DockRefusal {
+    pub(crate) fn text(self) -> &'static str {
+        match self {
+            Self::NoTerminal => t(DockMsg::DockNoTerminal),
+            Self::PanelBusy => t(DockMsg::DockPanelBusy),
+        }
+    }
+}
+
+/// 「并排到终端」按钮 / 菜单项的字和悬停提示（文件窗口标题栏、文件窗口标签右键、主窗口文件标签右键共用）。
+pub(crate) fn dock_label() -> &'static str {
+    t(DockMsg::DockBesideTerminal)
+}
+
+/// 「重新连接」（SFTP 标签右键、文件窗口标签右键、面板标题栏共用的字）。
+pub(crate) fn reconnect_label() -> &'static str {
+    t(DockMsg::Reconnect)
+}
+
+pub(crate) fn dock_tip() -> &'static str {
+    t(DockMsg::DockTip)
+}
+
+/// 这台主机的视图该挂到哪个终端标签上：有激活的终端标签并且就是这台主机的，用它；
+/// 否则用这台主机的第一个终端标签；没有就是 `None`。`tabs` 是（标签号，聚焦窗格的主机）。
+pub(crate) fn pick_dock_tab(
+    tabs: &[(u64, Option<i64>)],
+    active: Option<u64>,
+    host_id: i64,
+) -> Option<u64> {
+    let of_host = |(_, host): &&(u64, Option<i64>)| *host == Some(host_id);
+    active
+        .filter(|active| tabs.iter().filter(of_host).any(|(id, _)| id == active))
+        .or_else(|| tabs.iter().find(of_host).map(|(id, _)| *id))
+}
+
+/// 完整的路由：选标签；该标签的面板里已经有这台主机的**另一个**视图时（`docks.sftp` 一台主机一个视图），
+/// 它还有传输在跑就拒绝，没有就换成这个（旧的收尾）。`existing_unfinished`：已有的另一个视图的未完成工作数
+/// （`None` = 没有，或者就是同一个视图）。
+pub(crate) fn dock_route(
+    tabs: &[(u64, Option<i64>)],
+    active: Option<u64>,
+    host_id: i64,
+    existing_unfinished: Option<usize>,
+) -> Result<u64, DockRefusal> {
+    let tab = pick_dock_tab(tabs, active, host_id).ok_or(DockRefusal::NoTerminal)?;
+    match existing_unfinished {
+        Some(unfinished) if unfinished > 0 => Err(DockRefusal::PanelBusy),
+        _ => Ok(tab),
     }
 }
 
@@ -671,6 +757,17 @@ impl MainWindow {
         {
             view.update(cx, |view, cx| view.set_arrange(arrange, cx));
         }
+        // 设置页的「显示本地栏」开关同样推给手里的视图（视图自己的开关也写设置，所以两边总是一致）。
+        let local_hidden = !self.workspace.read(cx).settings().sftp_show_local;
+        for view in self
+            .docks
+            .sftp
+            .values()
+            .cloned()
+            .chain(self.docks.sftp_tabs.iter().map(|tab| tab.view.clone()))
+        {
+            view.update(cx, |view, cx| view.set_local_hidden(local_hidden, cx));
+        }
         let hosts_in_tabs: HashSet<i64> =
             self.docks.sftp_tabs.iter().map(|tab| tab.host_id).collect();
         let stale: Vec<i64> = self
@@ -1041,6 +1138,101 @@ impl MainWindow {
         self.select_sftp_tab(id, window, cx);
     }
 
+    // ---- 并排到终端 ----
+
+    /// 这个文件视图现在能不能并排到 `host_id` 的终端标签右侧；能就返回要挂的终端标签号。
+    pub(crate) fn dock_check(
+        &self,
+        host_id: i64,
+        view: &Entity<SftpDemo>,
+        cx: &gpui::App,
+    ) -> Result<u64, DockRefusal> {
+        let workspace = self.workspace.read(cx);
+        let existing = self
+            .docks
+            .sftp
+            .get(&host_id)
+            .filter(|existing| existing.entity_id() != view.entity_id())
+            .map(|existing| existing.read(cx).unfinished());
+        dock_route(
+            &workspace.tab_hosts(),
+            workspace.active_tab_id(),
+            host_id,
+            existing,
+        )
+    }
+
+    /// 把同一个视图实体挂到这台主机的终端标签的停靠面板上（`set_dock_layout(true)`，连接、目录、传输都不断），
+    /// 切到那个终端标签、打开面板、主窗口到前台。拒绝时原样返回原因，视图没动。
+    pub(crate) fn dock_sftp_view(
+        &mut self,
+        host_id: i64,
+        view: Entity<SftpDemo>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), DockRefusal> {
+        let tab = self.dock_check(host_id, &view, cx)?;
+        // 这个终端标签的面板里已经有这台主机的另一个视图（没有传输在跑）：让位给这一个。
+        if let Some(old) = self.docks.sftp.remove(&host_id)
+            && old.entity_id() != view.entity_id()
+        {
+            old.update(cx, |old, _| old.shutdown_embedded());
+        }
+        view.update(cx, |view, cx| {
+            view.set_dock_layout(true, cx);
+            view.rebind_window(window, cx);
+        });
+        self.docks.sftp.insert(host_id, view);
+        self.docks.set_sftp_open_for(tab, true);
+        self.docks.active_sftp = None;
+        self.docks.active_editor = None;
+        let index = self
+            .workspace
+            .read(cx)
+            .tab_hosts()
+            .iter()
+            .position(|(id, _)| *id == tab);
+        if let Some(index) = index {
+            self.workspace.update(cx, |ws, cx| ws.select_tab(index, cx));
+        }
+        self.nav = self.nav.show(MainView::Terminal);
+        self.sync_docks(window, cx);
+        self.enforce_dock_layout(window, cx);
+        self.save_layout();
+        window.activate_window();
+        cx.notify();
+        Ok(())
+    }
+
+    /// 主窗口文件标签右键「并排到终端」：先查能不能挂，能才摘下标签（失败时标签原样留着，并说明原因）。
+    pub(crate) fn dock_sftp_tab_to_terminal(
+        &mut self,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.docks.sftp_tab_index(id) else {
+            return;
+        };
+        let (host_id, view) = {
+            let tab = &self.docks.sftp_tabs[index];
+            (tab.host_id, tab.view.clone())
+        };
+        if let Err(refusal) = self.dock_check(host_id, &view, cx) {
+            self.notice(refusal.text(), window, cx);
+            return;
+        }
+        let tab = self.docks.sftp_tabs.remove(index);
+        self.after_sftp_tab_removed(id, index, window, cx);
+        if let Err(refusal) = self.dock_sftp_view(host_id, tab.view.clone(), window, cx) {
+            // 查过了不该走到这里；万一失败，标签放回原处，不丢。
+            self.docks
+                .sftp_tabs
+                .insert(index.min(self.docks.sftp_tabs.len()), tab);
+            self.notice(refusal.text(), window, cx);
+        }
+    }
+
     // ---- 退出 ----
 
     /// 真正退出前先看一眼进行中的工作；有就弹确认（返回 `false` 先别退），没有返回 `true`。
@@ -1174,7 +1366,7 @@ impl MainWindow {
             .map(|view| view.read(cx).local_hidden())
             .unwrap_or(false);
         let mut actions: Vec<AnyElement> = Vec::new();
-        // 「本地」是开关：只影响当前这个视图，不改设置里的「显示本地栏」。
+        // 「本地」是开关：改当前视图，同时写设置里的「显示本地栏」（视图回收 / 重建后照此）。
         if let Some(view) = view.as_ref() {
             let view = view.clone();
             let (hover, text, accent_bg) = (tokens.hover, tokens.text, tokens.subtle);
@@ -1209,10 +1401,28 @@ impl MainWindow {
                     .on_click(move |_, _window, cx| {
                         view.update(cx, |view, cx| {
                             let hidden = view.local_hidden();
-                            view.set_local_hidden(!hidden, cx);
+                            view.toggle_local_pane(!hidden, cx);
                         });
                     })
                     .into_any_element(),
+            );
+        }
+        // 连不上 / 连上之后断了：标题栏上多一个「重新连接」（回到原来的目录）。
+        if let Some(view) = view.as_ref().filter(|view| view.read(cx).is_down()) {
+            let view = view.clone();
+            actions.push(
+                dock_icon_button(
+                    "sftp-reconnect",
+                    Icon::new(Ico::RotateCcw),
+                    t(DockMsg::Reconnect),
+                    tokens,
+                )
+                .on_click(move |_, _window, cx| {
+                    view.update(cx, |view, cx| {
+                        view.reconnect(cx);
+                    });
+                })
+                .into_any_element(),
             );
         }
         if let Some(host_id) = host_id.filter(|id| self.docks.sftp.contains_key(id)) {
@@ -1425,6 +1635,11 @@ impl MainWindow {
         let menu_close = entity.clone();
         let drag_entity = entity.clone();
         let drag_title = tab.title.clone();
+        // 连不上 / 断了才有右键「重新连接」。
+        let reconnect_view = tab.view.read(cx).is_down().then(|| tab.view.clone());
+        // 这台主机有终端标签、面板也没被占着才有右键「并排到终端」。
+        let can_dock = self.dock_check(tab.host_id, &tab.view, cx).is_ok();
+        let menu_dock = entity.clone();
         let dragging = self.dragging_tab() == Some(crate::tab_drag::DragKey::Sftp(id));
         let title: SharedString = tab.title.clone().into();
         div()
@@ -1510,6 +1725,31 @@ impl MainWindow {
                 let tokens = Tokens::current(cx);
                 let to_files = menu_move.clone();
                 let close = menu_close.clone();
+                let menu = match reconnect_view.clone() {
+                    Some(view) => menu.item(
+                        crate::menu_kit::row(&tokens, t(DockMsg::Reconnect), Ico::RotateCcw)
+                            .on_click(move |_, _window, cx| {
+                                view.update(cx, |view, cx| {
+                                    view.reconnect(cx);
+                                });
+                            }),
+                    ),
+                    None => menu,
+                };
+                let menu = if can_dock {
+                    let dock = menu_dock.clone();
+                    menu.item(
+                        crate::menu_kit::row(&tokens, dock_label(), Ico::Columns2).on_click(
+                            move |_, window, cx| {
+                                dock.update(cx, |this, cx| {
+                                    this.dock_sftp_tab_to_terminal(id, window, cx);
+                                });
+                            },
+                        ),
+                    )
+                } else {
+                    menu
+                };
                 menu.item(
                     crate::menu_kit::row(
                         &tokens,
@@ -1547,7 +1787,8 @@ impl MainWindow {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::DockState;
+    use super::{DockMsg, DockRefusal, DockState, dock_route, pick_dock_tab};
+    use crate::i18n::Msg as _;
     use crate::main_window::dock_layout::{Input, compute};
     use std::collections::HashSet;
 
@@ -1646,5 +1887,67 @@ mod tests {
         // 标签 1 关掉了：记录跟着清掉，同号的新标签不会继承。
         docks.forget_dead_sftp_tabs(&HashSet::from([2]));
         assert!(!docks.overview_open_for(Some(1)));
+    }
+
+    const TABS: [(u64, Option<i64>); 4] = [(1, Some(7)), (2, None), (3, Some(9)), (4, Some(7))];
+
+    #[test]
+    fn the_dock_goes_to_the_active_terminal_of_the_host_else_its_first_one() {
+        // 激活的终端标签就是这台主机的：用它（哪怕不是第一个）。
+        assert_eq!(pick_dock_tab(&TABS, Some(4), 7), Some(4));
+        // 激活的是别的主机 / 空标签 / 没有激活的：用这台主机的第一个终端标签。
+        assert_eq!(pick_dock_tab(&TABS, Some(3), 7), Some(1));
+        assert_eq!(pick_dock_tab(&TABS, Some(2), 7), Some(1));
+        assert_eq!(pick_dock_tab(&TABS, None, 7), Some(1));
+        assert_eq!(pick_dock_tab(&TABS, None, 9), Some(3));
+        // 激活标签号不存在：同样退到第一个。
+        assert_eq!(pick_dock_tab(&TABS, Some(99), 9), Some(3));
+    }
+
+    #[test]
+    fn without_a_terminal_tab_for_the_host_nothing_is_docked() {
+        assert_eq!(pick_dock_tab(&TABS, Some(1), 5), None);
+        assert_eq!(
+            dock_route(&TABS, Some(1), 5, None),
+            Err(DockRefusal::NoTerminal)
+        );
+        assert_eq!(dock_route(&[], None, 7, None), Err(DockRefusal::NoTerminal));
+        // 没有终端标签时，哪怕面板里有视图也先说没有终端。
+        assert_eq!(
+            dock_route(&TABS, None, 5, Some(3)),
+            Err(DockRefusal::NoTerminal)
+        );
+    }
+
+    #[test]
+    fn an_existing_panel_view_with_running_transfers_blocks_the_dock() {
+        // 面板里没有这台主机的视图 / 就是同一个视图：直接挂。
+        assert_eq!(dock_route(&TABS, Some(1), 7, None), Ok(1));
+        // 已有另一个视图但空闲：让位（路由放行，调用方负责收尾旧视图）。
+        assert_eq!(dock_route(&TABS, Some(1), 7, Some(0)), Ok(1));
+        // 它还有传输在跑：拒绝，别丢它的任务。
+        assert_eq!(
+            dock_route(&TABS, Some(1), 7, Some(2)),
+            Err(DockRefusal::PanelBusy)
+        );
+    }
+
+    #[test]
+    fn the_dock_entry_texts_exist_in_both_languages() {
+        for msg in [
+            DockMsg::DockBesideTerminal,
+            DockMsg::DockTip,
+            DockMsg::DockNoTerminal,
+            DockMsg::DockPanelBusy,
+            DockMsg::Reconnect,
+        ] {
+            assert!(!msg.zh().is_empty() && !msg.en().is_empty());
+            assert_ne!(msg.zh(), msg.en());
+        }
+        assert!(!DockRefusal::NoTerminal.text().is_empty());
+        assert_ne!(
+            DockRefusal::NoTerminal.text(),
+            DockRefusal::PanelBusy.text()
+        );
     }
 }

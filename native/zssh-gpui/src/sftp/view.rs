@@ -402,7 +402,7 @@ fn tool_button(
 }
 
 impl SftpDemo {
-    /// 页头上的「本地」开关：只管当前这个视图（显示 / 收起本地栏），不改设置里的「显示本地栏」。
+    /// 页头上的「本地」开关：显示 / 收起本地栏，同时写设置里的「显示本地栏」（新建的视图照此）。
     fn local_toggle(&self, tokens: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let hidden = self.local_hidden;
@@ -438,7 +438,7 @@ impl SftpDemo {
             .on_click(move |_, _, cx| {
                 entity.update(cx, |this, cx| {
                     let hidden = this.local_hidden;
-                    this.set_local_hidden(!hidden, cx);
+                    this.toggle_local_pane(!hidden, cx);
                 });
             })
     }
@@ -511,8 +511,8 @@ impl Render for SftpDemo {
                 let local_slot = div().flex().flex_1().min_h_0().min_w_0().child(local_pane);
                 let body = div().flex().flex_1().min_h_0().gap(px(gap)).p(px(pad));
                 if stacked {
-                    // 上下排：本地在上，远端在下。
-                    body.flex_col().child(local_slot).child(remote_slot)
+                    // 上下排：远端在上，本地在下（目录列表是主角，窄的视图里先看到它）。
+                    body.flex_col().child(remote_slot).child(local_slot)
                 } else {
                     body.child(local_slot).child(remote_slot)
                 }
@@ -816,7 +816,7 @@ impl SftpDemo {
                             false,
                         )
                         .on_click(move |_, _, cx| {
-                            e_close.update(cx, |this, cx| this.set_local_hidden(true, cx));
+                            e_close.update(cx, |this, cx| this.toggle_local_pane(true, cx));
                         }),
                     )
                 })
@@ -886,7 +886,7 @@ impl SftpDemo {
                 t(SftpViewMsg::ReadingDir).to_owned()
             } else if !pane.filter.text.trim().is_empty() {
                 t(SftpViewMsg::NoMatches).to_owned()
-            } else if is_remote && self.phase != Phase::Ready {
+            } else if is_remote && self.phase != Phase::Ready && self.phase != Phase::Disconnected {
                 t(SftpViewMsg::NotConnected).to_owned()
             } else {
                 hidden_in_empty = hidden_count(&pane.raw, &pane.filter);

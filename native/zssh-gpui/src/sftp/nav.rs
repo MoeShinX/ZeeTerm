@@ -156,6 +156,7 @@ impl SftpDemo {
                             path: target,
                             mode,
                             message: error_text(&err),
+                            disconnected: err.is_disconnect(),
                         },
                     };
                     let _ = sender.send(event);

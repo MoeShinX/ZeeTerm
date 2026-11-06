@@ -846,6 +846,28 @@ pub(super) fn run_dock(
             let id = this.docks.active_sftp.ok_or("当前没有显示 SFTP 标签")?;
             this.move_sftp_tab_to_file_window(id, window, cx);
         }
+        // files_dock：把当前显示的 SFTP 标签并排到这台主机的终端右侧（和标签右键「并排到终端」同一个方法）
+        "files_dock" => {
+            let id = this.docks.active_sftp.ok_or("当前没有显示 SFTP 标签")?;
+            this.dock_sftp_tab_to_terminal(id, window, cx);
+        }
+        // files_window_dock：文件窗口里的当前标签并排到终端（和文件窗口标题栏「并排到终端」同一个方法）
+        "files_window_dock" => {
+            let handle = crate::file_window::window_handle(cx).ok_or("文件窗口没有开")?;
+            handle
+                .update(cx, |files, window, cx| {
+                    files.dock_active_to_terminal(window, cx)
+                })
+                .map_err(|_| "文件窗口已经关闭")?;
+        }
+        // sftp_reconnect：对当前显示的文件视图点「重新连接」（连不上 / 断开时才会真的重连）
+        "sftp_reconnect" => {
+            let view = active_sftp(this, cx).ok_or("没有文件视图")?;
+            let started = view.update(cx, |view, cx| view.reconnect(cx));
+            if !started {
+                return fail("这个文件视图没有断开，不用重新连接");
+            }
+        }
         // files_dup[:<标签下标>]：复制文件窗口里的标签（和标签右键「复制标签」同一个方法）；不写下标就复制当前标签
         "files_dup" => {
             let handle = crate::file_window::window_handle(cx).ok_or("文件窗口没有开")?;
@@ -1011,7 +1033,7 @@ pub(super) fn run_dock(
         "sftp_hide_local" => {
             let view = active_sftp(this, cx).ok_or("没有文件视图")?;
             let hidden = on_off(a)?;
-            view.update(cx, |view, cx| view.set_local_hidden(hidden, cx));
+            view.update(cx, |view, cx| view.toggle_local_pane(hidden, cx));
         }
         // assert_quit:none|prompt：现在退出要不要先问。
         "assert_quit" => {

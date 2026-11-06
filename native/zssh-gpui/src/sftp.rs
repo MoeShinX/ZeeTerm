@@ -130,6 +130,9 @@ enum SftpMsg {
     PhaseConnecting,
     PhaseReady,
     PhaseFailed,
+    PhaseDisconnected,
+    DisconnectedStatus,
+    TransferInterrupted,
     // ---- 跟随终端目录 ----
     FollowOn,
     FollowOff,
@@ -624,6 +627,9 @@ impl Msg for SftpMsg {
             Self::PhaseConnecting => "连接中…",
             Self::PhaseReady => "已连接",
             Self::PhaseFailed => "连接失败",
+            Self::PhaseDisconnected => "已断开",
+            Self::DisconnectedStatus => "文件连接已断开。点刷新或右键标签「重新连接」可以恢复",
+            Self::TransferInterrupted => "连接已断开，传输中断（重新连接后可重试）",
             Self::FollowOn => "跟随终端目录：已开启",
             Self::FollowOff => "跟随终端目录：已关闭",
             Self::FollowStopped => "已停止跟随终端目录（手动换了目录）",
@@ -1107,6 +1113,13 @@ impl Msg for SftpMsg {
             Self::PhaseConnecting => "Connecting…",
             Self::PhaseReady => "Connected",
             Self::PhaseFailed => "Connection failed",
+            Self::PhaseDisconnected => "Disconnected",
+            Self::DisconnectedStatus => {
+                "The file connection was lost. Click Refresh or right-click the tab and choose Reconnect to recover"
+            }
+            Self::TransferInterrupted => {
+                "The connection was lost and the transfer was interrupted (retry it after reconnecting)"
+            }
             Self::FollowOn => "Follow terminal directory: on",
             Self::FollowOff => "Follow terminal directory: off",
             Self::FollowStopped => {
@@ -1659,7 +1672,17 @@ static NEXT_VIEW: AtomicU64 = AtomicU64::new(1);
 enum Phase {
     Connecting,
     Ready,
+    /// 连不上（首屏失败）。
     Failed,
+    /// 连上之后断了（连接被关，或者 SFTP 通道死了）：旧目录还留在界面上，刷新 / 「重新连接」可以恢复。
+    Disconnected,
+}
+
+impl Phase {
+    /// 现在没有可用的连接：`Failed` 和 `Disconnected` 都可以重新连接。
+    fn is_down(self) -> bool {
+        matches!(self, Phase::Failed | Phase::Disconnected)
+    }
 }
 
 /// 新视图一开始要落在哪（复制标签时用原视图当前的两个目录）：远端读不出来就退回家目录，
@@ -1711,6 +1734,8 @@ enum SftpEvent {
         path: String,
         mode: NavMode,
         message: String,
+        /// 这个错误是「通道 / 连接已经断了」一类：视图要转成断开状态，而不只是换状态栏的一句话。
+        disconnected: bool,
     },
     /// 传输的进度或结束事件（后台转发任务送过来）。
     Transfer(TransferEvent),
@@ -2005,6 +2030,11 @@ pub struct SftpDemo {
     conflict_name_input: Entity<InputState>,
     /// 连上之后才有：传输引擎和浏览通道分开，互不拖累。
     engine: Option<Arc<TransferEngine>>,
+    /// 引擎的代号：每建 / 停一次加一。旧引擎的事件转发任务发现代号变了就退出，旧任务号的事件
+    /// 不会落到新引擎的行上（任务号每个引擎都从头数）。
+    engine_gen: Arc<AtomicU64>,
+    /// 上一次「检测到断线后自动重连」的时间：只自动试一次，间隔内不再自动试（见 `reconnect`）。
+    last_auto_reconnect: Option<Instant>,
     /// 引擎用的端点（属性对话框里数远端文件夹大小也用它列目录）。
     endpoints: Option<Arc<SftpEndpoints>>,
     /// 环境变量给的自动传输，Ready 之后跑一次。
@@ -2173,7 +2203,7 @@ impl SftpDemo {
             close_confirmed: false,
             ime_key,
             dock: false,
-            local_hidden: !panel.sftp_show_local,
+            local_hidden: local_hidden_initial(&panel),
             arrange: panel.sftp_local_layout,
             view_width: std::rc::Rc::new(std::cell::Cell::new(0.0)),
             start_custom,
@@ -2188,6 +2218,8 @@ impl SftpDemo {
             probe_gate: SeqGate::default(),
             conflict_name_input,
             engine: None,
+            engine_gen: Arc::new(AtomicU64::new(0)),
+            last_auto_reconnect: None,
             endpoints: None,
             pending_hooks,
             pause_hook_ms: pause_hook_ms(),
@@ -2456,6 +2488,18 @@ impl SftpDemo {
             self.apply(event, window, cx);
             changed = true;
         }
+        // 连上之后连接被关了（对端断开 / keepalive 超时）：转成断开状态。通道死了但连接还活着的情形
+        // 靠远端操作返回的「通道已关闭」错误发现（见 `SftpEvent::ListFailed`）。
+        if reconnect::connection_lost(
+            self.phase,
+            self.fixture,
+            self.factory
+                .as_ref()
+                .map(|factory| factory.connection().is_closed()),
+        ) {
+            self.mark_disconnected(cx);
+            changed = true;
+        }
         // 暂停钩子挂在同一条 100ms 心跳上：不用再起一个定时任务。
         if self.tick_pause_hook(cx) {
             changed = true;
@@ -2521,14 +2565,19 @@ impl SftpDemo {
                 path,
                 mode,
                 message,
+                disconnected,
             } => {
                 if self.listing.is_latest(seq) {
                     self.remote.loading = false;
                     // 后退 / 前进去不了的目录从历史里拿掉，免得一直撞墙。
-                    if mode == NavMode::History {
+                    if mode == NavMode::History && !disconnected {
                         self.remote.history.forget(&path);
                     }
                     self.warn(message);
+                    // 通道 / 连接断了：转成断开状态（会先停掉旧引擎、把没完成的传输标为失败，再自动试一次）。
+                    if disconnected {
+                        self.mark_disconnected(cx);
+                    }
                 }
             }
             SftpEvent::Transfer(event) => {
@@ -2844,9 +2893,20 @@ impl SftpDemo {
         cx.notify();
     }
 
+    /// 只改这个视图（设置变了、别的入口已经写过设置时用）。用户点开关走 [`Self::toggle_local_pane`]。
     pub fn set_local_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
-        self.local_hidden = hidden;
-        cx.notify();
+        if self.local_hidden != hidden {
+            self.local_hidden = hidden;
+            cx.notify();
+        }
+    }
+
+    /// 用户收起 / 展开本地栏（停靠面板标题栏的「本地」开关、页头的开关、本地栏工具栏的 ×）：
+    /// 视图马上变，同时写设置 `sftp_show_local`（和设置页是同一个开关）。只改视图内存的话，视图被回收 /
+    /// 重建后会按设置（默认显示）又冒出来。
+    pub fn toggle_local_pane(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        self.set_local_hidden(hidden, cx);
+        save_show_local(!hidden, cx);
     }
 
     pub fn local_hidden(&self) -> bool {
@@ -2865,6 +2925,22 @@ impl SftpDemo {
     #[cfg(debug_assertions)]
     pub fn is_failed(&self) -> bool {
         self.phase == Phase::Failed
+    }
+
+    /// 现在没有可用的连接（连不上，或连上之后断了）：标签右键「重新连接」、面板标题栏的重连按钮据此显示。
+    pub fn is_down(&self) -> bool {
+        !self.fixture && self.phase.is_down()
+    }
+
+    /// 手动重新连接（标签右键、面板标题栏）：回到原来的远端目录。返回是否真的发起了。
+    pub fn reconnect(&mut self, cx: &mut Context<Self>) -> bool {
+        self.retry_connect(cx)
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    #[allow(dead_code)]
+    pub fn is_disconnected(&self) -> bool {
+        self.phase == Phase::Disconnected
     }
 
     #[cfg(debug_assertions)]
@@ -2937,5 +3013,18 @@ mod local_listing_tests;
 mod move_e2e_tests;
 #[cfg(test)]
 mod paste_tests;
+/// 新建视图时本地栏是不是收起的：就是设置里「显示本地栏」的反面。
+fn local_hidden_initial(settings: &crate::settings::UiSettings) -> bool {
+    !settings.sftp_show_local
+}
+
+/// 把「显示本地栏」写进设置（和设置页同一个开关；设置实体会通知订阅它的窗口并落盘）。
+fn save_show_local(show: bool, cx: &mut App) {
+    let settings = crate::settings_store::AppSettings::global(cx);
+    settings.update(cx, |model, mcx| {
+        model.update_with(mcx, |s| s.sftp_show_local = show);
+    });
+}
+
 #[cfg(test)]
 mod tests;

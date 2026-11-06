@@ -49,7 +49,7 @@ pub(super) fn gate(
 ) -> Result<(), CloneRefusal> {
     match phase {
         Phase::Connecting => Err(CloneRefusal::Connecting),
-        Phase::Failed => Err(CloneRefusal::Disconnected),
+        Phase::Failed | Phase::Disconnected => Err(CloneRefusal::Disconnected),
         Phase::Ready if fixture => Ok(()),
         Phase::Ready => match connection_closed {
             Some(false) => Ok(()),
