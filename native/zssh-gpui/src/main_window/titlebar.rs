@@ -4,8 +4,9 @@
 //! 凭据和设置的入口在侧栏左下角和「管理 + 设置」页里。
 //!
 //! 结构照 0.2.14 的 `components/titlebar/TopTabs.tsx`。窗口拖动和最大化靠
-//! `WindowControlArea::Drag`：条本身是拖动区，所有可点的东西都 `occlude()` 一下，把拖动区
-//! 在它们身上挖掉，这样点击不会被系统当成拖标题栏；双击空白处最大化也由系统处理。
+//! `window_frame::drag_region`（Windows 上是 `WindowControlArea::Drag`，Linux 上是鼠标事件）：条本身是拖动区，
+//! 所有可点的东西都 `occlude()` 一下，把拖动区在它们身上挖掉，这样点击不会被当成拖标题栏；
+//! 双击空白处最大化也由它处理。
 
 use ::gpui::{
     AnyElement, App, Hsla, MouseButton, SharedString, Stateful, Window, WindowControlArea, px,
@@ -22,6 +23,7 @@ use crate::app_theme::Tokens;
 use crate::i18n::{Msg, t};
 use crate::terminal_workspace::{TabInfo, TabStatus};
 use crate::typography::{Role, Typo as _};
+use crate::window_frame;
 use zssh_core::model::{Host, Protocol, parse_quick_target};
 
 /// 标题栏高度（0.2.14 的 `h-9`）。
@@ -589,12 +591,12 @@ impl MainWindow {
                     .min_w_0()
                     .h_full()
                     .items_end()
-                    .window_control_area(WindowControlArea::Drag)
+                    .map(window_frame::drag_region)
                     .child(left.items_end())
                     .child(tabs)
                     .children(drag_hint),
             )
-            .child(window_controls(tokens, window.is_maximized()))
+            .child(window_controls(tokens, window))
     }
 
     fn render_tab(
@@ -820,22 +822,35 @@ pub(crate) fn back_button(
     )
 }
 
-/// 最小化 / 最大化（还原）/ 关闭：点击由系统按 `WindowControlArea` 处理，关闭走窗口的
-/// `on_window_should_close`（关到托盘或退出，见 `main.rs`）。
-pub(crate) fn window_controls(tokens: &Tokens, maximized: bool) -> impl IntoElement {
-    window_controls_with(tokens, maximized, true)
+/// 最小化 / 最大化（还原）/ 关闭。Windows 上点击由系统按 `WindowControlArea` 处理；Linux 客户端装饰下
+/// 用点击事件实现（见 `window_frame`），合成器不支持的按钮不画，服务端装饰时整组都不画。
+/// 关闭都走窗口的 `on_window_should_close`（关到托盘或退出，见 `main.rs`）。
+pub(crate) fn window_controls(tokens: &Tokens, window: &Window) -> impl IntoElement {
+    window_controls_with(tokens, window, true)
 }
 
 /// 同 [`window_controls`]，`with_maximize` 为假时不放最大化按钮（固定用途的小窗口，如更新窗口：只有最小化 / 关闭）。
 pub(crate) fn window_controls_with(
     tokens: &Tokens,
-    maximized: bool,
+    window: &Window,
     with_maximize: bool,
 ) -> impl IntoElement {
+    let chrome = window_frame::chrome(window);
+    let maximized = window.is_maximized();
+    let shown = window_frame::buttons_for(
+        window.window_controls(),
+        window.is_minimizable(),
+        window.is_resizable(),
+        with_maximize,
+    );
     let hover = tokens.hover;
     let text = tokens.text;
     let danger = tokens.danger;
-    let button = move |id: &'static str, area: WindowControlArea, icon: IconName, close: bool| {
+    let button = move |id: &'static str,
+                       area: WindowControlArea,
+                       icon: IconName,
+                       close: bool,
+                       on_click: fn(&mut Window, &mut App)| {
         div()
             .id(id)
             .flex()
@@ -845,7 +860,6 @@ pub(crate) fn window_controls_with(
             .h_full()
             .flex_none()
             .text_color(text)
-            .window_control_area(area)
             .hover(move |style| {
                 if close {
                     style.bg(danger).text_color(::gpui::white())
@@ -854,34 +868,57 @@ pub(crate) fn window_controls_with(
                 }
             })
             .child(Icon::new(icon).size_3p5())
+            .map(|button| match chrome {
+                // 系统按区域做命中测试，不挂事件。
+                window_frame::Chrome::Native => button.window_control_area(area),
+                // `occlude`：窗口边缘的缩放带伸进标题栏最上面几像素，不挡掉的话按钮上沿点了会变成拉窗口。
+                _ => button
+                    .cursor_pointer()
+                    .occlude()
+                    .on_click(move |_, window, cx| on_click(window, cx)),
+            })
     };
     h_flex()
         .h_full()
         .flex_none()
-        .child(button(
-            "win-min",
-            WindowControlArea::Min,
-            IconName::WindowMinimize,
-            false,
-        ))
-        .when(with_maximize, |row| {
-            row.child(button(
-                "win-max",
-                WindowControlArea::Max,
-                if maximized {
-                    IconName::WindowRestore
-                } else {
-                    IconName::WindowMaximize
+        // 服务端装饰：窗口管理器已经画了一组，这里一个都不放。
+        .when(chrome != window_frame::Chrome::Server, |row| {
+            row.when(
+                chrome == window_frame::Chrome::Native || shown.minimize,
+                |row| {
+                    row.child(button(
+                        "win-min",
+                        WindowControlArea::Min,
+                        IconName::WindowMinimize,
+                        false,
+                        |window, _cx| window.minimize_window(),
+                    ))
                 },
-                false,
+            )
+            .when(
+                with_maximize && (chrome == window_frame::Chrome::Native || shown.maximize),
+                |row| {
+                    row.child(button(
+                        "win-max",
+                        WindowControlArea::Max,
+                        if maximized {
+                            IconName::WindowRestore
+                        } else {
+                            IconName::WindowMaximize
+                        },
+                        false,
+                        |window, _cx| window.zoom_window(),
+                    ))
+                },
+            )
+            .child(button(
+                "win-close",
+                WindowControlArea::Close,
+                IconName::WindowClose,
+                true,
+                window_frame::request_close,
             ))
         })
-        .child(button(
-            "win-close",
-            WindowControlArea::Close,
-            IconName::WindowClose,
-            true,
-        ))
 }
 
 #[cfg(test)]

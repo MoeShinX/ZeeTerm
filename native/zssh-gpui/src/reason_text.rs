@@ -161,6 +161,13 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         }
         "store.dpapi_protect_failed" => "CryptProtectData failed: {cause}",
         "store.dpapi_unprotect_failed" => "CryptUnprotectData failed: {cause}",
+        "store.vault_unavailable" => {
+            "The system keyring is unavailable, so saved secrets cannot be read or stored"
+        }
+        "store.vault_corrupt" => {
+            "Saved secrets cannot be decrypted: the data is damaged or the vault key has changed"
+        }
+        "store.vault_crypto_failed" => "Encrypting or decrypting saved secrets failed",
         "store.data_too_long" => "The data is too long: {len} bytes",
         "store.no_saved_password" => "This host has no saved password",
         "store.key_login_no_password" => {

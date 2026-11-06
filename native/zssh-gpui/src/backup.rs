@@ -918,7 +918,7 @@ pub fn open_backup_window(cx: &mut App) {
             cx,
         )),
         focus: true,
-        ..Default::default()
+        ..crate::window_frame::app_options()
     };
     let _ = cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| BackupDemo::new(window, cx, ime_key));
