@@ -168,6 +168,7 @@ enum UpdateMsg {
     WritePackageFailedPrefix,
     RememberSkipFailedPrefix,
     PackageChangedRefusedPrefix,
+    #[cfg(windows)]
     ShellExecuteErrorPrefix,
     /// 只有非 Windows 构建会用到（Windows 上走 `ShellExecuteW`）。
     #[cfg(not(windows))]
@@ -182,6 +183,7 @@ enum UpdateMsg {
     CreateDownloadClientFailedPrefix,
     PubkeyUnavailable,
     SigningUnconfigured,
+    ManualUpdate,
     NoReleaseNotes,
     PackageLabel,
     PlatformLabel,
@@ -273,6 +275,7 @@ impl Msg for UpdateMsg {
             Self::WritePackageFailedPrefix => "写入更新包失败：",
             Self::RememberSkipFailedPrefix => "没能记住跳过：",
             Self::PackageChangedRefusedPrefix => "安装包与验签时不一致，已拒绝启动：",
+            #[cfg(windows)]
             Self::ShellExecuteErrorPrefix => "ShellExecuteW 返回错误码 ",
             #[cfg(not(windows))]
             Self::InstallerWindowsOnly => "只支持在 Windows 上启动安装器",
@@ -285,6 +288,9 @@ impl Msg for UpdateMsg {
             Self::UpdateProxyConfigErrorPrefix => "更新代理配置错误：",
             Self::CreateDownloadClientFailedPrefix => "创建下载客户端失败：",
             Self::PubkeyUnavailable => "内置的更新公钥不可用，无法校验更新包",
+            Self::ManualUpdate => {
+                "macOS 请手动更新：在设置 → 关于中打开发布页，下载 Apple Silicon 版本并替换应用。本应用不会下载或启动 Windows 安装器。"
+            }
             Self::SigningUnconfigured => SIGNING_UNCONFIGURED, // i18n-allow: 与 e2e 测试共用的中文原文
             Self::NoReleaseNotes => "（无更新说明）",
             Self::PackageLabel => "安装包：",
@@ -383,6 +389,7 @@ impl Msg for UpdateMsg {
             Self::PackageChangedRefusedPrefix => {
                 "The package no longer matches the verified bytes; launch refused: "
             }
+            #[cfg(windows)]
             Self::ShellExecuteErrorPrefix => "ShellExecuteW returned error code ",
             #[cfg(not(windows))]
             Self::InstallerWindowsOnly => "The installer can only be launched on Windows",
@@ -398,6 +405,9 @@ impl Msg for UpdateMsg {
             Self::CreateDownloadClientFailedPrefix => "Failed to create the download client: ",
             Self::PubkeyUnavailable => {
                 "The built-in update public key is unusable, so update packages cannot be verified"
+            }
+            Self::ManualUpdate => {
+                "On macOS, update manually: open the release page in Settings → About, download the Apple Silicon build and replace the app. No Windows installer will be downloaded or launched."
             }
             Self::SigningUnconfigured => {
                 "Update signing is not configured: this build has no update signing public key yet, so online updates are unavailable (no update will be downloaded or installed). Please download the latest installer from the release page."
@@ -1375,7 +1385,14 @@ async fn load_manifest_text(
 /// 读清单 + 选择包；读不到也算界面错误，不让窗口崩。
 ///
 /// 更新签名公钥是占位值时直接返回"更新签名未配置"，一个请求都不发。
+pub(crate) fn manual_update_description() -> &'static str {
+    t(UpdateMsg::ManualUpdate)
+}
+
 pub(crate) async fn check_for_update(current: &str) -> Checked {
+    if cfg!(target_os = "macos") {
+        return Checked::failed(manual_update_description());
+    }
     let pubkey = update_pubkey();
     // 公钥不可用时先不建客户端（建客户端要读设置库）：下面 `check_with` 会原样返回原因。
     let client = if pubkey.is_ok() {
@@ -1763,6 +1780,7 @@ fn clear_pending_install() {
 }
 
 /// 排队等退出后安装的版本号（不带 `v`）；托盘据此显示「重启安装 vX」。没有排队时为 `None`。
+#[cfg(windows)]
 pub fn pending_install_version() -> Option<String> {
     locked_pending_install()
         .as_ref()
@@ -1771,6 +1789,7 @@ pub fn pending_install_version() -> Option<String> {
 
 /// 托盘的「重启安装」：把排队的计划改成"装完重启 ZeeTerm"。返回是否真有计划可改。
 /// 实际启动安装器仍然在程序退出时（`run_pending_install`），由调用方随后退出程序。
+#[cfg(windows)]
 pub fn arm_pending_restart() -> bool {
     let mut slot = locked_pending_install();
     match slot.take() {
@@ -1885,6 +1904,7 @@ fn shell_execute_installer(_plan: &InstallPlan) -> Result<(), String> {
 }
 
 /// 按 Windows 命令行规则拼一组参数。
+#[cfg(any(windows, test))]
 fn quote_args(args: &[String]) -> String {
     let mut line = String::new();
     for (index, arg) in args.iter().enumerate() {
@@ -1900,6 +1920,7 @@ fn quote_args(args: &[String]) -> String {
 ///
 /// 引号前的反斜杠要加倍再转义引号，结尾的反斜杠也要加倍，否则会被当成
 /// 转义后面的结束引号。
+#[cfg(any(windows, test))]
 fn push_quoted_arg(line: &mut String, arg: &str) {
     let needs_quotes = arg.is_empty() || arg.chars().any(|ch| ch.is_whitespace() || ch == '"');
     if !needs_quotes {
@@ -1927,6 +1948,7 @@ fn push_quoted_arg(line: &mut String, arg: &str) {
     line.push('"');
 }
 
+#[cfg(any(windows, test))]
 fn push_repeated(line: &mut String, ch: char, count: usize) {
     for _ in 0..count {
         line.push(ch);
@@ -2909,6 +2931,14 @@ mod tests {
             .expect("workspace 应有版本号")
     }
 
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn mac_updates_offer_manual_install_before_network_or_download() {
+        let checked = super::check_for_update("0.0.1").await;
+        assert!(checked.package.is_none());
+        assert_eq!(checked.failure_reason(), super::manual_update_description());
+    }
+
     #[test]
     fn compiled_version_matches_the_stable_release_line() {
         assert_ne!(env!("CARGO_PKG_VERSION"), "0.0.0");
@@ -3030,12 +3060,13 @@ mod tests {
             "version": "0.3.0",
             "platforms": { "windows-x86_64-nsis": { "url": "http://example.com/a.exe", "signature": "sig" } }
         }"#;
-        let refused = evaluate_manifest(manifest, "0.2.14", false);
+        let manifest = manifest.replace("windows-x86_64-nsis", zssh_update::platform_keys()[0]);
+        let refused = evaluate_manifest(&manifest, "0.2.14", false);
         assert!(refused.package.is_none());
         assert_eq!(refused.kind, CheckKind::Failed);
         assert!(refused.status.contains("https"), "{}", refused.status);
         // 调试配置放行同一份清单。
-        let allowed = evaluate_manifest(manifest, "0.2.14", true);
+        let allowed = evaluate_manifest(&manifest, "0.2.14", true);
         assert!(allowed.package.is_some());
         assert_eq!(allowed.kind, CheckKind::Found);
     }
@@ -3049,7 +3080,8 @@ mod tests {
 
     #[test]
     fn a_found_update_carries_the_notes_and_the_release_date_for_the_window() {
-        let checked = evaluate_manifest(FOUND_MANIFEST, "0.2.14", false);
+        let manifest = FOUND_MANIFEST.replace("windows-x86_64", zssh_update::platform_keys()[0]);
+        let checked = evaluate_manifest(&manifest, "0.2.14", false);
         assert_eq!(checked.kind, CheckKind::Found);
         assert_eq!(
             checked.package.as_ref().map(|p| p.version.as_str()),

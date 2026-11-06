@@ -190,6 +190,20 @@ pub fn start_owned(
     x11_dir: &Path,
     install: &VcXsrvInstall,
 ) -> Result<OwnedServer, X11Failure> {
+    if !cfg!(windows) {
+        return Err(X11Failure::LaunchFailed {
+            reason: Reason::text("只支持在 Windows 上启动 VcXsrv"),
+        });
+    }
+    start_owned_impl(sys, owned, x11_dir, install)
+}
+
+fn start_owned_impl(
+    sys: &dyn LocalSystem,
+    owned: &OwnedRegistry,
+    x11_dir: &Path,
+    install: &VcXsrvInstall,
+) -> Result<OwnedServer, X11Failure> {
     let fail = |reason: Reason| X11Failure::LaunchFailed { reason };
 
     let display = (OWNED_FIRST_DISPLAY..=OWNED_LAST_DISPLAY)
@@ -289,6 +303,19 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn unsupported_platform_never_starts_or_writes_auth() {
+        let dir = TestDir::new("x11-launch-unsupported");
+        let sys = FakeSystem::default();
+        let owned = OwnedRegistry::default();
+        let err = start_owned(&sys, &owned, &dir, &install()).unwrap_err();
+        assert!(err.to_string().contains("Windows"));
+        assert!(sys.with(|s| s.spawned.is_empty()));
+        assert!(!auth_file_path(&dir, 20).exists());
+        assert_eq!(owned.current_display(), None);
+    }
+
     #[test]
     fn launch_args_use_auth_and_never_disable_access_control() {
         let args = launch_args(20, Path::new(r"C:\data\x11\xauth-20"));
@@ -310,7 +337,7 @@ mod tests {
             s.listen_after_spawn = Some(6021);
         });
         let owned = OwnedRegistry::default();
-        let server = start_owned(&sys, &owned, &dir, &install()).expect("拉起");
+        let server = start_owned_impl(&sys, &owned, &dir, &install()).expect("拉起");
 
         assert_eq!(server.endpoint.port, 6021);
         assert!(!server.reused);
@@ -334,9 +361,9 @@ mod tests {
         let dir = TestDir::new("x11-launch-cookies");
         let sys = FakeSystem::default();
         sys.with(|s| s.listen_after_spawn = Some(6020));
-        let a = start_owned(&sys, &OwnedRegistry::default(), &dir, &install()).unwrap();
+        let a = start_owned_impl(&sys, &OwnedRegistry::default(), &dir, &install()).unwrap();
         sys.with(|s| s.listening.clear());
-        let b = start_owned(&sys, &OwnedRegistry::default(), &dir, &install()).unwrap();
+        let b = start_owned_impl(&sys, &OwnedRegistry::default(), &dir, &install()).unwrap();
         assert_ne!(a.cookie, b.cookie);
     }
 
@@ -345,7 +372,7 @@ mod tests {
         let dir = TestDir::new("x11-launch-timeout");
         let sys = FakeSystem::default();
         let owned = OwnedRegistry::default();
-        let err = start_owned(&sys, &owned, &dir, &install()).unwrap_err();
+        let err = start_owned_impl(&sys, &owned, &dir, &install()).unwrap_err();
         assert_eq!(err.code(), "launch_failed");
         assert_eq!(sys.with(|s| s.killed), 1, "没起来的进程要杀掉");
         assert_eq!(owned.current_display(), None);
@@ -357,12 +384,12 @@ mod tests {
         let dir = TestDir::new("x11-launch-exit");
         let sys = FakeSystem::default();
         sys.with(|s| s.exit_immediately = true);
-        let err = start_owned(&sys, &OwnedRegistry::default(), &dir, &install()).unwrap_err();
+        let err = start_owned_impl(&sys, &OwnedRegistry::default(), &dir, &install()).unwrap_err();
         assert!(err.to_string().contains("立刻退出"), "{err}");
 
         let sys = FakeSystem::default();
         sys.with(|s| s.spawn_error = Some("找不到程序".into()));
-        let err = start_owned(&sys, &OwnedRegistry::default(), &dir, &install()).unwrap_err();
+        let err = start_owned_impl(&sys, &OwnedRegistry::default(), &dir, &install()).unwrap_err();
         assert!(err.to_string().contains("找不到程序"), "{err}");
     }
 
@@ -374,7 +401,7 @@ mod tests {
             s.listening
                 .extend((OWNED_FIRST_DISPLAY..=OWNED_LAST_DISPLAY).map(|d| 6000 + d));
         });
-        let err = start_owned(&sys, &OwnedRegistry::default(), &dir, &install()).unwrap_err();
+        let err = start_owned_impl(&sys, &OwnedRegistry::default(), &dir, &install()).unwrap_err();
         assert!(err.to_string().contains("空闲"), "{err}");
     }
 
@@ -384,7 +411,7 @@ mod tests {
         let sys = FakeSystem::default();
         sys.with(|s| s.listen_after_spawn = Some(6020));
         let owned = OwnedRegistry::default();
-        start_owned(&sys, &owned, &dir, &install()).unwrap();
+        start_owned_impl(&sys, &owned, &dir, &install()).unwrap();
         assert!(owned.shutdown(&dir));
         assert_eq!(sys.with(|s| s.killed), 1);
         assert_eq!(owned.current_display(), None);
@@ -399,7 +426,7 @@ mod tests {
         let sys = FakeSystem::default();
         sys.with(|s| s.listen_after_spawn = Some(6020));
         let first = OwnedRegistry::default();
-        let started = start_owned(&sys, &first, &dir, &install()).unwrap();
+        let started = start_owned_impl(&sys, &first, &dir, &install()).unwrap();
 
         // 模拟 ZeeTerm 重启：新的登记表，进程还在监听。
         let second = OwnedRegistry::default();
@@ -423,7 +450,7 @@ mod tests {
         );
 
         sys.with(|s| s.listen_after_spawn = Some(6020));
-        start_owned(&sys, &OwnedRegistry::default(), &dir, &install()).unwrap();
+        start_owned_impl(&sys, &OwnedRegistry::default(), &dir, &install()).unwrap();
         sys.with(|s| s.listening.clear());
         assert!(
             reuse_owned(&sys, &OwnedRegistry::default(), &dir).is_none(),

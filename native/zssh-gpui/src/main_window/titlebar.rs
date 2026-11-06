@@ -29,6 +29,7 @@ pub const BAR_HEIGHT: f32 = 36.0;
 /// 标签高度。
 const TAB_HEIGHT: f32 = 32.0;
 /// 窗口按钮宽度。
+#[cfg(not(target_os = "macos"))]
 const CONTROL_WIDTH: f32 = 42.0;
 /// 标题栏图标按钮的边长、图标间距（Tailwind `gap_1` = 4）、左侧块的左右内边距（`pl_3` / `pr_2`）。
 const ICON_SIZE: f32 = 28.0;
@@ -589,6 +590,8 @@ impl MainWindow {
                     .min_w_0()
                     .h_full()
                     .items_end()
+                    // macOS 的系统红黄绿画在左上角，这里让出它们的宽度，别被返回按钮压住。
+                    .when(cfg!(target_os = "macos"), |row| row.pl(px(72.0)))
                     .window_control_area(WindowControlArea::Drag)
                     .child(left.items_end())
                     .child(tabs)
@@ -831,57 +834,69 @@ pub(crate) fn window_controls_with(
     tokens: &Tokens,
     maximized: bool,
     with_maximize: bool,
-) -> impl IntoElement {
-    let hover = tokens.hover;
-    let text = tokens.text;
-    let danger = tokens.danger;
-    let button = move |id: &'static str, area: WindowControlArea, icon: IconName, close: bool| {
-        div()
-            .id(id)
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(px(CONTROL_WIDTH))
+) -> AnyElement {
+    // macOS 用系统自己的红黄绿（窗口选项里的 traffic_light_position 把它们放在左上角），
+    // 这里不再画一套 Windows 风格的按钮，避免同一窗口出现两组最小化 / 关闭。
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (tokens, maximized, with_maximize);
+        div().into_any_element()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let hover = tokens.hover;
+        let text = tokens.text;
+        let danger = tokens.danger;
+        let button =
+            move |id: &'static str, area: WindowControlArea, icon: IconName, close: bool| {
+                div()
+                    .id(id)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(CONTROL_WIDTH))
+                    .h_full()
+                    .flex_none()
+                    .text_color(text)
+                    .window_control_area(area)
+                    .hover(move |style| {
+                        if close {
+                            style.bg(danger).text_color(::gpui::white())
+                        } else {
+                            style.bg(hover)
+                        }
+                    })
+                    .child(Icon::new(icon).size_3p5())
+            };
+        h_flex()
             .h_full()
             .flex_none()
-            .text_color(text)
-            .window_control_area(area)
-            .hover(move |style| {
-                if close {
-                    style.bg(danger).text_color(::gpui::white())
-                } else {
-                    style.bg(hover)
-                }
-            })
-            .child(Icon::new(icon).size_3p5())
-    };
-    h_flex()
-        .h_full()
-        .flex_none()
-        .child(button(
-            "win-min",
-            WindowControlArea::Min,
-            IconName::WindowMinimize,
-            false,
-        ))
-        .when(with_maximize, |row| {
-            row.child(button(
-                "win-max",
-                WindowControlArea::Max,
-                if maximized {
-                    IconName::WindowRestore
-                } else {
-                    IconName::WindowMaximize
-                },
+            .child(button(
+                "win-min",
+                WindowControlArea::Min,
+                IconName::WindowMinimize,
                 false,
             ))
-        })
-        .child(button(
-            "win-close",
-            WindowControlArea::Close,
-            IconName::WindowClose,
-            true,
-        ))
+            .when(with_maximize, |row| {
+                row.child(button(
+                    "win-max",
+                    WindowControlArea::Max,
+                    if maximized {
+                        IconName::WindowRestore
+                    } else {
+                        IconName::WindowMaximize
+                    },
+                    false,
+                ))
+            })
+            .child(button(
+                "win-close",
+                WindowControlArea::Close,
+                IconName::WindowClose,
+                true,
+            ))
+            .into_any_element()
+    }
 }
 
 #[cfg(test)]

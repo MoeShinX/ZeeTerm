@@ -234,7 +234,7 @@ pub(super) fn validate_local_dir(raw: &str) -> NameCheck {
         [letter, b':', ..] if letter.is_ascii_alphabetic() => &value[2..],
         _ => value,
     };
-    if rest.contains(['<', '>', '"', '|', '?', '*']) {
+    if value.contains('\0') || (cfg!(windows) && rest.contains(['<', '>', '"', '|', '?', '*'])) {
         return NameCheck::Bad(t(super::SftpMsg::DialogWindowsBadChars).to_owned());
     }
     NameCheck::Ok
@@ -379,6 +379,11 @@ mod tests {
     #[test]
     fn download_directories_are_checked_for_writing_only() {
         assert_eq!(bad(validate_local_dir("")), "请输入一个本地目录");
+        if !cfg!(windows) {
+            assert_eq!(validate_local_dir("/tmp/下载 <目录>?"), NameCheck::Ok);
+            assert!(matches!(validate_local_dir("/tmp/a\0b"), NameCheck::Bad(_)));
+            return;
+        }
         assert_eq!(
             bad(validate_local_dir("D:\\a<b")),
             "路径里有 Windows 不允许的字符"

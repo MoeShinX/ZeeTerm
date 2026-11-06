@@ -243,10 +243,15 @@ pub(crate) fn semicolon() -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Key {
     // ---- 托盘 ----
+    #[cfg(any(windows, test))]
     TrayShowPrefix,
+    #[cfg(any(windows, test))]
     TrayLock,
+    #[cfg(any(windows, test))]
     TrayCheckUpdate,
+    #[cfg(any(windows, test))]
     TrayRestartInstallPrefix,
+    #[cfg(any(windows, test))]
     TrayQuit,
     // ---- 主机右键菜单 ----
     MenuConnect,
@@ -292,10 +297,15 @@ impl Msg for Key {
     fn zh(&self) -> &'static str {
         let key = *self;
         match key {
+            #[cfg(any(windows, test))]
             Self::TrayShowPrefix => "显示 ",
+            #[cfg(any(windows, test))]
             Self::TrayLock => "锁定",
+            #[cfg(any(windows, test))]
             Self::TrayCheckUpdate => "检查更新",
+            #[cfg(any(windows, test))]
             Self::TrayRestartInstallPrefix => "重启安装 v",
+            #[cfg(any(windows, test))]
             Self::TrayQuit => "退出",
             Self::MenuConnect => "连接",
             Self::MenuConnectNewTab => "在新标签连接",
@@ -340,10 +350,15 @@ impl Msg for Key {
     fn en(&self) -> &'static str {
         let key = *self;
         match key {
+            #[cfg(any(windows, test))]
             Self::TrayShowPrefix => "Show ",
+            #[cfg(any(windows, test))]
             Self::TrayLock => "Lock",
+            #[cfg(any(windows, test))]
             Self::TrayCheckUpdate => "Check for Updates",
+            #[cfg(any(windows, test))]
             Self::TrayRestartInstallPrefix => "Restart to install v",
+            #[cfg(any(windows, test))]
             Self::TrayQuit => "Quit",
             Self::MenuConnect => "Connect",
             Self::MenuConnectNewTab => "Connect in New Tab",

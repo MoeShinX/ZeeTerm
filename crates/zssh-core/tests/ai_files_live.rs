@@ -29,7 +29,6 @@ use zssh_core::ai::protocol::{RequestEnvelope, ResponseEnvelope, TokenLine};
 use zssh_core::ai::safety::DangerLevel;
 use zssh_core::sftp::SftpChannel;
 use zssh_core::ssh::{BoxFuture, Connection, ExecCapture};
-use zssh_core::Database;
 
 use common::{serial, RemoteTempDir, TempKnownHosts, TestServer};
 
@@ -210,7 +209,7 @@ async fn file_tools_through_the_bridge_on_a_real_server() {
     let base = dir.path().to_owned();
 
     // 桥：手动 / 自动可切，审批可脚本化，审计写内存库。
-    let database = Arc::new(Database::open_in_memory().expect("审计库"));
+    let database = Arc::new(common::vault::open_in_memory().expect("审计库"));
     let approver = Arc::new(ScriptedApprover {
         allow: AtomicBool::new(true),
         requests: Mutex::new(Vec::new()),

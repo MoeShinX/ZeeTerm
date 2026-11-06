@@ -8,8 +8,10 @@
 // 测试 / 示例代码：失败就让它 panic，不包装成错误返回（生产代码的 unwrap / expect 由 clippy 拦）。
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
 #[path = "common/fake_browser.rs"]
 mod fake_browser;
+
 #[path = "common/harness.rs"]
 mod harness;
 #[path = "common/mock_cloud.rs"]

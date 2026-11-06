@@ -11,7 +11,7 @@ use std::sync::Arc;
 use zssh_core::model::{AuthMethod, HostDraft, IdentityDraft, IdentityKind, ProxyMode};
 
 use zssh_core::ssh::{ConnectParams, Connection, NonInteractive, ShellEvent};
-use zssh_core::{Database, ZsshError};
+use zssh_core::ZsshError;
 
 use common::{TempKnownHosts, TestServer};
 
@@ -49,7 +49,7 @@ async fn connects_to_a_host_stored_in_the_vault() {
     };
 
     let temp = TempDb::new();
-    let db = Database::open(&temp.path).expect("临时库应该能建起来");
+    let db = common::vault::open(&temp.path).expect("临时库应该能建起来");
 
     // 密码进保险库（DPAPI 加密后落 secret_blob）
     let identity = db

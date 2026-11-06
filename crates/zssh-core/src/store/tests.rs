@@ -35,6 +35,7 @@ impl TempDb {
     }
 
     /// 主文件和 WAL 的原始字节。
+    #[cfg(windows)]
     fn raw_bytes(&self) -> Vec<u8> {
         let mut bytes = std::fs::read(&self.path).expect("应该能读数据库文件");
         let wal = self.path.with_extension("db-wal");

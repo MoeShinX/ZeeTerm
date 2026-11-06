@@ -7,6 +7,27 @@ use crate::sync::storage::MemoryStorage;
 
 const PASSWORD: &str = "conflict-test-password";
 
+#[cfg(target_os = "macos")]
+#[test]
+fn use_other_keeps_database_vault_scope_after_loading_the_row() {
+    let db = Database::open_in_memory().unwrap();
+    let sealer = crate::sync::sealer::DpapiSealer;
+    db.with_conn_as(|conn| -> Result<(), SyncError> {
+        store_conflict(
+            conn,
+            &sealer,
+            100,
+            "setting",
+            "theme",
+            "\"dark\"",
+            "\"light\"",
+        )
+    })
+    .unwrap();
+    use_other(&db, &sealer, "device-test", None, 1, 101).unwrap();
+    assert!(list(&db, &sealer, "device-test", 101).unwrap().is_empty());
+}
+
 fn temp_dir(name: &str) -> crate::test_util::TestDir {
     crate::test_util::TestDir::new(&format!("sync-conflicts-{name}"))
 }

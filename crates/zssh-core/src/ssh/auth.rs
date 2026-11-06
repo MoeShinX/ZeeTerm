@@ -583,30 +583,50 @@ async fn agent_auth(
     }
 }
 
-/// 先试 OpenSSH agent 的命名管道，失败再试 Pageant（设计文档 4.3）。
+/// 按平台找本机 SSH Agent。
+///
+/// Windows 先试 OpenSSH 的命名管道，失败再试 Pageant（设计文档 4.3）。
+/// macOS / Linux 只认 `SSH_AUTH_SOCK` 指向的 Unix socket：没有这个变量、
+/// socket 不存在或连不上都返回 `None`，调用方据此提示用户，不静默换成别的代理。
 async fn connect_agent() -> Option<AnyAgent> {
-    let pipe = tokio::time::timeout(
-        AGENT_CONNECT_TIMEOUT,
-        AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent"),
-    )
-    .await;
+    #[cfg(windows)]
+    {
+        let pipe = tokio::time::timeout(
+            AGENT_CONNECT_TIMEOUT,
+            AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent"),
+        )
+        .await;
 
-    match pipe {
-        Ok(Ok(client)) => {
-            debug!("连上 OpenSSH agent 命名管道");
-            return Some(client.dynamic());
+        match pipe {
+            Ok(Ok(client)) => {
+                debug!("连上 OpenSSH agent 命名管道");
+                return Some(client.dynamic());
+            }
+            Ok(Err(err)) => debug!(%err, "OpenSSH agent 命名管道连不上"),
+            Err(_) => debug!("OpenSSH agent 命名管道连接超时"),
         }
-        Ok(Err(err)) => debug!(%err, "OpenSSH agent 命名管道连不上"),
-        Err(_) => debug!("OpenSSH agent 命名管道连接超时"),
+
+        match AgentClient::connect_pageant().await {
+            Ok(client) => {
+                debug!("连上 Pageant");
+                return Some(client.dynamic());
+            }
+            Err(err) => debug!(%err, "Pageant 连不上"),
+        }
     }
 
-    #[cfg(windows)]
-    match AgentClient::connect_pageant().await {
-        Ok(client) => {
-            debug!("连上 Pageant");
-            return Some(client.dynamic());
+    #[cfg(unix)]
+    {
+        // 不打印 socket 路径：它经常带用户目录。
+        let socket = tokio::time::timeout(AGENT_CONNECT_TIMEOUT, AgentClient::connect_env()).await;
+        match socket {
+            Ok(Ok(client)) => {
+                debug!("连上 SSH_AUTH_SOCK 指向的 agent");
+                return Some(client.dynamic());
+            }
+            Ok(Err(err)) => debug!(%err, "SSH agent socket 连不上"),
+            Err(_) => debug!("SSH agent socket 连接超时"),
         }
-        Err(err) => debug!(%err, "Pageant 连不上"),
     }
 
     None

@@ -60,7 +60,7 @@ impl BrowserOpener for SystemBrowser {
 }
 
 /// 打开浏览器最多等这么久；超时按"已经交给系统"处理（后台线程会自己跑完）。
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 const SHELL_OPEN_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// 用系统默认浏览器打开网址。
@@ -125,9 +125,41 @@ fn shell_open_on_this_thread(url: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(not(windows))]
+/// macOS 用 `open` 交给系统默认浏览器。同样放在后台线程，界面不等它返回。
+#[cfg(target_os = "macos")]
+pub(crate) fn shell_open(url: &str) -> Result<(), String> {
+    let url = url.to_owned();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("shell-open".to_owned())
+        .spawn(move || {
+            let mut command = std::process::Command::new("/usr/bin/open");
+            command.arg(&url);
+            let result = crate::process_util::hide_console(&mut command)
+                .status()
+                .map_err(|err| format!("没能启动 open：{err}"))
+                .and_then(|status| {
+                    if status.success() {
+                        Ok(())
+                    } else {
+                        Err(format!("系统没能打开默认浏览器（退出码 {status}）"))
+                    }
+                });
+            let _ = sender.send(result);
+        })
+        .map_err(|err| format!("没能启动打开浏览器的线程：{err}"))?;
+    match receiver.recv_timeout(SHELL_OPEN_WAIT) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(()),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("打开浏览器的线程异常结束".to_owned())
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn shell_open(_url: &str) -> Result<(), String> {
-    Err("只支持在 Windows 上打开系统浏览器".to_owned())
+    Err("这个平台还不能打开系统浏览器".to_owned())
 }
 
 #[cfg(test)]

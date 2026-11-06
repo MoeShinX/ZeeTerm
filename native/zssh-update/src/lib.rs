@@ -111,8 +111,30 @@ pub fn releases_page_url(endpoint: &str) -> Option<String> {
     Some(format!("https://github.com/{owner}/{name}/releases"))
 }
 
-/// 自动更新优先用安装版包；没有时退回通用 Windows key。
-pub const PLATFORM_KEYS: &[&str] = &["windows-x86_64-nsis", "windows-x86_64"];
+/// 当前宿主平台能安装的更新包 key，按优先级排列。
+///
+/// 只有清单里有本平台的 key 才会下载：在 macOS 上绝不能因为清单只有 Windows 包就退回
+/// `windows-x86_64-nsis`，那会把一个 Windows 安装器下载下来。没有对应 key 时返回空列表，
+/// [`Manifest::select`] 报 `NoPlatform`，界面提示手动下载。
+pub fn platform_keys() -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        // 自动更新优先用安装版包；没有时退回通用 Windows key。
+        &["windows-x86_64-nsis", "windows-x86_64"]
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        // macOS 还没有可安装的更新包：安装器只接受 Windows 的 .exe，清单里即使有
+        // darwin 的 key 也下载不了、装不上。返回空让界面走“请手动更新”，
+        // 不要在这里承诺一个还没实现的平台。
+        &[]
+    }
+    #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+    {
+        // macOS Intel / Linux ARM64 不在支持矩阵里：不选任何包。
+        &[]
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Manifest {
@@ -220,7 +242,7 @@ impl Manifest {
             return Ok(None);
         }
 
-        for key in PLATFORM_KEYS {
+        for key in platform_keys() {
             let Some(asset) = self.platforms.get(*key) else {
                 continue;
             };
@@ -538,7 +560,18 @@ mod tests {
         assert_eq!(manifest.version, "1.4.0");
         assert_eq!(manifest.notes.as_deref(), Some("修复若干问题\n- 第二行"));
         assert_eq!(manifest.date.as_deref(), Some("2026-11-03T08:00:00Z"));
-        let package = manifest.select("1.3.9").unwrap().expect("比 1.3.9 新");
+        // 发版清单只写 Windows key；这里按发版 key 取包验证往返，不走宿主平台的选包
+        //（非 Windows 平台的 select 会拒绝这份清单，那是另一条测试覆盖的行为）。
+        let asset = manifest
+            .platforms
+            .get(RELEASE_PLATFORM_KEY)
+            .expect("发版清单应带 Windows key");
+        let package = Package {
+            platform_key: RELEASE_PLATFORM_KEY.to_owned(),
+            version: "1.4.0".to_owned(),
+            url: asset.url.clone(),
+            signature: asset.signature.clone().unwrap_or_default(),
+        };
         assert_eq!(package.platform_key, RELEASE_PLATFORM_KEY);
         assert_eq!(package.version, "1.4.0");
         assert!(package.url.ends_with("/v1.4.0/ZeeTerm-Setup-1.4.0.exe"));
@@ -626,12 +659,43 @@ mod tests {
     }
 
     #[test]
-    fn newer_version_selects_the_nsis_package() {
+    fn newer_version_selects_this_platforms_package() {
         let (_kp, pubkey) = keypair();
         let manifest = parse_manifest(&manifest("0.3.0", &pubkey)).unwrap();
-        let package = manifest.select("0.2.14").unwrap().expect("应有更新");
-        assert_eq!(package.platform_key, "windows-x86_64-nsis");
-        assert_eq!(package.version, "0.3.0");
+        let selected = manifest.select("0.2.14");
+        // 测试清单只有 Windows 包。Windows 上应选安装版；其他平台不能退回 Windows 包。
+        #[cfg(windows)]
+        {
+            let package = selected.unwrap().expect("应有更新");
+            assert_eq!(package.platform_key, "windows-x86_64-nsis");
+            assert_eq!(package.version, "0.3.0");
+        }
+        #[cfg(not(windows))]
+        assert!(
+            matches!(selected, Err(UpdateError::NoPlatform)),
+            "非 Windows 平台不能选 Windows 更新包：{selected:?}"
+        );
+    }
+
+    #[test]
+    fn a_windows_only_manifest_is_not_selected_off_windows() {
+        let manifest = parse_manifest(
+            r#"{
+                "version": "9.9.9",
+                "platforms": {
+                    "windows-x86_64": { "url": "https://example.com/a.exe", "signature": "sig" },
+                    "windows-x86_64-nsis": { "url": "https://example.com/a-setup.exe", "signature": "sig" }
+                }
+            }"#,
+        )
+        .unwrap();
+        #[cfg(not(windows))]
+        assert!(
+            matches!(manifest.select("0.0.1"), Err(UpdateError::NoPlatform)),
+            "清单里没有本平台的包时必须拒绝，不能下载 Windows 安装器"
+        );
+        #[cfg(windows)]
+        assert!(manifest.select("0.0.1").unwrap().is_some());
     }
 
     #[test]

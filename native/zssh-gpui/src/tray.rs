@@ -1,15 +1,25 @@
 //! 托盘原型：隐藏到托盘、菜单唤回、退出。
 //!
-//! 托盘图标在独立线程创建并持续泵 Win32 消息；菜单/图标事件通过 tray-icon 的
+//! Windows：托盘图标在独立线程创建并持续泵 Win32 消息；菜单/图标事件通过 tray-icon 的
 //! 全局通道到达监听线程，再经一个发送端可跨线程的队列回到 GPUI 主线程。
 //! 不跨线程直接碰 Entity，也不把 `AsyncApp` 移出主线程。
+//!
+//! macOS（P0）：暂时不建托盘，关闭按钮一律退出；没有托盘却把窗口藏起来会让用户
+//! 再也找不回窗口。菜单项等纯数据仍可单测。
 
+#[cfg(windows)]
 use futures::StreamExt as _;
+#[cfg(windows)]
 use gpui::{AnyWindowHandle, App};
+#[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+#[cfg(windows)]
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+#[cfg(windows)]
 use tray_icon::{Icon, TrayIconBuilder, TrayIconEvent};
+#[cfg(windows)]
 use windows::Win32::Foundation::HWND;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, DispatchMessageW, GetMessageW, GetSystemMetrics, HWND_NOTOPMOST,
     HWND_TOPMOST, MSG, SM_CXSMICON, SM_CYSMICON, SW_HIDE, SW_SHOW, SWP_NOMOVE, SWP_NOSIZE,
@@ -18,21 +28,26 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 /// 托盘图标是否已经建好。没建好时"关闭"不能只把窗口藏起来：
 /// 那样没有任何入口能把窗口叫回来，进程和 SSH 会话只能靠任务管理器结束。
+#[cfg(windows)]
 static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// build.rs 把 assets/brand/zeeterm.ico 编成资源 ID 1；GPUI 窗口类图标用的是同一个 ID。
+#[cfg(windows)]
 const APP_ICON_RESOURCE_ID: u16 = 1;
 
 /// 资源加载失败时的后备图标（32px，透明底）。
+#[cfg(windows)]
 const FALLBACK_PNG: &[u8] = include_bytes!("../assets/brand/zeeterm-logo-32.png");
 
 /// 主窗口点关闭按钮时该做什么。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseAction {
+    #[cfg(any(windows, test))]
     HideToTray,
     Quit,
 }
 
+#[cfg(windows)]
 pub fn close_action() -> CloseAction {
     // 每次点 × 读一次设置：用户在设置页改了「关闭主窗口时」马上生效，不用重启。
     close_action_for(
@@ -41,7 +56,14 @@ pub fn close_action() -> CloseAction {
     )
 }
 
+/// macOS 还没有托盘：窗口一旦藏起来就没有入口叫回，所以关闭一律退出。
+#[cfg(not(windows))]
+pub fn close_action() -> CloseAction {
+    CloseAction::Quit
+}
+
 /// 托盘没建起来时没有入口能叫回窗口，不管设置怎么选都必须退出；托盘在，才按设置走。
+#[cfg(any(windows, test))]
 fn close_action_for(tray_ready: bool, choice: crate::app_prefs::CloseChoice) -> CloseAction {
     if tray_ready && choice == crate::app_prefs::CloseChoice::Tray {
         CloseAction::HideToTray
@@ -51,20 +73,32 @@ fn close_action_for(tray_ready: bool, choice: crate::app_prefs::CloseChoice) -> 
 }
 
 /// 锁屏启用了没有（V2-U26）：主窗口每次重读设置时写，托盘线程的定时器读，据此显示 / 隐藏菜单里的「锁定」。
+#[cfg(windows)]
 static LOCK_AVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// 主窗口告诉托盘：锁屏现在启用了没有（没启用时菜单里没有「锁定」）。
+#[cfg(windows)]
 pub fn set_lock_menu(enabled: bool) {
     LOCK_AVAILABLE.store(enabled, std::sync::atomic::Ordering::Release);
 }
 
+/// 没有托盘就没有菜单可同步。
+#[cfg(not(windows))]
+pub fn set_lock_menu(_enabled: bool) {}
+
+#[cfg(any(windows, test))]
 const SHOW_ID: &str = "tray-show";
+#[cfg(any(windows, test))]
 const LOCK_ID: &str = "tray-lock";
+#[cfg(any(windows, test))]
 const CHECK_ID: &str = "tray-check-update";
+#[cfg(any(windows, test))]
 const UPDATE_ID: &str = "tray-update";
+#[cfg(any(windows, test))]
 const QUIT_ID: &str = "tray-quit";
 
 /// 托盘菜单里的一项。抽成纯数据，菜单有哪些项不用起窗口就能测（同 0.2.14 的 `TrayEntry`）。
+#[cfg(any(windows, test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayEntry {
     Show,
@@ -80,6 +114,7 @@ pub enum TrayEntry {
     Quit,
 }
 
+#[cfg(any(windows, test))]
 impl TrayEntry {
     pub fn label(&self) -> Option<String> {
         use crate::i18n::{Key, t};
@@ -99,6 +134,7 @@ impl TrayEntry {
         }
     }
 
+    #[cfg(any(windows, test))]
     fn id(&self) -> Option<&'static str> {
         match self {
             Self::Show => Some(SHOW_ID),
@@ -114,6 +150,7 @@ impl TrayEntry {
 /// 托盘菜单该有哪些项。「显示」下面是「检查更新」（和关于页同一个入口，打开更新窗口）；
 /// 只有"在线更新开着、并且有一个已验签、排队等安装的更新"才再多一项「重启安装 vX」。
 ///「锁定」跟在「显示」后面，只有启用了锁屏才有。
+#[cfg(any(windows, test))]
 pub fn menu_entries(
     auto_update: bool,
     ready_version: Option<&str>,
@@ -134,6 +171,7 @@ pub fn menu_entries(
     entries
 }
 
+#[cfg(windows)]
 enum Command {
     Show,
     /// 托盘「锁定」：立即锁定（没启用锁屏时主窗口什么都不做）。
@@ -145,11 +183,13 @@ enum Command {
 }
 
 /// 隐藏主窗口，但保留进程与后台任务。
+#[cfg(windows)]
 pub fn hide(window: &mut gpui::Window) {
     crate::ime::apply("main", false);
     set_visible(window, false);
 }
 
+#[cfg(windows)]
 fn set_visible(window: &mut gpui::Window, visible: bool) {
     let Ok(handle) = window.window_handle() else {
         return;
@@ -172,6 +212,7 @@ fn set_visible(window: &mut gpui::Window, visible: bool) {
 /// GPUI 主线程，窗口建出来时前台已经不在本进程手里，Windows 的前台锁会把
 /// `SetForegroundWindow` 降级成任务栏闪烁。先临时置顶再取消置顶，窗口至少会盖在其他
 /// 窗口上面；再补一次 `SetForegroundWindow`，系统允许时顺便拿到键盘焦点。
+#[cfg(windows)]
 pub fn bring_to_front(window: &mut gpui::Window) {
     window.activate_window();
     let Ok(handle) = window.window_handle() else {
@@ -191,6 +232,7 @@ pub fn bring_to_front(window: &mut gpui::Window) {
 }
 
 /// 启动托盘。必须在 GPUI 主线程调用；托盘本身在独立线程建并泵消息。
+#[cfg(windows)]
 pub fn spawn(
     cx: &mut App,
     window: AnyWindowHandle,
@@ -375,9 +417,11 @@ pub fn spawn(
 }
 
 /// 查「有没有排队等安装的更新」的间隔（毫秒）。
+#[cfg(windows)]
 const RESTART_POLL_MS: u32 = 1000;
 
 /// 菜单里会随状态出现 / 消失的两项当前的样子：「重启安装」（对应哪个版本）和「锁定」（在不在）。
+#[cfg(windows)]
 #[derive(Default)]
 struct RestartItem {
     item: Option<MenuItem>,
@@ -388,7 +432,7 @@ struct RestartItem {
 
 /// 让菜单里的「重启安装」和排队的更新一致：版本没变不动，变了就先删旧的再按 [`menu_entries`] 的顺序
 ///（显示、检查更新、重启安装、分隔线、退出）插在第 3 位。不管「锁定」项（保持它现在的样子）。
-#[cfg(test)]
+#[cfg(all(windows, test))]
 fn sync_restart_item(menu: &Menu, state: &mut RestartItem, ready: Option<String>) {
     let lock_on = state.lock_on;
     sync_dynamic_items(menu, state, ready, lock_on);
@@ -396,6 +440,7 @@ fn sync_restart_item(menu: &Menu, state: &mut RestartItem, ready: Option<String>
 
 /// 同 [`sync_restart_item`]，同时让「锁定」项和锁屏是否启用一致。两项都要按 [`menu_entries`] 的次序插，
 /// 所以任何一个变了就把两个动态项都删掉重插。
+#[cfg(windows)]
 fn sync_dynamic_items(menu: &Menu, state: &mut RestartItem, ready: Option<String>, lock_on: bool) {
     if state.version == ready && state.lock_on == lock_on {
         return;
@@ -432,6 +477,7 @@ fn sync_dynamic_items(menu: &Menu, state: &mut RestartItem, ready: Option<String
 /// 托盘图标：优先用 exe 里嵌入的图标资源（`build.rs` 编进去的 ID 1，系统会按托盘需要的尺寸
 /// 从多尺寸 .ico 里挑最接近的，高 DPI 下不会把 16px 拉糊）；资源不在时（例如从没带资源的
 /// 测试 / 自定义构建里启动）退回内置的 32px PNG，托盘总有个像样的图标。
+#[cfg(windows)]
 fn load_icon() -> Result<Icon, String> {
     // SAFETY: GetSystemMetrics 只读系统参数，没有前置条件。
     let (width, height) = unsafe { (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)) };
@@ -446,11 +492,13 @@ fn load_icon() -> Result<Icon, String> {
 }
 
 /// 内置 PNG 解码成 RGBA。独立成函数是为了不起托盘也能测。
+#[cfg(windows)]
 fn fallback_icon() -> Result<Icon, String> {
     let (rgba, width, height) = decode_fallback_png()?;
     Icon::from_rgba(rgba, width, height).map_err(|err| err.to_string())
 }
 
+#[cfg(windows)]
 fn decode_fallback_png() -> Result<(Vec<u8>, u32, u32), String> {
     let image = image::load_from_memory_with_format(FALLBACK_PNG, image::ImageFormat::Png)
         .map_err(|err| err.to_string())?
@@ -459,10 +507,30 @@ fn decode_fallback_png() -> Result<(Vec<u8>, u32, u32), String> {
     Ok((image.into_raw(), width, height))
 }
 
+/// 没有托盘时不做隐藏：窗口藏起来就没有入口叫回。
+#[cfg(not(windows))]
+pub fn hide(_window: &mut gpui::Window) {}
+
+/// macOS 用 GPUI 自己的窗口激活；不需要 Win32 的置顶 / 前台技巧。
+#[cfg(not(windows))]
+pub fn bring_to_front(window: &mut gpui::Window) {
+    window.activate_window();
+}
+
+/// macOS 暂无托盘：不创建图标，也不启动托盘线程。
+#[cfg(not(windows))]
+pub fn spawn(
+    _cx: &mut gpui::App,
+    _window: gpui::AnyWindowHandle,
+    _main: gpui::Entity<crate::main_window::MainWindow>,
+) {
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn the_fallback_icon_is_the_32px_logo_with_a_transparent_background() {
         let (rgba, width, height) = decode_fallback_png().expect("内置 PNG 应能解码");
@@ -532,6 +600,7 @@ mod tests {
     }
 
     /// 菜单里现在每一项的文字（分隔线记为空串）。
+    #[cfg(windows)]
     fn menu_texts(menu: &Menu) -> Vec<String> {
         use tray_icon::menu::MenuItemKind;
         menu.items()
@@ -543,6 +612,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_live_menu_gains_and_loses_the_restart_item_with_the_queued_update() {
         let menu = Menu::new();
@@ -605,6 +675,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_live_menu_gains_and_loses_the_lock_item_with_the_setting() {
         let menu = Menu::new();
@@ -650,6 +721,7 @@ mod tests {
         assert_eq!(menu_texts(&menu), idle);
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_main_window_tells_the_tray_whether_the_lock_is_on() {
         set_lock_menu(true);

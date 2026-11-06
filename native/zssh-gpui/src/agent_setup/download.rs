@@ -98,7 +98,7 @@ pub async fn install_release(
     })?;
     // 先核对大小和 SHA-256，一致才解压、才运行；不一致时文件已经删掉。
     download::verify_download(&zip_path, release.size, &release.sha256)?;
-    let extracted = download::extract_exe(&zip_path, tools_dir);
+    let extracted = download::extract_asset(&zip_path, tools_dir, &release.asset_name);
     let _ = std::fs::remove_file(&zip_path);
     extracted
 }
@@ -330,7 +330,7 @@ mod tests {
             "tag_name": "v1.20.0",
             "html_url": "https://github.com/x/y/releases/tag/v1.20.0",
             "assets": [{
-                "name": download::WINDOWS_X64_ASSET,
+                "name": download::platform_asset(),
                 "size": 1024,
                 "browser_download_url": "https://github.com/x/y/releases/download/v1.20.0/opencode-windows-x64.zip"
             }]

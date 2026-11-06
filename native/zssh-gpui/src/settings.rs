@@ -357,11 +357,13 @@ pub fn sanitize_font_family(raw: &str) -> String {
     }
 }
 
-/// `ZSSH_DATA_DIR` 优先，其次 `%APPDATA%\ZeeTerm`（与 Tauri 版 Z-SSH 的数据目录分开）。
+/// `ZSSH_DATA_DIR` 优先；否则按平台放正式资料目录：
+/// - Windows：`%APPDATA%\ZeeTerm`（环境变量被清掉时问系统「漫游应用数据」已知文件夹）；
+/// - macOS：`~/Library/Application Support/ZeeTerm`；
+/// - 其他 Unix：`$XDG_DATA_HOME/ZeeTerm`，没设时 `~/.local/share/ZeeTerm`。
 ///
-/// 环境变量里的 `APPDATA` 被清掉（某些启动器、计划任务、精简过的环境）时，问系统要「漫游应用数据」
-/// 已知文件夹，落点和平时一样。两样都拿不到就**不再退回临时目录**——临时目录随时会被清理，凭据库、
-/// 主机库放进去等于悄悄丢数据。启动时 [`ensure_data_dir_or_exit`] 已经把这种情况拦下来并提示退出；
+/// 一个都拿不到就**不再退回临时目录**——临时目录随时会被清理，凭据库、主机库放进去等于
+/// 悄悄丢数据。启动时 [`ensure_data_dir_or_exit`] 已经把这种情况拦下来并提示退出；
 /// 万一别的地方先走到这里，也一样提示后退出。
 pub fn data_dir() -> PathBuf {
     try_data_dir().unwrap_or_else(|| exit_without_data_dir())
@@ -369,11 +371,7 @@ pub fn data_dir() -> PathBuf {
 
 /// 同 [`data_dir`]，拿不到时返回 `None`。
 pub fn try_data_dir() -> Option<PathBuf> {
-    resolve_data_dir(
-        std::env::var_os("ZSSH_DATA_DIR"),
-        std::env::var_os("APPDATA"),
-        known_roaming_appdata,
-    )
+    resolve_data_dir(std::env::var_os("ZSSH_DATA_DIR"), platform_data_base())
 }
 
 /// 启动第一件事：确认有正式的数据目录，没有就弹框说明后退出（不建窗口、不写任何文件）。
@@ -384,7 +382,7 @@ pub fn ensure_data_dir_or_exit() {
 }
 
 fn exit_without_data_dir() -> ! {
-    tracing::error!("找不到数据目录：APPDATA 和系统的漫游应用数据文件夹都不可用");
+    tracing::error!("找不到数据目录：系统没有可用的应用数据位置");
     show_fatal(no_data_dir_message());
     std::process::exit(1);
 }
@@ -392,9 +390,21 @@ fn exit_without_data_dir() -> ! {
 /// 这时设置还没读，界面语言按系统语言挑：中文系统中文，其他英文。
 fn no_data_dir_message() -> &'static str {
     if zssh_platform_windows::locale::system_is_chinese() {
-        "ZeeTerm 找不到保存数据的位置（%APPDATA% 和系统的「应用数据」文件夹都不可用），为避免把凭据和主机写进会被清理的临时目录，程序已退出。\n\n请从开始菜单或桌面快捷方式正常启动；如果需要指定位置，可以设置环境变量 ZSSH_DATA_DIR。" // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
+        #[cfg(windows)]
+        const MESSAGE: &str = "ZeeTerm 找不到保存数据的位置（%APPDATA% 和系统的「应用数据」文件夹都不可用），为避免把凭据和主机写进会被清理的临时目录，程序已退出。\n\n请从开始菜单或桌面快捷方式正常启动；如果需要指定位置，可以设置环境变量 ZSSH_DATA_DIR。"; // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
+        #[cfg(target_os = "macos")]
+        const MESSAGE: &str = "ZeeTerm 找不到保存数据的位置（~/Library/Application Support 不可用），为避免把凭据和主机写进会被清理的临时目录，程序已退出。\n\n请确认当前用户的主目录可用；如果需要指定位置，可以设置环境变量 ZSSH_DATA_DIR。"; // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
+        #[cfg(not(any(windows, target_os = "macos")))]
+        const MESSAGE: &str = "ZeeTerm 找不到保存数据的位置，为避免把凭据和主机写进会被清理的临时目录，程序已退出。\n\n如果需要指定位置，可以设置环境变量 ZSSH_DATA_DIR。"; // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
+        MESSAGE
     } else {
-        "ZeeTerm cannot find a place to keep its data (neither %APPDATA% nor the system Application Data folder is available). To avoid putting credentials and hosts in a temporary folder that may be cleaned up, ZeeTerm has exited.\n\nStart it normally from the Start menu or a desktop shortcut, or set the ZSSH_DATA_DIR environment variable to choose a location."
+        #[cfg(windows)]
+        const MESSAGE: &str = "ZeeTerm cannot find a place to keep its data (neither %APPDATA% nor the system Application Data folder is available). To avoid putting credentials and hosts in a temporary folder that may be cleaned up, ZeeTerm has exited.\n\nStart it normally from the Start menu or a desktop shortcut, or set the ZSSH_DATA_DIR environment variable to choose a location.";
+        #[cfg(target_os = "macos")]
+        const MESSAGE: &str = "ZeeTerm cannot find a place to keep its data (~/Library/Application Support is unavailable). To avoid putting credentials and hosts in a temporary folder that may be cleaned up, ZeeTerm has exited.\n\nCheck that your home folder is available, or set the ZSSH_DATA_DIR environment variable to choose a location.";
+        #[cfg(not(any(windows, target_os = "macos")))]
+        const MESSAGE: &str = "ZeeTerm cannot find a place to keep its data. To avoid putting credentials and hosts in a temporary folder that may be cleaned up, ZeeTerm has exited.\n\nSet the ZSSH_DATA_DIR environment variable to choose a location.";
+        MESSAGE
     }
 }
 
@@ -418,6 +428,63 @@ fn show_fatal(text: &str) {
     eprintln!("{text}");
 }
 
+/// 第二个实例启动时提示“已经在运行”。
+///
+/// macOS 上还不能把已有窗口带到前面，无声退出会让用户以为双击没有反应。
+/// 这里用系统对话框说一声；对话框起不来时至少写到 stderr。
+#[cfg(target_os = "macos")]
+pub fn notify_already_running() {
+    let text = if zssh_platform_windows::locale::system_is_chinese() {
+        "ZeeTerm 已经在运行。请在程序坞里点它的图标切回去；再次双击不会打开新的窗口。"
+    } else {
+        "ZeeTerm is already running. Click its icon in the Dock to switch to it; opening it again does not create another window."
+    };
+    // osascript 是系统自带的，不依赖本程序有没有签名。失败也不影响退出。
+    let _ = std::process::Command::new("/usr/bin/osascript")
+        .args([
+            "-e",
+            &format!("display alert \"ZeeTerm\" message \"{text}\""),
+        ])
+        .status();
+    eprintln!("{text}");
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn notify_already_running() {}
+
+/// 系统给的“应用数据”基准目录（还不是 ZeeTerm 自己的目录）。
+#[cfg(windows)]
+fn platform_data_base() -> Option<PathBuf> {
+    let usable = |dir: PathBuf| dir.is_absolute().then_some(dir);
+    std::env::var_os("APPDATA")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .and_then(usable)
+        .or_else(|| known_roaming_appdata().and_then(usable))
+}
+
+/// macOS 的 `~/Library/Application Support`（用 HOME，不猜别的路径）。
+#[cfg(target_os = "macos")]
+fn platform_data_base() -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME").filter(|dir| !dir.is_empty())?);
+    home.is_absolute()
+        .then(|| home.join("Library").join("Application Support"))
+}
+
+/// 其他 Unix 的 XDG data 目录；没有 `XDG_DATA_HOME` 时用 `~/.local/share`。
+#[cfg(not(any(windows, target_os = "macos")))]
+fn platform_data_base() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("XDG_DATA_HOME").filter(|dir| !dir.is_empty()) {
+        let dir = PathBuf::from(dir);
+        if dir.is_absolute() {
+            return Some(dir);
+        }
+    }
+    let home = PathBuf::from(std::env::var_os("HOME").filter(|dir| !dir.is_empty())?);
+    home.is_absolute()
+        .then(|| home.join(".local").join("share"))
+}
+
 /// Windows 的「漫游应用数据」已知文件夹（就是平时 `%APPDATA%` 指向的地方）。
 #[cfg(windows)]
 fn known_roaming_appdata() -> Option<PathBuf> {
@@ -434,26 +501,15 @@ fn known_roaming_appdata() -> Option<PathBuf> {
     }
 }
 
-#[cfg(not(windows))]
-fn known_roaming_appdata() -> Option<PathBuf> {
-    None
-}
-
-/// 选数据目录。空字符串当作没设（空的 `APPDATA` 拼出来是相对路径 `ZeeTerm`，会落到当前目录）；
-/// `APPDATA` 和系统文件夹都必须是绝对路径。
+/// 选数据目录。空字符串当作没设（空的 `ZSSH_DATA_DIR` 拼出来是相对路径）；基准目录必须是绝对路径。
 fn resolve_data_dir(
     override_dir: Option<std::ffi::OsString>,
-    appdata: Option<std::ffi::OsString>,
-    known_appdata: impl FnOnce() -> Option<PathBuf>,
+    base: Option<PathBuf>,
 ) -> Option<PathBuf> {
     if let Some(dir) = override_dir.filter(|dir| !dir.is_empty()) {
         return Some(PathBuf::from(dir));
     }
-    let usable = |dir: PathBuf| dir.is_absolute().then_some(dir);
-    appdata
-        .map(PathBuf::from)
-        .and_then(usable)
-        .or_else(|| known_appdata().and_then(usable))
+    base.filter(|dir| dir.is_absolute())
         .map(|base| base.join(crate::product::DATA_DIR_NAME))
 }
 
@@ -662,40 +718,35 @@ mod tests {
     }
 
     #[test]
-    fn the_default_data_dir_is_zeeterm_under_appdata() {
-        let appdata = std::ffi::OsString::from(r"C:\data\roaming");
-        let no_known = || None;
+    fn the_default_data_dir_is_zeeterm_under_the_platform_base() {
+        let base = std::env::temp_dir().join("zssh-settings-base");
         assert_eq!(
-            resolve_data_dir(None, Some(appdata.clone()), no_known),
-            Some(PathBuf::from(r"C:\data\roaming").join("ZeeTerm"))
+            resolve_data_dir(None, Some(base.clone())),
+            Some(base.join("ZeeTerm"))
         );
         // 环境变量优先；也不再落到 Tauri 版 Z-SSH 的目录下。
         assert_eq!(
-            resolve_data_dir(Some(r"D:\isolated".into()), Some(appdata.clone()), no_known),
+            resolve_data_dir(Some(r"D:\isolated".into()), Some(base.clone())),
             Some(PathBuf::from(r"D:\isolated"))
         );
-        let default = resolve_data_dir(None, Some(appdata), no_known).unwrap();
+        let default = resolve_data_dir(None, Some(base)).unwrap();
         assert!(!default.to_string_lossy().contains("Z-SSH"));
     }
 
     #[test]
-    fn a_missing_appdata_asks_the_system_folder_and_never_falls_back_to_temp() {
-        let known = || Some(PathBuf::from(r"C:\Users\x\AppData\Roaming"));
-        let expected = Some(PathBuf::from(r"C:\Users\x\AppData\Roaming").join("ZeeTerm"));
-        // 没有 APPDATA、APPDATA 是空的、APPDATA 是相对路径：都去问系统文件夹。
-        assert_eq!(resolve_data_dir(None, None, known), expected);
-        assert_eq!(resolve_data_dir(None, Some("".into()), known), expected);
+    fn a_missing_or_relative_base_never_falls_back_to_temp() {
+        // 基准目录拿不到、是空的或相对路径：没有数据目录，绝不退回临时目录。
+        assert_eq!(resolve_data_dir(None, None), None);
         assert_eq!(
-            resolve_data_dir(None, Some("roaming".into()), known),
-            expected
+            resolve_data_dir(None, Some(PathBuf::from("relative"))),
+            None
         );
         // 空的 ZSSH_DATA_DIR 当作没设。
-        assert_eq!(resolve_data_dir(Some("".into()), None, known), expected);
-        // 系统文件夹也拿不到（或不是绝对路径）：没有数据目录，绝不退回临时目录。
-        assert_eq!(resolve_data_dir(None, None, || None), None);
+        assert_eq!(resolve_data_dir(Some("".into()), None), None);
+        // 非空 ZSSH_DATA_DIR 按用户给的路径用（这是产品功能，允许自定义位置）。
         assert_eq!(
-            resolve_data_dir(None, Some("".into()), || Some(PathBuf::from("relative"))),
-            None
+            resolve_data_dir(Some(r"D:\isolated".into()), None),
+            Some(PathBuf::from(r"D:\isolated"))
         );
     }
 

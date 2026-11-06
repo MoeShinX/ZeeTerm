@@ -10,7 +10,9 @@ use crate::store::Database;
 use crate::sync::crypto::{seal_with, KdfParams, NONCE_BYTES, SALT_BYTES};
 use crate::sync::engine::SyncEngine;
 use crate::sync::offline::OfflineImportMode;
-use crate::sync::sealer::{DpapiSealer, SecretSealer, TestSealer};
+#[cfg(windows)]
+use crate::sync::sealer::DpapiSealer;
+use crate::sync::sealer::{SecretSealer, TestSealer};
 use crate::test_util::TestDir;
 
 const QUICK_COMMANDS: &str = r#"[{"id":"q1","name":"磁盘","command":"df -h","enter":true},{"id":"q2","name":"进程","command":"ps aux","enter":true}]"#;
@@ -232,6 +234,9 @@ fn reads_hosts_groups_credentials_proxies_fingerprints_and_settings() {
     assert!(snap.tombstones.is_empty());
 }
 
+// 直接读 Z-SSH 的原机密文靠 DPAPI（当前 Windows 用户）。没有 DPAPI 的平台
+// 走加密导出/导入，这条只在 Windows 上验证。
+#[cfg(windows)]
 #[test]
 fn the_real_dpapi_secrets_of_the_same_windows_user_can_be_read() {
     // 真正的 Z-SSH 用 DPAPI 加密；同一个 Windows 用户下 ZeeTerm 直接解得开。

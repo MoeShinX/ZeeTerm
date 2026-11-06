@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use crate::ai::agent::download::{download_to, verify_download, DownloadError};
 
-use super::detect::{find_vcxsrv, VcXsrvInstall};
+use super::detect::{find_vcxsrv_impl, VcXsrvInstall};
 use super::system::LocalSystem;
 
 /// 固定的、已核实的安装包信息。
@@ -72,6 +72,8 @@ pub fn pinned_source() -> InstallerSource {
 
 #[derive(Debug, thiserror::Error)]
 pub enum InstallError {
+    #[error("只支持在 Windows 上安装 VcXsrv")]
+    UnsupportedPlatform,
     #[error("用户取消")]
     Cancelled,
     #[error("{0}")]
@@ -130,6 +132,21 @@ pub async fn install_vcxsrv(
     on_progress: impl FnMut(u64, u64) + Send,
     cancel: &AtomicBool,
 ) -> Result<VcXsrvInstall, InstallError> {
+    if !cfg!(windows) {
+        return Err(InstallError::UnsupportedPlatform);
+    }
+    install_vcxsrv_impl(client, source, work_dir, runner, sys, on_progress, cancel).await
+}
+
+async fn install_vcxsrv_impl(
+    client: &reqwest::Client,
+    source: &InstallerSource,
+    work_dir: &Path,
+    runner: Arc<dyn InstallerRunner>,
+    sys: Arc<dyn LocalSystem>,
+    on_progress: impl FnMut(u64, u64) + Send,
+    cancel: &AtomicBool,
+) -> Result<VcXsrvInstall, InstallError> {
     let installer = download_installer(client, source, work_dir, on_progress, cancel).await?;
     let run_path = installer.clone();
     let result = tokio::task::spawn_blocking(move || runner.run_elevated(&run_path, SILENT_ARGS))
@@ -143,7 +160,7 @@ pub async fn install_vcxsrv(
         code => return Err(InstallError::InstallerFailed(code)),
     }
     let sys_for_find = Arc::clone(&sys);
-    tokio::task::spawn_blocking(move || find_vcxsrv(sys_for_find.as_ref()))
+    tokio::task::spawn_blocking(move || find_vcxsrv_impl(sys_for_find.as_ref()))
         .await
         .ok()
         .flatten()
@@ -209,7 +226,7 @@ impl InstallerRunner for UacRunner {
 #[cfg(not(windows))]
 impl InstallerRunner for UacRunner {
     fn run_elevated(&self, _installer: &Path, _args: &[&str]) -> Result<i32, InstallError> {
-        Err(InstallError::Launch("只支持在 Windows 上安装".to_owned()))
+        Err(InstallError::UnsupportedPlatform)
     }
 }
 
@@ -307,6 +324,35 @@ mod tests {
         crate::ai::agent::download::build_client(None).expect("客户端")
     }
 
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn unsupported_platform_never_downloads_or_runs_an_installer() {
+        let work = TestDir::new("x11-install-unsupported");
+        let runner = Arc::new(FakeRunner {
+            code: Ok(0),
+            calls: Mutex::new(Vec::new()),
+            install_into: None,
+        });
+        let err = install_vcxsrv(
+            &client(),
+            &source_for("invalid-url".into(), b"stub"),
+            &work,
+            runner.clone(),
+            Arc::new(FakeSystem::default()),
+            |_, _| panic!("不应下载"),
+            &AtomicBool::new(false),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, InstallError::UnsupportedPlatform));
+        assert!(runner.calls.lock().unwrap().is_empty());
+        assert!(!work.join("stub-installer.exe").exists());
+        assert!(matches!(
+            UacRunner.run_elevated(&work.join("unused.exe"), SILENT_ARGS),
+            Err(InstallError::UnsupportedPlatform)
+        ));
+    }
+
     #[test]
     fn the_pinned_release_is_the_official_github_asset() {
         let source = pinned_source();
@@ -327,7 +373,7 @@ mod tests {
         let body = b"pretend installer".to_vec();
         let url = serve(body.clone(), false).await;
         let work = TestDir::new("x11-install-ok");
-        let exe = PathBuf::from(r"C:\Program Files\VcXsrv\vcxsrv.exe");
+        let exe = work.join("VcXsrv").join("vcxsrv.exe");
         let sys = FakeSystem::default();
         let runner = Arc::new(FakeRunner {
             code: Ok(0),
@@ -336,12 +382,12 @@ mod tests {
         });
         sys.with(|s| {
             s.registry.push(RegistryInstall {
-                dir: PathBuf::from(r"C:\Program Files\VcXsrv"),
+                dir: work.join("VcXsrv"),
                 version: Some("0.0.0-test".into()),
             })
         });
         let progress = Mutex::new(Vec::new());
-        let installed = install_vcxsrv(
+        let installed = install_vcxsrv_impl(
             &client(),
             &source_for(url, &body),
             &work,
@@ -374,7 +420,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             install_into: None,
         });
-        let err = install_vcxsrv(
+        let err = install_vcxsrv_impl(
             &client(),
             &source,
             &work,
@@ -451,7 +497,7 @@ mod tests {
                 calls: Mutex::new(Vec::new()),
                 install_into: None,
             });
-            let err = install_vcxsrv(
+            let err = install_vcxsrv_impl(
                 &client(),
                 &source_for(url.clone(), &body),
                 &work,
@@ -478,7 +524,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             install_into: None,
         });
-        let err = install_vcxsrv(
+        let err = install_vcxsrv_impl(
             &client(),
             &source_for(url, &body),
             &work,

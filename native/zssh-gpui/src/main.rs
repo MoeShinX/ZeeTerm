@@ -4,7 +4,7 @@
 //! 数据目录按 `ZSSH_DATA_DIR` 决定。
 
 // 发行版用 GUI 子系统：双击 exe 不再多出一个控制台窗口。调试构建保留控制台，方便看日志。
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod about_view;
 mod agent_chat;
@@ -94,12 +94,15 @@ mod tray;
 mod typography;
 mod update;
 mod update_auto;
+#[cfg(target_os = "macos")]
+mod vault;
 mod window_state;
 mod x11_glue;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 use main_window::MainWindow;
+#[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::sync::Mutex;
 #[cfg(debug_assertions)]
@@ -114,6 +117,9 @@ static INSTANCE: Mutex<Option<InstanceGuard>> = Mutex::new(None);
 fn main() {
     // 先确认有正式的数据目录：拿不到就提示退出，不让凭据库、主机库落进会被清理的临时目录。
     settings::ensure_data_dir_or_exit();
+    // macOS 的秘密用钥匙串里的资料库密钥加密。要在任何读写密文之前接上。
+    #[cfg(target_os = "macos")]
+    zssh_core::store::secrets::set_vault_backend(&vault::KEYCHAIN);
     let app = gpui_kit::application().with_assets(icons::AppAssets);
 
     app.run(move |cx| {
@@ -146,7 +152,11 @@ fn main() {
                 }
             }
             None => {
-                single_instance::focus_existing(MAIN_WINDOW_PROP);
+                if !single_instance::focus_existing(MAIN_WINDOW_PROP) {
+                    // macOS 还不能把已有窗口带到前面：不能无声退出，否则用户会以为
+                    // 双击没反应、反复再开。告诉他已经在运行，然后退出。
+                    settings::notify_already_running();
+                }
                 // 还没建窗口和托盘，直接退出；cx.quit() 在空事件循环里不一定收得住。
                 std::process::exit(0);
             }
@@ -200,6 +210,7 @@ fn main() {
             window.set_window_title(product::NAME);
             let view = cx.new(|cx| MainWindow::new(window, cx));
             window.focus(&view.read(cx).focus_handle(), cx);
+            #[cfg(windows)]
             if let Ok(handle) = window.window_handle()
                 && let RawWindowHandle::Win32(win32) = handle.as_raw()
             {
@@ -209,6 +220,7 @@ fn main() {
             // 这时必须真正退出。两种情况都记住窗口位置和布局。
             let close_view = view.clone();
             window.on_window_should_close(cx, move |window, cx| match tray::close_action() {
+                #[cfg(any(windows, test))]
                 tray::CloseAction::HideToTray => {
                     close_view.update(cx, |this, cx| {
                         this.save_state(window);
@@ -223,8 +235,7 @@ fn main() {
                     if !close_view.update(cx, |this, cx| this.request_quit(cx)) {
                         return false;
                     }
-                    close_view.update(cx, |this, cx| this.on_close(window, cx));
-                    cx.quit();
+                    close_view.update(cx, |this, cx| this.do_quit(window, cx));
                     true
                 }
             });
@@ -244,6 +255,21 @@ fn main() {
         file_window::register_main(cx, handle, view.downgrade());
 
         tray::spawn(cx, handle, view.clone());
+
+        // 调试钩子：启动后若干毫秒自动退出，用来做“连续启动 / 关闭”的验证。
+        // release 构建里 dev_hooks 读不到环境变量，这条路径不存在。
+        #[cfg(debug_assertions)]
+        if let Some(millis) =
+            dev_hooks::var("ZSSH_QUIT_AFTER_MS").and_then(|value| value.trim().parse::<u64>().ok())
+        {
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(millis))
+                    .await;
+                cx.update(|app| app.quit());
+            })
+            .detach();
+        }
 
         // 启动隐藏：等窗口真正显示后再收进托盘，否则会被平台的首次显示覆盖。
         if settings_store::snapshot(cx).start_hidden {

@@ -223,6 +223,16 @@ pub fn list(
     device_id: &str,
     now: i64,
 ) -> Result<Vec<ConflictView>, SyncError> {
+    // 解密发生在数据库锁外，必须先把本库身份带上；否则会落到默认账户上解不开。
+    db.with_vault_scope(|| list_inner(db, sealer, device_id, now))
+}
+
+fn list_inner(
+    db: &crate::store::Database,
+    sealer: &dyn SecretSealer,
+    device_id: &str,
+    now: i64,
+) -> Result<Vec<ConflictView>, SyncError> {
     let rows = db.with_conn_as(|conn| -> Result<Vec<Row>, SyncError> {
         purge_expired(conn, now)?;
         read_rows(conn)
@@ -308,6 +318,17 @@ fn known_uid(uid: &Option<String>, existing: impl Fn(&str) -> bool) -> Option<St
 /// 现在的内容。结果写回本地（和同步用同一套“写前重读比较”），之后正常参与下次
 /// 同步。成功后这条冲突被清掉。
 pub fn use_other(
+    db: &crate::store::Database,
+    sealer: &dyn SecretSealer,
+    device_id: &str,
+    known_hosts_path: Option<&std::path::Path>,
+    id: i64,
+    now: i64,
+) -> Result<(), SyncError> {
+    db.with_vault_scope(|| use_other_inner(db, sealer, device_id, known_hosts_path, id, now))
+}
+
+fn use_other_inner(
     db: &crate::store::Database,
     sealer: &dyn SecretSealer,
     device_id: &str,

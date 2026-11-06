@@ -822,12 +822,11 @@ fn read_at_impl(file: &std::fs::File, offset: u64, buf: &mut [u8]) -> std::io::R
     file.seek_read(buf, offset)
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn read_at_impl(file: &std::fs::File, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
-    // 其它平台：借助 pread 语义（这里用 seek + read，调用方保证单个句柄同一时刻只读一次）。
-    let mut file = file;
-    file.seek(SeekFrom::Start(offset))?;
-    file.read(buf)
+    // 克隆的句柄共享游标；并行块必须使用 pread，不能 seek 后再 read。
+    use std::os::unix::fs::FileExt;
+    file.read_at(buf, offset)
 }
 
 #[cfg(windows)]
@@ -847,17 +846,61 @@ fn write_file_at(file: &std::fs::File, offset: u64, data: &[u8]) -> std::io::Res
     Ok(written)
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn write_file_at(file: &std::fs::File, offset: u64, data: &[u8]) -> std::io::Result<usize> {
-    let mut file = file;
-    file.seek(SeekFrom::Start(offset))?;
-    file.write_all(data)?;
+    use std::os::unix::fs::FileExt;
+    file.write_all_at(data, offset)?;
     Ok(data.len())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloned_handles_read_and_write_independent_offsets_concurrently() {
+        let dir = crate::test_util::TestDir::new("offset-io");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.join("blocks.bin"))
+            .unwrap();
+        file.set_len(8 * 4096).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        std::thread::scope(|scope| {
+            for block in 0..8_u64 {
+                let file = file.try_clone().unwrap();
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    let data = vec![block as u8 + 1; 4096];
+                    barrier.wait();
+                    for _ in 0..64 {
+                        write_file_at(&file, block * 4096, &data).unwrap();
+                        let mut read = vec![0; 4096];
+                        let mut offset = 0;
+                        while offset < read.len() {
+                            let n = read_at_impl(
+                                &file,
+                                block * 4096 + offset as u64,
+                                &mut read[offset..],
+                            )
+                            .unwrap();
+                            assert!(n > 0);
+                            offset += n;
+                        }
+                        assert_eq!(read, data);
+                    }
+                });
+            }
+        });
+        let bytes = std::fs::read(dir.join("blocks.bin")).unwrap();
+        for block in 0..8 {
+            assert!(bytes[block * 4096..(block + 1) * 4096]
+                .iter()
+                .all(|b| *b == block as u8 + 1));
+        }
+    }
 
     #[test]
     fn remote_source_size_never_uses_a_link_text_length() {

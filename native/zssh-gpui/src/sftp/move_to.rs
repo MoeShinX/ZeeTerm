@@ -41,6 +41,9 @@ pub(super) fn cross_device_note() -> &'static str {
 fn path_key(side: Side, path: &str) -> String {
     match side {
         Side::Remote => normalize(path),
+        Side::Local if !cfg!(windows) => zssh_core::pathnorm::normalize(Path::new(path))
+            .to_string_lossy()
+            .into_owned(),
         Side::Local => {
             let mut text = path.replace('/', "\\");
             if let Some(rest) = text.strip_prefix("\\\\?\\UNC\\") {
@@ -64,7 +67,7 @@ fn path_key(side: Side, path: &str) -> String {
 fn separator(side: Side) -> char {
     match side {
         Side::Remote => '/',
-        Side::Local => '\\',
+        Side::Local => std::path::MAIN_SEPARATOR,
     }
 }
 
@@ -175,6 +178,14 @@ fn dest_shape(side: Side, raw: &str) -> Result<String, String> {
         Side::Local => {
             if let NameCheck::Bad(reason) = validate_local_dir(text) {
                 return Err(reason);
+            }
+            if !cfg!(windows) {
+                let path = Path::new(text);
+                return if path.is_absolute() {
+                    Ok(zssh_core::pathnorm::normalize(path).display().to_string())
+                } else {
+                    Err(t(super::SftpMsg::MoveDestNeedAbsoluteRemote).to_owned())
+                };
             }
             let normalized = text.replace('/', "\\");
             let drive = normalized.len() >= 2
@@ -701,7 +712,7 @@ mod tests {
     fn entry(side: Side, dir: &str, name: &str, kind: EntryKind) -> Entry {
         let path = match side {
             Side::Remote => format!("{}/{name}", dir.trim_end_matches('/')),
-            Side::Local => format!("{}\\{name}", dir.trim_end_matches('\\')),
+            Side::Local => std::path::Path::new(dir).join(name).display().to_string(),
         };
         Entry {
             name: name.to_owned(),
@@ -722,6 +733,7 @@ mod tests {
         entry(Side::Remote, "/srv/app", name, kind)
     }
 
+    #[cfg(windows)]
     fn local(name: &str, kind: EntryKind) -> Entry {
         entry(Side::Local, "D:\\work", name, kind)
     }
@@ -747,6 +759,7 @@ mod tests {
         assert!(same_or_inside(Side::Remote, "/anything", "/"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn local_paths_ignore_case_slashes_prefixes_and_trailing_separators() {
         assert!(same_or_inside(Side::Local, "d:\\Work\\Sub", "D:\\work"));
@@ -770,6 +783,7 @@ mod tests {
         assert!(!same_or_inside(Side::Local, "E:\\work", "D:\\work"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn live_transfers_block_the_items_they_touch_in_either_direction() {
         use super::transfer_blocks as blocks;
@@ -835,6 +849,7 @@ mod tests {
         assert!(!related(Side::Remote, "/a/b", "/a/c"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn target_paths_are_joined_with_the_path_tools_not_by_hand() {
         assert_eq!(target_path(Side::Remote, "/", "a.txt"), "/a.txt");
@@ -855,6 +870,7 @@ mod tests {
 
     // ---- 目标检查 ----
 
+    #[cfg(windows)]
     #[test]
     fn a_destination_equal_to_the_source_folder_is_refused_with_the_card_wording() {
         let entries = [
@@ -882,6 +898,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_folder_cannot_go_into_itself_or_below_itself() {
         let entries = [remote("data", EntryKind::Dir)];
@@ -923,6 +940,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn bad_destinations_say_why_or_stay_silent_when_empty() {
         let entries = [remote("a", EntryKind::File)];
@@ -1400,6 +1418,7 @@ mod tests {
         ));
     }
 
+    #[cfg(windows)]
     #[test]
     fn local_jobs_build_windows_targets() {
         let mut job = MoveJob::new(
@@ -1410,5 +1429,47 @@ mod tests {
         );
         let next = job.advance(&none);
         assert_eq!(attempt(&next), ("报告 1.txt", "D:\\out\\报告 1.txt", false));
+    }
+    #[cfg(not(windows))]
+    #[test]
+    fn local_posix_paths_validate_compare_and_build_jobs() {
+        let files = [entry(Side::Local, "/work", "报告 1.txt", EntryKind::File)];
+        assert_eq!(
+            check_destination(Side::Local, &files, "/work/"),
+            DestCheck::SameFolder
+        );
+        assert_eq!(
+            check_destination(Side::Local, &files, "/out/"),
+            DestCheck::Ok("/out".into())
+        );
+        assert!(matches!(
+            check_destination(Side::Local, &files, "relative"),
+            DestCheck::Invalid(_)
+        ));
+        let dirs = [entry(Side::Local, "/work", "data", EntryKind::Dir)];
+        for dest in ["/work/data", "/work/data/sub", "/work/data/./sub/.."] {
+            assert_eq!(
+                check_destination(Side::Local, &dirs, dest),
+                DestCheck::IntoSelf
+            );
+        }
+        assert!(check_destination(Side::Local, &dirs, "/work/data2").is_ok());
+        assert!(!super::same_path(Side::Local, "/work/Data", "/work/data"));
+        assert!(same_or_inside(Side::Local, "/work/data/sub", "/work/data"));
+        assert!(!same_or_inside(Side::Local, "/work/data2", "/work/data"));
+        assert!(super::transfer_blocks(
+            Side::Local,
+            "/work/data",
+            super::Direction::Upload,
+            "/work/data/a",
+            "/remote"
+        ));
+        assert_eq!(target_path(Side::Local, "/", "a.txt"), "/a.txt");
+        assert_eq!(target_path(Side::Remote, "/srv/", "a.txt"), "/srv/a.txt");
+        let mut job = MoveJob::new(2, Side::Local, "/out".into(), files.to_vec());
+        assert_eq!(
+            attempt(&job.advance(&none)),
+            ("报告 1.txt", "/out/报告 1.txt", false)
+        );
     }
 }

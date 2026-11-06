@@ -5,6 +5,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(dead_code)]
 
+use crate::common::vault;
+
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -43,7 +45,7 @@ impl Machine {
         let guard = temp_dir(name);
         let dir = guard.path().to_path_buf();
         Self {
-            db: Database::open(&dir.join("zssh.db")).expect("打开库"),
+            db: vault::open(&dir.join("zssh.db")).expect("打开库"),
             dir,
             device,
             _guard: guard,

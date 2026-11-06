@@ -1065,7 +1065,16 @@ mod tests {
 
         let shim = |name: &str, output: &str| {
             let path = tool_dir.join(name);
+            #[cfg(windows)]
             std::fs::write(&path, format!("@echo off\r\necho {output}\r\n")).expect("写垫片");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{output}'\n"))
+                    .expect("写垫片");
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                    .expect("可执行权限");
+            }
             path.to_string_lossy().into_owned()
         };
         let cases = [

@@ -6,6 +6,8 @@
 pub mod activity;
 pub mod clipboard;
 pub mod ime;
+#[cfg(target_os = "macos")]
+pub mod keychain;
 pub mod locale;
 pub mod single_instance;
 pub mod theme;

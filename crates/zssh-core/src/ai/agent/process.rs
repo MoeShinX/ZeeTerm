@@ -65,23 +65,89 @@ fn clip_tail(text: &str) -> String {
     format!("…{kept}")
 }
 
-/// 杀掉整个进程树（智能体底下挂着 zssh-mcp 等子进程）。
-pub async fn kill_process_tree(child: &mut tokio::process::Child) -> std::io::Result<()> {
-    let Some(pid) = child.id() else {
-        // 已经退出了，收尸。
-        let _ = child.wait().await;
+/// 独立进程组让 Unix 收尾只影响这个智能体，不能向应用或用户终端所在的组发信号。
+pub fn configure_process_group(cmd: &mut tokio::process::Command) {
+    #[cfg(unix)]
+    cmd.process_group(0);
+    cmd.kill_on_drop(true);
+}
+
+#[cfg(unix)]
+fn kill_unix_group(child: &tokio::process::Child) -> std::io::Result<()> {
+    unsafe extern "C" {
+        fn getpgid(pid: std::ffi::c_int) -> std::ffi::c_int;
+        fn kill(pid: std::ffi::c_int, signal: std::ffi::c_int) -> std::ffi::c_int;
+    }
+    let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) else {
         return Ok(());
     };
-    let mut kill = tokio::process::Command::new("taskkill");
-    kill.args(["/PID", &pid.to_string(), "/T", "/F"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let status = crate::process_util::hide_console_async(&mut kill)
-        .status()
+    // SAFETY: 只查询仍由 Child 持有、尚未回收的 PID。
+    // macOS 对僵尸组长的 getpgid 返回 ESRCH，但它的进程组可能还有子孙。
+    // 不先 try_wait：未回收的 PID 不会重用，负 PID 不会指向别人的新组。
+    let group = unsafe { getpgid(pid) };
+    let exited = group == -1 && std::io::Error::last_os_error().raw_os_error() == Some(3);
+    if pid > 1 && (group == pid || exited) {
+        // SAFETY: 负 PID 只能指向这个未回收子进程创建的组；SIGKILL 为 9。
+        if unsafe { kill(-pid, 9) } != 0 {
+            let err = std::io::Error::last_os_error();
+            // ESRCH 表示整个组已经消失，清理完成。
+            if err.raw_os_error() != Some(3) {
+                return Err(err);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 析构不能依赖异步运行时仍然存活，也不能无限等待外部命令。
+pub fn kill_process_tree_on_drop(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Err(err) = kill_unix_group(child) {
+        tracing::warn!(%err, "结束智能体进程组失败");
+    }
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        let mut kill = std::process::Command::new("taskkill");
+        kill.args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // 不等待 taskkill；应用级 Job Object 仍提供退出兜底。
+        let _ = crate::process_util::hide_console(&mut kill).spawn();
+    }
+    #[cfg(not(windows))]
+    let _ = child.start_kill();
+}
+
+/// 杀掉整个进程树（智能体底下挂着 zssh-mcp 等子进程），回收等待有上限。
+pub async fn kill_process_tree(child: &mut tokio::process::Child) -> std::io::Result<()> {
+    #[cfg(unix)]
+    let group_result = kill_unix_group(child);
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        let mut kill = tokio::process::Command::new("taskkill");
+        kill.args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            crate::process_util::hide_console_async(&mut kill).status(),
+        )
         .await;
-    let _ = child.wait().await;
-    status.map(|_| ())
+        if !matches!(result, Ok(Ok(status)) if status.success()) {
+            tracing::warn!("taskkill 未能完成，改为直接结束智能体子进程");
+        }
+    }
+    // 即使杀组失败或子进程没有独立组，也必须结束直属子进程，避免 wait 卡住。
+    child.start_kill()?;
+    tokio::time::timeout(Duration::from_secs(2), child.wait())
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "等待智能体退出超时"))??;
+    #[cfg(unix)]
+    group_result?;
+    Ok(())
 }
 
 /// 一个"句柄关掉就结束里面全部进程"的 Job Object（K06）。
@@ -247,6 +313,105 @@ pub const TAIL_LINES: usize = 40;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    async fn unix_tree_fixture() -> (tokio::process::Child, tokio::process::ChildStdout) {
+        use tokio::io::AsyncReadExt;
+        let mut cmd = super::super::discovery::build_command(std::path::Path::new("/bin/sh"));
+        // 后台子进程继承 stdout，只有整组都退出，读端才会 EOF。
+        cmd.args(["-c", "sleep 30 & printf ready; wait"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        let mut child = cmd.spawn().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let mut ready = [0; 5];
+        tokio::time::timeout(Duration::from_secs(3), stdout.read_exact(&mut ready))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&ready, b"ready");
+        (child, stdout)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_cleanup_kills_descendants_and_preserves_other_groups() {
+        use tokio::io::AsyncReadExt;
+        let mut unrelated = tokio::process::Command::new("/bin/sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let (mut child, mut stdout) = unix_tree_fixture().await;
+        let result =
+            tokio::time::timeout(Duration::from_secs(3), kill_process_tree(&mut child)).await;
+        let mut output = Vec::new();
+        let eof =
+            tokio::time::timeout(Duration::from_secs(3), stdout.read_to_end(&mut output)).await;
+        let unrelated_alive = unrelated.try_wait().unwrap().is_none();
+        unrelated.kill().await.unwrap();
+        result.unwrap().unwrap();
+        eof.unwrap().unwrap();
+        assert!(unrelated_alive);
+        // 已回收的 Child 再次清理不能向旧 PID 发信号。
+        kill_process_tree(&mut child).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_drop_cleanup_kills_descendants() {
+        use tokio::io::AsyncReadExt;
+        let (mut child, mut stdout) = unix_tree_fixture().await;
+        kill_process_tree_on_drop(&mut child);
+        drop(child);
+        let mut output = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), stdout.read_to_end(&mut output))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_cleanup_without_private_group_only_kills_child() {
+        // 继承测试进程的组：错误地杀组会连测试进程一起结束。
+        let mut child = tokio::process::Command::new("/bin/sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), kill_process_tree(&mut child))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(child.try_wait().unwrap().is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_cleanup_after_leader_exits_still_kills_descendant() {
+        use tokio::io::AsyncReadExt;
+        let mut cmd = super::super::discovery::build_command(std::path::Path::new("/bin/sh"));
+        // 组长退出但还没被回收时，后台子进程仍须被收掉。
+        cmd.args(["-c", "sleep 30 & printf ready"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        let mut child = cmd.spawn().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let mut ready = [0; 5];
+        tokio::time::timeout(Duration::from_secs(3), stdout.read_exact(&mut ready))
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        kill_process_tree(&mut child).await.unwrap();
+        let mut output = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), stdout.read_to_end(&mut output))
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     #[test]
     fn tail_keeps_only_the_newest_lines() {

@@ -38,6 +38,7 @@ $steps = @(
     @{ Name = '原生 gate 构建';       DenyWarnings = $true; Args = @('build', '--manifest-path', 'native/Cargo.toml', '--workspace', '--profile', 'gate', '--locked') }
 )
 
+$savedVaultMemory = $env:ZSSH_VAULT_MEMORY
 $total = [System.Diagnostics.Stopwatch]::StartNew()
 $failed = @()
 try {
@@ -52,6 +53,14 @@ try {
     if ($i18nCode -ne 0) { $failed += 'i18n 覆盖检查' }
 
     foreach ($step in $steps) {
+        # 核心测试自行注入故障后端；原生测试依赖普通库构建，必须显式用内存钥匙串。
+        if ($IsMacOS) {
+            if ($step.Args -contains 'native/Cargo.toml') {
+                $env:ZSSH_VAULT_MEMORY = '1'
+            } else {
+                Remove-Item Env:ZSSH_VAULT_MEMORY -ErrorAction SilentlyContinue
+            }
+        }
         Write-Host ("==> {0}: cargo {1}" -f $step.Name, ($step.Args -join ' '))
         $watch = [System.Diagnostics.Stopwatch]::StartNew()
         if ($step.DenyWarnings) {
@@ -75,6 +84,11 @@ try {
         if ($code -ne 0) { $failed += $step.Name }
     }
 } finally {
+    if ($null -eq $savedVaultMemory) {
+        Remove-Item Env:ZSSH_VAULT_MEMORY -ErrorAction SilentlyContinue
+    } else {
+        $env:ZSSH_VAULT_MEMORY = $savedVaultMemory
+    }
     if ($ownDataDir) { Remove-Item -LiteralPath $ownDataDir -Recurse -Force -ErrorAction SilentlyContinue }
 }
 

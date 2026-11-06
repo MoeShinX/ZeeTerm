@@ -1,6 +1,12 @@
 ﻿[workspace]
 members = ["zssh-gpui", "tools/icons", "zssh-protocols", "zssh-regex", "zssh-session", "zssh-terminal", "zssh-update", "zssh-editor"]
 resolver = "2"
+exclude = ["vendor/block-0.1.6"]
+
+# block 0.1.6 has no newer upstream release; fix its uninhabited FFI static.
+# Pinned source, license and the exact local change are recorded in vendor/.
+[patch.crates-io]
+block = { path = "vendor/block-0.1.6" }
 
 [workspace.package]
 # 与根 workspace 的版本保持一致（有测试比对）：

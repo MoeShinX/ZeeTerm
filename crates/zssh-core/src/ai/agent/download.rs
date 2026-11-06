@@ -1,5 +1,5 @@
-//! 一键下载 opencode：查官方 GitHub Release、下载 Windows x64 zip、解压出
-//! `opencode.exe`。代理走 Z-SSH 的默认代理设置（拼好 URL 传进来）。
+//! 一键下载 opencode：查官方 GitHub Release、下载当前平台的 zip、解压可执行文件。
+//! Windows x64 与 macOS ARM64 使用各自的资产。代理走 Z-SSH 的默认代理设置（拼好 URL 传进来）。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,6 +10,18 @@ use serde::Serialize;
 pub const RELEASE_API: &str = "https://api.github.com/repos/anomalyco/opencode/releases/latest";
 /// 要下载的资产名（Windows x64 普通版；baseline 和 arm64 不选）。
 pub const WINDOWS_X64_ASSET: &str = "opencode-windows-x64.zip";
+pub const MACOS_ARM64_ASSET: &str = "opencode-darwin-arm64.zip";
+
+pub fn platform_asset() -> &'static str {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        MACOS_ARM64_ASSET
+    } else if cfg!(windows) {
+        WINDOWS_X64_ASSET
+    } else {
+        "unsupported-platform"
+    }
+}
+
 /// 下载地址必须在 GitHub 上（Release 资产的直链都是这个前缀，之后的重定向由 GitHub 发起）。
 const DOWNLOAD_URL_PREFIX: &str = "https://github.com/";
 /// 资产大小上限：远大于真实包（几十 MiB），只防一个异常的响应把磁盘写满。
@@ -90,7 +102,7 @@ fn redirect_allowed(url: &reqwest::Url) -> bool {
         .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
 }
 
-/// 查最新 Release 里的 Windows x64 资产。
+/// 查最新 Release 里的当前平台资产。
 pub async fn latest_release(client: &reqwest::Client) -> Result<ReleaseInfo, String> {
     let resp = client
         .get(RELEASE_API)
@@ -109,7 +121,7 @@ pub async fn latest_release(client: &reqwest::Client) -> Result<ReleaseInfo, Str
     parse_release(&body)
 }
 
-/// 从 Release JSON 里挑出 Windows x64 资产。
+/// 从 Release JSON 里挑出当前平台的资产，不回退到其他架构。
 pub fn parse_release(body: &serde_json::Value) -> Result<ReleaseInfo, String> {
     let version = body["tag_name"]
         .as_str()
@@ -119,8 +131,8 @@ pub fn parse_release(body: &serde_json::Value) -> Result<ReleaseInfo, String> {
     let assets = body["assets"].as_array().ok_or("Release 里没有 assets")?;
     let asset = assets
         .iter()
-        .find(|a| a["name"].as_str() == Some(WINDOWS_X64_ASSET))
-        .ok_or_else(|| format!("最新 Release 里没有 {WINDOWS_X64_ASSET}"))?;
+        .find(|a| a["name"].as_str() == Some(platform_asset()))
+        .ok_or_else(|| format!("最新 Release 里没有 {}", platform_asset()))?;
     // 下载的东西随后会被直接运行：没有能核对的摘要就不下（R-10 M8）。TLS 之外只有它能证明
     // 下下来的就是 Release 里那一份（代理 / 中间盒 / CDN 一侧被改过都能发现）。
     let sha256 = asset["digest"]
@@ -145,7 +157,7 @@ pub fn parse_release(body: &serde_json::Value) -> Result<ReleaseInfo, String> {
     }
     Ok(ReleaseInfo {
         version,
-        asset_name: WINDOWS_X64_ASSET.to_string(),
+        asset_name: platform_asset().to_string(),
         size,
         sha256,
         download_url,
@@ -275,6 +287,24 @@ pub fn extract_exe(zip_path: &Path, out_dir: &Path) -> Result<PathBuf, String> {
 
 /// 同 [`extract_exe`]，解出来的文件超过 `limit` 字节就删掉并报错。
 fn extract_exe_limited(zip_path: &Path, out_dir: &Path, limit: u64) -> Result<PathBuf, String> {
+    extract_named(zip_path, out_dir, limit, "opencode.exe")
+}
+
+pub fn extract_asset(zip_path: &Path, out_dir: &Path, asset: &str) -> Result<PathBuf, String> {
+    let name = match asset {
+        WINDOWS_X64_ASSET => "opencode.exe",
+        MACOS_ARM64_ASSET => "opencode",
+        _ => return Err("不支持的智能体安装包".to_owned()),
+    };
+    extract_named(zip_path, out_dir, MAX_EXTRACTED_BYTES, name)
+}
+
+fn extract_named(
+    zip_path: &Path,
+    out_dir: &Path,
+    limit: u64,
+    executable: &str,
+) -> Result<PathBuf, String> {
     let file = std::fs::File::open(zip_path).map_err(|e| format!("打开压缩包失败：{e}"))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("压缩包损坏或格式不对：{e}"))?;
@@ -289,16 +319,16 @@ fn extract_exe_limited(zip_path: &Path, out_dir: &Path, limit: u64) -> Result<Pa
         let is_exe = name
             .file_name()
             .and_then(|n| n.to_str())
-            .map(|n| n.eq_ignore_ascii_case("opencode.exe"))
+            .map(|n| n.eq_ignore_ascii_case(executable))
             .unwrap_or(false);
         if !is_exe {
             continue;
         }
         std::fs::create_dir_all(out_dir).map_err(|e| format!("创建目录失败：{e}"))?;
-        let dest = out_dir.join("opencode.exe");
+        let dest = out_dir.join(executable);
         if entry.size() > limit {
             return Err(format!(
-                "压缩包里的 opencode.exe 声称有 {} 字节，超过上限 {limit} 字节，没有解压",
+                "压缩包里的 {executable} 声称有 {} 字节，超过上限 {limit} 字节，没有解压",
                 entry.size()
             ));
         }
@@ -310,13 +340,19 @@ fn extract_exe_limited(zip_path: &Path, out_dir: &Path, limit: u64) -> Result<Pa
             drop(out);
             let _ = std::fs::remove_file(&dest);
             return Err(format!(
-                "解出来的 opencode.exe 超过上限 {limit} 字节，已删除"
+                "解出来的 {executable} 超过上限 {limit} 字节，已删除"
             ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            out.set_permissions(std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| format!("设置执行权限失败：{e}"))?;
         }
         return Ok(dest);
     }
     Err(format!(
-        "压缩包里没有 opencode.exe（{}）",
+        "压缩包里没有 {executable}（{}）",
         zip_path.display()
     ))
 }
@@ -325,8 +361,22 @@ fn extract_exe_limited(zip_path: &Path, out_dir: &Path, limit: u64) -> Result<Pa
 mod tests {
     use super::*;
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
-    fn parses_release_and_picks_x64_asset() {
+    fn mac_does_not_fall_back_to_windows_assets() {
+        assert_eq!(platform_asset(), MACOS_ARM64_ASSET);
+        let body = serde_json::json!({"tag_name": "v1.0.0", "assets": [{
+            "name": WINDOWS_X64_ASSET, "size": 10,
+            "digest": format!("sha256:{}", "ab".repeat(32)),
+            "browser_download_url": "https://github.com/example/tool/releases/download/v1/windows.zip"
+        }]});
+        assert!(parse_release(&body)
+            .unwrap_err()
+            .contains(MACOS_ARM64_ASSET));
+    }
+
+    #[test]
+    fn parses_release_and_picks_host_asset() {
         let body = serde_json::json!({
             "tag_name": "v1.19.0",
             "html_url": "https://github.com/anomalyco/opencode/releases/tag/v1.19.0",
@@ -335,16 +385,16 @@ mod tests {
                  "browser_download_url": "https://example.invalid/baseline.zip"},
                 {"name": "opencode-windows-arm64.zip", "size": 55000000,
                  "browser_download_url": "https://example.invalid/arm64.zip"},
-                {"name": "opencode-windows-x64.zip", "size": 62173956,
+                {"name": platform_asset(), "size": 62173956,
                  "digest": format!("sha256:{}", "AB".repeat(32)),
-                 "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v1.19.0/opencode-windows-x64.zip"}
+                 "browser_download_url": format!("https://github.com/anomalyco/opencode/releases/download/v1.19.0/{}", platform_asset())}
             ]
         });
         let info = parse_release(&body).unwrap();
         assert_eq!(info.version, "v1.19.0");
-        assert_eq!(info.asset_name, "opencode-windows-x64.zip");
+        assert_eq!(info.asset_name, platform_asset());
         // 不能挑成 baseline。
-        assert!(info.download_url.ends_with("x64.zip"));
+        assert!(info.download_url.ends_with(platform_asset()));
         assert_eq!(info.size, 62173956);
         assert_eq!(info.sha256, "ab".repeat(32), "摘要统一成小写");
     }
@@ -359,20 +409,20 @@ mod tests {
         let url =
             "https://github.com/anomalyco/opencode/releases/download/v1/opencode-windows-x64.zip";
         let no_digest = release_with(serde_json::json!({
-            "name": WINDOWS_X64_ASSET, "size": 10, "browser_download_url": url
+            "name": platform_asset(), "size": 10, "browser_download_url": url
         }));
         assert!(parse_release(&no_digest).unwrap_err().contains("SHA-256"));
         let bad_digest = release_with(serde_json::json!({
-            "name": WINDOWS_X64_ASSET, "size": 10, "digest": "sha1:abcd", "browser_download_url": url
+            "name": platform_asset(), "size": 10, "digest": "sha1:abcd", "browser_download_url": url
         }));
         assert!(parse_release(&bad_digest).is_err());
         let elsewhere = release_with(serde_json::json!({
-            "name": WINDOWS_X64_ASSET, "size": 10, "digest": format!("sha256:{}", "0".repeat(64)),
+            "name": platform_asset(), "size": 10, "digest": format!("sha256:{}", "0".repeat(64)),
             "browser_download_url": "http://example.invalid/opencode-windows-x64.zip"
         }));
         assert!(parse_release(&elsewhere).unwrap_err().contains("GitHub"));
         let huge = release_with(serde_json::json!({
-            "name": WINDOWS_X64_ASSET, "size": MAX_DOWNLOAD_BYTES + 1,
+            "name": platform_asset(), "size": MAX_DOWNLOAD_BYTES + 1,
             "digest": format!("sha256:{}", "0".repeat(64)), "browser_download_url": url
         }));
         assert!(parse_release(&huge).is_err());
@@ -411,10 +461,34 @@ mod tests {
     fn parse_release_rejects_missing_assets() {
         let body = serde_json::json!({"tag_name": "v1.0.0", "assets": []});
         let err = parse_release(&body).unwrap_err();
-        assert!(err.contains("opencode-windows-x64.zip"));
+        assert!(err.contains(platform_asset()));
     }
 
     /// 伪造一个 zip（里面是随便什么内容的 opencode.exe）验证解压逻辑，不连网。
+    #[test]
+    fn darwin_asset_extracts_executable_without_windows_suffix() {
+        let tmp = crate::test_util::TestDir::new("download-darwin");
+        let zip_path = tmp.join("mac.zip");
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("opencode", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut writer, b"fake mach-o").unwrap();
+        writer.finish().unwrap();
+        let dest = extract_asset(&zip_path, &tmp.join("out"), MACOS_ARM64_ASSET).unwrap();
+        assert_eq!(dest.file_name().unwrap(), "opencode");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"fake mach-o");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+        }
+    }
+
     #[test]
     fn extracts_exe_from_local_zip() {
         let tmp = crate::test_util::TestDir::new("download-test");
@@ -438,6 +512,14 @@ mod tests {
         assert_eq!(exe, out_dir.join("opencode.exe"));
         let bytes = std::fs::read(&exe).unwrap();
         assert_eq!(bytes, b"FAKE-EXE-CONTENT");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&exe).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+        }
     }
 
     #[test]

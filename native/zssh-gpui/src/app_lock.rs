@@ -405,16 +405,30 @@ impl OsVerifier for StubVerifier {
     }
 }
 
-/// 阻塞地做一次“证明你是这台电脑的 Windows 用户”（在后台线程里调）。
+/// 阻塞地做一次“证明你是这台电脑的当前用户”（在后台线程里调）。
+///
+/// macOS 还没有系统身份验证（Touch ID / LocalAuthentication 是后续工作），
+/// 直接返回 `Unavailable`：调用方据此提示“不能重置”，不会放行重置。
 pub fn verify_windows_user(window: Option<isize>) -> OsCheck {
     let message = t(LockMsg::VerifyMessage);
     if let Some(stub) = stub_from_env() {
         return zssh_core::app_lock::verify_os_user(&stub, message);
     }
-    zssh_core::app_lock::verify_os_user(&zssh_core::app_lock::WindowsVerifier::new(window), message)
+    #[cfg(windows)]
+    {
+        return zssh_core::app_lock::verify_os_user(
+            &zssh_core::app_lock::WindowsVerifier::new(window),
+            message,
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, message);
+        OsCheck::Unavailable
+    }
 }
 
-/// 这个窗口的 HWND（给 Windows Hello 对话框挂在 ZeeTerm 上）。
+/// 这个窗口的 HWND（给 Windows Hello 对话框挂在 ZeeTerm 上）。macOS 没有这个句柄，返回 `None`。
 pub fn window_hwnd(window: &Window) -> Option<isize> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     // `Window` 自己也有一个返回 gpui 窗口句柄的 `window_handle()`：这里要的是系统的那个，写明白。

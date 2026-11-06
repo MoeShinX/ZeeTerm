@@ -1031,13 +1031,15 @@ impl MainWindow {
     }
 
     /// Ctrl+Shift+W：分屏时关聚焦窗格，否则关标签。
+    /// 关掉聚焦的窗格或标签；没有可关的（或者不在终端页）时返回 `false`，
+    /// 让调用方决定要不要退一步去关窗口（macOS 的 Cmd+W 需要这个区分）。
     pub(crate) fn close_focused_pane_or_tab(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if self.nav.view != MainView::Terminal {
-            return;
+            return false;
         }
         let acted = self
             .workspace
@@ -1045,6 +1047,7 @@ impl MainWindow {
         if acted {
             self.after_tabs_closed(window, cx);
         }
+        acted
     }
 
     /// 复制标签（双击标签和右键「复制会话」是同一个动作）。
@@ -1534,6 +1537,58 @@ impl MainWindow {
                 // Ctrl+Shift+F 是文件（SFTP）面板（同 0.2.14）；先拦下来，不然会被终端当成 Ctrl+F 发给远端。
                 "f" => {
                     self.open_files(window, cx);
+                    true
+                }
+                _ => false,
+            };
+            if handled {
+                cx.stop_propagation();
+                return;
+            }
+        }
+        // macOS：同样的窗口级操作走 Cmd，而不是 Ctrl。终端里的 Ctrl+C 仍然是中断，
+        // 不能被这里的复制粘贴抢走（终端的复制粘贴在 `terminal_workspace::on_key_down` 里
+        // 单独按 Cmd 处理）。
+        #[cfg(target_os = "macos")]
+        if mods.platform && !mods.control && !mods.alt {
+            let handled = match key.as_str() {
+                "q" => {
+                    if self.request_quit(cx) {
+                        self.do_quit(window, cx);
+                    }
+                    true
+                }
+                "t" => {
+                    self.new_tab(window, cx);
+                    true
+                }
+                "w" => {
+                    // 有标签就关标签；没有就关窗口（macOS 上关窗口即退出，和标题栏关闭同一条路径）。
+                    if !self.close_focused_pane_or_tab(window, cx) && self.request_quit(cx) {
+                        self.do_quit(window, cx);
+                    }
+                    true
+                }
+                "d" | "e" => {
+                    if self.nav.view == MainView::Terminal {
+                        let axis = if key == "d" { Axis::X } else { Axis::Y };
+                        self.workspace
+                            .update(cx, |ws, cx| ws.split_active(axis, cx));
+                    }
+                    true
+                }
+                "b" if !mods.shift => {
+                    if self.nav.view == MainView::Terminal {
+                        self.workspace.update(cx, |ws, cx| ws.toggle_broadcast(cx));
+                    }
+                    true
+                }
+                "f" if mods.shift => {
+                    self.open_files(window, cx);
+                    true
+                }
+                "," => {
+                    self.toggle_settings(window, cx);
                     true
                 }
                 _ => false,

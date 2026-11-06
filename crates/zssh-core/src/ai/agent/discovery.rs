@@ -137,6 +137,10 @@ pub async fn discover(
     setting: Option<&str>,
     data_dir: &Path,
 ) -> Result<Option<AgentInstall>, String> {
+    // 手动路径不需要查询包管理器，更不应该为此读取用户的包管理器配置。
+    if setting.is_some_and(|value| !value.trim().is_empty()) {
+        return discover_with_env(spec, setting, data_dir, &EnvView::fake(&[], &[])).await;
+    }
     let env = EnvView::from_process().await;
     discover_with_env(spec, setting, data_dir, &env).await
 }
@@ -219,7 +223,18 @@ impl EnvView {
             vars: std::env::vars()
                 .map(|(name, value)| (name.to_ascii_uppercase(), value))
                 .collect(),
-            manager_dirs: package_manager_dirs().await.clone(),
+            manager_dirs: {
+                let dirs = package_manager_dirs().await.clone();
+                #[cfg(unix)]
+                let dirs = dirs
+                    .into_iter()
+                    .chain([
+                        PathBuf::from("/opt/homebrew/bin"),
+                        PathBuf::from("/usr/local/bin"),
+                    ])
+                    .collect();
+                dirs
+            },
         }
     }
 
@@ -274,6 +289,14 @@ async fn package_manager_dirs() -> &'static Vec<PathBuf> {
         ("bun", &["pm", "bin", "-g"][..]),
     ] {
         if let Some(dir) = query_dir(program, args).await {
+            // npm 报的是 prefix：可执行文件在它的 bin 下。但有的版本管理器直接报 bin 目录，
+            // 再拼一层就变成 bin/bin，永远找不到。先看原目录里有没有东西，没有再加 bin。
+            #[cfg(unix)]
+            let dir = if program == "npm" && dir.join("bin").is_dir() {
+                dir.join("bin")
+            } else {
+                dir
+            };
             if !found.contains(&dir) {
                 found.push(dir);
             }
@@ -339,9 +362,9 @@ fn auto_candidates(spec: &AgentSpec, data_dir: &Path, env: &EnvView) -> Vec<Cand
 
     // 1. 数据目录下的 tools\<智能体>\（一键下载装的位置）。
     let tools = tools_dir(data_dir, spec);
-    for ext in ["exe", "cmd", "bat", "com"] {
+    for path in runnable_names(spec, &tools) {
         out.push(Candidate {
-            path: tools.join(format!("{}.{}", spec.command, ext)),
+            path,
             source: DiscoverySource::ToolsDir,
         });
     }
@@ -371,6 +394,7 @@ fn auto_candidates(spec: &AgentSpec, data_dir: &Path, env: &EnvView) -> Vec<Cand
         }
     }
     // 3b. winget 的包目录（`Packages\<包>\...`）：包名带版本和哈希，只能扫。
+    #[cfg(windows)]
     for path in winget_package_exes(spec, env) {
         out.push(Candidate {
             path,
@@ -401,12 +425,17 @@ fn hide_local_with(enabled: bool, is_set: impl FnOnce(&str) -> bool) -> bool {
 /// 同一目录里同时有无扩展名的 shim（npm 的 POSIX 版）和 `.cmd` 时，**先用 `.cmd`**
 /// ——裸 shim 在 Windows 上 `cmd /c` 跑不了。
 fn runnable_names(spec: &AgentSpec, dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    for ext in ["exe", "cmd", "bat", "com"] {
-        out.push(dir.join(format!("{}.{}", spec.command, ext)));
+    #[cfg(windows)]
+    {
+        let mut out: Vec<_> = ["exe", "cmd", "bat", "com"]
+            .into_iter()
+            .map(|ext| dir.join(format!("{}.{}", spec.command, ext)))
+            .collect();
+        out.push(dir.join(spec.command));
+        out
     }
-    out.push(dir.join(spec.command));
-    out
+    #[cfg(not(windows))]
+    vec![dir.join(spec.command)]
 }
 
 /// 其他常见安装位置（按顺序）。
@@ -416,6 +445,7 @@ fn runnable_names(spec: &AgentSpec, dir: &Path) -> Vec<PathBuf> {
 ///    `yarn global bin` / `bun pm bin -g`）——问不到时下面还有默认路径兜底；
 /// 2. 各家默认目录（含 Node 版本管理器、scoop、chocolatey、winget）；
 /// 3. 每个智能体自己的官方安装位置（[`AgentSpec::extra_bins`]）。
+#[cfg(windows)]
 fn known_dirs(spec: &AgentSpec, env: &EnvView) -> Vec<PathBuf> {
     let mut out = env.manager_dirs.clone();
 
@@ -497,9 +527,62 @@ fn known_dirs(spec: &AgentSpec, env: &EnvView) -> Vec<PathBuf> {
     out
 }
 
+/// Unix GUI 启动时 PATH 可能没有 shell 初始化过的目录；按环境定位用户安装。
+#[cfg(unix)]
+fn known_dirs(spec: &AgentSpec, env: &EnvView) -> Vec<PathBuf> {
+    let mut out = env.manager_dirs.clone();
+    for (var, sub) in [
+        ("PNPM_HOME", ""),
+        ("BUN_INSTALL", "bin"),
+        ("VOLTA_HOME", "bin"),
+        ("FNM_DIR", "aliases/default/bin"),
+        ("NVM_BIN", ""),
+    ] {
+        if let Some(dir) = env.local_dir(var, sub) {
+            out.push(dir);
+        }
+    }
+    if let Some(home) = env.var("HOME") {
+        let home = Path::new(home);
+        for sub in [
+            ".local/bin",
+            ".bun/bin",
+            ".volta/bin",
+            ".yarn/bin",
+            "Library/pnpm",
+            ".local/share/pnpm",
+            ".local/share/fnm/aliases/default/bin",
+        ] {
+            out.push(home.join(sub));
+        }
+        if spec.command == "opencode" {
+            out.push(home.join(".opencode/bin"));
+        }
+        let nvm = env
+            .dir_of("NVM_DIR", "versions/node")
+            .unwrap_or_else(|| home.join(".nvm/versions/node"));
+        if let Ok(entries) = std::fs::read_dir(nvm) {
+            let mut versions: Vec<_> = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path().join("bin"))
+                .collect();
+            versions.sort();
+            versions.reverse();
+            out.extend(versions);
+        }
+    }
+    if spec.command == "codex" {
+        if let Some(dir) = env.dir_of("CODEX_INSTALL_DIR", "") {
+            out.push(dir);
+        }
+    }
+    out
+}
+
 /// winget 装的包在 `%LOCALAPPDATA%\Microsoft\WinGet\Packages\<包>\` 下面，
 /// 包名带版本和哈希（例如 `Anthropic.Claude_1.0.0_x64__8wekyb3d8bbwe` 这种样子），
 /// 猜不出来，只能逐个包目录里找同名 exe（深度受限）。
+#[cfg(windows)]
 fn winget_package_exes(spec: &AgentSpec, env: &EnvView) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Some(root) = env.local_dir("LOCALAPPDATA", "Microsoft\\WinGet\\Packages") else {
@@ -859,6 +942,7 @@ pub async fn probe_version(path: &Path) -> Result<String, ProbeError> {
 pub fn build_command(path: &Path) -> tokio::process::Command {
     // 发行版是 GUI 子系统：不隐藏的话每启动一个智能体就弹一个控制台窗口。
     let mut cmd = tokio::process::Command::new(path);
+    super::process::configure_process_group(&mut cmd);
     hide_console(&mut cmd);
     cmd
 }
@@ -962,6 +1046,7 @@ mod tests {
     }
 
     /// npm 风格的全局安装：`<dir>\<命令>.cmd` 里 `%~dp0` 指向包里的真 exe。
+    #[cfg(windows)]
     fn npm_layout(dir: &Path, command: &str) -> PathBuf {
         let bin = dir
             .join("node_modules")
@@ -981,6 +1066,7 @@ mod tests {
     }
 
     /// 一个直接放的 exe（scoop / chocolatey / 官方安装包那种布局）。
+    #[cfg(windows)]
     fn plain_exe(dir: &Path, command: &str) -> PathBuf {
         fs::create_dir_all(dir).unwrap();
         let exe = dir.join(format!("{command}.exe"));
@@ -989,6 +1075,7 @@ mod tests {
     }
 
     /// 自动发现的候选路径（字符串形式，方便断言）。
+    #[cfg(windows)]
     fn candidates(spec: &AgentSpec, data_dir: &Path, env: &EnvView) -> Vec<String> {
         auto_candidates(spec, data_dir, env)
             .iter()
@@ -1006,7 +1093,7 @@ mod tests {
     #[test]
     fn tools_dir_layout() {
         let dir = tools_dir(Path::new("C:\\data"), &OPENCODE);
-        assert_eq!(dir, PathBuf::from("C:\\data\\tools\\opencode"));
+        assert_eq!(dir, Path::new("C:\\data").join("tools").join("opencode"));
     }
 
     #[test]
@@ -1022,6 +1109,7 @@ mod tests {
     /// 验证"问到的目录"进候选，也验证各家默认目录兜底。`%APPDATA%\npm` 那种是
     /// 常见情况，pnpm / yarn / bun 的默认位置各家不同。
     #[test]
+    #[cfg(windows)]
     fn package_manager_global_dirs_are_all_candidates() {
         let root = layout_root("managers");
         let spec = &OPENCODE;
@@ -1068,6 +1156,7 @@ mod tests {
 
     /// Node 版本管理器：nvm-windows（`NVM_SYMLINK`）/ fnm（别名目录）/ volta。
     #[test]
+    #[cfg(windows)]
     fn node_version_manager_dirs_are_candidates() {
         let root = layout_root("node-managers");
         let spec = &CLAUDE;
@@ -1102,6 +1191,7 @@ mod tests {
 
     /// winget（Links + Packages）/ scoop（SCOOP 指到别处 + `.shim`）/ chocolatey。
     #[test]
+    #[cfg(windows)]
     fn winget_scoop_and_chocolatey_layouts_are_candidates() {
         let guard = layout_root("windows-managers-a-rather-long-name");
         let root = short_form(&guard);
@@ -1158,6 +1248,7 @@ mod tests {
 
     /// 官方安装脚本 / 独立安装包：opencode / Claude Code / codex 三家各自的位置。
     #[test]
+    #[cfg(windows)]
     fn official_installer_dirs_are_candidates() {
         let root = layout_root("official");
         let local = root.join("AppData\\Local");
@@ -1225,25 +1316,27 @@ mod tests {
         let dir = root.join("npm 全局 目录");
         fs::create_dir_all(&dir).unwrap();
 
-        let shim = dir.join("opencode.cmd");
-        fs::write(&shim, "@ECHO off\r\necho opencode 1.19.1\r\n").unwrap();
+        let shim = versioned_cmd(&dir, "opencode", "opencode 1.19.1");
         let install = probe(&OPENCODE, &shim, DiscoverySource::Path, true)
             .await
             .expect("要探到版本");
         assert_eq!(install.version, "opencode 1.19.1");
         assert!(!install.too_old);
-        assert!(install.needs_shell, ".cmd 要经 cmd.exe 启动");
+        assert_eq!(install.needs_shell, cfg!(windows));
         assert!(install.auto);
 
         // 老版本：标版本过低（不拦，只提示）。
-        fs::write(&shim, "@ECHO off\r\necho 1.17.3\r\n").unwrap();
+        versioned_cmd(&dir, "opencode", "1.17.3");
         let install = probe(&OPENCODE, &shim, DiscoverySource::Path, true)
             .await
             .expect("要探到版本");
         assert!(install.too_old, "1.17.3 低于 1.19.0");
 
         // 报错退出：探不通（发现流程里跳过它继续找下一个候选）。
+        #[cfg(windows)]
         fs::write(&shim, "@ECHO off\r\nexit /b 3\r\n").unwrap();
+        #[cfg(unix)]
+        fs::write(&shim, "#!/bin/sh\nexit 3\n").unwrap();
         assert!(probe(&OPENCODE, &shim, DiscoverySource::Path, true)
             .await
             .is_err());
@@ -1258,9 +1351,14 @@ mod tests {
     #[tokio::test]
     async fn manual_mode_with_bad_path_errors_and_does_not_fall_back() {
         let tmp = crate::test_util::TestDir::new("discovery-test-bad");
-        let err = discover(&OPENCODE, Some("C:\\不存在的\\opencode.exe"), &tmp)
-            .await
-            .expect_err("手动指定坏了要报出来");
+        let err = discover_with_env(
+            &OPENCODE,
+            Some("missing-agent"),
+            &tmp,
+            &EnvView::fake(&[], &[]),
+        )
+        .await
+        .expect_err("手动指定坏了要报出来");
         assert!(err.contains("手动指定"));
     }
 
@@ -1268,7 +1366,7 @@ mod tests {
     async fn auto_mode_with_blank_setting_does_not_error() {
         // 设置里是空白：跳过设置、走自动。找到找不到都行（本机 PATH 上可能有 opencode）。
         let tmp = crate::test_util::TestDir::new("discovery-test-none");
-        let found = discover(&OPENCODE, Some("   "), &tmp)
+        let found = discover_with_env(&OPENCODE, Some("   "), &tmp, &EnvView::fake(&[], &[]))
             .await
             .expect("空白设置不算错误");
         drop(found);
@@ -1277,8 +1375,18 @@ mod tests {
     /// 造一个能跑 `--version` 的假安装：`.cmd` 里 echo 一个版本号。
     fn versioned_cmd(dir: &Path, command: &str, version: &str) -> PathBuf {
         fs::create_dir_all(dir).unwrap();
+        #[cfg(windows)]
         let path = dir.join(format!("{command}.cmd"));
+        #[cfg(windows)]
         fs::write(&path, format!("@ECHO off\r\necho {version}\r\n")).unwrap();
+        #[cfg(unix)]
+        let path = dir.join(command);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{version}'\n")).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
         path
     }
 
@@ -1289,7 +1397,7 @@ mod tests {
         let old_dir = root.join("PATH 上的 旧版本");
         versioned_cmd(&old_dir, "opencode", "1.17.3"); // 低于 1.19.0
                                                        // 后面那个位置上的可用版本：pnpm 的默认全局目录里就是直接放 .cmd 的布局。
-        let new_dir = root.join("AppData\\Local\\pnpm");
+        let new_dir = root.join("pnpm");
         versioned_cmd(&new_dir, "opencode", "1.19.1");
 
         let vars = [
@@ -1303,7 +1411,7 @@ mod tests {
                 root.join("Users\\张 三").display().to_string(),
             ),
         ];
-        let env = EnvView::fake(&env_pairs(&vars), &[]);
+        let env = EnvView::fake(&env_pairs(&vars), &[new_dir.to_str().unwrap()]);
         let data_dir = root.join("数据 目录");
 
         let install = discover_with_env(&OPENCODE, None, &data_dir, &env)
@@ -1366,7 +1474,7 @@ mod tests {
         let root = layout_root("all-old");
         let old_dir = root.join("PATH 上的 旧版本");
         versioned_cmd(&old_dir, "opencode", "1.17.3");
-        let also_old = root.join("AppData\\Local\\pnpm");
+        let also_old = root.join("pnpm");
         versioned_cmd(&also_old, "opencode", "1.18.0");
 
         let vars = [
@@ -1376,7 +1484,7 @@ mod tests {
                 root.join("AppData\\Local").display().to_string(),
             ),
         ];
-        let env = EnvView::fake(&env_pairs(&vars), &[]);
+        let env = EnvView::fake(&env_pairs(&vars), &[also_old.to_str().unwrap()]);
         let install = discover_with_env(&OPENCODE, None, &root.join("数据 目录"), &env)
             .await
             .expect("发现不该报错")
@@ -1384,6 +1492,44 @@ mod tests {
         assert!(install.too_old);
         assert!(install.version.contains("1.17.3"));
         assert!(install.skipped_older.is_none(), "没有可用的就别提旧版本");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_tools_home_managers_and_symlinks_are_discovered() {
+        let root = layout_root("unix 安装");
+        let home = root.join("home 空格");
+        let data = root.join("data");
+        let vars = [("HOME", home.display().to_string())];
+        let env = EnvView::fake(&env_pairs(&vars), &[]);
+        for (spec, sub, version) in [
+            (&OPENCODE, ".opencode/bin", "1.19.1"),
+            (&CLAUDE, ".local/bin", "2.1.0"),
+            (&CODEX, ".nvm/versions/node/v22.0.0/bin", "0.150.0"),
+        ] {
+            let path = versioned_cmd(&home.join(sub), spec.command, version);
+            let found = discover_with_env(spec, None, &data, &env)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_same_path(Path::new(&found.path), &path);
+            assert_eq!(found.source, DiscoverySource::KnownLocation);
+            assert!(!found.needs_shell);
+        }
+        let real = versioned_cmd(&root.join("包管理器 bin"), "opencode", "1.20.0");
+        let tools = tools_dir(&data, &OPENCODE);
+        fs::create_dir_all(&tools).unwrap();
+        std::os::unix::fs::symlink(&real, tools.join("opencode")).unwrap();
+        let found = discover_with_env(&OPENCODE, None, &data, &env)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.source, DiscoverySource::ToolsDir);
+        assert_same_path(Path::new(&found.path), &real);
+        assert_eq!(
+            runnable_names(&OPENCODE, &tools),
+            vec![tools.join("opencode")]
+        );
     }
 
     /// 候选都没有：返回 None（不是错误）。
@@ -1406,6 +1552,7 @@ mod tests {
 
     /// 拆 `.cmd`：写一个假 shim 指到假 exe，确认解析到 exe。
     #[test]
+    #[cfg(windows)]
     fn resolves_shim_to_exe_on_disk() {
         let guard = crate::test_util::TestDir::new("discovery-shim-a-rather-long-name");
         let tmp = short_form(&guard);
@@ -1427,6 +1574,7 @@ mod tests {
     /// codex 的 npm 布局（AI-3 第 5 节）：shim 转发 node + 包里的 .js，
     /// 要顺着包目录找到 `codex.exe`。
     #[test]
+    #[cfg(windows)]
     fn resolves_codex_npm_shims_to_the_vendored_exe() {
         let guard = crate::test_util::TestDir::new("discovery-codex-shim-a-rather-long-name");
         let tmp = short_form(&guard);

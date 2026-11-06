@@ -1120,7 +1120,7 @@ impl TempAuditDb {
     }
 
     fn open(&self) -> Database {
-        Database::open(&self.path).expect("建审计库")
+        common::vault::open(&self.path).expect("建审计库")
     }
 }
 

@@ -1,13 +1,16 @@
 //! 本地快照：引用换 uid、DPAPI 解密、设置白名单、known_hosts、墓碑。
 
 use super::*;
+#[cfg(windows)]
 use crate::model::{
     AuthMethod, GroupDraft, HostDraft, IdentityDraft, IdentityKind, ProxyDraft, ProxyKind,
     ProxyMode,
 };
 use crate::store::Database;
+#[cfg(windows)]
 use crate::sync::package::Tombstone;
 
+#[cfg(windows)]
 fn raw_uid(db: &Database, table: &str, id: i64) -> String {
     db.with_conn(|conn| {
         let uid: String = conn.query_row(

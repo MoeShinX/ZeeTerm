@@ -375,12 +375,28 @@ async fn non_utf8_names_are_listed_but_not_operated_on() {
     let dir = temp_dir(&server, &connection, &channel, "gbk").await;
 
     // 造一个 GBK 名字的文件（0xB1 0xA8 = "报"）：printf 的八进制转义。
-    let created = exec(
-        &connection,
-        &format!("cd {dir} && touch \"$(printf '\\261\\250.txt')\" && echo OK"),
-    )
-    .await;
-    assert!(created.contains("OK"), "造 GBK 名字失败：{created}");
+    let created = connection
+        .exec_capture(
+            &format!(
+                "export LC_ALL=C; cd '{dir}' && touch \"$(printf '\\261\\250.txt')\" && echo OK"
+            ),
+            std::time::Duration::from_secs(10),
+            8192,
+        )
+        .await
+        .expect("执行非 UTF-8 文件名探测");
+    // APFS 等文件系统拒绝非 UTF-8 字节；只对明确的 EILSEQ 诊断跳过。
+    if created.exit_code == Some(1) && created.stderr.contains("Illegal byte sequence") {
+        println!("跳过 non_utf8_names_are_listed_but_not_operated_on：测试服务器文件系统拒绝非 UTF-8 名字（EILSEQ）；未验证非 UTF-8 SFTP 行为");
+        dir.cleanup(&connection, &channel).await;
+        channel.close();
+        connection.disconnect().await.expect("断开测试连接");
+        return;
+    }
+    assert!(
+        created.stdout.contains("OK") && created.exit_code == Some(0),
+        "造 GBK 名字失败：{created:?}"
+    );
 
     let entries = channel.read_dir(dir.path()).await.expect("列目录");
     let gbk = entries
@@ -407,20 +423,24 @@ async fn non_utf8_names_are_listed_but_not_operated_on() {
     assert!(matches!(err, SftpError::NonUtf8Name { .. }), "{err}");
 
     // 服务器上的原名没被碰过（还在，字节没变）。
-    let listing = exec(&connection, &format!("cd {dir} && ls -b")).await;
-    println!("服务器上实际的字节：{}", listing.trim());
-    assert!(
-        listing.contains("\\261\\250.txt"),
-        "原文件还在且字节没变：{listing}"
-    );
+    // ls -b 的转义格式随平台不同；直接检查原始字节路径是否仍存在。
+    let listing = connection
+        .exec(&format!(
+            "cd '{dir}' && test -f \"$(printf '\\261\\250.txt')\" && echo PRESENT"
+        ))
+        .await
+        .expect("检查原始字节路径");
+    assert!(listing.contains("PRESENT"), "原始文件应保持不变");
 
     // 用 shell 收尾（我们有原始字节，客户端没有）；守卫不知道 shell 删没删，
     // 显式 mark_done，Drop 里的兜底就不会再跑一遍（GBK 名字它删不动）。
-    exec(
-        &connection,
-        &format!("rm -f {dir}/*.txt && rmdir {dir} && echo CLEAN"),
-    )
-    .await;
+    let cleaned = connection
+        .exec(&format!(
+            "rm -f '{dir}'/*.txt && rmdir '{dir}' && echo CLEAN"
+        ))
+        .await
+        .expect("清理原始字节文件");
+    assert!(cleaned.contains("CLEAN"));
     dir.mark_done();
     channel.close();
     let _ = connection.disconnect().await;

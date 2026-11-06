@@ -167,6 +167,9 @@ fn direct_import_previews_then_merges_and_makes_a_safety_backup() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+// Z-SSH 的直接导入靠 DPAPI 解开原机密文；没有 DPAPI 的平台按设计拒绝，
+// 所以这条只在 Windows 上验证。
+#[cfg(windows)]
 #[test]
 fn replace_mode_matches_zssh_and_the_preview_says_what_will_be_deleted() {
     let root = temp_dir("replace");

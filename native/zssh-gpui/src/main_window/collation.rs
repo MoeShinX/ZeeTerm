@@ -1,8 +1,8 @@
 //! 中文名字的排序规则：和 0.2.14 前端的 `Intl.Collator("zh-Hans-CN", { numeric: true,
 //! sensitivity: "base" })` 一致——中文按拼音、数字按数值、英文不分大小写。
 //!
-//! Windows 自带这套规则（`CompareStringEx`，区域 `zh-CN` 的默认排序就是拼音），ZeeTerm 只发
-//! Windows，所以直接问系统，不再塞一张拼音表进来。系统调用失败（返回 0）时退回按字符比较，
+//! Windows 用 `CompareStringEx`，macOS 用 CoreFoundation 的显式中文拼音区域；
+//! 不依赖用户当前语言，也不需要内置拼音表。系统调用失败时退回按字符比较，
 //! 排出来的顺序可能和拼音不同，但至少稳定、不 panic。
 
 use std::cmp::Ordering;
@@ -42,7 +42,83 @@ fn system_compare(a: &str, b: &str) -> Option<Ordering> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn system_compare(a: &str, b: &str) -> Option<Ordering> {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct CFRange {
+        location: isize,
+        length: isize,
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFStringCreateWithCharacters(
+            allocator: *const c_void,
+            chars: *const u16,
+            count: isize,
+        ) -> *const c_void;
+        fn CFLocaleCreate(allocator: *const c_void, identifier: *const c_void) -> *const c_void;
+        fn CFStringCompareWithOptionsAndLocale(
+            a: *const c_void,
+            b: *const c_void,
+            range: CFRange,
+            options: usize,
+            locale: *const c_void,
+        ) -> isize;
+        fn CFRelease(value: *const c_void);
+    }
+
+    struct OwnedCf(*const c_void);
+    impl Drop for OwnedCf {
+        fn drop(&mut self) {
+            // SAFETY: 只持有 Create 返回的非空对象，每个对象恰好释放一次。
+            unsafe { CFRelease(self.0) };
+        }
+    }
+    fn string(text: &str) -> Option<(OwnedCf, isize)> {
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        let length = isize::try_from(utf16.len()).ok()?;
+        // SAFETY: CFString 复制调用期间有效的 UTF-16 切片；空 allocator 使用默认分配器。
+        let value =
+            unsafe { CFStringCreateWithCharacters(std::ptr::null(), utf16.as_ptr(), length) };
+        if value.is_null() {
+            None
+        } else {
+            Some((OwnedCf(value), length))
+        }
+    }
+
+    let (left, length) = string(a)?;
+    let (right, _) = string(b)?;
+    let (identifier, _) = string("zh_CN@collation=pinyin")?;
+    // SAFETY: identifier 是有效 CFString，Create 的所有权由 OwnedCf 接管。
+    let locale = unsafe { CFLocaleCreate(std::ptr::null(), identifier.0) };
+    if locale.is_null() {
+        return None;
+    }
+    let locale = OwnedCf(locale);
+    // CaseInsensitive | Nonliteral | Localized | Numerically | DiacriticInsensitive。
+    // 显式区域保证中文拼音顺序，不受系统显示语言影响。
+    let options = 1 | 16 | 32 | 64 | 128;
+    // SAFETY: 字符串和区域在调用期间有效；范围恰好覆盖左字符串的 UTF-16 长度。
+    let result = unsafe {
+        CFStringCompareWithOptionsAndLocale(
+            left.0,
+            right.0,
+            CFRange {
+                location: 0,
+                length,
+            },
+            options,
+            locale.0,
+        )
+    };
+    Some(result.cmp(&0))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn system_compare(_a: &str, _b: &str) -> Option<Ordering> {
     None
 }

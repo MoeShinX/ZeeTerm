@@ -3,8 +3,10 @@
 //! `SyncContext::run_sync`、`service::test_connection`、`service::onedrive_disconnect`），
 //! 微软服务是进程内的模拟。
 
+mod common;
 #[path = "common/fake_browser.rs"]
 mod fake_browser;
+
 #[path = "common/harness.rs"]
 mod harness;
 #[path = "common/mock_microsoft.rs"]

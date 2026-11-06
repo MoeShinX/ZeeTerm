@@ -103,7 +103,7 @@ struct Rig {
 }
 
 async fn rig(connection: &Arc<Connection>) -> Rig {
-    let database = Arc::new(Database::open_in_memory().expect("审计库"));
+    let database = Arc::new(common::vault::open_in_memory().expect("审计库"));
     let approver = Arc::new(RecordingApprover {
         requests: Mutex::new(Vec::new()),
     });

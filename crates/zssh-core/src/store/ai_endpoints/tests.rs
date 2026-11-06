@@ -336,6 +336,9 @@ fn old_databases_upgrade_and_get_the_empty_table() {
         .join("fixtures")
         .join("legacy-v6.db");
     std::fs::copy(&fixture, &path).expect("复制老库");
+    // 老库不能自动替换缺失的钥匙；测试显式准备原路径账户的内存钥匙。
+    #[cfg(target_os = "macos")]
+    crate::store::secrets::initialize_vault(&crate::store::db::vault_account_for(&path)).unwrap();
     let db = Database::open(&path).expect("老库升级");
     assert_eq!(
         db.schema_version().unwrap(),

@@ -506,7 +506,14 @@ fn lexical_parts(path: &Path) -> Option<Vec<String>> {
             Component::ParentDir => {
                 parts.pop()?;
             }
-            Component::Normal(name) => parts.push(name.to_string_lossy().to_lowercase()),
+            Component::Normal(name) => {
+                let text = name.to_string_lossy();
+                parts.push(if cfg!(windows) {
+                    text.to_lowercase()
+                } else {
+                    text.into_owned()
+                });
+            }
         }
     }
     Some(parts)
@@ -554,7 +561,29 @@ pub fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::rename(from, to)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    unsafe extern "C" {
+        fn renamex_np(
+            from: *const std::ffi::c_char,
+            to: *const std::ffi::c_char,
+            flags: u32,
+        ) -> i32;
+    }
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    // RENAME_EXCL 原子地拒绝已有目标，也支持目录；硬链接不能移动目录。
+    let result = unsafe { renamex_np(from.as_ptr(), to.as_ptr(), 0x00000004) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
     // 硬链接在目标存在时失败，成功后再删掉原名：同样没有"先检查再改名"的空窗。
     std::fs::hard_link(from, to)?;
@@ -680,9 +709,21 @@ mod tests {
 
     #[test]
     fn ensure_inside_rejects_escapes() {
-        let root = Path::new("C:\\d\\out");
-        assert!(ensure_inside(root, Path::new("C:\\d\\out\\a.txt")).is_ok());
-        assert!(ensure_inside(root, Path::new("C:\\D\\OUT\\sub\\a.txt")).is_ok());
+        let base = if cfg!(windows) {
+            r"C:\d"
+        } else {
+            "/path-check"
+        };
+        let root_buf = Path::new(base).join("out");
+        let root = root_buf.as_path();
+        assert!(ensure_inside(root, &root.join("a.txt")).is_ok());
+        assert!(ensure_inside(root, &root.join("sub/a.txt")).is_ok());
+        if cfg!(windows) {
+            assert!(ensure_inside(root, Path::new("C:\\D\\OUT\\sub\\a.txt")).is_ok());
+        }
+        assert!(ensure_inside(root, root).is_err());
+        assert!(ensure_inside(root, &root.join("../x")).is_err());
+        assert!(ensure_inside(root, &Path::new(base).join("outside.txt")).is_err());
         for bad in [
             "C:\\d\\out",
             "C:\\d\\out\\..\\x",

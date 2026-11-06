@@ -1350,14 +1350,21 @@ pub async fn send_unless_cancelled(
     Ok(true)
 }
 
-/// `zssh-mcp.exe` 应该在的位置：和主程序放在同一个目录。
+/// helper 应该在的位置：和主程序放在同一个目录。
+///
+/// Windows 是 `zssh-mcp.exe`；macOS 的 `.app` 里主程序在 `Contents/MacOS/`，
+/// helper 也放同一层（`Contents/MacOS/zssh-mcp`），没有 `.exe` 后缀。
 fn mcp_binary_location() -> Result<PathBuf, String> {
     let exe = std::env::current_exe()
         .map_err(|err| format!("{}{err}", t(AgentHostMsg::CurrentExeFailedPrefix)))?;
     let dir = exe
         .parent()
         .ok_or_else(|| t(AgentHostMsg::NoExeParentDir).to_string())?;
-    Ok(dir.join("zssh-mcp.exe"))
+    #[cfg(windows)]
+    let name = "zssh-mcp.exe";
+    #[cfg(not(windows))]
+    let name = "zssh-mcp";
+    Ok(dir.join(name))
 }
 
 /// 驱动的启动参数。

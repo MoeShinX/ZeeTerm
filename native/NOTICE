@@ -63,6 +63,8 @@ Netcatty (host operating-system logos and brand colours, native interface)
 Other direct dependencies of the native interface (native/Cargo.toml and its
 Cargo.lock), all used unmodified from crates.io:
   alacritty_terminal 0.26.0 (terminal emulation core) - Apache-2.0
+  libc 0.2 (Unix local time and daylight-saving offset via localtime_r) -
+  MIT OR Apache-2.0 (https://github.com/rust-lang/libc), used unmodified.
   markdown 1.0.0 (update-notes sanitising before rendering; the same crate
   gpui-base uses) - MIT
   fancy-regex 0.20.0, minisign 0.10.0, minisign-verify 0.3.0 (update signature
@@ -78,6 +80,19 @@ Cargo.lock), all used unmodified from crates.io:
   cbindgen 0.28.0 is build-time only; the source of those files is the published
   crate versions above. None of the licenses in the tree is incompatible with
   distribution under GPL-3.0-or-later.
+
+block 0.1.6 (macOS Metal / Objective-C blocks, native/vendor/block-0.1.6)
+  https://github.com/SSheldon/rust-block
+  Author: Steven Sheldon. License: MIT, as declared in the original manifest.
+  Vendored from the published crates.io archive, SHA-256:
+  0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a
+  Local patch replaces an uninhabited opaque FFI enum with an inhabited
+  repr(C) struct and makes the existing C ABI explicit. No lint suppression.
+  The original archive has no standalone license text; LICENSE-MIT supplies
+  the standard MIT text with manifest author attribution. PROVENANCE and
+  verify-source.py record and verify the precise original source and patch.
+  The macOS dependency path is gpui-kit -> gpui-pre-platform -> gpui-pre-macos
+  -> gpui-pre-apple -> metal 0.33.0 -> block 0.1.6.
 
 SQLite (database engine, compiled into executable)
   https://sqlite.org/

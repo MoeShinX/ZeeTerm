@@ -110,27 +110,28 @@ mod tests {
     #[test]
     fn the_same_target_in_different_spellings_is_one_lock() {
         let locks = Arc::new(TargetLocks::default());
-        let first = locks
-            .try_acquire_local(Path::new("C:\\Users\\x\\Downloads\\a.txt"))
-            .unwrap();
-        for same in [
-            "c:\\users\\X\\downloads\\A.TXT",
-            "C:\\Users\\x\\Downloads\\.\\a.txt",
-            "C:\\Users\\x\\Downloads\\sub\\..\\a.txt",
-        ] {
-            let err = locks.try_acquire_local(Path::new(same)).err();
+        let dir = crate::test_util::TestDir::new("target-lock-spellings");
+        let target = dir.join("a.txt");
+        let first = locks.try_acquire_local(&target).unwrap();
+        let mut spellings = vec![dir.join("./a.txt"), dir.join("sub/../a.txt")];
+        if cfg!(windows) {
+            spellings.push(std::path::PathBuf::from(
+                target.to_string_lossy().to_uppercase(),
+            ));
+        }
+        for same in spellings {
+            let err = locks.try_acquire_local(&same).err();
             assert!(
                 matches!(err, Some(SftpError::TargetBusy { .. })),
-                "{same} 应该和第一个是同一个目标"
+                "{} 应该和第一个是同一个目标",
+                same.display()
             );
         }
         // 别的目标不受影响。
-        let other = locks
-            .try_acquire_local(Path::new("C:\\Users\\x\\Downloads\\b.txt"))
-            .unwrap();
+        let other = locks.try_acquire_local(&dir.join("b.txt")).unwrap();
         drop(first);
         // 释放之后可以再拿。
-        let again = locks.try_acquire_local(Path::new("C:\\Users\\x\\Downloads\\a.txt"));
+        let again = locks.try_acquire_local(&target);
         assert!(again.is_ok());
         drop(other);
     }

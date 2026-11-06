@@ -417,9 +417,32 @@ mod tests {
         assert!(refuse_into_self(true, &dir, "/srv").is_none());
         // 文件没有这个限制。
         assert!(refuse_into_self(true, &item("/srv/a", false), "/srv/a").is_none());
-        let local = item(r"C:\work\data", true);
-        assert!(refuse_into_self(false, &local, r"C:\work\data\sub").is_some());
-        assert!(refuse_into_self(false, &local, r"C:\work\data2").is_none());
+        let root = if cfg!(windows) {
+            r"C:\work\data"
+        } else {
+            "/work/data"
+        };
+        let local = item(root, true);
+        assert!(
+            refuse_into_self(
+                false,
+                &local,
+                &Path::new(root).join("sub").display().to_string()
+            )
+            .is_some()
+        );
+        assert!(
+            refuse_into_self(
+                false,
+                &local,
+                if cfg!(windows) {
+                    r"C:\work\data2"
+                } else {
+                    "/work/data2"
+                }
+            )
+            .is_none()
+        );
         let message = refuse_into_self(true, &dir, "/srv/data").unwrap_or_default();
         assert!(message.contains("「data」"), "{message}");
     }

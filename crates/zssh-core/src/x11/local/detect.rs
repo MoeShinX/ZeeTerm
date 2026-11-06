@@ -55,6 +55,14 @@ fn candidate_dirs(sys: &dyn LocalSystem) -> Vec<(PathBuf, Option<String>)> {
 
 /// 找已安装的 VcXsrv。
 pub fn find_vcxsrv(sys: &dyn LocalSystem) -> Option<VcXsrvInstall> {
+    if !cfg!(windows) {
+        return None;
+    }
+    find_vcxsrv_impl(sys)
+}
+
+// 假环境也能验证安装后的重新检测，不执行宿主平台上的程序。
+pub(super) fn find_vcxsrv_impl(sys: &dyn LocalSystem) -> Option<VcXsrvInstall> {
     candidate_dirs(sys).into_iter().find_map(|(dir, version)| {
         let exe = dir.join("vcxsrv.exe");
         sys.path_is_file(&exe)
@@ -169,6 +177,7 @@ pub(crate) mod fake {
 mod tests {
     use super::fake::FakeSystem;
     use super::*;
+    #[cfg(windows)]
     use crate::x11::local::system::RegistryInstall;
 
     #[test]
@@ -177,6 +186,7 @@ mod tests {
         assert_eq!(find_vcxsrv(&sys), None);
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_registry_location_wins_and_carries_its_version() {
         let sys = FakeSystem::default();
@@ -196,6 +206,7 @@ mod tests {
         assert_eq!(found.version.as_deref(), Some("1.2.3"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_stale_registry_entry_falls_back_to_common_directories() {
         let sys = FakeSystem::default();
@@ -218,6 +229,7 @@ mod tests {
         assert_eq!(found.version, None);
     }
 
+    #[cfg(windows)]
     #[test]
     fn every_common_location_is_checked() {
         for (var, base, expected) in [
@@ -247,6 +259,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn duplicate_candidates_are_probed_once() {
         let sys = FakeSystem::default();
@@ -259,6 +272,21 @@ mod tests {
                 .insert("ProgramFiles".into(), r"C:\PROGRAM FILES".into());
         });
         assert_eq!(candidate_dirs(&sys).len(), 1);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn windows_installations_are_not_detected_on_other_platforms() {
+        let sys = FakeSystem::default();
+        let dir = PathBuf::from("/virtual/VcXsrv");
+        sys.with(|s| {
+            s.registry.push(crate::x11::local::system::RegistryInstall {
+                dir: dir.clone(),
+                version: None,
+            });
+            s.files.insert(dir.join("vcxsrv.exe"));
+        });
+        assert!(find_vcxsrv(&sys).is_none());
     }
 
     #[test]

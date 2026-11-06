@@ -44,6 +44,13 @@ async fn harness(tag: &str) -> Option<(Harness, RemoteTempDir, LocalTempDir)> {
             return None;
         }
     };
+    harness_on(tag, server).await
+}
+
+async fn harness_on(
+    tag: &str,
+    server: TestServer,
+) -> Option<(Harness, RemoteTempDir, LocalTempDir)> {
     let known_hosts = TempKnownHosts::new(tag);
     let connection = Arc::new(server.connect(&known_hosts).await.expect("连接测试服务器"));
     let browse = Arc::new(common::open_sftp(&connection).await.expect("开浏览通道"));
@@ -202,11 +209,11 @@ async fn upload_download_roundtrip(tag: &str, size: usize) {
     assert_eq!(report.total_bytes, size as u64);
     assert_eq!(report.done_bytes, size as u64);
     assert!(!progress.is_empty(), "要有进度事件");
-    let last_progress = progress.last().expect("进度");
-    assert!(
-        last_progress.done_bytes >= last_progress.total_bytes / 2,
-        "进度要接近完成：{last_progress:?}"
-    );
+    // Progress 按时间节流：快速传输可能只发出零字节初始事件，完成量由 Finished 保证。
+    assert!(progress.iter().all(|p| p.done_bytes <= report.done_bytes));
+    assert!(progress
+        .windows(2)
+        .all(|pair| pair[0].done_bytes <= pair[1].done_bytes));
     println!(
         "上传 {}MB：用时 {:.1}s（{:.1} MB/s），进度事件 {} 条",
         size as f64 / 1024.0 / 1024.0,
@@ -385,13 +392,80 @@ async fn upload_and_download_a_folder_tree_many_files() {
     folder_tree_roundtrip("transfer-dir-many", 300).await;
 }
 
+// 限制真实 TCP 流速，让暂停覆盖传输中途，不依赖服务器性能或文件大小猜时序。
+struct PacedProxy {
+    port: u16,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl PacedProxy {
+    async fn start(host: &str, port: u16) -> Self {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let local_port = listener.local_addr().unwrap().port();
+        let host = host.to_owned();
+        let task = tokio::spawn(async move {
+            let mut sessions = tokio::task::JoinSet::new();
+            loop {
+                let Ok((client, _)) = listener.accept().await else {
+                    break;
+                };
+                let host = host.clone();
+                sessions.spawn(async move {
+                    let Ok(upstream) = tokio::net::TcpStream::connect((host.as_str(), port)).await
+                    else {
+                        return;
+                    };
+                    let (mut cr, mut cw) = client.into_split();
+                    let (mut sr, mut sw) = upstream.into_split();
+                    let upload = async {
+                        let mut buf = [0u8; 16384];
+                        loop {
+                            let n = cr.read(&mut buf).await?;
+                            if n == 0 {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(4)).await;
+                            sw.write_all(&buf[..n]).await?;
+                        }
+                        sw.shutdown().await
+                    };
+                    tokio::select! { _ = upload => {}, _ = tokio::io::copy(&mut sr, &mut cw) => {} }
+                });
+            }
+        });
+        Self {
+            port: local_port,
+            task,
+        }
+    }
+}
+
+impl Drop for PacedProxy {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 #[tokio::test]
 async fn pause_then_resume_finishes_with_the_same_hash() {
     if !common::full_live("pause_then_resume_finishes_with_the_same_hash") {
         return;
     }
     let _serial = serial().await;
-    let Some((harness, remote, local)) = harness("transfer-pause").await else {
+    let mut server = match TestServer::from_env() {
+        Ok(server) => server,
+        Err(reason) => {
+            println!("跳过 pause：{reason}");
+            return;
+        }
+    };
+    let proxy = PacedProxy::start(&server.host, server.port).await;
+    server.host = std::net::Ipv4Addr::LOCALHOST.to_string();
+    server.port = proxy.port;
+    let Some((harness, remote, local)) = harness_on("transfer-pause", server).await else {
         return;
     };
 

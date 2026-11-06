@@ -400,14 +400,8 @@ impl Drop for AgentRuntime {
         // 兜底：没走 shutdown 就丢了句柄，也要把进程树杀掉，不留孤儿。
         let _ = self.shutdown_tx.send(true);
         let child = self.shared.child.lock().ok().and_then(|mut c| c.take());
-        if let Some(child) = child {
-            if let Some(pid) = child.id() {
-                let mut kill = std::process::Command::new("taskkill");
-                kill.args(["/PID", &pid.to_string(), "/T", "/F"])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null());
-                let _ = crate::process_util::hide_console(&mut kill).status();
-            }
+        if let Some(mut child) = child {
+            super::process::kill_process_tree_on_drop(&mut child);
         }
     }
 }
@@ -1576,7 +1570,7 @@ pub(crate) mod tests {
         let home = default_config_home(std::path::Path::new("C:\\data\\agent-workspace"));
         assert_eq!(
             home,
-            std::path::PathBuf::from("C:\\data\\agent-workspace\\opencode-config")
+            std::path::Path::new("C:\\data\\agent-workspace").join("opencode-config")
         );
     }
 

@@ -121,10 +121,19 @@ pub fn dir_from_registry_command(value: &str) -> Option<PathBuf> {
         }
     };
     let path_text = path_text.split(',').next().unwrap_or(path_text).trim();
-    Path::new(path_text)
-        .parent()
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .map(Path::to_path_buf)
+    // 注册表里的分隔符属于 Windows，不能用宿主平台的 Path::parent 解释。
+    let end = path_text.rfind(['\\', '/'])?;
+    let dir = &path_text[..end];
+    if dir.is_empty() {
+        return None;
+    }
+    // 盘符根目录的反斜杠不能丢，否则 C:\ 会变成相对盘符路径 C:。
+    let end = if dir.len() == 2 && dir.ends_with(':') {
+        end + 1
+    } else {
+        end
+    };
+    Some(PathBuf::from(&path_text[..end]))
 }
 
 #[cfg(windows)]
@@ -256,6 +265,18 @@ mod tests {
         assert_eq!(
             dir_from_registry_command(r#""C:\Tools\VcXsrv\uninstall.exe" /S"#),
             dir
+        );
+        assert_eq!(
+            dir_from_registry_command(r"C:\vcxsrv.exe"),
+            Some(PathBuf::from(r"C:\"))
+        );
+        assert_eq!(
+            dir_from_registry_command("C:/Tools/VcXsrv/vcxsrv.exe,0"),
+            Some(PathBuf::from("C:/Tools/VcXsrv"))
+        );
+        assert_eq!(
+            dir_from_registry_command(r"\\server\share\VcXsrv\vcxsrv.exe"),
+            Some(PathBuf::from(r"\\server\share\VcXsrv"))
         );
         assert_eq!(dir_from_registry_command(""), None);
         assert_eq!(dir_from_registry_command("vcxsrv.exe"), None);

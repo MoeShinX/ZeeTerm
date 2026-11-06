@@ -1,0 +1,32 @@
+Source: https://static.crates.io/crates/block/block-0.1.6.crate
+Repository: https://github.com/SSheldon/rust-block
+Version: 0.1.6
+Archive SHA-256: 0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a
+Author: Steven Sheldon (original Cargo.toml)
+License: MIT (original Cargo.toml)
+
+The published archive contains Cargo.toml, README.md, src/lib.rs and
+src/test_utils.rs. All four are retained. The archive and upstream repository
+omit a standalone license text. LICENSE-MIT supplies the standard MIT text
+with author attribution from the manifest; it is not claimed to be a file
+copied from upstream, and no copyright year has been inferred.
+
+Local changes to src/lib.rs:
+- Add a source attribution comment.
+- Replace the uninhabited empty Class enum with an opaque #[repr(C)] struct
+  containing a private zero-length byte array. Only pointers to Class cross
+  the FFI boundary; the foreign symbol and pointer layout stay unchanged.
+  This fixes the uninhabited_static lint (rust-lang/rust issue 74840).
+- Make all default extern ABIs explicitly "C", preserving the previous ABI
+  and fixing missing_abi warnings exposed for local path dependencies.
+No warnings are suppressed. Cargo.toml, README.md and src/test_utils.rs are
+byte-for-byte upstream. The public API and crate version are unchanged.
+
+As checked during this patch, crates.io has no release newer than 0.1.6.
+Upstream master revision 642ea4a4a5853a21b55b05c34832a5f1bb1af61c still
+uses the uninhabited Class enum; switching to that revision does not fix it.
+
+To verify original bytes and the exact permitted patch without executing
+anything from the archive, run from the project root:
+  python3 -I native/vendor/block-0.1.6/verify-source.py /path/to/block-0.1.6.crate
+The verifier reads archive members without extracting them.

@@ -22,5 +22,29 @@ windows = { workspace = true, features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# macOS 的原生能力：NSUserDefaults（明暗主题）、NSLocale（系统语言）、
+# NSPasteboard（剪贴板，含“这次写入”的私有标记）。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+    "NSArray",
+    "NSData",
+    "NSLocale",
+    "NSString",
+    "NSUserDefaults",
+] }
+objc2-app-kit = { version = "0.3", features = ["NSPasteboard"] }
+objc2-core-foundation = { version = "0.3", features = [
+    "CFData",
+    "CFDictionary",
+    "CFString",
+] }
+# 只存资料库密钥，不逐条存秘密。
+objc2-security = { version = "0.3", features = ["SecItem", "SecBase"] }
+
+# 单实例的文件锁（flock）。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true

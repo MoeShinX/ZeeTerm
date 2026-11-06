@@ -61,6 +61,8 @@ fn new_token() -> [u8; TOKEN_LEN] {
 }
 
 /// 到点要不要清：剪贴板上我们的私有格式还在、内容就是这次的标记才清。
+/// Windows 的私有格式返回原始字节；macOS 用同一个标记的十六进制字符串自行比较。
+#[cfg(any(windows, test))]
 fn token_matches(on_clipboard: Option<&[u8]>, token: &[u8; TOKEN_LEN]) -> bool {
     on_clipboard.is_some_and(|bytes| bytes.get(..TOKEN_LEN) == Some(token.as_slice()))
 }
@@ -275,7 +277,69 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod imp {
+    use std::fmt::Write as _;
+
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+    use objc2_foundation::{NSData, NSString};
+
+    use super::TOKEN_LEN;
+
+    /// 这次写入的私有格式：清空前用它确认剪贴板还是我们写的那份。
+    const TOKEN_TYPE: &str = "com.zeeterm.clipboard.token";
+    /// macOS 剪贴板历史 / 云剪贴板的通用“不要记录”标记。
+    const CONCEALED_TYPE: &str = "org.nspasteboard.ConcealedType";
+
+    fn hex(token: &[u8; TOKEN_LEN]) -> String {
+        let mut out = String::with_capacity(TOKEN_LEN * 2);
+        for byte in token {
+            // 写 String 不会失败。
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+
+    fn type_name(name: &str) -> objc2::rc::Retained<NSString> {
+        NSString::from_str(name)
+    }
+
+    pub fn write_text(text: &str, token: Option<&[u8; TOKEN_LEN]>) -> Result<(), String> {
+        let pasteboard = NSPasteboard::generalPasteboard();
+        pasteboard.clearContents();
+        let string = NSString::from_str(text);
+        // SAFETY: 类型常量由 AppKit 提供，调用期间一直有效。
+        if !pasteboard.setString_forType(&string, unsafe { NSPasteboardTypeString }) {
+            return Err("写入剪贴板失败".to_owned());
+        }
+        if let Some(token) = token {
+            // 私有标记写不进去时正文已经写入，但无法再确认所有权；自动清除会因此放弃，
+            // 所以这里把失败报给调用方，不让它以为“30 秒后一定会清”。
+            if !pasteboard
+                .setString_forType(&NSString::from_str(&hex(token)), &type_name(TOKEN_TYPE))
+            {
+                return Err("剪贴板写入成功，但无法标记这份内容的所有权".to_owned());
+            }
+            let concealed = type_name(CONCEALED_TYPE);
+            let empty = NSData::new();
+            let _ = pasteboard.setData_forType(Some(&empty), &concealed);
+        }
+        Ok(())
+    }
+
+    pub fn clear_if_ours(token: &[u8; TOKEN_LEN]) {
+        let pasteboard = NSPasteboard::generalPasteboard();
+        let token_type = type_name(TOKEN_TYPE);
+        let Some(current) = pasteboard.stringForType(&token_type) else {
+            return;
+        };
+        if current.to_string() == hex(token) {
+            pasteboard.clearContents();
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use super::TOKEN_LEN;
 

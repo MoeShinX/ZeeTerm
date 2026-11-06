@@ -223,6 +223,15 @@ fn publish(
     })
     .expect("生成 latest.json")
     .replace("https://fixture.invalid", &fixture.base);
+    // 此处测试可注入的下载/验签链；实际 macOS 入口在请求前选择手动更新。
+    // 让同一份内存包在宿主平台可选，安装阶段始终使用假 launcher。
+    let json = json.replace(
+        "windows-x86_64",
+        zssh_update::platform_keys()
+            .first()
+            .copied()
+            .unwrap_or("unsupported"),
+    );
     let path = format!("/download/v{announced}/{name}");
     fixture.set("/latest.json", Route::Ok(json.into_bytes()));
     fixture.set(&path, served);
@@ -300,7 +309,7 @@ fn a_new_release_goes_from_manifest_to_a_confirmed_install_with_the_stub_launche
     let (status, package) = check(&fixture, "1.3.0", &keys.pubkey_b64);
     assert!(status.contains("发现新版本 1.4.0"), "{status}");
     assert!(status.contains("修复若干问题"), "{status}");
-    assert!(status.contains("windows-x86_64"), "{status}");
+    assert!(status.contains(zssh_update::platform_keys()[0]), "{status}");
     let package = package.expect("应选出安装包");
     assert_eq!(package.version, "1.4.0");
 

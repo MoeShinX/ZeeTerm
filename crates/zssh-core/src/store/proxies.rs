@@ -105,7 +105,8 @@ impl Database {
         let secret_blob = match draft.secret.as_deref() {
             None => None,
             Some("") => Some(Vec::new()),
-            Some(secret) => Some(crate::store::secrets::protect(secret.as_bytes())?),
+            // 加密发生在 with_conn 之前，必须走本库身份，不能用默认账户。
+            Some(secret) => Some(self.protect_secret(secret.as_bytes())?),
         };
 
         self.with_conn_write(|conn| {

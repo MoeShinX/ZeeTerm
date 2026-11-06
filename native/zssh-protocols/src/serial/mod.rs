@@ -25,6 +25,7 @@ pub struct SerialPortEntry {
 }
 
 /// COM 口按编号排（COM2 在 COM10 前面）。
+#[cfg(any(windows, test))]
 fn sort_ports(entries: &mut [SerialPortEntry]) {
     fn number(device: &str) -> (u64, String) {
         let digits: String = device
@@ -69,10 +70,15 @@ pub fn probe_serial(options: &zssh_core::model::SerialOptions) -> Result<(), Ser
     })
 }
 
-/// 非 Windows 平台没有实现（ZeeTerm 只面向 Windows）；保留签名让 crate 在别处也能编译。
+/// macOS / Linux 首版不做串口：报错而不是返回空列表，界面据此提示“不支持”，
+/// 不会把“平台不支持”显示成“这台机器没有串口”。
 #[cfg(not(windows))]
 pub fn list_ports() -> Result<Vec<SerialPortEntry>, SerialError> {
-    Ok(Vec::new())
+    Err(SerialError::Os {
+        device: String::new(),
+        code: 0,
+        what: crate::lang::serial_windows_only(),
+    })
 }
 
 #[cfg(not(windows))]
@@ -113,7 +119,14 @@ mod tests {
         assert_eq!(order, ["COM1", "COM2", "COM10", "COM11"]);
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn unsupported_platform_reports_an_error() {
+        assert!(list_ports().is_err());
+    }
+
     /// 本机有没有串口都不算失败：能列出就列出，没有就是空列表。
+    #[cfg(windows)]
     #[test]
     fn listing_ports_works_with_or_without_hardware() {
         let ports = list_ports().expect("枚举不该失败");

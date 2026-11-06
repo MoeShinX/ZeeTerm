@@ -8,6 +8,7 @@
 use std::time::{Duration, Instant};
 
 use ::gpui::{AnyElement, ClickEvent, Entity, Window};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::notification::Notification;
@@ -91,6 +92,8 @@ enum LockUiMsg {
     DisableLock,
     IdleRowTitle,
     IdleRowDescription,
+    IdleUnsupported,
+    IdleUnsupportedDescription,
     TrayRowTitle,
     TrayRowDescription,
     StartRowTitle,
@@ -165,6 +168,10 @@ impl Msg for LockUiMsg {
             Self::IdleRowTitle => "空闲多久自动锁定",
             Self::IdleRowDescription => {
                 "以键盘、鼠标在 ZeeTerm 窗口里的操作为准；窗口在后台时也计时。需要先启用锁屏。"
+            }
+            Self::IdleUnsupported => "此平台暂不支持",
+            Self::IdleUnsupportedDescription => {
+                "此平台暂不支持检测 ZeeTerm 窗口的空闲时间，因此不会按空闲时间自动锁定。已保存的时长设置会保留，但在此平台不生效；请使用手动锁定或启动时锁定。"
             }
             Self::TrayRowTitle => "关到托盘时自动锁定",
             Self::TrayRowDescription => {
@@ -259,6 +266,10 @@ impl Msg for LockUiMsg {
             Self::IdleRowTitle => "Auto-lock when idle",
             Self::IdleRowDescription => {
                 "Keyboard and mouse activity in ZeeTerm windows counts, including windows in the background. Requires app lock to be enabled."
+            }
+            Self::IdleUnsupported => "Not supported here",
+            Self::IdleUnsupportedDescription => {
+                "ZeeTerm window idle detection is not supported on this platform, so idle auto-lock will not run. Your saved timeout is retained but does not take effect here. Use manual locking or lock on startup instead."
             }
             Self::TrayRowTitle => "Lock when minimized to tray",
             Self::TrayRowDescription => {
@@ -666,6 +677,7 @@ impl MainWindow {
     }
 
     /// 关到托盘：设置里选了“关到托盘时锁定”就锁。
+    #[cfg(any(windows, test))]
     pub(crate) fn lock_for_tray(&mut self, cx: &mut Context<Self>) {
         self.reload_lock_config();
         if self.app_lock.config.lock_on_tray {
@@ -739,7 +751,7 @@ impl MainWindow {
             clear_notifications(window, cx);
             return;
         }
-        if !enabled {
+        if !enabled || !cfg!(windows) {
             return;
         }
         let idle = zssh_platform_windows::activity::idle_for();
@@ -1138,19 +1150,41 @@ impl MainWindow {
         let mut auto_rows = Vec::new();
         auto_rows.push(row(
             t(LockUiMsg::IdleRowTitle),
-            Some(t(LockUiMsg::IdleRowDescription)),
-            div().w(::gpui::px(160.0)).child(select(
-                "lock-idle",
-                idle_label(idle_current),
-                IDLE_CHOICES
-                    .iter()
-                    .map(|minutes| Choice::new(idle_label(*minutes), *minutes == idle_current))
-                    .collect(),
-                move |index, window, cx| {
-                    let minutes = IDLE_CHOICES.get(index).copied().unwrap_or(0);
-                    idle_entity.update(cx, |this, cx| this.set_lock_idle(minutes, window, cx));
-                },
-            )),
+            Some(t(if cfg!(windows) {
+                LockUiMsg::IdleRowDescription
+            } else {
+                LockUiMsg::IdleUnsupportedDescription
+            })),
+            if !cfg!(windows) {
+                div()
+                    .w(::gpui::px(160.0))
+                    .child(
+                        Button::new("lock-idle-unavailable")
+                            .outline()
+                            .label(t(LockUiMsg::IdleUnsupported))
+                            .disabled(true),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .w(::gpui::px(160.0))
+                    .child(select(
+                        "lock-idle",
+                        idle_label(idle_current),
+                        IDLE_CHOICES
+                            .iter()
+                            .map(|minutes| {
+                                Choice::new(idle_label(*minutes), *minutes == idle_current)
+                            })
+                            .collect(),
+                        move |index, window, cx| {
+                            let minutes = IDLE_CHOICES.get(index).copied().unwrap_or(0);
+                            idle_entity
+                                .update(cx, |this, cx| this.set_lock_idle(minutes, window, cx));
+                        },
+                    ))
+                    .into_any_element()
+            },
             tokens,
         ));
 

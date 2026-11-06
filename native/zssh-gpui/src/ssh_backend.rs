@@ -922,10 +922,11 @@ fn user_known_hosts(home: Option<PathBuf>) -> Option<PathBuf> {
 pub(crate) fn known_hosts() -> KnownHosts {
     let mut known_hosts = KnownHosts::new(data_dir().join("known_hosts"));
     let isolated = cfg!(debug_assertions) && std::env::var_os("ZSSH_DATA_DIR").is_some();
-    if !isolated
-        && let Some(user_file) =
-            user_known_hosts(std::env::var_os("USERPROFILE").map(PathBuf::from))
-    {
+    // Windows 用 USERPROFILE，macOS / Linux 用 HOME；两处都先看，缺哪个都不会崩。
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from);
+    if !isolated && let Some(user_file) = user_known_hosts(home) {
         known_hosts = known_hosts.with_read_only(user_file);
     }
     known_hosts

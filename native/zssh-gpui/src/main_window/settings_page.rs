@@ -1928,7 +1928,14 @@ impl MainWindow {
             );
             return;
         }
-        if let Err(err) = std::process::Command::new("explorer").arg(&dir).spawn() {
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else if cfg!(windows) {
+            "explorer"
+        } else {
+            "xdg-open"
+        };
+        if let Err(err) = std::process::Command::new(opener).arg(&dir).spawn() {
             self.notice_error(
                 &format!("{}{err}", t(SettingsMsg::SessionLogOpenExplorerFailed)),
                 window,

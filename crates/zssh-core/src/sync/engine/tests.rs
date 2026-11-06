@@ -1,5 +1,8 @@
+#[cfg(windows)]
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+#[cfg(windows)]
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use super::*;
 use crate::model::{AuthMethod, HostDraft, ProxyMode};
@@ -989,11 +992,14 @@ fn oversized_or_too_many_unknown_settings_are_dropped_and_the_rest_still_import(
 
 // ---------- 日志里不能出现密码 / 私钥 / 同步包明文 ----------
 
+#[cfg(windows)]
 #[derive(Clone)]
 struct Capture(Arc<Mutex<Vec<u8>>>);
 
+#[cfg(windows)]
 struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
 
+#[cfg(windows)]
 impl Write for CaptureWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.0.lock().unwrap().extend_from_slice(buf);
@@ -1004,6 +1010,7 @@ impl Write for CaptureWriter {
     }
 }
 
+#[cfg(windows)]
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
     type Writer = CaptureWriter;
     fn make_writer(&'a self) -> Self::Writer {

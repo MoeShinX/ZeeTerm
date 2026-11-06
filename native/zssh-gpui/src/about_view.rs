@@ -150,6 +150,9 @@ impl crate::i18n::Msg for AboutMsg {
 
 /// 「检查更新」一行下面的说明。`signing_configured` 为假（公钥还是占位）时说明改成"更新签名未配置"。
 pub fn update_description(signing_configured: bool) -> &'static str {
+    if cfg!(target_os = "macos") {
+        return crate::update::manual_update_description();
+    }
     if signing_configured {
         crate::i18n::t(AboutMsg::UpdateReady)
     } else {
@@ -498,7 +501,11 @@ mod tests {
         }
         let configured = update_description(true);
         assert!(
-            configured.contains("更新窗口"),
+            configured.contains(if cfg!(target_os = "macos") {
+                "手动更新"
+            } else {
+                "更新窗口"
+            }),
             "点「检查更新」打开更新窗口"
         );
         assert!(!configured.contains("试用"));
@@ -512,8 +519,12 @@ mod tests {
     #[test]
     fn an_unconfigured_update_key_is_called_out_instead_of_promising_updates() {
         let text = update_description(false);
-        assert_eq!(text, crate::update::signing_unconfigured());
-        assert!(text.contains("更新签名未配置"));
+        if cfg!(target_os = "macos") {
+            assert_eq!(text, crate::update::manual_update_description());
+        } else {
+            assert_eq!(text, crate::update::signing_unconfigured());
+            assert!(text.contains("更新签名未配置"));
+        }
         // 界面上"配没配"和更新流程里拿不拿得到公钥是同一个判断。
         assert_eq!(signing_configured(), crate::update::update_pubkey().is_ok());
     }

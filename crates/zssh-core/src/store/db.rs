@@ -39,6 +39,9 @@ pub struct Database {
     /// 用户改了会进同步包的数据时调用（自动同步的“变化后 30 秒”靠它）。
     /// 同步自己写本地库走的是 `apply_snapshot`，不经过这里，所以不会自己触发自己。
     change_listener: Mutex<Option<ChangeListener>>,
+    /// 本机资料库持久化的密钥身份，移动目录不改变它。
+    /// 老资料库沿用原路径哈希账户，以免遗弃已有钥匙。
+    vault_account: String,
 }
 
 type ChangeListener = std::sync::Arc<dyn Fn() + Send + Sync>;
@@ -47,26 +50,130 @@ impl Database {
     /// 打开（或新建）指定路径的库，并把迁移跑到最新。
     pub fn open(path: &Path) -> Result<Self, ZsshError> {
         let conn = Connection::open(path)?;
-        Self::from_connection(conn)
+        Self::from_connection(conn, vault_account_for(path))
     }
 
-    /// 内存库，只给测试用。
+    /// 内存库，只给测试用。每个内存库有自己的密钥身份，不会互相串。
     pub fn open_in_memory() -> Result<Self, ZsshError> {
         let conn = Connection::open_in_memory()?;
-        Self::from_connection(conn)
+        Self::from_connection(conn, unique_memory_account())
     }
 
-    fn from_connection(conn: Connection) -> Result<Self, ZsshError> {
+    /// 这份资料库的密钥身份。
+    pub fn vault_account(&self) -> &str {
+        &self.vault_account
+    }
+
+    /// 在本次调用的整段时间内绑定本库身份。**在数据库锁外**解密或加密时必须用它：
+    /// 先把行读出来、再解锁、再解密，会让解密落到默认账户上，和写入时的账户对不上。
+    pub fn with_vault_scope<T>(&self, run: impl FnOnce() -> T) -> T {
+        #[cfg(target_os = "macos")]
+        {
+            let _scope = crate::store::secrets::VaultScope::new(&self.vault_account);
+            run()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            run()
+        }
+    }
+
+    /// 用本资料库的身份加密一段秘密。
+    ///
+    /// 加解密常常发生在 `with_conn` 之前（先算出密文再写库），这类调用必须走这里，
+    /// 不能直接调 `secrets::protect`：那时线程上还没有本库身份，会落到默认账户上，
+    /// 写进去的密文和之后读它的人对不上。
+    pub fn protect_secret(&self, plaintext: &[u8]) -> Result<Vec<u8>, ZsshError> {
+        #[cfg(target_os = "macos")]
+        {
+            let _scope = crate::store::secrets::VaultScope::new(&self.vault_account);
+            crate::store::secrets::protect(plaintext)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            crate::store::secrets::protect(plaintext)
+        }
+    }
+
+    /// 用本资料库的身份解密一段秘密。见 [`Self::protect_secret`]。
+    pub fn unprotect_secret(&self, blob: &[u8]) -> Result<Vec<u8>, ZsshError> {
+        #[cfg(target_os = "macos")]
+        {
+            let _scope = crate::store::secrets::VaultScope::new(&self.vault_account);
+            crate::store::secrets::unprotect(blob)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            crate::store::secrets::unprotect(blob)
+        }
+    }
+
+    fn from_connection(conn: Connection, vault_account: String) -> Result<Self, ZsshError> {
         // 外键默认是关的，每个连接都要打开。
         conn.pragma_update(None, "foreign_keys", true)?;
         // WAL：读写不互相阻塞。内存库会返回 memory，不用管。
         let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
 
+        #[cfg(target_os = "macos")]
+        let fresh = current_version(&conn)? == 0;
         let database = Self {
             conn: Mutex::new(conn),
             change_listener: Mutex::new(None),
+            vault_account,
         };
         database.migrate()?;
+        #[cfg(target_os = "macos")]
+        let mut database = database;
+        #[cfg(target_os = "macos")]
+        {
+            use rusqlite::OptionalExtension;
+            let mut guard = database.lock();
+            // 多个后台连接可能同时首次打开资料库，身份选择和落盘必须串行。
+            let conn = guard.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            // local_vault 只记录“这把密钥在本机钥匙串里的身份”，不进迁移、也不进同步快照。
+            // 它随数据库文件一起被拷到另一台机器时，那边的钥匙串里没有对应密钥，密文解不开，
+            // 这是预期：密钥不出本机。换机恢复要单独迁移钥匙串条目，不能靠复制这个文件。
+            conn.execute_batch("CREATE TABLE IF NOT EXISTS local_vault (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), account TEXT NOT NULL, initialized INTEGER NOT NULL)")?;
+            let saved: Option<(String, bool)> = conn
+                .query_row(
+                    "SELECT account, initialized FROM local_vault WHERE singleton = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            let (account, initialized) = match saved {
+                Some((account, initialized)) if !account.is_empty() => (account, initialized),
+                Some(_) => {
+                    return Err(ZsshError::Secret(crate::error::Reason::text(
+                        "资料库密钥身份损坏",
+                    )));
+                }
+                None => {
+                    // 旧库保留原路径账户；绝不因密钥缺失切换到新身份。
+                    let account = if fresh {
+                        format!("vault-{}", uuid::Uuid::new_v4())
+                    } else {
+                        database.vault_account.clone()
+                    };
+                    conn.execute(
+                        "INSERT INTO local_vault (singleton, account, initialized) VALUES (1, ?1, ?2)",
+                        rusqlite::params![account, !fresh],
+                    )?;
+                    (account, !fresh)
+                }
+            };
+            conn.commit()?;
+            // pending 身份先落盘：授权取消后可重试同一账户，不能换身份。
+            if !initialized {
+                crate::store::secrets::initialize_vault(&account)?;
+                guard.execute(
+                    "UPDATE local_vault SET initialized = 1 WHERE singleton = 1",
+                    [],
+                )?;
+            }
+            drop(guard);
+            database.vault_account = account;
+        }
         Ok(database)
     }
 
@@ -110,7 +217,18 @@ impl Database {
         run: impl FnOnce(&mut Connection) -> Result<T, ZsshError>,
     ) -> Result<T, ZsshError> {
         let mut guard = self.lock();
-        run(&mut guard)
+        // 在这份资料库的身份下读写秘密：同一线程先后操作两个库，各用各的钥匙串条目。
+        // 用作用域而不是手动恢复：闭包里 panic 时也要回到调用方原来的身份，
+        // 否则这个线程池线程会一直带着上一个库的身份，之后的库用错密钥。
+        #[cfg(target_os = "macos")]
+        {
+            let _scope = crate::store::secrets::VaultScope::new(&self.vault_account);
+            run(&mut guard)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            run(&mut guard)
+        }
     }
 
     /// 写操作用：成功后通知“数据变了”。
@@ -152,7 +270,16 @@ impl Database {
         run: impl FnOnce(&mut Connection) -> Result<T, E>,
     ) -> Result<T, E> {
         let mut guard = self.lock();
-        run(&mut guard)
+        // 和 with_conn 一样：panic 时也要恢复调用方原来的身份。
+        #[cfg(target_os = "macos")]
+        {
+            let _scope = crate::store::secrets::VaultScope::new(&self.vault_account);
+            run(&mut guard)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            run(&mut guard)
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {
@@ -183,6 +310,33 @@ fn repair_uids(conn: &Connection) -> Result<(), ZsshError> {
         }
     }
     Ok(())
+}
+
+/// 由库文件路径派生钥匙串里的资料库身份。用哈希而不是路径明文：
+/// 账户名会出现在钥匙串界面和日志里，不能带出用户目录。
+pub fn vault_account_for(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.to_string_lossy().as_bytes());
+    let digest = hasher.finalize();
+    format!("db-{}", hex_prefix(&digest[..16]))
+}
+
+/// 每个内存库一个独立身份，测试之间不会互相串用密钥。
+fn unique_memory_account() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!("memory-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+fn hex_prefix(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 /// `schema_version` 里最大的版本号。表还没建出来就是 0。

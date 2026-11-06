@@ -6,6 +6,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(dead_code)]
 
+pub mod vault;
+
 use std::collections::VecDeque;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -565,6 +567,8 @@ struct RemoteSweepSpec {
     port: u16,
     username: String,
     password: String,
+    key_path: Option<PathBuf>,
+    key_passphrase: Option<String>,
 }
 
 impl RemoteSweepSpec {
@@ -574,6 +578,8 @@ impl RemoteSweepSpec {
             port: server.port,
             username: server.username.clone(),
             password: server.password.clone(),
+            key_path: server.key_path.clone(),
+            key_passphrase: server.key_passphrase.clone(),
         }
     }
 }
@@ -599,12 +605,24 @@ impl RemoteTempDir {
         channel: &zssh_core::sftp::SftpChannel,
         tag: &str,
     ) -> Self {
-        sweep_stale_remote_dirs(connection, channel, STALE_DIR_AGE).await;
+        let _ = connection;
+        // 清理只属于本轮的子目录，不能清扫共享 /tmp 中其他运行留下的文件。
+        let root = require("ZSSH_TEST_REMOTE_ROOT").expect("需要专用远端测试目录");
+        assert!(
+            root.starts_with('/') && root != "/" && root != "/tmp",
+            "远端测试目录必须是专用绝对路径"
+        );
+        assert!(
+            !root.contains('\'')
+                && !root.contains('\n')
+                && !root.split('/').any(|part| part == ".."),
+            "远端测试目录包含不安全路径片段"
+        );
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or_default();
-        let path = format!("/tmp/{REMOTE_TEMP_PREFIX}{tag}-{nanos:x}");
+        let path = format!("{root}/{REMOTE_TEMP_PREFIX}{tag}-{nanos:x}");
         channel.create_dir(&path).await.expect("建远端临时目录");
         Self {
             path,
@@ -672,7 +690,13 @@ impl Drop for RemoteTempDir {
                     host: spec.host,
                     port: spec.port,
                     username: spec.username,
-                    auth: AuthConfig::password(Some(spec.password)),
+                    auth: match spec.key_path {
+                        Some(path) => AuthConfig::key(KeySource::File {
+                            path,
+                            passphrase: spec.key_passphrase,
+                        }),
+                        None => AuthConfig::password(Some(spec.password)),
+                    },
                     known_hosts: known_hosts.known_hosts(),
                     legacy_algorithms: false,
                 };

@@ -40,6 +40,7 @@ enum ProtocolMsg {
     // ---- 串口设备 ----
     BaudNeedsNumber,
     NoSerialPorts,
+    SerialUnsupported,
     ChooseSerialPort,
     DeviceNotDetectedSuffix,
     SerialTag,
@@ -69,6 +70,7 @@ impl Msg for ProtocolMsg {
             Self::SerialNewlineLf => "LF（换行）",
             Self::SerialNewlineCrLf => "CR LF（回车 + 换行）",
             Self::BaudNeedsNumber => "波特率要填数字（例如 115200）",
+            Self::SerialUnsupported => "当前平台不支持串口连接",
             Self::NoSerialPorts => "未检测到串口",
             Self::ChooseSerialPort => "（请选择串口）",
             Self::DeviceNotDetectedSuffix => "（当前未检测到）",
@@ -98,6 +100,7 @@ impl Msg for ProtocolMsg {
             Self::SerialNewlineLf => "LF (line feed)",
             Self::SerialNewlineCrLf => "CR LF (carriage return + line feed)",
             Self::BaudNeedsNumber => "Baud rate must be a number (for example 115200)",
+            Self::SerialUnsupported => "Serial connections are not supported on this platform",
             Self::NoSerialPorts => "No serial ports detected",
             Self::ChooseSerialPort => "(Select a serial port)",
             Self::DeviceNotDetectedSuffix => " (not detected right now)",
@@ -489,6 +492,9 @@ fn parse_fake_ports(raw: &str) -> Vec<PortChoice> {
 /// 设备下拉按钮上的字：能在列表里找到就显示友好名；找不到（拔掉了 / 手填的）显示设备名并说明；
 /// 还没填显示提示。
 pub fn device_button_label(device: &str, ports: &[PortChoice]) -> String {
+    if !cfg!(windows) && ports.is_empty() {
+        return t(ProtocolMsg::SerialUnsupported).to_owned();
+    }
     let device = device.trim();
     if device.is_empty() {
         return if ports.is_empty() {
@@ -848,9 +854,23 @@ mod tests {
             "USB Serial Adapter (COM3)"
         );
         assert_eq!(device_button_label("", &ports), "（请选择串口）");
-        assert_eq!(device_button_label("", &[]), "未检测到串口");
+        assert_eq!(
+            device_button_label("", &[]),
+            if cfg!(windows) {
+                "未检测到串口"
+            } else {
+                "当前平台不支持串口连接"
+            }
+        );
         assert_eq!(device_button_label("COM9", &ports), "COM9（当前未检测到）");
-        assert_eq!(device_button_label("COM9", &[]), "COM9（当前未检测到）");
+        assert_eq!(
+            device_button_label("COM9", &[]),
+            if cfg!(windows) {
+                "COM9（当前未检测到）"
+            } else {
+                "当前平台不支持串口连接"
+            }
+        );
     }
 
     #[test]

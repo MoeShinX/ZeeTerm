@@ -226,6 +226,7 @@ mod tests {
         assert!(sys.with(|s| s.spawned.is_empty()));
     }
 
+    #[cfg(windows)]
     #[test]
     fn auto_launches_vcxsrv_when_installed_and_nothing_runs() {
         let dir = TestDir::new("x11-prepare-launch");
@@ -249,6 +250,26 @@ mod tests {
         assert_eq!(sys.with(|s| s.spawned.len()), 1);
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn vcxsrv_is_unavailable_even_with_windows_installation_hints() {
+        let dir = TestDir::new("x11-prepare-unsupported");
+        let sys = FakeSystem::default();
+        with_vcxsrv(&sys);
+        let owned = OwnedRegistry::default();
+        assert!(matches!(
+            prepare_blocking(&X11Prefs::default(), &dir, &sys, &owned),
+            Err(X11Failure::NoLocalXServer {
+                installable: false,
+                ..
+            })
+        ));
+        let status = status(&sys, &owned);
+        assert!(status.vcxsrv.is_none());
+        assert!(!status.can_install);
+        assert!(sys.with(|s| s.spawned.is_empty()));
+    }
+
     #[test]
     fn auto_with_nothing_available_says_it_can_be_installed() {
         let dir = TestDir::new("x11-prepare-none");
@@ -267,6 +288,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_launch_failure_surfaces_as_a_structured_error() {
         let dir = TestDir::new("x11-prepare-launch-fail");
@@ -278,6 +300,7 @@ mod tests {
         assert_eq!(err.code(), "launch_failed");
     }
 
+    #[cfg(windows)]
     #[test]
     fn status_reports_install_running_and_owned_state() {
         let dir = TestDir::new("x11-status");

@@ -157,6 +157,7 @@ const DEFAULT_SIZE: Size = Size {
 };
 mod dev_tools;
 mod highlight_ops;
+mod ime_input;
 mod search_ops;
 mod settings_ops;
 
@@ -1341,6 +1342,8 @@ pub struct TerminalWorkspace {
     drag_anchor: Option<(usize, usize)>,
     cell_width: f32,
     cell_height: f32,
+    /// 输入法正在组合、还没提交的文字。只在本地显示，提交前不发给远端。
+    composition: ime_input::Composition<(u64, bool, Vec<PasteTarget>)>,
     pending_paste: Option<PendingPaste>,
     hover_link: Option<Arc<str>>,
     /// 应用级设置实体（全进程一份，所有窗口共用）；改设置走它，不在窗口里存盘。
@@ -1550,6 +1553,7 @@ impl TerminalWorkspace {
             drag_anchor: None,
             cell_width: 8.0,
             cell_height: 18.0,
+            composition: ime_input::Composition::default(),
             pending_paste: None,
             hover_link: None,
             settings_store,
@@ -2909,6 +2913,7 @@ impl TerminalWorkspace {
         let key = keystroke.key.as_str();
         // 粘贴确认框开着是模态的：Esc 取消、回车粘贴（沿用 0.2.14），其余按键一律不进终端。
         if self.pending_paste.is_some() {
+            cx.stop_propagation();
             match key {
                 "escape" => self.cancel_paste(window, cx),
                 "enter" => self.confirm_paste(window, cx),
@@ -2916,6 +2921,12 @@ impl TerminalWorkspace {
             }
             return;
         }
+        if !self.terminal_input_allowed(window) {
+            cx.stop_propagation();
+            return;
+        }
+        // 已由终端编码的按键不能再落到 macOS insertText，否则 ABC 字符会发送两次。
+        cx.stop_propagation();
         // 打字时光标先亮着，停下来才闪（和常见终端一致）。
         self.cursor_blink.reset();
 
@@ -3011,11 +3022,17 @@ impl TerminalWorkspace {
         // - Ctrl+V / Ctrl+Shift+V 粘贴；
         // - Ctrl+C 有选区才复制，没有选区继续发 ^C；
         // - Ctrl+Shift+C 没有选区时吞掉，不能把 ^C 发给远端。
-        if ctrl && key.eq_ignore_ascii_case("v") {
+        // macOS 上复制粘贴是 Cmd+C / Cmd+V；Ctrl+C 必须继续发给远端（中断），不能被抢。
+        let copy_mod = if cfg!(target_os = "macos") {
+            keystroke.modifiers.platform
+        } else {
+            ctrl
+        };
+        if copy_mod && key.eq_ignore_ascii_case("v") {
             self.request_paste(window, cx);
             return;
         }
-        if ctrl && key.eq_ignore_ascii_case("c") {
+        if copy_mod && key.eq_ignore_ascii_case("c") {
             let selected = self.selected_text();
             match crate::selection::copy_key_action(&selected, shift) {
                 crate::selection::CopyKey::Copy => {
@@ -3894,6 +3911,13 @@ impl Render for TerminalWorkspace {
         self.cell_height = cell_height;
 
         // 区域用上一帧量到的；第一帧还没有，先按整个窗口估，下一帧就会纠正。
+        if !self.terminal_input_allowed(window)
+            || !self
+                .composition
+                .matches_target(self.composition_target().as_ref())
+        {
+            self.composition.invalidate();
+        }
         let measured = self.area.get();
         let (area_x, area_y, area_w, area_h) = match measured {
             Some(bounds) => (
@@ -4224,6 +4248,24 @@ impl Render for TerminalWorkspace {
                         .absolute()
                         .size_full(),
                     )
+                    // 每帧把终端登记成当前焦点的文本输入目标，系统输入法才能把组合文字送进来。
+                    .child({
+                        let focus = self.focus.clone();
+                        let entity = entity.clone();
+                        canvas(
+                            |bounds, _, _| bounds,
+                            move |_, bounds, window, cx| {
+                                // handle_input 只能在 paint 阶段调用，放在 prepaint 里会直接 panic。
+                                window.handle_input(
+                                    &focus,
+                                    ::gpui::ElementInputHandler::new(bounds, entity.clone()),
+                                    cx,
+                                );
+                            },
+                        )
+                        .absolute()
+                        .size_full()
+                    })
                     .child(
                         div()
                             .id("pane-area")
@@ -4253,9 +4295,203 @@ impl Render for TerminalWorkspace {
                                 .text_xs()
                                 .child("\u{5e7f}\u{64ad}\u{4e2d}"),
                         )
-                    }),
+                    })
+                    // 预编辑画在光标处：只显示，提交前不进远端。
+                    .children(self.preedit_overlay(
+                        mono.clone(),
+                        mono_size,
+                        tokens.text,
+                        tokens.surface,
+                    )),
             )
             .into_any_element()
+    }
+}
+
+impl TerminalWorkspace {
+    fn terminal_input_allowed(&self, window: &Window) -> bool {
+        ime_input::input_allowed(
+            self.focus.is_focused(window),
+            self.pending_paste.is_some(),
+            crate::app_lock::is_locked(),
+            !self.tabs.is_empty(),
+        )
+    }
+
+    fn composition_target(&self) -> Option<(u64, bool, Vec<PasteTarget>)> {
+        let tab = self.tabs.active()?;
+        Some((
+            tab.id,
+            tab.broadcast,
+            tab.input_targets()
+                .into_iter()
+                .map(|index| tab.panes[index].paste_target())
+                .collect(),
+        ))
+    }
+
+    fn commit_terminal_text(&mut self, text: &str, window: &Window, cx: &mut Context<Self>) {
+        let allowed = self.terminal_input_allowed(window);
+        let target = self.composition_target();
+        if let Some(bytes) = self.composition.commit(text, target, allowed) {
+            self.cursor_blink.reset();
+            self.send_bytes(&bytes);
+        }
+        cx.notify();
+    }
+
+    /// 预编辑的显示：下划线标出正在组合的文字，位置跟当前聚焦窗格的光标。
+    fn preedit_overlay(
+        &self,
+        mono: ::gpui::SharedString,
+        mono_size: ::gpui::Pixels,
+        color: ::gpui::Hsla,
+        background: ::gpui::Hsla,
+    ) -> Option<gpui_kit::AnyElement> {
+        if self.composition.marked().is_empty()
+            || !self
+                .composition
+                .matches_target(self.composition_target().as_ref())
+        {
+            return None;
+        }
+        let geom = self.focused_pane_geom()?;
+        let (row, col) = self
+            .pane()
+            .and_then(|pane| pane.pump().cursor_visible())
+            .unwrap_or((0, 0));
+        let left = geom.left - self.area_origin.0 + col as f32 * self.cell_width;
+        let top = geom.top - self.area_origin.1 + row as f32 * self.cell_height;
+        Some(
+            div()
+                .absolute()
+                .left(::gpui::px(left))
+                .top(::gpui::px(top))
+                .h(::gpui::px(self.cell_height))
+                .px_1()
+                .bg(background)
+                .border_b_2()
+                .border_color(color)
+                .font_family(mono)
+                .text_size(mono_size)
+                .text_color(color)
+                .child(self.composition.marked().to_owned())
+                .into_any_element(),
+        )
+    }
+
+    /// 当前聚焦窗格的几何；还没量到时返回 `None`。
+    fn focused_pane_geom(&self) -> Option<PaneGeom> {
+        let index = self.tabs.active().map(|tab| tab.active_pane)?;
+        self.pane_geom.get(index).copied()
+    }
+}
+
+/// 终端的输入法接线。预编辑只改 `composition`（本地显示），
+/// `replace_text_in_range` 才把最终文字发给远端。
+impl ::gpui::EntityInputHandler for TerminalWorkspace {
+    fn text_for_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        _adjusted: &mut Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut ::gpui::Context<Self>,
+    ) -> Option<String> {
+        let units: Vec<u16> = self.composition.marked().encode_utf16().collect();
+        let end = range.end.min(units.len());
+        let start = range.start.min(end);
+        Some(String::from_utf16_lossy(&units[start..end]))
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut ::gpui::Context<Self>,
+    ) -> Option<::gpui::UTF16Selection> {
+        let end = self.composition.marked().encode_utf16().count();
+        Some(::gpui::UTF16Selection {
+            range: end..end,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut ::gpui::Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        if self.composition.marked().is_empty() {
+            None
+        } else {
+            Some(0..self.composition.marked().encode_utf16().count())
+        }
+    }
+
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut ::gpui::Context<Self>) {
+        let text = self.composition.marked().to_owned();
+        self.commit_terminal_text(&text, window, cx);
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut ::gpui::Context<Self>,
+    ) {
+        self.commit_terminal_text(text, window, cx);
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _selection: Option<std::ops::Range<usize>>,
+        window: &mut Window,
+        cx: &mut ::gpui::Context<Self>,
+    ) {
+        let allowed = self.terminal_input_allowed(window);
+        let target = self.composition_target();
+        self.composition.set_marked(new_text, target, allowed);
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range: std::ops::Range<usize>,
+        _element_bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _cx: &mut ::gpui::Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let geom = self.focused_pane_geom()?;
+        let (row, col) = self
+            .pane()
+            .and_then(|pane| pane.pump().cursor_visible())
+            .unwrap_or((0, 0));
+        Some(ime_input::cursor_bounds(
+            geom.left,
+            geom.top,
+            self.cell_width,
+            self.cell_height,
+            col,
+            row,
+        ))
+    }
+
+    fn accepts_text_input(&self, window: &mut Window, _cx: &mut ::gpui::Context<Self>) -> bool {
+        // GPUI 只有在组合输入源活动时才按这个偏好优先调用 IME；ABC 仍先走按键。
+        self.terminal_input_allowed(window)
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: ::gpui::Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut ::gpui::Context<Self>,
+    ) -> Option<usize> {
+        // 终端没有可点击定位的文档，点哪都落在预编辑末尾。
+        Some(self.composition.marked().encode_utf16().count())
     }
 }
 

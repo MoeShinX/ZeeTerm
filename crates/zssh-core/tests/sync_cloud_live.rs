@@ -59,7 +59,7 @@ impl Machine {
             .expect("建目录");
         let dir = guard.path().to_path_buf();
         Self {
-            db: Database::open(&dir.join("zssh.db")).expect("打开库"),
+            db: common::vault::open(&dir.join("zssh.db")).expect("打开库"),
             dir,
             device,
             _guard: guard,

@@ -521,6 +521,19 @@ pub(super) fn local_crumbs(path: &str) -> Vec<Crumb> {
     if path.is_empty() {
         return Vec::new();
     }
+    if !cfg!(windows) {
+        let mut built = std::path::PathBuf::new();
+        return std::path::Path::new(path)
+            .components()
+            .map(|part| {
+                built.push(part.as_os_str());
+                Crumb {
+                    name: part.as_os_str().to_string_lossy().into_owned(),
+                    path: built.display().to_string(),
+                }
+            })
+            .collect();
+    }
     let (root, rest) = split_local_root(path);
     let mut out = vec![Crumb {
         name: root.clone(),
@@ -1258,6 +1271,7 @@ mod tests {
         assert_eq!(remote_parent("/"), "/");
     }
 
+    #[cfg(windows)]
     #[test]
     fn local_breadcrumbs_handle_drives_shares_and_the_verbatim_prefix() {
         let crumbs = local_crumbs(r"C:\Users\demo\Docs");
@@ -1283,6 +1297,20 @@ mod tests {
         assert_eq!(long[0].name, "C:");
         let unc = local_crumbs(r"\\?\UNC\srv\share\a");
         assert_eq!(unc[0].name, r"\\srv\share");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn local_posix_breadcrumbs_and_parent() {
+        let crumbs = local_crumbs("/tmp/资料/a");
+        assert_eq!(
+            crumbs.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(),
+            ["/", "/tmp", "/tmp/资料", "/tmp/资料/a"]
+        );
+        assert_eq!(local_parent("/tmp/资料"), "/tmp");
+        assert_eq!(local_parent("/tmp"), "/");
+        assert_eq!(local_parent("/"), "");
+        assert!(local_crumbs("").is_empty());
     }
 
     #[test]

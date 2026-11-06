@@ -58,7 +58,14 @@ pub fn key(path: &Path) -> String {
 fn parts(path: &Path) -> Vec<String> {
     normalize(path)
         .components()
-        .map(|component| component.as_os_str().to_string_lossy().to_lowercase())
+        .map(|component| {
+            let text = component.as_os_str().to_string_lossy();
+            if cfg!(windows) {
+                text.to_lowercase()
+            } else {
+                text.into_owned()
+            }
+        })
         .collect()
 }
 
@@ -145,11 +152,22 @@ mod tests {
     #[test]
     fn normalize_cleans_dots_and_parent_components() {
         assert_eq!(
-            normalize(Path::new(r"C:\a\.\b\..\c")),
-            PathBuf::from(r"C:\a\c")
+            normalize(Path::new(if cfg!(windows) {
+                r"C:\a\.\b\..\c"
+            } else {
+                "/a/./b/../c"
+            })),
+            PathBuf::from(if cfg!(windows) { r"C:\a\c" } else { "/a/c" })
         );
         // 越过根停在根上。
-        assert_eq!(normalize(Path::new(r"C:\..\..\x")), PathBuf::from(r"C:\x"));
+        assert_eq!(
+            normalize(Path::new(if cfg!(windows) {
+                r"C:\..\..\x"
+            } else {
+                "/../../x"
+            })),
+            PathBuf::from(if cfg!(windows) { r"C:\x" } else { "/x" })
+        );
     }
 
     #[test]

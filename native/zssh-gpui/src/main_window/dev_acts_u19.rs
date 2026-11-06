@@ -83,11 +83,16 @@ mod real {
                 fake_backup(std::path::Path::new(path), password)?;
             }
             "u19_hold" => {
-                use std::os::windows::fs::OpenOptionsExt;
-                let file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .share_mode(3)
+                // Windows 上用 share_mode 允许别的进程同时打开；macOS / Linux 的普通打开
+                // 本来就共享，不需要这一步。
+                let mut options = std::fs::OpenOptions::new();
+                options.read(true).write(true);
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::OpenOptionsExt;
+                    options.share_mode(3);
+                }
+                let file = options
                     .open(std::path::Path::new(&joined).join("data.db"))
                     .map_err(|err| format!("占不住：{err}"))?;
                 *HELD.lock().unwrap_or_else(|p| p.into_inner()) = Some(file);

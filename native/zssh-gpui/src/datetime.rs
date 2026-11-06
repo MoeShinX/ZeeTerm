@@ -17,7 +17,21 @@ pub(crate) fn local_utc_offset() -> i64 {
         };
         -(i64::from(info.Bias) + i64::from(extra)) * 60
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs() as libc::time_t);
+        let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
+        // SAFETY: localtime_r 写入调用方拥有的有效存储，结果包含当前夏令时偏移。
+        unsafe {
+            if libc::localtime_r(&now, local.as_mut_ptr()).is_null() {
+                return 0;
+            }
+            local.assume_init().tm_gmtoff
+        }
+    }
+    #[cfg(not(any(windows, unix)))]
     {
         0
     }

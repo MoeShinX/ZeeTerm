@@ -426,6 +426,10 @@ fn deleting_endpoints_counts_in_the_mass_delete_guard() {
     assert!(plan.samples.iter().any(|s| s.entity == ENTITY_AI_ENDPOINT));
 }
 
+// 这条靠"另一台设备封的密钥本机也能解"（Windows 同一用户的 DPAPI）。
+// macOS 每个资料库一把密钥，别的设备封的密文本机按设计解不开，
+// 恢复时要求用户重新填密钥。这里只在 Windows 上验证。
+#[cfg(windows)]
 #[tokio::test]
 async fn the_conflict_list_can_restore_a_deleted_endpoint_as_a_new_record() {
     let dir_a = temp_dir("conflict-a");
