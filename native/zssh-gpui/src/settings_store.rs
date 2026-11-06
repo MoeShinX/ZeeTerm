@@ -410,6 +410,25 @@ impl AppSettings {
         Self::init(cx)
     }
 
+    /// 测试用：装一份默认设置的实体，**不读不写磁盘，也不改进程级的界面语言**。`init` 会按系统语言
+    /// 重设 `i18n` 的全局值，并行跑的别的测试（默认按中文断言）会被它在非中文系统上带偏；开 GPUI
+    /// 测试窗口的测试用这个。
+    #[cfg(test)]
+    pub(crate) fn init_for_test(cx: &mut App) -> Entity<AppSettings> {
+        if let Some(handle) = cx.try_global::<SettingsHandle>() {
+            return handle.0.clone();
+        }
+        let settings = UiSettings::default();
+        let writer = SettingsWriter::with(Box::new(|_| Ok(())), SAVE_DELAY, RETRY_DELAY);
+        cx.set_global(settings.look());
+        crate::app_theme::init_mode(true, cx);
+        let entity = cx.new(|_| AppSettings {
+            store: SettingsStore::new(settings, writer),
+        });
+        cx.set_global(SettingsHandle(entity.clone()));
+        entity
+    }
+
     pub fn settings(&self) -> &UiSettings {
         self.store.settings()
     }
