@@ -207,6 +207,14 @@ async fn connect_local(endpoint: &XEndpoint) -> Result<LocalStream, X11Failure> 
     match timeout(LOCAL_CONNECT_TIMEOUT, connecting).await {
         Ok(Ok(stream)) => Ok(stream),
         Ok(Err(error)) => {
+            #[cfg(target_os = "linux")]
+            if error
+                .get_ref()
+                .is_some_and(|inner| inner.is::<UntrustedPeer>())
+            {
+                tracing::warn!(x_server = %shown, "本机 X 服务器的套接字不属于当前用户，已断开");
+                return Err(X11Failure::LocalXServerUntrusted { display: shown });
+            }
             tracing::debug!(%error, x_server = %shown, "连接本机 X 服务器失败");
             Err(X11Failure::NoLocalXServer {
                 display: shown,
@@ -226,18 +234,68 @@ async fn connect_tcp(endpoint: &XEndpoint) -> std::io::Result<LocalStream> {
 
 /// Unix 套接字：Linux 先试抽象命名空间（Xorg、Xwayland 默认同时监听 `@/tmp/.X11-unix/XN` 和
 /// 文件路径，libxcb 也是这个顺序），再试文件路径。
+///
+/// Linux 上连上之后用 `SO_PEERCRED` 核对对端 uid：抽象命名空间里的名字没有文件权限，X 服务器只监听
+/// 文件路径时别的本地用户可以抢先绑定同名套接字，接到我们换进去的真 cookie。对端不是当前用户
+/// （或 root）就断开，不再改试别的路径。
 #[cfg(unix)]
 async fn connect_unix(socket: &UnixSocket) -> std::io::Result<LocalStream> {
     #[cfg(target_os = "linux")]
     match connect_abstract(&socket.path).await {
-        Ok(stream) => return Ok(Box::new(stream)),
+        Ok(stream) => {
+            verify_peer(&stream)?;
+            return Ok(Box::new(stream));
+        }
         Err(error) => {
             tracing::debug!(%error, display = socket.display, "抽象命名空间里没有 X 套接字，改试文件路径");
         }
     }
-    Ok(Box::new(
-        tokio::net::UnixStream::connect(&socket.path).await?,
-    ))
+    let stream = tokio::net::UnixStream::connect(&socket.path).await?;
+    #[cfg(target_os = "linux")]
+    verify_peer(&stream)?;
+    Ok(Box::new(stream))
+}
+
+/// 对端 uid 能不能信：root，或者和我们是同一个用户（X 服务器可能是 root 起的，比如 GDM 登录界面）。
+#[cfg(target_os = "linux")]
+fn peer_uid_trusted(peer_uid: u32, own_uid: u32) -> bool {
+    peer_uid == 0 || peer_uid == own_uid
+}
+
+/// [`verify_peer`] 的错误：用 `io::Error` 带出去，`connect_local` 据此区分"连不上"和"对端不可信"。
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct UntrustedPeer;
+
+#[cfg(target_os = "linux")]
+impl std::fmt::Display for UntrustedPeer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the peer of the X socket belongs to another user")
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl std::error::Error for UntrustedPeer {}
+
+#[cfg(target_os = "linux")]
+fn verify_peer(stream: &tokio::net::UnixStream) -> std::io::Result<()> {
+    // SAFETY: geteuid 没有前置条件。
+    let own = unsafe { libc::geteuid() };
+    verify_peer_as(stream, own)
+}
+
+/// 取不到对端凭据也当作不可信（fail closed）。`own` 单独传进来只为了测试能模拟"别的用户"。
+#[cfg(target_os = "linux")]
+fn verify_peer_as(stream: &tokio::net::UnixStream, own: u32) -> std::io::Result<()> {
+    let peer = stream.peer_cred()?;
+    if peer_uid_trusted(peer.uid(), own) {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            UntrustedPeer,
+        ))
+    }
 }
 
 #[cfg(not(unix))]
@@ -390,6 +448,56 @@ mod tests {
         let no_auth = test_setup_packet(b'l', b"", b"");
         assert!(lookup_entry(&hub, &no_auth).is_none());
         assert!(lookup_entry(&hub, &good[..10]).is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_root_and_the_current_user_are_trusted_x_server_peers() {
+        assert!(peer_uid_trusted(1000, 1000));
+        assert!(peer_uid_trusted(0, 1000), "root 起的 X 服务器可信");
+        assert!(peer_uid_trusted(0, 0));
+        assert!(!peer_uid_trusted(1001, 1000));
+        assert!(!peer_uid_trusted(65534, 0));
+    }
+
+    /// 真实的 Unix 套接字：同一个用户的服务端可以连；把"自己"换成别的 uid 就被拒（对端是我们自己，
+    /// 不是 root 的话就不可信）。
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_same_user_socket_is_accepted_and_a_foreign_one_is_refused() {
+        let dir = crate::test_util::TestDir::new("x11-peer");
+        let path = dir.join("X9");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let accept = tokio::spawn(async move {
+            let _keep = (listener.accept().await, listener.accept().await);
+        });
+        let socket = UnixSocket {
+            display: 9,
+            path: path.clone(),
+        };
+        let endpoint = XEndpoint {
+            host: String::new(),
+            port: 0,
+            screen: 0,
+            unix: Some(socket),
+        };
+        // 同一个用户（我们自己连自己）：通过。
+        assert!(connect_local(&endpoint).await.is_ok());
+
+        // 假装"自己"是另一个用户：对端（真实 uid）不在可信之列，除非测试本身以 root 运行。
+        let stream = tokio::net::UnixStream::connect(&path).await.unwrap();
+        let real = unsafe { libc::geteuid() };
+        let result = verify_peer_as(&stream, real.wrapping_add(1));
+        if real == 0 {
+            assert!(result.is_ok(), "root 对端永远可信");
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            assert!(error
+                .get_ref()
+                .is_some_and(|inner| inner.is::<UntrustedPeer>()));
+        }
+        accept.abort();
     }
 
     #[tokio::test]

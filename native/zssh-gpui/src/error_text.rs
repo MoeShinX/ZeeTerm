@@ -117,6 +117,7 @@ enum CoreErrorMsg {
     X11NoDisplay,
     X11Rejected,
     X11Timeout,
+    X11Untrusted,
     X11Launch,
     X11UnknownCookie,
     X11BadSetup,
@@ -253,6 +254,7 @@ impl Msg for CoreErrorMsg {
             Self::X11NoDisplay => "本机没有 X 服务器（环境里没有 DISPLAY）",
             Self::X11Rejected => "本机 X 服务器（{display}）拒绝了连接：{reason}",
             Self::X11Timeout => "连接本机 X 服务器（{display}）超时",
+            Self::X11Untrusted => "本机 X 服务器（{display}）的套接字不属于当前用户，已断开",
             Self::X11Launch => "没能启动本机 X 服务器：{detail}",
             Self::X11UnknownCookie => "收到一个 X11 连接，但它的认证信息不属于任何终端，已拒绝",
             Self::X11BadSetup => "X11 连接的握手包不合法、太大或超时，已关闭",
@@ -427,6 +429,9 @@ impl Msg for CoreErrorMsg {
             }
             Self::X11Rejected => "The local X server ({display}) rejected the connection: {reason}",
             Self::X11Timeout => "Connecting to the local X server ({display}) timed out",
+            Self::X11Untrusted => {
+                "The socket of the local X server ({display}) belongs to another user; the connection was dropped"
+            }
             Self::X11Launch => "Could not start the local X server: {detail}",
             Self::X11UnknownCookie => {
                 "Received an X11 connection whose authentication does not belong to any terminal; it was refused"
@@ -547,6 +552,7 @@ fn message_for(code: &str) -> Option<CoreErrorMsg> {
         "x11f.no_x_display" => CoreErrorMsg::X11NoDisplay,
         "x11f.local_x_server_rejected" => CoreErrorMsg::X11Rejected,
         "x11f.local_x_server_timeout" => CoreErrorMsg::X11Timeout,
+        "x11f.local_x_server_untrusted" => CoreErrorMsg::X11Untrusted,
         "x11f.launch_failed" => CoreErrorMsg::X11Launch,
         "x11f.unknown_cookie" => CoreErrorMsg::X11UnknownCookie,
         "x11f.bad_setup" => CoreErrorMsg::X11BadSetup,
@@ -781,6 +787,7 @@ fn x11_advice_en(failure: &zssh_core::x11::X11Failure) -> String {
             format!("The local X server ({display}) rejected the connection ({}). {hint}", get("reason"))
         }
         "x11f.local_x_server_timeout" => format!("Connecting to the local X server ({display}) timed out; make sure it is running and not blocked by a firewall."),
+        "x11f.local_x_server_untrusted" => format!("The socket of the local X server ({display}) belongs to another user (and is not root), so the connection was dropped to avoid handing your authentication data to someone else. Make sure this display number is served by an X server in your own session; if another user owns it, use a different display number. Opened as a plain terminal."),
         "x11f.launch_failed" => format!("Could not start the local X server: {detail}. Opened as a plain terminal."),
         "x11f.unknown_cookie" => "The authentication data of an X11 connection from the remote side is wrong, so it was refused (another terminal may have been closed).".to_owned(),
         "x11f.bad_setup" => "An X11 connection from the remote side had an invalid setup or timed out, so it was closed.".to_owned(),
@@ -1042,6 +1049,7 @@ mod tests {
             CoreErrorMsg::X11NoDisplay,
             CoreErrorMsg::X11Rejected,
             CoreErrorMsg::X11Timeout,
+            CoreErrorMsg::X11Untrusted,
             CoreErrorMsg::X11Launch,
             CoreErrorMsg::X11UnknownCookie,
             CoreErrorMsg::X11BadSetup,

@@ -49,6 +49,10 @@ pub enum X11Failure {
     /// 连本机 X 服务器超时。
     #[error("连接本机 X 服务器（{display}）超时")]
     LocalXServerTimeout { display: String },
+    /// 本机 X 服务器的 Unix 套接字对端不是当前用户（也不是 root）：别的用户抢先绑定了同名的套接字
+    /// （抽象命名空间里的名字没有文件权限保护），不能把真 cookie 交给它。
+    #[error("本机 X 服务器（{display}）的套接字不属于当前用户，已断开")]
+    LocalXServerUntrusted { display: String },
     /// 本机 X 服务器是 ZeeTerm 自己要拉起的，但没起来。
     #[error("没能启动本机 X 服务器：{reason}")]
     LaunchFailed { reason: Reason },
@@ -76,6 +80,7 @@ impl X11Failure {
             Self::NoXDisplay => "no_x_display",
             Self::LocalXServerRejected { .. } => "local_x_server_rejected",
             Self::LocalXServerTimeout { .. } => "local_x_server_timeout",
+            Self::LocalXServerUntrusted { .. } => "local_x_server_untrusted",
             Self::LaunchFailed { .. } => "launch_failed",
             Self::UnknownCookie => "unknown_cookie",
             Self::BadSetup => "bad_setup",
@@ -153,6 +158,11 @@ impl X11Failure {
             Self::LocalXServerTimeout { display } => {
                 format!("连接本机 X 服务器（{display}）超时，请确认它在运行且没被防火墙拦住。")
             }
+            Self::LocalXServerUntrusted { display } => format!(
+                "本机 X 服务器（{display}）的套接字不属于当前用户（也不是 root），为了不把认证信息交给\
+                 别人，已断开。请确认这个显示号上跑的是你自己会话里的 X 服务器；如果是别的用户的，\
+                 请换一个显示号。已按普通终端打开。"
+            ),
             Self::LaunchFailed { reason } => {
                 format!("没能启动本机 X 服务器：{reason}。已按普通终端打开。")
             }
@@ -178,6 +188,7 @@ impl ErrorWithCode for X11Failure {
             Self::NoXDisplay => "x11f.no_x_display",
             Self::LocalXServerRejected { .. } => "x11f.local_x_server_rejected",
             Self::LocalXServerTimeout { .. } => "x11f.local_x_server_timeout",
+            Self::LocalXServerUntrusted { .. } => "x11f.local_x_server_untrusted",
             Self::LaunchFailed { .. } => "x11f.launch_failed",
             Self::UnknownCookie => "x11f.unknown_cookie",
             Self::BadSetup => "x11f.bad_setup",
@@ -210,7 +221,9 @@ impl ErrorWithCode for X11Failure {
                 ("reason", reason.clone()),
                 ("passthrough", u8::from(*passthrough).to_string()),
             ],
-            Self::LocalXServerTimeout { display } => vec![("display", display.clone())],
+            Self::LocalXServerTimeout { display } | Self::LocalXServerUntrusted { display } => {
+                vec![("display", display.clone())]
+            }
             Self::LaunchFailed { reason } | Self::NotRegistered { reason } => {
                 vec![("detail", reason.zh().to_owned())]
             }
@@ -250,6 +263,9 @@ mod tests {
             },
             X11Failure::LocalXServerTimeout {
                 display: "localhost:6000".into(),
+            },
+            X11Failure::LocalXServerUntrusted {
+                display: ":7".into(),
             },
             X11Failure::LaunchFailed {
                 reason: "找不到程序".into(),
