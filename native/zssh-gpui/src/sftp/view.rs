@@ -243,11 +243,6 @@ pub(super) fn filter_compact(dock: bool, pane_width: f32) -> bool {
     !dock && pane_width > 0.0 && pane_width < 400.0
 }
 
-/// 这一栏的过滤框现在画成输入框还是放大镜按钮：窄栏里没点开、也没在过滤时才收起。
-fn filter_collapsed(dock: bool, pane_width: f32, open: bool, text: &str) -> bool {
-    filter_compact(dock, pane_width) && !open && text.is_empty()
-}
-
 /// 工具栏里过滤那一格占多宽：收起时是一个按钮（约 30），展开的窄栏给 120 好打字。
 fn filter_slot(dock: bool, pane_width: f32, collapsed: bool) -> f32 {
     if collapsed {
@@ -257,6 +252,84 @@ fn filter_slot(dock: bool, pane_width: f32, collapsed: bool) -> f32 {
     } else {
         filter_width(dock, pane_width)
     }
+}
+
+/// 工具栏里一个图标按钮（`Button::compact`）的宽度，和按钮之间的间距（`gap_1`）。
+const TOOL_BUTTON_WIDTH: f32 = 32.0;
+const TOOLBAR_GAP: f32 = 4.0;
+/// 工具栏左右内边距（`px_2`）加一栏的边框。
+const TOOLBAR_PADDING: f32 = 2.0 * 8.0 + 2.0;
+/// 面包屑至少要有的宽度：放得下「… ›」加当前目录名的前几个字（再长的名字由它自己截断）。
+/// 宽度不够时先收其它东西，不能把面包屑压成 0（停靠面板里本地栏比远端栏多一个关闭按钮，
+/// 1554 px 宽的窗口、面板约 650 px 时两栏各约 320，本地栏连当前目录都看不到）。
+pub(super) const MIN_CRUMBS_WIDTH: f32 = 80.0;
+/// 极窄时给面包屑保底的宽度：别的按钮宁可被裁掉，也要让用户看到自己在哪一级。
+const CRUMBS_FLOOR: f32 = 48.0;
+
+/// 一栏工具栏这一帧的排法：哪些东西放、面包屑能分到多宽。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ToolbarPlan {
+    /// 放「前进」按钮吗。
+    pub(super) forward: bool,
+    /// 过滤框收成放大镜按钮吗。
+    pub(super) filter_collapsed: bool,
+    /// 过滤框是输入框时的宽度。
+    pub(super) filter_width: f32,
+    /// 面包屑能用的宽度（`0` = 这一栏的宽度还没量到）。
+    pub(super) crumbs: f32,
+}
+
+/// 工具栏里除了面包屑之外，固定要占的宽度（按钮、过滤那一格、间距、内边距）。
+fn toolbar_fixed_width(forward: bool, is_remote: bool, filter_slot: f32) -> f32 {
+    // 后退、上级、刷新、隐藏文件；本地栏多一个「关闭本地栏」。
+    let buttons = 4 + usize::from(forward) + usize::from(!is_remote);
+    // 控件个数 = 按钮 + 过滤那一格 + 面包屑，之间各有一个间距。
+    let items = buttons + 2;
+    TOOLBAR_PADDING
+        + buttons as f32 * TOOL_BUTTON_WIDTH
+        + filter_slot
+        + (items - 1) as f32 * TOOLBAR_GAP
+}
+
+/// 定这一栏工具栏的排法。先按原来的规则排（窄的独立窗口里收过滤框、去掉前进）；这样排下来面包屑
+/// 还不到 [`MIN_CRUMBS_WIDTH`]，再依次：过滤框收成按钮（正在过滤时缩成最窄的输入框）→ 去掉「前进」
+/// （Alt+→ 照样能用）；都做了还是窄，面包屑也至少保底 [`CRUMBS_FLOOR`]。
+pub(super) fn toolbar_plan(
+    dock: bool,
+    is_remote: bool,
+    pane_width: f32,
+    filter_active: bool,
+) -> ToolbarPlan {
+    let compact = filter_compact(dock, pane_width);
+    let mut plan = ToolbarPlan {
+        forward: !compact,
+        filter_collapsed: compact && !filter_active,
+        filter_width: filter_slot(dock, pane_width, compact && !filter_active),
+        crumbs: 0.0,
+    };
+    if pane_width <= 0.0 {
+        return plan;
+    }
+    let fixed = |plan: &ToolbarPlan| {
+        let slot = if plan.filter_collapsed {
+            TOOL_BUTTON_WIDTH
+        } else {
+            plan.filter_width
+        };
+        toolbar_fixed_width(plan.forward, is_remote, slot)
+    };
+    if pane_width - fixed(&plan) < MIN_CRUMBS_WIDTH {
+        if filter_active {
+            plan.filter_width = plan.filter_width.min(72.0);
+        } else {
+            plan.filter_collapsed = true;
+        }
+    }
+    if pane_width - fixed(&plan) < MIN_CRUMBS_WIDTH {
+        plan.forward = false;
+    }
+    plan.crumbs = (pane_width - fixed(&plan)).max(CRUMBS_FLOOR);
+    plan
 }
 
 /// 列表一行的高度（0.2.14 是 26，V2-U14 起 14px 文字配 34px 行，不挤）。
@@ -611,6 +684,12 @@ impl SftpDemo {
         let entity_id = cx.entity_id();
 
         let id_suffix = if is_remote { "remote" } else { "local" };
+        let plan = toolbar_plan(
+            dock,
+            is_remote,
+            used,
+            pane.filter_open || !pane.filter.text.is_empty(),
+        );
         let toolbar = {
             let (e_back, e_fwd, e_up, e_refresh, e_hidden, e_close) = (
                 entity.clone(),
@@ -640,7 +719,7 @@ impl SftpDemo {
                     }),
                 )
                 // 窄栏里不放「前进」（Alt+→ 照样能用），把地方让给路径栏。
-                .when(!filter_compact(dock, used), |bar| {
+                .when(plan.forward, |bar| {
                     bar.child(
                         tool_button(
                             SharedString::from(format!("sftp-forward-{id_suffix}")),
@@ -664,7 +743,7 @@ impl SftpDemo {
                         e_up.update(cx, |this, cx| this.go_parent(side, cx));
                     }),
                 )
-                .child(self.render_path_bar(side, tokens, used, cx))
+                .child(self.render_path_bar(side, tokens, plan.crumbs, cx))
                 .child(
                     tool_button(
                         SharedString::from(format!("sftp-refresh-{id_suffix}")),
@@ -697,9 +776,7 @@ impl SftpDemo {
                     }),
                 )
                 .map(|bar| {
-                    let collapsed =
-                        filter_collapsed(dock, used, pane.filter_open, &pane.filter.text);
-                    if collapsed {
+                    if plan.filter_collapsed {
                         let e_filter = entity.clone();
                         let input = pane.filter_input.clone();
                         bar.child(
@@ -720,16 +797,13 @@ impl SftpDemo {
                         )
                     } else {
                         bar.child(
-                            div()
-                                .w(px(filter_slot(dock, used, false)))
-                                .flex_none()
-                                .child(
-                                    Input::new(&pane.filter_input).prefix(
-                                        Icon::new(IconName::Search)
-                                            .size_3()
-                                            .text_color(tokens.text_muted),
-                                    ),
+                            div().w(px(plan.filter_width)).flex_none().child(
+                                Input::new(&pane.filter_input).prefix(
+                                    Icon::new(IconName::Search)
+                                        .size_3()
+                                        .text_color(tokens.text_muted),
                                 ),
+                            ),
                         )
                     }
                 })
@@ -990,7 +1064,7 @@ impl SftpDemo {
         &self,
         side: Side,
         tokens: &Tokens,
-        pane_width: f32,
+        crumbs_width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let entity = cx.entity();
@@ -1019,32 +1093,18 @@ impl SftpDemo {
         } else {
             local_crumbs(&pane.path)
         };
-        // 面包屑放得下的宽度 ≈ 栏宽减去其它按钮（后退 前进 上级 刷新 隐藏 过滤）占的位置。
+        // 面包屑能用的宽度由工具栏的排法定（`toolbar_plan`：栏宽减去按钮、过滤那一格和间距，不够时先收别的）。
         // 量到了栏宽但剩得很少（窄栏）也要折叠成「… › 最后一级」，不能当成"还没量到"整串显示：
         // 那样溢出部分被裁掉，只剩第一级（C:、srv），反而是最没用的那段。
-        let available = if pane_width > 0.0 {
-            // 按钮（后退 前进 上级 刷新 隐藏，停靠面板多一个关闭）约 200，再减过滤那一格的实际宽度。
-            let collapsed =
-                filter_collapsed(self.dock, pane_width, pane.filter_open, &pane.filter.text);
-            let buttons = if self.dock {
-                216.0
-            } else if filter_compact(self.dock, pane_width) {
-                // 窄栏不放「前进」。
-                168.0
-            } else {
-                200.0
-            };
-            (pane_width - buttons - filter_slot(self.dock, pane_width, collapsed)).max(1.0)
-        } else {
-            0.0
-        };
-        let (hidden, shown) = collapse_crumbs(&crumbs, available);
+        let (hidden, shown) = collapse_crumbs(&crumbs, crumbs_width);
         let start_entity = entity.clone();
         let hover = tokens.hover;
         let mut bar = h_flex()
             .id(SharedString::from(format!("sftp-crumbs-{id_suffix}")))
             .flex_1()
             .min_w_0()
+            // 极窄时别的按钮宁可被裁掉，面包屑至少留几个字的位置（量到宽度之后才保底）。
+            .when(crumbs_width > 0.0, |bar| bar.min_w(px(CRUMBS_FLOOR)))
             .h(px(30.0))
             .px_0p5()
             .gap_0p5()
@@ -1997,11 +2057,75 @@ mod list_size_tests {
         assert!(!super::filter_compact(false, 450.0));
         assert!(!super::filter_compact(true, 316.0), "停靠面板不收");
         assert!(!super::filter_compact(false, 0.0), "还没量到按宽版");
-        assert!(super::filter_collapsed(false, 316.0, false, ""));
-        assert!(!super::filter_collapsed(false, 316.0, true, ""));
-        assert!(!super::filter_collapsed(false, 316.0, false, "log"));
+        // 窄栏里没点开、也没在过滤时才收成按钮。
+        assert!(super::toolbar_plan(false, true, 316.0, false).filter_collapsed);
+        assert!(!super::toolbar_plan(false, true, 316.0, true).filter_collapsed);
         assert_eq!(super::filter_slot(false, 316.0, true), 30.0);
         assert_eq!(super::filter_slot(false, 316.0, false), 120.0);
+    }
+
+    /// 停靠面板里本地栏比远端栏多一个「关闭本地栏」按钮：1554 px 宽的窗口、面板约 650 px 时两栏各约 320，
+    /// 以前面包屑分到 0（本地栏）或几乎 0（远端栏），连当前目录都看不见。
+    #[test]
+    fn the_breadcrumb_always_keeps_room_in_the_toolbar() {
+        use super::{CRUMBS_FLOOR, MIN_CRUMBS_WIDTH, toolbar_plan};
+        for dock in [true, false] {
+            for is_remote in [true, false] {
+                for width in (150..=1600).map(|w| w as f32) {
+                    // 正在过滤的栏过滤框要留着输入，保底就行；其余情况都要给够 MIN。
+                    let plan = toolbar_plan(dock, is_remote, width, false);
+                    assert!(plan.crumbs >= CRUMBS_FLOOR, "{dock} {is_remote} {width}");
+                    if width >= 316.0 {
+                        assert!(
+                            plan.crumbs >= MIN_CRUMBS_WIDTH,
+                            "dock={dock} remote={is_remote} 宽 {width}：面包屑只有 {}",
+                            plan.crumbs
+                        );
+                    }
+                    let typing = toolbar_plan(dock, is_remote, width, true);
+                    assert!(typing.crumbs >= CRUMBS_FLOOR);
+                    assert!(!typing.filter_collapsed, "正在过滤时过滤框不收");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_filter_collapses_before_the_breadcrumb_disappears() {
+        use super::toolbar_plan;
+        // 复现的现场：停靠面板里两栏各 321 px 宽。
+        let remote = toolbar_plan(true, true, 321.0, false);
+        let local = toolbar_plan(true, false, 321.0, false);
+        assert!(
+            remote.filter_collapsed && local.filter_collapsed,
+            "过滤框先收成按钮"
+        );
+        assert!(local.crumbs >= 80.0 && remote.crumbs >= 80.0);
+        // 本地栏多一个关闭按钮，比远端栏窄，还得去掉「前进」才够。
+        assert!(!local.forward);
+        // 宽的时候什么都不收：停靠面板整栏（上下排）、独立窗口宽栏。
+        let wide = toolbar_plan(true, false, 650.0, false);
+        assert!(wide.forward && !wide.filter_collapsed);
+        assert_eq!(wide.filter_width, 84.0);
+        let window = toolbar_plan(false, true, 700.0, false);
+        assert!(window.forward && !window.filter_collapsed);
+        assert_eq!(window.filter_width, 120.0);
+        // 没量到宽度：按原来的宽版排，面包屑宽度是 0（整串显示）。
+        let unmeasured = toolbar_plan(true, false, 0.0, false);
+        assert!(unmeasured.forward && !unmeasured.filter_collapsed);
+        assert_eq!(unmeasured.crumbs, 0.0);
+    }
+
+    #[test]
+    fn narrow_standalone_panes_keep_their_old_layout() {
+        use super::toolbar_plan;
+        // 独立文件窗口最窄时两栏各约 316：不放「前进」、过滤框是按钮（0.2.14 起的行为）。
+        for is_remote in [true, false] {
+            let plan = toolbar_plan(false, is_remote, 316.0, false);
+            assert!(!plan.forward && plan.filter_collapsed);
+        }
+        // 不到 400 的窄栏，点开过滤之后输入框仍是 120（再窄的才会缩到 72）。
+        assert_eq!(toolbar_plan(false, true, 390.0, true).filter_width, 120.0);
     }
 
     #[test]
