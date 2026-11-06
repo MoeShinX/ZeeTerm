@@ -87,6 +87,10 @@ async fn check_once() -> Option<update::Checked> {
         let _ = zssh_core::updater::record_check(&db, now_secs());
     }
     let package = checked.package.clone()?;
+    // Linux：这个版本本进程里已经装好、只差重启，就不用再提醒一遍。
+    if update::awaiting_restart(&package.version).is_some() {
+        return None;
+    }
     let mut announced = ANNOUNCED.lock().ok()?;
     if !should_announce_found(&prefs, &current, &package, announced.as_deref()) {
         return None;

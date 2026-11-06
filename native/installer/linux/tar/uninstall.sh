@@ -77,6 +77,13 @@ while IFS= read -r path; do
         "$prefix"/*) ;;
         *) echo "跳过 / skip（不在安装位置下 / outside prefix）: $path" >&2; continue ;;
     esac
+    # 前缀匹配挡不住 `<prefix>/../../etc/x`：含 `..` / `.` 段的路径一律不删。
+    case "$path" in
+        *"/../"*|*"/.."|*"/./"*|*"/.")
+            echo "跳过 / skip（含 . 或 .. 段 / has a dot segment）: $path" >&2
+            continue
+            ;;
+    esac
     if [ -e "$path" ] || [ -L "$path" ]; then
         rm -f "$path"
         removed=$((removed + 1))

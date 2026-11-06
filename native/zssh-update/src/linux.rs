@@ -253,6 +253,10 @@ pub enum DebResult {
     HashChanged,
     /// root 侧复核没过：包的 `Package` 字段不是 `zeeterm`。没有安装任何东西。
     WrongPackage,
+    /// root 侧复核没过：传进去的路径不是普通文件（不存在、是符号链接、设备、FIFO、目录……）。没有读它、没有安装任何东西。
+    NotRegularFile,
+    /// root 侧复核没过：文件超过 [`MAX_DEB_BYTES`]。没有安装任何东西。
+    TooLarge,
     /// `apt-get` 跑了但失败；带它输出的末尾几行（系统原文，不翻译）。
     Failed(String),
 }
@@ -306,21 +310,34 @@ fn is_executable_file(path: &Path) -> bool {
 pub const EXIT_HASH_CHANGED: i32 = 83;
 /// root 侧脚本的退出码：复制品的 `Package` 字段不是 `zeeterm`。
 pub const EXIT_WRONG_PACKAGE: i32 = 84;
+/// root 侧脚本的退出码：传进去的路径不是普通文件，或者是符号链接。
+pub const EXIT_NOT_REGULAR_FILE: i32 = 85;
+/// root 侧脚本的退出码：文件超过 [`MAX_DEB_BYTES`]。
+pub const EXIT_TOO_LARGE: i32 = 86;
+/// root 侧最多复制多少字节的 deb（与下载时的上限 `MAX_PACKAGE_BYTES` 一致：512 MiB）。
+pub const MAX_DEB_BYTES: u64 = 512 * 1024 * 1024;
 
 /// pkexec 以 root 身份运行的**固定脚本**（经 `/bin/sh -c`）。路径、哈希、apt-get 都走位置参数，不拼进脚本文本：
-/// `$1` 缓存里的 deb，`$2` 验签时算出的 SHA-256，`$3` apt-get 的路径（产品里固定是 `/usr/bin/apt-get`，测试里换成假的）。
+/// `$1` 缓存里的 deb，`$2` 验签时算出的 SHA-256，`$3` apt-get 的路径（产品里固定是 `/usr/bin/apt-get`，测试里换成假的），
+/// `$4` 最多复制的字节数（产品里是 [`MAX_DEB_BYTES`]，测试里换成小值）。
 ///
 /// 为什么：缓存目录归普通用户，验签之后、root 读文件之前，同一用户的别的进程可以把文件换掉；用户在授权框里同意的是
 /// "装 ZeeTerm 更新"，装的却可能是别的包。所以 root 先把文件复制进自己的临时目录（0700，root 所有，别人换不了），
 /// 对**复制品**核对哈希和包名，再从复制品安装。目录 0755、文件 0644，`_apt` 也读得了（不再有沙盒提示）。
 /// 退出时临时目录一定删掉。哈希或包名不对分别用 [`EXIT_HASH_CHANGED`] / [`EXIT_WRONG_PACKAGE`] 退出，apt 一次都不会被叫起来。
+///
+/// 复制之前还要确认 `$1` 是普通文件而且不是符号链接（[`EXIT_NOT_REGULAR_FILE`]），复制最多读 `$4 + 1` 个字节、
+/// 多出来就拒绝（[`EXIT_TOO_LARGE`]）：否则同一用户的进程在授权之后把缓存里的包换成指向 `/dev/zero` 的链接或 FIFO，
+/// root 的 `cp` 会一直读，写满 `/tmp` 或一直卡住（只是拒绝服务，不能提权，但值得堵上）。
 pub const DEB_INSTALL_SCRIPT: &str = r#"set -eu
 umask 022
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 dir=$(mktemp -d /tmp/zeeterm-update.XXXXXX)
 trap 'rm -rf "$dir"' EXIT
-cp -- "$1" "$dir/package.deb"
+[ -f "$1" ] && [ ! -L "$1" ] || exit 85
+head -c "$(($4 + 1))" -- "$1" > "$dir/package.deb"
+[ "$(wc -c < "$dir/package.deb")" -le "$4" ] || exit 86
 printf '%s  %s\n' "$2" "$dir/package.deb" | sha256sum -c - >/dev/null 2>&1 || exit 83
 [ "$(dpkg-deb -f "$dir/package.deb" Package)" = zeeterm ] || exit 84
 chmod 755 "$dir"
@@ -333,12 +350,12 @@ fn is_sha256_hex(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// `pkexec /bin/sh -c <固定脚本> zeeterm-update <deb> <sha256> <apt-get>`（脚本见 [`DEB_INSTALL_SCRIPT`]）。
+/// `pkexec /bin/sh -c <固定脚本> zeeterm-update <deb> <sha256> <apt-get> <最大字节数>`（脚本见 [`DEB_INSTALL_SCRIPT`]）。
 ///
 /// `sha256` 必须是验签时对同一份字节算出来的值（不要在安装前重新读磁盘去算：那样换包就能一并"通过"）。
 ///
 /// pkexec 的退出码：126 = 用户关掉了授权框或没有授权，127 = 没法执行（没有授权代理、命令不存在……）；
-/// 这两种都不算错误，交给调用方显示手动安装的说明。83 / 84 = root 侧复核没过（包被改过 / 不是 zeeterm 包），
+/// 这两种都不算错误，交给调用方显示手动安装的说明。83 / 84 / 85 / 86 = root 侧复核没过（包被改过 / 不是 zeeterm 包 / 不是普通文件 / 太大），
 /// 是明确的错误，不能落到"未授权"。0 = 装好了；其他非 0 是 apt 自己失败了，带上它的输出。
 pub fn install_deb(
     runner: &dyn CommandRunner,
@@ -360,6 +377,7 @@ pub fn install_deb(
         deb.as_os_str().to_owned(),
         OsString::from(sha256.to_ascii_lowercase()),
         tools.apt_get.as_os_str().to_owned(),
+        OsString::from(MAX_DEB_BYTES.to_string()),
     ];
     match runner.run(pkexec, &args) {
         Ok(output) => match output.code {
@@ -367,6 +385,8 @@ pub fn install_deb(
             Some(126 | 127) => DebResult::Manual(ManualReason::NotAuthorized),
             Some(EXIT_HASH_CHANGED) => DebResult::HashChanged,
             Some(EXIT_WRONG_PACKAGE) => DebResult::WrongPackage,
+            Some(EXIT_NOT_REGULAR_FILE) => DebResult::NotRegularFile,
+            Some(EXIT_TOO_LARGE) => DebResult::TooLarge,
             code => {
                 let tail = tail_text(if output.stderr.trim().is_empty() {
                     &output.stdout

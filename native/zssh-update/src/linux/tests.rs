@@ -307,6 +307,7 @@ fn the_deb_goes_to_a_fixed_root_script_with_the_path_hash_and_apt_get_as_positio
             deb.as_os_str().to_owned(),
             OsString::from(GOOD_SHA),
             OsString::from("/usr/bin/apt-get"),
+            OsString::from("536870912"),
         ]
     );
     let script = DEB_INSTALL_SCRIPT;
@@ -317,7 +318,9 @@ fn the_deb_goes_to_a_fixed_root_script_with_the_path_hash_and_apt_get_as_positio
     for needle in [
         "mktemp -d /tmp/zeeterm-update.XXXXXX",
         "trap 'rm -rf \"$dir\"' EXIT",
-        "cp -- \"$1\" \"$dir/package.deb\"",
+        "[ -f \"$1\" ] && [ ! -L \"$1\" ] || exit 85",
+        "head -c \"$(($4 + 1))\" -- \"$1\" > \"$dir/package.deb\"",
+        "-le \"$4\" ] || exit 86",
         "sha256sum -c -",
         "dpkg-deb -f \"$dir/package.deb\" Package",
         "chmod 755 \"$dir\"",
@@ -368,6 +371,14 @@ fn the_root_side_checks_map_to_their_own_results_and_never_to_not_authorized() {
         install_deb(&FakeRunner::exits(84), &tools(), deb, GOOD_SHA),
         DebResult::WrongPackage
     );
+    assert_eq!(
+        install_deb(&FakeRunner::exits(85), &tools(), deb, GOOD_SHA),
+        DebResult::NotRegularFile
+    );
+    assert_eq!(
+        install_deb(&FakeRunner::exits(86), &tools(), deb, GOOD_SHA),
+        DebResult::TooLarge
+    );
     // 126 / 127 仍是 pkexec 的含义；别的退出码（比如 apt 的 100、以前顺手用的 3 / 4）是普通失败。
     for code in [126, 127] {
         assert_eq!(
@@ -375,7 +386,7 @@ fn the_root_side_checks_map_to_their_own_results_and_never_to_not_authorized() {
             DebResult::Manual(ManualReason::NotAuthorized)
         );
     }
-    for code in [1, 3, 4, 100] {
+    for code in [1, 3, 4, 87, 100] {
         assert!(
             matches!(
                 install_deb(&FakeRunner::exits(code), &tools(), deb, GOOD_SHA),
@@ -1057,6 +1068,48 @@ mod on_disk {
         assert!(rest.is_empty(), "卸载后还剩：{rest:?}");
     }
 
+    /// 清单被改坏：含 `..` / `.` 段的路径即使以前缀开头也不能删，前缀之外的更不能。
+    #[test]
+    fn uninstall_skips_manifest_paths_that_climb_out_with_dot_segments() {
+        let root = temp_dir("uninstall-dotdot");
+        let (prefix, _layout) = installer_install(&root, OLD_VERSION);
+        let victim = root.join("victim.txt");
+        std::fs::write(&victim, "keep").expect("写受害文件");
+        let inside = prefix.join("share/kept-by-dot-segment.txt");
+        std::fs::write(&inside, "keep too").expect("写文件");
+
+        let manifest_path = prefix.join("share/zeeterm/install-manifest");
+        let mut manifest = read(&manifest_path);
+        let prefix_text = prefix.display().to_string();
+        for line in [
+            format!("{prefix_text}/../victim.txt"),
+            format!("{prefix_text}/share/../../victim.txt"),
+            format!("{prefix_text}/share/.."),
+            format!("{prefix_text}/./share/kept-by-dot-segment.txt"),
+            format!("{prefix_text}/share/./kept-by-dot-segment.txt"),
+        ] {
+            manifest.push_str(&line);
+            manifest.push('\n');
+        }
+        std::fs::write(&manifest_path, manifest).expect("改清单");
+
+        let uninstall = Command::new("sh")
+            .arg(prefix.join("share/zeeterm/uninstall.sh"))
+            .output()
+            .expect("运行 uninstall.sh");
+        assert!(
+            uninstall.status.success(),
+            "{}",
+            String::from_utf8_lossy(&uninstall.stderr)
+        );
+        assert_eq!(read(&victim), "keep", "前缀之外的文件不能被删");
+        assert_eq!(read(&inside), "keep too", "含 . 段的路径不能被删");
+        let stderr = String::from_utf8_lossy(&uninstall.stderr);
+        assert!(stderr.contains("skip"), "要说明跳过了什么：{stderr}");
+        // 正常的条目照常被卸载。
+        assert!(!prefix.join("lib/zeeterm/zeeterm").exists());
+    }
+
     fn walk_non_dirs(root: &Path) -> Vec<String> {
         let mut found = Vec::new();
         let mut pending = vec![root.to_path_buf()];
@@ -1174,6 +1227,16 @@ mod on_disk {
     }
 
     fn run_script(deb: &Path, sha256: &str, apt: &Path) -> std::process::Output {
+        run_script_limited(deb, sha256, apt, crate::linux::MAX_DEB_BYTES)
+    }
+
+    /// `limit`：最多复制的字节数（第 4 个位置参数）；测试里用小值，不用真造 512 MiB 的文件。
+    fn run_script_limited(
+        deb: &Path,
+        sha256: &str,
+        apt: &Path,
+        limit: u64,
+    ) -> std::process::Output {
         Command::new("/bin/sh")
             .arg("-c")
             .arg(DEB_INSTALL_SCRIPT)
@@ -1181,6 +1244,7 @@ mod on_disk {
             .arg(deb)
             .arg(sha256)
             .arg(apt)
+            .arg(limit.to_string())
             .output()
             .expect("运行脚本")
     }
@@ -1242,13 +1306,60 @@ mod on_disk {
         assert_eq!(output.status.code(), Some(84), "{output:?}");
         assert!(!log.exists(), "包名不对时 apt 一次都不能被叫起来");
 
-        // 传进来的文件不存在：普通失败（不是 83 / 84），也不留临时目录。
+        // 传进来的文件不存在：85（不是普通文件），也不叫 apt。
         let output = run_script(&dir.join("missing.deb"), &good, &apt);
-        assert!(
-            !matches!(output.status.code(), Some(0 | 83 | 84)),
-            "{output:?}"
-        );
+        assert_eq!(output.status.code(), Some(85), "{output:?}");
         assert!(!log.exists());
+    }
+
+    #[test]
+    fn the_root_script_refuses_links_devices_and_directories_without_reading_them() {
+        let dir = temp_dir("root-script-nonregular");
+        let Some(deb) = tiny_deb(&dir, "zeeterm") else {
+            println!("跳过：没有 dpkg-deb，没法造测试用的 deb");
+            return;
+        };
+        let (apt, log) = fake_apt(&dir);
+        let good = sha256_of(&deb);
+
+        // 符号链接：哪怕指向的就是正确的包也拒绝（验签之后被换成链接是我们要防的情形）。
+        let link = dir.join("link.deb");
+        std::os::unix::fs::symlink(&deb, &link).expect("建链接");
+        assert_eq!(run_script(&link, &good, &apt).status.code(), Some(85));
+        // 指向 /dev/zero 的链接：不能一直读下去（脚本在 85 退出，而不是卡住 / 写满磁盘）。
+        let zero = dir.join("zero.deb");
+        std::os::unix::fs::symlink("/dev/zero", &zero).expect("建链接");
+        assert_eq!(run_script(&zero, &good, &apt).status.code(), Some(85));
+        // 设备文件本身、目录。
+        assert_eq!(
+            run_script(Path::new("/dev/zero"), &good, &apt)
+                .status
+                .code(),
+            Some(85)
+        );
+        assert_eq!(run_script(&dir, &good, &apt).status.code(), Some(85));
+        assert!(!log.exists(), "拒绝时 apt 一次都不能被叫起来");
+    }
+
+    #[test]
+    fn the_root_script_copies_at_most_the_limit_and_refuses_anything_bigger() {
+        let dir = temp_dir("root-script-limit");
+        let Some(deb) = tiny_deb(&dir, "zeeterm") else {
+            println!("跳过：没有 dpkg-deb，没法造测试用的 deb");
+            return;
+        };
+        let (apt, log) = fake_apt(&dir);
+        let good = sha256_of(&deb);
+        let size = std::fs::metadata(&deb).expect("元数据").len();
+
+        // 刚好等于上限：通过。
+        let output = run_script_limited(&deb, &good, &apt, size);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        // 比上限大一个字节：86，apt 不会被叫起来。
+        let _ = std::fs::remove_file(&log);
+        let output = run_script_limited(&deb, &good, &apt, size - 1);
+        assert_eq!(output.status.code(), Some(86), "{output:?}");
+        assert!(!log.exists(), "太大时 apt 一次都不能被叫起来");
     }
 
     #[test]

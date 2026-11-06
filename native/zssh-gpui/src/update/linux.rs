@@ -7,7 +7,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use zssh_update::linux::{
     self as lx, CommandRunner, DebResult, DebTools, Flavor, LinuxInstallRequest, ManualReason,
@@ -51,6 +51,18 @@ fn resolve_platform(hook: Option<String>, detect: impl FnOnce() -> Platform) -> 
     }
 }
 
+/// 探测本机安装方式的线程没跑完（panic）时用的退路：按编译平台给，别在 Linux 上退成 Windows 的包。
+///
+/// Linux 上退成 tar.gz：它是三种里最保守的——不需要 `pkexec` / `dpkg` / root，只在程序所在目录能写时才自动替换，
+/// 写不了就走「手动安装」的说明，不会去动系统包管理器；而 deb 要拉起 root 授权框、直接 `apt-get install`。
+pub(crate) fn fallback_platform() -> Platform {
+    if cfg!(target_os = "linux") {
+        Platform::Linux(Flavor::Tar)
+    } else {
+        Platform::Windows
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn detect_host() -> Platform {
     match std::env::current_exe() {
@@ -66,6 +78,60 @@ fn detect_host() -> Platform {
 #[cfg(not(target_os = "linux"))]
 fn detect_host() -> Platform {
     Platform::Windows
+}
+
+/// 本进程里已经装好、还没重启的版本。只放内存里，不落盘：重启之后新进程自己的版本号就是它，
+/// 没有什么要记；而真正已经换在磁盘上的文件，下次启动本来就是新版本。
+///
+/// 为什么需要：deb / tar.gz 装好后磁盘上的程序已经是新版本，但正在跑的还是旧的，`current_version()` 不变。
+/// 用户点了「稍后重启」再检查更新，会又看到同一个版本，可以再下载、再走一遍授权安装；自动检查也会重复提醒。
+#[derive(Debug, Default)]
+pub(crate) struct AwaitingRestart {
+    installed: Mutex<Option<(String, PathBuf)>>,
+}
+
+impl AwaitingRestart {
+    pub(crate) const fn new() -> Self {
+        Self {
+            installed: Mutex::new(None),
+        }
+    }
+
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<(String, PathBuf)>> {
+        self.installed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 记下刚装好的版本和重启时要启动的程序（只留最近一次）。
+    pub(crate) fn remember(&self, version: &str, restart: PathBuf) {
+        *self.slot() = Some((normalize_version(version).to_owned(), restart));
+    }
+
+    /// 这个版本已经装好、只差重启吗？是的话返回重启要启动的程序。
+    pub(crate) fn restart_for(&self, version: &str) -> Option<PathBuf> {
+        self.slot()
+            .as_ref()
+            .filter(|(installed, _)| installed == normalize_version(version))
+            .map(|(_, restart)| restart.clone())
+    }
+}
+
+/// 清单里的版本可能带 `v` 前缀、两端有空白。
+fn normalize_version(version: &str) -> &str {
+    version.trim().trim_start_matches('v')
+}
+
+static AWAITING_RESTART: AwaitingRestart = AwaitingRestart::new();
+
+/// 记下本进程里刚装好的版本。
+pub(crate) fn remember_installed(version: &str, restart: PathBuf) {
+    AWAITING_RESTART.remember(version, restart);
+}
+
+/// 清单公告的这个版本，在本进程里是不是已经装好、只差重启？
+pub(crate) fn awaiting_restart(version: &str) -> Option<PathBuf> {
+    AWAITING_RESTART.restart_for(version)
 }
 
 /// 正在运行的程序文件（解析过软链接）。替换之后 `/proc/self/exe` 会带 ` (deleted)`，去掉它。
@@ -141,6 +207,10 @@ pub(super) fn run(
             DebResult::Manual(reason) => Outcome::Manual(reason),
             DebResult::HashChanged => Outcome::Failed(t(UpdateMsg::DebHashChanged).to_owned()),
             DebResult::WrongPackage => Outcome::Failed(t(UpdateMsg::DebWrongPackage).to_owned()),
+            DebResult::NotRegularFile => {
+                Outcome::Failed(t(UpdateMsg::DebNotRegularFile).to_owned())
+            }
+            DebResult::TooLarge => Outcome::Failed(t(UpdateMsg::DebTooLarge).to_owned()),
             DebResult::Failed(output) => {
                 Outcome::Failed(format!("{}{output}", t(UpdateMsg::DebInstallFailedPrefix)))
             }
@@ -304,6 +374,41 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_platform_probe_falls_back_to_the_build_platform_not_to_windows() {
+        let fallback = fallback_platform();
+        if cfg!(target_os = "linux") {
+            // 最保守的一种：不拉起 root 授权框，写不了就改手动安装。
+            assert_eq!(fallback, Platform::Linux(Flavor::Tar));
+            assert_eq!(fallback.keys(), [zssh_update::PLATFORM_LINUX_TAR]);
+        } else {
+            assert_eq!(fallback, Platform::Windows);
+        }
+    }
+
+    #[test]
+    fn an_installed_version_is_remembered_in_memory_until_the_restart() {
+        let awaiting = AwaitingRestart::new();
+        assert_eq!(awaiting.restart_for("2.0.0"), None, "什么都没装过");
+        awaiting.remember("2.0.0", PathBuf::from("/usr/bin/zeeterm"));
+        assert_eq!(
+            awaiting.restart_for("2.0.0"),
+            Some(PathBuf::from("/usr/bin/zeeterm"))
+        );
+        // 清单里的写法带 v、带空白也认。
+        assert!(awaiting.restart_for(" v2.0.0 ").is_some());
+        // 别的版本（更新的、更旧的）照常当新版本处理。
+        assert_eq!(awaiting.restart_for("2.0.1"), None);
+        assert_eq!(awaiting.restart_for("1.9.0"), None);
+        // 又装了更新的：只记最近一次。
+        awaiting.remember("v2.0.1", PathBuf::from("/opt/zeeterm"));
+        assert_eq!(awaiting.restart_for("2.0.0"), None);
+        assert_eq!(
+            awaiting.restart_for("2.0.1"),
+            Some(PathBuf::from("/opt/zeeterm"))
+        );
+    }
+
+    #[test]
     fn a_deb_install_asks_pkexec_once_and_restarts_through_the_usr_bin_command() {
         let (root, package, sha) = cached_package("deb-ok", "ZeeTerm-2.0.0-linux-x86_64.deb");
         let runner = scripted(0, "");
@@ -328,6 +433,7 @@ mod tests {
                 OsString::from(package.canonicalize().expect("规范化")),
                 OsString::from(sha.as_str()),
                 OsString::from("/usr/bin/apt-get"),
+                OsString::from("536870912"),
             ]
         );
     }
@@ -336,8 +442,12 @@ mod tests {
     fn a_failed_root_side_check_is_a_clear_error_not_a_missing_authorization() {
         let (root, package, sha) =
             cached_package("deb-root-check", "ZeeTerm-2.0.0-linux-x86_64.deb");
-        for (code, wording) in [(83, "验证之后被改动"), (84, "不是 ZeeTerm 的安装包")]
-        {
+        for (code, wording) in [
+            (83, "验证之后被改动"),
+            (84, "不是 ZeeTerm 的安装包"),
+            (85, "不是普通文件"),
+            (86, "太大"),
+        ] {
             match run(
                 &job(Flavor::Deb, &root, &package, &sha),
                 &scripted(code, ""),
@@ -362,6 +472,12 @@ mod tests {
                 .en()
                 .contains("not a ZeeTerm package")
         );
+        assert!(
+            UpdateMsg::DebNotRegularFile
+                .en()
+                .contains("not a regular file")
+        );
+        assert!(UpdateMsg::DebTooLarge.en().contains("too large"));
     }
 
     #[test]

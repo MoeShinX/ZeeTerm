@@ -241,8 +241,9 @@ pub(crate) fn semicolon() -> &'static str {
 
 /// 界面文案的键。
 ///
-/// 少数键只在 Windows 的托盘里用；Linux 首版没有托盘，这些键暂未构造，
-/// 但翻译表要保留，方便接 Linux 托盘时直接复用。
+/// 托盘文案（`Tray*`）经 `tray_menu` 在 Windows 和 Linux 两边共用；少数键只有 Windows 会构造
+/// （比如「重启安装 vX」：Linux 没有「退出后安装」排队）。整个枚举上的 `allow(dead_code)` 就是为这些键留的，
+/// 代价是 Linux 构建里以后真没人用的键也不报警；要收窄得逐个键标注，改动面大，暂不处理。
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Key {

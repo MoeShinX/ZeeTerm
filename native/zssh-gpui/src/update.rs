@@ -54,6 +54,7 @@ mod linux;
 mod notes;
 mod view;
 
+pub(crate) use linux::awaiting_restart;
 use linux::{Platform, host_platform};
 
 /// 更新检查窗口的编号；IME 按窗口 key 管理。
@@ -216,6 +217,8 @@ enum UpdateMsg {
     DebInstallFailedPrefix,
     DebHashChanged,
     DebWrongPackage,
+    DebNotRegularFile,
+    DebTooLarge,
     RestartFailedPrefix,
 }
 
@@ -349,6 +352,10 @@ impl Msg for UpdateMsg {
             Self::DebWrongPackage => {
                 "这个文件不是 ZeeTerm 的安装包，已拒绝安装（没有安装任何东西）。请重新下载。"
             }
+            Self::DebNotRegularFile => {
+                "缓存里的安装包不是普通文件（可能被换成了链接或别的东西），已拒绝安装（没有安装任何东西）。请重新下载。"
+            }
+            Self::DebTooLarge => "缓存里的安装包太大，已拒绝安装（没有安装任何东西）。请重新下载。",
             Self::RestartFailedPrefix => "没能重启：",
         }
     }
@@ -499,6 +506,12 @@ impl Msg for UpdateMsg {
             }
             Self::DebWrongPackage => {
                 "This file is not a ZeeTerm package, so installation was refused (nothing was installed). Please download it again."
+            }
+            Self::DebNotRegularFile => {
+                "The cached package is not a regular file (it may have been replaced by a link or something else), so installation was refused (nothing was installed). Please download it again."
+            }
+            Self::DebTooLarge => {
+                "The cached package is too large, so installation was refused (nothing was installed). Please download it again."
             }
             Self::RestartFailedPrefix => "Could not restart: ",
         }
@@ -689,6 +702,13 @@ impl UpdateDemo {
         self.package = checked.package.clone();
         self.notes_markdown =
             notes::display_markdown(checked.notes.as_deref()).map(::gpui::SharedString::from);
+        // Linux：这个版本本进程里已经装好、只差重启（用户点过「稍后重启」）时，不当新版本再装一遍，
+        // 直接回到「已安装，重启后生效」那一屏，还能点「立即重启」。
+        let awaiting = checked
+            .package
+            .as_ref()
+            .and_then(|package| linux::awaiting_restart(&package.version));
+        self.install = state_after_check(std::mem::take(&mut self.install), awaiting);
         self.checked = Some(checked);
     }
 
@@ -900,6 +920,9 @@ impl UpdateDemo {
     fn apply_linux_outcome(&mut self, outcome: linux::Outcome, cx: &mut Context<Self>) {
         match outcome {
             linux::Outcome::Installed { restart } => {
+                if let Some(package) = &self.package {
+                    linux::remember_installed(&package.version, restart.clone());
+                }
                 self.install = InstallState::Installed { restart };
             }
             linux::Outcome::Manual(reason) => {
@@ -1213,6 +1236,15 @@ enum InstallState {
         reason: ManualReason,
         path: PathBuf,
     },
+}
+
+/// 一次检查之后的安装状态：本进程里已经装好这个版本（`awaiting` 是重启要启动的程序）就回到「已安装」，
+/// 否则保持原样。
+fn state_after_check(state: InstallState, awaiting: Option<PathBuf>) -> InstallState {
+    match awaiting {
+        Some(restart) => InstallState::Installed { restart },
+        None => state,
+    }
 }
 
 /// 点「立即安装」时的纯状态迁移：生成计划并启动。
@@ -1629,7 +1661,7 @@ pub(crate) async fn check_for_update(current: &str) -> Checked {
     // 本机是怎么装的（Linux 上要问 dpkg，别占着界面线程，也别堵住 async 工作线程）。
     let platform = tokio::task::spawn_blocking(host_platform)
         .await
-        .unwrap_or(Platform::Windows);
+        .unwrap_or_else(|_| linux::fallback_platform());
     let pubkey = update_pubkey();
     // 公钥不可用时先不建客户端（建客户端要读设置库）：下面 `check_with` 会原样返回原因。
     let client = if pubkey.is_ok() {
@@ -2020,7 +2052,8 @@ fn clear_pending_install() {
 
 /// 排队等退出后安装的版本号（不带 `v`）；托盘据此显示「重启安装 vX」。没有排队时为 `None`。
 ///
-/// 目前只有 Windows 托盘用它；Linux 首版没有托盘。
+/// 只有 Windows 有「退出后安装」排队（安装器可以等程序退出再启动）；Linux 的安装要用户在场（授权框），
+/// 装好后由更新窗口里的「立即重启」接手，没有排队的计划，所以只有 Windows 的托盘会显示「重启安装 vX」。
 #[cfg(windows)]
 pub fn pending_install_version() -> Option<String> {
     locked_pending_install()
@@ -2409,7 +2442,7 @@ mod tests {
     use super::{
         DownloadState, InstallState, advance_install, build_install_plan, cache_path,
         download_file_name, file_summary, progress_text, push_quoted_arg, queue_install,
-        quote_args, run_install, take_pending_install,
+        quote_args, run_install, state_after_check, take_pending_install,
     };
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard};
@@ -2617,6 +2650,33 @@ mod tests {
         assert!(command.contains("--minimized"));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_version_already_installed_in_this_run_goes_back_to_the_installed_state() {
+        let restart = PathBuf::from("/usr/bin/zeeterm");
+        // 本进程里装好过这个版本：不管之前是什么状态，都回到「已安装，重启后生效」。
+        for before in [
+            InstallState::Idle,
+            InstallState::Failed("x".to_owned()),
+            InstallState::Launched,
+        ] {
+            assert_eq!(
+                state_after_check(before, Some(restart.clone())),
+                InstallState::Installed {
+                    restart: restart.clone()
+                }
+            );
+        }
+        // 没装过：原样保留（包括已经在界面上的失败原因）。
+        assert_eq!(
+            state_after_check(InstallState::Idle, None),
+            InstallState::Idle
+        );
+        assert_eq!(
+            state_after_check(InstallState::Failed("x".to_owned()), None),
+            InstallState::Failed("x".to_owned())
+        );
     }
 
     #[test]
