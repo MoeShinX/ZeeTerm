@@ -85,16 +85,106 @@ fn known_downloads() -> Option<PathBuf> {
     }
 }
 
+/// 「下载」文件夹（Linux 等）：`$XDG_CONFIG_HOME/user-dirs.dirs` 里的 `XDG_DOWNLOAD_DIR`
+/// （默认 `~/.config/user-dirs.dirs`）；没有就 `~/Downloads`（要真的存在），再没有返回 `None`，
+/// 由调用方退到主目录。
 #[cfg(not(windows))]
 fn known_downloads() -> Option<PathBuf> {
-    None
+    let home = home_dir()?;
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .unwrap_or_else(|| home.join(".config"));
+    let configured = std::fs::read_to_string(config_home.join("user-dirs.dirs"))
+        .ok()
+        .and_then(|text| download_dir_from_user_dirs(&text, &home));
+    configured.or_else(|| {
+        let default = home.join("Downloads");
+        default.is_dir().then_some(default)
+    })
 }
 
+/// 解析 `user-dirs.dirs` 里的 `XDG_DOWNLOAD_DIR`。
+///
+/// 这个文件是 shell 语法（`xdg-user-dir` 直接 `source` 它），常见的写法是
+/// `XDG_DOWNLOAD_DIR="$HOME/Downloads"`，也可能是带引号的绝对路径。后面的赋值盖掉前面的，
+/// 注释和别的键忽略。结果必须是绝对路径；指向家目录本身表示用户关掉了这个文件夹
+/// （`xdg-user-dirs` 的约定），当作没有。
+#[cfg(not(windows))]
+fn download_dir_from_user_dirs(text: &str, home: &Path) -> Option<PathBuf> {
+    let mut found = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some(value) = line.strip_prefix("XDG_DOWNLOAD_DIR=") else {
+            continue;
+        };
+        found = unquote_shell_value(value.trim());
+    }
+    let expanded = expand_home(&found?, home)?;
+    let dir = PathBuf::from(expanded);
+    let is_home = dir.components().eq(home.components());
+    (dir.is_absolute() && !is_home).then_some(dir)
+}
+
+/// 去掉成对的引号。双引号里 `\"`、`\`、`\$`、`` \` `` 还原成字符本身；单引号里一切原样。
+/// 引号不成对（写坏了的文件）返回 `None`。
+#[cfg(not(windows))]
+fn unquote_shell_value(value: &str) -> Option<String> {
+    let mut chars = value.chars();
+    match value.chars().next() {
+        Some('\'') => {
+            let inner = value.strip_prefix('\'')?.split_once('\'')?.0;
+            Some(inner.to_owned())
+        }
+        Some('"') => {
+            chars.next();
+            let mut out = String::new();
+            loop {
+                match chars.next()? {
+                    '"' => return Some(out),
+                    '\\' => match chars.next()? {
+                        escaped @ ('"' | '\\' | '$' | '`') => out.push(escaped),
+                        other => {
+                            out.push('\\');
+                            out.push(other);
+                        }
+                    },
+                    other => out.push(other),
+                }
+            }
+        }
+        // 没有引号：到行尾或第一个空白/井号注释为止。
+        _ => Some(
+            value
+                .split(|c: char| c.is_whitespace() || c == '#')
+                .next()
+                .unwrap_or_default()
+                .to_owned(),
+        ),
+    }
+}
+
+/// 开头的 `$HOME` / `${HOME}` 换成家目录；别的变量不展开（返回 `None`）。
+#[cfg(not(windows))]
+fn expand_home(value: &str, home: &Path) -> Option<String> {
+    if value.contains('$') {
+        let rest = value
+            .strip_prefix("${HOME}")
+            .or_else(|| value.strip_prefix("$HOME"))?;
+        if rest.contains('$') || !(rest.is_empty() || rest.starts_with('/')) {
+            return None;
+        }
+        return Some(format!("{}{rest}", home.display()));
+    }
+    Some(value.to_owned())
+}
+
+/// 家目录：Windows 读 `USERPROFILE`，别的系统读 `HOME`（都交给标准库）。
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .filter(|dir| !dir.as_os_str().is_empty())
+    std::env::home_dir().filter(|dir| !dir.as_os_str().is_empty())
 }
 
 /// 没有「下载」文件夹、没有主目录时的最后一站，也是自动化默认落点：`%TEMP%\zssh-sftp-dl`。
@@ -228,6 +318,153 @@ mod tests {
         let unset = pick(&plan(SftpLocalDir::Custom, "  ", None), &existing);
         assert_eq!(unset.dir, PathBuf::from("T:/dl"));
         assert!(!unset.custom_missing);
+    }
+
+    #[cfg(not(windows))]
+    fn xdg_download(text: &str) -> Option<PathBuf> {
+        download_dir_from_user_dirs(text, Path::new("/home/someone"))
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn user_dirs_download_dir_handles_the_usual_spellings() {
+        let home = Some(PathBuf::from("/home/someone/Downloads"));
+        assert_eq!(xdg_download("XDG_DOWNLOAD_DIR=\"$HOME/Downloads\"\n"), home);
+        assert_eq!(xdg_download("XDG_DOWNLOAD_DIR=\"${HOME}/Downloads\""), home);
+        assert_eq!(xdg_download("XDG_DOWNLOAD_DIR=$HOME/Downloads"), home);
+        assert_eq!(
+            xdg_download("XDG_DOWNLOAD_DIR='/home/someone/Downloads'"),
+            home
+        );
+        // 本地化的名字、带空格和中文。
+        assert_eq!(
+            xdg_download("XDG_DOWNLOAD_DIR=\"$HOME/下载\"\n"),
+            Some(PathBuf::from("/home/someone/下载"))
+        );
+        assert_eq!(
+            xdg_download("XDG_DOWNLOAD_DIR=\"$HOME/My Downloads\""),
+            Some(PathBuf::from("/home/someone/My Downloads"))
+        );
+        // 绝对路径（别的盘）原样用。
+        assert_eq!(
+            xdg_download("XDG_DOWNLOAD_DIR=\"/mnt/data/dl\""),
+            Some(PathBuf::from("/mnt/data/dl"))
+        );
+        // CRLF 行尾、前后空白、行尾注释。
+        assert_eq!(
+            xdg_download("  XDG_DOWNLOAD_DIR=\"$HOME/Downloads\" # 我的下载\r\n"),
+            home
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn user_dirs_parsing_picks_the_right_line_and_ignores_garbage() {
+        let file = "# This file is written by xdg-user-dirs-update\n\
+                    XDG_DESKTOP_DIR=\"$HOME/Desktop\"\n\
+                    # XDG_DOWNLOAD_DIR=\"$HOME/commented\"\n\
+                    XDG_DOCUMENTS_DIR=\"$HOME/Documents\"\n\
+                    XDG_DOWNLOAD_DIR=\"$HOME/Downloads\"\n";
+        assert_eq!(
+            xdg_download(file),
+            Some(PathBuf::from("/home/someone/Downloads"))
+        );
+        // 后面的赋值盖掉前面的（shell 的语义）。
+        assert_eq!(
+            xdg_download("XDG_DOWNLOAD_DIR=\"$HOME/a\"\nXDG_DOWNLOAD_DIR=\"$HOME/b\"\n"),
+            Some(PathBuf::from("/home/someone/b"))
+        );
+        // 没有这个键、空文件。
+        assert_eq!(xdg_download("XDG_DESKTOP_DIR=\"$HOME/Desktop\"\n"), None);
+        assert_eq!(xdg_download(""), None);
+        // 相对路径、别的变量、引号不成对、空值：不信。
+        assert_eq!(xdg_download("XDG_DOWNLOAD_DIR=\"Downloads\""), None);
+        assert_eq!(xdg_download("XDG_DOWNLOAD_DIR=\"$OTHER/Downloads\""), None);
+        assert_eq!(xdg_download("XDG_DOWNLOAD_DIR=\"$HOMEWORK/x\""), None);
+        assert_eq!(xdg_download("XDG_DOWNLOAD_DIR=\"$HOME/Downloads"), None);
+        assert_eq!(xdg_download("XDG_DOWNLOAD_DIR=\"\""), None);
+        assert_eq!(xdg_download("XDG_DOWNLOAD_DIR="), None);
+        // 前一行是好的、最后一行写坏了：以最后一行为准（不退回前面的）。
+        assert_eq!(
+            xdg_download("XDG_DOWNLOAD_DIR=\"$HOME/ok\"\nXDG_DOWNLOAD_DIR=\"$HOME/bad\n"),
+            None
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_download_dir_equal_to_home_means_the_folder_is_disabled() {
+        assert_eq!(xdg_download("XDG_DOWNLOAD_DIR=\"$HOME/\"\n"), None);
+        assert_eq!(xdg_download("XDG_DOWNLOAD_DIR=\"$HOME\"\n"), None);
+        assert_eq!(xdg_download("XDG_DOWNLOAD_DIR=\"/home/someone\"\n"), None);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn shell_escapes_in_double_quotes_are_undone() {
+        assert_eq!(
+            xdg_download("XDG_DOWNLOAD_DIR=\"$HOME/a\\\"b\\$c\\\\d\""),
+            Some(PathBuf::from("/home/someone/a\"b$c\\d"))
+        );
+    }
+
+    /// 在临时目录里放一份真实的 `user-dirs.dirs`，走整条读盘路径，结果由 `XDG_CONFIG_HOME` 决定。
+    /// 只在子进程里设环境变量（测试进程自己的环境不动）。
+    #[cfg(unix)]
+    #[test]
+    fn the_real_lookup_reads_the_file_under_xdg_config_home() {
+        const CHILD: &str = "ZT_USER_DIRS_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            // 子进程：打印 known_downloads 的结果。
+            match known_downloads() {
+                Some(dir) => println!("DOWNLOADS={}", dir.display()),
+                None => println!("DOWNLOADS=none"),
+            }
+            return;
+        }
+        let base = std::env::temp_dir().join(format!("zssh-userdirs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let config = base.join("config");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let name = format!(
+            "{}::the_real_lookup_reads_the_file_under_xdg_config_home",
+            module_path!()
+                .split_once("::")
+                .map(|(_, rest)| rest)
+                .unwrap()
+        );
+        let run = || -> String {
+            let out = std::process::Command::new(&exe)
+                .args(["--exact", &name, "--nocapture", "--test-threads=1"])
+                .env(CHILD, "1")
+                .env("HOME", &home)
+                .env("XDG_CONFIG_HOME", &config)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .find_map(|line| {
+                    line.split_once("DOWNLOADS=")
+                        .map(|(_, found)| found.trim().to_owned())
+                })
+                .unwrap_or_default()
+        };
+        // 没有配置文件、也没有 ~/Downloads：没有结果（调用方退到家目录）。
+        assert_eq!(run(), "none");
+        // 有 ~/Downloads：用它。
+        std::fs::create_dir_all(home.join("Downloads")).unwrap();
+        assert_eq!(run(), home.join("Downloads").display().to_string());
+        // 配置文件优先，路径里的 $HOME 换成家目录。
+        std::fs::write(
+            config.join("user-dirs.dirs"),
+            "XDG_DOWNLOAD_DIR=\"$HOME/下载\"\n",
+        )
+        .unwrap();
+        assert_eq!(run(), home.join("下载").display().to_string());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

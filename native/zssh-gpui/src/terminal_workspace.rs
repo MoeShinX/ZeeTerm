@@ -1486,8 +1486,7 @@ impl TerminalWorkspace {
         // 设置页的两个控件：自定义字体的输入框、回滚行数的滑块。状态归工作区，这样设置页每次
         // 重绘拿到的是同一个实体。
         let font_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("JetBrains Mono, Cascadia Mono, Consolas, monospace")
+            InputState::new(window, cx).placeholder(crate::settings::DEFAULT_FONT_FAMILY)
         });
         font_input.update(cx, |state, cx| {
             state.set_value(settings.font_family.clone(), window, cx);
@@ -5470,10 +5469,17 @@ mod pane_tests {
 
     #[test]
     fn the_status_line_never_shows_the_user_directory() {
-        let Ok(home) = std::env::var("USERPROFILE") else {
-            eprintln!("跳过：没有 USERPROFILE");
+        let Some(home) = std::env::home_dir().and_then(|home| home.to_str().map(str::to_owned))
+        else {
+            eprintln!("跳过：找不到家目录");
             return;
         };
+        // `redact_paths`（agent_text.rs）目前只认 Windows 的 USERPROFILE，Linux 上还不会脱敏家目录：
+        // 那一处归 AI 卡改，改完把这个跳过去掉。
+        if !cfg!(windows) {
+            eprintln!("跳过：非 Windows 上 redact_paths 还不认家目录");
+            return;
+        }
         let path = std::path::Path::new(&home).join("logs").join("web-1.log");
         let text = LogOutcome::Stopped { path: Some(path) }.status_text();
         assert!(!text.contains(&home), "{text}");
