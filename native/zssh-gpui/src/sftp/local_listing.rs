@@ -112,8 +112,10 @@ pub(super) trait LocalFs: Send + Sync + 'static {
     fn start_dir(&self, wanted: Option<&str>) -> String;
 }
 
-/// 生产用的实现：直接走系统文件接口。
-pub(super) struct RealFs;
+/// 生产用的实现：直接走系统文件接口。`plan` 决定本地栏一开始落在哪。
+pub(super) struct RealFs {
+    pub(super) plan: super::local_start::StartPlan,
+}
 
 impl LocalFs for RealFs {
     fn is_dir(&self, path: &str) -> bool {
@@ -131,7 +133,7 @@ impl LocalFs for RealFs {
             .filter(|dir| !dir.is_empty() && std::path::Path::new(dir).is_dir())
             .map(str::to_owned);
         wanted.unwrap_or_else(|| {
-            super::engine::absolute_local(&super::engine::initial_local_dir())
+            super::engine::absolute_local(&super::engine::initial_local_dir(&self.plan))
                 .display()
                 .to_string()
         })
@@ -187,8 +189,8 @@ impl LocalLister {
     }
 
     /// 生产配置：真文件系统 + 共用线程池。
-    pub(super) fn real() -> Self {
-        Self::new(Arc::new(RealFs), Arc::clone(LocalPool::global()))
+    pub(super) fn real(plan: super::local_start::StartPlan) -> Self {
+        Self::new(Arc::new(RealFs { plan }), Arc::clone(LocalPool::global()))
     }
 
     /// 在后台线程里跑 `work`，结果交给 `deliver`（也在后台线程里调，通常是往界面的事件通道里送）。

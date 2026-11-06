@@ -278,6 +278,38 @@ pub(super) fn filter_entries(sorted: &[Entry], filter: &Filter) -> Vec<Entry> {
         .collect()
 }
 
+/// 被「隐藏文件」开关藏起来的条目数：不显示隐藏文件时，名字过滤（如果有）也能匹配到的那些点开头的条目。
+/// 目录里只剩隐藏文件时列表是空的，用它告诉用户「不是空，是被藏起来了」。
+pub(super) fn hidden_count(raw: &[Entry], filter: &Filter) -> usize {
+    if filter.show_hidden {
+        return 0;
+    }
+    let needle = filter.text.trim().to_lowercase();
+    raw.iter()
+        .filter(|entry| entry.hidden && !entry.is_drive())
+        .filter(|entry| needle.is_empty() || entry.name.to_lowercase().contains(&needle))
+        .count()
+}
+
+/// 自动排列：视图宽度不小于这个值就左右排两栏，否则上下排。
+pub(super) const SIDE_BY_SIDE_MIN_WIDTH: f32 = 640.0;
+
+/// 本地栏和远端栏是不是上下排（本地在上、远端在下）。
+/// 「自动」按量到的视图宽度定；还没量到（第一帧，宽度是 0）时沿用停靠面板默认上下、标签默认左右。
+pub(super) fn local_stacked(
+    layout: crate::settings::SftpLocalLayout,
+    width: f32,
+    dock: bool,
+) -> bool {
+    use crate::settings::SftpLocalLayout;
+    match layout {
+        SftpLocalLayout::Side => false,
+        SftpLocalLayout::Stacked => true,
+        SftpLocalLayout::Auto if width <= 0.0 => dock,
+        SftpLocalLayout::Auto => width < SIDE_BY_SIDE_MIN_WIDTH,
+    }
+}
+
 /// 排序 + 过滤一条龙。
 pub(super) fn visible_entries(raw: &[Entry], order: SortOrder, filter: &Filter) -> Vec<Entry> {
     let mut sorted = raw.to_vec();
@@ -846,9 +878,56 @@ mod tests {
     use super::{
         Column, Crumb, Entry, EntryKind, Filter, LinkBase, NavHistory, Selection, SortKey,
         SortOrder, TargetKind, adaptive_columns, cell_text, collapse_crumbs, compact_columns,
-        filter_entries, full_columns, local_crumbs, local_parent, remote_crumbs, remote_parent,
-        size_short, sort_entries, time_full, time_short, visible_entries,
+        filter_entries, full_columns, hidden_count, local_crumbs, local_parent, local_stacked,
+        remote_crumbs, remote_parent, size_short, sort_entries, time_full, time_short,
+        visible_entries,
     };
+
+    #[test]
+    fn hidden_files_are_counted_only_while_they_are_hidden() {
+        let raw = vec![
+            entry(".bashrc", EntryKind::File),
+            entry(".ssh", EntryKind::Dir),
+            file("visible.txt", 1, 1),
+        ];
+        let hide = Filter {
+            text: String::new(),
+            show_hidden: false,
+        };
+        assert_eq!(hidden_count(&raw, &hide), 2);
+        let show = Filter {
+            text: String::new(),
+            show_hidden: true,
+        };
+        assert_eq!(hidden_count(&raw, &show), 0, "显示隐藏文件时没有被藏起来的");
+        // 有名字过滤时只数过滤也匹配得到的那几个。
+        let narrowed = Filter {
+            text: "ssh".to_owned(),
+            show_hidden: false,
+        };
+        assert_eq!(hidden_count(&raw, &narrowed), 1);
+        // 目录里只有隐藏文件：列表是空的、藏起来的是全部。
+        let only_hidden = vec![entry(".a", EntryKind::File), entry(".b", EntryKind::File)];
+        assert!(visible_entries(&only_hidden, SortOrder::DEFAULT, &hide).is_empty());
+        assert_eq!(hidden_count(&only_hidden, &hide), 2);
+    }
+
+    #[test]
+    fn auto_layout_switches_at_the_width_threshold_and_fixed_layouts_never_do() {
+        use crate::settings::SftpLocalLayout::{Auto, Side, Stacked};
+        assert!(!local_stacked(Auto, 640.0, true), "刚好 640：左右排");
+        assert!(!local_stacked(Auto, 900.0, true));
+        assert!(local_stacked(Auto, 639.0, false), "不到 640：上下排");
+        assert!(local_stacked(Auto, 320.0, false));
+        // 还没量到宽度：停靠面板上下、标签左右。
+        assert!(local_stacked(Auto, 0.0, true));
+        assert!(!local_stacked(Auto, 0.0, false));
+        // 固定的排列不看宽度。
+        for width in [0.0, 300.0, 640.0, 2000.0] {
+            assert!(!local_stacked(Side, width, true));
+            assert!(local_stacked(Stacked, width, false));
+        }
+    }
 
     fn entry(name: &str, kind: EntryKind) -> Entry {
         Entry {

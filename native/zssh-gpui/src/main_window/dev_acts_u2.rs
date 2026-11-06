@@ -253,6 +253,12 @@ mod real {
                     "copy_on_select" => on_off_text(saved.copy_on_select),
                     "start_hidden" => on_off_text(saved.start_hidden),
                     "follow_system" => on_off_text(saved.follow_system),
+                    // 文件传输页「文件面板」的六项（V2-SFTP-DOCK1）。
+                    "sftp_open_in" => format!("{:?}", saved.sftp_open_in).to_lowercase(),
+                    "sftp_show_local" => on_off_text(saved.sftp_show_local),
+                    "sftp_local_layout" => format!("{:?}", saved.sftp_local_layout).to_lowercase(),
+                    "sftp_local_dir" => format!("{:?}", saved.sftp_local_dir).to_lowercase(),
+                    "sftp_follow_cwd" => on_off_text(saved.sftp_follow_cwd),
                     // 落盘的明暗（手动选的；跟随系统时只是读不到系统值时的回退）。
                     "dark" => (if saved.dark { "yes" } else { "no" }).to_owned(),
                     "font_size" => format!("{}", saved.font_size),

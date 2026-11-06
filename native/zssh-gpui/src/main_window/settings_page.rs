@@ -157,6 +157,31 @@ enum SettingsMsg {
     PreservePermissionsDescription,
     ShowHiddenTitle,
     ShowHiddenDescription,
+    FilePanelGroup,
+    FilePanelDescription,
+    OpenInTitle,
+    OpenInDescription,
+    OpenInDock,
+    OpenInTab,
+    OpenInWindow,
+    ShowLocalTitle,
+    ShowLocalDescription,
+    LayoutTitle,
+    LayoutDescription,
+    LayoutAuto,
+    LayoutSide,
+    LayoutStacked,
+    LocalDirTitle,
+    LocalDirDescription,
+    LocalDirDownloads,
+    LocalDirLast,
+    LocalDirCustom,
+    CustomDirTitle,
+    CustomDirUnset,
+    CustomDirChoose,
+    CustomDirDialog,
+    FollowCwdTitle,
+    FollowCwdDescription,
     // ---- 快捷键 ----
     ShortcutsTabsWindows,
     ShortcutsTerminalSplits,
@@ -178,7 +203,7 @@ impl Msg for SettingsMsg {
             Self::PageConnection => {
                 "连接服务器和软件自己联网使用的代理、连接维护，以及服务器监控。"
             }
-            Self::PageSftp => "文件传输的并发数、保留属性和文件浏览选项。",
+            Self::PageSftp => "文件面板、传输并发数、保留属性和文件浏览选项。",
             Self::PageAi => "AI 助手使用的接口、外部工具和执行权限。",
             Self::PageLock => "应用锁和自动锁定；密码只保存在这台电脑上。",
             Self::PageSync => "配置同步、本地与云端备份，以及导入、导出和恢复。",
@@ -282,7 +307,7 @@ impl Msg for SettingsMsg {
                 "传输参数对之后打开的 SFTP 标签生效（正在传的任务不受影响）。"
             }
             Self::SftpConcurrencyTitle => "同时传输的文件数",
-            Self::SftpConcurrencyDescription => "1～8，默认 3",
+            Self::SftpConcurrencyDescription => "1～8，默认 5",
             Self::SftpConcurrencySuffix => " 个",
             Self::PreserveMtimeTitle => "保留修改时间",
             Self::PreserveMtimeDescription => {
@@ -291,6 +316,43 @@ impl Msg for SettingsMsg {
             Self::PreservePermissionsTitle => "保留权限",
             Self::PreservePermissionsDescription => {
                 "远端按源的权限位设置；本地只有只读一位有意义。"
+            }
+            Self::FilePanelGroup => "文件面板",
+            Self::FilePanelDescription => {
+                "「文件」按钮和 Ctrl+Shift+F 打开的文件视图；对之后新打开的视图生效。"
+            }
+            Self::OpenInTitle => "打开位置",
+            Self::OpenInDescription => {
+                "标签 / 窗口方式下，这台主机已经开着文件视图时再按只会切过去，不会重复打开。"
+            }
+            Self::OpenInDock => "终端右侧并排",
+            Self::OpenInTab => "新标签页",
+            Self::OpenInWindow => "独立窗口",
+            Self::ShowLocalTitle => "显示本地栏",
+            Self::ShowLocalDescription => {
+                "新打开的文件视图是否同时显示本机文件夹；视图顶部的「本地」按钮只影响那一个视图。"
+            }
+            Self::LayoutTitle => "本地栏排列",
+            Self::LayoutDescription => {
+                "自动：视图够宽时左右排列，否则上下排列（本地在上、远端在下）。"
+            }
+            Self::LayoutAuto => "自动",
+            Self::LayoutSide => "左右",
+            Self::LayoutStacked => "上下",
+            Self::LocalDirTitle => "本地默认目录",
+            Self::LocalDirDescription => {
+                "新打开的文件视图里本地栏从哪个文件夹开始；「上次用过的」按主机各记各的。"
+            }
+            Self::LocalDirDownloads => "下载文件夹",
+            Self::LocalDirLast => "上次用过的",
+            Self::LocalDirCustom => "自定义",
+            Self::CustomDirTitle => "自定义目录",
+            Self::CustomDirUnset => "还没选目录，暂时用下载文件夹",
+            Self::CustomDirChoose => "选择…",
+            Self::CustomDirDialog => "选择本地默认目录",
+            Self::FollowCwdTitle => "默认跟随终端目录",
+            Self::FollowCwdDescription => {
+                "并排的文件面板里「跟随终端目录」默认勾选；在面板里勾选 / 取消只影响那个面板。"
             }
             Self::ShowHiddenTitle => "默认显示隐藏文件",
             Self::ShowHiddenDescription => {
@@ -321,7 +383,7 @@ impl Msg for SettingsMsg {
                 "Proxies for connecting to servers and for the app's own network access, connection maintenance, and server monitoring."
             }
             Self::PageSftp => {
-                "Transfer concurrency, attribute preservation, and file browsing options."
+                "The file panel, transfer concurrency, attribute preservation, and file browsing options."
             }
             Self::PageAi => {
                 "Endpoints, external tools, and execution permissions for the AI assistant."
@@ -442,7 +504,7 @@ impl Msg for SettingsMsg {
                 "Transfer settings apply to SFTP tabs opened afterwards (running transfers are unaffected)."
             }
             Self::SftpConcurrencyTitle => "Concurrent file transfers",
-            Self::SftpConcurrencyDescription => "1–8, default 3",
+            Self::SftpConcurrencyDescription => "1–8, default 5",
             Self::SftpConcurrencySuffix => " files",
             Self::PreserveMtimeTitle => "Preserve modification time",
             Self::PreserveMtimeDescription => {
@@ -451,6 +513,43 @@ impl Msg for SettingsMsg {
             Self::PreservePermissionsTitle => "Preserve permissions",
             Self::PreservePermissionsDescription => {
                 "On remote, set the source's permission bits; locally only the read-only bit is meaningful."
+            }
+            Self::FilePanelGroup => "File Panel",
+            Self::FilePanelDescription => {
+                "The file view opened by the Files button and Ctrl+Shift+F; applies to views opened afterwards."
+            }
+            Self::OpenInTitle => "Open in",
+            Self::OpenInDescription => {
+                "With tab or window, pressing it again while this host already has a file view switches to it instead of opening another."
+            }
+            Self::OpenInDock => "Beside the terminal",
+            Self::OpenInTab => "New tab",
+            Self::OpenInWindow => "Separate window",
+            Self::ShowLocalTitle => "Show the local pane",
+            Self::ShowLocalDescription => {
+                "Whether newly opened file views also show folders on this computer; the Local button at the top of a view only affects that view."
+            }
+            Self::LayoutTitle => "Pane layout",
+            Self::LayoutDescription => {
+                "Auto: side by side when the view is wide enough, otherwise stacked (local on top, remote below)."
+            }
+            Self::LayoutAuto => "Auto",
+            Self::LayoutSide => "Side by side",
+            Self::LayoutStacked => "Stacked",
+            Self::LocalDirTitle => "Default local folder",
+            Self::LocalDirDescription => {
+                "Where the local pane starts in a newly opened file view. “Last used” is remembered per host."
+            }
+            Self::LocalDirDownloads => "Downloads folder",
+            Self::LocalDirLast => "Last used",
+            Self::LocalDirCustom => "Custom",
+            Self::CustomDirTitle => "Custom folder",
+            Self::CustomDirUnset => "No folder chosen yet; the Downloads folder is used for now",
+            Self::CustomDirChoose => "Choose…",
+            Self::CustomDirDialog => "Choose the default local folder",
+            Self::FollowCwdTitle => "Follow the terminal directory by default",
+            Self::FollowCwdDescription => {
+                "Side-by-side file panels start with Follow terminal directory checked; changing it in a panel only affects that panel."
             }
             Self::ShowHiddenTitle => "Show hidden files by default",
             Self::ShowHiddenDescription => {
@@ -964,6 +1063,8 @@ impl MainWindow {
             Some(about) => about.clone(),
             None => {
                 let about = cx.new(|_cx| crate::about_view::AboutView::new());
+                // 常规页的「启动时自动检查」开关读写这个实体：它变了，设置页要跟着重画。
+                cx.observe(&about, |_this, _about, cx| cx.notify()).detach();
                 self.about_settings = Some(about.clone());
                 about
             }
@@ -1394,7 +1495,7 @@ impl MainWindow {
         ]
     }
 
-    /// 更新：只有「检查更新」（和关于页、托盘共用一个入口），不新增自动检查开关。
+    /// 更新：「检查更新」（和关于页、托盘共用一个入口）和「启动时自动检查」开关。
     fn update_card(&self, tokens: &Tokens, cx: &mut Context<Self>) -> ::gpui::AnyElement {
         let entity = cx.entity();
         card(
@@ -1402,20 +1503,27 @@ impl MainWindow {
             t(SettingsMsg::UpdatesGroup),
             None,
             tokens,
-            vec![row(
-                t(SettingsMsg::UpdateCheckTitle),
-                Some(crate::about_view::update_description(
-                    crate::about_view::signing_configured(),
-                )),
-                crate::about_view::update_buttons(
-                    "general-open-releases",
-                    "general-check-update",
-                    move |window, cx| {
-                        entity.update(cx, |this, cx| this.check_for_updates(window, cx));
-                    },
-                ),
-                tokens,
-            )],
+            {
+                let mut rows = vec![row(
+                    t(SettingsMsg::UpdateCheckTitle),
+                    Some(crate::about_view::update_description(
+                        crate::about_view::signing_configured(),
+                    )),
+                    crate::about_view::update_buttons(
+                        "general-open-releases",
+                        "general-check-update",
+                        move |window, cx| {
+                            entity.update(cx, |this, cx| this.check_for_updates(window, cx));
+                        },
+                    ),
+                    tokens,
+                )];
+                // 「启动时自动检查」跟「检查更新」放在一起（关于页不再重复）；设置键不变。
+                if let Some(about) = &self.about_settings {
+                    rows.push(crate::about_view::auto_check_row(about, tokens, cx));
+                }
+                rows
+            },
         )
     }
 
@@ -2078,7 +2186,11 @@ impl MainWindow {
                 },
             )
         };
+        let ws = self.workspace.clone();
+        let settings = ws.read(cx).settings().clone();
+        let panel_card = self.file_panel_card(&settings, tokens);
         vec![
+            panel_card,
             card(
                 "settings-sftp",
                 t(SettingsMsg::Transfers),
@@ -2122,7 +2234,167 @@ impl MainWindow {
                     self.prefs.sftp_show_hidden,
                 )],
             ),
+            crate::settings_view::reset_sftp_block(&ws, cx),
         ]
+    }
+
+    /// 「文件面板」一组：打开位置、本地栏显示与排列、本地默认目录、跟随终端目录。
+    /// 都存在 `ui-settings.json` 里（和外观 / 终端页同一条路），对之后新开的文件视图生效，
+    /// 排列另外会推给已经开着的视图。
+    fn file_panel_card(
+        &self,
+        settings: &crate::settings::UiSettings,
+        tokens: &Tokens,
+    ) -> ::gpui::AnyElement {
+        use crate::settings::{SftpLocalDir, SftpLocalLayout, SftpOpenIn};
+        let ws = self.workspace.clone();
+        let (open_ws, layout_ws, dir_ws, show_ws, follow_ws, pick_ws) = (
+            ws.clone(),
+            ws.clone(),
+            ws.clone(),
+            ws.clone(),
+            ws.clone(),
+            ws.clone(),
+        );
+        let open_in = settings.sftp_open_in;
+        let layout = settings.sftp_local_layout;
+        let dir_choice = settings.sftp_local_dir;
+        let open_label = |value: SftpOpenIn| {
+            t(match value {
+                SftpOpenIn::Dock => SettingsMsg::OpenInDock,
+                SftpOpenIn::Tab => SettingsMsg::OpenInTab,
+                SftpOpenIn::Window => SettingsMsg::OpenInWindow,
+            })
+        };
+        let layout_label = |value: SftpLocalLayout| {
+            t(match value {
+                SftpLocalLayout::Auto => SettingsMsg::LayoutAuto,
+                SftpLocalLayout::Side => SettingsMsg::LayoutSide,
+                SftpLocalLayout::Stacked => SettingsMsg::LayoutStacked,
+            })
+        };
+        let dir_label = |value: SftpLocalDir| {
+            t(match value {
+                SftpLocalDir::Downloads => SettingsMsg::LocalDirDownloads,
+                SftpLocalDir::Last => SettingsMsg::LocalDirLast,
+                SftpLocalDir::Custom => SettingsMsg::LocalDirCustom,
+            })
+        };
+        const OPEN_IN: [SftpOpenIn; 3] = [SftpOpenIn::Dock, SftpOpenIn::Tab, SftpOpenIn::Window];
+        const LAYOUTS: [SftpLocalLayout; 3] = [
+            SftpLocalLayout::Auto,
+            SftpLocalLayout::Side,
+            SftpLocalLayout::Stacked,
+        ];
+        const DIRS: [SftpLocalDir; 3] = [
+            SftpLocalDir::Downloads,
+            SftpLocalDir::Last,
+            SftpLocalDir::Custom,
+        ];
+        let mut rows = vec![
+            row(
+                t(SettingsMsg::OpenInTitle),
+                Some(t(SettingsMsg::OpenInDescription)),
+                div().w(px(224.0)).child(select(
+                    "sftp-open-in",
+                    open_label(open_in),
+                    OPEN_IN
+                        .iter()
+                        .map(|value| Choice::new(open_label(*value), *value == open_in))
+                        .collect(),
+                    move |index, _window, cx| {
+                        let value = OPEN_IN[index.min(OPEN_IN.len() - 1)];
+                        open_ws.update(cx, |ws, cx| ws.set_sftp_open_in(value, cx));
+                    },
+                )),
+                tokens,
+            ),
+            pref_switch(
+                "sftp-show-local",
+                t(SettingsMsg::ShowLocalTitle),
+                t(SettingsMsg::ShowLocalDescription),
+                settings.sftp_show_local,
+                tokens,
+                move |_checked, _window, cx| {
+                    show_ws.update(cx, |ws, cx| ws.toggle_sftp_show_local(cx));
+                },
+            ),
+            row(
+                t(SettingsMsg::LayoutTitle),
+                Some(t(SettingsMsg::LayoutDescription)),
+                div().w(px(224.0)).child(select(
+                    "sftp-local-layout",
+                    layout_label(layout),
+                    LAYOUTS
+                        .iter()
+                        .map(|value| Choice::new(layout_label(*value), *value == layout))
+                        .collect(),
+                    move |index, _window, cx| {
+                        let value = LAYOUTS[index.min(LAYOUTS.len() - 1)];
+                        layout_ws.update(cx, |ws, cx| ws.set_sftp_local_layout(value, cx));
+                    },
+                )),
+                tokens,
+            ),
+            row(
+                t(SettingsMsg::LocalDirTitle),
+                Some(t(SettingsMsg::LocalDirDescription)),
+                div().w(px(224.0)).child(select(
+                    "sftp-local-dir",
+                    dir_label(dir_choice),
+                    DIRS.iter()
+                        .map(|value| Choice::new(dir_label(*value), *value == dir_choice))
+                        .collect(),
+                    move |index, window, cx| {
+                        let value = DIRS[index.min(DIRS.len() - 1)];
+                        dir_ws.update(cx, |ws, cx| ws.set_sftp_local_dir(value, cx));
+                        // 切到「自定义」而还没选过目录：直接弹出选择目录的对话框。
+                        let unset = dir_ws.read(cx).settings().sftp_local_dir_custom.is_empty();
+                        if value == SftpLocalDir::Custom && unset {
+                            pick_custom_dir(&dir_ws, window, cx);
+                        }
+                    },
+                )),
+                tokens,
+            ),
+        ];
+        if dir_choice == SftpLocalDir::Custom {
+            let shown = if settings.sftp_local_dir_custom.is_empty() {
+                SharedString::new_static(t(SettingsMsg::CustomDirUnset))
+            } else {
+                // 只显示脱敏后的路径（用户目录换成 %USERPROFILE%），截图和录屏不带出用户名。
+                SharedString::from(crate::about_view::display_path(std::path::Path::new(
+                    &settings.sftp_local_dir_custom,
+                )))
+            };
+            rows.push(row_with(
+                t(SettingsMsg::CustomDirTitle),
+                Some(shown),
+                Button::new("sftp-custom-dir-pick")
+                    .outline()
+                    .compact()
+                    .label(t(SettingsMsg::CustomDirChoose))
+                    .on_click(move |_, window, cx| pick_custom_dir(&pick_ws, window, cx)),
+                tokens,
+            ));
+        }
+        rows.push(pref_switch(
+            "sftp-follow-cwd",
+            t(SettingsMsg::FollowCwdTitle),
+            t(SettingsMsg::FollowCwdDescription),
+            settings.sftp_follow_cwd,
+            tokens,
+            move |_checked, _window, cx| {
+                follow_ws.update(cx, |ws, cx| ws.toggle_sftp_follow_cwd(cx));
+            },
+        ));
+        card(
+            "settings-sftp-panel",
+            t(SettingsMsg::FilePanelGroup),
+            Some(t(SettingsMsg::FilePanelDescription)),
+            tokens,
+            rows,
+        )
     }
 
     /// 一行滑块设置：左边名字和说明，右边滑块 + 当前值。
@@ -2174,6 +2446,34 @@ impl MainWindow {
 }
 
 /// 一行开关设置（读写数据库设置的那些）：左边名字和说明，右边开关。
+/// 「自定义」本地默认目录的选择对话框：选中的目录存进设置并把来源切到「自定义」。
+fn pick_custom_dir(
+    ws: &::gpui::Entity<crate::terminal_workspace::TerminalWorkspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let receiver = cx.prompt_for_paths(PathPromptOptions {
+        files: false,
+        directories: true,
+        multiple: false,
+        prompt: Some(t(SettingsMsg::CustomDirDialog).into()),
+    });
+    let ws = ws.clone();
+    window
+        .spawn(cx, async move |cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(picked) = paths.into_iter().next() else {
+                return;
+            };
+            ws.update(cx, |ws, cx| {
+                ws.set_sftp_local_dir_custom(picked.display().to_string(), cx);
+            });
+        })
+        .detach();
+}
+
 fn pref_switch(
     id: &'static str,
     title: &'static str,
@@ -2285,8 +2585,26 @@ fn shortcuts_cards(tokens: &Tokens) -> Vec<::gpui::AnyElement> {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{SHORTCUT_GROUPS, SystemProxy, app_prefs, system_proxy_text};
+    use super::{SHORTCUT_GROUPS, SettingsMsg, SystemProxy, app_prefs, system_proxy_text};
+    use crate::i18n::Msg as _;
     use crate::settings_nav::SHORTCUTS;
+
+    /// 「同时传输的文件数」页面上写的默认值必须和代码里的默认值一致（以前写着 3、代码是 5）。
+    #[test]
+    fn the_concurrency_hint_names_the_real_default() {
+        let default = app_prefs::SFTP_CONCURRENCY_DEFAULT.to_string();
+        let (min, max) = app_prefs::SFTP_CONCURRENCY_RANGE;
+        for text in [
+            SettingsMsg::SftpConcurrencyDescription.zh(),
+            SettingsMsg::SftpConcurrencyDescription.en(),
+        ] {
+            assert!(
+                text.ends_with(&default),
+                "说明里的默认值要写成 {default}：{text}"
+            );
+            assert!(text.contains(&min.to_string()) && text.contains(&max.to_string()));
+        }
+    }
 
     #[test]
     fn shortcut_groups_include_each_existing_shortcut_once() {

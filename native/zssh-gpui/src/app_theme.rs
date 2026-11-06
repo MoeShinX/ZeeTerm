@@ -43,18 +43,21 @@ pub struct TermPalette {
 #[derive(Clone, Copy, Debug)]
 enum ThemeMsg {
     PaperWhite,
+    Graphite,
 }
 
 impl crate::i18n::Msg for ThemeMsg {
     fn zh(&self) -> &'static str {
         match self {
             Self::PaperWhite => "纸白",
+            Self::Graphite => "石墨",
         }
     }
 
     fn en(&self) -> &'static str {
         match self {
             Self::PaperWhite => "Paper White",
+            Self::Graphite => "Graphite",
         }
     }
 }
@@ -63,6 +66,7 @@ impl crate::i18n::Msg for ThemeMsg {
 pub fn skin_name(skin: &Skin) -> &'static str {
     match skin.name {
         "纸白" => crate::i18n::t(ThemeMsg::PaperWhite), // i18n-allow: 皮肤名的数据匹配
+        "石墨" => crate::i18n::t(ThemeMsg::Graphite),   // i18n-allow: 皮肤名的数据匹配
         other => other,
     }
 }
@@ -1019,6 +1023,31 @@ mod tests {
 
     fn dark() -> Skin {
         *skin_for(true, "dracula")
+    }
+
+    #[test]
+    fn every_chinese_skin_name_has_an_english_display_name() {
+        use crate::i18n::Msg as _;
+        // 中文名的皮肤（纸白、石墨）在英文界面里必须显示英文名，不能把中文原样漏出来。
+        assert_eq!(ThemeMsg::Graphite.en(), "Graphite");
+        assert_eq!(ThemeMsg::Graphite.zh(), "石墨");
+        for skin in SKINS {
+            let shown = skin_name(skin);
+            if !skin.name.is_ascii() && !skin.name.contains('é') {
+                assert!(
+                    shown == ThemeMsg::PaperWhite.zh()
+                        || shown == ThemeMsg::PaperWhite.en()
+                        || shown == ThemeMsg::Graphite.zh()
+                        || shown == ThemeMsg::Graphite.en(),
+                    "{} 的显示名没有走 i18n 表",
+                    skin.id
+                );
+            }
+        }
+        // 英文表里不留汉字。
+        for text in [ThemeMsg::PaperWhite.en(), ThemeMsg::Graphite.en()] {
+            assert!(text.is_ascii(), "{text}");
+        }
     }
 
     #[test]

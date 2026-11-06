@@ -100,6 +100,7 @@ mod docks;
 mod drag;
 mod drag_scroll;
 pub(crate) mod editor_tabs;
+mod files_open;
 mod forward_panel;
 mod host_delete;
 mod host_dialog;
@@ -1532,7 +1533,7 @@ impl MainWindow {
                 "k" => self.send_break_active(window, cx),
                 // Ctrl+Shift+F 是文件（SFTP）面板（同 0.2.14）；先拦下来，不然会被终端当成 Ctrl+F 发给远端。
                 "f" => {
-                    self.toggle_sftp_dock(window, cx);
+                    self.open_files(window, cx);
                     true
                 }
                 _ => false,

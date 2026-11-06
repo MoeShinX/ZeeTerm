@@ -55,6 +55,7 @@ enum SettingsViewMsg {
     ResetRowTitle,
     ResetAppearanceScope,
     ResetTerminalScope,
+    ResetSftpScope,
     // ---- 终端 · 字体与显示 ----
     ShowLatencyTitle,
     ShowLatencyDescription,
@@ -122,6 +123,9 @@ impl Msg for SettingsViewMsg {
             }
             Self::ResetTerminalScope => {
                 "只恢复本页的字体与显示、光标、输入与剪贴板、括号粘贴和高亮开关；高亮规则、会话日志、主题和其他页的设置不变。"
+            }
+            Self::ResetSftpScope => {
+                "只恢复本页「文件面板」里的打开位置、本地栏、排列、本地默认目录和跟随终端目录；同时传输数、保留属性、默认显示隐藏文件等其他设置不变。"
             }
             Self::ShowLatencyTitle => "在终端右上角显示延迟",
             Self::ShowLatencyDescription => {
@@ -203,6 +207,9 @@ impl Msg for SettingsViewMsg {
             }
             Self::ResetTerminalScope => {
                 "Restores only this page's font & display, cursor, input & clipboard, bracketed paste, and highlight switch. Highlight rules, the session log, the theme, and settings on other pages stay as they are."
+            }
+            Self::ResetSftpScope => {
+                "Restores only the File Panel settings on this page (open location, local pane, layout, default local folder, follow terminal directory). Concurrent transfers, preserved attributes, show hidden files and other settings stay as they are."
             }
             Self::ShowLatencyTitle => "Show latency in the top-right corner of the terminal",
             Self::ShowLatencyDescription => {
@@ -533,6 +540,18 @@ pub(crate) fn reset_terminal_block(ws: &Entity<TerminalWorkspace>, cx: &App) -> 
     )
 }
 
+/// 文件传输页末尾的「恢复本页默认设置」：只还原文件面板六项（见 `UiSettings::reset_sftp_page`）。
+pub(crate) fn reset_sftp_block(ws: &Entity<TerminalWorkspace>, cx: &App) -> AnyElement {
+    let reset = ws.clone();
+    reset_block(
+        "settings-reset-sftp",
+        "settings-reset-sftp-button",
+        t(SettingsViewMsg::ResetSftpScope),
+        move |_, cx| reset.update(cx, |this, cx| this.reset_sftp_settings(cx)),
+        cx,
+    )
+}
+
 /// 主题与皮肤：明暗模式（系统 / 浅色 / 深色），下面是浅色、深色各一排皮肤。
 #[inline(never)]
 fn theme_card(ws: &Entity<TerminalWorkspace>, s: &UiSettings, tokens: &Tokens) -> AnyElement {
@@ -825,7 +844,7 @@ fn terminal_mismatch_hint(
             .child(format!(
                 "{}{}{}{}{}{}{}{}",
                 t(SettingsViewMsg::MismatchLead),
-                fixed.name,
+                crate::app_theme::skin_name(fixed),
                 t(SettingsViewMsg::OpenParen),
                 mode_label(fixed.dark),
                 t(SettingsViewMsg::CloseParen),

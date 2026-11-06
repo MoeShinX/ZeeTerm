@@ -160,6 +160,41 @@ pub fn adopt(cx: &mut App, host_id: i64, title: String, view: Entity<SftpDemo>) 
     open_window(cx, host_id, title, view);
 }
 
+/// 文件窗口里有没有这台主机的标签。
+pub fn has_host(cx: &App, host_id: i64) -> bool {
+    window_handle(cx)
+        .and_then(|handle| {
+            handle
+                .read_with(cx, |window_view, _| {
+                    window_view.tabs.iter().any(|tab| tab.host_id == host_id)
+                })
+                .ok()
+        })
+        .unwrap_or(false)
+}
+
+/// 把文件窗口里这台主机的标签切到前台并激活窗口；窗口没开或没有这台主机的标签返回 `false`。
+pub fn focus_host(cx: &mut App, host_id: i64) -> bool {
+    let Some(handle) = window_handle(cx) else {
+        return false;
+    };
+    handle
+        .update(cx, move |window_view, window, cx| {
+            let Some(id) = window_view
+                .tabs
+                .iter()
+                .find(|tab| tab.host_id == host_id)
+                .map(|tab| tab.id)
+            else {
+                return false;
+            };
+            window_view.select(id, cx);
+            window.activate_window();
+            true
+        })
+        .unwrap_or(false)
+}
+
 /// 窗口的最小尺寸；记住的大小也不会低于它。
 const MIN_SIZE: (f32, f32) = (640.0, 420.0);
 /// 没有记住的大小时的默认大小。

@@ -103,6 +103,45 @@ impl BracketedPaste {
     }
 }
 
+/// 文件面板默认开在哪（「设置 → 文件传输 → 文件面板 → 打开位置」）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SftpOpenIn {
+    /// 终端右侧并排（停靠面板）。
+    #[default]
+    Dock,
+    /// 主窗口里的新标签页。
+    Tab,
+    /// 独立的文件窗口。
+    Window,
+}
+
+/// 文件视图里本地栏和远端栏怎么排。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SftpLocalLayout {
+    /// 视图够宽左右排，否则上下排。
+    #[default]
+    Auto,
+    /// 左边本地、右边远端。
+    Side,
+    /// 上面本地、下面远端。
+    Stacked,
+}
+
+/// 新开文件视图时，本地栏从哪个目录开始。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SftpLocalDir {
+    /// Windows 的「下载」文件夹。
+    #[default]
+    Downloads,
+    /// 这台主机上次用到的本地目录。
+    Last,
+    /// 用户自己选的目录（[`UiSettings::sftp_local_dir_custom`]）。
+    Custom,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiSettings {
@@ -145,6 +184,18 @@ pub struct UiSettings {
     /// 界面语言偏好：`system` / `zh` / `en`。没选过（全新安装、老设置文件里没有这个字段）
     /// 一律跟随系统：系统主语言是中文（简体、繁体都算）用中文，其他语言一律英文。
     pub language: String,
+    /// 「文件传输 → 文件面板」：快捷键 / 标题栏「文件」默认把文件视图开在哪。
+    pub sftp_open_in: SftpOpenIn,
+    /// 新开的文件视图显示本地栏吗（视图里的「本地」按钮只管当前这一个视图，不改这里）。
+    pub sftp_show_local: bool,
+    /// 本地栏和远端栏的排列。
+    pub sftp_local_layout: SftpLocalLayout,
+    /// 本地栏的起始目录来源。
+    pub sftp_local_dir: SftpLocalDir,
+    /// [`SftpLocalDir::Custom`] 用的目录；空 = 还没选。
+    pub sftp_local_dir_custom: String,
+    /// 新开的文件视图默认「跟随终端目录」。
+    pub sftp_follow_cwd: bool,
 }
 
 impl Default for UiSettings {
@@ -171,6 +222,12 @@ impl Default for UiSettings {
             highlight_rules: None,
             bracketed_paste: BracketedPaste::Auto,
             language: "system".to_owned(),
+            sftp_open_in: SftpOpenIn::Dock,
+            sftp_show_local: true,
+            sftp_local_layout: SftpLocalLayout::Auto,
+            sftp_local_dir: SftpLocalDir::Downloads,
+            sftp_local_dir_custom: String::new(),
+            sftp_follow_cwd: false,
         }
     }
 }
@@ -236,6 +293,19 @@ impl UiSettings {
         self.confirm_multiline = d.confirm_multiline;
         self.bracketed_paste = d.bracketed_paste;
         self.highlight_enabled = d.highlight_enabled;
+    }
+
+    /// 「文件传输」页「恢复本页默认设置」负责的字段：只有存在 `ui-settings.json` 里的「文件面板」六项。
+    /// 同时传输数、保留修改时间 / 权限、默认显示隐藏文件存在数据库设置表里，不在这里。
+    /// 「上次用过的」本地目录是各主机的使用记录，也不算设置，不清。
+    pub fn reset_sftp_page(&mut self) {
+        let d = Self::default();
+        self.sftp_open_in = d.sftp_open_in;
+        self.sftp_show_local = d.sftp_show_local;
+        self.sftp_local_layout = d.sftp_local_layout;
+        self.sftp_local_dir = d.sftp_local_dir;
+        self.sftp_local_dir_custom = d.sftp_local_dir_custom;
+        self.sftp_follow_cwd = d.sftp_follow_cwd;
     }
 
     /// 这份设置对应的外观选择（给 `app_theme::set_look`）。
@@ -350,6 +420,12 @@ mod tests {
             highlight_rules: Some(Vec::new()),
             bracketed_paste: BracketedPaste::On,
             language: "en".to_owned(),
+            sftp_open_in: SftpOpenIn::Window,
+            sftp_show_local: false,
+            sftp_local_layout: SftpLocalLayout::Stacked,
+            sftp_local_dir: SftpLocalDir::Custom,
+            sftp_local_dir_custom: "D:/x".to_owned(),
+            sftp_follow_cwd: true,
         }
     }
 
@@ -402,11 +478,12 @@ mod tests {
 
     #[test]
     fn every_field_has_an_owner_or_is_deliberately_left_alone() {
-        // 两页都重置一遍之后，和默认值还不一样的字段，必须正是「故意不重置」的那三个：
+        // 三页都重置一遍之后，和默认值还不一样的字段，必须正是「故意不重置」的那三个：
         // 语言和启动时隐藏（常规页，没有重置按钮）、高亮规则（用户自己的数据）。
         let mut s = all_changed();
         s.reset_appearance_page();
         s.reset_terminal_page();
+        s.reset_sftp_page();
         let d = UiSettings::default();
         let mut left = Vec::new();
         if s.language != d.language {
@@ -424,6 +501,63 @@ mod tests {
         rest.start_hidden = d.start_hidden;
         rest.highlight_rules = d.highlight_rules.clone();
         assert_eq!(rest, d, "其余字段两页合起来必须全部回到默认");
+    }
+
+    #[test]
+    fn resetting_the_sftp_page_only_touches_the_file_panel_fields() {
+        let mut s = all_changed();
+        s.reset_sftp_page();
+        let d = UiSettings::default();
+        let mut expected = all_changed();
+        expected.sftp_open_in = d.sftp_open_in;
+        expected.sftp_show_local = d.sftp_show_local;
+        expected.sftp_local_layout = d.sftp_local_layout;
+        expected.sftp_local_dir = d.sftp_local_dir;
+        expected.sftp_local_dir_custom = d.sftp_local_dir_custom;
+        expected.sftp_follow_cwd = d.sftp_follow_cwd;
+        assert_eq!(s, expected);
+        // 外观 / 终端 / 语言 / 启动行为 / 高亮规则都还是改过的值。
+        assert!(!s.dark && !s.follow_system);
+        assert_eq!(s.font_family, "X Mono");
+        assert_eq!(s.cursor, CursorShape::Bar);
+        assert_eq!(s.language, "en");
+        assert!(s.start_hidden);
+        assert!(s.highlight_rules.is_some());
+        // 另外两页的重置也不碰文件面板的字段。
+        let mut other = all_changed();
+        other.reset_appearance_page();
+        other.reset_terminal_page();
+        assert_eq!(other.sftp_open_in, SftpOpenIn::Window);
+        assert_eq!(other.sftp_local_dir_custom, "D:/x");
+    }
+
+    #[test]
+    fn the_file_panel_defaults_match_the_card_and_old_files_get_them() {
+        let d = UiSettings::default();
+        assert_eq!(d.sftp_open_in, SftpOpenIn::Dock);
+        assert!(d.sftp_show_local);
+        assert_eq!(d.sftp_local_layout, SftpLocalLayout::Auto);
+        assert_eq!(d.sftp_local_dir, SftpLocalDir::Downloads);
+        assert_eq!(d.sftp_local_dir_custom, "");
+        assert!(!d.sftp_follow_cwd);
+        // 旧设置文件没有这六个字段：照常读，取默认值，别的字段不受影响。
+        let old: UiSettings =
+            serde_json::from_str(r#"{"font_size": 15.0, "cursor": "block"}"#).expect("旧文件");
+        assert_eq!(old.sftp_open_in, SftpOpenIn::Dock);
+        assert!(old.sftp_show_local);
+        assert_eq!(old.sftp_local_layout, SftpLocalLayout::Auto);
+        assert_eq!(old.sftp_local_dir, SftpLocalDir::Downloads);
+        assert!(!old.sftp_follow_cwd);
+        assert_eq!(old.cursor, CursorShape::Block);
+        // 存下来的写法固定（小写单词），以后改名会弄坏已有的设置文件。
+        let json = serde_json::to_string(&all_changed()).unwrap();
+        for word in [
+            "\"sftp_open_in\":\"window\"",
+            "\"sftp_local_layout\":\"stacked\"",
+            "\"sftp_local_dir\":\"custom\"",
+        ] {
+            assert!(json.contains(word), "{word} 不在 {json}");
+        }
     }
 
     /// 没选过语言（全新安装、老设置文件里没有这个字段）一律跟随系统；选过的照旧。
@@ -497,6 +631,12 @@ mod tests {
             highlight_rules: Some(vec![HighlightRule::new(3, "err(or)?", true)]),
             bracketed_paste: BracketedPaste::On,
             language: "en".to_owned(),
+            sftp_open_in: SftpOpenIn::Tab,
+            sftp_show_local: false,
+            sftp_local_layout: SftpLocalLayout::Side,
+            sftp_local_dir: SftpLocalDir::Custom,
+            sftp_local_dir_custom: "D:/work".to_owned(),
+            sftp_follow_cwd: true,
         };
         settings.save_to(&path).unwrap();
         assert_eq!(UiSettings::load_from(&path), Some(settings));

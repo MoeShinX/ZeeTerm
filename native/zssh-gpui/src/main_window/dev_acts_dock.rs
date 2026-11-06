@@ -328,12 +328,6 @@ fn run_inner(
                     return fail("撰写栏开关和预期不同");
                 }
             }
-            // 文件面板里本地栏收起的设置（等节拍把视图里的值存进设置表）。
-            ("local_hidden", state) => {
-                if this.store.bars().sftp_local_hidden != on_off(state)? {
-                    return Ok(Outcome::Pending);
-                }
-            }
             ("quick_height", n) => {
                 let want: f32 = n.parse().map_err(|_| "高度不是数字")?;
                 let have = this.quick_height_now();

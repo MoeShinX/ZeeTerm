@@ -290,6 +290,62 @@ impl TerminalWorkspace {
         cx.notify();
     }
 
+    // ---- 文件传输 · 文件面板 ----
+
+    pub(crate) fn set_sftp_open_in(
+        &mut self,
+        value: crate::settings::SftpOpenIn,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_settings(cx, move |s| s.sftp_open_in = value);
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_sftp_show_local(&mut self, cx: &mut Context<Self>) {
+        self.update_settings(cx, |s| s.sftp_show_local = !s.sftp_show_local);
+        cx.notify();
+    }
+
+    pub(crate) fn set_sftp_local_layout(
+        &mut self,
+        value: crate::settings::SftpLocalLayout,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_settings(cx, move |s| s.sftp_local_layout = value);
+        cx.notify();
+    }
+
+    pub(crate) fn set_sftp_local_dir(
+        &mut self,
+        value: crate::settings::SftpLocalDir,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_settings(cx, move |s| s.sftp_local_dir = value);
+        cx.notify();
+    }
+
+    /// 「自定义」目录：选了目录就同时把来源切到「自定义」。
+    pub(crate) fn set_sftp_local_dir_custom(&mut self, dir: String, cx: &mut Context<Self>) {
+        let dir = dir.trim().to_owned();
+        self.update_settings(cx, move |s| {
+            s.sftp_local_dir_custom = dir;
+            s.sftp_local_dir = crate::settings::SftpLocalDir::Custom;
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_sftp_follow_cwd(&mut self, cx: &mut Context<Self>) {
+        self.update_settings(cx, |s| s.sftp_follow_cwd = !s.sftp_follow_cwd);
+        cx.notify();
+    }
+
+    /// 「文件传输」页的「恢复本页默认设置」：只还原文件面板六项（见 [`UiSettings::reset_sftp_page`]），
+    /// 外观、终端、语言、启动行为都不动；同时传输数这类存在数据库里的传输参数也不在其中。
+    pub(crate) fn reset_sftp_settings(&mut self, cx: &mut Context<Self>) {
+        self.update_settings(cx, UiSettings::reset_sftp_page);
+        cx.notify();
+    }
+
     /// 「外观」页的「恢复本页默认设置」：只还原这一页负责的字段（见 [`UiSettings::reset_appearance_page`]），
     /// 语言、终端字体、启动行为、高亮规则都不动。
     pub(crate) fn reset_appearance_settings(&mut self, cx: &mut Context<Self>) {

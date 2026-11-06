@@ -20,6 +20,47 @@ use crate::error_text::error_text;
 use crate::i18n::t;
 use crate::ssh_backend::runtime;
 
+/// 一栏的条目数：全部显示时就是总数；被隐藏文件开关 / 名字过滤藏起来一部分时写清「可见 / 总数」，
+/// 免得列表是空的、计数却写着几项。
+pub(super) fn items_text(visible: usize, total: usize) -> String {
+    let all = crate::i18n::count(total as u64, t(SftpMsg::ItemCountSuffix), "item", "items");
+    if visible == total {
+        return all;
+    }
+    let join = t(SftpMsg::ItemsVisibleJoin);
+    let end = t(SftpMsg::ItemsVisibleEnd);
+    if crate::i18n::is_en() {
+        format!("{visible}{join}{all}{end}")
+    } else {
+        format!("{visible}{}{join}{all}{end}", t(SftpMsg::ItemCountSuffix))
+    }
+}
+
+/// 记「这台主机上次本地栏所在的目录」的设置键：存在本机设置表的 `layout.*` 里，只在本机，不进同步。
+fn last_local_key(host_id: i64) -> String {
+    format!("layout.sftp_last_local.{host_id}")
+}
+
+/// 读这台主机上次本地栏所在的目录；没记过 / 读不出来都是 `None`（调用方退到下载文件夹）。
+pub(super) fn last_local_dir(host_id: i64) -> Option<String> {
+    let db = crate::host_db::open_database().ok()?;
+    let raw = db.setting_get(&last_local_key(host_id)).ok().flatten()?;
+    crate::main_window::page_logic::setting_text(Some(&raw)).filter(|dir| !dir.trim().is_empty())
+}
+
+/// 在后台线程里记下本地栏现在所在的目录（界面线程不等数据库）。写失败不打扰用户，下次回到下载文件夹而已。
+fn remember_last_local(host_id: i64, dir: String) {
+    std::thread::spawn(move || {
+        let Ok(db) = crate::host_db::open_database() else {
+            return;
+        };
+        let value = crate::main_window::page_logic::setting_json(&dir);
+        if let Err(err) = db.setting_set(&last_local_key(host_id), &value) {
+            tracing::debug!(%err, "记录本地栏最后所在的目录失败");
+        }
+    });
+}
+
 impl SftpDemo {
     // ---- 列表到了 ----
 
@@ -41,7 +82,7 @@ impl SftpDemo {
         if !same {
             self.remote.scroll_to(0);
         }
-        let items = crate::i18n::count(count as u64, t(SftpMsg::ItemCountSuffix), "item", "items");
+        let items = items_text(self.remote.rows.len(), count);
         let text = match notice {
             Some(notice) => format!("{notice} · {items}"),
             None => items,
@@ -223,15 +264,20 @@ impl SftpDemo {
                 if !same {
                     self.local.scroll_to(0);
                 }
+                let items = items_text(self.local.rows.len(), count);
                 match notice {
-                    Some(notice) => {
-                        self.say(format!("{notice} · {count}{}", t(SftpMsg::ItemCountSuffix)))
-                    }
-                    None => self.say(format!(
-                        "{}{count}{}",
-                        t(SftpMsg::NavLocalCountPrefix),
-                        t(SftpMsg::ItemCountSuffix)
-                    )),
+                    Some(notice) => self.say(format!("{notice} · {items}")),
+                    None => self.say(format!("{}{items}", t(SftpMsg::NavLocalCountPrefix))),
+                }
+                if self.remember_last && mode != NavMode::Refresh {
+                    remember_last_local(self.host_id, target.clone());
+                }
+                // 设置里选的「自定义」目录用不了、已经退回下载文件夹：在状态栏说一次。
+                if initial
+                    && let Some(custom) = self.start_custom.take()
+                    && std::path::Path::new(&custom) != std::path::Path::new(&target)
+                {
+                    self.warn(format!("{}{custom}", t(SftpMsg::StartCustomMissing)));
                 }
             }
             Err(error) => {

@@ -45,10 +45,19 @@ fn entry(dir: &str, name: &str, kind: FileKind, size: Option<u64>, mtime: u32) -
     }
 }
 
-/// 假目录的内容（每个目录都一样，只有路径不同）。
+/// 假目录的内容（每个目录都一样，只有路径不同）；名叫 `dotfiles` 的目录例外，里面只有隐藏文件
+/// （截「空目录（N 个隐藏文件）」提示用）。
 pub(super) fn entries(dir: &str) -> Vec<DirEntry> {
     let day = 86_400u32;
     let base = 1_730_000_000u32;
+    if dir.trim_end_matches('/').ends_with("/dotfiles") {
+        return vec![
+            entry(dir, ".bashrc", FileKind::File, Some(3_771), base),
+            entry(dir, ".profile", FileKind::File, Some(807), base + day),
+            entry(dir, ".env", FileKind::File, Some(214), base + 2 * day),
+            entry(dir, ".config", FileKind::Dir, None, base + 3 * day),
+        ];
+    }
     vec![
         entry(dir, "releases", FileKind::Dir, None, base),
         entry(dir, "shared", FileKind::Dir, None, base + day),
@@ -121,5 +130,12 @@ mod tests {
         assert!(a.iter().all(|e| e.path.starts_with("/srv/www/")));
         assert!(b.iter().all(|e| e.path.starts_with("/srv/www/releases/")));
         assert!(a.iter().any(|e| e.name == "big.bin"));
+    }
+
+    #[test]
+    fn the_dotfiles_fixture_directory_holds_only_hidden_entries() {
+        let rows = entries("/srv/www/dotfiles");
+        assert!(!rows.is_empty());
+        assert!(rows.iter().all(|e| e.name.starts_with('.')));
     }
 }

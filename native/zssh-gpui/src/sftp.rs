@@ -71,6 +71,7 @@ mod follow;
 mod header;
 mod local_listing;
 mod local_ops;
+mod local_start;
 mod menu;
 mod model;
 mod move_flow;
@@ -294,6 +295,9 @@ enum SftpMsg {
     NavReadingPrefix,
     NavReadingThisComputer,
     NavLocalPrefix,
+    ItemsVisibleJoin,
+    ItemsVisibleEnd,
+    StartCustomMissing,
     NavLocalCountPrefix,
     NavNotADirectoryPrefix,
     NavLocalReadFailedPrefix,
@@ -773,6 +777,9 @@ impl Msg for SftpMsg {
             Self::NavReadingPrefix => "正在读取 ",
             Self::NavReadingThisComputer => "正在读取 此电脑",
             Self::NavLocalPrefix => "本地：",
+            Self::ItemsVisibleJoin => "（共 ",
+            Self::ItemsVisibleEnd => "）",
+            Self::StartCustomMissing => "自定义的本地目录不存在，已改用下载文件夹：",
             Self::NavLocalCountPrefix => "本地 ",
             Self::NavNotADirectoryPrefix => "不是目录：",
             Self::NavLocalReadFailedPrefix => "读取本地目录失败：",
@@ -1273,6 +1280,11 @@ impl Msg for SftpMsg {
             Self::NavReadingPrefix => "Reading ",
             Self::NavReadingThisComputer => "Reading This PC",
             Self::NavLocalPrefix => "Local: ",
+            Self::ItemsVisibleJoin => " of ",
+            Self::ItemsVisibleEnd => "",
+            Self::StartCustomMissing => {
+                "The custom local folder does not exist; using the Downloads folder instead: "
+            }
             Self::NavLocalCountPrefix => "Local ",
             Self::NavNotADirectoryPrefix => "Not a directory: ",
             Self::NavLocalReadFailedPrefix => "Failed to read the local directory: ",
@@ -1951,8 +1963,16 @@ pub struct SftpDemo {
     ime_key: String,
     /// 嵌在主窗口停靠面板里（远端在上、本地在下，标题由面板外壳画）。
     dock: bool,
-    /// 停靠面板里本地栏收起了（0.2.14 `layout.sftp_dock_local_hidden`）。
+    /// 本地栏收起了。新开的视图按设置「显示本地栏」决定，面板上的「本地」按钮只改当前这个视图。
     local_hidden: bool,
+    /// 本地栏和远端栏怎么排（设置「本地栏排列」；设置页改了，主窗口会推过来）。
+    arrange: crate::settings::SftpLocalLayout,
+    /// 画面上量到的整个视图的宽度：「自动」排列据此在左右 / 上下之间切换。
+    view_width: std::rc::Rc<std::cell::Cell<f32>>,
+    /// 设置选了「自定义」目录、且这次真的按它起步时，记着它：落点不是它就在状态栏提示一次。
+    start_custom: Option<String>,
+    /// 设置选的是「上次用过的」：本地栏换了目录就按主机记下来（其他来源不写库）。
+    remember_last: bool,
     /// 引擎的同名文件提问者：界面回答它，或者自动化钩子直接回答。
     resolver: Option<Arc<UiConflictResolver>>,
     /// `ZSSH_SFTP_CONFLICT`：有值就不弹面板（自动化测试用）。
@@ -2062,8 +2082,24 @@ impl SftpDemo {
         // 这里只先放一个暂定的路径，免得首屏回来之前本地栏的路径是空的。落点规则不变：复制标签带来的
         // 目录必须还是个目录才用，否则默认的临时目录，绝不回退到家目录。
         let wanted_local = start_local.filter(|dir| !dir.is_empty());
+        // 起始目录的来源来自设置（下载文件夹 / 这台主机上次用过的 / 自定义）；`ZSSH_SFTP_LOCAL` 和
+        // 复制标签带来的目录优先，这两种情况下不看设置。
+        let panel = crate::settings_store::snapshot(cx);
+        let plan = local_start::StartPlan {
+            choice: panel.sftp_local_dir,
+            custom: panel.sftp_local_dir_custom.clone(),
+            last: (panel.sftp_local_dir == crate::settings::SftpLocalDir::Last)
+                .then(|| nav::last_local_dir(host_id))
+                .flatten(),
+        };
+        let start_custom = (wanted_local.is_none()
+            && env_value("ZSSH_SFTP_LOCAL").is_none()
+            && plan.choice == crate::settings::SftpLocalDir::Custom
+            && !plan.custom.trim().is_empty())
+        .then(|| plan.custom.trim().to_owned());
+        let plan_last = plan.choice == crate::settings::SftpLocalDir::Last;
         local.path = wanted_local.clone().unwrap_or_else(|| {
-            absolute_local(&initial_local_candidate())
+            absolute_local(&initial_local_candidate(&plan))
                 .display()
                 .to_string()
         });
@@ -2119,13 +2155,17 @@ impl SftpDemo {
             close_confirmed: false,
             ime_key,
             dock: false,
-            local_hidden: false,
+            local_hidden: !panel.sftp_show_local,
+            arrange: panel.sftp_local_layout,
+            view_width: std::rc::Rc::new(std::cell::Cell::new(0.0)),
+            start_custom,
+            remember_last: plan_last,
             resolver: None,
             conflict_automation,
             conflicts: VecDeque::new(),
             batch_scope: None,
             listing: ListingGate::default(),
-            local_lister: LocalLister::real(),
+            local_lister: LocalLister::real(plan),
             local_gate: SeqGate::default(),
             probe_gate: SeqGate::default(),
             conflict_name_input,
@@ -2750,7 +2790,6 @@ impl SftpDemo {
         host_id: i64,
         factory: Option<Arc<SshSessionFactory>>,
         dock: bool,
-        local_hidden: bool,
     ) -> Self {
         let n = NEXT_SFTP.fetch_add(1, Ordering::Relaxed);
         let mut this = Self::new(
@@ -2762,8 +2801,21 @@ impl SftpDemo {
             None,
         );
         this.dock = dock;
-        this.local_hidden = local_hidden;
+        // 「跟随终端目录」只有停靠面板里有开关也有轮询；初始状态取设置，之后只由这个视图自己的勾选改。
+        this.follow = dock && crate::settings_store::snapshot(cx).sftp_follow_cwd;
         this
+    }
+
+    /// 设置页改了「本地栏排列」：主窗口把新值推给手里的视图。
+    pub fn set_arrange(
+        &mut self,
+        arrange: crate::settings::SftpLocalLayout,
+        cx: &mut Context<Self>,
+    ) {
+        if self.arrange != arrange {
+            self.arrange = arrange;
+            cx.notify();
+        }
     }
 
     /// 停靠面板 → 标签（或反过来）：同一个实体换个布局，连接和两栏目录原样带过去。

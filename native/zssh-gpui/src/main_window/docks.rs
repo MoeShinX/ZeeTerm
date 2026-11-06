@@ -46,7 +46,7 @@ const AI_HEADER_NARROW_WIDTH: f32 = 360.0;
 /// 本文件（AI / 文件停靠面板、SFTP 标签）的界面文案。SFTP、AI 这类名字两个语言下写法相同；
 /// 主机名、协议名、文件名来自用户或远端，照原样显示。
 #[derive(Clone, Copy, Debug)]
-enum DockMsg {
+pub(super) enum DockMsg {
     AiOnlyInTerminal,
     FileOnlyInTerminal,
     TooNarrow,
@@ -59,13 +59,13 @@ enum DockMsg {
     /// 传给 `ssh_only_notice` 的功能名（后面直接接「仅 SSH 主机可用」）。
     FilePanelFeature,
     ShowLocalBar,
+    HideLocalBar,
     LocalBar,
     OpenInNewTab,
     NonSshPrefix,
     NonSshSuffix,
     NoHostRecord,
     OpeningSftp,
-    SaveSettingFailedPrefix,
     CloseAiPanel,
     CloseFilePanel,
     CloseTab,
@@ -87,13 +87,13 @@ impl Msg for DockMsg {
             Self::FilePanelTitle => "文件",
             Self::FilePanelFeature => "文件面板",
             Self::ShowLocalBar => "显示本地栏",
+            Self::HideLocalBar => "隐藏本地栏",
             Self::LocalBar => "本地",
             Self::OpenInNewTab => "在新标签中打开",
             Self::NonSshPrefix => "这是一台 ",
             Self::NonSshSuffix => " 主机，文件面板仅 SSH 主机可用。",
             Self::NoHostRecord => "这个终端没有主机记录（快速连接）或还没连主机，不能用文件面板。",
             Self::OpeningSftp => "正在打开 SFTP…",
-            Self::SaveSettingFailedPrefix => "保存设置失败：",
             Self::CloseAiPanel => "关闭 AI 面板",
             Self::CloseFilePanel => "关闭文件面板",
             Self::CloseTab => "关闭标签",
@@ -119,6 +119,7 @@ impl Msg for DockMsg {
             Self::FilePanelTitle => "Files",
             Self::FilePanelFeature => "File panel — ",
             Self::ShowLocalBar => "Show Local Pane",
+            Self::HideLocalBar => "Hide Local Pane",
             Self::LocalBar => "Local",
             Self::OpenInNewTab => "Open in New Tab",
             Self::NonSshPrefix => "This is a ",
@@ -127,7 +128,6 @@ impl Msg for DockMsg {
                 "This terminal has no host record (quick connect) or is not connected to a host, so the file panel is unavailable."
             }
             Self::OpeningSftp => "Opening SFTP…",
-            Self::SaveSettingFailedPrefix => "Failed to save settings: ",
             Self::CloseAiPanel => "Close AI Panel",
             Self::CloseFilePanel => "Close File Panel",
             Self::CloseTab => "Close Tab",
@@ -184,8 +184,6 @@ pub struct DockState {
     pub net: VecDeque<(f64, f64)>,
     net_host: Option<i64>,
     net_revision: u64,
-    /// 文件面板里本地栏收起了没有（所有主机的面板共用一个值，存在设置表里）；`None` = 还没从设置读。
-    local_hidden: Option<bool>,
     /// 跟随终端目录：后台那次探测的结果（主机 id，终端目录）送回来的通道、有没有在探测、上次探测的时间。
     follow_rx: Option<std::sync::mpsc::Receiver<(i64, Option<String>)>>,
     follow_in_flight: bool,
@@ -215,7 +213,6 @@ impl Default for DockState {
             net: VecDeque::new(),
             net_host: None,
             net_revision: 0,
-            local_hidden: None,
             follow_rx: None,
             follow_in_flight: false,
             follow_last: None,
@@ -329,6 +326,19 @@ impl MainWindow {
     }
 
     pub(crate) fn toggle_sftp_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let was_open = self
+            .docks
+            .sftp_open_for(self.workspace.read(cx).active_tab_id());
+        self.set_sftp_dock(!was_open, window, cx);
+    }
+
+    /// 开 / 关当前终端标签的文件面板（开着时再要求开 = 不动）。
+    pub(crate) fn set_sftp_dock(
+        &mut self,
+        open: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.docks_available(cx) {
             self.notice(t(DockMsg::FileOnlyInTerminal), window, cx);
             return;
@@ -338,13 +348,16 @@ impl MainWindow {
             return;
         };
         let was_open = self.docks.sftp_open_for(Some(tab));
-        if !was_open && !self.active_caps(cx).sftp {
+        if was_open == open {
+            return;
+        }
+        if open && !self.active_caps(cx).sftp {
             let host = self.workspace.read(cx).active_host_id();
             self.ssh_only_notice(host, t(DockMsg::FilePanelFeature), window, cx);
             return;
         }
-        self.docks.set_sftp_open_for(tab, !was_open);
-        if !was_open {
+        self.docks.set_sftp_open_for(tab, open);
+        if open {
             self.sync_docks(window, cx);
             self.enforce_dock_layout(window, cx);
         }
@@ -359,6 +372,25 @@ impl MainWindow {
 
     fn sftp_width_stored(&self) -> f32 {
         self.docks.sftp_live.unwrap_or(self.store.bars().sftp_width)
+    }
+
+    /// 文件面板想要的宽度：用户拖过（存的宽度不是出厂默认）就用他的；没拖过，显示本地栏时取窗口内容区的
+    /// 一半（够左右排两栏），只显示远端保持窄宽度。双击把手恢复的就是「没拖过」。
+    fn sftp_desired_width(&self, cx: &App) -> f32 {
+        let local_shown = self
+            .workspace
+            .read(cx)
+            .active_host_id()
+            .and_then(|host| self.docks.sftp.get(&host))
+            .map(|view| !view.read(cx).local_hidden())
+            // 视图还没建出来（刚按下快捷键的这一帧）：按设置里的「显示本地栏」估。
+            .unwrap_or_else(|| self.workspace.read(cx).settings().sftp_show_local);
+        panel_width::sftp_desired(
+            self.sftp_width_stored(),
+            local_shown,
+            self.window_width,
+            self.tree_reserved(),
+        )
     }
 
     /// 主机树展开时占的宽度：算终端最少保留宽度时要先扣掉。
@@ -379,7 +411,7 @@ impl MainWindow {
                 .docks
                 .sftp_shown(visible, self.workspace.read(cx).active_tab_id()),
             ai_desired: self.ai_width_stored(),
-            sftp_desired: self.sftp_width_stored(),
+            sftp_desired: self.sftp_desired_width(cx),
             reserved: self.tree_reserved()
                 + if self.panels_on_page() && self.panels.visible().is_some() {
                     self.panel_width_now(self.window_width)
@@ -613,10 +645,19 @@ impl MainWindow {
             && self.caps_of(host_id).sftp
             && !self.docks.sftp.contains_key(&host_id)
         {
-            let hidden = self.store.bars().sftp_local_hidden;
-            let view =
-                cx.new(|cx| SftpDemo::new_embedded(window, cx, host_id, factory, true, hidden));
+            let view = cx.new(|cx| SftpDemo::new_embedded(window, cx, host_id, factory, true));
             self.docks.sftp.insert(host_id, view);
+        }
+        // 设置页改了「本地栏排列」：停靠面板和主视图标签里的视图都跟着换（文件窗口里的视图下次新开时生效）。
+        let arrange = self.workspace.read(cx).settings().sftp_local_layout;
+        for view in self
+            .docks
+            .sftp
+            .values()
+            .cloned()
+            .chain(self.docks.sftp_tabs.iter().map(|tab| tab.view.clone()))
+        {
+            view.update(cx, |view, cx| view.set_arrange(arrange, cx));
         }
         let hosts_in_tabs: HashSet<i64> =
             self.docks.sftp_tabs.iter().map(|tab| tab.host_id).collect();
@@ -636,7 +677,6 @@ impl MainWindow {
                 view.update(cx, |view, _| view.shutdown_embedded());
             }
         }
-        self.sync_local_hidden(window, cx);
         // 切到一个开着文件面板的标签、窗口又窄：和手动打开时一样收起 AI 面板。
         self.enforce_dock_layout(window, cx);
         self.poll_follow(cx);
@@ -782,7 +822,7 @@ impl MainWindow {
                 view.update(cx, |view, cx| view.set_dock_layout(false, cx));
                 view
             }
-            None => cx.new(|cx| SftpDemo::new_embedded(window, cx, host_id, factory, false, false)),
+            None => cx.new(|cx| SftpDemo::new_embedded(window, cx, host_id, factory, false)),
         };
         // 文件窗口开着：新开的 SFTP 放进文件窗口（同 0.2.14）。
         if crate::file_window::is_open(cx) {
@@ -1122,8 +1162,10 @@ impl MainWindow {
             .map(|view| view.read(cx).local_hidden())
             .unwrap_or(false);
         let mut actions: Vec<AnyElement> = Vec::new();
-        if let (Some(view), true) = (view.as_ref(), local_hidden) {
+        // 「本地」是开关：只影响当前这个视图，不改设置里的「显示本地栏」。
+        if let Some(view) = view.as_ref() {
             let view = view.clone();
+            let (hover, text, accent_bg) = (tokens.hover, tokens.text, tokens.subtle);
             actions.push(
                 div()
                     .id("sftp-show-local")
@@ -1135,16 +1177,28 @@ impl MainWindow {
                     .rounded_md()
                     .text_xs()
                     .cursor_pointer()
-                    .text_color(tokens.text_muted)
-                    .hover({
-                        let hover = tokens.hover;
-                        move |style| style.bg(hover)
+                    .text_color(if local_hidden {
+                        tokens.text_muted
+                    } else {
+                        tokens.text
                     })
-                    .tooltip(|window, cx| Tooltip::new(t(DockMsg::ShowLocalBar)).build(window, cx))
+                    .when(!local_hidden, move |d| d.bg(accent_bg))
+                    .hover(move |style| style.bg(hover).text_color(text))
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(if local_hidden {
+                            t(DockMsg::ShowLocalBar)
+                        } else {
+                            t(DockMsg::HideLocalBar)
+                        })
+                        .build(window, cx)
+                    })
                     .child(Icon::new(Ico::Monitor).size_3p5())
                     .child(t(DockMsg::LocalBar))
                     .on_click(move |_, _window, cx| {
-                        view.update(cx, |view, cx| view.set_local_hidden(false, cx));
+                        view.update(cx, |view, cx| {
+                            let hidden = view.local_hidden();
+                            view.set_local_hidden(!hidden, cx);
+                        });
                     })
                     .into_any_element(),
             );
@@ -1208,54 +1262,6 @@ impl MainWindow {
             tokens,
             cx,
         )
-    }
-
-    /// 文件面板里「本地栏收起」：用户在当前主机的视图里点了收起 / 显示就存进设置表（键同 0.2.14），
-    /// 再把同一个值推给别的主机的视图；设置在别处变了（同步、另一个窗口）也跟过来。
-    fn sync_local_hidden(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let stored = self.store.bars().sftp_local_hidden;
-        let current = *self.docks.local_hidden.get_or_insert(stored);
-        let active = self
-            .workspace
-            .read(cx)
-            .active_host_id()
-            .and_then(|id| self.docks.sftp.get(&id).cloned());
-        let mut truth = current;
-        if let Some(view) = &active {
-            let seen = view.read(cx).local_hidden();
-            if seen != current {
-                truth = seen;
-                self.save_local_hidden(seen, window, cx);
-            }
-        }
-        if truth == current && stored != current {
-            // 设置在别处变了。
-            truth = stored;
-        }
-        self.docks.local_hidden = Some(truth);
-        for view in self.docks.sftp.values() {
-            if view.read(cx).local_hidden() != truth {
-                view.update(cx, |view, cx| view.set_local_hidden(truth, cx));
-            }
-        }
-    }
-
-    pub(super) fn save_local_hidden(
-        &mut self,
-        hidden: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let result = self.store.write_bar_setting(|db| {
-            bar_settings::write_bool(db, bar_settings::SFTP_LOCAL_HIDDEN, hidden)
-        });
-        if let Err(err) = result {
-            self.notice(
-                &format!("{}{err}", t(DockMsg::SaveSettingFailedPrefix)),
-                window,
-                cx,
-            );
-        }
     }
 
     /// 面板外壳：左边缘拖宽（双击恢复）、标题栏、内容区。

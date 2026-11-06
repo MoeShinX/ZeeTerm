@@ -7,7 +7,6 @@
 //! | `quick_commands_group` | 命令栏当前分组 | 本机 |
 //! | `layout.quick_bar_height` / `layout.compose_bar_height` | 栏高（撰写栏 0 = 自动） | 本机 |
 //! | `layout.ai_panel_width` / `layout.sftp_panel_width` / `layout.overview_width` / `layout.ai_input_height` | 面板宽度、AI 输入框高度 | 本机 |
-//! | `layout.sftp_dock_local_hidden` | 文件停靠面板里本地栏收起了 | 本机 |
 //!
 //! 读不懂的值回到默认，不崩；写失败把原因交给调用方显示。
 
@@ -25,7 +24,6 @@ pub const COMPOSE_BAR: &str = "compose_bar";
 pub const QUICK_HEIGHT: &str = "layout.quick_bar_height";
 pub const COMPOSE_HEIGHT: &str = "layout.compose_bar_height";
 pub const AI_INPUT_HEIGHT: &str = "layout.ai_input_height";
-pub const SFTP_LOCAL_HIDDEN: &str = "layout.sftp_dock_local_hidden";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BarSettings {
@@ -41,7 +39,6 @@ pub struct BarSettings {
     pub sftp_width: f32,
     /// 服务器概览面板的宽度。
     pub overview_width: f32,
-    pub sftp_local_hidden: bool,
 }
 
 impl Default for BarSettings {
@@ -57,7 +54,6 @@ impl Default for BarSettings {
             ai_width: panel_width::AI_DEFAULT,
             sftp_width: panel_width::SFTP_DEFAULT,
             overview_width: panel_width::OVERVIEW_DEFAULT,
-            sftp_local_hidden: false,
         }
     }
 }
@@ -100,7 +96,6 @@ impl BarSettings {
                 number(PanelKind::Overview.setting_key()),
                 panel_width::OVERVIEW_DEFAULT,
             ),
-            sftp_local_hidden: parse_bool(read(db, SFTP_LOCAL_HIDDEN).as_deref(), false),
         }
     }
 }

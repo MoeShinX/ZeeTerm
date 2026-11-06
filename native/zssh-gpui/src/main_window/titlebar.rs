@@ -421,7 +421,7 @@ impl MainWindow {
                 tokens,
             )
             .on_click(move |_, window, cx| {
-                entity.update(cx, |this, cx| this.toggle_sftp_dock(window, cx));
+                entity.update(cx, |this, cx| this.open_files(window, cx));
             })
         };
         // 侧栏折叠时左下角的入口跟着看不见：在这里补一个设置与管理的齿轮，保证总有入口。

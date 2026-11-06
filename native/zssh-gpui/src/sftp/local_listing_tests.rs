@@ -375,7 +375,7 @@ fn a_real_directory_is_listed_on_a_worker_thread() {
     std::fs::create_dir_all(root.join("sub")).expect("建临时目录");
     std::fs::write(root.join("a.txt"), b"hello").expect("写文件");
 
-    let lister = LocalLister::real();
+    let lister = LocalLister::real(super::local_start::StartPlan::default());
     let gate = SeqGate::default();
     let target = root.display().to_string();
     let (_, replies) = ask(&lister, &gate, dir(&target));

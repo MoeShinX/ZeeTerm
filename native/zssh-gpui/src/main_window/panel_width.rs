@@ -110,6 +110,19 @@ pub fn parse_stored(raw: Option<&str>) -> Option<f32> {
         .map(|value| value as f32)
 }
 
+/// 文件面板想要的宽度。`stored` 是存的宽度（没拖过就是出厂默认 420）：用户拖过就照他的；
+/// 没拖过且显示本地栏时取窗口内容区（扣掉左边主机树）的一半，让两栏有地方左右排；
+/// 只显示远端保持窄宽度。最后的上下限由 [`bounds`] / 布局计算夹。
+pub fn sftp_desired(stored: f32, local_shown: bool, window_width: f32, reserved: f32) -> f32 {
+    if local_shown && (stored - SFTP_DEFAULT).abs() < 0.5 {
+        ((window_width - reserved.max(0.0)) / 2.0)
+            .round()
+            .max(SFTP_DEFAULT)
+    } else {
+        stored
+    }
+}
+
 /// 左边缘的拖动把手：按下时记下指针和宽度，拖动时宽度 = 起始宽度 - 指针移动量（往左拖变宽）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DragStart {
@@ -135,6 +148,22 @@ pub fn dragged_width(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_file_panel_is_half_the_content_area_with_the_local_pane_and_narrow_without() {
+        // 窗口 1600、主机树占 260：内容区 1340，一半 670。
+        assert_eq!(sftp_desired(SFTP_DEFAULT, true, 1600.0, 260.0), 670.0);
+        // 只显示远端：保持现在的窄宽度。
+        assert_eq!(
+            sftp_desired(SFTP_DEFAULT, false, 1600.0, 260.0),
+            SFTP_DEFAULT
+        );
+        // 窗口很小时一半比窄宽度还小：不比窄宽度更窄（上限由布局计算保证终端留 360）。
+        assert_eq!(sftp_desired(SFTP_DEFAULT, true, 700.0, 0.0), SFTP_DEFAULT);
+        // 用户拖过（存的不是默认值）：两种情况都照他的。
+        assert_eq!(sftp_desired(555.0, true, 1600.0, 260.0), 555.0);
+        assert_eq!(sftp_desired(555.0, false, 1600.0, 260.0), 555.0);
+    }
 
     #[test]
     fn aside_is_between_320_and_half_the_window_and_leaves_room_for_the_terminal() {

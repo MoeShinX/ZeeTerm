@@ -194,7 +194,7 @@ impl MainWindow {
             .position(|(_, host)| *host == Some(host_id))
             .and_then(|index| self.workspace.read(cx).tab_origin(index))
             .and_then(|(_, factory)| factory);
-        self.open_sftp_tab(host_id, factory, window, cx);
+        self.open_files_for(host_id, factory, None, window, cx);
     }
 
     /// 终端标签右键「打开 SFTP」：复用这个标签已认证的连接。
@@ -210,7 +210,7 @@ impl MainWindow {
                 self.ssh_only_notice(Some(host_id), t(VaultActMsg::SftpFeature), window, cx);
                 return;
             }
-            self.open_sftp_tab(host_id, factory, window, cx);
+            self.open_files_for(host_id, factory, Some(index), window, cx);
         }
     }
 

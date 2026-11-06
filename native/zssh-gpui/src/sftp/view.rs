@@ -24,7 +24,7 @@ use super::engine::{conflict_compare, state_label};
 use super::menu::Side;
 use super::model::{
     Column, Entry, EntryKind, LinkBase, LinkInfo, adaptive_columns, cell_text, collapse_crumbs,
-    compact_columns, local_crumbs, remote_crumbs,
+    compact_columns, hidden_count, local_crumbs, local_stacked, remote_crumbs,
 };
 use super::{Phase, SftpDemo, SftpMsg, queue};
 use crate::app_theme::Tokens;
@@ -53,6 +53,11 @@ enum SftpViewMsg {
     NoMatches,
     NotConnected,
     EmptyDir,
+    EmptyHiddenPrefix,
+    EmptyHiddenSuffix,
+    ShowLocalPane,
+    HideLocalPane,
+    LocalPaneButton,
     ThisComputer,
     NotUtf8Badge,
     Cancelling,
@@ -109,6 +114,11 @@ impl Msg for SftpViewMsg {
             Self::NoMatches => "没有匹配的条目",
             Self::NotConnected => "还没连上",
             Self::EmptyDir => "空目录",
+            Self::EmptyHiddenPrefix => "空目录（",
+            Self::EmptyHiddenSuffix => " 个隐藏文件）",
+            Self::ShowLocalPane => "显示本地栏",
+            Self::HideLocalPane => "隐藏本地栏",
+            Self::LocalPaneButton => "本地",
             Self::ThisComputer => "此电脑",
             Self::NotUtf8Badge => "非 UTF-8 名字",
             Self::Cancelling => "取消中…",
@@ -169,6 +179,11 @@ impl Msg for SftpViewMsg {
             Self::NoMatches => "No matching entries",
             Self::NotConnected => "Not connected",
             Self::EmptyDir => "Empty directory",
+            Self::EmptyHiddenPrefix => "Empty (",
+            Self::EmptyHiddenSuffix => " hidden)",
+            Self::ShowLocalPane => "Show Local Pane",
+            Self::HideLocalPane => "Hide Local Pane",
+            Self::LocalPaneButton => "Local",
             Self::ThisComputer => "This PC",
             Self::NotUtf8Badge => "Non-UTF-8 name",
             Self::Cancelling => "Cancelling…",
@@ -313,6 +328,49 @@ fn tool_button(
         .disabled(disabled)
 }
 
+impl SftpDemo {
+    /// 页头上的「本地」开关：只管当前这个视图（显示 / 收起本地栏），不改设置里的「显示本地栏」。
+    fn local_toggle(&self, tokens: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        let hidden = self.local_hidden;
+        let (hover, text) = (tokens.hover, tokens.text);
+        div()
+            .id("sftp-toggle-local")
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .px_1p5()
+            .py_1()
+            .rounded_md()
+            .cursor_pointer()
+            .typo(Role::Caption, tokens)
+            .text_color(if hidden {
+                tokens.text_muted
+            } else {
+                tokens.text
+            })
+            .when(!hidden, |d| d.bg(tokens.subtle))
+            .hover(move |style| style.bg(hover).text_color(text))
+            .tooltip(move |window, cx| {
+                Tooltip::new(if hidden {
+                    t(SftpViewMsg::ShowLocalPane)
+                } else {
+                    t(SftpViewMsg::HideLocalPane)
+                })
+                .build(window, cx)
+            })
+            .child(Icon::new(Ico::Monitor).size_3p5())
+            .child(t(SftpViewMsg::LocalPaneButton))
+            .on_click(move |_, _, cx| {
+                entity.update(cx, |this, cx| {
+                    let hidden = this.local_hidden;
+                    this.set_local_hidden(!hidden, cx);
+                });
+            })
+    }
+}
+
 impl Render for SftpDemo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = Tokens::current(cx);
@@ -357,39 +415,35 @@ impl Render for SftpDemo {
                             .bg(super::header::phase_color(self.phase, &tokens)),
                     )
                     .child(super::header::phase_label(self.phase)),
-            );
+            )
+            .child(div().flex_1())
+            .child(self.local_toggle(&tokens, cx));
 
         let remote_pane = self.render_pane(Side::Remote, &tokens, cx);
-        let local_pane = self.render_pane(Side::Local, &tokens, cx);
-        let body = if dock {
-            let mut body = div()
+        let local_pane = (!self.local_hidden).then(|| self.render_pane(Side::Local, &tokens, cx));
+        // 本地栏和远端栏怎么排：设置选「自动」时按这个视图现在的宽度在左右 / 上下之间切换；
+        // 两栏的目录、选区、滚动位置都存在 `Pane` 里，换排法只是换个容器，不会丢。
+        let stacked = local_stacked(self.arrange, self.view_width.get(), dock);
+        let (gap, pad) = if dock { (6.0, 6.0) } else { (8.0, 8.0) };
+        let remote_slot = div().flex().flex_1().min_h_0().min_w_0().child(remote_pane);
+        let body = match local_pane {
+            None => div()
                 .flex()
                 .flex_col()
                 .flex_1()
                 .min_h_0()
-                .gap_1p5()
-                .p_1p5()
-                .child(div().flex().flex_1().min_h_0().min_w_0().child(remote_pane));
-            if !self.local_hidden {
-                body = body.child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .h(px(190.0))
-                        .min_w_0()
-                        .child(local_pane),
-                );
+                .p(px(pad))
+                .child(remote_slot),
+            Some(local_pane) => {
+                let local_slot = div().flex().flex_1().min_h_0().min_w_0().child(local_pane);
+                let body = div().flex().flex_1().min_h_0().gap(px(gap)).p(px(pad));
+                if stacked {
+                    // 上下排：本地在上，远端在下。
+                    body.flex_col().child(local_slot).child(remote_slot)
+                } else {
+                    body.child(local_slot).child(remote_slot)
+                }
             }
-            body
-        } else {
-            div()
-                .flex()
-                .flex_1()
-                .min_h_0()
-                .gap_2()
-                .p_2()
-                .child(div().flex().flex_1().min_w_0().child(local_pane))
-                .child(div().flex().flex_1().min_w_0().child(remote_pane))
         };
 
         // 窗口外壳的确认条：关窗口时还有没完成的传输 / 删除。
@@ -459,11 +513,29 @@ impl Render for SftpDemo {
         });
 
         let overlay = self.render_dialog(&tokens, window, cx);
+        let width_cell = self.view_width.clone();
+        let entity_id = cx.entity_id();
         v_flex()
             .id("sftp-root")
             .size_full()
             .relative()
             .track_focus(&self.focus)
+            // 量整个视图的宽度（「自动」排列据此切换）；只在跨过阈值时才请求重画。
+            .child(
+                canvas(
+                    move |bounds, _, cx| {
+                        let width = f32::from(bounds.size.width);
+                        let before = width_cell.replace(width);
+                        let threshold = super::model::SIDE_BY_SIDE_MIN_WIDTH;
+                        if before <= 0.0 || (before < threshold) != (width < threshold) {
+                            cx.notify(entity_id);
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
             .bg(tokens.background)
             .typo(Role::Body, &tokens)
             .when(!dock, |root| root.child(header))
@@ -661,7 +733,7 @@ impl SftpDemo {
                         )
                     }
                 })
-                .when(dock && !is_remote, |bar| {
+                .when(!is_remote, |bar| {
                     bar.child(
                         tool_button(
                             "sftp-close-local-pane",
@@ -733,16 +805,42 @@ impl SftpDemo {
 
         // 列表（虚拟滚动）：20000 个条目也只画可见的那一段。
         let count = pane.rows.len();
+        // 目录里只有被隐藏的文件：写「空目录（N 个隐藏文件）」并给一个「显示隐藏文件」的链接，别让人以为真空。
+        let mut hidden_in_empty = 0;
         let empty_text = pane.rows.is_empty().then(|| {
             if pane.loading && pane.raw.is_empty() {
-                t(SftpViewMsg::ReadingDir)
+                t(SftpViewMsg::ReadingDir).to_owned()
             } else if !pane.filter.text.trim().is_empty() {
-                t(SftpViewMsg::NoMatches)
+                t(SftpViewMsg::NoMatches).to_owned()
             } else if is_remote && self.phase != Phase::Ready {
-                t(SftpViewMsg::NotConnected)
+                t(SftpViewMsg::NotConnected).to_owned()
             } else {
-                t(SftpViewMsg::EmptyDir)
+                hidden_in_empty = hidden_count(&pane.raw, &pane.filter);
+                if hidden_in_empty > 0 {
+                    format!(
+                        "{}{hidden_in_empty}{}",
+                        t(SftpViewMsg::EmptyHiddenPrefix),
+                        t(SftpViewMsg::EmptyHiddenSuffix)
+                    )
+                } else {
+                    t(SftpViewMsg::EmptyDir).to_owned()
+                }
             }
+        });
+        let show_hidden_link = (hidden_in_empty > 0).then(|| {
+            let link_entity = entity.clone();
+            let accent = tokens.accent;
+            div()
+                .id(SharedString::from(format!(
+                    "sftp-show-hidden-link-{id_suffix}"
+                )))
+                .cursor_pointer()
+                .text_color(accent)
+                .hover(|style| style.underline())
+                .child(t(SftpViewMsg::ShowHidden))
+                .on_click(move |_, _, cx| {
+                    link_entity.update(cx, |this, cx| this.toggle_hidden(side, cx));
+                })
         });
         let list_columns = columns.clone();
         let row_tokens = *tokens;
@@ -789,11 +887,14 @@ impl SftpDemo {
                 blank_entity.update(cx, |this, cx| this.blank_right_down(side, window, cx));
             })
             .child(match empty_text {
-                Some(text) => div()
+                Some(text) => v_flex()
                     .p_4()
+                    .gap_1p5()
+                    .items_start()
                     .typo(Role::Body, tokens)
                     .text_color(tokens.text_muted)
                     .child(text)
+                    .children(show_hidden_link)
                     .into_any_element(),
                 None => rows_el.into_any_element(),
             })
@@ -811,12 +912,7 @@ impl SftpDemo {
             .border_t_1()
             .border_color(tokens.border)
             .typo(Role::Caption, tokens)
-            .child(crate::i18n::count(
-                count as u64,
-                t(SftpMsg::ItemCountSuffix),
-                "item",
-                "items",
-            ))
+            .child(super::nav::items_text(count, pane.raw.len()))
             .when(selected_count > 0, |bar| {
                 bar.child(format!(
                     "{}{}",

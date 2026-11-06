@@ -1,6 +1,7 @@
-//! 设置页的「关于」一节（G12，R1 起是正式版的样子）：版本、检查更新、启动时自动检查、
-//! known_hosts、第三方组件与许可。数据目录从 V2-SETTINGS-1 起放在「常规」页（[`data_dir_rows`]），
-//! 「常规」页的检查更新入口和这里共用同一份实现（[`check_update_now`]、[`update_buttons`]）。
+//! 设置页的「关于」一节（G12，R1 起是正式版的样子）：版本、检查更新、known_hosts、第三方组件与许可。
+//! 数据目录从 V2-SETTINGS-1 起放在「常规」页（[`data_dir_rows`]），「常规 → 更新」组里除了检查更新
+//! 还有「启动时自动检查」开关（[`auto_check_row`]，V2-SFTP-DOCK1 从这里搬过去，关于页不再重复放）；
+//! 检查更新入口和这里共用同一份实现（[`check_update_now`]、[`update_buttons`]）。
 //!
 //! 「检查更新」打开更新窗口（`update`）：读 `latest.json`、下载、校验签名、确认后安装。
 //! 「启动时自动检查」默认开，存在本机设置里（`zssh_core::updater::AUTO_CHECK_KEY`，不参与同步）；
@@ -266,16 +267,6 @@ impl AboutView {
             product::NAME.to_owned(),
             version_text(),
             update_description(signing_configured()).to_owned(),
-            auto_check_description().to_owned(),
-            format!(
-                "{}{}",
-                crate::i18n::t(AboutMsg::AutoCheckValuePrefix),
-                crate::i18n::t(if self.auto_check {
-                    AboutMsg::On
-                } else {
-                    AboutMsg::Off
-                })
-            ),
             known_hosts_text(),
         ]
         .join("\n")
@@ -369,37 +360,45 @@ pub(crate) fn data_dir_rows(tokens: &Tokens) -> Vec<AnyElement> {
     ]
 }
 
+/// 「常规 → 更新」里的「启动时自动检查」一行：开关读写的是同一个 [`AboutView`] 实体
+/// （设置库里的 `AUTO_CHECK_KEY`），关于页不再放这一行。
+pub(crate) fn auto_check_row(
+    about: &::gpui::Entity<AboutView>,
+    tokens: &Tokens,
+    cx: &::gpui::App,
+) -> AnyElement {
+    let view = about.read(cx);
+    let note = match &view.save_error {
+        Some(error) => crate::i18n::paren(auto_check_description(), error),
+        None => auto_check_description().to_owned(),
+    };
+    let toggle = about.clone();
+    crate::settings_view::row_with(
+        crate::i18n::t(AboutMsg::AutoCheckTitle),
+        Some(SharedString::from(note)),
+        Switch::new("general-auto-check")
+            .checked(view.auto_check)
+            .accessibility_label(crate::i18n::t(AboutMsg::AutoCheckTitle))
+            .on_click(move |_, _, cx| {
+                toggle.update(cx, |this, cx| this.toggle_auto_check(cx));
+            }),
+        tokens,
+    )
+}
+
 impl AboutView {
     #[inline(never)]
     fn update_rows(&self, tokens: &Tokens, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let check = cx.entity();
-        let toggle = cx.entity();
         let buttons = update_buttons("about-open-releases", "about-check-update", move |_, cx| {
             check.update(cx, |this, cx| this.check_update(cx));
         });
-        let auto_note = match &self.save_error {
-            Some(error) => crate::i18n::paren(auto_check_description(), error),
-            None => auto_check_description().to_owned(),
-        };
-        vec![
-            setting(
-                crate::i18n::t(AboutMsg::CheckUpdate),
-                update_description(signing_configured()),
-                buttons,
-                tokens,
-            ),
-            setting(
-                crate::i18n::t(AboutMsg::AutoCheckTitle),
-                auto_note,
-                Switch::new("about-auto-check")
-                    .checked(self.auto_check)
-                    .accessibility_label(crate::i18n::t(AboutMsg::AutoCheckTitle))
-                    .on_click(move |_, _, cx| {
-                        toggle.update(cx, |this, cx| this.toggle_auto_check(cx));
-                    }),
-                tokens,
-            ),
-        ]
+        vec![setting(
+            crate::i18n::t(AboutMsg::CheckUpdate),
+            update_description(signing_configured()),
+            buttons,
+            tokens,
+        )]
     }
 
     #[inline(never)]

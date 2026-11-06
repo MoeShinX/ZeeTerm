@@ -832,31 +832,40 @@ pub(super) async fn create_remote_dir(
     Ok(format!("{}{target}", t(super::SftpMsg::MkdirDonePrefix)))
 }
 
-/// 本地栏的初始目录：`ZSSH_SFTP_LOCAL` 指到哪就是哪（**必须已经存在**），
-/// 否则 `%TEMP%\zssh-sftp-dl`（不存在就建）。两种落点都在临时区，不碰用户的家目录 /
-/// 文档 / 桌面——自动化钩子默认就写这里。
-pub(super) fn initial_local_dir() -> PathBuf {
+/// 本地栏的初始目录：`ZSSH_SFTP_LOCAL` 指到哪就是哪（**必须已经存在**），否则按设置选
+/// （下载文件夹 / 这台主机上次用过的 / 自定义，见 `local_start`）。自动化钩子和测试一律设
+/// `ZSSH_SFTP_LOCAL`，不落到用户的下载文件夹；调试构建里设了 `ZSSH_DATA_DIR` 时「下载文件夹」
+/// 也指向临时区（见 `local_start::debug_downloads_override`）。后台线程里调：会读盘。
+pub(super) fn initial_local_dir(plan: &super::local_start::StartPlan) -> PathBuf {
     if let Some(dir) = env_value("ZSSH_SFTP_LOCAL").map(PathBuf::from)
         && dir.is_dir()
     {
         return dir;
     }
-    let dir = default_download_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    dir
+    super::local_start::resolve_real(plan).dir
 }
 
-/// 不碰磁盘的“暂定落点”：`ZSSH_SFTP_LOCAL` 指到哪就是哪（还没验证），否则默认临时目录。
+/// 不碰磁盘的“暂定落点”：`ZSSH_SFTP_LOCAL` 指到哪就是哪（还没验证），否则设置里选的目录（还没验证）。
 /// 视图创建时界面线程先用它显示路径，真正的落点由后台线程用 [`initial_local_dir`] 定。
-pub(super) fn initial_local_candidate() -> PathBuf {
-    env_value("ZSSH_SFTP_LOCAL")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_download_dir)
+pub(super) fn initial_local_candidate(plan: &super::local_start::StartPlan) -> PathBuf {
+    use crate::settings::SftpLocalDir;
+    if let Some(dir) = env_value("ZSSH_SFTP_LOCAL") {
+        return PathBuf::from(dir);
+    }
+    let wanted = match plan.choice {
+        SftpLocalDir::Downloads => None,
+        SftpLocalDir::Last => plan.last.as_deref(),
+        SftpLocalDir::Custom => Some(plan.custom.as_str()),
+    };
+    match wanted.map(str::trim).filter(|dir| !dir.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => default_download_dir(),
+    }
 }
 
-/// 默认本地目录：`%TEMP%\zssh-sftp-dl`，不往用户的文档 / 桌面写东西。
+/// 没有指定目录时的默认落点：系统的「下载」文件夹（取不到退到主目录，再退到临时区）。只算路径，不建目录。
 pub(super) fn default_download_dir() -> PathBuf {
-    std::env::temp_dir().join("zssh-sftp-dl")
+    super::local_start::default_downloads()
 }
 
 /// 本地路径输入：绝对路径原样用，相对路径按本地栏的当前目录拼；空串给 `None`。
