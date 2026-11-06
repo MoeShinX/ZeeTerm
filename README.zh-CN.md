@@ -13,6 +13,7 @@
   <img src="https://img.shields.io/badge/Rust-native-DEA584?style=flat-square" alt="Rust 原生实现" />
   <img src="https://img.shields.io/badge/UI-GPUI-8B5CF6?style=flat-square" alt="GPUI 原生界面" />
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4?style=flat-square" alt="Windows 10 和 11 x64" />
+  <img src="https://img.shields.io/badge/Linux-x86__64-FCC624?style=flat-square" alt="Linux x86_64" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0--or--later-22C55E?style=flat-square" alt="GPL-3.0-or-later 许可证" /></a>
 </p>
 
@@ -53,7 +54,9 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 
 ## 开始使用
 
-**当前支持：Windows 10 / 11，x64。**
+**当前支持：Windows 10 / 11（x64）和 Linux（x86_64）。**
+
+### Windows
 
 1. 从 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载 `ZeeTerm-Setup-<版本>.exe`。
 2. 运行安装程序，按当前用户安装，无需管理员权限。
@@ -61,12 +64,23 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 
 数据默认保存在 `%APPDATA%\ZeeTerm`，也可以通过环境变量 `ZSSH_DATA_DIR` 指定其他目录。
 
+### Linux
+
+系统要求：x86_64，**glibc 2.35 及以上**（Ubuntu 22.04+、Debian 12+ 或同代发行版），Wayland 或 X11，以及 **Vulkan 驱动**（例如 `mesa-vulkan-drivers`，`.deb` 会推荐安装）。
+
+- **Debian / Ubuntu（`.deb`）：** 从 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载 `ZeeTerm-<版本>-linux-x86_64.deb`，执行 `sudo apt install ./ZeeTerm-<版本>-linux-x86_64.deb`；卸载用 `sudo apt remove zeeterm`。
+- **其他发行版（`.tar.gz`）：** 下载 `ZeeTerm-<版本>-linux-x86_64.tar.gz`，解压后在目录里运行 `./install.sh`。默认装到 `~/.local`，不需要 root（`--prefix <目录>` 可改位置）；卸载运行 `~/.local/share/zeeterm/uninstall.sh`。也可以不安装，直接在解压目录里运行 `./zeeterm`。
+
+两种包都会装上应用菜单项和图标（应用标识 `app.zeeterm.ZeeTerm`）。`zeeterm --version` 打印已安装的版本。`zssh-mcp` 必须和 `zeeterm` 放在同一个目录，两种包都已经这样放好。
+
+数据默认保存在 `$XDG_DATA_HOME/ZeeTerm`（通常是 `~/.local/share/ZeeTerm`），目录权限仅限本人；`ZSSH_DATA_DIR` 仍然优先。保存的密码和密钥通过桌面钥匙串（Secret Service：GNOME Keyring、KeePassXC、KWallet 等）保护，建议安装并解锁其中一个。完全没有钥匙串服务时，密钥改存数据目录里的文件，设置页会提示。
+
 **从 Z-SSH 迁移？** 使用应用内的导入流程，先预览数据并创建备份，再应用变更。
 
 ## 🔐 安全与数据管理
 
 - **默认本地存储。** 会话和应用数据保存在本机，由你决定是否配置云同步或 AI 服务。
-- **保存的凭据受保护。** 密码、托管私钥、私钥口令及同步秘密使用 Windows DPAPI 加密，绑定 Windows 用户环境。
+- **保存的凭据受保护。** 密码、托管私钥、私钥口令及同步秘密使用 Windows DPAPI 加密，绑定 Windows 用户环境；Linux 上用一把保存在桌面钥匙串（Secret Service）里的随机资料库密钥加密。
 - **同步包加密。** 使用主密码配合 **Argon2id + XChaCha20-Poly1305**；更换电脑时，通过加密导出或同步迁移凭据。
 - **SSH 主机指纹验证。** 连接未知主机或指纹发生变化时，先核对服务器身份。
 - **更新先验签。** 更新器校验发布签名及签名中的版本号，再运行安装程序。
@@ -81,9 +95,9 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 | 终端状态 | Alacritty 终端引擎 |
 | SSH / SFTP | `russh` · `russh-sftp` |
 | 异步运行时 | Tokio |
-| 本地存储 | SQLite · Windows DPAPI |
+| 本地存储 | SQLite · Windows DPAPI · Linux Secret Service |
 | 加密同步 | Argon2id · XChaCha20-Poly1305 |
-| 安装与更新 | NSIS 安装包 · minisign 更新验签 |
+| 安装与更新 | NSIS 安装包 · Linux `.deb` / `.tar.gz` · minisign 更新验签 |
 
 仓库分为两个 Cargo 工作区：
 
@@ -109,6 +123,24 @@ pwsh -File native/installer/build.ps1
 ```
 
 应用产物位于 `native/target/release/zssh-gpui.exe`，安装包位于 `native/installer/out/`。
+
+**Linux：** 用 `scripts/linux-build-deps.sh` 装系统依赖（清单就在这个脚本里，CI 也用它），再装 [rust-toolchain.toml](rust-toolchain.toml) 指定的 Rust 工具链，然后：
+
+```bash
+git clone https://github.com/MoeShinX/ZeeTerm.git
+cd ZeeTerm
+
+# 编译原生应用
+cargo build --manifest-path native/Cargo.toml --release --locked
+
+# 格式、静态检查、测试（在一次性的 D-Bus 会话 + 临时解锁的钥匙串里跑）及 gate 配置检查
+scripts/gates.sh
+
+# 打 .deb 和 .tar.gz，产物在 dist/<版本>/
+scripts/package-linux.sh
+```
+
+应用产物位于 `native/target/release/zssh-gpui`。发布用的包要在 Ubuntu 22.04 上编，保证 glibc 2.35 基线，详见 [docs/RELEASING.md](docs/RELEASING.md)。
 
 开发约定与独立测试数据要求见 [AGENTS.md](AGENTS.md)，发布及签名流程见 [docs/RELEASING.md](docs/RELEASING.md)。
 
