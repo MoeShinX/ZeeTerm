@@ -22,8 +22,8 @@ use gpui_kit::*;
 
 use super::layout::{self, Action, Screen};
 use super::{
-    DownloadState, InstallState, UpdateDemo, UpdateMsg, command_line, file_summary, notes,
-    quit_after_paint, source_label, window_title,
+    DownloadState, InstallState, UpdateDemo, UpdateMsg, file_summary, notes, quit_after_paint,
+    source_label, window_title,
 };
 use crate::app_theme::Tokens;
 use crate::i18n::t;
@@ -311,7 +311,7 @@ impl UpdateDemo {
         }
     }
 
-    /// 安装相关的提示行：等确认、已启动、没能准备、被拦下、没存成跳过。
+    /// 安装相关的提示行：已启动、没能准备、被拦下、没存成跳过。
     fn notices(&self, tokens: &Tokens) -> Vec<AnyElement> {
         let mut notices = Vec::new();
         let line = |text: String, color| {
@@ -324,13 +324,6 @@ impl UpdateDemo {
         };
         match &self.install {
             InstallState::Idle => {}
-            InstallState::Confirming(plan) => {
-                notices.push(line(
-                    t(UpdateMsg::ConfirmAgainNotice).to_owned(),
-                    tokens.text_muted,
-                ));
-                notices.push(line(command_line(plan), tokens.text_faint));
-            }
             InstallState::Launched => notices.push(line(
                 t(UpdateMsg::InstallerStartedNotice).to_owned(),
                 tokens.text_muted,
@@ -389,7 +382,7 @@ impl UpdateDemo {
         let specs = if launched {
             Vec::new()
         } else {
-            layout::buttons(screen, self.install.awaiting_confirm())
+            layout::buttons(screen)
         };
         let entity = cx.entity();
         let restart = self.restart;

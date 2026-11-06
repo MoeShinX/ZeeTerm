@@ -13,9 +13,9 @@
 //! 启动安装器前（含"退出后安装"）会重新算一次哈希，不一致就拒绝。
 //! 后台任务经 `std::sync::mpsc` 把进度交给界面，100ms tick 取一次。
 //!
-//! 「安装」分两步：第一次只调用 `zssh_update::plan_install` 生成计划并展示，
-//! 点「确认安装」才用 `ShellExecuteW` 启动已校验的安装器；启动成功后界面退出，
-//! 安装器继续运行。
+//! 点一下「立即安装」就调用 `zssh_update::plan_install` 生成计划，并用 `ShellExecuteW`
+//! 启动已校验的安装器；启动成功后界面退出，安装器继续运行。安装前先问
+//! `install_state::blocking_reason`，还有传输 / AI 回合在跑就不启动。
 //!
 //! 「退出后安装」只把计划排进进程级队列，界面不退出；真正的 `ShellExecuteW`
 //! 放在 `App::on_app_quit` 注册的回调里，等程序退出时再启动。
@@ -33,9 +33,7 @@ use std::time::{Duration, Instant};
 use ::gpui::{App, FocusHandle, Subscription, Task, Window, WindowBounds, WindowOptions};
 use gpui_kit::*;
 use tokio::io::AsyncReadExt as _;
-use zssh_update::{
-    InstallPlan, InstallRequest, Package, UpdateError, command_line, plan_install, sha256_hex,
-};
+use zssh_update::{InstallPlan, InstallRequest, Package, UpdateError, plan_install, sha256_hex};
 
 use crate::i18n::{Msg, t};
 use crate::install_state;
@@ -108,7 +106,6 @@ enum UpdateMsg {
     LaterButton,
     DownloadAndInstallButton,
     CancelButton,
-    ConfirmInstallButton,
     InstallNowButton,
     // ---- 正文提示 ----
     UpdateSourceTooltipPrefix,
@@ -118,7 +115,6 @@ enum UpdateMsg {
     LatestMessage,
     DownloadCompleteVerifying,
     SignatureVerifiedLabel,
-    ConfirmAgainNotice,
     InstallerStartedNotice,
     NotesHeading,
     RestartAfterInstallCheckbox,
@@ -208,20 +204,16 @@ impl Msg for UpdateMsg {
             Self::LaterButton => "稍后",
             Self::DownloadAndInstallButton => "下载并安装",
             Self::CancelButton => "取消",
-            Self::ConfirmInstallButton => "确认安装",
             Self::InstallNowButton => "立即安装",
             Self::UpdateSourceTooltipPrefix => "更新来自",
             Self::UpdateSourceTooltipSuffix => {
-                "。安装包下载后会先校验签名，你确认后才会启动安装程序。"
+                "。安装包下载后会先校验签名，点「立即安装」后才会启动安装程序。"
             }
             Self::RecheckTooltip => "重新检查",
             Self::CheckingMessage => "正在向发布页询问最新版本…",
             Self::LatestMessage => "你用的已经是最新版本，无需更新。",
             Self::DownloadCompleteVerifying => "下载完成，正在校验签名…",
             Self::SignatureVerifiedLabel => "签名已验证",
-            Self::ConfirmAgainNotice => {
-                "再点一次「确认安装」：ZeeTerm 会退出，并运行已验证的安装程序。"
-            }
             Self::InstallerStartedNotice => "安装器已启动，程序即将退出",
             Self::NotesHeading => "更新内容",
             Self::RestartAfterInstallCheckbox => "安装后重启 ZeeTerm",
@@ -312,20 +304,16 @@ impl Msg for UpdateMsg {
             Self::LaterButton => "Later",
             Self::DownloadAndInstallButton => "Download and Install",
             Self::CancelButton => "Cancel",
-            Self::ConfirmInstallButton => "Confirm Install",
             Self::InstallNowButton => "Install Now",
             Self::UpdateSourceTooltipPrefix => "Updates come from ",
             Self::UpdateSourceTooltipSuffix => {
-                ". The installer is signature-checked after download, and only starts once you confirm."
+                ". The installer is signature-checked after download, and only starts after you click \"Install Now\"."
             }
             Self::RecheckTooltip => "Check Again",
             Self::CheckingMessage => "Asking the release page for the latest version…",
             Self::LatestMessage => "You're already on the latest version. No update is needed.",
             Self::DownloadCompleteVerifying => "Download complete, verifying signature…",
             Self::SignatureVerifiedLabel => "Signature verified",
-            Self::ConfirmAgainNotice => {
-                "Click \"Confirm Install\" again: ZeeTerm will quit and run the verified installer."
-            }
             Self::InstallerStartedNotice => "The installer has started; the app is about to quit",
             Self::NotesHeading => "What's New",
             Self::RestartAfterInstallCheckbox => "Restart ZeeTerm after installing",
@@ -475,10 +463,7 @@ pub struct UpdateDemo {
     /// 安装后是否重启；只在生成安装计划时使用。
     restart: bool,
     install: InstallState,
-    /// 这个窗口里已经点过一次「安装 / 确认安装」：之后重试（下载失败、启动失败、取消后再来）
-    /// 直接装，不再让用户确认第二遍。
-    install_confirmed: bool,
-    /// 安装前安全检查拦下的原因；下一次点「安装 / 确认安装」时重算。
+    /// 安装前安全检查拦下的原因；下一次点「立即安装」时重算。
     blocked: Option<String>,
     /// 「退出后安装」的成功提示；排队状态本身在进程级队列里，关窗不丢。
     queued: Option<String>,
@@ -517,7 +502,6 @@ impl UpdateDemo {
             ime_key,
             restart: true,
             install: InstallState::Idle,
-            install_confirmed: false,
             blocked: None,
             queued: None,
             generation: 0,
@@ -561,8 +545,6 @@ impl UpdateDemo {
         self.notes_markdown = None;
         self.phase = DownloadState::Idle;
         self.install = InstallState::Idle;
-        // 重新取清单可能拿到另一个版本：之前那次确认不算数。
-        self.install_confirmed = false;
         self.blocked = None;
         self.skip_error = None;
         match crate::ssh_backend::runtime() {
@@ -688,7 +670,7 @@ impl UpdateDemo {
         cx.notify();
     }
 
-    /// 「安装」按钮：第一次点击只生成并展示计划，第二次才启动安装器。
+    /// 「立即安装」按钮：生成计划并直接启动安装器。
     ///
     /// 返回是否已经启动；调用方据此安排退出。
     fn click_install(&mut self, cx: &mut Context<Self>) -> bool {
@@ -698,26 +680,17 @@ impl UpdateDemo {
             }
             _ => return false,
         };
-        // 安装器一启动本程序就要退出：SFTP 传输 / 真实 AI 回合还在跑时先拦住。
-        // 第一次点「安装」和第二次点「确认安装」都走这里，计划已生成也不会启动。
-        if let Some(reason) = install_state::blocking_reason() {
-            self.blocked = Some(reason);
-            cx.notify();
-            return false;
-        }
-        self.blocked = None;
         let cache_root = update_cache_dir();
         let args = current_exe_args();
         let restart = self.restart;
-        let confirmed = confirmed_after_click(&self.install, self.install_confirmed);
-        let (state, launched) = advance_install(
+        let (state, blocked, launched) = run_install(
+            install_state::blocking_reason(),
             std::mem::take(&mut self.install),
-            self.install_confirmed,
             || build_install_plan(&installer, &cache_root, &version, restart, &args, &sha256),
             launch_installer,
         );
         self.install = state;
-        self.install_confirmed = confirmed;
+        self.blocked = blocked;
         if launched {
             // 安装器已经立即启动了，退出回调里不能再启动一次排队的计划。
             clear_pending_install();
@@ -939,61 +912,30 @@ impl DownloadState {
     }
 }
 
-/// 安装的两段确认状态：第一次点击只生成计划，第二次才启动安装器。
+/// 安装状态：点「立即安装」一次就生成计划并启动安装器。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 enum InstallState {
     #[default]
     Idle,
-    /// 计划已生成，等用户点「确认安装」；这一阶段不会启动任何进程。
-    Confirming(InstallPlan),
     /// 安装器已交给系统，界面即将退出。
     Launched,
     Failed(String),
 }
 
-impl InstallState {
-    /// 是否已经点过一次「安装」、正在等确认。
-    fn awaiting_confirm(&self) -> bool {
-        matches!(self, Self::Confirming(_))
-    }
-}
-
-/// 点「安装」/「确认安装」时的纯状态迁移。
+/// 点「立即安装」时的纯状态迁移：生成计划并启动。
 ///
-/// 第一次点击只生成计划并进入 [`InstallState::Confirming`]；再点一次才调用
-/// `launch`。返回 `(新状态, 是否已启动安装器)`，调用方据此决定是否退出。
-/// `confirmed_before` 为真（这个窗口里已经确认过一次）时，重试直接生成计划并启动，
-/// 不再要第二遍确认——下载失败 / 启动失败后重来是同一个决定。
-/// `launch` 由调用方注入，测试里换成假实现，不会真的启动进程。
-/// 这一下点击之后，算不算"用户在这个窗口里确认过安装"。
-///
-/// 只有点的是「确认安装」（当前停在确认步骤）才算；第一下「安装」只是进入确认步骤，
-/// 那时用户还没看到"ZeeTerm 会退出"的提示——包括准备失败后重点的情况。
-fn confirmed_after_click(state: &InstallState, already: bool) -> bool {
-    already || matches!(state, InstallState::Confirming(_))
-}
-
+/// 返回 `(新状态, 是否已启动安装器)`，调用方据此决定是否退出。
+/// 生成计划或启动失败都变成 [`InstallState::Failed`]，按钮仍可再点重试。
+/// `plan` / `launch` 由调用方注入，测试里换成假实现，不会真的启动进程。
 fn advance_install(
     state: InstallState,
-    confirmed_before: bool,
     plan: impl FnOnce() -> Result<InstallPlan, String>,
     launch: impl FnOnce(&InstallPlan) -> Result<(), String>,
 ) -> (InstallState, bool) {
     match state {
         // 已经启动过，界面正在退出，不再响应点击。
         InstallState::Launched => (InstallState::Launched, false),
-        InstallState::Confirming(plan) => match launch(&plan) {
-            Ok(()) => (InstallState::Launched, true),
-            Err(err) => (
-                InstallState::Failed(format!(
-                    "{}{err}",
-                    t(UpdateMsg::LaunchInstallerFailedPrefix)
-                )),
-                false,
-            ),
-        },
-        // 这次窗口里已经确认过：重试直接装。
-        _ if confirmed_before => match plan() {
+        _ => match plan() {
             Ok(plan) => match launch(&plan) {
                 Ok(()) => (InstallState::Launched, true),
                 Err(err) => (
@@ -1009,14 +951,23 @@ fn advance_install(
                 false,
             ),
         },
-        _ => match plan() {
-            Ok(plan) => (InstallState::Confirming(plan), false),
-            Err(err) => (
-                InstallState::Failed(format!("{}{err}", t(UpdateMsg::PrepareInstallFailedPrefix))),
-                false,
-            ),
-        },
     }
+}
+
+/// 在 [`advance_install`] 前加安装前拦截：SFTP 传输 / AI 回合等还在跑时
+/// （`blocking` 为 `Some`）不生成计划、不启动，状态原样还回，原因交给界面显示。
+/// 返回 `(新状态, 拦截原因, 是否已启动)`。
+fn run_install(
+    blocking: Option<String>,
+    state: InstallState,
+    plan: impl FnOnce() -> Result<InstallPlan, String>,
+    launch: impl FnOnce(&InstallPlan) -> Result<(), String>,
+) -> (InstallState, Option<String>, bool) {
+    if blocking.is_some() {
+        return (state, blocking, false);
+    }
+    let (state, launched) = advance_install(state, plan, launch);
+    (state, None, launched)
 }
 
 /// 取消标志；后台任务在每个数据块之间检查。
@@ -2111,8 +2062,8 @@ mod tests {
     // `#[test]` 属性宏，展开时直接撞递归上限。
     use super::{
         DownloadState, InstallState, advance_install, build_install_plan, cache_path,
-        confirmed_after_click, download_file_name, file_summary, progress_text, push_quoted_arg,
-        queue_install, quote_args, take_pending_install,
+        download_file_name, file_summary, progress_text, push_quoted_arg, queue_install,
+        quote_args, run_install, take_pending_install,
     };
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard};
@@ -2323,30 +2274,12 @@ mod tests {
     }
 
     #[test]
-    fn install_needs_a_second_click_before_launching() {
+    fn one_click_builds_the_plan_and_launches() {
         let plan = sample_plan();
         let mut launches = 0;
-
-        // 第一次点击：只生成计划，不调用启动。
         let (state, launched) = advance_install(
             InstallState::Idle,
-            false,
             || Ok(plan.clone()),
-            |_| {
-                launches += 1;
-                Ok(())
-            },
-        );
-        assert!(!launched);
-        assert_eq!(launches, 0);
-        assert!(state.awaiting_confirm());
-        assert_eq!(state, InstallState::Confirming(plan.clone()));
-
-        // 第二次点击：才真正把计划交给启动函数。
-        let (state, launched) = advance_install(
-            state,
-            false,
-            || Err("已经有计划，不该重新规划".to_owned()),
             |launched_plan| {
                 assert_eq!(launched_plan, &plan);
                 launches += 1;
@@ -2359,62 +2292,49 @@ mod tests {
     }
 
     #[test]
-    fn only_clicking_confirm_counts_as_confirming() {
-        // 第一下「安装」（空闲、失败后重点）只是进入确认步骤，不算确认过。
-        assert!(!confirmed_after_click(&InstallState::Idle, false));
-        assert!(!confirmed_after_click(
-            &InstallState::Failed("准备安装失败：x".to_owned()),
-            false
-        ));
-        // 停在确认步骤时点的那一下才算。
-        assert!(confirmed_after_click(
-            &InstallState::Confirming(sample_plan()),
-            false
-        ));
-        // 确认过之后一直算（直到重新检查清单把它清掉）。
-        assert!(confirmed_after_click(&InstallState::Idle, true));
+    fn clicking_again_after_launch_does_not_launch_twice() {
+        let (state, launched) = advance_install(
+            InstallState::Launched,
+            || panic!("已启动后不能再生成计划"),
+            |_| panic!("已启动后不能再启动安装器"),
+        );
+        assert!(!launched);
+        assert_eq!(state, InstallState::Launched);
     }
 
     #[test]
-    fn a_retry_after_confirming_launches_without_asking_again() {
-        // 这个窗口里已经确认过一次（下载失败 / 启动失败后重来）：直接生成计划并启动。
+    fn plan_failure_becomes_failed_and_a_retry_can_launch() {
+        let (state, launched) = advance_install(
+            InstallState::Idle,
+            || Err("安装包不存在".to_owned()),
+            |_| panic!("计划失败时不能启动安装器"),
+        );
+        assert!(!launched);
+        assert_eq!(
+            state,
+            InstallState::Failed("准备安装失败：安装包不存在".to_owned())
+        );
+
+        // 失败后按钮仍可点：重试一次就装。
         let mut launches = 0;
         let (state, launched) = advance_install(
-            InstallState::Failed("启动安装器失败：x".to_owned()),
-            true,
+            state,
             || Ok(sample_plan()),
             |_| {
                 launches += 1;
                 Ok(())
             },
         );
-        assert!(launched, "重试不再停在确认阶段");
+        assert!(launched);
         assert_eq!(launches, 1);
         assert_eq!(state, InstallState::Launched);
     }
 
     #[test]
-    fn plan_failure_keeps_the_error_and_does_not_arm_confirmation() {
+    fn launch_failure_reports_the_code_does_not_exit_and_can_be_retried() {
         let (state, launched) = advance_install(
             InstallState::Idle,
-            false,
-            || Err("安装包不存在".to_owned()),
-            |_| panic!("计划失败时不能启动安装器"),
-        );
-        assert!(!launched);
-        assert!(!state.awaiting_confirm());
-        assert_eq!(
-            state,
-            InstallState::Failed("准备安装失败：安装包不存在".to_owned())
-        );
-    }
-
-    #[test]
-    fn launch_failure_reports_the_code_and_does_not_exit() {
-        let (state, launched) = advance_install(
-            InstallState::Confirming(sample_plan()),
-            false,
-            || Err("已经有计划，不该重新规划".to_owned()),
+            || Ok(sample_plan()),
             |_| Err("ShellExecuteW 返回错误码 5".to_owned()),
         );
         assert!(!launched);
@@ -2422,6 +2342,30 @@ mod tests {
             state,
             InstallState::Failed("启动安装器失败：ShellExecuteW 返回错误码 5".to_owned())
         );
+
+        let (state, launched) = advance_install(state, || Ok(sample_plan()), |_| Ok(()));
+        assert!(launched);
+        assert_eq!(state, InstallState::Launched);
+    }
+
+    #[test]
+    fn a_blocking_reason_stops_the_install_without_planning_or_launching() {
+        let (state, blocked, launched) = run_install(
+            Some("还有 1 个传输在进行".to_owned()),
+            InstallState::Failed("启动安装器失败：x".to_owned()),
+            || panic!("被拦住时不能生成计划"),
+            |_| panic!("被拦住时不能启动安装器"),
+        );
+        assert!(!launched);
+        assert_eq!(blocked.as_deref(), Some("还有 1 个传输在进行"));
+        assert_eq!(state, InstallState::Failed("启动安装器失败：x".to_owned()));
+
+        // 没有拦截时照常启动，并清掉旧的拦截原因。
+        let (state, blocked, launched) =
+            run_install(None, InstallState::Idle, || Ok(sample_plan()), |_| Ok(()));
+        assert!(launched);
+        assert_eq!(blocked, None);
+        assert_eq!(state, InstallState::Launched);
     }
 
     #[test]

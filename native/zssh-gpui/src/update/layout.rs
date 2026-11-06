@@ -158,8 +158,8 @@ pub(super) fn publish_date(raw: &str) -> Option<String> {
     shaped.then(|| head.to_owned())
 }
 
-/// 底部右侧的按钮，从左到右。`confirming`：已经点过一次"立即安装"，在等确认。
-pub(super) fn buttons(screen: Screen, confirming: bool) -> Vec<ButtonSpec> {
+/// 底部右侧的按钮，从左到右。
+pub(super) fn buttons(screen: Screen) -> Vec<ButtonSpec> {
     match screen {
         Screen::Checking => vec![ButtonSpec::plain(Action::Close, t(UpdateMsg::CloseButton))],
         Screen::CheckFailed => vec![
@@ -183,14 +183,7 @@ pub(super) fn buttons(screen: Screen, confirming: bool) -> Vec<ButtonSpec> {
         Screen::Verifying => Vec::new(),
         Screen::Verified => vec![
             ButtonSpec::plain(Action::Later, t(UpdateMsg::LaterButton)),
-            ButtonSpec::primary(
-                Action::Install,
-                if confirming {
-                    t(UpdateMsg::ConfirmInstallButton)
-                } else {
-                    t(UpdateMsg::InstallNowButton)
-                },
-            ),
+            ButtonSpec::primary(Action::Install, t(UpdateMsg::InstallNowButton)),
         ],
         Screen::DownloadFailed => vec![
             ButtonSpec::plain(Action::Close, t(UpdateMsg::CloseButton)),
@@ -302,15 +295,15 @@ mod tests {
         }
     }
 
-    fn actions(screen: Screen, confirming: bool) -> Vec<Action> {
-        buttons(screen, confirming)
+    fn actions(screen: Screen) -> Vec<Action> {
+        buttons(screen)
             .into_iter()
             .map(|button| button.action)
             .collect()
     }
 
-    fn labels(screen: Screen, confirming: bool) -> Vec<&'static str> {
-        buttons(screen, confirming)
+    fn labels(screen: Screen) -> Vec<&'static str> {
+        buttons(screen)
             .into_iter()
             .map(|button| button.label)
             .collect()
@@ -388,14 +381,14 @@ mod tests {
     #[test]
     fn found_offers_skip_later_and_download() {
         assert_eq!(
-            actions(Screen::Found, false),
+            actions(Screen::Found),
             vec![Action::Skip, Action::Later, Action::Download]
         );
         assert_eq!(
-            labels(Screen::Found, false),
+            labels(Screen::Found),
             vec!["跳过此版本", "稍后", "下载并安装"]
         );
-        let found = buttons(Screen::Found, false);
+        let found = buttons(Screen::Found);
         assert!(found[0].text_only, "跳过此版本是文字按钮");
         assert!(found[2].primary, "下载并安装是主按钮");
         assert!(shows_restart_choice(Screen::Found));
@@ -403,34 +396,33 @@ mod tests {
 
     #[test]
     fn downloading_only_offers_cancel() {
-        assert_eq!(labels(Screen::Downloading, false), vec!["取消"]);
+        assert_eq!(labels(Screen::Downloading), vec!["取消"]);
         assert!(!shows_restart_choice(Screen::Downloading));
-        assert_eq!(actions(Screen::Verifying, false), Vec::<Action>::new());
+        assert_eq!(actions(Screen::Verifying), Vec::<Action>::new());
     }
 
     #[test]
-    fn verified_offers_later_and_install_with_a_second_confirmation() {
-        assert_eq!(labels(Screen::Verified, false), vec!["稍后", "立即安装"]);
-        assert_eq!(labels(Screen::Verified, true), vec!["稍后", "确认安装"]);
+    fn verified_offers_later_and_install_in_one_step() {
+        assert_eq!(labels(Screen::Verified), vec!["稍后", "立即安装"]);
         assert_eq!(
-            actions(Screen::Verified, false),
+            actions(Screen::Verified),
             vec![Action::Later, Action::Install]
         );
-        assert!(buttons(Screen::Verified, false)[1].primary);
+        assert!(buttons(Screen::Verified)[1].primary);
         assert!(shows_restart_choice(Screen::Verified));
     }
 
     #[test]
     fn latest_and_failures_close_and_failures_can_retry() {
-        assert_eq!(labels(Screen::Latest, false), vec!["关闭"]);
-        assert_eq!(labels(Screen::CheckFailed, false), vec!["关闭", "重试"]);
+        assert_eq!(labels(Screen::Latest), vec!["关闭"]);
+        assert_eq!(labels(Screen::CheckFailed), vec!["关闭", "重试"]);
         assert_eq!(
-            actions(Screen::CheckFailed, false),
+            actions(Screen::CheckFailed),
             vec![Action::Close, Action::RecheckAgain]
         );
-        assert_eq!(labels(Screen::DownloadFailed, false), vec!["关闭", "重试"]);
+        assert_eq!(labels(Screen::DownloadFailed), vec!["关闭", "重试"]);
         assert_eq!(
-            actions(Screen::DownloadFailed, false),
+            actions(Screen::DownloadFailed),
             vec![Action::Close, Action::RetryDownload]
         );
         for screen in [Screen::Latest, Screen::CheckFailed, Screen::Checking] {
