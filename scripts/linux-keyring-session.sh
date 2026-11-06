@@ -26,6 +26,9 @@ trap 'rm -rf "$session_dir"' EXIT INT TERM
 status=0
 dbus-run-session -- sh -c '
     export XDG_DATA_HOME="$1" XDG_RUNTIME_DIR="$1"
+    # 告诉测试"现在是私有钥匙串"：直接走真实 Secret Service 的集成测试（crates/zssh-core/tests/vault_linux.rs）
+    # 没有这个标志就跳过，不去碰开发者桌面上的正式条目。
+    export ZSSH_TEST_PRIVATE_KEYRING=1
     shift
     printf "%s" zt-test | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1
     "$@"
