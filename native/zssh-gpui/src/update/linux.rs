@@ -400,11 +400,11 @@ mod tests {
         assert_eq!(awaiting.restart_for("2.0.1"), None);
         assert_eq!(awaiting.restart_for("1.9.0"), None);
         // 又装了更新的：只记最近一次。
-        awaiting.remember("v2.0.1", PathBuf::from("/opt/zeeterm"));
+        awaiting.remember("v2.0.1", PathBuf::from("/usr/local/lib/zeeterm/zeeterm"));
         assert_eq!(awaiting.restart_for("2.0.0"), None);
         assert_eq!(
             awaiting.restart_for("2.0.1"),
-            Some(PathBuf::from("/opt/zeeterm"))
+            Some(PathBuf::from("/usr/local/lib/zeeterm/zeeterm"))
         );
     }
 
