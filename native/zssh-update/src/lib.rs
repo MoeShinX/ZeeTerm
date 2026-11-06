@@ -4,7 +4,9 @@
 //! - manifest 的 `version` 只是"公告版本"，本身没有被签名；
 //! - 签名 trusted comment 里的 `version:` 才是包真正对应的版本；
 //! - 两者不一致、缺版本、错公钥、包被改过都必须拒绝；
-//! - 平台 key 保留 `windows-x86_64` 与 `windows-x86_64-nsis`。
+//! - 平台 key 保留 `windows-x86_64` 与 `windows-x86_64-nsis`；
+//! - Linux 的包用 `linux-x86_64-deb` 与 `linux-x86_64-tar` 两个 key 放在同一份清单里。Windows 端的
+//!   [`Manifest::select`] 只认上面两个 Windows key，清单里多出来的平台条目不影响它（有测试钉住）。
 //!
 //! 本 crate 不负责下载、不启动安装器，也不依赖 Tauri/GPUI。
 
@@ -113,6 +115,15 @@ pub fn releases_page_url(endpoint: &str) -> Option<String> {
 
 /// 自动更新优先用安装版包；没有时退回通用 Windows key。
 pub const PLATFORM_KEYS: &[&str] = &["windows-x86_64-nsis", "windows-x86_64"];
+
+/// `latest.json` 里 Linux x86_64 `.deb` 包的平台 key（用系统包管理器装的）。
+pub const PLATFORM_LINUX_DEB: &str = "linux-x86_64-deb";
+
+/// `latest.json` 里 Linux x86_64 `.tar.gz` 包的平台 key（`install.sh` 装的或手动解压的）。
+pub const PLATFORM_LINUX_TAR: &str = "linux-x86_64-tar";
+
+/// 发版时允许写进 `latest.json` 的 Linux 平台 key。
+pub const LINUX_PLATFORM_KEYS: &[&str] = &[PLATFORM_LINUX_DEB, PLATFORM_LINUX_TAR];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Manifest {
@@ -255,12 +266,21 @@ pub struct ReleaseManifest<'a> {
     pub signature: &'a str,
 }
 
+/// 清单里 Windows 以外的一个平台包（见 [`build_latest_json_with_platforms`]）。`key` 只能是 [`LINUX_PLATFORM_KEYS`] 里的一个。
+#[derive(Debug, Clone)]
+pub struct PlatformAsset<'a> {
+    pub key: &'a str,
+    pub url: &'a str,
+    /// 该包 `.minisig` 文件全文的 base64。
+    pub signature: &'a str,
+}
+
 #[derive(serde::Serialize)]
 struct ManifestOut<'a> {
     version: &'a str,
     notes: &'a str,
     pub_date: &'a str,
-    platforms: BTreeMap<&'static str, AssetOut<'a>>,
+    platforms: BTreeMap<&'a str, AssetOut<'a>>,
 }
 
 #[derive(serde::Serialize)]
@@ -272,6 +292,16 @@ struct AssetOut<'a> {
 /// 生成 `latest.json` 文本。版本必须是合法 semver（不带 `v`）、地址必须是 https、签名不能为空；
 /// 生成的文本能被 [`parse_manifest`] 读回来，这是单测钉住的往返。
 pub fn build_latest_json(release: &ReleaseManifest<'_>) -> Result<String, UpdateError> {
+    build_latest_json_with_platforms(release, &[])
+}
+
+/// 和 [`build_latest_json`] 一样，另外把 Windows 以外的平台包（Linux 的 deb / tar.gz）写进 `platforms`。
+/// `extra` 里的 key 必须是 [`LINUX_PLATFORM_KEYS`] 之一且不能重复，地址必须是 https、签名不能为空；
+/// Windows 的那一项原样保留，所以老版本的 Windows 客户端读到这份清单选中的包和以前完全一样。
+pub fn build_latest_json_with_platforms(
+    release: &ReleaseManifest<'_>,
+    extra: &[PlatformAsset<'_>],
+) -> Result<String, UpdateError> {
     if release.version.starts_with('v') || Version::parse(release.version).is_err() {
         return Err(UpdateError::BadVersion(release.version.to_owned()));
     }
@@ -291,6 +321,38 @@ pub fn build_latest_json(release: &ReleaseManifest<'_>) -> Result<String, Update
             url: release.url,
         },
     );
+    for extra in extra {
+        // 只收认识的 Linux key：写错 key 的清单发出去，对应平台永远选不到包，所以在这里就拒绝。
+        if !LINUX_PLATFORM_KEYS.contains(&extra.key) {
+            return Err(UpdateError::Signature(SignatureProblem::Other(format!(
+                "不认识的平台 key：{}",
+                extra.key
+            ))));
+        }
+        if extra.signature.trim().is_empty() {
+            return Err(UpdateError::MissingSignature);
+        }
+        if !extra.url.starts_with("https://") {
+            return Err(UpdateError::Signature(SignatureProblem::HttpsRequired {
+                url: extra.url.to_owned(),
+            }));
+        }
+        let duplicate = platforms
+            .insert(
+                extra.key,
+                AssetOut {
+                    signature: extra.signature.trim(),
+                    url: extra.url,
+                },
+            )
+            .is_some();
+        if duplicate {
+            return Err(UpdateError::Signature(SignatureProblem::Other(format!(
+                "平台 key 重复：{}",
+                extra.key
+            ))));
+        }
+    }
     let out = ManifestOut {
         version: release.version,
         notes: release.notes,
@@ -586,6 +648,211 @@ mod tests {
             ..ok
         };
         assert!(build_latest_json(&release).is_err(), "清单里不放 http 地址");
+    }
+
+    fn linux_release<'a>(deb_signature: &'a str, tar_signature: &'a str) -> [PlatformAsset<'a>; 2] {
+        [
+            PlatformAsset {
+                key: PLATFORM_LINUX_DEB,
+                url: "https://github.com/owner/repo/releases/download/v1.4.0/ZeeTerm-1.4.0-linux-x86_64.deb",
+                signature: deb_signature,
+            },
+            PlatformAsset {
+                key: PLATFORM_LINUX_TAR,
+                url: "https://github.com/owner/repo/releases/download/v1.4.0/ZeeTerm-1.4.0-linux-x86_64.tar.gz",
+                signature: tar_signature,
+            },
+        ]
+    }
+
+    fn windows_release(signature: &str) -> ReleaseManifest<'_> {
+        ReleaseManifest {
+            version: "1.4.0",
+            notes: "notes",
+            pub_date: "2026-11-03T08:00:00Z",
+            url: "https://github.com/owner/repo/releases/download/v1.4.0/ZeeTerm-Setup-1.4.0.exe",
+            signature,
+        }
+    }
+
+    /// 清单里加了 Linux 条目之后，Windows 客户端读到的还是原来的包（老版本客户端也是这套
+    /// `parse_manifest` + `select`，只认 Windows 的两个 key）。
+    #[test]
+    fn linux_entries_leave_the_windows_selection_unchanged() {
+        let (kp, pubkey) = keypair();
+        let installer = b"windows installer";
+        let deb = b"deb bytes";
+        let tar = b"tar bytes";
+        let win_sig = sign(
+            &kp,
+            installer,
+            &trusted_comment("1.4.0", "ZeeTerm-Setup-1.4.0.exe", 1).unwrap(),
+        );
+        let deb_sig = sign(
+            &kp,
+            deb,
+            &trusted_comment("1.4.0", "ZeeTerm-1.4.0-linux-x86_64.deb", 2).unwrap(),
+        );
+        let tar_sig = sign(
+            &kp,
+            tar,
+            &trusted_comment("1.4.0", "ZeeTerm-1.4.0-linux-x86_64.tar.gz", 3).unwrap(),
+        );
+
+        let windows_only = build_latest_json(&windows_release(&win_sig)).expect("只有 Windows");
+        let with_linux = build_latest_json_with_platforms(
+            &windows_release(&win_sig),
+            &linux_release(&deb_sig, &tar_sig),
+        )
+        .expect("带 Linux 条目");
+
+        let before = parse_manifest(&windows_only)
+            .unwrap()
+            .select("1.3.0")
+            .unwrap()
+            .expect("有更新");
+        let manifest = parse_manifest(&with_linux).expect("带 Linux 条目的清单能读");
+        let after = manifest.select("1.3.0").unwrap().expect("有更新");
+        assert_eq!(before, after, "Windows 选中的包必须和没有 Linux 条目时一样");
+        assert_eq!(after.platform_key, RELEASE_PLATFORM_KEY);
+        assert!(after.url.ends_with("ZeeTerm-Setup-1.4.0.exe"));
+        assert!(manifest.select("1.4.0").unwrap().is_none(), "同版本不更新");
+
+        // 清单里确实有两个 Linux 条目，签名各自能验过（文件名和版本都绑在受信注释里）。
+        let deb_asset = manifest
+            .platforms
+            .get(PLATFORM_LINUX_DEB)
+            .expect("deb 条目");
+        let tar_asset = manifest
+            .platforms
+            .get(PLATFORM_LINUX_TAR)
+            .expect("tar 条目");
+        assert!(
+            deb_asset
+                .url
+                .ends_with("/v1.4.0/ZeeTerm-1.4.0-linux-x86_64.deb")
+        );
+        assert!(
+            tar_asset
+                .url
+                .ends_with("/v1.4.0/ZeeTerm-1.4.0-linux-x86_64.tar.gz")
+        );
+        verify_signature(
+            deb,
+            deb_asset.signature.as_deref().unwrap(),
+            &pubkey,
+            "1.4.0",
+            true,
+        )
+        .expect("deb 签名");
+        verify_signature(
+            tar,
+            tar_asset.signature.as_deref().unwrap(),
+            &pubkey,
+            "1.4.0",
+            true,
+        )
+        .expect("tar 签名");
+        // 用 deb 的签名去验 tar 的内容必须失败。
+        assert!(
+            verify_signature(
+                tar,
+                deb_asset.signature.as_deref().unwrap(),
+                &pubkey,
+                "1.4.0",
+                true
+            )
+            .is_err()
+        );
+    }
+
+    /// 手写的、同时带 nsis / 通用 Windows 键和 Linux 键的清单：优先级仍是 nsis。
+    #[test]
+    fn linux_keys_never_win_over_the_windows_keys() {
+        let json = r#"{
+            "version": "2.0.0",
+            "platforms": {
+                "linux-x86_64-deb": { "url": "https://example.com/a.deb", "signature": "c2ln" },
+                "linux-x86_64-tar": { "url": "https://example.com/a.tar.gz", "signature": "c2ln" },
+                "windows-x86_64": { "url": "https://example.com/a.exe", "signature": "c2ln" },
+                "windows-x86_64-nsis": { "url": "https://example.com/a-setup.exe", "signature": "c2ln" }
+            }
+        }"#;
+        let package = parse_manifest(json)
+            .unwrap()
+            .select("1.0.0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(package.platform_key, "windows-x86_64-nsis");
+        assert_eq!(package.url, "https://example.com/a-setup.exe");
+        assert!(
+            PLATFORM_KEYS
+                .iter()
+                .all(|key| !LINUX_PLATFORM_KEYS.contains(key))
+        );
+        assert_eq!(
+            LINUX_PLATFORM_KEYS,
+            &["linux-x86_64-deb", "linux-x86_64-tar"]
+        );
+    }
+
+    /// 只有 Linux 条目的清单（不会由发版流程产生）在 Windows 上就是"没有适用的包"，不会误选 Linux 包。
+    #[test]
+    fn a_linux_only_manifest_gives_windows_no_package() {
+        let json = r#"{
+            "version": "2.0.0",
+            "platforms": {
+                "linux-x86_64-deb": { "url": "https://example.com/a.deb", "signature": "c2ln" }
+            }
+        }"#;
+        let manifest = parse_manifest(json).unwrap();
+        assert!(matches!(
+            manifest.select("1.0.0"),
+            Err(UpdateError::NoPlatform)
+        ));
+        assert!(manifest.select("2.0.0").unwrap().is_none());
+    }
+
+    #[test]
+    fn linux_platform_generation_refuses_bad_input() {
+        let release = windows_release("c2ln");
+        let ok = linux_release("c2ln", "c2ln");
+        assert!(build_latest_json_with_platforms(&release, &ok).is_ok());
+        assert!(build_latest_json_with_platforms(&release, &[]).is_ok());
+
+        // 不认识的 key（含 Windows 的 key：Windows 那一项只能由 `release` 自己给）。
+        for key in [
+            "linux-x86_64",
+            "linux-aarch64-deb",
+            "windows-x86_64",
+            "darwin-x86_64",
+        ] {
+            let bad = [PlatformAsset {
+                key,
+                ..ok[0].clone()
+            }];
+            assert!(
+                build_latest_json_with_platforms(&release, &bad).is_err(),
+                "{key}"
+            );
+        }
+        // 同一个 key 写两次。
+        let twice = [ok[0].clone(), ok[0].clone()];
+        assert!(build_latest_json_with_platforms(&release, &twice).is_err());
+        // 空签名、http 地址。
+        let unsigned = [PlatformAsset {
+            signature: "  ",
+            ..ok[0].clone()
+        }];
+        assert!(matches!(
+            build_latest_json_with_platforms(&release, &unsigned),
+            Err(UpdateError::MissingSignature)
+        ));
+        let insecure = [PlatformAsset {
+            url: "http://example.com/a.deb",
+            ..ok[0].clone()
+        }];
+        assert!(build_latest_json_with_platforms(&release, &insecure).is_err());
     }
 
     #[test]

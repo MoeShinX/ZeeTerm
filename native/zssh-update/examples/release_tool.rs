@@ -10,6 +10,10 @@
 //!   sign     --key <私钥> --file <安装包> --version <x.y.z> --pubkey <base64> --out <签名文件>
 //!   manifest --version <x.y.z> --notes-file <文件> --pub-date <RFC3339> --url <地址>
 //!            --signature-file <签名文件> --out <latest.json>
+//!            [--linux-deb-url <地址> --linux-deb-signature-file <签名文件>]
+//!            [--linux-tar-url <地址> --linux-tar-signature-file <签名文件>]
+//!                                              可选：把 Linux 的 deb / tar.gz 写成 `linux-x86_64-deb` /
+//!                                              `linux-x86_64-tar` 两个平台条目（每组的地址和签名必须一起给）
 //!   verify   --pubkey <base64> --file <安装包> --signature-file <签名文件> --version <x.y.z>
 //! ```
 //!
@@ -25,7 +29,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use minisign::{KeyPair, PublicKey, SecretKey, SecretKeyBox};
-use zssh_update::{ReleaseManifest, build_latest_json, trusted_comment, verify_signature};
+use zssh_update::{
+    PLATFORM_LINUX_DEB, PLATFORM_LINUX_TAR, PlatformAsset, ReleaseManifest,
+    build_latest_json_with_platforms, trusted_comment, verify_signature,
+};
 
 const PASSWORD_ENV: &str = "ZEETERM_UPDATER_KEY_PASSWORD";
 
@@ -212,19 +219,63 @@ fn sign(options: &BTreeMap<String, String>) -> Result<(), String> {
     Ok(())
 }
 
+/// 可选的一组 Linux 平台参数：`--<前缀>-url` 和 `--<前缀>-signature-file` 要么都给、要么都不给。
+fn linux_asset(
+    options: &BTreeMap<String, String>,
+    prefix: &str,
+) -> Result<Option<(String, String)>, String> {
+    let url = options
+        .get(&format!("{prefix}-url"))
+        .filter(|v| !v.is_empty());
+    let sig_path = options
+        .get(&format!("{prefix}-signature-file"))
+        .filter(|v| !v.is_empty());
+    match (url, sig_path) {
+        (None, None) => Ok(None),
+        (Some(url), Some(sig_path)) => {
+            let signature = fs::read_to_string(sig_path)
+                .map_err(|err| format!("读签名文件 {sig_path} 失败：{err}"))?;
+            Ok(Some((url.clone(), signature)))
+        }
+        _ => Err(format!(
+            "--{prefix}-url 和 --{prefix}-signature-file 必须一起给"
+        )),
+    }
+}
+
 fn manifest(options: &BTreeMap<String, String>) -> Result<(), String> {
     let notes = fs::read_to_string(required(options, "notes-file")?)
         .map_err(|err| format!("读更新说明失败：{err}"))?;
     let signature = fs::read_to_string(required(options, "signature-file")?)
         .map_err(|err| format!("读签名文件失败：{err}"))?;
-    let json = build_latest_json(&ReleaseManifest {
-        version: required(options, "version")?,
-        // 记事本等工具存的 UTF-8 文件带 BOM：不剥掉它会混进更新说明的第一个字。
-        notes: notes.trim_start_matches('\u{feff}').trim(),
-        pub_date: required(options, "pub-date")?,
-        url: required(options, "url")?,
-        signature: &signature,
-    })
+    let deb = linux_asset(options, "linux-deb")?;
+    let tar = linux_asset(options, "linux-tar")?;
+    let mut extra = Vec::new();
+    if let Some((url, signature)) = &deb {
+        extra.push(PlatformAsset {
+            key: PLATFORM_LINUX_DEB,
+            url,
+            signature,
+        });
+    }
+    if let Some((url, signature)) = &tar {
+        extra.push(PlatformAsset {
+            key: PLATFORM_LINUX_TAR,
+            url,
+            signature,
+        });
+    }
+    let json = build_latest_json_with_platforms(
+        &ReleaseManifest {
+            version: required(options, "version")?,
+            // 记事本等工具存的 UTF-8 文件带 BOM：不剥掉它会混进更新说明的第一个字。
+            notes: notes.trim_start_matches('\u{feff}').trim(),
+            pub_date: required(options, "pub-date")?,
+            url: required(options, "url")?,
+            signature: &signature,
+        },
+        &extra,
+    )
     .map_err(|err| err.to_string())?;
     let out = required(options, "out")?;
     fs::write(out, json).map_err(|err| format!("写 {out} 失败：{err}"))?;
