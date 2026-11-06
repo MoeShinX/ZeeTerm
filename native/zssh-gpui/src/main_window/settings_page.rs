@@ -113,6 +113,8 @@ enum SettingsMsg {
     SessionLogExitNotePrefix,
     SessionLogChooseDialog,
     SessionLogCreateDirFailed,
+    // 只有 Windows 用资源管理器打开并能报错；Linux 交给桌面的文件管理器，打不开也没有返回值可看。
+    #[cfg(windows)]
     SessionLogOpenExplorerFailed,
     // ---- 连接与网络 · 代理 ----
     ProxyLabelOpen,
@@ -264,6 +266,7 @@ impl Msg for SettingsMsg {
             Self::SessionLogExitNotePrefix => "上次退出时：",
             Self::SessionLogChooseDialog => "选择会话日志目录",
             Self::SessionLogCreateDirFailed => "建不了目录：",
+            #[cfg(windows)]
             Self::SessionLogOpenExplorerFailed => "打不开资源管理器：",
             Self::ProxyLabelOpen => "（",
             Self::ProxyLabelClose => "）",
@@ -463,6 +466,7 @@ impl Msg for SettingsMsg {
             Self::SessionLogExitNotePrefix => "At the last exit: ",
             Self::SessionLogChooseDialog => "Choose Session Log Directory",
             Self::SessionLogCreateDirFailed => "Cannot create the directory: ",
+            #[cfg(windows)]
             Self::SessionLogOpenExplorerFailed => "Cannot open File Explorer: ",
             Self::ProxyLabelOpen => " (",
             Self::ProxyLabelClose => ")",
@@ -1071,7 +1075,8 @@ impl MainWindow {
                 backup
             }
         };
-        let migrate = self.ensure_migrate(window, cx);
+        // 「从 Z-SSH 迁移」只在 Windows 上有意义（旧版 Z-SSH 的数据在那里），别的系统不建、不显示。
+        let migrate = crate::migrate::available().then(|| self.ensure_migrate(window, cx));
         let about = match &self.about_settings {
             Some(about) => about.clone(),
             None => {
@@ -1109,11 +1114,9 @@ impl MainWindow {
                 ],
                 SettingsSection::Sync => {
                     // 同步在前，备份其次，从 Z-SSH 导入旧备份放最后（`BACKUP_ITEM` 按这个顺序数）。
-                    vec![
-                        sync.into_any_element(),
-                        backup.into_any_element(),
-                        migrate.into_any_element(),
-                    ]
+                    let mut blocks = vec![sync.into_any_element(), backup.into_any_element()];
+                    blocks.extend(migrate.map(|migrate| migrate.into_any_element()));
+                    blocks
                 }
                 SettingsSection::Lock => self.lock_blocks(tokens, cx),
                 SettingsSection::Shortcuts => shortcuts_cards(tokens),
@@ -1956,7 +1959,7 @@ impl MainWindow {
         .detach();
     }
 
-    /// 「打开目录」：用资源管理器打开（还没有就先建出来）。
+    /// 「打开目录」：用资源管理器 / 文件管理器打开（还没有就先建出来）。
     fn open_session_log_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let dir = self.prefs.session_log_dir_path();
         if let Err(err) = std::fs::create_dir_all(&dir) {
@@ -1967,6 +1970,7 @@ impl MainWindow {
             );
             return;
         }
+        #[cfg(windows)]
         if let Err(err) = std::process::Command::new("explorer").arg(&dir).spawn() {
             self.notice_error(
                 &format!("{}{err}", t(SettingsMsg::SessionLogOpenExplorerFailed)),
@@ -1974,6 +1978,9 @@ impl MainWindow {
                 cx,
             );
         }
+        // Linux：GPUI 用 xdg-open 交给桌面的文件管理器（带上图形会话的环境变量）。
+        #[cfg(not(windows))]
+        cx.open_with_system(&dir);
     }
 
     // ---- 连接与网络 ----

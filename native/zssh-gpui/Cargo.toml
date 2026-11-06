@@ -7,6 +7,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# 名字排序的后备：汉字借 GBK 编码的顺序得到拼音顺序（main_window/collation.rs）；协议 crate 也在用它。
+encoding_rs = "0.8"
 futures = "0.3"
 gpui-kit = { version = "=0.8.1", features = ["syntect"] }
 gpui = { package = "gpui-pre", version = "=0.3.10" }

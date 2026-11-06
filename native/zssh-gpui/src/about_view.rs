@@ -8,7 +8,7 @@
 //! 它只管后台自动检查（`update_auto`），手动「检查更新」不受影响。
 //! 更新签名公钥还是占位值时（`zssh_update::is_placeholder_pubkey`）这一行改成提示"更新签名未配置"。
 //!
-//! 数据目录、known_hosts 的路径显示前过 `redact_paths`（用户目录换成 `%USERPROFILE%`），
+//! 数据目录、known_hosts 的路径显示前过 `display_path`（用户目录换成 `%USERPROFILE%`，Linux 上是 `~`），
 //! 截图和录屏不会带出用户名。
 
 use ::gpui::{AnyElement, Context, SharedString, Window, px};
@@ -17,6 +17,7 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::*;
 use gpui_kit::*;
 
+#[cfg(windows)]
 use crate::agent_text::redact_paths;
 use crate::app_theme::Tokens;
 use crate::product;
@@ -38,9 +39,30 @@ pub fn version_text() -> String {
     format!("v{}", env!("CARGO_PKG_VERSION"))
 }
 
-/// 路径的显示文字：用户目录换成 `%USERPROFILE%`。
+/// 路径的显示文字：用户目录换成 `%USERPROFILE%`（Linux 上换成 `~`）。
 pub fn display_path(path: &std::path::Path) -> String {
-    redact_paths(&path.display().to_string())
+    #[cfg(windows)]
+    {
+        redact_paths(&path.display().to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        tilde_path(path, std::env::home_dir().as_deref())
+    }
+}
+
+/// 家目录前缀换成 `~`（整段路径分量匹配，`/home/ab` 不会误伤 `/home/abc`）。
+/// 家目录是 `/`（或读不到）时没有东西可脱敏，原样返回。
+#[cfg(not(windows))]
+fn tilde_path(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
+    let Some(home) = home.filter(|home| home.parent().is_some()) else {
+        return path.display().to_string();
+    };
+    match path.strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.display().to_string(),
+    }
 }
 
 /// 数据目录的显示文字（已脱敏）。
@@ -105,7 +127,11 @@ impl crate::i18n::Msg for AboutMsg {
                 " 以 GPL-3.0-or-later 许可发布；使用的第三方组件及其许可见第三方声明。"
             }
             Self::Tagline => {
-                "面向 Windows 的 SSH 客户端：标签与分屏终端、跳板机与代理、AI 运维助手。"
+                if cfg!(windows) {
+                    "面向 Windows 的 SSH 客户端：标签与分屏终端、跳板机与代理、AI 运维助手。"
+                } else {
+                    "面向 Linux 的 SSH 客户端：标签与分屏终端、跳板机与代理、AI 运维助手。"
+                }
             }
             Self::VersionInfo => "版本信息",
         }
@@ -141,7 +167,11 @@ impl crate::i18n::Msg for AboutMsg {
                 " is released under GPL-3.0-or-later; the third-party components it uses and their licenses are listed in the third-party notices."
             }
             Self::Tagline => {
-                "An SSH client for Windows: tabbed and split terminals, jump hosts and proxies, and an AI operations assistant."
+                if cfg!(windows) {
+                    "An SSH client for Windows: tabbed and split terminals, jump hosts and proxies, and an AI operations assistant."
+                } else {
+                    "An SSH client for Linux: tabbed and split terminals, jump hosts and proxies, and an AI operations assistant."
+                }
             }
             Self::VersionInfo => "Version Information",
         }
@@ -485,9 +515,13 @@ impl Render for AboutView {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
+    #[cfg(windows)]
+    use super::display_path;
+    #[cfg(not(windows))]
+    use super::tilde_path;
     use super::{
-        auto_check_description, data_dir_text, display_path, known_hosts_text, releases_url,
-        signing_configured, update_description, version_text,
+        auto_check_description, data_dir_text, known_hosts_text, releases_url, signing_configured,
+        update_description, version_text,
     };
     use crate::product;
 
@@ -531,12 +565,15 @@ mod tests {
         assert!(url.starts_with("https://github.com/") && url.ends_with("/releases"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn paths_are_shown_without_the_user_directory() {
         // 用户目录前缀换成 %USERPROFILE%（有 USERPROFILE 时），不管数据目录在哪。
-        let home = std::env::var("USERPROFILE").unwrap_or_default();
+        let home = std::env::home_dir()
+            .map(|home| home.display().to_string())
+            .unwrap_or_default();
         if home.is_empty() {
-            eprintln!("跳过：读不到 USERPROFILE");
+            eprintln!("跳过：读不到家目录");
             return;
         }
         let dir = std::path::Path::new(&home)
@@ -558,9 +595,11 @@ mod tests {
 
     #[test]
     fn the_data_dir_under_the_user_profile_is_redacted_when_shown() {
-        let home = std::env::var("USERPROFILE").unwrap_or_default();
-        if home.is_empty() {
-            eprintln!("跳过：读不到 USERPROFILE");
+        let home = std::env::home_dir()
+            .map(|home| home.display().to_string())
+            .unwrap_or_default();
+        if home.len() < 3 {
+            eprintln!("跳过：读不到家目录（或家目录太短，没有可脱敏的东西）");
             return;
         }
         // 数据目录不在用户目录下（比如测试用的独立目录）时没有东西可脱敏，同样不应带出用户目录。
@@ -570,5 +609,37 @@ mod tests {
                 "显示文字里不该有用户目录"
             );
         }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn linux_paths_under_the_home_dir_are_shown_with_a_tilde() {
+        use std::path::Path;
+        let home = Some(Path::new("/home/someone"));
+        assert_eq!(
+            tilde_path(Path::new("/home/someone/.local/share/ZeeTerm"), home),
+            "~/.local/share/ZeeTerm"
+        );
+        assert_eq!(tilde_path(Path::new("/home/someone"), home), "~");
+        // 按路径分量比较，名字只是前缀相同的目录不算。
+        assert_eq!(
+            tilde_path(Path::new("/home/someone-else/x"), home),
+            "/home/someone-else/x"
+        );
+        assert_eq!(tilde_path(Path::new("/opt/data"), home), "/opt/data");
+        // 目录名里的中文、空格不影响。
+        assert_eq!(
+            tilde_path(
+                Path::new("/home/张 三/文档"),
+                Some(Path::new("/home/张 三"))
+            ),
+            "~/文档"
+        );
+        // 读不到家目录、或家目录是根目录：没有东西可脱敏，原样。
+        assert_eq!(tilde_path(Path::new("/opt/data"), None), "/opt/data");
+        assert_eq!(
+            tilde_path(Path::new("/opt/data"), Some(Path::new("/"))),
+            "/opt/data"
+        );
     }
 }

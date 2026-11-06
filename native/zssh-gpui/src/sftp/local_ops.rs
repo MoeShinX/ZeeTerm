@@ -277,6 +277,53 @@ mod tests {
         }
     }
 
+    /// Unix 上点开头的就是隐藏文件（没有 Windows 那种「隐藏」属性）；列表据此决定「显示隐藏文件」开关藏哪些。
+    #[cfg(unix)]
+    #[test]
+    fn dot_files_are_hidden_on_unix_and_the_toggle_shows_them() {
+        use super::super::model::{Filter, filter_entries, hidden_count};
+
+        let dir = Scratch::new("hidden");
+        std::fs::write(dir.path().join(".profile"), b"x").expect("写点文件");
+        std::fs::create_dir(dir.path().join(".config")).expect("建点目录");
+        std::fs::write(dir.path().join("visible.txt"), b"x").expect("写普通文件");
+        std::fs::write(dir.path().join("trailing."), b"x").expect("写末尾带点的文件");
+        let rows = list_dir(&dir.path().display().to_string()).expect("列目录");
+        let hidden = |name: &str| {
+            rows.iter()
+                .find(|row| row.name == name)
+                .map(|row| row.hidden)
+        };
+        assert_eq!(hidden(".profile"), Some(true));
+        assert_eq!(hidden(".config"), Some(true));
+        assert_eq!(hidden("visible.txt"), Some(false));
+        assert_eq!(hidden("trailing."), Some(false), "只看开头的点");
+
+        let names = |filter: &Filter| -> Vec<String> {
+            let mut names: Vec<String> = filter_entries(&rows, filter)
+                .into_iter()
+                .map(|row| row.name)
+                .collect();
+            names.sort();
+            names
+        };
+        let off = Filter {
+            show_hidden: false,
+            ..Filter::default()
+        };
+        let on = Filter {
+            show_hidden: true,
+            ..Filter::default()
+        };
+        assert_eq!(names(&off), ["trailing.", "visible.txt"]);
+        assert_eq!(
+            names(&on),
+            [".config", ".profile", "trailing.", "visible.txt"]
+        );
+        assert_eq!(hidden_count(&rows, &off), 2, "提示「有 2 项被隐藏」");
+        assert_eq!(hidden_count(&rows, &on), 0);
+    }
+
     #[test]
     fn listing_reads_files_and_directories_with_sizes_and_times() {
         let dir = Scratch::new("list");

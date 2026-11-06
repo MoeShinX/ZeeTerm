@@ -622,7 +622,11 @@ fn validate_serial(options: &mut SerialOptions) -> Result<(), ZsshError> {
     if device.is_empty() {
         return Err(invalid(Reason::new(
             rk::SERIAL_DEVICE_EMPTY,
-            "请填串口设备名（例如 COM3）",
+            if cfg!(windows) {
+                "请填串口设备名（例如 COM3）"
+            } else {
+                "请填串口设备名（例如 /dev/ttyUSB0）"
+            },
         )));
     }
     if device.chars().count() > MAX_SERIAL_DEVICE_CHARS || device.chars().any(char::is_control) {

@@ -6,6 +6,7 @@
 //!
 //! 不用 Tauri 的 opener 插件：这里直接在 Rust 里调 `ShellExecuteW`，前端没有任何
 //! “打开网址”的权限（capability 不用新增），能打开什么完全由这个白名单决定。
+//! Linux 等非 Windows 系统改交给桌面的 `xdg-open`（见 [`shell_open`]）。
 
 use reqwest::Url;
 
@@ -125,9 +126,41 @@ fn shell_open_on_this_thread(url: &str) -> Result<(), String> {
     }
 }
 
+/// 用系统默认浏览器打开网址（Linux 等：交给桌面的 `xdg-open`）。
+///
+/// 不等 `xdg-open` 退出（有的桌面它会一直挂到浏览器关掉），也不让它继承我们的标准输入输出
+/// （终端里启动时它的输出会糊进日志）；另起一个线程回收子进程，免得留下僵尸进程。
 #[cfg(not(windows))]
-pub(crate) fn shell_open(_url: &str) -> Result<(), String> {
-    Err("只支持在 Windows 上打开系统浏览器".to_owned())
+pub(crate) fn shell_open(url: &str) -> Result<(), String> {
+    spawn_detached(std::ffi::OsStr::new("xdg-open"), &[url])
+}
+
+/// 启动一个不等待、不接管标准输入输出的子进程。
+#[cfg(not(windows))]
+fn spawn_detached(program: &std::ffi::OsStr, args: &[&str]) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // 非 Windows 上这是空操作；留着是为了让「子进程都隐藏控制台窗口」的守卫一视同仁。
+    crate::process_util::hide_console(&mut command);
+    let mut child = command.spawn().map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            // 这个函数返回纯文本错误，和上面 Windows 那几条一样；调用方原样显示。
+            "没有找到 xdg-open，请安装 xdg-utils 后再试".to_owned()
+        } else {
+            format!("没能启动 xdg-open：{err}")
+        }
+    })?;
+    let _ = std::thread::Builder::new()
+        .name("xdg-open-reaper".to_owned())
+        .spawn(move || {
+            let _ = child.wait();
+        });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -188,6 +221,56 @@ mod tests {
         assert!(validate_open_url("https://login.microsoftonline.com/a\r\nb").is_err());
         let long = format!("https://login.microsoftonline.com/{}", "a".repeat(2100));
         assert!(validate_open_url(&long).is_err());
+    }
+
+    /// 起子进程不等它退出：一个睡 5 秒的子进程，`spawn_detached` 要立刻返回。
+    #[cfg(unix)]
+    #[test]
+    fn the_opener_does_not_wait_for_the_child() {
+        let started = std::time::Instant::now();
+        spawn_detached(std::ffi::OsStr::new("sh"), &["-c", "sleep 5"]).expect("sh 能起");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "不应该等子进程：{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// 参数原样交给子进程，而且子进程的标准输入是空的（`cat` 立刻读到 EOF 退出，不会卡住等输入）。
+    #[cfg(unix)]
+    #[test]
+    fn the_child_gets_the_argument_and_an_empty_stdin() {
+        let dir = crate::test_util::TestDir::new("browser-open");
+        let out = dir.join("argument.txt");
+        let script = r#"cat >/dev/null; printf '%s' "$1" > "$2""#;
+        let target = "https://login.microsoftonline.com/x?y=1";
+        spawn_detached(
+            std::ffi::OsStr::new("sh"),
+            &["-c", script, "opener", target, &out.display().to_string()],
+        )
+        .expect("sh 能起");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let written = loop {
+            if let Ok(text) = std::fs::read_to_string(&out) {
+                if !text.is_empty() {
+                    break text;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "子进程没写出文件");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(written, target);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_opener_is_a_readable_error() {
+        let err = spawn_detached(
+            std::ffi::OsStr::new("zssh-no-such-opener-program"),
+            &["https://example.com/"],
+        )
+        .unwrap_err();
+        assert!(err.contains("xdg-open"), "{err}");
     }
 
     #[test]

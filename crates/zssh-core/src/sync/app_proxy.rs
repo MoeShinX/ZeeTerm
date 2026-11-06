@@ -132,19 +132,166 @@ fn manual(scheme: &str, address: &str) -> Option<SystemProxy> {
     })
 }
 
-/// 读当前用户的系统代理（HKCU 的 Internet Settings）。读不到按"没开代理"。
+/// 读当前用户的系统代理。读不到按"没开代理"。
+///
+/// Windows 读 HKCU 的 Internet Settings；其他系统（Linux）读 `https_proxy` 等环境变量，
+/// 规则见 [`parse_env_proxy`]。
 pub fn read_system_proxy() -> SystemProxy {
+    read_system_proxy_with_credentials().proxy
+}
+
+/// 系统代理，外加环境变量代理地址里可能带的账号密码（Windows 的系统代理没有这一项）。
+#[derive(Clone, PartialEq, Eq)]
+pub struct SystemProxyReading {
+    pub proxy: SystemProxy,
+    /// `(用户名, 密码)`，已经做过百分号解码。
+    pub credentials: Option<(String, String)>,
+}
+
+impl std::fmt::Debug for SystemProxyReading {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 不打印密码。
+        f.debug_struct("SystemProxyReading")
+            .field("proxy", &self.proxy)
+            .field("has_credentials", &self.credentials.is_some())
+            .finish()
+    }
+}
+
+fn read_system_proxy_with_credentials() -> SystemProxyReading {
     #[cfg(windows)]
     {
         let enabled = registry::read_dword("ProxyEnable").unwrap_or(0) != 0;
         let server = registry::read_string("ProxyServer");
         let auto_config = registry::read_string("AutoConfigURL");
-        parse_system_proxy(enabled, server.as_deref(), auto_config.as_deref())
+        SystemProxyReading {
+            proxy: parse_system_proxy(enabled, server.as_deref(), auto_config.as_deref()),
+            credentials: None,
+        }
     }
     #[cfg(not(windows))]
     {
-        SystemProxy::None
+        parse_env_proxy(|name| std::env::var(name).ok())
     }
+}
+
+/// 环境变量里的代理设置（Linux 的"系统代理"）。`get` 按名字取环境变量，测试里换成假的。
+///
+/// 软件联网基本都是 https，所以顺序照 curl 的惯例：`https_proxy`、`HTTPS_PROXY`、`all_proxy`、
+/// `ALL_PROXY`，**小写优先于大写**，第一个"设置了"的变量说了算——它是空字符串就表示明确不走代理，
+/// 不会再往后找。`no_proxy` / `NO_PROXY` 只认 `*`（全部直连）；按域名排除要知道目的地，
+/// 而这里只决定"用不用代理"，不知道软件这次要连哪里，所以其余条目不处理。GNOME / KDE 的
+/// 代理设置不读。
+///
+/// 值可以是 `http://主机:端口`、`socks5://…`、`socks5h://…`、不写协议的 `主机:端口`（按 http）、
+/// 带 `用户名:密码@` 的写法，IPv6 地址用方括号；没写端口按 curl 的惯例是 1080。
+/// `socks4`、`https`（到代理本身是 TLS）等没有对应实现的协议按"没有代理"处理并记一条日志。
+pub fn parse_env_proxy(get: impl Fn(&str) -> Option<String>) -> SystemProxyReading {
+    let none = SystemProxyReading {
+        proxy: SystemProxy::None,
+        credentials: None,
+    };
+    let lookup = |names: &[&str]| names.iter().find_map(|name| get(name));
+    if lookup(&["no_proxy", "NO_PROXY"])
+        .is_some_and(|list| list.split(',').any(|entry| entry.trim() == "*"))
+    {
+        return none;
+    }
+    let Some(raw) = lookup(&["https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"]) else {
+        return none;
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return none;
+    }
+    match parse_proxy_url(raw) {
+        Some(found) => found,
+        None => {
+            // 地址里可能有密码，日志里不带内容。
+            tracing::warn!("环境变量里的代理地址读不懂或协议不支持，按直连处理");
+            none
+        }
+    }
+}
+
+/// 默认端口：curl 对没写端口的代理地址用 1080。
+const DEFAULT_ENV_PROXY_PORT: u16 = 1080;
+
+fn parse_proxy_url(raw: &str) -> Option<SystemProxyReading> {
+    let (scheme, rest) = match raw.split_once("://") {
+        Some((scheme, rest)) => (scheme.to_ascii_lowercase(), rest),
+        None => ("http".to_owned(), raw),
+    };
+    let scheme = match scheme.as_str() {
+        "http" => "http",
+        "socks5" | "socks5h" | "socks" => "socks5",
+        _ => return None,
+    };
+    // 只取"主机部分"：去掉路径、查询和锚点。
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let (userinfo, host_port) = match authority.rsplit_once('@') {
+        Some((userinfo, host_port)) => (Some(userinfo), host_port),
+        None => (None, authority),
+    };
+    let (host, port) = split_host_port(host_port)?;
+    if host.is_empty() || port == 0 || host.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return None;
+    }
+    let credentials = match userinfo {
+        None | Some("") => None,
+        Some(info) => {
+            let (user, pass) = info.split_once(':').unwrap_or((info, ""));
+            let (user, pass) = (percent_decode(user)?, percent_decode(pass)?);
+            // `:密码@主机` 这种没有用户名的写法没法认证，当成地址不合法。
+            if user.is_empty() {
+                return None;
+            }
+            Some((user, pass))
+        }
+    };
+    Some(SystemProxyReading {
+        proxy: SystemProxy::Manual {
+            scheme: scheme.to_owned(),
+            host: host.to_owned(),
+            port,
+        },
+        credentials,
+    })
+}
+
+/// `host`、`host:port`、`[v6]`、`[v6]:port` → (主机, 端口)。
+fn split_host_port(text: &str) -> Option<(&str, u16)> {
+    if let Some(rest) = text.strip_prefix('[') {
+        let (host, after) = rest.split_once(']')?;
+        return match after {
+            "" => Some((host, DEFAULT_ENV_PROXY_PORT)),
+            _ => Some((host, after.strip_prefix(':')?.parse().ok()?)),
+        };
+    }
+    match text.rsplit_once(':') {
+        // 不带方括号却有多个冒号的是裸 IPv6，分不出端口，不接受。
+        Some((host, _)) if host.contains(':') => None,
+        Some((host, port)) => Some((host, port.parse().ok()?)),
+        None => Some((text, DEFAULT_ENV_PROXY_PORT)),
+    }
+}
+
+/// `%XX` 解码；解出来不是 UTF-8 或者 `%` 后面不是两位十六进制就返回 `None`。
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = text.get(index + 1..index + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// 软件自身联网要用的代理；`None` 表示直连（不读系统代理和环境变量）。
@@ -168,23 +315,38 @@ pub fn app_proxy(db: &Database) -> Result<Option<SyncProxy>, SyncError> {
                 password: login.password,
             }))
         }
-        AppProxyMode::System => Ok(match read_system_proxy() {
-            SystemProxy::Manual { scheme, host, port } => Some(SyncProxy {
-                kind: if scheme == "socks5" {
-                    ProxyScheme::Socks5
-                } else {
-                    ProxyScheme::Http
-                },
-                host,
-                port,
-                username: None,
-                password: None,
-            }),
-            SystemProxy::AutoConfig { .. } => {
+        AppProxyMode::System => Ok(match read_system_proxy_with_credentials() {
+            SystemProxyReading {
+                proxy: SystemProxy::Manual { scheme, host, port },
+                credentials,
+            } => {
+                let (username, password) = match credentials {
+                    Some((username, password)) => (Some(username), Some(password)),
+                    None => (None, None),
+                };
+                Some(SyncProxy {
+                    kind: if scheme == "socks5" {
+                        ProxyScheme::Socks5
+                    } else {
+                        ProxyScheme::Http
+                    },
+                    host,
+                    port,
+                    username,
+                    password,
+                })
+            }
+            SystemProxyReading {
+                proxy: SystemProxy::AutoConfig { .. },
+                ..
+            } => {
                 tracing::warn!("系统代理用的是自动配置脚本（PAC），暂不支持，按直连处理");
                 None
             }
-            SystemProxy::None => None,
+            SystemProxyReading {
+                proxy: SystemProxy::None,
+                ..
+            } => None,
         }),
     }
 }
@@ -378,6 +540,178 @@ mod tests {
             parse_system_proxy(true, Some("127.0.0.1:7890"), Some("http://wpad/proxy.pac")),
             manual("http", "127.0.0.1", 7890),
             "手动代理和 PAC 都有时用手动的"
+        );
+    }
+
+    /// 用一张假的环境变量表跑 [`parse_env_proxy`]（不碰测试进程自己的环境）。
+    fn env_proxy(vars: &[(&str, &str)]) -> SystemProxyReading {
+        let vars: std::collections::HashMap<String, String> = vars
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        parse_env_proxy(|name| vars.get(name).cloned())
+    }
+
+    fn env_manual(scheme: &str, host: &str, port: u16) -> SystemProxy {
+        manual(scheme, host, port)
+    }
+
+    #[test]
+    fn no_environment_means_no_proxy() {
+        assert_eq!(env_proxy(&[]).proxy, SystemProxy::None);
+        assert_eq!(env_proxy(&[("http_proxy", "h:1")]).proxy, SystemProxy::None);
+        assert_eq!(env_proxy(&[("https_proxy", "  ")]).proxy, SystemProxy::None);
+    }
+
+    #[test]
+    fn the_environment_names_follow_curl_order_with_lowercase_first() {
+        let https = |value: &'static str| ("https_proxy", value);
+        assert_eq!(
+            env_proxy(&[https("http://a:1")]).proxy,
+            env_manual("http", "a", 1)
+        );
+        assert_eq!(
+            env_proxy(&[("HTTPS_PROXY", "http://b:2")]).proxy,
+            env_manual("http", "b", 2)
+        );
+        assert_eq!(
+            env_proxy(&[("HTTPS_PROXY", "http://b:2"), https("http://a:1")]).proxy,
+            env_manual("http", "a", 1),
+            "小写优先"
+        );
+        assert_eq!(
+            env_proxy(&[("all_proxy", "http://c:3"), ("HTTPS_PROXY", "http://b:2")]).proxy,
+            env_manual("http", "b", 2),
+            "协议专属的 https_proxy 优先于 all_proxy"
+        );
+        assert_eq!(
+            env_proxy(&[("ALL_PROXY", "socks5://d:4"), ("all_proxy", "http://c:3")]).proxy,
+            env_manual("http", "c", 3)
+        );
+        assert_eq!(
+            env_proxy(&[("ALL_PROXY", "socks5://d:4")]).proxy,
+            env_manual("socks5", "d", 4)
+        );
+        // 第一个设置了的变量说了算：它是空的就是明确不走代理，不再往后找。
+        assert_eq!(
+            env_proxy(&[("https_proxy", ""), ("all_proxy", "http://c:3")]).proxy,
+            SystemProxy::None
+        );
+    }
+
+    #[test]
+    fn proxy_urls_are_read_in_every_common_form() {
+        let one = |value: &str| env_proxy(&[("https_proxy", value)]);
+        assert_eq!(
+            one("127.0.0.1:7890").proxy,
+            env_manual("http", "127.0.0.1", 7890),
+            "不写协议按 http"
+        );
+        assert_eq!(
+            one("http://127.0.0.1:7890/").proxy,
+            env_manual("http", "127.0.0.1", 7890)
+        );
+        assert_eq!(
+            one("HTTP://Proxy.Example:8080/path?x=1").proxy,
+            env_manual("http", "Proxy.Example", 8080)
+        );
+        assert_eq!(
+            one("socks5h://127.0.0.1:1080").proxy,
+            env_manual("socks5", "127.0.0.1", 1080)
+        );
+        assert_eq!(
+            one("socks5://127.0.0.1:1080").proxy,
+            env_manual("socks5", "127.0.0.1", 1080)
+        );
+        assert_eq!(
+            one("http://[::1]:3128").proxy,
+            env_manual("http", "::1", 3128)
+        );
+        assert_eq!(
+            one("http://proxy.example").proxy,
+            env_manual("http", "proxy.example", 1080),
+            "没写端口按 curl 的惯例是 1080"
+        );
+        assert_eq!(one("http://[::1]").proxy, env_manual("http", "::1", 1080));
+    }
+
+    #[test]
+    fn credentials_in_the_proxy_url_are_decoded_and_kept_out_of_debug_output() {
+        let found = env_proxy(&[(
+            "https_proxy",
+            "http://al%40ice:p%3Ass%25@proxy.example:8080",
+        )]);
+        assert_eq!(found.proxy, env_manual("http", "proxy.example", 8080));
+        assert_eq!(
+            found.credentials,
+            Some(("al@ice".to_owned(), "p:ss%".to_owned()))
+        );
+        let shown = format!("{found:?}");
+        assert!(
+            !shown.contains("p:ss") && !shown.contains("al@ice"),
+            "{shown}"
+        );
+        // 只有用户名没有密码：密码按空串。
+        let found = env_proxy(&[("https_proxy", "http://bob@proxy.example:8080")]);
+        assert_eq!(found.credentials, Some(("bob".to_owned(), String::new())));
+        // 密码里有 `@` 时取最后一个 `@` 作分隔。
+        let found = env_proxy(&[("https_proxy", "http://bob:a@b@proxy.example:8080")]);
+        assert_eq!(found.proxy, env_manual("http", "proxy.example", 8080));
+        assert_eq!(
+            found.credentials,
+            Some(("bob".to_owned(), "a@b".to_owned()))
+        );
+        // 没有认证信息就是 None。
+        assert_eq!(
+            env_proxy(&[("https_proxy", "http://proxy.example:8080")]).credentials,
+            None
+        );
+    }
+
+    #[test]
+    fn unusable_proxy_values_mean_no_proxy_not_a_wrong_proxy() {
+        for bad in [
+            "socks4://127.0.0.1:1080",
+            "https://proxy.example:443",
+            "ftp://proxy.example:21",
+            "http://:8080",
+            "http://proxy.example:0",
+            "http://proxy.example:notaport",
+            "http://proxy.example:99999",
+            "http://::1:8080",
+            "http://[::1",
+            "http://:secret@proxy.example:8080",
+            "http://a%zz@proxy.example:8080",
+            "http://bad host:8080",
+            "://",
+        ] {
+            let found = env_proxy(&[("https_proxy", bad)]);
+            assert_eq!(found.proxy, SystemProxy::None, "{bad}");
+            assert_eq!(found.credentials, None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_star_in_no_proxy_turns_the_proxy_off() {
+        for no_proxy in ["*", " * ", "localhost, *", "example.com,*"] {
+            assert_eq!(
+                env_proxy(&[("https_proxy", "http://a:1"), ("no_proxy", no_proxy)]).proxy,
+                SystemProxy::None,
+                "{no_proxy}"
+            );
+        }
+        assert_eq!(
+            env_proxy(&[("https_proxy", "http://a:1"), ("NO_PROXY", "*")]).proxy,
+            SystemProxy::None
+        );
+        // 其他条目需要知道目的地，这里不处理：代理照常生效。
+        assert_eq!(
+            env_proxy(&[
+                ("https_proxy", "http://a:1"),
+                ("no_proxy", "localhost,.lan")
+            ])
+            .proxy,
+            env_manual("http", "a", 1)
         );
     }
 
