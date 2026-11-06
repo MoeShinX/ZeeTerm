@@ -25,6 +25,8 @@ reqwest = { version = "0.12", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
+# 终端输入法预编辑文字按格子宽度排版（中文占两格）：与终端核心 alacritty_terminal 用的同一个库。
+unicode-width = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "net", "io-util", "fs", "macros"] }
 zssh-app-runtime = { path = "../../crates/zssh-app-runtime" }
 zssh-core = { path = "../../crates/zssh-core" }
@@ -60,6 +62,8 @@ ksni = { version = "0.3", default-features = false, features = ["async-io", "blo
 zbus = "5"
 
 [dev-dependencies]
+# GPUI 的测试平台（TestAppContext、模拟窗口、模拟按键 / 输入法事件）：终端输入法的测试用，只进测试构建。
+gpui = { package = "gpui-pre", version = "=0.3.10", features = ["test-support"] }
 tokio = { version = "1", features = ["test-util"] }
 base64 = "0.22"
 minisign = "0.10"

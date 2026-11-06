@@ -157,6 +157,7 @@ const DEFAULT_SIZE: Size = Size {
 };
 mod dev_tools;
 mod highlight_ops;
+mod ime_ops;
 mod search_ops;
 mod settings_ops;
 
@@ -1393,6 +1394,12 @@ pub struct TerminalWorkspace {
     ime_key: String,
     /// 光标闪烁的相位时钟。
     cursor_blink: BlinkClock,
+    /// 终端有没有注册文字输入处理器（只有 Linux 注册，见 `ime_ops`）：决定带字符的按键处理完要不要拦下事件。
+    ime_input: bool,
+    /// 输入法还没提交的文字（拼音等），只画在光标处，不发给远端。
+    ime_preedit: ime_ops::Preedit,
+    /// 上一帧告诉输入法的光标格子位置：变了才通知平台挪候选框。
+    ime_cell: Option<(f32, f32)>,
     /// 终端内容现在有没有摆在窗口里（主窗口在主机页 / 设置页 / 文件标签时没有）。外壳每个节拍告诉
     /// 它；独立终端窗口恒为真。延迟测量只对看得见的窗格做。
     surface_shown: bool,
@@ -1480,7 +1487,9 @@ impl TerminalWorkspace {
             }
         });
         let ime_blur_key = ime_key.clone();
-        let _ime_blur = cx.on_blur(&focus, window, move |_this, _window, _cx| {
+        let _ime_blur = cx.on_blur(&focus, window, move |this, _window, _cx| {
+            // 焦点走了，输入法没提交的预编辑也随之作废（输入法那边会自己取消）。
+            this.ime_preedit.clear();
             crate::ime::apply(&ime_blur_key, false);
         });
         // 设置页的两个控件：自定义字体的输入框、回滚行数的滑块。状态归工作区，这样设置页每次
@@ -1577,6 +1586,9 @@ impl TerminalWorkspace {
             default_size: DEFAULT_SIZE,
             ime_key,
             cursor_blink: BlinkClock::new(),
+            ime_input: ime_ops::INPUT_HANDLER_ENABLED,
+            ime_preedit: ime_ops::Preedit::default(),
+            ime_cell: None,
             surface_shown: true,
             latency_stamp: 0,
             _ime_focus,
@@ -1822,6 +1834,7 @@ impl TerminalWorkspace {
         self.selecting = false;
         self.drag_anchor = None;
         self.hover_link = None;
+        self.ime_preedit.clear();
         // 标签 / 窗格结构变了，待确认的粘贴作废：不静默，告诉用户要重来。
         if self.pending_paste.take().is_some() {
             self.status_text = paste_cancelled().to_owned();
@@ -2893,8 +2906,24 @@ impl TerminalWorkspace {
 
     // ---- 键盘 ----
 
-    /// 按键编码后直接发给活动窗格的会话（离线演示窗格会本地回显）。
+    /// 按键入口：处理交给 [`Self::handle_key_down`]，之后在注册了文字输入处理器的平台（Linux，见 `ime_ops`）
+    /// 上拦下带字符的按键。窗口层在 `KeyDown` 没被拦下时，还会把 `key_char` 当文字再交给输入处理器插一遍，
+    /// 不拦就会让每个字符发两次。终端没有焦点（别的输入框有焦点）时不拦，让那个输入框自己收。
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self.focus.is_focused(window);
+        self.handle_key_down(event, window, cx);
+        if self.ime_input && focused && event.keystroke.key_char.is_some() {
+            cx.stop_propagation();
+        }
+    }
+
+    /// 按键编码后直接发给活动窗格的会话（离线演示窗格会本地回显）。
+    fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // 按键从子元素冒泡上来：别的输入框有焦点时终端不能抢键。
         if !self.focus.is_focused(window) {
             return;
@@ -3982,6 +4011,14 @@ impl Render for TerminalWorkspace {
                 .into_any_element();
         }
         self.request_highlight_scan();
+        // 光标挪了格子：让平台把输入法候选框挪到新位置（预编辑过程中的位置由输入法事件自己更新）。
+        if self.ime_input && self.focus.is_focused(window) {
+            let cell = self.ime_cursor_origin();
+            if cell != self.ime_cell {
+                self.ime_cell = cell;
+                window.invalidate_character_coordinates();
+            }
+        }
 
         let Some(active) = self.tabs.active() else {
             return v_flex()
@@ -4018,6 +4055,9 @@ impl Render for TerminalWorkspace {
         });
 
         let area_cell = Rc::clone(&self.area);
+        let ime_input = self.ime_input;
+        let ime_focus = self.focus.clone();
+        let ime_entity = entity.clone();
         // 搜索条画在被搜的窗格里（不在当前标签就不画，`tick_search` 随后会把它收起来）。
         let search_pane = self
             .search
@@ -4110,6 +4150,28 @@ impl Render for TerminalWorkspace {
                                 cursor_color,
                                 &ansi,
                             )),
+                    )
+                    // 输入法的预编辑文字画在光标处（只有聚焦窗格、停在最新一屏时）。
+                    .children(
+                        (focused
+                            && self.ime_input
+                            && !self.ime_preedit.is_empty()
+                            && pane.snapshot.display_offset == 0)
+                            .then(|| {
+                                ime_ops::preedit_overlay(
+                                    self.ime_preedit.text(),
+                                    (
+                                        PANE_PAD
+                                            + pane.snapshot.cursor_col as f32 * self.cell_width,
+                                        PANE_PAD
+                                            + pane.snapshot.cursor_row as f32 * self.cell_height,
+                                    ),
+                                    self.cell_height,
+                                    &mono,
+                                    self.settings.font_size,
+                                    (foreground, background),
+                                )
+                            }),
                     )
                     // 断线遮罩（V2-U30）：盖暗整个窗格，正中写明已断开 + 原因 + 怎么重连。点击 / 按 R 的处理
                     // 在窗口级的鼠标 / 键盘入口（`reconnect_overlay_pane`），所以这里只画不接事件：
@@ -4218,7 +4280,18 @@ impl Render for TerminalWorkspace {
                     .child(
                         canvas(
                             move |bounds, _, _| area_cell.set(Some(bounds)),
-                            |_, _, _, _| {},
+                            // 终端聚焦时把它登记成文字输入目标：输入法的提交 / 预编辑才到得了这里。
+                            move |bounds, _, window, cx| {
+                                if ime_input {
+                                    ime_ops::register(
+                                        &ime_focus,
+                                        bounds,
+                                        ime_entity.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            },
                         )
                         .absolute()
                         .size_full(),

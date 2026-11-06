@@ -88,6 +88,16 @@ crates.io:
   Apache-2.0. Unlicense is a public-domain dedication and is compatible with
   distribution under GPL-3.0-or-later.
 
+Test-only dependencies of the terminal input-method tests (native/zssh-gpui
+dev-dependencies; never part of the shipped executable): gpui-pre's
+"test-support" feature (the GPUI test platform, same Apache-2.0 crate as above)
+pulls in proptest 1.12.0, proptest-macro, rusty-fork, rand_xorshift, bit-set,
+bit-vec, unarray, quick-error, wait-timeout, postage, futures-concurrency,
+pollster, atomic, borsh, convert_case and fixedbitset, all from crates.io and
+all MIT or Apache-2.0 (or both). unicode-width 0.2 (MIT or Apache-2.0, already
+in the tree through the terminal core) is now also a direct dependency of
+zssh-gpui, used to lay out the input method's pre-edit text in terminal cells.
+
 SQLite (database engine, compiled into executable)
   https://sqlite.org/
   The bundled SQLite amalgamation (enabled by libsqlite3-sys's "bundled"
