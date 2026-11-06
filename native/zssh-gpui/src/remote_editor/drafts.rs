@@ -91,16 +91,78 @@ pub(super) trait DraftCipher {
     fn open(&self, sealed: &[u8]) -> Result<Vec<u8>, String>;
 }
 
-/// Windows DPAPI，绑定当前登录用户（和主机密码、私钥口令用同一套）。
-pub(super) struct Dpapi;
+/// Windows DPAPI / macOS 资料库密钥，绑定当前资料库账户。
+///
+/// 草稿和数据库里的密码、私钥一样属于这个资料库；不带账户就会落到共享的
+/// `database-key`，不同资料库之间没有隔离。
+pub(super) struct DbDraftCipher {
+    account: String,
+}
 
-impl DraftCipher for Dpapi {
+impl DbDraftCipher {
+    pub(super) fn new(account: impl Into<String>) -> Self {
+        Self {
+            account: account.into(),
+        }
+    }
+}
+
+fn seal_as(account: &str, plain: &[u8]) -> Result<Vec<u8>, String> {
+    #[cfg(target_os = "macos")]
+    let _scope = zssh_core::store::secrets::VaultScope::new(account);
+    #[cfg(not(target_os = "macos"))]
+    let _ = account;
+    secrets::protect(plain).map_err(|err| crate::error_text::error_text(&err))
+}
+
+fn open_as(account: &str, sealed: &[u8]) -> Result<Vec<u8>, String> {
+    #[cfg(target_os = "macos")]
+    let _scope = zssh_core::store::secrets::VaultScope::new(account);
+    #[cfg(not(target_os = "macos"))]
+    let _ = account;
+    secrets::unprotect(sealed).map_err(|err| crate::error_text::error_text(&err))
+}
+
+impl DraftCipher for DbDraftCipher {
     fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, String> {
-        secrets::protect(plain).map_err(|err| crate::error_text::error_text(&err))
+        seal_as(&self.account, plain)
     }
 
     fn open(&self, sealed: &[u8]) -> Result<Vec<u8>, String> {
-        secrets::unprotect(sealed).map_err(|err| crate::error_text::error_text(&err))
+        open_as(&self.account, sealed)
+    }
+}
+
+/// 测试用的无绑定实现；生产代码不允许使用（避免草稿落回共享默认账户）。
+#[cfg(test)]
+pub(super) struct Dpapi;
+
+#[cfg(test)]
+impl DraftCipher for Dpapi {
+    // 草稿的写盘逻辑不依赖系统钥匙串；测试用固定可逆变换，避免默认 `cargo test`
+    // 在没有内存后端环境变量时去访问真实 Keychain。
+    fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, String> {
+        let mut out = vec![b'D', 0x5a];
+        out.extend(plain.iter().map(|byte| byte ^ 0x5a));
+        let checksum = out.iter().fold(0u8, |acc, byte| acc.wrapping_add(*byte));
+        out.insert(2, checksum);
+        Ok(out)
+    }
+
+    fn open(&self, sealed: &[u8]) -> Result<Vec<u8>, String> {
+        if sealed.len() < 3 || sealed[0] != b'D' || sealed[1] != 0x5a {
+            return Err("不是测试草稿密文".to_owned());
+        }
+        let checksum = sealed[2];
+        let body = &sealed[3..];
+        let expected = [b'D', 0x5a]
+            .into_iter()
+            .chain(body.iter().copied())
+            .fold(0u8, |acc, byte| acc.wrapping_add(byte));
+        if checksum != expected {
+            return Err("测试草稿密文校验失败".to_owned());
+        }
+        Ok(body.iter().map(|byte| byte ^ 0x5a).collect())
     }
 }
 
@@ -235,6 +297,7 @@ pub(super) fn draft_notice(
 
 /// 写草稿：序列化后整份加密，再同目录临时文件 + `sync_all` + 改名，崩溃时不会留下半截文件。
 /// 加密失败就不写（不退回明文）：宁可这一轮没有草稿，也不把正文落到磁盘上。
+#[cfg(test)]
 pub(super) fn write_draft(path: &Path, draft: &EditDraft) -> std::io::Result<()> {
     write_draft_with(&Dpapi, path, draft)
 }
@@ -355,6 +418,7 @@ fn migrate_to_sealed(cipher: &dyn DraftCipher, path: &Path, original: &[u8], dra
 /// 读这台主机、这个路径的草稿：主机 id 和路径都要对上，对不上的当没有（也不删别人的）。
 /// 解不开返回 [`DraftLocked`]，调用方要告诉用户并把那个文件挪开（见 [`set_aside_locked`]），
 /// 否则下一次自动保存会把它盖掉。
+#[cfg(test)]
 pub(super) fn read_draft(
     path: &Path,
     host_id: i64,
@@ -383,12 +447,21 @@ pub(super) fn read_draft_with(
 }
 
 /// 找同路径的旧格式草稿（没有主机 id）。不删：认不出主人，不自动恢复；明文的会改写成加密格式（内容不变）。
+#[cfg(test)]
 pub(super) fn read_legacy_draft(path: &Path, remote_path: &str) -> Option<EditDraft> {
+    read_legacy_draft_with(&Dpapi, path, remote_path)
+}
+
+pub(super) fn read_legacy_draft_with(
+    cipher: &dyn DraftCipher,
+    path: &Path,
+    remote_path: &str,
+) -> Option<EditDraft> {
     let opts = LoadOpts {
         delete_broken: false,
         migrate: true,
     };
-    match load_draft_file(&Dpapi, path, opts) {
+    match load_draft_file(cipher, path, opts) {
         Loaded::Draft(draft) => {
             (draft.host_id.is_none() && draft.path == remote_path).then_some(draft)
         }
@@ -506,11 +579,16 @@ pub(super) struct DraftWriter {
 }
 
 impl DraftWriter {
-    pub(super) fn spawn() -> Self {
+    /// `account` 是本资料库的钥匙串身份；拿不到时禁用草稿，绝不落回共享默认账户。
+    pub(super) fn spawn(account: Option<String>) -> Self {
+        let Some(account) = account else {
+            tracing::warn!("没有资料库身份，这次编辑不会保存草稿");
+            return Self { sender: None };
+        };
         let (sender, jobs) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("zssh-draft-writer".to_owned())
-            .spawn(move || run_draft_writer(jobs));
+            .spawn(move || run_draft_writer(jobs, DbDraftCipher::new(account)));
         match spawned {
             Ok(_) => Self {
                 sender: Some(sender),
@@ -520,6 +598,20 @@ impl DraftWriter {
                 tracing::warn!(%err, "启动草稿写线程失败，这次编辑不会保存草稿");
                 Self { sender: None }
             }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn spawn_for_test() -> Self {
+        let (sender, jobs) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("zssh-draft-writer-test".to_owned())
+            .spawn(move || run_draft_writer_for_test(jobs));
+        match spawned {
+            Ok(_) => Self {
+                sender: Some(sender),
+            },
+            Err(_) => Self { sender: None },
         }
     }
 
@@ -578,7 +670,7 @@ pub(super) fn queue_draft_job(
 /// 写线程主循环：每次醒来把通道里已经排队的任务全取走、按路径合并，再统一落盘。
 ///
 /// 发送端全丢掉之后再 `recv` 会返回 `Err`，这时队列已经处理完，线程自己退出。
-pub(super) fn run_draft_writer(jobs: Receiver<DraftJob>) {
+fn run_draft_writer_with(jobs: Receiver<DraftJob>, cipher: &dyn DraftCipher) {
     while let Ok(first) = jobs.recv() {
         let mut pending = HashMap::new();
         let mut flushes = Vec::new();
@@ -589,13 +681,15 @@ pub(super) fn run_draft_writer(jobs: Receiver<DraftJob>) {
         for (path, job) in pending {
             match job {
                 DraftJob::Save(_, draft) => {
-                    if let Err(err) = write_draft(&path, &draft) {
+                    if let Err(err) = write_draft_with(cipher, &path, &draft) {
                         tracing::warn!(%err, path = %path.display(), "写编辑器草稿失败");
                     }
                 }
                 // 用任务里带的路径删，和入队时界面算的是同一个文件。
                 DraftJob::Delete(path) => remove_draft(&path),
-                DraftJob::DeleteUpTo(path, revision) => remove_draft_up_to(&path, revision),
+                DraftJob::DeleteUpTo(path, revision) => {
+                    remove_draft_up_to_with(cipher, &path, revision)
+                }
                 DraftJob::Flush(_) => {}
             }
         }
@@ -605,13 +699,27 @@ pub(super) fn run_draft_writer(jobs: Receiver<DraftJob>) {
     }
 }
 
+pub(super) fn run_draft_writer(jobs: Receiver<DraftJob>, cipher: DbDraftCipher) {
+    run_draft_writer_with(jobs, &cipher);
+}
+
+#[cfg(test)]
+fn run_draft_writer_for_test(jobs: Receiver<DraftJob>) {
+    run_draft_writer_with(jobs, &Dpapi);
+}
+
 /// 磁盘上的草稿修订号不晚于 `revision` 才删；读不出来（文件坏了 / 不在）按「没有可保护的新草稿」处理。
+#[cfg(test)]
 pub(super) fn remove_draft_up_to(path: &Path, revision: u64) {
+    remove_draft_up_to_with(&Dpapi, path, revision)
+}
+
+pub(super) fn remove_draft_up_to_with(cipher: &dyn DraftCipher, path: &Path, revision: u64) {
     let opts = LoadOpts {
         delete_broken: false,
         migrate: false,
     };
-    match load_draft_file(&Dpapi, path, opts) {
+    match load_draft_file(cipher, path, opts) {
         Loaded::Draft(draft) if draft.revision > revision => {}
         // 解不开的不知道修订号，也不是我们刚保存的那一份：不删。
         Loaded::Locked(_) => {}
@@ -675,8 +783,13 @@ pub(super) struct DraftScan {
 /// 坏的、太大的、读不了的文件一概跳过（不删——这里是「列一列」，删不删是各自的事）；
 /// 旧版本的明文草稿读出来之后顺手改写成加密格式；解不开的另外报出来（文件不动）。
 /// 临时文件（`*.tmp`）是写到一半的残留，不算草稿。文本为空的草稿也列（用户可能确实清空了文件）。
+#[cfg(test)]
 pub(super) fn list_drafts(base: &Path) -> Vec<FoundDraft> {
-    let scan = scan_drafts_with(&Dpapi, base);
+    list_drafts_with(&Dpapi, base)
+}
+
+pub(super) fn list_drafts_with(cipher: &dyn DraftCipher, base: &Path) -> Vec<FoundDraft> {
+    let scan = scan_drafts_with(cipher, base);
     if !scan.locked.is_empty() {
         tracing::warn!(
             count = scan.locked.len(),
@@ -987,7 +1100,7 @@ mod tests {
     fn draft_writer_delete_after_save_leaves_no_file() {
         let base = temp_dir("writer-delete");
         let path = draft_file_in(&base, HOST, "/srv/app/main.rs");
-        let writer = DraftWriter::spawn();
+        let writer = DraftWriter::spawn_for_test();
 
         writer.send(DraftJob::Save(path.clone(), sample_draft("未保存的内容")));
         writer.send(DraftJob::Delete(path.clone()));
@@ -1004,7 +1117,7 @@ mod tests {
     fn draft_writer_keeps_only_the_latest_save() {
         let base = temp_dir("writer-latest");
         let path = draft_file_in(&base, HOST, "/srv/app/main.rs");
-        let writer = DraftWriter::spawn();
+        let writer = DraftWriter::spawn_for_test();
 
         let mut older = sample_draft("旧内容");
         older.saved_at_unix = 1_700_000_000;
@@ -1105,7 +1218,7 @@ mod tests {
     fn the_writer_applies_delete_up_to_in_order_with_saves() {
         let base = temp_dir("rev-writer");
         let path = draft_file_in(&base, HOST, "/srv/app/main.rs");
-        let writer = DraftWriter::spawn();
+        let writer = DraftWriter::spawn_for_test();
         // 第 5 次保存成功前后的一串任务：写草稿 5、保存成功（删到 5）、保存期间又打字写草稿 6。
         writer.send(DraftJob::Save(path.clone(), at_revision("v5", 5)));
         writer.send(DraftJob::DeleteUpTo(path.clone(), 5));

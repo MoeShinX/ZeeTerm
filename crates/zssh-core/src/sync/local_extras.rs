@@ -21,6 +21,15 @@ pub struct LocalExtras {
     pub host_memory: Vec<MemoryRecord>,
     #[serde(default)]
     pub forwards: Vec<ForwardRecord>,
+    /// 私钥文件路径只在本机有意义：不跨设备同步，但本机备份 / 恢复必须带回来。
+    #[serde(default)]
+    pub identity_paths: Vec<IdentityPathRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IdentityPathRecord {
+    pub uid: String,
+    pub key_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,6 +55,7 @@ pub struct ForwardRecord {
 pub struct ExtrasRestored {
     pub host_memory: usize,
     pub forwards: usize,
+    pub identity_paths: usize,
 }
 
 impl LocalExtras {
@@ -65,6 +75,19 @@ impl LocalExtras {
             })?;
             for row in rows {
                 extras.host_memory.push(row?);
+            }
+            let mut statement = conn.prepare(
+                "SELECT uid, key_path FROM identities \
+                 WHERE key_path IS NOT NULL AND key_path <> '' ORDER BY uid",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok(IdentityPathRecord {
+                    uid: row.get(0)?,
+                    key_path: row.get(1)?,
+                })
+            })?;
+            for row in rows {
+                extras.identity_paths.push(row?);
             }
             let mut statement = conn.prepare(
                 "SELECT h.uid, f.name, f.kind, f.bind_host, f.bind_port, f.dest_host, f.dest_port, \
@@ -142,6 +165,24 @@ impl LocalExtras {
                 Ok::<_, SyncError>(())
             })?;
             restored.host_memory += 1;
+        }
+
+        // 私钥路径：只补回本机还空着的记录。用户已经改过路径时保留本地值，
+        // 恢复旧备份不能把正在使用的路径改回去。
+        for identity in &self.identity_paths {
+            if identity.key_path.is_empty() {
+                continue;
+            }
+            let changed = db.with_conn_as(|conn| {
+                Ok::<_, SyncError>(conn.execute(
+                    "UPDATE identities SET key_path = ?1 \
+                     WHERE uid = ?2 AND (key_path IS NULL OR key_path = '')",
+                    params![identity.key_path, identity.uid],
+                )?)
+            })?;
+            if changed > 0 {
+                restored.identity_paths += 1;
+            }
         }
 
         // 旧版本允许同一台主机上两条远程转发占同一个端口，现在保存会被拒绝。恢复时遇到这种
@@ -282,6 +323,69 @@ mod tests {
     }
 
     #[test]
+    fn identity_key_paths_round_trip_but_do_not_overwrite_a_local_choice() {
+        use crate::model::{IdentityDraft, IdentityKind};
+
+        let db = Database::open_in_memory().unwrap();
+        let saved = db
+            .identity_save(&IdentityDraft {
+                id: None,
+                name: "key".to_owned(),
+                kind: IdentityKind::KeyFile,
+                key_path: Some("/home/user/.ssh/id_ed25519".to_owned()),
+                secret: None,
+                passphrase: None,
+            })
+            .unwrap();
+        let uid: String = db
+            .with_conn_as(|conn| {
+                conn.query_row(
+                    "SELECT uid FROM identities WHERE id = ?1",
+                    [saved.id],
+                    |row| row.get(0),
+                )
+                .map_err(SyncError::from)
+            })
+            .unwrap();
+        let extras = LocalExtras::read(&db).unwrap();
+        assert_eq!(
+            extras.identity_paths,
+            vec![IdentityPathRecord {
+                uid: uid.clone(),
+                key_path: "/home/user/.ssh/id_ed25519".to_owned()
+            }]
+        );
+
+        // 本地已经改过路径时，恢复旧备份不能覆盖它。
+        db.with_conn_as(|conn| {
+            conn.execute(
+                "UPDATE identities SET key_path = '/local/new-key' WHERE uid = ?1",
+                [&uid],
+            )
+            .map_err(SyncError::from)
+        })
+        .unwrap();
+        assert_eq!(
+            extras
+                .restore(&db, &BTreeMap::new())
+                .unwrap()
+                .identity_paths,
+            0
+        );
+        let path: String = db
+            .with_conn_as(|conn| {
+                conn.query_row(
+                    "SELECT key_path FROM identities WHERE uid = ?1",
+                    [&uid],
+                    |row| row.get(0),
+                )
+                .map_err(SyncError::from)
+            })
+            .unwrap();
+        assert_eq!(path, "/local/new-key");
+    }
+
+    #[test]
     fn legacy_duplicate_remote_rules_are_skipped_not_fatal() {
         let db = Database::open_in_memory().unwrap();
         let (host_id, uid) = host(&db);
@@ -294,6 +398,7 @@ mod tests {
                 updated_at: 1,
             }],
             forwards: vec![remote(&uid, "甲", 80), duplicate],
+            ..Default::default()
         };
         let restored = extras.restore(&db, &BTreeMap::new()).unwrap();
         assert_eq!(restored.host_memory, 1);

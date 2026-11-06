@@ -93,6 +93,25 @@ struct Exported<'a> {
         skip_serializing_if = "Option::is_none"
     )]
     accounts: Option<&'a SyncAccounts>,
+    /// 本机私钥路径：不跨设备云同步，但离线搬机器时应尽量保留。
+    /// 旧客户端不认识这个字段，会原样忽略；快照版本同时升到 v4。
+    #[serde(
+        rename = "zeeterm_identity_paths",
+        skip_serializing_if = "<[super::local_extras::IdentityPathRecord]>::is_empty"
+    )]
+    local_paths: Vec<super::local_extras::IdentityPathRecord>,
+}
+
+/// 从导出文件的明文里取本机私钥路径。损坏或没有都按空处理。
+fn parse_identity_paths(plaintext: &[u8]) -> Vec<super::local_extras::IdentityPathRecord> {
+    #[derive(Deserialize)]
+    struct Extras {
+        #[serde(default)]
+        zeeterm_identity_paths: Vec<super::local_extras::IdentityPathRecord>,
+    }
+    serde_json::from_slice::<Extras>(plaintext)
+        .map(|extras| extras.zeeterm_identity_paths)
+        .unwrap_or_default()
 }
 
 /// 从导出文件的明文里取同步账号设置。没有、或者格式认不出来都当没有（不让导入因此失败）。
@@ -154,10 +173,12 @@ impl SyncEngine<'_> {
         snapshot.sort_canonical();
         // 同步账号设置跟着导出文件一起被导出密码加密。离线包就是 `.zsshbak`，没有另一种格式。
         let accounts = SyncAccounts::read(self.db, self.sealer)?;
+        let local_paths = super::local_extras::LocalExtras::read(self.db)?.identity_paths;
         let plaintext = zeroize::Zeroizing::new(
             serde_json::to_vec(&Exported {
                 snapshot: &snapshot,
                 accounts: accounts.as_ref(),
+                local_paths,
             })
             .map_err(|err| {
                 SyncError::Internal(Reason::text(format!("离线备份序列化失败：{err}")))
@@ -180,10 +201,23 @@ impl SyncEngine<'_> {
         mode: OfflineImportMode,
     ) -> Result<OfflineImportReport, SyncError> {
         let plaintext = super::crypto::open(bytes, password)?;
-        let incoming = SyncSnapshot::parse(&plaintext)?;
+        let mut incoming = SyncSnapshot::parse(&plaintext)?;
         let accounts = parse_accounts(&plaintext);
+        let local_paths = parse_identity_paths(&plaintext);
+        for identity in &mut incoming.identities {
+            identity.key_path = local_paths
+                .iter()
+                .find(|record| record.uid == identity.uid)
+                .map(|record| record.key_path.clone());
+        }
         drop(plaintext);
         let mut report = self.import_snapshot(incoming, mode)?;
+        // 快照新建的记录已经把路径带进来；已有记录只补空路径，不覆盖用户改过的值。
+        let _ = super::local_extras::LocalExtras {
+            identity_paths: local_paths,
+            ..Default::default()
+        }
+        .restore(self.db, &BTreeMap::new())?;
         // 数据已经导入；账号设置的处理结果单独带回去。
         report.accounts = SyncAccounts::restore_or_offer(accounts, self.db, self.sealer)?;
         Ok(report)

@@ -558,17 +558,22 @@ mod vault {
     /// `create` 为真且钥匙串里还没有密钥时，生成一把并保存。
     /// 已有密文但密钥缺失时调用方传 `false`，这里直接失败。
     pub(super) fn vault_key(create: bool) -> Result<Zeroizing<[u8; 32]>, ZsshError> {
-        let mut cache = KEY_CACHE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let cache = cache.get_or_insert_with(std::collections::HashMap::new);
         let account = vault_account();
         // 缓存命中就不再问钥匙串：一次连接要解好几条密文，每条都走一次 IPC 会把连接拖慢。
         // 缓存只在读取失败时清掉（见下面的 Err 分支），所以取消、锁定和缺失仍然会暴露出来。
-        if let Some(cached) = cache.get(&account) {
-            return Ok(cached.clone());
+        {
+            let mut cache = KEY_CACHE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(cached) = cache
+                .get_or_insert_with(std::collections::HashMap::new)
+                .get(&account)
+            {
+                return Ok(cached.clone());
+            }
         }
         // 钥匙串调用放到专用线程上：系统授权框需要能跑自己的事件循环，不能占着调用方的线程。
+        // 等授权时不再持有缓存锁，否则所有资料库的加解密都会被这一个对话框堵住。
         let lookup = account.clone();
         let selected_backend = backend();
         match keychain_call(move || selected_backend.load(SERVICE, &lookup)) {
@@ -576,7 +581,11 @@ mod vault {
                 let mut key = [0u8; 32];
                 key.copy_from_slice(&bytes);
                 let key = Zeroizing::new(key);
-                cache.insert(account, key.clone());
+                KEY_CACHE
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get_or_insert_with(std::collections::HashMap::new)
+                    .insert(account, key.clone());
                 Ok(key)
             }
             Ok(_) => Err(ZsshError::Secret(Reason::text(
@@ -608,11 +617,19 @@ mod vault {
                     )));
                 }
                 key.copy_from_slice(&stored);
-                cache.insert(account, key.clone());
+                KEY_CACHE
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get_or_insert_with(std::collections::HashMap::new)
+                    .insert(account, key.clone());
                 Ok(key)
             }
             Err(err) => {
-                cache.remove(&vault_account());
+                KEY_CACHE
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get_or_insert_with(std::collections::HashMap::new)
+                    .remove(&vault_account());
                 Err(err)
             }
         }

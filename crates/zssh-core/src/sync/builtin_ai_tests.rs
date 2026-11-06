@@ -14,7 +14,7 @@ use super::guard::{deletion_plan, DeletionDecision};
 use super::merge::merge;
 use super::package::{
     AiEndpointRecord, IdentityRecord, SyncSnapshot, Tombstone, ENTITY_AI_ENDPOINT,
-    SNAPSHOT_VERSION_BUILTIN_AI,
+    MAX_SNAPSHOT_VERSION, SNAPSHOT_VERSION_BUILTIN_AI,
 };
 use super::sealer::DpapiSealer;
 use super::settings::validate_value;
@@ -220,8 +220,9 @@ fn parsing_a_v1_package_without_the_key_gives_no_endpoints() {
 
 #[test]
 fn a_newer_package_than_this_version_is_still_refused() {
+    let newer = MAX_SNAPSHOT_VERSION + 1;
     let mut raw = json!({
-        "schema_version": 4, "device_id": "x", "created_at": 5
+        "schema_version": newer, "device_id": "x", "created_at": 5
     });
     raw["ai_endpoints"] = json!([]);
     let err = SyncSnapshot::parse(&serde_json::to_vec(&raw).unwrap()).unwrap_err();
@@ -229,9 +230,9 @@ fn a_newer_package_than_this_version_is_still_refused() {
         matches!(
             err,
             super::SyncError::FormatTooNew {
-                found: 4,
-                supported: 3
-            }
+                found,
+                supported
+            } if found == newer && supported == MAX_SNAPSHOT_VERSION
         ),
         "{err:?}"
     );

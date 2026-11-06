@@ -35,8 +35,14 @@ pub const SNAPSHOT_VERSION_PROTOCOLS: u32 = 2;
 /// 和 Key 静默丢掉。
 pub const SNAPSHOT_VERSION_BUILTIN_AI: u32 = 3;
 
+/// 本机私钥路径只存在本机备份 / 离线包里、不跨设备同步的明文格式版本。
+///
+/// `key_path` 在快照里被跳过序列化；只要有记录带路径，包就必须用这一版写，
+/// 只认到 v3 的旧客户端会返回 `FormatTooNew`，而不是把缺字段当成 None 再清空本机路径。
+pub const SNAPSHOT_VERSION_LOCAL_KEY_PATH: u32 = 4;
+
 /// 这个版本能读的最高明文格式版本。
-pub const MAX_SNAPSHOT_VERSION: u32 = SNAPSHOT_VERSION_BUILTIN_AI;
+pub const MAX_SNAPSHOT_VERSION: u32 = SNAPSHOT_VERSION_LOCAL_KEY_PATH;
 
 /// 墓碑保留 90 天。
 pub const TOMBSTONE_RETENTION_SECS: i64 = 90 * 24 * 60 * 60;
@@ -382,10 +388,11 @@ impl HostRecord {
 
 impl IdentityRecord {
     pub fn same_content(&self, other: &Self) -> bool {
+        // key_path 只在本机使用，不参与同步内容比较；否则本机快照（有路径）
+        // 和云端快照（路径已被省略）会永远被当成不同内容。
         self.uid == other.uid
             && self.name == other.name
             && self.kind == other.kind
-            && self.key_path == other.key_path
             && self.secret == other.secret
     }
 }
@@ -489,7 +496,13 @@ impl SyncSnapshot {
     /// 其次有任何带新字段的主机用 [`SNAPSHOT_VERSION_PROTOCOLS`]，否则用 [`SNAPSHOT_VERSION`]
     /// （旧版本照常能读）。
     pub fn required_version(&self) -> u32 {
-        if self.needs_builtin_ai_format() {
+        if self
+            .identities
+            .iter()
+            .any(|identity| identity.key_path.is_some())
+        {
+            SNAPSHOT_VERSION_LOCAL_KEY_PATH
+        } else if self.needs_builtin_ai_format() {
             SNAPSHOT_VERSION_BUILTIN_AI
         } else if self.hosts.iter().any(HostRecord::needs_protocol_format) {
             SNAPSHOT_VERSION_PROTOCOLS

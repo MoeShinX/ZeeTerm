@@ -93,12 +93,13 @@ impl TokenStore for DbTokenStore<'_> {
             Ok(None) => return Ok(None),
             // 数据库本身出了问题：是暂时的故障，不能误判成“没登录”。
             Err(err @ (SyncError::Database(_) | SyncError::Io(_))) => return Err(store_error(err)),
-            // 解不开（换了 Windows 账户 / 换了电脑拷来的数据库）或内容损坏：令牌用不了，
-            // 按“没有登录”处理，界面会让用户重新登录。
-            Err(_) => return Ok(None),
+            // 解密失败、钥匙串锁定 / 取消 / 缺钥都不是“没登录”：密文还在，必须让用户
+            // 看见真正的错误，也不能顺手触发重新登录把旧令牌覆盖掉。
+            Err(err) => return Err(store_error(err)),
         };
-        // 格式不对同样按“没有登录”处理（读不了 = 不确定，不崩）。
-        Ok(serde_json::from_slice(&plain).ok())
+        let tokens = serde_json::from_slice(&plain)
+            .map_err(|err| store_error(format!("保存的登录信息格式损坏：{err}")))?;
+        Ok(Some(tokens))
     }
 
     fn save(&self, tokens: &TokenSet) -> Result<(), StorageError> {
@@ -287,18 +288,24 @@ mod tests {
     }
 
     #[test]
-    fn tokens_sealed_on_another_machine_read_as_signed_out() {
-        // 换了台电脑（DPAPI 不同）或数据损坏：解不开就当没登录，不崩。
+    fn unreadable_saved_tokens_are_an_error_not_a_signed_out_user() {
+        // 换了台电脑（DPAPI 不同）解不开：必须报错并保留密文，不能伪装成“没登录”。
         let (_dir, db) = open_db();
         DbTokenStore::new(&db, &TestSealer(1))
             .save(&sample())
             .unwrap();
+        let before = db.setting_get(TOKENS_KEY).unwrap();
         let other = DbTokenStore::new(&db, &TestSealer(2));
-        assert_eq!(other.load().unwrap(), None);
+        assert!(other.load().is_err());
+        assert_eq!(db.setting_get(TOKENS_KEY).unwrap(), before);
+
+        // 内容损坏同样报错，不删除原值。
         db.setting_set(TOKENS_KEY, "\"not-base64!!\"").unwrap();
-        assert_eq!(DbTokenStore::new(&db, &TestSealer(1)).load().unwrap(), None);
-        db.setting_set(TOKENS_KEY, "123").unwrap();
-        assert_eq!(DbTokenStore::new(&db, &TestSealer(1)).load().unwrap(), None);
+        assert!(DbTokenStore::new(&db, &TestSealer(1)).load().is_err());
+        assert_eq!(
+            db.setting_get(TOKENS_KEY).unwrap().as_deref(),
+            Some("\"not-base64!!\"")
+        );
     }
 
     #[test]

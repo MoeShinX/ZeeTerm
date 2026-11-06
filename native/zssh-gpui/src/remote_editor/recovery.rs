@@ -14,7 +14,10 @@ use zssh_core::sftp::edit::{EditBackend, OwnerMode};
 use zssh_core::sftp::path::file_name;
 
 use super::contract::{RemoteVersion, encode, open_bytes};
-use super::drafts::{EditDraft, draft_age_label, export_recovered, list_drafts, now_unix};
+use super::drafts::{
+    DbDraftCipher, DraftCipher, EditDraft, draft_age_label, export_recovered, list_drafts_with,
+    now_unix,
+};
 use super::remote::{self, SaveOutcome};
 
 /// 一项待恢复的修改（一份编辑草稿）。
@@ -82,8 +85,19 @@ pub(crate) fn recovery_title(count: usize) -> String {
 
 /// 扫一遍草稿目录（只读不改）。
 pub(crate) fn scan(data_dir: &Path) -> Vec<RecoveryItem> {
+    let Some(account) = crate::host_db::open_database()
+        .ok()
+        .map(|db| db.vault_account().to_owned())
+    else {
+        tracing::warn!("没有资料库身份，无法列出草稿");
+        return Vec::new();
+    };
+    scan_with(&DbDraftCipher::new(account), data_dir)
+}
+
+fn scan_with(cipher: &dyn DraftCipher, data_dir: &Path) -> Vec<RecoveryItem> {
     let now = now_unix();
-    list_drafts(data_dir)
+    list_drafts_with(cipher, data_dir)
         .into_iter()
         .map(|found| {
             let draft = found.draft;
@@ -320,7 +334,7 @@ impl crate::i18n::Msg for RecoveryMsg {
 #[cfg(test)]
 mod tests {
     use super::super::contract::version_of;
-    use super::super::drafts::{draft_file_in, write_draft};
+    use super::super::drafts::{Dpapi, draft_file_in, write_draft};
     use super::super::remote::testing::{MemBackend, MemFs, block_on};
     use super::*;
 
@@ -345,7 +359,7 @@ mod tests {
     fn written(dir: &Path, draft: &EditDraft) -> RecoveryItem {
         let file = draft_file_in(dir, 3, &draft.path);
         write_draft(&file, draft).expect("写草稿");
-        scan(dir)
+        scan_with(&Dpapi, dir)
             .into_iter()
             .find(|item| item.file == file)
             .expect("扫得到")
@@ -372,7 +386,7 @@ mod tests {
         old.host_id = None;
         let file = super::super::drafts::legacy_draft_file_in(&dir, &old.path);
         write_draft(&file, &old).expect("写旧格式草稿");
-        let item = scan(&dir).into_iter().next().expect("扫得到");
+        let item = scan_with(&Dpapi, &dir).into_iter().next().expect("扫得到");
         assert!(item.uncertain && !item.can_reupload() && !item.can_open_in_editor());
         // 不能重传，但可以另存、可以放弃。
         let backend = MemBackend(MemFs::default());

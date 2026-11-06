@@ -60,9 +60,9 @@ use crate::install_state::{Registration, WorkKind};
 use crate::ssh_backend::runtime;
 use contract::{MAX_BYTES, Opened, RemoteVersion};
 use drafts::{
-    DraftJob, DraftNotice, DraftWriter, EditDraft, draft_age_label, draft_file_in, draft_notice,
-    export_recovered, legacy_draft_file_in, now_unix, read_draft, read_legacy_draft,
-    set_aside_locked,
+    DbDraftCipher, DraftJob, DraftNotice, DraftWriter, EditDraft, draft_age_label, draft_file_in,
+    draft_notice, export_recovered, legacy_draft_file_in, now_unix, read_draft_with,
+    read_legacy_draft_with, set_aside_locked,
 };
 // 恢复列表的「另存到本地」也要在界面上说明导出的是明文。
 pub(crate) use drafts::export_plaintext_note;
@@ -571,6 +571,8 @@ pub struct RemoteEditor {
     data_dir: PathBuf,
     /// 这台主机上这个远端路径对应的草稿文件。
     draft_path: PathBuf,
+    /// 草稿加密绑定的资料库账户；拿不到时草稿功能关闭，绝不使用共享默认密钥。
+    draft_account: Option<String>,
     /// 草稿写线程：自动保存、保存成功和丢弃都只往这里丢任务。
     drafts: DraftWriter,
     /// 加载完成时发现的草稿；用户没有动作之前一直显示提示条。
@@ -663,6 +665,13 @@ impl RemoteEditor {
         let watch = Arc::new(RemoteWatch::default());
         // 数据目录只取一次：草稿路径和写线程用的是同一份，运行中改环境变量不会拆开它们。
         let data_dir = crate::settings::data_dir();
+        let draft_account = match crate::host_db::open_database() {
+            Ok(db) => Some(db.vault_account().to_owned()),
+            Err(err) => {
+                tracing::warn!(%err, "没有资料库身份，编辑器草稿已禁用");
+                None
+            }
+        };
         let draft_path = draft_file_in(&data_dir, host_id, &path);
         let open_file = open_files::OpenFile::register(host_id, &path);
 
@@ -730,7 +739,8 @@ impl RemoteEditor {
             watch,
             data_dir,
             draft_path,
-            drafts: DraftWriter::spawn(),
+            draft_account: draft_account.clone(),
+            drafts: DraftWriter::spawn(draft_account),
             draft: None,
             draft_preserved: false,
             discarded_text: None,
@@ -1265,34 +1275,44 @@ impl RemoteEditor {
             .update(cx, |state, cx| state.set_highlighter(token, cx));
         self.set_text(opened.text, window, cx);
         // 草稿要等加载完成才查：`base_version` 比的就是这次读到的版本。
-        let own_draft = match read_draft(&self.draft_path, self.host_id, &self.path) {
-            Ok(draft) => draft,
-            Err(locked) => {
+        let own_draft = match self.draft_account.as_deref() {
+            Some(account) => match read_draft_with(
+                &DbDraftCipher::new(account),
+                &self.draft_path,
+                self.host_id,
+                &self.path,
+            ) {
+                Ok(draft) => draft,
                 // 解不开（别的 Windows 用户 / 别的电脑保存的）：文件挪到一边留着，不然下一次自动保存会把它盖掉。
-                let kept = match set_aside_locked(&locked) {
-                    Ok(path) => path
-                        .file_name()
-                        .map(|name| {
-                            format!(
-                                "{}{}",
-                                crate::i18n::t(StatusMsg::KeptAsPrefix),
-                                name.to_string_lossy()
-                            )
-                        })
-                        .unwrap_or_default(),
-                    Err(err) => format!(
-                        "{}{err}{}",
-                        crate::i18n::t(StatusMsg::MoveAsideFailedPrefix),
-                        crate::i18n::t(StatusMsg::MoveAsideFailedSuffix)
-                    ),
-                };
-                self.status = format!("{locked}{kept}");
-                None
-            }
+                Err(locked) => {
+                    let kept = match set_aside_locked(&locked) {
+                        Ok(path) => path
+                            .file_name()
+                            .map(|name| {
+                                format!(
+                                    "{}{}",
+                                    crate::i18n::t(StatusMsg::KeptAsPrefix),
+                                    name.to_string_lossy()
+                                )
+                            })
+                            .unwrap_or_default(),
+                        Err(err) => format!(
+                            "{}{err}{}",
+                            crate::i18n::t(StatusMsg::MoveAsideFailedPrefix),
+                            crate::i18n::t(StatusMsg::MoveAsideFailedSuffix)
+                        ),
+                    };
+                    self.status = format!("{locked}{kept}");
+                    None
+                }
+            },
+            None => None,
         };
         self.draft = draft_notice(own_draft, opened.version).or_else(|| {
+            let cipher = DbDraftCipher::new(self.draft_account.as_deref()?);
             // 认不出主人的旧格式草稿：只提示、不恢复、不删。
-            read_legacy_draft(
+            read_legacy_draft_with(
+                &cipher,
                 &legacy_draft_file_in(&self.data_dir, &self.path),
                 &self.path,
             )

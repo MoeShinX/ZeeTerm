@@ -37,6 +37,31 @@ fn package_roundtrips_and_rejects_newer_schema_version() {
 }
 
 #[test]
+fn local_key_paths_bump_the_version_and_are_not_put_on_the_wire() {
+    let mut snapshot = SyncSnapshot::empty("dev-a", 1_760_000_000);
+    snapshot.identities.push(IdentityRecord {
+        uid: "i1".to_owned(),
+        name: "key".to_owned(),
+        kind: "key".to_owned(),
+        key_path: Some("/home/user/.ssh/id_ed25519".to_owned()),
+        secret: None,
+        updated_at: 10,
+        device_id: "dev-a".to_owned(),
+    });
+    assert_eq!(snapshot.required_version(), SNAPSHOT_VERSION_LOCAL_KEY_PATH);
+    let bytes = snapshot.to_json().expect("序列化");
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        value["schema_version"],
+        serde_json::json!(SNAPSHOT_VERSION_LOCAL_KEY_PATH)
+    );
+    assert!(value["identities"][0].get("key_path").is_none());
+    // 旧客户端只认到 v3，必须拒绝这份包，而不是把缺字段当成 None 清空路径。
+    let parsed = SyncSnapshot::parse(&bytes).expect("本版本能读");
+    assert_eq!(parsed.identities[0].key_path, None);
+}
+
+#[test]
 fn snapshot_seals_and_opens_with_the_master_password() {
     let mut snapshot = SyncSnapshot::empty("dev-a", 1_760_000_000);
     snapshot.groups.push(group("g1", "生产"));
