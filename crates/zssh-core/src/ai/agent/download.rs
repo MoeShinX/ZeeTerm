@@ -469,20 +469,35 @@ pub fn extract_tar_gz_binary(
         }
         std::fs::create_dir_all(out_dir).map_err(|e| format!("创建目录失败：{e}"))?;
         let dest = out_dir.join(wanted);
-        let mut out = std::fs::File::create(&dest).map_err(|e| format!("写 {dest:?} 失败：{e}"))?;
+        // Unix：先写到同目录的临时名，设好可执行权限，再 `rename` 覆盖。直接截断一个正在运行的程序
+        // 会得到 `ETXTBSY`（opencode 智能体运行中更新就是这样），而替换目录项不受它限制，
+        // 失败时旧版本也原样保留。Windows 保持原来的直接写（运行中的 exe 本来就不能被替换）。
+        #[cfg(unix)]
+        let write_to = out_dir.join(format!(
+            ".{wanted}.{}.{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default()
+        ));
+        #[cfg(not(unix))]
+        let write_to = dest.clone();
+        let mut out =
+            std::fs::File::create(&write_to).map_err(|e| format!("写 {write_to:?} 失败：{e}"))?;
         let copied = std::io::copy(&mut Read::take(&mut tar, size), &mut out)
             .map_err(|e| format!("解压失败：{e}"));
         drop(out);
         let copied = match copied {
             Ok(copied) if copied == size => copied,
             Ok(copied) => {
-                let _ = std::fs::remove_file(&dest);
+                let _ = std::fs::remove_file(&write_to);
                 return Err(format!(
                     "压缩包不完整：{wanted} 应有 {size} 字节，只读到 {copied} 字节"
                 ));
             }
             Err(err) => {
-                let _ = std::fs::remove_file(&dest);
+                let _ = std::fs::remove_file(&write_to);
                 return Err(err);
             }
         };
@@ -490,8 +505,16 @@ pub fn extract_tar_gz_binary(
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))
-                .map_err(|e| format!("设置可执行权限失败：{e}"))?;
+            std::fs::set_permissions(&write_to, std::fs::Permissions::from_mode(0o755)).map_err(
+                |e| {
+                    let _ = std::fs::remove_file(&write_to);
+                    format!("设置可执行权限失败：{e}")
+                },
+            )?;
+            std::fs::rename(&write_to, &dest).map_err(|e| {
+                let _ = std::fs::remove_file(&write_to);
+                format!("替换 {dest:?} 失败：{e}")
+            })?;
         }
         return Ok(dest);
     }
@@ -827,6 +850,77 @@ mod tests {
             assert_eq!(mode & 0o777, 0o755, "解出来要能直接运行");
         }
         assert!(!out_dir.join("README.md").exists(), "只解出要的那一个文件");
+    }
+
+    /// 智能体正在运行时再下载一次：直接截断会得到 ETXTBSY，先写临时名再 rename 就能换上新版本，
+    /// 正在跑的旧进程不受影响。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn updating_a_running_binary_replaces_it_without_etxtbsy() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = crate::test_util::TestDir::new("download-targz-running");
+        let out_dir = tmp.join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let running = out_dir.join("opencode");
+        std::fs::copy("/bin/sh", &running).unwrap();
+        std::fs::set_permissions(&running, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = std::process::Command::new(&running)
+            .args(["-c", "sleep 30"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        // 前提：确实会 ETXTBSY（这个环境里直接写正在运行的文件会失败）。
+        let direct = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&running);
+        let busy = direct.is_err();
+
+        let archive = tmp.join("opencode-linux-x64.tar.gz");
+        write_tar_gz(&archive, &[tar_entry("./opencode", b"NEW-BINARY", b'0')]);
+        let result = extract_tar_gz_binary(&archive, &out_dir, 1024);
+        let _ = child.kill();
+        let _ = child.wait();
+        let exe = result.expect("运行中的程序也要能被替换");
+
+        assert!(busy, "测试前提不成立：直接写没有得到 ETXTBSY");
+        assert_eq!(std::fs::read(&exe).unwrap(), b"NEW-BINARY");
+        assert_eq!(
+            std::fs::metadata(&exe).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&out_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name() != "opencode")
+            .collect();
+        assert!(leftovers.is_empty(), "不能留下临时文件：{leftovers:?}");
+    }
+
+    /// 解压失败时旧版本原样保留（不再被先删掉）。
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_extraction_keeps_the_previous_binary() {
+        let tmp = crate::test_util::TestDir::new("download-targz-keep-old");
+        let out_dir = tmp.join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        std::fs::write(out_dir.join("opencode"), b"OLD").unwrap();
+        // 压缩流被截掉一半 -> 解压中途失败。
+        let archive = tmp.join("short.tar.gz");
+        write_tar_gz(&archive, &[tar_entry("opencode", &[7u8; 4096], b'0')]);
+        let truncated = tmp.join("truncated.tar.gz");
+        let bytes = std::fs::read(&archive).unwrap();
+        std::fs::write(&truncated, &bytes[..bytes.len() / 2]).unwrap();
+        assert!(extract_tar_gz_binary(&truncated, &out_dir, 1 << 20).is_err());
+        assert_eq!(std::fs::read(out_dir.join("opencode")).unwrap(), b"OLD");
+        assert_eq!(
+            std::fs::read_dir(&out_dir).unwrap().count(),
+            1,
+            "临时文件要清掉"
+        );
     }
 
     #[test]
