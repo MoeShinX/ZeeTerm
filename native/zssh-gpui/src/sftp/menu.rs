@@ -158,7 +158,7 @@ pub(super) struct MenuContext {
     /// `true`：点在空白处（`entries` 是空的）。
     pub(super) blank: bool,
     pub(super) entries: Vec<Entry>,
-    /// 这一栏当前目录；本地的空字符串 = “此电脑”（盘符列表）。
+    /// 这一栏当前目录；Windows 本地的空字符串 = “此电脑”（盘符列表）。
     pub(super) current_dir: String,
     /// 剪贴板里有几项、来自哪一边；没有就是 `None`。
     pub(super) clipboard: Option<(Side, usize)>,
@@ -275,7 +275,7 @@ fn dir_missing(side: Side) -> String {
     .to_owned()
 }
 
-/// 当前目录能不能新建东西（远端没进任何目录、本地在“此电脑”时不行）。
+/// 当前目录能不能新建东西（远端没进任何目录、Windows 本地在“此电脑”时不行）。
 fn dir_reason(context: &MenuContext) -> Option<String> {
     context
         .current_dir

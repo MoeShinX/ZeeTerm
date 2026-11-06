@@ -1248,7 +1248,12 @@ impl SftpDemo {
         } else {
             self.local.path.clone()
         };
-        let input = self.dialog_input(&initial, t(SftpMsg::OpsDownloadDirPlaceholder), window, cx);
+        let input = self.dialog_input(
+            &initial,
+            super::local_path::download_dir_placeholder(),
+            window,
+            cx,
+        );
         let subscriptions = vec![
             cx.observe(&input, |_this, _input, cx| cx.notify()),
             cx.subscribe_in(
@@ -1309,7 +1314,8 @@ impl SftpDemo {
         let Some(Dialog::DownloadTo(dialog)) = &mut self.dialog else {
             return;
         };
-        let text = dialog.input.read(cx).value().trim().to_owned();
+        // Linux 上 `~/…` 先展开成家目录（Windows 原样）。
+        let text = super::local_path::expand_typed(dialog.input.read(cx).value().trim());
         if let NameCheck::Bad(reason) = validate_local_dir(&text) {
             dialog.error = Some(reason);
             cx.notify();

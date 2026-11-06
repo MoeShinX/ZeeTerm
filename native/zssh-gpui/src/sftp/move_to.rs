@@ -36,35 +36,38 @@ pub(super) fn cross_device_note() -> &'static str {
 // 路径比较
 // ---------------------------------------------------------------------------
 
-/// 比较用的路径键：远端按规范化的 POSIX 路径（区分大小写），本地按 Windows 规则
-/// （`/` 和 `\` 一样、不分大小写、没有 `\\?\` 前缀、盘符根带 `\`、没有末尾的 `\`）。
+/// 比较用的路径键：远端按规范化的 POSIX 路径（区分大小写）；本地在 Windows 上按 Windows 规则
+/// （`/` 和 `\` 一样、不分大小写、没有 `\\?\` 前缀、盘符根带 `\`、没有末尾的 `\`），
+/// 在 Linux 上和远端一样按 POSIX（区分大小写，`\` 只是名字里的一个字符）。
 fn path_key(side: Side, path: &str) -> String {
     match side {
-        Side::Remote => normalize(path),
-        Side::Local => {
-            let mut text = path.replace('/', "\\");
-            if let Some(rest) = text.strip_prefix("\\\\?\\UNC\\") {
-                text = format!("\\\\{rest}");
-            } else if let Some(rest) = text.strip_prefix("\\\\?\\") {
-                text = rest.to_owned();
-            }
-            let bytes = text.as_bytes();
-            let is_bare_drive = bytes.len() == 2 && bytes[1] == b':';
-            if is_bare_drive {
-                text.push('\\');
-            }
-            while text.len() > 3 && text.ends_with('\\') {
-                text.pop();
-            }
-            text.to_lowercase()
-        }
+        Side::Local if cfg!(windows) => windows_path_key(path),
+        Side::Remote | Side::Local => normalize(path),
     }
+}
+
+fn windows_path_key(path: &str) -> String {
+    let mut text = path.replace('/', "\\");
+    if let Some(rest) = text.strip_prefix("\\\\?\\UNC\\") {
+        text = format!("\\\\{rest}");
+    } else if let Some(rest) = text.strip_prefix("\\\\?\\") {
+        text = rest.to_owned();
+    }
+    let bytes = text.as_bytes();
+    let is_bare_drive = bytes.len() == 2 && bytes[1] == b':';
+    if is_bare_drive {
+        text.push('\\');
+    }
+    while text.len() > 3 && text.ends_with('\\') {
+        text.pop();
+    }
+    text.to_lowercase()
 }
 
 fn separator(side: Side) -> char {
     match side {
-        Side::Remote => '/',
-        Side::Local => '\\',
+        Side::Local if cfg!(windows) => '\\',
+        Side::Remote | Side::Local => '/',
     }
 }
 
@@ -172,29 +175,34 @@ fn dest_shape(side: Side, raw: &str) -> Result<String, String> {
             }
             Ok(normalize(text))
         }
+        Side::Local if cfg!(windows) => windows_dest_shape(text),
         Side::Local => {
-            if let NameCheck::Bad(reason) = validate_local_dir(text) {
-                return Err(reason);
-            }
-            let normalized = text.replace('/', "\\");
-            let drive = normalized.len() >= 2
-                && normalized.as_bytes()[1] == b':'
-                && normalized.as_bytes()[0].is_ascii_alphabetic();
-            if !(drive || normalized.starts_with("\\\\")) {
-                return Err(t(super::SftpMsg::MoveDestNeedAbsoluteLocal).to_owned());
-            }
-            // 盘符根写成 `D:` 时补上 `\`（不补的话 `D:` 指的是那个盘的当前目录）。
-            if normalized.len() == 2 {
-                return Ok(format!("{normalized}\\"));
-            }
-            let trimmed = normalized.trim_end_matches('\\');
-            Ok(if trimmed.len() == 2 {
-                format!("{trimmed}\\")
-            } else {
-                trimmed.to_owned()
-            })
+            super::local_path::posix_dest_shape(text, super::local_path::home().as_deref())
         }
     }
+}
+
+fn windows_dest_shape(text: &str) -> Result<String, String> {
+    if let NameCheck::Bad(reason) = validate_local_dir(text) {
+        return Err(reason);
+    }
+    let normalized = text.replace('/', "\\");
+    let drive = normalized.len() >= 2
+        && normalized.as_bytes()[1] == b':'
+        && normalized.as_bytes()[0].is_ascii_alphabetic();
+    if !(drive || normalized.starts_with("\\\\")) {
+        return Err(t(super::SftpMsg::MoveDestNeedAbsoluteLocal).to_owned());
+    }
+    // 盘符根写成 `D:` 时补上 `\`（不补的话 `D:` 指的是那个盘的当前目录）。
+    if normalized.len() == 2 {
+        return Ok(format!("{normalized}\\"));
+    }
+    let trimmed = normalized.trim_end_matches('\\');
+    Ok(if trimmed.len() == 2 {
+        format!("{trimmed}\\")
+    } else {
+        trimmed.to_owned()
+    })
 }
 
 /// 一个条目放进 `dest` 有没有问题：已经在里面 / 文件夹放进自己里面。
@@ -676,7 +684,7 @@ pub(super) async fn remote_folders(channel: &SftpChannel, dir: &str) -> Result<V
     ))
 }
 
-/// 本地：列出一个目录里的子文件夹（空路径 = “此电脑”，列出盘符）。只能在后台线程里调
+/// 本地：列出一个目录里的子文件夹（Windows 上空路径 = “此电脑”，列出盘符）。只能在后台线程里调
 /// （见 [`super::local_listing`]），`fs` 由线程池传进来。
 pub(super) fn local_folders(
     fs: &dyn super::local_listing::LocalFs,
@@ -701,7 +709,8 @@ mod tests {
     fn entry(side: Side, dir: &str, name: &str, kind: EntryKind) -> Entry {
         let path = match side {
             Side::Remote => format!("{}/{name}", dir.trim_end_matches('/')),
-            Side::Local => format!("{}\\{name}", dir.trim_end_matches('\\')),
+            Side::Local if cfg!(windows) => format!("{}\\{name}", dir.trim_end_matches('\\')),
+            Side::Local => format!("{}/{name}", dir.trim_end_matches('/')),
         };
         Entry {
             name: name.to_owned(),
@@ -723,8 +732,11 @@ mod tests {
     }
 
     fn local(name: &str, kind: EntryKind) -> Entry {
-        entry(Side::Local, "D:\\work", name, kind)
+        entry(Side::Local, LOCAL_DIR, name, kind)
     }
+
+    /// 本地条目所在的目录，按当前系统的写法。
+    const LOCAL_DIR: &str = if cfg!(windows) { "D:\\work" } else { "/work" };
 
     fn none(_: &Entry) -> Option<String> {
         None
@@ -747,6 +759,31 @@ mod tests {
         assert!(same_or_inside(Side::Remote, "/anything", "/"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn linux_local_paths_are_case_sensitive_posix_paths() {
+        assert!(same_or_inside(Side::Local, "/work/sub", "/work"));
+        assert!(same_or_inside(Side::Local, "/work//sub/", "/work/"));
+        assert!(same_or_inside(Side::Local, "/anything", "/"));
+        assert!(same_or_inside(Side::Local, "/", "/"));
+        assert!(!same_or_inside(Side::Local, "/workshop", "/work"));
+        // 区分大小写：只差大小写的是两个目录。
+        assert!(!same_or_inside(Side::Local, "/Work/sub", "/work"));
+        assert!(!same_or_inside(Side::Local, "/work", "/Work"));
+        // 反斜杠不是分隔符。
+        assert!(!same_or_inside(Side::Local, r"/work\sub", "/work"));
+        assert!(same_or_inside(Side::Local, r"/work\sub/x", r"/work\sub"));
+        // 中文、空格。
+        assert!(same_or_inside(
+            Side::Local,
+            "/home/me/下载 目录/a",
+            "/home/me/下载 目录"
+        ));
+        assert!(super::same_path(Side::Local, "/a/b/", "/a//b"));
+        assert!(!super::same_path(Side::Local, "/a/b", "/a/B"));
+    }
+
+    #[cfg(windows)]
     #[test]
     fn local_paths_ignore_case_slashes_prefixes_and_trailing_separators() {
         assert!(same_or_inside(Side::Local, "d:\\Work\\Sub", "D:\\work"));
@@ -770,6 +807,40 @@ mod tests {
         assert!(!same_or_inside(Side::Local, "E:\\work", "D:\\work"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn live_transfers_block_local_items_by_posix_paths() {
+        use super::transfer_blocks as blocks;
+        use zssh_core::sftp::transfer::Direction::{Download, LocalCopy, Upload};
+        let local = Side::Local;
+        assert!(blocks(
+            local,
+            "/src",
+            Upload,
+            "/src/f.txt",
+            "/srv/app/f.txt"
+        ));
+        assert!(!blocks(
+            local,
+            "/other",
+            Upload,
+            "/src/f.txt",
+            "/srv/app/f.txt"
+        ));
+        assert!(blocks(local, "/dl", Download, "/srv/app", "/dl/app"));
+        assert!(blocks(local, "/a", LocalCopy, "/a/x", "/b/x"));
+        assert!(!blocks(local, "/c", LocalCopy, "/a/x", "/b/x"));
+        // 只差大小写的是别的目录。
+        assert!(!blocks(
+            local,
+            "/SRC",
+            Upload,
+            "/src/f.txt",
+            "/srv/app/f.txt"
+        ));
+    }
+
+    #[cfg(windows)]
     #[test]
     fn live_transfers_block_the_items_they_touch_in_either_direction() {
         use super::transfer_blocks as blocks;
@@ -891,10 +962,27 @@ mod tests {
         );
         assert_eq!(same_folder_note(), "已经在这个文件夹里");
         let local_entries = [local("a.txt", EntryKind::File)];
+        #[cfg(windows)]
         assert_eq!(
             check_destination(Side::Local, &local_entries, "d:/WORK/"),
             DestCheck::SameFolder
         );
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                check_destination(Side::Local, &local_entries, "/work/"),
+                DestCheck::SameFolder
+            );
+            assert_eq!(
+                check_destination(Side::Local, &local_entries, "/work//"),
+                DestCheck::SameFolder
+            );
+            // 区分大小写：`/WORK` 是另一个目录。
+            assert_eq!(
+                check_destination(Side::Local, &local_entries, "/WORK"),
+                DestCheck::Ok("/WORK".to_owned())
+            );
+        }
     }
 
     #[test]
@@ -919,10 +1007,25 @@ mod tests {
         let file = [remote("f", EntryKind::File)];
         assert!(check_destination(Side::Remote, &file, "/srv/app/f").is_ok());
         let local_dirs = [local("data", EntryKind::Dir)];
+        #[cfg(windows)]
         assert_eq!(
             check_destination(Side::Local, &local_dirs, "D:\\work\\Data\\x"),
             DestCheck::IntoSelf
         );
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                check_destination(Side::Local, &local_dirs, "/work/data/x"),
+                DestCheck::IntoSelf
+            );
+            assert_eq!(
+                check_destination(Side::Local, &local_dirs, "/work/data"),
+                DestCheck::IntoSelf
+            );
+            // 区分大小写：`/work/Data/x` 不在 `/work/data` 里面。
+            assert!(check_destination(Side::Local, &local_dirs, "/work/Data/x").is_ok());
+            assert!(check_destination(Side::Local, &local_dirs, "/work/data2").is_ok());
+        }
     }
 
     #[test]
@@ -969,14 +1072,42 @@ mod tests {
                 .is_some()
         );
         // 盘符根：`E:` 补成 `E:\`，不当成“E 盘的当前目录”。
-        assert_eq!(
-            check_destination(Side::Local, &local_entries, "E:"),
-            DestCheck::Ok("E:\\".to_owned())
-        );
-        assert_eq!(
-            check_destination(Side::Local, &local_entries, "E:\\sub\\"),
-            DestCheck::Ok("E:\\sub".to_owned())
-        );
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                check_destination(Side::Local, &local_entries, "E:"),
+                DestCheck::Ok("E:\\".to_owned())
+            );
+            assert_eq!(
+                check_destination(Side::Local, &local_entries, "E:\\sub\\"),
+                DestCheck::Ok("E:\\sub".to_owned())
+            );
+        }
+        // Linux：`E:` / `E:\sub` 是相对路径，要拒绝并给出 POSIX 写法的提示；`/` 开头的整理后放行。
+        #[cfg(unix)]
+        {
+            for relative in ["E:", "E:\\sub\\", "docs", "./x", "~someone/x"] {
+                let note = check_destination(Side::Local, &local_entries, relative).note();
+                assert_eq!(
+                    note.as_deref(),
+                    Some("目标要写成完整路径（以 / 或 ~/ 开头，例如 /srv/data）"),
+                    "{relative}"
+                );
+            }
+            assert_eq!(
+                check_destination(Side::Local, &local_entries, " /srv//data/ "),
+                DestCheck::Ok("/srv/data".to_owned())
+            );
+            assert_eq!(
+                check_destination(Side::Local, &local_entries, "/"),
+                DestCheck::Ok("/".to_owned())
+            );
+            // 这些在 Windows 上不合法的字符，在 Linux 上是正常的目录名。
+            assert_eq!(
+                check_destination(Side::Local, &local_entries, "/srv/a<b>?*|:\\c"),
+                DestCheck::Ok("/srv/a<b>?*|:\\c".to_owned())
+            );
+        }
     }
 
     #[test]

@@ -71,6 +71,7 @@ mod follow;
 mod header;
 mod local_listing;
 mod local_ops;
+mod local_path;
 mod local_start;
 mod menu;
 mod model;
@@ -355,6 +356,7 @@ enum SftpMsg {
     OpsChmodRecursiveFailedPrefix,
     OpsSelectItemsToTransfer,
     OpsDownloadDirPlaceholder,
+    OpsDownloadDirPlaceholderPosix,
     OpsChooseDownloadFolder,
     OpsNotADirectory,
     OpsDirUnusablePrefix,
@@ -429,6 +431,7 @@ enum SftpMsg {
     MoveCrossDevice,
     MoveDestNeedAbsoluteRemote,
     MoveDestNeedAbsoluteLocal,
+    MoveDestNeedAbsoluteLocalPosix,
     MoveSelectItems,
     MoveDialogOnePrefix,
     MoveDialogOneSuffix,
@@ -836,6 +839,7 @@ impl Msg for SftpMsg {
             Self::OpsChmodRecursiveFailedPrefix => "递归改权限失败：",
             Self::OpsSelectItemsToTransfer => "先选中要传的条目",
             Self::OpsDownloadDirPlaceholder => "例如 D:\\下载",
+            Self::OpsDownloadDirPlaceholderPosix => "例如 ~/Downloads",
             Self::OpsChooseDownloadFolder => "选择下载到的文件夹",
             Self::OpsNotADirectory => "不是一个目录",
             Self::OpsDirUnusablePrefix => "这个目录用不了：",
@@ -911,6 +915,9 @@ impl Msg for SftpMsg {
             Self::MoveCrossDevice => "不能跨磁盘移动，请用复制 + 删除",
             Self::MoveDestNeedAbsoluteRemote => "目标要写成完整路径（以 / 开头）",
             Self::MoveDestNeedAbsoluteLocal => "目标要写成完整路径（例如 D:\\文件夹）",
+            Self::MoveDestNeedAbsoluteLocalPosix => {
+                "目标要写成完整路径（以 / 或 ~/ 开头，例如 /srv/data）"
+            }
             Self::MoveSelectItems => "先选中要移动的条目",
             Self::MoveDialogOnePrefix => "移动「",
             Self::MoveDialogOneSuffix => "」到…",
@@ -1347,6 +1354,7 @@ impl Msg for SftpMsg {
             Self::OpsChmodRecursiveFailedPrefix => "Recursive permission change failed: ",
             Self::OpsSelectItemsToTransfer => "Select the items to transfer first",
             Self::OpsDownloadDirPlaceholder => "e.g. D:\\Downloads",
+            Self::OpsDownloadDirPlaceholderPosix => "e.g. ~/Downloads",
             Self::OpsChooseDownloadFolder => "Choose a download folder",
             Self::OpsNotADirectory => "Not a directory",
             Self::OpsDirUnusablePrefix => "This directory cannot be used: ",
@@ -1437,6 +1445,9 @@ impl Msg for SftpMsg {
             Self::MoveDestNeedAbsoluteRemote => "The target must be a full path (starting with /)",
             Self::MoveDestNeedAbsoluteLocal => {
                 "The target must be a full path (for example D:\\folder)"
+            }
+            Self::MoveDestNeedAbsoluteLocalPosix => {
+                "The target must be a full path (starting with / or ~/, for example /srv/data)"
             }
             Self::MoveSelectItems => "Select the items to move first",
             Self::MoveDialogOnePrefix => "Move \"",

@@ -1,28 +1,33 @@
 //! 本地栏的文件系统操作：列目录（含“此电脑”盘符列表）、新建、改名、删除。
 //!
-//! 行为照 0.2.14 的 `sftp_local_*` 命令：路径一律用 `long_path` 包一层再交给系统（超长路径），
+//! 行为照 0.2.14 的 `sftp_local_*` 命令：路径一律用 `sys_path`（Windows 上是 `long_path`）包一层再交给系统（超长路径），
 //! 给界面看的路径不带 `\\?\` 前缀；改名不覆盖，新建文件不截断已有文件；
 //! 删除符号链接只删链接本身。
 
 use std::path::{Path, PathBuf};
 
-use zssh_core::pathnorm::simplify_verbatim;
 use zssh_core::sftp::local::{
-    create_new_file, is_reparse_point, logical_drives, long_path, move_no_replace, replace_file,
+    create_new_file, is_reparse_point, logical_drives, move_no_replace, replace_file,
 };
 
+use super::local_path::{sys_path, ui_path};
 use super::model::{Entry, EntryKind};
 use crate::i18n::t;
 
-/// 列一个本地目录；空路径是“此电脑”（盘符）。
+/// 列一个本地目录；Windows 上空路径是“此电脑”（盘符），Linux 上没有这一层，空路径就当 `/`。
 pub(super) fn list_dir(path: &str) -> Result<Vec<Entry>, String> {
+    let path = if path.is_empty() && !cfg!(windows) {
+        "/"
+    } else {
+        path
+    };
     if path.is_empty() {
         return Ok(drives());
     }
     // 给界面的路径不能带 `\\?\` 前缀：面包屑和“向上”按 `X:\` 的形状切路径，带前缀就全乱了。
     // 前缀只在真正调系统接口时加；传进来的路径本身带着前缀也先剥掉。
-    let dir = simplify_verbatim(PathBuf::from(path));
-    let listing = std::fs::read_dir(long_path(&dir)).map_err(|err| err.to_string())?;
+    let dir = ui_path(PathBuf::from(path));
+    let listing = std::fs::read_dir(sys_path(&dir)).map_err(|err| err.to_string())?;
     let mut out = Vec::new();
     for item in listing {
         let item = item.map_err(|err| err.to_string())?;
@@ -47,7 +52,7 @@ fn entry_of(path: PathBuf, name: &str, own: Option<std::fs::Metadata>) -> Entry 
         .is_some_and(|meta| meta.file_type().is_symlink() || is_reparse_point(meta));
     let meta = match (&own, is_link) {
         (Some(meta), false) => Ok(meta.clone()),
-        _ => std::fs::metadata(long_path(&path)),
+        _ => std::fs::metadata(sys_path(&path)),
     };
     let (kind, size) = match &meta {
         Ok(meta) if meta.is_dir() => (EntryKind::Dir, None),
@@ -57,7 +62,7 @@ fn entry_of(path: PathBuf, name: &str, own: Option<std::fs::Metadata>) -> Entry 
     // 链接：记下它指向哪儿（列表里画成链接用，操作仍按跟随之后的类型走）。读不出路径的（比如 OneDrive
     // 的云文件占位符也是重解析点）不当链接画。
     let link_target = is_link
-        .then(|| std::fs::read_link(long_path(&path)).ok())
+        .then(|| std::fs::read_link(sys_path(&path)).ok())
         .flatten()
         .map(|target| target.display().to_string());
     let hidden = own
@@ -143,7 +148,7 @@ pub(super) fn mkdir(path: &str) -> Result<(), String> {
         return Err(t(super::SftpMsg::DirNameEmpty).to_owned());
     }
     // 不用 create_dir_all：已经有同名的就报错，不静悄悄当成功。
-    std::fs::create_dir(long_path(Path::new(path))).map_err(|err| {
+    std::fs::create_dir(sys_path(Path::new(path))).map_err(|err| {
         if err.kind() == std::io::ErrorKind::AlreadyExists {
             t(super::SftpMsg::AlreadyExists).to_owned()
         } else {
@@ -174,7 +179,7 @@ pub(super) fn rename(from: &str, to: &str) -> Result<(), String> {
         return Err(t(super::SftpMsg::AlreadyExists).to_owned());
     }
     // 系统在改名那一刻判断目标是否存在（上面的检查只是为了给出好读的提示，不能代替它）。
-    move_no_replace(&long_path(Path::new(from)), &long_path(Path::new(to))).map_err(|err| {
+    move_no_replace(&sys_path(Path::new(from)), &sys_path(Path::new(to))).map_err(|err| {
         if err.kind() == std::io::ErrorKind::AlreadyExists {
             t(super::SftpMsg::AlreadyExists).to_owned()
         } else {
@@ -191,7 +196,7 @@ pub(super) fn move_item(from: &Path, to: &Path, overwrite: bool) -> super::move_
     if from.as_os_str().is_empty() || to.as_os_str().is_empty() {
         return StepResult::Failed(t(super::SftpMsg::PathEmpty).to_owned());
     }
-    let (long_from, long_to) = (long_path(from), long_path(to));
+    let (long_from, long_to) = (sys_path(from), sys_path(to));
     let result = if overwrite {
         replace_file(&long_from, &long_to)
     } else {
@@ -223,7 +228,7 @@ pub(super) fn delete(paths: &[String]) -> Vec<(String, Option<String>)> {
     paths
         .iter()
         .map(|path| {
-            let long = long_path(Path::new(path));
+            let long = sys_path(Path::new(path));
             let result = match std::fs::symlink_metadata(&long) {
                 Ok(meta) if meta.file_type().is_symlink() || is_reparse_point(&meta) => {
                     // 链接只删链接本身；目录联接 / 目录符号链接要用 remove_dir。
@@ -275,6 +280,68 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// Linux：没有“此电脑”，空路径就是 `/`；条目路径是 POSIX 的；`//` 开头的合法路径不会被当成 UNC。
+    #[cfg(unix)]
+    #[test]
+    fn linux_listing_has_no_this_pc_level_and_keeps_posix_paths() {
+        let root = list_dir("").expect("空路径当作根目录");
+        assert!(!root.is_empty());
+        assert!(
+            root.iter()
+                .all(|row| row.path.starts_with('/') && row.kind != EntryKind::Drive)
+        );
+        assert_eq!(
+            list_dir("/").expect("根目录").len(),
+            root.len(),
+            "空路径和 `/` 是同一个目录"
+        );
+
+        let dir = Scratch::new("posix");
+        std::fs::create_dir(dir.path().join("下载 目录")).expect("中文目录");
+        std::fs::create_dir(dir.path().join("a\\b")).expect("名字里带反斜杠的目录");
+        std::fs::write(dir.path().join("Docs"), b"x").expect("大写文件");
+        std::fs::write(dir.path().join("docs"), b"y").expect("小写文件");
+        let shown = dir.path().display().to_string();
+        let rows = list_dir(&shown).expect("列目录");
+        let mut names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["Docs", "a\\b", "docs", "下载 目录"]);
+        let backslash = rows
+            .iter()
+            .find(|row| row.name == "a\\b")
+            .expect("反斜杠目录");
+        assert_eq!(backslash.path, format!("{shown}/a\\b"));
+        assert_eq!(backslash.kind, EntryKind::Dir);
+        // 双斜杠开头也是普通的 POSIX 路径。
+        let doubled = list_dir(&format!("/{shown}")).expect("双斜杠路径");
+        assert_eq!(doubled.len(), rows.len());
+    }
+
+    /// Linux：新建 / 改名对名字里的 Windows 字符、反斜杠一视同仁，大小写不同的两个名字可以共存。
+    #[cfg(unix)]
+    #[test]
+    fn linux_create_and_rename_accept_posix_names() {
+        let dir = Scratch::new("posix-ops");
+        for name in ["Docs", "docs", "a\\b", "x:y*z?", "报告 终稿"] {
+            mkdir(&dir.child(name)).unwrap_or_else(|err| panic!("{name:?}: {err}"));
+        }
+        assert_eq!(
+            list_dir(&dir.path().display().to_string())
+                .expect("列目录")
+                .len(),
+            5
+        );
+        rename(&dir.child("Docs"), &dir.child("DOCS")).expect("只改大小写");
+        assert!(dir.path().join("DOCS").is_dir() && dir.path().join("docs").is_dir());
+        // 目标已经有同名（区分大小写）条目：不覆盖。
+        assert_eq!(
+            rename(&dir.child("DOCS"), &dir.child("docs"))
+                .err()
+                .as_deref(),
+            Some("已经有同名的条目")
+        );
     }
 
     /// Unix 上点开头的就是隐藏文件（没有 Windows 那种「隐藏」属性）；列表据此决定「显示隐藏文件」开关藏哪些。

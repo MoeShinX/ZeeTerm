@@ -16,7 +16,7 @@ use super::dialogs::{
 use super::engine::create_remote_dir;
 use super::local_ops;
 use super::menu::Side;
-use super::model::{Entry, local_parent, remote_parent};
+use super::model::{Entry, local_at_top, local_parent, remote_parent};
 use super::move_to::{
     Choice, DestCheck, MoveJob, Next, StepResult, check_destination, local_folders, local_step,
     remote_folders, remote_step, same_path, target_path, transfer_blocks,
@@ -268,7 +268,7 @@ impl SftpDemo {
         let parent = match d.side {
             Side::Remote if d.browse.dir.is_empty() || d.browse.dir == "/" => return,
             Side::Remote => remote_parent(&d.browse.dir),
-            Side::Local if d.browse.dir.is_empty() => return,
+            Side::Local if local_at_top(&d.browse.dir) => return,
             Side::Local => local_parent(&d.browse.dir),
         };
         self.move_browse_to(parent, window, cx);
@@ -283,12 +283,17 @@ impl SftpDemo {
         d.browse.selected = None;
         let trimmed = text.trim();
         let ends_with_separator =
-            trimmed.len() > 1 && (trimmed.ends_with('/') || trimmed.ends_with('\\'));
+            trimmed.len() > 1 && trimmed.ends_with(super::local_path::is_separator);
         let side = d.side;
-        let differs = !same_path(side, trimmed, &d.browse.dir);
+        // Linux 本地：`~/…` 先展开成家目录再去比较、去浏览（Windows 和远端原样）。
+        let typed = if side == Side::Local {
+            super::local_path::expand_typed(trimmed)
+        } else {
+            trimmed.to_owned()
+        };
+        let differs = !same_path(side, &typed, &d.browse.dir);
         if ends_with_separator && differs {
-            let dir = trimmed.to_owned();
-            self.spawn_browse(dir, false, None);
+            self.spawn_browse(typed, false, None);
         }
         cx.notify();
     }
@@ -701,10 +706,11 @@ impl SftpDemo {
 fn display_name(side: Side, dest: &str) -> String {
     let name = match side {
         Side::Remote => file_name(dest),
-        Side::Local => {
+        Side::Local if cfg!(windows) => {
             let tail = dest.trim_end_matches('\\');
             tail.rsplit('\\').next().unwrap_or(tail).to_owned()
         }
+        Side::Local => file_name(dest),
     };
     if name.is_empty() {
         dest.to_owned()
@@ -721,10 +727,19 @@ mod tests {
     fn the_destination_is_named_by_its_last_segment() {
         assert_eq!(display_name(Side::Remote, "/srv/app/docs"), "docs");
         assert_eq!(display_name(Side::Remote, "/"), "/");
-        assert_eq!(
-            display_name(Side::Local, "D:\\work\\文档 归档"),
-            "文档 归档"
-        );
-        assert_eq!(display_name(Side::Local, "D:\\"), "D:");
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                display_name(Side::Local, "D:\\work\\文档 归档"),
+                "文档 归档"
+            );
+            assert_eq!(display_name(Side::Local, "D:\\"), "D:");
+        }
+        #[cfg(unix)]
+        {
+            assert_eq!(display_name(Side::Local, "/home/me/文档 归档"), "文档 归档");
+            assert_eq!(display_name(Side::Local, "/"), "/");
+            assert_eq!(display_name(Side::Local, r"/tmp/a\b"), r"a\b");
+        }
     }
 }

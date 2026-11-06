@@ -106,7 +106,7 @@ impl SeqGate {
 pub(super) trait LocalFs: Send + Sync + 'static {
     /// 路径是不是（跟随链接后的）目录。
     fn is_dir(&self, path: &str) -> bool;
-    /// 列目录；空路径是“此电脑”（盘符）。
+    /// 列目录；Windows 上空路径是“此电脑”（盘符），Linux 上空路径当作 `/`。
     fn list_dir(&self, path: &str) -> Result<Vec<Entry>, String>;
     /// 本地栏一开始落在哪：`wanted` 是复制标签带来的目录，必须还是个目录才用，否则按默认处理。
     fn start_dir(&self, wanted: Option<&str>) -> String;
@@ -222,7 +222,7 @@ impl LocalLister {
 /// 界面发给后台的一次本地列表请求。
 #[derive(Debug, Clone)]
 pub(super) enum LocalRequest {
-    /// 去 `target`（已去掉 `\\?\` 前缀；空 = “此电脑”）。
+    /// 去 `target`（已去掉 `\\?\` 前缀；Windows 上空 = “此电脑”）。
     Dir(String),
     /// 视图刚创建：先定下落点（复制标签带来的目录必须还是目录才用，否则默认临时目录），再读。
     Start(Option<String>),

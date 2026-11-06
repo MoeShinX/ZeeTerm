@@ -10,8 +10,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
 use zssh_core::sftp::fs::{self, CancelHandle, RecursiveDelete};
-use zssh_core::sftp::local::check_child_name;
-use zssh_core::sftp::path::{file_name, join, normalize, parent, relative};
+use zssh_core::sftp::path::{join, normalize, parent, relative};
 use zssh_core::sftp::transfer::{
     ConflictAction, ConflictDecision, ConflictInfo, ConflictResolver, Direction, TransferId,
     TransferState,
@@ -94,7 +93,8 @@ pub(super) fn conflict_decision(
 }
 
 /// 冲突「重命名」的新名字。落在本机（下载、本地复制）的名字复用核心的
-/// [`check_child_name`]；落在远端（上传、远端复制）的名字只能是一级、非空、不是 `.` / `..`。
+/// [`local_child_name`](super::local_path::local_child_name)（Windows 过 Windows 文件名规则，Linux 只挡 `/` 和 NUL）；
+/// 落在远端（上传、远端复制）的名字只能是一级、非空、不是 `.` / `..`。
 pub(super) fn conflict_rename_name(
     direction: Direction,
     typed_name: &str,
@@ -103,16 +103,19 @@ pub(super) fn conflict_rename_name(
     if typed.is_empty() {
         return Ok(None);
     }
-    if typed.contains(['/', '\\']) {
+    // 落在 Linux 本机的名字里 `\` 是普通字符，只有 `/` 是分隔符；其余情况（Windows 本机、远端）两个都不行。
+    let local_posix =
+        !cfg!(windows) && matches!(direction, Direction::Download | Direction::LocalCopy);
+    if typed.contains(|c: char| c == '/' || (c == '\\' && !local_posix)) {
         return Err(format!(
             "{}{typed}",
             t(super::SftpMsg::NamePathSeparatorPrefix)
         ));
     }
     match direction {
-        Direction::Download | Direction::LocalCopy => check_child_name(typed)
-            .map(Some)
-            .map_err(|err| error_text(&err)),
+        Direction::Download | Direction::LocalCopy => {
+            super::local_path::local_child_name(typed).map(Some)
+        }
         Direction::Upload | Direction::RemoteCopy => {
             if typed.contains('\0') {
                 return Err(t(super::SftpMsg::ConflictNameNullChar).to_owned());
@@ -706,7 +709,7 @@ pub(super) fn can_pause(state: &TransferState) -> bool {
     )
 }
 
-/// 上传落点：当前远端目录 + 本地文件名。Windows 的 `\` 先换成 `/` 再取最后一段。
+/// 上传落点：当前远端目录 + 本地文件名。Windows 的 `\` 先换成 `/` 再取最后一段；Linux 上 `\` 是名字的一部分。
 pub(super) fn upload_target(cwd: &str, local_path: &str) -> Result<String, String> {
     let name = local_file_name(local_path);
     if name.is_empty() {
@@ -721,10 +724,12 @@ pub(super) fn upload_target(cwd: &str, local_path: &str) -> Result<String, Strin
 /// 整目录上传的远端落点：当前远端目录 + 本地目录名，和单文件的规则一致。
 ///
 /// 名字里带 `:`、`/`、`\` 或被规范化成 `.` / `..` 的（比如盘符根 `C:\`）直接拒绝：
-/// 否则 `join` 出来的目标会跑出远端当前目录。
+/// 否则 `join` 出来的目标会跑出远端当前目录。Linux 本地的名字里 `:` 是普通字符，可以传；`\` 仍然拒绝
+/// （远端的名字规则不许有它，远端是 Windows 的 SFTP 服务时它还是分隔符）。
 pub(super) fn upload_dir_target(cwd: &str, local_dir: &str) -> Result<String, String> {
     let name = local_file_name(local_dir);
-    if name.is_empty() || name == "." || name == ".." || name.contains([':', '\\', '/']) {
+    let unusable = |c: char| c == '/' || c == '\\' || (cfg!(windows) && c == ':');
+    if name.is_empty() || name == "." || name == ".." || name.contains(unusable) {
         return Err(format!(
             "{local_dir:?}{}",
             t(super::SftpMsg::NoUsableDirName)
@@ -733,9 +738,7 @@ pub(super) fn upload_dir_target(cwd: &str, local_dir: &str) -> Result<String, St
     Ok(join(cwd, &name))
 }
 
-pub(super) fn local_file_name(local_path: &str) -> String {
-    file_name(&local_path.replace('\\', "/"))
-}
+pub(super) use super::local_path::local_file_name;
 
 /// 从系统拖进来的路径能怎么传。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -869,7 +872,17 @@ pub(super) fn default_download_dir() -> PathBuf {
 }
 
 /// 本地路径输入：绝对路径原样用，相对路径按本地栏的当前目录拼；空串给 `None`。
+///
+/// Linux 上还会展开 `~`、按文字整理 `.` / `..`（和 shell 的 `cd` 一样）。
 pub(super) fn resolve_local_path(cwd: &Path, typed: &str) -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return super::local_path::posix_resolve_typed(
+            &cwd.to_string_lossy(),
+            typed,
+            super::local_path::home().as_deref(),
+        )
+        .map(PathBuf::from);
+    }
     let trimmed = typed.trim();
     if trimmed.is_empty() {
         return None;

@@ -175,7 +175,7 @@ pub(super) enum NameCheck {
 }
 
 /// 新建 / 重命名的名字校验（0.2.14 `validateName`，再加 ZeeTerm 一直有的 `.` / `..` 和路径分隔符规则；
-/// 本地名字另外过 Windows 规则：保留名、非法字符、尾部点等）。
+/// 本地名字在 Windows 上另外过 Windows 规则：保留名、非法字符、尾部点等；在 Linux 上只有 `/` 和 NUL 不合法）。
 pub(super) fn validate_name(name: &str, side: Side) -> NameCheck {
     if name.trim().is_empty() {
         return NameCheck::Bad(t(super::SftpMsg::DialogNameEmpty).to_owned());
@@ -197,6 +197,10 @@ pub(super) fn validate_name(name: &str, side: Side) -> NameCheck {
             }
             NameCheck::Ok
         }
+        Side::Local if !cfg!(windows) => match super::local_path::posix_child_name(name) {
+            Ok(_) => NameCheck::Ok,
+            Err(reason) => NameCheck::Bad(reason),
+        },
         Side::Local => {
             if name.contains('\\') {
                 return NameCheck::Bad(t(super::SftpMsg::DialogNameBackslash).to_owned());
@@ -217,8 +221,12 @@ pub(super) fn validate_name(name: &str, side: Side) -> NameCheck {
     }
 }
 
-/// 名字已经被这个目录里的别的条目用了吗（不分大小写）。
-pub(super) fn name_taken(name: &str, existing: &[String]) -> bool {
+/// 名字已经被这个目录里的别的条目用了吗（不分大小写；Linux 的本地栏区分大小写）。
+pub(super) fn name_taken(side: Side, name: &str, existing: &[String]) -> bool {
+    if side == Side::Local && !cfg!(windows) {
+        let wanted = name.trim();
+        return existing.iter().any(|other| other == wanted);
+    }
     let wanted = name.trim().to_lowercase();
     existing.iter().any(|other| other.to_lowercase() == wanted)
 }
@@ -228,6 +236,17 @@ pub(super) fn validate_local_dir(raw: &str) -> NameCheck {
     let value = raw.trim();
     if value.is_empty() {
         return NameCheck::Bad(t(super::SftpMsg::DialogLocalDirRequired).to_owned());
+    }
+    // Linux：除了 NUL 什么字符都能出现在路径里（`?`、`*`、`\` 都是合法的名字字符），
+    // 但必须是绝对路径（`~` / `~/…` 先展开成家目录）。
+    if !cfg!(windows) {
+        return if value.contains('\0') {
+            NameCheck::Bad(t(super::SftpMsg::ConflictNameNullChar).to_owned())
+        } else if !super::local_path::expand_typed(value).starts_with('/') {
+            NameCheck::Bad(t(super::SftpMsg::MoveDestNeedAbsoluteLocalPosix).to_owned())
+        } else {
+            NameCheck::Ok
+        };
     }
     // 盘符后面的冒号是合法的，其余位置不许有 Windows 不允许的字符。
     let rest = match value.as_bytes() {
@@ -350,6 +369,7 @@ mod tests {
         assert_eq!(bad(validate_name("a\\b", Side::Remote)), "名字里不能有 \\");
     }
 
+    #[cfg(windows)]
     #[test]
     fn local_names_also_follow_windows_rules() {
         assert_eq!(validate_name("notes.txt", Side::Local), NameCheck::Ok);
@@ -368,14 +388,81 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
-    fn taken_names_ignore_case() {
-        let existing = vec!["Readme.md".to_owned(), "src".to_owned()];
-        assert!(name_taken(" readme.MD ", &existing));
-        assert!(!name_taken("docs", &existing));
-        assert!(!name_taken("x", &[]));
+    fn local_names_on_linux_only_exclude_slash_nul_and_dots() {
+        assert_eq!(validate_name("notes.txt", Side::Local), NameCheck::Ok);
+        // Windows 的限制在 Linux 本地栏上都是合法名字，反斜杠也是。
+        for name in [
+            "a:b",
+            "a*b",
+            "a?b",
+            "a\"b",
+            "a<b>",
+            "a|b",
+            "CON",
+            "name.",
+            r"a\b",
+            "报告 (1).txt",
+            ".hidden",
+        ] {
+            assert_eq!(validate_name(name, Side::Local), NameCheck::Ok, "{name:?}");
+        }
+        assert_eq!(bad(validate_name("a/b", Side::Local)), "名字里不能有 /");
+        assert_eq!(bad(validate_name("  ", Side::Local)), "名字不能为空");
+        assert_eq!(bad(validate_name("..", Side::Local)), "名字不能是 ..");
+        assert!(matches!(
+            validate_name("a\0b", Side::Local),
+            NameCheck::Bad(_)
+        ));
+        // 远端那一侧的规则不变：反斜杠照旧不让用。
+        assert_eq!(bad(validate_name(r"a\b", Side::Remote)), r"名字里不能有 \");
     }
 
+    #[test]
+    fn taken_names_ignore_case_except_in_the_linux_local_pane() {
+        let existing = vec!["Readme.md".to_owned(), "src".to_owned()];
+        assert!(name_taken(Side::Remote, " readme.MD ", &existing));
+        assert!(!name_taken(Side::Remote, "docs", &existing));
+        assert!(!name_taken(Side::Remote, "x", &[]));
+        #[cfg(windows)]
+        assert!(name_taken(Side::Local, " readme.MD ", &existing));
+        #[cfg(unix)]
+        {
+            assert!(!name_taken(Side::Local, " readme.MD ", &existing));
+            assert!(name_taken(Side::Local, " Readme.md ", &existing));
+            assert!(name_taken(Side::Local, "src", &existing));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_download_directories_must_be_absolute_and_nothing_else() {
+        assert_eq!(bad(validate_local_dir("")), "请输入一个本地目录");
+        assert_eq!(bad(validate_local_dir("   ")), "请输入一个本地目录");
+        for ok in [
+            "/srv/data",
+            "/home/me/下载 目录",
+            r"/tmp/a\b",
+            "/tmp/a?b*c",
+            "/tmp/a<b>|c",
+        ] {
+            assert_eq!(validate_local_dir(ok), NameCheck::Ok, "{ok:?}");
+        }
+        // 相对路径、Windows 的写法都不是 Linux 上的绝对路径。
+        let hint = "目标要写成完整路径（以 / 或 ~/ 开头，例如 /srv/data）";
+        for relative in ["docs", "./x", "D:\\x", "~someone/x"] {
+            assert_eq!(bad(validate_local_dir(relative)), hint, "{relative:?}");
+        }
+        // `~` 在取得到家目录时展开成绝对路径。
+        if super::super::local_path::home().is_some() {
+            assert_eq!(validate_local_dir("~/Downloads"), NameCheck::Ok);
+            assert_eq!(validate_local_dir(" ~ "), NameCheck::Ok);
+        }
+        assert!(matches!(validate_local_dir("/a\0b"), NameCheck::Bad(_)));
+    }
+
+    #[cfg(windows)]
     #[test]
     fn download_directories_are_checked_for_writing_only() {
         assert_eq!(bad(validate_local_dir("")), "请输入一个本地目录");
