@@ -127,7 +127,11 @@ impl crate::i18n::Msg for AboutMsg {
                 " 以 GPL-3.0-or-later 许可发布；使用的第三方组件及其许可见第三方声明。"
             }
             Self::Tagline => {
-                "面向 Windows 的 SSH 客户端：标签与分屏终端、跳板机与代理、AI 运维助手。"
+                if cfg!(windows) {
+                    "面向 Windows 的 SSH 客户端：标签与分屏终端、跳板机与代理、AI 运维助手。"
+                } else {
+                    "面向 Linux 的 SSH 客户端：标签与分屏终端、跳板机与代理、AI 运维助手。"
+                }
             }
             Self::VersionInfo => "版本信息",
         }
@@ -163,7 +167,11 @@ impl crate::i18n::Msg for AboutMsg {
                 " is released under GPL-3.0-or-later; the third-party components it uses and their licenses are listed in the third-party notices."
             }
             Self::Tagline => {
-                "An SSH client for Windows: tabbed and split terminals, jump hosts and proxies, and an AI operations assistant."
+                if cfg!(windows) {
+                    "An SSH client for Windows: tabbed and split terminals, jump hosts and proxies, and an AI operations assistant."
+                } else {
+                    "An SSH client for Linux: tabbed and split terminals, jump hosts and proxies, and an AI operations assistant."
+                }
             }
             Self::VersionInfo => "Version Information",
         }
