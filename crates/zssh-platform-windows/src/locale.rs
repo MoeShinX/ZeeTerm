@@ -9,8 +9,13 @@ pub fn system_is_chinese() -> bool {
         let lang_id = unsafe { GetUserDefaultUILanguage() };
         (lang_id & 0x3ff) == 0x04
     }
+    // Unix 按 POSIX locale 判断；LC_ALL 优先于 LC_MESSAGES，最后才是 LANG。
     #[cfg(not(windows))]
     {
-        false
+        ["LC_ALL", "LC_MESSAGES", "LANG"]
+            .iter()
+            .filter_map(|key| std::env::var(key).ok())
+            .find(|value| !value.is_empty())
+            .is_some_and(|value| value.to_ascii_lowercase().starts_with("zh"))
     }
 }

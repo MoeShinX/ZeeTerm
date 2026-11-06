@@ -142,6 +142,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn normalize_cleans_dots_and_parent_components() {
         assert_eq!(

@@ -822,9 +822,17 @@ fn read_at_impl(file: &std::fs::File, offset: u64, buf: &mut [u8]) -> std::io::R
     file.seek_read(buf, offset)
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn read_at_impl(file: &std::fs::File, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
-    // 其它平台：借助 pread 语义（这里用 seek + read，调用方保证单个句柄同一时刻只读一次）。
+    // pread：不移动共享的文件偏移，多个流水线读任务可以并发用同一个句柄。
+    // 不能用 seek + read——try_clone 出来的句柄共享偏移，并发读会读到错位的数据。
+    use std::os::unix::fs::FileExt;
+    file.read_at(buf, offset)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn read_at_impl(file: &std::fs::File, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+    // 其它平台没有位置读：只能 seek + read，调用方必须保证同一句柄串行读。
     let mut file = file;
     file.seek(SeekFrom::Start(offset))?;
     file.read(buf)
@@ -847,7 +855,25 @@ fn write_file_at(file: &std::fs::File, offset: u64, data: &[u8]) -> std::io::Res
     Ok(written)
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn write_file_at(file: &std::fs::File, offset: u64, data: &[u8]) -> std::io::Result<usize> {
+    // pwrite：和读一样，不碰共享的偏移。
+    use std::os::unix::fs::FileExt;
+    let mut written = 0;
+    while written < data.len() {
+        let n = file.write_at(&data[written..], offset + written as u64)?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "写入 0 字节",
+            ));
+        }
+        written += n;
+    }
+    Ok(written)
+}
+
+#[cfg(not(any(windows, unix)))]
 fn write_file_at(file: &std::fs::File, offset: u64, data: &[u8]) -> std::io::Result<usize> {
     let mut file = file;
     file.seek(SeekFrom::Start(offset))?;
@@ -873,6 +899,32 @@ mod tests {
         attrs.permissions = Some(0o100644);
         attrs.size = Some(1024);
         assert_eq!(remote_source_size("/file", &attrs).unwrap(), Some(1024));
+    }
+
+    /// 流水线会对同一个读句柄并发读；Unix 上必须用 pread，不能共享 seek 偏移。
+    #[tokio::test]
+    async fn concurrent_positional_reads_do_not_share_a_file_offset() {
+        let dir = crate::test_util::TestDir::new("endpoint-concurrent-read");
+        let path = dir.join("source.bin");
+        let data: Vec<u8> = (0..64 * 4096).map(|index| (index % 251) as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+
+        let endpoint = LocalEndpoint::new(&path);
+        let reader = endpoint.open_read().await.unwrap();
+        let mut set = tokio::task::JoinSet::new();
+        for index in 0..64u64 {
+            let reader = Arc::clone(&reader);
+            set.spawn(async move {
+                let chunk = reader.read_at(index * 4096, 4096).await.unwrap();
+                (index, chunk)
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            let (index, chunk) = joined.unwrap();
+            let start = index as usize * 4096;
+            assert_eq!(chunk, &data[start..start + 4096], "第 {index} 块读错了");
+        }
+        reader.close().await.unwrap();
     }
 
     #[tokio::test]

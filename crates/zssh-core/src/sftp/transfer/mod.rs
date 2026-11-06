@@ -328,6 +328,9 @@ struct JobState {
     resume_signal: Notify,
     progress: Mutex<JobProgress>,
     state: Mutex<TransferState>,
+    /// 同一任务同时只允许一轮 run_job。重试必须等上一轮把临时文件的收尾做完，
+    /// 否则两个 run 会同时打开同一个 `.zssh-part`（Linux 上已复现过内容重复）。
+    run_lock: tokio::sync::Mutex<()>,
     /// 每个目标的临时文件里**已确认的连续前缀**长度（目标路径 → 字节数）。
     /// 只在整批写都成功之后才往前走。续传点由它决定，而不是临时文件的长度：
     /// 一批并发写里失败时，后面的块可能已经落盘，长度大于前缀、中间有洞，
@@ -502,6 +505,7 @@ impl TransferEngine {
             resume_signal: Notify::new(),
             progress: Mutex::new(JobProgress::new()),
             state: Mutex::new(TransferState::Queued),
+            run_lock: tokio::sync::Mutex::new(()),
             confirmed: Mutex::new(HashMap::new()),
         });
         self.jobs
@@ -631,6 +635,8 @@ impl TransferEngine {
     }
 
     async fn run_job(self: Arc<Self>, state: Arc<JobState>, prefer_resume: bool) {
+        // 上一轮还没退出时（例如刚看到 Failed 事件就点了重试），这一轮在这里等。
+        let _run = state.run_lock.lock().await;
         self.set_state(&state, TransferState::Planning);
         self.emit(&state, true);
 

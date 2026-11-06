@@ -107,6 +107,7 @@ fn under(child: &str, parent: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn the_same_target_in_different_spellings_is_one_lock() {
         let locks = Arc::new(TargetLocks::default());

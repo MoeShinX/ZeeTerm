@@ -31,7 +31,7 @@ pub fn hide_console_async(cmd: &mut tokio::process::Command) -> &mut tokio::proc
     cmd
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 

@@ -3,7 +3,11 @@
 //! 用 `CryptProtectData` 加一个固定的应用级 entropy，别的程序拿到密文也没法直接
 //! 解出来。密文只进 `secret_blob`，绝不出现明文列。
 
-use crate::error::{reason_keys as rk, Reason, ZsshError};
+#[cfg(windows)]
+use crate::error::reason_keys as rk;
+#[cfg(any(windows, not(target_os = "linux")))]
+use crate::error::Reason;
+use crate::error::ZsshError;
 
 /// 应用级 entropy。这是历史值：当初产品还叫 Z-ssh 时定下的，现在产品叫 ZeeTerm，
 /// 这里也保持原样。**永远不要改**——改一个字节，已有的密文就都解不开了。
@@ -125,20 +129,29 @@ fn to_u32(len: usize) -> Result<u32, ZsshError> {
     })
 }
 
-/// 非 Windows 平台上没有 DPAPI。本项目只做 Windows，这里让 crate 在别的平台上
-/// 也能编译，真调用会明确报错。
-#[cfg(not(windows))]
+/// Linux 没有 DPAPI：用资料库密钥 + XChaCha20-Poly1305，密钥放系统钥匙串。
+#[cfg(target_os = "linux")]
+pub fn protect(plaintext: &[u8]) -> Result<Vec<u8>, ZsshError> {
+    super::vault::protect(plaintext)
+}
+
+#[cfg(target_os = "linux")]
+pub fn unprotect(blob: &[u8]) -> Result<Vec<u8>, ZsshError> {
+    super::vault::unprotect(blob)
+}
+
+/// macOS 的 Keychain 后端尚未实现：明确报错，不静默降级。
+#[cfg(all(not(windows), not(target_os = "linux")))]
 pub fn protect(_plaintext: &[u8]) -> Result<Vec<u8>, ZsshError> {
-    // 本项目只做 Windows，这条路径用户碰不到。
     Err(ZsshError::Secret(Reason::text(
-        "这个平台没有 DPAPI，敏感信息无法加密",
+        "这个平台还没有实现本机秘密保管",
     )))
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "linux")))]
 pub fn unprotect(_blob: &[u8]) -> Result<Vec<u8>, ZsshError> {
     Err(ZsshError::Secret(Reason::text(
-        "这个平台没有 DPAPI，敏感信息无法解密",
+        "这个平台还没有实现本机秘密保管",
     )))
 }
 

@@ -404,6 +404,9 @@ pub mod keys {
         SSH_USER_REQUIRED = "store.ssh_user_required";
         DPAPI_PROTECT_FAILED = "store.dpapi_protect_failed";
         DPAPI_UNPROTECT_FAILED = "store.dpapi_unprotect_failed";
+        VAULT_UNAVAILABLE = "store.vault_unavailable";
+        VAULT_CORRUPT = "store.vault_corrupt";
+        VAULT_CRYPTO_FAILED = "store.vault_crypto_failed";
         DATA_TOO_LONG = "store.data_too_long";
         NO_SAVED_PASSWORD = "store.no_saved_password";
         KEY_LOGIN_NO_PASSWORD = "store.key_login_no_password";

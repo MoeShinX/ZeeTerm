@@ -61,6 +61,7 @@ fn new_token() -> [u8; TOKEN_LEN] {
 }
 
 /// 到点要不要清：剪贴板上我们的私有格式还在、内容就是这次的标记才清。
+#[cfg(any(windows, test))]
 fn token_matches(on_clipboard: Option<&[u8]>, token: &[u8; TOKEN_LEN]) -> bool {
     on_clipboard.is_some_and(|bytes| bytes.get(..TOKEN_LEN) == Some(token.as_slice()))
 }

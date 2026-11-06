@@ -2619,6 +2619,7 @@ async fn paused_wait_cannot_lose_resume_or_cancel_before_await() {
             resume_signal: Notify::new(),
             progress: Mutex::new(JobProgress::new()),
             state: Mutex::new(TransferState::Paused),
+            run_lock: tokio::sync::Mutex::new(()),
             confirmed: Mutex::new(HashMap::new()),
         });
         engine

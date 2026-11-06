@@ -34,7 +34,8 @@ impl TempDb {
         Database::open(&self.path).expect("文件库应该能建起来")
     }
 
-    /// 主文件和 WAL 的原始字节。
+    /// 主文件和 WAL 的原始字节。只有 Windows 的 DPAPI 明文检查用它。
+    #[cfg(windows)]
     fn raw_bytes(&self) -> Vec<u8> {
         let mut bytes = std::fs::read(&self.path).expect("应该能读数据库文件");
         let wal = self.path.with_extension("db-wal");

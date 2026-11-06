@@ -583,30 +583,42 @@ async fn agent_auth(
     }
 }
 
-/// 先试 OpenSSH agent 的命名管道，失败再试 Pageant（设计文档 4.3）。
+/// Windows 用命名管道，失败再试 Pageant；Unix 用 `SSH_AUTH_SOCK`（设计文档 4.3）。
 async fn connect_agent() -> Option<AnyAgent> {
-    let pipe = tokio::time::timeout(
-        AGENT_CONNECT_TIMEOUT,
-        AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent"),
-    )
-    .await;
+    #[cfg(windows)]
+    {
+        let pipe = tokio::time::timeout(
+            AGENT_CONNECT_TIMEOUT,
+            AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent"),
+        )
+        .await;
 
-    match pipe {
-        Ok(Ok(client)) => {
-            debug!("连上 OpenSSH agent 命名管道");
-            return Some(client.dynamic());
+        match pipe {
+            Ok(Ok(client)) => {
+                debug!("连上 OpenSSH agent 命名管道");
+                return Some(client.dynamic());
+            }
+            Ok(Err(err)) => debug!(%err, "OpenSSH agent 命名管道连不上"),
+            Err(_) => debug!("OpenSSH agent 命名管道连接超时"),
         }
-        Ok(Err(err)) => debug!(%err, "OpenSSH agent 命名管道连不上"),
-        Err(_) => debug!("OpenSSH agent 命名管道连接超时"),
+
+        match AgentClient::connect_pageant().await {
+            Ok(client) => {
+                debug!("连上 Pageant");
+                return Some(client.dynamic());
+            }
+            Err(err) => debug!(%err, "Pageant 连不上"),
+        }
     }
 
-    #[cfg(windows)]
-    match AgentClient::connect_pageant().await {
-        Ok(client) => {
-            debug!("连上 Pageant");
+    #[cfg(unix)]
+    match tokio::time::timeout(AGENT_CONNECT_TIMEOUT, AgentClient::connect_env()).await {
+        Ok(Ok(client)) => {
+            debug!("连上 SSH_AUTH_SOCK agent");
             return Some(client.dynamic());
         }
-        Err(err) => debug!(%err, "Pageant 连不上"),
+        Ok(Err(err)) => debug!(%err, "SSH_AUTH_SOCK agent 连不上"),
+        Err(_) => debug!("SSH_AUTH_SOCK agent 连接超时"),
     }
 
     None

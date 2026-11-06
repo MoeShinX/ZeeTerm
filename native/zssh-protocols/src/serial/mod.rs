@@ -24,7 +24,8 @@ pub struct SerialPortEntry {
     pub display_name: String,
 }
 
-/// COM 口按编号排（COM2 在 COM10 前面）。
+/// COM 口按编号排（COM2 在 COM10 前面）。串口首版只做 Windows。
+#[cfg(windows)]
 fn sort_ports(entries: &mut [SerialPortEntry]) {
     fn number(device: &str) -> (u64, String) {
         let digits: String = device
@@ -95,7 +96,7 @@ pub fn open_serial(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 

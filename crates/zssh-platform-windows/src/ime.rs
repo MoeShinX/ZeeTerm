@@ -235,6 +235,22 @@ mod win32 {
 #[cfg(windows)]
 pub use win32::Win32Ime;
 
+/// Unix 的输入法由 GPUI/winit 自己处理，这里只保留状态机需要的后端形状：
+/// 读不到模式，状态机就不会尝试切英文，也不会误改系统输入法。
+#[cfg(unix)]
+pub struct Win32Ime;
+
+#[cfg(unix)]
+impl ImeControl for Win32Ime {
+    fn read_mode(&mut self) -> Option<usize> {
+        None
+    }
+
+    fn write_mode(&mut self, _mode: usize) -> bool {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

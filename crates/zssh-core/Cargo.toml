@@ -42,6 +42,15 @@ sha2 = "0.10"
 # Tokenway 预设清单的 ed25519 验签（V2-A5）。russh 的 ring 后端本来就在依赖树里，不引新的编译产物。
 ring = "0.17"
 
+# Linux 本机秘密：资料库密钥放 Secret Service（keyring → zbus）。
+# Entry 的调用是同步阻塞的，代码里用独立线程访问，不能放在 Tokio 主线程。
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = [
+    "async-secret-service",
+    "tokio",
+    "crypto-rust",
+] }
+
 [target.'cfg(windows)'.dependencies]
 # DPAPI（CryptProtectData / CryptUnprotectData）
 windows = { workspace = true, features = [

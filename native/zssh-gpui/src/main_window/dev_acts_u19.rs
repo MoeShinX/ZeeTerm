@@ -83,14 +83,20 @@ mod real {
                 fake_backup(std::path::Path::new(path), password)?;
             }
             "u19_hold" => {
-                use std::os::windows::fs::OpenOptionsExt;
-                let file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .share_mode(3)
-                    .open(std::path::Path::new(&joined).join("data.db"))
-                    .map_err(|err| format!("占不住：{err}"))?;
-                *HELD.lock().unwrap_or_else(|p| p.into_inner()) = Some(file);
+                // 这个钩子靠 Windows 的共享模式占住文件；Unix 的 demo 不需要它。
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::OpenOptionsExt;
+                    let file = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .share_mode(3)
+                        .open(std::path::Path::new(&joined).join("data.db"))
+                        .map_err(|err| format!("占不住：{err}"))?;
+                    *HELD.lock().unwrap_or_else(|p| p.into_inner()) = Some(file);
+                }
+                #[cfg(not(windows))]
+                return Err("u19_hold 只支持 Windows".to_owned());
             }
             "u19_release" => {
                 *HELD.lock().unwrap_or_else(|p| p.into_inner()) = None;

@@ -90,6 +90,10 @@ mod terminal_workspace;
 mod test_sftp_server;
 #[cfg(test)]
 mod test_ssh_server;
+#[cfg(windows)]
+mod tray;
+#[cfg(not(windows))]
+#[path = "tray_linux.rs"]
 mod tray;
 mod typography;
 mod update;
@@ -100,6 +104,7 @@ mod x11_glue;
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 use main_window::MainWindow;
+#[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::sync::Mutex;
 #[cfg(debug_assertions)]
@@ -200,11 +205,14 @@ fn main() {
             window.set_window_title(product::NAME);
             let view = cx.new(|cx| MainWindow::new(window, cx));
             window.focus(&view.read(cx).focus_handle(), cx);
+            #[cfg(windows)]
             if let Ok(handle) = window.window_handle()
                 && let RawWindowHandle::Win32(win32) = handle.as_raw()
             {
                 single_instance::set_window_prop(win32.hwnd.get(), MAIN_WINDOW_PROP);
             }
+            #[cfg(not(windows))]
+            let _ = MAIN_WINDOW_PROP;
             // 关闭按钮收进托盘，进程和后台任务继续跑；托盘没建起来时没有入口能叫回窗口，
             // 这时必须真正退出。两种情况都记住窗口位置和布局。
             let close_view = view.clone();

@@ -164,6 +164,8 @@ enum UpdateMsg {
     WritePackageFailedPrefix,
     RememberSkipFailedPrefix,
     PackageChangedRefusedPrefix,
+    /// 只有 Windows 的安装路径会用；保留键值方便翻译表对齐。
+    #[cfg_attr(not(windows), allow(dead_code))]
     ShellExecuteErrorPrefix,
     /// 只有非 Windows 构建会用到（Windows 上走 `ShellExecuteW`）。
     #[cfg(not(windows))]
@@ -1714,6 +1716,9 @@ fn clear_pending_install() {
 }
 
 /// 排队等退出后安装的版本号（不带 `v`）；托盘据此显示「重启安装 vX」。没有排队时为 `None`。
+///
+/// 目前只有 Windows 托盘用它；Linux 首版没有托盘。
+#[cfg(windows)]
 pub fn pending_install_version() -> Option<String> {
     locked_pending_install()
         .as_ref()
@@ -1722,6 +1727,7 @@ pub fn pending_install_version() -> Option<String> {
 
 /// 托盘的「重启安装」：把排队的计划改成"装完重启 ZeeTerm"。返回是否真有计划可改。
 /// 实际启动安装器仍然在程序退出时（`run_pending_install`），由调用方随后退出程序。
+#[cfg(windows)]
 pub fn arm_pending_restart() -> bool {
     let mut slot = locked_pending_install();
     match slot.take() {
@@ -1836,6 +1842,7 @@ fn shell_execute_installer(_plan: &InstallPlan) -> Result<(), String> {
 }
 
 /// 按 Windows 命令行规则拼一组参数。
+#[cfg(any(windows, test))]
 fn quote_args(args: &[String]) -> String {
     let mut line = String::new();
     for (index, arg) in args.iter().enumerate() {
@@ -1851,6 +1858,7 @@ fn quote_args(args: &[String]) -> String {
 ///
 /// 引号前的反斜杠要加倍再转义引号，结尾的反斜杠也要加倍，否则会被当成
 /// 转义后面的结束引号。
+#[cfg(any(windows, test))]
 fn push_quoted_arg(line: &mut String, arg: &str) {
     let needs_quotes = arg.is_empty() || arg.chars().any(|ch| ch.is_whitespace() || ch == '"');
     if !needs_quotes {
@@ -1878,6 +1886,7 @@ fn push_quoted_arg(line: &mut String, arg: &str) {
     line.push('"');
 }
 
+#[cfg(any(windows, test))]
 fn push_repeated(line: &mut String, ch: char, count: usize) {
     for _ in 0..count {
         line.push(ch);

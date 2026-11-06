@@ -678,6 +678,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn ensure_inside_rejects_escapes() {
         let root = Path::new("C:\\d\\out");

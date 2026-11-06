@@ -154,7 +154,7 @@ pub fn shutdown_owned_if_configured(prefs: &X11Prefs, x11_dir: &Path) -> bool {
     prefs.close_owned_on_exit && OwnedRegistry::global().shutdown(x11_dir)
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use std::path::PathBuf;
 

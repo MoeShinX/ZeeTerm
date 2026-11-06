@@ -240,6 +240,10 @@ pub(crate) fn semicolon() -> &'static str {
 }
 
 /// 界面文案的键。
+///
+/// 少数键只在 Windows 的托盘里用；Linux 首版没有托盘，这些键暂未构造，
+/// 但翻译表要保留，方便接 Linux 托盘时直接复用。
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Key {
     // ---- 托盘 ----

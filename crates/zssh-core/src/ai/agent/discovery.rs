@@ -911,7 +911,7 @@ fn first_meaningful_line(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use std::fs;

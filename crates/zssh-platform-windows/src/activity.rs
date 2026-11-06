@@ -11,8 +11,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+#[cfg(windows)]
 use windows::Win32::System::Threading::GetCurrentThreadId;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, SetWindowsHookExW, HHOOK, MSG, WH_GETMESSAGE,
 };
@@ -53,6 +56,7 @@ pub fn idle_for() -> Duration {
     Duration::from_millis(now_ms().saturating_sub(LAST.load(Ordering::Relaxed)))
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // code < 0 时按约定不处理，直接交给下一个。
     if code >= 0 && lparam.0 != 0 {
@@ -70,10 +74,16 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 /// 进程里装一次就够；钩子随线程结束自动卸掉，所以不保存句柄。
 pub fn install_on_current_thread() -> bool {
     touch();
-    // SAFETY: 线程钩子（dwThreadId = 当前线程），回调是上面的 extern "system" 函数，不引用任何会失效的东西。
-    let hook: windows::core::Result<HHOOK> =
-        unsafe { SetWindowsHookExW(WH_GETMESSAGE, Some(hook_proc), None, GetCurrentThreadId()) };
-    hook.is_ok()
+    #[cfg(windows)]
+    {
+        // SAFETY: 线程钩子（dwThreadId = 当前线程），回调是上面的 extern "system" 函数，不引用任何会失效的东西。
+        let hook: windows::core::Result<HHOOK> =
+            unsafe { SetWindowsHookExW(WH_GETMESSAGE, Some(hook_proc), None, GetCurrentThreadId()) };
+        return hook.is_ok();
+    }
+    // Unix 没有消息钩子；空闲检测由界面层自己调用 touch()（待接 GPUI 输入事件）。
+    #[cfg(not(windows))]
+    false
 }
 
 #[cfg(test)]

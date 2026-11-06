@@ -411,16 +411,37 @@ pub fn verify_windows_user(window: Option<isize>) -> OsCheck {
     if let Some(stub) = stub_from_env() {
         return zssh_core::app_lock::verify_os_user(&stub, message);
     }
-    zssh_core::app_lock::verify_os_user(&zssh_core::app_lock::WindowsVerifier::new(window), message)
+    #[cfg(windows)]
+    {
+        zssh_core::app_lock::verify_os_user(
+            &zssh_core::app_lock::WindowsVerifier::new(window),
+            message,
+        )
+    }
+    // Unix 还没有系统身份验证后端：明确返回不可用，由调用方走密码校验，
+    // 不能假装验证成功。
+    #[cfg(not(windows))]
+    {
+        let _ = (window, message);
+        OsCheck::Unavailable
+    }
 }
 
-/// 这个窗口的 HWND（给 Windows Hello 对话框挂在 ZeeTerm 上）。
+/// 这个窗口的系统句柄（Windows Hello 对话框挂靠用；其他平台没有）。
 pub fn window_hwnd(window: &Window) -> Option<isize> {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    // `Window` 自己也有一个返回 gpui 窗口句柄的 `window_handle()`：这里要的是系统的那个，写明白。
-    match HasWindowHandle::window_handle(window).ok()?.as_raw() {
-        RawWindowHandle::Win32(win32) => Some(win32.hwnd.get()),
-        _ => None,
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        // `Window` 自己也有一个返回 gpui 窗口句柄的 `window_handle()`：这里要的是系统的那个，写明白。
+        return match HasWindowHandle::window_handle(window).ok()?.as_raw() {
+            RawWindowHandle::Win32(win32) => Some(win32.hwnd.get()),
+            _ => None,
+        };
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        None
     }
 }
 

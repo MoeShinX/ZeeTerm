@@ -213,7 +213,7 @@ impl InstallerRunner for UacRunner {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use std::sync::atomic::Ordering;
     use std::sync::Mutex;

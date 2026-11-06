@@ -1569,6 +1569,7 @@ pub(crate) mod tests {
         assert!(parse_ready_line("something else").is_none());
     }
 
+    #[cfg(windows)]
     #[test]
     fn config_home_lives_under_the_workspace() {
         // 用户自带 MCP 的隔离靠这个目录（见 config.rs）：它必须在我们的工作目录下，
