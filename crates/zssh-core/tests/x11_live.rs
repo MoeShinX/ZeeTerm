@@ -100,6 +100,7 @@ async fn x11_forwarding_through_a_real_sshd_swaps_the_cookie() {
                         host: "127.0.0.1".into(),
                         port,
                         screen: 0,
+                        unix: None,
                     },
                     real_cookie: Some(real.clone()),
                 },

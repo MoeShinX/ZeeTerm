@@ -128,6 +128,7 @@ enum HostDialogMsg {
     // ---- 高级设置 ----
     X11Forward,
     X11Hint,
+    X11HintLinux,
     LegacyTitle,
     LegacyHint,
     NawsHint,
@@ -203,7 +204,11 @@ impl Msg for HostDialogMsg {
             Self::NoSerialPorts => "未检测到串口",
             Self::RefreshPorts => "刷新串口列表",
             Self::NoPortsHint => {
-                "没有检测到串口，可以直接填设备名（例如 COM3）；插上设备后点右边的刷新。"
+                if cfg!(windows) {
+                    "没有检测到串口，可以直接填设备名（例如 COM3）；插上设备后点右边的刷新。"
+                } else {
+                    "没有检测到串口，可以直接填设备路径（例如 /dev/ttyUSB0）；插上设备后点右边的刷新。"
+                }
             }
             Self::CommonValues => "常用值",
             Self::HidePassword => "隐藏密码",
@@ -229,6 +234,9 @@ impl Msg for HostDialogMsg {
             Self::X11Forward => "X11 转发",
             Self::X11Hint => {
                 "把远程图形程序显示在本机的 X 服务器上（如 VcXsrv）；本机没有时连接会提示安装。"
+            }
+            Self::X11HintLinux => {
+                "把远程图形程序显示在本机的 X 服务器上（当前桌面会话的 DISPLAY；Wayland 桌面需要 Xwayland）；本机没有时连接会提示。"
             }
             Self::LegacyTitle => "旧算法兼容",
             Self::LegacyHint => {
@@ -311,7 +319,11 @@ impl Msg for HostDialogMsg {
             Self::NoSerialPorts => "No serial ports detected",
             Self::RefreshPorts => "Refresh serial port list",
             Self::NoPortsHint => {
-                "No serial ports detected; you can enter the device name directly (for example COM3). Plug in the device, then click Refresh on the right."
+                if cfg!(windows) {
+                    "No serial ports detected; you can enter the device name directly (for example COM3). Plug in the device, then click Refresh on the right."
+                } else {
+                    "No serial ports detected; you can enter the device path directly (for example /dev/ttyUSB0). Plug in the device, then click Refresh on the right."
+                }
             }
             Self::CommonValues => "Common Values",
             Self::HidePassword => "Hide Password",
@@ -341,6 +353,9 @@ impl Msg for HostDialogMsg {
             Self::X11Forward => "X11 Forwarding",
             Self::X11Hint => {
                 "Show remote graphical programs on this machine's X server (such as VcXsrv); when none is available, connecting prompts you to install one."
+            }
+            Self::X11HintLinux => {
+                "Show remote graphical programs on this machine's X server (the DISPLAY of the current desktop session; Wayland desktops need Xwayland); when none is available, connecting tells you so."
             }
             Self::LegacyTitle => "Legacy Algorithms",
             Self::LegacyHint => {
@@ -1718,7 +1733,11 @@ impl MainWindow {
                     entity,
                     "host-x11",
                     t(HostDialogMsg::X11Forward),
-                    Some(t(HostDialogMsg::X11Hint)),
+                    Some(t(if cfg!(unix) {
+                        HostDialogMsg::X11HintLinux
+                    } else {
+                        HostDialogMsg::X11Hint
+                    })),
                     form.x11,
                     |form, value| form.x11 = value,
                     tokens,

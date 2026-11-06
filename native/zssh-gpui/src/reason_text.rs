@@ -100,7 +100,13 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
             "With auto-login on, both the user name prompt and the password prompt need at least one match rule"
         }
         "protocol.auto_login_needs_user" => "With auto-login on, the user name cannot be empty",
-        "protocol.serial_device_empty" => "Enter the serial device name (for example COM3)",
+        "protocol.serial_device_empty" => {
+            if cfg!(windows) {
+                "Enter the serial device name (for example COM3)"
+            } else {
+                "Enter the serial device path (for example /dev/ttyUSB0)"
+            }
+        }
         "protocol.serial_device_bad" => {
             "The serial device name can be at most {max} characters and cannot contain control characters"
         }
@@ -292,6 +298,9 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         }
         "x11.display_unix_socket" => {
             "Windows has no Unix sockets; write an address like localhost:0"
+        }
+        "x11.display_socket_path" => {
+            "Writing a socket path directly is not supported; use an address like :0 or localhost:0"
         }
         "x11.display_format" => {
             "The display address {spec} is not valid; it should look like localhost:0 or :0"
@@ -730,6 +739,9 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         }
         "x11.custom_display_bad" => {
             "The display address specified in settings is unusable: {cause}"
+        }
+        "x11.session_display_bad" => {
+            "The DISPLAY environment variable of this session is unusable: {cause}"
         }
         "x11.prepare_task_failed" => {
             "The task that prepares the local X server ended abnormally: {cause}"

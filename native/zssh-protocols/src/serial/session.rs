@@ -1,9 +1,9 @@
-//! 串口会话：一个读线程、一个写线程，各自挂在重叠 I/O 上，不忙等。
+//! 串口会话：一个读线程、一个写线程，不忙等（Windows 挂在重叠 I/O 上，Linux 挂在 poll 上）。
 //!
 //! - 读线程：先问流控门（终端没消化完就不读，驱动缓冲满了之后由线路流控挡住设备），然后阻塞在
-//!   `ReadFile` 上直到有字节到达；解码成 UTF-8 送给界面；
+//!   `ReadFile`（Linux 是 `poll`）上直到有字节到达；解码成 UTF-8 送给界面；
 //! - 写线程：取命令（键入、Break、关闭），转换回车 / 编码后写出；
-//! - 关闭（用户关标签、后端被丢弃、设备被拔出）：置停止事件，两个线程的等待立刻返回，
+//! - 关闭（用户关标签、后端被丢弃、设备被拔出）：置停止事件（Linux 是 eventfd），两个线程的等待立刻返回，
 //!   线程退出时放掉最后一个 `Arc<CommHandle>`，句柄关闭，COM 口随即可以被重新打开。
 
 use std::sync::Arc;
@@ -17,10 +17,7 @@ use zssh_core::ssh::FlowGate;
 use zssh_session::{SessionCommand, SessionEvent};
 
 use super::os::{CommHandle, IoEvent, ReadOutcome, WriteOutcome};
-use super::params::{
-    OpenStage, SerialError, classify_open_error, describe_framing_in, io_error_means_disconnected,
-    normalize_device,
-};
+use super::params::{SerialError, describe_framing_in, normalize_device_for_os};
 use crate::backend::{BackendCommand, BackendEnds, COMMAND_QUEUE, EventOut, StreamBackend};
 use crate::input::{InputFilter, serial_enter_bytes};
 use crate::text::{TextDecoder, TextEncoder};
@@ -45,7 +42,7 @@ pub fn open_serial(
     ),
     SerialError,
 > {
-    let (path, label) = normalize_device(&options.device)?;
+    let (path, label) = normalize_device_for_os(&options.device)?;
     let comm = Arc::new(CommHandle::open_comm(&path, &label, options)?);
     Ok(start(comm, label, options, generation, runtime))
 }
@@ -240,7 +237,9 @@ fn write_loop(
     closed.store(true, Ordering::Release);
 }
 
+#[cfg(windows)]
 fn io_failure_message(label: &str, error: &std::io::Error, writing: bool) -> String {
+    use super::params::{OpenStage, classify_open_error, io_error_means_disconnected};
     let code = error.raw_os_error().unwrap_or(0) as u32;
     if io_error_means_disconnected(code) {
         return SerialError::Disconnected {
@@ -257,7 +256,27 @@ fn io_failure_message(label: &str, error: &std::io::Error, writing: bool) -> Str
     .message(crate::lang::language())
 }
 
+/// Linux：读写出错时 `errno` 是 EIO / ENXIO / ENODEV / EPIPE 基本就是设备没了（USB 串口被拔出）。
+#[cfg(not(windows))]
+fn io_failure_message(label: &str, error: &std::io::Error, writing: bool) -> String {
+    use super::params::errno_means_disconnected;
+    let errno = error.raw_os_error().unwrap_or(0);
+    if errno_means_disconnected(errno) {
+        return SerialError::Disconnected {
+            device: label.to_owned(),
+        }
+        .message(crate::lang::language());
+    }
+    SerialError::Os {
+        device: label.to_owned(),
+        code: errno as u32,
+        what: crate::lang::serial_io_failed(writing, &error.to_string()),
+    }
+    .message(crate::lang::language())
+}
+
 #[cfg(test)]
+#[cfg(windows)]
 mod tests {
     use super::*;
     use crate::serial::os::test_pipe;

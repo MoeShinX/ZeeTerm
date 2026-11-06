@@ -59,7 +59,13 @@ impl Msg for HostPanelMsg {
     fn zh(&self) -> &'static str {
         match self {
             Self::MemoryPlaceholder => "还没有记忆。和 AI 聊这台主机时，它会把有用的事实记在这里。",
-            Self::DevicePlaceholder => "例如 COM3",
+            Self::DevicePlaceholder => {
+                if cfg!(windows) {
+                    "例如 COM3"
+                } else {
+                    "例如 /dev/ttyUSB0"
+                }
+            }
             Self::CannotSwitchSerial => "串口主机和网络主机不能互相转换，要换类型请新建一台主机",
             Self::FingerprintsClearedPrefix => "已清除 ",
             Self::FingerprintsClearedSuffix => " 条指纹记录，下次连接会重新询问",
@@ -87,7 +93,13 @@ impl Msg for HostPanelMsg {
             Self::MemoryPlaceholder => {
                 "No notes yet. When you chat with the AI about this host, useful facts are recorded here."
             }
-            Self::DevicePlaceholder => "for example COM3",
+            Self::DevicePlaceholder => {
+                if cfg!(windows) {
+                    "for example COM3"
+                } else {
+                    "for example /dev/ttyUSB0"
+                }
+            }
             Self::CannotSwitchSerial => {
                 "Serial hosts and network hosts cannot be converted into each other; create a new host to change the type"
             }
