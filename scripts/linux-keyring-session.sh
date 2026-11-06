@@ -5,7 +5,7 @@
 # 为什么：Linux 版把本机秘密的密钥放进 Secret Service（见 crates/zssh-core/src/store/vault.rs），
 # 测试要走真实的 Secret Service，又不能碰用户桌面的钥匙串。所以每次跑一个私有的会话总线，
 # 起一个用固定测试口令解锁的 gnome-keyring-daemon，命令结束后整个会话连同它的数据一起删掉。
-# 本机的 /opt/zeeterm/vm-gates.sh 和 CI 用的是同一种做法。需要 dbus-run-session 和 gnome-keyring
+# CI 用的也是这种做法。需要 dbus-run-session 和 gnome-keyring
 # （scripts/linux-build-deps.sh test 会装）。命令的退出码原样返回。
 set -eu
 
