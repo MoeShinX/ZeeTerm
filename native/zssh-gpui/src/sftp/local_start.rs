@@ -170,11 +170,12 @@ fn unquote_shell_value(value: &str) -> Option<String> {
 /// 开头的 `$HOME` / `${HOME}` 换成家目录；别的变量不展开（返回 `None`）。
 #[cfg(not(windows))]
 fn expand_home(value: &str, home: &Path) -> Option<String> {
-    if value.contains('$') {
+    // 引号里的转义已经还原过了（`\$` 已经是字面的 `$`），所以只看开头：以 `$` 开头的必须是 `$HOME`。
+    if value.starts_with('$') {
         let rest = value
             .strip_prefix("${HOME}")
             .or_else(|| value.strip_prefix("$HOME"))?;
-        if rest.contains('$') || !(rest.is_empty() || rest.starts_with('/')) {
+        if !(rest.is_empty() || rest.starts_with('/')) {
             return None;
         }
         return Some(format!("{}{rest}", home.display()));

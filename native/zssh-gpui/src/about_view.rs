@@ -507,9 +507,13 @@ impl Render for AboutView {
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
+    #[cfg(windows)]
+    use super::display_path;
+    #[cfg(not(windows))]
+    use super::tilde_path;
     use super::{
-        auto_check_description, data_dir_text, display_path, known_hosts_text, releases_url,
-        signing_configured, update_description, version_text,
+        auto_check_description, data_dir_text, known_hosts_text, releases_url, signing_configured,
+        update_description, version_text,
     };
     use crate::product;
 

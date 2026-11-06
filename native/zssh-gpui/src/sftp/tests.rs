@@ -307,14 +307,18 @@ fn pause_hook_only_accepts_a_positive_number() {
 
 #[test]
 fn local_paths_resolve_against_the_current_dir() {
-    let cwd = Path::new(r"C:\root");
+    #[cfg(windows)]
+    let (root, joined, other) = (r"C:\root", r"C:\root\sub", r"D:\other");
+    #[cfg(not(windows))]
+    let (root, joined, other) = ("/root", "/root/sub", "/other");
+    let cwd = Path::new(root);
     assert_eq!(
         resolve_local_path(cwd, "sub").unwrap(),
-        PathBuf::from(r"C:\root\sub")
+        PathBuf::from(joined)
     );
     assert_eq!(
-        resolve_local_path(cwd, r"D:\other").unwrap(),
-        PathBuf::from(r"D:\other")
+        resolve_local_path(cwd, other).unwrap(),
+        PathBuf::from(other)
     );
     assert!(resolve_local_path(cwd, "   ").is_none());
 }

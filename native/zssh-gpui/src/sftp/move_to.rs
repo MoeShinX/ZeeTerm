@@ -846,11 +846,26 @@ mod tests {
             target_path(Side::Remote, "/srv", "a'b $c;.txt"),
             "/srv/a'b $c;.txt"
         );
-        assert_eq!(
-            target_path(Side::Local, "D:\\out", "报告 1.txt"),
-            "D:\\out\\报告 1.txt"
-        );
-        assert_eq!(target_path(Side::Local, "D:\\", "a.txt"), "D:\\a.txt");
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                target_path(Side::Local, "D:\\out", "报告 1.txt"),
+                "D:\\out\\报告 1.txt"
+            );
+            assert_eq!(target_path(Side::Local, "D:\\", "a.txt"), "D:\\a.txt");
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(
+                target_path(Side::Local, "/out", "报告 1.txt"),
+                "/out/报告 1.txt"
+            );
+            assert_eq!(
+                target_path(Side::Local, "/out/", "a'b $c;.txt"),
+                "/out/a'b $c;.txt"
+            );
+            assert_eq!(target_path(Side::Local, "/", "a.txt"), "/a.txt");
+        }
     }
 
     // ---- 目标检查 ----
@@ -1401,14 +1416,18 @@ mod tests {
     }
 
     #[test]
-    fn local_jobs_build_windows_targets() {
+    fn local_jobs_build_targets_in_the_local_path_style() {
+        #[cfg(windows)]
+        let (dest, expected) = ("D:\\out", "D:\\out\\报告 1.txt");
+        #[cfg(not(windows))]
+        let (dest, expected) = ("/out", "/out/报告 1.txt");
         let mut job = MoveJob::new(
             2,
             Side::Local,
-            "D:\\out".to_owned(),
+            dest.to_owned(),
             vec![local("报告 1.txt", EntryKind::File)],
         );
         let next = job.advance(&none);
-        assert_eq!(attempt(&next), ("报告 1.txt", "D:\\out\\报告 1.txt", false));
+        assert_eq!(attempt(&next), ("报告 1.txt", expected, false));
     }
 }
