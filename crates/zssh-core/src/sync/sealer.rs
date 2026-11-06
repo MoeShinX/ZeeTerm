@@ -10,7 +10,8 @@ pub trait SecretSealer: Send + Sync {
     fn open(&self, blob: &[u8]) -> Result<Vec<u8>, SyncError>;
 }
 
-/// Windows DPAPI（绑定当前用户）。
+/// 本机密封：Windows 上是 DPAPI（绑定当前用户）；Linux 上是资料库密钥（系统钥匙串，
+/// 没有钥匙串服务时是数据目录里的密钥文件，见 `store::vault`）。名字沿用 Windows 时代的叫法。
 pub struct DpapiSealer;
 
 impl SecretSealer for DpapiSealer {

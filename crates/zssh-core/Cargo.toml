@@ -50,6 +50,9 @@ keyring = { version = "=3.6.3", default-features = false, features = [
     "tokio",
     "crypto-rust",
 ] }
+# 只为了按错误变体区分"没有钥匙串服务"和"钥匙串被锁住"：keyring 把它的错误装在盒子里，
+# 要向下转型才分得出来。版本由 keyring 决定（同一个 crate，不引入新的编译产物）。
+secret-service = { version = "4", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 # DPAPI（CryptProtectData / CryptUnprotectData）

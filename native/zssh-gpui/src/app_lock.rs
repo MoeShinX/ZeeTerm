@@ -39,7 +39,7 @@ use crate::typography::{Role, Typo as _, UiFontStyled as _};
 /// 只放应用自己的固定文案；输错次数、产品名这类值由 `format!` 带进来。锁屏密码本身、
 /// 后台任务的调试输出都不进这张表。
 #[derive(Clone, Copy, Debug)]
-enum LockMsg {
+pub(crate) enum LockMsg {
     LockedSuffix,
     Subtitle,
     PasswordPlaceholder,
@@ -52,6 +52,7 @@ enum LockMsg {
     ForgotReset,
     ForgotText,
     ForgotTextInline,
+    ForgotTextNoOs,
     WaitPrefix,
     WaitSuffix,
     VerifyMessage,
@@ -81,6 +82,9 @@ impl Msg for LockMsg {
             }
             Self::ForgotTextInline => {
                 "锁屏密码只保存在这台电脑上，无法找回。可以用 Windows Hello / PIN（没有就用 Windows 登录密码）验证你是这台电脑的用户，然后设一个新密码，会话不受影响。"
+            }
+            Self::ForgotTextNoOs => {
+                "锁屏密码只保存在这台电脑上，无法找回；这个系统上没有可用来重置的系统身份验证。确实忘记时，退出 ZeeTerm，把数据目录里的 zssh.db（连同 zssh.db-wal、zssh.db-shm）改名或删除后重新打开（本机保存的主机、凭据等会一起清空，有同步或备份的可以再恢复）。"
             }
             Self::WaitPrefix => "输错次数过多，请 ",
             Self::WaitSuffix => " 秒后再试",
@@ -113,6 +117,9 @@ impl Msg for LockMsg {
             }
             Self::ForgotTextInline => {
                 "The lock password is stored only on this computer and cannot be recovered. You can verify that you are a user of this computer with Windows Hello / PIN (or your Windows sign-in password), then set a new password; sessions are not affected."
+            }
+            Self::ForgotTextNoOs => {
+                "The lock password is stored only on this computer and cannot be recovered, and this system has no OS identity verification that could reset it. If you really forgot it, quit ZeeTerm, rename or delete zssh.db (with zssh.db-wal and zssh.db-shm) in the data folder, and reopen (saved hosts, credentials and other local data are cleared with it; restore them from sync or a backup)."
             }
             Self::WaitPrefix => "Too many failed attempts. Try again in ",
             Self::WaitSuffix => " s",
@@ -403,6 +410,13 @@ impl OsVerifier for StubVerifier {
     fn windows_credentials(&self, _message: &str) -> OsCheck {
         self.credentials
     }
+}
+
+/// 这个平台有没有"系统身份验证"可用来重置锁屏密码。Windows 有（Hello / 凭据框）；Linux 没有等价物，
+/// 界面上就不能出现"验证 Windows 账户并重置"这类入口，否则是个点了只会报错的按钮。
+/// 调试构建里的 `ZSSH_LOCK_OS_STUB` 算有（自动化要驱动这条流程）。
+pub fn os_verification_available() -> bool {
+    cfg!(windows) || stub_from_env().is_some()
 }
 
 /// 阻塞地做一次“证明你是这台电脑的 Windows 用户”（在后台线程里调）。
@@ -785,6 +799,7 @@ impl Render for LockScreen {
             ))
             .when(self.show_forgot, |d| {
                 let hook = self.forgot_hook.clone();
+                let has_os = os_verification_available();
                 d.child(
                     v_flex()
                         .id("lock-forgot-text")
@@ -795,12 +810,14 @@ impl Render for LockScreen {
                         .border_1()
                         .border_color(tokens.border)
                         .bg(tokens.subtle)
-                        .child(div().typo(Role::Caption, &tokens).child(if hook.is_some() {
+                        .child(div().typo(Role::Caption, &tokens).child(if !has_os {
+                            t(LockMsg::ForgotTextNoOs)
+                        } else if hook.is_some() {
                             t(LockMsg::ForgotTextInline)
                         } else {
                             t(LockMsg::ForgotText)
                         }))
-                        .children(hook.map(|hook| {
+                        .children(hook.filter(|_| has_os).map(|hook| {
                             text_button(
                                 "lock-forgot-reset",
                                 t(LockMsg::ForgotReset),
@@ -1399,5 +1416,17 @@ mod tests {
         ] {
             assert!(crate::i18n::t(LockMsg::ForgotText).contains(part), "{part}");
         }
+    }
+
+    /// Linux 没有 Windows Hello / 凭据框：不能有"验证 Windows 账户并重置"这类入口，
+    /// 真的去验证也只会得到"不可用"，不会冒充通过。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_has_no_os_verification() {
+        if super::stub_from_env().is_some() {
+            return; // 自动化设了调试桩：此时按设计"有"
+        }
+        assert!(!super::os_verification_available());
+        assert_eq!(super::verify_windows_user(None), OsCheck::Unavailable);
     }
 }
