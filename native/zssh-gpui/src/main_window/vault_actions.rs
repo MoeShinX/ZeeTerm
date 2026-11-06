@@ -42,9 +42,17 @@ impl Msg for VaultActMsg {
     fn zh(&self) -> &'static str {
         match self {
             Self::SftpFeature => "文件（SFTP）",
-            Self::PasswordCopied => "已复制密码，30 秒后自动清除",
+            Self::PasswordCopied if cfg!(windows) => "已复制密码，30 秒后自动清除",
+            // Linux 的剪贴板没有「别记进历史」的通用标记（GPUI 的剪贴板接口挂不了自定义类型），
+            // 剪贴板管理器可能已经把它记下来了，自动清除清不掉历史：直接说明。
+            Self::PasswordCopied => "已复制密码，30 秒后自动清除；剪贴板管理器可能会记下这条内容",
             Self::CopyPasswordFailedPrefix => "复制密码失败：",
-            Self::InfoCopiedWithPassword => "已复制连接信息（含密码），30 秒后自动清除",
+            Self::InfoCopiedWithPassword if cfg!(windows) => {
+                "已复制连接信息（含密码），30 秒后自动清除"
+            }
+            Self::InfoCopiedWithPassword => {
+                "已复制连接信息（含密码），30 秒后自动清除；剪贴板管理器可能会记下这条内容"
+            }
             Self::InfoCopied => "已复制连接信息",
             Self::CopyInfoFailedPrefix => "复制连接信息失败：",
             Self::GroupDeletedPrefix => "已删除分组「",
@@ -59,10 +67,18 @@ impl Msg for VaultActMsg {
     fn en(&self) -> &'static str {
         match self {
             Self::SftpFeature => "SFTP files — ",
-            Self::PasswordCopied => "Password copied; it is cleared automatically in 30 seconds",
+            Self::PasswordCopied if cfg!(windows) => {
+                "Password copied; it is cleared automatically in 30 seconds"
+            }
+            Self::PasswordCopied => {
+                "Password copied; it is cleared automatically in 30 seconds. A clipboard manager may keep a copy"
+            }
             Self::CopyPasswordFailedPrefix => "Failed to copy the password: ",
-            Self::InfoCopiedWithPassword => {
+            Self::InfoCopiedWithPassword if cfg!(windows) => {
                 "Connection info copied (including the password); it is cleared automatically in 30 seconds"
+            }
+            Self::InfoCopiedWithPassword => {
+                "Connection info copied (including the password); it is cleared automatically in 30 seconds. A clipboard manager may keep a copy"
             }
             Self::InfoCopied => "Connection info copied",
             Self::CopyInfoFailedPrefix => "Failed to copy the connection info: ",
@@ -528,5 +544,39 @@ impl MainWindow {
         self.workspace
             .update(cx, |ws, cx| ws.open_quick_tab(parsed, password, label, cx));
         self.show_view(super::nav::MainView::Terminal, window, cx);
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::VaultActMsg;
+    use crate::i18n::Msg as _;
+
+    /// 复制密码的提示：Windows 文案不变；其他系统多一句剪贴板管理器可能会记下（中英成对）。
+    #[test]
+    fn the_password_copy_notices_warn_about_clipboard_managers_except_on_windows() {
+        for msg in [
+            VaultActMsg::PasswordCopied,
+            VaultActMsg::InfoCopiedWithPassword,
+        ] {
+            assert!(msg.zh().contains("30 秒后自动清除"), "{}", msg.zh());
+            assert!(msg.en().contains("30 seconds"), "{}", msg.en());
+            let (zh_warns, en_warns) = (
+                msg.zh().contains("剪贴板管理器可能会记下这条内容"),
+                msg.en().contains("clipboard manager may keep a copy"),
+            );
+            assert_eq!(zh_warns, !cfg!(windows), "{}", msg.zh());
+            assert_eq!(en_warns, !cfg!(windows), "{}", msg.en());
+        }
+        if cfg!(windows) {
+            assert_eq!(
+                VaultActMsg::PasswordCopied.zh(),
+                "已复制密码，30 秒后自动清除"
+            );
+            assert_eq!(
+                VaultActMsg::InfoCopiedWithPassword.zh(),
+                "已复制连接信息（含密码），30 秒后自动清除"
+            );
+        }
     }
 }

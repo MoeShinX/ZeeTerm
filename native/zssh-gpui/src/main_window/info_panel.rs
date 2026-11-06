@@ -28,7 +28,9 @@ impl Msg for InfoPanelMsg {
         match self {
             Self::CopiedPrefix => "已复制：",
             Self::RevealFirst => "先点眼睛显示密码",
-            Self::PasswordCopied => "已复制密码，30 秒后自动清除",
+            Self::PasswordCopied if cfg!(windows) => "已复制密码，30 秒后自动清除",
+            // Linux 的剪贴板管理器可能已经记下来了，自动清除清不掉历史（见 `chat_copy`）。
+            Self::PasswordCopied => "已复制密码，30 秒后自动清除；剪贴板管理器可能会记下这条内容",
             Self::PasswordCopyFailedPrefix => "复制密码失败：",
         }
     }
@@ -37,7 +39,12 @@ impl Msg for InfoPanelMsg {
         match self {
             Self::CopiedPrefix => "Copied: ",
             Self::RevealFirst => "Click the eye to show the password first",
-            Self::PasswordCopied => "Password copied; it will be cleared after 30 seconds",
+            Self::PasswordCopied if cfg!(windows) => {
+                "Password copied; it will be cleared after 30 seconds"
+            }
+            Self::PasswordCopied => {
+                "Password copied; it will be cleared after 30 seconds. A clipboard manager may keep a copy"
+            }
             Self::PasswordCopyFailedPrefix => "Failed to copy password: ",
         }
     }
@@ -184,7 +191,25 @@ impl MainWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::secret_stays;
+    use super::{InfoPanelMsg, secret_stays};
+    use crate::i18n::Msg as _;
+
+    #[test]
+    fn the_password_copy_notice_warns_about_clipboard_managers_except_on_windows() {
+        let msg = InfoPanelMsg::PasswordCopied;
+        assert!(msg.zh().contains("30 秒后自动清除") && msg.en().contains("30 seconds"));
+        assert_eq!(
+            msg.zh().contains("剪贴板管理器可能会记下这条内容"),
+            !cfg!(windows)
+        );
+        assert_eq!(
+            msg.en().contains("clipboard manager may keep a copy"),
+            !cfg!(windows)
+        );
+        if cfg!(windows) {
+            assert_eq!(msg.zh(), "已复制密码，30 秒后自动清除");
+        }
+    }
 
     #[test]
     fn the_secret_only_stays_for_the_same_open_panel_of_a_saved_password_host() {

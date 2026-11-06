@@ -117,6 +117,12 @@ pub fn capture_last() -> Option<String> {
 /// （长度 + 带随机密钥的哈希，不留明文，见 `zssh_platform_windows::clipboard::Fingerprint`），
 /// 30 秒后读一次剪贴板，现在的内容算出来和指纹一致才清。
 ///
+/// 剪贴板历史：Windows 版把内容排除在历史 / 云同步之外，Linux 没有通用的做法——Klipper、CopyQ 等认
+/// `x-kde-passwordManagerHint: secret` 这个 MIME 类型，但 GPUI 的 `ClipboardItem` 只有文字 / 图片 / 文件列表三种条目，
+/// Wayland 的 `data_source.offer` 和 X11 的 `TARGETS` 都是它内部写死的，挂不上自定义类型（也不许给 gpui 打补丁），
+/// 所以没法让管理器跳过。到点清除只清得了当前选区、清不掉管理器已经记下的历史；复制密码后的提示
+/// 在 Linux 上因此多一句「剪贴板管理器可能会记下这条内容」（见 `vault_actions` / `info_panel`）。
+///
 /// Wayland 的限制：只有拥有键盘焦点的窗口才能读写剪贴板，也只有这时它的"当前选区"才是新的。
 /// 所以到点时窗口不在前台就继续等，回到前台并稳定半秒（等合成器把新的选区通知过来）之后再读；
 /// 读不到就当作"不知道"，不清，每秒再试，最多等 10 分钟就放弃（宁可留着也不误清用户后来复制的内容）。
