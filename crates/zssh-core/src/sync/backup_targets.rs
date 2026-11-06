@@ -44,7 +44,7 @@ use crate::store::Database;
 pub const TARGETS_KEY: &str = "sync_backup_targets";
 
 /// 备份目标的 OneDrive 令牌的键前缀，后面接目标 id。不在白名单里 = 一律不同步。
-const TOKEN_KEY_PREFIX: &str = "sync_backup_token.";
+pub(super) const TOKEN_KEY_PREFIX: &str = "sync_backup_token.";
 
 /// 云端备份的对象名（Gist 是文件名）。和主同步的 `zssh-sync.json` 不同。
 pub const OBJECT_NAME: &str = "zeeterm-backup.json";
@@ -211,14 +211,13 @@ pub fn load_targets(
     load_unlocked(db, sealer)
 }
 
-/// 整个替换（从备份恢复同步账号设置时用）。
-pub(super) fn replace_all(
-    db: &Database,
-    sealer: &dyn SecretSealer,
-    targets: &[BackupTarget],
-) -> Result<(), SyncError> {
+/// 账号恢复与目标列表的读—改—写共用锁；调用方必须先拿此锁再拿数据库锁，
+/// 且闭包内不能再调用会拿目标锁的接口。
+pub(super) fn with_targets_lock<T>(
+    run: impl FnOnce() -> Result<T, SyncError>,
+) -> Result<T, SyncError> {
     let _guard = lock();
-    save_unlocked(db, sealer, targets)
+    run()
 }
 
 /// 目标列表读不出来时的出路：删掉整个列表和所有目标的令牌（云端的备份文件不动）。

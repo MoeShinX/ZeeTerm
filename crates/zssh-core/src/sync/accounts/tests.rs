@@ -238,6 +238,154 @@ fn applying_replaces_what_the_computer_had_and_leaves_no_stale_tokens() {
         .any(|t| t.id == old_target));
 }
 
+fn raw_settings(db: &Database) -> BTreeMap<String, String> {
+    db.with_conn_as(|conn| -> rusqlite::Result<_> {
+        let mut statement = conn.prepare("SELECT key, value FROM settings ORDER BY key")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect()
+    })
+    .unwrap()
+}
+
+fn replacement_accounts(m: &Machine) -> SyncAccounts {
+    let mut accounts = SyncAccounts::read(&m.db, &m.sealer).unwrap().unwrap();
+    accounts.storage = Some(StorageConfig::Onedrive(OneDriveConfig::default()));
+    accounts.onedrive_tokens = Some(tokens("replacement-main"));
+    accounts.master_password = Some("replacement-master-password".to_owned());
+    accounts.auto = Some(AutoSettings {
+        enabled: true,
+        interval_minutes: 17,
+    });
+    accounts.backup_keep = Some(serde_json::json!(3));
+    accounts.backup_targets = vec![BackupTarget {
+        id: "replacement-target".to_owned(),
+        config: StorageConfig::Onedrive(OneDriveConfig::default()),
+        enabled: true,
+        last: None,
+    }];
+    accounts.target_tokens.clear();
+    accounts.target_tokens.insert(
+        "replacement-target".to_owned(),
+        tokens("replacement-target"),
+    );
+    accounts
+}
+
+struct FailNthSeal {
+    inner: TestSealer,
+    fail_at: usize,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl SecretSealer for FailNthSeal {
+    fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>, SyncError> {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        if call == self.fail_at {
+            return Err(SyncError::Internal(Reason::text(
+                "injected seal failure".to_owned(),
+            )));
+        }
+        self.inner.seal(plaintext)
+    }
+
+    fn open(&self, blob: &[u8]) -> Result<Vec<u8>, SyncError> {
+        self.inner.open(blob)
+    }
+}
+
+#[test]
+fn applying_accounts_seal_failure_preserves_all_old_settings_and_tokens() {
+    let m = Machine::new("seal-failure", 1);
+    configured(&m);
+    service::set_ready(&m.db, true).unwrap();
+    m.db.setting_set(service::CONCURRENCY_KEY, "{}").unwrap();
+    let old = SyncAccounts::read(&m.db, &m.sealer).unwrap();
+    let before = raw_settings(&m.db);
+    let replacement = replacement_accounts(&m);
+    // 存储、主令牌、主密码、目标列表、目标令牌：每一步失败都不得开始改库。
+    for fail_at in 1..=5 {
+        let sealer = FailNthSeal {
+            inner: TestSealer(1),
+            fail_at,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let error = replacement.apply(&m.db, &sealer).unwrap_err();
+        assert!(error.to_string().contains("injected seal failure"));
+        assert_eq!(
+            sealer.calls.load(std::sync::atomic::Ordering::SeqCst),
+            fail_at
+        );
+        assert_eq!(
+            raw_settings(&m.db),
+            before,
+            "密封第 {fail_at} 项失败后密文必须原样保留"
+        );
+        assert_eq!(SyncAccounts::read(&m.db, &m.sealer).unwrap(), old);
+    }
+}
+
+#[test]
+fn applying_accounts_sql_failure_rolls_back_all_settings_and_tokens() {
+    let m = Machine::new("sql-failure", 1);
+    configured(&m);
+    service::set_ready(&m.db, true).unwrap();
+    m.db.setting_set(service::CONCURRENCY_KEY, "{}").unwrap();
+    token_store(&m.db, &m.sealer, "orphan")
+        .save(&tokens("orphan"))
+        .unwrap();
+    // 下划线必须按字面匹配，不能误删相似名称的无关设置。
+    m.db.setting_set("syncXbackupXtoken.keep", "true").unwrap();
+    let old = SyncAccounts::read(&m.db, &m.sealer).unwrap();
+    let before = raw_settings(&m.db);
+    let replacement = replacement_accounts(&m);
+    m.db.with_conn_as(|conn| {
+        conn.execute_batch(
+            "CREATE TEMP TRIGGER fail_accounts_restore BEFORE INSERT ON settings
+         WHEN NEW.key = 'sync_backup_token.replacement-target'
+         BEGIN
+             SELECT CASE WHEN EXISTS (
+                 SELECT 1 FROM settings WHERE key = 'sync_backup_keep' AND value = '3'
+             ) AND NOT EXISTS (
+                 SELECT 1 FROM settings WHERE key = 'sync_backup_token.orphan'
+             ) THEN RAISE(ABORT, 'injected late SQL failure')
+             ELSE RAISE(ABORT, 'failure happened before replacement writes') END;
+         END;",
+        )
+    })
+    .unwrap();
+    let error = replacement.apply(&m.db, &m.sealer).unwrap_err();
+    assert!(
+        error.to_string().contains("injected late SQL failure"),
+        "{error}"
+    );
+    assert_eq!(raw_settings(&m.db), before, "删除及前面所有写入都必须回滚");
+    assert_eq!(SyncAccounts::read(&m.db, &m.sealer).unwrap(), old);
+
+    m.db.with_conn_as(|conn| conn.execute_batch("DROP TRIGGER fail_accounts_restore"))
+        .unwrap();
+    replacement.apply(&m.db, &m.sealer).unwrap();
+    assert_eq!(
+        SyncAccounts::read(&m.db, &m.sealer).unwrap(),
+        Some(replacement)
+    );
+    assert!(token_store(&m.db, &m.sealer, "orphan")
+        .load()
+        .unwrap()
+        .is_none());
+    assert!(m.db.setting_get(service::READY_KEY).unwrap().is_none());
+    assert!(m
+        .db
+        .setting_get(service::CONCURRENCY_KEY)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        m.db.setting_get("syncXbackupXtoken.keep")
+            .unwrap()
+            .as_deref(),
+        Some("true")
+    );
+}
+
 #[test]
 fn a_backup_without_a_main_onedrive_clears_stale_main_tokens() {
     // 备份里主同步是 WebDAV：本机原来 OneDrive 的令牌不能留着

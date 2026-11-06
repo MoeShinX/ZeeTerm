@@ -224,12 +224,18 @@ pub(super) fn seal_to_setting(
     key: &str,
     plaintext: &[u8],
 ) -> Result<(), SyncError> {
+    let value = sealed_setting_value(sealer, plaintext)?;
+    db.setting_set(key, &value).map_err(SyncError::from)
+}
+
+/// 先准备密文，供需要一次事务写回多项设置的调用方使用。
+pub(super) fn sealed_setting_value(
+    sealer: &dyn SecretSealer,
+    plaintext: &[u8],
+) -> Result<String, SyncError> {
     let sealed = sealer.seal(plaintext)?;
-    set_json(
-        db,
-        key,
-        &base64::engine::general_purpose::STANDARD.encode(sealed),
-    )
+    serde_json::to_string(&base64::engine::general_purpose::STANDARD.encode(sealed))
+        .map_err(|err| SyncError::Internal(Reason::text(format!("设置序列化失败：{err}"))))
 }
 
 pub(super) fn open_from_setting(

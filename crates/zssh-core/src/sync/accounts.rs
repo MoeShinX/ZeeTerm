@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use super::backup_targets::{self, BackupTarget, MAX_TARGETS};
 use super::error::SyncError;
@@ -196,49 +196,89 @@ impl SyncAccounts {
         Ok(())
     }
 
-    /// 用这块替换本机现在的同步账号设置：本机原有的存储连接、令牌、主密码、备份目标先清掉，
-    /// 再写回备份里的。同步基线、“已和云端对上”标记、并发保护检测结果都不带——换了存储
-    /// 它们本来就不适用（`save_config` 也是这样），第一次同步会重新确认。
+    /// 原子替换本机同步账号设置。校验和密封全部成功后才开始事务；任何写入失败都保留原状态。
+    /// “已和云端对上”标记、并发保护检测结果一并清掉，第一次同步会重新确认。
+    /// 老备份没带自动同步或保留份数时，仍保留本机的这些设置。
     pub fn apply(&self, db: &Database, sealer: &dyn SecretSealer) -> Result<(), SyncError> {
         self.check()?;
-        // 旧的备份目标令牌：新列表里没有的 id 不能留下。
-        if let Ok(old) = backup_targets::load_targets(db, sealer) {
-            for target in &old {
-                let _ = backup_targets::token_store(db, sealer, &target.id).clear();
-            }
+        let mut writes = Vec::<(String, String)>::new();
+        if let Some(config) = &self.storage {
+            writes.push((service::STORAGE_KEY.to_owned(), seal_json(sealer, config)?));
         }
-        match &self.storage {
-            Some(config) => service::save_config(db, sealer, config)?,
-            None => service::clear_config(db)?,
+        if let (Some(StorageConfig::Onedrive(_)), Some(tokens)) =
+            (&self.storage, &self.onedrive_tokens)
+        {
+            writes.push((TOKENS_KEY.to_owned(), seal_json(sealer, tokens)?));
         }
-        // 主同步的令牌：只有 OneDrive 且备份里带了才写回，其余一律清掉（不留别的账号的令牌）。
-        let main_tokens = DbTokenStore::new(db, sealer);
-        match (&self.storage, &self.onedrive_tokens) {
-            (Some(StorageConfig::Onedrive(_)), Some(tokens)) => {
-                main_tokens.save(tokens).map_err(SyncError::from)?;
-            }
-            _ => service::clear(db, TOKENS_KEY)?,
-        }
-        match &self.master_password {
-            Some(password) => service::save_master_password(db, sealer, password)?,
-            None => service::clear_master_password(db)?,
+        if let Some(password) = &self.master_password {
+            writes.push((
+                service::MASTER_PASSWORD_KEY.to_owned(),
+                service::sealed_setting_value(sealer, password.as_bytes())?,
+            ));
         }
         if let Some(auto) = &self.auto {
-            service::save_auto(db, auto)?;
+            let mut auto = auto.clone();
+            auto.interval_minutes = auto.interval_minutes.clamp(1, 24 * 60);
+            let value = serde_json::to_string(&auto).map_err(|err| {
+                SyncError::Internal(Reason::text(format!("设置序列化失败：{err}")))
+            })?;
+            writes.push((service::AUTO_KEY.to_owned(), value));
         }
         if let Some(keep) = &self.backup_keep {
-            db.setting_set(SYNC_BACKUP_KEEP_KEY, &keep.to_string())
-                .map_err(SyncError::from)?;
+            writes.push((SYNC_BACKUP_KEEP_KEY.to_owned(), keep.to_string()));
         }
-        backup_targets::replace_all(db, sealer, &self.backup_targets)?;
+        if !self.backup_targets.is_empty() {
+            writes.push((
+                backup_targets::TARGETS_KEY.to_owned(),
+                seal_json(sealer, &self.backup_targets)?,
+            ));
+        }
         for target in &self.backup_targets {
-            if let Some(tokens) = self.target_tokens.get(&target.id) {
-                backup_targets::token_store(db, sealer, &target.id)
-                    .save(tokens)
-                    .map_err(SyncError::from)?;
+            if matches!(target.config, StorageConfig::Onedrive(_)) {
+                if let Some(tokens) = self.target_tokens.get(&target.id) {
+                    writes.push((
+                        backup_targets::token_key(&target.id),
+                        seal_json(sealer, tokens)?,
+                    ));
+                }
             }
         }
-        Ok(())
+        // 与 setting_set 使用同样的校验，但不在持有数据库锁时调用它。
+        for (key, value) in &writes {
+            super::settings::validate_local_value(key, value).map_err(|reason| {
+                SyncError::InvalidData(Reason::text(format!("设置 {key} 的值不合格：{reason}")))
+            })?;
+        }
+        backup_targets::with_targets_lock(|| {
+            db.with_conn_as(|conn| -> Result<(), SyncError> {
+                let tx = conn.transaction()?;
+                for key in [
+                    service::STORAGE_KEY,
+                    service::CONCURRENCY_KEY,
+                    service::READY_KEY,
+                    TOKENS_KEY,
+                    service::MASTER_PASSWORD_KEY,
+                    backup_targets::TARGETS_KEY,
+                ] {
+                    tx.execute("DELETE FROM settings WHERE key = ?1", [key])?;
+                }
+                // 按字面前缀清理，连旧列表损坏或已遗失的目标令牌也不会残留。
+                // 不能用 LIKE：前缀中的下划线会被当作通配符。
+                tx.execute(
+                    "DELETE FROM settings WHERE substr(key, 1, length(?1)) = ?1",
+                    [backup_targets::TOKEN_KEY_PREFIX],
+                )?;
+                for (key, value) in &writes {
+                    tx.execute(
+                        "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+                         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        rusqlite::params![key, value],
+                    )?;
+                }
+                tx.commit()?;
+                Ok(())
+            })
+        })
     }
 
     /// 备份 / 导入里带着这块时的统一处理：本机还没配置同步就直接写回；已经配置了就原样交给
@@ -264,6 +304,13 @@ impl SyncAccounts {
             Err(err) => AccountsRestore::Failed(err.to_string()),
         })
     }
+}
+
+fn seal_json<T: Serialize>(sealer: &dyn SecretSealer, value: &T) -> Result<String, SyncError> {
+    let plain = Zeroizing::new(serde_json::to_vec(value).map_err(|err| {
+        SyncError::Internal(Reason::text(format!("同步账号设置序列化失败：{err}")))
+    })?);
+    service::sealed_setting_value(sealer, &plain)
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::error::SyncError;
 use crate::error::ZsshError;
-use crate::store::forwards::{ForwardKind, PortForwardDraft};
+use crate::store::forwards::{ForwardKind, PortForwardDraft, DEFAULT_BIND_HOST};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LocalExtras {
@@ -105,7 +105,8 @@ impl LocalExtras {
     }
 
     /// 写回：主机按 uid 找（`renamed` 是恢复时换过 uid 的主机：旧 uid → 新 uid）；找不到的跳过。
-    /// 记忆覆盖成备份里的内容；转发规则只补回本机没有的（同一主机、同方向、同监听端口算同一条）。
+    /// 记忆覆盖成备份里的内容；转发规则只补回本机没有的：同一主机、同方向、同监听端口，
+    /// 本地转发还要监听地址相同才算重复；远程转发保持同端口冲突的政策。
     pub fn restore(
         &self,
         db: &crate::store::Database,
@@ -150,10 +151,16 @@ impl LocalExtras {
             let Some(host_id) = host_of(&forward.host_uid) else {
                 continue;
             };
+            // 和 forward_save 的规范化一致，避免空地址或两端空白导致重复恢复。
+            let bind_host = match forward.bind_host.trim() {
+                "" => DEFAULT_BIND_HOST,
+                host => host,
+            };
             let present = existing.iter().any(|rule| {
                 rule.host_id == host_id
                     && rule.kind == forward.kind
                     && rule.bind_port == forward.bind_port
+                    && (forward.kind == ForwardKind::Remote || rule.bind_host == bind_host)
             });
             if present {
                 continue;
@@ -233,16 +240,60 @@ mod tests {
     }
 
     #[test]
+    fn local_rules_with_same_port_and_different_bind_hosts_round_trip() {
+        let db = Database::open_in_memory().unwrap();
+        let (host_id, _) = host(&db);
+        for (index, bind_host) in [DEFAULT_BIND_HOST, "::1"].iter().enumerate() {
+            db.forward_save(&PortForwardDraft {
+                id: None,
+                host_id,
+                name: format!("local-{index}"),
+                kind: ForwardKind::Local,
+                bind_host: (*bind_host).to_owned(),
+                bind_port: 18080,
+                dest_host: "localhost".to_owned(),
+                dest_port: 8080 + index as u16,
+                auto_start: index == 1,
+            })
+            .unwrap();
+        }
+        let before = LocalExtras::read(&db).unwrap();
+        assert_eq!(before.forwards.len(), 2);
+        let json = serde_json::to_vec(&before).unwrap();
+        let restored_extras: LocalExtras = serde_json::from_slice(&json).unwrap();
+        db.with_conn_as(|conn| conn.execute("DELETE FROM port_forwards", []))
+            .unwrap();
+        let restored = restored_extras.restore(&db, &BTreeMap::new()).unwrap();
+        assert_eq!(restored.forwards, 2);
+        assert_eq!(LocalExtras::read(&db).unwrap(), before);
+        assert_eq!(
+            restored_extras
+                .restore(&db, &BTreeMap::new())
+                .unwrap()
+                .forwards,
+            0
+        );
+
+        let mut aliases = restored_extras;
+        aliases.forwards[0].bind_host.clear();
+        aliases.forwards[1].bind_host = "  ::1  ".to_owned();
+        assert_eq!(aliases.restore(&db, &BTreeMap::new()).unwrap().forwards, 0);
+        assert_eq!(LocalExtras::read(&db).unwrap(), before);
+    }
+
+    #[test]
     fn legacy_duplicate_remote_rules_are_skipped_not_fatal() {
         let db = Database::open_in_memory().unwrap();
         let (host_id, uid) = host(&db);
+        let mut duplicate = remote(&uid, "乙", 81);
+        duplicate.bind_host = "::1".to_owned();
         let extras = LocalExtras {
             host_memory: vec![MemoryRecord {
                 host_uid: uid.clone(),
                 content: "记忆".to_owned(),
                 updated_at: 1,
             }],
-            forwards: vec![remote(&uid, "甲", 80), remote(&uid, "乙", 81)],
+            forwards: vec![remote(&uid, "甲", 80), duplicate],
         };
         let restored = extras.restore(&db, &BTreeMap::new()).unwrap();
         assert_eq!(restored.host_memory, 1);
