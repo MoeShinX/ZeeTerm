@@ -55,6 +55,10 @@ windows = { version = "0.62", features = [
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# 托盘测试里扮演 StatusNotifierWatcher（版本跟 ksni 用的同一个）。
+zbus = "5"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 base64 = "0.22"

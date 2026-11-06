@@ -10782,6 +10782,7 @@ dependencies = [
  "tracing",
  "tray-icon",
  "windows 0.62.2",
+ "zbus 5.19.0",
  "zeroize",
  "zssh-app-runtime",
  "zssh-core",

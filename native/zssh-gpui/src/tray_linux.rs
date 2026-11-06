@@ -522,3 +522,122 @@ mod tests {
         assert_eq!(rgba_to_argb(vec![1, 2, 3, 4]), vec![4, 1, 2, 3]);
     }
 }
+
+/// 真实 D-Bus 上的生命周期：宿主（StatusNotifierWatcher）晚于托盘出现、中途消失、再回来，
+/// 可用状态都要跟着变。需要会话总线（门禁在一次性的 dbus-run-session 里跑）；没有就跳过。
+#[cfg(test)]
+mod dbus_tests {
+    use super::*;
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    struct FakeWatcher {
+        registered: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
+    impl FakeWatcher {
+        fn register_status_notifier_item(&self, service: &str) {
+            if let Ok(mut list) = self.registered.lock() {
+                list.push(service.to_owned());
+            }
+        }
+
+        #[zbus(property)]
+        fn is_status_notifier_host_registered(&self) -> bool {
+            true
+        }
+    }
+
+    fn start_watcher(
+        registered: &Arc<Mutex<Vec<String>>>,
+    ) -> zbus::Result<zbus::blocking::Connection> {
+        zbus::blocking::connection::Builder::session()?
+            .name("org.kde.StatusNotifierWatcher")?
+            .serve_at(
+                "/StatusNotifierWatcher",
+                FakeWatcher {
+                    registered: Arc::clone(registered),
+                },
+            )?
+            .build()
+    }
+
+    fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if condition() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("timed out waiting for: {what}");
+    }
+
+    #[test]
+    fn availability_follows_the_watcher_appearing_vanishing_and_returning() {
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
+            eprintln!("skipped: no D-Bus session bus in this environment");
+            return;
+        }
+        let registered = Arc::new(Mutex::new(Vec::new()));
+        // 开发机的桌面上可能已经有真的 watcher：不去抢它的名字
+        match start_watcher(&registered) {
+            Ok(conn) => drop(conn),
+            Err(err) => {
+                eprintln!("skipped: cannot own the watcher name here: {err}");
+                return;
+            }
+        }
+        wait_until("the probe watcher to go away", || {
+            zbus::blocking::Connection::session()
+                .ok()
+                .and_then(|c| zbus::blocking::fdo::DBusProxy::new(&c).ok())
+                .and_then(|p| {
+                    p.name_has_owner("org.kde.StatusNotifierWatcher".try_into().ok()?)
+                        .ok()
+                })
+                == Some(false)
+        });
+        registered.lock().expect("lock").clear();
+
+        let state = Arc::new(State::new());
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<Command>();
+        // 1. 先起托盘，此时还没有 watcher（原版 GNOME 的情形）：服务建好了，但不可用
+        let handle = try_spawn(&state, &tx, false).expect("tray service starts without a watcher");
+        assert!(state.spawned.load(Ordering::Acquire));
+        wait_until("watcher_offline", || {
+            !state.watcher_up.load(Ordering::Acquire)
+        });
+        assert!(!state.available(), "没有宿主时不可用");
+
+        // 2. 宿主出现（用户装上 / 启用了 AppIndicator 扩展）：自动登记，变为可用，并通知界面
+        let watcher = start_watcher(&registered).expect("start fake watcher");
+        wait_until("availability after the watcher appears", || {
+            state.available()
+        });
+        wait_until("registration at the watcher", || {
+            !registered.lock().expect("lock").is_empty()
+        });
+        let mut notified = false;
+        while let Ok(command) = rx.try_recv() {
+            notified |= command == Command::AvailabilityChanged;
+        }
+        assert!(notified, "界面应收到可用状态变化的通知");
+
+        // 3. 宿主消失（扩展被关掉）：不可用
+        drop(watcher);
+        wait_until("availability to drop", || !state.available());
+
+        // 4. 宿主又回来：重新登记，恢复可用
+        registered.lock().expect("lock").clear();
+        let watcher = start_watcher(&registered).expect("restart fake watcher");
+        wait_until("availability to return", || state.available());
+        wait_until("re-registration", || {
+            !registered.lock().expect("lock").is_empty()
+        });
+
+        drop(watcher);
+        handle.shutdown().wait();
+    }
+}
