@@ -180,7 +180,7 @@ impl MainWindow {
                         .icon(IconName::Plus),
                     ),
             )
-            .child(self.render_zssh_link(tokens, cx))
+            .children(crate::migrate::available().then(|| self.render_zssh_link(tokens, cx)))
             .child(
                 div()
                     .mt_1()

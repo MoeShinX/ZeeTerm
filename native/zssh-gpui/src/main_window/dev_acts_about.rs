@@ -87,10 +87,12 @@ mod real {
                         }
                         let lower = text.to_lowercase();
                         let mut needles = vec![String::from(r"c:\users\")];
-                        for var in ["USERNAME", "USERPROFILE"] {
-                            if let Ok(value) = std::env::var(var)
-                                && value.trim().len() >= 3
-                            {
+                        let home = std::env::home_dir().map(|home| home.display().to_string());
+                        let names = ["USERNAME", "USER"]
+                            .iter()
+                            .filter_map(|var| std::env::var(var).ok());
+                        for value in names.chain(home) {
+                            if value.trim().len() >= 3 {
                                 needles.push(value.trim().to_lowercase());
                             }
                         }

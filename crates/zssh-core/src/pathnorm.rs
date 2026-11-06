@@ -58,8 +58,18 @@ pub fn key(path: &Path) -> String {
 fn parts(path: &Path) -> Vec<String> {
     normalize(path)
         .components()
-        .map(|component| component.as_os_str().to_string_lossy().to_lowercase())
+        .map(|component| fold_case(&component.as_os_str().to_string_lossy()))
         .collect()
+}
+
+/// Windows 的文件名不分大小写；Linux 分（`File.txt` 和 `file.txt` 是两个文件），
+/// 在 Linux 上也折叠的话，粘贴 / 移动的冲突判断和"文件夹不能移进自己"会把不同的路径当成同一个。
+fn fold_case(text: &str) -> String {
+    if cfg!(windows) {
+        text.to_lowercase()
+    } else {
+        text.to_owned()
+    }
 }
 
 fn clean_lexically(path: &Path) -> PathBuf {
@@ -151,6 +161,21 @@ mod tests {
         );
         // 越过根停在根上。
         assert_eq!(normalize(Path::new(r"C:\..\..\x")), PathBuf::from(r"C:\x"));
+    }
+
+    /// Linux 的文件名区分大小写：只差大小写的是两个不同的路径。
+    #[cfg(unix)]
+    #[test]
+    fn unix_paths_that_differ_only_in_case_are_different() {
+        let dir = crate::test_util::TestDir::new("pathnorm-case");
+        let upper = dir.join("Folder");
+        let lower = dir.join("folder");
+        std::fs::create_dir_all(&upper).unwrap();
+        std::fs::create_dir_all(&lower).unwrap();
+        assert!(!same_path(&upper, &lower));
+        assert!(!is_within(&upper, &lower.join("x")));
+        assert!(is_within(&upper, &upper.join("x")));
+        assert!(same_path(&upper.join("a/../b"), &upper.join("b")));
     }
 
     #[test]

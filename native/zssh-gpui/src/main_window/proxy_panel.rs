@@ -668,7 +668,7 @@ impl MainWindow {
                                         div()
                                             .truncate()
                                             .typo(Role::Caption, tokens)
-                                            .font_family("Consolas")
+                                            .font_family(crate::fonts::mono_text_family())
                                             .child(SharedString::from(format!(
                                                 "{}:{}",
                                                 proxy.host, proxy.port

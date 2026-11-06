@@ -25,7 +25,13 @@ pub const DEFAULT_SCROLLBACK: usize = 10_000;
 pub const SCROLLBACK_STEP: usize = 1_000;
 /// 终端字体栈（CSS 写法，逗号隔开，靠前的优先）。GPUI 一次只认一个字体名，所以实际用的是栈里
 /// 第一个本机装了的（见 `fonts`），一个都没有就退回主题自带的等宽字体。
+#[cfg(windows)]
 pub const DEFAULT_FONT_FAMILY: &str = "JetBrains Mono, Cascadia Mono, Consolas, monospace";
+/// Linux 上没有 Cascadia / Consolas：JetBrains Mono 之后依次是发行版常见的等宽字体，最后交给 `monospace`。
+/// 已经保存的字体栈不会被改写，只有全新安装（或点了「恢复默认」）才用这个默认值。
+#[cfg(not(windows))]
+pub const DEFAULT_FONT_FAMILY: &str =
+    "JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Liberation Mono, Ubuntu Mono, monospace";
 /// 字体栈最长这么多个字符（同步校验的上限）。
 pub const MAX_FONT_FAMILY_CHARS: usize = 200;
 
@@ -357,9 +363,10 @@ pub fn sanitize_font_family(raw: &str) -> String {
     }
 }
 
-/// `ZSSH_DATA_DIR` 优先，其次 `%APPDATA%\ZeeTerm`（与 Tauri 版 Z-SSH 的数据目录分开）。
+/// `ZSSH_DATA_DIR` 优先；其次 Windows 是 `%APPDATA%\ZeeTerm`（与 Tauri 版 Z-SSH 的数据目录分开），
+/// Linux 是 `$XDG_DATA_HOME/ZeeTerm`（没设或不是绝对路径时用 `~/.local/share/ZeeTerm`）。
 ///
-/// 环境变量里的 `APPDATA` 被清掉（某些启动器、计划任务、精简过的环境）时，问系统要「漫游应用数据」
+/// Windows 上环境变量里的 `APPDATA` 被清掉（某些启动器、计划任务、精简过的环境）时，问系统要「漫游应用数据」
 /// 已知文件夹，落点和平时一样。两样都拿不到就**不再退回临时目录**——临时目录随时会被清理，凭据库、
 /// 主机库放进去等于悄悄丢数据。启动时 [`ensure_data_dir_or_exit`] 已经把这种情况拦下来并提示退出；
 /// 万一别的地方先走到这里，也一样提示后退出。
@@ -369,32 +376,73 @@ pub fn data_dir() -> PathBuf {
 
 /// 同 [`data_dir`]，拿不到时返回 `None`。
 pub fn try_data_dir() -> Option<PathBuf> {
-    resolve_data_dir(
-        std::env::var_os("ZSSH_DATA_DIR"),
-        std::env::var_os("APPDATA"),
-        known_roaming_appdata,
-    )
-}
-
-/// 启动第一件事：确认有正式的数据目录，没有就弹框说明后退出（不建窗口、不写任何文件）。
-pub fn ensure_data_dir_or_exit() {
-    if try_data_dir().is_none() {
-        exit_without_data_dir();
+    #[cfg(windows)]
+    {
+        resolve_data_dir(
+            std::env::var_os("ZSSH_DATA_DIR"),
+            std::env::var_os("APPDATA"),
+            known_roaming_appdata,
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        resolve_data_dir_xdg(
+            std::env::var_os("ZSSH_DATA_DIR"),
+            std::env::var_os("XDG_DATA_HOME"),
+            std::env::home_dir(),
+        )
     }
 }
 
+/// 启动第一件事：确认有正式的数据目录，没有就弹框说明后退出（不建窗口、不写任何文件）。
+///
+/// Linux 上默认位置（不是 `ZSSH_DATA_DIR` 指定的）在这里建好，并保证只有自己能进（0700）：
+/// 里面是凭据库和主机库。用户用 `ZSSH_DATA_DIR` 指定的目录是他自己的选择，权限不替他改。
+pub fn ensure_data_dir_or_exit() {
+    let Some(dir) = try_data_dir() else {
+        exit_without_data_dir();
+    };
+    #[cfg(unix)]
+    if std::env::var_os("ZSSH_DATA_DIR").is_none_or(|dir| dir.is_empty()) {
+        match secure_private_dir(&dir) {
+            Ok(Tightened::Created) => tracing::info!("已创建数据目录，权限 0700"),
+            Ok(Tightened::Narrowed { from }) => {
+                tracing::warn!("数据目录的权限是 {from:04o}，已收紧到 0700");
+            }
+            Ok(Tightened::Unchanged) => {}
+            // 建不了就让后面各处照常报自己的错；这里不替用户决定退出。
+            Err(err) => tracing::error!("没能建好数据目录或设置权限：{err}"),
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
 fn exit_without_data_dir() -> ! {
+    #[cfg(windows)]
     tracing::error!("找不到数据目录：APPDATA 和系统的漫游应用数据文件夹都不可用");
+    #[cfg(not(windows))]
+    tracing::error!("找不到数据目录：XDG_DATA_HOME 和家目录都不可用");
     show_fatal(no_data_dir_message());
     std::process::exit(1);
 }
 
 /// 这时设置还没读，界面语言按系统语言挑：中文系统中文，其他英文。
+#[cfg(windows)]
 fn no_data_dir_message() -> &'static str {
     if zssh_platform_windows::locale::system_is_chinese() {
         "ZeeTerm 找不到保存数据的位置（%APPDATA% 和系统的「应用数据」文件夹都不可用），为避免把凭据和主机写进会被清理的临时目录，程序已退出。\n\n请从开始菜单或桌面快捷方式正常启动；如果需要指定位置，可以设置环境变量 ZSSH_DATA_DIR。" // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
     } else {
         "ZeeTerm cannot find a place to keep its data (neither %APPDATA% nor the system Application Data folder is available). To avoid putting credentials and hosts in a temporary folder that may be cleaned up, ZeeTerm has exited.\n\nStart it normally from the Start menu or a desktop shortcut, or set the ZSSH_DATA_DIR environment variable to choose a location."
+    }
+}
+
+#[cfg(not(windows))]
+fn no_data_dir_message() -> &'static str {
+    if zssh_platform_windows::locale::system_is_chinese() {
+        "ZeeTerm 找不到保存数据的位置（XDG_DATA_HOME 没有设置，也找不到当前用户的家目录），为避免把凭据和主机写进会被清理的临时目录，程序已退出。\n\n请从应用菜单正常启动，或检查 HOME 环境变量；如果需要指定位置，可以设置环境变量 ZSSH_DATA_DIR。" // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
+    } else {
+        "ZeeTerm cannot find a place to keep its data (XDG_DATA_HOME is not set and the home directory of the current user cannot be found). To avoid putting credentials and hosts in a temporary folder that may be cleaned up, ZeeTerm has exited.\n\nStart it from the application menu, check the HOME environment variable, or set the ZSSH_DATA_DIR environment variable to choose a location."
     }
 }
 
@@ -413,9 +461,59 @@ fn show_fatal(text: &str) {
     }
 }
 
+/// 先写到标准错误（从终端启动能看到），再尽量弹一个对话框：有 `zenity` / `kdialog` 就用，
+/// 都没有就算了——这时窗口系统还没建，不能指望图形库。
 #[cfg(not(windows))]
 fn show_fatal(text: &str) {
     eprintln!("{text}");
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    for (program, args) in fatal_dialog_commands(text, &desktop) {
+        // 没有图形会话时这些程序会马上失败退出；弹出来的会等用户点掉再返回。
+        let mut command = std::process::Command::new(program);
+        command
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // 非 Windows 上这是空操作；留着是为了让「子进程都隐藏控制台窗口」的守卫一视同仁。
+        zssh_core::process_util::hide_console(&mut command);
+        let shown = command.status();
+        if shown.is_ok_and(|status| status.success()) {
+            return;
+        }
+    }
+}
+
+/// 弹对话框的候选命令，按优先顺序：KDE 桌面先试 `kdialog`，其他先试 `zenity`。
+/// 文字作为独立参数传，不经过 shell。
+#[cfg(not(windows))]
+fn fatal_dialog_commands(text: &str, desktop: &str) -> Vec<(&'static str, Vec<String>)> {
+    let name = crate::product::NAME.to_owned();
+    let zenity = (
+        "zenity",
+        vec![
+            "--error".to_owned(),
+            "--no-markup".to_owned(),
+            "--title".to_owned(),
+            name.clone(),
+            "--text".to_owned(),
+            text.to_owned(),
+        ],
+    );
+    let kdialog = (
+        "kdialog",
+        vec![
+            "--title".to_owned(),
+            name,
+            "--error".to_owned(),
+            text.to_owned(),
+        ],
+    );
+    if desktop.to_ascii_lowercase().contains("kde") {
+        vec![kdialog, zenity]
+    } else {
+        vec![zenity, kdialog]
+    }
 }
 
 /// Windows 的「漫游应用数据」已知文件夹（就是平时 `%APPDATA%` 指向的地方）。
@@ -434,13 +532,9 @@ fn known_roaming_appdata() -> Option<PathBuf> {
     }
 }
 
-#[cfg(not(windows))]
-fn known_roaming_appdata() -> Option<PathBuf> {
-    None
-}
-
-/// 选数据目录。空字符串当作没设（空的 `APPDATA` 拼出来是相对路径 `ZeeTerm`，会落到当前目录）；
+/// 选数据目录（Windows）。空字符串当作没设（空的 `APPDATA` 拼出来是相对路径 `ZeeTerm`，会落到当前目录）；
 /// `APPDATA` 和系统文件夹都必须是绝对路径。
+#[cfg(windows)]
 fn resolve_data_dir(
     override_dir: Option<std::ffi::OsString>,
     appdata: Option<std::ffi::OsString>,
@@ -455,6 +549,69 @@ fn resolve_data_dir(
         .and_then(usable)
         .or_else(|| known_appdata().and_then(usable))
         .map(|base| base.join(crate::product::DATA_DIR_NAME))
+}
+
+/// 选数据目录（Linux 等）：`ZSSH_DATA_DIR` 优先（空串当没设）；其次 `$XDG_DATA_HOME/ZeeTerm`，
+/// 规范要求它是绝对路径，空的或相对的一律忽略；最后 `~/.local/share/ZeeTerm`。
+/// 家目录也不是绝对路径（`HOME` 被设成怪东西）就没有数据目录，不退回临时目录。
+#[cfg(not(windows))]
+fn resolve_data_dir_xdg(
+    override_dir: Option<std::ffi::OsString>,
+    xdg_data_home: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(dir) = override_dir.filter(|dir| !dir.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    let usable = |dir: PathBuf| dir.is_absolute().then_some(dir);
+    xdg_data_home
+        .map(PathBuf::from)
+        .and_then(usable)
+        .or_else(|| {
+            home.and_then(usable)
+                .map(|home| home.join(".local").join("share"))
+        })
+        .map(|base| base.join(crate::product::DATA_DIR_NAME))
+}
+
+/// [`secure_private_dir`] 做了什么。
+#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq)]
+enum Tightened {
+    /// 目录原来不存在，新建（权限 0700）。
+    Created,
+    /// 目录已经存在，权限比 0700 宽，已收紧；`from` 是原来的权限位。
+    Narrowed { from: u32 },
+    /// 已经是只有所有者能访问（或者根本不是目录），没动。
+    Unchanged,
+}
+
+/// 保证 `dir` 存在，并且只有所有者能访问（0700）。
+///
+/// 新建时连缺的上级目录一起建（XDG 规范要求自己建的基础目录是 0700）；已经存在的只处理 `dir` 本身，
+/// 它的上级（比如 `~/.local/share`）是别的程序共用的，不动。
+#[cfg(unix)]
+fn secure_private_dir(dir: &Path) -> std::io::Result<Tightened> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    match std::fs::metadata(dir) {
+        Ok(meta) => {
+            let mode = meta.permissions().mode() & 0o777;
+            if !meta.is_dir() || mode & 0o077 == 0 {
+                return Ok(Tightened::Unchanged);
+            }
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+            Ok(Tightened::Narrowed { from: mode })
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            // umask 只会让结果更严，不会更宽。
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)?;
+            Ok(Tightened::Created)
+        }
+        Err(err) => Err(err),
+    }
 }
 
 pub fn settings_path() -> PathBuf {
@@ -661,6 +818,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_default_data_dir_is_zeeterm_under_appdata() {
         let appdata = std::ffi::OsString::from(r"C:\data\roaming");
@@ -678,6 +836,7 @@ mod tests {
         assert!(!default.to_string_lossy().contains("Z-SSH"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_missing_appdata_asks_the_system_folder_and_never_falls_back_to_temp() {
         let known = || Some(PathBuf::from(r"C:\Users\x\AppData\Roaming"));
@@ -697,6 +856,157 @@ mod tests {
             resolve_data_dir(None, Some("".into()), || Some(PathBuf::from("relative"))),
             None
         );
+    }
+
+    #[cfg(unix)]
+    fn xdg(
+        override_dir: Option<&str>,
+        xdg_data_home: Option<&str>,
+        home: Option<&str>,
+    ) -> Option<PathBuf> {
+        resolve_data_dir_xdg(
+            override_dir.map(Into::into),
+            xdg_data_home.map(Into::into),
+            home.map(PathBuf::from),
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_data_dir_follows_xdg_data_home_then_the_home_dir() {
+        let default = Some(PathBuf::from("/home/u/.local/share/ZeeTerm"));
+        // 只有家目录：~/.local/share/ZeeTerm。
+        assert_eq!(xdg(None, None, Some("/home/u")), default);
+        // XDG_DATA_HOME 是绝对路径就用它，家目录不再参与。
+        assert_eq!(
+            xdg(None, Some("/data/xdg"), Some("/home/u")),
+            Some(PathBuf::from("/data/xdg/ZeeTerm"))
+        );
+        assert_eq!(
+            xdg(None, Some("/data/xdg"), None),
+            Some(PathBuf::from("/data/xdg/ZeeTerm"))
+        );
+        // XDG_DATA_HOME 为空或不是绝对路径：规范要求忽略，退到家目录。
+        assert_eq!(xdg(None, Some(""), Some("/home/u")), default);
+        assert_eq!(xdg(None, Some("relative/dir"), Some("/home/u")), default);
+        assert_eq!(xdg(None, Some("~/.data"), Some("/home/u")), default);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_override_wins_and_an_empty_one_counts_as_unset() {
+        assert_eq!(
+            xdg(Some("/isolated"), Some("/data/xdg"), Some("/home/u")),
+            Some(PathBuf::from("/isolated"))
+        );
+        assert_eq!(
+            xdg(Some("/isolated"), None, None),
+            Some(PathBuf::from("/isolated"))
+        );
+        assert_eq!(
+            xdg(Some(""), None, Some("/home/u")),
+            Some(PathBuf::from("/home/u/.local/share/ZeeTerm"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_without_a_usable_home_has_no_data_dir_and_never_uses_temp() {
+        assert_eq!(xdg(None, None, None), None);
+        assert_eq!(xdg(None, Some(""), None), None);
+        assert_eq!(xdg(None, Some("rel"), Some("rel-home")), None);
+        assert_eq!(xdg(None, None, Some("")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_default_data_dir_name_is_not_the_tauri_one() {
+        let dir = xdg(None, None, Some("/home/u")).unwrap();
+        assert!(!dir.to_string_lossy().contains("Z-SSH"));
+        assert_eq!(dir.file_name().and_then(|n| n.to_str()), Some("ZeeTerm"));
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_data_dir_is_created_private_with_its_missing_parents() {
+        let base = temp_dir("private-new");
+        let dir = base.join(".local").join("share").join("ZeeTerm");
+        assert_eq!(secure_private_dir(&dir).unwrap(), Tightened::Created);
+        assert_eq!(mode_of(&dir), 0o700);
+        // 缺的上级是跟着一起建的，同样不对外开放。
+        assert_eq!(mode_of(&base.join(".local")), 0o700);
+        // 再来一次什么都不用做。
+        assert_eq!(secure_private_dir(&dir).unwrap(), Tightened::Unchanged);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_wide_data_dir_is_narrowed_but_its_parent_is_left_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = temp_dir("private-wide");
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let dir = base.join("ZeeTerm");
+        std::fs::create_dir(&dir).unwrap();
+        for wide in [0o755, 0o750, 0o770, 0o777, 0o705] {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(wide)).unwrap();
+            assert_eq!(
+                secure_private_dir(&dir).unwrap(),
+                Tightened::Narrowed { from: wide }
+            );
+            assert_eq!(mode_of(&dir), 0o700, "原来是 {wide:o}");
+        }
+        assert_eq!(mode_of(&base), 0o755, "上级目录是别的程序共用的，不动");
+        // 已经是 0700 或更严：不动。
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        assert_eq!(secure_private_dir(&dir).unwrap(), Tightened::Unchanged);
+        assert_eq!(mode_of(&dir), 0o500);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_where_the_data_dir_should_be_is_left_untouched() {
+        let base = temp_dir("private-file");
+        let path = base.join("ZeeTerm");
+        std::fs::write(&path, b"x").unwrap();
+        assert_eq!(secure_private_dir(&path).unwrap(), Tightened::Unchanged);
+        assert_eq!(std::fs::read(&path).unwrap(), b"x");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fatal_dialogs_try_kdialog_first_only_on_kde_and_pass_the_text_as_one_argument() {
+        let text = "第一行\n第二行 & <b>不是标记</b> $(不执行)";
+        let order = |desktop: &str| -> Vec<&'static str> {
+            fatal_dialog_commands(text, desktop)
+                .into_iter()
+                .map(|(program, _)| program)
+                .collect()
+        };
+        assert_eq!(order("GNOME"), ["zenity", "kdialog"]);
+        assert_eq!(order("ubuntu:GNOME"), ["zenity", "kdialog"]);
+        assert_eq!(order(""), ["zenity", "kdialog"]);
+        assert_eq!(order("KDE"), ["kdialog", "zenity"]);
+        assert_eq!(order("plasma:kde"), ["kdialog", "zenity"]);
+        for (program, args) in fatal_dialog_commands(text, "GNOME") {
+            assert_eq!(
+                args.iter().filter(|arg| arg.as_str() == text).count(),
+                1,
+                "{program}：文字必须整段作为一个参数"
+            );
+            assert!(args.iter().any(|arg| arg == crate::product::NAME));
+        }
+        let zenity = fatal_dialog_commands(text, "GNOME").remove(0).1;
+        assert!(zenity.iter().any(|arg| arg == "--no-markup"));
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -869,9 +1179,16 @@ mod tests {
             ("github-light", "graphite")
         );
         assert_eq!(s.terminal_theme, "skin", "终端配色默认跟随皮肤");
+        assert_eq!(s.font_family, DEFAULT_FONT_FAMILY);
+        #[cfg(windows)]
         assert_eq!(
             s.font_family,
             "JetBrains Mono, Cascadia Mono, Consolas, monospace"
+        );
+        #[cfg(not(windows))]
+        assert!(
+            s.font_family
+                .starts_with("JetBrains Mono, DejaVu Sans Mono")
         );
         assert_eq!((s.font_size, s.line_height), (12.0, 1.3));
         assert_eq!(s.scrollback, 10_000);

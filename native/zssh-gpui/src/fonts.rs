@@ -6,8 +6,8 @@
 //! （比例字体，终端的格子宽度就全错了），所以这里自己做同一件事：按栈的顺序取第一个
 //! **本机装了的**，一个都没有就用主题自带的等宽字体。
 
-/// 设置页下拉里供选的常见等宽字体（同 0.2.14 `SettingsPage.tsx` 的 `COMMON_MONO_FONTS`）。
-pub const COMMON_MONO_FONTS: &[&str] = &[
+/// Windows 设置页下拉里供选的常见等宽字体（同 0.2.14 `SettingsPage.tsx` 的 `COMMON_MONO_FONTS`）。
+pub const WINDOWS_MONO_FONTS: &[&str] = &[
     "JetBrains Mono",
     "Cascadia Mono",
     "Cascadia Code",
@@ -17,6 +17,32 @@ pub const COMMON_MONO_FONTS: &[&str] = &[
     "Source Code Pro",
     "Fira Code",
 ];
+
+/// Linux 上常见的等宽字体：发行版自带的（DejaVu、Noto、Liberation、Ubuntu）和开发者常自己装的
+/// （JetBrains Mono、Source Code Pro、Fira Code、Cascadia）。
+/// 顺序同时是「界面里零星等宽文字」的挑选顺序（见 [`mono_text_family`]）。
+pub const LINUX_MONO_FONTS: &[&str] = &[
+    "JetBrains Mono",
+    "DejaVu Sans Mono",
+    "Noto Sans Mono",
+    "Liberation Mono",
+    "Ubuntu Mono",
+    "Source Code Pro",
+    "Fira Code",
+    "Cascadia Code",
+    "Cascadia Mono",
+];
+
+/// 设置页下拉里供选的常见等宽字体：按当前系统挑一份名单，下拉里只列其中本机装了的。
+pub const COMMON_MONO_FONTS: &[&str] = if cfg!(windows) {
+    WINDOWS_MONO_FONTS
+} else {
+    LINUX_MONO_FONTS
+};
+
+/// 在下拉里选了字体时，写在它后面的后备字体（再加通用族名）。
+const WINDOWS_STACK_FALLBACKS: &str = "Cascadia Mono, Consolas, monospace";
+const LINUX_STACK_FALLBACKS: &str = "DejaVu Sans Mono, Noto Sans Mono, Liberation Mono, monospace";
 
 /// CSS 里的通用族名：不是具体字体，不拿去本机查。
 const GENERIC_FAMILIES: &[&str] = &[
@@ -65,7 +91,11 @@ pub fn resolve_family(stack: &str, installed: &[String], fallback: &str) -> Stri
 
 /// 常见等宽字体里本机装了的（下拉里只列这些，顺序同 [`COMMON_MONO_FONTS`]）。
 pub fn installed_common(installed: &[String]) -> Vec<&'static str> {
-    COMMON_MONO_FONTS
+    installed_common_in(COMMON_MONO_FONTS, installed)
+}
+
+fn installed_common_in(common: &[&'static str], installed: &[String]) -> Vec<&'static str> {
+    common
         .iter()
         .copied()
         .filter(|name| installed_match(name, installed).is_some())
@@ -79,8 +109,12 @@ pub fn leading_family(stack: &str) -> Option<String> {
 
 /// 栈的第一个名字是不是常见字体之一（不是就当成「自定义」）。
 pub fn is_common(stack: &str) -> bool {
+    is_common_in(COMMON_MONO_FONTS, stack)
+}
+
+fn is_common_in(common: &[&str], stack: &str) -> bool {
     leading_family(stack).is_some_and(|first| {
-        COMMON_MONO_FONTS
+        common
             .iter()
             .any(|common| common.eq_ignore_ascii_case(&first))
     })
@@ -88,7 +122,12 @@ pub fn is_common(stack: &str) -> bool {
 
 /// 在下拉里选了一个常见字体：写成「它 + 常用的后备」（同 0.2.14）。
 pub fn stack_for_choice(name: &str) -> String {
-    format!("{name}, Cascadia Mono, Consolas, monospace")
+    let fallbacks = if cfg!(windows) {
+        WINDOWS_STACK_FALLBACKS
+    } else {
+        LINUX_STACK_FALLBACKS
+    };
+    format!("{name}, {fallbacks}")
 }
 
 /// 字体回退提示的一句话。
@@ -135,11 +174,32 @@ pub fn fallback_note(stack: &str, installed: &[String], fallback: &str) -> Optio
     ))
 }
 
-/// 界面西文字体的候选，按好看程度排：Windows 11 自带的 `Segoe UI Variable Text`（为正文大小调过的可变字体），
+/// Windows 界面西文字体的候选，按好看程度排：Windows 11 自带的 `Segoe UI Variable Text`（为正文大小调过的可变字体），
 /// 没有（Windows 10）就用 `Segoe UI`。
-pub const UI_LATIN_FONTS: &[&str] = &["Segoe UI Variable Text", "Segoe UI"];
-/// 界面中文字体的候选：`Microsoft YaHei UI`（UI 版行距更紧、字形和 Segoe UI 搭得更齐），没有就用普通的雅黑。
-pub const UI_CJK_FONTS: &[&str] = &["Microsoft YaHei UI", "Microsoft YaHei"];
+pub const WINDOWS_UI_LATIN_FONTS: &[&str] = &["Segoe UI Variable Text", "Segoe UI"];
+/// Windows 界面中文字体的候选：`Microsoft YaHei UI`（UI 版行距更紧、字形和 Segoe UI 搭得更齐），没有就用普通的雅黑。
+pub const WINDOWS_UI_CJK_FONTS: &[&str] = &["Microsoft YaHei UI", "Microsoft YaHei"];
+/// Linux 界面西文字体的候选：GNOME 的 `Cantarell` 在前，其次 `Noto Sans`、`Ubuntu`，最后各发行版都有的 `DejaVu Sans`。
+pub const LINUX_UI_LATIN_FONTS: &[&str] = &["Cantarell", "Noto Sans", "Ubuntu", "DejaVu Sans"];
+/// Linux 界面中文字体的候选（西文字体里没有的汉字才会用到）：思源黑体（Noto / Source Han 两种叫法）、文泉驿微米黑。
+pub const LINUX_UI_CJK_FONTS: &[&str] = &[
+    "Noto Sans CJK SC",
+    "Source Han Sans SC",
+    "WenQuanYi Micro Hei",
+];
+
+/// 界面西文字体的候选（当前系统的那一份）。
+pub const UI_LATIN_FONTS: &[&str] = if cfg!(windows) {
+    WINDOWS_UI_LATIN_FONTS
+} else {
+    LINUX_UI_LATIN_FONTS
+};
+/// 界面中文字体的候选（当前系统的那一份）。
+pub const UI_CJK_FONTS: &[&str] = if cfg!(windows) {
+    WINDOWS_UI_CJK_FONTS
+} else {
+    LINUX_UI_CJK_FONTS
+};
 /// GPUI 的虚拟族名：映射到系统当前的界面字体（`SPI_GETICONTITLELOGFONT`，中文版 Windows 上是雅黑 UI）。
 pub const SYSTEM_UI_FONT: &str = ".SystemUIFont";
 
@@ -156,13 +216,18 @@ pub struct UiFont {
 /// 放进后备。字体存不存在只看传进来的名单，所以 Windows 10（没有 Segoe UI Variable）、
 /// 没装雅黑的系统都落到各自能用的组合上，不会出现方框；一个候选都没有就是「全交给系统」。
 pub fn resolve_ui_font(installed: &[String]) -> UiFont {
+    resolve_ui_font_from(UI_LATIN_FONTS, UI_CJK_FONTS, installed)
+}
+
+/// [`resolve_ui_font`] 的实现，候选名单从参数传进来（测试里两个系统的名单都要验）。
+fn resolve_ui_font_from(latin: &[&str], cjk: &[&str], installed: &[String]) -> UiFont {
     let pick = |candidates: &[&str]| {
         candidates
             .iter()
             .find_map(|name| installed_match(name, installed).cloned())
     };
-    let family = pick(UI_LATIN_FONTS).unwrap_or_else(|| SYSTEM_UI_FONT.to_owned());
-    let fallbacks = pick(UI_CJK_FONTS)
+    let family = pick(latin).unwrap_or_else(|| SYSTEM_UI_FONT.to_owned());
+    let fallbacks = pick(cjk)
         .filter(|cjk| !cjk.eq_ignore_ascii_case(&family))
         .into_iter()
         .collect();
@@ -182,7 +247,40 @@ pub fn ui_font(cx: &::gpui::App) -> &'static UiFont {
 /// 本机已装字体名，整个进程里只列一次（枚举要花几十毫秒，运行期间系统字体不会变）。
 pub fn installed_fonts(cx: &::gpui::App) -> &'static [String] {
     static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    NAMES.get_or_init(|| cx.text_system().all_font_names())
+    NAMES.get_or_init(|| {
+        let names = cx.text_system().all_font_names();
+        // 界面里零星的等宽文字（命令行预览、路径）手边没有 `cx`，趁这里把要用的字体定下来。
+        let _ = MONO_TEXT.set(pick_mono_text(&names));
+        names
+    })
+}
+
+static MONO_TEXT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// 界面里零星几处等宽文字（命令、路径）用的字体族名。
+///
+/// Windows 一直是 `Consolas`，不变；Linux 没有它，取 [`LINUX_MONO_FONTS`] 里第一个本机装了的，
+/// 一个都没有就交给系统界面字体（宁可不等宽，也不去找一个不存在的族名）。
+/// 字体列表启动时就列好了（见 [`installed_fonts`]）；万一还没列过，先用名单里的第一个。
+pub fn mono_text_family() -> &'static str {
+    if cfg!(windows) {
+        return "Consolas";
+    }
+    MONO_TEXT
+        .get()
+        .map(String::as_str)
+        .unwrap_or(LINUX_MONO_FONTS[0])
+}
+
+/// 从本机字体名里挑 [`mono_text_family`] 用的那个。
+fn pick_mono_text(installed: &[String]) -> String {
+    if cfg!(windows) {
+        return "Consolas".to_owned();
+    }
+    LINUX_MONO_FONTS
+        .iter()
+        .find_map(|name| installed_match(name, installed).cloned())
+        .unwrap_or_else(|| SYSTEM_UI_FONT.to_owned())
 }
 
 #[cfg(test)]
@@ -191,6 +289,15 @@ mod tests {
 
     fn installed(names: &[&str]) -> Vec<String> {
         names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    /// 用 Windows 的候选名单选界面字体（名单在两个系统上都编译，所以两边都能跑这些用例）。
+    fn windows_ui(installed: &[String]) -> UiFont {
+        resolve_ui_font_from(WINDOWS_UI_LATIN_FONTS, WINDOWS_UI_CJK_FONTS, installed)
+    }
+
+    fn linux_ui(installed: &[String]) -> UiFont {
+        resolve_ui_font_from(LINUX_UI_LATIN_FONTS, LINUX_UI_CJK_FONTS, installed)
     }
 
     #[test]
@@ -246,17 +353,23 @@ mod tests {
     fn the_dropdown_only_lists_installed_common_fonts() {
         let fonts = installed(&["Consolas", "Fira Code", "Comic Sans MS", "courier new"]);
         assert_eq!(
-            installed_common(&fonts),
+            installed_common_in(WINDOWS_MONO_FONTS, &fonts),
             vec!["Consolas", "Courier New", "Fira Code"]
         );
-        assert!(installed_common(&installed(&["Arial"])).is_empty());
+        assert!(installed_common_in(WINDOWS_MONO_FONTS, &installed(&["Arial"])).is_empty());
     }
 
     #[test]
     fn choosing_a_common_font_writes_it_with_the_usual_fallbacks() {
+        #[cfg(windows)]
         assert_eq!(
             stack_for_choice("Fira Code"),
             "Fira Code, Cascadia Mono, Consolas, monospace"
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            stack_for_choice("Fira Code"),
+            "Fira Code, DejaVu Sans Mono, Noto Sans Mono, Liberation Mono, monospace"
         );
         assert_eq!(
             leading_family(&stack_for_choice("Fira Code")).as_deref(),
@@ -266,10 +379,10 @@ mod tests {
 
     #[test]
     fn a_stack_starting_with_an_unknown_font_counts_as_custom() {
-        assert!(is_common("Consolas, monospace"));
-        assert!(is_common("jetbrains mono"));
-        assert!(!is_common("Iosevka, monospace"));
-        assert!(!is_common(""));
+        assert!(is_common_in(WINDOWS_MONO_FONTS, "Consolas, monospace"));
+        assert!(is_common_in(WINDOWS_MONO_FONTS, "jetbrains mono"));
+        assert!(!is_common_in(WINDOWS_MONO_FONTS, "Iosevka, monospace"));
+        assert!(!is_common_in(WINDOWS_MONO_FONTS, ""));
     }
 
     #[test]
@@ -281,7 +394,7 @@ mod tests {
             "Microsoft YaHei UI",
         ]);
         assert_eq!(
-            resolve_ui_font(&fonts),
+            windows_ui(&fonts),
             UiFont {
                 family: "Segoe UI Variable Text".to_owned(),
                 fallbacks: vec!["Microsoft YaHei UI".to_owned()],
@@ -292,7 +405,7 @@ mod tests {
     #[test]
     fn windows_10_without_segoe_ui_variable_falls_back_to_segoe_ui() {
         let fonts = installed(&["Segoe UI", "Microsoft YaHei UI", "Arial"]);
-        let font = resolve_ui_font(&fonts);
+        let font = windows_ui(&fonts);
         assert_eq!(font.family, "Segoe UI");
         assert_eq!(font.fallbacks, vec!["Microsoft YaHei UI"]);
     }
@@ -301,7 +414,7 @@ mod tests {
     fn without_yahei_ui_the_plain_yahei_is_the_chinese_fallback() {
         let fonts = installed(&["Segoe UI Variable Text", "Microsoft YaHei"]);
         assert_eq!(
-            resolve_ui_font(&fonts).fallbacks,
+            windows_ui(&fonts).fallbacks,
             vec!["Microsoft YaHei".to_owned()]
         );
     }
@@ -310,19 +423,19 @@ mod tests {
     fn without_any_candidate_the_system_decides_and_no_fallback_is_forced() {
         let fonts = installed(&["Arial", "SimSun"]);
         assert_eq!(
-            resolve_ui_font(&fonts),
+            windows_ui(&fonts),
             UiFont {
                 family: SYSTEM_UI_FONT.to_owned(),
                 fallbacks: Vec::new(),
             }
         );
-        assert_eq!(resolve_ui_font(&[]).family, SYSTEM_UI_FONT);
+        assert_eq!(windows_ui(&[]).family, SYSTEM_UI_FONT);
     }
 
     #[test]
     fn the_ui_font_matches_names_ignoring_case_and_uses_the_system_spelling() {
         let fonts = installed(&["segoe ui variable text", "MICROSOFT YAHEI UI"]);
-        let font = resolve_ui_font(&fonts);
+        let font = windows_ui(&fonts);
         assert_eq!(font.family, "segoe ui variable text");
         assert_eq!(font.fallbacks, vec!["MICROSOFT YAHEI UI"]);
     }
@@ -331,7 +444,7 @@ mod tests {
     fn a_chinese_font_never_doubles_as_its_own_fallback() {
         // 极端情况：只装了雅黑 UI。它当不了「西文候选」，主字体交给系统，中文后备仍是它。
         let fonts = installed(&["Microsoft YaHei UI"]);
-        let font = resolve_ui_font(&fonts);
+        let font = windows_ui(&fonts);
         assert_eq!(font.family, SYSTEM_UI_FONT);
         assert_eq!(font.fallbacks, vec!["Microsoft YaHei UI"]);
     }
@@ -353,5 +466,97 @@ mod tests {
         );
         // 只写通用族名：没有「想要的具体字体」，不提示。
         assert_eq!(fallback_note("monospace", &fonts, "Courier New"), None);
+    }
+
+    #[test]
+    fn linux_picks_cantarell_with_a_chinese_fallback_when_they_exist() {
+        let fonts = installed(&["DejaVu Sans", "Noto Sans", "Cantarell", "Noto Sans CJK SC"]);
+        assert_eq!(
+            linux_ui(&fonts),
+            UiFont {
+                family: "Cantarell".to_owned(),
+                fallbacks: vec!["Noto Sans CJK SC".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn linux_ui_font_walks_down_the_candidate_list() {
+        let font = linux_ui(&installed(&[
+            "DejaVu Sans",
+            "Ubuntu",
+            "WenQuanYi Micro Hei",
+        ]));
+        assert_eq!(font.family, "Ubuntu");
+        assert_eq!(font.fallbacks, vec!["WenQuanYi Micro Hei"]);
+        let font = linux_ui(&installed(&["DejaVu Sans", "Source Han Sans SC"]));
+        assert_eq!(font.family, "DejaVu Sans");
+        assert_eq!(font.fallbacks, vec!["Source Han Sans SC"]);
+        // 一个候选都没有：全交给系统，不强行指定后备。
+        let bare = linux_ui(&installed(&["Arial"]));
+        assert_eq!(bare.family, SYSTEM_UI_FONT);
+        assert!(bare.fallbacks.is_empty());
+    }
+
+    #[test]
+    fn the_linux_dropdown_lists_the_common_fonts_that_are_installed() {
+        let fonts = installed(&[
+            "DejaVu Sans Mono",
+            "Liberation Mono",
+            "Noto Sans Mono",
+            "Comic Sans MS",
+        ]);
+        assert_eq!(
+            installed_common_in(LINUX_MONO_FONTS, &fonts),
+            vec!["DejaVu Sans Mono", "Noto Sans Mono", "Liberation Mono"]
+        );
+        assert!(is_common_in(
+            LINUX_MONO_FONTS,
+            "DejaVu Sans Mono, monospace"
+        ));
+        assert!(is_common_in(LINUX_MONO_FONTS, "ubuntu mono"));
+        assert!(!is_common_in(LINUX_MONO_FONTS, "Consolas, monospace"));
+    }
+
+    /// 已经保存的字体栈（比如从 Windows 同步来的）不会被改写，在 Linux 上照样解析：
+    /// 找不到的 Windows 字体被跳过，落到栈里装了的那个或主题的等宽字体。
+    #[test]
+    fn a_saved_windows_stack_still_resolves_on_linux() {
+        let stack = "JetBrains Mono, Cascadia Mono, Consolas, monospace";
+        let fonts = installed(&["DejaVu Sans Mono", "Liberation Mono"]);
+        assert_eq!(resolve_family(stack, &fonts, "Theme Mono"), "Theme Mono");
+        let with_jb = installed(&["JetBrains Mono", "DejaVu Sans Mono"]);
+        assert_eq!(
+            resolve_family(stack, &with_jb, "Theme Mono"),
+            "JetBrains Mono"
+        );
+        assert!(settings_default_stack_is_listed());
+    }
+
+    /// 各平台的默认字体栈里至少有一个具体字体在该平台的常见名单里（不然下拉里永远选不中默认值）。
+    fn settings_default_stack_is_listed() -> bool {
+        let common = if cfg!(windows) {
+            WINDOWS_MONO_FONTS
+        } else {
+            LINUX_MONO_FONTS
+        };
+        is_common_in(common, crate::settings::DEFAULT_FONT_FAMILY)
+    }
+
+    #[test]
+    fn the_mono_text_font_is_the_first_installed_candidate() {
+        if cfg!(windows) {
+            assert_eq!(pick_mono_text(&installed(&["Arial"])), "Consolas");
+            return;
+        }
+        let fonts = installed(&["Liberation Mono", "DejaVu Sans Mono", "Noto Sans Mono"]);
+        assert_eq!(pick_mono_text(&fonts), "DejaVu Sans Mono");
+        assert_eq!(pick_mono_text(&installed(&["Ubuntu Mono"])), "Ubuntu Mono");
+        assert_eq!(pick_mono_text(&installed(&["Arial"])), SYSTEM_UI_FONT);
+        // 系统里的写法不同（大小写）时用系统的写法。
+        assert_eq!(
+            pick_mono_text(&installed(&["dejavu sans mono"])),
+            "dejavu sans mono"
+        );
     }
 }

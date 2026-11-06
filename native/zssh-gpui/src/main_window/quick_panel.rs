@@ -538,7 +538,7 @@ impl MainWindow {
                                     div()
                                         .truncate()
                                         .typo(Role::Caption, tokens)
-                                        .font_family("Consolas")
+                                        .font_family(crate::fonts::mono_text_family())
                                         .child(first_line),
                                 ),
                         )
@@ -869,7 +869,7 @@ impl MainWindow {
                         None,
                         Textarea::new(&ui.command)
                             .h(px(200.0))
-                            .font_family("Consolas"),
+                            .font_family(crate::fonts::mono_text_family()),
                         error_of(Field::Command).as_deref(),
                         tokens,
                     ))
