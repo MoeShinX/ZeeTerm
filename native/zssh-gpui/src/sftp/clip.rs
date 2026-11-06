@@ -90,12 +90,9 @@ pub(super) fn items_from(entries: &[Entry]) -> Vec<ClipItem> {
         .collect()
 }
 
-/// 路径最后一段（远端 `/`、本地 `\` 都认；末尾的分隔符忽略）。
+/// 路径最后一段（远端 `/`；Windows 本地再加 `\`，Linux 上 `\` 是名字的一部分；末尾的分隔符忽略）。
 pub(super) fn name_of(path: &str) -> String {
-    path.rsplit(['/', '\\'])
-        .find(|part| !part.is_empty())
-        .unwrap_or(path)
-        .to_owned()
+    super::local_path::last_segment(path)
 }
 
 /// 粘贴前的检查：文件夹不能粘贴到它自己或它的子文件夹里。返回要给用户看的原因。
@@ -446,7 +443,15 @@ mod tests {
     fn name_and_dest() {
         assert_eq!(name_of("/a/b/c.txt"), "c.txt");
         assert_eq!(name_of("/a/b/"), "b");
+        #[cfg(windows)]
         assert_eq!(name_of(r"C:\w\x y.txt"), "x y.txt");
+        // Linux 上反斜杠是名字的一部分，只有 `/` 分段。
+        #[cfg(unix)]
+        {
+            assert_eq!(name_of("/home/me/下载 目录/报告.txt"), "报告.txt");
+            assert_eq!(name_of(r"/tmp/a\b c.txt"), r"a\b c.txt");
+            assert_eq!(name_of(r"/tmp/dir\/"), r"dir\");
+        }
         assert_eq!(remote_dest("/t", &item("/a/b.txt", false)), "/t/b.txt");
         assert_eq!(remote_dest("/", &item("/a/b", true)), "/b");
     }

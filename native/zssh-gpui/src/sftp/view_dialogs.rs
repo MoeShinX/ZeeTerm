@@ -453,7 +453,7 @@ impl SftpDemo {
         let ok = entity.clone();
         let name = d.input.read(cx).value().to_string();
         let check = validate_name(&name, d.side);
-        let taken = name_taken(&name, &d.existing)
+        let taken = name_taken(d.side, &name, &d.existing)
             && !(d.kind == NameKind::Rename
                 && d.from.as_ref().is_some_and(|f| f.name == name.trim()));
         let (title, desc) = match d.kind {

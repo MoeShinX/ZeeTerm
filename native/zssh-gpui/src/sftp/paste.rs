@@ -846,10 +846,9 @@ async fn resolve_local_dest(
         ConflictAction::Rename => {
             let chosen = match decision.rename_to {
                 Some(name) => {
-                    // 必须原样是合法的 Windows 文件名：`C:evil.txt` 会让 `with_file_name` 丢掉所在
+                    // 必须原样是合法的本机文件名（Windows 上按 Windows 规则）：`C:evil.txt` 会让 `with_file_name` 丢掉所在
                     // 目录，`a:b` 会写进备用数据流。拼好之后再核对一次仍在原目录里。
-                    let name = zssh_core::sftp::local::check_child_name(&name)
-                        .map_err(|err| error_text(&err))?;
+                    let name = super::local_path::local_child_name(&name)?;
                     let chosen = dest.with_file_name(&name);
                     if let Some(parent) = dest.parent() {
                         zssh_core::sftp::local::ensure_inside(parent, &chosen)

@@ -12,7 +12,7 @@ use gpui_kit::*;
 use super::SftpDemo;
 use super::dialogs::{MoveConflict, MoveDialog, MoveReport};
 use super::menu::Side;
-use super::model::{Crumb, local_crumbs, remote_crumbs};
+use super::model::{Crumb, local_at_top, local_crumbs, remote_crumbs};
 use super::move_to::{Choice, check_destination, dialog_title as move_title};
 use crate::app_theme::Tokens;
 use crate::i18n::{Msg, t};
@@ -118,9 +118,11 @@ fn button_row(children: Vec<AnyElement>) -> Div {
     h_flex().gap_2().justify_end().children(children)
 }
 
-/// 浏览目录的面包屑：远端从 `/` 起，本地从“此电脑”起。
+/// 浏览目录的面包屑：远端从 `/` 起，本地在 Windows 上从“此电脑”起、在 Linux 上也从 `/` 起
+/// （Linux 的本地面包屑自己就以 `/` 打头，不再加一级）。
 fn browse_crumbs(side: Side, dir: &str) -> Vec<Crumb> {
     let mut crumbs = match side {
+        Side::Local if !cfg!(windows) => Vec::new(),
         Side::Remote => vec![Crumb {
             name: "/".to_owned(),
             path: "/".to_owned(),
@@ -151,7 +153,7 @@ impl SftpDemo {
         let check = check_destination(d.side, &d.entries, &text);
         let at_top = match d.side {
             Side::Remote => d.browse.dir.is_empty() || d.browse.dir == "/",
-            Side::Local => d.browse.dir.is_empty(),
+            Side::Local => local_at_top(&d.browse.dir),
         };
 
         // 面包屑 + 上一级。

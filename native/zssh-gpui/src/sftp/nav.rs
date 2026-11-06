@@ -13,7 +13,7 @@ use zssh_core::sftp::path::{join, normalize};
 use super::engine::resolve_local_path;
 use super::local_listing::{LocalReply, LocalRequest, ScanError, accepts, request_listing};
 use super::menu::{Side, not_utf8_reason};
-use super::model::{Entry, NavMode, SortKey, local_parent, remote_parent};
+use super::model::{Entry, NavMode, SortKey, local_at_top, local_parent, remote_parent};
 use super::pane::PathEdit;
 use super::{SftpDemo, SftpEvent, SftpMsg};
 use crate::error_text::error_text;
@@ -178,8 +178,15 @@ impl SftpDemo {
         notice: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        // 给界面的路径不带 `\\?\` 前缀（纯字符串处理，不碰磁盘）。
-        let target = if path.is_empty() {
+        // 给界面的路径不带 `\\?\` 前缀（纯字符串处理，不碰磁盘）。Linux 没有“此电脑”：空路径就是 `/`，
+        // 也没有 `\\?\` 前缀这回事（那只是个相对路径的怪名字），原样用。
+        let target = if !cfg!(windows) {
+            if path.is_empty() {
+                "/".to_owned()
+            } else {
+                path.to_owned()
+            }
+        } else if path.is_empty() {
             String::new()
         } else {
             simplify_verbatim(PathBuf::from(path)).display().to_string()
@@ -343,7 +350,7 @@ impl SftpDemo {
                 self.navigate(side, &target, NavMode::Visit, cx);
             }
             Side::Local => {
-                if pane.path.is_empty() {
+                if local_at_top(&pane.path) {
                     return;
                 }
                 let target = local_parent(&pane.path);

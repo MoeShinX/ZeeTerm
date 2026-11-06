@@ -36,7 +36,7 @@ pub(super) enum TargetKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Entry {
     pub(super) name: String,
-    /// 远端是 POSIX 路径，本地是 Windows 路径。
+    /// 远端是 POSIX 路径；本地在 Windows 上是 Windows 路径，在 Linux 上是 POSIX 路径。
     pub(super) path: String,
     pub(super) kind: EntryKind,
     pub(super) target_kind: Option<TargetKind>,
@@ -516,8 +516,18 @@ fn split_local_root(path: &str) -> (String, String) {
     (root, rest)
 }
 
-/// 本地路径的面包屑：`C:\Users\demo` → `C:`、Users、demo；“此电脑”（空）是空列表。
+/// 本地路径的面包屑。Windows：`C:\Users\demo` → `C:`、Users、demo，“此电脑”（空）是空列表；
+/// Linux：`/home/me` → `/`、home、me，根 `/` 是第一级（没有“此电脑”这一层）。
 pub(super) fn local_crumbs(path: &str) -> Vec<Crumb> {
+    if cfg!(windows) {
+        windows_local_crumbs(path)
+    } else {
+        super::local_path::posix_crumbs(path)
+    }
+}
+
+/// Windows 本地路径的面包屑（盘符、网络共享、`\\?\` 前缀）。
+fn windows_local_crumbs(path: &str) -> Vec<Crumb> {
     if path.is_empty() {
         return Vec::new();
     }
@@ -541,9 +551,26 @@ pub(super) fn local_crumbs(path: &str) -> Vec<Crumb> {
     out
 }
 
-/// 本地上一级：`C:\a\b` → `C:\a`；`C:\` → 空（此电脑）。
+/// 本地上一级。Windows：`C:\a\b` → `C:\a`，`C:\` → 空（此电脑）；Linux：`/a/b` → `/a`，`/` 还是 `/`。
 pub(super) fn local_parent(path: &str) -> String {
-    let crumbs = local_crumbs(path);
+    if cfg!(windows) {
+        windows_local_parent(path)
+    } else {
+        super::local_path::posix_parent(path)
+    }
+}
+
+/// 本地栏已经在最上层、没有「上一级」可去：Windows 是“此电脑”（空路径），Linux 是 `/`。
+pub(super) fn local_at_top(path: &str) -> bool {
+    if cfg!(windows) {
+        path.is_empty()
+    } else {
+        path.is_empty() || path == "/"
+    }
+}
+
+fn windows_local_parent(path: &str) -> String {
+    let crumbs = windows_local_crumbs(path);
     if crumbs.len() <= 1 {
         return String::new();
     }
@@ -878,10 +905,11 @@ mod tests {
     use super::{
         Column, Crumb, Entry, EntryKind, Filter, LinkBase, NavHistory, Selection, SortKey,
         SortOrder, TargetKind, adaptive_columns, cell_text, collapse_crumbs, compact_columns,
-        filter_entries, full_columns, hidden_count, local_crumbs, local_parent, local_stacked,
-        remote_crumbs, remote_parent, size_short, sort_entries, time_full, time_short,
-        visible_entries,
+        filter_entries, full_columns, hidden_count, local_stacked, remote_crumbs, remote_parent,
+        size_short, sort_entries, time_full, time_short, visible_entries,
     };
+    // 这两个测试验证的是 Windows 规则，两个系统上都跑；Linux 规则的测试在 `local_path.rs`。
+    use super::{windows_local_crumbs as local_crumbs, windows_local_parent as local_parent};
 
     #[test]
     fn hidden_files_are_counted_only_while_they_are_hidden() {
@@ -1283,6 +1311,40 @@ mod tests {
         assert_eq!(long[0].name, "C:");
         let unc = local_crumbs(r"\\?\UNC\srv\share\a");
         assert_eq!(unc[0].name, r"\\srv\share");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_local_breadcrumbs_start_at_the_root_and_never_go_above_it() {
+        use super::{local_at_top, local_crumbs, local_parent};
+        let crumbs = local_crumbs("/home/me/下载 目录");
+        let names: Vec<&str> = crumbs.iter().map(|c| c.name.as_str()).collect();
+        let paths: Vec<&str> = crumbs.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(names, ["/", "home", "me", "下载 目录"]);
+        assert_eq!(paths, ["/", "/home", "/home/me", "/home/me/下载 目录"]);
+        // 空路径当作根；根的上一级还是根，“已在最上层”。
+        assert_eq!(local_crumbs("").len(), 1);
+        assert_eq!(local_parent("/home/me"), "/home");
+        assert_eq!(local_parent("/home"), "/");
+        assert_eq!(local_parent("/"), "/");
+        assert_eq!(local_parent(""), "/");
+        assert!(local_at_top("/") && local_at_top(""));
+        assert!(!local_at_top("/home"));
+        // 走 `local_parent` 一路往上，最后停在 `/`，不会掉进空串。
+        let mut path = "/a/b c/d\\e".to_owned();
+        for _ in 0..6 {
+            path = local_parent(&path);
+        }
+        assert_eq!(path, "/");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_local_top_level_is_this_pc() {
+        use super::local_at_top;
+        assert!(local_at_top(""));
+        assert!(!local_at_top("/"));
+        assert!(!local_at_top(r"C:\"));
     }
 
     #[test]

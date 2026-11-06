@@ -24,7 +24,7 @@ use super::engine::{conflict_compare, state_label};
 use super::menu::Side;
 use super::model::{
     Column, Entry, EntryKind, LinkBase, LinkInfo, adaptive_columns, cell_text, collapse_crumbs,
-    compact_columns, hidden_count, local_crumbs, local_stacked, remote_crumbs,
+    compact_columns, hidden_count, local_at_top, local_crumbs, local_stacked, remote_crumbs,
 };
 use super::{Phase, SftpDemo, SftpMsg, queue};
 use crate::app_theme::Tokens;
@@ -603,7 +603,7 @@ impl SftpDemo {
         let at_top = if is_remote {
             pane.path.is_empty() || pane.path == "/"
         } else {
-            pane.path.is_empty()
+            local_at_top(&pane.path)
         };
         let show_hidden = pane.filter.show_hidden;
         let loading = pane.loading;
@@ -1077,12 +1077,14 @@ impl SftpDemo {
                     })
             };
         if crumbs.is_empty() {
-            let root = if is_remote {
+            // 路径还没读出来：Windows 本地是“此电脑”，Linux 本地和远端一样是 `/`。
+            let slash_root = is_remote || !cfg!(windows);
+            let root = if slash_root {
                 "/"
             } else {
                 t(SftpViewMsg::ThisComputer)
             };
-            let target = if is_remote { "/" } else { "" };
+            let target = if slash_root { "/" } else { "" };
             bar = bar.child(crumb_button(
                 SharedString::from(format!("crumb-root-{id_suffix}")),
                 root.to_owned(),

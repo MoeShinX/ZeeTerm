@@ -130,8 +130,9 @@ pub(super) struct PropTarget {
 }
 
 fn base_name(path: &str) -> String {
-    let trimmed = path.trim_end_matches(['/', '\\']);
-    let name = trimmed.rsplit(['/', '\\']).next().unwrap_or("");
+    use super::local_path::is_separator;
+    let trimmed = path.trim_end_matches(is_separator);
+    let name = trimmed.rsplit(is_separator).next().unwrap_or("");
     if name.is_empty() {
         if trimmed.is_empty() { path } else { trimmed }.to_owned()
     } else {
@@ -646,7 +647,10 @@ mod tests {
         assert!(properties_targets(&[entry("C:", EntryKind::Drive)], "").is_empty());
         // 根目录的名字就是它自己。
         assert_eq!(properties_targets(&[], "/")[0].name, "/");
+        #[cfg(windows)]
         assert_eq!(properties_targets(&[], r"C:\")[0].name, "C:");
+        #[cfg(unix)]
+        assert_eq!(properties_targets(&[], r"/tmp/a\b")[0].name, r"a\b");
     }
 
     #[test]

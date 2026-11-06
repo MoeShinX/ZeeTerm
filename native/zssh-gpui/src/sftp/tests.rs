@@ -66,10 +66,23 @@ fn format_size_switches_units() {
 #[test]
 fn upload_target_keeps_the_local_file_name() {
     assert_eq!(upload_target("/home/u", "a.txt").unwrap(), "/home/u/a.txt");
+    #[cfg(windows)]
     assert_eq!(
         upload_target("/home/u/", r"C:\tmp\a.txt").unwrap(),
         "/home/u/a.txt"
     );
+    // Linux 本地路径：反斜杠是名字的一部分。
+    #[cfg(unix)]
+    {
+        assert_eq!(
+            upload_target("/home/u/", "/tmp/下载 目录/a.txt").unwrap(),
+            "/home/u/a.txt"
+        );
+        assert_eq!(
+            upload_target("/home/u", r"/tmp/a\b.txt").unwrap(),
+            r"/home/u/a\b.txt"
+        );
+    }
     assert_eq!(upload_target("/", "/tmp/a.txt").unwrap(), "/a.txt");
     assert!(upload_target("/home/u", "").is_err());
 }
@@ -102,6 +115,7 @@ fn download_target_names_a_remote_directory() {
 
 #[test]
 fn upload_dir_target_keeps_the_local_directory_name() {
+    #[cfg(windows)]
     assert_eq!(
         upload_dir_target("/home/u", r"C:\tmp\proj").unwrap(),
         "/home/u/proj"
@@ -113,8 +127,22 @@ fn upload_dir_target_keeps_the_local_directory_name() {
     assert_eq!(upload_dir_target("/", "/tmp/proj").unwrap(), "/proj");
     // 名字为空、盘符根、`..` 都不能拼出一个跑出远端当前目录的落点。
     assert!(upload_dir_target("/home/u", "").is_err());
-    assert!(upload_dir_target("/home/u", r"C:\").is_err());
-    assert!(upload_dir_target("/home/u", r"C:\tmp\..").is_err());
+    #[cfg(windows)]
+    {
+        assert!(upload_dir_target("/home/u", r"C:\").is_err());
+        assert!(upload_dir_target("/home/u", r"C:\tmp\..").is_err());
+    }
+    #[cfg(unix)]
+    {
+        assert!(upload_dir_target("/home/u", "/").is_err());
+        assert!(upload_dir_target("/home/u", "/tmp/..").is_err());
+        // Linux 本地目录名里的冒号是普通字符；反斜杠仍按远端名字规则拒绝。
+        assert_eq!(
+            upload_dir_target("/home/u", "/tmp/a:b 目录").unwrap(),
+            "/home/u/a:b 目录"
+        );
+        assert!(upload_dir_target("/home/u", r"/tmp/a\b").is_err());
+    }
 }
 
 #[test]
@@ -435,7 +463,44 @@ fn conflict_rename_empty_name_means_auto_name() {
     }
 }
 
+/// 下载的新名字落在 Linux 上：只有 `/`、NUL、`.`、`..` 和空名字不行，Windows 的限制不适用。
+#[cfg(unix)]
+#[test]
+fn conflict_rename_for_downloads_on_linux_only_needs_a_posix_name() {
+    for direction in [Direction::Download, Direction::LocalCopy] {
+        for good in [
+            "x.txt:evil",
+            "CON",
+            "a*b",
+            "trailing.",
+            r"sub\b.txt",
+            "报告 (副本).txt",
+            ".bashrc",
+            "a b.txt",
+            "C:evil.txt",
+        ] {
+            assert_eq!(
+                conflict_rename_name(direction, good).unwrap().as_deref(),
+                Some(good),
+                "{good:?}"
+            );
+        }
+        for bad in ["..", ".", "sub/b.txt", "a\0b"] {
+            assert!(
+                conflict_rename_name(direction, bad).is_err(),
+                "{bad:?} 应该被拒绝"
+            );
+        }
+    }
+    // 落在远端的名字规则没变：反斜杠照旧不行。
+    for direction in [Direction::Upload, Direction::RemoteCopy] {
+        assert!(conflict_rename_name(direction, r"sub\b.txt").is_err());
+        assert!(conflict_rename_name(direction, "sub/b.txt").is_err());
+    }
+}
+
 /// M2：下载的新名字落在 Windows 上，非法字符、保留名、备用数据流、尾部点 / 空格都要挡住。
+#[cfg(windows)]
 #[test]
 fn conflict_rename_for_downloads_rejects_windows_unsafe_names() {
     for bad in [

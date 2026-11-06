@@ -17,7 +17,7 @@ pub(super) struct PathEdit {
 }
 
 pub(super) struct Pane {
-    /// 当前目录：远端是 POSIX 路径（还没读出来是空）；本地空字符串 = “此电脑”。
+    /// 当前目录：远端是 POSIX 路径（还没读出来是空）；Windows 本地空字符串 = “此电脑”（Linux 本地没有这一层，最上层是 `/`）。
     pub(super) path: String,
     /// 这个目录读回来的原始条目。
     pub(super) raw: Vec<Entry>,
