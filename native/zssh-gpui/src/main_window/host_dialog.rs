@@ -128,6 +128,7 @@ enum HostDialogMsg {
     // ---- 高级设置 ----
     X11Forward,
     X11Hint,
+    X11HintLinux,
     LegacyTitle,
     LegacyHint,
     NawsHint,
@@ -229,6 +230,9 @@ impl Msg for HostDialogMsg {
             Self::X11Forward => "X11 转发",
             Self::X11Hint => {
                 "把远程图形程序显示在本机的 X 服务器上（如 VcXsrv）；本机没有时连接会提示安装。"
+            }
+            Self::X11HintLinux => {
+                "把远程图形程序显示在本机的 X 服务器上（当前桌面会话的 DISPLAY；Wayland 桌面需要 Xwayland）；本机没有时连接会提示。"
             }
             Self::LegacyTitle => "旧算法兼容",
             Self::LegacyHint => {
@@ -341,6 +345,9 @@ impl Msg for HostDialogMsg {
             Self::X11Forward => "X11 Forwarding",
             Self::X11Hint => {
                 "Show remote graphical programs on this machine's X server (such as VcXsrv); when none is available, connecting prompts you to install one."
+            }
+            Self::X11HintLinux => {
+                "Show remote graphical programs on this machine's X server (the DISPLAY of the current desktop session; Wayland desktops need Xwayland); when none is available, connecting tells you so."
             }
             Self::LegacyTitle => "Legacy Algorithms",
             Self::LegacyHint => {
@@ -1718,7 +1725,11 @@ impl MainWindow {
                     entity,
                     "host-x11",
                     t(HostDialogMsg::X11Forward),
-                    Some(t(HostDialogMsg::X11Hint)),
+                    Some(t(if cfg!(unix) {
+                        HostDialogMsg::X11HintLinux
+                    } else {
+                        HostDialogMsg::X11Hint
+                    })),
                     form.x11,
                     |form, value| form.x11 = value,
                     tokens,

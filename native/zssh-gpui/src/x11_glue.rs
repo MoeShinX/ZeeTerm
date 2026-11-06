@@ -126,7 +126,7 @@ pub fn shutdown_owned() {
 
 /// 界面用：本机 X 服务器的状态（已装的 VcXsrv、正在运行的、ZeeTerm 自己拉起的）。
 ///
-/// 调试构建可以用 `ZSSH_FAKE_X11_STATUS` 伪造（`none` / `installed[:版本]` / `running[:显示号]`），
+/// 调试构建可以用 `ZSSH_FAKE_X11_STATUS` 伪造（`none` / `installed[:版本]` / `running[:显示号]` / `session[:显示]`），
 /// 截图和自动化不依赖这台电脑上装没装 VcXsrv。
 pub fn local_status() -> local::LocalXStatus {
     #[cfg(debug_assertions)]
@@ -147,13 +147,22 @@ fn fake_status(raw: &str) -> local::LocalXStatus {
         vcxsrv: None,
         running_displays: Vec::new(),
         owned_display: None,
-        can_install: true,
+        can_install: !cfg!(unix),
+        session_display: None,
     };
     match kind {
         "installed" => status.vcxsrv = Some(installed()),
         "running" => {
             status.vcxsrv = Some(installed());
             status.running_displays = vec![arg.parse().unwrap_or(0)];
+        }
+        // Linux 的桌面会话显示（`session[:显示]`，没写显示就是 :0）。
+        "session" => {
+            status.session_display = Some(if arg.is_empty() {
+                ":0".to_owned()
+            } else {
+                arg.to_owned()
+            });
         }
         _ => {}
     }

@@ -114,6 +114,7 @@ enum CoreErrorMsg {
     X11Refused,
     X11NoReply,
     X11NoLocal,
+    X11NoDisplay,
     X11Rejected,
     X11Timeout,
     X11Launch,
@@ -249,6 +250,7 @@ impl Msg for CoreErrorMsg {
             Self::X11Refused => "服务器拒绝了 X11 转发请求",
             Self::X11NoReply => "服务器没有回复 X11 转发请求：{detail}",
             Self::X11NoLocal => "本机没有可用的 X 服务器（{display}）",
+            Self::X11NoDisplay => "本机没有 X 服务器（环境里没有 DISPLAY）",
             Self::X11Rejected => "本机 X 服务器（{display}）拒绝了连接：{reason}",
             Self::X11Timeout => "连接本机 X 服务器（{display}）超时",
             Self::X11Launch => "没能启动本机 X 服务器：{detail}",
@@ -420,6 +422,9 @@ impl Msg for CoreErrorMsg {
             Self::X11Refused => "The server refused the X11 forwarding request",
             Self::X11NoReply => "The server did not reply to the X11 forwarding request: {detail}",
             Self::X11NoLocal => "There is no usable X server on this computer ({display})",
+            Self::X11NoDisplay => {
+                "There is no X server on this computer (the DISPLAY variable is not set)"
+            }
             Self::X11Rejected => "The local X server ({display}) rejected the connection: {reason}",
             Self::X11Timeout => "Connecting to the local X server ({display}) timed out",
             Self::X11Launch => "Could not start the local X server: {detail}",
@@ -539,6 +544,7 @@ fn message_for(code: &str) -> Option<CoreErrorMsg> {
         "x11f.server_refused" => CoreErrorMsg::X11Refused,
         "x11f.server_no_reply" => CoreErrorMsg::X11NoReply,
         "x11f.no_local_x_server" => CoreErrorMsg::X11NoLocal,
+        "x11f.no_x_display" => CoreErrorMsg::X11NoDisplay,
         "x11f.local_x_server_rejected" => CoreErrorMsg::X11Rejected,
         "x11f.local_x_server_timeout" => CoreErrorMsg::X11Timeout,
         "x11f.launch_failed" => CoreErrorMsg::X11Launch,
@@ -757,13 +763,20 @@ fn x11_advice_en(failure: &zssh_core::x11::X11Failure) -> String {
             } else {
                 ""
             };
-            format!("There is no usable X server on this computer (connecting to {display} failed). {tail}or start an X server such as X410 / MobaXterm first and reconnect.")
-        }
-        "x11f.local_x_server_rejected" => {
-            let hint = if get("passthrough") == "1" {
-                "This is an X server you started yourself, so ZeeTerm cannot get its authentication data: turn off access control in its settings (for example tick Disable access control in VcXsrv), or configure authentication and try again."
+            if cfg!(unix) {
+                format!("There is no usable X server on this computer (connecting to {display} failed). {tail}Make sure the X server of the current desktop session (Xorg or Xwayland) is running and the DISPLAY variable points to it, then reconnect.")
             } else {
-                "Close it and let ZeeTerm start a new one."
+                format!("There is no usable X server on this computer (connecting to {display} failed). {tail}or start an X server such as X410 / MobaXterm first and reconnect.")
+            }
+        }
+        "x11f.no_x_display" => "There is no X server on this computer (the DISPLAY variable is not set). On Linux an X server is provided by Xwayland (Wayland desktops) or Xorg; a pure Wayland session without Xwayland, or a headless SSH login, has none. Opened as a plain terminal.".to_owned(),
+        "x11f.local_x_server_rejected" => {
+            let passthrough = get("passthrough") == "1";
+            let hint = match (cfg!(unix), passthrough) {
+                (true, true) => "ZeeTerm did not find authentication data for this display in the authority file (XAUTHORITY or ~/.Xauthority): make sure XAUTHORITY points to the current session's authority file, or allow the current user with xhost (for example xhost +SI:localuser:$USER).",
+                (true, false) => "The authentication data for this display in the authority file was rejected: make sure XAUTHORITY points to the current session's authority file.",
+                (false, true) => "This is an X server you started yourself, so ZeeTerm cannot get its authentication data: turn off access control in its settings (for example tick Disable access control in VcXsrv), or configure authentication and try again.",
+                (false, false) => "Close it and let ZeeTerm start a new one.",
             };
             format!("The local X server ({display}) rejected the connection ({}). {hint}", get("reason"))
         }
@@ -1026,6 +1039,7 @@ mod tests {
             CoreErrorMsg::X11Refused,
             CoreErrorMsg::X11NoReply,
             CoreErrorMsg::X11NoLocal,
+            CoreErrorMsg::X11NoDisplay,
             CoreErrorMsg::X11Rejected,
             CoreErrorMsg::X11Timeout,
             CoreErrorMsg::X11Launch,
