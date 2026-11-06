@@ -112,7 +112,7 @@ impl TerminalWorkspace {
     }
 
     pub(crate) fn set_theme_auto(&mut self, cx: &mut Context<Self>) {
-        let system_light = zssh_platform_windows::theme::apps_use_light_theme();
+        let system_light = crate::settings_store::system_light(cx);
         self.update_settings(cx, |s| {
             s.follow_system = true;
             s.dark = crate::settings::resolve_dark(true, s.dark, system_light);

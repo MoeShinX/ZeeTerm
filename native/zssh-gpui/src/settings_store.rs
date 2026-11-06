@@ -16,7 +16,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use gpui::{App, AppContext as _, Context, Entity, Global};
+use gpui::{App, AppContext as _, Context, Entity, Global, WindowAppearance};
 
 use crate::highlight::HighlightRule;
 use crate::settings::UiSettings;
@@ -367,11 +367,8 @@ impl AppSettings {
         let _ = WRITER.set(Arc::clone(&writer));
         // 主题要在开任何窗口之前定下来：`Theme::change` 会把颜色重置成组件库默认值，
         // 之后统一由 `app_theme` 写入自己的色板。
-        let dark = crate::settings::resolve_dark(
-            settings.follow_system,
-            settings.dark,
-            zssh_platform_windows::theme::apps_use_light_theme(),
-        );
+        let dark =
+            crate::settings::resolve_dark(settings.follow_system, settings.dark, system_light(cx));
         // 皮肤和终端配色的选择先记下，`init_mode` 写主题时才取得到。
         cx.set_global(settings.look());
         // 界面语言要在开窗口之前定下来。没选过（全新安装、老设置文件里没有这个字段）时
@@ -443,9 +440,10 @@ impl AppSettings {
         true
     }
 
-    fn sync_system_theme(&mut self, cx: &mut Context<Self>) {
+    /// 对齐一次"跟随系统主题"。定时轮询在调用，Unix 上主窗口还订阅了系统外观变化，变了立刻来一次。
+    pub(crate) fn sync_system_theme(&mut self, cx: &mut Context<Self>) {
         let current = crate::app_theme::is_dark(cx);
-        let system_light = zssh_platform_windows::theme::apps_use_light_theme();
+        let system_light = system_light(cx);
         if let Some(dark) = self.store.follow_system_tick(system_light, current) {
             crate::app_theme::set_mode(dark, cx);
             cx.notify();
@@ -456,6 +454,26 @@ impl AppSettings {
     pub fn save_error(&self) -> (Option<String>, u64) {
         self.store.writer().last_error()
     }
+}
+
+/// GPUI 的窗口外观折成门户的明暗偏好（macOS 的 Vibrant 变体按同色算）。
+fn portal_scheme(appearance: WindowAppearance) -> zssh_platform_windows::theme::PortalScheme {
+    use zssh_platform_windows::theme::PortalScheme;
+    match appearance {
+        WindowAppearance::Dark | WindowAppearance::VibrantDark => PortalScheme::Dark,
+        WindowAppearance::Light | WindowAppearance::VibrantLight => PortalScheme::Light,
+    }
+}
+
+/// 系统现在是不是浅色（`Some(true)`）；读不到是 `None`。
+///
+/// Windows 读注册表（和以前一样，GPUI 的外观不参与）。Linux 用 GPUI 的窗口外观：它在后台读
+/// xdg-desktop-portal 的 color-scheme 并在系统切换时更新（Wayland / X11 都是），`GTK_THEME` 只作后备
+/// （判定规则见 `zssh_platform_windows::theme::resolve_unix`）。
+pub(crate) fn system_light(cx: &App) -> Option<bool> {
+    zssh_platform_windows::theme::apps_use_light_theme_with(Some(portal_scheme(
+        cx.window_appearance(),
+    )))
 }
 
 /// 当前这份设置的副本；设置实体还没建（单独的演示窗口、早期代码）就读盘。
@@ -477,6 +495,63 @@ pub fn flush_to_disk() {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn gpui_appearances_map_onto_the_portal_scheme() {
+        use zssh_platform_windows::theme::PortalScheme;
+        assert_eq!(portal_scheme(WindowAppearance::Dark), PortalScheme::Dark);
+        assert_eq!(
+            portal_scheme(WindowAppearance::VibrantDark),
+            PortalScheme::Dark
+        );
+        assert_eq!(portal_scheme(WindowAppearance::Light), PortalScheme::Light);
+        assert_eq!(
+            portal_scheme(WindowAppearance::VibrantLight),
+            PortalScheme::Light
+        );
+    }
+
+    /// 跟随系统：系统切到深色，设置里"跟随"开着的话立刻变深色；手动选过明暗的不被系统带走。
+    #[test]
+    fn following_the_system_tracks_a_changing_portal_value() {
+        use zssh_platform_windows::theme::{PortalScheme, resolve_unix};
+        let mut store = SettingsStore::new(
+            UiSettings {
+                follow_system: true,
+                dark: false,
+                ..UiSettings::default()
+            },
+            SettingsWriter::with(
+                Box::new(|_| Ok(())),
+                Duration::from_millis(5),
+                Duration::from_millis(5),
+            ),
+        );
+        let system = |scheme| resolve_unix(Some(scheme), None);
+        assert_eq!(
+            store.follow_system_tick(system(PortalScheme::Dark), false),
+            Some(true)
+        );
+        assert!(store.settings().dark);
+        // 没变化：不动
+        assert_eq!(
+            store.follow_system_tick(system(PortalScheme::Dark), true),
+            None
+        );
+        // 系统又切回浅色
+        assert_eq!(
+            store.follow_system_tick(system(PortalScheme::Light), true),
+            Some(false)
+        );
+        assert!(!store.settings().dark);
+        // 手动选了明暗（关掉跟随）：系统变化不再影响
+        store.update(|s| s.follow_system = false);
+        assert_eq!(
+            store.follow_system_tick(system(PortalScheme::Dark), false),
+            None
+        );
+    }
+
     use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

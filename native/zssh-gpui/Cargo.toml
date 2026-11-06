@@ -23,7 +23,6 @@ reqwest = { version = "0.12", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
-tray-icon = "=0.25.1"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "net", "io-util", "fs", "macros"] }
 zssh-app-runtime = { path = "../../crates/zssh-app-runtime" }
 zssh-core = { path = "../../crates/zssh-core" }
@@ -38,6 +37,7 @@ zssh-update = { path = "../zssh-update" }
 zeroize = "1"
 
 [target.'cfg(windows)'.dependencies]
+tray-icon = "=0.25.1"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Globalization",
@@ -47,6 +47,11 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# Linux 托盘：StatusNotifierItem（纯 Rust 的 D-Bus 实现，不引 GTK）。async-io 后端自带执行器，
+# 不要求调用线程在 tokio 运行时里；blocking 接口让托盘线程用同步写法。
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

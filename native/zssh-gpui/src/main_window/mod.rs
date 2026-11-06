@@ -1821,5 +1821,7 @@ impl MainWindow {
             .children(tab_menu)
             .children(drag_ghost)
             .child(self.ssh_prompt.clone())
+            // 空闲自动锁定要统计这个窗口里的鼠标操作（Windows 上是 `None`，见 `input_activity`）
+            .children(crate::input_activity::probe())
     }
 }

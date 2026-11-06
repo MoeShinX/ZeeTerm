@@ -269,7 +269,7 @@ impl MainWindow {
             if info.has_password() {
                 crate::chat_copy::write_sensitive(text.as_str(), cx)?;
             } else {
-                crate::chat_copy::write_plain(text.as_str())?;
+                crate::chat_copy::write_plain(text.as_str(), cx)?;
             }
             Ok(info.has_password())
         });
