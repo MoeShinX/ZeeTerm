@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use ::gpui::{
     AnyElement, App, Context, Entity, Image, ImageFormat, IntoElement, Render, SharedString,
-    Window, WindowControlArea, img, px,
+    Window, img, px,
 };
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::*;
@@ -699,9 +699,9 @@ impl LockScreen {
                     .id("lock-title-drag")
                     .flex_1()
                     .h_full()
-                    .window_control_area(WindowControlArea::Drag),
+                    .map(crate::window_frame::drag_region),
             )
-            .child(titlebar::window_controls(tokens, window.is_maximized()))
+            .child(titlebar::window_controls(tokens, window))
             .into_any_element()
     }
 }

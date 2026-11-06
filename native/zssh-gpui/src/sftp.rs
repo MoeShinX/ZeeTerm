@@ -2765,7 +2765,7 @@ pub fn open_sftp_window_with_factory(
             size(::gpui::px(1100.), ::gpui::px(760.)),
             cx,
         )),
-        ..Default::default()
+        ..crate::window_frame::app_options()
     };
     let _ = cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| SftpDemo::new(window, cx, host_id, ime_key, factory, None));

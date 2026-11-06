@@ -1742,7 +1742,7 @@ pub fn open_agents_window(cx: &mut App) {
             cx,
         )),
         focus: true,
-        ..Default::default()
+        ..crate::window_frame::app_options()
     };
     let _ = cx.open_window(options, |window, cx| {
         let view = cx.new(|cx| AgentsDemo::new(window, cx));

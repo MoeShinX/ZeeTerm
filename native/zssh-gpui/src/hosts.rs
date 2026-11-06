@@ -1117,7 +1117,7 @@ impl HostsDemo {
                 size(::gpui::px(760.), ::gpui::px(540.)),
                 cx,
             )),
-            ..Default::default()
+            ..crate::window_frame::app_options()
         };
         let _ = cx.open_window(options, move |window, cx| {
             let view = cx.new(|cx| crate::proxies::ProxiesDemo::new(window, cx, key));
@@ -1142,7 +1142,7 @@ impl HostsDemo {
                 size(::gpui::px(760.), ::gpui::px(540.)),
                 cx,
             )),
-            ..Default::default()
+            ..crate::window_frame::app_options()
         };
         let _ = cx.open_window(options, move |window, cx| {
             let view = cx.new(|cx| crate::identities::IdentitiesDemo::new(window, cx, key));
@@ -1835,7 +1835,7 @@ pub(crate) fn open_hosts_window(cx: &mut App) {
             });
     let options = WindowOptions {
         window_bounds: Some(bounds),
-        ..Default::default()
+        ..crate::window_frame::app_options()
     };
     let key = format!("hosts-{n}");
     let close_key = key.clone();

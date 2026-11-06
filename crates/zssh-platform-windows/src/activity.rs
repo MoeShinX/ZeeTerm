@@ -80,7 +80,7 @@ pub fn install_on_current_thread() -> bool {
         let hook: windows::core::Result<HHOOK> = unsafe {
             SetWindowsHookExW(WH_GETMESSAGE, Some(hook_proc), None, GetCurrentThreadId())
         };
-        return hook.is_ok();
+        hook.is_ok()
     }
     // Unix 没有消息钩子；空闲检测由界面层自己调用 touch()（待接 GPUI 输入事件）。
     #[cfg(not(windows))]
