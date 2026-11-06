@@ -58,7 +58,7 @@ fn add_host(db: &Database, name: &str, group: Option<i64>, identity: Option<i64>
 fn content(db: &Database, dir: &Path, device: &str) -> SyncSnapshot {
     snapshot_local(
         db,
-        &DpapiSealer,
+        &DpapiSealer::for_test(),
         device,
         Some(&dir.join("known_hosts")),
         1_000,
@@ -87,8 +87,8 @@ async fn two_data_directories_converge_through_repeated_syncs() {
     let dir_b = temp_dir("b");
     let db_a = open_db(&dir_a);
     let db_b = open_db(&dir_b);
-    let sealer_a = DpapiSealer;
-    let sealer_b = DpapiSealer;
+    let sealer_a = DpapiSealer::for_test();
+    let sealer_b = DpapiSealer::for_test();
     let storage = MemoryStorage::new();
     let known_a = dir_a.join("known_hosts");
     let known_b = dir_b.join("known_hosts");
@@ -328,7 +328,7 @@ async fn empty_local_library_skips_the_pre_merge_backup() {
     let dir_b = temp_dir("empty-b");
     let db_a = open_db(&dir_a);
     let db_b = open_db(&dir_b);
-    let sealer = DpapiSealer;
+    let sealer = DpapiSealer::for_test();
     let storage = MemoryStorage::new();
     add_host(&db_a, "web-1", None, None);
     let engine_a = SyncEngine::new(

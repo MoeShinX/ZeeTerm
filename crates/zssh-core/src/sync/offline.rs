@@ -375,7 +375,7 @@ mod tests {
 
     /// 导出方：库里的凭据是真的 DPAPI 密文，所以导出用 DpapiSealer。
     fn source_file() -> (Machine, Vec<u8>) {
-        let sealer = DpapiSealer;
+        let sealer = DpapiSealer::for_test();
         let source = Machine::new("source");
         let identity = source
             .db
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn wrong_password_changes_nothing() {
-        let sealer = DpapiSealer;
+        let sealer = DpapiSealer::for_test();
         let (_source, bytes) = source_file();
         let target = Machine::new("wrong");
         target.db.host_save(&host("local", None)).unwrap();
@@ -455,7 +455,7 @@ mod tests {
 
     #[test]
     fn replace_makes_this_machine_match_the_file() {
-        let sealer = DpapiSealer;
+        let sealer = DpapiSealer::for_test();
         let (_source, bytes) = source_file();
         let target = Machine::new("replace");
         target.db.host_save(&host("local", None)).unwrap();
@@ -471,7 +471,7 @@ mod tests {
     fn restoring_the_safety_backup_brings_back_memory_and_forwards() {
         use crate::store::forwards::{ForwardKind, PortForwardDraft};
 
-        let sealer = DpapiSealer;
+        let sealer = DpapiSealer::for_test();
         let (_source, bytes) = source_file();
         let target = Machine::new("restore-extras");
         let local_id = target.db.host_save(&host("local", None)).unwrap().id;

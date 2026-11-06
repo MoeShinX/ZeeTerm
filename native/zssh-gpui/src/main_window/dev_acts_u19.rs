@@ -335,7 +335,7 @@ mod real {
         let db = Database::open(&scratch.join("data.db")).map_err(|e| e.to_string())?;
         let engine = SyncEngine::new(
             &db,
-            &DpapiSealer,
+            &DpapiSealer::new(db.vault_account().to_owned()),
             "fake-zssh-device",
             &scratch,
             Some(scratch.join("known_hosts")),

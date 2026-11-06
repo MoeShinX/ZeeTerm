@@ -659,7 +659,7 @@ impl BackupDemo {
                 self.busy = Some(Busy::Export);
                 self.status.clear();
                 drop(runtime.spawn_blocking(move || {
-                    let event = match export_offline_to(&dir, &DpapiSealer, &password, &path) {
+                    let event = match export_offline_to(&dir, &DpapiSealer::new(db.vault_account().to_owned()), &password, &path) {
                         Ok(bytes) => BackupEvent::Exported { path, bytes },
                         Err(message) => BackupEvent::ExportFailed(message),
                     };
@@ -736,7 +736,7 @@ impl BackupDemo {
                 drop(runtime.spawn_blocking(move || {
                     let _guard = guard;
                     let event =
-                        match import_offline_from(&dir, &DpapiSealer, &path, &password, mode) {
+                        match import_offline_from(&dir, &DpapiSealer::new(db.vault_account().to_owned()), &path, &password, mode) {
                             Ok(report) => BackupEvent::Imported(Box::new(report)),
                             Err(message) => BackupEvent::ImportFailed(message),
                         };
@@ -877,7 +877,7 @@ impl BackupDemo {
         let result = open_db_at(&crate::settings::data_dir()).and_then(|db| {
             pending
                 .accounts
-                .apply(&db, &DpapiSealer)
+                .apply(&db, &DpapiSealer::new(db.vault_account().to_owned()))
                 .map_err(|err| crate::error_text::error_text(&err))
         });
         match result {
@@ -1284,7 +1284,7 @@ fn write_keep(data_dir: &Path, keep: usize) -> Result<usize, String> {
 
 /// 读备份列表；界面路径用生产 DPAPI。
 fn list_backups(data_dir: &Path) -> Result<Vec<BackupDetail>, String> {
-    list_backups_with(data_dir, &DpapiSealer)
+    list_backups_with(data_dir, &DpapiSealer::new(db.vault_account().to_owned()))
 }
 
 /// 同 [`list_backups`]，加密实现由调用方给，测试用它绕开 DPAPI。
@@ -1299,7 +1299,7 @@ fn list_backups_with(
 
 /// 新建备份；界面路径用生产 DPAPI。
 fn create_backup(data_dir: &Path) -> Result<BackupInfo, String> {
-    create_backup_with(data_dir, &DpapiSealer, env!("CARGO_PKG_VERSION"))
+    create_backup_with(data_dir, &DpapiSealer::new(db.vault_account().to_owned()), env!("CARGO_PKG_VERSION"))
 }
 
 /// 同 [`create_backup`]，加密实现和版本号由调用方给，测试用它绕开 DPAPI。
@@ -1339,7 +1339,7 @@ fn create_backup_with(
 
 /// 恢复备份；界面路径用生产 DPAPI。
 fn restore_backup(data_dir: &Path, path: &Path) -> Result<RestoreReport, String> {
-    restore_backup_with(data_dir, path, &DpapiSealer)
+    restore_backup_with(data_dir, path, &DpapiSealer::new(db.vault_account().to_owned()))
 }
 
 /// 同 [`restore_backup`]，加密实现由调用方给，测试用它绕开 DPAPI。

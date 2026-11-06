@@ -55,7 +55,7 @@ impl Machine {
     pub fn engine(&self) -> SyncEngine<'_> {
         SyncEngine::new(
             &self.db,
-            &DpapiSealer,
+            &DpapiSealer::for_test(),
             self.device,
             &self.dir,
             Some(self.dir.join("known_hosts")),
@@ -66,7 +66,7 @@ impl Machine {
     pub fn content(&self) -> SyncSnapshot {
         snapshot_local(
             &self.db,
-            &DpapiSealer,
+            &DpapiSealer::for_test(),
             "compare",
             Some(&self.dir.join("known_hosts")),
             1_000,

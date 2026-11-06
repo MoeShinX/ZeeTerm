@@ -1517,10 +1517,18 @@ impl SyncDemo {
                     };
                     let _ = sender.send(event);
                     if let Some(password) = backup_password {
+                        let db = match open_db_at(&data_dir) {
+                            Ok(db) => db,
+                            Err(err) => {
+                                let _ = sender.send(SyncEvent::PostSyncBackupError(err));
+                                return;
+                            }
+                        };
+                        let sealer = DpapiSealer::new(db.vault_account().to_owned());
                         cloud_backup::backup_after_sync(
                             &handle,
                             &data_dir,
-                            &DpapiSealer,
+                            &sealer,
                             &password,
                         );
                         let _ = sender.send(SyncEvent::PostSyncBackupsDone);
@@ -2320,7 +2328,7 @@ fn baseline_broken_at(data_dir: &Path) -> bool {
     let Ok(db) = open_existing_db_at(data_dir) else {
         return false;
     };
-    baseline_broken_with(&db, &DpapiSealer, data_dir)
+    baseline_broken_with(&db, &DpapiSealer::new(db.vault_account().to_owned()), data_dir)
 }
 
 /// 同 [`baseline_broken_at`]，数据库和加密实现由调用方给，测试用它绕开 DPAPI。
@@ -2340,7 +2348,7 @@ fn reset_baseline_at(data_dir: &Path) -> Result<(), String> {
     let _guard = SyncInFlight::acquire(ExclusiveKind::Restore)
         .map_err(|holder| exclusive_busy_message(ExclusiveKind::Restore, holder).to_owned())?;
     let db = open_db_at(data_dir)?;
-    SyncEngine::new(&db, &DpapiSealer, "", data_dir, None, None)
+    SyncEngine::new(&db, &DpapiSealer::new(db.vault_account().to_owned()), "", data_dir, None, None)
         .reset_baseline()
         .map_err(|err| crate::error_text::error_text(&err))
 }
@@ -2498,7 +2506,7 @@ fn auto_sync_tick() {
 /// 需要用户处理的状态下一律不跑：开关关了、没保存存储、没记住主密码、还没到间隔、
 /// 或者手动同步正在跑（同一个同步开关）。
 fn auto_tick_at(handle: &tokio::runtime::Handle, data_dir: &Path, now: i64) -> Option<LastResult> {
-    auto_tick_with(handle, data_dir, now, &DpapiSealer)
+    auto_tick_with(handle, data_dir, now, &DpapiSealer::for_test())
 }
 
 /// 同 [`auto_tick_at`]，加密实现由调用方给，测试用它绕开 DPAPI。
@@ -3476,7 +3484,7 @@ fn load_saved_config(data_dir: &Path) -> Result<Option<StorageConfig>, String> {
             crate::error_text::error_text(&err)
         )
     })?;
-    service::load_config(&db, &DpapiSealer).map_err(|err| crate::error_text::error_text(&err))
+    service::load_config(&db, &DpapiSealer::new(db.vault_account().to_owned())).map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 冲突列表：库文件不存在就当没有冲突，不为了看列表新建一个库。
@@ -3492,7 +3500,7 @@ fn load_conflicts_at(data_dir: &Path) -> Result<Vec<ConflictView>, String> {
             crate::error_text::error_text(&err)
         )
     })?;
-    conflicts::list(&db, &DpapiSealer, &device_id, now_secs())
+    conflicts::list(&db, &DpapiSealer::new(db.vault_account().to_owned()), &device_id, now_secs())
         .map_err(|err| crate::error_text::error_text(&err))
 }
 
@@ -3553,7 +3561,7 @@ fn now_secs() -> i64 {
 
 fn save_config_at(data_dir: &Path, config: &StorageConfig) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    service::save_config(&db, &DpapiSealer, config)
+    service::save_config(&db, &DpapiSealer::new(db.vault_account().to_owned()), config)
         .map_err(|err| crate::error_text::error_text(&err))
 }
 
@@ -3607,7 +3615,7 @@ fn load_master_password_at(data_dir: &Path) -> Result<Option<String>, String> {
         return Ok(None);
     }
     let db = open_existing_db_at(data_dir)?;
-    service::load_master_password(&db, &DpapiSealer)
+    service::load_master_password(&db, &DpapiSealer::new(db.vault_account().to_owned()))
         .map(|password| password.map(|password| password.as_str().to_owned()))
         .map_err(|err| crate::error_text::error_text(&err))
 }
@@ -3615,7 +3623,7 @@ fn load_master_password_at(data_dir: &Path) -> Result<Option<String>, String> {
 /// 同步成功后记住主密码：交给核心用本机 DPAPI 加密，界面和日志都拿不到密文。
 fn save_master_password_at(data_dir: &Path, password: &str) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    service::save_master_password(&db, &DpapiSealer, password)
+    service::save_master_password(&db, &DpapiSealer::new(db.vault_account().to_owned()), password)
         .map_err(|err| crate::error_text::error_text(&err))
 }
 
@@ -3672,7 +3680,7 @@ fn sign_in_onedrive_at(
     cancel: &Notify,
 ) -> Result<SignedIn, String> {
     let db = open_db_at(data_dir)?;
-    let sealer = DpapiSealer;
+    let sealer = DpapiSealer::new(db.vault_account().to_owned());
     let endpoints = onedrive_endpoints();
     let browser = onedrive_opener();
     handle
@@ -3695,7 +3703,8 @@ fn probe_connection_at(
     config: &StorageConfig,
 ) -> Result<ConnectionProbe, String> {
     let db = open_db_at(data_dir)?;
-    probe_connection_with(handle, &db, &DpapiSealer, config)
+    let sealer = DpapiSealer::new(db.vault_account().to_owned());
+    probe_connection_with(handle, &db, &sealer, config)
 }
 
 /// 同 [`probe_connection_at`]，库和加密实现由调用方给，测试用它绕开 DPAPI。
@@ -3746,7 +3755,7 @@ fn run_sync_at(
     password: &str,
     decision: Option<DeletionDecision>,
 ) -> Result<SyncReport, SyncFailure> {
-    run_sync_with(handle, data_dir, &DpapiSealer, password, decision)
+    run_sync_with(handle, data_dir, &DpapiSealer::for_test(), password, decision)
 }
 
 /// 同 [`run_sync_at`]，加密实现由调用方给，测试用它绕开 DPAPI。

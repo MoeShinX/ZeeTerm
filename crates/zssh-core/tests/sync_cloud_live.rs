@@ -69,7 +69,7 @@ impl Machine {
     fn context(&self) -> SyncContext<'_> {
         SyncContext {
             db: &self.db,
-            sealer: &DpapiSealer,
+            sealer: &DpapiSealer::for_test(),
             device_id: self.device.to_owned(),
             data_dir: self.dir.clone(),
             known_hosts_path: None,
@@ -138,7 +138,7 @@ async fn run_against(label: &str, config: StorageConfig) {
     let a = Machine::new("dev-a");
     let b = Machine::new("dev-b");
     for machine in [&a, &b] {
-        zssh_core::sync::service::save_config(&machine.db, &DpapiSealer, &config).unwrap();
+        zssh_core::sync::service::save_config(&machine.db, &DpapiSealer::for_test(), &config).unwrap();
         zssh_core::sync::service::save_concurrency(
             &machine.db,
             &zssh_core::sync::service::ConcurrencyRecord {
@@ -165,7 +165,7 @@ async fn run_against(label: &str, config: StorageConfig) {
     assert_eq!(report.status, SyncStatus::Completed);
     b.context().run_sync(PASSWORD, None).await.expect("B 同步");
     assert_eq!(a.names(), b.names());
-    let content = snapshot_local(&b.db, &DpapiSealer, "x", None, 1).unwrap();
+    let content = snapshot_local(&b.db, &DpapiSealer::for_test(), "x", None, 1).unwrap();
     assert!(content
         .identities
         .iter()

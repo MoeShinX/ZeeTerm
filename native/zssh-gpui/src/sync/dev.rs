@@ -365,7 +365,7 @@ impl SyncDemo {
         let now = super::now_secs();
         let dav = backup_targets::add_target(
             &db,
-            &DpapiSealer,
+            &DpapiSealer::new(db.vault_account().to_owned()),
             None,
             StorageConfig::Webdav(WebDavConfig {
                 url: "https://dav.example.com/remote.php/dav/files/me/".to_owned(),
@@ -379,7 +379,7 @@ impl SyncDemo {
         .map_err(|err| err.to_string())?;
         let s3 = backup_targets::add_target(
             &db,
-            &DpapiSealer,
+            &DpapiSealer::new(db.vault_account().to_owned()),
             None,
             StorageConfig::S3(S3Config {
                 endpoint: "https://s3.example.com".to_owned(),
@@ -396,7 +396,7 @@ impl SyncDemo {
         let record = |id: &str, ok: bool, ago: i64, message: &str| {
             backup_targets::record_result(
                 &db,
-                &DpapiSealer,
+                &DpapiSealer::new(db.vault_account().to_owned()),
                 id,
                 TargetResult {
                     at: now - ago,

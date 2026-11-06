@@ -344,13 +344,13 @@ pub fn apply_snapshot_guarded_with(
             };
             match identity_ids.get(&identity.uid) {
                 Some(id) => {
+                    // key_path 不再从远端同步过来：本地私钥路径不改（V2-M9）
                     tx.execute(
-                        "UPDATE identities SET name = ?1, kind = ?2, key_path = ?3, \
-                         secret_blob = ?4, updated_at = ?5 WHERE id = ?6",
+                        "UPDATE identities SET name = ?1, kind = ?2, \
+                         secret_blob = ?3, updated_at = ?4 WHERE id = ?5",
                         params![
                             identity.name,
                             identity.kind,
-                            identity.key_path,
                             secret_blob,
                             identity.updated_at,
                             id
@@ -359,14 +359,14 @@ pub fn apply_snapshot_guarded_with(
                     report.identities.updated += 1;
                 }
                 None => {
+                    // 新建凭据时 key_path 留空，由用户本地填写
                     tx.execute(
                         "INSERT INTO identities (uid, name, kind, key_path, secret_blob, \
-                         updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                         updated_at) VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
                         params![
                             identity.uid,
                             identity.name,
                             identity.kind,
-                            identity.key_path,
                             secret_blob,
                             identity.updated_at
                         ],

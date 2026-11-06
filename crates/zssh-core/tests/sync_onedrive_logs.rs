@@ -79,7 +79,7 @@ async fn logs_never_contain_tokens_codes_verifiers_or_the_account_name() {
     // 登录 → 同步 → 令牌快过期自动刷新 → 再同步 → 服务器 401 强制刷新 → 再同步。
     service::onedrive_sign_in(
         &machine.db,
-        &DpapiSealer,
+        &DpapiSealer::for_test(),
         &endpoints,
         CLIENT_ID,
         Duration::from_secs(20),
@@ -90,7 +90,7 @@ async fn logs_never_contain_tokens_codes_verifiers_or_the_account_name() {
     .expect("登录");
     let ctx = SyncContext {
         db: &machine.db,
-        sealer: &DpapiSealer,
+        sealer: &DpapiSealer::for_test(),
         device_id: machine.device.to_owned(),
         data_dir: machine.dir.clone(),
         known_hosts_path: Some(machine.dir.join("known_hosts")),
@@ -100,7 +100,7 @@ async fn logs_never_contain_tokens_codes_verifiers_or_the_account_name() {
     ctx.run_sync(PASSWORD, Some(DeletionDecision::Continue))
         .await
         .expect("同步");
-    let store = DbTokenStore::new(&machine.db, &DpapiSealer);
+    let store = DbTokenStore::new(&machine.db, &DpapiSealer::for_test());
     let first = store.load().unwrap().expect("令牌");
     store
         .save(&TokenSet {

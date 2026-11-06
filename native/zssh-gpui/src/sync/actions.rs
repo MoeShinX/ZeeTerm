@@ -209,7 +209,7 @@ impl SyncDemo {
                 drop(runtime.spawn_blocking(move || {
                     let _guard = guard;
                     let event =
-                        match change_password_with(&handle, &data_dir, &DpapiSealer, &old, &new) {
+                        match change_password_with(&handle, &data_dir, &DpapiSealer::new(db.vault_account().to_owned()), &old, &new) {
                             Ok(()) => SyncEvent::PasswordChanged { new },
                             Err(message) => SyncEvent::PasswordChangeFailed(message),
                         };

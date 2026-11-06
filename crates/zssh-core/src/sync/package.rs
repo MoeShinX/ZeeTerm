@@ -158,7 +158,8 @@ pub struct IdentityRecord {
     pub uid: String,
     pub name: String,
     pub kind: String,
-    #[serde(default)]
+    /// 旧快照的路径字段，读取时保留、写出时不序列化（V2-M9 之后不再跨平台同步）。
+    #[serde(default, skip_serializing)]
     pub key_path: Option<String>,
     /// 明文密码 / 私钥 / 口令。**只在加密后的同步包和 DPAPI 基线里存在**。
     #[serde(default)]

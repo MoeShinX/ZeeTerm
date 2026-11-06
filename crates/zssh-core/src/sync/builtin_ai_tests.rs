@@ -97,8 +97,8 @@ async fn endpoints_and_keys_sync_to_the_other_computer_and_the_version_follows_t
     let db_a = Database::open_in_memory().unwrap();
     let db_b = Database::open_in_memory().unwrap();
     let storage = MemoryStorage::new();
-    let engine_a = SyncEngine::new(&db_a, &DpapiSealer, "dev-a", &dir_a, None, None);
-    let engine_b = SyncEngine::new(&db_b, &DpapiSealer, "dev-b", &dir_b, None, None);
+    let engine_a = SyncEngine::new(&db_a, &DpapiSealer::for_test(), "dev-a", &dir_a, None, None);
+    let engine_b = SyncEngine::new(&db_b, &DpapiSealer::for_test(), "dev-b", &dir_b, None, None);
 
     // 没有接口：包是旧格式，没有 ai_endpoints 键。
     db_a.setting_set("ai_default_agent", "\"claude\"").unwrap();
@@ -186,11 +186,11 @@ async fn a_package_from_an_older_client_has_no_endpoints_and_leaves_local_ones_a
     let db_old = Database::open_in_memory().unwrap();
     let db_new = Database::open_in_memory().unwrap();
     let storage = MemoryStorage::new();
-    SyncEngine::new(&db_old, &DpapiSealer, "old", &dir_old, None, None)
+    SyncEngine::new(&db_old, &DpapiSealer::for_test(), "old", &dir_old, None, None)
         .sync(&storage, PASSWORD, None)
         .await
         .unwrap();
-    let engine_new = SyncEngine::new(&db_new, &DpapiSealer, "new", &dir_new, None, None);
+    let engine_new = SyncEngine::new(&db_new, &DpapiSealer::for_test(), "new", &dir_new, None, None);
     engine_new.sync(&storage, PASSWORD, None).await.unwrap();
     db_new.ai_endpoint_save(&draft("本机", None)).unwrap();
     engine_new.sync(&storage, PASSWORD, None).await.unwrap();
@@ -350,21 +350,21 @@ fn applying_rejects_unknown_kinds_and_bad_options_without_writing_anything() {
     let mut future = record("e2", "未来类型", 10, "dev-a");
     future.kind = "openai_responses".to_owned();
     snapshot.ai_endpoints.push(future);
-    let err = apply_snapshot(&db, &snapshot, &DpapiSealer, None, &[], NOW).unwrap_err();
+    let err = apply_snapshot(&db, &snapshot, &DpapiSealer::for_test(), None, &[], NOW).unwrap_err();
     assert!(err.to_string().contains("不认识的类型"), "{err}");
     assert!(db.ai_endpoint_list().unwrap().is_empty(), "整次导入回滚");
 
     snapshot.ai_endpoints.pop();
     snapshot.ai_endpoints[0].overrides = json!([1]);
-    let err = apply_snapshot(&db, &snapshot, &DpapiSealer, None, &[], NOW).unwrap_err();
+    let err = apply_snapshot(&db, &snapshot, &DpapiSealer::for_test(), None, &[], NOW).unwrap_err();
     assert!(err.to_string().contains("选项格式"), "{err}");
 
     snapshot.ai_endpoints[0].overrides = json!({});
     snapshot.ai_endpoints[0].base_url = "ftp://nope".to_owned();
-    assert!(apply_snapshot(&db, &snapshot, &DpapiSealer, None, &[], NOW).is_err());
+    assert!(apply_snapshot(&db, &snapshot, &DpapiSealer::for_test(), None, &[], NOW).is_err());
 
     snapshot.ai_endpoints[0].base_url = "https://ok.example.com/v1".to_owned();
-    let report = apply_snapshot(&db, &snapshot, &DpapiSealer, None, &[], NOW).unwrap();
+    let report = apply_snapshot(&db, &snapshot, &DpapiSealer::for_test(), None, &[], NOW).unwrap();
     assert_eq!(report.identities.inserted, 0);
     assert_eq!(db.ai_endpoint_list().unwrap().len(), 1);
     assert_eq!(local_counts(&db).unwrap()[ENTITY_AI_ENDPOINT], 1);
@@ -378,8 +378,8 @@ fn unknown_option_keys_are_kept_byte_for_byte_through_apply_and_snapshot() {
     future.openai_options = json!({"echo_reasoning_content": "on", "future_switch": 7});
     future.overrides = json!({"m": {"context_window": 1000, "future_field": true}});
     snapshot.ai_endpoints.push(future.clone());
-    apply_snapshot(&db, &snapshot, &DpapiSealer, None, &[], NOW).unwrap();
-    let again = super::snapshot::snapshot_local(&db, &DpapiSealer, "dev-a", None, NOW).unwrap();
+    apply_snapshot(&db, &snapshot, &DpapiSealer::for_test(), None, &[], NOW).unwrap();
+    let again = super::snapshot::snapshot_local(&db, &DpapiSealer::for_test(), "dev-a", None, NOW).unwrap();
     assert_eq!(again.ai_endpoints[0].openai_options, future.openai_options);
     assert_eq!(again.ai_endpoints[0].overrides, future.overrides);
 }
@@ -437,8 +437,8 @@ async fn the_conflict_list_can_restore_a_deleted_endpoint_as_a_new_record() {
     let db_a = Database::open_in_memory().unwrap();
     let db_b = Database::open_in_memory().unwrap();
     let storage = MemoryStorage::new();
-    let engine_a = SyncEngine::new(&db_a, &DpapiSealer, "dev-a", &dir_a, None, None);
-    let engine_b = SyncEngine::new(&db_b, &DpapiSealer, "dev-b", &dir_b, None, None);
+    let engine_a = SyncEngine::new(&db_a, &DpapiSealer::for_test(), "dev-a", &dir_a, None, None);
+    let engine_b = SyncEngine::new(&db_b, &DpapiSealer::for_test(), "dev-b", &dir_b, None, None);
     let saved = db_a
         .ai_endpoint_save(&draft("甲", Some("sk-c-0001")))
         .unwrap();
@@ -461,7 +461,7 @@ async fn the_conflict_list_can_restore_a_deleted_endpoint_as_a_new_record() {
         .unwrap();
     assert!(db_b.ai_endpoint_list().unwrap().is_empty());
 
-    let list = super::conflicts::list(&db_b, &DpapiSealer, "dev-b", SyncEngine::now()).unwrap();
+    let list = super::conflicts::list(&db_b, &DpapiSealer::for_test(), "dev-b", SyncEngine::now()).unwrap();
     let conflict = list
         .iter()
         .find(|c| c.entity == ENTITY_AI_ENDPOINT)
@@ -473,7 +473,7 @@ async fn the_conflict_list_can_restore_a_deleted_endpoint_as_a_new_record() {
     );
     super::conflicts::use_other(
         &db_b,
-        &DpapiSealer,
+        &DpapiSealer::for_test(),
         "dev-b",
         None,
         conflict.id,

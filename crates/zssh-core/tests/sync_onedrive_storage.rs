@@ -205,8 +205,8 @@ async fn login_upload_second_machine_token_refresh_and_disconnect() {
     let a = Machine::new("od-e2e-a", "dev-a");
     let b = Machine::new("od-e2e-b", "dev-b");
     seed(&a);
-    let store_a = DbTokenStore::new(&a.db, &DpapiSealer);
-    let store_b = DbTokenStore::new(&b.db, &DpapiSealer);
+    let store_a = DbTokenStore::new(&a.db, &DpapiSealer::for_test());
+    let store_b = DbTokenStore::new(&b.db, &DpapiSealer::for_test());
 
     // 1. 两台电脑各自走一遍浏览器授权登录，令牌 DPAPI 加密存进各自的数据库。
     for store in [&store_a, &store_b] {

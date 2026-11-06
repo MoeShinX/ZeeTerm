@@ -320,14 +320,16 @@ fn key_error(err: VaultKeyError) -> ZsshError {
     ZsshError::Secret(Reason::new(key, text))
 }
 
-/// 是不是“条目已存在、没有覆盖”的那一种失败。调用方据此回读已有密钥。
+/// 是不是”条目已存在、没有覆盖”的那一种失败。调用方据此回读已有密钥。
+#[cfg(target_os = “macos”)]
 fn is_key_exists(err: &ZsshError) -> bool {
-    matches!(err, ZsshError::Secret(reason) if reason.key() == "vault_key_exists")
+    matches!(err, ZsshError::Secret(reason) if reason.key() == “vault_key_exists”)
 }
 
-/// 是不是“钥匙串里没有这把密钥”。只有这时才允许新建。
+/// 是不是”钥匙串里没有这把密钥”。只有这时才允许新建。
+#[cfg(target_os = “macos”)]
 fn is_key_missing(err: &ZsshError) -> bool {
-    matches!(err, ZsshError::Secret(reason) if reason.key() == "vault_key_missing")
+    matches!(err, ZsshError::Secret(reason) if reason.key() == “vault_key_missing”)
 }
 
 #[cfg(target_os = "macos")]
@@ -483,8 +485,15 @@ mod vault {
                     let _ = tx.send(call());
                 }))
                 .map_err(|_| ZsshError::Secret(Reason::text("钥匙串线程已经退出")))?;
-            rx.recv()
-                .map_err(|_| ZsshError::Secret(Reason::text("钥匙串线程没有返回结果")))?
+            // 60 秒超时：首次授权对话框可能需要用户交互，但不应该无限等待
+            rx.recv_timeout(std::time::Duration::from_secs(60))
+                .map_err(|err| {
+                    if err == std::sync::mpsc::RecvTimeoutError::Timeout {
+                        ZsshError::Secret(Reason::text("钥匙串操作超时（60 秒）"))
+                    } else {
+                        ZsshError::Secret(Reason::text("钥匙串线程没有返回结果"))
+                    }
+                })?
                 .map_err(key_error)
         }
     }

@@ -38,6 +38,11 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
             "Credential \"{name}\" is not a password credential and cannot be used for password authentication (its content would be sent to the server as the password)"
         }
         "store.host_name_empty" => "The host's name cannot be empty",
+        "vault_key_missing" => "The database key is not in the keychain; existing encrypted data is kept as is",
+        "vault_key_cancelled" => "Keychain authorization was cancelled; the key was not accessed",
+        "vault_key_locked" => "The keychain is locked; the key was not accessed",
+        "vault_key_failed" => "Failed to access the keychain: {cause}",
+        "vault_key_exists" => "The database key already exists in the keychain and was not overwritten",
         "input.port_range" => "The port must be between 1 and 65535",
         "input.username_empty" => "The user name cannot be empty",
         "input.address_empty" => "The address cannot be empty",

@@ -883,7 +883,7 @@ pub(crate) fn peer_run(
     peer_run_at(
         global_started()?,
         handle,
-        &DpapiSealer,
+        &DpapiSealer::new(db.vault_account().to_owned()),
         &peer_dir(),
         kind,
         op,

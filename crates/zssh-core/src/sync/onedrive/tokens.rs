@@ -313,7 +313,7 @@ mod tests {
             return;
         }
         let (_dir, db) = open_db();
-        let store = DbTokenStore::new(&db, &DpapiSealer);
+        let store = DbTokenStore::new(&db, &DpapiSealer::for_test());
         store.save(&sample()).unwrap();
         assert_eq!(store.load().unwrap(), Some(sample()));
         let raw = db.setting_get(TOKENS_KEY).unwrap().unwrap();

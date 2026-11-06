@@ -242,9 +242,9 @@ fn the_real_dpapi_secrets_of_the_same_windows_user_can_be_read() {
     // 真正的 Z-SSH 用 DPAPI 加密；同一个 Windows 用户下 ZeeTerm 直接解得开。
     // 这里的"Z-SSH 库"是测试里用同一个 DPAPI（同一进程用户）造的，不是真实的 Z-SSH 数据。
     let root = TestDir::new("zi-dpapi");
-    let dir = fake_zssh(&root, &DpapiSealer);
+    let dir = fake_zssh(&root, &DpapiSealer::for_test());
     let scratch = TestDir::new("zi-dpapi-scratch");
-    let read = read_zssh(&source_at(&dir).unwrap(), &DpapiSealer, &scratch).unwrap();
+    let read = read_zssh(&source_at(&dir).unwrap(), &DpapiSealer::for_test(), &scratch).unwrap();
     let pw = read
         .snapshot
         .identities

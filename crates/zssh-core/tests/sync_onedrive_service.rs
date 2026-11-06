@@ -33,7 +33,7 @@ use zssh_core::sync::SyncError;
 fn context<'a>(machine: &'a Machine, endpoints: &Endpoints) -> SyncContext<'a> {
     SyncContext {
         db: &machine.db,
-        sealer: &DpapiSealer,
+        sealer: &DpapiSealer::for_test(),
         device_id: machine.device.to_owned(),
         data_dir: machine.dir.clone(),
         known_hosts_path: Some(machine.dir.join("known_hosts")),
@@ -49,7 +49,7 @@ async fn sign_in(
 ) -> Result<service::SignedIn, LoginError> {
     service::onedrive_sign_in(
         &machine.db,
-        &DpapiSealer,
+        &DpapiSealer::for_test(),
         endpoints,
         client_id,
         Duration::from_secs(20),
@@ -81,7 +81,7 @@ async fn sign_in_sync_test_connection_and_disconnect_use_the_same_chain_as_the_u
     let signed = sign_in(&a, &endpoints, CLIENT_ID).await.expect("登录");
     assert!(signed.config_changed, "第一次登录");
     assert_eq!(signed.config.account, ACCOUNT_NAME);
-    let saved = service::load_config(&a.db, &DpapiSealer)
+    let saved = service::load_config(&a.db, &DpapiSealer::for_test())
         .unwrap()
         .expect("连接设置已保存");
     assert!(matches!(&saved, StorageConfig::Onedrive(c) if c.client_id == CLIENT_ID));
@@ -94,7 +94,7 @@ async fn sign_in_sync_test_connection_and_disconnect_use_the_same_chain_as_the_u
     for needle in [ACCOUNT_NAME, CLIENT_ID] {
         assert!(!stored.contains(needle), "设置表里不该出现 {needle}");
     }
-    let tokens = DbTokenStore::new(&a.db, &DpapiSealer)
+    let tokens = DbTokenStore::new(&a.db, &DpapiSealer::for_test())
         .load()
         .unwrap()
         .expect("令牌已保存");
@@ -106,7 +106,7 @@ async fn sign_in_sync_test_connection_and_disconnect_use_the_same_chain_as_the_u
     let probe = service::test_connection(
         &config,
         None,
-        Arc::new(DbTokenStore::new(&a.db, &DpapiSealer)),
+        Arc::new(DbTokenStore::new(&a.db, &DpapiSealer::for_test())),
         &endpoints,
     )
     .await;
@@ -157,7 +157,7 @@ async fn sign_in_sync_test_connection_and_disconnect_use_the_same_chain_as_the_u
     // 断开连接：令牌和连接设置都没了，不能再同步。
     service::onedrive_disconnect(&a.db).unwrap();
     assert_eq!(a.db.setting_get(TOKENS_KEY).unwrap(), None);
-    assert_eq!(service::load_config(&a.db, &DpapiSealer).unwrap(), None);
+    assert_eq!(service::load_config(&a.db, &DpapiSealer::for_test()).unwrap(), None);
     assert!(!service::is_ready(&a.db).unwrap());
     let err = context(&a, &endpoints)
         .run_sync(PASSWORD, None)
@@ -180,7 +180,7 @@ async fn switching_to_another_storage_removes_the_saved_onedrive_tokens() {
     assert!(a.db.setting_get(TOKENS_KEY).unwrap().is_some());
     service::save_config(
         &a.db,
-        &DpapiSealer,
+        &DpapiSealer::for_test(),
         &StorageConfig::Webdav(WebDavConfig {
             url: "https://dav.example.invalid/".to_owned(),
             directory: String::new(),
@@ -206,7 +206,7 @@ async fn without_a_custom_client_id_the_login_uses_the_built_in_one() {
     // 授权地址：没填自己的就带内置的 client ID，不会不带、也不会带别的。
     let result = service::onedrive_sign_in(
         &a.db,
-        &DpapiSealer,
+        &DpapiSealer::for_test(),
         &mock.endpoints(),
         "",
         Duration::from_secs(1),
@@ -229,7 +229,7 @@ async fn without_a_custom_client_id_the_login_uses_the_built_in_one() {
         urls[0]
     );
     assert!(!urls[0].contains(CLIENT_ID), "{}", urls[0]);
-    assert_eq!(service::load_config(&a.db, &DpapiSealer).unwrap(), None);
+    assert_eq!(service::load_config(&a.db, &DpapiSealer::for_test()).unwrap(), None);
 
     // 填得不合法的不会悄悄换成内置的：直接报格式错误，不打开浏览器。
     let err = sign_in(&a, &mock.endpoints(), "not-a-guid")
@@ -245,7 +245,7 @@ async fn a_failed_or_timed_out_login_leaves_nothing_saved() {
     let a = Machine::new("od-failed", "dev-a");
     let err = service::onedrive_sign_in(
         &a.db,
-        &DpapiSealer,
+        &DpapiSealer::for_test(),
         &mock.endpoints(),
         CLIENT_ID,
         Duration::from_millis(300),
@@ -255,7 +255,7 @@ async fn a_failed_or_timed_out_login_leaves_nothing_saved() {
     .await
     .expect_err("超时");
     assert!(matches!(err, LoginError::Timeout), "{err:?}");
-    assert_eq!(service::load_config(&a.db, &DpapiSealer).unwrap(), None);
+    assert_eq!(service::load_config(&a.db, &DpapiSealer::for_test()).unwrap(), None);
     assert_eq!(a.db.setting_get(TOKENS_KEY).unwrap(), None);
 
     mock.set_mode(mock_microsoft::AuthorizeMode::Deny);
@@ -263,7 +263,7 @@ async fn a_failed_or_timed_out_login_leaves_nothing_saved() {
         .await
         .expect_err("拒绝");
     assert!(matches!(err, LoginError::Denied), "{err:?}");
-    assert_eq!(service::load_config(&a.db, &DpapiSealer).unwrap(), None);
+    assert_eq!(service::load_config(&a.db, &DpapiSealer::for_test()).unwrap(), None);
     assert_eq!(a.db.setting_get(TOKENS_KEY).unwrap(), None);
 }
 

@@ -775,7 +775,7 @@ async fn github_goes_through_an_http_proxy_with_authentication() {
 fn context(machine: &Machine) -> SyncContext<'_> {
     SyncContext {
         db: &machine.db,
-        sealer: &DpapiSealer,
+        sealer: &DpapiSealer::for_test(),
         device_id: machine.device.to_owned(),
         data_dir: machine.dir.clone(),
         known_hosts_path: Some(machine.dir.join("known_hosts")),
@@ -791,7 +791,7 @@ async fn the_token_is_stored_sealed_never_shown_and_never_synced() {
     let a = Machine::new("gh-token", "dev-a");
     seed(&a);
     let saved = StorageConfig::Github(config(&gh, &id));
-    service::save_config(&a.db, &DpapiSealer, &saved).expect("保存");
+    service::save_config(&a.db, &DpapiSealer::for_test(), &saved).expect("保存");
 
     // 设置表里是 DPAPI 封装后的密文：找不到令牌，也找不到接口地址和 Gist ID。
     let stored = a.db.setting_get(service::STORAGE_KEY).unwrap().unwrap();
@@ -802,7 +802,7 @@ async fn the_token_is_stored_sealed_never_shown_and_never_synced() {
         );
     }
     assert_eq!(
-        service::load_config(&a.db, &DpapiSealer).unwrap().unwrap(),
+        service::load_config(&a.db, &DpapiSealer::for_test()).unwrap().unwrap(),
         saved,
         "读回来要一模一样"
     );
@@ -832,7 +832,7 @@ async fn the_token_is_stored_sealed_never_shown_and_never_synced() {
     assert!(matches!(&replaced, StorageConfig::Github(c) if c.token == "ghp_new"));
 
     // 令牌不进同步包：设置键 sync_storage 是 LocalOnly，同步包的明文里没有令牌。
-    let snapshot = snapshot_local(&a.db, &DpapiSealer, "dev-a", None, 1).unwrap();
+    let snapshot = snapshot_local(&a.db, &DpapiSealer::for_test(), "dev-a", None, 1).unwrap();
     let plain = serde_json::to_string(&snapshot).unwrap();
     assert!(!plain.contains(TOKEN) && !plain.contains("ghp_"));
     assert!(
@@ -857,7 +857,7 @@ async fn saved_github_settings_drive_a_sync_and_github_is_never_marked_as_protec
     // 种子数据里的默认代理是个不存在的地址；服务层会按默认代理设置发请求，这里要直连模拟服务。
     a.db.set_default_proxy_id(None).unwrap();
     for machine in [&a, &b] {
-        service::save_config(&machine.db, &DpapiSealer, &saved).unwrap();
+        service::save_config(&machine.db, &DpapiSealer::for_test(), &saved).unwrap();
     }
     let probe = service::test_connection(
         &saved,

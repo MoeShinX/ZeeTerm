@@ -135,7 +135,7 @@ fn direct_import_previews_then_merges_and_makes_a_safety_backup() {
         db.host_save(&host("web-1", "192.0.2.10", None)).unwrap();
     }
 
-    let loaded = load_direct(&source, &data_dir, &DpapiSealer, OfflineImportMode::Merge)
+    let loaded = load_direct(&source, &data_dir, &DpapiSealer::for_test(), OfflineImportMode::Merge)
         .unwrap_or_else(|failure| panic!("{}", failure.message));
     assert_eq!(loaded.origin, Origin::Direct);
     assert_eq!(loaded.preview.source.hosts, 2);
@@ -147,7 +147,7 @@ fn direct_import_previews_then_merges_and_makes_a_safety_backup() {
 
     let report = run_import(
         &data_dir,
-        &DpapiSealer,
+        &DpapiSealer::for_test(),
         &loaded.snapshot,
         OfflineImportMode::Merge,
     )
@@ -181,13 +181,13 @@ fn replace_mode_matches_zssh_and_the_preview_says_what_will_be_deleted() {
         db.host_save(&host("only-here", "198.51.100.7", None))
             .unwrap();
     }
-    let loaded = load_direct(&source, &data_dir, &DpapiSealer, OfflineImportMode::Replace).unwrap();
+    let loaded = load_direct(&source, &data_dir, &DpapiSealer::for_test(), OfflineImportMode::Replace).unwrap();
     assert_eq!(loaded.preview.hosts.deleted, 1);
     let warnings = preview_warnings(&loaded.preview, &loaded.origin);
     assert!(warnings.iter().any(|w| w.contains("删除")), "{warnings:?}");
     run_import(
         &data_dir,
-        &DpapiSealer,
+        &DpapiSealer::for_test(),
         &loaded.snapshot,
         OfflineImportMode::Replace,
     )
@@ -211,7 +211,7 @@ fn a_running_zssh_is_reported_as_in_use() {
         .share_mode(3)
         .open(&source.db_path)
         .unwrap();
-    let failure = load_direct(&source, &data_dir, &DpapiSealer, OfflineImportMode::Merge)
+    let failure = load_direct(&source, &data_dir, &DpapiSealer::for_test(), OfflineImportMode::Merge)
         .err()
         .expect("应当失败");
     assert_eq!(failure.kind, FailureKind::InUse);
@@ -223,7 +223,7 @@ fn a_running_zssh_is_reported_as_in_use() {
     assert!(!data_dir.join("zssh.db").exists(), "什么都没写");
     drop(held);
     assert!(
-        load_direct(&source, &data_dir, &DpapiSealer, OfflineImportMode::Merge).is_ok(),
+        load_direct(&source, &data_dir, &DpapiSealer::for_test(), OfflineImportMode::Merge).is_ok(),
         "退出之后重试能读"
     );
     let _ = std::fs::remove_dir_all(&root);
@@ -238,7 +238,7 @@ fn make_backup(root: &Path, password: &str) -> PathBuf {
     let db = Database::open(&src_dir.join("zssh.db")).unwrap();
     db.host_save(&host("from-file", "192.0.2.20", None))
         .unwrap();
-    let engine = SyncEngine::new(&db, &DpapiSealer, "dev-src", &src_dir, None, None);
+    let engine = SyncEngine::new(&db, &DpapiSealer::for_test(), "dev-src", &src_dir, None, None);
     let bytes = engine.export_offline(password).unwrap();
     let path = root.join("zeeterm-20261103.zsshbak");
     std::fs::write(&path, bytes).unwrap();
@@ -252,7 +252,7 @@ fn a_backup_file_needs_the_right_password_and_changes_nothing_when_wrong() {
     let data_dir = root.join("zeeterm");
     let merge = OfflineImportMode::Merge;
 
-    let wrong = load_file(&path, "not-the-password", &data_dir, &DpapiSealer, merge)
+    let wrong = load_file(&path, "not-the-password", &data_dir, &DpapiSealer::for_test(), merge)
         .err()
         .expect("密码不对应当失败");
     assert_eq!(wrong.kind, FailureKind::Other);
@@ -260,18 +260,18 @@ fn a_backup_file_needs_the_right_password_and_changes_nothing_when_wrong() {
     assert_eq!(wrong.origin, Origin::File);
     assert!(!data_dir.join("zssh.db").exists(), "预览阶段不动本机");
 
-    let loaded = load_file(&path, "file-password-1", &data_dir, &DpapiSealer, merge)
+    let loaded = load_file(&path, "file-password-1", &data_dir, &DpapiSealer::for_test(), merge)
         .unwrap_or_else(|f| panic!("{}", f.message));
     assert_eq!(loaded.origin, Origin::File);
     assert_eq!(loaded.preview.hosts.inserted, 1);
-    run_import(&data_dir, &DpapiSealer, &loaded.snapshot, merge).unwrap();
+    run_import(&data_dir, &DpapiSealer::for_test(), &loaded.snapshot, merge).unwrap();
     assert_eq!(host_names(&data_dir), vec!["from-file"]);
 
     let missing = load_file(
         &root.join("nope.zsshbak"),
         "x",
         &data_dir,
-        &DpapiSealer,
+        &DpapiSealer::for_test(),
         merge,
     )
     .err()
@@ -302,7 +302,7 @@ fn file_requests_are_checked_before_anything_runs() {
 
 fn loaded_for_state(root: &Path, source: &ZsshSource, mode: OfflineImportMode) -> Box<Loaded> {
     let data_dir = root.join("zeeterm");
-    Box::new(load_direct(source, &data_dir, &DpapiSealer, mode).unwrap())
+    Box::new(load_direct(source, &data_dir, &DpapiSealer::for_test(), mode).unwrap())
 }
 
 #[test]
@@ -339,7 +339,7 @@ fn the_state_walks_detect_preview_import_done() {
     assert!(state.set_mode(OfflineImportMode::Merge));
     assert!(!state.replace_armed);
 
-    let report = run_import(&data_dir, &DpapiSealer, &snapshot, OfflineImportMode::Merge).unwrap();
+    let report = run_import(&data_dir, &DpapiSealer::for_test(), &snapshot, OfflineImportMode::Merge).unwrap();
     state.on_event(MigrateEvent::Imported(Box::new(report)));
     match &state.stage {
         Stage::Done(done) => {
@@ -425,11 +425,11 @@ fn done_rows_count_skipped_records() {
     let source = fake_zssh(&root);
     let data_dir = root.join("zeeterm");
     let merge = OfflineImportMode::Merge;
-    let first = load_direct(&source, &data_dir, &DpapiSealer, merge).unwrap();
-    run_import(&data_dir, &DpapiSealer, &first.snapshot, merge).unwrap();
-    let second = load_direct(&source, &data_dir, &DpapiSealer, merge).unwrap();
+    let first = load_direct(&source, &data_dir, &DpapiSealer::for_test(), merge).unwrap();
+    run_import(&data_dir, &DpapiSealer::for_test(), &first.snapshot, merge).unwrap();
+    let second = load_direct(&source, &data_dir, &DpapiSealer::for_test(), merge).unwrap();
     assert_eq!(second.preview.hosts.inserted, 0);
-    let report = run_import(&data_dir, &DpapiSealer, &second.snapshot, merge).unwrap();
+    let report = run_import(&data_dir, &DpapiSealer::for_test(), &second.snapshot, merge).unwrap();
     let rows = done_rows(&second.preview, &report);
     let hosts = rows.iter().find(|(label, _)| label == "主机").unwrap();
     assert!(
