@@ -83,6 +83,7 @@ mod pane;
 mod paste;
 mod props;
 mod queue;
+mod reconnect;
 mod script;
 mod transfer;
 mod view;
@@ -2023,6 +2024,11 @@ pub struct SftpDemo {
     sender: Sender<SftpEvent>,
     /// 连上之后一直持有：连接回到池里之后终端还能复用同一条。
     factory: Option<Arc<SshSessionFactory>>,
+    /// 终端窗格眼下持有的连接（主窗口每个节拍递来，停靠面板用）：首次连接失败后终端重连成功，
+    /// 靠它让文件面板用新连接重试。只存弱引用，不拖住连接池里的空闲回收。
+    offered: Option<std::sync::Weak<SshSessionFactory>>,
+    /// 最近一次连接尝试用的是哪条连接（`None` = 自己按主机拨号）：同一条连接失败了不自动再试。
+    attempted: Option<std::sync::Weak<SshSessionFactory>>,
     channel: Option<Arc<SftpChannel>>,
     /// 压缩 / 解压 / 粘贴正在占用的服务器任务。
     busy: Option<Busy>,
@@ -2120,6 +2126,7 @@ impl SftpDemo {
         let (conflict_automation, conflict_automation_error) = conflict_automation();
         let focus = cx.focus_handle();
 
+        let attempted = factory.as_ref().map(Arc::downgrade);
         let fixture_dir = fixture::start_dir().map(|dir| start_remote.clone().unwrap_or(dir));
         let fixture = fixture_dir.is_some();
         let (phase, status) = if fixture {
@@ -2191,6 +2198,8 @@ impl SftpDemo {
             events,
             sender,
             factory: None,
+            offered: None,
+            attempted,
             channel: None,
             busy: None,
             provider: None,
