@@ -1025,7 +1025,7 @@ fn logs_never_contain_passwords_keys_or_package_plaintext() {
     let dir_b = temp_dir("logs-b");
     let db_a = Database::open_in_memory().expect("A 库");
     let db_b = Database::open_in_memory().expect("B 库");
-    let sealer_a = crate::sync::sealer::DpapiSealer;
+    let sealer_a = crate::sync::sealer::DpapiSealer::new(db_a.vault_account().to_owned());
     let sealer_b = TestSealer(2);
     add_host(&db_a, "PLAINTEXT-HOST-MARKER");
     db_a.identity_save(&crate::model::IdentityDraft {

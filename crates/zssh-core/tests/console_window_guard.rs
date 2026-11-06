@@ -17,6 +17,10 @@ const ALLOWED_GUI_LAUNCHES: &[(&str, &str)] = &[
         "native/zssh-gpui/src/main_window/settings_page.rs",
         "用 explorer 打开日志目录：用户就是要看到资源管理器窗口",
     ),
+    (
+        "native/zssh-gpui/src/settings.rs",
+        "macOS 用 osascript 弹系统对话框；没有可隐藏的控制台窗口",
+    ),
 ];
 
 /// 只给测试用的文件（对应的 `mod` 带 `#[cfg(test)]`）。

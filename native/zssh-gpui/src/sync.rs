@@ -1525,12 +1525,7 @@ impl SyncDemo {
                             }
                         };
                         let sealer = DpapiSealer::new(db.vault_account().to_owned());
-                        cloud_backup::backup_after_sync(
-                            &handle,
-                            &data_dir,
-                            &sealer,
-                            &password,
-                        );
+                        cloud_backup::backup_after_sync(&handle, &data_dir, &sealer, &password);
                         let _ = sender.send(SyncEvent::PostSyncBackupsDone);
                     }
                 }));
@@ -1836,6 +1831,10 @@ impl SyncDemo {
                 }
                 SyncEvent::TargetSignedIn(result) => self.on_target_signed_in(result, cx),
                 SyncEvent::PostSyncBackupsDone => self.reload_targets_now(),
+                SyncEvent::PostSyncBackupError(message) => {
+                    self.status = message;
+                    self.reload_targets_now();
+                }
             }
         }
         // 备份页恢复 / 导入时写回了同步账号设置：把这一页的显示也换成新的。
@@ -2330,7 +2329,11 @@ fn baseline_broken_at(data_dir: &Path) -> bool {
     let Ok(db) = open_existing_db_at(data_dir) else {
         return false;
     };
-    baseline_broken_with(&db, &DpapiSealer::new(db.vault_account().to_owned()), data_dir)
+    baseline_broken_with(
+        &db,
+        &DpapiSealer::new(db.vault_account().to_owned()),
+        data_dir,
+    )
 }
 
 /// 同 [`baseline_broken_at`]，数据库和加密实现由调用方给，测试用它绕开 DPAPI。
@@ -2350,9 +2353,16 @@ fn reset_baseline_at(data_dir: &Path) -> Result<(), String> {
     let _guard = SyncInFlight::acquire(ExclusiveKind::Restore)
         .map_err(|holder| exclusive_busy_message(ExclusiveKind::Restore, holder).to_owned())?;
     let db = open_db_at(data_dir)?;
-    SyncEngine::new(&db, &DpapiSealer::new(db.vault_account().to_owned()), "", data_dir, None, None)
-        .reset_baseline()
-        .map_err(|err| crate::error_text::error_text(&err))
+    SyncEngine::new(
+        &db,
+        &DpapiSealer::new(db.vault_account().to_owned()),
+        "",
+        data_dir,
+        None,
+        None,
+    )
+    .reset_baseline()
+    .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 自动同步的计时：上次同步（自动或手动）的起点和连续失败次数。
@@ -2497,8 +2507,11 @@ fn auto_sync_tick() {
     let handle = runtime.handle().clone();
     drop(runtime.spawn_blocking(move || {
         let data_dir = crate::settings::data_dir();
-        if let Some(result) = auto_tick_at(&handle, &data_dir, now_secs()) {
-            broadcast_auto_result(result);
+        let now = now_secs();
+        match auto_tick_at(&handle, &data_dir, now) {
+            Ok(Some(result)) => broadcast_auto_result(result),
+            Ok(None) => {}
+            Err(message) => broadcast_auto_result(last_result_error(&message, true, now)),
         }
     }));
 }
@@ -2507,10 +2520,17 @@ fn auto_sync_tick() {
 ///
 /// 需要用户处理的状态下一律不跑：开关关了、没保存存储、没记住主密码、还没到间隔、
 /// 或者手动同步正在跑（同一个同步开关）。
-fn auto_tick_at(handle: &tokio::runtime::Handle, data_dir: &Path, now: i64) -> Option<LastResult> {
-    let db = open_db_at(data_dir)?;
+fn auto_tick_at(
+    handle: &tokio::runtime::Handle,
+    data_dir: &Path,
+    now: i64,
+) -> Result<Option<LastResult>, String> {
+    if !data_dir.join("zssh.db").is_file() {
+        return Ok(None);
+    }
+    let db = open_existing_db_at(data_dir)?;
     let sealer = DpapiSealer::new(db.vault_account().to_owned());
-    auto_tick_with(handle, data_dir, now, &sealer)
+    Ok(auto_tick_with(handle, data_dir, now, &sealer))
 }
 
 /// 同 [`auto_tick_at`]，加密实现由调用方给，测试用它绕开 DPAPI。
@@ -3488,7 +3508,8 @@ fn load_saved_config(data_dir: &Path) -> Result<Option<StorageConfig>, String> {
             crate::error_text::error_text(&err)
         )
     })?;
-    service::load_config(&db, &DpapiSealer::new(db.vault_account().to_owned())).map_err(|err| crate::error_text::error_text(&err))
+    service::load_config(&db, &DpapiSealer::new(db.vault_account().to_owned()))
+        .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 冲突列表：库文件不存在就当没有冲突，不为了看列表新建一个库。
@@ -3504,8 +3525,13 @@ fn load_conflicts_at(data_dir: &Path) -> Result<Vec<ConflictView>, String> {
             crate::error_text::error_text(&err)
         )
     })?;
-    conflicts::list(&db, &DpapiSealer::new(db.vault_account().to_owned()), &device_id, now_secs())
-        .map_err(|err| crate::error_text::error_text(&err))
+    conflicts::list(
+        &db,
+        &DpapiSealer::new(db.vault_account().to_owned()),
+        &device_id,
+        now_secs(),
+    )
+    .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 改用另一份：结果写回本地库，成功后由调用方刷新列表。
@@ -3522,9 +3548,10 @@ fn use_other_at(data_dir: &Path, id: i64) -> Result<(), String> {
         )
     })?;
     let known_hosts = data_dir.join("known_hosts");
+    let sealer = DpapiSealer::new(db.vault_account().to_owned());
     conflicts::use_other(
         &db,
-        &DpapiSealer,
+        &sealer,
         &device_id,
         Some(known_hosts.as_path()),
         id,
@@ -3565,8 +3592,12 @@ fn now_secs() -> i64 {
 
 fn save_config_at(data_dir: &Path, config: &StorageConfig) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    service::save_config(&db, &DpapiSealer::new(db.vault_account().to_owned()), config)
-        .map_err(|err| crate::error_text::error_text(&err))
+    service::save_config(
+        &db,
+        &DpapiSealer::new(db.vault_account().to_owned()),
+        config,
+    )
+    .map_err(|err| crate::error_text::error_text(&err))
 }
 
 fn clear_config_at(data_dir: &Path) -> Result<(), String> {
@@ -3627,8 +3658,12 @@ fn load_master_password_at(data_dir: &Path) -> Result<Option<String>, String> {
 /// 同步成功后记住主密码：交给核心用本机 DPAPI 加密，界面和日志都拿不到密文。
 fn save_master_password_at(data_dir: &Path, password: &str) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    service::save_master_password(&db, &DpapiSealer::new(db.vault_account().to_owned()), password)
-        .map_err(|err| crate::error_text::error_text(&err))
+    service::save_master_password(
+        &db,
+        &DpapiSealer::new(db.vault_account().to_owned()),
+        password,
+    )
+    .map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 开关关掉或者清除存储时删掉本机保存的主密码。

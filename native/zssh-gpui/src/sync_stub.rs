@@ -880,14 +880,12 @@ pub(crate) fn peer_run(
     kind: &str,
     op: &str,
 ) -> Result<String, String> {
-    peer_run_at(
-        global_started()?,
-        handle,
-        &DpapiSealer::new(db.vault_account().to_owned()),
-        &peer_dir(),
-        kind,
-        op,
-    )
+    let dir = peer_dir();
+    std::fs::create_dir_all(&dir).map_err(|err| format!("建另一台电脑的目录失败：{err}"))?;
+    let db = Database::open(&dir.join("zssh.db"))
+        .map_err(|err| format!("打开另一台电脑的库失败：{err}"))?;
+    let sealer = DpapiSealer::new(db.vault_account().to_owned());
+    peer_run_at(global_started()?, handle, &sealer, &dir, kind, op)
 }
 
 /// 在另一台电脑上做一件事再同步一次。`kind` 是存储（webdav / s3 / github），`op`：

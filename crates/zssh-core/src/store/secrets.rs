@@ -313,8 +313,8 @@ fn key_error(err: VaultKeyError) -> ZsshError {
         )),
         VaultKeyError::Failed { status } => {
             let text = format!("钥匙串读写失败（状态 {status}）");
-            let mut reason = Reason::new("vault_key_failed", text);
-            reason = reason.with_param("status", status.to_string());
+            let reason =
+                Reason::new("vault_key_failed", text).with_all([("status", status.to_string())]);
             ZsshError::Secret(reason)
         }
         VaultKeyError::Exists => ZsshError::Secret(Reason::new(
@@ -325,15 +325,15 @@ fn key_error(err: VaultKeyError) -> ZsshError {
 }
 
 /// 是不是”条目已存在、没有覆盖”的那一种失败。调用方据此回读已有密钥。
-#[cfg(target_os = “macos”)]
+#[cfg(target_os = "macos")]
 fn is_key_exists(err: &ZsshError) -> bool {
-    matches!(err, ZsshError::Secret(reason) if reason.key() == “vault_key_exists”)
+    matches!(err, ZsshError::Secret(reason) if reason.key() == "vault_key_exists")
 }
 
 /// 是不是”钥匙串里没有这把密钥”。只有这时才允许新建。
-#[cfg(target_os = “macos”)]
+#[cfg(target_os = "macos")]
 fn is_key_missing(err: &ZsshError) -> bool {
-    matches!(err, ZsshError::Secret(reason) if reason.key() == “vault_key_missing”)
+    matches!(err, ZsshError::Secret(reason) if reason.key() == "vault_key_missing")
 }
 
 #[cfg(target_os = "macos")]
@@ -445,12 +445,14 @@ mod vault {
         static VAULT_ACCOUNT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
     }
 
+    #[cfg(not(test))]
     type KeychainJob = Box<dyn FnOnce() + Send>;
 
     /// 一把长期存在的线程，专门跑钥匙串调用。
     ///
     /// 不能每次调用都新建线程：一次连接要解开好几条密文。也不能在调用方线程上直接跑，
     /// 系统授权框需要自己的事件循环。队列空时线程停在 `recv` 上，不占 CPU。
+    #[cfg(not(test))]
     fn keychain_thread() -> &'static std::sync::mpsc::Sender<KeychainJob> {
         static THREAD: std::sync::OnceLock<std::sync::mpsc::Sender<KeychainJob>> =
             std::sync::OnceLock::new();
@@ -479,7 +481,7 @@ mod vault {
         // 测试里没有系统授权框，直接在调用方线程上跑。
         #[cfg(test)]
         {
-            return call().map_err(key_error);
+            call().map_err(key_error)
         }
         #[cfg(not(test))]
         {
@@ -695,7 +697,7 @@ mod macos_tests {
         fn load(&self, _: &str, _: &str) -> Result<Vec<u8>, VaultKeyError> {
             self.key
                 .lock()
-                .unwrap()
+                .map_err(|_| VaultKeyError::Failed { status: 0 })?
                 .clone()
                 .ok_or(VaultKeyError::Missing)
         }

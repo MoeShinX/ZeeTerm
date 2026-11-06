@@ -33,7 +33,7 @@ impl DpapiSealer {
 
 impl SecretSealer for DpapiSealer {
     fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>, SyncError> {
-        #[cfg(target_os = “macos”)]
+        #[cfg(target_os = "macos")]
         {
             if let Some(account) = &self.vault_account {
                 let _scope = crate::store::secrets::VaultScope::new(account);
@@ -42,7 +42,7 @@ impl SecretSealer for DpapiSealer {
                 crate::store::secrets::protect(plaintext).map_err(SyncError::from)
             }
         }
-        #[cfg(not(target_os = “macos”))]
+        #[cfg(not(target_os = "macos"))]
         {
             let _ = &self.vault_account;
             crate::store::secrets::protect(plaintext).map_err(SyncError::from)
@@ -50,7 +50,7 @@ impl SecretSealer for DpapiSealer {
     }
 
     fn open(&self, blob: &[u8]) -> Result<Vec<u8>, SyncError> {
-        #[cfg(target_os = “macos”)]
+        #[cfg(target_os = "macos")]
         {
             if let Some(account) = &self.vault_account {
                 let _scope = crate::store::secrets::VaultScope::new(account);
@@ -59,7 +59,7 @@ impl SecretSealer for DpapiSealer {
                 crate::store::secrets::unprotect(blob).map_err(SyncError::from)
             }
         }
-        #[cfg(not(target_os = “macos”))]
+        #[cfg(not(target_os = "macos"))]
         {
             let _ = &self.vault_account;
             crate::store::secrets::unprotect(blob).map_err(SyncError::from)

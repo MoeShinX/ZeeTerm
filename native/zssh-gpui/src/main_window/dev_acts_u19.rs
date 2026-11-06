@@ -333,9 +333,10 @@ mod real {
         let scratch = path.with_extension("src");
         fake_zssh(&scratch)?;
         let db = Database::open(&scratch.join("data.db")).map_err(|e| e.to_string())?;
+        let sealer = DpapiSealer::new(db.vault_account().to_owned());
         let engine = SyncEngine::new(
             &db,
-            &DpapiSealer::new(db.vault_account().to_owned()),
+            &sealer,
             "fake-zssh-device",
             &scratch,
             Some(scratch.join("known_hosts")),

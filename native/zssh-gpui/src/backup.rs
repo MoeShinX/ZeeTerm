@@ -659,8 +659,14 @@ impl BackupDemo {
                 self.busy = Some(Busy::Export);
                 self.status.clear();
                 drop(runtime.spawn_blocking(move || {
-                    let event = match export_offline_to(&dir, &DpapiSealer::new(db.vault_account().to_owned()), &password, &path) {
-                        Ok(bytes) => BackupEvent::Exported { path, bytes },
+                    let event = match open_db_at(&dir) {
+                        Ok(db) => {
+                            let sealer = DpapiSealer::new(db.vault_account().to_owned());
+                            match export_offline_to(&dir, &sealer, &password, &path) {
+                                Ok(bytes) => BackupEvent::Exported { path, bytes },
+                                Err(message) => BackupEvent::ExportFailed(message),
+                            }
+                        }
                         Err(message) => BackupEvent::ExportFailed(message),
                     };
                     let _ = sender.send(event);
@@ -735,11 +741,16 @@ impl BackupDemo {
                 self.status.clear();
                 drop(runtime.spawn_blocking(move || {
                     let _guard = guard;
-                    let event =
-                        match import_offline_from(&dir, &DpapiSealer::new(db.vault_account().to_owned()), &path, &password, mode) {
-                            Ok(report) => BackupEvent::Imported(Box::new(report)),
-                            Err(message) => BackupEvent::ImportFailed(message),
-                        };
+                    let event = match open_db_at(&dir) {
+                        Ok(db) => {
+                            let sealer = DpapiSealer::new(db.vault_account().to_owned());
+                            match import_offline_from(&dir, &sealer, &path, &password, mode) {
+                                Ok(report) => BackupEvent::Imported(Box::new(report)),
+                                Err(message) => BackupEvent::ImportFailed(message),
+                            }
+                        }
+                        Err(message) => BackupEvent::ImportFailed(message),
+                    };
                     let _ = sender.send(event);
                 }));
             }
@@ -1301,7 +1312,11 @@ fn list_backups_with(
 /// 新建备份；界面路径用生产 DPAPI。
 fn create_backup(data_dir: &Path) -> Result<BackupInfo, String> {
     let db = open_db_at(data_dir)?;
-    create_backup_with(data_dir, &DpapiSealer::new(db.vault_account().to_owned()), env!("CARGO_PKG_VERSION"))
+    create_backup_with(
+        data_dir,
+        &DpapiSealer::new(db.vault_account().to_owned()),
+        env!("CARGO_PKG_VERSION"),
+    )
 }
 
 /// 同 [`create_backup`]，加密实现和版本号由调用方给，测试用它绕开 DPAPI。
@@ -1342,7 +1357,11 @@ fn create_backup_with(
 /// 恢复备份；界面路径用生产 DPAPI。
 fn restore_backup(data_dir: &Path, path: &Path) -> Result<RestoreReport, String> {
     let db = open_db_at(data_dir)?;
-    restore_backup_with(data_dir, path, &DpapiSealer::new(db.vault_account().to_owned()))
+    restore_backup_with(
+        data_dir,
+        path,
+        &DpapiSealer::new(db.vault_account().to_owned()),
+    )
 }
 
 /// 同 [`restore_backup`]，加密实现由调用方给，测试用它绕开 DPAPI。

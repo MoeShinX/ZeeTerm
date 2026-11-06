@@ -45,6 +45,7 @@ fn unique_name() -> String {
 
 struct Machine {
     db: Database,
+    sealer: DpapiSealer,
     dir: PathBuf,
     device: &'static str,
     /// 目录守卫放在最后：数据库先关，目录最后删。
@@ -58,8 +59,11 @@ impl Machine {
             .tempdir()
             .expect("建目录");
         let dir = guard.path().to_path_buf();
+        let db = common::vault::open(&dir.join("zssh.db")).expect("打开库");
+        let sealer = DpapiSealer::new(db.vault_account().to_owned());
         Self {
-            db: common::vault::open(&dir.join("zssh.db")).expect("打开库"),
+            db,
+            sealer,
             dir,
             device,
             _guard: guard,
@@ -69,7 +73,7 @@ impl Machine {
     fn context(&self) -> SyncContext<'_> {
         SyncContext {
             db: &self.db,
-            sealer: &DpapiSealer::for_test(),
+            sealer: &self.sealer,
             device_id: self.device.to_owned(),
             data_dir: self.dir.clone(),
             known_hosts_path: None,
@@ -138,7 +142,7 @@ async fn run_against(label: &str, config: StorageConfig) {
     let a = Machine::new("dev-a");
     let b = Machine::new("dev-b");
     for machine in [&a, &b] {
-        zssh_core::sync::service::save_config(&machine.db, &DpapiSealer::for_test(), &config).unwrap();
+        zssh_core::sync::service::save_config(&machine.db, &machine.sealer, &config).unwrap();
         zssh_core::sync::service::save_concurrency(
             &machine.db,
             &zssh_core::sync::service::ConcurrencyRecord {
@@ -165,7 +169,7 @@ async fn run_against(label: &str, config: StorageConfig) {
     assert_eq!(report.status, SyncStatus::Completed);
     b.context().run_sync(PASSWORD, None).await.expect("B 同步");
     assert_eq!(a.names(), b.names());
-    let content = snapshot_local(&b.db, &DpapiSealer::for_test(), "x", None, 1).unwrap();
+    let content = snapshot_local(&b.db, &b.sealer, "x", None, 1).unwrap();
     assert!(content
         .identities
         .iter()

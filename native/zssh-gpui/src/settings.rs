@@ -435,13 +435,17 @@ enum AlreadyRunningMsg {
 impl crate::i18n::Msg for AlreadyRunningMsg {
     fn zh(&self) -> &'static str {
         match self {
-            Self::Message => “ZeeTerm 已经在运行。请在程序坞里点它的图标切回去；再次双击不会打开新的窗口。”,
+            Self::Message => {
+                "ZeeTerm 已经在运行。请在程序坞里点它的图标切回去；再次双击不会打开新的窗口。"
+            }
         }
     }
 
     fn en(&self) -> &'static str {
         match self {
-            Self::Message => “ZeeTerm is already running. Click its icon in the Dock to switch to it; opening it again does not create another window.”,
+            Self::Message => {
+                "ZeeTerm is already running. Click its icon in the Dock to switch to it; opening it again does not create another window."
+            }
         }
     }
 }
@@ -450,17 +454,17 @@ impl crate::i18n::Msg for AlreadyRunningMsg {
 ///
 /// macOS 上还不能把已有窗口带到前面，无声退出会让用户以为双击没有反应。
 /// 这里用系统对话框说一声；对话框起不来时至少写到 stderr。
-#[cfg(target_os = “macos”)]
+#[cfg(target_os = "macos")]
 pub fn notify_already_running() {
     let text = crate::i18n::t(AlreadyRunningMsg::Message);
     // osascript 是系统自带的，不依赖本程序有没有签名。失败也不影响退出。
-    let _ = std::process::Command::new(“/usr/bin/osascript”)
+    let _ = std::process::Command::new("/usr/bin/osascript")
         .args([
-            “-e”,
-            &format!(“display alert \”ZeeTerm\” message \”{text}\””),
+            "-e",
+            &format!("display alert \"ZeeTerm\" message \"{text}\""),
         ])
         .status();
-    eprintln!(“{text}”);
+    eprintln!("{text}");
 }
 
 #[cfg(not(target_os = "macos"))]

@@ -208,11 +208,16 @@ impl SyncDemo {
                 let handle = runtime.handle().clone();
                 drop(runtime.spawn_blocking(move || {
                     let _guard = guard;
-                    let event =
-                        match change_password_with(&handle, &data_dir, &DpapiSealer::new(db.vault_account().to_owned()), &old, &new) {
-                            Ok(()) => SyncEvent::PasswordChanged { new },
-                            Err(message) => SyncEvent::PasswordChangeFailed(message),
-                        };
+                    let event = match open_existing_db_at(&data_dir) {
+                        Ok(db) => {
+                            let sealer = DpapiSealer::new(db.vault_account().to_owned());
+                            match change_password_with(&handle, &data_dir, &sealer, &old, &new) {
+                                Ok(()) => SyncEvent::PasswordChanged { new },
+                                Err(message) => SyncEvent::PasswordChangeFailed(message),
+                            }
+                        }
+                        Err(message) => SyncEvent::PasswordChangeFailed(message),
+                    };
                     let _ = sender.send(event);
                 }));
             }

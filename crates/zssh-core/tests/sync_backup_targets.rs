@@ -39,7 +39,6 @@ use zssh_core::sync::onedrive::oauth::Endpoints;
 use zssh_core::sync::onedrive::tokens::{DbTokenStore, TokenStore};
 use zssh_core::sync::remote::ConcurrencyMode;
 use zssh_core::sync::s3::{self, S3Config};
-use zssh_core::sync::sealer::DpapiSealer;
 use zssh_core::sync::service::{self, StorageConfig, SyncContext};
 use zssh_core::sync::storage::SyncStorage;
 use zssh_core::sync::webdav::{self, WebDavConfig};
@@ -54,7 +53,7 @@ const GH_TOKEN: &str = "ghp_mocktoken_not_a_real_token_0123456789";
 fn context<'a>(machine: &'a Machine, endpoints: &Endpoints) -> SyncContext<'a> {
     SyncContext {
         db: &machine.db,
-        sealer: &DpapiSealer::for_test(),
+        sealer: &machine.sealer,
         device_id: machine.device.to_owned(),
         known_hosts_path: Some(machine.dir.join("known_hosts")),
         data_dir: machine.dir.clone(),
@@ -159,11 +158,11 @@ async fn webdav_sync_and_backup_in_the_same_directory_do_not_overwrite_each_othe
     direct(&a);
     a.add_host("web-1");
     let config = dav_config(&cloud, "Z-SSH/sync");
-    service::save_config(&a.db, &DpapiSealer::for_test(), &StorageConfig::Webdav(config.clone())).unwrap();
+    service::save_config(&a.db, &a.sealer, &StorageConfig::Webdav(config.clone())).unwrap();
     // 备份目标指向和主同步完全相同的 URL + 目录 + 账号
     let id = add_target(
         &a.db,
-        &DpapiSealer::for_test(),
+        &a.sealer,
         None,
         StorageConfig::Webdav(config.clone()),
         true,
@@ -233,7 +232,7 @@ async fn webdav_sync_and_backup_in_the_same_directory_do_not_overwrite_each_othe
     // 另一台电脑：用主同步照常拿到数据（备份对象的存在不影响它）
     let b = Machine::new("bt-dav-b", "dev-b");
     direct(&b);
-    service::save_config(&b.db, &DpapiSealer::for_test(), &StorageConfig::Webdav(config.clone())).unwrap();
+    service::save_config(&b.db, &b.sealer, &StorageConfig::Webdav(config.clone())).unwrap();
     let report = context(&b, &endpoints)
         .run_sync(PASSWORD, Some(DeletionDecision::Continue))
         .await
@@ -253,7 +252,7 @@ async fn webdav_restore_from_a_target_replaces_local_data_after_a_safety_backup(
     let config = dav_config(&cloud, "backup");
     let id = add_target(
         &a.db,
-        &DpapiSealer::for_test(),
+        &a.sealer,
         None,
         StorageConfig::Webdav(config.clone()),
         true,
@@ -261,7 +260,7 @@ async fn webdav_restore_from_a_target_replaces_local_data_after_a_safety_backup(
     .unwrap()
     .id;
     // 没有配置主同步也能单独备份（用本机当前数据）
-    assert!(service::load_config(&a.db, &DpapiSealer::for_test()).unwrap().is_none());
+    assert!(service::load_config(&a.db, &a.sealer).unwrap().is_none());
     let outcomes = context(&a, &endpoints)
         .backup_to_targets(PASSWORD, Some(&id))
         .await
@@ -275,7 +274,7 @@ async fn webdav_restore_from_a_target_replaces_local_data_after_a_safety_backup(
     b.add_host("only-on-b");
     let id_b = add_target(
         &b.db,
-        &DpapiSealer::for_test(),
+        &b.sealer,
         None,
         StorageConfig::Webdav(config.clone()),
         true,
@@ -300,7 +299,7 @@ async fn webdav_restore_from_a_target_replaces_local_data_after_a_safety_backup(
     // 没动同步基线
     assert!(b.engine().load_baseline().unwrap().is_none());
     // 备份目标还在
-    assert_eq!(load_targets(&b.db, &DpapiSealer::for_test()).unwrap().len(), 1);
+    assert_eq!(load_targets(&b.db, &b.sealer).unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -313,25 +312,19 @@ async fn a_failing_target_does_not_stop_the_others_or_the_main_sync() {
     a.add_host("web-1");
     service::save_config(
         &a.db,
-        &DpapiSealer::for_test(),
+        &a.sealer,
         &StorageConfig::Webdav(dav_config(&good, "sync")),
     )
     .unwrap();
     // 第一个目标密码是错的（401），第二个正常
     let mut wrong = dav_config(&bad, "backup");
     wrong.password = "wrong-password".to_owned();
-    let first = add_target(
-        &a.db,
-        &DpapiSealer::for_test(),
-        None,
-        StorageConfig::Webdav(wrong),
-        true,
-    )
-    .unwrap()
-    .id;
+    let first = add_target(&a.db, &a.sealer, None, StorageConfig::Webdav(wrong), true)
+        .unwrap()
+        .id;
     let second = add_target(
         &a.db,
-        &DpapiSealer::for_test(),
+        &a.sealer,
         None,
         StorageConfig::Webdav(dav_config(&good, "backup")),
         true,
@@ -352,7 +345,7 @@ async fn a_failing_target_does_not_stop_the_others_or_the_main_sync() {
     );
     assert_eq!(status_of(&outcomes, &second), OutcomeStatus::Uploaded);
 
-    let targets = load_targets(&a.db, &DpapiSealer::for_test()).unwrap();
+    let targets = load_targets(&a.db, &a.sealer).unwrap();
     let last = |id: &str| {
         targets
             .iter()
@@ -382,10 +375,10 @@ async fn s3_sync_and_backup_in_the_same_bucket_and_prefix_do_not_collide() {
     direct(&a);
     a.add_host("web-1");
     let config = s3_config(&cloud);
-    service::save_config(&a.db, &DpapiSealer::for_test(), &StorageConfig::S3(config.clone())).unwrap();
+    service::save_config(&a.db, &a.sealer, &StorageConfig::S3(config.clone())).unwrap();
     let id = add_target(
         &a.db,
-        &DpapiSealer::for_test(),
+        &a.sealer,
         None,
         StorageConfig::S3(config.clone()),
         true,
@@ -459,16 +452,10 @@ async fn gist_sync_and_backup_share_one_gist_with_two_files() {
         gist_id: gist_id.clone(),
         ..base.clone()
     };
-    service::save_config(&a.db, &DpapiSealer::for_test(), &StorageConfig::Github(with_id.clone())).unwrap();
-    let id = add_target(
-        &a.db,
-        &DpapiSealer::for_test(),
-        None,
-        StorageConfig::Github(with_id),
-        true,
-    )
-    .unwrap()
-    .id;
+    service::save_config(&a.db, &a.sealer, &StorageConfig::Github(with_id.clone())).unwrap();
+    let id = add_target(&a.db, &a.sealer, None, StorageConfig::Github(with_id), true)
+        .unwrap()
+        .id;
     let ctx = context(&a, &endpoints);
     ctx.run_sync(PASSWORD, Some(DeletionDecision::Continue))
         .await
@@ -511,7 +498,7 @@ async fn a_gist_target_without_an_id_creates_one_on_the_first_backup() {
     a.add_host("web-1");
     let id = add_target(
         &a.db,
-        &DpapiSealer::for_test(),
+        &a.sealer,
         None,
         StorageConfig::Github(GithubConfig {
             api_base: gh.api_base(),
@@ -543,7 +530,7 @@ async fn a_gist_target_without_an_id_creates_one_on_the_first_backup() {
         "新建的 Gist 里只有备份文件，没有多余的同步包占位"
     );
     // 新 ID 记下来了，第二次不会再建
-    let targets = load_targets(&a.db, &DpapiSealer::for_test()).unwrap();
+    let targets = load_targets(&a.db, &a.sealer).unwrap();
     assert!(matches!(&targets[0].config, StorageConfig::Github(c) if c.gist_id == ids[0]));
     ctx.backup_to_targets(PASSWORD, Some(&id)).await.unwrap();
     assert_eq!(gh.gist_ids().len(), 1);
@@ -563,7 +550,7 @@ async fn onedrive_main_sync_and_target_use_separate_tokens_and_the_same_app_fold
     // 主同步登录
     service::onedrive_sign_in(
         &a.db,
-        &DpapiSealer::for_test(),
+        &a.sealer,
         &endpoints,
         CLIENT_ID,
         Duration::from_secs(20),
@@ -576,7 +563,7 @@ async fn onedrive_main_sync_and_target_use_separate_tokens_and_the_same_app_fold
     let target_id = backup_targets::new_target_id();
     let signed = backup_targets::onedrive_sign_in_for_target(
         &a.db,
-        &DpapiSealer::for_test(),
+        &a.sealer,
         &endpoints,
         &target_id,
         CLIENT_ID,
@@ -588,7 +575,7 @@ async fn onedrive_main_sync_and_target_use_separate_tokens_and_the_same_app_fold
     .expect("备份目标登录");
     add_target(
         &a.db,
-        &DpapiSealer::for_test(),
+        &a.sealer,
         Some(target_id.clone()),
         StorageConfig::Onedrive(OneDriveConfig {
             client_id: CLIENT_ID.to_owned(),
@@ -599,14 +586,11 @@ async fn onedrive_main_sync_and_target_use_separate_tokens_and_the_same_app_fold
     .unwrap();
     // 登录目标没有动主同步的连接设置
     assert!(matches!(
-        service::load_config(&a.db, &DpapiSealer::for_test()).unwrap(),
+        service::load_config(&a.db, &a.sealer).unwrap(),
         Some(StorageConfig::Onedrive(_))
     ));
-    let main_tokens = DbTokenStore::new(&a.db, &DpapiSealer::for_test())
-        .load()
-        .unwrap()
-        .unwrap();
-    let target_tokens = backup_targets::token_store(&a.db, &DpapiSealer::for_test(), &target_id)
+    let main_tokens = DbTokenStore::new(&a.db, &a.sealer).load().unwrap().unwrap();
+    let target_tokens = backup_targets::token_store(&a.db, &a.sealer, &target_id)
         .load()
         .unwrap()
         .unwrap();
@@ -636,11 +620,11 @@ async fn onedrive_main_sync_and_target_use_separate_tokens_and_the_same_app_fold
 
     // 主同步断开：目标的令牌还在、还能备份
     service::onedrive_disconnect(&a.db).unwrap();
-    assert!(DbTokenStore::new(&a.db, &DpapiSealer::for_test())
+    assert!(DbTokenStore::new(&a.db, &a.sealer)
         .load()
         .unwrap()
         .is_none());
-    assert!(backup_targets::token_store(&a.db, &DpapiSealer::for_test(), &target_id)
+    assert!(backup_targets::token_store(&a.db, &a.sealer, &target_id)
         .load()
         .unwrap()
         .is_some());
@@ -664,7 +648,7 @@ async fn onedrive_main_sync_and_target_use_separate_tokens_and_the_same_app_fold
     // 主同步换成别的存储（save_config 清主同步令牌）也不影响目标
     service::save_config(
         &a.db,
-        &DpapiSealer::for_test(),
+        &a.sealer,
         &StorageConfig::Webdav(WebDavConfig {
             url: "https://dav.example.invalid/".to_owned(),
             directory: String::new(),
@@ -674,7 +658,7 @@ async fn onedrive_main_sync_and_target_use_separate_tokens_and_the_same_app_fold
         }),
     )
     .unwrap();
-    assert!(backup_targets::token_store(&a.db, &DpapiSealer::for_test(), &target_id)
+    assert!(backup_targets::token_store(&a.db, &a.sealer, &target_id)
         .load()
         .unwrap()
         .is_some());
@@ -697,7 +681,7 @@ async fn a_revoked_onedrive_login_fails_only_that_target() {
     let target_id = backup_targets::new_target_id();
     backup_targets::onedrive_sign_in_for_target(
         &a.db,
-        &DpapiSealer::for_test(),
+        &a.sealer,
         &endpoints,
         &target_id,
         CLIENT_ID,
@@ -709,7 +693,7 @@ async fn a_revoked_onedrive_login_fails_only_that_target() {
     .unwrap();
     let od = add_target(
         &a.db,
-        &DpapiSealer::for_test(),
+        &a.sealer,
         Some(target_id),
         StorageConfig::Onedrive(OneDriveConfig {
             client_id: CLIENT_ID.to_owned(),
@@ -721,7 +705,7 @@ async fn a_revoked_onedrive_login_fails_only_that_target() {
     .id;
     let dav = add_target(
         &a.db,
-        &DpapiSealer::for_test(),
+        &a.sealer,
         None,
         StorageConfig::Webdav(dav_config(&cloud, "backup")),
         true,

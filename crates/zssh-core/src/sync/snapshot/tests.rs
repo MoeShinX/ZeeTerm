@@ -129,7 +129,7 @@ fn snapshot_uses_uids_for_every_reference_and_includes_secrets() {
 
     let snapshot = snapshot_local(
         &db,
-        &crate::sync::sealer::DpapiSealer,
+        &crate::sync::sealer::DpapiSealer::new(db.vault_account().to_owned()),
         "dev-a",
         Some(&known_hosts),
         now,
@@ -221,7 +221,7 @@ fn missing_known_hosts_is_not_an_error() {
     let path = dir.join("missing");
     let snapshot = snapshot_local(
         &db,
-        &crate::sync::sealer::DpapiSealer,
+        &crate::sync::sealer::DpapiSealer::new(db.vault_account().to_owned()),
         "dev-a",
         Some(&path),
         1,

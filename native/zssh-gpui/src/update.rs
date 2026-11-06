@@ -3054,6 +3054,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn manifest_pointing_at_a_non_https_package_is_refused_in_release_mode() {
         let manifest = r#"{
@@ -3078,6 +3079,7 @@ mod tests {
         "platforms": { "windows-x86_64": { "url": "https://example.com/a.exe", "signature": "sig" } }
     }"####;
 
+    #[cfg(windows)]
     #[test]
     fn a_found_update_carries_the_notes_and_the_release_date_for_the_window() {
         let manifest = FOUND_MANIFEST.replace("windows-x86_64", zssh_update::platform_keys()[0]);
@@ -3188,5 +3190,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+// 自动更新的下载与安装链只存在于 Windows；macOS 走明确的手动更新。
+#[cfg(all(test, windows))]
 mod e2e_tests;

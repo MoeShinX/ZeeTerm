@@ -822,16 +822,27 @@ fn load_targets_at(data_dir: &Path) -> Result<Vec<BackupTarget>, String> {
 
 fn add_target_at(data_dir: &Path, id: String, config: StorageConfig) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    backup_targets::add_target(&db, &DpapiSealer::new(db.vault_account().to_owned()), Some(id), config, true)
-        .map(|_| ())
-        .map_err(|err| crate::error_text::error_text(&err))
+    backup_targets::add_target(
+        &db,
+        &DpapiSealer::new(db.vault_account().to_owned()),
+        Some(id),
+        config,
+        true,
+    )
+    .map(|_| ())
+    .map_err(|err| crate::error_text::error_text(&err))
 }
 
 fn update_target_at(data_dir: &Path, id: &str, config: StorageConfig) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    backup_targets::update_target(&db, &DpapiSealer::new(db.vault_account().to_owned()), id, config)
-        .map(|_| ())
-        .map_err(|err| crate::error_text::error_text(&err))
+    backup_targets::update_target(
+        &db,
+        &DpapiSealer::new(db.vault_account().to_owned()),
+        id,
+        config,
+    )
+    .map(|_| ())
+    .map_err(|err| crate::error_text::error_text(&err))
 }
 
 fn delete_target_at(data_dir: &Path, id: &str) -> Result<(), String> {
@@ -842,8 +853,13 @@ fn delete_target_at(data_dir: &Path, id: &str) -> Result<(), String> {
 
 fn set_enabled_at(data_dir: &Path, id: &str, enabled: bool) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    backup_targets::set_enabled(&db, &DpapiSealer::new(db.vault_account().to_owned()), id, enabled)
-        .map_err(|err| crate::error_text::error_text(&err))
+    backup_targets::set_enabled(
+        &db,
+        &DpapiSealer::new(db.vault_account().to_owned()),
+        id,
+        enabled,
+    )
+    .map_err(|err| crate::error_text::error_text(&err))
 }
 
 fn reset_targets_at(data_dir: &Path) -> Result<(), String> {
@@ -855,7 +871,11 @@ fn reset_targets_at(data_dir: &Path) -> Result<(), String> {
 /// 丢弃一个还没保存的新目标留下的 OneDrive 令牌。
 fn discard_token_at(data_dir: &Path, id: &str) {
     if let Ok(db) = open_existing_db_at(data_dir) {
-        let _ = backup_targets::delete_target(&db, &DpapiSealer::new(db.vault_account().to_owned()), id);
+        let _ = backup_targets::delete_target(
+            &db,
+            &DpapiSealer::new(db.vault_account().to_owned()),
+            id,
+        );
     }
 }
 
@@ -1326,15 +1346,21 @@ impl SyncDemo {
                 drop(runtime.spawn_blocking(move || {
                     // 守卫活到这次备份结束：期间同步和恢复都进不来。
                     let _guard = guard;
-                    let result =
-                        backup_with(&handle, &data_dir, &DpapiSealer::new(db.vault_account().to_owned()), &password, Some(&id))
-                            .and_then(|outcomes| {
-                                outcomes
-                                    .into_iter()
-                                    .next()
-                                    .map(|outcome| outcome.status)
-                                    .ok_or_else(|| t(CloudBackupMsg::NoTarget).to_owned())
-                            });
+                    let result = match open_db_at(&data_dir) {
+                        Ok(db) => {
+                            let sealer = DpapiSealer::new(db.vault_account().to_owned());
+                            backup_with(&handle, &data_dir, &sealer, &password, Some(&id)).and_then(
+                                |outcomes| {
+                                    outcomes
+                                        .into_iter()
+                                        .next()
+                                        .map(|outcome| outcome.status)
+                                        .ok_or_else(|| t(CloudBackupMsg::NoTarget).to_owned())
+                                },
+                            )
+                        }
+                        Err(message) => Err(message),
+                    };
                     let _ = sender.send(SyncEvent::TargetBackedUp { id, result });
                 }));
             }
@@ -1398,8 +1424,13 @@ impl SyncDemo {
                 let handle = runtime.handle().clone();
                 drop(runtime.spawn_blocking(move || {
                     let _guard = guard;
-                    let result = restore_with(&handle, &data_dir, &DpapiSealer::new(db.vault_account().to_owned()), &id, &password)
-                        .map(Box::new);
+                    let result = match open_db_at(&data_dir) {
+                        Ok(db) => {
+                            let sealer = DpapiSealer::new(db.vault_account().to_owned());
+                            restore_with(&handle, &data_dir, &sealer, &id, &password).map(Box::new)
+                        }
+                        Err(message) => Err(message),
+                    };
                     let _ = sender.send(SyncEvent::TargetRestored { id, result });
                 }));
             }

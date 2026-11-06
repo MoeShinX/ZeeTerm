@@ -244,7 +244,12 @@ fn the_real_dpapi_secrets_of_the_same_windows_user_can_be_read() {
     let root = TestDir::new("zi-dpapi");
     let dir = fake_zssh(&root, &DpapiSealer::for_test());
     let scratch = TestDir::new("zi-dpapi-scratch");
-    let read = read_zssh(&source_at(&dir).unwrap(), &DpapiSealer::for_test(), &scratch).unwrap();
+    let read = read_zssh(
+        &source_at(&dir).unwrap(),
+        &DpapiSealer::for_test(),
+        &scratch,
+    )
+    .unwrap();
     let pw = read
         .snapshot
         .identities

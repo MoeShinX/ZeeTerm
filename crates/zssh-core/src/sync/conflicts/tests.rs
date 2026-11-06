@@ -11,7 +11,7 @@ const PASSWORD: &str = "conflict-test-password";
 #[test]
 fn use_other_keeps_database_vault_scope_after_loading_the_row() {
     let db = Database::open_in_memory().unwrap();
-    let sealer = crate::sync::sealer::DpapiSealer;
+    let sealer = crate::sync::sealer::DpapiSealer::new(db.vault_account().to_owned());
     db.with_conn_as(|conn| -> Result<(), SyncError> {
         store_conflict(
             conn,
@@ -66,6 +66,8 @@ fn host_names(db: &Database) -> Vec<String> {
 struct Pair {
     db_a: Database,
     db_b: Database,
+    sealer_a: TestSealer,
+    sealer_b: TestSealer,
     // 目录守卫放在数据库之后：先关库再删目录。
     dir_a: crate::test_util::TestDir,
     dir_b: crate::test_util::TestDir,
@@ -74,13 +76,10 @@ struct Pair {
 
 impl Pair {
     fn engine_a(&self) -> SyncEngine<'_> {
-        // 这里的 TestSealer 要活得比引擎久，所以用泄漏的静态引用。
-        let sealer: &'static TestSealer = Box::leak(Box::new(TestSealer(1)));
-        SyncEngine::new(&self.db_a, sealer, "dev-a", &self.dir_a, None, None)
+        SyncEngine::new(&self.db_a, &self.sealer_a, "dev-a", &self.dir_a, None, None)
     }
     fn engine_b(&self) -> SyncEngine<'_> {
-        let sealer: &'static TestSealer = Box::leak(Box::new(TestSealer(2)));
-        SyncEngine::new(&self.db_b, sealer, "dev-b", &self.dir_b, None, None)
+        SyncEngine::new(&self.db_b, &self.sealer_b, "dev-b", &self.dir_b, None, None)
     }
 }
 
@@ -88,6 +87,8 @@ async fn paired(name: &str) -> Pair {
     let pair = Pair {
         db_a: Database::open_in_memory().expect("A 库"),
         db_b: Database::open_in_memory().expect("B 库"),
+        sealer_a: TestSealer(1),
+        sealer_b: TestSealer(2),
         dir_a: temp_dir(&format!("{name}-a")),
         dir_b: temp_dir(&format!("{name}-b")),
         storage: MemoryStorage::new(),

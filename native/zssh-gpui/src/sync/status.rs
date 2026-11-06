@@ -309,14 +309,13 @@ pub(crate) fn refresh_now() {
     if data_dir.join("zssh.db").is_file()
         && let Ok(db) = open_existing_db_at(&data_dir)
     {
-        let config = service::load_config(&db, &super::DpapiSealer)
-            .ok()
-            .flatten();
+        let sealer = super::DpapiSealer::new(db.vault_account().to_owned());
+        let config = service::load_config(&db, &sealer).ok().flatten();
         next.configured = config.is_some();
         next.provider = config.as_ref().map(|config| config.provider());
         next.ready = service::is_ready(&db).unwrap_or(false);
         // 只关心「有没有记住」，不需要解开密文。
-        next.remembered = service::load_master_password(&db, &super::DpapiSealer)
+        next.remembered = service::load_master_password(&db, &sealer)
             .ok()
             .flatten()
             .is_some();

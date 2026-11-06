@@ -651,14 +651,22 @@ impl MigrateDemo {
         self.spawn(
             Busy::Reading,
             move |sender| {
-                let db = match open_db_at(&data_dir) {
-                            Ok(db) => db,
-                            Err(err) => {
-                                let _ = sender.send(MigrateEvent::LoadFailed(err));
-                                return;
-                            }
-                        };
-                        let event = match load_direct(&source, &data_dir, &DpapiSealer::new(db.vault_account().to_owned()), mode) {
+                let db = match open_db(&data_dir) {
+                    Ok(db) => db,
+                    Err(err) => {
+                        let _ = sender.send(MigrateEvent::LoadFailed(Failure::other(
+                            Origin::Direct,
+                            err,
+                        )));
+                        return;
+                    }
+                };
+                let event = match load_direct(
+                    &source,
+                    &data_dir,
+                    &DpapiSealer::new(db.vault_account().to_owned()),
+                    mode,
+                ) {
                     Ok(loaded) => MigrateEvent::Loaded(Box::new(loaded)),
                     Err(failure) => MigrateEvent::LoadFailed(failure),
                 };
@@ -698,14 +706,21 @@ impl MigrateDemo {
         self.spawn(
             Busy::Reading,
             move |sender| {
-                let db = match open_db_at(&data_dir) {
-                            Ok(db) => db,
-                            Err(err) => {
-                                let _ = sender.send(MigrateEvent::LoadFailed(err));
-                                return;
-                            }
-                        };
-                        let event = match load_file(&path, &password, &data_dir, &DpapiSealer::new(db.vault_account().to_owned()), mode) {
+                let db = match open_db(&data_dir) {
+                    Ok(db) => db,
+                    Err(err) => {
+                        let _ = sender
+                            .send(MigrateEvent::LoadFailed(Failure::other(Origin::File, err)));
+                        return;
+                    }
+                };
+                let event = match load_file(
+                    &path,
+                    &password,
+                    &data_dir,
+                    &DpapiSealer::new(db.vault_account().to_owned()),
+                    mode,
+                ) {
                     Ok(loaded) => MigrateEvent::Loaded(Box::new(loaded)),
                     Err(failure) => MigrateEvent::LoadFailed(failure),
                 };
@@ -732,14 +747,19 @@ impl MigrateDemo {
         self.spawn(
             Busy::Previewing,
             move |sender| {
-                let db = match open_db_at(&data_dir) {
-                            Ok(db) => db,
-                            Err(err) => {
-                                let _ = sender.send(MigrateEvent::PreviewFailed(err));
-                                return;
-                            }
-                        };
-                        let event = match preview_of(&data_dir, &DpapiSealer::new(db.vault_account().to_owned()), &snapshot, mode) {
+                let db = match open_db(&data_dir) {
+                    Ok(db) => db,
+                    Err(err) => {
+                        let _ = sender.send(MigrateEvent::RepreviewFailed(err));
+                        return;
+                    }
+                };
+                let event = match preview_of(
+                    &data_dir,
+                    &DpapiSealer::new(db.vault_account().to_owned()),
+                    &snapshot,
+                    mode,
+                ) {
                     Ok(preview) => MigrateEvent::Repreviewed(Box::new(preview)),
                     Err(message) => MigrateEvent::RepreviewFailed(message),
                 };
@@ -777,14 +797,19 @@ impl MigrateDemo {
             move |sender| {
                 // 守卫活到导入结束（含出错）；期间同步和别的恢复 / 导入进不来。
                 let _guard = guard;
-                let db = match open_db_at(&data_dir) {
-                            Ok(db) => db,
-                            Err(err) => {
-                                let _ = sender.send(MigrateEvent::ImportFailed(err));
-                                return;
-                            }
-                        };
-                        let event = match run_import(&data_dir, &DpapiSealer::new(db.vault_account().to_owned()), &snapshot, mode) {
+                let db = match open_db(&data_dir) {
+                    Ok(db) => db,
+                    Err(err) => {
+                        let _ = sender.send(MigrateEvent::ImportFailed(err));
+                        return;
+                    }
+                };
+                let event = match run_import(
+                    &data_dir,
+                    &DpapiSealer::new(db.vault_account().to_owned()),
+                    &snapshot,
+                    mode,
+                ) {
                     Ok(report) => MigrateEvent::Imported(Box::new(report)),
                     Err(message) => MigrateEvent::ImportFailed(message),
                 };

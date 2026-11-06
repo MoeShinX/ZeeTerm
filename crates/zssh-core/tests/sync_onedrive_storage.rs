@@ -33,7 +33,6 @@ use zssh_core::sync::onedrive::login::{login, LoginParams};
 use zssh_core::sync::onedrive::oauth::{now_secs, TokenSet, REAUTH_MESSAGE};
 use zssh_core::sync::onedrive::tokens::{DbTokenStore, MemoryTokenStore, TokenStore, TOKENS_KEY};
 use zssh_core::sync::remote::{ConcurrencyMode, ConditionalStore};
-use zssh_core::sync::sealer::DpapiSealer;
 use zssh_core::sync::storage::{StorageError, SyncStorage};
 use zssh_core::sync::SyncError;
 
@@ -205,8 +204,8 @@ async fn login_upload_second_machine_token_refresh_and_disconnect() {
     let a = Machine::new("od-e2e-a", "dev-a");
     let b = Machine::new("od-e2e-b", "dev-b");
     seed(&a);
-    let store_a = DbTokenStore::new(&a.db, &DpapiSealer::for_test());
-    let store_b = DbTokenStore::new(&b.db, &DpapiSealer::for_test());
+    let store_a = DbTokenStore::new(&a.db, &a.sealer);
+    let store_b = DbTokenStore::new(&b.db, &b.sealer);
 
     // 1. 两台电脑各自走一遍浏览器授权登录，令牌 DPAPI 加密存进各自的数据库。
     for store in [&store_a, &store_b] {

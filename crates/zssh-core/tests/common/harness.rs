@@ -36,6 +36,7 @@ pub struct Machine {
     pub db: Database,
     pub dir: PathBuf,
     pub device: &'static str,
+    pub sealer: DpapiSealer,
     /// 目录守卫：放在最后，数据库先关、目录最后删（panic / 提前 return 也一样）。
     _guard: tempfile::TempDir,
 }
@@ -44,10 +45,13 @@ impl Machine {
     pub fn new(name: &str, device: &'static str) -> Self {
         let guard = temp_dir(name);
         let dir = guard.path().to_path_buf();
+        let db = vault::open(&dir.join("zssh.db")).expect("打开库");
+        let sealer = DpapiSealer::new(db.vault_account().to_owned());
         Self {
-            db: vault::open(&dir.join("zssh.db")).expect("打开库"),
+            db,
             dir,
             device,
+            sealer,
             _guard: guard,
         }
     }
@@ -55,7 +59,7 @@ impl Machine {
     pub fn engine(&self) -> SyncEngine<'_> {
         SyncEngine::new(
             &self.db,
-            &DpapiSealer::for_test(),
+            &self.sealer,
             self.device,
             &self.dir,
             Some(self.dir.join("known_hosts")),
@@ -66,7 +70,7 @@ impl Machine {
     pub fn content(&self) -> SyncSnapshot {
         snapshot_local(
             &self.db,
-            &DpapiSealer::for_test(),
+            &self.sealer,
             "compare",
             Some(&self.dir.join("known_hosts")),
             1_000,

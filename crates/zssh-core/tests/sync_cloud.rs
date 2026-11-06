@@ -23,7 +23,6 @@ use zssh_core::sync::engine::SyncStatus;
 use zssh_core::sync::net::{ProxyScheme, SyncProxy};
 use zssh_core::sync::remote::{ConcurrencyMode, ConnectionProbe};
 use zssh_core::sync::s3::{self, S3Config};
-use zssh_core::sync::sealer::DpapiSealer;
 use zssh_core::sync::webdav::{self, WebDavConfig, WebDavRaw};
 
 const DAV_USER: &str = "alice";
@@ -567,7 +566,7 @@ use zssh_core::sync::service::{self, StorageConfig, SyncContext};
 fn context<'a>(machine: &'a Machine) -> SyncContext<'a> {
     SyncContext {
         db: &machine.db,
-        sealer: &DpapiSealer::for_test(),
+        sealer: &machine.sealer,
         device_id: machine.device.to_owned(),
         data_dir: machine.dir.clone(),
         known_hosts_path: Some(machine.dir.join("known_hosts")),
@@ -628,7 +627,7 @@ async fn saved_settings_drive_a_sync_through_the_default_proxy_and_secrets_stay_
         allow_insecure_http: true,
     });
     for machine in [&a, &b] {
-        service::save_config(&machine.db, &DpapiSealer::for_test(), &config).unwrap();
+        service::save_config(&machine.db, &machine.sealer, &config).unwrap();
         let proxy = machine
             .db
             .proxy_save(&ProxyDraft {
@@ -658,7 +657,7 @@ async fn saved_settings_drive_a_sync_through_the_default_proxy_and_secrets_stay_
         "{dump}"
     );
     assert_eq!(
-        service::load_config(&a.db, &DpapiSealer::for_test()).unwrap().unwrap(),
+        service::load_config(&a.db, &a.sealer).unwrap().unwrap(),
         config
     );
 
@@ -723,18 +722,18 @@ async fn saved_settings_drive_a_sync_through_the_default_proxy_and_secrets_stay_
 
     // 主密码：默认不落盘；记住时用本机封装保存，关掉时删除。
     assert!(!raw_settings_dump(&a).contains("sync_master_password"));
-    service::save_master_password(&a.db, &DpapiSealer::for_test(), PASSWORD).unwrap();
+    service::save_master_password(&a.db, &a.sealer, PASSWORD).unwrap();
     let dump = raw_settings_dump(&a);
     assert!(dump.contains("sync_master_password") && !dump.contains(PASSWORD));
     assert_eq!(
-        service::load_master_password(&a.db, &DpapiSealer::for_test())
+        service::load_master_password(&a.db, &a.sealer)
             .unwrap()
             .unwrap()
             .as_str(),
         PASSWORD
     );
     service::clear_master_password(&a.db).unwrap();
-    assert!(service::load_master_password(&a.db, &DpapiSealer::for_test())
+    assert!(service::load_master_password(&a.db, &a.sealer)
         .unwrap()
         .is_none());
 
