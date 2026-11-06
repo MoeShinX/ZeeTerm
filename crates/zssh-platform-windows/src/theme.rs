@@ -34,7 +34,7 @@ pub fn apps_use_light_theme() -> Option<bool> {
                 Some(&mut size),
             )
         };
-        return (status == ERROR_SUCCESS).then_some(value != 0);
+        (status == ERROR_SUCCESS).then_some(value != 0)
     }
 
     // GTK 桌面通常把偏好放在 GTK_THEME（如 Adwaita:dark）；读不到就交给上层用默认值，

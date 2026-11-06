@@ -1,4 +1,5 @@
 //! 本地快照：引用换 uid、DPAPI 解密、设置白名单、known_hosts、墓碑。
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 use crate::model::{

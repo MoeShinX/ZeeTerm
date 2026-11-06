@@ -215,6 +215,8 @@ impl InstallerRunner for UacRunner {
 
 #[cfg(all(test, windows))]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use std::sync::atomic::Ordering;
     use std::sync::Mutex;
 

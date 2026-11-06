@@ -913,6 +913,8 @@ fn first_meaningful_line(text: &str) -> Option<String> {
 
 #[cfg(all(test, windows))]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use std::fs;
 
