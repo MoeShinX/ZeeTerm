@@ -82,6 +82,9 @@ pub fn encode_key(input: KeyInput<'_>) -> Option<Vec<u8>> {
 
     match input.key {
         "enter" => return Some(vec![b'\r']),
+        // Wayland 的输入法单独提交一个 ASCII 字符时，GPUI 把它伪装成按键：`key` 就是字符本身
+        // （真正的回车键是 "enter"）。换行符走到 `key_char` 那条路会原样发出 LF，和按 Enter 的 CR 不一致。
+        "\n" | "\r" => return Some(vec![b'\r']),
         "tab" if input.shift => return Some(b"\x1b[Z".to_vec()),
         "tab" => return Some(vec![b'\t']),
         "backspace" => return Some(vec![0x7f]),
@@ -288,6 +291,22 @@ mod tests {
         assert_eq!(encode_key(key("escape")).unwrap(), vec![0x1b]);
         assert_eq!(encode_key(key("delete")).unwrap(), b"\x1b[3~");
         assert_eq!(encode_key(key("f5")).unwrap(), b"\x1b[15~");
+    }
+
+    /// Wayland 的 `commit_string` 恰好一个字节时 GPUI 发的是 `key == key_char == 字符` 的按键：
+    /// 换行必须和 Enter 一样发 CR，不能原样发 LF。
+    #[test]
+    fn a_disguised_newline_commit_is_enter() {
+        for text in ["\n", "\r"] {
+            assert_eq!(encode_key(character(text)).unwrap(), b"\r", "{text:?}");
+        }
+        // 真的回车键和 Ctrl+J 不受影响。
+        assert_eq!(encode_key(key("enter")).unwrap(), b"\r");
+        let ctrl_j = KeyInput {
+            ctrl: true,
+            ..character("j")
+        };
+        assert_eq!(encode_key(ctrl_j).unwrap(), vec![0x0a]);
     }
 
     #[test]
