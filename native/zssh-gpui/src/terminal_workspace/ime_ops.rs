@@ -689,6 +689,22 @@ mod gpui_tests {
         assert_eq!(term.sent(), vec![b"\x1bx".to_vec()]);
     }
 
+    /// Wayland 上输入法单独提交一个 `\n`：GPUI 伪装成 `key == key_char == "\n"` 的按键（真回车键的 `key`
+    /// 是 "enter"）。终端要把它当 Enter 发 CR，而且只发一次。
+    #[gpui::test]
+    fn a_wayland_newline_commit_is_sent_as_enter(cx: &mut TestAppContext) {
+        let term = Harness::open(cx, true);
+        cx.dispatch_keystroke(
+            term.window.into(),
+            Keystroke {
+                modifiers: ::gpui::Modifiers::default(),
+                key: "\n".to_owned(),
+                key_char: Some("\n".to_owned()),
+            },
+        );
+        assert_eq!(term.sent(), vec![b"\r".to_vec()]);
+    }
+
     #[gpui::test]
     fn a_commit_from_the_input_method_is_sent_exactly_once(cx: &mut TestAppContext) {
         let term = Harness::open(cx, true);

@@ -908,6 +908,12 @@ mod tests {
         fn attributes<'a>(&'a self) -> EndpointFuture<'a, Result<FileAttributesPair, SftpError>> {
             self.inner.attributes()
         }
+        fn prepare_commit<'a>(
+            &'a self,
+            source_permissions: Option<u32>,
+        ) -> EndpointFuture<'a, Result<(), SftpError>> {
+            self.inner.prepare_commit(source_permissions)
+        }
     }
 
     struct TrackedPair {

@@ -406,14 +406,57 @@ fn names_and_paths() {
     assert_eq!(default_save_as_name("/srv/a.txt"), "a (副本).txt");
     assert_eq!(default_save_as_name("/srv/Makefile"), "Makefile (副本)");
     assert_eq!(default_save_as_name("/srv/.env"), ".env (副本)");
-    assert_eq!(sanitize_local_name("a:b*c?.txt"), "a_b_c_.txt");
-    assert_eq!(sanitize_local_name("con.txt"), "_con.txt");
     assert_eq!(sanitize_local_name("名字 带空格.conf"), "名字 带空格.conf");
-    assert_eq!(sanitize_local_name("end. "), "end");
     assert!(validate_remote_name("ok.txt").is_ok());
     assert!(validate_remote_name("").is_err());
     assert!(validate_remote_name("a/b").is_err());
     assert!(validate_remote_name("..").is_err());
+}
+
+/// Windows 规则的清理函数两个系统上都编译：各自平台上都能直接测。
+#[test]
+fn the_windows_cleanup_rules() {
+    assert_eq!(sanitize_windows_name("a:b*c?.txt"), "a_b_c_.txt");
+    assert_eq!(sanitize_windows_name("con.txt"), "_con.txt");
+    assert_eq!(
+        sanitize_windows_name("名字 带空格.conf"),
+        "名字 带空格.conf"
+    );
+    assert_eq!(sanitize_windows_name("end. "), "end");
+}
+
+/// 临时文件名和下载同一套规则，按本机平台走。
+#[test]
+fn temp_names_follow_the_platform_like_downloads() {
+    for name in [
+        "a:b*c?.txt",
+        "con.txt",
+        "end. ",
+        "a\\b|c.txt",
+        "名字 带空格.conf",
+        "x\u{1b}[31my",
+    ] {
+        assert_eq!(
+            sanitize_local_name(name),
+            crate::sftp::local::local_name(name).name,
+            "{name:?}"
+        );
+    }
+    if cfg!(windows) {
+        assert_eq!(sanitize_local_name("a:b*c?.txt"), "a_b_c_.txt");
+        assert_eq!(sanitize_local_name("con.txt"), "_con.txt");
+        assert_eq!(sanitize_local_name("end. "), "end");
+    } else {
+        // POSIX：只有 `/` 和控制字符放不进文件名，其余原样保留。
+        assert_eq!(sanitize_local_name("a:b*c?.txt"), "a:b*c?.txt");
+        assert_eq!(sanitize_local_name("con.txt"), "con.txt");
+        assert_eq!(sanitize_local_name("end. "), "end. ");
+        assert_eq!(sanitize_local_name("a\\b|c.txt"), "a\\b|c.txt");
+        assert_eq!(sanitize_local_name("a/b"), "a_b");
+        assert_eq!(sanitize_local_name("x\u{1b}[31my"), "x_[31my");
+        assert_eq!(sanitize_local_name(".."), "_");
+        assert_eq!(sanitize_local_name(""), "_");
+    }
 }
 
 #[test]

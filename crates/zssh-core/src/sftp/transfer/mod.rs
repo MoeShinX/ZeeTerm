@@ -985,6 +985,23 @@ impl TransferEngine {
                         let _ = target_endpoint.remove_partial().await;
                         return Err(SftpError::Cancelled);
                     }
+                    // Unix 上下载的新文件权限不能比远端宽：临时文件在改名成最终名字之前定好权限
+                    // （无论是否开了「保留权限」；续传来的旧临时文件、覆盖、改名下载也一样）。
+                    // Windows 没有对应概念，不多发这一次属性查询。本地到本地的复制没有「远端权限」可参照，
+                    // 临时文件创建时是私有的，这里补成默认权限（和以前一样）。
+                    if cfg!(unix) {
+                        match state.job.direction {
+                            Direction::Download => {
+                                let permissions =
+                                    source.attributes().await.ok().and_then(|(_, p)| p);
+                                let _ = target_endpoint.prepare_commit(permissions).await;
+                            }
+                            Direction::LocalCopy => {
+                                let _ = target_endpoint.prepare_commit(None).await;
+                            }
+                            Direction::Upload | Direction::RemoteCopy => {}
+                        }
+                    }
                     if let Err(err) = target_endpoint.commit(source_size, overwrite).await {
                         if !overwrite
                             && renamed_target.is_none()

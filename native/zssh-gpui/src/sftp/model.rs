@@ -1363,6 +1363,37 @@ mod tests {
         assert_eq!(collapse_crumbs(&[], 100.0), (Vec::new(), Vec::new()));
     }
 
+    /// 窄栏里面包屑再怎么折叠，当前这一级（最后一级）一定在：根目录、一级目录、很深的目录、
+    /// 每一级都很长的目录，从极窄到很宽的每个宽度都查。
+    #[test]
+    fn the_last_crumb_survives_every_width() {
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut paths = vec![
+            remote_crumbs("/"),
+            remote_crumbs("/work"),
+            remote_crumbs("/very/long/path/with/many/parts/inside"),
+            remote_crumbs("/一个很长很长的中文目录名/另一个很长很长的中文目录名"),
+            remote_crumbs("/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            local_crumbs("/home/user/projects/alpha"),
+            local_crumbs("/"),
+        ];
+        #[cfg(windows)]
+        {
+            paths.push(local_crumbs(r"C:\"));
+            paths.push(local_crumbs(r"C:\Users\someone\Documents"));
+            paths.push(local_crumbs(""));
+        }
+        for crumbs in paths {
+            for width in (1..=400).map(|w| w as f32).chain([1_000.0, 100_000.0]) {
+                let (hidden, shown) = collapse_crumbs(&crumbs, width);
+                assert_eq!(shown.last(), crumbs.last(), "宽度 {width}：{crumbs:?}");
+                assert_eq!(hidden.len() + shown.len(), crumbs.len());
+                // 折叠掉的永远是前面的几级，显示的是连续的后半段。
+                assert_eq!([hidden.as_slice(), shown.as_slice()].concat(), crumbs);
+            }
+        }
+    }
+
     #[test]
     fn history_goes_back_and_forward_and_drops_the_forward_tail() {
         let mut history = NavHistory::default();

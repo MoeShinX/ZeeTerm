@@ -309,6 +309,10 @@ impl SftpDemo {
     }
 
     pub(super) fn refresh(&mut self, side: Side, cx: &mut Context<Self>) {
+        // 远端栏连接失败着（还没有路径可刷新）：刷新就是重新连接，见 `reconnect`。
+        if side == Side::Remote && self.retry_connect(cx) {
+            return;
+        }
         let path = self.pane(side).path.clone();
         match side {
             Side::Remote => {

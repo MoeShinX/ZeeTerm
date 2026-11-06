@@ -11,6 +11,8 @@
 //!   长路径加 `\\?\` 前缀，临时文件同样叫 `.zssh-part`。
 
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -126,6 +128,20 @@ pub trait FileEndpoint: Send + Sync {
 
     /// 源文件的修改时间 / 权限（上传本地文件、下载远端文件时都要读）。
     fn attributes<'a>(&'a self) -> EndpointFuture<'a, Result<FileAttributesPair, SftpError>>;
+
+    /// 提交（临时文件改名成最终名字）之前：让落地的文件权限不比源文件宽。
+    ///
+    /// 只有 Unix 上的本地端点有事做（下载的新文件默认是 `0666 & !umask`，常见的 0664，会比远端的
+    /// 0600 私钥宽；见 [`local::download_mode`]）。不管用户开没开「保留权限」都要做，所以不放在
+    /// `set_attributes` 里。`source_permissions` 是源文件的权限位，拿不到就 `None`（按默认权限）。
+    /// 其余端点默认什么也不做。
+    fn prepare_commit<'a>(
+        &'a self,
+        source_permissions: Option<u32>,
+    ) -> EndpointFuture<'a, Result<(), SftpError>> {
+        let _ = source_permissions;
+        Box::pin(async { Ok(()) })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +508,13 @@ impl FileEndpoint for LocalEndpoint {
                 if resume_len == 0 {
                     options.truncate(true);
                 }
+                // 传输中的临时文件只有自己能读写：源文件权限要到收尾才知道对应成什么（见
+                // `prepare_commit`），之前不能先按默认的 0664 暴露给同组 / 其他用户。
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600);
+                }
                 options.open(part)
             })
             .await
@@ -658,21 +681,51 @@ impl FileEndpoint for LocalEndpoint {
         })
     }
 
+    fn prepare_commit<'a>(
+        &'a self,
+        source_permissions: Option<u32>,
+    ) -> EndpointFuture<'a, Result<(), SftpError>> {
+        Box::pin(async move {
+            #[cfg(unix)]
+            {
+                let part = self.part_path();
+                let display = part.display().to_string();
+                let mode = local::download_mode(source_permissions, local::process_umask());
+                std::fs::set_permissions(&part, std::fs::Permissions::from_mode(mode))
+                    .map_err(|err| from_io(err, &display))?;
+            }
+            #[cfg(not(unix))]
+            let _ = source_permissions;
+            Ok(())
+        })
+    }
+
     fn set_attributes<'a>(
         &'a self,
         mtime: Option<u32>,
         permissions: Option<u32>,
     ) -> EndpointFuture<'a, Result<(), SftpError>> {
         Box::pin(async move {
-            // 权限位在 Windows 上只有"只读"这一位有意义；用 std 的权限接口。
             if let Some(mode) = permissions {
-                let readonly = mode & 0o200 == 0;
                 let path = local::long_path(&self.path);
                 let display = self.path.display().to_string();
-                let meta = std::fs::metadata(&path).map_err(|err| from_io(err, &display))?;
-                let mut perms = meta.permissions();
-                perms.set_readonly(readonly);
-                std::fs::set_permissions(&path, perms).map_err(|err| from_io(err, &display))?;
+                #[cfg(unix)]
+                {
+                    // 「保留权限」：和提交前一样的规则（不比远端宽、不比 umask 宽）。以前这里用
+                    // `set_readonly(false)`，在 Unix 上它会把三组写权限全打开，反而把文件放宽。
+                    let mode = local::download_mode(Some(mode), local::process_umask());
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+                        .map_err(|err| from_io(err, &display))?;
+                }
+                // 权限位在 Windows 上只有"只读"这一位有意义；用 std 的权限接口。
+                #[cfg(not(unix))]
+                {
+                    let readonly = mode & 0o200 == 0;
+                    let meta = std::fs::metadata(&path).map_err(|err| from_io(err, &display))?;
+                    let mut perms = meta.permissions();
+                    perms.set_readonly(readonly);
+                    std::fs::set_permissions(&path, perms).map_err(|err| from_io(err, &display))?;
+                }
             }
             // 修改时间：Windows 上要用 SetFileTime，这里用 std 的 File::set_modified（Rust 1.75+）。
             if let Some(mtime) = mtime {

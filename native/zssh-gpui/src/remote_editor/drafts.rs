@@ -852,7 +852,13 @@ mod tests {
             .file_name()
             .and_then(|name| name.to_str())
             .expect("文件名");
-        assert!(!name.to_ascii_uppercase().starts_with("CON."), "{name}");
+        if cfg!(windows) {
+            // `CON` 是 Windows 的保留设备名：不能照原样当文件名。
+            assert!(!name.to_ascii_uppercase().starts_with("CON."), "{name}");
+        } else {
+            // POSIX 上它是个普通名字，按下载同一套规则原样保留。
+            assert!(name.starts_with("CON.txt."), "{name}");
+        }
         assert_eq!(first.parent(), Some(dir.join("edit-recovered").as_path()));
         let _ = std::fs::remove_dir_all(&dir);
     }

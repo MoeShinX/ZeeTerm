@@ -359,6 +359,11 @@ impl MainWindow {
         self.docks.set_sftp_open_for(tab, open);
         if open {
             self.sync_docks(window, cx);
+            // 上一次连接失败后面板关掉又打开：再试一次（视图还留着，不重试就一直停在「还没连上」）。
+            let host = self.workspace.read(cx).active_host_id();
+            if let Some(view) = host.and_then(|host| self.docks.sftp.get(&host).cloned()) {
+                view.update(cx, |view, cx| view.retry_if_failed(cx));
+            }
             self.enforce_dock_layout(window, cx);
         }
         cx.notify();
@@ -640,6 +645,13 @@ impl MainWindow {
         // 又没有未结束传输的视图回收掉（连接回到池里）。
         // 标签关了 / 搬走了：它的文件面板开关记录一起清掉。
         self.docks.forget_dead_sftp_tabs(&live);
+        // 终端窗格眼下持有的连接递给这台主机的文件视图：首次连接失败的视图，等终端重连成功后
+        // 会用这条新连接自动重试一次（见 `sftp::reconnect`）。
+        if let Some((host_id, factory)) = active_origin.clone()
+            && let Some(view) = self.docks.sftp.get(&host_id).cloned()
+        {
+            view.update(cx, |view, cx| view.offer_factory(factory, cx));
+        }
         if self.docks.sftp_open_for(active_tab)
             && let Some((host_id, factory)) = active_origin
             && self.caps_of(host_id).sftp
