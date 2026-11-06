@@ -51,8 +51,11 @@ pub fn is_within(dir: &Path, path: &Path) -> bool {
 }
 
 /// 比较用的键。
+///
+/// 段与段之间用该平台的路径分隔符拼：Linux 上 `\` 是合法的文件名字符，用它拼的话 `/x/a\b`（一个文件）
+/// 和 `/x/a/b`（目录里的文件）会得到同一个键。
 pub fn key(path: &Path) -> String {
-    parts(path).join("\\")
+    parts(path).join(if cfg!(windows) { "\\" } else { "/" })
 }
 
 fn parts(path: &Path) -> Vec<String> {
@@ -185,6 +188,19 @@ mod tests {
             normalize(Path::new("C:evil.txt")),
             PathBuf::from("C:evil.txt")
         );
+    }
+
+    /// Linux 上反斜杠是普通的文件名字符：`/x/a\b`（一个文件）和 `/x/a/b` 不是同一个位置。
+    #[cfg(not(windows))]
+    #[test]
+    fn a_backslash_in_a_file_name_does_not_collide_with_a_subdirectory() {
+        let file_with_backslash = Path::new("/x/a\\b");
+        let nested = Path::new("/x/a/b");
+        assert!(!same_path(file_with_backslash, nested));
+        assert_ne!(key(file_with_backslash), key(nested));
+        assert!(key(nested).ends_with("x/a/b"));
+        assert!(!is_within(Path::new("/x/a"), file_with_backslash));
+        assert!(is_within(Path::new("/x/a"), nested));
     }
 
     #[cfg(windows)]
