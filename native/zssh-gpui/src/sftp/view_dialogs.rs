@@ -364,7 +364,7 @@ fn name_list(names: Vec<String>, more: Option<String>, tokens: &Tokens) -> Div {
         .border_1()
         .border_color(tokens.border)
         .bg(tokens.surface)
-        .font_family("Consolas")
+        .font_family(crate::fonts::mono_text_family())
         .text_xs()
         .children(names.into_iter().map(|name| div().truncate().child(name)))
         .children(more.map(|text| div().text_color(tokens.text_muted).child(text)))

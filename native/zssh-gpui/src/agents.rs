@@ -1371,7 +1371,7 @@ impl AgentsDemo {
             } else {
                 lines.push(
                     small(redact_paths(&install.path), muted)
-                        .font_family("Consolas")
+                        .font_family(crate::fonts::mono_text_family())
                         .into_any_element(),
                 );
             }
@@ -1568,7 +1568,7 @@ impl AgentsDemo {
                         .child(
                             div()
                                 .typo(Role::Caption, tokens)
-                                .font_family("Consolas")
+                                .font_family(crate::fonts::mono_text_family())
                                 .child(source),
                         )
                         .child(div().text_xs().child(format!(

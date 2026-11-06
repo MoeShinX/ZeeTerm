@@ -2058,7 +2058,7 @@ impl MainWindow {
                     .child(
                         div()
                             .text_xs()
-                            .font_family("Consolas")
+                            .font_family(crate::fonts::mono_text_family())
                             .text_color(if form.fingerprint.is_some() {
                                 tokens.text
                             } else {
