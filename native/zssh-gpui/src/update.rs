@@ -81,6 +81,12 @@ pub const SIGNING_UNCONFIGURED: &str = "更新签名未配置：这个构建还�
 pub(crate) fn signing_unconfigured() -> &'static str {
     crate::i18n::t(UpdateMsg::SigningUnconfigured)
 }
+
+/// macOS：还没有自动更新（关于页和更新窗口说的是同一句）。
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn macos_no_auto_update() -> &'static str {
+    crate::i18n::t(UpdateMsg::MacosNoAutoUpdate)
+}
 /// 安装包大小上限。清单里没有大小字段，用一个宽松但有限的值挡住"无限流"和撑满内存。
 const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
 /// 清单大小上限。
@@ -193,6 +199,9 @@ enum UpdateMsg {
     CreateDownloadClientFailedPrefix,
     PubkeyUnavailable,
     SigningUnconfigured,
+    /// 只有 macOS 构建会用到（还没有 macOS 的发布包，也不能装 Windows 的）。
+    #[cfg(any(target_os = "macos", test))]
+    MacosNoAutoUpdate,
     NoReleaseNotes,
     PackageLabel,
     PlatformLabel,
@@ -317,6 +326,10 @@ impl Msg for UpdateMsg {
             Self::CreateDownloadClientFailedPrefix => "创建下载客户端失败：",
             Self::PubkeyUnavailable => "内置的更新公钥不可用，无法校验更新包",
             Self::SigningUnconfigured => SIGNING_UNCONFIGURED, // i18n-allow: 与 e2e 测试共用的中文原文
+            #[cfg(any(target_os = "macos", test))]
+            Self::MacosNoAutoUpdate => {
+                "macOS 版暂不支持自动更新，也还没有 macOS 的发布包：ZeeTerm 不会下载或启动任何安装程序。"
+            }
             Self::NoReleaseNotes => "（无更新说明）",
             Self::PackageLabel => "安装包：",
             Self::PlatformLabel => "平台：",
@@ -465,6 +478,10 @@ impl Msg for UpdateMsg {
             }
             Self::SigningUnconfigured => {
                 "Update signing is not configured: this build has no update signing public key yet, so online updates are unavailable (no update will be downloaded or installed). Please download the latest installer from the release page."
+            }
+            #[cfg(any(target_os = "macos", test))]
+            Self::MacosNoAutoUpdate => {
+                "Automatic updates are not supported on macOS yet, and there is no macOS release package: ZeeTerm will not download or launch any installer."
             }
             Self::NoReleaseNotes => "(no release notes)",
             Self::PackageLabel => "Package: ",
@@ -1657,7 +1674,15 @@ async fn load_manifest_text(
 /// 读清单 + 选择包；读不到也算界面错误，不让窗口崩。
 ///
 /// 更新签名公钥是占位值时直接返回"更新签名未配置"，一个请求都不发。
+#[cfg_attr(target_os = "macos", allow(unreachable_code))]
 pub(crate) async fn check_for_update(current: &str) -> Checked {
+    // macOS：没有 macOS 的发布包；探测本机安装方式会退成 Windows，绝不能拿 Windows 的安装包来装。
+    // 一个请求都不发，自动检查也就什么都不会做。
+    #[cfg(target_os = "macos")]
+    {
+        let _ = current;
+        return Checked::failed(macos_no_auto_update());
+    }
     // 本机是怎么装的（Linux 上要问 dpkg，别占着界面线程，也别堵住 async 工作线程）。
     let platform = tokio::task::spawn_blocking(host_platform)
         .await
@@ -2437,6 +2462,15 @@ fn status_text(outcome: &Result<Option<Package>, UpdateError>, notes: Option<&st
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_macos_no_update_text_exists_in_both_languages() {
+        use crate::i18n::Msg as _;
+        let zh = super::UpdateMsg::MacosNoAutoUpdate.zh();
+        let en = super::UpdateMsg::MacosNoAutoUpdate.en();
+        assert!(zh.contains("不会下载") && en.contains("will not download"));
+        assert!(en.is_ascii(), "{en}");
+    }
     // 不写 `use super::*`：父模块 glob 进来的 `gpui_kit::test` 会盖掉内置的
     // `#[test]` 属性宏，展开时直接撞递归上限。
     use super::{

@@ -179,7 +179,14 @@ impl crate::i18n::Msg for AboutMsg {
 }
 
 /// 「检查更新」一行下面的说明。`signing_configured` 为假（公钥还是占位）时说明改成"更新签名未配置"。
+#[cfg_attr(target_os = "macos", allow(unreachable_code))]
 pub fn update_description(signing_configured: bool) -> &'static str {
+    // macOS 没有自动更新：说实话，不提更新窗口能下载什么。
+    #[cfg(target_os = "macos")]
+    {
+        let _ = signing_configured;
+        return crate::update::macos_no_auto_update();
+    }
     if signing_configured {
         crate::i18n::t(AboutMsg::UpdateReady)
     } else {
@@ -531,10 +538,13 @@ mod tests {
             assert!(product::AUTO_UPDATE_ENABLED);
         }
         let configured = update_description(true);
-        assert!(
-            configured.contains("更新窗口"),
-            "点「检查更新」打开更新窗口"
-        );
+        // macOS 没有自动更新，说明换成另一句（见 `macos_updates_are_called_unsupported`）。
+        if !cfg!(target_os = "macos") {
+            assert!(
+                configured.contains("更新窗口"),
+                "点「检查更新」打开更新窗口"
+            );
+        }
         assert!(!configured.contains("试用"));
         assert!(!auto_check_description().contains("试用"));
         assert!(
@@ -546,10 +556,27 @@ mod tests {
     #[test]
     fn an_unconfigured_update_key_is_called_out_instead_of_promising_updates() {
         let text = update_description(false);
-        assert_eq!(text, crate::update::signing_unconfigured());
-        assert!(text.contains("更新签名未配置"));
+        if !cfg!(target_os = "macos") {
+            assert_eq!(text, crate::update::signing_unconfigured());
+            assert!(text.contains("更新签名未配置"));
+        }
         // 界面上"配没配"和更新流程里拿不拿得到公钥是同一个判断。
         assert_eq!(signing_configured(), crate::update::update_pubkey().is_ok());
+    }
+
+    /// macOS：关于页不承诺自动更新，也不叫人去下载不存在的 macOS 安装包。
+    #[test]
+    fn macos_updates_are_called_unsupported() {
+        let text = crate::update::macos_no_auto_update();
+        assert!(
+            text.contains("macOS") && text.contains("不支持自动更新"),
+            "{text}"
+        );
+        assert!(!text.contains("Apple Silicon"), "{text}");
+        if cfg!(target_os = "macos") {
+            assert_eq!(update_description(true), text);
+            assert_eq!(update_description(false), text);
+        }
     }
 
     #[test]
