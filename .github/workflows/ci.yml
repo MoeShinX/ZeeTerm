@@ -103,6 +103,11 @@ jobs:
       - name: "原生 3/5 cargo test"
         run: cargo test --manifest-path native/Cargo.toml --workspace --locked
 
+      # 和本机 gates.ps1 的「原生 gate dev_hooks」一样：release 类配置（没有 debug_assertions）下，
+      # ZSSH_* 测试钩子必须读不到环境变量。发版工作流不再重跑门禁，这条检查只在这里。
+      - name: "原生 3b/5 release 配置下测试钩子关闭（dev_hooks）"
+        run: cargo test --manifest-path native/Cargo.toml -p zssh-gpui --profile gate --locked dev_hooks
+
       - name: "原生 4/5 cargo build --release"
         run: cargo build --manifest-path native/Cargo.toml --workspace --release --locked
 

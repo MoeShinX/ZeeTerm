@@ -75,14 +75,12 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
    ```
 
    tag 必须叫 `v<版本>`，并且指向已经在 `main` 上的提交。
-5. **看 Actions 页**的 Release 工作流。它依次做：
-   0. **Linux 任务先跑**（`linux`，ubuntu-22.04，不接触私钥，也不在 `release` 环境里）：校验 tag 和版本号 → Linux 门禁 `scripts/gates.sh` → `scripts/package-linux.sh` 做完整 release 编译并打出 deb + tar.gz（带 lintian、appstreamcli、`desktop-file-validate`、`ldd`、glibc 基线等自检）→ 在 `debian:12` 和 `ubuntu:22.04` 的干净容器里装一遍 deb → 上传为 artifact。它失败，下面的 Windows 任务不会开始，也就不会发布任何东西。详情见"Linux 包"一节。
-   1. 校验：tag 去掉 `v` 等于两个 `Cargo.toml` 的版本；检出的提交就是 tag 指向的提交且在 `main` 上；`docs/release-notes/<版本>.md` 存在；`updater.json` 的公钥不是占位值；这个 tag 的 Release 还不存在。
-   2. 装 Rust（按 `rust-toolchain.toml`），跑 `scripts/gates.ps1`（和本机同一套门禁；runner 上没有 `ZSSH_TEST_*`，联网用例会自己跳过）。门禁里 release 类的两步用 `gate` 配置（`Cargo.toml` 里 `inherits = "release"`，只差 LTO / 并行代码生成单元，`debug-assertions` 同为 false，测试钩子行为一致），为的是省编译时间；**安装包本身仍由第 3 步用完整的 release 编译**。
-   3. 装 NSIS，打安装包 `native/installer/build.ps1`；再取回 Linux 任务上传的 deb 和 tar.gz（核对文件名正好是这两个、不是空文件）。
-   4. 把 Secret 里的私钥写到 runner 临时目录的一个文件，调 `scripts/release-sign.ps1`（带 `-LinuxDebPath`、`-LinuxTarPath`）：核对 `updater.json` 的公钥与私钥是一对（对不上直接失败）→ 用**同一把私钥**给安装包、deb、tar.gz 各签一份名（签名里带 `version:` 和文件名）→ 生成 `latest.json`（`windows-x86_64` 加上 `linux-x86_64-deb`、`linux-x86_64-tar`）→ 用公钥按应用里的验签代码再验一遍 → 算 SHA-256，写 `SHA256SUMS.txt`（三个文件）和 Release 正文。
-   5. **无论成败都删掉临时私钥文件**（`if: always()` 的清理步骤）。
-   6. `gh release create`：上传安装包、deb、tar.gz、`latest.json`、`SHA256SUMS.txt`，标题 `ZeeTerm <版本>`，正文是更新说明加三个包各自的 SHA-256。同名 Release 已存在时失败，不覆盖。
+5. **看 Actions 页**的 Release 工作流。四个任务：
+   0. **校验**（`verify`，ubuntu）：tag 去掉 `v` 等于两个 `Cargo.toml` 的版本；tag 指向的提交在 `main` 上；`docs/release-notes/<版本>.md` 存在且不空；`updater.json` 的公钥不是占位值；这个 tag 的 Release 还不存在；**这个提交在 `main` 上的 CI（`ci.yml`）有一次已经通过**。门禁不在发版里重跑——CI 已经在 Windows、Linux、macOS 上对同一个提交跑过 fmt / clippy / test / 打包，所以第 3 步说的"等 CI 通过再打 tag"是硬性要求：CI 没跑完或失败时，这里直接失败，什么都不编译。
+   1. **Linux 包**（`linux`，ubuntu-22.04，不接触私钥）和 **Windows 安装包**（`windows`，windows-latest，不接触私钥）**并行**：各自做完整 release 编译；Linux 还在 `debian:12` 和 `ubuntu:22.04` 的干净容器里装一遍 deb；两边都上传为 artifact。详情见"Linux 包"一节。
+   2. **签名、发布**（`release`，windows-latest，`release` 环境，只有它拿得到私钥）：再校验一遍 tag / 版本 / 更新说明 / 公钥 / Release 不存在 → 取回三个包并核对文件名、不是空文件 → 把 Secret 里的私钥写到 runner 临时目录，调 `scripts/release-sign.ps1`（带 `-LinuxDebPath`、`-LinuxTarPath`）：核对 `updater.json` 的公钥与私钥是一对 → 用**同一把私钥**给安装包、deb、tar.gz 各签一份名（签名里带 `version:` 和文件名）→ 生成 `latest.json`（`windows-x86_64` 加上 `linux-x86_64-deb`、`linux-x86_64-tar`）→ 用公钥按应用里的验签代码再验一遍 → 算 SHA-256，写 `SHA256SUMS.txt` 和 Release 正文 → **无论成败都删掉临时私钥文件** → `gh release create` 上传五个文件（同名 Release 已存在时失败，不覆盖）。
+
+   以前（1.0.1 及之前）Linux 和 Windows 是串行的，而且各自重跑一遍门禁，一次发版约 1 小时 20 分钟；现在约 30–40 分钟，主要花在两边各自的完整 release 编译上。
 6. **下载核对**：从 Release 页下载安装包，`Get-FileHash` 对一下 `SHA256SUMS.txt`（Linux 包用 `sha256sum -c SHA256SUMS.txt --ignore-missing`）；再用一个旧版本程序点「设置 → 关于 → 检查更新」，确认能发现、下载并校验通过（不必点安装）。
 
 `latest.json` 里的下载地址是 `https://github.com/MoeShinX/ZeeTerm/releases/download/v<版本>/<安装包文件名>`，所以 tag 必须叫 `v<版本>`、安装包文件名不能改。程序读的更新源是 `https://github.com/MoeShinX/ZeeTerm/releases/latest/download/latest.json`（`native/zssh-update/updater.json` 的 `endpoints`），即最新 Release 里的 `latest.json`。
@@ -91,7 +89,8 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
 ### 失败了怎么办
 
-- **Linux 任务失败**：Windows 任务没有开始，什么都没发布。看日志里是门禁、打包自检（lintian、appstreamcli、glibc 基线）还是容器检查；修好合进 main 发补丁版本，或不改代码的话 *Re-run* 即可。
+- **校验任务失败**：什么都没编译。最常见的是 main 上的 CI 还没跑完或没通过：等 CI 通过后 *Re-run*（或 *Run workflow* 输入这个 tag）；CI 失败就修好合进 main，发新的补丁版本。
+- **Linux 或 Windows 编译任务失败**：签名发布任务不会开始，什么都没发布。看日志里是编译、打包自检（lintian、appstreamcli、glibc 基线）还是容器检查；修好合进 main 发补丁版本，或不改代码的话 *Re-run* 即可。
 - **工作流在"创建 Release"之前失败**：还没有发布任何东西。代码有问题就修好合进 main，**发新的补丁版本**（最稳，不用动 tag）；只是 runner 抽风、Secrets 没设好之类，不改代码的话，在 Actions 页对该次运行点 *Re-run*，或者 *Run workflow*（从 `main` 触发，输入已有的 tag，如 `v1.0.0`）。
 - **"创建 Release"失败或半途中断**：先到 Releases 页看有没有残留的 Release（含草稿）。有就整个删掉（附件一起），再重跑；没有就直接重跑。
 - **Release 已经发布了才发现有问题**：见下面"回滚与事故"，不要在同一版本号下替换附件，发新的补丁版本。
