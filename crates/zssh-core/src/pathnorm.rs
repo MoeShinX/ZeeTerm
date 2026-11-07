@@ -65,10 +65,13 @@ fn parts(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Windows 的文件名不分大小写；Linux 分（`File.txt` 和 `file.txt` 是两个文件），
+/// Windows 和 macOS 的文件名不分大小写；Linux 分（`File.txt` 和 `file.txt` 是两个文件），
 /// 在 Linux 上也折叠的话，粘贴 / 移动的冲突判断和"文件夹不能移进自己"会把不同的路径当成同一个。
+///
+/// macOS 的卷可以格式化成区分大小写（APFS 区分大小写），这里仍然按不分大小写处理：默认卷
+/// 就是不分的，按分的处理会让 `File` 和 `file` 被当成两个位置，最后在真实磁盘上互相覆盖。
 fn fold_case(text: &str) -> String {
-    if cfg!(windows) {
+    if cfg!(any(windows, target_os = "macos")) {
         text.to_lowercase()
     } else {
         text.to_owned()
@@ -167,7 +170,7 @@ mod tests {
     }
 
     /// Linux 的文件名区分大小写：只差大小写的是两个不同的路径。
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn unix_paths_that_differ_only_in_case_are_different() {
         let dir = crate::test_util::TestDir::new("pathnorm-case");
@@ -178,6 +181,24 @@ mod tests {
         assert!(!same_path(&upper, &lower));
         assert!(!is_within(&upper, &lower.join("x")));
         assert!(is_within(&upper, &upper.join("x")));
+        assert!(same_path(&upper.join("a/../b"), &upper.join("b")));
+    }
+
+    /// macOS 默认卷不分大小写：只差大小写的是同一个位置（和 Windows 一致）。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_paths_that_differ_only_in_case_are_the_same() {
+        let dir = crate::test_util::TestDir::new("pathnorm-case-macos");
+        let upper = dir.join("Folder");
+        let lower = dir.join("folder");
+        std::fs::create_dir_all(&upper).unwrap();
+        // 大小写不敏感的卷上，第二次建目录落到的就是同一个目录。
+        std::fs::create_dir_all(&lower).unwrap();
+        assert!(same_path(&upper, &lower));
+        assert!(
+            is_within(&lower, &upper.join("x")),
+            "小写写法的目录也算在里面"
+        );
         assert!(same_path(&upper.join("a/../b"), &upper.join("b")));
     }
 

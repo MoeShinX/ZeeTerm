@@ -38,10 +38,14 @@ pub(super) fn cross_device_note() -> &'static str {
 
 /// 比较用的路径键：远端按规范化的 POSIX 路径（区分大小写）；本地在 Windows 上按 Windows 规则
 /// （`/` 和 `\` 一样、不分大小写、没有 `\\?\` 前缀、盘符根带 `\`、没有末尾的 `\`），
-/// 在 Linux 上和远端一样按 POSIX（区分大小写，`\` 只是名字里的一个字符）。
+/// 在 Linux 上和远端一样按 POSIX（区分大小写，`\` 只是名字里的一个字符），
+/// 在 macOS 上按 POSIX 的写法但**不分大小写**（默认卷就是这样）。
 fn path_key(side: Side, path: &str) -> String {
     match side {
         Side::Local if cfg!(windows) => windows_path_key(path),
+        // macOS 的本地卷默认不分大小写：同一个位置的不同写法要当成同一个，
+        // 否则"把文件夹移进它自己"和"覆盖自己"的判断会漏。
+        Side::Local if cfg!(target_os = "macos") => normalize(path).to_lowercase(),
         Side::Remote | Side::Local => normalize(path),
     }
 }
@@ -759,7 +763,7 @@ mod tests {
         assert!(same_or_inside(Side::Remote, "/anything", "/"));
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn linux_local_paths_are_case_sensitive_posix_paths() {
         assert!(same_or_inside(Side::Local, "/work/sub", "/work"));
@@ -807,7 +811,65 @@ mod tests {
         assert!(!same_or_inside(Side::Local, "E:\\work", "D:\\work"));
     }
 
-    #[cfg(unix)]
+    /// macOS：POSIX 写法（`/` 是分隔符、反斜杠只是名字里的字符），但本地卷不分大小写。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_local_paths_are_posix_but_case_insensitive() {
+        assert!(same_or_inside(Side::Local, "/work/sub", "/work"));
+        assert!(same_or_inside(Side::Local, "/work//sub/", "/work/"));
+        assert!(same_or_inside(Side::Local, "/anything", "/"));
+        assert!(same_or_inside(Side::Local, "/", "/"));
+        assert!(!same_or_inside(Side::Local, "/workshop", "/work"));
+        // 不分大小写：只差大小写的是同一个目录。
+        assert!(same_or_inside(Side::Local, "/Work/sub", "/work"));
+        assert!(same_or_inside(Side::Local, "/work", "/Work"));
+        // 反斜杠不是分隔符。
+        assert!(!same_or_inside(Side::Local, r"/work\sub", "/work"));
+        assert!(same_or_inside(Side::Local, r"/work\sub/x", r"/work\sub"));
+        // 中文、空格。
+        assert!(same_or_inside(
+            Side::Local,
+            "/home/me/下载 目录/a",
+            "/home/me/下载 目录"
+        ));
+        assert!(super::same_path(Side::Local, "/a/b/", "/a//b"));
+        assert!(super::same_path(Side::Local, "/a/b", "/a/B"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn live_transfers_block_local_items_ignoring_case() {
+        use super::transfer_blocks as blocks;
+        use zssh_core::sftp::transfer::Direction::{Download, LocalCopy, Upload};
+        let local = Side::Local;
+        assert!(blocks(
+            local,
+            "/src",
+            Upload,
+            "/src/f.txt",
+            "/srv/app/f.txt"
+        ));
+        assert!(!blocks(
+            local,
+            "/other",
+            Upload,
+            "/src/f.txt",
+            "/srv/app/f.txt"
+        ));
+        assert!(blocks(local, "/dl", Download, "/srv/app", "/dl/app"));
+        assert!(blocks(local, "/a", LocalCopy, "/a/x", "/b/x"));
+        assert!(!blocks(local, "/c", LocalCopy, "/a/x", "/b/x"));
+        // 不分大小写：`/SRC` 就是 `/src`，正在进行的传输要挡住。
+        assert!(blocks(
+            local,
+            "/SRC",
+            Upload,
+            "/src/f.txt",
+            "/srv/app/f.txt"
+        ));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn live_transfers_block_local_items_by_posix_paths() {
         use super::transfer_blocks as blocks;
@@ -967,7 +1029,7 @@ mod tests {
             check_destination(Side::Local, &local_entries, "d:/WORK/"),
             DestCheck::SameFolder
         );
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_os = "macos")))]
         {
             assert_eq!(
                 check_destination(Side::Local, &local_entries, "/work/"),
@@ -981,6 +1043,18 @@ mod tests {
             assert_eq!(
                 check_destination(Side::Local, &local_entries, "/WORK"),
                 DestCheck::Ok("/WORK".to_owned())
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(
+                check_destination(Side::Local, &local_entries, "/work/"),
+                DestCheck::SameFolder
+            );
+            // 不分大小写：`/WORK` 就是 `/work`。
+            assert_eq!(
+                check_destination(Side::Local, &local_entries, "/WORK"),
+                DestCheck::SameFolder
             );
         }
     }
@@ -1012,7 +1086,7 @@ mod tests {
             check_destination(Side::Local, &local_dirs, "D:\\work\\Data\\x"),
             DestCheck::IntoSelf
         );
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_os = "macos")))]
         {
             assert_eq!(
                 check_destination(Side::Local, &local_dirs, "/work/data/x"),
@@ -1024,6 +1098,19 @@ mod tests {
             );
             // 区分大小写：`/work/Data/x` 不在 `/work/data` 里面。
             assert!(check_destination(Side::Local, &local_dirs, "/work/Data/x").is_ok());
+            assert!(check_destination(Side::Local, &local_dirs, "/work/data2").is_ok());
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // 不分大小写：`/work/Data/x` 就在 `/work/data` 里面。
+            assert_eq!(
+                check_destination(Side::Local, &local_dirs, "/work/Data/x"),
+                DestCheck::IntoSelf
+            );
+            assert_eq!(
+                check_destination(Side::Local, &local_dirs, "/work/data"),
+                DestCheck::IntoSelf
+            );
             assert!(check_destination(Side::Local, &local_dirs, "/work/data2").is_ok());
         }
     }

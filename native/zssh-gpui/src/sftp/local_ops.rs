@@ -283,7 +283,7 @@ mod tests {
     }
 
     /// Linux：没有“此电脑”，空路径就是 `/`；条目路径是 POSIX 的；`//` 开头的合法路径不会被当成 UNC。
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn linux_listing_has_no_this_pc_level_and_keeps_posix_paths() {
         let root = list_dir("").expect("空路径当作根目录");
@@ -319,8 +319,44 @@ mod tests {
         assert_eq!(doubled.len(), rows.len());
     }
 
+    /// macOS：没有“此电脑”，路径是 POSIX 的；卷不分大小写，`Docs` 和 `docs` 是同一个条目。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_listing_treats_case_only_names_as_one_entry() {
+        let root = list_dir("").expect("空路径当作根目录");
+        assert!(
+            root.iter()
+                .all(|row| row.path.starts_with('/') && row.kind != EntryKind::Drive)
+        );
+
+        let dir = Scratch::new("macos-listing");
+        std::fs::create_dir(dir.path().join("下载 目录")).expect("中文目录");
+        std::fs::create_dir(dir.path().join("a\\b")).expect("名字里带反斜杠的目录");
+        std::fs::write(dir.path().join("Docs"), b"x").expect("大写文件");
+        // 大小写不敏感的卷上，小写写法打开的就是 `Docs` 那个文件。
+        std::fs::write(dir.path().join("docs"), b"y").expect("小写写法是同一个文件");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).expect("列目录").count(),
+            3,
+            "大小写不同不是新条目"
+        );
+        let shown = dir.path().display().to_string();
+        let rows = list_dir(&shown).expect("列目录");
+        let mut names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["Docs", "a\\b", "下载 目录"]);
+        let backslash = rows
+            .iter()
+            .find(|row| row.name == "a\\b")
+            .expect("反斜杠目录");
+        assert_eq!(backslash.path, format!("{shown}/a\\b"));
+        assert_eq!(backslash.kind, EntryKind::Dir);
+        let doubled = list_dir(&format!("/{shown}")).expect("双斜杠路径");
+        assert_eq!(doubled.len(), rows.len());
+    }
+
     /// Linux：新建 / 改名对名字里的 Windows 字符、反斜杠一视同仁，大小写不同的两个名字可以共存。
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn linux_create_and_rename_accept_posix_names() {
         let dir = Scratch::new("posix-ops");
@@ -338,6 +374,36 @@ mod tests {
         // 目标已经有同名（区分大小写）条目：不覆盖。
         assert_eq!(
             rename(&dir.child("DOCS"), &dir.child("docs"))
+                .err()
+                .as_deref(),
+            Some("已经有同名的条目")
+        );
+    }
+
+    /// macOS：名字里的 `:`、`*`、`?`、`\` 都是合法字符（非法字符规则仍按 POSIX），
+    /// 但只差大小写的名字是同一个条目 —— 新建会报重名，改名也按重名处理（和 Windows 一致）。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_create_and_rename_fold_case_like_windows() {
+        let dir = Scratch::new("macos-ops");
+        for name in ["a\\b", "x:y*z?", "报告 终稿"] {
+            mkdir(&dir.child(name)).unwrap_or_else(|err| panic!("{name:?}: {err}"));
+        }
+        mkdir(&dir.child("Docs")).expect("建目录");
+        assert_eq!(
+            mkdir(&dir.child("docs")).err().as_deref(),
+            Some("已经有同名的条目"),
+            "只差大小写是同一个目录"
+        );
+        assert_eq!(
+            list_dir(&dir.path().display().to_string())
+                .expect("列目录")
+                .len(),
+            4
+        );
+        // 只想改大小写也当成重名：和 Windows 现在的行为一致（目标"已经存在"）。
+        assert_eq!(
+            rename(&dir.child("Docs"), &dir.child("DOCS"))
                 .err()
                 .as_deref(),
             Some("已经有同名的条目")

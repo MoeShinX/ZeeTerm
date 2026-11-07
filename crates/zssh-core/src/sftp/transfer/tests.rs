@@ -588,7 +588,7 @@ async fn download_writes_local_files_with_clean_names() {
 
 /// 下载方向（Linux）：Windows 才有的限制不适用，这些名字原样落盘；只有控制字符被换掉并注明；
 /// 只差大小写的两个文件是两个文件。
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 #[tokio::test]
 async fn download_keeps_posix_file_names_as_they_are() {
     let root = temp_root("download-posix");
@@ -654,6 +654,89 @@ async fn download_keeps_posix_file_names_as_they_are() {
             .notes
             .iter()
             .any(|note| note.contains("保留名") || note.contains("只差大小写")),
+        "{:?}",
+        report.notes
+    );
+}
+
+/// 下载方向（macOS）：卷不分大小写，远端同时有 `File` 和 `file` 时两个都要落下来——
+/// 后一个改成带序号的本地名字，不能互相覆盖。POSIX 里合法的名字（`:`、`?`、`\`）照旧保留，
+/// 只有控制字符换成 `_` 并注明。
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn download_keeps_both_files_whose_names_differ_only_by_case_on_macos() {
+    let root = temp_root("download-macos-case");
+    let local_dir = root.join("downloads");
+    std::fs::create_dir_all(&local_dir).unwrap();
+
+    let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+    for (name, body) in [
+        ("File", &b"upper"[..]),
+        ("file", b"lower"),
+        ("weird:name?.txt", b"bbb"),
+        ("bell\u{7}.txt", b"fff"),
+    ] {
+        endpoints.put_remote(&format!("/remote/dir/{name}"), body.to_vec());
+    }
+
+    let (engine, mut events) =
+        TransferEngine::new(endpoints.clone(), Arc::new(OverwriteAll), local_options());
+    let id = engine.submit(TransferJob {
+        direction: Direction::Download,
+        source: "/remote/dir".to_owned(),
+        target: local_dir.display().to_string(),
+        recursive: true,
+        peer: None,
+    });
+    let report = drain_until_finished(&mut events, id, Duration::from_secs(20)).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+
+    // 两个文件都在，内容各自正确：谁拿到原名取决于列目录顺序，所以不假设具体是谁。
+    let mut contents: Vec<Vec<u8>> = std::fs::read_dir(&local_dir)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            std::fs::read(entry.path()).unwrap()
+        })
+        .collect();
+    contents.sort();
+    assert_eq!(
+        contents,
+        vec![
+            b"bbb".to_vec(),
+            b"fff".to_vec(),
+            b"lower".to_vec(),
+            b"upper".to_vec()
+        ],
+        "两个只差大小写的文件都要落下来，不能互相覆盖"
+    );
+    let names: Vec<String> = std::fs::read_dir(&local_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        names.iter().any(|name| name == "File" || name == "file"),
+        "{names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .any(|name| name == "File (2)" || name == "file (2)"),
+        "后一个要带序号改名：{names:?}"
+    );
+    // POSIX 的非法字符规则不变：`:` 和 `?` 原样，控制字符换成 `_` 并注明。
+    assert!(
+        names.iter().any(|name| name == "weird:name?.txt"),
+        "{names:?}"
+    );
+    assert!(names.iter().any(|name| name == "bell_.txt"), "{names:?}");
+    assert!(
+        report.notes.iter().any(|note| note.contains("只差大小写")),
+        "{:?}",
+        report.notes
+    );
+    assert!(
+        report.notes.iter().any(|note| note.contains("非法字符")),
         "{:?}",
         report.notes
     );

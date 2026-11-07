@@ -222,8 +222,10 @@ pub(super) fn validate_name(name: &str, side: Side) -> NameCheck {
 }
 
 /// 名字已经被这个目录里的别的条目用了吗（不分大小写；Linux 的本地栏区分大小写）。
+///
+/// macOS 的本地卷默认也不分大小写，所以和 Windows 一样折叠；只有 Linux 按原样比。
 pub(super) fn name_taken(side: Side, name: &str, existing: &[String]) -> bool {
-    if side == Side::Local && !cfg!(windows) {
+    if side == Side::Local && !cfg!(any(windows, target_os = "macos")) {
         let wanted = name.trim();
         return existing.iter().any(|other| other == wanted);
     }
@@ -427,7 +429,15 @@ mod tests {
         assert!(!name_taken(Side::Remote, "x", &[]));
         #[cfg(windows)]
         assert!(name_taken(Side::Local, " readme.MD ", &existing));
-        #[cfg(unix)]
+        // macOS 的本地卷默认不分大小写，和 Windows 一样折叠。
+        #[cfg(target_os = "macos")]
+        {
+            assert!(name_taken(Side::Local, " readme.MD ", &existing));
+            assert!(name_taken(Side::Local, " Readme.md ", &existing));
+            assert!(name_taken(Side::Local, "src", &existing));
+        }
+        // Linux 的本地栏区分大小写。
+        #[cfg(all(unix, not(target_os = "macos")))]
         {
             assert!(!name_taken(Side::Local, " readme.MD ", &existing));
             assert!(name_taken(Side::Local, " Readme.md ", &existing));

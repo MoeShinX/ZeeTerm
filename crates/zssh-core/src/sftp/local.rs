@@ -391,9 +391,12 @@ impl LocalNamePlan {
     }
 }
 
-/// 比较两个本地名字用的写法：Windows 不分大小写，折成小写；Linux 区分大小写，原样。
+/// 比较两个本地名字用的写法：Windows 和 macOS 不分大小写，折成小写；Linux 区分大小写，原样。
+///
+/// macOS 的卷可以格式化成区分大小写，这里仍按不分大小写处理：默认卷就是不分的，按分的处理
+/// 会让只想差一个大小写的两个远端文件落到同一个本地文件上，后写的把先写的盖掉。
 fn fold_case(name: &str) -> String {
-    if cfg!(windows) {
+    if cfg!(any(windows, target_os = "macos")) {
         name.to_lowercase()
     } else {
         name.to_owned()
@@ -1428,7 +1431,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn names_that_differ_only_by_case_do_not_clash() {
         let plan = LocalNamePlan::plan(
@@ -1466,6 +1469,43 @@ mod tests {
         assert_eq!(plan.assignments[1].1.name, "Data");
     }
 
+    /// macOS 默认卷不分大小写：同一批里只差大小写的名字会撞，后面的加序号；
+    /// 本地已有的条目按不分大小写比较，类型不同也要改名。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn names_that_differ_only_by_case_clash_on_macos() {
+        let plan = LocalNamePlan::plan(
+            &["File".to_owned(), "file".to_owned(), "FILE".to_owned()],
+            &["Other".to_owned()],
+        );
+        let names: Vec<&str> = plan
+            .assignments
+            .iter()
+            .map(|(_, local)| local.name.as_str())
+            .collect();
+        assert_eq!(names, ["File", "file (2)", "FILE (3)"]);
+        assert!(plan.assignments[1].1.note.is_some(), "改名要写进任务说明");
+
+        // 完全相同的名字照样加序号（和 Linux 一致）。
+        let plan = LocalNamePlan::plan(&["a.txt".to_owned(), "a.txt".to_owned()], &[]);
+        assert_eq!(plan.assignments[1].1.name, "a (2).txt");
+
+        // 已有名字按不分大小写避开：`A (2).txt` 已经占了 `a (2).txt`。
+        let plan = LocalNamePlan::plan(
+            &["a.txt".to_owned(), "a.txt".to_owned()],
+            &["A (2).txt".to_owned()],
+        );
+        assert_eq!(plan.assignments[1].1.name, "a (3).txt");
+
+        // 类型不同的同名条目（不分大小写）也要换名字。
+        let plan = LocalNamePlan::plan_with_kinds(
+            &[("logs".to_owned(), true), ("Data".to_owned(), true)],
+            &[("logs".to_owned(), false), ("data".to_owned(), false)],
+        );
+        assert_eq!(plan.assignments[0].1.name, "logs (2)");
+        assert_eq!(plan.assignments[1].1.name, "Data (2)");
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_child_name_on_posix_only_rejects_slash_nul_and_dots() {
@@ -1491,7 +1531,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn ensure_inside_on_posix_is_case_sensitive_and_allows_colons() {
         let root = Path::new("/tmp/zt-out");
@@ -1523,8 +1563,41 @@ mod tests {
         );
     }
 
+    /// macOS：只有大小写比较跟 Windows 走；非法字符仍按 POSIX（`:`、`\`、`?` 都是合法名字）。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ensure_inside_on_macos_folds_case_and_allows_colons() {
+        let root = Path::new("/tmp/zt-out");
+        for ok in [
+            "/tmp/zt-out/a.txt",
+            "/tmp/zt-out/a:b.log",
+            "/tmp/zt-out/a\\b.txt",
+            "/tmp/zt-out/sub/notes?.txt",
+            "/tmp/ZT-OUT/a.txt",
+        ] {
+            assert!(ensure_inside(root, Path::new(ok)).is_ok(), "{ok}");
+        }
+        for bad in [
+            "/tmp/zt-out",
+            "/tmp/zt-out/../x",
+            "/tmp/other/a.txt",
+            "/tmp/zt-outside.txt",
+        ] {
+            assert!(ensure_inside(root, Path::new(bad)).is_err(), "{bad}");
+        }
+        // 传输锁的键不分大小写：`File` 和 `file` 是同一个文件，必须共用一把锁。
+        assert_eq!(
+            lexical_key(Path::new("/tmp/zt-out/File")),
+            lexical_key(Path::new("/tmp/zt-out/file"))
+        );
+        assert_eq!(
+            lexical_key(Path::new("/tmp/zt-out/./a/../File")),
+            lexical_key(Path::new("/tmp/zt-out/File"))
+        );
+    }
+
     /// 端到端：落到真实磁盘上，`a:b.log`、`File` 与 `file` 各是一个文件。
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn posix_download_targets_are_distinct_files_on_disk() {
         let root = crate::test_util::TestDir::new("local-posix-names");
@@ -1535,6 +1608,35 @@ mod tests {
             assert!(seen.insert(target));
         }
         assert_eq!(std::fs::read_dir(&*root).unwrap().count(), 4);
+    }
+
+    /// macOS：只差大小写的两个远端名字落到同一个本地文件上，第二次新建要报"已存在"，
+    /// 不能悄悄覆盖；POSIX 里合法的 `:`、`\` 照常保留（不套 Windows 的非法字符规则）。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_download_targets_treat_case_only_names_as_one_file() {
+        let root = crate::test_util::TestDir::new("local-macos-names");
+        let upper = download_target(&root, "/srv/File").expect("落点");
+        let lower = download_target(&root, "/srv/file").expect("落点");
+        assert_eq!(
+            lexical_key(&upper),
+            lexical_key(&lower),
+            "只差大小写是同一个文件"
+        );
+        create_new_file(&upper).expect("第一次落盘");
+        assert!(
+            create_new_file(&lower).is_err(),
+            "同一个文件，第二次不能当成新文件新建"
+        );
+        for remote in ["/srv/a:b.log", "/srv/a\\b.txt"] {
+            let target = download_target(&root, remote).expect("落点");
+            assert_eq!(
+                target.file_name().unwrap(),
+                remote.trim_start_matches("/srv/")
+            );
+            create_new_file(&target).expect("冒号和反斜杠在 macOS 上是合法名字");
+        }
+        assert_eq!(std::fs::read_dir(&*root).unwrap().count(), 3);
     }
 
     #[test]
