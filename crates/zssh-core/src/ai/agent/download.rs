@@ -16,6 +16,8 @@ pub const WINDOWS_X64_ASSET: &str = "opencode-windows-x64.zip";
 pub const LINUX_X64_ASSET: &str = "opencode-linux-x64.tar.gz";
 /// Linux x64 的 baseline 版：CPU 不支持 AVX2 时官方脚本选它（`/proc/cpuinfo` 里没有 `avx2`）。
 pub const LINUX_X64_BASELINE_ASSET: &str = "opencode-linux-x64-baseline.tar.gz";
+/// macOS Apple Silicon：zip，里面是不带扩展名的 `opencode`。
+pub const MACOS_ARM64_ASSET: &str = "opencode-darwin-arm64.zip";
 /// 下载地址必须在 GitHub 上（Release 资产的直链都是这个前缀，之后的重定向由 GitHub 发起）。
 const DOWNLOAD_URL_PREFIX: &str = "https://github.com/";
 /// 资产大小上限：远大于真实包（几十 MiB），只防一个异常的响应把磁盘写满。
@@ -113,7 +115,15 @@ pub fn platform_asset_name() -> Result<&'static str, String> {
             LINUX_X64_BASELINE_ASSET
         })
     }
-    #[cfg(not(any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        Ok(MACOS_ARM64_ASSET)
+    }
+    #[cfg(not(any(
+        windows,
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    )))]
     {
         Err("这个平台没有 opencode 官方一键下载包，请手动安装并在设置里指定路径".to_string())
     }
@@ -327,6 +337,17 @@ pub fn extract_exe(zip_path: &Path, out_dir: &Path) -> Result<PathBuf, String> {
 
 /// 同 [`extract_exe`]，解出来的文件超过 `limit` 字节就删掉并报错。
 fn extract_exe_limited(zip_path: &Path, out_dir: &Path, limit: u64) -> Result<PathBuf, String> {
+    extract_zip_named(zip_path, out_dir, limit, "opencode.exe")
+}
+
+/// 从 zip 里解出名叫 `executable` 的那一个文件到 `out_dir`（平铺）。macOS 的包里是不带扩展名的
+/// `opencode`，解出来要能直接运行，所以 Unix 上设成 0755。
+fn extract_zip_named(
+    zip_path: &Path,
+    out_dir: &Path,
+    limit: u64,
+    executable: &str,
+) -> Result<PathBuf, String> {
     let file = std::fs::File::open(zip_path).map_err(|e| format!("打开压缩包失败：{e}"))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("压缩包损坏或格式不对：{e}"))?;
@@ -341,16 +362,16 @@ fn extract_exe_limited(zip_path: &Path, out_dir: &Path, limit: u64) -> Result<Pa
         let is_exe = name
             .file_name()
             .and_then(|n| n.to_str())
-            .map(|n| n.eq_ignore_ascii_case("opencode.exe"))
+            .map(|n| n.eq_ignore_ascii_case(executable))
             .unwrap_or(false);
         if !is_exe {
             continue;
         }
         std::fs::create_dir_all(out_dir).map_err(|e| format!("创建目录失败：{e}"))?;
-        let dest = out_dir.join("opencode.exe");
+        let dest = out_dir.join(executable);
         if entry.size() > limit {
             return Err(format!(
-                "压缩包里的 opencode.exe 声称有 {} 字节，超过上限 {limit} 字节，没有解压",
+                "压缩包里的 {executable} 声称有 {} 字节，超过上限 {limit} 字节，没有解压",
                 entry.size()
             ));
         }
@@ -362,13 +383,19 @@ fn extract_exe_limited(zip_path: &Path, out_dir: &Path, limit: u64) -> Result<Pa
             drop(out);
             let _ = std::fs::remove_file(&dest);
             return Err(format!(
-                "解出来的 opencode.exe 超过上限 {limit} 字节，已删除"
+                "解出来的 {executable} 超过上限 {limit} 字节，已删除"
             ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            out.set_permissions(std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| format!("设置执行权限失败：{e}"))?;
         }
         return Ok(dest);
     }
     Err(format!(
-        "压缩包里没有 opencode.exe（{}）",
+        "压缩包里没有 {executable}（{}）",
         zip_path.display()
     ))
 }
@@ -381,6 +408,13 @@ pub fn extract_binary(archive_path: &Path, out_dir: &Path) -> Result<PathBuf, St
         .is_some_and(|name| name.ends_with(".tar.gz"));
     if is_tar_gz {
         extract_tar_gz_binary(archive_path, out_dir, MAX_EXTRACTED_BYTES)
+    } else if cfg!(target_os = "macos") {
+        extract_zip_named(
+            archive_path,
+            out_dir,
+            MAX_EXTRACTED_BYTES,
+            installed_binary_name(),
+        )
     } else {
         extract_exe(archive_path, out_dir)
     }

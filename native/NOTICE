@@ -98,6 +98,19 @@ all MIT or Apache-2.0 (or both). unicode-width 0.2 (MIT or Apache-2.0, already
 in the tree through the terminal core) is now also a direct dependency of
 zssh-gpui, used to lay out the input method's pre-edit text in terminal cells.
 
+block 0.1.6 (macOS Metal / Objective-C blocks, native/vendor/block-0.1.6)
+  https://github.com/SSheldon/rust-block
+  Author: Steven Sheldon. License: MIT, as declared in the original manifest.
+  Vendored from the published crates.io archive, SHA-256:
+  0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a
+  Local patch replaces an uninhabited opaque FFI enum with an inhabited
+  repr(C) struct and makes the existing C ABI explicit. No lint suppression.
+  The original archive has no standalone license text; LICENSE-MIT supplies
+  the standard MIT text with manifest author attribution. PROVENANCE and
+  verify-source.py record and verify the precise original source and patch.
+  The macOS dependency path is gpui-kit -> gpui-pre-platform -> gpui-pre-macos
+  -> gpui-pre-apple -> metal 0.33.0 -> block 0.1.6.
+
 SQLite (database engine, compiled into executable)
   https://sqlite.org/
   The bundled SQLite amalgamation (enabled by libsqlite3-sys's "bundled"

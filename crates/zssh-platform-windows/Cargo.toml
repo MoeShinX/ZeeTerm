@@ -14,6 +14,11 @@ zeroize = "1"
 # 单实例的激活套接字要核对对端 uid（SO_PEERCRED），标准库还没有稳定的接口。
 libc = "0.2"
 
+# macOS 的系统界面语言（NSLocale.preferredLanguages）：Finder 启动的程序没有 LANG 可看。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSLocale", "NSString"] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",

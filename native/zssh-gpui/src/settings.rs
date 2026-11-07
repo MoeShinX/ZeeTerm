@@ -384,7 +384,11 @@ pub fn try_data_dir() -> Option<PathBuf> {
             known_roaming_appdata,
         )
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        resolve_data_dir_macos(std::env::var_os("ZSSH_DATA_DIR"), std::env::home_dir())
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         resolve_data_dir_xdg(
             std::env::var_os("ZSSH_DATA_DIR"),
@@ -421,7 +425,9 @@ pub fn ensure_data_dir_or_exit() {
 fn exit_without_data_dir() -> ! {
     #[cfg(windows)]
     tracing::error!("找不到数据目录：APPDATA 和系统的漫游应用数据文件夹都不可用");
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    tracing::error!("找不到数据目录：家目录不可用");
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     tracing::error!("找不到数据目录：XDG_DATA_HOME 和家目录都不可用");
     show_fatal(no_data_dir_message());
     std::process::exit(1);
@@ -437,7 +443,16 @@ fn no_data_dir_message() -> &'static str {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn no_data_dir_message() -> &'static str {
+    if zssh_platform_windows::locale::system_is_chinese() {
+        "ZeeTerm 找不到保存数据的位置（找不到当前用户的家目录，~/Library/Application Support 不可用），为避免把凭据和主机写进会被清理的临时目录，程序已退出。\n\n请确认当前用户的家目录可用；如果需要指定位置，可以设置环境变量 ZSSH_DATA_DIR。" // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
+    } else {
+        "ZeeTerm cannot find a place to keep its data (the home folder of the current user cannot be found, so ~/Library/Application Support is unavailable). To avoid putting credentials and hosts in a temporary folder that may be cleaned up, ZeeTerm has exited.\n\nCheck that your home folder is available, or set the ZSSH_DATA_DIR environment variable to choose a location."
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 fn no_data_dir_message() -> &'static str {
     if zssh_platform_windows::locale::system_is_chinese() {
         "ZeeTerm 找不到保存数据的位置（XDG_DATA_HOME 没有设置，也找不到当前用户的家目录），为避免把凭据和主机写进会被清理的临时目录，程序已退出。\n\n请从应用菜单正常启动，或检查 HOME 环境变量；如果需要指定位置，可以设置环境变量 ZSSH_DATA_DIR。" // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
@@ -554,7 +569,7 @@ fn resolve_data_dir(
 /// 选数据目录（Linux 等）：`ZSSH_DATA_DIR` 优先（空串当没设）；其次 `$XDG_DATA_HOME/ZeeTerm`，
 /// 规范要求它是绝对路径，空的或相对的一律忽略；最后 `~/.local/share/ZeeTerm`。
 /// 家目录也不是绝对路径（`HOME` 被设成怪东西）就没有数据目录，不退回临时目录。
-#[cfg(not(windows))]
+#[cfg(any(all(not(windows), not(target_os = "macos")), all(unix, test)))]
 fn resolve_data_dir_xdg(
     override_dir: Option<std::ffi::OsString>,
     xdg_data_home: Option<std::ffi::OsString>,
@@ -572,6 +587,23 @@ fn resolve_data_dir_xdg(
                 .map(|home| home.join(".local").join("share"))
         })
         .map(|base| base.join(crate::product::DATA_DIR_NAME))
+}
+
+/// 选数据目录（macOS）：`ZSSH_DATA_DIR` 优先（空字符串当没设），否则
+/// `~/Library/Application Support/ZeeTerm`；家目录必须是绝对路径，拿不到就是 `None`（不退回临时目录）。
+#[cfg(any(target_os = "macos", all(unix, test)))]
+fn resolve_data_dir_macos(
+    override_dir: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(dir) = override_dir.filter(|dir| !dir.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    home.filter(|home| home.is_absolute()).map(|home| {
+        home.join("Library")
+            .join("Application Support")
+            .join(crate::product::DATA_DIR_NAME)
+    })
 }
 
 /// [`secure_private_dir`] 做了什么。
@@ -890,6 +922,30 @@ mod tests {
         assert_eq!(xdg(None, Some(""), Some("/home/u")), default);
         assert_eq!(xdg(None, Some("relative/dir"), Some("/home/u")), default);
         assert_eq!(xdg(None, Some("~/.data"), Some("/home/u")), default);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn macos_data_dir_is_under_application_support() {
+        assert_eq!(
+            resolve_data_dir_macos(None, Some(PathBuf::from("/Users/u"))),
+            Some(PathBuf::from(
+                "/Users/u/Library/Application Support/ZeeTerm"
+            ))
+        );
+        // 环境变量优先，空的当没设；家目录不是绝对路径或拿不到：没有数据目录。
+        assert_eq!(
+            resolve_data_dir_macos(Some("/isolated".into()), Some(PathBuf::from("/Users/u"))),
+            Some(PathBuf::from("/isolated"))
+        );
+        assert_eq!(
+            resolve_data_dir_macos(Some("".into()), Some(PathBuf::from("/Users/u"))),
+            Some(PathBuf::from(
+                "/Users/u/Library/Application Support/ZeeTerm"
+            ))
+        );
+        assert_eq!(resolve_data_dir_macos(None, Some(PathBuf::from("u"))), None);
+        assert_eq!(resolve_data_dir_macos(None, None), None);
     }
 
     #[cfg(unix)]

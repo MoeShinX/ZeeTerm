@@ -130,9 +130,15 @@ fn shell_open_on_this_thread(url: &str) -> Result<(), String> {
 ///
 /// 不等 `xdg-open` 退出（有的桌面它会一直挂到浏览器关掉），也不让它继承我们的标准输入输出
 /// （终端里启动时它的输出会糊进日志）；另起一个线程回收子进程，免得留下僵尸进程。
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "macos")))]
 pub(crate) fn shell_open(url: &str) -> Result<(), String> {
     spawn_detached(std::ffi::OsStr::new("xdg-open"), &[url])
+}
+
+/// macOS：交给系统自带的 `/usr/bin/open`（绝对路径，不靠 PATH），同样不等它退出。
+#[cfg(target_os = "macos")]
+pub(crate) fn shell_open(url: &str) -> Result<(), String> {
+    spawn_detached(std::ffi::OsStr::new("/usr/bin/open"), &[url])
 }
 
 /// 启动一个不等待、不接管标准输入输出的子进程。

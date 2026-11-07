@@ -626,6 +626,13 @@ fn known_dirs(spec: &AgentSpec, env: &EnvView) -> Vec<PathBuf> {
     out.extend(env.home_dir(".bun/bin"));
     out.extend(env.dir_of("VOLTA_HOME", "bin"));
     out.extend(env.home_dir(".volta/bin"));
+    // macOS：Homebrew（Apple Silicon 在 /opt/homebrew，Intel 在 /usr/local）。从 Finder 启动时
+    // PATH 里没有它们。
+    #[cfg(target_os = "macos")]
+    out.extend([
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ]);
 
     // 官方安装脚本 / 独立安装包（每个智能体自己的位置）。
     for (base, sub) in spec.unix_extra_bins {

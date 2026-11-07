@@ -17,16 +17,21 @@
 //! - 预编辑（拼音还没选字）→ `replace_and_mark_text_in_range`；清空预编辑 → 空串 / `unmark_text` /
 //!   `replace_text_in_range(Some(标记范围), "")`。预编辑只存在本地、画在光标处，**不发给远端**。
 //!
-//! 只在 Linux 上注册（[`INPUT_HANDLER_ENABLED`]）：Windows 走"聚焦终端时把输入法切成英文"，行为不变。
+//! macOS（gpui-pre-macos 0.3.10）的顺序同样成立：没有在组合、也没有激活中文 / 日文这类输入源时，带字符的按键
+//! 先作为 `KeyDown` 交给终端，监听器拦下（`propagate` 为假）就不再交给 `insertText`；激活了输入源且
+//! [`accepts_text_input`](EntityInputHandler::accepts_text_input) 为真时，可打印键先交给输入法，提交走
+//! `insertText` → `replace_text_in_range`，预编辑走 `setMarkedText` → `replace_and_mark_text_in_range`。
+//!
+//! 只在 Linux 和 macOS 上注册（[`INPUT_HANDLER_ENABLED`]）：Windows 走"聚焦终端时把输入法切成英文"，行为不变。
 
 use super::*;
 use ::gpui::{ElementInputHandler, EntityInputHandler, UTF16Selection};
 use std::ops::Range;
 use unicode_width::UnicodeWidthChar as _;
 
-/// 终端要不要注册文字输入处理器。只有 Linux 要：Windows 的输入法由 `crate::ime` 切成英文，不经过这里。
-/// 写成常量而不是 `#[cfg]`，两个平台都编译同一份代码（Windows 上不注册，也就永远不会被调用）。
-pub(super) const INPUT_HANDLER_ENABLED: bool = cfg!(target_os = "linux");
+/// 终端要不要注册文字输入处理器。Linux 和 macOS 要：Windows 的输入法由 `crate::ime` 切成英文，不经过这里。
+/// 写成常量而不是 `#[cfg]`，各平台都编译同一份代码（Windows 上不注册，也就永远不会被调用）。
+pub(super) const INPUT_HANDLER_ENABLED: bool = cfg!(any(target_os = "linux", target_os = "macos"));
 
 /// 输入法还没提交的文字（拼音等）。只记本地，不发给远端。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -606,8 +611,11 @@ mod gpui_tests {
     }
 
     #[test]
-    fn only_linux_registers_the_input_handler() {
-        assert_eq!(INPUT_HANDLER_ENABLED, cfg!(target_os = "linux"));
+    fn only_linux_and_macos_register_the_input_handler() {
+        assert_eq!(
+            INPUT_HANDLER_ENABLED,
+            cfg!(any(target_os = "linux", target_os = "macos"))
+        );
     }
 
     #[gpui::test]
@@ -621,7 +629,10 @@ mod gpui_tests {
         let registered = window
             .update(cx, |workspace, _, _| workspace.ime_input)
             .expect("window");
-        assert_eq!(registered, cfg!(target_os = "linux"));
+        assert_eq!(
+            registered,
+            cfg!(any(target_os = "linux", target_os = "macos"))
+        );
     }
 
     #[gpui::test]

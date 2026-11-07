@@ -591,6 +591,8 @@ impl MainWindow {
                     .min_w_0()
                     .h_full()
                     .items_end()
+                    // macOS 的系统红黄绿画在左上角，这里让出它们的宽度，别被返回按钮压住。
+                    .when(cfg!(target_os = "macos"), |row| row.pl(px(72.0)))
                     .map(window_frame::drag_region)
                     .child(left.items_end())
                     .child(tabs)
@@ -924,44 +926,48 @@ pub(crate) fn window_controls_with(
     h_flex()
         .h_full()
         .flex_none()
-        // 服务端装饰：窗口管理器已经画了一组，这里一个都不放。
-        .when(chrome != window_frame::Chrome::Server, |row| {
-            row.when(
-                chrome == window_frame::Chrome::Native || shown.minimize,
-                |row| {
-                    row.child(button(
-                        "win-min",
-                        WindowControlArea::Min,
-                        IconName::WindowMinimize,
-                        false,
-                        |window, _cx| window.minimize_window(),
-                    ))
-                },
-            )
-            .when(
-                with_maximize && (chrome == window_frame::Chrome::Native || shown.maximize),
-                |row| {
-                    row.child(button(
-                        "win-max",
-                        WindowControlArea::Max,
-                        if maximized {
-                            IconName::WindowRestore
-                        } else {
-                            IconName::WindowMaximize
-                        },
-                        false,
-                        |window, _cx| window.zoom_window(),
-                    ))
-                },
-            )
-            .child(button(
-                "win-close",
-                WindowControlArea::Close,
-                IconName::WindowClose,
-                true,
-                window_frame::request_close,
-            ))
-        })
+        // 服务端装饰：窗口管理器已经画了一组，这里一个都不放。macOS 同理：系统自己的红黄绿就在
+        // 左上角，再画一组 Windows 风格的按钮就成了两套最小化 / 关闭。
+        .when(
+            chrome != window_frame::Chrome::Server && !cfg!(target_os = "macos"),
+            |row| {
+                row.when(
+                    chrome == window_frame::Chrome::Native || shown.minimize,
+                    |row| {
+                        row.child(button(
+                            "win-min",
+                            WindowControlArea::Min,
+                            IconName::WindowMinimize,
+                            false,
+                            |window, _cx| window.minimize_window(),
+                        ))
+                    },
+                )
+                .when(
+                    with_maximize && (chrome == window_frame::Chrome::Native || shown.maximize),
+                    |row| {
+                        row.child(button(
+                            "win-max",
+                            WindowControlArea::Max,
+                            if maximized {
+                                IconName::WindowRestore
+                            } else {
+                                IconName::WindowMaximize
+                            },
+                            false,
+                            |window, _cx| window.zoom_window(),
+                        ))
+                    },
+                )
+                .child(button(
+                    "win-close",
+                    WindowControlArea::Close,
+                    IconName::WindowClose,
+                    true,
+                    window_frame::request_close,
+                ))
+            },
+        )
 }
 
 #[cfg(test)]

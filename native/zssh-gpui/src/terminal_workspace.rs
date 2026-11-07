@@ -1394,7 +1394,7 @@ pub struct TerminalWorkspace {
     ime_key: String,
     /// 光标闪烁的相位时钟。
     cursor_blink: BlinkClock,
-    /// 终端有没有注册文字输入处理器（只有 Linux 注册，见 `ime_ops`）：决定带字符的按键处理完要不要拦下事件。
+    /// 终端有没有注册文字输入处理器（Linux 和 macOS 注册，见 `ime_ops`）：决定带字符的按键处理完要不要拦下事件。
     ime_input: bool,
     /// 输入法还没提交的文字（拼音等），只画在光标处，不发给远端。
     ime_preedit: ime_ops::Preedit,
@@ -2906,7 +2906,7 @@ impl TerminalWorkspace {
 
     // ---- 键盘 ----
 
-    /// 按键入口：处理交给 [`Self::handle_key_down`]，之后在注册了文字输入处理器的平台（Linux，见 `ime_ops`）
+    /// 按键入口：处理交给 [`Self::handle_key_down`]，之后在注册了文字输入处理器的平台（Linux、macOS，见 `ime_ops`）
     /// 上拦下带字符的按键。窗口层在 `KeyDown` 没被拦下时，还会把 `key_char` 当文字再交给输入处理器插一遍，
     /// 不拦就会让每个字符发两次。终端没有焦点（别的输入框有焦点）时不拦，让那个输入框自己收。
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -3039,11 +3039,17 @@ impl TerminalWorkspace {
         // - Ctrl+V / Ctrl+Shift+V 粘贴；
         // - Ctrl+C 有选区才复制，没有选区继续发 ^C；
         // - Ctrl+Shift+C 没有选区时吞掉，不能把 ^C 发给远端。
-        if ctrl && key.eq_ignore_ascii_case("v") {
+        // macOS 上复制粘贴是 Cmd+C / Cmd+V；Ctrl+C 必须继续发给远端（中断），不能被抢。
+        let copy_mod = if cfg!(target_os = "macos") {
+            keystroke.modifiers.platform
+        } else {
+            ctrl
+        };
+        if copy_mod && key.eq_ignore_ascii_case("v") {
             self.request_paste(window, cx);
             return;
         }
-        if ctrl && key.eq_ignore_ascii_case("c") {
+        if copy_mod && key.eq_ignore_ascii_case("c") {
             let selected = self.selected_text();
             match crate::selection::copy_key_action(&selected, shift) {
                 crate::selection::CopyKey::Copy => {

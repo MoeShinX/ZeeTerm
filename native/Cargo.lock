@@ -814,8 +814,6 @@ dependencies = [
 [[package]]
 name = "block"
 version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a"
 
 [[package]]
 name = "block-buffer"
@@ -10985,6 +10983,8 @@ name = "zssh-platform-windows"
 version = "0.3.5"
 dependencies = [
  "libc",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
  "tracing",
  "windows 0.62.2",
  "zeroize",

@@ -681,7 +681,40 @@ pub fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
-#[cfg(all(unix, not(target_os = "linux")))]
+/// macOS：`renamex_np(RENAME_EXCL)`，同样由系统在改名那一刻拒绝已有目标，文件夹也行。
+/// exFAT / FAT 外置盘、部分网络盘不支持这个标志（`ENOTSUP` / `EINVAL`）时退到
+/// [`move_no_replace_fallback`]。
+#[cfg(target_os = "macos")]
+pub fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    // `<stdio.h>` 里的 RENAME_EXCL。
+    const RENAME_EXCL: libc::c_uint = 0x0000_0004;
+    unsafe extern "C" {
+        fn renamex_np(
+            from: *const libc::c_char,
+            to: *const libc::c_char,
+            flags: libc::c_uint,
+        ) -> libc::c_int;
+    }
+    let as_c = |path: &Path| {
+        CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
+    };
+    let (c_from, c_to) = (as_c(from)?, as_c(to)?);
+    // SAFETY: 两个路径都是以 0 结尾的 C 字符串，调用期间一直活着；标志是常量。
+    let result = unsafe { renamex_np(c_from.as_ptr(), c_to.as_ptr(), RENAME_EXCL) };
+    if result == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::ENOTSUP | libc::EINVAL) => move_no_replace_fallback(from, to),
+        _ => Err(err),
+    }
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 pub fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
     move_no_replace_fallback(from, to)
 }
