@@ -243,7 +243,14 @@ mod tests {
         .await
         .expect("下载并解压");
         server.abort();
-        assert_eq!(exe, dir.join(download::installed_binary_name()));
+        // 解出来的名字跟着压缩包走：Windows / Linux 测试用的桩是 Windows 包（`opencode.exe`），
+        // macOS 用 macOS 包（不带扩展名的 `opencode`）。
+        let expected = if cfg!(target_os = "macos") {
+            "opencode"
+        } else {
+            "opencode.exe"
+        };
+        assert_eq!(exe, dir.join(expected));
         assert!(exe.is_file());
         assert!(!dir.join("opencode-download.zip").exists(), "压缩包要删掉");
         let last = progress.last().copied().expect("至少回调一次进度");
