@@ -403,6 +403,10 @@ mod tests {
             // 最保守的一种：不拉起 root 授权框，写不了就改手动安装。
             assert_eq!(fallback, Platform::Linux(Flavor::Tar));
             assert_eq!(fallback.keys(), [zssh_update::PLATFORM_LINUX_TAR]);
+        } else if cfg!(target_os = "macos") {
+            // macOS 只提醒、不安装：退回去也绝不能变成 Windows（那会去下 Windows 安装包）。
+            assert_eq!(fallback, Platform::MacOs);
+            assert!(fallback.keys().is_empty());
         } else {
             assert_eq!(fallback, Platform::Windows);
         }
