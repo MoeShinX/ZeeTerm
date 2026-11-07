@@ -23,7 +23,7 @@
   <a href="https://github.com/MoeShinX/ZeeTerm/releases/latest"><strong>下载</strong></a> ·
   <a href="README.md">English</a> ·
   <a href="https://t.me/ZeeTerm">Telegram 群</a> ·
-  <a href="https://zeeterm.app/">官网 · 筹备中</a> ·
+  <a href="https://zeeterm.app/zh/">官网</a> ·
   <a href="CHANGELOG.md">更新日志</a>
 </p>
 
@@ -178,7 +178,7 @@ scripts/package-linux.sh
 ## 💬 社区与项目入口
 
 - **[Telegram · ZeeTerm 交流群](https://t.me/ZeeTerm)**：使用交流、问题反馈与建议。
-- **[zeeterm.app 官网](https://zeeterm.app/)**：目前筹备中，后续开发。现阶段请通过 GitHub 下载程序和查看项目文档。
+- **[zeeterm.app 官网](https://zeeterm.app/zh/)**：使用说明和更新记录；安装包在 GitHub Releases 发布。
 - **[GitHub Issues](https://github.com/MoeShinX/ZeeTerm/issues)**：提交问题或功能建议，请附上应用版本、复现步骤，以及已脱敏的截图或日志。
 - **[更新日志](CHANGELOG.md)**：查看版本历史与近期变化。
 

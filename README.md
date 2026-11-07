@@ -23,7 +23,7 @@
   <a href="https://github.com/MoeShinX/ZeeTerm/releases/latest"><strong>Download</strong></a> ·
   <a href="README.zh-CN.md">简体中文</a> ·
   <a href="https://t.me/ZeeTerm">Telegram</a> ·
-  <a href="https://zeeterm.app/">Website · coming soon</a> ·
+  <a href="https://zeeterm.app/">Website</a> ·
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
@@ -178,7 +178,7 @@ See [AGENTS.md](AGENTS.md) for development conventions and isolated test-data re
 ## 💬 Community & project links
 
 - **[Telegram · ZeeTerm](https://t.me/ZeeTerm)** — Questions, feedback, and discussion.
-- **[zeeterm.app](https://zeeterm.app/)** — The project website is planned; development is coming later. GitHub remains the source for downloads and project documentation.
+- **[zeeterm.app](https://zeeterm.app/)** — Project website with the user guide and changelog. Downloads are published on GitHub Releases.
 - **[GitHub Issues](https://github.com/MoeShinX/ZeeTerm/issues)** — Bug reports and feature requests. Include the app version, reproduction steps, and sanitized screenshots or logs.
 - **[Changelog](CHANGELOG.md)** — Release history and recent changes.
 
