@@ -29,8 +29,9 @@ use crate::settings_nav::SettingsSection;
 use crate::settings_view::{card, row};
 use crate::typography::{Role, Typo as _, UiFontStyled as _};
 
-/// Linux：设置页「安全与锁定」里那一块"密码保管方式"的文案（Windows 用 DPAPI，没有这一块）。
-#[cfg(target_os = "linux")]
+/// Linux / macOS：设置页「安全与锁定」里那一块"密码保管方式"的文案（Windows 用 DPAPI，没有这一块）。
+/// 两个平台说法不同的几条（钥匙串叫什么、密钥为什么会找不到）按平台给。
+#[cfg(unix)]
 #[derive(Clone, Copy, Debug)]
 enum KeyStoreMsg {
     CardTitle,
@@ -52,27 +53,40 @@ enum KeyStoreMsg {
     ResetDone,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl Msg for KeyStoreMsg {
     fn zh(&self) -> &'static str {
         match *self {
             Self::CardTitle => "已保存密码的保管方式",
             Self::RowTitle => "加密密钥保存在",
+            Self::InKeyring if cfg!(target_os = "macos") => "macOS 钥匙串",
             Self::InKeyring => "系统钥匙串",
+            Self::InKeyringDetail if cfg!(target_os = "macos") => {
+                "已保存的密码和私钥口令用一把本机密钥加密；这把密钥放在 macOS 钥匙串（登录钥匙串）里，由钥匙串保护。"
+            }
             Self::InKeyringDetail => {
                 "已保存的密码和私钥口令用一把本机密钥加密；这把密钥放在系统钥匙串（Secret Service）里，由钥匙串保护。"
             }
             Self::InFile => "本机文件",
+            Self::InFileDetail if cfg!(target_os = "macos") => {
+                "数据目录里有 vault.key 文件，加密密钥就用它，只靠文件权限（仅当前用户可读）保护，比系统钥匙串弱。ZeeTerm 在 macOS 上不会新建这个文件。"
+            }
             Self::InFileDetail => {
                 "没有找到系统钥匙串服务，加密密钥放在数据目录的 vault.key 文件里，只靠文件权限（仅当前用户可读）保护，比系统钥匙串弱。之后即使装上钥匙串服务，也会继续使用这个文件。"
             }
             Self::Loading => "正在检查…",
             Self::LoadingDetail => "正在向系统钥匙串确认加密密钥。",
             Self::Failed => "暂时读不到",
+            Self::FailedDetail if cfg!(target_os = "macos") => {
+                "没能取得加密密钥（钥匙串被锁住，或访问授权被拒绝 / 取消）。保存和查看密码会失败，请解锁钥匙串后重试，系统询问时选择允许；不会自动改用本机文件。"
+            }
             Self::FailedDetail => {
                 "没能取得加密密钥（钥匙串被锁住、解锁被取消或服务出错）。保存和查看密码会失败，请解锁系统钥匙串后重试；不会自动改用本机文件。"
             }
             Self::KeyMissing => "钥匙串里找不到密钥",
+            Self::KeyMissingDetail if cfg!(target_os = "macos") => {
+                "macOS 钥匙串里找不到 ZeeTerm 的密钥——可能把数据目录拷到了另一台 Mac、换了用户，或重置过钥匙串。已保存的密码解不开。如果换回原来的 Mac / 用户就能找回，请先试试；确认找不回了，可以重置已保存的密码，之后重新输入。"
+            }
             Self::KeyMissingDetail => {
                 "系统钥匙串里找不到 ZeeTerm 的密钥——可能换了桌面环境、换了用户，或重置过钥匙串。已保存的密码解不开。如果换回原来的桌面环境 / 用户就能找回，请先试试；确认找不回了，可以重置已保存的密码，之后重新输入。"
             }
@@ -90,21 +104,34 @@ impl Msg for KeyStoreMsg {
         match *self {
             Self::CardTitle => "Saved-password storage",
             Self::RowTitle => "Encryption key is kept in",
+            Self::InKeyring if cfg!(target_os = "macos") => "macOS Keychain",
             Self::InKeyring => "System keyring",
+            Self::InKeyringDetail if cfg!(target_os = "macos") => {
+                "Saved passwords and key passphrases are encrypted with a local key. That key is kept in the macOS Keychain (the login keychain), which protects it."
+            }
             Self::InKeyringDetail => {
                 "Saved passwords and key passphrases are encrypted with a local key. That key is kept in the system keyring (Secret Service), which protects it."
             }
             Self::InFile => "Local file",
+            Self::InFileDetail if cfg!(target_os = "macos") => {
+                "The data folder contains a vault.key file, so the encryption key is taken from it. It is protected only by file permissions (readable by the current user only), which is weaker than the system keyring. ZeeTerm never creates this file on macOS."
+            }
             Self::InFileDetail => {
                 "No system keyring service was found, so the encryption key is kept in the vault.key file in the data folder. It is protected only by file permissions (readable by the current user only), which is weaker than the system keyring. The file keeps being used even if a keyring service is installed later."
             }
             Self::Loading => "Checking…",
             Self::LoadingDetail => "Checking the encryption key with the system keyring.",
             Self::Failed => "Not readable right now",
+            Self::FailedDetail if cfg!(target_os = "macos") => {
+                "The encryption key could not be obtained (the keychain is locked, or access was denied or cancelled). Saving and viewing passwords will fail until you unlock the keychain and retry, choosing Allow when macOS asks; ZeeTerm will not switch to a local file by itself."
+            }
             Self::FailedDetail => {
                 "The encryption key could not be obtained (the keyring is locked, unlocking was cancelled, or the service failed). Saving and viewing passwords will fail until you unlock the system keyring and retry; ZeeTerm will not switch to a local file by itself."
             }
             Self::KeyMissing => "Key not found in the keyring",
+            Self::KeyMissingDetail if cfg!(target_os = "macos") => {
+                "ZeeTerm's key is not in the macOS Keychain (the data folder may have been copied to another Mac, the user may have changed, or the keychain was reset), so saved passwords cannot be decrypted. If switching back to the original Mac or user brings it back, try that first; if it is really gone, you can reset the saved passwords and enter them again."
+            }
             Self::KeyMissingDetail => {
                 "ZeeTerm's key is not in the system keyring (the desktop environment or user may have changed, or the keyring was reset), so saved passwords cannot be decrypted. If switching back to the original desktop environment or user brings it back, try that first; if it is really gone, you can reset the saved passwords and enter them again."
             }
@@ -549,10 +576,10 @@ pub fn forgot_step(check: OsCheck) -> ForgotStep {
     }
 }
 
-/// Linux：「密码保管方式」一块——加密已保存密码的密钥现在放在系统钥匙串还是本机文件里。
+/// Linux / macOS：「密码保管方式」一块——加密已保存密码的密钥现在放在系统钥匙串还是本机文件里。
 /// 状态来自启动时的后台预热（见 `zssh_core::store::secrets::warm_up_vault`），这里只读不触发加载。
 /// 钥匙串里找不到密钥时多一行「重置已保存的密码」（确认之后才会清）。
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn key_store_card(tokens: &Tokens, entity: &Entity<MainWindow>) -> AnyElement {
     use zssh_core::store::secrets::{KeyBackend, KeyState, key_state};
 
@@ -597,7 +624,7 @@ fn key_store_card(tokens: &Tokens, entity: &Entity<MainWindow>) -> AnyElement {
     )
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl MainWindow {
     /// 弹确认框；确认后才真的清（见 [`Self::do_reset_saved_credentials`]）。
     pub(super) fn ask_reset_saved_credentials(&mut self, cx: &mut Context<Self>) {
@@ -1400,7 +1427,7 @@ impl MainWindow {
             ));
         }
 
-        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut blocks = vec![
             card(
                 "settings-lock",
@@ -1417,7 +1444,7 @@ impl MainWindow {
                 auto_rows,
             ),
         ];
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         blocks.push(key_store_card(tokens, &entity));
         blocks
     }
@@ -1814,7 +1841,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[test]
     fn the_key_store_card_texts_exist_in_both_languages() {
         use crate::i18n::Msg as _;

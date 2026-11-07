@@ -48,8 +48,8 @@ pub enum ConfirmAction {
     CloseSftpTab(u64),
     /// AI 面板的执行模式切到「全部放行」。
     AllowAllCommands,
-    /// Linux：钥匙串里找不到资料库密钥时，清掉所有已保存的密码并重来（设置页「重置已保存的密码」）。
-    #[cfg(target_os = "linux")]
+    /// Linux / macOS：钥匙串里找不到资料库密钥时，清掉所有已保存的密码并重来（设置页「重置已保存的密码」）。
+    #[cfg(unix)]
     ResetSavedCredentials,
 }
 
@@ -622,7 +622,7 @@ impl MainWindow {
             }
             ConfirmAction::CloseSftpTab(id) => self.do_close_sftp_tab(id, window, cx),
             ConfirmAction::AllowAllCommands => self.do_allow_all_commands(cx),
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             ConfirmAction::ResetSavedCredentials => self.do_reset_saved_credentials(window, cx),
         }
         self.focus_content(window, cx);

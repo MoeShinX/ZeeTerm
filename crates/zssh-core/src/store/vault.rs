@@ -1,6 +1,6 @@
-//! Linux 本机秘密：随机资料库密钥 + XChaCha20-Poly1305。
+//! Linux / macOS 本机秘密：随机资料库密钥 + XChaCha20-Poly1305。
 //!
-//! Windows 继续用 DPAPI；Linux 没有等价的内核用户绑定能力，所以按方案 3.2：
+//! Windows 继续用 DPAPI；Linux / macOS 没有等价的内核用户绑定能力，所以按方案 3.2：
 //! - 生成 32 字节随机资料库密钥；
 //! - 密文留在 SQLite 的 `secret_blob` 列，格式带 magic、版本和随机 nonce；
 //! - 密钥的存放顺序（`load_or_create`）：
@@ -17,6 +17,14 @@
 //! 钥匙串**被锁住 / 用户拒绝 / 超时 / 别的错误**一律明确报错，绝不降级到文件：否则用户在解锁
 //! 对话框里点一次"取消"，应用就悄悄把密钥换成一份弱保护的文件，之后又和钥匙串里那把分叉。
 //! 单元测试用固定测试密钥验证加解密本身；生产路径始终走 `load_or_create`。
+//!
+//! # macOS
+//!
+//! 同一套流程，"系统钥匙串"换成 macOS 的登录钥匙串（keyring 的 apple-native 后端，传统的文件型
+//! 钥匙串），服务名 / 条目名和 Linux 一样。一个系统用户一把密钥，密钥身份不放在 `zssh.db` 里：
+//! 库坏了、重建了，备份和草稿照样能解。macOS 上登录钥匙串总是在的，没有"服务不存在"这一类，
+//! 所以不会新建 `vault.key`（数据目录里已经有的照常优先使用）；锁住 / 授权被拒绝或取消一律报错。
+//! 钥匙串里找不到、而 `vault.keyring` 标记在：进入 [`KeyState::KeyMissing`]，不悄悄新建。
 
 use std::path::Path;
 #[cfg(not(test))]
@@ -261,6 +269,10 @@ fn vault_key() -> Result<Key, ZsshError> {
         loader()
             .get(LOAD_TIMEOUT, || {
                 let dir = lock(&DATA_DIR).clone();
+                #[cfg(all(target_os = "macos", debug_assertions))]
+                if memory_store_enabled() {
+                    return load_or_create(dir.as_deref(), &MemoryStore);
+                }
                 load_or_create(dir.as_deref(), &SecretServiceStore)
             })
             .map_err(ZsshError::Secret)
@@ -515,11 +527,9 @@ fn load_or_create_locked(dir: Option<&Path>, store: &dyn KeyringStore) -> LoadRe
         }
         // 钥匙串在、条目不见了，而这个数据目录以前明明把密钥放进过钥匙串：不能悄悄新建一把——
         // 新建的那把解不开旧密文，回到原来的桌面环境时又会各自损坏一部分。让用户明确决定要不要重置。
-        Ok(None) if dir.is_some_and(|dir| dir.join(KEYRING_MARKER).exists()) => Err(Reason::new(
-            rk::VAULT_KEY_MISSING,
-            "系统钥匙串里找不到 ZeeTerm 的密钥（可能换了桌面环境、换了用户，或重置过钥匙串），\
-             已保存的密码解不开。为了不再造成分叉，没有自动新建密钥；需要的话可以在设置里重置已保存的密码",
-        )),
+        Ok(None) if dir.is_some_and(|dir| dir.join(KEYRING_MARKER).exists()) => {
+            Err(Reason::new(rk::VAULT_KEY_MISSING, KEY_MISSING_TEXT))
+        }
         Ok(None) => {
             let mut key = Zeroizing::new([0u8; KEY_LEN]);
             rand::rng().fill(&mut *key);
@@ -581,6 +591,15 @@ fn mark_keyring(dir: Option<&Path>) {
         tracing::warn!(%err, "记录「密钥在系统钥匙串里」失败");
     }
 }
+
+/// 钥匙串里找不到密钥时的说明（按平台说可能的原因）。
+#[cfg(not(target_os = "macos"))]
+const KEY_MISSING_TEXT: &str =
+    "系统钥匙串里找不到 ZeeTerm 的密钥（可能换了桌面环境、换了用户，或重置过钥匙串），\
+     已保存的密码解不开。为了不再造成分叉，没有自动新建密钥；需要的话可以在设置里重置已保存的密码";
+#[cfg(target_os = "macos")]
+const KEY_MISSING_TEXT: &str = "macOS 钥匙串里找不到 ZeeTerm 的密钥（可能把数据目录拷到了另一台 Mac、换了用户，\
+     或重置过钥匙串），已保存的密码解不开。为了不再造成分叉，没有自动新建密钥；需要的话可以在设置里重置已保存的密码";
 
 fn store_failure(err: StoreError, no_dir: bool) -> Reason {
     let (key, zh) = match err.kind {
@@ -732,9 +751,35 @@ fn create_key_file(dir: &Path) -> Result<Key, Reason> {
 // ---------------------------------------------------------------------------
 
 /// keyring 的 Entry 是同步阻塞 API：只在 `KeyLoader` 的工作线程里调用，
-/// 不能放在 GPUI 主线程或 Tokio worker 上等 D-Bus。
+/// 不能放在 GPUI 主线程或 Tokio worker 上等 D-Bus / 钥匙串授权框。
+/// 名字沿用 Linux 的说法；macOS 上 keyring 的默认后端就是登录钥匙串。
 #[cfg(not(test))]
 struct SecretServiceStore;
+
+/// 调试构建专用：`ZSSH_VAULT_MEMORY=1` 时用进程内的内存"钥匙串"（macOS 上跑集成测试和原生测试时用，
+/// 不碰用户真实的登录钥匙串）。发行版里没有这条路径（AGENTS.md 的测试钩子约定）。
+#[cfg(all(target_os = "macos", debug_assertions))]
+fn memory_store_enabled() -> bool {
+    std::env::var_os("ZSSH_VAULT_MEMORY").is_some_and(|value| value == "1")
+}
+
+#[cfg(all(target_os = "macos", debug_assertions, not(test)))]
+struct MemoryStore;
+
+#[cfg(all(target_os = "macos", debug_assertions, not(test)))]
+static MEMORY_ENTRY: Mutex<Option<String>> = Mutex::new(None);
+
+#[cfg(all(target_os = "macos", debug_assertions, not(test)))]
+impl KeyringStore for MemoryStore {
+    fn get(&self) -> Result<Option<String>, StoreError> {
+        Ok(lock(&MEMORY_ENTRY).clone())
+    }
+
+    fn set(&self, value: &str) -> Result<(), StoreError> {
+        *lock(&MEMORY_ENTRY) = Some(value.to_owned());
+        Ok(())
+    }
+}
 
 #[cfg(not(test))]
 impl SecretServiceStore {
@@ -770,6 +815,7 @@ fn from_keyring(err: keyring::Error) -> StoreError {
 ///
 /// keyring 把 Secret Service 的错误装在 `PlatformFailure` / `NoStorageAccess` 的盒子里；
 /// 这里按 `secret_service::Error` 的变体判断，认不出来的一律算 `Other`（报错而不是降级）。
+#[cfg(target_os = "linux")]
 fn classify(err: &keyring::Error) -> FailureKind {
     use secret_service::Error as Ss;
 
@@ -786,7 +832,41 @@ fn classify(err: &keyring::Error) -> FailureKind {
     }
 }
 
+/// macOS：keyring 把 Security 框架的错误装在 `PlatformFailure`（`security_framework::base::Error`）里，
+/// `NoStorageAccess` 是它认出来的"没有可用钥匙串 / 只读 / 钥匙串不存在或损坏"。都不降级到文件：
+/// 登录钥匙串在 macOS 上总是在的，连不上就是出了问题，新建一把会和原来那把分叉。
+#[cfg(target_os = "macos")]
+fn classify(err: &keyring::Error) -> FailureKind {
+    match err {
+        keyring::Error::PlatformFailure(inner) => inner
+            .downcast_ref::<security_framework::base::Error>()
+            .map_or(FailureKind::Other, |inner| classify_status(inner.code())),
+        _ => FailureKind::Other,
+    }
+}
+
+/// Security 框架的状态码里，"钥匙串被锁住且不让弹框 / 用户在授权框里拒绝或取消"算 `Locked`，其余算 `Other`。
+/// 找不到条目（errSecItemNotFound）keyring 已经变成 `NoEntry`，不会到这里。
+#[cfg(any(target_os = "macos", test))]
+fn classify_status(status: i32) -> FailureKind {
+    /// errSecUserCanceled：用户在授权框里点了取消。
+    const USER_CANCELED: i32 = -128;
+    /// errSecAuthFailed：授权框里点了"拒绝"，或输错了钥匙串密码。
+    const AUTH_FAILED: i32 = -25293;
+    /// errSecInteractionNotAllowed：钥匙串锁着、当前又不允许弹框（例如没有图形会话）。
+    const INTERACTION_NOT_ALLOWED: i32 = -25308;
+    /// errSecInteractionRequired：需要用户交互才能继续。
+    const INTERACTION_REQUIRED: i32 = -25315;
+    match status {
+        USER_CANCELED | AUTH_FAILED | INTERACTION_NOT_ALLOWED | INTERACTION_REQUIRED => {
+            FailureKind::Locked
+        }
+        _ => FailureKind::Other,
+    }
+}
+
 /// D-Bus 层的错误里，"总线上没有人提供 org.freedesktop.secrets"（也包括总线 socket 连不上）算没有服务。
+#[cfg(target_os = "linux")]
 fn classify_bus_error(debug: &str) -> FailureKind {
     const MISSING: [&str; 4] = [
         "ServiceUnknown",
@@ -801,7 +881,7 @@ fn classify_bus_error(debug: &str) -> FailureKind {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
@@ -1098,6 +1178,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn keyring_errors_are_classified_by_what_they_mean() {
         let boxed = |err: secret_service::Error| keyring::Error::PlatformFailure(Box::new(err));
@@ -1134,6 +1215,43 @@ mod tests {
         );
         assert_eq!(
             classify_bus_error("Failure(\"disk full\")"),
+            FailureKind::Other
+        );
+    }
+
+    /// macOS 的状态码分类是纯函数：在 Linux 上也跑，保证"取消 / 拒绝 / 锁住"不会被当成别的。
+    #[test]
+    fn macos_keychain_statuses_are_classified_by_what_they_mean() {
+        for locked in [-128, -25293, -25308, -25315] {
+            assert_eq!(classify_status(locked), FailureKind::Locked, "{locked}");
+        }
+        // errSecMissingEntitlement、errSecDuplicateItem、errSecIO：报错，不降级、不当成锁住。
+        for other in [-34018, -25299, -36, 0] {
+            assert_eq!(classify_status(other), FailureKind::Other, "{other}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keyring_errors_are_classified_by_what_they_mean_on_macos() {
+        let boxed = |status: i32| {
+            keyring::Error::PlatformFailure(Box::new(security_framework::base::Error::from_code(
+                status,
+            )))
+        };
+        assert_eq!(classify(&boxed(-128)), FailureKind::Locked);
+        assert_eq!(classify(&boxed(-25293)), FailureKind::Locked);
+        assert_eq!(classify(&boxed(-34018)), FailureKind::Other);
+        assert_eq!(
+            classify(&keyring::Error::NoStorageAccess(Box::new(
+                security_framework::base::Error::from_code(-25294)
+            ))),
+            FailureKind::Other,
+            "钥匙串不存在也不能降级到文件"
+        );
+        assert_eq!(classify(&keyring::Error::NoEntry), FailureKind::Other);
+        assert_eq!(
+            classify(&keyring::Error::PlatformFailure("boom".into())),
             FailureKind::Other
         );
     }

@@ -15,7 +15,7 @@ pub mod protocols;
 pub mod proxies;
 pub mod secrets;
 pub mod settings;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 mod vault;
 
 pub use db::Database;

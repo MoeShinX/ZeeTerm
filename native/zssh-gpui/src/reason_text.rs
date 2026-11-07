@@ -177,6 +177,9 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "store.vault_keyring_gone" => {
             "Saved passwords are protected by a key in the system keyring, but the keyring cannot be reached right now (for example over SSH without a desktop session). ZeeTerm did not switch to a local file, so they stay recoverable: {cause}"
         }
+        "store.vault_key_missing" if cfg!(target_os = "macos") => {
+            "ZeeTerm's key is not in the macOS Keychain (the data folder may have been copied to another Mac, the user may have changed, or the keychain was reset), so saved passwords cannot be decrypted. ZeeTerm did not create a new key on its own; you can reset the saved passwords in Settings if you want to start over"
+        }
         "store.vault_key_missing" => {
             "The system keyring is available, but ZeeTerm's key is not in it (the desktop environment or user may have changed, or the keyring was reset), so saved passwords cannot be decrypted. ZeeTerm did not create a new key on its own; you can reset the saved passwords in Settings if you want to start over"
         }

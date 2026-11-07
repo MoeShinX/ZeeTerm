@@ -61,6 +61,15 @@ keyring = { version = "=3.6.3", default-features = false, features = [
 # 要向下转型才分得出来。版本由 keyring 决定（同一个 crate，不引入新的编译产物）。
 secret-service = { version = "4", default-features = false }
 
+# macOS 本机秘密：同一把资料库密钥放在 macOS 的登录钥匙串（keyring 的 apple-native 后端走的是
+# 传统的文件型钥匙串 SecKeychain，不用数据保护钥匙串：ad-hoc 签名的应用没有 keychain-access-groups
+# 权利，用数据保护钥匙串会直接得到 errSecMissingEntitlement）。条目名和 Linux 一样。
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
+# 只为了按 OSStatus 区分"被锁 / 授权被取消"和其他错误：keyring 把它的错误装在盒子里，
+# 要向下转型才拿得到状态码。版本由 keyring 决定（同一个 crate，不引入新的编译产物）。
+security-framework = "3"
+
 [target.'cfg(windows)'.dependencies]
 # DPAPI（CryptProtectData / CryptUnprotectData）
 windows = { workspace = true, features = [

@@ -139,9 +139,9 @@ fn main() {
     }
     // 先确认有正式的数据目录：拿不到就提示退出，不让凭据库、主机库落进会被清理的临时目录。
     settings::ensure_data_dir_or_exit();
-    // Linux 的本机密钥：后备密钥文件放进数据目录，并在后台先把密钥取出来缓存好，
+    // Linux / macOS 的本机密钥：后备密钥文件放进数据目录，并在后台先把密钥取出来缓存好，
     // 免得界面线程上第一次保存 / 查看密码时去等钥匙串（见 `zssh_core::store::secrets`）。
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         zssh_core::store::secrets::init_vault(&settings::data_dir());
         zssh_core::store::secrets::warm_up_vault();
