@@ -1263,13 +1263,16 @@ fn query_login_shell_path(shell: &Path, timeout: Duration) -> Option<String> {
     use std::os::unix::process::CommandExt as _;
 
     let script = format!("printf '%s%s%s' '{PATH_BEGIN}' \"$PATH\" '{PATH_END}'");
-    let mut child = std::process::Command::new(shell)
+    let mut command = std::process::Command::new(shell);
+    command
         .args(["-l", "-c", &script])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         // 自成进程组：超时时连它在 profile 里拉起的子进程一起结束（它们拿着输出管道，不结束就读不完）。
-        .process_group(0)
+        .process_group(0);
+    // 非 Windows 上是空操作；留着是为了让「子进程都隐藏控制台窗口」的守卫一视同仁。
+    let mut child = crate::process_util::hide_console(&mut command)
         .spawn()
         .ok()?;
     let mut stdout = child.stdout.take()?;
