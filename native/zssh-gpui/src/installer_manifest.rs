@@ -523,39 +523,64 @@ fn linux_package_names_agree_between_the_script_and_the_release_pipeline() {
 }
 
 #[test]
-fn the_linux_release_job_never_touches_the_signing_key() {
+fn only_the_final_release_job_touches_the_signing_key() {
     let release = repo_file(".github/workflows/release.yml");
-    let start = release.find("\n  linux:\n").expect("有 linux 任务");
-    let end = release.find("\n  release:\n").expect("有 release 任务");
-    assert!(start < end, "linux 任务在 release 任务前面");
-    let linux_job = &release[start..end];
-    for forbidden in [
+    let job = |name: &str| {
+        release
+            .find(&format!("\n  {name}:\n"))
+            .unwrap_or_else(|| panic!("有 {name} 任务"))
+    };
+    let (verify, linux, windows, sign) =
+        (job("verify"), job("linux"), job("windows"), job("release"));
+    assert!(
+        verify < linux && linux < windows && windows < sign,
+        "任务顺序：verify、linux、windows、release"
+    );
+    let forbidden = [
         "secrets.",
         "ZEETERM_UPDATER_KEY",
         "environment:",
         "contents: write",
-        "gh release",
+        "gh release create",
         "release-sign",
+    ];
+    // 校验和两个编译任务都拿不到私钥、不能建 Release。
+    for (name, block) in [
+        ("verify", &release[verify..linux]),
+        ("linux", &release[linux..windows]),
+        ("windows", &release[windows..sign]),
     ] {
-        assert!(
-            !linux_job.contains(forbidden),
-            "linux 任务里不能有 {forbidden}"
-        );
+        for word in forbidden {
+            assert!(!block.contains(word), "{name} 任务里不能有 {word}");
+        }
+        assert!(block.contains("contents: read"), "{name}");
     }
-    assert!(linux_job.contains("contents: read"));
+    let verify_job = &release[verify..linux];
+    // 门禁不在发版里重跑，所以发版前必须核对 main 上这个提交的 CI 已经通过。
+    assert!(verify_job.contains("actions/workflows/ci.yml/runs"));
+    assert!(verify_job.contains("completed/success"));
+    let linux_job = &release[linux..windows];
     assert!(linux_job.contains("runs-on: ubuntu-22.04"));
-    assert!(linux_job.contains("./scripts/gates.sh"));
+    assert!(linux_job.contains("needs: verify"));
     assert!(linux_job.contains("./scripts/package-linux.sh"));
-    // 签名、发布只在 release 任务里，而且要等 Linux 任务成功。
-    let release_job = &release[end..];
-    assert!(release_job.contains("needs: linux"));
+    assert!(linux_job.contains("./scripts/linux-container-check.sh"));
+    let windows_job = &release[windows..sign];
+    assert!(windows_job.contains("needs: verify"));
+    assert!(windows_job.contains("native/installer/build.ps1"));
+    // 签名、发布只在 release 任务里，而且要等两个编译任务都成功。
+    let release_job = &release[sign..];
+    assert!(release_job.contains("needs: [verify, linux, windows]"));
     assert!(release_job.contains("-LinuxDebPath"));
     assert!(release_job.contains("-LinuxTarPath"));
     assert!(release_job.contains("environment: release"));
-    // 私钥文件在取回 Linux 包之后才写出来。
-    let fetch = release_job.find("取回 Linux 包").expect("取回步骤");
+    // 私钥文件在取回三个包之后才写出来，而且无论成败都删掉。
     let write_key = release_job.find("写出更新私钥").expect("写私钥步骤");
-    assert!(fetch < write_key);
+    for fetched in ["取回 Windows 安装包", "取回 Linux 包"] {
+        let at = release_job.find(fetched).expect(fetched);
+        assert!(at < write_key, "{fetched} 要在写私钥之前");
+    }
+    let cleanup = release_job.find("删掉临时私钥文件").expect("清理步骤");
+    assert!(release_job[cleanup..].contains("if: always()"));
 }
 
 #[test]
