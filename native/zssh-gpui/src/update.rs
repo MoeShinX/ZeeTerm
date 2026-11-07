@@ -2422,17 +2422,17 @@ fn evaluate_manifest_notice_only(text: &str, current: &str) -> Checked {
 
 /// 后台自动检查要提醒的版本号。
 ///
-/// 有可下载的包就是包的版本（Windows、Linux 照旧）；macOS 没有包，但"只提醒"本来就是它的全部功能，
-/// 所以 `FoundManual` 的版本号也提醒。Linux 上"没有适用的包"保持原样，不自动提醒。
+/// 有可下载的包就是包的版本；没有适用的包（macOS 一律如此，Linux 是清单里没有本机安装方式的条目）
+/// 时是 `FoundManual` 公告的版本号：用户照样该知道有新版本，窗口里引导去发布页手动下载。
 pub(crate) fn auto_announce_version(checked: &Checked) -> Option<String> {
-    announce_version_for(checked, &host_platform())
+    announce_version_for(checked)
 }
 
-fn announce_version_for(checked: &Checked, platform: &Platform) -> Option<String> {
+fn announce_version_for(checked: &Checked) -> Option<String> {
     if let Some(package) = &checked.package {
         return Some(package.version.clone());
     }
-    if *platform == Platform::MacOs && checked.kind == CheckKind::FoundManual {
+    if checked.kind == CheckKind::FoundManual {
         return checked.release_version.clone();
     }
     None
@@ -3768,14 +3768,11 @@ mod tests {
             super::UpdateMsg::NoPackageMessage
         ));
 
-        // 自动检查：macOS 的"只提醒"也算，Linux 没有适用包仍然不自动提醒，Windows 有包照旧。
+        // 自动检查：macOS 的"只提醒"和 Linux 没有适用包都提醒（引导去发布页），Windows 有包照旧。
         let mac = evaluate_manifest_for(MACOS_MANIFEST, "0.2.14", false, &Platform::MacOs);
-        assert_eq!(
-            announce_version_for(&mac, &Platform::MacOs).as_deref(),
-            Some("0.3.1")
-        );
+        assert_eq!(announce_version_for(&mac).as_deref(), Some("0.3.1"));
         let latest = evaluate_manifest_for(MACOS_MANIFEST, "0.3.1", false, &Platform::MacOs);
-        assert_eq!(announce_version_for(&latest, &Platform::MacOs), None);
+        assert_eq!(announce_version_for(&latest), None);
         let linux = evaluate_manifest_for(
             FOUND_MANIFEST,
             "0.2.14",
@@ -3783,15 +3780,9 @@ mod tests {
             &Platform::Linux(Flavor::Tar),
         );
         assert_eq!(linux.kind, CheckKind::FoundManual);
-        assert_eq!(
-            announce_version_for(&linux, &Platform::Linux(Flavor::Tar)),
-            None
-        );
+        assert_eq!(announce_version_for(&linux).as_deref(), Some("0.3.1"));
         let windows = evaluate_manifest_for(FOUND_MANIFEST, "0.2.14", false, &Platform::Windows);
-        assert_eq!(
-            announce_version_for(&windows, &Platform::Windows).as_deref(),
-            Some("0.3.1")
-        );
+        assert_eq!(announce_version_for(&windows).as_deref(), Some("0.3.1"));
     }
 
     #[test]

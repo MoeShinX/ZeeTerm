@@ -98,7 +98,7 @@ async fn check_once() -> Option<update::Checked> {
     if let Ok(db) = crate::host_db::open_database() {
         let _ = zssh_core::updater::record_check(&db, now_secs());
     }
-    // 有包的新版本，或 macOS 的「只提醒」新版本；其余情况（含 Linux 没有适用包）不自动提醒。
+    // 有包的新版本，或没有适用包的新版本（macOS 一律如此，Linux 是清单里没有本机安装方式的条目）：都提醒，后者引导去发布页。
     let version = update::auto_announce_version(&checked)?;
     // Linux：这个版本本进程里已经装好、只差重启，就不用再提醒一遍。
     if update::awaiting_restart(&version).is_some() {
