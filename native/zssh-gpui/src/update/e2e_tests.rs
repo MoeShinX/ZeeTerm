@@ -8,9 +8,10 @@
 
 // 不写 `use super::*`：父模块 glob 进来的 `gpui_kit::test` 会盖掉内置的 `#[test]` 属性宏。
 use super::{
-    CheckKind, Checked, DownloadContext, DownloadEvent, DownloadFailure, InstallState,
-    ManifestSource, Platform, SIGNING_UNCONFIGURED, advance_install, build_install_plan,
-    check_with, download_with, launch_if_unchanged, proxy_from_settings, update_client_builder,
+    CheckKind, Checked, DownloadContext, DownloadEvent, DownloadFailure, DownloadState,
+    InstallState, ManifestSource, Platform, SIGNING_UNCONFIGURED, advance_install,
+    build_install_plan, check_with, download_with, finish_event, launch_if_unchanged,
+    proxy_from_settings, run_install, settle_download, update_client_builder,
 };
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -355,6 +356,137 @@ fn a_new_release_goes_from_manifest_to_a_one_click_install_with_the_stub_launche
         launched_with,
         vec![vec!["/P", "/UPDATE", "/R", "/ARGS", "--minimized"]]
     );
+    let _ = std::fs::remove_dir_all(&cache);
+}
+
+/// 界面收到一次下载的全部事件（进度、校验中，再加最后的结果）后的做法：返回 (下载阶段, 是否该立刻安装)。
+/// `consent` 是用户有没有点「下载并安装」。
+fn replay(
+    consent: bool,
+    result: DownloadResult,
+    events: Vec<DownloadEvent>,
+) -> (DownloadState, bool) {
+    let mut phase = DownloadState::Idle;
+    phase.start();
+    let mut consent = consent;
+    let mut install_now = false;
+    for event in events
+        .iter()
+        .chain(std::iter::once(&finish_event(7, result)))
+    {
+        install_now |= settle_download(&mut phase, &mut consent, event);
+    }
+    (phase, install_now)
+}
+
+/// 界面在"该立刻安装"时做的事：生成计划、调用启动桩（只记录参数，不运行任何东西）。
+/// 返回桩被调用时收到的参数，每次调用一项。
+fn install_with_stub(phase: &DownloadState, cache: &Path) -> Vec<Vec<String>> {
+    let DownloadState::Verified { path, sha256, .. } = phase else {
+        panic!("没有验签通过的包，不该走到安装：{phase:?}");
+    };
+    let mut launches = Vec::new();
+    let (state, _blocked, launched) = run_install(
+        None,
+        InstallState::Idle,
+        || build_install_plan(path, cache, "1.4.0", true, &[], sha256),
+        |plan| {
+            launch_if_unchanged(plan, |checked| {
+                launches.push(checked.args.clone());
+                Ok(())
+            })
+        },
+    );
+    assert!(launched);
+    assert_eq!(state, InstallState::Launched);
+    launches
+}
+
+#[test]
+fn download_and_install_goes_straight_from_a_verified_signature_to_the_installer() {
+    let keys = keys();
+    let installer = vec![0x5a; 50_000];
+    let (fixture, _) = publish(
+        &keys,
+        "1.4.0",
+        "1.4.0",
+        &installer,
+        Route::Ok(installer.clone()),
+    );
+    let package = found_package(&fixture, &keys, "1.3.0");
+    let cache = temp_dir("auto-install");
+    let (result, events) = download(&package, &keys.pubkey_b64, &cache);
+
+    // 用户点了「下载并安装」：验签一过就该安装，启动桩恰好被调用一次，中间没有再点一次的环节。
+    let (phase, install_now) = replay(true, result, events);
+    assert!(matches!(phase, DownloadState::Verified { .. }));
+    assert!(install_now);
+    let launches = install_with_stub(&phase, &cache);
+    assert_eq!(launches, vec![vec!["/P", "/UPDATE", "/R", "/ARGS"]]);
+    let _ = std::fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn a_verified_package_nobody_asked_to_install_is_not_installed() {
+    // 自动检查只是弹出窗口、用户没点「下载并安装」：不下载；就算有别的路径把包下完了，也不会自己装。
+    let keys = keys();
+    let installer = vec![0x5a; 50_000];
+    let (fixture, _) = publish(
+        &keys,
+        "1.4.0",
+        "1.4.0",
+        &installer,
+        Route::Ok(installer.clone()),
+    );
+    let package = found_package(&fixture, &keys, "1.3.0");
+    let hits = fixture.hits();
+    assert_eq!(hits, 1, "只取过清单，没碰安装包");
+    let cache = temp_dir("no-consent");
+    let (result, events) = download(&package, &keys.pubkey_b64, &cache);
+    let (phase, install_now) = replay(false, result, events);
+    assert!(matches!(phase, DownloadState::Verified { .. }));
+    assert!(!install_now);
+    let _ = std::fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn a_failed_signature_check_never_reaches_the_installer_even_after_download_and_install() {
+    // 安全底线：用户点了「下载并安装」，但签名是另一把密钥签的 -> 停在失败，安装桩一次都不被调用，缓存里没有文件。
+    let keys = keys();
+    let other = self::keys();
+    let installer = vec![0x5a; 50_000];
+    let (fixture, _) = publish(
+        &other,
+        "1.4.0",
+        "1.4.0",
+        &installer,
+        Route::Ok(installer.clone()),
+    );
+    let package = found_package(&fixture, &keys, "1.3.0");
+    let cache = temp_dir("bad-signature");
+    let (result, events) = download(&package, &keys.pubkey_b64, &cache);
+    let (phase, install_now) = replay(true, result, events);
+    assert!(
+        matches!(phase, DownloadState::Failed(_)),
+        "应停在失败：{phase:?}"
+    );
+    assert!(!install_now);
+    assert_eq!(file_count(&cache), 0);
+
+    // 下载中断、安装包被改过同理：都是失败阶段，不进入安装。
+    let (tampered_fixture, _) = publish(
+        &keys,
+        "1.4.0",
+        "1.4.0",
+        &installer,
+        Route::Ok(vec![0x5b; 50_000]),
+    );
+    let tampered = found_package(&tampered_fixture, &keys, "1.3.0");
+    let (result, events) = download(&tampered, &keys.pubkey_b64, &cache);
+    let (phase, install_now) = replay(true, result, events);
+    assert!(matches!(phase, DownloadState::Failed(_)), "{phase:?}");
+    assert!(!install_now);
+    assert_eq!(file_count(&cache), 0);
     let _ = std::fs::remove_dir_all(&cache);
 }
 

@@ -15,16 +15,18 @@
 //! 启动安装器前（含"退出后安装"）会重新算一次哈希，不一致就拒绝。
 //! 后台任务经 `std::sync::mpsc` 把进度交给界面，100ms tick 取一次。
 //!
-//! 点一下「立即安装」就调用 `zssh_update::plan_install` 生成计划，并用 `ShellExecuteW`
-//! 启动已校验的安装器；启动成功后界面退出，安装器继续运行。安装前先问
-//! `install_state::blocking_reason`，还有传输 / AI 回合在跑就不启动。
+//! 点「下载并安装」就是同意安装：下载、验签一通过（`settle_download`）就直接调用
+//! `zssh_update::plan_install` 生成计划，并用 `ShellExecuteW` 启动已校验的安装器，不再停在「已准备好安装」
+//! 等第二次点击；验签 / 下载失败一律停下报错，绝不安装。启动成功后界面退出，安装器继续运行。
+//! 安装前先问 `install_state::blocking_reason`，还有传输 / AI 回合在跑就不启动，留在「已准备好安装」屏，
+//! 那里的「立即安装」是兜底（被拦下、启动失败后重试）。
 //!
 //! 「退出后安装」只把计划排进进程级队列，界面不退出；真正的 `ShellExecuteW`
 //! 放在 `App::on_app_quit` 注册的回调里，等程序退出时再启动。
 //!
 //! Linux（`linux.rs` 和 `zssh_update::linux`）：检查时先判断本机怎么装的（`dpkg -S` 认得 → deb，否则 tar.gz），
 //! 只选清单里对应的 `linux-x86_64-deb` / `linux-x86_64-tar`；没有适用条目时给 `CheckKind::FoundManual`，
-//! 界面引导到发布页。下载、验签、版本绑定与 Windows 是同一套（`download_with`）。点「立即安装」后在后台线程里
+//! 界面引导到发布页。下载、验签、版本绑定与 Windows 是同一套（`download_with`）。验签通过后在后台线程里
 //! 安装：deb 经 `pkexec apt-get install`，tar.gz 解压后核对新程序的版本再原子替换程序文件；没有 `pkexec`、授权
 //! 被取消、目录不可写时不报错，保留已校验的包并显示手动安装的方法。装好后由用户点「立即重启」（Linux 没有"退出后安装"）。
 //!
@@ -262,7 +264,7 @@ impl Msg for UpdateMsg {
             Self::InstallNowButton => "立即安装",
             Self::UpdateSourceTooltipPrefix => "更新来自",
             Self::UpdateSourceTooltipSuffix => {
-                "。安装包下载后会先校验签名，点「立即安装」后才会启动安装程序。"
+                "。安装包下载后会先校验签名，校验通过才会安装；校验不过绝不安装。"
             }
             Self::RecheckTooltip => "重新检查",
             Self::CheckingMessage => "正在向发布页询问最新版本…",
@@ -406,7 +408,7 @@ impl Msg for UpdateMsg {
             Self::InstallNowButton => "Install Now",
             Self::UpdateSourceTooltipPrefix => "Updates come from ",
             Self::UpdateSourceTooltipSuffix => {
-                ". The installer is signature-checked after download, and only starts after you click \"Install Now\"."
+                ". The package is signature-checked after download and installed only if the check passes; a failed check never installs."
             }
             Self::RecheckTooltip => "Check Again",
             Self::CheckingMessage => "Asking the release page for the latest version…",
@@ -620,6 +622,9 @@ pub struct UpdateDemo {
     /// 安装后是否重启；只在生成安装计划时使用。
     restart: bool,
     install: InstallState,
+    /// 这一次下载是用户点「下载并安装」发起的：验签通过后直接开始安装，不再停下来等第二次点击。
+    /// 只对这一次下载有效，失败 / 取消 / 重新检查都会清掉；调试钩子发起的下载不带它。
+    install_when_verified: bool,
     /// 安装前安全检查拦下的原因；下一次点「立即安装」时重算。
     blocked: Option<String>,
     /// 「退出后安装」的成功提示；排队状态本身在进程级队列里，关窗不丢。
@@ -659,6 +664,7 @@ impl UpdateDemo {
             ime_key,
             restart: true,
             install: InstallState::Idle,
+            install_when_verified: false,
             blocked: None,
             queued: None,
             generation: 0,
@@ -808,6 +814,7 @@ impl UpdateDemo {
 
     /// 作废当前下载任务；后台任务看到取消标志后删除半截文件。
     fn cancel_job(&mut self) {
+        self.install_when_verified = false;
         self.generation = self.generation.wrapping_add(1);
         if let Some(job) = self.job.take() {
             job.cancel.store(true, Ordering::Relaxed);
@@ -815,7 +822,9 @@ impl UpdateDemo {
     }
 
     /// 在 Tokio runtime 上开始下载；界面只收事件，不等待网络。
-    fn start_download(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// `install_when_verified`：用户点的是「下载并安装」（或失败后的「重试」），验签通过后直接安装。
+    fn start_download(&mut self, install_when_verified: bool, cx: &mut Context<Self>) {
         let Some(package) = self.package.clone() else {
             return;
         };
@@ -825,6 +834,7 @@ impl UpdateDemo {
         let generation = self.generation.wrapping_add(1);
         self.generation = generation;
         self.phase.start();
+        self.install_when_verified = install_when_verified;
         self.speed.reset();
         self.install = InstallState::Idle;
 
@@ -843,6 +853,7 @@ impl UpdateDemo {
             Err(err) => {
                 self.phase
                     .fail(format!("{}{err}", t(UpdateMsg::StartDownloadFailedPrefix)));
+                self.install_when_verified = false;
                 self.job = None;
             }
         }
@@ -855,6 +866,7 @@ impl UpdateDemo {
             job.cancel.store(true, Ordering::Relaxed);
         }
         self.phase.cancel();
+        self.install_when_verified = false;
         cx.notify();
     }
 
@@ -1058,22 +1070,21 @@ impl UpdateDemo {
             if event.generation() != self.generation {
                 continue;
             }
+            // 下载阶段的迁移和"验签通过就装"的判断都在 `settle_download`（纯函数，有测试钉着）。
+            let install_now =
+                settle_download(&mut self.phase, &mut self.install_when_verified, &event);
             match event {
-                DownloadEvent::Progress {
-                    received, total, ..
-                } => {
-                    self.phase.progress(received, total);
+                DownloadEvent::Progress { received, .. } => {
                     self.speed.record(Instant::now(), received);
                 }
-                DownloadEvent::Verifying { .. } => self.phase.begin_verify(),
-                DownloadEvent::Verified {
-                    path, size, sha256, ..
-                } => {
-                    self.phase.verified(path, size, sha256);
+                DownloadEvent::Verifying { .. } => {}
+                DownloadEvent::Verified { .. } => {
                     self.job = None;
+                    // 用户点过「下载并安装」，验签一过就装。
                     // 调试钩子：验签通过就直接点「立即安装」（只对 Linux 的包生效；自动化 / 真机验证用）。
-                    auto_install = self.linux_flavor().is_some()
-                        && crate::dev_hooks::var_os("ZSSH_UPDATE_AUTOINSTALL").is_some();
+                    auto_install = install_now
+                        || (self.linux_flavor().is_some()
+                            && crate::dev_hooks::var_os("ZSSH_UPDATE_AUTOINSTALL").is_some());
                 }
                 DownloadEvent::LinuxInstall { outcome, .. } => {
                     let installed = matches!(outcome, linux::Outcome::Installed { .. });
@@ -1088,22 +1099,19 @@ impl UpdateDemo {
                     auto_download = self.package.is_some()
                         && crate::dev_hooks::var_os("ZSSH_UPDATE_AUTODOWNLOAD").is_some();
                 }
-                DownloadEvent::Failed { message, .. } => {
-                    self.phase.fail(message);
-                    self.job = None;
-                }
-                DownloadEvent::Cancelled { .. } => {
-                    self.phase.cancel();
+                DownloadEvent::Failed { .. } | DownloadEvent::Cancelled { .. } => {
                     self.job = None;
                 }
             }
             changed = true;
         }
         if auto_download {
-            self.start_download(cx);
+            self.start_download(false, cx);
         }
-        if auto_install {
-            self.click_install(cx);
+        // Windows 启动了安装器就要退出程序；Linux 的安装在后台线程里跑，这里返回 false。
+        // 被安装前检查拦下（传输 / AI 回合还在跑）或启动失败时留在「已准备好安装」屏，原因显示在窗口里。
+        if auto_install && self.click_install(cx) {
+            quit_after_paint(cx);
         }
         if auto_restart && self.click_restart(cx) {
             quit_after_paint(cx);
@@ -1244,6 +1252,41 @@ impl DownloadState {
             Self::Cancelled => Some(t(UpdateMsg::DownloadCancelled).to_owned()),
         }
     }
+}
+
+/// 把一条下载事件落到下载阶段上。返回 `true` 表示"验签通过，而且这次下载是用户点「下载并安装」发起的"，
+/// 调用方应当立刻开始安装（Windows 启动已验证的安装器，Linux 走 pkexec / 原地替换）。
+///
+/// 安全底线：只有阶段真的走到 [`DownloadState::Verified`] 才返回 `true`；下载失败、验签失败、取消都
+/// 清掉"同意安装"并返回 `false`，没验过的包永远进不了安装。同意只管这一次下载（取走即清）。
+fn settle_download(
+    phase: &mut DownloadState,
+    install_when_verified: &mut bool,
+    event: &DownloadEvent,
+) -> bool {
+    match event {
+        DownloadEvent::Progress {
+            received, total, ..
+        } => phase.progress(*received, *total),
+        DownloadEvent::Verifying { .. } => phase.begin_verify(),
+        DownloadEvent::Verified {
+            path, size, sha256, ..
+        } => {
+            phase.verified(path.clone(), *size, sha256.clone());
+            let consented = std::mem::take(install_when_verified);
+            return consented && matches!(phase, DownloadState::Verified { .. });
+        }
+        DownloadEvent::Failed { message, .. } => {
+            phase.fail(message.clone());
+            *install_when_verified = false;
+        }
+        DownloadEvent::Cancelled { .. } => {
+            phase.cancel();
+            *install_when_verified = false;
+        }
+        DownloadEvent::Checked { .. } | DownloadEvent::LinuxInstall { .. } => {}
+    }
+    false
 }
 
 /// 安装状态：点「立即安装」一次就生成计划并启动安装器。
@@ -1762,24 +1805,27 @@ async fn run_download(
     cancel: Arc<AtomicBool>,
     sender: Sender<DownloadEvent>,
 ) {
-    match download_and_verify(generation, &package, &cache_root, &cancel, &sender).await {
-        Ok((path, size, sha256)) => {
-            let _ = sender.send(DownloadEvent::Verified {
-                generation,
-                path,
-                size,
-                sha256,
-            });
-        }
-        Err(DownloadFailure::Cancelled) => {
-            let _ = sender.send(DownloadEvent::Cancelled { generation });
-        }
-        Err(DownloadFailure::Failed(message)) => {
-            let _ = sender.send(DownloadEvent::Failed {
-                generation,
-                message,
-            });
-        }
+    let result = download_and_verify(generation, &package, &cache_root, &cancel, &sender).await;
+    let _ = sender.send(finish_event(generation, result));
+}
+
+/// 下载 + 验签的结果 → 界面收到的最后一条事件。
+fn finish_event(
+    generation: u64,
+    result: Result<(PathBuf, u64, String), DownloadFailure>,
+) -> DownloadEvent {
+    match result {
+        Ok((path, size, sha256)) => DownloadEvent::Verified {
+            generation,
+            path,
+            size,
+            sha256,
+        },
+        Err(DownloadFailure::Cancelled) => DownloadEvent::Cancelled { generation },
+        Err(DownloadFailure::Failed(message)) => DownloadEvent::Failed {
+            generation,
+            message,
+        },
     }
 }
 
@@ -2554,7 +2600,7 @@ mod tests {
     use super::{
         DownloadState, InstallState, advance_install, build_install_plan, cache_path,
         download_file_name, file_summary, progress_text, push_quoted_arg, queue_install,
-        quote_args, run_install, state_after_check, take_pending_install,
+        quote_args, run_install, settle_download, state_after_check, take_pending_install,
     };
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard};
@@ -2807,6 +2853,89 @@ mod tests {
         assert!(launched);
         assert_eq!(launches, 1);
         assert_eq!(state, InstallState::Launched);
+    }
+
+    fn verified_event() -> super::DownloadEvent {
+        super::DownloadEvent::Verified {
+            generation: 1,
+            path: PathBuf::from("setup.exe"),
+            size: 1,
+            sha256: "0".repeat(64),
+        }
+    }
+
+    /// 走到"正在校验"：下载开始 -> 有进度 -> 校验中。
+    fn verifying_phase() -> DownloadState {
+        let mut phase = DownloadState::Idle;
+        phase.start();
+        let progress = super::DownloadEvent::Progress {
+            generation: 1,
+            received: 1,
+            total: Some(1),
+        };
+        assert!(!settle_download(&mut phase, &mut true, &progress));
+        let verifying = super::DownloadEvent::Verifying { generation: 1 };
+        assert!(!settle_download(&mut phase, &mut true, &verifying));
+        assert_eq!(phase, DownloadState::Verifying);
+        phase
+    }
+
+    #[test]
+    fn a_verified_download_the_user_asked_to_install_goes_straight_to_installing() {
+        let mut phase = verifying_phase();
+        let mut consent = true;
+        assert!(settle_download(&mut phase, &mut consent, &verified_event()));
+        assert!(matches!(phase, DownloadState::Verified { .. }));
+        assert!(!consent, "同意只管这一次下载，取走即清");
+    }
+
+    #[test]
+    fn a_verified_download_nobody_asked_to_install_waits_for_the_install_button() {
+        // 只是弹窗 / 调试钩子发起的下载：没有同意就停在"已准备好安装"。
+        let mut phase = verifying_phase();
+        let mut consent = false;
+        assert!(!settle_download(
+            &mut phase,
+            &mut consent,
+            &verified_event()
+        ));
+        assert!(matches!(phase, DownloadState::Verified { .. }));
+    }
+
+    #[test]
+    fn a_failed_or_cancelled_download_never_installs_and_forgets_the_consent() {
+        for event in [
+            super::DownloadEvent::Failed {
+                generation: 1,
+                message: "签名不对".to_owned(),
+            },
+            super::DownloadEvent::Cancelled { generation: 1 },
+        ] {
+            let mut phase = verifying_phase();
+            let mut consent = true;
+            assert!(!settle_download(&mut phase, &mut consent, &event));
+            assert!(!consent);
+            assert!(!matches!(phase, DownloadState::Verified { .. }));
+            // 即使之后迟到一条"已验证"，也已经没有同意可用。
+            assert!(!settle_download(
+                &mut phase,
+                &mut consent,
+                &verified_event()
+            ));
+        }
+    }
+
+    #[test]
+    fn a_late_verified_event_after_cancelling_does_not_install() {
+        // 取消和验签完成赶在同一刻：界面已经是"已取消"，迟到的"已验证"既不改阶段也不安装。
+        let mut phase = DownloadState::Cancelled;
+        let mut consent = true;
+        assert!(!settle_download(
+            &mut phase,
+            &mut consent,
+            &verified_event()
+        ));
+        assert_eq!(phase, DownloadState::Cancelled);
     }
 
     #[test]

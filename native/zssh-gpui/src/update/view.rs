@@ -490,7 +490,7 @@ impl UpdateDemo {
         match action {
             Action::Close => self.close_window(window),
             Action::RecheckAgain => self.reload(cx),
-            Action::RetryDownload | Action::Download => self.start_download(cx),
+            Action::RetryDownload | Action::Download => self.start_download(true, cx),
             Action::Skip => self.skip_version(window, cx),
             Action::Later => self.later(window, cx),
             Action::Cancel => self.cancel_download(cx),
