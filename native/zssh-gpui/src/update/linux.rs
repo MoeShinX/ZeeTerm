@@ -22,20 +22,41 @@ use crate::i18n::t;
 pub(crate) enum Platform {
     Windows,
     Linux(Flavor),
+    /// macOS：只提醒有新版本，引导到发布页；清单里没有（也不认）任何 macOS 的包，
+    /// 所以永远不会选出安装包、不下载、不验签、不安装。
+    MacOs,
 }
 
 impl Platform {
-    /// 给 [`zssh_update::Manifest::select_for`] 的平台 key。
+    /// 给 [`zssh_update::Manifest::select_for`] 的平台 key。macOS 没有可装的包，key 为空。
     pub(crate) fn keys(&self) -> &'static [&'static str] {
         match self {
             Self::Windows => zssh_update::PLATFORM_KEYS,
             Self::Linux(flavor) => flavor.platform_keys(),
+            Self::MacOs => &[],
         }
+    }
+}
+
+/// macOS「打开发布页」固定打开的地址：写死的常量，不取清单里的任何网址。
+pub(crate) const MACOS_RELEASE_PAGE_URL: &str =
+    "https://github.com/MoeShinX/ZeeTerm/releases/latest";
+
+/// 「打开发布页」要打开的地址：macOS 是固定常量，其余平台从内嵌的更新源推出来。
+pub(super) fn release_page_url_for(platform: &Platform) -> Option<String> {
+    match platform {
+        Platform::MacOs => Some(MACOS_RELEASE_PAGE_URL.to_owned()),
+        Platform::Windows | Platform::Linux(_) => release_page_url(),
     }
 }
 
 /// 本机的更新平台（进程里只判断一次；第一次要问 `dpkg`，所以别在界面线程上第一个调用它）。
 pub(crate) fn host_platform() -> Platform {
+    // macOS 必须在探测和调试钩子之前分出去：下面的探测在非 Linux 上会退成 Windows，
+    // 钩子也能把平台改成 Windows，两者都可能让 macOS 走进 Windows 的下载 / 安装流程。
+    if cfg!(target_os = "macos") {
+        return Platform::MacOs;
+    }
     static HOST: OnceLock<Platform> = OnceLock::new();
     HOST.get_or_init(|| resolve_platform(crate::dev_hooks::var("ZSSH_UPDATE_FLAVOR"), detect_host))
         .clone()
@@ -58,6 +79,8 @@ fn resolve_platform(hook: Option<String>, detect: impl FnOnce() -> Platform) -> 
 pub(crate) fn fallback_platform() -> Platform {
     if cfg!(target_os = "linux") {
         Platform::Linux(Flavor::Tar)
+    } else if cfg!(target_os = "macos") {
+        Platform::MacOs
     } else {
         Platform::Windows
     }

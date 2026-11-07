@@ -28,6 +28,11 @@
 //! 安装：deb 经 `pkexec apt-get install`，tar.gz 解压后核对新程序的版本再原子替换程序文件；没有 `pkexec`、授权
 //! 被取消、目录不可写时不报错，保留已校验的包并显示手动安装的方法。装好后由用户点「立即重启」（Linux 没有"退出后安装"）。
 //!
+//! macOS（`Platform::MacOs`，`host_platform` 最先分出去，不会退成 Windows）：只提醒，不下载、不验签、不安装。
+//! 检查时照常读清单，但只取版本号、更新说明和发布时间（不看清单里的任何包和网址）；比当前新就给
+//! `CheckKind::FoundManual`，界面是同一屏「发现新版本」，按钮只有跳过 / 关闭 / 「打开发布页」，
+//! 打开的地址是固定常量 `linux::MACOS_RELEASE_PAGE_URL`；自动检查发现新版本时同样弹出这个窗口。
+//!
 //! 界面（V2-U22 重做，只动版式，流程不变）：每种状态都是"顶部信息区 / 中间内容区 / 底部按钮区"三段。
 //! 画哪一屏、标题和按钮集合见 `layout`，更新说明（Markdown）先经 `notes` 改写成安全的版本再渲染，
 //! `view` 是 `Render`。「跳过此版本」把版本号写进本机设置 `update_skipped_version`，自动检查据此不再提示它。
@@ -199,9 +204,11 @@ enum UpdateMsg {
     CreateDownloadClientFailedPrefix,
     PubkeyUnavailable,
     SigningUnconfigured,
-    /// 只有 macOS 构建会用到（还没有 macOS 的发布包，也不能装 Windows 的）。
+    /// 只有 macOS 构建会用到：关于页「检查更新」一行的说明（macOS 只提醒、不自动更新）。
     #[cfg(any(target_os = "macos", test))]
     MacosNoAutoUpdate,
+    /// macOS 发现新版本时的说明：不自动更新，下载后自己替换「应用程序」里的 ZeeTerm。
+    MacosManualMessage,
     NoReleaseNotes,
     PackageLabel,
     PlatformLabel,
@@ -328,7 +335,10 @@ impl Msg for UpdateMsg {
             Self::SigningUnconfigured => SIGNING_UNCONFIGURED, // i18n-allow: 与 e2e 测试共用的中文原文
             #[cfg(any(target_os = "macos", test))]
             Self::MacosNoAutoUpdate => {
-                "macOS 版暂不支持自动更新，也还没有 macOS 的发布包：ZeeTerm 不会下载或启动任何安装程序。"
+                "macOS 版暂不支持自动更新：有新版本时会提示你去发布页下载，下载后替换「应用程序」里的 ZeeTerm。ZeeTerm 不会下载或启动任何安装程序。"
+            }
+            Self::MacosManualMessage => {
+                "macOS 版暂不支持自动更新，请下载新版本后替换「应用程序」里的 ZeeTerm。"
             }
             Self::NoReleaseNotes => "（无更新说明）",
             Self::PackageLabel => "安装包：",
@@ -481,7 +491,10 @@ impl Msg for UpdateMsg {
             }
             #[cfg(any(target_os = "macos", test))]
             Self::MacosNoAutoUpdate => {
-                "Automatic updates are not supported on macOS yet, and there is no macOS release package: ZeeTerm will not download or launch any installer."
+                "Automatic updates are not supported on macOS yet: when a new version is out you are pointed to the release page to download it, then replace ZeeTerm in your Applications folder. ZeeTerm will not download or launch any installer."
+            }
+            Self::MacosManualMessage => {
+                "Automatic updates are not supported on macOS yet. Please download the new version and replace ZeeTerm in your Applications folder."
             }
             Self::NoReleaseNotes => "(no release notes)",
             Self::PackageLabel => "Package: ",
@@ -994,7 +1007,7 @@ impl UpdateDemo {
 
     /// 「打开发布页」：用系统浏览器打开（只认 https，过 core 的网址检查）；打不开时把原因显示出来。
     fn open_release_page(&mut self, cx: &mut Context<Self>) {
-        let Some(url) = linux::release_page_url() else {
+        let Some(url) = linux::release_page_url_for(&host_platform()) else {
             return;
         };
         if let Err(err) = zssh_core::external_url::open_external_url(&url) {
@@ -1674,22 +1687,17 @@ async fn load_manifest_text(
 /// 读清单 + 选择包；读不到也算界面错误，不让窗口崩。
 ///
 /// 更新签名公钥是占位值时直接返回"更新签名未配置"，一个请求都不发。
-#[cfg_attr(target_os = "macos", allow(unreachable_code))]
 pub(crate) async fn check_for_update(current: &str) -> Checked {
-    // macOS：没有 macOS 的发布包；探测本机安装方式会退成 Windows，绝不能拿 Windows 的安装包来装。
-    // 一个请求都不发，自动检查也就什么都不会做。
-    #[cfg(target_os = "macos")]
-    {
-        let _ = current;
-        return Checked::failed(macos_no_auto_update());
-    }
     // 本机是怎么装的（Linux 上要问 dpkg，别占着界面线程，也别堵住 async 工作线程）。
+    // macOS 在 `host_platform` 里最先分出去（`Platform::MacOs`）：它只读清单的版本号和说明，
+    // 不会退成 Windows，也不会选出任何安装包。
     let platform = tokio::task::spawn_blocking(host_platform)
         .await
         .unwrap_or_else(|_| linux::fallback_platform());
     let pubkey = update_pubkey();
     // 公钥不可用时先不建客户端（建客户端要读设置库）：下面 `check_with` 会原样返回原因。
-    let client = if pubkey.is_ok() {
+    // macOS 不下载也不验签，用不着公钥，照样要建客户端读清单。
+    let client = if pubkey.is_ok() || platform == Platform::MacOs {
         match update_client() {
             Ok(client) => client,
             Err(err) => {
@@ -1720,12 +1728,15 @@ async fn check_with(
     platform: &Platform,
 ) -> Checked {
     // 没有可用的验签公钥（占位值、内置配置坏了）就不发任何请求：后面下的包也验不了。
-    match pubkey {
-        Err(message) => return Checked::failed(message.clone()),
-        Ok(key) if zssh_update::is_placeholder_pubkey(key) => {
-            return Checked::failed(t(UpdateMsg::SigningUnconfigured));
+    // macOS 不下载任何包，没有要验的东西，所以不受公钥影响。
+    if *platform != Platform::MacOs {
+        match pubkey {
+            Err(message) => return Checked::failed(message.clone()),
+            Ok(key) if zssh_update::is_placeholder_pubkey(key) => {
+                return Checked::failed(t(UpdateMsg::SigningUnconfigured));
+            }
+            Ok(_) => {}
         }
-        Ok(_) => {}
     }
     if sources.is_empty() {
         return Checked::failed(t(UpdateMsg::NoUpdateSource));
@@ -2371,6 +2382,70 @@ fn evaluate_manifest(text: &str, current: &str, allow_insecure: bool) -> Checked
     evaluate_manifest_for(text, current, allow_insecure, &Platform::Windows)
 }
 
+/// macOS：只用清单的版本号、更新说明和发布时间，不看也不碰清单里的任何包 / 网址。
+///
+/// 比当前新 -> `FoundManual`（`package` 恒为空，界面只给「打开发布页」，地址是固定常量，见
+/// [`linux::MACOS_RELEASE_PAGE_URL`]）；不比当前新 -> `Latest`；清单读不懂 / 版本号不对 -> `Failed`。
+/// 平台 key 为空，所以 `select_for` 不可能选出包；这里再把 `package` 显式写成 `None`，不依赖那个细节。
+fn evaluate_manifest_notice_only(text: &str, current: &str) -> Checked {
+    let manifest = match zssh_update::parse_manifest(text) {
+        Ok(manifest) => manifest,
+        Err(err) => return Checked::failed(status_text(&Err(err), None)),
+    };
+    match manifest.select_for(current, Platform::MacOs.keys()) {
+        Ok(_) => Checked {
+            kind: CheckKind::Latest,
+            status: status_text(&Ok(None), None),
+            package: None,
+            notes: None,
+            published: None,
+            release_version: None,
+        },
+        Err(UpdateError::NoPlatform) => {
+            let version = manifest.version.trim_start_matches('v').to_owned();
+            Checked {
+                kind: CheckKind::FoundManual,
+                status: format!(
+                    "{}{version}\n{}",
+                    t(UpdateMsg::FoundVersionPrefix),
+                    t(UpdateMsg::MacosManualMessage)
+                ),
+                package: None,
+                notes: manifest.notes,
+                published: manifest.date,
+                release_version: Some(version),
+            }
+        }
+        Err(err) => Checked::failed(status_text(&Err(err), None)),
+    }
+}
+
+/// 后台自动检查要提醒的版本号。
+///
+/// 有可下载的包就是包的版本（Windows、Linux 照旧）；macOS 没有包，但"只提醒"本来就是它的全部功能，
+/// 所以 `FoundManual` 的版本号也提醒。Linux 上"没有适用的包"保持原样，不自动提醒。
+pub(crate) fn auto_announce_version(checked: &Checked) -> Option<String> {
+    announce_version_for(checked, &host_platform())
+}
+
+fn announce_version_for(checked: &Checked, platform: &Platform) -> Option<String> {
+    if let Some(package) = &checked.package {
+        return Some(package.version.clone());
+    }
+    if *platform == Platform::MacOs && checked.kind == CheckKind::FoundManual {
+        return checked.release_version.clone();
+    }
+    None
+}
+
+/// 「没有适用的包」那一屏的说明：macOS 讲"暂不支持自动更新，下载后替换"，Linux 讲"没有适合本机安装方式的包"。
+fn no_package_message(platform: &Platform) -> UpdateMsg {
+    match platform {
+        Platform::MacOs => UpdateMsg::MacosManualMessage,
+        Platform::Windows | Platform::Linux(_) => UpdateMsg::NoPackageMessage,
+    }
+}
+
 /// 解析清单并按本机平台选包；选出的安装包地址也要过协议检查。
 ///
 /// Linux 上公告的新版本如果没有适用于本机安装方式的条目（老版本发布的清单只有 Windows 条目，
@@ -2382,6 +2457,9 @@ fn evaluate_manifest_for(
     allow_insecure: bool,
     platform: &Platform,
 ) -> Checked {
+    if *platform == Platform::MacOs {
+        return evaluate_manifest_notice_only(text, current);
+    }
     match zssh_update::parse_manifest(text) {
         Ok(manifest) => {
             let outcome = manifest.select_for(current, platform.keys());
@@ -3573,6 +3651,159 @@ mod tests {
         // 调试构建放开 http 之后才选得出来。
         let allowed = evaluate_manifest_for(insecure, "0.2.14", true, &platform);
         assert_eq!(allowed.kind, CheckKind::Found);
+    }
+
+    const MACOS_MANIFEST: &str = r####"{
+        "version": "v0.3.1",
+        "notes": "### 新增\n- macOS 版",
+        "pub_date": "2026-11-06T08:00:00Z",
+        "platforms": {
+            "windows-x86_64": { "url": "http://evil.example/a.exe", "signature": "sig" },
+            "linux-x86_64-deb": { "url": "https://example.com/a.deb", "signature": "sig" }
+        }
+    }"####;
+
+    #[test]
+    fn macos_checks_only_read_the_version_and_notes_and_never_select_a_package() {
+        use super::{Platform, evaluate_manifest_for};
+
+        assert!(Platform::MacOs.keys().is_empty(), "macOS 没有可装的包");
+        // allow_insecure 开不开都一样：清单里的网址（哪怕是 http）macOS 根本不看。
+        for allow_insecure in [false, true] {
+            let checked =
+                evaluate_manifest_for(MACOS_MANIFEST, "0.2.14", allow_insecure, &Platform::MacOs);
+            assert_eq!(checked.kind, CheckKind::FoundManual, "{}", checked.status);
+            assert!(checked.package.is_none());
+            assert_eq!(checked.release_version.as_deref(), Some("0.3.1"));
+            assert_eq!(checked.notes.as_deref(), Some("### 新增\n- macOS 版"));
+            assert_eq!(checked.published.as_deref(), Some("2026-11-06T08:00:00Z"));
+            assert!(
+                checked.status.contains("发现新版本 0.3.1"),
+                "{}",
+                checked.status
+            );
+            assert!(
+                checked.status.contains("替换「应用程序」里的 ZeeTerm"),
+                "{}",
+                checked.status
+            );
+            assert!(!checked.status.contains("evil"), "{}", checked.status);
+        }
+        // 没有任何平台条目的清单也一样提示；已是最新、读不懂都和其他平台一致。
+        let bare = r#"{ "version": "0.3.1", "platforms": {} }"#;
+        let found = evaluate_manifest_for(bare, "0.2.14", false, &Platform::MacOs);
+        assert_eq!(found.kind, CheckKind::FoundManual);
+        let latest = evaluate_manifest_for(bare, "0.3.1", false, &Platform::MacOs);
+        assert_eq!(latest.kind, CheckKind::Latest);
+        assert_eq!(latest.status, "已是最新版本");
+        assert!(latest.package.is_none() && latest.release_version.is_none());
+        let broken = evaluate_manifest_for("这不是 JSON", "0.2.14", false, &Platform::MacOs);
+        assert_eq!(broken.kind, CheckKind::Failed);
+        assert!(broken.package.is_none());
+        let bad_version = r#"{ "version": "abc", "platforms": {} }"#;
+        let bad = evaluate_manifest_for(bad_version, "0.2.14", false, &Platform::MacOs);
+        assert_eq!(bad.kind, CheckKind::Failed);
+    }
+
+    #[test]
+    fn macos_results_never_lead_to_an_install_action_and_the_release_page_is_a_fixed_constant() {
+        use super::layout::{self, Action};
+        use super::linux::{MACOS_RELEASE_PAGE_URL, release_page_url_for};
+        use super::{Platform, evaluate_manifest_for};
+
+        assert_eq!(
+            MACOS_RELEASE_PAGE_URL,
+            "https://github.com/MoeShinX/ZeeTerm/releases/latest"
+        );
+        assert_eq!(
+            release_page_url_for(&Platform::MacOs).as_deref(),
+            Some(MACOS_RELEASE_PAGE_URL)
+        );
+        for (manifest, current) in [
+            (MACOS_MANIFEST, "0.2.14"),
+            (MACOS_MANIFEST, "0.3.1"),
+            (FOUND_MANIFEST, "0.2.14"),
+            ("这不是 JSON", "0.2.14"),
+        ] {
+            let checked = evaluate_manifest_for(manifest, current, true, &Platform::MacOs);
+            assert!(checked.package.is_none(), "{}", checked.status);
+            let screen = layout::screen(Some(checked.kind), &DownloadState::Idle);
+            for button in layout::buttons(screen) {
+                assert!(
+                    !matches!(
+                        button.action,
+                        Action::Download
+                            | Action::Install
+                            | Action::Cancel
+                            | Action::RetryDownload
+                            | Action::Restart
+                            | Action::RevealFile
+                            | Action::Later
+                    ),
+                    "{screen:?} 不该有 {:?}",
+                    button.action
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn macos_is_told_apart_before_anything_that_could_fall_back_to_windows() {
+        use super::linux::{fallback_platform, host_platform};
+        use super::{Platform, announce_version_for, evaluate_manifest_for, no_package_message};
+        use zssh_update::linux::Flavor;
+
+        if cfg!(target_os = "macos") {
+            assert_eq!(host_platform(), Platform::MacOs);
+            assert_eq!(fallback_platform(), Platform::MacOs);
+        } else {
+            assert_ne!(host_platform(), Platform::MacOs);
+        }
+        assert!(matches!(
+            no_package_message(&Platform::MacOs),
+            super::UpdateMsg::MacosManualMessage
+        ));
+        assert!(matches!(
+            no_package_message(&Platform::Windows),
+            super::UpdateMsg::NoPackageMessage
+        ));
+
+        // 自动检查：macOS 的"只提醒"也算，Linux 没有适用包仍然不自动提醒，Windows 有包照旧。
+        let mac = evaluate_manifest_for(MACOS_MANIFEST, "0.2.14", false, &Platform::MacOs);
+        assert_eq!(
+            announce_version_for(&mac, &Platform::MacOs).as_deref(),
+            Some("0.3.1")
+        );
+        let latest = evaluate_manifest_for(MACOS_MANIFEST, "0.3.1", false, &Platform::MacOs);
+        assert_eq!(announce_version_for(&latest, &Platform::MacOs), None);
+        let linux = evaluate_manifest_for(
+            FOUND_MANIFEST,
+            "0.2.14",
+            false,
+            &Platform::Linux(Flavor::Tar),
+        );
+        assert_eq!(linux.kind, CheckKind::FoundManual);
+        assert_eq!(
+            announce_version_for(&linux, &Platform::Linux(Flavor::Tar)),
+            None
+        );
+        let windows = evaluate_manifest_for(FOUND_MANIFEST, "0.2.14", false, &Platform::Windows);
+        assert_eq!(
+            announce_version_for(&windows, &Platform::Windows).as_deref(),
+            Some("0.3.1")
+        );
+    }
+
+    #[test]
+    fn the_macos_manual_text_exists_in_both_languages() {
+        use crate::i18n::Msg as _;
+        let zh = super::UpdateMsg::MacosManualMessage.zh();
+        let en = super::UpdateMsg::MacosManualMessage.en();
+        assert!(
+            zh.contains("不支持自动更新") && zh.contains("应用程序"),
+            "{zh}"
+        );
+        assert!(en.contains("Applications") && en.is_ascii(), "{en}");
     }
 
     #[test]

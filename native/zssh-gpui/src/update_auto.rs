@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ::gpui::App;
+#[cfg(test)]
 use zssh_update::Package;
 
 use crate::{product, update};
@@ -42,14 +43,25 @@ fn check_interval() -> Duration {
 }
 
 /// 一次检查的结果要不要提示用户：有包、比当前新、没被「跳过」、这次运行里还没提示过这个版本。
+#[cfg(test)]
 pub fn should_announce_found(
     prefs: &zssh_core::updater::UpdatePrefs,
     current: &str,
     package: &Package,
     announced: Option<&str>,
 ) -> bool {
-    zssh_core::updater::should_announce(prefs, current, &package.version, false)
-        && announced != Some(package.version.as_str())
+    should_announce_version(prefs, current, &package.version, announced)
+}
+
+/// 同上，只给版本号：macOS 只提醒、没有 `Package`，也走这条判断。
+pub fn should_announce_version(
+    prefs: &zssh_core::updater::UpdatePrefs,
+    current: &str,
+    version: &str,
+    announced: Option<&str>,
+) -> bool {
+    zssh_core::updater::should_announce(prefs, current, version, false)
+        && announced != Some(version)
 }
 
 fn now_secs() -> i64 {
@@ -86,16 +98,17 @@ async fn check_once() -> Option<update::Checked> {
     if let Ok(db) = crate::host_db::open_database() {
         let _ = zssh_core::updater::record_check(&db, now_secs());
     }
-    let package = checked.package.clone()?;
+    // 有包的新版本，或 macOS 的「只提醒」新版本；其余情况（含 Linux 没有适用包）不自动提醒。
+    let version = update::auto_announce_version(&checked)?;
     // Linux：这个版本本进程里已经装好、只差重启，就不用再提醒一遍。
-    if update::awaiting_restart(&package.version).is_some() {
+    if update::awaiting_restart(&version).is_some() {
         return None;
     }
     let mut announced = ANNOUNCED.lock().ok()?;
-    if !should_announce_found(&prefs, &current, &package, announced.as_deref()) {
+    if !should_announce_version(&prefs, &current, &version, announced.as_deref()) {
         return None;
     }
-    *announced = Some(package.version.clone());
+    *announced = Some(version);
     Some(checked)
 }
 

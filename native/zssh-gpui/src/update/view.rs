@@ -299,7 +299,7 @@ impl UpdateDemo {
                 div()
                     .flex_none()
                     .typo(Role::Body, tokens)
-                    .child(t(UpdateMsg::NoPackageMessage))
+                    .child(t(super::no_package_message(&super::host_platform())))
                     .into_any_element(),
             ),
             (Screen::Installing, _) => {

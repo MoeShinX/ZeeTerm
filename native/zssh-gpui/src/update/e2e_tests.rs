@@ -1167,3 +1167,89 @@ mod linux_chain {
         }
     }
 }
+
+/// macOS：只提醒有新版本，引导到发布页。检查链路用同一套本机服务，Windows / Linux 上也能跑。
+mod macos_notice {
+    use super::{
+        CheckKind, Checked, Fixture, ManifestSource, Platform, Route, block_on, check_with, client,
+        keys, publish,
+    };
+    use crate::update::DownloadState;
+    use crate::update::layout::{self, Action};
+
+    fn check_mac(fixture: &Fixture, current: &str, pubkey: Result<&str, &String>) -> Checked {
+        let sources = [ManifestSource::Url(fixture.url("/latest.json"))];
+        block_on(check_with(
+            current,
+            &sources,
+            &client(),
+            true,
+            pubkey,
+            &Platform::MacOs,
+        ))
+    }
+
+    #[test]
+    fn a_newer_manifest_is_only_a_notice_and_nothing_but_the_manifest_is_requested() {
+        let keys = keys();
+        let installer = b"installer".to_vec();
+        let (fixture, _) = publish(
+            &keys,
+            "1.4.0",
+            "1.4.0",
+            &installer,
+            Route::Ok(installer.clone()),
+        );
+        // 公钥是占位值也无所谓：macOS 不验签，只读版本号和说明。
+        let checked = check_mac(&fixture, "1.3.0", Ok("PLACEHOLDER"));
+        assert_eq!(checked.kind, CheckKind::FoundManual, "{}", checked.status);
+        assert!(checked.package.is_none(), "不能带安装包");
+        assert_eq!(checked.release_version.as_deref(), Some("1.4.0"));
+        assert_eq!(checked.notes.as_deref(), Some("修复若干问题\n新增在线更新"));
+        assert_eq!(checked.published.as_deref(), Some("2026-11-03T08:00:00Z"));
+        assert!(
+            checked.status.contains("发现新版本 1.4.0") && checked.status.contains("应用程序"),
+            "{}",
+            checked.status
+        );
+        assert!(
+            !checked.status.contains(&fixture.base),
+            "清单里的网址不能进提示：{}",
+            checked.status
+        );
+        assert_eq!(fixture.hits(), 1, "只读了清单，没有碰安装包");
+
+        // 界面：这一屏只有「跳过 / 关闭 / 打开发布页」，没有任何下载、安装、重启动作。
+        let screen = layout::screen(Some(checked.kind), &DownloadState::Idle);
+        let actions: Vec<Action> = layout::buttons(screen)
+            .iter()
+            .map(|button| button.action)
+            .collect();
+        assert_eq!(
+            actions,
+            vec![Action::Skip, Action::Close, Action::OpenReleasePage]
+        );
+    }
+
+    #[test]
+    fn latest_and_unreadable_manifests_behave_like_other_platforms() {
+        let keys = keys();
+        let installer = b"installer".to_vec();
+        let (fixture, _) = publish(
+            &keys,
+            "1.4.0",
+            "1.4.0",
+            &installer,
+            Route::Ok(installer.clone()),
+        );
+        let latest = check_mac(&fixture, "1.4.0", Ok("PLACEHOLDER"));
+        assert_eq!(latest.kind, CheckKind::Latest, "{}", latest.status);
+        assert!(latest.package.is_none() && latest.release_version.is_none());
+
+        // 清单读不到：和其他平台一样给检查失败的原因。
+        let missing = Fixture::start();
+        let failed = check_mac(&missing, "1.3.0", Ok("PLACEHOLDER"));
+        assert_eq!(failed.kind, CheckKind::Failed);
+        assert!(failed.status.contains("404"), "{}", failed.status);
+    }
+}
