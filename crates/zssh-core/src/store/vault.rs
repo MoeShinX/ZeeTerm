@@ -452,6 +452,8 @@ fn loader() -> &'static KeyLoader {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FailureKind {
     /// 这台机器上没有 Secret Service（没有 D-Bus 会话 / 没人提供服务）。**只有这一类**可以降级到文件。
+    /// macOS 的登录钥匙串总是在的，`classify` 不会给出这一类（只有测试构造它）。
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     Absent,
     /// 钥匙串被锁住 / 解锁被取消 / 访问被拒绝。降级会让用户点一次"取消"就悄悄换成文件，所以报错。
     Locked,
@@ -758,7 +760,7 @@ struct SecretServiceStore;
 
 /// 调试构建专用：`ZSSH_VAULT_MEMORY=1` 时用进程内的内存"钥匙串"（macOS 上跑集成测试和原生测试时用，
 /// 不碰用户真实的登录钥匙串）。发行版里没有这条路径（AGENTS.md 的测试钩子约定）。
-#[cfg(all(target_os = "macos", debug_assertions))]
+#[cfg(all(target_os = "macos", debug_assertions, not(test)))]
 fn memory_store_enabled() -> bool {
     std::env::var_os("ZSSH_VAULT_MEMORY").is_some_and(|value| value == "1")
 }
