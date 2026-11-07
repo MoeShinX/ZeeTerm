@@ -1285,7 +1285,12 @@ mod tests {
             .expect_err("解不开必须是错误，不是 None 也不是崩溃");
         let message = error.to_string();
         assert!(message.contains("无法解密"), "{message}");
-        assert!(message.contains("另一个 Windows 用户"), "{message}");
+        let other_user = if cfg!(windows) {
+            "另一个 Windows 用户"
+        } else {
+            "另一个用户"
+        };
+        assert!(message.contains(other_user), "{message}");
         assert!(!message.contains("hunter2"), "错误信息里不能带正文");
         assert_eq!(std::fs::read(&path).unwrap(), before, "文件不能被删或改");
 

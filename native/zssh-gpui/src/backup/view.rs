@@ -891,7 +891,12 @@ mod tests {
     fn an_unreadable_backup_says_why_and_shows_the_file_stamp() {
         let (title, sub) = row_texts(&detail(false));
         assert_eq!(title, "20260101-010203");
-        assert_eq!(sub, "这份备份读不了（可能是换了 Windows 用户保存的）");
+        let expected = if cfg!(windows) {
+            "这份备份读不了（可能是换了 Windows 用户保存的）"
+        } else {
+            "这份备份读不了（可能是另一个用户或另一台电脑保存的，或本机的资料库密钥不可用）"
+        };
+        assert_eq!(sub, expected);
     }
 
     #[test]
