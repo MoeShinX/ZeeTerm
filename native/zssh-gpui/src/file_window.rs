@@ -143,7 +143,15 @@ pub fn is_open(cx: &App) -> bool {
 
 /// 把一个文件视图交给文件窗口：窗口开着就放进去当前标签，没有就新开一个。
 /// 视图原来所在的地方（主窗口的标签 / 停靠面板）要先摘干净，视图不能同时在两个地方。
+///
+/// 真正的交接推迟到当前这一轮更新结束之后：调用方几乎都在 `MainWindow` 的更新里（右键菜单、拖动松手），
+/// 这时新开的文件窗口会立刻画第一帧，画标签要读 `MainWindow`（能不能并排到终端），而它正被借出，
+/// 读它就是 gpui 的重复借用 panic（0xc0000409 闪退）。
 pub fn adopt(cx: &mut App, host_id: i64, title: String, view: Entity<SftpDemo>) {
+    cx.defer(move |cx| adopt_now(cx, host_id, title, view));
+}
+
+fn adopt_now(cx: &mut App, host_id: i64, title: String, view: Entity<SftpDemo>) {
     let existing = window_handle(cx);
     if let Some(handle) = existing {
         let (title_in, view_in) = (title.clone(), view.clone());
@@ -1188,5 +1196,50 @@ mod tests {
         assert!(!should_merge_on_close(Some("close"), 2));
         assert!(!should_merge_on_close(None, 2));
         assert!(!should_merge_on_close(Some("乱七八糟"), 2));
+    }
+
+    #[test]
+    fn handing_a_view_to_the_file_window_waits_until_the_current_update_is_over() {
+        // 回归：标签右键「移到文件窗口」（0xc0000409 闪退）。`adopt` 是在 `MainWindow` 的更新里调的，新开的文件
+        // 窗口立刻画第一帧，画标签要读 `MainWindow`（`dock_state`），它正被借出 -> gpui 重复借用 panic。
+        // 所以 `adopt` 本身只能排一个延后的任务，真正开窗 / 加标签的 `adopt_now` 不能在它里面同步执行。
+        let code = include_str!("file_window.rs");
+        let code = code.split("#[cfg(test)]").next().unwrap_or(code);
+        let body = code
+            .split("pub fn adopt(")
+            .nth(1)
+            .and_then(|rest| rest.split("fn adopt_now(").next())
+            .unwrap_or("");
+        assert!(
+            body.contains("cx.defer("),
+            "adopt 要把交接推迟到这轮更新之后"
+        );
+        assert!(body.contains("adopt_now("));
+        assert!(
+            !body.contains("open_window(") && !body.contains("handle.update("),
+            "adopt 里不能同步开窗或更新文件窗口"
+        );
+    }
+
+    #[gpui::test]
+    fn work_deferred_from_inside_an_update_runs_after_the_entity_is_released(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        // `adopt` 靠的就是这一条：在实体 A 的更新里 `defer` 的任务，运行时 A 已经还回来了，能读它；
+        // 同步地读（没有 defer）会是 gpui 的 "already being updated" panic。
+        use gpui::AppContext as _;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        struct Main(u32);
+        let main = cx.new(|_| Main(7));
+        let seen = Rc::new(Cell::new(None));
+        let seen_in = Rc::clone(&seen);
+        let reader = main.clone();
+        cx.update(|cx| {
+            main.update(cx, |_, cx| {
+                cx.defer(move |cx| seen_in.set(Some(reader.read(cx).0)));
+            });
+        });
+        assert_eq!(seen.get(), Some(7));
     }
 }

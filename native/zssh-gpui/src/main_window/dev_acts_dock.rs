@@ -442,6 +442,7 @@ const DOCK_KNOWN: &[&str] = &[
     "sftp_follow",
     "sftp_ui",
     "files_move",
+    "panic_now",
     "file_window_setting",
     "files_assert",
     "files_dup",
@@ -846,6 +847,8 @@ pub(super) fn run_dock(
             let id = this.docks.active_sftp.ok_or("当前没有显示 SFTP 标签")?;
             this.move_sftp_tab_to_file_window(id, window, cx);
         }
+        // panic_now：故意 panic 一次，验证 panic hook 把记录写进数据目录的 logs/panic.log（见 `panic_log.rs`）
+        "panic_now" => panic!("dev panic_now: 自检用的故意 panic"),
         // files_dock：把当前显示的 SFTP 标签并排到这台主机的终端右侧（和标签右键「并排到终端」同一个方法）
         "files_dock" => {
             let id = this.docks.active_sftp.ok_or("当前没有显示 SFTP 标签")?;

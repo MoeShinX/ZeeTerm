@@ -63,6 +63,7 @@ mod main_window;
 mod menu_kit;
 mod migrate;
 mod os_icons;
+mod panic_log;
 mod product;
 mod protocol_backend;
 mod proxies;
@@ -152,6 +153,8 @@ fn main() {
     }
     // 先确认有正式的数据目录：拿不到就提示退出，不让凭据库、主机库落进会被清理的临时目录。
     settings::ensure_data_dir_or_exit();
+    // 出货版 panic 之后进程直接没了：先装 hook，把 panic 的位置和消息记到数据目录的 logs/panic.log。
+    panic_log::install();
     // Linux / macOS 的本机密钥：后备密钥文件放进数据目录，并在后台先把密钥取出来缓存好，
     // 免得界面线程上第一次保存 / 查看密码时去等钥匙串（见 `zssh_core::store::secrets`）。
     #[cfg(unix)]
