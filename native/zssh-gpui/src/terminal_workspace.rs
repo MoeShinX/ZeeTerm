@@ -3068,6 +3068,11 @@ impl TerminalWorkspace {
             return;
         }
 
+        // macOS：Cmd 组合是应用快捷键，上面没接住的也不发给远端（否则 Cmd+K 这类会把字母打进去）。
+        if cfg!(target_os = "macos") && keystroke.modifiers.platform {
+            return;
+        }
+
         let Some(app_cursor) = self.pane().map(|pane| pane.pump().app_cursor()) else {
             return;
         };
@@ -3075,7 +3080,11 @@ impl TerminalWorkspace {
             key: &keystroke.key,
             key_char: keystroke.key_char.as_deref(),
             ctrl: keystroke.modifiers.control,
-            alt: keystroke.modifiers.alt,
+            alt: alt_as_meta(
+                keystroke.modifiers.alt,
+                keystroke.key_char.is_some(),
+                cfg!(target_os = "macos"),
+            ),
             shift: keystroke.modifiers.shift,
             app_cursor,
         };
@@ -4337,6 +4346,15 @@ impl Render for TerminalWorkspace {
     }
 }
 
+/// Alt / Option 要不要当 Meta（在字符前补 ESC）。
+///
+/// Windows / Linux：Alt 一律是 Meta，和以前一样。macOS：Option 默认不当 Meta（和系统自带的终端一致）——
+/// 德语、北欧、西班牙语等键盘的 `@ [ ] { } | \ ~` 都靠 Option 打出来，系统已经把组合好的字符放进 `key_char`，
+/// 要原样发出去；没有字符的键（方向键、退格这类）仍然带上修饰键参数。
+fn alt_as_meta(alt: bool, has_char: bool, macos: bool) -> bool {
+    if macos { alt && !has_char } else { alt }
+}
+
 /// 预览框最多显示的行数 / 字符数：几万行的剪贴板不能整段塞进界面。
 const PASTE_PREVIEW_LINES: usize = 30;
 const PASTE_PREVIEW_CHARS: usize = 4000;
@@ -4895,6 +4913,24 @@ fn indexed_color(index: u8, ansi: &[u32; 16]) -> Hsla {
         }
     };
     ::gpui::rgb(rgb).into()
+}
+
+#[cfg(test)]
+mod alt_meta_tests {
+    use super::alt_as_meta;
+
+    #[test]
+    fn alt_is_meta_except_for_option_characters_on_macos() {
+        // Windows / Linux：和以前一样，Alt 一律补 ESC。
+        assert!(alt_as_meta(true, true, false));
+        assert!(alt_as_meta(true, false, false));
+        // macOS：Option 打出来的字符原样发；没有字符的键（方向键）仍带修饰键。
+        assert!(!alt_as_meta(true, true, true));
+        assert!(alt_as_meta(true, false, true));
+        // 没按 Alt 永远不补。
+        assert!(!alt_as_meta(false, true, false));
+        assert!(!alt_as_meta(false, true, true));
+    }
 }
 
 #[cfg(test)]
