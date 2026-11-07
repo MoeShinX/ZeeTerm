@@ -21,9 +21,12 @@
 //!   minimal 当 low、medium/xhigh 当 high——等级列表由 A1 的能力识别给出，这里原样透传）。
 //!   `Off` / `Budget` 不发 `reasoning_effort`（Chat Completions 没有 token 预算参数）。
 //!   DeepSeek 另有开关 `thinking: {"type": "enabled" | "disabled"}`，默认开：
-//!   [`OpenAiOptions::thinking_toggle`] 为 `Auto` 时模型名含 `deepseek` 才发——`Off` 发
+//!   [`OpenAiOptions::thinking_toggle`] 为 `Auto` 时模型名含 `deepseek` **并且** Base URL 是
+//!   DeepSeek 官方（`*.deepseek.com`，见 [`options_for_endpoint`]）才发——`Off` 发
 //!   `disabled`，`Effort` / `Budget` 发 `enabled`；其它服务一律不发这个字段（不认识的字段，
-//!   严格的服务会 400）。
+//!   严格的服务会 400）。网关转发的 DeepSeek 模型不自动发：New API 这类网关会以
+//!   "thinking is not supported on /v1/chat/completions" 拒掉整个请求，宁可少一个开关
+//!   （思考按模型默认开）也不能让请求失败；网关确实认这个字段时在配置里手动打开。
 //!
 //! # 多轮：assistant 历史里的 `reasoning_content`
 //! 任务卡写的是「DeepSeek 多轮时 assistant 历史消息不能带回 `reasoning_content`」。
@@ -86,7 +89,8 @@ pub struct OpenAiOptions {
     pub max_completion_tokens: Switch,
     /// assistant 历史里带不带 `reasoning_content`；Auto = 模型名含 `deepseek`。
     pub echo_reasoning_content: Switch,
-    /// 发不发 DeepSeek 风格的 `thinking: {type}` 开关；Auto = 模型名含 `deepseek`。
+    /// 发不发 DeepSeek 风格的 `thinking: {type}` 开关；Auto = 模型名含 `deepseek`
+    /// （经 [`options_for_endpoint`] 后还要求 Base URL 是 DeepSeek 官方）。
     pub thinking_toggle: Switch,
     /// 发 `stream_options.include_usage`。
     pub include_usage: bool,
@@ -142,6 +146,31 @@ pub fn endpoint_url(base_url: &str) -> String {
     } else {
         format!("{base}/chat/completions")
     }
+}
+
+/// Base URL 的主机名是不是 DeepSeek 官方（`deepseek.com` 或它的子域名）。
+fn is_deepseek_host(base_url: &str) -> bool {
+    let rest = base_url.trim();
+    let rest = rest.split_once("://").map_or(rest, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    let host = host
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let host = host.trim_end_matches('.');
+    host == "deepseek.com" || host.ends_with(".deepseek.com")
+}
+
+/// 按接口地址收窄 `Auto` 开关：`thinking_toggle` 是 Auto 而 Base URL 不是 DeepSeek 官方时
+/// 当成 Off（理由见模块文档「思考」一条）。手动 On / Off 原样保留。
+pub fn options_for_endpoint(options: &OpenAiOptions, base_url: &str) -> OpenAiOptions {
+    let mut options = options.clone();
+    if options.thinking_toggle == Switch::Auto && !is_deepseek_host(base_url) {
+        options.thinking_toggle = Switch::Off;
+    }
+    options
 }
 
 /// 温度四舍五入到三位小数：`f32` 直接转 JSON 会变成 `0.699999988…`。
@@ -822,6 +851,44 @@ mod tests {
             },
         );
         assert_eq!(body["thinking"], json!({"type": "disabled"}));
+    }
+
+    #[test]
+    fn the_auto_thinking_toggle_is_only_sent_to_the_official_deepseek_api() {
+        let mut req = request();
+        req.model = "deepseek-v4-flash".into();
+        req.reasoning = ReasoningParam::Effort("high".into());
+        let auto = OpenAiOptions::default();
+        for official in [
+            "https://api.deepseek.com",
+            "https://api.deepseek.com/v1/",
+            "https://API.DeepSeek.com.:443/beta",
+        ] {
+            let body = build_body(&req, &options_for_endpoint(&auto, official));
+            assert_eq!(body["thinking"], json!({"type": "enabled"}), "{official}");
+        }
+        for gateway in [
+            "https://gateway.example.com/v1",
+            "https://deepseek.com.example.net/v1",
+            "https://notdeepseek.com/v1",
+            "https://api.deepseek.com@gateway.example.com/v1",
+            "http://127.0.0.1:8080/v1",
+        ] {
+            let body = build_body(&req, &options_for_endpoint(&auto, gateway));
+            assert!(body.get("thinking").is_none(), "{gateway}");
+            // 思考等级照常走标准字段。
+            assert_eq!(body["reasoning_effort"], "high", "{gateway}");
+        }
+        // 手动打开的照样发。
+        let forced = OpenAiOptions {
+            thinking_toggle: Switch::On,
+            ..Default::default()
+        };
+        let body = build_body(
+            &req,
+            &options_for_endpoint(&forced, "https://gateway.example.com/v1"),
+        );
+        assert_eq!(body["thinking"], json!({"type": "enabled"}));
     }
 
     fn history_with_reasoning() -> Vec<Message> {

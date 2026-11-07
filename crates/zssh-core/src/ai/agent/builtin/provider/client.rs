@@ -87,7 +87,10 @@ pub fn build_http_request(
             }
             (
                 openai_chat::endpoint_url(&config.base_url),
-                openai_chat::build_body(request, &config.openai),
+                openai_chat::build_body(
+                    request,
+                    &openai_chat::options_for_endpoint(&config.openai, &config.base_url),
+                ),
                 headers,
             )
         }
