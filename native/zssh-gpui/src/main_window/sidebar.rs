@@ -1355,7 +1355,12 @@ mod tests {
     #[test]
     fn the_sidebar_footer_has_only_settings_with_a_tooltip() {
         let tips: Vec<_> = FOOTER_ACTIONS.iter().map(|a| t(a.tooltip)).collect();
-        assert_eq!(tips, ["设置与管理 (Ctrl+,)"]);
+        let expected_tip = if cfg!(target_os = "macos") {
+            "设置与管理 (Cmd+,)"
+        } else {
+            "设置与管理 (Ctrl+,)"
+        };
+        assert_eq!(tips, [expected_tip]);
         let labels: Vec<_> = FOOTER_ACTIONS.iter().map(|a| a.label.map(t)).collect();
         assert_eq!(labels, [Some("设置")], "设置是图标加文字");
     }
@@ -1389,7 +1394,14 @@ mod tests {
         assert_eq!(SidebarMsg::ThemeLight.zh(), "浅色");
         assert_eq!(SidebarMsg::ThemeDark.zh(), "深色");
         assert_eq!(SidebarMsg::ThemeFollowSystem.zh(), "跟随系统");
-        assert_eq!(SidebarMsg::SettingsTooltip.zh(), "设置与管理 (Ctrl+,)");
+        assert_eq!(
+            SidebarMsg::SettingsTooltip.zh(),
+            if cfg!(target_os = "macos") {
+                "设置与管理 (Cmd+,)"
+            } else {
+                "设置与管理 (Ctrl+,)"
+            }
+        );
         assert_eq!(SidebarMsg::SettingsLabel.zh(), "设置");
         assert_eq!(SidebarMsg::NoMatch.zh(), "没有匹配的主机");
         assert_eq!(SidebarMsg::ExpandSidebar.zh(), "展开侧边栏");

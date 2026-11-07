@@ -19,6 +19,9 @@ fn version_text(version: &str) -> String {
 
 /// 有没有能开窗口的显示环境（Wayland 或 X11）。两个变量都没有（或是空串）时 GPUI 会退到无头模式：
 /// 进程照常运行，但永远不出窗口，从 SSH 会话、cron、systemd 服务里启动的人只会看到"卡住了"。
+///
+/// 只有 Linux 用得上（macOS 从 Finder 启动永远有窗口）；测试构建里在别的平台也编译，免得测试被门掉。
+#[cfg(any(target_os = "linux", test))]
 pub fn has_display(wayland: Option<OsString>, x11: Option<OsString>) -> bool {
     [wayland, x11]
         .into_iter()

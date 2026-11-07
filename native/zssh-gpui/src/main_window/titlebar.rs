@@ -1257,10 +1257,32 @@ mod tests {
         assert_eq!(TitlebarMsg::CollapseSidebar.zh(), "收起侧边栏");
         assert_eq!(TitlebarMsg::Hosts.zh(), "主机");
         assert_eq!(TitlebarMsg::AiAssistant.zh(), "AI 助手 (Ctrl+Shift+A)");
-        assert_eq!(TitlebarMsg::Files.zh(), "文件 (Ctrl+Shift+F)");
+        // 快捷键提示按平台给：macOS 用 Cmd，没有 Cmd 版的动作照旧写 Ctrl。
+        assert_eq!(
+            TitlebarMsg::Files.zh(),
+            if cfg!(target_os = "macos") {
+                "文件 (Cmd+Shift+F)"
+            } else {
+                "文件 (Ctrl+Shift+F)"
+            }
+        );
         assert_eq!(TitlebarMsg::FilesSshOnly.zh(), "文件（仅 SSH 主机可用）");
-        assert_eq!(TitlebarMsg::Settings.zh(), "设置与管理 (Ctrl+,)");
-        assert_eq!(TitlebarMsg::NewTab.zh(), "新标签 (Ctrl+Shift+T)");
+        assert_eq!(
+            TitlebarMsg::Settings.zh(),
+            if cfg!(target_os = "macos") {
+                "设置与管理 (Cmd+,)"
+            } else {
+                "设置与管理 (Ctrl+,)"
+            }
+        );
+        assert_eq!(
+            TitlebarMsg::NewTab.zh(),
+            if cfg!(target_os = "macos") {
+                "新标签 (Cmd+T)"
+            } else {
+                "新标签 (Ctrl+Shift+T)"
+            }
+        );
         assert_eq!(TitlebarMsg::AiRunning.zh(), "AI 正在这个终端里执行命令");
         assert_eq!(TitlebarMsg::CloseTab.zh(), "关闭标签");
         assert_eq!(TitlebarMsg::BackToMain.zh(), "移回主窗口");

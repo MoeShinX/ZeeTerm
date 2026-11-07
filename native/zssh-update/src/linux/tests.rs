@@ -977,6 +977,9 @@ mod on_disk {
         (prefix, TarLayout::detect(&exe))
     }
 
+    /// 只在 Linux 上跑：跑的是仓库里真正给 Linux 用的 `install.sh` / `uninstall.sh`
+    /// （`readlink -f`、`install -D` 这些是 GNU 工具的行为，macOS 的 `/bin/sh` 没有）。
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_installer_layout_gets_programs_icons_desktop_file_and_manifest_updated_together() {
         let root = temp_dir("prefix-ok");
@@ -1069,6 +1072,7 @@ mod on_disk {
     }
 
     /// 清单被改坏：含 `..` / `.` 段的路径即使以前缀开头也不能删，前缀之外的更不能。
+    #[cfg(target_os = "linux")]
     #[test]
     fn uninstall_skips_manifest_paths_that_climb_out_with_dot_segments() {
         let root = temp_dir("uninstall-dotdot");
@@ -1110,6 +1114,8 @@ mod on_disk {
         assert!(!prefix.join("lib/zeeterm/zeeterm").exists());
     }
 
+    /// 只给上面两个在 Linux 上跑的 on-disk 测试用。
+    #[cfg(target_os = "linux")]
     fn walk_non_dirs(root: &Path) -> Vec<String> {
         let mut found = Vec::new();
         let mut pending = vec![root.to_path_buf()];

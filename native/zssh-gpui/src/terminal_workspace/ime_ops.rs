@@ -686,6 +686,9 @@ mod gpui_tests {
     /// X11 / Wayland 给 Alt+字母的 `key_char` 是这个字母（模拟器会把它丢掉，所以手工构造）：
     /// 终端发 ESC 前缀加字母；窗口层虽然因为修饰键不只有 Shift 不会再插一遍，但模拟分发
     /// 不看修饰键（更严），这里也要只有一份。
+    ///
+    /// macOS 的 Option 不是 Meta：按下 Option+X 输入法给的就是 `x` 这个字符，终端只发 `x`，
+    /// 不补 ESC（写 `∫` 这类组合字符时更不能补）。
     #[gpui::test]
     fn alt_letter_is_sent_once_with_an_escape_prefix(cx: &mut TestAppContext) {
         let term = Harness::open(cx, true);
@@ -697,6 +700,9 @@ mod gpui_tests {
                 key_char: Some("x".to_owned()),
             },
         );
+        #[cfg(target_os = "macos")]
+        assert_eq!(term.sent(), vec![b"x".to_vec()]);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(term.sent(), vec![b"\x1bx".to_vec()]);
     }
 

@@ -148,10 +148,26 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    /// 只有 `opencode.exe` 一个条目的小 zip（内容是一行文字，不是真的可执行文件）。
+    /// 只有可执行文件一个条目的小 zip（内容是一行文字，不是真的可执行文件）。
+    /// Windows 的资产里叫 `opencode.exe`，macOS 的叫 `opencode`，两套夹具各一份。
+    #[cfg(not(target_os = "macos"))]
     const STUB_ZIP: &[u8] = include_bytes!("fixtures/opencode-stub.zip");
-    /// `STUB_ZIP` 的 SHA-256（PowerShell `Get-FileHash` 算的）。
+    #[cfg(not(target_os = "macos"))]
     const STUB_SHA256: &str = "9ab4c3fcf1d0ab2b6a66d02a2134cb78eb745c4fd02c96b1912432e6e14669ee";
+    #[cfg(target_os = "macos")]
+    const STUB_ZIP: &[u8] = include_bytes!("fixtures/opencode-stub-macos.zip");
+    #[cfg(target_os = "macos")]
+    const STUB_SHA256: &str = "c70ecb8e7c5e2bc15af98f991757a899a0876e33bbf640fd22a71ab411ad0b04";
+
+    /// 桩用的资产名：macOS 是 arm64 的 zip，其他平台沿用 Windows 的 zip 夹具
+    /// （Linux 的资产是 tar.gz，这条下载解压路径在 Linux 上用另一套夹具）。
+    fn stub_asset() -> &'static str {
+        if cfg!(target_os = "macos") {
+            download::MACOS_ARM64_ASSET
+        } else {
+            download::WINDOWS_X64_ASSET
+        }
+    }
 
     /// 本地桩：每个连接回答一个固定响应（`body` 是整包字节），可以故意发慢。
     async fn serve_once(body: Vec<u8>, slow: bool) -> (String, tokio::task::JoinHandle<()>) {
@@ -188,7 +204,7 @@ mod tests {
     fn release(url: &str, size: u64, sha256: &str) -> ReleaseInfo {
         ReleaseInfo {
             version: "v9.9.9".to_owned(),
-            asset_name: download::WINDOWS_X64_ASSET.to_owned(),
+            asset_name: stub_asset().to_owned(),
             size,
             sha256: sha256.to_owned(),
             download_url: url.to_owned(),
@@ -227,7 +243,7 @@ mod tests {
         .await
         .expect("下载并解压");
         server.abort();
-        assert_eq!(exe, dir.join("opencode.exe"));
+        assert_eq!(exe, dir.join(download::installed_binary_name()));
         assert!(exe.is_file());
         assert!(!dir.join("opencode-download.zip").exists(), "压缩包要删掉");
         let last = progress.last().copied().expect("至少回调一次进度");

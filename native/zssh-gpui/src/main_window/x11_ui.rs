@@ -1013,9 +1013,12 @@ mod tests {
 
     use zssh_core::x11::local::VcXsrvInstall;
 
+    /// 只给 Linux 上的会话 `DISPLAY` 测试用。
+    #[cfg(target_os = "linux")]
+    use super::session_headline;
     use super::{
         DisplayMode, InstallError, InstallPhase, LocalXStatus, X11Prefs, failure_text,
-        progress_text, server_available, session_headline, status_headline,
+        progress_text, server_available, status_headline,
     };
 
     fn status(installed: Option<&str>, running: &[u16], owned: Option<u16>) -> LocalXStatus {
@@ -1048,6 +1051,8 @@ mod tests {
         assert!(server_available(&custom, &status(None, &[], None)));
     }
 
+    /// Linux 的 X11：会话里的 `DISPLAY` 算可用服务器，状态行写「当前会话」；没有时提 Xwayland。
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_session_display_counts_as_a_usable_server_and_is_named_in_the_status_line() {
         let none = status(None, &[], None);
