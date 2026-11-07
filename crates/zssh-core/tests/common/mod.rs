@@ -501,7 +501,7 @@ pub const STALE_DIR_AGE: std::time::Duration = std::time::Duration::from_secs(36
 pub async fn list_remote_temp_dirs(
     channel: &zssh_core::sftp::SftpChannel,
 ) -> Result<Vec<(String, Option<u32>)>, zssh_core::sftp::SftpError> {
-    let entries = channel.read_dir("/tmp").await?;
+    let entries = channel.read_dir(remote_temp_root()).await?;
     Ok(entries
         .into_iter()
         .filter(|entry| entry.name.starts_with(REMOTE_TEMP_PREFIX) && entry.kind.is_dir())
@@ -532,7 +532,7 @@ pub async fn sweep_stale_remote_dirs(
         if !stale {
             continue;
         }
-        let path = format!("/tmp/{name}");
+        let path = format!("{}/{name}", remote_temp_root());
         if delete_remote_dir(connection, channel, &path).await {
             removed += 1;
             println!("清扫：删掉上次遗留的 {path}");
@@ -541,6 +541,37 @@ pub async fn sweep_stale_remote_dirs(
         }
     }
     removed
+}
+
+/// 远端临时目录放在哪：`ZSSH_TEST_REMOTE_ROOT`（测试服务器上专给这些测试用的目录，几台机器共用一台
+/// 测试服务器时互不清扫对方的东西）；没设，或者不是一个安全的绝对路径，就打印原因并照旧用 `/tmp`。
+/// 不 panic：联网测试缺这个变量也要能跑。
+pub fn remote_temp_root() -> &'static str {
+    static ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| match std::env::var("ZSSH_TEST_REMOTE_ROOT") {
+        Ok(raw) if !raw.is_empty() => match checked_remote_root(&raw) {
+            Some(root) => root,
+            None => {
+                // 不打印值本身：它可能带测试服务器上的用户名。
+                println!("ZSSH_TEST_REMOTE_ROOT 不是可用的绝对路径（不能是 /、/tmp，不能含引号、换行或 ..），改用 /tmp");
+                "/tmp".to_owned()
+            }
+        },
+        _ => {
+            println!("没有设置 ZSSH_TEST_REMOTE_ROOT，远端临时目录用 /tmp");
+            "/tmp".to_owned()
+        }
+    })
+}
+
+/// 远端测试目录要拼进 shell 命令（`rm -rf -- '<路径>'`），只收不会逃出单引号、也不会指到上层的绝对路径。
+fn checked_remote_root(raw: &str) -> Option<String> {
+    let root = raw.trim_end_matches('/');
+    let safe = root.starts_with('/')
+        && root != "/tmp"
+        && !root.contains(['\'', '\n', '\r'])
+        && !root.split('/').any(|part| part == "..");
+    (safe && !root.is_empty()).then(|| root.to_owned())
 }
 
 /// 删一个远端目录：先走自己的递归删除，删不动用 shell 的 `rm -rf` 兜底
@@ -604,7 +635,7 @@ impl RemoteTempDir {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or_default();
-        let path = format!("/tmp/{REMOTE_TEMP_PREFIX}{tag}-{nanos:x}");
+        let path = format!("{}/{REMOTE_TEMP_PREFIX}{tag}-{nanos:x}", remote_temp_root());
         channel.create_dir(&path).await.expect("建远端临时目录");
         Self {
             path,

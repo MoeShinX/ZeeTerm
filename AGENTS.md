@@ -43,6 +43,7 @@ ZeeTerm 要能在**别人的 Windows 10/11** 上用，不能只照着开发这�
 ## 测试服务器
 
 - 连接测试只从环境变量读取：`ZSSH_TEST_HOST`、`ZSSH_TEST_PORT`、`ZSSH_TEST_USER`，以及 `ZSSH_TEST_PASSWORD` 或 `ZSSH_TEST_KEY_PATH`（`ZSSH_TEST_KEY_PASSPHRASE`）；可选 `ZSSH_TEST_SOCKS5`（测代理）。没设置就跳过对应测试并打印原因。
+- 可选 `ZSSH_TEST_REMOTE_ROOT`：测试服务器上专给联网测试用的远端临时目录（绝对路径，不能是 `/`、`/tmp`，不能含引号、换行或 `..`）。几台机器共用一台测试服务器时设它，各自的临时目录和清扫互不影响；没设或不合格就打印原因、照旧用 `/tmp`，不会让测试失败。
 - **任何密码、私钥、IP、主机名都不能写进代码、测试、提交、文档和报告。**报告里写"测试服务器"就行。
 - 完整联网档（SFTP 全套、断线续传、AI 驱动、认证、代理 / 跳板、连接池等）在 `common::full_live()` 里检查 `ZSSH_LIVE_FULL=1`；日常检查不设它。
 
