@@ -17,6 +17,8 @@ mod agent_tools;
 mod agents;
 mod ai_terminals;
 mod app_lock;
+#[cfg(any(target_os = "macos", test))]
+mod app_menu;
 mod app_prefs;
 mod app_theme;
 mod armed;
@@ -305,6 +307,10 @@ fn main() {
 
         // 文件窗口把标签交回主窗口时要找到它。
         file_window::register_main(cx, handle, view.downgrade());
+
+        // macOS：应用菜单（关于 / 设置 / 隐藏 / 退出）和 Cmd+Q 等应用级快捷键，任何窗口里都走主窗口的流程。
+        #[cfg(target_os = "macos")]
+        app_menu::install(cx, handle, view.clone());
 
         tray::spawn(cx, handle, view.clone());
 

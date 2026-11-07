@@ -1549,16 +1549,10 @@ impl MainWindow {
         }
         // macOS：同样的窗口级操作走 Cmd，而不是 Ctrl。终端里的 Ctrl+C 仍然是中断，
         // 不能被这里的复制粘贴抢走（终端的复制粘贴在 `terminal_workspace::on_key_down` 里
-        // 单独按 Cmd 处理）。
+        // 单独按 Cmd 处理）。Cmd+Q / Cmd+, / Cmd+H 是应用菜单的快捷键（`app_menu`），不在这里。
         #[cfg(target_os = "macos")]
         if mods.platform && !mods.control && !mods.alt {
             let handled = match key.as_str() {
-                "q" => {
-                    if self.request_quit(cx) {
-                        self.do_quit(window, cx);
-                    }
-                    true
-                }
                 "t" => {
                     self.new_tab(window, cx);
                     true
@@ -1586,10 +1580,6 @@ impl MainWindow {
                 }
                 "f" if mods.shift => {
                     self.open_files(window, cx);
-                    true
-                }
-                "," => {
-                    self.toggle_settings(window, cx);
                     true
                 }
                 _ => false,
