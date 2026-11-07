@@ -749,9 +749,10 @@ impl MainWindow {
                 .map_err(|err| crate::error_text::error_text(&err))?;
             // 用这台主机现在的登录方式连上（池里有就复用；要密码 / 指纹确认照常弹提问）。
             let factory = crate::ssh_backend::factory_for_host(host_id).await?;
+            // 装公钥的命令是 POSIX sh 写法：走 stdin 交给 `sh -s`，登录 shell 是 fish / csh 也能装。
             let output = factory
                 .connection()
-                .exec(&command)
+                .exec_script(&command, std::time::Duration::from_secs(30))
                 .await
                 .map_err(|err| crate::error_text::error_text(&err))?;
             zssh_core::ssh::keygen::parse_install_output(&output)

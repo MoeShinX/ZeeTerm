@@ -853,6 +853,56 @@ impl Connection {
             .await
     }
 
+    /// 在这条连接上跑一段 ZeeTerm 自己写的 POSIX sh 脚本（不带 PTY），返回完整结果。
+    ///
+    /// 不能把脚本当命令行发给 `exec`：sshd 会交给用户的**登录 shell** 解析，fish / csh / tcsh 读不懂
+    /// `$(…)`、`case`、`||` 这些 POSIX 写法，多行脚本里的引号和 `!` 在 csh 里也会炸。所以 exec 的命令只发
+    /// [`SCRIPT_EXEC_COMMAND`]（`sh -s`，没有任何 shell 元字符，任何登录 shell 解析出来都一样），脚本从
+    /// stdin 写进去再发 EOF（见 [`script_stdin`]）。超时、输出截断、退出码的处理和 [`Connection::exec_capture`]
+    /// 完全一样（同一个 `run_exec`）。
+    ///
+    /// 只给 ZeeTerm 内部的探测 / 采集脚本用；用户输入的命令和 AI 生成的命令照旧走 `exec_capture`，它们本来
+    /// 就该在用户的 shell 里跑。
+    pub async fn exec_script_capture(
+        &self,
+        script: &str,
+        wait: Duration,
+        max_stream_bytes: usize,
+    ) -> Result<ExecCapture, ZsshError> {
+        let channel = self.open_session_channel().await?;
+        run_exec(
+            channel,
+            SCRIPT_EXEC_COMMAND,
+            Some(&script_stdin(script)),
+            wait,
+            max_stream_bytes,
+            None,
+        )
+        .await
+    }
+
+    /// 同 [`Connection::exec_script_capture`]，但按 [`Connection::exec`] 的口径返回：只要 stdout，
+    /// 退出码非 0 或超时是错误。给"只关心输出、失败就是失败"的一次性脚本用（装公钥之类）。
+    pub async fn exec_script(&self, script: &str, wait: Duration) -> Result<String, ZsshError> {
+        let capture = self
+            .exec_script_capture(script, wait, EXEC_MAX_STREAM_BYTES)
+            .await?;
+        if capture.timed_out {
+            return Err(ZsshError::Shell(Reason::new(
+                rk::EXEC_FAILED,
+                format!("执行命令失败：{} 秒内没有结束", wait.as_secs()),
+            )));
+        }
+        if capture.exit_code.is_some_and(|code| code != 0) {
+            let stderr = capture.stderr.trim();
+            return Err(ZsshError::Shell(
+                Reason::new(rk::EXEC_NONZERO, format!("命令退出码非 0：{stderr}"))
+                    .with("stderr", stderr),
+            ));
+        }
+        Ok(capture.stdout)
+    }
+
     /// 同 [`Connection::exec_capture`]，但可以在等待期间取消。
     ///
     /// 取消时**关闭执行通道**（服务器上的进程会收到通道关闭，OpenSSH 给它发 SIGHUP；
@@ -902,9 +952,16 @@ impl Connection {
             return Err(reason);
         }
         let stopped = || guard.stop_requested();
-        run_exec(channel, command, wait, max_stream_bytes, Some(&stopped))
-            .await
-            .map_err(|err| err.to_string())
+        run_exec(
+            channel,
+            command,
+            None,
+            wait,
+            max_stream_bytes,
+            Some(&stopped),
+        )
+        .await
+        .map_err(|err| err.to_string())
     }
 
     async fn exec_capture_inner(
@@ -927,9 +984,17 @@ impl Connection {
         match cancel {
             Some(flag) => {
                 let stopped = || flag.load(Ordering::SeqCst);
-                run_exec(channel, command, wait, max_stream_bytes, Some(&stopped)).await
+                run_exec(
+                    channel,
+                    command,
+                    None,
+                    wait,
+                    max_stream_bytes,
+                    Some(&stopped),
+                )
+                .await
             }
-            None => run_exec(channel, command, wait, max_stream_bytes, None).await,
+            None => run_exec(channel, command, None, wait, max_stream_bytes, None).await,
         }
     }
 
@@ -940,6 +1005,22 @@ impl Connection {
             .await?;
         Ok(())
     }
+}
+
+/// [`Connection::exec_script_capture`] 发给 `exec` 的命令。
+///
+/// 选 `sh -s` 而不是 `/bin/sh -s`：命令里没有路径、引号、分号，fish / csh / bash / zsh 解析结果一致；
+/// 按 PATH 找 `sh` 在 `/bin/sh` 不存在的系统（Termux 之类）也能跑，而 sshd 的 exec 环境里 `sh` 总在 PATH 上。
+/// `-s` 明确"从 stdin 读命令"，不依赖 sh 在没有参数时的默认行为。
+pub const SCRIPT_EXEC_COMMAND: &str = "sh -s";
+
+/// 写进 `sh -s` 的 stdin 的内容：脚本包成一个函数，再以 `</dev/null` 调用。
+///
+/// sh 是一边读 stdin 一边执行的：脚本里任何会读 stdin 的命令（`top`、`ps`、没带文件名的 `awk` / `cat`……）
+/// 都会把后面还没执行的脚本文本吃掉，结果只跑了一半。放进函数里 sh 必须先把整个函数读完才开始执行，
+/// 调用时再把函数里的 stdin 指到 `/dev/null`，脚本就读不到自己的文本了。
+pub fn script_stdin(script: &str) -> Vec<u8> {
+    format!("__zssh_script() {{\n{script}\n}}\n__zssh_script </dev/null\n").into_bytes()
 }
 
 /// 工具桥 exec 通道每个流的输出上限（卡片 AI-1：每个流最多 64KB）。
@@ -1004,11 +1085,17 @@ where
 async fn run_exec(
     mut channel: Channel<client::Msg>,
     command: &str,
+    // 要写进远端 stdin 的内容（写完发 EOF）；`None` = 不碰 stdin（和以前一样）。
+    stdin: Option<&[u8]>,
     wait: Duration,
     max_stream_bytes: usize,
     stopped: Option<&(dyn Fn() -> bool + Sync)>,
 ) -> Result<ExecCapture, ZsshError> {
     channel.exec(true, command).await.map_err(exec_failed)?;
+    if let Some(input) = stdin {
+        channel.data(input).await.map_err(exec_failed)?;
+        channel.eof().await.map_err(exec_failed)?;
+    }
 
     let started = Instant::now();
     let mut stdout = Vec::new();

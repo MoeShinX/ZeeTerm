@@ -15,6 +15,9 @@ use crate::ssh::Connection;
 /// 单次采集的时限：超时跳过这一次，不影响终端。
 pub const COLLECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// 采集输出的字节上限：正常一次不到 4KB，留足余量（几十个挂载点、网卡）又不让异常输出无限涨。
+const STATS_MAX_OUTPUT_BYTES: usize = 64 * 1024;
+
 /// CPU 型号探测：只拼在每个连接的**第一次**采集脚本前面（型号不会变），
 /// 和统计脚本同一个 exec 通道跑完，不多一次往返，也不让每次采集都多跑 awk/lscpu。
 ///
@@ -710,11 +713,26 @@ impl StatsCollector {
     ) -> Result<Option<ServerStats>, String> {
         let started = std::time::Instant::now();
         let script = self.script();
-        let output = match tokio::time::timeout(COLLECT_TIMEOUT, connection.exec(&script)).await {
-            Ok(Ok(output)) => output,
+        // 脚本走 stdin 交给 `sh -s`，不经过用户的登录 shell（fish / csh 读不懂 POSIX 写法）。
+        // 里面那层限的是脚本运行的时间；外面这层兜住开通道（对端不理会时开通道会一直等）。
+        let capture = match tokio::time::timeout(
+            COLLECT_TIMEOUT + Duration::from_secs(1),
+            connection.exec_script_capture(&script, COLLECT_TIMEOUT, STATS_MAX_OUTPUT_BYTES),
+        )
+        .await
+        {
+            Ok(Ok(capture)) => capture,
             Ok(Err(error)) => return Err(error.to_string()),
-            Err(_elapsed) => return Ok(None), // 超时：跳过这次，不影响终端
+            Err(_elapsed) => return Ok(None),
         };
+        if capture.timed_out {
+            return Ok(None); // 超时：跳过这次，不影响终端
+        }
+        if capture.exit_code.is_some_and(|code| code != 0) {
+            let stderr = capture.stderr.trim();
+            return Err(format!("命令退出码非 0：{stderr}"));
+        }
+        let output = capture.stdout;
         let mut sample = StatsSample::parse(&output);
         if !sample.parseable {
             // 系统不是 Linux（或 shell 不是 POSIX）：上层可以据此停止采集。

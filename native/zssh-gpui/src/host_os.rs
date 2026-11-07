@@ -51,7 +51,8 @@ pub fn record_output(db: &Database, host_id: i64, output: &str) -> Result<Record
 /// 在已认证的连接上跑探测命令；失败、超时都是 `None`。
 pub async fn probe_output(connection: &Connection) -> Option<String> {
     match connection
-        .exec_capture(OS_PROBE_COMMAND, PROBE_TIMEOUT, PROBE_MAX_BYTES)
+        // 脚本走 stdin 交给 `sh -s`：登录 shell 是 fish / csh 时 `||`、`2>/dev/null` 也不会被它误解析。
+        .exec_script_capture(OS_PROBE_COMMAND, PROBE_TIMEOUT, PROBE_MAX_BYTES)
         .await
     {
         Ok(capture) if !capture.timed_out => Some(capture.stdout),
