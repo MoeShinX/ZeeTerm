@@ -28,7 +28,7 @@ pub const CPU_MODEL_PROBE: &str = r#"cpumodel=$( { awk '/^(model name|cpu model|
 /// 采集脚本。参照 Netcatty `linuxStatsCommand`：每项 `|| echo""` 兜底，
 /// 占内存最多的进程带 BusyBox 的两级回退（`top -b` → 裸 `ps`）。
 /// 字段分隔符 `;`（进程内部）和 `,`（条目之间）都被脚本替换成 `_`，不会串。
-pub const STATS_SCRIPT: &str = "cores=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo \"1\"); cpuraw=$(awk '/^cpu / {total=0; for(i=2;i<=NF;i++) total+=$i; printf \"%d %d\", total, $5}' /proc/stat 2>/dev/null || echo \"\"); percoreraw=$(awk '/^cpu[0-9]/ {total=0; for(i=2;i<=NF;i++) total+=$i; printf \"%d:%d,\", total, $5}' /proc/stat 2>/dev/null | sed 's/,$//' || echo \"\"); meminfo=$(awk '/^MemTotal:/{t=$2} /^MemFree:/{f=$2} /^Buffers:/{b=$2} /^Cached:/{c=$2} /^SReclaimable:/{s=$2} /^SwapTotal:/{st=$2} /^SwapFree:/{sf=$2} END{printf \"%d %d %d %d %d %d\", t/1024, f/1024, b/1024, (c+s)/1024, st/1024, sf/1024}' /proc/meminfo 2>/dev/null || echo \"\"); procs=$(if procraw=$(ps -eo pid,%mem,comm --sort=-%mem 2>/dev/null); then printf \"%s\\n\" \"$procraw\" | awk 'NR>1 && NR<=11 {gsub(/;/, \"_\", $3); printf \"%s;%.1f;%s,\", $1, $2, $3}' | sed 's/,$//'; elif topraw=$(top -b -n 1 2>/dev/null); then printf \"%s\\n\" \"$topraw\" | awk '$1 == \"PID\" {for(i=1;i<=NF;i++){if($i==\"%VSZ\") mem_col=i; else if($i==\"COMMAND\") cmd_col=i} next} $1 ~ /^[0-9]+$/ && mem_col && cmd_col {pct=$(mem_col); gsub(/%/, \"\", pct); cmd=$(cmd_col); gsub(/;/, \"_\", cmd); print pct \";\" $1 \";\" cmd}' | sort -t ';' -k1,1rn | head -10 | awk -F';' '{printf \"%s;%.1f;%s,\", $2, $1, $3}' | sed 's/,$//'; else ps ww 2>/dev/null | awk -v total=$(awk '/^MemTotal:/{print $2}' /proc/meminfo) '$1 ~ /^[0-9]+$/ {v=$3; unit=substr(v,length(v),1); mult=1; if(unit==\"m\"||unit==\"M\")mult=1024; else if(unit==\"g\"||unit==\"G\")mult=1048576; sub(/[mMgG]$/, \"\", v); pct=total>0?v*mult*100/total:0; cmd=$5; gsub(/;/, \"_\", cmd); print pct, $1, cmd}' | sort -rn | head -10 | awk '{printf \"%s;%.1f;%s,\", $2, $1, $3}' | sed 's/,$//'; fi); procscpu=$(if procraw=$(ps -eo pid,%cpu,comm --sort=-%cpu 2>/dev/null); then printf \"%s\\n\" \"$procraw\" | awk -v me=$$ 'NR>1 && $1 != me && $3 != \"ps\" {gsub(/;/, \"_\", $3); printf \"%s;%.1f;%s,\", $1, $2, $3; if (++n >= 10) exit}' | sed 's/,$//'; elif topraw=$(top -b -n 1 2>/dev/null); then printf \"%s\\n\" \"$topraw\" | awk '$1 == \"PID\" {for(i=1;i<=NF;i++){if($i==\"%CPU\") cpu_col=i; else if($i==\"COMMAND\") cmd_col=i} next} $1 ~ /^[0-9]+$/ && cpu_col && cmd_col && $(cmd_col) != \"top\" {pct=$(cpu_col); gsub(/%/, \"\", pct); cmd=$(cmd_col); gsub(/;/, \"_\", cmd); print pct \";\" $1 \";\" cmd}' | sort -t ';' -k1,1rn | head -10 | awk -F';' '{printf \"%s;%.1f;%s,\", $2, $1, $3}' | sed 's/,$//'; fi); net=$(cat /proc/net/dev 2>/dev/null | awk 'NR>2 {gsub(/^[ \\t]+/, \"\"); split($0, a, \":\"); iface=a[1]; if(iface != \"lo\" && iface !~ /^veth/ && iface !~ /^docker/ && iface !~ /^br-/) {split(a[2], b); printf \"%s:%s:%s,\", iface, b[1], b[9]}}' | sed 's/,$//' || echo \"\"); disks=$(df -kP / 2>/dev/null | awk 'NR==2 {printf \"%s:%s:%s\", $6, $3, $2}' || echo \"\"); mounts=$( { df -kPT 2>/dev/null || df -kP 2>/dev/null; } | awk 'NR>1 { if (NF>=7) { src=$1; t=$2; total=$3; used=$4; m=$7 } else { src=$1; t=\"-\"; total=$2; used=$3; m=$6 } if (t ~ /^(tmpfs|devtmpfs|overlay|squashfs|proc|sysfs|cgroup|cgroup2|devpts|mqueue|autofs|efivarfs|ramfs|nsfs|tracefs|debugfs|fuse.lxcfs)$/) next; if (src ~ /^(tmpfs|overlay|shm|none|udev|devtmpfs)$/) next; if (index(m, \"/proc\") == 1 || index(m, \"/sys\") == 1 || index(m, \"/dev\") == 1 || index(m, \"/run\") == 1 || index(m, \"/var/lib/docker/\") == 1 || index(m, \"/snap/\") == 1) next; if (total + 0 <= 0) next; if (seen[src]++) next; if (++count > 32) next; gsub(/[;,|:]/, \"_\", m); gsub(/[;,|:]/, \"_\", src); gsub(/[;,|:]/, \"_\", t); printf \"%s;%s;%s;%s;%s,\", m, t, src, used, total }' | sed 's/,$//' || echo \"\"); hostname_value=$(hostname 2>/dev/null || uname -n 2>/dev/null || echo \"\"); osname=$(awk -F= '/^PRETTY_NAME=/{gsub(/\"/,\"\",$2);print $2;exit}' /etc/os-release 2>/dev/null || uname -s 2>/dev/null || echo \"\"); kernel=$(uname -r 2>/dev/null || echo \"\"); uptime=$(awk '{printf \"%.0f\",$1}' /proc/uptime 2>/dev/null || echo \"\"); loadavg=$(awk '{print $1\" \"$2\" \"$3}' /proc/loadavg 2>/dev/null || echo \"\"); echo \"CPURAW:$cpuraw|CORES:$cores|PERCORERAW:$percoreraw|MEMINFO:$meminfo|PROCS:$procs|PROCSCPU:$procscpu|NET:$net|DISK:$disks|HOST:$hostname_value|OS:$osname|KERNEL:$kernel|UPTIME:$uptime|LOAD:$loadavg|MOUNTS:$mounts\"";
+pub const STATS_SCRIPT: &str = "cores=$(awk '/^cpu[0-9]/ {n++} END {print n+0}' /proc/stat 2>/dev/null); case \"$cores\" in ''|0|*[!0-9]*) cores=$(nproc 2>/dev/null); case \"$cores\" in ''|0|*[!0-9]*) cores=1;; esac;; esac; cpuraw=$(awk '/^cpu / {total=0; for(i=2;i<=NF;i++) total+=$i; printf \"%d %d\", total, $5}' /proc/stat 2>/dev/null || echo \"\"); percoreraw=$(awk '/^cpu[0-9]/ {total=0; for(i=2;i<=NF;i++) total+=$i; printf \"%d:%d,\", total, $5}' /proc/stat 2>/dev/null | sed 's/,$//' || echo \"\"); meminfo=$(awk '/^MemTotal:/{t=$2} /^MemFree:/{f=$2} /^Buffers:/{b=$2} /^Cached:/{c=$2} /^SReclaimable:/{s=$2} /^SwapTotal:/{st=$2} /^SwapFree:/{sf=$2} END{printf \"%d %d %d %d %d %d\", t/1024, f/1024, b/1024, (c+s)/1024, st/1024, sf/1024}' /proc/meminfo 2>/dev/null || echo \"\"); procs=$(if procraw=$(ps -eo pid,%mem,comm --sort=-%mem 2>/dev/null); then printf \"%s\\n\" \"$procraw\" | awk 'NR>1 && NR<=11 {gsub(/;/, \"_\", $3); printf \"%s;%.1f;%s,\", $1, $2, $3}' | sed 's/,$//'; elif topraw=$(top -b -n 1 2>/dev/null); then printf \"%s\\n\" \"$topraw\" | awk '$1 == \"PID\" {for(i=1;i<=NF;i++){if($i==\"%VSZ\") mem_col=i; else if($i==\"COMMAND\") cmd_col=i} next} $1 ~ /^[0-9]+$/ && mem_col && cmd_col {pct=$(mem_col); gsub(/%/, \"\", pct); cmd=$(cmd_col); gsub(/;/, \"_\", cmd); print pct \";\" $1 \";\" cmd}' | sort -t ';' -k1,1rn | head -10 | awk -F';' '{printf \"%s;%.1f;%s,\", $2, $1, $3}' | sed 's/,$//'; else ps ww 2>/dev/null | awk -v total=$(awk '/^MemTotal:/{print $2}' /proc/meminfo) '$1 ~ /^[0-9]+$/ {v=$3; unit=substr(v,length(v),1); mult=1; if(unit==\"m\"||unit==\"M\")mult=1024; else if(unit==\"g\"||unit==\"G\")mult=1048576; sub(/[mMgG]$/, \"\", v); pct=total>0?v*mult*100/total:0; cmd=$5; gsub(/;/, \"_\", cmd); print pct, $1, cmd}' | sort -rn | head -10 | awk '{printf \"%s;%.1f;%s,\", $2, $1, $3}' | sed 's/,$//'; fi); procscpu=$(if procraw=$(ps -eo pid,%cpu,comm --sort=-%cpu 2>/dev/null); then printf \"%s\\n\" \"$procraw\" | awk -v me=$$ 'NR>1 && $1 != me && $3 != \"ps\" {gsub(/;/, \"_\", $3); printf \"%s;%.1f;%s,\", $1, $2, $3; if (++n >= 10) exit}' | sed 's/,$//'; elif topraw=$(top -b -n 1 2>/dev/null); then printf \"%s\\n\" \"$topraw\" | awk '$1 == \"PID\" {for(i=1;i<=NF;i++){if($i==\"%CPU\") cpu_col=i; else if($i==\"COMMAND\") cmd_col=i} next} $1 ~ /^[0-9]+$/ && cpu_col && cmd_col && $(cmd_col) != \"top\" {pct=$(cpu_col); gsub(/%/, \"\", pct); cmd=$(cmd_col); gsub(/;/, \"_\", cmd); print pct \";\" $1 \";\" cmd}' | sort -t ';' -k1,1rn | head -10 | awk -F';' '{printf \"%s;%.1f;%s,\", $2, $1, $3}' | sed 's/,$//'; fi); net=$(cat /proc/net/dev 2>/dev/null | awk 'NR>2 {gsub(/^[ \\t]+/, \"\"); split($0, a, \":\"); iface=a[1]; if(iface != \"lo\" && iface !~ /^veth/ && iface !~ /^docker/ && iface !~ /^br-/) {split(a[2], b); printf \"%s:%s:%s,\", iface, b[1], b[9]}}' | sed 's/,$//' || echo \"\"); disks=$(df -kP / 2>/dev/null | awk 'NR==2 {printf \"%s:%s:%s\", $6, $3, $2}' || echo \"\"); mounts=$( { df -kPT 2>/dev/null || df -kP 2>/dev/null; } | awk 'NR>1 { if (NF>=7) { src=$1; t=$2; total=$3; used=$4; m=$7 } else { src=$1; t=\"-\"; total=$2; used=$3; m=$6 } if (t ~ /^(tmpfs|devtmpfs|overlay|squashfs|proc|sysfs|cgroup|cgroup2|devpts|mqueue|autofs|efivarfs|ramfs|nsfs|tracefs|debugfs|fuse.lxcfs)$/) next; if (src ~ /^(tmpfs|overlay|shm|none|udev|devtmpfs)$/) next; if (index(m, \"/proc\") == 1 || index(m, \"/sys\") == 1 || index(m, \"/dev\") == 1 || index(m, \"/run\") == 1 || index(m, \"/var/lib/docker/\") == 1 || index(m, \"/snap/\") == 1) next; if (total + 0 <= 0) next; if (seen[src]++) next; if (++count > 32) next; gsub(/[;,|:]/, \"_\", m); gsub(/[;,|:]/, \"_\", src); gsub(/[;,|:]/, \"_\", t); printf \"%s;%s;%s;%s;%s,\", m, t, src, used, total }' | sed 's/,$//' || echo \"\"); hostname_value=$(hostname 2>/dev/null || uname -n 2>/dev/null || echo \"\"); osname=$(awk -F= '/^PRETTY_NAME=/{gsub(/\"/,\"\",$2);print $2;exit}' /etc/os-release 2>/dev/null || uname -s 2>/dev/null || echo \"\"); kernel=$(uname -r 2>/dev/null || echo \"\"); uptime=$(awk '{printf \"%.0f\",$1}' /proc/uptime 2>/dev/null || echo \"\"); loadavg=$(awk '{print $1\" \"$2\" \"$3}' /proc/loadavg 2>/dev/null || echo \"\"); echo \"CPURAW:$cpuraw|CORES:$cores|PERCORERAW:$percoreraw|MEMINFO:$meminfo|PROCS:$procs|PROCSCPU:$procscpu|NET:$net|DISK:$disks|HOST:$hostname_value|OS:$osname|KERNEL:$kernel|UPTIME:$uptime|LOAD:$loadavg|MOUNTS:$mounts\"";
 
 /// 一次采样里一块网卡的原始计数。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -295,11 +295,9 @@ impl StatsSample {
                     }
                 }
                 "CORES" => {
-                    if let Ok(cores) = value.parse::<u32>() {
-                        if cores > 0 {
-                            sample.cores = Some(cores);
-                            seen_any_key = true;
-                        }
+                    if let Some(cores) = first_positive_int(value) {
+                        sample.cores = Some(cores);
+                        seen_any_key = true;
                     }
                 }
                 "MEMINFO" => {
@@ -637,6 +635,16 @@ fn parse_net_entry(entry: &str) -> Option<NetCounters> {
 }
 
 /// 解析一个不带符号的整数；负数 / 格式不对都是 `None`。
+/// 取字符串里第一个正整数。核数字段只该是一个数字；旧脚本在 OpenWrt 上会写出 `0\n1`（`grep -c` 没匹配到
+/// 打印 0 又返回失败，后面的 `echo 1` 再补一个），所以这里容错：跳过 0 和非数字，取第一个正整数。
+fn first_positive_int(value: &str) -> Option<u32> {
+    value
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|token| !token.is_empty())
+        .filter_map(|token| token.parse::<u32>().ok())
+        .find(|n| *n > 0)
+}
+
 fn parse_u64(value: &str) -> Option<u64> {
     value.trim().parse::<u64>().ok()
 }
@@ -1351,6 +1359,164 @@ top() { printf 'Mem: 900K used, 100K free\nCPU:  1%% usr\n  PID  PPID USER     S
             cpu,
             vec![("812", 55.5, "app-worker"), ("7", 0.3, "sshd")],
             "BusyBox 的 top 自己要滤掉，按 %CPU 从高到低"
+        );
+    }
+
+    // ---- 核数（OpenWrt / BusyBox 上曾经识别成 "0\n1"） ----
+
+    /// 用本机 sh 真跑 [`STATS_SCRIPT`]，`/proc/stat` 换成样本文件，`nproc` 用 shell 函数顶替
+    ///（`None` = 这台机器没有 nproc，BusyBox 常见）。返回解析后的核数和原始输出；本机没有 `sh` 时返回 `None`。
+    fn cores_from_script(
+        test: &str,
+        proc_stat: Option<&str>,
+        nproc: Option<&str>,
+    ) -> Option<(Option<u32>, String)> {
+        let dir = std::env::temp_dir().join(format!("zssh-cores-{}-{test}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stat_path = dir.join("stat");
+        let missing = dir.join("no-such-stat");
+        let to_sh_path = |path: &std::path::Path| path.to_string_lossy().replace('\\', "/");
+        let target = match proc_stat {
+            Some(text) => {
+                std::fs::write(&stat_path, text).unwrap();
+                &stat_path
+            }
+            None => &missing,
+        };
+        let nproc_stub = match nproc {
+            Some(count) => format!("nproc() {{ echo {count}; }}"),
+            None => "nproc() { return 127; }".to_owned(),
+        };
+        let script = format!(
+            "{nproc_stub}\n{}",
+            STATS_SCRIPT.replace("/proc/stat", &to_sh_path(target))
+        );
+        let output = crate::test_util::run_sh(test, &script);
+        let _ = std::fs::remove_dir_all(&dir);
+        let output = output?;
+        let sample = StatsSample::parse(&output);
+        Some((sample.cores, output))
+    }
+
+    #[test]
+    fn first_positive_int_tolerates_garbage_around_the_core_count() {
+        assert_eq!(first_positive_int("4"), Some(4));
+        // 旧脚本在 OpenWrt 上的输出。
+        assert_eq!(first_positive_int("0\n1"), Some(1));
+        assert_eq!(first_positive_int(" 0 \n 2 \n"), Some(2));
+        assert_eq!(first_positive_int("8 cores"), Some(8));
+        assert_eq!(first_positive_int("0"), None);
+        assert_eq!(first_positive_int(""), None);
+        assert_eq!(first_positive_int("n/a"), None);
+        let sample = StatsSample::parse("CPURAW:1 1|CORES:0\n1|NET:");
+        assert_eq!(sample.cores, Some(1));
+        assert!(sample.parseable);
+    }
+
+    #[test]
+    fn core_count_comes_from_proc_stat_even_without_nproc() {
+        // 每核一行 `cpuN`，总行 `cpu ` 不算。
+        let linux = "cpu  100 0 50 800 0 0 0 0 0 0\n\
+                     cpu0 25 0 12 200 0 0 0 0 0 0\ncpu1 25 0 13 200 0 0 0 0 0 0\n\
+                     cpu2 25 0 12 200 0 0 0 0 0 0\ncpu3 25 0 13 200 0 0 0 0 0 0\n\
+                     intr 1 2 3\nctxt 99\nbtime 1\nprocesses 7\n";
+        // OpenWrt / BusyBox（ARM，双核）：没有 nproc。
+        let openwrt_arm = "cpu  4403 0 5105 197822 0 0 211 0 0 0\n\
+                           cpu0 2150 0 2600 98911 0 0 150 0 0 0\ncpu1 2253 0 2505 98911 0 0 61 0 0 0\n\
+                           intr 120331 0 0\nctxt 211022\nbtime 1762500000\nprocesses 2412\n";
+        // OpenWrt（MIPS，MT7621 这类 2 核 4 线程）。
+        let openwrt_mips = "cpu  900 0 700 70000 10 0 30 0 0 0\n\
+                            cpu0 200 0 170 17500 3 0 10 0 0 0\ncpu1 250 0 180 17500 2 0 8 0 0 0\n\
+                            cpu2 220 0 170 17500 3 0 6 0 0 0\ncpu3 230 0 180 17500 2 0 6 0 0 0\n\
+                            intr 5000 0\nctxt 8000\nbtime 1762500000\nprocesses 900\n";
+        let single = "cpu  10 0 5 100 0 0 0 0 0 0\ncpu0 10 0 5 100 0 0 0 0 0 0\nintr 1\n";
+        for (name, text, want) in [
+            ("linux", linux, 4u32),
+            ("openwrt_arm", openwrt_arm, 2),
+            ("openwrt_mips", openwrt_mips, 4),
+            ("single", single, 1),
+        ] {
+            // 没有 nproc。
+            let Some((cores, output)) =
+                cores_from_script("core_count_comes_from_proc_stat", Some(text), None)
+            else {
+                return;
+            };
+            assert_eq!(cores, Some(want), "{name}（无 nproc）输出：{output:?}");
+            // CORES 段只有一个数字，不带换行（以前是 "0\n1"）。
+            let segment = output
+                .split('|')
+                .find_map(|part| part.strip_prefix("CORES:"))
+                .unwrap_or("");
+            assert_eq!(segment, want.to_string(), "{name} 输出：{output:?}");
+            // 有 nproc 且答案不同：以 /proc/stat 为准（它也是每核占用在用的来源）。
+            let Some((cores, _)) =
+                cores_from_script("core_count_comes_from_proc_stat", Some(text), Some("99"))
+            else {
+                return;
+            };
+            assert_eq!(cores, Some(want), "{name}（nproc 说 99）");
+        }
+    }
+
+    #[test]
+    fn core_count_falls_back_to_nproc_then_to_one() {
+        // /proc/stat 读不了：用 nproc。
+        let Some((cores, _)) = cores_from_script("core_count_fallback", None, Some("6")) else {
+            return;
+        };
+        assert_eq!(cores, Some(6));
+        // /proc/stat 存在但一行 cpuN 都没有（奇怪的容器）：同样回退。
+        let Some((cores, _)) = cores_from_script(
+            "core_count_fallback",
+            Some("cpu  1 2 3 4\nintr 1\n"),
+            Some("3"),
+        ) else {
+            return;
+        };
+        assert_eq!(cores, Some(3));
+        // 什么都没有：1，而且只有一个数字。
+        let Some((cores, output)) = cores_from_script("core_count_fallback", None, None) else {
+            return;
+        };
+        assert_eq!(cores, Some(1));
+        assert!(output.contains("CORES:1|"), "输出：{output:?}");
+        // nproc 输出了垃圾：也回到 1。
+        let Some((cores, output)) = cores_from_script("core_count_fallback", None, Some("abc"))
+        else {
+            return;
+        };
+        assert_eq!(cores, Some(1), "输出：{output:?}");
+    }
+
+    /// OpenWrt（MIPS）的 `/proc/cpuinfo` 没有 `model name`，型号在 `cpu model` 里；BusyBox 没有 `lscpu`。
+    #[test]
+    fn cpu_model_probe_reads_mips_cpu_model() {
+        let dir = std::env::temp_dir().join(format!("zssh-mips-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cpuinfo = dir.join("cpuinfo");
+        std::fs::write(
+            &cpuinfo,
+            "system type\t\t: MediaTek MT7621 ver:1 eco:3\nmachine\t\t\t: Example Router\n\
+             processor\t\t: 0\ncpu model\t\t: MIPS 1004Kc V2.15\nBogoMIPS\t\t: 586.13\n\n\
+             processor\t\t: 1\ncpu model\t\t: MIPS 1004Kc V2.15\nBogoMIPS\t\t: 586.13\n",
+        )
+        .unwrap();
+        let path = cpuinfo.to_string_lossy().replace('\\', "/");
+        let script = format!(
+            "lscpu() {{ return 127; }}; {}",
+            CPU_MODEL_PROBE.replace("/proc/cpuinfo", &path)
+        );
+        let output = crate::test_util::run_sh("cpu_model_probe_reads_mips_cpu_model", &script);
+        let _ = std::fs::remove_dir_all(&dir);
+        let Some(output) = output else {
+            return;
+        };
+        let sample = StatsSample::parse(&output);
+        assert_eq!(
+            sample.cpu_model.as_deref(),
+            Some("MIPS 1004Kc V2.15"),
+            "输出：{output:?}"
         );
     }
 }
