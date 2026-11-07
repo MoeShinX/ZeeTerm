@@ -10,8 +10,16 @@ NATIVE="$ROOT/native"
 BRAND="$NATIVE/zssh-gpui/assets/brand"
 DIST="${ZSSH_MAC_DIST_DIR:-$NATIVE/target/dist}"
 APP="$DIST/ZeeTerm.app"
-BUNDLE_ID="com.zeeterm.app"
-VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$NATIVE/Cargo.toml" | head -1)"
+# 和 Linux 的应用标识（app.zeeterm.ZeeTerm.desktop / window_frame::APP_ID）一致：发出去之后再改，
+# 钥匙串条目的访问授权、隐私授权（TCC）和 defaults 域都会对不上。
+BUNDLE_ID="app.zeeterm.ZeeTerm"
+# 版本号取 native/Cargo.toml 里 [workspace.package] 的 version（和程序自己显示的是同一个）。
+VERSION="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$NATIVE/Cargo.toml" | head -1)"
+# CFBundleShortVersionString 只能是点分的数字（带预发布后缀时系统会拒绝或排序出错）。
+if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){1,2}$'; then
+  echo "从 native/Cargo.toml 读到的版本号不能直接用作 macOS 版本号：'$VERSION'" >&2
+  exit 1
+fi
 MIN_MACOS="14.0"
 export MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS"
 
@@ -66,6 +74,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key><string>ZeeTerm</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>en</string>
+        <string>zh-Hans</string>
+    </array>
     <key>LSMinimumSystemVersion</key><string>$MIN_MACOS</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key><true/>
