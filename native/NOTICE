@@ -98,6 +98,19 @@ all MIT or Apache-2.0 (or both). unicode-width 0.2 (MIT or Apache-2.0, already
 in the tree through the terminal core) is now also a direct dependency of
 zssh-gpui, used to lay out the input method's pre-edit text in terminal cells.
 
+macOS-only dependencies (ZeeTerm for macOS, including those that the shared
+crates under crates/ pull in when built for macOS), all used unmodified from
+crates.io:
+  objc2 0.6 and objc2-foundation 0.3 (system UI language through NSLocale;
+  direct dependencies of crates/zssh-platform-windows), with objc2-encode,
+  block2 - MIT; objc2-core-foundation, dispatch2 - Zlib OR Apache-2.0 OR MIT;
+  keyring 3.6.3 with its "apple-native" backend and security-framework 3
+  (local vault key in the macOS login keychain; security-framework is a
+  direct dependency of crates/zssh-core, used only to read the keychain
+  status code), with security-framework-sys, core-foundation and
+  core-foundation-sys - MIT OR Apache-2.0. Zlib is compatible with
+  distribution under GPL-3.0-or-later.
+
 block 0.1.6 (macOS Metal / Objective-C blocks, native/vendor/block-0.1.6)
   https://github.com/SSheldon/rust-block
   Author: Steven Sheldon. License: MIT, as declared in the original manifest.
