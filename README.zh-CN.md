@@ -6,7 +6,8 @@
 
 <p align="center">
   <strong>Rust + GPUI 原生 SSH 工作区。</strong><br />
-  将终端、文件传输、远端编辑与 AI 助手整合在一个桌面应用中。
+  将终端、文件传输、远端编辑与 AI 助手整合在一个桌面应用中。<br />
+  基于 GPUI 原生 GPU 渲染：<strong>不是 Electron，不用 WebView2，不内嵌浏览器。</strong>
 </p>
 
 <p align="center">
@@ -14,6 +15,7 @@
   <img src="https://img.shields.io/badge/UI-GPUI-8B5CF6?style=flat-square" alt="GPUI 原生界面" />
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4?style=flat-square" alt="Windows 10 和 11 x64" />
   <img src="https://img.shields.io/badge/Linux-x86__64-FCC624?style=flat-square" alt="Linux x86_64" />
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon%20(%E9%A2%84%E8%A7%88)-000000?style=flat-square" alt="macOS Apple Silicon 预览版" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0--or--later-22C55E?style=flat-square" alt="GPL-3.0-or-later 许可证" /></a>
 </p>
 
@@ -33,9 +35,9 @@ ZeeTerm 是 **[Z-SSH](https://github.com/MoeShinX/Z-SSH) 的 GPUI 原生重构�
 
 ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安装、使用。
 
-![ZeeTerm 工作区，展示示例会话](docs/images/workspace.png)
+![ZeeTerm 工作区：分屏终端、主机树和快捷命令栏](docs/images/terminal-split-zh.png)
 
-*截图使用虚拟连接数据。*
+*浅色皮肤。截图使用虚拟主机和本机演示后端。*
 
 ## 🧰 围绕远程工作组织功能
 
@@ -52,9 +54,26 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 
 除 SSH 外，也支持 **Telnet 与串口连接**。外部 AI 工具为可选集成，需要满足各自的安装、账号及运行环境要求。
 
+### 界面一览
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/hosts-zh.png" alt="主机管理：分组的主机树和主机卡片" /><br /><sub><b>主机管理</b>：分组、标签和系统图标，一眼找到每台主机。</sub></td>
+    <td width="50%"><img src="docs/images/sftp-zh.png" alt="SFTP 文件管理，本地与远端并排" /><br /><sub><b>SFTP</b>：本地与远端并排，带传输队列。</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/ai-zh.png" alt="ZeePilot 排查服务器问题，执行命令前请求确认" /><br /><sub><b>AI 助手</b>：只读命令自动执行，会改动服务器的命令要等你确认。</sub></td>
+    <td width="50%"><img src="docs/images/themes-zh.png" alt="外观设置，浅色和深色皮肤" /><br /><sub><b>外观</b>：16 套皮肤，浅色深色都有，终端配色可单独选。</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/overview-zh.png" alt="服务器概览面板与分屏终端" /><br /><sub><b>服务器概览</b>：在终端旁看 CPU、内存、磁盘和网络。</sub></td>
+    <td width="50%"><img src="docs/images/forwards-zh.png" alt="端口转发规则" /><br /><sub><b>端口转发</b>：本地 / 远程隧道，一键启动。</sub></td>
+  </tr>
+</table>
+
 ## 开始使用
 
-**当前支持：Windows 10 / 11（x64）和 Linux（x86_64）。**
+**当前支持：Windows 10 / 11（x64）、Linux（x86_64）和 macOS（Apple Silicon，预览版）。**
 
 ### Windows
 
@@ -77,12 +96,22 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 
 数据默认保存在 `$XDG_DATA_HOME/ZeeTerm`（通常是 `~/.local/share/ZeeTerm`），目录权限仅限本人；`ZSSH_DATA_DIR` 仍然优先。保存的密码和密钥通过桌面钥匙串（Secret Service：GNOME Keyring、KeePassXC、KWallet 等）保护，建议安装并解锁其中一个。完全没有钥匙串服务时，密钥改存数据目录里的文件，设置页会提示。
 
+### macOS（Apple Silicon，预览版）
+
+系统要求：Apple Silicon 的 Mac（M1 及更新），**macOS 14 或更新**。
+
+1. 从 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载 `ZeeTerm-<版本>-macos-arm64.zip`，解压后把 `ZeeTerm.app` 拖进「应用程序」。
+2. 第一次打开会被系统拦下：macOS 版目前没有 Apple 开发者签名，也没有公证（只有 ad-hoc 签名）。先在「应用程序」里双击一次 ZeeTerm，弹出提示后到「系统设置 → 隐私与安全性」，滚到页面底部点 **仍要打开**；之后就能正常打开了。
+3. 保存密码时，以及每次更新到新版本后第一次启动时，系统可能会问「ZeeTerm 想要使用钥匙串」，选 **始终允许**。
+
+macOS 版暂时没有应用内自动更新：新版本请到 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载，替换「应用程序」里的 ZeeTerm，数据和已保存的主机不受影响。数据默认保存在 `~/Library/Application Support/ZeeTerm`，`ZSSH_DATA_DIR` 仍然优先。
+
 **从 Z-SSH 迁移？** 使用应用内的导入流程，先预览数据并创建备份，再应用变更。
 
 ## 🔐 安全与数据管理
 
 - **默认本地存储。** 会话和应用数据保存在本机，由你决定是否配置云同步或 AI 服务。
-- **保存的凭据受保护。** 密码、托管私钥、私钥口令及同步秘密使用 Windows DPAPI 加密，绑定 Windows 用户环境；Linux 上用一把保存在桌面钥匙串（Secret Service）里的随机资料库密钥加密。
+- **保存的凭据受保护。** 密码、托管私钥、私钥口令及同步秘密使用 Windows DPAPI 加密，绑定 Windows 用户环境；macOS 上保存在系统钥匙串；Linux 上用一把保存在桌面钥匙串（Secret Service）里的随机资料库密钥加密。
 - **同步包加密。** 使用主密码配合 **Argon2id + XChaCha20-Poly1305**；更换电脑时，通过加密导出或同步迁移凭据。
 - **SSH 主机指纹验证。** 连接未知主机或指纹发生变化时，先核对服务器身份。
 - **更新先验签。** 更新器校验发布签名及签名中的版本号，再运行安装程序。
@@ -99,7 +128,7 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 | 异步运行时 | Tokio |
 | 本地存储 | SQLite · Windows DPAPI · Linux Secret Service |
 | 加密同步 | Argon2id · XChaCha20-Poly1305 |
-| 安装与更新 | NSIS 安装包 · Linux `.deb` / `.tar.gz` · minisign 更新验签 |
+| 安装与更新 | NSIS 安装包 · Linux `.deb` / `.tar.gz` · macOS `.zip` · minisign 更新验签 |
 
 仓库分为两个 Cargo 工作区：
 

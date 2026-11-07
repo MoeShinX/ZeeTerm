@@ -6,7 +6,8 @@
 
 <p align="center">
   <strong>A native SSH workspace. Built with Rust and GPUI.</strong><br />
-  Terminals, file transfers, remote editing, and AI assistance in one desktop application.
+  Terminals, file transfers, remote editing, and AI assistance in one desktop application.<br />
+  Rendered natively with GPUI on the GPU: <strong>No Electron. No WebView2. No embedded browser.</strong>
 </p>
 
 <p align="center">
@@ -14,6 +15,7 @@
   <img src="https://img.shields.io/badge/UI-GPUI-8B5CF6?style=flat-square" alt="GPUI native UI" />
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4?style=flat-square" alt="Windows 10 and 11 x64" />
   <img src="https://img.shields.io/badge/Linux-x86__64-FCC624?style=flat-square" alt="Linux x86_64" />
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon%20(preview)-000000?style=flat-square" alt="macOS Apple Silicon, preview build" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0--or--later-22C55E?style=flat-square" alt="GPL-3.0-or-later license" /></a>
 </p>
 
@@ -33,9 +35,9 @@ ZeeTerm is the **GPUI native rebuild of [Z-SSH](https://github.com/MoeShinX/Z-SS
 
 ZeeTerm installs separately from Z-SSH, uses its own data directory, and can coexist with it.
 
-![ZeeTerm workspace with example sessions](docs/images/workspace.png)
+![ZeeTerm workspace: split terminal panes, host tree and snippets bar](docs/images/terminal-split.png)
 
-*Workspace preview using fictional connection data.*
+*Light skin shown. Screenshots use fictional hosts and a local demo backend.*
 
 ## 🧰 One workspace for remote operations
 
@@ -52,9 +54,26 @@ ZeeTerm installs separately from Z-SSH, uses its own data directory, and can coe
 
 SSH is the primary workflow; **Telnet and serial connections** are also available. External AI tools are optional and have their own installation, account, and runtime requirements.
 
+### A closer look
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/hosts.png" alt="Host management: a grouped host tree and host cards" /><br /><sub><b>Host management</b>: groups, tags and OS icons for every host.</sub></td>
+    <td width="50%"><img src="docs/images/sftp.png" alt="SFTP file manager with local and remote folders side by side" /><br /><sub><b>SFTP</b>: local and remote side by side, with a transfer queue.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/ai.png" alt="ZeePilot investigating a server and asking for approval before a command" /><br /><sub><b>AI assistant</b>: read-only commands run automatically; anything that changes the server waits for your approval.</sub></td>
+    <td width="50%"><img src="docs/images/themes.png" alt="Appearance settings with light and dark skins" /><br /><sub><b>Appearance</b>: 16 skins, light and dark, with separate terminal colors.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/overview.png" alt="Server overview panel beside a split terminal" /><br /><sub><b>Server overview</b>: CPU, memory, disk and network next to your terminal.</sub></td>
+    <td width="50%"><img src="docs/images/forwards.png" alt="Port forwarding rules" /><br /><sub><b>Port forwarding</b>: local and remote tunnels, started with one click.</sub></td>
+  </tr>
+</table>
+
 ## Get started
 
-**Supported platforms: Windows 10 / 11 (x64) and Linux (x86_64).**
+**Supported platforms: Windows 10 / 11 (x64), Linux (x86_64), and macOS (Apple Silicon, preview build).**
 
 ### Windows
 
@@ -77,12 +96,22 @@ Updates: the in-app update window recognizes how ZeeTerm was installed. For the 
 
 Data is stored in `$XDG_DATA_HOME/ZeeTerm` (usually `~/.local/share/ZeeTerm`) with owner-only permissions; `ZSSH_DATA_DIR` still takes priority. Saved passwords and keys are protected through the desktop keyring (Secret Service: GNOME Keyring, KeePassXC, KWallet, and so on) — install and unlock one for best results. If no keyring service is running at all, ZeeTerm keeps its key in a file in the data directory instead and says so in the settings.
 
+### macOS (Apple Silicon, preview)
+
+Requirements: an Apple Silicon Mac (M1 or newer) running **macOS 14 or newer**.
+
+1. Download `ZeeTerm-<version>-macos-arm64.zip` from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest), unzip it, and drag `ZeeTerm.app` into your Applications folder.
+2. The first launch is blocked: the macOS build is not signed with an Apple Developer ID and not notarized (it carries only an ad-hoc signature). Double-click ZeeTerm in Applications once, then open **System Settings → Privacy & Security**, scroll to the bottom and click **Open Anyway**. After that it opens normally.
+3. When you save a password, and the first time you start a newly updated version, macOS may ask whether "ZeeTerm wants to use the keychain". Choose **Always Allow**.
+
+There is no in-app auto-update on macOS yet. To update, download the new version from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) and replace ZeeTerm in Applications; your data and saved hosts are not affected. Data is stored in `~/Library/Application Support/ZeeTerm` (`ZSSH_DATA_DIR` still takes priority).
+
 **Coming from Z-SSH?** Use the built-in import flow to preview your data and create a backup before applying changes.
 
 ## 🔐 Security & data ownership
 
 - **Local storage by default.** Sessions and application data stay on your machine; you choose whether to configure cloud synchronization or AI services.
-- **Protected saved credentials.** Passwords, stored private keys, passphrases, and synchronization secrets use Windows DPAPI, bound to the Windows user context. On Linux they are encrypted with a random vault key held in the desktop keyring (Secret Service).
+- **Protected saved credentials.** Passwords, stored private keys, passphrases, and synchronization secrets use Windows DPAPI, bound to the Windows user context. On macOS they are kept in the system Keychain. On Linux they are encrypted with a random vault key held in the desktop keyring (Secret Service).
 - **Encrypted synchronization.** Sync packages use **Argon2id + XChaCha20-Poly1305** with a master password. Use encrypted export or sync when moving credentials between machines.
 - **SSH host-key verification.** Review unknown hosts and changed fingerprints before connecting.
 - **Verified updates.** The updater validates the release signature and signed version before running the installer.
@@ -99,7 +128,7 @@ The app lock protects an unattended workspace; it does not replace operating-sys
 | Async runtime | Tokio |
 | Local storage | SQLite · Windows DPAPI · Linux Secret Service |
 | Encrypted sync | Argon2id · XChaCha20-Poly1305 |
-| Distribution | NSIS installer · `.deb` / `.tar.gz` for Linux · minisign update verification |
+| Distribution | NSIS installer · `.deb` / `.tar.gz` for Linux · `.zip` for macOS · minisign update verification |
 
 The repository uses two Cargo workspaces:
 
