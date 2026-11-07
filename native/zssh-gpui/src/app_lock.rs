@@ -412,7 +412,7 @@ impl OsVerifier for StubVerifier {
     }
 }
 
-/// 这个平台有没有"系统身份验证"可用来重置锁屏密码。Windows 有（Hello / 凭据框）；Linux 没有等价物，
+/// 这个平台有没有"系统身份验证"可用来重置锁屏密码。Windows 有（Hello / 凭据框）；Linux、macOS 没有等价物，
 /// 界面上就不能出现"验证 Windows 账户并重置"这类入口，否则是个点了只会报错的按钮。
 /// 调试构建里的 `ZSSH_LOCK_OS_STUB` 算有（自动化要驱动这条流程）。
 pub fn os_verification_available() -> bool {
@@ -1418,11 +1418,11 @@ mod tests {
         }
     }
 
-    /// Linux 没有 Windows Hello / 凭据框：不能有"验证 Windows 账户并重置"这类入口，
-    /// 真的去验证也只会得到"不可用"，不会冒充通过。
-    #[cfg(target_os = "linux")]
+    /// Linux / macOS 没有 Windows Hello / 凭据框：不能有"验证 Windows 账户并重置"这类入口，
+    /// 真的去验证也只会得到"不可用"，不会冒充通过（macOS 的 Touch ID 还没做）。
+    #[cfg(unix)]
     #[test]
-    fn linux_has_no_os_verification() {
+    fn unix_has_no_os_verification() {
         if super::stub_from_env().is_some() {
             return; // 自动化设了调试桩：此时按设计"有"
         }

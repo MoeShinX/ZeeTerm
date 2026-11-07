@@ -1820,7 +1820,7 @@ mod tests {
             assert!(!modal_visible_while_locked(&lock_dialog(kind, true)));
         }
     }
-    /// 没有系统身份验证的平台（Linux）：设置页和锁屏页讲的是事实，不提 Windows、不指向不存在的按钮。
+    /// 没有系统身份验证的平台（Linux、macOS）：设置页和锁屏页讲的是事实，不提 Windows、不指向不存在的按钮。
     #[test]
     fn the_forgot_texts_without_os_verification_do_not_mention_windows() {
         use crate::app_lock::LockMsg;
