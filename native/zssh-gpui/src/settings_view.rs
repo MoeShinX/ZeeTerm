@@ -100,6 +100,9 @@ impl Msg for SettingsViewMsg {
             Self::Dark => "深色",
             Self::FollowSystem => "跟随系统",
             Self::AppearanceTitle => "应用外观",
+            Self::AppearanceDescription if !cfg!(windows) => {
+                "选「跟随系统」时，系统切换浅色 / 深色模式，界面跟着变。"
+            }
             Self::AppearanceDescription => {
                 "选「跟随系统」时，Windows 切换浅色 / 深色模式，界面跟着变。"
             }
@@ -180,6 +183,9 @@ impl Msg for SettingsViewMsg {
             Self::Dark => "Dark",
             Self::FollowSystem => "Follow System",
             Self::AppearanceTitle => "App Appearance",
+            Self::AppearanceDescription if !cfg!(windows) => {
+                "When “Follow System” is selected, the interface follows the system as it switches between light and dark mode."
+            }
             Self::AppearanceDescription => {
                 "When “Follow System” is selected, the interface follows Windows as it switches between light and dark mode."
             }

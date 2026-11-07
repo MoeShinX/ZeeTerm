@@ -118,6 +118,9 @@ impl Msg for KeyDialogMsg {
             Self::GeneratedNote => {
                 "私钥已经加密存进凭据库。把下面的公钥装到服务器上就能用这把密钥登录（主机右键「安装公钥」可以一键装）。"
             }
+            Self::GenerateNote if !cfg!(windows) => {
+                "私钥存在本机凭据库里（用本机的资料库密钥加密，密钥在系统钥匙串里），不会离开这台电脑，除非开了配置同步。"
+            }
             Self::GenerateNote => {
                 "私钥存在本机凭据库里（Windows 数据保护加密），不会离开这台电脑，除非开了配置同步。"
             }
@@ -173,6 +176,9 @@ impl Msg for KeyDialogMsg {
             Self::GenerateTitle => "Generate SSH Key",
             Self::GeneratedNote => {
                 "The private key has been encrypted and stored in the credential library. Install the public key below on the server to sign in with it (right-click the host and choose \"Install Public Key\" for one-click installation)."
+            }
+            Self::GenerateNote if !cfg!(windows) => {
+                "The private key is stored in the local credential library (encrypted with this computer's data key, which is kept in the system keychain) and never leaves this computer unless configuration sync is enabled."
             }
             Self::GenerateNote => {
                 "The private key is stored in the local credential library (encrypted with Windows Data Protection) and never leaves this computer unless configuration sync is enabled."

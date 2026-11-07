@@ -129,6 +129,8 @@ impl crate::i18n::Msg for AboutMsg {
             Self::Tagline => {
                 if cfg!(windows) {
                     "面向 Windows 的 SSH 客户端：标签与分屏终端、跳板机与代理、AI 运维助手。"
+                } else if cfg!(target_os = "macos") {
+                    "面向 macOS 的 SSH 客户端：标签与分屏终端、跳板机与代理、AI 运维助手。"
                 } else {
                     "面向 Linux 的 SSH 客户端：标签与分屏终端、跳板机与代理、AI 运维助手。"
                 }
@@ -169,6 +171,8 @@ impl crate::i18n::Msg for AboutMsg {
             Self::Tagline => {
                 if cfg!(windows) {
                     "An SSH client for Windows: tabbed and split terminals, jump hosts and proxies, and an AI operations assistant."
+                } else if cfg!(target_os = "macos") {
+                    "An SSH client for macOS: tabbed and split terminals, jump hosts and proxies, and an AI operations assistant."
                 } else {
                     "An SSH client for Linux: tabbed and split terminals, jump hosts and proxies, and an AI operations assistant."
                 }

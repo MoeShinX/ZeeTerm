@@ -143,15 +143,24 @@ impl Msg for X11Msg {
             }
             Self::InstalledNotice => "VcXsrv 已安装好，现在可以连接开了 X11 的主机了",
             Self::PlaceholderLinux => "例如 :0 或 localhost:10",
+            Self::PromptSuffixLinux if cfg!(target_os = "macos") => {
+                "」开了 X11 转发，但这台 Mac 上没有可用的 X 服务器（环境里没有 DISPLAY）。macOS 版还没有适配 XQuartz；没有 X 服务器，远程的图形程序显示不出来。"
+            }
             Self::PromptSuffixLinux => {
                 "」开了 X11 转发，但这台电脑上没有可用的 X 服务器（环境里没有 DISPLAY）。Linux 下需要 Xwayland（Wayland 桌面）或 Xorg；没有它，远程的图形程序显示不出来。"
             }
             Self::SpecifyDisplaySettings => "去设置里指定显示",
+            Self::SourceDescriptionLinux if cfg!(target_os = "macos") => {
+                "自动：使用环境变量 DISPLAY 指向的 X 服务器（macOS 版还没有适配 XQuartz）。指定显示：连到你写的显示，例如 localhost:10。"
+            }
             Self::SourceDescriptionLinux => {
                 "自动：使用当前桌面会话的 X 服务器（环境变量 DISPLAY；Wayland 桌面需要 Xwayland，Xorg 桌面自带）。指定显示：连到你写的显示，例如 :1 或 localhost:10。"
             }
             Self::SessionServerTitle => "本机 X 服务器",
             Self::SessionDisplayPrefix => "使用当前会话的显示 ",
+            Self::NoSessionDisplay if cfg!(target_os = "macos") => {
+                "没有（环境里没有 DISPLAY；macOS 版还没有适配 XQuartz）"
+            }
             Self::NoSessionDisplay => "没有（环境里没有 DISPLAY，需要 Xwayland 或 Xorg）",
         }
     }
@@ -216,15 +225,24 @@ impl Msg for X11Msg {
                 "VcXsrv is installed; you can now connect to hosts with X11 enabled"
             }
             Self::PlaceholderLinux => "for example :0 or localhost:10",
+            Self::PromptSuffixLinux if cfg!(target_os = "macos") => {
+                "” has X11 forwarding enabled, but this Mac has no usable X server (the DISPLAY variable is not set). The macOS version does not support XQuartz yet; without an X server, remote graphical programs cannot be displayed."
+            }
             Self::PromptSuffixLinux => {
                 "” has X11 forwarding enabled, but this computer has no usable X server (the DISPLAY variable is not set). On Linux an X server comes from Xwayland (Wayland desktops) or Xorg; without one, remote graphical programs cannot be displayed."
             }
             Self::SpecifyDisplaySettings => "Specify a display in settings",
+            Self::SourceDescriptionLinux if cfg!(target_os = "macos") => {
+                "Automatic: use the X server the DISPLAY variable points to (the macOS version does not support XQuartz yet). Specific display: connect to the display you give, such as localhost:10."
+            }
             Self::SourceDescriptionLinux => {
                 "Automatic: use the X server of the current desktop session (the DISPLAY variable; Wayland desktops need Xwayland, Xorg desktops have one built in). Specific display: connect to the display you give, such as :1 or localhost:10."
             }
             Self::SessionServerTitle => "Local X Server",
             Self::SessionDisplayPrefix => "Using the current session's display ",
+            Self::NoSessionDisplay if cfg!(target_os = "macos") => {
+                "None (the DISPLAY variable is not set; the macOS version does not support XQuartz yet)"
+            }
             Self::NoSessionDisplay => {
                 "None (the DISPLAY variable is not set; Xwayland or Xorg is required)"
             }
@@ -647,11 +665,13 @@ impl MainWindow {
         let settings_entity = entity.clone();
         let skip_entity = entity.clone();
         let cancel_entity = entity;
-        let can_install = self
-            .x11_ui
-            .status
-            .as_ref()
-            .is_none_or(|status| status.can_install);
+        // Linux / macOS 上没有 VcXsrv 可装：状态还没读到（默认算"能装"）时也不能先露出「一键安装 VcXsrv」。
+        let can_install = !cfg!(unix)
+            && self
+                .x11_ui
+                .status
+                .as_ref()
+                .is_none_or(|status| status.can_install);
         v_flex()
             .gap_4()
             .child(

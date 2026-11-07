@@ -52,6 +52,9 @@ enum DraftsMsg {
 impl crate::i18n::Msg for DraftsMsg {
     fn zh(&self) -> &'static str {
         match self {
+            Self::LockedPrefix if !cfg!(windows) => {
+                "本地有一份草稿无法解密（可能是另一个用户或另一台电脑保存的、本机的资料库密钥不可用，或文件已损坏）："
+            }
             Self::LockedPrefix => {
                 "本地有一份草稿无法解密（可能是另一个 Windows 用户或另一台电脑保存的，或文件已损坏）："
             }
@@ -68,6 +71,9 @@ impl crate::i18n::Msg for DraftsMsg {
 
     fn en(&self) -> &'static str {
         match self {
+            Self::LockedPrefix if !cfg!(windows) => {
+                "A local draft cannot be decrypted (it may belong to another user or another computer, this computer's data key may be unavailable, or the file is damaged): "
+            }
             Self::LockedPrefix => {
                 "A local draft cannot be decrypted (it may belong to another Windows user or another computer, or the file is damaged): "
             }

@@ -90,6 +90,9 @@ impl Msg for BackupViewMsg {
             Self::RecordCountPrefix => " 条记录（主机 ",
             Self::HostCountSeparator => " 台）· ",
             Self::UnknownVersion => "未知",
+            Self::UnreadableBackup if !cfg!(windows) => {
+                "这份备份读不了（可能是另一个用户或另一台电脑保存的，或本机的资料库密钥不可用）"
+            }
             Self::UnreadableBackup => "这份备份读不了（可能是换了 Windows 用户保存的）",
             Self::LocalCardTitle => "本地备份",
             Self::LocalCardDescription => {
@@ -157,6 +160,9 @@ impl Msg for BackupViewMsg {
             Self::RecordCountPrefix => " records (hosts: ",
             Self::HostCountSeparator => ") · ",
             Self::UnknownVersion => "unknown",
+            Self::UnreadableBackup if !cfg!(windows) => {
+                "This backup cannot be read (it may have been saved by another user or on another computer, or this computer's data key is unavailable)"
+            }
             Self::UnreadableBackup => {
                 "This backup cannot be read (it may have been saved under a different Windows user)"
             }

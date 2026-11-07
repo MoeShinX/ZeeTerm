@@ -209,6 +209,9 @@ impl Msg for SyncViewMsg {
             Self::ApiBase => "接口地址",
             Self::ApiBaseHint => "留空 = https://api.github.com（GitHub Enterprise 填自己的）",
             Self::Token => "个人访问令牌",
+            Self::TokenHint if !cfg!(windows) => {
+                "需要 gist 权限。令牌只用本机的资料库密钥加密保存，不会进同步包。"
+            }
             Self::TokenHint => {
                 "需要 gist 权限。令牌只用本机的 Windows 账户加密保存，不会进同步包。"
             }
@@ -227,6 +230,9 @@ impl Msg for SyncViewMsg {
                  （outlook.com、hotmail.com 等），工作或学校账号暂不支持。"
             }
             Self::Account => "账号",
+            Self::OneDriveTokenHint if !cfg!(windows) => {
+                "登录信息（令牌）用本机的资料库密钥加密保存，不会进同步包。"
+            }
             Self::OneDriveTokenHint => {
                 "登录信息（令牌）用本机的 Windows 账户加密保存，不会进同步包。"
             }
@@ -276,6 +282,9 @@ impl Msg for SyncViewMsg {
             Self::PasswordAgain => "再输入一次",
             Self::UnderstoodCheck => "我知道忘记主密码就无法恢复云端数据",
             Self::RememberTitle => "在这台电脑上记住主密码",
+            Self::RememberDescriptionPrefix if !cfg!(windows) => {
+                "用本机的资料库密钥加密保存，下次不用再输入。"
+            }
             Self::RememberDescriptionPrefix => "用 Windows 账户加密保存，下次不用再输入。",
             Self::RememberA11y => "在这台电脑上记住主密码",
             Self::MasterPasswordHint => {
@@ -408,6 +417,9 @@ impl Msg for SyncViewMsg {
                 "Leave empty for https://api.github.com (GitHub Enterprise users enter their own)"
             }
             Self::Token => "Personal Access Token",
+            Self::TokenHint if !cfg!(windows) => {
+                "Needs the gist scope. The token is encrypted with this computer's data key and never enters the sync package."
+            }
             Self::TokenHint => {
                 "Needs the gist scope. The token is encrypted with your Windows account and never enters the sync package."
             }
@@ -429,6 +441,9 @@ impl Msg for SyncViewMsg {
                  (outlook.com, hotmail.com etc.) are supported; work or school accounts are not yet."
             }
             Self::Account => "Account",
+            Self::OneDriveTokenHint if !cfg!(windows) => {
+                "The sign-in info (token) is encrypted with this computer's data key and never enters the sync package."
+            }
             Self::OneDriveTokenHint => {
                 "The sign-in info (token) is encrypted with your Windows account and never enters the sync package."
             }
@@ -483,6 +498,9 @@ impl Msg for SyncViewMsg {
                 "I understand that forgetting the master password means the cloud data cannot be recovered"
             }
             Self::RememberTitle => "Remember the master password on this computer",
+            Self::RememberDescriptionPrefix if !cfg!(windows) => {
+                "Encrypted with this computer's data key, so you do not have to enter it next time. "
+            }
             Self::RememberDescriptionPrefix => {
                 "Encrypted with your Windows account, so you do not have to enter it next time. "
             }

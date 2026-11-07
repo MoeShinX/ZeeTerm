@@ -216,6 +216,9 @@ impl Msg for CloudBackupMsg {
             Self::Deleted => "已删除这个备份目标（云端已经上传的备份文件没有动）",
             Self::ResetDone => "已清空本机保存的云端备份设置（云端的备份文件没有动）",
             Self::LoadErrorPrefix => "读不出本机保存的云端备份设置：",
+            Self::LoadErrorHint if !cfg!(windows) => {
+                "可能是换了用户或电脑、本机的资料库密钥不可用，或者设置被破坏了。清空之后可以重新添加备份目标（云端已有的备份文件不会被删）。"
+            }
             Self::LoadErrorHint => {
                 "可能是换了 Windows 账户，或者设置被破坏了。清空之后可以重新添加备份目标（云端已有的备份文件不会被删）。"
             }
@@ -359,6 +362,9 @@ impl Msg for CloudBackupMsg {
             }
             Self::LoadErrorPrefix => {
                 "Could not read the cloud backup settings saved on this computer: "
+            }
+            Self::LoadErrorHint if !cfg!(windows) => {
+                "This may be a different user or computer, this computer's data key may be unavailable, or the settings were damaged. Clear them and add the backup targets again (existing cloud backup files are not deleted)."
             }
             Self::LoadErrorHint => {
                 "This may be a different Windows account, or the settings were damaged. Clear them and add the backup targets again (existing cloud backup files are not deleted)."
