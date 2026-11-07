@@ -100,11 +100,13 @@ Data is stored in `$XDG_DATA_HOME/ZeeTerm` (usually `~/.local/share/ZeeTerm`) wi
 
 Requirements: an Apple Silicon Mac (M1 or newer) running **macOS 14 or newer**.
 
+With [Homebrew](https://brew.sh/): `brew install --cask moeshinx/tap/zeeterm` (update with `brew upgrade --cask zeeterm`; the first launch still has to be allowed once, see step 2). Or install manually:
+
 1. Download `ZeeTerm-<version>-macos-arm64.zip` from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest), unzip it, and drag `ZeeTerm.app` into your Applications folder.
 2. The first launch is blocked: the macOS build is not signed with an Apple Developer ID and not notarized (it carries only an ad-hoc signature). Double-click ZeeTerm in Applications once, then open **System Settings → Privacy & Security**, scroll to the bottom and click **Open Anyway**. After that it opens normally.
 3. When you save a password, and the first time you start a newly updated version, macOS may ask whether "ZeeTerm wants to use the keychain". Choose **Always Allow**.
 
-There is no in-app auto-update on macOS yet. To update, download the new version from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) and replace ZeeTerm in Applications; your data and saved hosts are not affected. Data is stored in `~/Library/Application Support/ZeeTerm` (`ZSSH_DATA_DIR` still takes priority).
+There is no in-app auto-update on macOS yet. To update, run `brew upgrade --cask zeeterm`, or download the new version from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) and replace ZeeTerm in Applications; your data and saved hosts are not affected. Data is stored in `~/Library/Application Support/ZeeTerm` (`ZSSH_DATA_DIR` still takes priority).
 
 **Coming from Z-SSH?** Use the built-in import flow to preview your data and create a backup before applying changes.
 
