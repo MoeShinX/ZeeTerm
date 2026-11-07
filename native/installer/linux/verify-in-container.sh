@@ -36,10 +36,17 @@ for path in \
     "/usr/share/icons/hicolor/16x16/apps/$app_id.png" \
     "/usr/share/icons/hicolor/256x256/apps/$app_id.png" \
     "/usr/share/icons/hicolor/512x512/apps/$app_id.png" \
-    /usr/share/doc/zeeterm/copyright \
-    /usr/share/man/man1/zeeterm.1.gz; do
+    /usr/share/doc/zeeterm/copyright; do
     [ -f "$path" ] || fail "缺少 $path"
 done
+# 精简版镜像（Docker 的 ubuntu）在 /etc/dpkg/dpkg.cfg.d/ 里用 path-exclude 不装 man 手册，
+# 这时文件本来就不会落盘：改成核对它确实在包里。
+man_page=/usr/share/man/man1/zeeterm.1.gz
+if [ ! -f "$man_page" ]; then
+    grep -qs '^path-exclude=/usr/share/man/' /etc/dpkg/dpkg.cfg.d/* || fail "缺少 $man_page"
+    dpkg-deb -c "$deb" | grep -qF ".$man_page" || fail "包里没有 $man_page"
+    echo "这个镜像的 dpkg 配置不装 man 手册，已确认它在包里"
+fi
 desktop-file-validate "/usr/share/applications/$app_id.desktop" || fail "desktop-file-validate 没通过"
 echo "桌面文件校验通过"
 
