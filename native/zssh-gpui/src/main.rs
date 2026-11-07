@@ -146,6 +146,8 @@ fn main() {
         zssh_core::store::secrets::init_vault(&settings::data_dir());
         zssh_core::store::secrets::warm_up_vault();
     }
+    // macOS：在后台先问一次登录 shell 的 PATH，给智能体的探测和启动用（其他平台什么也不做）。
+    zssh_core::ai::agent::discovery::warm_up_agent_path();
     let app = gpui_kit::application().with_assets(icons::AppAssets);
 
     app.run(move |cx| {

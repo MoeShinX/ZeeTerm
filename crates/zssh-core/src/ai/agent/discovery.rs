@@ -252,10 +252,19 @@ pub struct EnvView {
 impl EnvView {
     /// 真实环境：快照进程环境变量 + 问一次包管理器（进程内缓存，问不到就算了）。
     pub async fn from_process() -> Self {
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+        let mut vars: Vec<(String, String)> = std::env::vars()
+            .map(|(name, value)| (name.to_ascii_uppercase(), value))
+            .collect();
+        // macOS：Finder / Dock 启动的程序拿不到登录 shell 设置的 PATH，换成合并后的那份再找。
+        #[cfg(target_os = "macos")]
+        {
+            let merged = agent_path().to_string_lossy().into_owned();
+            vars.retain(|(name, _)| name != "PATH");
+            vars.push(("PATH".to_owned(), merged));
+        }
         Self {
-            vars: std::env::vars()
-                .map(|(name, value)| (name.to_ascii_uppercase(), value))
-                .collect(),
+            vars,
             manager_dirs: package_manager_dirs().await.clone(),
             #[cfg(unix)]
             home: std::env::home_dir().filter(|home| !home.as_os_str().is_empty()),
@@ -361,6 +370,9 @@ async fn package_manager_dirs() -> &'static Vec<PathBuf> {
 /// （实测 `pnpm bin -g` 就是），拿 stderr 当目录就错了。
 async fn query_dir(program: &str, args: &[&str]) -> Option<PathBuf> {
     let mut cmd = tokio::process::Command::new(program);
+    // macOS：`npm` 这类命令本身也只在登录 shell 的 PATH 里（子进程的 PATH 也用于查找程序）。
+    #[cfg(target_os = "macos")]
+    cmd.env("PATH", agent_path());
     cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -1179,7 +1191,199 @@ pub fn build_command(path: &Path) -> tokio::process::Command {
     // Unix：自成进程组（结束时整组一起杀）并在 ZeeTerm 被强杀时跟着走，见 `process.rs`。
     #[cfg(unix)]
     super::process::isolate_process_group(&mut cmd);
+    // macOS：npm / nvm 装的智能体是 `#!/usr/bin/env node` 脚本，GUI 进程的 PATH 里没有 node。
+    #[cfg(target_os = "macos")]
+    cmd.env("PATH", agent_path());
     cmd
+}
+
+/// 给智能体探测和启动用的 PATH（macOS）。第一次调用时取一次，之后缓存到进程结束。
+///
+/// 为什么：从 Finder / Dock 启动的程序，PATH 只有 `/usr/bin:/bin:/usr/sbin:/sbin` 这类系统目录，
+/// Homebrew、npm、nvm 装的东西都不在里面。照 VS Code / Zed 的做法问一次登录 shell 的 PATH，和当前
+/// PATH 合并；问不到（超时、shell 不可用）时退回到当前 PATH 加几个常见目录（存在才加）。
+#[cfg(target_os = "macos")]
+pub fn agent_path() -> &'static std::ffi::OsString {
+    static PATH: OnceLock<std::ffi::OsString> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let current = std::env::var_os("PATH").unwrap_or_default();
+        let login = query_login_shell_path(&login_shell(), LOGIN_PATH_TIMEOUT);
+        let fallbacks = if login.is_some() {
+            Vec::new()
+        } else {
+            tracing::info!("没取到登录 shell 的 PATH，改用当前 PATH 加常见目录");
+            let home = std::env::home_dir().filter(|home| home.is_absolute());
+            fallback_path_dirs(home.as_deref(), std::env::var_os("NVM_BIN").as_deref())
+        };
+        merge_path(login.as_deref(), &current, &fallbacks)
+    })
+}
+
+/// 启动时在后台把 [`agent_path`] 先算好：登录 shell 可能要跑几百毫秒，别让第一次探测智能体等它。
+/// 其他平台什么也不做。
+pub fn warm_up_agent_path() {
+    #[cfg(target_os = "macos")]
+    {
+        let spawned = std::thread::Builder::new()
+            .name("zeeterm-agent-path".to_owned())
+            .spawn(|| {
+                let _ = agent_path();
+            });
+        if let Err(err) = spawned {
+            tracing::warn!(%err, "启动 PATH 预取线程失败");
+        }
+    }
+}
+
+/// 登录 shell 最多等多久（有的用户 `.zprofile` 里会初始化 conda / nvm，慢一点也正常）。
+#[cfg(target_os = "macos")]
+const LOGIN_PATH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 用户的登录 shell：`$SHELL` 是绝对路径且是文件才用，否则用系统默认的 zsh。
+#[cfg(target_os = "macos")]
+fn login_shell() -> PathBuf {
+    std::env::var_os("SHELL")
+        .map(PathBuf::from)
+        .filter(|shell| shell.is_absolute() && shell.is_file())
+        .unwrap_or_else(|| PathBuf::from("/bin/zsh"))
+}
+
+/// 登录 shell 输出里包住 PATH 的标记：`.zprofile` 之类往标准输出打印的东西不会混进来。
+#[cfg(any(target_os = "macos", all(test, unix)))]
+const PATH_BEGIN: &str = "__ZEETERM_PATH_BEGIN__";
+#[cfg(any(target_os = "macos", all(test, unix)))]
+const PATH_END: &str = "__ZEETERM_PATH_END__";
+
+/// 跑一次 `<shell> -l -c 'printf ...'` 取登录 shell 的 PATH。超时、退出码非 0、没有标记都算取不到。
+///
+/// 不加 `-i`：交互式初始化可能等终端输入、改终端模式；标准输入给空，超时就杀掉。
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn query_login_shell_path(shell: &Path, timeout: Duration) -> Option<String> {
+    use std::io::Read as _;
+    use std::os::unix::process::CommandExt as _;
+
+    let script = format!("printf '%s%s%s' '{PATH_BEGIN}' \"$PATH\" '{PATH_END}'");
+    let mut child = std::process::Command::new(shell)
+        .args(["-l", "-c", &script])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        // 自成进程组：超时时连它在 profile 里拉起的子进程一起结束（它们拿着输出管道，不结束就读不完）。
+        .process_group(0)
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    // 读在另一个线程里，这里按超时等退出。
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stdout.read_to_end(&mut out);
+        let _ = sender.send(out);
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => {
+                if let Ok(pid) = i32::try_from(child.id()) {
+                    // SAFETY: 负 PID 指向上面 `process_group(0)` 给这个子进程新建的组，子进程还没被回收，
+                    // 组号不会被别人重用；SIGKILL 只发给这个组。
+                    unsafe {
+                        libc::kill(-pid, libc::SIGKILL);
+                    }
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    // 正常退出后输出很快读完；还有后台进程拿着管道的话也不久等。
+    let out = receiver.recv_timeout(Duration::from_secs(1)).ok()?;
+    if !status.success() {
+        return None;
+    }
+    extract_marked_path(&String::from_utf8_lossy(&out))
+}
+
+/// 从登录 shell 的输出里取出两个标记之间的 PATH；空的也算没有。
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn extract_marked_path(output: &str) -> Option<String> {
+    let start = output.find(PATH_BEGIN)? + PATH_BEGIN.len();
+    let rest = &output[start..];
+    let end = rest.find(PATH_END)?;
+    let path = rest[..end].trim();
+    (!path.is_empty()).then(|| path.to_owned())
+}
+
+/// 取不到登录 shell 的 PATH 时补的常见目录（只加存在的）：Homebrew（Apple Silicon / Intel）、
+/// `~/.local/bin`、npm 免 sudo 前缀 `~/.npm-global/bin`、nvm 当前版本的 bin。
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn fallback_path_dirs(home: Option<&Path>, nvm_bin: Option<&std::ffi::OsStr>) -> Vec<PathBuf> {
+    let mut dirs = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ];
+    if let Some(home) = home {
+        dirs.push(home.join(".local").join("bin"));
+        dirs.push(home.join(".npm-global").join("bin"));
+    }
+    match nvm_bin.map(PathBuf::from).filter(|dir| dir.is_absolute()) {
+        Some(dir) => dirs.push(dir),
+        None => dirs.extend(home.and_then(nvm_default_bin)),
+    }
+    dirs.retain(|dir| dir.is_dir());
+    dirs
+}
+
+/// nvm 的默认版本（`~/.nvm/alias/default` 里写的版本前缀，如 `22`、`v20.11.0`）对应的 bin 目录。
+/// 写的是 `node`、`lts/*` 这类别名或读不到时，取装着的最高版本。
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn nvm_default_bin(home: &Path) -> Option<PathBuf> {
+    let nvm = home.join(".nvm");
+    let alias = std::fs::read_to_string(nvm.join("alias").join("default")).unwrap_or_default();
+    let alias = alias.trim().trim_start_matches('v').to_owned();
+    let pinned = alias.starts_with(|c: char| c.is_ascii_digit());
+    let mut versions: Vec<(Vec<u64>, PathBuf)> =
+        std::fs::read_dir(nvm.join("versions").join("node"))
+            .ok()?
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let bare = name.trim_start_matches('v');
+                let numbers = bare
+                    .split('.')
+                    .map(|part| part.parse::<u64>().ok())
+                    .collect::<Option<Vec<_>>>()?;
+                let wanted = !pinned || bare == alias || bare.starts_with(&format!("{alias}."));
+                wanted.then(|| (numbers, entry.path().join("bin")))
+            })
+            .collect();
+    versions.sort();
+    versions.pop().map(|(_, bin)| bin)
+}
+
+/// 合并 PATH：登录 shell 的在前，然后当前 PATH，再是补的目录；只留绝对路径，去重保序。
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn merge_path(
+    login: Option<&str>,
+    current: &std::ffi::OsStr,
+    extra: &[PathBuf],
+) -> std::ffi::OsString {
+    let mut seen: Vec<PathBuf> = Vec::new();
+    let login = std::ffi::OsStr::new(login.unwrap_or_default());
+    for dir in std::env::split_paths(login)
+        .chain(std::env::split_paths(current))
+        .chain(extra.iter().cloned())
+    {
+        if dir.is_absolute() && !seen.contains(&dir) {
+            seen.push(dir);
+        }
+    }
+    std::env::join_paths(seen).unwrap_or_else(|_| current.to_owned())
 }
 
 /// 不给子进程弹控制台窗口。
@@ -2381,5 +2585,120 @@ mod unix_tests {
             assert!(found.contains(&good.join("opencode")));
             assert!(found.iter().all(|path| path.is_absolute()), "{found:?}");
         }
+    }
+}
+
+// macOS 的登录 shell PATH 合并：纯逻辑在 Linux 上一样能跑（真实的 `sh -l` 也是）。
+#[cfg(all(test, unix))]
+mod login_path_tests {
+    use super::*;
+
+    #[test]
+    fn the_marked_path_is_extracted_even_with_profile_noise_around_it() {
+        let noisy = format!("Welcome!\n{PATH_BEGIN}/opt/homebrew/bin:/usr/bin{PATH_END}\nbye");
+        assert_eq!(
+            extract_marked_path(&noisy).as_deref(),
+            Some("/opt/homebrew/bin:/usr/bin")
+        );
+        assert_eq!(extract_marked_path("no markers"), None);
+        assert_eq!(
+            extract_marked_path(&format!("{PATH_BEGIN}  {PATH_END}")),
+            None
+        );
+    }
+
+    #[test]
+    fn merging_keeps_order_drops_duplicates_and_relative_entries() {
+        let merged = merge_path(
+            Some("/opt/homebrew/bin:/usr/bin:relative"),
+            std::ffi::OsStr::new("/usr/bin:/bin::"),
+            &[PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/extra")],
+        );
+        assert_eq!(merged, "/opt/homebrew/bin:/usr/bin:/bin:/extra");
+        // 登录 shell 没给：当前 PATH 原样在前。
+        let merged = merge_path(None, std::ffi::OsStr::new("/usr/bin:/bin"), &[]);
+        assert_eq!(merged, "/usr/bin:/bin");
+    }
+
+    #[test]
+    fn a_real_login_shell_reports_its_path() {
+        let path = query_login_shell_path(Path::new("/bin/sh"), Duration::from_secs(10))
+            .expect("/bin/sh -l 应该能报出 PATH");
+        assert!(path.contains('/'), "{path}");
+    }
+
+    #[test]
+    fn a_shell_that_fails_or_hangs_gives_nothing_in_time() {
+        assert_eq!(
+            query_login_shell_path(Path::new("/nonexistent/shell"), Duration::from_secs(1)),
+            None
+        );
+        // `false` 不认 `-l -c`，退出码非 0。
+        assert_eq!(
+            query_login_shell_path(Path::new("/bin/false"), Duration::from_secs(1)),
+            None
+        );
+        // 卡住不退出的"shell"：到点杀掉，不会一直等。
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let hang = dir.path().join("hang.sh");
+        std::fs::write(
+            &hang,
+            "#!/bin/sh
+sleep 30
+",
+        )
+        .expect("写脚本");
+        std::fs::set_permissions(&hang, std::fs::Permissions::from_mode(0o755)).expect("权限");
+        let started = std::time::Instant::now();
+        assert_eq!(
+            query_login_shell_path(&hang, Duration::from_millis(300)),
+            None
+        );
+        assert!(started.elapsed() < Duration::from_secs(10), "超时没生效");
+    }
+
+    #[test]
+    fn fallback_dirs_only_include_existing_ones_and_pick_the_nvm_default() {
+        let home = tempfile::tempdir().expect("临时目录");
+        let local_bin = home.path().join(".local").join("bin");
+        std::fs::create_dir_all(&local_bin).expect("建目录");
+        let versions = home.path().join(".nvm").join("versions").join("node");
+        for version in ["v18.19.0", "v20.11.0", "v20.9.0", "v22.1.0"] {
+            std::fs::create_dir_all(versions.join(version).join("bin")).expect("建目录");
+        }
+        std::fs::create_dir_all(home.path().join(".nvm").join("alias")).expect("建目录");
+        std::fs::write(
+            home.path().join(".nvm").join("alias").join("default"),
+            "20\n",
+        )
+        .expect("写别名");
+
+        let dirs = fallback_path_dirs(Some(home.path()), None);
+        assert!(dirs.contains(&local_bin));
+        assert!(
+            !dirs.contains(&home.path().join(".npm-global").join("bin")),
+            "不存在的目录不加"
+        );
+        assert!(
+            dirs.contains(&versions.join("v20.11.0").join("bin")),
+            "{dirs:?}"
+        );
+        assert!(!dirs.contains(&versions.join("v22.1.0").join("bin")));
+
+        // 别名不是版本号（lts/*）：取最高版本。
+        std::fs::write(
+            home.path().join(".nvm").join("alias").join("default"),
+            "lts/*",
+        )
+        .expect("写别名");
+        assert_eq!(
+            nvm_default_bin(home.path()),
+            Some(versions.join("v22.1.0").join("bin"))
+        );
+        // NVM_BIN 给了就用它。
+        let nvm_bin = versions.join("v18.19.0").join("bin");
+        let dirs = fallback_path_dirs(Some(home.path()), Some(nvm_bin.as_os_str()));
+        assert!(dirs.contains(&nvm_bin));
     }
 }
