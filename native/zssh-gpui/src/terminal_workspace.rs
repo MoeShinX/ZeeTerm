@@ -1342,6 +1342,8 @@ pub struct TerminalWorkspace {
     drag_anchor: Option<(usize, usize)>,
     cell_width: f32,
     cell_height: f32,
+    /// 触控板 / 高精度滚轮累积下来、还不够一整行的滚动量（行）；见 [`take_whole_lines`]。
+    wheel_remainder: f32,
     pending_paste: Option<PendingPaste>,
     hover_link: Option<Arc<str>>,
     /// 应用级设置实体（全进程一份，所有窗口共用）；改设置走它，不在窗口里存盘。
@@ -1558,6 +1560,7 @@ impl TerminalWorkspace {
             drag_anchor: None,
             cell_width: 8.0,
             cell_height: 18.0,
+            wheel_remainder: 0.0,
             pending_paste: None,
             hover_link: None,
             settings_store,
@@ -3448,12 +3451,12 @@ impl TerminalWorkspace {
     }
 
     fn on_wheel(&mut self, event: &ScrollEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let row_height = self.settings.font_size * self.settings.line_height;
+        let row_height = self.cell_height;
         let lines = match event.delta {
             ScrollDelta::Lines(point) => point.y,
             ScrollDelta::Pixels(point) => f32::from(point.y) / row_height.max(1.0),
         };
-        let delta = lines.round() as i32;
+        let delta = take_whole_lines(&mut self.wheel_remainder, lines);
 
         let mode = self.mouse_report_mode(event.modifiers.shift);
         if mode.reports_buttons() && delta != 0 {
@@ -3909,6 +3912,40 @@ impl BlinkClock {
     }
 }
 
+/// 终端一行的高度（逻辑像素），取整到整数设备像素。
+///
+/// gpui 在布局之前就把显式的 `h(..)` 按设备像素取整（`round_half_toward_zero`）：12px 字体 × 行高 1.3
+/// = 15.6px 实际每行占 16px。如果行数仍按 15.6 算（区域高 ÷ 15.6），50 行就多出 20px，最后一行
+/// 伸出终端区域被底部栏盖住，而且已经在最底部、滚不下去。绘制、行数、鼠标命中、输入法位置都用这个
+/// 取整后的值，三处就永远一致。`scale` 是窗口缩放比例（100% = 1.0）。
+pub(crate) fn snap_row_height(row_height: f32, scale: f32) -> f32 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let device = (row_height * scale).round().max(1.0);
+    device / scale
+}
+
+/// 把这次滚动量（行，可以是小数）加进累积余数，取出其中的整行数，余数留着给下一次。
+///
+/// 触控板 / 高精度滚轮每个事件只有零点几行：逐个 `round()` 全是 0，怎么滚都不动。累积后总量不丢；
+/// 方向反过来时先清掉旧余数（不然反向的第一下要先抵消前面攒的，手感发滞）。余数放在窗口级而不是
+/// 每个窗格一份：它最多不到一行，滚动目标窗格是每次事件按指针位置现找的，串到相邻窗格也看不出来。
+fn take_whole_lines(remainder: &mut f32, lines: f32) -> i32 {
+    if !lines.is_finite() {
+        return 0;
+    }
+    if remainder.signum() * lines.signum() < 0.0 {
+        *remainder = 0.0;
+    }
+    let total = *remainder + lines;
+    let whole = total.trunc();
+    *remainder = total - whole;
+    whole as i32
+}
+
 impl Render for TerminalWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mono = self.mono_family(cx);
@@ -3932,7 +3969,12 @@ impl Render for TerminalWorkspace {
             .advance(font_id, mono_size, 'M')
             .map(|size| f32::from(size.width))
             .unwrap_or(f32::from(mono_size) * 0.6);
-        let cell_height = f32::from(mono_size) * self.settings.line_height;
+        // 行高取整到整数设备像素：gpui 在布局前就把 `h(..)` 取整，行高是小数时每行实际占的高度和这里按
+        // 小数算出来的行数对不上，行数越多累计越多，最后一行会伸到区域外被底部栏盖住。
+        let cell_height = snap_row_height(
+            f32::from(mono_size) * self.settings.line_height,
+            window.scale_factor(),
+        );
         self.cell_width = cell_width;
         self.cell_height = cell_height;
 
@@ -4156,7 +4198,7 @@ impl Render for TerminalWorkspace {
                                 &mono,
                                 self.settings.font_size,
                                 self.cell_width,
-                                self.settings.line_height,
+                                self.cell_height,
                                 self.settings.cursor,
                                 !self.settings.cursor_blink || self.cursor_blink.visible(),
                                 foreground,
@@ -4593,7 +4635,8 @@ fn pane_grid(
     font_size: f32,
     // 一个栅格列的宽度：选区底纹按「列区间 × 列宽」整块画，不留缝。
     cell_width: f32,
-    line_height: f32,
+    // 一行的高度（逻辑像素），和布局算行数用的是同一个值（见 `snap_row_height`）。
+    row_height: f32,
     cursor_shape: CursorShape,
     cursor_lit: bool,
     foreground: Hsla,
@@ -4614,7 +4657,7 @@ fn pane_grid(
         .children(pane.snapshot.rows.iter().enumerate().map(|(row_ix, row)| {
             let plain_links = crate::links::find_plain_links(row);
             let row_spans = highlights.get(row_ix).map(Vec::as_slice).unwrap_or(&[]);
-            let row_h = ::gpui::px(font_size * line_height);
+            let row_h = ::gpui::px(row_height);
             // 选区底纹按「连续的列区间」整块画在文字下面：逐字 div 的背景宽度取字形 advance，
             // 非整数像素时相邻背景之间会露缝；按 列宽 × 列数 画整块矩形就没有缝。
             div()
@@ -7503,5 +7546,108 @@ mod overlay_tests {
         failing.poll_events();
         assert_eq!(failing.overlay_reason(), Some("连接失败：refused"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod row_height_tests {
+    use super::{snap_row_height, take_whole_lines};
+
+    /// gpui 布局前对显式长度的取整（`round_half_toward_zero`，设备像素）：每行真正占的高度。
+    fn gpui_row_height(row: f32, scale: f32) -> f32 {
+        let device = row * scale;
+        (device - 0.5).ceil() / scale
+    }
+
+    /// 布局按 `rows` 行排：区域里放得下这么多行时 `rows * 每行真正占的高度` 不能超过文字区高度。
+    fn rows_that_fit(inner_h: f32, cell_h: f32) -> usize {
+        (inner_h / cell_h).floor() as usize
+    }
+
+    #[test]
+    fn fractional_row_height_snaps_to_whole_device_pixels() {
+        // 12px × 1.3 = 15.6：100% 缩放下实际一行 16px（现场量到的就是 16.0）。
+        assert_eq!(snap_row_height(15.6, 1.0), 16.0);
+        // 150% 缩放：15.6 × 1.5 = 23.4 → 23 设备像素。
+        assert!((snap_row_height(15.6, 1.5) * 1.5 - 23.0).abs() < 1e-4);
+        // 非法缩放按 1.0 处理，行高不会变成 0 / NaN。
+        assert_eq!(snap_row_height(15.6, 0.0), 16.0);
+        assert_eq!(snap_row_height(15.6, f32::NAN), 16.0);
+        assert!(snap_row_height(0.0, 1.0) >= 1.0);
+    }
+
+    #[test]
+    fn unsnapped_row_height_overflowed_the_area() {
+        // 复现现场：810px 的终端区、8px 内边距，行高 15.6 → 按 15.6 排出 50 行，
+        // 但每行真占 16px，50 行 = 800px > 794px，最后一行伸出区域。
+        let inner = 810.0 - 16.0;
+        let rows = rows_that_fit(inner, 15.6);
+        assert_eq!(rows, 50);
+        assert!(rows as f32 * gpui_row_height(15.6, 1.0) > inner);
+        // 取整之后排出 49 行，放得下。
+        let snapped = snap_row_height(15.6, 1.0);
+        let rows = rows_that_fit(inner, snapped);
+        assert_eq!(rows, 49);
+        assert!(rows as f32 * gpui_row_height(snapped, 1.0) <= inner);
+    }
+
+    #[test]
+    fn snapped_rows_always_fit_for_common_scales_and_sizes() {
+        for scale in [1.0_f32, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0] {
+            for size in (16..=64).map(|n| n as f32 * 0.5) {
+                for lh in (0..=12).map(|n| 1.0 + n as f32 * 0.05) {
+                    let snapped = snap_row_height(size * lh, scale);
+                    // 取整后就是整数设备像素：gpui 再取整也不会变。
+                    let device = snapped * scale;
+                    assert!(
+                        (device - device.round()).abs() < 1e-3,
+                        "{size} {lh} {scale}"
+                    );
+                    assert!(
+                        (gpui_row_height(snapped, scale) - snapped).abs() < 1e-3,
+                        "{size} {lh} {scale}"
+                    );
+                    for inner in [300.0_f32, 794.0, 797.5, 1210.0] {
+                        let rows = rows_that_fit(inner, snapped);
+                        assert!(
+                            rows as f32 * gpui_row_height(snapped, scale) <= inner + 1e-3,
+                            "{size} {lh} {scale} {inner}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn small_wheel_deltas_accumulate_into_whole_lines() {
+        let mut rem = 0.0;
+        // 触控板：每个事件 0.3 行。以前每个都 round 成 0，一行也滚不动。
+        let total: i32 = (0..10).map(|_| take_whole_lines(&mut rem, 0.3)).sum();
+        assert_eq!(total, 3, "10 × 0.3 行 = 3 行，一点不丢");
+        assert!(rem.abs() < 1e-3);
+        // 整行的滚轮：余数一直是 0。
+        let mut rem = 0.0;
+        assert_eq!(take_whole_lines(&mut rem, 3.0), 3);
+        assert_eq!(take_whole_lines(&mut rem, -2.0), -2);
+        assert_eq!(rem, 0.0);
+        // 一次跨多行带小数：整行先出，小数留着。
+        assert_eq!(take_whole_lines(&mut rem, 2.56), 2);
+        assert!((rem - 0.56).abs() < 1e-5);
+        assert_eq!(take_whole_lines(&mut rem, 0.5), 1);
+    }
+
+    #[test]
+    fn wheel_remainder_resets_when_direction_reverses() {
+        let mut rem = 0.0;
+        assert_eq!(take_whole_lines(&mut rem, 0.8), 0);
+        // 反向：不用先抵消前面攒的 0.8，直接从 0 开始攒。
+        assert_eq!(take_whole_lines(&mut rem, -0.4), 0);
+        assert!((rem + 0.4).abs() < 1e-5);
+        assert_eq!(take_whole_lines(&mut rem, -0.7), -1);
+        // 非法值不动余数。
+        let before = rem;
+        assert_eq!(take_whole_lines(&mut rem, f32::NAN), 0);
+        assert_eq!(rem, before);
     }
 }
