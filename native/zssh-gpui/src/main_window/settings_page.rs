@@ -331,6 +331,9 @@ impl Msg for SettingsMsg {
                 "远端按源的权限位设置；本地只有只读一位有意义。"
             }
             Self::FilePanelGroup => "文件面板",
+            Self::FilePanelDescription if cfg!(target_os = "macos") => {
+                "「文件」按钮和 Cmd+Shift+F 打开的文件视图；对之后新打开的视图生效。"
+            }
             Self::FilePanelDescription => {
                 "「文件」按钮和 Ctrl+Shift+F 打开的文件视图；对之后新打开的视图生效。"
             }
@@ -538,6 +541,9 @@ impl Msg for SettingsMsg {
                 "On remote, set the source's permission bits; locally only the read-only bit is meaningful."
             }
             Self::FilePanelGroup => "File Panel",
+            Self::FilePanelDescription if cfg!(target_os = "macos") => {
+                "The file view opened by the Files button and Cmd+Shift+F; applies to views opened afterwards."
+            }
             Self::FilePanelDescription => {
                 "The file view opened by the Files button and Ctrl+Shift+F; applies to views opened afterwards."
             }

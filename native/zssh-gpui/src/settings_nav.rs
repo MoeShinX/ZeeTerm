@@ -329,6 +329,7 @@ impl Msg for ShortcutMsg {
             Self::ToggleFilePanel => "开关文件（SFTP）面板（仅 SSH 主机）",
             Self::SendBreak => "发送 Break（串口标签；右键标签也有）",
             Self::FontZoom => "终端字号放大 / 缩小 / 恢复默认",
+            Self::CopyPaste if cfg!(target_os = "macos") => "有选区时复制；粘贴（Shift+Insert 同）",
             Self::CopyPaste => "有选区时复制；粘贴（Ctrl+Shift+V、Shift+Insert 同）",
             Self::ScrollPages => "终端翻页（Shift+Home / End 到顶 / 到底）",
             Self::CloseSettings => "关闭设置与管理页，回到原来的页面",
@@ -352,6 +353,9 @@ impl Msg for ShortcutMsg {
             Self::ToggleFilePanel => "Toggle the file (SFTP) panel (SSH hosts only)",
             Self::SendBreak => "Send Break (serial tabs; also on the tab's right-click menu)",
             Self::FontZoom => "Enlarge / shrink / reset the terminal font size",
+            Self::CopyPaste if cfg!(target_os = "macos") => {
+                "Copy when there is a selection; paste (also Shift+Insert)"
+            }
             Self::CopyPaste => {
                 "Copy when there is a selection; paste (also Ctrl+Shift+V, Shift+Insert)"
             }
@@ -385,6 +389,16 @@ impl std::ops::Deref for ShortcutMsg {
     }
 }
 
+/// macOS 上主窗口认的是 Cmd 组合（见 `main_window::on_key_down` 的 macOS 分支）：表里写那一份；
+/// 原来的 Ctrl+Shift 组合在 macOS 上也照样生效，只是不再写进表里。
+const fn mac_or(mac: &'static str, other: &'static str) -> &'static str {
+    if cfg!(target_os = "macos") {
+        mac
+    } else {
+        other
+    }
+}
+
 /// 快捷键表里的一行：按键、作用。
 pub struct Shortcut {
     pub keys: &'static str,
@@ -396,19 +410,19 @@ pub struct Shortcut {
 /// 只读说明，不能改键（0.2.14 也是「不支持自定义」）。
 pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut {
-        keys: "Ctrl+Shift+T",
+        keys: mac_or("Cmd+T", "Ctrl+Shift+T"),
         what: ShortcutMsg::NewTab,
     },
     Shortcut {
-        keys: "Ctrl+Shift+W",
+        keys: mac_or("Cmd+W", "Ctrl+Shift+W"),
         what: ShortcutMsg::ClosePane,
     },
     Shortcut {
-        keys: "Ctrl+Shift+D",
+        keys: mac_or("Cmd+D", "Ctrl+Shift+D"),
         what: ShortcutMsg::SplitRight,
     },
     Shortcut {
-        keys: "Ctrl+Shift+E",
+        keys: mac_or("Cmd+E", "Ctrl+Shift+E"),
         what: ShortcutMsg::SplitDown,
     },
     Shortcut {
@@ -416,7 +430,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
         what: ShortcutMsg::SwitchTabs,
     },
     Shortcut {
-        keys: "Ctrl+,",
+        keys: mac_or("Cmd+,", "Ctrl+,"),
         what: ShortcutMsg::OpenSettings,
     },
     Shortcut {
@@ -424,7 +438,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
         what: ShortcutMsg::ReconnectPane,
     },
     Shortcut {
-        keys: "Ctrl+Shift+B",
+        keys: mac_or("Cmd+B", "Ctrl+Shift+B"),
         what: ShortcutMsg::ToggleBroadcast,
     },
     Shortcut {
@@ -432,7 +446,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
         what: ShortcutMsg::ToggleAiPanel,
     },
     Shortcut {
-        keys: "Ctrl+Shift+F",
+        keys: mac_or("Cmd+Shift+F", "Ctrl+Shift+F"),
         what: ShortcutMsg::ToggleFilePanel,
     },
     Shortcut {
@@ -444,7 +458,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
         what: ShortcutMsg::FontZoom,
     },
     Shortcut {
-        keys: "Ctrl+C / Ctrl+V",
+        keys: mac_or("Cmd+C / Cmd+V", "Ctrl+C / Ctrl+V"),
         what: ShortcutMsg::CopyPaste,
     },
     Shortcut {
@@ -823,12 +837,12 @@ mod tests {
     fn the_shortcut_table_has_the_0_2_14_rows_and_no_duplicate_keys() {
         let keys: Vec<_> = SHORTCUTS.iter().map(|s| s.keys).collect();
         for needed in [
-            "Ctrl+Shift+T",
-            "Ctrl+Shift+W",
-            "Ctrl+Shift+D",
-            "Ctrl+Shift+E",
+            mac_or("Cmd+T", "Ctrl+Shift+T"),
+            mac_or("Cmd+W", "Ctrl+Shift+W"),
+            mac_or("Cmd+D", "Ctrl+Shift+D"),
+            mac_or("Cmd+E", "Ctrl+Shift+E"),
             "Ctrl+Tab / Ctrl+Shift+Tab",
-            "Ctrl+,",
+            mac_or("Cmd+,", "Ctrl+,"),
             "Ctrl+Shift+K",
         ] {
             assert!(keys.contains(&needed), "缺 {needed}");

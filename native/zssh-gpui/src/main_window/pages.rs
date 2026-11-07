@@ -27,6 +27,9 @@ enum PagesMsg {
 impl Msg for PagesMsg {
     fn zh(&self) -> &'static str {
         match self {
+            Self::NoTabs if cfg!(target_os = "macos") => {
+                "没有打开的标签。按 Cmd+T 新建，或者在左侧双击一台主机。"
+            }
             Self::NoTabs => "没有打开的标签。按 Ctrl+Shift+T 新建，或者在左侧双击一台主机。",
             Self::QuickConnect => "快速连接",
             Self::LauncherHint => "搜索已保存的会话，回车即可连接",
@@ -37,6 +40,9 @@ impl Msg for PagesMsg {
 
     fn en(&self) -> &'static str {
         match self {
+            Self::NoTabs if cfg!(target_os = "macos") => {
+                "No open tabs. Press Cmd+T to create one, or double-click a host on the left."
+            }
             Self::NoTabs => {
                 "No open tabs. Press Ctrl+Shift+T to create one, or double-click a host on the left."
             }

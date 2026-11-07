@@ -32,6 +32,9 @@ impl Msg for WelcomeMsg {
     fn zh(&self) -> &'static str {
         match self {
             Self::Subtitle => "简洁的 SSH / Telnet / 串口终端",
+            Self::Hint if cfg!(target_os = "macos") => {
+                "从左侧双击主机开始连接，或按 Cmd+T 新建标签"
+            }
             Self::Hint => "从左侧双击主机开始连接，或按 Ctrl+Shift+T 新建标签",
             Self::QuickConnect => "快速连接",
             Self::NewHost => "新建主机",
@@ -41,6 +44,9 @@ impl Msg for WelcomeMsg {
     fn en(&self) -> &'static str {
         match self {
             Self::Subtitle => "A clean SSH / Telnet / serial terminal",
+            Self::Hint if cfg!(target_os = "macos") => {
+                "Double-click a host on the left to connect, or press Cmd+T for a new tab"
+            }
             Self::Hint => {
                 "Double-click a host on the left to connect, or press Ctrl+Shift+T for a new tab"
             }
@@ -246,12 +252,17 @@ mod tests {
             [t(WelcomeMsg::QuickConnect), t(WelcomeMsg::NewHost)],
             ["快速连接", "新建主机"]
         );
-        assert!(t(WelcomeMsg::Hint).contains("Ctrl+Shift+T"));
+        let new_tab = if cfg!(target_os = "macos") {
+            "Cmd+T"
+        } else {
+            "Ctrl+Shift+T"
+        };
+        assert!(t(WelcomeMsg::Hint).contains(new_tab));
         // 快捷键表里确实有这一条，提示不会说谎。
         assert!(
             crate::settings_nav::SHORTCUTS
                 .iter()
-                .any(|s| s.keys == "Ctrl+Shift+T")
+                .any(|s| s.keys == new_tab)
         );
         assert!(!t(WelcomeMsg::Subtitle).is_empty());
     }
@@ -260,10 +271,12 @@ mod tests {
     fn every_welcome_message_keeps_its_chinese_and_has_english() {
         // 中文是原来那句，一字不改。
         assert_eq!(WelcomeMsg::Subtitle.zh(), "简洁的 SSH / Telnet / 串口终端");
-        assert_eq!(
-            WelcomeMsg::Hint.zh(),
-            "从左侧双击主机开始连接，或按 Ctrl+Shift+T 新建标签"
-        );
+        if !cfg!(target_os = "macos") {
+            assert_eq!(
+                WelcomeMsg::Hint.zh(),
+                "从左侧双击主机开始连接，或按 Ctrl+Shift+T 新建标签"
+            );
+        }
         assert_eq!(WelcomeMsg::QuickConnect.zh(), "快速连接");
         assert_eq!(WelcomeMsg::NewHost.zh(), "新建主机");
         for key in [

@@ -118,11 +118,20 @@ impl crate::i18n::Msg for BarsMsg {
             Self::EmptyHint => "还没有快捷命令，点这里添加常用命令（例如查看端口、系统更新）",
             Self::BroadcastOn => "广播中",
             Self::BroadcastOff => "广播",
+            Self::BroadcastDisabledTip if cfg!(target_os = "macos") => {
+                "输入广播：先分屏（Cmd+D / E）再开，键盘输入会同时发到所有分屏"
+            }
             Self::BroadcastDisabledTip => {
                 "输入广播：先分屏（Ctrl+Shift+D / E）再开，键盘输入会同时发到所有分屏"
             }
+            Self::BroadcastOnTip if cfg!(target_os = "macos") => {
+                "正在广播：键盘输入同时发到这个标签的所有分屏（点一下关闭，Cmd+B）"
+            }
             Self::BroadcastOnTip => {
                 "正在广播：键盘输入同时发到这个标签的所有分屏（点一下关闭，Ctrl+Shift+B）"
+            }
+            Self::BroadcastOffTip if cfg!(target_os = "macos") => {
+                "输入广播：键盘输入同时发到这个标签的所有分屏（Cmd+B）"
             }
             Self::BroadcastOffTip => "输入广播：键盘输入同时发到这个标签的所有分屏（Ctrl+Shift+B）",
             Self::EnterSuffix => "\n（只填入，不回车）",
@@ -132,6 +141,9 @@ impl crate::i18n::Msg for BarsMsg {
             Self::Delete => "删除",
             Self::ComposeBroadcastTip => {
                 "这个标签正在广播输入，Enter 和发送按钮实际发到所有分屏（先关广播才能只发当前窗格）"
+            }
+            Self::ComposeDisabledTip if cfg!(target_os = "macos") => {
+                "发送目标：先分屏（Cmd+D / E）才能选「所有分屏」"
             }
             Self::ComposeDisabledTip => "发送目标：先分屏（Ctrl+Shift+D / E）才能选「所有分屏」",
             Self::ComposeAllTip => {
@@ -161,11 +173,20 @@ impl crate::i18n::Msg for BarsMsg {
             }
             Self::BroadcastOn => "Broadcasting",
             Self::BroadcastOff => "Broadcast",
+            Self::BroadcastDisabledTip if cfg!(target_os = "macos") => {
+                "Input broadcast: split the pane first (Cmd+D / E); keystrokes then go to every split pane"
+            }
             Self::BroadcastDisabledTip => {
                 "Input broadcast: split the pane first (Ctrl+Shift+D / E); keystrokes then go to every split pane"
             }
+            Self::BroadcastOnTip if cfg!(target_os = "macos") => {
+                "Broadcasting: keystrokes go to every split pane in this tab (click to turn off, Cmd+B)"
+            }
             Self::BroadcastOnTip => {
                 "Broadcasting: keystrokes go to every split pane in this tab (click to turn off, Ctrl+Shift+B)"
+            }
+            Self::BroadcastOffTip if cfg!(target_os = "macos") => {
+                "Input broadcast: send keystrokes to every split pane in this tab (Cmd+B)"
             }
             Self::BroadcastOffTip => {
                 "Input broadcast: send keystrokes to every split pane in this tab (Ctrl+Shift+B)"
@@ -177,6 +198,9 @@ impl crate::i18n::Msg for BarsMsg {
             Self::Delete => "Delete",
             Self::ComposeBroadcastTip => {
                 "This tab is broadcasting input; Enter and the send button go to all split panes (turn broadcast off to send to the active pane only)"
+            }
+            Self::ComposeDisabledTip if cfg!(target_os = "macos") => {
+                "Send target: split the pane first (Cmd+D / E) to choose “All panes”"
             }
             Self::ComposeDisabledTip => {
                 "Send target: split the pane first (Ctrl+Shift+D / E) to choose “All panes”"
