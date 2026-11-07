@@ -222,6 +222,10 @@ fn main() {
             update::run_pending_install();
             // 设置要求时，一并关掉本次运行拉起的 X 服务器（用户自己开的不动）。
             x11_glue::shutdown_owned();
+            // macOS：从 Dock 右键「退出」、注销关机这类退出不经过主窗口的退出流程，也要把智能体的共用进程
+            // （按进程组）收掉；走过 `do_quit` 的再调一次只是空转。
+            #[cfg(target_os = "macos")]
+            agent_host::shutdown_global();
         }));
 
         // 自动同步的调度器：一个进程一个，和同步设置窗口的开关无关。
