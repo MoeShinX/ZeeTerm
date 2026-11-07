@@ -91,6 +91,10 @@ impl TokenStore for DbTokenStore<'_> {
         let plain = match open_from_setting(self.db, self.sealer, &self.key) {
             Ok(Some(plain)) => plain,
             Ok(None) => return Ok(None),
+            // Linux / macOS：资料库密钥认不出这份密文（不是本机密钥写的、或被改过）是永久的，按“没有登录”
+            // 处理；钥匙串被锁住、授权被取消、超时、密钥不见了是暂时的，落到下面报错、保留密文。
+            #[cfg(unix)]
+            Err(SyncError::Database(err)) if permanently_unreadable(&err) => return Ok(None),
             // 数据库本身出了问题：是暂时的故障，不能误判成“没登录”。
             Err(err @ (SyncError::Database(_) | SyncError::Io(_))) => return Err(store_error(err)),
             // 解不开（换了 Windows 账户 / 换了电脑拷来的数据库）或内容损坏：令牌用不了，
@@ -111,6 +115,12 @@ impl TokenStore for DbTokenStore<'_> {
     fn clear(&self) -> Result<(), StorageError> {
         clear_setting(self.db, &self.key).map_err(store_error)
     }
+}
+
+/// 本机密文永远解不开了（只有 Linux / macOS 的资料库密钥能这样判断：格式不认识或认证失败）。
+#[cfg(unix)]
+fn permanently_unreadable(err: &crate::error::ZsshError) -> bool {
+    matches!(err, crate::error::ZsshError::Secret(reason) if reason.key() == reason_keys::VAULT_CORRUPT)
 }
 
 /// 内存里的令牌存储（测试用，也给联网测试用环境变量里的刷新令牌起头）。
@@ -257,6 +267,51 @@ mod tests {
             .expect("临时目录");
         let db = Database::open(&dir.path().join("zssh.db")).expect("打开库");
         (dir, db)
+    }
+
+    /// 解密时返回指定密钥错误的封装（模拟资料库密钥的各种失败）。
+    #[cfg(unix)]
+    struct FailingSealer(&'static str);
+
+    #[cfg(unix)]
+    impl SecretSealer for FailingSealer {
+        fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>, SyncError> {
+            Ok(plaintext.to_vec())
+        }
+
+        fn open(&self, _blob: &[u8]) -> Result<Vec<u8>, SyncError> {
+            Err(SyncError::from(crate::error::ZsshError::Secret(
+                Reason::new(self.0, "mock"),
+            )))
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_tells_a_temporarily_locked_keychain_from_tokens_that_can_never_be_read() {
+        let (_dir, db) = open_db();
+        DbTokenStore::new(&db, &TestSealer(0x11))
+            .save(&sample())
+            .unwrap();
+        // 永久解不开：按没登录处理，界面让用户重新登录。
+        let corrupt = FailingSealer(reason_keys::VAULT_CORRUPT);
+        assert_eq!(DbTokenStore::new(&db, &corrupt).load().unwrap(), None);
+        // 暂时不可用：报错，密文留着，钥匙串回来以后照常能用。
+        for key in [
+            reason_keys::VAULT_LOCKED,
+            reason_keys::VAULT_TIMEOUT,
+            reason_keys::VAULT_UNAVAILABLE,
+            reason_keys::VAULT_KEY_MISSING,
+            reason_keys::VAULT_KEYRING_GONE,
+        ] {
+            let failing = FailingSealer(key);
+            assert!(DbTokenStore::new(&db, &failing).load().is_err(), "{key}");
+        }
+        assert_eq!(
+            DbTokenStore::new(&db, &TestSealer(0x11)).load().unwrap(),
+            Some(sample()),
+            "暂时失败不能清掉保存的令牌"
+        );
     }
 
     #[test]
