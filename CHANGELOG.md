@@ -4,16 +4,29 @@
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-07
+
 ### 新增
 
 - Linux 版（x86_64，glibc 2.35 及以上，Wayland 与 X11）的安装包与发布流水线：每个版本发 `ZeeTerm-<版本>-linux-x86_64.deb`（`sudo apt install ./….deb`；程序在 `/usr/lib/zeeterm/{zeeterm,zssh-mcp}`，`/usr/bin/zeeterm` 是指向它的软链接，内部辅助程序 `zssh-mcp` 不占 PATH 里的命令名；桌面文件、hicolor 图标、AppStream 元数据、man 手册；依赖由 `dpkg-shlibdeps` 计算，另补 Vulkan 加载器等运行时库）和 `.tar.gz`（`install.sh` 免 root 装到 `~/.local`，`--prefix` 可改，布局同 deb：`<前缀>/lib/zeeterm` 加 `bin/zeeterm` 软链接，`uninstall.sh` 按安装清单卸载）。应用标识 `app.zeeterm.ZeeTerm`；`zeeterm --version` 在任何初始化之前打印版本。`scripts/package-linux.sh` 本机和 CI 通用，自检含 `desktop-file-validate`、`appstreamcli`、`lintian`、`ldd`、glibc 基线和 tar.gz 的安装 / 卸载；`scripts/linux-container-check.sh` 在 `debian:12`、`ubuntu:22.04` 容器里装一遍。
 - CI 增加 ubuntu-22.04 的核心库与原生应用两个任务（fmt / clippy / test / release 构建 / 打包）；测试在一次性的 D-Bus 会话 + 临时解锁的 gnome-keyring 里跑（`scripts/linux-keyring-session.sh`）；系统依赖清单只在 `scripts/linux-build-deps.sh`；本地 Linux 门禁 `scripts/gates.sh`。
 - 发版：Linux 任务（ubuntu-22.04，不接触私钥）先编包并上传，Windows 任务取回后用同一把更新私钥签名；`latest.json` 增加 `linux-x86_64-deb` 与 `linux-x86_64-tar` 两个平台条目（Windows 条目不变，老版本 Windows 客户端照常更新），`SHA256SUMS.txt` 和 Release 正文含全部文件。`release_tool manifest` 与 `release-sign.ps1` 支持 Linux 资产，`release-drill.ps1` 覆盖其签名与清单生成。
 - Linux 上的应用内更新：更新窗口认出 ZeeTerm 是 deb 装的还是 tar.gz 装的，只选对应的包（`latest.json` 里没有适用条目时提示去发布页下载）；下载、签名校验和版本绑定与 Windows 同一套，校验不过绝不安装。deb 经系统授权框用 `pkexec` 以 root 运行一个固定脚本安装：脚本先把包复制进 root 自己的临时目录，对复制品核对验签时的 SHA-256 和包名，通过才 `apt-get install`（验签之后包被同用户的别的进程换掉也装不进去），tar.gz 在安装目录可写时先解压、核对新程序的版本，再原子替换程序文件（失败整体回滚，旧版本原样留着）；没有 `pkexec`、授权被取消或目录不可写时不报错，保留已校验的安装包并显示手动安装的方法。装好后点「立即重启」，等本进程退出后再启动新版本。
+- macOS（Apple Silicon）移植：本机秘密与 Linux 共用 `store/vault.rs`（macOS 用 keyring 的 apple-native 后端，登录钥匙串，条目 `app.zeeterm` / `local-vault-key`），应用菜单（Cmd+Q / Cmd+, / Cmd+H，退出走主窗口同一条确认流程），Option 键按系统终端习惯输出字符，登录 shell 的 PATH 用于发现和启动智能体，本地路径按不分大小写比较，`native/installer/macos/build-app.sh` 打 `.app`（Bundle ID `app.zeeterm.ZeeTerm`，ad-hoc 签名）。本版本**不发布** macOS 产物，也没有 macOS 自动更新。
+- CI 增加 macos-latest 的核心库与原生应用两个任务（测试用调试构建的内存钥匙串 `ZSSH_VAULT_MEMORY=1`，并打一次 `.app`）。
+- 文件面板：远端连接断开显示「已断开」并自动重连一次（标签右键、面板标题栏、刷新可手动重连），本地栏开关持久化，上下排列时远端在上，独立文件窗口可「并排到终端」。
 
 ### 改进
 
 - 更新窗口去掉「确认安装」这一步：签名验证通过后点一下「立即安装」就启动安装程序，窗口里也不再显示安装器命令行。
+- 终端双击选词的分隔符与 VS Code / xterm.js 一致（空白、各种括号和引号、逗号、竖线、制表线及中文标点），句末的点和冒号仍会去掉。
+- Linux 和 macOS 上的界面文案不再提 Windows 专有的东西（Windows 数据保护、资源管理器、%APPDATA% 等），Windows 文案不变。
+
+### 修复
+
+- Linux：串口关闭时撤掉 TIOCEXCL 独占标志，之后普通用户重新打开不再 EBUSY。
+- Linux：桌面文件 `Version=1.4`、AppStream 描述按段落本地化，过 Ubuntu 22.04 的校验工具；容器检查兼容不装 man 手册的精简镜像。
+- 文件面板首次连接失败后可以通过刷新 / 重开 / 终端重连恢复；窄面板里面包屑至少显示当前一级。
 
 ## [0.3.5] - 2026-11-06
 
