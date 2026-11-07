@@ -26,6 +26,7 @@ use zssh_core::ai::agent::builtin::config::{
 };
 use zssh_core::ai::agent::builtin::probe::EndpointProbe;
 use zssh_core::ai::agent::builtin::provider::ApiKey;
+use zssh_core::ai::agent::builtin::tokenway::endpoint::pick_default_model;
 
 use super::MainWindow;
 use super::modal::Modal;
@@ -71,6 +72,8 @@ enum EndpointMsg {
     FetchFailed,
     FetchedPrefix,
     FetchedSuffix,
+    FetchedPickedMid,
+    FetchedPickedSuffix,
     FetchModels,
     FetchModelsHint,
     Fetching,
@@ -195,6 +198,8 @@ impl crate::i18n::Msg for EndpointMsg {
             }
             Self::FetchedPrefix => "已获取 ",
             Self::FetchedSuffix => "：在「默认模型」右边的「选择」里挑一个，再点「测试」",
+            Self::FetchedPickedMid => "，默认模型先填了 ",
+            Self::FetchedPickedSuffix => "；想换就在右边的「选择」里挑，然后点「测试」",
             Self::FetchModels => "获取模型",
             Self::FetchModelsHint => "从接口拉取模型列表（只需要 Base URL 和 API Key）",
             Self::Fetching => "正在获取模型列表…",
@@ -337,6 +342,10 @@ impl crate::i18n::Msg for EndpointMsg {
             }
             Self::FetchedPrefix => "Fetched ",
             Self::FetchedSuffix => ": pick one from Choose next to Default model, then click Test",
+            Self::FetchedPickedMid => "; the default model is set to ",
+            Self::FetchedPickedSuffix => {
+                " for now. To change it, pick another from Choose, then click Test"
+            }
             Self::FetchModels => "Fetch models",
             Self::FetchModelsHint => {
                 "Fetch the model list from the endpoint (only the Base URL and API key are needed)"
@@ -946,21 +955,30 @@ pub fn describe_probe(probe: &EndpointProbe, model: &str, caps: &ModelCaps) -> T
     }
 }
 
-/// 只拉清单成功时的结果行。
-pub fn describe_fetched(count: usize) -> TestResult {
+/// 只拉清单成功时的结果行；`picked` 是替用户自动填上的默认模型。
+pub fn describe_fetched(count: usize, picked: Option<&str>) -> TestResult {
+    let count = crate::i18n::count(
+        count as u64,
+        crate::i18n::t(EndpointMsg::ModelCountSuffix),
+        "model",
+        "models",
+    );
+    let line = match picked {
+        Some(model) => format!(
+            "{}{count}{}{model}{}",
+            crate::i18n::t(EndpointMsg::FetchedPrefix),
+            crate::i18n::t(EndpointMsg::FetchedPickedMid),
+            crate::i18n::t(EndpointMsg::FetchedPickedSuffix)
+        ),
+        None => format!(
+            "{}{count}{}",
+            crate::i18n::t(EndpointMsg::FetchedPrefix),
+            crate::i18n::t(EndpointMsg::FetchedSuffix)
+        ),
+    };
     TestResult {
         ok: true,
-        lines: vec![format!(
-            "{}{}{}",
-            crate::i18n::t(EndpointMsg::FetchedPrefix),
-            crate::i18n::count(
-                count as u64,
-                crate::i18n::t(EndpointMsg::ModelCountSuffix),
-                "model",
-                "models"
-            ),
-            crate::i18n::t(EndpointMsg::FetchedSuffix)
-        )],
+        lines: vec![line],
     }
 }
 
@@ -1692,8 +1710,8 @@ impl MainWindow {
             };
             let _ = tx.send(outcome);
         });
-        self.await_result(rx, window, cx, move |this, outcome, _window, cx| {
-            this.ai_endpoint_fetch_done(generation, outcome, cx);
+        self.await_result(rx, window, cx, move |this, outcome, window, cx| {
+            this.ai_endpoint_fetch_done(generation, outcome, window, cx);
         });
         cx.notify();
     }
@@ -1702,6 +1720,7 @@ impl MainWindow {
         &mut self,
         generation: u64,
         outcome: Result<Option<Vec<(String, PartialCaps)>>, String>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(Modal::AiEndpoint(dialog)) = &mut self.modal else {
@@ -1711,11 +1730,22 @@ impl MainWindow {
             return;
         }
         dialog.test.running = false;
-        dialog.test.result = Some(match outcome {
+        let result = match outcome {
             Ok(Some(models)) => {
-                let result = describe_fetched(models.len());
                 dialog.remote = models.iter().cloned().collect();
                 dialog.remote_models = models.into_iter().map(|(id, _)| id).collect();
+                // 默认模型还空着就替用户挑一个，规则和浏览器授权 Tokenway 时一样（第一个像对话模型的）；
+                // 已经填了的不动。
+                let picked = if dialog.model_text(cx).is_empty() {
+                    pick_default_model(&dialog.remote_models)
+                } else {
+                    None
+                };
+                let result = describe_fetched(dialog.remote_models.len(), picked.as_deref());
+                if let Some(model) = picked {
+                    // 会清掉旧的测试结果，所以先填模型、再写这次的结果。
+                    self.ai_dialog_pick_model(model, window, cx);
+                }
                 result
             }
             Ok(None) => TestResult {
@@ -1729,8 +1759,8 @@ impl MainWindow {
                     crate::i18n::t(EndpointMsg::TestAbortedPrefix)
                 )],
             },
-        });
-        cx.notify();
+        };
+        self.with_ai_dialog(cx, |dialog| dialog.test.result = Some(result));
     }
 
     /// crate::i18n::t(EndpointMsg::Test)：用表单当前的值（没保存的也行）拉模型清单并对默认模型发一个极短的请求。
@@ -3054,11 +3084,17 @@ mod tests {
 
     #[test]
     fn fetching_only_the_model_list_says_how_many_and_where_to_pick() {
-        let result = describe_fetched(37);
+        let result = describe_fetched(37, None);
         assert!(result.ok);
         assert_eq!(
             result.lines,
             vec!["已获取 37 个模型：在「默认模型」右边的「选择」里挑一个，再点「测试」".to_owned()]
+        );
+        let result = describe_fetched(3, Some("gpt-5.5"));
+        assert!(result.ok);
+        assert_eq!(
+            result.lines,
+            vec!["已获取 3 个模型，默认模型先填了 gpt-5.5；想换就在右边的「选择」里挑，然后点「测试」".to_owned()]
         );
     }
 
