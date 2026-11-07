@@ -75,15 +75,21 @@ pub(crate) fn install(
     {
         let view = view.clone();
         cx.on_action(move |_: &Quit, cx| {
+            // 菜单动作是在窗口自己的更新过程中派发的：这时再 update 同一个窗口会失败
+            // （GPUI 已经把窗口从窗口表里取走），表现就是点了"退出"毫无反应。
+            // 推迟到这一轮更新结束之后再动窗口。
             let view = view.clone();
-            let _ = handle.update(cx, |_, window, cx| {
-                view.update(cx, |this, cx| {
-                    if this.request_quit(cx) {
-                        this.do_quit(window, cx);
-                    } else {
-                        // 要先确认：确认框在主窗口里，把它叫到前面。
-                        window.activate_window();
-                    }
+            cx.defer(move |cx| {
+                let view = view.clone();
+                let _ = handle.update(cx, |_, window, cx| {
+                    view.update(cx, |this, cx| {
+                        if this.request_quit(cx) {
+                            this.do_quit(window, cx);
+                        } else {
+                            // 要先确认：确认框在主窗口里，把它叫到前面。
+                            window.activate_window();
+                        }
+                    });
                 });
             });
         });
@@ -92,30 +98,36 @@ pub(crate) fn install(
         let view = view.clone();
         cx.on_action(move |_: &OpenSettings, cx| {
             let view = view.clone();
-            let _ = handle.update(cx, |_, window, cx| {
-                window.activate_window();
-                // 锁着的时候只把窗口叫出来，锁屏页之外什么都不打开。
-                if !crate::app_lock::is_locked() {
-                    view.update(cx, |this, cx| {
-                        this.show_view(crate::main_window::nav::MainView::Settings, window, cx)
-                    });
-                }
+            cx.defer(move |cx| {
+                let view = view.clone();
+                let _ = handle.update(cx, |_, window, cx| {
+                    window.activate_window();
+                    // 锁着的时候只把窗口叫出来，锁屏页之外什么都不打开。
+                    if !crate::app_lock::is_locked() {
+                        view.update(cx, |this, cx| {
+                            this.show_view(crate::main_window::nav::MainView::Settings, window, cx)
+                        });
+                    }
+                });
             });
         });
     }
     cx.on_action(move |_: &About, cx| {
         let view = view.clone();
-        let _ = handle.update(cx, |_, window, cx| {
-            window.activate_window();
-            if !crate::app_lock::is_locked() {
-                view.update(cx, |this, cx| {
-                    this.open_settings_section(
-                        crate::settings_nav::SettingsSection::About,
-                        window,
-                        cx,
-                    )
-                });
-            }
+        cx.defer(move |cx| {
+            let view = view.clone();
+            let _ = handle.update(cx, |_, window, cx| {
+                window.activate_window();
+                if !crate::app_lock::is_locked() {
+                    view.update(cx, |this, cx| {
+                        this.open_settings_section(
+                            crate::settings_nav::SettingsSection::About,
+                            window,
+                            cx,
+                        )
+                    });
+                }
+            });
         });
     });
     cx.on_action(|_: &Hide, cx| cx.hide());
