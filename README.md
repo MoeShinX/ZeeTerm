@@ -27,6 +27,14 @@
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
+## ✨ Highlights
+
+- **Bring your own AI agent.** ZeeTerm finds the **Claude Code, Codex or OpenCode** already installed on your computer and lets it work on your servers from a chat panel next to the terminal: it sees the session it is attached to and runs commands there under the approval mode you pick (ask for every command, run read-only commands automatically, or full access). No agent installed? The built-in **ZeePilot** works with any OpenAI-compatible or Anthropic endpoint.
+- **Dual-pane file manager, Xftp style.** Local and remote folders side by side, docked right next to the terminal, in a tab of its own, or in a separate window. Drag files between the panes, follow the terminal's current directory, and keep a transfer queue with pause, resume and automatic reconnect.
+- **Native, not a web page.** Written in Rust and drawn by GPUI on the GPU: no Electron, no WebView2, no embedded browser. It starts fast and stays light.
+- **One workspace on Windows, Linux and macOS**, with end-to-end encrypted sync (WebDAV, S3, GitHub Gist or OneDrive) and up to five extra cloud backups.
+- **Your secrets stay protected.** Saved passwords and keys are encrypted with the operating system's own facilities (DPAPI, Secret Service, macOS Keychain); an app lock covers the window while sessions keep running; updates are installed only after their signature is verified.
+
 ## ⚡ Rebuilt for native rendering
 
 ZeeTerm is the **GPUI native rebuild of [Z-SSH](https://github.com/MoeShinX/Z-SSH)**. Its desktop interface and terminal rendering are implemented in Rust, with GPUI handling the UI and the Alacritty terminal engine maintaining terminal state.
@@ -45,9 +53,9 @@ ZeeTerm installs separately from Z-SSH, uses its own data directory, and can coe
 | :--- | :--- |
 | **Terminal workspace** | Work across tabs and split panes, detach tabs into separate windows, customize scrollback, and use themes and keyword highlighting. |
 | **Sessions & authentication** | Organize connections in a searchable session tree. Use passwords, SSH keys, or an SSH agent; connect through proxies and jump hosts; configure port forwarding. |
-| **SFTP file management** | Browse local and remote files, drag to transfer, follow the terminal directory, and manage queued transfers with resume support. |
+| **SFTP file management** | A dual-pane local / remote file manager docked beside the terminal, in a tab or in its own window. Drag to transfer, follow the terminal directory, and manage queued transfers with resume and automatic reconnect. |
 | **Remote editing** | Edit remote files in tabs with syntax highlighting, save conflict checks, and recoverable drafts. |
-| **AI assistance** | Use the built-in **ZeePilot** assistant or integrate an installed OpenCode, Codex, or Claude Code. Select per-command approval, automatic read-only mode, or full access. |
+| **AI assistance** | Drive the Claude Code, Codex or OpenCode installed on your computer, or use the built-in **ZeePilot** with your own endpoint. Agents run commands in the attached session under per-command approval, automatic read-only mode, or full access. |
 | **Encrypted sync & backup** | Sync through WebDAV, S3-compatible storage, GitHub Gist, or OneDrive. Keep encrypted local backups and additional cloud backup targets. |
 | **Server overview** | Inspect CPU, memory, disk, and network information alongside your terminal. |
 | **App lock** | Lock the workspace manually or after inactivity while sessions and transfers continue in the background. |
