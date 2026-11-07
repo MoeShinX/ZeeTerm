@@ -51,6 +51,7 @@ mod real {
         "aib_pick_model",
         "aib_override",
         "aib_test",
+        "aib_fetch_models",
         "aib_wait_test",
         "aib_save",
         "aib_scroll",
@@ -289,6 +290,11 @@ mod real {
             "aib_test" => {
                 dialog(this)?;
                 this.ai_endpoint_test(window, cx);
+                Ok(Outcome::Done)
+            }
+            "aib_fetch_models" => {
+                dialog(this)?;
+                this.ai_endpoint_fetch_models(window, cx);
                 Ok(Outcome::Done)
             }
             "aib_wait_test" => {

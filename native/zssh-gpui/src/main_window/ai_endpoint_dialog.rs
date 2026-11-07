@@ -68,7 +68,12 @@ enum EndpointMsg {
     Budget,
     SearchModelsPlaceholder,
     EndpointGone,
-    TestNeedsModel,
+    FetchFailed,
+    FetchedPrefix,
+    FetchedSuffix,
+    FetchModels,
+    FetchModelsHint,
+    Fetching,
     RuntimeNotStarted,
     EditTitle,
     AddTitle,
@@ -85,7 +90,6 @@ enum EndpointMsg {
     NoKeyCleared,
     Choose,
     ModelPickHint,
-    ModelFetchHint,
     DefaultModelLabel,
     DefaultModelHint,
     ExtraModels,
@@ -186,9 +190,14 @@ impl crate::i18n::Msg for EndpointMsg {
             Self::Budget => "预算",
             Self::SearchModelsPlaceholder => "搜索 models.dev 的模型…",
             Self::EndpointGone => "这个接口已经不存在了",
-            Self::TestNeedsModel => {
-                "先填一个默认模型再测试（不知道填什么可以先留空点测试看接口返回的清单）"
+            Self::FetchFailed => {
+                "没取到模型列表：检查 Base URL 和 API Key；接口不提供列表的话，直接在「默认模型」里手填模型名再测试"
             }
+            Self::FetchedPrefix => "已获取 ",
+            Self::FetchedSuffix => "：在「默认模型」右边的「选择」里挑一个，再点「测试」",
+            Self::FetchModels => "获取模型",
+            Self::FetchModelsHint => "从接口拉取模型列表（只需要 Base URL 和 API Key）",
+            Self::Fetching => "正在获取模型列表…",
             Self::RuntimeNotStarted => "后台运行时没起来，不能测试",
             Self::EditTitle => "编辑接口",
             Self::AddTitle => "添加接口",
@@ -209,7 +218,6 @@ impl crate::i18n::Msg for EndpointMsg {
             Self::NoKeyCleared => "已设为不需要 Key。保存时，这个接口原来存的 Key 会一起清掉。",
             Self::Choose => "选择",
             Self::ModelPickHint => "从接口返回的和手填的模型里选",
-            Self::ModelFetchHint => "点底部的「测试」可以拉取接口的模型列表",
             Self::DefaultModelLabel => "默认模型",
             Self::DefaultModelHint => "可以直接输入，也可以从右边的下拉里选",
             Self::ExtraModels => "额外模型",
@@ -236,7 +244,9 @@ impl crate::i18n::Msg for EndpointMsg {
             Self::ReasoningContent => "回传 reasoning_content",
             Self::ReasoningContentHint => "DeepSeek 等要求工具调用后把思考内容原样带回去",
             Self::ThinkingSwitch => "thinking 开关",
-            Self::ThinkingSwitchHint => "发 thinking: {type} 来开关思考（DeepSeek 风格）",
+            Self::ThinkingSwitchHint => {
+                "发 thinking: {type} 来开关思考（DeepSeek 风格）；自动 = 只对 DeepSeek 官方接口发，网关不认这个字段会报 400"
+            }
             Self::IncludeUsage => "请求带 include_usage",
             Self::IncludeUsageHint => {
                 "让接口在流的末尾回报 token 用量，上下文指示器靠它；个别网关不认这个参数时关掉"
@@ -322,9 +332,16 @@ impl crate::i18n::Msg for EndpointMsg {
             Self::Budget => "Budget",
             Self::SearchModelsPlaceholder => "Search models.dev…",
             Self::EndpointGone => "This endpoint no longer exists",
-            Self::TestNeedsModel => {
-                "Fill in a default model before testing (leave it empty and click Test to see the endpoint list)"
+            Self::FetchFailed => {
+                "Could not get the model list: check the Base URL and API key. If the endpoint has no list, type a model name under Default model and test again"
             }
+            Self::FetchedPrefix => "Fetched ",
+            Self::FetchedSuffix => ": pick one from Choose next to Default model, then click Test",
+            Self::FetchModels => "Fetch models",
+            Self::FetchModelsHint => {
+                "Fetch the model list from the endpoint (only the Base URL and API key are needed)"
+            }
+            Self::Fetching => "Fetching the model list…",
             Self::RuntimeNotStarted => {
                 "The background runtime is not running, so the test cannot start"
             }
@@ -357,7 +374,6 @@ impl crate::i18n::Msg for EndpointMsg {
             Self::ModelPickHint => {
                 "Pick from the models the endpoint returned and the ones you typed"
             }
-            Self::ModelFetchHint => "Click Test at the bottom to fetch the endpoint model list",
             Self::DefaultModelLabel => "Default model",
             Self::DefaultModelHint => {
                 "Type it directly, or pick one from the dropdown on the right"
@@ -393,7 +409,7 @@ impl crate::i18n::Msg for EndpointMsg {
             }
             Self::ThinkingSwitch => "thinking switch",
             Self::ThinkingSwitchHint => {
-                "Send thinking: {type} to toggle reasoning (DeepSeek style)"
+                "Send thinking: {type} to toggle reasoning (DeepSeek style). Auto sends it only to the official DeepSeek API; gateways that do not accept it return HTTP 400"
             }
             Self::IncludeUsage => "Request include_usage",
             Self::IncludeUsageHint => {
@@ -459,6 +475,23 @@ pub fn example_url(kind: EndpointKind) -> &'static str {
         EndpointKind::OpenAiChat => OPENAI_EXAMPLE_URL,
         EndpointKind::Anthropic => ANTHROPIC_EXAMPLE_URL,
     }
+}
+
+/// Anthropic 的 Base URL 不带版本段（请求时自己拼 `/v1/messages`）：从别处复制来的
+/// `…/v1`、`…/v1/messages` 去掉结尾这段，免得看起来像要请求 `/v1/v1/messages`。
+/// OpenAI 兼容接口的版本段是地址的一部分，原样返回。
+pub fn normalize_base_url(kind: EndpointKind, url: &str) -> &str {
+    let url = url.trim().trim_end_matches('/');
+    if kind != EndpointKind::Anthropic {
+        return url;
+    }
+    let lower = url.to_ascii_lowercase();
+    for suffix in ["/v1/messages", "/v1"] {
+        if lower.ends_with(suffix) {
+            return url[..url.len() - suffix.len()].trim_end_matches('/');
+        }
+    }
+    url
 }
 
 pub fn kind_label(kind: EndpointKind) -> &'static str {
@@ -540,7 +573,7 @@ pub fn build_draft(values: &FormValues<'_>) -> Result<AiEndpointDraft, FormError
             crate::i18n::t(EndpointMsg::NameTooLong),
         ));
     }
-    let url = values.base_url.trim().trim_end_matches('/');
+    let url = normalize_base_url(values.kind, values.base_url);
     if url.is_empty() {
         return Err(FormError::new(
             Field::BaseUrl,
@@ -913,6 +946,24 @@ pub fn describe_probe(probe: &EndpointProbe, model: &str, caps: &ModelCaps) -> T
     }
 }
 
+/// 只拉清单成功时的结果行。
+pub fn describe_fetched(count: usize) -> TestResult {
+    TestResult {
+        ok: true,
+        lines: vec![format!(
+            "{}{}{}",
+            crate::i18n::t(EndpointMsg::FetchedPrefix),
+            crate::i18n::count(
+                count as u64,
+                crate::i18n::t(EndpointMsg::ModelCountSuffix),
+                "model",
+                "models"
+            ),
+            crate::i18n::t(EndpointMsg::FetchedSuffix)
+        )],
+    }
+}
+
 fn display_name(caps: &ModelCaps, model: &str) -> String {
     if caps.display_name.trim().is_empty() {
         model.to_owned()
@@ -931,6 +982,8 @@ pub struct TestUi {
     /// 每点一次加一；结果回来对不上就作废（中途改了表单重测、关了对话框）。
     pub generation: u64,
     pub running: bool,
+    /// 这一轮只拉模型清单（没填默认模型时点「测试」或点「获取模型」），结果栏文案不同。
+    pub fetch_only: bool,
     pub result: Option<TestResult>,
 }
 
@@ -1349,6 +1402,19 @@ impl MainWindow {
                 }
             },
         ));
+        // Anthropic 的地址离开输入框时去掉结尾的 /v1（见 normalize_base_url）。
+        dialog._subs.push(cx.subscribe_in(
+            &dialog.base_url.clone(),
+            window,
+            |this, _input, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::Blur) {
+                    if let Some(Modal::AiEndpoint(dialog)) = &mut this.modal {
+                        Self::normalize_base_url_input(dialog, window, cx);
+                    }
+                    cx.notify();
+                }
+            },
+        ));
         // 地址、Key 一改，上一次的测试结果就不作数了；名称等一改，旧的校验错误也该消失。
         for input in [dialog.base_url.clone(), dialog.api_key.clone()] {
             dialog._subs.push(cx.subscribe_in(
@@ -1438,8 +1504,28 @@ impl MainWindow {
         dialog.base_url.update(cx, |input, cx| {
             input.set_placeholder(example_url(kind), window, cx);
         });
+        Self::normalize_base_url_input(dialog, window, cx);
         dialog.test.result = None;
         cx.notify();
+    }
+
+    /// Anthropic 时把地址框里结尾的 `/v1` 去掉；没变就不动，免得光标被挪走。OpenAI 兼容的地址不碰。
+    fn normalize_base_url_input(
+        dialog: &mut AiEndpointDialog,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if dialog.kind != EndpointKind::Anthropic {
+            return;
+        }
+        let raw = dialog.base_url.read(cx).value().to_string();
+        let clean = normalize_base_url(dialog.kind, &raw);
+        if clean != raw {
+            let clean = clean.to_owned();
+            dialog
+                .base_url
+                .update(cx, |input, cx| input.set_value(clean, window, cx));
+        }
     }
 
     pub(crate) fn ai_dialog_toggle_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1532,25 +1618,21 @@ impl MainWindow {
         }
     }
 
-    /// crate::i18n::t(EndpointMsg::Test)：用表单当前的值（没保存的也行）拉模型清单并对默认模型发一个极短的请求。
-    pub(crate) fn ai_endpoint_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Modal::AiEndpoint(dialog)) = &mut self.modal else {
-            return;
-        };
+    /// 测试 / 拉清单共用的开头：没在跑、Base URL 合格，就记一次新的 generation、标成运行中，
+    /// 返回连接配置；不满足时把原因写进结果栏，返回 `None`。
+    fn ai_endpoint_begin_probe(
+        dialog: &mut AiEndpointDialog,
+        fetch_only: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<(u64, zssh_core::ai::agent::builtin::provider::ProviderConfig)> {
         if dialog.test.running {
-            return;
+            return None;
         }
         dialog.commit_override_fields(cx);
         dialog.error = None;
-        let model = dialog.model_text(cx);
-        // 测试只需要地址、类型、Key 和一个模型；名称之类不在这里挑剔。
-        let base_url = dialog
-            .base_url
-            .read(cx)
-            .value()
-            .trim()
-            .trim_end_matches('/')
-            .to_owned();
+        // 只需要地址、类型和 Key；名称之类不在这里挑剔。
+        let base_url =
+            normalize_base_url(dialog.kind, &dialog.base_url.read(cx).value()).to_owned();
         if !valid_base_url(&base_url) {
             dialog.test.result = Some(TestResult {
                 ok: false,
@@ -1561,25 +1643,7 @@ impl MainWindow {
                     crate::i18n::t(EndpointMsg::BaseUrlFirstClose)
                 )],
             });
-            cx.notify();
-            return;
-        }
-        let model = if model.is_empty() {
-            dialog
-                .model_choices(cx)
-                .into_iter()
-                .next()
-                .unwrap_or_default()
-        } else {
-            model
-        };
-        if model.is_empty() {
-            dialog.test.result = Some(TestResult {
-                ok: false,
-                lines: vec![crate::i18n::t(EndpointMsg::TestNeedsModel).to_owned()],
-            });
-            cx.notify();
-            return;
+            return None;
         }
         let key = dialog.probe_key(cx);
         let mut config = zssh_core::ai::agent::builtin::provider::ProviderConfig::new(
@@ -1591,8 +1655,111 @@ impl MainWindow {
             zssh_core::ai::agent::builtin::provider::OpenAiOptions::from(&dialog.options);
         dialog.test.generation += 1;
         dialog.test.running = true;
+        dialog.test.fetch_only = fetch_only;
         dialog.test.result = None;
-        let generation = dialog.test.generation;
+        Some((dialog.test.generation, config))
+    }
+
+    /// 「获取模型」：只拉 `GET /models`，把清单放进「默认模型」旁的下拉。没填默认模型时点
+    /// 「测试」也走这里——不知道接口有哪些模型的人不用先去别处查。
+    pub(crate) fn ai_endpoint_fetch_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Modal::AiEndpoint(dialog)) = &mut self.modal else {
+            return;
+        };
+        let Some((generation, config)) = Self::ai_endpoint_begin_probe(dialog, true, cx) else {
+            cx.notify();
+            return;
+        };
+        let Ok(runtime) = crate::ssh_backend::runtime() else {
+            dialog.test.running = false;
+            dialog.test.result = Some(TestResult {
+                ok: false,
+                lines: vec![crate::i18n::t(EndpointMsg::RuntimeNotStarted).to_owned()],
+            });
+            cx.notify();
+            return;
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        runtime.spawn(async move {
+            let outcome = match builtin::make_transport() {
+                Ok(transport) => Ok(zssh_core::ai::agent::builtin::probe::fetch_models(
+                    transport.as_ref(),
+                    &config,
+                    zssh_core::ai::agent::builtin::probe::MODELS_TIMEOUT,
+                )
+                .await),
+                Err(reason) => Err(reason),
+            };
+            let _ = tx.send(outcome);
+        });
+        self.await_result(rx, window, cx, move |this, outcome, _window, cx| {
+            this.ai_endpoint_fetch_done(generation, outcome, cx);
+        });
+        cx.notify();
+    }
+
+    fn ai_endpoint_fetch_done(
+        &mut self,
+        generation: u64,
+        outcome: Result<Option<Vec<(String, PartialCaps)>>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Modal::AiEndpoint(dialog)) = &mut self.modal else {
+            return;
+        };
+        if dialog.test.generation != generation {
+            return;
+        }
+        dialog.test.running = false;
+        dialog.test.result = Some(match outcome {
+            Ok(Some(models)) => {
+                let result = describe_fetched(models.len());
+                dialog.remote = models.iter().cloned().collect();
+                dialog.remote_models = models.into_iter().map(|(id, _)| id).collect();
+                result
+            }
+            Ok(None) => TestResult {
+                ok: false,
+                lines: vec![crate::i18n::t(EndpointMsg::FetchFailed).to_owned()],
+            },
+            Err(reason) => TestResult {
+                ok: false,
+                lines: vec![format!(
+                    "{}{reason}",
+                    crate::i18n::t(EndpointMsg::TestAbortedPrefix)
+                )],
+            },
+        });
+        cx.notify();
+    }
+
+    /// crate::i18n::t(EndpointMsg::Test)：用表单当前的值（没保存的也行）拉模型清单并对默认模型发一个极短的请求。
+    /// 默认模型没填、也没有可选的模型时，改成只拉清单。
+    pub(crate) fn ai_endpoint_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Modal::AiEndpoint(dialog)) = &mut self.modal else {
+            return;
+        };
+        if dialog.test.running {
+            return;
+        }
+        let model = dialog.model_text(cx);
+        let model = if model.is_empty() {
+            dialog
+                .model_choices(cx)
+                .into_iter()
+                .next()
+                .unwrap_or_default()
+        } else {
+            model
+        };
+        if model.is_empty() {
+            self.ai_endpoint_fetch_models(window, cx);
+            return;
+        }
+        let Some((generation, config)) = Self::ai_endpoint_begin_probe(dialog, false, cx) else {
+            cx.notify();
+            return;
+        };
         let Ok(runtime) = crate::ssh_backend::runtime() else {
             dialog.test.running = false;
             dialog.test.result = Some(TestResult {
@@ -1827,34 +1994,45 @@ impl MainWindow {
         {
             let choices = dialog.model_choices(cx);
             let pick = entity.clone();
-            let has_choices = !choices.is_empty();
-            let menu_button = Button::new("ai-endpoint-model-menu")
-                .outline()
-                .compact()
-                .label(crate::i18n::t(EndpointMsg::Choose))
-                .dropdown_caret(true)
-                .tooltip(if has_choices {
-                    crate::i18n::t(EndpointMsg::ModelPickHint)
-                } else {
-                    crate::i18n::t(EndpointMsg::ModelFetchHint)
-                })
-                .disabled(!has_choices)
-                .dropdown_menu(move |menu, _window, _cx| {
-                    let mut menu = menu.min_w(px(240.0)).max_h(px(320.0)).scrollable(true);
-                    for model in &choices {
-                        let pick = pick.clone();
-                        let model = model.clone();
-                        menu = menu.item(menu_kit::choice(model.clone(), false).on_click(
-                            move |_: &::gpui::ClickEvent, window, cx| {
-                                let model = model.clone();
-                                pick.update(cx, |this, cx| {
-                                    this.ai_dialog_pick_model(model, window, cx)
-                                });
-                            },
-                        ));
-                    }
-                    menu
-                });
+            // 还没拉过接口的清单时，这里直接是「获取模型」：下拉里只有自己手填的那几个，
+            // 帮不上不知道该填什么的人。
+            let menu_button = if dialog.remote_models.is_empty() {
+                let fetch = entity.clone();
+                Button::new("ai-endpoint-fetch-models")
+                    .outline()
+                    .compact()
+                    .label(crate::i18n::t(EndpointMsg::FetchModels))
+                    .tooltip(crate::i18n::t(EndpointMsg::FetchModelsHint))
+                    .disabled(dialog.test.running)
+                    .on_click(move |_, window, cx| {
+                        fetch.update(cx, |this, cx| this.ai_endpoint_fetch_models(window, cx));
+                    })
+                    .into_any_element()
+            } else {
+                Button::new("ai-endpoint-model-menu")
+                    .outline()
+                    .compact()
+                    .label(crate::i18n::t(EndpointMsg::Choose))
+                    .dropdown_caret(true)
+                    .tooltip(crate::i18n::t(EndpointMsg::ModelPickHint))
+                    .dropdown_menu(move |menu, _window, _cx| {
+                        let mut menu = menu.min_w(px(240.0)).max_h(px(320.0)).scrollable(true);
+                        for model in &choices {
+                            let pick = pick.clone();
+                            let model = model.clone();
+                            menu = menu.item(menu_kit::choice(model.clone(), false).on_click(
+                                move |_: &::gpui::ClickEvent, window, cx| {
+                                    let model = model.clone();
+                                    pick.update(cx, |this, cx| {
+                                        this.ai_dialog_pick_model(model, window, cx)
+                                    });
+                                },
+                            ));
+                        }
+                        menu
+                    })
+                    .into_any_element()
+            };
             rows.push(labelled(
                 field_label(
                     crate::i18n::t(EndpointMsg::DefaultModelLabel),
@@ -1932,7 +2110,11 @@ impl MainWindow {
                 div()
                     .text_sm()
                     .text_color(tokens.text_muted)
-                    .child(crate::i18n::t(EndpointMsg::TestingLong))
+                    .child(crate::i18n::t(if dialog.test.fetch_only {
+                        EndpointMsg::Fetching
+                    } else {
+                        EndpointMsg::TestingLong
+                    }))
                     .into_any_element(),
             )
         } else if let Some(result) = &dialog.test.result {
@@ -2500,8 +2682,8 @@ fn field_label(label: &str, hint: &str, tokens: &Tokens) -> Div {
 mod tests {
     // 不写 `use super::*`：`gpui_kit::*` 里有个同名的 `test` 宏，会把 `#[test]` 抢走。
     use super::{
-        Field, Force, FormValues, OverrideFields, build_draft, describe_probe, example_url,
-        kind_label, override_from_fields, parse_tokens, source_label, store_override,
+        Field, Force, FormValues, OverrideFields, build_draft, describe_fetched, describe_probe,
+        example_url, kind_label, override_from_fields, parse_tokens, source_label, store_override,
         thinking_choice_index, thinking_from_choice,
     };
     use std::collections::BTreeMap;
@@ -2831,6 +3013,52 @@ mod tests {
         assert_eq!(
             result.lines[2],
             "接口返回了 1 个模型，可以在「默认模型」旁的下拉里选"
+        );
+    }
+
+    #[test]
+    fn anthropic_base_urls_drop_a_trailing_version_segment() {
+        use super::normalize_base_url;
+        let a = EndpointKind::Anthropic;
+        assert_eq!(
+            normalize_base_url(a, "https://api.example.com/v1"),
+            "https://api.example.com"
+        );
+        assert_eq!(
+            normalize_base_url(a, " https://api.example.com/v1/ "),
+            "https://api.example.com"
+        );
+        assert_eq!(
+            normalize_base_url(a, "https://api.example.com/V1/messages"),
+            "https://api.example.com"
+        );
+        assert_eq!(
+            normalize_base_url(a, "https://gw.example.com/claude/v1"),
+            "https://gw.example.com/claude"
+        );
+        assert_eq!(
+            normalize_base_url(a, "https://api.example.com"),
+            "https://api.example.com"
+        );
+        // 只认整段的 /v1，不误伤 /v10、/apiv1。
+        assert_eq!(
+            normalize_base_url(a, "https://api.example.com/v10"),
+            "https://api.example.com/v10"
+        );
+        // OpenAI 兼容：版本段是地址的一部分，只去掉结尾的斜杠。
+        assert_eq!(
+            normalize_base_url(EndpointKind::OpenAiChat, "https://api.example.com/v1/"),
+            "https://api.example.com/v1"
+        );
+    }
+
+    #[test]
+    fn fetching_only_the_model_list_says_how_many_and_where_to_pick() {
+        let result = describe_fetched(37);
+        assert!(result.ok);
+        assert_eq!(
+            result.lines,
+            vec!["已获取 37 个模型：在「默认模型」右边的「选择」里挑一个，再点「测试」".to_owned()]
         );
     }
 
