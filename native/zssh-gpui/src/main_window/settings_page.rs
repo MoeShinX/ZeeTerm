@@ -274,7 +274,7 @@ impl Msg for SettingsMsg {
             Self::ProxyLabelOpen => "（",
             Self::ProxyLabelClose => "）",
             Self::NoDefaultProxy => "不使用默认代理",
-            Self::NoProxiesHint => "还没有代理，点下面的「新建 / 管理代理」添加一个。",
+            Self::NoProxiesHint => "还没有代理，点下面的按钮添加一个。",
             Self::ManageProxies => "新建 / 管理代理",
             Self::AppProxySshDefault => "使用 SSH 默认代理",
             Self::AppProxySystem => "跟随系统代理",
