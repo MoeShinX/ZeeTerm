@@ -583,6 +583,10 @@ impl TermWindow {
                             .items_end()
                             .gap_0p5()
                             .pl_3()
+                            // macOS 的红黄绿在左上角：和主窗口一样让出它们的宽度。
+                            .when(cfg!(target_os = "macos"), |row| {
+                                row.pl(px(crate::main_window::titlebar::MAC_TRAFFIC_LIGHT_INSET))
+                            })
                             .overflow_hidden()
                             .map(crate::window_frame::drag_region)
                             .child(

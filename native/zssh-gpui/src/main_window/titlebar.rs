@@ -592,7 +592,9 @@ impl MainWindow {
                     .h_full()
                     .items_end()
                     // macOS 的系统红黄绿画在左上角，这里让出它们的宽度，别被返回按钮压住。
-                    .when(cfg!(target_os = "macos"), |row| row.pl(px(72.0)))
+                    .when(cfg!(target_os = "macos"), |row| {
+                        row.pl(px(MAC_TRAFFIC_LIGHT_INSET))
+                    })
                     .map(window_frame::drag_region)
                     .child(left.items_end())
                     .child(tabs)
@@ -873,6 +875,9 @@ pub(crate) fn dock_button(
 pub(crate) fn window_controls(tokens: &Tokens, window: &Window) -> impl IntoElement {
     window_controls_with(tokens, window, true)
 }
+
+/// macOS：标题栏左边给系统的红黄绿按钮让出的宽度（主窗口和文件 / 终端 / 更新窗口共用）。
+pub(crate) const MAC_TRAFFIC_LIGHT_INSET: f32 = 72.0;
 
 /// 同 [`window_controls`]，`with_maximize` 为假时不放最大化按钮（固定用途的小窗口，如更新窗口：只有最小化 / 关闭）。
 pub(crate) fn window_controls_with(

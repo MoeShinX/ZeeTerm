@@ -112,6 +112,10 @@ fn titlebar(tokens: &Tokens, window: &Window) -> AnyElement {
                 .items_center()
                 .gap_2()
                 .pl_3()
+                // macOS 的红黄绿在左上角：和主窗口一样让出它们的宽度。
+                .when(cfg!(target_os = "macos"), |row| {
+                    row.pl(px(crate::main_window::titlebar::MAC_TRAFFIC_LIGHT_INSET))
+                })
                 .map(crate::window_frame::drag_region)
                 .child(img(logo()).size(px(16.)).flex_none())
                 .child(div().typo(Role::ItemName, tokens).child(window_title())),
