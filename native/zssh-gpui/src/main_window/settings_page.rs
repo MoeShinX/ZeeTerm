@@ -245,6 +245,9 @@ impl Msg for SettingsMsg {
             Self::FileWindowMerge => "合并回主窗口",
             Self::StartHiddenTitle => "启动时隐藏到托盘",
             Self::StartHiddenDescription => "下次启动不显示主窗口，从托盘图标打开",
+            Self::CloseMainNoTray if cfg!(target_os = "macos") => {
+                "macOS 版还没有菜单栏图标，关闭主窗口会直接退出程序。"
+            }
             Self::CloseMainNoTray => {
                 "没有检测到系统托盘，关闭主窗口会直接退出程序。GNOME 需要先启用 AppIndicator 扩展；托盘出现后这里会自动恢复。"
             }
@@ -442,6 +445,9 @@ impl Msg for SettingsMsg {
             Self::StartHiddenTitle => "Hide to tray on startup",
             Self::StartHiddenDescription => {
                 "Don't show the main window on the next launch; open it from the tray icon"
+            }
+            Self::CloseMainNoTray if cfg!(target_os = "macos") => {
+                "The macOS version has no menu bar icon yet, so closing the main window quits the app."
             }
             Self::CloseMainNoTray => {
                 "No system tray was detected, so closing the main window quits the app. On GNOME, enable the AppIndicator extension first; this setting comes back once a tray appears."
@@ -1662,100 +1668,100 @@ impl MainWindow {
         let tray_missing = !crate::tray::available();
         #[cfg(windows)]
         let tray_missing = false;
+        let mut rows = vec![
+            if tray_missing {
+                // 没有托盘宿主：选项不可选，显示实际效果（直接退出）和原因
+                row(
+                    t(SettingsMsg::CloseMainTitle),
+                    Some(t(SettingsMsg::CloseMainNoTray)),
+                    div()
+                        .w(px(224.0))
+                        .typo(Role::Caption, tokens)
+                        .child(t(SettingsMsg::QuitApp)),
+                    tokens,
+                )
+            } else {
+                row(
+                    t(SettingsMsg::CloseMainTitle),
+                    Some(t(SettingsMsg::CloseMainDescription)),
+                    div().w(px(224.0)).child(select(
+                        "close-action",
+                        match close {
+                            CloseChoice::Tray => t(SettingsMsg::CloseToTray),
+                            CloseChoice::Quit => t(SettingsMsg::QuitApp),
+                        },
+                        vec![
+                            Choice::new(t(SettingsMsg::CloseToTray), close == CloseChoice::Tray),
+                            Choice::new(t(SettingsMsg::QuitApp), close == CloseChoice::Quit),
+                        ],
+                        move |index, window, cx| {
+                            let choice = if index == 0 {
+                                CloseChoice::Tray
+                            } else {
+                                CloseChoice::Quit
+                            };
+                            close_entity
+                                .update(cx, |this, cx| this.set_close_choice(choice, window, cx));
+                        },
+                    )),
+                    tokens,
+                )
+            },
+            row(
+                t(SettingsMsg::CloseFileTitle),
+                Some(t(SettingsMsg::CloseFileDescription)),
+                div().w(px(224.0)).child(select(
+                    "file-window-close",
+                    match file_close {
+                        FileWindowChoice::Close => t(SettingsMsg::FileWindowDisconnect),
+                        FileWindowChoice::Merge => t(SettingsMsg::FileWindowMerge),
+                    },
+                    vec![
+                        Choice::new(
+                            t(SettingsMsg::FileWindowDisconnect),
+                            file_close == FileWindowChoice::Close,
+                        ),
+                        Choice::new(
+                            t(SettingsMsg::FileWindowMerge),
+                            file_close == FileWindowChoice::Merge,
+                        ),
+                    ],
+                    move |index, window, cx| {
+                        let choice = if index == 0 {
+                            FileWindowChoice::Close
+                        } else {
+                            FileWindowChoice::Merge
+                        };
+                        file_entity.update(cx, |this, cx| {
+                            this.set_file_window_choice(choice, window, cx);
+                        });
+                    },
+                )),
+                tokens,
+            ),
+        ];
+        // macOS 没有菜单栏图标，"启动时隐藏到托盘"永远做不到：不显示这一项（Linux 的托盘可能稍后出现，照旧显示）。
+        if !cfg!(target_os = "macos") {
+            rows.push(crate::settings_view::switch_row(
+                "start-hidden",
+                t(SettingsMsg::StartHiddenTitle),
+                if tray_missing {
+                    t(SettingsMsg::StartHiddenNoTray)
+                } else {
+                    t(SettingsMsg::StartHiddenDescription)
+                },
+                start_hidden,
+                |this, cx| this.toggle_start_hidden(cx),
+                &ws,
+                tokens,
+            ));
+        }
         card(
             "settings-window",
             t(SettingsMsg::StartupExit),
             None,
             tokens,
-            vec![
-                if tray_missing {
-                    // 没有托盘宿主：选项不可选，显示实际效果（直接退出）和原因
-                    row(
-                        t(SettingsMsg::CloseMainTitle),
-                        Some(t(SettingsMsg::CloseMainNoTray)),
-                        div()
-                            .w(px(224.0))
-                            .typo(Role::Caption, tokens)
-                            .child(t(SettingsMsg::QuitApp)),
-                        tokens,
-                    )
-                } else {
-                    row(
-                        t(SettingsMsg::CloseMainTitle),
-                        Some(t(SettingsMsg::CloseMainDescription)),
-                        div().w(px(224.0)).child(select(
-                            "close-action",
-                            match close {
-                                CloseChoice::Tray => t(SettingsMsg::CloseToTray),
-                                CloseChoice::Quit => t(SettingsMsg::QuitApp),
-                            },
-                            vec![
-                                Choice::new(
-                                    t(SettingsMsg::CloseToTray),
-                                    close == CloseChoice::Tray,
-                                ),
-                                Choice::new(t(SettingsMsg::QuitApp), close == CloseChoice::Quit),
-                            ],
-                            move |index, window, cx| {
-                                let choice = if index == 0 {
-                                    CloseChoice::Tray
-                                } else {
-                                    CloseChoice::Quit
-                                };
-                                close_entity.update(cx, |this, cx| {
-                                    this.set_close_choice(choice, window, cx)
-                                });
-                            },
-                        )),
-                        tokens,
-                    )
-                },
-                row(
-                    t(SettingsMsg::CloseFileTitle),
-                    Some(t(SettingsMsg::CloseFileDescription)),
-                    div().w(px(224.0)).child(select(
-                        "file-window-close",
-                        match file_close {
-                            FileWindowChoice::Close => t(SettingsMsg::FileWindowDisconnect),
-                            FileWindowChoice::Merge => t(SettingsMsg::FileWindowMerge),
-                        },
-                        vec![
-                            Choice::new(
-                                t(SettingsMsg::FileWindowDisconnect),
-                                file_close == FileWindowChoice::Close,
-                            ),
-                            Choice::new(
-                                t(SettingsMsg::FileWindowMerge),
-                                file_close == FileWindowChoice::Merge,
-                            ),
-                        ],
-                        move |index, window, cx| {
-                            let choice = if index == 0 {
-                                FileWindowChoice::Close
-                            } else {
-                                FileWindowChoice::Merge
-                            };
-                            file_entity.update(cx, |this, cx| {
-                                this.set_file_window_choice(choice, window, cx);
-                            });
-                        },
-                    )),
-                    tokens,
-                ),
-                crate::settings_view::switch_row(
-                    "start-hidden",
-                    t(SettingsMsg::StartHiddenTitle),
-                    if tray_missing {
-                        t(SettingsMsg::StartHiddenNoTray)
-                    } else {
-                        t(SettingsMsg::StartHiddenDescription)
-                    },
-                    start_hidden,
-                    |this, cx| this.toggle_start_hidden(cx),
-                    &ws,
-                    tokens,
-                ),
-            ],
+            rows,
         )
     }
 

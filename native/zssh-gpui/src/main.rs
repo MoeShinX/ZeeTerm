@@ -97,10 +97,21 @@ mod test_sftp_server;
 mod test_ssh_server;
 #[cfg(windows)]
 mod tray;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 #[path = "tray_linux.rs"]
 mod tray;
+// macOS 还没有菜单栏图标：同一套接口，行为同 Linux 托盘不可用时（见 `tray_macos.rs`）。
+#[cfg(target_os = "macos")]
+#[path = "tray_macos.rs"]
+mod tray;
+#[cfg(any(windows, target_os = "linux"))]
 mod tray_menu;
+// 只为在别的平台上也编译、测试 macOS 那份托盘替身（它不依赖任何 macOS 专有的东西）；
+// 这里没人调用它的接口，所以放过"从未使用"。
+#[cfg(all(test, not(target_os = "macos")))]
+#[path = "tray_macos.rs"]
+#[allow(dead_code)]
+mod tray_macos_check;
 mod typography;
 mod update;
 mod update_auto;

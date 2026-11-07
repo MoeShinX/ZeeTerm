@@ -41,12 +41,21 @@ pub const STATS_REFRESH_DEFAULT: u32 = 3;
 pub const SFTP_CONCURRENCY_RANGE: (u32, u32) = (1, 8);
 pub const SFTP_CONCURRENCY_DEFAULT: u32 = 5;
 
-/// 关闭主窗口时：缩到托盘（默认）或退出程序。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// 关闭主窗口时：缩到托盘（Windows / Linux 的默认）或退出程序（macOS 的默认：没有菜单栏图标，退出就是真实行为）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseChoice {
-    #[default]
     Tray,
     Quit,
+}
+
+impl Default for CloseChoice {
+    fn default() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Quit
+        } else {
+            Self::Tray
+        }
+    }
 }
 
 impl CloseChoice {
@@ -57,11 +66,13 @@ impl CloseChoice {
         }
     }
 
-    /// 只有明确是 `quit` 才退出，缺省或乱七八糟的值一律按默认（缩到托盘），同 0.2.14 的 `parseCloseAction`。
+    /// 明确写了 `quit` / `tray` 就照写的来；缺省或乱七八糟的值一律按平台默认（Windows / Linux 缩到托盘，
+    /// 同 0.2.14 的 `parseCloseAction`；macOS 退出）。
     pub fn parse(raw: Option<&str>) -> Self {
         match text_of(raw).as_deref() {
             Some("quit") => Self::Quit,
-            _ => Self::Tray,
+            Some("tray") => Self::Tray,
+            _ => Self::default(),
         }
     }
 }
@@ -445,7 +456,13 @@ mod tests {
         assert!(!p.sftp_preserve_mtime);
         assert!(!p.sftp_preserve_permissions);
         assert!(!p.sftp_show_hidden);
-        assert_eq!(p.close_action, CloseChoice::Tray);
+        // macOS 没有托盘，默认就是退出；Windows / Linux 照 0.2.14 缩到托盘。
+        let default_close = if cfg!(target_os = "macos") {
+            CloseChoice::Quit
+        } else {
+            CloseChoice::Tray
+        };
+        assert_eq!(p.close_action, default_close);
         assert_eq!(p.file_window_close, FileWindowChoice::Close);
         assert!(!p.session_log_enabled, "会话日志默认关");
         assert_eq!(p.session_log_dir, "");
@@ -537,7 +554,14 @@ mod tests {
         assert_eq!(CloseChoice::parse(Some("\"quit\"")), CloseChoice::Quit);
         assert_eq!(CloseChoice::parse(Some("quit")), CloseChoice::Quit);
         assert_eq!(CloseChoice::parse(Some("tray")), CloseChoice::Tray);
-        assert_eq!(CloseChoice::parse(None), CloseChoice::Tray);
+        assert_eq!(
+            CloseChoice::parse(None),
+            if cfg!(target_os = "macos") {
+                CloseChoice::Quit
+            } else {
+                CloseChoice::Tray
+            }
+        );
         assert_eq!(
             FileWindowChoice::parse(Some("merge")),
             FileWindowChoice::Merge
