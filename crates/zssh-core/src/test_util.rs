@@ -75,43 +75,74 @@ impl AsRef<std::ffi::OsStr> for TestDir {
 
 /// 在当前线程里抓 `tracing` 输出（含 TRACE 级别），返回闭包的结果和抓到的全部日志文字。
 ///
-/// 用线程局部订阅者：异步用例要用单线程运行时（`#[tokio::test]` 默认就是），任务才会
-/// 在当前线程上跑。别的用例先触发过的 callsite 会缓存“没人订阅”，所以要重建一次缓存。
+/// 异步用例要用单线程运行时（`#[tokio::test]` 默认就是），任务才会在当前线程上跑。
+///
+/// 为什么不用 `with_default` 装线程局部订阅者：callsite 的“有没有人要”缓存是全局的。别的测试线程
+/// 第一次碰到同一个 `warn!` 时如果没有订阅者，会把它缓存成“永远不要”；这一步偶尔正好落在我们
+/// 重建缓存之后，日志就漏抓了（`exit_message_and_log_do_not_echo_secrets_from_the_output_tail`
+/// 负载下偶发“日志没抓到”）。改成整个测试进程只装一次全局订阅者，用按线程判断的过滤器决定要不要：
+/// 过滤器让每个 callsite 的兴趣都是“每次都问”，不会再被缓存成“永远不要”。
 pub(crate) fn capture_logs<R>(f: impl FnOnce() -> R) -> (R, String) {
+    use std::cell::RefCell;
     use std::io::Write;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, Once};
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::Layer as _;
 
-    #[derive(Clone)]
-    struct Sink(Arc<Mutex<Vec<u8>>>);
-    struct SinkWriter(Arc<Mutex<Vec<u8>>>);
-    impl Write for SinkWriter {
+    thread_local! {
+        static CAPTURE: RefCell<Option<Arc<Mutex<Vec<u8>>>>> = const { RefCell::new(None) };
+    }
+
+    struct ThreadSink;
+    struct ThreadWriter;
+    impl Write for ThreadWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            if let Ok(mut inner) = self.0.lock() {
-                inner.extend_from_slice(buf);
-            }
+            CAPTURE.with(|slot| {
+                if let Some(buffer) = slot.borrow().as_ref() {
+                    if let Ok(mut inner) = buffer.lock() {
+                        inner.extend_from_slice(buf);
+                    }
+                }
+            });
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
     }
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Sink {
-        type Writer = SinkWriter;
-        fn make_writer(&'a self) -> SinkWriter {
-            SinkWriter(self.0.clone())
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ThreadSink {
+        type Writer = ThreadWriter;
+        fn make_writer(&'a self) -> ThreadWriter {
+            ThreadWriter
         }
     }
 
-    let buffer = Arc::new(Mutex::new(Vec::new()));
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .with_writer(Sink(buffer.clone()))
-        .finish();
-    let result = tracing::subscriber::with_default(subscriber, || {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(ThreadSink)
+            .with_filter(tracing_subscriber::filter::filter_fn(|_| {
+                CAPTURE.with(|slot| slot.borrow().is_some())
+            }));
+        // 装不上（别处先装了全局订阅者）时抓不到日志，用例的“抓取失效”断言会明确失败，不会静默通过。
+        let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer));
         tracing::callsite::rebuild_interest_cache();
-        f()
     });
+
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    CAPTURE.with(|slot| *slot.borrow_mut() = Some(buffer.clone()));
+    // 闭包 panic 时也要把本线程的抓取关掉，免得后面同线程的用例往这块缓冲里写。
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CAPTURE.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+    let result = {
+        let _reset = Reset;
+        f()
+    };
     let logs = buffer
         .lock()
         .map(|inner| String::from_utf8_lossy(&inner).into_owned())
