@@ -12,6 +12,7 @@ zssh-terminal = { path = "../zssh-terminal" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "time"] }
+tempfile = "3"
 
 [lints]
 workspace = true

@@ -51,12 +51,14 @@ fn manifest_json(version: &str, signature: &str) -> String {
     )
 }
 
-fn temp_cache(name: &str) -> PathBuf {
-    let root =
-        std::env::temp_dir().join(format!("zssh-update-chain-{}-{name}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("创建缓存目录");
-    root
+/// 随机唯一的缓存目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+fn temp_cache(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("zssh-update-chain-{name}-"))
+        .tempdir()
+        .expect("创建缓存目录");
+    let root = dir.path().to_path_buf();
+    (dir, root)
 }
 
 #[test]
@@ -80,7 +82,7 @@ fn manifest_to_install_plan_chain() {
     )
     .expect("验签与版本绑定通过");
 
-    let cache = temp_cache("ok");
+    let (_dir_cache, cache) = temp_cache("ok");
     let installer = cache.join("Z-SSH_0.3.0_x64-setup.exe");
     fs::write(&installer, package_bytes).expect("写安装包");
     let plan = plan_install(&InstallRequest {

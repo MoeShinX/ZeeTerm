@@ -50,11 +50,14 @@ impl CommandRunner for FakeRunner {
     }
 }
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("zssh-update-linux-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("创建临时目录");
-    dir
+/// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("zssh-update-linux-{name}-"))
+        .tempdir()
+        .expect("创建临时目录");
+    let path = dir.path().to_path_buf();
+    (dir, path)
 }
 
 // ---- 选包 ----
@@ -228,7 +231,7 @@ fn the_deleted_suffix_proc_adds_after_replacement_is_removed() {
 
 #[test]
 fn the_plan_accepts_only_a_matching_package_inside_the_cache_with_the_verified_content() {
-    let cache = temp_dir("plan");
+    let (_dir_cache, cache) = temp_dir("plan");
     let deb = cache.join("ZeeTerm-2.0.0-linux-x86_64.deb");
     std::fs::write(&deb, b"deb bytes").expect("写包");
     let request = |package: &Path, flavor: Flavor, sha256: String| LinuxInstallRequest {
@@ -264,7 +267,7 @@ fn the_plan_accepts_only_a_matching_package_inside_the_cache_with_the_verified_c
         )),
         Err(InstallError::MissingInstaller)
     );
-    let elsewhere = temp_dir("plan-elsewhere");
+    let (_dir_elsewhere, elsewhere) = temp_dir("plan-elsewhere");
     let outside = elsewhere.join("ZeeTerm-2.0.0-linux-x86_64.deb");
     std::fs::write(&outside, b"deb bytes").expect("写包");
     assert_eq!(
@@ -601,7 +604,7 @@ fn archive_entries_must_share_one_top_directory_and_stay_inside_it() {
 
 #[test]
 fn only_a_lib_zeeterm_directory_with_an_install_manifest_is_the_installer_layout() {
-    let root = temp_dir("layout");
+    let (_dir_root, root) = temp_dir("layout");
     // install.sh 的布局。
     let prefix = root.join("prefix with space");
     let lib = prefix.join("lib/zeeterm");
@@ -760,7 +763,7 @@ mod on_disk {
 
     #[test]
     fn a_flat_unpacked_directory_gets_both_programs_replaced_and_nothing_left_behind() {
-        let root = temp_dir("flat-ok");
+        let (_dir_root, root) = temp_dir("flat-ok");
         let layout = flat_install(&root);
         let archive = make_tarball(&root, &package_tree(&root.join("new"), NEW_VERSION));
 
@@ -796,7 +799,7 @@ mod on_disk {
 
     #[test]
     fn staging_directories_left_by_a_killed_update_are_cleaned_up_after_a_day() {
-        let root = temp_dir("stale");
+        let (_dir_root, root) = temp_dir("stale");
         let layout = flat_install(&root);
         let old = layout.dir.join(".zeeterm-update-1-1");
         let recent = layout.dir.join(".zeeterm-update-2-2");
@@ -821,7 +824,7 @@ mod on_disk {
 
     #[test]
     fn a_running_program_can_be_replaced_because_the_swap_is_a_rename() {
-        let root = temp_dir("busy");
+        let (_dir_root, root) = temp_dir("busy");
         let layout = flat_install(&root);
         // 旧程序正在运行（sleep 的脚本，exec 之后文件被内核占着）。
         write_exec(&layout.dir.join("zeeterm"), "#!/bin/sh\nexec sleep 30\n");
@@ -840,7 +843,7 @@ mod on_disk {
 
     #[test]
     fn a_wrong_version_or_an_unrunnable_binary_leaves_the_old_install_untouched() {
-        let root = temp_dir("flat-bad");
+        let (_dir_root, root) = temp_dir("flat-bad");
         let layout = flat_install(&root);
         let archive = make_tarball(&root, &package_tree(&root.join("new"), NEW_VERSION));
 
@@ -867,7 +870,7 @@ mod on_disk {
 
     #[test]
     fn a_package_without_the_helper_or_with_links_is_refused_before_anything_changes() {
-        let root = temp_dir("flat-refuse");
+        let (_dir_root, root) = temp_dir("flat-refuse");
         let layout = flat_install(&root);
 
         let missing = package_tree(&root.join("missing"), NEW_VERSION);
@@ -913,7 +916,7 @@ mod on_disk {
 
     #[test]
     fn a_directory_that_cannot_be_written_means_manual_install_and_changes_nothing() {
-        let root = temp_dir("not-writable");
+        let (_dir_root, root) = temp_dir("not-writable");
         // 程序所在目录建不出临时目录（用"父路径是文件"模拟：以 root 跑测试时权限位挡不住）。
         let blocker = root.join("blocker");
         std::fs::write(&blocker, b"file").expect("写");
@@ -930,7 +933,7 @@ mod on_disk {
 
     #[test]
     fn a_failure_halfway_through_the_swap_restores_every_file_already_replaced() {
-        let root = temp_dir("rollback");
+        let (_dir_root, root) = temp_dir("rollback");
         let layout = flat_install(&root);
         let archive = make_tarball(&root, &package_tree(&root.join("new"), NEW_VERSION));
         // zssh-mcp 先换上，换主程序时失败：zssh-mcp 必须退回旧的。
@@ -982,7 +985,7 @@ mod on_disk {
     #[cfg(target_os = "linux")]
     #[test]
     fn the_installer_layout_gets_programs_icons_desktop_file_and_manifest_updated_together() {
-        let root = temp_dir("prefix-ok");
+        let (_dir_root, root) = temp_dir("prefix-ok");
         let (prefix, layout) = installer_install(&root, OLD_VERSION);
         assert_eq!(layout.prefix.as_deref(), Some(prefix.as_path()));
         let desktop_path = prefix.join(format!("share/applications/{APP_ID}.desktop"));
@@ -1075,7 +1078,7 @@ mod on_disk {
     #[cfg(target_os = "linux")]
     #[test]
     fn uninstall_skips_manifest_paths_that_climb_out_with_dot_segments() {
-        let root = temp_dir("uninstall-dotdot");
+        let (_dir_root, root) = temp_dir("uninstall-dotdot");
         let (prefix, _layout) = installer_install(&root, OLD_VERSION);
         let victim = root.join("victim.txt");
         std::fs::write(&victim, "keep").expect("写受害文件");
@@ -1134,7 +1137,7 @@ mod on_disk {
 
     #[test]
     fn a_failure_in_the_installer_layout_rolls_back_programs_and_shared_files_together() {
-        let root = temp_dir("prefix-rollback");
+        let (_dir_root, root) = temp_dir("prefix-rollback");
         let (prefix, layout) = installer_install(&root, OLD_VERSION);
         let manifest_before = read(&prefix.join("share/zeeterm/install-manifest"));
         let archive = make_tarball(&root, &package_tree(&root.join("pkg-new"), NEW_VERSION));
@@ -1176,7 +1179,7 @@ mod on_disk {
 
     #[test]
     fn the_system_entry_point_runs_the_real_tar_and_the_real_version_probe() {
-        let root = temp_dir("system");
+        let (_dir_root, root) = temp_dir("system");
         let layout = flat_install(&root);
         let archive = make_tarball(&root, &package_tree(&root.join("new"), NEW_VERSION));
         apply_tar_update_system(&archive, &layout, NEW_VERSION).expect("更新");
@@ -1261,7 +1264,7 @@ mod on_disk {
 
     #[test]
     fn the_root_script_installs_only_a_private_copy_whose_hash_and_package_name_match() {
-        let dir = temp_dir("root-script");
+        let (_dir_guard, dir) = temp_dir("root-script");
         let Some(deb) = tiny_deb(&dir, "zeeterm") else {
             println!("跳过：没有 dpkg-deb，没法造测试用的 deb");
             return;
@@ -1320,7 +1323,7 @@ mod on_disk {
 
     #[test]
     fn the_root_script_refuses_links_devices_and_directories_without_reading_them() {
-        let dir = temp_dir("root-script-nonregular");
+        let (_dir_guard, dir) = temp_dir("root-script-nonregular");
         let Some(deb) = tiny_deb(&dir, "zeeterm") else {
             println!("跳过：没有 dpkg-deb，没法造测试用的 deb");
             return;
@@ -1349,7 +1352,7 @@ mod on_disk {
 
     #[test]
     fn the_root_script_copies_at_most_the_limit_and_refuses_anything_bigger() {
-        let dir = temp_dir("root-script-limit");
+        let (_dir_guard, dir) = temp_dir("root-script-limit");
         let Some(deb) = tiny_deb(&dir, "zeeterm") else {
             println!("跳过：没有 dpkg-deb，没法造测试用的 deb");
             return;
@@ -1370,7 +1373,7 @@ mod on_disk {
 
     #[test]
     fn the_root_script_survives_hostile_looking_arguments_because_they_are_never_parsed() {
-        let dir = temp_dir("root-script-hostile");
+        let (_dir_guard, dir) = temp_dir("root-script-hostile");
         let Some(deb) = tiny_deb(&dir, "zeeterm") else {
             println!("跳过：没有 dpkg-deb，没法造测试用的 deb");
             return;

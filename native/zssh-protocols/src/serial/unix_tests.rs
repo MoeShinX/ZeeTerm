@@ -7,9 +7,8 @@
 
 use std::ffi::CStr;
 use std::os::fd::{FromRawFd, OwnedFd};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use zssh_core::model::{
@@ -592,30 +591,21 @@ fn break_on_a_pty_does_not_crash() {
 
 // ---------------------------------------------------------------- 枚举
 
-static NEXT_TREE: AtomicU32 = AtomicU32::new(0);
-
-/// 一个临时目录，drop 时删掉。
-struct Tree(PathBuf);
+/// 一个随机唯一的临时目录，drop 时删掉。
+struct Tree(tempfile::TempDir);
 
 impl Tree {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "zt-serial-tree-{}-{}",
-            std::process::id(),
-            NEXT_TREE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
+        Self(
+            tempfile::Builder::new()
+                .prefix("zssh-serial-tree-")
+                .tempdir()
+                .unwrap(),
+        )
     }
 
     fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Tree {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        self.0.path()
     }
 }
 

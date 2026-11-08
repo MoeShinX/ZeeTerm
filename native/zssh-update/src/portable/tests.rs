@@ -4,16 +4,14 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 
-/// 每个用例一个全新的临时目录（进程号 + 名字 + 纳秒），用完不删也不影响别的用例。
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "zeeterm-portable-{}-{name}-{}",
-        std::process::id(),
-        unique_suffix()
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("建临时目录");
-    dir
+/// 每个用例一个随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("zssh-portable-{name}-"))
+        .tempdir()
+        .expect("建临时目录");
+    let path = dir.path().to_path_buf();
+    (dir, path)
 }
 
 /// 假的 Windows 程序：`MZ` 开头，后面是区分版本的内容。
@@ -93,7 +91,7 @@ fn assert_old_version_intact(dir: &Path) {
 
 #[test]
 fn the_marker_decides_portable_mode_and_the_data_dir_sits_beside_the_program() {
-    let dir = temp_dir("marker");
+    let (_dir_guard, dir) = temp_dir("marker");
     assert!(!has_marker(&dir), "没有标记文件就是安装版");
     assert_eq!(data_dir_for(&dir, false), None);
 
@@ -105,7 +103,7 @@ fn the_marker_decides_portable_mode_and_the_data_dir_sits_beside_the_program() {
     );
 
     // 同名的目录不算标记。
-    let other = temp_dir("marker-dir");
+    let (_dir_other, other) = temp_dir("marker-dir");
     fs::create_dir(other.join(MARKER_FILE)).expect("建同名目录");
     assert!(!has_marker(&other));
     // 目录不存在也不算，也不 panic。
@@ -114,7 +112,7 @@ fn the_marker_decides_portable_mode_and_the_data_dir_sits_beside_the_program() {
 
 #[test]
 fn a_writable_directory_is_detected_and_a_missing_one_is_not() {
-    let dir = temp_dir("writable");
+    let (_dir_guard, dir) = temp_dir("writable");
     assert!(dir_is_writable(&dir));
     assert_no_leftovers(&dir);
     let names: Vec<_> = fs::read_dir(&dir).expect("读目录").flatten().collect();
@@ -148,8 +146,8 @@ fn the_instance_hash_is_short_stable_and_ignores_case_and_separators() {
 
 #[test]
 fn the_plan_accepts_only_a_cached_zip_with_the_verified_hash() {
-    let cache = temp_dir("plan-cache");
-    let outside = temp_dir("plan-outside");
+    let (_dir_cache, cache) = temp_dir("plan-cache");
+    let (_dir_outside, outside) = temp_dir("plan-outside");
     let zip = cache.join("ZeeTerm-2.0.0-windows-x64-portable.zip");
     good_zip(&zip);
     let sha = crate::sha256_hex(&read(&zip));
@@ -209,7 +207,7 @@ fn the_plan_accepts_only_a_cached_zip_with_the_verified_hash() {
 
 #[test]
 fn an_update_swaps_the_program_files_and_leaves_the_data_and_the_marker_alone() {
-    let dir = temp_dir("apply");
+    let (_dir_guard, dir) = temp_dir("apply");
     install_old(&dir);
     // 磁盘上的标记里放点东西：zip 里的 `portable` 是空的，要是被解出来就会把它覆盖掉。
     fs::write(dir.join(MARKER_FILE), "keep me").expect("写标记");
@@ -233,7 +231,7 @@ fn an_update_swaps_the_program_files_and_leaves_the_data_and_the_marker_alone() 
 
 #[test]
 fn only_the_whitelisted_top_level_files_are_unpacked() {
-    let dir = temp_dir("whitelist");
+    let (_dir_guard, dir) = temp_dir("whitelist");
     install_old(&dir);
     let zip = dir.join("update.zip");
     build_zip(
@@ -258,7 +256,7 @@ fn only_the_whitelisted_top_level_files_are_unpacked() {
 
 #[test]
 fn a_renamed_program_is_replaced_in_place_under_its_own_name() {
-    let dir = temp_dir("renamed");
+    let (_dir_guard, dir) = temp_dir("renamed");
     install_old(&dir);
     fs::rename(dir.join(MAIN_EXE), dir.join("MyTerm.exe")).expect("改名");
     let zip = dir.join("update.zip");
@@ -274,7 +272,7 @@ fn a_renamed_program_is_replaced_in_place_under_its_own_name() {
 
 #[test]
 fn a_stale_old_file_from_an_earlier_update_does_not_block_the_next_one() {
-    let dir = temp_dir("stale-old");
+    let (_dir_guard, dir) = temp_dir("stale-old");
     install_old(&dir);
     fs::write(dir.join("ZeeTerm.exe.old"), "older").expect("写旧文件");
     let zip = dir.join("update.zip");
@@ -289,7 +287,7 @@ fn a_stale_old_file_from_an_earlier_update_does_not_block_the_next_one() {
 fn a_failure_at_any_step_rolls_everything_back() {
     // 四个文件，每个先"旧文件改名"再"新文件移上去"：8 次 rename。
     for fail_at in 1..=8 {
-        let dir = temp_dir(&format!("rollback-{fail_at}"));
+        let (_dir_guard, dir) = temp_dir(&format!("rollback-{fail_at}"));
         install_old(&dir);
         let zip = dir.join("update.zip");
         good_zip(&zip);
@@ -332,7 +330,7 @@ fn a_failure_at_any_step_rolls_everything_back() {
 
 #[test]
 fn a_program_that_was_missing_before_is_removed_again_on_rollback() {
-    let dir = temp_dir("rollback-missing");
+    let (_dir_guard, dir) = temp_dir("rollback-missing");
     install_old(&dir);
     fs::remove_file(dir.join(HELPER_EXE)).expect("删辅助程序");
     let zip = dir.join("update.zip");
@@ -370,7 +368,7 @@ fn a_program_that_was_missing_before_is_removed_again_on_rollback() {
 
 #[test]
 fn an_unwritable_directory_means_manual_download_not_an_error() {
-    let dir = temp_dir("unwritable");
+    let (_dir_guard, dir) = temp_dir("unwritable");
     let zip = dir.join("update.zip");
     good_zip(&zip);
     // 程序所在目录不存在：建不了临时目录，和 Program Files / 只读盘上的表现一样。
@@ -389,7 +387,7 @@ fn assert_rejected_untouched(
     entries: &[(&str, &[u8])],
     check: impl Fn(&PortableError),
 ) {
-    let dir = temp_dir(name);
+    let (_dir_guard, dir) = temp_dir(name);
     install_old(&dir);
     let zip = dir.join("update.zip");
     build_zip(&zip, entries);
@@ -445,7 +443,7 @@ fn a_bad_archive_is_rejected_before_anything_is_touched() {
 
 #[test]
 fn too_many_entries_and_non_zip_files_are_rejected() {
-    let dir = temp_dir("bad-zip");
+    let (_dir_guard, dir) = temp_dir("bad-zip");
     install_old(&dir);
     let layout = layout_in(&dir);
 
@@ -475,7 +473,7 @@ fn too_many_entries_and_non_zip_files_are_rejected() {
 
 #[test]
 fn a_symlink_entry_is_rejected() {
-    let dir = temp_dir("symlink");
+    let (_dir_guard, dir) = temp_dir("symlink");
     install_old(&dir);
     let zip = dir.join("update.zip");
     let file = fs::File::create(&zip).expect("建 zip");
@@ -500,7 +498,7 @@ fn a_symlink_entry_is_rejected() {
 
 #[test]
 fn startup_cleanup_removes_old_files_but_keeps_everything_else() {
-    let dir = temp_dir("cleanup");
+    let (_dir_guard, dir) = temp_dir("cleanup");
     install_old(&dir);
     for old in [
         "ZeeTerm.exe.old",
@@ -537,7 +535,7 @@ fn startup_cleanup_removes_old_files_but_keeps_everything_else() {
 
 #[test]
 fn a_renamed_programs_old_file_is_cleaned_up_too() {
-    let dir = temp_dir("cleanup-renamed");
+    let (_dir_guard, dir) = temp_dir("cleanup-renamed");
     install_old(&dir);
     fs::write(dir.join("MyTerm.exe"), fake_exe("x")).expect("写程序");
     fs::write(dir.join("MyTerm.exe.old"), "leftover").expect("写旧文件");

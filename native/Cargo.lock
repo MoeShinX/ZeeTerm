@@ -10947,6 +10947,9 @@ dependencies = [
 [[package]]
 name = "zssh-editor"
 version = "0.0.0"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "zssh-gpui"
@@ -11012,6 +11015,7 @@ version = "0.0.0"
 dependencies = [
  "encoding_rs",
  "libc",
+ "tempfile",
  "tokio",
  "tracing",
  "windows 0.62.2",
@@ -11033,6 +11037,7 @@ dependencies = [
 name = "zssh-session"
 version = "0.0.0"
 dependencies = [
+ "tempfile",
  "tokio",
  "zssh-core",
  "zssh-terminal",
@@ -11056,6 +11061,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "zip",
 ]
 

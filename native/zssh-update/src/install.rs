@@ -266,12 +266,14 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    fn temp_cache(name: &str) -> PathBuf {
-        let root =
-            std::env::temp_dir().join(format!("zssh-update-plan-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("创建临时缓存目录");
-        root
+    /// 随机唯一的临时缓存目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+    fn temp_cache(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-update-plan-{name}-"))
+            .tempdir()
+            .expect("创建临时缓存目录");
+        let root = dir.path().to_path_buf();
+        (dir, root)
     }
 
     fn request(root: &Path, restart: bool) -> InstallRequest {
@@ -289,7 +291,7 @@ mod tests {
 
     #[test]
     fn passive_update_without_restart() {
-        let root = temp_cache("no-restart");
+        let (_dir_root, root) = temp_cache("no-restart");
         let plan = plan_install(&request(&root, false)).expect("计划应通过");
         assert_eq!(plan.args, ["/P", "/UPDATE"]);
         assert!(!plan.restart);
@@ -298,7 +300,7 @@ mod tests {
 
     #[test]
     fn with_restart_turns_a_queued_plan_into_the_restart_plan_once() {
-        let root = temp_cache("with-restart");
+        let (_dir_root, root) = temp_cache("with-restart");
         let args = vec!["--minimized".to_owned()];
         let plain = plan_install(&request(&root, false)).expect("计划应通过");
         let upgraded = plain.clone().with_restart(&args);
@@ -313,15 +315,15 @@ mod tests {
 
     #[test]
     fn restart_passes_current_arguments() {
-        let root = temp_cache("restart");
+        let (_dir_root, root) = temp_cache("restart");
         let plan = plan_install(&request(&root, true)).expect("计划应通过");
         assert_eq!(plan.args, ["/P", "/UPDATE", "/R", "/ARGS", "--minimized"]);
     }
 
     #[test]
     fn installer_outside_cache_is_rejected() {
-        let root = temp_cache("outside");
-        let other = temp_cache("outside-other");
+        let (_dir_root, root) = temp_cache("outside");
+        let (_dir_other, other) = temp_cache("outside-other");
         let mut req = request(&root, false);
         let outside = other.join("evil.exe");
         fs::write(&outside, b"evil").unwrap();
@@ -331,7 +333,7 @@ mod tests {
 
     #[test]
     fn non_exe_is_rejected() {
-        let root = temp_cache("non-exe");
+        let (_dir_root, root) = temp_cache("non-exe");
         let mut req = request(&root, false);
         let zip = root.join("payload.zip");
         fs::write(&zip, b"zip").unwrap();
@@ -341,7 +343,7 @@ mod tests {
 
     #[test]
     fn missing_and_empty_are_rejected() {
-        let root = temp_cache("missing");
+        let (_dir_root, root) = temp_cache("missing");
         let mut req = request(&root, false);
         req.installer = root.join("missing.exe");
         assert_eq!(plan_install(&req), Err(InstallError::MissingInstaller));
@@ -361,7 +363,7 @@ mod tests {
 
     #[test]
     fn plan_carries_the_hash_and_rechecks_clean() {
-        let root = temp_cache("hash-ok");
+        let (_dir_root, root) = temp_cache("hash-ok");
         let plan = plan_install(&request(&root, false)).expect("计划应通过");
         assert_eq!(plan.sha256, sha256_hex(b"fake installer"));
         assert_eq!(verify_plan_file(&plan), Ok(()));
@@ -369,7 +371,7 @@ mod tests {
 
     #[test]
     fn plan_is_refused_when_the_file_differs_from_the_verified_bytes() {
-        let root = temp_cache("hash-differs");
+        let (_dir_root, root) = temp_cache("hash-differs");
         let mut req = request(&root, false);
         req.sha256 = sha256_hex(b"some other bytes");
         assert_eq!(plan_install(&req), Err(InstallError::HashMismatch));
@@ -377,7 +379,7 @@ mod tests {
 
     #[test]
     fn recheck_rejects_a_file_swapped_after_planning() {
-        let root = temp_cache("hash-swapped");
+        let (_dir_root, root) = temp_cache("hash-swapped");
         let req = request(&root, false);
         let plan = plan_install(&req).expect("计划应通过");
         fs::write(&req.installer, b"swapped after verification").unwrap();
@@ -391,7 +393,7 @@ mod tests {
 
     #[test]
     fn open_and_verify_rejects_bytes_that_changed_after_planning() {
-        let root = temp_cache("held-swapped");
+        let (_dir_root, root) = temp_cache("held-swapped");
         let req = request(&root, false);
         let plan = plan_install(&req).expect("计划应通过");
         fs::write(&req.installer, b"swapped after verification").unwrap();
@@ -405,7 +407,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn held_installer_cannot_be_replaced_until_dropped() {
-        let root = temp_cache("held-lock");
+        let (_dir_root, root) = temp_cache("held-lock");
         let plan = plan_install(&request(&root, false)).expect("计划应通过");
         let held = open_and_verify(&plan).expect("内容一致应通过");
         assert_eq!(held.path, plan.program);

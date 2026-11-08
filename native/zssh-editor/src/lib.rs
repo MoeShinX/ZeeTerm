@@ -112,18 +112,20 @@ fn io_error(err: std::io::Error) -> EditorError {
 mod tests {
     use super::*;
 
-    fn temp_file(name: &str, contents: &[u8]) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("zssh-editor-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("创建临时目录");
-        let path = dir.join("sample.txt");
+    /// 返回的 `TempDir` 要在用例结束前一直拿着：目录名随机唯一，drop 时整棵删掉。
+    fn temp_file(name: &str, contents: &[u8]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-editor-{name}-"))
+            .tempdir()
+            .expect("创建临时目录");
+        let path = dir.path().join("sample.txt");
         fs::write(&path, contents).expect("写初始文件");
-        path
+        (dir, path)
     }
 
     #[test]
     fn read_then_save_roundtrip() {
-        let path = temp_file("roundtrip", "hello\nworld\n".as_bytes());
+        let (_dir, path) = temp_file("roundtrip", "hello\nworld\n".as_bytes());
         let snapshot = read(&path).expect("读取");
         assert_eq!(snapshot.text, "hello\nworld\n");
 
@@ -134,7 +136,7 @@ mod tests {
 
     #[test]
     fn external_change_is_a_conflict_and_is_not_overwritten() {
-        let path = temp_file("conflict", b"original");
+        let (_dir, path) = temp_file("conflict", b"original");
         let snapshot = read(&path).expect("读取");
         fs::write(&path, b"changed by someone else").unwrap();
 
@@ -149,22 +151,22 @@ mod tests {
 
     #[test]
     fn binary_and_oversized_files_are_rejected() {
-        let binary = temp_file("binary", b"abc\0def");
+        let (_dir_binary, binary) = temp_file("binary", b"abc\0def");
         assert!(matches!(read(&binary), Err(EditorError::Binary)));
 
-        let big = temp_file("big", &vec![b'a'; MAX_FILE_BYTES + 1]);
+        let (_dir_big, big) = temp_file("big", &vec![b'a'; MAX_FILE_BYTES + 1]);
         assert!(matches!(read(&big), Err(EditorError::TooLarge(_))));
     }
 
     #[test]
     fn invalid_utf8_is_rejected() {
-        let path = temp_file("utf8", &[0xff, 0xfe, 0xfa]);
+        let (_dir, path) = temp_file("utf8", &[0xff, 0xfe, 0xfa]);
         assert!(matches!(read(&path), Err(EditorError::NotUtf8)));
     }
 
     #[test]
     fn save_does_not_leave_temp_files_on_success() {
-        let path = temp_file("temp-clean", b"a");
+        let (_dir, path) = temp_file("temp-clean", b"a");
         let snapshot = read(&path).unwrap();
         save(&path, "b", snapshot.version).unwrap();
         let leftovers: Vec<_> = fs::read_dir(path.parent().unwrap())

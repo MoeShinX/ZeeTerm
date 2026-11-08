@@ -8,5 +8,9 @@ publish.workspace = true
 
 [dependencies]
 
+[dev-dependencies]
+# 测试用的随机唯一临时目录（drop 时清理）。
+tempfile = "3"
+
 [lints]
 workspace = true

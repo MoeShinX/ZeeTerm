@@ -741,8 +741,11 @@ mod tests {
 
     #[test]
     fn plain_log_gets_the_display_bytes_as_text_without_colors_or_hidden_bytes() {
-        let dir = std::env::temp_dir().join(format!("zssh-pump-plain-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let guard = tempfile::Builder::new()
+            .prefix("zssh-pump-plain-")
+            .tempdir()
+            .unwrap();
+        let dir = guard.path().to_path_buf();
 
         let mut pump = pump(DropHidden);
         let log = zssh_core::ssh::session_log::SessionLog::create(&dir, "web-1", "t").unwrap();
@@ -756,7 +759,6 @@ mod tests {
         assert!(log.close_and_wait(std::time::Duration::from_secs(10)));
         assert!(!pump.has_plain_log());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "red line\n");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
