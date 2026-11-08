@@ -1,7 +1,3 @@
-#[cfg(windows)]
-use std::io::Write;
-#[cfg(windows)]
-use std::sync::Arc;
 use std::sync::Mutex;
 
 use super::*;
@@ -993,32 +989,6 @@ fn oversized_or_too_many_unknown_settings_are_dropped_and_the_rest_still_import(
 // ---------- 日志里不能出现密码 / 私钥 / 同步包明文 ----------
 
 #[cfg(windows)]
-#[derive(Clone)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
-
-#[cfg(windows)]
-struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
-
-#[cfg(windows)]
-impl Write for CaptureWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
-    type Writer = CaptureWriter;
-    fn make_writer(&'a self) -> Self::Writer {
-        CaptureWriter(self.0.clone())
-    }
-}
-
-#[cfg(windows)]
 #[test]
 fn logs_never_contain_passwords_keys_or_package_plaintext() {
     let dir_a = temp_dir("logs-a");
@@ -1054,19 +1024,9 @@ fn logs_never_contain_passwords_keys_or_package_plaintext() {
 
     let engine_a = SyncEngine::new(&db_a, &sealer_a, "dev-a", &dir_a, None, None);
     let engine_b = SyncEngine::new(&db_b, &sealer_b, "dev-b", &dir_b, None, None);
-    let captured = Arc::new(Mutex::new(Vec::new()));
-    let make_subscriber = || {
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
-            .with_ansi(false)
-            .with_writer(Capture(captured.clone()))
-            .finish()
-    };
-
-    // 用全局订阅者而不是线程局部的：同一个测试进程里别的用例可能先触发过这些
-    // callsite（当时没有订阅者），线程局部订阅者收不到已经被缓存的 callsite。
-    let installed = tracing::subscriber::set_global_default(make_subscriber()).is_ok();
-    let run = || {
+    // 走共用的 capture_logs：它在整个测试进程里装唯一的全局订阅者。这里再自己装一个全局的，
+    // 谁先装上就会让另一边抓不到日志（先后顺序取决于测试调度）。同步流程不开别的线程，按线程抓就够。
+    let ((), logs) = crate::test_util::capture_logs(|| {
         let package = engine_a
             .export_package("MASTER-PASSWORD-MARKER")
             .expect("导出");
@@ -1079,18 +1039,8 @@ fn logs_never_contain_passwords_keys_or_package_plaintext() {
             .import_package(&package, "WRONG-PASSWORD-MARKER", None)
             .expect_err("错误密码");
         assert!(matches!(err, SyncError::WrongPassword), "{err}");
-    };
-    if installed {
-        tracing::callsite::rebuild_interest_cache();
-        run();
-    } else {
-        tracing::subscriber::with_default(make_subscriber(), || {
-            tracing::callsite::rebuild_interest_cache();
-            run();
-        });
-    }
+    });
 
-    let logs = String::from_utf8_lossy(&captured.lock().unwrap()).into_owned();
     assert!(
         logs.contains("同步包已导入"),
         "导入流程自己的日志没抓到：{logs:?}"

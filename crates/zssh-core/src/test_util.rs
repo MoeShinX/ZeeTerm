@@ -42,8 +42,11 @@ impl Drop for TestDir {
             use std::os::windows::process::CommandExt;
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             let _ = std::process::Command::new("cmd")
-                .args(["/C", "ping -n 6 127.0.0.1 >nul & rmdir /S /Q"])
-                .arg(&self.0)
+                // 整条命令自己拼、路径加引号：分开传参时 cmd 遇到带空格的路径会把引号剥掉，rmdir 删不到。
+                .raw_arg(format!(
+                    "/C ping -n 6 127.0.0.1 >nul & rmdir /S /Q \"{}\"",
+                    self.0.display()
+                ))
                 .creation_flags(CREATE_NO_WINDOW)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
@@ -82,6 +85,10 @@ impl AsRef<std::ffi::OsStr> for TestDir {
 /// 重建缓存之后，日志就漏抓了（`exit_message_and_log_do_not_echo_secrets_from_the_output_tail`
 /// 负载下偶发“日志没抓到”）。改成整个测试进程只装一次全局订阅者，用按线程判断的过滤器决定要不要：
 /// 过滤器让每个 callsite 的兴趣都是“每次都问”，不会再被缓存成“永远不要”。
+///
+/// 过滤器必须是 `dynamic_filter_fn`：`filter_fn` 只看元数据，tracing-subscriber 认为它的结果可缓存，
+/// 在 callsite 第一次登记时跑一遍闭包就定成“一直要 / 一直不要”——别的线程（没在抓）先碰到的
+/// callsite 就永远抓不到（同步引擎的日志测试在全套里稳定失败就是这样）。
 pub(crate) fn capture_logs<R>(f: impl FnOnce() -> R) -> (R, String) {
     use std::cell::RefCell;
     use std::io::Write;
@@ -117,18 +124,25 @@ pub(crate) fn capture_logs<R>(f: impl FnOnce() -> R) -> (R, String) {
         }
     }
 
-    static INSTALL: Once = Once::new();
-    INSTALL.call_once(|| {
+    fn thread_routed() -> impl tracing::Subscriber + Send + Sync {
         let layer = tracing_subscriber::fmt::layer()
             .with_ansi(false)
             .with_writer(ThreadSink)
-            .with_filter(tracing_subscriber::filter::filter_fn(|_| {
+            .with_filter(tracing_subscriber::filter::dynamic_filter_fn(|_, _| {
                 CAPTURE.with(|slot| slot.borrow().is_some())
             }));
-        // 装不上（别处先装了全局订阅者）时抓不到日志，用例的“抓取失效”断言会明确失败，不会静默通过。
-        let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer));
+        tracing_subscriber::registry().with(layer)
+    }
+
+    static INSTALL: Once = Once::new();
+    static INSTALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    INSTALL.call_once(|| {
+        let ok = tracing::subscriber::set_global_default(thread_routed()).is_ok();
+        INSTALLED.store(ok, std::sync::atomic::Ordering::SeqCst);
         tracing::callsite::rebuild_interest_cache();
     });
+    // 本进程里别处先装了全局订阅者：退回线程局部订阅者，至少不会因为全局被占而一条都抓不到。
+    let global = INSTALLED.load(std::sync::atomic::Ordering::SeqCst);
 
     let buffer = Arc::new(Mutex::new(Vec::new()));
     CAPTURE.with(|slot| *slot.borrow_mut() = Some(buffer.clone()));
@@ -141,7 +155,14 @@ pub(crate) fn capture_logs<R>(f: impl FnOnce() -> R) -> (R, String) {
     }
     let result = {
         let _reset = Reset;
-        f()
+        if global {
+            f()
+        } else {
+            tracing::subscriber::with_default(thread_routed(), || {
+                tracing::callsite::rebuild_interest_cache();
+                f()
+            })
+        }
     };
     let logs = buffer
         .lock()
