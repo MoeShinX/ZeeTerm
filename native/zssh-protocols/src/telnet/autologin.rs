@@ -201,12 +201,14 @@ pub fn strip_control_sequences(text: &str) -> String {
                         break;
                     }
                 }
-            } else {
-                index += 1;
+            } else if let Some(skipped) = text.get(index..).and_then(|rest| rest.chars().next()) {
+                // ESC 后面跟的可能是多字节字符：要整个字符跳过，按一个字节跳会落在字符中间，
+                // 下面的 `text[index..]` 会 panic（设备或对端发什么都有可能）。
+                index += skipped.len_utf8();
             }
             continue;
         }
-        let Some(ch) = text[index..].chars().next() else {
+        let Some(ch) = text.get(index..).and_then(|rest| rest.chars().next()) else {
             break;
         };
         if ch != '\u{7f}' && (!ch.is_control() || matches!(ch, '\r' | '\n' | '\t')) {
@@ -357,6 +359,26 @@ mod tests {
         let now = Instant::now();
         assert!(login.on_output("login: ", now).is_some());
         assert_eq!(login.on_output("Password: ", now), None);
+    }
+
+    #[test]
+    fn an_escape_followed_by_a_multibyte_character_does_not_panic() {
+        // ESC 后面是汉字 / emoji / 带重音的字母：以前按一个字节跳过，落在字符中间就 panic。
+        assert_eq!(strip_control_sequences("a\u{1b}中b"), "ab");
+        assert_eq!(strip_control_sequences("\u{1b}\u{e9}x"), "x");
+        assert_eq!(strip_control_sequences("x\u{1b}\u{1f600}y"), "xy");
+        // 结尾的孤立 ESC、ESC 加不完整的 CSI 都不能崩。
+        assert_eq!(strip_control_sequences("ok\u{1b}"), "ok");
+        assert_eq!(strip_control_sequences("ok\u{1b}[31"), "ok");
+        // CSI 参数里夹多字节字符：整段当控制序列吃掉，直到结束字节。
+        assert_eq!(strip_control_sequences("\u{1b}[1中m文"), "文");
+
+        // 走完整的自动登录路径：带这种输出的提示行照样能被识别。
+        let mut login = login("root", Some("pw"));
+        assert_eq!(
+            login.on_output("\u{1b}中login: ", Instant::now()),
+            Some(b"root\r\n".to_vec())
+        );
     }
 
     #[test]

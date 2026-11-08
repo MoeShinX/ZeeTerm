@@ -70,6 +70,7 @@ pub(crate) enum Text {
     RemoteWriteClosed,
     RemoteWriteFailed,
     RemoteReadFailed,
+    NegotiationFlood,
 }
 
 impl Text {
@@ -126,6 +127,7 @@ impl Text {
             Self::RemoteWriteClosed => "写入远端失败：连接已关闭",
             Self::RemoteWriteFailed => "写入远端失败：{error}",
             Self::RemoteReadFailed => "读取远端失败：{error}",
+            Self::NegotiationFlood => "服务器发来的协商请求过多，应答积压超过上限，已断开连接",
         }
     }
 
@@ -192,6 +194,9 @@ impl Text {
             }
             Self::RemoteWriteFailed => "Failed to write to the remote end: {error}",
             Self::RemoteReadFailed => "Failed to read from the remote end: {error}",
+            Self::NegotiationFlood => {
+                "The server sent too many negotiation requests and the pending replies exceeded the limit; the connection was closed"
+            }
         }
     }
 }
@@ -311,6 +316,11 @@ pub fn remote_write_failed(error: Option<&str>) -> String {
 
 pub fn remote_read_failed(error: &str) -> String {
     render(language(), Text::RemoteReadFailed, &[("error", error)])
+}
+
+/// 服务器连发协商请求、应答在发送缓冲里积压超过上限：会话以这句话结束。
+pub fn negotiation_flood() -> String {
+    render(language(), Text::NegotiationFlood, &[])
 }
 
 /// 枚举串口列表失败时的"设备名"。

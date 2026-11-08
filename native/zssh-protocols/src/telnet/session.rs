@@ -29,6 +29,13 @@ use crate::text::{TextDecoder, TextEncoder};
 pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// 发送缓冲超过这个大小就先不收新命令。
 const OUTBOX_SOFT_LIMIT: usize = 64 * 1024;
+/// 发送缓冲的硬上限：协商应答让缓冲超过它就以错误结束会话。
+///
+/// 软上限只拦用户输入（不再收新命令），拦不住**对端驱动**的增长：服务器连发 TTYPE 查询
+/// 之类，每条都要应答（必须发，不能悄悄丢），而它自己又不读我们的数据时，应答会在这里无界
+/// 积压。正常的协商一共就几十个字节，远低于这个值；用户一次粘贴进来的大段输入也算在缓冲里，
+/// 所以留出软上限的两倍，免得一次大粘贴碰上一条正常的协商应答就被误杀。
+const OUTBOX_HARD_LIMIT: usize = 2 * OUTBOX_SOFT_LIMIT;
 /// 每次读的缓冲大小。
 const READ_BUFFER: usize = 8192;
 /// 关闭时给对端发 FIN 的时间，写端卡住也不能拖住收尾。
@@ -153,10 +160,21 @@ impl Session {
             let mut visible = Vec::with_capacity(data.len());
             let mut events = Vec::new();
             self.decoder.feed(data, &mut visible, &mut events);
+            let before = self.outbox.len();
             for event in &events {
                 self.negotiator.handle(event, &mut self.outbox);
             }
             self.decoder.set_binary(self.negotiator.binary_in());
+            // 只在这一批协商真的往缓冲里加了东西时才查：协商应答不能丢（对端在等），
+            // 积压过头只能结束会话，并说清原因。
+            if self.outbox.len() > before && self.outbox.len() > OUTBOX_HARD_LIMIT {
+                tracing::warn!(
+                    pending = self.outbox.len(),
+                    "Telnet 协商应答积压超过上限，结束会话"
+                );
+                self.out.error(crate::lang::negotiation_flood());
+                return false;
+            }
             visible
         };
         if visible.is_empty() {
@@ -355,3 +373,6 @@ where
     let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, writer.shutdown()).await;
     session.out.gate.close();
 }
+
+#[cfg(test)]
+mod tests;
