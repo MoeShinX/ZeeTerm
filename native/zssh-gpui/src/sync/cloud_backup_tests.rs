@@ -30,17 +30,26 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 struct Device {
-    dir: PathBuf,
+    // 字段按声明顺序析构：`db` 必须排在 `_guard` 前面，先关库再删目录；
+    // 在 Drop 里删目录会先于字段析构执行，Windows 上库文件还开着，目录删不掉。
     db: Database,
+    dir: PathBuf,
+    _guard: tempfile::TempDir,
 }
 
 impl Device {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("zssh-u33-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("建目录");
+        let guard = tempfile::Builder::new()
+            .prefix(&format!("zssh-u33-{name}-"))
+            .tempdir()
+            .expect("建目录");
+        let dir = guard.path().to_path_buf();
         let db = Database::open(&dir.join("zssh.db")).expect("打开库");
-        Self { dir, db }
+        Self {
+            db,
+            dir,
+            _guard: guard,
+        }
     }
 
     fn sealer() -> XorSealer {
@@ -67,12 +76,6 @@ impl Device {
         backup_targets::add_target(&self.db, &Self::sealer(), None, config, true)
             .expect("添加备份目标")
             .id
-    }
-}
-
-impl Drop for Device {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -247,8 +250,12 @@ fn restoring_from_a_target_replaces_this_computers_data_and_keeps_a_local_backup
 
 #[test]
 fn an_empty_data_directory_has_no_targets_and_is_not_created_just_to_look() {
-    let dir = std::env::temp_dir().join(format!("zssh-u33-empty-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    // 数据目录本身必须「不存在」，所以放在随机唯一的父目录下面。
+    let parent = tempfile::Builder::new()
+        .prefix("zssh-u33-empty-")
+        .tempdir()
+        .expect("临时目录");
+    let dir = parent.path().join("data");
     let cloud = CloudBackup::load(&dir);
     assert!(cloud.targets.is_empty() && cloud.load_error.is_none());
     assert!(!dir.exists(), "为了读列表不能建数据目录 / 库");

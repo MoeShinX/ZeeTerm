@@ -296,12 +296,14 @@ fn state_path() -> PathBuf {
 mod tests {
     use super::*;
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("zssh-window-state-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+    fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-window-state-{name}-"))
+            .tempdir()
+            .unwrap();
+        let path = dir.path().to_path_buf();
+        (dir, path)
     }
 
     #[test]
@@ -350,7 +352,7 @@ mod tests {
 
     #[test]
     fn state_round_trips() {
-        let dir = temp_dir("roundtrip");
+        let (_dir_guard, dir) = temp_dir("roundtrip");
         let path = dir.join("window-state.json");
         let state = WindowState {
             main: Some(SavedBounds {
@@ -381,7 +383,7 @@ mod tests {
 
     #[test]
     fn an_old_file_without_a_layout_still_loads_with_defaults() {
-        let dir = temp_dir("oldfile");
+        let (_dir_guard, dir) = temp_dir("oldfile");
         let path = dir.join("window-state.json");
         std::fs::write(
             &path,
@@ -395,7 +397,7 @@ mod tests {
 
     #[test]
     fn the_settings_section_is_kept_only_when_it_is_a_known_one() {
-        let dir = temp_dir("sections");
+        let (_dir_guard, dir) = temp_dir("sections");
         let path = dir.join("window-state.json");
         std::fs::write(&path, br#"{"layout":{"settings_section":"shortcuts"}}"#).unwrap();
         assert_eq!(
@@ -425,7 +427,7 @@ mod tests {
 
     #[test]
     fn old_view_values_and_the_new_welcome_and_manage_ids_all_read_back() {
-        let dir = temp_dir("u3-ids");
+        let (_dir_guard, dir) = temp_dir("u3-ids");
         let path = dir.join("window-state.json");
         for (view, section) in [
             ("vault", "appearance"),
@@ -450,7 +452,7 @@ mod tests {
     #[test]
     fn a_missing_section_opens_general_and_every_recorded_one_is_restored() {
         use crate::settings_nav::SettingsSection;
-        let dir = temp_dir("section-restore");
+        let (_dir_guard, dir) = temp_dir("section-restore");
         let path = dir.join("window-state.json");
         // 没有记录（全新安装 / 旧文件里没有这个字段）：进「常规」。
         std::fs::write(&path, br#"{"layout":{"view":"settings"}}"#).unwrap();
@@ -476,7 +478,7 @@ mod tests {
 
     #[test]
     fn a_bad_layout_field_only_loses_that_field() {
-        let dir = temp_dir("badlayout");
+        let (_dir_guard, dir) = temp_dir("badlayout");
         let path = dir.join("window-state.json");
         std::fs::write(
             &path,
@@ -531,7 +533,7 @@ mod tests {
 
     #[test]
     fn the_files_window_remembers_its_size_and_whether_it_was_maximized() {
-        let dir = temp_dir("files-roundtrip");
+        let (_dir_guard, dir) = temp_dir("files-roundtrip");
         let path = dir.join("window-state.json");
         let mut state = WindowState::default();
         assert_eq!(state.files, None);
@@ -555,7 +557,7 @@ mod tests {
 
     #[test]
     fn a_garbled_files_entry_does_not_take_the_main_window_down_with_it() {
-        let dir = temp_dir("files-garbled");
+        let (_dir_guard, dir) = temp_dir("files-garbled");
         let path = dir.join("window-state.json");
         std::fs::write(
             &path,
@@ -695,7 +697,7 @@ mod tests {
 
     #[test]
     fn missing_or_corrupt_state_falls_back() {
-        let dir = temp_dir("broken");
+        let (_dir_guard, dir) = temp_dir("broken");
         assert_eq!(WindowState::load_from(&dir.join("none.json")), None);
         let path = dir.join("window-state.json");
         std::fs::write(&path, b"{ nope").unwrap();

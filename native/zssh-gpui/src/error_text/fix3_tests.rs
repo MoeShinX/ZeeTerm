@@ -132,12 +132,14 @@ fn server_side_copy_failures_are_english() {
 #[test]
 fn transfer_plan_notes_are_english_sentences() {
     // 一个带空子目录的本地目录：上传计划里有「空目录」和「共 N 个文件」两条说明。
-    let root = std::env::temp_dir().join(format!("zssh-fix3-plan-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let _root_guard = tempfile::Builder::new()
+        .prefix("zssh-fix3-plan-")
+        .tempdir()
+        .expect("建临时目录");
+    let root = _root_guard.path().to_path_buf();
     std::fs::create_dir_all(root.join("empty-dir")).expect("建临时目录");
     std::fs::write(root.join("a.txt"), b"x").expect("写临时文件");
     let plan = plan_upload(&root, "/srv/up", true).expect("展开上传计划");
-    let _ = std::fs::remove_dir_all(&root);
 
     let notes: Vec<String> = plan
         .notes

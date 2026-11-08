@@ -180,14 +180,14 @@ fn resume_needs_an_agent_session_id() {
 // 历史保存：草稿映射、状态映射、id 分配、临时目录往返；不起智能体、不连网络。
 // ---------------------------------------------------------------------
 
-fn temp_dir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "zssh-agent-chat-history-{}-{name}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("创建临时目录");
-    dir
+/// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+fn temp_dir(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("zssh-agent-chat-history-{name}-"))
+        .tempdir()
+        .expect("创建临时目录");
+    let path = dir.path().to_path_buf();
+    (dir, path)
 }
 
 /// 一轮真实对话：正文 + 一次成功的工具调用，然后正常结束。
@@ -349,7 +349,7 @@ fn history_id_is_allocated_once_and_reset_by_a_new_conversation() {
 
 #[test]
 fn mapped_draft_round_trips_through_a_temp_history_store() {
-    let dir = temp_dir("round-trip");
+    let (_dir_guard, dir) = temp_dir("round-trip");
     let store = HistoryStore::new(&dir);
     let mut state = ChatState::default();
     real_turn_with_a_tool(&mut state);
@@ -394,8 +394,6 @@ fn mapped_draft_round_trips_through_a_temp_history_store() {
     assert_eq!(record.created_at, 1_700_000_000_000);
     assert_eq!(record.updated_at, 1_700_000_100_000);
     assert_eq!(record.messages, draft.messages);
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -478,7 +476,7 @@ fn loaded_history_round_trips_back_into_the_same_draft() {
 fn continuing_a_history_never_writes_two_conversations_into_one_file() {
     // 审查 H4：旧版「继续」不清当前对话也不换历史 id，续接后的内容连同屏幕上原来的
     // 对话一起写回了原来的文件。
-    let dir = temp_dir("continue-no-mix");
+    let (_dir_guard, dir) = temp_dir("continue-no-mix");
     let store = HistoryStore::new(&dir);
     let session_a = "aaaaaaaa-2222-3333-4444-555555555555";
     let session_b = "bbbbbbbb-2222-3333-4444-555555555555";
@@ -557,8 +555,6 @@ fn continuing_a_history_never_writes_two_conversations_into_one_file() {
         "B 保留旧内容并追加新的，没有 A 的内容"
     );
     assert_eq!(store.list(CLAUDE.command).expect("列表").len(), 2);
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -191,11 +191,14 @@ fn sign_installer(keys: &Keys, bytes: &[u8], signed_version: &str, file_name: &s
     base64::engine::general_purpose::STANDARD.encode(signed.to_string())
 }
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("zeeterm-r1-e2e-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("创建临时目录");
-    dir
+/// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("zeeterm-r1-e2e-{name}-"))
+        .tempdir()
+        .expect("创建临时目录");
+    let path = dir.path().to_path_buf();
+    (dir, path)
 }
 
 fn file_count(dir: &Path) -> usize {
@@ -314,7 +317,7 @@ fn a_new_release_goes_from_manifest_to_a_one_click_install_with_the_stub_launche
     assert_eq!(package.version, "1.4.0");
 
     // 2. 下载 + 验签：有进度、有"校验中"，缓存里是验过的那份字节。
-    let cache = temp_dir("happy");
+    let (_dir_cache, cache) = temp_dir("happy");
     let (result, events) = download(&package, &keys.pubkey_b64, &cache);
     let (path, size, sha256) = result.unwrap_or_else(|failed| match failed {
         DownloadFailure::Failed(message) => panic!("下载应通过，实际：{message}"),
@@ -357,7 +360,6 @@ fn a_new_release_goes_from_manifest_to_a_one_click_install_with_the_stub_launche
         launched_with,
         vec![vec!["/P", "/UPDATE", "/R", "/ARGS", "--minimized"]]
     );
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 /// 界面收到一次下载的全部事件（进度、校验中，再加最后的结果）后的做法：返回 (下载阶段, 是否该立刻安装)。
@@ -415,7 +417,7 @@ fn download_and_install_goes_straight_from_a_verified_signature_to_the_installer
         Route::Ok(installer.clone()),
     );
     let package = found_package(&fixture, &keys, "1.3.0");
-    let cache = temp_dir("auto-install");
+    let (_dir_cache, cache) = temp_dir("auto-install");
     let (result, events) = download(&package, &keys.pubkey_b64, &cache);
 
     // 用户点了「下载并安装」：验签一过就该安装，启动桩恰好被调用一次，中间没有再点一次的环节。
@@ -424,7 +426,6 @@ fn download_and_install_goes_straight_from_a_verified_signature_to_the_installer
     assert!(install_now);
     let launches = install_with_stub(&phase, &cache);
     assert_eq!(launches, vec![vec!["/P", "/UPDATE", "/R", "/ARGS"]]);
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 #[test]
@@ -442,12 +443,11 @@ fn a_verified_package_nobody_asked_to_install_is_not_installed() {
     let package = found_package(&fixture, &keys, "1.3.0");
     let hits = fixture.hits();
     assert_eq!(hits, 1, "只取过清单，没碰安装包");
-    let cache = temp_dir("no-consent");
+    let (_dir_cache, cache) = temp_dir("no-consent");
     let (result, events) = download(&package, &keys.pubkey_b64, &cache);
     let (phase, install_now) = replay(false, result, events);
     assert!(matches!(phase, DownloadState::Verified { .. }));
     assert!(!install_now);
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 #[test]
@@ -464,7 +464,7 @@ fn a_failed_signature_check_never_reaches_the_installer_even_after_download_and_
         Route::Ok(installer.clone()),
     );
     let package = found_package(&fixture, &keys, "1.3.0");
-    let cache = temp_dir("bad-signature");
+    let (_dir_cache, cache) = temp_dir("bad-signature");
     let (result, events) = download(&package, &keys.pubkey_b64, &cache);
     let (phase, install_now) = replay(true, result, events);
     assert!(
@@ -488,7 +488,6 @@ fn a_failed_signature_check_never_reaches_the_installer_even_after_download_and_
     assert!(matches!(phase, DownloadState::Failed(_)), "{phase:?}");
     assert!(!install_now);
     assert_eq!(file_count(&cache), 0);
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 /// 英文更新说明从发版工具生成的清单一路走到更新窗口：中文 `notes` 不变（老客户端只认它），`notes_en` 单独带着，
@@ -586,7 +585,7 @@ fn a_signature_from_another_key_is_refused_and_nothing_is_cached() {
     );
     let package = found_package(&fixture, &keys, "1.3.0");
 
-    let cache = temp_dir("wrong-key");
+    let (_dir_cache, cache) = temp_dir("wrong-key");
     let (result, events) = download(&package, &keys.pubkey_b64, &cache);
     let message = failure(result);
     assert!(message.contains("签名校验未通过"), "{message}");
@@ -596,7 +595,6 @@ fn a_signature_from_another_key_is_refused_and_nothing_is_cached() {
             .iter()
             .any(|event| matches!(event, DownloadEvent::Verified { .. }))
     );
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 #[test]
@@ -613,14 +611,13 @@ fn a_signature_for_a_different_version_than_announced_is_refused() {
     );
     let package = found_package(&fixture, &keys, "1.3.0");
 
-    let cache = temp_dir("version-mismatch");
+    let (_dir_cache, cache) = temp_dir("version-mismatch");
     let message = failure(download(&package, &keys.pubkey_b64, &cache).0);
     assert!(
         message.contains("签名版本 1.3.5 与公告版本 1.4.0 不一致"),
         "{message}"
     );
     assert_eq!(file_count(&cache), 0);
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 #[test]
@@ -631,11 +628,10 @@ fn an_installer_changed_after_signing_is_refused() {
     let (fixture, _) = publish(&keys, "1.4.0", "1.4.0", &signed, Route::Ok(served));
     let package = found_package(&fixture, &keys, "1.3.0");
 
-    let cache = temp_dir("tampered");
+    let (_dir_cache, cache) = temp_dir("tampered");
     let message = failure(download(&package, &keys.pubkey_b64, &cache).0);
     assert!(message.contains("签名校验未通过"), "{message}");
     assert_eq!(file_count(&cache), 0);
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 #[test]
@@ -654,7 +650,7 @@ fn an_interrupted_download_fails_with_a_message_and_leaves_no_file() {
     );
     let package = found_package(&fixture, &keys, "1.3.0");
 
-    let cache = temp_dir("cut");
+    let (_dir_cache, cache) = temp_dir("cut");
     let (result, events) = download(&package, &keys.pubkey_b64, &cache);
     let message = failure(result);
     assert!(message.starts_with("下载失败："), "{message}");
@@ -663,7 +659,6 @@ fn an_interrupted_download_fails_with_a_message_and_leaves_no_file() {
         event,
         DownloadEvent::Verifying { .. } | DownloadEvent::Verified { .. }
     )));
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 #[test]
@@ -693,14 +688,13 @@ fn a_missing_installer_is_a_clear_download_failure() {
         map.remove(&path);
     }
     let package = found_package(&fixture, &keys, "1.3.0");
-    let cache = temp_dir("pkg-404");
+    let (_dir_cache, cache) = temp_dir("pkg-404");
     let message = failure(download(&package, &keys.pubkey_b64, &cache).0);
     assert!(
         message.contains("HTTP 404") && message.contains("找不到"),
         "{message}"
     );
     assert_eq!(file_count(&cache), 0);
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 #[test]
@@ -715,12 +709,11 @@ fn a_cancelled_download_leaves_nothing_behind() {
         Route::Ok(installer.clone()),
     );
     let package = found_package(&fixture, &keys, "1.3.0");
-    let cache = temp_dir("cancel");
+    let (_dir_cache, cache) = temp_dir("cancel");
     let cancel = AtomicBool::new(true);
     let (result, _) = download_with_cancel(&package, &keys.pubkey_b64, &cache, &cancel);
     assert!(matches!(result, Err(DownloadFailure::Cancelled)));
     assert_eq!(file_count(&cache), 0);
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 #[test]
@@ -767,12 +760,11 @@ fn a_placeholder_key_refuses_before_any_request_and_before_any_download() {
     // 即使有人绕过检查、直接拿着一个包来下载：下载这一层也拒绝，同样不发请求、不落盘。
     let package = found_package(&fixture, &keys, "1.3.0");
     let hits_before = fixture.hits();
-    let cache = temp_dir("placeholder");
+    let (_dir_cache, cache) = temp_dir("placeholder");
     let message = failure(download(&package, "PLACEHOLDER", &cache).0);
     assert_eq!(message, SIGNING_UNCONFIGURED);
     assert_eq!(fixture.hits(), hits_before, "下载层也不能发请求");
     assert_eq!(file_count(&cache), 0);
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 #[test]
@@ -790,7 +782,7 @@ fn the_installer_stub_is_never_called_for_a_package_that_failed_verification() {
         Route::Ok(installer.clone()),
     );
     let package = found_package(&fixture, &keys, "1.3.0");
-    let cache = temp_dir("no-install");
+    let (_dir_cache, cache) = temp_dir("no-install");
     let (result, _) = download(&package, &keys.pubkey_b64, &cache);
     assert!(result.is_err());
     // 用一份"没验过"的文件硬凑计划也过不了：哈希对不上验签时记下的那份。
@@ -805,7 +797,6 @@ fn the_installer_stub_is_never_called_for_a_package_that_failed_verification() {
         &zssh_update::sha256_hex(&installer),
     );
     assert!(plan.is_err(), "未验签的文件不能生成安装计划");
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 #[test]
@@ -1002,7 +993,7 @@ mod linux_chain {
         assert_eq!(package.platform_key, "linux-x86_64-deb");
         assert_eq!(checked.release_version.as_deref(), Some("1.4.0"));
 
-        let cache = temp_dir("linux-deb");
+        let (_dir_cache, cache) = temp_dir("linux-deb");
         let (result, _) = download(&package, &keys.pubkey_b64, &cache);
         let (path, size, sha256) = result.unwrap_or_else(|_| panic!("下载并验签应通过"));
         assert_eq!(size, deb.len() as u64);
@@ -1052,7 +1043,6 @@ mod linux_chain {
             Outcome::Failed(_)
         ));
         assert!(untouched.calls.borrow().is_empty());
-        let _ = std::fs::remove_dir_all(&cache);
     }
 
     #[test]
@@ -1075,7 +1065,7 @@ mod linux_chain {
             &Platform::Linux(Flavor::Deb),
         );
         let package = checked.package.expect("清单本身没问题");
-        let cache = temp_dir("linux-bad-sig");
+        let (_dir_cache, cache) = temp_dir("linux-bad-sig");
         let (result, events) = download(&package, &keys.pubkey_b64, &cache);
         let message = failure(result);
         assert!(message.contains("签名校验未通过"), "{message}");
@@ -1085,7 +1075,6 @@ mod linux_chain {
                 .iter()
                 .any(|event| matches!(event, DownloadEvent::Verified { .. }))
         );
-        let _ = std::fs::remove_dir_all(&cache);
     }
 
     #[test]
@@ -1207,7 +1196,7 @@ mod linux_chain {
 
         /// 做一个 tar.gz：顶层目录里放会报告指定版本的 `zeeterm` 和 `zssh-mcp`。
         fn tarball(version: &str) -> Vec<u8> {
-            let root = temp_dir(&format!("linux-tarball-{version}"));
+            let (_dir_root, root) = temp_dir(&format!("linux-tarball-{version}"));
             let top = root.join(format!("ZeeTerm-{version}-linux-x86_64"));
             std::fs::create_dir_all(&top).expect("建目录");
             for (name, body) in [
@@ -1230,13 +1219,12 @@ mod linux_chain {
                 .expect("需要系统 tar");
             assert!(status.success());
             let bytes = std::fs::read(&out).expect("读包");
-            let _ = std::fs::remove_dir_all(&root);
             bytes
         }
 
         /// 模拟手动解压的旧版本。
-        fn old_install(name: &str, version: &str) -> PathBuf {
-            let dir = temp_dir(name);
+        fn old_install(name: &str, version: &str) -> (tempfile::TempDir, PathBuf) {
+            let (guard, dir) = temp_dir(name);
             for (file, body) in [
                 ("zeeterm", format!("#!/bin/sh\necho 'ZeeTerm {version}'\n")),
                 ("zssh-mcp", format!("#!/bin/sh\necho 'mcp {version}'\n")),
@@ -1246,7 +1234,7 @@ mod linux_chain {
                 std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))
                     .expect("权限");
             }
-            dir
+            (guard, dir)
         }
 
         fn read(path: &Path) -> String {
@@ -1285,11 +1273,11 @@ mod linux_chain {
             let package = checked.package.expect("应选出 tar.gz");
             assert_eq!(package.platform_key, "linux-x86_64-tar");
 
-            let cache = temp_dir("linux-tar-cache");
+            let (_dir_cache, cache) = temp_dir("linux-tar-cache");
             let (result, _) = download(&package, &keys.pubkey_b64, &cache);
             let (path, _, sha256) = result.unwrap_or_else(|_| panic!("下载并验签应通过"));
 
-            let install = old_install("linux-tar-install", "1.3.0");
+            let (_dir_install, install) = old_install("linux-tar-install", "1.3.0");
             let exe = install.join("zeeterm");
             let outcome = run_tar(&Job {
                 flavor: Flavor::Tar,
@@ -1310,8 +1298,6 @@ mod linux_chain {
                 read(&install.join("zssh-mcp")),
                 "#!/bin/sh\necho 'mcp 1.4.0'\n"
             );
-            let _ = std::fs::remove_dir_all(&cache);
-            let _ = std::fs::remove_dir_all(&install);
         }
 
         #[test]
@@ -1336,10 +1322,10 @@ mod linux_chain {
                 &Platform::Linux(Flavor::Tar),
             );
             let package = checked.package.expect("选包");
-            let cache = temp_dir("linux-tar-mismatch-cache");
+            let (_dir_cache, cache) = temp_dir("linux-tar-mismatch-cache");
             let (result, _) = download(&package, &keys.pubkey_b64, &cache);
             let (path, _, sha256) = result.unwrap_or_else(|_| panic!("验签应通过"));
-            let install = old_install("linux-tar-mismatch-install", "1.3.0");
+            let (_dir_install, install) = old_install("linux-tar-mismatch-install", "1.3.0");
             let exe = install.join("zeeterm");
             let outcome = run_tar(&Job {
                 flavor: Flavor::Tar,
@@ -1359,8 +1345,6 @@ mod linux_chain {
                 read(&install.join("zssh-mcp")),
                 "#!/bin/sh\necho 'mcp 1.3.0'\n"
             );
-            let _ = std::fs::remove_dir_all(&cache);
-            let _ = std::fs::remove_dir_all(&install);
         }
     }
 }
@@ -1546,7 +1530,7 @@ mod portable_chain {
         assert_eq!(checked.release_version.as_deref(), Some("1.4.0"));
 
         // 下载 + 验签：缓存里是验过的那份字节，文件名保持 zip 的名字。
-        let cache = temp_dir("portable-ok");
+        let (_dir_cache, cache) = temp_dir("portable-ok");
         let (result, _) = download(&package, &keys.pubkey_b64, &cache);
         let (path, size, sha256) = result.unwrap_or_else(|_| panic!("下载并验签应通过"));
         assert_eq!(size, zip.len() as u64);
@@ -1586,7 +1570,6 @@ mod portable_chain {
         std::fs::write(&path, b"tampered").expect("改包");
         let untouched = glue::run(&job, &|_, _| panic!("包不对就不能去替换程序文件"));
         assert!(matches!(untouched, Outcome::Failed(_)), "{untouched:?}");
-        let _ = std::fs::remove_dir_all(&cache);
     }
 
     #[test]
@@ -1614,7 +1597,7 @@ mod portable_chain {
             &Platform::WindowsPortable { writable: true },
         );
         let package = checked.package.expect("清单本身没问题");
-        let cache = temp_dir("portable-bad-sig");
+        let (_dir_cache, cache) = temp_dir("portable-bad-sig");
         let (result, events) = download(&package, &keys.pubkey_b64, &cache);
         let message = failure(result);
         assert!(message.contains("签名校验未通过"), "{message}");
@@ -1624,7 +1607,6 @@ mod portable_chain {
                 .iter()
                 .any(|event| matches!(event, DownloadEvent::Verified { .. }))
         );
-        let _ = std::fs::remove_dir_all(&cache);
     }
 
     #[test]

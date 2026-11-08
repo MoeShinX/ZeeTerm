@@ -521,10 +521,14 @@ mod tests {
             .expect("运行时")
     }
 
-    fn temp_known_hosts(tag: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("zssh-u13-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        path
+    /// 随机唯一的临时目录里的 known_hosts 路径（文件还不存在）；`TempDir` 要拿到用例结束。
+    fn temp_known_hosts(tag: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-u13-{tag}-"))
+            .tempdir()
+            .expect("临时目录");
+        let path = dir.path().join("known_hosts");
+        (dir, path)
     }
 
     fn hop(label: &str, addr: SocketAddr, password: &str, known_hosts: &PathBuf) -> ChainHop {
@@ -552,7 +556,7 @@ mod tests {
 
     #[test]
     fn an_ssh_test_succeeds_for_a_trusted_host_and_never_writes_known_hosts() {
-        let known = temp_known_hosts("ok");
+        let (_known_dir, known) = temp_known_hosts("ok");
         let (stopped, outcome) = runtime().block_on(async {
             // 要连两次（先陌生、再信任），所以用能一直接受连接的那个。
             let (addr, _probe) = test_ssh_server::spawn_counting().await;
@@ -601,7 +605,7 @@ mod tests {
 
     #[test]
     fn a_wrong_password_is_an_authentication_failure_and_the_right_one_succeeds() {
-        let known = temp_known_hosts("auth");
+        let (_known_dir, known) = temp_known_hosts("auth");
         let (bad, good, saved) = runtime().block_on(async {
             // 主机已信任：测试才会真的去登录。
             let addr = test_ssh_server::spawn_requiring_password("right-pw").await;
@@ -639,7 +643,7 @@ mod tests {
 
     #[test]
     fn a_changed_host_key_fails_and_leaves_the_saved_one_alone() {
-        let known = temp_known_hosts("changed");
+        let (_known_dir, known) = temp_known_hosts("changed");
         let outcome = runtime().block_on(async {
             let addr = test_ssh_server::spawn().await;
             // 先给这台主机存一把别的密钥：服务器的密钥是现场随机生成的，所以一定对不上。
@@ -676,14 +680,10 @@ mod tests {
 
     #[test]
     fn a_refused_connection_is_reported_as_refused_at_the_connect_stage() {
+        let (_known_dir, known) = temp_known_hosts("refused");
         let outcome = runtime().block_on(async {
             test_ssh(SshTestPlan {
-                hops: vec![hop(
-                    "目标 lab-1",
-                    closed_port(),
-                    "pw",
-                    &temp_known_hosts("refused"),
-                )],
+                hops: vec![hop("目标 lab-1", closed_port(), "pw", &known)],
             })
             .await
         });
@@ -698,6 +698,7 @@ mod tests {
 
     #[test]
     fn a_server_that_never_answers_times_out_and_names_the_stage() {
+        let (_known_dir, known) = temp_known_hosts("slow");
         let outcome = runtime().block_on(async {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
@@ -710,7 +711,7 @@ mod tests {
             });
             test_ssh_with(
                 SshTestPlan {
-                    hops: vec![hop("目标 lab-1", addr, "pw", &temp_known_hosts("slow"))],
+                    hops: vec![hop("目标 lab-1", addr, "pw", &known)],
                 },
                 Duration::from_millis(700),
             )
@@ -727,12 +728,13 @@ mod tests {
 
     #[test]
     fn an_unreachable_proxy_is_a_proxy_failure() {
+        let (_known_dir, known) = temp_known_hosts("proxy");
         let outcome = runtime().block_on(async {
             let mut target = hop(
                 "目标 lab-1",
                 "127.0.0.1:22".parse().expect("地址"),
                 "pw",
-                &temp_known_hosts("proxy"),
+                &known,
             );
             let proxy = closed_port();
             target.proxy = Some(ProxyConfig {
@@ -756,7 +758,7 @@ mod tests {
 
     #[test]
     fn ssh_through_a_jump_host_works_and_the_route_names_it() {
-        let known = temp_known_hosts("jump");
+        let (_known_dir, known) = temp_known_hosts("jump");
         let (outcome, saved) = runtime().block_on(async {
             let jump = test_ssh_server::spawn_forwarding().await;
             let target = test_ssh_server::spawn().await;
@@ -858,7 +860,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn a_telnet_test_can_go_through_an_ssh_jump_host() {
-        let known = temp_known_hosts("tjump");
+        let (_known_dir, known) = temp_known_hosts("tjump");
         let outcome = runtime().block_on(async {
             let jump = test_ssh_server::spawn_forwarding().await;
             test_ssh_server::trust_host_key(jump, &known);

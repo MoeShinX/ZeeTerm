@@ -1994,10 +1994,11 @@ mod tests {
     fn telnet_and_serial_hosts_are_refused_as_ai_targets_but_ssh_hosts_are_not() {
         use zssh_core::model::{AuthMethod, HostDraft, Protocol, ProtocolSettings, ProxyMode};
 
-        let dir =
-            std::env::temp_dir().join(format!("zssh-agent-host-refusal-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let _dir_guard = tempfile::Builder::new()
+            .prefix("zssh-agent-host-refusal-")
+            .tempdir()
+            .expect("临时目录");
+        let dir = _dir_guard.path().to_path_buf();
         let db = Database::open(&dir.join("zssh.db")).unwrap();
         let draft = |name: &str| HostDraft {
             protocol: None,
@@ -2038,7 +2039,6 @@ mod tests {
             futures::executor::block_on(host.target_refusal("sess-1")),
             None
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2173,15 +2173,16 @@ mod tests {
 
     #[test]
     fn mode_falls_back_to_manual_when_db_is_unavailable() {
-        let dir = std::env::temp_dir().join(format!("zssh-agent-host-mode-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let _dir_guard = tempfile::Builder::new()
+            .prefix("zssh-agent-host-mode-")
+            .tempdir()
+            .expect("临时目录");
+        let dir = _dir_guard.path().to_path_buf();
         // 拿一个普通文件当"数据目录"：它下面拼出来的 zssh.db 一定打不开。
         let blocker = dir.join("not-a-dir");
         std::fs::write(&blocker, b"x").expect("写占位文件");
         let mode = NativeMode::new(&blocker);
         assert_eq!(mode.mode(), ExecMode::Manual);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // -----------------------------------------------------------------------
@@ -2546,16 +2547,23 @@ mod tests {
 
     // ---- 共用桥：一个桥、多个对话，确认请求按 scope 分路 ----
 
-    async fn test_hub(host: Arc<CountingHost>) -> Arc<AgentHub> {
-        AgentHub::with_parts(
+    /// 数据目录用随机唯一的临时目录：内置智能体的对话记录会写到 `<数据目录>/ai-history`，
+    /// 直接用系统临时目录会把记录留在那里。返回的 `TempDir` 排在前面，用例里先放掉桥、再删目录。
+    async fn test_hub(host: Arc<CountingHost>) -> (tempfile::TempDir, Arc<AgentHub>) {
+        let data_dir = tempfile::Builder::new()
+            .prefix("zssh-agent-hub-")
+            .tempdir()
+            .expect("临时数据目录");
+        let hub = AgentHub::with_parts(
             host,
             Arc::new(NoAudit),
             Arc::new(FixedMode(ExecMode::Manual)),
-            std::env::temp_dir(),
+            data_dir.path().to_path_buf(),
             PathBuf::from("zssh-mcp.exe"),
         )
         .await
-        .expect("建共用桥")
+        .expect("建共用桥");
+        (data_dir, hub)
     }
 
     /// 连上共用桥、用 `capability` 发一条 `run_command`。
@@ -2587,7 +2595,7 @@ mod tests {
     #[tokio::test]
     async fn one_bridge_routes_each_prompt_to_the_conversation_that_asked() {
         let host = Arc::new(CountingHost::default());
-        let hub = test_hub(Arc::clone(&host)).await;
+        let (_data_dir, hub) = test_hub(Arc::clone(&host)).await;
         let a = ToolChannel::attach(&hub.bridge, &hub.approver, &hub.reports);
         let b = ToolChannel::attach(&hub.bridge, &hub.approver, &hub.reports);
         a.sync_hosts(&[web_host(1)]);
@@ -2617,7 +2625,7 @@ mod tests {
     #[tokio::test]
     async fn stopping_one_conversation_leaves_the_others_prompt_waiting() {
         let host = Arc::new(CountingHost::default());
-        let hub = test_hub(Arc::clone(&host)).await;
+        let (_data_dir, hub) = test_hub(Arc::clone(&host)).await;
         let a = ToolChannel::attach(&hub.bridge, &hub.approver, &hub.reports);
         let b = ToolChannel::attach(&hub.bridge, &hub.approver, &hub.reports);
         a.sync_hosts(&[web_host(1)]);
@@ -2642,7 +2650,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_closed_conversation_has_no_route_and_asks_are_denied() {
-        let hub = test_hub(Arc::new(CountingHost::default())).await;
+        let (_data_dir, hub) = test_hub(Arc::new(CountingHost::default())).await;
         let a = ToolChannel::attach(&hub.bridge, &hub.approver, &hub.reports);
         let scope_id = a.scope().scope_id().to_owned();
         a.close();
@@ -2694,7 +2702,7 @@ mod tests {
         // 不能只靠 Drop。
         let conversation = Arc::new(CountingConversation::default());
         let host = Arc::new(CountingHost::default());
-        let hub = test_hub(Arc::clone(&host)).await;
+        let (_data_dir, hub) = test_hub(Arc::clone(&host)).await;
         let tools = ToolChannel::attach(&hub.bridge, &hub.approver, &hub.reports);
         tools.sync_hosts(&[web_host(1)]);
         let scope_id = tools.scope().scope_id().to_owned();
@@ -2783,9 +2791,11 @@ mod tests {
         use crate::agent_setup::builtin_fake::FakeTransport;
         use zssh_core::ai::agent::builtin::config::EndpointKind;
         let host = Arc::new(CountingHost::default());
-        let dir = std::env::temp_dir().join(format!("zssh-builtin-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let _dir_guard = tempfile::Builder::new()
+            .prefix("zssh-builtin-e2e-")
+            .tempdir()
+            .expect("临时目录");
+        let dir = _dir_guard.path().to_path_buf();
         let hub = AgentHub::with_parts(
             host,
             Arc::new(NoAudit),
@@ -2880,7 +2890,6 @@ mod tests {
             Some(resume.as_str())
         );
         again.shutdown().await;
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -2888,7 +2897,7 @@ mod tests {
         use crate::agent_setup::builtin_fake::FakeTransport;
         use zssh_core::ai::agent::builtin::config::EndpointKind;
         let host = Arc::new(CountingHost::default());
-        let hub = test_hub(host).await;
+        let (_data_dir, hub) = test_hub(host).await;
         let fake = Arc::new(FakeTransport::default());
 
         let mut anthropic = hub
@@ -3020,7 +3029,7 @@ mod tests {
 
         let (endpoint, key) = load_endpoint_from(&db, saved.id).expect("不需要 Key 的接口可以读");
         assert!(key.is_empty() && endpoint.is_ready());
-        let hub = test_hub(Arc::new(CountingHost::default())).await;
+        let (_data_dir, hub) = test_hub(Arc::new(CountingHost::default())).await;
         let recorder = Arc::new(HeaderRecorder {
             inner: crate::agent_setup::builtin_fake::FakeTransport::default(),
             seen: std::sync::Mutex::new(Vec::new()),
@@ -3115,7 +3124,7 @@ mod tests {
         assert_eq!(endpoint.preset_id.as_deref(), Some("tokenway"));
 
         // 2 对话：用保险库里的 Key，经真实的 HTTP。
-        let hub = test_hub(Arc::new(CountingHost::default())).await;
+        let (_data_dir, hub) = test_hub(Arc::new(CountingHost::default())).await;
         let mut session = hub
             .start_builtin(BuiltinStart {
                 endpoint: endpoint.clone(),
@@ -3292,7 +3301,7 @@ mod tests {
     async fn a_topup_error_code_reaches_the_ui_as_a_structured_signal() {
         use crate::agent_setup::builtin_fake::FakeTransport;
         use zssh_core::ai::agent::builtin::config::EndpointKind;
-        let hub = test_hub(Arc::new(CountingHost::default())).await;
+        let (_data_dir, hub) = test_hub(Arc::new(CountingHost::default())).await;
         let mut session = hub
             .start_builtin(BuiltinStart {
                 endpoint: fake_endpoint(EndpointKind::OpenAiChat),
@@ -3385,9 +3394,11 @@ mod tests {
         );
 
         // 4 发消息：模型调工具（假主机），结果回填，用量上报；5 新对话互不影响。
-        let dir = std::env::temp_dir().join(format!("zssh-builtin-flow-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let _dir_guard = tempfile::Builder::new()
+            .prefix("zssh-builtin-flow-")
+            .tempdir()
+            .expect("临时目录");
+        let dir = _dir_guard.path().to_path_buf();
         let hub = AgentHub::with_parts(
             Arc::new(CountingHost::default()),
             Arc::new(NoAudit),
@@ -3437,7 +3448,6 @@ mod tests {
         );
         assert_eq!(second.conversation.resume_id(), None, "还没有消息");
         second.shutdown().await;
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- 真实智能体（显式 ZSSH_AGENT_E2E=1 才拉起；每种都用独立配置，不碰用户真实的配置）----

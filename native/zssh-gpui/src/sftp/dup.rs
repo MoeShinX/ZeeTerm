@@ -156,24 +156,19 @@ mod tests {
 mod load_tests {
     //! 复制标签的首屏：用进程内的假 SFTP 服务器验证"起始目录读得出来就落在那儿，读不出来退回家目录"。
 
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
     use super::super::{SftpEvent, load_first};
     use crate::ssh_backend::{SshSessionFactory, runtime};
     use crate::test_ssh_server::{SFTP_HOME, connect_trusting, spawn_sftp};
-
-    static SEQ: AtomicU32 = AtomicU32::new(0);
+    use std::sync::Arc;
 
     /// 连上假服务器，用同一条连接跑一次首屏，返回 (落在哪个目录, 里面的名字)。
     fn first_screen(start: Option<&str>) -> (String, Vec<String>) {
         let runtime = runtime().expect("运行时");
-        let dir = std::env::temp_dir().join(format!(
-            "zssh-u24-{}-{}",
-            std::process::id(),
-            SEQ.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("临时目录");
+        let _dir_guard = tempfile::Builder::new()
+            .prefix("zssh-u24-")
+            .tempdir()
+            .expect("临时目录");
+        let dir = _dir_guard.path().to_path_buf();
         let start = start.map(str::to_owned);
         let known_hosts_dir = dir.clone();
         let event = runtime.block_on(async move {
@@ -182,7 +177,6 @@ mod load_tests {
             let factory: Arc<SshSessionFactory> = SshSessionFactory::from_connection(connection);
             load_first(1, Some(factory), start).await
         });
-        let _ = std::fs::remove_dir_all(&dir);
         match event {
             SftpEvent::Ready { cwd, entries, .. } => {
                 (cwd, entries.into_iter().map(|e| e.name).collect())

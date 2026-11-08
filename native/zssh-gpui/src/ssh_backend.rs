@@ -1124,8 +1124,11 @@ mod tests {
 
     #[test]
     fn user_known_hosts_only_when_the_file_exists() {
-        let dir = std::env::temp_dir().join(format!("zssh-kh-home-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _dir_guard = tempfile::Builder::new()
+            .prefix("zssh-kh-home-")
+            .tempdir()
+            .unwrap();
+        let dir = _dir_guard.path().to_path_buf();
         assert_eq!(user_known_hosts(None), None);
         assert_eq!(user_known_hosts(Some(dir.clone())), None);
         std::fs::create_dir_all(dir.join(".ssh")).unwrap();
@@ -1135,7 +1138,6 @@ mod tests {
             user_known_hosts(Some(dir.clone())),
             Some(dir.join(".ssh").join("known_hosts"))
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn test_runtime() -> tokio::runtime::Runtime {
@@ -1858,11 +1860,11 @@ mod tests {
     fn a_quick_hop_connects_to_a_local_server_and_opens_a_shell() {
         let runtime = runtime().expect("runtime");
         let addr = runtime.block_on(crate::test_ssh_server::spawn());
-        let known_hosts = std::env::temp_dir().join(format!(
-            "zssh-g07b-quick-kh-{}-{}",
-            std::process::id(),
-            addr.port()
-        ));
+        let known_hosts_guard = tempfile::Builder::new()
+            .prefix("zssh-g07b-quick-kh-")
+            .tempdir()
+            .expect("临时目录");
+        let known_hosts = known_hosts_guard.path().join("known_hosts");
         let (_, hops) = quick_hops(
             &quick_target(addr.port()),
             "pw".to_owned(),
@@ -1904,7 +1906,6 @@ mod tests {
             }
             Ok::<_, String>(seen)
         });
-        let _ = std::fs::remove_file(&known_hosts);
         let seen = outcome.expect("快速连接的拨号链能连上本机测试服务器");
         assert!(seen.contains("MINI_READY"), "应该进了 shell：{seen}");
     }
@@ -1913,11 +1914,14 @@ mod tests {
 
     use crate::test_ssh_server::{spawn_counting, trust_once, trusting_hops};
 
-    fn pool_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("zssh-pool-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("临时目录");
-        dir
+    /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+    fn pool_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-pool-{name}-"))
+            .tempdir()
+            .expect("临时目录");
+        let path = dir.path().to_path_buf();
+        (dir, path)
     }
 
     fn test_pool(idle: Duration) -> Pool<SshSessionFactory> {
@@ -1952,7 +1956,7 @@ mod tests {
     /// R08：同一份配置同时来十个建连请求，服务器只看到一次握手；配置不同则各握各的。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn ten_concurrent_connects_to_one_host_handshake_once() {
-        let dir = pool_dir("r08");
+        let (_dir_guard, dir) = pool_dir("r08");
         let (addr, probe) = spawn_counting().await;
         let pool = test_pool(Duration::from_secs(60));
         let hops = trusting_hops(addr, &dir);
@@ -1996,13 +2000,12 @@ mod tests {
             .item;
         assert!(!Arc::ptr_eq(&other, &factories[0]));
         assert_eq!(probe.accepted(), 2);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// R08：握手失败不会留下永远在等的占位——同键的下一次请求重新拨号并成功。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_failed_connect_does_not_block_the_next_attempt() {
-        let dir = pool_dir("r08-fail");
+        let (_dir_guard, dir) = pool_dir("r08-fail");
         // 一个没人监听的端口：连接被拒绝。
         let dead = {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("占一个端口");
@@ -2032,12 +2035,11 @@ mod tests {
         .expect("重试连上");
         assert!(!retried.reused);
         assert_eq!(probe.accepted(), 1);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// R07：所有使用者放手之后才开始计时，到点真的断开服务器那一端的连接；超时值不同，断开时刻不同。
     async fn idle_close_scenario(idle: Duration) -> Duration {
-        let dir = pool_dir(&format!("r07-{}", idle.as_millis()));
+        let (_dir_guard, dir) = pool_dir(&format!("r07-{}", idle.as_millis()));
         let (addr, probe) = spawn_counting().await;
         let pool = test_pool(idle);
         let hops = trusting_hops(addr, &dir);
@@ -2062,9 +2064,7 @@ mod tests {
             eventually(idle + Duration::from_secs(5), || probe.live() == 0).await,
             "放手满 {idle:?} 之后连接应该断开"
         );
-        let elapsed = released.elapsed();
-        let _ = std::fs::remove_dir_all(&dir);
-        elapsed
+        released.elapsed()
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2091,7 +2091,7 @@ mod tests {
     /// 同样算使用者，超时再短也不能在它用着的时候断开。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn holding_only_the_connection_handle_keeps_the_connection_open() {
-        let dir = pool_dir("r07-conn");
+        let (_dir_guard, dir) = pool_dir("r07-conn");
         let (addr, probe) = spawn_counting().await;
         let pool = test_pool(Duration::from_millis(200));
         let hops = trusting_hops(addr, &dir);
@@ -2109,13 +2109,12 @@ mod tests {
             eventually(Duration::from_secs(5), || probe.live() == 0).await,
             "放手后应该断开"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// R07：开着 SFTP 通道（远端编辑器就是这样，不握工厂）时，空闲回收不能把连接关掉；通道关掉之后才回收。
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn an_open_sftp_channel_keeps_the_connection_from_being_reaped() {
-        let dir = pool_dir("r07-sftp");
+        let (_dir_guard, dir) = pool_dir("r07-sftp");
         let addr = crate::test_ssh_server::spawn_sftp().await;
         let pool = test_pool(Duration::from_millis(200));
         let hops = trusting_hops(addr, &dir);
@@ -2141,7 +2140,6 @@ mod tests {
             eventually(Duration::from_secs(5), || watcher.upgrade().is_none()).await,
             "通道关掉之后，连接应该被回收"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 设置页的「连接空闲断开」确实接到了全局连接池。

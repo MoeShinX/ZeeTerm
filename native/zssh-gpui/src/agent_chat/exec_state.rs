@@ -205,10 +205,11 @@ mod tests {
     /// 一边写，另一边的 `data_version` 翻动，面板据此刷新。
     #[test]
     fn a_panel_follows_a_mode_written_through_another_connection() {
-        let dir =
-            std::env::temp_dir().join(format!("zssh-agent-chat-exec-state-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        let _dir_guard = tempfile::Builder::new()
+            .prefix("zssh-agent-chat-exec-state-")
+            .tempdir()
+            .expect("临时目录");
+        let dir = _dir_guard.path().to_path_buf();
         let path = dir.join("zssh.db");
 
         let panel_db = Database::open(&path).expect("面板的库连接");
@@ -231,6 +232,5 @@ mod tests {
         assert_eq!(state.mode, ExecMode::Auto);
 
         drop((panel_db, other_db));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

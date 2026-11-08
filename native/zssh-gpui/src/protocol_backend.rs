@@ -619,11 +619,11 @@ mod tests {
         let (factory, telnet_addr, mut received) = runtime.block_on(async {
             let (telnet_addr, received) = spawn_telnet_server().await;
             let jump_addr = crate::test_ssh_server::spawn_forwarding().await;
-            let known_hosts = std::env::temp_dir().join(format!(
-                "zssh-n1-jump-kh-{}-{}",
-                std::process::id(),
-                jump_addr.port()
-            ));
+            let known_hosts_guard = tempfile::Builder::new()
+                .prefix("zssh-n1-jump-kh-")
+                .tempdir()
+                .expect("临时目录");
+            let known_hosts = known_hosts_guard.path().join("known_hosts");
             let hop = ChainHop {
                 label: "本机跳板机".to_owned(),
                 host: jump_addr.ip().to_string(),
@@ -637,7 +637,6 @@ mod tests {
             let connection = Connection::connect_chain(vec![hop], Arc::new(TrustOnce))
                 .await
                 .expect("连接本机跳板机");
-            let _ = std::fs::remove_file(&known_hosts);
             (
                 SshSessionFactory::from_connection(connection),
                 telnet_addr,
@@ -747,11 +746,11 @@ mod tests {
         let runtime = crate::ssh_backend::runtime().expect("runtime");
         let outcome = runtime.block_on(async {
             let jump_addr = crate::test_ssh_server::spawn_forwarding().await;
-            let known_hosts = std::env::temp_dir().join(format!(
-                "zssh-n1-jump2-kh-{}-{}",
-                std::process::id(),
-                jump_addr.port()
-            ));
+            let known_hosts_guard = tempfile::Builder::new()
+                .prefix("zssh-n1-jump2-kh-")
+                .tempdir()
+                .expect("临时目录");
+            let known_hosts = known_hosts_guard.path().join("known_hosts");
             let hop = ChainHop {
                 label: "本机跳板机".to_owned(),
                 host: jump_addr.ip().to_string(),
@@ -765,7 +764,6 @@ mod tests {
             let connection = Connection::connect_chain(vec![hop], Arc::new(TrustOnce))
                 .await
                 .expect("连接本机跳板机");
-            let _ = std::fs::remove_file(&known_hosts);
             let factory = SshSessionFactory::from_connection(connection);
             // 没有人监听的本机端口。
             let free = {

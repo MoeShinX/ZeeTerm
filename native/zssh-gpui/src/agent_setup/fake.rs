@@ -593,12 +593,14 @@ mod tests {
     #[test]
     fn a_missing_file_or_bad_json_is_reported_not_panicked() {
         assert!(load(std::path::Path::new("no-such-fake-world.json")).is_err());
-        let dir = std::env::temp_dir().join(format!("zssh-g10a-fake-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("目录");
+        let _dir_guard = tempfile::Builder::new()
+            .prefix("zssh-g10a-fake-")
+            .tempdir()
+            .expect("目录");
+        let dir = _dir_guard.path().to_path_buf();
         let file = dir.join("bad.json");
         std::fs::write(&file, "{ not json").expect("写");
         assert!(load(&file).expect_err("坏 JSON").contains("JSON 不对"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

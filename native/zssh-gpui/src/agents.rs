@@ -1863,10 +1863,11 @@ mod tests {
     /// 设置页改了，面板也跟上；谁都不自己缓存一份旧值。
     #[test]
     fn settings_page_and_panel_follow_the_same_exec_mode_in_the_database() {
-        let dir =
-            std::env::temp_dir().join(format!("zssh-agents-exec-sync-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        let _dir_guard = tempfile::Builder::new()
+            .prefix("zssh-agents-exec-sync-")
+            .tempdir()
+            .expect("临时目录");
+        let dir = _dir_guard.path().to_path_buf();
         let path = dir.join("zssh.db");
 
         let page_db = Database::open(&path).expect("设置页的库连接");
@@ -1892,7 +1893,6 @@ mod tests {
         )));
 
         drop((page_db, panel_db));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -2277,7 +2277,11 @@ mod live_tests {
                 password: None,
             })
         });
-        let known_hosts = std::env::temp_dir().join(format!("zssh-f5-kh-{}", std::process::id()));
+        let _known_hosts_guard = tempfile::Builder::new()
+            .prefix("zssh-f5-kh-")
+            .tempdir()
+            .expect("临时目录");
+        let known_hosts = _known_hosts_guard.path().join("known_hosts");
         let hop = ChainHop {
             label: "测试服务器".to_owned(),
             host,
@@ -2360,7 +2364,6 @@ mod live_tests {
             "{} 次采集只能用同一条已认证连接",
             reports.len()
         );
-        let _ = std::fs::remove_file(&known_hosts);
     }
 }
 

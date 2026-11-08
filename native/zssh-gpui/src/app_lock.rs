@@ -1056,8 +1056,9 @@ mod tests {
 
     /// 测试用的临时库：目录随守卫一起删。
     struct TempDb {
-        dir: std::path::PathBuf,
+        // 字段按声明顺序析构：`db` 必须在前，先关库再删目录；否则 Windows 上库文件还开着，目录删不掉。
         db: Database,
+        _dir: tempfile::TempDir,
     }
 
     impl std::ops::Deref for TempDb {
@@ -1067,22 +1068,13 @@ mod tests {
         }
     }
 
-    impl Drop for TempDb {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
-
     fn open_db() -> TempDb {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "zssh-lock-ui-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("临时目录");
-        let db = Database::open(&dir.join("zssh.db")).expect("打开库");
-        TempDb { dir, db }
+        let dir = tempfile::Builder::new()
+            .prefix("zssh-lock-ui-")
+            .tempdir()
+            .expect("临时目录");
+        let db = Database::open(&dir.path().join("zssh.db")).expect("打开库");
+        TempDb { db, _dir: dir }
     }
 
     fn pw(text: &str) -> String {

@@ -245,40 +245,30 @@ pub(super) fn delete(paths: &[String]) -> Vec<(String, Option<String>)> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     use super::super::model::EntryKind;
     use super::{create_file, delete, list_dir, mkdir, move_item, rename};
 
-    /// 测试用的临时目录：Drop 时整个删掉，断言失败也不留垃圾。
-    struct Scratch(PathBuf);
+    /// 测试用的临时目录：随机唯一的名字，Drop 时整个删掉，断言失败也不留垃圾。
+    struct Scratch(tempfile::TempDir);
 
     impl Scratch {
         fn new(name: &str) -> Self {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default();
-            let dir = std::env::temp_dir().join(format!(
-                "zssh-sftp-ops-{name}-{}-{stamp}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&dir).expect("建临时目录");
-            Self(dir)
+            Self(
+                tempfile::Builder::new()
+                    .prefix(&format!("zssh-sftp-ops-{name}-"))
+                    .tempdir()
+                    .expect("建临时目录"),
+            )
         }
 
         fn path(&self) -> &Path {
-            &self.0
+            self.0.path()
         }
 
         fn child(&self, name: &str) -> String {
-            self.0.join(name).display().to_string()
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            self.0.path().join(name).display().to_string()
         }
     }
 

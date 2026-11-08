@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -240,23 +240,21 @@ struct Rig {
     client: BridgeClient,
     host: Arc<NativeBridgeHost>,
     dir: PathBuf,
+    /// 放在最后：字段按声明顺序析构，宿主等先放掉，目录最后删。
+    _guard: tempfile::TempDir,
 }
 
-static NEXT_DIR: AtomicU32 = AtomicU32::new(1);
-
-fn scratch_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "zssh-g10b-{name}-{}-{}",
-        std::process::id(),
-        NEXT_DIR.fetch_add(1, Ordering::SeqCst)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("建临时目录");
-    dir
+/// 随机唯一的临时目录，由 `Rig` 带着，对话结束时整棵删掉。
+fn scratch_dir(name: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("zssh-g10b-{name}-"))
+        .tempdir()
+        .expect("建临时目录")
 }
 
 async fn rig_waiting(name: &str, mode: ExecMode, approval_wait: Duration) -> Rig {
-    let dir = scratch_dir(name);
+    let guard = scratch_dir(name);
+    let dir = guard.path().to_path_buf();
     let mut host_handle = None;
     let tools = ToolChannel::new_with_host(
         |reports| {
@@ -283,6 +281,7 @@ async fn rig_waiting(name: &str, mode: ExecMode, approval_wait: Duration) -> Rig
         client,
         host: host_handle.expect("宿主"),
         dir,
+        _guard: guard,
     }
 }
 

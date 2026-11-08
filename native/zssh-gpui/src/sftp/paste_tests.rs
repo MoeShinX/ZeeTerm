@@ -2,7 +2,7 @@
 // 不写 `use super::*`：父模块 glob 进来的 `gpui_kit::test` 会盖掉内置的 `#[test]` 属性宏。
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -34,28 +34,21 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     crate::ssh_backend::runtime().expect("runtime")
 }
 
-struct Scratch(PathBuf);
+/// 随机唯一的临时目录，Drop 时整个删掉。
+struct Scratch(tempfile::TempDir);
 
 impl Scratch {
     fn new(name: &str) -> Self {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        let dir =
-            std::env::temp_dir().join(format!("zssh-paste-{name}-{}-{stamp}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("建临时目录");
-        Self(dir)
+        Self(
+            tempfile::Builder::new()
+                .prefix(&format!("zssh-paste-{name}-"))
+                .tempdir()
+                .expect("建临时目录"),
+        )
     }
 
     fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        self.0.path()
     }
 }
 

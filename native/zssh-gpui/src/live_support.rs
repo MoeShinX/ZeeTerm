@@ -51,7 +51,8 @@ pub struct LiveSftp {
     pub channel: Arc<SftpChannel>,
     /// 远端专用目录，形如 `/tmp/zssh-live-<用例名>-<进程号>`，用例名由调用方起（带上卡号，方便按卡清理）。
     pub dir: String,
-    known_hosts: std::path::PathBuf,
+    /// 放本机 known_hosts 的临时目录；字段声明在最后，随结构体一起删掉。
+    _known_hosts_dir: tempfile::TempDir,
 }
 
 impl LiveSftp {
@@ -72,8 +73,12 @@ impl LiveSftp {
         let port = env("ZSSH_TEST_PORT")
             .and_then(|raw| raw.parse::<u16>().ok())
             .unwrap_or(22);
-        let known_hosts =
-            std::env::temp_dir().join(format!("zssh-live-kh-{}-{tag}", std::process::id()));
+        // 本机的 known_hosts 放在随机唯一的临时目录里，随结构体一起删掉。
+        let known_hosts_dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-live-kh-{tag}-"))
+            .tempdir()
+            .ok()?;
+        let known_hosts = known_hosts_dir.path().join("known_hosts");
         let hop = ChainHop {
             label: "test server".to_owned(),
             host,
@@ -113,12 +118,11 @@ impl LiveSftp {
                 connection,
                 channel,
                 dir,
-                known_hosts,
+                _known_hosts_dir: known_hosts_dir,
             }),
             Err(message) => {
                 // 连不上是环境问题（共用机可能在封禁、限流），不是代码问题：跳过。
                 println!("跳过 {tag}：{message}");
-                let _ = std::fs::remove_file(&known_hosts);
                 None
             }
         }
@@ -139,7 +143,6 @@ impl Drop for LiveSftp {
                 let _ = RecursiveDelete::new().run(&channel, &dir, |_| {}).await;
             });
         }
-        let _ = std::fs::remove_file(&self.known_hosts);
     }
 }
 
@@ -150,7 +153,8 @@ pub struct LiveShell {
     pub factory: Arc<crate::ssh_backend::SshSessionFactory>,
     /// 远端专用目录，形如 `/tmp/zssh-live-<用例名>-<进程号>`。
     pub dir: String,
-    known_hosts: std::path::PathBuf,
+    /// 放本机 known_hosts 的临时目录；字段声明在最后，随结构体一起删掉。
+    _known_hosts_dir: tempfile::TempDir,
 }
 
 impl LiveShell {
@@ -170,8 +174,12 @@ impl LiveShell {
         let port = env("ZSSH_TEST_PORT")
             .and_then(|raw| raw.parse::<u16>().ok())
             .unwrap_or(22);
-        let known_hosts =
-            std::env::temp_dir().join(format!("zssh-live-kh-{}-{tag}", std::process::id()));
+        // 本机的 known_hosts 放在随机唯一的临时目录里，随结构体一起删掉。
+        let known_hosts_dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-live-kh-{tag}-"))
+            .tempdir()
+            .ok()?;
+        let known_hosts = known_hosts_dir.path().join("known_hosts");
         let hop = ChainHop {
             label: "test server".to_owned(),
             host,
@@ -199,13 +207,12 @@ impl LiveShell {
                     connection,
                     factory,
                     dir: format!("/tmp/zssh-live-{tag}-{}", std::process::id()),
-                    known_hosts,
+                    _known_hosts_dir: known_hosts_dir,
                 })
             }
             Err(message) => {
                 // 连不上是环境问题（共用机可能在封禁、限流），不是代码问题：跳过。
                 println!("跳过 {tag}：{message}");
-                let _ = std::fs::remove_file(&known_hosts);
                 None
             }
         }
@@ -223,6 +230,5 @@ impl Drop for LiveShell {
                     .await;
             });
         }
-        let _ = std::fs::remove_file(&self.known_hosts);
     }
 }

@@ -1089,7 +1089,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_new_data_dir_is_created_private_with_its_missing_parents() {
-        let base = temp_dir("private-new");
+        let (_dir_base, base) = temp_dir("private-new");
         let dir = base.join(".local").join("share").join("ZeeTerm");
         assert_eq!(secure_private_dir(&dir).unwrap(), Tightened::Created);
         assert_eq!(mode_of(&dir), 0o700);
@@ -1097,14 +1097,13 @@ mod tests {
         assert_eq!(mode_of(&base.join(".local")), 0o700);
         // 再来一次什么都不用做。
         assert_eq!(secure_private_dir(&dir).unwrap(), Tightened::Unchanged);
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[cfg(unix)]
     #[test]
     fn an_existing_wide_data_dir_is_narrowed_but_its_parent_is_left_alone() {
         use std::os::unix::fs::PermissionsExt;
-        let base = temp_dir("private-wide");
+        let (_dir_base, base) = temp_dir("private-wide");
         std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o755)).unwrap();
         let dir = base.join("ZeeTerm");
         std::fs::create_dir(&dir).unwrap();
@@ -1122,18 +1121,16 @@ mod tests {
         assert_eq!(secure_private_dir(&dir).unwrap(), Tightened::Unchanged);
         assert_eq!(mode_of(&dir), 0o500);
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[cfg(unix)]
     #[test]
     fn a_file_where_the_data_dir_should_be_is_left_untouched() {
-        let base = temp_dir("private-file");
+        let (_dir_base, base) = temp_dir("private-file");
         let path = base.join("ZeeTerm");
         std::fs::write(&path, b"x").unwrap();
         assert_eq!(secure_private_dir(&path).unwrap(), Tightened::Unchanged);
         assert_eq!(std::fs::read(&path).unwrap(), b"x");
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[cfg(unix)]
@@ -1163,16 +1160,19 @@ mod tests {
         assert!(zenity.iter().any(|arg| arg == "--no-markup"));
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("zssh-settings-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+    fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-settings-{name}-"))
+            .tempdir()
+            .unwrap();
+        let path = dir.path().to_path_buf();
+        (dir, path)
     }
 
     #[test]
     fn round_trips_through_json() {
-        let dir = temp_dir("roundtrip");
+        let (_dir_guard, dir) = temp_dir("roundtrip");
         let path = dir.join("ui-settings.json");
         let settings = UiSettings {
             dark: false,
@@ -1209,7 +1209,7 @@ mod tests {
 
     #[test]
     fn an_old_file_without_the_new_fields_gets_the_0_2_14_defaults() {
-        let dir = temp_dir("old-terminal");
+        let (_dir_guard, dir) = temp_dir("old-terminal");
         let path = dir.join("ui-settings.json");
         std::fs::write(&path, br#"{"font_size": 15.0, "cursor": "underline"}"#).unwrap();
         let loaded = UiSettings::load_from(&path)
@@ -1223,7 +1223,7 @@ mod tests {
 
     #[test]
     fn a_stored_cursor_shape_is_kept_and_a_missing_one_gets_the_new_default() {
-        let dir = temp_dir("cursor-default");
+        let (_dir_guard, dir) = temp_dir("cursor-default");
         let path = dir.join("ui-settings.json");
         std::fs::write(&path, br#"{"font_size": 15.0, "cursor": "block"}"#).unwrap();
         let kept = UiSettings::load_from(&path).expect("旧文件照常读");
@@ -1249,7 +1249,7 @@ mod tests {
 
     #[test]
     fn missing_file_falls_back() {
-        let dir = temp_dir("missing");
+        let (_dir_guard, dir) = temp_dir("missing");
         assert_eq!(UiSettings::load_from(&dir.join("nope.json")), None);
         assert_eq!(
             UiSettings::load_from(&dir.join("nope.json")).unwrap_or_default(),
@@ -1259,7 +1259,7 @@ mod tests {
 
     #[test]
     fn corrupt_file_falls_back() {
-        let dir = temp_dir("corrupt");
+        let (_dir_guard, dir) = temp_dir("corrupt");
         let path = dir.join("ui-settings.json");
         std::fs::write(&path, b"{ not json").unwrap();
         assert_eq!(UiSettings::load_from(&path), None);
@@ -1268,7 +1268,7 @@ mod tests {
     #[test]
     fn a_leftover_external_editor_field_from_a_dev_build_is_ignored() {
         // 外部编辑器按 0.2.14 / R-8 已经移除；开发期写进 ui-settings.json 的字段必须能正常读，不报错。
-        let dir = temp_dir("leftover-external");
+        let (_dir_guard, dir) = temp_dir("leftover-external");
         let path = dir.join("ui-settings.json");
         std::fs::write(
             &path,
@@ -1281,7 +1281,7 @@ mod tests {
 
     #[test]
     fn unknown_fields_and_missing_fields_are_tolerated() {
-        let dir = temp_dir("partial");
+        let (_dir_guard, dir) = temp_dir("partial");
         let path = dir.join("ui-settings.json");
         std::fs::write(&path, br#"{"font_size": 16.0, "future_field": 1}"#).unwrap();
         let settings = UiSettings::load_from(&path).unwrap();
@@ -1355,7 +1355,7 @@ mod tests {
     #[test]
     fn a_saved_choice_is_not_replaced_by_the_new_defaults() {
         // 老文件里存过浅色：升级后仍然是浅色，不会被新的「默认深色」改掉。
-        let dir = temp_dir("keeps-saved-light");
+        let (_dir_guard, dir) = temp_dir("keeps-saved-light");
         let path = dir.join("ui-settings.json");
         std::fs::write(
             &path,
@@ -1371,7 +1371,7 @@ mod tests {
     #[test]
     fn a_saved_right_click_paste_choice_wins_over_the_new_default() {
         // V2-U25 把默认改成关：存过「开」的老用户仍是开，存过「关」的仍是关，只有从没写过这一项的才取新默认。
-        let dir = temp_dir("keeps-saved-right-click");
+        let (_dir_guard, dir) = temp_dir("keeps-saved-right-click");
         let path = dir.join("ui-settings.json");
         std::fs::write(&path, br#"{"right_click_paste": true}"#).unwrap();
         let on = UiSettings::load_from(&path).unwrap().sanitized();
@@ -1489,7 +1489,7 @@ mod tests {
 
     #[test]
     fn save_creates_parent_directory() {
-        let dir = temp_dir("nested");
+        let (_dir_guard, dir) = temp_dir("nested");
         let path = dir.join("a").join("b").join("ui-settings.json");
         UiSettings::default().save_to(&path).unwrap();
         assert!(path.exists());

@@ -365,17 +365,22 @@ mod tests {
         }
     }
 
-    /// 缓存目录里放一个包，返回 (缓存根, 包路径, 内容哈希)。
-    fn cached_package(name: &str, file: &str) -> (PathBuf, PathBuf, String) {
-        let root = std::env::temp_dir().join(format!(
-            "zeeterm-update-linux-glue-{}-{name}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("建缓存目录");
+    /// 缓存目录里放一个包，返回 (目录守卫, 缓存根, 包路径, 内容哈希)。
+    /// 目录名随机唯一，守卫要拿到用例结束，drop 时整棵删掉。
+    fn cached_package(name: &str, file: &str) -> (tempfile::TempDir, PathBuf, PathBuf, String) {
+        let guard = tempfile::Builder::new()
+            .prefix(&format!("zeeterm-update-linux-glue-{name}-"))
+            .tempdir()
+            .expect("建缓存目录");
+        let root = guard.path().to_path_buf();
         let package = root.join(file);
         std::fs::write(&package, b"package bytes").expect("写包");
-        (root, package, zssh_update::sha256_hex(b"package bytes"))
+        (
+            guard,
+            root,
+            package,
+            zssh_update::sha256_hex(b"package bytes"),
+        )
     }
 
     fn job(flavor: Flavor, root: &Path, package: &Path, sha256: &str) -> Job {
@@ -507,7 +512,8 @@ mod tests {
 
     #[test]
     fn a_deb_install_asks_pkexec_once_and_restarts_through_the_usr_bin_command() {
-        let (root, package, sha) = cached_package("deb-ok", "ZeeTerm-2.0.0-linux-x86_64.deb");
+        let (_root_guard, root, package, sha) =
+            cached_package("deb-ok", "ZeeTerm-2.0.0-linux-x86_64.deb");
         let runner = scripted(0, "");
         let outcome = run(
             &job(Flavor::Deb, &root, &package, &sha),
@@ -537,7 +543,7 @@ mod tests {
 
     #[test]
     fn a_failed_root_side_check_is_a_clear_error_not_a_missing_authorization() {
-        let (root, package, sha) =
+        let (_root_guard, root, package, sha) =
             cached_package("deb-root-check", "ZeeTerm-2.0.0-linux-x86_64.deb");
         for (code, wording) in [
             (83, "验证之后被改动"),
@@ -579,7 +585,8 @@ mod tests {
 
     #[test]
     fn a_declined_or_unavailable_authorization_is_not_an_error() {
-        let (root, package, sha) = cached_package("deb-manual", "ZeeTerm-2.0.0-linux-x86_64.deb");
+        let (_root_guard, root, package, sha) =
+            cached_package("deb-manual", "ZeeTerm-2.0.0-linux-x86_64.deb");
         let declined = run(
             &job(Flavor::Deb, &root, &package, &sha),
             &scripted(126, ""),
@@ -604,7 +611,8 @@ mod tests {
 
     #[test]
     fn an_apt_failure_shows_its_output_and_a_changed_package_is_never_installed() {
-        let (root, package, sha) = cached_package("deb-fail", "ZeeTerm-2.0.0-linux-x86_64.deb");
+        let (_root_guard, root, package, sha) =
+            cached_package("deb-fail", "ZeeTerm-2.0.0-linux-x86_64.deb");
         match run(
             &job(Flavor::Deb, &root, &package, &sha),
             &scripted(100, "E: dpkg was interrupted\n"),
@@ -629,7 +637,8 @@ mod tests {
 
     #[test]
     fn a_tar_update_reports_success_manual_fallback_or_failure() {
-        let (root, package, sha) = cached_package("tar", "ZeeTerm-2.0.0-linux-x86_64.tar.gz");
+        let (_root_guard, root, package, sha) =
+            cached_package("tar", "ZeeTerm-2.0.0-linux-x86_64.tar.gz");
         let tar_job = job(Flavor::Tar, &root, &package, &sha);
         let runner = scripted(0, "");
 

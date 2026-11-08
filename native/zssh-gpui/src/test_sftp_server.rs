@@ -377,21 +377,16 @@ impl russh_sftp::server::Handler for Sftp {
     }
 }
 
-/// 临时根目录：Drop 时整个删掉，断言失败也不留垃圾。
-pub struct TempRoot(pub PathBuf);
+/// 临时根目录：随机唯一的名字，Drop 时整个删掉（第二个字段是守卫），断言失败也不留垃圾。
+pub struct TempRoot(pub PathBuf, tempfile::TempDir);
 
 impl TempRoot {
     pub fn new(tag: &str) -> Self {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        let dir = std::env::temp_dir().join(format!(
-            "zssh-fake-sftp-{tag}-{}-{stamp}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).expect("建临时根目录");
-        Self(dir)
+        let guard = tempfile::Builder::new()
+            .prefix(&format!("zssh-fake-sftp-{tag}-"))
+            .tempdir()
+            .expect("建临时根目录");
+        Self(guard.path().to_path_buf(), guard)
     }
 
     pub fn path(&self) -> &Path {
@@ -417,11 +412,5 @@ impl TempRoot {
 
     pub fn exists(&self, relative: &str) -> bool {
         self.0.join(relative).exists()
-    }
-}
-
-impl Drop for TempRoot {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }

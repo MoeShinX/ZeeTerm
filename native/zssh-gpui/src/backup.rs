@@ -1521,17 +1521,19 @@ mod tests {
         }
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("zssh-backup-demo-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("创建临时目录");
-        dir
+    /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+    fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-backup-demo-{name}-"))
+            .tempdir()
+            .expect("创建临时目录");
+        let path = dir.path().to_path_buf();
+        (dir, path)
     }
 
     #[test]
     fn the_keep_default_is_five_and_a_stored_value_wins() {
-        let dir = temp_dir("keep-default");
+        let (_dir_guard, dir) = temp_dir("keep-default");
         // 还没有数据库 / 没设置过：5。
         assert_eq!(read_keep(&dir), 5);
         drop(Database::open(&dir.join("zssh.db")).expect("建库"));
@@ -1568,7 +1570,7 @@ mod tests {
     #[test]
     fn invalid_input_is_not_saved_and_a_valid_one_is() {
         // 界面的保存链路：输入框文字 → parse_keep → write_keep。
-        let dir = temp_dir("keep-input");
+        let (_dir_guard, dir) = temp_dir("keep-input");
         let save = |text: &str| parse_keep(text).and_then(|keep| write_keep(&dir, keep));
         for bad in ["0", "201", "abc"] {
             assert!(save(bad).is_err(), "{bad}");
@@ -1669,7 +1671,7 @@ mod tests {
 
     #[test]
     fn create_list_restore_round_trip() {
-        let dir = temp_dir("round-trip");
+        let (_dir_guard, dir) = temp_dir("round-trip");
         let sealer = TestSealer(0x5a);
 
         {
@@ -1710,8 +1712,6 @@ mod tests {
                 .len(),
             2
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1870,8 +1870,8 @@ mod tests {
 
     #[test]
     fn offline_package_round_trip_merge_and_replace() {
-        let source_dir = temp_dir("offline-source");
-        let target_dir = temp_dir("offline-target");
+        let (_dir_source_dir, source_dir) = temp_dir("offline-source");
+        let (_dir_target_dir, target_dir) = temp_dir("offline-target");
         let source_sealer = TestSealer(0x5a);
         let target_sealer = TestSealer(0x33);
         seed(&source_dir, &["web", "db"]);
@@ -1923,19 +1923,15 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("主密码错误"), "{error}");
         assert_eq!(host_names(&target_dir), vec!["db", "web"]);
-
-        let _ = std::fs::remove_dir_all(&source_dir);
-        let _ = std::fs::remove_dir_all(&target_dir);
     }
 
     #[test]
     fn a_short_export_password_is_refused_by_the_core_too() {
-        let dir = temp_dir("offline-short");
+        let (_dir_guard, dir) = temp_dir("offline-short");
         let error =
             export_offline_to(&dir, &TestSealer(1), "short", &dir.join("a.zssh")).unwrap_err();
         assert!(error.contains("至少"), "{error}");
         assert!(!dir.join("a.zssh").exists(), "失败时不能留下文件");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// D2-01：离线导入不改同步基线，之后的云同步不会把刚导入的记录删掉。
@@ -1948,8 +1944,8 @@ mod tests {
         let cloud = MemoryStorage::new();
         let sealer = TestSealer(0x44);
         let other_sealer = TestSealer(0x45);
-        let this_dir = temp_dir("baseline-this");
-        let other_dir = temp_dir("baseline-other");
+        let (_dir_this_dir, this_dir) = temp_dir("baseline-this");
+        let (_other_dir_guard, other_dir) = temp_dir("baseline-other");
         seed(&this_dir, &["shared"]);
         // 两台电脑各自建的同名主机 uid 不同，会被当成两台；这里用不同的名字。
         seed(&other_dir, &["imported"]);
@@ -2011,15 +2007,12 @@ mod tests {
             cloud_version_before,
             "导入的记录被推上了云端"
         );
-
-        let _ = std::fs::remove_dir_all(&this_dir);
-        let _ = std::fs::remove_dir_all(&other_dir);
     }
 
     /// D2-14：导出先写临时文件再改名；写失败时旧的离线包原样留着。
     #[test]
     fn export_replaces_the_target_atomically_and_leaves_no_temp_file() {
-        let dir = temp_dir("atomic-ok");
+        let (_dir_guard, dir) = temp_dir("atomic-ok");
         let target = dir.join("offline-export.zssh");
         std::fs::write(&target, b"old package").expect("先放一个旧包");
         super::write_atomic(&target, b"new package").expect("原子替换");
@@ -2030,12 +2023,11 @@ mod tests {
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(leftovers, vec!["offline-export.zssh".to_owned()]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_failed_write_keeps_the_old_package_and_cleans_up() {
-        let dir = temp_dir("atomic-fail");
+        let (_dir_guard, dir) = temp_dir("atomic-fail");
         let target = dir.join("offline-export.zssh");
         std::fs::write(&target, b"old package").expect("先放一个旧包");
 
@@ -2062,13 +2054,12 @@ mod tests {
             .filter(|name| name.ends_with(".zssh-tmp"))
             .collect();
         assert!(leftovers.is_empty(), "不能留临时文件：{leftovers:?}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// D2-06：恢复走引擎入口——备份必须在备份目录里，同步基线一并参与。
     #[test]
     fn restore_goes_through_the_engine_checks() {
-        let dir = temp_dir("restore-engine");
+        let (_dir_guard, dir) = temp_dir("restore-engine");
         let sealer = TestSealer(0x5a);
         seed(&dir, &["web"]);
         let info = create_backup_with(&dir, &sealer, "9.9.9").expect("创建备份");
@@ -2100,7 +2091,6 @@ mod tests {
             !dir.join("sync-baseline.bin").exists(),
             "恢复不能凭空写基线"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// D2-06：恢复 / 导入与同步互斥，进行期间安装前检查会拦着更新器。

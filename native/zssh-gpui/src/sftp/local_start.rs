@@ -423,8 +423,11 @@ mod tests {
             }
             return;
         }
-        let base = std::env::temp_dir().join(format!("zssh-userdirs-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let _base_guard = tempfile::Builder::new()
+            .prefix("zssh-userdirs-")
+            .tempdir()
+            .unwrap();
+        let base = _base_guard.path().to_path_buf();
         let home = base.join("home");
         let config = base.join("config");
         std::fs::create_dir_all(&home).unwrap();
@@ -465,15 +468,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(run(), home.join("下载").display().to_string());
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
     fn the_real_resolver_never_creates_the_directories_the_user_picked() {
         // 用临时目录当「自定义」：存在就用，不存在就退回，且不会替用户建目录。
-        let base = std::env::temp_dir().join(format!("zssh-localstart-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
+        let _base_guard = tempfile::Builder::new()
+            .prefix("zssh-localstart-")
+            .tempdir()
+            .unwrap();
+        let base = _base_guard.path().to_path_buf();
         let there = base.join("here");
         std::fs::create_dir_all(&there).unwrap();
         let ok = resolve_real(&plan(
@@ -490,6 +494,5 @@ mod tests {
         ));
         assert!(missing.custom_missing);
         assert!(!gone.exists());
-        let _ = std::fs::remove_dir_all(&base);
     }
 }

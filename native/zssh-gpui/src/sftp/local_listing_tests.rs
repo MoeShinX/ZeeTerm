@@ -370,8 +370,11 @@ fn the_move_dialog_browses_local_folders_through_the_same_bounded_path() {
 
 #[test]
 fn a_real_directory_is_listed_on_a_worker_thread() {
-    let root = std::env::temp_dir().join(format!("zssh-c3-list-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let _root_guard = tempfile::Builder::new()
+        .prefix("zssh-c3-list-")
+        .tempdir()
+        .expect("建临时目录");
+    let root = _root_guard.path().to_path_buf();
     std::fs::create_dir_all(root.join("sub")).expect("建临时目录");
     std::fs::write(root.join("a.txt"), b"hello").expect("写文件");
 
@@ -395,5 +398,4 @@ fn a_real_directory_is_listed_on_a_worker_thread() {
         replies.recv_timeout(WAIT).expect("回报").result.err(),
         Some(ScanError::NotDir)
     );
-    let _ = std::fs::remove_dir_all(&root);
 }

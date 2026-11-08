@@ -2933,10 +2933,11 @@ mod tests {
 
     #[test]
     fn install_plan_is_built_without_running_the_installer() {
-        let root =
-            std::env::temp_dir().join(format!("zssh-update-demo-{}-install", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("创建临时缓存目录");
+        let _root_guard = tempfile::Builder::new()
+            .prefix("zssh-update-demo-install-")
+            .tempdir()
+            .expect("创建临时缓存目录");
+        let root = _root_guard.path().to_path_buf();
         let installer = root.join("Z-SSH_0.3.0_x64-setup.exe");
         std::fs::write(&installer, b"fake installer").expect("写安装包");
 
@@ -2957,8 +2958,6 @@ mod tests {
         assert!(command.contains("/R"));
         assert!(command.contains("/ARGS"));
         assert!(command.contains("--minimized"));
-
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -3368,9 +3367,11 @@ mod tests {
 
     #[test]
     fn oversized_local_file_is_refused_before_reading_it() {
-        let dir = std::env::temp_dir().join(format!("zssh-f2-big-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let _dir_guard = tempfile::Builder::new()
+            .prefix("zssh-f2-big-")
+            .tempdir()
+            .unwrap();
+        let dir = _dir_guard.path().to_path_buf();
         let file = dir.join("big.exe");
         std::fs::write(&file, vec![7u8; 4096]).unwrap();
         let url = reqwest::Url::from_file_path(&file).expect("file 地址");
@@ -3384,7 +3385,6 @@ mod tests {
             |_, _, _| {},
         ));
         assert!(failure_text(result).contains("大小上限"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3490,11 +3490,14 @@ mod tests {
         base64::engine::general_purpose::STANDARD.encode(signed.to_string())
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("zssh-f2-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("创建临时目录");
-        dir
+    /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+    fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-f2-{name}-"))
+            .tempdir()
+            .expect("创建临时目录");
+        let path = dir.path().to_path_buf();
+        (dir, path)
     }
 
     fn signed_package(kp: &minisign::KeyPair, bytes: &[u8]) -> Package {
@@ -3509,7 +3512,7 @@ mod tests {
     #[test]
     fn verified_bytes_are_written_to_a_fresh_hash_named_file() {
         let (kp, pubkey) = keypair();
-        let cache = temp_dir("store");
+        let (_dir_cache, cache) = temp_dir("store");
         let bytes = b"fake nsis installer bytes";
         let package = signed_package(&kp, bytes);
 
@@ -3524,13 +3527,12 @@ mod tests {
         let again =
             verify_and_store(bytes, &package, &pubkey, &cache, "zssh-setup.exe").expect("重下");
         assert_eq!(again.0, path);
-        let _ = std::fs::remove_dir_all(&cache);
     }
 
     #[test]
     fn a_file_planted_at_the_target_is_replaced_not_trusted() {
         let (kp, pubkey) = keypair();
-        let cache = temp_dir("planted");
+        let (_dir_cache, cache) = temp_dir("planted");
         let bytes = b"real installer";
         let package = signed_package(&kp, bytes);
         let dir = cache.join(&zssh_update::sha256_hex(bytes)[..16]);
@@ -3540,13 +3542,12 @@ mod tests {
         let (path, _, _) =
             verify_and_store(bytes, &package, &pubkey, &cache, "zssh-setup.exe").expect("应通过");
         assert_eq!(std::fs::read(path).unwrap(), bytes);
-        let _ = std::fs::remove_dir_all(&cache);
     }
 
     #[test]
     fn unverified_bytes_never_reach_the_cache() {
         let (kp, pubkey) = keypair();
-        let cache = temp_dir("tampered");
+        let (_dir_cache, cache) = temp_dir("tampered");
         let package = signed_package(&kp, b"original");
 
         let err =
@@ -3567,13 +3568,12 @@ mod tests {
             .is_err()
         );
         assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 0);
-        let _ = std::fs::remove_dir_all(&cache);
     }
 
     #[test]
     fn launch_is_refused_when_the_file_changed_after_verification() {
         let (kp, pubkey) = keypair();
-        let cache = temp_dir("swap");
+        let (_dir_cache, cache) = temp_dir("swap");
         let bytes = b"real installer";
         let package = signed_package(&kp, bytes);
         let (path, _, sha256) =
@@ -3597,7 +3597,6 @@ mod tests {
         // 文件没了：同样拒绝。
         std::fs::remove_file(&path).unwrap();
         assert!(launch_if_unchanged(&plan, |_| panic!("不能启动")).is_err());
-        let _ = std::fs::remove_dir_all(&cache);
     }
 
     #[test]
@@ -3605,7 +3604,7 @@ mod tests {
         let _guard = queue_lock();
         let _ = take_pending_install();
         let (kp, pubkey) = keypair();
-        let cache = temp_dir("queued-swap");
+        let (_dir_cache, cache) = temp_dir("queued-swap");
         let bytes = b"real installer";
         let package = signed_package(&kp, bytes);
         let (path, _, sha256) =
@@ -3617,7 +3616,6 @@ mod tests {
         std::fs::write(&path, b"swapped while waiting for quit").unwrap();
         super::run_pending_install();
         assert_eq!(take_pending_install(), None, "队列应已被取走");
-        let _ = std::fs::remove_dir_all(&cache);
     }
 
     // ---- 版本、公钥、更新源 ----

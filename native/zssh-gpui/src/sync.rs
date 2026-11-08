@@ -5825,11 +5825,14 @@ mod protection_tests {
         }
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("zssh-sync-f5-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("创建临时目录");
-        dir
+    /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+    fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-sync-f5-{name}-"))
+            .tempdir()
+            .expect("创建临时目录");
+        let path = dir.path().to_path_buf();
+        (dir, path)
     }
 
     fn host(name: &str) -> HostDraft {
@@ -6006,8 +6009,15 @@ mod protection_tests {
     }
 
     /// 一个配好 WebDAV 桩、记住主密码、开了自动同步的数据目录。
-    fn configured_dir(name: &str, stub: &DavStub, sealer: &TestSealer) -> (PathBuf, Database) {
-        let dir = temp_dir(name);
+    ///
+    /// 返回 `(目录守卫, 目录, 库)`：绑定时守卫写在最前，局部变量按相反顺序析构，
+    /// 所以库先关、目录后删（库文件还开着，Windows 上目录删不掉）。
+    fn configured_dir(
+        name: &str,
+        stub: &DavStub,
+        sealer: &TestSealer,
+    ) -> (tempfile::TempDir, PathBuf, Database) {
+        let (guard, dir) = temp_dir(name);
         let db = Database::open(&dir.join("zssh.db")).expect("打开库");
         service::save_config(&db, sealer, &stub.config()).expect("保存存储设置");
         service::save_master_password(&db, sealer, PASSWORD).expect("记住主密码");
@@ -6020,7 +6030,7 @@ mod protection_tests {
         )
         .expect("开自动同步");
         db.host_save(&host("web")).expect("加主机");
-        (dir, db)
+        (guard, dir, db)
     }
 
     fn corrupt_baseline(dir: &Path) {
@@ -6071,7 +6081,7 @@ mod protection_tests {
         let _serial = Serial::new();
         let stub = DavStub::start();
         let sealer = TestSealer(0x21);
-        let (dir, db) = configured_dir("probe-save", &stub, &sealer);
+        let (_dir_guard, dir, db) = configured_dir("probe-save", &stub, &sealer);
         let runtime = runtime();
         let handle = runtime.handle().clone();
 
@@ -6110,8 +6120,6 @@ mod protection_tests {
             "首次上传用 If-None-Match: *"
         );
         assert!(puts[1].0.is_some(), "更新要带 If-Match: {puts:?}");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -6322,7 +6330,7 @@ mod protection_tests {
         let _serial = Serial::new();
         let stub = DavStub::start();
         let sealer = TestSealer(0x22);
-        let (dir, db) = configured_dir("auto-gates", &stub, &sealer);
+        let (_dir_guard, dir, db) = configured_dir("auto-gates", &stub, &sealer);
         let runtime = runtime();
         let handle = runtime.handle().clone();
         // 每一拍用递增的"现在"，免得内存里的间隔计时把后面的拍挡掉而冒充通过。
@@ -6377,8 +6385,6 @@ mod protection_tests {
         assert!(result.auto);
         assert!(stub.requests() > 0);
         assert!(!stub.package_puts().is_empty());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn load_ready_at_with(db: &Database) -> bool {
@@ -6398,7 +6404,7 @@ mod protection_tests {
         let _serial = Serial::new();
         let stub = DavStub::start();
         let sealer = TestSealer(0x31);
-        let (dir, db) = configured_dir("manual-settle", &stub, &sealer);
+        let (_dir_guard, dir, db) = configured_dir("manual-settle", &stub, &sealer);
         // 本机还没记住主密码、开关是打开的：同步成功后应当写进去。
         service::clear_master_password(&db).expect("清掉记住的主密码");
         assert_eq!(remembered_password(&db, &sealer), None);
@@ -6433,8 +6439,6 @@ mod protection_tests {
         assert_eq!(with_auto_clock(|clock| clock.last_run_at), Some(last.at));
         // 同步本体也确实做了。
         assert!(!stub.package_puts().is_empty());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -6442,7 +6446,7 @@ mod protection_tests {
         let _serial = Serial::new();
         let stub = DavStub::start();
         let sealer = TestSealer(0x32);
-        let (dir, db) = configured_dir("manual-settle-clear", &stub, &sealer);
+        let (_dir_guard, dir, db) = configured_dir("manual-settle-clear", &stub, &sealer);
         assert_eq!(remembered_password(&db, &sealer).as_deref(), Some(PASSWORD));
         let runtime = runtime();
         let handle = runtime.handle().clone();
@@ -6484,8 +6488,6 @@ mod protection_tests {
             receiver.recv().expect("备份完成事件"),
             super::SyncEvent::PostSyncBackupsDone
         ));
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -6493,11 +6495,11 @@ mod protection_tests {
         let _serial = Serial::new();
         let stub = DavStub::start();
         let sealer = TestSealer(0x33);
-        let (dir, db) = configured_dir("manual-settle-fail", &stub, &sealer);
+        let (_dir_guard, dir, db) = configured_dir("manual-settle-fail", &stub, &sealer);
         let runtime = runtime();
         let handle = runtime.handle().clone();
         // 云端是另一台电脑用别的主密码传上去的包：这台用 PASSWORD 同步会因主密码不对失败。
-        let other_dir = temp_dir("manual-settle-fail-other");
+        let (_other_dir_guard, other_dir) = temp_dir("manual-settle-fail-other");
         {
             let other_db = Database::open(&other_dir.join("zssh.db")).expect("另一台电脑的库");
             service::save_config(&other_db, &sealer, &stub.config()).expect("同一个云端");
@@ -6536,9 +6538,6 @@ mod protection_tests {
             "失败不改变本机是否保存主密码"
         );
         assert_eq!(with_auto_clock(|clock| clock.last_run_at), Some(last.at));
-
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&other_dir);
     }
 
     #[test]
@@ -6546,7 +6545,7 @@ mod protection_tests {
         let _serial = Serial::new();
         let stub = DavStub::start();
         let sealer = TestSealer(0x34);
-        let (dir, db) = configured_dir("manual-settle-error", &stub, &sealer);
+        let (_dir_guard, dir, db) = configured_dir("manual-settle-error", &stub, &sealer);
         let report = zssh_core::sync::engine::SyncReport {
             status: SyncStatus::Completed,
             summary: "同步完成".to_owned(),
@@ -6574,8 +6573,6 @@ mod protection_tests {
             .expect("已写好");
         assert_eq!(last, settled.last_result);
         assert_eq!(last.at, 1_900_000_000);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -6583,7 +6580,7 @@ mod protection_tests {
         let _serial = Serial::new();
         let stub = DavStub::start();
         let sealer = TestSealer(0x23);
-        let (dir, db) = configured_dir("enabled-switch", &stub, &sealer);
+        let (_dir_guard, dir, db) = configured_dir("enabled-switch", &stub, &sealer);
 
         // 老用户升级后库里没有这一条：按启用。
         assert!(load_enabled_at(&dir).expect("读取"));
@@ -6601,12 +6598,9 @@ mod protection_tests {
         save_enabled_at(&dir, true).expect("启用");
         assert!(load_enabled_at(&dir).expect("读取"));
         // 库不存在时是默认的"启用"，而且不会为了读它新建库。
-        let empty = temp_dir("enabled-switch-empty");
+        let (_dir_empty, empty) = temp_dir("enabled-switch-empty");
         assert!(load_enabled_at(&empty).expect("读取"));
         assert!(!empty.join("zssh.db").exists());
-
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&empty);
     }
 
     #[test]
@@ -6614,14 +6608,14 @@ mod protection_tests {
         let _serial = Serial::new();
         let stub = DavStub::start();
         let sealer = TestSealer(0x23);
-        let (dir, db) = configured_dir("auto-auth", &stub, &sealer);
+        let (_dir_guard, dir, db) = configured_dir("auto-auth", &stub, &sealer);
         service::set_ready(&db, true).expect("标记已对上");
         // 桩不验登录密码，所以用"云端是另一台电脑用别的主密码传上去的包"来触发
         // WrongPassword，再看调度器是不是只试一次就停。
         let other_password = "another-master-password";
         let runtime = runtime();
         let handle = runtime.handle().clone();
-        let other_dir = temp_dir("auto-auth-other");
+        let (_other_dir_guard, other_dir) = temp_dir("auto-auth-other");
         {
             let other_db = Database::open(&other_dir.join("zssh.db")).expect("另一台电脑的库");
             service::save_config(&other_db, &sealer, &stub.config()).expect("同一个云端");
@@ -6657,9 +6651,6 @@ mod protection_tests {
                 .expect("界面要能看到暂停原因")
                 .contains("主密码")
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&other_dir);
     }
 
     // -- 基线损坏：识别、拦同步、重建 -----------------------------------------
@@ -6669,7 +6660,7 @@ mod protection_tests {
         let _serial = Serial::new();
         let stub = DavStub::start();
         let sealer = TestSealer(0x24);
-        let (dir, db) = configured_dir("baseline", &stub, &sealer);
+        let (_dir_guard, dir, db) = configured_dir("baseline", &stub, &sealer);
         let runtime = runtime();
         let handle = runtime.handle().clone();
 
@@ -6698,7 +6689,6 @@ mod protection_tests {
         SyncEngine::new(&db, &sealer, "x", &dir, None, None)
             .reset_baseline()
             .expect("没有基线时重建也不报错");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // -- D2-09：首次主密码两遍、防误删名字 --------------------------------------
@@ -6726,13 +6716,12 @@ mod protection_tests {
 
     #[test]
     fn ready_flag_is_read_from_the_local_settings() {
-        let dir = temp_dir("ready-flag");
+        let (_dir_guard, dir) = temp_dir("ready-flag");
         assert!(!load_ready_at(&dir), "没有库按没对上处理");
         let db = Database::open(&dir.join("zssh.db")).expect("打开库");
         assert!(!load_ready_at(&dir));
         service::set_ready(&db, true).expect("标记");
         assert!(load_ready_at(&dir));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn plan(names: &[(&str, &str)], deleted_records: usize) -> DeletionPlan {
@@ -6788,7 +6777,7 @@ mod protection_tests {
         let _serial = Serial::new();
         let held = SyncInFlight::acquire(ExclusiveKind::Sync).expect("占住同步权");
         // 在拿到独占权之前就返回，连数据库都不会去打开（这个目录里没有库）。
-        let dir = temp_dir("use-other-busy");
+        let (_dir_guard, dir) = temp_dir("use-other-busy");
         let error = super::use_other_at(&dir, 1).unwrap_err();
         assert!(error.contains("同步正在进行"), "{error}");
         drop(held);
@@ -6797,7 +6786,6 @@ mod protection_tests {
             !error.contains("同步正在进行"),
             "放掉后走到打开数据库那一步: {error}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

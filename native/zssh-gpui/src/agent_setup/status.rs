@@ -1055,8 +1055,12 @@ mod tests {
     /// 和设置页「检测并保存」之后的状态一样；`.cmd` 垫片代替真实的 npm 安装。
     #[tokio::test]
     async fn real_discovery_handles_spaces_chinese_unknown_and_old_versions() {
-        let root = std::env::temp_dir().join(format!("zssh-g10a-发现 测试-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        // 路径里带空格和中文是这个用例要测的部分，所以放在随机唯一的父目录里。
+        let _root_guard = tempfile::Builder::new()
+            .prefix("zssh-g10a-")
+            .tempdir()
+            .expect("临时目录");
+        let root = _root_guard.path().join("发现 测试");
         let tool_dir = root.join("我的 工具").join("bin 目录");
         std::fs::create_dir_all(&tool_dir).expect("建目录");
         let data_dir = root.join("data");
@@ -1148,7 +1152,6 @@ mod tests {
         assert_eq!(status.availability(), Availability::Missing);
         assert!(matches!(status.install, InstallState::Invalid(_)));
         drop(db);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 真实发现，登录 / 本机工具探测换成空实现：这条用例只关心发现，不能去碰用户真实的智能体配置。

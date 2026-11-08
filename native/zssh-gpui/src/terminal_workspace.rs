@@ -5560,14 +5560,23 @@ mod pane_tests {
     }
 
     /// 临时的会话日志目录 + 指向它的设置；每个用例一个目录。
-    fn log_prefs(name: &str) -> (std::path::PathBuf, crate::app_prefs::AppPrefs) {
-        let dir = std::env::temp_dir().join(format!("zssh-pane-log-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn log_prefs(
+        name: &str,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        crate::app_prefs::AppPrefs,
+    ) {
+        let guard = tempfile::Builder::new()
+            .prefix(&format!("zssh-pane-log-{name}-"))
+            .tempdir()
+            .expect("临时目录");
+        let dir = guard.path().to_path_buf();
         let prefs = crate::app_prefs::AppPrefs {
             session_log_dir: dir.display().to_string(),
             ..Default::default()
         };
-        (dir, prefs)
+        (guard, dir, prefs)
     }
 
     /// 日志在自己的线程里写：等文件出现并带上期望的内容（最多 10 秒），返回目录里所有 `.log`。
@@ -5599,7 +5608,7 @@ mod pane_tests {
         let mut pane = Pane::connecting(SIZE, 100, 1, Some(7), pending);
         // 连接期间窗口变小了，也在记录日志。
         pane.resize(Size { rows: 8, cols: 40 });
-        let (dir, prefs) = log_prefs("attach");
+        let (_dir_guard, dir, prefs) = log_prefs("attach");
         assert!(matches!(
             pane.toggle_log_with(&prefs),
             LogOutcome::Started { .. }
@@ -5647,12 +5656,11 @@ mod pane_tests {
             "hello
 "
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn manual_logging_writes_one_file_into_the_settings_directory_and_stop_reports_its_path() {
-        let (dir, prefs) = log_prefs("manual");
+        let (_dir_guard, dir, prefs) = log_prefs("manual");
         let (mut pane, _tx, _sent) = remote_pane();
 
         let started = pane.toggle_log_with(&prefs);
@@ -5692,12 +5700,11 @@ mod pane_tests {
             "one
 "
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn when_the_setting_already_records_everything_the_pane_does_not_open_a_second_log() {
-        let (dir, prefs) = log_prefs("auto");
+        let (_dir_guard, dir, prefs) = log_prefs("auto");
         let (mut pane, _tx, _sent) = remote_pane();
         // 设置里自动开着：连上时挂上的那份。
         let auto = crate::app_prefs::start_session_log(&prefs, "web-1").expect("起日志线程");
@@ -5725,7 +5732,6 @@ mod pane_tests {
 ",
         );
         assert_eq!(files.len(), 1, "同一份字节只写一处：{files:?}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -6319,7 +6325,11 @@ mod live_tests {
         let port = env("ZSSH_TEST_PORT")
             .and_then(|raw| raw.parse::<u16>().ok())
             .unwrap_or(22);
-        let known_hosts = std::env::temp_dir().join(format!("zssh-f1-kh-{}", std::process::id()));
+        let _known_hosts_guard = tempfile::Builder::new()
+            .prefix("zssh-f1-kh-")
+            .tempdir()
+            .expect("临时目录");
+        let known_hosts = _known_hosts_guard.path().join("known_hosts");
         let hop = ChainHop {
             label: "测试服务器".to_owned(),
             host,
@@ -6474,18 +6484,17 @@ mod live_tests {
             screen(&again)
         );
         again.close();
-        let _ = std::fs::remove_file(&known_hosts);
     }
 
     /// 连上进程内的迷你 SSH 服务器（本机回环，不碰任何外部主机）。
     fn local_factory() -> Arc<crate::ssh_backend::SshSessionFactory> {
         let runtime = crate::ssh_backend::runtime().expect("runtime");
         let addr = runtime.block_on(crate::test_ssh_server::spawn());
-        let known_hosts = std::env::temp_dir().join(format!(
-            "zssh-f1-local-kh-{}-{}",
-            std::process::id(),
-            addr.port()
-        ));
+        let known_hosts_guard = tempfile::Builder::new()
+            .prefix("zssh-f1-local-kh-")
+            .tempdir()
+            .expect("临时目录");
+        let known_hosts = known_hosts_guard.path().join("known_hosts");
         let hop = ChainHop {
             label: "本机测试服务器".to_owned(),
             host: addr.ip().to_string(),
@@ -6499,7 +6508,6 @@ mod live_tests {
         let connection = runtime
             .block_on(Connection::connect_chain(vec![hop], Arc::new(TrustOnce)))
             .expect("连接本机测试服务器");
-        let _ = std::fs::remove_file(&known_hosts);
         crate::ssh_backend::SshSessionFactory::from_connection(connection)
     }
 
@@ -7639,8 +7647,11 @@ mod overlay_tests {
             .enable_all()
             .build()
             .expect("运行时");
-        let dir = std::env::temp_dir().join(format!("zssh-u30-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("临时目录");
+        let _dir_guard = tempfile::Builder::new()
+            .prefix("zssh-u30-")
+            .tempdir()
+            .expect("临时目录");
+        let dir = _dir_guard.path().to_path_buf();
         let connect = || {
             let addr = runtime.block_on(crate::test_ssh_server::spawn());
             let connection = runtime.block_on(crate::test_ssh_server::connect_trusting(addr, &dir));
@@ -7702,7 +7713,6 @@ mod overlay_tests {
         failing.quick = Some(quick_spec());
         failing.poll_events();
         assert_eq!(failing.overlay_reason(), Some("连接失败：refused"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

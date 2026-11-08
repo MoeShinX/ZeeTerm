@@ -84,16 +84,16 @@ mod tests {
 
     use super::*;
 
-    fn cache_with_zip(name: &str) -> (PathBuf, PathBuf, String) {
-        let root = std::env::temp_dir().join(format!(
-            "zeeterm-update-portable-glue-{}-{name}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("建缓存目录");
+    /// 返回 (目录守卫, 缓存根, 包路径, 内容哈希)。目录名随机唯一，守卫要拿到用例结束，drop 时整棵删掉。
+    fn cache_with_zip(name: &str) -> (tempfile::TempDir, PathBuf, PathBuf, String) {
+        let guard = tempfile::Builder::new()
+            .prefix(&format!("zeeterm-update-portable-glue-{name}-"))
+            .tempdir()
+            .expect("建缓存目录");
+        let root = guard.path().to_path_buf();
         let package = root.join("ZeeTerm-2.0.0-windows-x64-portable.zip");
         std::fs::write(&package, b"zip bytes").expect("写包");
-        (root, package, zssh_update::sha256_hex(b"zip bytes"))
+        (guard, root, package, zssh_update::sha256_hex(b"zip bytes"))
     }
 
     /// 假的程序位置。用各平台都认的写法拼：`D:\Tools\...` 这种反斜杠路径在 Linux / macOS 上取不出上级目录。
@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn a_verified_package_is_applied_and_the_restart_target_is_the_running_path() {
-        let (root, package, sha) = cache_with_zip("ok");
+        let (_root_guard, root, package, sha) = cache_with_zip("ok");
         let seen = RefCell::new(None);
         let outcome = run(&job(&root, &package, &sha), &|archive, layout| {
             *seen.borrow_mut() = Some((archive.to_path_buf(), layout.clone()));
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn a_package_that_changed_after_verification_is_never_applied() {
-        let (root, package, sha) = cache_with_zip("changed");
+        let (_root_guard, root, package, sha) = cache_with_zip("changed");
         std::fs::write(&package, b"swapped").expect("换包");
         let outcome = run(&job(&root, &package, &sha), &|_, _| {
             panic!("包不对就不能去替换程序文件")
@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn failures_are_shown_and_an_unwritable_folder_points_at_the_release_page() {
-        let (root, package, sha) = cache_with_zip("fail");
+        let (_root_guard, root, package, sha) = cache_with_zip("fail");
         let failed = run(&job(&root, &package, &sha), &|_, _| {
             Err(PortableError::MissingFile("ZeeTerm.exe".into()))
         });

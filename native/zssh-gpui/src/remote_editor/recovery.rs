@@ -346,11 +346,14 @@ mod tests {
     use super::super::remote::testing::{MemBackend, MemFs, block_on};
     use super::*;
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("zssh-recovery-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("建临时目录");
-        dir
+    /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+    fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-recovery-{name}-"))
+            .tempdir()
+            .expect("建临时目录");
+        let path = dir.path().to_path_buf();
+        (dir, path)
     }
 
     fn draft(path: &str, base: &[u8], text: &str) -> EditDraft {
@@ -376,7 +379,7 @@ mod tests {
 
     #[test]
     fn scan_lists_drafts_with_their_host_and_path() {
-        let dir = temp_dir("scan");
+        let (_dir_guard, dir) = temp_dir("scan");
         let item = written(&dir, &draft("/srv/app/a.conf", b"old", "new"));
         assert_eq!(item.host_id, Some(3));
         assert_eq!(item.path.as_deref(), Some("/srv/app/a.conf"));
@@ -385,12 +388,11 @@ mod tests {
         assert!(!item.uncertain);
         assert_eq!(recovery_line(&item), "/srv/app/a.conf");
         assert_eq!(recovery_title(2), "上次有 2 个文件的修改没有上传");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn legacy_drafts_are_listed_but_cannot_be_reuploaded() {
-        let dir = temp_dir("legacy");
+        let (_dir_guard, dir) = temp_dir("legacy");
         let mut old = draft("/srv/app/a.conf", b"old", "new");
         old.host_id = None;
         let file = super::super::drafts::legacy_draft_file_in(&dir, &old.path);
@@ -402,13 +404,12 @@ mod tests {
         let (file, draft) = (&item.file, &item.draft);
         let outcome = block_on(reupload_draft(&backend, file, draft, false));
         assert!(matches!(outcome, Outcome::Failed(_)), "{outcome:?}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 异常退出后的恢复链：远端没变 → 重新上传成功，远端是草稿内容，草稿文件没了。
     #[test]
     fn reupload_sends_the_draft_when_the_remote_is_unchanged() {
-        let dir = temp_dir("reupload");
+        let (_dir_guard, dir) = temp_dir("reupload");
         let base = b"server {\n  listen 80;\n}\n";
         let backend = MemBackend(MemFs::with("/etc/nginx/site.conf", base));
         let item = written(
@@ -427,12 +428,11 @@ mod tests {
         );
         let file = &item.file;
         assert!(!file.exists(), "上传成功后草稿删掉");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn reupload_keeps_the_crlf_and_bom_of_the_remote_file() {
-        let dir = temp_dir("crlf");
+        let (_dir_guard, dir) = temp_dir("crlf");
         let base = b"\xEF\xBB\xBFa\r\nb\r\n";
         let backend = MemBackend(MemFs::with("/srv/win.txt", base));
         let item = written(&dir, &draft("/srv/win.txt", base, "a\nB\n"));
@@ -442,13 +442,12 @@ mod tests {
             backend.0.get("/srv/win.txt").as_deref(),
             Some(&b"\xEF\xBB\xBFa\r\nB\r\n"[..])
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 远端在这期间被改过：不传，草稿原样留着；用户看过后选覆盖才传。
     #[test]
     fn reupload_reports_a_conflict_and_overwrite_then_goes_through() {
-        let dir = temp_dir("conflict");
+        let (_dir_guard, dir) = temp_dir("conflict");
         let base = b"v1\n";
         let backend = MemBackend(MemFs::with("/srv/a.txt", b"edited by someone else\n"));
         let item = written(&dir, &draft("/srv/a.txt", base, "my draft\n"));
@@ -466,23 +465,21 @@ mod tests {
             backend.0.get("/srv/a.txt").as_deref(),
             Some(&b"my draft\n"[..])
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_deleted_remote_file_is_a_conflict_not_a_silent_recreate() {
-        let dir = temp_dir("gone");
+        let (_dir_guard, dir) = temp_dir("gone");
         let backend = MemBackend(MemFs::default());
         let item = written(&dir, &draft("/srv/gone.txt", b"v1", "mine"));
         let outcome = block_on(act_with(&backend, &item, Action::Reupload));
         assert!(matches!(outcome, Outcome::Conflict(_)), "{outcome:?}");
         assert!(backend.0.get("/srv/gone.txt").is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn save_local_exports_without_touching_the_draft_and_discard_removes_it() {
-        let dir = temp_dir("local");
+        let (_dir_guard, dir) = temp_dir("local");
         let item = written(&dir, &draft("/srv/app/a.conf", b"old", "unsaved text"));
         let outcome = act_local(&item, Action::SaveLocal, &dir);
         let Outcome::Done(Some(saved)) = outcome else {
@@ -497,7 +494,6 @@ mod tests {
         assert!(file.exists(), "另存之后草稿还在，等用户确认");
         assert_eq!(act_local(&item, Action::Discard, &dir), Outcome::Done(None));
         assert!(!file.exists());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn server(target: &str, host_key: Option<&str>) -> ServerIdentity {
@@ -510,7 +506,7 @@ mod tests {
     /// W07：草稿记着当初的服务器，现在拨到的是同一台才照常上传。
     #[test]
     fn reupload_to_the_same_server_goes_through() {
-        let dir = temp_dir("same-server");
+        let (_dir_guard, dir) = temp_dir("same-server");
         let base = b"v1\n";
         let backend = MemBackend(MemFs::with("/etc/app.conf", base));
         let mut recorded = draft("/etc/app.conf", base, "v2\n");
@@ -523,7 +519,6 @@ mod tests {
             backend.0.get("/etc/app.conf").as_deref(),
             Some(&b"v2\n"[..])
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 主机记录被改成指向别的机器（或同一地址换了主机密钥）：不上传，远端和草稿都不动，
@@ -549,7 +544,7 @@ mod tests {
             ),
         ];
         for (name, recorded_server, current) in cases {
-            let dir = temp_dir(&format!("blocked-{name}"));
+            let (_dir_guard, dir) = temp_dir(&format!("blocked-{name}"));
             let backend = MemBackend(MemFs::with("/etc/app.conf", base));
             let mut recorded = draft("/etc/app.conf", base, "v2\n");
             recorded.server = recorded_server.clone();
@@ -581,13 +576,12 @@ mod tests {
                 backend.0.get("/etc/app.conf").as_deref(),
                 Some(&b"v2\n"[..])
             );
-            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 
     #[test]
     fn owner_that_cannot_be_kept_blocks_the_reupload_with_a_clear_reason() {
-        let dir = temp_dir("owner");
+        let (_dir_guard, dir) = temp_dir("owner");
         let base = b"v1\n";
         let mem = MemFs::with("/etc/app.conf", base);
         *mem.deny_owner.lock().expect("锁") = true;
@@ -599,6 +593,5 @@ mod tests {
         };
         assert!(message.contains("属主"), "{message}");
         assert_eq!(backend.0.get("/etc/app.conf").as_deref(), Some(&base[..]));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

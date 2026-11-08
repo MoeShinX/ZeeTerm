@@ -271,8 +271,11 @@ fn live_draft_recovery_reupload_checks_conflicts() {
     };
     let runtime = runtime().expect("runtime");
     let channel = Arc::clone(&live.channel);
-    let data = std::env::temp_dir().join(format!("zssh-g09-recover-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&data);
+    let _data_guard = tempfile::Builder::new()
+        .prefix("zssh-g09-recover-")
+        .tempdir()
+        .expect("临时目录");
+    let data = _data_guard.path().to_path_buf();
     let clean = live.path("clean.txt");
     let moved = live.path("moved.txt");
     runtime.block_on(async {
@@ -330,5 +333,4 @@ fn live_draft_recovery_reupload_checks_conflicts() {
             b"stale draft\n"
         );
     });
-    let _ = std::fs::remove_dir_all(&data);
 }

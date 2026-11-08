@@ -25,31 +25,21 @@ use super::{
 };
 use zssh_core::sftp::local::download_target;
 
-/// 测试用的临时目录：Drop 时整个删掉，断言失败也不留垃圾。
-struct ScratchDir(PathBuf);
+/// 测试用的临时目录：随机唯一的名字，Drop 时整个删掉，断言失败也不留垃圾。
+struct ScratchDir(tempfile::TempDir);
 
 impl ScratchDir {
     fn new(name: &str) -> Self {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        let dir = std::env::temp_dir().join(format!(
-            "zssh-sftp-local-{name}-{}-{stamp}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).expect("建临时目录");
-        Self(dir)
+        Self(
+            tempfile::Builder::new()
+                .prefix(&format!("zssh-sftp-local-{name}-"))
+                .tempdir()
+                .expect("建临时目录"),
+        )
     }
 
     fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for ScratchDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        self.0.path()
     }
 }
 

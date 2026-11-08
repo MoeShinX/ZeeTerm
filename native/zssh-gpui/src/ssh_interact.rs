@@ -150,7 +150,7 @@ impl Interactor for Scoped {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
@@ -160,27 +160,21 @@ mod tests {
     use crate::ssh_prompt::{HostKeyButton, button_decision};
     use crate::test_ssh_server;
 
-    /// 临时目录里的 known_hosts；用完整个目录删掉。
-    struct TempDir(PathBuf);
+    /// 临时目录里的 known_hosts；随机唯一的名字，用完整个目录删掉。
+    struct TempDir(tempfile::TempDir);
 
     impl TempDir {
         fn new(tag: &str) -> Self {
-            static COUNTER: AtomicUsize = AtomicUsize::new(0);
-            let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-            let dir =
-                std::env::temp_dir().join(format!("zssh-u29-{tag}-{}-{n}", std::process::id()));
-            let _ = std::fs::create_dir_all(&dir);
-            Self(dir)
+            Self(
+                tempfile::Builder::new()
+                    .prefix(&format!("zssh-u29-{tag}-"))
+                    .tempdir()
+                    .expect("临时目录"),
+            )
         }
 
         fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            self.0.path()
         }
     }
 

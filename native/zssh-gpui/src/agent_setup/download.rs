@@ -212,11 +212,14 @@ mod tests {
         }
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("zssh-g10a-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("建临时目录");
-        dir
+    /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+    fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-g10a-{name}-"))
+            .tempdir()
+            .expect("建临时目录");
+        let path = dir.path().to_path_buf();
+        (dir, path)
     }
 
     fn client() -> reqwest::Client {
@@ -230,7 +233,7 @@ mod tests {
     #[tokio::test]
     async fn a_matching_download_is_verified_extracted_and_the_zip_removed() {
         let (url, server) = serve_once(STUB_ZIP.to_vec(), false).await;
-        let dir = temp_dir("ok");
+        let (_dir_guard, dir) = temp_dir("ok");
         let cancel = AtomicBool::new(false);
         let mut progress = Vec::new();
         let exe = install_release(
@@ -255,13 +258,12 @@ mod tests {
         assert!(!dir.join("opencode-download.zip").exists(), "压缩包要删掉");
         let last = progress.last().copied().expect("至少回调一次进度");
         assert_eq!(last.0, STUB_ZIP.len() as u64);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn a_wrong_digest_stops_before_anything_is_extracted() {
         let (url, server) = serve_once(STUB_ZIP.to_vec(), false).await;
-        let dir = temp_dir("bad-digest");
+        let (_dir_guard, dir) = temp_dir("bad-digest");
         let cancel = AtomicBool::new(false);
         let wrong = "0".repeat(64);
         let err = install_release(
@@ -281,13 +283,12 @@ mod tests {
             !dir.join("opencode-download.zip").exists(),
             "校验失败要删掉下载的文件"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn a_response_bigger_than_the_published_size_is_refused() {
         let (url, server) = serve_once(STUB_ZIP.to_vec(), false).await;
-        let dir = temp_dir("too-big");
+        let (_dir_guard, dir) = temp_dir("too-big");
         let cancel = AtomicBool::new(false);
         // Release 公布的比实际小：服务器给的大小超过了公布值，一个字节都不落盘。
         let err = install_release(
@@ -303,13 +304,12 @@ mod tests {
         assert!(err.contains("超过"), "{err}");
         assert!(!dir.join("opencode-download.zip").exists());
         assert!(!dir.join("opencode.exe").exists());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn cancelling_mid_download_removes_the_partial_file() {
         let (url, server) = serve_once(STUB_ZIP.to_vec(), true).await;
-        let dir = temp_dir("cancel");
+        let (_dir_guard, dir) = temp_dir("cancel");
         let cancel = std::sync::Arc::new(AtomicBool::new(false));
         let flag = std::sync::Arc::clone(&cancel);
         // 收到第一块（进度回调）就取消。
@@ -334,7 +334,6 @@ mod tests {
             "半截文件要删掉"
         );
         assert!(!dir.join("opencode.exe").exists());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 只有一个 `opencode` 条目的小 `.tar.gz`（脚本内容，不是真的程序）。
@@ -348,7 +347,7 @@ mod tests {
     #[tokio::test]
     async fn a_matching_tar_gz_download_is_verified_extracted_and_removed() {
         let (url, server) = serve_once(STUB_TAR_GZ.to_vec(), false).await;
-        let dir = temp_dir("targz-ok");
+        let (_dir_guard, dir) = temp_dir("targz-ok");
         let cancel = AtomicBool::new(false);
         let mut linux = release(&url, STUB_TAR_GZ.len() as u64, STUB_TAR_GZ_SHA256);
         linux.asset_name = download::LINUX_X64_ASSET.to_owned();
@@ -376,13 +375,12 @@ mod tests {
                 .expect("装好的文件能跑 --version");
             assert_eq!(install.version, "opencode 9.9.9");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn a_wrong_digest_on_a_tar_gz_stops_before_extraction() {
         let (url, server) = serve_once(STUB_TAR_GZ.to_vec(), false).await;
-        let dir = temp_dir("targz-bad-digest");
+        let (_dir_guard, dir) = temp_dir("targz-bad-digest");
         let cancel = AtomicBool::new(false);
         let mut linux = release(&url, STUB_TAR_GZ.len() as u64, &"0".repeat(64));
         linux.asset_name = download::LINUX_X64_ASSET.to_owned();
@@ -396,7 +394,6 @@ mod tests {
             !dir.join("opencode-download.tar.gz").exists(),
             "校验失败要删掉下载的文件"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -124,12 +124,11 @@ fn retrying_a_same_host_copy_stays_same_host() {
 /// 旧行的任务号在新引擎里也找不到（它的暂停 / 取消 / 重试不会命中新任务）。
 #[tokio::test(flavor = "multi_thread")]
 async fn reports_of_a_rebuilt_engine_never_land_on_rows_of_the_old_one() {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
-    let dir = std::env::temp_dir().join(format!("zssh-ids-{}-{stamp}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("建临时目录");
+    let _dir_guard = tempfile::Builder::new()
+        .prefix("zssh-ids-")
+        .tempdir()
+        .expect("建临时目录");
+    let dir = _dir_guard.path().to_path_buf();
     let old_file = dir.join("old.bin");
     let new_file = dir.join("new.bin");
     std::fs::write(&old_file, vec![1u8; 10]).expect("写旧文件");
@@ -206,5 +205,4 @@ async fn reports_of_a_rebuilt_engine_never_land_on_rows_of_the_old_one() {
     assert!(!new_engine.cancel(old_id));
     assert!(!new_engine.retry(old_id));
     assert!(!old_engine.cancel(new_id));
-    let _ = std::fs::remove_dir_all(&dir);
 }

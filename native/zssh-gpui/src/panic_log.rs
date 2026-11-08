@@ -206,17 +206,11 @@ mod tests {
         scrub_home, short_path, utc_text,
     };
 
-    fn temp_dir(tag: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or_default();
-        let dir = std::env::temp_dir().join(format!(
-            "zssh-panic-log-{tag}-{}-{nanos}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).expect("建临时目录");
-        dir
+    fn temp_dir(tag: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("zssh-panic-log-{tag}-"))
+            .tempdir()
+            .expect("建临时目录")
     }
 
     #[test]
@@ -295,17 +289,18 @@ mod tests {
 
     #[test]
     fn appending_creates_the_folder_and_keeps_adding() {
-        let dir = temp_dir("append").join("logs");
+        let root = temp_dir("append");
+        let dir = root.path().join("logs");
         append(&dir, "one\n");
         append(&dir, "two\n");
         let text = std::fs::read_to_string(dir.join(FILE_NAME)).expect("读日志");
         assert_eq!(text, "one\ntwo\n");
-        let _ = std::fs::remove_dir_all(dir.parent().expect("上一级"));
     }
 
     #[test]
     fn a_big_log_is_rotated_to_one_old_file() {
-        let dir = temp_dir("rotate");
+        let root = temp_dir("rotate");
+        let dir = root.path().to_path_buf();
         std::fs::write(dir.join(FILE_NAME), vec![b'a'; 100]).expect("写");
         // 没到上限：不动。
         rotate_if_large(&dir, 101);
@@ -321,6 +316,5 @@ mod tests {
             std::fs::read(dir.join(OLD_NAME)).expect("读"),
             vec![b'b'; 120]
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

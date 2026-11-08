@@ -222,8 +222,11 @@ mod tests {
     #[test]
     fn probing_a_live_connection_writes_the_result_once() {
         let runtime = crate::ssh_backend::runtime().expect("runtime");
-        let dir = std::env::temp_dir().join(format!("zssh-u20-os-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("临时目录");
+        let guard = tempfile::Builder::new()
+            .prefix("zssh-u20-os-")
+            .tempdir()
+            .expect("临时目录");
+        let dir = guard.path().to_path_buf();
         let db_path = dir.join("zssh.db");
         let host_id = {
             let db = Database::open(&db_path).expect("开库");
@@ -239,7 +242,6 @@ mod tests {
             .expect("重新开库")
             .host_os_list()
             .expect("读");
-        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(first, Some(Recorded::Changed("debian")));
         assert_eq!(second, Some(Recorded::Unchanged("debian")));
         assert_eq!(stored.get(&host_id).map(String::as_str), Some("debian"));
@@ -249,8 +251,11 @@ mod tests {
     #[test]
     fn a_server_that_refuses_exec_leaves_the_host_unprobed() {
         let runtime = crate::ssh_backend::runtime().expect("runtime");
-        let dir = std::env::temp_dir().join(format!("zssh-u20-os-refuse-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("临时目录");
+        let guard = tempfile::Builder::new()
+            .prefix("zssh-u20-os-refuse-")
+            .tempdir()
+            .expect("临时目录");
+        let dir = guard.path().to_path_buf();
         let db_path = dir.join("zssh.db");
         let host_id = {
             let db = Database::open(&db_path).expect("开库");
@@ -263,7 +268,6 @@ mod tests {
             .expect("重新开库")
             .host_os_list()
             .expect("读");
-        let _ = std::fs::remove_dir_all(&dir);
         assert_ne!(outcome, Some(Recorded::Changed("debian")));
         assert!(stored.is_empty(), "{stored:?}");
     }

@@ -36,17 +36,26 @@ fn runtime() -> tokio::runtime::Runtime {
 
 /// 一台被测的电脑：独立的数据目录和库。
 struct Device {
-    dir: PathBuf,
+    // 字段按声明顺序析构：`db` 必须排在 `_guard` 前面，先关库再删目录；
+    // 在 Drop 里删目录会先于字段析构执行，Windows 上库文件还开着，目录删不掉。
     db: Database,
+    dir: PathBuf,
+    _guard: tempfile::TempDir,
 }
 
 impl Device {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("zssh-g11-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("建目录");
+        let guard = tempfile::Builder::new()
+            .prefix(&format!("zssh-g11-{name}-"))
+            .tempdir()
+            .expect("建目录");
+        let dir = guard.path().to_path_buf();
         let db = Database::open(&dir.join("zssh.db")).expect("打开库");
-        Self { dir, db }
+        Self {
+            db,
+            dir,
+            _guard: guard,
+        }
     }
 
     fn configure(&self, config: &StorageConfig) {
@@ -75,31 +84,22 @@ impl Device {
     }
 }
 
-impl Drop for Device {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-/// 「另一台电脑」的数据目录（每个用例一个，用完删）。
-struct PeerDir(PathBuf);
+/// 「另一台电脑」的数据目录（每个用例一个，随机唯一的名字，用完删）。
+struct PeerDir(tempfile::TempDir);
 
 impl PeerDir {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("zssh-g11-peer-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        Self(dir)
-    }
-}
-
-impl Drop for PeerDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        Self(
+            tempfile::Builder::new()
+                .prefix(&format!("zssh-g11-peer-{name}-"))
+                .tempdir()
+                .expect("建目录"),
+        )
     }
 }
 
 fn peer(server: &StubServer, handle: &tokio::runtime::Handle, kind: &str, op: &str, dir: &PeerDir) {
-    peer_run_at(server, handle, &XorSealer(0x6B), &dir.0, kind, op).expect("另一台电脑");
+    peer_run_at(server, handle, &XorSealer(0x6B), dir.0.path(), kind, op).expect("另一台电脑");
 }
 
 /// 每种存储第一次同步需要的 Gist ID（只有 GitHub 要）。

@@ -741,12 +741,14 @@ mod tests {
         super::read_draft(path, host_id, remote_path).ok().flatten()
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("zssh-edit-drafts-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("建临时目录");
-        dir
+    /// 随机唯一的临时目录；返回的 `TempDir` 要拿到用例结束，drop 时整棵删掉。
+    fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-edit-drafts-{name}-"))
+            .tempdir()
+            .expect("建临时目录");
+        let path = dir.path().to_path_buf();
+        (dir, path)
     }
 
     /// 样例草稿属于主机 7。
@@ -798,7 +800,7 @@ mod tests {
     /// E2：A 主机的草稿，B 主机打开同一个路径时读不到，也不会被删。
     #[test]
     fn a_draft_is_only_read_back_for_its_own_host() {
-        let dir = temp_dir("host-isolation");
+        let (_dir_guard, dir) = temp_dir("host-isolation");
         let path_a = draft_file_in(&dir, 1, "/etc/hosts");
         let path_b = draft_file_in(&dir, 2, "/etc/hosts");
         assert_ne!(path_a, path_b);
@@ -813,13 +815,12 @@ mod tests {
         std::fs::copy(&path_a, &path_b).expect("复制成 B 的文件名");
         assert!(read_draft(&path_b, 2, "/etc/hosts").is_none());
         assert!(path_b.is_file(), "认不出的草稿不能被删");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// E2：旧格式（没有主机 id）的草稿能被认出来，但不会当作任何主机的草稿，更不会被删。
     #[test]
     fn legacy_drafts_are_found_but_never_adopted_or_deleted() {
-        let dir = temp_dir("legacy");
+        let (_dir_guard, dir) = temp_dir("legacy");
         let legacy_path = legacy_draft_file_in(&dir, "/srv/app/main.rs");
         std::fs::create_dir_all(draft_dir_in(&dir)).expect("建草稿目录");
         let json = r#"{"path":"/srv/app/main.rs","base_version":42,"text":"旧草稿","saved_at_unix":1700000000}"#;
@@ -845,13 +846,12 @@ mod tests {
         std::fs::write(&legacy_path, b"{not json").expect("写坏旧草稿");
         assert!(read_legacy_draft(&legacy_path, "/srv/app/main.rs").is_none());
         assert!(legacy_path.is_file());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// E3：旧版本草稿能存成本地文件，内容原样，重名不覆盖。
     #[test]
     fn stale_drafts_export_to_new_local_files_without_overwriting() {
-        let dir = temp_dir("export");
+        let (_dir_guard, dir) = temp_dir("export");
         let mut draft = sample_draft("旧版本里的改动\n第二行");
         draft.path = "/srv/app/CON.txt".to_owned();
         let first = export_recovered(&dir, &draft).expect("第一次导出");
@@ -873,7 +873,6 @@ mod tests {
             assert!(name.starts_with("CON.txt."), "{name}");
         }
         assert_eq!(first.parent(), Some(dir.join("edit-recovered").as_path()));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -935,7 +934,7 @@ mod tests {
 
     #[test]
     fn draft_round_trips_through_an_atomic_write() {
-        let dir = temp_dir("roundtrip");
+        let (_dir_guard, dir) = temp_dir("roundtrip");
         let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
         let draft = sample_draft("未保存的内容\n");
 
@@ -954,12 +953,11 @@ mod tests {
         assert!(read_draft(&path, HOST, "/srv/app/other.rs").is_none());
         assert!(path.is_file());
         assert_eq!(read_draft(&path, HOST, "/srv/app/main.rs"), Some(draft));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn empty_draft_text_is_still_a_draft() {
-        let dir = temp_dir("empty");
+        let (_dir_guard, dir) = temp_dir("empty");
         let path = draft_file_in(&dir, HOST, "/srv/app/empty.txt");
         let draft = EditDraft {
             path: "/srv/app/empty.txt".to_owned(),
@@ -972,12 +970,11 @@ mod tests {
         };
         write_draft(&path, &draft).expect("写空草稿");
         assert_eq!(read_draft(&path, HOST, "/srv/app/empty.txt"), Some(draft));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn broken_drafts_are_ignored_and_removed() {
-        let dir = temp_dir("broken");
+        let (_dir_guard, dir) = temp_dir("broken");
         let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
         std::fs::create_dir_all(draft_dir_in(&dir)).expect("建草稿目录");
 
@@ -1000,12 +997,11 @@ mod tests {
 
         // 文件不存在：安静地当作没有。
         assert!(read_draft(&path, HOST, "/srv/app/main.rs").is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn draft_writer_delete_after_save_leaves_no_file() {
-        let base = temp_dir("writer-delete");
+        let (_dir_base, base) = temp_dir("writer-delete");
         let path = draft_file_in(&base, HOST, "/srv/app/main.rs");
         let writer = DraftWriter::spawn();
 
@@ -1017,12 +1013,11 @@ mod tests {
         );
 
         assert!(!path.exists(), "Save 之后入队的 Delete 必须生效");
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
     fn draft_writer_keeps_only_the_latest_save() {
-        let base = temp_dir("writer-latest");
+        let (_dir_base, base) = temp_dir("writer-latest");
         let path = draft_file_in(&base, HOST, "/srv/app/main.rs");
         let writer = DraftWriter::spawn();
 
@@ -1038,7 +1033,6 @@ mod tests {
         );
 
         assert_eq!(read_draft(&path, HOST, "/srv/app/main.rs"), Some(newer));
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1097,7 +1091,7 @@ mod tests {
     /// 保存成功只删「不晚于那次保存」的草稿：保存期间继续输入写下的更新草稿必须留着。
     #[test]
     fn saving_deletes_only_drafts_that_are_not_newer_than_the_save() {
-        let dir = temp_dir("rev-delete");
+        let (_dir_guard, dir) = temp_dir("rev-delete");
         let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
         write_draft(&path, &at_revision("typed during the save", 9)).expect("写");
         remove_draft_up_to(&path, 5);
@@ -1106,7 +1100,6 @@ mod tests {
         assert!(!path.exists(), "不晚于保存的草稿要删掉");
         // 文件本来就不在：安静。
         remove_draft_up_to(&path, 9);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1151,7 +1144,7 @@ mod tests {
 
     #[test]
     fn the_writer_applies_delete_up_to_in_order_with_saves() {
-        let base = temp_dir("rev-writer");
+        let (_dir_base, base) = temp_dir("rev-writer");
         let path = draft_file_in(&base, HOST, "/srv/app/main.rs");
         let writer = DraftWriter::spawn();
         // 第 5 次保存成功前后的一串任务：写草稿 5、保存成功（删到 5）、保存期间又打字写草稿 6。
@@ -1167,12 +1160,11 @@ mod tests {
         writer.send(DraftJob::DeleteUpTo(path.clone(), 6));
         assert!(writer.flush(Duration::from_secs(5)));
         assert!(!path.exists());
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
     fn listing_finds_every_readable_draft_newest_first_and_skips_junk() {
-        let base = temp_dir("list");
+        let (_dir_base, base) = temp_dir("list");
         let first = draft_file_in(&base, HOST, "/srv/a.txt");
         let second = draft_file_in(&base, HOST + 1, "/srv/b.txt");
         let mut older = sample_draft("a");
@@ -1197,7 +1189,6 @@ mod tests {
         // 只读：坏文件没有被删。
         assert!(draft_dir_in(&base).join("junk.json").exists());
         assert!(list_drafts(&base.join("nope")).is_empty());
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     // ---- S01：草稿正文加密落盘 ----
@@ -1239,7 +1230,7 @@ mod tests {
     /// S01：新写的草稿文件里找不到正文（连远端路径也不露），读回来一字不差。
     #[test]
     fn a_new_draft_file_holds_no_plaintext() {
-        let dir = temp_dir("sealed-write");
+        let (_dir_guard, dir) = temp_dir("sealed-write");
         let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
         let draft = sample_draft(SECRET_BODY);
         write_draft(&path, &draft).expect("写草稿");
@@ -1260,13 +1251,12 @@ mod tests {
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(leftovers.len(), 1, "{leftovers:?}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// S01：旧版本留下的明文草稿照常读出来，读到之后就地改写成加密格式，再读还是同样的内容。
     #[test]
     fn a_plaintext_draft_from_an_older_version_is_read_then_rewritten_encrypted() {
-        let dir = temp_dir("sealed-migrate");
+        let (_dir_guard, dir) = temp_dir("sealed-migrate");
         let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
         std::fs::create_dir_all(draft_dir_in(&dir)).expect("建草稿目录");
         let draft = sample_draft(SECRET_BODY);
@@ -1287,13 +1277,12 @@ mod tests {
             Some(draft),
             "改写后内容不变"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// S01：启动时的恢复扫描也会把明文草稿改写成加密格式，并且列得出来。
     #[test]
     fn the_startup_scan_rewrites_plaintext_drafts_too() {
-        let dir = temp_dir("sealed-scan");
+        let (_dir_guard, dir) = temp_dir("sealed-scan");
         let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
         std::fs::create_dir_all(draft_dir_in(&dir)).expect("建草稿目录");
         let draft = sample_draft(SECRET_BODY);
@@ -1305,14 +1294,13 @@ mod tests {
         let raw = std::fs::read(&path).expect("读回");
         assert!(raw.starts_with(SEALED_MAGIC));
         assert!(!contains(&raw, "hunter2"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// S01：别的用户 / 别的电脑保存的草稿解不开：给清楚的错误，不崩，不删，不改；
     /// 恢复扫描把它单独报出来；挪到一边之后，新草稿能写在原来的位置，旧的原样还在。
     #[test]
     fn a_draft_another_user_cannot_decrypt_is_reported_clearly_and_kept() {
-        let dir = temp_dir("sealed-other-user");
+        let (_dir_guard, dir) = temp_dir("sealed-other-user");
         let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
         write_draft(&path, &sample_draft(SECRET_BODY)).expect("写草稿");
         let before = std::fs::read(&path).expect("读原始字节");
@@ -1357,13 +1345,12 @@ mod tests {
             },
         );
         assert!(matches!(loaded, Loaded::Draft(draft) if draft.text == SECRET_BODY));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// S01：加密文件被改坏：也是「解不开」的清楚错误，不是崩溃，也不会被当成坏文件删掉。
     #[test]
     fn a_damaged_encrypted_draft_is_reported_and_never_deleted() {
-        let dir = temp_dir("sealed-damaged");
+        let (_dir_guard, dir) = temp_dir("sealed-damaged");
         let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
         write_draft(&path, &sample_draft(SECRET_BODY)).expect("写草稿");
         let mut raw = std::fs::read(&path).expect("读");
@@ -1377,13 +1364,12 @@ mod tests {
             super::read_draft(&path, HOST, "/srv/app/main.rs").expect_err("改坏的加密草稿读不了");
         assert!(error.to_string().contains("无法解密"));
         assert_eq!(std::fs::read(&path).unwrap(), raw, "解不开的不能删");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// S01：加密失败就不写——不退回明文，也不留临时文件。
     #[test]
     fn when_encryption_fails_nothing_is_written() {
-        let dir = temp_dir("sealed-seal-fails");
+        let (_dir_guard, dir) = temp_dir("sealed-seal-fails");
         let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
         let error = write_draft_with(&SealFails, &path, &sample_draft(SECRET_BODY))
             .expect_err("加密失败要报错");
@@ -1393,13 +1379,12 @@ mod tests {
             .map(|entries| entries.count())
             .unwrap_or(0);
         assert_eq!(leftovers, 0, "连临时文件都不能有");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// S01：保存成功后的清理删不掉「读不出修订号」的加密草稿（可能是别人的），也不会因此崩。
     #[test]
     fn cleanup_after_a_save_leaves_a_draft_it_cannot_decrypt() {
-        let dir = temp_dir("sealed-cleanup");
+        let (_dir_guard, dir) = temp_dir("sealed-cleanup");
         let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
         std::fs::create_dir_all(draft_dir_in(&dir)).expect("建草稿目录");
         let mut foreign = SEALED_MAGIC.to_vec();
@@ -1407,17 +1392,15 @@ mod tests {
         std::fs::write(&path, &foreign).expect("写别人的草稿");
         remove_draft_up_to(&path, 5);
         assert_eq!(std::fs::read(&path).unwrap(), foreign);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// S01：加密格式比明文 JSON 稍大；贴着上限、全是要转义的字符的草稿也不能被当成"太大"删掉。
     #[test]
     fn a_maximum_size_draft_with_heavy_escaping_still_reads_back() {
-        let dir = temp_dir("sealed-max");
+        let (_dir_guard, dir) = temp_dir("sealed-max");
         let path = draft_file_in(&dir, HOST, "/srv/app/main.rs");
         let draft = sample_draft(&"\n".repeat(MAX_BYTES));
         write_draft(&path, &draft).expect("写草稿");
         assert_eq!(read_draft(&path, HOST, "/srv/app/main.rs"), Some(draft));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

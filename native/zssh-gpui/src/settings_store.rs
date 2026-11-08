@@ -574,11 +574,14 @@ mod tests {
     use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn temp_path(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("zssh-store-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join("ui-settings.json")
+    /// 随机唯一的临时目录里的设置文件路径；`TempDir` 要拿到用例结束，drop 时整棵删掉。
+    fn temp_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("zssh-store-{name}-"))
+            .tempdir()
+            .unwrap();
+        let path = dir.path().join("ui-settings.json");
+        (dir, path)
     }
 
     fn sized(font_size: f32) -> UiSettings {
@@ -643,7 +646,7 @@ mod tests {
 
     #[test]
     fn dropping_the_writer_writes_what_is_pending() {
-        let path = temp_path("drop");
+        let (_dir_path, path) = temp_path("drop");
         let writer = SettingsWriter::to_file(path.clone());
         writer.submit(sized(18.0));
         drop(writer);
@@ -876,7 +879,7 @@ mod tests {
     /// 重启（重新读盘）后磁盘上也一致；每个窗口的修改都不会被另一个窗口手里的旧副本覆盖。
     #[test]
     fn three_windows_alternating_edits_agree_in_memory_and_after_a_restart() {
-        let path = temp_path("three-windows");
+        let (_dir_path, path) = temp_path("three-windows");
         let writer = SettingsWriter::to_file(path.clone());
         let store = Rc::new(RefCell::new(SettingsStore::new(
             UiSettings::default(),
@@ -937,7 +940,7 @@ mod tests {
     /// 它改回去；即使系统明暗来回变，手动选的深色仍是深色，磁盘上也是。
     #[test]
     fn a_manual_theme_survives_system_theme_changes_and_restarts() {
-        let path = temp_path("manual-theme");
+        let (_dir_path, path) = temp_path("manual-theme");
         let writer = SettingsWriter::to_file(path.clone());
         let store = Rc::new(RefCell::new(SettingsStore::new(
             UiSettings::default(),

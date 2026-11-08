@@ -597,8 +597,12 @@ mod tests {
 
     #[test]
     fn a_session_log_is_only_opened_when_enabled_and_writes_plain_text() {
-        let dir = std::env::temp_dir().join(format!("zssh-prefs-log-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        // 日志目录要「还不存在」（下面断言默认关时不建文件），所以放在随机目录的子目录里。
+        let guard = tempfile::Builder::new()
+            .prefix("zssh-prefs-log-")
+            .tempdir()
+            .unwrap();
+        let dir = guard.path().join("logs");
         let mut p = AppPrefs {
             session_log_dir: dir.display().to_string(),
             ..AppPrefs::default()
@@ -644,7 +648,6 @@ mod tests {
                 .any(|line| line.starts_with("blocked-host-") && line.contains("建不了日志文件")),
             "{lines:?}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

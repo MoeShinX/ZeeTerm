@@ -71,6 +71,8 @@ rand = "0.10"
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
 # 进程内 SFTP 服务器夹具（src/test_sftp_server.rs、test_ssh_server.rs 的 SFTP 部分，测试和 examples/fake_sftp_server.rs 共用）。
 russh-sftp = "3.0"
+# 测试用的随机唯一临时目录（drop 时清理）。
+tempfile = "3"
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3"
