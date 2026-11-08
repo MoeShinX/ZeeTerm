@@ -780,7 +780,14 @@ impl FileEndpoint for LocalEndpoint {
                 .ok()
                 .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|duration| duration.as_secs().min(u64::from(u32::MAX)) as u32);
-            // 本地 → 远端：只读给 0o444，其余给 0o644（远端服务器会按 umask 处理）。
+            // Unix：给真实的权限位，「保留权限」才有意义（0600 的私钥不能被放宽成 0644，
+            // 0755 的脚本不能丢执行位）。只取 `0o777`，不带 setuid / setgid / sticky：这些位
+            // 带到另一台机器（上传）或另一个位置（复制）上会变成提权入口，而且很多 SFTP 服务器
+            // 本来也会拒绝或忽略它们；`download_mode` 对落到本地的文件同样一律不带。
+            #[cfg(unix)]
+            let permissions = Some(meta.permissions().mode() & 0o777);
+            // Windows 只有「只读」一位有意义：只读给 0o444，其余给 0o644（远端服务器会按 umask 处理）。
+            #[cfg(not(unix))]
             let permissions = Some(if meta.permissions().readonly() {
                 0o444
             } else {
@@ -1062,9 +1069,78 @@ mod tests {
         );
         reader.close().await.unwrap();
 
+        // Unix 上读到的是文件真实的权限位（不再按「只读与否」合成），所以先把它设成确定值。
+        #[cfg(unix)]
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
         let (mtime, permissions) = endpoint.attributes().await.unwrap();
         assert!(mtime.is_some(), "本地文件有修改时间");
+        #[cfg(unix)]
+        assert_eq!(permissions, Some(0o640));
+        #[cfg(not(unix))]
         assert_eq!(permissions, Some(0o644));
+    }
+
+    /// W08：开了「保留权限」，上传 / 本地复制读到的源权限必须是真实值：
+    /// 0600 的私钥不能被报成 0644，0755 的脚本不能丢执行位，特殊位不带出去。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_attributes_report_the_real_unix_mode() {
+        let dir = crate::test_util::TestDir::new("endpoint-real-mode");
+        for (mode, expected) in [
+            (0o600, 0o600),
+            (0o755, 0o755),
+            (0o400, 0o400),
+            (0o664, 0o664),
+            // setuid 不带（setgid / sticky 受文件系统和组成员限制，不在这里设）。
+            (0o4755, 0o755),
+        ] {
+            let path = dir.join(format!("m{mode:o}"));
+            std::fs::write(&path, b"x").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            if std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777 != mode {
+                eprintln!("跳过 {mode:o}：这个文件系统不接受这组权限位");
+                continue;
+            }
+            let (_, permissions) = LocalEndpoint::new(&path).attributes().await.unwrap();
+            assert_eq!(permissions, Some(expected), "{mode:o}");
+        }
+    }
+
+    /// W08：本地复制（或上传）开着「保留权限」的完整一步：读源权限 → 写到目标上。
+    /// 目标权限 = 源权限收窄到 umask 允许的范围（私钥仍是 0600，脚本的属主执行位保住），
+    /// 而不是被合成的 0644 覆盖。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn preserving_permissions_keeps_private_and_executable_modes() {
+        let dir = crate::test_util::TestDir::new("endpoint-preserve-mode");
+        for source_mode in [0o600, 0o755, 0o700] {
+            let from = dir.join(format!("from{source_mode:o}"));
+            std::fs::write(&from, b"x").unwrap();
+            std::fs::set_permissions(&from, std::fs::Permissions::from_mode(source_mode)).unwrap();
+            let to = dir.join(format!("to{source_mode:o}"));
+            std::fs::write(&to, b"x").unwrap();
+            std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+            let (_, permissions) = LocalEndpoint::new(&from).attributes().await.unwrap();
+            LocalEndpoint::new(&to)
+                .set_attributes(None, permissions)
+                .await
+                .unwrap();
+
+            let got = std::fs::metadata(&to).unwrap().permissions().mode() & 0o7777;
+            assert_eq!(
+                got,
+                local::download_mode(Some(source_mode), local::process_umask()),
+                "{source_mode:o}"
+            );
+            // 不比源宽（私钥不会变成 0644）；属主执行位保住。
+            assert_eq!(got & !source_mode, 0, "{source_mode:o} -> {got:o}");
+            assert_eq!(
+                got & 0o100,
+                source_mode & 0o100,
+                "{source_mode:o} -> {got:o}"
+            );
+        }
     }
 
     // ---- F04：本地覆盖是原子替换、临时文件认主、同目标互斥 ----

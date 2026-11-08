@@ -806,14 +806,55 @@ pub fn download_mode(remote: Option<u32>, umask: u32) -> u32 {
     mode | 0o400
 }
 
-/// 当前进程的 umask（Linux 读 `/proc/self/status` 的 `Umask:` 行；读不到按最常见的 `022`）。
+/// 实在确定不了 umask 时用的保守值：只给属主留权限。
+///
+/// 为什么不是常见的 `022`：这个值只会被拿来「收窄」下载 / 复制出来的文件权限，猜窄了顶多是用户
+/// 想要的 0644 变成 0600（自己还能读写、再 chmod 即可）；猜宽了（真实 umask 是 077）则会把
+/// 私钥这类文件放宽给同组和其他用户，不可逆。无法确定时不扩大权限。
+#[cfg(unix)]
+const FALLBACK_UMASK: u32 = 0o077;
+
+/// 当前进程的 umask。
+///
+/// 依次：Linux 读 `/proc/self/status` 的 `Umask:` 行；读不到（macOS / BSD 没有 procfs，或被容器
+/// 隔离了）就让内核替我们算，见 [`probe_umask`]；还是不行用 [`FALLBACK_UMASK`]。
 /// 不用 `umask(2)`：它只能「设置并取回旧值」，进程里别的线程此刻建的文件会被短暂改写权限。
 #[cfg(unix)]
 pub fn process_umask() -> u32 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|status| parse_umask(&status))
-        .unwrap_or(0o022)
+        .or_else(probe_umask)
+        .unwrap_or(FALLBACK_UMASK)
+}
+
+/// 让内核告诉我们 umask：在临时目录里独占创建一个空文件、请求 `0777`，内核实际给的权限就是
+/// `0777 & !umask`，反推即得（执行位也在内，`download_mode` 要用）。
+///
+/// 没有 `umask(2)` 的「设置再恢复」那种多线程竞态；代价是一次建 + 删空文件，只在传输收尾时调用。
+/// 建不出来（临时目录不可写等）返回 `None`。
+#[cfg(unix)]
+fn probe_umask() -> Option<u32> {
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let path = std::env::temp_dir().join(format!(
+        ".zssh-umask-probe-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    // `create_new` = O_EXCL：名字被人预先占了（含软链接）就失败，不会跟随去改别的文件。
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o777)
+        .open(&path)
+        .ok()?;
+    let mode = file.metadata().ok().map(|meta| meta.permissions().mode());
+    drop(file);
+    let _ = std::fs::remove_file(&path);
+    mode.map(|mode| !mode & 0o777)
 }
 
 /// 从 `/proc/self/status` 的内容里找 `Umask:\t0022`。
@@ -1688,6 +1729,33 @@ mod tests {
         assert_eq!(parse_umask("Umask:\t077"), Some(0o077));
         assert_eq!(parse_umask("Name:\tx\n"), None);
         assert_eq!(parse_umask("Umask:\tzzz"), None);
+    }
+
+    /// 内核反推出来的 umask 和 `/proc` 里读到的一致（Linux 上两条路径都能走通，可以互相印证）；
+    /// 其它 Unix（macOS）没有 procfs，只确认探测本身能给出落在权限位范围内的值。
+    #[cfg(unix)]
+    #[test]
+    fn the_kernel_probe_reports_the_real_umask() {
+        let Some(probed) = probe_umask() else {
+            eprintln!("跳过：临时目录不可写，探测不了 umask");
+            return;
+        };
+        assert!(probed <= 0o777);
+        #[cfg(target_os = "linux")]
+        {
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            assert_eq!(parse_umask(&status), Some(probed));
+        }
+    }
+
+    /// 无法确定 umask 时的兜底只给属主权限：不能放宽下载 / 复制出来的文件。
+    #[cfg(unix)]
+    #[test]
+    fn the_fallback_umask_never_widens_a_download() {
+        assert_eq!(download_mode(Some(0o100600), FALLBACK_UMASK), 0o600);
+        assert_eq!(download_mode(Some(0o100644), FALLBACK_UMASK), 0o600);
+        assert_eq!(download_mode(Some(0o100755), FALLBACK_UMASK), 0o700);
+        assert_eq!(download_mode(None, FALLBACK_UMASK), 0o600);
     }
 
     #[cfg(target_os = "linux")]
