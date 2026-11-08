@@ -13,7 +13,7 @@
 //! 算命中；`~`、`$HOME`、`${HOME}` 当作普通的家目录写法。纯 `*` / `?` 的段没有任何固定
 //! 字符，不去猜（否则 `ls *` 也要问），这是已知的、有意的缺口。
 
-use super::safety::{split_segments, tokenize_marked};
+use super::safety::{split_segments, tokenize_redirects, Parsed};
 
 /// 路径段规则：连续几段依次匹配。`last_is_prefix` 为真时最后一段按前缀匹配
 /// （`shadow` 也认 `shadow-` 这个备份，`.npmrc` 也认 `.npmrc.bak`）；其余段要整段相等。
@@ -157,19 +157,23 @@ pub fn sensitive_file_path(path: &str) -> Option<SensitiveHit> {
 pub fn sensitive_path_in_command(command: &str) -> Option<SensitiveHit> {
     for segment in split_segments(command) {
         // 引号没配平：交给 `is_read_only` 去拒，这里保守按命中。
-        let Ok(words) = tokenize_marked(&segment) else {
+        let Ok(Parsed { words, redirects }) = tokenize_redirects(&segment) else {
             return Some(SensitiveHit {
                 path: segment.trim().to_owned(),
                 exact: false,
             });
         };
-        let Some(name) = words.first().map(|word| word.text.as_str()) else {
-            continue;
-        };
-        if NON_PATH_COMMANDS.contains(&name) {
-            continue;
+        // 重定向要分出来再看：`cat</etc/shadow` 的命令名是 `cat`、`/etc/shadow` 是重定向目标，
+        // 并成一个词的话整串被当成命令名，路径就漏检了。
+        if let Some(name) = words.first().map(|word| word.text.as_str()) {
+            if NON_PATH_COMMANDS.contains(&name) {
+                continue;
+            }
         }
-        for word in words.iter().skip(1) {
+        let targets = redirects
+            .iter()
+            .filter_map(|redirect| redirect.target.as_ref());
+        for word in words.iter().skip(1).chain(targets) {
             if let Some(hit) = check_word(&word.text, word.expands) {
                 return Some(hit);
             }

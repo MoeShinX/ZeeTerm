@@ -49,17 +49,36 @@ fn assess_into(command: &str, depth: u8, reasons: &mut Vec<Rule>) {
 }
 
 fn assess_segment(segment: &str, depth: u8, reasons: &mut Vec<Rule>) {
-    let mut tokens = match tokenize(segment) {
-        Ok(tokens) => tokens,
+    // 重定向要从词里分出来：`reboot>/dev/null` 的命令名是 `reboot`，不是整串
+    // （否则 basename 取到 `null`，危险规则一条都对不上）。
+    let parsed = match tokenize_redirects(segment) {
+        Ok(parsed) => parsed,
         Err(()) => {
             push_reason(reasons, UNPAIRED_QUOTES);
             return;
         }
     };
-    if tokens.is_empty() {
+    if parsed.words.is_empty() && parsed.redirects.is_empty() {
         return;
     }
     scan_redirects(segment, reasons);
+    // 重定向目标不是命令参数，但 sudoers / sysrq 这两条是看名字的，目标也要过一遍。
+    let targets: Vec<&str> = parsed
+        .redirects
+        .iter()
+        .filter_map(|redirect| redirect.target.as_ref())
+        .map(|target| target.text.as_str())
+        .collect();
+    if targets.iter().any(|t| t.contains("sudoers")) {
+        push_reason(reasons, SUDOERS_FILE);
+    }
+    if targets.iter().any(|t| t.contains("sysrq")) {
+        push_reason(reasons, SYSRQ);
+    }
+    let mut tokens: Vec<String> = parsed.words.into_iter().map(|word| word.text).collect();
+    if tokens.is_empty() {
+        return;
+    }
     while tokens.first().is_some_and(|t| is_assignment(t)) {
         tokens.remove(0);
     }
@@ -962,7 +981,10 @@ pub(crate) fn split_segments(command: &str) -> Vec<String> {
             }
             '&' => {
                 let prev = if i > 0 { Some(chars[i - 1]) } else { None };
-                if prev == Some('>') || prev == Some('<') {
+                // `>&` / `<&`（fd 复制）和 `&>`（stdout+stderr 一起重定向）里的 `&` 是重定向运算符，
+                // 不是后台运行：拆开的话 `ls &>/dev/null` 会多出一段只有重定向的空命令，
+                // `reboot&>/dev/null` 的命令名也会被丢到另一段去。
+                if prev == Some('>') || prev == Some('<') || chars.get(i + 1) == Some(&'>') {
                     current.push(c);
                     i += 1;
                     continue;
@@ -1009,23 +1031,62 @@ pub(crate) struct Word {
     pub(crate) expands: bool,
 }
 
-pub(crate) fn tokenize(segment: &str) -> Result<Vec<String>, ()> {
-    Ok(tokenize_marked(segment)?
-        .into_iter()
-        .map(|word| word.text)
-        .collect())
+/// 一个重定向：运算符、紧贴在前面的 fd 数字、目标词。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Redirect {
+    /// 运算符本身：`>` `>>` `>|` `>&` `&>` `&>>` `<` `<<` `<<<` `<&` `<>`。
+    pub(crate) op: String,
+    /// 紧贴在运算符前面的 fd 数字（`2>` 的 `2`）。按 bash，只有"整个词都是不带引号的数字"才算 fd。
+    pub(crate) fd: Option<String>,
+    /// 目标词（`>/dev/null` 的 `/dev/null`）；运算符后面没有词就是 `None`。
+    pub(crate) target: Option<Word>,
 }
 
-/// 和 [`tokenize`] 切出同样的词，只是多带一个展开标记；引号规则按 bash。
-pub(crate) fn tokenize_marked(segment: &str) -> Result<Vec<Word>, ()> {
-    let mut tokens = Vec::new();
+/// 一段命令按 bash 词法拆开的结果：命令名 + 参数（不含重定向）和重定向。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Parsed {
+    pub(crate) words: Vec<Word>,
+    pub(crate) redirects: Vec<Redirect>,
+}
+
+/// 按 bash 的引号规则切词，每个词带展开标记；引号外的 `>`、`<`（含 `&>`）是重定向运算符，不并进词里：
+/// `reboot>/dev/null` 是命令 `reboot` 加一个重定向，`2>&1` 是 fd 2 复制到 1，
+/// `ls2>/dev/null` 是命令 `ls2`、`a2>/dev/null` 里的 `a2` 是一个词。引号里的 `>` 仍是普通字符。
+pub(crate) fn tokenize_redirects(segment: &str) -> Result<Parsed, ()> {
+    scan_words(segment)
+}
+
+enum Piece {
+    Word(Word),
+    Op { op: String, fd: Option<String> },
+}
+
+fn scan_words(segment: &str) -> Result<Parsed, ()> {
+    let chars: Vec<char> = segment.chars().collect();
+    let mut pieces: Vec<Piece> = Vec::new();
     let mut current = String::new();
     let mut expands = false;
     let mut has_content = false;
+    // 当前词里出现过引号或反斜杠：这样的词不能当 fd 数字（`"2">x` 的 `"2"` 是普通词）。
+    let mut quoted = false;
     let mut in_single = false;
     let mut in_double = false;
-    let mut chars = segment.chars();
-    while let Some(c) = chars.next() {
+    let mut i = 0;
+    macro_rules! flush {
+        () => {
+            if has_content {
+                pieces.push(Piece::Word(Word {
+                    text: std::mem::take(&mut current),
+                    expands: std::mem::take(&mut expands),
+                }));
+                has_content = false;
+            }
+            quoted = false;
+        };
+    }
+    while i < chars.len() {
+        let c = chars[i];
+        i += 1;
         if in_single {
             if c == '\'' {
                 in_single = false;
@@ -1035,12 +1096,14 @@ pub(crate) fn tokenize_marked(segment: &str) -> Result<Vec<Word>, ()> {
             continue;
         }
         if c == '\\' {
-            if let Some(next) = chars.next() {
+            if let Some(&next) = chars.get(i) {
                 current.push(next);
+                i += 1;
             } else {
                 current.push('\\');
             }
             has_content = true;
+            quoted = true;
             continue;
         }
         if in_double {
@@ -1058,19 +1121,55 @@ pub(crate) fn tokenize_marked(segment: &str) -> Result<Vec<Word>, ()> {
             '\'' => {
                 in_single = true;
                 has_content = true;
+                quoted = true;
             }
             '"' => {
                 in_double = true;
                 has_content = true;
+                quoted = true;
             }
             c if c.is_whitespace() => {
-                if has_content {
-                    tokens.push(Word {
-                        text: std::mem::take(&mut current),
-                        expands: std::mem::take(&mut expands),
-                    });
+                flush!();
+            }
+            '>' | '<' => {
+                let fd = if has_content
+                    && !quoted
+                    && !current.is_empty()
+                    && current.chars().all(|d| d.is_ascii_digit())
+                {
                     has_content = false;
+                    expands = false;
+                    Some(std::mem::take(&mut current))
+                } else {
+                    flush!();
+                    None
+                };
+                let mut op = String::from(c);
+                if c == '>' {
+                    if let Some(next @ ('>' | '|' | '&')) = chars.get(i).copied() {
+                        op.push(next);
+                        i += 1;
+                    }
+                } else if let Some(next @ ('<' | '&' | '>')) = chars.get(i).copied() {
+                    op.push(next);
+                    i += 1;
+                    if next == '<' && chars.get(i) == Some(&'<') {
+                        op.push('<');
+                        i += 1;
+                    }
                 }
+                pieces.push(Piece::Op { op, fd });
+            }
+            '&' if chars.get(i) == Some(&'>') => {
+                // `&>` / `&>>`：stdout 和 stderr 一起重定向，bash 紧贴在词后面也认。
+                flush!();
+                i += 1;
+                let mut op = String::from("&>");
+                if chars.get(i) == Some(&'>') {
+                    op.push('>');
+                    i += 1;
+                }
+                pieces.push(Piece::Op { op, fd: None });
             }
             _ => {
                 if matches!(c, '$' | '{' | '}' | '*' | '?' | '[') {
@@ -1085,12 +1184,32 @@ pub(crate) fn tokenize_marked(segment: &str) -> Result<Vec<Word>, ()> {
         return Err(());
     }
     if has_content {
-        tokens.push(Word {
+        pieces.push(Piece::Word(Word {
             text: current,
             expands,
-        });
+        }));
     }
-    Ok(tokens)
+    let mut parsed = Parsed {
+        words: Vec::new(),
+        redirects: Vec::new(),
+    };
+    let mut iter = pieces.into_iter().peekable();
+    while let Some(piece) = iter.next() {
+        match piece {
+            Piece::Word(word) => parsed.words.push(word),
+            Piece::Op { op, fd } => {
+                let target = match iter.peek() {
+                    Some(Piece::Word(_)) => match iter.next() {
+                        Some(Piece::Word(word)) => Some(word),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                parsed.redirects.push(Redirect { op, fd, target });
+            }
+        }
+    }
+    Ok(parsed)
 }
 
 fn is_fork_bomb(dense: &str) -> bool {
@@ -1596,6 +1715,23 @@ mod tests {
         kill_all_processes => "kill -9 -1";
         kill_hup_all => "kill -1";
         killall5_all => "killall5";
+        // 重定向和命令名粘在一起：命令名不能被重定向吞掉
+        reboot_glued_devnull => "reboot>/dev/null";
+        poweroff_glued_devnull => "poweroff>/dev/null";
+        halt_glued_devnull => "halt>/dev/null";
+        killall5_glued_devnull => "killall5>/dev/null";
+        reboot_glued_stderr_dup => "reboot>&2";
+        reboot_glued_both => "reboot&>/dev/null";
+        reboot_glued_both_spaced_target => "reboot&> /dev/null";
+        reboot_quoted_glued => "'reboot'>/dev/null";
+        reboot_dquoted_glued => "\"reboot\">/dev/null";
+        reboot_glued_in_pipe => "cat x | reboot>/dev/null";
+        reboot_with_stderr_to_null => "reboot 2>/dev/null";
+        reboot_glued_then_dup => "reboot>/dev/null 2>&1";
+        shutdown_glued_args => "shutdown -h now>/dev/null";
+        reboot_after_input_redirect => "reboot</dev/null";
+        reboot_glued_fd_redirect => "reboot 2>/dev/null >/dev/null";
+        redirect_into_sudoers_d_glued => "echo x>/etc/sudoers.d/a";
         killall_sshd => "killall sshd";
         pkill_sshd => "pkill sshd";
         pkill_systemd => "pkill -9 systemd";
@@ -1613,6 +1749,10 @@ mod tests {
 
     safe_cases! {
         rm_rf_build => "rm -rf ./build";
+        ls_glued_devnull => "ls>/dev/null";
+        ls_both_to_devnull => "ls &>/dev/null";
+        ls_stderr_dup_glued => "ls -la 2>&1";
+        w_glued_stderr_dup => "w>&2";
         rm_rf_build_rel => "rm -rf build";
         rm_rf_tmp => "rm -rf /tmp/zssh-test-123";
         rm_r_old_logs => "rm -r old-logs";
@@ -1753,5 +1893,80 @@ mod tests {
                 assert!(rule.starts_with("cmd."), "{rule}");
             }
         }
+    }
+
+    fn parse(segment: &str) -> Parsed {
+        tokenize_redirects(segment).expect("引号配平")
+    }
+
+    fn texts(words: &[Word]) -> Vec<&str> {
+        words.iter().map(|word| word.text.as_str()).collect()
+    }
+
+    /// 重定向从词里分出来：命令名留下，fd 数字只在"整个词都是数字"时才算 fd。
+    #[test]
+    fn redirects_are_split_off_the_words_like_bash_does() {
+        let parsed = parse("reboot>/dev/null");
+        assert_eq!(texts(&parsed.words), ["reboot"]);
+        assert_eq!(parsed.redirects.len(), 1);
+        assert_eq!(parsed.redirects[0].op, ">");
+        assert_eq!(parsed.redirects[0].fd, None);
+        assert_eq!(
+            parsed.redirects[0].target.as_ref().map(|t| t.text.as_str()),
+            Some("/dev/null")
+        );
+
+        // `ls2>…` 的命令是 ls2；`a2>…` 里 a2 是普通词；`2>…` 才是 fd
+        assert_eq!(texts(&parse("ls2>/dev/null").words), ["ls2"]);
+        assert_eq!(texts(&parse("ls a2>/dev/null").words), ["ls", "a2"]);
+        let fd = parse("ls 2>&1");
+        assert_eq!(texts(&fd.words), ["ls"]);
+        assert_eq!(
+            (fd.redirects[0].op.as_str(), fd.redirects[0].fd.as_deref()),
+            (">&", Some("2"))
+        );
+        assert_eq!(
+            fd.redirects[0].target.as_ref().map(|t| t.text.as_str()),
+            Some("1")
+        );
+        // 带引号的数字不是 fd
+        let quoted = parse("ls \"2\">/dev/null");
+        assert_eq!(texts(&quoted.words), ["ls", "2"]);
+        assert_eq!(quoted.redirects[0].fd, None);
+
+        // `&>`、`&>>`、`>>`、`<`、目标在空格后面
+        assert_eq!(parse("ls &>/dev/null").redirects[0].op, "&>");
+        assert_eq!(parse("reboot&>/dev/null").redirects[0].op, "&>");
+        assert_eq!(texts(&parse("reboot&>/dev/null").words), ["reboot"]);
+        assert_eq!(parse("ls >> log").redirects[0].op, ">>");
+        let input = parse("cat</etc/hostname");
+        assert_eq!(texts(&input.words), ["cat"]);
+        assert_eq!(input.redirects[0].op, "<");
+        assert_eq!(
+            input.redirects[0].target.as_ref().map(|t| t.text.as_str()),
+            Some("/etc/hostname")
+        );
+        assert_eq!(texts(&parse("ls > /dev/null -la").words), ["ls", "-la"]);
+
+        // 引号里的 `>` 是普通字符
+        let literal = parse("echo 'a>b' \"c<d\"");
+        assert_eq!(texts(&literal.words), ["echo", "a>b", "c<d"]);
+        assert!(literal.redirects.is_empty());
+        // 运算符后面没有词：目标为空，由调用方当成不确定
+        assert_eq!(parse("ls >").redirects[0].target, None);
+        assert!(tokenize_redirects("echo 'oops").is_err());
+    }
+
+    /// 命令名和 `&>` 粘在一起时，`&` 不是"后台运行"，不能把命令拆成两段。
+    #[test]
+    fn ampersand_greater_stays_inside_one_segment() {
+        assert_eq!(split_segments("reboot&>/dev/null"), ["reboot&>/dev/null"]);
+        assert_eq!(
+            split_segments("ls &>/dev/null; pwd"),
+            ["ls &>/dev/null", " pwd"]
+        );
+        // 真正的后台运行和 `&&` 照旧拆开
+        assert_eq!(split_segments("sleep 1 & pwd"), ["sleep 1 ", " pwd"]);
+        assert_eq!(split_segments("a && b"), ["a ", " b"]);
     }
 }

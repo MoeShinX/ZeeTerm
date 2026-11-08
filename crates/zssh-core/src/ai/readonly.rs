@@ -6,6 +6,8 @@
 //! 规则：
 //! - 有命令替换（`$(…)`、反引号、`<(…)`）、写文件的重定向（除了 `2>&1`、`>/dev/null` 这几种）、
 //!   变量赋值前缀、`sudo` 一类的包装，都不算只读；
+//! - 重定向按 bash 词法从词里分出来（`reboot>/dev/null` 是命令 `reboot` 加重定向，不是一个词），
+//!   只有"整个词就是无害重定向"才丢掉；去掉重定向后没有命令名的一段不算只读（见 [`redirect_is_harmless`]）；
 //! - 用 `;`、`&&`、`||`、`|` 连起来的每一段都要是只读的。
 //! - 有参数筛选的命令（`sort`、`rg`、`date`、`ip`……）用**允许列表**：只放行列出来的选项，
 //!   长选项必须写全，不认识的参数 / 缩写一律要确认（细节见下面的 `Spec`）。
@@ -27,7 +29,7 @@
 //! - 命令是打进交互式终端的，bash 会先做历史展开（`!`），所以任何命令里可能触发历史展开的 `!`
 //!   都要确认（见 [`has_unsafe_shell_syntax`]）。只按 bash 的规则，zsh / fish 的额外展开不在范围。
 
-use super::safety::{split_segments, tokenize_marked, Word};
+use super::safety::{split_segments, tokenize_redirects, Parsed, Redirect, Word};
 
 /// 白名单里的程序名。其中要看参数的（`rg`、`sort`、`printf`……）在 [`rule_for`] 里另有登记，
 /// 那边优先；没登记的才是"带什么参数都只读"。
@@ -189,25 +191,22 @@ fn replace_at_word_end(text: &str, pattern: &str) -> String {
     out
 }
 
-/// 去掉 `2>&1`、`2>/dev/null`、`> /dev/null` 这类不写文件的重定向，免得被当成命令参数。
-/// 别的重定向在 [`has_write_redirect`] 里已经拦掉了。
-fn without_harmless_redirects(tokens: Vec<Word>) -> Vec<Word> {
-    let is_redirect_op = |t: &str| matches!(t, ">" | "1>" | "2>" | "&>");
-    let mut out = Vec::with_capacity(tokens.len());
-    let mut iter = tokens.into_iter().peekable();
-    while let Some(token) = iter.next() {
-        let text = token.text.as_str();
-        let dup = text.len() == 4 && text.as_bytes()[1..3] == *b">&";
-        if dup || text == ">&2" || text.ends_with(">/dev/null") {
-            continue;
-        }
-        if is_redirect_op(text) && iter.peek().is_some_and(|next| next.text == "/dev/null") {
-            iter.next();
-            continue;
-        }
-        out.push(token);
+/// 这个重定向是不是"无害"的那几种：`>/dev/null`（含 `1>`、`2>`、`&>`）、`2>&1`、`1>&2`、`>&2`，
+/// 以及输入重定向 `< 文件`（读哪个文件由敏感路径检查管）。
+///
+/// 只认**整个重定向**：fd 数字必须是词的全部前缀、目标必须是整个词。词里在重定向前面的内容
+/// （`reboot>/dev/null` 的 `reboot`）已经由 [`tokenize_redirects`] 留在命令词里，不会被一起丢掉。
+/// 别的重定向在 [`has_write_redirect`] 里已经拦掉了，这里是第二道。
+fn redirect_is_harmless(redirect: &Redirect) -> bool {
+    let target = redirect.target.as_ref().map(|word| word.text.as_str());
+    let fd = redirect.fd.as_deref();
+    match redirect.op.as_str() {
+        "<" => target.is_some(),
+        ">" => target == Some("/dev/null"),
+        "&>" => fd.is_none() && target == Some("/dev/null"),
+        ">&" => matches!(fd, None | Some("1" | "2")) && matches!(target, Some("1" | "2")),
+        _ => false,
     }
-    out
 }
 
 /// 系统程序的标准目录。带路径的程序名只认这些目录下的，`/tmp/ls`、`./cat` 不算
@@ -1554,12 +1553,16 @@ fn expansion_names_secret(text: &str) -> bool {
 }
 
 fn segment_is_read_only(segment: &str) -> bool {
-    let Ok(words) = tokenize_marked(segment) else {
+    let Ok(Parsed { words, redirects }) = tokenize_redirects(segment) else {
         return false;
     };
-    let words = without_harmless_redirects(words);
+    if !redirects.iter().all(redirect_is_harmless) {
+        return false;
+    }
+    // 去掉重定向之后一个命令词都没有（`>/dev/null` 单独一段，或者命令名被重定向吞掉的写法）：
+    // 不知道实际在跑什么，不能当只读。
     let Some(head) = words.first() else {
-        return true;
+        return false;
     };
     // 命令名要展开（`$X file`、`{cat,x}`、`c*t x`）就不知道实际跑的是什么。
     // 单独一个 `[` 是 test 的别名，不是通配符。
@@ -2804,6 +2807,122 @@ mod env_leak_tests {
             assert!(
                 crate::ai::sensitive::sensitive_path_in_command(command).is_some(),
                 "应命中敏感路径：{command}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod redirect_tests {
+    use super::is_read_only;
+
+    fn assert_all_read_only(commands: &[&str]) {
+        for command in commands {
+            assert!(is_read_only(command), "应该算只读：{command}");
+        }
+    }
+
+    fn assert_all_need_approval(commands: &[&str]) {
+        for command in commands {
+            assert!(!is_read_only(command), "不该算只读：{command}");
+        }
+    }
+
+    /// W01：重定向和命令名粘在一起（`reboot>/dev/null`）时，命令名不能被一起丢掉，
+    /// 否则剩下一个空命令被当成只读，在「只读自动」里直接执行。
+    #[test]
+    fn a_redirect_glued_to_the_command_name_does_not_hide_the_command() {
+        assert_all_need_approval(&[
+            "reboot>/dev/null",
+            "poweroff>/dev/null",
+            "halt>/dev/null",
+            "killall5>/dev/null",
+            "shutdown>/dev/null",
+            "reboot >/dev/null",
+            "reboot 2>/dev/null",
+            "reboot>/dev/null 2>&1",
+            "reboot&>/dev/null",
+            "reboot &>/dev/null",
+            "reboot>&2",
+            "reboot 2>&1",
+            "'reboot'>/dev/null",
+            "\"reboot\">/dev/null",
+            "cat x | reboot>/dev/null",
+            "ls && reboot>/dev/null",
+            "ls; reboot&>/dev/null",
+            "reboot</dev/null",
+            // fd 数字不是整个词的前缀：`ls2` 是命令，不是 `ls` 加 fd 2
+            "ls2>/dev/null",
+            "reboot2>/dev/null",
+            // 前面的内容留作参数，照常过允许列表（`-o` 会写文件）
+            "sort -o>/dev/null file",
+            "sort -o>&2 file",
+            "sort -o2>/dev/null file",
+        ]);
+    }
+
+    /// 只剩重定向、没有命令名的一段，不知道在跑什么，要确认。
+    #[test]
+    fn a_segment_with_nothing_but_redirects_needs_approval() {
+        assert_all_need_approval(&[
+            ">/dev/null",
+            "2>&1",
+            "&>/dev/null",
+            "</dev/null",
+            "> /dev/null",
+            "ls; >/dev/null",
+            "ls && 2>&1",
+            "ls | >/dev/null",
+        ]);
+    }
+
+    /// 正常的诊断写法（输出丢进 /dev/null、合并 stderr）照旧自动执行。
+    #[test]
+    fn ordinary_diagnostics_with_harmless_redirects_still_pass() {
+        assert_all_read_only(&[
+            "ls -la 2>/dev/null",
+            "ls>/dev/null",
+            "ls >/dev/null",
+            "ls &>/dev/null",
+            "ls&>/dev/null",
+            "ls 1>/dev/null 2>&1",
+            "dmesg 2>&1 | tail",
+            "df -h>/dev/null",
+            "df -h 2>&1|tail -n 3",
+            "w>&2",
+            "echo hi >&2",
+            "echo hi 1>&2",
+            "ls a2>/dev/null",
+            "ls -la 2> /dev/null",
+            "cat </etc/hostname",
+            "cat</etc/hostname",
+            "wc -l </etc/hostname",
+            "sort </etc/hostname",
+            "grep -rn listen /etc/nginx 2>/dev/null",
+            "ping -c 1 example.com 2>&1",
+        ]);
+    }
+
+    /// 输入重定向：目标是命令读的文件，不能吞掉命令名；读敏感文件走敏感路径那一道。
+    #[test]
+    fn input_redirects_neither_hide_the_command_nor_the_file() {
+        assert_all_need_approval(&[
+            "reboot</dev/null",
+            "reboot< /dev/null",
+            "mkdir</dev/null",
+            "cat <>/tmp/x",
+        ]);
+        for command in [
+            "cat</etc/shadow",
+            "cat < /etc/shadow",
+            "sort</etc/shadow",
+            "wc -c</root/.ssh/id_rsa",
+            "cat 0</etc/shadow",
+        ] {
+            assert!(is_read_only(command), "命令本身是只读的：{command}");
+            assert!(
+                crate::ai::sensitive::sensitive_path_in_command(command).is_some(),
+                "重定向目标要过敏感路径检查：{command}"
             );
         }
     }
