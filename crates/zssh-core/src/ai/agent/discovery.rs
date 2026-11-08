@@ -373,16 +373,10 @@ async fn query_dir(program: &str, args: &[&str]) -> Option<PathBuf> {
     // macOS：`npm` 这类命令本身也只在登录 shell 的 PATH 里（子进程的 PATH 也用于查找程序）。
     #[cfg(target_os = "macos")]
     cmd.env("PATH", agent_path());
-    cmd.args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+    cmd.args(args);
     hide_console(&mut cmd);
-    let child = cmd.spawn().ok()?;
-    let output = tokio::time::timeout(QUERY_TIMEOUT, child.wait_with_output())
-        .await
-        .ok()?
-        .ok()?;
+    // stderr 也会被（封顶地）读掉丢弃：执行器统一接管输出管道。
+    let output = super::short_probe::run(cmd, QUERY_TIMEOUT).await.ok()?;
     if !output.status.success() {
         return None;
     }
@@ -1151,17 +1145,16 @@ pub enum ProbeError {
 /// 跑一次 `--version`，返回版本号文本。
 pub async fn probe_version(path: &Path) -> Result<String, ProbeError> {
     let mut cmd = build_command(path);
-    cmd.arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    cmd.arg("--version");
     hide_console(&mut cmd);
 
-    let child = cmd.spawn().map_err(|e| ProbeError::Spawn(e.to_string()))?;
-    let output = match tokio::time::timeout(PROBE_TIMEOUT, child.wait_with_output()).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(err)) => return Err(ProbeError::Spawn(err.to_string())),
-        Err(_) => return Err(ProbeError::Timeout),
+    // 超时会终止整棵进程树并回收，输出各封顶 64 KiB（见 `short_probe`）。
+    let output = match super::short_probe::run(cmd, PROBE_TIMEOUT).await {
+        Ok(output) => output,
+        Err(super::short_probe::RunError::Spawn(err) | super::short_probe::RunError::Wait(err)) => {
+            return Err(ProbeError::Spawn(err.to_string()))
+        }
+        Err(super::short_probe::RunError::Timeout) => return Err(ProbeError::Timeout),
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);

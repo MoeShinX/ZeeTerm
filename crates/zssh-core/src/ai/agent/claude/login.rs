@@ -63,15 +63,10 @@ fn config_dir_from(explicit: Option<std::ffi::OsString>, home: Option<PathBuf>) 
 /// 跑 `claude auth status` 判断（拿不到 / 解析不出返回 `None`，交给兜底）。
 pub async fn login_status_cli(install_path: &str) -> Option<ClaudeLogin> {
     let mut cmd = discovery::build_command(Path::new(install_path));
-    cmd.args(["auth", "status"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    cmd.args(["auth", "status"]);
     discovery::hide_console(&mut cmd);
-    let child = cmd.spawn().ok()?;
-    let output = tokio::time::timeout(PROBE_TIMEOUT, child.wait_with_output())
+    let output = super::super::short_probe::run(cmd, PROBE_TIMEOUT)
         .await
-        .ok()?
         .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;

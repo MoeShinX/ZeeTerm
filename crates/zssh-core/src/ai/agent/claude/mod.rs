@@ -213,16 +213,9 @@ pub async fn catalog_for_install(install_path: &str) -> AgentModelCatalog {
 /// 探测 `--help` 里的可选参数（失败按"都不支持"）。
 async fn detect_flags(install_path: &str) -> ClaudeFlags {
     let mut cmd = discovery::build_command(std::path::Path::new(install_path));
-    cmd.arg("--help")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    cmd.arg("--help");
     discovery::hide_console(&mut cmd);
-    let Ok(child) = cmd.spawn() else {
-        return ClaudeFlags::default();
-    };
-    let Ok(Ok(output)) = tokio::time::timeout(HELP_PROBE_TIMEOUT, child.wait_with_output()).await
-    else {
+    let Ok(output) = super::short_probe::run(cmd, HELP_PROBE_TIMEOUT).await else {
         return ClaudeFlags::default();
     };
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();

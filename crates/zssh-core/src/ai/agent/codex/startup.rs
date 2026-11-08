@@ -313,15 +313,10 @@ impl StartupProbes for CommandProbes {
 /// 跑一次 codex CLI，拿 stdout（失败/超时给 None）。
 async fn run_cli(exe: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = super::super::discovery::build_command(exe);
-    cmd.args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    cmd.args(args);
     super::super::discovery::hide_console(&mut cmd);
-    let child = cmd.spawn().ok()?;
-    let output = tokio::time::timeout(PROBE_TIMEOUT, child.wait_with_output())
+    let output = super::super::short_probe::run(cmd, PROBE_TIMEOUT)
         .await
-        .ok()?
         .ok()?;
     if !output.status.success() {
         tracing::debug!(?args, "codex 探测命令失败（用兜底）");
@@ -560,15 +555,10 @@ fn section_string(section: &str, key: &str) -> Option<String> {
 /// 跑一次 CLI 并把 stdout + stderr 合起来（登录判断要能看错误文本；失败也给文本）。
 async fn run_cli_capture(exe: &Path, args: &[&str]) -> Option<(bool, String)> {
     let mut cmd = super::super::discovery::build_command(exe);
-    cmd.args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    cmd.args(args);
     super::super::discovery::hide_console(&mut cmd);
-    let child = cmd.spawn().ok()?;
-    let output = tokio::time::timeout(PROBE_TIMEOUT, child.wait_with_output())
+    let output = super::super::short_probe::run(cmd, PROBE_TIMEOUT)
         .await
-        .ok()?
         .ok()?;
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&output.stderr));

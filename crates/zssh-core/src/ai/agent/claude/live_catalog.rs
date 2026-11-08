@@ -119,7 +119,8 @@ async fn probe_models(install_path: &str, extra_env: &[(String, String)]) -> Opt
         .await
         .ok()
         .flatten();
-    let _ = child.kill().await;
+    // 整棵进程树一起收（claude 底下会拉起 node 等子孙），不只是直接子进程。
+    let _ = super::super::process::kill_process_tree(&mut child).await;
     if result.is_none() {
         tracing::info!("没能从 Claude Code 取到模型目录，用内置的别名列表");
     }
