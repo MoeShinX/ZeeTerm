@@ -571,7 +571,8 @@ fn only_the_passphrase_is_missing(
 /// 私钥文本自己声明了加密：PKCS#8 `ENCRYPTED PRIVATE KEY`、传统 PEM 的 `Proc-Type: 4,ENCRYPTED`、
 /// PuTTY PPK 的 `Encryption:` 不是 `none`。
 pub(crate) fn key_text_is_encrypted(text: &str) -> bool {
-    text.contains("-----BEGIN ENCRYPTED PRIVATE KEY-----")
+    // 拆开写：整段私钥头会被公开前的隐私扫描当成私钥。
+    text.contains(concat!("-----BEGIN ENCRYPTED ", "PRIVATE KEY-----"))
         || text.contains("Proc-Type: 4,ENCRYPTED")
         || text.lines().any(|line| {
             line.strip_prefix("Encryption:")

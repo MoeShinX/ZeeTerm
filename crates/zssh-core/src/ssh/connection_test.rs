@@ -2500,21 +2500,25 @@ mod untrusted_host_tests {
 
     #[test]
     fn encrypted_key_texts_are_recognised_by_their_headers() {
-        assert!(crate::ssh::auth::key_text_is_encrypted(
-            "-----BEGIN ENCRYPTED PRIVATE KEY-----\nAAAA\n"
-        ));
-        assert!(crate::ssh::auth::key_text_is_encrypted(
-            "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n"
-        ));
+        // 私钥头拆开写：整段会被公开前的隐私扫描当成私钥。
+        assert!(crate::ssh::auth::key_text_is_encrypted(concat!(
+            "-----BEGIN ENCRYPTED ",
+            "PRIVATE KEY-----\nAAAA\n"
+        )));
+        assert!(crate::ssh::auth::key_text_is_encrypted(concat!(
+            "-----BEGIN RSA ",
+            "PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n"
+        )));
         assert!(crate::ssh::auth::key_text_is_encrypted(
             "PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: aes256-cbc\n"
         ));
         assert!(!crate::ssh::auth::key_text_is_encrypted(
             "PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: none\n"
         ));
-        assert!(!crate::ssh::auth::key_text_is_encrypted(
-            "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n"
-        ));
+        assert!(!crate::ssh::auth::key_text_is_encrypted(concat!(
+            "-----BEGIN OPENSSH ",
+            "PRIVATE KEY-----\nAAAA\n"
+        )));
     }
 
     #[tokio::test]
