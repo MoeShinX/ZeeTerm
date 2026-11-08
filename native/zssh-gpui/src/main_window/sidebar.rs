@@ -475,13 +475,13 @@ impl MainWindow {
             .w(px(width))
             .h_full()
             .flex_none()
-            .bg(tokens.background)
-            .border_r_1()
-            .border_color(tokens.divider)
+            .bg(tokens.surface)
+            .rounded(px(crate::app_theme::PANEL_RADIUS))
             .child(top)
             .child(
-                div().px_2().pt_2().pb_3().child(
+                div().px_2().pt_2().pb_2().child(
                     Input::new(&self.tree_query)
+                        .rounded_full()
                         .prefix(
                             Icon::new(IconName::Search)
                                 .size_4()
@@ -540,8 +540,6 @@ impl MainWindow {
             .items_center()
             .px_2()
             .py_1p5()
-            .border_t_1()
-            .border_color(tokens.divider)
             .children(FOOTER_ACTIONS.iter().map(|action| {
                 let entity = entity.clone();
                 let kind = action.kind;
@@ -577,7 +575,7 @@ impl MainWindow {
                     .justify_center()
                     .size(px(28.0))
                     .flex_none()
-                    .rounded_md()
+                    .rounded_full()
                     .cursor_pointer()
                     .text_color(if active { text } else { muted })
                     .when(active, |d| d.bg(hover))
@@ -612,9 +610,8 @@ impl MainWindow {
             .items_center()
             .gap_1()
             .py_3()
-            .bg(tokens.background)
-            .border_r_1()
-            .border_color(tokens.divider)
+            .bg(tokens.surface)
+            .rounded(px(crate::app_theme::PANEL_RADIUS))
             .child(icon_button(
                 "tree-expand",
                 IconName::PanelLeftOpen,
@@ -694,7 +691,7 @@ impl MainWindow {
                     .overflow_y_scroll()
                     .child(
                         v_flex()
-                            .rounded_sm()
+                            .rounded(px(crate::app_theme::CONTROL_RADIUS))
                             .border_1()
                             .border_color(tokens.border)
                             .overflow_hidden()
@@ -783,7 +780,7 @@ impl MainWindow {
                             .w(px(16.0))
                             .h(px(16.0))
                             .flex_none()
-                            .rounded_sm()
+                            .rounded_full()
                             .text_color(tokens.text_muted)
                             .when(!searching, |d| {
                                 d.hover(|style| style.bg(tokens.hover))
@@ -1078,7 +1075,7 @@ fn footer_button(
         .min_w(px(FOOTER_BUTTON))
         .when(action.label.is_some(), |d| d.px_2p5())
         .flex_none()
-        .rounded_md()
+        .rounded_full()
         .cursor_pointer()
         .text_color(muted)
         .hover(move |style| style.bg(hover).text_color(text))
@@ -1149,7 +1146,7 @@ fn tree_line(
         .w_full()
         .pl(px(8.0 + indent))
         .pr_2p5()
-        .rounded_md()
+        .rounded_full()
         .typo(Role::Tree, tokens)
         .cursor_pointer()
         .when(active, |d| {

@@ -144,6 +144,20 @@ impl MainWindow {
             .justify_center()
             .gap_3()
             .bg(tokens.background)
+            .rounded(px(crate::app_theme::PANEL_RADIUS))
+            .px_4()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(64.0))
+                    .mb_2()
+                    .rounded(px(crate::app_theme::PANEL_RADIUS))
+                    .bg(tokens.accent_soft)
+                    .text_color(tokens.accent)
+                    .child(Icon::new(crate::icons::Ico::Terminal).size_8()),
+            )
             .child(
                 div()
                     .text_3xl()
@@ -159,6 +173,8 @@ impl MainWindow {
             .child(
                 h_flex()
                     .mt_2()
+                    .flex_wrap()
+                    .justify_center()
                     .gap_2()
                     .child(
                         text_button(
@@ -169,6 +185,8 @@ impl MainWindow {
                                 this.open_quick_target_dialog(window, cx)
                             }),
                         )
+                        .h(px(36.0))
+                        .px_4()
                         .icon(IconName::Search),
                     )
                     .child(
@@ -178,6 +196,8 @@ impl MainWindow {
                             ButtonLook::Outline,
                             act(&entity, |this, window, cx| this.new_host(window, cx)),
                         )
+                        .h(px(36.0))
+                        .px_4()
                         .icon(IconName::Plus),
                     ),
             )
@@ -185,6 +205,7 @@ impl MainWindow {
                 div()
                     .mt_1()
                     .max_w(px(480.0))
+                    .text_center()
                     .typo(Role::Caption, tokens)
                     .opacity(0.8)
                     .child(t(WelcomeMsg::Hint)),

@@ -9,7 +9,7 @@
 //! 选择有三层，和 0.2.14 的设置一一对应：明暗（`set_mode`）、浅色和深色各自用哪个皮肤、
 //! 终端配色（跟随皮肤，或固定成某一套皮肤的终端色板）。后两项记在全局 [`Look`] 里。
 
-use ::gpui::{App, Global, Hsla, Rgba};
+use ::gpui::{App, Global, Hsla, Rgba, px};
 use gpui_kit::component::{Theme, ThemeMode};
 
 /// 一个皮肤的界面色板（对应 skins.ts 里的 `ui`）。
@@ -91,8 +91,12 @@ pub const DEFAULT_TERMINAL_THEME: &str = TERMINAL_FOLLOW_SKIN;
 /// 聚焦控件外面的光晕圈：关（只留 1px 强调色边框）。见 `apply`。
 pub const FOCUS_HALO: bool = false;
 
-/// 全部皮肤，顺序和 0.2.14 `skins.ts` 的 `SKINS` 一样（先浅色后深色）。
-/// 色值由脚本从 `skins.ts` 抽出，不手写；`skin_ids_match_the_sync_whitelist` 核对 id 与同步白名单一致。
+/// 圆润界面的逻辑像素；与系统缩放无关。输入框 / 按钮用 20，面板用 24。
+pub const CONTROL_RADIUS: f32 = 20.0;
+pub const PANEL_RADIUS: f32 = 24.0;
+
+/// 原有皮肤保留顺序，GitHub 后加入 Lavender（先浅色后深色）。
+/// 原有色值由脚本从 `skins.ts` 抽出；`skin_ids_match_the_sync_whitelist` 核对 id 与同步白名单一致。
 pub const SKINS: &[Skin] = &[
     Skin {
         // VS Code Light Modern
@@ -185,6 +189,32 @@ pub const SKINS: &[Skin] = &[
             text: 0x1F2328,
             text_muted: 0x59636E,
             accent: 0x0969DA,
+            danger: 0xCF222E,
+        },
+        terminal: TermPalette {
+            background: 0xFFFFFF,
+            foreground: 0x1F2328,
+            cursor: 0x0969DA,
+            selection: 0xB6E3FF,
+            ansi: [
+                0x24292F, 0xCF222E, 0x116329, 0x4D2D00, 0x0969DA, 0x8250DF, 0x1B7C83, 0x6E7781,
+                0x57606A, 0xA40E26, 0x1A7F37, 0x633C01, 0x218BFF, 0xA475F9, 0x3192AA, 0x8C959F,
+            ],
+        },
+    },
+    Skin {
+        // Lavender：圆润 UI 的独立皮肤，保留原 GitHub 终端 ANSI 配色。
+        id: "lavender",
+        name: "Lavender",
+        dark: false,
+        ui: UiColors {
+            background: 0xFFFFFF,
+            surface: 0xF5F1FC,
+            subtle: 0xEEE7FA,
+            border: 0xDAD2E8,
+            text: 0x252033,
+            text_muted: 0x696177,
+            accent: 0x7041D9,
             danger: 0xCF222E,
         },
         terminal: TermPalette {
@@ -901,6 +931,9 @@ fn apply(dark: bool, cx: &mut App) {
         // 输入框聚焦只把 1px 边框换成强调色（`ring` = 强调色）：组件库默认还会在外面再画一圈半透明光晕，
         // 和边框叠成「粗蓝双框」（V2-U17）。关掉这个开关，组件库就退回到只染边框的样式，按钮的键盘焦点也是这样。
         theme.focus_ring = FOCUS_HALO;
+        // PopupMenu 的外框也读取 radius；不重写菜单以保留键盘导航和辅助功能。
+        theme.radius = px(CONTROL_RADIUS);
+        theme.radius_lg = px(PANEL_RADIUS);
         let c = &mut theme.colors;
         c.background = t.background;
         c.foreground = t.text;
@@ -1093,7 +1126,7 @@ mod tests {
         assert_eq!(ids.len(), SKINS.len());
         assert_eq!(skins_of(false).next().map(|skin| skin.id), Some("paper"));
         assert_eq!(skins_of(true).next().map(|skin| skin.id), Some("graphite"));
-        assert_eq!(skins_of(false).count(), 7);
+        assert_eq!(skins_of(false).count(), 8);
         assert_eq!(skins_of(true).count(), 9);
     }
 

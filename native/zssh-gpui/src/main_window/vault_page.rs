@@ -155,7 +155,7 @@ impl MainWindow {
             h_flex()
                 .gap_0p5()
                 .p_0p5()
-                .rounded_md()
+                .rounded_full()
                 .border_1()
                 .border_color(tokens.border)
                 .child(left)
@@ -170,7 +170,7 @@ impl MainWindow {
                     .items_center()
                     .justify_center()
                     .size(px(28.0))
-                    .rounded_md()
+                    .rounded_full()
                     .cursor_pointer()
                     .text_color(if active {
                         tokens.text
@@ -196,7 +196,7 @@ impl MainWindow {
                 .items_center()
                 .justify_center()
                 .size(px(28.0))
-                .rounded_md()
+                .rounded_full()
                 .cursor_pointer()
                 .bg(if compact {
                     tokens.accent_soft
@@ -248,12 +248,10 @@ impl MainWindow {
             .items_center()
             .px_4()
             .py_2()
-            .bg(tokens.background)
-            .border_b_1()
-            .border_color(tokens.divider)
             .child(
                 div().flex_1().min_w(px(160.0)).max_w(px(448.0)).child(
                     Input::new(&self.vault_query)
+                        .rounded_full()
                         .prefix(
                             Icon::new(IconName::Search)
                                 .size_4()
@@ -289,7 +287,7 @@ impl MainWindow {
                     .child(
                         h_flex()
                             .p_0p5()
-                            .rounded_md()
+                            .rounded_full()
                             .border_1()
                             .border_color(tokens.border)
                             .child(density_button),
@@ -297,7 +295,7 @@ impl MainWindow {
                     .child(
                         h_flex()
                             .p_0p5()
-                            .rounded_md()
+                            .rounded_full()
                             .border_1()
                             .border_color(tokens.border)
                             .child(sort_button),
@@ -331,26 +329,19 @@ impl MainWindow {
                         }))
                         .into_any_element()
                 }
-                ViewMode::List => {
-                    let last = shown.len().saturating_sub(1);
-                    v_flex()
-                        .w_full()
-                        .overflow_hidden()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(tokens.border)
-                        .children(shown.iter().enumerate().map(|(at, host)| {
-                            self.host_row(
-                                host,
-                                at == last,
-                                (layout.density, page_width < 640.0),
-                                order,
-                                tokens,
-                                cx,
-                            )
-                        }))
-                        .into_any_element()
-                }
+                ViewMode::List => v_flex()
+                    .w_full()
+                    .gap_1p5()
+                    .children(shown.iter().map(|host| {
+                        self.host_row(
+                            host,
+                            (layout.density, page_width < 640.0),
+                            order,
+                            tokens,
+                            cx,
+                        )
+                    }))
+                    .into_any_element(),
             }
         };
 
@@ -399,7 +390,18 @@ impl MainWindow {
                                             "host",
                                             "hosts",
                                         )),
-                                    )),
+                                    ))
+                                    .child(
+                                        Button::new("vault-header-new")
+                                            .ml_auto()
+                                            .compact()
+                                            .primary()
+                                            .icon(IconName::Plus)
+                                            .label(crate::i18n::t(VaultMsg::NewHost))
+                                            .on_click(act(&entity, |this, window, cx| {
+                                                this.new_host(window, cx)
+                                            })),
+                                    ),
                             )
                             .child(body),
                     ),
@@ -451,16 +453,14 @@ impl MainWindow {
                     .max_w(px(448.0))
                     .gap_4()
                     .items_center()
-                    .px_8()
-                    .py_10()
-                    .rounded_xl()
-                    .border_1()
-                    .border_color(tokens.border)
-                    .bg(tokens.surface)
+                    .w_full()
+                    .px_4()
+                    .py_6()
+                    .text_center()
                     .child(
                         div()
                             .p_4()
-                            .rounded_full()
+                            .rounded(px(crate::app_theme::PANEL_RADIUS))
                             .bg(tokens.accent_soft)
                             .text_color(tokens.accent)
                             .child(Icon::new(crate::icons::Ico::Server).size_8()),
@@ -483,6 +483,8 @@ impl MainWindow {
                     )
                     .child(
                         Button::new("vault-empty-new")
+                            .h(px(36.0))
+                            .px_4()
                             .primary()
                             .icon(IconName::Plus)
                             .label(crate::i18n::t(VaultMsg::NewHost))
@@ -667,7 +669,7 @@ impl MainWindow {
                         .justify_center()
                         .size(px(if compact { 28.0 } else { 36.0 }))
                         .flex_none()
-                        .rounded_md()
+                        .rounded_full()
                         .bg(if selected {
                             tokens.accent_soft
                         } else {
@@ -711,7 +713,7 @@ impl MainWindow {
             .flex_none()
             .p(px(if compact { 10.0 } else { 16.0 }))
             .gap_2()
-            .rounded_lg()
+            .rounded(px(crate::app_theme::PANEL_RADIUS))
             .border_1()
             .border_color(if selected {
                 tokens.accent
@@ -773,7 +775,6 @@ impl MainWindow {
     fn host_row(
         &self,
         host: &Host,
-        last: bool,
         layout: (Density, bool),
         order: OrderState,
         tokens: &Tokens,
@@ -801,19 +802,25 @@ impl MainWindow {
             .gap_3()
             .items_center()
             .px_4()
-            .py(px(if compact { 4.0 } else { 10.0 }))
+            .py(px(if compact { 5.0 } else { 8.0 }))
+            .rounded_full()
+            .border_1()
+            .border_color(if selected {
+                tokens.accent
+            } else {
+                tokens.border
+            })
             .typo(Role::Body, tokens)
             .cursor_pointer()
             .when(selected, |d| d.bg(tokens.accent_soft))
             .when(!selected, |d| d.hover(move |style| style.bg(hover)))
-            .when(!last, |d| d.border_b_1().border_color(tokens.border))
             .when_some(self.host_focus_handle(id), |d, handle| {
                 d.track_focus(&handle)
             })
             .focus_visible(|style| {
                 style
                     .bg(tokens.accent_soft)
-                    .border_l_2()
+                    .border_1()
                     .border_color(tokens.accent)
             })
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
@@ -904,7 +911,7 @@ fn icon_only_button(
         .items_center()
         .justify_center()
         .size(px(28.0))
-        .rounded_md()
+        .rounded_full()
         .cursor_pointer()
         .text_color(if active {
             tokens.text

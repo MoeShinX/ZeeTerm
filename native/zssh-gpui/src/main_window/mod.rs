@@ -1898,7 +1898,7 @@ impl MainWindow {
             .capture_key_down(cx.listener(Self::on_capture_key))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .bg(tokens.background)
+            .bg(tokens.surface)
             .text_color(tokens.text)
             .ui_font_fallbacks(cx)
             .child(drag_sensor)
@@ -1914,7 +1914,18 @@ impl MainWindow {
                     .when(self.tree.collapsed && view == MainView::Vault, |d| {
                         d.child(self.render_tree_collapsed(&tokens, cx))
                     })
-                    .child(div().flex_1().min_w_0().h_full().child(content))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            // 不裁剪终端或浮层；圆角只作用于非终端页面的背景。
+                            .when(view != MainView::Terminal, |d| {
+                                d.rounded(px(crate::app_theme::PANEL_RADIUS))
+                                    .bg(tokens.background)
+                            })
+                            .child(content),
+                    )
                     .children(docks)
                     .children(panel),
             )
