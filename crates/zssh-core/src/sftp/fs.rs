@@ -92,7 +92,11 @@ pub async fn entries_from_protocol(
     files: Vec<russh_sftp::protocol::File>,
 ) -> Result<Vec<DirEntry>, SftpError> {
     // 第一遍只做本地计算：拼路径、取静态字段，把需要额外往返的攒进两张表。
-    let (mut rows, links, suspicious) = first_pass(dir, files);
+    let FirstPass {
+        mut rows,
+        links,
+        suspicious,
+    } = first_pass(dir, files);
 
     // 符号链接的目标：每条 2 个往返，一批 [`RESOLVE_CONCURRENCY`] 个并发。
     for chunk in links.chunks(RESOLVE_CONCURRENCY) {
@@ -180,10 +184,7 @@ pub async fn entries_from_protocol(
 
 /// 第一遍：只做本地计算——过滤不合法的名字、拼路径、取静态字段，把需要额外往返的（符号链接、
 /// 可疑名字）记进两张表。拆出来是为了不连服务器也能测"恶意名字被丢掉"。
-fn first_pass(
-    dir: &str,
-    files: Vec<russh_sftp::protocol::File>,
-) -> (Vec<Row>, Vec<(usize, String)>, Vec<(usize, String)>) {
+fn first_pass(dir: &str, files: Vec<russh_sftp::protocol::File>) -> FirstPass {
     let mut rows: Vec<Row> = Vec::with_capacity(files.len());
     let mut links: Vec<(usize, String)> = Vec::new();
     let mut suspicious: Vec<(usize, String)> = Vec::new();
@@ -230,7 +231,18 @@ fn first_pass(
                 .or_else(|| attrs.uid.map(|uid| uid.to_string())),
         });
     }
-    (rows, links, suspicious)
+    FirstPass {
+        rows,
+        links,
+        suspicious,
+    }
+}
+
+/// [`first_pass`] 的结果：拼好的行，以及需要额外往返的两张表（行号, 路径）。
+struct FirstPass {
+    rows: Vec<Row>,
+    links: Vec<(usize, String)>,
+    suspicious: Vec<(usize, String)>,
 }
 
 /// 第一遍本地拼装时的中间行；额外的网络往返结果最后填回来。
@@ -689,7 +701,7 @@ mod tests {
             .iter()
             .map(|name| russh_sftp::protocol::File::dummy(*name))
             .collect();
-        let (rows, _links, _suspicious) = first_pass("/chosen-destination", files);
+        let rows = first_pass("/chosen-destination", files).rows;
         let kept: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
         assert_eq!(kept, vec!["normal.txt", ".hidden", "back\\slash"]);
         for row in &rows {
