@@ -427,6 +427,14 @@ impl JobProgress {
     }
 }
 
+/// 任务号 / 批次号在整个进程里唯一，不按引擎各数各的。
+///
+/// 为什么：断线重建引擎后，界面里旧引擎留下的行（失败 / 已取消的）还在，如果新引擎又从 1
+/// 开始发号，新任务的进度会按号落到旧行上，旧行的暂停 / 取消 / 重试也会命中新任务。
+/// 号只存在于内存里（不落盘、不跨进程），所以进程内唯一就够了。
+static NEXT_TRANSFER_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_BATCH_ID: AtomicU64 = AtomicU64::new(1);
+
 /// 传输引擎。
 pub struct TransferEngine {
     /// 数据面（生产是本地 ↔ 远端；单测是内存替身）。
@@ -435,8 +443,6 @@ pub struct TransferEngine {
     options: TransferOptions,
     events: mpsc::UnboundedSender<TransferEvent>,
     jobs: Mutex<HashMap<TransferId, Arc<JobState>>>,
-    next_id: AtomicU64,
-    next_batch: AtomicU64,
     /// 这个引擎的标识：和任务号一起组成临时文件名里的任务标识（不同引擎、不同次启动不会撞）。
     nonce: String,
     /// 同时进行的文件数上限。
@@ -463,8 +469,6 @@ impl TransferEngine {
                 options,
                 events,
                 jobs: Mutex::new(HashMap::new()),
-                next_id: AtomicU64::new(1),
-                next_batch: AtomicU64::new(1),
                 nonce: uuid::Uuid::new_v4().simple().to_string()[..8].to_owned(),
                 this,
             }
@@ -480,7 +484,7 @@ impl TransferEngine {
     /// 共享"全部应用"的选择。
     pub fn new_batch(&self) -> Arc<ConflictBatch> {
         Arc::new(ConflictBatch::new(
-            self.next_batch.fetch_add(1, Ordering::SeqCst),
+            NEXT_BATCH_ID.fetch_add(1, Ordering::SeqCst),
         ))
     }
 
@@ -496,7 +500,7 @@ impl TransferEngine {
     }
 
     fn submit_with(&self, job: TransferJob, batch: Option<Arc<ConflictBatch>>) -> TransferId {
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let id = NEXT_TRANSFER_ID.fetch_add(1, Ordering::SeqCst);
         let state = Arc::new(JobState {
             id,
             job: job.clone(),

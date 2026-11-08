@@ -1005,11 +1005,6 @@ async fn cancel_while_paused_removes_the_part_file() {
 
     let (engine, mut events) =
         TransferEngine::new(endpoints.clone(), Arc::new(OverwriteAll), local_options());
-    // 这个任务（第 1 号）上次传到一半留下的临时文件：名字里带着它的任务标识。
-    endpoints.put_remote(
-        &format!("/remote/big.bin.{}1.zssh-part", engine.nonce),
-        vec![2u8; 100],
-    );
     let id = engine.submit(TransferJob {
         direction: Direction::Upload,
         source: source.display().to_string(),
@@ -1017,6 +1012,12 @@ async fn cancel_while_paused_removes_the_part_file() {
         recursive: false,
         peer: None,
     });
+    // 这个任务上次传到一半留下的临时文件：名字里带着它的任务标识。任务号是进程内唯一的、
+    // 不从 1 开始，所以要提交之后才知道名字；单线程运行时里任务此刻还没开始跑，来得及放。
+    endpoints.put_remote(
+        &format!("/remote/big.bin.{}{id}.zssh-part", engine.nonce),
+        vec![2u8; 100],
+    );
     // 单线程运行时：任务还没开始跑，先按暂停；它在检查点停住。
     assert!(engine.pause(id));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
@@ -3200,4 +3201,48 @@ mod download_permissions {
         endpoint.commit(0, false).await.unwrap();
         assert_eq!(mode_of(&target), download_mode(None, process_umask()));
     }
+}
+
+/// W05：任务号 / 批次号在进程内唯一。界面在断线重建引擎后还留着旧引擎的行，新引擎若又从 1 发号，
+/// 进度会落到旧行上，旧行的暂停 / 取消 / 重试也会命中新任务。
+#[tokio::test]
+async fn ids_are_unique_across_engines_so_rebuilt_engines_never_collide_with_old_rows() {
+    let root = temp_root("unique-ids");
+    let source = root.join("a.bin");
+    std::fs::write(&source, vec![1u8; 1024]).unwrap();
+    let make = || {
+        TransferEngine::new(
+            Arc::new(MemoryEndpoints::new("/remote")),
+            Arc::new(OverwriteAll),
+            local_options(),
+        )
+    };
+    let (first, mut first_events) = make();
+    let (second, mut second_events) = make();
+    let job = |target: &str| TransferJob {
+        direction: Direction::Upload,
+        source: source.display().to_string(),
+        target: target.to_owned(),
+        recursive: false,
+        peer: None,
+    };
+    let a = first.submit(job("/remote/a.bin"));
+    let b = second.submit(job("/remote/b.bin"));
+    assert_ne!(a, b, "两个引擎发出的任务号不能相同");
+    assert_ne!(first.new_batch().id(), second.new_batch().id());
+    // 同一个引擎里连续的任务号也各不相同。
+    assert_ne!(first.submit(job("/remote/c.bin")), a);
+
+    // 一个引擎不认另一个引擎的任务号：旧行的操作不会命中新任务。
+    assert_eq!(first.state(b), None);
+    assert_eq!(second.state(a), None);
+    assert!(!second.cancel(a));
+    assert!(!first.retry(b));
+
+    // 各自的进度事件只带自己的号。
+    let report_a = drain_until_finished(&mut first_events, a, Duration::from_secs(30)).await;
+    let report_b = drain_until_finished(&mut second_events, b, Duration::from_secs(30)).await;
+    assert_eq!((report_a.id, report_b.id), (a, b));
+    assert_eq!(report_a.state, TransferState::Done, "{report_a:?}");
+    assert_eq!(report_b.state, TransferState::Done, "{report_b:?}");
 }

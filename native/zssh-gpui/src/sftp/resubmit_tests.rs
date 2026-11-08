@@ -6,13 +6,17 @@ use std::sync::{Arc, Weak};
 use zssh_core::sftp::transfer::backend::{
     SftpEndpoints, TransferChannelProvider, TransferEndpoints,
 };
-use zssh_core::sftp::transfer::{Direction, TransferState};
+use zssh_core::sftp::transfer::memory::MemoryEndpoints;
+use zssh_core::sftp::transfer::{
+    ConflictResolver, Direction, OverwriteAll, TransferEngine, TransferEvent, TransferJob,
+    TransferOptions, TransferState,
+};
 use zssh_core::sftp::{SftpChannel, SftpError};
 use zssh_core::ssh::BoxFuture;
 
 use super::TransferRow;
 use super::paste::PeerRef;
-use super::transfer::plan_resubmit;
+use super::transfer::{find_row, plan_resubmit};
 
 /// 开通道一律失败，错误文字带着自己的标签：看错误就知道请求落在了哪台主机的数据面上。
 struct Labelled(&'static str);
@@ -113,4 +117,94 @@ fn retrying_a_same_host_copy_stays_same_host() {
     let plan = plan_resubmit(&failed_row(None)).expect("可以重试");
     assert_eq!(plan.job.peer, None);
     assert!(plan.peer_provider.is_none());
+}
+
+/// W05：断线重建引擎后，旧引擎留下的行和新引擎的任务各用各的行。
+/// 两个引擎的任务号不相同；新引擎的进度只落在新行上，旧行不被覆盖，
+/// 旧行的任务号在新引擎里也找不到（它的暂停 / 取消 / 重试不会命中新任务）。
+#[tokio::test(flavor = "multi_thread")]
+async fn reports_of_a_rebuilt_engine_never_land_on_rows_of_the_old_one() {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let dir = std::env::temp_dir().join(format!("zssh-ids-{}-{stamp}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("建临时目录");
+    let old_file = dir.join("old.bin");
+    let new_file = dir.join("new.bin");
+    std::fs::write(&old_file, vec![1u8; 10]).expect("写旧文件");
+    std::fs::write(&new_file, vec![2u8; 20]).expect("写新文件");
+
+    let engine_with_one_upload = |file: &std::path::Path, target: &str| {
+        let resolver: Arc<dyn ConflictResolver> = Arc::new(OverwriteAll);
+        let (engine, events) = TransferEngine::new(
+            Arc::new(MemoryEndpoints::new("/remote")),
+            resolver,
+            TransferOptions::default(),
+        );
+        let id = engine.submit(TransferJob {
+            direction: Direction::Upload,
+            source: file.display().to_string(),
+            target: target.to_owned(),
+            recursive: false,
+            peer: None,
+        });
+        (engine, events, id)
+    };
+    // 把一个任务的事件全部喂给「行表」，直到它结束。
+    async fn feed(
+        rows: &mut [TransferRow],
+        events: &mut tokio::sync::mpsc::UnboundedReceiver<TransferEvent>,
+        id: u64,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "任务 60 秒内没结束");
+            let Ok(Some(event)) =
+                tokio::time::timeout(std::time::Duration::from_millis(100), events.recv()).await
+            else {
+                continue;
+            };
+            let (TransferEvent::Progress(report) | TransferEvent::Finished(report)) = event;
+            if let Some(row) = find_row(rows, report.id) {
+                row.apply(&report);
+            }
+            if report.id == id && report.state.is_terminal() {
+                return;
+            }
+        }
+    }
+    let row_of = |id: u64, name: &str| {
+        TransferRow::new(
+            id,
+            name.to_owned(),
+            Direction::Upload,
+            None,
+            String::new(),
+            String::new(),
+        )
+    };
+
+    // 旧引擎：一个任务做完，它的行留在界面上。
+    let (old_engine, mut old_events, old_id) = engine_with_one_upload(&old_file, "/remote/old.bin");
+    let mut rows = vec![row_of(old_id, "old.bin")];
+    feed(&mut rows, &mut old_events, old_id).await;
+    assert_eq!(rows[0].state, TransferState::Done);
+    assert_eq!(rows[0].total_bytes, 10);
+
+    // 重建：新引擎提交新任务，新行跟在旧行后面。
+    let (new_engine, mut new_events, new_id) = engine_with_one_upload(&new_file, "/remote/new.bin");
+    assert_ne!(old_id, new_id, "任务号必须在进程内唯一");
+    rows.push(row_of(new_id, "new.bin"));
+    feed(&mut rows, &mut new_events, new_id).await;
+
+    assert_eq!(rows[1].state, TransferState::Done);
+    assert_eq!(rows[1].total_bytes, 20, "新任务的进度落在新行上");
+    assert_eq!(rows[0].total_bytes, 10, "旧行不能被新任务的进度覆盖");
+
+    // 旧行的操作不会命中新任务，反过来也一样。
+    assert!(!new_engine.cancel(old_id));
+    assert!(!new_engine.retry(old_id));
+    assert!(!old_engine.cancel(new_id));
+    let _ = std::fs::remove_dir_all(&dir);
 }

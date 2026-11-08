@@ -32,6 +32,12 @@ use crate::error_text::error_text;
 use crate::i18n::t;
 use crate::ssh_backend::runtime;
 
+/// 按任务号找传输行。任务号在整个进程内唯一（见 `TransferEngine` 的发号），所以断线重建引擎后
+/// 旧引擎留下的行不会和新任务撞号；这里只管按号找，不需要再区分是哪个引擎的。
+pub(super) fn find_row(rows: &mut [TransferRow], id: TransferId) -> Option<&mut TransferRow> {
+    rows.iter_mut().find(|row| row.id == id)
+}
+
 /// 失败的行重新提交所需的东西（纯数据，方便单测）。
 pub(super) struct ResubmitPlan {
     pub(super) job: TransferJob,
@@ -233,7 +239,7 @@ impl SftpDemo {
 
     /// 进度事件 → 对应的行；结束事件顺手更新状态栏。
     pub(super) fn apply_report(&mut self, report: ProgressReport) {
-        let Some(row) = self.transfers.iter_mut().find(|row| row.id == report.id) else {
+        let Some(row) = find_row(&mut self.transfers, report.id) else {
             return;
         };
         row.apply(&report);
