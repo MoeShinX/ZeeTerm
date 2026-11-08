@@ -4,7 +4,7 @@
 //! `treeFilterFor` / `hostsUnder` / `groupsUnder`）和 `VaultView.tsx` 里 `HostTreeAside`
 //! 的行顺序。不依赖 GPUI，单测直接盯住这些规则。
 //!
-//! 名字排序：先分数字 / 英文 / 中文 / 其他四段，段内交给 [`super::collation`]
+//! 名字排序：先分英文 / 数字 / 中文 / 其他四段，段内交给 [`super::collation`]
 //! （Windows 的 `zh-CN` 排序：中文按拼音、数字按数值、英文不分大小写，对应前端的
 //! `Intl.Collator("zh-Hans-CN")`）。
 
@@ -64,14 +64,14 @@ pub fn parse_expanded(raw: &[String]) -> BTreeSet<String> {
         .collect()
 }
 
-/// 名字开头是哪一类：数字 → 英文字母 → 中文 → 其他符号。
+/// 名字开头是哪一类：英文字母 → 数字 → 中文 → 其他符号（11-08 定：英文在数字前面）。
 fn name_class(name: &str) -> u8 {
     let Some(first) = name.trim_start().chars().next() else {
         return 3;
     };
-    if first.is_ascii_digit() {
+    if first.is_ascii_alphabetic() {
         0
-    } else if first.is_ascii_alphabetic() {
+    } else if first.is_ascii_digit() {
         1
     } else if is_han(first) {
         2
@@ -85,7 +85,7 @@ fn is_han(ch: char) -> bool {
         0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FA1F)
 }
 
-/// 主机、分组按名字排：先按开头分成 数字、英文、中文、其他符号 四段，段内按自然序。
+/// 主机、分组按名字排：先按开头分成 英文、数字、中文、其他符号 四段，段内按自然序。
 pub fn compare_names(a: &str, b: &str) -> Ordering {
     name_class(a)
         .cmp(&name_class(b))
@@ -487,10 +487,31 @@ mod tests {
     }
 
     #[test]
-    fn names_sort_digits_then_latin_then_han_then_symbols() {
-        let mut names = vec!["_tmp", "中文机", "web", "10-db", "2-db", "Alpha"];
+    fn names_sort_latin_then_digits_then_han_then_symbols() {
+        let mut names = vec![
+            "_tmp",
+            "中文机",
+            "web",
+            "10-db",
+            "2-db",
+            "Alpha",
+            "百度",
+            "诛仙",
+        ];
         names.sort_by(|a, b| compare_names(a, b));
-        assert_eq!(names, ["2-db", "10-db", "Alpha", "web", "中文机", "_tmp"]);
+        assert_eq!(
+            names,
+            [
+                "Alpha",
+                "web",
+                "2-db",
+                "10-db",
+                "百度",
+                "中文机",
+                "诛仙",
+                "_tmp"
+            ]
+        );
     }
 
     #[test]

@@ -13,8 +13,8 @@ use super::GroupSel;
 use super::MainWindow;
 use super::host_tree::group_key;
 use super::page_logic::{
-    OrderState, can_step_group, can_step_host, group_layer_ids, host_layer_ids,
-    looks_like_quick_target, order_state, step_in_layer,
+    OrderState, can_step_group, can_step_host, looks_like_quick_target, order_state,
+    plan_group_step, plan_host_step,
 };
 use super::reveal_ui::RevealAction;
 use crate::i18n::{Msg, t};
@@ -370,7 +370,7 @@ impl MainWindow {
 
     // ---- 排序 ----
 
-    /// 右键「上移 / 下移」（主机）：传整层的新顺序。
+    /// 右键「上移 / 下移」（主机）：只固定挪动涉及的开头那一段，其余继续按名字排。
     pub(crate) fn step_host(
         &mut self,
         host_id: i64,
@@ -382,8 +382,7 @@ impl MainWindow {
         let Some(current) = self.store.host(host_id).cloned() else {
             return;
         };
-        let ids = host_layer_ids(self.store.hosts(), current.group_id);
-        let Some(next) = step_in_layer(&ids, host_id, delta) else {
+        let Some(next) = plan_host_step(self.store.hosts(), &current, delta) else {
             return;
         };
         if let Err(err) = self.store.reorder_hosts(&next) {
@@ -412,8 +411,7 @@ impl MainWindow {
         else {
             return;
         };
-        let ids = group_layer_ids(self.store.groups(), current.parent_id);
-        let Some(next) = step_in_layer(&ids, group_id, delta) else {
+        let Some(next) = plan_group_step(self.store.groups(), &current, delta) else {
             return;
         };
         if let Err(err) = self.store.reorder_groups(&next) {

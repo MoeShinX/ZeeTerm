@@ -478,6 +478,46 @@ pub fn step_in_layer(ids: &[i64], id: i64, delta: i32) -> Option<Vec<i64>> {
     Some(next)
 }
 
+/// 手动调整后真正要固定（写 `sort`）的那一段：原来就固定的，加上从顶上到 `moved` 新位置的这一段；
+/// 后面的保持 `sort == 0`，继续按名字自动排。
+///
+/// 以前是整层都编上号，拖一次之后这一层再也不按名字排、新加的主机只能排在最后。
+/// 固定的总在前面（见 `compare_order`），所以「原来固定的」在新顺序里也是开头连续的一段：
+/// `moved` 落在这段里面或紧跟其后，就只固定这段加上它；落在更后面，就固定到它为止，
+/// 中间被跨过的那些跟着固定，显示出来的顺序才和松手时一样。
+pub fn pinned_prefix(order: &[i64], moved: i64, was_pinned: impl Fn(i64) -> bool) -> Vec<i64> {
+    let Some(at) = order.iter().position(|id| *id == moved) else {
+        return order.to_vec();
+    };
+    let pinned = order
+        .iter()
+        .filter(|id| **id != moved && was_pinned(**id))
+        .count();
+    order[..pinned.max(at) + 1].to_vec()
+}
+
+fn host_pinned(hosts: &[Host]) -> impl Fn(i64) -> bool + '_ {
+    |id| hosts.iter().any(|h| h.id == id && h.sort > 0)
+}
+
+fn group_pinned(groups: &[Group]) -> impl Fn(i64) -> bool + '_ {
+    |id| groups.iter().any(|g| g.id == id && g.sort > 0)
+}
+
+/// 右键「上移 / 下移」主机：要写回的那一段（见 [`pinned_prefix`]）；挪不动返回 `None`。
+pub fn plan_host_step(hosts: &[Host], host: &Host, delta: i32) -> Option<Vec<i64>> {
+    let ids = host_layer_ids(hosts, host.group_id);
+    let next = step_in_layer(&ids, host.id, delta)?;
+    Some(pinned_prefix(&next, host.id, host_pinned(hosts)))
+}
+
+/// 右键「上移 / 下移」分组，规则同 [`plan_host_step`]。
+pub fn plan_group_step(groups: &[Group], group: &Group, delta: i32) -> Option<Vec<i64>> {
+    let ids = group_layer_ids(groups, group.parent_id);
+    let next = step_in_layer(&ids, group.id, delta)?;
+    Some(pinned_prefix(&next, group.id, group_pinned(groups)))
+}
+
 /// 上移 / 下移还能不能动：`(能上移, 能下移)`。
 pub fn can_step_host(hosts: &[Host], host: &Host) -> (bool, bool) {
     let ids = host_layer_ids(hosts, host.group_id);
@@ -516,10 +556,12 @@ pub fn plan_host_drop(
     let target = hosts.iter().find(|h| h.id == target_id)?;
     let layer = host_layer_ids(hosts, target.group_id);
     let order = insert_in_layer(&layer, host_id, target_id, after)?;
-    if host.group_id == target.group_id {
-        if order == layer {
-            return None;
-        }
+    let same_layer = host.group_id == target.group_id;
+    if same_layer && order == layer {
+        return None;
+    }
+    let order = pinned_prefix(&order, host_id, host_pinned(hosts));
+    if same_layer {
         return Some(HostDrop {
             move_to: None,
             order,
@@ -546,7 +588,7 @@ pub fn plan_group_drop(
     }
     let layer = group_layer_ids(groups, group.parent_id);
     let order = insert_in_layer(&layer, group_id, target_id, after)?;
-    (order != layer).then_some(order)
+    (order != layer).then(|| pinned_prefix(&order, group_id, group_pinned(groups)))
 }
 
 // ---- 分组 ----
@@ -869,6 +911,63 @@ mod tests {
     }
 
     #[test]
+    fn a_manual_move_pins_only_the_head_of_the_layer_and_the_rest_stays_by_name() {
+        // 都没调过：显示为 alpha, beta, gamma, delta(按名字：alpha beta delta gamma)。
+        let hosts = vec![
+            host(1, None, "alpha", 0),
+            host(2, None, "beta", 0),
+            host(3, None, "delta", 0),
+            host(4, None, "gamma", 0),
+        ];
+        // gamma 拖到 beta 前面：只固定 alpha、gamma，beta / delta 继续按名字排。
+        let drop = plan_host_drop(&hosts, 4, 2, false).expect("有变化");
+        assert_eq!(drop.order, vec![1, 4]);
+        // 拖到最上面：只固定它自己。
+        assert_eq!(
+            plan_host_drop(&hosts, 3, 1, false).expect("有变化").order,
+            vec![3]
+        );
+
+        // 已经固定了 gamma(1)、alpha(2)，其余没调过。
+        let hosts = vec![
+            host(1, None, "alpha", 2),
+            host(2, None, "beta", 0),
+            host(3, None, "delta", 0),
+            host(4, None, "gamma", 1),
+        ];
+        // 显示：gamma, alpha | beta, delta。把 delta 拖到 alpha 前面：原来固定的两个一起留着。
+        assert_eq!(
+            plan_host_drop(&hosts, 3, 1, false).expect("有变化").order,
+            vec![4, 3, 1]
+        );
+        // 把 alpha 往下拖到 delta 后面：跨过的 beta、delta 跟着固定，顺序才和松手时一样。
+        assert_eq!(
+            plan_host_drop(&hosts, 1, 3, true).expect("有变化").order,
+            vec![4, 2, 3, 1]
+        );
+        // 上移 / 下移同样只固定开头那段。
+        let beta = hosts[1].clone();
+        assert_eq!(plan_host_step(&hosts, &beta, -1), Some(vec![4, 2, 1]));
+    }
+
+    #[test]
+    fn pinned_prefix_keeps_everything_pinned_before() {
+        let pinned = |id: i64| id == 10 || id == 20;
+        assert_eq!(
+            pinned_prefix(&[10, 30, 20, 40], 30, pinned),
+            vec![10, 30, 20]
+        );
+        assert_eq!(
+            pinned_prefix(&[10, 20, 40, 30], 30, pinned),
+            vec![10, 20, 40, 30]
+        );
+        assert_eq!(
+            pinned_prefix(&[30, 10, 20, 40], 30, pinned),
+            vec![30, 10, 20]
+        );
+    }
+
+    #[test]
     fn the_sort_button_cycles_manual_recent_name_manual() {
         let mut mode = SortMode::Manual;
         let seen: Vec<_> = (0..4)
@@ -1101,20 +1200,20 @@ mod tests {
     }
 
     #[test]
-    fn dropping_inside_one_group_renumbers_the_whole_layer() {
+    fn dropping_inside_one_group_pins_up_to_the_dropped_host() {
         let hosts = vec![
             host(1, Some(1), "a", 0),
             host(2, Some(1), "b", 0),
             host(3, Some(1), "c", 0),
         ];
-        // 把 c 拖到 a 的前半：c a b。
+        // 把 c 拖到 a 的前半：c a b，只固定 c（a、b 还按名字排在它后面）。
         let plan = plan_host_drop(&hosts, 3, 1, false).expect("要调整");
         assert_eq!(plan.move_to, None);
-        assert_eq!(plan.order, vec![3, 1, 2]);
-        // 后半：a 之后 → a c b。
+        assert_eq!(plan.order, vec![3]);
+        // 后半：a 之后 → a c b，固定 a、c。
         assert_eq!(
             plan_host_drop(&hosts, 3, 1, true).expect("要调整").order,
-            vec![1, 3, 2]
+            vec![1, 3]
         );
         // 位置没变、拖到自己身上：什么都不做。
         assert_eq!(
@@ -1136,7 +1235,7 @@ mod tests {
         ];
         let plan = plan_host_drop(&hosts, 1, 3, false).expect("要换分组");
         assert_eq!(plan.move_to, Some(Some(2)));
-        assert_eq!(plan.order, vec![2, 1, 3], "b 1 c");
+        assert_eq!(plan.order, vec![2, 1], "b 1 | c 继续按名字");
         // 拖到顶层主机旁边：移到顶层并插在那个位置。
         let top = plan_host_drop(&hosts, 1, 4, true).expect("到顶层");
         assert_eq!(top.move_to, Some(None));
@@ -1150,7 +1249,7 @@ mod tests {
             group(2, None, "b", 0),
             group(3, Some(1), "child", 0),
         ];
-        assert_eq!(plan_group_drop(&groups, 2, 1, false), Some(vec![2, 1]));
+        assert_eq!(plan_group_drop(&groups, 2, 1, false), Some(vec![2]));
         assert_eq!(plan_group_drop(&groups, 1, 2, false), None, "位置没变");
         assert_eq!(
             plan_group_drop(&groups, 3, 2, false),
