@@ -10,6 +10,7 @@
 //!
 //! 测试用**独立连接**：不进连接池（不碰 `ssh_backend` 的池）、不影响已打开的标签；日志和结果里没有密码。
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use ::gpui::{ClipboardItem, Window};
@@ -18,7 +19,8 @@ use zssh_core::model::{
     AuthMethod, HostDraft, Protocol, ProtocolSettings, ProxyMode, SerialOptions,
 };
 use zssh_core::ssh::connection_test::{
-    self, SshTestPlan, TEST_TIMEOUT, TcpRoute, TcpTestPlan, TestOutcome,
+    self, CheckState, IdentityState, SshTestPlan, TEST_TIMEOUT, TcpRoute, TcpTestPlan, TestOutcome,
+    TestResultKind,
 };
 use zssh_core::ssh::{AuthConfig, ChainHop, ProxyConfig};
 use zssh_core::store::Database;
@@ -28,11 +30,42 @@ use crate::i18n::t;
 use super::MainWindow;
 use super::host_form::{FormInput, effective_routing};
 use super::protocol_form::{FieldError, FormField};
-use crate::ssh_backend::{known_hosts, resolve_proxy};
+use crate::ssh_backend::{chain_hops, known_hosts, resolve_proxy_choice};
 
-/// 正在跑的那次测试：丢掉它（对话框关了 / 重新测试）就终止任务。
+/// 影响测试结论的表单参数（路线、认证、目标）的快照，**不含任何密码原文或可恢复的哈希**：
+/// 密码只用 `password_version`（框里的内容每变一次就加一）。名称、分组、标签这类纯展示的修改不在里面，
+/// 改它们不必重测，也不会让旧结果失效。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParamsSignature {
+    pub protocol: Protocol,
+    pub address: String,
+    pub port: String,
+    pub username: String,
+    pub auth: AuthMethod,
+    pub identity: Option<i64>,
+    pub proxy_mode: ProxyMode,
+    pub proxy: Option<i64>,
+    pub jump: Option<i64>,
+    pub legacy: bool,
+    pub password_version: u64,
+    /// 串口：设备名和波特率（别的串口参数不影响「能不能打开」，但改了就应当重测，所以都列出）。
+    pub serial: String,
+}
+
+/// 下一个表单实例编号。每次打开表单领一个新的，关闭再打开也不会重复。
+static NEXT_FORM_INSTANCE: AtomicU64 = AtomicU64::new(1);
+
+/// 一次测试的身份：哪个表单实例、第几次测试、当时的参数修订。结果回来时三者都对得上才算数。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TestTicket {
+    pub form_instance: u64,
+    pub attempt: u64,
+    pub params_revision: u64,
+}
+
+/// 正在跑的那次测试：丢掉它（对话框关了 / 重新测试 / 参数改了）就终止任务。
 pub struct RunningTest {
-    pub generation: u64,
+    pub ticket: TestTicket,
     abort: tokio::task::AbortHandle,
 }
 
@@ -43,23 +76,245 @@ impl Drop for RunningTest {
 }
 
 /// 表单上和测试连接有关的状态。
-#[derive(Default)]
+///
+/// 三重身份：`form_instance`（每次打开表单分配一个，整个表单生命周期不变）、`attempt`（每次测试加一）、
+/// `params_revision`（连接参数每变一次加一）。参数改动、关闭 / 重开表单（实例变了）、取消、重新测试
+/// 都让旧任务终止、旧结果失效；迟到的结果对不上身份就丢掉，不会回填到别的表单或改过的参数上。
 pub struct TestState {
     pub running: Option<RunningTest>,
-    pub result: Option<TestOutcome>,
-    next_generation: u64,
+    result: Option<TestOutcome>,
+    form_instance: u64,
+    attempt: u64,
+    params_revision: u64,
+    signature: Option<ParamsSignature>,
+}
+
+impl Default for TestState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TestState {
+    pub fn new() -> Self {
+        Self {
+            running: None,
+            result: None,
+            form_instance: NEXT_FORM_INSTANCE.fetch_add(1, Ordering::Relaxed),
+            attempt: 0,
+            params_revision: 0,
+            signature: None,
+        }
+    }
+
     pub fn is_running(&self) -> bool {
         self.running.is_some()
     }
 
-    fn begin(&mut self) -> u64 {
-        self.next_generation += 1;
+    /// 表单当前的参数是 `signature`：和上次看到的不一样就是参数变了——终止进行中的测试、丢掉旧结果。
+    /// 返回参数有没有变。
+    pub fn params_changed(&mut self, signature: &ParamsSignature) -> bool {
+        if self.signature.as_ref() == Some(signature) {
+            return false;
+        }
+        let first = self.signature.is_none();
+        self.signature = Some(signature.clone());
+        if first && self.running.is_none() && self.result.is_none() {
+            // 第一次登记当前参数：没有什么要作废的，修订号也不用动。
+            return false;
+        }
+        self.params_revision += 1;
+        self.running = None;
         self.result = None;
-        self.next_generation
+        true
     }
+
+    /// 开始新的一次测试：登记当前参数、作废旧任务和旧结果、换一个新的 attempt。
+    pub fn begin(
+        &mut self,
+        signature: &ParamsSignature,
+        abort: tokio::task::AbortHandle,
+    ) -> TestTicket {
+        self.params_changed(signature);
+        self.attempt += 1;
+        self.result = None;
+        let ticket = TestTicket {
+            form_instance: self.form_instance,
+            attempt: self.attempt,
+            params_revision: self.params_revision,
+        };
+        self.running = Some(RunningTest { ticket, abort });
+        ticket
+    }
+
+    /// 结果回来了。身份对不上（表单换了、又测了一次、参数改了、已取消）就丢掉，返回 `false`。
+    pub fn finish(
+        &mut self,
+        ticket: TestTicket,
+        current: &ParamsSignature,
+        outcome: TestOutcome,
+    ) -> bool {
+        // 先看参数有没有变：变了会把进行中的任务作废，下面的核对自然通不过。
+        self.params_changed(current);
+        let live = self.running.as_ref().is_some_and(|running| {
+            running.ticket == ticket
+                && ticket.form_instance == self.form_instance
+                && ticket.params_revision == self.params_revision
+        });
+        if !live {
+            return false;
+        }
+        self.running = None;
+        self.result = Some(outcome);
+        true
+    }
+
+    /// 取消：终止任务，结果是「已取消」。没有在跑就什么都不做。
+    pub fn cancel(&mut self) -> bool {
+        if self.running.take().is_none() {
+            return false;
+        }
+        self.result = Some(connection_test::cancelled());
+        true
+    }
+
+    /// 丢掉当前显示的结果（进行中的测试不动）。
+    pub fn clear_result(&mut self) {
+        self.result = None;
+    }
+
+    /// 要显示的结果：参数改过之后的旧结果不显示（即使还没来得及作废）。
+    pub fn shown_result(&self, current: &ParamsSignature) -> Option<&TestOutcome> {
+        if self.signature.as_ref() == Some(current) {
+            self.result.as_ref()
+        } else {
+            None
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn set_result(&mut self, outcome: TestOutcome, current: &ParamsSignature) {
+        self.params_changed(current);
+        self.result = Some(outcome);
+    }
+
+    #[cfg(test)]
+    pub fn form_instance(&self) -> u64 {
+        self.form_instance
+    }
+}
+
+/// 结果的显示等级：颜色和图标只由它决定（见 [`present`]）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    /// 检查范围内全部完成。
+    Success,
+    /// 部分完成 / 已取消：中性，不是失败也不是成功。
+    Neutral,
+    /// 失败。
+    Danger,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResultIcon {
+    Success,
+    Info,
+    Error,
+    Cancelled,
+}
+
+/// 结果条里的检查项。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckItem {
+    Connectivity,
+    Identity,
+    Login,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckLine {
+    pub item: CheckItem,
+    pub state: CheckState,
+    /// 身份项的具体情况（别的项是 `None`）。
+    pub identity: Option<IdentityState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Presentation {
+    pub tone: Tone,
+    pub icon: ResultIcon,
+    pub lines: Vec<CheckLine>,
+}
+
+/// **唯一**把测试结果映射成显示等级的地方：Complete 绿色对勾；Partial 中性提示图标，加上通过项目和
+/// 中性的待办标签（不画失败叉，也不把待验证的登录画成绿色成功）；Failed 红色错误图标；Cancelled 中性取消图标。
+pub fn present(outcome: &TestOutcome) -> Presentation {
+    let (tone, icon) = match outcome.kind {
+        TestResultKind::Complete => (Tone::Success, ResultIcon::Success),
+        TestResultKind::Partial => (Tone::Neutral, ResultIcon::Info),
+        TestResultKind::Failed => (Tone::Danger, ResultIcon::Error),
+        TestResultKind::Cancelled => (Tone::Neutral, ResultIcon::Cancelled),
+    };
+    let mut lines = Vec::new();
+    if outcome.kind != TestResultKind::Cancelled {
+        if outcome.connectivity != CheckState::NotApplicable {
+            lines.push(CheckLine {
+                item: CheckItem::Connectivity,
+                state: outcome.connectivity,
+                identity: None,
+            });
+        }
+        if let Some(identity) = outcome.identity {
+            let state = match identity {
+                IdentityState::Matched => CheckState::Passed,
+                IdentityState::Unconfirmed | IdentityState::OtherKeyTypes => CheckState::Pending,
+                IdentityState::Changed | IdentityState::Revoked | IdentityState::Unreadable => {
+                    CheckState::Failed
+                }
+            };
+            lines.push(CheckLine {
+                item: CheckItem::Identity,
+                state,
+                identity: Some(identity),
+            });
+        }
+        if outcome.authentication != CheckState::NotApplicable {
+            lines.push(CheckLine {
+                item: CheckItem::Login,
+                state: outcome.authentication,
+                identity: None,
+            });
+        }
+    }
+    Presentation { tone, icon, lines }
+}
+
+/// 检查项一行的文字，例如「登录：待首次连接验证」。
+pub fn check_line_text(line: &CheckLine) -> String {
+    let item = match line.item {
+        CheckItem::Connectivity => t(HostTestMsg::ItemConnectivity),
+        CheckItem::Identity => t(HostTestMsg::ItemIdentity),
+        CheckItem::Login => t(HostTestMsg::ItemLogin),
+    };
+    let state = match (line.item, line.identity, line.state) {
+        (CheckItem::Identity, Some(IdentityState::Matched), _) => t(HostTestMsg::IdentityMatched),
+        (CheckItem::Identity, Some(IdentityState::Unconfirmed), _) => {
+            t(HostTestMsg::IdentityUnconfirmed)
+        }
+        (CheckItem::Identity, Some(IdentityState::Changed), _) => t(HostTestMsg::IdentityChanged),
+        (CheckItem::Identity, Some(IdentityState::Revoked), _) => t(HostTestMsg::IdentityRevoked),
+        (CheckItem::Identity, Some(IdentityState::Unreadable), _) => {
+            t(HostTestMsg::IdentityUnreadable)
+        }
+        (CheckItem::Identity, Some(IdentityState::OtherKeyTypes), _) => {
+            t(HostTestMsg::IdentityOtherKeyTypes)
+        }
+        (_, _, CheckState::Passed) => t(HostTestMsg::StatePassed),
+        (_, _, CheckState::Pending) => t(HostTestMsg::StatePending),
+        (_, _, CheckState::Failed) => t(HostTestMsg::StateFailed),
+        (_, _, CheckState::NotApplicable) => "",
+    };
+    format!("{item}{}{state}", t(HostTestMsg::Colon))
 }
 
 /// 一次要跑的测试。
@@ -82,68 +337,32 @@ pub struct JobInput<'a> {
     pub stored_password_identity: Option<i64>,
 }
 
+/// 表单里选的代理方式 → 代理配置。解析规则和正式连接是同一份（`ssh_backend::resolve_proxy_choice`），
+/// 只是错误换成落在「代理」那一行的字段错误。
 fn proxy_config(
     db: &Database,
     mode: ProxyMode,
     proxy_id: Option<i64>,
+    name: &str,
 ) -> Result<Option<ProxyConfig>, FieldError> {
-    let id = match mode {
-        ProxyMode::None => return Ok(None),
-        ProxyMode::Default => match db
-            .default_proxy_id()
-            .map_err(|err| FieldError::new(FormField::Proxy, err.to_string()))?
-        {
-            Some(id) => id,
-            None => return Ok(None),
-        },
-        ProxyMode::Custom => proxy_id
-            .ok_or_else(|| FieldError::new(FormField::Proxy, t(HostTestMsg::ProxyNotChosen)))?,
-    };
-    let login = db
-        .proxy_login(id)
-        .map_err(|err| FieldError::new(FormField::Proxy, err.to_string()))?;
-    Ok(Some(ProxyConfig {
-        kind: login.kind,
-        host: login.host,
-        port: login.port,
-        username: login.username,
-        password: login.password,
-    }))
-}
-
-/// 跳板机那条链（最外层在前，最后一个就是选中的跳板机）。每一跳用它自己那条主机记录的认证；
-/// 只有第一跳的代理生效（后面各跳走在前一跳的 SSH 通道里），所以只给第一跳解析代理。
-fn jump_hops(db: &Database, jump_id: i64) -> Result<Vec<ChainHop>, FieldError> {
-    let jump_error = |message: String| FieldError::new(FormField::Jump, message);
-    let hosts = db
-        .host_chain(jump_id)
-        .map_err(|err| jump_error(err.to_string()))?;
+    let proxy_error = |message: String| FieldError::new(FormField::Proxy, message);
+    if mode == ProxyMode::Custom && proxy_id.is_none() {
+        return Err(proxy_error(t(HostTestMsg::ProxyNotChosen).to_owned()));
+    }
     let default_proxy = db
         .default_proxy_id()
-        .map_err(|err| jump_error(err.to_string()))?;
-    let known = known_hosts();
-    let mut hops = Vec::with_capacity(hosts.len());
-    for (index, host) in hosts.iter().enumerate() {
-        let login = db
-            .host_login(host.id)
-            .map_err(|err| jump_error(err.to_string()))?;
-        let proxy = if index == 0 {
-            resolve_proxy(db, host, default_proxy).map_err(jump_error)?
-        } else {
-            None
-        };
-        hops.push(ChainHop {
-            label: format!("{}{}", t(HostTestMsg::JumpLabelPrefix), host.name),
-            host: login.host,
-            port: login.port,
-            username: login.username,
-            proxy,
-            auth: login.auth,
-            known_hosts: known.clone(),
-            legacy_algorithms: login.legacy_algorithms,
-        });
-    }
-    Ok(hops)
+        .map_err(|err| proxy_error(err.to_string()))?;
+    resolve_proxy_choice(db, mode, proxy_id, default_proxy, name).map_err(proxy_error)
+}
+
+/// 跳板机那条链（最外层在前，最后一个就是选中的跳板机）。和正式连接用同一个 `ssh_backend::chain_hops`：
+/// 每一跳用它自己那条主机记录的认证、代理、known_hosts 和「旧算法兼容」；只有第一跳的代理生效
+/// （后面各跳走在前一跳的 SSH 通道里）。这里只决定每一跳在界面上叫什么。
+fn jump_hops(db: &Database, jump_id: i64) -> Result<Vec<ChainHop>, FieldError> {
+    chain_hops(db, jump_id, |host, _index, _total, _proxy| {
+        format!("{}{}", t(HostTestMsg::JumpLabelPrefix), host.name)
+    })
+    .map_err(|message| FieldError::new(FormField::Jump, message))
 }
 
 /// 把表单里的值拼成一份测试计划。错误带着该显示在哪个字段旁边（和保存时的校验错误一样显示）。
@@ -160,7 +379,7 @@ pub fn build_job(db: &Database, input: &JobInput<'_>) -> Result<Job, FieldError>
             let route = match draft.jump_host_id {
                 // 设了跳板机时目标自己的代理不再用（和真实连接一样）。
                 Some(jump) => TcpRoute::Jump(jump_hops(db, jump)?),
-                None => match proxy_config(db, draft.proxy_mode, draft.proxy_id)? {
+                None => match proxy_config(db, draft.proxy_mode, draft.proxy_id, input.name)? {
                     Some(proxy) => TcpRoute::Proxy(proxy),
                     None => TcpRoute::Direct,
                 },
@@ -193,7 +412,7 @@ pub fn build_job(db: &Database, input: &JobInput<'_>) -> Result<Job, FieldError>
                 None => Vec::new(),
             };
             let proxy = if hops.is_empty() {
-                proxy_config(db, draft.proxy_mode, draft.proxy_id)?
+                proxy_config(db, draft.proxy_mode, draft.proxy_id, input.name)?
             } else {
                 None
             };
@@ -390,37 +609,40 @@ impl MainWindow {
             return;
         };
         form.errors.clear();
-        let generation = form.test.begin();
-        form.test.running = Some(RunningTest {
-            generation,
-            abort: handle.abort_handle(),
-        });
+        let signature = form.test_signature(cx);
+        let ticket = form.test.begin(&signature, handle.abort_handle());
         self.await_result(rx, window, cx, move |this, outcome, _window, cx| {
-            this.host_test_done(generation, outcome, cx);
+            this.host_test_done(ticket, outcome, cx);
         });
         cx.notify();
     }
 
-    fn host_test_done(&mut self, generation: u64, outcome: TestOutcome, cx: &mut Context<Self>) {
-        if let Some(form) = &mut self.host_form
-            && form
-                .test
-                .running
-                .as_ref()
-                .is_some_and(|running| running.generation == generation)
-        {
-            form.test.running = None;
-            form.test.result = Some(outcome);
-            cx.notify();
+    /// 测试结果回来了：只有表单实例、第几次测试、参数修订都对得上才落到表单上；
+    /// 表单已经关了 / 重开过、又测了一次、参数改过、已取消，一律丢掉。
+    fn host_test_done(&mut self, ticket: TestTicket, outcome: TestOutcome, cx: &mut Context<Self>) {
+        if let Some(form) = &mut self.host_form {
+            let signature = form.test_signature(cx);
+            if form.test.finish(ticket, &signature, outcome) {
+                cx.notify();
+            }
+        }
+    }
+
+    /// 表单里和连接有关的参数可能变了：对一下，变了就终止进行中的测试、作废旧结果。
+    pub(crate) fn host_test_sync(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = &mut self.host_form {
+            let signature = form.test_signature(cx);
+            if form.test.params_changed(&signature) {
+                cx.notify();
+            }
         }
     }
 
     /// 「取消」：终止正在跑的测试（连接随任务一起关掉）。
     pub(crate) fn host_test_cancel(&mut self, cx: &mut Context<Self>) {
         if let Some(form) = &mut self.host_form
-            && form.test.running.take().is_some()
+            && form.test.cancel()
         {
-            form.test.result = Some(connection_test::cancelled());
             cx.notify();
         }
     }
@@ -430,7 +652,7 @@ impl MainWindow {
         let detail = self
             .host_form
             .as_ref()
-            .and_then(|form| form.test.result.as_ref())
+            .and_then(|form| form.test.shown_result(&form.test_signature(cx)))
             .map(|outcome| outcome.detail.clone());
         if let Some(detail) = detail {
             cx.write_to_clipboard(ClipboardItem::new_string(detail));
@@ -452,6 +674,19 @@ enum HostTestMsg {
     RuntimeUnavailable,
     CopiedDetail,
     DefaultTestName,
+    ItemConnectivity,
+    ItemIdentity,
+    ItemLogin,
+    StatePassed,
+    StatePending,
+    StateFailed,
+    IdentityMatched,
+    IdentityUnconfirmed,
+    IdentityChanged,
+    IdentityRevoked,
+    IdentityUnreadable,
+    IdentityOtherKeyTypes,
+    Colon,
 }
 
 impl crate::i18n::Msg for HostTestMsg {
@@ -467,6 +702,19 @@ impl crate::i18n::Msg for HostTestMsg {
             Self::RuntimeUnavailable => "后台运行时没起来，不能测试连接",
             Self::CopiedDetail => "已复制测试详情",
             Self::DefaultTestName => "测试",
+            Self::ItemConnectivity => "连通性",
+            Self::ItemIdentity => "服务器身份",
+            Self::ItemLogin => "登录",
+            Self::StatePassed => "通过",
+            Self::StatePending => "待验证",
+            Self::StateFailed => "失败",
+            Self::IdentityMatched => "与已保存的记录一致",
+            Self::IdentityUnconfirmed => "尚未确认，首次连接时核对",
+            Self::IdentityChanged => "与已保存的记录不一致",
+            Self::IdentityRevoked => "已被吊销",
+            Self::IdentityUnreadable => "无法读取信任记录",
+            Self::IdentityOtherKeyTypes => "密钥类型与已保存的不同，待核对",
+            Self::Colon => "：",
         }
     }
 
@@ -486,6 +734,19 @@ impl crate::i18n::Msg for HostTestMsg {
             }
             Self::CopiedDetail => "Test details copied",
             Self::DefaultTestName => "test",
+            Self::ItemConnectivity => "Connectivity",
+            Self::ItemIdentity => "Server identity",
+            Self::ItemLogin => "Login",
+            Self::StatePassed => "passed",
+            Self::StatePending => "to be verified",
+            Self::StateFailed => "failed",
+            Self::IdentityMatched => "matches the saved record",
+            Self::IdentityUnconfirmed => "not confirmed yet, checked on the first connection",
+            Self::IdentityChanged => "differs from the saved record",
+            Self::IdentityRevoked => "revoked",
+            Self::IdentityUnreadable => "trust records could not be read",
+            Self::IdentityOtherKeyTypes => "key type differs from the saved ones, to be checked",
+            Self::Colon => ": ",
         }
     }
 }
@@ -505,7 +766,8 @@ mod tests {
         ProxyKind, ProxyMode,
     };
     use zssh_core::ssh::connection_test::{
-        SshTestPlan, TcpRoute, TestStage, test_ssh, test_ssh_with,
+        CheckState, IdentityState, SshTestPlan, TcpRoute, TestResultKind, TestStage, test_ssh,
+        test_ssh_with,
     };
     // 只有用假 Telnet 设备的用例会用到（它们只在 debug 下编译）。
     #[cfg(debug_assertions)]
@@ -579,28 +841,23 @@ mod tests {
             );
             (stopped, outcome)
         });
-        assert!(
-            !stopped.ok && stopped.stage.is_none(),
-            "{}",
-            stopped.headline
+        assert_eq!(stopped.kind, TestResultKind::Partial, "{}", stopped.reason);
+        assert!(stopped.failing_stage.is_none(), "部分完成不是失败");
+        assert_eq!(
+            stopped.reason,
+            "网络与 SSH 响应检测通过，登录待首次连接验证"
         );
-        assert!(
-            stopped
-                .headline
-                .contains("没有测试登录；请先正式连接一次并核对指纹"),
-            "{}",
-            stopped.headline
-        );
-        assert!(stopped.untrusted_fingerprint.is_some());
+        assert_eq!(stopped.identity, Some(IdentityState::Unconfirmed));
+        assert_eq!(stopped.authentication, CheckState::Pending);
         assert!(stopped.detail.contains("直连") && stopped.detail.contains("没有保存"));
         // 已信任：照常登录，结果里带服务器版本。
-        assert!(outcome.ok, "{}", outcome.headline);
+        assert_eq!(outcome.kind, TestResultKind::Complete, "{}", outcome.reason);
+        assert_eq!(outcome.identity, Some(IdentityState::Matched));
         assert!(
-            outcome.headline.contains("服务器 SSH-2.0-"),
+            outcome.reason.contains("服务器 SSH-2.0-"),
             "{}",
-            outcome.headline
+            outcome.reason
         );
-        assert!(outcome.untrusted_fingerprint.is_none());
     }
 
     #[test]
@@ -623,17 +880,17 @@ mod tests {
             .await;
             (bad, good, saved)
         });
-        assert!(!bad.ok);
-        assert_eq!(bad.stage, Some(TestStage::Auth));
-        assert!(bad.headline.contains("认证失败"), "{}", bad.headline);
+        assert_eq!(bad.kind, TestResultKind::Failed);
+        assert_eq!(bad.failing_stage, Some(TestStage::Auth));
+        assert!(bad.reason.contains("认证失败"), "{}", bad.reason);
         // 结果和详情里都不能出现密码。
-        for text in [bad.headline.to_string(), bad.detail.clone()] {
+        for text in [bad.reason.to_string(), bad.detail.clone()] {
             assert!(
                 !text.contains("wrong-pw") && !text.contains("right-pw"),
                 "{text}"
             );
         }
-        assert!(good.ok, "{}", good.headline);
+        assert_eq!(good.kind, TestResultKind::Complete, "{}", good.reason);
         assert_eq!(
             std::fs::read(&known).expect("读"),
             saved,
@@ -669,12 +926,12 @@ mod tests {
             );
             outcome
         });
-        assert!(!outcome.ok);
-        assert_eq!(outcome.stage, Some(TestStage::HostKey));
+        assert_eq!(outcome.kind, TestResultKind::Failed);
+        assert_eq!(outcome.failing_stage, Some(TestStage::HostKey));
         assert!(
-            outcome.headline.contains("主机密钥与保存的不一致"),
+            outcome.reason.contains("主机密钥与保存的不一致"),
             "{}",
-            outcome.headline
+            outcome.reason
         );
     }
 
@@ -687,13 +944,9 @@ mod tests {
             })
             .await
         });
-        assert!(!outcome.ok);
-        assert_eq!(outcome.stage, Some(TestStage::Connect));
-        assert!(
-            outcome.headline.contains("连接被拒绝"),
-            "{}",
-            outcome.headline
-        );
+        assert_eq!(outcome.kind, TestResultKind::Failed);
+        assert_eq!(outcome.failing_stage, Some(TestStage::Connect));
+        assert!(outcome.reason.contains("连接被拒绝"), "{}", outcome.reason);
     }
 
     #[test]
@@ -717,12 +970,12 @@ mod tests {
             )
             .await
         });
-        assert!(!outcome.ok);
-        assert_eq!(outcome.stage, Some(TestStage::Handshake));
+        assert_eq!(outcome.kind, TestResultKind::Failed);
+        assert_eq!(outcome.failing_stage, Some(TestStage::Handshake));
         assert!(
-            outcome.headline.contains("卡在：SSH 握手"),
+            outcome.reason.contains("卡在：SSH 握手"),
             "{}",
-            outcome.headline
+            outcome.reason
         );
     }
 
@@ -746,13 +999,9 @@ mod tests {
             });
             test_ssh(SshTestPlan { hops: vec![target] }).await
         });
-        assert!(!outcome.ok);
-        assert_eq!(outcome.stage, Some(TestStage::Proxy));
-        assert!(
-            outcome.headline.starts_with("代理失败"),
-            "{}",
-            outcome.headline
-        );
+        assert_eq!(outcome.kind, TestResultKind::Failed);
+        assert_eq!(outcome.failing_stage, Some(TestStage::Proxy));
+        assert!(outcome.reason.starts_with("代理失败"), "{}", outcome.reason);
         assert!(!outcome.detail.contains("proxy-secret"));
     }
 
@@ -774,7 +1023,7 @@ mod tests {
             .await;
             (outcome, saved)
         });
-        assert!(outcome.ok, "{}", outcome.headline);
+        assert_eq!(outcome.kind, TestResultKind::Complete, "{}", outcome.reason);
         assert!(
             outcome.detail.contains("经 跳板机 edge-1"),
             "{}",
@@ -838,21 +1087,21 @@ mod tests {
             (talkative, quiet, refused)
         });
         assert!(
-            talkative.ok && talkative.headline.contains("对方已回应"),
+            talkative.kind == TestResultKind::Complete && talkative.reason.contains("对方已回应"),
             "{}",
-            talkative.headline
+            talkative.reason
         );
         assert!(
-            quiet.ok && quiet.headline.contains("没有主动发数据"),
+            quiet.kind == TestResultKind::Complete && quiet.reason.contains("没有主动发数据"),
             "{}",
-            quiet.headline
+            quiet.reason
         );
         assert!(
-            !refused.ok && refused.headline.contains("连接被拒绝"),
+            refused.kind == TestResultKind::Failed && refused.reason.contains("连接被拒绝"),
             "{}",
-            refused.headline
+            refused.reason
         );
-        assert_eq!(refused.stage, Some(TestStage::Connect));
+        assert_eq!(refused.failing_stage, Some(TestStage::Connect));
         // Telnet 测试只连 TCP：不做自动登录。
         assert!(talkative.detail.contains("未做登录"));
     }
@@ -872,7 +1121,7 @@ mod tests {
             })
             .await
         });
-        assert!(outcome.ok, "{}", outcome.headline);
+        assert_eq!(outcome.kind, TestResultKind::Complete, "{}", outcome.reason);
         assert!(
             outcome.detail.contains("经跳板机 跳板机 edge-1"),
             "{}",
@@ -890,12 +1139,12 @@ mod tests {
             };
             super::run_job(Job::Serial(options)).await
         });
-        assert!(!outcome.ok);
-        assert_eq!(outcome.stage, Some(TestStage::Open));
+        assert_eq!(outcome.kind, TestResultKind::Failed);
+        assert_eq!(outcome.failing_stage, Some(TestStage::Open));
         assert!(
-            outcome.headline.contains("COM98") && outcome.headline.contains("不存在"),
+            outcome.reason.contains("COM98") && outcome.reason.contains("不存在"),
             "{}",
-            outcome.headline
+            outcome.reason
         );
     }
 
@@ -1131,5 +1380,402 @@ mod tests {
             Job::Serial(options) => assert_eq!(options.device, "COM3"),
             _ => panic!("应当是串口测试"),
         }
+    }
+
+    /// 同一份配置：表单里（还没保存）拼出来的测试路线，和保存之后正式连接用的路线，
+    /// 逐跳的地址 / 端口 / 用户 / 代理 / 旧算法兼容 / 认证方式完全一致——测试没有另造一份路线规则。
+    #[test]
+    fn the_test_route_equals_the_route_of_a_normal_connection_to_the_same_host() {
+        let db = memory_db();
+        let settings = ProtocolSettings::default();
+        let proxy_id = save_proxy(&db, "办公室代理", 1080);
+        let mut outer = draft("outer");
+        outer.host = "192.0.2.1".to_owned();
+        outer.proxy_mode = ProxyMode::Custom;
+        outer.proxy_id = Some(proxy_id);
+        outer.legacy_algorithms = true;
+        let outer = db.host_save(&outer).expect("外层跳板机");
+        let mut target = draft("lab-1");
+        target.host = "192.0.2.9".to_owned();
+        target.port = 2222;
+        target.jump_host_id = Some(outer.id);
+        target.legacy_algorithms = true;
+        let saved = db.host_save(&target).expect("目标");
+        let formal = crate::ssh_backend::chain_hops(&db, saved.id, |_, _, _, _| String::new())
+            .expect("正式连接的路线");
+        let tested = ssh_hops(build_job(&db, &input(&target, &settings, "x", None)).expect("计划"));
+        assert_eq!(formal.len(), tested.len());
+        for (formal, tested) in formal.iter().zip(&tested) {
+            assert_eq!(
+                (
+                    &formal.host,
+                    formal.port,
+                    &formal.username,
+                    formal.legacy_algorithms,
+                    formal.auth.method,
+                    formal.proxy.as_ref().map(|p| (&p.host, p.port)),
+                ),
+                (
+                    &tested.host,
+                    tested.port,
+                    &tested.username,
+                    tested.legacy_algorithms,
+                    tested.auth.method,
+                    tested.proxy.as_ref().map(|p| (&p.host, p.port)),
+                )
+            );
+        }
+    }
+
+    // ---- 结果的显示等级（唯一的映射函数）----
+
+    use super::{CheckItem, ResultIcon, Tone, present};
+    use zssh_core::ssh::connection_test::{TestOutcome, cancelled, serial_failure, serial_success};
+
+    fn outcome(
+        kind: TestResultKind,
+        connectivity: CheckState,
+        identity: Option<IdentityState>,
+        authentication: CheckState,
+    ) -> TestOutcome {
+        TestOutcome {
+            kind,
+            connectivity,
+            identity,
+            authentication,
+            failing_stage: None,
+            checked_hop: None,
+            untested_hops: Vec::new(),
+            reason: zssh_core::error::Reason::text("x"),
+            detail: String::new(),
+            elapsed_ms: 1,
+        }
+    }
+
+    #[test]
+    fn each_result_kind_has_its_own_tone_and_icon() {
+        let complete = present(&outcome(
+            TestResultKind::Complete,
+            CheckState::Passed,
+            Some(IdentityState::Matched),
+            CheckState::Passed,
+        ));
+        assert_eq!(
+            (complete.tone, complete.icon),
+            (Tone::Success, ResultIcon::Success)
+        );
+        assert!(
+            complete
+                .lines
+                .iter()
+                .all(|line| line.state == CheckState::Passed)
+        );
+        assert_eq!(complete.lines.len(), 3);
+
+        let partial = present(&outcome(
+            TestResultKind::Partial,
+            CheckState::Passed,
+            Some(IdentityState::Unconfirmed),
+            CheckState::Pending,
+        ));
+        // 部分完成：中性提示图标，不是失败叉，也不是绿色成功。
+        assert_eq!(
+            (partial.tone, partial.icon),
+            (Tone::Neutral, ResultIcon::Info)
+        );
+        let login = partial
+            .lines
+            .iter()
+            .find(|line| line.item == CheckItem::Login)
+            .expect("有登录一项");
+        assert_eq!(login.state, CheckState::Pending, "待验证的登录不画成通过");
+        let connectivity = partial
+            .lines
+            .iter()
+            .find(|line| line.item == CheckItem::Connectivity)
+            .expect("有连通性一项");
+        assert_eq!(connectivity.state, CheckState::Passed);
+        assert!(
+            partial
+                .lines
+                .iter()
+                .all(|line| line.state != CheckState::Failed),
+            "部分完成里不能有失败项"
+        );
+
+        let failed = present(&outcome(
+            TestResultKind::Failed,
+            CheckState::Passed,
+            Some(IdentityState::Changed),
+            CheckState::NotApplicable,
+        ));
+        assert_eq!(
+            (failed.tone, failed.icon),
+            (Tone::Danger, ResultIcon::Error)
+        );
+        assert!(
+            failed
+                .lines
+                .iter()
+                .any(|line| line.state == CheckState::Failed),
+            "指纹变化画成失败项"
+        );
+        assert!(
+            failed
+                .lines
+                .iter()
+                .all(|line| line.item != CheckItem::Login),
+            "认证之前就停了：没有登录这一项"
+        );
+
+        let cancelled = present(&cancelled());
+        assert_eq!(
+            (cancelled.tone, cancelled.icon),
+            (Tone::Neutral, ResultIcon::Cancelled)
+        );
+        assert!(cancelled.lines.is_empty(), "取消什么都没证明");
+    }
+
+    #[test]
+    fn every_identity_state_is_drawn_consistently() {
+        use IdentityState::*;
+        let state_of = |identity| {
+            present(&outcome(
+                TestResultKind::Partial,
+                CheckState::Passed,
+                Some(identity),
+                CheckState::Pending,
+            ))
+            .lines
+            .into_iter()
+            .find(|line| line.item == CheckItem::Identity)
+            .map(|line| line.state)
+        };
+        assert_eq!(state_of(Matched), Some(CheckState::Passed));
+        assert_eq!(state_of(Unconfirmed), Some(CheckState::Pending));
+        assert_eq!(state_of(OtherKeyTypes), Some(CheckState::Pending));
+        assert_eq!(state_of(Changed), Some(CheckState::Failed));
+        assert_eq!(state_of(Revoked), Some(CheckState::Failed));
+        assert_eq!(state_of(Unreadable), Some(CheckState::Failed));
+        // 每种身份状态都有自己的文字（中文、英文都不是空的，彼此不同）。
+        let texts: Vec<String> = [
+            Matched,
+            Unconfirmed,
+            OtherKeyTypes,
+            Changed,
+            Revoked,
+            Unreadable,
+        ]
+        .into_iter()
+        .map(|identity| {
+            let shown = present(&outcome(
+                TestResultKind::Failed,
+                CheckState::Passed,
+                Some(identity),
+                CheckState::NotApplicable,
+            ));
+            let line = shown
+                .lines
+                .iter()
+                .find(|line| line.item == CheckItem::Identity)
+                .expect("身份一项");
+            super::check_line_text(line)
+        })
+        .collect();
+        for (i, a) in texts.iter().enumerate() {
+            assert!(!a.is_empty());
+            for b in &texts[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn serial_and_telnet_results_have_no_identity_or_login_line() {
+        let ok = present(&serial_success("COM3", 5));
+        assert_eq!(ok.tone, Tone::Success);
+        assert_eq!(ok.lines.len(), 1);
+        assert_eq!(ok.lines[0].item, CheckItem::Connectivity);
+        let bad = present(&serial_failure("COM3", "不存在", 5));
+        assert_eq!(bad.tone, Tone::Danger);
+        assert_eq!(bad.lines[0].state, CheckState::Failed);
+    }
+
+    // ---- 表单实例 / 第几次测试 / 参数修订：迟到的结果不回填 ----
+
+    use super::{ParamsSignature, TestState};
+
+    fn signature(version: u64) -> ParamsSignature {
+        ParamsSignature {
+            protocol: Protocol::Ssh,
+            address: "192.0.2.10".to_owned(),
+            port: "22".to_owned(),
+            username: "ops".to_owned(),
+            auth: AuthMethod::Password,
+            identity: None,
+            proxy_mode: ProxyMode::None,
+            proxy: None,
+            jump: None,
+            legacy: false,
+            password_version: version,
+            serial: String::new(),
+        }
+    }
+
+    fn done() -> TestOutcome {
+        outcome(
+            TestResultKind::Complete,
+            CheckState::Passed,
+            Some(IdentityState::Matched),
+            CheckState::Passed,
+        )
+    }
+
+    fn idle_task(rt: &tokio::runtime::Runtime) -> tokio::task::AbortHandle {
+        rt.spawn(std::future::pending::<()>()).abort_handle()
+    }
+
+    #[test]
+    fn a_result_for_the_current_test_is_accepted_once() {
+        let rt = runtime();
+        let mut state = TestState::new();
+        let sig = signature(0);
+        let ticket = state.begin(&sig, idle_task(&rt));
+        assert!(state.is_running());
+        assert!(state.finish(ticket, &sig, done()));
+        assert!(!state.is_running());
+        assert!(state.shown_result(&sig).is_some());
+        // 同一张票据再回一次：已经用过了。
+        assert!(!state.finish(ticket, &sig, cancelled()));
+        assert_eq!(
+            state.shown_result(&sig).map(|o| o.kind),
+            Some(TestResultKind::Complete)
+        );
+    }
+
+    #[test]
+    fn a_late_result_never_fills_a_reopened_form() {
+        let rt = runtime();
+        // 关闭再打开：新的表单实例，新的状态。
+        let mut old_form = TestState::new();
+        let sig = signature(0);
+        let stale = old_form.begin(&sig, idle_task(&rt));
+        drop(old_form);
+        let mut new_form = TestState::new();
+        assert_ne!(stale.form_instance, new_form.form_instance());
+        // 新表单还没测过：迟到的结果落不下来。
+        assert!(!new_form.finish(stale, &sig, done()));
+        assert!(new_form.shown_result(&sig).is_none());
+        // 新表单自己测着的时候，旧结果也不能顶替它。
+        let current = new_form.begin(&sig, idle_task(&rt));
+        assert!(!new_form.finish(stale, &sig, done()));
+        assert!(new_form.is_running(), "还在等自己的结果");
+        assert!(new_form.finish(current, &sig, done()));
+    }
+
+    #[test]
+    fn changing_a_connection_parameter_stops_the_test_and_drops_its_late_result() {
+        let rt = runtime();
+        let mut state = TestState::new();
+        let before = signature(0);
+        let ticket = state.begin(&before, idle_task(&rt));
+        // 改了地址。
+        let mut after = before.clone();
+        after.address = "192.0.2.11".to_owned();
+        assert!(state.params_changed(&after), "参数变了");
+        assert!(!state.is_running(), "进行中的测试被终止");
+        // 迟到的结果：对不上了。
+        assert!(!state.finish(ticket, &after, done()));
+        assert!(state.shown_result(&after).is_none());
+        // 重新测试得到的新票据带着新的参数修订。
+        let next = state.begin(&after, idle_task(&rt));
+        assert_ne!(next.params_revision, ticket.params_revision);
+        assert_ne!(next.attempt, ticket.attempt);
+        assert!(state.finish(next, &after, done()));
+    }
+
+    #[test]
+    fn a_parameter_change_the_state_has_not_seen_yet_still_rejects_the_result() {
+        let rt = runtime();
+        let mut state = TestState::new();
+        let before = signature(0);
+        let ticket = state.begin(&before, idle_task(&rt));
+        // 没有人通知过 state，但结果回来时表单里的参数已经变了（密码改过一次）。
+        let now = signature(1);
+        assert!(!state.finish(ticket, &now, done()));
+        assert!(state.shown_result(&now).is_none());
+    }
+
+    #[test]
+    fn an_old_result_is_hidden_as_soon_as_the_form_differs() {
+        let rt = runtime();
+        let mut state = TestState::new();
+        let before = signature(0);
+        let ticket = state.begin(&before, idle_task(&rt));
+        assert!(state.finish(ticket, &before, done()));
+        assert!(state.shown_result(&before).is_some());
+        // 参数变了但还没通知到 state：不显示旧结果。
+        assert!(state.shown_result(&signature(1)).is_none());
+        // 通知之后旧结果被清掉，改回原样也不会复活。
+        assert!(state.params_changed(&signature(1)));
+        assert!(state.shown_result(&before).is_none());
+        state.params_changed(&before);
+        assert!(state.shown_result(&before).is_none());
+    }
+
+    #[test]
+    fn display_only_changes_are_not_part_of_the_signature() {
+        // 签名里没有名称、分组、标签：改它们不会让结果失效（也就不必重拨）。
+        let a = signature(0);
+        let rendered = format!("{a:?}");
+        for shown_only in [" name:", " group:", " tags:"] {
+            assert!(!rendered.contains(shown_only), "{rendered}");
+        }
+        let rt = runtime();
+        let mut state = TestState::new();
+        let ticket = state.begin(&a, idle_task(&rt));
+        assert!(state.finish(ticket, &a, done()));
+        assert!(!state.params_changed(&a.clone()), "同样的参数不算变");
+        assert!(state.shown_result(&a).is_some());
+    }
+
+    #[test]
+    fn the_password_is_tracked_by_a_version_never_by_its_text() {
+        let rendered = format!("{:?}", signature(7));
+        assert!(rendered.contains("password_version: 7"), "{rendered}");
+        assert!(!rendered.contains("password:"), "{rendered}");
+        let rt = runtime();
+        let mut state = TestState::new();
+        let ticket = state.begin(&signature(0), idle_task(&rt));
+        // 密码框内容变了一次：版本号变了，结果作废。
+        assert!(!state.finish(ticket, &signature(1), done()));
+    }
+
+    #[test]
+    fn a_second_test_supersedes_the_first_and_cancel_drops_the_late_result() {
+        let rt = runtime();
+        let mut state = TestState::new();
+        let sig = signature(0);
+        let first = state.begin(&sig, idle_task(&rt));
+        let second = state.begin(&sig, idle_task(&rt));
+        assert_ne!(first.attempt, second.attempt);
+        assert!(
+            !state.finish(first, &sig, done()),
+            "第一次的结果不能顶替第二次"
+        );
+        assert!(state.cancel());
+        assert_eq!(
+            state.shown_result(&sig).map(|o| o.kind),
+            Some(TestResultKind::Cancelled)
+        );
+        assert!(
+            !state.finish(second, &sig, done()),
+            "取消之后迟到的结果丢掉"
+        );
+        assert_eq!(
+            state.shown_result(&sig).map(|o| o.kind),
+            Some(TestResultKind::Cancelled)
+        );
+        assert!(!state.cancel(), "没有在跑就没什么可取消的");
     }
 }

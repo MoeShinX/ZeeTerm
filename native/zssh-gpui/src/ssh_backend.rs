@@ -930,6 +930,26 @@ pub(crate) fn known_hosts() -> KnownHosts {
 
 /// 拨号链：跳板机从最外层到目标；代理只挂在第一跳。
 fn build_chain(db: &Database, host_id: i64) -> Result<Vec<ChainHop>, String> {
+    chain_hops(db, host_id, |host, index, total, proxy| {
+        match (proxy, index + 1 == total) {
+            (Some(proxy), _) if index == 0 => {
+                format!("{}{}", t(BackendMsg::HopProxy), proxy_label(&proxy.kind))
+            }
+            (_, true) => format!("{}{}", t(BackendMsg::HopTarget), host.name),
+            _ => format!("{}{}", t(BackendMsg::HopJump), host.name),
+        }
+    })
+}
+
+/// 一台已保存主机的拨号链（外层跳板机在前，`host_id` 自己在最后）：读登录信息、解析每一跳的代理、
+/// 带上同一份 known_hosts 与「旧算法兼容」。正式连接（[`build_chain`]）和「测试连接」的跳板机部分
+/// 共用它，路线和凭据的解析规则只有这一份；`label` 决定每一跳在界面上叫什么
+/// （参数：主机、第几跳、一共几跳、这一跳的代理）。
+pub(crate) fn chain_hops(
+    db: &Database,
+    host_id: i64,
+    label: impl Fn(&Host, usize, usize, Option<&ProxyConfig>) -> String,
+) -> Result<Vec<ChainHop>, String> {
     let hosts = db
         .host_chain(host_id)
         .map_err(|err| crate::error_text::error_text(&err))?;
@@ -944,13 +964,7 @@ fn build_chain(db: &Database, host_id: i64) -> Result<Vec<ChainHop>, String> {
             .host_login(host.id)
             .map_err(|err| crate::error_text::error_text(&err))?;
         let proxy = resolve_proxy(db, host, default_proxy_id)?;
-        let label = match (&proxy, index + 1 == total) {
-            (Some(proxy), _) if index == 0 => {
-                format!("{}{}", t(BackendMsg::HopProxy), proxy_label(&proxy.kind))
-            }
-            (_, true) => format!("{}{}", t(BackendMsg::HopTarget), host.name),
-            _ => format!("{}{}", t(BackendMsg::HopJump), host.name),
-        };
+        let label = label(host, index, total, proxy.as_ref());
         hops.push(ChainHop {
             label,
             host: login.host,
@@ -970,17 +984,35 @@ pub(crate) fn resolve_proxy(
     host: &Host,
     default_proxy_id: Option<i64>,
 ) -> Result<Option<ProxyConfig>, String> {
-    let proxy_id = match host.proxy_mode {
+    resolve_proxy_choice(
+        db,
+        host.proxy_mode,
+        host.proxy_id,
+        default_proxy_id,
+        &host.name,
+    )
+}
+
+/// 代理三选一（不用 / 跟随默认 / 指定）解析成真正的代理配置。`name`：出错时说是哪台主机。
+/// 已保存的主机和还在表单里的草稿用同一套规则。
+pub(crate) fn resolve_proxy_choice(
+    db: &Database,
+    mode: ProxyMode,
+    proxy_id: Option<i64>,
+    default_proxy_id: Option<i64>,
+    name: &str,
+) -> Result<Option<ProxyConfig>, String> {
+    let proxy_id = match mode {
         ProxyMode::None => return Ok(None),
         ProxyMode::Default => match default_proxy_id {
             Some(id) => id,
             None => return Ok(None),
         },
-        ProxyMode::Custom => host.proxy_id.ok_or_else(|| {
+        ProxyMode::Custom => proxy_id.ok_or_else(|| {
             format!(
                 "{}{}{}",
                 t(BackendMsg::CustomProxyMissingPrefix),
-                host.name,
+                name,
                 t(BackendMsg::CustomProxyMissingSuffix)
             )
         })?,

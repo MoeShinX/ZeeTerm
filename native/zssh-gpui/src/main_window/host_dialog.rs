@@ -17,6 +17,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use zssh_core::ai::host_memory::MAX_MEMORY_CHARS;
 use zssh_core::model::{AuthMethod, Host, IdentityKind, Protocol, ProxyKind, ProxyMode};
+use zssh_core::ssh::connection_test::CheckState;
 
 use super::MainWindow;
 use super::host_form::{
@@ -25,6 +26,7 @@ use super::host_form::{
 };
 use super::host_panel::HostForm;
 use super::host_props::{self, AdvRow, Row};
+use super::host_test;
 use super::page_logic::{flatten_groups, ungrouped_option_label};
 use super::protocol_form::{
     self, COMMON_BAUD_RATES, DATA_BITS, ENCODINGS, FLOW_CONTROLS, FormField, LOCAL_ECHOES,
@@ -729,65 +731,100 @@ impl MainWindow {
                     .children(rows),
             );
 
-        // 结果栏：测试结果（绿 / 红，可复制详情）；找不到字段的保存错误也显示在这里。
-        let result: Option<AnyElement> =
-            match (&form.test.result, form.error_of(FormField::General)) {
-                (Some(outcome), _) => {
-                    let color = if outcome.ok {
-                        tokens.dot_connected
-                    } else if outcome.stage.is_some() {
-                        tokens.danger
-                    } else {
-                        tokens.text_muted
-                    };
-                    let copy = entity.clone();
-                    Some(
+        // 结果栏：测试结果（成功绿 / 部分完成中性 / 失败红 / 取消中性，可复制详情）；
+        // 找不到字段的保存错误也显示在这里。参数改过之后的旧结果不显示。
+        let signature = form.test_signature(cx);
+        let result: Option<AnyElement> = match (
+            form.test.shown_result(&signature),
+            form.error_of(FormField::General),
+        ) {
+            (Some(outcome), _) => {
+                let shown = host_test::present(outcome);
+                let (color, icon) = match (shown.tone, shown.icon) {
+                    (host_test::Tone::Success, _) => (tokens.dot_connected, IconName::CircleCheck),
+                    (host_test::Tone::Danger, _) => (tokens.danger, IconName::CircleX),
+                    (host_test::Tone::Neutral, host_test::ResultIcon::Cancelled) => {
+                        (tokens.text_muted, IconName::Square)
+                    }
+                    (host_test::Tone::Neutral, _) => (tokens.text_muted, IconName::Info),
+                };
+                // 每个检查项一小段：通过的画绿色对勾，待验证的中性提示，失败的红叉。
+                let lines: Vec<AnyElement> = shown
+                    .lines
+                    .iter()
+                    .map(|line| {
+                        let (mark, mark_color) = match line.state {
+                            CheckState::Passed => (IconName::Check, tokens.dot_connected),
+                            CheckState::Failed => (IconName::CircleX, tokens.danger),
+                            CheckState::Pending | CheckState::NotApplicable => {
+                                (IconName::Info, tokens.text_muted)
+                            }
+                        };
                         h_flex()
-                            .id("host-test-result")
-                            .w_full()
-                            .flex_none()
-                            .gap_2()
-                            .items_start()
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(color)
-                            .child(
-                                Icon::new(if outcome.ok {
-                                    IconName::CircleCheck
-                                } else {
-                                    IconName::CircleX
-                                })
-                                .size_4()
-                                .text_color(color),
-                            )
+                            .gap_1()
+                            .items_center()
+                            .child(Icon::new(mark).size_3().text_color(mark_color))
                             .child(
                                 div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .typo(Role::Body, tokens)
-                                    .text_color(color)
-                                    .child(SharedString::from(crate::error_text::reason_text(
-                                        &outcome.headline,
-                                    ))),
+                                    .text_xs()
+                                    .text_color(tokens.text_muted)
+                                    .child(SharedString::from(host_test::check_line_text(line))),
                             )
-                            .child(text_button(
-                                "host-test-copy",
-                                t(HostDialogMsg::CopyDetails),
-                                ButtonLook::Ghost,
-                                move |_, window, cx| {
-                                    copy.update(cx, |this, cx| this.host_test_copy(window, cx));
-                                },
-                            ))
-                            .into_any_element(),
-                    )
-                }
-                (None, Some(text)) => {
-                    Some(error_note(text.to_owned(), tokens.danger).into_any_element())
-                }
-                (None, None) => None,
-            };
+                            .into_any_element()
+                    })
+                    .collect();
+                let copy = entity.clone();
+                Some(
+                    h_flex()
+                        .id("host-test-result")
+                        .w_full()
+                        .flex_none()
+                        .gap_2()
+                        .items_start()
+                        .px_3()
+                        .py_2()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(color)
+                        .child(Icon::new(icon).size_4().text_color(color))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .typo(Role::Body, tokens)
+                                        .text_color(match shown.tone {
+                                            host_test::Tone::Neutral => tokens.text,
+                                            _ => color,
+                                        })
+                                        .child(SharedString::from(crate::error_text::reason_text(
+                                            &outcome.reason,
+                                        ))),
+                                )
+                                .when(!lines.is_empty(), |d| {
+                                    d.child(
+                                        h_flex().flex_wrap().gap_x_3().gap_y_1().children(lines),
+                                    )
+                                }),
+                        )
+                        .child(text_button(
+                            "host-test-copy",
+                            t(HostDialogMsg::CopyDetails),
+                            ButtonLook::Ghost,
+                            move |_, window, cx| {
+                                copy.update(cx, |this, cx| this.host_test_copy(window, cx));
+                            },
+                        ))
+                        .into_any_element(),
+                )
+            }
+            (None, Some(text)) => {
+                Some(error_note(text.to_owned(), tokens.danger).into_any_element())
+            }
+            (None, None) => None,
+        };
 
         let (cancel, connect, ok, test, stop) = (
             entity.clone(),

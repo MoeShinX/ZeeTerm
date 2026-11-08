@@ -445,6 +445,16 @@ fn run_inner(
                 return fail("这个表单现在没开着");
             };
             set_input(&state, b, window, cx);
+            // `set_value` 不发「内容变了」事件（真人敲字才发）：这里照真人的样子补上，
+            // 让「测试连接」的结果随主机表单的参数一起失效。
+            if form == "host" {
+                if field == "password"
+                    && let Some(host_form) = &mut this.host_form
+                {
+                    host_form.password_version += 1;
+                }
+                this.host_test_sync(cx);
+            }
         }
         "host_group" => {
             let group = group_ref(this, a)?;

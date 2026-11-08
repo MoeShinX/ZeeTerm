@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use ::gpui::{App, Entity};
-use gpui_kit::component::input::{InputState, TextareaState};
+use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::*;
 use zssh_core::model::{
     AuthMethod, Host, IdentityKind, LocalEcho, Protocol, ProxyMode, SerialDataBits,
@@ -24,7 +24,7 @@ use super::host_form::{
     plan_save,
 };
 use super::host_props::{self, LayoutState, Row};
-use super::host_test::TestState;
+use super::host_test::{ParamsSignature, TestState};
 use super::modal::Modal;
 use super::protocol_form::{self, FormField, PortChoice};
 use crate::i18n::{Msg, t};
@@ -208,6 +208,10 @@ pub struct HostForm {
     pub scroll: ::gpui::ScrollHandle,
     /// 「测试连接」的进行中 / 结果。
     pub test: TestState,
+    /// 密码框里的内容变过多少次：测试结果只认版本号，不记密码原文，也不存可恢复的哈希。
+    pub password_version: u64,
+    /// 连接参数输入框的变更订阅（随表单一起丢掉）。
+    pub test_subs: Vec<::gpui::Subscription>,
 }
 
 impl HostForm {
@@ -329,7 +333,45 @@ impl HostForm {
             advanced_open: false,
             memory_open: false,
             scroll: ::gpui::ScrollHandle::new(),
-            test: TestState::default(),
+            test: TestState::new(),
+            password_version: 0,
+            test_subs: Vec::new(),
+        }
+    }
+
+    /// 影响「测试连接」结论的参数快照（不含密码原文，见 [`ParamsSignature`]）。
+    pub fn test_signature(&self, cx: &App) -> ParamsSignature {
+        let text = |state: &Entity<InputState>| state.read(cx).value().to_string();
+        let serial = &self.serial;
+        // 真正会用的路线（和测试 / 保存时一样按「连接方式」折算）：切到不用的那一段不算路线变了。
+        let routing = effective_routing(
+            self.conn_mode,
+            self.proxy_mode,
+            self.proxy,
+            self.jump,
+            self.jump_keeps_proxy,
+        );
+        ParamsSignature {
+            protocol: self.protocol,
+            address: text(&self.address),
+            port: text(&self.port),
+            username: text(&self.username),
+            auth: self.effective_auth(),
+            identity: self.identity,
+            proxy_mode: routing.proxy_mode,
+            proxy: routing.proxy,
+            jump: routing.jump,
+            legacy: self.legacy,
+            password_version: self.password_version,
+            serial: format!(
+                "{}|{}|{:?}|{:?}|{:?}|{:?}",
+                text(&serial.device),
+                text(&serial.baud),
+                serial.data_bits,
+                serial.parity,
+                serial.stop_bits,
+                serial.flow_control
+            ),
         }
     }
 
@@ -466,6 +508,37 @@ impl MainWindow {
             form.fingerprint =
                 crate::ssh_backend::known_hosts().saved_fingerprint(&host.host, host.port);
         }
+        // 地址 / 端口 / 用户名 / 串口设备一改，进行中的测试和旧结果就作废；密码只记「改过几次」。
+        for input in [
+            form.address.clone(),
+            form.port.clone(),
+            form.username.clone(),
+            form.serial.device.clone(),
+            form.serial.baud.clone(),
+        ] {
+            form.test_subs.push(cx.subscribe_in(
+                &input,
+                window,
+                |this, _input, event: &InputEvent, _window, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.host_test_sync(cx);
+                    }
+                },
+            ));
+        }
+        let password = form.password.clone();
+        form.test_subs.push(cx.subscribe_in(
+            &password,
+            window,
+            |this, _input, event: &InputEvent, _window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    if let Some(form) = &mut this.host_form {
+                        form.password_version += 1;
+                    }
+                    this.host_test_sync(cx);
+                }
+            },
+        ));
         let initial = form.snapshot(cx);
         let focus = form.name.read(cx).focus_handle(cx);
         self.host_form = Some(form);
@@ -491,6 +564,8 @@ impl MainWindow {
         if let Some(form) = &mut self.host_form {
             f(form);
         }
+        // 认证方式 / 凭据 / 路线 / 旧算法兼容……都从这里改：参数变了就让旧的测试作废。
+        self.host_test_sync(cx);
         cx.notify();
     }
 
@@ -543,6 +618,7 @@ impl MainWindow {
         if protocol == Protocol::Serial {
             form.serial.ports = protocol_form::list_ports();
         }
+        self.host_test_sync(cx);
         cx.notify();
     }
 
@@ -603,7 +679,10 @@ impl MainWindow {
                     input.set_value("", window, cx);
                 }
             });
+            // `set_value` 不会发「内容变了」事件：密码框被程序清空也要算一次修改。
+            form.password_version += 1;
         }
+        self.host_test_sync(cx);
         cx.notify();
     }
 
@@ -662,7 +741,10 @@ impl MainWindow {
                     password.update(cx, |input, cx| input.set_value(text.clone(), window, cx));
                     if let Some(form) = &mut self.host_form {
                         form.revealed = Some((identity.id, text));
+                        // 程序往框里填了明文（`set_value` 不发变更事件）：也算一次修改。
+                        form.password_version += 1;
                     }
+                    self.host_test_sync(cx);
                 }
                 Err(err) => {
                     self.notice_error(&err, window, cx);
@@ -700,6 +782,10 @@ impl MainWindow {
                 input.set_value("", window, cx);
             }
         });
+        if drop_fetched {
+            form.password_version += 1;
+            self.host_test_sync(cx);
+        }
         cx.notify();
     }
 
@@ -753,7 +839,7 @@ impl MainWindow {
             form.errors.clear();
             form.errors.insert(field, message);
             // 结果栏里上一次的测试结果和新的错误无关，先清掉免得并排显示。
-            form.test.result = None;
+            form.test.clear_result();
             if row.is_some_and(host_props::is_advanced) {
                 form.advanced_open = true;
             }

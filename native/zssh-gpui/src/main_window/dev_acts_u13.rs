@@ -7,14 +7,14 @@
 //! - `host_conn:<direct|jump|proxy>`：点「连接方式」分段；
 //! - `assert_u13:<rows|conn_mode|advanced|memory_open|keeps_proxy|saved_routing|test>:<值>`：
 //!   表单现在从上到下的行（逗号分隔）/ 连接方式 / 折叠状态 / 旧数据里跳板机和代理并存 /
-//!   保存时会写进库的 `代理方式,代理,跳板机` / 测试连接（`running` `ok` `fail` `none`，或 `contains:<文字>`
-//!   结果行里应有的文字）；
+//!   保存时会写进库的 `代理方式,代理,跳板机` / 测试连接（`running` `ok`（全部完成）`partial`（部分完成）
+//!   `fail` `cancelled` `none`，或 `contains:<文字>` 结果行里应有的文字）；
 //! - `host_db_routing:<@主机>:<default|none|custom>:<代理 id|none>:<@跳板机|none>`：直接改库里这台主机的代理 /
 //!   跳板机设置（造「旧数据里跳板机和代理都设了」这种界面已经设不出来的组合）；
 //! - `assert_stored_routing:<@主机>:<代理方式,代理,跳板机>`：从库里**重新读**这台主机的这三个字段；
 //! - `host_test:<run|cancel>`：点「测试连接」/「取消」；
 //! - `host_fake_test:<种类>`：摆一个测试结果（只改界面状态，不联网）。SSH 没有真服务器时截图用，文案走核心库
-//!   同一批函数：`ssh_ok` `ssh_untrusted` `ssh_auth_failed` `ssh_refused` `ssh_dns` `ssh_proxy` `ssh_jump`
+//!   同一批函数：`ssh_ok` `ssh_untrusted` `ssh_other_types` `ssh_untrusted_jump` `ssh_interactive` `cancelled` `ssh_auth_failed` `ssh_refused` `ssh_dns` `ssh_proxy` `ssh_jump`
 //!   `ssh_hostkey` `ssh_timeout` `telnet_ok` `serial_ok` `serial_missing`。
 
 #[cfg(debug_assertions)]
@@ -23,9 +23,10 @@ mod real {
     use gpui_kit::*;
     use zssh_core::error::{HostKeyMismatch, ZsshError};
     use zssh_core::ssh::connection_test::{
-        FailurePhase, FirstByte, HopRole, Interaction, TestOutcome, TestStage, classify_failure,
-        serial_failure, serial_success, ssh_success_headline, tcp_success_headline,
-        untrusted_stop_headline,
+        CheckState, FailurePhase, FirstByte, HopRole, IdentityState, Interaction, TestOutcome,
+        TestResultKind, TestStage, cancelled, classify_failure, failure_checks,
+        identity_pending_headline, login_interactive_headline, serial_failure, serial_success,
+        ssh_success_headline, tcp_success_headline,
     };
 
     use super::super::MainWindow;
@@ -306,22 +307,27 @@ mod real {
                     }
                     let have = form
                         .test
-                        .result
-                        .as_ref()
-                        .is_some_and(|outcome| outcome.headline.contains(text));
+                        .shown_result(&form.test_signature(cx))
+                        .is_some_and(|outcome| outcome.reason.contains(text));
                     return check(have, "测试结果行里没有预期的文字".to_owned());
                 }
                 // 还在跑就等一等（除非就是在断言 running）。
                 if form.test.is_running() && want != "running" {
                     return Ok(Outcome::Pending);
                 }
-                let state = match (&form.test.running, &form.test.result) {
-                    (Some(_), _) => "running",
-                    (None, None) => "none",
-                    (None, Some(outcome)) if outcome.ok => "ok",
-                    (None, Some(_)) => "fail",
+                let state = if form.test.is_running() {
+                    "running"
+                } else {
+                    match form.test.shown_result(&form.test_signature(cx)) {
+                        None => "none",
+                        Some(outcome) => match outcome.kind {
+                            TestResultKind::Complete => "ok",
+                            TestResultKind::Partial => "partial",
+                            TestResultKind::Failed => "fail",
+                            TestResultKind::Cancelled => "cancelled",
+                        },
+                    }
                 };
-                let _ = cx;
                 check(state == want, format!("测试状态是 {state}，不是 {want}"))
             }
             _ => Err("assert_u13:rows|conn_mode|advanced|memory_open|keeps_proxy|saved_routing|test:<值>".to_owned()),
@@ -342,20 +348,44 @@ mod real {
         Ok(Outcome::Done)
     }
 
+    /// 摆一个结果：各项检查状态按参数给，其余字段是演示用的占位。
+    fn fake_outcome(
+        kind: TestResultKind,
+        checks: (CheckState, Option<IdentityState>, CheckState),
+        failing_stage: Option<TestStage>,
+        reason: zssh_core::error::Reason,
+        detail: &str,
+        elapsed_ms: u64,
+    ) -> TestOutcome {
+        TestOutcome {
+            kind,
+            connectivity: checks.0,
+            identity: checks.1,
+            authentication: checks.2,
+            failing_stage,
+            checked_hop: None,
+            untested_hops: Vec::new(),
+            reason,
+            detail: detail.to_owned(),
+            elapsed_ms,
+        }
+    }
+
     fn failure(error: &ZsshError, phase: FailurePhase, role: HopRole, label: &str) -> TestOutcome {
         let f = classify_failure(error, phase, role, label, Interaction::default());
-        TestOutcome {
-            ok: false,
-            headline: f.message.clone(),
-            detail: format!(
+        let checks = failure_checks(error, phase);
+        fake_outcome(
+            TestResultKind::Failed,
+            (checks.connectivity, checks.identity, checks.authentication),
+            Some(f.stage),
+            f.message.clone(),
+            &format!(
                 "测试连接（SSH）\n结果：失败（阶段：{}）\n原因：{}",
                 f.stage.label(),
                 f.message
             ),
-            elapsed_ms: 20,
-            stage: Some(f.stage),
-            untrusted_fingerprint: None,
-        }
+            20,
+        )
     }
 
     fn io_error(kind: std::io::ErrorKind) -> std::io::Error {
@@ -369,31 +399,83 @@ mod real {
     ) -> Result<Outcome, String> {
         let version = "SSH-2.0-OpenSSH_9.6";
         let direct = FailurePhase::Connect { via_proxy: false };
-        let ok = |headline: zssh_core::error::Reason| TestOutcome {
-            ok: true,
-            headline,
-            detail: "测试连接\n结果：成功".to_owned(),
-            elapsed_ms: 86,
-            stage: None,
-            untrusted_fingerprint: None,
+        let passed = CheckState::Passed;
+        let ok = |reason: zssh_core::error::Reason, identity: Option<IdentityState>| {
+            fake_outcome(
+                TestResultKind::Complete,
+                (
+                    passed,
+                    identity,
+                    if identity.is_some() {
+                        passed
+                    } else {
+                        CheckState::NotApplicable
+                    },
+                ),
+                None,
+                reason,
+                "测试连接\n结果：成功",
+                86,
+            )
         };
         let outcome = match kind {
-            "ssh_ok" => ok(ssh_success_headline(86, Some(version))),
-            // 指纹没信任：测试停在认证之前，既不是成功也不是红色失败（和真实流程一样 stage 留空）。
-            "ssh_untrusted" => TestOutcome {
-                ok: false,
-                headline: untrusted_stop_headline(
-                    "SHA256:3xAmPlEfIngErPrInTdOcUmEnTaTiOnOnLy0123456",
+            "ssh_ok" => ok(
+                ssh_success_headline(86, Some(version)),
+                Some(IdentityState::Matched),
+            ),
+            // 指纹没核对过：测试停在认证之前，只证明有响应端出示了主机密钥——部分完成，不是成功也不是失败。
+            "ssh_untrusted" => fake_outcome(
+                TestResultKind::Partial,
+                (
+                    passed,
+                    Some(IdentityState::Unconfirmed),
+                    CheckState::Pending,
+                ),
+                None,
+                identity_pending_headline(false, None),
+                "测试连接\n结果：部分完成（登录待验证）",
+                92,
+            ),
+            "ssh_other_types" => fake_outcome(
+                TestResultKind::Partial,
+                (
+                    passed,
+                    Some(IdentityState::OtherKeyTypes),
+                    CheckState::Pending,
+                ),
+                None,
+                identity_pending_headline(true, None),
+                "测试连接\n结果：部分完成（登录待核对）",
+                92,
+            ),
+            "ssh_untrusted_jump" => fake_outcome(
+                TestResultKind::Partial,
+                (
+                    passed,
+                    Some(IdentityState::Unconfirmed),
+                    CheckState::Pending,
+                ),
+                None,
+                identity_pending_headline(
                     false,
-                    None,
+                    Some(if crate::i18n::current() == crate::i18n::Lang::En {
+                        "Jump host edge-1"
+                    } else {
+                        "跳板机 edge-1"
+                    }),
                 ),
-                detail: "测试连接\n结果：没有测试登录".to_owned(),
-                elapsed_ms: 92,
-                stage: None,
-                untrusted_fingerprint: Some(
-                    "SHA256:3xAmPlEfIngErPrInTdOcUmEnTaTiOnOnLy0123456".to_owned(),
-                ),
-            },
+                "测试连接\n结果：部分完成（跳板机可达，后续目标未测试）",
+                92,
+            ),
+            "ssh_interactive" => fake_outcome(
+                TestResultKind::Partial,
+                (passed, Some(IdentityState::Matched), CheckState::Pending),
+                None,
+                login_interactive_headline(None),
+                "测试连接\n结果：部分完成（登录需要交互验证）",
+                95,
+            ),
+            "cancelled" => cancelled(),
             "ssh_auth_failed" => failure(
                 &ZsshError::AuthFailed,
                 FailurePhase::Handshake,
@@ -467,26 +549,27 @@ mod real {
                     "目标 web-1",
                     Interaction::default(),
                 );
-                TestOutcome {
-                    ok: false,
-                    headline: f.message,
-                    detail: String::new(),
-                    elapsed_ms: 10_000,
-                    stage: Some(TestStage::Connect),
-                    untrusted_fingerprint: None,
-                }
+                fake_outcome(
+                    TestResultKind::Failed,
+                    (CheckState::Failed, None, CheckState::NotApplicable),
+                    Some(TestStage::Connect),
+                    f.message,
+                    "",
+                    10_000,
+                )
             }
-            "telnet_ok" => ok(tcp_success_headline(31, FirstByte::Data)),
+            "telnet_ok" => ok(tcp_success_headline(31, FirstByte::Data), None),
             "serial_ok" => serial_success("COM3", 9),
             "serial_missing" => serial_failure(
                 "COM3",
                 "COM3 不存在：设备没有插好，或者设备名写错了（可以在设备管理器的“端口”里查看当前的 COM 口）",
                 4,
             ),
-            _ => return Err("host_fake_test:ssh_ok|ssh_untrusted|ssh_auth_failed|ssh_refused|ssh_dns|ssh_proxy|ssh_jump|ssh_hostkey|ssh_timeout|telnet_ok|serial_ok|serial_missing".to_owned()),
+            _ => return Err("host_fake_test:ssh_ok|ssh_untrusted|ssh_other_types|ssh_untrusted_jump|ssh_interactive|cancelled|ssh_auth_failed|ssh_refused|ssh_dns|ssh_proxy|ssh_jump|ssh_hostkey|ssh_timeout|telnet_ok|serial_ok|serial_missing".to_owned()),
         };
         let form = this.host_form.as_mut().ok_or("主机表单没开着")?;
-        form.test.result = Some(outcome);
+        let signature = form.test_signature(cx);
+        form.test.set_result(outcome, &signature);
         cx.notify();
         Ok(Outcome::Done)
     }
