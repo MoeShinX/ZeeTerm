@@ -417,8 +417,14 @@ impl MainWindow {
         let saved_view = layout.view.as_deref().and_then(MainView::parse);
 
         let mut subs = Vec::new();
-        // 终端工作区变了（标签、状态点、标题）标题栏跟着重画。
-        subs.push(cx.observe(&workspace, |_this, _ws, cx| cx.notify()));
+        // 终端工作区变了（标签、状态点、标题）标题栏跟着重画；工作区里需要用户看见的状态提示
+        // （设置没存上、粘贴没去处、日志续不上……）在这里取走，弹成通知。
+        subs.push(cx.observe_in(&workspace, window, |this, ws, window, cx| {
+            if let Some(notice) = ws.update(cx, |ws, _cx| ws.take_status_notice()) {
+                this.show_status_notice(&notice, window, cx);
+            }
+            cx.notify();
+        }));
         // 输入框是 MainWindow 自己画出来的元素：它的状态（文字、光标、焦点）一变，主窗口要跟着重画。
         for input in [
             &tree_query,
@@ -1266,6 +1272,21 @@ impl MainWindow {
 
     pub(crate) fn notice(&mut self, message: &str, window: &mut Window, cx: &mut Context<Self>) {
         window.push_notification(message.to_owned(), cx);
+    }
+
+    /// 终端工作区的状态提示：错误用错误样式，普通状态用普通通知。
+    pub(crate) fn show_status_notice(
+        &mut self,
+        notice: &crate::terminal_workspace::StatusNotice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match notice.level {
+            crate::terminal_workspace::StatusLevel::Error => {
+                self.notice_error(&notice.text, window, cx)
+            }
+            crate::terminal_workspace::StatusLevel::Info => self.notice(&notice.text, window, cx),
+        }
     }
 
     // ---- 主机树 ----

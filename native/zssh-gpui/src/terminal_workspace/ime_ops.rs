@@ -469,7 +469,7 @@ mod tests {
 #[cfg(test)]
 mod gpui_tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::super::{Pane, Tab, TerminalWorkspace};
+    use super::super::{Pane, StatusLevel, Tab, TerminalWorkspace};
     use super::INPUT_HANDLER_ENABLED;
     use crate::settings_store::AppSettings;
     use ::gpui::{
@@ -881,5 +881,35 @@ mod gpui_tests {
             term.sent(),
             vec![b"a".to_vec(), "好".as_bytes().to_vec(), b"\r".to_vec()]
         );
+    }
+
+    /// release 语义：提示不靠 debug 才有的读取口，外壳用 `take_status_notice` 取（只取一次、带类别）。
+    #[gpui::test]
+    fn a_failed_paste_is_handed_to_the_shell_as_an_error_notice(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            AppSettings::init_for_test(cx);
+        });
+        let window = cx.add_window(|window, cx| {
+            TerminalWorkspace::new(window, cx, "status-notice".to_owned())
+        });
+        window
+            .update(cx, |workspace, window, cx| {
+                assert!(workspace.take_status_notice().is_none(), "刚开窗没有提示");
+                // 没有任何标签：多行粘贴没有去处。
+                workspace.begin_paste(
+                    "a
+b"
+                    .to_owned(),
+                    window,
+                    cx,
+                );
+                assert_eq!(workspace.status_level(), StatusLevel::Error);
+                let notice = workspace.take_status_notice().expect("该有一条提示");
+                assert_eq!(notice.level, StatusLevel::Error);
+                assert!(notice.text.contains("无法粘贴"), "{}", notice.text);
+                assert!(workspace.take_status_notice().is_none(), "只取一次");
+            })
+            .expect("window");
     }
 }

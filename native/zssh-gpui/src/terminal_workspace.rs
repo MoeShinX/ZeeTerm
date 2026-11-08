@@ -379,6 +379,68 @@ enum LogMode {
     Manual,
 }
 
+/// 状态提示的类别：界面据此决定怎么提示（错误用错误样式的通知，普通状态用普通通知）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StatusLevel {
+    /// 普通状态（日志续记到哪、不能执行的原因）。
+    Info,
+    /// 失败：用户的操作没做成，或后台写盘失败。
+    Error,
+}
+
+/// 要弹给用户看的一条状态提示。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StatusNotice {
+    pub(crate) text: String,
+    pub(crate) level: StatusLevel,
+}
+
+/// 终端页的一行状态。release 里没有常驻的状态栏位置，所以需要用户看见的提示（`announce`）
+/// 由外壳（主窗口）取走后用通知弹出来；界面上本来就有表现的（重新连接中、已断开）只记下文字（`set`），
+/// 不再重复弹。后写的覆盖先写的：同一刻连着写两句，用户只需要看到最后那句。
+#[derive(Debug)]
+struct StatusLine {
+    text: String,
+    level: StatusLevel,
+    /// 这句还没被外壳取走、且需要弹出来。
+    pending: bool,
+}
+
+impl StatusLine {
+    fn new() -> Self {
+        Self {
+            text: String::new(),
+            level: StatusLevel::Info,
+            pending: false,
+        }
+    }
+
+    /// 只记下，不弹通知。
+    fn set(&mut self, level: StatusLevel, text: impl Into<String>) {
+        self.text = text.into();
+        self.level = level;
+        self.pending = false;
+    }
+
+    /// 记下并要求外壳弹出来。
+    fn announce(&mut self, level: StatusLevel, text: impl Into<String>) {
+        self.text = text.into();
+        self.level = level;
+        self.pending = true;
+    }
+
+    /// 外壳取走待弹的提示；取过一次就不会再有，直到下一次 `announce`。
+    fn take_notice(&mut self) -> Option<StatusNotice> {
+        if !std::mem::take(&mut self.pending) {
+            return None;
+        }
+        Some(StatusNotice {
+            text: self.text.clone(),
+            level: self.level,
+        })
+    }
+}
+
 /// 点「记录」的结果。
 #[derive(Debug)]
 enum LogOutcome {
@@ -397,6 +459,14 @@ enum LogOutcome {
 }
 
 impl LogOutcome {
+    /// 开不了日志是失败，其余只是告知。
+    fn level(&self) -> StatusLevel {
+        match self {
+            Self::Failed(_) => StatusLevel::Error,
+            _ => StatusLevel::Info,
+        }
+    }
+
     /// 状态栏上的一句话；路径过 `redact_paths`，用户目录显示成占位。
     fn status_text(&self) -> String {
         use crate::agent_text::redact_paths;
@@ -1353,8 +1423,8 @@ pub struct TerminalWorkspace {
     settings_rev: u64,
     /// 已经提示过的写盘失败次数：同一次失败只提示一回。
     settings_error_seen: u64,
-    /// 一行状态文字（日志路径、「正在重新连接…」、不能执行的原因）。
-    status_text: String,
+    /// 一行状态文字（日志路径、「正在重新连接…」、不能执行的原因）；需要用户看见的由外壳取走弹通知。
+    status: StatusLine,
     /// 高亮规则与最近一次扫描结果。
     highlight: HighlightUi,
     /// 定时取后台结果的轻量任务。
@@ -1567,7 +1637,7 @@ impl TerminalWorkspace {
             settings,
             settings_rev,
             settings_error_seen: 0,
-            status_text: String::new(),
+            status: StatusLine::new(),
             dragging_split: None,
             pane_geom: Vec::new(),
             layout: Layout::default(),
@@ -1647,9 +1717,12 @@ impl TerminalWorkspace {
         let Some(error) = error else {
             return false;
         };
-        self.status_text = format!(
-            "{}{error}",
-            crate::i18n::t(TermMsg::SettingsSaveFailedPrefix)
+        self.status.announce(
+            StatusLevel::Error,
+            format!(
+                "{}{error}",
+                crate::i18n::t(TermMsg::SettingsSaveFailedPrefix)
+            ),
         );
         true
     }
@@ -1769,14 +1842,24 @@ impl TerminalWorkspace {
         &self.settings
     }
 
+    /// 外壳取走待弹的状态提示（主窗口在工作区通知重画时调用，转成通知）。
+    pub(crate) fn take_status_notice(&mut self) -> Option<StatusNotice> {
+        self.status.take_notice()
+    }
+
     #[cfg(debug_assertions)]
     pub(crate) fn status_text(&self) -> &str {
-        &self.status_text
+        &self.status.text
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_level(&self) -> StatusLevel {
+        self.status.level
     }
 
     #[cfg(debug_assertions)]
     pub(crate) fn set_status_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
-        self.status_text = text.into();
+        self.status.set(StatusLevel::Info, text);
         cx.notify();
     }
 
@@ -1840,7 +1923,7 @@ impl TerminalWorkspace {
         self.ime_preedit.clear();
         // 标签 / 窗格结构变了，待确认的粘贴作废：不静默，告诉用户要重来。
         if self.pending_paste.take().is_some() {
-            self.status_text = paste_cancelled().to_owned();
+            self.status.announce(StatusLevel::Info, paste_cancelled());
         }
         self.mouse_pressed = false;
         self.last_mouse_cell = None;
@@ -2791,7 +2874,8 @@ impl TerminalWorkspace {
             .filter(|(_, pane)| pane.state == PaneState::Disconnected && pane.is_session())
             .map(|(at, _)| at)
             .collect();
-        self.status_text = crate::i18n::t(TermMsg::Reconnecting).to_owned();
+        self.status
+            .set(StatusLevel::Info, crate::i18n::t(TermMsg::Reconnecting));
         for &at in &targets {
             self.reconnect_pane(index, at);
         }
@@ -2833,7 +2917,9 @@ impl TerminalWorkspace {
         };
         let count = tab.disconnect_sessions();
         if count > 0 {
-            self.status_text = crate::i18n::t(TermMsg::Disconnected).to_owned();
+            // 标签上的状态点已经变了，不再弹通知。
+            self.status
+                .set(StatusLevel::Info, crate::i18n::t(TermMsg::Disconnected));
             self.reset_interaction();
             self.refresh();
             cx.notify();
@@ -2856,7 +2942,9 @@ impl TerminalWorkspace {
             && logging
         {
             let prefs = crate::app_prefs::cached();
-            self.status_text = pane.toggle_log_with(&prefs).status_text();
+            // 断线重连后续记日志：续不上要告诉用户（日志在断档），续上了告知写到哪。
+            let outcome = pane.toggle_log_with(&prefs);
+            self.status.announce(outcome.level(), outcome.status_text());
         }
     }
 
@@ -2877,7 +2965,8 @@ impl TerminalWorkspace {
         }
         self.focus_pane(pane_index);
         // 先写提示：之前在记录日志时，新窗格续记会把状态改成日志路径，那个更有用。
-        self.status_text = crate::i18n::t(TermMsg::Reconnecting).to_owned();
+        self.status
+            .set(StatusLevel::Info, crate::i18n::t(TermMsg::Reconnecting));
         self.reconnect_pane(index, pane_index);
         self.reset_interaction();
         self.refresh();
@@ -2895,12 +2984,17 @@ impl TerminalWorkspace {
             None => return,
         };
         if !is_session {
-            self.status_text = crate::i18n::t(TermMsg::NoReconnectOffline).to_owned();
+            // 什么都没发生，得告诉用户为什么。
+            self.status.announce(
+                StatusLevel::Info,
+                crate::i18n::t(TermMsg::NoReconnectOffline),
+            );
             cx.notify();
             return;
         }
         // 先写提示：之前在记录日志时，新窗格续记会把状态改成日志路径，那个更有用。
-        self.status_text = crate::i18n::t(TermMsg::Reconnecting).to_owned();
+        self.status
+            .set(StatusLevel::Info, crate::i18n::t(TermMsg::Reconnecting));
         self.reconnect_pane(index, pane_index);
         self.reset_interaction();
         self.refresh();
@@ -3680,7 +3774,7 @@ impl TerminalWorkspace {
             let _ = std::fs::create_dir_all(dir);
             cx.reveal_path(dir);
         }
-        self.status_text = outcome.status_text();
+        self.status.announce(outcome.level(), outcome.status_text());
         cx.notify();
     }
 
@@ -3712,7 +3806,9 @@ impl TerminalWorkspace {
                 // 键盘留在终端上：Enter / Esc 由终端的按键处理接走，不会漏到远端。
                 window.focus(&self.focus, cx);
             } else {
-                self.status_text = crate::i18n::t(TermMsg::PasteNoPane).to_owned();
+                // 粘贴的内容没有去处，用户得知道没粘上。
+                self.status
+                    .announce(StatusLevel::Error, crate::i18n::t(TermMsg::PasteNoPane));
             }
             cx.notify();
         } else {
@@ -3831,7 +3927,8 @@ impl TerminalWorkspace {
         match resolved {
             Some((index, targets)) => self.send_paste_to(index, &targets, &pending.text, cx),
             None => {
-                self.status_text = paste_cancelled().to_owned();
+                // 这里已经就地弹了通知，状态只记文字，不再让外壳重复弹。
+                self.status.set(StatusLevel::Info, paste_cancelled());
                 window.push_notification(paste_cancelled().to_owned(), cx);
             }
         }
@@ -5019,7 +5116,8 @@ mod pane_tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
         CoreFilter, FlowGate, LogMode, LogOutcome, Pane, PaneState, SessionBackend, SessionCommand,
-        SessionPump, Size, disconnect_notice, failure_notice,
+        SessionPump, Size, StatusLevel, StatusLine, StatusNotice, disconnect_notice,
+        failure_notice,
     };
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -5652,6 +5750,60 @@ mod pane_tests {
         }
         .status_text();
         assert!(!text.contains(&home), "{text}");
+    }
+
+    #[test]
+    fn an_announced_status_reaches_the_shell_once_with_its_level() {
+        let mut line = StatusLine::new();
+        assert_eq!(line.take_notice(), None, "什么都没写过就没有提示");
+        line.announce(StatusLevel::Error, "设置没能保存");
+        assert_eq!(
+            line.take_notice(),
+            Some(StatusNotice {
+                text: "设置没能保存".to_owned(),
+                level: StatusLevel::Error,
+            })
+        );
+        assert_eq!(line.take_notice(), None, "取走以后不重复弹");
+        line.announce(StatusLevel::Info, "粘贴已取消");
+        assert_eq!(line.take_notice().map(|n| n.level), Some(StatusLevel::Info));
+    }
+
+    #[test]
+    fn a_quiet_status_is_remembered_but_never_popped_up() {
+        let mut line = StatusLine::new();
+        line.set(StatusLevel::Info, "正在重新连接…");
+        assert_eq!(line.text, "正在重新连接…");
+        assert_eq!(line.take_notice(), None);
+        // 先弹后又被界面上已有表现的状态顶掉：后写的赢，不会弹出过期的那句。
+        line.announce(StatusLevel::Error, "旧的失败");
+        line.set(StatusLevel::Info, "已断开连接");
+        assert_eq!(line.take_notice(), None);
+        // 反过来：后写的是要弹的，弹的是后写那句。
+        line.set(StatusLevel::Info, "正在重新连接…");
+        line.announce(StatusLevel::Info, "日志已续记");
+        assert_eq!(
+            line.take_notice().map(|n| n.text),
+            Some("日志已续记".to_owned())
+        );
+    }
+
+    #[test]
+    fn only_a_log_that_cannot_start_counts_as_an_error() {
+        let dir = std::path::PathBuf::from("logs");
+        assert_eq!(
+            LogOutcome::Failed("x".to_owned()).level(),
+            StatusLevel::Error
+        );
+        assert_eq!(
+            LogOutcome::Started { dir: dir.clone() }.level(),
+            StatusLevel::Info
+        );
+        assert_eq!(LogOutcome::Auto { dir }.level(), StatusLevel::Info);
+        assert_eq!(
+            LogOutcome::Stopped { path: None }.level(),
+            StatusLevel::Info
+        );
     }
 }
 
