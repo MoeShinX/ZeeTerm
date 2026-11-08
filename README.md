@@ -91,6 +91,8 @@ SSH is the primary workflow; **Telnet and serial connections** are also availabl
 
 Data is stored in `%APPDATA%\ZeeTerm` by default. Set `ZSSH_DATA_DIR` to use a different directory.
 
+**Portable version (no installer):** download `ZeeTerm-<version>-windows-x64-portable.zip`, extract it anywhere you can write to, and run `ZeeTerm.exe`. It keeps its data in a `data` folder beside the program instead of `%APPDATA%`, writes nothing to the registry, can run alongside an installed copy, and updates itself in the app. Saved passwords are bound to your Windows user (DPAPI), so to move to another computer or Windows user, export an offline backup file first.
+
 ### Linux
 
 Requirements: x86_64, **glibc 2.35 or newer** (Ubuntu 22.04+, Debian 12+, or a distribution of the same generation), Wayland or X11, and a **Vulkan driver** (for example `mesa-vulkan-drivers`; the `.deb` recommends it).
@@ -116,7 +118,7 @@ With [Homebrew](https://brew.sh/): `brew install --cask moeshinx/tap/zeeterm` (u
 
 There is no in-app auto-update on macOS yet. To update, run `brew upgrade --cask zeeterm`, or download the new version from [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) and replace ZeeTerm in Applications; your data and saved hosts are not affected. Data is stored in `~/Library/Application Support/ZeeTerm` (`ZSSH_DATA_DIR` still takes priority).
 
-**Coming from Z-SSH?** Use the built-in import flow to preview your data and create a backup before applying changes.
+**Coming from Z-SSH?** ZeeTerm is a fresh rewrite and does not import Z-SSH data. If you still need Z-SSH, download one of its [older releases](https://github.com/MoeShinX/Z-SSH/releases).
 
 ## 🔐 Security & data ownership
 

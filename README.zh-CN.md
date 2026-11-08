@@ -91,6 +91,8 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 
 数据默认保存在 `%APPDATA%\ZeeTerm`，也可以通过环境变量 `ZSSH_DATA_DIR` 指定其他目录。
 
+**免安装版：** 下载 `ZeeTerm-<版本>-windows-x64-portable.zip`，解压到任意可写的位置，运行 `ZeeTerm.exe` 即可。数据放在程序旁边的 `data` 文件夹里（不用 `%APPDATA%`），不写注册表，可以和安装版同时运行，也能在应用内自动更新。已保存的密码绑定当前 Windows 用户（DPAPI），拷到别的电脑或别的 Windows 用户下之前，请先导出离线备份文件。
+
 ### Linux
 
 系统要求：x86_64，**glibc 2.35 及以上**（Ubuntu 22.04+、Debian 12+ 或同代发行版），Wayland 或 X11，以及 **Vulkan 驱动**（例如 `mesa-vulkan-drivers`，`.deb` 会推荐安装）。
@@ -116,7 +118,7 @@ ZeeTerm 拥有独立的安装目录和数据目录，可以与 Z-SSH 同时安�
 
 macOS 版暂时没有应用内自动更新：用 Homebrew 装的执行 `brew upgrade --cask zeeterm`，手动装的请到 [GitHub Releases](https://github.com/MoeShinX/ZeeTerm/releases/latest) 下载，替换「应用程序」里的 ZeeTerm，数据和已保存的主机不受影响。数据默认保存在 `~/Library/Application Support/ZeeTerm`，`ZSSH_DATA_DIR` 仍然优先。
 
-**从 Z-SSH 迁移？** 使用应用内的导入流程，先预览数据并创建备份，再应用变更。
+**从 Z-SSH 迁移？** ZeeTerm 是全新重写的产品，不再提供从 Z-SSH 导入。如果还需要 Z-SSH，请下载它的[老版本](https://github.com/MoeShinX/Z-SSH/releases)。
 
 ## 🔐 安全与数据管理
 
