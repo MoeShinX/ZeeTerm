@@ -336,6 +336,49 @@ struct JobState {
     /// 一批并发写里失败时，后面的块可能已经落盘，长度大于前缀、中间有洞，
     /// 而这时连接多半也断了，截回前缀（或删掉）都会失败。
     confirmed: Mutex<HashMap<String, u64>>,
+    /// 每个文件在本任务里的运行状态（键 = 计划里的目标路径）：实际目标、已计入进度的字节。
+    /// 暂停后重进、取消清理、断线重试都读这一份，不各自在局部变量里记。
+    files: Mutex<HashMap<String, FileRun>>,
+}
+
+/// 一个文件在任务里的运行状态（暂停 / 重试 / 取消之间不能丢）。
+#[derive(Debug, Clone, Default)]
+struct FileRun {
+    /// 冲突里选了"改名"之后实际写入的目标；`None` = 还在用计划里的目标。
+    /// 临时文件、续传位置、取消清理、提交都认它，不认计划里的原目标。
+    actual_target: Option<String>,
+    /// 这个文件已经计入任务 `done_bytes` 的字节数。重传（续传位置回退、从头来、重试）时先扣掉
+    /// 它再按新起点计，所以同一段数据不会被累加两次，进度也不会超过总量。
+    counted_bytes: u64,
+}
+
+impl JobState {
+    fn actual_target(&self, planned_target: &str) -> Option<String> {
+        self.files
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(planned_target)
+            .and_then(|run| run.actual_target.clone())
+    }
+
+    fn set_actual_target(&self, planned_target: &str, actual: String) {
+        self.files
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(planned_target.to_owned())
+            .or_default()
+            .actual_target = Some(actual);
+    }
+
+    /// 把这个文件已计入的字节数改成 `new`，返回改之前的值。
+    fn replace_counted(&self, planned_target: &str, new: u64) -> u64 {
+        let mut files = self
+            .files
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let run = files.entry(planned_target.to_owned()).or_default();
+        std::mem::replace(&mut run.counted_bytes, new)
+    }
 }
 
 impl JobState {
@@ -401,12 +444,12 @@ struct JobProgress {
 }
 
 /// 一个目标上用户做过的冲突选择（暂停后重进同一个文件时沿用）。
+///
+/// 选了"改名"的不记在这里：改名后的实际目标在 [`FileRun::actual_target`] 里，只此一份。
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RememberedConflict {
     /// 同意覆盖（选了覆盖或续传）。
     Overwrite,
-    /// 改成了这个名字。
-    Renamed(String),
 }
 
 impl JobProgress {
@@ -511,6 +554,7 @@ impl TransferEngine {
             state: Mutex::new(TransferState::Queued),
             run_lock: tokio::sync::Mutex::new(()),
             confirmed: Mutex::new(HashMap::new()),
+            files: Mutex::new(HashMap::new()),
         });
         self.jobs
             .lock()
@@ -561,6 +605,13 @@ impl TransferEngine {
             progress.conflict_all = None;
             progress.conflicted_targets.clear();
         }
+        // 进度归零了，每个文件"已计入的字节"和"改过的名字"也要清（重试重新问冲突）。
+        // `confirmed`（续传前缀）不清：重试就是要接着上次的临时文件传。
+        state
+            .files
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         // 同理，重试的任务脱离原来的批次：批次里旧的"全部应用"不再替它回答，它重新问，
         // 重试后勾的"全部应用"也只管它自己。
         *state
@@ -694,6 +745,11 @@ impl TransferEngine {
                 self.emit(&state, true);
                 return;
             }
+            // 从暂停回来：状态要变回「传输中」，不然界面一直显示已暂停。
+            if self.state_of(&state) == TransferState::Paused {
+                self.set_state(&state, TransferState::Running);
+                self.emit(&state, true);
+            }
 
             // 文件级并发许可。
             let _permit = match Arc::clone(&self.permits).acquire_owned().await {
@@ -813,7 +869,9 @@ impl TransferEngine {
         let mut attempt = 0u32;
         // 重试的任务：上次留下的 .zssh-part 先当续传起点试（尾部对账把着关）。
         let mut resume_from_partial = prefer_resume;
-        let mut renamed_target: Option<String> = None;
+        // 暂停后重进同一个文件时，之前选的"改名"结果在任务状态里（局部变量会随返回丢掉，
+        // 重进就会回到原目标或重新提问）。
+        let mut renamed_target: Option<String> = state.actual_target(&planned.target);
         // 改名时已经抢到手的新名字的目标锁：交给下一轮用，中间不放手（见 `pick_free_name`）。
         let mut renamed_guard: Option<lock::TargetGuard> = None;
         // 用户是否**真的**同意过覆盖这个目标。开始时目标不存在（没问过）就是 false：
@@ -874,6 +932,7 @@ impl TransferEngine {
                         return Ok(FileOutcome::Skipped);
                     }
                     ConflictOutcome::Renamed(name, guard) => {
+                        state.set_actual_target(&planned.target, name.clone());
                         renamed_target = Some(name);
                         renamed_guard = guard;
                         continue;
@@ -953,8 +1012,11 @@ impl TransferEngine {
                     1
                 },
             };
-            let mut file_bytes_done = resume_len;
+            // 本文件计入进度的字节数对齐到这次的起点：续传前缀算已完成，回退 / 从头来则先扣掉
+            // 之前多计的，同一段数据不会被累加两次（断线重试、重传都走这里）。
+            self.set_counted(state, &planned.target, planned.size, resume_len);
             let confirmed_key = target.clone();
+            let planned_key = planned.target.clone();
             let outcome = copy_file(
                 Arc::clone(&source),
                 Arc::clone(&target_endpoint),
@@ -965,13 +1027,11 @@ impl TransferEngine {
                 {
                     let state = Arc::clone(state);
                     let engine = Arc::clone(self);
+                    let planned_size = planned.size;
                     move |done, _total| {
                         // `done` 只在整批写成功之后才报：就是已确认的连续前缀。
                         state.record_confirmed(&confirmed_key, done);
-                        // 进度 = 之前文件累计 + 本文件已传（不含续传前已有的部分）。
-                        let delta = done - file_bytes_done.min(done);
-                        file_bytes_done = done;
-                        engine.lock_progress(&state).done_bytes += delta;
+                        engine.set_counted(&state, &planned_key, planned_size, done);
                         engine.emit(&state, false);
                     }
                 },
@@ -1060,6 +1120,13 @@ impl TransferEngine {
                             )
                             .await;
                     }
+                    // 传完的文件整个算进度（大小以计划为准，没有就用这次读到的源大小）。
+                    self.set_counted(
+                        state,
+                        &planned.target,
+                        planned.size,
+                        planned.size.unwrap_or(source_size),
+                    );
                     self.lock_progress(state).current = None;
                     return Ok(FileOutcome::Done);
                 }
@@ -1080,6 +1147,23 @@ impl TransferEngine {
                 }
             }
         }
+    }
+
+    /// 把一个文件计入进度的字节数改成 `new`（`done_bytes` 同步加减差值）。
+    ///
+    /// 不超过计划里的文件大小：源在传输期间变大时，多出来的部分不能让进度超过总量。
+    /// 大小未知（`None`）的文件总量里按 0 计，这里不封顶（速度和进度条还要用它）。
+    fn set_counted(
+        &self,
+        state: &Arc<JobState>,
+        planned_target: &str,
+        planned_size: Option<u64>,
+        new: u64,
+    ) {
+        let new = planned_size.map_or(new, |size| new.min(size));
+        let old = state.replace_counted(planned_target, new);
+        let mut progress = self.lock_progress(state);
+        progress.done_bytes = progress.done_bytes.saturating_sub(old).saturating_add(new);
     }
 
     /// 临时文件名里的任务标识：同一个任务的重试 / 续传不变，别的任务不同。
@@ -1107,14 +1191,19 @@ impl TransferEngine {
     }
 
     /// 取消时把这个文件在目标端的临时文件删掉（尽力而为：连不上就算了，不报错）。
+    ///
+    /// 清的是**实际目标**（冲突里改过名就是新名字）的临时文件；原目标不碰。
     async fn discard_partial(&self, state: &Arc<JobState>, planned: &plan::PlannedFile) {
+        let target = state
+            .actual_target(&planned.target)
+            .unwrap_or_else(|| planned.target.clone());
         if let Ok(pair) = self
             .endpoints
             .pair(
                 state.job.direction,
                 state.job.peer.as_deref(),
                 &planned.source,
-                &planned.target,
+                &target,
                 &self.owner_of(state),
             )
             .await
@@ -1150,6 +1239,9 @@ impl TransferEngine {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        // 退避结束要重连了：不再是「等待重连」。
+        self.set_state(state, TransferState::Running);
+        self.emit(state, true);
         Ok(())
     }
 
@@ -1174,10 +1266,6 @@ impl TransferEngine {
                     resume: true,
                     overwrite: true,
                 })
-            }
-            // 暂停前选了改名：接着往那个名字传，不能回到原目标上（那等于没经同意就覆盖）。
-            Some(RememberedConflict::Renamed(name)) => {
-                return Ok(ConflictOutcome::Renamed(name, None))
             }
             None => {}
         }
@@ -1252,8 +1340,7 @@ impl TransferEngine {
             .await?;
         let remembered = match &outcome {
             ConflictOutcome::Proceed { .. } => Some(RememberedConflict::Overwrite),
-            ConflictOutcome::Renamed(name, _) => Some(RememberedConflict::Renamed(name.clone())),
-            ConflictOutcome::Skip => None,
+            ConflictOutcome::Renamed(..) | ConflictOutcome::Skip => None,
         };
         if let Some(remembered) = remembered {
             self.lock_progress(state)

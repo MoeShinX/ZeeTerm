@@ -2870,6 +2870,7 @@ async fn paused_wait_cannot_lose_resume_or_cancel_before_await() {
             state: Mutex::new(TransferState::Paused),
             run_lock: tokio::sync::Mutex::new(()),
             confirmed: Mutex::new(HashMap::new()),
+            files: Mutex::new(HashMap::new()),
         });
         engine
             .jobs
@@ -3245,4 +3246,269 @@ async fn ids_are_unique_across_engines_so_rebuilt_engines_never_collide_with_old
     assert_eq!((report_a.id, report_b.id), (a, b));
     assert_eq!(report_a.state, TransferState::Done, "{report_a:?}");
     assert_eq!(report_b.state, TransferState::Done, "{report_b:?}");
+}
+
+// ---------------------------------------------------------------------------
+// W12：改名 / 暂停 / 取消 / 重传之间，目标和进度状态不能丢
+// ---------------------------------------------------------------------------
+
+/// 总是选"改名"并给定新名字的回答者。
+struct RenameTo(&'static str);
+
+impl ConflictResolver for RenameTo {
+    fn decide<'a>(&'a self, _info: ConflictInfo) -> BoxFuture<'a, ConflictDecision> {
+        Box::pin(async move {
+            ConflictDecision {
+                action: ConflictAction::Rename,
+                apply_to_all: false,
+                rename_to: Some(self.0.to_owned()),
+            }
+        })
+    }
+}
+
+/// 收事件直到任务进终态，途中每一条进度都不能超过总量。
+async fn finish_with_bounded_progress(
+    events: &mut mpsc::UnboundedReceiver<TransferEvent>,
+    id: TransferId,
+) -> ProgressReport {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(!remaining.is_zero(), "等不到任务 {id} 的终态");
+        let event = tokio::time::timeout(remaining, events.recv())
+            .await
+            .expect("等不到终态")
+            .expect("事件通道关了");
+        let (TransferEvent::Progress(report) | TransferEvent::Finished(report)) = &event;
+        if report.id != id {
+            continue;
+        }
+        assert!(
+            report.done_bytes <= report.total_bytes,
+            "进度超过了总量：{report:?}"
+        );
+        if let TransferEvent::Finished(report) = event {
+            return report;
+        }
+    }
+}
+
+/// 等某个目标的临时文件比 `beyond` 长，然后暂停并等到真的停下。返回暂停时的临时文件长度。
+async fn pause_when_partial_grows(
+    engine: &Arc<TransferEngine>,
+    endpoints: &MemoryEndpoints,
+    id: TransferId,
+    part_of: &str,
+    beyond: u64,
+) -> u64 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while endpoints.remote_partial_len(part_of) <= beyond {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{part_of} 的临时文件一直没长大"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert!(engine.pause(id), "暂停要成功（文件还没传完）");
+    while engine.state(id) != Some(TransferState::Paused) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "没停在暂停状态：{:?}",
+            engine.state(id)
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    endpoints.remote_partial_len(part_of)
+}
+
+fn slow_rename_options() -> TransferOptions {
+    TransferOptions {
+        concurrency: 1,
+        in_flight: 1,
+        chunk_len: Some(1024),
+        ..local_options()
+    }
+}
+
+/// 改名之后传到一半，反复暂停再继续：每一轮都写同一个改名后的目标，原目标不被动，
+/// 也不重新提问；进度始终不超过总量，最后正好等于总量。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn renamed_target_survives_repeated_pause_and_resume() {
+    let root = temp_root("w12-rename-pause");
+    let source = root.join("big.bin");
+    let size: usize = 16 * 1024 * 1024;
+    let contents: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&source, &contents).unwrap();
+    let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+    endpoints.put_remote("/remote/big.bin", vec![9u8; 1024]);
+    let (engine, mut events) = TransferEngine::new(
+        endpoints.clone(),
+        Arc::new(RenameTo("other.bin")),
+        slow_rename_options(),
+    );
+    let id = engine.submit(TransferJob {
+        direction: Direction::Upload,
+        source: source.display().to_string(),
+        target: "/remote/big.bin".to_owned(),
+        recursive: false,
+        peer: None,
+    });
+
+    let mut paused_at = 0;
+    for _ in 0..2 {
+        paused_at =
+            pause_when_partial_grows(&engine, &endpoints, id, "/remote/other.bin", paused_at).await;
+        assert!(
+            endpoints.remote_part_files("/remote/big.bin").is_empty(),
+            "暂停时不该有原目标的临时文件：{:?}",
+            endpoints.remote_part_files("/remote/big.bin")
+        );
+        let report = engine.report(id).unwrap();
+        assert!(report.done_bytes <= report.total_bytes, "{report:?}");
+        assert!(engine.resume(id));
+        // 继续之后状态要离开「已暂停」（以前一直显示已暂停直到传完）。
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while engine.state(id) == Some(TransferState::Paused) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "继续之后状态一直停在已暂停"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+    let report = finish_with_bounded_progress(&mut events, id).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    assert_eq!(report.done_bytes, report.total_bytes, "{report:?}");
+    assert_eq!(report.total_bytes, size as u64);
+    assert_eq!(endpoints.remote_contents("/remote/other.bin"), contents);
+    assert_eq!(
+        endpoints.remote_contents("/remote/big.bin"),
+        vec![9u8; 1024],
+        "原目标不能被动"
+    );
+    assert!(endpoints.remote_part_files("/remote/other.bin").is_empty());
+}
+
+/// 改名之后暂停再取消：清掉的是改名目标的临时文件；原目标和别人的同名临时文件原样留着。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancel_after_rename_and_pause_cleans_the_renamed_partial() {
+    let root = temp_root("w12-rename-cancel");
+    let source = root.join("big.bin");
+    std::fs::write(&source, vec![4u8; 16 * 1024 * 1024]).unwrap();
+    let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+    endpoints.put_remote("/remote/big.bin", vec![9u8; 1024]);
+    // 原目标旁边别人留下的旧写法临时文件：不属于这个任务，取消时也不能碰。
+    endpoints.put_remote("/remote/big.bin.zssh-part", vec![1u8; 100]);
+    let (engine, mut events) = TransferEngine::new(
+        endpoints.clone(),
+        Arc::new(RenameTo("other.bin")),
+        slow_rename_options(),
+    );
+    let id = engine.submit(TransferJob {
+        direction: Direction::Upload,
+        source: source.display().to_string(),
+        target: "/remote/big.bin".to_owned(),
+        recursive: false,
+        peer: None,
+    });
+    pause_when_partial_grows(&engine, &endpoints, id, "/remote/other.bin", 0).await;
+    assert_eq!(endpoints.remote_part_files("/remote/other.bin").len(), 1);
+
+    assert!(engine.cancel(id));
+    let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+    assert_eq!(report.state, TransferState::Cancelled, "{report:?}");
+    assert!(
+        endpoints.remote_part_files("/remote/other.bin").is_empty(),
+        "改名目标的临时文件要清掉：{:?}",
+        endpoints.remote_part_files("/remote/other.bin")
+    );
+    assert!(!endpoints.remote_exists("/remote/other.bin"));
+    assert_eq!(
+        endpoints.remote_contents("/remote/big.bin"),
+        vec![9u8; 1024]
+    );
+    assert_eq!(
+        endpoints.remote_contents("/remote/big.bin.zssh-part"),
+        vec![1u8; 100],
+        "别人的临时文件不能碰"
+    );
+}
+
+/// 一次失败的写之后，连续前缀之后的洞截不掉、只能从头传：重传前先扣掉之前已计入的字节，
+/// 进度不能因为同一段数据传了两遍而超过总量，最后正好等于总量。
+#[tokio::test]
+async fn restarting_a_file_from_scratch_does_not_double_count_progress() {
+    let data = nonzero_pattern(10 * 4096);
+    let root = temp_root("w12-restart-count");
+    let source = root.join("hole.bin");
+    std::fs::write(&source, &data).unwrap();
+    let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+    // 和 `upload_that_leaves_a_hole` 同一个夹具，但允许任务内自动重试：第一轮已确认 16384
+    // 字节并计入进度，之后清理一直失败（截不掉洞），第二轮只能从 0 开始。
+    endpoints.fail_remote_write_at_offset(20_480);
+    endpoints.set_remote_cleanup_fails(true);
+    let (engine, mut events) = TransferEngine::new(
+        endpoints.clone(),
+        Arc::new(OverwriteAll),
+        TransferOptions {
+            max_retries: 2,
+            ..local_options()
+        },
+    );
+    let id = engine.submit(TransferJob {
+        direction: Direction::Upload,
+        source: source.display().to_string(),
+        target: "/remote/hole.bin".to_owned(),
+        recursive: false,
+        peer: None,
+    });
+    let report = finish_with_bounded_progress(&mut events, id).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    assert!(
+        report.notes.iter().any(|note| note.contains("从头传")),
+        "前提：这一轮真的是从头重传：{:?}",
+        report.notes
+    );
+    assert_eq!(report.done_bytes, report.total_bytes, "{report:?}");
+    assert_eq!(endpoints.remote_contents("/remote/hole.bin"), data);
+}
+
+/// 重试一个失败的任务（进度归零、接着上次的临时文件传）：续传前缀也要算进进度，
+/// 最后 `done_bytes` 正好等于总量（以前只算新传的部分，少了续传前缀那一段）。
+#[tokio::test]
+async fn retry_counts_the_resumed_prefix_so_progress_ends_at_the_total() {
+    let root = temp_root("w12-retry-count");
+    let source = root.join("retry.bin");
+    std::fs::write(&source, vec![7u8; 16 * 1024]).unwrap();
+    let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+    endpoints.fail_remote_write_after(4096);
+    let (engine, mut events) = TransferEngine::new(
+        endpoints.clone(),
+        Arc::new(OverwriteAll),
+        TransferOptions {
+            max_retries: 0,
+            in_flight: 1,
+            ..local_options()
+        },
+    );
+    let id = engine.submit(TransferJob {
+        direction: Direction::Upload,
+        source: source.display().to_string(),
+        target: "/remote/retry.bin".to_owned(),
+        recursive: false,
+        peer: None,
+    });
+    let report = finish_with_bounded_progress(&mut events, id).await;
+    assert!(
+        matches!(report.state, TransferState::Failed(_)),
+        "{report:?}"
+    );
+    assert!(endpoints.remote_partial_len("/remote/retry.bin") > 0);
+
+    assert!(engine.retry(id));
+    let report = finish_with_bounded_progress(&mut events, id).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    assert_eq!(report.done_bytes, 16 * 1024, "{report:?}");
+    assert_eq!(report.done_bytes, report.total_bytes);
 }
