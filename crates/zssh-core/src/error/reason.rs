@@ -819,10 +819,12 @@ pub mod keys {
         CT_HANDSHAKE_OTHER = "conntest.handshake_other";
         CT_OK = "conntest.ok";
         CT_OK_VERSION = "conntest.ok_version";
-        CT_UNTRUSTED = "conntest.untrusted";
-        CT_UNTRUSTED_OTHER = "conntest.untrusted_other";
-        CT_UNTRUSTED_HOP = "conntest.untrusted_hop";
-        CT_UNTRUSTED_OTHER_HOP = "conntest.untrusted_other_hop";
+        CT_PARTIAL_UNCONFIRMED = "conntest.partial_unconfirmed";
+        CT_PARTIAL_UNCONFIRMED_JUMP = "conntest.partial_unconfirmed_jump";
+        CT_PARTIAL_OTHER_TYPES = "conntest.partial_other_types";
+        CT_PARTIAL_OTHER_TYPES_JUMP = "conntest.partial_other_types_jump";
+        CT_PARTIAL_INTERACTIVE = "conntest.partial_interactive";
+        CT_PARTIAL_INTERACTIVE_JUMP = "conntest.partial_interactive_jump";
         CT_TCP_DATA = "conntest.tcp_data";
         CT_TCP_SILENT = "conntest.tcp_silent";
         CT_TCP_CLOSED = "conntest.tcp_closed";

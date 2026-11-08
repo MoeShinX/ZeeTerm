@@ -30,6 +30,13 @@ impl Counters {
         self.password.load(Ordering::SeqCst) + self.keyboard_interactive.load(Ordering::SeqCst)
     }
 
+    /// 任何认证请求（none / 公钥 / 密码 / 键盘交互）一共收到几次：没核对过身份的主机一次都不该收到。
+    pub fn auth_requests(&self) -> usize {
+        self.none.load(Ordering::SeqCst)
+            + self.publickey.load(Ordering::SeqCst)
+            + self.secret_attempts()
+    }
+
     pub fn accepted(&self) -> usize {
         self.accepted.load(Ordering::SeqCst)
     }

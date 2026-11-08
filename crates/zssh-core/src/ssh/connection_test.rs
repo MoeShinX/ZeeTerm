@@ -5,9 +5,11 @@
 //!   已经打开的标签，也不弹任何确认框；
 //! - **主机指纹**：测试里的 [`Interactor`] 对没信任的指纹（没见过 / 只存过别种类型）一律**拒绝并记下指纹**：
 //!   握手做到出示指纹为止，不进行任何认证——密码、keyboard-interactive 的回答发给还没核对过的主机，
-//!   中间人就能拿到明文（V2-C7a S1）。结果写「主机指纹 … 尚未信任，没有测试登录；请先正式连接一次并核对指纹」；
-//!   跳板链上哪一跳没信任，就在那一跳停下（它之后的各跳都不连）。指纹和已存的不一致时同样拒绝，按失败显示
-//!   「主机密钥与保存的不一致」。整个过程不会调用 `KnownHosts::append / replace`；
+//!   中间人就能拿到明文（V2-C7a S1）。这是**有预期的主动停止**：记录绑定到本次测试、具体哪一跳、具体指纹，
+//!   只有那一跳因这条记录而返回的 `HostKeyRejected` 才算「网络与 SSH 响应检测通过，登录待首次连接验证」
+//!   （[`TestResultKind::Partial`]）；超时、断开、签名错误等其它错误不会被误当成通过。跳板链上哪一跳没信任，
+//!   就在那一跳停下（它之后的各跳都不连）。指纹和已存的不一致 / 吊销 / 信任库读不了时按失败显示、在认证之前停止。
+//!   整个过程不会调用 `KnownHosts::append / replace / remove`；
 //! - **Telnet**：经代理 / 跳板机把 TCP 连上就算成功（读到第一个字节或 2 秒内没数据都算），不做自动登录；
 //! - **串口**：由界面层按参数打开端口再关闭（串口驱动在 `zssh-protocols`），这里只给结果的文案；
 //! - 整次测试 10 秒超时，超时的结果写明卡在哪个阶段。日志和结果里都没有密码。
@@ -83,19 +85,116 @@ impl TestStage {
     }
 }
 
+/// 一次测试的结论。界面的颜色 / 图标只由它（加上各项检查）决定，不再由 `ok` / `stage` 这类字段的组合推断。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TestResultKind {
+    /// 这次检查范围内的每一项都做完并通过。
+    Complete,
+    /// 已做的项目通过，剩下的项目要等以后（首次正式连接、人工输入验证码……）才能验证；不是失败。
+    Partial,
+    /// 某一项失败。
+    Failed,
+    /// 用户中途取消（什么都没证明）。
+    Cancelled,
+}
+
+/// 单项检查的状态。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckState {
+    /// 检查过，通过。
+    Passed,
+    /// 本次没法验证，留给以后（例如首次连接时核对身份后才登录）。
+    Pending,
+    /// 检查过，失败。
+    Failed,
+    /// 不适用：这个协议没有这一项，或前面已经失败 / 停下，没有机会走到这一项。
+    NotApplicable,
+}
+
+/// 服务器身份（主机密钥）的核对情况。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdentityState {
+    /// 和已保存的记录一致。
+    Matched,
+    /// 没有这台主机的记录：看到了主机密钥，但没有核对过（不等于信任）。
+    Unconfirmed,
+    /// 和已保存的记录不一致。
+    Changed,
+    /// 命中了 `@revoked`。
+    Revoked,
+    /// 信任库读不了，无法判断。
+    Unreadable,
+    /// 只保存过这台主机别种类型的密钥，这次出示的类型没有记录。
+    OtherKeyTypes,
+}
+
+/// 测试停下（或结束）在拨号链的哪一跳。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckedHop {
+    /// 从 0 开始，在整条链（跳板机在前、目标在最后）里的位置。
+    pub index: usize,
+    /// 界面上这一跳的名字（「跳板机 web-1」「目标 db」）。
+    pub label: String,
+}
+
+/// 一组检查的状态（构造结果和错误分类共用）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Checks {
+    /// 网络与 SSH 响应：TCP 连得上、对方回应 SSH 并出示了主机密钥。
+    pub connectivity: CheckState,
+    pub identity: Option<IdentityState>,
+    pub authentication: CheckState,
+}
+
+impl Checks {
+    /// 连不上 / 握手没做完：网络与 SSH 响应没通过，后面的项目没有机会检查。
+    const NOT_REACHED: Self = Self {
+        connectivity: CheckState::Failed,
+        identity: None,
+        authentication: CheckState::NotApplicable,
+    };
+
+    /// 对方出示了主机密钥，但身份核对没过 / 没做：在认证之前停下。
+    const fn stopped_at_identity(identity: Option<IdentityState>) -> Self {
+        Self {
+            connectivity: CheckState::Passed,
+            identity,
+            authentication: CheckState::NotApplicable,
+        }
+    }
+
+    /// 身份核对通过，认证这一步失败。
+    const AUTH_FAILED: Self = Self {
+        connectivity: CheckState::Passed,
+        identity: Some(IdentityState::Matched),
+        authentication: CheckState::Failed,
+    };
+}
+
 /// 一次测试的结果（界面直接显示）。
+///
+/// 显示等级只看 `kind`（和各项检查），由界面的一个映射函数决定；`failing_stage` 只是诊断信息，
+/// 不参与着色。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TestOutcome {
-    pub ok: bool,
+    pub kind: TestResultKind,
+    /// 网络与 SSH 响应（Telnet：TCP 连通；串口：能打开）。
+    pub connectivity: CheckState,
+    /// 服务器身份；没有这一项的协议（Telnet、串口）和没走到这一步的失败是 `None`。
+    pub identity: Option<IdentityState>,
+    /// 登录认证。
+    pub authentication: CheckState,
+    /// 失败时出问题的阶段（诊断用）。
+    pub failing_stage: Option<TestStage>,
+    /// 停下 / 结束在哪一跳；串口和没有目标的情况是 `None`。
+    pub checked_hop: Option<CheckedHop>,
+    /// 停下的那一跳之后没有测试的各跳（名字，按链的顺序；Telnet 经跳板机时包含 Telnet 目标）。
+    pub untested_hops: Vec<String>,
     /// 按钮栏上面那一行。
-    pub headline: Reason,
-    /// 「复制详情」复制的多行文字（目标、路线、阶段、耗时、完整原因；没有密码）。
+    pub reason: Reason,
+    /// 「复制详情」复制的多行文字（目标、路线、阶段、耗时、指纹、完整原因；没有密码）。
     pub detail: String,
     pub elapsed_ms: u64,
-    /// 失败时出问题的阶段。
-    pub stage: Option<TestStage>,
-    /// 连接成功但指纹尚未信任：本次看到的指纹（`SHA256:…`）。
-    pub untrusted_fingerprint: Option<String>,
 }
 
 /// SSH 测试：整条拨号链（跳板机在前，目标在最后），每一跳带着它自己的认证和 known_hosts 视图。
@@ -199,6 +298,33 @@ pub fn classify_failure(
         };
     }
     inner
+}
+
+/// 一次失败说明了哪几项检查是什么状态（和 [`classify_failure`] 看同一个错误，但不被「跳板机」前缀之类的包装影响）。
+///
+/// 对方出示了主机密钥之后才失败的（指纹变化 / 吊销 / 信任库读不了 / 认证失败）算「网络与 SSH 响应」通过。
+pub fn failure_checks(error: &ZsshError, phase: FailurePhase) -> Checks {
+    if phase != FailurePhase::Handshake {
+        return Checks::NOT_REACHED;
+    }
+    match error {
+        ZsshError::HostKeyChanged(_) => Checks::stopped_at_identity(Some(IdentityState::Changed)),
+        ZsshError::HostKeyRevoked(_) => Checks::stopped_at_identity(Some(IdentityState::Revoked)),
+        ZsshError::HostKeyStore(_) => Checks::stopped_at_identity(Some(IdentityState::Unreadable)),
+        // 没有预期的拒绝（见 [`TestInteractor::expected_stop_for`]）：身份没核对，但也不是已知的哪种。
+        ZsshError::HostKeyRejected { .. } => {
+            Checks::stopped_at_identity(Some(IdentityState::Unconfirmed))
+        }
+        ZsshError::HostKeyRekeyMismatch { .. } => Checks::stopped_at_identity(None),
+        ZsshError::AuthFailed
+        | ZsshError::AllAuthFailed { .. }
+        | ZsshError::AuthTimeout { .. }
+        | ZsshError::KeyLoad(_)
+        | ZsshError::AgentUnavailable(_)
+        | ZsshError::RsaSha1Refused { .. }
+        | ZsshError::Cancelled => Checks::AUTH_FAILED,
+        _ => Checks::NOT_REACHED,
+    }
 }
 
 fn forward_reason(error: &ZsshError) -> Reason {
@@ -503,55 +629,68 @@ fn classify_handshake(error: &ZsshError, interaction: Interaction) -> Failure {
 
 // ---- 结果文案（纯函数）----
 
-/// SSH 成功的那一行（走到这里的主机指纹都已经信任，见 [`untrusted_stop_headline`]）。
+/// SSH 成功的那一行：身份核对过、登录也成功，才会走到这里。
 pub fn ssh_success_headline(elapsed_ms: u64, version: Option<&str>) -> Reason {
     match version {
         Some(version) => Reason::new(
             reason_keys::CT_OK_VERSION,
-            format!("连接成功，耗时 {elapsed_ms} ms，服务器 {version}"),
+            format!("连接与登录验证通过，耗时 {elapsed_ms} ms，服务器 {version}"),
         )
         .with("elapsed", elapsed_ms)
         .with("version", version),
         None => Reason::new(
             reason_keys::CT_OK,
-            format!("连接成功，耗时 {elapsed_ms} ms"),
+            format!("连接与登录验证通过，耗时 {elapsed_ms} ms"),
         )
         .with("elapsed", elapsed_ms),
     }
 }
 
-/// 主机指纹没信任、测试停在认证之前的那一行。`other_types`：这台主机只保存过别种类型的密钥；
+/// 测试按预期停在了一个还没核对过身份的主机上（没有记录，或只存过别种类型的密钥）：已经证明有响应端
+/// 出示了主机密钥，登录要等首次正式连接核对身份后才验证。`other_types`：这台主机只保存过别种类型的密钥；
 /// `hop_label`：停下的是跳板机时它的名字（目标就是 `None`）。
-pub fn untrusted_stop_headline(
-    fingerprint: &str,
-    other_types: bool,
-    hop_label: Option<&str>,
-) -> Reason {
-    let subject = if other_types {
-        format!("这台主机只保存过别种类型的密钥，本次指纹 {fingerprint} 尚未信任")
-    } else {
-        format!("主机指纹 {fingerprint} 尚未信任")
-    };
-    let note = "没有测试登录；请先正式连接一次并核对指纹";
-    let (key, zh) = match (other_types, hop_label) {
-        (false, None) => (reason_keys::CT_UNTRUSTED, format!("{subject}，{note}")),
-        (true, None) => (
-            reason_keys::CT_UNTRUSTED_OTHER,
-            format!("{subject}，{note}"),
+///
+/// 只说「网络与 SSH 响应检测通过」：这时只拿到了主机密钥，没有完成整个握手，也没有核对过服务器身份。
+pub fn identity_pending_headline(other_types: bool, hop_label: Option<&str>) -> Reason {
+    match (other_types, hop_label) {
+        (false, None) => Reason::new(
+            reason_keys::CT_PARTIAL_UNCONFIRMED,
+            "网络与 SSH 响应检测通过，登录待首次连接验证",
         ),
-        (false, Some(label)) => (
-            reason_keys::CT_UNTRUSTED_HOP,
-            format!("{label}：{subject}，{note}"),
+        (true, None) => Reason::new(
+            reason_keys::CT_PARTIAL_OTHER_TYPES,
+            "网络与 SSH 响应检测通过，但服务器出示的密钥类型和已保存的不同，登录待正式连接时核对",
         ),
-        (true, Some(label)) => (
-            reason_keys::CT_UNTRUSTED_OTHER_HOP,
-            format!("{label}：{subject}，{note}"),
-        ),
-    };
-    let reason = Reason::new(key, zh).with("fingerprint", fingerprint);
+        (false, Some(label)) => Reason::new(
+            reason_keys::CT_PARTIAL_UNCONFIRMED_JUMP,
+            format!("{label}：可达，后续目标未测试（其服务器身份尚未确认，登录待首次连接验证）"),
+        )
+        .with("label", label),
+        (true, Some(label)) => Reason::new(
+            reason_keys::CT_PARTIAL_OTHER_TYPES_JUMP,
+            format!(
+                "{label}：可达，后续目标未测试（它出示的密钥类型和已保存的不同，登录待正式连接时核对）"
+            ),
+        )
+        .with("label", label),
+    }
+}
+
+/// 身份核对通过，但登录要密码 / 口令 / 验证码而测试连接不弹窗询问：已完成的项目通过，登录待人工验证。
+/// 不是认证失败，更不能说成密码错误。
+pub fn login_interactive_headline(hop_label: Option<&str>) -> Reason {
     match hop_label {
-        Some(label) => reason.with("label", label),
-        None => reason,
+        None => Reason::new(
+            reason_keys::CT_PARTIAL_INTERACTIVE,
+            "网络、SSH 响应与服务器身份检测通过，登录需要交互验证（测试连接不会弹窗询问）",
+        ),
+        Some(label) => Reason::new(
+            reason_keys::CT_PARTIAL_INTERACTIVE_JUMP,
+            format!(
+                "{label}：可达且身份已核对，后续目标未测试（它的登录需要交互验证，测试连接不会弹窗询问）"
+            ),
+        )
+        .with("label", label),
     }
 }
 
@@ -580,39 +719,129 @@ pub enum FirstByte {
     Closed,
 }
 
-fn success(headline: Reason, detail: String, elapsed_ms: u64) -> TestOutcome {
-    TestOutcome {
-        ok: true,
-        headline,
-        detail,
-        elapsed_ms,
-        stage: None,
-        untrusted_fingerprint: None,
+/// 这次测试涉及的整条链：每一跳（含 Telnet 经跳板机时的 Telnet 目标）的名字，按链的顺序。
+/// 结果里的「停在哪一跳 / 哪些没测」都从它来。
+struct Chain {
+    labels: Vec<String>,
+}
+
+impl Chain {
+    fn checked_hop(&self, index: Option<usize>) -> Option<CheckedHop> {
+        let index = index?;
+        self.labels.get(index).map(|label| CheckedHop {
+            index,
+            label: label.clone(),
+        })
+    }
+
+    /// `index` 那一跳之后没有测试的各跳；没有停下的位置（`None`）时整条链都没测。
+    fn untested_after(&self, index: Option<usize>) -> Vec<String> {
+        let start = index.map_or(0, |index| index + 1);
+        self.labels.iter().skip(start).cloned().collect()
+    }
+
+    /// 停下的那一跳是不是跳板机（它之后还有各跳）。
+    fn is_jump_hop(&self, index: usize) -> bool {
+        index + 1 < self.labels.len()
     }
 }
 
-fn failure_outcome(failure: &Failure, detail: String, elapsed_ms: u64) -> TestOutcome {
+/// 没有「停在哪一跳」可言时（串口、没有目标）的空链。
+fn no_chain() -> Chain {
+    Chain { labels: Vec::new() }
+}
+
+/// 一次完整通过的结果。
+fn complete_outcome(
+    reason: Reason,
+    detail: String,
+    elapsed_ms: u64,
+    checks: Checks,
+    chain: &Chain,
+    last_hop: Option<usize>,
+) -> TestOutcome {
     TestOutcome {
-        ok: false,
-        // 原因本身已经带着阶段的说法（「域名解析失败」「连接被拒绝」「认证失败」），不再重复前缀。
-        headline: failure.message.clone(),
+        kind: TestResultKind::Complete,
+        connectivity: checks.connectivity,
+        identity: checks.identity,
+        authentication: checks.authentication,
+        failing_stage: None,
+        checked_hop: chain.checked_hop(last_hop),
+        untested_hops: Vec::new(),
+        reason,
         detail,
         elapsed_ms,
-        stage: Some(failure.stage),
-        untrusted_fingerprint: None,
+    }
+}
+
+/// 已做的项目通过、剩下的要以后验证（不是失败）。
+fn partial_outcome(
+    reason: Reason,
+    detail: String,
+    elapsed_ms: u64,
+    checks: Checks,
+    chain: &Chain,
+    stopped_at: usize,
+) -> TestOutcome {
+    TestOutcome {
+        kind: TestResultKind::Partial,
+        connectivity: checks.connectivity,
+        identity: checks.identity,
+        authentication: checks.authentication,
+        failing_stage: None,
+        checked_hop: chain.checked_hop(Some(stopped_at)),
+        untested_hops: chain.untested_after(Some(stopped_at)),
+        reason,
+        detail,
+        elapsed_ms,
+    }
+}
+
+/// 某一项失败。`failed_at`：失败发生在第几跳（不知道就 `None`）。
+fn failure_outcome(
+    failure: &Failure,
+    detail: String,
+    elapsed_ms: u64,
+    checks: Checks,
+    chain: &Chain,
+    failed_at: Option<usize>,
+) -> TestOutcome {
+    TestOutcome {
+        kind: TestResultKind::Failed,
+        connectivity: checks.connectivity,
+        identity: checks.identity,
+        authentication: checks.authentication,
+        failing_stage: Some(failure.stage),
+        checked_hop: chain.checked_hop(failed_at),
+        untested_hops: chain.untested_after(failed_at),
+        // 原因本身已经带着阶段的说法（「域名解析失败」「连接被拒绝」「认证失败」），不再重复前缀。
+        reason: failure.message.clone(),
+        detail,
+        elapsed_ms,
     }
 }
 
 /// 串口打开成功。
 pub fn serial_success(device: &str, elapsed_ms: u64) -> TestOutcome {
-    let headline = Reason::new(
+    let reason = Reason::new(
         reason_keys::CT_SERIAL_OK,
         format!("串口 {device} 可以打开（已立即关闭），耗时 {elapsed_ms} ms"),
     )
     .with("device", device)
     .with("elapsed", elapsed_ms);
     let detail = format!("测试连接\n串口：{device}\n结果：可以打开\n耗时：{elapsed_ms} ms");
-    success(headline, detail, elapsed_ms)
+    complete_outcome(
+        reason,
+        detail,
+        elapsed_ms,
+        Checks {
+            connectivity: CheckState::Passed,
+            identity: None,
+            authentication: CheckState::NotApplicable,
+        },
+        &no_chain(),
+        None,
+    )
 }
 
 /// 串口打开失败：`reason` 是串口驱动层分类好的中文原因（「COM3 不存在…」「COM3 被别的程序占用…」）。
@@ -623,33 +852,59 @@ pub fn serial_failure(device: &str, reason: &str, elapsed_ms: u64) -> TestOutcom
         failure.stage.label(),
         failure.message.zh()
     );
-    failure_outcome(&failure, detail, elapsed_ms)
+    failure_outcome(
+        &failure,
+        detail,
+        elapsed_ms,
+        Checks::NOT_REACHED,
+        &no_chain(),
+        None,
+    )
 }
 
-/// 用户在测试中途点了取消。
+/// 用户在测试中途点了取消：什么都没证明，所有项目都是「没做」。
 pub fn cancelled() -> TestOutcome {
     TestOutcome {
-        ok: false,
-        headline: Reason::new(reason_keys::CT_CANCELLED_TEST, "已取消测试"),
+        kind: TestResultKind::Cancelled,
+        connectivity: CheckState::NotApplicable,
+        identity: None,
+        authentication: CheckState::NotApplicable,
+        failing_stage: None,
+        checked_hop: None,
+        untested_hops: Vec::new(),
+        reason: Reason::new(reason_keys::CT_CANCELLED_TEST, "已取消测试"),
         detail: "测试连接\n结果：已取消".to_owned(),
         elapsed_ms: 0,
-        stage: None,
-        untrusted_fingerprint: None,
     }
 }
 
 // ---- 测试用的 Interactor ----
 
-/// 测试过程中的观察：问过什么、停在了哪个没信任的指纹、现在走到哪一步。
+/// 对一个没信任的指纹「按预期主动拒绝」的记录。只有同一跳、同一地址端口、同一指纹的 `HostKeyRejected`
+/// 才会被当成它造成的停止（见 [`TestInteractor::expected_stop_for`]）。
+#[derive(Clone)]
+struct ExpectedStop {
+    hop: usize,
+    info: HostKeyInfo,
+    /// 这台主机只存过别种类型的密钥。
+    other_types: bool,
+}
+
+/// 测试过程中的观察：现在在第几跳、问过什么、按预期拒绝了哪个没信任的指纹、现在走到哪一步。
 #[derive(Default)]
 struct Observed {
-    /// 第一个没信任的指纹（连接随即被拒绝，所以最多一个）；`bool`：这台主机只存过别种类型的密钥。
-    untrusted: Option<(HostKeyInfo, bool)>,
-    prompted: Option<PromptKind>,
+    /// 当前正在连的是第几跳（从 0 开始）。
+    hop: usize,
+    /// 第一个按预期拒绝的没信任指纹（连接随即被拒绝，所以最多一个）。
+    expected_stop: Option<ExpectedStop>,
+    /// 谁问了需要输入的问题：（第几跳, 问的是什么）。
+    prompted: Option<(usize, PromptKind)>,
     stage: Option<TestStage>,
 }
 
 /// 对任何没信任的指纹都拒绝（不写 known_hosts）；任何需要输入的提问一律取消，不弹窗。
+///
+/// 一个实例只服务一次测试（一个 attempt）：观察到的东西不会带到下一次测试里。
 struct TestInteractor {
     seen: Mutex<Observed>,
 }
@@ -671,9 +926,47 @@ impl TestInteractor {
         self.lock().stage = Some(stage);
     }
 
+    /// 开始连第 `hop` 跳。
+    fn begin_hop(&self, hop: usize) {
+        self.lock().hop = hop;
+    }
+
     fn interaction(&self) -> Interaction {
         Interaction {
-            prompted: self.lock().prompted,
+            prompted: self.lock().prompted.map(|(_, kind)| kind),
+        }
+    }
+
+    /// 第 `hop` 跳的握手失败是不是「按预期的主动停止」，是的话它停在了哪个没信任的指纹。
+    ///
+    /// 只认两种且都要对得上记录：
+    /// - 这一跳因为自己记下的没信任指纹被我们拒绝，错误是同地址、同端口、同指纹的 `HostKeyRejected`；
+    /// - 这一跳问过需要输入的问题（密码 / 口令 / 验证码），被我们取消，错误是 `Cancelled`。
+    ///
+    /// 超时、断开、签名错误、别的指纹被拒绝、别的跳的提问……一律不是。
+    fn expected_stop_for(&self, hop: usize, error: &ZsshError) -> Option<PendingStop> {
+        let seen = self.lock();
+        match error {
+            ZsshError::HostKeyRejected {
+                host,
+                port,
+                fingerprint,
+            } => {
+                let stop = seen.expected_stop.as_ref()?;
+                (stop.hop == hop
+                    && stop.info.host == *host
+                    && stop.info.port == *port
+                    && stop.info.fingerprint == *fingerprint)
+                    .then(|| PendingStop::Unconfirmed {
+                        info: stop.info.clone(),
+                        other_types: stop.other_types,
+                    })
+            }
+            ZsshError::Cancelled => match seen.prompted {
+                Some((asked_hop, kind)) if asked_hop == hop => Some(PendingStop::Interactive(kind)),
+                _ => None,
+            },
+            _ => None,
         }
     }
 }
@@ -681,11 +974,17 @@ impl TestInteractor {
 impl Interactor for TestInteractor {
     fn confirm_host_key(&self, info: HostKeyInfo) -> BoxFuture<'_, HostKeyDecision> {
         let decision = match info.status {
-            // 没见过 / 只存过别的类型：不放行，握手到此为止，只记下指纹给结果用。放行的话下一步就是
-            // 把保存的密码发过去；「本次放行」不等于「核对过」。
+            // 没见过 / 只存过别的类型：不放行，握手到此为止，把这次拒绝记成「按预期的停止」给结果用。
+            // 放行的话下一步就是把保存的密码发过去；「本次放行」不等于「核对过」。
             HostKeyStatus::Unknown | HostKeyStatus::OtherKeyTypesSaved => {
-                let other = info.status == HostKeyStatus::OtherKeyTypesSaved;
-                self.lock().untrusted.get_or_insert((info, other));
+                let other_types = info.status == HostKeyStatus::OtherKeyTypesSaved;
+                let mut seen = self.lock();
+                let hop = seen.hop;
+                seen.expected_stop.get_or_insert(ExpectedStop {
+                    hop,
+                    info,
+                    other_types,
+                });
                 HostKeyDecision::Reject
             }
             // 指纹变了 / 吊销：绝不放行（也不更新已存的）。
@@ -695,7 +994,10 @@ impl Interactor for TestInteractor {
     }
 
     fn prompt(&self, request: PromptRequest) -> BoxFuture<'_, Option<PromptAnswers>> {
-        self.lock().prompted = Some(request.kind);
+        let mut seen = self.lock();
+        let hop = seen.hop;
+        seen.prompted = Some((hop, request.kind));
+        drop(seen);
         Box::pin(async { None })
     }
 
@@ -711,11 +1013,41 @@ impl Interactor for TestInteractor {
 
 // ---- 拨号 ----
 
-type Fail = (Failure, String);
+/// 按预期停在一个「还没法继续验证登录」的位置（不是失败）。
+#[derive(Clone)]
+enum PendingStop {
+    /// 对方出示了主机密钥，但这台主机没有记录（或只有别种类型）：不核对身份就不往下认证。
+    Unconfirmed {
+        info: HostKeyInfo,
+        other_types: bool,
+    },
+    /// 身份已核对，但认证要交互输入（密码没填、私钥口令、验证码）；测试连接不弹窗。
+    Interactive(PromptKind),
+}
 
-fn fail(failure: Failure, error: &ZsshError) -> Fail {
-    let raw = one_line(&error.to_string());
-    (failure, raw)
+/// 一跳没有顺利建立的原因。
+enum HopStop {
+    /// 第几跳、分类后的失败、各项检查状态、原始错误文字。
+    Failed(usize, Failure, Checks, String),
+    /// 第几跳按预期停下。
+    Pending(usize, PendingStop),
+}
+
+fn fail(index: usize, failure: Failure, checks: Checks, error: &ZsshError) -> Box<HopStop> {
+    fail_with(index, failure, checks, one_line(&error.to_string()))
+}
+
+fn fail_with(index: usize, failure: Failure, checks: Checks, raw: String) -> Box<HopStop> {
+    Box::new(HopStop::Failed(index, failure, checks, raw))
+}
+
+/// 已经建立的各跳连接。掉出作用域（任务被取消、超时、出错）时**目标先于跳板机**释放。
+struct Established(Vec<Connection>);
+
+impl Drop for Established {
+    fn drop(&mut self) {
+        while self.0.pop().is_some() {}
+    }
 }
 
 /// 按顺序连每一跳（只有第一跳走自己的代理，后面各跳走在前一跳的 SSH 通道里，同 `connect_chain`）。
@@ -724,11 +1056,12 @@ async fn connect_hops(
     hops: Vec<ChainHop>,
     last_is_target: bool,
     interactor: &Arc<TestInteractor>,
-) -> Result<Vec<Connection>, Fail> {
+) -> Result<Established, Box<HopStop>> {
     let total = hops.len();
     let dyn_interactor: Arc<dyn Interactor> = interactor.clone();
-    let mut established: Vec<Connection> = Vec::with_capacity(total);
+    let mut established = Established(Vec::with_capacity(total));
     for (index, hop) in hops.into_iter().enumerate() {
+        interactor.begin_hop(index);
         let role = if last_is_target && index + 1 == total {
             HopRole::Target
         } else {
@@ -740,29 +1073,26 @@ async fn connect_hops(
         } else {
             TestStage::Connect
         });
-        let stream: BoxedStream = match established.last() {
+        let stream: BoxedStream = match established.0.last() {
             None => match &hop.proxy {
                 Some(proxy) => connect_via_proxy(proxy, &hop.host, hop.port)
                     .await
                     .map_err(|err| {
+                        let phase = FailurePhase::Connect { via_proxy: true };
                         let failure = classify_failure(
                             &err,
-                            FailurePhase::Connect { via_proxy: true },
+                            phase,
                             role,
                             &hop.label,
                             interactor.interaction(),
                         );
-                        fail(failure, &err)
+                        fail(index, failure, failure_checks(&err, phase), &err)
                     })?,
                 None => Box::new(connect_direct(&hop.host, hop.port).await.map_err(|err| {
-                    let failure = classify_failure(
-                        &err,
-                        FailurePhase::Connect { via_proxy: false },
-                        role,
-                        &hop.label,
-                        interactor.interaction(),
-                    );
-                    fail(failure, &err)
+                    let phase = FailurePhase::Connect { via_proxy: false };
+                    let failure =
+                        classify_failure(&err, phase, role, &hop.label, interactor.interaction());
+                    fail(index, failure, failure_checks(&err, phase), &err)
                 })?),
             },
             Some(previous) => {
@@ -771,14 +1101,15 @@ async fn connect_hops(
                     .open_direct_tcpip(&hop.host, hop.port)
                     .await
                     .map_err(|err| {
+                        let phase = FailurePhase::Forward;
                         let failure = classify_failure(
                             &err,
-                            FailurePhase::Forward,
+                            phase,
                             role,
                             &hop.label,
                             interactor.interaction(),
                         );
-                        fail(failure, &err)
+                        fail(index, failure, failure_checks(&err, phase), &err)
                     })?
             }
         };
@@ -795,62 +1126,119 @@ async fn connect_hops(
         )
         .await
         .map_err(|err| {
-            let failure = classify_failure(
-                &err,
-                FailurePhase::Handshake,
-                role,
-                &hop.label,
-                interactor.interaction(),
-            );
-            fail(failure, &err)
+            // 先看是不是我们自己按预期造成的停止（只认这一跳、对得上记录的那一种）。
+            if let Some(stop) = interactor.expected_stop_for(index, &err) {
+                return Box::new(HopStop::Pending(index, stop));
+            }
+            let phase = FailurePhase::Handshake;
+            let failure = classify_failure(&err, phase, role, &hop.label, interactor.interaction());
+            fail(index, failure, failure_checks(&err, phase), &err)
         })?;
-        established.push(connection);
+        established.0.push(connection);
     }
     Ok(established)
 }
 
-/// 每一跳的（地址, 端口, 名字），测试被拒绝在某一跳时按地址找回它的名字。目标不算：它不需要"跳板机 x："前缀。
-type HopLabels = Vec<(String, u16, String)>;
-
-/// `last_is_target`：最后一跳是目标（不收集）还是也只是跳板机。
-fn hop_labels(hops: &[ChainHop], last_is_target: bool) -> HopLabels {
-    let jumps = if last_is_target {
-        hops.len().saturating_sub(1)
-    } else {
-        hops.len()
-    };
-    hops.iter()
-        .take(jumps)
-        .map(|hop| (hop.host.clone(), hop.port, hop.label.clone()))
-        .collect()
+/// 某一跳没有顺利建立：按预期停下的是 Partial，其余是 Failed。
+fn stop_outcome(stop: HopStop, chain: &Chain, header: &str, elapsed_ms: u64) -> TestOutcome {
+    match stop {
+        HopStop::Pending(hop, stop) => pending_outcome(&stop, hop, chain, header, elapsed_ms),
+        HopStop::Failed(hop, failure, checks, raw) => {
+            let detail = failure_detail(header, &failure, elapsed_ms, Some(&raw));
+            failure_outcome(&failure, detail, elapsed_ms, checks, chain, Some(hop))
+        }
+    }
 }
 
-/// 测试停在没信任的指纹上：拼出"没有测试登录"的结果。不是成功（什么都没测到），也不是红色失败
-/// （`stage` 留空，界面用中性色）。没有停在指纹上就是 `None`。
-fn untrusted_stop_outcome(
-    interactor: &TestInteractor,
+/// 一次按预期的停止的完整结果。`chain`：整条链的名字；`hop`：停在第几跳。
+fn pending_outcome(
+    stop: &PendingStop,
+    hop: usize,
+    chain: &Chain,
     header: &str,
-    labels: &HopLabels,
     elapsed_ms: u64,
-) -> Option<TestOutcome> {
-    let (info, other_types) = interactor.lock().untrusted.clone()?;
-    let hop_label = labels
-        .iter()
-        .find(|(host, port, _)| *host == info.host && *port == info.port)
-        .map(|(_, _, label)| label.as_str());
-    let headline = untrusted_stop_headline(&info.fingerprint, other_types, hop_label);
-    let detail = format!(
-        "{header}\n结果：没有测试登录（主机指纹尚未信任）\n耗时：{elapsed_ms} ms\n主机：{}:{}\n指纹：{}（尚未信任，没有保存）\n说明：测试连接只做到握手和出示指纹，不会把密码或验证码发给还没核对过的主机；请先正式连接一次并核对指纹。",
-        info.host, info.port, info.fingerprint
-    );
-    Some(TestOutcome {
-        ok: false,
-        headline,
-        detail,
-        elapsed_ms,
-        stage: None,
-        untrusted_fingerprint: Some(info.fingerprint),
-    })
+) -> TestOutcome {
+    // 停下的是跳板机（它之后还有各跳）时标题里带它的名字；停在目标上不带。
+    let hop_label = chain
+        .is_jump_hop(hop)
+        .then(|| chain.labels.get(hop).map(String::as_str))
+        .flatten();
+    let untested = chain.untested_after(Some(hop));
+    let untested_line = if untested.is_empty() {
+        String::new()
+    } else {
+        format!("\n没有测试的后续各跳：{}", untested.join("、"))
+    };
+    match stop {
+        PendingStop::Unconfirmed { info, other_types } => {
+            let reason = identity_pending_headline(*other_types, hop_label);
+            let identity = if *other_types {
+                IdentityState::OtherKeyTypes
+            } else {
+                IdentityState::Unconfirmed
+            };
+            let saved = if info.saved_keys.is_empty() {
+                String::new()
+            } else {
+                let types = info
+                    .saved_keys
+                    .iter()
+                    .map(|key| key.key_type.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、");
+                format!("\n已保存的密钥类型：{types}")
+            };
+            let note = if *other_types {
+                "这台主机以前只保存过别种类型的密钥，这次出示的类型没有记录；可能是服务器换了密钥，也可能不是同一台服务器。测试连接没有核对它，也没有登录；请正式连接时仔细核对指纹。"
+            } else {
+                "测试连接只做到收到主机密钥为止，没有核对服务器身份，也不会把密码或验证码发给还没核对过的主机。首次正式连接时会让你确认指纹，确认后才验证登录。"
+            };
+            let detail = format!(
+                "{header}\n结果：部分完成（网络与 SSH 响应检测通过，登录待验证）\n耗时：{elapsed_ms} ms\n停在：{}\n主机：{}:{}\n密钥类型：{}\n指纹：{}（已看到，尚未信任，没有保存）{saved}{untested_line}\n说明：{note}",
+                chain.labels.get(hop).map_or("", String::as_str),
+                info.host,
+                info.port,
+                info.key_type,
+                info.fingerprint
+            );
+            partial_outcome(
+                reason,
+                detail,
+                elapsed_ms,
+                Checks {
+                    connectivity: CheckState::Passed,
+                    identity: Some(identity),
+                    authentication: CheckState::Pending,
+                },
+                chain,
+                hop,
+            )
+        }
+        PendingStop::Interactive(kind) => {
+            let reason = login_interactive_headline(hop_label);
+            let asked = match kind {
+                PromptKind::Password => "登录密码（没有填写）",
+                PromptKind::Passphrase => "私钥口令（没有可用的口令）",
+                PromptKind::KeyboardInteractive => "服务器的交互式验证（例如动态口令）",
+            };
+            let detail = format!(
+                "{header}\n结果：部分完成（网络、SSH 响应与服务器身份检测通过，登录需要交互验证）\n耗时：{elapsed_ms} ms\n停在：{}\n服务器要求：{asked}{untested_line}\n说明：测试连接不会弹窗询问，也不能代替你回答；这不是密码错误，用正式连接登录即可。",
+                chain.labels.get(hop).map_or("", String::as_str),
+            );
+            partial_outcome(
+                reason,
+                detail,
+                elapsed_ms,
+                Checks {
+                    connectivity: CheckState::Passed,
+                    identity: Some(IdentityState::Matched),
+                    authentication: CheckState::Pending,
+                },
+                chain,
+                hop,
+            )
+        }
+    }
 }
 
 /// 路线的文字：`直连` / `经代理 socks5 h:p` / `经跳板机 a → b`。
@@ -874,9 +1262,13 @@ fn route_text(hops: &[ChainHop]) -> String {
     }
 }
 
-fn timeout_failure(timeout: Duration, interactor: &TestInteractor) -> Failure {
-    let stage = interactor.lock().stage.unwrap_or(TestStage::Connect);
-    Failure {
+/// 超时：卡在哪个阶段、卡在第几跳。超时不是「按预期的停止」——哪怕之前已经记过没信任的指纹。
+fn timeout_failure(timeout: Duration, interactor: &TestInteractor) -> (Failure, Checks, usize) {
+    let (stage, hop) = {
+        let seen = interactor.lock();
+        (seen.stage.unwrap_or(TestStage::Connect), seen.hop)
+    };
+    let failure = Failure {
         stage,
         message: Reason::new(
             reason_keys::CT_TIMEOUT_STAGE,
@@ -888,7 +1280,23 @@ fn timeout_failure(timeout: Duration, interactor: &TestInteractor) -> Failure {
         )
         .with("seconds", timeout.as_secs())
         .with("stage", stage.code()),
-    }
+    };
+    let checks = match stage {
+        TestStage::HostKey => Checks::stopped_at_identity(None),
+        TestStage::Auth => Checks::AUTH_FAILED,
+        _ => Checks::NOT_REACHED,
+    };
+    (failure, checks, hop)
+}
+
+/// 失败 / 超时的详情文字。
+fn failure_detail(header: &str, failure: &Failure, elapsed_ms: u64, raw: Option<&str>) -> String {
+    let raw = raw.map_or_else(String::new, |raw| format!("\n原始错误：{raw}"));
+    format!(
+        "{header}\n结果：失败（阶段：{}）\n耗时：{elapsed_ms} ms\n原因：{}{raw}",
+        failure.stage.label(),
+        failure.message
+    )
 }
 
 /// 测试一条 SSH 链（整次 10 秒超时）。
@@ -921,57 +1329,64 @@ pub async fn test_ssh_with(plan: SshTestPlan, timeout: Duration) -> TestOutcome 
             stage: TestStage::Connect,
             message: Reason::new(reason_keys::CT_NO_TARGET, "没有要连接的目标"),
         };
-        return failure_outcome(&failure, format!("{header}\n结果：失败"), 0);
+        return failure_outcome(
+            &failure,
+            format!("{header}\n结果：失败"),
+            0,
+            Checks::NOT_REACHED,
+            &no_chain(),
+            None,
+        );
     }
     let interactor = TestInteractor::new();
-    let jump_labels = hop_labels(&plan.hops, true);
+    let chain = Chain {
+        labels: plan.hops.iter().map(|hop| hop.label.clone()).collect(),
+    };
     let result = tokio::time::timeout(timeout, connect_hops(plan.hops, true, &interactor)).await;
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     match result {
-        Ok(Ok(connections)) => {
-            let version = connections
+        Ok(Ok(established)) => {
+            let version = established
+                .0
                 .last()
                 .and_then(|connection| connection.server_version().map(str::to_owned));
-            let target_fingerprint = connections
+            let target_fingerprint = established
+                .0
                 .last()
                 .map(|connection| connection.server_key().fingerprint.clone());
             // 先断开再给结果：目标先关，再关跳板机。
-            for connection in connections.iter().rev() {
+            for connection in established.0.iter().rev() {
                 let _ = connection.disconnect().await;
             }
-            drop(connections);
-            let headline = ssh_success_headline(elapsed_ms, version.as_deref());
+            let last_hop = established.0.len().checked_sub(1);
+            drop(established);
+            let reason = ssh_success_headline(elapsed_ms, version.as_deref());
             let detail = format!(
-                "{header}\n结果：连接成功\n耗时：{elapsed_ms} ms\n服务器：{}\n指纹：{}",
+                "{header}\n结果：连接与登录验证通过\n耗时：{elapsed_ms} ms\n服务器：{}\n指纹：{}",
                 version.as_deref().unwrap_or("（没取到版本）"),
                 match &target_fingerprint {
                     Some(fp) => format!("{fp}（已信任）"),
                     None => "（没取到）".to_owned(),
                 }
             );
-            success(headline, detail, elapsed_ms)
+            complete_outcome(
+                reason,
+                detail,
+                elapsed_ms,
+                Checks {
+                    connectivity: CheckState::Passed,
+                    identity: Some(IdentityState::Matched),
+                    authentication: CheckState::Passed,
+                },
+                &chain,
+                last_hop,
+            )
         }
-        Ok(Err((failure, raw))) => {
-            if let Some(outcome) =
-                untrusted_stop_outcome(&interactor, &header, &jump_labels, elapsed_ms)
-            {
-                return outcome;
-            }
-            let detail = format!(
-                "{header}\n结果：失败（阶段：{}）\n耗时：{elapsed_ms} ms\n原因：{}\n原始错误：{raw}",
-                failure.stage.label(),
-                failure.message
-            );
-            failure_outcome(&failure, detail, elapsed_ms)
-        }
+        Ok(Err(stop)) => stop_outcome(*stop, &chain, &header, elapsed_ms),
         Err(_) => {
-            let failure = timeout_failure(timeout, &interactor);
-            let detail = format!(
-                "{header}\n结果：失败（阶段：{}）\n耗时：{elapsed_ms} ms\n原因：{}",
-                failure.stage.label(),
-                failure.message
-            );
-            failure_outcome(&failure, detail, elapsed_ms)
+            let (failure, checks, hop) = timeout_failure(timeout, &interactor);
+            let detail = failure_detail(&header, &failure, elapsed_ms, None);
+            failure_outcome(&failure, detail, elapsed_ms, checks, &chain, Some(hop))
         }
     }
 }
@@ -1000,79 +1415,89 @@ pub async fn test_tcp_with(
         ),
     };
     let header = format!("测试连接（Telnet）\n目标：{host}:{port}\n路线：{route_label}");
-    let jump_labels = match &route {
-        TcpRoute::Jump(hops) => hop_labels(hops, false),
+    // 整条链：各跳板机在前，Telnet 目标在最后（跳板机停下时「后续目标未测试」就指它）。
+    let mut labels = match &route {
+        TcpRoute::Jump(hops) => hops.iter().map(|hop| hop.label.clone()).collect(),
         _ => Vec::new(),
     };
+    let target_index = labels.len();
+    labels.push(format!("{host}:{port}"));
+    let chain = Chain { labels };
     let interactor = TestInteractor::new();
     let attempt = async {
-        let (stream, _keep): (BoxedStream, Vec<Connection>) = match route {
+        let (stream, _keep): (BoxedStream, Option<Established>) = match route {
             TcpRoute::Direct => {
                 interactor.set_stage(TestStage::Connect);
                 let socket = connect_direct(&host, port).await.map_err(|err| {
+                    let phase = FailurePhase::Connect { via_proxy: false };
                     fail(
-                        classify_failure(
-                            &err,
-                            FailurePhase::Connect { via_proxy: false },
-                            HopRole::Target,
-                            "",
-                            Interaction::default(),
-                        ),
+                        target_index,
+                        classify_failure(&err, phase, HopRole::Target, "", Interaction::default()),
+                        failure_checks(&err, phase),
                         &err,
                     )
                 })?;
-                (Box::new(socket), Vec::new())
+                (Box::new(socket), None)
             }
             TcpRoute::Proxy(proxy) => {
                 interactor.set_stage(TestStage::Proxy);
                 let stream = connect_via_proxy(&proxy, &host, port)
                     .await
                     .map_err(|err| {
+                        let phase = FailurePhase::Connect { via_proxy: true };
                         fail(
+                            target_index,
                             classify_failure(
                                 &err,
-                                FailurePhase::Connect { via_proxy: true },
+                                phase,
                                 HopRole::Target,
                                 "",
                                 Interaction::default(),
                             ),
+                            failure_checks(&err, phase),
                             &err,
                         )
                     })?;
-                (stream, Vec::new())
+                (stream, None)
             }
             TcpRoute::Jump(hops) => {
                 let connections = connect_hops(hops, false, &interactor).await?;
                 interactor.set_stage(TestStage::Jump);
+                interactor.begin_hop(target_index);
                 let originator = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
-                let channel = match connections.last() {
+                let channel = match connections.0.last() {
                     Some(last) => last
                         .open_forward_channel(&host, port, originator)
                         .await
                         .map_err(|err| {
+                            let phase = FailurePhase::Forward;
                             fail(
+                                target_index,
                                 classify_failure(
                                     &err,
-                                    FailurePhase::Forward,
+                                    phase,
                                     HopRole::Target,
                                     "",
                                     Interaction::default(),
                                 ),
+                                failure_checks(&err, phase),
                                 &err,
                             )
                         })?,
                     None => {
                         let err = ZsshError::InvalidInput("没有跳板机".into());
                         return Err(fail(
+                            target_index,
                             Failure {
                                 stage: TestStage::Jump,
                                 message: Reason::new(reason_keys::CT_NO_JUMP, "没有跳板机"),
                             },
+                            Checks::NOT_REACHED,
                             &err,
                         ));
                     }
                 };
-                (Box::new(channel), connections)
+                (Box::new(channel), Some(connections))
             }
         };
         let mut stream = stream;
@@ -1091,47 +1516,45 @@ pub async fn test_tcp_with(
                     )
                     .with("cause", one_line(&err.to_string()))
                 };
-                return Err((
+                return Err(fail_with(
+                    target_index,
                     Failure {
                         stage: TestStage::Connect,
                         message,
                     },
+                    Checks::NOT_REACHED,
                     one_line(&err.to_string()),
                 ));
             }
             Err(_) => FirstByte::Silent,
         };
-        Ok::<_, Fail>(first)
+        Ok::<_, Box<HopStop>>(first)
     };
     let result = tokio::time::timeout(timeout, attempt).await;
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     match result {
         Ok(Ok(first)) => {
-            let headline = tcp_success_headline(elapsed_ms, first);
-            let detail = format!("{header}\n结果：连接成功\n耗时：{elapsed_ms} ms\n{headline}");
-            success(headline, detail, elapsed_ms)
+            let reason = tcp_success_headline(elapsed_ms, first);
+            let detail = format!("{header}\n结果：连接成功\n耗时：{elapsed_ms} ms\n{reason}");
+            complete_outcome(
+                reason,
+                detail,
+                elapsed_ms,
+                // Telnet 只测 TCP 连得上：没有主机密钥，也没有登录这一项。
+                Checks {
+                    connectivity: CheckState::Passed,
+                    identity: None,
+                    authentication: CheckState::NotApplicable,
+                },
+                &chain,
+                Some(target_index),
+            )
         }
-        Ok(Err((failure, raw))) => {
-            if let Some(outcome) =
-                untrusted_stop_outcome(&interactor, &header, &jump_labels, elapsed_ms)
-            {
-                return outcome;
-            }
-            let detail = format!(
-                "{header}\n结果：失败（阶段：{}）\n耗时：{elapsed_ms} ms\n原因：{}\n原始错误：{raw}",
-                failure.stage.label(),
-                failure.message
-            );
-            failure_outcome(&failure, detail, elapsed_ms)
-        }
+        Ok(Err(stop)) => stop_outcome(*stop, &chain, &header, elapsed_ms),
         Err(_) => {
-            let failure = timeout_failure(timeout, &interactor);
-            let detail = format!(
-                "{header}\n结果：失败（阶段：{}）\n耗时：{elapsed_ms} ms\n原因：{}",
-                failure.stage.label(),
-                failure.message
-            );
-            failure_outcome(&failure, detail, elapsed_ms)
+            let (failure, checks, hop) = timeout_failure(timeout, &interactor);
+            let detail = failure_detail(&header, &failure, elapsed_ms, None);
+            failure_outcome(&failure, detail, elapsed_ms, checks, &chain, Some(hop))
         }
     }
 }
@@ -1343,21 +1766,35 @@ mod tests {
     fn headlines_for_every_kind_of_success() {
         assert_eq!(
             ssh_success_headline(123, Some("SSH-2.0-OpenSSH_9.6")),
-            "连接成功，耗时 123 ms，服务器 SSH-2.0-OpenSSH_9.6"
+            "连接与登录验证通过，耗时 123 ms，服务器 SSH-2.0-OpenSSH_9.6"
         );
-        assert_eq!(ssh_success_headline(5, None), "连接成功，耗时 5 ms");
-        let first = untrusted_stop_headline("SHA256:abc", false, None);
         assert_eq!(
-            first,
-            "主机指纹 SHA256:abc 尚未信任，没有测试登录；请先正式连接一次并核对指纹"
+            ssh_success_headline(5, None),
+            "连接与登录验证通过，耗时 5 ms"
         );
-        let other = untrusted_stop_headline("SHA256:abc", true, None);
-        assert!(other.contains("别种类型的密钥") && other.contains("没有测试登录"));
-        let jump = untrusted_stop_headline("SHA256:abc", false, Some("跳板机 edge-1"));
+        let first = identity_pending_headline(false, None);
+        assert_eq!(first, "网络与 SSH 响应检测通过，登录待首次连接验证");
+        let other = identity_pending_headline(true, None);
         assert!(
-            jump.starts_with("跳板机 edge-1：主机指纹 SHA256:abc 尚未信任"),
+            other.contains("密钥类型") && other.contains("登录待"),
+            "{other}"
+        );
+        assert!(
+            !other.contains("首次"),
+            "只存过别种类型的不能当成首次：{other}"
+        );
+        let jump = identity_pending_headline(false, Some("跳板机 edge-1"));
+        assert!(
+            jump.starts_with("跳板机 edge-1：可达，后续目标未测试"),
             "{jump}"
         );
+        let interactive = login_interactive_headline(None);
+        assert!(interactive.contains("登录需要交互验证"), "{interactive}");
+        assert!(
+            !interactive.contains("密码错误") && !interactive.contains("失败"),
+            "{interactive}"
+        );
+        assert!(login_interactive_headline(Some("跳板机 edge-1")).contains("后续目标未测试"));
         assert_eq!(
             tcp_success_headline(12, FirstByte::Silent),
             "连接成功，耗时 12 ms（TCP 已连通，未做登录；对方 2 秒内没有主动发数据，Telnet 设备常见）"
@@ -1372,23 +1809,93 @@ mod tests {
             stage: TestStage::Auth,
             message: "认证失败：用户名或密码错误".into(),
         };
-        let outcome = failure_outcome(&f, "d".into(), 7);
-        assert!(!outcome.ok);
-        assert_eq!(outcome.stage, Some(TestStage::Auth));
-        assert_eq!(outcome.headline, "认证失败：用户名或密码错误");
+        let outcome = failure_outcome(&f, "d".into(), 7, Checks::AUTH_FAILED, &no_chain(), None);
+        assert_eq!(outcome.kind, TestResultKind::Failed);
+        assert_eq!(outcome.failing_stage, Some(TestStage::Auth));
+        assert_eq!(outcome.reason, "认证失败：用户名或密码错误");
+        assert_eq!(outcome.authentication, CheckState::Failed);
+        assert_eq!(outcome.identity, Some(IdentityState::Matched));
     }
 
     #[test]
     fn serial_results_name_the_device_and_the_reason() {
         let ok = serial_success("COM3", 12);
-        assert!(ok.ok && ok.headline.contains("COM3 可以打开"));
+        assert_eq!(ok.kind, TestResultKind::Complete);
+        assert!(ok.reason.contains("COM3 可以打开"));
         let bad = serial_failure("COM3", "COM3 不存在：设备没有插好，或者设备名写错了", 3);
-        assert!(!bad.ok);
-        assert_eq!(bad.stage, Some(TestStage::Open));
-        assert!(bad.headline.contains("不存在"));
+        assert_eq!(bad.kind, TestResultKind::Failed);
+        assert_eq!(bad.failing_stage, Some(TestStage::Open));
+        assert!(bad.reason.contains("不存在"));
         assert!(bad.detail.contains("串口：COM3"));
         let busy = serial_failure("COM3", "COM3 被别的程序占用（或者没有访问权限）", 3);
-        assert!(busy.headline.contains("被别的程序占用"));
+        assert!(busy.reason.contains("被别的程序占用"));
+    }
+
+    #[test]
+    fn a_cancelled_test_proves_nothing() {
+        let outcome = cancelled();
+        assert_eq!(outcome.kind, TestResultKind::Cancelled);
+        assert_eq!(outcome.connectivity, CheckState::NotApplicable);
+        assert_eq!(outcome.authentication, CheckState::NotApplicable);
+        assert_eq!(outcome.identity, None);
+        assert_eq!(outcome.failing_stage, None);
+    }
+
+    #[test]
+    fn failure_checks_follow_how_far_the_handshake_got() {
+        let handshake = FailurePhase::Handshake;
+        let changed = ZsshError::HostKeyChanged(Box::new(HostKeyMismatch {
+            host: "h".into(),
+            port: 22,
+            key_type: "ssh-ed25519".into(),
+            stored: "a".into(),
+            presented: "b".into(),
+            stored_in: "f".into(),
+            advice: String::new(),
+            source: crate::error::HostKeySource::Own,
+        }));
+        let checks = failure_checks(&changed, handshake);
+        assert_eq!(checks.identity, Some(IdentityState::Changed));
+        assert_eq!(checks.connectivity, CheckState::Passed);
+        assert_eq!(checks.authentication, CheckState::NotApplicable);
+        let revoked = ZsshError::HostKeyRevoked(Box::new(HostKeyRevokedInfo {
+            host: "h".into(),
+            port: 22,
+            stored: "a".into(),
+            presented: "b".into(),
+            stored_in: "f".into(),
+            advice: String::new(),
+            source: crate::error::HostKeySource::Own,
+        }));
+        assert_eq!(
+            failure_checks(&revoked, handshake).identity,
+            Some(IdentityState::Revoked)
+        );
+        let unreadable = ZsshError::HostKeyStore(Reason::text("x"));
+        assert_eq!(
+            failure_checks(&unreadable, handshake).identity,
+            Some(IdentityState::Unreadable)
+        );
+        // 认证失败：身份已经核对过。
+        assert_eq!(
+            failure_checks(&ZsshError::AuthFailed, handshake),
+            Checks::AUTH_FAILED
+        );
+        // 握手没做完 / 网络层失败：什么都没证明。
+        for error in [
+            ZsshError::Ssh(russh::Error::Disconnect),
+            ZsshError::ConnectTimeout {
+                host: "h".into(),
+                port: 22,
+                seconds: 15,
+            },
+        ] {
+            assert_eq!(failure_checks(&error, handshake), Checks::NOT_REACHED);
+        }
+        assert_eq!(
+            failure_checks(&refused(), FailurePhase::Connect { via_proxy: false }),
+            Checks::NOT_REACHED
+        );
     }
 
     #[test]
@@ -1476,41 +1983,160 @@ mod tests {
             assert!(answer.is_none());
         });
         let seen = interactor.lock();
-        let (first, other_types) = seen.untrusted.as_ref().expect("记下了第一个没信任的指纹");
-        assert_eq!(first.status, HostKeyStatus::Unknown);
-        assert!(!other_types, "记的是第一个，不被后面的覆盖");
-        assert_eq!(seen.prompted, Some(PromptKind::Password));
+        let stop = seen
+            .expected_stop
+            .as_ref()
+            .expect("记下了第一个没信任的指纹");
+        assert_eq!(stop.info.status, HostKeyStatus::Unknown);
+        assert!(!stop.other_types, "记的是第一个，不被后面的覆盖");
+        assert_eq!(seen.prompted, Some((0, PromptKind::Password)));
     }
 
     #[test]
     fn a_hung_stage_is_named_in_the_timeout_message() {
         let interactor = TestInteractor::new();
         interactor.set_stage(TestStage::Handshake);
-        let f = timeout_failure(Duration::from_secs(10), &interactor);
+        let (f, checks, hop) = timeout_failure(Duration::from_secs(10), &interactor);
         assert_eq!(f.stage, TestStage::Handshake);
         assert!(f.message.contains("10 秒") && f.message.contains("SSH 握手"));
+        assert_eq!(checks, Checks::NOT_REACHED);
+        assert_eq!(hop, 0);
+    }
+
+    fn rejected(host: &str, port: u16, fingerprint: &str) -> ZsshError {
+        ZsshError::HostKeyRejected {
+            host: host.into(),
+            port,
+            fingerprint: fingerprint.into(),
+        }
+    }
+
+    /// 「按预期的停止」只认对得上记录的那一种：同一跳、同地址端口、同指纹的拒绝；
+    /// 其它任何错误（哪怕这次测试里确实拒绝过一个指纹）都不能被当成通过。
+    #[test]
+    fn only_the_rejection_we_caused_counts_as_an_expected_stop() {
+        let interactor = TestInteractor::new();
+        interactor.begin_hop(1);
+        let info = HostKeyInfo {
+            host: "192.0.2.10".into(),
+            port: 22,
+            key_type: "ssh-ed25519".into(),
+            fingerprint: "SHA256:abc".into(),
+            status: HostKeyStatus::Unknown,
+            stored_fingerprint: None,
+            saved_keys: Vec::new(),
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("运行时");
+        rt.block_on(interactor.confirm_host_key(info));
+
+        // 对得上：是。
+        assert!(matches!(
+            interactor.expected_stop_for(1, &rejected("192.0.2.10", 22, "SHA256:abc")),
+            Some(PendingStop::Unconfirmed {
+                other_types: false,
+                ..
+            })
+        ));
+        // 别的跳 / 别的地址 / 别的端口 / 别的指纹的拒绝：不是。
+        for (hop, error) in [
+            (0, rejected("192.0.2.10", 22, "SHA256:abc")),
+            (1, rejected("192.0.2.11", 22, "SHA256:abc")),
+            (1, rejected("192.0.2.10", 2222, "SHA256:abc")),
+            (1, rejected("192.0.2.10", 22, "SHA256:other")),
+        ] {
+            assert!(interactor.expected_stop_for(hop, &error).is_none());
+        }
+        // 超时、断开、握手别的错误、签名之类：就算记录还在也不是。
+        for error in [
+            ZsshError::ConnectTimeout {
+                host: "192.0.2.10".into(),
+                port: 22,
+                seconds: 15,
+            },
+            ZsshError::Ssh(russh::Error::Disconnect),
+            ZsshError::AuthFailed,
+            ZsshError::HostKeyRekeyMismatch {
+                host: "192.0.2.10".into(),
+                port: 22,
+                first: "a".into(),
+                again: "b".into(),
+            },
+        ] {
+            assert!(interactor.expected_stop_for(1, &error).is_none(), "{error}");
+        }
+        // 没问过任何问题时，Cancelled 也不是预期的停止。
+        assert!(interactor
+            .expected_stop_for(1, &ZsshError::Cancelled)
+            .is_none());
+        // 一个新的测试（新的 interactor）带不走旧测试的记录。
+        let fresh = TestInteractor::new();
+        fresh.begin_hop(1);
+        assert!(fresh
+            .expected_stop_for(1, &rejected("192.0.2.10", 22, "SHA256:abc"))
+            .is_none());
+    }
+
+    #[test]
+    fn a_cancelled_prompt_is_expected_only_on_the_hop_that_asked() {
+        let interactor = TestInteractor::new();
+        interactor.begin_hop(2);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("运行时");
+        rt.block_on(interactor.prompt(PromptRequest::single(
+            PromptKind::Passphrase,
+            "ops@web-1:22",
+            "Passphrase:",
+            false,
+        )));
+        assert!(matches!(
+            interactor.expected_stop_for(2, &ZsshError::Cancelled),
+            Some(PendingStop::Interactive(PromptKind::Passphrase))
+        ));
+        assert!(interactor
+            .expected_stop_for(1, &ZsshError::Cancelled)
+            .is_none());
     }
 }
 
 #[cfg(test)]
 mod untrusted_host_tests {
-    //! 「测试连接」不能把凭据发给没信任的主机（V2-C7a S1）：用进程内服务器数认证请求。
+    //! 「测试连接」不能把凭据发给没核对过身份的主机（V2-C7a S1），并且把结果说准确：
+    //! 用进程内迷你 SSH 服务器数认证请求、比较信任文件的字节。
 
     use russh::keys::HashAlg;
 
     use super::*;
     use crate::ssh::auth::AuthConfig;
-    use crate::ssh::fake_server::{self, FakeServer};
+    use crate::ssh::fake_server::{self, AuthMode, FakeServer};
     use crate::ssh::known_hosts::KnownHosts;
 
+    const PASSWORD: &str = "never-leave-this-machine";
+
     fn hop(label: &str, server: &FakeServer, known: &std::path::Path) -> ChainHop {
+        hop_with(
+            label,
+            server,
+            known,
+            AuthConfig::password(Some(PASSWORD.to_owned())),
+        )
+    }
+
+    fn hop_with(
+        label: &str,
+        server: &FakeServer,
+        known: &std::path::Path,
+        auth: AuthConfig,
+    ) -> ChainHop {
         ChainHop {
             label: label.to_owned(),
             host: server.addr.ip().to_string(),
             port: server.addr.port(),
             username: "tester".to_owned(),
             proxy: None,
-            auth: AuthConfig::password(Some("never-leave-this-machine".to_owned())),
+            auth,
             known_hosts: KnownHosts::new(known),
             legacy_algorithms: false,
         }
@@ -1530,36 +2156,50 @@ mod untrusted_host_tests {
         server.host_keys[0].fingerprint(HashAlg::Sha256).to_string()
     }
 
-    const STOP_NOTE: &str = "没有测试登录；请先正式连接一次并核对指纹";
+    fn known_path(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        dir.path().join("known_hosts")
+    }
 
     #[tokio::test]
-    async fn an_unknown_host_gets_a_handshake_and_a_fingerprint_but_no_secret() {
+    async fn an_unknown_host_is_a_partial_result_and_gets_no_authentication_at_all() {
         let server = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
         let dir = tempfile::tempdir().expect("临时目录");
-        let known = dir.path().join("known_hosts");
+        let known = known_path(&dir);
         let outcome = test_ssh(SshTestPlan {
             hops: vec![hop("目标 lab-1", &server, &known)],
         })
         .await;
         assert_eq!(
-            server.counters.secret_attempts(),
+            server.counters.auth_requests(),
             0,
-            "密码 / 键盘交互一次都不能发"
+            "未知指纹阶段：none / 公钥 / 密码 / 键盘交互一个请求都不能发"
         );
-        assert!(!outcome.ok, "没登录就不能报成功：{}", outcome.headline);
-        assert!(outcome.headline.contains(STOP_NOTE), "{}", outcome.headline);
-        assert!(outcome.headline.contains(&fingerprint(&server)));
-        assert_eq!(outcome.untrusted_fingerprint, Some(fingerprint(&server)));
+        assert_eq!(outcome.kind, TestResultKind::Partial, "{}", outcome.reason);
+        assert_eq!(outcome.connectivity, CheckState::Passed);
+        assert_eq!(outcome.identity, Some(IdentityState::Unconfirmed));
+        assert_eq!(outcome.authentication, CheckState::Pending);
+        assert_eq!(outcome.failing_stage, None, "不是失败，没有出问题的阶段");
+        assert_eq!(
+            outcome.reason,
+            "网络与 SSH 响应检测通过，登录待首次连接验证"
+        );
+        let hop = outcome.checked_hop.as_ref().expect("停在目标上");
+        assert_eq!((hop.index, hop.label.as_str()), (0, "目标 lab-1"));
+        assert!(outcome.untested_hops.is_empty());
+        // 详情里有指纹、密钥类型，写明「已看到」而不是「已信任」，没有保存，也没有密码。
         assert!(outcome.detail.contains(&fingerprint(&server)));
-        assert!(!outcome.detail.contains("never-leave-this-machine"));
+        assert!(outcome.detail.contains("ssh-ed25519"), "{}", outcome.detail);
+        assert!(outcome.detail.contains("尚未信任，没有保存"));
+        assert!(!outcome.detail.contains(PASSWORD));
         assert!(!known.exists(), "指纹也不能顺手保存");
     }
 
     #[tokio::test]
-    async fn a_host_that_only_has_other_key_types_saved_also_gets_no_secret() {
+    async fn a_host_that_only_has_other_key_types_saved_waits_for_a_check_and_is_not_a_first_time()
+    {
         let server = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
         let dir = tempfile::tempdir().expect("临时目录");
-        let known = dir.path().join("known_hosts");
+        let known = known_path(&dir);
         // 这台主机以前只存过 ECDSA；服务器这回出示的是 Ed25519（中间人最爱用的情形）。
         let stored = fake_server::ecdsa_key();
         KnownHosts::new(&known)
@@ -1574,39 +2214,189 @@ mod untrusted_host_tests {
             hops: vec![hop("目标 lab-1", &server, &known)],
         })
         .await;
-        assert_eq!(server.counters.secret_attempts(), 0);
-        assert!(!outcome.ok);
-        assert!(outcome.headline.contains(STOP_NOTE), "{}", outcome.headline);
+        assert_eq!(server.counters.auth_requests(), 0);
+        assert_eq!(outcome.kind, TestResultKind::Partial);
+        assert_eq!(outcome.identity, Some(IdentityState::OtherKeyTypes));
+        assert_eq!(outcome.authentication, CheckState::Pending);
+        assert!(outcome.reason.contains("登录待"), "{}", outcome.reason);
         assert!(
-            outcome.headline.contains("别种类型"),
-            "{}",
-            outcome.headline
+            !outcome.reason.contains("首次"),
+            "只存过别种类型，不能说成首次：{}",
+            outcome.reason
         );
+        assert!(
+            outcome.detail.contains("ecdsa-sha2-nistp256"),
+            "详情里列出已保存的类型：{}",
+            outcome.detail
+        );
+        assert_eq!(
+            std::fs::read(&known).expect("读"),
+            before,
+            "不静默接受新类型"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_trusted_host_is_tested_for_real_and_is_complete() {
+        let server = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let known = known_path(&dir);
+        trust(&server, &known);
+        let before = std::fs::read(&known).expect("读");
+        let outcome = test_ssh(SshTestPlan {
+            hops: vec![hop("目标 lab-1", &server, &known)],
+        })
+        .await;
+        assert_eq!(outcome.kind, TestResultKind::Complete, "{}", outcome.reason);
+        assert_eq!(outcome.connectivity, CheckState::Passed);
+        assert_eq!(outcome.identity, Some(IdentityState::Matched));
+        assert_eq!(outcome.authentication, CheckState::Passed);
+        assert!(outcome.reason.contains("连接与登录验证通过"));
+        assert_eq!(server.counters.passwords(), 1, "已信任：照常用密码登录");
+        assert!(outcome.detail.contains("已信任"), "{}", outcome.detail);
         assert_eq!(std::fs::read(&known).expect("读"), before);
     }
 
     #[tokio::test]
-    async fn a_trusted_host_is_tested_for_real() {
-        let server = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
+    async fn a_trusted_host_that_refuses_the_login_is_a_failure_in_the_auth_stage() {
+        let server = fake_server::spawn_with(
+            vec![fake_server::ed25519_key()],
+            AuthMode::PublickeyOnlyRejecting,
+        )
+        .await;
         let dir = tempfile::tempdir().expect("临时目录");
-        let known = dir.path().join("known_hosts");
+        let known = known_path(&dir);
         trust(&server, &known);
         let outcome = test_ssh(SshTestPlan {
             hops: vec![hop("目标 lab-1", &server, &known)],
         })
         .await;
-        assert!(outcome.ok, "{}", outcome.headline);
-        assert_eq!(server.counters.passwords(), 1, "已信任：照常用密码登录");
-        assert_eq!(outcome.untrusted_fingerprint, None);
-        assert!(outcome.detail.contains("已信任"), "{}", outcome.detail);
+        assert_eq!(outcome.kind, TestResultKind::Failed, "{}", outcome.reason);
+        assert_eq!(outcome.failing_stage, Some(TestStage::Auth));
+        assert_eq!(outcome.identity, Some(IdentityState::Matched));
+        assert_eq!(outcome.authentication, CheckState::Failed);
+        assert_eq!(outcome.connectivity, CheckState::Passed);
     }
 
     #[tokio::test]
-    async fn an_untrusted_target_behind_a_trusted_jump_host_gets_no_secret() {
+    async fn a_missing_password_on_a_trusted_host_is_partial_interactive_not_a_wrong_password() {
+        let server = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let known = known_path(&dir);
+        trust(&server, &known);
+        let outcome = test_ssh(SshTestPlan {
+            hops: vec![hop_with(
+                "目标 lab-1",
+                &server,
+                &known,
+                AuthConfig::password(None),
+            )],
+        })
+        .await;
+        assert_eq!(
+            server.counters.secret_attempts(),
+            0,
+            "没有密码：没有东西可发，也不会弹窗问"
+        );
+        assert_eq!(outcome.kind, TestResultKind::Partial, "{}", outcome.reason);
+        assert_eq!(outcome.connectivity, CheckState::Passed);
+        assert_eq!(outcome.identity, Some(IdentityState::Matched));
+        assert_eq!(outcome.authentication, CheckState::Pending);
+        assert_eq!(outcome.failing_stage, None);
+        assert!(
+            outcome.reason.contains("登录需要交互验证"),
+            "{}",
+            outcome.reason
+        );
+        for wrong in ["密码错误", "认证失败", "失败"] {
+            assert!(
+                !outcome.reason.contains(wrong) && !outcome.detail.contains("结果：失败"),
+                "不能说成{wrong}：{}",
+                outcome.reason
+            );
+        }
+        assert!(
+            outcome.detail.contains("不是密码错误"),
+            "{}",
+            outcome.detail
+        );
+    }
+
+    #[tokio::test]
+    async fn a_changed_fingerprint_fails_before_authentication_and_leaves_the_file_alone() {
+        let server = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let known = known_path(&dir);
+        // 先给这台主机存一把同类型的别的密钥：服务器的密钥是现场生成的，一定对不上。
+        let other = fake_server::ed25519_key();
+        KnownHosts::new(&known)
+            .append(
+                &server.addr.ip().to_string(),
+                server.addr.port(),
+                other.public_key(),
+            )
+            .expect("预先保存");
+        let before = std::fs::read(&known).expect("读");
+        let outcome = test_ssh(SshTestPlan {
+            hops: vec![hop("目标 lab-1", &server, &known)],
+        })
+        .await;
+        assert_eq!(server.counters.auth_requests(), 0, "认证之前就停");
+        assert_eq!(outcome.kind, TestResultKind::Failed);
+        assert_eq!(outcome.identity, Some(IdentityState::Changed));
+        assert_eq!(outcome.failing_stage, Some(TestStage::HostKey));
+        assert_eq!(outcome.authentication, CheckState::NotApplicable);
+        assert_eq!(
+            std::fs::read(&known).expect("读"),
+            before,
+            "已保存的指纹一个字节都不能动"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_revoked_key_fails_before_authentication() {
+        let server = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let known = known_path(&dir);
+        trust(&server, &known);
+        let line = std::fs::read_to_string(&known).expect("读");
+        std::fs::write(&known, format!("@revoked {line}")).expect("改成吊销");
+        let before = std::fs::read(&known).expect("读");
+        let outcome = test_ssh(SshTestPlan {
+            hops: vec![hop("目标 lab-1", &server, &known)],
+        })
+        .await;
+        assert_eq!(server.counters.auth_requests(), 0);
+        assert_eq!(outcome.kind, TestResultKind::Failed, "{}", outcome.reason);
+        assert_eq!(outcome.identity, Some(IdentityState::Revoked));
+        assert_eq!(outcome.authentication, CheckState::NotApplicable);
+        assert_eq!(std::fs::read(&known).expect("读"), before);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_trust_store_fails_before_authentication() {
+        let server = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        // 信任文件的位置其实是个目录：读不了，不能退化成「没见过」。
+        let known = known_path(&dir);
+        std::fs::create_dir_all(&known).expect("建目录");
+        let outcome = test_ssh(SshTestPlan {
+            hops: vec![hop("目标 lab-1", &server, &known)],
+        })
+        .await;
+        assert_eq!(server.counters.auth_requests(), 0);
+        assert_eq!(outcome.kind, TestResultKind::Failed, "{}", outcome.reason);
+        assert_eq!(outcome.identity, Some(IdentityState::Unreadable));
+        assert_eq!(outcome.failing_stage, Some(TestStage::HostKey));
+        assert!(known.is_dir(), "没动它");
+    }
+
+    #[tokio::test]
+    async fn an_untrusted_target_behind_a_trusted_jump_host_stops_at_the_target() {
         let jump = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
         let target = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
         let dir = tempfile::tempdir().expect("临时目录");
-        let known = dir.path().join("known_hosts");
+        let known = known_path(&dir);
         trust(&jump, &known);
         let outcome = test_ssh(SshTestPlan {
             hops: vec![
@@ -1616,10 +2406,149 @@ mod untrusted_host_tests {
         })
         .await;
         assert_eq!(jump.counters.passwords(), 1, "已信任的跳板机照常登录");
-        assert_eq!(target.counters.secret_attempts(), 0);
-        assert!(!outcome.ok);
-        assert!(outcome.headline.contains(STOP_NOTE), "{}", outcome.headline);
-        assert_eq!(outcome.untrusted_fingerprint, Some(fingerprint(&target)));
+        assert_eq!(target.counters.auth_requests(), 0);
+        assert_eq!(outcome.kind, TestResultKind::Partial, "{}", outcome.reason);
+        assert_eq!(outcome.identity, Some(IdentityState::Unconfirmed));
+        let hop = outcome.checked_hop.as_ref().expect("停在目标上");
+        assert_eq!((hop.index, hop.label.as_str()), (1, "目标 lab-1"));
+        assert!(outcome.untested_hops.is_empty());
+        assert!(outcome.detail.contains(&fingerprint(&target)));
+    }
+
+    #[tokio::test]
+    async fn an_untrusted_jump_host_stops_the_chain_with_zero_connections_after_it() {
+        let jump = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
+        let target = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let known = known_path(&dir);
+        // 目标已经信任了，但跳板机没有：跳板机之后的每一步都不能发。
+        trust(&target, &known);
+        let outcome = test_ssh(SshTestPlan {
+            hops: vec![
+                hop("跳板机 edge-1", &jump, &known),
+                hop("目标 lab-1", &target, &known),
+            ],
+        })
+        .await;
+        assert_eq!(jump.counters.auth_requests(), 0, "跳板机也不认证");
+        assert_eq!(
+            target.counters.accepted(),
+            0,
+            "连跳板机都没过，不会去碰目标：连接数为 0"
+        );
+        assert_eq!(outcome.kind, TestResultKind::Partial, "{}", outcome.reason);
+        let hop = outcome.checked_hop.as_ref().expect("停在跳板机上");
+        assert_eq!((hop.index, hop.label.as_str()), (0, "跳板机 edge-1"));
+        assert_eq!(outcome.untested_hops, vec!["目标 lab-1".to_owned()]);
+        assert!(
+            outcome
+                .reason
+                .starts_with("跳板机 edge-1：可达，后续目标未测试"),
+            "{}",
+            outcome.reason
+        );
+    }
+
+    #[tokio::test]
+    async fn a_telnet_target_behind_an_untrusted_jump_host_is_not_called_reachable() {
+        let jump = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let known = known_path(&dir);
+        let outcome = test_tcp(TcpTestPlan {
+            host: "192.0.2.50".to_owned(),
+            port: 23,
+            route: TcpRoute::Jump(vec![hop("跳板机 edge-1", &jump, &known)]),
+        })
+        .await;
+        assert_eq!(jump.counters.auth_requests(), 0);
+        assert_eq!(outcome.kind, TestResultKind::Partial, "{}", outcome.reason);
+        assert_eq!(outcome.untested_hops, vec!["192.0.2.50:23".to_owned()]);
+        assert!(outcome.reason.contains("后续目标未测试"));
+        assert!(!known.exists());
+    }
+
+    #[tokio::test]
+    async fn a_telnet_target_behind_a_trusted_jump_host_is_a_plain_tcp_check() {
+        let jump = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("绑定");
+        let addr = target.local_addr().expect("地址");
+        tokio::spawn(async move {
+            // 接受后直接关掉：算连通（Closed），不需要 Telnet 协议。
+            let _ = target.accept().await;
+        });
+        let dir = tempfile::tempdir().expect("临时目录");
+        let known = known_path(&dir);
+        trust(&jump, &known);
+        let outcome = test_tcp_with(
+            TcpTestPlan {
+                host: addr.ip().to_string(),
+                port: addr.port(),
+                route: TcpRoute::Jump(vec![hop("跳板机 edge-1", &jump, &known)]),
+            },
+            Duration::from_secs(5),
+            Duration::from_millis(300),
+        )
+        .await;
+        assert_eq!(outcome.kind, TestResultKind::Complete, "{}", outcome.reason);
+        assert_eq!(outcome.identity, None, "Telnet 没有主机密钥这一项");
+        assert_eq!(outcome.authentication, CheckState::NotApplicable);
+        let hop = outcome.checked_hop.as_ref().expect("Telnet 目标");
+        assert_eq!(hop.index, 1);
+    }
+
+    /// 一个只接受 TCP 连接然后什么都不做 / 立刻关掉的「服务器」：它让握手卡住或断开，
+    /// 但从来没有出示过主机密钥，也就没有任何「预期的停止」可言。
+    #[tokio::test]
+    async fn a_hung_or_dropped_handshake_is_never_turned_into_a_partial_result() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let known = known_path(&dir);
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("绑定");
+        let silent_addr = silent.local_addr().expect("地址");
+        tokio::spawn(async move {
+            let _held = silent.accept().await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let dropper = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("绑定");
+        let dropper_addr = dropper.local_addr().expect("地址");
+        tokio::spawn(async move {
+            if let Ok((socket, _)) = dropper.accept().await {
+                drop(socket);
+            }
+        });
+        let make = |addr: std::net::SocketAddr| ChainHop {
+            label: "目标 lab-1".to_owned(),
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            username: "tester".to_owned(),
+            proxy: None,
+            auth: AuthConfig::password(Some(PASSWORD.to_owned())),
+            known_hosts: KnownHosts::new(&known),
+            legacy_algorithms: false,
+        };
+        let hung = test_ssh_with(
+            SshTestPlan {
+                hops: vec![make(silent_addr)],
+            },
+            Duration::from_millis(500),
+        )
+        .await;
+        assert_eq!(hung.kind, TestResultKind::Failed, "{}", hung.reason);
+        assert_eq!(hung.failing_stage, Some(TestStage::Handshake));
+        assert_eq!(hung.connectivity, CheckState::Failed);
+        assert_eq!(hung.identity, None);
+        let dropped = test_ssh(SshTestPlan {
+            hops: vec![make(dropper_addr)],
+        })
+        .await;
+        assert_eq!(dropped.kind, TestResultKind::Failed, "{}", dropped.reason);
+        assert_eq!(dropped.identity, None);
+        assert_ne!(dropped.connectivity, CheckState::Passed);
     }
 
     #[tokio::test]
@@ -1630,7 +2559,7 @@ mod untrusted_host_tests {
         let ecdsa = fake_server::ecdsa_key();
         let server = fake_server::spawn(vec![fake_server::ed25519_key(), ecdsa.clone()]).await;
         let dir = tempfile::tempdir().expect("临时目录");
-        let known = dir.path().join("known_hosts");
+        let known = known_path(&dir);
         KnownHosts::new(&known)
             .append(
                 &server.addr.ip().to_string(),
@@ -1642,56 +2571,141 @@ mod untrusted_host_tests {
             hops: vec![hop("目标 lab-1", &server, &known)],
         })
         .await;
-        assert!(outcome.ok, "{}", outcome.headline);
+        assert_eq!(outcome.kind, TestResultKind::Complete, "{}", outcome.reason);
+        assert_eq!(outcome.identity, Some(IdentityState::Matched));
         assert_eq!(server.counters.passwords(), 1);
-        assert_eq!(outcome.untrusted_fingerprint, None);
     }
 
+    /// 测试过不等于核对过：测试之后正式连接照样要问指纹（不继承测试里「看到过」的结果），
+    /// 用户确认保存之后再测，才是 Complete；这一整套里测试自己从没写过信任文件。
     #[tokio::test]
-    async fn without_a_saved_key_the_default_order_still_applies() {
-        let ecdsa = fake_server::ecdsa_key();
-        let ed = fake_server::ed25519_key();
-        let server = fake_server::spawn(vec![ecdsa, ed.clone()]).await;
+    async fn testing_never_authorises_the_normal_connection_that_follows() {
+        struct Asker {
+            asked: Mutex<usize>,
+            decision: HostKeyDecision,
+        }
+        impl Interactor for Asker {
+            fn confirm_host_key(&self, _info: HostKeyInfo) -> BoxFuture<'_, HostKeyDecision> {
+                *self
+                    .asked
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) += 1;
+                let decision = self.decision;
+                Box::pin(async move { decision })
+            }
+            fn prompt(&self, _request: PromptRequest) -> BoxFuture<'_, Option<PromptAnswers>> {
+                Box::pin(async { None })
+            }
+        }
+        let server = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
         let dir = tempfile::tempdir().expect("临时目录");
-        let known = dir.path().join("known_hosts");
-        let outcome = test_ssh(SshTestPlan {
+        let known = known_path(&dir);
+        let tested = test_ssh(SshTestPlan {
             hops: vec![hop("目标 lab-1", &server, &known)],
         })
         .await;
-        // 没存过任何类型：保持默认的 Ed25519 优先，指纹就是 Ed25519 那把。
+        assert_eq!(tested.kind, TestResultKind::Partial);
+        assert!(!known.exists(), "测试没有留下任何信任记录");
+        // 正式连接：照样要确认；用户选「信任并保存」。
+        let asker = Arc::new(Asker {
+            asked: Mutex::new(0),
+            decision: HostKeyDecision::TrustAndSave,
+        });
+        let formal =
+            Connection::connect_chain(vec![hop("目标 lab-1", &server, &known)], asker.clone())
+                .await;
+        assert!(formal.is_ok());
         assert_eq!(
-            outcome.untrusted_fingerprint,
-            Some(ed.public_key().fingerprint(HashAlg::Sha256).to_string())
+            *asker
+                .asked
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            1,
+            "测试过也要重新问"
+        );
+        // 保存之后：再测就是 Complete，正式连接不再问。
+        let tested = test_ssh(SshTestPlan {
+            hops: vec![hop("目标 lab-1", &server, &known)],
+        })
+        .await;
+        assert_eq!(tested.kind, TestResultKind::Complete, "{}", tested.reason);
+        let again = Arc::new(Asker {
+            asked: Mutex::new(0),
+            decision: HostKeyDecision::Reject,
+        });
+        let formal =
+            Connection::connect_chain(vec![hop("目标 lab-1", &server, &known)], again.clone())
+                .await;
+        assert!(formal.is_ok());
+        assert_eq!(
+            *again
+                .asked
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            0,
+            "已核对的主机不重复问"
         );
     }
 
+    /// 同一份目标配置和信任快照：测试连接和正式连接走同一个握手函数，所以出示的主机密钥、
+    /// 身份分类完全一致（不另造一份协商规则）。
     #[tokio::test]
-    async fn an_untrusted_jump_host_stops_the_whole_chain_before_any_secret() {
-        let jump = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
-        let target = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
+    async fn the_test_and_a_normal_connection_see_the_same_host_key_and_status() {
+        struct Recorder(Mutex<Vec<HostKeyInfo>>);
+        impl Interactor for Recorder {
+            fn confirm_host_key(&self, info: HostKeyInfo) -> BoxFuture<'_, HostKeyDecision> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(info);
+                Box::pin(async { HostKeyDecision::Reject })
+            }
+            fn prompt(&self, _request: PromptRequest) -> BoxFuture<'_, Option<PromptAnswers>> {
+                Box::pin(async { None })
+            }
+        }
+        // 服务器有两把密钥；先什么都没存，再只存 ECDSA 的。
+        let ecdsa = fake_server::ecdsa_key();
+        let server = fake_server::spawn(vec![fake_server::ed25519_key(), ecdsa.clone()]).await;
         let dir = tempfile::tempdir().expect("临时目录");
-        let known = dir.path().join("known_hosts");
-        // 目标已经信任了，但跳板机没有：跳板机之后的每一步都不能发秘密。
-        trust(&target, &known);
-        let outcome = test_ssh(SshTestPlan {
-            hops: vec![
-                hop("跳板机 edge-1", &jump, &known),
-                hop("目标 lab-1", &target, &known),
-            ],
-        })
-        .await;
-        assert_eq!(jump.counters.secret_attempts(), 0);
-        assert_eq!(
-            target.counters.accepted(),
-            0,
-            "连跳板机都没过，不会去碰目标"
-        );
-        assert!(!outcome.ok);
-        assert!(
-            outcome.headline.contains("跳板机 edge-1"),
-            "{}",
-            outcome.headline
-        );
-        assert!(outcome.headline.contains(STOP_NOTE), "{}", outcome.headline);
+        let known = known_path(&dir);
+        for saved in [None, Some(ecdsa.public_key().clone())] {
+            if let Some(key) = &saved {
+                KnownHosts::new(&known)
+                    .append(&server.addr.ip().to_string(), server.addr.port(), key)
+                    .expect("保存");
+            }
+            let recorder = Arc::new(Recorder(Mutex::new(Vec::new())));
+            let formal = Connection::connect_chain(
+                vec![hop("目标 lab-1", &server, &known)],
+                recorder.clone(),
+            )
+            .await;
+            let tested = test_ssh(SshTestPlan {
+                hops: vec![hop("目标 lab-1", &server, &known)],
+            })
+            .await;
+            let asked = recorder
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            match saved {
+                None => {
+                    assert!(formal.is_err(), "没有记录：正式连接要先问，这里回答拒绝");
+                    let info = asked.first().expect("正式连接问了指纹");
+                    assert_eq!(info.status, HostKeyStatus::Unknown);
+                    assert_eq!(tested.identity, Some(IdentityState::Unconfirmed));
+                    assert!(tested.detail.contains(&info.fingerprint));
+                    assert!(tested.detail.contains(&info.key_type));
+                }
+                Some(_) => {
+                    assert!(formal.is_ok(), "已保存的类型：正式连接直接核对通过");
+                    assert!(asked.is_empty(), "不再问");
+                    assert_eq!(tested.identity, Some(IdentityState::Matched));
+                    assert_eq!(tested.kind, TestResultKind::Complete);
+                }
+            }
+        }
     }
 }
