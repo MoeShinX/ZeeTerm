@@ -19,6 +19,34 @@ pub fn join(base: &str, name: &str) -> String {
     }
 }
 
+/// 是不是"目录里的一个条目名"：POSIX 上合法的单个文件名不能为空、不能含 `/` 或 NUL，
+/// 也不能是 `.` / `..`。服务器给出不满足这些的名字，说明它异常或有恶意——这种名字拼到路径里
+/// （`join` 对 `/` 开头的名字原样返回，`../x` 会爬出目录）能把读写删的目标带到目录之外。
+pub fn is_plain_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\0'])
+}
+
+/// 在 `base` 下面拼一个条目：`name` 必须满足 [`is_plain_name`]，且结果恰好是 `base` 的直接孩子，
+/// 否则返回 `None`。给"服务器给的名字要变成写入 / 删除目标"的地方用，不改 [`join`] 的行为
+/// （别处有正当的绝对路径用法）。
+pub fn join_child(base: &str, name: &str) -> Option<String> {
+    if !is_plain_name(name) {
+        return None;
+    }
+    let child = join(base, name);
+    // 纵深防御：孩子必须是 `base/` 开头、后面恰好是这个名字（比较时忽略 base 结尾的 `/`）。
+    let prefix = if base.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", trim_trailing_slash(base).trim_end_matches('/'))
+    };
+    if child.strip_prefix(prefix.as_str()) == Some(name) {
+        Some(child)
+    } else {
+        None
+    }
+}
+
 /// 父目录：`/a/b/c` → `/a/b`；`/a` → `/`；`/` → `/`。
 pub fn parent(path: &str) -> String {
     let trimmed = trim_trailing_slash(path);
@@ -124,6 +152,33 @@ mod tests {
         assert_eq!(join("", "a.txt"), "a.txt");
         // 子路径是绝对路径时直接用子路径（远端 API 就是这个语义）。
         assert_eq!(join("/tmp", "/etc/hosts"), "/etc/hosts");
+    }
+
+    #[test]
+    fn plain_names_and_join_child() {
+        for ok in ["a.txt", ".hidden", "...", "a b", "back\\slash", "报告"] {
+            assert!(is_plain_name(ok), "{ok:?}");
+        }
+        for bad in [
+            "",
+            ".",
+            "..",
+            "/outside/x.txt",
+            "../x",
+            "a/b",
+            "a/",
+            "nul\0byte",
+        ] {
+            assert!(!is_plain_name(bad), "{bad:?}");
+            assert_eq!(join_child("/dest", bad), None, "{bad:?}");
+        }
+        assert_eq!(join_child("/dest", "a.txt").as_deref(), Some("/dest/a.txt"));
+        assert_eq!(
+            join_child("/dest/", "a.txt").as_deref(),
+            Some("/dest/a.txt")
+        );
+        assert_eq!(join_child("/", "a.txt").as_deref(), Some("/a.txt"));
+        assert_eq!(join_child("", "a.txt").as_deref(), Some("a.txt"));
     }
 
     #[test]

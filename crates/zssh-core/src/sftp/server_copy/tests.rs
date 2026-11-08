@@ -30,6 +30,8 @@ struct FakeFs {
     /// 指向目录的符号链接：链接路径 → 目标目录（绝对路径）。列目录和 realpath 会穿过它们，
     /// 像真服务器一样（C09 / C21）。
     dir_links: Mutex<HashMap<String, String>>,
+    /// 列目录时额外报出的条目（目录, 名字）：模拟异常 / 恶意服务器给出不合法的名字。
+    injected_names: Mutex<Vec<(String, String)>>,
 }
 
 impl FakeFs {
@@ -252,6 +254,17 @@ impl CopyDataOps for FakeFs {
                     is_symlink: child.is_symlink,
                     size: (!child.is_dir).then_some(child.data.len() as u64),
                 });
+            }
+            for (dir, name) in self.injected_names.lock().unwrap().iter() {
+                if dir == path {
+                    out.push(CopyEntry {
+                        path: remote_path::join(path, name),
+                        name: name.clone(),
+                        is_dir: false,
+                        is_symlink: false,
+                        size: Some(1),
+                    });
+                }
             }
             Ok(out)
         })
@@ -1218,4 +1231,41 @@ async fn copying_stops_at_the_depth_limit() {
         .names_in("/")
         .iter()
         .all(|name| !name.contains(".zssh-part")));
+}
+
+/// W03：源文件夹里的条目名不是单个文件名（绝对路径、`..`、带 `/`）时，复制必须报错，
+/// 目标文件夹之外一个字节都不能写，目标之内也不留半成品。
+#[tokio::test]
+async fn copying_a_folder_refuses_entry_names_that_could_leave_the_target() {
+    for bad in ["/outside/chosen.txt", "../escape.txt", "a/b", "nul byte"] {
+        let fs = FakeFs::new();
+        fs.put_dir("/src");
+        fs.put_file("/src/fine.txt", b"fine");
+        fs.put_file("/outside/chosen.txt", b"untouched");
+        fs.injected_names
+            .lock()
+            .unwrap()
+            .push(("/src".to_owned(), bad.to_owned()));
+        fs.put_dir("/dst");
+        let cancel = no_cancel();
+        let opts = CopyOptions {
+            conflict: Some(&OverwriteAll),
+            ..CopyOptions::simple("evil-name", "evil-name-server", &cancel)
+        };
+        // 新建：整棵树先复制到临时名再改名。
+        let created = copy_with_copy_data(&fs, "/src", "/dst/new", &opts).await;
+        assert!(created.is_err(), "{bad:?}: {created:?}");
+        assert!(!fs.exists("/dst/new"), "{bad:?}: 失败不能留下目标");
+        // 合并进已有文件夹。
+        fs.put_dir("/dst/existing");
+        let merged = copy_with_copy_data(&fs, "/src", "/dst/existing", &opts).await;
+        assert!(merged.is_err(), "{bad:?}: {merged:?}");
+        assert_eq!(
+            fs.get("/outside/chosen.txt").as_deref(),
+            Some(&b"untouched"[..]),
+            "{bad:?}"
+        );
+        assert!(!fs.exists("/escape.txt"), "{bad:?}");
+        assert!(!fs.exists("/dst/escape.txt"), "{bad:?}");
+    }
 }

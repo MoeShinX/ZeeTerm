@@ -593,6 +593,7 @@ pub mod keys {
         XFER_NOTE_RENAMED = "xfer.note_renamed";
         XFER_DIR_NEEDS_RECURSIVE = "xfer.dir_needs_recursive";
         XFER_SYMLINK_NO_RELAY = "xfer.symlink_no_relay";
+        XFER_UNSAFE_ENTRY_NAME = "xfer.unsafe_entry_name";
         XFER_NOTE_NO_RESUME_POINT = "xfer.note_no_resume_point";
         XFER_NOTE_CANNOT_TRUNCATE = "xfer.note_cannot_truncate";
         XFER_NOTE_RESUME_MISMATCH = "xfer.note_resume_mismatch";

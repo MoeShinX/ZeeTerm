@@ -92,40 +92,7 @@ pub async fn entries_from_protocol(
     files: Vec<russh_sftp::protocol::File>,
 ) -> Result<Vec<DirEntry>, SftpError> {
     // 第一遍只做本地计算：拼路径、取静态字段，把需要额外往返的攒进两张表。
-    let mut rows: Vec<Row> = Vec::with_capacity(files.len());
-    let mut links: Vec<(usize, String)> = Vec::new();
-    let mut suspicious: Vec<(usize, String)> = Vec::new();
-    for file in files {
-        let name = file.filename;
-        // `.` / `..` 不列（POSIX 惯例，界面也不需要）。
-        if name == "." || name == ".." {
-            continue;
-        }
-        let entry_path = path::join(dir, &name);
-        let attrs = file.attrs;
-        let longname_owner = owner_from_longname(&file.longname);
-        if kind_of(&attrs).is_symlink() {
-            links.push((rows.len(), entry_path.clone()));
-        }
-        if name.contains(char::REPLACEMENT_CHARACTER) {
-            suspicious.push((rows.len(), entry_path.clone()));
-        }
-        rows.push(Row {
-            name_is_utf8: !name.contains(char::REPLACEMENT_CHARACTER),
-            name,
-            path: entry_path,
-            kind: kind_of(&attrs),
-            link_target: None,
-            size: attrs.size,
-            mtime: attrs.mtime,
-            permissions: attrs.permissions,
-            owner: attrs
-                .user
-                .clone()
-                .or(longname_owner)
-                .or_else(|| attrs.uid.map(|uid| uid.to_string())),
-        });
-    }
+    let (mut rows, links, suspicious) = first_pass(dir, files);
 
     // 符号链接的目标：每条 2 个往返，一批 [`RESOLVE_CONCURRENCY`] 个并发。
     for chunk in links.chunks(RESOLVE_CONCURRENCY) {
@@ -209,6 +176,61 @@ pub async fn entries_from_protocol(
         .collect();
     out.sort_by_cached_key(|entry| (!entry.kind.is_dir(), entry.name.to_lowercase()));
     Ok(out)
+}
+
+/// 第一遍：只做本地计算——过滤不合法的名字、拼路径、取静态字段，把需要额外往返的（符号链接、
+/// 可疑名字）记进两张表。拆出来是为了不连服务器也能测"恶意名字被丢掉"。
+fn first_pass(
+    dir: &str,
+    files: Vec<russh_sftp::protocol::File>,
+) -> (Vec<Row>, Vec<(usize, String)>, Vec<(usize, String)>) {
+    let mut rows: Vec<Row> = Vec::with_capacity(files.len());
+    let mut links: Vec<(usize, String)> = Vec::new();
+    let mut suspicious: Vec<(usize, String)> = Vec::new();
+    for file in files {
+        let name = file.filename;
+        // `.` / `..` 不列（POSIX 惯例，界面也不需要）。
+        if name == "." || name == ".." {
+            continue;
+        }
+        // 目录项的名字只能是单个文件名：含 `/`、NUL 或为空的名字在 POSIX 上不可能存在，是服务器
+        // 异常或恶意。`path::join` 对 `/` 开头的名字原样返回、`../x` 会爬出目录，放进来的话
+        // 复制 / 删除 / 下载的目标都会被带到所选目录之外，所以在这个边界上就丢掉（界面里列不出
+        // 这种条目，也就没法对它操作）。
+        if !path::is_plain_name(&name) {
+            tracing::warn!(
+                dir = %dir.escape_debug(),
+                name = %name.chars().take(120).flat_map(char::escape_debug).collect::<String>(),
+                "SFTP 服务器返回了不合法的文件名，已忽略这个条目"
+            );
+            continue;
+        }
+        let entry_path = path::join(dir, &name);
+        let attrs = file.attrs;
+        let longname_owner = owner_from_longname(&file.longname);
+        if kind_of(&attrs).is_symlink() {
+            links.push((rows.len(), entry_path.clone()));
+        }
+        if name.contains(char::REPLACEMENT_CHARACTER) {
+            suspicious.push((rows.len(), entry_path.clone()));
+        }
+        rows.push(Row {
+            name_is_utf8: !name.contains(char::REPLACEMENT_CHARACTER),
+            name,
+            path: entry_path,
+            kind: kind_of(&attrs),
+            link_target: None,
+            size: attrs.size,
+            mtime: attrs.mtime,
+            permissions: attrs.permissions,
+            owner: attrs
+                .user
+                .clone()
+                .or(longname_owner)
+                .or_else(|| attrs.uid.map(|uid| uid.to_string())),
+        });
+    }
+    (rows, links, suspicious)
 }
 
 /// 第一遍本地拼装时的中间行；额外的网络往返结果最后填回来。
@@ -645,6 +667,39 @@ mod tests {
     }
 
     use super::*;
+
+    /// W03：服务器给的目录项名字不合法（带 `/`、`..` 开头的路径、NUL、空）时，列表里直接丢掉，
+    /// 绝不能拼出目录之外的路径。
+    #[test]
+    fn hostile_names_never_become_entries_and_normal_ones_stay_inside_the_dir() {
+        let names = [
+            "/outside/chosen.txt",
+            "../escape.txt",
+            "a/b",
+            "tail/",
+            "nul\0byte",
+            "",
+            ".",
+            "..",
+            "normal.txt",
+            ".hidden",
+            "back\\slash",
+        ];
+        let files = names
+            .iter()
+            .map(|name| russh_sftp::protocol::File::dummy(*name))
+            .collect();
+        let (rows, _links, _suspicious) = first_pass("/chosen-destination", files);
+        let kept: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(kept, vec!["normal.txt", ".hidden", "back\\slash"]);
+        for row in &rows {
+            assert_eq!(
+                row.path,
+                format!("/chosen-destination/{}", row.name),
+                "路径必须是目录的直接孩子"
+            );
+        }
+    }
 
     #[test]
     fn kinds_come_from_attributes() {

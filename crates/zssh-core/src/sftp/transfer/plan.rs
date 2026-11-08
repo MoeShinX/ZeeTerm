@@ -143,6 +143,32 @@ fn file_count_note(count: usize) -> Reason {
     .with("count", count)
 }
 
+/// 服务器给的条目名拼成 `dir` 下的孩子路径。名字不是单个文件名（含 `/`、NUL、空、`.`、`..`）时
+/// 明确报错，不静默跳过（跳过再报"成功"会让用户以为都复制了）。
+///
+/// 列目录的边界（`fs::entries_from_protocol`）已经会丢掉这类条目；这里是第二道防线，因为
+/// "规划写 / 删的目标"一旦被带到目录之外就是越权写，不能只靠上游。
+pub(crate) fn child_path(dir: &str, name: &str) -> Result<String, SftpError> {
+    remote_path::join_child(dir, name).ok_or_else(|| unsafe_entry_name(dir, name))
+}
+
+pub(crate) fn unsafe_entry_name(dir: &str, name: &str) -> SftpError {
+    // 名字来自服务器：转义掉控制字符再放进提示，免得把终端控制序列带到界面 / 日志里。
+    let shown: String = name
+        .chars()
+        .take(120)
+        .flat_map(char::escape_debug)
+        .collect();
+    SftpError::InvalidInput(
+        Reason::new(
+            reason_keys::XFER_UNSAFE_ENTRY_NAME,
+            format!("服务器返回的条目名不是单个文件名（{dir} 里的「{shown}」），已拒绝，没有复制任何东西"),
+        )
+        .with("name", &shown)
+        .with("dir", dir),
+    )
+}
+
 fn dir_needs_recursive() -> SftpError {
     SftpError::InvalidInput(Reason::new(
         reason_keys::XFER_DIR_NEEDS_RECURSIVE,
@@ -209,6 +235,9 @@ pub async fn plan_download(
                 plan.notes.push(skipped_symlink_note(&entry.path));
                 continue;
             }
+            // 本地落盘的名字有 `LocalNamePlan` 清洗，但源路径是服务器给的 `entry.path`：
+            // 名字不是单个文件名时它可能指到所选目录之外，别去读。
+            child_path(&dir, &entry.name)?;
             if !entry.name_is_utf8 {
                 // 名字不是 UTF-8：本地落盘会有损，明确记下来（下载下来内容是对的，
                 // 名字只能用有损版本）。
@@ -317,7 +346,7 @@ pub async fn plan_remote_copy(
                 plan.notes.push(skipped_symlink_note(&entry.path));
                 continue;
             }
-            let child = remote_path::join(&target_dir, &entry.name);
+            let child = child_path(&target_dir, &entry.name)?;
             if entry.kind.is_dir() {
                 plan.dirs.push(child.clone());
                 pending.push((entry.path.clone(), child));
@@ -607,6 +636,110 @@ mod tests {
             .unwrap();
         assert_eq!(plan.files.len(), 1);
         assert_eq!(plan.files[0].source, "/srv/current/app.conf");
+    }
+
+    /// 一个目录，里面的条目名由测试指定（模拟异常 / 恶意服务器给出的名字）。
+    struct Named(Vec<&'static str>);
+
+    impl super::super::backend::RemoteLister for Named {
+        fn list_dir<'a>(
+            &'a self,
+            path: &'a str,
+        ) -> crate::ssh::BoxFuture<'a, Result<Vec<crate::sftp::fs::DirEntry>, SftpError>> {
+            let path = path.to_owned();
+            let names = self.0.clone();
+            Box::pin(async move {
+                Ok(names
+                    .into_iter()
+                    .map(|name| crate::sftp::fs::DirEntry {
+                        name: name.to_owned(),
+                        path: remote_path::join(&path, name),
+                        kind: crate::sftp::fs::FileKind::File,
+                        link_target: None,
+                        size: Some(1),
+                        mtime: None,
+                        permissions: None,
+                        owner: None,
+                        name_is_utf8: true,
+                    })
+                    .collect())
+            })
+        }
+
+        fn stat_remote<'a>(
+            &'a self,
+            _path: &'a str,
+        ) -> crate::ssh::BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>>
+        {
+            Box::pin(async {
+                Ok(russh_sftp::protocol::FileAttributes {
+                    permissions: Some(0o040755),
+                    ..Default::default()
+                })
+            })
+        }
+    }
+
+    /// W03：源服务器给的名字带绝对路径 / `..` / `/` / NUL 时，复制计划要明确报错，
+    /// 目标里不能出现目录之外的路径；正常名字照常落在所选目录下。
+    #[tokio::test]
+    async fn remote_copy_refuses_entry_names_that_could_leave_the_target_dir() {
+        for bad in [
+            "/outside/chosen.txt",
+            "../x",
+            "a/b",
+            "nul\0byte",
+            "",
+            ".",
+            "..",
+        ] {
+            let err = plan_remote_copy(
+                &Named(vec!["fine.txt", bad]),
+                "/src",
+                "/chosen-destination",
+                true,
+            )
+            .await
+            .expect_err(&format!("{bad:?} 应该被拒绝"));
+            match err {
+                SftpError::InvalidInput(reason) => {
+                    assert_eq!(reason.key(), reason_keys::XFER_UNSAFE_ENTRY_NAME, "{bad:?}");
+                }
+                other => panic!("{bad:?}: {other}"),
+            }
+        }
+        let plan = plan_remote_copy(
+            &Named(vec!["fine.txt", ".hidden", "back\\slash"]),
+            "/src",
+            "/chosen-destination",
+            true,
+        )
+        .await
+        .expect("正常名字");
+        assert_eq!(plan.files.len(), 3);
+        for file in &plan.files {
+            assert!(
+                file.target.starts_with("/chosen-destination/"),
+                "{}",
+                file.target
+            );
+            assert_eq!(remote_path::parent(&file.target), "/chosen-destination");
+        }
+    }
+
+    /// 下载计划也一样：源路径是服务器给的，名字不是单个文件名就不去读。
+    #[tokio::test]
+    async fn recursive_download_refuses_entry_names_that_escape_the_source_dir() {
+        let root = crate::test_util::TestDir::new("plan-down-escape");
+        let err = plan_download(
+            &Named(vec!["/etc/shadow"]),
+            "/srv/data",
+            &root.join("out"),
+            true,
+        )
+        .await
+        .expect_err("绝对路径名字");
+        assert!(matches!(err, SftpError::InvalidInput(_)), "{err}");
     }
 
     /// F02：递归下载时远端子项的名字再怪，也只能落在目标目录里面。

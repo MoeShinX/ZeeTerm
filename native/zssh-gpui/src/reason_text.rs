@@ -477,6 +477,9 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "xfer.symlink_no_relay" => {
             "Symlinks cannot be copied through the relay (they would be copied as the content they point to, which differs from cp -a)"
         }
+        "xfer.unsafe_entry_name" => {
+            "The server reported an entry name that is not a plain file name (\"{name}\" in {dir}); nothing was copied"
+        }
         "xfer.note_no_resume_point" => "{target} has no confirmed resume point; starting over",
         "xfer.note_cannot_truncate" => {
             "The temporary file of {target} cannot be truncated back to the resume point; starting over"

@@ -22,6 +22,7 @@ use crate::sftp::path as remote_path;
 use crate::sftp::session::{SftpCaps, SftpChannel, COPY_DATA};
 use crate::sftp::transfer::endpoint::{part_name, PART_SUFFIX};
 use crate::sftp::transfer::lock::TargetLocks;
+use crate::sftp::transfer::plan::child_path;
 use crate::ssh::{BoxFuture, Connection};
 
 /// 实际用了哪种办法（报告 / 界面提示用）。
@@ -905,8 +906,8 @@ async fn copy_dir_contents(
             stats.skipped_links.push(entry.path.clone());
             continue;
         }
-        let final_child = remote_path::join(final_dir, &entry.name);
-        let temp_child = remote_path::join(temp_dir, &entry.name);
+        let final_child = child_path(final_dir, &entry.name)?;
+        let temp_child = child_path(temp_dir, &entry.name)?;
         if entry.is_dir {
             let child_attrs = ops.lstat(&entry.path).await?;
             ops.create_dir(&temp_child).await?;
@@ -959,7 +960,7 @@ async fn merge_dir(
             stats.skipped_links.push(entry.path.clone());
             continue;
         }
-        let dest = remote_path::join(target_dir, &entry.name);
+        let dest = child_path(target_dir, &entry.name)?;
         let existing = match ops.lstat(&dest).await {
             Ok(attrs) => Some(attrs),
             Err(SftpError::NotFound { .. }) => None,
