@@ -254,6 +254,62 @@ impl Database {
         })
     }
 
+    /// 只改一台主机的认证方式和凭据，其余字段保持**库里**现在的值。
+    ///
+    /// 界面缓存可能比库旧（同步、别的窗口改过）；调用方拿缓存整条 `host_save` 会把新数据盖回去。
+    /// 这里在一个写事务里读出最新的主机，按它重新校验认证组合（凭据存在、类型对得上、不是 AI 专用
+    /// 密钥、协议允许这种认证），再只 UPDATE 这两列和 `updated_at`。主机不存在返回 `NotFound`。
+    pub fn host_set_auth(
+        &self,
+        id: i64,
+        auth_method: AuthMethod,
+        identity_id: Option<i64>,
+    ) -> Result<Host, ZsshError> {
+        self.with_conn_write(|conn| {
+            let host = host_get(conn, id)?;
+            let settings = crate::store::protocols::protocol_get(conn, id)?;
+            if settings.protocol == Protocol::Serial {
+                // 串口主机的认证列是固定占位值，不接受改动。
+                crate::model::check_serial_refs(identity_id.is_some(), false, false)?;
+                return Err(ZsshError::InvalidInput(Reason::text(
+                    "串口主机没有认证方式，不能修改",
+                )));
+            }
+            let mut identity = None;
+            if let Some(identity_id) = identity_id {
+                crate::store::identities::ensure_identity_exists(conn, identity_id)?;
+                check_not_ai_key(conn, Some(id), identity_id)?;
+                let found = crate::store::identities::identity_get(conn, identity_id)?;
+                check_identity_matches(auth_method, &found)?;
+                identity = Some(found);
+            }
+            let jump_host_protocol = match host.jump_host_id {
+                Some(jump) => Some(crate::store::protocols::protocol_get(conn, jump)?.protocol),
+                None => None,
+            };
+            // 协议设置对认证组合有要求（Telnet 只能密码类）：用库里的最新值重新校验，结果不写回。
+            settings.validated(&HostFacts {
+                username: &host.username,
+                auth_method,
+                identity: identity.as_ref(),
+                proxy_mode: host.proxy_mode,
+                proxy_id: host.proxy_id,
+                jump_host_protocol,
+            })?;
+            let changed = conn.execute(
+                "UPDATE hosts SET auth_method = ?1, identity_id = ?2, updated_at = ?3                  WHERE id = ?4",
+                params![auth_method.as_str(), identity_id, now_unix(), id],
+            )?;
+            if changed == 0 {
+                return Err(ZsshError::NotFound {
+                    entity: Entity::Host,
+                    id,
+                });
+            }
+            host_get(conn, id)
+        })
+    }
+
     pub fn host_delete(&self, id: i64) -> Result<(), ZsshError> {
         self.with_conn_write(|conn| {
             let changed = conn.execute("DELETE FROM hosts WHERE id = ?1", [id])?;

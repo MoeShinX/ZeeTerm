@@ -299,6 +299,18 @@ impl HostStore {
         self.after_write(result)
     }
 
+    /// 只改一台主机的认证方式和凭据（其余字段以库里为准，成功后刷新缓存）。
+    /// 不要拿缓存里的整条主机再 `save_host`：缓存可能比库旧，会把新数据盖回去。
+    pub fn set_host_auth(
+        &mut self,
+        id: i64,
+        auth_method: zssh_core::model::AuthMethod,
+        identity_id: Option<i64>,
+    ) -> Result<Host, String> {
+        let result = self.db()?.host_set_auth(id, auth_method, identity_id);
+        self.after_write(result)
+    }
+
     /// 按保存计划落库：主机的密码身份、主机本身、释放不再用的独占密码（见 `host_form::apply_save`）。
     pub fn save_host_plan(
         &mut self,

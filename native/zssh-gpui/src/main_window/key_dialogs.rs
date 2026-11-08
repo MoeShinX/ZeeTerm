@@ -13,7 +13,6 @@ use zssh_core::model::{AuthMethod, IdentityKind};
 use zssh_core::ssh::keygen::{InstallOutcome, KeyAlgorithm};
 
 use super::MainWindow;
-use super::host_store::draft_of_host;
 use super::modal::Modal;
 use super::widgets::{
     ButtonLook, Choice, error_note, field, note, select, switch_row, text_button,
@@ -785,11 +784,12 @@ impl MainWindow {
         match result {
             Ok(outcome) => {
                 let mut switched = false;
-                if switch_auth && let Some(host) = self.store.host(host_id).cloned() {
-                    let mut draft = draft_of_host(&host);
-                    draft.auth_method = AuthMethod::Key;
-                    draft.identity_id = Some(key_id);
-                    match self.store.save_host(&draft) {
+                if switch_auth {
+                    // 只改认证两列、以库里最新的主机为准：界面缓存可能比库旧（同步、别的窗口改过）。
+                    match self
+                        .store
+                        .set_host_auth(host_id, AuthMethod::Key, Some(key_id))
+                    {
                         Ok(_) => switched = true,
                         Err(err) => {
                             self.notice_error(

@@ -1954,3 +1954,84 @@ fn the_local_backup_keep_defaults_to_five_and_stored_values_are_kept_and_clamped
         .unwrap();
     assert_eq!(db.sync_backup_keep().unwrap(), 5);
 }
+
+// ---------- 只改认证（W28：不拿界面缓存整条写回） ----------
+
+#[test]
+fn set_host_auth_changes_only_the_auth_fields_and_keeps_fresher_data() {
+    let db = memory_db();
+    let key = identity_of_kind(&db, "私钥", IdentityKind::KeyInline);
+    let saved = db.host_save(&sample_host(None, None)).expect("新建主机");
+
+    // 界面缓存还是 `saved`；这时别处（同步 / 另一个窗口）把主机改了名、换了标签和端口。
+    let mut newer = crate::model::HostDraft {
+        id: Some(saved.id),
+        name: "别处改过的名字".to_owned(),
+        port: 2200,
+        tags: vec!["新标签".to_owned()],
+        ..sample_host(None, None)
+    };
+    newer.sort = saved.sort;
+    db.host_save(&newer).expect("别处的修改");
+
+    let updated = db
+        .host_set_auth(saved.id, AuthMethod::Key, Some(key.id))
+        .expect("只改认证");
+    assert_eq!(updated.auth_method, AuthMethod::Key);
+    assert_eq!(updated.identity_id, Some(key.id));
+    assert_eq!(updated.name, "别处改过的名字", "库里的新名字不能被缓存盖掉");
+    assert_eq!(updated.port, 2200);
+    assert_eq!(updated.tags, vec!["新标签".to_owned()]);
+
+    // 再读一次落库的结果，和返回值一致。
+    assert_eq!(db.host_get(saved.id).unwrap(), updated);
+}
+
+#[test]
+fn set_host_auth_on_a_missing_host_is_not_found() {
+    let db = memory_db();
+    let key = identity_of_kind(&db, "私钥", IdentityKind::KeyInline);
+    let saved = db.host_save(&sample_host(None, None)).expect("新建主机");
+    db.host_delete(saved.id).unwrap();
+    let err = db
+        .host_set_auth(saved.id, AuthMethod::Key, Some(key.id))
+        .expect_err("主机已不存在");
+    assert!(
+        matches!(err, crate::error::ZsshError::NotFound { id, .. } if id == saved.id),
+        "{err:?}"
+    );
+    assert!(db.host_list().unwrap().is_empty(), "不能当成新建");
+}
+
+#[test]
+fn set_host_auth_rechecks_the_combination_against_the_database() {
+    let db = memory_db();
+    let password = identity_of_kind(&db, "密码", IdentityKind::Password);
+    let key = identity_of_kind(&db, "私钥", IdentityKind::KeyInline);
+    let saved = db.host_save(&sample_host(None, None)).expect("新建主机");
+
+    // 私钥认证配密码凭据 / 凭据已被删：都拒绝，且库里原样不动。
+    assert!(db
+        .host_set_auth(saved.id, AuthMethod::Key, Some(password.id))
+        .is_err());
+    assert!(db
+        .host_set_auth(saved.id, AuthMethod::Key, Some(9999))
+        .is_err());
+    assert_eq!(db.host_get(saved.id).unwrap(), saved);
+
+    // Telnet 主机不能改成私钥认证。
+    let telnet = db
+        .host_save_with_protocol(
+            &crate::model::HostDraft {
+                name: "telnet 机".to_owned(),
+                ..sample_host(None, None)
+            },
+            &crate::model::ProtocolSettings::new(crate::model::Protocol::Telnet),
+        )
+        .expect("Telnet 主机")
+        .0;
+    assert!(db
+        .host_set_auth(telnet.id, AuthMethod::Key, Some(key.id))
+        .is_err());
+    assert_eq!(db.host_get(telnet.id).unwrap(), telnet);
+}
