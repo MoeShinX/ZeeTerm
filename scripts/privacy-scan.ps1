@@ -143,30 +143,48 @@ function Test-PublicIpv4([string]$a, [string]$b, [string]$c, [string]$d) {
     return $true
 }
 
-function Get-FileList {
-    if ($Root) {
-        $base = (Resolve-Path $Root).Path
+# 要扫描的文件清单。
+# - 指定 $RootDir（导出目录，没有 git）：目录下所有文件都列出来，包括不公开目录里的——导出物里不该有它们，
+#   由 Invoke-Scan 的"不该进仓库的文件"检查报出来。
+# - 否则按 git：已跟踪的文件一律列出（哪怕在不公开目录里，那正是要报的误跟踪）；未跟踪的本地私人目录
+#   （$excludedPrefixes）照旧排除，不扫也不报。
+function Get-FileList([string]$RepoDir, [string]$RootDir) {
+    if ($RootDir) {
+        $base = (Resolve-Path $RootDir).Path
         return @(Get-ChildItem -LiteralPath $base -Recurse -File -Force | Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' } | ForEach-Object {
             $rel = $_.FullName.Substring($base.Length).TrimStart('\', '/').Replace('\', '/')
-            [pscustomobject]@{ Rel = $rel; Full = $_.FullName }
-        } | Where-Object {
-            $n = $_.Rel
-            $skip = $false
-            foreach ($p in $excludedPrefixes) { if ($n.StartsWith($p)) { $skip = $true; break } }
-            -not $skip
+            [pscustomobject]@{ Rel = $rel; Full = $_.FullName; Missing = $false }
         })
     }
-    Push-Location $repo
-    try { $names = & git ls-files --cached --others --exclude-standard } finally { Pop-Location }
+    # -z：文件名不被 git 转义成带引号的形式（带中文或特殊字符的名字否则认不出前缀）。
+    Push-Location $RepoDir
+    try {
+        $trackedRaw = (& git ls-files -z --cached) -join "`n"
+        $allRaw = (& git ls-files -z --cached --others --exclude-standard) -join "`n"
+    } finally { Pop-Location }
+    $nul = [string][char]0
+    $tracked = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::Ordinal)
+    foreach ($n in $trackedRaw.Split($nul, [System.StringSplitOptions]::RemoveEmptyEntries)) { [void]$tracked.Add($n.Trim("`n")) }
     $out = @()
-    foreach ($n in $names) {
-        $skip = $false
-        foreach ($p in $excludedPrefixes) { if ($n.StartsWith($p)) { $skip = $true; break } }
-        if ($skip) { continue }
-        $full = Join-Path $repo $n
-        if (Test-Path -LiteralPath $full -PathType Leaf) { $out += [pscustomobject]@{ Rel = $n; Full = $full } }
+    foreach ($n in $allRaw.Split($nul, [System.StringSplitOptions]::RemoveEmptyEntries)) {
+        $n = $n.Trim("`n")
+        $inPrivateDir = $false
+        foreach ($p in $excludedPrefixes) { if ($n.StartsWith($p)) { $inPrivateDir = $true; break } }
+        if ($inPrivateDir -and -not $tracked.Contains($n)) { continue }
+        $full = Join-Path $RepoDir $n
+        if (Test-Path -LiteralPath $full -PathType Leaf) { $out += [pscustomobject]@{ Rel = $n; Full = $full; Missing = $false } }
+        # 索引里还有、工作区已删：路径本身照样要报，没有内容可扫。
+        elseif ($inPrivateDir) { $out += [pscustomobject]@{ Rel = $n; Full = $full; Missing = $true } }
     }
     return $out
+}
+
+# 不该出现在公开仓库 / 导出物里的路径：本地私人目录、日志、.env（.env.example 除外）。
+function Test-ForbiddenPath([string]$rel) {
+    if ($rel -match '\.env\.example$') { return $false }
+    if ($rel -match '(^|/)\.claude/|\.log$|(^|/)\.env') { return $true }
+    foreach ($p in $excludedPrefixes) { if ($rel.StartsWith($p)) { return $true } }
+    return $false
 }
 
 function Get-Position([string]$hay, [int]$index, [bool]$isBinary) {
@@ -222,9 +240,10 @@ function Invoke-Scan($files, $needles) {
     $latin1 = [System.Text.Encoding]::GetEncoding(28591)
     $hits = New-Object System.Collections.Generic.List[string]
     foreach ($f in $files) {
-        if ($f.Rel -match '(^|/)\.claude/|\.log$|(^|/)\.env' -and $f.Rel -notmatch '\.env\.example$') {
+        if (Test-ForbiddenPath $f.Rel) {
             $hits.Add(("{0}  [不该进仓库的文件]" -f $f.Rel))
         }
+        if ($f.Missing) { continue }
         $bytes = [System.IO.File]::ReadAllBytes($f.Full)
         $isBinary = $false
         $probe = [Math]::Min($bytes.Length, 8000)
@@ -368,12 +387,60 @@ if ($SelfTest) {
             Write-Host ("自检失败：没有命中 " + ($missing -join "、") + $(if ($binHit -eq 0) { "；二进制文件里的用户名也没命中" } else { "" })) -ForegroundColor Red
             exit 1
         }
-        Write-Host ("自检通过：5 类假值（含外部模式文件）和二进制文件里的用户名都命中了；放行清单对内置类命中也生效，且不放行光秃秃的值、只盖住一部分的占位和本机真实用户名（{0} 条命中）" -f $hits.Count) -ForegroundColor Green
+        # 不公开目录（.claude/、docs/internal/、dist/）：隔离的临时 git 仓库里造 已跟踪 / 未跟踪 / 跟踪后又删掉 三种，
+        # 再用 -Root 的方式扫同一个目录。已跟踪的必须报"不该进仓库的文件"，未跟踪的本地私人目录在 git 模式下照旧排除，
+        # -Root 模式（导出物，没有 git）里这些目录下的文件一律要报；普通文件任何模式下都不报。
+        $fixture = Join-Path $dir "path-fixture"
+        New-Item -ItemType Directory -Force $fixture | Out-Null
+        & git -C $fixture init -q 2>$null
+        if ($LASTEXITCODE -ne 0) { Write-Host "自检失败：造不出临时 git 仓库。" -ForegroundColor Red; exit 1 }
+        $trackedRel = @("src/ok.txt", ".claude/tracked.txt", "docs/internal/tracked.md", "dist/tracked.txt", ".claude/gone.txt")
+        $untrackedRel = @(".claude/untracked.txt", "docs/internal/untracked.md", "dist/untracked.txt")
+        foreach ($rel in ($trackedRel + $untrackedRel)) {
+            $target = Join-Path $fixture $rel
+            New-Item -ItemType Directory -Force (Split-Path $target -Parent) | Out-Null
+            [System.IO.File]::WriteAllText($target, "placeholder`n")
+        }
+        # -f：不让全局 / 仓库的忽略规则挡住"误跟踪"的情形。
+        # 换行转换的提示走 stderr，在 Stop 模式下会变成终止错误：关掉转换，并临时放宽错误模式。
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        & git -C $fixture -c core.autocrlf=false -c core.safecrlf=false add -f -- $trackedRel 2>$null
+        $addCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEap
+        if ($addCode -ne 0) { Write-Host "自检失败：临时仓库里 git add 失败。" -ForegroundColor Red; exit 1 }
+        Remove-Item -LiteralPath (Join-Path $fixture ".claude/gone.txt") -Force
+        $forbiddenSuffix = "  [不该进仓库的文件]"
+        $forbiddenFrom = { param($hitList) @($hitList | Where-Object { $_ -and $_.EndsWith($forbiddenSuffix) } | ForEach-Object { $_.Substring(0, $_.Length - $forbiddenSuffix.Length) }) }
+
+        $gitList = Get-FileList $fixture ""
+        $gitRels = @($gitList | ForEach-Object { $_.Rel })
+        $gitForbidden = & $forbiddenFrom (Invoke-Scan $gitList @())
+        $problems = New-Object System.Collections.Generic.List[string]
+        foreach ($rel in @(".claude/tracked.txt", "docs/internal/tracked.md", "dist/tracked.txt", ".claude/gone.txt")) {
+            if ($gitForbidden -notcontains $rel) { $problems.Add("git 模式没报已跟踪的 $rel") }
+        }
+        foreach ($rel in $untrackedRel) {
+            if ($gitRels -contains $rel) { $problems.Add("git 模式扫了未跟踪的本地目录 $rel") }
+        }
+        if ($gitForbidden -contains "src/ok.txt") { $problems.Add("git 模式误报了普通文件") }
+        if ($gitRels -notcontains "src/ok.txt") { $problems.Add("git 模式漏了普通文件") }
+
+        $rootList = Get-FileList $repo $fixture
+        $rootForbidden = & $forbiddenFrom (Invoke-Scan $rootList @())
+        foreach ($rel in @(".claude/tracked.txt", ".claude/untracked.txt", "docs/internal/untracked.md", "dist/untracked.txt")) {
+            if ($rootForbidden -notcontains $rel) { $problems.Add("-Root 模式没报 $rel") }
+        }
+        if ($rootForbidden -contains "src/ok.txt") { $problems.Add("-Root 模式误报了普通文件") }
+        if ($problems.Count -gt 0) {
+            Write-Host ("自检失败（不公开目录）：" + ($problems -join "；")) -ForegroundColor Red
+            exit 1
+        }
+        Write-Host ("自检通过：5 类假值（含外部模式文件）和二进制文件里的用户名都命中了；放行清单对内置类命中也生效，且不放行光秃秃的值、只盖住一部分的占位和本机真实用户名；不公开目录：已跟踪的会报、未跟踪的 git 模式下排除、-Root 模式下都报（{0} 条命中）" -f $hits.Count) -ForegroundColor Green
         exit 0
     } finally { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
 }
 
-$files = Get-FileList
+$files = Get-FileList $repo $Root
 Write-Host ("扫描 {0} 个文件；敏感值来源 {1} 项（类别：{2}）" -f $files.Count, $needles.Count, ((($needles | ForEach-Object { $_.Kind }) | Sort-Object -Unique) -join "、"))
 Write-Host ("放行清单：{0}（{1} 条）" -f $(if ($usingDefaultAllowList) { "scripts/privacy-allow.txt（默认）" } else { "-AllowListFile 指定的文件" }), (Get-AllowRegexes).Count)
 $hits = Invoke-Scan $files $needles
