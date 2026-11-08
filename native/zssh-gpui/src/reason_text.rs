@@ -862,19 +862,25 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
             "The server disconnected during the handshake (the service on this address / port may not be SSH)"
         }
         "conntest.handshake_other" => "SSH handshake failed: {cause}",
-        "conntest.ok" => "Connected in {elapsed} ms",
-        "conntest.ok_version" => "Connected in {elapsed} ms, server {version}",
-        "conntest.untrusted" => {
-            "The host fingerprint {fingerprint} is not trusted yet; no login was tested. Connect once normally and verify the fingerprint first"
+        "conntest.ok" => "Connection and login verified in {elapsed} ms",
+        "conntest.ok_version" => "Connection and login verified in {elapsed} ms, server {version}",
+        "conntest.partial_unconfirmed" => {
+            "Network and SSH response check passed; the login will be verified on the first normal connection"
         }
-        "conntest.untrusted_other" => {
-            "This host only has keys of other types saved, and the fingerprint {fingerprint} is not trusted yet; no login was tested. Connect once normally and verify the fingerprint first"
+        "conntest.partial_unconfirmed_jump" => {
+            "{label}: reachable, later hops were not tested (its identity is not confirmed yet; the login will be verified on the first normal connection)"
         }
-        "conntest.untrusted_hop" => {
-            "{label}: the host fingerprint {fingerprint} is not trusted yet; no login was tested. Connect once normally and verify the fingerprint first"
+        "conntest.partial_other_types" => {
+            "Network and SSH response check passed, but the server presented a key type different from the saved ones; the login needs to be checked on a normal connection"
         }
-        "conntest.untrusted_other_hop" => {
-            "{label}: this host only has keys of other types saved, and the fingerprint {fingerprint} is not trusted yet; no login was tested. Connect once normally and verify the fingerprint first"
+        "conntest.partial_other_types_jump" => {
+            "{label}: reachable, later hops were not tested (it presented a key type different from the saved ones; the login needs to be checked on a normal connection)"
+        }
+        "conntest.partial_interactive" => {
+            "Network, SSH response and server identity checks passed; the login needs interactive verification (Test Connection does not prompt)"
+        }
+        "conntest.partial_interactive_jump" => {
+            "{label}: reachable and identity verified, later hops were not tested (its login needs interactive verification, and Test Connection does not prompt)"
         }
         "conntest.tcp_data" => {
             "Connected in {elapsed} ms (TCP is reachable, no login attempted; the peer responded)"

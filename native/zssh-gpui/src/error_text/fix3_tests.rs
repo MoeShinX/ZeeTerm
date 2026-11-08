@@ -388,8 +388,8 @@ fn x11_failures_are_english_in_errors_and_in_the_terminal_notice() {
 fn connection_test_results_are_english_sentences() {
     use zssh_core::error::ZsshError;
     use zssh_core::ssh::connection_test::{
-        FailurePhase, HopRole, Interaction, TestStage, classify_failure, ssh_success_headline,
-        untrusted_stop_headline,
+        FailurePhase, HopRole, Interaction, TestStage, classify_failure, identity_pending_headline,
+        login_interactive_headline, ssh_success_headline,
     };
 
     let refused = ZsshError::Connect {
@@ -434,13 +434,45 @@ fn connection_test_results_are_english_sentences() {
             Lang::En,
             &ssh_success_headline(86, Some("SSH-2.0-OpenSSH_9.6"))
         ),
-        "Connected in 86 ms, server SSH-2.0-OpenSSH_9.6"
+        "Connection and login verified in 86 ms, server SSH-2.0-OpenSSH_9.6"
     );
-    let untrusted = untrusted_stop_headline("SHA256:abc", true, None);
-    let en = reason_text_in(Lang::En, &untrusted);
+
+    // 部分完成的结果：英文整句，且不说成失败 / 密码错误；中文界面逐字等于核心库的中文原文。
+    let first = identity_pending_headline(false, None);
+    assert_eq!(
+        reason_text_in(Lang::En, &first),
+        "Network and SSH response check passed; the login will be verified on the first normal connection"
+    );
+    assert_eq!(reason_text_in(Lang::Zh, &first), first.zh());
+    let other = identity_pending_headline(true, None);
+    let en = reason_text_in(Lang::En, &other);
+    assert_english(&en);
+    assert!(en.contains("key type") && en.contains("different"), "{en}");
+    assert!(!en.contains("first normal connection"), "{en}");
+    let jump = identity_pending_headline(false, Some("Jump host edge-1"));
+    let en = reason_text_in(Lang::En, &jump);
     assert_english(&en);
     assert!(
-        en.contains("SHA256:abc") && en.contains("other types"),
+        en.starts_with("Jump host edge-1: reachable, later hops were not tested"),
+        "{en}"
+    );
+    let jump_other = identity_pending_headline(true, Some("Jump host edge-1"));
+    let en = reason_text_in(Lang::En, &jump_other);
+    assert_english(&en);
+    assert!(en.contains("later hops were not tested"), "{en}");
+    let interactive = login_interactive_headline(None);
+    let en = reason_text_in(Lang::En, &interactive);
+    assert_english(&en);
+    assert!(en.contains("interactive verification"), "{en}");
+    assert!(
+        !en.contains("wrong") && !en.contains("failed"),
+        "不能说成密码错误 / 失败：{en}"
+    );
+    let interactive_jump = login_interactive_headline(Some("Jump host edge-1"));
+    let en = reason_text_in(Lang::En, &interactive_jump);
+    assert_english(&en);
+    assert!(
+        en.starts_with("Jump host edge-1:") && en.contains("later hops were not tested"),
         "{en}"
     );
 }
