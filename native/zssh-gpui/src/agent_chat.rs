@@ -96,6 +96,7 @@ use demo::{
     demo_toggle_available, start_in_real_mode,
 };
 use exec_state::ExecState;
+use fence::{StartVerdict, TurnFence};
 use history::{
     continue_conversation, delete_history_record, history_host, history_id_for_turn, history_meta,
     history_title, history_tool_status, load_history_record, load_history_rows, resume_session_id,
@@ -123,6 +124,7 @@ mod composer;
 mod demo;
 mod embed;
 mod exec_state;
+mod fence;
 mod history;
 mod history_view;
 mod model;
@@ -179,8 +181,8 @@ pub struct AgentChatDemo {
     model_index: usize,
     /// 真实会话；第一条消息发出时才建。
     session: Option<AgentSession>,
-    /// 正在后台找安装 / 起进程。
-    starting: bool,
+    /// 回合编号和"后台正在找安装 / 起进程"的标记：后台结果带着编号回来，只认当前的（见 `fence`）。
+    fence: TurnFence,
     /// 这个窗口给安装前检查登记的真实回合；回合进行中是 `Some`，窗口没了随 `Drop` 撤销。
     ai_turn: Option<install_state::Registration>,
     /// 这次启动的取消标记：启动期间点停止 / 新对话就置位，后台任务发第一条消息前会看它。
@@ -193,8 +195,6 @@ pub struct AgentChatDemo {
     thinking_sec: Option<u64>,
     /// 起进程期间用户点了「停止」：会话起来之后直接关掉。
     stop_requested: bool,
-    /// 起进程期间用户点了「新对话」：会话起来之后直接丢掉。
-    discard_start: bool,
     /// 后台结果出口和入口。
     host_tx: Sender<HostEvent>,
     host_rx: Receiver<HostEvent>,
@@ -301,14 +301,13 @@ impl AgentChatDemo {
             models: vec![ModelChoice::default()],
             model_index: 0,
             session: None,
-            starting: false,
+            fence: TurnFence::default(),
             ai_turn: None,
             start_cancel: None,
             activity_hosts: Vec::new(),
             owner_id: NEXT_OWNER.fetch_add(1, Ordering::Relaxed),
             thinking_sec: None,
             stop_requested: false,
-            discard_start: false,
             host_tx,
             host_rx,
             footer_error: host_error,

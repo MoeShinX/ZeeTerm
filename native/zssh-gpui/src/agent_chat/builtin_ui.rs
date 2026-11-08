@@ -142,7 +142,7 @@ impl AgentChatDemo {
             return;
         }
         let started = self.session.is_some()
-            || self.starting
+            || self.fence.starting()
             || self.pending_resume.is_some()
             || !self.chat.messages.is_empty();
         if started {
@@ -499,14 +499,12 @@ impl AgentChatDemo {
                 return;
             }
         };
-        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.start_cancel = Some(Arc::clone(&cancel));
-        self.starting = true;
+        let (turn, cancel) = self.begin_start();
         runtime.handle().spawn(async move {
             let session = match start_builtin_agent(endpoint_id, resume).await {
                 Ok(session) => session,
                 Err(err) => {
-                    let _ = sender.send(HostEvent::StartFailed(err));
+                    let _ = sender.send(HostEvent::StartFailed { turn, err });
                     return;
                 }
             };
@@ -520,6 +518,7 @@ impl AgentChatDemo {
             .await
             .map(|_| ());
             let event = HostEvent::Started {
+                turn,
                 session: Box::new(session),
                 sent,
             };

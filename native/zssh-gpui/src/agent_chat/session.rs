@@ -7,12 +7,14 @@ use super::*;
 /// 后台任务 → 界面的消息（100ms tick 取走）。
 pub(super) enum HostEvent {
     /// 会话已经建好，第一条消息也已经发出去（`sent` 是发送结果）。
+    /// `turn` 是发起这次启动的回合编号：只有它还是当前启动时才算数（见 `fence`）。
     Started {
+        turn: u64,
         session: Box<AgentSession>,
         sent: Result<(), String>,
     },
-    /// 找安装 / 起进程失败。
-    StartFailed(String),
+    /// 找安装 / 起进程失败（`turn` 同上）。
+    StartFailed { turn: u64, err: String },
     /// 对话起来之后顺手读回来的模型目录（`agent` 是读的哪个智能体的：用户中途换了就丢掉）。
     Models {
         agent: AgentKind,
@@ -24,8 +26,11 @@ pub(super) enum HostEvent {
         key: String,
         result: Option<RemoteModels>,
     },
-    /// 已有会话上发消息的结果。
-    Sent(Result<(), String>),
+    /// 已有会话上发消息的结果；`turn` 是发这条消息的回合编号，上一个回合的结果迟到时靠它认出来。
+    Sent {
+        turn: u64,
+        result: Result<(), String>,
+    },
     /// 后台存历史的结果（`id` 是那条历史）；失败是 `HistoryError` 的文字。
     HistorySaved {
         id: String,
@@ -131,7 +136,7 @@ impl AgentChatDemo {
             return;
         }
         let started = self.session.is_some()
-            || self.starting
+            || self.fence.starting()
             || self.pending_resume.is_some()
             || !self.chat.messages.is_empty();
         if started {
@@ -318,6 +323,7 @@ impl AgentChatDemo {
         if !self.chat.start_real_turn(&text) {
             return;
         }
+        let turn = self.fence.begin_turn();
         self.sync_ai_turn_count();
         self.sync_host_activity();
         // 第一次发送时给这个对话定一个历史 id：之后的回合都写回同一个文件。
@@ -345,7 +351,7 @@ impl AgentChatDemo {
                             .send(&text, model.as_deref())
                             .await
                             .map_err(|err| err.to_string());
-                        let _ = sender.send(HostEvent::Sent(result));
+                        let _ = sender.send(HostEvent::Sent { turn, result });
                     });
                 }
                 Err(err) => self.fail_turn(format!("{}{err}", t(ChatMsg::SendFailedPrefix)), cx),
@@ -353,6 +359,15 @@ impl AgentChatDemo {
             return;
         }
         self.start_and_send(targets, text, model, cx);
+    }
+
+    /// 开始一次后台启动：登记取消标记和回合编号，并把上一次启动期间点的「停止」作废
+    /// （它说的是上一次启动；这次是用户停止之后又发了新消息）。
+    pub(super) fn begin_start(&mut self) -> (u64, Arc<AtomicBool>) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.start_cancel = Some(Arc::clone(&cancel));
+        self.stop_requested = false;
+        (self.fence.begin_start(), cancel)
     }
 
     /// 第一次发送：后台起会话（Claude Code 懒启动进程，opencode / codex 复用或拉起共用进程）、
@@ -404,15 +419,13 @@ impl AgentChatDemo {
         };
         let handle = runtime.handle().clone();
         let models_handle = handle.clone();
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.start_cancel = Some(Arc::clone(&cancel));
-        self.starting = true;
+        let (turn, cancel) = self.begin_start();
         let catalog_key = agent_setup::catalog::key(kind, &install);
         handle.spawn(async move {
             let session = match start_agent(kind, install, resume_session_id).await {
                 Ok(session) => session,
                 Err(err) => {
-                    let _ = sender.send(HostEvent::StartFailed(err));
+                    let _ = sender.send(HostEvent::StartFailed { turn, err });
                     return;
                 }
             };
@@ -438,6 +451,7 @@ impl AgentChatDemo {
             .await
             .map(|_| ());
             let event = HostEvent::Started {
+                turn,
                 session: Box::new(session),
                 sent,
             };
@@ -474,20 +488,27 @@ impl AgentChatDemo {
         while let Ok(event) = self.host_rx.try_recv() {
             changed = true;
             match event {
-                HostEvent::Started { session, sent } => {
-                    self.starting = false;
-                    self.start_cancel = None;
-                    self.unsent_text = None;
-                    if self.discard_start {
-                        // 用户已经点了「新对话」：别让回复落在清空后的对话里。
-                        self.discard_start = false;
-                        self.resume_requested = false;
-                        self.shutdown_session(*session, cx);
-                    } else if self.stop_requested {
+                HostEvent::Started {
+                    turn,
+                    session,
+                    sent,
+                } => match self.fence.finish_start(turn, self.stop_requested) {
+                    StartVerdict::Stale => {
+                        // 启动期间点了「新对话」（也许已经在新对话里又发了消息）：这个会话不属于
+                        // 现在的对话。只关掉它，不碰现在的启动 / 回合状态，更不能清掉新对话的活动标记。
+                        tracing::debug!(turn, "丢弃过期的启动结果");
+                        self.close_stale_session(*session);
+                    }
+                    StartVerdict::Stopped => {
+                        self.start_cancel = None;
+                        self.unsent_text = None;
                         self.stop_requested = false;
                         self.resume_requested = false;
                         self.shutdown_session(*session, cx);
-                    } else {
+                    }
+                    StartVerdict::Current => {
+                        self.start_cancel = None;
+                        self.unsent_text = None;
                         // 启动期间用户可能又增减了目标：以现在的选择为准。
                         session.sync_hosts(&self.selected_targets());
                         // 要续接、智能体那边的会话已经不在了：和 0.2.14 一样提示"上下文没有带给 AI"。
@@ -499,21 +520,23 @@ impl AgentChatDemo {
                             self.fail_turn(format!("{}{err}", t(ChatMsg::SendFailedPrefix)), cx);
                         }
                     }
-                }
-                HostEvent::StartFailed(err) => {
-                    self.starting = false;
-                    self.start_cancel = None;
-                    if self.discard_start {
-                        // 用户已经点了「新对话」：别把错误写进清空后的对话。
-                        self.discard_start = false;
-                        self.unsent_text = None;
-                        self.resume_requested = false;
-                    } else if self.stop_requested {
-                        self.stop_requested = false;
-                        self.unsent_text = None;
-                        self.resume_requested = false;
-                    } else {
-                        self.start_failed(err, cx);
+                },
+                HostEvent::StartFailed { turn, err } => {
+                    match self.fence.finish_start(turn, self.stop_requested) {
+                        StartVerdict::Stale => {
+                            // 别把旧启动的错误写进「新对话」，也不能动现在这次启动的状态。
+                            tracing::debug!(turn, "丢弃过期的启动失败");
+                        }
+                        StartVerdict::Stopped => {
+                            self.start_cancel = None;
+                            self.stop_requested = false;
+                            self.unsent_text = None;
+                            self.resume_requested = false;
+                        }
+                        StartVerdict::Current => {
+                            self.start_cancel = None;
+                            self.start_failed(err, cx);
+                        }
                     }
                 }
                 HostEvent::Models { agent, key, result } => match result {
@@ -547,11 +570,17 @@ impl AgentChatDemo {
                     // 下一个节拍的 `sync_builtin_state` 从进程级缓存里取到它，补进模型下拉。
                     builtin::remote_finish(key, result);
                 }
-                HostEvent::Sent(Ok(())) => {}
-                HostEvent::Sent(Err(err)) => {
-                    // 已经点了停止 / 新对话：迟到的发送错误不再往对话里写。
-                    if self.chat.is_running() {
+                HostEvent::Sent { result: Ok(()), .. } => {}
+                HostEvent::Sent {
+                    turn,
+                    result: Err(err),
+                } => {
+                    // 已经点了停止 / 新对话：迟到的发送错误不再往对话里写；上一个回合的错误
+                    // 迟到时新回合已经在跑，只看"在不在跑"会把新回合判成失败，所以要认回合编号。
+                    if self.fence.send_is_current(turn, self.chat.is_running()) {
                         self.fail_turn(format!("{}{err}", t(ChatMsg::SendFailedPrefix)), cx);
+                    } else {
+                        tracing::debug!(turn, "丢弃过期的发送结果");
                     }
                 }
                 HostEvent::HistorySaved { id, result } => {
@@ -734,6 +763,21 @@ impl AgentChatDemo {
         });
     }
 
+    /// 关掉一个已经不属于当前对话的会话（启动期间点了「新对话」，结果才到）：只关会话，
+    /// 不碰界面状态。`clear_host_activity` 清的是现在这个窗口的活动标记，而新对话可能正在用。
+    fn close_stale_session(&self, session: AgentSession) {
+        match runtime() {
+            Ok(runtime) => {
+                runtime.spawn(async move {
+                    let mut session = session;
+                    session.shutdown().await;
+                });
+            }
+            // 运行时不可用（理论上不会）：丢掉句柄，Drop 兜底停监听和 scope。
+            Err(err) => tracing::warn!(error = %err, "过期的会话关不掉，靠 Drop 收尾"),
+        }
+    }
+
     /// 关掉一个会话：`shutdown` 在运行时上跑，界面不等待。
     pub(super) fn shutdown_session(&mut self, session: AgentSession, cx: &mut Context<Self>) {
         // 会话都关了，主机库里的「AI 使用中」标记不能留着。
@@ -772,9 +816,13 @@ impl AgentChatDemo {
         self.cancel_starting();
         if let Some(session) = self.session.take() {
             self.shutdown_session(session, cx);
-        } else if self.starting {
-            // 会话还在后台起：起来之后直接丢掉，别在清空的对话里冒出一条回复。
-            self.discard_start = true;
+        } else if self.fence.starting() {
+            // 会话还在后台起：这次启动作废，它的结果到了按过期处理（会话关掉、其余不碰），
+            // 别在清空的对话里冒出一条回复；用户马上在新对话里再发消息也不会和它混在一起。
+            self.fence.cancel_start();
+            self.start_cancel = None;
+            self.unsent_text = None;
+            self.resume_requested = false;
         }
         self.stop_requested = false;
     }
@@ -841,7 +889,7 @@ impl AgentChatDemo {
                     self.footer_error = Some(format!("{}{err}", t(ChatMsg::StopFailedPrefix)))
                 }
             }
-        } else if self.starting {
+        } else if self.fence.starting() {
             // 进程还在起：起来之后立刻关掉。
             self.stop_requested = true;
         }
