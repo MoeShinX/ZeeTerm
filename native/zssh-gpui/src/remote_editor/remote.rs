@@ -809,6 +809,19 @@ pub(super) mod testing {
                 Ok(())
             })
         }
+        fn create_exclusive<'a>(
+            &'a self,
+            path: &'a str,
+        ) -> BoxFuture<'a, Result<(), zssh_core::ai::files::CreateExclusiveError>> {
+            Box::pin(async move {
+                let mut files = self.files.lock().expect("锁");
+                if files.contains_key(path) {
+                    return Err(zssh_core::ai::files::CreateExclusiveError::AlreadyExists);
+                }
+                files.insert(path.to_owned(), Vec::new());
+                Ok(())
+            })
+        }
         fn set_owner<'a>(
             &'a self,
             _path: &'a str,

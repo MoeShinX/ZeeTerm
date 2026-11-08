@@ -902,6 +902,111 @@ fn write_atomic_replaces_an_existing_file_and_leaves_no_temp_file() {
     assert_eq!(names, vec!["a.txt".to_owned(), "b.txt".to_owned()]);
 }
 
+// ---------- W06 / Z-A2：新建目标的提交不能覆盖别人刚建的文件；解析不了真实路径就拒绝 ----------
+
+const COPY: &str = "/home/u/app.conf.copy";
+const THEIRS: &[u8] = b"created by another client\n";
+
+fn no_temp_left(fs: &MemFs) -> bool {
+    fs.names_in("/home/u")
+        .iter()
+        .all(|name| !name.contains("zssh-tmp") && !name.contains("zssh-old"))
+}
+
+/// 另存为 / 冲突另存走 `EditBackend::write_all` → `upload_via_fs`：目标不存在 = 新建，先占位。
+#[tokio::test]
+async fn save_as_creates_a_new_file_by_claiming_it_first() {
+    let fx = fixture().await;
+    fx.backend.write_all(COPY, EDITED).await.unwrap();
+    assert_eq!(fx.fs.get(COPY).unwrap(), EDITED);
+    assert!(fx
+        .fs
+        .log()
+        .iter()
+        .any(|l| l == &format!("create-excl {COPY}")));
+    assert!(no_temp_left(&fx.fs));
+    assert_eq!(fx.fs.get(REMOTE).unwrap(), ORIGINAL, "原文件不受影响");
+}
+
+#[tokio::test]
+async fn save_as_never_overwrites_a_file_another_client_just_created() {
+    let fx = fixture().await;
+    *fx.fs.external_create_before_claim.lock().unwrap() = Some((COPY.to_owned(), THEIRS.to_vec()));
+    let err = fx.backend.write_all(COPY, EDITED).await.unwrap_err();
+    assert!(err.to_string().contains("刚刚被创建了"), "{err}");
+    assert_eq!(fx.fs.get(COPY).unwrap(), THEIRS);
+    assert!(no_temp_left(&fx.fs));
+}
+
+/// 远端文件被删后用户选"覆盖远端"重建：同样是新建，同样不能盖过期间冒出来的同名文件。
+#[tokio::test]
+async fn recreating_a_deleted_remote_does_not_overwrite_a_file_that_appeared_meanwhile() {
+    let fx = fixture().await;
+    crate::ai::files::RemoteFs::remove_file(fx.fs.as_ref(), REMOTE)
+        .await
+        .unwrap();
+    *fx.fs.external_create_before_claim.lock().unwrap() =
+        Some((REMOTE.to_owned(), THEIRS.to_vec()));
+    let err = fx
+        .backend
+        .overwrite(REMOTE, EDITED, OwnerMode::Allow)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, OverwriteError::Failed(e) if e.to_string().contains("刚刚被创建了")),
+        "{err:?}"
+    );
+    assert_eq!(fx.fs.get(REMOTE).unwrap(), THEIRS);
+}
+
+#[tokio::test]
+async fn a_server_without_exclusive_create_refuses_to_create_instead_of_falling_back() {
+    let fx = fixture().await;
+    *fx.fs.exclusive_unsupported.lock().unwrap() = true;
+    let err = fx.backend.write_all(COPY, EDITED).await.unwrap_err();
+    assert!(err.to_string().contains("不支持原子地新建"), "{err}");
+    assert_eq!(fx.fs.get(COPY), None);
+    assert!(no_temp_left(&fx.fs));
+    // 覆盖已有文件不需要独占创建，照常成功。
+    fx.backend
+        .overwrite(REMOTE, EDITED, OwnerMode::Allow)
+        .await
+        .unwrap();
+    assert_eq!(fx.fs.get(REMOTE).unwrap(), EDITED);
+}
+
+/// Z-A2：目标存在但解析不出真实路径（身份不确定，可能是链接）——拒绝，不退回原路径去写。
+#[tokio::test]
+async fn an_existing_target_whose_real_path_cannot_be_resolved_is_refused() {
+    let fx = fixture().await;
+    *fx.fs.fail_realpath_for.lock().unwrap() = Some(REMOTE.to_owned());
+    let err = fx
+        .backend
+        .overwrite(REMOTE, EDITED, OwnerMode::Allow)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, OverwriteError::Failed(e) if e.to_string().contains("解析不出")),
+        "{err:?}"
+    );
+    assert_eq!(fx.fs.get(REMOTE).unwrap(), ORIGINAL);
+    assert!(no_temp_left(&fx.fs));
+    assert!(
+        fx.fs.log().iter().all(|l| !l.starts_with("write ")),
+        "拒绝时什么都不能写：{:?}",
+        fx.fs.log()
+    );
+}
+
+/// 目标本来就不存在：realpath 失败是正常现象，照常新建。
+#[tokio::test]
+async fn a_missing_target_with_an_unresolvable_path_is_created_normally() {
+    let fx = fixture().await;
+    *fx.fs.fail_realpath_for.lock().unwrap() = Some(COPY.to_owned());
+    fx.backend.write_all(COPY, EDITED).await.unwrap();
+    assert_eq!(fx.fs.get(COPY).unwrap(), EDITED);
+}
+
 #[cfg(windows)]
 #[test]
 fn write_atomic_failure_leaves_the_original_file_intact() {

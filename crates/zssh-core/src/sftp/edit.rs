@@ -230,9 +230,23 @@ pub async fn upload_via_fs(
     random_hex: &str,
     mode: OwnerMode,
 ) -> Result<OverwriteReport, OverwriteError> {
+    // 写链接指向的真实文件。解析失败要分两种：目标本来就不存在（正常新建，沿用原路径）；
+    // 目标存在却解析不了（身份不确定，可能是链接）——后者拒绝，不能退回原路径把链接换掉。
     let target = match fs.realpath(path).await {
         Ok(real) => real,
-        Err(_) => path.to_owned(),
+        Err(err) => match fs.stat(path).await {
+            Ok(None) => path.to_owned(),
+            Ok(Some(_)) => {
+                return Err(OverwriteError::Failed(SftpError::Remote(format!(
+                    "{path} 已经存在，但解析不出它的真实路径（{err}），无法确认写入会落在哪个文件上，已拒绝写入"
+                ))));
+            }
+            Err(stat_err) => {
+                return Err(OverwriteError::Failed(SftpError::Remote(format!(
+                    "无法确认 {path} 是否存在（{stat_err}），已拒绝写入"
+                ))));
+            }
+        },
     };
     let base = match fs
         .stat(&target)

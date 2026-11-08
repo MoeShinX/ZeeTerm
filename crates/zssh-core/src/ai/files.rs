@@ -16,6 +16,7 @@
 use std::borrow::Borrow;
 use std::sync::Arc;
 
+use russh_sftp::protocol::{FileAttributes, OpenFlags};
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
 
@@ -622,6 +623,16 @@ impl RenameFailure {
 }
 
 /// 服务器文件系统的最小抽象。错误都是给模型 / 用户看的中文文本。
+/// [`RemoteFs::create_exclusive`] 的失败。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateExclusiveError {
+    /// 路径上已经有东西（含悬空链接）。
+    AlreadyExists,
+    /// 服务器不遵守独占创建：没法保证不覆盖别人刚建的文件。
+    Unsupported(String),
+    Failed(String),
+}
+
 pub trait RemoteFs: Send + Sync {
     /// 这台服务器的身份（用户名@主机:端口）。写文件前按它 + 路径加进程级的远端目标锁，
     /// 和传输队列、编辑器保存共用同一把；`None`（单测里的假文件系统）不加锁。
@@ -659,6 +670,23 @@ pub trait RemoteFs: Send + Sync {
         to: &'a str,
     ) -> BoxFuture<'a, Result<(), RenameFailure>>;
     fn remove_file<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<(), String>>;
+    /// 原子地占住一个**不存在**的路径：建一个空文件（`CREATE | EXCLUDE`），同名的东西已经有
+    /// 了就报 [`CreateExclusiveError::AlreadyExists`]，绝不清空、不覆盖。服务器不遵守独占标志
+    /// 时必须报 [`CreateExclusiveError::Unsupported`]（并自己清掉刚建的空文件），不能退回
+    /// "先看一眼再写"——那正是这个方法要消除的竞态。
+    ///
+    /// 默认实现一律拒绝：没有原子占位能力的实现不能假装有。
+    fn create_exclusive<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<(), CreateExclusiveError>> {
+        let _ = path;
+        Box::pin(async {
+            Err(CreateExclusiveError::Unsupported(
+                "这个文件系统不支持独占创建".to_owned(),
+            ))
+        })
+    }
     /// 改属主（`setstat` 的 uid/gid）。服务器不允许时返回错误，调用方要把
     /// "属主变了"写进结果，不能悄悄算了。
     fn set_owner<'a>(
@@ -705,6 +733,37 @@ impl<C: Borrow<SftpChannel>> Drop for SftpRemoteFs<C> {
     fn drop(&mut self) {
         if self.close_on_drop {
             self.channel.borrow().close();
+        }
+    }
+}
+
+/// 对**已经存在**的 `path` 再做一次 `CREATE | EXCLUDE` 打开，看服务器认不认独占标志：
+/// 被拒绝 = 认（`Ok(true)`）；打开成功 = 标志被忽略（`Ok(false)`，句柄会关掉，文件不动：
+/// 这次打开不带 `TRUNCATE`）。只有连接断开才算错误——别的拒绝原因（权限、笼统的失败）
+/// 都说明服务器没有放我们进去，对"不会被覆盖"这个结论没有影响。
+async fn server_honors_exclusive(
+    raw: &russh_sftp::client::RawSftpSession,
+    path: &str,
+) -> Result<bool, SftpError> {
+    match raw
+        .open(
+            path,
+            OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUDE,
+            FileAttributes::default(),
+        )
+        .await
+    {
+        Ok(handle) => {
+            let _ = raw.close(&handle.handle).await;
+            Ok(false)
+        }
+        Err(err) => {
+            let err = SftpError::from(err);
+            if err.is_disconnect() {
+                Err(err)
+            } else {
+                Ok(true)
+            }
         }
     }
 }
@@ -867,6 +926,36 @@ impl<C: Borrow<SftpChannel> + Send + Sync> RemoteFs for SftpRemoteFs<C> {
         gid: Option<u32>,
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move { self.ch().set_owner(path, uid, gid).await.map_err(sftp_err) })
+    }
+
+    fn create_exclusive<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<(), CreateExclusiveError>> {
+        Box::pin(async move {
+            // `create_file` = lstat + `CREATE | EXCLUDE`，已有同名东西报 AlreadyExists。
+            match self.ch().create_file(path).await {
+                Ok(()) => {}
+                Err(SftpError::AlreadyExists { .. }) => {
+                    return Err(CreateExclusiveError::AlreadyExists)
+                }
+                Err(err) => return Err(CreateExclusiveError::Failed(sftp_err(err))),
+            }
+            // 探测服务器认不认独占标志：对刚建的文件再独占打开一次。认的话这次必被拒绝；
+            // 打开成功 = 标志被忽略，上面那次"建成功"只说明当时没有同名文件，不是原子的。
+            match server_honors_exclusive(self.ch().raw(), path).await {
+                Ok(true) => Ok(()),
+                Ok(false) => {
+                    remove_own_placeholder(self, path).await;
+                    Err(CreateExclusiveError::Unsupported(
+                        "服务器不遵守 SFTP 的独占创建标志".to_owned(),
+                    ))
+                }
+                // 占位已经建出来了，但连接断了没法确认或清理；报失败，调用方不会往下写，
+                // 残留的是一个空文件。
+                Err(err) => Err(CreateExclusiveError::Failed(sftp_err(err))),
+            }
+        })
     }
 }
 
@@ -1138,11 +1227,19 @@ pub async fn prepare_write(
                     stat.size, WRITE_MAX_BYTES
                 ));
             }
-            // 符号链接：写链接指向的真实文件，不把链接换成普通文件。
-            if let Ok(real) = fs.realpath(&requested).await {
-                if real != requested {
-                    danger = merge_verdicts(danger, assess_absolute_path(&real));
-                    target = real;
+            // 符号链接：写链接指向的真实文件，不把链接换成普通文件。文件明明存在却解析不了
+            // 真实路径 = 不知道写下去落在哪个文件上（可能是链接），宁可拒绝也不退回原路径。
+            match fs.realpath(&requested).await {
+                Ok(real) => {
+                    if real != requested {
+                        danger = merge_verdicts(danger, assess_absolute_path(&real));
+                        target = real;
+                    }
+                }
+                Err(err) => {
+                    return Err(format!(
+                        "{requested} 已经存在，但解析不出它的真实路径（{err}），无法确认写入会落在哪个文件上，已拒绝写入"
+                    ));
                 }
             }
             let bytes = fs.read_all(&target, WRITE_MAX_BYTES).await?;
@@ -1376,6 +1473,24 @@ pub async fn replace_via_temp_with(
 /// 临时文件 / 备份），原文件保持原样。AI 写文件用它响应停止按钮和目标移出（R-9 F12）。
 pub type Checkpoint<'a> = &'a (dyn Fn() -> Result<(), String> + Send + Sync);
 
+/// 放弃一次写入：删临时文件；有占位的话，只在它仍是空的普通文件时才删。
+async fn abandon(fs: &dyn RemoteFs, temp: &str, placeholder: Option<&str>) {
+    let _ = fs.remove_file(temp).await;
+    if let Some(path) = placeholder {
+        remove_own_placeholder(fs, path).await;
+    }
+}
+
+/// 删掉自己建的空占位文件。占位只有"仍是空的普通文件"才可能还是自己的；有内容了就是别人写
+/// 进去的，不能删。stat 与删除之间别人写入的残余竞态 SFTP 无法消除，缩到了最小。
+async fn remove_own_placeholder(fs: &dyn RemoteFs, path: &str) {
+    if let Ok(Some(stat)) = fs.stat(path).await {
+        if stat.kind == FsKind::File && stat.size == 0 {
+            let _ = fs.remove_file(path).await;
+        }
+    }
+}
+
 /// 同 [`replace_via_temp_with`]，改名覆盖之前先过 `checkpoint`。
 pub async fn replace_via_temp_checked(
     fs: &dyn RemoteFs,
@@ -1396,57 +1511,82 @@ pub async fn replace_via_temp_checked(
         ),
         None => None,
     };
+    // 创建模式：先用独占创建把目标占成一个空文件，再写临时文件、最后改名覆盖到自己的占位上。
+    // 只"先看一眼不存在"再用覆盖语义的改名提交，中间别的客户端新建了同名文件会被静默覆盖。
+    // 占位失败（已存在）= 别人抢先了，什么都不动；服务器不遵守独占标志就明确失败，不退回
+    // 非原子写法。
+    let placeholder = if base.existed {
+        None
+    } else {
+        match fs.create_exclusive(target).await {
+            Ok(()) => Some(target),
+            Err(CreateExclusiveError::AlreadyExists) => {
+                return Err(format!("{target} 刚刚被创建了，已取消写入").into());
+            }
+            Err(CreateExclusiveError::Unsupported(why)) => {
+                return Err(format!(
+                    "服务器不支持原子地新建文件（{why}），无法保证不覆盖别人同时新建的 {target}，已取消写入"
+                )
+                .into());
+            }
+            Err(CreateExclusiveError::Failed(err)) => {
+                return Err(format!("新建 {target} 失败，没有写入：{err}").into());
+            }
+        }
+    };
     let temp = temp_name(target, random_hex);
     if let Err(err) = fs.write_file(&temp, bytes, base.mode).await {
-        let _ = fs.remove_file(&temp).await;
+        abandon(fs, &temp, placeholder).await;
         return Err(format!("写临时文件失败，原文件没有改动：{err}").into());
     }
     match fs.stat(&temp).await {
         Ok(Some(stat)) if stat.size == bytes.len() as u64 => {}
         Ok(_) => {
-            let _ = fs.remove_file(&temp).await;
+            abandon(fs, &temp, placeholder).await;
             return Err("临时文件的大小和要写的内容不一致，原文件没有改动"
                 .to_owned()
                 .into());
         }
         Err(err) => {
-            let _ = fs.remove_file(&temp).await;
+            abandon(fs, &temp, placeholder).await;
             return Err(format!("核对临时文件失败，原文件没有改动：{err}").into());
-        }
-    }
-    // 创建模式：改名前再确认一次目标仍不存在（改名是覆盖语义）。
-    if !base.existed {
-        match fs.stat(target).await {
-            Ok(None) => {}
-            Ok(Some(_)) => {
-                let _ = fs.remove_file(&temp).await;
-                return Err(format!("{target} 刚刚被创建了，已取消写入").into());
-            }
-            Err(err) => {
-                let _ = fs.remove_file(&temp).await;
-                return Err(err.into());
-            }
         }
     }
     // 改名之前先把临时文件的属主设成原文件的：设不了就不替换，让调用方先问用户。
     if base.existed && (base.uid.is_some() || base.gid.is_some()) {
         if let Some(change) = ensure_temp_owner(fs, &temp, base).await {
             if policy == OwnerPolicy::Require {
-                let _ = fs.remove_file(&temp).await;
+                abandon(fs, &temp, placeholder).await;
                 return Err(ReplaceError::OwnerWouldChange(change));
             }
         }
     }
     // 最后一个不改动原文件的位置：之后就是替换。
     if let Err(reason) = checkpoint() {
-        let _ = fs.remove_file(&temp).await;
+        abandon(fs, &temp, placeholder).await;
         return Err(format!("{reason}，原文件没有改动").into());
+    }
+    // 创建模式：提交前最后确认占位还是自己建的那个空文件。独占创建挡住了"新建"，挡不住别人
+    // 往已存在的文件里写；它有内容了（或者被删了 / 换成了别的东西）就放弃，不去覆盖。
+    // 这一步和改名之间的残余竞态 SFTP 无法消除（没有"仅当未变化才改名"的原语）。
+    if placeholder.is_some() {
+        match fs.stat(target).await {
+            Ok(Some(stat)) if stat.kind == FsKind::File && stat.size == 0 => {}
+            Ok(_) => {
+                abandon(fs, &temp, placeholder).await;
+                return Err(format!("{target} 刚刚被别人改动了，已取消写入").into());
+            }
+            Err(err) => {
+                abandon(fs, &temp, placeholder).await;
+                return Err(err.into());
+            }
+        }
     }
     if let Err(failure) = fs.rename_over(&temp, target).await {
         return Err(ReplaceError::Failed(match failure.state {
             ReplaceState::Untouched => {
-                // 原文件没动：临时文件没用了，清掉。
-                let _ = fs.remove_file(&temp).await;
+                // 原文件没动：临时文件没用了，清掉（自己建的空占位也一并清掉）。
+                abandon(fs, &temp, placeholder).await;
                 format!("提交前失败，原文件没有改动：{}", failure.message)
             }
             // 原文件已经挪开又没能恢复：两份内容都完整地在服务器上，谁也不能删。
@@ -1696,6 +1836,10 @@ pub async fn execute_write_checked(
     })
 }
 
+#[cfg(test)]
+mod exclusive_sftp_tests;
+#[cfg(test)]
+mod exclusive_tests;
 #[cfg(test)]
 mod replace_tests;
 #[cfg(test)]

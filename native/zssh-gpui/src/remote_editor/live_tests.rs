@@ -76,6 +76,12 @@ impl RemoteFs for FailRename<'_> {
     fn remove_file<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<(), String>> {
         self.0.remove_file(path)
     }
+    fn create_exclusive<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<(), zssh_core::ai::files::CreateExclusiveError>> {
+        self.0.create_exclusive(path)
+    }
     fn set_owner<'a>(
         &'a self,
         path: &'a str,

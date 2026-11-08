@@ -139,15 +139,22 @@ async fn a_server_with_the_extension_still_replaces_atomically() {
     );
 }
 
-/// 创建新文件（目标不存在）不需要备用文件，一步改名。
+/// 创建新文件时目标先被占成一个空文件，改名覆盖的是这个占位：没有 `posix-rename` 的服务器上
+/// 它被当成"原文件"让到备用名再删掉，最后不留任何多余文件。
 #[tokio::test]
-async fn creating_a_new_file_needs_no_backup() {
+async fn creating_a_new_file_on_a_server_without_posix_rename_leaves_no_leftovers() {
     let fs = MemFs::new();
     *fs.no_posix_rename.lock().unwrap() = true;
     let plan = prepare_write(&fs, "fresh.txt", NEW, true).await.unwrap();
     execute_write(&fs, &plan, true, 5, "r", 5).await.unwrap();
     assert_eq!(fs.get("/home/u/fresh.txt").unwrap(), NEW.as_bytes());
-    assert!(fs.log().iter().all(|l| !l.contains("zssh-old")));
+    let names = fs.names_in("/home/u");
+    assert!(
+        names
+            .iter()
+            .all(|n| !n.contains("zssh-old") && !n.contains("zssh-tmp")),
+        "不该留下备用文件或临时文件：{names:?}"
+    );
 }
 
 /// R-6c R01：AI 写文件和传输队列共用同一把远端目标锁——别的任务正在写这个路径，就明确拒绝。

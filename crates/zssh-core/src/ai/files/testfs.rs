@@ -45,6 +45,15 @@ pub(crate) struct MemFs {
     pub(crate) server_key: Mutex<Option<String>>,
     /// `set_owner` 返回成功但其实没生效（模拟服务器忽略 setstat）。
     pub(crate) ignore_set_owner: Mutex<bool>,
+    /// 模拟"不认独占创建标志的服务器"：`create_exclusive` 报不支持。
+    pub(crate) exclusive_unsupported: Mutex<bool>,
+    /// 独占创建之前，另一个客户端先把这个路径建好了：(路径, 内容)。只触发一次。
+    pub(crate) external_create_before_claim: Mutex<Option<(String, Vec<u8>)>>,
+    /// 写到路径含 `pattern` 的文件时，另一个客户端把 `path`（比如我们的占位）写成 `content`：
+    /// (pattern, path, content)。只触发一次。
+    pub(crate) external_write_during_write: Mutex<Option<(String, String, Vec<u8>)>>,
+    /// 这个路径的 `realpath` 失败（文件仍然存在）。
+    pub(crate) fail_realpath_for: Mutex<Option<String>>,
 }
 
 impl MemFs {
@@ -160,7 +169,12 @@ impl RemoteFs for MemFs {
     }
 
     fn realpath<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<String, String>> {
-        Box::pin(async move { Ok(self.resolved(path)) })
+        Box::pin(async move {
+            if self.fail_realpath_for.lock().unwrap().as_deref() == Some(path) {
+                return Err("realpath 失败".to_owned());
+            }
+            Ok(self.resolved(path))
+        })
     }
 
     fn list<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<Vec<FsEntry>, String>> {
@@ -217,6 +231,16 @@ impl RemoteFs for MemFs {
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             self.log.lock().unwrap().push(format!("write {path}"));
+            let intruder = {
+                let mut hook = self.external_write_during_write.lock().unwrap();
+                match hook.as_ref() {
+                    Some((pattern, _, _)) if path.contains(pattern.as_str()) => hook.take(),
+                    _ => None,
+                }
+            };
+            if let Some((_, victim, content)) = intruder {
+                self.put(&victim, &content, 0o644);
+            }
             if let Some(pattern) = self.fail_write_containing.lock().unwrap().as_deref() {
                 if path.contains(pattern) {
                     return Err("磁盘写入失败".to_owned());
@@ -301,6 +325,40 @@ impl RemoteFs for MemFs {
                 }
             }
             self.nodes.lock().unwrap().remove(path);
+            Ok(())
+        })
+    }
+
+    fn create_exclusive<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<(), CreateExclusiveError>> {
+        Box::pin(async move {
+            self.log.lock().unwrap().push(format!("create-excl {path}"));
+            if *self.exclusive_unsupported.lock().unwrap() {
+                return Err(CreateExclusiveError::Unsupported(
+                    "测试：不认独占标志".to_owned(),
+                ));
+            }
+            let intruder = self.external_create_before_claim.lock().unwrap().take();
+            if let Some((victim, content)) = intruder {
+                self.put(&victim, &content, 0o644);
+            }
+            let mut nodes = self.nodes.lock().unwrap();
+            if nodes.contains_key(path) || self.links.lock().unwrap().contains_key(path) {
+                return Err(CreateExclusiveError::AlreadyExists);
+            }
+            nodes.insert(
+                path.to_owned(),
+                Node {
+                    data: Vec::new(),
+                    mode: 0o644,
+                    kind: FsKind::File,
+                    mtime: 1_760_000_001,
+                    uid: 1000,
+                    gid: 1000,
+                },
+            );
             Ok(())
         })
     }
