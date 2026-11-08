@@ -496,11 +496,20 @@ impl Connection {
         let host = bind_host.to_owned();
         let cancel_handle = Arc::clone(&self.handle);
         let cancel_host = host.clone();
+        let limit = RequestLimit {
+            after: REMOTE_FORWARD_REQUEST_TIMEOUT,
+            error: ZsshError::ConnectTimeout {
+                host: bind_host.to_owned(),
+                port: bind_port,
+                seconds: REMOTE_FORWARD_REQUEST_TIMEOUT.as_secs(),
+            },
+        };
         let result = spawn_remote_forward(
             Arc::clone(&self.remote_forwards),
             Arc::clone(&self.remote_cleanup),
             port,
             sink,
+            limit,
             async move {
                 handle.tcpip_forward(&host, port).await.map_err(|err| match err {
                     russh::Error::RequestDenied => ZsshError::InvalidInput(
@@ -519,15 +528,11 @@ impl Connection {
                 .await;
             },
         );
-        // 超时只结束调用方等待；已发出的请求仍须读完回复，才能取消服务器分配的端口。
-        match timeout(HOP_TIMEOUT, result).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(ZsshError::Ssh(russh::Error::Disconnect)),
-            Err(_) => Err(ZsshError::ConnectTimeout {
-                host: bind_host.to_owned(),
-                port: bind_port,
-                seconds: HOP_TIMEOUT.as_secs(),
-            }),
+        // 超时由后台任务自己判（见 `spawn_remote_forward`）：它会放掉登记、给这里回超时错误，
+        // 同时继续等已发出的请求，迟到成功就把服务器那边的监听收回去。
+        match result.await {
+            Ok(result) => result,
+            Err(_) => Err(ZsshError::Ssh(russh::Error::Disconnect)),
         }
     }
 
@@ -1299,12 +1304,26 @@ pub struct ForwardedChannel {
 type RemoteForwardTable =
     Arc<std::sync::Mutex<HashMap<u32, tokio::sync::mpsc::UnboundedSender<ForwardedChannel>>>>;
 
+/// 远程转发请求（`tcpip-forward`）等服务器回复的时限。
+const REMOTE_FORWARD_REQUEST_TIMEOUT: Duration = HOP_TIMEOUT;
+
+/// 请求的时限，以及超时时回给调用方的错误。
+struct RequestLimit {
+    after: Duration,
+    error: ZsshError,
+}
+
 /// 请求任务独立于调用方存活；结果无人接收或 incoming 被丢弃时收回服务器监听。
+///
+/// 请求超过 `limit.after` 还没回复：放掉端口登记（别让后面的重试被"已登记"挡住）、给调用方
+/// 回超时错误，但**不丢弃请求**——继续在任务里等。迟到的结果若是成功，服务器那边已经开了监听，
+/// 要在清理锁下取消掉；迟到失败则没有残留，什么都不用做。
 fn spawn_remote_forward<Request, Cancel, Cleanup>(
     table: RemoteForwardTable,
     cleanup_lock: Arc<tokio::sync::Mutex<()>>,
     port: u32,
     sink: tokio::sync::mpsc::UnboundedSender<ForwardedChannel>,
+    limit: RequestLimit,
     request: Request,
     cancel: Cancel,
 ) -> tokio::sync::oneshot::Receiver<Result<u32, ZsshError>>
@@ -1322,12 +1341,25 @@ where
             let _ = reply.send(Err(err));
             return;
         }
-        let actual = match request.await {
-            Ok(0) => port,
-            Ok(actual) => actual,
-            Err(err) => {
+        let mut request = Box::pin(request);
+        let actual = match timeout(limit.after, request.as_mut()).await {
+            Ok(Ok(0)) => port,
+            Ok(Ok(actual)) => actual,
+            Ok(Err(err)) => {
                 release_remote_port(&table, port, &sink);
                 let _ = reply.send(Err(err));
+                return;
+            }
+            Err(_) => {
+                release_remote_port(&table, port, &sink);
+                let _ = reply.send(Err(limit.error));
+                if let Ok(late) = request.await {
+                    let late = if late == 0 { port } else { late };
+                    // 同一条连接上的全局请求，服务器按发出顺序处理、回复：这条取消一定排在
+                    // 超时后重试的新请求之后，不会误伤重试开出来的监听。
+                    let _cleanup = cleanup_lock.lock().await;
+                    cancel(late).await;
+                }
                 return;
             }
         };
@@ -1652,6 +1684,164 @@ impl client::Handler for ClientHandler {
 
 #[cfg(test)]
 mod tests {
+    /// 不会触发的时限：不测超时的用例用它。
+    fn long_limit() -> RequestLimit {
+        RequestLimit {
+            after: std::time::Duration::from_secs(3600),
+            error: ZsshError::Cancelled,
+        }
+    }
+
+    fn short_limit() -> RequestLimit {
+        RequestLimit {
+            after: std::time::Duration::from_millis(50),
+            error: ZsshError::ConnectTimeout {
+                host: "web-1".to_owned(),
+                port: 23456,
+                seconds: 15,
+            },
+        }
+    }
+
+    /// 请求超时：登记被放掉、调用方拿到超时错误；请求本身不丢，迟到成功就取消服务器端的监听。
+    #[tokio::test]
+    async fn remote_request_timeout_releases_claim_and_cancels_a_late_success() {
+        let table = RemoteForwardTable::default();
+        let (sink, _incoming) = tokio::sync::mpsc::unbounded_channel();
+        let (finish, response) = tokio::sync::oneshot::channel::<Result<u32, ZsshError>>();
+        let (stopped, stopped_rx) = tokio::sync::oneshot::channel();
+        let result = spawn_remote_forward(
+            Arc::clone(&table),
+            Arc::default(),
+            23456,
+            sink,
+            short_limit(),
+            async move { response.await.unwrap() },
+            move |port| async move {
+                stopped.send(port).unwrap();
+            },
+        );
+        let err = timeout(std::time::Duration::from_secs(2), result)
+            .await
+            .expect("超时要有结果")
+            .expect("任务没丢结果")
+            .expect_err("服务器不回应要报错");
+        assert!(
+            matches!(err, ZsshError::ConnectTimeout { port: 23456, .. }),
+            "{err:?}"
+        );
+        assert!(
+            lock_table(&table).is_empty(),
+            "超时之后登记要放掉，重试不能被挡住"
+        );
+        // 登记放掉后别人可以马上认领同一个端口
+        let (retry, _retry_rx) = tokio::sync::mpsc::unbounded_channel();
+        claim_remote_port(&table, 23456, &retry).expect("重试能认领");
+        release_remote_port(&table, 23456, &retry);
+
+        // 迟到的成功：服务器那边已经开了监听，必须取消
+        finish.send(Ok(23456)).unwrap();
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(1), stopped_rx)
+                .await
+                .expect("迟到成功后要取消监听")
+                .unwrap(),
+            23456
+        );
+        assert!(lock_table(&table).is_empty(), "没有残留登记");
+    }
+
+    /// 迟到成功时服务器给的是动态端口（请求 0 号端口）：取消的是服务器实际分配的那个。
+    #[tokio::test]
+    async fn remote_late_success_on_a_dynamic_port_cancels_the_allocated_port() {
+        let table = RemoteForwardTable::default();
+        let (sink, _incoming) = tokio::sync::mpsc::unbounded_channel();
+        let (finish, response) = tokio::sync::oneshot::channel::<Result<u32, ZsshError>>();
+        let (stopped, stopped_rx) = tokio::sync::oneshot::channel();
+        let result = spawn_remote_forward(
+            Arc::clone(&table),
+            Arc::default(),
+            0,
+            sink,
+            short_limit(),
+            async move { response.await.unwrap() },
+            move |port| async move {
+                stopped.send(port).unwrap();
+            },
+        );
+        assert!(result.await.unwrap().is_err());
+        assert!(lock_table(&table).is_empty());
+        finish.send(Ok(40123)).unwrap();
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(1), stopped_rx)
+                .await
+                .unwrap()
+                .unwrap(),
+            40123
+        );
+    }
+
+    /// 迟到的失败：服务器那边没有监听，不需要取消，也不留登记。
+    #[tokio::test]
+    async fn remote_late_failure_needs_no_cancel() {
+        let table = RemoteForwardTable::default();
+        let (sink, _incoming) = tokio::sync::mpsc::unbounded_channel();
+        let (finish, response) = tokio::sync::oneshot::channel::<Result<u32, ZsshError>>();
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&cancelled);
+        let result = spawn_remote_forward(
+            Arc::clone(&table),
+            Arc::default(),
+            23456,
+            sink,
+            short_limit(),
+            async move { response.await.unwrap() },
+            move |_| async move {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            },
+        );
+        assert!(result.await.unwrap().is_err());
+        finish.send(Err(ZsshError::Cancelled)).unwrap();
+        // 让后台任务把迟到的结果处理完
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!cancelled.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(lock_table(&table).is_empty());
+    }
+
+    /// 正常路径不受影响：时限内回复就照常登记、交还端口。
+    #[tokio::test]
+    async fn remote_request_within_the_limit_behaves_as_before() {
+        let table = RemoteForwardTable::default();
+        let (sink, incoming) = tokio::sync::mpsc::unbounded_channel();
+        let (stopped, stopped_rx) = tokio::sync::oneshot::channel();
+        let result = spawn_remote_forward(
+            Arc::clone(&table),
+            Arc::default(),
+            23456,
+            sink,
+            short_limit(),
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                Ok(23456)
+            },
+            move |port| async move {
+                stopped.send(port).unwrap();
+            },
+        );
+        assert_eq!(result.await.unwrap().unwrap(), 23456);
+        assert!(lock_table(&table).contains_key(&23456), "成功后登记保留");
+        // 时限过去之后也不会误取消
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        assert!(lock_table(&table).contains_key(&23456));
+        drop(incoming);
+        assert_eq!(
+            timeout(std::time::Duration::from_secs(1), stopped_rx)
+                .await
+                .unwrap()
+                .unwrap(),
+            23456
+        );
+    }
 
     #[tokio::test]
     async fn remote_cancelled_start_cleans_late_allocated_port() {
@@ -1665,6 +1855,7 @@ mod tests {
             Arc::default(),
             0,
             sink,
+            long_limit(),
             async move {
                 started.send(()).unwrap();
                 Ok(response.await.unwrap())
@@ -1704,6 +1895,7 @@ mod tests {
             Arc::default(),
             23456,
             sink,
+            long_limit(),
             async { Ok(23456) },
             move |port| async move {
                 stopped.send(port).unwrap();
@@ -1750,6 +1942,7 @@ mod tests {
             Arc::default(),
             0,
             sink,
+            long_limit(),
             async { Ok(23456) },
             move |port| async move {
                 stopped.send(port).unwrap();

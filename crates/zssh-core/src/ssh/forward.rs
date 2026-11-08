@@ -5,6 +5,7 @@
 //! 所有连接一起断，不会留下孤儿。
 
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,8 +15,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task::JoinSet;
-use tokio::time::timeout;
-use tracing::debug;
+use tokio::time::{timeout, Instant, Sleep};
+use tracing::{debug, warn};
 
 use crate::error::{reason_keys as rk, Reason, ZsshError};
 use crate::ssh::connection::{Connection, ForwardedChannel};
@@ -24,6 +25,93 @@ use crate::ssh::connection::{Connection, ForwardedChannel};
 const LIVENESS_TICK: Duration = Duration::from_secs(2);
 /// 远程转发连本机目标的超时。
 const DEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// `accept` 连续失败时第一次等多久；之后每失败一次翻倍。
+const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
+/// 退避的上限。
+const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
+
+/// `accept` 连续失败的退避：10ms 起翻倍、封顶 1s，成功一次就从头算。
+///
+/// 句柄用光（EMFILE）这类错误不会自己好，不退避的话循环会空转吃满一个核。
+#[derive(Debug, Default)]
+struct AcceptBackoff {
+    failures: u32,
+}
+
+/// 一次失败之后该怎么办。
+#[derive(Debug, PartialEq, Eq)]
+struct AcceptRetry {
+    /// 先等多久再接着 accept。
+    delay: Duration,
+    /// 值得记一条日志：这一串失败的第一次，以及第一次退避到顶。别每次都记，否则会刷屏。
+    log: bool,
+}
+
+impl AcceptBackoff {
+    fn failed(&mut self) -> AcceptRetry {
+        self.failures = self.failures.saturating_add(1);
+        // 位移到 63 位以上会溢出，封顶之后不用再算
+        let shift = (self.failures - 1).min(16);
+        let delay = (ACCEPT_BACKOFF_MIN * (1u32 << shift)).min(ACCEPT_BACKOFF_MAX);
+        let previous = if self.failures == 1 {
+            Duration::ZERO
+        } else {
+            (ACCEPT_BACKOFF_MIN * (1u32 << (shift - 1))).min(ACCEPT_BACKOFF_MAX)
+        };
+        AcceptRetry {
+            delay,
+            log: self.failures == 1 || (delay == ACCEPT_BACKOFF_MAX && previous < delay),
+        }
+    }
+
+    fn succeeded(&mut self) {
+        self.failures = 0;
+    }
+}
+
+/// 把退避接进 `select!` 循环：失败后先"暂停" accept，等待期间循环里别的分支
+/// （断线检查、连接收尾、取消）照常响应，不会被睡眠堵住。
+struct AcceptPacer {
+    backoff: AcceptBackoff,
+    pause: Pin<Box<Sleep>>,
+    paused: bool,
+}
+
+impl AcceptPacer {
+    fn new() -> Self {
+        Self {
+            backoff: AcceptBackoff::default(),
+            pause: Box::pin(tokio::time::sleep(Duration::ZERO)),
+            paused: false,
+        }
+    }
+
+    fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    fn ok(&mut self) {
+        self.backoff.succeeded();
+    }
+
+    /// 记一次失败并开始暂停；`what` 说是哪个监听。
+    fn err(&mut self, what: &str, err: &std::io::Error) {
+        let retry = self.backoff.failed();
+        if retry.log {
+            warn!(%err, retry_in = ?retry.delay, "{what} accept 失败，退避重试");
+        } else {
+            debug!(%err, retry_in = ?retry.delay, "{what} accept 仍然失败");
+        }
+        self.pause.as_mut().reset(Instant::now() + retry.delay);
+        self.paused = true;
+    }
+
+    /// 暂停结束时返回。取消安全，放在 `select!` 的分支里用（配 `if pacer.is_paused()`）。
+    async fn resumed(&mut self) {
+        self.pause.as_mut().await;
+        self.paused = false;
+    }
+}
 
 /// 一条规则的计数，界面轮询着显示。
 #[derive(Debug, Default)]
@@ -136,13 +224,17 @@ pub async fn run_local(
 ) -> ZsshError {
     let mut conns = JoinSet::new();
     let mut tick = tokio::time::interval(LIVENESS_TICK);
+    let mut pacer = AcceptPacer::new();
     loop {
         tokio::select! {
-            accepted = listener.accept() => {
+            accepted = listener.accept(), if !pacer.is_paused() => {
                 let (socket, peer): (TcpStream, SocketAddr) = match accepted {
-                    Ok(pair) => pair,
+                    Ok(pair) => {
+                        pacer.ok();
+                        pair
+                    }
                     Err(err) => {
-                        debug!(%err, "本地转发 accept 失败");
+                        pacer.err("本地转发", &err);
                         continue;
                     }
                 };
@@ -157,6 +249,7 @@ pub async fn run_local(
                     }
                 });
             }
+            () = pacer.resumed(), if pacer.is_paused() => {}
             _ = tick.tick() => {
                 if connection.is_closed() {
                     return connection_lost();
@@ -229,6 +322,67 @@ mod tests {
         assert_eq!(listen_host(""), "0.0.0.0");
         assert_eq!(listen_host("[::1]"), "::1");
         assert_eq!(listen_host("127.0.0.1"), "127.0.0.1");
+    }
+
+    #[test]
+    fn accept_backoff_doubles_up_to_the_cap_and_resets_on_success() {
+        let mut backoff = AcceptBackoff::default();
+        let delays: Vec<u64> = (0..10)
+            .map(|_| u64::try_from(backoff.failed().delay.as_millis()).unwrap())
+            .collect();
+        assert_eq!(delays, [10, 20, 40, 80, 160, 320, 640, 1000, 1000, 1000]);
+        // 失败很多次也不溢出
+        for _ in 0..1000 {
+            assert_eq!(backoff.failed().delay, ACCEPT_BACKOFF_MAX);
+        }
+        backoff.succeeded();
+        assert_eq!(backoff.failed().delay, ACCEPT_BACKOFF_MIN, "成功一次从头算");
+    }
+
+    #[test]
+    fn accept_backoff_logs_the_first_failure_and_reaching_the_cap_only() {
+        let mut backoff = AcceptBackoff::default();
+        let logged: Vec<bool> = (0..12).map(|_| backoff.failed().log).collect();
+        // 第 1 次失败、第 8 次（第一次到 1s）记日志，其余不记
+        let expected: Vec<bool> = (1..=12).map(|n| n == 1 || n == 8).collect();
+        assert_eq!(logged, expected);
+        backoff.succeeded();
+        assert!(backoff.failed().log, "恢复之后再坏，又是新的一串");
+    }
+
+    /// 模拟 `run_local` 的循环形状：accept 一直立刻报错时不能空转，退避等待期间还要能响应关闭。
+    #[tokio::test]
+    async fn a_failing_accept_is_paced_and_the_wait_does_not_block_shutdown() {
+        let mut pacer = AcceptPacer::new();
+        let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&attempts);
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = async {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        // 假 listener：每次都立刻失败（相当于 EMFILE）
+                    }, if !pacer.is_paused() => {
+                        pacer.err("测试", &std::io::Error::other("emfile"));
+                    }
+                    () = pacer.resumed(), if pacer.is_paused() => {}
+                    _ = &mut stopped => return,
+                }
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let during = attempts.load(Ordering::SeqCst);
+        // 不退避的话 300ms 里会转几十万圈；有退避大约 6 次，机器忙时容许偏差
+        assert!((2..=12).contains(&during), "300ms 里 accept 了 {during} 次");
+        // 此时多半正睡在一次（最长 1s 的）退避里：关闭要马上生效
+        let began = std::time::Instant::now();
+        stop.send(()).unwrap();
+        timeout(Duration::from_millis(500), task)
+            .await
+            .expect("退避等待不能堵住关闭")
+            .unwrap();
+        assert!(began.elapsed() < Duration::from_millis(500));
     }
 
     #[tokio::test]
