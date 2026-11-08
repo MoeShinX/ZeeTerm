@@ -252,23 +252,106 @@ pub fn verify_download(
     })
 }
 
+/// 下载的等待时限：卡住的连接不能无限等下去。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DownloadTimeouts {
+    /// 发出请求到拿到响应头（含连接、TLS 和跳转）最多等多久。
+    pub header: std::time::Duration,
+    /// 响应体里相邻两块数据之间最多隔多久（总时长不限，大文件慢慢下没问题）。
+    pub idle: std::time::Duration,
+}
+
+impl Default for DownloadTimeouts {
+    fn default() -> Self {
+        Self {
+            header: std::time::Duration::from_secs(30),
+            idle: std::time::Duration::from_secs(30),
+        }
+    }
+}
+
+/// 等待期间多久看一次 `cancel`：用户点取消后最慢这么久生效。
+const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// 等一个 future 的结果，但可以被取消打断、也有总时限。
+enum Waited<T> {
+    Done(T),
+    Cancelled,
+    TimedOut,
+}
+
+/// `cancel` 是个原子标志，没法直接 `await`，所以切成短间隔轮询；每一小段里 future 照常被推进，
+/// 不会因为轮询丢进度（`timeout` 到期只是不再等，future 本身还留在这里继续用）。
+async fn wait_cancellable<F: std::future::Future>(
+    fut: F,
+    limit: std::time::Duration,
+    cancel: &AtomicBool,
+) -> Waited<F::Output> {
+    tokio::pin!(fut);
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Waited::Cancelled;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Waited::TimedOut;
+        }
+        let step = (deadline - now).min(CANCEL_POLL);
+        if let Ok(output) = tokio::time::timeout(step, &mut fut).await {
+            return Waited::Done(output);
+        }
+    }
+}
+
 /// 下载到本地文件；每次回调 `(已下载, 总量)`，1MiB 节流；`cancel` 置位就中断。
 ///
 /// `max_bytes`：最多收这么多字节（Release 公布的大小），多了就中断——下载完还要
 /// [`verify_download`]，这里只防异常的响应把磁盘写满。
+///
+/// 等响应头、等每一块数据时都能被 `cancel` 打断（最慢 [`CANCEL_POLL`] 生效），
+/// 并有时限（[`DownloadTimeouts`]）：对端停住不发数据时不会一直挂着。取消、超时、
+/// 中断都会把已写的半截文件删掉。
 pub async fn download_to(
+    client: &reqwest::Client,
+    url: &str,
+    dest: &Path,
+    max_bytes: u64,
+    on_progress: impl FnMut(u64, u64) + Send,
+    cancel: &AtomicBool,
+) -> Result<(), DownloadError> {
+    download_to_with(
+        client,
+        url,
+        dest,
+        max_bytes,
+        on_progress,
+        cancel,
+        DownloadTimeouts::default(),
+    )
+    .await
+}
+
+/// [`download_to`]，时限可注入（测试用短值）。
+pub(crate) async fn download_to_with(
     client: &reqwest::Client,
     url: &str,
     dest: &Path,
     max_bytes: u64,
     mut on_progress: impl FnMut(u64, u64) + Send,
     cancel: &AtomicBool,
+    timeouts: DownloadTimeouts,
 ) -> Result<(), DownloadError> {
-    let mut resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| DownloadError::Failed(format!("下载失败：{e}")))?;
+    let mut resp = match wait_cancellable(client.get(url).send(), timeouts.header, cancel).await {
+        Waited::Done(sent) => sent.map_err(|e| DownloadError::Failed(format!("下载失败：{e}")))?,
+        Waited::Cancelled => return Err(DownloadError::Cancelled),
+        Waited::TimedOut => {
+            return Err(DownloadError::Failed(format!(
+                "下载失败：{} 秒内没有收到服务器的响应",
+                timeouts.header.as_secs().max(1)
+            )))
+        }
+    };
     if !resp.status().is_success() {
         return Err(DownloadError::Failed(format!("下载返回 {}", resp.status())));
     }
@@ -286,11 +369,32 @@ pub async fn download_to(
     let mut last_reported: u64 = 0;
     on_progress(0, total);
 
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| DownloadError::Failed(format!("下载中断：{e}")))?
-    {
+    loop {
+        let next = match wait_cancellable(resp.chunk(), timeouts.idle, cancel).await {
+            Waited::Done(next) => next,
+            Waited::Cancelled => {
+                drop(file);
+                let _ = tokio::fs::remove_file(dest).await;
+                return Err(DownloadError::Cancelled);
+            }
+            Waited::TimedOut => {
+                drop(file);
+                let _ = tokio::fs::remove_file(dest).await;
+                return Err(DownloadError::Failed(format!(
+                    "下载中断：{} 秒内没有收到新的数据",
+                    timeouts.idle.as_secs().max(1)
+                )));
+            }
+        };
+        let chunk = match next {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(e) => {
+                drop(file);
+                let _ = tokio::fs::remove_file(dest).await;
+                return Err(DownloadError::Failed(format!("下载中断：{e}")));
+            }
+        };
         if cancel.load(Ordering::Relaxed) {
             drop(file);
             let _ = tokio::fs::remove_file(dest).await;
@@ -1136,5 +1240,264 @@ mod tests {
         }
         let err = extract_exe(&zip_path, &tmp.join("out")).unwrap_err();
         assert!(err.contains("没有 opencode.exe"));
+    }
+
+    /// 用本地合成服务器验证"对端停住"时的取消与超时（W17）。
+    mod stalled {
+        use super::*;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        /// 服务器收到请求后怎么表现。
+        #[derive(Clone, Copy)]
+        enum Script {
+            /// 读完请求就再不回应。
+            SilentAfterRequest,
+            /// 发完响应头（声明 1 MiB）和 1000 字节，之后不再发。
+            StallAfterFirstChunk,
+            /// 一次发完整个响应。
+            Complete,
+        }
+
+        const BODY_LEN: usize = 1000;
+
+        /// 起一个只服务一个连接的合成 HTTP 服务器；返回地址和任务句柄（测试结束要 abort）。
+        async fn serve(script: Script) -> (String, tokio::task::JoinHandle<()>) {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("监听");
+            let url = format!("http://{}/asset.bin", listener.local_addr().expect("地址"));
+            let handle = tokio::spawn(async move {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut request = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => request.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let body = vec![b'a'; BODY_LEN];
+                match script {
+                    Script::SilentAfterRequest => {}
+                    Script::StallAfterFirstChunk => {
+                        let head = "HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\n";
+                        let _ = stream.write_all(head.as_bytes()).await;
+                        let _ = stream.write_all(&body).await;
+                        let _ = stream.flush().await;
+                    }
+                    Script::Complete => {
+                        let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {BODY_LEN}\r\n\r\n");
+                        let _ = stream.write_all(head.as_bytes()).await;
+                        let _ = stream.write_all(&body).await;
+                        let _ = stream.flush().await;
+                    }
+                }
+                // 连接保持打开（不关、不发），直到测试结束把任务 abort。
+                tokio::time::sleep(Duration::from_secs(120)).await;
+            });
+            (url, handle)
+        }
+
+        fn client() -> reqwest::Client {
+            build_client(None).expect("客户端")
+        }
+
+        /// 过一会儿（等文件出现，如果要求的话）再置位取消。
+        fn cancel_later(
+            cancel: &Arc<AtomicBool>,
+            wait_for_file: Option<std::path::PathBuf>,
+            delay: Duration,
+        ) {
+            let cancel = Arc::clone(cancel);
+            tokio::spawn(async move {
+                if let Some(file) = wait_for_file {
+                    for _ in 0..200 {
+                        if file.exists() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }
+                tokio::time::sleep(delay).await;
+                cancel.store(true, Ordering::Relaxed);
+            });
+        }
+
+        /// 修复前：`send()` 不看取消，服务器不回响应头就永远挂着。
+        #[tokio::test]
+        async fn cancel_interrupts_the_wait_for_response_headers() {
+            let dir = crate::test_util::TestDir::new("download stall head");
+            let dest = dir.join("asset.bin");
+            let (url, server) = serve(Script::SilentAfterRequest).await;
+            let cancel = Arc::new(AtomicBool::new(false));
+            cancel_later(&cancel, None, Duration::from_millis(300));
+
+            let started = Instant::now();
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                download_to(&client(), &url, &dest, 1 << 20, |_, _| {}, &cancel),
+            )
+            .await
+            .expect("取消没有及时生效，下载一直挂着");
+            server.abort();
+
+            assert!(
+                matches!(result, Err(DownloadError::Cancelled)),
+                "{result:?}"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "{:?}",
+                started.elapsed()
+            );
+            assert!(!dest.exists());
+        }
+
+        /// 修复前：`chunk()` 不看取消，首块之后对端不发了就永远挂着，半截文件也留着。
+        #[tokio::test]
+        async fn cancel_interrupts_a_stalled_body_and_removes_the_partial_file() {
+            let dir = crate::test_util::TestDir::new("download stall body");
+            let dest = dir.join("asset.bin");
+            let (url, server) = serve(Script::StallAfterFirstChunk).await;
+            let cancel = Arc::new(AtomicBool::new(false));
+            // 等半截文件出现、首块写下去，再取消。
+            cancel_later(&cancel, Some(dest.clone()), Duration::from_millis(300));
+
+            let started = Instant::now();
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                download_to(&client(), &url, &dest, 1 << 20, |_, _| {}, &cancel),
+            )
+            .await
+            .expect("取消没有及时生效，下载一直挂着");
+            server.abort();
+
+            assert!(
+                matches!(result, Err(DownloadError::Cancelled)),
+                "{result:?}"
+            );
+            // 从置位取消算起 2 秒内：前面等文件和 300ms 的延迟不算。
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "{:?}",
+                started.elapsed()
+            );
+            assert!(!dest.exists(), "取消后半截文件要删掉");
+        }
+
+        #[tokio::test]
+        async fn waiting_for_response_headers_times_out() {
+            let dir = crate::test_util::TestDir::new("download stall head timeout");
+            let dest = dir.join("asset.bin");
+            let (url, server) = serve(Script::SilentAfterRequest).await;
+            let cancel = AtomicBool::new(false);
+            let timeouts = DownloadTimeouts {
+                header: Duration::from_millis(400),
+                idle: Duration::from_secs(60),
+            };
+
+            let started = Instant::now();
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                download_to_with(
+                    &client(),
+                    &url,
+                    &dest,
+                    1 << 20,
+                    |_, _| {},
+                    &cancel,
+                    timeouts,
+                ),
+            )
+            .await
+            .expect("等响应头没有时限");
+            server.abort();
+
+            match result {
+                Err(DownloadError::Failed(reason)) => {
+                    assert!(reason.contains("没有收到服务器的响应"), "{reason}")
+                }
+                other => panic!("应该是等响应头超时：{other:?}"),
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "{:?}",
+                started.elapsed()
+            );
+            assert!(!dest.exists());
+        }
+
+        #[tokio::test]
+        async fn a_body_that_goes_idle_times_out_and_removes_the_partial_file() {
+            let dir = crate::test_util::TestDir::new("download idle timeout");
+            let dest = dir.join("asset.bin");
+            let (url, server) = serve(Script::StallAfterFirstChunk).await;
+            let cancel = AtomicBool::new(false);
+            let timeouts = DownloadTimeouts {
+                header: Duration::from_secs(60),
+                idle: Duration::from_millis(500),
+            };
+
+            let started = Instant::now();
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                download_to_with(
+                    &client(),
+                    &url,
+                    &dest,
+                    1 << 20,
+                    |_, _| {},
+                    &cancel,
+                    timeouts,
+                ),
+            )
+            .await
+            .expect("响应体空闲没有时限");
+            server.abort();
+
+            match result {
+                Err(DownloadError::Failed(reason)) => {
+                    assert!(reason.contains("没有收到新的数据"), "{reason}")
+                }
+                other => panic!("应该是空闲超时：{other:?}"),
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "{:?}",
+                started.elapsed()
+            );
+            assert!(!dest.exists(), "空闲超时后半截文件要删掉");
+        }
+
+        /// 正常下载不受影响：内容完整、大小和摘要校验照常通过。
+        #[tokio::test]
+        async fn a_normal_download_still_completes_and_verifies() {
+            use sha2::{Digest, Sha256};
+
+            let dir = crate::test_util::TestDir::new("download normal");
+            let dest = dir.join("asset.bin");
+            let (url, server) = serve(Script::Complete).await;
+            let cancel = AtomicBool::new(false);
+
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                download_to(&client(), &url, &dest, 1 << 20, |_, _| {}, &cancel),
+            )
+            .await
+            .expect("正常下载不该超时");
+            server.abort();
+            result.expect("下载成功");
+
+            let expected: String = Sha256::digest(vec![b'a'; BODY_LEN])
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            verify_download(&dest, BODY_LEN as u64, &expected).expect("摘要核对通过");
+        }
     }
 }
