@@ -234,11 +234,19 @@ pub fn append_missing(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // 文件末尾没有换行（最后一行是别的程序写的注释或记录，没带行尾）时先补一个，否则新记录会
+    // 被拼进上一行：返回 added=1，重新解析却一条也没有。补 `\n`：本函数写的行尾一直是 `\n`
+    // （见 `line_for`）；CRLF 文件本来就以 `\n` 结尾，不会走到这里，末尾裸 `\r` 补 `\n` 也正好成 CRLF。
+    let mut chunk = String::with_capacity(lines.len() + 1);
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        chunk.push('\n');
+    }
+    chunk.push_str(&lines);
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)?;
-    file.write_all(lines.as_bytes())?;
+    file.write_all(chunk.as_bytes())?;
     file.flush()?;
     Ok(AppendOutcome {
         added: appended,
@@ -365,6 +373,121 @@ web-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIaaa
     }
 
     const KEY: &str = "AAAAC3NzaC1lZDI1NTE5AAAAInew";
+
+    /// 往 `initial` 内容的文件里追加一条新记录，返回（追加条数，重新解析出的全部 key，文件原文）。
+    fn append_one_to(tag: &str, initial: &[u8]) -> (usize, BTreeSet<String>, String) {
+        let dir = crate::test_util::TestDir::new(tag);
+        let path = dir.join("known_hosts");
+        std::fs::write(&path, initial).expect("写样本");
+        let added = append_missing(
+            &path,
+            &[record("new.example.internal", 22, "ssh-ed25519", KEY)],
+        )
+        .expect("追加")
+        .added;
+        let content = String::from_utf8(std::fs::read(&path).expect("读回")).expect("UTF-8");
+        let keys = collect(&content, "local", 0)
+            .into_iter()
+            .map(|record| record.key())
+            .collect();
+        (added, keys, content)
+    }
+
+    fn key_of(host: &str) -> String {
+        known_host_key(host, 22, "ssh-ed25519")
+    }
+
+    #[test]
+    fn a_last_line_without_a_newline_does_not_swallow_the_new_record() {
+        let (added, keys, content) = append_one_to(
+            "kh-nonl-key",
+            b"web-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIaaa",
+        );
+        assert_eq!(added, 1);
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                key_of("web-1.example.internal"),
+                key_of("new.example.internal")
+            ]),
+            "{content:?}"
+        );
+        // 补的是一个换行，不是空行。
+        assert!(!content.contains("\n\n"), "{content:?}");
+    }
+
+    #[test]
+    fn a_trailing_comment_without_a_newline_is_kept_and_the_record_starts_a_new_line() {
+        let (added, keys, content) = append_one_to(
+            "kh-nonl-comment",
+            b"web-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIaaa\n# managed elsewhere",
+        );
+        assert_eq!(added, 1);
+        assert!(content.contains("\n# managed elsewhere\n"), "{content:?}");
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                key_of("web-1.example.internal"),
+                key_of("new.example.internal")
+            ])
+        );
+    }
+
+    #[test]
+    fn crlf_files_get_no_extra_blank_line_and_unterminated_crlf_files_get_a_newline() {
+        // 本来就以 CRLF 结尾：不补任何东西，新行紧跟在后面。
+        let (added, keys, content) = append_one_to(
+            "kh-crlf",
+            b"# c\r\nweb-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIaaa\r\n",
+        );
+        assert_eq!(added, 1);
+        assert!(
+            !content.contains("\n\n") && !content.contains("\r\n\r\n"),
+            "{content:?}"
+        );
+        assert!(
+            content.ends_with(&format!("ssh-ed25519 {KEY}\n")),
+            "{content:?}"
+        );
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                key_of("web-1.example.internal"),
+                key_of("new.example.internal")
+            ])
+        );
+
+        // CRLF 文件最后一行没有行尾：补一个换行再写。
+        let (added, keys, _) = append_one_to(
+            "kh-crlf-unterminated",
+            b"# c\r\nweb-1.example.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIaaa",
+        );
+        assert_eq!(added, 1);
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                key_of("web-1.example.internal"),
+                key_of("new.example.internal")
+            ])
+        );
+
+        // 末尾只有一个 `\r`：补 `\n` 正好是 CRLF，不多出空行。
+        let (added, keys, content) = append_one_to("kh-lone-cr", b"# c\r");
+        assert_eq!(added, 1);
+        assert!(
+            content.starts_with("# c\r\nnew.example.internal"),
+            "{content:?}"
+        );
+        assert_eq!(keys, BTreeSet::from([key_of("new.example.internal")]));
+    }
+
+    #[test]
+    fn an_empty_existing_file_gets_no_leading_blank_line() {
+        let (added, keys, content) = append_one_to("kh-empty", b"");
+        assert_eq!(added, 1);
+        assert!(content.starts_with("new.example.internal "), "{content:?}");
+        assert_eq!(keys, BTreeSet::from([key_of("new.example.internal")]));
+    }
 
     #[test]
     fn records_with_injected_fields_are_skipped_and_never_written() {
