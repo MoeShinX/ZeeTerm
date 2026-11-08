@@ -599,10 +599,7 @@ impl RecursiveDelete {
     {
         let mut count = 0u64;
         let mut stack = vec![self.enter_dir(channel, root, 0).await?];
-        loop {
-            let Some(frame) = stack.last_mut() else {
-                break;
-            };
+        while let Some(frame) = stack.last_mut() {
             let Some(entry) = frame.entries.next() else {
                 // 孩子都处理完了：删目录自己。
                 if self.is_cancelled() {
