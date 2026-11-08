@@ -61,6 +61,14 @@ impl EditBackend for FsBackend {
         })
     }
 
+    fn create_new<'a>(
+        &'a self,
+        path: &'a str,
+        data: &'a [u8],
+    ) -> BoxFuture<'a, Result<(), CreateNewError>> {
+        Box::pin(async move { create_new_via_fs(self.0.as_ref(), path, data, "t0").await })
+    }
+
     fn overwrite<'a>(
         &'a self,
         path: &'a str,
@@ -957,6 +965,76 @@ async fn recreating_a_deleted_remote_does_not_overwrite_a_file_that_appeared_mea
         "{err:?}"
     );
     assert_eq!(fx.fs.get(REMOTE).unwrap(), THEIRS);
+}
+
+/// W31：`create_new` 是"只新建"——成功时落下完整内容，目标已有东西绝不覆盖。
+#[tokio::test]
+async fn create_new_writes_a_missing_target_and_never_replaces_an_existing_one() {
+    let fx = fixture().await;
+    fx.backend.create_new(COPY, EDITED).await.unwrap();
+    assert_eq!(fx.fs.get(COPY).unwrap(), EDITED);
+    assert!(no_temp_left(&fx.fs));
+    // 目标已存在：报已存在，原内容不动。
+    let err = fx.backend.create_new(COPY, b"other").await.unwrap_err();
+    assert!(matches!(err, CreateNewError::AlreadyExists), "{err:?}");
+    assert_eq!(fx.fs.get(COPY).unwrap(), EDITED);
+    let err = fx.backend.create_new(REMOTE, b"other").await.unwrap_err();
+    assert!(matches!(err, CreateNewError::AlreadyExists), "{err:?}");
+    assert_eq!(fx.fs.get(REMOTE).unwrap(), ORIGINAL);
+}
+
+/// 检查之后、创建之前别的客户端建了同名文件：不覆盖它（旧的"先 stat 再 write_all"会盖掉）。
+#[tokio::test]
+async fn create_new_does_not_overwrite_a_file_created_just_before_the_claim() {
+    let fx = fixture().await;
+    *fx.fs.external_create_before_claim.lock().unwrap() = Some((COPY.to_owned(), THEIRS.to_vec()));
+    let err = fx.backend.create_new(COPY, EDITED).await.unwrap_err();
+    assert!(matches!(err, CreateNewError::AlreadyExists), "{err:?}");
+    assert_eq!(fx.fs.get(COPY).unwrap(), THEIRS);
+    assert!(no_temp_left(&fx.fs));
+}
+
+#[tokio::test]
+async fn create_new_on_a_server_without_exclusive_create_reports_unsupported() {
+    let fx = fixture().await;
+    *fx.fs.exclusive_unsupported.lock().unwrap() = true;
+    let err = fx.backend.create_new(COPY, EDITED).await.unwrap_err();
+    assert!(matches!(err, CreateNewError::Unsupported(_)), "{err:?}");
+    assert_eq!(fx.fs.get(COPY), None, "不退回覆盖写");
+    assert!(no_temp_left(&fx.fs));
+}
+
+/// 没覆盖 `create_new` 的简单替身不能假装有原子占位能力。
+#[tokio::test]
+async fn the_default_create_new_refuses_instead_of_pretending_to_be_atomic() {
+    let fx = fixture().await;
+    struct Plain(FsBackend);
+    impl EditBackend for Plain {
+        fn stat<'a>(
+            &'a self,
+            path: &'a str,
+        ) -> BoxFuture<'a, Result<(RemoteSnapshot, bool), SftpError>> {
+            self.0.stat(path)
+        }
+        fn read_all<'a>(
+            &'a self,
+            path: &'a str,
+            limit: u64,
+        ) -> BoxFuture<'a, Result<Vec<u8>, SftpError>> {
+            self.0.read_all(path, limit)
+        }
+        fn write_all<'a>(
+            &'a self,
+            path: &'a str,
+            data: &'a [u8],
+        ) -> BoxFuture<'a, Result<(), SftpError>> {
+            self.0.write_all(path, data)
+        }
+    }
+    let plain = Plain(FsBackend(Arc::clone(&fx.fs)));
+    let err = plain.create_new(COPY, EDITED).await.unwrap_err();
+    assert!(matches!(err, CreateNewError::Unsupported(_)), "{err:?}");
+    assert_eq!(fx.fs.get(COPY), None);
 }
 
 #[tokio::test]

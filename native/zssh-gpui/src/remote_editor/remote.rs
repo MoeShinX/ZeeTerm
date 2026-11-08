@@ -17,7 +17,8 @@ use std::time::Duration;
 use zssh_core::sftp::SftpChannel;
 use zssh_core::sftp::SftpError;
 use zssh_core::sftp::edit::{
-    EditBackend, OverwriteError, OwnerMode, sibling_remote_path, validate_remote_name,
+    CreateNewError, EditBackend, OverwriteError, OwnerMode, sibling_remote_path,
+    validate_remote_name,
 };
 use zssh_core::sftp::path::{is_absolute, join, normalize, parent};
 
@@ -43,10 +44,10 @@ enum RemoteMsg {
     SaveFailedPrefix,
     ReadRemoteFailedPrefix,
     ExistsSuffix,
-    CheckFailedPrefix,
     SaveAsFailedPrefix,
     SaveAsExists,
     SaveAsEmpty,
+    SaveAsNoExclusive,
     ByteSuffix,
 }
 
@@ -65,10 +66,12 @@ impl crate::i18n::Msg for RemoteMsg {
             Self::SaveFailedPrefix => "保存失败：",
             Self::ReadRemoteFailedPrefix => "保存失败：读取远端当前内容失败：",
             Self::ExistsSuffix => " 已经存在，换个名字",
-            Self::CheckFailedPrefix => "检查目标失败：",
             Self::SaveAsFailedPrefix => "另存为失败：",
             Self::SaveAsExists => "目标已存在，另存为不会覆盖",
             Self::SaveAsEmpty => "另存为路径不能为空",
+            Self::SaveAsNoExclusive => {
+                "另存为失败：服务器不支持原子地新建文件，无法保证不覆盖同名文件，已取消"
+            }
             Self::ByteSuffix => " 字节",
         }
     }
@@ -89,10 +92,12 @@ impl crate::i18n::Msg for RemoteMsg {
                 "Save failed: could not read the current remote content: "
             }
             Self::ExistsSuffix => " already exists — choose another name",
-            Self::CheckFailedPrefix => "Could not check the target: ",
             Self::SaveAsFailedPrefix => "Save as failed: ",
             Self::SaveAsExists => "The target already exists; Save as does not overwrite",
             Self::SaveAsEmpty => "The save-as path cannot be empty",
+            Self::SaveAsNoExclusive => {
+                "Save as failed: the server cannot create files exclusively, so an existing file of the same name could be overwritten; cancelled"
+            }
             Self::ByteSuffix => "bytes",
         }
     }
@@ -262,7 +267,7 @@ pub(super) async fn load_remote(channel: &SftpChannel, path: &str) -> Result<Loa
     Ok(Loaded { opened, stamp })
 }
 
-/// 读远端标记：`stat` 跟随链接；悬空链接再 `lstat` 一次（和 `target_exists` 一致）。
+/// 读远端标记：`stat` 跟随链接；悬空链接再 `lstat` 一次。
 pub(super) async fn read_stamp(
     channel: &SftpChannel,
     path: &str,
@@ -361,6 +366,32 @@ async fn write_gate<B: EditBackend + ?Sized>(
     gate.lock_owned().await
 }
 
+/// 写入口统一的大小检查：编码后的字节超过 [`MAX_BYTES`] 就拒绝，调用方在碰远端之前先过这一关
+/// （普通保存、冲突另存为、另存为副本共用同一段文案）。
+fn check_save_size(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() <= MAX_BYTES {
+        return Ok(());
+    }
+    Err(format!(
+        "{}{}{}{}{}",
+        crate::i18n::t(RemoteMsg::TooLargePrefix),
+        crate::i18n::count(
+            bytes.len() as u64,
+            crate::i18n::t(RemoteMsg::ByteSuffix),
+            "byte",
+            "bytes"
+        ),
+        crate::i18n::t(RemoteMsg::TooLargeMid),
+        crate::i18n::count(
+            MAX_BYTES as u64,
+            crate::i18n::t(RemoteMsg::ByteSuffix),
+            "byte",
+            "bytes"
+        ),
+        crate::i18n::t(RemoteMsg::TooLargeSuffix)
+    ))
+}
+
 /// 保存：重读当前内容 → 比版本 → 一致才交给核心的 [`EditBackend::overwrite`]。
 ///
 /// `expected` 为 `None` 是用户在冲突提示里选了「覆盖远端」：不比版本，直接写（远端被删了也照写，等于重建）。
@@ -373,25 +404,8 @@ pub(super) async fn save_remote<B: EditBackend + ?Sized>(
     expected: Option<RemoteVersion>,
     owner: OwnerMode,
 ) -> SaveOutcome {
-    if bytes.len() > MAX_BYTES {
-        return SaveOutcome::Failed(format!(
-            "{}{}{}{}{}",
-            crate::i18n::t(RemoteMsg::TooLargePrefix),
-            crate::i18n::count(
-                bytes.len() as u64,
-                crate::i18n::t(RemoteMsg::ByteSuffix),
-                "byte",
-                "bytes"
-            ),
-            crate::i18n::t(RemoteMsg::TooLargeMid),
-            crate::i18n::count(
-                MAX_BYTES as u64,
-                crate::i18n::t(RemoteMsg::ByteSuffix),
-                "byte",
-                "bytes"
-            ),
-            crate::i18n::t(RemoteMsg::TooLargeSuffix)
-        ));
+    if let Err(message) = check_save_size(bytes) {
+        return SaveOutcome::Failed(message);
     }
     let _gate = write_gate(backend, path).await;
     if let Some(expected) = expected {
@@ -489,8 +503,40 @@ pub(super) async fn save_event(
 // 冲突处理
 // ---------------------------------------------------------------------------
 
+/// 「只新建」写入的失败，还没转成各入口自己的说法。
+enum NewFileFailure {
+    /// 编码后超过上限：一个字节都没写，远端文件也没创建。
+    TooLarge(String),
+    /// 目标已经有东西了（含别人在我们动手前一刻抢先建的），没有覆盖。
+    Exists,
+    /// 服务器不遵守独占创建，没法保证不覆盖：没写，也不退回覆盖写。
+    NoExclusive,
+    Failed(String),
+}
+
+/// 另存为类写入的唯一出口：先过大小检查，再用 [`EditBackend::create_new`] 原子地新建。
+///
+/// 不再「先 `stat` 目标存在就拒绝、再 `write_all`」：两步之间别人建了同名文件会被盖掉。
+/// 存在性判断由服务器在创建那一刻做（`CREATE | EXCLUDE`）。
+async fn create_new_file<B: EditBackend + ?Sized>(
+    backend: &B,
+    path: &str,
+    bytes: &[u8],
+) -> Result<(), NewFileFailure> {
+    check_save_size(bytes).map_err(NewFileFailure::TooLarge)?;
+    match backend.create_new(path, bytes).await {
+        Ok(()) => Ok(()),
+        Err(CreateNewError::AlreadyExists) => Err(NewFileFailure::Exists),
+        Err(CreateNewError::Unsupported(_)) => Err(NewFileFailure::NoExclusive),
+        Err(CreateNewError::Failed(err)) => Err(NewFileFailure::Failed(format!(
+            "{}{err}",
+            crate::i18n::t(RemoteMsg::SaveAsFailedPrefix)
+        ))),
+    }
+}
+
 /// 冲突提示里的「另存为」：同目录下用新名字存一份，之后这个编辑器改跟踪新文件。
-/// 返回新文件的完整路径；目标已存在就拒绝（绝不覆盖别人的文件）。
+/// 返回新文件的完整路径；目标已存在就拒绝（绝不覆盖别人的文件，包括我们动手前一刻才冒出来的）。
 pub(super) async fn save_beside<B: EditBackend + ?Sized>(
     backend: &B,
     original: &str,
@@ -500,77 +546,38 @@ pub(super) async fn save_beside<B: EditBackend + ?Sized>(
     validate_remote_name(name).map_err(|reason| crate::error_text::reason_text(&reason))?;
     let target = sibling_remote_path(original, name.trim());
     let _gate = write_gate(backend, &target).await;
-    match backend.stat(&target).await {
-        Ok(_) => {
-            return Err(format!(
-                "{target}{}",
-                crate::i18n::t(RemoteMsg::ExistsSuffix)
-            ));
+    match create_new_file(backend, &target, bytes).await {
+        Ok(()) => Ok(target),
+        Err(NewFileFailure::Exists) => Err(format!(
+            "{target}{}",
+            crate::i18n::t(RemoteMsg::ExistsSuffix)
+        )),
+        Err(NewFileFailure::NoExclusive) => {
+            Err(crate::i18n::t(RemoteMsg::SaveAsNoExclusive).to_owned())
         }
-        Err(SftpError::NotFound { .. }) => {}
-        Err(err) => {
-            return Err(format!(
-                "{}{err}",
-                crate::i18n::t(RemoteMsg::CheckFailedPrefix)
-            ));
-        }
+        Err(NewFileFailure::TooLarge(message) | NewFileFailure::Failed(message)) => Err(message),
     }
-    backend
-        .write_all(&target, bytes)
-        .await
-        .map_err(|err| format!("{}{err}", crate::i18n::t(RemoteMsg::SaveAsFailedPrefix)))?;
-    Ok(target)
 }
 
-/// 另存为（副本）：先确认目标不存在，再用核心的「临时文件 + 改名」新建；不改当前文件和版本。
-pub(super) async fn save_as_remote(
-    channel: &SftpChannel,
+/// 另存为（副本）：用核心的「独占占位 + 临时文件 + 改名」只新建；不改当前文件和版本。
+pub(super) async fn save_as_remote<B: EditBackend + ?Sized>(
+    backend: &B,
     path: &str,
     bytes: &[u8],
 ) -> RemoteEditEvent {
-    match target_exists(channel, path).await {
-        Ok(true) => {
-            return RemoteEditEvent::SaveAsFailed(
-                crate::i18n::t(RemoteMsg::SaveAsExists).to_owned(),
-            );
-        }
-        Ok(false) => {}
-        Err(message) => {
-            return RemoteEditEvent::SaveAsFailed(format!(
-                "{}{message}",
-                crate::i18n::t(RemoteMsg::SaveAsFailedPrefix)
-            ));
-        }
-    }
-    // 目标原来不存在：核心在改名前会再确认一次它没有被别人刚刚建出来，建出来了就放弃。
-    match channel.write_all(path, bytes).await {
+    match create_new_file(backend, path, bytes).await {
         Ok(()) => RemoteEditEvent::SavedAs {
             path: path.to_owned(),
         },
-        Err(err) => RemoteEditEvent::SaveAsFailed(format!(
-            "{}{err}",
-            crate::i18n::t(RemoteMsg::SaveAsFailedPrefix)
-        )),
-    }
-}
-
-/// 目标名字是不是已经被占用：`stat` 跟随链接，悬空链接再由 `lstat` 兜底。
-async fn target_exists(channel: &SftpChannel, path: &str) -> Result<bool, String> {
-    match channel.stat(path).await {
-        Ok(_) => Ok(true),
-        // 悬空符号链接：`stat` 跟随之后报不存在，但名字本身已经被占了。
-        Err(SftpError::NotFound { .. }) => match channel.lstat(path).await {
-            Ok(_) => Ok(true),
-            Err(SftpError::NotFound { .. }) => Ok(false),
-            Err(err) => Err(format!(
-                "{}{err}",
-                crate::i18n::t(RemoteMsg::CheckFailedPrefix)
-            )),
-        },
-        Err(err) => Err(format!(
-            "{}{err}",
-            crate::i18n::t(RemoteMsg::CheckFailedPrefix)
-        )),
+        Err(NewFileFailure::Exists) => {
+            RemoteEditEvent::SaveAsFailed(crate::i18n::t(RemoteMsg::SaveAsExists).to_owned())
+        }
+        Err(NewFileFailure::NoExclusive) => {
+            RemoteEditEvent::SaveAsFailed(crate::i18n::t(RemoteMsg::SaveAsNoExclusive).to_owned())
+        }
+        Err(NewFileFailure::TooLarge(message) | NewFileFailure::Failed(message)) => {
+            RemoteEditEvent::SaveAsFailed(message)
+        }
     }
 }
 
@@ -670,7 +677,8 @@ pub(super) mod testing {
     use zssh_core::ai::files::{FsEntry, FsKind, FsStat, RemoteFs, RenameFailure};
     use zssh_core::sftp::SftpError;
     use zssh_core::sftp::edit::{
-        EditBackend, OverwriteError, OverwriteReport, OwnerMode, RemoteSnapshot,
+        CreateNewError, EditBackend, OverwriteError, OverwriteReport, OwnerMode, RemoteSnapshot,
+        create_new_via_fs,
     };
     use zssh_core::sftp::error::ReplaceState;
     use zssh_core::ssh::BoxFuture;
@@ -686,6 +694,11 @@ pub(super) mod testing {
         pub(in crate::remote_editor) deny_owner: Mutex<bool>,
         /// 文件的属主 uid（没记的算 1000）。`deny_owner` 打开时，新写出的文件属主是 0（登录用户自己）。
         pub(in crate::remote_editor) uids: Mutex<HashMap<String, u32>>,
+        /// 模拟「检查之后、创建之前别人建了同名文件」：下一次独占创建之前，先把这个路径写成这份内容。
+        /// 只触发一次。
+        pub(in crate::remote_editor) racer: Mutex<Option<(String, Vec<u8>)>>,
+        /// 模拟不认独占创建标志的服务器：`create_exclusive` 报不支持。
+        pub(in crate::remote_editor) no_exclusive: Mutex<bool>,
     }
 
     impl MemFs {
@@ -820,6 +833,15 @@ pub(super) mod testing {
             path: &'a str,
         ) -> BoxFuture<'a, Result<(), zssh_core::ai::files::CreateExclusiveError>> {
             Box::pin(async move {
+                if *self.no_exclusive.lock().expect("锁") {
+                    return Err(zssh_core::ai::files::CreateExclusiveError::Unsupported(
+                        "测试：不认独占标志".to_owned(),
+                    ));
+                }
+                let intruder = self.racer.lock().expect("锁").take();
+                if let Some((victim, content)) = intruder {
+                    self.put(&victim, &content);
+                }
                 let mut files = self.files.lock().expect("锁");
                 if files.contains_key(path) {
                     return Err(zssh_core::ai::files::CreateExclusiveError::AlreadyExists);
@@ -901,6 +923,13 @@ pub(super) mod testing {
                 Ok(())
             })
         }
+        fn create_new<'a>(
+            &'a self,
+            path: &'a str,
+            data: &'a [u8],
+        ) -> BoxFuture<'a, Result<(), CreateNewError>> {
+            Box::pin(async move { create_new_via_fs(&self.0, path, data, "abc123def456").await })
+        }
         fn overwrite<'a>(
             &'a self,
             path: &'a str,
@@ -931,7 +960,8 @@ pub(super) mod testing {
 mod tests {
     use super::testing::{MemBackend, MemFs, block_on};
     use super::*;
-    use zssh_core::sftp::edit::OwnerMode;
+    use zssh_core::sftp::edit::{OwnerMode, RemoteSnapshot};
+    use zssh_core::ssh::BoxFuture;
 
     fn stamp(size: u64, mtime: u32) -> RemoteStamp {
         RemoteStamp {
@@ -1391,6 +1421,116 @@ mod tests {
         // 名字不合法：不带路径、不能为空。
         assert!(block_on(save_beside(&backend, "/srv/app/a.txt", "x/y", b"")).is_err());
         assert!(block_on(save_beside(&backend, "/srv/app/a.txt", "  ", b"")).is_err());
+    }
+
+    /// W31：冲突另存为和普通保存一样先查大小，超限一个文件都不创建。
+    #[test]
+    fn save_beside_refuses_oversized_content_without_creating_anything() {
+        let backend = MemBackend(MemFs::with("/srv/app/a.txt", b"mine"));
+        let big = vec![b'x'; MAX_BYTES + 1];
+        let message =
+            block_on(save_beside(&backend, "/srv/app/a.txt", "big.txt", &big)).expect_err("超限");
+        assert_eq!(message, check_save_size(&big).expect_err("同一段文案"));
+        assert_eq!(backend.0.names(), vec!["/srv/app/a.txt".to_owned()]);
+        assert!(backend.0.ops.lock().expect("锁").is_empty(), "没碰远端");
+        // 正好等于上限可以存。
+        let exact = vec![b'y'; MAX_BYTES];
+        let made =
+            block_on(save_beside(&backend, "/srv/app/a.txt", "ok.txt", &exact)).expect("上限内");
+        assert_eq!(made, "/srv/app/ok.txt");
+    }
+
+    /// W31：检查之后、创建之前别人建了同名文件，不能被盖掉（旧实现先 stat 再 write_all 会盖）。
+    #[test]
+    fn save_beside_does_not_overwrite_a_file_created_just_before_the_write() {
+        let backend = MemBackend(MemFs::with("/srv/app/a.txt", b"mine"));
+        *backend.0.racer.lock().expect("锁") =
+            Some(("/srv/app/b.txt".to_owned(), b"someone else".to_vec()));
+        let refused = block_on(save_beside(&backend, "/srv/app/a.txt", "b.txt", b"new"))
+            .expect_err("被抢先建了");
+        assert!(refused.contains("已经存在"), "{refused}");
+        assert_eq!(
+            backend.0.get("/srv/app/b.txt").as_deref(),
+            Some(&b"someone else"[..])
+        );
+        // 没留下临时文件 / 占位。
+        assert_eq!(
+            backend.0.names(),
+            vec!["/srv/app/a.txt".to_owned(), "/srv/app/b.txt".to_owned()]
+        );
+    }
+
+    #[test]
+    fn save_beside_reports_a_server_without_exclusive_create_and_does_not_fall_back() {
+        let backend = MemBackend(MemFs::with("/srv/app/a.txt", b"mine"));
+        *backend.0.no_exclusive.lock().expect("锁") = true;
+        let message = block_on(save_beside(&backend, "/srv/app/a.txt", "b.txt", b"new"))
+            .expect_err("不支持独占创建");
+        assert_eq!(message, crate::i18n::t(RemoteMsg::SaveAsNoExclusive));
+        assert_eq!(backend.0.get("/srv/app/b.txt"), None, "不退回覆盖写");
+    }
+
+    /// 没有原子新建能力的简单替身（只有 `write_all`）不能被当成能安全另存为。
+    #[test]
+    fn save_beside_refuses_a_backend_that_cannot_create_atomically() {
+        struct WriteAllOnly(MemBackend);
+        impl EditBackend for WriteAllOnly {
+            fn stat<'a>(
+                &'a self,
+                path: &'a str,
+            ) -> BoxFuture<'a, Result<(RemoteSnapshot, bool), SftpError>> {
+                self.0.stat(path)
+            }
+            fn read_all<'a>(
+                &'a self,
+                path: &'a str,
+                limit: u64,
+            ) -> BoxFuture<'a, Result<Vec<u8>, SftpError>> {
+                self.0.read_all(path, limit)
+            }
+            fn write_all<'a>(
+                &'a self,
+                path: &'a str,
+                data: &'a [u8],
+            ) -> BoxFuture<'a, Result<(), SftpError>> {
+                self.0.write_all(path, data)
+            }
+        }
+        let backend = WriteAllOnly(MemBackend(MemFs::with("/srv/app/a.txt", b"mine")));
+        assert!(block_on(save_beside(&backend, "/srv/app/a.txt", "b.txt", b"new")).is_err());
+        assert_eq!(backend.0.0.get("/srv/app/b.txt"), None);
+    }
+
+    /// 另存为副本走同一个只新建出口：超限不创建、被抢先建不覆盖、正常成功。
+    #[test]
+    fn save_as_copy_checks_size_never_overwrites_and_creates_when_free() {
+        let backend = MemBackend(MemFs::with("/srv/app/a.txt", b"mine"));
+        let big = vec![b'x'; MAX_BYTES + 1];
+        let event = block_on(save_as_remote(&backend, "/srv/app/copy.txt", &big));
+        assert!(
+            matches!(&event, RemoteEditEvent::SaveAsFailed(m) if *m == check_save_size(&big).expect_err("超限")),
+        );
+        assert_eq!(backend.0.get("/srv/app/copy.txt"), None);
+
+        *backend.0.racer.lock().expect("锁") =
+            Some(("/srv/app/copy.txt".to_owned(), b"theirs".to_vec()));
+        let event = block_on(save_as_remote(&backend, "/srv/app/copy.txt", b"new"));
+        assert!(
+            matches!(&event, RemoteEditEvent::SaveAsFailed(m) if m == crate::i18n::t(RemoteMsg::SaveAsExists)),
+        );
+        assert_eq!(
+            backend.0.get("/srv/app/copy.txt").as_deref(),
+            Some(&b"theirs"[..])
+        );
+
+        let event = block_on(save_as_remote(&backend, "/srv/app/fresh.txt", b"new"));
+        assert!(
+            matches!(&event, RemoteEditEvent::SavedAs { path } if path == "/srv/app/fresh.txt"),
+        );
+        assert_eq!(
+            backend.0.get("/srv/app/fresh.txt").as_deref(),
+            Some(&b"new"[..])
+        );
     }
 
     #[test]

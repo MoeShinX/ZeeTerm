@@ -65,6 +65,24 @@ pub trait EditBackend: Send + Sync {
         })
     }
 
+    /// **只新建**：目标路径上没有任何东西时才写入，已经有了（含悬空链接、目录）就报
+    /// [`CreateNewError::AlreadyExists`]，绝不覆盖。判断和创建必须是原子的，不能先 `stat` 再写。
+    ///
+    /// 默认实现一律拒绝（[`CreateNewError::Unsupported`]）：只有 `write_all` 的简单替身没有原子占位
+    /// 能力，不能假装有；真实实现和需要这条语义的测试替身自己覆盖。
+    fn create_new<'a>(
+        &'a self,
+        path: &'a str,
+        data: &'a [u8],
+    ) -> BoxFuture<'a, Result<(), CreateNewError>> {
+        let _ = (path, data);
+        Box::pin(async {
+            Err(CreateNewError::Unsupported(
+                "这个远端不支持原子地新建文件".to_owned(),
+            ))
+        })
+    }
+
     /// 这台服务器的身份（用户名@主机:端口）。远端写的进程级锁按它 + 路径做键；
     /// 单测替身可以不实现（不加锁，和以前一样）。
     fn server_identity(&self) -> Option<String> {
@@ -87,6 +105,16 @@ pub trait EditBackend: Send + Sync {
     ) -> BoxFuture<'a, Result<(), SftpError>> {
         self.write_all(path, data)
     }
+}
+
+/// [`EditBackend::create_new`] 的失败。
+#[derive(Debug)]
+pub enum CreateNewError {
+    /// 路径上已经有东西了（文件、目录、悬空链接都算），什么都没写。
+    AlreadyExists,
+    /// 服务器不遵守独占创建，没法保证不覆盖别人同时新建的文件，什么都没写。字符串是给人看的说明。
+    Unsupported(String),
+    Failed(SftpError),
 }
 
 /// 覆盖已有远端文件时，属主怎么处理。
@@ -168,6 +196,23 @@ impl EditBackend for SftpChannel {
                     .with("to", &change.to),
                 ),
             })
+        })
+    }
+
+    fn create_new<'a>(
+        &'a self,
+        path: &'a str,
+        data: &'a [u8],
+    ) -> BoxFuture<'a, Result<(), CreateNewError>> {
+        Box::pin(async move {
+            let remote = crate::ai::files::SftpRemoteFs::borrowed(self);
+            create_new_via_fs(
+                &remote,
+                path,
+                data,
+                &uuid::Uuid::new_v4().simple().to_string()[..12],
+            )
+            .await
         })
     }
 
@@ -269,12 +314,52 @@ pub async fn upload_via_fs(
         .await
     {
         Ok(owner_change) => Ok(OverwriteReport { owner_change }),
-        Err(crate::ai::files::ReplaceError::Failed(message)) => {
-            Err(OverwriteError::Failed(SftpError::Remote(message)))
-        }
+        Err(
+            crate::ai::files::ReplaceError::Failed(message)
+            | crate::ai::files::ReplaceError::AlreadyExists(message)
+            | crate::ai::files::ReplaceError::ExclusiveUnsupported(message),
+        ) => Err(OverwriteError::Failed(SftpError::Remote(message))),
         Err(crate::ai::files::ReplaceError::OwnerWouldChange(change)) => {
             Err(OverwriteError::OwnerWouldChange(change))
         }
+    }
+}
+
+/// 只新建：把 `data` 写成一个**原来不存在**的远端文件，已经有东西就不动它。
+///
+/// 走和 AI 写新文件、编辑器保存新文件同一条路：先用独占创建（`CREATE | EXCLUDE`）把路径占成
+/// 空文件，再写同目录的临时文件、核对大小、改名到自己的占位上。判断"不存在"和创建是服务器上
+/// 的同一个动作，不是先 `stat` 再写——两步之间别人新建了同名文件不会被覆盖。服务器不遵守
+/// 独占标志时报 [`CreateNewError::Unsupported`]，不退回覆盖写。
+///
+/// 不解析符号链接：路径上已经有链接（含悬空的）就是"已存在"。
+pub async fn create_new_via_fs(
+    fs: &dyn crate::ai::files::RemoteFs,
+    path: &str,
+    data: &[u8],
+    random_hex: &str,
+) -> Result<(), CreateNewError> {
+    use crate::ai::files::{OwnerPolicy, ReplaceBase, ReplaceError};
+    match crate::ai::files::replace_via_temp_with(
+        fs,
+        path,
+        data,
+        &ReplaceBase::default(),
+        random_hex,
+        OwnerPolicy::Allow,
+    )
+    .await
+    {
+        Ok(_) => Ok(()),
+        Err(ReplaceError::AlreadyExists(_)) => Err(CreateNewError::AlreadyExists),
+        Err(ReplaceError::ExclusiveUnsupported(why)) => Err(CreateNewError::Unsupported(why)),
+        Err(ReplaceError::Failed(message)) => {
+            Err(CreateNewError::Failed(SftpError::Remote(message)))
+        }
+        // 新建没有原文件，不会有属主要保持；万一走到就当失败说清楚。
+        Err(ReplaceError::OwnerWouldChange(change)) => Err(CreateNewError::Failed(
+            SftpError::Remote(format!("属主会从 {} 变成 {}", change.from, change.to)),
+        )),
     }
 }
 
@@ -337,6 +422,13 @@ impl<T: EditBackend + ?Sized> EditBackend for Arc<T> {
         mode: OwnerMode,
     ) -> BoxFuture<'a, Result<OverwriteReport, OverwriteError>> {
         (**self).overwrite(path, data, mode)
+    }
+    fn create_new<'a>(
+        &'a self,
+        path: &'a str,
+        data: &'a [u8],
+    ) -> BoxFuture<'a, Result<(), CreateNewError>> {
+        (**self).create_new(path, data)
     }
     fn server_identity(&self) -> Option<String> {
         (**self).server_identity()

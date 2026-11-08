@@ -1424,7 +1424,11 @@ pub async fn replace_via_temp(
 ) -> Result<Option<OwnerChange>, String> {
     match replace_via_temp_with(fs, target, bytes, base, random_hex, OwnerPolicy::Allow).await {
         Ok(change) => Ok(change),
-        Err(ReplaceError::Failed(message)) => Err(message),
+        Err(
+            ReplaceError::Failed(message)
+            | ReplaceError::AlreadyExists(message)
+            | ReplaceError::ExclusiveUnsupported(message),
+        ) => Err(message),
         // `Allow` 不会走到这里；万一走到就当失败说清楚。
         Err(ReplaceError::OwnerWouldChange(change)) => Err(format!(
             "保存后属主会从 {} 变成 {}：{}",
@@ -1449,6 +1453,11 @@ pub enum ReplaceError {
     Failed(String),
     /// 属主保持不了，**什么都没替换**（临时文件已清掉）。
     OwnerWouldChange(OwnerChange),
+    /// 新建模式：目标已经有东西（别人抢先建了），什么都没写。字符串是给人看的说明。
+    /// 单独成变体是为了让调用方不靠解析文案就能区分"已存在"。
+    AlreadyExists(String),
+    /// 新建模式：服务器不遵守独占创建，没法保证不覆盖，什么都没写。字符串是给人看的说明。
+    ExclusiveUnsupported(String),
 }
 
 impl From<String> for ReplaceError {
@@ -1521,13 +1530,14 @@ pub async fn replace_via_temp_checked(
         match fs.create_exclusive(target).await {
             Ok(()) => Some(target),
             Err(CreateExclusiveError::AlreadyExists) => {
-                return Err(format!("{target} 刚刚被创建了，已取消写入").into());
+                return Err(ReplaceError::AlreadyExists(format!(
+                    "{target} 刚刚被创建了，已取消写入"
+                )));
             }
             Err(CreateExclusiveError::Unsupported(why)) => {
-                return Err(format!(
+                return Err(ReplaceError::ExclusiveUnsupported(format!(
                     "服务器不支持原子地新建文件（{why}），无法保证不覆盖别人同时新建的 {target}，已取消写入"
-                )
-                .into());
+                )));
             }
             Err(CreateExclusiveError::Failed(err)) => {
                 return Err(format!("新建 {target} 失败，没有写入：{err}").into());
@@ -1801,7 +1811,9 @@ pub async fn execute_write_checked(
                 }
             }
             return Err(match err {
-                ReplaceError::Failed(message) => message,
+                ReplaceError::Failed(message)
+                | ReplaceError::AlreadyExists(message)
+                | ReplaceError::ExclusiveUnsupported(message) => message,
                 // `Allow` 不会走到这里；万一走到就当失败说清楚。
                 ReplaceError::OwnerWouldChange(change) => format!(
                     "保存后属主会从 {} 变成 {}：{}",
