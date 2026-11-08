@@ -617,6 +617,7 @@ fn assert_no_credentials(plaintext: &str, what: &str) {
         "sync_backup_targets",
         "sync_backup_token",
         "sync_auto",
+        "sync_enabled",
         "sync_backup_keep",
         "zeeterm_sync_accounts",
     ] {
@@ -633,6 +634,7 @@ async fn neither_the_sync_package_nor_the_cloud_backup_contains_any_credential()
     let m = Machine::new("no-creds", 1);
     let (od, s3, gist) = fully_configured(&m);
     m.db.setting_set("sync_backup_keep", "7").unwrap();
+    service::set_enabled(&m.db, false).unwrap();
     service::save_auto(
         &m.db,
         &service::AutoSettings {

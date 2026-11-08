@@ -129,6 +129,7 @@ pub(crate) enum SyncMsg {
     CreateDataDirFailedPrefix,
     // ---- 互斥 / 保护状态 ----
     SyncAlreadyRunning,
+    SyncDisabled,
     BusyRestoring,
     BusySyncing,
     BusyOtherRestore,
@@ -310,6 +311,7 @@ impl Msg for SyncMsg {
             Self::OpenDatabaseFailedPrefix => "打开数据库失败：",
             Self::CreateDataDirFailedPrefix => "创建数据目录失败：",
             Self::SyncAlreadyRunning => "已经有一个同步正在进行，请稍后再试",
+            Self::SyncDisabled => "同步已停用",
             Self::BusyRestoring => "正在恢复备份或导入离线包，结束后再同步",
             Self::BusySyncing => "同步正在进行，结束后再恢复或导入",
             Self::BusyOtherRestore => "另一个恢复或导入正在进行，请稍后再试",
@@ -503,6 +505,7 @@ impl Msg for SyncMsg {
             Self::OpenDatabaseFailedPrefix => "Could not open the database: ",
             Self::CreateDataDirFailedPrefix => "Could not create the data directory: ",
             Self::SyncAlreadyRunning => "A sync is already running, please try again later",
+            Self::SyncDisabled => "Sync is turned off",
             Self::BusyRestoring => "A restore or offline import is running; sync when it finishes",
             Self::BusySyncing => "A sync is running; restore or import when it finishes",
             Self::BusyOtherRestore => {
@@ -740,6 +743,9 @@ pub struct SyncDemo {
     master_password_confirm: Entity<InputState>,
     /// 这台电脑已经用主密码和云端对上过（核心的 `sync_ready`）。
     ready: bool,
+    /// 主同步的启用开关（核心的 `sync_enabled`，本机设置）。关掉后不自动同步、"立即同步"置灰，
+    /// 存储连接、登录、主密码、云端备份目标都原样留着。
+    enabled: bool,
     /// 同步基线读不出来：同步和自动同步都停，等用户重建。
     baseline_broken: bool,
     /// 「重建基线」的二次确认。
@@ -999,6 +1005,8 @@ impl SyncDemo {
             master_password: master_password_input,
             master_password_confirm: master_password_confirm_input,
             ready,
+            // 读不出来按"启用"：停用是用户明确点的，读坏了宁可继续同步，也别悄悄停摆。
+            enabled: load_enabled_at(&crate::settings::data_dir()).unwrap_or(true),
             baseline_broken,
             baseline_reset_armed: false,
             remember,
@@ -1150,6 +1158,36 @@ impl SyncDemo {
             },
             // 取消、失败和需要确认不改变本机是否保存；footer 也保留原来的内容。
             RememberAction::Keep => {}
+        }
+    }
+
+    /// 现在能不能同步。以本机保存的开关为准（别的窗口可能刚改过），读到的值顺手同步给界面。
+    /// 读不出来按"启用"，和 [`service::is_enabled`] 一致。
+    fn sync_allowed(&mut self) -> bool {
+        self.enabled = load_enabled_at(&crate::settings::data_dir()).unwrap_or(true);
+        self.enabled
+    }
+
+    /// 切换「启用同步」。关掉只改这一个开关，别的设置都留着；打开后立刻按正常流程同步一次
+    /// （和刚配好时一样走合并逻辑）。主密码没记住、输入框也是空的时，这次同步会像点「立即同步」
+    /// 一样提示要输入主密码。
+    fn toggle_enabled(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy() {
+            return;
+        }
+        let enabled = !self.enabled;
+        if let Err(message) = save_enabled_at(&crate::settings::data_dir(), enabled) {
+            self.sync_state.fail(message);
+            cx.notify();
+            return;
+        }
+        self.enabled = enabled;
+        self.sync_state.error = None;
+        // 底部状态条每 2 秒才读一次库，改了开关就马上补一次。
+        status::request_refresh();
+        cx.notify();
+        if enabled {
+            self.start_sync(window, cx);
         }
     }
 
@@ -1341,6 +1379,11 @@ impl SyncDemo {
         if self.testing || self.syncing || self.signing_in {
             return;
         }
+        if !self.sync_allowed() {
+            self.sync_state.fail(t(SyncMsg::SyncDisabled).to_owned());
+            cx.notify();
+            return;
+        }
         // 以本机保存的配置为准（可能有另一个窗口刚改过），不用界面里可能过期的副本。
         let saved = match load_saved_config(&crate::settings::data_dir()) {
             Ok(saved) => saved,
@@ -1451,6 +1494,12 @@ impl SyncDemo {
         decision: Option<DeletionDecision>,
         cx: &mut Context<Self>,
     ) {
+        // 所有手动同步（含防误删确认后的重放）都从这里过：停用时一律不碰云端。
+        if !self.sync_allowed() {
+            self.sync_state.fail(t(SyncMsg::SyncDisabled).to_owned());
+            cx.notify();
+            return;
+        }
         // 还在限流等待期内：不去碰服务（再试一次只会让限流更久），告诉用户还要等多久。
         // 没限流就是用户亲自点的：清掉"凭据被拒"的暂停再试一次，还是被拒会重新暂停。
         let limited = with_sync_guard(|guard| {
@@ -1557,6 +1606,8 @@ impl SyncDemo {
             Ok(()) => {
                 clear_sync_guard();
                 self.saved = None;
+                // 核心清除存储设置时把启用开关一起复位，界面跟着回到默认的"启用"。
+                self.enabled = true;
                 self.webdav_has_secret = false;
                 self.s3_has_secret = false;
                 self.github_has_secret = false;
@@ -1645,6 +1696,8 @@ impl SyncDemo {
             Ok(()) => {
                 clear_sync_guard();
                 self.saved = None;
+                // 退出登录同样清掉存储设置，启用开关跟着回到默认的"启用"。
+                self.enabled = true;
                 self.refresh_secret_ui(window, cx);
                 self.reset_onedrive_inputs(window, cx);
                 self.probe = None;
@@ -2509,6 +2562,10 @@ fn auto_tick_with(
     sealer: &dyn SecretSealer,
 ) -> Option<LastResult> {
     let db = open_existing_db_at(data_dir).ok()?;
+    // 同步停用时什么都不做，比下面"自动同步"的开关更靠前：这是总开关。
+    if !service::is_enabled(&db).ok()? {
+        return None;
+    }
     let settings = service::load_auto(&db).ok()?;
     let configured = service::load_config(&db, sealer).ok().flatten().is_some();
     // 读不出来的主密码（换了电脑、密文损坏）按「没记住」处理：不跑，也不猜。
@@ -3578,6 +3635,21 @@ fn load_auto_at(data_dir: &Path) -> Result<AutoSettings, String> {
     }
     let db = open_existing_db_at(data_dir)?;
     service::load_auto(&db).map_err(|err| crate::error_text::error_text(&err))
+}
+
+/// 读主同步的启用开关；库文件不存在就是默认的"启用"，不为了读它新建库。
+fn load_enabled_at(data_dir: &Path) -> Result<bool, String> {
+    if !data_dir.join("zssh.db").is_file() {
+        return Ok(true);
+    }
+    let db = open_existing_db_at(data_dir)?;
+    service::is_enabled(&db).map_err(|err| crate::error_text::error_text(&err))
+}
+
+/// 保存主同步的启用开关：显式操作，库不存在就建一个。
+fn save_enabled_at(data_dir: &Path, enabled: bool) -> Result<(), String> {
+    let db = open_db_at(data_dir)?;
+    service::set_enabled(&db, enabled).map_err(|err| crate::error_text::error_text(&err))
 }
 
 /// 保存自动同步设置（开关或间隔）：显式操作，库不存在就建一个。
@@ -5573,8 +5645,9 @@ mod protection_tests {
         AutoClock, AutoPause, ExclusiveKind, FailureKind, SyncGuardState, SyncInFlight,
         SyncOutcome, WebDavForm, auto_block_reason, auto_tick_with, baseline_broken_with,
         build_webdav, check_master_password_entry, classify_failure, deletion_lines,
-        exclusive_busy_message, load_ready_at, probe_connection_with, reset_baseline_at,
-        run_sync_with, save_probed_concurrency, with_auto_clock, with_sync_guard,
+        exclusive_busy_message, load_enabled_at, load_ready_at, probe_connection_with,
+        reset_baseline_at, run_sync_with, save_enabled_at, save_probed_concurrency,
+        with_auto_clock, with_sync_guard,
     };
 
     const PASSWORD: &str = "protection-test-password";
@@ -6131,8 +6204,14 @@ mod protection_tests {
         assert!(tick().is_none(), "没 ready 不能自动同步");
         assert_eq!(stub.requests(), 0);
 
-        // 门 2：基线损坏 → 不跑。
+        // 门 0：同步被停用 → 其余条件全放行也不跑，不碰服务器；重新打开后才跑（见最后的对照）。
         service::set_ready(&db, true).expect("标记已对上");
+        service::set_enabled(&db, false).expect("停用同步");
+        assert!(tick().is_none(), "停用同步后不能自动同步");
+        assert_eq!(stub.requests(), 0);
+        service::set_enabled(&db, true).expect("重新启用");
+
+        // 门 2：基线损坏 → 不跑。
         corrupt_baseline(&dir);
         assert!(baseline_broken_with(&db, &sealer, &dir));
         assert!(tick().is_none(), "基线损坏不能自动同步");
@@ -6171,6 +6250,37 @@ mod protection_tests {
 
     fn load_ready_at_with(db: &Database) -> bool {
         service::is_ready(db).unwrap_or(false)
+    }
+
+    #[test]
+    fn the_enabled_switch_is_stored_locally_and_keeps_the_rest_of_the_setup() {
+        let _serial = Serial::new();
+        let stub = DavStub::start();
+        let sealer = TestSealer(0x23);
+        let (dir, db) = configured_dir("enabled-switch", &stub, &sealer);
+
+        // 老用户升级后库里没有这一条：按启用。
+        assert!(load_enabled_at(&dir).expect("读取"));
+        save_enabled_at(&dir, false).expect("停用");
+        assert!(!load_enabled_at(&dir).expect("读取"));
+        // 存储连接、记住的主密码、自动同步设置都原样留着。
+        assert!(service::load_config(&db, &sealer).expect("读取").is_some());
+        assert!(
+            service::load_master_password(&db, &sealer)
+                .expect("读取")
+                .is_some()
+        );
+        assert!(service::load_auto(&db).expect("读取").enabled);
+
+        save_enabled_at(&dir, true).expect("启用");
+        assert!(load_enabled_at(&dir).expect("读取"));
+        // 库不存在时是默认的"启用"，而且不会为了读它新建库。
+        let empty = temp_dir("enabled-switch-empty");
+        assert!(load_enabled_at(&empty).expect("读取"));
+        assert!(!empty.join("zssh.db").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&empty);
     }
 
     #[test]

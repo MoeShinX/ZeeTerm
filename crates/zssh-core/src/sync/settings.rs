@@ -133,6 +133,8 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     ("sync_auto", SyncMode::LocalOnly),
     ("sync_last_result", SyncMode::LocalOnly),
     ("sync_ready", SyncMode::LocalOnly),
+    // 主同步的启用开关：这台电脑想不想同步，不能被另一台电脑关掉或打开
+    ("sync_enabled", SyncMode::LocalOnly),
     // OneDrive 的访问令牌 + 刷新令牌（DPAPI 加密）：绝不能进同步包 / 离线备份
     ("sync_onedrive_tokens", SyncMode::LocalOnly),
     // 云端备份目标列表（含各家存储的密码 / Secret / 令牌，整体 DPAPI 加密）：绝不能进同步包 / 云端备份。

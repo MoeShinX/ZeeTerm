@@ -90,6 +90,10 @@ impl SyncDemo {
             "clear" => self.clear(window, cx),
             "remember" => self.toggle_remember(cx),
             "auto" => self.toggle_auto(window, cx),
+            // 「启用同步」开关（关掉后不自动同步；重新打开会马上同步一次）。
+            "enabled" => self.toggle_enabled(window, cx),
+            // 让自动同步调度器立刻走一拍（不等 30 秒，间隔也当作已经到点），结果和真调度器一样推回界面。
+            "auto_tick" => self.dev_auto_tick()?,
             "understood" => self.toggle_understood(cx),
             "advanced" => self.toggle_onedrive_advanced(cx),
             "login" => self.start_onedrive_login(cx),
@@ -226,6 +230,12 @@ impl SyncDemo {
                 .map(|record| format!("{:?}", record.mode))
                 .unwrap_or_default(),
             "needs_confirm_password" => flag(self.needs_password_confirm()),
+            // 界面上的开关 / 本机库里存的开关 / 「立即同步」按钮是不是置灰了。
+            "enabled" => flag(self.enabled),
+            "enabled_saved" => flag(super::load_enabled_at(&crate::settings::data_dir())?),
+            "sync_now_disabled" => flag(self.sync_now_disabled()),
+            // 上次结果是不是自动同步跑的。
+            "last_auto" => flag(self.auto.last.as_ref().is_some_and(|last| last.auto)),
             "auto_enabled" => flag(self.auto.settings.enabled),
             "auto_interval" => self.auto.settings.interval_minutes.to_string(),
             "auto_error" => self.auto.error.clone().unwrap_or_default(),
@@ -305,6 +315,20 @@ impl SyncDemo {
 }
 
 impl SyncDemo {
+    /// 调度器的一拍：和真调度器同一个入口，只是把"现在"往后拨一天让间隔肯定到点。
+    fn dev_auto_tick(&self) -> Result<(), String> {
+        let runtime = crate::ssh_backend::runtime()?;
+        let handle = runtime.handle().clone();
+        drop(runtime.spawn_blocking(move || {
+            let data_dir = crate::settings::data_dir();
+            let later = super::now_secs() + 24 * 60 * 60;
+            if let Some(result) = super::auto_tick_at(&handle, &data_dir, later) {
+                super::broadcast_auto_result(result);
+            }
+        }));
+        Ok(())
+    }
+
     /// 把本机桩的地址和固定凭据填进云端备份的添加表单。
     fn dev_target_fill(
         &mut self,

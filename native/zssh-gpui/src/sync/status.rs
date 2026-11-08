@@ -25,6 +25,7 @@ use crate::i18n::{Msg, t};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SyncStatusMsg {
     Syncing,
+    Disabled,
     AutoPausedPrefix,
     PendingDeletionDefault,
     PendingDeletionSuffix,
@@ -50,6 +51,7 @@ impl Msg for SyncStatusMsg {
     fn zh(&self) -> &'static str {
         match *self {
             Self::Syncing => "同步中…",
+            Self::Disabled => "同步已停用",
             Self::AutoPausedPrefix => "自动同步已暂停：",
             Self::PendingDeletionDefault => "同步会删除很多记录",
             Self::PendingDeletionSuffix => "，等待你确认",
@@ -75,6 +77,7 @@ impl Msg for SyncStatusMsg {
     fn en(&self) -> &'static str {
         match *self {
             Self::Syncing => "Syncing…",
+            Self::Disabled => "Sync is turned off",
             Self::AutoPausedPrefix => "Auto sync paused: ",
             Self::PendingDeletionDefault => "The sync would delete many records",
             Self::PendingDeletionSuffix => ", waiting for your confirmation",
@@ -145,6 +148,8 @@ pub(super) struct BarInput {
     pub provider: Option<&'static str>,
     /// 同步正在跑（手动或自动）。
     pub running: bool,
+    /// 用户在设置里停用了同步（存储设置都还在）。
+    pub disabled: bool,
     /// 有停在防误删确认上的同步。
     pub pending: bool,
     pub baseline_broken: bool,
@@ -179,7 +184,7 @@ pub(crate) fn format_stamp(secs: i64) -> String {
     )
 }
 
-/// 状态条的文案和颜色；优先级同 0.2.14：没连存储就隐藏 → 同步中 → 待确认 → 基线损坏 → 还没设置主密码
+/// 状态条的文案和颜色；优先级同 0.2.14：没连存储就隐藏 → 同步中 → 已停用 → 待确认 → 基线损坏 → 还没设置主密码
 /// → 需要输入主密码 → 凭据失效 → 上次结果。
 pub(super) fn model_for(input: &BarInput) -> SyncBarModel {
     if !input.configured {
@@ -187,6 +192,10 @@ pub(super) fn model_for(input: &BarInput) -> SyncBarModel {
     }
     if input.running {
         return SyncBarModel::shown(Tone::Busy, t(SyncStatusMsg::Syncing));
+    }
+    // 停用了就只说这一件事：后面那些"需要主密码 / 凭据失效"都是启用之后才要处理的。
+    if input.disabled {
+        return SyncBarModel::shown(Tone::Idle, t(SyncStatusMsg::Disabled));
     }
     if input.pending {
         let auto = input.last.as_ref().is_some_and(|last| last.auto);
@@ -286,6 +295,7 @@ static REVISION: AtomicU64 = AtomicU64::new(0);
 struct Stored {
     configured: bool,
     provider: Option<&'static str>,
+    disabled: bool,
     ready: bool,
     remembered: bool,
     baseline_broken: bool,
@@ -315,6 +325,8 @@ pub(crate) fn refresh_now() {
         next.configured = config.is_some();
         next.provider = config.as_ref().map(|config| config.provider());
         next.ready = service::is_ready(&db).unwrap_or(false);
+        // 读不出来按启用（和调度器、设置页一致）。
+        next.disabled = !service::is_enabled(&db).unwrap_or(true);
         // 只关心「有没有记住」，不需要解开密文。
         next.remembered = service::load_master_password(&db, &super::DpapiSealer)
             .ok()
@@ -374,6 +386,7 @@ pub(crate) fn bar_model() -> (u64, SyncBarModel) {
         configured: stored.configured,
         provider: stored.provider,
         running,
+        disabled: stored.disabled,
         pending,
         baseline_broken: stored.baseline_broken,
         ready: stored.ready,
@@ -444,6 +457,31 @@ mod tests {
         // 手动停在确认上：不带「自动同步已暂停」。
         input.last = Some(last("needs_confirmation", "删除 3 条", false));
         assert!(!model_for(&input).text.starts_with("自动同步"));
+    }
+
+    #[test]
+    fn a_disabled_sync_says_so_and_hides_the_other_warnings() {
+        let mut input = ready();
+        input.disabled = true;
+        // 停用前就有的告警（缺主密码、凭据失效、基线损坏）不抢这一句。
+        input.password_available = false;
+        input.auth_paused = true;
+        input.baseline_broken = true;
+        let model = model_for(&input);
+        assert_eq!(
+            (model.visible, model.tone, model.text.as_str()),
+            (true, Tone::Idle, "同步已停用")
+        );
+
+        // 没连存储时整条隐藏，和有没有停用无关。
+        input.configured = false;
+        assert!(!model_for(&input).visible);
+
+        // 正在跑的同步先报"同步中"。
+        let mut input = ready();
+        input.disabled = true;
+        input.running = true;
+        assert_eq!(model_for(&input).text, "同步中…");
     }
 
     #[test]

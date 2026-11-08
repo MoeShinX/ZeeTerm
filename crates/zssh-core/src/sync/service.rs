@@ -41,6 +41,8 @@ pub const MASTER_PASSWORD_KEY: &str = "sync_master_password";
 pub const AUTO_KEY: &str = "sync_auto";
 pub const LAST_RESULT_KEY: &str = "sync_last_result";
 pub const READY_KEY: &str = "sync_ready";
+/// 主同步的总开关。没有这一条 = 开着，所以升级前就配好同步的用户不用动。
+pub const ENABLED_KEY: &str = "sync_enabled";
 
 /// 主密码至少几个字符。
 pub const MIN_MASTER_PASSWORD_CHARS: usize = 8;
@@ -293,7 +295,25 @@ pub fn save_config(
 pub fn clear_config(db: &Database) -> Result<(), SyncError> {
     clear(db, STORAGE_KEY)?;
     clear(db, CONCURRENCY_KEY)?;
-    clear(db, READY_KEY)
+    clear(db, READY_KEY)?;
+    // 清除 = 回到没配过的状态：下次重新配好同步时从"启用"开始，不带着上一份配置的停用。
+    clear(db, ENABLED_KEY)
+}
+
+/// 主同步现在是不是启用的。没写过 = 启用；读不出来的值也按启用处理（停用是用户明确点的，
+/// 读坏了宁可继续同步，也别悄悄让备份停摆）。
+pub fn is_enabled(db: &Database) -> Result<bool, SyncError> {
+    Ok(get_json::<bool>(db, ENABLED_KEY)?.unwrap_or(true))
+}
+
+/// 启用 / 停用主同步。只改这一个开关，存储连接、登录、主密码、云端备份目标都不动。
+pub fn set_enabled(db: &Database, enabled: bool) -> Result<(), SyncError> {
+    if enabled {
+        // 启用是默认值：直接删掉这一条，库里就和没停用过一样。
+        clear(db, ENABLED_KEY)
+    } else {
+        set_json(db, ENABLED_KEY, &false)
+    }
 }
 
 /// 浏览器授权登录成功之后的结果。
@@ -691,5 +711,68 @@ impl<'a> SyncContext<'a> {
                 other => SyncError::from(other),
             })?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod enabled_tests {
+    use super::*;
+    use crate::sync::sealer::TestSealer;
+    use crate::sync::settings::{sync_mode, SyncMode};
+
+    #[test]
+    fn sync_is_enabled_by_default_so_existing_setups_keep_syncing() {
+        let db = Database::open_in_memory().expect("内存库");
+        assert!(is_enabled(&db).expect("读取"));
+    }
+
+    #[test]
+    fn disabling_round_trips_and_enabling_removes_the_row() {
+        let db = Database::open_in_memory().expect("内存库");
+        set_enabled(&db, false).expect("停用");
+        assert!(!is_enabled(&db).expect("读取"));
+        assert!(db.setting_get(ENABLED_KEY).expect("读取").is_some());
+
+        set_enabled(&db, true).expect("启用");
+        assert!(is_enabled(&db).expect("读取"));
+        assert!(db.setting_get(ENABLED_KEY).expect("读取").is_none());
+    }
+
+    #[test]
+    fn an_unreadable_value_counts_as_enabled() {
+        let db = Database::open_in_memory().expect("内存库");
+        db.setting_set(ENABLED_KEY, "not json").expect("写入");
+        assert!(is_enabled(&db).expect("读取"));
+    }
+
+    #[test]
+    fn the_switch_is_a_local_setting_and_never_travels_in_the_sync_package() {
+        assert_eq!(sync_mode(ENABLED_KEY), Some(SyncMode::LocalOnly));
+    }
+
+    #[test]
+    fn disabling_keeps_every_other_sync_setting() {
+        let db = Database::open_in_memory().expect("内存库");
+        let sealer = TestSealer(7);
+        let config = StorageConfig::Webdav(WebDavConfig {
+            url: "https://dav.example.com/".to_owned(),
+            directory: "zeeterm".to_owned(),
+            username: "demo".to_owned(),
+            password: "demo-password".to_owned(),
+            allow_insecure_http: false,
+        });
+        save_config(&db, &sealer, &config).expect("保存");
+        set_ready(&db, true).expect("标记");
+        set_enabled(&db, false).expect("停用");
+        assert!(load_config(&db, &sealer).expect("读取").is_some());
+        assert!(is_ready(&db).expect("读取"));
+    }
+
+    #[test]
+    fn clearing_the_storage_resets_the_switch_to_enabled() {
+        let db = Database::open_in_memory().expect("内存库");
+        set_enabled(&db, false).expect("停用");
+        clear_config(&db).expect("清除");
+        assert!(is_enabled(&db).expect("读取"));
     }
 }

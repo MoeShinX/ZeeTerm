@@ -130,6 +130,9 @@ enum SyncViewMsg {
     // ---- 同步 ----
     Syncing,
     SyncNow,
+    EnableSync,
+    EnableSyncDescription,
+    EnableSyncA11y,
     SyncResults,
     SyncCardTitle,
     SyncCardDescription,
@@ -308,6 +311,12 @@ impl Msg for SyncViewMsg {
             Self::Cancel => "取消",
             Self::Syncing => "同步中…",
             Self::SyncNow => "立即同步",
+            Self::EnableSync => "启用同步",
+            Self::EnableSyncDescription => {
+                "关掉后不再自动同步，「立即同步」也不能用；存储连接、登录信息、主密码和云端备份目标都会保留。\
+                 重新打开时会马上同步一次。"
+            }
+            Self::EnableSyncA11y => "启用同步",
             Self::SyncResults => "同步结果",
             Self::SyncCardTitle => "同步",
             Self::SyncCardDescription => "手动同步，或者让它在后台自动做。",
@@ -528,6 +537,12 @@ impl Msg for SyncViewMsg {
             Self::Cancel => "Cancel",
             Self::Syncing => "Syncing…",
             Self::SyncNow => "Sync Now",
+            Self::EnableSync => "Enable Sync",
+            Self::EnableSyncDescription => {
+                "When off, nothing syncs automatically and Sync Now is unavailable; the storage connection, \
+                 sign-in, master password and cloud backup targets are all kept. Turning it back on syncs once right away."
+            }
+            Self::EnableSyncA11y => "Enable Sync",
             Self::SyncResults => "Sync Results",
             Self::SyncCardTitle => "Sync",
             Self::SyncCardDescription => {
@@ -883,6 +898,11 @@ impl SyncDemo {
 
     pub(super) fn busy(&self) -> bool {
         self.testing || self.syncing || self.signing_in || self.cloud.is_busy()
+    }
+
+    /// 「立即同步」按钮要不要置灰：有任务在跑、基线损坏，或者同步被停用。
+    pub(super) fn sync_now_disabled(&self) -> bool {
+        self.busy() || self.baseline_broken || !self.enabled
     }
 
     // ---- 连接存储 ----
@@ -1498,14 +1518,31 @@ impl SyncDemo {
         } else {
             t(SyncViewMsg::SyncNow)
         };
+        let toggle = entity.clone();
+        rows.push(setting(
+            t(SyncViewMsg::EnableSync),
+            t(SyncViewMsg::EnableSyncDescription),
+            Switch::new("sync-enabled-toggle")
+                .checked(self.enabled)
+                .disabled(busy)
+                .accessibility_label(t(SyncViewMsg::EnableSyncA11y))
+                .on_click(move |_, window, cx| {
+                    toggle.update(cx, |this, cx| this.toggle_enabled(window, cx));
+                }),
+            tokens,
+        ));
         rows.push(setting(
             t(SyncViewMsg::SyncNow),
-            last_result_text(self.auto.last.as_ref()),
+            if self.enabled {
+                last_result_text(self.auto.last.as_ref())
+            } else {
+                t(SyncMsg::SyncDisabled).to_owned()
+            },
             act_button(
                 "sync-now",
                 sync_label,
                 entity,
-                busy || self.baseline_broken,
+                self.sync_now_disabled(),
                 |this, window, cx| this.start_sync(window, cx),
             ),
             tokens,
@@ -1654,7 +1691,8 @@ impl SyncDemo {
         let busy = self.busy();
         let enabled = self.auto.settings.enabled;
         let toggle = entity.clone();
-        let pause = enabled
+        // 同步整体停用时，"自动同步暂停"的原因没有意义（总开关已经说明了），不显示。
+        let pause = (enabled && self.enabled)
             .then(|| {
                 auto_block_reason(
                     true,
