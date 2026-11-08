@@ -7,7 +7,24 @@ use super::*;
 impl AgentChatDemo {
     /// 当前模式下生效的执行模式。
     pub(super) fn current_mode(&self) -> ExecMode {
-        if self.real { self.mode } else { self.demo_mode }
+        if self.real {
+            self.exec.mode
+        } else {
+            self.demo_mode
+        }
+    }
+
+    /// 每个节拍：别的窗口 / 设置页改了执行模式，这个面板的显示跟上（只在库版本翻动时才读库）。
+    /// 离线演示的模式只在内存里，不对齐。
+    pub(super) fn sync_exec_mode(&mut self) -> bool {
+        if !self.real {
+            return false;
+        }
+        let Some(db) = self.db.as_ref() else {
+            return false;
+        };
+        self.exec
+            .poll(db.data_version().ok(), || load_exec_mode(db))
     }
 
     /// 输入框里的字加进待发送队列（回合进行中按 Enter）。

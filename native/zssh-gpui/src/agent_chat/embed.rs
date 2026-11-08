@@ -1592,11 +1592,10 @@ impl AgentChatDemo {
 
     pub fn set_mode_explicit(&mut self, mode: ExecMode, cx: &mut Context<Self>) {
         if mode_is_persisted(self.real) {
-            match self.write_mode(mode) {
-                Ok(()) => self.settings_error = None,
-                Err(err) => self.settings_error = Some(err),
-            }
-            self.mode = mode;
+            // 写成功才改显示：工具桥读的是库里的值，写失败时它还按旧模式放行，
+            // 显示成新模式会让用户以为后面的操作都会先问他。
+            let result = self.write_mode(mode);
+            self.exec.commit(mode, result);
         } else {
             self.demo_mode = mode;
         }
@@ -2381,7 +2380,7 @@ impl AgentChatDemo {
             if let Some(text) = self.footer_error.clone() {
                 lines.push(notice(text, true).into_any_element());
             }
-            if let Some(text) = self.settings_error.clone() {
+            if let Some(text) = self.exec.error.clone() {
                 lines.push(notice(text, true).into_any_element());
             }
             if let Some(text) = self.storage_error.clone() {

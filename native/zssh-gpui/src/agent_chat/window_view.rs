@@ -374,7 +374,7 @@ impl AgentChatDemo {
                         .child(redact_paths(&err)),
                 )
             })
-            .when_some(self.settings_error.clone(), |footer, err| {
+            .when_some(self.exec.error.clone(), |footer, err| {
                 footer.child(
                     div()
                         .text_xs()

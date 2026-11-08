@@ -95,6 +95,7 @@ use demo::{
     DENIED_ERROR, DemoInput, MARKDOWN_SAMPLE, STOPPED_ERROR, TurnEvent, TurnScript,
     demo_toggle_available, start_in_real_mode,
 };
+use exec_state::ExecState;
 use history::{
     continue_conversation, delete_history_record, history_host, history_id_for_turn, history_meta,
     history_title, history_tool_status, load_history_record, load_history_rows, resume_session_id,
@@ -121,6 +122,7 @@ mod builtin_ui;
 mod composer;
 mod demo;
 mod embed;
+mod exec_state;
 mod history;
 mod history_view;
 mod model;
@@ -149,8 +151,9 @@ pub use embed::EmbedContext;
 type HostChoice = HostTarget;
 
 pub struct AgentChatDemo {
-    /// 真实模式用的执行模式（读自设置库的 `ai_exec_mode`，和工具桥读的是同一个）。
-    mode: ExecMode,
+    /// 真实模式用的执行模式（读自设置库的 `ai_exec_mode`，和工具桥读的是同一个）和读写它的错误；
+    /// 显示的值只跟着库走（写成功才变，别处改了会跟上，读不出来按逐条确认），见 `exec_state`。
+    exec: ExecState,
     /// 离线演示用的执行模式：只存在内存里，**不写设置库**（审查 M2：旧版在演示里
     /// 点一下就把真实的审批策略改成了全部放行）。
     demo_mode: ExecMode,
@@ -158,8 +161,6 @@ pub struct AgentChatDemo {
     /// 设置库；打不开时为 `None`，窗口照常使用。
     db: Option<Database>,
     storage_error: Option<String>,
-    /// 读取/保存执行模式的错误；成功保存后清掉。
-    settings_error: Option<String>,
     /// 当前是不是真实模式（产品默认）；调试版里可以切到离线演示。
     real: bool,
     /// 主机库里的主机（可选的执行目标）。
@@ -259,9 +260,10 @@ impl AgentChatDemo {
             Ok(db) => (Some(db), None),
             Err(err) => (None, Some(err)),
         };
-        let (mode, settings_error) = match &db {
-            Some(db) => load_exec_mode(db),
-            None => (ExecMode::Manual, None),
+        // 版本先于模式读取：读完之后别的窗口再写，下一个节拍会发现版本变了而重读。
+        let exec = match &db {
+            Some(db) => ExecState::new(db.data_version().ok(), load_exec_mode(db)),
+            None => ExecState::unavailable(),
         };
 
         let demo_hook = crate::dev_hooks::var(DEMO_ENV);
@@ -285,12 +287,11 @@ impl AgentChatDemo {
         });
 
         let mut this = Self {
-            mode,
+            exec,
             demo_mode: ExecMode::Manual,
             chat: ChatState::default(),
             db,
             storage_error,
-            settings_error,
             real,
             hosts,
             selected_hosts: Vec::new(),
@@ -348,6 +349,9 @@ impl AgentChatDemo {
                     // 粘到底部：用户往上翻着看旧消息时，新内容不把他拉回底部（面板形态；独立窗口照旧）。
                     let stick = this.embed.is_none() || this.at_bottom();
                     let mut changed = this.sync_agent_state();
+                    if this.sync_exec_mode() {
+                        changed = true;
+                    }
                     if let Some(text) = this.restore_input.take() {
                         this.input
                             .update(cx, |state, cx| state.set_value(text, window, cx));
