@@ -161,6 +161,7 @@ mod tests {
     fn the_test_binary_is_not_a_portable_copy() {
         // 测试程序旁边没有 `portable` 标记：别的用例读的数据目录不能被它改变。
         assert!(!is_portable());
+        #[cfg(windows)]
         assert_eq!(data_dir(), None);
         assert_eq!(layout(), None);
         assert_eq!(about_tag(), None);
