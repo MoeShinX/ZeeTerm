@@ -118,21 +118,60 @@ const NON_PATH_COMMANDS: &[&str] = &[
     "uptime", "free", "history",
 ];
 
+/// 命中的是哪一类。路径类是"读到了某个敏感文件"；其余几类是命令本身会交出秘密，
+/// 或者搜索范围覆盖敏感目录（见 [`sources`]），参数里没有敏感路径。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SensitiveKind {
+    /// 参数 / 重定向目标是敏感路径。
+    Path,
+    /// `getent shadow` / `gshadow` 或不认识的数据库：密码哈希。
+    AccountDatabase,
+    /// 环境变量 / 服务环境（`jq env`、`systemctl show-environment`、`printenv`……）：密钥和令牌。
+    Environment,
+    /// shell 命令历史：里面常有命令行里敲过的密码。
+    ShellHistory,
+    /// 递归搜索的根目录是敏感路径的祖先（`grep -r … /home`）。
+    RecursiveSearch,
+}
+
 /// 命中的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SensitiveHit {
-    /// 命中的那个路径参数（用户看到的原文）。
+    /// 命中的那个路径参数（用户看到的原文）；非路径类是命令的简称（`getent shadow`）或搜索根目录。
     pub path: String,
     /// 路径是明确写出来的（`false` = 含通配符 / 变量，按“可能命中”处理）。
     pub exact: bool,
+    pub kind: SensitiveKind,
 }
 
 impl SensitiveHit {
     /// 确认卡片上写的原因（结构化：界面按语言生成文案，路径过长会截断）。
+    /// 非路径类走 `ApprovalReason::Command` 的 key + 中文原文，界面按 key 出英文整句。
     pub fn reason(&self) -> crate::ai::reason::ApprovalReason {
-        crate::ai::reason::ApprovalReason::SensitiveRead {
-            path: clip(&self.path, 120),
-            exact: self.exact,
+        use crate::ai::reason::ApprovalReason;
+        use crate::error::reason_keys as rk;
+        let what = clip(&self.path, 120);
+        match self.kind {
+            SensitiveKind::Path => ApprovalReason::SensitiveRead {
+                path: what,
+                exact: self.exact,
+            },
+            SensitiveKind::AccountDatabase => ApprovalReason::command(
+                rk::CMD_SENSITIVE_ACCOUNT_DB,
+                format!("读取账号数据库（{what}）：shadow / gshadow 含密码哈希，不认识的数据库按敏感处理"),
+            ),
+            SensitiveKind::Environment => ApprovalReason::command(
+                rk::CMD_SENSITIVE_ENVIRONMENT,
+                format!("可能输出环境变量或服务的环境配置（{what}）：里面常有密钥和令牌"),
+            ),
+            SensitiveKind::ShellHistory => ApprovalReason::command(
+                rk::CMD_SENSITIVE_HISTORY,
+                format!("读取 shell 命令历史（{what}）：里面常有命令行里敲过的密码和令牌"),
+            ),
+            SensitiveKind::RecursiveSearch => ApprovalReason::command(
+                rk::CMD_SENSITIVE_RECURSIVE_SEARCH,
+                format!("递归搜索的范围（{what}）覆盖私钥、凭据等敏感文件所在的目录"),
+            ),
         }
     }
 }
@@ -150,34 +189,43 @@ pub fn sensitive_file_path(path: &str) -> Option<SensitiveHit> {
     matches_literal(path).then(|| SensitiveHit {
         path: path.to_owned(),
         exact: true,
+        kind: SensitiveKind::Path,
     })
 }
 
-/// 命令里第一个敏感路径参数。命令名本身（每段的第一个词）不查。
+/// 命令里第一个敏感读取：敏感路径参数（命令名本身，即每段的第一个词，不查），或者命令本身会交出秘密
+/// （`getent shadow`、`jq env`、`history`、`grep -r … /home`，见 [`sources`]）。
 pub fn sensitive_path_in_command(command: &str) -> Option<SensitiveHit> {
+    // 前面的 `cd` 决定后面相对路径的搜索根目录在哪（不知道就是 None）
+    let mut cwd: Option<String> = None;
     for segment in split_segments(command) {
         // 引号没配平：交给 `is_read_only` 去拒，这里保守按命中。
         let Ok(Parsed { words, redirects }) = tokenize_redirects(&segment) else {
             return Some(SensitiveHit {
                 path: segment.trim().to_owned(),
                 exact: false,
+                kind: SensitiveKind::Path,
             });
         };
         // 重定向要分出来再看：`cat</etc/shadow` 的命令名是 `cat`、`/etc/shadow` 是重定向目标，
         // 并成一个词的话整串被当成命令名，路径就漏检了。
-        if let Some(name) = words.first().map(|word| word.text.as_str()) {
-            if NON_PATH_COMMANDS.contains(&name) {
-                continue;
+        let name_is_not_a_path_reader = words
+            .first()
+            .is_some_and(|word| NON_PATH_COMMANDS.contains(&word.text.as_str()));
+        if !name_is_not_a_path_reader {
+            let targets = redirects
+                .iter()
+                .filter_map(|redirect| redirect.target.as_ref());
+            for word in words.iter().skip(1).chain(targets) {
+                if let Some(hit) = check_word(&word.text, word.expands) {
+                    return Some(hit);
+                }
             }
         }
-        let targets = redirects
-            .iter()
-            .filter_map(|redirect| redirect.target.as_ref());
-        for word in words.iter().skip(1).chain(targets) {
-            if let Some(hit) = check_word(&word.text, word.expands) {
-                return Some(hit);
-            }
+        if let Some(hit) = sources::command_source_hit(&words, cwd.as_deref()) {
+            return Some(hit);
         }
+        cwd = sources::cwd_after(&words, cwd);
     }
     None
 }
@@ -200,6 +248,7 @@ fn check_word(text: &str, expands: bool) -> Option<SensitiveHit> {
             return Some(SensitiveHit {
                 path: text.to_owned(),
                 exact: false,
+                kind: SensitiveKind::Path,
             });
         };
         for variant in &variants {
@@ -209,12 +258,14 @@ fn check_word(text: &str, expands: bool) -> Option<SensitiveHit> {
                     return Some(SensitiveHit {
                         path: text.to_owned(),
                         exact: variants.len() == 1 && !has_glob(variant),
+                        kind: SensitiveKind::Path,
                     })
                 }
                 Verdict::Maybe => {
                     return Some(SensitiveHit {
                         path: text.to_owned(),
                         exact: false,
+                        kind: SensitiveKind::Path,
                     })
                 }
             }
@@ -481,5 +532,9 @@ fn expand_braces(word: &str) -> Option<Vec<String>> {
     )
 }
 
+mod sources;
+
+#[cfg(test)]
+mod source_tests;
 #[cfg(test)]
 mod tests;

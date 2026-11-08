@@ -386,6 +386,18 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "cmd.su" => "su switches to another user, so the execution environment is not controlled",
         "cmd.redirect_block_device" => "The redirect writes to a block device and may destroy data",
         "cmd.redirect_system_file" => "The redirect overwrites files under a system path",
+        "cmd.sensitive_account_db" => {
+            "It reads an account database such as shadow / gshadow, or one that is not recognised; the output may contain password hashes"
+        }
+        "cmd.sensitive_environment" => {
+            "It may print environment variables or a service's environment settings, which often hold keys and tokens"
+        }
+        "cmd.sensitive_history" => {
+            "It reads the shell command history, which often contains passwords and tokens typed on the command line"
+        }
+        "cmd.sensitive_recursive_search" => {
+            "It searches recursively through a directory tree that holds private keys, credentials or password files"
+        }
         "sftp.limited" => "Exceeded a server limit: {message}",
         "sftp.unexpected_packet" => "SFTP protocol error (received an unexpected reply)",
         "sftp.request_timeout" => {

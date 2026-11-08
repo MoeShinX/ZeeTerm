@@ -346,8 +346,12 @@ fn shell_and_database_history_files_are_hit() {
     ] {
         assert!(!path_hit(path), "不该命中：{path}");
     }
-    // `history` 命令本身打印当前 shell 的历史，不是读文件，保持现状。
-    assert!(cmd_hit("history").is_none());
+    // `history` 命令本身不是读文件（路径检查不管它），但它打印的就是 shell 历史，按命令来源命中
+    // （见 sources.rs）。
+    assert_eq!(
+        cmd_hit("history").map(|hit| hit.kind),
+        Some(SensitiveKind::ShellHistory)
+    );
 }
 
 #[test]

@@ -1585,14 +1585,15 @@ impl Bridge {
                     let read_only = request.file.is_none()
                         && request.danger == DangerLevel::Safe
                         && crate::ai::readonly::is_read_only(&request.command);
-                    // 只读命令也可能把私钥、云凭据读出来交给模型服务商：命中敏感路径的
-                    // 降级为要确认，并在卡片上写明原因。
+                    // 只读命令也可能把私钥、云凭据、环境变量读出来交给模型服务商：命中敏感来源的
+                    // 降级为要确认，并在卡片上写明原因。命令本身不算只读时同样写明（和逐条确认模式
+                    // 的卡片一致：那边命中就写，不看命令是不是只读）。
                     match crate::ai::sensitive::sensitive_path_in_command(&request.command) {
-                        Some(hit) if read_only => {
+                        Some(hit) => {
                             request.reasons.push(hit.reason());
                             false
                         }
-                        _ => read_only,
+                        None => read_only,
                     }
                 }
                 ExecMode::Manual => {

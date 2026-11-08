@@ -544,6 +544,10 @@ pub mod keys {
         CMD_SU = "cmd.su";
         CMD_REDIRECT_BLOCK_DEVICE = "cmd.redirect_block_device";
         CMD_REDIRECT_SYSTEM_FILE = "cmd.redirect_system_file";
+        CMD_SENSITIVE_ACCOUNT_DB = "cmd.sensitive_account_db";
+        CMD_SENSITIVE_ENVIRONMENT = "cmd.sensitive_environment";
+        CMD_SENSITIVE_HISTORY = "cmd.sensitive_history";
+        CMD_SENSITIVE_RECURSIVE_SEARCH = "cmd.sensitive_recursive_search";
         SFTP_LIMITED = "sftp.limited";
         SFTP_UNEXPECTED_PACKET = "sftp.unexpected_packet";
         SFTP_REQUEST_TIMEOUT = "sftp.request_timeout";

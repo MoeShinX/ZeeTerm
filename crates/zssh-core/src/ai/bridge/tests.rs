@@ -886,6 +886,87 @@ async fn readonly_mode_asks_before_reading_sensitive_files() {
     }
 }
 
+/// 审核 W01 / W02：粘连重定向吞掉命令名（`reboot>/dev/null`）、以及参数里没有敏感路径的秘密读取
+/// （`getent shadow`、`jq -n env`、`history`、`systemctl cat`、`grep -r … /home`），
+/// 「只读自动」和「逐条确认」两个模式都要问，卡片上带原因；正常诊断不受影响。
+#[tokio::test]
+async fn readonly_and_manual_cards_agree_on_glued_redirects_and_secret_sources() {
+    use crate::error::reason_keys as rk;
+    let asked_commands = [
+        ("reboot>/dev/null", "cmd.power"),
+        ("killall5>/dev/null", "cmd.killall5"),
+        ("getent shadow", rk::CMD_SENSITIVE_ACCOUNT_DB),
+        ("jq -n env", rk::CMD_SENSITIVE_ENVIRONMENT),
+        ("jq -n '$ENV'", rk::CMD_SENSITIVE_ENVIRONMENT),
+        ("history", rk::CMD_SENSITIVE_HISTORY),
+        (
+            "systemctl --user show-environment",
+            rk::CMD_SENSITIVE_ENVIRONMENT,
+        ),
+        (
+            "systemctl cat sample.service",
+            rk::CMD_SENSITIVE_ENVIRONMENT,
+        ),
+        (
+            "grep -r -A40 'PRIVATE KEY' /home",
+            rk::CMD_SENSITIVE_RECURSIVE_SEARCH,
+        ),
+    ];
+    let plain_commands = [
+        "getent passwd",
+        "jq . data.json",
+        "systemctl status sample.service",
+        "grep -r error /var/log",
+        "ls -la 2>/dev/null",
+        "dmesg 2>&1 | tail",
+    ];
+    for mode in [ExecMode::ReadOnly, ExecMode::Manual] {
+        let h = harness(mode, ApproverBehavior::Deny, short_wait()).await;
+        let scope = h.bridge.create_scope();
+        scope.add_target("s1", "web-1", "root", "connected", true, false);
+        let mut client =
+            Client::authenticated(h.port, h.bridge.connection_token(), scope.capability()).await;
+        let mut id = 0;
+        for (command, rule) in asked_commands {
+            id += 1;
+            let before = h.approver.calls();
+            let response = client
+                .request(
+                    id,
+                    METHOD_RUN_COMMAND,
+                    json!({ "target_id": "s1", "command": command }),
+                )
+                .await;
+            assert_eq!(h.approver.calls(), before + 1, "{mode:?}：{command} 要问");
+            assert!(error_of(&response).contains("用户拒绝"), "{response}");
+            let asked = h.approver.last().expect("审批请求");
+            assert!(
+                asked.reasons.iter().any(|reason| matches!(
+                    reason,
+                    ApprovalReason::Command { rule: key, .. } if key == rule
+                )),
+                "{mode:?}：{command} 的卡片要写明 {rule}：{:?}",
+                asked.reasons
+            );
+        }
+        if mode == ExecMode::ReadOnly {
+            for command in plain_commands {
+                id += 1;
+                let before = h.approver.calls();
+                let response = client
+                    .request(
+                        id,
+                        METHOD_RUN_COMMAND,
+                        json!({ "target_id": "s1", "command": command }),
+                    )
+                    .await;
+                assert_eq!(result_of(&response)["exit_code"], 0, "{command}");
+                assert_eq!(h.approver.calls(), before, "{command} 不该问");
+            }
+        }
+    }
+}
+
 /// 「逐条确认」本来每条都问；读敏感文件的命令在卡片上额外写明原因，普通命令不加。
 #[tokio::test]
 async fn manual_mode_cards_say_when_a_command_reads_sensitive_files() {

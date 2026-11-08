@@ -112,8 +112,6 @@ const ALWAYS: &[&str] = &[
     "cmp",
     "last",
     "lastlog",
-    "getent",
-    "history",
     "cd",
     "true",
     "false",
@@ -126,7 +124,6 @@ const ALWAYS: &[&str] = &[
     "pidstat",
     "iotop",
     "uniq",
-    "jq",
     "sort",
 ];
 
@@ -221,7 +218,7 @@ const STANDARD_BIN_DIRS: &[&str] = &[
 ];
 
 /// 命令名：不带路径的原样返回；带路径的只认标准目录下的，否则 `None`（不算只读）。
-fn program_name(head: &str) -> Option<&str> {
+pub(crate) fn program_name(head: &str) -> Option<&str> {
     if !head.contains('/') {
         return Some(head);
     }
@@ -793,8 +790,8 @@ const SYSTEMD_CTL: Spec = Spec {
 
 const SYSTEMCTL_VERBS: &[&str] = &[
     "status",
-    // 没有 `show`：它的输出带 `Environment=` / `EnvironmentFiles=`，服务单元里的环境变量会整份打出来
-    "cat",
+    // 没有 `show`：它的输出带 `Environment=` / `EnvironmentFiles=`，服务单元里的环境变量会整份打出来；
+    // 没有 `cat`（单元文件里的 `Environment=` 原样打出来）和 `show-environment`（整份管理器环境）
     "list-units",
     "list-unit-files",
     "list-timers",
@@ -806,7 +803,6 @@ const SYSTEMCTL_VERBS: &[&str] = &[
     "is-failed",
     "is-system-running",
     "get-default",
-    "show-environment",
 ];
 
 const OTHER_CTL_VERBS: &[&str] = &[
@@ -830,6 +826,176 @@ fn ctl_is_read_only(args: &[String], verbs: &[&str], allow_missing_verb: bool) -
         Some(verb) => verbs.contains(verb),
         None => allow_missing_verb,
     }
+}
+
+/// rg 的位置参数（模式 + 路径，不含选项和选项的值）；有不认识的选项就是 `None`。
+pub(crate) fn rg_positional(args: &[String]) -> Option<Vec<String>> {
+    parse_args(&RG, args).map(|rest| rest.into_iter().map(str::to_owned).collect())
+}
+
+/// `systemctl` 的子命令（选项之后的第一个位置参数）；选项里有不认识的就是 `None`。
+pub(crate) fn systemctl_verb(args: &[String]) -> Option<String> {
+    let positional = parse_args(&SYSTEMD_CTL, args)?;
+    positional.first().map(|verb| (*verb).to_owned())
+}
+
+// getent：-s 指定 nsswitch 服务、-i 不做 IDN 转换。数据库是第一个位置参数，后面是键
+const GETENT: Spec = Spec {
+    flags: "iV?",
+    valued: "s",
+    optional: "",
+    long_flags: &["no-idn", "help", "usage", "version"],
+    long_valued: &["service"],
+    long_optional: &[],
+};
+
+/// `getent` 自动放行的数据库（glibc 的 getent 认得的有：ahosts ahostsv4 ahostsv6 aliases ethers group
+/// gshadow hosts initgroups netgroup networks passwd protocols rpc services shadow）。
+/// 放行的是内容本来就公开的：用户 / 组名册、主机名解析、服务 / 协议 / 网络 / RPC 编号表、MAC 表、网络组。
+/// 不放行：`shadow`、`gshadow`（密码哈希）、`aliases`（邮件别名可以指向程序，没有理由自动读），
+/// 以及任何不认识的名字（NSS 模块可能提供别的数据库，内容不明）。
+const GETENT_PUBLIC_DATABASES: &[&str] = &[
+    "passwd",
+    "group",
+    "hosts",
+    "ahosts",
+    "ahostsv4",
+    "ahostsv6",
+    "services",
+    "protocols",
+    "networks",
+    "rpc",
+    "ethers",
+    "netgroup",
+    "initgroups",
+];
+
+/// `getent` 要查的数据库名：选项之后的第一个位置参数。选项里有不认识的就退回"第一个不以 `-` 开头的词"，
+/// 宁可多认一个数据库名出来去对照。
+pub(crate) fn getent_database(args: &[String]) -> Option<String> {
+    let positional =
+        parse_args(&GETENT, args).and_then(|rest| rest.first().map(|name| (*name).to_owned()));
+    positional.or_else(|| args.iter().find(|arg| !arg.starts_with('-')).cloned())
+}
+
+/// 数据库是不是上面那张"内容公开"的表。
+pub(crate) fn getent_database_is_public(database: &str) -> bool {
+    GETENT_PUBLIC_DATABASES.contains(&database)
+}
+
+fn getent_is_read_only(args: &[String]) -> bool {
+    parse_args(&GETENT, args).is_some()
+        && getent_database(args).is_some_and(|database| getent_database_is_public(&database))
+}
+
+/// jq 的过滤器是不是能读到环境变量（或别的额外输入）：`env`、`$ENV`、`$__prog_args`、`input_filename`、
+/// `include` / `import`（读模块文件）。`-f` / `--from-file`（过滤器在文件里，看不到）、不认识的选项、
+/// 需要 shell 展开才知道内容的过滤器，一律按"能读"算。`.env`（取名叫 env 的字段）不算。
+/// 拿不准就返回 `true`——调用方据此要求确认。
+pub(crate) fn jq_reads_environment(args: &[Word]) -> bool {
+    // 不带值的长选项
+    const LONG_FLAGS: &[&str] = &[
+        "null-input",
+        "raw-input",
+        "slurp",
+        "compact-output",
+        "raw-output",
+        "raw-output0",
+        "join-output",
+        "ascii-output",
+        "sort-keys",
+        "color-output",
+        "monochrome-output",
+        "tab",
+        "unbuffered",
+        "stream",
+        "stream-errors",
+        "seq",
+        "exit-status",
+        "binary",
+        "help",
+        "version",
+        "args",
+        "jsonargs",
+    ];
+    let mut filter: Option<&Word> = None;
+    let mut only_positional = false;
+    let mut i = 0;
+    while i < args.len() {
+        let word = &args[i];
+        let arg = word.text.as_str();
+        i += 1;
+        if only_positional || arg == "-" || !arg.starts_with('-') {
+            // 第一个位置参数是过滤器，后面的是文件（文件路径另有敏感路径检查）
+            filter.get_or_insert(word);
+            continue;
+        }
+        if arg == "--" {
+            only_positional = true;
+            continue;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            match long.split('=').next().unwrap_or(long) {
+                // 后面跟名字和值（两个参数）
+                "arg" | "argjson" | "slurpfile" | "rawfile" => i += 2,
+                "indent" | "library-path" => i += 1,
+                // 过滤器放在文件里：看不到
+                "from-file" => return true,
+                name if LONG_FLAGS.contains(&name) => {}
+                _ => return true,
+            }
+            continue;
+        }
+        for (index, c) in arg[1..].char_indices() {
+            match c {
+                'n' | 'r' | 'j' | 'a' | 's' | 'c' | 'C' | 'M' | 'S' | 'e' | 'R' | 'h' | 'V'
+                | 'b' => {}
+                'L' => {
+                    if arg[1 + index + 1..].is_empty() {
+                        i += 1;
+                    }
+                    break;
+                }
+                // -f 文件：过滤器在文件里；别的字母不认识
+                _ => return true,
+            }
+        }
+    }
+    let Some(filter) = filter else {
+        return false;
+    };
+    // 过滤器本身要靠 shell 展开才知道内容（`jq $F`、`jq {a,b}`）
+    filter.expands || jq_filter_names_environment(&filter.text)
+}
+
+/// 过滤器文本里有没有能读环境 / 额外输入的名字。按 jq 的标识符切词：不在 `.` 后面的 `env`
+/// （`.env` 是取字段）、`$ENV`、`$__prog_args`、`input_filename`、`include`、`import`。
+/// 字符串字面量里的同名词也会命中——宁可多问。
+fn jq_filter_names_environment(filter: &str) -> bool {
+    let chars: Vec<char> = filter.chars().collect();
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_ident(chars[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && is_ident(chars[i]) {
+            i += 1;
+        }
+        let name: String = chars[start..i].iter().collect();
+        let before = start.checked_sub(1).map(|at| chars[at]);
+        match (before, name.as_str()) {
+            // `$ENV` / `$__prog_args` 的 `$` 和名字之间 jq 也许允许空白，所以只认名字
+            (_, "ENV" | "__prog_args") => return true,
+            // `.env` 是取字段，`$env` 是用户自己的变量
+            (Some('.' | '$'), _) => {}
+            (_, "env" | "input_filename" | "include" | "import") => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// `ip [选项] 对象 [show|list|ls ...]`：只放行明确的读操作。
@@ -1159,8 +1325,13 @@ fn rule_for(name: &str) -> Rule {
         "lastlog" => {
             Rule::Filtered(|args| parse_args(&LASTLOG, args).is_some_and(|rest| rest.is_empty()))
         }
-        // history -c 清空、-w 写文件、-d 删除……只认不带参数的
-        "history" => Rule::Filtered(|args| args.is_empty()),
+        // shell 历史里常有命令行里敲过的密码和令牌，会整份交给模型服务商：`history`、`fc -l` 不放行
+        // （没有登记，落到 Unknown；敏感原因见 sensitive 的 command_source_hit）。
+        // getent 只放行明确不敏感的数据库；shadow / gshadow 和不认识的数据库要确认。
+        // hosts / ahosts 会发 DNS 查询，所以走 Filtered：参数里有展开就直接要确认
+        "getent" => Rule::Filtered(getent_is_read_only),
+        // jq 过滤器里的 env / $ENV 等能把环境变量打出来，见 jq_reads_environment
+        "jq" => Rule::Words(|words| !jq_reads_environment(words)),
         // echo / printf 本身无害，但 `echo $GITHUB_TOKEN` 会把环境变量里的机密打给模型
         "echo" => Rule::Words(echo_is_read_only),
         "printf" => Rule::Words(printf_is_read_only),
@@ -1513,7 +1684,7 @@ const SECRET_NAME_HINTS: &[&str] = &[
     "token", "secret", "key", "pass", "cred", "auth", "private", "session", "cookie",
 ];
 
-fn name_looks_secret(name: &str) -> bool {
+pub(crate) fn name_looks_secret(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     SECRET_NAME_HINTS.iter().any(|hint| lower.contains(hint))
 }
@@ -1818,7 +1989,6 @@ mod tests {
             "journalctl --lines=50 --no-pager",
             "systemctl list-units --type=service --state=running",
             "systemctl is-active nginx",
-            "systemctl cat nginx",
             "systemctl status nginx -l --no-pager",
             "systemctl --user status foo",
             "timedatectl",
@@ -1844,7 +2014,6 @@ mod tests {
             "mount",
             "mount -l",
             "printenv PATH",
-            "history",
         ]);
     }
 
@@ -2310,7 +2479,6 @@ mod tests {
             "ss -s",
             "blkid",
             "lastlog",
-            "history",
             "find . -name x",
             "hostname",
             "date",
@@ -2700,7 +2868,7 @@ mod env_leak_tests {
         ("systemctl status nginx", true),
         ("systemctl list-units --type=service", true),
         ("systemctl is-active nginx", true),
-        ("systemctl cat nginx", true),
+        ("systemctl cat nginx", false),
         ("systemctl show nginx", false),
         ("systemctl show", false),
         ("systemctl show -p MainPID nginx", false),
