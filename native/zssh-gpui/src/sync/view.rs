@@ -1793,9 +1793,13 @@ impl SyncDemo {
                             .child(row.title),
                     )
                     .into_any_element(),
-                muted(row.kept, tokens),
-                muted(row.other, tokens),
             ];
+            // 解不开的冲突没有摘要，只剩下面那句说明。
+            for text in [row.kept, row.other] {
+                if !text.is_empty() {
+                    lines.push(muted(text, tokens));
+                }
+            }
             if !row.can_use_other && !row.message.is_empty() {
                 lines.push(muted(row.message, tokens));
             }

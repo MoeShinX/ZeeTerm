@@ -371,3 +371,98 @@ async fn a_known_host_conflict_cannot_switch_to_the_other_key() {
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), local_line);
 }
+
+fn host_json(name: &str, device: &str) -> String {
+    serde_json::json!({
+        "uid": "host-uid-1", "name": name, "host": "web-1.example.internal", "port": 22,
+        "username": "deploy", "updated_at": 1, "device_id": device
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn a_conflict_that_cannot_be_decrypted_is_unreadable_not_deleted() {
+    let db = Database::open_in_memory().unwrap();
+    let ours = TestSealer(1);
+    let theirs = TestSealer(2);
+    db.with_conn_as(|conn| -> Result<_, SyncError> {
+        // 真正的删除冲突（kept 为空）、正常的改动冲突、用另一把密钥封装的两条。
+        store_conflict(
+            conn,
+            &ours,
+            100,
+            "host",
+            "deleted-uid",
+            "",
+            &host_json("gone", "dev-x"),
+        )?;
+        store_conflict(
+            conn,
+            &ours,
+            101,
+            "host",
+            "edited-uid",
+            &host_json("edited-kept", "dev-a"),
+            &host_json("edited-other", "dev-x"),
+        )?;
+        store_conflict(
+            conn,
+            &theirs,
+            102,
+            "host",
+            "foreign-uid",
+            &host_json("foreign-kept", "dev-x"),
+            &host_json("foreign-other", "dev-y"),
+        )?;
+        // 另一边为空的“删除冲突”也用别人的密钥封装：kept 为空串不加密，other 解不开。
+        store_conflict(
+            conn,
+            &theirs,
+            103,
+            "host",
+            "foreign-deleted-uid",
+            "",
+            &host_json("foreign-gone", "dev-y"),
+        )
+    })
+    .unwrap();
+    // 损坏的编码也一样。
+    db.with_conn_as(|conn| -> Result<_, SyncError> {
+        conn.execute(
+            "INSERT INTO sync_conflicts (at, entity, key, kept, other)              VALUES (104, 'host', 'broken-uid', 'enc1:@@@not-base64@@@', 'enc1:@@@')",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    let views = list(&db, &ours, "dev-a", 200).unwrap();
+    let find = |key: &str| views.iter().find(|v| v.key == key).expect(key);
+
+    let deleted = find("deleted-uid");
+    assert!(deleted.deletion && !deleted.unreadable && deleted.can_use_other);
+    assert_eq!(deleted.kept_summary, "已删除");
+
+    let edited = find("edited-uid");
+    assert!(!edited.deletion && !edited.unreadable && edited.can_use_other);
+    assert!(edited.other_summary.contains("web-1.example.internal"));
+
+    for key in ["foreign-uid", "foreign-deleted-uid", "broken-uid"] {
+        let view = find(key);
+        assert!(view.unreadable, "{key} 解不开要标成不可读");
+        assert!(!view.deletion, "{key} 不能显示成已删除");
+        assert!(!view.can_use_other, "{key} 不能给恢复 / 采用");
+        assert!(view.kept_summary.is_empty() && view.other_summary.is_empty());
+        assert!(view.message.contains("无法解密"), "{}", view.message);
+        assert_eq!(view.name, key, "没有可读内容时用主键当名字");
+    }
+
+    // 不可读的冲突既不能被采用，也不会因此被清掉；“我知道了”可以清。
+    let foreign = find("foreign-uid").id;
+    assert!(use_other(&db, &ours, "dev-a", None, foreign, 200).is_err());
+    assert_eq!(list(&db, &ours, "dev-a", 200).unwrap().len(), 5);
+    dismiss(&db, foreign).unwrap();
+    let after = list(&db, &ours, "dev-a", 200).unwrap();
+    assert_eq!(after.len(), 4);
+    assert!(after.iter().all(|v| v.key != "foreign-uid"));
+}

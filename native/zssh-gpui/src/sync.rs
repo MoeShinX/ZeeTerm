@@ -220,6 +220,7 @@ pub(crate) enum SyncMsg {
     SkippedHostKeysSuffix,
     // ---- 冲突面板 ----
     KeptDeletion,
+    ConflictUnreadable,
     KeptChangePrefix,
     KeptChangeMiddle,
     OtherLastContentPrefix,
@@ -402,6 +403,9 @@ impl Msg for SyncMsg {
             Self::SkippedHostKeysPrefix => "；跳过 ",
             Self::SkippedHostKeysSuffix => " 条可疑主机密钥记录",
             Self::KeptDeletion => "保留：删除（这条记录在另一边已被删除）",
+            Self::ConflictUnreadable => {
+                "无法解密这条冲突记录：它可能是在别的电脑或别的 Windows 账户下保存的，或数据已损坏。它不能用来恢复或采用，确认后可以清除。"
+            }
             Self::KeptChangePrefix => "保留：",
             Self::KeptChangeMiddle => " 的改动：",
             Self::OtherLastContentPrefix => "另一份：",
@@ -614,6 +618,9 @@ impl Msg for SyncMsg {
             Self::SkippedHostKeysPrefix => "; skipped ",
             Self::SkippedHostKeysSuffix => " suspicious host key records",
             Self::KeptDeletion => "Kept: the deletion (this record was deleted on the other side)",
+            Self::ConflictUnreadable => {
+                "This conflict record cannot be decrypted: it may have been saved on another computer or under another Windows account, or the data is damaged. It cannot be used to restore or adopt anything; you can clear it once you have acknowledged it."
+            }
             Self::KeptChangePrefix => "Kept: ",
             Self::KeptChangeMiddle => " changes: ",
             Self::OtherLastContentPrefix => "Other copy: the last content on ",
@@ -3281,6 +3288,8 @@ struct ConflictRow {
     kept: String,
     other: String,
     deletion: bool,
+    /// 解不开的冲突：没有摘要，只显示说明，只能“我知道了”清掉。
+    unreadable: bool,
     can_use_other: bool,
     message: String,
     armed: bool,
@@ -3293,6 +3302,21 @@ fn conflict_row(view: &ConflictView, armed: bool) -> ConflictRow {
     } else {
         view.name.clone()
     };
+    if view.unreadable {
+        // 内容解不开：不能说成“已删除”，也没有两份摘要可显示；说明放在 message 里。
+        return ConflictRow {
+            id: view.id,
+            title,
+            entity: entity_label(&view.entity).to_owned(),
+            kept: String::new(),
+            other: String::new(),
+            deletion: false,
+            unreadable: true,
+            can_use_other: false,
+            message: t(SyncMsg::ConflictUnreadable).to_owned(),
+            armed: false,
+        };
+    }
     let kept = if view.deletion {
         t(SyncMsg::KeptDeletion).to_owned()
     } else {
@@ -3328,6 +3352,7 @@ fn conflict_row(view: &ConflictView, armed: bool) -> ConflictRow {
         kept,
         other,
         deletion: view.deletion,
+        unreadable: false,
         can_use_other: view.can_use_other,
         message: view.message.clone(),
         armed,
@@ -5301,6 +5326,7 @@ mod tests {
             other_device: Some("bbbbbbbb-1111-2222-3333-444444444444".to_owned()),
             other_is_local: true,
             deletion: false,
+            unreadable: false,
             can_use_other: true,
             message: String::new(),
         }
@@ -5375,6 +5401,25 @@ mod tests {
         assert_eq!(row.message, "主机指纹不能在这里改用另一份");
         // 另一份的摘要仍要显示，用户才知道冲突的是哪把钥匙。
         assert!(row.other.contains("bob@10.0.0.6:22"), "{}", row.other);
+    }
+
+    #[test]
+    fn an_unreadable_conflict_is_explained_and_offers_nothing_but_clearing() {
+        let mut view = conflict_view();
+        view.unreadable = true;
+        view.can_use_other = false;
+        view.kept_summary = String::new();
+        view.other_summary = String::new();
+
+        // 就算上一次点过一下“改用另一份”（armed），不可读的行也不再出现确认。
+        let row = conflict_row(&view, true);
+        assert!(row.unreadable);
+        assert!(!row.deletion, "解不开不能显示成已删除");
+        assert!(!row.can_use_other, "不能给恢复 / 采用");
+        assert!(!row.armed);
+        assert!(row.kept.is_empty() && row.other.is_empty());
+        assert!(row.message.contains("无法解密"), "{}", row.message);
+        assert!(!row.message.contains("已删除"), "{}", row.message);
     }
 
     #[test]

@@ -37,6 +37,9 @@ const SEALED_PREFIX: &str = "enc1:";
 const KNOWN_HOST_REFUSAL: &str = "主机指纹不能在这里改用另一份：替换已信任的公钥关系到连接安全。如果这台主机确实换了密钥，下次连接时核对新指纹再确认即可";
 const KNOWN_HOST_DELETED_REFUSAL: &str = "已删除的主机指纹不能恢复，下次连接那台主机时重新确认即可";
 
+/// 解不开的冲突记录给人看的说明。
+const UNREADABLE_MESSAGE: &str = "无法解密这条冲突记录：它可能是在别的电脑或别的 Windows 账户下保存的，或数据已损坏。它不能用来恢复或采用，确认后可以清除";
+
 pub(crate) fn encode_field(sealer: &dyn SecretSealer, json: &str) -> Result<String, SyncError> {
     if json.is_empty() {
         return Ok(String::new());
@@ -91,8 +94,11 @@ pub struct ConflictView {
     pub other_summary: String,
     pub other_device: Option<String>,
     pub other_is_local: bool,
-    /// 这是一条“删除赢了”的冲突（另一份是被删掉记录的最后改动）。
+    /// 这是一条“删除赢了”的冲突（另一份是被删掉记录的最后改动）。解不开的冲突不是删除冲突（见 `unreadable`）。
     pub deletion: bool,
+    /// 这条冲突的内容解不开（密文来自别的电脑 / 别的 Windows 账户，或数据损坏）。**不等于被删除**：
+    /// 两份摘要都是空的，没有任何恢复 / 采用操作，只能“我知道了”清掉。
+    pub unreadable: bool,
     /// 能不能一键改用另一份 / 恢复。
     pub can_use_other: bool,
     pub message: String,
@@ -230,12 +236,16 @@ pub fn list(
     let mut views = Vec::new();
     for row in rows {
         // 一条解不开的冲突不能让整个列表打不开；它仍可以被“我知道了”清掉。
+        // 但它也不能被当成“已删除”（空字段 = 删除）：单独标成不可读，不给任何恢复 / 采用操作。
         let (kept, other) = match (
             decode_field(sealer, &row.kept),
             decode_field(sealer, &row.other),
         ) {
             (Ok(kept), Ok(other)) => (kept, other),
-            _ => (String::new(), String::new()),
+            _ => {
+                views.push(unreadable_view(row));
+                continue;
+            }
         };
         let deletion = kept.is_empty();
         let other_summary = summarize(&row.entity, &row.key, &other);
@@ -274,11 +284,33 @@ pub fn list(
             other_summary: other_summary.text,
             other_device: other_summary.device,
             deletion,
+            unreadable: false,
             can_use_other,
             message,
         });
     }
     Ok(views)
+}
+
+/// 解不开的冲突在列表里的样子：只有时间、类型和主键，没有摘要，也没有恢复 / 采用的资格。
+fn unreadable_view(row: Row) -> ConflictView {
+    ConflictView {
+        id: row.id,
+        at: row.at,
+        name: row.key.clone(),
+        entity: row.entity,
+        key: row.key,
+        kept_summary: String::new(),
+        kept_device: None,
+        kept_is_local: false,
+        other_summary: String::new(),
+        other_device: None,
+        other_is_local: false,
+        deletion: false,
+        unreadable: true,
+        can_use_other: false,
+        message: UNREADABLE_MESSAGE.to_owned(),
+    }
 }
 
 /// “我知道了”：清掉一条冲突。
