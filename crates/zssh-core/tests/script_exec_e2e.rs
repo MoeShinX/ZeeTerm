@@ -306,9 +306,16 @@ fn a_command_that_reads_stdin_cannot_swallow_the_rest_of_the_script() {
     }
     // `cat` 不带文件名会读 stdin 直到 EOF。
     let script = "echo before\ncat >/dev/null\necho after";
-    // 不包函数：cat 把后面的 `echo after` 当输入吃掉了。
+    // 不包函数（对照组）：bash 从管道读脚本是边读边执行，cat 会把后面的 `echo after` 当输入吃掉；
+    // dash（Ubuntu / Debian 的 sh）先把整段读进来，吃不到。两种都是真实服务器上会遇到的 sh，
+    // 所以对照组只要求是这两种结果之一，真正要保证的是下面包了函数之后一定能跑完。
     let (raw, _, _) = run_local_sh(script.as_bytes());
-    assert_eq!(raw.trim(), "before", "对照组：直接喂脚本会被吃掉后半段");
+    match raw.trim() {
+        "before" => {}
+        "before
+after" => println!("本机 sh 先读完整段脚本（dash 一类），对照组吃不到后半段"),
+        other => panic!("对照组输出意外：{other:?}"),
+    }
     // 包了函数：整个脚本跑完。
     let (wrapped, _, code) = run_local_sh(&script_stdin(script));
     assert_eq!(wrapped.trim(), "before\nafter");
