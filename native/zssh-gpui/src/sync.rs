@@ -1133,39 +1133,36 @@ impl SyncDemo {
         cx.notify();
     }
 
-    /// 同步成功后按开关记住或忘掉主密码；取消、失败和需要确认都不动本机的保存。
-    /// 密码只进核心接口，错误和 footer 都不带密码原文。
-    fn apply_remember_after_sync(&mut self, status: SyncStatus, password: &str) {
-        let action = remember_action(self.remember.toggled, Some(status));
-        let data_dir = crate::settings::data_dir();
-        match action {
-            RememberAction::Save => match save_master_password_at(&data_dir, password) {
-                Ok(()) => {
-                    self.remember.saved = true;
-                    if let Some(text) = remember_footer(action) {
-                        self.status = text.to_owned();
-                    }
+    /// 手动同步收尾的显示部分：记住主密码的结果（本机的写入已由后台任务做完）和「上次结果」。
+    /// 这里不碰盘。错误和 footer 都不带密码原文。
+    fn show_manual_settled(&mut self, settled: ManualSettled) {
+        let ManualSettled {
+            last_result,
+            remember,
+        } = settled;
+        match (remember.action, remember.error) {
+            (RememberAction::Save, None) => {
+                self.remember.saved = true;
+                if let Some(text) = remember_footer(RememberAction::Save) {
+                    self.status = text.to_owned();
                 }
-                Err(message) => {
-                    self.status =
-                        format!("{}{message}", t(SyncMsg::SyncCompletedRememberFailedPrefix));
+            }
+            (RememberAction::Save, Some(message)) => {
+                self.status = format!("{}{message}", t(SyncMsg::SyncCompletedRememberFailedPrefix));
+            }
+            (RememberAction::Clear, None) => {
+                self.remember.saved = false;
+                if let Some(text) = remember_footer(RememberAction::Clear) {
+                    self.status = text.to_owned();
                 }
-            },
-            RememberAction::Clear => match clear_master_password_at(&data_dir) {
-                Ok(()) => {
-                    self.remember.saved = false;
-                    if let Some(text) = remember_footer(action) {
-                        self.status = text.to_owned();
-                    }
-                }
-                Err(message) => {
-                    self.status =
-                        format!("{}{message}", t(SyncMsg::SyncCompletedClearFailedPrefix));
-                }
-            },
+            }
+            (RememberAction::Clear, Some(message)) => {
+                self.status = format!("{}{message}", t(SyncMsg::SyncCompletedClearFailedPrefix));
+            }
             // 取消、失败和需要确认不改变本机是否保存；footer 也保留原来的内容。
-            RememberAction::Keep => {}
+            (RememberAction::Keep, _) => {}
         }
+        self.auto.last = Some(last_result);
     }
 
     /// 现在能不能同步。以本机保存的开关为准（别的窗口可能刚改过），读到的值顺手同步给界面。
@@ -1252,17 +1249,6 @@ impl SyncDemo {
             Err(message) => self.auto.error = Some(message),
         }
         cx.notify();
-    }
-
-    /// 手动同步结束：写「上次结果」，并让自动同步的退避清零、间隔从这一刻重新算。
-    fn save_manual_result(&mut self, result: LastResult) {
-        let data_dir = crate::settings::data_dir();
-        if let Err(message) = save_last_result_at(&data_dir, &result) {
-            // 写不进本机设置不影响这次同步本身；下次打开窗口只是看不到新结果。
-            tracing::warn!(%message, "保存同步结果失败");
-        }
-        with_auto_clock(|clock| clock.manual(result.at));
-        self.auto.last = Some(result);
     }
 
     /// 切换显示哪一家；四套草稿都留着，没保存的输入不会被清掉。
@@ -1541,46 +1527,20 @@ impl SyncDemo {
                 self.syncing = true;
                 self.sync_state.begin();
                 let handle = runtime.handle().clone();
+                // 「记住主密码」以点下同步那一刻的开关为准：收尾在后台做，窗口可能早就关了。
+                let remember_toggled = self.remember.toggled;
                 drop(runtime.spawn_blocking(move || {
-                    // 守卫活到这次同步结束（含出错）；期间自动同步的这一拍会跳过。
+                    // 守卫活到这次同步结束（含出错、含收尾落库）；期间自动同步的这一拍会跳过。
                     let _guard = guard;
-                    let outcome = run_sync_at(&handle, &data_dir, &password, decision);
-                    // 主同步成功才顺带备份；备份在同步结果送回界面之后再做，哪个目标慢都不会拖住这次同步的结果。
-                    let backup_password = matches!(
-                        &outcome,
-                        Ok(report) if report.status == SyncStatus::Completed
-                    )
-                    .then(|| password.clone());
-                    let event = match outcome {
-                        Ok(report) => {
-                            with_sync_guard(|guard| {
-                                guard.note(&SyncOutcome::Report(report.status), Instant::now());
-                            });
-                            SyncEvent::Synced {
-                                report: Box::new(report),
-                                password,
-                            }
-                        }
-                        Err(failure) => {
-                            with_sync_guard(|guard| {
-                                guard.note(
-                                    &SyncOutcome::Failed(failure.kind.clone()),
-                                    Instant::now(),
-                                );
-                            });
-                            SyncEvent::SyncFailed(failure)
-                        }
-                    };
-                    let _ = sender.send(event);
-                    if let Some(password) = backup_password {
-                        cloud_backup::backup_after_sync(
-                            &handle,
-                            &data_dir,
-                            &DpapiSealer,
-                            &password,
-                        );
-                        let _ = sender.send(SyncEvent::PostSyncBackupsDone);
-                    }
+                    manual_sync_job_with(
+                        &handle,
+                        &data_dir,
+                        &DpapiSealer,
+                        password,
+                        decision,
+                        remember_toggled,
+                        &sender,
+                    );
                 }));
             }
             Err(err) => self
@@ -1819,32 +1779,31 @@ impl SyncDemo {
                     self.testing = false;
                     self.status = message;
                 }
-                SyncEvent::Synced { report, password } => {
+                SyncEvent::Synced {
+                    report,
+                    password,
+                    settled,
+                } => {
                     self.syncing = false;
-                    let status = report.status;
-                    if status == SyncStatus::Completed {
+                    if report.status == SyncStatus::Completed {
                         // 成功读到了基线、也和云端对上了。
                         self.ready = true;
                         self.baseline_broken = false;
                         self.master_password_confirm
                             .update(cx, |state, cx| state.set_value("", window, cx));
                     }
-                    // `finish` 会拿走报告；先留下状态给「记住主密码」判断。
-                    let result = last_result_from_report(&report, false, now_secs());
-                    self.sync_state.finish(*report, password.clone());
-                    self.apply_remember_after_sync(status, &password);
-                    self.save_manual_result(result);
+                    // 「上次结果」和「记住主密码」已经由后台任务落库，这里只负责显示。
+                    self.sync_state.finish(*report, password);
+                    self.show_manual_settled(settled);
                     self.reload_saved_gist(window, cx);
                     // 同步可能新留下冲突，结果出来后立刻重读。
                     self.refresh_conflicts(cx);
                 }
-                SyncEvent::SyncFailed(failure) => {
+                SyncEvent::SyncFailed { failure, settled } => {
                     self.syncing = false;
                     self.baseline_broken = failure.baseline_broken;
-                    let message = failure.message;
-                    let result = last_result_error(&message, false, now_secs());
-                    self.sync_state.fail(message);
-                    self.save_manual_result(result);
+                    self.sync_state.fail(failure.message);
+                    self.show_manual_settled(settled);
                     self.reload_saved_gist(window, cx);
                     self.refresh_conflicts(cx);
                 }
@@ -2048,11 +2007,16 @@ enum SyncEvent {
     TestFailed(String),
     /// 同步结果和这次用的主密码一起带回：需要确认时要用同一个密码重放。
     /// 密码只在这里、[`SyncState`] 和「记住主密码」的保存接口里短暂停留，不写日志。
+    /// `settled` 是后台任务在送出这个事件之前已经落库的收尾结果，窗口只拿去显示。
     Synced {
         report: Box<SyncReport>,
         password: String,
+        settled: ManualSettled,
     },
-    SyncFailed(SyncFailure),
+    SyncFailed {
+        failure: SyncFailure,
+        settled: ManualSettled,
+    },
     /// 进程级调度器跑完一次自动同步；结果已经写进本机设置，这里只用来刷新界面。
     AutoSynced(LastResult),
     /// OneDrive 浏览器授权成功；核心已经保存好令牌和连接设置。
@@ -3711,8 +3675,17 @@ fn load_master_password_at(data_dir: &Path) -> Result<Option<String>, String> {
 
 /// 同步成功后记住主密码：交给核心用本机 DPAPI 加密，界面和日志都拿不到密文。
 fn save_master_password_at(data_dir: &Path, password: &str) -> Result<(), String> {
+    save_master_password_with(data_dir, &DpapiSealer, password)
+}
+
+/// 同 [`save_master_password_at`]，加密实现由调用方给，测试用它绕开 DPAPI。
+fn save_master_password_with(
+    data_dir: &Path,
+    sealer: &dyn SecretSealer,
+    password: &str,
+) -> Result<(), String> {
     let db = open_db_at(data_dir)?;
-    service::save_master_password(&db, &DpapiSealer, password)
+    service::save_master_password(&db, sealer, password)
         .map_err(|err| crate::error_text::error_text(&err))
 }
 
@@ -3835,18 +3808,115 @@ fn save_probed_concurrency(db: &Database, probe: &ConnectionProbe) -> Result<(),
     })
 }
 
-/// 在阻塞线程里跑一次真正的同步；界面线程不开库、不碰网络。
-/// 主密码只进参数，不写日志。
-fn run_sync_at(
-    handle: &tokio::runtime::Handle,
-    data_dir: &Path,
-    password: &str,
-    decision: Option<DeletionDecision>,
-) -> Result<SyncReport, SyncFailure> {
-    run_sync_with(handle, data_dir, &DpapiSealer, password, decision)
+/// 手动同步收尾里「记住主密码」那一项的结果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RememberDone {
+    action: RememberAction,
+    /// 写 / 删本机保存的主密码失败时的原因（不含密码原文）。
+    error: Option<String>,
 }
 
-/// 同 [`run_sync_at`]，加密实现由调用方给，测试用它绕开 DPAPI。
+/// 手动同步结束后需要落库的收尾，由后台任务在送事件之前做完。
+/// 窗口收到它只负责显示：同步中途关掉设置窗口，这些也已经存好了。
+#[derive(Clone, Debug)]
+struct ManualSettled {
+    last_result: LastResult,
+    remember: RememberDone,
+}
+
+/// 手动同步的收尾落库（阻塞线程里做，不依赖设置窗口还在不在），共三项：
+/// 1. 「记住主密码」：同步真正完成时按点击同步那一刻的开关，写入或删除本机保存的那份；
+/// 2. 「上次结果」：写进本机设置（失败只记日志，不影响这次同步本身）；
+/// 3. 进程级的自动同步计时：退避清零、间隔从这一刻重新算。
+///
+/// 同步本体、基线和 ready 标记由核心 `run_sync` 自己写，不在这里。调用时手上还握着同步权，
+/// 所以不会和自动同步的写入交错。
+fn settle_manual_sync_with(
+    data_dir: &Path,
+    sealer: &dyn SecretSealer,
+    remember_toggled: bool,
+    outcome: &Result<SyncReport, SyncFailure>,
+    password: &str,
+    at: i64,
+) -> ManualSettled {
+    let (last_result, action) = match outcome {
+        Ok(report) => (
+            last_result_from_report(report, false, at),
+            remember_action(remember_toggled, Some(report.status)),
+        ),
+        Err(failure) => (
+            last_result_error(&failure.message, false, at),
+            RememberAction::Keep,
+        ),
+    };
+    let error = match action {
+        RememberAction::Save => save_master_password_with(data_dir, sealer, password).err(),
+        RememberAction::Clear => clear_master_password_at(data_dir).err(),
+        // 取消、失败和需要确认不改变本机是否保存。
+        RememberAction::Keep => None,
+    };
+    if let Err(message) = save_last_result_at(data_dir, &last_result) {
+        // 写不进本机设置不影响这次同步本身；下次打开窗口只是看不到新结果。
+        tracing::warn!(%message, "保存同步结果失败");
+    }
+    with_auto_clock(|clock| clock.manual(last_result.at));
+    ManualSettled {
+        last_result,
+        remember: RememberDone { action, error },
+    }
+}
+
+/// 手动同步在阻塞线程里的完整流程：同步 → 记入保护状态 → 收尾落库 → 送事件 → 顺带备份。
+/// 事件送不出去（窗口已关、接收端没了）也不影响前面已经做完的落库。
+/// 备份在同步结果送出之后再做，哪个目标慢都不会拖住这次同步的结果；主同步成功才备份。
+fn manual_sync_job_with(
+    handle: &tokio::runtime::Handle,
+    data_dir: &Path,
+    sealer: &dyn SecretSealer,
+    password: String,
+    decision: Option<DeletionDecision>,
+    remember_toggled: bool,
+    sender: &Sender<SyncEvent>,
+) {
+    let outcome = run_sync_with(handle, data_dir, sealer, &password, decision);
+    let backup_password = matches!(
+        &outcome,
+        Ok(report) if report.status == SyncStatus::Completed
+    )
+    .then(|| password.clone());
+    match &outcome {
+        Ok(report) => with_sync_guard(|guard| {
+            guard.note(&SyncOutcome::Report(report.status), Instant::now());
+        }),
+        Err(failure) => with_sync_guard(|guard| {
+            guard.note(&SyncOutcome::Failed(failure.kind.clone()), Instant::now());
+        }),
+    }
+    let settled = settle_manual_sync_with(
+        data_dir,
+        sealer,
+        remember_toggled,
+        &outcome,
+        &password,
+        now_secs(),
+    );
+    let event = match outcome {
+        Ok(report) => SyncEvent::Synced {
+            report: Box::new(report),
+            password,
+            settled,
+        },
+        Err(failure) => SyncEvent::SyncFailed { failure, settled },
+    };
+    let _ = sender.send(event);
+    if let Some(password) = backup_password {
+        cloud_backup::backup_after_sync(handle, data_dir, sealer, &password);
+        let _ = sender.send(SyncEvent::PostSyncBackupsDone);
+    }
+}
+
+/// 在阻塞线程里跑一次真正的同步；界面线程不开库、不碰网络。
+/// 主密码只进参数，不写日志；加密实现由调用方给，测试用它绕开 DPAPI。
 fn run_sync_with(
     handle: &tokio::runtime::Handle,
     data_dir: &Path,
@@ -5687,12 +5757,13 @@ mod protection_tests {
     use zssh_core::sync::webdav::WebDavConfig;
 
     use super::{
-        AutoClock, AutoPause, ExclusiveKind, FailureKind, SyncGuardState, SyncInFlight,
-        SyncOutcome, WebDavForm, auto_block_reason, auto_tick_with, baseline_broken_with,
-        build_webdav, check_master_password_entry, classify_failure, deletion_lines,
-        exclusive_busy_message, load_enabled_at, load_ready_at, probe_connection_with,
-        reset_baseline_at, run_sync_with, save_enabled_at, save_probed_concurrency,
-        with_auto_clock, with_sync_guard,
+        AutoClock, AutoPause, ExclusiveKind, FailureKind, RememberAction, RememberDone,
+        SyncGuardState, SyncInFlight, SyncOutcome, WebDavForm, auto_block_reason, auto_tick_with,
+        baseline_broken_with, build_webdav, check_master_password_entry, classify_failure,
+        deletion_lines, exclusive_busy_message, load_enabled_at, load_ready_at,
+        manual_sync_job_with, probe_connection_with, reset_baseline_at, run_sync_with,
+        save_enabled_at, save_probed_concurrency, settle_manual_sync_with, with_auto_clock,
+        with_sync_guard,
     };
 
     const PASSWORD: &str = "protection-test-password";
@@ -5713,6 +5784,23 @@ mod protection_tests {
                 )));
             }
             Ok(blob[2..].iter().map(|byte| byte ^ self.0).collect())
+        }
+    }
+
+    /// 加密永远失败：用来看「记住主密码」写不进去时收尾怎么报。
+    struct FailingSealer;
+
+    impl SecretSealer for FailingSealer {
+        fn seal(&self, _plaintext: &[u8]) -> Result<Vec<u8>, SyncError> {
+            Err(SyncError::InvalidData(zssh_core::error::Reason::text(
+                "测试：加密失败".to_owned(),
+            )))
+        }
+
+        fn open(&self, _blob: &[u8]) -> Result<Vec<u8>, SyncError> {
+            Err(SyncError::InvalidData(zssh_core::error::Reason::text(
+                "测试：解密失败".to_owned(),
+            )))
         }
     }
 
@@ -6295,6 +6383,199 @@ mod protection_tests {
 
     fn load_ready_at_with(db: &Database) -> bool {
         service::is_ready(db).unwrap_or(false)
+    }
+
+    fn remembered_password(db: &Database, sealer: &TestSealer) -> Option<String> {
+        service::load_master_password(db, sealer)
+            .expect("读取记住的主密码")
+            .map(|password| password.as_str().to_owned())
+    }
+
+    // -- W38：手动同步的收尾落库不依赖设置窗口 ---------------------------------
+
+    #[test]
+    fn a_manual_sync_settles_everything_even_when_nobody_receives_the_event() {
+        let _serial = Serial::new();
+        let stub = DavStub::start();
+        let sealer = TestSealer(0x31);
+        let (dir, db) = configured_dir("manual-settle", &stub, &sealer);
+        // 本机还没记住主密码、开关是打开的：同步成功后应当写进去。
+        service::clear_master_password(&db).expect("清掉记住的主密码");
+        assert_eq!(remembered_password(&db, &sealer), None);
+        assert!(service::load_last_result(&db).expect("读取").is_none());
+        let runtime = runtime();
+        let handle = runtime.handle().clone();
+
+        // 窗口已经关了：接收端先丢掉，事件送不出去，什么都没人消费。
+        let (sender, receiver) = std::sync::mpsc::channel();
+        drop(receiver);
+        let before = super::now_secs();
+        manual_sync_job_with(
+            &handle,
+            &dir,
+            &sealer,
+            PASSWORD.to_owned(),
+            None,
+            true,
+            &sender,
+        );
+
+        // 上次结果：手动（auto = false），同步完成。
+        let last = service::load_last_result(&db)
+            .expect("读取")
+            .expect("上次结果要在后台任务里就写好");
+        assert_eq!(last.status, "completed", "{last:?}");
+        assert!(!last.auto);
+        assert!(last.at >= before);
+        // 记住主密码：开关打开 + 同步完成 → 已写进本机。
+        assert_eq!(remembered_password(&db, &sealer).as_deref(), Some(PASSWORD));
+        // 自动同步的计时：间隔从这次手动同步重新算。
+        assert_eq!(with_auto_clock(|clock| clock.last_run_at), Some(last.at));
+        // 同步本体也确实做了。
+        assert!(!stub.package_puts().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_event_carries_what_was_already_saved_and_the_remember_switch_off_clears_the_password() {
+        let _serial = Serial::new();
+        let stub = DavStub::start();
+        let sealer = TestSealer(0x32);
+        let (dir, db) = configured_dir("manual-settle-clear", &stub, &sealer);
+        assert_eq!(remembered_password(&db, &sealer).as_deref(), Some(PASSWORD));
+        let runtime = runtime();
+        let handle = runtime.handle().clone();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        // 开关关着：同步完成后删掉本机保存的那份。
+        manual_sync_job_with(
+            &handle,
+            &dir,
+            &sealer,
+            PASSWORD.to_owned(),
+            None,
+            false,
+            &sender,
+        );
+        assert_eq!(remembered_password(&db, &sealer), None);
+
+        // 窗口还在时收到的事件带着同样的收尾，显示和落库一致。
+        let saved = service::load_last_result(&db)
+            .expect("读取")
+            .expect("已写好");
+        let super::SyncEvent::Synced {
+            report, settled, ..
+        } = receiver.recv().expect("同步结果事件")
+        else {
+            panic!("第一个事件应是同步结果");
+        };
+        assert_eq!(report.status, SyncStatus::Completed);
+        assert_eq!(settled.last_result, saved);
+        assert_eq!(
+            settled.remember,
+            RememberDone {
+                action: RememberAction::Clear,
+                error: None
+            }
+        );
+        // 备份跑完的通知在同步结果之后。
+        assert!(matches!(
+            receiver.recv().expect("备份完成事件"),
+            super::SyncEvent::PostSyncBackupsDone
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_manual_sync_still_saves_the_error_result_and_keeps_the_remembered_password() {
+        let _serial = Serial::new();
+        let stub = DavStub::start();
+        let sealer = TestSealer(0x33);
+        let (dir, db) = configured_dir("manual-settle-fail", &stub, &sealer);
+        let runtime = runtime();
+        let handle = runtime.handle().clone();
+        // 云端是另一台电脑用别的主密码传上去的包：这台用 PASSWORD 同步会因主密码不对失败。
+        let other_dir = temp_dir("manual-settle-fail-other");
+        {
+            let other_db = Database::open(&other_dir.join("zssh.db")).expect("另一台电脑的库");
+            service::save_config(&other_db, &sealer, &stub.config()).expect("同一个云端");
+            other_db.host_save(&host("elsewhere")).expect("加主机");
+        }
+        let report = run_sync_with(
+            &handle,
+            &other_dir,
+            &sealer,
+            "another-master-password",
+            None,
+        )
+        .expect("另一台电脑先把包传上去");
+        assert_eq!(report.status, SyncStatus::Completed);
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        drop(receiver);
+        // 开关关着，但失败不能触发清除。
+        manual_sync_job_with(
+            &handle,
+            &dir,
+            &sealer,
+            PASSWORD.to_owned(),
+            None,
+            false,
+            &sender,
+        );
+        let last = service::load_last_result(&db)
+            .expect("读取")
+            .expect("失败的结果也要写");
+        assert_eq!(last.status, "error", "{last:?}");
+        assert!(!last.auto);
+        assert_eq!(
+            remembered_password(&db, &sealer).as_deref(),
+            Some(PASSWORD),
+            "失败不改变本机是否保存主密码"
+        );
+        assert_eq!(with_auto_clock(|clock| clock.last_run_at), Some(last.at));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other_dir);
+    }
+
+    #[test]
+    fn settling_reports_a_remember_failure_without_losing_the_last_result() {
+        let _serial = Serial::new();
+        let stub = DavStub::start();
+        let sealer = TestSealer(0x34);
+        let (dir, db) = configured_dir("manual-settle-error", &stub, &sealer);
+        let report = zssh_core::sync::engine::SyncReport {
+            status: SyncStatus::Completed,
+            summary: "同步完成".to_owned(),
+            conflicts: Vec::new(),
+            nulled_references: Vec::new(),
+            deletion: plan(&[], 0),
+            backup: None,
+            applied: None,
+            cloud_version: None,
+            retries: 0,
+        };
+        // 加密失败：记住不成，但上次结果照样写，错误原因带回给窗口显示。
+        let settled = settle_manual_sync_with(
+            &dir,
+            &FailingSealer,
+            true,
+            &Ok(report),
+            PASSWORD,
+            1_900_000_000,
+        );
+        assert_eq!(settled.remember.action, RememberAction::Save);
+        assert!(settled.remember.error.is_some());
+        let last = service::load_last_result(&db)
+            .expect("读取")
+            .expect("已写好");
+        assert_eq!(last, settled.last_result);
+        assert_eq!(last.at, 1_900_000_000);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
