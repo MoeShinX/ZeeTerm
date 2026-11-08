@@ -18,6 +18,10 @@ const ALLOWED_GUI_LAUNCHES: &[(&str, &str)] = &[
         "用 explorer 打开日志目录：用户就是要看到资源管理器窗口",
     ),
     (
+        "native/zssh-update/src/portable.rs",
+        "免安装版自更新后重启 ZeeTerm 自己（GUI 程序），已带 DETACHED_PROCESS | CREATE_NO_WINDOW",
+    ),
+    (
         "native/zssh-update/src/linux.rs",
         "Linux 的应用内更新（dpkg / pkexec / tar / sh / 新程序的 --version）：只有 Linux 版会走到，Windows 上不会启动它们",
     ),

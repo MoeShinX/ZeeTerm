@@ -35,7 +35,8 @@ pub(crate) fn is_portable() -> bool {
     portable_exe().is_some()
 }
 
-/// 免安装版的默认数据目录（`<程序所在目录>\data`）；安装版返回 `None`。
+/// 免安装版的默认数据目录（`<程序所在目录>\data`）；安装版返回 `None`。只有 Windows 有免安装版。
+#[cfg(windows)]
 pub(crate) fn data_dir() -> Option<PathBuf> {
     let exe = portable_exe()?;
     core::data_dir_for(exe.parent()?, true)

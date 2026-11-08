@@ -28,7 +28,8 @@ pub fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(windows)]
+#[cfg(test)]
 mod tests {
     use super::*;
 
