@@ -79,6 +79,7 @@ mod move_flow;
 mod move_to;
 mod nav;
 mod ops;
+mod orphan;
 mod pane;
 mod paste;
 mod props;
@@ -1737,8 +1738,12 @@ enum SftpEvent {
         /// 这个错误是「通道 / 连接已经断了」一类：视图要转成断开状态，而不只是换状态栏的一句话。
         disconnected: bool,
     },
-    /// 传输的进度或结束事件（后台转发任务送过来）。
-    Transfer(TransferEvent),
+    /// 传输的进度或结束事件（后台转发任务送过来）。`generation` 是发出它的引擎代号：
+    /// 断线重建引擎后，旧引擎排在队里的事件不能再落到界面上。
+    Transfer {
+        generation: u64,
+        event: TransferEvent,
+    },
     /// 引擎撞上同名文件，在等界面回答（`respond` 用这个编号）。
     Conflict { id: u64, info: ConflictInfo },
     /// 递归删除的进度（后台任务限流后送来）。
@@ -1790,6 +1795,8 @@ enum SftpEvent {
     /// 粘贴的决定和服务器端复制做完了；中转 / 本地复制的任务已经排进引擎（`jobs`）。
     PasteDone {
         op: u64,
+        /// 发起粘贴时的引擎代号：做完时引擎已经换了，说明任务是排进旧引擎的。
+        generation: u64,
         result: Result<(clip::Outcome, Vec<paste::PastedJob>), String>,
     },
     /// 「移动到…」对话框里读回来一个目录的子文件夹（`request` 是发起时的序号）。
@@ -2077,7 +2084,7 @@ pub struct SftpDemo {
     /// 最近一次粘贴的目标和源（失败后重试用）。
     last_paste: Option<copy::LastPaste>,
     /// 比行先到的进度（粘贴任务在后台排进引擎，行在界面线程建）：行建好后补上。
-    orphan_reports: std::collections::HashMap<TransferId, ProgressReport>,
+    orphan_reports: orphan::OrphanReports,
     /// 递归改权限的取消开关（关窗口时用）。
     chmod_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     archive_caps: ArchiveCapsState,
@@ -2243,7 +2250,7 @@ impl SftpDemo {
             paste_retry: None,
             follow: false,
             last_paste: None,
-            orphan_reports: std::collections::HashMap::new(),
+            orphan_reports: orphan::OrphanReports::new(),
             chmod_cancel: None,
             archive_caps: ArchiveCapsState::Idle,
             moving: None,
@@ -2584,7 +2591,11 @@ impl SftpDemo {
                     }
                 }
             }
-            SftpEvent::Transfer(event) => {
+            SftpEvent::Transfer { generation, event } => {
+                // 旧引擎排在队里的事件：它的行已经标成失败，不能再被盖回去。
+                if generation != self.engine_gen.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
                 let report = match event {
                     TransferEvent::Progress(report) | TransferEvent::Finished(report) => report,
                 };
@@ -2594,9 +2605,8 @@ impl SftpDemo {
                 let copied = report.direction == Direction::RemoteCopy && finished;
                 if !self.transfers.iter().any(|row| row.id == report.id) {
                     // 行还没建（粘贴的任务是后台排进引擎的）：先记着，行建好时补上。
-                    if self.orphan_reports.len() < 256 {
-                        self.orphan_reports.insert(report.id, report);
-                    }
+                    // 暂存满了也不丢终态，见 `orphan`。
+                    self.orphan_reports.insert(report);
                     return;
                 }
                 self.apply_report(report);
@@ -2710,7 +2720,11 @@ impl SftpDemo {
                     busy.files = Some(files_done);
                 }
             }
-            SftpEvent::PasteDone { op, result } => self.finish_paste(op, result, cx),
+            SftpEvent::PasteDone {
+                op,
+                generation,
+                result,
+            } => self.finish_paste(op, generation, result, cx),
             SftpEvent::ExtractDone { op, ask, result } => self.finish_extract(op, ask, result, cx),
             SftpEvent::MoveBrowsed {
                 request,

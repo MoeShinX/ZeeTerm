@@ -156,7 +156,8 @@ impl SftpDemo {
                             break;
                         }
                         // 窗口关掉之后接收端已经没了，转发任务自己退出。
-                        if sender.send(super::SftpEvent::Transfer(event)).is_err() {
+                        let event = super::SftpEvent::Transfer { generation, event };
+                        if sender.send(event).is_err() {
                             break;
                         }
                     }

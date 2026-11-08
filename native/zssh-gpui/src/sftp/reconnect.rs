@@ -151,6 +151,8 @@ impl SftpDemo {
         // 旧引擎的事件转发任务认代号：加一，它们的事件就不会落到以后新引擎的行上。
         self.engine_gen
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // 旧引擎的任务号以后不会再有行（新引擎另起任务号），暂存的早到报告一并作废。
+        self.orphan_reports.clear();
         let interrupted = interrupt_rows(
             &mut self.transfers,
             t(SftpMsg::TransferInterrupted),

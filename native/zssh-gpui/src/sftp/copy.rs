@@ -5,6 +5,8 @@
 //! 远端和本地之间不能粘贴（请用上传 / 下载，同 0.2.14）。
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use gpui_kit::*;
 
@@ -156,9 +158,25 @@ impl SftpDemo {
             this_view: self.view_id,
         };
         let sender = self.sender.clone();
+        // 任务是排进"现在这个引擎"的：做完时代号变了（中途断线重建了引擎），这些任务属于死掉的
+        // 引擎，既不能让行停在排队里，也不能让它们在死通道上白跑。
+        let generation = self.engine_gen.load(Ordering::SeqCst);
+        let current_gen = Arc::clone(&self.engine_gen);
+        let queued_engine = Arc::clone(&ctx.engine);
         runtime.spawn(async move {
             let result = run_paste(ctx, request).await;
-            let _ = sender.send(SftpEvent::PasteDone { op, result });
+            if current_gen.load(Ordering::SeqCst) != generation
+                && let Ok((_, jobs)) = &result
+            {
+                for job in jobs {
+                    queued_engine.cancel(job.id);
+                }
+            }
+            let _ = sender.send(SftpEvent::PasteDone {
+                op,
+                generation,
+                result,
+            });
         });
         cx.notify();
     }
@@ -167,6 +185,7 @@ impl SftpDemo {
     pub(super) fn finish_paste(
         &mut self,
         op: u64,
+        generation: u64,
         result: Result<(Outcome, Vec<PastedJob>), String>,
         cx: &mut Context<Self>,
     ) {
@@ -185,6 +204,9 @@ impl SftpDemo {
             }
         };
         let queued = !jobs.is_empty();
+        // 排进的引擎已经不是现在这个了：行照建（用户看得到、能重试），但标成"连接已断开"，
+        // 旧引擎的进度也不再套上来。
+        let stale = generation != self.engine_gen.load(Ordering::SeqCst);
         for job in jobs {
             let mut row = TransferRow::new(
                 job.id,
@@ -195,8 +217,25 @@ impl SftpDemo {
                 job.target,
             );
             row.peer = job.peer;
-            // 比行先到的进度补上（小文件可能已经做完了）。
-            let early = self.orphan_reports.remove(&job.id);
+            // 比行先到的进度补上（小文件可能已经做完了）；引擎里的当前快照比暂存的更新，
+            // 暂存满了丢过的报告也靠它补回来。
+            let early = self.orphan_reports.take(job.id);
+            let early = if stale {
+                None
+            } else {
+                let snapshot = self
+                    .engine
+                    .as_ref()
+                    .and_then(|engine| engine.report(job.id));
+                super::orphan::reconcile(snapshot, early)
+            };
+            if stale {
+                super::reconnect::interrupt_rows(
+                    std::slice::from_mut(&mut row),
+                    t(SftpMsg::TransferInterrupted),
+                    Instant::now(),
+                );
+            }
             self.transfers.push(row);
             if let Some(report) = early {
                 self.apply_report(report);
