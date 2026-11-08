@@ -1086,6 +1086,63 @@ fn live_recursive_delete_can_be_cancelled_and_reports_the_remainder() {
     });
 }
 
+/// 删除一棵比层数上限还深的目录：明确失败（不是无限往下走），已经删掉的部分如实报告，
+/// 没到的深处原样留着；上限够用时同一棵树能删干净。进程内 SFTP 夹具，不联网。
+#[tokio::test(flavor = "multi_thread")]
+async fn recursive_delete_refuses_a_tree_deeper_than_the_limit_and_reports_what_it_removed() {
+    use crate::test_sftp_server::{Options, TempRoot, spawn};
+    use crate::test_ssh_server::connect_trusting;
+
+    let root = TempRoot::new("delete-deep");
+    // tree/a.txt 和 tree/d1/.../d5：文件名排序 "a.txt" < "d1"，所以 a.txt 先被删掉。
+    root.write("tree/a.txt", b"a");
+    root.write("tree/d1/d2/d3/d4/d5/leaf.txt", b"leaf");
+    let known_hosts = TempRoot::new("delete-deep-kh");
+    let addr = spawn(root.path().into(), 0, Options { posix_rename: true })
+        .await
+        .expect("起夹具服务器");
+    let connection = Arc::new(connect_trusting(addr, known_hosts.path()).await);
+    let channel = zssh_core::sftp::SftpChannel::open(&connection)
+        .await
+        .expect("开通道");
+
+    // tree=0, d1=1 … d3=3, d4=4 超过上限 3。
+    let outcome = run_delete(
+        &channel,
+        "/tree",
+        &RecursiveDelete::with_max_depth(3),
+        |_| {},
+    )
+    .await;
+    let DeleteOutcome::Failed { deleted, message } = outcome else {
+        panic!("太深必须失败：{outcome:?}");
+    };
+    assert!(deleted >= 1, "a.txt 已经删了，要如实报告：{deleted}");
+    assert!(message.contains('3'), "要说明层数上限：{message}");
+    assert!(!root.path().join("tree").join("a.txt").exists());
+    assert!(
+        root.path()
+            .join("tree")
+            .join("d1")
+            .join("d2")
+            .join("d3")
+            .join("d4")
+            .exists(),
+        "没到的深处不能动"
+    );
+
+    // 上限够用：同一棵树删干净，数目对得上（a.txt 已经没了，剩 leaf.txt、d5…d1、tree 共 7 项）。
+    let outcome = run_delete(
+        &channel,
+        "/tree",
+        &RecursiveDelete::with_max_depth(6),
+        |_| {},
+    )
+    .await;
+    assert_eq!(outcome, DeleteOutcome::Done(7), "{outcome:?}");
+    assert!(!root.path().join("tree").exists());
+}
+
 // ---- 联网：本卡新增的远端操作（真实服务器，`/tmp/zssh-live-*`，测试自己的目录，结束清掉）----
 
 /// 在服务器上跑一条 shell 命令（造符号链接这类 SFTP 做不了的准备工作）。

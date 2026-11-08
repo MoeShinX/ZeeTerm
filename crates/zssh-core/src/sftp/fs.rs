@@ -524,12 +524,21 @@ pub struct DeleteProgress {
 pub struct RecursiveDelete {
     /// 取消标志：置位后在下一次检查时停下来（已删掉的不回滚）。
     cancel: Arc<AtomicBool>,
+    /// 最多进多少层目录；超过就失败。
+    max_depth: usize,
 }
 
 impl RecursiveDelete {
     pub fn new() -> Self {
+        Self::with_max_depth(super::server_copy::MAX_TREE_DEPTH)
+    }
+
+    /// 层数上限可调（测试用小值造「太深」）。默认值和服务器端清理临时目录用的是同一个
+    /// [`super::server_copy::MAX_TREE_DEPTH`]，远高于真实目录树。
+    pub fn with_max_depth(max_depth: usize) -> Self {
         Self {
             cancel: Arc::new(AtomicBool::new(false)),
+            max_depth,
         }
     }
 
@@ -571,57 +580,97 @@ impl RecursiveDelete {
             });
             return Ok(1);
         }
-        self.remove_tree(channel, target, &mut on_progress, 0).await
+        self.remove_tree(channel, target, &mut on_progress).await
     }
 
     /// 递归删目录：深度优先，先删孩子再删自己。
-    fn remove_tree<'a, F>(
-        &'a self,
-        channel: &'a SftpChannel,
-        dir: &'a str,
-        on_progress: &'a mut F,
-        deleted: u64,
-    ) -> crate::ssh::BoxFuture<'a, Result<u64, SftpError>>
+    ///
+    /// 用显式的栈而不是递归的 async 函数：层数很深时递归会先把工作线程的栈用光。
+    /// 嵌套超过 `max_depth` 层就以 [`reason_keys::SFTP_REMOVE_TREE_TOO_DEEP`] 失败；这时更浅处已经
+    /// 删掉的东西不会回滚，调用方从进度里的 `deleted` 就知道删到了哪。
+    async fn remove_tree<F>(
+        &self,
+        channel: &SftpChannel,
+        root: &str,
+        on_progress: &mut F,
+    ) -> Result<u64, SftpError>
     where
         F: FnMut(DeleteProgress) + Send,
     {
-        Box::pin(async move {
-            let mut count = deleted;
-            let entries = channel.read_dir_raw(dir).await?;
-            for entry in entries {
+        let mut count = 0u64;
+        let mut stack = vec![self.enter_dir(channel, root, 0).await?];
+        loop {
+            let Some(frame) = stack.last_mut() else {
+                break;
+            };
+            let Some(entry) = frame.entries.next() else {
+                // 孩子都处理完了：删目录自己。
                 if self.is_cancelled() {
                     return Err(SftpError::Cancelled);
                 }
-                if entry.filename == "." || entry.filename == ".." {
-                    continue;
-                }
-                let child = path::join(dir, &entry.filename);
-                // 符号链接当作文件删（不跟着走，免得删到目标目录里去）。
-                if entry.attrs.is_dir() && !entry.attrs.is_symlink() {
-                    count = self
-                        .remove_tree(channel, &child, on_progress, count)
-                        .await?;
-                } else {
-                    channel.remove_file(&child).await?;
-                    count += 1;
-                    on_progress(DeleteProgress {
-                        deleted: count,
-                        current: child,
-                    });
-                }
-            }
+                let Some(done) = stack.pop() else {
+                    break;
+                };
+                channel.remove_dir(&done.dir).await?;
+                count += 1;
+                on_progress(DeleteProgress {
+                    deleted: count,
+                    current: done.dir,
+                });
+                continue;
+            };
             if self.is_cancelled() {
                 return Err(SftpError::Cancelled);
             }
-            channel.remove_dir(dir).await?;
-            count += 1;
-            on_progress(DeleteProgress {
-                deleted: count,
-                current: dir.to_owned(),
-            });
-            Ok(count)
+            if entry.filename == "." || entry.filename == ".." {
+                continue;
+            }
+            let child = path::join(&frame.dir, &entry.filename);
+            // 符号链接当作文件删（不跟着走，免得删到目标目录里去）。
+            if entry.attrs.is_dir() && !entry.attrs.is_symlink() {
+                let next = self.enter_dir(channel, &child, stack.len()).await?;
+                stack.push(next);
+            } else {
+                channel.remove_file(&child).await?;
+                count += 1;
+                on_progress(DeleteProgress {
+                    deleted: count,
+                    current: child,
+                });
+            }
+        }
+        Ok(count)
+    }
+
+    /// 进一层目录：先查深度，再读出它的条目。
+    async fn enter_dir(
+        &self,
+        channel: &SftpChannel,
+        dir: &str,
+        depth: usize,
+    ) -> Result<DeleteFrame, SftpError> {
+        if depth > self.max_depth {
+            return Err(SftpError::RemoteReason(
+                Reason::new(
+                    reason_keys::SFTP_REMOVE_TREE_TOO_DEEP,
+                    format!("文件夹嵌套超过 {} 层，不继续删除：{dir}", self.max_depth),
+                )
+                .with("max", self.max_depth)
+                .with("path", dir),
+            ));
+        }
+        let entries = channel.read_dir_raw(dir).await?;
+        Ok(DeleteFrame {
+            dir: dir.to_owned(),
+            entries: entries.into_iter(),
         })
     }
+}
+
+/// 递归删除正在处理的一层目录：路径和还没处理的条目。
+struct DeleteFrame {
+    dir: String,
+    entries: std::vec::IntoIter<russh_sftp::protocol::File>,
 }
 
 impl Default for RecursiveDelete {
