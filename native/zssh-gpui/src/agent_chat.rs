@@ -90,14 +90,12 @@ const DEMO_ENV: &str = "ZSSH_AGENT_DEMO";
 
 // 拆到子模块里的名字在这里留一份绑定：子模块用 `use super::*` 取用，路径不变。
 use approval::{
-    AllowAllGate, ModeSwitch, approval_input, load_exec_mode, mode_is_persisted, mode_label,
-    open_settings_db, save_exec_mode,
+    AllowAllGate, ModeSwitch, approval_input, mode_is_persisted, mode_label, open_settings_db,
 };
 use demo::{
     DENIED_ERROR, DemoInput, MARKDOWN_SAMPLE, STOPPED_ERROR, TurnEvent, TurnScript,
     demo_toggle_available, start_in_real_mode,
 };
-use exec_state::ExecState;
 use fence::{StartVerdict, TurnFence};
 use history::{
     continue_conversation, delete_history_record, history_host, history_id_for_turn, history_meta,
@@ -146,7 +144,11 @@ mod history_tests;
 mod tests;
 
 pub use approval::AgentChatEvent;
-pub(crate) use approval::{allow_all_message, allow_all_title};
+pub(crate) use approval::{
+    allow_all_message, allow_all_title, load_exec_mode, mode_setting, save_exec_mode,
+};
+// 设置页和面板显示执行模式用同一套（以库为准、按库版本跟随），见 `exec_state`。
+pub(crate) use exec_state::ExecState;
 pub(crate) use view::link_click_opens;
 
 pub use embed::EmbedContext;

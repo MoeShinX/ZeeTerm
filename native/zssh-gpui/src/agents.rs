@@ -23,9 +23,11 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use zssh_core::ai::agent::discovery::{self, AgentInstall};
 use zssh_core::ai::agent::download::ReleaseInfo;
+use zssh_core::ai::bridge::ExecMode;
 use zssh_core::ai::history::HistoryStore;
 use zssh_core::store::Database;
 
+use crate::agent_chat::{ExecState, load_exec_mode, mode_setting, save_exec_mode};
 use crate::agent_setup::download::{self as agent_download, format_bytes, percent};
 use crate::agent_setup::status::{
     login_followup, login_text, skipped_older_note, source_label, too_old_note,
@@ -44,18 +46,22 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const EMPTY_PATH_SETTING: &str = "\"\"";
 
 /// 执行模式的设置值、界面标签和说明（0.2.14 `EXEC_MODE_OPTIONS`）。
-const EXEC_MODES: [(&str, AgentsMsg, AgentsMsg); 3] = [
+const EXEC_MODES: [(ExecMode, AgentsMsg, AgentsMsg); 3] = [
     (
-        "manual",
+        ExecMode::Manual,
         AgentsMsg::ExecModeManual,
         AgentsMsg::ExecModeManualHint,
     ),
     (
-        "readonly",
+        ExecMode::ReadOnly,
         AgentsMsg::ExecModeReadonly,
         AgentsMsg::ExecModeReadonlyHint,
     ),
-    ("auto", AgentsMsg::ExecModeAuto, AgentsMsg::ExecModeAutoHint),
+    (
+        ExecMode::Auto,
+        AgentsMsg::ExecModeAuto,
+        AgentsMsg::ExecModeAutoHint,
+    ),
 ];
 
 /// 写文件备份份数的范围（0.2.14 的滑块 1～20，设置库默认值见 core）。
@@ -129,7 +135,6 @@ enum AgentsMsg {
     PathReadPrefix,
     PathReadSuffix,
     DefaultAgentReadFailedPrefix,
-    ExecModeReadFailedPrefix,
     BackupKeepReadFailedPrefix,
     ErrorJoin,
     LabelSeparator,
@@ -138,7 +143,6 @@ enum AgentsMsg {
     StorageUnavailableSuffix,
     OpenFailed,
     SaveDefaultAgentFailedPrefix,
-    SaveExecModeFailedPrefix,
     SaveBackupKeepFailedPrefix,
     CreateDataDirFailedPrefix,
     OpenSettingsDbFailedPrefix,
@@ -226,7 +230,6 @@ impl Msg for AgentsMsg {
             Self::PathReadPrefix => "读取 ",
             Self::PathReadSuffix => " 的路径失败：",
             Self::DefaultAgentReadFailedPrefix => "读取默认智能体失败：",
-            Self::ExecModeReadFailedPrefix => "读取执行模式失败：",
             Self::BackupKeepReadFailedPrefix => "读取备份份数失败：",
             Self::ErrorJoin => "；",
             Self::LabelSeparator => "：",
@@ -235,7 +238,6 @@ impl Msg for AgentsMsg {
             Self::StorageUnavailableSuffix => "；路径和设置的改动不会保存。",
             Self::OpenFailed => "打开失败",
             Self::SaveDefaultAgentFailedPrefix => "保存默认智能体失败：",
-            Self::SaveExecModeFailedPrefix => "保存执行模式失败：",
             Self::SaveBackupKeepFailedPrefix => "保存备份份数失败：",
             Self::CreateDataDirFailedPrefix => "创建数据目录失败：",
             Self::OpenSettingsDbFailedPrefix => "打开设置库失败：",
@@ -324,7 +326,6 @@ impl Msg for AgentsMsg {
             Self::PathReadPrefix => "Failed to read the path for ",
             Self::PathReadSuffix => ": ",
             Self::DefaultAgentReadFailedPrefix => "Failed to read the default agent: ",
-            Self::ExecModeReadFailedPrefix => "Failed to read the execution mode: ",
             Self::BackupKeepReadFailedPrefix => "Failed to read the backup count: ",
             Self::ErrorJoin => "; ",
             Self::LabelSeparator => ": ",
@@ -333,7 +334,6 @@ impl Msg for AgentsMsg {
             Self::StorageUnavailableSuffix => "; changes to paths and settings won't be saved.",
             Self::OpenFailed => "failed to open",
             Self::SaveDefaultAgentFailedPrefix => "Failed to save the default agent: ",
-            Self::SaveExecModeFailedPrefix => "Failed to save the execution mode: ",
             Self::SaveBackupKeepFailedPrefix => "Failed to save the backup count: ",
             Self::CreateDataDirFailedPrefix => "Failed to create the data directory: ",
             Self::OpenSettingsDbFailedPrefix => "Failed to open the settings database: ",
@@ -411,7 +411,9 @@ pub struct AgentsDemo {
     saved: [Option<String>; 3],
     status: agent_setup::Snapshot,
     default_agent: AgentKind,
-    exec_mode: String,
+    /// 执行模式：不自己缓存，显示的值只跟着库走（和 AI 面板同一套 `ExecState`：写成功才变，
+    /// 面板 / 别的窗口改了会在下一个节拍跟上，读不出来按逐条确认并带上原因）。
+    exec: ExecState,
     backup_keep: usize,
     download: DownloadUi,
     download_error: Option<String>,
@@ -452,7 +454,12 @@ impl AgentsDemo {
         let mut settings_error = None;
         let mut saved: [Option<String>; 3] = std::array::from_fn(|_| None);
         let mut default_agent = AgentKind::Builtin;
-        let mut exec_mode = "manual".to_owned();
+        // 执行模式和 AI 面板用同一套状态（以库为准）：版本先于模式读取，读完之后别的窗口再写，
+        // 下一个节拍会发现版本变了而重读。
+        let exec = match &db {
+            Some(db) => ExecState::new(db.data_version().ok(), load_exec_mode(db)),
+            None => ExecState::unavailable(),
+        };
         let mut backup_keep = 5;
         if let Some(db) = &db {
             let mut problems = Vec::new();
@@ -473,14 +480,6 @@ impl AgentsDemo {
                 Err(err) => problems.push(format!(
                     "{}{err}",
                     t(AgentsMsg::DefaultAgentReadFailedPrefix)
-                )),
-            }
-            match db.ai_exec_mode() {
-                Ok(value) => exec_mode = value,
-                Err(err) => problems.push(format!(
-                    "{}{}",
-                    t(AgentsMsg::ExecModeReadFailedPrefix),
-                    crate::error_text::error_text(&err)
                 )),
             }
             match db.ai_write_backup_keep() {
@@ -516,7 +515,7 @@ impl AgentsDemo {
             saved,
             status: agent_setup::snapshot(),
             default_agent,
-            exec_mode,
+            exec,
             backup_keep,
             download: DownloadUi::Idle,
             download_error: None,
@@ -567,8 +566,17 @@ impl AgentsDemo {
         )
     }
 
+    /// 每个节拍：面板 / 别的窗口改了执行模式，这里的选中项跟上（只在库版本翻动时才读库）。
+    fn sync_exec_mode(&mut self) -> bool {
+        let Some(db) = self.db.as_ref() else {
+            return false;
+        };
+        self.exec
+            .poll(db.data_version().ok(), || load_exec_mode(db))
+    }
+
     fn poll(&mut self, cx: &mut Context<Self>) {
-        let mut changed = false;
+        let mut changed = self.sync_exec_mode();
         if agent_setup::version() != self.status.version {
             self.status = agent_setup::snapshot();
             // 状态变了顺手重读默认智能体（别的窗口 / 同步可能改了它）。
@@ -688,21 +696,15 @@ impl AgentsDemo {
         cx.notify();
     }
 
-    fn set_exec_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
+    fn set_exec_mode(&mut self, mode: ExecMode, cx: &mut Context<Self>) {
         match &self.db {
-            Some(db) => match db.set_ai_exec_mode(mode) {
-                Ok(()) => {
-                    self.exec_mode = mode.to_owned();
+            Some(db) => {
+                // 写失败时显示的模式不变（库里还是旧值），原因记在 `exec.error` 里。
+                let result = save_exec_mode(db, mode);
+                if self.exec.commit(mode, result) {
                     self.settings_error = None;
                 }
-                Err(err) => {
-                    self.settings_error = Some(format!(
-                        "{}{}",
-                        t(AgentsMsg::SaveExecModeFailedPrefix),
-                        crate::error_text::error_text(&err)
-                    ))
-                }
-            },
+            }
             None => self.settings_error = Some(self.db_unavailable()),
         }
         cx.notify();
@@ -1070,7 +1072,7 @@ impl AgentsDemo {
 
     #[cfg(debug_assertions)]
     pub fn dev_set_exec_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
-        self.set_exec_mode(mode, cx);
+        self.set_exec_mode(ExecMode::from_setting(Some(mode)), cx);
     }
 
     /// 下载流程走到哪一步：`idle` / `fetching` / `confirm` / `running`。
@@ -1125,7 +1127,7 @@ impl AgentsDemo {
 
     #[cfg(debug_assertions)]
     pub fn dev_exec_mode(&self) -> String {
-        self.exec_mode.clone()
+        mode_setting(self.exec.mode).to_owned()
     }
 }
 
@@ -1192,14 +1194,11 @@ impl AgentsDemo {
     }
 
     fn exec_mode_row(&self, entity: &Entity<Self>, tokens: &Tokens) -> AnyElement {
-        let current = EXEC_MODES
-            .iter()
-            .find(|(value, _, _)| *value == self.exec_mode)
-            .map_or("manual", |(value, _, _)| *value);
+        let current = self.exec.mode;
         let segments = EXEC_MODES
             .iter()
             .map(|(value, label, _)| crate::settings_view::Segment {
-                id: format!("ai-exec-mode-{value}").into(),
+                id: format!("ai-exec-mode-{}", mode_setting(*value)).into(),
                 label: t(*label),
                 icon: None,
                 selected: current == *value,
@@ -1217,8 +1216,8 @@ impl AgentsDemo {
             t(AgentsMsg::ExecModeTitle),
             Some(description),
             crate::settings_view::choice_group(segments, tokens, move |index, _, cx| {
-                if let Some((value, _, _)) = EXEC_MODES.get(index).copied() {
-                    entity.update(cx, |this, cx| this.set_exec_mode(value, cx));
+                if let Some((mode, _, _)) = EXEC_MODES.get(index).copied() {
+                    entity.update(cx, |this, cx| this.set_exec_mode(mode, cx));
                 }
             }),
             tokens,
@@ -1677,7 +1676,7 @@ impl AgentsDemo {
         for kind in AgentKind::ALL {
             rows.push(self.agent_block(kind, entity, &tokens));
         }
-        if let Some(err) = &self.settings_error {
+        for err in self.settings_error.iter().chain(self.exec.error.iter()) {
             rows.push(
                 div()
                     .text_xs()
@@ -1807,7 +1806,10 @@ fn save_path_setting(db: &Database, key: &str, input: &str) -> Result<Option<Str
 mod tests {
     // 不写 `use super::*`：父模块 glob 进来的 `gpui_kit::test` 会盖掉内置的
     // `#[test]` 属性宏，展开时直接撞递归上限。
-    use super::{AgentsMsg, EXEC_MODES, block_description, path_setting_value, save_path_setting};
+    use super::{
+        AgentsMsg, EXEC_MODES, ExecMode, ExecState, block_description, load_exec_mode,
+        mode_setting, path_setting_value, save_exec_mode, save_path_setting,
+    };
     use crate::agent_setup::AgentKind;
     use crate::i18n::Msg as _;
     use zssh_core::store::Database;
@@ -1846,12 +1848,51 @@ mod tests {
 
     #[test]
     fn exec_modes_match_the_values_the_bridge_reads() {
-        let values: Vec<_> = EXEC_MODES.iter().map(|(value, _, _)| *value).collect();
+        let values: Vec<_> = EXEC_MODES
+            .iter()
+            .map(|(mode, _, _)| mode_setting(*mode))
+            .collect();
         assert_eq!(values, ["manual", "readonly", "auto"]);
         let db = Database::open_in_memory().expect("内存库");
         assert_eq!(db.ai_exec_mode().expect("默认"), "manual");
         db.set_ai_exec_mode("readonly").expect("写");
         assert_eq!(db.ai_exec_mode().expect("读回"), "readonly");
+    }
+
+    /// 设置页和 AI 面板各开一个库连接、各持一份 `ExecState`：面板改了执行模式，设置页下一拍跟上；
+    /// 设置页改了，面板也跟上；谁都不自己缓存一份旧值。
+    #[test]
+    fn settings_page_and_panel_follow_the_same_exec_mode_in_the_database() {
+        let dir =
+            std::env::temp_dir().join(format!("zssh-agents-exec-sync-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        let path = dir.join("zssh.db");
+
+        let page_db = Database::open(&path).expect("设置页的库连接");
+        let panel_db = Database::open(&path).expect("面板的库连接");
+        let mut page = ExecState::new(page_db.data_version().ok(), load_exec_mode(&page_db));
+        let mut panel = ExecState::new(panel_db.data_version().ok(), load_exec_mode(&panel_db));
+        assert_eq!(page.mode, ExecMode::Manual);
+
+        // 面板里把模式改成只读自动：设置页没做任何操作，下一拍显示跟上。
+        save_exec_mode(&panel_db, ExecMode::ReadOnly).expect("面板写库");
+        assert!(panel.commit(ExecMode::ReadOnly, Ok(())));
+        assert!(page.poll(page_db.data_version().ok(), || load_exec_mode(&page_db)));
+        assert_eq!(page.mode, ExecMode::ReadOnly);
+
+        // 反过来：设置页写成功才改显示，面板下一拍跟上。
+        let result = save_exec_mode(&page_db, ExecMode::Auto);
+        assert!(page.commit(ExecMode::Auto, result));
+        assert!(panel.poll(panel_db.data_version().ok(), || load_exec_mode(&panel_db)));
+        assert_eq!(panel.mode, ExecMode::Auto);
+        // 设置页自己的写不会让它自己重读一遍。
+        assert!(!page.poll(page_db.data_version().ok(), || panic!(
+            "自己的写不该触发重读"
+        )));
+
+        drop((page_db, panel_db));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1920,7 +1961,6 @@ mod tests {
             AgentsMsg::PathReadPrefix,
             AgentsMsg::PathReadSuffix,
             AgentsMsg::DefaultAgentReadFailedPrefix,
-            AgentsMsg::ExecModeReadFailedPrefix,
             AgentsMsg::BackupKeepReadFailedPrefix,
             AgentsMsg::ErrorJoin,
             AgentsMsg::LabelSeparator,
@@ -1929,7 +1969,6 @@ mod tests {
             AgentsMsg::StorageUnavailableSuffix,
             AgentsMsg::OpenFailed,
             AgentsMsg::SaveDefaultAgentFailedPrefix,
-            AgentsMsg::SaveExecModeFailedPrefix,
             AgentsMsg::SaveBackupKeepFailedPrefix,
             AgentsMsg::CreateDataDirFailedPrefix,
             AgentsMsg::OpenSettingsDbFailedPrefix,

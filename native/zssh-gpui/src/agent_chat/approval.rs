@@ -6,7 +6,7 @@ use super::*;
 
 /// 执行模式在 `ai_exec_mode` 设置项里的字符串值。模式类型本身用 core 的
 /// [`ExecMode`]（工具桥判定放行用的就是它），窗口不再自己复制一份。
-pub(super) fn mode_setting(mode: ExecMode) -> &'static str {
+pub(crate) fn mode_setting(mode: ExecMode) -> &'static str {
     match mode {
         ExecMode::Manual => "manual",
         ExecMode::ReadOnly => "readonly",
@@ -120,7 +120,7 @@ pub(super) fn approval_input(request: &ApprovalRequest) -> (String, ToolInput) {
 }
 
 /// 读执行模式；失败时按逐条确认显示，原因交给底部。
-pub(super) fn load_exec_mode(db: &Database) -> (ExecMode, Option<String>) {
+pub(crate) fn load_exec_mode(db: &Database) -> (ExecMode, Option<String>) {
     match db.ai_exec_mode() {
         Ok(raw) => (ExecMode::from_setting(Some(&raw)), None),
         Err(err) => (
@@ -135,7 +135,7 @@ pub(super) fn load_exec_mode(db: &Database) -> (ExecMode, Option<String>) {
 }
 
 /// 保存执行模式；失败只返回给界面，不 panic。
-pub(super) fn save_exec_mode(db: &Database, mode: ExecMode) -> Result<(), String> {
+pub(crate) fn save_exec_mode(db: &Database, mode: ExecMode) -> Result<(), String> {
     db.set_ai_exec_mode(mode_setting(mode)).map_err(|err| {
         format!(
             "{}{}",

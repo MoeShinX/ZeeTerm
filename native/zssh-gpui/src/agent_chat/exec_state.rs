@@ -15,11 +15,11 @@ const FALLBACK_TICKS: u32 = 150;
 
 /// 真实模式下面板显示的执行模式，以及和它有关的错误。
 #[derive(Debug)]
-pub(super) struct ExecState {
+pub(crate) struct ExecState {
     /// 面板显示（也是面板自己当策略看待）的模式。读不出来时固定是逐条确认。
-    pub(super) mode: ExecMode,
+    pub(crate) mode: ExecMode,
     /// 读 / 写执行模式的错误，显示在面板底部；成功读到或写入后清掉。
-    pub(super) error: Option<String>,
+    pub(crate) error: Option<String>,
     /// 最近一次读取失败：此时 `mode` 是保守的逐条确认，不是库里的值。
     unreadable: bool,
     /// 上次对齐时的库版本（`PRAGMA data_version`）。
@@ -30,7 +30,7 @@ pub(super) struct ExecState {
 impl ExecState {
     /// 打开面板时的初始状态。`version` 要在读模式**之前**取：读完到下一个节拍之间别的窗口写了，
     /// 下一个节拍就会看到版本不同而重读。
-    pub(super) fn new(version: Option<i64>, read: (ExecMode, Option<String>)) -> Self {
+    pub(crate) fn new(version: Option<i64>, read: (ExecMode, Option<String>)) -> Self {
         let (mode, error) = read;
         Self {
             mode,
@@ -42,13 +42,13 @@ impl ExecState {
     }
 
     /// 没有设置库（打不开）：没法读也没法写，按逐条确认，原因由存储错误那一行显示。
-    pub(super) fn unavailable() -> Self {
+    pub(crate) fn unavailable() -> Self {
         Self::new(None, (ExecMode::Manual, None))
     }
 
     /// 用户选了 `mode`，`result` 是写库的结果。只有写成功才改显示；失败时保持原值并记下错误。
     /// 返回显示的模式有没有变成 `mode`。
-    pub(super) fn commit(&mut self, mode: ExecMode, result: Result<(), String>) -> bool {
+    pub(crate) fn commit(&mut self, mode: ExecMode, result: Result<(), String>) -> bool {
         match result {
             Ok(()) => {
                 self.mode = mode;
@@ -66,7 +66,7 @@ impl ExecState {
     /// 每个节拍调一次。库版本变了（或到了兜底间隔）才调用 `read` 重读，并把显示对齐到读到的值。
     /// 读失败时显示逐条确认并带上原因（和工具桥读失败时的做法一致），不会留着旧的"全部放行"。
     /// 返回界面有没有变化。
-    pub(super) fn poll(
+    pub(crate) fn poll(
         &mut self,
         version: Option<i64>,
         read: impl FnOnce() -> (ExecMode, Option<String>),
