@@ -95,6 +95,9 @@ impl Msg for BackupViewMsg {
             }
             Self::UnreadableBackup => "这份备份读不了（可能是换了 Windows 用户保存的）",
             Self::LocalCardTitle => "本地备份",
+            Self::LocalCardDescription if !cfg!(windows) => {
+                "用本机的资料库密钥（存在系统钥匙串里）加密保存在本机。每次从云端合并之前、每次恢复之前、版本升级后第一次启动时                 （库里有数据才备份）会自动留一份。恢复之前会先自动备份当前状态。备份里也带着同步账号设置                 （存储连接、登录信息、云端备份目标），恢复后不用重新填。"
+            }
             Self::LocalCardDescription => {
                 "用 Windows 账户加密保存在本机。每次从云端合并之前、每次恢复之前、版本升级后第一次启动时\
                  （库里有数据才备份）会自动留一份。恢复之前会先自动备份当前状态。备份里也带着同步账号设置\
@@ -167,6 +170,9 @@ impl Msg for BackupViewMsg {
                 "This backup cannot be read (it may have been saved under a different Windows user)"
             }
             Self::LocalCardTitle => "Local Backups",
+            Self::LocalCardDescription if !cfg!(windows) => {
+                "Encrypted with this computer's data key (kept in the system keychain) and stored on this computer.                  A backup is kept automatically before every merge from the cloud, before every restore, and on the                  first start after an upgrade (only when the database has data). The current state is backed up                  automatically before a restore. Backups also carry the sync account settings (storage connection,                  sign-in info, cloud backup targets), so you do not need to fill them in again after restoring."
+            }
             Self::LocalCardDescription => {
                 "Encrypted with your Windows account and stored on this computer. A backup is kept automatically \
                  before every merge from the cloud, before every restore, and on the first start after an upgrade \
