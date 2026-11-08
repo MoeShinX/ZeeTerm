@@ -145,18 +145,28 @@ pub fn normalize_device(raw: &str) -> Result<(String, String), SerialError> {
         return Err(SerialError::InvalidName(raw.trim().to_owned()));
     }
     // 不带 `\\.\` 前缀的只认 COM 口。
-    let is_com = short.len() > 3
-        && short[..3].eq_ignore_ascii_case("COM")
-        && short[3..].bytes().all(|byte| byte.is_ascii_digit());
-    if short == name && !is_com {
+    let com_digits = com_port_digits(short);
+    if short == name && com_digits.is_none() {
         return Err(SerialError::InvalidName(raw.trim().to_owned()));
     }
-    let short = if is_com {
-        format!("COM{}", &short[3..])
-    } else {
-        short.to_owned()
+    let short = match com_digits {
+        Some(digits) => format!("COM{digits}"),
+        None => short.to_owned(),
     };
     Ok((format!(r"\\.\{short}"), short))
+}
+
+/// `COM<数字>`（不分大小写，至少一位数字）时返回数字部分。
+///
+/// 用 `get` 取前缀：设备名来自用户输入或同步过来的主机配置，第 3 个字节可能落在多字节字符中间，
+/// 直接 `name[..3]` 会 panic。
+fn com_port_digits(name: &str) -> Option<&str> {
+    let prefix = name.get(..3)?;
+    let digits = name.get(3..)?;
+    (prefix.eq_ignore_ascii_case("COM")
+        && !digits.is_empty()
+        && digits.bytes().all(|byte| byte.is_ascii_digit()))
+    .then_some(digits)
 }
 
 /// 串口的错误。`Display` 是中文（日志和测试用）；界面上的文案走 [`SerialError::message`]，按语言生成。
@@ -367,10 +377,7 @@ pub fn normalize_device_unix(raw: &str) -> Result<(String, String), SerialError>
     } else if name.contains('/') {
         return Err(invalid());
     } else {
-        let is_com = name.len() > 3
-            && name[..3].eq_ignore_ascii_case("COM")
-            && name[3..].bytes().all(|byte| byte.is_ascii_digit());
-        if is_com || !segment_ok(name) {
+        if com_port_digits(name).is_some() || !segment_ok(name) {
             return Err(invalid());
         }
         format!("/dev/{name}")
@@ -833,6 +840,36 @@ mod unix_tests {
             );
         }
         assert!(normalize_device_unix(&format!("/dev/{}", "a".repeat(300))).is_err());
+    }
+
+    /// 第 3 个字节落在多字节字符中间时以前会 panic（按字节切片）。
+    #[test]
+    fn multibyte_device_names_are_rejected_without_panicking() {
+        for bad in [
+            "a\u{e9}",
+            "a\u{4e2d}\u{6587}",
+            "ab\u{4e2d}",
+            "\u{4e2d}",
+            "co\u{4e2d}3",
+            "/dev/tty\u{4e2d}",
+            "tty\u{1f600}0",
+        ] {
+            assert!(
+                matches!(normalize_device_unix(bad), Err(SerialError::InvalidName(_))),
+                "{bad:?} 应当被拒绝"
+            );
+            assert!(
+                matches!(normalize_device(bad), Err(SerialError::InvalidName(_))),
+                "{bad:?} 应当被拒绝（Windows 规则）"
+            );
+            assert!(normalize_device_for_os(bad).is_err());
+        }
+        // 正常的短名不受影响。
+        assert_eq!(com_port_digits("COM3"), Some("3"));
+        assert_eq!(com_port_digits("com12"), Some("12"));
+        assert_eq!(com_port_digits("COM"), None);
+        assert_eq!(com_port_digits("COMx"), None);
+        assert_eq!(com_port_digits("a\u{e9}"), None);
     }
 
     #[test]
