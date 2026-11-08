@@ -454,7 +454,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
         what: ShortcutMsg::SendBreak,
     },
     Shortcut {
-        keys: "Ctrl+= / Ctrl+- / Ctrl+0",
+        keys: mac_or("Cmd+= / Cmd+- / Cmd+0", "Ctrl+= / Ctrl+- / Ctrl+0"),
         what: ShortcutMsg::FontZoom,
     },
     Shortcut {

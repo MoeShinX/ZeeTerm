@@ -2967,8 +2967,13 @@ impl TerminalWorkspace {
             return;
         }
 
-        // Ctrl+= / Ctrl+- / Ctrl+0 缩放终端字号。
-        if ctrl {
+        // Ctrl+= / Ctrl+- / Ctrl+0 缩放终端字号；macOS 上是 Cmd（Ctrl 组合要照常发给远端）。
+        let zoom_mod = if cfg!(target_os = "macos") {
+            keystroke.modifiers.platform
+        } else {
+            ctrl
+        };
+        if zoom_mod {
             match key {
                 "=" | "+" => {
                     self.update_settings(cx, |s| {
