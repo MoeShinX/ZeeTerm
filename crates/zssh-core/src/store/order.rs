@@ -38,11 +38,10 @@ impl Database {
             return Ok(());
         }
         self.with_conn_write(|conn| {
-            let tx = conn.transaction()?;
             let now = crate::store::hosts::now_unix();
             let mut layer: Option<Option<i64>> = None;
             for (index, id) in ids.iter().enumerate() {
-                let row: Option<(Option<i64>, i64)> = tx
+                let row: Option<(Option<i64>, i64)> = conn
                     .query_row(
                         "SELECT group_id, sort FROM hosts WHERE id = ?1",
                         [id],
@@ -67,13 +66,12 @@ impl Database {
                 }
                 let wanted = index as i64 + 1;
                 if sort != wanted {
-                    tx.execute(
+                    conn.execute(
                         "UPDATE hosts SET sort = ?1, updated_at = ?2 WHERE id = ?3",
                         params![wanted, now, id],
                     )?;
                 }
             }
-            tx.commit()?;
             Ok(())
         })
     }
@@ -85,11 +83,10 @@ impl Database {
             return Ok(());
         }
         self.with_conn_write(|conn| {
-            let tx = conn.transaction()?;
             let now = crate::store::hosts::now_unix();
             let mut layer: Option<Option<i64>> = None;
             for (index, id) in ids.iter().enumerate() {
-                let row: Option<(Option<i64>, i64)> = tx
+                let row: Option<(Option<i64>, i64)> = conn
                     .query_row(
                         "SELECT parent_id, sort FROM groups WHERE id = ?1",
                         [id],
@@ -114,13 +111,12 @@ impl Database {
                 }
                 let wanted = index as i64 + 1;
                 if sort != wanted {
-                    tx.execute(
+                    conn.execute(
                         "UPDATE groups SET sort = ?1, updated_at = ?2 WHERE id = ?3",
                         params![wanted, now, id],
                     )?;
                 }
             }
-            tx.commit()?;
             Ok(())
         })
     }
@@ -129,20 +125,18 @@ impl Database {
     /// `group_id` 是 `None` 时只管未分组的主机（根分组那一层不重置）。
     pub fn order_reset(&self, group_id: Option<i64>) -> Result<(), ZsshError> {
         self.with_conn_write(|conn| {
-            let tx = conn.transaction()?;
             let now = crate::store::hosts::now_unix();
             if let Some(group_id) = group_id {
-                crate::store::groups::ensure_group_exists(&tx, group_id)?;
-                tx.execute(
+                crate::store::groups::ensure_group_exists(conn, group_id)?;
+                conn.execute(
                     "UPDATE groups SET sort = 0, updated_at = ?1 WHERE parent_id = ?2 AND sort != 0",
                     params![now, group_id],
                 )?;
             }
-            tx.execute(
+            conn.execute(
                 "UPDATE hosts SET sort = 0, updated_at = ?1 WHERE group_id IS ?2 AND sort != 0",
                 params![now, group_id],
             )?;
-            tx.commit()?;
             Ok(())
         })
     }

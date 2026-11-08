@@ -40,4 +40,6 @@ pub(crate) fn parse_column<T>(
 }
 
 #[cfg(test)]
+mod atomic_writes;
+#[cfg(test)]
 mod tests;

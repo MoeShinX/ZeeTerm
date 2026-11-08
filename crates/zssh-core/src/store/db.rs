@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 
 use crate::error::ZsshError;
 
@@ -113,12 +113,33 @@ impl Database {
         run(&mut guard)
     }
 
-    /// 写操作用：成功后通知“数据变了”。
+    /// 在一个写事务里跑 `run`：返回 `Ok` 才提交，返回 `Err`（或 panic）整个回滚。
+    ///
+    /// 用 `IMMEDIATE`：一开始就拿写锁。多条语句的写操作里常有"先读后写"（查冲突再插入、
+    /// 读旧值再合并），默认的延迟事务在读和写之间被别的连接（比如同时开着的另一个实例）
+    /// 抢先写入时，要么读到过期结果，要么在升级写锁时直接报 busy。
+    ///
+    /// `run` 拿到的是事务里的连接（只给 `&Connection`，开不了嵌套事务）；
+    /// 需要局部回滚的用 SAVEPOINT。
+    pub(crate) fn with_tx<T>(
+        &self,
+        run: impl FnOnce(&Connection) -> Result<T, ZsshError>,
+    ) -> Result<T, ZsshError> {
+        self.with_conn(|conn| {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let value = run(&tx)?;
+            tx.commit()?;
+            Ok(value)
+        })
+    }
+
+    /// 写操作用：整个 `run` 是一个事务，**提交成功之后**才通知“数据变了”。
+    /// 失败（含提交失败）时库回到调用前的样子，也不通知。
     pub(crate) fn with_conn_write<T>(
         &self,
-        run: impl FnOnce(&mut Connection) -> Result<T, ZsshError>,
+        run: impl FnOnce(&Connection) -> Result<T, ZsshError>,
     ) -> Result<T, ZsshError> {
-        let result = self.with_conn(run);
+        let result = self.with_tx(run);
         if result.is_ok() {
             self.notify_changed();
         }

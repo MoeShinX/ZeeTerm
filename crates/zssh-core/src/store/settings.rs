@@ -226,7 +226,9 @@ impl Database {
     /// 存在 `settings` 表里，但**不在同步白名单**里：每台电脑一个，跟着包走会让
     /// 平局规则失效。
     pub fn sync_device_id(&self) -> Result<String, ZsshError> {
-        self.with_conn(|conn| {
+        // 先读后写（没有就生成并保存）：放进一个写事务，两个实例同时第一次启动也不会各存各的。
+        // 不通知"数据变了"：这个设置不在同步白名单里。
+        self.with_tx(|conn| {
             let existing: Option<String> = conn
                 .query_row(
                     "SELECT value FROM settings WHERE key = ?1",

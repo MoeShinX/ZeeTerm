@@ -165,26 +165,33 @@ impl Database {
     /// 新建或修改一条规则。
     pub fn forward_save(&self, draft: &PortForwardDraft) -> Result<PortForward, ZsshError> {
         let (name, bind_host, dest_host) = validate(draft)?;
-        // 同一台主机上两条远程转发监听同一个端口：服务器只会接受一条，另一条开启时一定失败，
-        // 保存时就拦下（复审 F3）。
-        if draft.kind == ForwardKind::Remote {
-            let clash = self.forward_list()?.into_iter().any(|rule| {
-                rule.host_id == draft.host_id
-                    && rule.kind == ForwardKind::Remote
-                    && rule.bind_port == draft.bind_port
-                    && Some(rule.id) != draft.id
-            });
-            if clash {
-                return Err(ZsshError::InvalidInput(
-                    Reason::new(
-                        rk::FORWARD_REMOTE_PORT_TAKEN,
-                        format!("这台主机已经有一条远程转发监听端口 {}", draft.bind_port),
-                    )
-                    .with("port", draft.bind_port),
-                ));
+        // 转发规则只存本机、不进同步包，所以用 `with_tx`（提交但不通知"同步数据变了"）。
+        let id = self.with_tx(|conn| {
+            // 同一台主机上两条远程转发监听同一个端口：服务器只会接受一条，另一条开启时一定失败，
+            // 保存时就拦下（复审 F3）。查冲突和下面的写入在同一个写事务里：以前是先查、放锁、
+            // 再插入，两次保存并发时都能通过检查。`id IS NOT ?` 在新建（`NULL`）时对所有行成立。
+            if draft.kind == ForwardKind::Remote {
+                let clash: bool = conn.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM port_forwards WHERE host_id = ?1 AND kind = ?2 \
+                     AND bind_port = ?3 AND id IS NOT ?4)",
+                    params![
+                        draft.host_id,
+                        ForwardKind::Remote.as_str(),
+                        draft.bind_port,
+                        draft.id
+                    ],
+                    |row| row.get(0),
+                )?;
+                if clash {
+                    return Err(ZsshError::InvalidInput(
+                        Reason::new(
+                            rk::FORWARD_REMOTE_PORT_TAKEN,
+                            format!("这台主机已经有一条远程转发监听端口 {}", draft.bind_port),
+                        )
+                        .with("port", draft.bind_port),
+                    ));
+                }
             }
-        }
-        let id = self.with_conn(|conn| {
             let now = crate::store::hosts::now_unix();
             match draft.id {
                 Some(id) => {

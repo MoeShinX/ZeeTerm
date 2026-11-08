@@ -116,8 +116,7 @@ impl Database {
     /// 删分组：里面的主机和子分组都挂回根目录，不删主机（设计文档 6.1 的规则）。
     pub fn group_delete(&self, id: i64) -> Result<(), ZsshError> {
         self.with_conn_write(|conn| {
-            let tx = conn.transaction()?;
-            let changed = tx.execute("DELETE FROM groups WHERE id = ?1", [id])?;
+            let changed = conn.execute("DELETE FROM groups WHERE id = ?1", [id])?;
             if changed == 0 {
                 return Err(ZsshError::NotFound {
                     entity: Entity::Group,
@@ -125,12 +124,11 @@ impl Database {
                 });
             }
             // groups.parent_id 上还有 ON DELETE SET NULL 兜底，这两句是显式的意图
-            tx.execute(
+            conn.execute(
                 "UPDATE groups SET parent_id = NULL WHERE parent_id = ?1",
                 [id],
             )?;
-            tx.execute("UPDATE hosts SET group_id = NULL WHERE group_id = ?1", [id])?;
-            tx.commit()?;
+            conn.execute("UPDATE hosts SET group_id = NULL WHERE group_id = ?1", [id])?;
             Ok(())
         })
     }
