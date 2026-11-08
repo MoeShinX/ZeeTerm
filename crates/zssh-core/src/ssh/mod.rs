@@ -28,7 +28,7 @@ pub mod stream;
 pub use auth::{AuthConfig, KeySource, RememberedSecret};
 pub use connection::{
     keepalive_interval, script_stdin, set_keepalive_interval, ChainHop, ConnectParams, Connection,
-    ExecCapture, ServerKey, EXEC_MAX_STREAM_BYTES, SCRIPT_EXEC_COMMAND,
+    ExecCapture, ServerKey, EXEC_MAX_STREAM_BYTES, EXEC_OUTPUT_LIMIT, SCRIPT_EXEC_COMMAND,
 };
 pub use connections::{
     collect_connections, connections_command, matches_query, parse_connections,

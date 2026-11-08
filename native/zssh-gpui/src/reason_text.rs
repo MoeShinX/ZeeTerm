@@ -248,6 +248,9 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "ssh.sftp_subsystem_timeout" => "Timed out waiting for the sftp subsystem's reply",
         "ssh.exec_failed" => "Failed to run the command: {cause}",
         "ssh.exec_nonzero" => "The command exited with a non-zero status: {stderr}",
+        "ssh.exec_output_too_large" => {
+            "The command's {stream} output exceeded {limit} bytes; reading was stopped and the channel closed"
+        }
         "ssh.exec_cancelled" => "Cancelled; the command was not sent",
         "ssh.remote_port_claimed" => {
             "A remote forward on this connection is already listening on port {port}"

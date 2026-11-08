@@ -812,6 +812,19 @@ impl Connection {
     /// 流控（见设计文档 5.2 的硬规则：采集不能阻塞会话的读写和 ack——它是
     /// **独立通道**，最多卡死自己的 exec，卡不到别的）。
     pub async fn exec(&self, command: &str) -> Result<String, ZsshError> {
+        self.exec_with_limit(command, EXEC_OUTPUT_LIMIT).await
+    }
+
+    /// 同 [`Connection::exec`]，但 stdout、stderr 各自最多收 `max_stream_bytes` 字节。
+    ///
+    /// 任何一个流超限都**报错**（`ssh.exec_output_too_large`），不会把截断的内容当成功返回；
+    /// 报错前先关掉这条 exec 通道，远端的命令不会因为没人读而卡在写满的窗口上，我们这边也不再收数据。
+    /// 采集类调用方的正常输出都很小，默认 [`EXEC_OUTPUT_LIMIT`] 够用；确实要更大的输出就传更大的上限。
+    pub async fn exec_with_limit(
+        &self,
+        command: &str,
+        max_stream_bytes: usize,
+    ) -> Result<String, ZsshError> {
         let mut channel = self.open_session_channel().await?;
         channel.exec(true, command).await.map_err(exec_failed)?;
         let mut output = Vec::new();
@@ -819,8 +832,18 @@ impl Connection {
         let mut exit_ok = true;
         while let Some(event) = channel.wait().await {
             match event {
-                russh::ChannelMsg::Data { ref data } => output.extend_from_slice(data),
-                russh::ChannelMsg::ExtendedData { ref data, .. } => stderr.extend_from_slice(data),
+                russh::ChannelMsg::Data { ref data } => {
+                    if !try_append_within(&mut output, data, max_stream_bytes) {
+                        let _ = channel.close().await;
+                        return Err(exec_output_too_large("stdout", max_stream_bytes));
+                    }
+                }
+                russh::ChannelMsg::ExtendedData { ref data, .. } => {
+                    if !try_append_within(&mut stderr, data, max_stream_bytes) {
+                        let _ = channel.close().await;
+                        return Err(exec_output_too_large("stderr", max_stream_bytes));
+                    }
+                }
                 russh::ChannelMsg::ExitStatus { exit_status } => {
                     exit_ok = exit_status == 0;
                 }
@@ -1031,6 +1054,13 @@ pub fn script_stdin(script: &str) -> Vec<u8> {
 /// 工具桥 exec 通道每个流的输出上限（卡片 AI-1：每个流最多 64KB）。
 pub const EXEC_MAX_STREAM_BYTES: usize = 64 * 1024;
 
+/// [`Connection::exec`] 每个流（stdout / stderr）最多收多少字节。
+///
+/// 它的调用方是状态栏采集、cwd 探测、装公钥这类"一次一发"的命令，正常输出是几十字节到几 KiB；
+/// 4 MiB 比最大的合法输出还大出几个数量级，同时让一个失控的命令（`yes`、被误指到大日志）
+/// 最多占这么多内存就被判失败。
+pub const EXEC_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
+
 /// [`Connection::exec_capture`] 的一次执行结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecCapture {
@@ -1173,6 +1203,26 @@ fn describe_source(
         stored_in.describe(),
         stored_in.advice(host, port),
         stored_in.source(host, port),
+    )
+}
+
+/// 追加后总量不超过 `limit` 才追加并返回 `true`；会超限就一个字节都不追加、返回 `false`。
+fn try_append_within(buffer: &mut Vec<u8>, data: &[u8], limit: usize) -> bool {
+    if buffer.len().saturating_add(data.len()) > limit {
+        return false;
+    }
+    buffer.extend_from_slice(data);
+    true
+}
+
+fn exec_output_too_large(stream: &'static str, limit: usize) -> ZsshError {
+    ZsshError::Shell(
+        Reason::new(
+            rk::EXEC_OUTPUT_TOO_LARGE,
+            format!("命令的 {stream} 输出超过 {limit} 字节上限，已停止读取并关闭通道"),
+        )
+        .with("stream", stream)
+        .with("limit", limit),
     )
 }
 
@@ -2251,5 +2301,36 @@ mod tests {
         }
         assert_eq!(buffer, b"abcd");
         assert_eq!(truncated, 4);
+    }
+
+    #[test]
+    fn try_append_within_never_exceeds_the_limit_and_leaves_the_buffer_untouched() {
+        let mut buffer = Vec::new();
+        assert!(try_append_within(&mut buffer, b"ab", 4));
+        assert!(try_append_within(&mut buffer, b"cd", 4), "恰好到上限允许");
+        assert_eq!(buffer, b"abcd");
+        assert!(!try_append_within(&mut buffer, b"e", 4));
+        assert_eq!(buffer, b"abcd", "超限的块整个不进缓冲，不留半截");
+        // 一块就超限，缓冲仍是空的。
+        let mut empty = Vec::new();
+        assert!(!try_append_within(&mut empty, b"abcde", 4));
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn exec_output_too_large_carries_a_reason_key_and_params() {
+        use crate::error::ErrorWithCode as _;
+        let err = exec_output_too_large("stderr", 1024);
+        let ZsshError::Shell(reason) = &err else {
+            panic!("应当是 Shell 原因：{err:?}");
+        };
+        assert_eq!(reason.key(), rk::EXEC_OUTPUT_TOO_LARGE);
+        let params = err.params();
+        assert!(
+            params.contains(&("stream", "stderr".to_owned())),
+            "{params:?}"
+        );
+        assert!(params.contains(&("limit", "1024".to_owned())), "{params:?}");
+        assert!(err.to_string().contains("1024"), "{err}");
     }
 }

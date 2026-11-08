@@ -839,6 +839,7 @@ pub mod keys {
         SYNC_ENDPOINT_KIND_UNKNOWN = "sync.endpoint_kind_unknown";
         SYNC_ENDPOINT_OPTIONS_BAD = "sync.endpoint_options_bad";
         SYNC_ENDPOINT_INVALID = "sync.endpoint_invalid";
+        EXEC_OUTPUT_TOO_LARGE = "ssh.exec_output_too_large";
         // @generated-keys-end
     }
 }
