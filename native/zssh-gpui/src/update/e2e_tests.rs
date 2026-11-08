@@ -1218,8 +1218,7 @@ mod linux_chain {
                 .status()
                 .expect("需要系统 tar");
             assert!(status.success());
-            let bytes = std::fs::read(&out).expect("读包");
-            bytes
+            std::fs::read(&out).expect("读包")
         }
 
         /// 模拟手动解压的旧版本。
