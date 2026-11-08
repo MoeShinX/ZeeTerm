@@ -727,8 +727,8 @@ mod c05 {
         fn reset<'a>(&'a self) -> BoxFuture<'a, ()> {
             self.inner.reset()
         }
-        fn suggested_chunk_len(&self) -> u32 {
-            self.inner.suggested_chunk_len()
+        fn suggested_chunk_len(&self, direction: Direction, peer: Option<&str>) -> u32 {
+            self.inner.suggested_chunk_len(direction, peer)
         }
         fn server_identity<'a>(&'a self) -> BoxFuture<'a, Result<String, SftpError>> {
             self.inner.server_identity()

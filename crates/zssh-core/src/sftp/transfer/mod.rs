@@ -1057,11 +1057,11 @@ impl TransferEngine {
             }
 
             let tuning = CopyTuning {
-                // 没显式配置时用数据面建议的块大小（SFTP 那边是服务器声明的读限制）。
-                chunk_len: self
-                    .options
-                    .chunk_len
-                    .unwrap_or_else(|| self.endpoints.suggested_chunk_len()),
+                // 没显式配置时用数据面建议的块大小（SFTP 那边按方向取服务器声明的读 / 写限制）。
+                chunk_len: self.options.chunk_len.unwrap_or_else(|| {
+                    self.endpoints
+                        .suggested_chunk_len(state.job.direction, state.job.peer.as_deref())
+                }),
                 in_flight: if self.options.pipeline {
                     self.options.in_flight.max(1)
                 } else {
@@ -1834,5 +1834,7 @@ fn local_source_mode(_path: &str) -> Option<u32> {
     None
 }
 
+#[cfg(test)]
+mod chunk_tests;
 #[cfg(test)]
 mod tests;

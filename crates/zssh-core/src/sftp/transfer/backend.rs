@@ -75,8 +75,12 @@ pub trait TransferEndpoints: RemoteLister {
     /// 断线之后让下一次拿到的通道是新的（真实现会重开通道 / 重连）。
     fn reset<'a>(&'a self) -> BoxFuture<'a, ()>;
 
-    /// 建议的读写块大小（SFTP 用服务器声明的读限制；其它实现给保守值）。
-    fn suggested_chunk_len(&self) -> u32 {
+    /// 建议的读写块大小（其它实现给保守值）。
+    ///
+    /// 要按方向取：同一块数据在源端是一次读、在目标端是一次写，两端各有自己的上限
+    /// （SFTP 的 `limits` 读写上限可以不同）。下载受源的读上限约束，上传受目标的写上限约束，
+    /// 远端到远端两者都要守。`peer` 的含义同 [`Self::pair`]。
+    fn suggested_chunk_len(&self, _direction: Direction, _peer: Option<&str>) -> u32 {
         crate::sftp::session::CONSERVATIVE_CHUNK
     }
 
@@ -98,8 +102,26 @@ pub trait TransferChannelProvider: Send + Sync {
         Box::pin(async {})
     }
     /// 通道已经开着时，用它协商出来的读限制当块大小；还没开就用保守值。
-    fn suggested_chunk_len(&self) -> u32 {
+    fn suggested_read_len(&self) -> u32 {
         crate::sftp::session::CONSERVATIVE_CHUNK
+    }
+    /// 通道已经开着时，用它协商出来的写限制当块大小；还没开就用保守值。
+    fn suggested_write_len(&self) -> u32 {
+        crate::sftp::session::CONSERVATIVE_CHUNK
+    }
+}
+
+/// 按传输方向选块大小：块在源端是一次读、在目标端是一次写，要同时守住两端各自的上限。
+///
+/// - 下载：只受源（远端）的读上限约束，本地写没有上限；
+/// - 上传：只受目标（远端）的写上限约束；
+/// - 远端到远端：两端都是 SFTP，取源读上限与目标写上限里小的那个；
+/// - 本地到本地：不经过 SFTP，沿用读侧的值。
+fn chunk_len_for(direction: Direction, source_read: u32, target_write: u32) -> u32 {
+    match direction {
+        Direction::Download | Direction::LocalCopy => source_read,
+        Direction::Upload => target_write,
+        Direction::RemoteCopy => source_read.min(target_write),
     }
 }
 
@@ -201,14 +223,27 @@ impl SftpChannelProvider {
         Ok(())
     }
 
-    /// 已经协商好的块大小（通道还没开就用保守值）。
-    pub fn chunk_len_hint(&self) -> u32 {
-        self.slots
-            .cached
-            .try_lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().map(|channel| channel.caps().max_read_len()))
-            .unwrap_or(crate::sftp::session::CONSERVATIVE_CHUNK)
+    /// 已经协商好的读块大小（通道还没开就用保守值）。
+    pub fn read_len_hint(&self) -> u32 {
+        self.negotiated(|caps| caps.max_read_len())
+    }
+
+    /// 已经协商好的写块大小（通道还没开就用保守值）。
+    pub fn write_len_hint(&self) -> u32 {
+        self.negotiated(|caps| caps.max_write_len())
+    }
+
+    /// 取已开通道协商出的某个上限：先看主连接上的通道，没有再看专用连接上的；
+    /// 都还没开（或锁正被占着）就用保守值——宁可小，不能超过服务器的上限。
+    fn negotiated(&self, pick: impl Fn(&crate::sftp::session::SftpCaps) -> u32) -> u32 {
+        for slot in [&self.slots.cached, &self.slots.dedicated] {
+            if let Ok(guard) = slot.try_lock() {
+                if let Some(channel) = guard.as_ref() {
+                    return pick(channel.caps());
+                }
+            }
+        }
+        crate::sftp::session::CONSERVATIVE_CHUNK
     }
 }
 
@@ -262,8 +297,12 @@ impl TransferChannelProvider for SftpChannelProvider {
         })
     }
 
-    fn suggested_chunk_len(&self) -> u32 {
-        self.chunk_len_hint()
+    fn suggested_read_len(&self) -> u32 {
+        self.read_len_hint()
+    }
+
+    fn suggested_write_len(&self) -> u32 {
+        self.write_len_hint()
     }
 }
 
@@ -467,8 +506,18 @@ impl TransferEndpoints for SftpEndpoints {
         })
     }
 
-    fn suggested_chunk_len(&self) -> u32 {
-        self.provider.suggested_chunk_len()
+    fn suggested_chunk_len(&self, direction: Direction, peer: Option<&str>) -> u32 {
+        // 源端：远端到远端时是 peer（缺失就当没开通道，用保守值）；下载时就是本机的连接。
+        let source_read = match direction {
+            Direction::RemoteCopy => self
+                .provider_for(peer)
+                .map(|provider| provider.suggested_read_len())
+                .unwrap_or(crate::sftp::session::CONSERVATIVE_CHUNK),
+            _ => self.provider.suggested_read_len(),
+        };
+        // 目标端永远是本机连接上的那条（上传 / 远端复制的目标）。
+        let target_write = self.provider.suggested_write_len();
+        chunk_len_for(direction, source_read, target_write)
     }
 }
 

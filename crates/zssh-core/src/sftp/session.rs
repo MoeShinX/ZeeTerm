@@ -629,19 +629,27 @@ impl SftpChannel {
         }
     }
 
-    /// 带偏移写一次。
+    /// 带偏移写。
+    ///
+    /// 数据超过本通道的写上限（`max_write_len`）时按上限拆成顺序的几次写：服务器遇到超限的
+    /// 写会直接拒绝（甚至断开连接），而 russh-sftp 不会替我们拆。这样不管调用方给多大一块，
+    /// 发出去的每个请求都不超限。
     pub async fn write_at(
         &self,
         handle: &str,
         offset: u64,
         data: Vec<u8>,
     ) -> Result<(), SftpError> {
-        let status = self
-            .raw
-            .write(handle, offset, data)
-            .await
-            .map_err(SftpError::from)?;
-        status_ok(status, "")
+        let max = self.caps.max_write_len() as usize;
+        write_in_pieces(offset, data, max, |piece_offset, piece| async move {
+            let status = self
+                .raw
+                .write(handle, piece_offset, piece)
+                .await
+                .map_err(SftpError::from)?;
+            status_ok(status, "")
+        })
+        .await
     }
 
     /// 服务器自己把一个句柄的内容拷到另一个句柄（`copy-data`，数据不经过本机）。
@@ -960,6 +968,32 @@ fn first_name(name: Name) -> Option<String> {
     name.files.into_iter().next().map(|file| file.filename)
 }
 
+/// 把一次写拆成不超过 `max` 字节的几段，**按顺序**一段一段交给 `send(偏移, 数据)`。
+///
+/// 没超限就原样交出整块（不拷贝）；某一段失败立刻返回错误，后面的不再发。
+/// 单独成函数是为了不依赖真实的 SFTP 会话就能测偏移和长度。
+async fn write_in_pieces<F, Fut>(
+    offset: u64,
+    data: Vec<u8>,
+    max: usize,
+    mut send: F,
+) -> Result<(), SftpError>
+where
+    F: FnMut(u64, Vec<u8>) -> Fut,
+    Fut: std::future::Future<Output = Result<(), SftpError>>,
+{
+    let max = max.max(1);
+    if data.len() <= max {
+        return send(offset, data).await;
+    }
+    let mut written = 0u64;
+    for piece in data.chunks(max) {
+        send(offset + written, piece.to_vec()).await?;
+        written += piece.len() as u64;
+    }
+    Ok(())
+}
+
 /// 通道空闲多久回收（专用通道在传输任务结束后关掉；浏览通道跟连接同寿命）。
 pub const IDLE_CHANNEL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
@@ -1018,6 +1052,55 @@ mod tests {
         let text = caps.describe();
         assert!(text.contains("fsync"), "{text}");
         assert!(text.contains("posix-rename"), "{text}");
+    }
+
+    /// 记录每次写的 (偏移, 长度)；`fail_at` 指定第几次写失败。
+    async fn collect_writes(
+        offset: u64,
+        len: usize,
+        max: usize,
+        fail_at: Option<usize>,
+    ) -> (Result<(), SftpError>, Vec<(u64, usize)>) {
+        let calls = std::sync::Mutex::new(Vec::new());
+        let result = write_in_pieces(offset, vec![1u8; len], max, |piece_offset, piece| {
+            let calls = &calls;
+            async move {
+                let mut calls = calls.lock().unwrap();
+                calls.push((piece_offset, piece.len()));
+                if fail_at == Some(calls.len()) {
+                    return Err(SftpError::Remote("boom".to_owned()));
+                }
+                Ok(())
+            }
+        })
+        .await;
+        (result, calls.into_inner().unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_write_within_the_limit_is_sent_whole() {
+        let (result, calls) = collect_writes(10, 100, 100, None).await;
+        result.unwrap();
+        assert_eq!(calls, vec![(10, 100)]);
+        // 空写也照发一次（和原来一致）。
+        let (result, calls) = collect_writes(7, 0, 100, None).await;
+        result.unwrap();
+        assert_eq!(calls, vec![(7, 0)]);
+    }
+
+    #[tokio::test]
+    async fn an_oversized_write_is_split_in_order_with_correct_offsets() {
+        let (result, calls) = collect_writes(1000, 250, 100, None).await;
+        result.unwrap();
+        assert_eq!(calls, vec![(1000, 100), (1100, 100), (1200, 50)]);
+        assert!(calls.iter().all(|(_, len)| *len <= 100));
+    }
+
+    #[tokio::test]
+    async fn a_failed_piece_stops_the_remaining_writes() {
+        let (result, calls) = collect_writes(0, 300, 100, Some(2)).await;
+        assert!(result.is_err());
+        assert_eq!(calls, vec![(0, 100), (100, 100)]);
     }
 
     #[test]
