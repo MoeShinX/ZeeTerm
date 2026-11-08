@@ -1127,7 +1127,8 @@ async fn recursive_delete_refuses_a_tree_deeper_than_the_limit_and_reports_what_
         "没到的深处不能动"
     );
 
-    // 上限够用：同一棵树删干净，数目对得上（a.txt 已经没了，剩 leaf.txt、d5…d1、tree 共 7 项）。
+    // 上限够用：同一棵树删干净，数目对得上：leaf.txt、d5…d1、tree 共 7 项，
+    // 上一轮没轮到 a.txt 的话再加它一项。
     let outcome = run_delete(
         &channel,
         "/tree",
@@ -1135,7 +1136,8 @@ async fn recursive_delete_refuses_a_tree_deeper_than_the_limit_and_reports_what_
         |_| {},
     )
     .await;
-    assert_eq!(outcome, DeleteOutcome::Done(7), "{outcome:?}");
+    let expected = 7 + u64::from(!a_removed);
+    assert_eq!(outcome, DeleteOutcome::Done(expected), "{outcome:?}");
     assert!(!root.path().join("tree").exists());
 }
 
