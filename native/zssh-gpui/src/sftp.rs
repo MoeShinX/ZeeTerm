@@ -1860,6 +1860,9 @@ struct TransferRow {
     batch: Option<u64>,
     source: String,
     target: String,
+    /// 跨主机复制的源端（其余任务是 `None`）。断线重建引擎后重试要靠它把源主机重新登记进新引擎，
+    /// 绝不能退回「源 = 目标主机」。
+    peer: Option<paste::PeerRef>,
     state: TransferState,
     total_files: u64,
     done_files: u64,
@@ -1890,6 +1893,7 @@ impl TransferRow {
             batch,
             source,
             target,
+            peer: None,
             state: TransferState::Queued,
             total_files: 0,
             done_files: 0,
@@ -3013,6 +3017,8 @@ mod local_listing_tests;
 mod move_e2e_tests;
 #[cfg(test)]
 mod paste_tests;
+#[cfg(test)]
+mod resubmit_tests;
 /// 新建视图时本地栏是不是收起的：就是设置里「显示本地栏」的反面。
 fn local_hidden_initial(settings: &crate::settings::UiSettings) -> bool {
     !settings.sftp_show_local

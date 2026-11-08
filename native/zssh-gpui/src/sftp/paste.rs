@@ -96,6 +96,27 @@ pub(super) struct PastedJob {
     pub(super) batch: Option<u64>,
     pub(super) source: String,
     pub(super) target: String,
+    /// 跨主机复制：源在哪台主机（见 [`PeerRef`]）；同一台主机上的任务是 `None`。
+    pub(super) peer: Option<PeerRef>,
+}
+
+/// 跨主机复制的源端：引擎里登记的名字 + 源主机数据面的弱引用。
+///
+/// 传输行要把它存下来：断线重建引擎后，重试要按它重新 `register_peer`，否则新引擎的
+/// `provider_for(None)` 会拿**目标**主机当源，目标机碰巧有同路径时就复制错内容还报成功。
+/// 用弱引用是因为源标签关了以后不该靠这一行把它的连接留着；弱引用升不上去 = 源已关闭，重试直接拒绝。
+#[derive(Clone)]
+pub(super) struct PeerRef {
+    pub(super) name: String,
+    pub(super) provider: std::sync::Weak<dyn TransferChannelProvider>,
+}
+
+impl std::fmt::Debug for PeerRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerRef")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
 }
 
 /// 登记在引擎里的对端名字：每个视图一个。
@@ -293,11 +314,13 @@ fn submit(
     engine: &Arc<TransferEngine>,
     batch: &Arc<ConflictBatch>,
     job: TransferJob,
+    peer_ref: Option<PeerRef>,
     jobs: &mut Vec<PastedJob>,
 ) -> u64 {
     let id = engine.submit_in_batch(job.clone(), batch);
     jobs.push(PastedJob {
         id,
+        peer: peer_ref,
         name: name_of(&job.source),
         direction: job.direction,
         batch: Some(batch.id()),
@@ -403,11 +426,16 @@ async fn paste_remote(
         conflict: None,
     };
 
-    // 源在另一台主机：把它的数据面登记给这边的引擎。
+    // 源在另一台主机：把它的数据面登记给这边的引擎，并留一份弱引用给传输行（重试要用）。
+    let mut peer_ref: Option<PeerRef> = None;
     if !same_host && let Some(provider) = &source_provider {
         let provider: Arc<dyn TransferChannelProvider> = provider.clone();
-        ctx.endpoints
-            .register_peer(&peer_name(request.source.view), provider);
+        let name = peer_name(request.source.view);
+        peer_ref = Some(PeerRef {
+            name: name.clone(),
+            provider: Arc::downgrade(&provider),
+        });
+        ctx.endpoints.register_peer(&name, provider);
     }
     let peer = (!same_host).then(|| peer_name(request.source.view));
     let relay_job = |item: &ClipItem, dest: &str| TransferJob {
@@ -455,7 +483,13 @@ async fn paste_remote(
             if !same_host {
                 method = Some(CopyMethod::Relay);
             }
-            submit(&ctx.engine, &batch, relay_job(item, &dest), &mut jobs);
+            submit(
+                &ctx.engine,
+                &batch,
+                relay_job(item, &dest),
+                peer_ref.clone(),
+                &mut jobs,
+            );
             results.push(ItemResult::new(item, ItemState::Queued, None));
             continue;
         }
@@ -471,7 +505,13 @@ async fn paste_remote(
                 .unwrap_or(false);
         if merging && !ctx.has_copy_data() {
             method = Some(CopyMethod::Relay);
-            submit(&ctx.engine, &batch, relay_job(item, &dest), &mut jobs);
+            submit(
+                &ctx.engine,
+                &batch,
+                relay_job(item, &dest),
+                peer_ref.clone(),
+                &mut jobs,
+            );
             results.push(ItemResult::new(
                 item,
                 ItemState::Queued,
@@ -504,7 +544,13 @@ async fn paste_remote(
                         )
                     };
                     method = Some(CopyMethod::Relay);
-                    submit(&ctx.engine, &batch, relay_job(item, &dest), &mut jobs);
+                    submit(
+                        &ctx.engine,
+                        &batch,
+                        relay_job(item, &dest),
+                        peer_ref.clone(),
+                        &mut jobs,
+                    );
                     results.push(ItemResult::new(
                         item,
                         ItemState::Queued,
@@ -581,7 +627,13 @@ async fn paste_remote(
                         // 命令没法用：改走中转（这是"用不了"，不是"做失败了"）。
                         tracing::info!(%reason, "服务器上没法用 cp，改经本机中转");
                         method = Some(CopyMethod::Relay);
-                        submit(&ctx.engine, &batch, relay_job(item, &dest), &mut jobs);
+                        submit(
+                            &ctx.engine,
+                            &batch,
+                            relay_job(item, &dest),
+                            peer_ref.clone(),
+                            &mut jobs,
+                        );
                         results.push(ItemResult::new(
                             item,
                             ItemState::Queued,
@@ -787,6 +839,7 @@ pub(super) async fn paste_local(
                 recursive: true,
                 peer: None,
             },
+            None,
             &mut jobs,
         );
         results.push(ItemResult::new(item, ItemState::Queued, None));

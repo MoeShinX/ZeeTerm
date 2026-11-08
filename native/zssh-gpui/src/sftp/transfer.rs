@@ -10,7 +10,9 @@ use ::gpui::{ExternalPaths, Window};
 use gpui_kit::*;
 use zssh_core::sftp::local::download_target;
 use zssh_core::sftp::path::file_name;
-use zssh_core::sftp::transfer::backend::{SftpChannelProvider, SftpEndpoints};
+use zssh_core::sftp::transfer::backend::{
+    SftpChannelProvider, SftpEndpoints, TransferChannelProvider,
+};
 use zssh_core::sftp::transfer::{
     ConflictAction, ConflictResolver, Direction, ProgressReport, TransferEngine, TransferId,
     TransferJob, TransferState,
@@ -24,10 +26,43 @@ use super::engine::{
 use super::local_listing::{LocalRequest, request_listing};
 use super::menu::MenuAction;
 use super::model::NavMode;
+use super::paste::PeerRef;
 use super::{RemoteOp, SftpDemo, SftpEvent, SftpMsg, TestHook, TransferRow};
 use crate::error_text::error_text;
 use crate::i18n::t;
 use crate::ssh_backend::runtime;
+
+/// 失败的行重新提交所需的东西（纯数据，方便单测）。
+pub(super) struct ResubmitPlan {
+    pub(super) job: TransferJob,
+    /// 跨主机复制：要登记进新引擎的 (登记名, 源主机数据面)；同一台主机上的任务是 `None`。
+    pub(super) peer_provider: Option<(String, Arc<dyn TransferChannelProvider>)>,
+}
+
+/// 由一个失败的行重建任务。行记着跨主机复制的源端就带上它（`peer` 用同一个登记名），
+/// 源主机的数据面升不上去（源标签已关闭 / 已重连换了新的）就拒绝，不回退成 `peer: None`。
+pub(super) fn plan_resubmit(row: &TransferRow) -> Result<ResubmitPlan, String> {
+    let peer_provider = match &row.peer {
+        None => None,
+        Some(peer) => {
+            let provider = peer
+                .provider
+                .upgrade()
+                .ok_or_else(|| t(SftpMsg::PasteSourceClosed).to_owned())?;
+            Some((peer.name.clone(), provider))
+        }
+    };
+    Ok(ResubmitPlan {
+        job: TransferJob {
+            direction: row.direction,
+            source: row.source.clone(),
+            target: row.target.clone(),
+            recursive: true,
+            peer: row.peer.as_ref().map(|peer| peer.name.clone()),
+        },
+        peer_provider,
+    })
+}
 
 impl SftpDemo {
     // ---- 远端编辑器 ----
@@ -504,6 +539,16 @@ impl SftpDemo {
     /// 提交任务。`submit` 内部 `tokio::spawn`，所以要套一层 runtime 上下文。
     /// 在 [`Self::in_new_batch`] 里调用时任务属于那个批次。
     fn submit_job(&mut self, job: TransferJob, name: String) -> Result<(), String> {
+        self.submit_job_from(job, name, None)
+    }
+
+    /// 同 [`Self::submit_job`]；`peer_ref` 是跨主机复制的源端，记在新行上供以后重试用。
+    fn submit_job_from(
+        &mut self,
+        job: TransferJob,
+        name: String,
+        peer_ref: Option<PeerRef>,
+    ) -> Result<(), String> {
         let engine = Arc::clone(
             self.engine
                 .as_ref()
@@ -520,14 +565,16 @@ impl SftpDemo {
                 None => engine.submit(job),
             }
         };
-        self.transfers.push(TransferRow::new(
+        let mut row = TransferRow::new(
             id,
             name.clone(),
             direction,
             batch.as_ref().map(|batch| batch.id()),
             source,
             target,
-        ));
+        );
+        row.peer = peer_ref;
+        self.transfers.push(row);
         self.sync_install_state();
         self.say(format!(
             "{}{}{}{name}",
@@ -597,42 +644,54 @@ impl SftpDemo {
         let _guard = runtime.enter();
         let retried = self.engine.as_ref().is_some_and(|engine| engine.retry(id));
         // 引擎不认这个任务号（断线时旧引擎已经停了，重连后是新引擎）：失败的行按原来的来源 / 目标重新排一个。
-        let text = if retried || self.resubmit_failed(id) {
-            t(SftpMsg::TransferRetrying)
+        if retried {
+            self.say(t(SftpMsg::TransferRetrying));
         } else {
-            t(SftpMsg::TransferCannotRetry)
-        };
-        self.say(text);
+            match self.resubmit_failed(id) {
+                Ok(true) => self.say(t(SftpMsg::TransferRetrying)),
+                Ok(false) => self.say(t(SftpMsg::TransferCannotRetry)),
+                // 跨主机复制的源已经关了：明说原因，行原样保留。
+                Err(message) => self.warn(message),
+            }
+        }
         cx.notify();
     }
 
     /// 失败的行在当前引擎里已经没有对应的任务（旧引擎在断线时停了）：按它的方向 / 来源 / 目标重新提交，
-    /// 旧行换成新行。只处理 `Failed` 的行；没排上返回 `false`（行原样保留）。
-    pub(super) fn resubmit_failed(&mut self, id: TransferId) -> bool {
+    /// 旧行换成新行。只处理 `Failed` 的行。
+    ///
+    /// - `Ok(true)`：已重新排上；`Ok(false)`：不适用（没有引擎、不是失败行、提交没成），行原样保留；
+    /// - `Err(原因)`：跨主机复制的源主机已经关闭，**拒绝**重试（行原样保留）——绝不退回成
+    ///   「源 = 目标主机」，那样目标机碰巧有同路径时会复制错内容还报成功。
+    pub(super) fn resubmit_failed(&mut self, id: TransferId) -> Result<bool, String> {
         if self.engine.is_none() {
-            return false;
+            return Ok(false);
         }
         let Some(position) = self
             .transfers
             .iter()
             .position(|row| row.id == id && matches!(row.state, TransferState::Failed(_)))
         else {
-            return false;
+            return Ok(false);
         };
+        let plan = plan_resubmit(&self.transfers[position])?;
+        // 新引擎的 `peers` 是空的：先把源主机的数据面登记进去，任务才找得到它。
+        if let Some((name, provider)) = plan.peer_provider {
+            let Some(endpoints) = &self.endpoints else {
+                return Err(t(SftpMsg::PasteSourceClosed).to_owned());
+            };
+            endpoints.register_peer(&name, provider);
+        }
         let row = self.transfers.remove(position);
-        let job = TransferJob {
-            direction: row.direction,
-            source: row.source.clone(),
-            target: row.target.clone(),
-            recursive: true,
-            peer: None,
-        };
-        if self.submit_job(job, row.name.clone()).is_err() {
+        if self
+            .submit_job_from(plan.job, row.name.clone(), row.peer.clone())
+            .is_err()
+        {
             self.transfers
                 .insert(position.min(self.transfers.len()), row);
-            return false;
+            return Ok(false);
         }
-        true
+        Ok(true)
     }
 
     /// 队列里一行的右键菜单项被点了。

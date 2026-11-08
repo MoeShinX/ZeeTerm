@@ -186,7 +186,7 @@ impl SftpDemo {
         };
         let queued = !jobs.is_empty();
         for job in jobs {
-            let row = TransferRow::new(
+            let mut row = TransferRow::new(
                 job.id,
                 job.name,
                 job.direction,
@@ -194,6 +194,7 @@ impl SftpDemo {
                 job.source,
                 job.target,
             );
+            row.peer = job.peer;
             // 比行先到的进度补上（小文件可能已经做完了）。
             let early = self.orphan_reports.remove(&job.id);
             self.transfers.push(row);

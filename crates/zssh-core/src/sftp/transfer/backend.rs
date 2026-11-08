@@ -419,3 +419,68 @@ impl TransferEndpoints for SftpEndpoints {
         self.provider.suggested_chunk_len()
     }
 }
+
+#[cfg(test)]
+mod peer_tests {
+    use super::*;
+
+    /// 开通道一律失败，错误文字带着自己的标签：看错误就知道请求落在了哪台主机上。
+    struct Labelled(&'static str);
+
+    impl TransferChannelProvider for Labelled {
+        fn channel<'a>(&'a self) -> BoxFuture<'a, Result<Arc<SftpChannel>, SftpError>> {
+            let label = self.0;
+            Box::pin(async move { Err(SftpError::Remote(format!("labelled:{label}"))) })
+        }
+    }
+
+    fn endpoints() -> SftpEndpoints {
+        SftpEndpoints::new(Arc::new(Labelled("target")))
+    }
+
+    async fn source_error(endpoints: &SftpEndpoints, peer: Option<&str>) -> SftpError {
+        match endpoints
+            .pair(Direction::RemoteCopy, peer, "/src/a", "/dst/a", "owner")
+            .await
+        {
+            Ok(_) => panic!("测试里的数据面都开不了通道"),
+            Err(err) => err,
+        }
+    }
+
+    /// W04：没登记过的 peer 要明确报"源已关闭"，绝不能退回目标主机当源
+    /// （目标机碰巧有同路径时会复制错内容还报成功）。
+    #[tokio::test]
+    async fn an_unregistered_peer_is_refused_instead_of_falling_back_to_the_target() {
+        let endpoints = endpoints();
+        match source_error(&endpoints, Some("view-9")).await {
+            SftpError::RemoteReason(reason) => {
+                assert_eq!(reason.key(), reason_keys::SFTP_COPY_PEER_CLOSED);
+            }
+            other => panic!("应该报源连接已关闭：{other}"),
+        }
+        // 计划阶段（展开源树）同样不退回。
+        let plan = endpoints
+            .plan_remote_copy(Some("view-9"), "/src", "/dst", true)
+            .await;
+        assert!(
+            matches!(&plan, Err(SftpError::RemoteReason(reason)) if reason.key() == reason_keys::SFTP_COPY_PEER_CLOSED),
+            "{plan:?}"
+        );
+        // 对照：peer 为 None 才是同一台主机，落在目标的数据面上。
+        let same_host = source_error(&endpoints, None).await.to_string();
+        assert!(same_host.contains("labelled:target"), "{same_host}");
+    }
+
+    /// 登记之后，源端落在登记的那台主机上；重复登记同名会换成新的数据面。
+    #[tokio::test]
+    async fn a_registered_peer_is_used_as_the_source() {
+        let endpoints = endpoints();
+        endpoints.register_peer("view-9", Arc::new(Labelled("first")));
+        let err = source_error(&endpoints, Some("view-9")).await.to_string();
+        assert!(err.contains("labelled:first"), "{err}");
+        endpoints.register_peer("view-9", Arc::new(Labelled("second")));
+        let err = source_error(&endpoints, Some("view-9")).await.to_string();
+        assert!(err.contains("labelled:second"), "{err}");
+    }
+}
