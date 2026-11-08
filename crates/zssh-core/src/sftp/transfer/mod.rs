@@ -718,10 +718,7 @@ impl TransferEngine {
         self.emit(&state, true);
 
         // 展开任务（下载要读远端目录，走数据面）。取消一到就丢掉还在读目录的规划。
-        let plan = match self
-            .until_cancelled(&state, self.build_plan(&state.job))
-            .await
-        {
+        let plan = match self.until_cancelled(&state, self.build_plan(&state)).await {
             Ok(plan) => plan,
             Err(err) => {
                 self.finish_with_error(&state, err);
@@ -835,13 +832,24 @@ impl TransferEngine {
     }
 
     /// 展开任务（按方向走本地树或远端树）。
-    async fn build_plan(&self, job: &TransferJob) -> Result<plan::TransferPlan, SftpError> {
+    async fn build_plan(&self, state: &Arc<JobState>) -> Result<plan::TransferPlan, SftpError> {
+        let job = &state.job;
         match job.direction {
-            Direction::Upload => plan::plan_upload(
-                std::path::Path::new(&job.source),
-                &job.target,
-                job.recursive,
-            ),
+            // 本地树的遍历是同步的：放进阻塞线程池（不占着异步工作线程），并且每个目录 / 条目
+            // 之前看一次取消，取消后规划很快停下。
+            Direction::Upload => {
+                let (state, job) = (Arc::clone(state), job.clone());
+                run_local_plan(move || {
+                    plan::plan_upload_with(
+                        std::path::Path::new(&job.source),
+                        &job.target,
+                        job.recursive,
+                        plan::MAX_PLAN_DEPTH,
+                        &|| state.is_cancelled(),
+                    )
+                })
+                .await
+            }
             Direction::Download => {
                 let lister: &dyn backend::RemoteLister = self.endpoints.as_ref();
                 plan::plan_download(
@@ -857,11 +865,19 @@ impl TransferEngine {
                     .plan_remote_copy(job.peer.as_deref(), &job.source, &job.target, job.recursive)
                     .await
             }
-            Direction::LocalCopy => plan::plan_local_copy(
-                std::path::Path::new(&job.source),
-                std::path::Path::new(&job.target),
-                job.recursive,
-            ),
+            Direction::LocalCopy => {
+                let (state, job) = (Arc::clone(state), job.clone());
+                run_local_plan(move || {
+                    plan::plan_local_copy_with(
+                        std::path::Path::new(&job.source),
+                        std::path::Path::new(&job.target),
+                        job.recursive,
+                        plan::MAX_PLAN_DEPTH,
+                        &|| state.is_cancelled(),
+                    )
+                })
+                .await
+            }
         }
     }
 
@@ -1733,6 +1749,21 @@ impl TransferEngine {
             .get(&id)
             .cloned()
     }
+}
+
+/// 在阻塞线程池里跑一次同步的本地规划。线程没跑起来（池关了、任务 panic）按内部错误报。
+async fn run_local_plan(
+    work: impl FnOnce() -> Result<plan::TransferPlan, SftpError> + Send + 'static,
+) -> Result<plan::TransferPlan, SftpError> {
+    tokio::task::spawn_blocking(work).await.map_err(|err| {
+        SftpError::Internal(
+            Reason::new(
+                reason_keys::SFTP_TASK_LOCAL_READ,
+                format!("本地读任务没跑起来：{err}"),
+            )
+            .with("cause", &err),
+        )
+    })?
 }
 
 /// 一个文件传完之后的结果。

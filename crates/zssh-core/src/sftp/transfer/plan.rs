@@ -20,7 +20,7 @@ use crate::sftp::path as remote_path;
 /// 目录树（Linux 路径最长 4096 字节，常见的树不过十几层），正常使用碰不到。
 pub const MAX_PLAN_DEPTH: usize = 256;
 
-fn tree_too_deep(dir: &str, max_depth: usize) -> SftpError {
+pub(crate) fn tree_too_deep(dir: &str, max_depth: usize) -> SftpError {
     SftpError::RemoteReason(
         Reason::new(
             reason_keys::XFER_TREE_TOO_DEEP,
@@ -74,6 +74,23 @@ pub fn plan_upload(
     remote_target: &str,
     recursive: bool,
 ) -> Result<TransferPlan, SftpError> {
+    plan_upload_with(
+        local_source,
+        remote_target,
+        recursive,
+        MAX_PLAN_DEPTH,
+        &|| false,
+    )
+}
+
+/// 同 [`plan_upload`]，层数上限可调、本地遍历可被打断（见 [`local::walk_local_tree_with`]）。
+pub(crate) fn plan_upload_with(
+    local_source: &Path,
+    remote_target: &str,
+    recursive: bool,
+    max_depth: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<TransferPlan, SftpError> {
     let mut plan = TransferPlan::default();
     if local_source.is_file() {
         let size = std::fs::metadata(local::long_path(local_source))
@@ -97,7 +114,7 @@ pub fn plan_upload(
         return Err(dir_needs_recursive());
     }
 
-    let tree = local::walk_local_tree(local_source)?;
+    let tree = local::walk_local_tree_with(local_source, max_depth, cancelled)?;
     // 目标根本身也要建（"拖目录 a 到 /remote" 的落点是 /remote/a，它可能不存在；
     // M3-1 的测试传进的都是已存在的临时目录，没踩到这条）。create_target_dir
     // 对"已存在"是成功的，所以多建一次没有代价。
@@ -424,6 +441,17 @@ pub fn plan_local_copy(
     target: &Path,
     recursive: bool,
 ) -> Result<TransferPlan, SftpError> {
+    plan_local_copy_with(source, target, recursive, MAX_PLAN_DEPTH, &|| false)
+}
+
+/// 同 [`plan_local_copy`]，层数上限可调、本地遍历可被打断。
+pub(crate) fn plan_local_copy_with(
+    source: &Path,
+    target: &Path,
+    recursive: bool,
+    max_depth: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<TransferPlan, SftpError> {
     let mut plan = TransferPlan::default();
     if source.is_file() {
         let size = std::fs::metadata(local::long_path(source))
@@ -446,7 +474,7 @@ pub fn plan_local_copy(
     if !recursive {
         return Err(dir_needs_recursive());
     }
-    let tree = local::walk_local_tree(source)?;
+    let tree = local::walk_local_tree_with(source, max_depth, cancelled)?;
     plan.dirs.push(target.display().to_string());
     let join = |relative: &str| -> PathBuf {
         let mut path = target.to_path_buf();
@@ -541,6 +569,36 @@ mod tests {
             plan.dirs
         );
         assert!(plan.notes.iter().any(|note| note.contains("空目录")));
+    }
+
+    /// 本地上传 / 本地复制的规划遇到太深的目录：明确失败，不是跳过深处的子树再报成功。
+    #[test]
+    fn local_plans_fail_on_a_tree_deeper_than_the_limit() {
+        let root = crate::test_util::TestDir::new("plan-local-deep");
+        let chain = root.join("d1").join("d2").join("d3").join("d4");
+        std::fs::create_dir_all(&chain).unwrap();
+        std::fs::write(root.join("top.txt"), b"t").unwrap();
+        std::fs::write(chain.join("leaf.txt"), b"l").unwrap();
+        let out = crate::test_util::TestDir::new("plan-local-deep-out");
+
+        let err = plan_upload_with(&root, "/dst", true, 2, &|| false).expect_err("上传规划太深");
+        assert!(
+            matches!(&err, SftpError::RemoteReason(r) if r.key() == reason_keys::XFER_TREE_TOO_DEEP),
+            "{err:?}"
+        );
+        let err = plan_local_copy_with(&root, &out.join("copy"), true, 2, &|| false)
+            .expect_err("本地复制规划太深");
+        assert!(
+            matches!(&err, SftpError::RemoteReason(r) if r.key() == reason_keys::XFER_TREE_TOO_DEEP),
+            "{err:?}"
+        );
+
+        // 上限够深就两个文件都在计划里（深处的叶子没有被丢）。
+        let plan = plan_upload_with(&root, "/dst", true, 4, &|| false).expect("上限够深");
+        assert_eq!(plan.files.len(), 2, "{:?}", plan.files);
+        // 取消的规划返回 Cancelled，不是一个半截的计划。
+        let err = plan_upload_with(&root, "/dst", true, 4, &|| true).expect_err("已取消");
+        assert!(matches!(err, SftpError::Cancelled), "{err:?}");
     }
 
     #[test]

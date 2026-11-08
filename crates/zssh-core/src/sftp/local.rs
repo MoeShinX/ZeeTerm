@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use super::error::{from_io, SftpError};
+use super::transfer::plan::{tree_too_deep, MAX_PLAN_DEPTH};
 use crate::error::{reason_keys, Reason};
 
 /// Windows 文件名里不允许出现的字符。
@@ -432,7 +433,20 @@ pub struct LocalTree {
 }
 
 /// 遍历本地目录（上传用）：**不跟着符号链接 / 目录联接走**，空目录也记下来。
+///
+/// 嵌套超过 [`MAX_PLAN_DEPTH`] 层就报错（和远端展开同一个上限），不会悄悄丢掉深处的内容再报成功。
 pub fn walk_local_tree(root: &Path) -> Result<LocalTree, SftpError> {
+    walk_local_tree_with(root, MAX_PLAN_DEPTH, &|| false)
+}
+
+/// 同 [`walk_local_tree`]，层数上限可调（测试用小值造「太深」），并且可以被打断：
+/// 每进一个目录、每处理一个条目之前问一次 `cancelled`，为真就返回 [`SftpError::Cancelled`]。
+/// 遍历是同步的，调用方要放进 `spawn_blocking`，取消才能及时生效。
+pub(crate) fn walk_local_tree_with(
+    root: &Path,
+    max_depth: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<LocalTree, SftpError> {
     let mut tree = LocalTree {
         files: Vec::new(),
         skipped_links: Vec::new(),
@@ -443,35 +457,81 @@ pub fn walk_local_tree(root: &Path) -> Result<LocalTree, SftpError> {
             path: root.display().to_string(),
         });
     }
-    walk_dir(root, root, &mut tree, 0)?;
+    walk_dir(root, &mut tree, max_depth, cancelled)?;
     Ok(tree)
 }
 
-fn walk_dir(root: &Path, dir: &Path, tree: &mut LocalTree, depth: usize) -> Result<(), SftpError> {
-    // 深度上限：正常人不会传 100 层，防的是病态目录结构（也可能藏着链接环）。
-    const MAX_DEPTH: usize = 64;
-    if depth > MAX_DEPTH {
-        tree.skipped_links.push(format!(
-            "{}（目录太深，超过 {MAX_DEPTH} 层）",
-            dir.display()
-        ));
-        return Ok(());
+/// 正在遍历的一层目录：它的条目名（已排序）和读到哪了。
+struct WalkFrame {
+    dir: PathBuf,
+    names: std::vec::IntoIter<std::ffi::OsString>,
+}
+
+/// 读一个目录并压成新的一层；`depth` 超限、被取消或读目录失败返回错误。
+fn enter_dir(
+    root: &Path,
+    dir: PathBuf,
+    depth: usize,
+    max_depth: usize,
+    tree: &mut LocalTree,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<WalkFrame, SftpError> {
+    // 深度上限：防的是病态目录结构（也可能藏着链接环）。超过要明确失败：跳过这棵子树却报成功，
+    // 用户会以为整个目录都传了。
+    if depth > max_depth {
+        return Err(tree_too_deep(&dir.display().to_string(), max_depth));
+    }
+    if cancelled() {
+        return Err(SftpError::Cancelled);
     }
     // 注意：只在真正调系统接口时才套长路径前缀，列表里的路径保持"原样"，
     // 否则 `\?\` 会混进相对路径和给用户的提示里。
-    let listing = std::fs::read_dir(long_path(dir))
+    let listing = std::fs::read_dir(long_path(&dir))
         .map_err(|err| from_io(err, &dir.display().to_string()))?;
     let mut names: Vec<std::ffi::OsString> = Vec::new();
     for entry in listing {
+        // 单个目录里条目很多时也要能及时打断。
+        if cancelled() {
+            return Err(SftpError::Cancelled);
+        }
         let entry = entry.map_err(|err| from_io(err, &dir.display().to_string()))?;
         names.push(entry.file_name());
     }
     names.sort();
     if names.is_empty() && dir != root {
-        tree.empty_dirs.push(relative_slash(root, dir));
+        tree.empty_dirs.push(relative_slash(root, &dir));
     }
-    for name in names {
-        let child = dir.join(&name);
+    Ok(WalkFrame {
+        dir,
+        names: names.into_iter(),
+    })
+}
+
+/// 深度优先、按名字排序遍历。用显式的栈而不是递归：目录可以嵌套几百层，递归会吃掉线程栈
+/// （阻塞线程池里的线程栈不大）。
+fn walk_dir(
+    root: &Path,
+    tree: &mut LocalTree,
+    max_depth: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), SftpError> {
+    let mut stack = vec![enter_dir(
+        root,
+        root.to_path_buf(),
+        0,
+        max_depth,
+        tree,
+        cancelled,
+    )?];
+    while let Some(frame) = stack.last_mut() {
+        let Some(name) = frame.names.next() else {
+            stack.pop();
+            continue;
+        };
+        if cancelled() {
+            return Err(SftpError::Cancelled);
+        }
+        let child = frame.dir.join(&name);
         let meta = match std::fs::symlink_metadata(long_path(&child)) {
             Ok(meta) => meta,
             Err(err) => return Err(from_io(err, &child.display().to_string())),
@@ -482,7 +542,9 @@ fn walk_dir(root: &Path, dir: &Path, tree: &mut LocalTree, depth: usize) -> Resu
             continue;
         }
         if meta.is_dir() {
-            walk_dir(root, &child, tree, depth + 1)?;
+            let depth = stack.len();
+            let next = enter_dir(root, child, depth, max_depth, tree, cancelled)?;
+            stack.push(next);
         } else if meta.is_file() {
             tree.files.push(LocalFile {
                 relative: relative_slash(root, &child),
@@ -1196,6 +1258,74 @@ mod tests {
             join_local(&root, "sub/b.txt"),
             root.join("sub").join("b.txt")
         );
+    }
+
+    /// 造一条 `levels` 层的目录链：`root/d1/d2/.../dN`，最深一层放一个文件。
+    fn make_chain(root: &Path, levels: usize) {
+        let mut dir = root.to_path_buf();
+        for level in 1..=levels {
+            dir.push(format!("d{level}"));
+        }
+        std::fs::create_dir_all(long_path(&dir)).unwrap();
+        std::fs::write(long_path(&dir.join("leaf.txt")), b"x").unwrap();
+    }
+
+    fn tree_too_deep_key(err: &SftpError) -> bool {
+        matches!(err, SftpError::RemoteReason(reason) if reason.key() == reason_keys::XFER_TREE_TOO_DEEP)
+    }
+
+    /// 以前超过深度的子树被悄悄丢掉、整次遍历还成功；现在必须明确失败，刚好在上限上的树照常遍历。
+    #[test]
+    fn local_tree_walk_fails_instead_of_silently_skipping_a_too_deep_tree() {
+        let root = crate::test_util::TestDir::new("local-deep");
+        std::fs::write(root.join("top.txt"), b"t").unwrap();
+        make_chain(&root, 5);
+
+        let err = walk_local_tree_with(&root, 3, &|| false).expect_err("太深必须失败");
+        assert!(tree_too_deep_key(&err), "{err:?}");
+        assert!(err.to_string().contains('3'), "要说明上限：{err}");
+
+        // 链有 5 层，叶子文件在第 5 层的目录里：上限 5 刚好放行。
+        let tree = walk_local_tree_with(&root, 5, &|| false).expect("正好在上限上要放行");
+        assert_eq!(tree.files.len(), 2);
+        assert!(tree.skipped_links.is_empty(), "{:?}", tree.skipped_links);
+    }
+
+    /// 默认上限和远端展开一致：比它深的真实目录失败，不比它深的通过。
+    #[test]
+    fn local_tree_walk_default_depth_matches_remote_plan_limit() {
+        let root = crate::test_util::TestDir::new("local-deep-default");
+        make_chain(&root, MAX_PLAN_DEPTH);
+        walk_local_tree(&root).expect("正好在上限上要放行");
+        let deeper = crate::test_util::TestDir::new("local-deep-default-over");
+        make_chain(&deeper, MAX_PLAN_DEPTH + 1);
+        let err = walk_local_tree(&deeper).expect_err("超过上限必须失败");
+        assert!(tree_too_deep_key(&err), "{err:?}");
+    }
+
+    /// 取消一到遍历就停（不是走完整棵树再说）。
+    #[test]
+    fn local_tree_walk_stops_when_cancelled() {
+        let root = crate::test_util::TestDir::new("local-cancel");
+        for dir in 0..20 {
+            let dir = root.join(format!("dir{dir}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            for file in 0..20 {
+                std::fs::write(dir.join(format!("f{file}.txt")), b"x").unwrap();
+            }
+        }
+        let polls = std::cell::Cell::new(0usize);
+        let err = walk_local_tree_with(&root, 8, &|| {
+            polls.set(polls.get() + 1);
+            polls.get() > 5
+        })
+        .expect_err("取消后要停");
+        assert!(matches!(err, SftpError::Cancelled), "{err:?}");
+        assert!(polls.get() <= 7, "取消后还在继续遍历：{}", polls.get());
+
+        // 一开始就取消：连根目录都不读。
+        let err = walk_local_tree_with(&root, 8, &|| true).expect_err("已取消");
+        assert!(matches!(err, SftpError::Cancelled), "{err:?}");
     }
 
     #[test]

@@ -3746,6 +3746,51 @@ async fn a_remote_tree_deeper_than_the_limit_fails_the_job() {
     assert!(!endpoints.remote_exists("/remote/copy/top.txt"));
 }
 
+/// 比默认上限更深的本地树：上传 / 本地复制以明确的错误失败（以前深处的子树被悄悄丢掉，任务还报完成）。
+#[tokio::test]
+async fn a_local_tree_deeper_than_the_limit_fails_the_job() {
+    let root = temp_root("local-deep-tree");
+    let source = root.join("src");
+    let mut deep = source.clone();
+    for level in 1..=(plan::MAX_PLAN_DEPTH + 2) {
+        deep.push(format!("d{level}"));
+    }
+    std::fs::create_dir_all(crate::sftp::local::long_path(&deep)).unwrap();
+    std::fs::write(
+        crate::sftp::local::long_path(&deep.join("leaf.txt")),
+        b"leaf",
+    )
+    .unwrap();
+    std::fs::write(source.join("top.txt"), b"top").unwrap();
+
+    let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+    let (engine, mut events) =
+        TransferEngine::new(endpoints.clone(), Arc::new(OverwriteAll), local_options());
+    for (direction, target) in [
+        (Direction::Upload, "/remote/up".to_owned()),
+        (
+            Direction::LocalCopy,
+            root.join("copy").display().to_string(),
+        ),
+    ] {
+        let id = engine.submit(TransferJob {
+            direction,
+            source: source.display().to_string(),
+            target,
+            recursive: true,
+            peer: None,
+        });
+        let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+        let TransferState::Failed(text) = &report.state else {
+            panic!("太深的本地树必须失败：{report:?}");
+        };
+        assert!(text.contains(&plan::MAX_PLAN_DEPTH.to_string()), "{text}");
+        assert_eq!(report.done_files, 0, "{report:?}");
+    }
+    assert!(!root.join("copy").exists(), "规划失败不该建本地目录");
+    assert!(!endpoints.remote_exists("/remote/up/top.txt"));
+}
+
 // ---------------------------------------------------------------------------
 // W13：提交时「目标冒出来了」的重查必须有次数上限
 // ---------------------------------------------------------------------------
