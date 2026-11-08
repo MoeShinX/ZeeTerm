@@ -295,7 +295,7 @@ pub fn open(bytes: &[u8], password: &str) -> Result<Zeroizing<Vec<u8>>, SyncErro
         return Err(SyncError::Format(
             Reason::new(
                 reason_keys::SYNC_PKG_NOT_SYNC,
-                format!("不是 Z-SSH 同步包（format={}）", envelope.format),
+                format!("不是 ZeeTerm 同步包（format={}）", envelope.format),
             )
             .with("format", &envelope.format),
         ));

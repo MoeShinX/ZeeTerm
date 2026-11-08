@@ -34,7 +34,7 @@ use crate::ssh::BoxFuture;
 pub const FILE_NAME: &str = "zssh-sync.json";
 pub const DEFAULT_API_BASE: &str = "https://api.github.com";
 /// 新建 Gist 的描述。
-pub const GIST_DESCRIPTION: &str = "Z-SSH 配置同步（已加密）";
+pub const GIST_DESCRIPTION: &str = "ZeeTerm 配置同步（已加密）";
 /// Gist 的文件不能是空的，新建时先放一个占位内容；读到它就当作“还没有同步数据”。
 pub const PLACEHOLDER: &str = "{\"zssh\":\"empty-gist-placeholder\"}";
 const SERVICE: &str = "GitHub";
@@ -198,7 +198,7 @@ impl GithubApi {
             return Err(io_r(if gist_id.is_empty() {
                 Reason::new(
                     reason_keys::GH_GIST_ID_EMPTY,
-                    "请填写 Gist ID，或者让 Z-SSH 新建一个",
+                    "请填写 Gist ID，或者让 ZeeTerm 新建一个",
                 )
             } else {
                 Reason::new(
@@ -321,7 +321,7 @@ impl GithubApi {
                 Reason::new(
                     reason_keys::GH_GIST_TOO_BIG,
                     format!(
-                        "Gist 里的同步文件太大（超过 {mib} MiB），不像是 Z-SSH 的同步包，没有下载"
+                        "Gist 里的同步文件太大（超过 {mib} MiB），不像是 ZeeTerm 的同步包，没有下载"
                     ),
                 )
                 .with("mib", mib),
@@ -923,7 +923,7 @@ pub async fn probe(
         return Ok(ConnectionProbe {
             read,
             write: failed(
-                "这个 Gist 不属于这个令牌的用户，只能读、写不进去。请填自己名下的 Gist ID，或者让 Z-SSH 新建一个",
+                "这个 Gist 不属于这个令牌的用户，只能读、写不进去。请填自己名下的 Gist ID，或者让 ZeeTerm 新建一个",
             ),
             concurrency: Some(unsupported_concurrency()),
             has_existing_data,

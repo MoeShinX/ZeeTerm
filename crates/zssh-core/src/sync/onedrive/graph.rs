@@ -181,7 +181,7 @@ impl<'a> OneDriveRaw<'a> {
         let value = Self::json_body(response, "文件信息").await?;
         if value.get("folder").is_some() {
             return Err(io(format!(
-                "OneDrive 的应用文件夹里有一个叫 {} 的文件夹，Z-SSH 没法用它放同步包，请改名或删除它",
+                "OneDrive 的应用文件夹里有一个叫 {} 的文件夹，ZeeTerm 没法用它放同步包，请改名或删除它",
                 self.object
             )));
         }
@@ -446,7 +446,7 @@ impl RawObjectStore for OneDriveRaw<'_> {
             if meta.size.is_some_and(|size| size > MAX_PACKAGE_BYTES) {
                 return Err(io(Reason::new(
                     reason_keys::OD_TOO_BIG,
-                    "OneDrive 上的同步文件超过 64 MiB 上限，不像是 Z-SSH 的同步包，没有下载",
+                    "OneDrive 上的同步文件超过 64 MiB 上限，不像是 ZeeTerm 的同步包，没有下载",
                 )));
             }
             // /content 会 302 到一个带临时凭据的下载地址。reqwest 跨主机重定向时会去掉

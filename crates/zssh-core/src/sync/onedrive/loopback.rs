@@ -252,13 +252,13 @@ fn page(title: &str, hint: &str) -> String {
 }
 
 pub fn success_page() -> String {
-    page("授权成功", "可以关闭这个页面，回到 Z-SSH 了。")
+    page("授权成功", "可以关闭这个页面，回到 ZeeTerm 了。")
 }
 
 fn failure_page() -> String {
     page(
         "授权没有完成",
-        "请回到 Z-SSH 查看原因，可以关闭这个页面后重新登录。",
+        "请回到 ZeeTerm 查看原因，可以关闭这个页面后重新登录。",
     )
 }
 

@@ -279,7 +279,7 @@ impl<'a> BackupStore<'a> {
         if Self::parse_name(name).is_none() {
             return Err(SyncError::InvalidData(Reason::new(
                 reason_keys::BK_NOT_BACKUP,
-                "不是 Z-SSH 的备份文件",
+                "不是 ZeeTerm 的备份文件",
             )));
         }
         let candidate = self.dir.join(name);

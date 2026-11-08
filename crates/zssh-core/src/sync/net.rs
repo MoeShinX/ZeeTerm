@@ -173,7 +173,7 @@ fn size_text(bytes: u64) -> String {
 
 fn too_large(what: &str, limit: u64) -> StorageError {
     StorageError::Io(Reason::text(format!(
-        "{what}超过 {} 上限，已停止读取（存储里的对象可能不是 Z-SSH 的同步包，或者服务返回了异常内容）",
+        "{what}超过 {} 上限，已停止读取（存储里的对象可能不是 ZeeTerm 的同步包，或者服务返回了异常内容）",
         size_text(limit)
     )))
 }
