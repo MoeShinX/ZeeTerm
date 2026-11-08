@@ -42,14 +42,22 @@ async fn check(spec: &AgentSpec, prefix: &std::path::Path, with_node: bool) {
             path = format!("{}:{}", path, PathBuf::from(node).display());
         }
     }
-    let home = std::env::temp_dir().join("zt-live-empty-home");
-    let _ = std::fs::create_dir_all(&home);
+    // 每次一个随机唯一的空目录：固定名字会让上一次的残留混进这一次的发现结果。
+    let home_guard = tempfile::Builder::new()
+        .prefix("zssh-live-empty-home-")
+        .tempdir()
+        .expect("空家目录");
+    let home = home_guard.path().to_path_buf();
     let home_text = home.display().to_string();
     let env = EnvView::fake(
         &[("PATH", path.as_str()), ("HOME", home_text.as_str())],
         &[],
     );
-    let data_dir = std::env::temp_dir().join("zt-live-empty-data");
+    let data_guard = tempfile::Builder::new()
+        .prefix("zssh-live-empty-data-")
+        .tempdir()
+        .expect("空数据目录");
+    let data_dir = data_guard.path().to_path_buf();
 
     let linked = bin.join(spec.command);
     let resolved = resolve_launch_path(&linked);

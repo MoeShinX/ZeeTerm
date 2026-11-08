@@ -1255,8 +1255,7 @@ mod tests {
     ///（没装 Git for Windows 等）就跳过。
     #[test]
     fn cpu_model_probe_script_runs_under_sh() {
-        let dir = std::env::temp_dir().join(format!("zssh-cpu-probe-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_util::TestDir::new("cpu-probe");
         let cpuinfo = dir.join("cpuinfo");
         let lscpu = dir.join("lscpu");
         let to_sh_path = |path: &std::path::Path| path.to_string_lossy().replace('\\', "/");
@@ -1275,7 +1274,6 @@ mod tests {
         let x86 = "processor\t: 0\nmodel name\t: Intel(R) Xeon(R) Gold 6148 CPU @ 2.40GHz\n\
                    processor\t: 1\nmodel name\t: Intel(R) Xeon(R) Gold 6148 CPU @ 2.40GHz\n";
         let Some(output) = run(x86, "Model name: should-not-be-used\n") else {
-            let _ = std::fs::remove_dir_all(&dir);
             return;
         };
         let sample = StatsSample::parse(&output);
@@ -1291,7 +1289,6 @@ mod tests {
         let arm = "processor\t: 0\nCPU implementer\t: 0x41\nCPU part\t: 0xd08\n\
                    processor\t: 1\nCPU implementer\t: 0x41\nCPU part\t: 0xd08\n";
         let Some(output) = run(arm, "Architecture: aarch64\nModel name: Cortex-A72|x\n") else {
-            let _ = std::fs::remove_dir_all(&dir);
             return;
         };
         let sample = StatsSample::parse(&output);
@@ -1299,15 +1296,12 @@ mod tests {
         assert_eq!(sample.cpu_model.as_deref(), Some("Cortex-A72_x"));
 
         let Some(output) = run(arm, "") else {
-            let _ = std::fs::remove_dir_all(&dir);
             return;
         };
         assert_eq!(
             StatsSample::parse(&output).cpu_model.as_deref(),
             Some("Cortex-A72")
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1434,8 +1428,7 @@ top() { printf 'Mem: 900K used, 100K free\nCPU:  1%% usr\n  PID  PPID USER     S
         proc_stat: Option<&str>,
         nproc: Option<&str>,
     ) -> Option<(Option<u32>, String)> {
-        let dir = std::env::temp_dir().join(format!("zssh-cores-{}-{test}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_util::TestDir::new(&format!("cores-{test}"));
         let stat_path = dir.join("stat");
         let missing = dir.join("no-such-stat");
         let to_sh_path = |path: &std::path::Path| path.to_string_lossy().replace('\\', "/");
@@ -1455,7 +1448,6 @@ top() { printf 'Mem: 900K used, 100K free\nCPU:  1%% usr\n  PID  PPID USER     S
             STATS_SCRIPT.replace("/proc/stat", &to_sh_path(target))
         );
         let output = crate::test_util::run_sh(test, &script);
-        let _ = std::fs::remove_dir_all(&dir);
         let output = output?;
         let sample = StatsSample::parse(&output);
         Some((sample.cores, output))
@@ -1555,8 +1547,7 @@ top() { printf 'Mem: 900K used, 100K free\nCPU:  1%% usr\n  PID  PPID USER     S
     /// OpenWrt（MIPS）的 `/proc/cpuinfo` 没有 `model name`，型号在 `cpu model` 里；BusyBox 没有 `lscpu`。
     #[test]
     fn cpu_model_probe_reads_mips_cpu_model() {
-        let dir = std::env::temp_dir().join(format!("zssh-mips-probe-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_util::TestDir::new("mips-probe");
         let cpuinfo = dir.join("cpuinfo");
         std::fs::write(
             &cpuinfo,
@@ -1571,7 +1562,6 @@ top() { printf 'Mem: 900K used, 100K free\nCPU:  1%% usr\n  PID  PPID USER     S
             CPU_MODEL_PROBE.replace("/proc/cpuinfo", &path)
         );
         let output = crate::test_util::run_sh("cpu_model_probe_reads_mips_cpu_model", &script);
-        let _ = std::fs::remove_dir_all(&dir);
         let Some(output) = output else {
             return;
         };

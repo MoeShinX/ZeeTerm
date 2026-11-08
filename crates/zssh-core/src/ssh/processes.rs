@@ -1489,8 +1489,7 @@ this line is not a process
     #[test]
     fn the_proc_fallback_awk_computes_the_same_columns_from_proc_files() {
         // /proc 换成临时目录里的样本：两个进程，一个命令名带空格，一个带括号。
-        let dir = std::env::temp_dir().join(format!("zssh-proc-fallback-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_util::TestDir::new("proc-fallback");
         let proc = dir.join("proc");
         for (pid, stat, uid) in [
             (
@@ -1534,11 +1533,9 @@ this line is not a process
             "the_proc_fallback_awk_computes_the_same_columns_from_proc_files",
             &full,
         ) else {
-            let _ = std::fs::remove_dir_all(&dir);
             return;
         };
         let report = parse_processes(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
-        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(report.source, ProcSource::Proc, "{text}");
         let app = report.row(123).unwrap_or_else(|| panic!("{text}"));
         assert_eq!(app.command, "app worker");
