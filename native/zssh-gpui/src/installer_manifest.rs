@@ -523,6 +523,63 @@ fn linux_package_names_agree_between_the_script_and_the_release_pipeline() {
 }
 
 #[test]
+fn the_portable_zip_is_built_signed_and_published_with_the_names_the_updater_expects() {
+    use zssh_update::PLATFORM_WINDOWS_PORTABLE;
+    use zssh_update::portable::{HELPER_EXE, MAIN_EXE, MARKER_FILE};
+
+    // 应用内更新替换的文件名，就是 zip 里的文件名，也就是安装包里的文件名。
+    assert_eq!(MAIN_EXE, format!("{}.exe", product::NAME));
+    assert_eq!(MAIN_EXE, define(&nsi(), "APP_EXE"));
+    assert_eq!(HELPER_EXE, define(&nsi(), "MCP_EXE"));
+    assert_eq!(MARKER_FILE, "portable");
+
+    // 构建脚本：平铺的 zip，正好是程序、辅助程序、两个许可文件加一个空的 portable 标记。
+    let build = repo_file("native/installer/build.ps1");
+    assert!(build.contains(r#"$portableName = "$productName-$version-windows-x64-portable.zip""#));
+    assert!(
+        build.contains("$portableFiles = @($mainExeName, 'zssh-mcp.exe', 'LICENSE', 'NOTICE')")
+    );
+    assert!(build.contains(&format!("$archive.CreateEntry('{MARKER_FILE}')")));
+    assert!(
+        build.contains("$zipExpected = @($portableFiles + 'portable') | Sort-Object"),
+        "打完要自检 zip 里的文件清单"
+    );
+    // 安装包里绝不能有 portable 标记：装出来的是安装版，数据要在 %APPDATA%。
+    let install = install_section(&nsi());
+    assert!(!install.contains(MARKER_FILE), "安装段里不能出现 portable");
+    // 免安装版不写注册表：zip 的内容和打包脚本里都没有卸载项。
+    assert!(!build.contains("HKCU") && !build.contains("Uninstall"));
+
+    // 签名：文件名按版本拼，平台 key 和应用里选包用的是同一个。
+    let sign = repo_file("scripts/release-sign.ps1");
+    assert!(sign.contains("ZeeTerm-$Version-windows-x64-portable.zip"));
+    assert!(sign.contains(&format!("Key = '{PLATFORM_WINDOWS_PORTABLE}'")));
+    let lib = repo_file("scripts/release-lib.ps1");
+    assert!(lib.contains(&format!("'{PLATFORM_WINDOWS_PORTABLE}' = 'portable'")));
+    assert_eq!(PLATFORM_WINDOWS_PORTABLE, "windows-x86_64-portable");
+    assert!(
+        repo_file("scripts/release.ps1").contains("windows-x64-portable.zip"),
+        "本机备用路径也要发免安装版"
+    );
+
+    // 工作流：windows 任务打出来并上传，release 任务核对、签名、上传到 Release。
+    let release = repo_file(".github/workflows/release.yml");
+    let windows = release.find("\n  windows:\n").expect("有 windows 任务");
+    let sign_job = release.find("\n  release:\n").expect("有 release 任务");
+    let windows_job = &release[windows..sign_job];
+    let release_job = &release[sign_job..];
+    assert!(windows_job.contains("ZeeTerm-${{ env.VERSION }}-windows-x64-portable.zip"));
+    assert!(windows_job.contains("ZeeTerm-$env:VERSION-windows-x64-portable.zip"));
+    assert!(release_job.contains("-PortablePath"));
+    let publish = &release_job[release_job.find("gh release create").expect("建 Release")..];
+    assert!(publish.contains("ZeeTerm-$env:VERSION-windows-x64-portable.zip"));
+    // 核对步骤要求 Windows 包正好是安装包 + 免安装版两个文件。
+    assert!(release_job.contains(
+        "$expected = @(\"ZeeTerm-Setup-$env:VERSION.exe\", \"ZeeTerm-$env:VERSION-windows-x64-portable.zip\")"
+    ));
+}
+
+#[test]
 fn only_the_final_release_job_touches_the_signing_key() {
     let release = repo_file(".github/workflows/release.yml");
     let job = |name: &str| {
@@ -572,6 +629,7 @@ fn only_the_final_release_job_touches_the_signing_key() {
     assert!(release_job.contains("needs: [verify, linux, windows]"));
     assert!(release_job.contains("-LinuxDebPath"));
     assert!(release_job.contains("-LinuxTarPath"));
+    assert!(release_job.contains("-PortablePath"));
     assert!(release_job.contains("environment: release"));
     // 私钥文件在取回三个包之后才写出来，而且无论成败都删掉。
     let write_key = release_job.find("写出更新私钥").expect("写私钥步骤");

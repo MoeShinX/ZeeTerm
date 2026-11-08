@@ -1,6 +1,6 @@
 # 发版说明
 
-ZeeTerm 的发布物放在 GitHub Release：Windows 安装包 `ZeeTerm-Setup-<版本>.exe`、Linux 的 `ZeeTerm-<版本>-linux-x86_64.deb` 和 `ZeeTerm-<版本>-linux-x86_64.tar.gz`、更新清单 `latest.json` 和校验文件 `SHA256SUMS.txt`。已安装的程序启动时（以及开着时每 6 小时）读取最新 Release 里的 `latest.json`，发现新版本后下载安装包，**用发布者的更新签名公钥验签通过才会安装**。这份文档说明怎么发版、签名密钥怎么管、怎么回滚、更新失败怎么查。
+ZeeTerm 的发布物放在 GitHub Release：Windows 安装包 `ZeeTerm-Setup-<版本>.exe`、Windows 免安装版 `ZeeTerm-<版本>-windows-x64-portable.zip`、Linux 的 `ZeeTerm-<版本>-linux-x86_64.deb` 和 `ZeeTerm-<版本>-linux-x86_64.tar.gz`、更新清单 `latest.json` 和校验文件 `SHA256SUMS.txt`。已安装的程序启动时（以及开着时每 6 小时）读取最新 Release 里的 `latest.json`，发现新版本后下载安装包，**用发布者的更新签名公钥验签通过才会安装**。这份文档说明怎么发版、签名密钥怎么管、怎么回滚、更新失败怎么查。
 
 **发版的主路径是 GitHub Actions**：改好版本号、推上 main，再推一个 `v*` tag，工作流（`.github/workflows/release.yml`）自己编译、跑门禁、签名、发布 Release。更新签名私钥和口令存在 GitHub 的 `release` 环境 Secrets 里，发版人的电脑上不需要私钥，也不用输口令。本机的 `scripts/release.ps1` 保留作备用（GitHub 出问题时手动发版）。
 
@@ -77,8 +77,8 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
    tag 必须叫 `v<版本>`，并且指向已经在 `main` 上的提交。
 5. **看 Actions 页**的 Release 工作流。四个任务：
    0. **校验**（`verify`，ubuntu）：tag 去掉 `v` 等于两个 `Cargo.toml` 的版本；tag 指向的提交在 `main` 上；`docs/release-notes/<版本>.md` 存在且不空；`updater.json` 的公钥不是占位值；这个 tag 的 Release 还不存在；**这个提交在 `main` 上的 CI（`ci.yml`）有一次已经通过**。门禁不在发版里重跑——CI 已经在 Windows、Linux、macOS 上对同一个提交跑过 fmt / clippy / test / 打包，所以第 3 步说的"等 CI 通过再打 tag"是硬性要求：CI 没跑完或失败时，这里直接失败，什么都不编译。
-   1. **Linux 包**（`linux`，ubuntu-22.04，不接触私钥）和 **Windows 安装包**（`windows`，windows-latest，不接触私钥）**并行**：各自做完整 release 编译；Linux 还在 `debian:12` 和 `ubuntu:22.04` 的干净容器里装一遍 deb；两边都上传为 artifact。详情见"Linux 包"一节。
-   2. **签名、发布**（`release`，windows-latest，`release` 环境，只有它拿得到私钥）：再校验一遍 tag / 版本 / 更新说明 / 公钥 / Release 不存在 → 取回三个包并核对文件名、不是空文件 → 把 Secret 里的私钥写到 runner 临时目录，调 `scripts/release-sign.ps1`（带 `-LinuxDebPath`、`-LinuxTarPath`）：核对 `updater.json` 的公钥与私钥是一对 → 用**同一把私钥**给安装包、deb、tar.gz 各签一份名（签名里带 `version:` 和文件名）→ 生成 `latest.json`（`windows-x86_64` 加上 `linux-x86_64-deb`、`linux-x86_64-tar`）→ 用公钥按应用里的验签代码再验一遍 → 算 SHA-256，写 `SHA256SUMS.txt` 和 Release 正文 → **无论成败都删掉临时私钥文件** → `gh release create` 上传五个文件（同名 Release 已存在时失败，不覆盖）。
+   1. **Linux 包**（`linux`，ubuntu-22.04，不接触私钥）和 **Windows 包**（`windows`，windows-latest，不接触私钥；`native/installer/build.ps1` 一次打出安装包和免安装版 zip）**并行**：各自做完整 release 编译；Linux 还在 `debian:12` 和 `ubuntu:22.04` 的干净容器里装一遍 deb；两边都上传为 artifact。详情见"Linux 包"和"Windows 免安装版"两节。
+   2. **签名、发布**（`release`，windows-latest，`release` 环境，只有它拿得到私钥）：再校验一遍 tag / 版本 / 更新说明 / 公钥 / Release 不存在 → 取回四个包（安装包、免安装版 zip、deb、tar.gz）并核对文件名、不是空文件 → 把 Secret 里的私钥写到 runner 临时目录，调 `scripts/release-sign.ps1`（带 `-PortablePath`、`-LinuxDebPath`、`-LinuxTarPath`）：核对 `updater.json` 的公钥与私钥是一对 → 用**同一把私钥**给四个包各签一份名（签名里带 `version:` 和文件名）→ 生成 `latest.json`（`windows-x86_64` 加上 `windows-x86_64-portable`、`linux-x86_64-deb`、`linux-x86_64-tar`）→ 用公钥按应用里的验签代码再验一遍 → 算 SHA-256，写 `SHA256SUMS.txt` 和 Release 正文 → **无论成败都删掉临时私钥文件** → `gh release create` 上传六个文件（四个包、`latest.json`、`SHA256SUMS.txt`；同名 Release 已存在时失败，不覆盖）。
 
    以前（1.0.1 及之前）Linux 和 Windows 是串行的，而且各自重跑一遍门禁，一次发版约 1 小时 20 分钟；现在约 30–40 分钟，主要花在两边各自的完整 release 编译上。
 6. **下载核对**：从 Release 页下载安装包，`Get-FileHash` 对一下 `SHA256SUMS.txt`（Linux 包用 `sha256sum -c SHA256SUMS.txt --ignore-missing`）；再用一个旧版本程序点「设置 → 关于 → 检查更新」，确认能发现、下载并校验通过（不必点安装）。
@@ -120,6 +120,23 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
 > 本机备用路径 `scripts/release.ps1` 在 Windows 上跑，**不带 Linux 包**：用它发版得到的 `latest.json` 没有 Linux 条目，Linux 客户端读到后按"没有适用的包"处理（提示去发布页下载），Windows 不受影响。需要 Linux 包时，用 GitHub 路径，或把别处打好的两个包用 `release-sign.ps1 -LinuxDebPath ... -LinuxTarPath ...` 签名并手动上传。
 
+## Windows 免安装版
+
+每个版本除了安装包，还发一个免安装版 `ZeeTerm-<版本>-windows-x64-portable.zip`（文件名固定，`latest.json` 里的下载地址按它拼，不能改）。`native/installer/build.ps1` 打安装包时顺手打它：平铺的 zip（没有外层目录），里面是 `ZeeTerm.exe`、`zssh-mcp.exe`（AI 工具桥，必须和主程序同目录）、`LICENSE`、`NOTICE`（和安装包里是同一份合并后的声明），再加一个**空的 `portable` 标记文件**。解压即用。
+
+**行为**：程序旁边有 `portable` 文件，就是免安装版（`native/zssh-gpui/src/portable.rs`）：
+
+- 数据放在 `<程序所在目录>\data`，不碰 `%APPDATA%`；`ZSSH_DATA_DIR` 仍然最优先。装在 `%APPDATA%\ZeeTerm` 的安装版完全不受影响。
+- 单实例的互斥体名和窗口属性名带上数据目录路径的短哈希，所以免安装版和安装版、两份不同目录的免安装版可以同时开；同一个目录再开一份仍会被拦下。安装版的名字一个字没变。
+- 不写注册表、没有卸载项；程序本来就没有开机自启功能。「关于」页的版本号后面标"免安装版 / Portable"，数据目录下面有一句提醒：已保存的密码用 DPAPI 绑定当前 Windows 用户，拷到别的电脑 / 别的 Windows 用户下会解不开，换电脑请用「离线备份文件」导出再导入。
+- 程序所在目录不能写（Program Files、只读盘）时，启动就提示并退出（数据目录建不出来）。
+
+**应用内更新**：`latest.json` 的 `platforms` 里多一项 `windows-x86_64-portable`（`url` + `signature`，格式和别的条目一样，同一把私钥签名，签名里绑版本和文件名）。老客户端只认 `windows-x86_64-nsis` / `windows-x86_64`，多出来的这一项对它们没有任何影响（`native/zssh-update` 有测试钉住）；免安装版自己只选这一项，绝不拿安装包去"更新"自己。流程：下载 zip → 用和安装包同一套 minisign 公钥验签 → 解压到程序所在目录里的临时目录（只解白名单上的四个文件，`data` 和 `portable` 永不碰）→ 把运行中的 `ZeeTerm.exe` 改名成 `ZeeTerm.exe.old`、新程序移进来（`zssh-mcp.exe`、许可文件同样），任何一步失败都回滚 → 用户点「立即重启」，新进程带 `--zeeterm-wait-pid=<旧进程号>` 启动，先等旧进程退出再抢单实例互斥体 → 下次启动清掉 `*.old`。程序所在目录不可写时不下载、不替换，只提示有新版本并引导到发布页；清单里没有 zip 条目（老版本发布的）时同样引导到发布页。
+
+**改打包布局时**：`build.ps1`（zip 内容和文件名）、`release-sign.ps1` / `release-lib.ps1`（签名和 `latest.json` 条目）、`release.yml`（上传、核对、发布）、`zssh_update::portable`（白名单文件名 `ZeeTerm.exe` / `zssh-mcp.exe` / `LICENSE` / `NOTICE`）要一起改，`installer_manifest.rs` 里的 `the_portable_zip_is_built_signed_and_published_with_the_names_the_updater_expects` 会拦住不一致。
+
+> 本机备用路径 `scripts/release.ps1` 也会带上免安装版：`build.ps1` 打好后，zip 在产物目录里就一起签名、写进 `latest.json`，下一步命令里的 `gh release create` 也带上它。
+
 ## macOS 包与 Homebrew
 
 macOS（Apple Silicon）目前没有签名和公证，不进发版工作流、不进 `latest.json`（客户端在 macOS 上只提醒有新版本、指向发布页）：
@@ -154,7 +171,7 @@ powershell -File scripts/release.ps1 -Version 1.0.0
 powershell -File scripts/release-drill.ps1
 ```
 
-用现生成的测试密钥（带随机口令，放 `C:\zssh-v2-data\r2-keys\`，跑完自动删）和一个充数文件，把 GitHub 路径的签名步骤（`release-sign.ps1`）和本机路径（`release.ps1 -DryRun`）各跑一遍，核对两边 `latest.json` / `SHA256SUMS.txt` / Release 正文的格式一致，再做几个反例（私钥与公钥对不上、口令不对、公钥是占位值、安装包被改……）确认都会失败。**Linux 资产也在里面演练**：用充数的 deb 和 tar.gz 走一遍带 `-LinuxDebPath` / `-LinuxTarPath` 的签名，核对 `latest.json` 恰好多出 `linux-x86_64-deb`、`linux-x86_64-tar` 两项而 Windows 项不变、三个文件各自验签通过（张冠李戴、改动、换私钥都验不过）、`SHA256SUMS.txt` 和 Release 正文含全部文件，并确认只给一个包、文件名不对、文件不存在都会失败。不读 `%USERPROFILE%\.zeeterm` 下的任何东西，也不会改仓库（`release.ps1 -DryRun` 改的版本号会原样还原）。
+用现生成的测试密钥（带随机口令，放 `C:\zssh-v2-data\r2-keys\`，跑完自动删）和一个充数文件，把 GitHub 路径的签名步骤（`release-sign.ps1`）和本机路径（`release.ps1 -DryRun`）各跑一遍，核对两边 `latest.json` / `SHA256SUMS.txt` / Release 正文的格式一致，再做几个反例（私钥与公钥对不上、口令不对、公钥是占位值、安装包被改……）确认都会失败。**Linux 资产也在里面演练**：用充数的 deb 和 tar.gz 走一遍带 `-LinuxDebPath` / `-LinuxTarPath` 的签名，核对 `latest.json` 恰好多出 `linux-x86_64-deb`、`linux-x86_64-tar` 两项而 Windows 项不变、三个文件各自验签通过（张冠李戴、改动、换私钥都验不过）、`SHA256SUMS.txt` 和 Release 正文含全部文件，并确认只给一个包、文件名不对、文件不存在都会失败。**免安装版也在里面演练**：用充数的 zip 走一遍带 `-PortablePath` 的签名（单独，以及和 Linux 包一起），核对 `latest.json` 恰好多出 `windows-x86_64-portable` 一项而安装包条目不变（老客户端只认自己的 key）、zip 验签通过（张冠李戴、改动都验不过）、`SHA256SUMS.txt` 和 Release 正文含它，并确认文件名不对、文件不存在、私钥对不上都会失败。不读 `%USERPROFILE%\.zeeterm` 下的任何东西，也不会改仓库（`release.ps1 -DryRun` 改的版本号会原样还原）。
 
 单跑本机路径的演练：
 
@@ -223,6 +240,7 @@ GitHub 工作流**只认** `docs/release-notes/<版本>.md`（没有或是空的
 | 签名校验未通过 | 安装包被改过或下载不完整，或不是用这把密钥签的；确认用的是发版产出的那份文件（GitHub Release 或 `release.ps1` 的产物） |
 | 签名版本 X 与公告版本 Y 不一致 | `latest.json` 的 `version` 与签名里的 `version:` 不同（手动改过清单，或把别的版本的签名搬了过来） |
 | 下载失败 | 网络中断、被限流，或附件被删；重试即可 |
-| 没有适用于当前平台的安装包 | `latest.json` 的 `platforms` 里没有 `windows-x86_64`（Linux 上是没有 `linux-x86_64-deb` / `linux-x86_64-tar`，例如用本机备用路径发的版本） |
+| 没有适用于当前平台的安装包 | `latest.json` 的 `platforms` 里没有 `windows-x86_64`（Linux 上是没有 `linux-x86_64-deb` / `linux-x86_64-tar`；免安装版是没有 `windows-x86_64-portable`，这时窗口不报错，改成引导到发布页；例如用本机备用路径发的版本） |
+| 免安装版提示"程序所在的文件夹不能写入" | 免安装版放在 Program Files、只读盘等不可写的位置：它不会自己更新，请到发布页下载新的 zip，解压后覆盖程序文件（保留 `portable` 文件和 `data` 文件夹） |
 
 用户端永远不会安装验签没通过的包：包先整个下到内存、验签通过后才落盘，启动安装器前还会再核对一次文件哈希。

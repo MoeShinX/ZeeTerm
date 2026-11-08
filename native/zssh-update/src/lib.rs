@@ -6,7 +6,8 @@
 //! - 两者不一致、缺版本、错公钥、包被改过都必须拒绝；
 //! - 平台 key 保留 `windows-x86_64` 与 `windows-x86_64-nsis`；
 //! - Linux 的包用 `linux-x86_64-deb` 与 `linux-x86_64-tar` 两个 key 放在同一份清单里。Windows 端的
-//!   [`Manifest::select`] 只认上面两个 Windows key，清单里多出来的平台条目不影响它（有测试钉住）。
+//!   [`Manifest::select`] 只认上面两个 Windows key，清单里多出来的平台条目不影响它（有测试钉住）；
+//! - Windows 免安装版（zip）用 `windows-x86_64-portable` 一个 key，同样放在同一份清单里，只有免安装版自己的更新窗口会选它（见 [`portable`]）。
 //!
 //! 本 crate 不负责下载、不启动安装器，也不依赖 Tauri/GPUI。
 
@@ -19,6 +20,7 @@ use serde::Deserialize;
 
 pub mod install;
 pub mod linux;
+pub mod portable;
 
 pub use install::{
     InstallError, InstallPlan, InstallRequest, command_line, plan_install, sha256_hex,
@@ -125,6 +127,20 @@ pub const PLATFORM_LINUX_TAR: &str = "linux-x86_64-tar";
 
 /// 发版时允许写进 `latest.json` 的 Linux 平台 key。
 pub const LINUX_PLATFORM_KEYS: &[&str] = &[PLATFORM_LINUX_DEB, PLATFORM_LINUX_TAR];
+
+/// `latest.json` 里 Windows 免安装版（zip）的平台 key。老客户端只认 [`PLATFORM_KEYS`] 里的两个 key，
+/// 多出来的这一项对它们没有任何影响（有测试钉住）；只有免安装版自己的更新窗口会选它（见 [`portable`]）。
+pub const PLATFORM_WINDOWS_PORTABLE: &str = "windows-x86_64-portable";
+
+/// 免安装版更新选包用的 key 列表：只认自己这一种，免安装版绝不拿安装包去"更新"自己。
+pub const PORTABLE_PLATFORM_KEYS: &[&str] = &[PLATFORM_WINDOWS_PORTABLE];
+
+/// 发版时允许写进 `latest.json`、Windows 安装包之外的平台 key：Linux 的两个包加免安装版。
+pub const EXTRA_PLATFORM_KEYS: &[&str] = &[
+    PLATFORM_LINUX_DEB,
+    PLATFORM_LINUX_TAR,
+    PLATFORM_WINDOWS_PORTABLE,
+];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Manifest {
@@ -274,7 +290,7 @@ pub struct ReleaseManifest<'a> {
     pub signature: &'a str,
 }
 
-/// 清单里 Windows 以外的一个平台包（见 [`build_latest_json_with_platforms`]）。`key` 只能是 [`LINUX_PLATFORM_KEYS`] 里的一个。
+/// 清单里 Windows 安装包以外的一个平台包（见 [`build_latest_json_with_platforms`]）。`key` 只能是 [`EXTRA_PLATFORM_KEYS`] 里的一个。
 #[derive(Debug, Clone)]
 pub struct PlatformAsset<'a> {
     pub key: &'a str,
@@ -303,8 +319,8 @@ pub fn build_latest_json(release: &ReleaseManifest<'_>) -> Result<String, Update
     build_latest_json_with_platforms(release, &[])
 }
 
-/// 和 [`build_latest_json`] 一样，另外把 Windows 以外的平台包（Linux 的 deb / tar.gz）写进 `platforms`。
-/// `extra` 里的 key 必须是 [`LINUX_PLATFORM_KEYS`] 之一且不能重复，地址必须是 https、签名不能为空；
+/// 和 [`build_latest_json`] 一样，另外把 Windows 安装包以外的平台包（Linux 的 deb / tar.gz、Windows 免安装版）写进 `platforms`。
+/// `extra` 里的 key 必须是 [`EXTRA_PLATFORM_KEYS`] 之一且不能重复，地址必须是 https、签名不能为空；
 /// Windows 的那一项原样保留，所以老版本的 Windows 客户端读到这份清单选中的包和以前完全一样。
 pub fn build_latest_json_with_platforms(
     release: &ReleaseManifest<'_>,
@@ -330,8 +346,8 @@ pub fn build_latest_json_with_platforms(
         },
     );
     for extra in extra {
-        // 只收认识的 Linux key：写错 key 的清单发出去，对应平台永远选不到包，所以在这里就拒绝。
-        if !LINUX_PLATFORM_KEYS.contains(&extra.key) {
+        // 只收认识的 key：写错 key 的清单发出去，对应平台永远选不到包，所以在这里就拒绝。
+        if !EXTRA_PLATFORM_KEYS.contains(&extra.key) {
             return Err(UpdateError::Signature(SignatureProblem::Other(format!(
                 "不认识的平台 key：{}",
                 extra.key
@@ -819,6 +835,105 @@ mod tests {
             Err(UpdateError::NoPlatform)
         ));
         assert!(manifest.select("2.0.0").unwrap().is_none());
+    }
+
+    fn portable_asset(signature: &str) -> PlatformAsset<'_> {
+        PlatformAsset {
+            key: PLATFORM_WINDOWS_PORTABLE,
+            url: "https://github.com/owner/repo/releases/download/v1.4.0/ZeeTerm-1.4.0-windows-x64-portable.zip",
+            signature,
+        }
+    }
+
+    /// 清单里加了免安装版条目之后：老客户端（只认 `PLATFORM_KEYS`）选中的包和没有这一项时完全一样，
+    /// 免安装版自己只会选 `windows-x86_64-portable`，而且签名各签各的。
+    #[test]
+    fn the_portable_entry_leaves_older_clients_unchanged_and_is_only_picked_by_portable() {
+        let (kp, pubkey) = keypair();
+        let installer = b"windows installer";
+        let zip = b"portable zip bytes";
+        let win_sig = sign(
+            &kp,
+            installer,
+            &trusted_comment("1.4.0", "ZeeTerm-Setup-1.4.0.exe", 1).unwrap(),
+        );
+        let zip_sig = sign(
+            &kp,
+            zip,
+            &trusted_comment("1.4.0", "ZeeTerm-1.4.0-windows-x64-portable.zip", 2).unwrap(),
+        );
+        let deb_sig = sign(
+            &kp,
+            b"deb",
+            &trusted_comment("1.4.0", "ZeeTerm-1.4.0-linux-x86_64.deb", 3).unwrap(),
+        );
+
+        let without = build_latest_json(&windows_release(&win_sig)).expect("只有安装包");
+        let mut extra = vec![portable_asset(&zip_sig)];
+        extra.extend(linux_release(&deb_sig, &deb_sig));
+        let with = build_latest_json_with_platforms(&windows_release(&win_sig), &extra)
+            .expect("带免安装版条目");
+
+        // 老客户端的解析 + 选包（`parse_manifest` 对多出来的 key 不挑）：结果逐字段一样。
+        let before = parse_manifest(&without).unwrap().select("1.3.0").unwrap();
+        let manifest = parse_manifest(&with).expect("带免安装版条目的清单能读");
+        let after = manifest.select("1.3.0").unwrap();
+        assert_eq!(before, after);
+        assert_eq!(after.unwrap().platform_key, RELEASE_PLATFORM_KEY);
+        assert!(
+            PLATFORM_KEYS
+                .iter()
+                .all(|key| !EXTRA_PLATFORM_KEYS.contains(key)),
+            "老客户端认的 key 和新增的 key 不能重叠"
+        );
+
+        // 免安装版只认自己的 key，选到的是 zip，签名能验过，拿安装包的签名去验 zip 必须失败。
+        let picked = manifest
+            .select_for("1.3.0", PORTABLE_PLATFORM_KEYS)
+            .unwrap()
+            .expect("有更新");
+        assert_eq!(picked.platform_key, PLATFORM_WINDOWS_PORTABLE);
+        assert!(
+            picked
+                .url
+                .ends_with("/ZeeTerm-1.4.0-windows-x64-portable.zip")
+        );
+        verify_signature(zip, &picked.signature, &pubkey, "1.4.0", true).expect("zip 签名");
+        assert!(verify_signature(zip, &win_sig, &pubkey, "1.4.0", true).is_err());
+        assert!(verify_signature(installer, &zip_sig, &pubkey, "1.4.0", true).is_err());
+        assert!(
+            manifest
+                .select_for("1.4.0", PORTABLE_PLATFORM_KEYS)
+                .unwrap()
+                .is_none()
+        );
+
+        // 清单里没有免安装版条目（老版本发布的）：免安装版得到"没有适用的包"，不会退而求其次装安装包。
+        assert!(matches!(
+            parse_manifest(&without)
+                .unwrap()
+                .select_for("1.3.0", PORTABLE_PLATFORM_KEYS),
+            Err(UpdateError::NoPlatform)
+        ));
+    }
+
+    #[test]
+    fn the_portable_entry_is_validated_like_the_other_extra_entries() {
+        let release = windows_release("c2ln");
+        assert!(build_latest_json_with_platforms(&release, &[portable_asset("c2ln")]).is_ok());
+        let unsigned = [portable_asset("  ")];
+        assert!(matches!(
+            build_latest_json_with_platforms(&release, &unsigned),
+            Err(UpdateError::MissingSignature)
+        ));
+        let insecure = [PlatformAsset {
+            url: "http://example.com/a.zip",
+            ..portable_asset("c2ln")
+        }];
+        assert!(build_latest_json_with_platforms(&release, &insecure).is_err());
+        let twice = [portable_asset("c2ln"), portable_asset("c2ln")];
+        assert!(build_latest_json_with_platforms(&release, &twice).is_err());
+        assert_eq!(PLATFORM_WINDOWS_PORTABLE, "windows-x86_64-portable");
     }
 
     #[test]

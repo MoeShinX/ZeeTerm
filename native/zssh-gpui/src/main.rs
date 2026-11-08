@@ -63,6 +63,7 @@ mod main_window;
 mod menu_kit;
 mod os_icons;
 mod panic_log;
+mod portable;
 mod product;
 mod protocol_backend;
 mod proxies;
@@ -150,6 +151,12 @@ fn main() {
         eprintln!("{}", cli_args::no_display_message());
         std::process::exit(1);
     }
+    // 免安装版自更新后的重启：新进程先等旧进程退出（释放单实例互斥体），否则会被当成"已经有一个在运行"而退出。
+    // 放在最前面，早于数据目录和单实例的任何动作；等不到（超时）也照常往下走。
+    #[cfg(windows)]
+    if let Some(pid) = zssh_update::portable::wait_pid_from_args(std::env::args_os()) {
+        zssh_platform_windows::process::wait_for_exit(pid, std::time::Duration::from_secs(30));
+    }
     // 先确认有正式的数据目录：拿不到就提示退出，不让凭据库、主机库落进会被清理的临时目录。
     settings::ensure_data_dir_or_exit();
     // 出货版 panic 之后进程直接没了：先装 hook，把 panic 的位置和消息记到数据目录的 logs/panic.log。
@@ -190,8 +197,15 @@ fn main() {
         // 单实例：已有实例就把它的主窗口带到前台，然后退出自己。
         // 调试构建里自动化可以用 `ZSSH_INSTANCE_NAME` 换一个互斥体名：用户自己开着的 ZeeTerm
         // 占着默认名时，自动化起的程序不然会把用户的窗口拉到前台再退出（release 里读不到这个变量）。
-        let instance_name =
-            dev_hooks::var("ZSSH_INSTANCE_NAME").unwrap_or_else(|| INSTANCE_NAME.to_owned());
+        // 免安装版的互斥体名、窗口属性名带数据目录的短哈希，这样它和安装版、和别的目录里的免安装版可以同时开；
+        // 安装版的名字不变（老版本升级上来仍是同一个名字）。
+        let instance_names = portable::instance_names(
+            INSTANCE_NAME,
+            MAIN_WINDOW_PROP,
+            portable::is_portable().then(settings::data_dir).as_deref(),
+        );
+        let instance_name = dev_hooks::var("ZSSH_INSTANCE_NAME").unwrap_or(instance_names.mutex);
+        let window_prop = instance_names.window_prop;
         // Unix：第二个实例通过套接字叫醒这里；监听线程只负责转发，真正动窗口要回到界面线程。
         #[cfg(unix)]
         let mut activation_rx = None;
@@ -214,10 +228,20 @@ fn main() {
                 if let Ok(mut slot) = INSTANCE.lock() {
                     *slot = Some(guard);
                 }
+                // 免安装版：上次自更新留下的 `*.old`（运行中的旧主程序当时删不掉）在这里清掉。放后台线程，不拖慢启动；
+                // 拿到单实例锁之后才做，旧进程一定已经退出了。
+                if let Some(layout) = portable::layout() {
+                    std::thread::spawn(move || {
+                        let removed = zssh_update::portable::cleanup_leftovers(&layout);
+                        if !removed.is_empty() {
+                            tracing::info!(count = removed.len(), "已清理上次更新留下的旧文件");
+                        }
+                    });
+                }
             }
             None => {
                 #[cfg(windows)]
-                single_instance::focus_existing(MAIN_WINDOW_PROP);
+                single_instance::focus_existing(&window_prop);
                 #[cfg(unix)]
                 single_instance::activate_existing(&instance_name);
                 // 还没建窗口和托盘，直接退出；cx.quit() 在空事件循环里不一定收得住。
@@ -281,10 +305,10 @@ fn main() {
             if let Ok(handle) = window.window_handle()
                 && let RawWindowHandle::Win32(win32) = handle.as_raw()
             {
-                single_instance::set_window_prop(win32.hwnd.get(), MAIN_WINDOW_PROP);
+                single_instance::set_window_prop(win32.hwnd.get(), &window_prop);
             }
             #[cfg(not(windows))]
-            let _ = MAIN_WINDOW_PROP;
+            let _ = &window_prop;
             // 关闭按钮收进托盘，进程和后台任务继续跑；托盘没建起来时没有入口能叫回窗口，
             // 这时必须真正退出。两种情况都记住窗口位置和布局。
             let close_view = view.clone();

@@ -363,7 +363,8 @@ pub fn sanitize_font_family(raw: &str) -> String {
     }
 }
 
-/// `ZSSH_DATA_DIR` 优先；其次 Windows 是 `%APPDATA%\ZeeTerm`（与 Tauri 版 Z-SSH 的数据目录分开），
+/// `ZSSH_DATA_DIR` 优先；其次 Windows 免安装版（程序旁边有 `portable` 标记，见 `portable`）是 `<程序所在目录>\data`；
+/// 再其次 Windows 是 `%APPDATA%\ZeeTerm`（与 Tauri 版 Z-SSH 的数据目录分开），
 /// Linux 是 `$XDG_DATA_HOME/ZeeTerm`（没设或不是绝对路径时用 `~/.local/share/ZeeTerm`）。
 ///
 /// Windows 上环境变量里的 `APPDATA` 被清掉（某些启动器、计划任务、精简过的环境）时，问系统要「漫游应用数据」
@@ -378,8 +379,9 @@ pub fn data_dir() -> PathBuf {
 pub fn try_data_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        resolve_data_dir(
+        resolve_data_dir_portable_aware(
             std::env::var_os("ZSSH_DATA_DIR"),
+            crate::portable::data_dir(),
             std::env::var_os("APPDATA"),
             known_roaming_appdata,
         )
@@ -406,6 +408,16 @@ pub fn ensure_data_dir_or_exit() {
     let Some(dir) = try_data_dir() else {
         exit_without_data_dir();
     };
+    // 免安装版的数据目录在程序旁边：程序放在只读位置（Program Files、只读盘）时建不出来，
+    // 不然要等到第一次写库才报一个看不懂的错，所以启动时就说清楚再退出。
+    #[cfg(windows)]
+    if crate::portable::data_dir().as_deref() == Some(dir.as_path())
+        && let Err(err) = std::fs::create_dir_all(&dir)
+    {
+        tracing::error!(%err, "免安装版建不了数据目录");
+        show_fatal(&portable_data_dir_message(&dir, &err));
+        std::process::exit(1);
+    }
     #[cfg(unix)]
     if std::env::var_os("ZSSH_DATA_DIR").is_none_or(|dir| dir.is_empty()) {
         match secure_private_dir(&dir) {
@@ -431,6 +443,22 @@ fn exit_without_data_dir() -> ! {
     tracing::error!("找不到数据目录：XDG_DATA_HOME 和家目录都不可用");
     show_fatal(no_data_dir_message());
     std::process::exit(1);
+}
+
+/// 免安装版建不出程序旁边的数据目录。同样按系统语言二选一（设置还没读）。
+#[cfg(windows)]
+fn portable_data_dir_message(dir: &Path, err: &std::io::Error) -> String {
+    if zssh_platform_windows::locale::system_is_chinese() {
+        format!(
+            "免安装版需要能在程序所在的文件夹里保存数据，但 {} 建不出来：{err}\n\n请把 ZeeTerm 解压到可以写入的位置（比如桌面或 D 盘的文件夹），不要放在 Program Files 或只读的光盘、U 盘里。", // i18n-allow: 设置还没读、按系统语言二选一，启动前的致命提示
+            dir.display()
+        )
+    } else {
+        format!(
+            "The portable version needs to keep its data in the folder it runs from, but {} could not be created: {err}\n\nExtract ZeeTerm to a location you can write to (for example the desktop or a folder on another drive), not to Program Files or a read-only disc or USB drive.",
+            dir.display()
+        )
+    }
 }
 
 /// 这时设置还没读，界面语言按系统语言挑：中文系统中文，其他英文。
@@ -545,6 +573,23 @@ fn known_roaming_appdata() -> Option<PathBuf> {
         CoTaskMemFree(Some(raw.0 as *const _));
         text.filter(|text| !text.is_empty()).map(PathBuf::from)
     }
+}
+
+/// 选数据目录（Windows，认免安装版）：`ZSSH_DATA_DIR` 最优先（产品功能，空串当没设）；
+/// 其次是免安装版（程序旁边有 `portable` 标记）的 `<程序所在目录>\data`，不碰 `%APPDATA%`；
+/// 都没有就是安装版的 `%APPDATA%\ZeeTerm`（见 [`resolve_data_dir`]，行为不变）。
+#[cfg(windows)]
+fn resolve_data_dir_portable_aware(
+    override_dir: Option<std::ffi::OsString>,
+    portable_dir: Option<PathBuf>,
+    appdata: Option<std::ffi::OsString>,
+    known_appdata: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let overridden = override_dir.as_ref().is_some_and(|dir| !dir.is_empty());
+    if !overridden && let Some(dir) = portable_dir {
+        return Some(dir);
+    }
+    resolve_data_dir(override_dir, appdata, known_appdata)
 }
 
 /// 选数据目录（Windows）。空字符串当作没设（空的 `APPDATA` 拼出来是相对路径 `ZeeTerm`，会落到当前目录）；
@@ -866,6 +911,59 @@ mod tests {
         );
         let default = resolve_data_dir(None, Some(appdata), no_known).unwrap();
         assert!(!default.to_string_lossy().contains("Z-SSH"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_portable_copy_keeps_its_data_beside_the_program_unless_zssh_data_dir_says_otherwise() {
+        let appdata = std::ffi::OsString::from(r"C:\data\roaming");
+        let known = || Some(PathBuf::from(r"C:\data\roaming"));
+        let beside = PathBuf::from(r"D:\Tools\ZeeTerm").join("data");
+
+        // 有标记（免安装版）、没设 ZSSH_DATA_DIR：数据在程序旁边，不碰 %APPDATA%。
+        assert_eq!(
+            resolve_data_dir_portable_aware(
+                None,
+                Some(beside.clone()),
+                Some(appdata.clone()),
+                known
+            ),
+            Some(beside.clone())
+        );
+        // 空的 ZSSH_DATA_DIR 当没设。
+        assert_eq!(
+            resolve_data_dir_portable_aware(
+                Some("".into()),
+                Some(beside.clone()),
+                Some(appdata.clone()),
+                known
+            ),
+            Some(beside.clone())
+        );
+        // 没有标记（安装版）：和以前完全一样，%APPDATA%\ZeeTerm。
+        assert_eq!(
+            resolve_data_dir_portable_aware(None, None, Some(appdata.clone()), known),
+            Some(PathBuf::from(r"C:\data\roaming").join("ZeeTerm"))
+        );
+        // ZSSH_DATA_DIR 仍然优先，免安装版也一样。
+        assert_eq!(
+            resolve_data_dir_portable_aware(
+                Some(r"D:\isolated".into()),
+                Some(beside),
+                Some(appdata.clone()),
+                known
+            ),
+            Some(PathBuf::from(r"D:\isolated"))
+        );
+        assert_eq!(
+            resolve_data_dir_portable_aware(
+                Some(r"D:\isolated".into()),
+                None,
+                Some(appdata),
+                known
+            ),
+            Some(PathBuf::from(r"D:\isolated"))
+        );
     }
 
     #[cfg(windows)]

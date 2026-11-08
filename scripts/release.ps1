@@ -167,8 +167,14 @@ try {
     # ---------- 6. 更新说明 -> 签名 -> latest.json -> 自检 -> SHA256SUMS ----------
     $notesOut = Join-Path $outDir 'RELEASE_NOTES.md'
     Write-ReleaseNotes -RepoRoot $repoRoot -Version $Version -OutFile $notesOut -NotesFile $NotesFile -DryRun:$DryRun
+    # build.ps1 在安装包旁边还打了免安装版 zip：有就一起签名、写进 latest.json（演练不编译，没有它）。
+    $portableZip = Join-Path $outDir "ZeeTerm-$Version-windows-x64-portable.zip"
+    $extraAssets = @()
+    if (Test-Path -LiteralPath $portableZip -PathType Leaf) {
+        $extraAssets += @{ Key = 'windows-x86_64-portable'; Path = $portableZip }
+    }
     $artifacts = New-ReleaseArtifacts -RepoRoot $repoRoot -Version $Version -Installer $installer -KeyPath $KeyPath `
-        -ConfiguredPubkey $configuredPubkey -NotesOut $notesOut -OutDir $outDir -Repo $Repo
+        -ConfiguredPubkey $configuredPubkey -NotesOut $notesOut -OutDir $outDir -Repo $Repo -ExtraAssets $extraAssets
     $sha = $artifacts.Sha256
     $latest = $artifacts.Latest
     $sums = $artifacts.Sums
@@ -206,6 +212,7 @@ Write-Host "       gh workflow disable release.yml --repo $Repo"
 Write-Host "       git tag v$Version"
 Write-Host "       git push origin main v$Version"
 Write-Host '  3. 创建 Release 并上传安装包、latest.json 和 SHA256SUMS.txt（latest.json 是用户端检查更新读的那份；正文末尾已带安装包的 SHA-256）：'
-Write-Host "       gh release create v$Version `"$installer`" `"$latest`" `"$sums`" --repo $Repo --title `"ZeeTerm $Version`" --notes-file `"$notesOut`""
+$portableArg = if (Test-Path -LiteralPath $portableZip -PathType Leaf) { " `"$portableZip`"" } else { '' }
+Write-Host "       gh release create v$Version `"$installer`"$portableArg `"$latest`" `"$sums`" --repo $Repo --title `"ZeeTerm $Version`" --notes-file `"$notesOut`""
 Write-Host "  4. 发布后重新启用工作流：gh workflow enable release.yml --repo $Repo；再用旧版本程序点一次「检查更新」验证；出问题的回滚办法见 docs/RELEASING.md。"
 exit 0

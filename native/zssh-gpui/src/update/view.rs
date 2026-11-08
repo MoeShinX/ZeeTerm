@@ -361,7 +361,9 @@ impl UpdateDemo {
             )),
             InstallState::Failed(err) => notices.push(line(err.clone(), tokens.danger)),
             // 这几种在 Linux 上由各自那一屏的状态块表达（见 `status_block`），这里只补手动安装的说明。
-            InstallState::Installing(_) | InstallState::Installed { .. } => {}
+            InstallState::Installing(_)
+            | InstallState::InstallingPortable
+            | InstallState::Installed { .. } => {}
             InstallState::Manual {
                 flavor,
                 reason,
@@ -445,9 +447,9 @@ impl UpdateDemo {
             .py_3()
             .border_t_1()
             .border_color(tokens.divider)
-            // "安装后重启"是 Windows 安装器的参数；Linux 装好后单独问一次「立即重启」。
+            // "安装后重启"是 Windows 安装器的参数；Linux 和免安装版装好后单独问一次「立即重启」。
             .when(
-                layout::shows_restart_choice(screen) && !launched && self.linux_flavor().is_none(),
+                layout::shows_restart_choice(screen) && !launched && !self.installs_in_place(),
                 |row| {
                     row.child(
                         Checkbox::new("update-restart")

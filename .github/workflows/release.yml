@@ -5,8 +5,8 @@
 #            并要求这个提交在 main 上的 CI（ci.yml，Windows + Linux + macOS 全套 fmt / clippy / test / 打包）已经通过。
 #            门禁不在这里重跑：发版前 main 上的 CI 已经对同一个提交跑过一遍。
 #   linux    （ubuntu-22.04）完整 release 编译出 deb + tar.gz，容器里装一遍，上传为 artifact。
-#   windows  （windows-latest）完整 release 编译出安装包，上传为 artifact。和 linux 并行。
-#   release  （windows-latest，release 环境）取回三个包 -> 用更新私钥签名并自检 -> latest.json /
+#   windows  （windows-latest）完整 release 编译出安装包和免安装版 zip，上传为 artifact。和 linux 并行。
+#   release  （windows-latest，release 环境）取回四个包 -> 用更新私钥签名并自检 -> latest.json /
 #            SHA256SUMS.txt / Release 正文 -> gh release create。只有这个任务拿得到私钥。
 # 改版本号、写更新说明、打 tag 的步骤见 docs/RELEASING.md（先 scripts/bump-version.ps1，提交推 main，等 CI 通过，再推 tag）。
 #
@@ -184,7 +184,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Windows 安装包：完整 release 编译。只读代码、不在 release 环境里、拿不到私钥；和 linux 并行。
+  # Windows 安装包和免安装版 zip（build.ps1 一次打出两个）：完整 release 编译。只读代码、不在 release 环境里、拿不到私钥；和 linux 并行。
   windows:
     name: 编译 Windows 安装包（windows-latest）
     needs: verify
@@ -241,12 +241,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $installer = Join-Path $out "ZeeTerm-Setup-$env:VERSION.exe"
           if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "没有找到预期的安装包：$installer" }
+          $portable = Join-Path $out "ZeeTerm-$env:VERSION-windows-x64-portable.zip"
+          if (-not (Test-Path -LiteralPath $portable -PathType Leaf)) { throw "没有找到预期的免安装版：$portable" }
 
-      - name: 上传安装包（给 release 任务签名用）
+      - name: 上传安装包和免安装版（给 release 任务签名用）
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: zeeterm-windows-release
-          path: dist/${{ env.VERSION }}/ZeeTerm-Setup-${{ env.VERSION }}.exe
+          path: |
+            dist/${{ env.VERSION }}/ZeeTerm-Setup-${{ env.VERSION }}.exe
+            dist/${{ env.VERSION }}/ZeeTerm-${{ env.VERSION }}-windows-x64-portable.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -331,27 +335,30 @@ jobs:
             native -> target
           key: release-sign
 
-      # Windows 任务打好的安装包：同样在私钥写出来之前取回并核对。
+      # Windows 任务打好的安装包和免安装版 zip：同样在私钥写出来之前取回并核对。
       - name: 取回 Windows 安装包
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: zeeterm-windows-release
           path: windows-dist
 
-      - name: 核对 Windows 安装包
+      - name: 核对 Windows 安装包和免安装版
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $name = "ZeeTerm-Setup-$env:VERSION.exe"
+          $expected = @("ZeeTerm-Setup-$env:VERSION.exe", "ZeeTerm-$env:VERSION-windows-x64-portable.zip")
           $actual = @(Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'windows-dist') -Recurse -File)
-          if ($actual.Count -ne 1 -or $actual[0].Name -ne $name) {
-            throw "Windows 安装包的文件清单不对：期望 [$name]，实际 [$(($actual | ForEach-Object { $_.Name }) -join ', ')]。"
+          $actualNames = @($actual | ForEach-Object { $_.Name }) | Sort-Object
+          if (($actualNames -join '|') -ne (($expected | Sort-Object) -join '|')) {
+            throw "Windows 包的文件清单不对：期望 [$($expected -join ', ')]，实际 [$($actualNames -join ', ')]。"
           }
-          if ($actual[0].Length -le 0) { throw "$name 是空文件。" }
           $dist = Join-Path $env:GITHUB_WORKSPACE "dist\$env:VERSION"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          Copy-Item -LiteralPath $actual[0].FullName -Destination (Join-Path $dist $name) -Force
-          Write-Host "已取回 Windows 安装包：$name"
+          foreach ($file in $actual) {
+            if ($file.Length -le 0) { throw "$($file.Name) 是空文件。" }
+            Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $dist $file.Name) -Force
+          }
+          Write-Host "已取回 Windows 包：$($expected -join '、')"
 
       # Linux 任务打好的 deb 和 tar.gz：在私钥写出来之前取回并核对文件名，签名那一步一并签。
       - name: 取回 Linux 包
@@ -391,7 +398,7 @@ jobs:
           $path = Join-Path $env:RUNNER_TEMP 'zeeterm-updater.key'
           [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
 
-      - name: 签名并生成 latest.json、SHA256SUMS.txt、Release 正文（含 Linux 包）
+      - name: 签名并生成 latest.json、SHA256SUMS.txt、Release 正文（含免安装版和 Linux 包）
         shell: pwsh
         env:
           ZEETERM_UPDATER_KEY_PASSWORD: ${{ secrets.ZEETERM_UPDATER_KEY_PASSWORD }}
@@ -400,6 +407,7 @@ jobs:
           ./scripts/release-sign.ps1 `
             -Version $env:VERSION `
             -InstallerPath (Join-Path $dist "ZeeTerm-Setup-$env:VERSION.exe") `
+            -PortablePath (Join-Path $dist "ZeeTerm-$env:VERSION-windows-x64-portable.zip") `
             -KeyPath (Join-Path $env:RUNNER_TEMP 'zeeterm-updater.key') `
             -LinuxDebPath (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.deb") `
             -LinuxTarPath (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.tar.gz") `
@@ -428,6 +436,7 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw "tag $env:TAG 的 Release 已经存在，不会覆盖。" }
           gh release create $env:TAG `
             (Join-Path $dist "ZeeTerm-Setup-$env:VERSION.exe") `
+            (Join-Path $dist "ZeeTerm-$env:VERSION-windows-x64-portable.zip") `
             (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.deb") `
             (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.tar.gz") `
             (Join-Path $dist 'latest.json') `

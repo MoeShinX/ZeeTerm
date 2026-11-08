@@ -1385,3 +1385,247 @@ mod macos_notice {
         assert!(failed.status.contains("404"), "{}", failed.status);
     }
 }
+
+/// Windows 免安装版：同一套"取清单 → 下载 → 验签"，选的是清单里的 `windows-x86_64-portable`（zip），
+/// 最后一步是原地替换程序文件——这里换成桩（真正的解压 / 替换 / 回滚在 `zssh_update::portable` 的测试里），
+/// 不碰任何正在用的程序。
+mod portable_chain {
+    use super::{
+        CheckKind, Checked, DownloadEvent, Fixture, ManifestSource, Platform, Route, block_on,
+        check_with, client, download, failure, file_count, keys, publish, sign_installer, temp_dir,
+    };
+    use crate::update::linux::Outcome;
+    use crate::update::portable::{self as glue, Job};
+    use std::cell::Cell;
+    use std::path::{Path, PathBuf};
+    use zssh_update::portable::{PortableError, PortableLayout};
+    use zssh_update::{
+        PLATFORM_LINUX_TAR, PLATFORM_WINDOWS_PORTABLE, PlatformAsset, ReleaseManifest,
+        build_latest_json_with_platforms,
+    };
+
+    const ZIP_NAME: &str = "ZeeTerm-1.4.0-windows-x64-portable.zip";
+
+    /// 发布一个带 Windows 安装包、Linux tar.gz 和免安装版 zip 的版本（和发版流水线生成 latest.json 用的是同一个函数）。
+    /// `served` 是夹具实际提供的 zip 字节，`signed` 是签名时用的字节。
+    fn publish_all(keys: &super::Keys, served: &[u8], signed: &[u8]) -> Fixture {
+        let fixture = Fixture::start();
+        let installer_sig = sign_installer(keys, b"installer", "1.4.0", "ZeeTerm-Setup-1.4.0.exe");
+        let zip_sig = sign_installer(keys, signed, "1.4.0", ZIP_NAME);
+        let tar_sig = sign_installer(keys, b"tar", "1.4.0", "ZeeTerm-1.4.0-linux-x86_64.tar.gz");
+        let json = build_latest_json_with_platforms(
+            &ReleaseManifest {
+                version: "1.4.0",
+                notes: "新增免安装版",
+                pub_date: "2026-11-08T08:00:00Z",
+                url: "https://fixture.invalid/download/v1.4.0/ZeeTerm-Setup-1.4.0.exe",
+                signature: &installer_sig,
+            },
+            &[
+                PlatformAsset {
+                    key: PLATFORM_LINUX_TAR,
+                    url: "https://fixture.invalid/download/v1.4.0/ZeeTerm-1.4.0-linux-x86_64.tar.gz",
+                    signature: &tar_sig,
+                },
+                PlatformAsset {
+                    key: PLATFORM_WINDOWS_PORTABLE,
+                    url: &format!("https://fixture.invalid/download/v1.4.0/{ZIP_NAME}"),
+                    signature: &zip_sig,
+                },
+            ],
+        )
+        .expect("生成 latest.json")
+        .replace("https://fixture.invalid", &fixture.base);
+        fixture.set("/latest.json", Route::Ok(json.into_bytes()));
+        fixture.set(
+            &format!("/download/v1.4.0/{ZIP_NAME}"),
+            Route::Ok(served.to_vec()),
+        );
+        fixture
+    }
+
+    fn check_on(
+        fixture: &Fixture,
+        current: &str,
+        pubkey: Result<&str, &String>,
+        platform: &Platform,
+    ) -> Checked {
+        let sources = [ManifestSource::Url(fixture.url("/latest.json"))];
+        block_on(check_with(
+            current,
+            &sources,
+            &client(),
+            true,
+            pubkey,
+            platform,
+        ))
+    }
+
+    fn layout() -> PortableLayout {
+        PortableLayout::new(Path::new(r"D:\Tools\ZeeTerm\ZeeTerm.exe"))
+    }
+
+    #[test]
+    fn a_portable_copy_picks_the_zip_downloads_and_verifies_it_and_then_replaces_in_place() {
+        let keys = keys();
+        let zip = b"PK fake zip bytes".to_vec();
+        let fixture = publish_all(&keys, &zip, &zip);
+        let platform = Platform::WindowsPortable { writable: true };
+
+        let checked = check_on(&fixture, "1.3.0", Ok(&keys.pubkey_b64), &platform);
+        assert_eq!(checked.kind, CheckKind::Found, "{}", checked.status);
+        let package = checked.package.expect("应选出 zip");
+        assert_eq!(package.platform_key, "windows-x86_64-portable");
+        assert!(package.url.ends_with(ZIP_NAME), "{}", package.url);
+        assert_eq!(checked.release_version.as_deref(), Some("1.4.0"));
+
+        // 下载 + 验签：缓存里是验过的那份字节，文件名保持 zip 的名字。
+        let cache = temp_dir("portable-ok");
+        let (result, _) = download(&package, &keys.pubkey_b64, &cache);
+        let (path, size, sha256) = result.unwrap_or_else(|_| panic!("下载并验签应通过"));
+        assert_eq!(size, zip.len() as u64);
+        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some(ZIP_NAME));
+        assert_eq!(sha256, zssh_update::sha256_hex(&zip));
+
+        // 原地替换（桩）：拿到的是缓存里已验签的 zip 和正在运行的程序布局；成功后重启的就是原来的路径。
+        let job = Job {
+            package: path.clone(),
+            cache_root: cache.clone(),
+            version: "1.4.0".to_owned(),
+            sha256,
+            layout: layout(),
+        };
+        let applied = Cell::new(0);
+        let outcome = glue::run(&job, &|archive, layout_seen| {
+            applied.set(applied.get() + 1);
+            assert_eq!(archive, path.canonicalize().expect("规范化"));
+            assert_eq!(layout_seen, &layout());
+            Ok(())
+        });
+        assert_eq!(
+            outcome,
+            Outcome::Installed {
+                restart: PathBuf::from(r"D:\Tools\ZeeTerm\ZeeTerm.exe")
+            }
+        );
+        assert_eq!(applied.get(), 1);
+
+        // 替换失败：给出原因，不是"已安装"。
+        let failed = glue::run(&job, &|_, _| {
+            Err(PortableError::MissingFile("ZeeTerm.exe".into()))
+        });
+        assert!(matches!(failed, Outcome::Failed(_)), "{failed:?}");
+
+        // 验签之后 zip 被动过：替换不会被调用。
+        std::fs::write(&path, b"tampered").expect("改包");
+        let untouched = glue::run(&job, &|_, _| panic!("包不对就不能去替换程序文件"));
+        assert!(matches!(untouched, Outcome::Failed(_)), "{untouched:?}");
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn the_same_manifest_still_gives_an_installed_copy_the_installer_and_never_the_zip() {
+        let keys = keys();
+        let zip = b"PK fake zip bytes".to_vec();
+        let fixture = publish_all(&keys, &zip, &zip);
+        // 安装版（和老客户端）选的还是 Windows 安装包。
+        let installed = check_on(&fixture, "1.3.0", Ok(&keys.pubkey_b64), &Platform::Windows);
+        assert_eq!(installed.kind, CheckKind::Found, "{}", installed.status);
+        assert_eq!(
+            installed.package.map(|package| package.platform_key),
+            Some("windows-x86_64".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_bad_signature_never_reaches_the_replacement() {
+        let keys = keys();
+        let fixture = publish_all(&keys, b"swapped on the server", b"good zip");
+        let checked = check_on(
+            &fixture,
+            "1.3.0",
+            Ok(&keys.pubkey_b64),
+            &Platform::WindowsPortable { writable: true },
+        );
+        let package = checked.package.expect("清单本身没问题");
+        let cache = temp_dir("portable-bad-sig");
+        let (result, events) = download(&package, &keys.pubkey_b64, &cache);
+        let message = failure(result);
+        assert!(message.contains("签名校验未通过"), "{message}");
+        assert_eq!(file_count(&cache), 0, "验不过的包一个字节都不能落盘");
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, DownloadEvent::Verified { .. }))
+        );
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn an_unwritable_folder_is_only_a_notice_that_needs_no_signing_key_and_touches_no_package() {
+        let keys = keys();
+        let zip = b"PK fake zip bytes".to_vec();
+        let fixture = publish_all(&keys, &zip, &zip);
+        // 公钥不可用也无所谓：不下载、不验签，只读版本号和说明。
+        let checked = check_on(
+            &fixture,
+            "1.3.0",
+            Ok("PLACEHOLDER"),
+            &Platform::WindowsPortable { writable: false },
+        );
+        assert_eq!(checked.kind, CheckKind::FoundManual, "{}", checked.status);
+        assert!(checked.package.is_none(), "不能带安装包");
+        assert_eq!(checked.release_version.as_deref(), Some("1.4.0"));
+        assert_eq!(checked.notes.as_deref(), Some("新增免安装版"));
+        assert!(
+            checked.status.contains("发现新版本 1.4.0") && checked.status.contains("data"),
+            "{}",
+            checked.status
+        );
+        assert!(
+            !checked.status.contains(&fixture.base),
+            "清单里的网址不能进提示：{}",
+            checked.status
+        );
+        assert_eq!(fixture.hits(), 1, "只读了清单，没有碰 zip");
+        // 已是最新时不提示。
+        let latest = check_on(
+            &fixture,
+            "1.4.0",
+            Ok("PLACEHOLDER"),
+            &Platform::WindowsPortable { writable: false },
+        );
+        assert_eq!(latest.kind, CheckKind::Latest);
+    }
+
+    #[test]
+    fn a_manifest_without_a_zip_entry_points_a_portable_copy_to_the_release_page() {
+        let keys = keys();
+        // 老版本发布的清单：只有 Windows 安装包条目。
+        let installer = b"installer".to_vec();
+        let (fixture, _) = publish(
+            &keys,
+            "1.4.0",
+            "1.4.0",
+            &installer,
+            Route::Ok(installer.clone()),
+        );
+        let checked = check_on(
+            &fixture,
+            "1.3.0",
+            Ok(&keys.pubkey_b64),
+            &Platform::WindowsPortable { writable: true },
+        );
+        assert_eq!(checked.kind, CheckKind::FoundManual, "{}", checked.status);
+        assert!(checked.package.is_none(), "免安装版不能退而求其次装安装包");
+        assert_eq!(checked.release_version.as_deref(), Some("1.4.0"));
+        // 公钥占位时照常拒绝（可写的免安装版会下载，没有公钥就不能验）。
+        let unconfigured = check_on(
+            &fixture,
+            "1.3.0",
+            Ok("PLACEHOLDER"),
+            &Platform::WindowsPortable { writable: true },
+        );
+        assert_eq!(unconfigured.kind, CheckKind::Failed);
+    }
+}

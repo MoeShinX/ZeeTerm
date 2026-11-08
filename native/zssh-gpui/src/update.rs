@@ -35,6 +35,12 @@
 //! `CheckKind::FoundManual`，界面是同一屏「发现新版本」，按钮只有跳过 / 关闭 / 「打开发布页」，
 //! 打开的地址是固定常量 `linux::MACOS_RELEASE_PAGE_URL`；自动检查发现新版本时同样弹出这个窗口。
 //!
+//! Windows 免安装版（`Platform::WindowsPortable`，程序旁边有 `portable` 标记文件，`portable.rs` 和 `zssh_update::portable`）：
+//! 只选清单里的 `windows-x86_64-portable`（zip），下载、验签与别的平台是同一套；验签通过后在后台线程里解出新程序，
+//! 把运行中的 exe 改名成 `*.old`、新程序移进来（失败回滚），装好后由用户点「立即重启」（新进程先等旧进程退出再启动；
+//! 下次启动清掉 `*.old`）。程序所在目录不可写（Program Files、只读盘）时不下载、不替换，和 macOS 一样只提醒并引导到发布页；
+//! 清单里没有 zip 条目（老版本发布的）时同样引导到发布页，不会拿安装包去"更新"免安装版。
+//!
 //! 界面（V2-U22 重做，只动版式，流程不变）：每种状态都是"顶部信息区 / 中间内容区 / 底部按钮区"三段。
 //! 画哪一屏、标题和按钮集合见 `layout`，更新说明（Markdown）先经 `notes` 改写成安全的版本再渲染，
 //! `view` 是 `Render`。「跳过此版本」把版本号写进本机设置 `update_skipped_version`，自动检查据此不再提示它。
@@ -59,6 +65,7 @@ use crate::install_state;
 mod layout;
 mod linux;
 mod notes;
+mod portable;
 mod view;
 
 pub(crate) use linux::awaiting_restart;
@@ -238,6 +245,10 @@ enum UpdateMsg {
     DebNotRegularFile,
     DebTooLarge,
     RestartFailedPrefix,
+    // ---- Windows 免安装版 ----
+    /// 免安装版所在的文件夹不能写入：不自己更新，请到发布页下载新的 zip 手动替换。
+    PortableManualMessage,
+    PortableInstallFailedPrefix,
 }
 
 impl Msg for UpdateMsg {
@@ -382,6 +393,10 @@ impl Msg for UpdateMsg {
             }
             Self::DebTooLarge => "缓存里的安装包太大，已拒绝安装（没有安装任何东西）。请重新下载。",
             Self::RestartFailedPrefix => "没能重启：",
+            Self::PortableManualMessage => {
+                "ZeeTerm 所在的文件夹不能写入，没法自己更新。请到发布页下载新的免安装版 zip，解压后覆盖原来的程序文件（保留 portable 文件和 data 文件夹，已保存的数据就不会丢）。"
+            }
+            Self::PortableInstallFailedPrefix => "更新免安装版失败：",
         }
     }
 
@@ -546,6 +561,10 @@ impl Msg for UpdateMsg {
                 "The cached package is too large, so installation was refused (nothing was installed). Please download it again."
             }
             Self::RestartFailedPrefix => "Could not restart: ",
+            Self::PortableManualMessage => {
+                "The folder ZeeTerm runs from is not writable, so it cannot update itself. Please download the new portable zip from the release page and extract it over the old program files (keep the portable file and the data folder, and your saved data stays intact)."
+            }
+            Self::PortableInstallFailedPrefix => "Could not update the portable version: ",
         }
     }
 }
@@ -703,7 +722,10 @@ impl UpdateDemo {
     /// 重新取一次清单；界面上的「重新检查」也走这里。网络请求在后台跑，结果经事件回来。
     fn reload(&mut self, cx: &mut Context<Self>) {
         // Linux：安装正在后台跑（授权框、apt、替换文件），这时重新检查会丢掉它的结果。
-        if matches!(self.install, InstallState::Installing(_)) {
+        if matches!(
+            self.install,
+            InstallState::Installing(_) | InstallState::InstallingPortable
+        ) {
             return;
         }
         self.cancel_job();
@@ -751,7 +773,9 @@ impl UpdateDemo {
     /// 当前画哪一屏。Linux 的安装过程（安装中 / 已装好 / 手动安装）盖在"已验证"之上。
     fn screen(&self) -> layout::Screen {
         match &self.install {
-            InstallState::Installing(_) => layout::Screen::Installing,
+            InstallState::Installing(_) | InstallState::InstallingPortable => {
+                layout::Screen::Installing
+            }
             InstallState::Installed { .. } => layout::Screen::Installed,
             InstallState::Manual { .. } => layout::Screen::ManualInstall,
             _ => layout::screen(
@@ -780,6 +804,19 @@ impl UpdateDemo {
             .and_then(|package| Flavor::from_platform_key(&package.platform_key))
     }
 
+    /// 选中的包是不是 Windows 免安装版的 zip（决定安装走原地替换，而不是启动 NSIS 安装器）。
+    fn is_portable_package(&self) -> bool {
+        self.package
+            .as_ref()
+            .is_some_and(|package| package.platform_key == zssh_update::PLATFORM_WINDOWS_PORTABLE)
+    }
+
+    /// 安装是"在程序里原地完成、装好后由用户点重启"的那几种（Linux 的 deb / tar.gz，Windows 免安装版）：
+    /// 没有"退出后安装"，也没有"安装后重启"复选框。
+    fn installs_in_place(&self) -> bool {
+        self.linux_flavor().is_some() || self.is_portable_package()
+    }
+
     /// 关掉这个窗口（程序自己关：要把 IME 的窗口记录还回去，和用户点关闭按钮走的收尾一致）。
     fn close_window(&mut self, window: &mut Window) {
         crate::ime::window_destroyed(&self.ime_key);
@@ -802,9 +839,10 @@ impl UpdateDemo {
 
     /// 「稍后」：发现新版本时只关窗口；已验证时先排队"退出后安装"（没排上就留在窗口里说原因）再关。
     fn later(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // "退出后安装"只有 Windows 有（安装器可以等程序退出时再启动）；Linux 的安装要用户在场（授权框），稍后就只是关窗口。
+        // "退出后安装"只有 Windows 安装版有（安装器可以等程序退出时再启动）；Linux 的安装要用户在场（授权框），
+        // 免安装版是程序自己原地替换，稍后都只是关窗口。
         if matches!(self.phase, DownloadState::Verified { .. })
-            && self.linux_flavor().is_none()
+            && !self.installs_in_place()
             && !self.click_queue_install(cx)
         {
             return;
@@ -885,6 +923,9 @@ impl UpdateDemo {
         if let Some(flavor) = self.linux_flavor() {
             return self.click_install_linux(flavor, cx);
         }
+        if self.is_portable_package() {
+            return self.click_install_portable(cx);
+        }
         let (installer, version, sha256) = match (&self.phase, &self.package) {
             (DownloadState::Verified { path, sha256, .. }, Some(package)) => {
                 (path.clone(), package.version.clone(), sha256.clone())
@@ -958,6 +999,61 @@ impl UpdateDemo {
         false
     }
 
+    /// Windows 免安装版的「立即安装」：点一下就开始原地替换程序文件。替换在后台线程里跑（要解压几十 MB），
+    /// 结果经 [`DownloadEvent::LinuxInstall`] 回来（和 Linux 的 tar.gz 更新是同一种"装好后重启生效"）。
+    /// 替换本身不退出程序，所以总是返回 `false`；重启是装好之后用户另点的。
+    fn click_install_portable(&mut self, cx: &mut Context<Self>) -> bool {
+        if !matches!(self.install, InstallState::Idle | InstallState::Failed(_)) {
+            return false;
+        }
+        let (package, version, sha256) = match (&self.phase, &self.package) {
+            (DownloadState::Verified { path, sha256, .. }, Some(package)) => {
+                (path.clone(), package.version.clone(), sha256.clone())
+            }
+            _ => return false,
+        };
+        let Some(layout) = crate::portable::layout() else {
+            self.install = InstallState::Failed(format!(
+                "{}{}",
+                t(UpdateMsg::PortableInstallFailedPrefix),
+                t(UpdateMsg::PortableManualMessage)
+            ));
+            cx.notify();
+            return false;
+        };
+        let runtime = match crate::ssh_backend::runtime() {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                self.install = InstallState::Failed(format!(
+                    "{}{err}",
+                    t(UpdateMsg::PortableInstallFailedPrefix)
+                ));
+                cx.notify();
+                return false;
+            }
+        };
+        let job = portable::Job {
+            package,
+            cache_root: update_cache_dir(),
+            version,
+            sha256,
+            layout,
+        };
+        self.install = InstallState::InstallingPortable;
+        self.blocked = None;
+        self.queued = None;
+        let (generation, sender) = (self.generation, self.sender.clone());
+        runtime.spawn_blocking(move || {
+            let outcome = portable::run_system(&job);
+            let _ = sender.send(DownloadEvent::LinuxInstall {
+                generation,
+                outcome,
+            });
+        });
+        cx.notify();
+        false
+    }
+
     /// 收下后台安装的结果。手动安装时顺手在文件管理器里显示那个文件（用户多半要双击它）。
     fn apply_linux_outcome(&mut self, outcome: linux::Outcome, cx: &mut Context<Self>) {
         match outcome {
@@ -996,7 +1092,13 @@ impl UpdateDemo {
             cx.notify();
             return false;
         }
-        let started = match linux::restart(restart, &current_exe_args()) {
+        // 免安装版直接起新程序（带"先等旧进程退出"的参数）；Linux 交给一个等旧进程退出的小 shell。
+        let restarted = if self.is_portable_package() {
+            portable::restart(restart, &current_exe_args())
+        } else {
+            linux::restart(restart, &current_exe_args())
+        };
+        let started = match restarted {
             Ok(()) => {
                 self.blocked = None;
                 true
@@ -1299,6 +1401,8 @@ enum InstallState {
     Failed(String),
     /// Linux：后台正在安装（deb 是系统授权框和 apt 在跑，tar.gz 是在替换文件）。
     Installing(Flavor),
+    /// Windows 免安装版：后台正在原地替换程序文件。
+    InstallingPortable,
     /// Linux：已经装好，等用户重启；`restart` 是要启动的新程序。
     Installed {
         restart: PathBuf,
@@ -1402,7 +1506,7 @@ enum DownloadEvent {
         generation: u64,
         checked: Checked,
     },
-    /// Linux：后台安装任务的结果。
+    /// Linux、Windows 免安装版：后台安装任务的结果（都是"程序里原地装、装好后重启生效"，共用这一种事件）。
     LinuxInstall {
         generation: u64,
         outcome: linux::Outcome,
@@ -1740,7 +1844,7 @@ pub(crate) async fn check_for_update(current: &str) -> Checked {
     let pubkey = update_pubkey();
     // 公钥不可用时先不建客户端（建客户端要读设置库）：下面 `check_with` 会原样返回原因。
     // macOS 不下载也不验签，用不着公钥，照样要建客户端读清单。
-    let client = if pubkey.is_ok() || platform == Platform::MacOs {
+    let client = if pubkey.is_ok() || !platform.installs_packages() {
         match update_client() {
             Ok(client) => client,
             Err(err) => {
@@ -1771,8 +1875,8 @@ async fn check_with(
     platform: &Platform,
 ) -> Checked {
     // 没有可用的验签公钥（占位值、内置配置坏了）就不发任何请求：后面下的包也验不了。
-    // macOS 不下载任何包，没有要验的东西，所以不受公钥影响。
-    if *platform != Platform::MacOs {
+    // macOS 和程序目录不可写的免安装版不下载任何包，没有要验的东西，所以不受公钥影响。
+    if platform.installs_packages() {
         match pubkey {
             Err(message) => return Checked::failed(message.clone()),
             Ok(key) if zssh_update::is_placeholder_pubkey(key) => {
@@ -2068,11 +2172,13 @@ fn skip_version_in(db: &zssh_core::store::Database, version: &str) -> Result<(),
     })
 }
 
+/// 重启时原样传回去的命令行参数。免安装版自更新重启带的 `--zeeterm-wait-pid=…` 只管那一次启动，不往下传。
 fn current_exe_args() -> Vec<String> {
-    std::env::args_os()
+    let args: Vec<String> = std::env::args_os()
         .skip(1)
         .map(|arg| arg.to_string_lossy().into_owned())
-        .collect()
+        .collect();
+    zssh_update::portable::without_wait_arg(&args)
 }
 
 /// 生成安装计划；不启动任何进程。失败时返回可直接显示的中文原因。
@@ -2428,17 +2534,18 @@ fn evaluate_manifest(text: &str, current: &str, allow_insecure: bool) -> Checked
     evaluate_manifest_for(text, current, allow_insecure, &Platform::Windows)
 }
 
-/// macOS：只用清单的版本号、更新说明和发布时间，不看也不碰清单里的任何包 / 网址。
+/// 只提醒、不下载的平台（macOS；程序目录不可写的免安装版）：只用清单的版本号、更新说明和发布时间，
+/// 不看也不碰清单里的任何包 / 网址。`message` 是"新版本怎么手动装"的那句说明。
 ///
-/// 比当前新 -> `FoundManual`（`package` 恒为空，界面只给「打开发布页」，地址是固定常量，见
+/// 比当前新 -> `FoundManual`（`package` 恒为空，界面只给「打开发布页」，macOS 的地址是固定常量，见
 /// [`linux::MACOS_RELEASE_PAGE_URL`]）；不比当前新 -> `Latest`；清单读不懂 / 版本号不对 -> `Failed`。
-/// 平台 key 为空，所以 `select_for` 不可能选出包；这里再把 `package` 显式写成 `None`，不依赖那个细节。
-fn evaluate_manifest_notice_only(text: &str, current: &str) -> Checked {
+/// 平台 key 传空，所以 `select_for` 不可能选出包；这里再把 `package` 显式写成 `None`，不依赖那个细节。
+fn evaluate_manifest_notice_only(text: &str, current: &str, message: UpdateMsg) -> Checked {
     let manifest = match zssh_update::parse_manifest(text) {
         Ok(manifest) => manifest,
         Err(err) => return Checked::failed(status_text(&Err(err), None)),
     };
-    match manifest.select_for(current, Platform::MacOs.keys()) {
+    match manifest.select_for(current, &[]) {
         Ok(_) => Checked {
             kind: CheckKind::Latest,
             status: status_text(&Ok(None), None),
@@ -2454,7 +2561,7 @@ fn evaluate_manifest_notice_only(text: &str, current: &str) -> Checked {
                 status: format!(
                     "{}{version}\n{}",
                     t(UpdateMsg::FoundVersionPrefix),
-                    t(UpdateMsg::MacosManualMessage)
+                    t(message)
                 ),
                 package: None,
                 notes: manifest.notes,
@@ -2484,11 +2591,15 @@ fn announce_version_for(checked: &Checked) -> Option<String> {
     None
 }
 
-/// 「没有适用的包」那一屏的说明：macOS 讲"暂不支持自动更新，下载后替换"，Linux 讲"没有适合本机安装方式的包"。
+/// 「没有适用的包」那一屏的说明：macOS 讲"暂不支持自动更新，下载后替换"，目录不可写的免安装版讲"自己没法更新，下载 zip 覆盖"，
+/// 其余讲"没有适合本机安装方式的包"。
 fn no_package_message(platform: &Platform) -> UpdateMsg {
     match platform {
         Platform::MacOs => UpdateMsg::MacosManualMessage,
-        Platform::Windows | Platform::Linux(_) => UpdateMsg::NoPackageMessage,
+        Platform::WindowsPortable { writable: false } => UpdateMsg::PortableManualMessage,
+        Platform::Windows | Platform::WindowsPortable { .. } | Platform::Linux(_) => {
+            UpdateMsg::NoPackageMessage
+        }
     }
 }
 
@@ -2496,21 +2607,25 @@ fn no_package_message(platform: &Platform) -> UpdateMsg {
 ///
 /// Linux 上公告的新版本如果没有适用于本机安装方式的条目（老版本发布的清单只有 Windows 条目，
 /// 或者 deb 安装的机器遇到只有 tar.gz 的清单），不算失败：给 [`CheckKind::FoundManual`]，界面引导到发布页。
-/// Windows 上选不出包仍然是失败，行为和以前一样。
+/// Windows 免安装版同理（清单里没有 zip 条目）。Windows 安装版上选不出包仍然是失败，行为和以前一样。
 fn evaluate_manifest_for(
     text: &str,
     current: &str,
     allow_insecure: bool,
     platform: &Platform,
 ) -> Checked {
-    if *platform == Platform::MacOs {
-        return evaluate_manifest_notice_only(text, current);
+    // 只提醒、不下载的平台：只读版本号和说明，不看清单里的任何包。
+    if !platform.installs_packages() {
+        return evaluate_manifest_notice_only(text, current, no_package_message(platform));
     }
     match zssh_update::parse_manifest(text) {
         Ok(manifest) => {
             let outcome = manifest.select_for(current, platform.keys());
-            if matches!(platform, Platform::Linux(_))
-                && matches!(outcome, Err(UpdateError::NoPlatform))
+            // 免安装版遇到没有 zip 条目的清单（老版本发布的）时同样只引导到发布页：它不会去装安装包。
+            if matches!(
+                platform,
+                Platform::Linux(_) | Platform::WindowsPortable { .. }
+            ) && matches!(outcome, Err(UpdateError::NoPlatform))
             {
                 let version = manifest.version.trim_start_matches('v').to_owned();
                 return Checked {

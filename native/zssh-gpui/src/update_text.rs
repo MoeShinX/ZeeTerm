@@ -6,6 +6,7 @@
 
 use zssh_update::install::InstallError;
 use zssh_update::linux::{IoStep, TarError};
+use zssh_update::portable::{PortableError, PortableStep};
 use zssh_update::{SignatureProblem, UpdateError};
 
 use crate::i18n::{Lang, Msg, current};
@@ -31,6 +32,7 @@ enum UpdateTextMsg {
     NotAFile,
     NotExe,
     NotLinuxPackage,
+    NotZip,
     OutsideCache,
     Path,
     Unreadable,
@@ -46,6 +48,14 @@ enum UpdateTextMsg {
     TarIoBackup,
     TarIoReplace,
     TarIoMetadata,
+    PortableNotWritable,
+    PortableBadArchive,
+    PortableBadFile,
+    PortableIoExtract,
+    PortableIoClearOld,
+    PortableIoBackup,
+    PortableIoReplace,
+    PortableRestored,
 }
 
 impl Msg for UpdateTextMsg {
@@ -70,6 +80,7 @@ impl Msg for UpdateTextMsg {
             Self::NotAFile => "安装包不是文件",
             Self::NotExe => "安装包不是 .exe",
             Self::NotLinuxPackage => "安装包不是 .deb / .tar.gz",
+            Self::NotZip => "更新包不是 .zip",
             Self::OutsideCache => "安装包不在更新缓存目录内，拒绝执行",
             Self::Path => "安装包路径无法解析：{err}",
             Self::Unreadable => "读取安装包失败：{err}",
@@ -85,6 +96,14 @@ impl Msg for UpdateTextMsg {
             Self::TarIoBackup => "备份旧文件失败：{err}",
             Self::TarIoReplace => "替换程序文件失败（已恢复成旧版本）：{err}",
             Self::TarIoMetadata => "更新安装清单失败：{err}",
+            Self::PortableNotWritable => "程序所在目录不可写：{err}",
+            Self::PortableBadArchive => "压缩包损坏或格式不对：{err}",
+            Self::PortableBadFile => "{name} 是空的、不是 Windows 程序，或者大得不正常",
+            Self::PortableIoExtract => "解开新文件失败：{err}",
+            Self::PortableIoClearOld => "清理上次留下的旧文件失败：{err}",
+            Self::PortableIoBackup => "备份旧文件失败：{err}",
+            Self::PortableIoReplace => "替换程序文件失败：{err}",
+            Self::PortableRestored => "（已恢复成旧版本）",
         }
     }
 
@@ -115,6 +134,7 @@ impl Msg for UpdateTextMsg {
             Self::NotAFile => "The installer is not a file",
             Self::NotExe => "The installer is not an .exe",
             Self::NotLinuxPackage => "The installer is not a .deb or .tar.gz file",
+            Self::NotZip => "The update package is not a .zip file",
             Self::OutsideCache => {
                 "The installer is outside the update cache folder, so it will not be run"
             }
@@ -136,6 +156,18 @@ impl Msg for UpdateTextMsg {
                 "Could not replace the program files (the old version was restored): {err}"
             }
             Self::TarIoMetadata => "Could not update the install record: {err}",
+            Self::PortableNotWritable => "The folder ZeeTerm runs from is not writable: {err}",
+            Self::PortableBadArchive => "The archive is damaged or in an unsupported format: {err}",
+            Self::PortableBadFile => {
+                "{name} is empty, is not a Windows program, or is abnormally large"
+            }
+            Self::PortableIoExtract => "Could not unpack the new files: {err}",
+            Self::PortableIoClearOld => {
+                "Could not clear the old files left by the last update: {err}"
+            }
+            Self::PortableIoBackup => "Could not back up the old files: {err}",
+            Self::PortableIoReplace => "Could not replace the program files: {err}",
+            Self::PortableRestored => " (the old version was restored)",
         }
     }
 }
@@ -210,6 +242,7 @@ pub(crate) fn install_error_in(lang: Lang, err: &InstallError) -> String {
         InstallError::NotAFile => plain(UpdateTextMsg::NotAFile),
         InstallError::NotExe => plain(UpdateTextMsg::NotExe),
         InstallError::NotLinuxPackage => plain(UpdateTextMsg::NotLinuxPackage),
+        InstallError::NotZip => plain(UpdateTextMsg::NotZip),
         InstallError::OutsideCache => plain(UpdateTextMsg::OutsideCache),
         InstallError::Path(inner) => fill(lang, UpdateTextMsg::Path, &[("err", inner)]),
         InstallError::Unreadable(inner) => fill(lang, UpdateTextMsg::Unreadable, &[("err", inner)]),
@@ -253,9 +286,91 @@ pub(crate) fn tar_error_in(lang: Lang, err: &TarError) -> String {
     }
 }
 
+/// 免安装版更新（解开 zip、校验、替换）的错误。
+pub(crate) fn portable_error(err: &PortableError) -> String {
+    portable_error_in(current(), err)
+}
+
+pub(crate) fn portable_error_in(lang: Lang, err: &PortableError) -> String {
+    match err {
+        PortableError::NotWritable(inner) => {
+            fill(lang, UpdateTextMsg::PortableNotWritable, &[("err", inner)])
+        }
+        PortableError::BadArchive(inner) => {
+            fill(lang, UpdateTextMsg::PortableBadArchive, &[("err", inner)])
+        }
+        PortableError::UnsafeEntry(name) => {
+            fill(lang, UpdateTextMsg::TarUnsafeEntry, &[("name", name)])
+        }
+        PortableError::MissingFile(name) => {
+            fill(lang, UpdateTextMsg::TarMissingFile, &[("name", name)])
+        }
+        PortableError::BadFile(name) => {
+            fill(lang, UpdateTextMsg::PortableBadFile, &[("name", name)])
+        }
+        PortableError::Io {
+            step,
+            message,
+            rolled_back,
+        } => {
+            let msg = match step {
+                PortableStep::Extract => UpdateTextMsg::PortableIoExtract,
+                PortableStep::ClearOld => UpdateTextMsg::PortableIoClearOld,
+                PortableStep::Backup => UpdateTextMsg::PortableIoBackup,
+                PortableStep::Replace => UpdateTextMsg::PortableIoReplace,
+            };
+            let mut text = fill(lang, msg, &[("err", message)]);
+            if *rolled_back {
+                text.push_str(&fill(lang, UpdateTextMsg::PortableRestored, &[]));
+            }
+            text
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portable_errors_match_the_core_in_chinese_and_are_english_otherwise() {
+        let errors = [
+            PortableError::NotWritable("access is denied".into()),
+            PortableError::BadArchive("invalid Zip archive".into()),
+            PortableError::UnsafeEntry("../evil.exe".into()),
+            PortableError::MissingFile("ZeeTerm.exe".into()),
+            PortableError::BadFile("zssh-mcp.exe".into()),
+            PortableError::Io {
+                step: PortableStep::Extract,
+                message: "disk full".into(),
+                rolled_back: false,
+            },
+            PortableError::Io {
+                step: PortableStep::ClearOld,
+                message: "in use".into(),
+                rolled_back: true,
+            },
+            PortableError::Io {
+                step: PortableStep::Backup,
+                message: "in use".into(),
+                rolled_back: true,
+            },
+            PortableError::Io {
+                step: PortableStep::Replace,
+                message: "access is denied".into(),
+                rolled_back: true,
+            },
+        ];
+        for err in errors {
+            assert_eq!(
+                portable_error_in(Lang::Zh, &err),
+                err.to_string(),
+                "{err:?}"
+            );
+            let en = portable_error_in(Lang::En, &err);
+            assert!(!has_cjk(&en), "{err:?} → {en}");
+        }
+    }
 
     fn has_cjk(text: &str) -> bool {
         text.chars()
@@ -302,6 +417,7 @@ mod tests {
             InstallError::NotAFile,
             InstallError::NotExe,
             InstallError::NotLinuxPackage,
+            InstallError::NotZip,
             InstallError::OutsideCache,
             InstallError::Path(r"C:\cache\x".into()),
             InstallError::Unreadable("access is denied".into()),

@@ -14,6 +14,8 @@
 //!            [--linux-tar-url <地址> --linux-tar-signature-file <签名文件>]
 //!                                              可选：把 Linux 的 deb / tar.gz 写成 `linux-x86_64-deb` /
 //!                                              `linux-x86_64-tar` 两个平台条目（每组的地址和签名必须一起给）
+//!            [--portable-url <地址> --portable-signature-file <签名文件>]
+//!                                              可选：把 Windows 免安装版的 zip 写成 `windows-x86_64-portable` 条目
 //!   verify   --pubkey <base64> --file <安装包> --signature-file <签名文件> --version <x.y.z>
 //! ```
 //!
@@ -30,8 +32,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use minisign::{KeyPair, PublicKey, SecretKey, SecretKeyBox};
 use zssh_update::{
-    PLATFORM_LINUX_DEB, PLATFORM_LINUX_TAR, PlatformAsset, ReleaseManifest,
-    build_latest_json_with_platforms, trusted_comment, verify_signature,
+    PLATFORM_LINUX_DEB, PLATFORM_LINUX_TAR, PLATFORM_WINDOWS_PORTABLE, PlatformAsset,
+    ReleaseManifest, build_latest_json_with_platforms, trusted_comment, verify_signature,
 };
 
 const PASSWORD_ENV: &str = "ZEETERM_UPDATER_KEY_PASSWORD";
@@ -219,8 +221,9 @@ fn sign(options: &BTreeMap<String, String>) -> Result<(), String> {
     Ok(())
 }
 
-/// 可选的一组 Linux 平台参数：`--<前缀>-url` 和 `--<前缀>-signature-file` 要么都给、要么都不给。
-fn linux_asset(
+/// 可选的一组额外平台包参数（Linux 的两个包、Windows 免安装版）：`--<前缀>-url` 和
+/// `--<前缀>-signature-file` 要么都给、要么都不给。
+fn extra_asset(
     options: &BTreeMap<String, String>,
     prefix: &str,
 ) -> Result<Option<(String, String)>, String> {
@@ -248,9 +251,17 @@ fn manifest(options: &BTreeMap<String, String>) -> Result<(), String> {
         .map_err(|err| format!("读更新说明失败：{err}"))?;
     let signature = fs::read_to_string(required(options, "signature-file")?)
         .map_err(|err| format!("读签名文件失败：{err}"))?;
-    let deb = linux_asset(options, "linux-deb")?;
-    let tar = linux_asset(options, "linux-tar")?;
+    let deb = extra_asset(options, "linux-deb")?;
+    let tar = extra_asset(options, "linux-tar")?;
+    let portable = extra_asset(options, "portable")?;
     let mut extra = Vec::new();
+    if let Some((url, signature)) = &portable {
+        extra.push(PlatformAsset {
+            key: PLATFORM_WINDOWS_PORTABLE,
+            url,
+            signature,
+        });
+    }
     if let Some((url, signature)) = &deb {
         extra.push(PlatformAsset {
             key: PLATFORM_LINUX_DEB,

@@ -14,4 +14,5 @@ native/zssh-editor/src/lib.rs
 native/zssh-update/src/install.rs
 native/zssh-update/src/lib.rs
 native/zssh-update/src/linux.rs
+native/zssh-update/src/portable.rs
 

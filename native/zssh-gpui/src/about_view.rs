@@ -34,9 +34,21 @@ pub struct AboutView {
     license_open: bool,
 }
 
-/// 版本行右边的文字。
+/// 版本号本身。
 pub fn version_text() -> String {
     format!("v{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// 版本行右边显示的文字：免安装版在版本号后面标上「免安装版」/ "Portable"，安装版就是版本号。
+pub fn version_display() -> String {
+    with_portable_tag(version_text(), crate::portable::about_tag())
+}
+
+fn with_portable_tag(version: String, tag: Option<&str>) -> String {
+    match tag {
+        Some(tag) => format!("{version} · {tag}"),
+        None => version,
+    }
 }
 
 /// 路径的显示文字：用户目录换成 `%USERPROFILE%`（Linux 上换成 `~`）。
@@ -306,7 +318,7 @@ impl AboutView {
     pub fn visible_text(&self) -> String {
         [
             product::NAME.to_owned(),
-            version_text(),
+            version_display(),
             update_description(signing_configured()).to_owned(),
             known_hosts_text(),
         ]
@@ -390,7 +402,7 @@ pub(crate) fn data_dir_rows(tokens: &Tokens) -> Vec<AnyElement> {
             let _ = std::fs::create_dir_all(&dir);
             cx.reveal_path(&dir);
         });
-    vec![
+    let mut rows = vec![
         setting(
             crate::i18n::t(AboutMsg::DataDir),
             crate::i18n::t(AboutMsg::DataDirNote),
@@ -398,7 +410,12 @@ pub(crate) fn data_dir_rows(tokens: &Tokens) -> Vec<AnyElement> {
             tokens,
         ),
         path_box(data_dir_text(), tokens),
-    ]
+    ];
+    // 免安装版：已保存的密码绑定当前 Windows 用户，拷到别处会解不开，换电脑要走离线备份文件。
+    if let Some(note) = crate::portable::password_note() {
+        rows.push(muted(note, tokens));
+    }
+    rows
 }
 
 /// 「常规 → 更新」里的「启动时自动检查」一行：开关读写的是同一个 [`AboutView`] 实体
@@ -507,7 +524,7 @@ impl Render for AboutView {
             div()
                 .text_sm()
                 .text_color(tokens.text_muted)
-                .child(version_text()),
+                .child(version_display()),
             &tokens,
         )];
         rows.extend(self.update_rows(&tokens, cx));
@@ -588,6 +605,22 @@ mod tests {
         let text = version_text();
         assert!(text.starts_with('v'));
         assert_ne!(text, "v0.0.0");
+    }
+
+    #[test]
+    fn a_portable_copy_marks_the_version_and_an_installed_one_does_not() {
+        use super::with_portable_tag;
+        assert_eq!(with_portable_tag("v1.2.3".to_owned(), None), "v1.2.3");
+        assert_eq!(
+            with_portable_tag("v1.2.3".to_owned(), Some("免安装版")),
+            "v1.2.3 · 免安装版"
+        );
+        assert_eq!(
+            with_portable_tag("v1.2.3".to_owned(), Some("Portable")),
+            "v1.2.3 · Portable"
+        );
+        // 测试程序旁边没有 portable 标记：显示的就是版本号本身。
+        assert_eq!(super::version_display(), version_text());
     }
 
     #[test]

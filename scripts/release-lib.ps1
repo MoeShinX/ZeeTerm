@@ -190,9 +190,10 @@ function Get-DerivedPubkey([string]$RepoRoot, [string]$KeyPath) {
 # 格式的约定（用户端读 latest.json、下载的人读 SHA256SUMS.txt，不能随便改）：
 #   - latest.json 的 notes 不带 SHA-256 那一行（更新窗口里显示它），Release 正文才带；
 #   - SHA256SUMS.txt 是 `<小写 sha256>  <文件名>`，两个空格，和 sha256sum 同格式。
-# -ExtraAssets：Windows 安装包以外一起发布的文件（Linux 的 deb / tar.gz），每项是 @{ Key = 平台 key; Path = 文件路径 }，
-#   key 只能是 linux-x86_64-deb / linux-x86_64-tar。它们用同一把私钥、同样的签名格式（受信注释里绑版本和文件名）签名，
-#   写进 latest.json 的 platforms 和 SHA256SUMS.txt，Release 正文各加一行 SHA-256；Windows 那一项一个字不变。
+# -ExtraAssets：Windows 安装包以外一起发布的文件（Linux 的 deb / tar.gz、Windows 免安装版的 zip），每项是
+#   @{ Key = 平台 key; Path = 文件路径 }，key 只能是 linux-x86_64-deb / linux-x86_64-tar / windows-x86_64-portable。
+#   它们用同一把私钥、同样的签名格式（受信注释里绑版本和文件名）签名，写进 latest.json 的 platforms 和 SHA256SUMS.txt，
+#   Release 正文各加一行 SHA-256；Windows 安装包那一项一个字不变（老客户端只认它，多出来的 key 它们不看）。
 #   不传时产物和以前逐字节一致。
 function New-ReleaseArtifacts {
     param(
@@ -209,7 +210,7 @@ function New-ReleaseArtifacts {
     $toolArgs = Get-ReleaseToolArgs $RepoRoot
     $installerName = Split-Path -Leaf $Installer
     # 平台 key -> release_tool manifest 的参数前缀；也限定了能发布哪些额外文件。
-    $extraFlagPrefix = @{ 'linux-x86_64-deb' = 'linux-deb'; 'linux-x86_64-tar' = 'linux-tar' }
+    $extraFlagPrefix = @{ 'linux-x86_64-deb' = 'linux-deb'; 'linux-x86_64-tar' = 'linux-tar'; 'windows-x86_64-portable' = 'portable' }
     $seenKeys = @{}
     foreach ($asset in $ExtraAssets) {
         if (-not $extraFlagPrefix.ContainsKey([string]$asset.Key)) { Stop-WithError "不认识的平台 key：$($asset.Key)" }

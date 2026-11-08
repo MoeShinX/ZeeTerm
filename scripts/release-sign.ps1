@@ -6,6 +6,8 @@
 #       -KeyPath <私钥文件> -OutDir dist\0.4.0 -Repo MoeShinX/ZeeTerm
 #   带 Linux 包时再加 -LinuxDebPath dist\0.4.0\ZeeTerm-0.4.0-linux-x86_64.deb -LinuxTarPath dist\0.4.0\ZeeTerm-0.4.0-linux-x86_64.tar.gz
 #   （两个一起给；用同一把私钥签名，latest.json 加 linux-x86_64-deb / linux-x86_64-tar 两个条目）。
+#   带 Windows 免安装版时再加 -PortablePath dist\0.4.0\ZeeTerm-0.4.0-windows-x64-portable.zip
+#   （同一把私钥签名，latest.json 加 windows-x86_64-portable 一个条目；老客户端只认自己的 key，不受影响）。
 #
 # 私钥口令只从环境变量 ZEETERM_UPDATER_KEY_PASSWORD 读（私钥没加密时不用设）；本脚本不提示输入（CI 里没有人可问）、
 # 不打印私钥和口令，签名工具也不开详细输出。
@@ -20,6 +22,8 @@ param(
     # Linux 的 deb 和 tar.gz（GitHub 发版里由 Linux 任务编好、下载到这里）；两个一起给或都不给。
     [string]$LinuxDebPath = '',
     [string]$LinuxTarPath = '',
+    # Windows 免安装版的 zip（GitHub 发版里由 Windows 任务和安装包一起打好）；不给就不发免安装版。
+    [string]$PortablePath = '',
     # 默认读仓库里的 updater.json；演练时指向一份带测试公钥的副本。
     [string]$UpdaterJson = ''
 )
@@ -38,6 +42,13 @@ if ($installerName -ne "ZeeTerm-Setup-$Version.exe") {
 }
 if (([bool]$LinuxDebPath) -ne ([bool]$LinuxTarPath)) { Stop-WithError '-LinuxDebPath 和 -LinuxTarPath 要一起给（latest.json 里两个 Linux 条目缺一不可）。' }
 $extraAssets = @()
+if ($PortablePath) {
+    $portableName = "ZeeTerm-$Version-windows-x64-portable.zip"
+    if (-not (Test-Path -LiteralPath $PortablePath -PathType Leaf)) { Stop-WithError "找不到免安装版：$PortablePath" }
+    $portableLeaf = Split-Path -Leaf $PortablePath
+    if ($portableLeaf -ne $portableName) { Stop-WithError "免安装版文件名应为 $portableName（latest.json 里的下载地址按它拼），实际是 $portableLeaf。" }
+    $extraAssets += @{ Key = 'windows-x86_64-portable'; Path = $PortablePath }
+}
 if ($LinuxDebPath) {
     foreach ($item in @(@{ Key = 'linux-x86_64-deb'; Path = $LinuxDebPath; Name = "ZeeTerm-$Version-linux-x86_64.deb" },
                         @{ Key = 'linux-x86_64-tar'; Path = $LinuxTarPath; Name = "ZeeTerm-$Version-linux-x86_64.tar.gz" })) {

@@ -1,4 +1,4 @@
-﻿# 构建 ZeeTerm 的独立 NSIS 安装包。
+﻿# 构建 ZeeTerm 的独立 NSIS 安装包，和 Windows 免安装版 zip（同一批程序文件，再加一个空的 `portable` 标记）。
 # 只用 native 工作区的产物，并额外带上 AI 工具桥依赖的 zssh-mcp.exe（每次都从根 workspace 现编，
 # 不拿 target 里留着的旧文件）。不启动安装包，也不改 Tauri 安装包的配置和产物，不签名。
 #
@@ -215,4 +215,47 @@ $size = (Get-Item -LiteralPath $outFile).Length
 Write-Host ""
 Write-Host "安装包已生成：$outFile"
 Write-Host ("大小：{0:N0} 字节（{1:N2} MiB）" -f $size, ($size / 1MB))
+
+# 6. 免安装版：同一个暂存目录里的程序和许可文件，加一个空的 `portable` 标记文件，打成 zip，解压即用。
+#    程序看到自己旁边有 `portable` 就把数据放在 <程序所在目录>\data、不碰 %APPDATA%、不写注册表
+#    （native/zssh-gpui/src/portable.rs）。zip 是平铺的（没有外层目录）；文件名按 release-sign.ps1 / release.yml
+#    里写的拼：ZeeTerm-<版本>-windows-x64-portable.zip。安装包里绝不能有 `portable`——它在暂存目录之外，由这里单独加。
+$portableName = "$productName-$version-windows-x64-portable.zip"
+$portableZip = Join-Path $OutDir $portableName
+if (Test-Path -LiteralPath $portableZip) {
+    Remove-Item -LiteralPath $portableZip -Force
+}
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$portableFiles = @($mainExeName, 'zssh-mcp.exe', 'LICENSE', 'NOTICE')
+$zipStream = [System.IO.File]::Open($portableZip, [System.IO.FileMode]::CreateNew)
+try {
+    $archive = New-Object System.IO.Compression.ZipArchive($zipStream, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($name in $portableFiles) {
+            $entry = $archive.CreateEntry($name, [System.IO.Compression.CompressionLevel]::Optimal)
+            $entryStream = $entry.Open()
+            try {
+                $source = [System.IO.File]::OpenRead((Join-Path $StageDir $name))
+                try { $source.CopyTo($entryStream) } finally { $source.Dispose() }
+            } finally { $entryStream.Dispose() }
+        }
+        # 空的标记文件：只靠"存在"起作用，内容不重要。
+        $archive.CreateEntry('portable').Open().Dispose()
+    } finally { $archive.Dispose() }
+} finally { $zipStream.Dispose() }
+
+# 自检：zip 里正好是这几个文件加标记，一个不多一个不少。
+$verify = [System.IO.Compression.ZipFile]::OpenRead($portableZip)
+try {
+    $zipActual = @($verify.Entries | ForEach-Object { $_.FullName }) | Sort-Object
+} finally { $verify.Dispose() }
+$zipExpected = @($portableFiles + 'portable') | Sort-Object
+if (($zipExpected -join '|') -ne ($zipActual -join '|')) {
+    Stop-WithError "免安装版 zip 的内容不对：期望 [$($zipExpected -join ', ')]，实际 [$($zipActual -join ', ')]。"
+}
+$portableSize = (Get-Item -LiteralPath $portableZip).Length
+Write-Host ""
+Write-Host "免安装版已生成：$portableZip"
+Write-Host ("大小：{0:N0} 字节（{1:N2} MiB）" -f $portableSize, ($portableSize / 1MB))
 exit 0

@@ -21,6 +21,11 @@ use crate::i18n::t;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Platform {
     Windows,
+    /// Windows 免安装版（程序旁边有 `portable` 标记）：只认清单里的 `windows-x86_64-portable`（zip），原地替换程序文件。
+    /// `writable` 是程序所在目录能不能写：不能写（Program Files、只读盘）就不下载、不替换，和 macOS 一样只提醒、引导到发布页。
+    WindowsPortable {
+        writable: bool,
+    },
     Linux(Flavor),
     /// macOS：只提醒有新版本，引导到发布页；清单里没有（也不认）任何 macOS 的包，
     /// 所以永远不会选出安装包、不下载、不验签、不安装。
@@ -32,9 +37,19 @@ impl Platform {
     pub(crate) fn keys(&self) -> &'static [&'static str] {
         match self {
             Self::Windows => zssh_update::PLATFORM_KEYS,
+            Self::WindowsPortable { .. } => zssh_update::PORTABLE_PLATFORM_KEYS,
             Self::Linux(flavor) => flavor.platform_keys(),
             Self::MacOs => &[],
         }
+    }
+
+    /// 这个平台会不会下载并安装包。不会的（macOS、程序目录不可写的免安装版）只读清单里的版本号和说明，
+    /// 不看清单里的任何包和网址，也用不着更新公钥。
+    pub(crate) fn installs_packages(&self) -> bool {
+        !matches!(
+            self,
+            Self::MacOs | Self::WindowsPortable { writable: false }
+        )
     }
 }
 
@@ -46,7 +61,9 @@ pub(crate) const MACOS_RELEASE_PAGE_URL: &str =
 pub(super) fn release_page_url_for(platform: &Platform) -> Option<String> {
     match platform {
         Platform::MacOs => Some(MACOS_RELEASE_PAGE_URL.to_owned()),
-        Platform::Windows | Platform::Linux(_) => release_page_url(),
+        Platform::Windows | Platform::WindowsPortable { .. } | Platform::Linux(_) => {
+            release_page_url()
+        }
     }
 }
 
@@ -81,6 +98,9 @@ pub(crate) fn fallback_platform() -> Platform {
         Platform::Linux(Flavor::Tar)
     } else if cfg!(target_os = "macos") {
         Platform::MacOs
+    } else if crate::portable::is_portable() {
+        // 免安装版：目录能不能写没探测成，按"不能写"处理——只提醒、不替换，最保守。
+        Platform::WindowsPortable { writable: false }
     } else {
         Platform::Windows
     }
@@ -100,7 +120,19 @@ fn detect_host() -> Platform {
 
 #[cfg(not(target_os = "linux"))]
 fn detect_host() -> Platform {
-    Platform::Windows
+    detect_windows(
+        crate::portable::layout().map(|layout| zssh_update::portable::dir_is_writable(&layout.dir)),
+    )
+}
+
+/// Windows 上的平台：`portable_writable` 有值就是免安装版（程序旁边有 `portable` 标记），值是程序所在目录能不能写；
+/// 没有值是安装版。
+#[cfg(any(not(target_os = "linux"), test))]
+fn detect_windows(portable_writable: Option<bool>) -> Platform {
+    match portable_writable {
+        Some(writable) => Platform::WindowsPortable { writable },
+        None => Platform::Windows,
+    }
 }
 
 /// 本进程里已经装好、还没重启的版本。只放内存里，不落盘：重启之后新进程自己的版本号就是它，
@@ -394,6 +426,44 @@ mod tests {
             Platform::Linux(Flavor::Tar).keys(),
             [zssh_update::PLATFORM_LINUX_TAR]
         );
+    }
+
+    #[test]
+    fn the_portable_version_only_looks_at_its_own_zip_and_only_installs_when_it_can_write() {
+        let writable = Platform::WindowsPortable { writable: true };
+        let read_only = Platform::WindowsPortable { writable: false };
+        // 免安装版只认 zip 条目，绝不去选安装包；安装版也不会选 zip。
+        assert_eq!(writable.keys(), [zssh_update::PLATFORM_WINDOWS_PORTABLE]);
+        assert_eq!(read_only.keys(), writable.keys());
+        assert!(
+            !Platform::Windows
+                .keys()
+                .contains(&zssh_update::PLATFORM_WINDOWS_PORTABLE)
+        );
+        // 目录不可写：和 macOS 一样只提醒；可写才下载安装。
+        assert!(writable.installs_packages());
+        assert!(!read_only.installs_packages());
+        assert!(!Platform::MacOs.installs_packages());
+        assert!(Platform::Windows.installs_packages());
+        assert!(Platform::Linux(Flavor::Tar).installs_packages());
+        // 发布页地址和安装版一样从内嵌更新源推出来。
+        assert_eq!(release_page_url_for(&writable), release_page_url());
+        assert_eq!(release_page_url_for(&read_only), release_page_url());
+    }
+
+    #[test]
+    fn windows_is_portable_exactly_when_the_marker_layout_is_found() {
+        assert_eq!(detect_windows(None), Platform::Windows);
+        assert_eq!(
+            detect_windows(Some(true)),
+            Platform::WindowsPortable { writable: true }
+        );
+        assert_eq!(
+            detect_windows(Some(false)),
+            Platform::WindowsPortable { writable: false }
+        );
+        // 测试程序旁边没有 portable 标记：本机探测的结果是安装版 / 其他平台，不会是免安装版。
+        assert!(!matches!(host_platform(), Platform::WindowsPortable { .. }));
     }
 
     #[test]

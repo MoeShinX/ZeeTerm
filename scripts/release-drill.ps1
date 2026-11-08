@@ -3,6 +3,8 @@
 # 核对两边的产物格式一致，再做几个反例（私钥与公钥对不上、安装包被改、口令不对）确认会失败。
 # 另外演练 Linux 资产：release-sign.ps1 带上 deb 和 tar.gz（用充数文件），核对它们被同一把私钥签名、latest.json 多出
 # linux-x86_64-deb / linux-x86_64-tar 两个条目而 Windows 条目不变、SHA256SUMS.txt 与 Release 正文包含全部文件，再做反例。
+# 免安装版同理：release-sign.ps1 带 -PortablePath（用充数 zip）时，latest.json 多出 windows-x86_64-portable 一项而安装包条目不变
+# （老客户端只认自己的 key），zip 用同一把私钥签名、验得过，SHA256SUMS.txt 和 Release 正文含它，文件名 / 缺文件 / 私钥不对都会失败。
 #
 # 用法：
 #   powershell -File scripts/release-drill.ps1                    # 测试密钥放 C:\zssh-v2-data\r2-keys\，用完删除
@@ -232,6 +234,81 @@ try {
     $code = Invoke-Script ($signHOther + @('-LinuxDebPath', (Join-Path $outH $debName), '-LinuxTarPath', (Join-Path $outH $tarName)))
     Check '私钥与 updater.json 公钥不是一对（带 Linux 包）-> 失败' ($code -ne 0)
     Check '……且仍然没有产出 latest.json' (-not (Test-Path -LiteralPath (Join-Path $outH 'latest.json')))
+
+    Step 'I. Windows 免安装版：release-sign.ps1 带 -PortablePath（单独、以及和 Linux 包一起）'
+    $portableName = "ZeeTerm-$version-windows-x64-portable.zip"
+    $outI = Join-Path $runDir 'I'
+    New-Item -ItemType Directory -Force -Path $outI | Out-Null
+    Copy-Item -LiteralPath $fake -Destination (Join-Path $outI $installerName)
+    $rngPortable = New-Object System.Random
+    $bytesPortable = New-Object byte[] 3072
+    $rngPortable.NextBytes($bytesPortable)
+    [System.IO.File]::WriteAllBytes((Join-Path $outI $portableName), $bytesPortable)
+    $signI = @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $outI $installerName),
+        '-KeyPath', $keyPath, '-OutDir', $outI, '-Repo', 'MoeShinX/ZeeTerm', '-UpdaterJson', $updaterJson)
+    $code = Invoke-Script ($signI + @('-PortablePath', (Join-Path $outI $portableName)))
+    Check 'release-sign.ps1（带免安装版）退出码 0' ($code -eq 0) "(退出码 $code)"
+    $latestI = Get-Content -LiteralPath (Join-Path $outI 'latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Check 'platforms 恰好是 windows-x86_64、windows-x86_64-portable' ((($latestI.platforms.PSObject.Properties.Name | Sort-Object) -join ',') -eq 'windows-x86_64,windows-x86_64-portable')
+    Check 'Windows 安装包条目不变：老客户端选到的包和没有免安装版时一样（地址、字段、版本、说明）' (($latestI.platforms.'windows-x86_64'.url -eq $latestA.platforms.'windows-x86_64'.url) -and
+        ((($latestI.platforms.'windows-x86_64'.PSObject.Properties.Name | Sort-Object) -join ',') -eq 'signature,url') -and ($latestI.version -eq $latestA.version) -and ($latestI.notes -eq $latestA.notes))
+    $portableEntry = $latestI.platforms.'windows-x86_64-portable'
+    Check '免安装版条目：地址按 tag 和文件名拼，字段是 signature、url' (($portableEntry.url -eq "https://github.com/MoeShinX/ZeeTerm/releases/download/v$version/$portableName") -and ((($portableEntry.PSObject.Properties.Name | Sort-Object) -join ',') -eq 'signature,url') -and $portableEntry.signature)
+    Check '免安装版和安装包的签名互不相同（各签各的文件）' ($portableEntry.signature -ne $latestI.platforms.'windows-x86_64'.signature)
+    $shaInstallerI = (Get-FileHash -LiteralPath (Join-Path $outI $installerName) -Algorithm SHA256).Hash.ToLowerInvariant()
+    $shaPortable = (Get-FileHash -LiteralPath (Join-Path $outI $portableName) -Algorithm SHA256).Hash.ToLowerInvariant()
+    $sumsI = [System.IO.File]::ReadAllText((Join-Path $outI 'SHA256SUMS.txt'))
+    Check 'SHA256SUMS.txt 含安装包和免安装版（各一行，格式同 sha256sum）' ($sumsI -ceq "$shaInstallerI  $installerName`n$shaPortable  $portableName`n")
+    $relI = [System.IO.File]::ReadAllText((Join-Path $outI 'RELEASE_NOTES.md'))
+    $tailI = "`n`n安装包 SHA-256：" + [char]96 + $shaInstallerI + [char]96 + "`n`n$portableName SHA-256：" + [char]96 + $shaPortable + [char]96 + "`n"
+    Check 'Release 正文：更新说明 + 安装包一行（格式不变）+ 免安装版一行' ($relI -ceq ($notesText + $tailI))
+    $expectedI = @($installerName, "$installerName.sig", $portableName, "$portableName.sig", 'latest.json', 'RELEASE_NOTES.md', 'SHA256SUMS.txt') | Sort-Object
+    $filesI = @(Get-ChildItem -LiteralPath $outI | ForEach-Object Name) | Sort-Object
+    Check '产物文件清单：安装包、免安装版各带 .sig，加 latest.json、RELEASE_NOTES.md、SHA256SUMS.txt' (($filesI -join '|') -eq ($expectedI -join '|'))
+    $sigPortable = Join-Path $outI "$portableName.sig"
+    Check '免安装版 + 签名 + 版本验过' ((Invoke-Verify $pubkey (Join-Path $outI $portableName) $sigPortable $version) -eq 0)
+    Check 'latest.json 里的签名就是 .sig 文件的内容' ($portableEntry.signature -eq (Get-Content -LiteralPath $sigPortable -Raw).Trim())
+    Check '拿安装包的签名去验免安装版失败' ((Invoke-Verify $pubkey (Join-Path $outI $portableName) (Join-Path $outI "$installerName.sig") $version) -ne 0)
+    Check '版本对不上验签失败（免安装版）' ((Invoke-Verify $pubkey (Join-Path $outI $portableName) $sigPortable '9.9.8') -ne 0)
+    $tamperedPortable = Join-Path $runDir 'tampered.zip'
+    $bytesTampered = [System.IO.File]::ReadAllBytes((Join-Path $outI $portableName)); $bytesTampered[0] = $bytesTampered[0] -bxor 0xFF
+    [System.IO.File]::WriteAllBytes($tamperedPortable, $bytesTampered)
+    Check '免安装版被改过验签失败' ((Invoke-Verify $pubkey $tamperedPortable $sigPortable $version) -ne 0)
+
+    # 免安装版 + Linux 包一起：四个条目，免安装版排在 Linux 前面，其余格式不变。
+    $outI2 = Join-Path $runDir 'I2'
+    New-Item -ItemType Directory -Force -Path $outI2 | Out-Null
+    foreach ($name in @($installerName, $portableName, $debName, $tarName)) {
+        $source = if ($name -eq $installerName) { Join-Path $outI $installerName } elseif ($name -eq $portableName) { Join-Path $outI $portableName } else { Join-Path $outF $name }
+        Copy-Item -LiteralPath $source -Destination (Join-Path $outI2 $name)
+    }
+    $signI2 = @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $outI2 $installerName),
+        '-KeyPath', $keyPath, '-OutDir', $outI2, '-Repo', 'MoeShinX/ZeeTerm', '-UpdaterJson', $updaterJson)
+    $code = Invoke-Script ($signI2 + @('-PortablePath', (Join-Path $outI2 $portableName), '-LinuxDebPath', (Join-Path $outI2 $debName), '-LinuxTarPath', (Join-Path $outI2 $tarName)))
+    Check 'release-sign.ps1（免安装版 + Linux 包）退出码 0' ($code -eq 0) "(退出码 $code)"
+    $latestI2 = Get-Content -LiteralPath (Join-Path $outI2 'latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Check 'platforms 是 linux 两个、windows 安装包、免安装版共四项' ((($latestI2.platforms.PSObject.Properties.Name | Sort-Object) -join ',') -eq 'linux-x86_64-deb,linux-x86_64-tar,windows-x86_64,windows-x86_64-portable')
+    $sumsI2 = [System.IO.File]::ReadAllText((Join-Path $outI2 'SHA256SUMS.txt'))
+    Check 'SHA256SUMS.txt 四个文件各一行' (($sumsI2 -split "`n" | Where-Object { $_ }).Count -eq 4 -and $sumsI2.Contains("  $portableName`n"))
+
+    Step 'J. 反例：这些免安装版的情况 release-sign.ps1 必须失败'
+    $outJ = Join-Path $runDir 'J'
+    New-Item -ItemType Directory -Force -Path $outJ | Out-Null
+    Copy-Item -LiteralPath $fake -Destination (Join-Path $outJ $installerName)
+    Copy-Item -LiteralPath (Join-Path $outI $portableName) -Destination (Join-Path $outJ $portableName)
+    $wrongPortable = Join-Path $outJ 'renamed.zip'
+    Copy-Item -LiteralPath (Join-Path $outJ $portableName) -Destination $wrongPortable
+    $signJ = @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $outJ $installerName),
+        '-KeyPath', $keyPath, '-OutDir', $outJ, '-UpdaterJson', $updaterJson)
+    $code = Invoke-Script ($signJ + @('-PortablePath', $wrongPortable))
+    Check '免安装版文件名与版本不符 -> 失败' ($code -ne 0)
+    $code = Invoke-Script ($signJ + @('-PortablePath', (Join-Path $outJ 'missing.zip')))
+    Check '免安装版不存在 -> 失败' ($code -ne 0)
+    $signJOther = @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $outJ $installerName),
+        '-KeyPath', $otherKey, '-OutDir', $outJ, '-UpdaterJson', $updaterJson)
+    $code = Invoke-Script ($signJOther + @('-PortablePath', (Join-Path $outJ $portableName)))
+    Check '私钥与 updater.json 公钥不是一对（带免安装版）-> 失败' ($code -ne 0)
+    Check '……且没有产出 latest.json' (-not (Test-Path -LiteralPath (Join-Path $outJ 'latest.json')))
 } finally {
     [Environment]::SetEnvironmentVariable($passwordEnv, $previousPassword, 'Process')
     if (-not $KeepFiles -and (Test-Path -LiteralPath $runDir)) { Remove-Item -LiteralPath $runDir -Recurse -Force -ErrorAction SilentlyContinue }

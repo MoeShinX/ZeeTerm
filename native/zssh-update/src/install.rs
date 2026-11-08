@@ -59,6 +59,8 @@ pub enum InstallError {
     NotExe,
     /// Linux：安装包的扩展名和要装的格式（.deb / .tar.gz）对不上。
     NotLinuxPackage,
+    /// Windows 免安装版：更新包的扩展名不是 .zip。
+    NotZip,
     OutsideCache,
     Path(String),
     /// 读不到文件，没法确认内容。
@@ -75,6 +77,7 @@ impl std::fmt::Display for InstallError {
             Self::NotAFile => write!(f, "安装包不是文件"),
             Self::NotExe => write!(f, "安装包不是 .exe"),
             Self::NotLinuxPackage => write!(f, "安装包不是 .deb / .tar.gz"),
+            Self::NotZip => write!(f, "更新包不是 .zip"),
             Self::OutsideCache => write!(f, "安装包不在更新缓存目录内，拒绝执行"),
             Self::Path(err) => write!(f, "安装包路径无法解析：{err}"),
             Self::Unreadable(err) => write!(f, "读取安装包失败：{err}"),
