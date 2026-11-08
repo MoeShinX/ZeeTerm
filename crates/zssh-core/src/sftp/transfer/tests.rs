@@ -3745,3 +3745,182 @@ async fn a_remote_tree_deeper_than_the_limit_fails_the_job() {
     assert!(!root.join("out").exists(), "规划失败不该建本地目录");
     assert!(!endpoints.remote_exists("/remote/copy/top.txt"));
 }
+
+// ---------------------------------------------------------------------------
+// W13：提交时「目标冒出来了」的重查必须有次数上限
+// ---------------------------------------------------------------------------
+
+/// 目标端点的包装：永远说「目标不存在」，提交却永远说「已存在」（对同一个路径的两种判断对不上）。
+struct NeverSeesTarget {
+    inner: Arc<dyn FileEndpoint>,
+    commits: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl FileEndpoint for NeverSeesTarget {
+    fn describe(&self) -> String {
+        self.inner.describe()
+    }
+    fn size<'a>(&'a self) -> endpoint::EndpointFuture<'a, Result<Option<u64>, SftpError>> {
+        self.inner.size()
+    }
+    fn open_read<'a>(
+        &'a self,
+    ) -> endpoint::EndpointFuture<'a, Result<Arc<dyn endpoint::ReadAt>, SftpError>> {
+        self.inner.open_read()
+    }
+    fn open_write<'a>(
+        &'a self,
+        resume_len: u64,
+    ) -> endpoint::EndpointFuture<'a, Result<Arc<dyn endpoint::WriteAt>, SftpError>> {
+        self.inner.open_write(resume_len)
+    }
+    fn commit<'a>(
+        &'a self,
+        _total: u64,
+        _overwrite: bool,
+    ) -> endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+        self.commits
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async {
+            Err(SftpError::AlreadyExists {
+                path: "endpoint-path".to_owned(),
+            })
+        })
+    }
+    fn existing_size<'a>(&'a self) -> endpoint::EndpointFuture<'a, Result<Option<u64>, SftpError>> {
+        Box::pin(async { Ok(None) })
+    }
+    fn remove_existing<'a>(&'a self) -> endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+        self.inner.remove_existing()
+    }
+    fn remove_partial<'a>(&'a self) -> endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+        self.inner.remove_partial()
+    }
+    fn partial_len<'a>(&'a self) -> endpoint::EndpointFuture<'a, Result<u64, SftpError>> {
+        self.inner.partial_len()
+    }
+    fn truncate_partial<'a>(
+        &'a self,
+        len: u64,
+    ) -> endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+        self.inner.truncate_partial(len)
+    }
+    fn read_partial<'a>(
+        &'a self,
+        offset: u64,
+        len: u32,
+    ) -> endpoint::EndpointFuture<'a, Result<Option<Vec<u8>>, SftpError>> {
+        self.inner.read_partial(offset, len)
+    }
+    fn set_attributes<'a>(
+        &'a self,
+        mtime: Option<u32>,
+        permissions: Option<u32>,
+    ) -> endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+        self.inner.set_attributes(mtime, permissions)
+    }
+    fn attributes<'a>(
+        &'a self,
+    ) -> endpoint::EndpointFuture<'a, Result<endpoint::FileAttributesPair, SftpError>> {
+        self.inner.attributes()
+    }
+}
+
+struct NeverSeesTargetEndpoints {
+    inner: Arc<MemoryEndpoints>,
+    commits: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl backend::RemoteLister for NeverSeesTargetEndpoints {
+    fn list_dir<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<crate::sftp::fs::DirEntry>, SftpError>> {
+        self.inner.list_dir(path)
+    }
+    fn stat_remote<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>> {
+        self.inner.stat_remote(path)
+    }
+}
+
+impl backend::TransferEndpoints for NeverSeesTargetEndpoints {
+    fn pair<'a>(
+        &'a self,
+        direction: Direction,
+        peer: Option<&'a str>,
+        source: &'a str,
+        target: &'a str,
+        owner: &'a str,
+    ) -> BoxFuture<'a, Result<backend::FilePair, SftpError>> {
+        Box::pin(async move {
+            let pair = self
+                .inner
+                .pair(direction, peer, source, target, owner)
+                .await?;
+            Ok(backend::FilePair {
+                source: pair.source,
+                target: Arc::new(NeverSeesTarget {
+                    inner: pair.target,
+                    commits: Arc::clone(&self.commits),
+                }),
+            })
+        })
+    }
+    fn plan_remote_copy<'a>(
+        &'a self,
+        peer: Option<&'a str>,
+        source: &'a str,
+        target: &'a str,
+        recursive: bool,
+    ) -> BoxFuture<'a, Result<plan::TransferPlan, SftpError>> {
+        self.inner.plan_remote_copy(peer, source, target, recursive)
+    }
+    fn create_target_dir<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<(), SftpError>> {
+        self.inner.create_target_dir(path)
+    }
+    fn reset<'a>(&'a self) -> BoxFuture<'a, ()> {
+        self.inner.reset()
+    }
+    fn server_identity<'a>(&'a self) -> BoxFuture<'a, Result<String, SftpError>> {
+        self.inner.server_identity()
+    }
+}
+
+/// 端点永远说「目标不存在」、提交永远说「已存在」：以前会无限重查；现在重查有限次后报「已存在」，
+/// 并清掉自己的临时文件。
+#[tokio::test]
+async fn commit_rechecks_stop_after_a_few_rounds_instead_of_looping_forever() {
+    let root = temp_root("w13-recheck-cap");
+    let source = root.join("a.bin");
+    std::fs::write(&source, vec![3u8; 4096]).unwrap();
+    let inner = Arc::new(MemoryEndpoints::new("/remote"));
+    let commits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let endpoints = Arc::new(NeverSeesTargetEndpoints {
+        inner: Arc::clone(&inner),
+        commits: Arc::clone(&commits),
+    });
+    let (engine, mut events) =
+        TransferEngine::new(endpoints, Arc::new(OverwriteAll), local_options());
+    let id = engine.submit(TransferJob {
+        direction: Direction::Upload,
+        source: source.display().to_string(),
+        target: "/remote/a.bin".to_owned(),
+        recursive: false,
+        peer: None,
+    });
+    let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+    let TransferState::Failed(text) = &report.state else {
+        panic!("必须失败：{report:?}");
+    };
+    assert!(text.contains("/remote/a.bin"), "{text}");
+    // 首次提交 + 每次重查之后各一次。
+    assert_eq!(
+        commits.load(std::sync::atomic::Ordering::SeqCst),
+        MAX_COMMIT_RECHECKS as usize + 1
+    );
+    assert!(inner.remote_part_files("/remote/a.bin").is_empty());
+    assert!(!inner.remote_exists("/remote/a.bin"));
+}

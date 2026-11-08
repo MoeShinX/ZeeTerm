@@ -933,6 +933,8 @@ impl TransferEngine {
         let mut overwrite_authorized = false;
         // 提交时才发现目标冒出来了：重新走冲突流程，临时文件已经完整，接着它提交。
         let mut recheck_conflict = false;
+        // 已经因为「提交时目标冒出来了」重查过几次（上限见 `MAX_COMMIT_RECHECKS`）。
+        let mut commit_rechecks = 0u32;
         let owner = self.owner_of(state);
 
         loop {
@@ -1143,6 +1145,14 @@ impl TransferEngine {
                                 )
                                 .with("target", &target),
                             );
+                            // 重查时端点说「目标不存在」、提交又说「已存在」（两边对同一个
+                            // 路径的判断不一致，例如悬空链接）会永远转下去：超过次数就把
+                            // 「已存在」当结果报出来，不能无限循环。
+                            commit_rechecks += 1;
+                            if commit_rechecks > MAX_COMMIT_RECHECKS {
+                                let _ = target_endpoint.remove_partial().await;
+                                return Err(SftpError::AlreadyExists { path: target });
+                            }
                             recheck_conflict = true;
                             resume_from_partial = true;
                             continue;
@@ -1745,6 +1755,13 @@ enum ConflictOutcome {
     /// 暂停后重进时记住的旧名字没有锁（`None`），照常在下一轮重新拿。
     Renamed(String, Option<lock::TargetGuard>),
 }
+
+/// 提交时发现目标冒出来了，重新走冲突流程最多这么多次。
+///
+/// 正常情况一次就够：重查时用户（或「全部应用」）会选覆盖 / 改名 / 跳过，之后不再冲突；
+/// 目标在重查的间隙里又被别人建出来是少见的巧合，所以给几次余地。再多就说明端点对「目标是否
+/// 存在」的判断和提交时的判断对不上，继续转只会卡死，按「已存在」报错。
+const MAX_COMMIT_RECHECKS: u32 = 3;
 
 /// 自动改名最多往后试这么多个名字，再多就按失败处理（不能无限循环）。
 const MAX_RENAME_TRIES: usize = 1000;
