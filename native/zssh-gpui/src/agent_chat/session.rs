@@ -4,6 +4,66 @@
 
 use super::*;
 
+/// 一拍最多处理多少条会话事件。外部智能体狂发事件时一拍取不完，剩下的留给下一拍。
+pub(super) const DRAIN_MAX_EVENTS: usize = 500;
+/// 一拍里处理会话事件最多花多久：条数没到、但每条都很重（长文本反复排版）时也要让出界面线程。
+pub(super) const DRAIN_BUDGET: Duration = Duration::from_millis(8);
+
+/// 按条数和耗时两个上限依次取并处理，至少处理一条（保证每拍都有进展）。
+/// 返回（处理了几条，是不是因为上限停下的）；后一个为真时队列里可能还有剩余，调用方要尽快再来一拍。
+pub(super) fn drain_limited<T>(
+    mut next: impl FnMut() -> Option<T>,
+    mut apply: impl FnMut(T),
+    max_items: usize,
+    budget: Duration,
+) -> (usize, bool) {
+    let started = Instant::now();
+    let mut processed = 0usize;
+    while let Some(item) = next() {
+        apply(item);
+        processed += 1;
+        if processed >= max_items || started.elapsed() >= budget {
+            return (processed, true);
+        }
+    }
+    (processed, false)
+}
+
+/// 独立窗口切换按钮能轮到的一项：内置助手按接口算一项（每个配好的接口一项，同面板下拉），外部智能体按种类。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AgentPick {
+    Builtin(i64),
+    External(AgentKind),
+}
+
+/// 可轮到的项，顺序同面板下拉：内置助手的接口在前，三个外部智能体在后；`external_ok` 判断外部智能体现在能不能选。
+pub(super) fn pick_candidates(
+    builtin_ids: &[i64],
+    external_ok: impl Fn(AgentKind) -> bool,
+) -> Vec<AgentPick> {
+    builtin_ids
+        .iter()
+        .copied()
+        .map(AgentPick::Builtin)
+        .chain(
+            AgentKind::ALL
+                .into_iter()
+                .filter(|kind| external_ok(*kind))
+                .map(AgentPick::External),
+        )
+        .collect()
+}
+
+/// 当前项之后的下一项（到头回到开头）。当前项不在列表里（比如它刚变得不可用）就从头开始；
+/// 列表里只剩当前这一项时没有可换的，返回 `None`。
+pub(super) fn next_pick(candidates: &[AgentPick], current: Option<AgentPick>) -> Option<AgentPick> {
+    let next = match current.and_then(|c| candidates.iter().position(|p| *p == c)) {
+        Some(index) => candidates[(index + 1) % candidates.len()],
+        None => *candidates.first()?,
+    };
+    (Some(next) != current).then_some(next)
+}
+
 /// 后台任务 → 界面的消息（100ms tick 取走）。
 pub(super) enum HostEvent {
     /// 会话已经建好，第一条消息也已经发出去（`sent` 是发送结果）。
@@ -100,22 +160,30 @@ impl AgentChatDemo {
         }
     }
 
-    /// 独立窗口里的切换按钮：按 opencode → codex → Claude Code 轮着换到下一个可用的。
+    /// 独立窗口里的切换按钮：和面板的智能体下拉同一份可选项（内置助手的每个已配好的接口排前面，
+    /// 其后是三个外部智能体），不可用的项（没装 / 没登录 / 版本过低）跳过，轮着换到下一个。
     pub(super) fn cycle_agent(&mut self, cx: &mut Context<Self>) {
-        let all = AgentKind::ALL;
-        let start = self.agent.index();
-        for step in 1..=all.len() {
-            let candidate = all[(start + step) % all.len()];
-            if self
-                .status
-                .get(candidate)
+        let builtin_ids: Vec<i64> = self
+            .builtin_menu_items()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        let candidates = pick_candidates(&builtin_ids, |kind| {
+            self.status
+                .get(kind)
                 .availability()
                 .selector_note()
                 .is_none()
-            {
-                self.switch_agent(candidate, cx);
-                return;
-            }
+        });
+        let current = if self.is_builtin() {
+            self.builtin.endpoint.map(AgentPick::Builtin)
+        } else {
+            Some(AgentPick::External(self.agent))
+        };
+        match next_pick(&candidates, current) {
+            Some(AgentPick::Builtin(id)) => self.switch_builtin_endpoint(id, cx),
+            Some(AgentPick::External(kind)) => self.switch_agent(kind, cx),
+            None => {}
         }
     }
 
@@ -615,26 +683,61 @@ impl AgentChatDemo {
     }
 
     /// 把会话里的事件和确认请求取出来；不阻塞界面线程。
+    ///
+    /// 事件每拍限量（见 [`drain_limited`]）：没取完时 `drain_backlog` 为真，节拍提前再来，
+    /// 确认请求和执行回报留到追平之后——它们要落在前面那些事件产生的卡片之后，顺序和一次取完时相同。
     pub(super) fn drain_session(&mut self) -> bool {
         // 内置助手的用量 / 提示 / 失败信号先处理（它们总在回合结束之前发出）。
         let mut changed = self.drain_builtin_signals();
+        self.drain_backlog = false;
         let Some(session) = self.session.as_mut() else {
             return changed;
         };
         let builtin_session = session.is_builtin();
         // 只有还在跑的回合收到 TurnEnd 才值得存一次；停止之后迟到的 TurnEnd 不再写。
         let mut turn_ended = false;
-        while let Ok(event) = session.events.try_recv() {
-            if matches!(&event, AgentEvent::TurnEnd) && self.chat.real_running {
-                turn_ended = true;
-            }
-            if builtin_session {
-                self.chat.apply_builtin_event(event);
-            } else {
-                self.chat.apply_agent_event(event);
-            }
+        // 每拍限量：外部智能体狂发事件时一拍处理不完，剩下的留到下一拍（按原顺序），界面不卡。
+        let (processed, backlog) = drain_limited(
+            || session.events.try_recv().ok(),
+            |event| {
+                if matches!(&event, AgentEvent::TurnEnd) && self.chat.real_running {
+                    turn_ended = true;
+                }
+                if builtin_session {
+                    self.chat.apply_builtin_event(event);
+                } else {
+                    self.chat.apply_agent_event(event);
+                }
+            },
+            DRAIN_MAX_EVENTS,
+            DRAIN_BUDGET,
+        );
+        if processed > 0 {
             changed = true;
         }
+        self.drain_backlog = backlog;
+        if !backlog {
+            changed |= self.drain_prompts_and_reports();
+        }
+        if turn_ended {
+            self.save_history();
+            // 一轮对话结束：余额变了，下次允许时（最多每 60 秒）重新取。
+            if builtin_session {
+                agent_setup::tokenway::mark_balance_dirty();
+            }
+        }
+        // TurnEnd 已经把 `real_running` 置 false；这里补一次计数更新。
+        self.sync_ai_turn_count();
+        self.sync_host_activity();
+        changed
+    }
+
+    /// 取走确认请求和执行回报（事件已经追平之后才调用）；返回是否有变化。
+    fn drain_prompts_and_reports(&mut self) -> bool {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        let mut changed = false;
         while let Some(prompt) = session.next_prompt() {
             if !self.chat.real_running {
                 // 回合已经停了 / 结束了（停止之前发起、停止之后才送到的请求）：不弹卡片，
@@ -664,16 +767,6 @@ impl AgentChatDemo {
         {
             changed = true;
         }
-        if turn_ended {
-            self.save_history();
-            // 一轮对话结束：余额变了，下次允许时（最多每 60 秒）重新取。
-            if builtin_session {
-                agent_setup::tokenway::mark_balance_dirty();
-            }
-        }
-        // TurnEnd 已经把 `real_running` 置 false；这里补一次计数更新。
-        self.sync_ai_turn_count();
-        self.sync_host_activity();
         changed
     }
 

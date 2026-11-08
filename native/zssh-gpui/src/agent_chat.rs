@@ -80,6 +80,8 @@ static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
 
 /// 脚本推进间隔；和 AI 智能体窗口、终端窗口的轮询节奏一致。
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
+/// 会话事件一拍没取完（见 `session::drain_limited`）时，下一拍提前到这个间隔，别等满 100ms。
+const BACKLOG_INTERVAL: Duration = Duration::from_millis(16);
 /// 点了消息上的「复制」之后，对勾和「已复制」留多久。
 const COPIED_FLASH: Duration = Duration::from_millis(1500);
 
@@ -198,6 +200,8 @@ pub struct AgentChatDemo {
     /// 后台结果出口和入口。
     host_tx: Sender<HostEvent>,
     host_rx: Receiver<HostEvent>,
+    /// 上一拍会话事件没取完（限量停下）：下一拍要提前来，排队消息也要等追平了才发（见 `drain_session`）。
+    drain_backlog: bool,
     /// 启动 / 发送失败的底部提示。
     footer_error: Option<String>,
     /// 点链接之后的底部提示（复制了什么网址，或为什么没复制）。
@@ -310,6 +314,7 @@ impl AgentChatDemo {
             stop_requested: false,
             host_tx,
             host_rx,
+            drain_backlog: false,
             footer_error: host_error,
             link_notice: None,
             copied: None,
@@ -342,8 +347,9 @@ impl AgentChatDemo {
             this.pick_default_builtin_endpoint();
         }
         this._tick = cx.spawn_in(window, async move |this, cx| {
+            let mut interval = TICK_INTERVAL;
             loop {
-                cx.background_executor().timer(TICK_INTERVAL).await;
+                cx.background_executor().timer(interval).await;
                 let alive = this.update_in(cx, |this, window, cx| {
                     // 粘到底部：用户往上翻着看旧消息时，新内容不把他拉回底部（面板形态；独立窗口照旧）。
                     let stick = this.embed.is_none() || this.at_bottom();
@@ -362,13 +368,15 @@ impl AgentChatDemo {
                     if this.drain_session() {
                         changed = true;
                     }
-                    if this.flush_queue(window, cx) {
+                    // 会话事件还没取完时不发排队消息：旧回合 TurnEnd 之后队列里可能还有它的尾巴，
+                    // 抢先开新回合会让这些事件落进新回合。
+                    if !this.drain_backlog && this.flush_queue(window, cx) {
                         changed = true;
                     }
                     if this.sync_input_placeholder(window, cx) {
                         changed = true;
                     }
-                    if this.flush_queue(window, cx) {
+                    if !this.drain_backlog && this.flush_queue(window, cx) {
                         changed = true;
                     }
                     if this.chat.advance(this.demo_mode) {
@@ -387,9 +395,17 @@ impl AgentChatDemo {
                         }
                         cx.notify();
                     }
+                    this.drain_backlog
                 });
-                if alive.is_err() {
-                    break;
+                match alive {
+                    Ok(backlog) => {
+                        interval = if backlog {
+                            BACKLOG_INTERVAL
+                        } else {
+                            TICK_INTERVAL
+                        };
+                    }
+                    Err(_) => break,
                 }
             }
         });

@@ -7,6 +7,7 @@
 use super::approval::mode_setting;
 use super::demo::{DemoTool, requires_approval};
 use super::model::raw_markdown_block;
+use super::session::{AgentPick, next_pick, pick_candidates};
 use super::{
     ApprovalDetail, ApprovalState, AssistantMessage, BodyMode, ChatMessage, ChatMsg, ChatState,
     DemoInput, ExecMode, HostChoice, MARKDOWN_SAMPLE, ModelChoice, ToolCard, ToolInput, ToolStatus,
@@ -15,6 +16,7 @@ use super::{
     mode_label, model_choices, model_label, next_model_index, save_exec_mode, selected_targets,
     start_in_real_mode, table_tsv, toggle_host_selection,
 };
+use crate::agent_setup::AgentKind;
 use crate::agent_text::{BODY_PREVIEW_CHARS, DIFF_FOLD_LIMIT, fold_diff};
 use crate::agent_tools::{self, ToolRow};
 use crate::i18n::t;
@@ -1637,4 +1639,204 @@ fn every_message_has_its_own_hover_group() {
         super::copy_group("agent-chat-msg-1"),
         super::copy_group("agent-chat-notice-1-0")
     );
+}
+
+// ---- W37：独立窗口和面板一致（运行中可编辑 / 排队、智能体切换列表）----
+
+#[test]
+fn the_window_input_stays_editable_while_a_real_turn_runs() {
+    use super::window_view::input_disabled;
+    // 真实回合进行中：和面板一样能写、Enter 排队。
+    assert!(!input_disabled(true, true, false));
+    assert!(!input_disabled(true, false, false));
+    // 智能体不可用（没找到 / 没登录 / 还在检测）仍然禁用，不管在不在跑。
+    assert!(input_disabled(true, false, true));
+    assert!(input_disabled(true, true, true));
+    // 离线演示脚本没有队列：运行中保持禁用。
+    assert!(input_disabled(false, true, false));
+    assert!(!input_disabled(false, false, false));
+}
+
+#[test]
+fn what_the_window_sends_while_running_waits_in_the_same_queue_as_the_panel() {
+    // 窗口的 send() 在真实回合进行中调 `enqueue`（和面板同一个入口）：多条按顺序排，
+    // 回合结束后合并成一条发出，输入行为和面板一致。
+    let mut state = real_started();
+    assert!(state.enqueue("窗口里补充一").is_some());
+    assert!(state.enqueue("窗口里补充二").is_some());
+    assert_eq!(
+        state
+            .queue
+            .items()
+            .iter()
+            .map(|i| i.text.as_str())
+            .collect::<Vec<_>>(),
+        ["窗口里补充一", "窗口里补充二"]
+    );
+    // 排队的消息可以边跑边编辑（编辑中不会被发出）。
+    let id = state.queue.items()[0].id;
+    assert!(state.queue.begin_edit(id));
+    state.apply_agent_event(AgentEvent::TurnEnd);
+    assert_eq!(state.take_queue_to_send(Instant::now()), None, "编辑中不发");
+    assert!(state.queue.edit(id, "窗口里补充一（改）"));
+    assert_eq!(
+        state.take_queue_to_send(Instant::now()).as_deref(),
+        Some("窗口里补充一（改）\n\n窗口里补充二")
+    );
+}
+
+fn all_ok(_: AgentKind) -> bool {
+    true
+}
+
+#[test]
+fn the_window_cycle_list_is_the_panel_list_with_builtin_first() {
+    let list = pick_candidates(&[7, 9], all_ok);
+    assert_eq!(
+        list,
+        [
+            AgentPick::Builtin(7),
+            AgentPick::Builtin(9),
+            AgentPick::External(AgentKind::OpenCode),
+            AgentPick::External(AgentKind::Codex),
+            AgentPick::External(AgentKind::Claude),
+        ]
+    );
+    // 内置助手没配好接口：只剩外部智能体。
+    assert_eq!(pick_candidates(&[], all_ok).len(), 3);
+}
+
+#[test]
+fn cycling_reaches_the_builtin_assistant_and_comes_back_to_it() {
+    let list = pick_candidates(&[7], all_ok);
+    let mut at = Some(AgentPick::External(AgentKind::Claude));
+    // 从最后一个外部智能体再切，回到内置助手（以前的实现永远跳过它）。
+    at = next_pick(&list, at);
+    assert_eq!(at, Some(AgentPick::Builtin(7)));
+    // 切走再切回：转一圈回到同一个接口。
+    let mut seen = vec![at];
+    for _ in 0..list.len() - 1 {
+        at = next_pick(&list, at);
+        seen.push(at);
+    }
+    assert_eq!(
+        seen,
+        [
+            Some(AgentPick::Builtin(7)),
+            Some(AgentPick::External(AgentKind::OpenCode)),
+            Some(AgentPick::External(AgentKind::Codex)),
+            Some(AgentPick::External(AgentKind::Claude)),
+        ]
+    );
+    assert_eq!(next_pick(&list, at), Some(AgentPick::Builtin(7)));
+}
+
+#[test]
+fn cycling_skips_unavailable_agents() {
+    // codex 没装：opencode 之后直接是 Claude Code。
+    let list = pick_candidates(&[], |kind| kind != AgentKind::Codex);
+    assert_eq!(
+        next_pick(&list, Some(AgentPick::External(AgentKind::OpenCode))),
+        Some(AgentPick::External(AgentKind::Claude))
+    );
+    // 当前这一项刚变得不可用（不在列表里）：从头开始，不卡在原地。
+    assert_eq!(
+        next_pick(&list, Some(AgentPick::External(AgentKind::Codex))),
+        Some(AgentPick::External(AgentKind::OpenCode))
+    );
+    // 当前在内置助手、但它的接口已经不可选：同样从头开始。
+    assert_eq!(
+        next_pick(&list, Some(AgentPick::Builtin(3))),
+        Some(AgentPick::External(AgentKind::OpenCode))
+    );
+}
+
+#[test]
+fn cycling_does_nothing_when_there_is_nowhere_to_go() {
+    // 一个都没有：什么也不换。
+    assert_eq!(
+        next_pick(&[], Some(AgentPick::External(AgentKind::Codex))),
+        None
+    );
+    // 只剩当前这一项：没有别的可换。
+    let only = pick_candidates(&[], |kind| kind == AgentKind::Codex);
+    assert_eq!(
+        next_pick(&only, Some(AgentPick::External(AgentKind::Codex))),
+        None
+    );
+}
+
+// ---- W18：每拍处理的会话事件有上限 ----
+
+use super::session::{DRAIN_MAX_EVENTS, drain_limited};
+
+#[test]
+fn a_flood_of_events_is_taken_in_capped_beats_and_applied_in_order() {
+    let (tx, rx) = std::sync::mpsc::channel::<AgentEvent>();
+    let total = DRAIN_MAX_EVENTS * 2 + 123;
+    for index in 0..total {
+        tx.send(AgentEvent::TextDelta {
+            text: format!("{index},"),
+        })
+        .expect("发送");
+    }
+    tx.send(AgentEvent::TurnEnd).expect("发送");
+
+    let mut state = real_started();
+    let beat = |state: &mut ChatState| {
+        drain_limited(
+            || rx.try_recv().ok(),
+            |event| {
+                state.apply_agent_event(event);
+            },
+            DRAIN_MAX_EVENTS,
+            Duration::from_secs(60),
+        )
+    };
+
+    // 第一拍只处理上限条，回合还在跑，并告诉调用方还有剩余。
+    assert_eq!(beat(&mut state), (DRAIN_MAX_EVENTS, true));
+    assert!(state.is_running(), "TurnEnd 还在后面排着");
+    assert_eq!(
+        assistant(&state).text.matches(',').count(),
+        DRAIN_MAX_EVENTS
+    );
+
+    assert_eq!(beat(&mut state), (DRAIN_MAX_EVENTS, true));
+    assert!(state.is_running());
+
+    // 第三拍：剩下的文本 + TurnEnd 一起处理完，队列空了，不再要求提前再来。
+    assert_eq!(beat(&mut state), (123 + 1, false));
+    assert!(!state.is_running(), "TurnEnd 在所有文本之后才生效");
+    assert_eq!(beat(&mut state), (0, false), "没有积压了");
+
+    // 顺序没变：0,1,2,…按发送顺序拼起来。
+    let expected: String = (0..total).map(|index| format!("{index},")).collect();
+    assert_eq!(assistant(&state).text, expected);
+}
+
+#[test]
+fn the_time_budget_also_ends_a_beat_but_always_makes_progress() {
+    let (tx, rx) = std::sync::mpsc::channel::<u32>();
+    for index in 0..10 {
+        tx.send(index).expect("发送");
+    }
+    let mut seen = Vec::new();
+    // 预算为零：每拍也至少处理一条，不会原地打转饿死后面的事件。
+    let outcome = drain_limited(
+        || rx.try_recv().ok(),
+        |item| seen.push(item),
+        1000,
+        Duration::ZERO,
+    );
+    assert_eq!(outcome, (1, true));
+    while drain_limited(
+        || rx.try_recv().ok(),
+        |item| seen.push(item),
+        1000,
+        Duration::ZERO,
+    )
+    .0 > 0
+    {}
+    assert_eq!(seen, (0..10).collect::<Vec<_>>());
 }

@@ -75,6 +75,12 @@ pub(super) fn allow_all_dialog(
     .into_any_element()
 }
 
+/// 独立窗口的输入框 / 发送按钮要不要禁用：智能体不可用（`blocked`）时禁用；
+/// 回合进行中，真实模式不禁用（和面板一样，Enter 排队），离线演示脚本没有队列，仍然禁用。
+pub(super) fn input_disabled(real: bool, running: bool, blocked: bool) -> bool {
+    blocked || (running && !real)
+}
+
 impl AgentChatDemo {
     pub(super) fn render_window(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let running = self.chat.is_running();
@@ -149,7 +155,11 @@ impl AgentChatDemo {
             .when(self.real, |row| {
                 row.child(
                     Button::new("agent-chat-agent")
-                        .label(format!("{}{}", t(ChatMsg::AgentPrefix), self.agent.label()))
+                        .label(format!(
+                            "{}{}",
+                            t(ChatMsg::AgentPrefix),
+                            self.agent_label_now()
+                        ))
                         .compact()
                         .on_click(move |_, _, cx| {
                             agent_entity.update(cx, |this, cx| this.cycle_agent(cx));
@@ -282,9 +292,11 @@ impl AgentChatDemo {
             .into_any_element()
     }
 
-    /// 输入行：输入框 + 发送。
+    /// 输入行：输入框 + 发送。真实回合进行中和面板一样可以继续写、Enter / 发送把话放进待发送队列
+    /// （队列块画在对话区底部，见 `queue_view`）；智能体不可用时才禁用。
     fn input_row(&self, running: bool, blocked: bool, cx: &mut Context<Self>) -> AnyElement {
         let send_entity = cx.entity();
+        let disabled = input_disabled(self.real, running, blocked);
         h_flex()
             .gap_2()
             .items_end()
@@ -292,12 +304,12 @@ impl AgentChatDemo {
                 Textarea::new(&self.input)
                     .flex_1()
                     .h(::gpui::px(72.0))
-                    .disabled(running || blocked),
+                    .disabled(disabled),
             )
             .child(
                 Button::new("agent-chat-send")
                     .label(t(ChatMsg::Send))
-                    .disabled(running || blocked)
+                    .disabled(disabled)
                     .on_click(move |_, window, cx| {
                         send_entity.update(cx, |this, cx| this.send(window, cx));
                     }),
