@@ -350,9 +350,78 @@ struct FileRun {
     /// 这个文件已经计入任务 `done_bytes` 的字节数。重传（续传位置回退、从头来、重试）时先扣掉
     /// 它再按新起点计，所以同一段数据不会被累加两次，进度也不会超过总量。
     counted_bytes: u64,
+    /// 这个文件的源路径（清理别的名字下的临时文件时要用它建端点）；开始传这个文件时记下。
+    source: Option<String>,
+    /// 目标端可能还留着本任务临时文件的那些目标路径（尝试过的实际目标）。
+    ///
+    /// 重试 / 重新提问之后实际目标可能变了（换了改名结果、改成覆盖或跳过），旧名字下的
+    /// `<目标>.<任务标识>.zssh-part` 就没人用了，也没人会清：靠这份记录在换目标时删掉。
+    /// 记录不随重试清空；文件传完（临时文件已改名为最终文件）或临时文件已删掉才去掉对应项。
+    parts: Vec<String>,
 }
 
 impl JobState {
+    /// 记下这个文件在 `target` 下可能有本任务的临时文件。
+    fn note_part(&self, planned_target: &str, source: &str, target: &str) {
+        let mut files = self
+            .files
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let run = files.entry(planned_target.to_owned()).or_default();
+        run.source.get_or_insert_with(|| source.to_owned());
+        if !run.parts.iter().any(|part| part == target) {
+            run.parts.push(target.to_owned());
+        }
+    }
+
+    /// 去掉一项记录（`target` 下的临时文件已经没了 / 已经提交成最终文件）。
+    fn forget_part(&self, planned_target: &str, target: &str) {
+        if let Some(run) = self
+            .files
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_mut(planned_target)
+        {
+            run.parts.retain(|part| part != target);
+        }
+    }
+
+    /// 这个文件记着的临时文件目标里不是 `keep` 的那些，连同源路径一起返回。
+    fn stale_parts(
+        &self,
+        planned_target: &str,
+        keep: Option<&str>,
+    ) -> (Option<String>, Vec<String>) {
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match files.get(planned_target) {
+            Some(run) => (
+                run.source.clone(),
+                run.parts
+                    .iter()
+                    .filter(|part| Some(part.as_str()) != keep)
+                    .cloned()
+                    .collect(),
+            ),
+            None => (None, Vec::new()),
+        }
+    }
+
+    /// 重试：进度归零要清的（实际目标、已计入字节）清掉，但仍可能留着临时文件的文件保留它的记录。
+    fn reset_for_retry(&self) {
+        let mut files = self
+            .files
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        files.retain(|_, run| !run.parts.is_empty());
+        for run in files.values_mut() {
+            run.actual_target = None;
+            run.counted_bytes = 0;
+        }
+    }
+
     fn actual_target(&self, planned_target: &str) -> Option<String> {
         self.files
             .lock()
@@ -624,11 +693,8 @@ impl TransferEngine {
         }
         // 进度归零了，每个文件"已计入的字节"和"改过的名字"也要清（重试重新问冲突）。
         // `confirmed`（续传前缀）不清：重试就是要接着上次的临时文件传。
-        state
-            .files
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
+        // 上次尝试留下的临时文件的记录也不清：重试选的目标变了，要靠它删掉旧名字下没人用的临时文件。
+        state.reset_for_retry();
         // 同理，重试的任务脱离原来的批次：批次里旧的"全部应用"不再替它回答，它重新问，
         // 重试后勾的"全部应用"也只管它自己。
         *state
@@ -709,6 +775,17 @@ impl TransferEngine {
     async fn run_job(self: Arc<Self>, state: Arc<JobState>, prefer_resume: bool) {
         // 上一轮还没退出时（例如刚看到 Failed 事件就点了重试），这一轮在这里等。
         let _run = state.run_lock.lock().await;
+        Arc::clone(&self)
+            .run_job_locked(Arc::clone(&state), prefer_resume)
+            .await;
+        // 取消是终点：不管在哪一步取消的，任务记着的临时文件（含上一次失败尝试用别的名字留下的、
+        // 还没轮到的文件的）都不会再有人用，统一在这里清。失败不清：留着给重试续传。
+        if self.state_of(&state) == TransferState::Cancelled {
+            self.reap_all_parts(&state).await;
+        }
+    }
+
+    async fn run_job_locked(self: Arc<Self>, state: Arc<JobState>, prefer_resume: bool) {
         // 排队期间就被取消了：连规划都不用做（更不能建目录）。
         if state.is_cancelled() {
             self.finish_with_error(&state, SftpError::Cancelled);
@@ -997,10 +1074,12 @@ impl TransferEngine {
                         recheck_conflict = false;
                     }
                     ConflictOutcome::Skip => {
+                        // 跳过了：已经传完的（重查冲突时）、或上一次尝试留下的临时文件都用不上了。
                         if recheck_conflict {
-                            // 已经传完的临时文件用不上了。
                             let _ = target_endpoint.remove_partial().await;
+                            state.forget_part(&planned.target, &target);
                         }
+                        self.reap_parts(state, planned, None).await;
                         return Ok(FileOutcome::Skipped);
                     }
                     ConflictOutcome::Renamed(name, guard) => {
@@ -1011,6 +1090,11 @@ impl TransferEngine {
                     }
                 }
             }
+
+            // 最终目标定下来了。上一次尝试（失败后重试、重查冲突）用过别的名字的话，那个名字下的
+            // 临时文件再也不会被用到，在这里删掉；就是这个目标的临时文件留着，下面接着续传。
+            self.reap_parts(state, planned, Some(&target)).await;
+            state.note_part(&planned.target, &planned.source, &target);
 
             // 续传：先看临时文件有多少，再和源对一下尾部；对不上从头来。
             let source_size = source.size().await?.unwrap_or(0);
@@ -1118,7 +1202,9 @@ impl TransferEngine {
                     // 这是提交的取消边界；进入 commit 后不能中途丢弃改名请求，
                     // 否则无法判断最终文件是否已经替换成功。
                     if state.control.state() == file::ControlState::Cancelled {
-                        let _ = target_endpoint.remove_partial().await;
+                        if target_endpoint.remove_partial().await.is_ok() {
+                            state.forget_part(&planned.target, &target);
+                        }
                         return Err(SftpError::Cancelled);
                     }
                     // Unix 上下载的新文件权限不能比远端宽：临时文件在改名成最终名字之前定好权限
@@ -1166,7 +1252,9 @@ impl TransferEngine {
                             // 「已存在」当结果报出来，不能无限循环。
                             commit_rechecks += 1;
                             if commit_rechecks > MAX_COMMIT_RECHECKS {
-                                let _ = target_endpoint.remove_partial().await;
+                                if target_endpoint.remove_partial().await.is_ok() {
+                                    state.forget_part(&planned.target, &target);
+                                }
                                 return Err(SftpError::AlreadyExists { path: target });
                             }
                             recheck_conflict = true;
@@ -1200,6 +1288,8 @@ impl TransferEngine {
                             )
                             .await;
                     }
+                    // 临时文件已经改名成最终文件，没有临时文件要记着了。
+                    state.forget_part(&planned.target, &target);
                     // 传完的文件整个算进度（大小以计划为准，没有就用这次读到的源大小）。
                     self.set_counted(
                         state,
@@ -1212,7 +1302,9 @@ impl TransferEngine {
                 }
                 Ok(CopyOutcome::Paused { .. }) => return Ok(FileOutcome::Paused),
                 Ok(CopyOutcome::Cancelled { .. }) => {
-                    let _ = target_endpoint.remove_partial().await;
+                    if target_endpoint.remove_partial().await.is_ok() {
+                        state.forget_part(&planned.target, &target);
+                    }
                     return Err(SftpError::Cancelled);
                 }
                 Err(err) => {
@@ -1288,7 +1380,80 @@ impl TransferEngine {
             )
             .await
         {
-            let _ = pair.target.remove_partial().await;
+            if pair.target.remove_partial().await.is_ok() {
+                state.forget_part(&planned.target, &target);
+            }
+        }
+        // 前几次尝试用别的名字留下的也一并清（取消之后它们不会再有人续传）。
+        self.reap_parts(state, planned, None).await;
+    }
+
+    /// 删掉这个文件记着的、不在 `keep` 位置的临时文件（`keep = None` 就是全删）。
+    ///
+    /// 删的永远是 `part_name(<目标>, <本任务标识>)`，也就是本任务自己的临时文件；用户自己的
+    /// 同名 `.zssh-part` 和别的任务的临时文件名字对不上，碰不到。尽力而为：删不掉（连接不在、
+    /// 没权限）就保留记录，下次有机会再删。
+    async fn reap_parts(
+        &self,
+        state: &Arc<JobState>,
+        planned: &plan::PlannedFile,
+        keep: Option<&str>,
+    ) {
+        let (_, stale) = state.stale_parts(&planned.target, keep);
+        for part_target in stale {
+            self.remove_part_at(state, &planned.target, &planned.source, &part_target)
+                .await;
+        }
+    }
+
+    /// 任务结束于取消时，清掉所有文件记着的临时文件（包括还没轮到的文件上一次尝试留下的）。
+    async fn reap_all_parts(&self, state: &Arc<JobState>) {
+        let pending: Vec<(String, String, Vec<String>)> = {
+            let files = state
+                .files
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            files
+                .iter()
+                .filter(|(_, run)| !run.parts.is_empty())
+                .map(|(planned, run)| {
+                    (
+                        planned.clone(),
+                        run.source.clone().unwrap_or_default(),
+                        run.parts.clone(),
+                    )
+                })
+                .collect()
+        };
+        for (planned_target, source, parts) in pending {
+            for part_target in parts {
+                self.remove_part_at(state, &planned_target, &source, &part_target)
+                    .await;
+            }
+        }
+    }
+
+    async fn remove_part_at(
+        &self,
+        state: &Arc<JobState>,
+        planned_target: &str,
+        source: &str,
+        part_target: &str,
+    ) {
+        let pair = self
+            .endpoints
+            .pair(
+                state.job.direction,
+                state.job.peer.as_deref(),
+                source,
+                part_target,
+                &self.owner_of(state),
+            )
+            .await;
+        if let Ok(pair) = pair {
+            if pair.target.remove_partial().await.is_ok() {
+                state.forget_part(planned_target, part_target);
+            }
         }
     }
 

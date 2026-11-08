@@ -3514,6 +3514,253 @@ async fn retry_counts_the_resumed_prefix_so_progress_ends_at_the_total() {
 }
 
 // ---------------------------------------------------------------------------
+// W12 续：失败重试时目标名变了，上一次留下的 `.zssh-part` 不能一直留着
+// ---------------------------------------------------------------------------
+
+/// 按顺序回答冲突：第 n 次被问就用第 n 个回答，用完了一直用最后一个。
+struct RetryAnswers {
+    answers: Vec<ConflictDecision>,
+    asked: std::sync::atomic::AtomicUsize,
+}
+
+impl RetryAnswers {
+    fn new(answers: Vec<ConflictDecision>) -> Self {
+        Self {
+            answers,
+            asked: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+impl ConflictResolver for RetryAnswers {
+    fn decide<'a>(&'a self, _info: ConflictInfo) -> BoxFuture<'a, ConflictDecision> {
+        let index = self
+            .asked
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .min(self.answers.len() - 1);
+        let answer = self.answers[index].clone();
+        Box::pin(async move { answer })
+    }
+}
+
+fn answer_rename(name: &str) -> ConflictDecision {
+    ConflictDecision {
+        action: ConflictAction::Rename,
+        apply_to_all: false,
+        rename_to: Some(name.to_owned()),
+    }
+}
+
+fn answer_action(action: ConflictAction) -> ConflictDecision {
+    ConflictDecision {
+        action,
+        apply_to_all: false,
+        rename_to: None,
+    }
+}
+
+/// 造一个"目标已存在 + 第一次改名写到一半失败"的场景：返回引擎、事件、任务号，任务已处于失败，
+/// `/remote/a.bin` 下留着本任务的临时文件。
+async fn failed_after_rename_to_a(
+    tag: &str,
+    answers: Vec<ConflictDecision>,
+) -> (
+    crate::test_util::TestDir,
+    Arc<MemoryEndpoints>,
+    Arc<TransferEngine>,
+    mpsc::UnboundedReceiver<TransferEvent>,
+    TransferId,
+    Vec<u8>,
+) {
+    let root = temp_root(tag);
+    let source = root.join("f.bin");
+    let data = nonzero_pattern(16 * 1024);
+    std::fs::write(&source, &data).unwrap();
+    let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+    endpoints.put_remote("/remote/f.bin", vec![9u8; 64]);
+    // 用户自己的、旧写法的 `.zssh-part`：不属于这个任务，什么时候都不能碰。
+    endpoints.put_remote("/remote/a.bin.zssh-part", vec![1u8; 10]);
+    endpoints.fail_remote_write_after(4096);
+    let (engine, mut events) = TransferEngine::new(
+        endpoints.clone(),
+        Arc::new(RetryAnswers::new(answers)),
+        TransferOptions {
+            max_retries: 0,
+            ..slow_rename_options()
+        },
+    );
+    let id = engine.submit(TransferJob {
+        direction: Direction::Upload,
+        source: source.display().to_string(),
+        target: "/remote/f.bin".to_owned(),
+        recursive: false,
+        peer: None,
+    });
+    let report = finish_with_bounded_progress(&mut events, id).await;
+    assert!(
+        matches!(report.state, TransferState::Failed(_)),
+        "前提：第一次尝试写到一半失败：{report:?}"
+    );
+    assert_eq!(
+        endpoints.remote_part_files("/remote/a.bin").len(),
+        2,
+        "前提：改名目标下有本任务的临时文件（外加用户自己那个）：{:?}",
+        endpoints.remote_part_files("/remote/a.bin")
+    );
+    (root, endpoints, engine, events, id, data)
+}
+
+fn own_parts(endpoints: &MemoryEndpoints, path: &str) -> Vec<String> {
+    endpoints
+        .remote_part_files(path)
+        .into_iter()
+        .filter(|name| name != &format!("{path}.zssh-part"))
+        .collect()
+}
+
+fn users_part_is_intact(endpoints: &MemoryEndpoints) {
+    assert_eq!(
+        endpoints.remote_contents("/remote/a.bin.zssh-part"),
+        vec![1u8; 10],
+        "用户自己的 .zssh-part 文件被动了"
+    );
+}
+
+/// 重试时改成了另一个名字：上一次留在旧名字下的临时文件要删掉（以前一直留在服务器上）。
+#[tokio::test]
+async fn retry_with_another_rename_removes_the_old_names_part() {
+    let (_root, endpoints, engine, mut events, id, data) = failed_after_rename_to_a(
+        "w12-retry-other-name",
+        vec![answer_rename("a.bin"), answer_rename("b.bin")],
+    )
+    .await;
+    assert!(engine.retry(id));
+    let report = finish_with_bounded_progress(&mut events, id).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    assert_eq!(endpoints.remote_contents("/remote/b.bin"), data);
+    assert!(
+        own_parts(&endpoints, "/remote/a.bin").is_empty(),
+        "旧名字下的临时文件没清：{:?}",
+        endpoints.remote_part_files("/remote/a.bin")
+    );
+    assert!(own_parts(&endpoints, "/remote/b.bin").is_empty());
+    assert!(!endpoints.remote_exists("/remote/a.bin"));
+    assert_eq!(endpoints.remote_contents("/remote/f.bin"), vec![9u8; 64]);
+    users_part_is_intact(&endpoints);
+}
+
+/// 重试时改成覆盖原目标：旧改名目标下的临时文件也不再有用。
+#[tokio::test]
+async fn retry_with_overwrite_removes_the_renamed_part() {
+    let (_root, endpoints, engine, mut events, id, data) = failed_after_rename_to_a(
+        "w12-retry-overwrite",
+        vec![
+            answer_rename("a.bin"),
+            answer_action(ConflictAction::Overwrite),
+        ],
+    )
+    .await;
+    assert!(engine.retry(id));
+    let report = finish_with_bounded_progress(&mut events, id).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    assert_eq!(endpoints.remote_contents("/remote/f.bin"), data);
+    assert!(
+        own_parts(&endpoints, "/remote/a.bin").is_empty(),
+        "{:?}",
+        endpoints.remote_part_files("/remote/a.bin")
+    );
+    users_part_is_intact(&endpoints);
+}
+
+/// 重试时选了跳过：临时文件同样要删。
+#[tokio::test]
+async fn retry_with_skip_removes_the_renamed_part() {
+    let (_root, endpoints, engine, mut events, id, _data) = failed_after_rename_to_a(
+        "w12-retry-skip",
+        vec![answer_rename("a.bin"), answer_action(ConflictAction::Skip)],
+    )
+    .await;
+    assert!(engine.retry(id));
+    let report = finish_with_bounded_progress(&mut events, id).await;
+    assert_eq!(report.state, TransferState::Skipped, "{report:?}");
+    assert!(
+        own_parts(&endpoints, "/remote/a.bin").is_empty(),
+        "{:?}",
+        endpoints.remote_part_files("/remote/a.bin")
+    );
+    assert_eq!(endpoints.remote_contents("/remote/f.bin"), vec![9u8; 64]);
+    users_part_is_intact(&endpoints);
+}
+
+/// 重试时又选了同一个名字：这份临时文件还能续传，不能被误删——重试的进度从续传前缀开始，
+/// 不是从 0。
+#[tokio::test]
+async fn retry_with_the_same_rename_keeps_and_resumes_the_part() {
+    let (_root, endpoints, engine, mut events, id, data) = failed_after_rename_to_a(
+        "w12-retry-same-name",
+        vec![answer_rename("a.bin"), answer_rename("a.bin")],
+    )
+    .await;
+    let kept = endpoints.remote_partial_len("/remote/a.bin");
+    assert!(kept >= 4096, "前提：失败时临时文件有内容：{kept}");
+    assert!(engine.retry(id));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut lowest_nonzero = u64::MAX;
+    let report = loop {
+        assert!(tokio::time::Instant::now() < deadline, "等不到终态");
+        let event = tokio::time::timeout(Duration::from_secs(60), events.recv())
+            .await
+            .expect("等不到终态")
+            .expect("事件通道关了");
+        let (TransferEvent::Progress(report) | TransferEvent::Finished(report)) = &event;
+        if report.id != id {
+            continue;
+        }
+        if report.done_bytes > 0 {
+            lowest_nonzero = lowest_nonzero.min(report.done_bytes);
+        }
+        if let TransferEvent::Finished(report) = event {
+            break report;
+        }
+    };
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    assert_eq!(endpoints.remote_contents("/remote/a.bin"), data);
+    assert!(
+        lowest_nonzero >= kept,
+        "应当从续传前缀 {kept} 开始，而不是从头：最低的非零进度 {lowest_nonzero}"
+    );
+    assert!(own_parts(&endpoints, "/remote/a.bin").is_empty());
+    users_part_is_intact(&endpoints);
+}
+
+/// 失败后重试，但在重新开始传这个文件之前就取消了：旧名字下的临时文件也要清。
+#[tokio::test]
+async fn cancelling_a_retry_before_the_file_restarts_cleans_the_old_part() {
+    let (_root, endpoints, engine, mut events, id, _data) = failed_after_rename_to_a(
+        "w12-retry-cancel",
+        vec![answer_rename("a.bin"), answer_rename("b.bin")],
+    )
+    .await;
+    // 把重试那一轮卡在队列里（拿着任务的运行锁），取消之后再放它走：它一上来就看到取消。
+    let state = engine.job(id).expect("任务还在");
+    let gate = state.run_lock.lock().await;
+    assert!(engine.retry(id));
+    assert!(engine.cancel(id));
+    drop(gate);
+    let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+    assert_eq!(report.state, TransferState::Cancelled, "{report:?}");
+    // 清理在终态之后紧接着做（同一把运行锁里）：等锁放开就是做完了。
+    drop(state.run_lock.lock().await);
+    assert!(
+        own_parts(&endpoints, "/remote/a.bin").is_empty(),
+        "{:?}",
+        endpoints.remote_part_files("/remote/a.bin")
+    );
+    assert_eq!(endpoints.remote_contents("/remote/f.bin"), vec![9u8; 64]);
+    users_part_is_intact(&endpoints);
+}
+
+// ---------------------------------------------------------------------------
 // W15：规划 / 建目录阶段的取消，以及目录树的深度上限
 // ---------------------------------------------------------------------------
 
