@@ -682,8 +682,10 @@ impl MainWindow {
             .text_sm()
             .cursor_pointer()
             .when(dragging, |d| d.opacity(0.4))
+            // 胶囊标签不叠顶部那条直线指示（会横穿圆角）；改用半透明强调色描边，
+            // 仍然不只靠底色区分当前标签。
             .when(active, |d| {
-                d.border_color(tokens.accent_soft)
+                d.border_color(tokens.accent.opacity(0.45))
                     .bg(tokens.accent_soft)
                     .text_color(text)
             })
@@ -692,7 +694,6 @@ impl MainWindow {
                     .text_color(muted)
                     .hover(move |style| style.bg(hover))
             })
-            .when(active, |d| d.child(active_tab_indicator(tokens)))
             .tooltip({
                 let tip = tab_tip.clone();
                 move |window, cx| Tooltip::new(tip.clone()).build(window, cx)
