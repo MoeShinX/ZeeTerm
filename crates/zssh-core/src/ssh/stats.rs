@@ -247,7 +247,8 @@ pub struct PreviousSample {
     pub cpu_total: Option<CpuCounters>,
     pub per_core: Vec<CpuCounters>,
     pub net: Vec<NetCounters>,
-    /// 两次采样之间的秒数（差值的分母）。第一次采样没有。
+    /// 上一次采样到这一次采样隔了多久（网速差值的分母）。第一次采样没有。
+    /// 由调用方在 [`StatsSample::diff`] 之前按两次采样的时刻填上（见 [`StatsCollector`]）。
     pub elapsed: Option<Duration>,
 }
 
@@ -257,12 +258,12 @@ impl PreviousSample {
         Self::default()
     }
 
-    /// 存下一次采样（下一次 diff 时当"前值"用）。
-    pub fn record(&mut self, sample: &StatsSample, at_elapsed: Duration) {
+    /// 存下一次采样（下一次 diff 时当"前值"用）。间隔要等下一次采样时才知道，先清空。
+    pub fn record(&mut self, sample: &StatsSample) {
         self.cpu_total = sample.cpu_total;
         self.per_core = sample.per_core.clone();
         self.net = sample.net.clone();
-        self.elapsed = Some(at_elapsed);
+        self.elapsed = None;
     }
 }
 
@@ -695,6 +696,8 @@ fn net_speed(
 #[derive(Debug, Default)]
 pub struct StatsCollector {
     previous: PreviousSample,
+    /// 上一次采样的时刻（取那次命令往返的中点）。
+    previous_at: Option<std::time::Instant>,
     /// 这条连接的 CPU 型号：`None` = 还没探测成功过；`Some(None)` = 探过了但拿不到。
     /// 一个连接只探一次（采集器跟着连接的采集任务走，换连接就是新的采集器）。
     cpu_model: Option<Option<String>>,
@@ -732,16 +735,29 @@ impl StatsCollector {
             let stderr = capture.stderr.trim();
             return Err(format!("命令退出码非 0：{stderr}"));
         }
-        let output = capture.stdout;
-        let mut sample = StatsSample::parse(&output);
+        // 远端读计数器的那一刻大约在往返的中点。
+        let at = started + started.elapsed() / 2;
+        Ok(self.ingest(&capture.stdout, at))
+    }
+
+    /// 吃进一次采样的输出（`at` 是这次采样的时刻），和上一次算差值。
+    ///
+    /// 网速的分母必须是**两次采样的时间差**。以前用的是这一次命令的往返耗时（几十到几百毫秒），
+    /// 而采样间隔是几秒，网速被放大了好几倍到几十倍。
+    fn ingest(&mut self, output: &str, at: std::time::Instant) -> Option<ServerStats> {
+        let mut sample = StatsSample::parse(output);
         if !sample.parseable {
             // 系统不是 Linux（或 shell 不是 POSIX）：上层可以据此停止采集。
-            return Ok(None);
+            return None;
         }
         self.absorb_cpu_model(&mut sample);
+        self.previous.elapsed = self
+            .previous_at
+            .map(|previous| at.saturating_duration_since(previous));
         let stats = sample.diff(&self.previous);
-        self.previous.record(&sample, started.elapsed());
-        Ok(Some(stats))
+        self.previous.record(&sample);
+        self.previous_at = Some(at);
+        Some(stats)
     }
 
     /// 这一次要执行的脚本：型号还没拿到就带上探测，拿到（或确认拿不到）后只跑统计。
@@ -1073,9 +1089,38 @@ mod tests {
             let sample = StatsSample::parse(output);
             let stats = sample.diff(&previous);
             percents.push(stats.cpu_percent);
-            previous.record(&sample, Duration::from_secs(3));
+            previous.record(&sample);
+            previous.elapsed = Some(Duration::from_secs(3));
         }
         assert_eq!(percents, vec![None, Some(100), Some(50)]);
+    }
+
+    #[test]
+    fn net_speed_divides_by_the_time_between_samples_not_the_round_trip() {
+        // 每 3 秒采一次，两次之间网卡收了 3 MB、发了 300 KB：应是 1 MB/s、100 KB/s，
+        // 不管单次命令往返多快。
+        let mut collector = StatsCollector::new();
+        let t0 = std::time::Instant::now();
+        let first = collector
+            .ingest("CPURAW:100 50|CORES:1|NET:eth0:1000000:500000", t0)
+            .expect("可解析");
+        assert_eq!(first.net_rx_speed, 0.0, "第一次没有前值");
+        let second = collector
+            .ingest(
+                "CPURAW:200 100|CORES:1|NET:eth0:4000000:800000",
+                t0 + Duration::from_secs(3),
+            )
+            .expect("可解析");
+        assert!(
+            (second.net_rx_speed - 1_000_000.0).abs() < 1.0,
+            "{}",
+            second.net_rx_speed
+        );
+        assert!(
+            (second.net_tx_speed - 100_000.0).abs() < 1.0,
+            "{}",
+            second.net_tx_speed
+        );
     }
 
     /// 拼一段 `CPUMODEL:` 输出（候选行之间用脚本里的 `\x1e`）。
