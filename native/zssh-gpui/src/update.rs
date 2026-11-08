@@ -7,7 +7,8 @@
 //! 调试版额外认 `ZSSH_UPDATE_MANIFEST`（本地清单路径或 URL）、`ZSSH_CURRENT_VERSION`、
 //! `ZSSH_UPDATE_PUBKEY`、`ZSSH_UPDATE_PROXY`，并放开 `http://` / `file://`；Linux 另有 `ZSSH_UPDATE_FLAVOR`
 //! （`deb` / `tar` / `windows`，盖掉对安装方式的探测）、`ZSSH_UPDATE_AUTODOWNLOAD` / `ZSSH_UPDATE_AUTOINSTALL` /
-//! `ZSSH_UPDATE_AUTORESTART`（查到新版本就下载、验签后就安装、装好就重启，自动化真机验证用）；这些变量
+//! `ZSSH_UPDATE_AUTORESTART`（查到新版本就下载、验签后就安装、装好就重启，自动化真机验证用；安装 / 重启这两个只对
+//! Linux 包和 Windows 免安装版生效）；这些变量
 //! 经 `dev_hooks` 读取，release 里恒为未设置。
 //!
 //! 安装包先整个下到内存、在内存里验签，通过后才以独占方式写进
@@ -1212,9 +1213,10 @@ impl UpdateDemo {
                 DownloadEvent::Verified { .. } => {
                     self.job = None;
                     // 用户点过「下载并安装」，验签一过就装。
-                    // 调试钩子：验签通过就直接点「立即安装」（只对 Linux 的包生效；自动化 / 真机验证用）。
+                    // 调试钩子：验签通过就直接点「立即安装」（只对 Linux 的包和 Windows 免安装版生效——
+                    // 两者都是在程序里原地替换；自动化 / 真机验证用）。
                     auto_install = install_now
-                        || (self.linux_flavor().is_some()
+                        || ((self.linux_flavor().is_some() || self.is_portable_package())
                             && crate::dev_hooks::var_os("ZSSH_UPDATE_AUTOINSTALL").is_some());
                 }
                 DownloadEvent::LinuxInstall { outcome, .. } => {
