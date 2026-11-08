@@ -70,6 +70,7 @@ enum KeychainMsg {
     GenerateKey,
     CantCheckHostsTitle,
     ReadHostsFailedPrefix,
+    IdentityGone,
     DeleteTitlePrefix,
     DeleteTitleSuffix,
     CantDeleteTitlePrefix,
@@ -129,6 +130,7 @@ impl Msg for KeychainMsg {
             Self::GenerateKey => "生成密钥",
             Self::CantCheckHostsTitle => "不能确认有没有主机在用它",
             Self::ReadHostsFailedPrefix => "读取主机失败：",
+            Self::IdentityGone => "这条凭据已被删除，没有保存。可以清空表单后新建一条",
             Self::DeleteTitlePrefix => "删除凭据「",
             Self::DeleteTitleSuffix => "」？",
             Self::CantDeleteTitlePrefix => "不能删除凭据「",
@@ -194,6 +196,9 @@ impl Msg for KeychainMsg {
             Self::GenerateKey => "Generate Key",
             Self::CantCheckHostsTitle => "Cannot check whether any host uses it",
             Self::ReadHostsFailedPrefix => "Could not read hosts: ",
+            Self::IdentityGone => {
+                "This credential has been deleted, so nothing was saved. Clear the form to create a new one"
+            }
             Self::DeleteTitlePrefix => "Delete credential \"",
             Self::DeleteTitleSuffix => "\"?",
             Self::CantDeleteTitlePrefix => "Cannot delete credential \"",
@@ -400,13 +405,28 @@ impl MainWindow {
     }
 
     pub(crate) fn keychain_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let editing = self.keychain.selected.and_then(|id| {
-            self.store
-                .identities()
-                .iter()
-                .find(|item| item.id == id)
-                .cloned()
+        // 编辑基础取库里**现在**的记录，不用界面缓存：缓存里找不到不等于要新建，可能是已被删除。
+        let fresh = self.store.db().and_then(|db| {
+            db.identity_list()
+                .map_err(|err| crate::error_text::error_text(&err))
         });
+        let editing = match fresh {
+            Ok(list) => match editing_base(self.keychain.selected, &list) {
+                EditingBase::New => None,
+                EditingBase::Editing(identity) => Some(identity),
+                EditingBase::Deleted => {
+                    // 缓存里的列表也过期了：刷新，免得用户继续点一条已经不存在的凭据。
+                    self.store.reload();
+                    self.notice_error(t(KeychainMsg::IdentityGone), window, cx);
+                    cx.notify();
+                    return;
+                }
+            },
+            Err(err) => {
+                self.notice_error(&err, window, cx);
+                return;
+            }
+        };
         let name = self.keychain.name.read(cx).value().to_string();
         let key_path = self.keychain.key_path.read(cx).value().to_string();
         let secret = self.keychain.secret.read(cx).value().to_string();
@@ -1021,10 +1041,32 @@ impl MainWindow {
     }
 }
 
+/// 保存凭据时“在改哪一条”的判定结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EditingBase {
+    /// 没选中任何一条：新建。
+    New,
+    /// 选中的那条在库里还在：以它现在的样子为基础。
+    Editing(Identity),
+    /// 选中了，但库里已经没有了（被删）：不能悄悄变成新建。
+    Deleted,
+}
+
+/// `selected` 是界面上选中的凭据 id，`fresh` 是刚从库里读出的全部凭据。
+pub(crate) fn editing_base(selected: Option<i64>, fresh: &[Identity]) -> EditingBase {
+    let Some(id) = selected else {
+        return EditingBase::New;
+    };
+    match fresh.iter().find(|item| item.id == id) {
+        Some(identity) => EditingBase::Editing(identity.clone()),
+        None => EditingBase::Deleted,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{identity_detail, identity_matches};
+    use super::{EditingBase, editing_base, identity_detail, identity_matches};
     use zssh_core::model::{Host, Identity, IdentityKind};
 
     fn identity(name: &str, kind: IdentityKind, path: Option<&str>) -> Identity {
@@ -1106,5 +1148,27 @@ mod tests {
         let key = identity("laptop", IdentityKind::KeyFile, Some("keys/id_demo"));
         let hosts = [host_using(10, "web-1", 1)];
         assert_eq!(identity_detail(&key, &hosts), "私钥文件 · keys/id_demo");
+    }
+
+    #[test]
+    fn saving_a_selected_credential_that_was_deleted_is_not_a_new_one() {
+        let mut gone = identity("Old", IdentityKind::Password, None);
+        gone.id = 7;
+        let mut kept = identity("Kept", IdentityKind::Password, None);
+        kept.id = 8;
+        let fresh = vec![kept.clone()];
+
+        assert_eq!(editing_base(None, &fresh), EditingBase::New, "没选中：新建");
+        assert_eq!(
+            editing_base(Some(8), &fresh),
+            EditingBase::Editing(kept),
+            "还在：以库里的为基础"
+        );
+        assert_eq!(
+            editing_base(Some(gone.id), &fresh),
+            EditingBase::Deleted,
+            "选中的已被删：报错，不能退回新建"
+        );
+        assert_eq!(editing_base(Some(7), &[]), EditingBase::Deleted);
     }
 }
