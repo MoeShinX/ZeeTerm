@@ -289,10 +289,16 @@ fn main() {
                 ..TitleBar::title_bar_options()
             }),
             window_bounds: Some(
-                window_state::WindowState::restore(window_state::WindowState::load().main)
-                    .unwrap_or_else(|| WindowBounds::centered(size(px(1180.), px(780.)), cx)),
+                window_state::restore_main(
+                    &window_state::WindowState::load(),
+                    &window_state::display_rects(cx),
+                )
+                .unwrap_or_else(|| WindowBounds::centered(size(px(1180.), px(780.)), cx)),
             ),
-            window_min_size: Some(size(px(720.), px(480.))),
+            window_min_size: Some(size(
+                px(window_state::MAIN_MIN.0),
+                px(window_state::MAIN_MIN.1),
+            )),
             ..window_frame::client_options()
         };
 

@@ -1828,11 +1828,11 @@ fn text_input(
 /// 打开主机库窗口；同一个进程可以开多个，IME 按窗口 key 管理。
 pub(crate) fn open_hosts_window(cx: &mut App) {
     let n = NEXT_HOSTS.fetch_add(1, Ordering::Relaxed);
-    let bounds =
-        crate::window_state::WindowState::restore(crate::window_state::WindowState::load().hosts)
-            .unwrap_or_else(|| {
-                WindowBounds::centered(size(::gpui::px(820.), ::gpui::px(650.)), cx)
-            });
+    let bounds = crate::window_state::restore_hosts(
+        &crate::window_state::WindowState::load(),
+        &crate::window_state::display_rects(cx),
+    )
+    .unwrap_or_else(|| WindowBounds::centered(size(::gpui::px(820.), ::gpui::px(650.)), cx));
     let options = WindowOptions {
         window_bounds: Some(bounds),
         ..crate::window_frame::app_options()

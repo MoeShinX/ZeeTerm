@@ -200,15 +200,6 @@ impl WindowState {
             height: f32::from(bounds.size.height),
         }
     }
-
-    /// 恢复成开窗参数；不合理时返回 `None`，由调用方退回居中。
-    pub fn restore(bounds: Option<SavedBounds>) -> Option<WindowBounds> {
-        let bounds = bounds?.sane()?;
-        Some(WindowBounds::Windowed(Bounds {
-            origin: point(px(bounds.x), px(bounds.y)),
-            size: size(px(bounds.width), px(bounds.height)),
-        }))
-    }
 }
 
 /// 保存的位置要落在现有的某个显示器上才算数：标题栏那一条（窗口顶部 `STRIP` 高）和某个显示器
@@ -255,6 +246,22 @@ pub fn restore_on_displays(
     } else {
         WindowBounds::Windowed(rect)
     })
+}
+
+/// 主窗口的最小尺寸；记住的大小也不会低于它（和开窗时的 `window_min_size` 一致）。
+pub const MAIN_MIN: (f32, f32) = (720.0, 480.0);
+/// 主机库窗口没设系统最小尺寸，这里只保证记住的大小不小于 `sane` 的下限。
+pub const HOSTS_MIN: (f32, f32) = (MIN_WIDTH, MIN_HEIGHT);
+
+/// 主窗口上次的位置：不在任何显示器上（拔了副屏、换了分辨率）就返回 `None`，由调用方居中。
+/// 主窗口不记最大化（`capture` 存的是还原后的矩形），所以总是普通窗口。
+pub fn restore_main(state: &WindowState, displays: &[SavedBounds]) -> Option<WindowBounds> {
+    restore_on_displays(state.main, false, displays, MAIN_MIN)
+}
+
+/// 主机库窗口上次的位置，规则同 [`restore_main`]。
+pub fn restore_hosts(state: &WindowState, displays: &[SavedBounds]) -> Option<WindowBounds> {
+    restore_on_displays(state.hosts, false, displays, HOSTS_MIN)
 }
 
 /// 现在所有显示器的矩形。
@@ -634,6 +641,56 @@ mod tests {
             .is_none()
         );
         assert!(restore_on_displays(None, false, &screens, FILES_MIN).is_none());
+    }
+
+    #[test]
+    fn main_and_hosts_windows_use_their_own_slot_and_minimum() {
+        let screens = [display(0.0, 0.0, 1920.0, 1080.0)];
+        let state = WindowState {
+            main: Some(display(100.0, 100.0, 600.0, 400.0)),
+            hosts: Some(display(200.0, 150.0, 500.0, 340.0)),
+            ..WindowState::default()
+        };
+        let WindowBounds::Windowed(main) = restore_main(&state, &screens).unwrap() else {
+            panic!("主窗口应当是普通窗口");
+        };
+        // 记住的大小低于主窗口最小尺寸：抬到最小尺寸，位置照旧。
+        assert_eq!(f32::from(main.origin.x), 100.0);
+        assert_eq!(f32::from(main.size.width), MAIN_MIN.0);
+        assert_eq!(f32::from(main.size.height), MAIN_MIN.1);
+        let WindowBounds::Windowed(hosts) = restore_hosts(&state, &screens).unwrap() else {
+            panic!("主机库窗口应当是普通窗口");
+        };
+        assert_eq!(f32::from(hosts.origin.x), 200.0);
+        assert_eq!(f32::from(hosts.size.width), 500.0);
+        assert_eq!(f32::from(hosts.size.height), 340.0);
+    }
+
+    #[test]
+    fn main_and_hosts_windows_on_an_unplugged_screen_fall_back_but_negative_screens_survive() {
+        let state = WindowState {
+            main: Some(display(-1500.0, 100.0, 900.0, 600.0)),
+            hosts: Some(display(2100.0, 100.0, 820.0, 650.0)),
+            ..WindowState::default()
+        };
+        // 主屏左边有副屏（负坐标）、右边有副屏：两个窗口都在，照着恢复。
+        let all = [
+            display(0.0, 0.0, 1920.0, 1080.0),
+            display(-1920.0, 0.0, 1920.0, 1080.0),
+            display(1920.0, 0.0, 1920.0, 1080.0),
+        ];
+        assert!(restore_main(&state, &all).is_some());
+        assert!(restore_hosts(&state, &all).is_some());
+        // 拔掉副屏只剩主屏：两个窗口都退回居中。
+        let only_main = [all[0]];
+        assert!(restore_main(&state, &only_main).is_none());
+        assert!(restore_hosts(&state, &only_main).is_none());
+        // 只拔右边那块：主窗口（在左副屏）保留，主机库（在右副屏）退回居中。
+        let without_right = [all[0], all[1]];
+        assert!(restore_main(&state, &without_right).is_some());
+        assert!(restore_hosts(&state, &without_right).is_none());
+        // 没存过：直接居中。
+        assert!(restore_main(&WindowState::default(), &all).is_none());
     }
 
     #[test]
