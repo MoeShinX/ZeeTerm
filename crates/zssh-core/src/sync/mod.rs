@@ -33,7 +33,6 @@ pub mod sigv4;
 pub mod snapshot;
 pub mod storage;
 pub mod webdav;
-pub mod zssh_import;
 
 pub use error::SyncError;
 pub use package::{

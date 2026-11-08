@@ -59,8 +59,6 @@ mod dev_acts_u1;
 #[cfg(debug_assertions)]
 mod dev_acts_u13;
 #[cfg(debug_assertions)]
-mod dev_acts_u19;
-#[cfg(debug_assertions)]
 mod dev_acts_u2;
 #[cfg(debug_assertions)]
 mod dev_acts_u20;
@@ -115,7 +113,6 @@ mod identity_form;
 mod info_panel;
 mod key_dialogs;
 mod keychain_panel;
-mod migrate_ui;
 mod modal;
 pub mod model_picker;
 pub mod nav;
@@ -317,10 +314,6 @@ pub struct MainWindow {
     /// 设置页同步一节（连接存储 / 主密码 / 同步 / 冲突）和备份一节：第一次打开设置页时建。
     pub(super) sync_settings: Option<Entity<crate::sync::SyncDemo>>,
     pub(super) backup_settings: Option<Entity<crate::backup::BackupDemo>>,
-    /// 设置页同步一节最上面的「从 Z-SSH 迁移」（V2-U19）：欢迎页的入口也会建它。
-    pub(super) migrate_settings: Option<Entity<crate::migrate::MigrateDemo>>,
-    /// 欢迎页「检测到 Z-SSH 的数据」提示卡的状态。
-    pub(super) migrate_hint: migrate_ui::MigrateHint,
     /// 设置页「关于」一节（版本 / 检查更新 / 数据目录 / 开源许可）：第一次打开设置页时建。
     pub(super) about_settings: Option<Entity<crate::about_view::AboutView>>,
     /// 底部同步状态条现在画的内容（版本号用来判断要不要重绘）。
@@ -581,8 +574,6 @@ impl MainWindow {
             agent_settings: None,
             sync_settings: None,
             backup_settings: None,
-            migrate_settings: None,
-            migrate_hint: migrate_ui::MigrateHint::default(),
             about_settings: None,
             sync_bar: crate::sync::bar_model(),
             settings_scroll: ::gpui::ScrollHandle::new(),
@@ -709,7 +700,6 @@ impl MainWindow {
         // 启动时锁定的话，上次没处理完的修改等解锁以后再扫、再提示（V2-U35：解锁前什么都不恢复）。
         if self.tick_count >= 2 && app_lock_ui::startup_scans_allowed() {
             self.scan_recovery_once(window, cx);
-            self.scan_zssh_once(window, cx);
         }
         self.record_net_history();
         if changed {
@@ -1721,12 +1711,6 @@ impl MainWindow {
         // 主机页的卡片会显示「用户@地址:端口」，只在主机页上才算画面里的文字。
         if self.nav.view == MainView::Vault {
             texts.extend(self.store.hosts().iter().map(protocol_form::host_detail));
-        }
-        // 设置页上的「从 Z-SSH 迁移」会显示数据文件夹、备份文件路径和结果文字（V2-U19）。
-        if self.nav.view == MainView::Settings
-            && let Some(migrate) = &self.migrate_settings
-        {
-            texts.extend(migrate.read(cx).privacy_texts(cx));
         }
         // 调用方给的禁用片段（地址、用户名）+ 内置规则（公网 IP、Last login、用户目录）。
         // 命中只返回类别或序号，不返回原文：原文正是不能出现的东西。

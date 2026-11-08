@@ -189,8 +189,7 @@ impl SyncEngine<'_> {
         Ok(report)
     }
 
-    /// 把一份已经解开的快照按 `mode` 导入。离线备份文件和"直接读 Z-SSH 的库"两条路径共用它，
-    /// 所以不管数据从哪来：导入前都会自动做一份本地备份、墓碑不带进来、不动同步基线。
+    /// 把一份已经解开的快照按 `mode` 导入：导入前会自动做一份本地备份、墓碑不带进来、不动同步基线。
     pub fn import_snapshot(
         &self,
         incoming: SyncSnapshot,

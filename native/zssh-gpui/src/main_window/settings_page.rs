@@ -35,7 +35,7 @@ use crate::settings_view::{card, row, row_with};
 use crate::typography::{Role, Typo as _};
 use zssh_core::sync::app_proxy::{APP_NETWORK_PROXY_KEY, AppProxyMode, SystemProxy};
 
-/// 备份那一块在「同步与备份」分类滚动容器里的下标（驱动脚本滚到备份一节用）：同步、备份、最后是「从 Z-SSH 迁移」。
+/// 备份那一块在「同步与备份」分类滚动容器里的下标（驱动脚本滚到备份一节用）：同步、备份。
 #[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub const BACKUP_ITEM: usize = 1;
 
@@ -1087,8 +1087,6 @@ impl MainWindow {
                 backup
             }
         };
-        // 「从 Z-SSH 迁移」只在 Windows 上有意义（旧版 Z-SSH 的数据在那里），别的系统不建、不显示。
-        let migrate = crate::migrate::available().then(|| self.ensure_migrate(window, cx));
         let about = match &self.about_settings {
             Some(about) => about.clone(),
             None => {
@@ -1125,10 +1123,8 @@ impl MainWindow {
                     agents.into_any_element(),
                 ],
                 SettingsSection::Sync => {
-                    // 同步在前，备份其次，从 Z-SSH 导入旧备份放最后（`BACKUP_ITEM` 按这个顺序数）。
-                    let mut blocks = vec![sync.into_any_element(), backup.into_any_element()];
-                    blocks.extend(migrate.map(|migrate| migrate.into_any_element()));
-                    blocks
+                    // 同步在前，备份其次（`BACKUP_ITEM` 按这个顺序数）。
+                    vec![sync.into_any_element(), backup.into_any_element()]
                 }
                 SettingsSection::Lock => self.lock_blocks(tokens, cx),
                 SettingsSection::Shortcuts => shortcuts_cards(tokens),

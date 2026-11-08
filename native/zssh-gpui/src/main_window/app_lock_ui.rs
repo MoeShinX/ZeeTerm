@@ -524,7 +524,7 @@ pub fn apply_start_lock(config: &LockConfig) -> bool {
     lock_ui::is_locked()
 }
 
-/// 启动后要做的后台扫描（上次没处理完的修改、Z-SSH 迁移提示）能不能开始：锁着就等解锁以后。
+/// 启动后要做的后台扫描（上次没处理完的修改）能不能开始：锁着就等解锁以后。
 /// 解锁前不恢复任何东西；解锁后照原来的逻辑做一次。
 pub fn startup_scans_allowed() -> bool {
     !lock_ui::is_locked()

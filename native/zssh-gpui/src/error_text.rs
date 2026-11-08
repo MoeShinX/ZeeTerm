@@ -101,11 +101,6 @@ enum CoreErrorMsg {
     LoginNetwork,
     LoginExchange,
     LoginInvalidClientId,
-    ImportInUse,
-    ImportNotData,
-    ImportTooNew,
-    ImportUndecryptable,
-    ImportUnreadable,
     HistoryInvalidAgent,
     HistoryInvalidId,
     HistoryNotFound,
@@ -203,12 +198,10 @@ impl Msg for CoreErrorMsg {
             Self::ReasonOnly => "{detail}",
             Self::SyncFormat => "同步包格式不对：{detail}",
             Self::SyncTooNew => {
-                "同步包的格式版本太新（v{found}，本软件只支持到 v{supported}），请先升级 Z-SSH"
+                "同步包的格式版本太新（v{found}，本软件只支持到 v{supported}），请先升级 ZeeTerm"
             }
             Self::SyncTooOld => "同步包的格式版本太旧（v{found}），这个版本不再支持",
-            Self::SyncUnsupportedKdf => {
-                "同步包用了不支持的密钥派生算法：{kdf}（可能是更新的 Z-SSH 写的）"
-            }
+            Self::SyncUnsupportedKdf => "同步包用了不支持的密钥派生算法：{kdf}（可能是新版本写的）",
             Self::SyncWrongPassword => "主密码错误（或文件头被改过）",
             Self::SyncTampered => "同步包被改过（认证失败），没有解密",
             Self::SyncInvalidData => "同步数据不合法：{detail}",
@@ -234,15 +227,6 @@ impl Msg for CoreErrorMsg {
             Self::LoginInvalidClientId => {
                 "client ID 的格式不对（应该形如 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx）"
             }
-            Self::ImportInUse => "Z-SSH 正在运行，数据库被它占着：请先退出 Z-SSH 再导入",
-            Self::ImportNotData => "这里不是有效的 Z-SSH 数据：{detail}",
-            Self::ImportTooNew => {
-                "Z-SSH 的数据库版本（v{found}）比这个 ZeeTerm 能读的（v{supported}）新，请先升级 ZeeTerm"
-            }
-            Self::ImportUndecryptable => {
-                "Z-SSH 里保存的密码解不开（只有保存它们的那个 Windows 用户能解）：请改用 Z-SSH 导出的备份文件导入"
-            }
-            Self::ImportUnreadable => "读取 Z-SSH 的数据失败：{detail}",
             Self::HistoryInvalidAgent => "不认识的智能体：{detail}",
             Self::HistoryInvalidId => "会话 id 不合法",
             Self::HistoryNotFound => "历史会话不存在",
@@ -405,17 +389,6 @@ impl Msg for CoreErrorMsg {
             Self::LoginInvalidClientId => {
                 "The client ID format is invalid (it should look like xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)"
             }
-            Self::ImportInUse => {
-                "Z-SSH is running and holds the database: quit Z-SSH first, then import"
-            }
-            Self::ImportNotData => "This is not valid Z-SSH data: {detail}",
-            Self::ImportTooNew => {
-                "The Z-SSH database version (v{found}) is newer than this ZeeTerm can read (v{supported}); please update ZeeTerm first"
-            }
-            Self::ImportUndecryptable => {
-                "The passwords saved in Z-SSH cannot be decrypted (only the Windows user who saved them can); import a backup file exported by Z-SSH instead"
-            }
-            Self::ImportUnreadable => "Failed to read the Z-SSH data: {detail}",
             Self::HistoryInvalidAgent => "Unknown agent: {detail}",
             Self::HistoryInvalidId => "Invalid conversation id",
             Self::HistoryNotFound => "The conversation history does not exist",
@@ -536,11 +509,6 @@ fn message_for(code: &str) -> Option<CoreErrorMsg> {
         "login.network" => CoreErrorMsg::LoginNetwork,
         "login.exchange" => CoreErrorMsg::LoginExchange,
         "login.invalid_client_id" => CoreErrorMsg::LoginInvalidClientId,
-        "import.in_use" => CoreErrorMsg::ImportInUse,
-        "import.not_data" => CoreErrorMsg::ImportNotData,
-        "import.too_new" => CoreErrorMsg::ImportTooNew,
-        "import.undecryptable" => CoreErrorMsg::ImportUndecryptable,
-        "import.unreadable" => CoreErrorMsg::ImportUnreadable,
         "history.invalid_agent" => CoreErrorMsg::HistoryInvalidAgent,
         "history.invalid_id" => CoreErrorMsg::HistoryInvalidId,
         "history.not_found" => CoreErrorMsg::HistoryNotFound,
@@ -1033,11 +1001,6 @@ mod tests {
             CoreErrorMsg::LoginNetwork,
             CoreErrorMsg::LoginExchange,
             CoreErrorMsg::LoginInvalidClientId,
-            CoreErrorMsg::ImportInUse,
-            CoreErrorMsg::ImportNotData,
-            CoreErrorMsg::ImportTooNew,
-            CoreErrorMsg::ImportUndecryptable,
-            CoreErrorMsg::ImportUnreadable,
             CoreErrorMsg::HistoryInvalidAgent,
             CoreErrorMsg::HistoryInvalidId,
             CoreErrorMsg::HistoryNotFound,

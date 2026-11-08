@@ -61,7 +61,6 @@ mod links;
 mod live_support;
 mod main_window;
 mod menu_kit;
-mod migrate;
 mod os_icons;
 mod panic_log;
 mod product;
