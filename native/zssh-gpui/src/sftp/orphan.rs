@@ -35,6 +35,7 @@ impl OrphanReports {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.map.len()
     }
