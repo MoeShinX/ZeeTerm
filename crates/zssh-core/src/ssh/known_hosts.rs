@@ -189,8 +189,10 @@ impl KnownHosts {
             std::fs::create_dir_all(parent)
                 .map_err(|err| kh_error(rk::KH_MKDIR_FAILED, format!("建目录失败：{err}"), &err))?;
         }
+        // 要读最后一个字节，所以读写都开；写入仍然只追加。
         let mut file = std::fs::OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(&self.our_file)
             .map_err(|err| {
@@ -200,7 +202,21 @@ impl KnownHosts {
                     &err,
                 )
             })?;
-        file.write_all(line.as_bytes()).map_err(|err| {
+        // 文件末尾没有换行（最后一行是别的程序写的记录或注释，没带行尾）时先补一个，否则新记录
+        // 会被拼进上一行，再也解析不出来。补 `\n`：本文件写的行尾一直是 `\n`；CRLF 文件本来就
+        // 以 `\n` 结尾，不会走到这里，末尾裸 `\r` 补 `\n` 正好成 CRLF。
+        let mut chunk = String::with_capacity(line.len() + 1);
+        if ends_without_newline(&mut file).map_err(|err| {
+            kh_error(
+                rk::KH_READ_FAILED,
+                format!("读 known_hosts 失败：{err}"),
+                &err,
+            )
+        })? {
+            chunk.push('\n');
+        }
+        chunk.push_str(line);
+        file.write_all(chunk.as_bytes()).map_err(|err| {
             kh_error(
                 rk::KH_WRITE_FAILED,
                 format!("写 known_hosts 失败：{err}"),
@@ -513,6 +529,18 @@ fn read_known_hosts(path: &Path) -> std::io::Result<Option<String>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err),
     }
+}
+
+/// 文件非空且最后一个字节不是 `\n`。
+fn ends_without_newline(file: &mut std::fs::File) -> std::io::Result<bool> {
+    use std::io::{Read, Seek, SeekFrom};
+    if file.metadata()?.len() == 0 {
+        return Ok(false);
+    }
+    let mut last = [0u8; 1];
+    file.seek(SeekFrom::End(-1))?;
+    file.read_exact(&mut last)?;
+    Ok(last[0] != b'\n')
 }
 
 fn parse(content: &str) -> Vec<Entry> {
@@ -1747,6 +1775,105 @@ other",
             .filter(|name| name != "known_hosts")
             .collect();
         assert!(leftovers.is_empty(), "不能留下临时文件：{leftovers:?}");
+    }
+
+    /// 往 `initial` 内容的文件里追加一条新记录，返回（新记录能否查到，文件原文）。
+    fn append_to(initial: &[u8]) -> (bool, Vec<u8>) {
+        let file = TempFile::new();
+        std::fs::write(&file.path, initial).expect("写样本");
+        let known = KnownHosts::new(&file.path);
+        known
+            .append("new.example.com", 22, &key(ED25519_B))
+            .expect("追加");
+        let found = known.lookup("new.example.com", 22, &key(ED25519_B)) == HostKeyLookup::Match;
+        let content = std::fs::read(&file.path).expect("读回");
+        (found, content)
+    }
+
+    #[test]
+    fn a_last_record_without_a_newline_does_not_swallow_the_new_one() {
+        let (found, content) = append_to(format!("old.example.com {ED25519_A}").as_bytes());
+        assert!(found, "{:?}", String::from_utf8_lossy(&content));
+        let text = String::from_utf8(content).expect("UTF-8");
+        assert!(!text.contains("\n\n"), "补的是换行，不是空行：{text:?}");
+        assert!(text.starts_with(&format!("old.example.com {ED25519_A}\nnew.example.com ")));
+    }
+
+    #[test]
+    fn a_trailing_comment_without_a_newline_is_kept_on_its_own_line() {
+        let (found, content) = append_to(b"# managed elsewhere");
+        assert!(found);
+        let text = String::from_utf8(content).expect("UTF-8");
+        assert!(
+            text.starts_with("# managed elsewhere\nnew.example.com "),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn crlf_files_get_no_extra_blank_line() {
+        // 本来就以 CRLF 结尾：不补任何东西。
+        let (found, content) = append_to(format!("old.example.com {ED25519_A}\r\n").as_bytes());
+        assert!(found);
+        let text = String::from_utf8(content).expect("UTF-8");
+        assert!(
+            !text.contains("\n\n") && !text.contains("\r\n\r\n"),
+            "{text:?}"
+        );
+        assert!(text.contains("\r\nnew.example.com "));
+
+        // CRLF 文件最后一行没有行尾：补一个换行再写。
+        let (found, content) = append_to(format!("# c\r\nold.example.com {ED25519_A}").as_bytes());
+        assert!(found);
+        let text = String::from_utf8(content).expect("UTF-8");
+        assert!(
+            text.contains(&format!("{ED25519_A}\nnew.example.com ")),
+            "{text:?}"
+        );
+
+        // 末尾只有一个 `\r`：补 `\n` 正好是 CRLF，不多出空行。
+        let (found, content) = append_to(b"# c\r");
+        assert!(found);
+        let text = String::from_utf8(content).expect("UTF-8");
+        assert!(text.starts_with("# c\r\nnew.example.com "), "{text:?}");
+    }
+
+    #[test]
+    fn an_empty_or_missing_file_gets_no_leading_newline() {
+        let (found, content) = append_to(b"");
+        assert!(found);
+        assert!(content.starts_with(b"new.example.com "), "{content:?}");
+
+        // 文件还不存在：照常创建。
+        let file = TempFile::new();
+        let known = KnownHosts::new(&file.path);
+        known
+            .append("new.example.com", 22, &key(ED25519_B))
+            .expect("追加");
+        assert!(file.read().starts_with("new.example.com "));
+    }
+
+    #[test]
+    fn replace_also_starts_a_new_line_after_an_unterminated_last_line() {
+        let file = TempFile::new();
+        std::fs::write(
+            &file.path,
+            format!("old.example.com {ED25519_A}\nother.example.com {ED25519_A}").as_bytes(),
+        )
+        .expect("写样本");
+        let known = KnownHosts::new(&file.path);
+        known
+            .replace("old.example.com", 22, &key(ED25519_B))
+            .expect("更新");
+        assert_eq!(
+            known.lookup("old.example.com", 22, &key(ED25519_B)),
+            HostKeyLookup::Match
+        );
+        assert_eq!(
+            known.lookup("other.example.com", 22, &key(ED25519_A)),
+            HostKeyLookup::Match,
+            "别的主机的记录不受影响"
+        );
     }
 
     #[test]
