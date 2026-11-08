@@ -23,7 +23,7 @@
 //! 工具名拼成 `<server>_<tool>`（例如 `zssh_run_command`），和 opencode 侧的写法
 //! 一致，面板的友好名 / 主机名 / 退出码解析原样复用。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde_json::Value;
 
@@ -31,7 +31,20 @@ use super::super::retry::friendly_agent_retry_reason;
 use super::super::usage::from_codex;
 use super::super::AgentEvent;
 
+/// "已结束"集合最多记多少个 item id。
+///
+/// 只存 id（一般几十字节），2048 个也就百来 KiB。远超过任何一个回合里的 item 数，
+/// 又比整个对话的总量小得多；挤出去的是最老的 id，那些 item 的迟到通知同时还被
+/// `mod.rs` 里按回合 id 的过滤（`abandoned_turns` + 当前 `turn_id`）拦着。
+const ENDED_ITEM_LIMIT: usize = 2048;
+
 /// 翻译状态：同一个 thread 共用一个实例。
+///
+/// 内存管理：`text_sent` / `reasoning_sent` 存的是每个 item 的全文，`tool_*` 存 id，只在
+/// 回合内有用（completed 靠它们只发尾巴 / 不重复发工具事件）。回合结束时调
+/// [`TranslateState::finish_turn`] 把它们整体释放，只把 item id 挪进有容量上限的
+/// "已结束"集合：同一个 item 在回合结束之后才到的 delta / started / completed 命中这个
+/// 集合就直接丢，不会因为状态被清掉而被当成新内容再发一遍。
 #[derive(Debug, Default)]
 pub struct TranslateState {
     /// 已经发过 ToolStart 的 item id。
@@ -42,6 +55,45 @@ pub struct TranslateState {
     text_sent: HashMap<String, String>,
     /// 思考 item 已经发出去的文本（同样用来只发尾巴）。
     reasoning_sent: HashMap<String, String>,
+    /// 已随回合结束而释放的 item id（先进先出，最多 [`ENDED_ITEM_LIMIT`] 个）。
+    ended_items: HashSet<String>,
+    ended_order: VecDeque<String>,
+}
+
+impl TranslateState {
+    /// 回合结束：释放这个回合的 item 状态，item id 记入"已结束"集合以拦迟到事件。
+    pub fn finish_turn(&mut self) {
+        let ids: Vec<String> = std::mem::take(&mut self.tool_started)
+            .into_keys()
+            .chain(std::mem::take(&mut self.tool_finished).into_keys())
+            .chain(std::mem::take(&mut self.text_sent).into_keys())
+            .chain(std::mem::take(&mut self.reasoning_sent).into_keys())
+            .collect();
+        for id in ids {
+            if self.ended_items.insert(id.clone()) {
+                self.ended_order.push_back(id);
+                if self.ended_order.len() > ENDED_ITEM_LIMIT {
+                    if let Some(old) = self.ended_order.pop_front() {
+                        self.ended_items.remove(&old);
+                    }
+                }
+            }
+        }
+    }
+
+    /// 当前回合的 item 状态是不是全空（测试用：确认回合结束后真的释放了）。
+    #[cfg(test)]
+    pub(super) fn is_empty_for_test(&self) -> bool {
+        self.tool_started.is_empty()
+            && self.tool_finished.is_empty()
+            && self.text_sent.is_empty()
+            && self.reasoning_sent.is_empty()
+    }
+
+    /// 这个 item 属于已经结束的回合（它的迟到通知要丢掉）。
+    fn is_ended(&self, item_id: &str) -> bool {
+        !item_id.is_empty() && self.ended_items.contains(item_id)
+    }
 }
 
 /// 一个回合的状态累积（`turn/completed` 时取用）。
@@ -84,6 +136,9 @@ pub fn translate(
             if delta.is_empty() {
                 return Vec::new();
             }
+            if state.is_ended(item_id_of(params)) {
+                return Vec::new();
+            }
             turn.content = true;
             note_delta(&mut state.text_sent, item_id_of(params), delta);
             vec![AgentEvent::TextDelta {
@@ -95,6 +150,9 @@ pub fn translate(
             if delta.is_empty() {
                 return Vec::new();
             }
+            if state.is_ended(item_id_of(params)) {
+                return Vec::new();
+            }
             note_delta(&mut state.reasoning_sent, item_id_of(params), delta);
             vec![AgentEvent::ReasoningDelta {
                 text: delta.to_string(),
@@ -103,6 +161,8 @@ pub fn translate(
         "item/started" => item_events(&params["item"], false, state, turn),
         "item/completed" => item_events(&params["item"], true, state, turn),
         "turn/completed" => {
+            // 回合结束：释放这个回合的 item 状态（含下面重试超限的早返回路径）。
+            state.finish_turn();
             // 重试超限被我们停掉：不管 codex 报的是中断、失败还是完成，都只报我们自己的
             // 这一条（取走，之后不会再报第二次）。
             if let Some(text) = turn.retry_stop.take() {
@@ -330,7 +390,7 @@ fn item_events(
 ) -> Vec<AgentEvent> {
     let item_type = item["type"].as_str().unwrap_or("");
     let item_id = item["id"].as_str().unwrap_or("");
-    if item_id.is_empty() {
+    if item_id.is_empty() || state.is_ended(item_id) {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -920,6 +980,117 @@ mod tests {
         // 再完成一次（重复通知）：不重复发。
         let events = translate("item/completed", &completed, &mut state, &mut turn);
         assert!(events.is_empty());
+    }
+
+    fn turn_completed() -> Value {
+        json!({ "turn": { "id": "t1", "status": "completed" } })
+    }
+
+    #[test]
+    fn turn_completed_releases_item_state() {
+        let mut state = TranslateState::default();
+        let mut turn = TurnStats::default();
+        let big = "长".repeat(10_000);
+        translate(
+            "item/agentMessage/delta",
+            &json!({ "itemId": "m1", "delta": big }),
+            &mut state,
+            &mut turn,
+        );
+        translate(
+            "item/reasoning/summaryTextDelta",
+            &json!({ "itemId": "r1", "delta": "想" }),
+            &mut state,
+            &mut turn,
+        );
+        let tool = json!({ "item": { "id": "c1", "type": "mcpToolCall", "server": "zssh",
+            "tool": "run_command", "arguments": {}, "status": "completed" } });
+        translate("item/completed", &tool, &mut state, &mut turn);
+        assert!(!state.text_sent.is_empty() && !state.tool_started.is_empty());
+
+        translate("turn/completed", &turn_completed(), &mut state, &mut turn);
+        // 全文和 id 表都释放了。
+        assert!(state.text_sent.is_empty());
+        assert!(state.reasoning_sent.is_empty());
+        assert!(state.tool_started.is_empty());
+        assert!(state.tool_finished.is_empty());
+        // 只剩有上限的 id 集合。
+        assert_eq!(state.ended_items.len(), 3);
+    }
+
+    #[test]
+    fn late_events_after_turn_end_are_not_emitted_again() {
+        let mut state = TranslateState::default();
+        let mut turn = TurnStats::default();
+        let delta = json!({ "itemId": "m1", "delta": "你好" });
+        translate("item/agentMessage/delta", &delta, &mut state, &mut turn);
+        let completed = json!({ "item": { "id": "m1", "type": "agentMessage", "text": "你好" } });
+        translate("item/completed", &completed, &mut state, &mut turn);
+        let tool = json!({ "item": { "id": "c1", "type": "mcpToolCall", "server": "zssh",
+            "tool": "run_command", "arguments": {}, "result": null, "status": "completed" } });
+        assert_eq!(
+            translate("item/completed", &tool, &mut state, &mut turn).len(),
+            2,
+            "ToolStart + ToolEnd"
+        );
+        translate("turn/completed", &turn_completed(), &mut state, &mut turn);
+
+        // 回合结束后才到的同一批 item 通知：一律丢弃，不当成新内容。
+        assert!(translate("item/agentMessage/delta", &delta, &mut state, &mut turn).is_empty());
+        assert!(translate("item/completed", &completed, &mut state, &mut turn).is_empty());
+        assert!(translate("item/completed", &tool, &mut state, &mut turn).is_empty());
+        assert!(translate(
+            "item/started",
+            &json!({ "item": { "id": "c1", "type": "mcpToolCall", "server": "zssh",
+                "tool": "run_command", "arguments": {} } }),
+            &mut state,
+            &mut turn
+        )
+        .is_empty());
+        // 状态也没被迟到事件重新撑起来。
+        assert!(state.text_sent.is_empty() && state.tool_started.is_empty());
+
+        // 新回合的新 item 不受影响。
+        let next = json!({ "itemId": "m2", "delta": "再见" });
+        assert_eq!(
+            translate("item/agentMessage/delta", &next, &mut state, &mut turn),
+            vec![AgentEvent::TextDelta {
+                text: "再见".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn ended_item_set_is_bounded() {
+        let mut state = TranslateState::default();
+        let mut turn = TurnStats::default();
+        let total = ENDED_ITEM_LIMIT + 100;
+        for i in 0..total {
+            let delta = json!({ "itemId": format!("m{i}"), "delta": "x" });
+            translate("item/agentMessage/delta", &delta, &mut state, &mut turn);
+            translate("turn/completed", &turn_completed(), &mut state, &mut turn);
+        }
+        assert_eq!(state.ended_items.len(), ENDED_ITEM_LIMIT);
+        assert_eq!(state.ended_order.len(), ENDED_ITEM_LIMIT);
+        // 最老的挤出去了，最新的还在。
+        assert!(!state.is_ended("m0"));
+        assert!(state.is_ended(&format!("m{}", total - 1)));
+    }
+
+    #[test]
+    fn retry_stop_turn_completed_also_releases_state() {
+        let mut state = TranslateState::default();
+        let mut turn = TurnStats::default();
+        translate(
+            "item/agentMessage/delta",
+            &json!({ "itemId": "m1", "delta": "你好" }),
+            &mut state,
+            &mut turn,
+        );
+        turn.retry_stop = Some("重试超限".into());
+        translate("turn/completed", &turn_completed(), &mut state, &mut turn);
+        assert!(state.text_sent.is_empty());
+        assert!(state.is_ended("m1"));
     }
 
     #[test]

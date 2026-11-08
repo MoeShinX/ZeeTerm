@@ -223,6 +223,9 @@ impl ThreadEntry {
             return Err(AgentError::Busy);
         }
         inner.turn = TurnStats::default();
+        // 上一回合没走到 turn/completed（启动失败、兜底收尾）也在这里释放它的 item 状态；
+        // 旧回合晚到的通知由回合 id 过滤拦住，这里不会误伤新回合。
+        inner.state.finish_turn();
         inner.turn_seq += 1;
         inner.awaiting_start = true;
         inner.pending_notifications.clear();
@@ -1036,6 +1039,7 @@ fn retry_stop_fallback_now(thread: &ThreadEntry, seq: u64) -> Option<String> {
         if let Some(id) = &abandoned {
             inner.abandon(id);
         }
+        inner.state.finish_turn();
         thread.stop_requested.store(false, Ordering::SeqCst);
         thread.busy.store(false, Ordering::SeqCst);
         thread.emit(vec![AgentEvent::Error { message }, AgentEvent::TurnEnd]);
@@ -2149,6 +2153,42 @@ mod tests {
             .iter()
             .any(|id| id == "late-id"));
         assert!(thread.begin_turn().is_ok());
+    }
+
+    /// 回合结束后释放该回合的 item 全文状态；同一个 item 的迟到通知不再重复出字，
+    /// 下一个回合的新 item 照常。
+    #[tokio::test]
+    async fn turn_completed_releases_item_state_and_late_items_stay_quiet() {
+        let shared = test_shared();
+        let (thread, mut rx) = running_thread(&shared);
+        let delta = json!({
+            "threadId": "t1", "turnId": "turn-1", "itemId": "m1", "delta": "你好"
+        });
+        handle_notification(&shared, "item/agentMessage/delta", &delta).await;
+        assert_eq!(drain(&mut rx).len(), 1);
+        assert!(!thread.inner.lock().unwrap().state.is_empty_for_test());
+
+        handle_notification(
+            &shared,
+            method::TURN_COMPLETED,
+            &completed("turn-1", "completed"),
+        )
+        .await;
+        assert_eq!(drain(&mut rx).len(), 1, "TurnEnd");
+        assert!(thread.inner.lock().unwrap().state.is_empty_for_test());
+
+        // 迟到的同 item 增量：回合已结束，不出字。
+        handle_notification(&shared, "item/agentMessage/delta", &delta).await;
+        assert!(drain(&mut rx).is_empty());
+
+        // 下一个回合里的新 item 正常出字。
+        thread.busy.store(true, Ordering::SeqCst);
+        *thread.turn_id.lock().unwrap() = Some("turn-2".to_string());
+        let next = json!({
+            "threadId": "t1", "turnId": "turn-2", "itemId": "m2", "delta": "再见"
+        });
+        handle_notification(&shared, "item/agentMessage/delta", &next).await;
+        assert_eq!(drain(&mut rx).len(), 1);
     }
 
     /// 兜底不误伤新回合：宽限期内用户已经开了下一个回合，兜底什么都不做。
