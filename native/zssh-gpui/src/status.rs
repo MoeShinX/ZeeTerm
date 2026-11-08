@@ -636,15 +636,33 @@ pub(crate) fn level_of(percent: u8) -> Level {
 
 /// 运行时间的短写法（同 0.2.14 的 `formatUptime`）：N 天 N 小时 / N 小时 N 分 / N 分钟。
 pub(crate) fn uptime_label(seconds: u64) -> String {
+    uptime_label_in(crate::i18n::current(), seconds)
+}
+
+/// 状态栏 / 概览上的短写法：只取最大的两级。英文同 [`format_uptime_in`] 的紧凑写法。
+fn uptime_label_in(lang: crate::i18n::Lang, seconds: u64) -> String {
     let days = seconds / 86_400;
     let hours = (seconds % 86_400) / 3_600;
     let minutes = (seconds % 3_600) / 60;
-    if days > 0 {
-        format!("{days} 天 {hours} 小时") // i18n-allow: 中文分支
-    } else if hours > 0 {
-        format!("{hours} 小时 {minutes} 分") // i18n-allow: 中文分支
-    } else {
-        format!("{minutes} 分钟") // i18n-allow: 中文分支
+    match lang {
+        crate::i18n::Lang::Zh => {
+            if days > 0 {
+                format!("{days} 天 {hours} 小时") // i18n-allow: 中文分支
+            } else if hours > 0 {
+                format!("{hours} 小时 {minutes} 分") // i18n-allow: 中文分支
+            } else {
+                format!("{minutes} 分钟") // i18n-allow: 中文分支
+            }
+        }
+        crate::i18n::Lang::En => {
+            if days > 0 {
+                format!("{days}d {hours}h")
+            } else if hours > 0 {
+                format!("{hours}h {minutes}m")
+            } else {
+                format!("{minutes}m")
+            }
+        }
     }
 }
 
@@ -2350,7 +2368,7 @@ mod live_tests {
 mod bar_tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        Level, ServerStatus, StatusSummary, level_of, mib_gb_label, percent_f, uptime_label,
+        Level, ServerStatus, StatusSummary, level_of, mib_gb_label, percent_f, uptime_label_in,
     };
     use zssh_core::ssh::stats::ServerStats;
 
@@ -2408,8 +2426,12 @@ mod bar_tests {
         assert_eq!(mib_gb_label(Some(10_240.0), 0), "10GB");
         assert_eq!(mib_gb_label(None, 1), "--");
         assert_eq!(mib_gb_label(Some(f64::NAN), 1), "--");
-        assert_eq!(uptime_label(59), "0 分钟");
-        assert_eq!(uptime_label(3_700), "1 小时 1 分");
-        assert_eq!(uptime_label(90_061), "1 天 1 小时");
+        use crate::i18n::Lang;
+        assert_eq!(uptime_label_in(Lang::Zh, 59), "0 分钟");
+        assert_eq!(uptime_label_in(Lang::Zh, 3_700), "1 小时 1 分");
+        assert_eq!(uptime_label_in(Lang::Zh, 90_061), "1 天 1 小时");
+        assert_eq!(uptime_label_in(Lang::En, 59), "0m");
+        assert_eq!(uptime_label_in(Lang::En, 3_700), "1h 1m");
+        assert_eq!(uptime_label_in(Lang::En, 3_553_200), "41d 3h");
     }
 }
