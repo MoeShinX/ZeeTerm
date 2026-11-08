@@ -120,6 +120,20 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
 > 本机备用路径 `scripts/release.ps1` 在 Windows 上跑，**不带 Linux 包**：用它发版得到的 `latest.json` 没有 Linux 条目，Linux 客户端读到后按"没有适用的包"处理（提示去发布页下载），Windows 不受影响。需要 Linux 包时，用 GitHub 路径，或把别处打好的两个包用 `release-sign.ps1 -LinuxDebPath ... -LinuxTarPath ...` 签名并手动上传。
 
+## macOS 包与 Homebrew
+
+macOS（Apple Silicon）目前没有签名和公证，不进发版工作流、不进 `latest.json`（客户端在 macOS 上只提醒有新版本、指向发布页）：
+
+1. 在 Mac 上打好 `ZeeTerm.app`，压成 `ZeeTerm-<版本>-macos-arm64.zip`，手动上传到这个版本的 Release。
+2. 更新 Homebrew tap（`MoeShinX/homebrew-tap` 的 `Casks/zeeterm.rb`）：
+
+   ```powershell
+   powershell -File scripts/update-homebrew-cask.ps1 -Version <版本> -TapDir <homebrew-tap 本地克隆> -Commit
+   ```
+
+   脚本从 Release 下载上一步的 zip、算 sha256、改写 cask 的 `version` 和 `sha256` 并在 tap 仓库提交，不推送；确认后自己 `git push`。
+   zip 还没传上去时脚本会失败，什么都不改。
+
 ## 备用路径：本机发版
 
 GitHub 出问题（Actions 故障、Secrets 失效）时才用。**先停用工作流**，否则推 tag 会触发它、与手动建 Release 冲突：`gh workflow disable release.yml -R MoeShinX/ZeeTerm`，发完 `gh workflow enable release.yml -R MoeShinX/ZeeTerm`。
