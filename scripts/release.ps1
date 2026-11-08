@@ -19,8 +19,10 @@
 #                       私钥有口令时脚本会提示输入。
 #   -OutRoot            产物根目录，默认仓库下的 dist\（已加入 .gitignore）。
 #   -NotesFile          更新说明（Markdown），优先级最高。不给就先找 docs/release-notes/<版本>.md（面向用户的简短说明，
-#                       会显示在用户的更新窗口里），再退回 CHANGELOG.md 里 "## [<版本>]" 一节。
-#   -Repo               GitHub 仓库，默认 MoeShinX/ZeeTerm；下载地址 = https://github.com/<Repo>/releases/download/v<版本>/<安装包>。
+#                       会显示在用户的更新窗口里），再退回 CHANGELOG.md 里 "## [<版本>]" 一节。这份是中文，写进 latest.json 的 notes。
+#   -NotesEnFile        英文更新说明（Markdown）。不给就用 docs/release-notes/<版本>.en.md；两样都没有就失败。
+#                       它写进 latest.json 的 notes_en，同时是 Release 正文（RELEASE_NOTES.md）。
+#   -Repo              GitHub 仓库，默认 MoeShinX/ZeeTerm；下载地址 = https://github.com/<Repo>/releases/download/v<版本>/<安装包>。
 #   -SkipGates          不跑 scripts/gates.ps1。
 #   -DryRun             演练：版本号只在改完后还原（git 看不到任何变化）；不检查分支 / 工作区；公钥与私钥对不上只警告；
 #                       不编译安装包（必须给 -PrebuiltInstaller，里面的文件当安装包用，产物不能发布）。
@@ -35,6 +37,7 @@ param(
     [string]$KeyPath = '',
     [string]$OutRoot = '',
     [string]$NotesFile = '',
+    [string]$NotesEnFile = '',
     [string]$Repo = 'MoeShinX/ZeeTerm',
     [switch]$SkipGates,
     [switch]$DryRun,
@@ -165,16 +168,22 @@ try {
     }
 
     # ---------- 6. 更新说明 -> 签名 -> latest.json -> 自检 -> SHA256SUMS ----------
+    # 中文说明（latest.json 的 notes）只是中间文件，放临时目录、用完就删；英文说明就是 Release 正文 RELEASE_NOTES.md。
     $notesOut = Join-Path $outDir 'RELEASE_NOTES.md'
-    Write-ReleaseNotes -RepoRoot $repoRoot -Version $Version -OutFile $notesOut -NotesFile $NotesFile -DryRun:$DryRun
+    $notesZh = Join-Path ([System.IO.Path]::GetTempPath()) ("zeeterm-notes-zh-" + [guid]::NewGuid().ToString('N') + '.md')
     # build.ps1 在安装包旁边还打了免安装版 zip：有就一起签名、写进 latest.json（演练不编译，没有它）。
     $portableZip = Join-Path $outDir "ZeeTerm-$Version-windows-x64-portable.zip"
     $extraAssets = @()
     if (Test-Path -LiteralPath $portableZip -PathType Leaf) {
         $extraAssets += @{ Key = 'windows-x86_64-portable'; Path = $portableZip }
     }
-    $artifacts = New-ReleaseArtifacts -RepoRoot $repoRoot -Version $Version -Installer $installer -KeyPath $KeyPath `
-        -ConfiguredPubkey $configuredPubkey -NotesOut $notesOut -OutDir $outDir -Repo $Repo -ExtraAssets $extraAssets
+    try {
+        Write-ReleaseNotes -RepoRoot $repoRoot -Version $Version -OutFile $notesZh -EnOutFile $notesOut -NotesFile $NotesFile -NotesEnFile $NotesEnFile -DryRun:$DryRun
+        $artifacts = New-ReleaseArtifacts -RepoRoot $repoRoot -Version $Version -Installer $installer -KeyPath $KeyPath `
+            -ConfiguredPubkey $configuredPubkey -NotesOut $notesOut -NotesZh $notesZh -OutDir $outDir -Repo $Repo -ExtraAssets $extraAssets
+    } finally {
+        if (Test-Path -LiteralPath $notesZh) { Remove-Item -LiteralPath $notesZh -Force }
+    }
     $sha = $artifacts.Sha256
     $latest = $artifacts.Latest
     $sums = $artifacts.Sums
@@ -204,7 +213,9 @@ Write-Host '下一步（脚本不会替你执行；确认无误后手动运行�
 Write-Host '  1. 版本号相关文件已改好，检查并提交（可能还要在 CHANGELOG.md 里把 [Unreleased] 改成这个版本）：'
 Write-Host '       git diff'
 $addFiles = 'Cargo.toml Cargo.lock native/Cargo.toml native/Cargo.lock CHANGELOG.md'
-if (Test-Path -LiteralPath (Join-Path $repoRoot "docs\release-notes\$Version.md") -PathType Leaf) { $addFiles += " docs/release-notes/$Version.md" }
+foreach ($suffix in @('.md', '.en.md')) {
+    if (Test-Path -LiteralPath (Join-Path $repoRoot "docs\release-notes\$Version$suffix") -PathType Leaf) { $addFiles += " docs/release-notes/$Version$suffix" }
+}
 Write-Host "       git add $addFiles"
 Write-Host "       git commit -m `"chore(release): v$Version`""
 Write-Host "  2. 打 tag 并推送。推 v* tag 会触发 GitHub 的发版工作流、与下面手动建 Release 冲突，所以手动发版前先停用它，发完再启用："

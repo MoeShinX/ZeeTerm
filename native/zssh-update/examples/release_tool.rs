@@ -10,6 +10,7 @@
 //!   sign     --key <私钥> --file <安装包> --version <x.y.z> --pubkey <base64> --out <签名文件>
 //!   manifest --version <x.y.z> --notes-file <文件> --pub-date <RFC3339> --url <地址>
 //!            --signature-file <签名文件> --out <latest.json>
+//!            [--notes-en-file <文件>]            可选：英文更新说明，写成 `notes_en`（`notes` 仍是中文，老客户端只认它）
 //!            [--linux-deb-url <地址> --linux-deb-signature-file <签名文件>]
 //!            [--linux-tar-url <地址> --linux-tar-signature-file <签名文件>]
 //!                                              可选：把 Linux 的 deb / tar.gz 写成 `linux-x86_64-deb` /
@@ -251,6 +252,13 @@ fn manifest(options: &BTreeMap<String, String>) -> Result<(), String> {
         .map_err(|err| format!("读更新说明失败：{err}"))?;
     let signature = fs::read_to_string(required(options, "signature-file")?)
         .map_err(|err| format!("读签名文件失败：{err}"))?;
+    // 英文更新说明（可选）：写进 `notes_en`，老客户端不认，新客户端的英文界面优先显示它。
+    let notes_en = match options.get("notes-en-file").filter(|path| !path.is_empty()) {
+        Some(path) => Some(
+            fs::read_to_string(path).map_err(|err| format!("读英文更新说明 {path} 失败：{err}"))?,
+        ),
+        None => None,
+    };
     let deb = extra_asset(options, "linux-deb")?;
     let tar = extra_asset(options, "linux-tar")?;
     let portable = extra_asset(options, "portable")?;
@@ -281,6 +289,9 @@ fn manifest(options: &BTreeMap<String, String>) -> Result<(), String> {
             version: required(options, "version")?,
             // 记事本等工具存的 UTF-8 文件带 BOM：不剥掉它会混进更新说明的第一个字。
             notes: notes.trim_start_matches('\u{feff}').trim(),
+            notes_en: notes_en
+                .as_deref()
+                .map(|text| text.trim_start_matches('\u{feff}').trim()),
             pub_date: required(options, "pub-date")?,
             url: required(options, "url")?,
             signature: &signature,

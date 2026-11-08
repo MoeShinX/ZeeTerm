@@ -3,6 +3,8 @@
 # 核对两边的产物格式一致，再做几个反例（私钥与公钥对不上、安装包被改、口令不对）确认会失败。
 # 另外演练 Linux 资产：release-sign.ps1 带上 deb 和 tar.gz（用充数文件），核对它们被同一把私钥签名、latest.json 多出
 # linux-x86_64-deb / linux-x86_64-tar 两个条目而 Windows 条目不变、SHA256SUMS.txt 与 Release 正文包含全部文件，再做反例。
+# 更新说明要中英两份：latest.json 的 notes 是中文、notes_en 是英文，Release 正文是英文加 SHA-256 一节；缺英文 / 英文是空的 /
+# 缺中文都会失败（-NotesDir 指向临时目录，不碰仓库）。
 # 免安装版同理：release-sign.ps1 带 -PortablePath（用充数 zip）时，latest.json 多出 windows-x86_64-portable 一项而安装包条目不变
 # （老客户端只认自己的 key），zip 用同一把私钥签名、验得过，SHA256SUMS.txt 和 Release 正文含它，文件名 / 缺文件 / 私钥不对都会失败。
 #
@@ -70,8 +72,14 @@ try {
     $json = (Read-Text (Join-Path $repoRoot 'native\zssh-update\updater.json')).Text
     Write-Text $updaterJson ([regex]::Replace($json, '"pubkey"\s*:\s*"[^"]*"', '"pubkey": "' + $pubkey + '"')) $false
 
-    $version = Get-CurrentVersion $repoRoot   # 当前版本有 docs/release-notes/<版本>.md，直接拿来演练
+    $version = Get-CurrentVersion $repoRoot   # 当前版本有 docs/release-notes/<版本>.md 和 <版本>.en.md，直接拿来演练
     $notesText = ((Read-Text (Join-Path $repoRoot "docs\release-notes\$version.md")).Text -replace "`r`n", "`n").Trim()
+    $notesEnText = ((Read-Text (Join-Path $repoRoot "docs\release-notes\$version.en.md")).Text -replace "`r`n", "`n").Trim()
+    # Release 正文（英文）末尾的 SHA-256 一节：`n`n### SHA-256`n`n- `文件名`: `哈希` 每个文件一行，最后一个换行。
+    function Get-ExpectedShaTail([object[]]$Pairs) {
+        $tick = [string][char]96
+        return "`n`n### SHA-256`n`n" + ((@($Pairs | ForEach-Object { "- $tick$($_.Name)${tick}: $tick$($_.Sha)$tick" })) -join "`n") + "`n"
+    }
     $installerName = "ZeeTerm-Setup-$version.exe"
     $fake = Join-Path $runDir 'fake-installer.bin'
     $rng = New-Object byte[] 4096
@@ -90,8 +98,10 @@ try {
     $outBRoot = Join-Path $runDir 'B'
     $notesFile = Join-Path $runDir 'notes.md'
     Write-Text $notesFile ($notesText + "`n") $false
+    $notesEnFile = Join-Path $runDir 'notes.en.md'
+    Write-Text $notesEnFile ($notesEnText + "`n") $false
     $code = Invoke-Script @((Join-Path $PSScriptRoot 'release.ps1'), '-Version', '9.9.9', '-DryRun', '-KeyPath', $keyPath, '-OutRoot', $outBRoot,
-        '-SkipGates', '-PrebuiltInstaller', $fake, '-NotesFile', $notesFile)
+        '-SkipGates', '-PrebuiltInstaller', $fake, '-NotesFile', $notesFile, '-NotesEnFile', $notesEnFile)
     Check 'release.ps1 -DryRun 退出码 0' ($code -eq 0) "(退出码 $code)"
     $outB = Join-Path $outBRoot '9.9.9'
 
@@ -106,6 +116,8 @@ try {
     Check 'platforms.windows-x86_64 字段相同（url、signature）' ($platA -eq $platB -and $platA -eq 'signature,url') "($platA / $platB)"
     Check 'latest.json.version 正确' ($latestA.version -eq $version -and $latestB.version -eq '9.9.9')
     Check 'latest.json.notes 一致且不带 SHA-256 行' ($latestA.notes -eq $latestB.notes -and $latestA.notes -eq $notesText -and $latestA.notes -notmatch 'SHA-256')
+    Check 'latest.json 顶层字段是 version、notes、notes_en、pub_date、platforms' ($fieldsA -eq 'notes,notes_en,platforms,pub_date,version')
+    Check 'latest.json.notes_en 是英文说明，两边一致，不带 SHA-256 行，且 notes 仍是中文那份（老客户端只认它）' ($latestA.notes_en -eq $latestB.notes_en -and $latestA.notes_en -eq $notesEnText -and $latestA.notes_en -notmatch 'SHA-256' -and $latestA.notes -ne $latestA.notes_en)
     Check 'pub_date 都是 UTC 秒级 RFC3339' (($latestA.pub_date -match '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$') -and ($latestB.pub_date -match '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$'))
     Check '下载地址格式一致' (($latestA.platforms.'windows-x86_64'.url -eq "https://github.com/MoeShinX/ZeeTerm/releases/download/v$version/$installerName") -and
         ($latestB.platforms.'windows-x86_64'.url -eq "https://github.com/MoeShinX/ZeeTerm/releases/download/v9.9.9/ZeeTerm-Setup-9.9.9.exe"))
@@ -116,9 +128,10 @@ try {
     Check 'SHA256SUMS.txt 格式：<小写 sha256>两个空格<文件名>换行' (($sumsA -ceq "$shaA  $installerName`n") -and ($sumsB -cmatch '^[0-9a-f]{64}  ZeeTerm-Setup-9\.9\.9\.exe\n$'))
     $relA = [System.IO.File]::ReadAllText((Join-Path $outA 'RELEASE_NOTES.md'))
     $relB = [System.IO.File]::ReadAllText((Join-Path $outB 'RELEASE_NOTES.md'))
-    $tail = "`n`n安装包 SHA-256：" + [char]96 + $shaA + [char]96 + "`n"
-    Check 'Release 正文 = 更新说明 + 空行 + “安装包 SHA-256：`哈希`”' ($relA -ceq ($notesText + $tail))
-    Check 'Release 正文末尾格式两边一致' (($relB -cmatch ('^' + [regex]::Escape($notesText) + '\n\n安装包 SHA-256：`[0-9a-f]{64}`\n$')))
+    $tail = Get-ExpectedShaTail @(@{ Name = $installerName; Sha = $shaA })
+    Check 'Release 正文 = 英文更新说明 + “### SHA-256”一节（每个文件一行“- `文件名`: `哈希`”）' ($relA -ceq ($notesEnText + $tail))
+    Check 'Release 正文不含中文说明（GitHub 上是英文）' (-not $relA.Contains($notesText))
+    Check 'Release 正文末尾格式两边一致' (($relB -cmatch ('^' + [regex]::Escape($notesEnText) + '\n\n### SHA-256\n\n- `ZeeTerm-Setup-9\.9\.9\.exe`: `[0-9a-f]{64}`\n$')))
     $expectedFiles = @($installerName, "$installerName.sig", 'latest.json', 'RELEASE_NOTES.md', 'SHA256SUMS.txt') | Sort-Object
     $filesA = @(Get-ChildItem -LiteralPath $outA | ForEach-Object Name) | Sort-Object
     Check '产物文件清单一致（安装包、.sig、latest.json、RELEASE_NOTES.md、SHA256SUMS.txt）' (($filesA -join '|') -eq ($expectedFiles -join '|'))
@@ -190,8 +203,8 @@ try {
     $sumsF = [System.IO.File]::ReadAllText((Join-Path $outF 'SHA256SUMS.txt'))
     Check 'SHA256SUMS.txt 含全部三个文件（安装包、deb、tar.gz，各一行，格式同 sha256sum）' ($sumsF -ceq "$shaInstaller  $installerName`n$shaDeb  $debName`n$shaTar  $tarName`n")
     $relF = [System.IO.File]::ReadAllText((Join-Path $outF 'RELEASE_NOTES.md'))
-    $tailF = "`n`n安装包 SHA-256：" + [char]96 + $shaInstaller + [char]96 + "`n`n$debName SHA-256：" + [char]96 + $shaDeb + [char]96 + "`n`n$tarName SHA-256：" + [char]96 + $shaTar + [char]96 + "`n"
-    Check 'Release 正文：更新说明 + 安装包一行（格式不变）+ deb 一行 + tar.gz 一行' ($relF -ceq ($notesText + $tailF))
+    $tailF = Get-ExpectedShaTail @(@{ Name = $installerName; Sha = $shaInstaller }, @{ Name = $debName; Sha = $shaDeb }, @{ Name = $tarName; Sha = $shaTar })
+    Check 'Release 正文：英文更新说明 + SHA-256 一节（安装包、deb、tar.gz 各一行）' ($relF -ceq ($notesEnText + $tailF))
     $expectedF = @($installerName, "$installerName.sig", $debName, "$debName.sig", $tarName, "$tarName.sig", 'latest.json', 'RELEASE_NOTES.md', 'SHA256SUMS.txt') | Sort-Object
     $filesF = @(Get-ChildItem -LiteralPath $outF | ForEach-Object Name) | Sort-Object
     Check '产物文件清单：安装包、deb、tar.gz 各带 .sig，加 latest.json、RELEASE_NOTES.md、SHA256SUMS.txt' (($filesF -join '|') -eq ($expectedF -join '|'))
@@ -260,8 +273,8 @@ try {
     $sumsI = [System.IO.File]::ReadAllText((Join-Path $outI 'SHA256SUMS.txt'))
     Check 'SHA256SUMS.txt 含安装包和免安装版（各一行，格式同 sha256sum）' ($sumsI -ceq "$shaInstallerI  $installerName`n$shaPortable  $portableName`n")
     $relI = [System.IO.File]::ReadAllText((Join-Path $outI 'RELEASE_NOTES.md'))
-    $tailI = "`n`n安装包 SHA-256：" + [char]96 + $shaInstallerI + [char]96 + "`n`n$portableName SHA-256：" + [char]96 + $shaPortable + [char]96 + "`n"
-    Check 'Release 正文：更新说明 + 安装包一行（格式不变）+ 免安装版一行' ($relI -ceq ($notesText + $tailI))
+    $tailI = Get-ExpectedShaTail @(@{ Name = $installerName; Sha = $shaInstallerI }, @{ Name = $portableName; Sha = $shaPortable })
+    Check 'Release 正文：英文更新说明 + SHA-256 一节（安装包、免安装版各一行）' ($relI -ceq ($notesEnText + $tailI))
     $expectedI = @($installerName, "$installerName.sig", $portableName, "$portableName.sig", 'latest.json', 'RELEASE_NOTES.md', 'SHA256SUMS.txt') | Sort-Object
     $filesI = @(Get-ChildItem -LiteralPath $outI | ForEach-Object Name) | Sort-Object
     Check '产物文件清单：安装包、免安装版各带 .sig，加 latest.json、RELEASE_NOTES.md、SHA256SUMS.txt' (($filesI -join '|') -eq ($expectedI -join '|'))
@@ -309,6 +322,42 @@ try {
     $code = Invoke-Script ($signJOther + @('-PortablePath', (Join-Path $outJ $portableName)))
     Check '私钥与 updater.json 公钥不是一对（带免安装版）-> 失败' ($code -ne 0)
     Check '……且没有产出 latest.json' (-not (Test-Path -LiteralPath (Join-Path $outJ 'latest.json')))
+
+    Step 'K. 更新说明要中英两份：缺英文 / 英文是空的 / 缺中文，release-sign.ps1 必须失败（-NotesDir 指向临时目录，不碰仓库）'
+    function Invoke-ScriptWithText([string[]]$ScriptArgs) {
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $text = (& powershell -NoProfile -File @ScriptArgs 2>&1 | Out-String)
+            return [pscustomobject]@{ Code = $LASTEXITCODE; Text = $text }
+        } finally { $ErrorActionPreference = $previous }
+    }
+    function New-SignCase([string]$Name, [string]$ZhText, [string]$EnText) {
+        $caseOut = Join-Path $runDir "K-$Name"
+        $caseNotes = Join-Path $runDir "K-$Name-notes"
+        New-Item -ItemType Directory -Force -Path $caseOut, $caseNotes | Out-Null
+        Copy-Item -LiteralPath $fake -Destination (Join-Path $caseOut $installerName)
+        if ($null -ne $ZhText) { Write-Text (Join-Path $caseNotes "$version.md") $ZhText $false }
+        if ($null -ne $EnText) { Write-Text (Join-Path $caseNotes "$version.en.md") $EnText $false }
+        $result = Invoke-ScriptWithText @((Join-Path $PSScriptRoot 'release-sign.ps1'), '-Version', $version, '-InstallerPath', (Join-Path $caseOut $installerName),
+            '-KeyPath', $keyPath, '-OutDir', $caseOut, '-UpdaterJson', $updaterJson, '-NotesDir', $caseNotes)
+        return [pscustomobject]@{ Code = $result.Code; Text = $result.Text; Out = $caseOut }
+    }
+    $caseNoEn = New-SignCase 'no-en' "中文说明`n" $null
+    Check '缺英文说明 -> 失败' ($caseNoEn.Code -ne 0)
+    Check '……错误里写清缺的是哪个文件、每次发版要两份' (($caseNoEn.Text.Contains("$version.en.md")) -and $caseNoEn.Text.Contains('两份'))
+    Check '……且没有产出 latest.json 和 Release 正文' (-not (Test-Path -LiteralPath (Join-Path $caseNoEn.Out 'latest.json')))
+    $caseEmptyEn = New-SignCase 'empty-en' "中文说明`n" "  `n`n"
+    Check '英文说明是空的 -> 失败' (($caseEmptyEn.Code -ne 0) -and $caseEmptyEn.Text.Contains('是空的'))
+    $caseNoZh = New-SignCase 'no-zh' $null "English notes`n"
+    Check '缺中文说明 -> 失败' (($caseNoZh.Code -ne 0) -and $caseNoZh.Text.Contains("$version.md"))
+    $caseOk = New-SignCase 'ok' "### 新功能`n`n- 中文要点`n" "### New`n`n- English point`n"
+    Check '中英两份都有 -> 成功' ($caseOk.Code -eq 0) "(退出码 $($caseOk.Code))：$($caseOk.Text)"
+    $latestK = Get-Content -LiteralPath (Join-Path $caseOk.Out 'latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    Check 'notes 是中文、notes_en 是英文' (($latestK.notes -eq "### 新功能`n`n- 中文要点") -and ($latestK.notes_en -eq "### New`n`n- English point"))
+    $relK = [System.IO.File]::ReadAllText((Join-Path $caseOk.Out 'RELEASE_NOTES.md'))
+    Check 'Release 正文是英文说明加 SHA-256 一节，不含中文说明' ($relK.StartsWith("### New`n`n- English point`n`n### SHA-256`n") -and -not $relK.Contains('中文要点'))
+    Check '中文说明的临时文件没有留在产物目录里' ((@(Get-ChildItem -LiteralPath $caseOk.Out | ForEach-Object Name) | Sort-Object) -join '|' -eq ((@($installerName, "$installerName.sig", 'latest.json', 'RELEASE_NOTES.md', 'SHA256SUMS.txt') | Sort-Object) -join '|'))
 } finally {
     [Environment]::SetEnvironmentVariable($passwordEnv, $previousPassword, 'Process')
     if (-not $KeepFiles -and (Test-Path -LiteralPath $runDir)) { Remove-Item -LiteralPath $runDir -Recurse -Force -ErrorAction SilentlyContinue }

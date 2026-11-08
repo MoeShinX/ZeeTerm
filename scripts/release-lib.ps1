@@ -121,19 +121,30 @@ function Set-WorkspaceVersion([string]$RepoRoot, [string]$From, [string]$To) {
 
 # ---------- 更新说明 ----------
 
-# 生成 Release 正文 / latest.json 里 notes 的基础文本，写到 $OutFile。来源优先级：
-#   -NotesFile > docs/release-notes/<版本>.md > CHANGELOG.md 的 "## [<版本>]" 一节。
-# -RequireUserNotes（GitHub 发版用）：只认 docs/release-notes/<版本>.md，没有就报错，不退回 CHANGELOG（那份是写给开发者的）。
+# 每个版本要准备两份更新说明：
+#   中文  docs/release-notes/<版本>.md     写进 latest.json 的 notes（更新窗口的中文界面、老版本客户端只认它），写到 $OutFile；
+#   英文  docs/release-notes/<版本>.en.md  写进 latest.json 的 notes_en（英文界面的更新窗口优先显示），
+#                                          同时是 GitHub Release 的正文（写到 $EnOutFile，之后由 New-ReleaseArtifacts 追加 SHA-256）。
+# 中文的来源优先级：-NotesFile > docs/release-notes/<版本>.md > CHANGELOG.md 的 "## [<版本>]" 一节。
+# 英文的来源优先级：-NotesEnFile > docs/release-notes/<版本>.en.md；两样都没有（或是空的）直接报错，发版必须有英文说明，
+#   不退回中文也不退回 CHANGELOG。
+# -RequireUserNotes（GitHub 发版用）：两份都只认 docs/release-notes/ 下的文件，没有就报错，不退回 CHANGELOG（那份是写给开发者的），
+#   也不认 -NotesFile / -NotesEnFile。
+# -NotesDir：换掉 docs/release-notes 这个目录（演练用）。
 function Write-ReleaseNotes {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][string]$Version,
         [Parameter(Mandatory = $true)][string]$OutFile,
+        [Parameter(Mandatory = $true)][string]$EnOutFile,
         [string]$NotesFile = '',
+        [string]$NotesEnFile = '',
+        [string]$NotesDir = '',
         [switch]$DryRun,
         [switch]$RequireUserNotes
     )
-    $releaseNotesFile = Join-Path $RepoRoot "docs\release-notes\$Version.md"
+    if (-not $NotesDir) { $NotesDir = Join-Path $RepoRoot 'docs\release-notes' }
+    $releaseNotesFile = Join-Path $NotesDir "$Version.md"
     if ($NotesFile -and -not $RequireUserNotes) {
         if (-not (Test-Path -LiteralPath $NotesFile -PathType Leaf)) { Stop-WithError "找不到更新说明文件：$NotesFile" }
         Copy-Item -LiteralPath $NotesFile -Destination $OutFile
@@ -161,6 +172,26 @@ function Write-ReleaseNotes {
         }
         Write-Text $OutFile ($section.Groups[1].Value.Trim() + "`n") $false
     }
+
+    # 英文说明：发版必须有。没有就在这里失败，错误里说清楚要补哪个文件、每次发版为什么要两份。
+    $releaseNotesEnFile = Join-Path $NotesDir "$Version.en.md"
+    $missingHint = "每次发版要准备两份更新说明：docs/release-notes/$Version.md（中文，更新窗口的中文界面和老版本客户端用）和 docs/release-notes/$Version.en.md（英文，GitHub Release 正文和英文界面的更新窗口用）。"
+    if ($NotesEnFile -and -not $RequireUserNotes) {
+        if (-not (Test-Path -LiteralPath $NotesEnFile -PathType Leaf)) { Stop-WithError "找不到英文更新说明文件：$NotesEnFile" }
+        $enSource = $NotesEnFile
+        $enLabel = "-NotesEnFile $NotesEnFile"
+    } elseif (Test-Path -LiteralPath $releaseNotesEnFile -PathType Leaf) {
+        $enSource = $releaseNotesEnFile
+        $enLabel = "docs/release-notes/$Version.en.md"
+    } else {
+        Stop-WithError "缺少英文更新说明 docs/release-notes/$Version.en.md。$missingHint"
+    }
+    $enNotes = (Read-Text $enSource).Text -replace "`r`n", "`n"
+    if ($enNotes.Trim() -eq '') {
+        Stop-WithError "英文更新说明 $enLabel 是空的。$missingHint"
+    }
+    Write-Text $EnOutFile ($enNotes.Trim() + "`n") $false
+    Write-Host "英文更新说明（Release 正文、latest.json 的 notes_en）：取自 $enLabel"
 }
 
 # ---------- 签名工具（release_tool 示例，签名 / 验签与应用里是同一套代码） ----------
@@ -185,10 +216,13 @@ function Get-DerivedPubkey([string]$RepoRoot, [string]$KeyPath) {
 
 # ---------- 签名 -> latest.json -> 自检 -> SHA256SUMS.txt -> Release 正文 ----------
 
-# 前提：$NotesOut 已经由 Write-ReleaseNotes 写好（本函数会在末尾追加安装包的 SHA-256 一行）。
+# 前提：中文说明 $NotesZh 和英文说明 $NotesOut 已经由 Write-ReleaseNotes 写好。$NotesOut 就是 Release 正文
+#   （英文；本函数会在末尾追加安装包等文件的 SHA-256 行），$NotesZh 只用来生成 latest.json 的 notes，不进产物目录。
 # 产物都写在 $OutDir：<安装包>.sig、latest.json、SHA256SUMS.txt，以及追加过 SHA-256 的 $NotesOut。
 # 格式的约定（用户端读 latest.json、下载的人读 SHA256SUMS.txt，不能随便改）：
-#   - latest.json 的 notes 不带 SHA-256 那一行（更新窗口里显示它），Release 正文才带；
+#   - latest.json 的 notes 是中文（老客户端只认它）、notes_en 是英文（新客户端的英文界面优先显示它），
+#     两个都不带 SHA-256 那一行（更新窗口里显示它们），Release 正文（英文）才带；
+#     latest.json 本身没有签名（签名只绑在安装包上：受信注释里的版本和文件名），所以加 notes_en 不影响任何校验；
 #   - SHA256SUMS.txt 是 `<小写 sha256>  <文件名>`，两个空格，和 sha256sum 同格式。
 # -ExtraAssets：Windows 安装包以外一起发布的文件（Linux 的 deb / tar.gz、Windows 免安装版的 zip），每项是
 #   @{ Key = 平台 key; Path = 文件路径 }，key 只能是 linux-x86_64-deb / linux-x86_64-tar / windows-x86_64-portable。
@@ -203,6 +237,7 @@ function New-ReleaseArtifacts {
         [Parameter(Mandatory = $true)][string]$KeyPath,
         [Parameter(Mandatory = $true)][string]$ConfiguredPubkey,
         [Parameter(Mandatory = $true)][string]$NotesOut,
+        [Parameter(Mandatory = $true)][string]$NotesZh,
         [Parameter(Mandatory = $true)][string]$OutDir,
         [Parameter(Mandatory = $true)][string]$Repo,
         [object[]]$ExtraAssets = @()
@@ -242,7 +277,7 @@ function New-ReleaseArtifacts {
     $url = "https://github.com/$Repo/releases/download/v$Version/$installerName"
     $latest = Join-Path $OutDir 'latest.json'
     $pubDate = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
-    $manifestArgs = @('manifest', '--version', $Version, '--notes-file', $NotesOut, '--pub-date', $pubDate, '--url', $url, '--signature-file', $sigFile, '--out', $latest)
+    $manifestArgs = @('manifest', '--version', $Version, '--notes-file', $NotesZh, '--notes-en-file', $NotesOut, '--pub-date', $pubDate, '--url', $url, '--signature-file', $sigFile, '--out', $latest)
     foreach ($extra in $extras) {
         $prefix = $extraFlagPrefix[$extra.Key]
         $manifestArgs += @("--$prefix-url", $extra.Url, "--$prefix-signature-file", $extra.Signature)
@@ -256,6 +291,7 @@ function New-ReleaseArtifacts {
     if ($LASTEXITCODE -ne 0) { Stop-WithError '自检没通过，产物不能发布。' }
     $parsed = Get-Content -LiteralPath $latest -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($parsed.version -ne $Version -or $parsed.platforms.'windows-x86_64'.url -ne $url) { Stop-WithError 'latest.json 的内容与预期不符。' }
+    if (-not $parsed.notes -or -not $parsed.notes_en) { Stop-WithError 'latest.json 里缺中文 notes 或英文 notes_en。' }
     foreach ($extra in $extras) {
         & cargo @toolArgs verify --pubkey $ConfiguredPubkey --file $extra.Path --signature-file $extra.Signature --version $Version
         if ($LASTEXITCODE -ne 0) { Stop-WithError "自检没通过（$($extra.Name)），产物不能发布。" }
@@ -268,11 +304,13 @@ function New-ReleaseArtifacts {
     $sha = (Get-FileHash -LiteralPath $Installer -Algorithm SHA256).Hash.ToLowerInvariant()
     $sums = Join-Path $OutDir 'SHA256SUMS.txt'
     $sumsText = "$sha  $installerName`n"
-    $notesTail = "`n`n安装包 SHA-256：" + [char]96 + $sha + [char]96
+    # Release 正文是英文：末尾一节 "### SHA-256"，每个文件一行 "- `文件名`: `哈希`"（和 1.0.1 手写的英文正文同一种写法）。
+    $tick = [string][char]96
+    $notesTail = "`n`n### SHA-256`n`n- $tick$installerName${tick}: $tick$sha$tick"
     foreach ($extra in $extras) {
         $extraSha = (Get-FileHash -LiteralPath $extra.Path -Algorithm SHA256).Hash.ToLowerInvariant()
         $sumsText += "$extraSha  $($extra.Name)`n"
-        $notesTail += "`n`n$($extra.Name) SHA-256：" + [char]96 + $extraSha + [char]96
+        $notesTail += "`n- $tick$($extra.Name)${tick}: $tick$extraSha$tick"
     }
     Write-Text $sums $sumsText $false
     $notesText = (Read-Text $NotesOut).Text.TrimEnd()

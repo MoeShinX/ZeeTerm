@@ -9,6 +9,8 @@
 - Windows 免安装版：每个版本多发一个 `ZeeTerm-<版本>-windows-x64-portable.zip`（`ZeeTerm.exe`、`zssh-mcp.exe`、`LICENSE`、`NOTICE`，加一个空的 `portable` 标记文件），解压即用。程序旁边有 `portable` 时数据放在 `<程序所在目录>\data`（`ZSSH_DATA_DIR` 仍然最优先，安装版行为不变）；单实例的互斥体名和窗口属性名带数据目录路径的短哈希，所以它和安装版、两份不同目录的免安装版可以同时开，安装版的名字不变；不写注册表（程序本来也没有开机自启功能）；「关于」页版本号旁标「免安装版」，数据目录下说明已保存的密码用 DPAPI 绑定当前 Windows 用户、换电脑要走离线备份文件；程序所在目录建不了数据目录时启动就提示并退出。
 - 免安装版的应用内更新：`latest.json` 多一项 `windows-x86_64-portable`（老客户端只认自己的 key，不受影响），免安装版只选它；下载、同一套 minisign 验签后，在程序目录里的临时目录解出 zip（只解白名单上的四个文件，`data` 和 `portable` 永不碰），把运行中的 exe 改名成 `*.old`、新程序移进来（`zssh-mcp.exe`、许可文件同样），失败整体回滚；用户点「立即重启」后新进程带 `--zeeterm-wait-pid` 先等旧进程退出，下次启动清掉 `*.old`。程序所在目录不可写、或清单里没有 zip 条目时只提示并引导到发布页。发版流水线（`build.ps1`、`release-sign.ps1`、`release.yml`、`release.ps1`）和 `release-drill.ps1` 同步支持，`installer_manifest.rs` 的测试钉住文件名和流程。
 
+- 更新说明中英两份：每个版本除了 `docs/release-notes/<版本>.md`（中文）再写一份 `<版本>.en.md`（英文，补上了 `1.0.1.en.md`）。GitHub Release 正文改用英文那份（末尾自动附一节 `### SHA-256`，每个包一行）；`latest.json` 的 `notes` 仍是中文（老客户端只认它），新增可选字段 `notes_en`（英文），新客户端的英文界面优先显示它，清单里没有（老清单）或是空的就退回 `notes`，中文界面永远显示 `notes`，窗口开着切换语言时说明跟着换。`latest.json` 本身没有签名（签名只绑在安装包上），加字段不影响任何校验。缺英文说明时 `bump-version.ps1`、发版工作流的校验任务和签名脚本都会失败并写清缺哪个文件；`release_tool manifest` 新增 `--notes-en-file`，演练脚本和 `docs/RELEASING.md`、`docs/release-notes/README.md` 同步。
+
 ### 改进
 
 - 更新窗口：点「下载并安装」就表示同意安装，下载、签名验证一通过就直接开始安装（Windows 启动安装程序并按「安装后重启 ZeeTerm」决定是否重启，Linux 的 deb 弹系统授权框、tar.gz 原地替换），不再停在「已准备好安装」等第二次点击。下载或签名验证失败一律停下报错，不会安装；被传输 / AI 回合拦下或安装程序没能启动时仍停在「已准备好安装」，那里的「立即安装」可以重试。自动检查弹出的窗口只是提醒，不点按钮什么都不会下载、不会安装。

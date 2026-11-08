@@ -31,6 +31,28 @@ pub(super) fn display_markdown(notes: Option<&str>) -> Option<String> {
     notes_text(notes).map(|text| sanitize_markdown(&text))
 }
 
+/// 按界面语言挑清单里的哪一份说明：英文界面优先 `notes_en`，清单里没有（老清单）或是空的就退回 `notes`（中文）；
+/// 中文界面一律用 `notes`。选出来的还要再过 [`display_markdown`] 才能显示。
+pub(super) fn pick_for_language<'a>(
+    lang: crate::i18n::Lang,
+    notes: Option<&'a str>,
+    notes_en: Option<&'a str>,
+) -> Option<&'a str> {
+    match lang {
+        crate::i18n::Lang::En if notes_text(notes_en).is_some() => notes_en,
+        _ => notes,
+    }
+}
+
+/// 窗口里要显示的说明（已做安全改写）：[`pick_for_language`] 再 [`display_markdown`]。
+pub(super) fn display_for_language(
+    lang: crate::i18n::Lang,
+    notes: Option<&str>,
+    notes_en: Option<&str>,
+) -> Option<String> {
+    display_markdown(pick_for_language(lang, notes, notes_en))
+}
+
 /// 点链接时真正要打开的地址：只认 `https://`，且要过 `validate_external_url`；其余一律 `None`。
 pub(super) fn link_target(raw: &str) -> Option<String> {
     let url = zssh_core::external_url::validate_external_url(raw.trim()).ok()?;
@@ -159,7 +181,10 @@ fn escape_punctuation(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::super::UpdateMsg;
-    use super::{link_target, notes_text, parse_options, sanitize_markdown};
+    use super::{
+        display_for_language, link_target, notes_text, parse_options, pick_for_language,
+        sanitize_markdown,
+    };
     use crate::i18n::t;
     use markdown::mdast::Node;
 
@@ -319,6 +344,37 @@ mod tests {
         assert_eq!(notes_text(Some(" \r\n\t ")), None);
         assert_eq!(notes_text(Some("  好  ")).as_deref(), Some("好"));
         assert!(t(UpdateMsg::EmptyNotes).contains("没有附带更新说明"));
+    }
+
+    #[test]
+    fn the_english_interface_prefers_the_english_notes_and_falls_back_to_the_chinese_ones() {
+        use crate::i18n::Lang;
+        let (zh, en) = (Some("中文说明"), Some("English notes"));
+        // 英文界面：有英文说明就用英文。
+        assert_eq!(pick_for_language(Lang::En, zh, en), en);
+        // 老清单没有 notes_en，或者英文说明是空白：退回中文。
+        assert_eq!(pick_for_language(Lang::En, zh, None), zh);
+        assert_eq!(pick_for_language(Lang::En, zh, Some("  \n")), zh);
+        assert_eq!(pick_for_language(Lang::En, zh, Some("")), zh);
+        // 中文界面永远用中文，不管有没有英文。
+        assert_eq!(pick_for_language(Lang::Zh, zh, en), zh);
+        assert_eq!(pick_for_language(Lang::Zh, zh, None), zh);
+        // 两份都没有：没有说明。
+        assert_eq!(pick_for_language(Lang::En, None, None), None);
+        assert_eq!(display_for_language(Lang::En, None, Some("  ")), None);
+        // 显示前照样过安全改写（英文说明里的 HTML 一样不会被执行）。
+        let shown = display_for_language(Lang::En, zh, Some("<b>bold</b> ![img](http://x/y.png)"))
+            .expect("有英文说明");
+        assert!(!shown.contains("<b>") || shown.contains("\\<"), "{shown}");
+        assert!(!shown.contains("](http://x/y.png)"), "{shown}");
+        assert_eq!(
+            display_for_language(Lang::En, zh, en).as_deref(),
+            Some("English notes")
+        );
+        assert_eq!(
+            display_for_language(Lang::Zh, zh, en).as_deref(),
+            Some("中文说明")
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 # ZeeTerm 发版：推 v* tag 后在 GitHub 上编译、签名、发布 Release。
 #
 # 流程（11-07 起）：
-#   verify   （ubuntu）校验 tag / 版本号 / 提交在 main 上 / 更新说明 / 公钥 / Release 还不存在，
+#   verify   （ubuntu）校验 tag / 版本号 / 提交在 main 上 / 更新说明（中文 <版本>.md 加英文 <版本>.en.md 两份）/ 公钥 / Release 还不存在，
 #            并要求这个提交在 main 上的 CI（ci.yml，Windows + Linux + macOS 全套 fmt / clippy / test / 打包）已经通过。
 #            门禁不在这里重跑：发版前 main 上的 CI 已经对同一个提交跑过一遍。
 #   linux    （ubuntu-22.04）完整 release 编译出 deb + tar.gz，容器里装一遍，上传为 artifact。
@@ -99,9 +99,16 @@ jobs:
             echo "tag $TAG 指向的提交不在 main 上：先把它合进 main，再在 main 的提交上打 tag。" >&2
             exit 1
           fi
+          # 每个版本两份更新说明：中文 <版本>.md（latest.json 的 notes，老客户端只认它）和英文 <版本>.en.md
+          # （GitHub Release 正文、latest.json 的 notes_en），缺哪份都在这里失败，什么都不编译。
           notes="docs/release-notes/$version.md"
           if [ ! -s "$notes" ] || [ -z "$(tr -d '[:space:]' < "$notes")" ]; then
             echo "缺少或是空的：$notes。" >&2
+            exit 1
+          fi
+          notes_en="docs/release-notes/$version.en.md"
+          if [ ! -s "$notes_en" ] || [ -z "$(tr -d '[:space:]' < "$notes_en")" ]; then
+            echo "缺少或是空的英文更新说明：$notes_en。每次发版要准备两份更新说明：$version.md（中文）和 $version.en.md（英文），写法见 docs/release-notes/README.md。" >&2
             exit 1
           fi
           pubkey=$(sed -n 's/.*"pubkey"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' native/zssh-update/updater.json | head -1)
@@ -299,11 +306,15 @@ jobs:
           git merge-base --is-ancestor $head origin/main
           if ($LASTEXITCODE -ne 0) { throw "tag $env:TAG 指向的提交不在 main 上：先把它合进 main，再在 main 的提交上打 tag。" }
 
-          # 3. 面向用户的更新说明必须存在且不是空的。
+          # 3. 面向用户的更新说明（中文、英文两份）必须存在且不是空的。
           $notes = "docs/release-notes/$version.md"
           $notesPath = Join-Path $env:GITHUB_WORKSPACE $notes
           if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) { throw "缺少 $notes。" }
           if ((Read-Text $notesPath).Text.Trim() -eq '') { throw "$notes 是空的。" }
+          $notesEn = "docs/release-notes/$version.en.md"
+          $notesEnPath = Join-Path $env:GITHUB_WORKSPACE $notesEn
+          if (-not (Test-Path -LiteralPath $notesEnPath -PathType Leaf)) { throw "缺少英文更新说明 $notesEn。每次发版要准备两份更新说明：$version.md（中文）和 $version.en.md（英文）。" }
+          if ((Read-Text $notesEnPath).Text.Trim() -eq '') { throw "英文更新说明 $notesEn 是空的。" }
 
           # 4. 公钥不能还是占位值（真正核对公钥和私钥是一对，在拿到私钥的签名那一步）。
           $pubkey = Get-ConfiguredPubkey (Join-Path $env:GITHUB_WORKSPACE 'native/zssh-update/updater.json')

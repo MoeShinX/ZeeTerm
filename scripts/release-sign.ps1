@@ -12,7 +12,8 @@
 # 私钥口令只从环境变量 ZEETERM_UPDATER_KEY_PASSWORD 读（私钥没加密时不用设）；本脚本不提示输入（CI 里没有人可问）、
 # 不打印私钥和口令，签名工具也不开详细输出。
 # 先核对 updater.json 里的公钥与私钥是一对（占位值或对不上就失败：这样发出去的版本用户永远验不过签名）；
-# 更新说明只认 docs/release-notes/<版本>.md；产物格式与 release.ps1 完全一致（两边共用 release-lib.ps1）。
+# 更新说明要两份：docs/release-notes/<版本>.md（中文，写进 latest.json 的 notes）和 <版本>.en.md（英文，写进 notes_en，
+# 同时是 Release 正文），缺任何一份都失败；产物格式与 release.ps1 完全一致（两边共用 release-lib.ps1）。
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [Parameter(Mandatory = $true)][string]$InstallerPath,
@@ -25,7 +26,9 @@ param(
     # Windows 免安装版的 zip（GitHub 发版里由 Windows 任务和安装包一起打好）；不给就不发免安装版。
     [string]$PortablePath = '',
     # 默认读仓库里的 updater.json；演练时指向一份带测试公钥的副本。
-    [string]$UpdaterJson = ''
+    [string]$UpdaterJson = '',
+    # 默认读仓库里的 docs/release-notes；演练时指向一个只放了 <版本>.md（或再加 <版本>.en.md）的临时目录。
+    [string]$NotesDir = ''
 )
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -73,9 +76,15 @@ if ($derived -ne $configured) {
 Write-Host 'updater.json 的公钥与私钥匹配。'
 
 $notesOut = Join-Path $OutDir 'RELEASE_NOTES.md'
-Write-ReleaseNotes -RepoRoot $repoRoot -Version $Version -OutFile $notesOut -RequireUserNotes
-$artifacts = New-ReleaseArtifacts -RepoRoot $repoRoot -Version $Version -Installer $InstallerPath -KeyPath $KeyPath `
-    -ConfiguredPubkey $configured -NotesOut $notesOut -OutDir $OutDir -Repo $Repo -ExtraAssets $extraAssets
+# 中文说明（latest.json 的 notes）只是中间文件，放在临时目录里用完就删，不进产物目录；英文说明就是 Release 正文 RELEASE_NOTES.md。
+$notesZh = Join-Path ([System.IO.Path]::GetTempPath()) ("zeeterm-notes-zh-" + [guid]::NewGuid().ToString('N') + '.md')
+try {
+    Write-ReleaseNotes -RepoRoot $repoRoot -Version $Version -OutFile $notesZh -EnOutFile $notesOut -NotesDir $NotesDir -RequireUserNotes
+    $artifacts = New-ReleaseArtifacts -RepoRoot $repoRoot -Version $Version -Installer $InstallerPath -KeyPath $KeyPath `
+        -ConfiguredPubkey $configured -NotesOut $notesOut -NotesZh $notesZh -OutDir $OutDir -Repo $Repo -ExtraAssets $extraAssets
+} finally {
+    if (Test-Path -LiteralPath $notesZh) { Remove-Item -LiteralPath $notesZh -Force }
+}
 
 Write-Host ''
 Write-Host "发布文件：$OutDir" -ForegroundColor Green

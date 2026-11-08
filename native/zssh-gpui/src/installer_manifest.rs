@@ -580,6 +580,43 @@ fn the_portable_zip_is_built_signed_and_published_with_the_names_the_updater_exp
 }
 
 #[test]
+fn every_release_needs_notes_in_both_languages_and_the_pipeline_insists_on_them() {
+    // 当前版本的两份说明都在、不是空的（bump-version.ps1 发版前就要求它们存在）。
+    let version = env!("CARGO_PKG_VERSION");
+    for name in [format!("{version}.md"), format!("{version}.en.md")] {
+        let text = repo_file(&format!("docs/release-notes/{name}"));
+        assert!(!text.trim().is_empty(), "docs/release-notes/{name} 是空的");
+    }
+    // 英文说明不自己写 SHA-256 一节：脚本会在正文末尾追加，写了就重复。
+    let en = repo_file(&format!("docs/release-notes/{version}.en.md"));
+    assert!(!en.contains("### SHA-256"), "英文说明里不要写 SHA-256 一节");
+
+    // 校验任务和发布任务都查英文说明，缺了在任何编译之前失败。
+    let release = repo_file(".github/workflows/release.yml");
+    let verify = release.find("\n  verify:\n").expect("有 verify 任务");
+    let linux = release.find("\n  linux:\n").expect("有 linux 任务");
+    let sign_job = release.find("\n  release:\n").expect("有 release 任务");
+    assert!(release[verify..linux].contains("docs/release-notes/$version.en.md"));
+    assert!(release[verify..linux].contains("每次发版要准备两份更新说明"));
+    assert!(release[sign_job..].contains("docs/release-notes/$version.en.md"));
+
+    // 发版脚本：英文说明缺了 / 是空的就失败；Release 正文取英文，latest.json 同时带中文 notes 和英文 notes_en。
+    let lib = repo_file("scripts/release-lib.ps1");
+    assert!(lib.contains("[Parameter(Mandatory = $true)][string]$EnOutFile"));
+    assert!(lib.contains(
+        r#"Stop-WithError "缺少英文更新说明 docs/release-notes/$Version.en.md。$missingHint""#
+    ));
+    assert!(lib.contains("'--notes-file', $NotesZh, '--notes-en-file', $NotesOut"));
+    assert!(lib.contains("### SHA-256"));
+    let sign = repo_file("scripts/release-sign.ps1");
+    assert!(sign.contains("-EnOutFile $notesOut"));
+    assert!(sign.contains("-RequireUserNotes"));
+    assert!(repo_file("scripts/release.ps1").contains("-EnOutFile $notesOut"));
+    assert!(repo_file("scripts/bump-version.ps1").contains("$Version.en.md"));
+    assert!(repo_file("native/zssh-update/examples/release_tool.rs").contains("\"notes-en-file\""));
+}
+
+#[test]
 fn only_the_final_release_job_touches_the_signing_key() {
     let release = repo_file(".github/workflows/release.yml");
     let job = |name: &str| {

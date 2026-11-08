@@ -52,18 +52,18 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
 ## 发版步骤（主路径：GitHub Actions）
 
-1. **写更新说明**：`docs/release-notes/<版本>.md`，面向用户（写法见下面"更新说明"一节）；开发者看的改动写进 `CHANGELOG.md` 的 `## [Unreleased]`。
+1. **写更新说明（两份）**：`docs/release-notes/<版本>.md`（中文）和 `docs/release-notes/<版本>.en.md`（英文），都面向用户（写法见下面"更新说明"一节）；开发者看的改动写进 `CHANGELOG.md` 的 `## [Unreleased]`。缺任何一份，`bump-version.ps1` 和发版工作流都会直接失败。
 2. **改版本号**（在 `main` 最新代码上）：
 
    ```powershell
    powershell -File scripts/bump-version.ps1 -Version 1.0.0            # 加 -DryRun 先演练：照常检查和修改，结束后原样还原
    ```
 
-   它检查：版本号格式正确且高于当前版本、`docs/release-notes/1.0.0.md` 存在且不空、tag `v1.0.0` 还不存在、CHANGELOG 有 `[Unreleased]` 一节；然后改全部版本号来源（见下面"版本号的来源"）、把 CHANGELOG 的 `[Unreleased]` 内容切成 `## [1.0.0] - <今天>`，最后打印要执行的 git 命令。**不提交、不打 tag、不推送。**
+   它检查：版本号格式正确且高于当前版本、`docs/release-notes/1.0.0.md` 和 `1.0.0.en.md` 都存在且不空、tag `v1.0.0` 还不存在、CHANGELOG 有 `[Unreleased]` 一节；然后改全部版本号来源（见下面"版本号的来源"）、把 CHANGELOG 的 `[Unreleased]` 内容切成 `## [1.0.0] - <今天>`，最后打印要执行的 git 命令。**不提交、不打 tag、不推送。**
 3. **提交并推到 main**，等 main 上的 CI 通过：
 
    ```powershell
-   git add Cargo.toml Cargo.lock native/Cargo.toml native/Cargo.lock CHANGELOG.md docs/release-notes/1.0.0.md
+   git add Cargo.toml Cargo.lock native/Cargo.toml native/Cargo.lock CHANGELOG.md docs/release-notes/1.0.0.md docs/release-notes/1.0.0.en.md
    git commit -m "chore(release): v1.0.0"
    git push origin main
    ```
@@ -76,9 +76,9 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
    tag 必须叫 `v<版本>`，并且指向已经在 `main` 上的提交。
 5. **看 Actions 页**的 Release 工作流。四个任务：
-   0. **校验**（`verify`，ubuntu）：tag 去掉 `v` 等于两个 `Cargo.toml` 的版本；tag 指向的提交在 `main` 上；`docs/release-notes/<版本>.md` 存在且不空；`updater.json` 的公钥不是占位值；这个 tag 的 Release 还不存在；**这个提交在 `main` 上的 CI（`ci.yml`）有一次已经通过**。门禁不在发版里重跑——CI 已经在 Windows、Linux、macOS 上对同一个提交跑过 fmt / clippy / test / 打包，所以第 3 步说的"等 CI 通过再打 tag"是硬性要求：CI 没跑完或失败时，这里直接失败，什么都不编译。
+   0. **校验**（`verify`，ubuntu）：tag 去掉 `v` 等于两个 `Cargo.toml` 的版本；tag 指向的提交在 `main` 上；`docs/release-notes/<版本>.md`（中文）和 `docs/release-notes/<版本>.en.md`（英文）都存在且不空；`updater.json` 的公钥不是占位值；这个 tag 的 Release 还不存在；**这个提交在 `main` 上的 CI（`ci.yml`）有一次已经通过**。门禁不在发版里重跑——CI 已经在 Windows、Linux、macOS 上对同一个提交跑过 fmt / clippy / test / 打包，所以第 3 步说的"等 CI 通过再打 tag"是硬性要求：CI 没跑完或失败时，这里直接失败，什么都不编译。
    1. **Linux 包**（`linux`，ubuntu-22.04，不接触私钥）和 **Windows 包**（`windows`，windows-latest，不接触私钥；`native/installer/build.ps1` 一次打出安装包和免安装版 zip）**并行**：各自做完整 release 编译；Linux 还在 `debian:12` 和 `ubuntu:22.04` 的干净容器里装一遍 deb；两边都上传为 artifact。详情见"Linux 包"和"Windows 免安装版"两节。
-   2. **签名、发布**（`release`，windows-latest，`release` 环境，只有它拿得到私钥）：再校验一遍 tag / 版本 / 更新说明 / 公钥 / Release 不存在 → 取回四个包（安装包、免安装版 zip、deb、tar.gz）并核对文件名、不是空文件 → 把 Secret 里的私钥写到 runner 临时目录，调 `scripts/release-sign.ps1`（带 `-PortablePath`、`-LinuxDebPath`、`-LinuxTarPath`）：核对 `updater.json` 的公钥与私钥是一对 → 用**同一把私钥**给四个包各签一份名（签名里带 `version:` 和文件名）→ 生成 `latest.json`（`windows-x86_64` 加上 `windows-x86_64-portable`、`linux-x86_64-deb`、`linux-x86_64-tar`）→ 用公钥按应用里的验签代码再验一遍 → 算 SHA-256，写 `SHA256SUMS.txt` 和 Release 正文 → **无论成败都删掉临时私钥文件** → `gh release create` 上传六个文件（四个包、`latest.json`、`SHA256SUMS.txt`；同名 Release 已存在时失败，不覆盖）。
+   2. **签名、发布**（`release`，windows-latest，`release` 环境，只有它拿得到私钥）：再校验一遍 tag / 版本 / 更新说明（两份）/ 公钥 / Release 不存在 → 取回四个包（安装包、免安装版 zip、deb、tar.gz）并核对文件名、不是空文件 → 把 Secret 里的私钥写到 runner 临时目录，调 `scripts/release-sign.ps1`（带 `-PortablePath`、`-LinuxDebPath`、`-LinuxTarPath`）：核对 `updater.json` 的公钥与私钥是一对 → 用**同一把私钥**给四个包各签一份名（签名里带 `version:` 和文件名）→ 生成 `latest.json`（`windows-x86_64` 加上 `windows-x86_64-portable`、`linux-x86_64-deb`、`linux-x86_64-tar`）→ 用公钥按应用里的验签代码再验一遍 → 算 SHA-256，写 `SHA256SUMS.txt` 和 Release 正文 → **无论成败都删掉临时私钥文件** → `gh release create` 上传六个文件（四个包、`latest.json`、`SHA256SUMS.txt`；同名 Release 已存在时失败，不覆盖）。
 
    以前（1.0.1 及之前）Linux 和 Windows 是串行的，而且各自重跑一遍门禁，一次发版约 1 小时 20 分钟；现在约 30–40 分钟，主要花在两边各自的完整 release 编译上。
 6. **下载核对**：从 Release 页下载安装包，`Get-FileHash` 对一下 `SHA256SUMS.txt`（Linux 包用 `sha256sum -c SHA256SUMS.txt --ignore-missing`）；再用一个旧版本程序点「设置 → 关于 → 检查更新」，确认能发现、下载并校验通过（不必点安装）。
@@ -171,7 +171,7 @@ powershell -File scripts/release.ps1 -Version 1.0.0
 powershell -File scripts/release-drill.ps1
 ```
 
-用现生成的测试密钥（带随机口令，放 `C:\zssh-v2-data\r2-keys\`，跑完自动删）和一个充数文件，把 GitHub 路径的签名步骤（`release-sign.ps1`）和本机路径（`release.ps1 -DryRun`）各跑一遍，核对两边 `latest.json` / `SHA256SUMS.txt` / Release 正文的格式一致，再做几个反例（私钥与公钥对不上、口令不对、公钥是占位值、安装包被改……）确认都会失败。**Linux 资产也在里面演练**：用充数的 deb 和 tar.gz 走一遍带 `-LinuxDebPath` / `-LinuxTarPath` 的签名，核对 `latest.json` 恰好多出 `linux-x86_64-deb`、`linux-x86_64-tar` 两项而 Windows 项不变、三个文件各自验签通过（张冠李戴、改动、换私钥都验不过）、`SHA256SUMS.txt` 和 Release 正文含全部文件，并确认只给一个包、文件名不对、文件不存在都会失败。**免安装版也在里面演练**：用充数的 zip 走一遍带 `-PortablePath` 的签名（单独，以及和 Linux 包一起），核对 `latest.json` 恰好多出 `windows-x86_64-portable` 一项而安装包条目不变（老客户端只认自己的 key）、zip 验签通过（张冠李戴、改动都验不过）、`SHA256SUMS.txt` 和 Release 正文含它，并确认文件名不对、文件不存在、私钥对不上都会失败。不读 `%USERPROFILE%\.zeeterm` 下的任何东西，也不会改仓库（`release.ps1 -DryRun` 改的版本号会原样还原）。
+用现生成的测试密钥（带随机口令，放 `C:\zssh-v2-data\r2-keys\`，跑完自动删）和一个充数文件，把 GitHub 路径的签名步骤（`release-sign.ps1`）和本机路径（`release.ps1 -DryRun`）各跑一遍，核对两边 `latest.json` / `SHA256SUMS.txt` / Release 正文的格式一致，再做几个反例（私钥与公钥对不上、口令不对、公钥是占位值、安装包被改……）确认都会失败。**Linux 资产也在里面演练**：用充数的 deb 和 tar.gz 走一遍带 `-LinuxDebPath` / `-LinuxTarPath` 的签名，核对 `latest.json` 恰好多出 `linux-x86_64-deb`、`linux-x86_64-tar` 两项而 Windows 项不变、三个文件各自验签通过（张冠李戴、改动、换私钥都验不过）、`SHA256SUMS.txt` 和 Release 正文含全部文件，并确认只给一个包、文件名不对、文件不存在都会失败。**免安装版也在里面演练**：用充数的 zip 走一遍带 `-PortablePath` 的签名（单独，以及和 Linux 包一起），核对 `latest.json` 恰好多出 `windows-x86_64-portable` 一项而安装包条目不变（老客户端只认自己的 key）、zip 验签通过（张冠李戴、改动都验不过）、`SHA256SUMS.txt` 和 Release 正文含它，并确认文件名不对、文件不存在、私钥对不上都会失败。**更新说明也在里面演练**：`latest.json` 的 `notes` 是中文、`notes_en` 是英文（顶层字段恰好是 `version`、`notes`、`notes_en`、`pub_date`、`platforms`），Release 正文是英文说明加一节 `### SHA-256`；缺英文说明、英文说明是空的、缺中文说明都会失败，错误里写清缺哪个文件。不读 `%USERPROFILE%\.zeeterm` 下的任何东西，也不会改仓库（`release.ps1 -DryRun` 改的版本号会原样还原）。
 
 单跑本机路径的演练：
 
@@ -184,13 +184,21 @@ powershell -File scripts/release.ps1 -Version 9.9.9 -DryRun -KeyPath <测试私�
 
 ## 更新说明
 
-更新说明会原样显示在用户的更新窗口里（窗口会把它渲染成带标题、列表、粗体的版式），也是 GitHub Release 页的正文。**写给普通用户看**：一句话概述加几条要点，每条一行说清"能做什么 / 有什么变化"；不要写脚本名、内部实现和开发者才关心的细节（那些留在 `CHANGELOG.md`）。
+**每次发版要准备两份更新说明**，都放在 `docs/release-notes/`，写法见那里的 `README.md`：
 
-GitHub 工作流**只认** `docs/release-notes/<版本>.md`（没有或是空的就在最前面失败，不退回 CHANGELOG）。本机备用脚本 `release.ps1` 按下面的优先级取说明，取到哪份会在输出里打印出来：
+| 文件 | 语言 | 用在哪 |
+| --- | --- | --- |
+| `<版本>.md` | 中文 | `latest.json` 的 `notes`：更新窗口的中文界面显示它；老版本客户端只认这一个字段 |
+| `<版本>.en.md` | 英文 | GitHub Release 页的正文（发版脚本在末尾自动附上 `### SHA-256` 一节，英文说明里不用写）；`latest.json` 的 `notes_en`：更新窗口的英文界面优先显示它 |
 
-1. `-NotesFile <文件>`（临时指定，优先级最高）；
-2. `docs/release-notes/<版本>.md`（推荐：每个版本一份面向用户的说明，格式见 `docs/release-notes/README.md`；文件存在但是空的会直接报错）；
-3. `CHANGELOG.md` 里的 `## [<版本>]` 一节（没有 `docs/release-notes/<版本>.md` 时的退路，内容偏技术，不推荐直接给用户看）。
+更新说明会原样显示在用户的更新窗口里（窗口会把它渲染成带标题、列表、粗体的版式）。**写给普通用户看**：一句话概述加几条要点，每条一行说清"能做什么 / 有什么变化"；不要写脚本名、内部实现和开发者才关心的细节（那些留在 `CHANGELOG.md`）。
+
+`latest.json` 里 `notes`（中文）一直都在，`notes_en`（英文）是新增的可选字段：老客户端不认这个字段，解析时直接忽略；新客户端的英文界面优先显示 `notes_en`，清单里没有它（老版本发布的清单）或是空的就退回 `notes`，中文界面永远显示 `notes`。`latest.json` 本身没有签名——签名只绑在安装包上（签名里的 `version:` 和文件名），所以加这个字段不影响任何校验；GitHub Release 页的正文是脚本生成的文件，和 `latest.json` 里的说明各自独立写出，不互相读取。
+
+GitHub 工作流**只认** `docs/release-notes/` 下这两份（任何一份没有或是空的，`verify` 任务就在最前面失败，什么都不编译；`release` 任务里还会再查一遍，签名那一步也会拒绝），不退回 CHANGELOG，也不用中文顶替英文。本机备用脚本 `release.ps1` 按下面的优先级取说明，取到哪份会在输出里打印出来：
+
+1. 中文：`-NotesFile <文件>`（临时指定，优先级最高）；`docs/release-notes/<版本>.md`（推荐：每个版本一份面向用户的说明；文件存在但是空的会直接报错）；`CHANGELOG.md` 里的 `## [<版本>]` 一节（没有 `docs/release-notes/<版本>.md` 时的退路，内容偏技术，不推荐直接给用户看）。
+2. 英文：`-NotesEnFile <文件>`（临时指定）；`docs/release-notes/<版本>.en.md`。**没有退路**，两样都没有就失败。
 
 更新窗口只渲染安全的 Markdown：HTML 不执行、图片不加载（显示替代文字）、只有 `https://` 链接能点开（用系统浏览器打开），所以说明里别靠图片和 HTML 传达信息。
 

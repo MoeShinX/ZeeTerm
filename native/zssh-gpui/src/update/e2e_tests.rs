@@ -218,6 +218,7 @@ fn publish(
     let json = build_latest_json(&ReleaseManifest {
         version: announced,
         notes: "修复若干问题\n新增在线更新",
+        notes_en: None,
         pub_date: "2026-11-03T08:00:00Z",
         url: &format!("https://fixture.invalid/download/v{announced}/{name}"),
         signature: &signature,
@@ -488,6 +489,69 @@ fn a_failed_signature_check_never_reaches_the_installer_even_after_download_and_
     assert!(!install_now);
     assert_eq!(file_count(&cache), 0);
     let _ = std::fs::remove_dir_all(&cache);
+}
+
+/// 英文更新说明从发版工具生成的清单一路走到更新窗口：中文 `notes` 不变（老客户端只认它），`notes_en` 单独带着，
+/// 窗口按界面语言挑；老清单（没有 `notes_en`）两种语言都显示中文那份。
+#[test]
+fn english_notes_travel_with_the_manifest_and_the_window_picks_by_language() {
+    use crate::i18n::Lang;
+    use crate::update::notes::display_for_language;
+
+    let keys = keys();
+    let installer = b"installer".to_vec();
+    let name = "ZeeTerm-Setup-1.4.0.exe";
+    let signature = sign_installer(&keys, &installer, "1.4.0", name);
+    let json = build_latest_json(&ReleaseManifest {
+        version: "1.4.0",
+        notes: "### 新功能\n\n- 中文要点",
+        notes_en: Some("### New\n\n- English point"),
+        pub_date: "2026-11-08T08:00:00Z",
+        url: &format!("https://fixture.invalid/download/v1.4.0/{name}"),
+        signature: &signature,
+    })
+    .expect("生成 latest.json");
+    let fixture = Fixture::start();
+    fixture.set(
+        "/latest.json",
+        Route::Ok(
+            json.replace("https://fixture.invalid", &fixture.base)
+                .into_bytes(),
+        ),
+    );
+    fixture.set(&format!("/download/v1.4.0/{name}"), Route::Ok(installer));
+
+    let checked = check_full(&fixture, "1.3.0", &keys.pubkey_b64);
+    assert_eq!(checked.kind, CheckKind::Found, "{}", checked.status);
+    assert_eq!(checked.notes.as_deref(), Some("### 新功能\n\n- 中文要点"));
+    assert_eq!(
+        checked.notes_en.as_deref(),
+        Some("### New\n\n- English point")
+    );
+    let shown = |lang| {
+        display_for_language(lang, checked.notes.as_deref(), checked.notes_en.as_deref())
+            .unwrap_or_default()
+    };
+    assert!(shown(Lang::En).contains("English point"));
+    assert!(!shown(Lang::En).contains("中文要点"));
+    assert!(shown(Lang::Zh).contains("中文要点"));
+
+    // 老清单：没有 notes_en，英文界面也只能显示中文那份，不会空着。
+    let (old_fixture, _) = publish(
+        &keys,
+        "1.4.0",
+        "1.4.0",
+        b"old installer",
+        Route::Ok(b"old installer".to_vec()),
+    );
+    let old = check_full(&old_fixture, "1.3.0", &keys.pubkey_b64);
+    assert_eq!(old.kind, CheckKind::Found, "{}", old.status);
+    assert_eq!(old.notes_en, None);
+    for lang in [Lang::Zh, Lang::En] {
+        let text = display_for_language(lang, old.notes.as_deref(), old.notes_en.as_deref())
+            .unwrap_or_default();
+        assert!(text.contains("修复若干问题"), "{lang:?}：{text}");
+    }
 }
 
 #[test]
@@ -849,6 +913,7 @@ mod linux_chain {
             &ReleaseManifest {
                 version: announced,
                 notes: "新增 Linux 版",
+                notes_en: None,
                 pub_date: "2026-11-06T08:00:00Z",
                 url: &format!("https://fixture.invalid/download/v{announced}/{windows_name}"),
                 signature: &windows_signature,
@@ -1417,6 +1482,7 @@ mod portable_chain {
             &ReleaseManifest {
                 version: "1.4.0",
                 notes: "新增免安装版",
+                notes_en: None,
                 pub_date: "2026-11-08T08:00:00Z",
                 url: "https://fixture.invalid/download/v1.4.0/ZeeTerm-Setup-1.4.0.exe",
                 signature: &installer_sig,

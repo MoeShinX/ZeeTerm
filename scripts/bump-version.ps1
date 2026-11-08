@@ -6,7 +6,8 @@
 #   2. 把 CHANGELOG.md 里 "## [Unreleased]" 下面的内容切成 "## [x.y.z] - <今天>"，[Unreleased] 留空；
 #   3. 最后打印接下来要执行的 git 命令（提交、推 main、打 tag、推 tag），由发版人自己执行。
 # 开始之前先检查，任何一条不满足就报错退出、不改任何文件：
-#   版本号格式正确且高于当前版本；docs/release-notes/<版本>.md 存在且不是空的；tag v<版本> 还不存在；
+#   版本号格式正确且高于当前版本；docs/release-notes/<版本>.md（中文）和 <版本>.en.md（英文）都存在且不是空的；
+#   tag v<版本> 还不存在；
 #   CHANGELOG.md 有 [Unreleased] 一节、还没有 [<版本>] 一节。
 #
 # 用法：
@@ -41,6 +42,14 @@ if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) {
 }
 if ((Read-Text $notesPath).Text.Trim() -eq '') {
     Stop-WithError "docs/release-notes/$Version.md 是空的。先写好面向用户的更新说明。"
+}
+# 每个版本要两份更新说明：中文 <版本>.md 和英文 <版本>.en.md（GitHub Release 正文、英文界面的更新窗口用）。
+$notesEnPath = Join-Path $repoRoot "docs\release-notes\$Version.en.md"
+if (-not (Test-Path -LiteralPath $notesEnPath -PathType Leaf)) {
+    Stop-WithError "缺少英文更新说明 docs/release-notes/$Version.en.md。每次发版要准备两份：$Version.md（中文）和 $Version.en.md（英文），格式见 docs/release-notes/README.md。"
+}
+if ((Read-Text $notesEnPath).Text.Trim() -eq '') {
+    Stop-WithError "docs/release-notes/$Version.en.md 是空的。先写好英文更新说明。"
 }
 
 if (@(& git tag --list "v$Version").Count -gt 0) { Stop-WithError "tag v$Version 已经存在。" }
@@ -96,7 +105,7 @@ Write-Host "版本号已改到 $Version。接下来由你执行（脚本不提�
 Write-Host '  1. 检查改动：'
 Write-Host '       git diff'
 Write-Host '  2. 提交，推到 main，等 main 上的 CI 通过：'
-Write-Host "       git add Cargo.toml Cargo.lock native/Cargo.toml native/Cargo.lock CHANGELOG.md docs/release-notes/$Version.md"
+Write-Host "       git add Cargo.toml Cargo.lock native/Cargo.toml native/Cargo.lock CHANGELOG.md docs/release-notes/$Version.md docs/release-notes/$Version.en.md"
 Write-Host "       git commit -m `"chore(release): v$Version`""
 Write-Host '       git push origin main'
 Write-Host '  3. 打 tag 并推送（推 tag 会触发 GitHub Actions 的发版工作流：编译、签名、发布 Release）：'

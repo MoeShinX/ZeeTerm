@@ -147,6 +147,10 @@ pub struct Manifest {
     pub version: String,
     #[serde(default, alias = "body")]
     pub notes: Option<String>,
+    /// 英文更新说明（可选）：老客户端不认这个字段，照常只读 `notes`；新客户端的英文界面优先显示它。
+    /// 和 `notes` 一样没有被签名——签名只绑在安装包上（见 [`verify_signature`]），清单整份不签名。
+    #[serde(default)]
+    pub notes_en: Option<String>,
     #[serde(default, alias = "pub_date")]
     pub date: Option<String>,
     pub platforms: BTreeMap<String, Asset>,
@@ -281,7 +285,10 @@ pub const RELEASE_PLATFORM_KEY: &str = "windows-x86_64";
 #[derive(Debug, Clone)]
 pub struct ReleaseManifest<'a> {
     pub version: &'a str,
+    /// 中文更新说明：老客户端只认它。
     pub notes: &'a str,
+    /// 英文更新说明；`None` 时清单里没有 `notes_en` 这个字段（和以前逐字节一样）。
+    pub notes_en: Option<&'a str>,
     /// RFC 3339 时间，例如 `2026-11-03T08:00:00Z`。
     pub pub_date: &'a str,
     /// 安装包的下载地址。
@@ -303,6 +310,8 @@ pub struct PlatformAsset<'a> {
 struct ManifestOut<'a> {
     version: &'a str,
     notes: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes_en: Option<&'a str>,
     pub_date: &'a str,
     platforms: BTreeMap<&'a str, AssetOut<'a>>,
 }
@@ -380,6 +389,11 @@ pub fn build_latest_json_with_platforms(
     let out = ManifestOut {
         version: release.version,
         notes: release.notes,
+        // 空白的英文说明当没有：别让客户端拿一个空字符串盖掉中文说明。
+        notes_en: release
+            .notes_en
+            .map(str::trim)
+            .filter(|notes| !notes.is_empty()),
         pub_date: release.pub_date,
         platforms,
     };
@@ -614,6 +628,7 @@ mod tests {
         let json = build_latest_json(&ReleaseManifest {
             version: "1.4.0",
             notes: "修复若干问题\n- 第二行",
+            notes_en: Some("Fixed a few problems\n- second line"),
             pub_date: "2026-11-03T08:00:00Z",
             url: "https://github.com/owner/repo/releases/download/v1.4.0/ZeeTerm-Setup-1.4.0.exe",
             signature: &signature,
@@ -623,6 +638,10 @@ mod tests {
         let manifest = parse_manifest(&json).expect("清单能读回来");
         assert_eq!(manifest.version, "1.4.0");
         assert_eq!(manifest.notes.as_deref(), Some("修复若干问题\n- 第二行"));
+        assert_eq!(
+            manifest.notes_en.as_deref(),
+            Some("Fixed a few problems\n- second line")
+        );
         assert_eq!(manifest.date.as_deref(), Some("2026-11-03T08:00:00Z"));
         let package = manifest.select("1.3.9").unwrap().expect("比 1.3.9 新");
         assert_eq!(package.platform_key, RELEASE_PLATFORM_KEY);
@@ -639,11 +658,72 @@ mod tests {
         assert!(manifest.select("1.4.0").unwrap().is_none(), "同版本不更新");
     }
 
+    /// 新增的英文说明字段对老清单、老客户端都没有影响：没有它的清单照常解析（`notes_en` 为 `None`），
+    /// 没传英文说明时生成的文本里根本没有这个字段（和以前逐字节一样）；老客户端的解析结构里没有这个字段，
+    /// 多出来的键被忽略，读到的 `notes`、选到的包都和没有它时一样。
+    #[test]
+    fn the_english_notes_field_is_optional_and_does_not_disturb_older_readers() {
+        // 老清单（没有 notes_en，Tauri 时代的 body / pub_date 别名也照常认）。
+        let old = r#"{
+            "version": "1.0.1",
+            "body": "旧说明",
+            "pub_date": "2026-11-07T00:00:00Z",
+            "platforms": { "windows-x86_64": { "url": "https://example.com/a.exe", "signature": "c2ln" } }
+        }"#;
+        let manifest = parse_manifest(old).expect("老清单能读");
+        assert_eq!(manifest.notes.as_deref(), Some("旧说明"));
+        assert_eq!(manifest.notes_en, None);
+        assert!(manifest.select("1.0.0").unwrap().is_some());
+
+        // 没传英文说明：生成的清单里没有 notes_en 这个键。
+        let without = build_latest_json(&windows_release("c2ln")).expect("生成");
+        assert!(!without.contains("notes_en"), "{without}");
+
+        // 传了英文说明：键在，值是去掉首尾空白的英文；中文 notes 一个字不变。
+        let release = ReleaseManifest {
+            notes: "中文说明",
+            notes_en: Some("\nEnglish notes\n"),
+            ..windows_release("c2ln")
+        };
+        let with = build_latest_json(&release).expect("生成");
+        let parsed = parse_manifest(&with).expect("读回来");
+        assert_eq!(parsed.notes.as_deref(), Some("中文说明"));
+        assert_eq!(parsed.notes_en.as_deref(), Some("English notes"));
+
+        // 老客户端的解析结构只有 version / notes(body) / date(pub_date) / platforms：用一个等价的老结构读新清单，
+        // 多出来的 notes_en 被忽略，读到的内容和不带英文时完全一样。
+        #[derive(serde::Deserialize)]
+        struct OlderManifest {
+            version: String,
+            #[serde(default, alias = "body")]
+            notes: Option<String>,
+            #[serde(default, alias = "pub_date")]
+            date: Option<String>,
+            platforms: BTreeMap<String, Asset>,
+        }
+        let older: OlderManifest = serde_json::from_str(&with).expect("老客户端读得了新清单");
+        assert_eq!(older.version, "1.4.0");
+        assert_eq!(older.notes.as_deref(), Some("中文说明"));
+        assert_eq!(older.date.as_deref(), Some("2026-11-03T08:00:00Z"));
+        assert!(older.platforms.contains_key(RELEASE_PLATFORM_KEY));
+
+        // 空白的英文说明当没有，不会把空字符串写进清单。
+        for blank in ["", "  \n "] {
+            let release = ReleaseManifest {
+                notes_en: Some(blank),
+                ..windows_release("c2ln")
+            };
+            let json = build_latest_json(&release).expect("生成");
+            assert!(!json.contains("notes_en"), "{json}");
+        }
+    }
+
     #[test]
     fn latest_json_generation_refuses_bad_input() {
         let ok = ReleaseManifest {
             version: "1.0.0",
             notes: "",
+            notes_en: None,
             pub_date: "2026-11-03T08:00:00Z",
             url: "https://example.com/a.exe",
             signature: "c2ln",
@@ -693,6 +773,7 @@ mod tests {
         ReleaseManifest {
             version: "1.4.0",
             notes: "notes",
+            notes_en: None,
             pub_date: "2026-11-03T08:00:00Z",
             url: "https://github.com/owner/repo/releases/download/v1.4.0/ZeeTerm-Setup-1.4.0.exe",
             signature,

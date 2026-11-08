@@ -65,6 +65,7 @@ impl Render for UpdateDemo {
             return crate::window_frame::frame(cover);
         }
         let tokens = Tokens::current(cx);
+        self.refresh_notes_language();
         let screen = self.screen();
         let version = self.announced_version().unwrap_or_default();
         let published = self
@@ -655,7 +656,8 @@ mod tests {
         assert!(!opens_directly, "更新窗口里不该有直接打开网址的路径");
         // 内容必须先过改写才进 TextView。
         let update = include_str!("../update.rs");
-        assert!(update.contains("notes::display_markdown(checked.notes.as_deref())"));
+        assert!(update.contains("notes::display_for_language("));
+        assert!(update.contains("checked.notes_en.as_deref()"));
     }
 
     #[test]

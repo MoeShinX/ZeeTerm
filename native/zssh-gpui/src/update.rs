@@ -590,8 +590,10 @@ pub(crate) struct Checked {
     pub status: String,
     /// 清单里选中的包；没有更新或清单出错时为 `None`。
     pub package: Option<Package>,
-    /// 清单里的更新说明（Markdown 原文）。
+    /// 清单里的更新说明（Markdown 原文，中文；老客户端只认它）。
     pub notes: Option<String>,
+    /// 清单里的英文更新说明（`notes_en`，可选）：英文界面优先显示它，没有就退回 `notes`。
+    pub notes_en: Option<String>,
     /// 清单里的发布时间（RFC 3339 原文）。
     pub published: Option<String>,
     /// 清单公告的新版本号（`Found` 和 `FoundManual` 有值，不带 `v`）。
@@ -605,6 +607,7 @@ impl Checked {
             status: status.into(),
             package: None,
             notes: None,
+            notes_en: None,
             published: None,
             release_version: None,
         }
@@ -628,7 +631,10 @@ pub struct UpdateDemo {
     /// 检查结果；`None` 表示还在检查。
     checked: Option<Checked>,
     /// 更新说明（已做安全改写，见 `notes`），交给 `TextView` 渲染；没有说明时为 `None`。
+    /// 按界面语言挑的（英文界面优先 `notes_en`），语言切换后在 `refresh_notes_language` 里重算。
     notes_markdown: Option<::gpui::SharedString>,
+    /// `notes_markdown` 是按哪种语言算的。
+    notes_lang: crate::i18n::Lang,
     /// 清单里选中的包；没有更新或清单出错时为 `None`。
     package: Option<Package>,
     phase: DownloadState,
@@ -676,6 +682,7 @@ impl UpdateDemo {
             current: current_version(),
             checked: None,
             notes_markdown: None,
+            notes_lang: crate::i18n::current(),
             package: None,
             phase: DownloadState::Idle,
             speed: layout::SpeedMeter::default(),
@@ -758,8 +765,13 @@ impl UpdateDemo {
     /// 收下一次检查的结果：选出的包、更新说明（先做安全改写）都在这里落到界面状态上。
     fn apply_checked(&mut self, checked: Checked) {
         self.package = checked.package.clone();
-        self.notes_markdown =
-            notes::display_markdown(checked.notes.as_deref()).map(::gpui::SharedString::from);
+        self.notes_lang = crate::i18n::current();
+        self.notes_markdown = notes::display_for_language(
+            self.notes_lang,
+            checked.notes.as_deref(),
+            checked.notes_en.as_deref(),
+        )
+        .map(::gpui::SharedString::from);
         // Linux：这个版本本进程里已经装好、只差重启（用户点过「稍后重启」）时，不当新版本再装一遍，
         // 直接回到「已安装，重启后生效」那一屏，还能点「立即重启」。
         let awaiting = checked
@@ -768,6 +780,23 @@ impl UpdateDemo {
             .and_then(|package| linux::awaiting_restart(&package.version));
         self.install = state_after_check(std::mem::take(&mut self.install), awaiting);
         self.checked = Some(checked);
+    }
+
+    /// 窗口开着时用户切了界面语言：更新说明跟着换（英文界面优先英文说明）。语言没变时什么都不做。
+    fn refresh_notes_language(&mut self) {
+        let lang = crate::i18n::current();
+        if lang == self.notes_lang {
+            return;
+        }
+        self.notes_lang = lang;
+        if let Some(checked) = &self.checked {
+            self.notes_markdown = notes::display_for_language(
+                lang,
+                checked.notes.as_deref(),
+                checked.notes_en.as_deref(),
+            )
+            .map(::gpui::SharedString::from);
+        }
     }
 
     /// 当前画哪一屏。Linux 的安装过程（安装中 / 已装好 / 手动安装）盖在"已验证"之上。
@@ -2551,6 +2580,7 @@ fn evaluate_manifest_notice_only(text: &str, current: &str, message: UpdateMsg) 
             status: status_text(&Ok(None), None),
             package: None,
             notes: None,
+            notes_en: None,
             published: None,
             release_version: None,
         },
@@ -2565,6 +2595,7 @@ fn evaluate_manifest_notice_only(text: &str, current: &str, message: UpdateMsg) 
                 ),
                 package: None,
                 notes: manifest.notes,
+                notes_en: manifest.notes_en,
                 published: manifest.date,
                 release_version: Some(version),
             }
@@ -2637,6 +2668,7 @@ fn evaluate_manifest_for(
                     ),
                     package: None,
                     notes: manifest.notes,
+                    notes_en: manifest.notes_en,
                     published: manifest.date,
                     release_version: Some(version),
                 };
@@ -2654,6 +2686,7 @@ fn evaluate_manifest_for(
                     release_version: Some(package.version.clone()),
                     package: Some(package),
                     notes: manifest.notes,
+                    notes_en: manifest.notes_en,
                     published: manifest.date,
                 },
                 Ok(None) => Checked {
@@ -2661,6 +2694,7 @@ fn evaluate_manifest_for(
                     status,
                     package: None,
                     notes: None,
+                    notes_en: None,
                     published: None,
                     release_version: None,
                 },
