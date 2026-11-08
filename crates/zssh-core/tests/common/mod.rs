@@ -922,8 +922,11 @@ impl Drop for TestDir {
             use std::os::windows::process::CommandExt;
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             let _ = std::process::Command::new("cmd")
-                .args(["/C", "ping -n 6 127.0.0.1 >nul & rmdir /S /Q"])
-                .arg(&self.0)
+                // 整条命令自己拼、路径加引号：分开传参时 cmd 遇到带空格的路径会把引号剥掉，rmdir 删不到。
+                .raw_arg(format!(
+                    "/C ping -n 6 127.0.0.1 >nul & rmdir /S /Q \"{}\"",
+                    self.0.display()
+                ))
                 .creation_flags(CREATE_NO_WINDOW)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())

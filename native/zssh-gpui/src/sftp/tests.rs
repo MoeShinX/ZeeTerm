@@ -1084,7 +1084,7 @@ async fn recursive_delete_refuses_a_tree_deeper_than_the_limit_and_reports_what_
     use crate::test_ssh_server::connect_trusting;
 
     let root = TempRoot::new("delete-deep");
-    // tree/a.txt 和 tree/d1/.../d5：文件名排序 "a.txt" < "d1"，所以 a.txt 先被删掉。
+    // tree/a.txt 和 tree/d1/.../d5：a.txt 先删还是先撞上限取决于服务器列目录的顺序（见下面的断言）。
     root.write("tree/a.txt", b"a");
     root.write("tree/d1/d2/d3/d4/d5/leaf.txt", b"leaf");
     let known_hosts = TempRoot::new("delete-deep-kh");

@@ -5604,11 +5604,12 @@ mod pane_tests {
 
     #[test]
     fn attach_keeps_the_log_and_syncs_a_resized_window() {
+        // 目录守卫先声明：局部变量逆序 drop，pane（连着日志文件）先关，目录后删。
+        let (_dir_guard, dir, prefs) = log_prefs("attach");
         let pending = crate::ssh_backend::ready(Err("never read".to_owned()));
         let mut pane = Pane::connecting(SIZE, 100, 1, Some(7), pending);
         // 连接期间窗口变小了，也在记录日志。
         pane.resize(Size { rows: 8, cols: 40 });
-        let (_dir_guard, dir, prefs) = log_prefs("attach");
         assert!(matches!(
             pane.toggle_log_with(&prefs),
             LogOutcome::Started { .. }
