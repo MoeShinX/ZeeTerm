@@ -204,6 +204,7 @@ enum LockUiMsg {
     PasswordRowTitle,
     PasswordReadableDescription,
     PasswordUnreadableDescription,
+    ReadFailedDescription,
     ChangePassword,
     DisableLock,
     IdleRowTitle,
@@ -278,6 +279,9 @@ impl Msg for LockUiMsg {
             Self::PasswordRowTitle => "锁屏密码",
             Self::PasswordReadableDescription => "修改或关闭都要先输入原来的密码。",
             Self::PasswordUnreadableDescription => "密码记录读不出来，只能用下面的“忘记密码”重置。",
+            Self::ReadFailedDescription => {
+                "暂时读不到锁屏设置，不确定有没有设过锁，所以先按已启用处理、不能在这里修改。请在锁屏页点“重试”，或重新打开 ZeeTerm。"
+            }
             Self::ChangePassword => "修改密码…",
             Self::DisableLock => "关闭锁屏",
             Self::IdleRowTitle => "空闲多久自动锁定",
@@ -374,6 +378,9 @@ impl Msg for LockUiMsg {
             }
             Self::PasswordUnreadableDescription => {
                 "The password record cannot be read; use \"Forgot password\" below to reset it."
+            }
+            Self::ReadFailedDescription => {
+                "The lock settings cannot be read right now, so it is unknown whether a lock is set. It is treated as enabled and cannot be changed here. Choose Retry on the lock screen, or reopen ZeeTerm."
             }
             Self::ChangePassword => "Change Password…",
             Self::DisableLock => "Turn Off App Lock",
@@ -518,6 +525,7 @@ pub fn is_lock_shortcut(key: &str, control: bool, alt: bool, shift: bool, platfo
 /// 主窗口建出来之前套用“启动时锁定”：开关打开并且锁屏启用着，就让第一帧直接是锁屏页。
 /// 返回现在是不是锁着。其他窗口（文件窗口、拖出的终端窗口）读同一份全局状态，不用各自处理。
 pub fn apply_start_lock(config: &LockConfig) -> bool {
+    lock_ui::set_read_failed(config.status.is_read_failed());
     if config.start_locked() {
         lock_ui::set_locked(true);
     }
@@ -853,6 +861,8 @@ impl MainWindow {
         if let Ok(db) = self.store.db() {
             self.app_lock.config = LockConfig::load(db);
         }
+        // 锁屏页据此决定画密码框，还是画“读不到设置：重试 / 退出”。
+        lock_ui::set_read_failed(self.app_lock.config.status.is_read_failed());
         crate::tray::set_lock_menu(self.lock_enabled());
     }
 
@@ -877,7 +887,7 @@ impl MainWindow {
     /// 关到托盘：设置里选了“关到托盘时锁定”就锁。
     pub(crate) fn lock_for_tray(&mut self, cx: &mut Context<Self>) {
         self.reload_lock_config();
-        if self.app_lock.config.lock_on_tray {
+        if self.app_lock.config.tray_locks() {
             self.lock_now(cx);
         }
     }
@@ -929,7 +939,8 @@ impl MainWindow {
 
     /// 每个节拍（半秒）：重读设置、同步托盘菜单；锁着时守住键盘焦点并清掉通知；没锁时判断空闲。
     pub(super) fn lock_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tick_count.is_multiple_of(4) {
+        // 锁屏页上“重试”读成功了：不等两秒一次的节拍，马上按真实状态走。
+        if lock_ui::take_reload_request() || self.tick_count.is_multiple_of(4) {
             self.reload_lock_config();
         }
         let enabled = self.lock_enabled();
@@ -942,7 +953,11 @@ impl MainWindow {
             }
             // 叠在锁屏页上的“重置锁屏密码”框开着时，键盘归它的输入框，不能被锁屏页的密码框抢回去。
             let reset_dialog_open = matches!(self.modal, Some(Modal::AppLock(_)));
-            if !reset_dialog_open && let Some(screen) = self.app_lock.screen.clone() {
+            // 读不到设置的页面上没有密码框，不用抢键盘。
+            if !reset_dialog_open
+                && !lock_ui::is_read_failed()
+                && let Some(screen) = self.app_lock.screen.clone()
+            {
                 screen.update(cx, |screen, cx| screen.keep_focus(window, cx));
             }
             clear_notifications(window, cx);
@@ -972,9 +987,24 @@ impl MainWindow {
         let forgot: lock_ui::ForgotHook = std::rc::Rc::new(move |window, cx| {
             let _ = weak.update(cx, |this, cx| this.start_forgot_reset(window, cx));
         });
-        let cover =
-            crate::app_lock::cover_with(&mut self.app_lock.screen, true, Some(forgot), window, cx)
-                .unwrap_or_else(|| div().into_any_element());
+        // 读不到锁屏设置时锁屏页上的“退出程序”：和关闭按钮 / 托盘「退出」同一套确认。
+        let weak = cx.entity().downgrade();
+        let quit: lock_ui::ForgotHook = std::rc::Rc::new(move |window, cx| {
+            let _ = weak.update(cx, |this, cx| {
+                if this.request_quit(cx) {
+                    this.do_quit(window, cx);
+                }
+            });
+        });
+        let cover = crate::app_lock::cover_with(
+            &mut self.app_lock.screen,
+            true,
+            Some(forgot),
+            Some(quit),
+            window,
+            cx,
+        )
+        .unwrap_or_else(|| div().into_any_element());
         let modal = if self.modal.as_ref().is_some_and(modal_visible_while_locked) {
             self.render_modal(&tokens, window, cx)
         } else {
@@ -1273,11 +1303,14 @@ impl MainWindow {
         let config = self.app_lock.config.clone();
         let enabled = config.status.is_enabled();
         let unreadable = config.status == LockStatus::Unreadable;
+        // 读不到设置：不知道有没有锁，这一节所有需要“现有状态”的操作都置灰，只说明情况。
+        let read_failed = config.status.is_read_failed();
 
         let switch = {
             let entity = entity.clone();
             Switch::new("lock-enabled")
                 .checked(enabled)
+                .disabled(read_failed)
                 .accessibility_label(t(LockUiMsg::SwitchLabel))
                 .on_click(move |checked: &bool, window, cx| {
                     let want = *checked;
@@ -1294,12 +1327,16 @@ impl MainWindow {
 
         let mut rows = vec![row(
             t(LockUiMsg::SwitchLabel),
-            Some(t(LockUiMsg::SwitchDescription)),
+            Some(if read_failed {
+                t(LockUiMsg::ReadFailedDescription)
+            } else {
+                t(LockUiMsg::SwitchDescription)
+            }),
             switch,
             tokens,
         )];
 
-        if enabled {
+        if enabled && !read_failed {
             let change = entity.clone();
             let disable = entity.clone();
             rows.push(row(
@@ -1387,7 +1424,7 @@ impl MainWindow {
             }),
             Switch::new("lock-on-start")
                 .checked(enabled && config.lock_on_start)
-                .disabled(!enabled)
+                .disabled(!enabled || read_failed)
                 .accessibility_label(t(LockUiMsg::StartRowTitle))
                 .on_click(move |checked: &bool, window, cx| {
                     let on = *checked;
@@ -1396,7 +1433,7 @@ impl MainWindow {
             tokens,
         ));
 
-        if enabled && !lock_ui::os_verification_available() {
+        if enabled && !read_failed && !lock_ui::os_verification_available() {
             // 没有系统身份验证的平台（Linux）：只讲清楚事实，不放一个点了只会报错的按钮。
             rows.push(row(
                 t(LockUiMsg::ForgotRowTitle),
@@ -1404,7 +1441,7 @@ impl MainWindow {
                 div(),
                 tokens,
             ));
-        } else if enabled {
+        } else if enabled && !read_failed {
             let forgot = entity.clone();
             let busy = self.app_lock.os_busy;
             rows.push(row(
@@ -1775,6 +1812,22 @@ mod tests {
         assert!(!apply_start_lock(&config(LockStatus::Disabled, true)));
         assert!(!apply_start_lock(&LockConfig::default()));
         assert!(startup_scans_allowed());
+    }
+
+    #[test]
+    fn unreadable_lock_settings_lock_the_first_frame_even_with_the_switch_off() {
+        crate::app_lock::set_locked(false);
+        crate::app_lock::set_read_failed(false);
+        // 读不到设置（不知道有没有设过锁）：开关是 false 也锁，页面上换成“重试 / 退出”。
+        assert!(apply_start_lock(&config(LockStatus::ReadFailed, false)));
+        assert!(crate::app_lock::is_locked());
+        assert!(crate::app_lock::is_read_failed());
+        assert!(!startup_scans_allowed());
+
+        // 重读成功、没设过锁：锁屏页的“读不到”状态撤掉，调用方随后放行。
+        crate::app_lock::set_locked(false);
+        assert!(!apply_start_lock(&LockConfig::default()));
+        assert!(!crate::app_lock::is_read_failed());
     }
 
     #[test]

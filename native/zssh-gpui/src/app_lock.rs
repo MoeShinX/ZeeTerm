@@ -62,6 +62,12 @@ pub(crate) enum LockMsg {
     CreatePasswordFailedPrefix,
     DisableFailedPrefix,
     SettingsDbOpenFailedPrefix,
+    ReadFailedTitle,
+    ReadFailedText,
+    Retry,
+    Retrying,
+    QuitApp,
+    SettingsUnreadable,
 }
 
 impl Msg for LockMsg {
@@ -95,6 +101,14 @@ impl Msg for LockMsg {
             Self::CreatePasswordFailedPrefix => "没能生成锁屏密码：",
             Self::DisableFailedPrefix => "没能关闭锁屏：",
             Self::SettingsDbOpenFailedPrefix => "打不开设置库：",
+            Self::ReadFailedTitle => "读不到锁屏设置",
+            Self::ReadFailedText => {
+                "暂时读不到锁屏设置，不确定有没有设过锁屏密码，所以先保持锁定。可以点“重试”重新读取；一直不行请退出程序，检查数据目录是否被别的程序占用或已损坏。"
+            }
+            Self::Retry => "重试",
+            Self::Retrying => "读取中…",
+            Self::QuitApp => "退出程序",
+            Self::SettingsUnreadable => "读不到锁屏设置，请稍后重试",
         }
     }
 
@@ -130,6 +144,14 @@ impl Msg for LockMsg {
             Self::CreatePasswordFailedPrefix => "Could not create the lock password: ",
             Self::DisableFailedPrefix => "Could not turn off app lock: ",
             Self::SettingsDbOpenFailedPrefix => "Could not open the settings database: ",
+            Self::ReadFailedTitle => "Cannot read the lock settings",
+            Self::ReadFailedText => {
+                "The lock settings cannot be read right now, so it is unknown whether a lock password was set. ZeeTerm stays locked to be safe. Choose Retry to read them again; if it keeps failing, quit and check whether the data folder is used by another program or damaged."
+            }
+            Self::Retry => "Retry",
+            Self::Retrying => "Reading…",
+            Self::QuitApp => "Quit",
+            Self::SettingsUnreadable => "The lock settings cannot be read; try again later",
         }
     }
 }
@@ -139,6 +161,11 @@ pub type ForgotHook = Rc<dyn Fn(&mut Window, &mut App)>;
 
 thread_local! {
     static LOCKED: Cell<bool> = const { Cell::new(false) };
+    /// 锁屏设置读不出来（`LockStatus::ReadFailed`）：锁屏页不画密码框，只给“重试 / 退出”。
+    /// 由主窗口每次重读设置时更新，所有窗口的锁屏页读同一份。
+    static READ_FAILED: Cell<bool> = const { Cell::new(false) };
+    /// 锁屏页点了“重试”且后台重读成功：让主窗口马上重读设置，不等下一个两秒节拍。
+    static RELOAD_REQUESTED: Cell<bool> = const { Cell::new(false) };
     /// 每次锁定加一：锁屏页据此知道“又锁了一次”，清空输入框和上次的提示。
     static EPOCH: Cell<u64> = const { Cell::new(0) };
     static BACKOFF: RefCell<Backoff> = RefCell::new(Backoff::new());
@@ -149,6 +176,26 @@ thread_local! {
 /// 现在锁着吗。任何要把用户输入送给会话的地方都可以问一句（见 `Pane::write`）。
 pub fn is_locked() -> bool {
     LOCKED.with(Cell::get)
+}
+
+/// 锁屏设置现在读不出来吗（见 [`set_read_failed`]）。
+pub fn is_read_failed() -> bool {
+    READ_FAILED.with(Cell::get)
+}
+
+/// 主窗口重读设置后告诉锁屏页：读库是不是失败了。
+pub(crate) fn set_read_failed(failed: bool) {
+    READ_FAILED.with(|cell| cell.set(failed));
+}
+
+/// 锁屏页的“重试”读成功了：请主窗口马上重读设置。
+pub(crate) fn request_reload() {
+    RELOAD_REQUESTED.with(|cell| cell.set(true));
+}
+
+/// 取走“请马上重读”的请求；有就返回 `true`。
+pub(crate) fn take_reload_request() -> bool {
+    RELOAD_REQUESTED.with(|cell| cell.replace(false))
 }
 
 pub fn lock_epoch() -> u64 {
@@ -257,6 +304,8 @@ pub enum Job {
     Reset { new: String },
     /// 查看 / 复制已保存密码前的验证（V2-U35）：只核对，不改任何东西。
     Verify { password: String },
+    /// 锁屏设置读不出来时的“重试”：只重新读一遍，读得出来就 `Done`，读不出来 `Failed`。
+    Recheck,
 }
 
 impl std::fmt::Debug for Job {
@@ -269,6 +318,7 @@ impl std::fmt::Debug for Job {
             Self::Disable { .. } => "Job::Disable",
             Self::Reset { .. } => "Job::Reset",
             Self::Verify { .. } => "Job::Verify",
+            Self::Recheck => "Job::Recheck",
         })
     }
 }
@@ -287,13 +337,25 @@ fn check_old(config: &LockConfig, old: &str) -> Result<(), JobOutcome> {
         LockStatus::Enabled(record) if record.verify(old) => Ok(()),
         // 记录读不懂时没法校验原密码：当作不对，用户走“忘记密码”重置。
         LockStatus::Enabled(_) | LockStatus::Unreadable => Err(JobOutcome::WrongPassword),
+        // 读不到设置时没有密码可校验，也不能算“密码错”（不计入输错次数）。
+        LockStatus::ReadFailed => Err(JobOutcome::Failed(
+            t(LockMsg::SettingsUnreadable).to_owned(),
+        )),
         LockStatus::Disabled => Err(JobOutcome::Failed(t(LockMsg::LockNotEnabled).to_owned())),
     }
 }
 
 /// 在后台线程里执行（会读写库、算 Argon2）。`cost` 正式用 `KdfCost::STANDARD`，测试用小参数。
 pub fn run_job(db: &Database, job: Job, cost: KdfCost) -> JobOutcome {
-    let config = LockConfig::load(db);
+    run_job_with(db, &LockConfig::load(db), job, cost)
+}
+
+/// [`run_job`] 的主体：`config` 是这一刻读到的设置（测试可以直接给一份，不必真的弄坏库）。
+fn run_job_with(db: &Database, config: &LockConfig, job: Job, cost: KdfCost) -> JobOutcome {
+    // 读不到设置时不知道库里是什么：除了重新读，一律不做（尤其不能写——会盖掉看不见的真实记录）。
+    if config.status.is_read_failed() {
+        return JobOutcome::Failed(t(LockMsg::SettingsUnreadable).to_owned());
+    }
     let save = |password: &str| match PasswordRecord::create_with(password, cost) {
         Ok(record) => match zssh_core::app_lock::save_password(db, &record) {
             Ok(()) => JobOutcome::Done,
@@ -313,9 +375,7 @@ pub fn run_job(db: &Database, job: Job, cost: KdfCost) -> JobOutcome {
         Job::Unlock { password } | Job::Verify { password } => match &config.status {
             // 别处（比如设置被改了）已经关掉了锁：放行，不让人卡在锁屏页上。
             LockStatus::Disabled => JobOutcome::Done,
-            _ => {
-                check_old(&config, &password).map_or_else(|outcome| outcome, |()| JobOutcome::Done)
-            }
+            _ => check_old(config, &password).map_or_else(|outcome| outcome, |()| JobOutcome::Done),
         },
         Job::Enable { password } => {
             if config.status.is_enabled() {
@@ -323,11 +383,11 @@ pub fn run_job(db: &Database, job: Job, cost: KdfCost) -> JobOutcome {
             }
             save(&password)
         }
-        Job::Change { old, new } => match check_old(&config, &old) {
+        Job::Change { old, new } => match check_old(config, &old) {
             Ok(()) => save(&new),
             Err(outcome) => outcome,
         },
-        Job::Disable { old } => match check_old(&config, &old) {
+        Job::Disable { old } => match check_old(config, &old) {
             Ok(()) => match zssh_core::app_lock::clear_password(db) {
                 Ok(()) => JobOutcome::Done,
                 Err(err) => JobOutcome::Failed(format!(
@@ -344,6 +404,8 @@ pub fn run_job(db: &Database, job: Job, cost: KdfCost) -> JobOutcome {
             }
             save(&new)
         }
+        // 读得出来（上面已经排除了读失败）：交给调用方按真实状态走。
+        Job::Recheck => JobOutcome::Done,
     }
 }
 
@@ -474,6 +536,8 @@ pub struct LockScreen {
     custom_titlebar: bool,
     /// 有就在“忘记密码？”展开的说明下面多一个“验证 Windows 账户并重置…”按钮。
     forgot_hook: Option<ForgotHook>,
+    /// 读不到设置时页面上“退出程序”按钮的回调（只有主窗口给；退出前的确认走主窗口自己的流程）。
+    quit_hook: Option<ForgotHook>,
     error: Option<String>,
     checking: bool,
     show_forgot: bool,
@@ -482,6 +546,8 @@ pub struct LockScreen {
     epoch: u64,
     focus_pending: bool,
     ticking: bool,
+    /// 上一帧是不是“读不到设置”的页面：变了说明页面换了样子，要清掉旧提示、把键盘重新交给密码框。
+    was_read_failed: bool,
 }
 
 impl LockScreen {
@@ -490,6 +556,7 @@ impl LockScreen {
         cx: &mut Context<Self>,
         custom_titlebar: bool,
         forgot_hook: Option<ForgotHook>,
+        quit_hook: Option<ForgotHook>,
     ) -> Self {
         let input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -512,6 +579,7 @@ impl LockScreen {
             logo: Arc::new(Image::from_bytes(ImageFormat::Png, LOGO_PNG.to_vec())),
             custom_titlebar,
             forgot_hook,
+            quit_hook,
             error: None,
             checking: false,
             show_forgot: false,
@@ -519,6 +587,7 @@ impl LockScreen {
             epoch: 0,
             focus_pending: true,
             ticking: false,
+            was_read_failed: false,
         }
     }
 
@@ -538,7 +607,8 @@ impl LockScreen {
     }
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.checking || !is_locked() {
+        // 读不到设置时页面上没有密码框，回车也不该走校验。
+        if self.checking || !is_locked() || is_read_failed() {
             return;
         }
         if let Some(left) = remaining_wait(Instant::now()) {
@@ -587,6 +657,29 @@ impl LockScreen {
             JobOutcome::Failed(reason) => self.error = Some(reason),
         }
         cx.notify();
+    }
+
+    /// 读不到设置时的“重试”：后台重新读一遍。读得出来就请主窗口马上按真实状态重画
+    /// （没设过锁则放行，设过则显示正常的密码框）；还读不出来就留在这一页。
+    fn retry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.checking || !is_locked() {
+            return;
+        }
+        self.checking = true;
+        self.error = None;
+        cx.notify();
+        spawn_job(window, cx, Job::Recheck, |this, outcome, _window, cx| {
+            this.checking = false;
+            match outcome {
+                JobOutcome::Done => request_reload(),
+                JobOutcome::Failed(reason) => this.error = Some(reason),
+                // `Recheck` 不会给出“密码错”；万一，也只当没读成。
+                JobOutcome::WrongPassword => {
+                    this.error = Some(t(LockMsg::SettingsUnreadable).to_owned());
+                }
+            }
+            cx.notify();
+        });
     }
 
     /// 密码错：输入框左右抖几下。
@@ -709,7 +802,14 @@ impl LockScreen {
 impl Render for LockScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_epoch(window, cx);
-        if self.focus_pending {
+        let read_failed = is_read_failed();
+        if read_failed != self.was_read_failed {
+            self.was_read_failed = read_failed;
+            self.error = None;
+            self.checking = false;
+            self.focus_pending = true;
+        }
+        if self.focus_pending && !read_failed {
             self.focus_pending = false;
             let handle = self.input.read(cx).focus_handle(cx);
             window.focus(&handle, cx);
@@ -726,6 +826,7 @@ impl Render for LockScreen {
         let entity = cx.entity();
         let forgot = entity.clone();
         let unlock_button = entity.clone();
+        let retry_button = entity.clone();
 
         let card = v_flex()
             .w(px(340.0))
@@ -742,91 +843,136 @@ impl Render for LockScreen {
                         crate::product::NAME,
                         t(LockMsg::LockedSuffix)
                     )))
-                    .child(
-                        div()
-                            .typo(Role::Caption, &tokens)
-                            .child(t(LockMsg::Subtitle)),
-                    ),
+                    .child(div().typo(Role::Caption, &tokens).child(if read_failed {
+                        t(LockMsg::ReadFailedTitle)
+                    } else {
+                        t(LockMsg::Subtitle)
+                    })),
             )
-            .child(
-                div()
-                    .w_full()
-                    .relative()
-                    .left(px(shake))
-                    .child(Input::new(&self.input)),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .min_h(px(18.0))
-                    .text_center()
-                    .text_xs()
-                    .text_color(tokens.danger)
-                    .children(
-                        self.error
-                            .clone()
-                            .or_else(|| waiting.map(wait_text))
-                            .map(SharedString::from),
-                    ),
-            )
-            .child(
-                div().w_full().child(
-                    text_button(
-                        "lock-unlock",
-                        if self.checking {
-                            t(LockMsg::Verifying)
-                        } else {
-                            t(LockMsg::Unlock)
-                        },
-                        ButtonLook::Primary,
-                        move |_, window, cx| {
-                            unlock_button.update(cx, |this, cx| this.submit(window, cx));
-                        },
-                    )
-                    .w_full(),
-                ),
-            )
-            .child(text_button(
-                "lock-forgot",
-                t(LockMsg::ForgotQuestion),
-                ButtonLook::Ghost,
-                move |_, _window, cx| {
-                    forgot.update(cx, |this, cx| {
-                        this.show_forgot = !this.show_forgot;
-                        cx.notify();
-                    });
-                },
-            ))
-            .when(self.show_forgot, |d| {
-                let hook = self.forgot_hook.clone();
-                let has_os = os_verification_available();
-                d.child(
-                    v_flex()
-                        .id("lock-forgot-text")
+            .when(!read_failed, |card| {
+                card.child(
+                    div()
                         .w_full()
-                        .p_3()
-                        .gap_2()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(tokens.border)
-                        .bg(tokens.subtle)
-                        .child(div().typo(Role::Caption, &tokens).child(if !has_os {
-                            t(LockMsg::ForgotTextNoOs)
-                        } else if hook.is_some() {
-                            t(LockMsg::ForgotTextInline)
-                        } else {
-                            t(LockMsg::ForgotText)
-                        }))
-                        .children(hook.filter(|_| has_os).map(|hook| {
-                            text_button(
-                                "lock-forgot-reset",
-                                t(LockMsg::ForgotReset),
-                                ButtonLook::Outline,
-                                move |_, window, cx| hook(window, cx),
-                            )
-                            .w_full()
-                        })),
+                        .relative()
+                        .left(px(shake))
+                        .child(Input::new(&self.input)),
                 )
+                .child(
+                    div()
+                        .w_full()
+                        .min_h(px(18.0))
+                        .text_center()
+                        .text_xs()
+                        .text_color(tokens.danger)
+                        .children(
+                            self.error
+                                .clone()
+                                .or_else(|| waiting.map(wait_text))
+                                .map(SharedString::from),
+                        ),
+                )
+                .child(
+                    div().w_full().child(
+                        text_button(
+                            "lock-unlock",
+                            if self.checking {
+                                t(LockMsg::Verifying)
+                            } else {
+                                t(LockMsg::Unlock)
+                            },
+                            ButtonLook::Primary,
+                            move |_, window, cx| {
+                                unlock_button.update(cx, |this, cx| this.submit(window, cx));
+                            },
+                        )
+                        .w_full(),
+                    ),
+                )
+                .child(text_button(
+                    "lock-forgot",
+                    t(LockMsg::ForgotQuestion),
+                    ButtonLook::Ghost,
+                    move |_, _window, cx| {
+                        forgot.update(cx, |this, cx| {
+                            this.show_forgot = !this.show_forgot;
+                            cx.notify();
+                        });
+                    },
+                ))
+                .when(self.show_forgot, |d| {
+                    let hook = self.forgot_hook.clone();
+                    let has_os = os_verification_available();
+                    d.child(
+                        v_flex()
+                            .id("lock-forgot-text")
+                            .w_full()
+                            .p_3()
+                            .gap_2()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(tokens.border)
+                            .bg(tokens.subtle)
+                            .child(div().typo(Role::Caption, &tokens).child(if !has_os {
+                                t(LockMsg::ForgotTextNoOs)
+                            } else if hook.is_some() {
+                                t(LockMsg::ForgotTextInline)
+                            } else {
+                                t(LockMsg::ForgotText)
+                            }))
+                            .children(hook.filter(|_| has_os).map(|hook| {
+                                text_button(
+                                    "lock-forgot-reset",
+                                    t(LockMsg::ForgotReset),
+                                    ButtonLook::Outline,
+                                    move |_, window, cx| hook(window, cx),
+                                )
+                                .w_full()
+                            })),
+                    )
+                })
+            })
+            .when(read_failed, |card| {
+                card.child(
+                    div()
+                        .w_full()
+                        .text_center()
+                        .typo(Role::Caption, &tokens)
+                        .child(t(LockMsg::ReadFailedText)),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .min_h(px(18.0))
+                        .text_center()
+                        .text_xs()
+                        .text_color(tokens.danger)
+                        .children(self.error.clone().map(SharedString::from)),
+                )
+                .child(
+                    div().w_full().child(
+                        text_button(
+                            "lock-retry",
+                            if self.checking {
+                                t(LockMsg::Retrying)
+                            } else {
+                                t(LockMsg::Retry)
+                            },
+                            ButtonLook::Primary,
+                            move |_, window, cx| {
+                                retry_button.update(cx, |this, cx| this.retry(window, cx));
+                            },
+                        )
+                        .w_full(),
+                    ),
+                )
+                .children(self.quit_hook.clone().map(|hook| {
+                    text_button(
+                        "lock-quit",
+                        t(LockMsg::QuitApp),
+                        ButtonLook::Ghost,
+                        move |_, window, cx| hook(window, cx),
+                    )
+                }))
             });
 
         v_flex()
@@ -861,14 +1007,15 @@ pub fn cover<T: 'static>(
     window: &mut Window,
     cx: &mut Context<T>,
 ) -> Option<AnyElement> {
-    cover_with(slot, custom_titlebar, None, window, cx)
+    cover_with(slot, custom_titlebar, None, None, window, cx)
 }
 
-/// 同 [`cover`]，锁屏页第一次建出来时可以带上“忘记密码”按钮的回调（只有主窗口给）。
+/// 同 [`cover`]，锁屏页第一次建出来时可以带上“忘记密码”和“退出程序”（读不到设置时）按钮的回调（只有主窗口给）。
 pub fn cover_with<T: 'static>(
     slot: &mut Option<Entity<LockScreen>>,
     custom_titlebar: bool,
     forgot_hook: Option<ForgotHook>,
+    quit_hook: Option<ForgotHook>,
     window: &mut Window,
     cx: &mut Context<T>,
 ) -> Option<AnyElement> {
@@ -878,7 +1025,8 @@ pub fn cover_with<T: 'static>(
     let screen = match slot {
         Some(screen) => screen.clone(),
         None => {
-            let screen = cx.new(|cx| LockScreen::new(window, cx, custom_titlebar, forgot_hook));
+            let screen =
+                cx.new(|cx| LockScreen::new(window, cx, custom_titlebar, forgot_hook, quit_hook));
             *slot = Some(screen.clone());
             screen
         }
@@ -892,7 +1040,7 @@ mod tests {
     use super::{
         Job, JobOutcome, LockMsg, StubVerifier, dev_reset_backoff, dev_reset_reveal, is_locked,
         lock_epoch, record_attempt, remaining_wait, reveal_mark_verified,
-        reveal_needs_verification, run_job, set_locked, wait_text, wrong_count,
+        reveal_needs_verification, run_job, run_job_with, set_locked, wait_text, wrong_count,
     };
     use std::time::{Duration, Instant};
     use zssh_core::app_lock::{
@@ -1233,6 +1381,88 @@ mod tests {
             ),
             JobOutcome::Done
         );
+    }
+
+    #[test]
+    fn nothing_is_decided_while_the_lock_settings_cannot_be_read() {
+        // 库里其实有一个密码；这一刻读不到设置（ReadFailed）：既不能放行，也不能改写那条看不见的记录。
+        let db = enabled_db("real-pass");
+        let blind = LockConfig {
+            status: LockStatus::ReadFailed,
+            ..LockConfig::default()
+        };
+        for job in [
+            Job::Unlock {
+                password: pw("real-pass"),
+            },
+            Job::Verify {
+                password: pw("real-pass"),
+            },
+            Job::Change {
+                old: pw("real-pass"),
+                new: pw("other-pass"),
+            },
+            Job::Disable {
+                old: pw("real-pass"),
+            },
+            Job::Reset {
+                new: pw("other-pass"),
+            },
+            Job::Enable {
+                password: pw("other-pass"),
+            },
+            Job::Recheck,
+        ] {
+            let outcome = run_job_with(&db, &blind, job.clone(), CHEAP);
+            assert!(
+                matches!(outcome, JobOutcome::Failed(_)),
+                "{job:?} 读不到设置时必须失败：{outcome:?}"
+            );
+        }
+        // 没有任何一次写入：真实密码照旧有效。
+        assert_eq!(
+            run_job(
+                &db,
+                Job::Unlock {
+                    password: pw("real-pass")
+                },
+                CHEAP
+            ),
+            JobOutcome::Done
+        );
+        assert_eq!(
+            run_job(
+                &db,
+                Job::Unlock {
+                    password: pw("other-pass")
+                },
+                CHEAP
+            ),
+            JobOutcome::WrongPassword
+        );
+    }
+
+    #[test]
+    fn rechecking_succeeds_once_the_settings_can_be_read_again() {
+        let db = enabled_db("real-pass");
+        assert_eq!(run_job(&db, Job::Recheck, CHEAP), JobOutcome::Done);
+        // 没设过锁也是 Done（调用方重读后发现没锁，直接放行）。
+        let none = open_db();
+        assert_eq!(run_job(&none, Job::Recheck, CHEAP), JobOutcome::Done);
+    }
+
+    #[test]
+    fn the_read_failed_flag_and_the_reload_request_are_plain_switches() {
+        use super::{is_read_failed, request_reload, set_read_failed, take_reload_request};
+        assert!(!is_read_failed());
+        set_read_failed(true);
+        assert!(is_read_failed());
+        set_read_failed(false);
+        assert!(!is_read_failed());
+        assert!(!take_reload_request());
+        request_reload();
+        assert!(take_reload_request());
+        assert!(!take_reload_request(), "取走一次就没了");
     }
 
     #[test]

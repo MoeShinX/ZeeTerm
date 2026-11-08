@@ -245,6 +245,131 @@ fn a_record_that_cannot_be_read_counts_as_enabled_not_as_off() {
     );
 }
 
+/// 故障注入：把某个设置项的值换成 BLOB。`setting_get` 按文本读它会报“类型不符”，
+/// 效果就是“这一项读库失败”，别的项不受影响（不用在产品代码里留测试钩子）。
+fn break_setting(db: &Database, key: &str) {
+    db.with_conn(|conn| {
+        let changed = conn.execute("UPDATE settings SET value = x'ff00' WHERE key = ?1", [key])?;
+        assert_eq!(changed, 1, "{key} 要先存在才能弄坏");
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn the_fault_injection_really_makes_the_read_fail() {
+    let (_dir, db) = open_db();
+    db.setting_set(LOCK_ON_TRAY_KEY, "true").unwrap();
+    break_setting(&db, LOCK_ON_TRAY_KEY);
+    assert!(db.setting_get(LOCK_ON_TRAY_KEY).is_err());
+    assert!(db.setting_get(HASH_KEY).is_ok(), "别的项照常读");
+}
+
+#[test]
+fn a_failed_hash_read_is_restricted_not_disabled_and_recovers_on_retry() {
+    let (_dir, db) = open_db();
+    save_password(
+        &db,
+        &PasswordRecord::create_with("abcd1234", CHEAP).unwrap(),
+    )
+    .unwrap();
+    break_setting(&db, HASH_KEY);
+
+    let config = LockConfig::load(&db);
+    assert_eq!(config.status, LockStatus::ReadFailed);
+    assert!(config.status.is_read_failed());
+    assert!(config.status.is_enabled(), "读不到不能当成没启用");
+    assert!(config.start_locked(), "读不到设置：启动直接是锁屏页");
+    // 对照：确实没启用时，残留的开关不会把人锁住。
+    assert!(!LockConfig {
+        status: LockStatus::Disabled,
+        lock_on_start: true,
+        ..LockConfig::default()
+    }
+    .start_locked());
+
+    assert!(config.tray_locks(), "读不到设置：关到托盘也锁");
+
+    // 恢复读取（重试）：按真实状态走。
+    let record = PasswordRecord::create_with("abcd1234", CHEAP).unwrap();
+    db.setting_set(HASH_KEY, &record.to_json().unwrap())
+        .unwrap();
+    let again = LockConfig::load(&db);
+    assert!(matches!(again.status, LockStatus::Enabled(_)));
+    assert!(!again.start_locked(), "真实状态没开启动即锁");
+    assert!(!again.tray_locks(), "真实状态没开托盘锁定");
+
+    // 恢复后发现其实没设过锁：放行。
+    db.setting_set(HASH_KEY, "null").unwrap();
+    let disabled = LockConfig::load(&db);
+    assert_eq!(disabled.status, LockStatus::Disabled);
+    assert!(!disabled.start_locked());
+}
+
+#[test]
+fn a_missing_hash_row_is_still_just_disabled() {
+    let (_dir, db) = open_db();
+    let config = LockConfig::load(&db);
+    assert_eq!(config.status, LockStatus::Disabled);
+    assert!(!config.start_locked());
+}
+
+#[test]
+fn other_settings_failing_to_read_take_the_strictest_value_while_the_lock_is_on() {
+    let (_dir, db) = open_db();
+    save_password(
+        &db,
+        &PasswordRecord::create_with("abcd1234", CHEAP).unwrap(),
+    )
+    .unwrap();
+    save_idle_minutes(&db, 15).unwrap();
+    save_lock_on_tray(&db, false).unwrap();
+    save_lock_on_start(&db, false).unwrap();
+    break_setting(&db, LOCK_ON_TRAY_KEY);
+    break_setting(&db, LOCK_ON_START_KEY);
+    break_setting(&db, IDLE_MINUTES_KEY);
+
+    let config = LockConfig::load(&db);
+    assert!(matches!(config.status, LockStatus::Enabled(_)));
+    assert!(config.lock_on_tray, "读失败：托盘锁定取开");
+    assert!(
+        config.lock_on_start && config.start_locked(),
+        "读失败：启动即锁取开"
+    );
+    assert_eq!(config.idle_minutes, 0, "空闲分钟读失败：不凭空多一条空闲锁");
+
+    // 值存在但读不懂不是读库失败，维持原来的宽容。
+    db.setting_set(LOCK_ON_TRAY_KEY, "\"yes\"").unwrap();
+    db.setting_set(LOCK_ON_START_KEY, "\"yes\"").unwrap();
+    let config = LockConfig::load(&db);
+    assert!(!config.lock_on_tray);
+    assert!(!config.start_locked());
+}
+
+#[test]
+fn an_unreadable_record_with_failing_switches_also_takes_the_strictest_values() {
+    let (_dir, db) = open_db();
+    db.setting_set(HASH_KEY, "{\"v\":1,\"junk\":true}").unwrap();
+    db.setting_set(LOCK_ON_TRAY_KEY, "false").unwrap();
+    db.setting_set(LOCK_ON_START_KEY, "false").unwrap();
+    break_setting(&db, LOCK_ON_TRAY_KEY);
+    break_setting(&db, LOCK_ON_START_KEY);
+    let config = LockConfig::load(&db);
+    assert_eq!(config.status, LockStatus::Unreadable);
+    assert!(config.lock_on_tray && config.start_locked());
+}
+
+#[test]
+fn switches_failing_to_read_do_not_matter_while_no_lock_is_set() {
+    let (_dir, db) = open_db();
+    db.setting_set(LOCK_ON_TRAY_KEY, "true").unwrap();
+    db.setting_set(LOCK_ON_START_KEY, "true").unwrap();
+    break_setting(&db, LOCK_ON_TRAY_KEY);
+    break_setting(&db, LOCK_ON_START_KEY);
+    let config = LockConfig::load(&db);
+    assert_eq!(config, LockConfig::default(), "没设锁：不凭空多出锁");
+}
+
 #[test]
 fn idle_and_tray_settings_round_trip_and_clamp() {
     let (_dir, db) = open_db();

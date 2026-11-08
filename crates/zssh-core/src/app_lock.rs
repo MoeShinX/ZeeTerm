@@ -272,11 +272,21 @@ pub enum LockStatus {
     /// 库里有记录但读不懂（文件被改、版本更新）。**不能当成没启用**：悄悄关掉锁等于绕过它。
     /// 按已启用处理，密码无法校验，只能走“用 Windows 账户验证后重置”。
     Unreadable,
+    /// 读库本身失败了（不是“没有这条记录”）：不知道有没有设过锁。**同样不能当成没启用**——
+    /// 临时的读错误不该让锁悄悄失效。按受限处理：启动即锁、托盘锁定都生效，锁屏页上不给密码框，
+    /// 只能“重试”（重新读，读成功就按真实状态走）或退出程序。
+    ReadFailed,
 }
 
 impl LockStatus {
+    /// 锁屏算不算生效。`Unreadable` 和 `ReadFailed` 都按生效算（失败即收紧）。
     pub fn is_enabled(&self) -> bool {
         !matches!(self, Self::Disabled)
+    }
+
+    /// 是不是“读不到设置、不知道有没有锁”。这种状态没有密码可以校验。
+    pub fn is_read_failed(&self) -> bool {
+        matches!(self, Self::ReadFailed)
     }
 }
 
@@ -305,31 +315,27 @@ impl Default for LockConfig {
 }
 
 impl LockConfig {
-    /// 读不到的项取默认（不启用、不自动锁定）。
+    /// 读设置。区分三种情况：
+    /// - 库里没有记录（`Ok(None)`）= 没启用，其余项取默认；
+    /// - 值存在但读不懂 = 取默认（`Unreadable` 另算），这不是读库失败；
+    /// - **读库本身失败（`Err`）**：密码记录读不出来 = [`LockStatus::ReadFailed`]；锁已生效（含
+    ///   `Unreadable` / `ReadFailed`）时，另外几项读失败取最严格的值（启动即锁、托盘锁定都开），
+    ///   空闲分钟数读失败保持 0（不凭空多出一条空闲锁）。
     pub fn load(db: &Database) -> Self {
         let status = match db.setting_get(HASH_KEY) {
             Ok(Some(raw)) => status_from_stored(&raw),
-            // 库读不出来：和“没有记录”不同，但这里没有更好的办法，按没启用，界面本身也读不了库。
-            _ => LockStatus::Disabled,
+            Ok(None) => LockStatus::Disabled,
+            Err(_) => LockStatus::ReadFailed,
         };
+        let strict = status.is_enabled();
         let idle_minutes = db
             .setting_get(IDLE_MINUTES_KEY)
             .ok()
             .flatten()
             .and_then(|raw| serde_json::from_str::<u32>(&raw).ok())
             .map_or(0, sanitize_idle_minutes);
-        let lock_on_tray = db
-            .setting_get(LOCK_ON_TRAY_KEY)
-            .ok()
-            .flatten()
-            .and_then(|raw| serde_json::from_str::<bool>(&raw).ok())
-            .unwrap_or(false);
-        let lock_on_start = db
-            .setting_get(LOCK_ON_START_KEY)
-            .ok()
-            .flatten()
-            .and_then(|raw| serde_json::from_str::<bool>(&raw).ok())
-            .unwrap_or(false);
+        let lock_on_tray = read_flag(db, LOCK_ON_TRAY_KEY, strict);
+        let lock_on_start = read_flag(db, LOCK_ON_START_KEY, strict);
         Self {
             status,
             idle_minutes,
@@ -338,10 +344,26 @@ impl LockConfig {
         }
     }
 
+    /// 关到托盘时要不要锁：开关打开，或者读不到设置（不知道有没有锁，按受限处理）。
+    pub fn tray_locks(&self) -> bool {
+        self.lock_on_tray || self.status.is_read_failed()
+    }
+
     /// 这次启动要不要一开始就锁着：开关打开**并且**锁屏还启用着（库里的开关残留、而密码已经没了时
-    /// 不能把人锁在一个没有密码的锁屏页上）。
+    /// 不能把人锁在一个没有密码的锁屏页上）。读不到设置（`ReadFailed`）时一律锁着，页面上是“重试 / 退出”。
     pub fn start_locked(&self) -> bool {
-        self.lock_on_start && self.status.is_enabled()
+        self.status.is_read_failed() || (self.lock_on_start && self.status.is_enabled())
+    }
+}
+
+/// 读一个布尔开关。读库失败：`strict` 时取 `true`（失败即收紧），否则取 `false`；
+/// 值存在但不是布尔、或根本没有这一项，一律 `false`（维持原来的宽容）。
+fn read_flag(db: &Database, key: &str, strict: bool) -> bool {
+    match db.setting_get(key) {
+        Ok(raw) => raw
+            .and_then(|raw| serde_json::from_str::<bool>(&raw).ok())
+            .unwrap_or(false),
+        Err(_) => strict,
     }
 }
 
