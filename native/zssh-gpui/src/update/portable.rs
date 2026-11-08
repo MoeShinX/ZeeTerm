@@ -96,13 +96,18 @@ mod tests {
         (root, package, zssh_update::sha256_hex(b"zip bytes"))
     }
 
+    /// 假的程序位置。用各平台都认的写法拼：`D:\Tools\...` 这种反斜杠路径在 Linux / macOS 上取不出上级目录。
+    fn tools_exe() -> PathBuf {
+        Path::new("Tools").join("ZeeTerm").join("ZeeTerm.exe")
+    }
+
     fn job(root: &Path, package: &Path, sha256: &str) -> Job {
         Job {
             package: package.to_path_buf(),
             cache_root: root.to_path_buf(),
             version: "2.0.0".to_owned(),
             sha256: sha256.to_owned(),
-            layout: PortableLayout::new(Path::new(r"D:\Tools\ZeeTerm\ZeeTerm.exe")),
+            layout: PortableLayout::new(&tools_exe()),
         }
     }
 
@@ -117,12 +122,12 @@ mod tests {
         assert_eq!(
             outcome,
             Outcome::Installed {
-                restart: PathBuf::from(r"D:\Tools\ZeeTerm\ZeeTerm.exe")
+                restart: tools_exe()
             }
         );
         let (archive, layout) = seen.into_inner().expect("调用了替换");
         assert_eq!(archive, package.canonicalize().expect("规范化"));
-        assert_eq!(layout.dir, Path::new(r"D:\Tools\ZeeTerm"));
+        assert_eq!(layout.dir, Path::new("Tools").join("ZeeTerm"));
     }
 
     #[test]
