@@ -927,6 +927,10 @@ pub(crate) fn sentence(key: &str, params: &[(&'static str, String)]) -> Option<S
             .iter()
             .find(|(name, _)| *name == "agent")
             .map(|(_, value)| value.clone());
+        let key = expanded
+            .iter()
+            .find(|(name, _)| *name == "key")
+            .map(|(_, value)| value.clone());
         let mut extra: Vec<(&'static str, String)> = Vec::new();
         for (name, value) in &mut expanded {
             match *name {
@@ -947,7 +951,7 @@ pub(crate) fn sentence(key: &str, params: &[(&'static str, String)]) -> Option<S
                 "io_reason" => *value = io_reason_en(value),
                 "tried_codes" => extra.push((
                     "tried",
-                    crate::error_text::tried_methods_en(value, agent.as_deref()),
+                    crate::error_text::tried_methods_en(value, agent.as_deref(), key.as_deref()),
                 )),
                 _ => {}
             }

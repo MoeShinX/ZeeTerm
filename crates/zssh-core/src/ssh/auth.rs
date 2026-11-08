@@ -15,7 +15,7 @@ use russh::keys::{
 use russh::{MethodKind, MethodSet};
 use tracing::{debug, info, warn};
 
-use crate::error::{reason_keys as rk, Reason, ZsshError};
+use crate::error::{reason_keys as rk, AuthCauses, Reason, ZsshError};
 use crate::model::AuthMethod;
 use crate::ssh::connection::ClientHandler;
 use crate::ssh::interact::{Interactor, PromptAnswers, PromptItem, PromptKind, PromptRequest};
@@ -169,7 +169,7 @@ pub(crate) async fn authenticate(
 
     // （中文说法, 稳定代码）：代码给界面按语言重新生成，见 `ZsshError::AllAuthFailed`。
     let mut tried: Vec<(String, String)> = Vec::new();
-    let mut agent_failure: Option<Box<ZsshError>> = None;
+    let mut causes = AuthCauses::default();
 
     // 1. 私钥
     if config.method == AuthMethod::Key {
@@ -186,14 +186,24 @@ pub(crate) async fn authenticate(
                 )
                 .await?
                 {
-                    Some(AuthResult::Success) => return Ok(outcome),
-                    Some(AuthResult::Failure {
+                    KeyAttempt::Answered(AuthResult::Success) => return Ok(outcome),
+                    KeyAttempt::Answered(AuthResult::Failure {
                         remaining_methods, ..
-                    }) => supported = remaining_methods,
-                    None => {}
+                    }) => {
+                        supported = remaining_methods;
+                        let (name, code) = source_name(source);
+                        tried.push((format!("私钥（{name}）"), code));
+                    }
+                    // 过程出错（不是服务器明确拒钥）：继续试后面的方法，但把原因留到最终报错里。
+                    KeyAttempt::Errored(err) => {
+                        let (name, code) = source_name(source);
+                        tried.push((
+                            format!("私钥（{name}，认证过程出错：{err}）"),
+                            key_error_code(&code),
+                        ));
+                        causes.key = Some(err);
+                    }
                 }
-                let (name, code) = source_name(source);
-                tried.push((format!("私钥（{name}）"), code));
             }
             Some(_) => debug!("服务器不支持 publickey，跳过私钥"),
             None => {
@@ -224,7 +234,7 @@ pub(crate) async fn authenticate(
                 Err(err) => {
                     warn!(%err, "ssh-agent 用不了，继续试后面的方法");
                     tried.push((format!("ssh-agent（{err}）"), "agent_error".to_owned()));
-                    agent_failure = Some(Box::new(err));
+                    causes.agent = Some(err);
                 }
             }
         } else {
@@ -299,7 +309,7 @@ pub(crate) async fn authenticate(
             .collect::<Vec<_>>()
             .join("\u{1f}"),
         remaining_codes: method_codes(&supported),
-        agent_error: agent_failure,
+        causes: (causes.agent.is_some() || causes.key.is_some()).then(|| Box::new(causes)),
     })
 }
 
@@ -369,7 +379,60 @@ fn method_codes(methods: &MethodSet) -> String {
         .join("\u{1f}")
 }
 
-/// 私钥认证。返回 `None` 表示这次没成功也没被明确拒绝（协议出错），继续试别的。
+/// 一次私钥认证的结果。
+enum KeyAttempt {
+    /// 服务器给了明确答复（成功、或拒绝 / 部分成功）。
+    Answered(AuthResult),
+    /// 这次没得到答复，但连接还在、也不是超时（比如签名出错）：继续试别的方法，
+    /// 错误留着，最终"全部失败"时带上。
+    Errored(ZsshError),
+}
+
+/// 私钥认证过程出的错要不要直接上抛。
+///
+/// 连接已经断了、传输层出错、超时：后面的方法（密码等）也一定失败，最后用户只会看到
+/// 别的错误，真正的原因就丢了，所以直接上抛。其他过程错误（签名失败这类只和这把钥
+/// 匙有关的）才继续试后面的方法。`handle_closed` 来自 `Handle::is_closed`，比错误
+/// 种类更可靠；认不得的错误种类按"继续试"处理，和原来的行为一致。
+fn is_fatal_key_error(err: &ZsshError, handle_closed: bool) -> bool {
+    if handle_closed {
+        return true;
+    }
+    match err {
+        ZsshError::AuthTimeout { .. } => true,
+        ZsshError::Ssh(inner) => matches!(
+            inner,
+            russh::Error::Disconnect
+                | russh::Error::HUP
+                | russh::Error::ConnectionTimeout
+                | russh::Error::KeepaliveTimeout
+                | russh::Error::InactivityTimeout
+                | russh::Error::SendError
+                | russh::Error::RecvError
+                | russh::Error::IO(_)
+                | russh::Error::Elapsed(_)
+                | russh::Error::Join(_)
+                | russh::Error::PacketAuth
+                | russh::Error::DecryptionError
+                | russh::Error::PacketSize(_)
+                | russh::Error::Kex
+                | russh::Error::KexInit
+                | russh::Error::StrictKeyExchangeViolation { .. }
+        ),
+        _ => false,
+    }
+}
+
+/// 私钥那一项"认证过程出错"的稳定代码：文件名照旧跟在后面（`key_error:<名字>`）。
+fn key_error_code(source_code: &str) -> String {
+    match source_code.split_once(':') {
+        Some(("key_file", name)) => format!("key_error:{name}"),
+        _ => "key_error".to_owned(),
+    }
+}
+
+/// 私钥认证。服务器明确答复（含拒绝）返回 `Answered`；过程出错但不致命返回 `Errored`；
+/// 致命错误（断链、传输层出错、超时）直接 `Err`。
 async fn publickey_auth(
     handle: &mut Handle<ClientHandler>,
     username: &str,
@@ -378,7 +441,7 @@ async fn publickey_auth(
     legacy_algorithms: bool,
     interactor: &Arc<dyn Interactor>,
     outcome: &mut AuthOutcome,
-) -> Result<Option<AuthResult>, ZsshError> {
+) -> Result<KeyAttempt, ZsshError> {
     let key = load_key(source, target, interactor, outcome).await?;
     let choice = rsa_hash_choice(handle, legacy_algorithms).await?;
     // 服务器只认 SHA-1 而用户没开兼容时直接报错，不往下试密码：
@@ -387,10 +450,20 @@ async fn publickey_auth(
 
     let key = PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg);
     match step(handle.authenticate_publickey(username, key)).await {
-        Ok(result) => Ok(Some(result)),
+        // russh 在连接中途断掉时不报错，而是把"没等到答复"伪装成一次空方法列表的拒绝；
+        // 连接已关就不是服务器拒钥，后面也不可能再成功。
+        Ok(AuthResult::Failure { .. }) if handle.is_closed() => {
+            warn!("私钥认证时连接断开了，不再试后面的方法");
+            Err(ZsshError::Ssh(russh::Error::HUP))
+        }
+        Ok(result) => Ok(KeyAttempt::Answered(result)),
+        Err(err) if is_fatal_key_error(&err, handle.is_closed()) => {
+            warn!(%err, "私钥认证时连接出了问题，不再试后面的方法");
+            Err(err)
+        }
         Err(err) => {
             warn!(%err, "私钥认证过程出错，继续试后面的方法");
-            Ok(None)
+            Ok(KeyAttempt::Errored(err))
         }
     }
 }
@@ -698,7 +771,7 @@ async fn keyboard_interactive_auth(
         remaining: "keyboard-interactive".to_owned(),
         tried_codes: format!("keyboard_rounds:{MAX_KEYBOARD_ROUNDS}"),
         remaining_codes: "keyboard-interactive".to_owned(),
-        agent_error: None,
+        causes: None,
     })
 }
 
@@ -1099,5 +1172,155 @@ mod tests {
             Some(None),
             "兼容模式下照旧用 SHA-1"
         );
+    }
+
+    #[test]
+    fn only_connection_level_failures_stop_the_remaining_methods() {
+        let ssh = |err: russh::Error| ZsshError::Ssh(err);
+        let io = || {
+            russh::Error::IO(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "reset",
+            ))
+        };
+        // 断链、传输层出错、超时：后面的方法一定也失败，要直接上抛。
+        for fatal in [
+            ZsshError::AuthTimeout { seconds: 15 },
+            ssh(russh::Error::Disconnect),
+            ssh(russh::Error::HUP),
+            ssh(russh::Error::SendError),
+            ssh(russh::Error::RecvError),
+            ssh(russh::Error::ConnectionTimeout),
+            ssh(russh::Error::KeepaliveTimeout),
+            ssh(io()),
+            ssh(russh::Error::DecryptionError),
+        ] {
+            assert!(is_fatal_key_error(&fatal, false), "应上抛：{fatal:?}");
+        }
+        // 只和这把钥匙有关的过程错误：照旧继续试后面的方法。
+        for local in [
+            ssh(russh::Error::CouldNotReadKey),
+            ssh(russh::Error::RequestDenied),
+            ssh(russh::Error::UnsupportedAuthMethod),
+            ssh(russh::Error::NoAuthMethod),
+            ZsshError::Cancelled,
+        ] {
+            assert!(!is_fatal_key_error(&local, false), "应继续：{local:?}");
+        }
+        // 句柄已经关了：不管错误长什么样都是断链。
+        assert!(is_fatal_key_error(
+            &ssh(russh::Error::CouldNotReadKey),
+            true
+        ));
+    }
+
+    #[test]
+    fn key_error_code_keeps_the_file_name_only() {
+        assert_eq!(
+            key_error_code("key_file:id_ed25519"),
+            "key_error:id_ed25519"
+        );
+        assert_eq!(key_error_code("key_file"), "key_error");
+        assert_eq!(key_error_code("key_vault"), "key_error");
+    }
+
+    /// 进程内服务器上的整条认证流程：私钥被拒要照旧回退，断链要直接上抛。
+    mod against_server {
+        use russh::keys::ssh_key::LineEnding;
+
+        use super::*;
+        use crate::ssh::connection::{ConnectParams, Connection};
+        use crate::ssh::fake_server::{self, AuthMode};
+        use crate::ssh::known_hosts::KnownHosts;
+
+        fn vault_key() -> KeySource {
+            let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("生成密钥");
+            KeySource::Inline {
+                pem: key
+                    .to_openssh(LineEnding::LF)
+                    .expect("导出密钥")
+                    .to_string(),
+                passphrase: None,
+            }
+        }
+
+        /// 用私钥认证连一台指定行为的服务器；`password` 是被问到密码时的回答。
+        async fn connect_with_key(
+            mode: AuthMode,
+            password: Option<&str>,
+        ) -> (
+            fake_server::FakeServer,
+            Arc<MockInteractor>,
+            Result<Connection, ZsshError>,
+        ) {
+            let server = fake_server::spawn_with(vec![fake_server::ed25519_key()], mode).await;
+            let dir = crate::test_util::TestDir::new("auth-server");
+            let interactor = Arc::new(MockInteractor::new(
+                HostKeyDecision::TrustOnce,
+                vec![password],
+            ));
+            let result = Connection::connect(
+                ConnectParams {
+                    host: server.addr.ip().to_string(),
+                    port: server.addr.port(),
+                    username: "tester".to_owned(),
+                    auth: AuthConfig::key(vault_key()),
+                    known_hosts: KnownHosts::new(dir.join("known_hosts")),
+                    legacy_algorithms: false,
+                },
+                interactor.clone(),
+            )
+            .await;
+            (server, interactor, result)
+        }
+
+        #[tokio::test]
+        async fn a_rejected_key_still_falls_back_to_the_password() {
+            let (server, interactor, result) = connect_with_key(
+                AuthMode::PublickeyRejectedPasswordAllowed,
+                Some("pw-for-test"),
+            )
+            .await;
+            assert!(result.is_ok(), "{:?}", result.err());
+            assert_eq!(server.counters.publickey.load(Ordering::SeqCst), 1);
+            assert_eq!(server.counters.passwords(), 1, "拒钥之后要回退到密码");
+            assert_eq!(interactor.asked_kinds(), vec![PromptKind::Password]);
+        }
+
+        #[tokio::test]
+        async fn a_rejected_key_on_a_publickey_only_server_reports_all_methods_failed() {
+            let (server, _interactor, result) =
+                connect_with_key(AuthMode::PublickeyOnlyRejecting, None).await;
+            let Err(ZsshError::AllAuthFailed {
+                tried,
+                tried_codes,
+                causes,
+                ..
+            }) = result
+            else {
+                panic!("应该是认证全部失败");
+            };
+            assert!(tried.contains("私钥"), "{tried}");
+            assert_eq!(tried_codes, "key_vault", "明确被拒不算过程出错");
+            assert!(causes.is_none());
+            assert_eq!(server.counters.passwords(), 0, "服务器没声明密码就不试");
+        }
+
+        #[tokio::test]
+        async fn a_connection_lost_during_key_auth_is_reported_not_hidden() {
+            let (server, interactor, result) =
+                connect_with_key(AuthMode::DropOnPublickey, Some("pw-for-test")).await;
+            let err = match result {
+                Err(err) => err,
+                Ok(_) => panic!("掉线了不能算认证成功"),
+            };
+            assert!(
+                matches!(err, ZsshError::Ssh(russh::Error::HUP)),
+                "应上抛断链原因，实际：{err:?}"
+            );
+            assert_eq!(server.counters.publickey.load(Ordering::SeqCst), 1);
+            assert_eq!(server.counters.passwords(), 0, "断链后不该再试密码");
+            assert!(interactor.asked_kinds().is_empty(), "也不该再问用户要密码");
+        }
     }
 }

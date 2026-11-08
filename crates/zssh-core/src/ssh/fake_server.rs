@@ -46,14 +46,35 @@ pub(crate) struct FakeServer {
     pub host_keys: Vec<PublicKey>,
 }
 
-struct Handler {
-    counters: Arc<Counters>,
+/// 服务器怎么对待认证请求（默认是原来的行为：公钥一律拒、密码和键盘交互一律收）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AuthMode {
+    /// 公钥拒绝，声明还能用密码 / 键盘交互；密码和键盘交互一律接受。
+    #[default]
+    PasswordAccepting,
+    /// 只声明公钥一种方法，公钥一律拒绝；密码类请求也拒绝（并计数）。
+    PublickeyOnlyRejecting,
+    /// 公钥拒绝，但声明里仍有密码；密码接受。和默认的区别是声明里带 publickey，
+    /// 让客户端真的发出公钥请求再被拒。
+    PublickeyRejectedPasswordAllowed,
+    /// 收到公钥请求就掐断连接（模拟认证过程中掉线）。
+    DropOnPublickey,
 }
 
-fn methods() -> Option<MethodSet> {
-    Some(MethodSet::from(
-        &[MethodKind::Password, MethodKind::KeyboardInteractive][..],
-    ))
+struct Handler {
+    counters: Arc<Counters>,
+    mode: AuthMode,
+}
+
+fn methods(mode: AuthMode) -> Option<MethodSet> {
+    let kinds: &[MethodKind] = match mode {
+        AuthMode::PasswordAccepting => &[MethodKind::Password, MethodKind::KeyboardInteractive],
+        AuthMode::PublickeyOnlyRejecting => &[MethodKind::PublicKey],
+        AuthMode::PublickeyRejectedPasswordAllowed | AuthMode::DropOnPublickey => {
+            &[MethodKind::PublicKey, MethodKind::Password]
+        }
+    };
+    Some(MethodSet::from(kinds))
 }
 
 impl server::Handler for Handler {
@@ -62,20 +83,29 @@ impl server::Handler for Handler {
     async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
         self.counters.none.fetch_add(1, Ordering::SeqCst);
         Ok(Auth::Reject {
-            proceed_with_methods: methods(),
+            proceed_with_methods: methods(self.mode),
             partial_success: false,
         })
     }
 
     async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
         self.counters.password.fetch_add(1, Ordering::SeqCst);
+        if self.mode == AuthMode::PublickeyOnlyRejecting {
+            return Ok(Auth::Reject {
+                proceed_with_methods: methods(self.mode),
+                partial_success: false,
+            });
+        }
         Ok(Auth::Accept)
     }
 
     async fn auth_publickey(&mut self, _user: &str, _key: &PublicKey) -> Result<Auth, Self::Error> {
         self.counters.publickey.fetch_add(1, Ordering::SeqCst);
+        if self.mode == AuthMode::DropOnPublickey {
+            return Err(russh::Error::Disconnect);
+        }
         Ok(Auth::Reject {
-            proceed_with_methods: methods(),
+            proceed_with_methods: methods(self.mode),
             partial_success: false,
         })
     }
@@ -135,6 +165,11 @@ pub(crate) fn ecdsa_key() -> PrivateKey {
 
 /// 起一台一直接受新连接的服务器，主机密钥就是 `keys`（客户端偏好哪种就出示哪种）。
 pub(crate) async fn spawn(keys: Vec<PrivateKey>) -> FakeServer {
+    spawn_with(keys, AuthMode::default()).await
+}
+
+/// 同 [`spawn`]，并指定认证行为。
+pub(crate) async fn spawn_with(keys: Vec<PrivateKey>, mode: AuthMode) -> FakeServer {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("绑定本机端口");
@@ -157,6 +192,7 @@ pub(crate) async fn spawn(keys: Vec<PrivateKey>) -> FakeServer {
             let config = Arc::clone(&config);
             let handler = Handler {
                 counters: Arc::clone(&shared),
+                mode,
             };
             tokio::spawn(async move {
                 if let Ok(running) = server::run_stream(config, socket, handler).await {

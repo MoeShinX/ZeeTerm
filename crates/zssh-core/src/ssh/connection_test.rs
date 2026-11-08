@@ -402,7 +402,7 @@ fn classify_handshake(error: &ZsshError, interaction: Interaction) -> Failure {
             remaining,
             tried_codes,
             remaining_codes,
-            agent_error,
+            causes,
         } => {
             let mut reason = Reason::new(
                 reason_keys::CT_AUTH_ALL,
@@ -414,8 +414,13 @@ fn classify_handshake(error: &ZsshError, interaction: Interaction) -> Failure {
             )
             .with("tried_codes", tried_codes)
             .with("remaining_codes", remaining_codes);
-            if let Some(agent) = agent_error {
-                reason = reason.caused_by_as("agent", agent.as_ref());
+            if let Some(causes) = causes {
+                if let Some(agent) = &causes.agent {
+                    reason = reason.caused_by_as("agent", agent);
+                }
+                if let Some(key) = &causes.key {
+                    reason = reason.caused_by_as("key", key);
+                }
             }
             auth(reason)
         }
@@ -1288,7 +1293,7 @@ mod tests {
             remaining: "keyboard-interactive".into(),
             tried_codes: String::new(),
             remaining_codes: String::new(),
-            agent_error: None,
+            causes: None,
         };
         let f = classify(&all, FailurePhase::Handshake, HopRole::Target);
         assert!(

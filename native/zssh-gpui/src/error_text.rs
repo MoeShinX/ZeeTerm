@@ -631,9 +631,11 @@ fn localize_params<E: ErrorWithCode + ?Sized>(
     }
     if lang == Lang::En && err.code() == "ssh.all_auth_failed" {
         let agent = get(params, "agent").map(str::to_owned);
+        let key = get(params, "key").map(str::to_owned);
         let tried = tried_methods_en(
             get(params, "tried_codes").unwrap_or_default(),
             agent.as_deref(),
+            key.as_deref(),
         );
         let offered = offered_methods_en(get(params, "remaining_codes").unwrap_or_default());
         set(params, "tried", tried);
@@ -774,7 +776,7 @@ fn pick(lang: Lang, msg: &impl Msg) -> &'static str {
 }
 
 /// `AllAuthFailed` 里"试过哪些方法"的英文（`\u{1f}` 分隔的稳定代码 → 一句话）；用户数据（私钥文件名）原样保留。
-pub(crate) fn tried_methods_en(codes: &str, agent: Option<&str>) -> String {
+pub(crate) fn tried_methods_en(codes: &str, agent: Option<&str>, key: Option<&str>) -> String {
     if codes.is_empty() {
         return "no method could be tried".to_owned();
     }
@@ -782,12 +784,20 @@ pub(crate) fn tried_methods_en(codes: &str, agent: Option<&str>) -> String {
         .split('\u{1f}')
         .map(|code| match code.split_once(':') {
             Some(("key_file", name)) => format!("private key ({name})"),
+            Some(("key_error", name)) => match key {
+                Some(reason) => format!("private key ({name}: {reason})"),
+                None => format!("private key ({name}: the exchange with the server failed)"),
+            },
             Some(("keyboard_rounds", rounds)) => {
                 format!("keyboard-interactive (more than {rounds} rounds)")
             }
             _ => match code {
                 "key_file" => "private key (<key file>)".to_owned(),
                 "key_vault" => "private key (the key stored in the vault)".to_owned(),
+                "key_error" => match key {
+                    Some(reason) => format!("private key ({reason})"),
+                    None => "private key (the exchange with the server failed)".to_owned(),
+                },
                 "key_missing" => "private key (none configured for this host)".to_owned(),
                 "agent_rejected" => "ssh-agent (none of its keys were accepted)".to_owned(),
                 "agent_no_keys" => "ssh-agent (no usable keys)".to_owned(),
@@ -1066,7 +1076,7 @@ mod tests {
             remaining: "keyboard-interactive".into(),
             tried_codes: "password\u{1f}key_vault".into(),
             remaining_codes: "keyboard-interactive".into(),
-            agent_error: None,
+            causes: None,
         };
         assert_eq!(error_text_in(Lang::Zh, &auth), auth.to_string());
 
@@ -1531,7 +1541,7 @@ mod tests {
             remaining: "keyboard-interactive、公钥".into(),
             tried_codes: "key_file:id_ed25519\u{1f}password".into(),
             remaining_codes: "keyboard-interactive\u{1f}publickey".into(),
-            agent_error: None,
+            causes: None,
         };
         assert_eq!(error_text_in(Lang::Zh, &err), err.to_string());
         assert_eq!(
@@ -1543,7 +1553,7 @@ mod tests {
             remaining: "没有声明".into(),
             tried_codes: String::new(),
             remaining_codes: String::new(),
-            agent_error: None,
+            causes: None,
         };
         let en = error_text_in(Lang::En, &none);
         assert!(!has_cjk(&en), "{en}");

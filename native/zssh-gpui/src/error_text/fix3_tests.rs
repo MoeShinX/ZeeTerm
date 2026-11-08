@@ -278,17 +278,20 @@ fn host_key_change_names_the_record_and_the_advice_in_english() {
 
 #[test]
 fn ssh_agent_failures_carry_the_concrete_reason_in_english() {
-    use zssh_core::error::{Reason, ZsshError, reason_keys};
+    use zssh_core::error::{AuthCauses, Reason, ZsshError, reason_keys};
 
     let err = ZsshError::AllAuthFailed {
         tried: "ssh-agent（x）、密码".into(),
         remaining: "publickey".into(),
         tried_codes: "agent_error\u{1f}password".into(),
         remaining_codes: "publickey".into(),
-        agent_error: Some(Box::new(ZsshError::AgentUnavailable(Reason::new(
-            reason_keys::AGENT_PIPE_UNREACHABLE,
-            "没连上 OpenSSH agent 的命名管道，也没连上 Pageant",
-        )))),
+        causes: Some(Box::new(AuthCauses {
+            agent: Some(ZsshError::AgentUnavailable(Reason::new(
+                reason_keys::AGENT_PIPE_UNREACHABLE,
+                "没连上 OpenSSH agent 的命名管道，也没连上 Pageant",
+            ))),
+            key: None,
+        })),
     };
     let en = error_text_in(Lang::En, &err);
     assert_english(&en);
@@ -298,6 +301,32 @@ fn ssh_agent_failures_carry_the_concrete_reason_in_english() {
     );
     assert!(en.contains("OpenSSH agent"), "{en}");
     assert!(en.contains("password"), "{en}");
+}
+
+#[test]
+fn private_key_exchange_failures_carry_the_concrete_reason_in_english() {
+    use zssh_core::error::{AuthCauses, ZsshError};
+
+    let err = ZsshError::AllAuthFailed {
+        tried: "私钥（id_ed25519，认证过程出错：x）、密码".into(),
+        remaining: "password".into(),
+        tried_codes: "key_error:id_ed25519\u{1f}password".into(),
+        remaining_codes: "password".into(),
+        causes: Some(Box::new(AuthCauses {
+            agent: None,
+            key: Some(ZsshError::Ssh(russh::Error::RequestDenied)),
+        })),
+    };
+    let en = error_text_in(Lang::En, &err);
+    assert_english(&en);
+    assert!(
+        en.contains("tried these methods: private key (id_ed25519: "),
+        "{en}"
+    );
+    assert!(en.contains("rejected by the other party"), "{en}");
+    assert!(en.contains("password"), "{en}");
+    // 中文界面照旧用核心给的整句，里面带着过程出错的原因
+    assert_eq!(error_text_in(Lang::Zh, &err), err.to_string());
 }
 
 #[test]

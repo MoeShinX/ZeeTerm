@@ -183,9 +183,9 @@ pub enum ZsshError {
         tried_codes: String,
         /// `remaining` 的稳定代码（`\u{1f}` 分隔）。
         remaining_codes: String,
-        /// ssh-agent 那一项出错的具体原因（`tried_codes` 里是 `agent_error`）：英文界面据此生成
-        /// 具体原因，不只写"用不了"。
-        agent_error: Option<Box<ZsshError>>,
+        /// ssh-agent / 私钥那几项出错的具体原因。装箱：这个变体字段多，直接放进来
+        /// 会把整个 `ZsshError` 撑过 128 字节。
+        causes: Option<Box<AuthCauses>>,
     },
 
     #[error("读私钥失败：{0}")]
@@ -230,6 +230,17 @@ pub enum ZsshError {
     /// 同上，详情装箱。
     #[error("{0}")]
     NoCommonAlgorithm(Box<NoCommonAlgorithmInfo>),
+}
+
+/// [`ZsshError::AllAuthFailed`] 里"某一项为什么失败"的具体原因；没有就是 `None`。
+#[derive(Debug, Default)]
+pub struct AuthCauses {
+    /// ssh-agent 那一项出错的原因（`tried_codes` 里是 `agent_error`）：英文界面据此生成
+    /// 具体原因，不只写"用不了"。
+    pub agent: Option<ZsshError>,
+    /// 私钥认证过程出错（不是被服务器拒绝）的原因（`tried_codes` 里是 `key_error`）：
+    /// 英文界面据此生成具体原因，用户才知道为什么私钥没用上。
+    pub key: Option<ZsshError>,
 }
 
 /// 错误码与结构化参数（界面按这两个来做文案，见 [trait `ErrorWithCode`](ErrorWithCode)）。
@@ -428,9 +439,18 @@ impl ErrorWithCode for ZsshError {
     fn causes(&self) -> Vec<(&'static str, &dyn ErrorWithCode)> {
         match self {
             ZsshError::AllAuthFailed {
-                agent_error: Some(inner),
+                causes: Some(causes),
                 ..
-            } => vec![("agent", inner.as_ref() as &dyn ErrorWithCode)],
+            } => {
+                let mut out: Vec<(&'static str, &dyn ErrorWithCode)> = Vec::new();
+                if let Some(inner) = &causes.agent {
+                    out.push(("agent", inner as &dyn ErrorWithCode));
+                }
+                if let Some(inner) = &causes.key {
+                    out.push(("key", inner as &dyn ErrorWithCode));
+                }
+                out
+            }
             ZsshError::X11(failure) => vec![("detail", failure as &dyn ErrorWithCode)],
             _ => Vec::new(),
         }
@@ -632,7 +652,7 @@ mod tests {
                 remaining: "publickey".into(),
                 tried_codes: "password".into(),
                 remaining_codes: "publickey".into(),
-                agent_error: None,
+                causes: None,
             },
             ZsshError::KeyLoad("load".into()),
             ZsshError::AgentUnavailable("agent".into()),
