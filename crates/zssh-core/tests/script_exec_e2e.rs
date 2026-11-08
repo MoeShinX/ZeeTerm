@@ -2,9 +2,13 @@
 //!
 //! 进程内迷你 SSH 服务器只监听本机回环，模拟**登录 shell 是 fish / csh 的主机**：sshd 把 exec 的命令行交给登录
 //! shell 解析，而它读不懂 POSIX 写法——所以服务器对任何不是 `sh -s` 的命令一律回 `Unknown command`、退出码 127。
-//! 命令恰好是 `sh -s` 时才"起一个 sh"：服务器把客户端写进 stdin 的内容收齐（等 EOF），交给**本机的真 sh** 执行
-//! 并把它的输出和退出码原样返回。整条链路（真 SSH 连接、真 exec 通道、真的采集器和解析）都是真的，只有"远端
-//! 机器"是本机（Windows 上没有 `/proc`，采集出来的数字是兜底值，但 `CORES:` 一定有）。本机没有 `sh` 就跳过。
+//! 命令恰好是 `sh -s` 时才"起一个 sh"：服务器把客户端写进 stdin 的内容收齐（等 EOF），再按 [`Exec`] 处理：
+//! - `Exec::LocalSh`：交给**本机的真 sh** 执行并把输出和退出码原样返回（只用于小脚本，验证引号 / `$(…)` /
+//!   退出码这些通用行为；本机没有可用的 `sh` 就跳过并打印原因）。
+//! - `Exec::Fixed`：不跑脚本，返回一段固定的、可解析的统计输出。完整的统计脚本在 Windows 的 Git for Windows
+//!   自带 sh 上要 fork 几十次（空载约 2 秒），机器一忙就超过采集器的 5 秒上限，采集被当成"超时没采到"——
+//!   这类用例要验证的是"exec 只有 `sh -s`、脚本经 stdin 整段送达、输出可解析"，不该依赖本机 sh 的快慢和
+//!   `/proc` 是否齐全。
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -35,19 +39,56 @@ struct World {
     scripts: Vec<String>,
 }
 
+/// 服务器对 `sh -s` 的处理方式。
+#[derive(Clone)]
+enum Exec {
+    /// 交给本机的真 sh。
+    LocalSh,
+    /// 不跑脚本，原样返回这段 stdout（退出码 0）。
+    Fixed(String),
+}
+
+/// 一台普通 Linux 服务器上统计脚本的输出（带第一次采集的 `CPUMODEL:` 段），数值是固定的合成值。
+const FIXED_STATS_OUTPUT: &str =
+    "CPUMODEL:model name\t: Test CPU @ 2.00GHz|CPURAW:281392 12345|CORES:4|\
+PERCORERAW:70000:3000,70000:3000,70000:3000,71392:3345|MEMINFO:15947 1234 100 7000 400 100|\
+PROCS:123;42.5;zsh,456;12.0;nginx|PROCSCPU:456;3.0;nginx|NET:eth0:1000:2000|DISK:/:10240:40960|\
+HOST:host-01|OS:Debian GNU/Linux 12|KERNEL:6.1.0-series|UPTIME:86400|LOAD:0.10 0.20 0.30|MOUNTS:\n";
+
 struct MiniSsh {
     world: Arc<Mutex<World>>,
+    exec: Exec,
     /// 等 EOF 再执行的 `sh -s` 通道。
     waiting: HashMap<ChannelId, ()>,
 }
 
-/// 本机能不能起 `sh`（装了 Git for Windows 之类）。
-fn local_sh_works() -> bool {
-    Command::new("sh")
-        .arg("-c")
-        .arg("echo ok")
-        .output()
-        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "ok")
+/// 本机的 `sh` 能不能当测试里的"远端 sh"用：不只是能起来，还要能按 `sh -s` 的方式从 stdin 读脚本，
+/// 并正确处理 `$(…)`、引号和退出码——这些正是用到它的几个用例依赖的能力。不满足就打印原因返回 false。
+fn local_sh_works(test: &str) -> bool {
+    let probe = "x=$(printf 'a b'); echo \"got: $x\"; exit 3";
+    let spawned = Command::new("sh")
+        .arg("-s")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = spawned else {
+        println!("跳过 {test}：本机没有可用的 sh");
+        return false;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&script_stdin(probe));
+    }
+    let Ok(out) = child.wait_with_output() else {
+        println!("跳过 {test}：等本机 sh 失败");
+        return false;
+    };
+    let ok =
+        String::from_utf8_lossy(&out.stdout).trim() == "got: a b" && out.status.code() == Some(3);
+    if !ok {
+        println!("跳过 {test}：本机 sh 不能按 `sh -s` 读 stdin 脚本并处理 $(…) / 退出码");
+    }
+    ok
 }
 
 /// 在本机真跑一遍 `sh -s`：stdin 喂脚本，返回 (stdout, stderr, 退出码)。
@@ -159,7 +200,10 @@ impl server::Handler for MiniSsh {
             .unwrap()
             .scripts
             .push(String::from_utf8_lossy(&script).into_owned());
-        let (stdout, stderr, code) = run_local_sh(&script);
+        let (stdout, stderr, code) = match &self.exec {
+            Exec::LocalSh => run_local_sh(&script),
+            Exec::Fixed(output) => (output.clone(), String::new(), 0),
+        };
         if !stdout.is_empty() {
             session.data(channel, stdout.into_bytes())?;
         }
@@ -180,6 +224,10 @@ struct Harness {
 }
 
 async fn start() -> Harness {
+    start_with(Exec::LocalSh).await
+}
+
+async fn start_with(exec: Exec) -> Harness {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("绑定");
     let addr = listener.local_addr().expect("端口");
     let config = Arc::new(server::Config {
@@ -196,6 +244,7 @@ async fn start() -> Harness {
         };
         let handler = MiniSsh {
             world: for_server,
+            exec,
             waiting: HashMap::new(),
         };
         if let Ok(running) = server::run_stream(config, socket, handler).await {
@@ -225,23 +274,21 @@ async fn a_login_shell_that_cannot_parse_posix_rejects_the_script_as_a_command_l
 
 #[tokio::test]
 async fn stats_collection_works_when_the_login_shell_is_not_posix() {
-    if !local_sh_works() {
-        println!("跳过：本机没有可用的 sh");
-        return;
-    }
-    let harness = start().await;
+    // 合成夹具：服务器对 `sh -s` 返回固定的可解析输出，不跑本机 sh（见文件头注释），所以不依赖本机环境、
+    // 也不会在机器忙时撞上采集器的超时。
+    let harness = start_with(Exec::Fixed(FIXED_STATS_OUTPUT.to_owned())).await;
     let mut collector = StatsCollector::new();
     let stats = collector
         .collect(&harness.connection)
         .await
         .expect("采集不报错")
         .expect("登录 shell 不是 POSIX 也采得到（输出可解析）");
-    // 重要的是拿到了结果，而不是 parseable=false 后停止采集（数值取决于本机：有没有 /proc、nproc）。
-    assert!(
-        stats.cpu_cores.is_some_and(|n| n >= 1),
-        "{:?}",
-        stats.cpu_cores
-    );
+    // 拿到的就是夹具里的数值：结果真的经 exec 通道回来并被解析，而不是 parseable=false 后停止采集。
+    assert_eq!(stats.cpu_cores, Some(4));
+    assert_eq!(stats.mem_total_mib, Some(15947));
+    assert_eq!(stats.hostname, "host-01");
+    assert_eq!(stats.os_name, "Debian GNU/Linux 12");
+    assert_eq!(stats.cpu_model.as_deref(), Some("Test CPU @ 2.00GHz"));
 
     let world = harness.world.lock().unwrap();
     // exec 命令只有 `sh -s`：没有任何要登录 shell 解析的内容。
@@ -259,10 +306,24 @@ async fn stats_collection_works_when_the_login_shell_is_not_posix() {
     assert!(script.contains("CPUMODEL:"), "第一次采集带型号探测");
 }
 
+/// 真 sh 上跑一遍完整的统计脚本，只验证"输出能被解析"。不经过采集器、没有超时：Windows 上 Git for Windows 自带的
+/// sh 很慢，这里给足时间，而不是让快慢决定成败。本机 sh 不具备 `sh -s` 读 stdin 的能力就跳过并打印原因。
+#[test]
+fn the_real_stats_script_output_parses_on_the_local_sh() {
+    if !local_sh_works("the_real_stats_script_output_parses_on_the_local_sh") {
+        return;
+    }
+    let (stdout, stderr, code) = run_local_sh(&script_stdin(STATS_SCRIPT));
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let sample = zssh_core::ssh::stats::StatsSample::parse(&stdout);
+    // 数值取决于本机（有没有 /proc、nproc），但 `CORES:` 一定有兜底值。
+    assert!(sample.parseable, "输出：{stdout:?}");
+    assert!(sample.cores.is_some_and(|n| n >= 1), "{:?}", sample.cores);
+}
+
 #[tokio::test]
 async fn script_output_and_exit_status_come_back_through_exec_script_capture() {
-    if !local_sh_works() {
-        println!("跳过：本机没有可用的 sh");
+    if !local_sh_works("script_output_and_exit_status_come_back_through_exec_script_capture") {
         return;
     }
     let harness = start().await;
@@ -271,7 +332,7 @@ async fn script_output_and_exit_status_come_back_through_exec_script_capture() {
         "x=$(printf 'a b'); echo \"got: $x !\"\nprintf 'tab:\\t|\\n'\necho to-stderr >&2\nexit 3";
     let capture = harness
         .connection
-        .exec_script_capture(script, Duration::from_secs(10), 4096)
+        .exec_script_capture(script, Duration::from_secs(30), 4096)
         .await
         .expect("执行");
     assert_eq!(capture.stdout, "got: a b !\ntab:\t|\n");
@@ -281,7 +342,7 @@ async fn script_output_and_exit_status_come_back_through_exec_script_capture() {
     // 输出上限照旧生效（和 exec_capture 同一个 run_exec）。
     let capped = harness
         .connection
-        .exec_script_capture("echo 0123456789", Duration::from_secs(10), 4)
+        .exec_script_capture("echo 0123456789", Duration::from_secs(30), 4)
         .await
         .expect("执行");
     assert_eq!(capped.stdout, "0123");
@@ -300,8 +361,7 @@ fn script_stdin_wraps_the_script_in_a_function_called_with_dev_null() {
 
 #[test]
 fn a_command_that_reads_stdin_cannot_swallow_the_rest_of_the_script() {
-    if !local_sh_works() {
-        println!("跳过：本机没有可用的 sh");
+    if !local_sh_works("a_command_that_reads_stdin_cannot_swallow_the_rest_of_the_script") {
         return;
     }
     // `cat` 不带文件名会读 stdin 直到 EOF。
@@ -324,20 +384,19 @@ after" => println!("本机 sh 先读完整段脚本（dash 一类），对照组
 
 #[tokio::test]
 async fn exec_script_returns_stdout_and_turns_a_failing_exit_into_an_error() {
-    if !local_sh_works() {
-        println!("跳过：本机没有可用的 sh");
+    if !local_sh_works("exec_script_returns_stdout_and_turns_a_failing_exit_into_an_error") {
         return;
     }
     let harness = start().await;
     let out = harness
         .connection
-        .exec_script("echo ZSSH_KEY_ADDED", Duration::from_secs(10))
+        .exec_script("echo ZSSH_KEY_ADDED", Duration::from_secs(30))
         .await
         .expect("执行");
     assert_eq!(out.trim(), "ZSSH_KEY_ADDED");
     let error = harness
         .connection
-        .exec_script("echo nope >&2; exit 4", Duration::from_secs(10))
+        .exec_script("echo nope >&2; exit 4", Duration::from_secs(30))
         .await
         .expect_err("退出码非 0 是错误");
     assert!(error.to_string().contains("nope"), "{error}");
