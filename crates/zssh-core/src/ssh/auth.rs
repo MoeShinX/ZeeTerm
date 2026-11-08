@@ -188,14 +188,20 @@ pub(crate) async fn authenticate(
                 {
                     KeyAttempt::Answered(AuthResult::Success) => return Ok(outcome),
                     KeyAttempt::Answered(AuthResult::Failure {
-                        remaining_methods, ..
+                        remaining_methods,
+                        partial_success,
                     }) => {
                         supported = remaining_methods;
+                        // 部分成功（私钥过了、还要第二步）不算被拒：之后问验证码是「本来就要交互」。
+                        if !partial_success {
+                            interactor.credential_rejected();
+                        }
                         let (name, code) = source_name(source);
                         tried.push((format!("私钥（{name}）"), code));
                     }
                     // 过程出错（不是服务器明确拒钥）：继续试后面的方法，但把原因留到最终报错里。
                     KeyAttempt::Errored(err) => {
+                        interactor.credential_rejected();
                         let (name, code) = source_name(source);
                         tried.push((
                             format!("私钥（{name}，认证过程出错：{err}）"),
@@ -205,9 +211,13 @@ pub(crate) async fn authenticate(
                     }
                 }
             }
-            Some(_) => debug!("服务器不支持 publickey，跳过私钥"),
+            Some(_) => {
+                debug!("服务器不支持 publickey，跳过私钥");
+                interactor.credential_rejected();
+            }
             None => {
                 warn!("主机配置成私钥认证但没有私钥材料");
+                interactor.credential_rejected();
                 tried.push(("私钥（主机没配私钥）".to_owned(), "key_missing".to_owned()));
             }
         }
@@ -219,26 +229,35 @@ pub(crate) async fn authenticate(
             match agent_auth(handle, username, legacy_algorithms).await {
                 Ok(Some(AuthResult::Success)) => return Ok(outcome),
                 Ok(Some(AuthResult::Failure {
-                    remaining_methods, ..
+                    remaining_methods,
+                    partial_success,
                 })) => {
                     supported = remaining_methods;
+                    if !partial_success {
+                        interactor.credential_rejected();
+                    }
                     tried.push((
                         "ssh-agent（密钥都不被接受）".to_owned(),
                         "agent_rejected".to_owned(),
                     ));
                 }
-                Ok(None) => tried.push((
-                    "ssh-agent（没有可用密钥）".to_owned(),
-                    "agent_no_keys".to_owned(),
-                )),
+                Ok(None) => {
+                    interactor.credential_rejected();
+                    tried.push((
+                        "ssh-agent（没有可用密钥）".to_owned(),
+                        "agent_no_keys".to_owned(),
+                    ));
+                }
                 Err(err) => {
                     warn!(%err, "ssh-agent 用不了，继续试后面的方法");
+                    interactor.credential_rejected();
                     tried.push((format!("ssh-agent（{err}）"), "agent_error".to_owned()));
                     causes.agent = Some(err);
                 }
             }
         } else {
             debug!("服务器不支持 publickey，跳过 ssh-agent");
+            interactor.credential_rejected();
         }
     }
 
@@ -271,11 +290,15 @@ pub(crate) async fn authenticate(
                 return Ok(outcome);
             }
             AuthResult::Failure {
-                remaining_methods, ..
+                remaining_methods,
+                partial_success,
             } => {
                 supported = remaining_methods;
                 // 密码不对，别记了
                 outcome.remembered = None;
+                if !partial_success {
+                    interactor.credential_rejected();
+                }
             }
         }
         tried.push(("密码".to_owned(), "password".to_owned()));
@@ -521,6 +544,41 @@ fn hash_for_key(
     }
 }
 
+/// 第一次读私钥失败，是不是只因为「钥匙加了密、而没存口令」。
+///
+/// 只有这种情况，接下来问口令才是「本来就缺这项」；存了口令还打不开、文件读不到、
+/// 内容坏了，都是凭据本身有问题。OpenSSH 格式没口令时报 `KeyIsEncrypted`；PKCS#8 / PEM / PPK
+/// 加密的钥匙没口令时报的是普通解析错误，只能看文本头认出来。
+fn only_the_passphrase_is_missing(
+    source: &KeySource,
+    saved: Option<&str>,
+    first_error: &russh::keys::Error,
+) -> bool {
+    if saved.is_some() {
+        return false;
+    }
+    if matches!(first_error, russh::keys::Error::KeyIsEncrypted) {
+        return true;
+    }
+    match source {
+        KeySource::File { path, .. } => std::fs::read_to_string(path)
+            .map(|text| key_text_is_encrypted(&text))
+            .unwrap_or(false),
+        KeySource::Inline { pem, .. } => key_text_is_encrypted(pem),
+    }
+}
+
+/// 私钥文本自己声明了加密：PKCS#8 `ENCRYPTED PRIVATE KEY`、传统 PEM 的 `Proc-Type: 4,ENCRYPTED`、
+/// PuTTY PPK 的 `Encryption:` 不是 `none`。
+pub(crate) fn key_text_is_encrypted(text: &str) -> bool {
+    text.contains("-----BEGIN ENCRYPTED PRIVATE KEY-----")
+        || text.contains("Proc-Type: 4,ENCRYPTED")
+        || text.lines().any(|line| {
+            line.strip_prefix("Encryption:")
+                .is_some_and(|value| !value.trim().eq_ignore_ascii_case("none"))
+        })
+}
+
 /// 读私钥；口令不够（或者不对）就问用户。
 async fn load_key(
     source: &KeySource,
@@ -555,6 +613,10 @@ async fn load_key(
         Err(first_error) => {
             // 保险库里的口令没有或者不对：问用户，答完再试一次
             debug!(error = %first_error, "私钥第一次读取失败，问用户要口令");
+            if !only_the_passphrase_is_missing(source, passphrase.as_deref(), &first_error) {
+                // 存的口令不对、文件读不到、钥匙坏了：这不是「没填口令」，问口令只是兜底重试。
+                interactor.credential_rejected();
+            }
             let answers = interactor
                 .prompt(PromptRequest::single(
                     PromptKind::Passphrase,

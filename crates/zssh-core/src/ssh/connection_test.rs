@@ -241,6 +241,9 @@ pub enum HopRole {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Interaction {
     pub prompted: Option<PromptKind>,
+    /// 提问之前，同一跳已经有凭据没成（被拒、读不了）：这次提问是认证在往下一种方法退，
+    /// 不是「本来就没填」。见 [`Interactor::credential_rejected`]。
+    pub after_rejection: bool,
 }
 
 /// 分类之后的失败：阶段 + 一句原因（带稳定 key 和参数，界面按语言出整句）。
@@ -575,6 +578,13 @@ fn classify_handshake(error: &ZsshError, interaction: Interaction) -> Failure {
             reason_keys::CT_RSA_SHA1,
             "服务器只接受 SHA-1 的 ssh-rsa 签名：换 Ed25519 / ECDSA 密钥，或打开「旧算法兼容」",
         )),
+        // 配置的凭据先没成、认证退到了要人输入：失败的是那份凭据，不是「没填」。
+        ZsshError::Cancelled if interaction.after_rejection && interaction.prompted.is_some() => {
+            auth(Reason::new(
+                reason_keys::CT_AUTH_REJECTED_THEN_PROMPT,
+                "认证失败：主机配置的凭据没有被服务器接受（或读不了），服务器转而要求输入别的凭据；测试连接不会弹窗询问",
+            ))
+        }
         ZsshError::Cancelled => match interaction.prompted {
             Some(PromptKind::Password) => auth(Reason::new(
                 reason_keys::CT_NEED_PASSWORD,
@@ -899,6 +909,8 @@ struct Observed {
     expected_stop: Option<ExpectedStop>,
     /// 谁问了需要输入的问题：（第几跳, 问的是什么）。
     prompted: Option<(usize, PromptKind)>,
+    /// 哪些跳已经有凭据没成（被拒 / 读不了），见 [`Interactor::credential_rejected`]。
+    rejected_hops: Vec<usize>,
     stage: Option<TestStage>,
 }
 
@@ -932,8 +944,12 @@ impl TestInteractor {
     }
 
     fn interaction(&self) -> Interaction {
+        let seen = self.lock();
         Interaction {
-            prompted: self.lock().prompted.map(|(_, kind)| kind),
+            prompted: seen.prompted.map(|(_, kind)| kind),
+            after_rejection: seen
+                .prompted
+                .is_some_and(|(hop, _)| seen.rejected_hops.contains(&hop)),
         }
     }
 
@@ -941,7 +957,9 @@ impl TestInteractor {
     ///
     /// 只认两种且都要对得上记录：
     /// - 这一跳因为自己记下的没信任指纹被我们拒绝，错误是同地址、同端口、同指纹的 `HostKeyRejected`；
-    /// - 这一跳问过需要输入的问题（密码 / 口令 / 验证码），被我们取消，错误是 `Cancelled`。
+    /// - 这一跳问过需要输入的问题（密码 / 口令 / 验证码），被我们取消，错误是 `Cancelled`，
+    ///   而且提问之前这一跳没有凭据被拒过：私钥被拒后退到问密码、存的密码不对后退到
+    ///   keyboard-interactive、存的口令打不开钥匙——这些是真的认证失败，不能说成「需要交互」。
     ///
     /// 超时、断开、签名错误、别的指纹被拒绝、别的跳的提问……一律不是。
     fn expected_stop_for(&self, hop: usize, error: &ZsshError) -> Option<PendingStop> {
@@ -963,7 +981,11 @@ impl TestInteractor {
                     })
             }
             ZsshError::Cancelled => match seen.prompted {
-                Some((asked_hop, kind)) if asked_hop == hop => Some(PendingStop::Interactive(kind)),
+                Some((asked_hop, kind))
+                    if asked_hop == hop && !seen.rejected_hops.contains(&hop) =>
+                {
+                    Some(PendingStop::Interactive(kind))
+                }
                 _ => None,
             },
             _ => None,
@@ -1003,6 +1025,14 @@ impl Interactor for TestInteractor {
 
     fn hop_started(&self, _progress: HopProgress) -> BoxFuture<'_, ()> {
         Box::pin(async {})
+    }
+
+    fn credential_rejected(&self) {
+        let mut seen = self.lock();
+        let hop = seen.hop;
+        if !seen.rejected_hops.contains(&hop) {
+            seen.rejected_hops.push(hop);
+        }
     }
 
     fn authentication_started(&self) -> BoxFuture<'_, ()> {
@@ -1729,7 +1759,10 @@ mod tests {
                 FailurePhase::Handshake,
                 HopRole::Target,
                 "",
-                Interaction { prompted: kind },
+                Interaction {
+                    prompted: kind,
+                    after_rejection: false,
+                },
             )
         };
         assert!(cancelled(Some(PromptKind::Password))
@@ -2320,6 +2353,168 @@ mod untrusted_host_tests {
             "{}",
             outcome.detail
         );
+    }
+
+    /// 配置的凭据先没成、认证退到要人输入：是真的认证失败，不能说成「需要交互验证」（部分通过）。
+    fn assert_rejected_then_prompt_fails(outcome: &TestOutcome) {
+        assert_eq!(outcome.kind, TestResultKind::Failed, "{}", outcome.reason);
+        assert_eq!(outcome.authentication, CheckState::Failed);
+        assert_eq!(outcome.failing_stage, Some(TestStage::Auth));
+        assert_eq!(
+            outcome.reason.key(),
+            reason_keys::CT_AUTH_REJECTED_THEN_PROMPT
+        );
+        assert!(
+            !outcome.reason.contains("交互验证") && !outcome.detail.contains("不是密码错误"),
+            "{} / {}",
+            outcome.reason,
+            outcome.detail
+        );
+    }
+
+    fn inline_key(passphrase: Option<&str>) -> crate::ssh::auth::KeySource {
+        use russh::keys::ssh_key::LineEnding;
+        let key = fake_server::ed25519_key();
+        crate::ssh::auth::KeySource::Inline {
+            pem: key.to_openssh(LineEnding::LF).expect("导出").to_string(),
+            passphrase: passphrase.map(str::to_owned),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rejected_key_that_falls_back_to_a_password_prompt_is_a_failure() {
+        let server = fake_server::spawn_with(
+            vec![fake_server::ed25519_key()],
+            AuthMode::PublickeyRejectedPasswordAllowed,
+        )
+        .await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let known = known_path(&dir);
+        trust(&server, &known);
+        let outcome = test_ssh(SshTestPlan {
+            hops: vec![hop_with(
+                "目标 lab-1",
+                &server,
+                &known,
+                AuthConfig::key(inline_key(None)),
+            )],
+        })
+        .await;
+        assert_eq!(
+            server
+                .counters
+                .publickey
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "钥匙确实发过、被拒"
+        );
+        assert_eq!(server.counters.passwords(), 0, "测试不会代填密码");
+        assert_rejected_then_prompt_fails(&outcome);
+    }
+
+    #[tokio::test]
+    async fn a_wrong_saved_password_followed_by_a_keyboard_prompt_is_a_failure() {
+        let server = fake_server::spawn_with(
+            vec![fake_server::ed25519_key()],
+            AuthMode::PasswordRejectedKeyboardPrompts,
+        )
+        .await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let known = known_path(&dir);
+        trust(&server, &known);
+        let outcome = test_ssh(SshTestPlan {
+            hops: vec![hop_with(
+                "目标 lab-1",
+                &server,
+                &known,
+                AuthConfig::password(Some("wrong-for-test".to_owned())),
+            )],
+        })
+        .await;
+        assert_eq!(server.counters.passwords(), 1, "存的密码发过、被拒");
+        assert_rejected_then_prompt_fails(&outcome);
+    }
+
+    #[tokio::test]
+    async fn a_missing_key_file_is_a_failure_not_a_passphrase_question() {
+        let server = fake_server::spawn(vec![fake_server::ed25519_key()]).await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let known = known_path(&dir);
+        trust(&server, &known);
+        let outcome = test_ssh(SshTestPlan {
+            hops: vec![hop_with(
+                "目标 lab-1",
+                &server,
+                &known,
+                AuthConfig::key(crate::ssh::auth::KeySource::File {
+                    path: dir.path().join("no-such-key"),
+                    passphrase: None,
+                }),
+            )],
+        })
+        .await;
+        assert_eq!(outcome.kind, TestResultKind::Failed, "{}", outcome.reason);
+        assert!(!outcome.reason.contains("交互验证"), "{}", outcome.reason);
+    }
+
+    #[tokio::test]
+    async fn an_encrypted_key_without_a_saved_passphrase_is_still_partial_interactive() {
+        use russh::keys::ssh_key::LineEnding;
+        // 要声明 publickey 的服务器：默认那台不收公钥，私钥会被直接跳过（那是真的失败）。
+        let server = fake_server::spawn_with(
+            vec![fake_server::ed25519_key()],
+            AuthMode::PublickeyRejectedPasswordAllowed,
+        )
+        .await;
+        let dir = tempfile::tempdir().expect("临时目录");
+        let known = known_path(&dir);
+        trust(&server, &known);
+        let encrypted = fake_server::ed25519_key()
+            .encrypt(&mut rand::rng(), "pass-for-test")
+            .expect("加密");
+        let outcome = test_ssh(SshTestPlan {
+            hops: vec![hop_with(
+                "目标 lab-1",
+                &server,
+                &known,
+                AuthConfig::key(crate::ssh::auth::KeySource::Inline {
+                    pem: encrypted
+                        .to_openssh(LineEnding::LF)
+                        .expect("导出")
+                        .to_string(),
+                    passphrase: None,
+                }),
+            )],
+        })
+        .await;
+        assert_eq!(
+            server
+                .counters
+                .publickey
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(outcome.kind, TestResultKind::Partial, "{}", outcome.reason);
+        assert_eq!(outcome.authentication, CheckState::Pending);
+    }
+
+    #[test]
+    fn encrypted_key_texts_are_recognised_by_their_headers() {
+        assert!(crate::ssh::auth::key_text_is_encrypted(
+            "-----BEGIN ENCRYPTED PRIVATE KEY-----\nAAAA\n"
+        ));
+        assert!(crate::ssh::auth::key_text_is_encrypted(
+            "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n"
+        ));
+        assert!(crate::ssh::auth::key_text_is_encrypted(
+            "PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: aes256-cbc\n"
+        ));
+        assert!(!crate::ssh::auth::key_text_is_encrypted(
+            "PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: none\n"
+        ));
+        assert!(!crate::ssh::auth::key_text_is_encrypted(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n"
+        ));
     }
 
     #[tokio::test]

@@ -203,6 +203,11 @@ pub trait Interactor: Send + Sync {
     fn authentication_started(&self) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
+
+    /// 当前这一跳已经有凭据没成：服务器拒了私钥 / 密码 / agent 里的钥，或者凭据本身读不了
+    /// （私钥文件读不到、坏了、存的口令不对）。之后再来的提问就不是「本来就没填这项」，而是
+    /// 认证在往下一种方法退。默认什么都不做；测试连接靠它区分「需要交互」和「真的失败」。
+    fn credential_rejected(&self) {}
 }
 
 /// 无人值守用的实现：主机密钥"仅本次"，需要提问时直接取消。

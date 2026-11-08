@@ -66,6 +66,8 @@ pub(crate) enum AuthMode {
     PublickeyRejectedPasswordAllowed,
     /// 收到公钥请求就掐断连接（模拟认证过程中掉线）。
     DropOnPublickey,
+    /// 密码一律拒绝，声明还能用键盘交互；键盘交互先出一道题（模拟动态口令），答了就接受。
+    PasswordRejectedKeyboardPrompts,
 }
 
 struct Handler {
@@ -79,6 +81,9 @@ fn methods(mode: AuthMode) -> Option<MethodSet> {
         AuthMode::PublickeyOnlyRejecting => &[MethodKind::PublicKey],
         AuthMode::PublickeyRejectedPasswordAllowed | AuthMode::DropOnPublickey => {
             &[MethodKind::PublicKey, MethodKind::Password]
+        }
+        AuthMode::PasswordRejectedKeyboardPrompts => {
+            &[MethodKind::Password, MethodKind::KeyboardInteractive]
         }
     };
     Some(MethodSet::from(kinds))
@@ -97,7 +102,10 @@ impl server::Handler for Handler {
 
     async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
         self.counters.password.fetch_add(1, Ordering::SeqCst);
-        if self.mode == AuthMode::PublickeyOnlyRejecting {
+        if matches!(
+            self.mode,
+            AuthMode::PublickeyOnlyRejecting | AuthMode::PasswordRejectedKeyboardPrompts
+        ) {
             return Ok(Auth::Reject {
                 proceed_with_methods: methods(self.mode),
                 partial_success: false,
@@ -121,11 +129,18 @@ impl server::Handler for Handler {
         &'a mut self,
         _user: &str,
         _submethods: &str,
-        _response: Option<server::Response<'a>>,
+        response: Option<server::Response<'a>>,
     ) -> Result<Auth, Self::Error> {
         self.counters
             .keyboard_interactive
             .fetch_add(1, Ordering::SeqCst);
+        if self.mode == AuthMode::PasswordRejectedKeyboardPrompts && response.is_none() {
+            return Ok(Auth::Partial {
+                name: "".into(),
+                instructions: "".into(),
+                prompts: vec![("Verification code: ".into(), false)].into(),
+            });
+        }
         Ok(Auth::Accept)
     }
 

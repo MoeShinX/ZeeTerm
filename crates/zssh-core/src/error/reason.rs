@@ -812,6 +812,7 @@ pub mod keys {
         CT_NEED_PASSWORD = "conntest.need_password";
         CT_NEED_PASSPHRASE = "conntest.need_passphrase";
         CT_NEED_INTERACTIVE = "conntest.need_interactive";
+        CT_AUTH_REJECTED_THEN_PROMPT = "conntest.auth_rejected_then_prompt";
         CT_CANCELLED = "conntest.cancelled";
         CT_NO_ALGO = "conntest.no_algo";
         CT_HANDSHAKE_TIMEOUT = "conntest.handshake_timeout";

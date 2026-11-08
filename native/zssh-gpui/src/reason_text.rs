@@ -853,6 +853,9 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
         "conntest.need_interactive" => {
             "The server asks for interactive verification (for example a one-time code), which Test Connection cannot answer for you; the server itself is reachable"
         }
+        "conntest.auth_rejected_then_prompt" => {
+            "Authentication failed: the credential configured for this host was not accepted by the server (or could not be read), and the server then asked for a different one; Test Connection does not prompt"
+        }
         "conntest.cancelled" => "Cancelled",
         "conntest.no_algo" => {
             "Cannot negotiate a common {kind} algorithm with the server (for older servers, try legacy algorithm support)"
