@@ -576,6 +576,9 @@ pub struct TransferEngine {
     nonce: String,
     /// 同时进行的文件数上限。
     permits: Arc<Semaphore>,
+    /// 本地目录树的规划一次只做一个（先到先得）：规划放进了阻塞线程池，不排队的话
+    /// 同一批提交的任务谁先规划完谁先传，传输顺序就不再是提交顺序了。
+    local_plan_gate: tokio::sync::Mutex<()>,
     /// 自己（弱引用）：后台任务拿着它，引擎被丢掉时任务自然退出。
     this: std::sync::OnceLock<std::sync::Weak<TransferEngine>>,
 }
@@ -595,6 +598,7 @@ impl TransferEngine {
                 endpoints,
                 resolver,
                 permits: Arc::new(Semaphore::new(options.concurrency.max(1))),
+                local_plan_gate: tokio::sync::Mutex::new(()),
                 options,
                 events,
                 jobs: Mutex::new(HashMap::new()),
@@ -916,7 +920,7 @@ impl TransferEngine {
             // 之前看一次取消，取消后规划很快停下。
             Direction::Upload => {
                 let (state, job) = (Arc::clone(state), job.clone());
-                run_local_plan(move || {
+                self.run_local_plan(move || {
                     plan::plan_upload_with(
                         std::path::Path::new(&job.source),
                         &job.target,
@@ -944,7 +948,7 @@ impl TransferEngine {
             }
             Direction::LocalCopy => {
                 let (state, job) = (Arc::clone(state), job.clone());
-                run_local_plan(move || {
+                self.run_local_plan(move || {
                     plan::plan_local_copy_with(
                         std::path::Path::new(&job.source),
                         std::path::Path::new(&job.target),
@@ -1916,19 +1920,25 @@ impl TransferEngine {
     }
 }
 
-/// 在阻塞线程池里跑一次同步的本地规划。线程没跑起来（池关了、任务 panic）按内部错误报。
-async fn run_local_plan(
-    work: impl FnOnce() -> Result<plan::TransferPlan, SftpError> + Send + 'static,
-) -> Result<plan::TransferPlan, SftpError> {
-    tokio::task::spawn_blocking(work).await.map_err(|err| {
-        SftpError::Internal(
-            Reason::new(
-                reason_keys::SFTP_TASK_LOCAL_READ,
-                format!("本地读任务没跑起来：{err}"),
+impl TransferEngine {
+    /// 在阻塞线程池里跑一次同步的本地规划，按提交顺序排队（见 `local_plan_gate`）。
+    /// 线程没跑起来（池关了、任务 panic）按内部错误报。
+    async fn run_local_plan(
+        &self,
+        work: impl FnOnce() -> Result<plan::TransferPlan, SftpError> + Send + 'static,
+    ) -> Result<plan::TransferPlan, SftpError> {
+        // 排队时被取消：整个规划 future 被丢掉，排队也就跟着取消了。
+        let _turn = self.local_plan_gate.lock().await;
+        tokio::task::spawn_blocking(work).await.map_err(|err| {
+            SftpError::Internal(
+                Reason::new(
+                    reason_keys::SFTP_TASK_LOCAL_READ,
+                    format!("本地读任务没跑起来：{err}"),
+                )
+                .with("cause", &err),
             )
-            .with("cause", &err),
-        )
-    })?
+        })?
+    }
 }
 
 /// 一个文件传完之后的结果。
