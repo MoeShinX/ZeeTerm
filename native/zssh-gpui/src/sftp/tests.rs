@@ -1117,9 +1117,15 @@ async fn recursive_delete_refuses_a_tree_deeper_than_the_limit_and_reports_what_
     let DeleteOutcome::Failed { deleted, message } = outcome else {
         panic!("太深必须失败：{outcome:?}");
     };
-    assert!(deleted >= 1, "a.txt 已经删了，要如实报告：{deleted}");
+    // 列目录的顺序因平台而异（NTFS 按名字排，Linux / macOS 不保证），a.txt 可能先删、也可能在撞上限之前还没轮到；
+    // 要求的是报告和实际一致：撞上限之前只有 a.txt 这一项会被删掉（目录要等清空才删）。
+    let a_removed = !root.path().join("tree").join("a.txt").exists();
+    assert_eq!(
+        deleted,
+        u64::from(a_removed),
+        "报告删掉的数量要和实际一致（a.txt 已删：{a_removed}）"
+    );
     assert!(message.contains('3'), "要说明层数上限：{message}");
-    assert!(!root.path().join("tree").join("a.txt").exists());
     assert!(
         root.path()
             .join("tree")

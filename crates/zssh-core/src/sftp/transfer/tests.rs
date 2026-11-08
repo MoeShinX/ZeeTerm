@@ -3999,8 +3999,9 @@ async fn a_local_tree_deeper_than_the_limit_fails_the_job() {
     let root = temp_root("local-deep-tree");
     let source = root.join("src");
     let mut deep = source.clone();
-    for level in 1..=(plan::MAX_PLAN_DEPTH + 2) {
-        deep.push(format!("d{level}"));
+    // 每层一个字母：macOS 路径上限 1024 字节，`d1`…`d258` 拼起来会超。
+    for _ in 0..(plan::MAX_PLAN_DEPTH + 2) {
+        deep.push("d");
     }
     std::fs::create_dir_all(crate::sftp::local::long_path(&deep)).unwrap();
     std::fs::write(

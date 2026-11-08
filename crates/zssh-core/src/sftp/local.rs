@@ -1260,11 +1260,12 @@ mod tests {
         );
     }
 
-    /// 造一条 `levels` 层的目录链：`root/d1/d2/.../dN`，最深一层放一个文件。
+    /// 造一条 `levels` 层的目录链：`root/d/d/.../d`，最深一层放一个文件。
+    /// 每层只用一个字母：macOS 的路径上限是 1024 字节，`d1`…`d258` 这种名字拼起来会超（CI 撞过）。
     fn make_chain(root: &Path, levels: usize) {
         let mut dir = root.to_path_buf();
-        for level in 1..=levels {
-            dir.push(format!("d{level}"));
+        for _ in 0..levels {
+            dir.push("d");
         }
         std::fs::create_dir_all(long_path(&dir)).unwrap();
         std::fs::write(long_path(&dir.join("leaf.txt")), b"x").unwrap();
