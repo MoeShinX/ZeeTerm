@@ -26,6 +26,7 @@ mod brackets;
 mod commands;
 mod contract;
 mod drafts;
+mod identity;
 mod language;
 mod lines;
 #[cfg(test)]
@@ -64,6 +65,7 @@ use drafts::{
     export_recovered, legacy_draft_file_in, now_unix, read_draft, read_legacy_draft,
     set_aside_locked,
 };
+use identity::{IdentityCheck, ServerIdentity};
 // 恢复列表的「另存到本地」也要在界面上说明导出的是明文。
 pub(crate) use drafts::export_plaintext_note;
 use language::Lang;
@@ -76,6 +78,8 @@ enum StatusMsg {
     Reconnecting,
     DisconnectedRead,
     Reconnected,
+    ServerChanged,
+    ServerChangeCancelled,
     RemoteDeletedRefused,
     RemoteChangedRefused,
     ConflictCloseSave,
@@ -144,6 +148,8 @@ impl crate::i18n::Msg for StatusMsg {
             Self::Reconnecting => "正在重新连接…",
             Self::DisconnectedRead => "连接已经断开，读不了文件",
             Self::Reconnected => "已重新连接",
+            Self::ServerChanged => "重新连上的不是原来的服务器，没有保存（内容和草稿都还在）",
+            Self::ServerChangeCancelled => "已取消，没有写入（内容和草稿都还在）",
             Self::RemoteDeletedRefused => "远端文件已经被删掉了，保存被拒绝",
             Self::RemoteChangedRefused => "远端文件已被外部修改，保存被拒绝",
             Self::ConflictCloseSave => "远端文件已被改过，有冲突要处理",
@@ -213,6 +219,12 @@ impl crate::i18n::Msg for StatusMsg {
             Self::Reconnecting => "Reconnecting…",
             Self::DisconnectedRead => "Connection lost — cannot read the file",
             Self::Reconnected => "Reconnected",
+            Self::ServerChanged => {
+                "The reconnected server is not the original one; nothing was saved (your content and draft are kept)"
+            }
+            Self::ServerChangeCancelled => {
+                "Cancelled; nothing was written (your content and draft are kept)"
+            }
             Self::RemoteDeletedRefused => "The remote file was deleted; the save was refused",
             Self::RemoteChangedRefused => {
                 "The remote file changed externally; the save was refused"
@@ -344,7 +356,7 @@ impl EventEmitter<EditorEvent> for RemoteEditor {}
 ///
 /// 带 `save_id` 的是保存相关：过期的（已经被新的保存取代的）一律忽略。
 enum RemoteEditEvent {
-    Connected(Arc<SftpChannel>),
+    Connected(Arc<SftpChannel>, ServerIdentity),
     ConnectFailed(String),
     Loaded {
         opened: Opened,
@@ -439,6 +451,12 @@ impl SaveKind {
             Self::Checked(owner) | Self::Overwrite(owner) => owner,
         }
     }
+}
+
+/// 重连连上的服务器和打开文件时的不一致：新通道先放在这里，用户确认才用。
+struct ServerPrompt {
+    channel: Arc<SftpChannel>,
+    current: ServerIdentity,
 }
 
 /// 冲突提示。
@@ -565,6 +583,11 @@ pub struct RemoteEditor {
     /// 连接没了（保存 / 读取时发现）：显示「重新连接」。
     disconnected: bool,
     reconnecting: bool,
+    /// 这个编辑会话连着的服务器（打开文件时记下的）：重连后换到别的机器上保存、草稿恢复上传之前
+    /// 都拿它比对。`None` = 还没连上过。
+    server: Option<ServerIdentity>,
+    /// 重连连上的不是 [`Self::server`]（或身份无法确认）：新通道先扣着不用，等用户决定。
+    server_prompt: Option<ServerPrompt>,
     /// 外部修改监视：加载/保存成功时更新标记，关闭时置停。
     watch: Arc<RemoteWatch>,
     /// 数据目录：打开时取一次，草稿、旧草稿导出都用它，中途不跟着环境变量变。
@@ -727,6 +750,8 @@ impl RemoteEditor {
             channel: None,
             disconnected: false,
             reconnecting: false,
+            server: None,
+            server_prompt: None,
             watch,
             data_dir,
             draft_path,
@@ -766,7 +791,10 @@ impl RemoteEditor {
             _tick: Task::ready(()),
         };
         match source {
-            ChannelSource::Ready(channel) => this.attach_channel(channel, cx),
+            ChannelSource::Ready(channel) => {
+                this.server = Some(ServerIdentity::from_channel(&channel));
+                this.attach_channel(channel, cx)
+            }
             ChannelSource::Dial => this.dial(cx),
         }
         // 100ms 轮询一次后台事件；每 20 次（约 2 秒）顺手写一次草稿。窗口没了
@@ -892,6 +920,43 @@ impl RemoteEditor {
 
     // ---- 连接 / 读取 ----
 
+    /// 重连拿到的新通道可以用了：第一次连上就读文件；断线后重连就换通道、换监视，
+    /// 有待重试的保存再保存一次。
+    fn adopt_channel(&mut self, channel: Arc<SftpChannel>, cx: &mut Context<Self>) {
+        if self.phase == Phase::Connecting || self.phase == Phase::Failed {
+            self.attach_channel(channel, cx);
+        } else {
+            self.restart_watcher(&channel);
+            self.channel = Some(channel);
+            self.status = crate::i18n::t(StatusMsg::Reconnected).to_owned();
+            if let Some(kind) = self.retry_save.take() {
+                self.start_save(kind, cx);
+            }
+        }
+    }
+
+    /// 提示条上的「仍写到当前服务器」：用户看过差异，同意换到现在这台。之后的草稿和重连都按它算；
+    /// 待重试的保存照常先核对版本（那里的文件和打开时读到的不是同一份就报冲突）。
+    pub(crate) fn accept_server_change(&mut self, cx: &mut Context<Self>) {
+        let Some(prompt) = self.server_prompt.take() else {
+            return;
+        };
+        self.server = Some(prompt.current);
+        self.disconnected = false;
+        self.adopt_channel(prompt.channel, cx);
+        cx.notify();
+    }
+
+    /// 提示条上的「取消」：扔掉新通道，什么都不写；内容和草稿都留着，待重试的保存作废。
+    pub(crate) fn cancel_server_change(&mut self, cx: &mut Context<Self>) {
+        if self.server_prompt.take().is_none() {
+            return;
+        }
+        self.retry_save = None;
+        self.status = crate::i18n::t(StatusMsg::ServerChangeCancelled).to_owned();
+        cx.notify();
+    }
+
     /// 有了现成的通道：起监视器，开始读文件。
     fn attach_channel(&mut self, channel: Arc<SftpChannel>, cx: &mut Context<Self>) {
         self.restart_watcher(&channel);
@@ -921,7 +986,7 @@ impl RemoteEditor {
             Ok(runtime) => {
                 runtime.spawn(async move {
                     let event = match remote::dial_channel(host_id).await {
-                        Ok(channel) => RemoteEditEvent::Connected(channel),
+                        Ok((channel, identity)) => RemoteEditEvent::Connected(channel, identity),
                         Err(message) => RemoteEditEvent::ConnectFailed(message),
                     };
                     let _ = sender.send(event);
@@ -1004,19 +1069,31 @@ impl RemoteEditor {
 
     fn apply(&mut self, event: RemoteEditEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
-            RemoteEditEvent::Connected(channel) => {
+            RemoteEditEvent::Connected(channel, dialed) => {
                 self.reconnecting = false;
-                self.disconnected = false;
-                if self.phase == Phase::Connecting || self.phase == Phase::Failed {
-                    self.attach_channel(channel, cx);
-                } else {
-                    // 断线后重连：换通道、换监视；有待重试的保存就再保存一次。
-                    self.restart_watcher(&channel);
-                    self.channel = Some(channel);
-                    self.status = crate::i18n::t(StatusMsg::Reconnected).to_owned();
-                    if let Some(kind) = self.retry_save.take() {
-                        self.start_save(kind, cx);
+                // 第一次连上就记下是哪台；之后（重连）必须还是它才照常用。主机记录在这期间
+                // 被改成指向别的机器时，新通道扣下来，不自动保存。
+                let verdict = match &self.server {
+                    None => IdentityCheck::Same,
+                    Some(original) => identity::check(Some(original), &dialed),
+                };
+                if verdict == IdentityCheck::Same {
+                    // 原来只有地址、端口、用户名（现成的通道取不到主机密钥）：补上这次校验过的指纹。
+                    if self
+                        .server
+                        .as_ref()
+                        .is_none_or(|original| original.host_key.is_none())
+                    {
+                        self.server = Some(dialed);
                     }
+                    self.disconnected = false;
+                    self.adopt_channel(channel, cx);
+                } else {
+                    self.status = crate::i18n::t(StatusMsg::ServerChanged).to_owned();
+                    self.server_prompt = Some(ServerPrompt {
+                        channel,
+                        current: dialed,
+                    });
                 }
             }
             RemoteEditEvent::ConnectFailed(message) => {
@@ -1640,6 +1717,7 @@ impl RemoteEditor {
             text,
             saved_at_unix: now_unix(),
             revision: self.revision,
+            server: self.server.clone(),
         };
         // 这里只入队：序列化、临时文件和 `sync_all` 都在写线程上做。
         self.drafts
@@ -2267,6 +2345,8 @@ impl RemoteEditor {
             }
         } else if self.owner_prompt.is_some() {
             "owner"
+        } else if self.server_prompt.is_some() {
+            "server_changed"
         } else if self.disconnected {
             "disconnected"
         } else {

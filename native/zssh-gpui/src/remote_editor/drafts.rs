@@ -23,6 +23,7 @@ use zssh_core::sftp::path::{file_name, normalize};
 use zssh_core::store::secrets;
 
 use super::contract::{MAX_BYTES, RemoteVersion};
+use super::identity::ServerIdentity;
 
 /// 草稿目录：和 `ui-settings.json` 一起放在数据目录下。
 pub(super) const DRAFT_DIR: &str = "edit-drafts";
@@ -161,6 +162,11 @@ pub(crate) struct EditDraft {
     /// 保存成功只删修订号不晚于那次保存的草稿，保存期间继续输入产生的新草稿留着。
     #[serde(default)]
     pub(super) revision: u64,
+    /// 写这份草稿时编辑器连着的服务器（地址、端口、用户名、已校验的主机密钥指纹）。恢复 / 重连后
+    /// 上传之前拿它跟现在要写的服务器比对，主机记录被改成指向另一台机器时不会静默写过去。
+    /// 旧草稿没有这个字段：读出来是 `None`，上传前要用户确认。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) server: Option<ServerIdentity>,
 }
 
 /// 加载完成后草稿能怎么处理：基准版本和这次读到的一致才能恢复；基准不一致（远端后来变了）
@@ -754,6 +760,7 @@ mod tests {
             text: text.to_owned(),
             saved_at_unix: 1_700_000_000,
             revision: 0,
+            server: None,
         }
     }
 
@@ -961,6 +968,7 @@ mod tests {
             text: String::new(),
             saved_at_unix: 10,
             revision: 0,
+            server: None,
         };
         write_draft(&path, &draft).expect("写空草稿");
         assert_eq!(read_draft(&path, HOST, "/srv/app/empty.txt"), Some(draft));
@@ -1049,6 +1057,34 @@ mod tests {
             revision,
             ..sample_draft(text)
         }
+    }
+
+    #[test]
+    fn old_drafts_without_a_server_identity_still_read_and_carry_none() {
+        let json = r#"{"path":"/a","host_id":3,"base_version":1,"text":"t","saved_at_unix":5,"revision":2}"#;
+        let draft: EditDraft = serde_json::from_str(json).expect("旧格式能读");
+        assert_eq!(draft.server, None);
+        assert_eq!(draft.text, "t");
+        assert_eq!(draft.revision, 2);
+    }
+
+    #[test]
+    fn a_server_identity_survives_the_draft_roundtrip() {
+        let draft = EditDraft {
+            server: Some(ServerIdentity {
+                target: "deploy@web-1.example:22".to_owned(),
+                host_key: Some("SHA256:aaa".to_owned()),
+            }),
+            ..sample_draft("body")
+        };
+        let json = serde_json::to_string(&draft).expect("序列化");
+        assert_eq!(
+            serde_json::from_str::<EditDraft>(&json).expect("反序列化"),
+            draft
+        );
+        // 没有身份的草稿不多写一个字段，老版本读到的也和以前一样。
+        let plain = serde_json::to_string(&sample_draft("body")).expect("序列化");
+        assert!(!plain.contains("server"), "{plain}");
     }
 
     #[test]

@@ -15,6 +15,7 @@ use super::commands::{
 };
 use super::contract::{encoding_label, eol_label};
 use super::drafts::{DraftNotice, draft_age_label, now_unix};
+use super::identity;
 use super::{Phase, RemoteEditor};
 use crate::app_theme::Tokens;
 use crate::main_window::widgets::{ButtonLook, text_button};
@@ -69,6 +70,9 @@ enum ViewMsg {
     OwnerPrefix,
     OwnerMid,
     OwnerTail,
+    ServerChangedPrefix,
+    ServerChangedSuffix,
+    WriteToCurrentServer,
     DraftFoundPrefix,
     DraftFoundSuffix,
     DraftOldPrefix,
@@ -141,6 +145,11 @@ impl crate::i18n::Msg for ViewMsg {
             Self::OwnerTail => {
                 "（服务器不让改回去），远端文件还没有被替换。「仍然保存」用临时文件替换，中途断线不会弄残原文件，但属主会变；「直接写入原文件」属主和权限都不变，可写到一半断线会只剩半截文件"
             }
+            Self::ServerChangedPrefix => "重新连上的不是打开这个文件时的服务器，所以没有保存。",
+            Self::ServerChangedSuffix => {
+                "。确认要把内容写到现在这台服务器的同一路径，请选「仍写到当前服务器」（保存时仍会核对那里的文件是否和你打开时一样）；不想写就选取消，内容和草稿都会保留"
+            }
+            Self::WriteToCurrentServer => "仍写到当前服务器",
             Self::DraftFoundPrefix => "发现未保存的草稿（",
             Self::DraftFoundSuffix => "）：恢复，还是丢弃？",
             Self::DraftOldPrefix => "草稿基于旧版本（",
@@ -217,6 +226,13 @@ impl crate::i18n::Msg for ViewMsg {
             Self::OwnerTail => {
                 " (the server will not let it change back), and the remote file has not been replaced yet. \"Save anyway\" replaces it through a temporary file: a dropped connection mid-write will not corrupt the original, but the owner changes. \"Write directly into the original\" keeps the owner and permissions unchanged, but a dropped connection mid-write can leave a partial file."
             }
+            Self::ServerChangedPrefix => {
+                "The reconnected server is not the one this file was opened from, so nothing was saved. "
+            }
+            Self::ServerChangedSuffix => {
+                ". To write to the current server at the same path, choose \"Write to the current server\" (saving still checks that the file there matches what you opened); otherwise cancel — your content and draft are kept"
+            }
+            Self::WriteToCurrentServer => "Write to the current server",
             Self::DraftFoundPrefix => "Found an unsaved draft (",
             Self::DraftFoundSuffix => "). Recover it or discard it?",
             Self::DraftOldPrefix => "The draft is based on an older version (",
@@ -576,6 +592,40 @@ impl Render for RemoteEditor {
                                 this.owner_prompt = None;
                                 cx.notify();
                             }),
+                        )
+                        .into_any_element(),
+                    ],
+                    &tokens,
+                )
+                .into_any_element(),
+            );
+        }
+
+        // 重连连上的不是原来那台服务器：新通道扣着，问用户。
+        if let Some(prompt) = &self.server_prompt {
+            bars.push(
+                bar(
+                    "remote-editor-server-changed",
+                    true,
+                    format!(
+                        "{}{}{}",
+                        crate::i18n::t(ViewMsg::ServerChangedPrefix),
+                        identity::describe(self.server.as_ref(), &prompt.current),
+                        crate::i18n::t(ViewMsg::ServerChangedSuffix)
+                    ),
+                    vec![
+                        text_button(
+                            "remote-editor-server-accept",
+                            crate::i18n::t(ViewMsg::WriteToCurrentServer),
+                            ButtonLook::Danger,
+                            act(&entity, |this, _window, cx| this.accept_server_change(cx)),
+                        )
+                        .into_any_element(),
+                        text_button(
+                            "remote-editor-server-cancel",
+                            crate::i18n::t(ViewMsg::Cancel),
+                            ButtonLook::Ghost,
+                            act(&entity, |this, _window, cx| this.cancel_server_change(cx)),
                         )
                         .into_any_element(),
                     ],

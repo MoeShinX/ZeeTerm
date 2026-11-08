@@ -23,6 +23,7 @@ use zssh_core::sftp::path::{is_absolute, join, normalize, parent};
 
 use super::RemoteEditEvent;
 use super::contract::{MAX_BYTES, Opened, RemoteVersion, open_bytes, too_large, version_of};
+use super::identity::ServerIdentity;
 use crate::error_text::error_text_in;
 use crate::i18n::{Lang, current};
 use crate::ssh_backend::{factory_for_host, runtime};
@@ -280,13 +281,18 @@ pub(super) async fn read_stamp(
 }
 
 /// 开一条新的 SFTP 通道（连接池里有同配置的活连接就复用，没有就重新握手）：
-/// 编辑器从恢复提示打开时、断线后「重新连接」时用。
-pub(crate) async fn dial_channel(host_id: i64) -> Result<Arc<SftpChannel>, String> {
+/// 编辑器从恢复提示打开时、断线后「重新连接」时用。同时带回这条连接实际连到的服务器身份，
+/// 调用方据此判断它还是不是当初那台（主机记录可能在这期间被改过）。
+pub(crate) async fn dial_channel(
+    host_id: i64,
+) -> Result<(Arc<SftpChannel>, ServerIdentity), String> {
     let factory = factory_for_host(host_id).await?;
-    let channel = SftpChannel::open(&factory.connection())
+    let connection = factory.connection();
+    let identity = ServerIdentity::from_connection(&connection);
+    let channel = SftpChannel::open(&connection)
         .await
         .map_err(|err| format!("{}{err}", crate::i18n::t(RemoteMsg::ChannelFailedPrefix)))?;
-    Ok(Arc::new(channel))
+    Ok((Arc::new(channel), identity))
 }
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ use zssh_core::sftp::path::file_name;
 
 use super::contract::{RemoteVersion, encode, open_bytes};
 use super::drafts::{EditDraft, draft_age_label, export_recovered, list_drafts, now_unix};
+use super::identity::{self, IdentityCheck, ServerIdentity};
 use super::remote::{self, SaveOutcome};
 
 /// 一项待恢复的修改（一份编辑草稿）。
@@ -137,8 +138,8 @@ pub(crate) async fn act(item: &RecoveryItem, action: Action, data_dir: &Path) ->
             let Some(host_id) = item.host_id else {
                 return Outcome::Failed(crate::i18n::t(RecoveryMsg::UnknownServerFile).to_owned());
             };
-            let channel = match remote::dial_channel(host_id).await {
-                Ok(channel) => channel,
+            let (channel, current) = match remote::dial_channel(host_id).await {
+                Ok(dialed) => dialed,
                 Err(message) => {
                     return Outcome::Failed(format!(
                         "{}{message}",
@@ -146,9 +147,30 @@ pub(crate) async fn act(item: &RecoveryItem, action: Action, data_dir: &Path) ->
                     ));
                 }
             };
-            act_with(&*channel, item, action).await
+            act_checked(&*channel, item, action, &current).await
         }
     }
+}
+
+/// 重新上传之前先确认现在拨到的服务器还是草稿当初对应的那台：主机记录可能在这期间被改成指向
+/// 另一台机器，按 id 重新拨号会把内容写到那里的同一路径上。不一致、或草稿没有记录（旧版本留下的）
+/// 就**不上传**，走冲突提示——用户看到两边的差异后选「覆盖服务器上的文件」才会写（那是明确的确认，
+/// 此时不再比对身份）；不选就什么都不会发生，草稿保留。
+pub(crate) async fn act_checked<B: EditBackend>(
+    backend: &B,
+    item: &RecoveryItem,
+    action: Action,
+    current: &ServerIdentity,
+) -> Outcome {
+    if action == Action::Reupload
+        && identity::check(item.draft.server.as_ref(), current) != IdentityCheck::Same
+    {
+        return Outcome::Conflict(identity::reupload_blocked_message(
+            item.draft.server.as_ref(),
+            current,
+        ));
+    }
+    act_with(backend, item, action).await
 }
 
 /// 不需要网络的动作：放弃、另存到本地。
@@ -339,6 +361,7 @@ mod tests {
             text: text.to_owned(),
             saved_at_unix: now_unix(),
             revision: 4,
+            server: None,
         }
     }
 
@@ -475,6 +498,91 @@ mod tests {
         assert_eq!(act_local(&item, Action::Discard, &dir), Outcome::Done(None));
         assert!(!file.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn server(target: &str, host_key: Option<&str>) -> ServerIdentity {
+        ServerIdentity {
+            target: target.to_owned(),
+            host_key: host_key.map(str::to_owned),
+        }
+    }
+
+    /// W07：草稿记着当初的服务器，现在拨到的是同一台才照常上传。
+    #[test]
+    fn reupload_to_the_same_server_goes_through() {
+        let dir = temp_dir("same-server");
+        let base = b"v1\n";
+        let backend = MemBackend(MemFs::with("/etc/app.conf", base));
+        let mut recorded = draft("/etc/app.conf", base, "v2\n");
+        recorded.server = Some(server("deploy@web-1.example:22", Some("SHA256:aaa")));
+        let item = written(&dir, &recorded);
+        let current = server("deploy@web-1.example:22", Some("SHA256:aaa"));
+        let outcome = block_on(act_checked(&backend, &item, Action::Reupload, &current));
+        assert!(matches!(outcome, Outcome::Done(_)), "{outcome:?}");
+        assert_eq!(
+            backend.0.get("/etc/app.conf").as_deref(),
+            Some(&b"v2\n"[..])
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 主机记录被改成指向别的机器（或同一地址换了主机密钥）：不上传，远端和草稿都不动，
+    /// 说明里带着两边的差异；用户选「覆盖」才写。旧草稿没有记录时同样拦下。
+    #[test]
+    fn reupload_is_blocked_when_the_server_changed_or_was_never_recorded() {
+        let base = b"v1\n";
+        let cases = [
+            (
+                "address",
+                Some(server("deploy@web-1.example:22", Some("SHA256:aaa"))),
+                server("deploy@web-2.example:22", Some("SHA256:aaa")),
+            ),
+            (
+                "host-key",
+                Some(server("deploy@web-1.example:22", Some("SHA256:aaa"))),
+                server("deploy@web-1.example:22", Some("SHA256:bbb")),
+            ),
+            (
+                "legacy",
+                None,
+                server("deploy@web-1.example:22", Some("SHA256:aaa")),
+            ),
+        ];
+        for (name, recorded_server, current) in cases {
+            let dir = temp_dir(&format!("blocked-{name}"));
+            let backend = MemBackend(MemFs::with("/etc/app.conf", base));
+            let mut recorded = draft("/etc/app.conf", base, "v2\n");
+            recorded.server = recorded_server.clone();
+            let item = written(&dir, &recorded);
+            let outcome = block_on(act_checked(&backend, &item, Action::Reupload, &current));
+            let Outcome::Conflict(message) = outcome else {
+                panic!("{name}: 应该被拦下");
+            };
+            assert!(message.contains(&current.target), "{name}: {message}");
+            if let Some(original) = &recorded_server {
+                assert!(message.contains(&original.target), "{name}: {message}");
+            }
+            assert_eq!(
+                backend.0.get("/etc/app.conf").as_deref(),
+                Some(&base[..]),
+                "{name}: 一个字节都不能写"
+            );
+            assert!(item.file.exists(), "{name}: 草稿保留");
+
+            // 用户看过差异之后明确选择覆盖：这时才写到现在这台。
+            let outcome = block_on(act_checked(
+                &backend,
+                &item,
+                Action::ReuploadOverwrite,
+                &current,
+            ));
+            assert!(matches!(outcome, Outcome::Done(_)), "{name}: {outcome:?}");
+            assert_eq!(
+                backend.0.get("/etc/app.conf").as_deref(),
+                Some(&b"v2\n"[..])
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

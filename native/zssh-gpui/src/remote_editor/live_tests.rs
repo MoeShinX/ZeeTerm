@@ -287,6 +287,7 @@ fn live_draft_recovery_reupload_checks_conflicts() {
                 text: text.to_owned(),
                 saved_at_unix: now_unix(),
                 revision: 3,
+                server: None,
             };
             write_draft(&draft_file_in(&data, 9, file), &draft).expect("写草稿");
         }
