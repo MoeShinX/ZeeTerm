@@ -398,6 +398,23 @@ impl JobState {
         }
     }
 
+    fn is_cancelled(&self) -> bool {
+        self.control.state() == file::ControlState::Cancelled
+    }
+
+    /// 等到任务被取消（取消的广播和暂停共用 `resume_signal`；先登记再读状态，不丢通知）。
+    async fn wait_cancelled(&self) {
+        loop {
+            let notified = self.resume_signal.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     fn confirmed_prefix(&self, target: &str) -> Option<u64> {
         self.confirmed
             .lock()
@@ -692,17 +709,30 @@ impl TransferEngine {
     async fn run_job(self: Arc<Self>, state: Arc<JobState>, prefer_resume: bool) {
         // 上一轮还没退出时（例如刚看到 Failed 事件就点了重试），这一轮在这里等。
         let _run = state.run_lock.lock().await;
+        // 排队期间就被取消了：连规划都不用做（更不能建目录）。
+        if state.is_cancelled() {
+            self.finish_with_error(&state, SftpError::Cancelled);
+            return;
+        }
         self.set_state(&state, TransferState::Planning);
         self.emit(&state, true);
 
-        // 展开任务（下载要读远端目录，走数据面）。
-        let plan = match self.build_plan(&state.job).await {
+        // 展开任务（下载要读远端目录，走数据面）。取消一到就丢掉还在读目录的规划。
+        let plan = match self
+            .until_cancelled(&state, self.build_plan(&state.job))
+            .await
+        {
             Ok(plan) => plan,
             Err(err) => {
                 self.finish_with_error(&state, err);
                 return;
             }
         };
+        // 同步的规划（本地树）中途没法打断，做完之后补一次检查，免得接着去建目录。
+        if state.is_cancelled() {
+            self.finish_with_error(&state, SftpError::Cancelled);
+            return;
+        }
         {
             let mut progress = self.lock_progress(&state);
             progress.total_files = plan.files.len() as u64;
@@ -714,7 +744,7 @@ impl TransferEngine {
         self.emit(&state, true);
 
         // 先建目录（目标端）。
-        if let Err(err) = self.create_dirs(&state.job, &plan).await {
+        if let Err(err) = self.create_dirs(&state, &plan).await {
             self.finish_with_error(&state, err);
             return;
         }
@@ -793,6 +823,9 @@ impl TransferEngine {
 
         let final_state = match failed {
             Some(err) => TransferState::Failed(err.to_string()),
+            // 给结束状态之前再看一次取消：没有文件的任务（空目录）不会进上面的逐文件检查点，
+            // 以前取消了也报「完成」。
+            None if state.is_cancelled() => TransferState::Cancelled,
             // 全都按"跳过"处理了：这个任务算"跳过"（不是失败）。
             None if completed_files == 0 && skipped_files > 0 => TransferState::Skipped,
             None => TransferState::Done,
@@ -832,30 +865,51 @@ impl TransferEngine {
         }
     }
 
-    /// 目标端的目录先建出来。
+    /// 目标端的目录先建出来。每建一个目录之前都看一次取消：取消之后不能再新建目录。
     async fn create_dirs(
         &self,
-        job: &TransferJob,
+        state: &Arc<JobState>,
         plan: &plan::TransferPlan,
     ) -> Result<(), SftpError> {
-        match job.direction {
+        match state.job.direction {
             Direction::Upload | Direction::RemoteCopy => {
                 // 按深度排序再建：父目录一定排在子目录前面（不管展开顺序怎么来的）。
                 let mut dirs: Vec<&String> = plan.dirs.iter().collect();
                 dirs.sort_by_key(|dir| dir.matches('/').count());
                 for dir in dirs {
-                    self.endpoints.create_target_dir(dir).await?;
+                    if state.is_cancelled() {
+                        return Err(SftpError::Cancelled);
+                    }
+                    self.until_cancelled(state, self.endpoints.create_target_dir(dir))
+                        .await?;
                 }
                 Ok(())
             }
             Direction::Download | Direction::LocalCopy => {
                 for dir in &plan.dirs {
+                    if state.is_cancelled() {
+                        return Err(SftpError::Cancelled);
+                    }
                     let path = crate::sftp::local::long_path(std::path::Path::new(dir));
                     std::fs::create_dir_all(&path)
                         .map_err(|err| crate::sftp::error::from_io(err, &dir.clone()))?;
                 }
                 Ok(())
             }
+        }
+    }
+
+    /// 跑 `work`，同时盯着取消：取消一到就丢掉它（停在它当前的 await 上，不再继续），
+    /// 返回 [`SftpError::Cancelled`]。只给没有副作用、或副作用可以半途丢弃的步骤用（读目录、建目录）。
+    async fn until_cancelled<T>(
+        &self,
+        state: &Arc<JobState>,
+        work: impl std::future::Future<Output = Result<T, SftpError>>,
+    ) -> Result<T, SftpError> {
+        tokio::select! {
+            biased;
+            () = state.wait_cancelled() => Err(SftpError::Cancelled),
+            out = work => out,
         }
     }
 
@@ -1525,8 +1579,12 @@ impl TransferEngine {
     }
 
     fn finish_with_error(&self, state: &Arc<JobState>, err: SftpError) {
-        let text = err.to_string();
-        self.set_state(state, TransferState::Failed(text));
+        // 取消不是失败：规划 / 建目录阶段被取消，最终状态是「已取消」。
+        let next = match err {
+            SftpError::Cancelled => TransferState::Cancelled,
+            other => TransferState::Failed(other.to_string()),
+        };
+        self.set_state(state, next);
         self.emit(state, true);
     }
 

@@ -606,6 +606,10 @@ pub mod keys {
         XFER_NOTE_SKIP_EXISTING = "xfer.note_skip_existing";
         XFER_NOTE_CANNOT_RESUME = "xfer.note_cannot_resume";
         XFER_NOTE_RENAMED_TO = "xfer.note_renamed_to";
+        XFER_TREE_TOO_DEEP = "xfer.tree_too_deep";
+        SFTP_DIR_TOO_MANY_ENTRIES = "sftp.dir_too_many_entries";
+        SFTP_DIR_PAGING_RUNAWAY = "sftp.dir_paging_runaway";
+        SFTP_REMOVE_TREE_TOO_DEEP = "sftp.remove_tree_too_deep";
         SFTP_WRAPPED = "sftp.wrapped";
         ARCHIVE_NAME_TAKEN = "archive.name_taken";
         ARCHIVE_NOTHING_SELECTED = "archive.nothing_selected";

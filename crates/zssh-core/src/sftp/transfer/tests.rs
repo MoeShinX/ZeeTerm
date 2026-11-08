@@ -3512,3 +3512,236 @@ async fn retry_counts_the_resumed_prefix_so_progress_ends_at_the_total() {
     assert_eq!(report.done_bytes, 16 * 1024, "{report:?}");
     assert_eq!(report.done_bytes, report.total_bytes);
 }
+
+// ---------------------------------------------------------------------------
+// W15：规划 / 建目录阶段的取消，以及目录树的深度上限
+// ---------------------------------------------------------------------------
+
+/// 立即取消一个空目录的本地复制：以前仍然建出目标目录、最后报「完成」。
+#[tokio::test]
+async fn cancelling_an_empty_directory_copy_right_away_creates_nothing() {
+    let root = temp_root("w15-cancel-empty");
+    let source = root.join("src");
+    std::fs::create_dir(&source).unwrap();
+    let target = root.join("dst");
+    let (engine, mut events) = TransferEngine::new(
+        Arc::new(MemoryEndpoints::new("/remote")),
+        Arc::new(OverwriteAll),
+        local_options(),
+    );
+    let id = engine.submit(TransferJob {
+        direction: Direction::LocalCopy,
+        source: source.display().to_string(),
+        target: target.display().to_string(),
+        recursive: true,
+        peer: None,
+    });
+    // 单线程运行时：任务此刻还没开始跑，取消先到。
+    assert!(engine.cancel(id));
+    let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+    assert_eq!(report.state, TransferState::Cancelled, "{report:?}");
+    assert!(!target.exists(), "取消之后不该建出目标目录");
+}
+
+/// 包一层 `MemoryEndpoints`，让读目录 / 建目录卡住（模拟很慢的服务器），并记下建过哪些目录。
+struct Stalling {
+    inner: Arc<MemoryEndpoints>,
+    stall_list: bool,
+    stall_create: bool,
+    entered: tokio::sync::Notify,
+    created: Mutex<Vec<String>>,
+    /// 被卡住的那次调用的 future 是否已经被丢掉（= 被取消打断，而不是一直挂着）。
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Stalling {
+    fn new(inner: &Arc<MemoryEndpoints>, stall_list: bool, stall_create: bool) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Arc::clone(inner),
+            stall_list,
+            stall_create,
+            entered: tokio::sync::Notify::new(),
+            created: Mutex::new(Vec::new()),
+            dropped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
+    }
+
+    async fn stall(&self) {
+        struct MarkOnDrop(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for MarkOnDrop {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _mark = MarkOnDrop(Arc::clone(&self.dropped));
+        self.entered.notify_one();
+        std::future::pending::<()>().await;
+    }
+}
+
+impl super::backend::RemoteLister for Stalling {
+    fn list_dir<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<crate::sftp::fs::DirEntry>, SftpError>> {
+        Box::pin(async move {
+            if self.stall_list {
+                self.stall().await;
+            }
+            self.inner.list_dir(path).await
+        })
+    }
+
+    fn stat_remote<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>> {
+        self.inner.stat_remote(path)
+    }
+}
+
+impl super::backend::TransferEndpoints for Stalling {
+    fn pair<'a>(
+        &'a self,
+        direction: Direction,
+        peer: Option<&'a str>,
+        source: &'a str,
+        target: &'a str,
+        owner: &'a str,
+    ) -> BoxFuture<'a, Result<super::backend::FilePair, SftpError>> {
+        self.inner.pair(direction, peer, source, target, owner)
+    }
+
+    fn plan_remote_copy<'a>(
+        &'a self,
+        peer: Option<&'a str>,
+        source: &'a str,
+        target: &'a str,
+        recursive: bool,
+    ) -> BoxFuture<'a, Result<plan::TransferPlan, SftpError>> {
+        self.inner.plan_remote_copy(peer, source, target, recursive)
+    }
+
+    fn create_target_dir<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<(), SftpError>> {
+        Box::pin(async move {
+            if self.stall_create {
+                self.stall().await;
+            }
+            self.created.lock().unwrap().push(path.to_owned());
+            Ok(())
+        })
+    }
+
+    fn reset<'a>(&'a self) -> BoxFuture<'a, ()> {
+        self.inner.reset()
+    }
+
+    fn server_identity<'a>(&'a self) -> BoxFuture<'a, Result<String, SftpError>> {
+        self.inner.server_identity()
+    }
+}
+
+/// 规划（读远端目录）卡住时取消：规划被打断，任务以「已取消」结束，本地目标一点没建。
+#[tokio::test]
+async fn cancelling_while_the_remote_listing_is_stuck_stops_the_plan() {
+    let root = temp_root("w15-cancel-listing");
+    let inner = Arc::new(MemoryEndpoints::new("/remote"));
+    inner.put_remote("/remote/tree/a/b.txt", vec![1u8; 10]);
+    let stalling = Stalling::new(&inner, true, false);
+    let (engine, mut events) =
+        TransferEngine::new(stalling.clone(), Arc::new(OverwriteAll), local_options());
+    let target = root.join("out");
+    let id = engine.submit(TransferJob {
+        direction: Direction::Download,
+        source: "/remote/tree".to_owned(),
+        target: target.display().to_string(),
+        recursive: true,
+        peer: None,
+    });
+    tokio::time::timeout(Duration::from_secs(30), stalling.entered.notified())
+        .await
+        .expect("读目录没有开始");
+    assert!(engine.cancel(id));
+    let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+    assert_eq!(report.state, TransferState::Cancelled, "{report:?}");
+    assert!(
+        stalling.dropped.load(std::sync::atomic::Ordering::SeqCst),
+        "卡住的读目录要被打断，不能一直挂着"
+    );
+    assert!(!target.exists(), "规划被取消，不该建本地目录");
+}
+
+/// 建远端目录的途中取消：当前这一个被打断，后面的目录不再建，最终是「已取消」。
+#[tokio::test]
+async fn cancelling_while_target_directories_are_created_stops_creating_more() {
+    let root = temp_root("w15-cancel-mkdir");
+    let tree = root.join("tree");
+    std::fs::create_dir_all(tree.join("a")).unwrap();
+    std::fs::create_dir_all(tree.join("b")).unwrap();
+    std::fs::write(tree.join("a").join("f.txt"), b"x").unwrap();
+    std::fs::write(tree.join("b").join("g.txt"), b"y").unwrap();
+    let inner = Arc::new(MemoryEndpoints::new("/remote"));
+    let stalling = Stalling::new(&inner, false, true);
+    let (engine, mut events) =
+        TransferEngine::new(stalling.clone(), Arc::new(OverwriteAll), local_options());
+    let id = engine.submit(TransferJob {
+        direction: Direction::Upload,
+        source: tree.display().to_string(),
+        target: "/remote/tree".to_owned(),
+        recursive: true,
+        peer: None,
+    });
+    tokio::time::timeout(Duration::from_secs(30), stalling.entered.notified())
+        .await
+        .expect("建目录没有开始");
+    assert!(engine.cancel(id));
+    let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+    assert_eq!(report.state, TransferState::Cancelled, "{report:?}");
+    assert!(stalling.dropped.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(
+        stalling.created.lock().unwrap().is_empty(),
+        "取消之后不该再建目录：{:?}",
+        stalling.created.lock().unwrap()
+    );
+    assert!(!endpoints_has_files(&inner));
+}
+
+fn endpoints_has_files(endpoints: &MemoryEndpoints) -> bool {
+    endpoints.remote_exists("/remote/tree/a/f.txt")
+        || endpoints.remote_exists("/remote/tree/b/g.txt")
+}
+
+/// 比默认上限更深的远端树：下载 / 复制都以明确的错误失败，不会只传一部分就报完成。
+#[tokio::test]
+async fn a_remote_tree_deeper_than_the_limit_fails_the_job() {
+    let root = temp_root("w15-deep-tree");
+    let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+    let mut path = "/remote/tree".to_owned();
+    endpoints.put_remote(&format!("{path}/top.txt"), vec![1u8; 4]);
+    for level in 1..=(plan::MAX_PLAN_DEPTH + 5) {
+        path = format!("{path}/d{level}");
+    }
+    endpoints.put_remote(&format!("{path}/leaf.txt"), vec![2u8; 4]);
+    let (engine, mut events) =
+        TransferEngine::new(endpoints.clone(), Arc::new(OverwriteAll), local_options());
+    for (direction, target) in [
+        (Direction::Download, root.join("out").display().to_string()),
+        (Direction::RemoteCopy, "/remote/copy".to_owned()),
+    ] {
+        let id = engine.submit(TransferJob {
+            direction,
+            source: "/remote/tree".to_owned(),
+            target,
+            recursive: true,
+            peer: None,
+        });
+        let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+        let TransferState::Failed(text) = &report.state else {
+            panic!("太深的树必须失败：{report:?}");
+        };
+        assert!(text.contains(&plan::MAX_PLAN_DEPTH.to_string()), "{text}");
+        assert_eq!(report.done_files, 0, "{report:?}");
+    }
+    assert!(!root.join("out").exists(), "规划失败不该建本地目录");
+    assert!(!endpoints.remote_exists("/remote/copy/top.txt"));
+}

@@ -1269,3 +1269,78 @@ async fn copying_a_folder_refuses_entry_names_that_could_leave_the_target() {
         assert!(!fs.exists("/dst/escape.txt"), "{bad:?}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// W15：remove_tree 的层数上限与取消
+// ---------------------------------------------------------------------------
+
+/// 造一条 `levels` 层的目录链 `/chain/1/2/...`，最深一层里放一个文件。
+fn put_chain(fs: &FakeFs, levels: usize) -> String {
+    let mut path = "/chain".to_owned();
+    fs.put_dir(&path);
+    for level in 1..=levels {
+        path = format!("{path}/{level}");
+        fs.put_dir(&path);
+    }
+    fs.put_file(&format!("{path}/leaf.txt"), b"x");
+    path
+}
+
+#[tokio::test]
+async fn remove_tree_removes_a_whole_tree() {
+    let fs = Arc::new(FakeFs::new());
+    put_chain(&fs, 5);
+    fs.put_file("/chain/top.txt", b"x");
+    remove_tree_checked(fs.as_ref(), "/chain", None, MAX_TREE_DEPTH)
+        .await
+        .expect("正常的树要删干净");
+    assert!(!fs.exists("/chain"));
+    assert!(!fs.exists("/chain/1/2/3/4/5/leaf.txt"));
+}
+
+#[tokio::test]
+async fn remove_tree_refuses_a_tree_deeper_than_the_limit() {
+    let fs = Arc::new(FakeFs::new());
+    put_chain(&fs, 6);
+    let err = remove_tree_checked(fs.as_ref(), "/chain", None, 3)
+        .await
+        .expect_err("超过层数上限必须报错，不能删一半报成功");
+    let SftpError::RemoteReason(reason) = &err else {
+        panic!("不是带 key 的错误：{err:?}");
+    };
+    assert_eq!(reason.key(), reason_keys::SFTP_REMOVE_TREE_TOO_DEEP);
+    assert!(fs.exists("/chain"), "没删完的根不能当成已删");
+    // 刚好等于上限还是可以的：根是第 0 层，最深的目录是第 6 层。
+    remove_tree_checked(fs.as_ref(), "/chain", None, 6)
+        .await
+        .expect("正好在上限上要放行");
+    assert!(!fs.exists("/chain"));
+}
+
+/// 一千多层的链：显式栈遍历，不会把栈用光；默认上限（1024）一样拦得住。
+#[tokio::test]
+async fn remove_tree_on_a_very_deep_chain_neither_overflows_nor_succeeds_silently() {
+    let fs = Arc::new(FakeFs::new());
+    put_chain(&fs, MAX_TREE_DEPTH + 20);
+    let err = remove_tree_checked(fs.as_ref(), "/chain", None, MAX_TREE_DEPTH)
+        .await
+        .expect_err("太深要报错");
+    assert!(matches!(err, SftpError::RemoteReason(_)), "{err:?}");
+    // 清理路径（不返回错误）也不能崩。
+    remove_tree(fs.as_ref(), "/chain").await;
+}
+
+#[tokio::test]
+async fn remove_tree_stops_when_cancelled_but_cleanup_ignores_cancel() {
+    let fs = Arc::new(FakeFs::new());
+    put_chain(&fs, 3);
+    let cancel = AtomicBool::new(true);
+    let err = remove_tree_checked(fs.as_ref(), "/chain", Some(&cancel), MAX_TREE_DEPTH)
+        .await
+        .expect_err("取消了要停");
+    assert!(matches!(err, SftpError::Cancelled), "{err:?}");
+    assert!(fs.exists("/chain/1/2/3/leaf.txt"), "取消后不能再删东西");
+    // 收尾用的 `remove_tree` 没有取消检查：取消之后清临时文件夹照样要清干净。
+    remove_tree(fs.as_ref(), "/chain").await;
+    assert!(!fs.exists("/chain"));
+}

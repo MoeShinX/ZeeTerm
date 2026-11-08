@@ -1296,26 +1296,66 @@ pub(crate) fn lock_target(
     TargetLocks::remote().try_acquire_remote(server, path)
 }
 
-/// 递归删掉一棵树（失败只记日志；清理自己的临时文件时用）。
+/// 清理自己的临时文件 / 文件夹：尽力而为，单项删不掉不影响其余。
+///
+/// **不带取消检查**：它多半就是在用户取消、或出错之后收尾，这时更要把临时文件删干净。
+/// 嵌套太深（超过 [`MAX_TREE_DEPTH`]）时停下，只记日志（调用方是清理路径，没有地方报错）。
 pub(crate) async fn remove_tree(ops: &dyn CopyDataOps, path: &str) {
-    let attrs = match ops.lstat(path).await {
-        Ok(attrs) => attrs,
-        Err(_) => return,
-    };
-    if attrs.is_dir {
-        if let Ok(entries) = ops.read_dir(path).await {
+    if let Err(err) = remove_tree_checked(ops, path, None, MAX_TREE_DEPTH).await {
+        tracing::warn!(error = %err, "清理临时文件夹没做完");
+    }
+}
+
+/// 递归删掉一棵树，层数超过 `max_depth` 报错、`cancel` 置位报 [`SftpError::Cancelled`]。
+///
+/// 用显式的栈做后序遍历（先删孩子再删目录自己），不用递归的 async 函数：层数很深时递归会先
+/// 把工作线程的栈用光（见 [`MAX_COPY_DEPTH`] 的说明）。单项删除失败照旧忽略（尽力而为）；
+/// 只有「太深」和「被取消」会让整件事停下，并且是报错，不是悄悄少删一部分。
+pub(crate) async fn remove_tree_checked(
+    ops: &dyn CopyDataOps,
+    path: &str,
+    cancel: Option<&AtomicBool>,
+    max_depth: usize,
+) -> Result<(), SftpError> {
+    // (路径, 深度, 孩子是不是已经处理完——处理完了才轮到删目录自己)
+    let mut stack: Vec<(String, usize, bool)> = vec![(path.to_owned(), 0, false)];
+    while let Some((current, depth, children_done)) = stack.pop() {
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::SeqCst)) {
+            return Err(SftpError::Cancelled);
+        }
+        if children_done {
+            let _ = ops.remove_dir(&current).await;
+            continue;
+        }
+        let Ok(attrs) = ops.lstat(&current).await else {
+            continue;
+        };
+        if !attrs.is_dir {
+            let _ = ops.remove_file(&current).await;
+            continue;
+        }
+        if depth > max_depth {
+            return Err(SftpError::RemoteReason(
+                Reason::new(
+                    reason_keys::SFTP_REMOVE_TREE_TOO_DEEP,
+                    format!("文件夹嵌套超过 {max_depth} 层，不继续删除：{current}"),
+                )
+                .with("max", max_depth)
+                .with("path", &current),
+            ));
+        }
+        stack.push((current.clone(), depth, true));
+        if let Ok(entries) = ops.read_dir(&current).await {
             for entry in entries {
                 if entry.is_dir && !entry.is_symlink {
-                    Box::pin(remove_tree(ops, &entry.path)).await;
+                    stack.push((entry.path, depth + 1, false));
                 } else {
                     let _ = ops.remove_file(&entry.path).await;
                 }
             }
         }
-        let _ = ops.remove_dir(path).await;
-    } else {
-        let _ = ops.remove_file(path).await;
     }
+    Ok(())
 }
 
 #[cfg(test)]

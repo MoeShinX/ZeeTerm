@@ -506,6 +506,18 @@ pub(crate) fn english(key: &str) -> Option<&'static str> {
             "{path} cannot be resumed (the target is not smaller than the source); overwriting instead"
         }
         "xfer.note_renamed_to" => "Target already exists; renamed to {renamed}",
+        "xfer.tree_too_deep" => {
+            "Folders are nested more than {max} levels deep; refusing to expand them: {dir}"
+        }
+        "sftp.dir_too_many_entries" => {
+            "The directory has more than {max} entries and cannot be listed in full: {path}"
+        }
+        "sftp.dir_paging_runaway" => {
+            "The server kept returning directory pages ({pages} so far) and the listing never finished: {path}"
+        }
+        "sftp.remove_tree_too_deep" => {
+            "Folders are nested more than {max} levels deep; refusing to delete them: {path}"
+        }
         "sftp.wrapped" => "{cause}",
         "archive.name_taken" => {
             "The archive name for \"{base}\" is still taken after trying up to (1000); nothing was compressed"

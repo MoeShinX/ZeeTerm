@@ -369,6 +369,9 @@ impl SftpChannel {
     // ---------- 目录 ----------
 
     /// 打开目录、读完整列表（`opendir` + 反复 `readdir` 到 EOF + `close`）。
+    ///
+    /// 条目数、翻页次数有硬上限，翻页卡住（重复同一页）也会停下：都以明确错误失败，
+    /// 不会截断成半份列表再报成功（见 [`DirLimits`]）。
     pub async fn read_dir_raw(
         &self,
         path: &str,
@@ -379,39 +382,22 @@ impl SftpChannel {
             .await
             .map_err(|err| with_path(err, path))?;
         let handle_id = handle.handle;
-        let mut out = Vec::new();
-        let mut failure = None;
-        loop {
+        let result = collect_dir_pages(path, DirLimits::DEFAULT, || async {
             match self.raw.readdir(&handle_id).await {
-                Ok(name) => {
-                    let empty = name.files.is_empty();
-                    out.extend(name.files);
-                    if empty {
-                        break;
-                    }
+                Ok(name) => Ok(name.files),
+                // EOF 是正常的结束信号（有些服务器用它代替空列表）。
+                Err(russh_sftp::client::error::Error::Status(status))
+                    if status.status_code == StatusCode::Eof =>
+                {
+                    Ok(Vec::new())
                 }
-                Err(err) => {
-                    // EOF 是正常的结束信号（有些服务器用它代替空列表）。
-                    match err {
-                        russh_sftp::client::error::Error::Status(status)
-                            if status.status_code == StatusCode::Eof =>
-                        {
-                            break
-                        }
-                        other => {
-                            failure = Some(with_path(other, path));
-                            break;
-                        }
-                    }
-                }
+                Err(other) => Err(with_path(other, path)),
             }
-        }
+        })
+        .await;
         // 句柄一定要关（服务器有句柄上限）。
         let _ = self.raw.close(&handle_id).await;
-        match failure {
-            Some(err) => Err(err),
-            None => Ok(out),
-        }
+        result
     }
 
     /// 列目录：符号链接显示链接本身，同时带上目标的类型。
@@ -897,6 +883,79 @@ fn status_ok(status: Status, path: &str) -> Result<(), SftpError> {
     }
 }
 
+/// 读一个目录时的硬上限。
+///
+/// 为什么要有：`readdir` 一直返回非空页的服务器（坏实现、恶意服务器）会让列表无限长，
+/// 内存先被吃光；一份被截断的列表又会让上层以为目录只有这些，所以超限必须报错，不能截断。
+/// 数值都远大于正常使用：一百万个条目的目录已经让任何文件管理界面不可用；OpenSSH 一页
+/// 约几十到上百个条目，十万页对应的条目数远超条目上限，正常目录碰不到。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DirLimits {
+    pub max_entries: usize,
+    pub max_pages: usize,
+}
+
+impl DirLimits {
+    pub(crate) const DEFAULT: Self = Self {
+        max_entries: 1_000_000,
+        max_pages: 100_000,
+    };
+}
+
+/// 反复取页直到空页（= 目录读完）。`next_page` 返回 `Ok(空)` 表示 EOF。
+///
+/// 除了条目数、页数上限，还检查「这一页和上一页一模一样」：目录里的名字互不相同，真实服务器
+/// 不会连着给两份完全相同的非空页，那是翻页卡住了（句柄没有前进）。
+async fn collect_dir_pages<F, Fut>(
+    path: &str,
+    limits: DirLimits,
+    mut next_page: F,
+) -> Result<Vec<russh_sftp::protocol::File>, SftpError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<russh_sftp::protocol::File>, SftpError>>,
+{
+    let mut out: Vec<russh_sftp::protocol::File> = Vec::new();
+    let mut previous: Option<Vec<(String, String)>> = None;
+    let mut pages = 0usize;
+    loop {
+        let page = next_page().await?;
+        if page.is_empty() {
+            return Ok(out);
+        }
+        pages += 1;
+        let signature: Vec<(String, String)> = page
+            .iter()
+            .map(|file| (file.filename.clone(), file.longname.clone()))
+            .collect();
+        if pages > limits.max_pages || previous.as_ref() == Some(&signature) {
+            return Err(SftpError::RemoteReason(
+                Reason::new(
+                    reason_keys::SFTP_DIR_PAGING_RUNAWAY,
+                    format!("服务器一直在返回目录页，列不完这个目录（已读 {pages} 页）：{path}"),
+                )
+                .with("pages", pages)
+                .with("path", path),
+            ));
+        }
+        if out.len().saturating_add(page.len()) > limits.max_entries {
+            return Err(SftpError::RemoteReason(
+                Reason::new(
+                    reason_keys::SFTP_DIR_TOO_MANY_ENTRIES,
+                    format!(
+                        "目录里的条目超过 {} 个，不能完整列出：{path}",
+                        limits.max_entries
+                    ),
+                )
+                .with("max", limits.max_entries)
+                .with("path", path),
+            ));
+        }
+        previous = Some(signature);
+        out.extend(page);
+    }
+}
+
 fn first_name(name: Name) -> Option<String> {
     name.files.into_iter().next().map(|file| file.filename)
 }
@@ -998,5 +1057,113 @@ mod tests {
         assert_eq!(&payload[4..9], b"a.txt");
         assert_eq!(&payload[9..13], &7u32.to_be_bytes());
         assert_eq!(&payload[13..], b"b c.txt");
+    }
+
+    fn page(names: &[&str]) -> Vec<russh_sftp::protocol::File> {
+        names
+            .iter()
+            .map(|name| russh_sftp::protocol::File::dummy(*name))
+            .collect()
+    }
+
+    async fn collect(
+        pages: Vec<Result<Vec<russh_sftp::protocol::File>, SftpError>>,
+        limits: DirLimits,
+    ) -> Result<Vec<russh_sftp::protocol::File>, SftpError> {
+        let queue = std::sync::Mutex::new(std::collections::VecDeque::from(pages));
+        collect_dir_pages("/dir", limits, || {
+            let next = queue
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Ok(Vec::new()));
+            async move { next }
+        })
+        .await
+    }
+
+    fn reason_key(err: &SftpError) -> &str {
+        match err {
+            SftpError::RemoteReason(reason) => reason.key(),
+            other => panic!("不是带 key 的错误：{other:?}"),
+        }
+    }
+
+    const SMALL: DirLimits = DirLimits {
+        max_entries: 5,
+        max_pages: 3,
+    };
+
+    #[tokio::test]
+    async fn dir_pages_are_concatenated_until_the_empty_page() {
+        let files = collect(
+            vec![Ok(page(&["a", "b"])), Ok(page(&["c"])), Ok(Vec::new())],
+            SMALL,
+        )
+        .await
+        .unwrap();
+        let names: Vec<&str> = files.iter().map(|file| file.filename.as_str()).collect();
+        assert_eq!(names, ["a", "b", "c"]);
+    }
+
+    #[tokio::test]
+    async fn exactly_the_entry_limit_is_still_fine() {
+        let files = collect(
+            vec![Ok(page(&["a", "b", "c"])), Ok(page(&["d", "e"]))],
+            SMALL,
+        )
+        .await
+        .unwrap();
+        assert_eq!(files.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn too_many_entries_fails_instead_of_truncating() {
+        let err = collect(
+            vec![Ok(page(&["a", "b", "c"])), Ok(page(&["d", "e", "f"]))],
+            SMALL,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(reason_key(&err), reason_keys::SFTP_DIR_TOO_MANY_ENTRIES);
+    }
+
+    #[tokio::test]
+    async fn endless_pages_fail_at_the_page_limit() {
+        // 每页都不同、每页一个条目：条目数没到上限，但翻页次数超了。
+        let pages = (0..10)
+            .map(|i| Ok(page(&[format!("f{i}").as_str()])))
+            .collect();
+        let err = collect(pages, SMALL).await.unwrap_err();
+        assert_eq!(reason_key(&err), reason_keys::SFTP_DIR_PAGING_RUNAWAY);
+    }
+
+    #[tokio::test]
+    async fn a_repeated_page_is_a_stuck_cursor() {
+        let err = collect(
+            vec![
+                Ok(page(&["a", "b"])),
+                Ok(page(&["a", "b"])),
+                Ok(page(&["c"])),
+            ],
+            DirLimits::DEFAULT,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(reason_key(&err), reason_keys::SFTP_DIR_PAGING_RUNAWAY);
+    }
+
+    #[tokio::test]
+    async fn a_page_error_is_passed_through() {
+        let err = collect(
+            vec![
+                Ok(page(&["a"])),
+                Err(SftpError::Disconnected("断了".to_owned())),
+            ],
+            SMALL,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SftpError::Disconnected(_)), "{err:?}");
     }
 }

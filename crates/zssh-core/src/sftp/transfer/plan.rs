@@ -13,6 +13,24 @@ use crate::sftp::error::SftpError;
 use crate::sftp::local::{self, LocalNamePlan};
 use crate::sftp::path as remote_path;
 
+/// 展开远端目录树时最多进多少层。
+///
+/// 为什么要有：服务器（坏实现、恶意服务器、目录环）可以给出没有尽头的目录链，展开不设界就会
+/// 一直列下去、计划无限变长。超过它**报错失败**，不能把深处的内容丢掉再报成功。256 层远超正常
+/// 目录树（Linux 路径最长 4096 字节，常见的树不过十几层），正常使用碰不到。
+pub const MAX_PLAN_DEPTH: usize = 256;
+
+fn tree_too_deep(dir: &str, max_depth: usize) -> SftpError {
+    SftpError::RemoteReason(
+        Reason::new(
+            reason_keys::XFER_TREE_TOO_DEEP,
+            format!("文件夹嵌套超过 {max_depth} 层，不展开：{dir}"),
+        )
+        .with("max", max_depth)
+        .with("dir", dir),
+    )
+}
+
 /// 一个要传的文件。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedFile {
@@ -197,6 +215,24 @@ pub async fn plan_download(
     local_target: &Path,
     recursive: bool,
 ) -> Result<TransferPlan, SftpError> {
+    plan_download_within(
+        lister,
+        remote_source,
+        local_target,
+        recursive,
+        MAX_PLAN_DEPTH,
+    )
+    .await
+}
+
+/// 同 [`plan_download`]，层数上限可调（测试用小值造「太深」）。
+pub(crate) async fn plan_download_within(
+    lister: &dyn super::backend::RemoteLister,
+    remote_source: &str,
+    local_target: &Path,
+    recursive: bool,
+    max_depth: usize,
+) -> Result<TransferPlan, SftpError> {
     let mut plan = TransferPlan::default();
     let mut attrs = lister.stat_remote(remote_source).await?;
     if attrs.is_symlink() {
@@ -223,10 +259,13 @@ pub async fn plan_download(
     }
 
     // 逐层走远端树：每层先拿到名字，再给这一层分配本地名字。
-    let mut pending: Vec<(String, PathBuf)> =
-        vec![(remote_source.to_owned(), local_target.to_path_buf())];
+    let mut pending: Vec<(String, PathBuf, usize)> =
+        vec![(remote_source.to_owned(), local_target.to_path_buf(), 0)];
     plan.dirs.push(local_target.display().to_string());
-    while let Some((dir, local_dir)) = pending.pop() {
+    while let Some((dir, local_dir, depth)) = pending.pop() {
+        if depth > max_depth {
+            return Err(tree_too_deep(&dir, max_depth));
+        }
         let entries = lister.list_dir(&dir).await?;
         let mut names = Vec::new();
         let mut sub_dirs = Vec::new();
@@ -302,7 +341,7 @@ pub async fn plan_download(
             let local_child = local_dir.join(&assigned.name);
             local::ensure_inside(local_target, &local_child)?;
             plan.dirs.push(local_child.display().to_string());
-            pending.push((remote_dir, local_child));
+            pending.push((remote_dir, local_child, depth + 1));
         }
     }
     plan.notes.push(file_count_note(plan.files.len()));
@@ -316,6 +355,17 @@ pub async fn plan_remote_copy(
     source: &str,
     target: &str,
     recursive: bool,
+) -> Result<TransferPlan, SftpError> {
+    plan_remote_copy_within(lister, source, target, recursive, MAX_PLAN_DEPTH).await
+}
+
+/// 同 [`plan_remote_copy`]，层数上限可调（测试用小值造「太深」）。
+pub(crate) async fn plan_remote_copy_within(
+    lister: &dyn super::backend::RemoteLister,
+    source: &str,
+    target: &str,
+    recursive: bool,
+    max_depth: usize,
 ) -> Result<TransferPlan, SftpError> {
     let mut plan = TransferPlan::default();
     let attrs = lister.stat_remote(source).await?;
@@ -339,8 +389,11 @@ pub async fn plan_remote_copy(
         return Err(dir_needs_recursive());
     }
     plan.dirs.push(target.to_owned());
-    let mut pending = vec![(source.to_owned(), target.to_owned())];
-    while let Some((dir, target_dir)) = pending.pop() {
+    let mut pending = vec![(source.to_owned(), target.to_owned(), 0usize)];
+    while let Some((dir, target_dir, depth)) = pending.pop() {
+        if depth > max_depth {
+            return Err(tree_too_deep(&dir, max_depth));
+        }
         for entry in lister.list_dir(&dir).await? {
             if entry.kind.is_symlink() {
                 plan.notes.push(skipped_symlink_note(&entry.path));
@@ -349,7 +402,7 @@ pub async fn plan_remote_copy(
             let child = child_path(&target_dir, &entry.name)?;
             if entry.kind.is_dir() {
                 plan.dirs.push(child.clone());
-                pending.push((entry.path.clone(), child));
+                pending.push((entry.path.clone(), child, depth + 1));
             } else {
                 plan.files.push(PlannedFile {
                     source: entry.path.clone(),
@@ -773,5 +826,112 @@ mod tests {
             local::ensure_inside(&target, Path::new(dir))
                 .unwrap_or_else(|err| panic!("{dir} 跑出了目标目录：{err}"));
         }
+    }
+
+    /// 一棵只有一条链的远端树：`/r/d1/d2/.../d{levels}`，每层一个目录，最深一层里一个文件。
+    struct Chain {
+        levels: usize,
+    }
+
+    impl Chain {
+        fn dir_at(&self, path: &str) -> Option<usize> {
+            if path == "/r" {
+                return Some(0);
+            }
+            let rest = path.strip_prefix("/r/")?;
+            let depth = rest.split('/').count();
+            rest.split('/')
+                .enumerate()
+                .all(|(index, part)| part == format!("d{}", index + 1))
+                .then_some(depth)
+        }
+    }
+
+    impl super::super::backend::RemoteLister for Chain {
+        fn list_dir<'a>(
+            &'a self,
+            path: &'a str,
+        ) -> crate::ssh::BoxFuture<'a, Result<Vec<crate::sftp::fs::DirEntry>, SftpError>> {
+            Box::pin(async move {
+                let depth = self.dir_at(path).unwrap_or(self.levels);
+                let (name, kind) = if depth < self.levels {
+                    (format!("d{}", depth + 1), crate::sftp::fs::FileKind::Dir)
+                } else {
+                    ("leaf.txt".to_owned(), crate::sftp::fs::FileKind::File)
+                };
+                Ok(vec![crate::sftp::fs::DirEntry {
+                    path: remote_path::join(path, &name),
+                    name,
+                    kind,
+                    link_target: None,
+                    size: Some(1),
+                    mtime: None,
+                    permissions: None,
+                    owner: None,
+                    name_is_utf8: true,
+                }])
+            })
+        }
+
+        fn stat_remote<'a>(
+            &'a self,
+            _path: &'a str,
+        ) -> crate::ssh::BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>>
+        {
+            Box::pin(async {
+                Ok(russh_sftp::protocol::FileAttributes {
+                    permissions: Some(0o040755),
+                    ..Default::default()
+                })
+            })
+        }
+    }
+
+    fn tree_too_deep_key(err: &SftpError) -> bool {
+        matches!(err, SftpError::RemoteReason(reason) if reason.key() == reason_keys::XFER_TREE_TOO_DEEP)
+    }
+
+    /// 深度超限必须报错，不能把深处丢掉再报成功；刚好在上限上的树照常展开。
+    #[tokio::test]
+    async fn plans_refuse_trees_deeper_than_the_limit() {
+        let root = crate::test_util::TestDir::new("plan-deep");
+        let out = root.join("out");
+
+        let deep = Chain { levels: 5 };
+        let err = plan_download_within(&deep, "/r", &out, true, 3)
+            .await
+            .expect_err("下载计划太深要报错");
+        assert!(tree_too_deep_key(&err), "{err:?}");
+        let err = plan_remote_copy_within(&deep, "/r", "/dst", true, 3)
+            .await
+            .expect_err("复制计划太深要报错");
+        assert!(tree_too_deep_key(&err), "{err:?}");
+
+        // 5 层的链：最深的目录在第 5 层，上限 5 刚好放行，列到文件为止。
+        let plan = plan_download_within(&deep, "/r", &out, true, 5)
+            .await
+            .expect("正好在上限上要放行");
+        assert_eq!(plan.files.len(), 1);
+        let plan = plan_remote_copy_within(&deep, "/r", "/dst", true, 5)
+            .await
+            .expect("正好在上限上要放行");
+        assert_eq!(plan.files.len(), 1);
+    }
+
+    /// 默认上限下，比它深的树同样失败（常量真的接上了）。
+    #[tokio::test]
+    async fn the_default_depth_limit_is_enforced() {
+        let root = crate::test_util::TestDir::new("plan-deep-default");
+        let deep = Chain {
+            levels: MAX_PLAN_DEPTH + 5,
+        };
+        let err = plan_remote_copy(&deep, "/r", "/dst", true)
+            .await
+            .expect_err("太深要报错");
+        assert!(tree_too_deep_key(&err), "{err:?}");
+        let err = plan_download(&deep, "/r", &root.join("out"), true)
+            .await
+            .expect_err("太深要报错");
+        assert!(tree_too_deep_key(&err), "{err:?}");
     }
 }
