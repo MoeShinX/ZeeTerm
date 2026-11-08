@@ -1317,7 +1317,7 @@ async fn read_event_stream(
         return Err(format!("事件流连接失败：HTTP {}", resp.status()));
     }
     let mut resp = resp;
-    let mut buf: Vec<u8> = Vec::new();
+    let mut frames = SseFrameBuffer::default();
 
     loop {
         let chunk = tokio::select! {
@@ -1327,15 +1327,10 @@ async fn read_event_stream(
         let Some(chunk) = chunk else {
             return Err("opencode 关闭了事件流".to_string());
         };
-        buf.extend_from_slice(&chunk);
+        frames.push(&chunk);
 
-        // SSE 帧用空行分隔（opencode 是 \n\n）。
-        while let Some(pos) = find_frame_end(&buf) {
-            let frame: Vec<u8> = buf.drain(..pos).collect();
-            // 清掉分隔符和可能多出来的空行/回车。
-            while matches!(buf.first(), Some(b'\n') | Some(b'\r')) {
-                buf.drain(..1);
-            }
+        // SSE 帧用空行分隔（opencode 是 \n\n，兼容 \r\n\r\n）。
+        while let Some(frame) = frames.next_frame()? {
             if let Some(data) = frame_data(&frame) {
                 if let Ok(event) = serde_json::from_str::<Value>(&data) {
                     handle_event(shared, &event);
@@ -1345,8 +1340,73 @@ async fn read_event_stream(
     }
 }
 
-fn find_frame_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(2).position(|w| w == b"\n\n")
+/// 单个 SSE 帧（含还没收到分隔符的半截帧）允许占用的最大字节数。
+///
+/// opencode 一帧只装一个事件；最大的一类是带整段工具输出/文件内容的 `message.part.updated`，
+/// 实测在几十 KiB 到几 MiB 量级。取 8 MiB：留足余量给正常的大输出，同时让一个坏掉/被劫持的
+/// 事件流（一直不发空行）最多占用这么多内存就被判失败，而不是无限涨。
+const MAX_SSE_FRAME_BYTES: usize = 8 * 1024 * 1024;
+
+/// SSE 字节缓冲：按空行切帧，扫描位置跨 chunk 记住，长帧不会每来一块就从头再扫一遍。
+#[derive(Default)]
+struct SseFrameBuffer {
+    buf: Vec<u8>,
+    /// `buf[..scanned]` 已经确认里面没有完整的分隔符。
+    scanned: usize,
+}
+
+impl SseFrameBuffer {
+    fn push(&mut self, chunk: &[u8]) {
+        self.buf.extend_from_slice(chunk);
+    }
+
+    /// 取出下一个完整帧（不含分隔符）；没有完整帧返回 `Ok(None)`。
+    /// 单帧（或还没收齐的半截帧）超过 [`MAX_SSE_FRAME_BYTES`] 返回 `Err`，
+    /// 调用方按"事件流中断"处理——不会把截断的半帧当成完整事件去解析。
+    fn next_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
+        let Some(pos) = self.find_frame_end() else {
+            // 没找到分隔符：下一次从末尾往前退 2 字节开始（最长分隔符 \n\r\n 是 3 字节，
+            // 前 2 字节可能已经在这一块里），这样分隔符跨 chunk 也不会漏。
+            self.scanned = self.buf.len().saturating_sub(2);
+            if self.buf.len() > MAX_SSE_FRAME_BYTES {
+                return Err(frame_too_large_message());
+            }
+            return Ok(None);
+        };
+        if pos > MAX_SSE_FRAME_BYTES {
+            return Err(frame_too_large_message());
+        }
+        let frame: Vec<u8> = self.buf.drain(..pos).collect();
+        // 清掉分隔符和可能多出来的空行/回车。
+        let skip = self
+            .buf
+            .iter()
+            .take_while(|b| matches!(**b, b'\n' | b'\r'))
+            .count();
+        self.buf.drain(..skip);
+        self.scanned = 0;
+        Ok(Some(frame))
+    }
+
+    /// 找第一个空行的起点：`\n\n`，或 CRLF 风格的 `\n\r\n`（即 `\r\n\r\n` 的后三个字节）。
+    fn find_frame_end(&self) -> Option<usize> {
+        let tail = &self.buf[self.scanned.min(self.buf.len())..];
+        tail.iter()
+            .enumerate()
+            .find(|&(i, &b)| {
+                b == b'\n'
+                    && (tail.get(i + 1) == Some(&b'\n')
+                        || (tail.get(i + 1) == Some(&b'\r') && tail.get(i + 2) == Some(&b'\n')))
+            })
+            .map(|(i, _)| self.scanned + i)
+    }
+}
+
+fn frame_too_large_message() -> String {
+    format!(
+        "事件流中断：单个事件超过 {} MiB 仍未结束",
+        MAX_SSE_FRAME_BYTES / (1024 * 1024)
+    )
 }
 
 /// 从帧里取 `data:` 行（多行按 SSE 规则用 \n 拼起来）。
@@ -2031,6 +2091,107 @@ pub(crate) mod tests {
         let multi = b"data: line1\ndata: line2\n";
         assert_eq!(frame_data(multi).as_deref(), Some("line1\nline2"));
         assert_eq!(frame_data(b"event: ping\n"), None);
+    }
+
+    fn drain_frames(frames: &mut SseFrameBuffer) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        while let Some(f) = frames.next_frame().expect("不应超限") {
+            out.push(f);
+        }
+        out
+    }
+
+    #[test]
+    fn sse_buffer_splits_lf_and_crlf_frames() {
+        let mut frames = SseFrameBuffer::default();
+        frames.push(b"data: {\"a\":1}\n\ndata: {\"b\":2}\r\n\r\ndata: {\"c\":3}\n\r\n");
+        let got = drain_frames(&mut frames);
+        assert_eq!(got.len(), 3);
+        assert_eq!(frame_data(&got[0]).as_deref(), Some("{\"a\":1}"));
+        assert_eq!(frame_data(&got[1]).as_deref(), Some("{\"b\":2}"));
+        assert_eq!(frame_data(&got[2]).as_deref(), Some("{\"c\":3}"));
+        assert!(frames.buf.is_empty());
+        assert_eq!(frames.scanned, 0);
+    }
+
+    #[test]
+    fn sse_buffer_handles_delimiter_split_across_chunks() {
+        for sep in [&b"\n\n"[..], &b"\r\n\r\n"[..], &b"\n\r\n"[..]] {
+            let mut data = b"data: {\"x\":1}".to_vec();
+            data.extend_from_slice(sep);
+            data.extend_from_slice(b"data: {\"y\":2}");
+            data.extend_from_slice(sep);
+            // 每个字节一块：分隔符一定会被切在 chunk 边界上。
+            let mut frames = SseFrameBuffer::default();
+            let mut got = Vec::new();
+            for b in &data {
+                frames.push(std::slice::from_ref(b));
+                got.extend(drain_frames(&mut frames));
+            }
+            assert_eq!(got.len(), 2, "分隔符 {sep:?}");
+            assert_eq!(frame_data(&got[0]).as_deref(), Some("{\"x\":1}"));
+            assert_eq!(frame_data(&got[1]).as_deref(), Some("{\"y\":2}"));
+        }
+    }
+
+    #[test]
+    fn sse_buffer_scans_incrementally_and_resets_after_drain() {
+        let mut frames = SseFrameBuffer::default();
+        let piece = vec![b'a'; 1000];
+        for _ in 0..50 {
+            frames.push(&piece);
+            assert!(frames.next_frame().unwrap().is_none());
+            // 没找到分隔符时，下次只从末尾往前 2 字节开始扫，而不是从 0 开始。
+            assert_eq!(frames.scanned, frames.buf.len() - 2);
+        }
+        frames.push(b"\n\nrest");
+        let frame = frames.next_frame().unwrap().expect("应出帧");
+        assert_eq!(frame.len(), 50_000);
+        assert_eq!(frames.buf, b"rest");
+        assert_eq!(frames.scanned, 0);
+        assert!(frames.next_frame().unwrap().is_none());
+    }
+
+    #[test]
+    fn sse_buffer_fails_when_frame_never_ends() {
+        let mut frames = SseFrameBuffer::default();
+        let chunk = vec![b'x'; 1024 * 1024];
+        let mut failed = false;
+        // 一直不发分隔符：必须在上限附近报错，不能无限涨。
+        for _ in 0..(MAX_SSE_FRAME_BYTES / chunk.len() + 2) {
+            frames.push(&chunk);
+            match frames.next_frame() {
+                Ok(None) => {}
+                Ok(Some(_)) => panic!("没有分隔符不该出帧"),
+                Err(message) => {
+                    assert!(message.contains("事件流中断"), "{message}");
+                    failed = true;
+                    break;
+                }
+            }
+        }
+        assert!(failed, "超过上限应当失败");
+        assert!(frames.buf.len() <= MAX_SSE_FRAME_BYTES + chunk.len());
+    }
+
+    #[test]
+    fn sse_buffer_rejects_oversized_frame_even_if_delimiter_arrived() {
+        // 一块里同时带着超限帧和分隔符：不能因为"已经完整"就放行。
+        let mut frames = SseFrameBuffer::default();
+        let mut big = vec![b'y'; MAX_SSE_FRAME_BYTES + 1];
+        big.extend_from_slice(b"\n\n");
+        frames.push(&big);
+        assert!(frames.next_frame().is_err());
+    }
+
+    #[test]
+    fn sse_buffer_accepts_frame_just_under_limit() {
+        let mut frames = SseFrameBuffer::default();
+        let mut big = vec![b'z'; MAX_SSE_FRAME_BYTES];
+        big.extend_from_slice(b"\n\n");
+        frames.push(&big);
+        let frame = frames.next_frame().unwrap().expect("恰好上限的帧应放行");
+        assert_eq!(frame.len(), MAX_SSE_FRAME_BYTES);
     }
 
     /// 造一个「进程」的共享状态（不真起进程），只测事件分发。
