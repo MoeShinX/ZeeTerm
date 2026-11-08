@@ -592,9 +592,9 @@ impl FileEndpoint for LocalEndpoint {
 
     fn existing_size<'a>(&'a self) -> EndpointFuture<'a, Result<Option<u64>, SftpError>> {
         Box::pin(async move {
-            match std::fs::metadata(local::long_path(&self.path)) {
-                Ok(meta) => Ok(Some(meta.len())),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            match existing_target_meta(&self.path) {
+                Ok(Some(meta)) => Ok(Some(meta.len())),
+                Ok(None) => Ok(None),
                 Err(err) => Err(from_io(err, &self.path.display().to_string())),
             }
         })
@@ -602,13 +602,13 @@ impl FileEndpoint for LocalEndpoint {
 
     fn existing_mtime<'a>(&'a self) -> EndpointFuture<'a, Result<Option<u32>, SftpError>> {
         Box::pin(async move {
-            match std::fs::metadata(local::long_path(&self.path)) {
-                Ok(meta) => Ok(meta
+            match existing_target_meta(&self.path) {
+                Ok(Some(meta)) => Ok(meta
                     .modified()
                     .ok()
                     .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
                     .and_then(|d| u32::try_from(d.as_secs()).ok())),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Ok(None) => Ok(None),
                 Err(err) => Err(from_io(err, &self.path.display().to_string())),
             }
         })
@@ -795,6 +795,32 @@ impl FileEndpoint for LocalEndpoint {
             });
             Ok((mtime, permissions))
         })
+    }
+}
+
+/// 最终目标位置上"有没有东西"：**不跟随符号链接**判断，有就返回要展示的元数据。
+///
+/// 为什么：以前用跟随链接的 `metadata`，悬空符号链接（指向的文件不存在）被当成"不存在"，
+/// 于是不走冲突流程、直接传；可是收尾的不覆盖改名发现这个名字已被占用（`AlreadyExists`），
+/// 引擎又回到冲突检查，仍判"不存在"……反复空转。位置被占用就是被占用，链接本身也算：
+/// 用户在冲突对话框里选覆盖时，删除和替换都作用在链接自己身上（`remove_file` / `rename` 不跟随），
+/// 不会把内容写进链接指向的地方。
+///
+/// 链接能解析时展示它指向的文件的大小 / 时间（用户关心的是"那边现在是什么"）；悬空时只能展示链接自己的。
+fn existing_target_meta(path: &Path) -> std::io::Result<Option<std::fs::Metadata>> {
+    let path = local::long_path(path);
+    let link_meta = match std::fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    if !link_meta.file_type().is_symlink() {
+        return Ok(Some(link_meta));
+    }
+    match std::fs::metadata(&path) {
+        Ok(meta) => Ok(Some(meta)),
+        // 悬空链接 / 链接环：名字被占着，展示链接自己的元数据。
+        Err(_) => Ok(Some(link_meta)),
     }
 }
 
@@ -1259,5 +1285,80 @@ mod tests {
         std::fs::remove_file(&target).unwrap();
         endpoint.commit(10, false).await.unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"DOWNLOADED");
+    }
+
+    /// 在 `link` 处造一个指向 `target` 的文件符号链接；平台 / 权限不允许（Windows 上没有创建
+    /// 符号链接的权限）就返回 `false`，调用方跳过。
+    fn make_file_symlink(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let result = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let result = std::os::windows::fs::symlink_file(target, link);
+        match result {
+            Ok(()) => true,
+            Err(err) => {
+                eprintln!("跳过：这里不能创建符号链接（{err}）");
+                false
+            }
+        }
+    }
+
+    /// W13：目标位置是悬空符号链接。以前被当成"不存在"，提交时又报"已存在"，引擎在两者之间空转。
+    /// 现在它算"位置被占用"：能走冲突流程；选覆盖 / 删除只作用在链接自己身上，绝不写穿到链接指向的地方。
+    #[tokio::test]
+    async fn a_dangling_symlink_at_the_target_counts_as_occupied() {
+        let dir = crate::test_util::TestDir::new("dangling-link");
+        let missing = dir.join("nowhere.txt");
+        let target = dir.join("report.txt");
+        if !make_file_symlink(&missing, &target) {
+            return;
+        }
+        let endpoint = LocalEndpoint::new(&target);
+        assert!(
+            endpoint.existing_size().await.unwrap().is_some(),
+            "悬空链接占着这个名字，不能判成不存在"
+        );
+        assert!(endpoint.existing_mtime().await.is_ok());
+
+        // 不覆盖提交：明确报已存在，临时文件留着；且没有写穿链接。
+        write_all_to(&endpoint, b"DOWNLOADED").await;
+        let err = endpoint.commit(10, false).await.unwrap_err();
+        assert!(matches!(err, SftpError::AlreadyExists { .. }), "{err:?}");
+        assert!(!missing.exists(), "不能把内容写进链接指向的地方");
+        assert!(endpoint.part_path().exists());
+
+        // 用户选"覆盖"：先删最终名字（只删链接），再提交，得到普通文件。
+        endpoint.remove_existing().await.unwrap();
+        assert_eq!(endpoint.existing_size().await.unwrap(), None);
+        endpoint.commit(10, false).await.unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"DOWNLOADED");
+        assert!(!std::fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(!missing.exists());
+    }
+
+    /// W13：覆盖提交直接替换链接本身（rename 不跟随），内容不会落到链接指向的文件里。
+    #[tokio::test]
+    async fn overwriting_a_symlink_replaces_the_link_not_its_destination() {
+        let dir = crate::test_util::TestDir::new("overwrite-link");
+        let destination = dir.join("destination.txt");
+        std::fs::write(&destination, b"UNTOUCHED").unwrap();
+        let target = dir.join("report.txt");
+        if !make_file_symlink(&destination, &target) {
+            return;
+        }
+        let endpoint = LocalEndpoint::new(&target);
+        // 能解析的链接：展示的是指向的文件的大小。
+        assert_eq!(endpoint.existing_size().await.unwrap(), Some(9));
+        write_all_to(&endpoint, b"NEW").await;
+        endpoint.commit(3, true).await.unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"NEW");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"UNTOUCHED");
+        assert!(!std::fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 }
