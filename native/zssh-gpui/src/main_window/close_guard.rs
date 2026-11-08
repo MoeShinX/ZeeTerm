@@ -162,6 +162,20 @@ pub fn close_sftp_prompt(host: &str, unfinished: usize) -> Option<(String, Strin
     })
 }
 
+/// 退出收尾只做一次：托盘「退出」、窗口关闭回调、菜单 / 确认框的退出都会走到收尾，
+/// 谁先到谁做；后到的直接跳过（收尾会清空标签再存布局，重复存会把好布局覆盖成空的）。
+#[derive(Debug, Default)]
+pub(crate) struct QuitOnce {
+    done: bool,
+}
+
+impl QuitOnce {
+    /// 第一次调用返回 `true`（该做收尾），之后一律 `false`。
+    pub(crate) fn claim(&mut self) -> bool {
+        !std::mem::replace(&mut self.done, true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +214,13 @@ mod tests {
         let (title, body) = close_sftp_prompt("web-1", 3).expect("有传输");
         assert!(title.contains("web-1"));
         assert!(body.contains("3 个传输"));
+    }
+
+    #[test]
+    fn quit_cleanup_runs_only_for_the_first_caller() {
+        let mut once = QuitOnce::default();
+        assert!(once.claim(), "第一个到的做收尾");
+        assert!(!once.claim(), "托盘和窗口回调都触发时第二个跳过");
+        assert!(!once.claim());
     }
 }

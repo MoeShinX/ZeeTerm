@@ -259,9 +259,8 @@ fn main() {
             update::run_pending_install();
             // 设置要求时，一并关掉本次运行拉起的 X 服务器（用户自己开的不动）。
             x11_glue::shutdown_owned();
-            // macOS：从 Dock 右键「退出」、注销关机这类退出不经过主窗口的退出流程，也要把智能体的共用进程
-            // （按进程组）收掉；走过 `do_quit` 的再调一次只是空转。
-            #[cfg(target_os = "macos")]
+            // 从 Dock 右键「退出」、注销关机这类退出不经过主窗口的退出流程，也要把智能体的共用进程
+            // （按进程组）收掉；走过 `finalize_quit` 的再调一次只是空转。各平台都一样。
             agent_host::shutdown_global();
         }));
 
@@ -334,7 +333,7 @@ fn main() {
                         if !close_view.update(cx, |this, cx| this.request_quit(cx)) {
                             return false;
                         }
-                        close_view.update(cx, |this, cx| this.on_close(window, cx));
+                        close_view.update(cx, |this, cx| this.finalize_quit(window, cx));
                         cx.quit();
                         true
                     }

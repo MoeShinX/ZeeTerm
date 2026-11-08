@@ -338,6 +338,8 @@ pub struct MainWindow {
     pub(super) ai_dots: Vec<(u64, bool)>,
     /// 状态栏正在订阅哪台主机的采集。
     pub(super) status_host: Option<i64>,
+    /// 退出收尾（存状态、收会话和全局智能体）只做一次。
+    pub(super) quit_once: close_guard::QuitOnce,
     pub(super) status: Option<crate::status::HostStatus>,
     pub(super) window_width: f32,
     pub(super) window_height: f32,
@@ -588,6 +590,7 @@ impl MainWindow {
             memory_seen: crate::host_activity::memory_version(),
             ai_dots: Vec::new(),
             status_host: None,
+            quit_once: close_guard::QuitOnce::default(),
             status: None,
             window_width: width_now,
             window_height: f32::from(window.viewport_size().height),
@@ -875,6 +878,17 @@ impl MainWindow {
             crate::status::unsubscribe_host(old);
         }
         self.save_state(window);
+    }
+
+    /// 真正退出前的统一收尾：关窗口回调、菜单 / 确认框的退出（`do_quit`）、托盘的「退出」都走这里。
+    /// 幂等，先到先做。全局智能体进程（opencode / codex 共用的）不属于任何对话，Windows / Linux
+    /// 也要在这里收掉，不能只靠 macOS 才注册的退出回调。
+    pub(crate) fn finalize_quit(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if !self.quit_once.claim() {
+            return;
+        }
+        self.on_close(window, cx);
+        crate::agent_host::shutdown_global();
     }
 
     // ---- 页面 ----

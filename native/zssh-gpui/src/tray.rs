@@ -148,10 +148,10 @@ pub fn spawn(
                         crate::update::arm_pending_restart();
                     }
                     // 有进行中的传输 / AI 回合：先把主窗口叫出来问一下，确认后由主窗口自己退出。
-                    let main = main.clone();
+                    let asking = main.clone();
                     let can_quit = window
                         .update(cx, move |_, window, cx| {
-                            let can = main.update(cx, |this, cx| this.request_quit(cx));
+                            let can = asking.update(cx, |this, cx| this.request_quit(cx));
                             if !can {
                                 set_visible(window, true);
                             }
@@ -159,7 +159,17 @@ pub fn spawn(
                         })
                         .unwrap_or(true);
                     if can_quit {
-                        cx.update(|app| app.quit());
+                        // 和菜单 / 确认框的退出同一条收尾（存状态、收会话、收全局智能体），
+                        // 窗口句柄失效时才退而直接退出。
+                        let main = main.clone();
+                        let finished = window
+                            .update(cx, move |_, window, cx| {
+                                main.update(cx, |this, cx| this.do_quit(window, cx));
+                            })
+                            .is_ok();
+                        if !finished {
+                            cx.update(|app| app.quit());
+                        }
                     }
                 }
             }

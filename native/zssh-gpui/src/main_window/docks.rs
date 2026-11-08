@@ -1271,9 +1271,7 @@ impl MainWindow {
     }
 
     pub(crate) fn do_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.on_close(window, cx);
-        // opencode / codex 的共用进程不属于任何一个对话：退出时一起收掉。
-        crate::agent_host::shutdown_global();
+        self.finalize_quit(window, cx);
         cx.quit();
     }
 
