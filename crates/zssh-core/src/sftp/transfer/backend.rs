@@ -8,6 +8,7 @@
 //!
 //! 展开远端目录要读目录，所以接口里也带上 [`RemoteLister`]（下载时要走它）。
 
+use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -107,6 +108,44 @@ pub trait SftpReconnect: Send + Sync {
     fn reconnect<'a>(&'a self) -> BoxFuture<'a, Result<Arc<Connection>, SftpError>>;
 }
 
+/// 通道提供者缓存的两个槽：主连接上的传输通道，和主连接开不出通道时改用的专用连接上的通道。
+///
+/// 单独成类型是为了让「`reset` 两个槽一起清」这件事不依赖真实的 SSH 连接就能测。
+struct ChannelSlots<T> {
+    cached: tokio::sync::Mutex<Option<Arc<T>>>,
+    dedicated: tokio::sync::Mutex<Option<Arc<T>>>,
+}
+
+impl<T> ChannelSlots<T> {
+    fn new() -> Self {
+        Self {
+            cached: tokio::sync::Mutex::new(None),
+            dedicated: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// 专用槽里有就用，没有就用 `open` 新开一条存进去。
+    async fn dedicated_or_open<F, Fut>(&self, open: F) -> Result<Arc<T>, SftpError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<T, SftpError>>,
+    {
+        if let Some(channel) = self.dedicated.lock().await.clone() {
+            return Ok(channel);
+        }
+        let channel = Arc::new(open().await?);
+        *self.dedicated.lock().await = Some(Arc::clone(&channel));
+        Ok(channel)
+    }
+
+    /// 断线之后两个槽都要清：只清 `cached` 的话，之后一直走专用连接的传输会反复拿到那条
+    /// 已经断掉的专用通道，重试永远失败。
+    async fn reset(&self) {
+        self.cached.lock().await.take();
+        self.dedicated.lock().await.take();
+    }
+}
+
 /// 生产用的通道提供者（M3-1 第 1 节）。
 ///
 /// - 正常情况：在**已有连接**上开一条传输通道（浏览/小操作那条是另一条，互不干扰）；
@@ -118,8 +157,8 @@ pub struct SftpChannelProvider {
     /// 当前用的连接（断线之后会被换成新连的那条）。
     connection: tokio::sync::Mutex<Arc<Connection>>,
     reconnect: Option<Arc<dyn SftpReconnect>>,
-    cached: tokio::sync::Mutex<Option<Arc<SftpChannel>>>,
-    dedicated: tokio::sync::Mutex<Option<Arc<SftpChannel>>>,
+    /// 缓存的传输通道和专用连接上的通道（两个槽一起失效，见 [`ChannelSlots::reset`]）。
+    slots: ChannelSlots<SftpChannel>,
     /// 重连次数（诊断 / 测试）。
     reconnects: std::sync::atomic::AtomicU64,
 }
@@ -129,8 +168,7 @@ impl SftpChannelProvider {
         Self {
             connection: tokio::sync::Mutex::new(connection),
             reconnect,
-            cached: tokio::sync::Mutex::new(None),
-            dedicated: tokio::sync::Mutex::new(None),
+            slots: ChannelSlots::new(),
             reconnects: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -165,7 +203,8 @@ impl SftpChannelProvider {
 
     /// 已经协商好的块大小（通道还没开就用保守值）。
     pub fn chunk_len_hint(&self) -> u32 {
-        self.cached
+        self.slots
+            .cached
             .try_lock()
             .ok()
             .and_then(|guard| guard.as_ref().map(|channel| channel.caps().max_read_len()))
@@ -176,7 +215,7 @@ impl SftpChannelProvider {
 impl TransferChannelProvider for SftpChannelProvider {
     fn channel<'a>(&'a self) -> BoxFuture<'a, Result<Arc<SftpChannel>, SftpError>> {
         Box::pin(async move {
-            if let Some(channel) = self.cached.lock().await.clone() {
+            if let Some(channel) = self.slots.cached.lock().await.clone() {
                 return Ok(channel);
             }
             // 连接死了就先重连（不然开通道只会报 "Channel send error"）。
@@ -185,7 +224,7 @@ impl TransferChannelProvider for SftpChannelProvider {
             match SftpChannel::open(&connection).await {
                 Ok(channel) => {
                     let channel = Arc::new(channel);
-                    *self.cached.lock().await = Some(Arc::clone(&channel));
+                    *self.slots.cached.lock().await = Some(Arc::clone(&channel));
                     Ok(channel)
                 }
                 // 通道被拒（多半到上限）：改成另开一条专用连接。
@@ -204,23 +243,22 @@ impl TransferChannelProvider for SftpChannelProvider {
 
     fn dedicated_channel<'a>(&'a self) -> BoxFuture<'a, Result<Arc<SftpChannel>, SftpError>> {
         Box::pin(async move {
-            if let Some(channel) = self.dedicated.lock().await.clone() {
-                return Ok(channel);
-            }
             let Some(reconnect) = self.reconnect.clone() else {
                 return Err(SftpError::ChannelLimit("没有配置专用连接的兜底".to_owned()));
             };
-            let connection = reconnect.reconnect().await?;
-            let channel = Arc::new(SftpChannel::open(&connection).await?);
-            *self.dedicated.lock().await = Some(Arc::clone(&channel));
-            Ok(channel)
+            self.slots
+                .dedicated_or_open(|| async move {
+                    let connection = reconnect.reconnect().await?;
+                    SftpChannel::open(&connection).await
+                })
+                .await
         })
     }
 
     fn reset<'a>(&'a self) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            // 丢掉缓存通道；连接死了的话，下一次 `channel()` 会重连。
-            self.cached.lock().await.take();
+            // 丢掉缓存通道和专用连接上的通道；连接死了的话，下一次 `channel()` 会重连。
+            self.slots.reset().await;
         })
     }
 
@@ -412,7 +450,21 @@ impl TransferEndpoints for SftpEndpoints {
     }
 
     fn reset<'a>(&'a self) -> BoxFuture<'a, ()> {
-        Box::pin(async move { self.provider.reset().await })
+        Box::pin(async move {
+            self.provider.reset().await;
+            // 跨主机复制的源端（peer）也是数据面：断线可能出在它那一侧，只重置目标端的话，
+            // 重试会继续拿 peer 上缓存的旧通道 / 专用连接。先取出再逐个等，不跨 await 持有锁。
+            let peers: Vec<Arc<dyn TransferChannelProvider>> = self
+                .peers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .values()
+                .cloned()
+                .collect();
+            for peer in peers {
+                peer.reset().await;
+            }
+        })
     }
 
     fn suggested_chunk_len(&self) -> u32 {
@@ -482,5 +534,90 @@ mod peer_tests {
         endpoints.register_peer("view-9", Arc::new(Labelled("second")));
         let err = source_error(&endpoints, Some("view-9")).await.to_string();
         assert!(err.contains("labelled:second"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod reset_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// 假通道：只记它是第几次开出来的。
+    struct FakeChannel(usize);
+
+    /// W14：主连接开不出通道、改走专用连接；专用连接断了之后 `reset` 必须把它也清掉，
+    /// 重试才会拿到新开的，而不是反复复用已经断掉的那条。
+    #[tokio::test]
+    async fn reset_drops_the_dedicated_channel_too() {
+        let slots = ChannelSlots::<FakeChannel>::new();
+        let opened = AtomicUsize::new(0);
+        let open = || {
+            let id = opened.fetch_add(1, Ordering::SeqCst) + 1;
+            async move { Ok(FakeChannel(id)) }
+        };
+
+        // 到达上限，改走专用：第一次新开，之后复用。
+        let first = slots.dedicated_or_open(open).await.unwrap();
+        assert_eq!(first.0, 1);
+        let again = slots.dedicated_or_open(open).await.unwrap();
+        assert_eq!(again.0, 1, "没有断线时复用同一条专用通道");
+        assert_eq!(opened.load(Ordering::SeqCst), 1);
+
+        // 专用连接断了，引擎 reset 后重试。
+        *slots.cached.lock().await = Some(Arc::new(FakeChannel(100)));
+        slots.reset().await;
+        assert!(slots.cached.lock().await.is_none());
+        assert!(slots.dedicated.lock().await.is_none(), "专用通道也要清掉");
+        let fresh = slots.dedicated_or_open(open).await.unwrap();
+        assert_eq!(fresh.0, 2, "重试要拿到新开的专用通道");
+        assert_eq!(opened.load(Ordering::SeqCst), 2);
+    }
+
+    /// 新开失败时槽里不留东西，下次还会再试。
+    #[tokio::test]
+    async fn a_failed_open_leaves_the_dedicated_slot_empty() {
+        let slots = ChannelSlots::<FakeChannel>::new();
+        let err = slots
+            .dedicated_or_open(|| async { Err(SftpError::Remote("连不上".to_owned())) })
+            .await;
+        assert!(err.is_err());
+        assert!(slots.dedicated.lock().await.is_none());
+        let ok = slots
+            .dedicated_or_open(|| async { Ok(FakeChannel(7)) })
+            .await
+            .unwrap();
+        assert_eq!(ok.0, 7);
+    }
+
+    /// 数一数被 reset 了几次的提供者。
+    struct Counting(AtomicUsize);
+
+    impl TransferChannelProvider for Counting {
+        fn channel<'a>(&'a self) -> BoxFuture<'a, Result<Arc<SftpChannel>, SftpError>> {
+            Box::pin(async { Err(SftpError::Remote("测试里不开通道".to_owned())) })
+        }
+
+        fn reset<'a>(&'a self) -> BoxFuture<'a, ()> {
+            Box::pin(async move {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            })
+        }
+    }
+
+    /// W14：跨主机复制时，目标端和源端（peer）的数据面都要 reset。
+    #[tokio::test]
+    async fn endpoints_reset_reaches_the_target_and_every_peer() {
+        let target = Arc::new(Counting(AtomicUsize::new(0)));
+        let peer_a = Arc::new(Counting(AtomicUsize::new(0)));
+        let peer_b = Arc::new(Counting(AtomicUsize::new(0)));
+        let endpoints = SftpEndpoints::new(target.clone());
+        endpoints.register_peer("view-1", peer_a.clone());
+        endpoints.register_peer("view-2", peer_b.clone());
+
+        endpoints.reset().await;
+
+        assert_eq!(target.0.load(Ordering::SeqCst), 1);
+        assert_eq!(peer_a.0.load(Ordering::SeqCst), 1, "源端的数据面没有被重置");
+        assert_eq!(peer_b.0.load(Ordering::SeqCst), 1);
     }
 }
