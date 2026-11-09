@@ -9,6 +9,10 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+pub mod osc;
+
+pub use osc::{MAX_CWD_BYTES, MAX_OSC_PAYLOAD, MarkFamily, OscMark, OscScanner, ShellMarkKind};
+
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Direction, Line, Point};
@@ -103,6 +107,62 @@ pub struct Snapshot {
     pub display_offset: usize,
 }
 
+/// 一条 shell 标记发生时的光标位置（屏幕坐标，不受滚回历史影响）。
+///
+/// 输入跟踪用它认出"Prompt 输入起点"：收到 `133;B` 那一刻的光标就是用户输入的第一个格子。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CursorAnchor {
+    pub row: usize,
+    pub col: usize,
+    pub alt_screen: bool,
+}
+
+/// 终端模型识别出的一条 shell 标记，连同它在流里的位置。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellEvent {
+    pub mark: OscMark,
+    /// 这条序列结尾之后，累计喂进来的远端字节数（`feed_local` 的文字不计）。单调递增，
+    /// 用来把事件和"之后某一批字节"排先后。
+    pub stream_pos: u64,
+    /// 序列结尾那一刻的光标位置。
+    pub anchor: CursorAnchor,
+}
+
+/// 标记队列的条数上限。调用方每批输出后取一次；满了丢最旧的并计数。
+pub const MAX_PENDING_MARKS: usize = 256;
+
+/// 一格输入行单元：保留尾部空格和组合字符，宽字符右侧的占位格单独标出。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineCell {
+    pub ch: char,
+    pub zerowidth: Option<Box<[char]>>,
+    pub kind: LineCellKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineCellKind {
+    Normal,
+    /// 宽字符本体（占两格，右边紧跟一个 `WideSpacer`）。
+    Wide,
+    /// 宽字符右侧的占位格。
+    WideSpacer,
+    /// 行尾放不下宽字符时留的占位格：说明下一行是这一行的软换行延续。
+    LeadingSpacer,
+}
+
+/// 光标和屏幕的轻量读数：输入跟踪每次都要取，所以不能像 [`Snapshot`] 那样整屏拷贝。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenProbe {
+    pub rows: usize,
+    pub cols: usize,
+    pub cursor_row: usize,
+    pub cursor_col: usize,
+    pub alt_screen: bool,
+    pub display_offset: usize,
+    pub revision: u64,
+    pub content_revision: u64,
+}
+
 /// 协议回复队列的条数上限。DSR / DA 这类应答都只有几个字节，远端正常使用时一批输出里
 /// 不会超过个位数；上限只是防恶意输出刷爆内存和上行带宽。
 pub const MAX_REPLIES: usize = 64;
@@ -192,6 +252,12 @@ pub struct TerminalModel {
     revision: u64,
     /// 文字内容的修订号：和 `revision` 的区别是滚动不算。搜索靠它认出"该重新找一遍"。
     content_revision: u64,
+    /// 远端输出里的 shell 标记（OSC 133 / 633 / 7）扫描器：只看不改，字节照常交给 Alacritty。
+    osc: OscScanner,
+    marks: VecDeque<ShellEvent>,
+    dropped_marks: u64,
+    /// 累计喂进来的远端字节数（见 [`ShellEvent::stream_pos`]）。
+    stream_pos: u64,
 }
 
 /// 一处搜索命中：起止都是网格坐标（行号为负表示在回滚缓冲里，0 是当前屏幕第一行），
@@ -230,7 +296,68 @@ impl TerminalModel {
             replies,
             revision: 0,
             content_revision: 0,
+            osc: OscScanner::new(),
+            marks: VecDeque::new(),
+            dropped_marks: 0,
+            stream_pos: 0,
         }
+    }
+
+    /// 取走自上次以来识别出的 shell 标记（按出现顺序）。每批输出之后取一次。
+    pub fn take_shell_events(&mut self) -> Vec<ShellEvent> {
+        self.marks.drain(..).collect()
+    }
+
+    /// 因队列满或序列超长 / 损坏而丢掉的标记数（诊断用）。
+    pub fn dropped_shell_events(&self) -> u64 {
+        self.dropped_marks + self.osc.dropped()
+    }
+
+    /// 光标和屏幕模式的轻量读数（不拷贝屏幕内容）。光标取网格里的真实位置，不管远端有没有把它隐藏。
+    pub fn screen_probe(&self) -> ScreenProbe {
+        let grid = self.term.grid();
+        ScreenProbe {
+            rows: grid.screen_lines(),
+            cols: grid.columns(),
+            cursor_row: grid.cursor.point.line.0.max(0) as usize,
+            cursor_col: grid.cursor.point.column.0,
+            alt_screen: self.alt_screen(),
+            display_offset: grid.display_offset(),
+            revision: self.revision,
+            content_revision: self.content_revision,
+        }
+    }
+
+    /// 屏幕第 `row` 行（屏幕坐标，不受滚回历史影响）的全部格子，保留尾部空格。
+    /// 行号越界返回 `None`。只读这一行，成本是列数，不扫整屏。
+    pub fn line_cells(&self, row: usize) -> Option<Vec<LineCell>> {
+        let grid = self.term.grid();
+        if row >= grid.screen_lines() {
+            return None;
+        }
+        let line = &grid[Line(row as i32)];
+        let cells = (0..grid.columns())
+            .map(|col| {
+                let cell = &line[Column(col)];
+                let kind = if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    LineCellKind::WideSpacer
+                } else if cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
+                    LineCellKind::LeadingSpacer
+                } else if cell.flags.contains(Flags::WIDE_CHAR) {
+                    LineCellKind::Wide
+                } else {
+                    LineCellKind::Normal
+                };
+                LineCell {
+                    ch: cell.c,
+                    zerowidth: cell
+                        .zerowidth()
+                        .map(|chars| chars.to_vec().into_boxed_slice()),
+                    kind,
+                }
+            })
+            .collect();
+        Some(cells)
     }
 
     /// 取走远端查询产生的协议回复（按产生顺序拼成一段字节）。调用方每次喂完输出后取一次，
@@ -270,8 +397,38 @@ impl TerminalModel {
     }
 
     /// 消费一批字节，返回实际交给状态机的字节数（供 ACK 账本使用）。
+    ///
+    /// 先对原始字节做一遍 OSC 扫描；有 shell 标记时在序列结尾处把批次切开，让 Alacritty 先处理到
+    /// 那里，这样记下的光标位置就是标记发生那一刻的（`133;B` 之后同一批里的回显不会混进去）。
+    /// 解析器是有状态的，切开喂和整批喂结果一样。
     pub fn feed(&mut self, bytes: &[u8]) -> usize {
-        self.processor.advance(&mut self.term, bytes);
+        let mut found = Vec::new();
+        self.osc.scan(bytes, &mut found);
+        if found.is_empty() {
+            self.processor.advance(&mut self.term, bytes);
+        } else {
+            let mut start = 0;
+            for (end, mark) in found {
+                self.processor.advance(&mut self.term, &bytes[start..end]);
+                start = end;
+                let anchor = CursorAnchor {
+                    row: self.term.grid().cursor.point.line.0.max(0) as usize,
+                    col: self.term.grid().cursor.point.column.0,
+                    alt_screen: self.alt_screen(),
+                };
+                if self.marks.len() >= MAX_PENDING_MARKS {
+                    self.marks.pop_front();
+                    self.dropped_marks += 1;
+                }
+                self.marks.push_back(ShellEvent {
+                    mark,
+                    stream_pos: self.stream_pos + end as u64,
+                    anchor,
+                });
+            }
+            self.processor.advance(&mut self.term, &bytes[start..]);
+        }
+        self.stream_pos += bytes.len() as u64;
         if !bytes.is_empty() {
             self.revision += 1;
             self.content_revision += 1;
@@ -361,6 +518,9 @@ impl TerminalModel {
     pub fn reset_for_new_session(&mut self) {
         // 断线时可能正卡在半截转义序列（比如 OSC 字符串）里，不换掉解析器的话后面的文字都会被吞。
         self.processor = Processor::new();
+        // 扫描器的半截序列和还没取走的标记也是旧会话的：一起作废。
+        self.osc.reset();
+        self.marks.clear();
         let _ = self.take_replies();
         if self.alt_screen() {
             self.processor.advance(&mut self.term, b"\x1b[?1049l");
@@ -1290,6 +1450,164 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_secs(60),
             "回放太慢：{elapsed:?}"
+        );
+    }
+
+    // ---- shell 标记（OSC 133 / 633 / 7）----
+
+    fn marks(term: &mut TerminalModel) -> Vec<ShellEvent> {
+        term.take_shell_events()
+    }
+
+    #[test]
+    fn a_prompt_input_mark_records_the_cursor_where_it_arrived_not_where_the_chunk_ended() {
+        let mut term = model(4, 40, 10);
+        // 提示符、133;B、同一批里紧跟的回显：锚点必须是 B 那一刻的列 2，不是批末的列 4。
+        term.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls");
+        let events = marks(&mut term);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].mark.kind, ShellMarkKind::PromptStart);
+        assert_eq!(events[0].anchor.col, 0);
+        assert_eq!(events[1].mark.kind, ShellMarkKind::PromptEnd);
+        assert_eq!((events[1].anchor.row, events[1].anchor.col), (0, 2));
+        assert!(!events[1].anchor.alt_screen);
+        let snap = term.snapshot();
+        assert_eq!(snap.rows[0].text, "$ ls");
+        assert_eq!(snap.cursor_col, 4);
+        assert!(events[0].stream_pos < events[1].stream_pos);
+    }
+
+    #[test]
+    fn splitting_at_marks_gives_the_same_screen_as_feeding_whole() {
+        let data: &[u8] = b"\x1b[31mred\x1b[0m\r\n\x1b]133;D;0\x07\x1b]7;file:///tmp\x07\x1b]133;A\x07\x1b[1m$ \x1b[0m\x1b]133;B\x07echo \xe4\xb8\xad";
+        let mut whole = model(4, 40, 10);
+        whole.feed(data);
+        let mut bytewise = model(4, 40, 10);
+        for byte in data {
+            bytewise.feed(&[*byte]);
+        }
+        assert_eq!(whole.snapshot().rows, bytewise.snapshot().rows);
+        assert_eq!(
+            (whole.snapshot().cursor_row, whole.snapshot().cursor_col),
+            (
+                bytewise.snapshot().cursor_row,
+                bytewise.snapshot().cursor_col
+            )
+        );
+        let a: Vec<_> = marks(&mut whole)
+            .into_iter()
+            .map(|e| (e.mark, e.anchor))
+            .collect();
+        let b: Vec<_> = marks(&mut bytewise)
+            .into_iter()
+            .map(|e| (e.mark, e.anchor))
+            .collect();
+        assert_eq!(a, b, "整批喂和逐字节喂得到同样的标记和锚点");
+        assert_eq!(a.len(), 4);
+    }
+
+    #[test]
+    fn a_mark_split_across_feeds_still_fires_once_at_the_end() {
+        let mut term = model(2, 20, 10);
+        term.feed(b"$ \x1b]133;");
+        assert!(marks(&mut term).is_empty());
+        term.feed(b"B\x07");
+        let events = marks(&mut term);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].anchor.col, 2);
+        assert!(marks(&mut term).is_empty(), "取走后队列是空的");
+    }
+
+    #[test]
+    fn local_text_never_produces_shell_marks_even_if_it_contains_them() {
+        let mut term = model(2, 40, 10);
+        term.feed_local(b"connecting \x1b]133;B\x07 \x1b]133;A\x07 \x1b]7;file:///x\x07\r\n");
+        assert!(marks(&mut term).is_empty(), "feed_local 不产生 Prompt 事件");
+        // 本地文字里的半截序列也不能被后面的远端字节续上。
+        term.feed_local(b"\x1b]133;");
+        term.feed(b"B\x07");
+        assert!(marks(&mut term).is_empty());
+    }
+
+    #[test]
+    fn a_new_session_drops_half_marks_and_pending_marks() {
+        let mut term = model(2, 40, 10);
+        term.feed(b"\x1b]133;A\x07\x1b]133;");
+        term.reset_for_new_session();
+        assert!(marks(&mut term).is_empty(), "没取走的旧标记作废");
+        term.feed(b"B\x07");
+        assert!(
+            marks(&mut term).is_empty(),
+            "旧会话的半截序列不会被新会话续上"
+        );
+        term.feed(b"\x1b]133;A\x07");
+        assert_eq!(marks(&mut term).len(), 1, "新会话照常识别");
+    }
+
+    #[test]
+    fn the_mark_queue_is_bounded() {
+        let mut term = model(2, 40, 10);
+        for _ in 0..(MAX_PENDING_MARKS + 50) {
+            term.feed(b"\x1b]133;A\x07");
+        }
+        assert_eq!(marks(&mut term).len(), MAX_PENDING_MARKS);
+        assert_eq!(term.dropped_shell_events(), 50);
+    }
+
+    #[test]
+    fn marks_on_the_alternate_screen_say_so() {
+        let mut term = model(3, 20, 10);
+        term.feed(b"\x1b[?1049h\x1b]133;B\x07");
+        let events = marks(&mut term);
+        assert!(events[0].anchor.alt_screen);
+    }
+
+    #[test]
+    fn line_cells_keep_trailing_spaces_wide_chars_and_combining_marks() {
+        let mut term = model(2, 10, 10);
+        term.feed("a 你e\u{301}  ".as_bytes());
+        let cells = term.line_cells(0).expect("第 0 行");
+        assert_eq!(cells.len(), 10);
+        assert_eq!(cells[0].ch, 'a');
+        assert_eq!(cells[1].ch, ' ');
+        assert_eq!(cells[2].ch, '你');
+        assert_eq!(cells[2].kind, LineCellKind::Wide);
+        assert_eq!(cells[3].kind, LineCellKind::WideSpacer);
+        assert_eq!(cells[4].ch, 'e');
+        assert_eq!(cells[4].zerowidth.as_deref(), Some(&['\u{301}'][..]));
+        assert_eq!((cells[5].ch, cells[6].ch), (' ', ' '), "尾部空格保留");
+        assert!(term.line_cells(2).is_none());
+        // 裁过尾空格的 RowSnapshot.text 看不出这两个空格，这正是不能用它的原因。
+        assert_eq!(term.snapshot().rows[0].text, "a 你e\u{301}");
+    }
+
+    #[test]
+    fn the_screen_probe_reads_the_real_cursor_and_ignores_scrollback() {
+        let mut term = model(3, 10, 50);
+        for i in 0..10 {
+            term.feed(format!("l{i}\r\n").as_bytes());
+        }
+        term.feed(b"ab\x1b[?25l");
+        let probe = term.screen_probe();
+        assert_eq!((probe.rows, probe.cols), (3, 10));
+        assert_eq!(
+            (probe.cursor_row, probe.cursor_col),
+            (2, 2),
+            "光标被远端隐藏也照读"
+        );
+        assert_eq!(term.cursor_visible(), None);
+        term.scroll(4);
+        let scrolled = term.screen_probe();
+        assert_eq!(scrolled.display_offset, 4);
+        assert_eq!(
+            (scrolled.cursor_row, scrolled.cursor_col),
+            (2, 2),
+            "回滚不改网格光标"
+        );
+        assert!(scrolled.revision > probe.revision);
+        assert_eq!(
+            scrolled.content_revision, probe.content_revision,
+            "滚动不算内容变化"
         );
     }
 }
