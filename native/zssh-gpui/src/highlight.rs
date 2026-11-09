@@ -1127,7 +1127,9 @@ mod tests {
         let first = key(1, 1, 1);
         assert!(scheduler.want(first, &default_rules(), || screen('A')));
         // 等它真的退出：之后直接交给它的请求都会被拒绝。
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // 上限给宽：CI 开着 RUST_BACKTRACE，Windows 上崩溃线程解析调用栈符号要好几秒，
+        // 5 秒在 CI 上超过时（线程还在打印调用栈，没退出）。正常情况下循环几毫秒就结束。
+        let deadline = Instant::now() + Duration::from_secs(30);
         while scheduler
             .engine
             .request(first, &default_rules(), screen('A'))
