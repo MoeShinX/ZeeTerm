@@ -1318,6 +1318,34 @@ fn the_accept_key_latch_consumes_repeats_until_release_and_clears_on_blur() {
     assert!(!rig.t.latch_consumes("enter"), "失焦清理");
 }
 
+/// 复查 R1：键盘接受候选后一直按住 Enter，回显超时失同步、进入限制、连接重置都不能把 latch
+/// 放掉——否则下一次重复事件会落到终端变成 CR，"填入"就成了"执行"。
+#[test]
+fn a_held_accept_key_stays_consumed_through_echo_timeout_restrictions_and_resets() {
+    let mut rig = at_prompt();
+    let seq = rig.t.on_text("ab", IntentOrigin::Manual, rig.now).unwrap();
+    rig.t.on_write_outcome(seq, WriteOutcome::Queued, rig.now);
+    rig.t.arm_accept_latch("enter");
+    rig.s.put("a");
+    rig.observe();
+    for _ in 0..5 {
+        rig.tick(1000);
+        rig.s.revision += 1;
+        rig.observe();
+    }
+    assert_eq!(rig.phase(), Phase::Desynced, "回显超时");
+    assert!(rig.t.latch_consumes("enter"), "失同步不放掉还按着的键");
+    rig.t.set_restriction(RestrictionKind::Modal, true, rig.now);
+    assert!(rig.t.latch_consumes("enter"), "进入限制也不放掉");
+    rig.t
+        .set_restriction(RestrictionKind::Modal, false, rig.now);
+    rig.t.on_connection_reset(rig.now);
+    assert!(rig.t.latch_consumes("enter"), "连接重置也不放掉");
+    // 只有松开（或失焦）才放掉。
+    rig.t.release_accept_latch("enter");
+    assert!(!rig.t.latch_consumes("enter"));
+}
+
 #[test]
 fn typing_in_the_middle_of_a_line_is_still_tracked_on_the_text_before_the_cursor() {
     let mut rig = at_prompt();

@@ -526,6 +526,42 @@ fn enter_in_select_mode_accepts_without_executing_and_a_held_key_stays_consumed_
     assert!(!blurred.suggest_key("tab", true, true, false));
 }
 
+/// 复查 R1：Enter 接受候选后一直按住，远端迟迟不回显（超过 5 秒失同步），重复事件也不能变成 CR。
+#[test]
+fn a_held_enter_after_accepting_sends_no_cr_even_when_the_echo_times_out() {
+    let (mut pane, remote) = prompt_with_history();
+    type_text(&mut pane, "gi");
+    let clock = Clock::new();
+    clock.settle(&mut pane);
+    pane.assist.enter_select_mode();
+    pane.suggest_key("down", true, false, false);
+    remote.set_echo(false);
+    assert!(pane.suggest_key("enter", true, false, false));
+    let after_accept = remote.sent().len();
+    clock.tick(&mut pane, 20_000);
+    assert_eq!(
+        pane.assist.phase(),
+        Phase::Desynced,
+        "后缀一直没回显，失同步"
+    );
+    for _ in 0..3 {
+        assert!(
+            pane.suggest_key("enter", true, true, false),
+            "失同步时还按着：照样消费"
+        );
+    }
+    // 屏幕安静后重新协调回来，也不改变"这颗键还按着"。
+    clock.tick(&mut pane, 30_000);
+    for _ in 0..3 {
+        assert!(
+            pane.suggest_key("enter", true, true, false),
+            "重新协调后还按着：照样消费"
+        );
+    }
+    assert_eq!(remote.sent().len(), after_accept, "一个 CR 都没发");
+    assert!(!plain_keys_sent(&remote).ends_with(b"\r"));
+}
+
 #[test]
 fn select_mode_without_a_selection_closes_and_hands_the_key_back_untouched() {
     for key in ["tab", "enter"] {

@@ -551,7 +551,8 @@ impl InputTracker {
         self.state.multiline = false;
         self.state.origin = InputOrigin::Clean;
         self.state.submitted_command = None;
-        self.state.accept_key_latch = None;
+        // accept_key_latch 不在这里清：它记的是还按着的那颗物理键，只由松开 / 失焦 / 新的一次按下释放；
+        // 这里清掉的话，回显超时之后按住 Enter 的重复事件会落到终端变成 CR，填入就成了执行。
         self.state.tail_blank = true;
         self.state.desync_reason = None;
         self.state.prompt_epoch += 1;
@@ -616,7 +617,8 @@ impl InputTracker {
                 self.state.predicted_text.clear();
                 self.state.cursor_byte = ByteIdx(0);
                 self.state.submitted_command = None;
-                self.state.accept_key_latch = None;
+                // accept_key_latch 不在这里清：它记的是还按着的那颗物理键，只由松开 / 失焦 / 新的一次按下释放；
+                // 这里清掉的话，回显超时之后按住 Enter 的重复事件会落到终端变成 CR，填入就成了执行。
                 self.enter_sent_at = None;
                 self.resync = None;
                 self.state.input_revision += 1;
@@ -1171,7 +1173,8 @@ impl InputTracker {
         self.intents.clear();
         self.echo.reset(&self.state.confirmed_text.clone());
         self.state.submitted_command = None;
-        self.state.accept_key_latch = None;
+        // accept_key_latch 不在这里清：它记的是还按着的那颗物理键，只由松开 / 失焦 / 新的一次按下释放；
+        // 这里清掉的话，回显超时之后按住 Enter 的重复事件会落到终端变成 CR，填入就成了执行。
         self.enter_sent_at = None;
         self.state.desync_reason = Some(reason);
         self.state.input_revision += 1;
