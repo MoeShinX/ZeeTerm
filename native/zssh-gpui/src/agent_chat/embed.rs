@@ -899,6 +899,9 @@ impl AgentChatDemo {
             }
             Some(Ok(anchor)) => {
                 let name = anchor.name.clone();
+                // 改绑前的目标：模型不知道这件事，要在下一条消息前面补一句（见 `model_notes`）。
+                let previous = embed.binding.anchor().cloned();
+                self.model_notes.note_rebind(previous, anchor.clone());
                 embed.binding = Binding::Locked(anchor);
                 // 对话里留一条记录：之后的命令跑在哪台主机上，翻回去看得明白。
                 self.chat

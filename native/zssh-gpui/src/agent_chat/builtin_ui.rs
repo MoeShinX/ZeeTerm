@@ -482,6 +482,7 @@ impl AgentChatDemo {
         targets: Vec<crate::agent_host::HostTarget>,
         text: String,
         model: Option<String>,
+        notes: Vec<super::model_notes::Note>,
         cx: &mut Context<Self>,
     ) {
         let resume = self.pending_resume.take();
@@ -509,10 +510,12 @@ impl AgentChatDemo {
                 }
             };
             session.sync_hosts(&targets);
+            // 内置助手在进程内拿密钥，没有"续接后旧密钥还在模型上下文里"的问题，只补改绑 / 终端旁注。
+            let wire_text = super::model_notes::compose(&notes, &text);
             let sent = super::send_unless_cancelled(
                 session.conversation.as_ref(),
                 &cancel,
-                &text,
+                &wire_text,
                 model.as_deref(),
             )
             .await
@@ -521,6 +524,7 @@ impl AgentChatDemo {
                 turn,
                 session: Box::new(session),
                 sent,
+                resume_note: None,
             };
             if let Err(rejected) = sender.send(event)
                 && let HostEvent::Started { mut session, .. } = rejected.0

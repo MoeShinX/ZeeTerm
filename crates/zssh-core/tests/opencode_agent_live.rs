@@ -399,6 +399,12 @@ async fn idle_timeout_shuts_the_shared_process_down() {
         .expect("开对话");
     assert!(process_alive(pid), "刚起的进程该活着");
 
+    // 对话还挂着时进程不会因空闲被关（否则隔一会儿再发消息就接不上了）；先看对话挂着时不关，
+    // 再结束对话，从那一刻起重新数空闲。
+    tokio::time::sleep(idle * 2).await;
+    assert!(process_alive(pid), "对话还挂着，空闲也不该关进程");
+    conv.shutdown().await;
+
     // 等进程自己退出（空闲阈值 + 余量）。
     let deadline = Instant::now() + idle * 4 + Duration::from_secs(10);
     loop {

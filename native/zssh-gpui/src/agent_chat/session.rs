@@ -72,6 +72,9 @@ pub(super) enum HostEvent {
         turn: u64,
         session: Box<AgentSession>,
         sent: Result<(), String>,
+        /// 第一条消息里带了"续接后的新密钥"旁注时，旁注里的密钥（发送失败时放回待发旁注，
+        /// 下一次再带；没带就是 `None`）。
+        resume_note: Option<String>,
     },
     /// 找安装 / 起进程失败（`turn` 同上）。
     StartFailed { turn: u64, err: String },
@@ -210,6 +213,8 @@ impl AgentChatDemo {
         if started {
             self.new_conversation(cx);
         }
+        // 没开始过的对话也可能攒了旁注（先改绑了目标）：它们属于换掉的那个智能体。
+        self.model_notes.reset();
         self.agent = next;
         if next == AgentKind::Builtin {
             self.pick_default_builtin_endpoint();
@@ -392,6 +397,8 @@ impl AgentChatDemo {
             return;
         }
         let turn = self.fence.begin_turn();
+        // 旁注只拼进发给智能体的文本；上面 `start_real_turn` 记进对话的、之后存进历史的都是用户原文。
+        let notes = self.begin_model_notes(turn, &targets);
         self.sync_ai_turn_count();
         self.sync_host_activity();
         // 第一次发送时给这个对话定一个历史 id：之后的回合都写回同一个文件。
@@ -412,11 +419,12 @@ impl AgentChatDemo {
             session.sync_hosts(&targets);
             let conversation = Arc::clone(&session.conversation);
             let sender = self.host_tx.clone();
+            let wire_text = model_notes::compose(&notes, &text);
             match runtime() {
                 Ok(runtime) => {
                     runtime.spawn(async move {
                         let result = conversation
-                            .send(&text, model.as_deref())
+                            .send(&wire_text, model.as_deref())
                             .await
                             .map_err(|err| err.to_string());
                         let _ = sender.send(HostEvent::Sent { turn, result });
@@ -426,7 +434,20 @@ impl AgentChatDemo {
             }
             return;
         }
-        self.start_and_send(targets, text, model, cx);
+        self.start_and_send(targets, text, model, notes, cx);
+    }
+
+    /// 这条消息要补给模型的旁注（也记下这次发送，结果回来时据此清旁注）。终端换没换按主机目标
+    /// 现在选中的终端编号对比，规则见 `model_notes`。
+    fn begin_model_notes(&mut self, turn: u64, targets: &[HostTarget]) -> Vec<Note> {
+        let hosts: Vec<(i64, String)> = targets
+            .iter()
+            .filter(|target| target.terminal.is_none())
+            .map(|target| (target.id, target.name.clone()))
+            .collect();
+        self.model_notes.begin_send(turn, &hosts, |host_id| {
+            terminals().for_host(host_id).map(|entry| entry.id.clone())
+        })
     }
 
     /// 开始一次后台启动：登记取消标记和回合编号，并把上一次启动期间点的「停止」作废
@@ -445,16 +466,18 @@ impl AgentChatDemo {
         targets: Vec<HostTarget>,
         text: String,
         model: Option<String>,
+        notes: Vec<Note>,
         cx: &mut Context<Self>,
     ) {
         if self.is_builtin() {
-            self.start_builtin_and_send(targets, text, model, cx);
+            self.start_builtin_and_send(targets, text, model, notes, cx);
             return;
         }
         let kind = self.agent;
         // 续接 id 只用在这一次启动上：启动失败也不再留着，免得下次误接。
         let resume_session_id = self.pending_resume.take();
         self.resume_requested = resume_session_id.is_some();
+        let wants_resume = resume_session_id.is_some();
         // 启动失败时要把这条消息放回输入框（0.2.14 同：失败不丢字）。
         self.unsent_text = Some(text.clone());
         let Some(install) = self.status.get(kind).found().cloned() else {
@@ -509,11 +532,25 @@ impl AgentChatDemo {
                     result,
                 });
             });
+            // 续接历史：这个对话的能力密钥是刚建的新一把（旧的随旧对话作废），模型上下文里还留着
+            // 旧密钥，第一条消息要把新密钥告诉它。密钥要等会话建好才知道，所以旁注在这里拼。
+            let mut notes = notes;
+            let resume_note = wants_resume.then(|| session.capability().to_owned());
+            if let Some(capability) = &resume_note {
+                notes.insert(
+                    0,
+                    Note::Resumed {
+                        capability: capability.clone(),
+                    },
+                );
+            }
+            // 拼好的全文含密钥，只交给驱动，不写日志。
+            let wire_text = model_notes::compose(&notes, &text);
             // 启动期间点了停止 / 新对话：不把第一条消息发给模型，会话随后由窗口关掉。
             let sent = send_unless_cancelled(
                 session.conversation.as_ref(),
                 &cancel,
-                &text,
+                &wire_text,
                 model.as_deref(),
             )
             .await
@@ -522,6 +559,7 @@ impl AgentChatDemo {
                 turn,
                 session: Box::new(session),
                 sent,
+                resume_note,
             };
             if let Err(rejected) = sender.send(event) {
                 // 窗口已经关了，没人接这个会话：在这里正经关掉，别靠 Drop 兜底。
@@ -543,6 +581,8 @@ impl AgentChatDemo {
         // 启动都失败了：排队的消息不自动再试一遍，留给用户决定。
         self.chat.queue.hold();
         self.resume_requested = false;
+        // 消息没发出去：待发旁注原样留着，用户重发时再带。
+        self.model_notes.abandon_send();
         self.footer_error = Some(message);
         self.sync_ai_turn_count();
         self.sync_host_activity();
@@ -560,6 +600,7 @@ impl AgentChatDemo {
                     turn,
                     session,
                     sent,
+                    resume_note,
                 } => match self.fence.finish_start(turn, self.stop_requested) {
                     StartVerdict::Stale => {
                         // 启动期间点了「新对话」（也许已经在新对话里又发了消息）：这个会话不属于
@@ -572,6 +613,7 @@ impl AgentChatDemo {
                         self.unsent_text = None;
                         self.stop_requested = false;
                         self.resume_requested = false;
+                        self.model_notes.abandon_send();
                         self.shutdown_session(*session, cx);
                     }
                     StartVerdict::Current => {
@@ -584,8 +626,18 @@ impl AgentChatDemo {
                             self.chat.apply_agent_event(AgentEvent::ResumeFailed);
                         }
                         self.session = Some(*session);
-                        if let Err(err) = sent {
-                            self.fail_turn(format!("{}{err}", t(ChatMsg::SendFailedPrefix)), cx);
+                        match sent {
+                            Ok(()) => self.model_notes.confirm_sent(turn),
+                            Err(err) => {
+                                // 第一条消息没发出去：续接旁注（新密钥）还没告诉模型，放回去下次再带。
+                                if let Some(capability) = resume_note {
+                                    self.model_notes.requeue_resumed(capability);
+                                }
+                                self.fail_turn(
+                                    format!("{}{err}", t(ChatMsg::SendFailedPrefix)),
+                                    cx,
+                                );
+                            }
                         }
                     }
                 },
@@ -638,11 +690,17 @@ impl AgentChatDemo {
                     // 下一个节拍的 `sync_builtin_state` 从进程级缓存里取到它，补进模型下拉。
                     builtin::remote_finish(key, result);
                 }
-                HostEvent::Sent { result: Ok(()), .. } => {}
+                // 发出去了：这条消息带的旁注可以清了（迟到的旧结果认回合编号，不会误清）。
+                HostEvent::Sent {
+                    turn,
+                    result: Ok(()),
+                } => self.model_notes.confirm_sent(turn),
                 HostEvent::Sent {
                     turn,
                     result: Err(err),
                 } => {
+                    // 没发出去：旁注留着，下一条消息再带。
+                    self.model_notes.send_failed(turn);
                     // 已经点了停止 / 新对话：迟到的发送错误不再往对话里写；上一个回合的错误
                     // 迟到时新回合已经在跑，只看"在不在跑"会把新回合判成失败，所以要认回合编号。
                     if self.fence.send_is_current(turn, self.chat.is_running()) {
@@ -778,6 +836,8 @@ impl AgentChatDemo {
         self.chat.finish_real_turn();
         // 发送本身失败：同样不自动重发排队的消息。
         self.chat.queue.hold();
+        // 这条消息没发出去：待发旁注留着，下一条再带。
+        self.model_notes.abandon_send();
         self.sync_ai_turn_count();
         self.sync_host_activity();
         self.footer_error = Some(message);
@@ -906,6 +966,8 @@ impl AgentChatDemo {
 
     /// 结束当前真实会话：关掉已有的，或者让还在后台起的那个起来之后直接丢掉。
     pub(super) fn end_current_conversation(&mut self, cx: &mut Context<Self>) {
+        // 旁注和终端记录属于要结束的这个对话（新对话 / 继续历史 / 回离线都会走到这里）。
+        self.model_notes.reset();
         self.cancel_starting();
         if let Some(session) = self.session.take() {
             self.shutdown_session(session, cx);

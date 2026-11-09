@@ -137,6 +137,13 @@ pub trait AgentConversation: Send + Sync {
         Vec::new()
     }
 
+    /// 这个对话所在的进程是不是已经没了（意外退出 / 被杀 / 空闲关停）。只有共用进程的驱动
+    /// （opencode / codex）会真的返回 true；上层据此在下一次发消息前换一个新进程、
+    /// 以同一把能力密钥和 [`Self::resume_id`] 重开对话，而不是让用户新开一个。
+    fn runtime_closed(&self) -> bool {
+        false
+    }
+
     /// 查可用模型。
     fn models<'a>(&'a self) -> BoxFuture<'a, Result<AgentModelCatalog, AgentError>>;
 

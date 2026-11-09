@@ -8,8 +8,10 @@
 //! 能力密钥，模型调 `zssh` 工具时必须把它当 `capability` 参数带上（实测 0.162.1：
 //! 模型会照做）。对话之间靠密钥隔离（桥侧按密钥找会话表），不是靠进程隔离。
 //!
-//! 进程生命周期和 opencode 一样：第一次用 AI 时启动，所有对话空闲
-//! [`DEFAULT_IDLE_TIMEOUT`]（10 分钟）后自动关闭，下次再启动；应用退出时杀进程树。
+//! 进程生命周期和 opencode 一样：第一次用 AI 时启动；**没有任何对话（thread）挂着**且空闲
+//! [`DEFAULT_IDLE_TIMEOUT`]（10 分钟）后自动关闭，下次再启动。只要还有对话没结束进程就
+//! 不会因空闲被关，否则用户隔一会儿再发消息会报事件流已断开、上下文接不上。进程意外退出
+//! 时由上层（`agent_host`）在下一次发送时按原密钥和 thread id 重开对话。应用退出时杀进程树。
 //!
 //! 启动参数（禁用本机工具、只挂 `zssh` 一个 MCP）在 [`startup`] 里组，见该模块注释。
 //!
@@ -787,6 +789,8 @@ impl CodexConversation {
         if let Ok(mut map) = self.runtime.shared.threads.lock() {
             map.remove(&self.thread_id);
         }
+        // 最后一个对话走了才开始数空闲：对话挂着期间看护不计时，这里重新起算 10 分钟。
+        self.runtime.shared.touch();
     }
 
     /// 等"MCP 里只有 zssh"确认完毕；违规 / 超时都按失败关闭拒绝回合。
@@ -1050,6 +1054,10 @@ fn retry_stop_fallback_now(thread: &ThreadEntry, seq: u64) -> Option<String> {
 impl AgentConversation for CodexConversation {
     fn session_id(&self) -> &str {
         &self.thread_id
+    }
+
+    fn runtime_closed(&self) -> bool {
+        self.runtime.is_closed()
     }
 
     fn models<'a>(&'a self) -> crate::ssh::BoxFuture<'a, Result<AgentModelCatalog, AgentError>> {
@@ -1445,7 +1453,9 @@ async fn idle_watch(
         if *shutdown_rx.borrow() {
             return;
         }
-        if shared.any_busy() {
+        // 还有 thread 登记着就不关：thread 的上下文在进程里，关掉等于让用户隔一会儿再发的
+        // 下一条消息接不上（thread 会在对话 shutdown / Drop 时从表里摘掉）。
+        if shared.any_busy() || shared.thread_count() > 0 {
             continue;
         }
         if shared.idle_for() >= idle_timeout {
@@ -2067,6 +2077,133 @@ mod tests {
             other => panic!("要提示新开对话：{other:?}"),
         }
         assert!(!thread.busy.load(Ordering::SeqCst));
+    }
+
+    // ---- 空闲看护：有对话登记就不关 ----
+
+    fn idle_fixture() -> (Arc<Shared>, Arc<ThreadEntry>) {
+        let shared = test_shared();
+        let (thread, _rx) = running_thread(&shared);
+        // 回合已经结束；对话（thread）仍登记在表里。
+        thread.busy.store(false, Ordering::SeqCst);
+        // 空闲时间早就超过阈值。
+        *shared.last_activity.lock().unwrap() = Instant::now()
+            .checked_sub(Duration::from_secs(60))
+            .unwrap_or_else(Instant::now);
+        (shared, thread)
+    }
+
+    fn idle_conversation(shared: &Arc<Shared>, entry: Arc<ThreadEntry>) -> CodexConversation {
+        CodexConversation {
+            runtime: Arc::new(CodexRuntime {
+                shared: Arc::clone(shared),
+                reader_task: Mutex::new(None),
+                shutdown_tx: watch::channel(false).0,
+                idle_task: Mutex::new(None),
+            }),
+            thread_id: "t1".to_owned(),
+            capability: String::new(),
+            entry,
+        }
+    }
+
+    #[test]
+    fn a_conversation_reports_when_its_shared_process_is_gone() {
+        let (shared, thread) = idle_fixture();
+        let conversation = idle_conversation(&shared, thread);
+        assert!(!conversation.runtime_closed());
+        shared.closed.store(true, Ordering::SeqCst);
+        assert!(conversation.runtime_closed());
+    }
+
+    #[tokio::test]
+    async fn idle_watch_closes_the_process_when_no_thread_is_registered() {
+        let shared = test_shared();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let kill_rx = shutdown_tx.clone();
+        let handle = tokio::spawn(idle_watch(
+            Arc::clone(&shared),
+            Duration::from_millis(80),
+            shutdown_rx,
+            shutdown_tx.clone(),
+        ));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while !shared.closed.load(Ordering::SeqCst) {
+            assert!(tokio::time::Instant::now() < deadline, "空闲看护没关进程");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(*kill_rx.borrow(), "关进程时也要通知读任务收工");
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn idle_watch_keeps_the_process_while_a_turn_is_busy() {
+        let shared = test_shared();
+        let (_thread, _rx) = running_thread(&shared); // busy = true
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = tokio::spawn(idle_watch(
+            Arc::clone(&shared),
+            Duration::from_millis(40),
+            shutdown_rx,
+            shutdown_tx.clone(),
+        ));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !shared.closed.load(Ordering::SeqCst),
+            "有回合在跑不该关进程"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn idle_watch_keeps_the_process_while_a_thread_is_registered() {
+        let (shared, _thread) = idle_fixture();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = tokio::spawn(idle_watch(
+            Arc::clone(&shared),
+            Duration::from_millis(40),
+            shutdown_rx,
+            shutdown_tx.clone(),
+        ));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !shared.closed.load(Ordering::SeqCst),
+            "对话还挂着，空闲也不该关进程"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn idle_watch_closes_once_the_last_thread_is_gone_and_counts_from_then() {
+        let (shared, thread) = idle_fixture();
+        let conversation = idle_conversation(&shared, thread);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = tokio::spawn(idle_watch(
+            Arc::clone(&shared),
+            Duration::from_millis(400),
+            shutdown_rx,
+            shutdown_tx.clone(),
+        ));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(!shared.closed.load(Ordering::SeqCst), "对话还在，不该关");
+
+        // 最后一个对话结束：从这一刻起重新数空闲，不是立刻关。
+        conversation.detach();
+        assert_eq!(shared.thread_count(), 0);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !shared.closed.load(Ordering::SeqCst),
+            "对话刚摘掉，还没空闲满阈值"
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while !shared.closed.load(Ordering::SeqCst) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "对话摘掉后空闲满阈值，看护该关进程"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let _ = handle.await;
     }
 
     #[tokio::test]

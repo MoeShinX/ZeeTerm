@@ -62,6 +62,9 @@ use crate::agent_setup::{AgentKind, fake};
 use crate::ai_terminals::{TermCommand, TermEntry, terminals};
 use crate::i18n::{Msg, t};
 
+mod reopen;
+use reopen::{Reopen, ReopeningConversation};
+
 /// Claude Code 对话的空闲关闭时间：10 分钟（和驱动默认值一致）。
 const CLAUDE_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
@@ -93,6 +96,8 @@ enum AgentHostMsg {
     ReadApiKeyFailedPrefix,
     MissingApiKeyPrefix,
     MissingApiKeySuffix,
+    ReopenFailedPrefix,
+    ConversationEnded,
 }
 
 impl Msg for AgentHostMsg {
@@ -126,6 +131,8 @@ impl Msg for AgentHostMsg {
             Self::ReadApiKeyFailedPrefix => "读取 API Key 失败：",
             Self::MissingApiKeyPrefix => "接口「",
             Self::MissingApiKeySuffix => "」还没有 API Key：到 设置 → AI 助手 → ZeePilot 里补上。",
+            Self::ReopenFailedPrefix => "智能体进程已经退出，重新启动失败：",
+            Self::ConversationEnded => "这个对话已经结束",
         }
     }
 
@@ -174,6 +181,8 @@ impl Msg for AgentHostMsg {
             Self::MissingApiKeySuffix => {
                 "\" has no API key yet: add one under Settings → AI Assistant → ZeePilot."
             }
+            Self::ReopenFailedPrefix => "The agent process exited and could not be restarted: ",
+            Self::ConversationEnded => "This conversation has ended",
         }
     }
 }
@@ -1707,32 +1716,34 @@ impl AgentHub {
                     .map_err(|err| err.to_string())?;
                 (conversation as Arc<dyn AgentConversation>, resume.is_some())
             }
-            AgentKind::OpenCode => {
-                let SharedRuntime::OpenCode(runtime) =
-                    self.runtime_for(kind, install, &overrides).await?
-                else {
-                    return Err("opencode 的共用进程类型不对".to_string()); // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
-                };
-                let (conversation, resumed) = runtime
-                    .open_conversation_resuming(capability, events_tx, resume.as_deref())
-                    .await
-                    .map_err(|err| err.to_string())?;
-                conversation
-                    .bind_tool_scope(tools.scope().clone())
-                    .map_err(|err| err.to_string())?;
-                (conversation as Arc<dyn AgentConversation>, resumed)
-            }
-            AgentKind::Codex => {
-                let SharedRuntime::Codex(runtime) =
-                    self.runtime_for(kind, install, &overrides).await?
-                else {
-                    return Err("codex 的共用进程类型不对".to_string()); // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
-                };
-                let (conversation, resumed) = runtime
-                    .open_conversation_resuming(capability, events_tx, resume.as_deref())
-                    .await
-                    .map_err(|err| err.to_string())?;
-                (conversation as Arc<dyn AgentConversation>, resumed)
+            // opencode / codex：共用进程里的一个对话。进程意外没了之后，下一次发消息由
+            // `ReopeningConversation` 用同一把密钥和会话标识重开（见 `reopen`）。
+            AgentKind::OpenCode | AgentKind::Codex => {
+                let reopen_events = events_tx.clone();
+                let (conversation, resumed) = self
+                    .open_shared_conversation(
+                        kind,
+                        install.clone(),
+                        &overrides,
+                        reopen::ReopenRequest {
+                            capability: capability.clone(),
+                            resume: resume.clone(),
+                        },
+                        tools.scope(),
+                        events_tx,
+                    )
+                    .await?;
+                let reopen = self.reopener(
+                    kind,
+                    install,
+                    overrides,
+                    tools.scope().clone(),
+                    reopen_events.clone(),
+                );
+                (
+                    ReopeningConversation::wrap(conversation, capability, reopen_events, reopen),
+                    resumed,
+                )
             }
         };
         Ok(AgentSession {
@@ -1742,6 +1753,77 @@ impl AgentHub {
             events,
             resumed,
             builtin: None,
+        })
+    }
+
+    /// 在 opencode / codex 的共用进程里开（或续接）一个对话：没有活着的进程就先拉一个。
+    /// 第一次开对话和进程没了之后的重开走同一条路，密钥、续接标识都由调用方给。
+    async fn open_shared_conversation(
+        &self,
+        kind: AgentKind,
+        install: AgentInstall,
+        overrides: &StartOverrides,
+        request: reopen::ReopenRequest,
+        scope: &ScopeHandle,
+        events: mpsc::UnboundedSender<AgentEvent>,
+    ) -> Result<(Arc<dyn AgentConversation>, bool), String> {
+        let reopen::ReopenRequest { capability, resume } = request;
+        match kind {
+            AgentKind::OpenCode => {
+                let SharedRuntime::OpenCode(runtime) =
+                    self.runtime_for(kind, install, overrides).await?
+                else {
+                    return Err("opencode 的共用进程类型不对".to_string()); // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
+                };
+                let (conversation, resumed) = runtime
+                    .open_conversation_resuming(capability, events, resume.as_deref())
+                    .await
+                    .map_err(|err| err.to_string())?;
+                // 重开时也要绑上：opencode 每个对话的工具授权是 scope 派生的独立 session 密钥。
+                conversation
+                    .bind_tool_scope(scope.clone())
+                    .map_err(|err| err.to_string())?;
+                Ok((conversation as Arc<dyn AgentConversation>, resumed))
+            }
+            AgentKind::Codex => {
+                let SharedRuntime::Codex(runtime) =
+                    self.runtime_for(kind, install, overrides).await?
+                else {
+                    return Err("codex 的共用进程类型不对".to_string()); // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
+                };
+                let (conversation, resumed) = runtime
+                    .open_conversation_resuming(capability, events, resume.as_deref())
+                    .await
+                    .map_err(|err| err.to_string())?;
+                Ok((conversation as Arc<dyn AgentConversation>, resumed))
+            }
+            AgentKind::Claude | AgentKind::Builtin => {
+                Err("这种智能体不使用共用进程".to_string()) // i18n-allow: 不可达的内部控制流断言（开发者信息），不进界面
+            }
+        }
+    }
+
+    /// 重开对话用的函数：向 hub 要一个活着的共用进程（`runtime_for` 会跳过已关闭的、必要时重新拉起），
+    /// 在里面以请求里的密钥和续接标识开对话。scope 和事件通道都是第一次开对话时那一份。
+    fn reopener(
+        self: &Arc<Self>,
+        kind: AgentKind,
+        install: AgentInstall,
+        overrides: StartOverrides,
+        scope: ScopeHandle,
+        events: mpsc::UnboundedSender<AgentEvent>,
+    ) -> Reopen {
+        let hub = Arc::clone(self);
+        Arc::new(move |request| {
+            let hub = Arc::clone(&hub);
+            let install = install.clone();
+            let overrides = overrides.clone();
+            let scope = scope.clone();
+            let events = events.clone();
+            Box::pin(async move {
+                hub.open_shared_conversation(kind, install, &overrides, request, &scope, events)
+                    .await
+            })
         })
     }
 

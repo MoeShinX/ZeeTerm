@@ -110,6 +110,7 @@ use model::{
     push_paragraph, redact_tool_input, selected_targets, toggle_host_selection,
     tool_history_status, tool_output_text,
 };
+use model_notes::{ModelNotes, Note};
 use session::{HostEvent, load_hosts};
 use state::ChatState;
 use text::ChatMsg;
@@ -128,6 +129,7 @@ mod fence;
 mod history;
 mod history_view;
 mod model;
+mod model_notes;
 mod queue;
 mod queue_view;
 mod reason;
@@ -228,6 +230,9 @@ pub struct AgentChatDemo {
     pending_resume: Option<String>,
     /// 这次启动要的是续接：会话起来后没接上（opencode / codex 立刻知道）就提示"上下文没带过去"。
     resume_requested: bool,
+    /// 要补给模型的旁注（续接后的新密钥、改绑目标、终端换了）：只拼进发给智能体的文本，不进界面
+    /// 和历史；消息发出去之后才清（见 `model_notes`）。
+    model_notes: ModelNotes,
     /// 启动失败时要放回输入框的那条消息（0.2.14：启动失败输入框里的字不丢，消息也不进对话）。
     unsent_text: Option<String>,
     /// 失败后等着放回输入框（放回需要窗口，节拍里做）。
@@ -329,6 +334,7 @@ impl AgentChatDemo {
             history_full: HashSet::new(),
             pending_resume: None,
             resume_requested: false,
+            model_notes: ModelNotes::default(),
             unsent_text: None,
             restore_input: None,
             resume_notice: None,
