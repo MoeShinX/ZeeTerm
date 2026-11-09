@@ -645,6 +645,18 @@ pub fn on_accent(skin: &Skin) -> u32 {
     }
 }
 
+/// 填在危险色上的图形 / 字：白色和皮肤里的深色哪个更清楚用哪个（同 [`on_accent`]；Tokyo Night、Dracula 的危险色是浅粉，
+/// 白色放上去只有 2.5 : 1）。
+pub fn on_danger(skin: &Skin) -> u32 {
+    let p = skin.ui;
+    let ink = if skin.dark { p.surface } else { p.text };
+    if contrast(0xFFFFFF, p.danger) >= contrast(ink, p.danger) {
+        0xFFFFFF
+    } else {
+        ink
+    }
+}
+
 /// 主文字色比皮肤表里的正文色更靠近纯黑（浅色皮肤）/ 纯白（深色皮肤）的比例：标题、名称要「黑」，
 /// 但保留皮肤自己的色调（Solarized 偏青、Rosé Pine 偏紫），不一刀切成 #000 / #FFF。
 pub const INK_PUSH_LIGHT: f32 = 0.55;
@@ -722,6 +734,8 @@ pub struct Tokens {
     pub text_nav: Hsla,
     pub accent: Hsla,
     pub on_accent: Hsla,
+    /// 填在危险色上的图形 / 字，见 [`on_danger`]。
+    pub on_danger: Hsla,
     /// 选中项 / 悬停的浅底色：强调色淡淡地叠在背景上。
     pub accent_soft: Hsla,
     /// 悬停底色：文字色以很低的透明度叠上去。
@@ -773,6 +787,7 @@ impl Tokens {
             text_nav: rgb(ink.nav),
             accent: rgb(p.accent),
             on_accent: rgb(on_accent(skin)),
+            on_danger: rgb(on_danger(skin)),
             accent_soft: rgb(soft),
             hover,
             danger: rgb(p.danger),

@@ -338,6 +338,31 @@ const ROW_HEIGHT: f32 = 34.0;
 /// 盘符图标的颜色（0.2.14 的 `text-sky-400`）和符号链接（`text-emerald-500`）；文件夹是固定的黄色，见 `icons::folder_icon`。
 const FOLDER_COLOR: u32 = 0x38BDF8;
 const LINK_COLOR: u32 = 0x10B981;
+/// 链接角标的直径（含 1px 边框）。
+const LINK_BADGE_SIZE: f32 = 11.0;
+
+/// 链接角标的三个颜色，全部取自当前皮肤的 token。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LinkBadgeColors {
+    bg: Hsla,
+    border: Hsla,
+    arrow: Hsla,
+}
+
+/// 正常链接：强调色底 + 强调色上最清楚的箭头；断链：危险色底 + 危险色上最清楚的箭头。两个都带一圈页面底色的描边，
+/// 把角标和底下的图标隔开。试过「页面底色 + 强调色箭头」：深色皮肤上圆点和背景融在一起、7px 的细箭头几乎看不见。
+fn link_badge_colors(broken: bool, tokens: &Tokens) -> LinkBadgeColors {
+    let (bg, arrow) = if broken {
+        (tokens.danger, tokens.on_danger)
+    } else {
+        (tokens.accent, tokens.on_accent)
+    };
+    LinkBadgeColors {
+        bg,
+        border: tokens.background,
+        arrow,
+    }
+}
 
 /// 链接的图标（Xftp 那种）：底是目标类型的图标（文件夹 / 文件），左下角叠一个小的快捷方式箭头
 /// 表示「这是链接」；断链的角标换成警示色。
@@ -349,12 +374,13 @@ fn link_icon(info: &LinkInfo, tokens: &Tokens) -> impl IntoElement {
             .text_color(tokens.text_muted)
             .into_any_element(),
     };
-    // 角标：白底 + 蓝箭头；断链是琥珀底 + 深色箭头。颜色固定（深浅主题里都清楚）。
-    let (badge_bg, arrow) = if info.broken {
-        (rgb(0xFBBF24), rgb(0x7C2D12))
-    } else {
-        (rgb(0xFFFFFF), rgb(0x1D4ED8))
-    };
+    // 角标：颜色全部跟主题走（强调色 / 危险色底，页面底色描边），断链整个换成危险色，
+    // 一眼能和正常链接分开。圆形，和侧栏、标题栏上已经改过的徽标一致；尺寸比原来大 1px，留出 1px 的边框。
+    let LinkBadgeColors {
+        bg: badge_bg,
+        border: badge_border,
+        arrow,
+    } = link_badge_colors(info.broken, tokens);
     div()
         .relative()
         .size(px(16.0))
@@ -368,8 +394,10 @@ fn link_icon(info: &LinkInfo, tokens: &Tokens) -> impl IntoElement {
                 .flex()
                 .items_center()
                 .justify_center()
-                .size(px(10.0))
-                .rounded(px(2.0))
+                .size(px(LINK_BADGE_SIZE))
+                .rounded_full()
+                .border_1()
+                .border_color(badge_border)
                 .bg(badge_bg)
                 .child(Icon::new(Ico::ArrowUpRight).size(px(8.0)).text_color(arrow)),
         )
@@ -2135,5 +2163,47 @@ mod list_size_tests {
         assert_eq!(Role::Body.spec().size, 14.0);
         assert!(Role::Caption.spec().size >= 12.0);
         assert!(super::ROW_HEIGHT >= Role::Body.spec().size * Role::Body.spec().leading);
+    }
+}
+
+#[cfg(test)]
+mod link_badge_tests {
+    // 不能 `use super::*`：gpui_kit 的通配导出里有一个叫 `test` 的宏，会盖掉 `#[test]`。
+    use ::gpui::Hsla;
+
+    use super::link_badge_colors;
+    use crate::app_theme::{SKINS, Tokens, contrast};
+
+    fn hex(color: Hsla) -> u32 {
+        let rgba = ::gpui::Rgba::from(color);
+        let byte = |v: f32| (v * 255.0).round() as u32;
+        (byte(rgba.r) << 16) | (byte(rgba.g) << 8) | byte(rgba.b)
+    }
+
+    #[test]
+    fn the_link_badge_follows_the_skin_and_broken_links_use_danger() {
+        for skin in SKINS {
+            let tokens = Tokens::for_skin(skin);
+            let ok = link_badge_colors(false, &tokens);
+            let broken = link_badge_colors(true, &tokens);
+            // 跟着主题走：不再是写死的白底蓝箭头。
+            assert_eq!(ok.bg, tokens.accent, "{}", skin.id);
+            assert_eq!(ok.arrow, tokens.on_accent, "{}", skin.id);
+            assert_eq!(broken.bg, tokens.danger, "{}", skin.id);
+            assert_eq!(broken.arrow, tokens.on_danger, "{}", skin.id);
+            // 断链和正常链接一眼能分开。
+            assert_ne!(ok.bg, broken.bg, "{}", skin.id);
+            // 箭头在自己的底上看得清（非文字图形，取 WCAG 的 3 : 1）。
+            assert!(
+                contrast(hex(ok.arrow), hex(ok.bg)) >= 3.0,
+                "{}: 正常链接的箭头对底色不够清楚",
+                skin.id
+            );
+            assert!(
+                contrast(hex(broken.arrow), hex(broken.bg)) >= 3.0,
+                "{}: 断链的箭头对底色不够清楚",
+                skin.id
+            );
+        }
     }
 }
