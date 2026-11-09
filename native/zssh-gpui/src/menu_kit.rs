@@ -359,6 +359,58 @@ mod tests {
         }
     }
 
+    /// 一个文件（测试模块之前的部分）里写死的小圆角（`rounded_sm/md/lg/xl`、`rounded_t_md`）的次数。
+    fn fixed_small_radii(text: &str) -> usize {
+        let body = text.split("#[cfg(test)]").next().unwrap_or(text);
+        [
+            ".rounded_sm()",
+            ".rounded_md()",
+            ".rounded_lg()",
+            ".rounded_xl()",
+            ".rounded_t_md()",
+        ]
+        .iter()
+        .map(|needle| body.matches(needle).count())
+        .sum()
+    }
+
+    #[test]
+    fn small_fixed_radii_only_remain_where_they_were_reviewed() {
+        // UI-UNIFY：圆润界面之后，控件按用途用胶囊 / `CONTROL_RADIUS` / `CARD_RADIUS` / `PANEL_RADIUS`，
+        // 不再写死 6–8px 的小圆角。下面几处是刻意保留的，新增的会让测试失败：
+        // - 拖拽时跟着鼠标的占位虚影（SFTP 拖拽小条、主窗口拖拽小条、标签拖拽的小条和合并提示）；
+        // - 概览里 22×32 的单核占用格：它是图表里的一个格子，不是按钮；
+        // - 外观页皮肤卡片里的配色预览条：嵌在 12px 圆角卡片的 6px 内边距里，6px 正好同心。
+        let allowed: &[(&str, usize)] = &[
+            ("sftp/drag.rs", 1),
+            ("main_window/drag.rs", 1),
+            ("tab_drag.rs", 2),
+            ("main_window/overview.rs", 1),
+            ("settings_view.rs", 1),
+        ];
+        for (name, text) in source_files() {
+            if name.contains("/dev_") {
+                continue;
+            }
+            let found = fixed_small_radii(&text);
+            let ok = allowed
+                .iter()
+                .find(|(suffix, _)| name.ends_with(suffix))
+                .map_or(0, |(_, n)| *n);
+            assert!(
+                found <= ok,
+                "{name} 里有 {found} 处写死的小圆角（允许 {ok}）：按用途选胶囊 / CONTROL_RADIUS / CARD_RADIUS / PANEL_RADIUS"
+            );
+        }
+    }
+
+    #[test]
+    fn the_card_radius_sits_between_the_pill_and_the_control_radius() {
+        // 12–14：比 20 的控件圆角小，免得多行内容块的首尾行被圆弧裁到；又比旧的 6–8 圆润。
+        const { assert!(crate::app_theme::CARD_RADIUS >= 12.0 && crate::app_theme::CARD_RADIUS <= 14.0) };
+        const { assert!(crate::app_theme::CARD_RADIUS < crate::app_theme::CONTROL_RADIUS) };
+    }
+
     /// 一个文件（测试模块之前的部分）里写死颜色字面量的次数。
     fn hardcoded_colours(text: &str) -> usize {
         let body = text.split("#[cfg(test)]").next().unwrap_or(text);

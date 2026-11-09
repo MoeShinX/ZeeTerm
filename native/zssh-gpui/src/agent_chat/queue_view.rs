@@ -270,7 +270,7 @@ impl AgentChatDemo {
                 .min_w_0()
                 .gap_1p5()
                 .p_2()
-                .rounded_md()
+                .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                 .border_1()
                 .border_color(border)
                 .child(

@@ -572,7 +572,7 @@ fn details_box(tokens: &Tokens) -> Div {
     v_flex()
         .gap_2()
         .p_3()
-        .rounded_md()
+        .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
         .bg(tokens.subtle)
         .border_1()
         .border_color(tokens.border)

@@ -517,7 +517,7 @@ fn fold_header(
         .items_center()
         .py_1()
         .cursor_pointer()
-        .rounded_md()
+        .rounded_full()
         .hover(move |style| style.bg(hover))
         .child(
             Icon::new(if open {
@@ -783,7 +783,7 @@ impl MainWindow {
                         .items_start()
                         .px_3()
                         .py_2()
-                        .rounded_md()
+                        .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                         .border_1()
                         .border_color(color)
                         .child(Icon::new(icon).size_4().text_color(color))
@@ -945,7 +945,7 @@ impl MainWindow {
                         .max_h_full()
                         .p_5()
                         .gap_4()
-                        .rounded_lg()
+                        .rounded(::gpui::px(crate::app_theme::PANEL_RADIUS))
                         .bg(tokens.background)
                         .border_1()
                         .border_color(tokens.border)
@@ -2100,7 +2100,7 @@ impl MainWindow {
             .w_full()
             .gap_2()
             .p_3()
-            .rounded_md()
+            .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
             .border_1()
             .border_color(tokens.border)
             .child(

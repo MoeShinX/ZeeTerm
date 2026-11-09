@@ -632,7 +632,7 @@ impl MainWindow {
                     .gap_1()
                     .px_3()
                     .py_2()
-                    .rounded_md()
+                    .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                     .border_1()
                     .border_color(if editing {
                         tokens.accent

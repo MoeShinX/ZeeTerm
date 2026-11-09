@@ -136,7 +136,7 @@ impl MainWindow {
                     .items_center()
                     .px_3()
                     .py_2()
-                    .rounded_md()
+                    .rounded_full()
                     .cursor_pointer()
                     .when(at == cursor, |d| d.bg(tokens.accent_soft))
                     .when(at != cursor, |d| d.hover(move |style| style.bg(hover)))

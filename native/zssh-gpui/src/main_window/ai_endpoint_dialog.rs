@@ -1297,7 +1297,7 @@ fn fold_header(
         .items_center()
         .py_1()
         .cursor_pointer()
-        .rounded_md()
+        .rounded_full()
         .hover(move |style| style.bg(hover))
         .child(
             Icon::new(if open {
@@ -2164,7 +2164,7 @@ impl MainWindow {
                     .items_start()
                     .px_3()
                     .py_2()
-                    .rounded_md()
+                    .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                     .border_1()
                     .border_color(color)
                     .child(
@@ -2274,7 +2274,7 @@ impl MainWindow {
             .id("ai-endpoint-caps")
             .gap_1()
             .p_3()
-            .rounded_md()
+            .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
             .border_1()
             .border_color(tokens.border)
             .bg(tokens.subtle)
@@ -2658,7 +2658,7 @@ impl MainWindow {
                     .id(("ai-pick-hit", index))
                     .px_2()
                     .py_1()
-                    .rounded_md()
+                    .rounded_full()
                     .text_xs()
                     .cursor_pointer()
                     .hover(move |style| style.bg(hover))

@@ -341,7 +341,7 @@ impl TerminalWorkspace {
                 .items_center()
                 .px_1p5()
                 .py_1()
-                .rounded_md()
+                .rounded(::gpui::px(crate::app_theme::CONTROL_RADIUS))
                 .border_1()
                 .border_color(tokens.border)
                 .bg(tokens.surface)

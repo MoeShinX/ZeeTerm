@@ -1287,7 +1287,7 @@ impl MainWindow {
                     .items_center()
                     .justify_center()
                     .size(px(24.0))
-                    .rounded_md()
+                    .rounded_full()
                     .cursor_pointer()
                     .text_color(tokens.text_muted)
                     .hover({
@@ -1577,7 +1577,7 @@ impl MainWindow {
         let table = v_flex()
             .flex_1()
             .min_h_0()
-            .rounded_md()
+            .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
             .border_1()
             .border_color(tokens.border)
             .overflow_hidden()

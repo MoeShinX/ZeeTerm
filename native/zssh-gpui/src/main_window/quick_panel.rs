@@ -478,7 +478,7 @@ impl MainWindow {
                         .justify_center()
                         .size(px(24.0))
                         .flex_none()
-                        .rounded_md()
+                        .rounded_full()
                         .text_color(tokens.text_muted)
                         .when(!enabled, |d| d.opacity(0.35))
                         .when(enabled, |d| {
@@ -520,7 +520,7 @@ impl MainWindow {
                 .items_center()
                 .gap_1()
                 .pr_1()
-                .rounded_md()
+                .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                 .border_1()
                 .border_color(if marked { tokens.accent } else { tokens.border })
                 .when(
@@ -656,7 +656,7 @@ impl MainWindow {
                     .gap_1()
                     .px_1()
                     .py_1()
-                    .rounded_md()
+                    .rounded_full()
                     .typo(Role::Caption, tokens)
                     .when(!searching, |d| {
                         d.cursor_pointer().hover(move |style| style.bg(hover))
@@ -829,7 +829,7 @@ impl MainWindow {
                         .id(("quick-group-chip", index))
                         .px_2()
                         .py_0p5()
-                        .rounded_md()
+                        .rounded_full()
                         .border_1()
                         .border_color(tokens.border)
                         .typo(Role::Caption, tokens)

@@ -405,7 +405,7 @@ impl MainWindow {
                 .w_full()
                 .gap_1p5()
                 .p_3()
-                .rounded_md()
+                .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                 .border_1()
                 .border_color(tokens.border)
                 .child(

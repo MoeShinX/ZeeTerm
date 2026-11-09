@@ -777,7 +777,7 @@ impl BackupDemo {
                         .w_full()
                         .gap_2()
                         .p_3()
-                        .rounded_md()
+                        .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                         .border_1()
                         .border_color(tokens.dot_connecting.opacity(0.5))
                         .bg(tokens.dot_connecting.opacity(0.1))

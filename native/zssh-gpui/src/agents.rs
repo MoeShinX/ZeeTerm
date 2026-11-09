@@ -1549,7 +1549,7 @@ impl AgentsDemo {
                         .gap_1()
                         .mt_1()
                         .p_3()
-                        .rounded_md()
+                        .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                         .border_1()
                         .border_color(tokens.border)
                         .bg(tokens.background)

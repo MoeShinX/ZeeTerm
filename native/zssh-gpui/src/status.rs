@@ -1270,7 +1270,7 @@ fn status_card(title: &str, body: AnyElement, colors: &CardColors) -> AnyElement
         .h(::gpui::px(150.))
         .gap_2()
         .p_3()
-        .rounded_md()
+        .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
         .border_1()
         .border_color(colors.border)
         .bg(colors.card)

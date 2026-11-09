@@ -1740,7 +1740,7 @@ impl SyncDemo {
                     .child(
                         div()
                             .px_1p5()
-                            .rounded_sm()
+                            .rounded_full()
                             .bg(tokens.subtle)
                             .text_size(::gpui::px(11.0))
                             .text_color(tokens.text_muted)
@@ -1992,7 +1992,7 @@ impl SyncDemo {
             .w_full()
             .gap_2()
             .p_3()
-            .rounded_md()
+            .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
             .border_1()
             .border_color(tokens.border)
             .children(rows)

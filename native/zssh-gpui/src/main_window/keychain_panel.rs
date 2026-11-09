@@ -692,7 +692,7 @@ impl MainWindow {
                 .items_center()
                 .px_3()
                 .py_3()
-                .rounded_md()
+                .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                 .border_1()
                 .border_color(if selected {
                     tokens.accent

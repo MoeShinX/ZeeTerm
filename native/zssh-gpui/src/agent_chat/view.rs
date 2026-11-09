@@ -100,7 +100,7 @@ impl AgentChatDemo {
             .flex_none()
             .gap_1()
             .items_center()
-            .rounded_sm()
+            .rounded_full()
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
@@ -297,7 +297,7 @@ impl AgentChatDemo {
             .id(id)
             .w_full()
             .p_2()
-            .rounded_sm()
+            .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
             .border_1()
             .border_color(if danger {
                 cx.theme().danger
@@ -495,7 +495,7 @@ impl AgentChatDemo {
                     .id(format!("{base}-diff"))
                     .w_full()
                     .p_2()
-                    .rounded_sm()
+                    .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                     .border_1()
                     .border_color(cx.theme().border)
                     .bg(cx.theme().background)
@@ -564,7 +564,7 @@ impl AgentChatDemo {
         let mut element = v_flex()
             .gap_1()
             .p_2()
-            .rounded_md()
+            .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
             .border_1()
             .border_color(if card.error.is_some() || dangerous {
                 cx.theme().danger
@@ -668,7 +668,7 @@ impl AgentChatDemo {
                 row.child(
                     div()
                         .px_1()
-                        .rounded_sm()
+                        .rounded_full()
                         .bg(cx.theme().danger)
                         .text_xs()
                         .text_color(cx.theme().background)
@@ -783,7 +783,7 @@ impl AgentChatDemo {
                 v_flex()
                     .gap_1()
                     .p_2()
-                    .rounded_sm()
+                    .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                     .border_1()
                     .border_color(cx.theme().warning)
                     .bg(cx.theme().muted)
@@ -894,7 +894,7 @@ impl AgentChatDemo {
                     "agent-chat-output-text-{message_index}-{tool_index}"
                 ))
                 .p_2()
-                .rounded_sm()
+                .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                 .border_1()
                 .border_color(cx.theme().border)
                 .bg(cx.theme().background)
@@ -1100,7 +1100,7 @@ pub(super) fn tokenway_card(
         .gap_2()
         .items_center()
         .p_2()
-        .rounded_md()
+        .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
         .border_1()
         .border_color(cx.theme().warning)
         .child(
@@ -1268,7 +1268,7 @@ impl AgentChatDemo {
                     .max_w(::gpui::px(680.0))
                     .min_w_0()
                     .p_2()
-                    .rounded_md()
+                    .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                     .bg(cx.theme().primary)
                     .text_color(cx.theme().primary_foreground)
                     .text_sm()

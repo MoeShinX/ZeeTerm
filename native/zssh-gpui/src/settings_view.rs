@@ -310,7 +310,7 @@ pub(crate) fn card(
         .child(
             v_flex()
                 .w_full()
-                .rounded_lg()
+                .rounded(::gpui::px(crate::app_theme::PANEL_RADIUS))
                 .border_1()
                 .border_color(tokens.border)
                 .bg(tokens.background)
@@ -423,7 +423,7 @@ pub(crate) fn choice_group(
                 .items_center()
                 .px_3()
                 .py_1p5()
-                .rounded_md()
+                .rounded_full()
                 .cursor_pointer()
                 .text_size(::gpui::px(14.0))
                 .line_height(::gpui::relative(1.4))
@@ -719,7 +719,7 @@ fn skin_card(
         .w(::gpui::px(150.0))
         .gap_1p5()
         .p_1p5()
-        .rounded_lg()
+        .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
         .border_1()
         .border_color(if selected {
             tokens.accent

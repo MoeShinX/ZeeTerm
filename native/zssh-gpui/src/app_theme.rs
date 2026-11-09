@@ -94,6 +94,10 @@ pub const FOCUS_HALO: bool = false;
 /// 圆润界面的逻辑像素；与系统缩放无关。输入框 / 按钮用 20，面板用 24。
 pub const CONTROL_RADIUS: f32 = 20.0;
 pub const PANEL_RADIUS: f32 = 24.0;
+/// 多行内容块（AI 对话气泡、代码 / 日志 / 输出框、表格容器、带说明文字的卡片）的圆角。20 的控件圆角放在这类块上，
+/// 首行 / 末行的字离圆弧只剩几个像素，字的左上角和右下角容易被裁；12 在 8–12px 的内边距下字不会碰到圆弧，
+/// 而且比 `CONTROL_RADIUS` 小一档，一眼能看出是「内容块」不是按钮。单行控件仍用 `CONTROL_RADIUS`，小按钮 / 徽标用胶囊。
+pub const CARD_RADIUS: f32 = 12.0;
 
 /// 原有皮肤保留顺序，GitHub 后加入 Lavender（先浅色后深色）。
 /// 原有色值由脚本从 `skins.ts` 抽出；`skin_ids_match_the_sync_whitelist` 核对 id 与同步白名单一致。

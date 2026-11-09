@@ -38,18 +38,6 @@ const ICON_GAP: f32 = 4.0;
 const LEFT_PAD_LEFT: f32 = 12.0;
 const LEFT_PAD_RIGHT: f32 = 8.0;
 
-/// 不同类型的标签使用同一条主题色标记，避免只靠背景色区分当前标签。
-pub(crate) fn active_tab_indicator(tokens: &Tokens) -> Div {
-    div()
-        .absolute()
-        .top_0()
-        .left(px(10.0))
-        .right(px(10.0))
-        .h(px(2.0))
-        .rounded_full()
-        .bg(tokens.accent)
-}
-
 fn status_color(status: TabStatus, tokens: &Tokens) -> Hsla {
     match status {
         TabStatus::Connecting => tokens.dot_connecting,

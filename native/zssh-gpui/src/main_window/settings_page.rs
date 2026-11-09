@@ -1392,7 +1392,7 @@ impl MainWindow {
                     .gap_2()
                     .items_center()
                     .px_2()
-                    .rounded_md()
+                    .rounded_full()
                     .cursor_pointer()
                     .typo(
                         if is_current {
@@ -1445,7 +1445,7 @@ impl MainWindow {
                 .gap_2()
                 .items_center()
                 .px_2()
-                .rounded_md()
+                .rounded_full()
                 .typo(Role::Nav, tokens)
                 .text_color(muted)
                 .cursor_pointer()
@@ -2608,7 +2608,7 @@ fn shortcuts_cards(tokens: &Tokens) -> Vec<::gpui::AnyElement> {
                                 .flex_none()
                                 .px_2()
                                 .py_0p5()
-                                .rounded_md()
+                                .rounded_full()
                                 .border_1()
                                 .border_color(tokens.border)
                                 .bg(tokens.background)
