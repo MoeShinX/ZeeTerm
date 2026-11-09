@@ -738,9 +738,9 @@ impl InputTracker {
         if self.state.composing != active {
             self.state.composing = active;
             self.state.input_revision += 1;
-        }
-        if !active {
-            self.recheck = true;
+            if !active {
+                self.recheck = true;
+            }
         }
     }
 
@@ -895,6 +895,32 @@ impl InputTracker {
             }
             Phase::Running | Phase::Suspended => {}
         }
+    }
+
+    /// 一次**没有登记意图**的本地写入（Enter、Tab、退格……）没有成功排队：它没有发出去（或者不知道发到了
+    /// 哪），所以此前按这次按键推演的判断（待提交快照、"shell 接管了输入行"）都不能信。
+    pub fn on_unsent_write(&mut self, outcome: WriteOutcome, now: Instant) {
+        let reason = match outcome {
+            WriteOutcome::Queued => return,
+            WriteOutcome::Rejected(reason) => DesyncReason::WriteRejected(reason),
+            WriteOutcome::TransportFailed => DesyncReason::TransportFailed,
+        };
+        if matches!(self.state.phase, Phase::Input | Phase::AwaitingEcho) {
+            self.desync(reason, now);
+        }
+    }
+
+    /// 屏幕几何变了（窗口尺寸、本地清屏）：输入起点的行列号不再对应原来的格子，
+    /// 必须等新 Prompt 重新确立。正在执行的命令不受影响。
+    pub fn on_geometry_changed(&mut self, _now: Instant) {
+        if matches!(self.state.phase, Phase::Running | Phase::Suspended) {
+            self.state.input_anchor = None;
+            self.anchor_valid = false;
+            return;
+        }
+        self.drop_prompt_state();
+        self.state.input_revision += 1;
+        self.set_phase(Phase::Unknown);
     }
 
     /// 登记一次"接受候选"：只发送 `suffix`（后缀），不发回车。校验全部通过才登记并进入 AwaitingEcho；

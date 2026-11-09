@@ -1379,6 +1379,57 @@ fn the_tracker_cap_is_4096_utf8_bytes_and_wide_text_counts_bytes() {
 }
 
 #[test]
+fn an_unregistered_key_that_never_left_invalidates_what_was_inferred_from_it() {
+    // Enter 没发出去（队列满）：待提交快照作废，输入行是否还在不知道。
+    let mut rig = at_prompt();
+    rig.type_echoed("rm x");
+    rig.t.on_key(KeyClass::Enter, rig.now);
+    assert!(rig.t.state().submitted_command.is_some());
+    rig.t
+        .on_unsent_write(WriteOutcome::Rejected(RejectReason::QueueFull), rig.now);
+    assert_eq!(rig.phase(), Phase::Desynced);
+    assert_eq!(rig.t.state().submitted_command, None);
+    // 成功排队的不改变状态。
+    let mut ok = at_prompt();
+    ok.t.on_unsent_write(WriteOutcome::Queued, ok.now);
+    assert_eq!(ok.phase(), Phase::Input);
+    // 传输失败同理。
+    let mut failed = at_prompt();
+    failed
+        .t
+        .on_key(KeyClass::Handoff(HandoffKey::Tab), failed.now);
+    failed
+        .t
+        .on_unsent_write(WriteOutcome::TransportFailed, failed.now);
+    assert_eq!(failed.phase(), Phase::Desynced);
+}
+
+#[test]
+fn a_geometry_change_forgets_the_anchor_and_waits_for_a_new_prompt() {
+    let mut rig = at_prompt();
+    rig.type_echoed("ls");
+    rig.t.on_geometry_changed(rig.now);
+    assert_eq!(rig.phase(), Phase::Unknown);
+    assert_eq!(rig.t.state().input_anchor, None);
+    for _ in 0..5 {
+        rig.tick(1000);
+        rig.observe();
+    }
+    assert_eq!(
+        rig.phase(),
+        Phase::Unknown,
+        "旧锚点的行列号可能已经不对应原来的格子"
+    );
+    rig.prompt();
+    assert_eq!(rig.phase(), Phase::Input);
+
+    let mut running = at_prompt();
+    running.mark(MarkKind::CommandStart);
+    running.t.on_geometry_changed(running.now);
+    assert_eq!(running.phase(), Phase::Running, "执行中的命令不受影响");
+}
+
+#[test]
 fn events_do_not_grow_without_bound() {
     let mut rig = at_prompt();
     for _ in 0..1000 {
