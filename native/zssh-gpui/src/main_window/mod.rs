@@ -98,6 +98,7 @@ pub mod dev_seed;
 pub mod dock_layout;
 mod docks;
 pub(crate) use docks::{DockRefusal, dock_label, reconnect_label};
+mod assist_settings;
 mod assist_ui;
 mod drag;
 mod drag_scroll;
@@ -383,6 +384,10 @@ pub struct MainWindow {
     pub(super) reveal_ask: Option<reveal_ui::RevealAsk>,
     /// 终端底部细栏「命令建议」弹出的状态说明 / 启用确认；锁屏时丢掉。
     pub(super) assist_dialog: Option<assist_ui::AssistDialog>,
+    /// 设置里正在录入"选择建议"快捷键：下一次按键（窗口级捕获阶段）就是要绑的组合。
+    pub(super) assist_key_capture: bool,
+    /// 「命令建议」设置小节里最近一次操作的结果提示（清除了几条、绑定了 / 清除了快捷键）。
+    pub(super) assist_settings_notice: Option<String>,
     /// 树底部属性面板现在显示哪台主机。
     pub(super) info_host: Option<i64>,
     /// 属性面板里点了小眼睛取回来的明文密码（只属于 `info_host` 那台；隐藏 / 切换 / 收起 / 锁屏都丢掉）。
@@ -629,6 +634,8 @@ impl MainWindow {
             modal: None,
             reveal_ask: None,
             assist_dialog: None,
+            assist_key_capture: false,
+            assist_settings_notice: None,
             info_host: None,
             info_secret: None,
             info_collapse_gen: 0,
@@ -1502,6 +1509,13 @@ impl MainWindow {
             if self.reveal_ask_key(&key, !mods.modified(), window, cx) {
                 cx.stop_propagation();
             }
+            return;
+        }
+
+        // 设置里正在录入"选择建议"快捷键：下一个组合键归它，先于一切别的窗口级快捷键。
+        if self.assist_key_capture {
+            self.assist_capture_key(event, window, cx);
+            cx.stop_propagation();
             return;
         }
 

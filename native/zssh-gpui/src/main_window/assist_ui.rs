@@ -341,6 +341,8 @@ impl MainWindow {
     /// 锁屏时把弹窗丢掉。
     pub(super) fn drop_assist_dialog(&mut self) {
         self.assist_dialog = None;
+        // 锁屏时也丢掉正在进行的快捷键录入。
+        self.assist_key_capture = false;
     }
 
     pub(super) fn assist_ask(&mut self, kind: ShellKind, cx: &mut Context<Self>) {
@@ -525,6 +527,8 @@ impl MainWindow {
                     .children(head.into_iter().map(|line| div().text_sm().child(line)))
                     .child(note(last, tokens)),
             )
+            // 自动建议 / 记录命令历史两个开关的入口（完整设置在 设置 → 终端）。
+            .child(self.assist_dialog_toggles(tokens, entity))
             .children(
                 dialog
                     .notice

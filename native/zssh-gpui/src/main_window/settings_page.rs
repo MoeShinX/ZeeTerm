@@ -1786,6 +1786,7 @@ impl MainWindow {
         };
         let mut blocks = crate::settings_view::terminal_cards(&self.workspace, cx);
         blocks.push(editor.into_any_element());
+        blocks.push(self.assist_settings_card(tokens, cx));
         blocks.push(self.session_log_card(tokens, cx));
         blocks.push(crate::settings_view::reset_terminal_block(
             &self.workspace,

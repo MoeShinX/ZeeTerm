@@ -727,8 +727,10 @@ fn switching_auto_suggestions_off_closes_the_overlay_and_select_mode_at_once(
         })
         .expect("window");
     assert!(term.select_mode(cx));
-    let mut off = AppPrefs::default();
-    off.terminal_assist_enabled = false;
+    let off = AppPrefs {
+        terminal_assist_enabled: false,
+        ..AppPrefs::default()
+    };
     crate::app_prefs::refresh_cached(off);
     term.poll(cx);
     assert!(term.shown(cx).is_empty());
@@ -779,8 +781,10 @@ fn a_binding_needs_a_real_modifier_and_round_trips_through_its_text() {
 fn the_bound_key_enters_select_mode_when_candidates_exist_and_is_the_terminals_otherwise(
     cx: &mut TestAppContext,
 ) {
-    let mut prefs = AppPrefs::default();
-    prefs.terminal_assist_select_key = "ctrl-alt-s".to_owned();
+    let prefs = AppPrefs {
+        terminal_assist_select_key: "ctrl-alt-s".to_owned(),
+        ..AppPrefs::default()
+    };
     let term = Harness::open_with(cx, prefs.clone());
     // 没有候选：绑定键不拦，按终端自己的规则发出去（Ctrl+Alt+S 编成 ^S）。
     term.named(cx, "ctrl-alt-s");
@@ -806,6 +810,73 @@ fn the_bound_key_enters_select_mode_when_candidates_exist_and_is_the_terminals_o
     term.named(cx, "ctrl-alt-s");
     assert!(!term.select_mode(cx));
     assert_eq!(term.sent().len(), before + 1);
+}
+
+#[gpui::test]
+fn clearing_history_drops_the_current_target_or_everything_and_closes_the_overlay(
+    cx: &mut TestAppContext,
+) {
+    let term = Harness::open(cx);
+    term.history_and_typed(cx);
+    assert_eq!(term.shown(cx).len(), 2);
+    let cleared = term
+        .window
+        .update(cx, |workspace, _, _| workspace.clear_history_current())
+        .expect("window");
+    assert_eq!(cleared, 3, "三条不同的命令");
+    assert!(term.shown(cx).is_empty(), "候选来自历史，一起收起");
+    // 再打一个字，新的检索里不会再有被清掉的历史。
+    term.type_text(cx, "t");
+    term.settle(cx);
+    assert!(term.shown(cx).is_empty());
+
+    // 全部清除：包括别的目标。
+    let term = Harness::open(cx);
+    term.run(cx, "uptime");
+    let other = term.with_pane(cx, |pane| {
+        zssh_core::terminal_assist::history::lock(pane.assist.history()).record(
+            "host:99",
+            "df -h",
+            zssh_core::terminal_assist::Provenance::Typed,
+        );
+        pane.assist.history().clone()
+    });
+    let cleared = term
+        .window
+        .update(cx, |workspace, _, _| workspace.clear_history_all())
+        .expect("window");
+    assert_eq!(cleared, 2);
+    assert_eq!(
+        zssh_core::terminal_assist::history::lock(&other)
+            .stats()
+            .entries,
+        0
+    );
+}
+
+#[gpui::test]
+fn switching_history_off_clears_what_was_collected_and_stops_collecting(cx: &mut TestAppContext) {
+    let term = Harness::open(cx);
+    term.run(cx, "uptime");
+    let entries = |term: &Harness, cx: &mut TestAppContext| {
+        term.with_pane(cx, |pane| {
+            zssh_core::terminal_assist::history::lock(pane.assist.history())
+                .stats()
+                .entries
+        })
+    };
+    assert_eq!(entries(&term, cx), 1);
+    let off = AppPrefs {
+        terminal_assist_history: false,
+        ..AppPrefs::default()
+    };
+    crate::app_prefs::refresh_cached(off);
+    term.window
+        .update(cx, |workspace, _, _| workspace.apply_assist_prefs())
+        .expect("window");
+    assert_eq!(entries(&term, cx), 0, "关掉即清空");
+    term.run(cx, "df -h");
+    assert_eq!(entries(&term, cx), 0, "关着时不采集");
 }
 
 #[test]

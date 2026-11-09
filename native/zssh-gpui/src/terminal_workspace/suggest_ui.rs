@@ -241,6 +241,28 @@ impl TerminalWorkspace {
         changed
     }
 
+    /// 设置页改了命令建议的开关：马上套用到所有窗格，不等 60 ms 的节拍。
+    /// 关掉自动建议会立即收起浮层和选择模式；关掉历史采集会清空内存里已有的历史。
+    pub(crate) fn apply_assist_prefs(&mut self) {
+        let active = self.tabs.active_index();
+        self.sync_assist_restrictions(active);
+    }
+
+    /// 清除活动窗格所属目标的内存历史；返回清掉了几条。
+    pub(crate) fn clear_history_current(&mut self) -> usize {
+        self.pane_mut()
+            .map_or(0, |pane| pane.assist.clear_target_history())
+    }
+
+    /// 清除全部内存历史（所有目标）；返回清掉了几条。
+    pub(crate) fn clear_history_all(&mut self) -> usize {
+        let cleared =
+            zssh_core::terminal_assist::history::lock(&super::assist_ops::shared_history())
+                .clear_all();
+        self.suggest_dismiss();
+        cleared
+    }
+
     /// 关掉所有窗格的列表和选择模式（点终端、滚动、拖选、鼠标上报、开关关掉）。原事件由调用方照常处理。
     pub(super) fn suggest_dismiss(&mut self) {
         for tab in self.tabs.items_mut() {

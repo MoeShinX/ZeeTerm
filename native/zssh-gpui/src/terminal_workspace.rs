@@ -171,6 +171,7 @@ mod suggest_ui;
 
 pub(crate) use assist_ops::{AssistView, IntegrationError, IntegrationState, StopOutcome};
 use assist_ops::{PaneAssist, WriteOrigin, classify_key};
+pub(crate) use suggest_ui::binding_text;
 use zssh_core::terminal_assist::suggest::QuickSource;
 use zssh_core::terminal_assist::{RejectReason, TrackerContext, WriteOutcome, WriteSource};
 

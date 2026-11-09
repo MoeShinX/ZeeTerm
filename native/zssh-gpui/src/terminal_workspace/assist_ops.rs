@@ -239,6 +239,14 @@ impl PaneAssist {
         &self.history
     }
 
+    /// 清除这个窗格所属目标的内存历史，返回清掉了几条；已展示的候选一起收起（它们来自历史）。
+    pub(crate) fn clear_target_history(&mut self) -> usize {
+        let target = self.tracker.context().target.clone();
+        let cleared = history::lock(&self.history).clear_target(&target);
+        self.dismiss_suggestions();
+        cleared
+    }
+
     /// 设置里的历史采集开关。关掉时停止采集，并清空本模块的全部内存历史。
     pub(crate) fn set_history_enabled(&mut self, enabled: bool) {
         if self.history_enabled && !enabled {
