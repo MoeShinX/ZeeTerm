@@ -8,13 +8,15 @@
 //! 代次失效复用 `highlight_ops` 的做法：窗格编号 + 连接代次 + 目标身份变了，整个状态机作废
 //! （见 [`PaneAssist::sync_context`]）。
 
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use zssh_core::terminal_assist::history::{self, HistoryStore};
 use zssh_core::terminal_assist::integration::{HANDSHAKE_TIMEOUT, ShellKind};
 use zssh_core::terminal_assist::{
     AcceptRefusal, HandoffKey, InputCell, InputTracker, IntentOrigin, KeyClass, MarkAnchor,
-    MarkKind, Phase, RequestIdentity, RestrictionKind, ScreenSource, ScreenView, TrackerContext,
-    WriteOutcome, WriteSource,
+    MarkKind, Phase, Provenance, RequestIdentity, RestrictionKind, ScreenSource, ScreenView,
+    TrackerContext, TrackerEvent, WriteOutcome, WriteSource,
 };
 use zssh_session::{CoreFilter, SessionPump};
 use zssh_terminal::{LineCellKind, ShellMarkKind};
@@ -157,6 +159,28 @@ pub(crate) struct PaneAssist {
     /// 已经处理过的 AI 注入次数（泵里的计数追上它就说明又有 AI 命令写进了终端）。
     ai_arms_seen: u64,
     integration: IntegrationState,
+    /// 进程共用的内存命令历史（按目标分域）。
+    history: Arc<Mutex<HistoryStore>>,
+    /// 设置里的 `terminal_assist.history_enabled`。关着时不采集。
+    history_enabled: bool,
+    /// 测试里看一眼取走过哪些事件（产品代码不读）。
+    #[cfg(test)]
+    drained: Vec<TrackerEvent>,
+}
+
+/// 进程共用的那份历史。测试里每个测试线程一份，互不污染（测试各自的窗格目标名常常相同）。
+pub(crate) fn shared_history() -> Arc<Mutex<HistoryStore>> {
+    #[cfg(not(test))]
+    {
+        history::shared()
+    }
+    #[cfg(test)]
+    {
+        thread_local! {
+            static STORE: Arc<Mutex<HistoryStore>> = Arc::new(Mutex::new(HistoryStore::new()));
+        }
+        STORE.with(Arc::clone)
+    }
 }
 
 impl PaneAssist {
@@ -166,7 +190,54 @@ impl PaneAssist {
             enabled: true,
             ai_arms_seen: 0,
             integration: IntegrationState::Off,
+            history: shared_history(),
+            history_enabled: true,
+            #[cfg(test)]
+            drained: Vec::new(),
         }
+    }
+
+    /// 窗格从状态机取走累积的事件（状态机里的队列有上限，不取就会被挤掉）。
+    /// 只有 `CommandStarted` 带命令时才进历史：状态机已经替我们判过"可靠输入、单行、行尾、来源干净、
+    /// 非前导空格、同一个 Prompt 的待提交快照"。
+    fn drain_events(&mut self) {
+        let events = self.tracker.take_events();
+        let password_phase = self.tracker.restrictions().password_prompt;
+        let target = self.tracker.context().target.clone();
+        for event in events {
+            if let TrackerEvent::CommandStarted {
+                command: Some(command),
+            } = &event
+                && self.history_enabled
+            {
+                let provenance = if password_phase {
+                    Provenance::PasswordPhase
+                } else {
+                    Provenance::Typed
+                };
+                history::lock(&self.history).record(&target, command, provenance);
+            }
+            #[cfg(test)]
+            self.drained.push(event);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn drained_events(&self) -> &[TrackerEvent] {
+        &self.drained
+    }
+
+    #[cfg(test)]
+    pub(crate) fn history(&self) -> &Arc<Mutex<HistoryStore>> {
+        &self.history
+    }
+
+    /// 设置里的历史采集开关。关掉时停止采集，并清空本模块的全部内存历史。
+    pub(crate) fn set_history_enabled(&mut self, enabled: bool) {
+        if self.history_enabled && !enabled {
+            history::lock(&self.history).clear_all();
+        }
+        self.history_enabled = enabled;
     }
 
     pub(crate) fn integration(&self) -> IntegrationState {
@@ -407,6 +478,7 @@ impl PaneAssist {
         }
         self.tracker.observe(&screen, now);
         self.advance_handshake(now);
+        self.drain_events();
     }
 }
 

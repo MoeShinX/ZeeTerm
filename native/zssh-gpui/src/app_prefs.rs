@@ -26,8 +26,8 @@ pub const SESSION_LOG_EXIT_NOTE_KEY: &str = "session_log_exit_note";
 /// 侧栏底部的「属性」面板（选中主机时显示名称 / 主机 / 用户名…）：默认关，只在本机（V2-U17）。
 pub const HOST_INFO_PANEL_KEY: &str = "host_info_panel";
 
-/// 终端命令建议的两个开关（都默认开，只在本机、不参与同步）：`enabled` 关了就不做输入跟踪；
-/// `history_enabled` 关了就不采集新的终端命令历史（候选与历史由后续功能使用）。
+/// 终端命令建议的两个开关（都默认开，只在本机、不参与同步）：`enabled` 关了就不做输入跟踪、不出候选；
+/// `history_enabled` 关了就不采集新的终端命令历史，并清空内存里已有的。
 pub const TERMINAL_ASSIST_ENABLED_KEY: &str = zssh_core::terminal_assist::ENABLED_KEY;
 pub const TERMINAL_ASSIST_HISTORY_KEY: &str = zssh_core::terminal_assist::HISTORY_ENABLED_KEY;
 
@@ -154,7 +154,6 @@ pub struct AppPrefs {
     /// 终端输入跟踪 / 命令建议总开关（默认开）。
     pub terminal_assist_enabled: bool,
     /// 采集新的终端命令历史（默认开）。
-    #[allow(dead_code)] // 键和读写已经接好，由后续的历史功能读取
     pub terminal_assist_history: bool,
 }
 

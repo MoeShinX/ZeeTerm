@@ -515,10 +515,10 @@ fn enter_then_the_command_start_mark_commits_exactly_one_submission() {
     assert_eq!(pane.assist.phase(), Phase::Running);
     let started: Vec<_> = pane
         .assist
-        .tracker_mut()
-        .take_events()
-        .into_iter()
+        .drained_events()
+        .iter()
         .filter(|event| matches!(event, TrackerEvent::CommandStarted { .. }))
+        .cloned()
         .collect();
     assert_eq!(
         started,
@@ -708,16 +708,17 @@ fn the_script_never_enters_the_command_history_capture() {
     remote.output(&mut pane, b"\x1b]133;C\x07");
     let started: Vec<_> = pane
         .assist
-        .tracker_mut()
-        .take_events()
-        .into_iter()
+        .drained_events()
+        .iter()
         .filter(|event| matches!(event, TrackerEvent::CommandStarted { .. }))
+        .cloned()
         .collect();
     assert_eq!(
         started,
         vec![TrackerEvent::CommandStarted { command: None }],
         "集成脚本不是用户命令，不进新历史"
     );
+    assert_eq!(history_stats(&pane).entries, 0);
 }
 
 #[test]
@@ -955,4 +956,121 @@ fn accepting_is_refused_while_composing_or_after_the_shell_took_the_line_over() 
         tabbed.accept_suggestion("atus", &id),
         Err(AcceptRefusal::NotInInput)
     );
+}
+
+// ---- 命令历史采集（P4 步骤 1） ----
+
+fn target_of(pane: &Pane) -> String {
+    pane.assist.tracker().context().target.clone()
+}
+
+fn history_stats(pane: &Pane) -> zssh_core::terminal_assist::history::Stats {
+    zssh_core::terminal_assist::history::lock(pane.assist.history()).stats()
+}
+
+fn history_texts(pane: &Pane, prefix: &str) -> Vec<String> {
+    let target = target_of(pane);
+    zssh_core::terminal_assist::history::lock(pane.assist.history())
+        .matches(&target, prefix)
+        .into_iter()
+        .map(|hit| hit.text)
+        .collect()
+}
+
+/// 输入一行、回车，远端发来命令开始标记（再给一个新的 Prompt）。
+fn run_line(pane: &mut Pane, remote: &Remote, line: &str) {
+    pane.write_as(line.as_bytes(), WriteOrigin::TypedText);
+    pane.write_as(b"\r", WriteOrigin::Key(KeyClass::Enter));
+    remote.output(pane, b"\x1b]133;C\x07");
+    remote.output(pane, b"\x1b]133;D;0\x07\r\n\x1b]133;A\x07$ \x1b]133;B\x07");
+}
+
+#[test]
+fn a_submitted_command_enters_the_target_history_only_after_the_start_mark() {
+    let (mut pane, remote) = at_prompt();
+    pane.write_as(b"ls -la", WriteOrigin::TypedText);
+    pane.write_as(b"\r", WriteOrigin::Key(KeyClass::Enter));
+    assert_eq!(history_stats(&pane).entries, 0, "只按了 Enter 还不算已执行");
+    remote.output(&mut pane, b"\x1b]133;C\x07");
+    assert_eq!(history_texts(&pane, "ls"), vec!["ls -la".to_owned()]);
+    assert_eq!(target_of(&pane), "host:7", "按目标身份分域");
+}
+
+#[test]
+fn a_line_that_never_got_its_start_mark_is_discarded_with_the_next_prompt() {
+    let (mut pane, remote) = at_prompt();
+    pane.write_as(b"vim x", WriteOrigin::TypedText);
+    pane.write_as(b"\r", WriteOrigin::Key(KeyClass::Enter));
+    remote.output(&mut pane, b"\n\x1b]133;A\x07$ \x1b]133;B\x07");
+    assert_eq!(pane.assist.phase(), Phase::Input);
+    run_line(&mut pane, &remote, "pwd");
+    assert_eq!(history_stats(&pane).entries, 1);
+    assert!(history_texts(&pane, "vi").is_empty());
+}
+
+#[test]
+fn leading_space_pasted_quick_and_uncertain_lines_are_never_collected() {
+    let (mut pane, remote) = at_prompt();
+    run_line(&mut pane, &remote, " ls -la");
+    assert_eq!(history_stats(&pane).entries, 0, "前导空格一律不采集");
+
+    // 粘贴：不是逐键用户命令。
+    pane.write_as(b"echo pasted\r", WriteOrigin::Foreign(WriteSource::Paste));
+    remote.output(&mut pane, b"\x1b]133;C\x07");
+    remote.output(&mut pane, b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    // 快捷命令。
+    pane.write_as(b"uptime\r", WriteOrigin::Foreign(WriteSource::QuickCommand));
+    remote.output(&mut pane, b"\x1b]133;C\x07");
+    remote.output(&mut pane, b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    assert_eq!(history_stats(&pane).entries, 0);
+
+    // 中途被 shell 接管（Tab 补全）：行内容来源不确定，不采集。
+    pane.write_as(b"gi", WriteOrigin::TypedText);
+    pane.write_as(b"\t", WriteOrigin::Key(KeyClass::Handoff(HandoffKey::Tab)));
+    pane.write_as(b"\r", WriteOrigin::Key(KeyClass::Enter));
+    remote.output(&mut pane, b"\x1b]133;C\x07");
+    assert_eq!(history_stats(&pane).entries, 0);
+}
+
+#[test]
+fn history_is_one_domain_per_target_and_never_leaks_across_panes() {
+    let (mut a, remote_a) = at_prompt();
+    run_line(&mut a, &remote_a, "ls /srv");
+    // 另一个目标的窗格共用同一份进程历史，但按目标分域。
+    let (tx, rx) = std::sync::mpsc::channel();
+    let pump = SessionPump::new(SIZE, 100, Arc::new(FlowGate::new()), CoreFilter::new(), 1);
+    let remote_b = Remote {
+        sent: Arc::new(Mutex::new(Vec::new())),
+        outcome: Arc::new(Mutex::new(WriteOutcome::Queued)),
+        echo: Arc::new(Mutex::new(true)),
+        tx,
+    };
+    let mut b = Pane::with_parts(
+        pump,
+        Box::new(Shell {
+            remote: remote_b.clone(),
+        }),
+        rx,
+        Some(99),
+        None,
+    );
+    remote_b.output(&mut b, b"\x1b]133;A\x07$ \x1b]133;B\x07");
+    run_line(&mut b, &remote_b, "ls /var");
+    assert_eq!(target_of(&b), "host:99");
+    assert_eq!(history_texts(&a, "ls"), vec!["ls /srv".to_owned()]);
+    assert_eq!(history_texts(&b, "ls"), vec!["ls /var".to_owned()]);
+}
+
+#[test]
+fn switching_the_history_switch_off_stops_collecting_and_clears_the_module_history() {
+    let (mut pane, remote) = at_prompt();
+    run_line(&mut pane, &remote, "ls /srv");
+    assert_eq!(history_stats(&pane).entries, 1);
+    pane.assist.set_history_enabled(false);
+    assert_eq!(history_stats(&pane).entries, 0, "关掉即清空");
+    run_line(&mut pane, &remote, "ls /var");
+    assert_eq!(history_stats(&pane).entries, 0, "关着时不采集");
+    pane.assist.set_history_enabled(true);
+    run_line(&mut pane, &remote, "ls /opt");
+    assert_eq!(history_texts(&pane, "ls"), vec!["ls /opt".to_owned()]);
 }

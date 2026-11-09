@@ -16,6 +16,7 @@
 
 pub mod cells;
 pub mod echo;
+pub mod history;
 pub mod integration;
 pub mod state;
 pub mod text_index;
@@ -23,6 +24,7 @@ pub mod write;
 
 pub use cells::{read_input_line, CellKind, InputCell, InputLine, ReadError, MAX_TRACKED_BYTES};
 pub use echo::{EchoModel, EchoVerdict};
+pub use history::{HistoryHit, HistoryStore, Provenance, Recorded, RejectedBecause};
 pub use state::{
     AcceptRefusal, DesyncReason, HandoffKey, InputAnchor, InputOrigin, InputState, InputTracker,
     KeyClass, MarkAnchor, MarkKind, Phase, RequestIdentity, RestrictionKind, Restrictions,

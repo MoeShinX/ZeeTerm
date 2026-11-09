@@ -2041,7 +2041,9 @@ impl TerminalWorkspace {
     /// 广播只作用于它所在的标签；模态框（粘贴确认、右键菜单）只挡住活动标签的聚焦窗格。
     fn sync_assist_restrictions(&mut self, active: Option<usize>) {
         let locked = crate::app_lock::is_locked();
-        let enabled = crate::app_prefs::cached().terminal_assist_enabled;
+        let prefs = crate::app_prefs::cached();
+        let (enabled, history_enabled) =
+            (prefs.terminal_assist_enabled, prefs.terminal_assist_history);
         let modal = self.pending_paste.is_some() || self.context_menu.is_some();
         let now = Instant::now();
         for (index, tab) in self.tabs.items_mut().iter_mut().enumerate() {
@@ -2050,6 +2052,7 @@ impl TerminalWorkspace {
             let foreground = Some(index) == active;
             for (pane_index, pane) in tab.panes.iter_mut().enumerate() {
                 pane.assist.set_broadcast_revision(revision, now);
+                pane.assist.set_history_enabled(history_enabled);
                 pane.set_assist_restrictions(
                     locked,
                     broadcast,
