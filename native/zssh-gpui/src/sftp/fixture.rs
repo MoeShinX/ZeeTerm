@@ -71,6 +71,14 @@ pub(super) fn entries(dir: &str) -> Vec<DirEntry> {
             None,
             base + 3 * day,
         ),
+        // 断链（目标不存在）：截图里和上面那个正常链接对照。
+        entry(
+            dir,
+            "old-release",
+            FileKind::Symlink { target: None },
+            None,
+            base + 3 * day + 3_600,
+        ),
         entry(
             dir,
             "app.tar.gz",
@@ -130,6 +138,21 @@ mod tests {
         assert!(a.iter().all(|e| e.path.starts_with("/srv/www/")));
         assert!(b.iter().all(|e| e.path.starts_with("/srv/www/releases/")));
         assert!(a.iter().any(|e| e.name == "big.bin"));
+    }
+
+    #[test]
+    fn the_fixture_has_one_working_and_one_broken_symlink() {
+        use zssh_core::sftp::FileKind;
+        let rows = entries("/srv/www");
+        let links: Vec<_> = rows
+            .iter()
+            .filter_map(|e| match &e.kind {
+                FileKind::Symlink { target } => Some(target.is_some()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(links.iter().filter(|ok| **ok).count(), 1);
+        assert_eq!(links.iter().filter(|ok| !**ok).count(), 1);
     }
 
     #[test]
