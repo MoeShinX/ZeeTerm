@@ -277,7 +277,7 @@ impl AgentChatDemo {
                 row.child(
                     div()
                         .text_xs()
-                        .text_color(cx.theme().warning)
+                        .text_color(Tokens::current(cx).caution)
                         .child(t(ChatMsg::NoHostsInLibrary)),
                 )
             })
@@ -285,7 +285,7 @@ impl AgentChatDemo {
                 row.child(
                     div()
                         .text_xs()
-                        .text_color(cx.theme().warning)
+                        .text_color(Tokens::current(cx).caution)
                         .child(t(ChatMsg::NoHostHint)),
                 )
             })

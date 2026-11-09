@@ -11,6 +11,7 @@ use gpui_kit::*;
 
 use super::{AgentChatDemo, redact_paths};
 use crate::agent_setup::{self, AgentKind, Availability, InstallState};
+use crate::app_theme::Tokens;
 use crate::menu_kit;
 
 use crate::i18n::{Msg, t};
@@ -125,7 +126,7 @@ impl AgentChatDemo {
     pub(super) fn unavailable_view(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let status = self.status.get(self.agent);
         let muted = cx.theme().muted_foreground;
-        let warning = cx.theme().warning;
+        let caution = Tokens::current(cx).caution;
         let centered = |children: Vec<AnyElement>| {
             v_flex()
                 .id("ai-unavailable")
@@ -164,7 +165,7 @@ impl AgentChatDemo {
                     children.push(
                         div()
                             .text_xs()
-                            .text_color(warning)
+                            .text_color(caution)
                             .child(redact_paths(reason))
                             .into_any_element(),
                     );
@@ -197,7 +198,7 @@ impl AgentChatDemo {
                     children.push(
                         div()
                             .text_xs()
-                            .text_color(warning)
+                            .text_color(caution)
                             .child(redact_paths(&hint))
                             .into_any_element(),
                     );
@@ -210,7 +211,7 @@ impl AgentChatDemo {
     /// 顶部的两条提示：版本过低（仍可用，带"下载 / 去设置"）、登录状态不确定（只提示，不拦着用）。
     pub(super) fn agent_banners(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let status = self.status.get(self.agent);
-        let warning = cx.theme().warning;
+        let caution = Tokens::current(cx).caution;
         let mut out: Vec<AnyElement> = Vec::new();
         if status.availability() == Availability::TooOld
             && let Some(install) = status.found()
@@ -230,7 +231,7 @@ impl AgentChatDemo {
                     .items_center()
                     .justify_between()
                     .text_xs()
-                    .text_color(warning)
+                    .text_color(caution)
                     .child(format!(
                         "{}{}{}",
                         t(AgentUiMsg::TooOldPrefix),
@@ -254,7 +255,7 @@ impl AgentChatDemo {
                     .px_3()
                     .py_1()
                     .text_xs()
-                    .text_color(warning)
+                    .text_color(caution)
                     .child(redact_paths(hint))
                     .into_any_element(),
             );

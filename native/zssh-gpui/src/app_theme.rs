@@ -798,11 +798,7 @@ impl Tokens {
             selection: rgb(skin.terminal.selection),
             dot_connected: rgb(DOT_CONNECTED),
             dot_connecting: rgb(DOT_CONNECTING),
-            caution: rgb(if dark {
-                DOT_CONNECTING
-            } else {
-                CAUTION_ON_LIGHT
-            }),
+            caution: rgb(caution_hex(skin)),
             dot_disconnected: rgb(DOT_DISCONNECTED),
             dot_idle: rgb(DOT_IDLE),
         }
@@ -1014,6 +1010,26 @@ pub fn mix(top: u32, bottom: u32, amount: f32) -> u32 {
         out = (out << 8) | value;
     }
     out
+}
+
+/// 警示文字色（Tokens::caution）按皮肤算。深色皮肤用亮琥珀；浅色皮肤从深琥珀 [`CAUTION_ON_LIGHT`]
+/// 出发，在底色 / 卡片色 / 淡底色（AI 面板的确认卡就铺淡底色）上有一个读不到 [`MUTED_MIN_CONTRAST`]
+/// 就朝黑色加深一点，直到三种底上都够。固定一个色值做不到：浅色皮肤的底色偏黄、偏紫、偏灰，
+/// 同一个琥珀色在其中几个（Catppuccin Latte、Solarized Light……）上只有 4.1 ~ 4.4 : 1。
+pub fn caution_hex(skin: &Skin) -> u32 {
+    if skin.dark {
+        return DOT_CONNECTING;
+    }
+    let ui = skin.ui;
+    let readable = |hex: u32| {
+        [ui.background, ui.surface, ui.subtle]
+            .iter()
+            .all(|bg| contrast(hex, *bg) >= MUTED_MIN_CONTRAST)
+    };
+    (0..=20)
+        .map(|step| mix(0x000000, CAUTION_ON_LIGHT, step as f32 * 0.02))
+        .find(|hex| readable(*hex))
+        .unwrap_or(CAUTION_ON_LIGHT)
 }
 
 fn luminance(hex: u32) -> f32 {
@@ -1473,6 +1489,64 @@ mod tests {
                     contrast(ink.faint, bg)
                 );
             }
+        }
+    }
+
+    /// AI 面板的提示文字（工具组里的失败摘要、重试提示、确认卡标题……）用 `tokens.caution`，不用
+    /// 组件库主题里的 `warning`：后者在所有皮肤里都是亮琥珀 `DOT_CONNECTING`，浅色底上几乎看不见。
+    /// 面板实际铺的底：主题的 background / tab_bar（= background）、确认卡的 muted（= subtle），
+    /// 以及卡片色；`caution` 在每个皮肤的这三种底上都要读得清。
+    #[test]
+    fn the_ai_panel_caution_colour_is_readable_on_every_skin() {
+        for skin in SKINS {
+            let tokens = Tokens::for_skin(skin);
+            let caution = caution_hex(skin);
+            assert_eq!(tokens.caution, rgb(caution), "{}", skin.id);
+            for (name, bg) in [
+                ("底色", skin.ui.background),
+                ("卡片色", skin.ui.surface),
+                ("淡底色", skin.ui.subtle),
+            ] {
+                let got = contrast(caution, bg);
+                assert!(
+                    got >= MUTED_MIN_CONTRAST,
+                    "{} 的警示色 {caution:06X} 在{name}上只有 {got:.2} : 1",
+                    skin.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_old_component_warning_colour_is_unreadable_on_light_skins() {
+        // 对照：组件库的 `warning`（= 亮琥珀）在浅色底上读不清，这条证明 AI 面板改用 caution 有必要。
+        for skin in SKINS.iter().filter(|skin| !skin.dark) {
+            assert!(
+                contrast(DOT_CONNECTING, skin.ui.background) < MUTED_MIN_CONTRAST,
+                "{}",
+                skin.id
+            );
+        }
+    }
+
+    #[test]
+    fn caution_only_darkens_a_light_skin_as_far_as_it_has_to() {
+        // 本来就读得清的皮肤保持原来的深琥珀；不够的才朝黑色加深，而且离原色不远（仍是琥珀色）。
+        for skin in SKINS.iter().filter(|skin| !skin.dark) {
+            let got = caution_hex(skin);
+            let fine = [skin.ui.background, skin.ui.surface, skin.ui.subtle]
+                .iter()
+                .all(|bg| contrast(CAUTION_ON_LIGHT, *bg) >= MUTED_MIN_CONTRAST);
+            if fine {
+                assert_eq!(got, CAUTION_ON_LIGHT, "{}", skin.id);
+            } else {
+                assert_ne!(got, CAUTION_ON_LIGHT, "{}", skin.id);
+                let [r, g, b] = [(got >> 16) & 0xFF, (got >> 8) & 0xFF, got & 0xFF];
+                assert!(r > g && g > b, "{} 加深后不再是琥珀色：{got:06X}", skin.id);
+            }
+        }
+        for skin in SKINS.iter().filter(|skin| skin.dark) {
+            assert_eq!(caution_hex(skin), DOT_CONNECTING, "{}", skin.id);
         }
     }
 

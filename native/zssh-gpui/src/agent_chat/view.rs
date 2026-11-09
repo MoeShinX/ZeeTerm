@@ -611,7 +611,7 @@ impl AgentChatDemo {
         let status_color = match card.status {
             ToolStatus::Done | ToolStatus::Answered => cx.theme().success,
             ToolStatus::Failed | ToolStatus::Stopped => cx.theme().danger,
-            ToolStatus::AwaitingApproval => cx.theme().warning,
+            ToolStatus::AwaitingApproval => Tokens::current(cx).caution,
             ToolStatus::Running => cx.theme().muted_foreground,
         };
         let output_id = format!("agent-chat-output-{message_index}-{tool_index}");
@@ -648,7 +648,7 @@ impl AgentChatDemo {
                 row.child(
                     div()
                         .text_xs()
-                        .text_color(cx.theme().warning)
+                        .text_color(Tokens::current(cx).caution)
                         .child(t(ChatMsg::TargetUnknown)),
                 )
             })
@@ -785,13 +785,13 @@ impl AgentChatDemo {
                     .p_2()
                     .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
                     .border_1()
-                    .border_color(cx.theme().warning)
+                    .border_color(Tokens::current(cx).caution)
                     .bg(cx.theme().muted)
                     .child(
                         div()
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(cx.theme().warning)
+                            .text_color(Tokens::current(cx).caution)
                             .child(t(ChatMsg::NeedsConfirm)),
                     )
                     .child(
@@ -1002,7 +1002,7 @@ impl AgentChatDemo {
                         .min_w_0()
                         .text_xs()
                         .text_color(if failed > 0 {
-                            cx.theme().warning
+                            Tokens::current(cx).caution
                         } else {
                             cx.theme().muted_foreground
                         })
@@ -1064,7 +1064,7 @@ impl AgentChatDemo {
                         div()
                             .id("agent-chat-retrying")
                             .text_xs()
-                            .text_color(cx.theme().warning)
+                            .text_color(Tokens::current(cx).caution)
                             .child(text),
                     )
                 })
@@ -1102,7 +1102,7 @@ pub(super) fn tokenway_card(
         .p_2()
         .rounded(::gpui::px(crate::app_theme::CARD_RADIUS))
         .border_1()
-        .border_color(cx.theme().warning)
+        .border_color(Tokens::current(cx).caution)
         .child(
             div()
                 .flex_1()
@@ -1417,7 +1417,7 @@ impl AgentChatDemo {
                 .text_color(if notice.error {
                     cx.theme().danger
                 } else {
-                    cx.theme().warning
+                    Tokens::current(cx).caution
                 })
                 .child(SelectableText::new(
                     ("agent-chat-notice-text", index * 1000 + notice_index),
