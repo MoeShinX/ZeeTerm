@@ -73,7 +73,7 @@ const SECRET: &[&str] = &[
     "kubectl create secret generic x --from-literal=password=abc",
     "env FOO=1 BAR_SECRET=abc ./run.sh",
     // 带凭据的 URL
-    "git clone https://user:hunter2@github.com/org/repo.git",
+    "git clone https://user:hunter2@example.com/org/repo.git",
     "curl https://user:hunter2@example.com/path",
     "psql postgres://app:hunter2@db:5432/app",
     "redis-cli -u redis://:hunter2@cache:6379",
@@ -83,9 +83,9 @@ const SECRET: &[&str] = &[
     "curl \"https://api.example.com/v1?a=1&api_key=abc\"",
     "curl 'https://x.example.com/?password=abc'",
     // 令牌形态
-    "echo ghp_abcdefghijklmnopqrstuvwxyz0123456789",
-    "echo github_pat_11ABCDEFG0123456789_abcdefghijklmnop",
-    "export X=sk-abcdefghijklmnopqrstuvwxyz",
+    "echo ghp_fakeabcdefghijklmnopqrstu0123456789",
+    "echo github_pat_fake11ABCDEFG0123456789_abcdefgh",
+    "export X=sk-fakeabcdefghijklmnopqrstuvwxyz",
     "aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE",
     "echo xoxb-1234567890-abcdefghij",
     "git remote add o https://oauth2:glpat-abcdefghijklmnopqr@gitlab.example.com/x.git",
@@ -121,8 +121,8 @@ const PLAIN: &[&str] = &[
     "git add -p",
     "git commit --author=\"Ann <ann@example.com>\" -m wip",
     "git log --author=ann",
-    "git clone git@github.com:org/repo.git",
-    "git clone ssh://git@github.com/org/repo.git",
+    "git clone git@example.com:org/repo.git",
+    "git clone ssh://git@example.com/org/repo.git",
     "git clone https://github.com/org/repo.git",
     "ps -p 1234",
     "kill -9 1234",
@@ -205,7 +205,7 @@ fn reasons_name_the_rule_that_fired() {
         Some(SensitiveReason::CredentialUrl)
     );
     assert_eq!(
-        sensitivity("echo ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
+        sensitivity("echo ghp_fakeabcdefghijklmnopqrstu0123456789"),
         Some(SensitiveReason::TokenShape)
     );
 }
