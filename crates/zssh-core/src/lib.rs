@@ -14,6 +14,7 @@ pub mod sftp;
 pub mod ssh;
 pub mod store;
 pub mod sync;
+pub mod terminal_assist;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod updater;
