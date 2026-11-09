@@ -787,3 +787,172 @@ fn suggestions_need_marks_and_a_working_integration_and_the_switch_on() {
     pane.set_assist_restrictions(false, false, false, false);
     assert!(!pane.assist.suggestions_available(), "总开关关着");
 }
+
+// ---- 接受候选（P4 的接入点）：写入结果、高延迟、超时、锁屏 ----
+
+use zssh_core::terminal_assist::AcceptRefusal;
+
+fn typed_prefix() -> (Pane, Remote) {
+    let (mut pane, remote) = at_prompt();
+    pane.write_as(b"git st", WriteOrigin::TypedText);
+    assert_eq!(confirmed(&pane), "git st");
+    assert_eq!(pane.assist.phase(), Phase::Input);
+    (pane, remote)
+}
+
+#[test]
+fn accepting_sends_only_the_suffix_never_a_carriage_return_and_confirms_by_the_screen() {
+    let (mut pane, remote) = typed_prefix();
+    let id = pane.assist.request_identity();
+    assert_eq!(
+        pane.accept_suggestion("atus", &id),
+        Ok(WriteOutcome::Queued)
+    );
+    let sent = remote.sent();
+    assert_eq!(sent.last().unwrap(), &b"atus".to_vec(), "只有后缀");
+    assert!(
+        sent.iter().all(|chunk| !chunk.contains(&b'\r')),
+        "接受不发回车：{sent:?}"
+    );
+    // 同步回环把 "atus" 回显出来：屏幕确认之后才算 confirmed。
+    assert_eq!(confirmed(&pane), "git status");
+    assert_eq!(pane.assist.phase(), Phase::Input);
+}
+
+#[test]
+fn accepting_does_not_pretend_the_suffix_is_confirmed_before_the_echo_and_survives_high_latency() {
+    let (mut pane, remote) = typed_prefix();
+    remote.set_echo(false);
+    let id = pane.assist.request_identity();
+    pane.accept_suggestion("atus", &id).unwrap();
+    assert_eq!(pane.assist.phase(), Phase::AwaitingEcho);
+    assert_eq!(confirmed(&pane), "git st", "不提前改成已确认");
+    assert_eq!(pane.assist.tracker().state().predicted_text, "git status");
+    // 高延迟：回显分两块到。
+    later(&mut pane, Duration::from_secs(2));
+    assert_eq!(pane.assist.phase(), Phase::AwaitingEcho);
+    remote.output(&mut pane, b"at");
+    assert_eq!(confirmed(&pane), "git stat");
+    assert_eq!(pane.assist.phase(), Phase::AwaitingEcho);
+    remote.output(&mut pane, b"us");
+    assert_eq!(confirmed(&pane), "git status");
+    assert_eq!(pane.assist.phase(), Phase::Input);
+}
+
+#[test]
+fn an_accepted_suffix_that_never_echoes_times_out_without_any_compensation() {
+    let (mut pane, remote) = typed_prefix();
+    remote.set_echo(false);
+    let id = pane.assist.request_identity();
+    pane.accept_suggestion("atus", &id).unwrap();
+    later(&mut pane, Duration::from_secs(6));
+    assert_eq!(pane.assist.phase(), Phase::Desynced);
+    assert_eq!(
+        pane.assist.tracker().state().desync_reason,
+        Some(DesyncReason::EchoTimeout)
+    );
+    let sent = remote.sent();
+    assert_eq!(
+        sent.last().unwrap(),
+        &b"atus".to_vec(),
+        "超时之后没有再发任何字节（退格、重试、补偿文本都不发）：{sent:?}"
+    );
+    assert!(!pane.assist.tracker().can_accept());
+}
+
+#[test]
+fn a_stale_identity_or_a_changed_line_sends_nothing() {
+    let (mut pane, remote) = typed_prefix();
+    let before = remote.sent().len();
+    let stale = pane.assist.request_identity();
+    pane.write_as(b"a", WriteOrigin::TypedText);
+    assert_eq!(
+        pane.accept_suggestion("tus", &stale),
+        Err(AcceptRefusal::StaleRequest)
+    );
+    assert_eq!(remote.sent().len(), before + 1, "只有那个字符，没有后缀");
+    // 新请求被更新的请求顶掉。
+    let first = pane.assist.request_identity();
+    let _second = pane.assist.request_identity();
+    assert_eq!(
+        pane.accept_suggestion("tus", &first),
+        Err(AcceptRefusal::StaleRequest)
+    );
+    // 在途写入还没确认时不能接受。
+    remote.set_echo(false);
+    pane.write_as(b"t", WriteOrigin::TypedText);
+    let id = pane.assist.request_identity();
+    assert_eq!(
+        pane.accept_suggestion("us", &id),
+        Err(AcceptRefusal::NotInInput)
+    );
+}
+
+#[test]
+fn accepting_while_locked_not_live_or_with_a_full_queue_reports_and_never_pretends() {
+    // 锁屏：不发，状态机暂停。
+    let (mut pane, remote) = typed_prefix();
+    let id = pane.assist.request_identity();
+    let before = remote.sent().len();
+    crate::app_lock::set_locked(true);
+    let outcome = pane.accept_suggestion("atus", &id);
+    crate::app_lock::set_locked(false);
+    assert_eq!(outcome, Ok(WriteOutcome::Rejected(RejectReason::Locked)));
+    assert_eq!(remote.sent().len(), before);
+    assert_eq!(pane.assist.phase(), Phase::Suspended);
+    assert_eq!(pane.assist.tracker().state().predicted_text, "");
+
+    // 不是 Live。
+    let (mut offline, remote) = typed_prefix();
+    let id = offline.assist.request_identity();
+    let before = remote.sent().len();
+    offline.state = PaneState::Disconnected;
+    assert_eq!(
+        offline.accept_suggestion("atus", &id),
+        Ok(WriteOutcome::Rejected(RejectReason::NotLive))
+    );
+    assert_eq!(remote.sent().len(), before);
+
+    // 队列满：本地拒绝，失同步，预测里不留这个后缀。
+    let (mut full, remote) = typed_prefix();
+    let id = full.assist.request_identity();
+    remote.set_outcome(WriteOutcome::Rejected(RejectReason::QueueFull));
+    assert_eq!(
+        full.accept_suggestion("atus", &id),
+        Ok(WriteOutcome::Rejected(RejectReason::QueueFull))
+    );
+    assert_eq!(full.assist.phase(), Phase::Desynced);
+    assert_eq!(full.assist.tracker().state().predicted_text, "git st");
+
+    // 传输失败（可能已部分写入）：失同步，不重试后缀。
+    let (mut broken, remote) = typed_prefix();
+    let id = broken.assist.request_identity();
+    let before = remote.sent().len();
+    remote.set_outcome(WriteOutcome::TransportFailed);
+    assert_eq!(
+        broken.accept_suggestion("atus", &id),
+        Ok(WriteOutcome::TransportFailed)
+    );
+    assert_eq!(broken.assist.phase(), Phase::Desynced);
+    remote.set_outcome(WriteOutcome::Queued);
+    later(&mut broken, Duration::from_secs(10));
+    assert_eq!(remote.sent().len(), before, "不自动重试");
+}
+
+#[test]
+fn accepting_is_refused_while_composing_or_after_the_shell_took_the_line_over() {
+    let (mut pane, _remote) = typed_prefix();
+    let id = pane.assist.request_identity();
+    pane.assist.on_ime_preedit(true, Instant::now());
+    assert_eq!(
+        pane.accept_suggestion("atus", &id),
+        Err(AcceptRefusal::Composing)
+    );
+    let (mut tabbed, _remote) = typed_prefix();
+    tabbed.write_as(b"\t", WriteOrigin::Key(KeyClass::Handoff(HandoffKey::Tab)));
+    let id = tabbed.assist.request_identity();
+    assert_eq!(
+        tabbed.accept_suggestion("atus", &id),
+        Err(AcceptRefusal::NotInInput)
+    );
+}

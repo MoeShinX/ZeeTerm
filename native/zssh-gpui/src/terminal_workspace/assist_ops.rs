@@ -12,8 +12,9 @@ use std::time::Instant;
 
 use zssh_core::terminal_assist::integration::{HANDSHAKE_TIMEOUT, ShellKind};
 use zssh_core::terminal_assist::{
-    HandoffKey, InputCell, InputTracker, IntentOrigin, KeyClass, MarkAnchor, MarkKind, Phase,
-    RestrictionKind, ScreenSource, ScreenView, TrackerContext, WriteOutcome, WriteSource,
+    AcceptRefusal, HandoffKey, InputCell, InputTracker, IntentOrigin, KeyClass, MarkAnchor,
+    MarkKind, Phase, RequestIdentity, RestrictionKind, ScreenSource, ScreenView, TrackerContext,
+    WriteOutcome, WriteSource,
 };
 use zssh_session::{CoreFilter, SessionPump};
 use zssh_terminal::{LineCellKind, ShellMarkKind};
@@ -342,6 +343,26 @@ impl PaneAssist {
         }
     }
 
+    /// 发候选请求之前取请求身份（P4）：结果回来和接受时都要用 [`InputTracker::is_current`] 重新核对。
+    #[allow(dead_code)] // P4：候选请求的接入点，这一版只有测试在用
+    pub(crate) fn request_identity(&mut self) -> RequestIdentity {
+        self.tracker.identity()
+    }
+
+    /// 接受候选前的登记（P4）：校验全部通过才返回本地序号，状态进入 AwaitingEcho。
+    #[allow(dead_code)] // P4：候选请求的接入点，这一版只有测试在用
+    pub(crate) fn begin_accept(
+        &mut self,
+        suffix: &str,
+        id: &RequestIdentity,
+        now: Instant,
+    ) -> Result<u64, AcceptRefusal> {
+        if !self.enabled {
+            return Err(AcceptRefusal::NotInInput);
+        }
+        self.tracker.begin_accept(suffix, id, now)
+    }
+
     /// 发送之后：报告结果。
     pub(crate) fn after_write(
         &mut self,
@@ -445,6 +466,34 @@ impl super::Pane {
             integration: self.assist.integration(),
             suggestions: self.assist.suggestions_available(),
         }
+    }
+
+    /// 接受一个候选（P4 的接入点）：只把 `suffix`（后缀）发给 shell，不发回车，也不提前把它当成已确认。
+    ///
+    /// 顺序和 [`Self::write_as`] 一样（先登记再发送再报告结果）。接受前最后核对一遍锁屏和窗格状态，
+    /// 再让状态机核对请求身份、输入起点、光标位置等全部条件（[`InputTracker::begin_accept`]）；
+    /// 任何一项不满足就一个字节都不发。已经排进发送队列的字节无法撤回，所以锁屏时只是不再发新的。
+    /// `Ok` 里是发送结果：被拒绝 / 传输失败都会让状态机失同步，**不会重试、不会补发退格或补偿文本**。
+    #[allow(dead_code)] // P4：候选列表接受入口，这一版只有测试在用
+    pub(super) fn accept_suggestion(
+        &mut self,
+        suffix: &str,
+        id: &zssh_core::terminal_assist::RequestIdentity,
+    ) -> Result<WriteOutcome, AcceptRefusal> {
+        if self.state != super::PaneState::Live {
+            return Ok(WriteOutcome::Rejected(zssh_session::RejectReason::NotLive));
+        }
+        if crate::app_lock::is_locked() {
+            self.assist.note_locked(Instant::now());
+            return Ok(WriteOutcome::Rejected(zssh_session::RejectReason::Locked));
+        }
+        let now = Instant::now();
+        let seq = self.assist.begin_accept(suffix, id, now)?;
+        let outcome = self.backend.send_write(suffix.as_bytes().to_vec());
+        self.assist
+            .after_write(WriteOrigin::Untracked, Some(seq), outcome, now);
+        self.poll_events();
+        Ok(outcome)
     }
 
     /// 往这个窗格发临时集成脚本。调用方（界面）已经让用户确认过"窗格停在空闲提示符"。
