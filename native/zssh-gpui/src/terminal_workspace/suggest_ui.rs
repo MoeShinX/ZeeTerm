@@ -241,6 +241,23 @@ impl TerminalWorkspace {
         changed
     }
 
+    /// 调试驱动：聚焦窗格现在展示的候选文字。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_suggest_texts(&self) -> Vec<String> {
+        self.pane()
+            .and_then(|pane| pane.assist.suggest_view())
+            .map(|view| view.items.iter().map(|item| item.text.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// 调试驱动：选择模式里选中了第几条。
+    #[cfg(debug_assertions)]
+    pub(crate) fn dev_suggest_selected(&self) -> Option<usize> {
+        self.pane()
+            .and_then(|pane| pane.assist.suggest_view())
+            .and_then(|view| view.selected)
+    }
+
     /// 设置页改了命令建议的开关：马上套用到所有窗格，不等 60 ms 的节拍。
     /// 关掉自动建议会立即收起浮层和选择模式；关掉历史采集会清空内存里已有的历史。
     pub(crate) fn apply_assist_prefs(&mut self) {

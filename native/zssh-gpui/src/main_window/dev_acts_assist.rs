@@ -8,7 +8,13 @@
 //! - `assist_disable`：点「停用本次集成」；
 //! - `assert_assist:<closed|status|confirm>`：弹窗现在在哪一步；
 //! - `assert_assist_text:<文字>`：状态说明（含上一个动作的提示）里有这段文字；
-//! - `assert_assist_integration:<off|handshake|active|failed>`：聚焦窗格的临时集成进度。
+//! - `assert_assist_integration:<off|handshake|active|failed>`：聚焦窗格的临时集成进度；
+//! - `assist_select`：点「选择建议」（状态栏 / 浮层标题条的入口，已在选择模式里就是退出）；
+//! - `assist_clear:<current|all>`：设置里的「清除当前目标 / 清除全部」；
+//! - `assist_pref:<auto|history>:<on|off>`：设置里的两个开关（自动建议 / 记录命令历史）；
+//! - `assert_suggest:<数量>`：聚焦窗格现在展示的候选条数（0 = 没有浮层）；`assert_suggest_text:<文字>`：候选里有这条命令；
+//!   `assert_suggest_mode:<on|off>`：现在是不是在选择模式；`assert_suggest_selected:<序号|none>`：选中了第几条（从 0 数）。
+//!   候选要等输入稳定约 80 ms 才出现，这几个断言遇到"还没有"时会继续等（`Pending`）。
 
 #[cfg(debug_assertions)]
 mod real {
@@ -31,6 +37,13 @@ mod real {
         "assert_assist",
         "assert_assist_text",
         "assert_assist_integration",
+        "assist_select",
+        "assist_clear",
+        "assist_pref",
+        "assert_suggest",
+        "assert_suggest_text",
+        "assert_suggest_mode",
+        "assert_suggest_selected",
     ];
 
     pub fn is_known(name: &str) -> bool {
@@ -151,7 +164,86 @@ mod real {
                     Err(format!("临时集成是「{have}」，不是「{arg}」"))
                 }
             }
+            "assist_select" => {
+                this.assist_select_clicked(window, cx);
+                Ok(Outcome::Done)
+            }
+            "assist_clear" => {
+                match arg {
+                    "current" => this.assist_clear_history(false, cx),
+                    "all" => this.assist_clear_history(true, cx),
+                    _ => return Err("参数只能是 current 或 all".to_owned()),
+                }
+                Ok(Outcome::Done)
+            }
+            "assist_pref" => {
+                let (which, value) = arg.split_once(':').ok_or("要写成 auto:on 这样")?;
+                let on = match value {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err("值只能是 on 或 off".to_owned()),
+                };
+                match which {
+                    "auto" => this.set_assist_enabled(on, window, cx),
+                    "history" => this.set_assist_history(on, window, cx),
+                    _ => return Err("开关只能是 auto 或 history".to_owned()),
+                }
+                Ok(Outcome::Done)
+            }
+            "assert_suggest" => {
+                let want: usize = arg.parse().map_err(|_| "要给一个数量".to_owned())?;
+                let have = this.workspace.read(cx).dev_suggest_texts().len();
+                settled(have == want, have == 0 && want > 0, || {
+                    format!("现在有 {have} 条候选，不是 {want}")
+                })
+            }
+            "assert_suggest_text" => {
+                let texts = this.workspace.read(cx).dev_suggest_texts();
+                settled(
+                    texts.iter().any(|text| text == arg),
+                    texts.is_empty(),
+                    || "候选里没有这条命令".to_owned(),
+                )
+            }
+            "assert_suggest_mode" => {
+                let on = this.workspace.read(cx).suggest_in_select_mode();
+                match arg {
+                    "on" | "off" => settled(on == (arg == "on"), false, || {
+                        format!("选择模式现在是{}", if on { "开" } else { "关" })
+                    }),
+                    _ => Err("参数只能是 on 或 off".to_owned()),
+                }
+            }
+            "assert_suggest_selected" => {
+                let have = this.workspace.read(cx).dev_suggest_selected();
+                let want = match arg {
+                    "none" => None,
+                    other => Some(
+                        other
+                            .parse::<usize>()
+                            .map_err(|_| "要给序号或 none".to_owned())?,
+                    ),
+                };
+                settled(have == want, false, || {
+                    format!("选中的是 {have:?}，不是 {want:?}")
+                })
+            }
             _ => Err(format!("未实现的动作 {name}")),
+        }
+    }
+
+    /// 断言结果：满足就完成；不满足但"还可能出现"（候选要等输入稳定）就继续等；否则报错。
+    fn settled(
+        ok: bool,
+        keep_waiting: bool,
+        why: impl FnOnce() -> String,
+    ) -> Result<Outcome, String> {
+        if ok {
+            Ok(Outcome::Done)
+        } else if keep_waiting {
+            Ok(Outcome::Pending)
+        } else {
+            Err(why())
         }
     }
 }

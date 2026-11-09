@@ -15,6 +15,10 @@ const SGA: u8 = 3;
 
 /// 读 `ZSSH_FAKE_TELNET_PORT` 并起监听线程；变量没设或端口占用都只是不起，不影响启动。
 pub fn spawn_from_env() {
+    // ZSSH_FAKE_TELNET_MARKS=1：登录后的提示符带 OSC 133 输入行标记（A 提示符开始 / B 输入起点 / C 命令开始 / D 命令结束），
+    // 让命令建议的窗口级场景有一个"提供标记的 shell"。没设就和以前完全一样。
+    let marks =
+        crate::dev_hooks::var("ZSSH_FAKE_TELNET_MARKS").is_some_and(|raw| raw.trim() == "1");
     let Some(port) = crate::dev_hooks::var("ZSSH_FAKE_TELNET_PORT")
         .and_then(|raw| raw.trim().parse::<u16>().ok())
     else {
@@ -30,7 +34,7 @@ pub fn spawn_from_env() {
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             std::thread::spawn(move || {
-                let _ = serve(stream);
+                let _ = serve_with(stream, marks);
             });
         }
     });
@@ -43,7 +47,13 @@ enum Stage {
     Shell,
 }
 
-pub(crate) fn serve(mut stream: TcpStream) -> std::io::Result<()> {
+#[cfg(test)]
+pub(crate) fn serve(stream: TcpStream) -> std::io::Result<()> {
+    serve_with(stream, false)
+}
+
+/// `marks` 为真时，shell 阶段的提示符和命令输出带 OSC 133 标记（见 [`spawn_from_env`]）。
+pub(crate) fn serve_with(mut stream: TcpStream, marks: bool) -> std::io::Result<()> {
     stream.write_all(&[IAC, WILL, ECHO, IAC, WILL, SGA])?;
     stream.write_all("ZeeTerm 假 Telnet 设备（调试用）\r\nlogin: ".as_bytes())?;
     let mut stage = Stage::User;
@@ -84,14 +94,31 @@ pub(crate) fn serve(mut stream: TcpStream) -> std::io::Result<()> {
                         }
                         Stage::Password => {
                             stage = Stage::Shell;
-                            stream.write_all(b"\r\nlogin ok\r\ndevice# ")?;
+                            if marks {
+                                stream.write_all(
+                                    b"\r\nlogin ok\r\n\x1b]133;A\x07device# \x1b]133;B\x07",
+                                )?;
+                            } else {
+                                stream.write_all(b"\r\nlogin ok\r\ndevice# ")?;
+                            }
                         }
                         Stage::Shell => {
                             if text.trim() == "quit" {
                                 stream.write_all("再见\r\n".as_bytes())?;
                                 return Ok(());
                             }
-                            stream.write_all(format!("你输入了：{text}\r\ndevice# ").as_bytes())?;
+                            if marks {
+                                stream.write_all(
+                                    format!(
+                                        "\x1b]133;C\x07你输入了：{text}\r\n\x1b]133;D;0\x07\x1b]133;A\x07device# \x1b]133;B\x07"
+                                    )
+                                    .as_bytes(),
+                                )?;
+                            } else {
+                                stream.write_all(
+                                    format!("你输入了：{text}\r\ndevice# ").as_bytes(),
+                                )?;
+                            }
                         }
                     }
                 }
@@ -144,5 +171,38 @@ mod tests {
         assert!(text.contains("login ok"), "{text}");
         assert!(text.contains("你输入了：show version"), "{text}");
         assert!(!text.contains("secret"), "密码不回显：{text}");
+        assert!(
+            !text.contains("\x1b]133"),
+            "默认不带 OSC 133 标记：{text:?}"
+        );
+    }
+
+    #[test]
+    fn with_marks_the_prompt_and_each_command_carry_osc_133() {
+        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                let _ = serve_with(stream, true);
+            }
+        });
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        client.write_all(b"admin\rsecret\rshow\rquit\r").unwrap();
+        let mut reader = BufReader::new(client);
+        let mut raw = Vec::new();
+        while reader.read_until(b'\n', &mut raw).unwrap_or(0) > 0 {}
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let at = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("缺 {needle:?}: {text:?}"))
+        };
+        // 登录后第一个提示符：A 在提示符前，B 在提示符后；命令：C 在输出前，D 在输出后，然后新的 A / B。
+        assert!(at("\x1b]133;A\x07device# \x1b]133;B\x07") < at("\x1b]133;C\x07"));
+        assert!(at("\x1b]133;C\x07") < at("你输入了：show"));
+        assert!(at("你输入了：show") < at("\x1b]133;D;0\x07"));
+        assert_eq!(text.matches("\x1b]133;B\x07").count(), 2, "{text:?}");
     }
 }
