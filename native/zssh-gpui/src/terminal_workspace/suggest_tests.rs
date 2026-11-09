@@ -247,6 +247,44 @@ fn a_search_in_flight_from_before_a_clear_is_discarded() {
 }
 
 #[test]
+fn a_finished_search_dropped_for_a_stale_history_searches_again_without_new_input() {
+    let (mut pane, _remote) = prompt_with_history();
+    pane.assist.set_quick_sources(&Arc::new(vec![QuickSource {
+        text: "git remote -v".into(),
+        excluded: false,
+    }]));
+    pane.assist.defer_search_jobs();
+    type_text(&mut pane, "gi");
+    let clock = Clock::new();
+    clock.settle(&mut pane);
+    assert_eq!(pane.assist.searches_started(), 1);
+    // 检索已经算完（历史 + 快捷命令），结果在通道里还没被取走；这时别的工作区清掉了这个目标的历史。
+    assert_eq!(pane.assist.run_deferred_jobs(), 1);
+    let target = pane.assist.tracker().context().target.clone();
+    let cleared = zssh_core::terminal_assist::history::lock(&super::assist_ops::shared_history())
+        .clear_target(&target);
+    assert!(cleared > 0);
+    // 下一拍收到旧结果：丢掉，不展示。
+    clock.tick(&mut pane, 20_000);
+    assert!(shown(&pane).is_empty(), "旧历史不展示：{:?}", shown(&pane));
+    // 不再打字：输入稳定之后为同一个输入重新检索一次。
+    clock.tick(&mut pane, 30_000);
+    clock.tick(&mut pane, 40_000);
+    assert_eq!(
+        pane.assist.searches_started(),
+        2,
+        "丢掉旧结果之后要重新检索，不能等用户再打字"
+    );
+    assert_eq!(pane.assist.run_deferred_jobs(), 1);
+    clock.tick(&mut pane, 50_000);
+    assert_eq!(
+        shown(&pane),
+        vec!["git remote -v".to_owned()],
+        "仍然有效的快捷命令照常出现，清掉的历史不再出现"
+    );
+}
+
+#[test]
 fn a_request_in_flight_dies_when_the_input_revision_changes() {
     let (mut pane, _remote) = prompt_with_history();
     pane.assist.defer_search_jobs();
@@ -498,6 +536,44 @@ fn escape_closes_a_shown_list_but_still_goes_to_the_program() {
     type_text(&mut pane, "t");
     Clock::new().settle(&mut pane);
     assert_eq!(shown(&pane).len(), 2);
+}
+
+/// 窗格里画不下列表：候选留着，但不能进入选择模式、不能被键盘选中或填入，按键都交给终端；
+/// 已经在选择模式里的随之退出；空间恢复后照常可用。
+#[test]
+fn candidates_that_cannot_be_drawn_take_no_keys_and_cannot_be_accepted() {
+    let (mut pane, _remote) = prompt_with_history();
+    type_text(&mut pane, "gi");
+    Clock::new().settle(&mut pane);
+    assert_eq!(shown(&pane).len(), 2);
+    assert!(pane.assist.enter_select_mode());
+    pane.assist.move_selection(true);
+    assert_eq!(pane.assist.selected_index(), Some(0));
+
+    pane.assist.set_suggest_room(false);
+    assert!(!pane.assist.in_select_mode(), "看不见了：退出选择模式");
+    assert_eq!(pane.assist.selected_index(), None, "旧选择清掉");
+    assert_eq!(shown(&pane).len(), 2, "候选保留");
+    assert!(!pane.assist.enter_select_mode());
+    assert!(
+        !pane.suggest_key("ctrl-alt-s", false, false, true),
+        "绑定键不进入选择模式，交给终端"
+    );
+    assert!(!pane.assist.in_select_mode());
+    for key in ["down", "up", "tab", "enter"] {
+        assert!(!pane.suggest_key(key, true, false, false), "{key} 交给终端");
+    }
+    assert!(
+        !pane.suggest_key("escape", true, false, false),
+        "Esc 交给前台程序"
+    );
+    assert_eq!(
+        pane.assist.plan_accept(0).err(),
+        Some(super::assist_ops::SuggestRefusal::Hidden)
+    );
+
+    pane.assist.set_suggest_room(true);
+    assert!(pane.assist.enter_select_mode(), "空间恢复：照常可以选择");
 }
 
 /// 显式进入选择模式后，列表拿到了键盘：Esc 归它，收起列表并被消费，不发给 shell。

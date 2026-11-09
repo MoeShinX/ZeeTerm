@@ -4389,6 +4389,7 @@ impl Render for TerminalWorkspace {
         }
         self.pane_geom = geoms;
         self.layout = layout.clone();
+        self.sync_suggest_room(&layout);
 
         if self.tabs.active().is_none() {
             return v_flex()

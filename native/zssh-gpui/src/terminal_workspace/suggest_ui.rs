@@ -173,6 +173,12 @@ pub(crate) fn place(
     }
 }
 
+/// 光标在 `cursor_y` 时，高 `pane_h` 的窗格里画不画得下浮层（标题加至少一行候选）。
+/// 和 [`place`] 用同一套规则（只看竖直方向，宽度不影响能画几行）。
+pub(crate) fn overlay_fits(cursor_y: f32, cell_h: f32, pane_h: f32) -> bool {
+    place(0.0, cursor_y, cell_h, 1, MIN_W, MAX_W + PAD * 2.0, pane_h).visible_rows > 0
+}
+
 /// 只画得下 `visible` 行时从第几行开始画：保证键盘选中的那一行在可见范围里（没有选中就从头画）。
 pub(crate) fn visible_window_start(selected: Option<usize>, visible: usize, total: usize) -> usize {
     if visible == 0 || total <= visible {
@@ -248,6 +254,25 @@ pub(crate) fn binding_text(keystroke: &::gpui::Keystroke) -> Option<String> {
 }
 
 impl TerminalWorkspace {
+    /// 每帧排完版后：告诉活动标签的聚焦窗格，光标这里画不画得下候选浮层。画不下时列表不显示，
+    /// 也不能进入选择模式、不能用键盘选或填入（不然方向键和 Enter 会选中、填入看不见的候选）。
+    pub(super) fn sync_suggest_room(&mut self, layout: &split_tree::Layout) {
+        let cell_h = self.cell_height;
+        let Some(tab) = self.tabs.active_mut() else {
+            return;
+        };
+        let focused = tab.active_pane;
+        let Some(pane) = tab.panes.get_mut(focused) else {
+            return;
+        };
+        let Some(rect) = layout.rect_of(pane.id) else {
+            return;
+        };
+        let cursor_y = PANE_PAD + pane.snapshot.cursor_row as f32 * cell_h;
+        let room = pane.snapshot.display_offset == 0 && overlay_fits(cursor_y, cell_h, rect.h);
+        pane.assist.set_suggest_room(room);
+    }
+
     pub(crate) fn suggest_in_select_mode(&self) -> bool {
         self.pane().is_some_and(|pane| pane.assist.in_select_mode())
     }

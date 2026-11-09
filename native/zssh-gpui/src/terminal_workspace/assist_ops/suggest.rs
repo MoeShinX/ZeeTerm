@@ -35,6 +35,8 @@ pub(crate) enum SuggestRefusal {
     Sensitive,
     /// 状态机不让接受。
     Accept(AcceptRefusal),
+    /// 窗格里放不下列表（一行候选都画不出来）：看不见的候选不能被选、被填入。
+    Hidden,
 }
 
 /// 已经核对过、正在展示的一批候选。
@@ -68,6 +70,9 @@ pub(crate) struct SuggestState {
     shown: Option<Shown>,
     selected: Option<usize>,
     select_mode: bool,
+    /// 光标这里放不下浮层（连标题加一行候选都画不出来），由工作区每帧按窗格几何告诉。
+    /// 放不下时候选照样保留（窗格变大就重新出现），但不能进入选择模式、不能被键盘选中或填入。
+    no_room: bool,
     quick: Arc<Vec<QuickSource>>,
     /// 测试里让检索任务停在这里，由测试决定什么时候跑（模拟在途请求）。
     #[cfg(test)]
@@ -172,6 +177,15 @@ impl PaneAssist {
         self.suggest.dismiss();
     }
 
+    /// 工作区每帧按窗格几何告诉：光标这里画不画得下浮层（至少标题加一行候选）。
+    /// 画不下就退出选择模式、清掉选择，之后按键照常交给终端；候选留着，空间够了再出现。
+    pub(crate) fn set_suggest_room(&mut self, room: bool) {
+        self.suggest.no_room = !room;
+        if !room {
+            self.exit_select_mode();
+        }
+    }
+
     pub(crate) fn exit_select_mode(&mut self) {
         self.suggest.select_mode = false;
         self.suggest.selected = None;
@@ -181,7 +195,6 @@ impl PaneAssist {
         self.suggest.select_mode
     }
 
-    /// 现在有没有资格生成候选（见模块说明）。
     /// 现在的历史数据源：共享历史的清除修订 + 本窗格的历史开关。
     fn history_source(&self) -> HistorySource {
         (
@@ -212,6 +225,7 @@ impl PaneAssist {
         }
     }
 
+    /// 现在有没有资格生成候选（见模块说明）。
     fn suggest_eligible(&self, live: bool) -> bool {
         if !(live && self.suggest.active && self.enabled && self.suggestions_available()) {
             return false;
@@ -314,10 +328,13 @@ impl PaneAssist {
         source: HistorySource,
         items: Vec<Candidate>,
     ) {
-        if !self.tracker.is_current(&id)
-            || self.tracker.state().confirmed_text != typed
-            || source != self.history_source()
-        {
+        if !self.tracker.is_current(&id) || self.tracker.state().confirmed_text != typed {
+            return;
+        }
+        if source != self.history_source() {
+            // 结果是按清除之前（或开关变化之前）的历史算的：丢掉，并让同一个输入重新检索一次。
+            // 输入没变，不复位计时就永远不会再检索，连仍然有效的快捷命令也不出现。
+            self.suggest.cancel_all();
             return;
         }
         let items: Vec<Candidate> = items
@@ -349,9 +366,17 @@ impl PaneAssist {
         })
     }
 
-    /// 显式进入选择模式：需要有有效的候选，并且现在能接受。初始仍不选中。
+    /// 用户看得见、能操作的候选：有效，并且窗格里画得下。键盘选择、进入选择模式、Esc 都看这个。
+    fn interactive_view(&self) -> Option<SuggestView<'_>> {
+        if self.suggest.no_room {
+            return None;
+        }
+        self.suggest_view()
+    }
+
+    /// 显式进入选择模式：需要有看得见的有效候选，并且现在能接受。初始仍不选中。
     pub(crate) fn enter_select_mode(&mut self) -> bool {
-        if self.suggest_view().is_none() || !self.tracker.can_accept() {
+        if self.interactive_view().is_none() || !self.tracker.can_accept() {
             return false;
         }
         self.suggest.select_mode = true;
@@ -361,7 +386,7 @@ impl PaneAssist {
 
     /// 选择模式里上下移动。第一次按下：↓ 选第一条、↑ 选最后一条；到头回绕。
     pub(crate) fn move_selection(&mut self, down: bool) {
-        let Some(count) = self.suggest_view().map(|view| view.items.len()) else {
+        let Some(count) = self.interactive_view().map(|view| view.items.len()) else {
             return;
         };
         if count == 0 {
@@ -385,6 +410,9 @@ impl PaneAssist {
             .shown
             .as_ref()
             .ok_or(SuggestRefusal::NothingShown)?;
+        if self.suggest.no_room {
+            return Err(SuggestRefusal::Hidden);
+        }
         if !self.tracker.is_current(&shown.id)
             || self.tracker.state().confirmed_text != shown.typed
             || shown.source != self.history_source()
@@ -427,7 +455,7 @@ impl PaneAssist {
             self.tracker.release_accept_latch(key);
         }
         if self.suggest.select_mode {
-            if self.suggest_view().is_none() {
+            if self.interactive_view().is_none() {
                 self.exit_select_mode();
             } else if is_bound && !is_held {
                 // 再按一次绑定键 = 退出选择模式；这个组合在本上下文里归建议所有，不交给 shell。
@@ -444,7 +472,7 @@ impl PaneAssist {
         }
         // 只是显示着的列表没有拿到键盘：Esc 收起它，但照样交给前台程序（vi 模式的 shell、
         // 把 Esc 当 Meta 前缀的用法都靠这一下）。只有显式进入选择模式后 Esc 才归列表、被消费。
-        if plain && key == "escape" && self.suggest_view().is_some() {
+        if plain && key == "escape" && self.interactive_view().is_some() {
             self.suggest.dismiss();
         }
         KeyDecision::Pass

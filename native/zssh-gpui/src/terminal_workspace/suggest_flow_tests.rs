@@ -5,16 +5,17 @@
 //! 输入行标记由测试通过会话事件注入（和真实远端发来的一模一样）。
 
 // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
+use super::assist_ops::SuggestRefusal;
 use super::suggest_ui::{
-    HEADER_H, OverlayModel, ROW_H, binding_text, bound_key_matches, content_width, overlay_height,
-    overlay_model, place,
+    HEADER_H, OverlayModel, ROW_H, binding_text, bound_key_matches, content_width, overlay_fits,
+    overlay_height, overlay_model, place,
 };
 use super::{Pane, PaneState, Tab, TerminalWorkspace};
 use crate::app_prefs::AppPrefs;
 use crate::settings_store::AppSettings;
 use ::gpui::{
     AppContext as _, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent,
-    PlatformInput, TestAppContext, WindowHandle, point, px,
+    PlatformInput, TestAppContext, WindowHandle, point, px, size,
 };
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -236,6 +237,29 @@ impl Harness {
             });
         }
         self.draw(cx);
+    }
+
+    /// 把窗口（也就是唯一一个窗格）改成这么大，排两次版让量到的区域生效。
+    fn resize(&self, cx: &mut TestAppContext, w: f32, h: f32) {
+        cx.simulate_window_resize(self.window.into(), size(px(w), px(h)));
+        self.draw(cx);
+        self.draw(cx);
+    }
+
+    /// 按工作区现在的几何，聚焦窗格的光标这里画不画得下浮层。
+    fn overlay_has_room(&self, cx: &mut TestAppContext) -> bool {
+        self.window
+            .update(cx, |workspace, _, _| {
+                let cell_h = workspace.cell_height;
+                let pane = workspace.pane().expect("pane");
+                let rect = workspace.layout.rect_of(pane.id).expect("rect");
+                overlay_fits(
+                    8.0 + pane.snapshot.cursor_row as f32 * cell_h,
+                    cell_h,
+                    rect.h,
+                )
+            })
+            .expect("window")
     }
 
     fn sent(&self) -> Vec<Vec<u8>> {
@@ -846,6 +870,83 @@ fn the_bound_key_enters_select_mode_when_candidates_exist_and_is_the_terminals_o
     term.named(cx, "ctrl-alt-s");
     assert!(!term.select_mode(cx));
     assert_eq!(term.sent().len(), before + 1);
+}
+
+#[gpui::test]
+fn a_pane_too_short_for_one_row_cannot_select_or_fill_in_hidden_candidates(
+    cx: &mut TestAppContext,
+) {
+    let prefs = AppPrefs {
+        terminal_assist_select_key: "ctrl-alt-s".to_owned(),
+        ..AppPrefs::default()
+    };
+    let term = Harness::open_with(cx, prefs);
+    // 窗格是分屏允许的最小高度。改尺寸之后要等新的提示符标记，输入跟踪才重新可靠。
+    term.resize(cx, 800.0, split_tree_min_height());
+    term.output(
+        cx,
+        b"
+]133;A$ ]133;B",
+    );
+    term.history_and_typed(cx);
+    assert!(!term.overlay_has_room(cx), "前提：这个高度一行候选都画不下");
+    assert!(
+        !term.shown(cx).is_empty(),
+        "前提：候选本身是有的，只是画不下"
+    );
+
+    term.window
+        .update(cx, |workspace, _, cx| {
+            assert!(
+                !workspace.suggest_toggle_select(cx),
+                "状态栏入口：看不见列表时不能进入选择模式"
+            );
+        })
+        .expect("window");
+    assert!(!term.select_mode(cx));
+    assert_eq!(
+        term.with_pane(cx, |pane| pane.assist.plan_accept(0).err()),
+        Some(SuggestRefusal::Hidden),
+        "看不见的候选不能被填入"
+    );
+    let before = term.sent().len();
+    term.named(cx, "ctrl-alt-s");
+    assert!(!term.select_mode(cx), "绑定键：看不见列表时不进入选择模式");
+    assert_eq!(
+        term.sent()[before..].to_vec(),
+        vec![vec![0x13]],
+        "绑定键照常发给终端"
+    );
+    term.named(cx, "down");
+    assert_eq!(term.sent().len(), before + 2, "方向键照常发给终端");
+    assert_eq!(term.with_pane(cx, |p| p.assist.selected_index()), None);
+    assert!(
+        !term.sent()[before..]
+            .iter()
+            .any(|bytes| bytes == b"t status"),
+        "没有填入看不见的候选"
+    );
+
+    // 窗格恢复：新的提示符上同样的输入，列表画得下，入口照常可用。
+    term.resize(cx, 800.0, 600.0);
+    term.output(
+        cx,
+        b"
+]133;A$ ]133;B",
+    );
+    term.type_text(cx, "gi");
+    term.settle(cx);
+    assert!(term.overlay_has_room(cx));
+    term.window
+        .update(cx, |workspace, _, cx| {
+            assert!(workspace.suggest_toggle_select(cx));
+        })
+        .expect("window");
+    assert!(term.select_mode(cx));
+}
+
+fn split_tree_min_height() -> f32 {
+    crate::split_tree::MIN_PANE_HEIGHT
 }
 
 #[gpui::test]
