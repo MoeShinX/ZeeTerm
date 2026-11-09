@@ -23,9 +23,15 @@ use super::compose_history::{self, Nav};
 use super::modal::{Confirm, ConfirmAction, Modal};
 use super::nav::MainView;
 use super::quick_commands::{self, QuickCommand};
-use crate::app_theme::Tokens;
+use crate::app_theme::{CONTROL_RADIUS, Tokens};
 use crate::icons::Ico;
 use crate::menu_kit;
+
+/// 输入组外框的上下边框各 1px：固定高度时输入框要比栏的内容区矮这么多。
+const COMPOSE_GROUP_BORDER: f32 = 2.0;
+
+/// 标签和发送按钮（24px 高）比输入组底边抬高这么多，正好和最后一行文字居中对齐（行高 18 + 内边距）。
+const COMPOSE_ROW_LIFT: f32 = 4.0;
 
 /// 拖动栏上沿时记下的起点。
 #[derive(Clone, Copy, Debug)]
@@ -1043,7 +1049,7 @@ impl MainWindow {
     fn render_compose_bar(
         &mut self,
         tokens: &Tokens,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let entity = cx.entity();
@@ -1081,7 +1087,7 @@ impl MainWindow {
                 .px_2()
                 .flex()
                 .items_center()
-                .rounded_md()
+                .rounded_full()
                 .when(toggle_disabled, |d| d.opacity(0.4))
                 .when(!toggle_disabled, |d| d.cursor_pointer())
                 .when(effective_all, |d| {
@@ -1129,7 +1135,7 @@ impl MainWindow {
                 .justify_center()
                 .size(px(24.0))
                 .flex_none()
-                .rounded_md()
+                .rounded_full()
                 .when(!can_send, |d| d.opacity(0.4).text_color(muted))
                 .when(can_send, |d| {
                     d.cursor_pointer()
@@ -1149,10 +1155,44 @@ impl MainWindow {
                     entity.update(cx, |this, cx| this.compose_submit(false, window, cx));
                 })
         };
+        // 输入框、目标标签、发送按钮收进同一个圆角输入组：边框和圆角画在外容器上，输入框自己不再画边框 / 底色
+        // （`appearance(false)`），所以聚焦时只有外面一圈强调色边框，不会出现双框。多行时输入框撑高外容器，
+        // 标签和按钮贴着最后一行（`items_end`），不压在文字上。
+        let focused = self
+            .bars
+            .compose
+            .read(cx)
+            .focus_handle(cx)
+            .contains_focused(window, cx);
         let input = Textarea::new(&self.bars.compose)
+            .appearance(false)
+            .bordered(false)
             .flex_1()
             .min_w_0()
-            .when(fixed, |t| t.h(px((height - COMPOSE_BAR_CHROME).max(24.0))));
+            .when(fixed, |t| {
+                t.h(px(
+                    (height - COMPOSE_BAR_CHROME - COMPOSE_GROUP_BORDER).max(24.0)
+                ))
+            });
+        let group = h_flex()
+            .id("compose-group")
+            .flex_1()
+            .min_w_0()
+            .items_end()
+            .gap_1()
+            .pr_1()
+            .overflow_hidden()
+            .rounded(px(CONTROL_RADIUS))
+            .border_1()
+            .border_color(if focused {
+                tokens.accent
+            } else {
+                tokens.field_border
+            })
+            .bg(tokens.background)
+            .child(input)
+            .child(target.mb(px(COMPOSE_ROW_LIFT)))
+            .child(send.mb(px(COMPOSE_ROW_LIFT)));
 
         h_flex()
             .id("compose-bar")
@@ -1161,7 +1201,6 @@ impl MainWindow {
             .w_full()
             .px_1p5()
             .py_0p5()
-            .gap_1()
             .items_end()
             .text_xs()
             .border_t_1()
@@ -1169,9 +1208,7 @@ impl MainWindow {
             .bg(tokens.background)
             .when(fixed, |d| d.h(px(height)))
             .child(handle)
-            .child(input)
-            .child(target)
-            .child(send)
+            .child(group)
             .into_any_element()
     }
 }
