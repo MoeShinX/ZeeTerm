@@ -2,8 +2,11 @@
 //! `ss` / `netstat` / `/proc/net` 看到的 TCP / UDP 连接。
 //!
 //! - 采集在 `zssh_core::ssh::connections`（一次 exec，5 秒超时）：点开和点「刷新」各执行一次，**不自动
-//!   轮询**；可以打开「每 5 秒自动刷新」开关（默认关）。走当前标签已有的那条 SSH 连接，不新建连接、
+//!   轮询**；可以打开「每 2 秒自动刷新」开关（默认关）。走当前标签已有的那条 SSH 连接，不新建连接、
 //!   不往终端里打字；
+//! - 「上行 / 下行」两列是每条 TCP 连接两次采集之间的平均速率（内核累计字节数的差除以时间差，见
+//!   `compute_rates`），所以窗口刚打开的第一次采集全是「—」；为了不让用户干等，第一次采集成功后 2 秒会
+//!   自动补采一次（不管自动刷新开没开）；
 //! - 筛选 / 搜索 / 排序都是 core 里的纯函数，这里只画：表格用虚拟列表，两万行也不卡；
 //! - 拿不到进程信息时进程列是「—」，表格上方一行淡色提示；服务器不支持（不是 Linux）时对话框里写清原因。
 //!
@@ -29,10 +32,10 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use zssh_core::ssh::{
-    ConnFilter, ConnectionsError, ConnectionsReport, DisconnectError, Endpoint, KillError,
-    KillSignal, NetConn, NetProto, ProcRisk, ProcRow, ProcessHint, ProcessReport, ProcessesError,
-    SortKey, SortSpec, disconnect_check, disconnect_connection, kill_check, kill_verdict,
-    menu_processes, same_endpoint, terminate_process, view_indices,
+    ConnFilter, ConnRate, ConnectionsError, ConnectionsReport, DisconnectError, Endpoint,
+    KillError, KillSignal, NetConn, NetProto, ProcRisk, ProcRow, ProcessHint, ProcessReport,
+    ProcessesError, SortKey, SortSpec, compute_rates, disconnect_check, disconnect_connection,
+    kill_check, kill_verdict, menu_processes, same_endpoint, terminate_process, view_indices,
 };
 
 use super::MainWindow;
@@ -106,7 +109,11 @@ enum ConnMsg {
     HeaderLocal,
     HeaderRemote,
     HeaderState,
+    HeaderUp,
+    HeaderDown,
     HeaderProcess,
+    NoValue,
+    NoCounters,
     Retry,
     Loading,
     Empty,
@@ -157,7 +164,7 @@ impl Msg for ConnMsg {
                 "当前连接已经不是打开这个窗口时的服务器，已取消，请重新打开所有网络连接。"
             }
             Self::Title => "所有网络连接",
-            Self::AutoRefresh => "每 5 秒自动刷新",
+            Self::AutoRefresh => "每 2 秒自动刷新",
             Self::Refreshing => "刷新中…",
             Self::Refresh => "刷新",
             Self::FilterAll => "全部",
@@ -174,7 +181,11 @@ impl Msg for ConnMsg {
             Self::HeaderLocal => "本地地址",
             Self::HeaderRemote => "远端地址",
             Self::HeaderState => "状态",
+            Self::HeaderUp => "上行",
+            Self::HeaderDown => "下行",
             Self::HeaderProcess => "进程",
+            Self::NoValue => "—",
+            Self::NoCounters => " · 当前来源没有流量计数，速率不可用",
             Self::Retry => "重试",
             Self::Loading => "正在读取网络连接…",
             Self::Empty => "没有符合条件的连接",
@@ -234,7 +245,7 @@ impl Msg for ConnMsg {
                 "The current connection is no longer the server this window was opened for. Cancelled; reopen All Network Connections."
             }
             Self::Title => "All Network Connections",
-            Self::AutoRefresh => "Auto-refresh every 5 seconds",
+            Self::AutoRefresh => "Auto-refresh every 2 seconds",
             Self::Refreshing => "Refreshing…",
             Self::Refresh => "Refresh",
             Self::FilterAll => "All",
@@ -253,7 +264,11 @@ impl Msg for ConnMsg {
             Self::HeaderLocal => "Local Address",
             Self::HeaderRemote => "Remote Address",
             Self::HeaderState => "State",
+            Self::HeaderUp => "Up",
+            Self::HeaderDown => "Down",
             Self::HeaderProcess => "Process",
+            Self::NoValue => "—",
+            Self::NoCounters => " · This source has no traffic counters; rates are unavailable",
             Self::Retry => "Retry",
             Self::Loading => "Reading network connections…",
             Self::Empty => "No matching connections",
@@ -265,15 +280,20 @@ impl Msg for ConnMsg {
 
 /// 对话框卡片的宽度。
 pub const DIALOG_WIDTH: f32 = 940.0;
-/// 自动刷新的间隔。
-const AUTO_REFRESH: Duration = Duration::from_secs(5);
+/// 自动刷新的间隔：速率是两次采集之间的平均值，2 秒一次既能看到变化又不至于给服务器添负担
+/// （一次采集是一条 exec 通道上的几条只读命令）。
+const AUTO_REFRESH: Duration = Duration::from_secs(2);
+/// 第一次采集成功后补采一次的等待：速率要两次采集才算得出来。
+const FOLLOW_UP: Duration = Duration::from_secs(2);
 const ROW_HEIGHT: f32 = 26.0;
-/// 表格各列的宽度（最后一列「进程」吃剩下的）。
-const COL_PROTO: f32 = 56.0;
-const COL_LOCAL: f32 = 250.0;
-/// 远端地址列留够一个完整的 IPv6 地址加端口。
-const COL_REMOTE: f32 = 310.0;
-const COL_STATE: f32 = 100.0;
+/// 表格各列的宽度（最后一列「进程」吃剩下的）。对话框内表格宽约 898，下面六列加起来 742，
+/// 进程列还剩 150 多：常见的 IPv4 地址加端口写得下，超长的 IPv6 地址截断并在悬停里看全文。
+const COL_PROTO: f32 = 52.0;
+const COL_LOCAL: f32 = 200.0;
+const COL_REMOTE: f32 = 240.0;
+const COL_STATE: f32 = 94.0;
+/// 上行 / 下行两列（右对齐，最宽 `1023 KB/s` 一类）。
+const COL_RATE: f32 = 78.0;
 
 // ---- 状态 ----
 
@@ -348,8 +368,14 @@ pub struct ConnectionsDialog {
     pub fetched: Option<String>,
     pub filter: ConnFilter,
     pub sort: SortSpec,
-    /// 「每 5 秒自动刷新」，默认关。
+    /// 「每 2 秒自动刷新」，默认关。
     pub auto: bool,
+    /// 每条连接的实时速率，与 `report.rows` 一一对应；算不出（第一次采集、新出现的连接……）是 `None`。
+    pub rates: Vec<Option<ConnRate>>,
+    /// 收到当前这份 `report` 的时刻：下一份结果来时，两次的间隔就是（没有服务器时间时的）速率时间差。
+    report_at: Option<Instant>,
+    /// 第一次采集成功后补采一次的时刻（见 [`FOLLOW_UP`]）；采集一开始到点就清掉。
+    follow_up: Option<Instant>,
     /// 筛选 / 搜索 / 排序之后要显示的行（下标指向 `report.rows`）。
     pub shown: Vec<usize>,
     /// 现在在等的那次采集的编号：关掉对话框再打开后，迟到的旧结果不能写进新对话框。
@@ -380,6 +406,9 @@ impl ConnectionsDialog {
             filter: ConnFilter::All,
             sort: SortSpec::default(),
             auto: false,
+            rates: Vec::new(),
+            report_at: None,
+            follow_up: None,
             shown: Vec::new(),
             generation,
             last_done: None,
@@ -396,13 +425,13 @@ impl ConnectionsDialog {
 
     fn refilter(&mut self, query: &str) {
         self.shown = match &self.report {
-            Some(report) => view_indices(&report.rows, self.filter, query, self.sort),
+            Some(report) => view_indices(&report.rows, &self.rates, self.filter, query, self.sort),
             None => Vec::new(),
         };
         self.scroll.scroll_to_item(0, ::gpui::ScrollStrategy::Top);
     }
 
-    /// 自动刷新该不该采了：开着开关、没有在采、距离上次完成已满 5 秒。
+    /// 自动刷新该不该采了：开着开关、没有在采、距离上次完成已满 [`AUTO_REFRESH`]。
     pub fn auto_due(&self, now: Instant) -> bool {
         self.auto
             && !self.loading
@@ -411,7 +440,12 @@ impl ConnectionsDialog {
                 .is_none_or(|done| now.duration_since(done) >= AUTO_REFRESH)
     }
 
-    /// 该不该再采一次：没在采，并且（自动刷新到点、或列表过时了、或到了动作之后的确认时刻）。
+    /// 第一次采集之后的那次补采到点了吗（不看自动刷新开关）。
+    pub fn follow_up_due(&self, now: Instant) -> bool {
+        self.follow_up.is_some_and(|due| now >= due)
+    }
+
+    /// 该不该再采一次：没在采，并且（自动刷新到点、补采到点、列表过时了、或到了动作之后的确认时刻）。
     pub fn refresh_due(&self, now: Instant) -> bool {
         if self.loading || self.procs_loading {
             return false;
@@ -420,7 +454,42 @@ impl ConnectionsDialog {
             .verify
             .as_ref()
             .is_some_and(|v| !v.refreshing && now >= v.due);
-        self.auto_due(now) || self.want_refresh || verify
+        self.auto_due(now) || self.follow_up_due(now) || self.want_refresh || verify
+    }
+
+    /// 开始一次采集。上一次还没回来返回 `false`（不叠成两次并发）；补采只要到点就算这一次顶掉了，
+    /// 自动刷新和补采同一拍到点也只采一次。
+    pub fn begin_refresh(&mut self, now: Instant) -> bool {
+        if self.loading {
+            return false;
+        }
+        self.loading = true;
+        self.want_refresh = false;
+        if let Some(verify) = &mut self.verify
+            && now >= verify.due
+        {
+            verify.refreshing = true;
+        }
+        if self.follow_up_due(now) {
+            self.follow_up = None;
+        }
+        true
+    }
+
+    /// 收下一份新的采集结果：用上一份算速率；这是第一份就安排一次补采。
+    pub fn accept_report(&mut self, report: ConnectionsReport, now: Instant) {
+        let first = self.report.is_none();
+        self.rates = match (&self.report, self.report_at) {
+            (Some(prev), Some(at)) => {
+                compute_rates(prev, &report, now.saturating_duration_since(at))
+            }
+            _ => vec![None; report.rows.len()],
+        };
+        self.report = Some(report);
+        self.report_at = Some(now);
+        if first {
+            self.follow_up = Some(now + FOLLOW_UP);
+        }
     }
 
     /// 确认框开着且已点了确认：对话框不能关。
@@ -474,6 +543,35 @@ pub fn hint_text(hint: ProcessHint) -> &'static str {
         ProcessHint::NotRoot => t(ConnMsg::HintNotRoot),
         ProcessHint::NoProcessSource => t(ConnMsg::HintNoProcessSource),
     }
+}
+
+/// 表格下方状态行：条数、来源、采集时间，没有流量计数时再加一句说明（速率两列都是「—」的原因）。
+pub fn summary_text(dialog: &ConnectionsDialog) -> String {
+    let total = dialog.report.as_ref().map_or(0, |r| r.rows.len());
+    let mut text = format!(
+        "{} / {}{}",
+        dialog.shown.len(),
+        total,
+        t(ConnMsg::SummarySuffix)
+    );
+    if let Some(report) = &dialog.report {
+        text.push_str(&format!(
+            "{}{}",
+            t(ConnMsg::SourcePrefix),
+            report.source.label()
+        ));
+    }
+    if let Some(at) = &dialog.fetched {
+        text.push_str(&format!("{}{at}", t(ConnMsg::FetchedPrefix)));
+    }
+    if dialog
+        .report
+        .as_ref()
+        .is_some_and(ConnectionsReport::counters_unavailable)
+    {
+        text.push_str(t(ConnMsg::NoCounters));
+    }
+    text
 }
 
 // ---- 右键菜单（纯数据，单测核对可用 / 置灰规则）----
@@ -718,15 +816,8 @@ impl MainWindow {
         let Some(Modal::Connections(dialog)) = &mut self.modal else {
             return;
         };
-        if dialog.loading {
+        if !dialog.begin_refresh(Instant::now()) {
             return;
-        }
-        dialog.loading = true;
-        dialog.want_refresh = false;
-        if let Some(verify) = &mut dialog.verify
-            && Instant::now() >= verify.due
-        {
-            verify.refreshing = true;
         }
         let generation = dialog.generation;
         cx.notify();
@@ -800,7 +891,7 @@ impl MainWindow {
                 {
                     dialog.selected = None;
                 }
-                dialog.report = Some(report);
+                dialog.accept_report(report, Instant::now());
                 dialog.error = None;
                 dialog.fetched = Some(clock_now());
                 dialog.refilter(&query);
@@ -960,7 +1051,7 @@ impl MainWindow {
     fn connections_set_auto(&mut self, on: bool, cx: &mut Context<Self>) {
         if let Some(Modal::Connections(dialog)) = &mut self.modal {
             dialog.auto = on;
-            // 刚打开开关：从现在起算 5 秒，不立刻再采一次。
+            // 刚打开开关：从现在起算 2 秒，不立刻再采一次。
             dialog.last_done = Some(Instant::now());
         }
         cx.notify();
@@ -1370,26 +1461,7 @@ impl MainWindow {
             });
 
         // 状态行：条数、来源、采集时间。
-        let summary = {
-            let total = dialog.report.as_ref().map_or(0, |r| r.rows.len());
-            let mut text = format!(
-                "{} / {}{}",
-                dialog.shown.len(),
-                total,
-                t(ConnMsg::SummarySuffix)
-            );
-            if let Some(report) = &dialog.report {
-                text.push_str(&format!(
-                    "{}{}",
-                    t(ConnMsg::SourcePrefix),
-                    report.source.label()
-                ));
-            }
-            if let Some(at) = &dialog.fetched {
-                text.push_str(&format!("{}{at}", t(ConnMsg::FetchedPrefix)));
-            }
-            text
-        };
+        let summary = summary_text(dialog);
         let hint = dialog
             .report
             .as_ref()
@@ -1452,7 +1524,11 @@ impl MainWindow {
         // 表头：点列名排序。
         let header = {
             let sort = dialog.sort;
-            let cell = |id: &'static str, label: &'static str, key: SortKey, width: Option<f32>| {
+            let cell = |id: &'static str,
+                        label: &'static str,
+                        key: SortKey,
+                        width: Option<f32>,
+                        right: bool| {
                 let entity = entity.clone();
                 let arrow = (sort.key == Some(key)).then_some(if sort.descending {
                     IconName::ArrowDown
@@ -1467,6 +1543,7 @@ impl MainWindow {
                     .h_full()
                     .px_2()
                     .cursor_pointer()
+                    .when(right, |d| d.justify_end())
                     .when_some(width, |d, w| d.w(px(w)).flex_none())
                     .when(width.is_none(), |d| d.flex_1().min_w_0())
                     .hover(move |style| style.bg(hover))
@@ -1491,30 +1568,49 @@ impl MainWindow {
                     t(ConnMsg::HeaderProto),
                     SortKey::Proto,
                     Some(COL_PROTO),
+                    false,
                 ))
                 .child(cell(
                     "conn-h-local",
                     t(ConnMsg::HeaderLocal),
                     SortKey::Local,
                     Some(COL_LOCAL),
+                    false,
                 ))
                 .child(cell(
                     "conn-h-remote",
                     t(ConnMsg::HeaderRemote),
                     SortKey::Remote,
                     Some(COL_REMOTE),
+                    false,
                 ))
                 .child(cell(
                     "conn-h-state",
                     t(ConnMsg::HeaderState),
                     SortKey::State,
                     Some(COL_STATE),
+                    false,
+                ))
+                .child(cell(
+                    "conn-h-up",
+                    t(ConnMsg::HeaderUp),
+                    SortKey::Up,
+                    Some(COL_RATE),
+                    true,
+                ))
+                .child(cell(
+                    "conn-h-down",
+                    t(ConnMsg::HeaderDown),
+                    SortKey::Down,
+                    Some(COL_RATE),
+                    true,
                 ))
                 .child(cell(
                     "conn-h-proc",
                     t(ConnMsg::HeaderProcess),
                     SortKey::Process,
                     None,
+                    false,
                 ))
         };
 
@@ -1685,6 +1781,12 @@ impl MainWindow {
                 let remote = row.remote.display();
                 let process = row.process_label();
                 let state = row.state.label();
+                let rate = dialog.rates.get(*dialog.shown.get(at)?).copied().flatten();
+                let rate_text = |pick: fn(ConnRate) -> u64| match rate {
+                    Some(rate) => crate::format::conn_rate(pick(rate)),
+                    None => t(ConnMsg::NoValue).to_owned(),
+                };
+                let (up_text, down_text) = (rate_text(|r| r.up), rate_text(|r| r.down));
                 let state_color = match row.state {
                     zssh_core::ssh::ConnState::Established => tokens.dot_connected,
                     zssh_core::ssh::ConnState::Listen => tokens.accent,
@@ -1735,6 +1837,16 @@ impl MainWindow {
                         .child(cell("conn-c-local", local, Some(COL_LOCAL)))
                         .child(cell("conn-c-remote", remote, Some(COL_REMOTE)))
                         .child(cell("conn-c-state", state, Some(COL_STATE)).text_color(state_color))
+                        .child(
+                            cell("conn-c-up", up_text, Some(COL_RATE))
+                                .text_right()
+                                .when(rate.is_none(), |d| d.text_color(tokens.text_muted)),
+                        )
+                        .child(
+                            cell("conn-c-down", down_text, Some(COL_RATE))
+                                .text_right()
+                                .when(rate.is_none(), |d| d.text_color(tokens.text_muted)),
+                        )
                         .child(
                             // 进程列：ZeeTerm 自己的连接前面带小锁，悬停说原因（同进程管理里受保护进程的锁）。
                             h_flex()
@@ -1848,10 +1960,11 @@ fn build_row_menu(
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
     use super::{
-        ConnAsk, ConnAskKind, ConnVerify, ConnVerifyKind, ConnectionsDialog, MenuAct, MenuItem,
-        RowKey, clock_now, disconnect_ask_text, disconnect_failure, disconnected_notice, hint_text,
-        kill_ask_text, row_menu,
+        ConnAsk, ConnAskKind, ConnMsg, ConnVerify, ConnVerifyKind, ConnectionsDialog, MenuAct,
+        MenuItem, RowKey, clock_now, disconnect_ask_text, disconnect_failure, disconnected_notice,
+        hint_text, kill_ask_text, row_menu, summary_text,
     };
+    use crate::i18n::Msg as _;
     use crate::main_window::processes_ui::{NoticeLevel, Warn};
     use std::time::{Duration, Instant};
     use zssh_core::ssh::{
@@ -1912,15 +2025,15 @@ mod tests {
     }
 
     #[test]
-    fn auto_refresh_waits_five_seconds_after_the_last_result_and_never_overlaps() {
+    fn auto_refresh_waits_two_seconds_after_the_last_result_and_never_overlaps() {
         let mut dialog = loaded();
         dialog.auto = true;
         let now = Instant::now();
         // 从没完成过：马上可以采。
         assert!(dialog.auto_due(now));
         dialog.last_done = Some(now);
-        assert!(!dialog.auto_due(now + Duration::from_secs(4)));
-        assert!(dialog.auto_due(now + Duration::from_secs(5)));
+        assert!(!dialog.auto_due(now + Duration::from_millis(1_900)));
+        assert!(dialog.auto_due(now + Duration::from_secs(2)));
         // 上一次还没回来：不再发。
         dialog.loading = true;
         assert!(!dialog.auto_due(now + Duration::from_secs(60)));
@@ -2484,6 +2597,174 @@ PID PPID USER %CPU %MEM RSS STAT ELAPSED COMMAND
         assert!(
             hits.is_empty(),
             "AI 工具桥 / zssh-mcp 引用了断开连接：{hits:?}"
+        );
+    }
+
+    // ---- 实时速率 ----
+
+    /// 带 tcpinfo 的 ss 输出：两条已建立的连接，第一条的已发送 / 已接收字节数和服务器时间由参数给，第二条是它的一半。
+    fn counted(now_ns: Option<u64>, sent: u64, received: u64) -> zssh_core::ssh::ConnectionsReport {
+        let now = now_ns.map_or(String::new(), |ns| format!("@@ZSSH now {ns}\n"));
+        parse_connections(&format!(
+            "@@ZSSH uid 0\n@@ZSSH source ss\n\
+             tcp ESTAB 0 0 192.0.2.1:22 198.51.100.2:5000\n\
+             tcp ESTAB 0 0 192.0.2.1:443 198.51.100.3:6000\n\
+             {now}@@ZSSH tcpinfo\n\
+             ESTAB 0 0 192.0.2.1:22 198.51.100.2:5000\n\
+             \t cubic bytes_acked:{sent} bytes_received:{received}\n\
+             ESTAB 0 0 192.0.2.1:443 198.51.100.3:6000\n\
+             \t cubic bytes_acked:{} bytes_received:{}\n",
+            sent / 2,
+            received / 2
+        ))
+        .expect("解析")
+    }
+
+    const T0: u64 = 1_700_000_000_000_000_000;
+
+    #[test]
+    fn the_first_report_has_no_rates_and_schedules_one_follow_up_two_seconds_later() {
+        let mut dialog = ConnectionsDialog::new(1, "web-1".into(), 1);
+        let now = Instant::now();
+        dialog.accept_report(counted(Some(T0), 1000, 1000), now);
+        assert_eq!(dialog.rates, [None, None], "第一次采集：没有上一份可比");
+        assert_eq!(dialog.follow_up, Some(now + Duration::from_secs(2)));
+        // 自动刷新没开也到点补采；没到点不采
+        assert!(!dialog.auto);
+        assert!(!dialog.refresh_due(now + Duration::from_millis(1_900)));
+        assert!(dialog.refresh_due(now + Duration::from_secs(2)));
+        // 第二份结果不再安排补采
+        dialog.follow_up = None;
+        dialog.accept_report(
+            counted(Some(T0 + 2_000_000_000), 3000, 5000),
+            now + Duration::from_secs(2),
+        );
+        assert_eq!(dialog.follow_up, None);
+    }
+
+    #[test]
+    fn the_second_report_gets_rates_from_server_time_or_else_from_the_local_gap() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(4);
+        // 有服务器时间：用它（2 秒），不用本地间隔（4 秒）
+        let mut dialog = ConnectionsDialog::new(1, "web-1".into(), 1);
+        dialog.accept_report(counted(Some(T0), 1000, 1000), now);
+        dialog.accept_report(counted(Some(T0 + 2_000_000_000), 3000, 5000), later);
+        let rate = dialog.rates[0].expect("有速率");
+        assert_eq!((rate.up, rate.down), (1000, 2000));
+        assert_eq!(dialog.rates[1].map(|r| (r.up, r.down)), Some((500, 1000)));
+        // 没有服务器时间：用本地两次收到结果的间隔（4 秒）
+        let mut dialog = ConnectionsDialog::new(1, "web-1".into(), 1);
+        dialog.accept_report(counted(None, 1000, 1000), now);
+        dialog.accept_report(counted(None, 3000, 5000), later);
+        let rate = dialog.rates[0].expect("有速率");
+        assert_eq!((rate.up, rate.down), (500, 1000));
+    }
+
+    #[test]
+    fn a_collection_never_overlaps_and_a_due_follow_up_is_used_up_by_whichever_collection_starts() {
+        let mut dialog = ConnectionsDialog::new(1, "web-1".into(), 1);
+        let now = Instant::now();
+        dialog.accept_report(counted(Some(T0), 1, 1), now);
+        dialog.auto = true;
+        dialog.last_done = Some(now);
+        let due = now + Duration::from_secs(2);
+        // 自动刷新和补采同一拍到点：只采一次
+        assert!(dialog.auto_due(due) && dialog.follow_up_due(due));
+        assert!(dialog.begin_refresh(due));
+        assert!(!dialog.begin_refresh(due), "上一次没回来：不再发");
+        assert!(!dialog.refresh_due(due + Duration::from_secs(60)));
+        // 回来之后补采已经用掉，不会再补一次
+        dialog.loading = false;
+        dialog.last_done = Some(due);
+        assert_eq!(dialog.follow_up, None);
+        assert!(!dialog.refresh_due(due + Duration::from_millis(500)));
+        assert!(
+            dialog.refresh_due(due + Duration::from_secs(2)),
+            "自动刷新照常"
+        );
+        // 没到点就开始的手动刷新不吃掉补采
+        let mut early = ConnectionsDialog::new(1, "web-1".into(), 1);
+        early.accept_report(counted(Some(T0), 1, 1), now);
+        assert!(early.begin_refresh(now + Duration::from_millis(500)));
+        assert_eq!(early.follow_up, Some(now + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn sorting_by_a_rate_column_uses_the_dialogs_rates_and_puts_rowless_ones_last() {
+        let mut dialog = ConnectionsDialog::new(1, "web-1".into(), 1);
+        let now = Instant::now();
+        dialog.accept_report(counted(Some(T0), 1000, 1000), now);
+        dialog.accept_report(
+            counted(Some(T0 + 2_000_000_000), 3000, 5000),
+            now + Duration::from_secs(2),
+        );
+        dialog.sort = SortSpec::default().toggled(SortKey::Down);
+        dialog.refilter("");
+        assert_eq!(dialog.shown, [0, 1], "下行大的在上");
+        dialog.sort = SortSpec::default()
+            .toggled(SortKey::Down)
+            .toggled(SortKey::Down);
+        dialog.refilter("");
+        assert_eq!(dialog.shown, [1, 0]);
+        // 第一份结果还没有速率：所有行都没有，保持采集顺序
+        let mut fresh = ConnectionsDialog::new(1, "web-1".into(), 1);
+        fresh.accept_report(counted(Some(T0), 1000, 1000), now);
+        fresh.sort = SortSpec::default().toggled(SortKey::Up);
+        fresh.refilter("");
+        assert_eq!(fresh.shown, [0, 1]);
+    }
+
+    #[test]
+    fn the_status_line_explains_missing_counters_only_when_there_are_none() {
+        let mut dialog = ConnectionsDialog::new(1, "web-1".into(), 1);
+        dialog.accept_report(counted(Some(T0), 1000, 1000), Instant::now());
+        dialog.refilter("");
+        assert!(!summary_text(&dialog).contains("流量计数"));
+        // 来源是 netstat：两列都是「—」，状态行说明原因
+        dialog.accept_report(
+            parse_connections(
+                "@@ZSSH source netstat\ntcp 0 0 192.0.2.1:22 198.51.100.2:5000 ESTABLISHED -\n",
+            )
+            .expect("解析"),
+            Instant::now(),
+        );
+        dialog.refilter("");
+        assert!(dialog.rates.iter().all(Option::is_none));
+        let text = summary_text(&dialog);
+        assert!(text.contains("来源 netstat"), "{text}");
+        assert!(text.ends_with("当前来源没有流量计数，速率不可用"), "{text}");
+        // ss 来源但内核没给字节数：同样说明
+        dialog.accept_report(
+            parse_connections("@@ZSSH source ss\ntcp ESTAB 0 0 192.0.2.1:22 198.51.100.2:5000\n")
+                .expect("解析"),
+            Instant::now(),
+        );
+        assert!(summary_text(&dialog).contains("速率不可用"));
+    }
+
+    #[test]
+    fn the_new_texts_exist_in_both_languages() {
+        assert_eq!(ConnMsg::AutoRefresh.zh(), "每 2 秒自动刷新");
+        assert_eq!(ConnMsg::AutoRefresh.en(), "Auto-refresh every 2 seconds");
+        assert_eq!(
+            (ConnMsg::HeaderUp.zh(), ConnMsg::HeaderUp.en()),
+            ("上行", "Up")
+        );
+        assert_eq!(
+            (ConnMsg::HeaderDown.zh(), ConnMsg::HeaderDown.en()),
+            ("下行", "Down")
+        );
+        assert!(ConnMsg::NoCounters.en().contains("rates are unavailable"));
+    }
+
+    #[test]
+    fn copying_a_row_does_not_include_the_rates() {
+        // 「复制整行」的格式不变（已有断言的就是这五列）。
+        let report = counted(Some(T0), 1000, 1000);
+        assert_eq!(
+            report.rows[0].tsv_line(),
+            "TCP\t192.0.2.1:22\t198.51.100.2:5000\tESTABLISHED\t—"
         );
     }
 }

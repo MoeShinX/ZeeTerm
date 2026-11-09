@@ -59,6 +59,29 @@ pub fn speed(bytes_per_sec: f64) -> String {
     }
 }
 
+/// 「所有网络连接」里每条连接的速率：`0 B/s` / `12.3 KB/s` / `4.56 MB/s`（1024 进制，三位有效数字左右，
+/// 列宽稳定）。输入是整数字节 / 秒。
+pub fn conn_rate(bytes_per_sec: u64) -> String {
+    const UNITS: [&str; 5] = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"];
+    if bytes_per_sec < 1024 {
+        return format!("{bytes_per_sec} B/s");
+    }
+    let mut value = bytes_per_sec as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    let digits = if value < 10.0 {
+        2
+    } else if value < 100.0 {
+        1
+    } else {
+        0
+    };
+    format!("{value:.digits$} {}", UNITS[unit])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,5 +115,18 @@ mod tests {
         assert_eq!(speed(5.0 * 1024.0 * 1024.0), "5.0MB/s");
         // 超过最大单位就停在 GB/s，数值继续放大。
         assert_eq!(speed(3.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0), "3072.0GB/s");
+    }
+
+    #[test]
+    fn conn_rate_has_a_space_and_about_three_significant_digits() {
+        assert_eq!(conn_rate(0), "0 B/s");
+        assert_eq!(conn_rate(1023), "1023 B/s");
+        assert_eq!(conn_rate(1024), "1.00 KB/s");
+        assert_eq!(conn_rate(12_595), "12.3 KB/s");
+        assert_eq!(conn_rate(150 * 1024), "150 KB/s");
+        assert_eq!(conn_rate(4_781_507), "4.56 MB/s");
+        assert_eq!(conn_rate(3 * 1024 * 1024 * 1024), "3.00 GB/s");
+        // 超过最大单位就停在 TB/s，数值继续放大。
+        assert_eq!(conn_rate(u64::MAX), "16777216 TB/s");
     }
 }

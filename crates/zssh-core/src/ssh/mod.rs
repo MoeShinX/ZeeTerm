@@ -31,10 +31,10 @@ pub use connection::{
     ExecCapture, ServerKey, EXEC_MAX_STREAM_BYTES, EXEC_OUTPUT_LIMIT, SCRIPT_EXEC_COMMAND,
 };
 pub use connections::{
-    collect_connections, connections_command, matches_query, parse_connections,
-    parse_ssh_connection, same_endpoint, view_indices, ConnFilter, ConnSource, ConnState,
+    collect_connections, compute_rates, connections_command, matches_query, parse_connections,
+    parse_ssh_connection, same_endpoint, view_indices, ConnFilter, ConnRate, ConnSource, ConnState,
     ConnectionsError, ConnectionsReport, Endpoint, NetConn, NetProto, ProcRef, ProcessHint,
-    SortKey, SortSpec, SshConnection, CONNECTIONS_MAX_ROWS,
+    SortKey, SortSpec, SshConnection, TcpBytes, CONNECTIONS_MAX_ROWS, RATE_MIN_INTERVAL,
 };
 pub use cwd::{parse_probe_output, pick_shell, probe_command, probe_shell_cwds, ShellCwd};
 pub use dialer::{connect_direct, BoxedStream, ByteStream, ProxyConfig, HOP_TIMEOUT};

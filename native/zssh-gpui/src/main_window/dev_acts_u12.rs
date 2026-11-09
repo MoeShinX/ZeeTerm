@@ -3,8 +3,10 @@
 //!
 //! 没有真实服务器时，用假数据喂界面（假数据走和真数据同一条解析 / 绘制路径）：
 //! - `fake_status:<@主机名|id>`：给这台主机塞一份状态采集结果（概览面板就有内容、能打开）；
-//! - `fake_conn:<ss|ss_nonroot|netstat|proc|many|unsupported|timeout|none>`：「所有连接」下一次采集拿到的东西
-//!   （`none` = 取消假数据）；地址全是文档保留段（192.0.2.x / 198.51.100.x / 203.0.113.x / 2001:db8::）；
+//! - `fake_conn:<ss|ss_nonroot|ss_rates[:步数]|netstat|proc|many|unsupported|timeout|none>`：「所有连接」下一次
+//!   采集拿到的东西（`none` = 取消假数据）；`ss_rates:N` 带 tcpinfo 字节数，N 每加 1 = 服务器时间晚 2 秒、
+//!   字节数按固定速率增长（不写 N 是 0），N 递增地刷新两次，上行 / 下行两列就有数；
+//!   地址全是文档保留段（192.0.2.x / 198.51.100.x / 203.0.113.x / 2001:db8::）；
 //! - `assert_overview:<width|layout|stored|open>:<值>`：概览面板现在的宽度 / 版式（圆环列数,系统信息列数）/
 //!   设置表里存的宽度 / 开没开；`overview_width:<像素|default>` 直接写设置表里的宽度；
 //! - `conn:<open|refresh|close|filter|search|sort|auto>[:值]`：对话框的操作（按钮走真点击，这里给键盘够不着的）；
@@ -120,7 +122,7 @@ mod real {
         };
         Some(match name {
             "fake_status" => fake_status(this, a, cx),
-            "fake_conn" => fake_conn(this, a),
+            "fake_conn" => fake_conn(this, a, &rest),
             "assert_overview" => assert_overview(this, a, &rest, cx),
             "overview_width" => overview_width(this, a, cx),
             "conn" => conn(this, a, &rest, window, cx),
@@ -351,6 +353,44 @@ udp6       0      0 fe80::1:546             :::*                                
   sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops
 ";
 
+    /// 带 tcpinfo 的 ss 输出：已建立的连接按固定速率随 `step` 增长，`step` 每加 1 = 服务器时间过了 2 秒。
+    fn ss_with_counters(step: u64) -> String {
+        const T0: u64 = 1_700_000_000_000_000_000;
+        // （上行, 下行）字节 / 秒，按已建立连接的顺序轮流用。
+        const RATES: [(u64, u64); 5] = [
+            (0, 0),
+            (1_500, 120),
+            (52_000, 3_400_000),
+            (880, 41_000),
+            (7_000_000, 650),
+        ];
+        let mut out = SS_FIXTURE.to_owned();
+        out.push_str(&format!(
+            "@@ZSSH now {}
+@@ZSSH tcpinfo
+",
+            T0 + step * 2_000_000_000
+        ));
+        let established = SS_FIXTURE
+            .lines()
+            .filter(|line| line.starts_with("tcp   ESTAB"));
+        for (i, line) in established.enumerate() {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            let (up, down) = RATES[i % RATES.len()];
+            let base = 1_000_000 * (i as u64 + 1);
+            out.push_str(&format!(
+                "ESTAB     0      0      {} {}
+	 cubic bytes_acked:{} bytes_received:{}
+",
+                words[4],
+                words[5],
+                base + up * 2 * step,
+                base / 2 + down * 2 * step
+            ));
+        }
+        out
+    }
+
     fn many() -> String {
         let mut out = String::from("@@ZSSH uid 0\n@@ZSSH source ss\n");
         for i in 0..(CONNECTIONS_MAX_ROWS + 500) {
@@ -365,10 +405,18 @@ udp6       0      0 fe80::1:546             :::*                                
         out
     }
 
-    fn fake_conn(this: &mut MainWindow, what: &str) -> Result<Outcome, String> {
+    fn fake_conn(this: &mut MainWindow, what: &str, arg: &str) -> Result<Outcome, String> {
         this.dev_fake.connections = match what {
             "ss" => Some(Ok(SS_FIXTURE.to_owned())),
             "ss_nonroot" => Some(Ok(SS_NONROOT_FIXTURE.to_owned())),
+            "ss_rates" => {
+                let step = if arg.is_empty() {
+                    0
+                } else {
+                    arg.parse().map_err(|_| "ss_rates 的步数写非负整数")?
+                };
+                Some(Ok(ss_with_counters(step)))
+            }
             "netstat" => Some(Ok(NETSTAT_FIXTURE.to_owned())),
             "proc" => Some(Ok(PROC_FIXTURE.to_owned())),
             "many" => Some(Ok(many())),
@@ -377,7 +425,8 @@ udp6       0      0 fe80::1:546             :::*                                
             "none" => None,
             _ => {
                 return Err(
-                    "fake_conn:ss|ss_nonroot|netstat|proc|many|unsupported|timeout|none".to_owned(),
+                    "fake_conn:ss|ss_nonroot|ss_rates[:步数]|netstat|proc|many|unsupported|timeout|none"
+                        .to_owned(),
                 );
             }
         };
@@ -475,8 +524,15 @@ udp6       0      0 fe80::1:546             :::*                                
                     "local" => SortKey::Local,
                     "remote" => SortKey::Remote,
                     "state" => SortKey::State,
+                    "up" => SortKey::Up,
+                    "down" => SortKey::Down,
                     "process" => SortKey::Process,
-                    _ => return Err("排序写 proto / local / remote / state / process".to_owned()),
+                    _ => {
+                        return Err(
+                            "排序写 proto / local / remote / state / up / down / process"
+                                .to_owned(),
+                        );
+                    }
                 };
                 let Some(Modal::Connections(dialog)) = &mut this.modal else {
                     return Err("连接对话框没开着".to_owned());
