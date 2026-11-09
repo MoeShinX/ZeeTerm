@@ -552,3 +552,238 @@ fn every_external_restriction_suspends_and_lifting_it_goes_back_through_unknown(
         assert_eq!(pane.assist.phase(), Phase::Input, "{kind:?}");
     }
 }
+
+// ---- 临时 Bash / Zsh 集成 ----
+
+use super::assist_ops::{IntegrationError, IntegrationState, StopOutcome};
+use zssh_core::terminal_assist::integration::{CLEANUP_COMMAND, HANDSHAKE_TIMEOUT, ShellKind};
+
+#[test]
+fn enabling_the_integration_sends_one_space_led_line_and_waits_for_the_first_prompt_mark() {
+    let (mut pane, remote) = shell_pane();
+    remote.set_echo(false);
+    // 没有任何标记：不知道停在哪儿，由用户确认（界面那一步）之后才会走到这里。
+    assert_eq!(pane.start_integration(ShellKind::Bash), Ok(()));
+    let sent = remote.sent();
+    assert_eq!(sent.len(), 1, "只发一条");
+    let line = String::from_utf8(sent[0].clone()).unwrap();
+    assert!(line.starts_with(' '), "前导空格：{line:.40}");
+    assert!(line.ends_with('\r') && line.matches('\r').count() == 1);
+    assert!(line.contains("__zeeterm_off"));
+    assert!(matches!(
+        pane.assist.integration(),
+        IntegrationState::Handshake {
+            kind: ShellKind::Bash,
+            ..
+        }
+    ));
+    assert!(!pane.assist.suggestions_available(), "没就绪不给候选");
+    // shell 执行脚本后画出下一个提示符：带着 133;B，握手完成。
+    remote.output(&mut pane, b"\r\n\x1b]133;A\x07$ \x1b]133;B\x07");
+    assert!(matches!(
+        pane.assist.integration(),
+        IntegrationState::Active {
+            kind: ShellKind::Bash
+        }
+    ));
+    assert!(pane.assist.suggestions_available());
+    assert_eq!(pane.assist.phase(), Phase::Input);
+}
+
+#[test]
+fn the_handshake_stops_after_ten_seconds_without_a_ready_mark_and_sends_nothing_more() {
+    let (mut pane, remote) = shell_pane();
+    remote.set_echo(false);
+    pane.start_integration(ShellKind::Zsh).unwrap();
+    later(&mut pane, HANDSHAKE_TIMEOUT - Duration::from_secs(1));
+    assert!(matches!(
+        pane.assist.integration(),
+        IntegrationState::Handshake { .. }
+    ));
+    later(&mut pane, HANDSHAKE_TIMEOUT + Duration::from_millis(50));
+    assert!(matches!(
+        pane.assist.integration(),
+        IntegrationState::Failed {
+            kind: ShellKind::Zsh
+        }
+    ));
+    assert!(!pane.assist.suggestions_available(), "失败后停止本地建议");
+    assert_eq!(
+        remote.sent().len(),
+        1,
+        "尚无可靠 Prompt，不自动往远端补发清理命令"
+    );
+    // 下一次用户确认空闲后可以重试。
+    assert_eq!(pane.start_integration(ShellKind::Zsh), Ok(()));
+    assert_eq!(remote.sent().len(), 2);
+}
+
+#[test]
+fn a_late_ready_mark_after_the_timeout_does_not_revive_a_failed_attempt_silently() {
+    let (mut pane, remote) = shell_pane();
+    remote.set_echo(false);
+    pane.start_integration(ShellKind::Bash).unwrap();
+    later(&mut pane, HANDSHAKE_TIMEOUT + Duration::from_secs(1));
+    assert!(matches!(
+        pane.assist.integration(),
+        IntegrationState::Failed { .. }
+    ));
+    // 标记之后到了：状态机自己仍能用（输入行标记是真的），但这次尝试已经报告过失败，不改成成功。
+    remote.output(&mut pane, b"\x1b]133;A\x07$ \x1b]133;B\x07");
+    assert!(matches!(
+        pane.assist.integration(),
+        IntegrationState::Failed { .. }
+    ));
+}
+
+#[test]
+fn enabling_is_refused_when_the_pane_is_busy_has_text_or_cannot_take_it() {
+    // 命令在运行。
+    let (mut running, remote) = at_prompt();
+    remote.output(&mut running, b"\x1b]133;C\x07");
+    assert_eq!(
+        running.start_integration(ShellKind::Bash),
+        Err(IntegrationError::Running)
+    );
+    // 输入行里已经有字：脚本会接在它后面一起执行，绝不发。
+    let (mut typed, remote) = at_prompt();
+    typed.write_as(b"rm -rf x", WriteOrigin::TypedText);
+    let before = remote.sent().len();
+    assert_eq!(
+        typed.start_integration(ShellKind::Bash),
+        Err(IntegrationError::LineNotEmpty)
+    );
+    assert_eq!(remote.sent().len(), before);
+    // 不是已连接的会话。
+    let (mut offline, remote) = at_prompt();
+    offline.state = PaneState::Disconnected;
+    assert_eq!(
+        offline.start_integration(ShellKind::Bash),
+        Err(IntegrationError::NoSession)
+    );
+    assert!(remote.sent().is_empty());
+    // 锁屏。
+    let (mut locked, remote) = at_prompt();
+    crate::app_lock::set_locked(true);
+    let result = locked.start_integration(ShellKind::Bash);
+    crate::app_lock::set_locked(false);
+    assert_eq!(result, Err(IntegrationError::Locked));
+    assert!(remote.sent().is_empty());
+    // 开关关着。
+    let (mut off, remote) = at_prompt();
+    off.set_assist_restrictions(false, false, false, false);
+    assert_eq!(
+        off.start_integration(ShellKind::Bash),
+        Err(IntegrationError::Disabled)
+    );
+    assert!(remote.sent().is_empty());
+    // 上一次还在握手。
+    let (mut twice, remote) = shell_pane();
+    remote.set_echo(false);
+    twice.start_integration(ShellKind::Bash).unwrap();
+    assert_eq!(
+        twice.start_integration(ShellKind::Bash),
+        Err(IntegrationError::Handshaking)
+    );
+    assert_eq!(remote.sent().len(), 1);
+}
+
+#[test]
+fn a_rejected_script_write_reports_the_failure_and_leaves_the_integration_off() {
+    let (mut pane, remote) = at_prompt();
+    remote.set_outcome(WriteOutcome::Rejected(RejectReason::QueueFull));
+    assert_eq!(
+        pane.start_integration(ShellKind::Bash),
+        Err(IntegrationError::WriteFailed(WriteOutcome::Rejected(
+            RejectReason::QueueFull
+        )))
+    );
+    assert_eq!(pane.assist.integration(), IntegrationState::Off);
+}
+
+#[test]
+fn the_script_never_enters_the_command_history_capture() {
+    let (mut pane, remote) = at_prompt();
+    pane.start_integration(ShellKind::Bash).unwrap();
+    remote.output(&mut pane, b"\x1b]133;C\x07");
+    let started: Vec<_> = pane
+        .assist
+        .tracker_mut()
+        .take_events()
+        .into_iter()
+        .filter(|event| matches!(event, TrackerEvent::CommandStarted { .. }))
+        .collect();
+    assert_eq!(
+        started,
+        vec![TrackerEvent::CommandStarted { command: None }],
+        "集成脚本不是用户命令，不进新历史"
+    );
+}
+
+#[test]
+fn disabling_sends_the_cleanup_only_at_an_empty_idle_prompt_otherwise_it_is_left_to_the_user() {
+    // 空闲提示符：发卸载命令，集成回到 Off。
+    let (mut pane, remote) = shell_pane();
+    pane.start_integration(ShellKind::Bash).unwrap();
+    remote.output(&mut pane, b"\r\n\x1b]133;A\x07$ \x1b]133;B\x07");
+    assert!(matches!(
+        pane.assist.integration(),
+        IntegrationState::Active { .. }
+    ));
+    let before = remote.sent().len();
+    assert_eq!(pane.stop_integration(), StopOutcome::Sent);
+    let sent = remote.sent();
+    assert_eq!(sent.len(), before + 1);
+    assert_eq!(
+        String::from_utf8(sent.last().unwrap().clone()).unwrap(),
+        format!(" {CLEANUP_COMMAND}\r")
+    );
+    assert_eq!(pane.assist.integration(), IntegrationState::Off);
+
+    // 输入行里有字：不发（会接在用户的文字后面被执行），交给用户手动。
+    let (mut typed, remote) = at_prompt();
+    typed
+        .assist
+        .begin_integration(ShellKind::Bash, Instant::now());
+    typed.write_as(b"ls", WriteOrigin::TypedText);
+    let before = remote.sent().len();
+    assert_eq!(typed.stop_integration(), StopOutcome::Manual);
+    assert_eq!(remote.sent().len(), before, "没有往远端补发任何东西");
+    assert_eq!(typed.assist.integration(), IntegrationState::Off);
+
+    // 握手失败、没有可靠 Prompt：同样不发。
+    let (mut failed, remote) = shell_pane();
+    remote.set_echo(false);
+    failed.start_integration(ShellKind::Zsh).unwrap();
+    later(&mut failed, HANDSHAKE_TIMEOUT + Duration::from_secs(1));
+    let before = remote.sent().len();
+    assert_eq!(failed.stop_integration(), StopOutcome::Manual);
+    assert_eq!(remote.sent().len(), before);
+}
+
+#[test]
+fn the_integration_ends_with_the_session() {
+    let (mut pane, remote) = shell_pane();
+    pane.start_integration(ShellKind::Bash).unwrap();
+    remote.output(&mut pane, b"\r\n\x1b]133;A\x07$ \x1b]133;B\x07");
+    assert!(matches!(
+        pane.assist.integration(),
+        IntegrationState::Active { .. }
+    ));
+    pane.disconnect("gone".into(), "gone");
+    assert_eq!(pane.assist.integration(), IntegrationState::Off);
+    assert!(!pane.assist.suggestions_available());
+    let view = pane.assist_view_for_test();
+    assert!(!view.live);
+}
+
+#[test]
+fn suggestions_need_marks_and_a_working_integration_and_the_switch_on() {
+    let (pane, _remote) = shell_pane();
+    assert!(!pane.assist.suggestions_available(), "没有标记不给候选");
+    let (pane, _remote) = at_prompt();
+    assert!(pane.assist.suggestions_available(), "原生就有标记的 shell");
+    let (mut pane, _remote) = at_prompt();
+    pane.set_assist_restrictions(false, false, false, false);
+    assert!(!pane.assist.suggestions_available(), "总开关关着");
+}

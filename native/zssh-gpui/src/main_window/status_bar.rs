@@ -28,6 +28,8 @@ pub(super) enum StatusBarMsg {
     QuickBar,
     /// 撰写栏开关的悬停提示。
     ComposeBar,
+    /// 命令建议入口的悬停提示。
+    Assist,
     /// 服务器状态块最右的「概览」入口。
     Overview,
     /// 运行时间前面那一段（后面跟 `uptime_label`）。
@@ -45,6 +47,7 @@ impl Msg for StatusBarMsg {
         match self {
             Self::QuickBar => "快捷命令栏",
             Self::ComposeBar => "撰写栏",
+            Self::Assist => "命令建议",
             Self::Overview => "概览",
             Self::UptimePrefix => "运行 ",
             Self::DisconnectedPrefix => "已断开：",
@@ -57,6 +60,7 @@ impl Msg for StatusBarMsg {
         match self {
             Self::QuickBar => "Quick Command Bar",
             Self::ComposeBar => "Compose Bar",
+            Self::Assist => "Command Suggestions",
             Self::Overview => "Overview",
             Self::UptimePrefix => "Uptime ",
             Self::DisconnectedPrefix => "Disconnected: ",
@@ -214,6 +218,7 @@ impl MainWindow {
         };
         let switches = switches_on.then(|| {
             let (quick_entity, compose_entity) = (entity.clone(), entity.clone());
+            let (assist_entity, assist_lit) = (entity.clone(), self.assist_button_lit(cx));
             let (lock_entity, lock_menu_entity) = (entity.clone(), entity.clone());
             let lock_enabled = self.lock_enabled();
             let menu_tokens = *tokens;
@@ -243,6 +248,19 @@ impl MainWindow {
                     )
                     .on_click(move |_, window, cx| {
                         compose_entity.update(cx, |this, cx| this.toggle_compose_bar(window, cx));
+                    }),
+                )
+                // 命令建议（P3）：点开是状态说明 + 本次启用 Bash / Zsh 集成 + 复制脚本。
+                .child(
+                    switch_button(
+                        "assist-switch",
+                        Ico::ListChecks,
+                        t(StatusBarMsg::Assist),
+                        assist_lit,
+                        tokens,
+                    )
+                    .on_click(move |_, window, cx| {
+                        assist_entity.update(cx, |this, cx| this.toggle_assist_dialog(window, cx));
                     }),
                 )
                 // 锁屏（V2-U26）：左键锁定（没启用时去设置里设密码），右键菜单。锁着的时候这条栏本身不画，

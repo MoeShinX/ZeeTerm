@@ -10,6 +10,7 @@
 
 use std::time::Instant;
 
+use zssh_core::terminal_assist::integration::{HANDSHAKE_TIMEOUT, ShellKind};
 use zssh_core::terminal_assist::{
     HandoffKey, InputCell, InputTracker, IntentOrigin, KeyClass, MarkAnchor, MarkKind, Phase,
     RestrictionKind, ScreenSource, ScreenView, TrackerContext, WriteOutcome, WriteSource,
@@ -128,6 +129,25 @@ fn mark_kind(kind: ShellMarkKind) -> MarkKind {
     }
 }
 
+/// 临时 shell 集成在这个窗格里的状态。默认关闭，只对当前会话生效；连接断开 / 重连就回到 `Off`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IntegrationState {
+    Off,
+    /// 脚本已经发出去，等第一个输入起点标记（最多 [`HANDSHAKE_TIMEOUT`]）。
+    Handshake {
+        kind: ShellKind,
+        since: Instant,
+    },
+    /// 收到了就绪标记。
+    Active {
+        kind: ShellKind,
+    },
+    /// 握手超时：说明失败，停止本地建议；用户确认空闲后可以重试。
+    Failed {
+        kind: ShellKind,
+    },
+}
+
 /// 每个窗格一份：输入跟踪 + 它依赖的少量窗格级状态。
 pub(crate) struct PaneAssist {
     tracker: InputTracker,
@@ -135,6 +155,7 @@ pub(crate) struct PaneAssist {
     enabled: bool,
     /// 已经处理过的 AI 注入次数（泵里的计数追上它就说明又有 AI 命令写进了终端）。
     ai_arms_seen: u64,
+    integration: IntegrationState,
 }
 
 impl PaneAssist {
@@ -143,6 +164,43 @@ impl PaneAssist {
             tracker: InputTracker::new(ctx),
             enabled: true,
             ai_arms_seen: 0,
+            integration: IntegrationState::Off,
+        }
+    }
+
+    pub(crate) fn integration(&self) -> IntegrationState {
+        self.integration
+    }
+
+    /// 开始临时集成的握手：集成世代换一代（旧的标记作废），之后收到第一个输入起点标记就算就绪。
+    pub(crate) fn begin_integration(&mut self, kind: ShellKind, now: Instant) {
+        self.tracker.on_integration_reset(now);
+        self.integration = IntegrationState::Handshake { kind, since: now };
+    }
+
+    /// 停用（或放弃）临时集成：世代再换一代，之后的标记不再被当成这次集成的就绪证据。
+    pub(crate) fn end_integration(&mut self, now: Instant) {
+        if self.integration != IntegrationState::Off {
+            self.integration = IntegrationState::Off;
+            self.tracker.on_integration_reset(now);
+        }
+    }
+
+    /// 现在有没有资格给出候选：开着、见过可靠的输入起点标记、临时集成没有失败。
+    pub(crate) fn suggestions_available(&self) -> bool {
+        self.enabled
+            && self.tracker.saw_prompt_marks()
+            && !matches!(self.integration, IntegrationState::Failed { .. })
+    }
+
+    /// 握手进度：收到就绪标记 -> Active，超时 -> Failed。
+    fn advance_handshake(&mut self, now: Instant) {
+        if let IntegrationState::Handshake { kind, since } = self.integration {
+            if self.tracker.saw_prompt_marks() {
+                self.integration = IntegrationState::Active { kind };
+            } else if now.saturating_duration_since(since) >= HANDSHAKE_TIMEOUT {
+                self.integration = IntegrationState::Failed { kind };
+            }
         }
     }
 
@@ -211,8 +269,9 @@ impl PaneAssist {
             .set_restriction(RestrictionKind::Locked, true, now);
     }
 
-    /// 断线 / 重连 / 连上：旧会话的状态全部作废。
+    /// 断线 / 重连 / 连上：旧会话的状态全部作废，临时集成随会话结束。
     pub(crate) fn on_connection_reset(&mut self, now: Instant) {
+        self.integration = IntegrationState::Off;
         self.tracker.on_connection_reset(now);
     }
 
@@ -326,6 +385,165 @@ impl PaneAssist {
                 .on_mark(mark_kind(event.mark.kind), anchor, &screen, now);
         }
         self.tracker.observe(&screen, now);
+        self.advance_handshake(now);
+    }
+}
+
+// ---- 临时 Bash / Zsh 集成：窗格和工作区的入口 ----
+
+/// 启用临时集成被拒绝的原因（界面按原因出词）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IntegrationError {
+    /// 窗格不是已连接的会话。
+    NoSession,
+    /// 设置里关掉了命令建议。
+    Disabled,
+    Locked,
+    /// 上一次启用还在握手。
+    Handshaking,
+    /// 正在执行命令：脚本不能发进一个运行中的程序。
+    Running,
+    /// 输入行里已经有没执行的文字：脚本会接在它后面一起被执行。
+    LineNotEmpty,
+    /// 脚本没能排进发送队列。
+    WriteFailed(WriteOutcome),
+}
+
+/// 停用的结果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StopOutcome {
+    /// 窗格停在空的输入行上，已把卸载命令发了过去。
+    Sent,
+    /// 没有可靠的空闲提示符，没有往远端发任何东西；用户要手动运行卸载命令。
+    Manual,
+}
+
+/// 命令建议入口弹窗要显示的东西。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AssistView {
+    pub(crate) live: bool,
+    pub(crate) enabled: bool,
+    pub(crate) phase: Phase,
+    /// 这个会话里见过输入起点标记。
+    pub(crate) marks: bool,
+    pub(crate) integration: IntegrationState,
+    pub(crate) suggestions: bool,
+}
+
+impl super::Pane {
+    #[cfg(test)]
+    pub(super) fn assist_view_for_test(&self) -> AssistView {
+        self.assist_view()
+    }
+
+    fn assist_view(&self) -> AssistView {
+        AssistView {
+            live: self.state == super::PaneState::Live && self.is_session(),
+            enabled: self.assist.enabled(),
+            phase: self.assist.phase(),
+            marks: self.assist.tracker().saw_prompt_marks(),
+            integration: self.assist.integration(),
+            suggestions: self.assist.suggestions_available(),
+        }
+    }
+
+    /// 往这个窗格发临时集成脚本。调用方（界面）已经让用户确认过"窗格停在空闲提示符"。
+    /// 这里再核对自己知道的事：运行中的程序、输入行里已经有字，都不发。
+    pub(super) fn start_integration(&mut self, kind: ShellKind) -> Result<(), IntegrationError> {
+        if self.state != super::PaneState::Live || !self.is_session() {
+            return Err(IntegrationError::NoSession);
+        }
+        if !self.assist.enabled() {
+            return Err(IntegrationError::Disabled);
+        }
+        if crate::app_lock::is_locked() {
+            return Err(IntegrationError::Locked);
+        }
+        if matches!(
+            self.assist.integration(),
+            IntegrationState::Handshake { .. }
+        ) {
+            return Err(IntegrationError::Handshaking);
+        }
+        let state = self.assist.tracker().state();
+        match state.phase {
+            Phase::Running => return Err(IntegrationError::Running),
+            Phase::Input | Phase::AwaitingEcho if !state.predicted_text.is_empty() => {
+                return Err(IntegrationError::LineNotEmpty);
+            }
+            _ => {}
+        }
+        let now = Instant::now();
+        // 先换集成世代再发：发送过程中回来的标记才算这次握手的。
+        self.assist.begin_integration(kind, now);
+        let line = format!(
+            "{}\r",
+            zssh_core::terminal_assist::integration::inject_line(kind)
+        );
+        let outcome = self.write_as(
+            line.as_bytes(),
+            WriteOrigin::Foreign(WriteSource::IntegrationScript),
+        );
+        if !outcome.is_queued() {
+            self.assist.end_integration(now);
+            return Err(IntegrationError::WriteFailed(outcome));
+        }
+        Ok(())
+    }
+
+    /// 停用临时集成。只有输入行是空的、确认停在输入行上才往远端发卸载命令；
+    /// 否则不发（不在未知状态下往 shell 里写东西），由用户手动运行卸载命令。
+    pub(super) fn stop_integration(&mut self) -> StopOutcome {
+        let state = self.assist.tracker().state();
+        let idle = self.state == super::PaneState::Live
+            && state.phase == Phase::Input
+            && state.predicted_text.is_empty();
+        self.assist.end_integration(Instant::now());
+        if !idle {
+            return StopOutcome::Manual;
+        }
+        let line = format!(
+            "{}\r",
+            zssh_core::terminal_assist::integration::cleanup_line()
+        );
+        let outcome = self.write_as(
+            line.as_bytes(),
+            WriteOrigin::Foreign(WriteSource::IntegrationScript),
+        );
+        if outcome.is_queued() {
+            StopOutcome::Sent
+        } else {
+            StopOutcome::Manual
+        }
+    }
+}
+
+impl super::TerminalWorkspace {
+    /// 聚焦窗格的命令建议状态；没有标签时是 `None`。
+    pub(crate) fn assist_view(&self) -> Option<AssistView> {
+        self.pane().map(super::Pane::assist_view)
+    }
+
+    pub(crate) fn start_integration(
+        &mut self,
+        kind: ShellKind,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> Result<(), IntegrationError> {
+        let result = match self.pane_mut() {
+            Some(pane) => pane.start_integration(kind),
+            None => Err(IntegrationError::NoSession),
+        };
+        cx.notify();
+        result
+    }
+
+    pub(crate) fn stop_integration(&mut self, cx: &mut gpui_kit::Context<Self>) -> StopOutcome {
+        let outcome = match self.pane_mut() {
+            Some(pane) => pane.stop_integration(),
+            None => StopOutcome::Manual,
+        };
+        cx.notify();
+        outcome
     }
 }
 

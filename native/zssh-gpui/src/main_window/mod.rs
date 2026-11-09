@@ -40,6 +40,7 @@ mod dev_acts_a5;
 mod dev_acts_about;
 #[cfg(debug_assertions)]
 mod dev_acts_agent;
+mod dev_acts_assist;
 #[cfg(debug_assertions)]
 mod dev_acts_c1;
 #[cfg(debug_assertions)]
@@ -96,6 +97,7 @@ pub mod dev_seed;
 pub mod dock_layout;
 mod docks;
 pub(crate) use docks::{DockRefusal, dock_label, reconnect_label};
+mod assist_ui;
 mod drag;
 mod drag_scroll;
 pub(crate) mod editor_tabs;
@@ -378,6 +380,8 @@ pub struct MainWindow {
     pub(super) modal: Option<Modal>,
     /// 查看 / 复制已保存密码前的锁屏密码验证小对话框（V2-U35）；压在 `modal` 上面，锁屏时丢掉。
     pub(super) reveal_ask: Option<reveal_ui::RevealAsk>,
+    /// 终端底部细栏「命令建议」弹出的状态说明 / 启用确认；锁屏时丢掉。
+    pub(super) assist_dialog: Option<assist_ui::AssistDialog>,
     /// 树底部属性面板现在显示哪台主机。
     pub(super) info_host: Option<i64>,
     /// 属性面板里点了小眼睛取回来的明文密码（只属于 `info_host` 那台；隐藏 / 切换 / 收起 / 锁屏都丢掉）。
@@ -623,6 +627,7 @@ impl MainWindow {
             pending_compose_text: None,
             modal: None,
             reveal_ask: None,
+            assist_dialog: None,
             info_host: None,
             info_secret: None,
             info_collapse_gen: 0,
@@ -1489,6 +1494,13 @@ impl MainWindow {
             return;
         }
 
+        // 命令建议弹窗开着：它没有输入框，所有按键都归它（Esc 取消、确认步骤里 Enter 确认），不漏给下面的终端。
+        if self.assist_dialog.is_some() {
+            self.assist_key(&key, !mods.modified(), window, cx);
+            cx.stop_propagation();
+            return;
+        }
+
         // 正在拖标签：Esc 取消（V2-U1，见 `tab_move`）。
         if self.tab_dragger.pending() && key == "escape" {
             self.cancel_tab_drag(cx);
@@ -1791,6 +1803,7 @@ impl Render for MainWindow {
             self.forget_info_secret(window, cx);
             // 验证小对话框里刚敲的密码和等着做的动作也一并作废。
             self.drop_reveal_ask();
+            self.drop_assist_dialog();
             // 对话框里还显示着的明文（主机属性的密码、AI 接口的 Key）重新遮住，解锁后看到的是遮住的样子。
             self.remask_host_password(window, cx);
             self.remask_ai_dialog_key(window, cx);
@@ -1840,6 +1853,7 @@ impl MainWindow {
         let docks = self.render_docks(&tokens, cx);
         let panel = self.render_side_panel(&tokens, window, cx);
         let modal = self.render_modal(&tokens, window, cx);
+        let assist_dialog = self.render_assist_dialog(&tokens, cx);
         let reveal_ask = self.render_reveal_ask(&tokens, cx);
         let tab_menu = self.render_tab_menu(&tokens, cx);
         let me_entity = cx.entity();
@@ -1882,6 +1896,7 @@ impl MainWindow {
             .children(self.render_status_bar(&tokens, cx))
             .children(self.render_sync_bar(&tokens, cx))
             .children(modal)
+            .children(assist_dialog)
             .children(reveal_ask)
             .children(tab_menu)
             .children(drag_ghost)

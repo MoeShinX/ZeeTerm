@@ -16,6 +16,7 @@
 
 pub mod cells;
 pub mod echo;
+pub mod integration;
 pub mod state;
 pub mod text_index;
 pub mod write;

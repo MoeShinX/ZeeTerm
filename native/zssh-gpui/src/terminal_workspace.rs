@@ -164,6 +164,7 @@ mod ime_ops;
 mod search_ops;
 mod settings_ops;
 
+pub(crate) use assist_ops::{AssistView, IntegrationError, IntegrationState, StopOutcome};
 use assist_ops::{PaneAssist, WriteOrigin, classify_key};
 use zssh_core::terminal_assist::{RejectReason, TrackerContext, WriteOutcome, WriteSource};
 
