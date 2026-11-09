@@ -47,7 +47,7 @@ pub enum IntentOrigin {
     Manual,
     /// 输入法的最终提交。
     ImeCommit,
-    /// 用户明确接受的候选，只发后缀（P4 用）。
+    /// 用户明确接受的候选，只发后缀。
     Accept,
 }
 

@@ -11,8 +11,9 @@
 //! 位置的三种单位不能混用，所以各有各的类型：[`ByteIdx`]（输入文本的 UTF-8 字节下标）、
 //! [`Utf16Idx`]（输入法的 UTF-16 范围）、[`TermCol`]（终端列号，宽字符占两列）。
 //!
-//! P4（候选列表）怎么接，见任务报告；入口是 [`InputTracker::identity`] / [`InputTracker::is_current`] /
-//! [`InputTracker::begin_accept`]。
+//! 候选这一层建在它上面：[`history`]（只驻内存、按目标分域的命令历史）、[`sensitive`]（敏感命令的纯函数规则）、
+//! [`suggest`]（严格前缀检索）；窗格的接入点是 [`InputTracker::identity`] / [`InputTracker::is_current`] /
+//! [`InputTracker::begin_accept`]，接受只追加后缀、不发回车。
 
 pub mod cells;
 pub mod echo;

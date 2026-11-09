@@ -264,7 +264,7 @@ pub enum TrackerEvent {
     },
 }
 
-/// 接受候选被拒绝的原因（P4 用）。
+/// 接受候选被拒绝的原因。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AcceptRefusal {
     NotInInput,
