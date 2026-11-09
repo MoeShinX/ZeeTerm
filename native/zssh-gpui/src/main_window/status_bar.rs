@@ -155,7 +155,7 @@ fn switch_button(
         .justify_center()
         .size(px(24.0))
         .flex_none()
-        .rounded_md()
+        .rounded_full()
         .cursor_pointer()
         .text_color(if on { tokens.accent } else { tokens.text_muted })
         .when(on, |d| d.bg(tokens.accent_soft))

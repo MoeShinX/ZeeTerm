@@ -395,6 +395,7 @@ impl TerminalWorkspace {
                 .px_2()
                 .gap_2()
                 .items_center()
+                .rounded(::gpui::px(crate::app_theme::CONTROL_RADIUS - 4.0))
                 .when(selected, |d| d.bg(tokens.accent.alpha(0.22)))
                 .child(
                     div()
@@ -475,7 +476,9 @@ impl TerminalWorkspace {
                 .w(::gpui::px(at.width))
                 .h(::gpui::px(at.height))
                 .py(::gpui::px(PAD))
-                .rounded_md()
+                // 圆润界面：和输入框 / 菜单同一个圆角；左右多留 4px，首尾两行的文字不会被圆角裁到。
+                .px_1()
+                .rounded(::gpui::px(crate::app_theme::CONTROL_RADIUS))
                 .border_1()
                 .border_color(tokens.border)
                 .bg(tokens.surface)
