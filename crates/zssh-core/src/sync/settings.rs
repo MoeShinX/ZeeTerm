@@ -86,6 +86,9 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     ("quick_commands_group", SyncMode::LocalOnly),
     // 终端底部的撰写栏显不显示（UI-17）：本机的使用习惯，不同步
     ("compose_bar", SyncMode::LocalOnly),
+    // 终端命令建议：总开关和"采集新命令历史"开关是这台电脑的使用习惯（历史也只存内存），不同步
+    ("terminal_assist.enabled", SyncMode::LocalOnly),
+    ("terminal_assist.history_enabled", SyncMode::LocalOnly),
     // 软件自身联网的代理：各台电脑的网络环境不一样
     ("app_network_proxy", SyncMode::LocalOnly),
     ("stats_show", SyncMode::LocalOnly),
@@ -1269,6 +1272,8 @@ mod tests {
             "layout.quick_bar_height",
             "layout.compose_bar_height",
             "compose_bar",
+            "terminal_assist.enabled",
+            "terminal_assist.history_enabled",
             "ai_opencode_path",
             "ai_codex_path",
             "ai_claude_path",

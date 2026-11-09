@@ -232,7 +232,13 @@ impl TerminalWorkspace {
                 zssh_platform_windows::activity::touch();
                 self.cursor_blink.reset();
                 self.ime_scroll_to_bottom();
-                self.send_bytes(&bytes);
+                // 输入法的最终提交：和逐键输入同一条发送路径，但输入跟踪按"输入法提交"记。
+                let origin = if bytes.iter().all(|b| *b == b'\r') {
+                    WriteOrigin::Key(zssh_core::terminal_assist::KeyClass::Enter)
+                } else {
+                    WriteOrigin::ImeText
+                };
+                self.send_bytes(&bytes, origin);
                 cx.notify();
             }
             Commit::Paste(text) => {
@@ -283,6 +289,7 @@ impl EntityInputHandler for TerminalWorkspace {
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.ime_preedit.is_empty() {
             self.ime_preedit.clear();
+            self.note_ime_preedit();
             cx.notify();
         }
     }
@@ -298,6 +305,8 @@ impl EntityInputHandler for TerminalWorkspace {
     ) {
         let had_preedit = !self.ime_preedit.is_empty();
         self.ime_preedit.clear();
+        // 预编辑先结束，再处理提交：最终提交只走一次登记。
+        self.note_ime_preedit();
         if self.ime_ready(window) {
             self.ime_commit(text, window, cx);
         }
@@ -318,11 +327,13 @@ impl EntityInputHandler for TerminalWorkspace {
             // 模态框开着 / 焦点已经走了：不接新的预编辑，已有的也清掉。
             if !self.ime_preedit.is_empty() {
                 self.ime_preedit.clear();
+                self.note_ime_preedit();
                 cx.notify();
             }
             return;
         }
         self.ime_preedit.mark(range, new_text, new_selected_range);
+        self.note_ime_preedit();
         if !self.ime_preedit.is_empty() {
             zssh_platform_windows::activity::touch();
             self.cursor_blink.reset();

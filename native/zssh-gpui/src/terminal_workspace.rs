@@ -25,7 +25,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use zssh_core::ssh::flow::FlowGate;
 use zssh_core::ssh::latency::{self, LatencyMonitor, LatencySnapshot, LatencyViewer};
 use zssh_session::{
@@ -155,11 +155,17 @@ const DEFAULT_SIZE: Size = Size {
     rows: 30,
     cols: 120,
 };
+mod assist_ops;
+#[cfg(test)]
+mod assist_tests;
 mod dev_tools;
 mod highlight_ops;
 mod ime_ops;
 mod search_ops;
 mod settings_ops;
+
+use assist_ops::{PaneAssist, WriteOrigin, classify_key};
+use zssh_core::terminal_assist::{RejectReason, TrackerContext, WriteOutcome, WriteSource};
 
 /// 窗格的会话状态。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -366,6 +372,8 @@ pub(crate) struct Pane {
     disconnect_reason: Option<String>,
     /// 这个窗格是重连出来的：连上时终端（屏幕 + 回滚）沿用重连前的，只换连接。连上（或放弃）后清掉。
     carry_terminal: bool,
+    /// 输入跟踪：只旁路观察，不改变任何按键行为（见 `assist_ops`）。
+    assist: PaneAssist,
 }
 
 /// 窗格会话日志的来源。写入位置只有一个——设置里的会话日志目录；区别只在谁开的：
@@ -542,8 +550,15 @@ impl Pane {
     ) -> Self {
         let snapshot = pump.snapshot();
         let generation = pump.generation();
+        let id = next_pane_id();
         Self {
-            id: next_pane_id(),
+            id,
+            assist: PaneAssist::new(TrackerContext {
+                pane_id: id,
+                connection_generation: generation,
+                target: String::new(),
+                broadcast_revision: 0,
+            }),
             open_size: snapshot.size,
             driver: SessionDriver::new(pump, events),
             backend,
@@ -730,6 +745,8 @@ impl Pane {
         self.factory = factory;
         self.state = PaneState::Live;
         self.disconnect_reason = None;
+        // 新连接：旧泵里的标记、旧会话的输入状态都不再有意义。
+        self.assist.on_connection_reset(Instant::now());
         self.shell_seq = next_shell_seq();
         if size != self.open_size {
             self.backend.send(SessionCommand::Resize(size));
@@ -746,6 +763,7 @@ impl Pane {
         self.state = PaneState::Disconnected;
         self.disconnect_reason = Some(reason);
         self.pending = None;
+        self.assist.on_connection_reset(Instant::now());
         self.pump_mut().feed_local(notice.as_bytes());
     }
 
@@ -942,6 +960,7 @@ impl Pane {
         }
         // 不管有没有重绘、窗格在不在前台：远端的查询（DSR / DA 等）等着回复。
         self.flush_replies();
+        self.observe_input();
         if changed {
             self.snapshot = self.driver.pump().snapshot();
         }
@@ -958,6 +977,41 @@ impl Pane {
 
     fn refresh(&mut self) {
         self.snapshot = self.driver.pump().snapshot();
+    }
+
+    /// 输入跟踪能认出的目标：窗格连的是谁。快速连接带着实际的用户 / 地址 / 端口；主机库里的主机用库编号
+    /// （连接参数改了要重连才生效，重连换连接代次，所以编号加代次足够区分）。
+    fn target_identity(&self) -> String {
+        match (&self.quick, self.host_id) {
+            (Some(spec), _) => format!("ssh://{}", spec.target.display()),
+            (None, Some(id)) => format!("host:{id}"),
+            (None, None) => String::new(),
+        }
+    }
+
+    /// 每次处理完输出（以及定时）：让输入跟踪看一眼——先确认它还属于这条连接，再处理新到的 shell 标记，
+    /// 最后对一遍屏幕。只读，不写远端。
+    fn observe_input(&mut self) {
+        let now = Instant::now();
+        let target = self.target_identity();
+        self.assist
+            .sync_context(self.id, self.generation, &target, now);
+        self.assist.after_output(self.driver.pump_mut(), now);
+    }
+
+    /// 限制条件（锁屏、广播、模态框）由工作区每帧告诉窗格；鼠标上报和备用屏幕 / 滚回历史由窗格自己从终端读。
+    fn set_assist_restrictions(
+        &mut self,
+        locked: bool,
+        broadcast: bool,
+        modal: bool,
+        enabled: bool,
+    ) {
+        let now = Instant::now();
+        let mouse = self.pump().mouse_mode().reports_buttons();
+        self.assist.set_enabled(enabled, now);
+        self.assist
+            .set_restrictions(locked, broadcast, modal, mouse, now);
     }
 
     /// 把终端对远端查询的协议回复写回这个窗格自己的会话。走写端专门的回复接口，不经 [`Self::write`]：
@@ -985,18 +1039,39 @@ impl Pane {
 
     /// 写命令走会话后端；同进程回环后端会立刻回送事件。
     /// 还在连接或已断开时丢弃输入，不能回显也不能攒着。
+    ///
+    /// 给不关心结果、也不属于任何输入来源的调用方（调试钩子、测试）用；产品里的输入路径一律走
+    /// [`Self::write_as`]，把来源和结果告诉输入跟踪。
+    #[cfg(any(test, debug_assertions))]
     fn write(&mut self, bytes: &[u8]) {
+        let _ = self.write_as(bytes, WriteOrigin::Untracked);
+    }
+
+    /// 带来源、带结果的本地写入。
+    ///
+    /// 顺序是：先把这次写入登记给输入跟踪，再交给后端发送，最后报告结果——同步回环回显会在发送的
+    /// 同一个调用里到达，不先登记就认不出它。锁屏、非 Live、队列满、通道已关都会得到明确的
+    /// [`WriteOutcome`]，不会静默当成已经写入；`Queued` 只表示本地排上了队，不是送达也不是回显。
+    pub(crate) fn write_as(&mut self, bytes: &[u8], origin: WriteOrigin) -> WriteOutcome {
+        if bytes.is_empty() {
+            return WriteOutcome::Rejected(RejectReason::Empty);
+        }
         if self.state != PaneState::Live {
-            return;
+            return WriteOutcome::Rejected(RejectReason::NotLive);
         }
         // 锁屏（V2-U26）：键盘、粘贴、快捷命令、撰写栏、广播都从这里出去，锁着时一律丢掉。
         // AI 助手往终端写命令不走这里（走 `ai_terminals`），它在工具桥那一层拦：锁着时 AI 的
         // 任何执行请求都要先经用户确认（`agent_host::set_ai_locked`），所以锁定期间不会有新命令进来。
         if crate::app_lock::is_locked() {
-            return;
+            self.assist.note_locked(Instant::now());
+            return WriteOutcome::Rejected(RejectReason::Locked);
         }
-        self.backend.send(SessionCommand::Write(bytes.to_vec()));
+        let now = Instant::now();
+        let seq = self.assist.before_write(origin, bytes, now);
+        let outcome = self.backend.send_write(bytes.to_vec());
+        self.assist.after_write(origin, seq, outcome, now);
         self.poll_events();
+        outcome
     }
 
     /// 发送 Break 信号（串口会话的按钮 / 快捷键用，后续界面卡接上；其他协议的会话忽略）。
@@ -1024,6 +1099,8 @@ impl Pane {
     /// 不需要靠"下一次还会再发"来补。
     fn resize(&mut self, size: Size) {
         self.pump_mut().resize(size);
+        // 重排之后输入起点的行列号不再对应原来的格子。
+        self.assist.on_geometry_changed(Instant::now());
         if self.state == PaneState::Live {
             self.backend.send(SessionCommand::Resize(size));
             self.open_size = size;
@@ -1138,6 +1215,8 @@ pub(crate) struct Tab {
     tree: Node,
     /// 输入广播：键盘和粘贴同时发给这个标签的所有分屏窗格（0.2.14 也只作用于当前标签）。
     broadcast: bool,
+    /// 广播开关翻转过几次：输入跟踪的候选请求带着它，翻转就让在途请求过期。
+    broadcast_revision: u64,
 }
 
 impl Tab {
@@ -1149,6 +1228,7 @@ impl Tab {
             panes: vec![pane],
             active_pane: 0,
             broadcast: false,
+            broadcast_revision: 0,
         }
     }
 
@@ -1921,6 +2001,7 @@ impl TerminalWorkspace {
         self.drag_anchor = None;
         self.hover_link = None;
         self.ime_preedit.clear();
+        self.note_ime_preedit();
         // 标签 / 窗格结构变了，待确认的粘贴作废：不静默，告诉用户要重来。
         if self.pending_paste.take().is_some() {
             self.status.announce(StatusLevel::Info, paste_cancelled());
@@ -1941,6 +2022,7 @@ impl TerminalWorkspace {
     /// 在所有窗格之间分配（前台优先、后台轮转），不是每个窗格各吃一份。
     fn poll_sessions(&mut self) -> bool {
         let active = self.tabs.active_index();
+        self.sync_assist_restrictions(active);
         let mut panes: Vec<(bool, &mut Pane)> = Vec::new();
         for (index, tab) in self.tabs.items_mut().iter_mut().enumerate() {
             let foreground = Some(index) == active;
@@ -1952,6 +2034,44 @@ impl TerminalWorkspace {
             |i| foreground[i],
             |i, allowance| panes[i].1.poll_events_within(allowance),
         )
+    }
+
+    /// 把锁屏、广播、模态框这些"此刻不该给建议"的条件告诉每个窗格的输入跟踪。
+    /// 广播只作用于它所在的标签；模态框（粘贴确认、右键菜单）只挡住活动标签的聚焦窗格。
+    fn sync_assist_restrictions(&mut self, active: Option<usize>) {
+        let locked = crate::app_lock::is_locked();
+        let enabled = crate::app_prefs::cached().terminal_assist_enabled;
+        let modal = self.pending_paste.is_some() || self.context_menu.is_some();
+        let now = Instant::now();
+        for (index, tab) in self.tabs.items_mut().iter_mut().enumerate() {
+            let (broadcast, revision) = (tab.broadcast, tab.broadcast_revision);
+            let focused = tab.active_pane;
+            let foreground = Some(index) == active;
+            for (pane_index, pane) in tab.panes.iter_mut().enumerate() {
+                pane.assist.set_broadcast_revision(revision, now);
+                pane.set_assist_restrictions(
+                    locked,
+                    broadcast,
+                    modal && foreground && pane_index == focused,
+                    enabled,
+                );
+            }
+        }
+    }
+
+    /// 输入法的预编辑开始 / 结束：告诉聚焦窗格的输入跟踪（预编辑期间不记录、不检索、不填入）。
+    pub(super) fn note_ime_preedit(&mut self) {
+        let composing = !self.ime_preedit.is_empty();
+        let now = Instant::now();
+        let active = self.tabs.active_index();
+        for (index, tab) in self.tabs.items_mut().iter_mut().enumerate() {
+            let focused = tab.active_pane;
+            for (pane_index, pane) in tab.panes.iter_mut().enumerate() {
+                // 预编辑只属于聚焦窗格；别的窗格（含别的标签）不能残留"正在预编辑"。
+                let mine = composing && Some(index) == active && pane_index == focused;
+                pane.assist.on_ime_preedit(mine, now);
+            }
+        }
     }
 
     /// 关闭所有会话（窗口关闭前调用），避免 SSH 通道挂着。
@@ -2575,7 +2695,11 @@ impl TerminalWorkspace {
             if pane.pump().display_offset() != 0 {
                 pane.pump_mut().scroll_to_bottom();
             }
-            pane.write(data.as_bytes());
+            // 快捷命令栏和撰写栏：不是逐键输入，输入跟踪要求之后重新取得可靠的输入边界。
+            let _ = pane.write_as(
+                data.as_bytes(),
+                WriteOrigin::Foreign(WriteSource::QuickCommand),
+            );
             sent += 1;
         }
         cx.notify();
@@ -2796,6 +2920,7 @@ impl TerminalWorkspace {
     pub(crate) fn toggle_broadcast(&mut self, cx: &mut Context<Self>) {
         if let Some(tab) = self.tabs.active_mut() {
             tab.broadcast = !tab.broadcast;
+            tab.broadcast_revision += 1;
             cx.notify();
         }
     }
@@ -2838,7 +2963,10 @@ impl TerminalWorkspace {
         };
         if host_id.is_none() && quick.is_none() && !blank {
             for i in 0..5 {
-                pane.write(format!("split pane line {i}\r\n").as_bytes());
+                let _ = pane.write_as(
+                    format!("split pane line {i}\r\n").as_bytes(),
+                    WriteOrigin::Untracked,
+                );
             }
             pane.fed = 5;
         }
@@ -3178,20 +3306,29 @@ impl TerminalWorkspace {
         let Some(app_cursor) = self.pane().map(|pane| pane.pump().app_cursor()) else {
             return;
         };
+        let alt = alt_as_meta(
+            keystroke.modifiers.alt,
+            keystroke.key_char.is_some(),
+            cfg!(target_os = "macos"),
+        );
         let input = KeyInput {
             key: &keystroke.key,
             key_char: keystroke.key_char.as_deref(),
             ctrl: keystroke.modifiers.control,
-            alt: alt_as_meta(
-                keystroke.modifiers.alt,
-                keystroke.key_char.is_some(),
-                cfg!(target_os = "macos"),
-            ),
+            alt,
             shift: keystroke.modifiers.shift,
             app_cursor,
         };
         if let Some(bytes) = encode_key(input) {
-            self.send_bytes(&bytes);
+            // 按键该发什么字节不变；这里只多告诉输入跟踪"这是字符还是交给 shell 的键"。
+            let origin = classify_key(
+                &keystroke.key,
+                keystroke.key_char.as_deref(),
+                keystroke.modifiers.control,
+                alt,
+                &bytes,
+            );
+            self.send_bytes(&bytes, origin);
             cx.notify();
         }
     }
@@ -3351,7 +3488,8 @@ impl TerminalWorkspace {
             sgr,
         });
         if let Some(pane) = self.pane_mut() {
-            pane.write(&bytes);
+            // 鼠标上报只在远端接管鼠标（全屏程序）时才有，输入跟踪此时早已暂停，不经它。
+            let _ = pane.write_as(&bytes, WriteOrigin::Untracked);
         }
     }
 
@@ -3820,7 +3958,7 @@ impl TerminalWorkspace {
 
     /// 输入的去向：开了广播就是当前标签的所有分屏窗格，否则只有聚焦的窗格。
     /// 各窗格各自回底并刷新快照。
-    fn send_bytes(&mut self, bytes: &[u8]) {
+    fn send_bytes(&mut self, bytes: &[u8], origin: WriteOrigin) {
         // 键盘输入发出去之后选区就过时了，留着会让下一次 Ctrl+C 走复制。
         self.selection = None;
         let Some(tab) = self.tabs.active_mut() else {
@@ -3831,7 +3969,7 @@ impl TerminalWorkspace {
             if pane.pump().display_offset() != 0 {
                 pane.pump_mut().scroll_to_bottom();
             }
-            pane.write(bytes);
+            let _ = pane.write_as(bytes, origin);
         }
     }
 
@@ -3870,7 +4008,10 @@ impl TerminalWorkspace {
             pane.pump_mut().scroll_to_bottom();
         }
         let wrapped = mode.wraps(pane.pump().bracketed_paste());
-        pane.write(&zssh_session::encode_paste(&text, wrapped));
+        let _ = pane.write_as(
+            &zssh_session::encode_paste(&text, wrapped),
+            WriteOrigin::Foreign(WriteSource::Paste),
+        );
         tab.active_pane = index;
         self.selection = None;
         cx.notify();
@@ -3901,7 +4042,10 @@ impl TerminalWorkspace {
                     continue;
                 };
                 let wrapped = mode.wraps(pane.pump().bracketed_paste());
-                pane.write(&zssh_session::encode_paste(text, wrapped));
+                let _ = pane.write_as(
+                    &zssh_session::encode_paste(text, wrapped),
+                    WriteOrigin::Foreign(WriteSource::Paste),
+                );
             }
         }
         cx.notify();
@@ -3966,7 +4110,28 @@ impl TerminalWorkspace {
     /// 调试钩子用：往活动窗格的会话里"打字"（和键盘输入同一条路径）。
     #[cfg(debug_assertions)]
     pub(crate) fn type_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.send_bytes(text.as_bytes());
+        // 和键盘输入同一条路径，字节原样：连续的普通文字按字符记，回车按 Enter 记，其余控制字符按交给 shell 的键记。
+        use zssh_core::terminal_assist::{HandoffKey, KeyClass};
+        let mut run = String::new();
+        for ch in text.chars() {
+            if !ch.is_control() {
+                run.push(ch);
+                continue;
+            }
+            if !run.is_empty() {
+                self.send_bytes(run.as_bytes(), WriteOrigin::TypedText);
+                run.clear();
+            }
+            let class = match ch {
+                '\r' | '\n' => KeyClass::Enter,
+                _ => KeyClass::Handoff(HandoffKey::Control),
+            };
+            let mut buf = [0u8; 4];
+            self.send_bytes(ch.encode_utf8(&mut buf).as_bytes(), WriteOrigin::Key(class));
+        }
+        if !run.is_empty() {
+            self.send_bytes(run.as_bytes(), WriteOrigin::TypedText);
+        }
         cx.notify();
     }
 

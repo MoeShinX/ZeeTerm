@@ -26,6 +26,11 @@ pub const SESSION_LOG_EXIT_NOTE_KEY: &str = "session_log_exit_note";
 /// 侧栏底部的「属性」面板（选中主机时显示名称 / 主机 / 用户名…）：默认关，只在本机（V2-U17）。
 pub const HOST_INFO_PANEL_KEY: &str = "host_info_panel";
 
+/// 终端命令建议的两个开关（都默认开，只在本机、不参与同步）：`enabled` 关了就不做输入跟踪；
+/// `history_enabled` 关了就不采集新的终端命令历史（候选与历史由后续功能使用）。
+pub const TERMINAL_ASSIST_ENABLED_KEY: &str = zssh_core::terminal_assist::ENABLED_KEY;
+pub const TERMINAL_ASSIST_HISTORY_KEY: &str = zssh_core::terminal_assist::HISTORY_ENABLED_KEY;
+
 /// 保活间隔（秒，0 = 关闭）：滑块 0～300，步长 5。
 pub const KEEPALIVE_RANGE: (u32, u32) = (0, 300);
 pub const KEEPALIVE_STEP: u32 = 5;
@@ -146,6 +151,11 @@ pub struct AppPrefs {
     pub session_log_exit_note: String,
     /// 在侧栏显示主机属性面板（默认关）。
     pub host_info_panel: bool,
+    /// 终端输入跟踪 / 命令建议总开关（默认开）。
+    pub terminal_assist_enabled: bool,
+    /// 采集新的终端命令历史（默认开）。
+    #[allow(dead_code)] // 键和读写已经接好，由后续的历史功能读取
+    pub terminal_assist_history: bool,
 }
 
 impl Default for AppPrefs {
@@ -200,6 +210,8 @@ impl AppPrefs {
                 .filter(|note| !note.chars().any(char::is_control))
                 .unwrap_or_default(),
             host_info_panel: flag(raw(HOST_INFO_PANEL_KEY).as_deref(), false),
+            terminal_assist_enabled: flag(raw(TERMINAL_ASSIST_ENABLED_KEY).as_deref(), true),
+            terminal_assist_history: flag(raw(TERMINAL_ASSIST_HISTORY_KEY).as_deref(), true),
         }
     }
 
@@ -478,6 +490,38 @@ mod tests {
         assert!(AppPrefs::load(&db).host_info_panel);
         write_flag(&db, HOST_INFO_PANEL_KEY, false).unwrap();
         assert!(!AppPrefs::load(&db).host_info_panel);
+    }
+
+    /// 命令建议的两个开关：默认都开、读不懂回到默认、读写用同一对键，而且这两个键归类为只在本机。
+    #[test]
+    fn the_terminal_assist_switches_default_on_round_trip_and_never_sync() {
+        let defaults = AppPrefs::default();
+        assert!(defaults.terminal_assist_enabled && defaults.terminal_assist_history);
+        let garbage = prefs(&[
+            ("terminal_assist.enabled", "maybe"),
+            ("terminal_assist.history_enabled", "7"),
+        ]);
+        assert!(garbage.terminal_assist_enabled && garbage.terminal_assist_history);
+        assert_eq!(TERMINAL_ASSIST_ENABLED_KEY, "terminal_assist.enabled");
+        assert_eq!(
+            TERMINAL_ASSIST_HISTORY_KEY,
+            "terminal_assist.history_enabled"
+        );
+
+        let db = Database::open_in_memory().expect("内存库");
+        write_flag(&db, TERMINAL_ASSIST_ENABLED_KEY, false).unwrap();
+        let loaded = AppPrefs::load(&db);
+        assert!(!loaded.terminal_assist_enabled);
+        assert!(loaded.terminal_assist_history, "两个开关互不影响");
+        write_flag(&db, TERMINAL_ASSIST_HISTORY_KEY, false).unwrap();
+        assert!(!AppPrefs::load(&db).terminal_assist_history);
+        write_flag(&db, TERMINAL_ASSIST_ENABLED_KEY, true).unwrap();
+        assert!(AppPrefs::load(&db).terminal_assist_enabled);
+
+        use zssh_core::sync::settings::{SyncMode, sync_mode};
+        for key in [TERMINAL_ASSIST_ENABLED_KEY, TERMINAL_ASSIST_HISTORY_KEY] {
+            assert_eq!(sync_mode(key), Some(SyncMode::LocalOnly), "{key}");
+        }
     }
 
     #[test]

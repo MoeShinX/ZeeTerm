@@ -308,6 +308,8 @@ impl TerminalWorkspace {
             return;
         };
         pane.pump_mut().clear_screen();
+        // 光标行被挪到了第一行：输入起点的行号作废，等新 Prompt。
+        pane.assist.on_geometry_changed(std::time::Instant::now());
         pane.refresh();
         // 选区、悬停链接的坐标都对不上了。
         self.selection = None;
