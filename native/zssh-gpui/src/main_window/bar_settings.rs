@@ -146,6 +146,7 @@ mod tests {
             group: Some("排查".into()),
             enter: true,
             color: Some("blue".into()),
+            no_suggest: false,
         }];
         write_commands(&db, &list).expect("写命令");
         write_bool(&db, QUICK_BAR, true).expect("写开关");

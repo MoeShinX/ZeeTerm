@@ -64,6 +64,8 @@ enum QuickPanelMsg {
     MultiLineHint,
     EnterRow,
     EnterHint,
+    SuggestRow,
+    SuggestHint,
     ShortcutHint,
     Cancel,
     Save,
@@ -101,6 +103,10 @@ impl Msg for QuickPanelMsg {
             Self::MultiLineHint => "可以写多行，每一行按回车执行一次。",
             Self::EnterRow => "发送后回车执行",
             Self::EnterHint => "关掉就只填进去，改完自己按回车。",
+            Self::SuggestRow => "排除自动建议",
+            Self::SuggestHint => {
+                "勾上后，这条命令不会出现在终端输入时的自动候选里（含密码、令牌的命令即使不勾也不会出现）。"
+            }
             Self::ShortcutHint => "Ctrl+Enter 保存，Esc 取消",
             Self::Cancel => "取消",
             Self::Save => "保存",
@@ -139,6 +145,10 @@ impl Msg for QuickPanelMsg {
             Self::EnterRow => "Send Enter after the command",
             Self::EnterHint => {
                 "When off, the command is only typed in; press Enter yourself after editing."
+            }
+            Self::SuggestRow => "Exclude from auto-suggestions",
+            Self::SuggestHint => {
+                "When on, this command never shows up in the suggestions while typing in the terminal (commands that look like they contain a password or token are left out even when this is off)."
             }
             Self::ShortcutHint => "Ctrl+Enter to save, Esc to cancel",
             Self::Cancel => "Cancel",
@@ -255,6 +265,7 @@ impl MainWindow {
             id: seed.id.clone(),
             color: seed.color.clone(),
             enter: seed.enter,
+            no_suggest: seed.no_suggest,
             error: None,
         }));
         let handle = match seed.focus() {
@@ -272,7 +283,12 @@ impl MainWindow {
         let Some(Modal::QuickEdit(dialog)) = &self.modal else {
             return;
         };
-        let (id, color, enter) = (dialog.id.clone(), dialog.color.clone(), dialog.enter);
+        let (id, color, enter, no_suggest) = (
+            dialog.id.clone(),
+            dialog.color.clone(),
+            dialog.enter,
+            dialog.no_suggest,
+        );
         let name = self.quick_ui.name.read(cx).value().to_string();
         let group = self.quick_ui.group.read(cx).value().to_string();
         let command = self.quick_ui.command.read(cx).value().to_string();
@@ -289,6 +305,7 @@ impl MainWindow {
                 command: &command,
                 color: color.as_deref(),
                 enter,
+                no_suggest,
             },
             &commands,
             || quick_commands::new_id(now, next_id),
@@ -891,6 +908,24 @@ impl MainWindow {
                         entity.update(cx, |this, cx| {
                             if let Some(Modal::QuickEdit(dialog)) = &mut this.modal {
                                 dialog.enter = !dialog.enter;
+                            }
+                            cx.notify();
+                        });
+                    }
+                },
+                tokens,
+            ))
+            .child(switch_row(
+                "quick-no-suggest",
+                t(QuickPanelMsg::SuggestRow),
+                Some(t(QuickPanelMsg::SuggestHint).to_owned()),
+                dialog.no_suggest,
+                {
+                    let entity = entity.clone();
+                    move |_window, cx| {
+                        entity.update(cx, |this, cx| {
+                            if let Some(Modal::QuickEdit(dialog)) = &mut this.modal {
+                                dialog.no_suggest = !dialog.no_suggest;
                             }
                             cx.notify();
                         });

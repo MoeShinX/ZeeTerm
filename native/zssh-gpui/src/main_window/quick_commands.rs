@@ -134,6 +134,9 @@ pub struct QuickCommand {
     pub enter: bool,
     /// 预设颜色 id；`None` = 默认（无色）。
     pub color: Option<String>,
+    /// 排除自动建议：勾上的快捷命令永远不会出现在终端内的自动候选里（疑似敏感的即使没勾也整条排除）。
+    /// 存在 JSON 的 `no_suggest` 里，只在为真时才写，旧版本客户端读不到也不受影响。
+    pub no_suggest: bool,
 }
 
 /// 预设颜色的名字（跟随界面语言）和 RGB（淡底色 / 细边 / 小图标共用同一色相）。
@@ -183,6 +186,7 @@ pub fn parse_commands(raw: &str) -> Vec<QuickCommand> {
                 group,
                 enter: object.get("enter").and_then(Value::as_bool) != Some(false),
                 color: normalize_color(object.get("color").and_then(Value::as_str)),
+                no_suggest: object.get("no_suggest").and_then(Value::as_bool) == Some(true),
             })
         })
         .collect()
@@ -203,6 +207,9 @@ pub fn serialize_commands(list: &[QuickCommand]) -> String {
             object.insert("enter".into(), json!(item.enter));
             if let Some(color) = normalize_color(item.color.as_deref()) {
                 object.insert("color".into(), json!(color));
+            }
+            if item.no_suggest {
+                object.insert("no_suggest".into(), json!(true));
             }
             Value::Object(object)
         })
@@ -316,6 +323,7 @@ pub struct Seed {
     pub command: String,
     pub color: Option<String>,
     pub enter: bool,
+    pub no_suggest: bool,
 }
 
 /// 对话框打开时光标放哪：新建先填名称，编辑多半是改命令内容。
@@ -334,6 +342,7 @@ impl Seed {
             command: String::new(),
             color: None,
             enter: false,
+            no_suggest: false,
         }
     }
 
@@ -345,6 +354,7 @@ impl Seed {
             command: command.command.clone(),
             color: command.color.clone(),
             enter: command.enter,
+            no_suggest: command.no_suggest,
         }
     }
 
@@ -374,6 +384,7 @@ pub struct Filled<'a> {
     pub command: &'a str,
     pub color: Option<&'a str>,
     pub enter: bool,
+    pub no_suggest: bool,
 }
 
 /// 保存：检查内容和条数上限，通过就做出要写进列表的那一条（名称、分组去首尾空白，命令原样，
@@ -405,6 +416,7 @@ pub fn build_item(
         group: (!group.is_empty()).then(|| group.to_owned()),
         enter: filled.enter,
         color: filled.color.map(str::to_owned),
+        no_suggest: filled.no_suggest,
     })
 }
 
@@ -555,6 +567,7 @@ mod tests {
             group: group.map(Into::into),
             enter: true,
             color: None,
+            no_suggest: false,
         }
     }
 
@@ -569,6 +582,58 @@ mod tests {
         let future = r#"[{"id":"a","name":"x","command":"ls","color":"mauve"}]"#;
         assert_eq!(parse_commands(future)[0].color, None, "未知颜色当没设");
         assert!(parse_commands(future)[0].enter, "没写 enter 就是执行");
+    }
+
+    #[test]
+    fn the_exclude_flag_round_trips_and_is_written_only_when_set() {
+        let mut item = cmd("a", "端口", "ss -tlnp", None);
+        let plain = serialize_commands(&[item.clone()]);
+        assert!(
+            !plain.contains("no_suggest"),
+            "没勾就不写，旧版本读到的数据一个字节都没变: {plain}"
+        );
+        assert!(
+            !parse_commands(&plain)[0].no_suggest,
+            "旧数据没有这个字段 = 不排除"
+        );
+        item.no_suggest = true;
+        let text = serialize_commands(&[item.clone()]);
+        assert!(text.contains(r#""no_suggest":true"#), "{text}");
+        assert_eq!(parse_commands(&text), vec![item]);
+    }
+
+    #[test]
+    fn a_malformed_exclude_flag_means_not_excluded_and_never_breaks_the_list() {
+        for bad in [r#""yes""#, "1", "null", "[]", r#"{"a":1}"#, "false"] {
+            let raw = format!(
+                r#"[{{"id":"a","name":"x","command":"ls","no_suggest":{bad}}},{{"id":"b","name":"y","command":"pwd"}}]"#
+            );
+            let list = parse_commands(&raw);
+            assert_eq!(list.len(), 2, "{bad}");
+            assert!(!list[0].no_suggest, "{bad}：只有布尔 true 才算排除");
+        }
+        // 别的客户端以后加的字段：读得进来，不报错（这里的读取是手写的，没有 deny_unknown_fields）。
+        let future =
+            r#"[{"id":"a","name":"x","command":"ls","no_suggest":true,"future_field":{"k":1}}]"#;
+        let list = parse_commands(future);
+        assert_eq!(list.len(), 1);
+        assert!(list[0].no_suggest);
+    }
+
+    #[test]
+    fn the_edit_dialog_carries_the_exclude_flag_both_ways() {
+        let mut item = cmd("9", "n", "ls", None);
+        item.no_suggest = true;
+        let seed = Seed::of(&item);
+        assert!(seed.no_suggest);
+        assert!(!Seed::blank().no_suggest);
+        let mut fill = filled(Some("9"), "n", "ls", "");
+        fill.no_suggest = seed.no_suggest;
+        let built = build_item(&fill, &[item], || "x".into()).unwrap();
+        assert!(built.no_suggest);
+        fill.no_suggest = false;
+        let built = build_item(&fill, &[], || "x".into()).unwrap();
+        assert!(!built.no_suggest);
     }
 
     #[test]
@@ -731,6 +796,7 @@ mod tests {
             command,
             color: None,
             enter: true,
+            no_suggest: false,
         }
     }
 

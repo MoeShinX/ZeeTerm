@@ -711,6 +711,16 @@ impl MainWindow {
             && self.active_editor_view().is_none();
         self.workspace
             .update(cx, |ws, _cx| ws.set_surface_shown(terminal_shown));
+        // 终端内命令建议用的快捷命令快照（只读；没变就不动）。
+        let suggest_sources: Vec<(&str, bool)> = self
+            .store
+            .bars()
+            .commands
+            .iter()
+            .map(|item| (item.command.as_str(), item.no_suggest))
+            .collect();
+        self.workspace
+            .update(cx, |ws, _cx| ws.sync_quick_sources(&suggest_sources));
         self.progress_unsaved_ask(window, cx);
         // 启动时锁定的话，上次没处理完的修改等解锁以后再扫、再提示（V2-U35：解锁前什么都不恢复）。
         if self.tick_count >= 2 && app_lock_ui::startup_scans_allowed() {

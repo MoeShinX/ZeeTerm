@@ -296,8 +296,8 @@ pub const QUICK_COMMANDS_MAX: usize = 500;
 pub const QUICK_COMMANDS_MAX_BYTES: usize = 256 * 1024;
 
 /// 快捷命令列表（设置里存的是 JSON 数组序列化成的字符串）：每条要有 id、name、command，
-/// group 可选，enter 是布尔，color 可选（短字符串、无控制字符；不限定成现在的预设 id，
-/// 以后加新颜色时老版本不会把整份同步配置判成坏的）。命令正文允许换行和 Tab（多行命令），别的控制字符不收——
+/// group 可选，enter 是布尔，no_suggest（排除自动建议）可选布尔，color 可选（短字符串、无控制字符；不限定成现在的预设 id，
+/// 以后加新颜色时老版本不会把整份同步配置判成坏的）。不认识的字段一律忽略，不会判坏。命令正文允许换行和 Tab（多行命令），别的控制字符不收——
 /// 它会原样发进别人的终端，ESC 之类的控制序列能改终端状态。
 fn check_quick_commands(value: &Value) -> bool {
     let Some(text) = value.as_str() else {
@@ -329,6 +329,7 @@ fn check_quick_commands(value: &Value) -> bool {
                 && (item.get("group").is_none() || field(item, "group", 50, false))
                 && (item.get("color").is_none() || field(item, "color", 20, false))
                 && item.get("enter").is_none_or(Value::is_boolean)
+                && item.get("no_suggest").is_none_or(Value::is_boolean)
         })
 }
 
@@ -1373,6 +1374,27 @@ mod tests {
         rejects("quick_commands", with_color(json!("red\n")));
         rejects("quick_commands", with_color(json!(5)));
         rejects("quick_commands", with_color(Value::Null));
+    }
+
+    /// "排除自动建议"标记（`no_suggest`）：可选的布尔。旧客户端的检查不认识它（只看自己认识的字段），
+    /// 所以带它的列表在旧版本上照常通过；这里只保证值要是布尔。
+    #[test]
+    fn quick_command_no_suggest_flag_is_an_optional_boolean() {
+        let list = |items: Value| json!(items.to_string());
+        let with_flag = |flag: Value| {
+            list(
+                json!([{"id": "a", "name": "x", "command": "ls", "enter": true, "no_suggest": flag}]),
+            )
+        };
+        accepts("quick_commands", with_flag(json!(true)));
+        accepts("quick_commands", with_flag(json!(false)));
+        accepts(
+            "quick_commands",
+            list(json!([{"id": "a", "name": "x", "command": "ls"}])),
+        );
+        rejects("quick_commands", with_flag(json!("yes")));
+        rejects("quick_commands", with_flag(json!(1)));
+        rejects("quick_commands", with_flag(Value::Null));
     }
 
     #[test]

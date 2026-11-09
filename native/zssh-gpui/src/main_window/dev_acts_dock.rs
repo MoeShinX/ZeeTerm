@@ -111,6 +111,7 @@ fn run_inner(
                 group: (!c.is_empty()).then(|| c.to_owned()),
                 enter: true,
                 color: (!d.is_empty()).then(|| d.to_owned()),
+                no_suggest: false,
             });
             this.save_quick_commands(&list, window, cx);
         }

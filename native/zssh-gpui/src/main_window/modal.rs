@@ -253,6 +253,7 @@ pub struct QuickEditDialog {
     pub id: Option<String>,
     pub color: Option<String>,
     pub enter: bool,
+    pub no_suggest: bool,
     pub error: Option<(QuickField, String)>,
 }
 

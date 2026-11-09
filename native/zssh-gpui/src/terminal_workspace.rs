@@ -168,6 +168,7 @@ mod suggest_tests;
 
 pub(crate) use assist_ops::{AssistView, IntegrationError, IntegrationState, StopOutcome};
 use assist_ops::{PaneAssist, WriteOrigin, classify_key};
+use zssh_core::terminal_assist::suggest::QuickSource;
 use zssh_core::terminal_assist::{RejectReason, TrackerContext, WriteOutcome, WriteSource};
 
 /// 窗格的会话状态。
@@ -1569,6 +1570,8 @@ pub struct TerminalWorkspace {
     surface_shown: bool,
     /// 上一次看到的各窗格延迟版本之和：变了就要重画徽标。
     latency_stamp: u64,
+    /// 终端内命令建议用的快捷命令快照（由外壳每个节拍同步，见 `sync_quick_sources`）。
+    assist_quick: Arc<Vec<QuickSource>>,
     _ime_focus: Subscription,
     _ime_blur: Subscription,
 }
@@ -1756,6 +1759,7 @@ impl TerminalWorkspace {
             ime_cell: None,
             surface_shown: true,
             latency_stamp: 0,
+            assist_quick: Arc::new(Vec::new()),
             _ime_focus,
             _ime_blur,
         };
@@ -2048,6 +2052,28 @@ impl TerminalWorkspace {
         )
     }
 
+    /// 终端内命令建议用的快捷命令快照（命令正文 + 是否勾了"排除自动建议"）。内容没变就不换，
+    /// 换了各窗格下一帧收到新的，旧候选作废。
+    pub(crate) fn sync_quick_sources(&mut self, wanted: &[(&str, bool)]) {
+        let same = self.assist_quick.len() == wanted.len()
+            && self
+                .assist_quick
+                .iter()
+                .zip(wanted)
+                .all(|(have, (text, excluded))| have.text == *text && have.excluded == *excluded);
+        if !same {
+            self.assist_quick = Arc::new(
+                wanted
+                    .iter()
+                    .map(|(text, excluded)| QuickSource {
+                        text: (*text).to_owned(),
+                        excluded: *excluded,
+                    })
+                    .collect(),
+            );
+        }
+    }
+
     /// 把锁屏、广播、模态框这些"此刻不该给建议"的条件告诉每个窗格的输入跟踪。
     /// 广播只作用于它所在的标签；模态框（粘贴确认、右键菜单）只挡住活动标签的聚焦窗格。
     fn sync_assist_restrictions(&mut self, active: Option<usize>) {
@@ -2057,6 +2083,7 @@ impl TerminalWorkspace {
             (prefs.terminal_assist_enabled, prefs.terminal_assist_history);
         let modal = self.pending_paste.is_some() || self.context_menu.is_some();
         let now = Instant::now();
+        let quick = Arc::clone(&self.assist_quick);
         for (index, tab) in self.tabs.items_mut().iter_mut().enumerate() {
             let (broadcast, revision) = (tab.broadcast, tab.broadcast_revision);
             let focused = tab.active_pane;
@@ -2064,6 +2091,7 @@ impl TerminalWorkspace {
             for (pane_index, pane) in tab.panes.iter_mut().enumerate() {
                 pane.assist.set_broadcast_revision(revision, now);
                 pane.assist.set_history_enabled(history_enabled);
+                pane.assist.set_quick_sources(&quick);
                 // 候选只给活动标签的聚焦窗格；别的窗格不生成、不展示。
                 pane.assist
                     .set_suggest_active(foreground && pane_index == focused);
