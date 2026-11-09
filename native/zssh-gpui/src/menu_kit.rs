@@ -386,7 +386,6 @@ mod tests {
             ("main_window/widgets.rs", 1),
             ("main_window/processes_ui.rs", 1),
             ("main_window/bars.rs", 2),
-            ("sftp/view.rs", 4),
             ("sftp/view_dialogs.rs", 1),
             ("sync/view.rs", 4),
         ];
