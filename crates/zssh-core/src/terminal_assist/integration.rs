@@ -41,13 +41,15 @@ const BASH_SCRIPT: &str = r#"# ZeeTerm: temporary shell integration for this ses
 # It emits OSC 133 prompt marks and OSC 7 cwd, keeps your PROMPT_COMMAND and PS1,
 # edits no rc file, and is removed by running: __zeeterm_off
 __zeeterm_cwd() {
-local LC_ALL=C __zp=$PWD __zo= __zi __zc
+local LC_ALL=C __zp=$PWD __zo= __zi __zc __zh
 for ((__zi = 0; __zi < ${#__zp}; __zi++)); do
 __zc=${__zp:__zi:1}
 if [[ $__zc == [A-Za-z0-9/._~-] ]]; then
 __zo=$__zo$__zc
 else
-__zo=$__zo$(printf '%%%02X' "'$__zc")
+printf -v __zh '%d' "'$__zc"
+printf -v __zh '%%%02X' "$((__zh & 255))"
+__zo=$__zo$__zh
 fi
 done
 printf '\033]7;file://%s%s\007' "${HOSTNAME-}" "$__zo"
@@ -98,6 +100,9 @@ unset -f __zeeterm_pc __zeeterm_cwd __zeeterm_on
 unset -f __zeeterm_off
 }
 __zeeterm_on() {
+( PS1=$PS1 ) 2>/dev/null || return 1
+( PROMPT_COMMAND=${PROMPT_COMMAND-} ) 2>/dev/null || return 1
+( PS0=${PS0-} ) 2>/dev/null || return 1
 __zeeterm_first=1
 printf -v PS1 '%s' "$PS1"$'\\[\\033]133;B\\007\\]' || return 1
 __zeeterm_ps1_added=$'\\[\\033]133;B\\007\\]'
@@ -130,7 +135,7 @@ __zc=${__zp[$__zi]}
 if [[ $__zc == [A-Za-z0-9/._~-] ]]; then
 __zo=$__zo$__zc
 else
-__zo=$__zo$(printf '%%%02X' "'$__zc")
+__zo=$__zo$(printf '%%%02X' "$(($(printf '%d' "'$__zc") & 255))")
 fi
 done
 printf '\033]7;file://%s%s\007' "${HOST-}" "$__zo"
