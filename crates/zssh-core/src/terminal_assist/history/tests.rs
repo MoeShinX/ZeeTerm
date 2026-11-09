@@ -112,6 +112,29 @@ fn explicitly_marked_and_password_phase_commands_are_not_recorded() {
 }
 
 #[test]
+fn commands_with_secrets_are_refused_at_collection_and_ordinary_ones_pass() {
+    use crate::terminal_assist::sensitive::SensitiveReason;
+    let mut store = HistoryStore::new();
+    assert_eq!(
+        store.record("t", "mysql -u root -pHunter2", Provenance::Typed),
+        Recorded::Rejected(RejectedBecause::Sensitive(SensitiveReason::SecretFlag))
+    );
+    assert_eq!(
+        store.record("t", "export AWS_SECRET_ACCESS_KEY=abc", Provenance::Typed),
+        Recorded::Rejected(RejectedBecause::Sensitive(SensitiveReason::SecretEnv))
+    );
+    assert_eq!(
+        store.record("t", "git clone https://u:p@h/r.git", Provenance::Typed),
+        Recorded::Rejected(RejectedBecause::Sensitive(SensitiveReason::CredentialUrl))
+    );
+    assert_eq!(store.stats().entries, 0);
+    assert_eq!(
+        store.record("t", "ssh -p 2222 deploy@build-box", Provenance::Typed),
+        Recorded::New
+    );
+}
+
+#[test]
 fn a_target_keeps_at_most_200_entries_and_drops_the_least_recently_used_first() {
     let mut store = HistoryStore::new();
     for i in 0..MAX_ENTRIES_PER_TARGET {

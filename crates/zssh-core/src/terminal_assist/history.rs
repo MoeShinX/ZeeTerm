@@ -48,6 +48,8 @@ pub enum RejectedBecause {
     TooLong,
     MarkedSensitive,
     PasswordPhase,
+    /// 命中敏感规则（见 [`super::sensitive`]）。
+    Sensitive(super::sensitive::SensitiveReason),
 }
 
 /// 采集结果。
@@ -234,7 +236,7 @@ impl HistoryStore {
         if command.len() > MAX_TRACKED_BYTES {
             return Some(RejectedBecause::TooLong);
         }
-        None
+        super::sensitive::sensitivity(command).map(RejectedBecause::Sensitive)
     }
 
     /// 超出预算就回收：先管这个目标自己的上限，再管进程总预算。

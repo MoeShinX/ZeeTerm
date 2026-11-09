@@ -1074,3 +1074,18 @@ fn switching_the_history_switch_off_stops_collecting_and_clears_the_module_histo
     run_line(&mut pane, &remote, "ls /opt");
     assert_eq!(history_texts(&pane, "ls"), vec!["ls /opt".to_owned()]);
 }
+
+#[test]
+fn a_command_with_a_secret_is_never_collected_but_still_runs_normally() {
+    let (mut pane, remote) = at_prompt();
+    run_line(&mut pane, &remote, "mysql -u root -pHunter2xyz");
+    run_line(&mut pane, &remote, "export DEPLOY_TOKEN=abc123");
+    run_line(&mut pane, &remote, "echo ok");
+    assert!(history_texts(&pane, "mysql").is_empty());
+    assert!(history_texts(&pane, "export").is_empty());
+    assert_eq!(history_stats(&pane).entries, 1);
+    // 采集与否不改变发送：命令照常发给了 shell。
+    let sent: Vec<u8> = remote.sent().concat();
+    let sent = String::from_utf8_lossy(&sent);
+    assert!(sent.contains("mysql -u root -pHunter2xyz"));
+}

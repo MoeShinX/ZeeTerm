@@ -18,6 +18,7 @@ pub mod cells;
 pub mod echo;
 pub mod history;
 pub mod integration;
+pub mod sensitive;
 pub mod state;
 pub mod text_index;
 pub mod write;
