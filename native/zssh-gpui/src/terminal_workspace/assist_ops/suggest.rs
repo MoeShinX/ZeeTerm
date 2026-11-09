@@ -42,13 +42,20 @@ pub(crate) struct Shown {
     id: RequestIdentity,
     typed: String,
     items: Vec<Candidate>,
+    /// 检索时的历史数据源（清除修订、历史开关），见 [`PaneAssist::history_source`]。
+    source: HistorySource,
 }
 
 struct Inflight {
     id: RequestIdentity,
     typed: String,
     rx: Receiver<Vec<Candidate>>,
+    source: HistorySource,
 }
+
+/// 一批候选是从哪份历史检索出来的：（清除修订, 历史开关）。两者任一变了，这批候选里的历史条目就可能
+/// 已经被清掉或不该再出现，整批作废、重新检索（快捷命令还能照常出现）。
+type HistorySource = (u64, bool);
 
 type Job = Box<dyn FnOnce() + Send>;
 
@@ -175,6 +182,36 @@ impl PaneAssist {
     }
 
     /// 现在有没有资格生成候选（见模块说明）。
+    /// 现在的历史数据源：共享历史的清除修订 + 本窗格的历史开关。
+    fn history_source(&self) -> HistorySource {
+        (
+            history::lock(&self.history).clear_revision(),
+            self.history_enabled,
+        )
+    }
+
+    /// 已展示或还在路上的候选是按旧的历史数据源检索的（历史被清除——可能是别的窗口清的——或者
+    /// 历史开关关了）：整批作废，并让同一个输入重新检索一次（快捷命令照常出现，旧历史不再出现）。
+    pub(super) fn drop_results_from_a_stale_history(&mut self) {
+        if self.suggest.shown.is_none() && self.suggest.inflight.is_none() {
+            return;
+        }
+        let current = self.history_source();
+        let stale = self
+            .suggest
+            .shown
+            .as_ref()
+            .is_some_and(|shown| shown.source != current)
+            || self
+                .suggest
+                .inflight
+                .as_ref()
+                .is_some_and(|inflight| inflight.source != current);
+        if stale {
+            self.suggest.cancel_all();
+        }
+    }
+
     fn suggest_eligible(&self, live: bool) -> bool {
         if !(live && self.suggest.active && self.enabled && self.suggestions_available()) {
             return false;
@@ -191,6 +228,7 @@ impl PaneAssist {
     pub(crate) fn suggest_tick(&mut self, live: bool, now: Instant) -> bool {
         let before = self.suggest.signature();
         self.collect_results();
+        self.drop_results_from_a_stale_history();
         if !self.suggest_eligible(live) {
             self.suggest.cancel_all();
         } else {
@@ -233,6 +271,7 @@ impl PaneAssist {
         let (tx, rx) = mpsc::channel();
         let store = Arc::clone(&self.history);
         let quick = Arc::clone(&self.suggest.quick);
+        let source = self.history_source();
         let history_on = self.history_enabled;
         let query = typed.clone();
         let job: Job = Box::new(move || {
@@ -243,7 +282,12 @@ impl PaneAssist {
             };
             let _ = tx.send(suggest::search(&query, hits, &quick));
         });
-        self.suggest.inflight = Some(Inflight { id, typed, rx });
+        self.suggest.inflight = Some(Inflight {
+            id,
+            typed,
+            rx,
+            source,
+        });
         self.suggest.spawn(job);
     }
 
@@ -254,7 +298,7 @@ impl PaneAssist {
         match inflight.rx.try_recv() {
             Ok(items) => {
                 if let Some(inflight) = self.suggest.inflight.take() {
-                    self.deliver(inflight.id, inflight.typed, items);
+                    self.deliver(inflight.id, inflight.typed, inflight.source, items);
                 }
             }
             Err(TryRecvError::Empty) => {}
@@ -263,8 +307,17 @@ impl PaneAssist {
     }
 
     /// 结果回来：先核对请求身份和确认文字，再按展示层规则过滤，最后才展示。不预选。
-    fn deliver(&mut self, id: RequestIdentity, typed: String, items: Vec<Candidate>) {
-        if !self.tracker.is_current(&id) || self.tracker.state().confirmed_text != typed {
+    fn deliver(
+        &mut self,
+        id: RequestIdentity,
+        typed: String,
+        source: HistorySource,
+        items: Vec<Candidate>,
+    ) {
+        if !self.tracker.is_current(&id)
+            || self.tracker.state().confirmed_text != typed
+            || source != self.history_source()
+        {
             return;
         }
         let items: Vec<Candidate> = items
@@ -274,7 +327,12 @@ impl PaneAssist {
         if items.is_empty() {
             return;
         }
-        self.suggest.shown = Some(Shown { id, typed, items });
+        self.suggest.shown = Some(Shown {
+            id,
+            typed,
+            items,
+            source,
+        });
         self.suggest.selected = None;
     }
 
@@ -327,7 +385,9 @@ impl PaneAssist {
             .shown
             .as_ref()
             .ok_or(SuggestRefusal::NothingShown)?;
-        if !self.tracker.is_current(&shown.id) || self.tracker.state().confirmed_text != shown.typed
+        if !self.tracker.is_current(&shown.id)
+            || self.tracker.state().confirmed_text != shown.typed
+            || shown.source != self.history_source()
         {
             return Err(SuggestRefusal::Stale);
         }

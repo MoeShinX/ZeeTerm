@@ -288,3 +288,18 @@ fn the_shared_store_is_one_per_process() {
     let b = shared();
     assert!(Arc::ptr_eq(&a, &b));
 }
+
+/// 清除（某个目标或全部）都让清除修订前进；记录新命令不动它。界面靠它认出旧检索结果作废（复查 R2）。
+#[test]
+fn every_clear_advances_the_clear_revision_and_recording_does_not() {
+    let mut store = HistoryStore::new();
+    assert_eq!(store.clear_revision(), 0);
+    store.record("t1", "ls -la", Provenance::Typed);
+    assert_eq!(store.clear_revision(), 0, "记录不算清除");
+    store.clear_target("t1");
+    assert_eq!(store.clear_revision(), 1);
+    store.clear_target("nobody");
+    assert_eq!(store.clear_revision(), 2, "清一个空目标也前进（保守）");
+    store.clear_all();
+    assert_eq!(store.clear_revision(), 3);
+}

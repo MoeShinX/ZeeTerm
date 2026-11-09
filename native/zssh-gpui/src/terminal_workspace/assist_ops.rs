@@ -253,6 +253,8 @@ impl PaneAssist {
             history::lock(&self.history).clear_all();
         }
         self.history_enabled = enabled;
+        // 已经展示 / 还在路上的历史候选马上作废（不等下一拍）。
+        self.drop_results_from_a_stale_history();
     }
 
     pub(crate) fn integration(&self) -> IntegrationState {

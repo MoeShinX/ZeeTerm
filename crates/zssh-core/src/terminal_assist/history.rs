@@ -151,6 +151,9 @@ pub struct HistoryStore {
     targets: HashMap<String, TargetHistory>,
     total_bytes: usize,
     tick: u64,
+    /// 清除修订：每次清除（某个目标或全部）加一。按旧修订检索出来、已经展示或还在路上的历史候选
+    /// 用它认出"数据源已经被清掉了"，不能再展示或填入（复查 R2）。
+    clear_revision: u64,
 }
 
 impl fmt::Debug for HistoryStore {
@@ -182,6 +185,7 @@ impl HistoryStore {
             targets: HashMap::new(),
             total_bytes: 0,
             tick: 0,
+            clear_revision: 0,
         }
     }
 
@@ -299,6 +303,7 @@ impl HistoryStore {
 
     /// 清除一个目标的全部历史。返回清掉了几条。
     pub fn clear_target(&mut self, target: &str) -> usize {
+        self.clear_revision += 1;
         match self.targets.remove(target) {
             Some(history) => {
                 self.total_bytes -= history.bytes;
@@ -310,10 +315,16 @@ impl HistoryStore {
 
     /// 清除全部历史。返回清掉了几条。
     pub fn clear_all(&mut self) -> usize {
+        self.clear_revision += 1;
         let count = self.stats().entries;
         self.targets.clear();
         self.total_bytes = 0;
         count
+    }
+
+    /// 当前的清除修订（见字段说明）。
+    pub fn clear_revision(&self) -> u64 {
+        self.clear_revision
     }
 
     pub fn stats(&self) -> Stats {

@@ -165,6 +165,87 @@ fn typing_more_voids_the_shown_list_at_once_and_a_new_one_comes_after_it_settles
     assert_eq!(shown(&pane), vec!["git stash".to_owned()]);
 }
 
+// ---- 复查 R2：历史被关掉 / 清除后，已展示、在途、别的窗口里的旧历史候选都要作废 ----
+
+fn quick_remote(pane: &mut Pane) {
+    pane.assist.set_quick_sources(&Arc::new(vec![QuickSource {
+        text: "git remote -v".into(),
+        excluded: false,
+    }]));
+}
+
+#[test]
+fn turning_history_off_drops_shown_history_candidates_and_keeps_quick_commands() {
+    let (mut pane, _remote) = prompt_with_history();
+    quick_remote(&mut pane);
+    type_text(&mut pane, "gi");
+    let clock = Clock::new();
+    clock.settle(&mut pane);
+    assert!(shown(&pane).contains(&"git status".to_owned()));
+    pane.assist.set_history_enabled(false);
+    assert!(
+        !shown(&pane).contains(&"git status".to_owned()),
+        "关掉历史当场撤掉历史候选"
+    );
+    assert!(pane.assist.plan_accept(0).is_err(), "旧候选不能再填入");
+    clock.tick(&mut pane, 20_000);
+    clock.tick(&mut pane, 30_000);
+    assert_eq!(
+        shown(&pane),
+        vec!["git remote -v".to_owned()],
+        "同一个输入重新检索：只剩快捷命令"
+    );
+}
+
+#[test]
+fn clearing_history_elsewhere_drops_shown_candidates_on_the_next_tick() {
+    let (mut pane, _remote) = prompt_with_history();
+    type_text(&mut pane, "gi");
+    let clock = Clock::new();
+    clock.settle(&mut pane);
+    assert!(!shown(&pane).is_empty());
+    // 另一个工作区（窗口）清了共享历史：这个窗格的列表它碰不到。
+    zssh_core::terminal_assist::history::lock(&super::assist_ops::shared_history()).clear_all();
+    assert!(
+        pane.assist.plan_accept(0).is_err(),
+        "数据源已被清除：接受前就拒绝"
+    );
+    clock.tick(&mut pane, 20_000);
+    assert!(shown(&pane).is_empty(), "下一拍撤掉旧候选");
+    clock.tick(&mut pane, 30_000);
+    assert!(shown(&pane).is_empty(), "重新检索后历史已经没有了");
+}
+
+#[test]
+fn a_search_in_flight_from_before_a_clear_is_discarded() {
+    let (mut pane, _remote) = prompt_with_history();
+    pane.assist.defer_search_jobs();
+    type_text(&mut pane, "gi");
+    let clock = Clock::new();
+    clock.settle(&mut pane);
+    assert!(pane.assist.search_in_flight());
+    // 旧检索已经按清除之前的历史算完、结果躺在通道里还没被取走，这时历史被清除。
+    assert_eq!(pane.assist.run_deferred_jobs(), 1);
+    let target_store = super::assist_ops::shared_history();
+    let cleared = zssh_core::terminal_assist::history::lock(&target_store).clear_all();
+    assert!(cleared > 0);
+    clock.tick(&mut pane, 20_000);
+    assert!(
+        shown(&pane).is_empty(),
+        "按清除之前的历史算出来的结果不展示：{:?}",
+        shown(&pane)
+    );
+    // 之后为同一个输入重新检索，历史已经空了。
+    clock.tick(&mut pane, 30_000);
+    pane.assist.run_deferred_jobs();
+    clock.tick(&mut pane, 40_000);
+    assert!(
+        !shown(&pane).contains(&"git status".to_owned()),
+        "清除之前发出的检索，结果不展示：{:?}",
+        shown(&pane)
+    );
+}
+
 #[test]
 fn a_request_in_flight_dies_when_the_input_revision_changes() {
     let (mut pane, _remote) = prompt_with_history();
