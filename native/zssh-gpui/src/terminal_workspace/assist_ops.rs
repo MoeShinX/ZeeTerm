@@ -21,6 +21,8 @@ use zssh_core::terminal_assist::{
 use zssh_session::{CoreFilter, SessionPump};
 use zssh_terminal::{LineCellKind, ShellMarkKind};
 
+mod suggest;
+
 /// 一次写入是怎么来的。输入跟踪据此决定"这是用户在输入行上打的字"还是"别的东西"。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WriteOrigin {
@@ -161,6 +163,8 @@ pub(crate) struct PaneAssist {
     integration: IntegrationState,
     /// 进程共用的内存命令历史（按目标分域）。
     history: Arc<Mutex<HistoryStore>>,
+    /// 候选的检索、展示和选择模式（见 `suggest`）。
+    suggest: suggest::SuggestState,
     /// 设置里的 `terminal_assist.history_enabled`。关着时不采集。
     history_enabled: bool,
     /// 测试里看一眼取走过哪些事件（产品代码不读）。
@@ -191,6 +195,7 @@ impl PaneAssist {
             ai_arms_seen: 0,
             integration: IntegrationState::Off,
             history: shared_history(),
+            suggest: suggest::SuggestState::default(),
             history_enabled: true,
             #[cfg(test)]
             drained: Vec::new(),
@@ -295,6 +300,8 @@ impl PaneAssist {
             self.enabled = enabled;
             // 开关切换等于换了一个世代：关掉时立刻取消一切，打开时从 Unknown 重新来。
             self.tracker.on_integration_reset(now);
+            // 关掉自动建议：浮层和选择模式立即收起，在途检索作废。
+            self.close_suggestions();
         }
     }
 
@@ -345,6 +352,7 @@ impl PaneAssist {
     pub(crate) fn on_connection_reset(&mut self, now: Instant) {
         self.integration = IntegrationState::Off;
         self.tracker.on_connection_reset(now);
+        self.close_suggestions();
     }
 
     pub(crate) fn on_geometry_changed(&mut self, now: Instant) {
@@ -371,6 +379,10 @@ impl PaneAssist {
     }
 
     pub(crate) fn on_ime_preedit(&mut self, active: bool, now: Instant) {
+        if active {
+            // 输入法开始预编辑：退出选择模式、收起列表，这次输入交回原输入链。
+            self.close_suggestions();
+        }
         if self.enabled {
             self.tracker.on_ime_preedit(active, now);
         }
@@ -383,6 +395,8 @@ impl PaneAssist {
         bytes: &[u8],
         now: Instant,
     ) -> Option<u64> {
+        // 选择模式里任何别的写入（普通输入、输入法提交、粘贴……）都让它退出；这次写入照常往下走一次。
+        self.exit_select_mode();
         if !self.enabled {
             return None;
         }
@@ -414,14 +428,12 @@ impl PaneAssist {
         }
     }
 
-    /// 发候选请求之前取请求身份（P4）：结果回来和接受时都要用 [`InputTracker::is_current`] 重新核对。
-    #[allow(dead_code)] // P4：候选请求的接入点，这一版只有测试在用
+    /// 发候选请求之前取请求身份：结果回来和接受时都要用 [`InputTracker::is_current`] 重新核对。
     pub(crate) fn request_identity(&mut self) -> RequestIdentity {
         self.tracker.identity()
     }
 
-    /// 接受候选前的登记（P4）：校验全部通过才返回本地序号，状态进入 AwaitingEcho。
-    #[allow(dead_code)] // P4：候选请求的接入点，这一版只有测试在用
+    /// 接受候选前的登记：校验全部通过才返回本地序号，状态进入 AwaitingEcho。
     pub(crate) fn begin_accept(
         &mut self,
         suffix: &str,
@@ -540,13 +552,13 @@ impl super::Pane {
         }
     }
 
-    /// 接受一个候选（P4 的接入点）：只把 `suffix`（后缀）发给 shell，不发回车，也不提前把它当成已确认。
+    /// 接受一个候选：只把 `suffix`（后缀）发给 shell，不发回车，也不提前把它当成已确认。候选列表的"填入"点击
+    /// 和选择模式里的 Tab / Enter 都只走这一个出口（不要用 `write_as` 去发后缀）。
     ///
     /// 顺序和 [`Self::write_as`] 一样（先登记再发送再报告结果）。接受前最后核对一遍锁屏和窗格状态，
     /// 再让状态机核对请求身份、输入起点、光标位置等全部条件（[`InputTracker::begin_accept`]）；
     /// 任何一项不满足就一个字节都不发。已经排进发送队列的字节无法撤回，所以锁屏时只是不再发新的。
     /// `Ok` 里是发送结果：被拒绝 / 传输失败都会让状态机失同步，**不会重试、不会补发退格或补偿文本**。
-    #[allow(dead_code)] // P4：候选列表接受入口，这一版只有测试在用
     pub(super) fn accept_suggestion(
         &mut self,
         suffix: &str,

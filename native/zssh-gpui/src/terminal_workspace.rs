@@ -163,6 +163,8 @@ mod highlight_ops;
 mod ime_ops;
 mod search_ops;
 mod settings_ops;
+#[cfg(test)]
+mod suggest_tests;
 
 pub(crate) use assist_ops::{AssistView, IntegrationError, IntegrationState, StopOutcome};
 use assist_ops::{PaneAssist, WriteOrigin, classify_key};
@@ -961,7 +963,9 @@ impl Pane {
         }
         // 不管有没有重绘、窗格在不在前台：远端的查询（DSR / DA 等）等着回复。
         self.flush_replies();
-        self.observe_input();
+        if self.observe_input() {
+            changed = true;
+        }
         if changed {
             self.snapshot = self.driver.pump().snapshot();
         }
@@ -992,12 +996,19 @@ impl Pane {
 
     /// 每次处理完输出（以及定时）：让输入跟踪看一眼——先确认它还属于这条连接，再处理新到的 shell 标记，
     /// 最后对一遍屏幕。只读，不写远端。
-    fn observe_input(&mut self) {
-        let now = Instant::now();
+    ///
+    /// 返回候选浮层要画的东西有没有变（出现、消失、选中项变了）。
+    fn observe_input(&mut self) -> bool {
+        self.observe_input_at(Instant::now())
+    }
+
+    fn observe_input_at(&mut self, now: Instant) -> bool {
         let target = self.target_identity();
         self.assist
             .sync_context(self.id, self.generation, &target, now);
         self.assist.after_output(self.driver.pump_mut(), now);
+        let live = self.state == PaneState::Live && self.is_session();
+        self.assist.suggest_tick(live, now)
     }
 
     /// 限制条件（锁屏、广播、模态框）由工作区每帧告诉窗格；鼠标上报和备用屏幕 / 滚回历史由窗格自己从终端读。
@@ -2053,6 +2064,9 @@ impl TerminalWorkspace {
             for (pane_index, pane) in tab.panes.iter_mut().enumerate() {
                 pane.assist.set_broadcast_revision(revision, now);
                 pane.assist.set_history_enabled(history_enabled);
+                // 候选只给活动标签的聚焦窗格；别的窗格不生成、不展示。
+                pane.assist
+                    .set_suggest_active(foreground && pane_index == focused);
                 pane.set_assist_restrictions(
                     locked,
                     broadcast,

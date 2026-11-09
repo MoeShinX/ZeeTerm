@@ -14,11 +14,11 @@ use zssh_core::terminal_assist::{
 };
 use zssh_session::SessionEvent;
 
-const SIZE: Size = Size { rows: 6, cols: 40 };
+pub(super) const SIZE: Size = Size { rows: 6, cols: 40 };
 
 /// 测试对假后端的遥控：写出去了什么、下一次写入给什么结果、要不要同步回显。
 #[derive(Clone)]
-struct Remote {
+pub(super) struct Remote {
     sent: Arc<Mutex<Vec<Vec<u8>>>>,
     outcome: Arc<Mutex<WriteOutcome>>,
     echo: Arc<Mutex<bool>>,
@@ -26,15 +26,15 @@ struct Remote {
 }
 
 impl Remote {
-    fn sent(&self) -> Vec<Vec<u8>> {
+    pub(super) fn sent(&self) -> Vec<Vec<u8>> {
         self.sent.lock().unwrap().clone()
     }
 
-    fn set_outcome(&self, outcome: WriteOutcome) {
+    pub(super) fn set_outcome(&self, outcome: WriteOutcome) {
         *self.outcome.lock().unwrap() = outcome;
     }
 
-    fn set_echo(&self, on: bool) {
+    pub(super) fn set_echo(&self, on: bool) {
         *self.echo.lock().unwrap() = on;
     }
 
@@ -47,7 +47,7 @@ impl Remote {
     }
 
     /// 远端发来一批输出（generation 1）。
-    fn output(&self, pane: &mut Pane, bytes: &[u8]) {
+    pub(super) fn output(&self, pane: &mut Pane, bytes: &[u8]) {
         self.tx
             .send(SessionEvent::Data {
                 generation: 1,
@@ -58,7 +58,7 @@ impl Remote {
     }
 }
 
-struct Shell {
+pub(super) struct Shell {
     remote: Remote,
 }
 
@@ -85,7 +85,7 @@ impl SessionBackend for Shell {
     }
 }
 
-fn shell_pane() -> (Pane, Remote) {
+pub(super) fn shell_pane() -> (Pane, Remote) {
     let (tx, rx) = std::sync::mpsc::channel();
     let remote = Remote {
         sent: Arc::new(Mutex::new(Vec::new())),
@@ -106,19 +106,19 @@ fn shell_pane() -> (Pane, Remote) {
     (pane, remote)
 }
 
-fn at_prompt() -> (Pane, Remote) {
+pub(super) fn at_prompt() -> (Pane, Remote) {
     let (mut pane, remote) = shell_pane();
     remote.output(&mut pane, b"\x1b]133;A\x07$ \x1b]133;B\x07");
     assert_eq!(pane.assist.phase(), Phase::Input);
     (pane, remote)
 }
 
-fn later(pane: &mut Pane, by: Duration) {
+pub(super) fn later(pane: &mut Pane, by: Duration) {
     let now = Instant::now() + by;
     pane.assist.after_output(pane.driver.pump_mut(), now);
 }
 
-fn confirmed(pane: &Pane) -> String {
+pub(super) fn confirmed(pane: &Pane) -> String {
     pane.assist.tracker().state().confirmed_text.clone()
 }
 
@@ -964,11 +964,11 @@ fn target_of(pane: &Pane) -> String {
     pane.assist.tracker().context().target.clone()
 }
 
-fn history_stats(pane: &Pane) -> zssh_core::terminal_assist::history::Stats {
+pub(super) fn history_stats(pane: &Pane) -> zssh_core::terminal_assist::history::Stats {
     zssh_core::terminal_assist::history::lock(pane.assist.history()).stats()
 }
 
-fn history_texts(pane: &Pane, prefix: &str) -> Vec<String> {
+pub(super) fn history_texts(pane: &Pane, prefix: &str) -> Vec<String> {
     let target = target_of(pane);
     zssh_core::terminal_assist::history::lock(pane.assist.history())
         .matches(&target, prefix)
@@ -978,7 +978,7 @@ fn history_texts(pane: &Pane, prefix: &str) -> Vec<String> {
 }
 
 /// 输入一行、回车，远端发来命令开始标记（再给一个新的 Prompt）。
-fn run_line(pane: &mut Pane, remote: &Remote, line: &str) {
+pub(super) fn run_line(pane: &mut Pane, remote: &Remote, line: &str) {
     pane.write_as(line.as_bytes(), WriteOrigin::TypedText);
     pane.write_as(b"\r", WriteOrigin::Key(KeyClass::Enter));
     remote.output(pane, b"\x1b]133;C\x07");

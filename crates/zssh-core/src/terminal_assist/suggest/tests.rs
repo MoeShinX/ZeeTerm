@@ -149,6 +149,29 @@ fn debug_output_does_not_contain_the_command() {
 }
 
 #[test]
+fn collecting_searching_and_filtering_emit_no_log_line_with_a_command() {
+    use crate::terminal_assist::history::{HistoryStore, Provenance};
+    let secret = "mysql -u root -pHunter2xyz";
+    let ordinary = "mysql -u root -h db-east";
+    let ((), logs) = crate::test_util::capture_logs(|| {
+        let mut store = HistoryStore::new();
+        store.record("deploy@build-box:22", secret, Provenance::Typed);
+        store.record("deploy@build-box:22", ordinary, Provenance::Typed);
+        let hits = store.matches("deploy@build-box:22", "mysql ");
+        let got = search("mysql ", hits, &[quick(secret), quick(ordinary)]);
+        assert_eq!(texts(&got), vec![ordinary]);
+        store.clear_target("deploy@build-box:22");
+        store.clear_all();
+    });
+    for forbidden in ["Hunter2xyz", "db-east", "mysql", "build-box"] {
+        assert!(
+            !logs.contains(forbidden),
+            "日志里不能有命令或目标名: {logs}"
+        );
+    }
+}
+
+#[test]
 fn a_quick_command_is_suggestible_only_when_unmarked_and_clean() {
     assert!(quick_command_suggestible("systemctl status nginx", false));
     assert!(!quick_command_suggestible("systemctl status nginx", true));
