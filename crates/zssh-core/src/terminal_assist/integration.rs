@@ -64,7 +64,8 @@ __zeeterm_cwd
 return "$__zs"
 }
 __zeeterm_off() {
-local __zi __zn=() __zv
+local __zi __zv
+local -a __zn=()
 if [ "${__zeeterm_pc_kind-}" = array ]; then
 for __zi in "${PROMPT_COMMAND[@]}"; do
 [ "$__zi" = __zeeterm_pc ] || __zn+=("$__zi")
