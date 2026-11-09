@@ -10,7 +10,7 @@
 //! 终端配色（跟随皮肤，或固定成某一套皮肤的终端色板）。后两项记在全局 [`Look`] 里。
 
 use ::gpui::{App, Global, Hsla, Rgba, px};
-use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::component::{Theme, ThemeColor, ThemeMode};
 
 /// 一个皮肤的界面色板（对应 skins.ts 里的 `ui`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -703,6 +703,12 @@ pub struct Tokens {
     pub surface: Hsla,
     pub subtle: Hsla,
     pub border: Hsla,
+    /// 输入框 / 默认按钮的边框：和 `border` 一样，只是深色皮肤上会拉到对字段底色够清楚，见 [`field_border_hex`]。
+    pub field_border: Hsla,
+    /// 菜单、下拉、提示这类弹出层的底色，见 [`popover_hex`]。
+    pub popover: Hsla,
+    /// 开关的圆点：强调色轨道和灰色关闭轨道上都看得清的浅（或皮肤深色）色，见 [`switch_thumb_hex`]。
+    pub switch_thumb: Hsla,
     /// 区域之间的分隔线（侧栏右边、标题栏下边、状态栏上边）：1px，取边框色和底色的中间，只起分界作用，
     /// 不抢眼；卡片、输入框、菜单仍用 `border`。
     pub divider: Hsla,
@@ -757,6 +763,9 @@ impl Tokens {
             surface: rgb(p.surface),
             subtle: rgb(p.subtle),
             border: rgb(p.border),
+            field_border: rgb(field_border_hex(skin)),
+            popover: rgb(popover_hex(skin)),
+            switch_thumb: rgb(switch_thumb_hex(skin)),
             divider: rgb(divider_hex(skin)),
             text: rgb(ink.primary),
             text_muted: rgb(ink.secondary),
@@ -829,6 +838,142 @@ fn rgb(hex: u32) -> Hsla {
 /// 区域分隔线的颜色：边框色和底色各一半（见 [`Tokens::divider`]）。
 pub fn divider_hex(skin: &Skin) -> u32 {
     mix(skin.ui.border, skin.ui.background, 0.5)
+}
+
+/// 组件库在深色模式下把输入框的底色算成 `input` 色以 30% 的不透明度叠在父级背景上（`Theme::input_background`）；
+/// 浅色模式下输入框底色就是 `background`。下面算对比度时按这个公式还原字段底色。
+const DARK_FIELD_FILL_ALPHA: f32 = 0.3;
+/// 组件库给弹出层画的 1px 外圈（`popover_style`）是前景色的 10% 不透明度。
+#[cfg(test)]
+const POPOVER_RING_INK: f32 = 0.1;
+
+/// 输入框边框对字段底色的对比度下限。浅色皮肤沿用现有最低值（everforest 约 1.21），保证浅色观感不变；
+/// 深色皮肤原来只有 1.1–1.2 : 1，框和底糊在一起，定 1.5 : 1：WCAG 对非文字控件建议 3 : 1，
+/// 深色界面里 3 : 1 的边框会很刺眼，1.5 : 1 在石墨这类很暗的底上已经是清楚的一圈。
+pub const FIELD_BORDER_MIN_LIGHT: f32 = 1.2;
+pub const FIELD_BORDER_MIN_DARK: f32 = 1.5;
+/// 弹出层（菜单）底色对主背景的对比度下限。组件库给菜单画的只有一圈 1px、前景色 10% 的外圈（约 1.2–1.3 : 1，
+/// 细得几乎看不见），真正把菜单和背景分开的是底色这一层。浅色皮肤的卡片色对白底本来就有 1.05–1.14，
+/// 观感一直可以，下限取 1.05 只防退化。深色皮肤的卡片色比主背景还暗、只有 1.05–1.17：想抬到 1.3
+/// （[`POPUP_FILL_TARGET_DARK`]），但菜单里的说明文字要守住 4.5 : 1，Nord / Gruvbox / Everforest 这类说明色偏暗的
+/// 皮肤只能抬到约 1.17，所以硬下限取 1.15，目标 1.3 尽量达到。
+pub const POPUP_FILL_MIN_LIGHT: f32 = 1.05;
+#[cfg(test)]
+pub const POPUP_FILL_MIN_DARK: f32 = 1.15;
+/// 深色皮肤菜单底色想达到的对比度（受说明文字可读性限制，见 [`popover_hex`]）。
+pub const POPUP_FILL_TARGET_DARK: f32 = 1.3;
+/// 开关圆点对强调色轨道的对比度下限（取 WCAG 对非文字控件的 3 : 1）。
+#[cfg(test)]
+pub const SWITCH_THUMB_ON_MIN: f32 = 3.0;
+/// 开关圆点对关闭轨道（灰色）的对比度下限：浅色皮肤原来最低约 1.9（白点放在浅灰轨道上），
+/// 取 1.9 保证没有变差；深色皮肤的关闭轨道更深，实际都在 2.2 以上。
+#[cfg(test)]
+pub const SWITCH_THUMB_OFF_MIN: f32 = 1.9;
+
+fn field_floor(skin: &Skin) -> f32 {
+    if skin.dark {
+        FIELD_BORDER_MIN_DARK
+    } else {
+        FIELD_BORDER_MIN_LIGHT
+    }
+}
+
+/// 输入框在某个父级背景上的底色（`border` 是当前的输入框边框色）。
+pub fn field_fill_hex(skin: &Skin, border: u32, parent: u32) -> u32 {
+    if skin.dark {
+        mix(border, parent, DARK_FIELD_FILL_ALPHA)
+    } else {
+        skin.ui.background
+    }
+}
+
+/// 输入框边框对字段底色的对比度；父级背景取主背景和卡片 / 对话框底色里更差的那个。
+pub fn field_border_contrast(skin: &Skin, border: u32) -> f32 {
+    [skin.ui.background, skin.ui.surface]
+        .into_iter()
+        .map(|parent| contrast(border, field_fill_hex(skin, border, parent)))
+        .fold(f32::MAX, f32::min)
+}
+
+/// 输入框 / 默认按钮的边框色：皮肤自己的边框色已经够清楚就原样用，不够就往主文字色混，
+/// 混到 [`field_border_contrast`] 刚好过下限为止。不改 `SKINS` 里的值（那是脚本从 skins.ts 抽出来的）。
+pub fn field_border_hex(skin: &Skin) -> u32 {
+    let own = skin.ui.border;
+    let floor = field_floor(skin);
+    if field_border_contrast(skin, own) >= floor {
+        return own;
+    }
+    (1..=50)
+        .map(|step| mix(skin.ui.text, own, step as f32 * 0.02))
+        .find(|hex| field_border_contrast(skin, *hex) >= floor)
+        .unwrap_or(skin.ui.text)
+}
+
+/// 弹出层底色对主背景的对比度。
+pub fn popover_contrast(skin: &Skin, popover: u32) -> f32 {
+    contrast(popover, skin.ui.background)
+}
+
+/// 组件库画在弹出层外面的 1px 外圈（前景色 10% 叠在主背景上）对主背景的对比度；只在报告里列出，不当下限。
+#[cfg(test)]
+pub fn popover_ring_contrast(skin: &Skin) -> f32 {
+    let bg = skin.ui.background;
+    contrast(mix(ink_for(skin).primary, bg, POPOVER_RING_INK), bg)
+}
+
+#[cfg(test)]
+fn popover_floor(skin: &Skin) -> f32 {
+    if skin.dark {
+        POPUP_FILL_MIN_DARK
+    } else {
+        POPUP_FILL_MIN_LIGHT
+    }
+}
+
+/// 菜单 / 下拉 / 提示的底色：皮肤的卡片色（`surface`）够和主背景分开就原样用（浅色皮肤都是）；
+/// 不够（深色皮肤的卡片色比主背景还暗，菜单糊进去）就从主背景往主文字色抬，和常见的「弹出层比页面亮一级」一致。
+/// 抬到对主背景 [`POPUP_FILL_TARGET_DARK`] 为止，但不能把菜单里的说明文字（右侧快捷键）压到
+/// [`MUTED_MIN_CONTRAST`] 以下：说明色是按主背景 / 卡片色算的，底色抬亮后会变难读，某些皮肤（Nord、Gruvbox 这类
+/// 说明色本来就偏暗的）抬不到目标，就停在说明文字刚好守住下限的那一档。
+pub fn popover_hex(skin: &Skin) -> u32 {
+    let own = skin.ui.surface;
+    let target = if skin.dark {
+        POPUP_FILL_TARGET_DARK
+    } else {
+        POPUP_FILL_MIN_LIGHT
+    };
+    if popover_contrast(skin, own) >= target {
+        return own;
+    }
+    let muted = ink_for(skin).secondary;
+    let mut best = own;
+    for step in 1..=50 {
+        let hex = mix(skin.ui.text, skin.ui.background, step as f32 * 0.01);
+        if contrast(muted, hex) < MUTED_MIN_CONTRAST {
+            break;
+        }
+        best = hex;
+        if popover_contrast(skin, hex) >= target {
+            break;
+        }
+    }
+    // 卡片色本来就是更暗的一档（Everforest 深色）而且分得更开时，保留它，不为了「抬亮」反而变差。
+    if popover_contrast(skin, best) < popover_contrast(skin, own) {
+        own
+    } else {
+        best
+    }
+}
+
+/// 开关关着时的轨道色：边框色和说明色之间，浅深皮肤上都看得出来。
+pub fn switch_off_hex(skin: &Skin) -> u32 {
+    mix(skin.ui.text_muted, skin.ui.border, 0.45)
+}
+
+/// 开关圆点：和强调色上的字（`on_accent`）同一个颜色。组件库默认取 `background`，石墨上是近黑色的圆点，
+/// 和别的浅色控件不一致；`on_accent` 本来就是按「放在强调色上最清楚」挑的，关闭轨道上也比原来更清楚。
+pub fn switch_thumb_hex(skin: &Skin) -> u32 {
+    on_accent(skin)
 }
 
 fn channels(hex: u32) -> [f32; 3] {
@@ -910,20 +1055,7 @@ pub fn contrast(a: u32, b: u32) -> f32 {
 
 fn apply(dark: bool, cx: &mut App) {
     let skin = look(cx).skin(dark);
-    let t = Tokens::for_skin(skin);
-    let p = skin.ui;
-    let hover_amount = if dark { 0.10 } else { 0.07 };
     let ui_font = crate::fonts::ui_font(cx);
-    let subtle_hover = rgb(mix(p.text, p.subtle, hover_amount));
-    let subtle_active = rgb(mix(p.text, p.subtle, hover_amount * 2.0));
-    let accent_hover = rgb(mix(p.text, p.accent, hover_amount));
-    let accent_active = rgb(mix(p.text, p.accent, hover_amount * 2.0));
-    let danger_hover = rgb(mix(p.text, p.danger, hover_amount));
-    let danger_active = rgb(mix(p.text, p.danger, hover_amount * 2.0));
-    // 状态色（成功 / 提示 / 警告）的悬停、按下：和上面按钮同一个公式，免得落到组件库自带的蓝绿色。
-    let tint = |base: u32, k: f32| rgb(mix(p.text, base, hover_amount * k));
-    // 开关关着时的轨道：边框色和说明色之间，浅深皮肤上都看得出来。
-    let switch_off = rgb(mix(p.text_muted, p.border, 0.45));
     Theme::update(cx, |theme| {
         // 界面字体：显式的字体栈代替 `.SystemUIFont`（见 `fonts::resolve_ui_font`）。中文后备在各窗口的
         // 顶层元素上设（`typography::UiFontStyled`），主题只有主字体一个槽。
@@ -934,116 +1066,138 @@ fn apply(dark: bool, cx: &mut App) {
         // PopupMenu 的外框也读取 radius；不重写菜单以保留键盘导航和辅助功能。
         theme.radius = px(CONTROL_RADIUS);
         theme.radius_lg = px(PANEL_RADIUS);
-        let c = &mut theme.colors;
-        c.background = t.background;
-        c.foreground = t.text;
-        c.border = t.border;
-        c.input = t.border;
-        c.ring = t.accent;
-        c.caret = t.text;
-        c.selection = t.selection;
-        c.muted = t.subtle;
-        c.muted_foreground = t.text_muted;
-        c.accent = t.accent_soft;
-        c.accent_foreground = t.text;
-        c.popover = t.surface;
-        c.popover_foreground = t.text;
-        c.group_box = t.surface;
-        c.group_box_foreground = t.text;
-        c.primary = t.accent;
-        c.primary_foreground = t.on_accent;
-        c.primary_hover = accent_hover;
-        c.primary_active = accent_active;
-        c.secondary = t.subtle;
-        c.secondary_foreground = t.text;
-        c.secondary_hover = subtle_hover;
-        c.secondary_active = subtle_active;
-        c.danger = t.danger;
-        c.danger_foreground = rgb(0xFFFFFF);
-        c.danger_hover = danger_hover;
-        c.danger_active = danger_active;
-        c.success = t.dot_connected;
-        c.warning = t.dot_connecting;
-        // 下面这些以前没写，会露出组件库默认的蓝 / 绿 / 灰：滑块、开关、进度条、链接、拖放提示、骨架屏、状态色变体。
-        c.success_hover = tint(DOT_CONNECTED, 1.0);
-        c.success_active = tint(DOT_CONNECTED, 2.0);
-        c.success_foreground = rgb(0xFFFFFF);
-        c.info = t.accent;
-        c.info_hover = accent_hover;
-        c.info_active = accent_active;
-        c.info_foreground = t.on_accent;
-        c.button_success = t.dot_connected;
-        c.button_success_hover = tint(DOT_CONNECTED, 1.0);
-        c.button_success_active = tint(DOT_CONNECTED, 2.0);
-        c.button_success_foreground = rgb(0xFFFFFF);
-        c.button_warning = t.dot_connecting;
-        c.button_warning_hover = tint(DOT_CONNECTING, 1.0);
-        c.button_warning_active = tint(DOT_CONNECTING, 2.0);
-        c.button_warning_foreground = rgb(0x1F2937);
-        c.button_info = t.accent;
-        c.button_info_hover = accent_hover;
-        c.button_info_active = accent_active;
-        c.button_info_foreground = t.on_accent;
-        c.switch = switch_off;
-        c.slider_bar = t.accent;
-        c.slider_thumb = t.on_accent;
-        c.progress_bar = t.accent;
-        c.link = t.accent;
-        c.link_hover = accent_hover;
-        c.link_active = accent_active;
-        c.drop_target = t.accent_soft;
-        c.drag_border = t.accent;
-        c.skeleton = t.subtle;
-        c.accordion = t.background;
-        c.description_list_label = t.subtle;
-        c.description_list_label_foreground = t.text_muted;
-        c.button = t.subtle;
-        c.button_hover = subtle_hover;
-        c.button_active = subtle_active;
-        c.button_foreground = t.text;
-        c.button_primary = t.accent;
-        c.button_primary_hover = accent_hover;
-        c.button_primary_active = accent_active;
-        c.button_primary_foreground = t.on_accent;
-        c.button_danger = t.danger;
-        c.button_danger_hover = danger_hover;
-        c.button_danger_active = danger_active;
-        c.button_danger_foreground = rgb(0xFFFFFF);
-        c.button_secondary = t.subtle;
-        c.button_secondary_hover = subtle_hover;
-        c.button_secondary_active = subtle_active;
-        c.button_secondary_foreground = t.text;
-        c.list = t.background;
-        c.list_even = t.background;
-        c.list_hover = t.hover;
-        c.list_active = t.accent_soft;
-        c.list_active_border = t.accent;
-        c.list_head = t.surface;
-        c.sidebar = t.background;
-        c.sidebar_foreground = t.text;
-        c.sidebar_border = t.divider;
-        c.sidebar_accent = t.accent_soft;
-        c.sidebar_accent_foreground = t.text;
-        c.sidebar_primary = t.accent;
-        c.sidebar_primary_foreground = t.on_accent;
-        c.tab_bar = t.background;
-        c.tab = t.background;
-        c.tab_active = t.background;
-        c.tab_foreground = t.text_muted;
-        c.tab_active_foreground = t.text;
-        c.title_bar = t.background;
-        c.title_bar_border = t.divider;
-        c.status_bar = t.background;
-        c.status_bar_border = t.divider;
-        c.scrollbar = t.background;
-        c.scrollbar_thumb = t.border;
-        c.scrollbar_thumb_hover = t.text_muted;
-        c.table = t.background;
-        c.table_even = t.background;
-        c.table_head = t.surface;
-        c.table_hover = t.hover;
-        c.table_row_border = t.border;
+        write_colors(&mut theme.colors, skin);
     });
+}
+
+/// 把一个皮肤的颜色写进组件库的主题色表（`apply` 调用；单独成函数是为了测试能直接核对「哪个组件颜色读哪个 token」）。
+fn write_colors(c: &mut ThemeColor, skin: &Skin) {
+    let t = Tokens::for_skin(skin);
+    let p = skin.ui;
+    let dark = skin.dark;
+    let hover_amount = if dark { 0.10 } else { 0.07 };
+    let subtle_hover = rgb(mix(p.text, p.subtle, hover_amount));
+    let subtle_active = rgb(mix(p.text, p.subtle, hover_amount * 2.0));
+    let accent_hover = rgb(mix(p.text, p.accent, hover_amount));
+    let accent_active = rgb(mix(p.text, p.accent, hover_amount * 2.0));
+    let danger_hover = rgb(mix(p.text, p.danger, hover_amount));
+    let danger_active = rgb(mix(p.text, p.danger, hover_amount * 2.0));
+    // 状态色（成功 / 提示 / 警告）的悬停、按下：和上面按钮同一个公式，免得落到组件库自带的蓝绿色。
+    let tint = |base: u32, k: f32| rgb(mix(p.text, base, hover_amount * k));
+    // 开关关着时的轨道：边框色和说明色之间，浅深皮肤上都看得出来。
+    let switch_off = rgb(switch_off_hex(skin));
+    c.background = t.background;
+    c.foreground = t.text;
+    c.border = t.border;
+    // 输入框（和默认按钮）的边框：深色皮肤的原边框对底色只有 1.1 : 1，糊在一起，见 [`field_border_hex`]。
+    c.input = t.field_border;
+    c.ring = t.accent;
+    c.caret = t.text;
+    c.selection = t.selection;
+    c.muted = t.subtle;
+    c.muted_foreground = t.text_muted;
+    c.accent = t.accent_soft;
+    c.accent_foreground = t.text;
+    // 菜单 / 弹出层 / 下拉：深色皮肤上比主背景亮一点，见 [`popover_hex`]。
+    c.popover = t.popover;
+    c.popover_foreground = t.text;
+    c.group_box = t.surface;
+    c.group_box_foreground = t.text;
+    c.primary = t.accent;
+    c.primary_foreground = t.on_accent;
+    c.primary_hover = accent_hover;
+    c.primary_active = accent_active;
+    c.secondary = t.subtle;
+    c.secondary_foreground = t.text;
+    c.secondary_hover = subtle_hover;
+    c.secondary_active = subtle_active;
+    c.danger = t.danger;
+    c.danger_foreground = rgb(0xFFFFFF);
+    c.danger_hover = danger_hover;
+    c.danger_active = danger_active;
+    c.success = t.dot_connected;
+    c.warning = t.dot_connecting;
+    // 下面这些以前没写，会露出组件库默认的蓝 / 绿 / 灰：滑块、开关、进度条、链接、拖放提示、骨架屏、状态色变体。
+    c.success_hover = tint(DOT_CONNECTED, 1.0);
+    c.success_active = tint(DOT_CONNECTED, 2.0);
+    c.success_foreground = rgb(0xFFFFFF);
+    c.info = t.accent;
+    c.info_hover = accent_hover;
+    c.info_active = accent_active;
+    c.info_foreground = t.on_accent;
+    c.button_success = t.dot_connected;
+    c.button_success_hover = tint(DOT_CONNECTED, 1.0);
+    c.button_success_active = tint(DOT_CONNECTED, 2.0);
+    c.button_success_foreground = rgb(0xFFFFFF);
+    c.button_warning = t.dot_connecting;
+    c.button_warning_hover = tint(DOT_CONNECTING, 1.0);
+    c.button_warning_active = tint(DOT_CONNECTING, 2.0);
+    c.button_warning_foreground = rgb(0x1F2937);
+    c.button_info = t.accent;
+    c.button_info_hover = accent_hover;
+    c.button_info_active = accent_active;
+    c.button_info_foreground = t.on_accent;
+    c.switch = switch_off;
+    // 开关圆点和强调色上的字同一个颜色：库默认取 `background`，深色皮肤上是近黑色的圆点。
+    c.switch_thumb = t.switch_thumb;
+    c.slider_bar = t.accent;
+    c.slider_thumb = t.on_accent;
+    c.progress_bar = t.accent;
+    c.link = t.accent;
+    c.link_hover = accent_hover;
+    c.link_active = accent_active;
+    c.drop_target = t.accent_soft;
+    c.drag_border = t.accent;
+    c.skeleton = t.subtle;
+    c.accordion = t.background;
+    c.description_list_label = t.subtle;
+    c.description_list_label_foreground = t.text_muted;
+    c.button = t.subtle;
+    c.button_hover = subtle_hover;
+    c.button_active = subtle_active;
+    c.button_foreground = t.text;
+    c.button_primary = t.accent;
+    c.button_primary_hover = accent_hover;
+    c.button_primary_active = accent_active;
+    c.button_primary_foreground = t.on_accent;
+    c.button_danger = t.danger;
+    c.button_danger_hover = danger_hover;
+    c.button_danger_active = danger_active;
+    c.button_danger_foreground = rgb(0xFFFFFF);
+    c.button_secondary = t.subtle;
+    c.button_secondary_hover = subtle_hover;
+    c.button_secondary_active = subtle_active;
+    c.button_secondary_foreground = t.text;
+    c.list = t.background;
+    c.list_even = t.background;
+    c.list_hover = t.hover;
+    c.list_active = t.accent_soft;
+    c.list_active_border = t.accent;
+    c.list_head = t.surface;
+    c.sidebar = t.background;
+    c.sidebar_foreground = t.text;
+    c.sidebar_border = t.divider;
+    c.sidebar_accent = t.accent_soft;
+    c.sidebar_accent_foreground = t.text;
+    c.sidebar_primary = t.accent;
+    c.sidebar_primary_foreground = t.on_accent;
+    c.tab_bar = t.background;
+    c.tab = t.background;
+    c.tab_active = t.background;
+    c.tab_foreground = t.text_muted;
+    c.tab_active_foreground = t.text;
+    c.title_bar = t.background;
+    c.title_bar_border = t.divider;
+    c.status_bar = t.background;
+    c.status_bar_border = t.divider;
+    c.scrollbar = t.background;
+    c.scrollbar_thumb = t.border;
+    c.scrollbar_thumb_hover = t.text_muted;
+    c.table = t.background;
+    c.table_even = t.background;
+    c.table_head = t.surface;
+    c.table_hover = t.hover;
+    c.table_row_border = t.border;
 }
 
 #[cfg(test)]
@@ -1477,5 +1631,157 @@ mod tests {
             .map(|level| latency_badge(level, skin, bg).fg)
             .to_vec();
         assert!(colours[0] != colours[1] && colours[1] != colours[2] && colours[0] != colours[2]);
+    }
+
+    // ---- UI-UNIFY：控件边界、菜单层次、开关圆点 ----
+
+    #[test]
+    fn every_skin_has_a_visible_input_border_against_the_field_fill() {
+        for skin in SKINS {
+            let border = field_border_hex(skin);
+            let floor = field_floor(skin);
+            let got = field_border_contrast(skin, border);
+            assert!(
+                got >= floor,
+                "{}: 输入框边框 {border:06X} 对字段底色只有 {got:.2} : 1，低于 {floor}",
+                skin.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_skin_whose_input_border_is_already_clear_keeps_its_own() {
+        // 只调真的不够的：浅色皮肤的边框（1.2 以上）原样保留，深色皮肤里不够的才被拉开。
+        for skin in SKINS.iter().filter(|s| !s.dark) {
+            assert_eq!(field_border_hex(skin), skin.ui.border, "{}", skin.id);
+        }
+        for skin in SKINS.iter().filter(|s| s.dark) {
+            if field_border_contrast(skin, skin.ui.border) < FIELD_BORDER_MIN_DARK {
+                assert_ne!(field_border_hex(skin), skin.ui.border, "{}", skin.id);
+            }
+        }
+        // 石墨：原来 1.1 : 1。
+        let graphite = skin("graphite").expect("石墨在表里");
+        assert!(field_border_contrast(graphite, graphite.ui.border) < 1.2);
+        assert!(field_border_contrast(graphite, field_border_hex(graphite)) >= 1.5);
+    }
+
+    #[test]
+    fn every_skin_menu_stands_out_from_the_main_background() {
+        for skin in SKINS {
+            let popover = popover_hex(skin);
+            let floor = popover_floor(skin);
+            let got = popover_contrast(skin, popover);
+            assert!(
+                got >= floor,
+                "{}: 菜单底色对主背景只有 {got:.2} : 1，低于 {floor}",
+                skin.id
+            );
+            // 菜单里的说明文字（右侧快捷键）仍要读得清。
+            let muted = ink_for(skin).secondary;
+            assert!(
+                contrast(muted, popover) >= MUTED_MIN_CONTRAST,
+                "{}: 说明文字在菜单底色上不够清楚",
+                skin.id
+            );
+            assert!(
+                contrast(ink_for(skin).primary, popover) >= 7.0,
+                "{}: 正文在菜单底色上不够清楚",
+                skin.id
+            );
+        }
+    }
+
+    #[test]
+    fn light_skin_menus_keep_the_card_colour() {
+        for skin in SKINS.iter().filter(|s| !s.dark) {
+            assert_eq!(popover_hex(skin), skin.ui.surface, "{}", skin.id);
+        }
+    }
+
+    #[test]
+    fn dark_menus_never_end_up_less_separated_than_the_skin_card_colour() {
+        for skin in SKINS.iter().filter(|s| s.dark) {
+            assert!(
+                popover_contrast(skin, popover_hex(skin))
+                    >= popover_contrast(skin, skin.ui.surface),
+                "{}",
+                skin.id
+            );
+        }
+        // 石墨：菜单抬到比主背景亮一级（原来 #181818 比 #1F1F1F 还暗，只差 1.08 : 1）。
+        let graphite = skin("graphite").expect("石墨在表里");
+        assert!(luminance(popover_hex(graphite)) > luminance(graphite.ui.background));
+        assert!(popover_contrast(graphite, popover_hex(graphite)) >= POPUP_FILL_TARGET_DARK);
+    }
+
+    #[test]
+    fn the_switch_thumb_is_the_on_accent_colour_and_shows_on_both_tracks() {
+        for skin in SKINS {
+            let thumb = switch_thumb_hex(skin);
+            assert_eq!(thumb, on_accent(skin), "{}", skin.id);
+            let on = contrast(thumb, skin.ui.accent);
+            let off = contrast(thumb, switch_off_hex(skin));
+            assert!(
+                on >= SWITCH_THUMB_ON_MIN,
+                "{}: 圆点对强调色轨道 {on:.2}",
+                skin.id
+            );
+            assert!(
+                off >= SWITCH_THUMB_OFF_MIN,
+                "{}: 圆点对关闭轨道 {off:.2}",
+                skin.id
+            );
+        }
+        // 石墨：不再是近黑色的圆点。
+        let graphite = skin("graphite").expect("石墨在表里");
+        assert_eq!(switch_thumb_hex(graphite), 0xFFFFFF);
+    }
+
+    #[test]
+    fn the_theme_colour_table_reads_the_derived_tokens() {
+        // 组件库的输入框边框读 `input`、菜单底色读 `popover`、开关圆点读 `switch_thumb`：
+        // 把映射钉住，免得以后有人把它们改回 `border` / `surface` / 组件库默认值。
+        for skin in SKINS {
+            let mut colors = ThemeColor::default();
+            write_colors(&mut colors, skin);
+            let t = Tokens::for_skin(skin);
+            assert_eq!(colors.input, t.field_border, "{}", skin.id);
+            assert_eq!(colors.input, rgb(field_border_hex(skin)), "{}", skin.id);
+            assert_eq!(colors.popover, rgb(popover_hex(skin)), "{}", skin.id);
+            assert_eq!(colors.switch_thumb, rgb(on_accent(skin)), "{}", skin.id);
+            assert_eq!(colors.switch, rgb(switch_off_hex(skin)), "{}", skin.id);
+            assert_eq!(colors.primary, rgb(skin.ui.accent), "{}", skin.id);
+            // 通用边框（卡片、分隔）不受影响。
+            assert_eq!(colors.border, rgb(skin.ui.border), "{}", skin.id);
+        }
+    }
+
+    #[test]
+    #[ignore = "打印 UI-UNIFY 报告里的对比度表：cargo test -p zssh-gpui print_unify_table -- --ignored --nocapture"]
+    fn print_unify_table() {
+        for skin in SKINS {
+            let border = field_border_hex(skin);
+            let popover = popover_hex(skin);
+            let thumb = switch_thumb_hex(skin);
+            println!(
+                "{:<18} {} | 边框 {:06X}->{:06X} {:.2}->{:.2} | 菜单 {:06X}->{:06X} {:.2}->{:.2} 外圈 {:.2} 说明字 {:.2} | 圆点 {:06X} 轨道 {:.2} / 关 {:.2}",
+                skin.id,
+                if skin.dark { "dark " } else { "light" },
+                skin.ui.border,
+                border,
+                field_border_contrast(skin, skin.ui.border),
+                field_border_contrast(skin, border),
+                skin.ui.surface,
+                popover,
+                popover_contrast(skin, skin.ui.surface),
+                popover_contrast(skin, popover),
+                popover_ring_contrast(skin),
+                contrast(ink_for(skin).secondary, popover),
+                thumb,
+                contrast(thumb, skin.ui.accent),
+                contrast(thumb, switch_off_hex(skin)),
+            );
+        }
     }
 }
