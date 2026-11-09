@@ -309,11 +309,34 @@ fn the_overlay_stays_inside_the_pane_horizontally_and_in_tiny_panes() {
     // 很长的命令：宽度有上限。
     let wide = place(0.0, 40.0, 18.0, 3, 5000.0, 2000.0, 400.0);
     assert_eq!(wide.width, 640.0);
-    // 上下都放不下（窗格很矮）：取空间大的一侧，不跑到窗格外面。
-    let squat = place(10.0, 60.0, 18.0, 8, 400.0, 800.0, 120.0);
-    assert!(squat.top >= 0.0);
-    let squat_bottom = place(10.0, 100.0, 18.0, 8, 400.0, 800.0, 120.0);
-    assert!(squat_bottom.top >= 0.0);
+    // 上下都放不下全部（窗格很矮）：取空间大的一侧，只画放得下的几行；整个浮层在窗格里，
+    // 也不盖住光标那一行（复查 R3：原来高度不缩，120 高的窗格里画出 244 高的浮层）。
+    let (cell_h, pane_h) = (18.0, 120.0);
+    for cursor_y in [0.0, 20.0, 40.0, 60.0, 80.0, 100.0] {
+        let at = place(10.0, cursor_y, cell_h, 8, 400.0, 800.0, pane_h);
+        assert!(at.visible_rows <= 8);
+        if at.visible_rows == 0 {
+            continue;
+        }
+        assert!(at.top >= 0.0, "y={cursor_y}: {at:?}");
+        assert!(
+            at.top + at.height <= pane_h,
+            "y={cursor_y}: 底边在窗格内 {at:?}"
+        );
+        assert_eq!(at.height, overlay_height(at.visible_rows));
+        let covers_cursor_row = at.top < cursor_y + cell_h && at.top + at.height > cursor_y;
+        assert!(!covers_cursor_row, "y={cursor_y}: 不盖住光标行 {at:?}");
+    }
+    let squat = place(10.0, 0.0, cell_h, 8, 400.0, 800.0, pane_h);
+    assert!(
+        squat.visible_rows >= 1 && squat.visible_rows < 8,
+        "放得下几行就画几行：{squat:?}"
+    );
+    // 一行都放不下：不画。
+    assert_eq!(
+        place(10.0, 30.0, cell_h, 8, 400.0, 800.0, 70.0).visible_rows,
+        0
+    );
     // 高 DPI：单元格高度按设备像素取整后可以是小数，边界照样成立。
     let (cell_h, scale) = (19.5, 1.5);
     let height = overlay_height(5);
@@ -321,6 +344,23 @@ fn the_overlay_stays_inside_the_pane_horizontally_and_in_tiny_panes() {
     let cursor_y = pane_h - height - cell_h - 2.0;
     assert!(!place(0.0, cursor_y, cell_h, 5, 400.0, 900.0, pane_h).flipped);
     assert!(place(0.0, cursor_y + 0.5, cell_h, 5, 400.0, 900.0, pane_h).flipped);
+}
+
+/// 只画得下几行时，键盘选中的那一行始终在可见范围里。
+#[test]
+fn the_visible_window_keeps_the_selected_row_in_view() {
+    use super::suggest_ui::visible_window_start as start;
+    assert_eq!(start(None, 3, 8), 0, "没选中从头画");
+    assert_eq!(start(Some(1), 3, 8), 0);
+    assert_eq!(start(Some(2), 3, 8), 0);
+    assert_eq!(start(Some(3), 3, 8), 1);
+    assert_eq!(start(Some(7), 3, 8), 5, "最后一行");
+    assert_eq!(start(Some(7), 8, 8), 0, "全放得下不滚");
+    assert_eq!(start(Some(2), 0, 8), 0);
+    for selected in 0..8 {
+        let first = start(Some(selected), 3, 8);
+        assert!((first..first + 3).contains(&selected));
+    }
 }
 
 #[test]

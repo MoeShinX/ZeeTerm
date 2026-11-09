@@ -110,6 +110,9 @@ pub(crate) struct Placement {
     pub(crate) height: f32,
     /// 向上翻转：底部放不下，画在光标那一行的上方。
     pub(crate) flipped: bool,
+    /// 实际画几行候选：上下都放不下全部时只画放得下的那几行（键盘选中项滚动到可见范围），
+    /// 0 表示一行都放不下，不画浮层。
+    pub(crate) visible_rows: usize,
 }
 
 /// 浮层总高度：标题条 + 每行 + 上下留白。
@@ -117,7 +120,13 @@ pub(crate) fn overlay_height(rows: usize) -> f32 {
     HEADER_H + rows as f32 * ROW_H + PAD * 2.0
 }
 
-/// 锚定光标：默认在光标那一行的下面；底部放不下就翻到上面；上下都放不下就取空间大的一侧并夹在窗格内。
+/// 空间 `room`（逻辑像素）里最多放得下几行候选。
+pub(crate) fn rows_fitting(room: f32) -> usize {
+    ((room - HEADER_H - PAD * 2.0) / ROW_H).floor().max(0.0) as usize
+}
+
+/// 锚定光标：默认在光标那一行的下面；底部放不下就翻到上面；上下都放不下全部候选时，取空间大的一侧，
+/// 只画放得下的行数（高度跟着缩），任何情况下都不盖住光标那一行、不超出窗格。
 /// 水平方向从光标列开始，右边放不下就左移，始终留在窗格里。
 pub(crate) fn place(
     cursor_x: f32,
@@ -136,19 +145,23 @@ pub(crate) fn place(
     let below = cursor_y + cell_h + GAP;
     let fits_below = below + height <= pane_h;
     let above = cursor_y - GAP - height;
-    let (top, flipped) = if fits_below {
-        (below, false)
+    let (top, height, flipped, visible_rows) = if fits_below {
+        (below, height, false, rows)
     } else if above >= 0.0 {
-        (above, true)
+        (above, height, true, rows)
     } else {
-        // 两边都放不下：取空间大的一侧，夹在窗格里。
-        let room_below = pane_h - below;
-        let room_above = cursor_y - GAP;
-        if room_below >= room_above {
-            (below.min((pane_h - height).max(0.0)), false)
+        // 两边都放不下全部：取空间大的一侧，少画几行，高度跟着缩。
+        let room_below = (pane_h - below).max(0.0);
+        let room_above = (cursor_y - GAP).max(0.0);
+        let flipped = room_above > room_below;
+        let visible = rows_fitting(if flipped { room_above } else { room_below }).min(rows);
+        let shrunk = overlay_height(visible);
+        let top = if flipped {
+            cursor_y - GAP - shrunk
         } else {
-            (0.0, true)
-        }
+            below
+        };
+        (top, shrunk, flipped, visible)
     };
     Placement {
         left,
@@ -156,7 +169,20 @@ pub(crate) fn place(
         width,
         height,
         flipped,
+        visible_rows,
     }
+}
+
+/// 只画得下 `visible` 行时从第几行开始画：保证键盘选中的那一行在可见范围里（没有选中就从头画）。
+pub(crate) fn visible_window_start(selected: Option<usize>, visible: usize, total: usize) -> usize {
+    if visible == 0 || total <= visible {
+        return 0;
+    }
+    let last_start = total - visible;
+    selected
+        .map(|index| (index + 1).saturating_sub(visible))
+        .unwrap_or(0)
+        .min(last_start)
 }
 
 /// 浮层里最长一行需要的宽度（等宽字：字符数 × 单元格宽度）。
@@ -380,58 +406,72 @@ impl TerminalWorkspace {
             pane_w,
             pane_h,
         );
+        if at.visible_rows == 0 {
+            return None;
+        }
+        let first = visible_window_start(
+            model.rows.iter().position(|row| row.selected),
+            at.visible_rows,
+            model.rows.len(),
+        );
         let entity = cx.entity();
         let pane_id = pane.id;
         let font_size = self.settings.font_size;
         let select_mode = model.select_mode;
-        let rows = model.rows.iter().enumerate().map(|(row_index, row)| {
-            let accept = entity.clone();
-            let tip: ::gpui::SharedString = row.text.clone().into();
-            let selected = row.selected;
-            h_flex()
-                .id(("suggest-row", index * 16 + row_index))
-                .h(::gpui::px(ROW_H))
-                .w_full()
-                .px_2()
-                .gap_2()
-                .items_center()
-                .rounded(::gpui::px(crate::app_theme::CONTROL_RADIUS - 4.0))
-                .when(selected, |d| d.bg(tokens.accent.alpha(0.22)))
-                .child(
-                    div()
-                        .id(("suggest-text", index * 16 + row_index))
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .font_family(mono.clone())
-                        .text_size(::gpui::px(font_size))
-                        .text_color(tokens.text)
-                        .child(row.text.clone())
-                        .tooltip(move |window, cx| {
-                            gpui_kit::component::tooltip::Tooltip::new(tip.clone())
-                                .build(window, cx)
-                        }),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .text_color(tokens.text_muted)
-                        .child(source_label(row.source)),
-                )
-                .child(
-                    Button::new(("suggest-fill", index * 16 + row_index))
-                        .ghost()
-                        .compact()
-                        .label(t(SuggestMsg::Fill))
-                        .tooltip(t(SuggestMsg::FillTip))
-                        .on_click(move |_, window, cx| {
-                            accept.update(cx, |this, cx| {
-                                this.suggest_click_accept(pane_id, row_index, window, cx);
-                            });
-                        }),
-                )
-        });
+        let rows = model
+            .rows
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(at.visible_rows)
+            .map(|(row_index, row)| {
+                let accept = entity.clone();
+                let tip: ::gpui::SharedString = row.text.clone().into();
+                let selected = row.selected;
+                h_flex()
+                    .id(("suggest-row", index * 16 + row_index))
+                    .h(::gpui::px(ROW_H))
+                    .w_full()
+                    .px_2()
+                    .gap_2()
+                    .items_center()
+                    .rounded(::gpui::px(crate::app_theme::CONTROL_RADIUS - 4.0))
+                    .when(selected, |d| d.bg(tokens.accent.alpha(0.22)))
+                    .child(
+                        div()
+                            .id(("suggest-text", index * 16 + row_index))
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(mono.clone())
+                            .text_size(::gpui::px(font_size))
+                            .text_color(tokens.text)
+                            .child(row.text.clone())
+                            .tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                                    .build(window, cx)
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(tokens.text_muted)
+                            .child(source_label(row.source)),
+                    )
+                    .child(
+                        Button::new(("suggest-fill", index * 16 + row_index))
+                            .ghost()
+                            .compact()
+                            .label(t(SuggestMsg::Fill))
+                            .tooltip(t(SuggestMsg::FillTip))
+                            .on_click(move |_, window, cx| {
+                                accept.update(cx, |this, cx| {
+                                    this.suggest_click_accept(pane_id, row_index, window, cx);
+                                });
+                            }),
+                    )
+            });
         let toggle = entity.clone();
         let header = h_flex()
             .h(::gpui::px(HEADER_H))
