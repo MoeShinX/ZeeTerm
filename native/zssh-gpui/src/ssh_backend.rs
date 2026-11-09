@@ -25,7 +25,9 @@ use zssh_core::ssh::{
     ShellEventStream, ShellWriter,
 };
 use zssh_core::store::Database;
-use zssh_session::{SessionBackend, SessionCommand, SessionEvent, map_core_event};
+use zssh_session::{
+    RejectReason, SessionBackend, SessionCommand, SessionEvent, WriteOutcome, map_core_event,
+};
 use zssh_terminal::Size;
 
 use crate::ai_terminals::{TermCommand, terminals};
@@ -258,30 +260,39 @@ impl SessionBackend for SshBackend {
         match command {
             SessionCommand::Close => {
                 let _ = self.closing.send(true);
-                return;
             }
             // 窗口大小只认最新值，不进（可能已满的）命令队列，所以不会因为输入堵塞而丢。
             SessionCommand::Resize(size) => {
                 self.resizes.send_replace(Some(size));
-                return;
             }
-            SessionCommand::Write(_) => {}
+            SessionCommand::Write(bytes) => {
+                let _ = self.send_write(bytes);
+            }
         }
-        match self.commands.try_send(TermCommand::Session(command)) {
-            Ok(()) => self.warned = false,
-            Err(mpsc::error::TrySendError::Full(dropped)) => {
+    }
+
+    fn send_write(&mut self, bytes: Vec<u8>) -> WriteOutcome {
+        match self
+            .commands
+            .try_send(TermCommand::Session(SessionCommand::Write(bytes)))
+        {
+            Ok(()) => {
+                self.warned = false;
+                WriteOutcome::Queued
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
                 // 输入丢了要让用户知道。
-                if matches!(dropped, TermCommand::Session(SessionCommand::Write(_))) && !self.warned
-                {
+                if !self.warned {
                     self.warned = true;
                     let _ = self.notices.send(SessionEvent::Notice {
                         generation: self.generation,
                         text: t(BackendMsg::InputDropped).to_owned(),
                     });
                 }
+                WriteOutcome::Rejected(RejectReason::QueueFull)
             }
             // 会话任务已经结束；界面会通过 Exit/Error 事件知道原因。
-            Err(mpsc::error::TrySendError::Closed(_)) => {}
+            Err(mpsc::error::TrySendError::Closed(_)) => WriteOutcome::TransportFailed,
         }
     }
 
@@ -1261,6 +1272,36 @@ mod tests {
             events_rx,
             shell_tx,
         }
+    }
+
+    /// 本地写入要有可区分的结果：排上了是 Queued，队列满是 Rejected（并且只提示一次），
+    /// 会话任务没了是 TransportFailed。三种都不能被当成"已经写进去"。
+    #[test]
+    fn a_local_write_says_queued_rejected_or_failed() {
+        let Harness {
+            mut backend,
+            commands,
+            events_rx,
+            ..
+        } = harness(WriteMode::Ok, 2);
+        assert_eq!(backend.send_write(b"a".to_vec()), WriteOutcome::Queued);
+        assert_eq!(backend.send_write(b"b".to_vec()), WriteOutcome::Queued);
+        assert_eq!(
+            backend.send_write(b"c".to_vec()),
+            WriteOutcome::Rejected(RejectReason::QueueFull)
+        );
+        assert_eq!(
+            backend.send_write(b"d".to_vec()),
+            WriteOutcome::Rejected(RejectReason::QueueFull)
+        );
+        let notices: Vec<_> = events_rx.try_iter().collect();
+        assert_eq!(notices.len(), 1, "丢输入只提示一次：{notices:?}");
+        // 会话任务退出（命令队列的接收端被丢弃）。
+        drop(commands);
+        assert_eq!(
+            backend.send_write(b"e".to_vec()),
+            WriteOutcome::TransportFailed
+        );
     }
 
     #[test]

@@ -22,8 +22,8 @@ pub mod keys;
 pub mod schedule;
 
 pub use driver::{
-    ChannelBackend, LoopbackBackend, POLL_BYTE_BUDGET, SessionBackend, SessionCommand,
-    SessionDriver, SessionEvent, SessionExit, map_core_event,
+    ChannelBackend, LoopbackBackend, POLL_BYTE_BUDGET, RejectReason, SessionBackend,
+    SessionCommand, SessionDriver, SessionEvent, SessionExit, WriteOutcome, map_core_event,
 };
 pub use keys::{
     KeyInput, MouseAction, MouseButton, MouseInput, encode_key, encode_mouse, encode_paste,
@@ -196,6 +196,9 @@ pub struct SessionPump<F: ByteFilter> {
     /// 会话日志（纯文本，去掉控制序列）：只有这一套，写文件在日志自己的线程里，不拖终端。
     /// 设置里开了「记录会话日志」时自动挂上，手动「开始记录」也是同一个对象、同一个目录。
     plain_log: Option<zssh_core::ssh::session_log::SessionLog>,
+    /// 累计收到的 AI 命令注入次数（`ai_arm`）：AI 往终端里写命令不经窗格的写路径，
+    /// 输入跟踪靠这个计数发现"有人替用户在输入行里写了东西"。
+    ai_arms: u64,
 }
 
 impl<F: ByteFilter> SessionPump<F> {
@@ -213,7 +216,29 @@ impl<F: ByteFilter> SessionPump<F> {
             generation,
             ledger: Ledger::default(),
             plain_log: None,
+            ai_arms: 0,
         }
+    }
+
+    /// 取走自上次以来终端识别出的 shell 标记（OSC 133 / 633 / 7）。
+    /// 只有远端输出会产生标记，`feed_local` 的本地文字不会。
+    pub fn take_shell_events(&mut self) -> Vec<zssh_terminal::ShellEvent> {
+        self.model.take_shell_events()
+    }
+
+    /// 光标和屏幕模式的轻量读数。
+    pub fn screen_probe(&self) -> zssh_terminal::ScreenProbe {
+        self.model.screen_probe()
+    }
+
+    /// 屏幕第 `row` 行的单元格（保留尾部空格）。
+    pub fn line_cells(&self, row: usize) -> Option<Vec<zssh_terminal::LineCell>> {
+        self.model.line_cells(row)
+    }
+
+    /// 累计的 AI 命令注入次数。
+    pub fn ai_arm_count(&self) -> u64 {
+        self.ai_arms
     }
 
     /// 挂上会话日志；只记录显示过滤之后、交给终端的字节。
@@ -293,6 +318,7 @@ impl<F: ByteFilter> SessionPump<F> {
             self.ledger.stale_batches += 1;
             return;
         }
+        self.ai_arms += 1;
         let filtered = self.filter.arm(marker, payload, command);
         self.apply_filtered(filtered);
     }
@@ -708,6 +734,36 @@ mod tests {
         let mut pump = pump(DropHidden);
         pump.on_data(7, b"HIDDEN \x1b[5n");
         assert_eq!(pump.take_replies(), None);
+    }
+
+    /// 远端输出里的 shell 标记经泵到达调用方；界面自己写的本地文字和旧代次的迟到数据都不产生标记。
+    #[test]
+    fn shell_marks_come_from_remote_output_only_and_respect_the_generation() {
+        let mut pump = pump(PassThrough);
+        pump.feed_local(b"connecting \x1b]133;B\x07\r\n");
+        pump.on_data(6, b"\x1b]133;A\x07stale generation");
+        assert!(pump.take_shell_events().is_empty());
+
+        pump.on_data(7, b"$ \x1b]133;B\x07ls");
+        let events = pump.take_shell_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].mark.kind, zssh_terminal::ShellMarkKind::PromptEnd);
+        let probe = pump.screen_probe();
+        assert_eq!((probe.cursor_row, probe.cursor_col), (1, 4));
+        assert_eq!((events[0].anchor.row, events[0].anchor.col), (1, 2));
+        let cells = pump.line_cells(1).expect("第 1 行");
+        assert_eq!(cells[2].ch, 'l');
+        assert!(pump.take_shell_events().is_empty());
+        assert!(pump.ledger().is_balanced());
+    }
+
+    #[test]
+    fn ai_arms_are_counted_only_for_the_current_generation() {
+        let mut pump = pump(PassThrough);
+        assert_eq!(pump.ai_arm_count(), 0);
+        pump.ai_arm(7, "m", "p", "ls");
+        pump.ai_arm(6, "m", "p", "ls");
+        assert_eq!(pump.ai_arm_count(), 1);
     }
 
     #[test]

@@ -71,9 +71,21 @@ pub fn map_core_event(event: zssh_core::ssh::shell::ShellEvent, generation: u64)
     }
 }
 
+pub use zssh_core::terminal_assist::{RejectReason, WriteOutcome};
+
 /// 会话写端：真实实现写入 SSH 通道，测试里是假后端。
 pub trait SessionBackend: Send {
     fn send(&mut self, command: SessionCommand);
+
+    /// 带结果的本地写入：[`WriteOutcome::Queued`] 只表示本地接受并排进了发送队列（不是送达，更不是回显），
+    /// 队列满是 `Rejected(QueueFull)`，通道已关是 `TransportFailed`。
+    ///
+    /// 默认实现把它当成不会失败的写端（回环 / 测试用的假后端没有队列）；真实后端必须重写，
+    /// 否则输入跟踪会把没发出去的字符当成已经输入。
+    fn send_write(&mut self, bytes: Vec<u8>) -> WriteOutcome {
+        self.send(SessionCommand::Write(bytes));
+        WriteOutcome::Queued
+    }
 
     /// 这个会话在 AI 终端登记表里的编号（V2-G10b）；没有登记的（回环、测试）返回 `None`。
     fn terminal_id(&self) -> Option<String> {
@@ -107,6 +119,14 @@ impl SessionBackend for ChannelBackend {
     fn send(&mut self, command: SessionCommand) {
         let _ = self.tx.send(command);
     }
+
+    fn send_write(&mut self, bytes: Vec<u8>) -> WriteOutcome {
+        match self.tx.send(SessionCommand::Write(bytes)) {
+            Ok(()) => WriteOutcome::Queued,
+            // 会话线程已经退出，通道关了。
+            Err(_) => WriteOutcome::TransportFailed,
+        }
+    }
 }
 
 /// 回环后端：把写入原样回送成事件，供离线演示和测试。
@@ -125,13 +145,20 @@ impl LoopbackBackend {
 }
 
 impl SessionBackend for LoopbackBackend {
+    fn send_write(&mut self, bytes: Vec<u8>) -> WriteOutcome {
+        match self.events.send(SessionEvent::Data {
+            generation: self.generation,
+            bytes,
+        }) {
+            Ok(()) => WriteOutcome::Queued,
+            Err(_) => WriteOutcome::TransportFailed,
+        }
+    }
+
     fn send(&mut self, command: SessionCommand) {
         match command {
             SessionCommand::Write(bytes) => {
-                let _ = self.events.send(SessionEvent::Data {
-                    generation: self.generation,
-                    bytes,
-                });
+                let _ = self.send_write(bytes);
             }
             SessionCommand::Resize(_) => {}
             SessionCommand::Close => {
@@ -843,5 +870,48 @@ mod tests {
         );
         drop(fake.backend);
         fake.handle.join().unwrap();
+    }
+
+    /// 本地写入的结果：能写进通道是 Queued；通道另一头没了是 TransportFailed，不能当成已经写入。
+    #[test]
+    fn a_write_reports_whether_the_channel_still_exists() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut backend = ChannelBackend::new(tx);
+        assert_eq!(backend.send_write(b"a".to_vec()), WriteOutcome::Queued);
+        assert_eq!(rx.recv().unwrap(), SessionCommand::Write(b"a".to_vec()));
+        drop(rx);
+        assert_eq!(
+            backend.send_write(b"b".to_vec()),
+            WriteOutcome::TransportFailed
+        );
+
+        let (mut loopback, events) = LoopbackBackend::new(1);
+        assert_eq!(loopback.send_write(b"x".to_vec()), WriteOutcome::Queued);
+        assert_eq!(
+            events.try_recv().unwrap(),
+            SessionEvent::Data {
+                generation: 1,
+                bytes: b"x".to_vec()
+            }
+        );
+        drop(events);
+        assert_eq!(
+            loopback.send_write(b"y".to_vec()),
+            WriteOutcome::TransportFailed
+        );
+    }
+
+    /// 没重写 `send_write` 的后端（测试里的假后端）仍然能用：写出去就当 Queued，命令照常送到。
+    #[test]
+    fn a_backend_without_its_own_write_result_defaults_to_queued_and_still_sends() {
+        struct Plain(Vec<SessionCommand>);
+        impl SessionBackend for Plain {
+            fn send(&mut self, command: SessionCommand) {
+                self.0.push(command);
+            }
+        }
+        let mut plain = Plain(Vec::new());
+        assert_eq!(plain.send_write(b"k".to_vec()), WriteOutcome::Queued);
+        assert_eq!(plain.0, vec![SessionCommand::Write(b"k".to_vec())]);
     }
 }

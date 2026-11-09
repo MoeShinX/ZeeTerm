@@ -6,7 +6,7 @@
 use std::sync::mpsc::Sender;
 
 use tokio::sync::{mpsc, watch};
-use zssh_session::{SessionBackend, SessionCommand, SessionEvent};
+use zssh_session::{RejectReason, SessionBackend, SessionCommand, SessionEvent, WriteOutcome};
 use zssh_terminal::Size;
 
 /// 命令队列容量（和 SSH 会话一致）。
@@ -115,10 +115,13 @@ impl StreamBackend {
         )
     }
 
-    fn enqueue(&mut self, command: BackendCommand) {
+    fn enqueue(&mut self, command: BackendCommand) -> WriteOutcome {
         let is_write = matches!(command, BackendCommand::Session(SessionCommand::Write(_)));
         match self.commands.try_send(command) {
-            Ok(()) => self.warned = false,
+            Ok(()) => {
+                self.warned = false;
+                WriteOutcome::Queued
+            }
             Err(mpsc::error::TrySendError::Full(_)) => {
                 // 输入丢了要让用户知道。
                 if is_write && !self.warned {
@@ -128,9 +131,10 @@ impl StreamBackend {
                         text: crate::lang::input_dropped_notice(),
                     });
                 }
+                WriteOutcome::Rejected(RejectReason::QueueFull)
             }
             // 会话任务已经结束；界面会通过 Exit/Error 事件知道原因。
-            Err(mpsc::error::TrySendError::Closed(_)) => {}
+            Err(mpsc::error::TrySendError::Closed(_)) => WriteOutcome::TransportFailed,
         }
     }
 }
@@ -145,12 +149,18 @@ impl SessionBackend for StreamBackend {
             SessionCommand::Resize(size) => {
                 self.resizes.send_replace(Some(size));
             }
-            SessionCommand::Write(_) => self.enqueue(BackendCommand::Session(command)),
+            SessionCommand::Write(_) => {
+                let _ = self.enqueue(BackendCommand::Session(command));
+            }
         }
     }
 
+    fn send_write(&mut self, bytes: Vec<u8>) -> WriteOutcome {
+        self.enqueue(BackendCommand::Session(SessionCommand::Write(bytes)))
+    }
+
     fn send_break(&mut self) {
-        self.enqueue(BackendCommand::Break);
+        let _ = self.enqueue(BackendCommand::Break);
     }
 
     fn send_reply(&mut self, generation: u64, bytes: Vec<u8>) {
@@ -215,6 +225,29 @@ mod tests {
             backend.send(SessionCommand::Write(b"x".to_vec()));
         }
         assert_eq!(rx.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn a_write_reports_queued_rejected_when_full_or_failed_when_the_session_is_gone() {
+        let (mut backend, mut ends, rx) = parts();
+        assert_eq!(backend.send_write(b"a".to_vec()), WriteOutcome::Queued);
+        assert_eq!(backend.send_write(b"b".to_vec()), WriteOutcome::Queued);
+        // 队列容量是 2：第三个被本地拒绝（不是静默丢弃），并且只提示一次。
+        assert_eq!(
+            backend.send_write(b"c".to_vec()),
+            WriteOutcome::Rejected(RejectReason::QueueFull)
+        );
+        assert_eq!(
+            backend.send_write(b"d".to_vec()),
+            WriteOutcome::Rejected(RejectReason::QueueFull)
+        );
+        assert_eq!(rx.try_iter().count(), 1);
+        // 会话任务退出：命令队列的接收端没了。
+        ends.commands.close();
+        assert_eq!(
+            backend.send_write(b"e".to_vec()),
+            WriteOutcome::TransportFailed
+        );
     }
 
     #[test]
