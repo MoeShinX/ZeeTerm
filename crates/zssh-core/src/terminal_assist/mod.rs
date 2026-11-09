@@ -20,6 +20,7 @@ pub mod history;
 pub mod integration;
 pub mod sensitive;
 pub mod state;
+pub mod suggest;
 pub mod text_index;
 pub mod write;
 
@@ -31,6 +32,7 @@ pub use state::{
     KeyClass, MarkAnchor, MarkKind, Phase, RequestIdentity, RestrictionKind, Restrictions,
     ScreenSource, ScreenView, SubmittedCommand, TrackerContext, TrackerEvent, WriteSource,
 };
+pub use suggest::{Candidate, CandidateSource, QuickSource, SettleTimer};
 pub use text_index::{byte_to_utf16, utf16_to_byte, ByteIdx, TermCol, Utf16Idx};
 pub use write::{Disposition, IntentOrigin, RejectReason, WriteIntent, WriteOutcome};
 
