@@ -643,28 +643,26 @@ impl MainWindow {
             .items_center()
             .gap_2()
             .h(px(32.0))
+            .mb(px(2.0))
             .min_w(px(112.0))
             .max_w(px(220.0))
             .pl_3()
             .pr_1p5()
             .flex_shrink(1.0)
-            .rounded_t_md()
-            .border_x_1()
-            .border_t_1()
+            // 和同一排的终端标签一样是胶囊：当前标签用半透明强调色描边，不叠顶部直线（会横穿圆角）。
+            .rounded_full()
+            .border_1()
             .text_sm()
             .cursor_pointer()
             .when(active, |d| {
-                d.border_color(tokens.border)
-                    .bg(tokens.background)
+                d.border_color(tokens.accent.opacity(0.45))
+                    .bg(tokens.accent_soft)
                     .text_color(text)
             })
             .when(!active, |d| {
                 d.border_color(::gpui::Hsla::transparent_black())
                     .text_color(muted)
                     .hover(move |style| style.bg(hover))
-            })
-            .when(active, |d| {
-                d.child(super::titlebar::active_tab_indicator(tokens))
             })
             .tooltip({
                 let tip = tip.clone();
@@ -684,7 +682,7 @@ impl MainWindow {
                     .justify_center()
                     .size(px(24.0))
                     .flex_none()
-                    .rounded_sm()
+                    .rounded_full()
                     .text_color(muted)
                     .cursor_pointer()
                     .hover(move |style| style.bg(hover).text_color(text))
