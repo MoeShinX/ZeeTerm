@@ -40,6 +40,7 @@ mod dev_acts_a5;
 mod dev_acts_about;
 #[cfg(debug_assertions)]
 mod dev_acts_agent;
+#[cfg(debug_assertions)]
 mod dev_acts_assist;
 #[cfg(debug_assertions)]
 mod dev_acts_c1;

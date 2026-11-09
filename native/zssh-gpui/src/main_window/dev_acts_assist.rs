@@ -1,4 +1,5 @@
-//! 调试驱动里「命令建议」入口要用的 `act:` 动作。只在 debug 构建里编进去；release 里这里只剩两个空函数。
+//! 调试驱动里「命令建议」入口要用的 `act:` 动作。整个模块只在 debug 构建里编进去（`mod.rs` 里带
+//! `cfg(debug_assertions)`，和 `dev_acts_u35` 等一样），release 里不存在。
 //! 动作走和界面按钮同一批方法，不绕过真实的确认步骤：
 //!
 //! - `assist_open`：点开状态栏上的「命令建议」；`assist_close`：关掉；
@@ -155,22 +156,5 @@ mod real {
     }
 }
 
-#[cfg(debug_assertions)]
 pub use real::is_known;
-#[cfg(debug_assertions)]
 pub(super) use real::run;
-
-#[cfg(not(debug_assertions))]
-pub fn is_known(_name: &str) -> bool {
-    false
-}
-
-#[cfg(not(debug_assertions))]
-pub(super) fn run(
-    _this: &mut super::MainWindow,
-    _spec: &str,
-    _window: &mut ::gpui::Window,
-    _cx: &mut gpui_kit::Context<super::MainWindow>,
-) -> Option<Result<super::dev_script::Outcome, String>> {
-    None
-}
