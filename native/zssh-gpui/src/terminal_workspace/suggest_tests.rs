@@ -392,7 +392,7 @@ fn without_select_mode_tab_enter_and_arrows_pass_through_unchanged_and_never_acc
 }
 
 #[test]
-fn escape_is_consumed_only_while_the_list_owns_it() {
+fn escape_closes_a_shown_list_but_still_goes_to_the_program() {
     let (mut pane, _remote) = prompt_with_history();
     assert!(
         !pane.suggest_key("escape", true, false, false),
@@ -405,7 +405,10 @@ fn escape_is_consumed_only_while_the_list_owns_it() {
         !pane.suggest_key("escape", false, false, false),
         "带修饰键的 Esc 不归列表"
     );
-    assert!(pane.suggest_key("escape", true, false, false));
+    assert!(
+        !pane.suggest_key("escape", true, false, false),
+        "没进选择模式：列表不拥有 Esc，照样交给前台程序"
+    );
     assert!(shown(&pane).is_empty(), "关闭");
     // 同一个输入不会自己再弹出来。
     Clock::new().settle(&mut pane);
@@ -414,6 +417,28 @@ fn escape_is_consumed_only_while_the_list_owns_it() {
     type_text(&mut pane, "t");
     Clock::new().settle(&mut pane);
     assert_eq!(shown(&pane).len(), 2);
+}
+
+/// 显式进入选择模式后，列表拿到了键盘：Esc 归它，收起列表并被消费，不发给 shell。
+#[test]
+fn escape_in_select_mode_belongs_to_the_list() {
+    let (mut pane, remote) = prompt_with_history();
+    type_text(&mut pane, "gi");
+    Clock::new().settle(&mut pane);
+    assert!(pane.assist.enter_select_mode());
+    let before = remote.sent().len();
+    assert!(
+        pane.suggest_key("escape", true, false, false),
+        "选择模式里消费"
+    );
+    assert!(shown(&pane).is_empty(), "收起列表");
+    assert!(
+        pane.assist
+            .suggest_view()
+            .is_none_or(|view| !view.select_mode),
+        "退出选择模式"
+    );
+    assert_eq!(remote.sent().len(), before, "不发任何字节");
 }
 
 #[test]

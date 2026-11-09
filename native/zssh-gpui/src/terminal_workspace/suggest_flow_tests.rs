@@ -431,21 +431,17 @@ fn tab_enter_and_arrows_reach_the_shell_unchanged_and_never_accept_a_candidate(
 }
 
 #[gpui::test]
-fn escape_closes_the_list_only_while_it_is_showing_and_is_otherwise_the_programs(
-    cx: &mut TestAppContext,
-) {
+fn escape_closes_a_shown_list_and_still_reaches_the_program(cx: &mut TestAppContext) {
     let term = Harness::open(cx);
     term.named(cx, "escape");
     assert_eq!(term.sent(), vec![vec![0x1b]], "没有列表：Esc 交给前台程序");
     term.history_and_typed(cx);
     let before = term.sent().len();
     term.named(cx, "escape");
-    assert_eq!(
-        term.sent().len(),
-        before,
-        "列表拥有 Esc：消费，不发给 shell"
-    );
-    assert!(term.shown(cx).is_empty());
+    let sent = term.sent();
+    assert_eq!(sent.len(), before + 1, "没进选择模式：Esc 照样发给 shell");
+    assert_eq!(sent.last(), Some(&vec![0x1b]));
+    assert!(term.shown(cx).is_empty(), "同时收起列表");
 }
 
 #[gpui::test]

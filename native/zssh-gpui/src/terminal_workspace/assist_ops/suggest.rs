@@ -382,9 +382,10 @@ impl PaneAssist {
             self.tracker.arm_accept_latch(key);
             return KeyDecision::Consume;
         }
+        // 只是显示着的列表没有拿到键盘：Esc 收起它，但照样交给前台程序（vi 模式的 shell、
+        // 把 Esc 当 Meta 前缀的用法都靠这一下）。只有显式进入选择模式后 Esc 才归列表、被消费。
         if plain && key == "escape" && self.suggest_view().is_some() {
             self.suggest.dismiss();
-            return KeyDecision::Consume;
         }
         KeyDecision::Pass
     }
