@@ -120,7 +120,6 @@ impl SuggestState {
 
 /// 浮层要画的东西。
 pub(crate) struct SuggestView<'a> {
-    pub(crate) typed: &'a str,
     pub(crate) items: &'a [Candidate],
     pub(crate) selected: Option<usize>,
     pub(crate) select_mode: bool,
@@ -286,7 +285,6 @@ impl PaneAssist {
             return None;
         }
         Some(SuggestView {
-            typed: &shown.typed,
             items: &shown.items,
             selected: self.suggest.selected,
             select_mode: self.suggest.select_mode,
@@ -458,6 +456,14 @@ impl PaneAssist {
     #[cfg(test)]
     pub(crate) fn search_in_flight(&self) -> bool {
         self.suggest.inflight.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn suggest_typed(&self) -> Option<&str> {
+        self.suggest
+            .shown
+            .as_ref()
+            .map(|shown| shown.typed.as_str())
     }
 
     #[cfg(test)]

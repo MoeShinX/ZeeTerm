@@ -30,6 +30,8 @@ pub(super) enum StatusBarMsg {
     ComposeBar,
     /// 命令建议入口的悬停提示。
     Assist,
+    /// 「选择建议」入口的悬停提示。
+    SelectSuggestion,
     /// 服务器状态块最右的「概览」入口。
     Overview,
     /// 运行时间前面那一段（后面跟 `uptime_label`）。
@@ -48,6 +50,7 @@ impl Msg for StatusBarMsg {
             Self::QuickBar => "快捷命令栏",
             Self::ComposeBar => "撰写栏",
             Self::Assist => "命令建议",
+            Self::SelectSuggestion => "选择建议（用方向键选，Tab / Enter 填入）",
             Self::Overview => "概览",
             Self::UptimePrefix => "运行 ",
             Self::DisconnectedPrefix => "已断开：",
@@ -61,6 +64,9 @@ impl Msg for StatusBarMsg {
             Self::QuickBar => "Quick Command Bar",
             Self::ComposeBar => "Compose Bar",
             Self::Assist => "Command Suggestions",
+            Self::SelectSuggestion => {
+                "Select a suggestion (arrow keys to pick, Tab / Enter to fill in)"
+            }
             Self::Overview => "Overview",
             Self::UptimePrefix => "Uptime ",
             Self::DisconnectedPrefix => "Disconnected: ",
@@ -219,6 +225,10 @@ impl MainWindow {
         let switches = switches_on.then(|| {
             let (quick_entity, compose_entity) = (entity.clone(), entity.clone());
             let (assist_entity, assist_lit) = (entity.clone(), self.assist_button_lit(cx));
+            let (select_entity, select_lit) = (
+                entity.clone(),
+                self.workspace.read(cx).suggest_in_select_mode(),
+            );
             let (lock_entity, lock_menu_entity) = (entity.clone(), entity.clone());
             let lock_enabled = self.lock_enabled();
             let menu_tokens = *tokens;
@@ -261,6 +271,19 @@ impl MainWindow {
                     )
                     .on_click(move |_, window, cx| {
                         assist_entity.update(cx, |this, cx| this.toggle_assist_dialog(window, cx));
+                    }),
+                )
+                // 选择建议：显式进入本地选择模式（默认没有快捷键）；没有候选时点了没有反应。
+                .child(
+                    switch_button(
+                        "assist-select-switch",
+                        Ico::List,
+                        t(StatusBarMsg::SelectSuggestion),
+                        select_lit,
+                        tokens,
+                    )
+                    .on_click(move |_, window, cx| {
+                        select_entity.update(cx, |this, cx| this.assist_select_clicked(window, cx));
                     }),
                 )
                 // 锁屏（V2-U26）：左键锁定（没启用时去设置里设密码），右键菜单。锁着的时候这条栏本身不画，

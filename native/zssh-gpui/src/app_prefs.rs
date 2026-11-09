@@ -30,6 +30,8 @@ pub const HOST_INFO_PANEL_KEY: &str = "host_info_panel";
 /// `history_enabled` 关了就不采集新的终端命令历史，并清空内存里已有的。
 pub const TERMINAL_ASSIST_ENABLED_KEY: &str = zssh_core::terminal_assist::ENABLED_KEY;
 pub const TERMINAL_ASSIST_HISTORY_KEY: &str = zssh_core::terminal_assist::HISTORY_ENABLED_KEY;
+/// 用户自己绑定的"选择建议"键（默认空 = 不绑定）。
+pub const TERMINAL_ASSIST_SELECT_KEY: &str = zssh_core::terminal_assist::SELECT_KEY;
 
 /// 保活间隔（秒，0 = 关闭）：滑块 0～300，步长 5。
 pub const KEEPALIVE_RANGE: (u32, u32) = (0, 300);
@@ -155,6 +157,8 @@ pub struct AppPrefs {
     pub terminal_assist_enabled: bool,
     /// 采集新的终端命令历史（默认开）。
     pub terminal_assist_history: bool,
+    /// 用户自己绑定的"选择建议"键（按键写法，如 `ctrl-alt-s`）；空 = 没绑。默认不绑定任何键。
+    pub terminal_assist_select_key: String,
 }
 
 impl Default for AppPrefs {
@@ -211,6 +215,10 @@ impl AppPrefs {
             host_info_panel: flag(raw(HOST_INFO_PANEL_KEY).as_deref(), false),
             terminal_assist_enabled: flag(raw(TERMINAL_ASSIST_ENABLED_KEY).as_deref(), true),
             terminal_assist_history: flag(raw(TERMINAL_ASSIST_HISTORY_KEY).as_deref(), true),
+            terminal_assist_select_key: text_of(raw(TERMINAL_ASSIST_SELECT_KEY).as_deref())
+                .map(|key| key.trim().to_owned())
+                .filter(|key| key.chars().count() <= 40 && !key.chars().any(char::is_control))
+                .unwrap_or_default(),
         }
     }
 
@@ -521,6 +529,31 @@ mod tests {
         for key in [TERMINAL_ASSIST_ENABLED_KEY, TERMINAL_ASSIST_HISTORY_KEY] {
             assert_eq!(sync_mode(key), Some(SyncMode::LocalOnly), "{key}");
         }
+    }
+
+    /// "选择建议"的快捷键：默认不绑定；读不懂（控制字符、过长）当没绑；只在本机。
+    #[test]
+    fn the_select_suggestion_key_is_unbound_by_default_and_local_only() {
+        assert_eq!(AppPrefs::default().terminal_assist_select_key, "");
+        assert_eq!(TERMINAL_ASSIST_SELECT_KEY, "terminal_assist.select_key");
+        let bound = prefs(&[("terminal_assist.select_key", r#""ctrl-alt-s""#)]);
+        assert_eq!(bound.terminal_assist_select_key, "ctrl-alt-s");
+        let spaced = prefs(&[("terminal_assist.select_key", r#""  ctrl-alt-s  ""#)]);
+        assert_eq!(spaced.terminal_assist_select_key, "ctrl-alt-s");
+        let long = format!(r#""{}""#, "x".repeat(41));
+        assert_eq!(
+            prefs(&[("terminal_assist.select_key", long.as_str())]).terminal_assist_select_key,
+            ""
+        );
+        assert_eq!(
+            prefs(&[("terminal_assist.select_key", r#""a\u0007b""#)]).terminal_assist_select_key,
+            ""
+        );
+        use zssh_core::sync::settings::{SyncMode, sync_mode};
+        assert_eq!(
+            sync_mode(TERMINAL_ASSIST_SELECT_KEY),
+            Some(SyncMode::LocalOnly)
+        );
     }
 
     #[test]

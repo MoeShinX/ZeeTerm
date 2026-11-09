@@ -23,6 +23,8 @@ use zssh_terminal::{LineCellKind, ShellMarkKind};
 
 mod suggest;
 
+pub(crate) use suggest::SuggestView;
+
 /// 一次写入是怎么来的。输入跟踪据此决定"这是用户在输入行上打的字"还是"别的东西"。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WriteOrigin {

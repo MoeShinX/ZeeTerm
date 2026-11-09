@@ -164,7 +164,10 @@ mod ime_ops;
 mod search_ops;
 mod settings_ops;
 #[cfg(test)]
+mod suggest_flow_tests;
+#[cfg(test)]
 mod suggest_tests;
+mod suggest_ui;
 
 pub(crate) use assist_ops::{AssistView, IntegrationError, IntegrationState, StopOutcome};
 use assist_ops::{PaneAssist, WriteOrigin, classify_key};
@@ -1658,6 +1661,8 @@ impl TerminalWorkspace {
             // 焦点走了，输入法没提交的预编辑也随之作废（输入法那边会自己取消）。
             this.ime_preedit.clear();
             crate::ime::apply(&ime_blur_key, false);
+            // 接受键按住时失焦：松开事件收不到了，latch 在这里清掉。
+            this.suggest_focus_lost();
         });
         // 设置页的两个控件：自定义字体的输入框、回滚行数的滑块。状态归工作区，这样设置页每次
         // 重绘拿到的是同一个实体。
@@ -3218,6 +3223,13 @@ impl TerminalWorkspace {
         // 打字时光标先亮着，停下来才闪（和常见终端一致）。
         self.cursor_blink.reset();
 
+        // 命令建议：只有显式进入"选择建议"之后，Tab / Enter / 上下键才归它；其余时候（含 Alt、Ctrl+Alt
+        // 方向键）原样往下走，编码后发给 shell。Esc 只在候选列表正显示时才被它消费。
+        if self.suggest_key_down(event) {
+            cx.notify();
+            return;
+        }
+
         // Ctrl+Shift+R 重连当前 SSH 窗格；离线标签只提示。
         if ctrl && shift && key.eq_ignore_ascii_case("r") {
             self.reconnect(cx);
@@ -3556,6 +3568,8 @@ impl TerminalWorkspace {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus, cx);
+        // 点终端：先关掉命令建议浮层 / 选择模式，原事件照常处理一次（浮层自己的点击在它那里就拦下了）。
+        self.suggest_dismiss();
         // 拖动分屏分隔条：只改比例，不做选择。
         if self.start_split_drag(event.position, event.click_count) {
             cx.notify();
@@ -3734,6 +3748,8 @@ impl TerminalWorkspace {
     }
 
     fn on_wheel(&mut self, event: &ScrollEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // 滚动：候选列表不占滚轮，关掉浮层，滚动照常处理一次。
+        self.suggest_dismiss();
         let row_height = self.cell_height;
         let lines = match event.delta {
             ScrollDelta::Lines(point) => point.y,
@@ -4575,6 +4591,21 @@ impl Render for TerminalWorkspace {
                     })
                     // 搜索条最后画，盖在延迟徽标上面。
                     .children(bar)
+                    // 命令建议浮层：锚定光标，只画在聚焦窗格里。
+                    .children(
+                        focused
+                            .then(|| {
+                                self.suggest_overlay(
+                                    pane,
+                                    index,
+                                    (rect.w, rect.h),
+                                    &mono,
+                                    &tokens,
+                                    cx,
+                                )
+                            })
+                            .flatten(),
+                    )
                     .into_any_element(),
             );
         }
@@ -4636,6 +4667,7 @@ impl Render for TerminalWorkspace {
             .size_full()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_key_up(cx.listener(Self::on_key_up))
             .on_scroll(cx.listener(Self::on_wheel))
             .bg(background)
             .when(self.hover_link.is_some(), |d| d.cursor_pointer())

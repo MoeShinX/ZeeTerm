@@ -81,7 +81,7 @@ fn two_characters_stable_for_80_ms_show_history_candidates_and_preselect_nothing
     let view = pane.assist.suggest_view().expect("view");
     assert_eq!(view.selected, None, "不预选");
     assert!(!view.select_mode);
-    assert_eq!(view.typed, "gi");
+    assert_eq!(pane.assist.suggest_typed(), Some("gi"));
 }
 
 #[test]
@@ -186,8 +186,11 @@ fn a_request_in_flight_dies_when_the_input_revision_changes() {
     // 两个任务现在才跑完：只有新输入那个的结果能展示。
     assert_eq!(pane.assist.run_deferred_jobs(), 2);
     clock.tick(&mut pane, 30_000);
-    let view = pane.assist.suggest_view().expect("新输入的结果");
-    assert_eq!(view.typed, "git", "旧输入 gi 的迟到结果不展示");
+    assert_eq!(
+        pane.assist.suggest_typed(),
+        Some("git"),
+        "旧输入 gi 的迟到结果不展示"
+    );
 
     // 另一个顺序：结果已经到了通道里、但在核对之前输入变了。
     let (mut late, _remote) = prompt_with_history();

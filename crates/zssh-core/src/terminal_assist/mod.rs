@@ -39,3 +39,5 @@ pub use write::{Disposition, IntentOrigin, RejectReason, WriteIntent, WriteOutco
 /// 本地产品设置的键（只在本机，不参与同步，见 `sync::settings::SETTINGS_SYNC_CLASS`）。
 pub const ENABLED_KEY: &str = "terminal_assist.enabled";
 pub const HISTORY_ENABLED_KEY: &str = "terminal_assist.history_enabled";
+/// 用户自己绑定的"选择建议"键（按键写法，如 `ctrl-alt-s`；空 = 没绑）。默认不绑定任何键；只在本机，不同步。
+pub const SELECT_KEY: &str = "terminal_assist.select_key";

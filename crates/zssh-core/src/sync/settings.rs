@@ -89,6 +89,7 @@ pub const SETTINGS_SYNC_CLASS: &[(&str, SyncMode)] = &[
     // 终端命令建议：总开关和"采集新命令历史"开关是这台电脑的使用习惯（历史也只存内存），不同步
     ("terminal_assist.enabled", SyncMode::LocalOnly),
     ("terminal_assist.history_enabled", SyncMode::LocalOnly),
+    ("terminal_assist.select_key", SyncMode::LocalOnly),
     // 软件自身联网的代理：各台电脑的网络环境不一样
     ("app_network_proxy", SyncMode::LocalOnly),
     ("stats_show", SyncMode::LocalOnly),
@@ -1275,6 +1276,7 @@ mod tests {
             "compose_bar",
             "terminal_assist.enabled",
             "terminal_assist.history_enabled",
+            "terminal_assist.select_key",
             "ai_opencode_path",
             "ai_codex_path",
             "ai_claude_path",

@@ -322,6 +322,15 @@ impl MainWindow {
         }
     }
 
+    /// 状态栏的「选择建议」：显式进入（或退出）候选的选择模式，然后把焦点还给终端。没有候选时什么也不做。
+    pub(super) fn assist_select_clicked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.suggest_toggle_select(cx);
+        });
+        self.focus_content(window, cx);
+        cx.notify();
+    }
+
     pub(super) fn close_assist_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.assist_dialog.take().is_some() {
             self.focus_content(window, cx);
