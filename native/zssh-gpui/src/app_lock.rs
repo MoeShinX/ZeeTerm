@@ -16,8 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ::gpui::{
-    AnyElement, App, Context, Entity, Image, ImageFormat, IntoElement, Render, SharedString,
-    Window, img, px,
+    AnyElement, App, Context, Entity, Image, IntoElement, Render, SharedString, Window, img, px,
 };
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::*;
@@ -523,8 +522,6 @@ pub fn window_hwnd(window: &Window) -> Option<isize> {
 
 // ---- 锁屏页 ----
 
-const LOGO_PNG: &[u8] = include_bytes!("../assets/brand/zeeterm-logo-64.png");
-
 /// 抖一下的位移序列（逻辑像素），每 35 毫秒走一格。
 const SHAKE: [f32; 8] = [-12.0, 12.0, -9.0, 9.0, -5.0, 5.0, -2.0, 0.0];
 
@@ -576,7 +573,8 @@ impl LockScreen {
         .detach();
         Self {
             input,
-            logo: Arc::new(Image::from_bytes(ImageFormat::Png, LOGO_PNG.to_vec())),
+            // 按 64 逻辑像素显示，用 256 位的图，高分屏也清楚。
+            logo: crate::os_icons::brand_logo_large(),
             custom_titlebar,
             forgot_hook,
             quit_hook,

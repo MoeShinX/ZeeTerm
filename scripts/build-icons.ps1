@@ -1,11 +1,11 @@
-﻿# 重新出 ZeeTerm 的图标：从 SVG 渲染全部尺寸，打包 zeeterm.ico，更新 zeeterm-logo-32.png / -64.png，
+﻿# 重新出 ZeeTerm 的图标：从 SVG 渲染全部尺寸，打包 zeeterm.ico，更新 zeeterm-logo-32.png / -64.png / -256.png，
 # 并把同一份 ico 复制到安装包用的 native/installer/assets/icon.ico（有测试要求两份逐字节相同）。
 #
 # 为什么用 Rust 小工具（native/tools/icons）而不是纯 PowerShell：.NET 的 System.Drawing 画不了 SVG，
 # 而 resvg / tiny-skia 已经在依赖树里（gpui 用它画 SVG），不引入新依赖；本脚本只是包一层，免得手敲路径。
 #
 # 源文件（都在 native/zssh-gpui/assets/brand/）：
-#   zeeterm-logo.svg                    48 / 64 / 128 / 256 以及 zeeterm-logo-64.png
+#   zeeterm-logo.svg                    48 / 64 / 128 / 256 以及 zeeterm-logo-64.png、zeeterm-logo-256.png
 #   small/zeeterm-icon-{16,20,24,32}.svg   小尺寸，按像素网格画的；zeeterm-logo-32.png 也用 32 这张
 # 用法：
 #   powershell -NoProfile -File scripts/build-icons.ps1            # 重新生成并写入

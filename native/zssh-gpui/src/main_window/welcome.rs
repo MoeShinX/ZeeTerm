@@ -146,17 +146,12 @@ impl MainWindow {
             .bg(tokens.background)
             .rounded(px(crate::app_theme::PANEL_RADIUS))
             .px_4()
+            // 应用的 Logo 本身（彩色 PNG；GPUI 的 SVG 只按透明度着色，画不出 Logo 的几种颜色）。
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
+                ::gpui::img(crate::os_icons::brand_logo_large())
                     .size(px(64.0))
-                    .mb_2()
-                    .rounded(px(crate::app_theme::PANEL_RADIUS))
-                    .bg(tokens.accent_soft)
-                    .text_color(tokens.accent)
-                    .child(Icon::new(crate::icons::Ico::Terminal).size_8()),
+                    .flex_none()
+                    .mb_2(),
             )
             .child(
                 div()

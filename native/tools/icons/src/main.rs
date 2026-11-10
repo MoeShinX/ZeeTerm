@@ -125,9 +125,11 @@ fn build_outputs(brand: &Path, installer_icon: &Path) -> Result<Vec<Output>> {
         entries.push((size, render_png(&svg, size)?));
     }
     let ico = pack_ico(&entries)?;
-    // 32 位 PNG 给托盘资源加载失败时的后备图标用（小图），64 位给窗口里的 Logo 用（矢量图直接渲染）。
+    // 32 位 PNG 给托盘资源加载失败时的后备图标用（小图），64 位给窗口里的小 Logo 用（矢量图直接渲染）；
+    // 256 位给按 64 逻辑像素显示的大 Logo（欢迎页、锁屏）：150% / 200% 缩放下 64 位的图会发糊。
     let png_32 = png_of(&entries, 32)?;
     let png_64 = png_of(&entries, 64)?;
+    let png_256 = png_of(&entries, 256)?;
     Ok(vec![
         Output {
             path: brand.join("zeeterm.ico"),
@@ -144,6 +146,10 @@ fn build_outputs(brand: &Path, installer_icon: &Path) -> Result<Vec<Output>> {
         Output {
             path: brand.join("zeeterm-logo-64.png"),
             bytes: png_64,
+        },
+        Output {
+            path: brand.join("zeeterm-logo-256.png"),
+            bytes: png_256,
         },
     ])
 }

@@ -153,6 +153,21 @@ fn brand_logo() -> std::sync::Arc<::gpui::Image> {
         .clone()
 }
 
+/// 大号 Logo（256 位 PNG）：欢迎页、锁屏按 64 逻辑像素显示，用 64 位的图在 150% / 200% 缩放下会发糊。
+static BRAND_LOGO_LARGE: std::sync::OnceLock<std::sync::Arc<::gpui::Image>> =
+    std::sync::OnceLock::new();
+
+pub fn brand_logo_large() -> std::sync::Arc<::gpui::Image> {
+    BRAND_LOGO_LARGE
+        .get_or_init(|| {
+            std::sync::Arc::new(::gpui::Image::from_bytes(
+                ::gpui::ImageFormat::Png,
+                include_bytes!("../assets/brand/zeeterm-logo-256.png").to_vec(),
+            ))
+        })
+        .clone()
+}
+
 /// 还没探测出系统的主机的图标：SSH 主机和老版本一样显示自家 Logo，Telnet / 串口返回
 /// `None`（它们永远探测不到系统，由调用方继续画协议图标，好和 SSH 区分开）。
 pub fn fallback_badge(
