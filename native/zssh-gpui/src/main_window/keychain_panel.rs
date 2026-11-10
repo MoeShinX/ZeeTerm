@@ -20,8 +20,8 @@ use super::identity_form::{
 use super::modal::{Confirm, ConfirmAction, Modal};
 use super::side_panel::PanelContent;
 use super::widgets::{
-    BadgeKind, ButtonLook, Choice, act, badge, empty_state, field, note, pick, section, select,
-    switch_row, text_button,
+    BadgeKind, ButtonLook, Choice, act, badge, empty_state, error_note, field, note, pick, section,
+    select, switch_row, text_button,
 };
 use crate::app_theme::Tokens;
 use crate::i18n::{Msg, t};
@@ -67,6 +67,7 @@ enum KeychainMsg {
     NewPassword,
     KeyFile,
     ImportKey,
+    Cancel,
     GenerateKey,
     CantCheckHostsTitle,
     ReadHostsFailedPrefix,
@@ -125,6 +126,7 @@ impl Msg for KeychainMsg {
             Self::PanelTitle => "凭据",
             Self::ItemCountSuffix => " 条",
             Self::NewPassword => "新建密码",
+            Self::Cancel => "取消",
             Self::KeyFile => "私钥文件",
             Self::ImportKey => "导入私钥",
             Self::GenerateKey => "生成密钥",
@@ -191,6 +193,7 @@ impl Msg for KeychainMsg {
             Self::PanelTitle => "Credentials",
             Self::ItemCountSuffix => " items",
             Self::NewPassword => "New Password",
+            Self::Cancel => "Cancel",
             Self::KeyFile => "Key File",
             Self::ImportKey => "Import Key",
             Self::GenerateKey => "Generate Key",
@@ -295,10 +298,6 @@ impl KeychainUi {
             kind_filter: None,
         }
     }
-
-    pub fn editing(&self) -> bool {
-        self.creating || self.selected.is_some()
-    }
 }
 
 /// 页面上的筛选 + 搜索：类型对得上，并且名称 / 类型名 / 私钥路径里含搜索词（不分大小写）。
@@ -353,6 +352,168 @@ pub fn identity_detail(identity: &Identity, hosts: &[Host]) -> String {
 }
 
 impl MainWindow {
+    /// 凭据表单的字段（名称 / 类型 / 路径或内容 / 秘密 / 口令）：
+    /// 「管理 + 设置」页编辑已选中凭据的表单和「新建凭据」弹窗共用同一份。
+    fn keychain_fields(
+        &self,
+        selected_identity: Option<&Identity>,
+        tokens: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let entity = cx.entity();
+        let ui = &self.keychain;
+        let kind_choices: Vec<Choice> = kinds()
+            .iter()
+            .map(|(kind, _)| Choice::new(kind_label(*kind), *kind == ui.kind))
+            .collect();
+        let can_keep = can_keep_passphrase(selected_identity, ui.kind);
+        let secret_label = if ui.kind == IdentityKind::Password {
+            t(KeychainMsg::PasswordLabel)
+        } else {
+            t(KeychainMsg::PassphraseLabel)
+        };
+        let mut items: Vec<AnyElement> = vec![
+            field(
+                t(KeychainMsg::NameLabel),
+                None,
+                Input::new(&ui.name),
+                tokens,
+            )
+            .into_any_element(),
+            v_flex()
+                .gap_1p5()
+                .child(field(
+                    t(KeychainMsg::KindLabel),
+                    None,
+                    select(
+                        "identity-kind",
+                        kind_label(ui.kind),
+                        kind_choices,
+                        pick(&entity, |this, index, _window, cx| {
+                            if let Some((kind, _)) = kinds().get(index) {
+                                this.keychain.kind = *kind;
+                                cx.notify();
+                            }
+                        }),
+                    ),
+                    tokens,
+                ))
+                .when(kind_change_clears_secret(selected_identity, ui.kind), |d| {
+                    d.child(note(
+                        format!(
+                            "{}{}{}",
+                            t(KeychainMsg::KindClearedPrefix),
+                            selected_identity.map_or("", |i| kind_label(i.kind)),
+                            t(KeychainMsg::KindClearedSuffix)
+                        ),
+                        tokens,
+                    ))
+                })
+                .into_any_element(),
+        ];
+        if ui.kind == IdentityKind::KeyFile {
+            items.push(
+                field(
+                    t(KeychainMsg::KeyPathLabel),
+                    None,
+                    h_flex()
+                        .w_full()
+                        .gap_1p5()
+                        .child(div().flex_1().min_w_0().child(Input::new(&ui.key_path)))
+                        .child(
+                            Button::new("identity-browse")
+                                .outline()
+                                .compact()
+                                .label(t(KeychainMsg::Browse))
+                                .on_click(act(&entity, |this, window, cx| {
+                                    this.keychain_browse(window, cx)
+                                })),
+                        ),
+                    tokens,
+                )
+                .into_any_element(),
+            );
+        }
+        if ui.kind == IdentityKind::KeyInline {
+            let has = selected_identity.is_some_and(|i| i.has_secret);
+            items.push(
+                field(
+                    t(KeychainMsg::KeyBodyLabel),
+                    Some(
+                        if has {
+                            t(KeychainMsg::KeepExisting)
+                        } else {
+                            t(KeychainMsg::PasteKey)
+                        }
+                        .to_owned(),
+                    ),
+                    Textarea::new(&ui.inline_key),
+                    tokens,
+                )
+                .into_any_element(),
+            );
+            items.push(
+                v_flex()
+                    .gap_1p5()
+                    .child(field(
+                        t(KeychainMsg::PassphraseLabel),
+                        Some(
+                            if can_keep {
+                                t(KeychainMsg::KeepExisting)
+                            } else {
+                                t(KeychainMsg::EmptyPassphrase)
+                            }
+                            .to_owned(),
+                        ),
+                        Input::new(&ui.passphrase),
+                        tokens,
+                    ))
+                    .when(can_keep, |d| {
+                        d.child(switch_row(
+                            "identity-clear-passphrase",
+                            t(KeychainMsg::ClearPassphraseRow),
+                            None,
+                            ui.clear_passphrase,
+                            {
+                                let entity = entity.clone();
+                                move |_window, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.keychain.clear_passphrase =
+                                            !this.keychain.clear_passphrase;
+                                        cx.notify();
+                                    });
+                                }
+                            },
+                            tokens,
+                        ))
+                    })
+                    .into_any_element(),
+            );
+        }
+        if matches!(ui.kind, IdentityKind::Password | IdentityKind::KeyFile) {
+            items.push(
+                field(
+                    secret_label,
+                    Some(
+                        if selected_identity.is_some() {
+                            t(KeychainMsg::KeepExisting)
+                        } else {
+                            ""
+                        }
+                        .to_owned(),
+                    )
+                    .filter(|s| !s.is_empty()),
+                    Input::new(&ui.secret),
+                    tokens,
+                )
+                .into_any_element(),
+            );
+        }
+        items
+    }
+}
+
+impl MainWindow {
     /// 清掉表单并收起（保存、删除之后，或者点「清空」）。
     pub(crate) fn keychain_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ui = &mut self.keychain;
@@ -381,7 +542,17 @@ impl MainWindow {
         self.keychain_new_kind(IdentityKind::Password, window, cx);
     }
 
-    /// 页面右上角的「新建密码 / 私钥文件 / 导入私钥」：空表单，类型先选好。
+    /// 列表下方的表单（编辑已选中凭据）在长列表里看不到：把管理页滚动区滚到底，
+    /// 下一帧布局算出表单高度后自动夹到表单处。
+    pub(crate) fn keychain_show_form(&mut self, cx: &mut Context<Self>) {
+        if self.nav.view == MainView::Settings && self.settings_section.is_manage() {
+            self.settings_scroll
+                .set_offset(::gpui::point(px(0.0), px(-f32::MAX)));
+        }
+        cx.notify();
+    }
+
+    /// 页面右上角的「新建密码 / 私钥文件 / 导入私钥」：弹「新建凭据」对话框，类型先选好。
     pub(crate) fn keychain_new_kind(
         &mut self,
         kind: IdentityKind,
@@ -391,11 +562,53 @@ impl MainWindow {
         self.keychain_reset(window, cx);
         self.keychain.kind = kind;
         self.keychain.creating = true;
-        // 新建的表单排在列表上面：管理区滚回顶部，凭据再多也一眼看得到。
-        self.keychain_reveal_form();
+        self.modal = Some(Modal::Identity);
         let focus = self.keychain.name.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         cx.notify();
+    }
+
+    /// 「新建凭据」对话框：表单字段和编辑已选中凭据共用一份（`keychain_fields`）。
+    pub(super) fn keychain_dialog_body(
+        &self,
+        tokens: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let entity = cx.entity();
+        let ui = &self.keychain;
+        let items = self.keychain_fields(None, tokens, cx);
+        let cancel = entity.clone();
+        v_flex()
+            .gap_4()
+            .child(
+                div()
+                    .typo(Role::GroupTitle, tokens)
+                    .child(t(KeychainMsg::NewTitle)),
+            )
+            .children(ui.error.clone().map(|text| error_note(text, tokens.danger)))
+            .child(v_flex().gap_3().children(items))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .child(text_button(
+                        "identity-dialog-cancel",
+                        t(KeychainMsg::Cancel),
+                        ButtonLook::Outline,
+                        move |_, window, cx| {
+                            cancel.update(cx, |this, cx| this.close_modal(window, cx));
+                        },
+                    ))
+                    .child(text_button(
+                        "identity-dialog-save",
+                        t(KeychainMsg::Save),
+                        ButtonLook::Primary,
+                        move |_, window, cx| {
+                            entity.update(cx, |this, cx| this.keychain_save(window, cx));
+                        },
+                    )),
+            )
+            .into_any_element()
     }
 
     /// 让刚出现的表单落在可见区域里（管理区是 `settings_page` 里的可滚动区域，不会自己滚过去）。
@@ -505,7 +718,12 @@ impl MainWindow {
         });
         self.store.reload();
         match saved {
-            Ok(_) => self.keychain_reset(window, cx),
+            Ok(_) => {
+                self.modal = None;
+                self.keychain_reset(window, cx);
+                self.focus_content(window, cx);
+                cx.notify();
+            }
             Err(err) => self.notice_error(&err, window, cx),
         }
     }
@@ -795,7 +1013,7 @@ impl MainWindow {
         let list = v_flex()
             .w_full()
             .gap_2()
-            .when(count == 0 && !ui.editing(), |d| {
+            .when(count == 0 && ui.selected.is_none(), |d| {
                 d.child(empty_state(
                     t(KeychainMsg::EmptyListTitle),
                     Some(t(KeychainMsg::EmptyListDetail)),
@@ -817,166 +1035,13 @@ impl MainWindow {
             })
             .children(rows);
 
-        let form = ui.editing().then(|| {
-            let kind_choices: Vec<Choice> = kinds()
-                .iter()
-                .map(|(kind, _)| Choice::new(kind_label(*kind), *kind == ui.kind))
-                .collect();
-            let can_keep = can_keep_passphrase(selected_identity, ui.kind);
-            let secret_label = if ui.kind == IdentityKind::Password {
-                t(KeychainMsg::PasswordLabel)
-            } else {
-                t(KeychainMsg::PassphraseLabel)
-            };
-            let mut items: Vec<AnyElement> = vec![
-                field(
-                    t(KeychainMsg::NameLabel),
-                    None,
-                    Input::new(&ui.name),
-                    tokens,
-                )
-                .into_any_element(),
-                v_flex()
-                    .gap_1p5()
-                    .child(field(
-                        t(KeychainMsg::KindLabel),
-                        None,
-                        select(
-                            "identity-kind",
-                            kind_label(ui.kind),
-                            kind_choices,
-                            pick(&entity, |this, index, _window, cx| {
-                                if let Some((kind, _)) = kinds().get(index) {
-                                    this.keychain.kind = *kind;
-                                    cx.notify();
-                                }
-                            }),
-                        ),
-                        tokens,
-                    ))
-                    .when(kind_change_clears_secret(selected_identity, ui.kind), |d| {
-                        d.child(note(
-                            format!(
-                                "{}{}{}",
-                                t(KeychainMsg::KindClearedPrefix),
-                                selected_identity.map_or("", |i| kind_label(i.kind)),
-                                t(KeychainMsg::KindClearedSuffix)
-                            ),
-                            tokens,
-                        ))
-                    })
-                    .into_any_element(),
-            ];
-            if ui.kind == IdentityKind::KeyFile {
-                items.push(
-                    field(
-                        t(KeychainMsg::KeyPathLabel),
-                        None,
-                        h_flex()
-                            .w_full()
-                            .gap_1p5()
-                            .child(div().flex_1().min_w_0().child(Input::new(&ui.key_path)))
-                            .child(
-                                Button::new("identity-browse")
-                                    .outline()
-                                    .compact()
-                                    .label(t(KeychainMsg::Browse))
-                                    .on_click(act(&entity, |this, window, cx| {
-                                        this.keychain_browse(window, cx)
-                                    })),
-                            ),
-                        tokens,
-                    )
-                    .into_any_element(),
-                );
-            }
-            if ui.kind == IdentityKind::KeyInline {
-                let has = selected_identity.is_some_and(|i| i.has_secret);
-                items.push(
-                    field(
-                        t(KeychainMsg::KeyBodyLabel),
-                        Some(
-                            if has {
-                                t(KeychainMsg::KeepExisting)
-                            } else {
-                                t(KeychainMsg::PasteKey)
-                            }
-                            .to_owned(),
-                        ),
-                        Textarea::new(&ui.inline_key),
-                        tokens,
-                    )
-                    .into_any_element(),
-                );
-                items.push(
-                    v_flex()
-                        .gap_1p5()
-                        .child(field(
-                            t(KeychainMsg::PassphraseLabel),
-                            Some(
-                                if can_keep {
-                                    t(KeychainMsg::KeepExisting)
-                                } else {
-                                    t(KeychainMsg::EmptyPassphrase)
-                                }
-                                .to_owned(),
-                            ),
-                            Input::new(&ui.passphrase),
-                            tokens,
-                        ))
-                        .when(can_keep, |d| {
-                            d.child(switch_row(
-                                "identity-clear-passphrase",
-                                t(KeychainMsg::ClearPassphraseRow),
-                                None,
-                                ui.clear_passphrase,
-                                {
-                                    let entity = entity.clone();
-                                    move |_window, cx| {
-                                        entity.update(cx, |this, cx| {
-                                            this.keychain.clear_passphrase =
-                                                !this.keychain.clear_passphrase;
-                                            cx.notify();
-                                        });
-                                    }
-                                },
-                                tokens,
-                            ))
-                        })
-                        .into_any_element(),
-                );
-            }
-            if matches!(ui.kind, IdentityKind::Password | IdentityKind::KeyFile) {
-                items.push(
-                    field(
-                        secret_label,
-                        Some(
-                            if selected_identity.is_some() {
-                                t(KeychainMsg::KeepExisting)
-                            } else {
-                                ""
-                            }
-                            .to_owned(),
-                        )
-                        .filter(|s| !s.is_empty()),
-                        Input::new(&ui.secret),
-                        tokens,
-                    )
-                    .into_any_element(),
-                );
-            }
-            section(
-                if ui.selected.is_some() {
-                    t(KeychainMsg::EditTitle)
-                } else {
-                    t(KeychainMsg::NewTitle)
-                },
-                items,
-                tokens,
-            )
+        // 新建凭据走弹窗（Modal::Identity）；列表下方的表单只在编辑已选中的凭据时出现。
+        let form = ui.selected.is_some().then(|| {
+            let items = self.keychain_fields(selected_identity, tokens, cx);
+            section(t(KeychainMsg::EditTitle), items, tokens)
         });
 
-        let footer = ui.editing().then(|| {
+        let footer = ui.selected.is_some().then(|| {
             let key_kind =
                 selected_identity.is_some_and(|i| super::MainWindow::host_kind_is_key(i.kind));
             let clearable = selected_identity.is_some_and(|i| {

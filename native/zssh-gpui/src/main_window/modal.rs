@@ -292,6 +292,9 @@ pub enum Modal {
     Connections(Box<super::connections_ui::ConnectionsDialog>),
     /// 概览面板「进程」一节的「进程管理」：进程列表 + 结束进程（带确认，V2-U18）；状态较大，装箱。
     Processes(Box<super::processes_ui::ProcessesDialog>),
+    /// 设置 → 凭据的「新建密码 / 私钥文件 / 导入私钥」：新建凭据对话框；表单状态在
+    /// `MainWindow::keychain`（编辑已选中的凭据仍用列表下方的表单，不走这里）。
+    Identity,
 }
 
 impl Modal {
@@ -344,7 +347,11 @@ impl Modal {
         // 锁屏密码对话框里是刚敲的密码，不能被一次误点遮罩丢掉。
         // 主机属性例外：它有「放弃修改」的确认浮层兜底，点遮罩走取消也丢不了东西
         // （取消按钮被挡住、窗口又小的时候，这是唯一的退路）。
-        (!self.tall() && !matches!(self, Self::Tokenway(_) | Self::AppLock(_)))
+        (!self.tall()
+            && !matches!(
+                self,
+                Self::Tokenway(_) | Self::AppLock(_) | Self::Identity
+            ))
             || matches!(self, Self::HostProps(_))
             || matches!(self, Self::Connections(dialog) if dialog.ask.is_none())
             // 进程列表点遮罩可以关；确认框开着时不行（免得一次误点把正要确认的结束请求丢掉）。
@@ -564,6 +571,10 @@ impl MainWindow {
             self.host_props_cancel(window, cx);
             return;
         }
+        // 新建凭据：连着把"正在新建"的状态一起收掉（下次打开是干净表单）。
+        if matches!(self.modal, Some(Modal::Identity)) {
+            self.keychain_reset(window, cx);
+        }
         self.modal = None;
         self.focus_content(window, cx);
         cx.notify();
@@ -584,6 +595,7 @@ impl MainWindow {
             Some(Modal::AiPresets) => {}
             Some(Modal::Tokenway(_)) => self.tokenway_confirm(window, cx),
             Some(Modal::GenerateKey(_)) => self.submit_generate_key(window, cx),
+            Some(Modal::Identity) => self.keychain_save(window, cx),
             Some(Modal::InstallKey(_)) => self.submit_install_key(window, cx),
             Some(Modal::Unsaved(_)) => self.answer_unsaved(true, window, cx),
             // 恢复提示每一项有自己的按钮，回车不替用户选。
@@ -761,6 +773,7 @@ impl MainWindow {
                 super::processes_ui::DIALOG_WIDTH,
                 self.processes_body(dialog, tokens, cx),
             ),
+            Modal::Identity => (480.0, self.keychain_dialog_body(tokens, cx)),
         };
         let closes_on_scrim = modal.closes_on_scrim();
         let tall = modal.tall();

@@ -208,6 +208,7 @@ pub(super) fn modal_name(this: &MainWindow) -> &'static str {
         Some(Modal::X11Needed(_)) => "x11",
         Some(Modal::Connections(_)) => "connections",
         Some(Modal::Processes(_)) => "processes",
+        Some(Modal::Identity) => "identity",
         Some(Modal::AiEndpoint(_)) => "ai_endpoint",
         Some(Modal::AiPresets) => "ai_presets",
         Some(Modal::Tokenway(_)) => "tokenway",
