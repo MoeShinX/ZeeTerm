@@ -159,6 +159,7 @@ mod assist_ops;
 #[cfg(test)]
 mod assist_tests;
 mod dev_tools;
+mod grid_paint;
 mod highlight_ops;
 mod ime_ops;
 #[cfg(test)]
@@ -5006,6 +5007,8 @@ fn pane_grid(
     };
     v_flex()
         .flex_1()
+        .w_full()
+        .min_w_0()
         .overflow_hidden()
         .children(pane.snapshot.rows.iter().enumerate().map(|(row_ix, row)| {
             let plain_links = crate::links::find_plain_links(row);
@@ -5016,6 +5019,7 @@ fn pane_grid(
             div()
                 .relative()
                 .h(row_h)
+                .flex_shrink_0()
                 .w_full()
                 .children(
                     selection_spans(selection, row_ix, row.cells.len())
@@ -5030,55 +5034,81 @@ fn pane_grid(
                                 .bg(selection_color)
                         }),
                 )
-                .child(
-                    h_flex().h(row_h).children(
-                        runs(
-                            row,
-                            foreground,
-                            background,
-                            selection,
-                            row_ix,
-                            cursor,
-                            &plain_links,
-                            row_spans,
-                            ansi,
-                        )
-                        .into_iter()
-                        .map(|run| {
-                            let block = run.cursor && cursor_shape == CursorShape::Block;
-                            let underline = run.cursor && cursor_shape == CursorShape::Underline;
-                            let bar = run.cursor && cursor_shape == CursorShape::Bar;
-                            let bg = run_background(
-                                block,
-                                run.selected,
-                                run.bg,
-                                background,
-                                cursor_color,
-                            );
-                            div()
-                                .font_family(mono.clone())
-                                .text_size(mono_size)
-                                .text_color(if block { background } else { run.fg })
-                                .when_some(bg, |d, bg| d.bg(bg))
-                                .when(run.underline || underline, |d| d.underline())
-                                .when(run.strikethrough, |d| d.line_through())
-                                .when(run.bold, |d| d.font_weight(FontWeight::BOLD))
-                                .when(run.italic, |d| d.italic())
-                                .child(run.text)
-                                // 竖线光标：压在格子左边的 2 px 细条，不占宽度，后面的字不会被挤开。
-                                .when(bar, |d| {
-                                    d.relative().child(
-                                        div()
-                                            .absolute()
-                                            .top_0()
-                                            .bottom_0()
-                                            .left_0()
-                                            .w(::gpui::px(2.0))
-                                            .bg(cursor_color),
-                                    )
-                                })
-                        }),
-                    ),
+                .children(
+                    runs(
+                        row,
+                        foreground,
+                        background,
+                        selection,
+                        row_ix,
+                        cursor,
+                        &plain_links,
+                        row_spans,
+                        ansi,
+                    )
+                    .into_iter()
+                    .map(|run| {
+                        let block = run.cursor && cursor_shape == CursorShape::Block;
+                        let underline = run.cursor && cursor_shape == CursorShape::Underline;
+                        let bar = run.cursor && cursor_shape == CursorShape::Bar;
+                        let bg =
+                            run_background(block, run.selected, run.bg, background, cursor_color);
+                        div()
+                            .absolute()
+                            .left(::gpui::px(run.col as f32 * cell_width))
+                            .w(::gpui::px(run.columns as f32 * cell_width))
+                            .h(row_h)
+                            .font_family(mono.clone())
+                            .text_size(mono_size)
+                            .text_color(if block { background } else { run.fg })
+                            .when_some(bg, |d, bg| d.bg(bg))
+                            .when(run.bold, |d| d.font_weight(FontWeight::BOLD))
+                            .when(run.italic, |d| d.italic())
+                            .child(grid_paint::glyphs(
+                                run.glyphs, run.col, cell_width, font_size, row_height,
+                            ))
+                            // 装饰线与背景也按格宽画，不能再取后备字形的自然宽度。
+                            .when(run.underline || underline, |d| {
+                                d.child(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .bottom_0()
+                                        .h(::gpui::px(1.0))
+                                        .bg(if underline {
+                                            cursor_color
+                                        } else if block {
+                                            background
+                                        } else {
+                                            run.fg
+                                        }),
+                                )
+                            })
+                            .when(run.strikethrough, |d| {
+                                d.child(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .top(::gpui::px(row_height * 0.5))
+                                        .h(::gpui::px(1.0))
+                                        .bg(if block { background } else { run.fg }),
+                                )
+                            })
+                            // 竖线光标：压在格子左边的 2 px 细条，不占宽度，后面的字不会被挤开。
+                            .when(bar, |d| {
+                                d.child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .left_0()
+                                        .w(::gpui::px(2.0))
+                                        .bg(cursor_color),
+                                )
+                            })
+                    }),
                 )
         }))
 }
@@ -5102,7 +5132,9 @@ fn is_selected(
 
 /// 把一行按相同属性（含选中状态）切成连续的 run；宽字符占位格跳过。
 struct Run {
-    text: String,
+    col: usize,
+    columns: usize,
+    glyphs: Vec<grid_paint::GridGlyph>,
     fg: Hsla,
     bg: Hsla,
     bold: bool,
@@ -5198,24 +5230,18 @@ fn runs(
             bg = ::gpui::rgb(color).into();
         }
         let selected = is_selected(selection, row_ix, col);
-        let is_cursor = cursor == Some((row_ix, col));
+        let glyph = grid_paint::grid_glyph(row, col);
+        let is_cursor =
+            cursor.is_some_and(|(r, c)| r == row_ix && (col..col + glyph.columns).contains(&c));
         let underline = cell.underline
             || cell.hyperlink.is_some()
             || plain_links
                 .iter()
                 .any(|link| col >= link.start_col && col <= link.end_col);
-        let mut text = if cell.hidden {
-            " ".to_owned()
-        } else {
-            let mut text = String::from(cell.ch);
-            if let Some(zerowidth) = &cell.zerowidth {
-                text.extend(zerowidth.iter());
-            }
-            text
-        };
         match out.last_mut() {
             Some(run)
-                if run.fg == fg
+                if run.col + run.columns == col
+                    && run.fg == fg
                     && run.bg == bg
                     && run.bold == cell.bold
                     && run.italic == cell.italic
@@ -5224,10 +5250,13 @@ fn runs(
                     && run.selected == selected
                     && run.cursor == is_cursor =>
             {
-                run.text.push_str(&text);
+                run.columns += glyph.columns;
+                run.glyphs.push(glyph);
             }
             _ => out.push(Run {
-                text: std::mem::take(&mut text),
+                col,
+                columns: glyph.columns,
+                glyphs: vec![glyph],
                 fg,
                 bg,
                 bold: cell.bold,
@@ -5241,7 +5270,13 @@ fn runs(
     }
     // 行尾空白只在没有背景色、没被选中/光标时裁掉。
     while let Some(run) = out.last() {
-        if run.text.trim().is_empty() && !run.cursor && !run.selected && run.bg == background {
+        if run.glyphs.iter().all(|glyph| glyph.text.trim().is_empty())
+            && !run.cursor
+            && !run.selected
+            && !run.underline
+            && !run.strikethrough
+            && run.bg == background
+        {
             out.pop();
         } else {
             break;

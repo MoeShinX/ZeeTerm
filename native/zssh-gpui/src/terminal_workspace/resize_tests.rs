@@ -11,12 +11,15 @@ use zssh_core::ssh::flow::FlowGate;
 use zssh_session::{CoreFilter, SessionBackend, SessionCommand, SessionPump};
 use zssh_terminal::Size;
 
-struct ResizeBackend(Arc<Mutex<Vec<Size>>>);
+type Writes = Arc<Mutex<Vec<Vec<u8>>>>;
+struct ResizeBackend(Arc<Mutex<Vec<Size>>>, Writes);
 
 impl SessionBackend for ResizeBackend {
     fn send(&mut self, command: SessionCommand) {
-        if let SessionCommand::Resize(size) = command {
-            self.0.lock().expect("sizes").push(size);
+        match command {
+            SessionCommand::Resize(size) => self.0.lock().expect("sizes").push(size),
+            SessionCommand::Write(bytes) => self.1.lock().expect("writes").push(bytes),
+            SessionCommand::Close => {}
         }
     }
 }
@@ -76,6 +79,7 @@ struct Harness {
     window: WindowHandle<ResizeHost>,
     workspace: Entity<TerminalWorkspace>,
     sizes: Arc<Mutex<Vec<Size>>>,
+    writes: Writes,
     frames: Arc<Mutex<Vec<(Size, Size)>>>,
     events: mpsc::Sender<zssh_session::SessionEvent>,
 }
@@ -87,6 +91,7 @@ impl Harness {
             AppSettings::init_for_test(cx);
         });
         let sizes = Arc::new(Mutex::new(Vec::new()));
+        let writes = Arc::new(Mutex::new(Vec::new()));
         let frames = Arc::new(Mutex::new(Vec::new()));
         let (events_tx, events) = mpsc::channel();
         let window = cx.add_window(|window, cx| {
@@ -101,7 +106,7 @@ impl Harness {
                 );
                 let pane = Pane::with_parts(
                     pump,
-                    Box::new(ResizeBackend(Arc::clone(&sizes))),
+                    Box::new(ResizeBackend(Arc::clone(&sizes), Arc::clone(&writes))),
                     events,
                     None,
                     None,
@@ -122,6 +127,7 @@ impl Harness {
             window,
             workspace,
             sizes,
+            writes,
             frames,
             events: events_tx,
         };
@@ -246,4 +252,107 @@ fn chinese_progress_keeps_overwriting_one_row_while_the_available_area_changes(
         harness.assert_current_size(cx, width - sidebar, 600.0);
         harness.progress(cx, 20 + index);
     }
+}
+
+#[gpui::test]
+fn a_link_selected_after_chinese_is_copied_and_pasted_without_prefix_or_truncation(
+    cx: &mut TestAppContext,
+) {
+    let harness = Harness::open(cx);
+    let url = "https://example.com/r/Case09XY";
+    harness
+        .events
+        .send(zssh_session::SessionEvent::Data {
+            generation: 1,
+            bytes: format!("\x1b[1m测试完成，点击查看你的结果链接：\x1b[0m{url}").into_bytes(),
+        })
+        .expect("output");
+    harness.workspace.update(cx, |ws, cx| {
+        ws.settings.copy_on_select = false;
+        ws.settings.bracketed_paste = crate::settings::BracketedPaste::Off;
+        ws.poll_sessions();
+        cx.notify();
+    });
+    harness.draw(cx);
+    let (start, end) = harness.workspace.read_with(cx, |ws, _| {
+        let geom = &ws.pane_geom[0];
+        let cell = |col: usize| {
+            gpui::point(
+                px(geom.left + (col as f32 + 0.5) * ws.cell_width),
+                px(geom.top + ws.cell_height * 0.5),
+            )
+        };
+        (cell(32), cell(32 + url.len() - 1))
+    });
+    cx.update_window(harness.window.into(), |_, window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position: start,
+                pressed_button: None,
+                modifiers: Default::default(),
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: start,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+    })
+    .expect("mouse down");
+    harness.draw(cx);
+    cx.update_window(harness.window.into(), |_, window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position: end,
+                pressed_button: Some(gpui::MouseButton::Left),
+                modifiers: Default::default(),
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position: end,
+                modifiers: Default::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+    })
+    .expect("mouse up");
+    let copy = if cfg!(target_os = "macos") {
+        "cmd-c"
+    } else {
+        "ctrl-shift-c"
+    };
+    let paste = if cfg!(target_os = "macos") {
+        "cmd-v"
+    } else {
+        "ctrl-v"
+    };
+    cx.dispatch_keystroke(
+        harness.window.into(),
+        gpui::Keystroke::parse(copy).expect("copy"),
+    );
+    let copied = cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some(url));
+    cx.dispatch_keystroke(
+        harness.window.into(),
+        gpui::Keystroke::parse(paste).expect("paste"),
+    );
+    assert_eq!(
+        harness
+            .writes
+            .lock()
+            .expect("writes")
+            .last()
+            .map(Vec::as_slice),
+        Some(url.as_bytes())
+    );
 }
