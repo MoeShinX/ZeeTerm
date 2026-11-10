@@ -72,6 +72,24 @@ pub trait FileEndpoint: Send + Sync {
     /// 源文件大小（拿不到就是 `None`）。
     fn size<'a>(&'a self) -> EndpointFuture<'a, Result<Option<u64>, SftpError>>;
 
+    /// 这个文件现在还在不在。
+    ///
+    /// 为什么需要：`size()` 返回 `None` 有两种来源——文件不存在，或者服务器没回大小属性
+    /// （SFTP 协议允许），调用方要靠这个区分。默认实现试着打开读：打得开就是在，`NotFound` 就是不在
+    /// （别的错误原样返回）；真实端点都改用一次 stat，不占读句柄。
+    fn exists<'a>(&'a self) -> EndpointFuture<'a, Result<bool, SftpError>> {
+        Box::pin(async move {
+            match self.open_read().await {
+                Ok(reader) => {
+                    let _ = reader.close().await;
+                    Ok(true)
+                }
+                Err(SftpError::NotFound { .. }) => Ok(false),
+                Err(err) => Err(err),
+            }
+        })
+    }
+
     /// 打开读（返回 `Arc`：流水线要把同一个句柄分给多个并发读任务）。
     fn open_read<'a>(&'a self) -> EndpointFuture<'a, Result<Arc<dyn ReadAt>, SftpError>>;
 
@@ -218,6 +236,17 @@ impl FileEndpoint for RemoteEndpoint {
             match self.channel.stat(&self.path).await {
                 Ok(attrs) => remote_source_size(&self.path, &attrs),
                 Err(SftpError::NotFound { .. }) => Ok(None),
+                Err(err) => Err(err),
+            }
+        })
+    }
+
+    fn exists<'a>(&'a self) -> EndpointFuture<'a, Result<bool, SftpError>> {
+        Box::pin(async move {
+            // 和 `size()` 一样跟随链接（`open_read` 读的是链接指向的文件）。
+            match self.channel.stat(&self.path).await {
+                Ok(_) => Ok(true),
+                Err(SftpError::NotFound { .. }) => Ok(false),
                 Err(err) => Err(err),
             }
         })
@@ -466,6 +495,16 @@ impl FileEndpoint for LocalEndpoint {
             match std::fs::metadata(local::long_path(&self.path)) {
                 Ok(meta) => Ok(Some(meta.len())),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(err) => Err(from_io(err, &self.path.display().to_string())),
+            }
+        })
+    }
+
+    fn exists<'a>(&'a self) -> EndpointFuture<'a, Result<bool, SftpError>> {
+        Box::pin(async move {
+            match std::fs::metadata(local::long_path(&self.path)) {
+                Ok(_) => Ok(true),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
                 Err(err) => Err(from_io(err, &self.path.display().to_string())),
             }
         })

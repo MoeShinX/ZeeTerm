@@ -201,10 +201,36 @@ pub async fn copy_file(
     resume_len: u64,
     tuning: CopyTuning,
     control: &ControlFlag,
+    on_progress: impl FnMut(u64, u64) + Send,
+) -> Result<CopyOutcome, SftpError> {
+    copy_file_sized(
+        source,
+        target,
+        Some(total),
+        resume_len,
+        tuning,
+        control,
+        on_progress,
+    )
+    .await
+}
+
+/// 同 [`copy_file`]，但源大小可以未知（`total = None`）：SFTP 服务器可以不回 `size` 属性。
+///
+/// 大小未知时读到文件末尾（读回来的字节数比请求的少）才算读完，不拿"实际长度 == 源大小"
+/// 做精确比较——没有可比的数；`on_progress` 的第二个参数（总量）取已读到的字节数。
+/// 任何一步出错都照常返回错误，由调用方决定不提交：只有读到末尾、全部写好、收尾成功才是 `Completed`。
+pub async fn copy_file_sized(
+    source: Arc<dyn FileEndpoint>,
+    target: Arc<dyn FileEndpoint>,
+    total: Option<u64>,
+    resume_len: u64,
+    tuning: CopyTuning,
+    control: &ControlFlag,
     mut on_progress: impl FnMut(u64, u64) + Send,
 ) -> Result<CopyOutcome, SftpError> {
     let mut done = resume_len;
-    on_progress(done, total);
+    on_progress(done, total.unwrap_or(done));
 
     let reader = source.open_read().await?;
     let writer = match target.open_write(resume_len).await {
@@ -220,7 +246,7 @@ pub async fn copy_file(
     let chunk = tuning.chunk_len.max(1) as u64;
     let batch = tuning.in_flight.max(1);
 
-    'outer: while done < total {
+    'outer: while total.is_none_or(|total| done < total) {
         // 暂停 / 取消检查点：放在批之间，保证"停下来"的位置是可续的。
         match control.state() {
             ControlState::Paused => {
@@ -242,8 +268,8 @@ pub async fn copy_file(
         // 一批：按顺序发出去，一起等（并发把 RTT 叠起来）。
         let mut requests: Vec<(u64, u32)> = Vec::with_capacity(batch);
         let mut offset = done;
-        while requests.len() < batch && offset < total {
-            let len = chunk.min(total - offset);
+        while requests.len() < batch && total.is_none_or(|total| offset < total) {
+            let len = total.map_or(chunk, |total| chunk.min(total - offset));
             requests.push((offset, u32::try_from(len).unwrap_or(u32::MAX)));
             offset += len;
         }
@@ -296,9 +322,10 @@ pub async fn copy_file(
                 ));
                 break 'outer;
             }
-            if data.len() != *req_len as usize {
+            if let (true, Some(total)) = (data.len() != *req_len as usize, total) {
                 // `read_full` 只有碰到文件末尾才会少：源文件比 stat 出来的时候短了（被改小了）。
                 // 不能把这块写进去——后面的块会隔着一个洞落盘。
+                // （大小未知时读到末尾就是正常结束，在下面处理。）
                 let read = piece_offset + data.len() as u64;
                 result = Err(SftpError::RemoteReason(
                     Reason::new(
@@ -310,6 +337,31 @@ pub async fn copy_file(
                 ));
                 break 'outer;
             }
+        }
+        // 大小未知：第一块读不满的就是文件末尾，它后面的块都该是空的（读在末尾之后）。
+        // 后面的块里还有数据说明源在读的过程中变了，写下去会留洞，当作错误。
+        let mut reached_eof = false;
+        if total.is_none() {
+            let short = pieces
+                .iter()
+                .zip(requests.iter())
+                .position(|((_, data), (_, req_len))| data.len() != *req_len as usize);
+            if let Some(short) = short {
+                if pieces[short + 1..].iter().any(|(_, data)| !data.is_empty()) {
+                    result = Err(SftpError::Internal(
+                        Reason::new(
+                            reason_keys::SFTP_READ_OFFSET_MISMATCH,
+                            "源文件在读取过程中发生了变化（末尾之后还读到了数据）".to_owned(),
+                        )
+                        .with("expected", pieces[short].0)
+                        .with("got", pieces[short + 1].0),
+                    ));
+                    break 'outer;
+                }
+                pieces.truncate(short + 1);
+                reached_eof = true;
+            }
+            pieces.retain(|(_, data)| !data.is_empty());
         }
         // 校验通过之后，整批**一起**写出去（慢网络下决定吞吐的是在途请求数）。
         // 写之前先记下这一批的末尾（写完用它推进度）；数据块整个 move 给写任务。
@@ -328,7 +380,10 @@ pub async fn copy_file(
         }
         // 到这里整批都读满、写好了，且从 `done` 开始首尾相接：已确认的连续前缀又往前走了这一批。
         done = batch_end.unwrap_or(done);
-        on_progress(done, total);
+        on_progress(done, total.unwrap_or(done));
+        if reached_eof {
+            break;
+        }
     }
 
     // 统一收尾：不管怎么走到这里（完成、暂停、取消、读错、写错），两边已经打开的句柄都要关。
@@ -670,6 +725,181 @@ mod tests {
             assert!(progress.windows(2).all(|w| w[0] <= w[1]), "{progress:?}");
             assert_eq!(progress.last().copied(), Some(50_000));
         }
+    }
+
+    async fn copy_unknown_size(source: &MemoryEndpoint, tune: CopyTuning) -> CopyRun {
+        let target = MemoryEndpoint::new("target", Vec::new()).as_endpoint();
+        let mut progress = Vec::new();
+        let outcome = copy_file_sized(
+            source.as_endpoint(),
+            Arc::clone(&target),
+            None,
+            0,
+            tune,
+            &ControlFlag::new(),
+            |done, total| {
+                assert!(
+                    total >= done,
+                    "未知大小时总量不能小于已完成：{done}/{total}"
+                );
+                progress.push(done);
+            },
+        )
+        .await;
+        (outcome, target, progress)
+    }
+
+    /// 大小未知：读到文件末尾为止；块大小、在途数、单次读上限怎么组合，结果都是整个文件。
+    #[tokio::test]
+    async fn unknown_size_copies_everything_up_to_end_of_file() {
+        for len in [0usize, 1, 1023, 1024, 1025, 4096, 10_000] {
+            for (chunk, in_flight, cap) in
+                [(1024, 1, u64::MAX), (1024, 4, u64::MAX), (1024, 8, 333)]
+            {
+                let data = pattern(len);
+                let source = MemoryEndpoint::new("source", data.clone());
+                source.cap_every_read(cap);
+                let (outcome, target, progress) =
+                    copy_unknown_size(&source, tuning(chunk, in_flight)).await;
+                assert_eq!(
+                    outcome.unwrap(),
+                    CopyOutcome::Completed { bytes: len as u64 },
+                    "len={len} chunk={chunk} in_flight={in_flight}"
+                );
+                assert_eq!(partial_bytes(&target, len as u64).await, data);
+                assert_eq!(progress.last().copied(), Some(len as u64));
+            }
+        }
+    }
+
+    /// 大小未知、读到一半出错：返回错误（调用方据此不提交），已写的部分不会被当成完成。
+    #[tokio::test]
+    async fn unknown_size_read_error_is_reported_not_completed() {
+        struct FailingSource(Arc<dyn FileEndpoint>);
+        struct FailingReader(Arc<dyn super::super::endpoint::ReadAt>);
+        impl super::super::endpoint::ReadAt for FailingReader {
+            fn read_at<'a>(
+                &'a self,
+                offset: u64,
+                len: u32,
+            ) -> super::super::endpoint::EndpointFuture<'a, Result<Vec<u8>, SftpError>>
+            {
+                if offset >= 2048 {
+                    return Box::pin(async {
+                        Err(SftpError::InvalidInput(Reason::text(
+                            "测试注入的读失败".to_owned(),
+                        )))
+                    });
+                }
+                self.0.read_at(offset, len)
+            }
+            fn close<'a>(
+                &'a self,
+            ) -> super::super::endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+                self.0.close()
+            }
+        }
+        impl FileEndpoint for FailingSource {
+            fn describe(&self) -> String {
+                self.0.describe()
+            }
+            fn size<'a>(
+                &'a self,
+            ) -> super::super::endpoint::EndpointFuture<'a, Result<Option<u64>, SftpError>>
+            {
+                Box::pin(async { Ok(None) })
+            }
+            fn open_read<'a>(
+                &'a self,
+            ) -> super::super::endpoint::EndpointFuture<
+                'a,
+                Result<Arc<dyn super::super::endpoint::ReadAt>, SftpError>,
+            > {
+                Box::pin(async move {
+                    let reader = self.0.open_read().await?;
+                    Ok(Arc::new(FailingReader(reader)) as Arc<dyn super::super::endpoint::ReadAt>)
+                })
+            }
+            fn open_write<'a>(
+                &'a self,
+                n: u64,
+            ) -> super::super::endpoint::EndpointFuture<
+                'a,
+                Result<Arc<dyn super::super::endpoint::WriteAt>, SftpError>,
+            > {
+                self.0.open_write(n)
+            }
+            fn commit<'a>(
+                &'a self,
+                total: u64,
+                overwrite: bool,
+            ) -> super::super::endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+                self.0.commit(total, overwrite)
+            }
+            fn existing_size<'a>(
+                &'a self,
+            ) -> super::super::endpoint::EndpointFuture<'a, Result<Option<u64>, SftpError>>
+            {
+                self.0.existing_size()
+            }
+            fn remove_existing<'a>(
+                &'a self,
+            ) -> super::super::endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+                self.0.remove_existing()
+            }
+            fn remove_partial<'a>(
+                &'a self,
+            ) -> super::super::endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+                self.0.remove_partial()
+            }
+            fn partial_len<'a>(
+                &'a self,
+            ) -> super::super::endpoint::EndpointFuture<'a, Result<u64, SftpError>> {
+                self.0.partial_len()
+            }
+            fn truncate_partial<'a>(
+                &'a self,
+                len: u64,
+            ) -> super::super::endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+                self.0.truncate_partial(len)
+            }
+            fn read_partial<'a>(
+                &'a self,
+                offset: u64,
+                len: u32,
+            ) -> super::super::endpoint::EndpointFuture<'a, Result<Option<Vec<u8>>, SftpError>>
+            {
+                self.0.read_partial(offset, len)
+            }
+            fn set_attributes<'a>(
+                &'a self,
+                mtime: Option<u32>,
+                permissions: Option<u32>,
+            ) -> super::super::endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+                self.0.set_attributes(mtime, permissions)
+            }
+            fn attributes<'a>(
+                &'a self,
+            ) -> super::super::endpoint::EndpointFuture<
+                'a,
+                Result<super::super::endpoint::FileAttributesPair, SftpError>,
+            > {
+                self.0.attributes()
+            }
+        }
+        let inner = MemoryEndpoint::new("source", pattern(10_000)).as_endpoint();
+        let target = MemoryEndpoint::new("target", Vec::new()).as_endpoint();
+        let outcome = copy_file_sized(
+            Arc::new(FailingSource(inner)),
+            Arc::clone(&target),
+            None,
+            0,
+            tuning(1024, 4),
+            &ControlFlag::new(),
+            |_, _| {},
+        )
+        .await;
+        assert!(outcome.is_err(), "读出错必须返回错误：{outcome:?}");
     }
 
     #[tokio::test]

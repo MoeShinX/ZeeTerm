@@ -35,7 +35,9 @@ use crate::ssh::BoxFuture;
 
 use backend::TransferEndpoints;
 use endpoint::FileEndpoint;
-use file::{copy_file, tails_match, ControlFlag, CopyOutcome, CopyTuning};
+#[cfg(test)]
+use file::copy_file;
+use file::{copy_file_sized, tails_match, ControlFlag, CopyOutcome, CopyTuning};
 
 /// 任务编号。
 pub type TransferId = u64;
@@ -1101,7 +1103,11 @@ impl TransferEngine {
             state.note_part(&planned.target, &planned.source, &target);
 
             // 续传：先看临时文件有多少，再和源对一下尾部；对不上从头来。
-            let source_size = source.size().await?.unwrap_or(0);
+            // 源大小：已知就是个数；`None` 是源在规划之后被删了（这里直接按「源不存在」失败，
+            // 不碰目标），或者服务器没回大小（按读到文件末尾为准，见 `source_size_or_missing`）。
+            let source_size = self
+                .source_size_or_missing(&source, &planned.source)
+                .await?;
             let actual_len = if resume_from_partial {
                 target_endpoint.partial_len().await?
             } else {
@@ -1109,6 +1115,11 @@ impl TransferEngine {
             };
             // 续传点以「已确认的连续前缀」为准，不信临时文件的长度（可能带洞，见 `JobState::confirmed`）。
             let mut resume_len = resume_point(actual_len, state.confirmed_prefix(&target));
+            if source_size.is_none() {
+                // 大小未知没有办法判断临时文件是不是这个源的前缀，也没有「读到哪算完」的数可对：
+                // 不续传，从头传（`open_write(0)` 会截断旧的临时文件）。
+                resume_len = 0;
+            }
             if actual_len > 0 && resume_len == 0 {
                 self.push_note(
                     state,
@@ -1119,7 +1130,7 @@ impl TransferEngine {
                     .with("target", &planned.target),
                 );
             }
-            if resume_len > source_size {
+            if source_size.is_some_and(|source_size| resume_len > source_size) {
                 // 临时文件比源还长（源换了 / 上次传的是别的文件）：放弃续传。
                 target_endpoint.remove_partial().await?;
                 resume_len = 0;
@@ -1177,7 +1188,7 @@ impl TransferEngine {
             self.set_counted(state, &planned.target, planned.size, resume_len);
             let confirmed_key = target.clone();
             let planned_key = planned.target.clone();
-            let outcome = copy_file(
+            let outcome = copy_file_sized(
                 Arc::clone(&source),
                 Arc::clone(&target_endpoint),
                 source_size,
@@ -1199,7 +1210,9 @@ impl TransferEngine {
             .await;
 
             match outcome {
-                Ok(CopyOutcome::Completed { .. }) => {
+                Ok(CopyOutcome::Completed { bytes }) => {
+                    // 大小未知时，读到的字节数就是文件大小（resume_len 一定是 0）。
+                    let copied_len = source_size.unwrap_or(resume_len + bytes);
                     // 收尾：把临时文件改名成最终名字。只有用户同意过覆盖才允许替换；
                     // 其余情况由系统在改名那一刻判断目标是否存在（不是先查再改）。
                     let overwrite = renamed_target.is_none() && overwrite_authorized;
@@ -1234,7 +1247,7 @@ impl TransferEngine {
                             Direction::Upload | Direction::RemoteCopy => {}
                         }
                     }
-                    if let Err(err) = target_endpoint.commit(source_size, overwrite).await {
+                    if let Err(err) = target_endpoint.commit(copied_len, overwrite).await {
                         if !overwrite
                             && renamed_target.is_none()
                             && matches!(err, SftpError::AlreadyExists { .. })
@@ -1299,7 +1312,7 @@ impl TransferEngine {
                         state,
                         &planned.target,
                         planned.size,
-                        planned.size.unwrap_or(source_size),
+                        planned.size.unwrap_or(copied_len),
                     );
                     self.lock_progress(state).current = None;
                     return Ok(FileOutcome::Done);
@@ -1323,6 +1336,25 @@ impl TransferEngine {
                 }
             }
         }
+    }
+
+    /// 源文件大小。`Ok(None)` = 文件在，但服务器没回大小（SFTP 协议允许），按读到文件末尾复制；
+    /// 文件已经不在（规划之后被删了）直接返回 `NotFound`。
+    ///
+    /// 为什么要多问一次：`size()` 对这两种情况都返回 `None`，当成 0 字节复制会把已有的目标
+    /// 换成空文件，结果还是「完成」。
+    async fn source_size_or_missing(
+        &self,
+        source: &Arc<dyn FileEndpoint>,
+        source_path: &str,
+    ) -> Result<Option<u64>, SftpError> {
+        let size = source.size().await?;
+        if size.is_none() && !source.exists().await? {
+            return Err(SftpError::NotFound {
+                path: source_path.to_owned(),
+            });
+        }
+        Ok(size)
     }
 
     /// 把一个文件计入进度的字节数改成 `new`（`done_bytes` 同步加减差值）。
@@ -1528,7 +1560,8 @@ impl TransferEngine {
                 overwrite: false,
             });
         };
-        let source_size = source.size().await?;
+        // 源已经不在了就不用问用户怎么处理冲突了：覆盖一个不存在的源没有意义（见 `source_size_or_missing`）。
+        let source_size = self.source_size_or_missing(source, &planned.source).await?;
         // 修改时间给冲突对话框用（两端各拿一次；拿不到就是 None，不拦着）。
         let source_mtime = source.attributes().await.ok().and_then(|(mtime, _)| mtime);
         let target_mtime = target.existing_mtime().await.unwrap_or(None);

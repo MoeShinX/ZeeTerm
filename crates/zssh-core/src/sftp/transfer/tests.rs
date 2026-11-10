@@ -4217,3 +4217,400 @@ async fn commit_rechecks_stop_after_a_few_rounds_instead_of_looping_forever() {
     assert!(inner.remote_part_files("/remote/a.bin").is_empty());
     assert!(!inner.remote_exists("/remote/a.bin"));
 }
+
+// ---------------------------------------------------------------------------
+// 2026-11-10 审计：源大小未知（`size()` 返回 `None`）不能当 0 字节复制
+// ---------------------------------------------------------------------------
+
+/// 源端点的包装：可以假装服务器没回大小、读到一半失败。
+struct DoubtfulSource {
+    inner: Arc<dyn FileEndpoint>,
+    hide_size: bool,
+    /// 读到这个偏移之后（含）的读请求报错（非断线类的错误，不会触发重试）。
+    fail_reads_from: Option<u64>,
+}
+
+struct FailingReader {
+    inner: Arc<dyn endpoint::ReadAt>,
+    fail_from: u64,
+}
+
+impl endpoint::ReadAt for FailingReader {
+    fn read_at<'a>(
+        &'a self,
+        offset: u64,
+        len: u32,
+    ) -> endpoint::EndpointFuture<'a, Result<Vec<u8>, SftpError>> {
+        if offset + u64::from(len) > self.fail_from {
+            return Box::pin(async {
+                Err(SftpError::InvalidInput(crate::error::Reason::text(
+                    "测试注入的读失败".to_owned(),
+                )))
+            });
+        }
+        self.inner.read_at(offset, len)
+    }
+    fn close<'a>(&'a self) -> endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+        self.inner.close()
+    }
+}
+
+impl FileEndpoint for DoubtfulSource {
+    fn describe(&self) -> String {
+        self.inner.describe()
+    }
+    fn size<'a>(&'a self) -> endpoint::EndpointFuture<'a, Result<Option<u64>, SftpError>> {
+        if self.hide_size {
+            return Box::pin(async { Ok(None) });
+        }
+        self.inner.size()
+    }
+    fn exists<'a>(&'a self) -> endpoint::EndpointFuture<'a, Result<bool, SftpError>> {
+        self.inner.exists()
+    }
+    fn open_read<'a>(
+        &'a self,
+    ) -> endpoint::EndpointFuture<'a, Result<Arc<dyn endpoint::ReadAt>, SftpError>> {
+        let inner = Arc::clone(&self.inner);
+        let fail_from = self.fail_reads_from;
+        Box::pin(async move {
+            let reader = inner.open_read().await?;
+            Ok(match fail_from {
+                Some(fail_from) => Arc::new(FailingReader {
+                    inner: reader,
+                    fail_from,
+                }) as Arc<dyn endpoint::ReadAt>,
+                None => reader,
+            })
+        })
+    }
+    fn open_write<'a>(
+        &'a self,
+        resume_len: u64,
+    ) -> endpoint::EndpointFuture<'a, Result<Arc<dyn endpoint::WriteAt>, SftpError>> {
+        self.inner.open_write(resume_len)
+    }
+    fn commit<'a>(
+        &'a self,
+        total: u64,
+        overwrite: bool,
+    ) -> endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+        self.inner.commit(total, overwrite)
+    }
+    fn existing_size<'a>(&'a self) -> endpoint::EndpointFuture<'a, Result<Option<u64>, SftpError>> {
+        self.inner.existing_size()
+    }
+    fn remove_existing<'a>(&'a self) -> endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+        self.inner.remove_existing()
+    }
+    fn remove_partial<'a>(&'a self) -> endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+        self.inner.remove_partial()
+    }
+    fn partial_len<'a>(&'a self) -> endpoint::EndpointFuture<'a, Result<u64, SftpError>> {
+        self.inner.partial_len()
+    }
+    fn truncate_partial<'a>(
+        &'a self,
+        len: u64,
+    ) -> endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+        self.inner.truncate_partial(len)
+    }
+    fn read_partial<'a>(
+        &'a self,
+        offset: u64,
+        len: u32,
+    ) -> endpoint::EndpointFuture<'a, Result<Option<Vec<u8>>, SftpError>> {
+        self.inner.read_partial(offset, len)
+    }
+    fn set_attributes<'a>(
+        &'a self,
+        mtime: Option<u32>,
+        permissions: Option<u32>,
+    ) -> endpoint::EndpointFuture<'a, Result<(), SftpError>> {
+        self.inner.set_attributes(mtime, permissions)
+    }
+    fn attributes<'a>(
+        &'a self,
+    ) -> endpoint::EndpointFuture<'a, Result<endpoint::FileAttributesPair, SftpError>> {
+        self.inner.attributes()
+    }
+}
+
+/// 数据面的包装：给源端点套上 [`DoubtfulSource`]，并可以在「规划之后、配对之前」把源删掉。
+struct DoubtfulEndpoints {
+    inner: Arc<MemoryEndpoints>,
+    hide_size: bool,
+    fail_reads_from: Option<u64>,
+    /// 配对时先把这个远端文件删掉：模拟规划之后源被别的程序删了。
+    delete_on_pair: Option<String>,
+}
+
+impl backend::RemoteLister for DoubtfulEndpoints {
+    fn list_dir<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<crate::sftp::fs::DirEntry>, SftpError>> {
+        self.inner.list_dir(path)
+    }
+    fn stat_remote<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<russh_sftp::protocol::FileAttributes, SftpError>> {
+        self.inner.stat_remote(path)
+    }
+}
+
+impl backend::TransferEndpoints for DoubtfulEndpoints {
+    fn pair<'a>(
+        &'a self,
+        direction: Direction,
+        peer: Option<&'a str>,
+        source: &'a str,
+        target: &'a str,
+        owner: &'a str,
+    ) -> BoxFuture<'a, Result<backend::FilePair, SftpError>> {
+        Box::pin(async move {
+            if let Some(path) = &self.delete_on_pair {
+                self.inner.remove_remote(path);
+            }
+            let pair = self
+                .inner
+                .pair(direction, peer, source, target, owner)
+                .await?;
+            Ok(backend::FilePair {
+                source: Arc::new(DoubtfulSource {
+                    inner: pair.source,
+                    hide_size: self.hide_size,
+                    fail_reads_from: self.fail_reads_from,
+                }),
+                target: pair.target,
+            })
+        })
+    }
+    fn plan_remote_copy<'a>(
+        &'a self,
+        peer: Option<&'a str>,
+        source: &'a str,
+        target: &'a str,
+        recursive: bool,
+    ) -> BoxFuture<'a, Result<plan::TransferPlan, SftpError>> {
+        // 规划只看 stat，大小照常拿得到；「没回大小」只发生在配对出来的源端点上。
+        self.inner.plan_remote_copy(peer, source, target, recursive)
+    }
+    fn create_target_dir<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<(), SftpError>> {
+        self.inner.create_target_dir(path)
+    }
+    fn reset<'a>(&'a self) -> BoxFuture<'a, ()> {
+        self.inner.reset()
+    }
+    fn server_identity<'a>(&'a self) -> BoxFuture<'a, Result<String, SftpError>> {
+        self.inner.server_identity()
+    }
+}
+
+/// 记下被问了几次冲突的「全部覆盖」策略。
+struct CountingOverwrite(Arc<std::sync::atomic::AtomicUsize>);
+
+impl ConflictResolver for CountingOverwrite {
+    fn decide<'a>(&'a self, info: ConflictInfo) -> BoxFuture<'a, ConflictDecision> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        OverwriteAll.decide(info)
+    }
+}
+
+/// 用 `endpoints` 跑一次远端复制（`/remote/source` → `/remote/target`）。
+async fn run_remote_copy(endpoints: Arc<DoubtfulEndpoints>) -> ProgressReport {
+    run_remote_copy_with(endpoints, Arc::new(OverwriteAll)).await
+}
+
+async fn run_remote_copy_with(
+    endpoints: Arc<DoubtfulEndpoints>,
+    resolver: Arc<dyn ConflictResolver>,
+) -> ProgressReport {
+    let (engine, mut events) = TransferEngine::new(endpoints, resolver, local_options());
+    let id = engine.submit(TransferJob {
+        direction: Direction::RemoteCopy,
+        source: "/remote/source".to_owned(),
+        target: "/remote/target".to_owned(),
+        recursive: false,
+        peer: None,
+    });
+    drain_until_finished(&mut events, id, Duration::from_secs(30)).await
+}
+
+fn doubtful_endpoints(
+    source: &[u8],
+    hide_size: bool,
+    fail_reads_from: Option<u64>,
+    delete_on_pair: bool,
+) -> Arc<DoubtfulEndpoints> {
+    let inner = Arc::new(MemoryEndpoints::new("/remote"));
+    inner.put_remote("/remote/source", source.to_vec());
+    inner.put_remote("/remote/target", b"previous target data".to_vec());
+    Arc::new(DoubtfulEndpoints {
+        inner,
+        hide_size,
+        fail_reads_from,
+        delete_on_pair: delete_on_pair.then(|| "/remote/source".to_owned()),
+    })
+}
+
+/// 服务器没回大小：以前按 0 字节复制，已有的目标被换成空文件还报完成。
+/// 现在读到文件末尾为止，目标内容就是源的内容。
+#[tokio::test]
+async fn unknown_source_size_copies_until_eof_and_replaces_the_target() {
+    // 比一块（4096）大、不是块的整数倍，覆盖「末尾那块读不满」。
+    let content: Vec<u8> = (0..(4096 * 9 + 123)).map(|i| (i % 251) as u8).collect();
+    let endpoints = doubtful_endpoints(&content, true, None, false);
+    let report = run_remote_copy(Arc::clone(&endpoints)).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    assert_eq!(endpoints.inner.remote_contents("/remote/target"), content);
+    assert!(
+        endpoints
+            .inner
+            .remote_part_files("/remote/target")
+            .is_empty(),
+        "不该留下临时文件"
+    );
+}
+
+/// 恰好是块大小的整数倍：末尾要靠下一次读回空来确认。
+#[tokio::test]
+async fn unknown_source_size_handles_a_source_that_ends_on_a_chunk_boundary() {
+    let content: Vec<u8> = (0..(4096 * 8)).map(|i| (i % 241) as u8).collect();
+    let endpoints = doubtful_endpoints(&content, true, None, false);
+    let report = run_remote_copy(Arc::clone(&endpoints)).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    assert_eq!(endpoints.inner.remote_contents("/remote/target"), content);
+}
+
+/// 源真的是空文件、而且大小未知：目标变成空文件是对的（源就是空的）。
+#[tokio::test]
+async fn unknown_source_size_with_an_empty_source_gives_an_empty_target() {
+    let endpoints = doubtful_endpoints(b"", true, None, false);
+    let report = run_remote_copy(Arc::clone(&endpoints)).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    assert!(endpoints.inner.remote_contents("/remote/target").is_empty());
+    assert!(endpoints.inner.remote_exists("/remote/target"));
+}
+
+/// 大小未知、复制到一半读失败：不提交，已有的目标保持原样。
+#[tokio::test]
+async fn unknown_source_size_with_a_read_failure_keeps_the_existing_target() {
+    let content = vec![7u8; 4096 * 10];
+    let endpoints = doubtful_endpoints(&content, true, Some(4096 * 3), false);
+    let report = run_remote_copy(Arc::clone(&endpoints)).await;
+    assert!(
+        matches!(report.state, TransferState::Failed(_)),
+        "读失败必须是失败：{report:?}"
+    );
+    assert_eq!(
+        endpoints.inner.remote_contents("/remote/target"),
+        b"previous target data",
+        "目标必须保持原内容"
+    );
+}
+
+/// 大小未知时不续传：留着一份旧的临时文件也不能被接上，更不能被提交。
+#[tokio::test]
+async fn unknown_source_size_never_resumes_from_a_stale_partial_file() {
+    let content: Vec<u8> = (0..(4096 * 3 + 5)).map(|i| (i % 199) as u8).collect();
+    let endpoints = doubtful_endpoints(&content, true, None, false);
+    // 一份和源毫无关系的旧临时文件（老写法的名字，没有任务标识）；本任务不该把它接着用。
+    endpoints
+        .inner
+        .put_remote("/remote/target.zssh-part", vec![9u8; 5000]);
+    let report = run_remote_copy(Arc::clone(&endpoints)).await;
+    assert_eq!(report.state, TransferState::Done, "{report:?}");
+    assert_eq!(endpoints.inner.remote_contents("/remote/target"), content);
+}
+
+/// 源在规划之后被删了：这个文件失败（带路径），目标原内容不变，不提交空文件。
+#[tokio::test]
+async fn a_source_deleted_after_planning_fails_without_touching_the_target() {
+    let endpoints = doubtful_endpoints(b"will be deleted", false, None, true);
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let report = run_remote_copy_with(
+        Arc::clone(&endpoints),
+        Arc::new(CountingOverwrite(Arc::clone(&asked))),
+    )
+    .await;
+    assert_eq!(
+        asked.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "源都不在了，不该再问用户怎么处理冲突"
+    );
+    let TransferState::Failed(text) = &report.state else {
+        panic!("源不存在必须失败：{report:?}");
+    };
+    assert!(text.contains("/remote/source"), "错误要带源路径：{text}");
+    assert_eq!(
+        endpoints.inner.remote_contents("/remote/target"),
+        b"previous target data"
+    );
+    assert!(endpoints
+        .inner
+        .remote_part_files("/remote/target")
+        .is_empty());
+}
+
+/// 同上，但源端点是本地文件（上传）：`LocalEndpoint::exists` 也要能区分「不在」。
+#[tokio::test]
+async fn an_upload_whose_local_source_vanished_fails_and_keeps_the_remote_target() {
+    let root = temp_root("source-vanished");
+    let missing = root.join("gone.bin");
+    let endpoints = Arc::new(MemoryEndpoints::new("/remote"));
+    endpoints.put_remote("/remote/target", b"previous target data".to_vec());
+    let (engine, mut events) =
+        TransferEngine::new(endpoints.clone(), Arc::new(OverwriteAll), local_options());
+    let id = engine.submit(TransferJob {
+        direction: Direction::Upload,
+        source: missing.display().to_string(),
+        target: "/remote/target".to_owned(),
+        recursive: false,
+        peer: None,
+    });
+    let report = drain_until_finished(&mut events, id, Duration::from_secs(30)).await;
+    assert!(
+        matches!(report.state, TransferState::Failed(_)),
+        "{report:?}"
+    );
+    assert_eq!(
+        endpoints.remote_contents("/remote/target"),
+        b"previous target data"
+    );
+}
+
+/// 端点的 `exists` 区分「不存在」和「在，只是没有大小」。
+#[tokio::test]
+async fn endpoint_exists_tells_a_missing_file_from_a_file_without_size() {
+    let present = MemoryEndpoint::new("/here", b"x".to_vec());
+    assert!(present.as_endpoint().exists().await.unwrap());
+    let hidden = DoubtfulSource {
+        inner: present.as_endpoint(),
+        hide_size: true,
+        fail_reads_from: None,
+    };
+    assert_eq!(hidden.size().await.unwrap(), None);
+    assert!(hidden.exists().await.unwrap(), "没有大小不等于不存在");
+
+    let gone = MemoryEndpoint::new("/other", Vec::new());
+    gone.as_endpoint().remove_existing().await.unwrap();
+    assert!(!gone.as_endpoint().exists().await.unwrap());
+    // 默认实现（靠 open_read）也一样。
+    let wrapped = DoubtfulSource {
+        inner: gone.as_endpoint(),
+        hide_size: true,
+        fail_reads_from: None,
+    };
+    assert!(!wrapped.inner.exists().await.unwrap());
+
+    let root = temp_root("exists");
+    let file = root.join("f.bin");
+    std::fs::write(&file, b"x").unwrap();
+    assert!(LocalEndpoint::new(&file).exists().await.unwrap());
+    assert!(!LocalEndpoint::new(root.join("none.bin"))
+        .exists()
+        .await
+        .unwrap());
+}

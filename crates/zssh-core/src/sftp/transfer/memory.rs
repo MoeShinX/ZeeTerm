@@ -291,6 +291,10 @@ impl FileEndpoint for MemoryEndpoint {
         })
     }
 
+    fn exists<'a>(&'a self) -> EndpointFuture<'a, Result<bool, SftpError>> {
+        Box::pin(async move { Ok(self.present(&self.path)) })
+    }
+
     fn open_read<'a>(&'a self) -> EndpointFuture<'a, Result<Arc<dyn ReadAt>, SftpError>> {
         Box::pin(async move {
             if !self.present(&self.path) {
@@ -587,6 +591,11 @@ impl MemoryEndpoints {
     /// 直接往"远端"放一个文件（造测试数据用）。
     pub fn put_remote(&self, path: &str, contents: Vec<u8>) {
         write_into(&self.remote.fs, path, 0, &contents);
+    }
+
+    /// 直接把"远端"的一个文件删掉（模拟别的程序删了它）。
+    pub fn remove_remote(&self, path: &str) {
+        self.remote.fs.files.lock().expect("锁").remove(path);
     }
 
     /// 给"远端"的一个文件指定权限位（下载时引擎读到的源权限）。
