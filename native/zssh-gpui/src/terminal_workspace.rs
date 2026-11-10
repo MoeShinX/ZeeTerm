@@ -7,7 +7,7 @@
 //!
 //! 工作区自己不画标题栏、标签条、主机树，也不知道主机库：谁要用它，就在外面套自己的
 //! 外壳，通过 `open_host_tab` / `new_empty_tab` / `duplicate_tab` 等方法开标签。
-//! 网格在窗口里的位置由 `canvas` 量出来（上一帧的结果），不再写死窗口坐标。
+//! 网格在窗口里的位置由 `canvas` 取得本帧实际区域，再重排、绘制和上报 PTY 尺寸。
 
 use ::gpui::FontWeight;
 use ::gpui::{
@@ -161,6 +161,8 @@ mod assist_tests;
 mod dev_tools;
 mod highlight_ops;
 mod ime_ops;
+#[cfg(test)]
+mod resize_tests;
 mod search_ops;
 mod settings_ops;
 #[cfg(test)]
@@ -1553,10 +1555,8 @@ pub struct TerminalWorkspace {
     mouse_pressed: bool,
     /// 上一次上报的格子；移动事件只在跨格时发。
     last_mouse_cell: Option<(usize, usize)>,
-    /// 窗格区域在窗口里的位置：canvas 在绘制时写入，下一帧排版读取。
+    /// 本帧窗格区域在窗口里的位置：排版、鼠标与输入法使用同一份坐标。
     area: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// 上一次排版用的区域；和 `area` 不一样说明窗口或外壳变了，要重排。
-    layout_area: Option<Bounds<Pixels>>,
     /// 新开的标签用的初始尺寸（最近一次排版算出来的整宽窗格）。
     default_size: Size,
     /// 输入法状态机里本窗口的名字（关掉「自动切英文」时要把输入法还回去）。
@@ -1756,7 +1756,6 @@ impl TerminalWorkspace {
             highlight,
             _highlight_tick: Task::ready(()),
             area: Rc::new(Cell::new(None)),
-            layout_area: None,
             default_size: DEFAULT_SIZE,
             ime_key,
             cursor_blink: BlinkClock::new(),
@@ -1769,8 +1768,7 @@ impl TerminalWorkspace {
             _ime_focus,
             _ime_blur,
         };
-        // 后台扫描完成后主动重绘；没有新结果时只醒来一次。区域变了（窗口缩放、外壳的
-        // 侧栏/状态栏出现消失）也在这里发现并重排。
+        // 后台扫描和会话输出完成后主动重绘；区域变化在本帧布局时处理，不等这个节拍。
         this._highlight_tick = cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -1778,7 +1776,6 @@ impl TerminalWorkspace {
                     .await;
                 let alive = this.update_in(cx, |this, window, cx| {
                     let sessions = this.poll_sessions();
-                    let relayout = this.area.get() != this.layout_area;
                     // 光标闪烁只在终端有焦点时重画（没焦点光标画成静止，不必每半秒重画）。
                     let blink = this.settings.cursor_blink
                         && this.focus.is_focused(window)
@@ -1789,7 +1786,6 @@ impl TerminalWorkspace {
                     if this.poll_highlight()
                         || search
                         || sessions
-                        || relayout
                         || blink
                         || latency
                         || save_failed
@@ -4277,7 +4273,31 @@ fn take_whole_lines(remainder: &mut f32, lines: f32) -> i32 {
 }
 
 impl Render for TerminalWorkspace {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let workspace = cx.entity();
+        // Render 阶段还不知道侧栏/分屏给终端留下的实际尺寸。等父布局完成再构建网格，
+        // 避免用上一帧的列数重绘，尤其是连续缩放时远端进度行与本地软换行交错。
+        canvas(
+            move |bounds, window, cx| {
+                let mut content = workspace.update(cx, |this, cx| {
+                    this.render_in_area(bounds, window, cx).into_any_element()
+                });
+                content.prepaint_as_root(bounds.origin, bounds.size.into(), window, cx);
+                content
+            },
+            |_, mut content, window, cx| content.paint(window, cx),
+        )
+        .size_full()
+    }
+}
+
+impl TerminalWorkspace {
+    fn render_in_area(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let mono = self.mono_family(cx);
         let mono_size = ::gpui::px(self.settings.font_size);
         // 终端自己的色板：配色可以固定成和界面皮肤不同的一套（默认界面 Dracula、终端 Tokyo Night），
@@ -4308,26 +4328,13 @@ impl Render for TerminalWorkspace {
         self.cell_width = cell_width;
         self.cell_height = cell_height;
 
-        // 区域用上一帧量到的；第一帧还没有，先按整个窗口估，下一帧就会纠正。
-        let measured = self.area.get();
-        let (area_x, area_y, area_w, area_h) = match measured {
-            Some(bounds) => (
-                f32::from(bounds.origin.x),
-                f32::from(bounds.origin.y),
-                f32::from(bounds.size.width),
-                f32::from(bounds.size.height),
-            ),
-            None => {
-                let viewport = window.viewport_size();
-                (
-                    0.0,
-                    0.0,
-                    f32::from(viewport.width),
-                    f32::from(viewport.height),
-                )
-            }
-        };
-        self.layout_area = measured;
+        self.area.set(Some(bounds));
+        let (area_x, area_y, area_w, area_h) = (
+            f32::from(bounds.origin.x),
+            f32::from(bounds.origin.y),
+            f32::from(bounds.size.width),
+            f32::from(bounds.size.height),
+        );
         self.area_origin = (area_x, area_y);
 
         let tokens = crate::app_theme::Tokens::current(cx);
@@ -4442,7 +4449,6 @@ impl Render for TerminalWorkspace {
             .with_priority(gpui_kit::base::POPUP_PRIORITY)
         });
 
-        let area_cell = Rc::clone(&self.area);
         let ime_input = self.ime_input;
         let ime_focus = self.focus.clone();
         let ime_entity = entity.clone();
@@ -4683,7 +4689,7 @@ impl Render for TerminalWorkspace {
                     .overflow_hidden()
                     .child(
                         canvas(
-                            move |bounds, _, _| area_cell.set(Some(bounds)),
+                            |_, _, _| {},
                             // 终端聚焦时把它登记成文字输入目标：输入法的提交 / 预编辑才到得了这里。
                             move |bounds, _, window, cx| {
                                 if ime_input {
