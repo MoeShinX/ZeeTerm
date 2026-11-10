@@ -342,7 +342,10 @@ impl Modal {
         // 连接列表点遮罩可以关；确认框开着时不行（同进程管理）。填了半天的表单才不行。
         // 连接 Tokenway 的对话框里有进行中的授权，不能被一次误点取消。
         // 锁屏密码对话框里是刚敲的密码，不能被一次误点遮罩丢掉。
+        // 主机属性例外：它有「放弃修改」的确认浮层兜底，点遮罩走取消也丢不了东西
+        // （取消按钮被挡住、窗口又小的时候，这是唯一的退路）。
         (!self.tall() && !matches!(self, Self::Tokenway(_) | Self::AppLock(_)))
+            || matches!(self, Self::HostProps(_))
             || matches!(self, Self::Connections(dialog) if dialog.ask.is_none())
             // 进程列表点遮罩可以关；确认框开着时不行（免得一次误点把正要确认的结束请求丢掉）。
             || matches!(self, Self::Processes(dialog) if dialog.ask.is_none())
