@@ -28,7 +28,7 @@ use zssh_core::sync::snapshot::snapshot_local;
 use zssh_core::sync::storage::{StorageError, SyncStorage};
 use zssh_core::sync::SyncError;
 
-const TOKEN: &str = "ghp_mocktoken_not_a_real_token_0123456789";
+const TOKEN: &str = "ghp_FAKEmocktoken_not_a_real_token_0123456789";
 const LOGIN: &str = "demo-user";
 
 async fn start() -> MockGithub {

@@ -26,7 +26,10 @@
 # 另外查固定样式：令牌 / 密钥 / 私钥头、公网 IPv4、非 noreply 的邮箱。
 #
 # 输出只写"文件:位置 + 类别"，不打印命中的内容（二进制文件写字节偏移）。有命中退出码 1。
-# 故意写在测试里的假值：命中行上带 mock / fake / dummy / example / test 等字样的令牌样式不算。
+# 故意写在测试里的假值：令牌 / 密钥样式（ghp_、github_pat_、AKIA、sk-）只看**命中的值本身**——值里带 fake / dummy / example /
+# placeholder / redacted / xxxx / test / 连续 7 个以上的 0、或者前缀之后整串是同一个字符，才算假值；不看整行
+# （同一行上写个 `latest=` 或 `# test` 不能把真令牌放过去）。私钥头命中的值里没有可判断的内容，仍按行判断，
+# 但标记必须是整词（mock / fake / dummy / example / placeholder / sample / test / redacted），`latest` 之类不算。
 
 param(
     [string]$Root = "",
@@ -119,15 +122,26 @@ function Get-Needles {
 
 # 固定样式。正则在 Latin1 字节串上跑，所以二进制文件也能扫。
 $patterns = @(
-    @{ Kind = "令牌样式 ghp_";        Re = 'ghp_[A-Za-z0-9]{8,}';                  Fakeable = $true },
-    @{ Kind = "令牌样式 github_pat_"; Re = 'github_pat_[A-Za-z0-9_]{8,}';          Fakeable = $true },
-    @{ Kind = "密钥样式 AKIA";        Re = 'AKIA[0-9A-Z]{12,}';                    Fakeable = $true },
-    @{ Kind = "私钥头";               Re = '-----BEGIN [A-Z ]*PRIVATE KEY';        Fakeable = $true },
-    @{ Kind = "密钥样式 sk-";         Re = '(?<![A-Za-z0-9])sk-[A-Za-z0-9]{16,}';  Fakeable = $true },
-    @{ Kind = "邮箱";                 Re = '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'; Fakeable = $false }
+    @{ Kind = "令牌样式 ghp_";        Re = 'ghp_[A-Za-z0-9]{8,}';                  Fake = "value" },
+    @{ Kind = "令牌样式 github_pat_"; Re = 'github_pat_[A-Za-z0-9_]{8,}';          Fake = "value" },
+    @{ Kind = "密钥样式 AKIA";        Re = 'AKIA[0-9A-Z]{12,}';                    Fake = "value" },
+    @{ Kind = "私钥头";               Re = '-----BEGIN [A-Z ]*PRIVATE KEY';        Fake = "line" },
+    @{ Kind = "密钥样式 sk-";         Re = '(?<![A-Za-z0-9])sk-[A-Za-z0-9]{16,}';  Fake = "value" },
+    @{ Kind = "邮箱";                 Re = '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'; Fake = "" }
 )
 $ipv4 = '(?<![0-9.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![0-9.])'
-$fakeMarker = 'mock|fake|dummy|example|not[_-]?a[_-]?real|placeholder|redact|sample|\bxxx|test'
+# 令牌 / 密钥样式：命中的值本身带这些标记之一才算假值（大小写不敏感）。
+$fakeValueMarker = '(?i)fake|dummy|example|placeholder|redacted|xxxx|test|0{7,}'
+# 私钥头：命中值里没有内容，按所在行判断；标记必须是整词（前后不是字母数字，`_` `-` 当分隔），
+# 所以 `latest`、`testing`、`contest` 都不再把整行放过。
+$fakeLineMarker = '(?i)(?<![A-Za-z0-9])(mock|fake|dummy|example|placeholder|sample|test|redacted)(?![A-Za-z0-9])'
+
+# 令牌 / 密钥样式的命中值是不是明显的假值：带假值标记，或者去掉前缀之后整串是同一个字符重复。
+function Test-FakeTokenValue([string]$value) {
+    if ($value -match $fakeValueMarker) { return $true }
+    $body = $value -creplace '^(ghp_|github_pat_|sk-|AKIA)', ''
+    return ($body.Length -gt 0 -and $body -cmatch '^(.)\1*$')
+}
 
 function Test-PublicIpv4([string]$a, [string]$b, [string]$c, [string]$d) {
     $o = @([int]$a, [int]$b, [int]$c, [int]$d)
@@ -288,8 +302,8 @@ function Invoke-Scan($files, $needles) {
         foreach ($p in $patterns) {
             if (-not $shapeScan) { break }
             foreach ($m in [regex]::Matches($text, $p.Re)) {
-                $ln = Get-LineAt $text $m.Index
-                if ($p.Fakeable -and $ln -match $fakeMarker) { continue }
+                if ($p.Fake -eq "value" -and (Test-FakeTokenValue $m.Value)) { continue }
+                if ($p.Fake -eq "line" -and ((Get-LineAt $text $m.Index) -match $fakeLineMarker)) { continue }
                 if ($p.Kind -eq "邮箱" -and ($m.Value -match 'noreply|@example\.|@([A-Za-z0-9-]+\.)+example\.(com|net|org)$|@localhost|\.example$|\.internal$|@openssh\.com$|\.(png|jpe?g|gif|svg|ico|webp|icns)$')) { continue }
                 if ($p.Kind -eq "邮箱" -and $f.Rel -match '(^|/)(package-lock\.json|Cargo\.lock)$') { continue }
                 $pos = Get-Position $text $m.Index $isBinary
@@ -365,6 +379,9 @@ if ($SelfTest) {
         [System.IO.File]::WriteAllLines((Join-Path $dir "waived.txt"), @("x=" + $fakeLiteral + "-allowed"))
         # 放行正则要能认出带中文的占位（命中处在 Latin1 视图里，按 UTF-8 看后面的字）。
         [System.IO.File]::WriteAllLines((Join-Path $dir "waived-cjk.txt"), @("x=" + $fakeLiteral + "-张"), (New-Object System.Text.UTF8Encoding($false)))
+        # 令牌样式是否放行只看命中的值：同一行写了 latest= 的随机令牌必须命中；值本身带假值标记的才放行。
+        [System.IO.File]::WriteAllLines((Join-Path $dir "tok-latest.txt"), @("latest=" + "ghp" + "_" + ("Q9w8E7r6" * 3)))
+        [System.IO.File]::WriteAllLines((Join-Path $dir "tok-fakevalue.txt"), @("t=" + "ghp" + "_" + "FAKEFAKEFAKEFAKE"))
         $files = @(Get-ChildItem -LiteralPath $dir -File | ForEach-Object { [pscustomobject]@{ Rel = $_.Name; Full = $_.FullName } })
         $hits = Invoke-Scan $files $needles
         $kinds = @($hits | ForEach-Object { ($_ -split '\[')[-1].TrimEnd(']') })
@@ -376,7 +393,11 @@ if ($SelfTest) {
             exit 1
         }
         # 不该放行的必须仍然命中：光秃秃的假值（没有占位前缀）、占位只盖住一部分、本机真实用户名。
-        $mustHit = @("bare-builtin.txt", "partial.txt")
+        if (@($hits | Where-Object { $_ -like "tok-fakevalue.txt:*" }).Count -gt 0) {
+            Write-Host "自检失败：值本身带假值标记的令牌样式不该命中。" -ForegroundColor Red
+            exit 1
+        }
+        $mustHit = @("bare-builtin.txt", "partial.txt", "tok-latest.txt")
         if ($env:USERNAME) { $mustHit += "real-path.txt" }
         $leaked = @($mustHit | Where-Object { $name = $_; @($hits | Where-Object { $_ -like "${name}:*" }).Count -eq 0 })
         if ($leaked.Count -gt 0) {

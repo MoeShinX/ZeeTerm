@@ -47,7 +47,7 @@ const DAV_USER: &str = "alice";
 const DAV_PASSWORD: &str = "dav-test-password";
 const S3_ACCESS: &str = "AKIATESTKEY";
 const S3_SECRET: &str = "s3-test-secret-key";
-const GH_TOKEN: &str = "ghp_mocktoken_not_a_real_token_0123456789";
+const GH_TOKEN: &str = "ghp_FAKEmocktoken_not_a_real_token_0123456789";
 
 fn context<'a>(machine: &'a Machine, endpoints: &Endpoints) -> SyncContext<'a> {
     SyncContext {

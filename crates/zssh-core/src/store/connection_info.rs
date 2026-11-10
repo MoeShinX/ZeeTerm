@@ -604,7 +604,7 @@ mod db_tests {
         let key = identity(
             &db,
             IdentityKind::KeyInline,
-            Some("-----BEGIN OPENSSH PRIVATE KEY-----\nnot-a-real-key\n-----END OPENSSH PRIVATE KEY-----\n"),
+            Some("-----BEGIN OPENSSH PRIVATE KEY-----\nnot-a-real-key\n-----END OPENSSH PRIVATE KEY-----\n"), // fake fixture, not a real key
         );
         let err = db.identity_saved_password(key).expect_err("私钥不给");
         assert!(err.to_string().contains("不是密码凭据"), "{err}");

@@ -193,7 +193,7 @@ mod cleanup {
     use super::*;
     use crate::mock_github::{GithubOptions, MockGithub};
 
-    const TOKEN: &str = "ghp_mocktoken_not_a_real_token_0123456789";
+    const TOKEN: &str = "ghp_FAKEmocktoken_not_a_real_token_0123456789";
 
     async fn setup() -> (MockGithub, GithubConfig, String) {
         let gh = MockGithub::start(GithubOptions::classic(TOKEN, "demo-user")).await;
