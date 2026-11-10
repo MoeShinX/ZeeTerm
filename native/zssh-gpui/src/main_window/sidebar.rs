@@ -54,12 +54,8 @@ pub(super) fn info_target(enabled: bool, selected: Option<i64>) -> Option<i64> {
 /// 侧栏自己的文案（主机名、分组名、标签名这些用户数据不走这里）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SidebarMsg {
-    /// 主机库是空的：提示点抬头的 +。
+    /// 主机库是空的：提示点顶栏的 +。
     EmptyHint,
-    /// 抬头 / 折叠列的「新建主机」。
-    NewHost,
-    /// 抬头 / 折叠列的「新建分组」。
-    NewGroup,
     /// 主题按钮：浅色。
     ThemeLight,
     /// 主题按钮：深色。
@@ -94,8 +90,6 @@ impl Msg for SidebarMsg {
     fn zh(&self) -> &'static str {
         match self {
             Self::EmptyHint => "还没有主机，点上方 + 添加",
-            Self::NewHost => "新建主机",
-            Self::NewGroup => "新建分组",
             Self::ThemeLight => "浅色",
             Self::ThemeDark => "深色",
             Self::ThemeFollowSystem => "跟随系统",
@@ -117,8 +111,6 @@ impl Msg for SidebarMsg {
     fn en(&self) -> &'static str {
         match self {
             Self::EmptyHint => "No hosts yet — click + above to add one",
-            Self::NewHost => "New Host",
-            Self::NewGroup => "New Group",
             Self::ThemeLight => "Light",
             Self::ThemeDark => "Dark",
             Self::ThemeFollowSystem => "Follow System",
@@ -561,18 +553,6 @@ impl MainWindow {
                 IconName::PanelLeftOpen,
                 t(SidebarMsg::ExpandSidebar),
                 act(&entity, |this, _window, cx| this.toggle_tree(cx)),
-            ))
-            .child(icon_button(
-                "tree-collapsed-new-host",
-                IconName::Plus,
-                t(SidebarMsg::NewHost),
-                act(&entity, |this, window, cx| this.new_host(window, cx)),
-            ))
-            .child(icon_button(
-                "tree-collapsed-new-group",
-                crate::icons::Ico::FolderPlus,
-                t(SidebarMsg::NewGroup),
-                act(&entity, |this, window, cx| this.new_group(None, window, cx)),
             ))
     }
 
@@ -1393,8 +1373,6 @@ mod tests {
     fn every_sidebar_message_keeps_its_chinese_and_has_english() {
         // 中文是原来那句，一字不改（含全角括号、ASCII 空格）。
         assert_eq!(SidebarMsg::EmptyHint.zh(), "还没有主机，点上方 + 添加");
-        assert_eq!(SidebarMsg::NewHost.zh(), "新建主机");
-        assert_eq!(SidebarMsg::NewGroup.zh(), "新建分组");
         assert_eq!(SidebarMsg::ThemeLight.zh(), "浅色");
         assert_eq!(SidebarMsg::ThemeDark.zh(), "深色");
         assert_eq!(SidebarMsg::ThemeFollowSystem.zh(), "跟随系统");
@@ -1418,8 +1396,6 @@ mod tests {
         assert_eq!(SidebarMsg::RevealFirst.zh(), "先点眼睛显示");
         for key in [
             SidebarMsg::EmptyHint,
-            SidebarMsg::NewHost,
-            SidebarMsg::NewGroup,
             SidebarMsg::ThemeLight,
             SidebarMsg::ThemeDark,
             SidebarMsg::ThemeFollowSystem,
