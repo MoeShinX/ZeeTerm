@@ -241,6 +241,38 @@ pub struct KeychainUi {
     pub kind_filter: Option<IdentityKind>,
 }
 
+/// 凭据表单画在列表的上面还是下面。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FormPlacement {
+    AboveList,
+    BelowList,
+}
+
+/// 管理区要滚到哪里才能看到表单。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScrollTarget {
+    Top,
+    Bottom,
+}
+
+/// 新建（`creating`，还没有选中项）的表单放在列表上面，凭据再多也在页面顶部；点选已有的一条编辑时
+/// 保持原样放在列表下面（表单后面就是底部按钮栏）。
+pub(crate) fn form_placement(creating: bool, selected: Option<i64>) -> FormPlacement {
+    if creating && selected.is_none() {
+        FormPlacement::AboveList
+    } else {
+        FormPlacement::BelowList
+    }
+}
+
+/// 表单在列表上面时滚回顶部；在列表下面时滚到底。
+pub(crate) fn scroll_target(placement: FormPlacement) -> ScrollTarget {
+    match placement {
+        FormPlacement::AboveList => ScrollTarget::Top,
+        FormPlacement::BelowList => ScrollTarget::Bottom,
+    }
+}
+
 impl KeychainUi {
     pub fn new(window: &mut Window, cx: &mut Context<MainWindow>) -> Self {
         Self {
@@ -359,9 +391,26 @@ impl MainWindow {
         self.keychain_reset(window, cx);
         self.keychain.kind = kind;
         self.keychain.creating = true;
+        // 新建的表单排在列表上面：管理区滚回顶部，凭据再多也一眼看得到。
+        self.keychain_reveal_form();
         let focus = self.keychain.name.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         cx.notify();
+    }
+
+    /// 让刚出现的表单落在可见区域里（管理区是 `settings_page` 里的可滚动区域，不会自己滚过去）。
+    /// 新建的表单在列表上面，滚回顶部；编辑已有的表单在列表下面，滚到底。滚到底只打个标记，
+    /// 下一次画管理区时按那一帧排好的内容高度生效，所以表单一定已经在布局里。
+    fn keychain_reveal_form(&mut self) {
+        match scroll_target(form_placement(
+            self.keychain.creating,
+            self.keychain.selected,
+        )) {
+            ScrollTarget::Top => self
+                .settings_scroll
+                .set_offset(::gpui::point(::gpui::px(0.0), ::gpui::px(0.0))),
+            ScrollTarget::Bottom => self.settings_scroll.scroll_to_bottom(),
+        }
     }
 
     /// 选中列表里的一条：表单填上它的名称、类型、路径；秘密框一律留空（不回显）。
@@ -382,6 +431,8 @@ impl MainWindow {
         );
         name.update(cx, |s, cx| s.set_value(name_text, window, cx));
         path.update(cx, |s, cx| s.set_value(path_text, window, cx));
+        // 编辑时表单在列表下面，列表长的话会在可见区域外。
+        self.keychain_reveal_form();
         cx.notify();
     }
 
@@ -1030,12 +1081,19 @@ impl MainWindow {
                 .icon(crate::icons::Ico::KeyRound)
                 .into_any_element(),
             ],
-            body: v_flex()
-                .w_full()
-                .gap_4()
-                .child(list)
-                .children(form)
-                .into_any_element(),
+            body: {
+                let (form_above, form_below) = match form_placement(ui.creating, ui.selected) {
+                    FormPlacement::AboveList => (form, None),
+                    FormPlacement::BelowList => (None, form),
+                };
+                v_flex()
+                    .w_full()
+                    .gap_4()
+                    .children(form_above)
+                    .child(list)
+                    .children(form_below)
+                    .into_any_element()
+            },
             footer,
         }
     }
@@ -1066,8 +1124,30 @@ pub(crate) fn editing_base(selected: Option<i64>, fresh: &[Identity]) -> Editing
 #[cfg(test)]
 mod tests {
     // 不能 `use super::*`：它会带进 gpui 的 `test` 宏，盖住内置的 `#[test]`。
-    use super::{EditingBase, editing_base, identity_detail, identity_matches};
+    use super::{
+        EditingBase, FormPlacement, ScrollTarget, editing_base, form_placement, identity_detail,
+        identity_matches, scroll_target,
+    };
     use zssh_core::model::{Host, Identity, IdentityKind};
+
+    #[test]
+    fn a_new_credential_form_goes_above_the_list_and_scrolls_to_the_top() {
+        assert_eq!(form_placement(true, None), FormPlacement::AboveList);
+        assert_eq!(scroll_target(form_placement(true, None)), ScrollTarget::Top);
+    }
+
+    #[test]
+    fn editing_an_existing_credential_keeps_the_form_below_and_scrolls_to_the_bottom() {
+        assert_eq!(form_placement(false, Some(3)), FormPlacement::BelowList);
+        assert_eq!(
+            scroll_target(form_placement(false, Some(3))),
+            ScrollTarget::Bottom
+        );
+        // 没有在新建也没有选中（表单收起）：保持老位置，不会把表单提到上面。
+        assert_eq!(form_placement(false, None), FormPlacement::BelowList);
+        // 两个状态同时为真不会出现；真出现了以"已选中"为准，别把编辑的表单挪走。
+        assert_eq!(form_placement(true, Some(3)), FormPlacement::BelowList);
+    }
 
     fn identity(name: &str, kind: IdentityKind, path: Option<&str>) -> Identity {
         Identity {
