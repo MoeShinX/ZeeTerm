@@ -104,7 +104,6 @@ const ALWAYS: &[&str] = &[
     "sha256sum",
     "sha512sum",
     "cksum",
-    "base64",
     "hexdump",
     "od",
     "strings",
@@ -510,6 +509,20 @@ const TREE: Spec = Spec {
     ],
     long_valued: &["charset", "filelimit", "timefmt", "sort"],
     long_optional: &[],
+};
+
+// macOS / BSD 的 -o <文件> / --output=<文件> 会写文件，GNU 版没有 -o：-o 及其长选项都不在列表里。
+// `-i` 在 GNU 是"忽略垃圾字符"的开关、在 macOS 是"-i <输入文件>"：这里一律按开关处理，
+// 它后面的输入文件落成位置参数（照样只是读），所以 `-i -o x` 里的 `-o` 仍然会被拦下，
+// 不会被当成 `-i` 的值藏起来。-w / -b（换行宽度）和 --input 也只认紧贴写法或纯数字的下一个参数，
+// 理由同 `optional` 的说明。
+const BASE64: Spec = Spec {
+    flags: "dDi",
+    valued: "",
+    optional: "wb",
+    long_flags: &["decode", "ignore-garbage", "help", "version"],
+    long_valued: &[],
+    long_optional: &["wrap", "break", "input"],
 };
 
 // -C / --compile 编译 magic 文件（写文件）
@@ -1319,6 +1332,7 @@ fn rule_for(name: &str) -> Rule {
             Rule::Filtered(|args| parse_args(&UNIQ, args).is_some_and(|rest| rest.len() <= 1))
         }
         "tree" => Rule::Filtered(|args| parse_args(&TREE, args).is_some()),
+        "base64" => Rule::Filtered(|args| parse_args(&BASE64, args).is_some()),
         "file" => Rule::Filtered(|args| parse_args(&FILE, args).is_some()),
         "ss" => Rule::Filtered(|args| parse_args(&SS, args).is_some()),
         "blkid" => Rule::Filtered(|args| parse_args(&BLKID, args).is_some()),
@@ -2077,6 +2091,74 @@ mod tests {
             "yq -i '.a = 1' x.yml",
             "",
         ]);
+    }
+
+    /// 2026-11-10 审计：macOS / BSD 的 `base64 -o <文件>` 会写文件，不能无条件放行。
+    #[test]
+    fn base64_output_options_need_approval() {
+        assert_all_need_approval(&[
+            "base64 -D -o /tmp/x in.b64",
+            "base64 --output=/tmp/x",
+            "base64 --output /tmp/x in.b64",
+            "base64 --out=/tmp/x in.b64",
+            "base64 -Do /tmp/x",
+            "base64 -oD /tmp/x",
+            "base64 -o/tmp/x",
+            "base64 -o /tmp/x in.b64",
+            "base64 -d -o /tmp/x in.b64",
+            "base64 -w 0 -o /tmp/x in.b64",
+            // -i 在 GNU 是开关、在 macOS 带值：不管哪种读法，后面的 -o 都不能被藏起来
+            "base64 -i -o /tmp/x",
+            "base64 -i in.b64 -o /tmp/x",
+            "base64 -io /tmp/x",
+            "base64 --input=in.b64 --output=/tmp/x",
+            "base64 --input -o /tmp/x",
+            // 带值选项后面跟着写选项：值只认纯数字
+            "base64 -w -o /tmp/x",
+            "base64 -b -o /tmp/x",
+            "base64 --wrap -o /tmp/x",
+            // 白名单以外的参数一律要确认
+            "base64 -x file",
+            "base64 --unknown file",
+            "base64 --decode=1 file",
+        ]);
+    }
+
+    #[test]
+    fn base64_read_usages_still_pass() {
+        assert_all_read_only(&[
+            "base64 file",
+            "base64 -d file",
+            "base64 -D file",
+            "base64 --decode file",
+            "base64 -w 0 file",
+            "base64 -w0 file",
+            "base64 --wrap=0 file",
+            "base64 -b 76 file",
+            "base64 -b76 file",
+            "base64 --break=76 file",
+            "base64 -i file",
+            "base64 -i file -d",
+            "base64 --input=file",
+            "base64 -di file",
+            "base64 --ignore-garbage -d file",
+            "base64 -d -w 0 file",
+            "base64 --help",
+            "base64 --version",
+            "base64 -- file",
+            "base64 --decode < in.b64",
+            "echo aGk= | base64 -d",
+            "cat in.b64 | base64 --decode 2>/dev/null",
+        ]);
+        // 读敏感文件的确认走 sensitive 那一层，不受 base64 改成参数白名单影响
+        assert!(
+            crate::ai::sensitive::sensitive_path_in_command("base64 ~/.ssh/id_rsa").is_some(),
+            "base64 读私钥应该仍被敏感读取检查命中"
+        );
+        assert!(
+            crate::ai::sensitive::sensitive_path_in_command("base64 -d -i ~/.aws/credentials")
+                .is_some()
+        );
     }
 
     /// AUDIT-2 A01：综合审查里实际放行了的四类写法。
