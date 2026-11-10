@@ -562,7 +562,9 @@ fn the_portable_zip_is_built_signed_and_published_with_the_names_the_updater_exp
         "本机备用路径也要发免安装版"
     );
 
-    // 工作流：windows 任务打出来并上传，release 任务核对、签名、上传到 Release。
+    // CI 打出来并上传（发版签的就是这一份）；受控重建时 windows 任务也打；release 任务核对、签名、上传到 Release。
+    let ci = repo_file(".github/workflows/ci.yml");
+    assert!(ci.contains("native/installer/out/ZeeTerm-*-windows-x64-portable.zip"));
     let release = repo_file(".github/workflows/release.yml");
     let windows = release.find("\n  windows:\n").expect("有 windows 任务");
     let sign_job = release.find("\n  release:\n").expect("有 release 任务");
@@ -575,7 +577,7 @@ fn the_portable_zip_is_built_signed_and_published_with_the_names_the_updater_exp
     assert!(publish.contains("ZeeTerm-$env:VERSION-windows-x64-portable.zip"));
     // 核对步骤要求 Windows 包正好是安装包 + 免安装版两个文件。
     assert!(release_job.contains(
-        "$expected = @(\"ZeeTerm-Setup-$env:VERSION.exe\", \"ZeeTerm-$env:VERSION-windows-x64-portable.zip\")"
+        "Assert-Names 'Windows 包' $win @(\"ZeeTerm-Setup-$v.exe\", \"ZeeTerm-$v-windows-x64-portable.zip\")"
     ));
 }
 
@@ -598,7 +600,7 @@ fn every_release_needs_notes_in_both_languages_and_the_pipeline_insists_on_them(
     let sign_job = release.find("\n  release:\n").expect("有 release 任务");
     assert!(release[verify..linux].contains("docs/release-notes/$version.en.md"));
     assert!(release[verify..linux].contains("每次发版要准备两份更新说明"));
-    assert!(release[sign_job..].contains("docs/release-notes/$version.en.md"));
+    assert!(release[sign_job..].contains("docs/release-notes/$env:VERSION.en.md"));
 
     // 发版脚本：英文说明缺了 / 是空的就失败；Release 正文取英文，latest.json 同时带中文 notes 和英文 notes_en。
     let lib = repo_file("scripts/release-lib.ps1");
@@ -650,16 +652,37 @@ fn only_the_final_release_job_touches_the_signing_key() {
         assert!(block.contains("contents: read"), "{name}");
     }
     let verify_job = &release[verify..linux];
-    // 门禁不在发版里重跑，所以发版前必须核对 main 上这个提交的 CI 已经通过。
+    // 门禁不在发版里重跑，发版也不重编：校验任务锁定 main 上这个提交唯一一次 push 触发、整次成功的 CI 运行，
+    // 再按名字锁定它的产物 ID（不挑别的运行的产物凑数）。
     assert!(verify_job.contains("actions/workflows/ci.yml/runs"));
-    assert!(verify_job.contains("completed/success"));
+    for needed in [
+        ".event == \"push\"",
+        ".head_branch == \"main\"",
+        ".head_sha == $sha",
+        "[ \"$count\" -eq 1 ]",
+        "[ \"$conclusion\" != success ]",
+        "/artifacts",
+        ".expired == false and .workflow_run.id == $id and .workflow_run.head_sha == $sha",
+    ] {
+        assert!(verify_job.contains(needed), "校验任务要有 {needed}");
+    }
+    for artifact in [
+        "zeeterm-windows",
+        "zeeterm-linux",
+        "zeeterm-release-tool-windows",
+    ] {
+        assert!(verify_job.contains(artifact), "{artifact}");
+    }
     let linux_job = &release[linux..windows];
     assert!(linux_job.contains("runs-on: ubuntu-22.04"));
     assert!(linux_job.contains("needs: verify"));
+    // 两个编译任务只在受控重建时跑。
+    assert!(linux_job.contains("if: needs.verify.outputs.rebuild == 'true'"));
     assert!(linux_job.contains("./scripts/package-linux.sh"));
     assert!(linux_job.contains("./scripts/linux-container-check.sh"));
     let windows_job = &release[windows..sign];
     assert!(windows_job.contains("needs: verify"));
+    assert!(windows_job.contains("if: needs.verify.outputs.rebuild == 'true'"));
     assert!(windows_job.contains("native/installer/build.ps1"));
     // 签名、发布只在 release 任务里，而且要等两个编译任务都成功。
     let release_job = &release[sign..];
@@ -668,12 +691,30 @@ fn only_the_final_release_job_touches_the_signing_key() {
     assert!(release_job.contains("-LinuxTarPath"));
     assert!(release_job.contains("-PortablePath"));
     assert!(release_job.contains("environment: release"));
-    // 私钥文件在取回三个包之后才写出来，而且无论成败都删掉。
+    // CI 产物按 run ID + artifact ID 取回；签名任务用预编译的签名工具，不装 Rust。
+    assert!(release_job.contains("run-id: ${{ needs.verify.outputs.ci_run_id }}"));
+    assert!(release_job.contains("artifact-ids: ${{ needs.verify.outputs.windows_artifact_id }}"));
+    assert!(release_job.contains("ZEETERM_RELEASE_TOOL="));
+    assert!(!release_job.contains("rustup toolchain install"));
+    // 私钥文件在取回、核对完包和签名工具之后才写出来，演练时根本不写，而且无论成败都删掉。
     let write_key = release_job.find("写出更新私钥").expect("写私钥步骤");
-    for fetched in ["取回 Windows 安装包", "取回 Linux 包"] {
+    for fetched in [
+        "取回 Windows 包",
+        "取回 Linux 包",
+        "取回签名工具",
+        "核对取回的包和签名工具",
+    ] {
         let at = release_job.find(fetched).expect(fetched);
         assert!(at < write_key, "{fetched} 要在写私钥之前");
     }
+    assert!(release_job[write_key..].starts_with(
+        "写出更新私钥（临时文件）
+        if: env.DRY_RUN != 'true'"
+    ));
+    let publish = release_job
+        .find("- name: 创建 Release")
+        .expect("建 Release 步骤");
+    assert!(release_job[publish..].contains("if: env.DRY_RUN != 'true'"));
     let cleanup = release_job.find("删掉临时私钥文件").expect("清理步骤");
     assert!(release_job[cleanup..].contains("if: always()"));
 }
