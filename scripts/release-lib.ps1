@@ -201,6 +201,18 @@ function Get-ReleaseToolArgs([string]$RepoRoot) {
         '-p', 'zssh-update', '--example', 'release_tool', '--')
 }
 
+# 签名工具怎么调：环境变量 ZEETERM_RELEASE_TOOL 指向预编译好的 release_tool.exe 时直接用它——发版工作流里它由
+# 同一个提交在 main 上的 CI 编好，签名任务就不用再装 Rust、编译；没设时照旧 cargo run（本机发版、演练）。
+# 返回 Exe 和 Args，调用方写 `$a = $tool.Args; & $tool.Exe @a <子命令> ...`。
+function Get-ReleaseTool([string]$RepoRoot) {
+    $prebuilt = $env:ZEETERM_RELEASE_TOOL
+    if ($prebuilt) {
+        if (-not (Test-Path -LiteralPath $prebuilt -PathType Leaf)) { Stop-WithError "ZEETERM_RELEASE_TOOL 指向的签名工具不存在：$prebuilt" }
+        return [pscustomobject]@{ Exe = $prebuilt; Args = @() }
+    }
+    return [pscustomobject]@{ Exe = 'cargo'; Args = @(Get-ReleaseToolArgs $RepoRoot) }
+}
+
 # updater.json 里配置的公钥（base64）；没有该字段返回空串。
 function Get-ConfiguredPubkey([string]$UpdaterJson) {
     return ([regex]::Match((Read-Text $UpdaterJson).Text, '"pubkey"\s*:\s*"([^"]*)"')).Groups[1].Value.Trim()
@@ -208,8 +220,8 @@ function Get-ConfiguredPubkey([string]$UpdaterJson) {
 
 # 由私钥推出公钥（base64）。读不了（口令不对 / 文件坏）返回 $null，由调用方决定怎么办。
 function Get-DerivedPubkey([string]$RepoRoot, [string]$KeyPath) {
-    $toolArgs = Get-ReleaseToolArgs $RepoRoot
-    $out = & cargo @toolArgs pubkey --key $KeyPath
+    $tool = Get-ReleaseTool $RepoRoot; $toolArgs = $tool.Args
+    $out = & $tool.Exe @toolArgs pubkey --key $KeyPath
     if ($LASTEXITCODE -ne 0 -or -not $out) { return $null }
     return ($out | Select-Object -Last 1).ToString().Trim()
 }
@@ -242,7 +254,7 @@ function New-ReleaseArtifacts {
         [Parameter(Mandatory = $true)][string]$Repo,
         [object[]]$ExtraAssets = @()
     )
-    $toolArgs = Get-ReleaseToolArgs $RepoRoot
+    $tool = Get-ReleaseTool $RepoRoot; $toolArgs = $tool.Args
     $installerName = Split-Path -Leaf $Installer
     # 平台 key -> release_tool manifest 的参数前缀；也限定了能发布哪些额外文件。
     $extraFlagPrefix = @{ 'linux-x86_64-deb' = 'linux-deb'; 'linux-x86_64-tar' = 'linux-tar'; 'windows-x86_64-portable' = 'portable' }
@@ -256,7 +268,7 @@ function New-ReleaseArtifacts {
 
     Step '用更新私钥签名（签名里带 version，签完用配置里的公钥自检）'
     $sigFile = "$Installer.sig"
-    & cargo @toolArgs sign --key $KeyPath --file $Installer --version $Version --pubkey $ConfiguredPubkey --out $sigFile
+    & $tool.Exe @toolArgs sign --key $KeyPath --file $Installer --version $Version --pubkey $ConfiguredPubkey --out $sigFile
     if ($LASTEXITCODE -ne 0) { Stop-WithError '签名失败。' }
 
     # 额外的包（Linux）：同一把私钥、同样的签名格式，签完立刻用配置里的公钥自检。
@@ -265,7 +277,7 @@ function New-ReleaseArtifacts {
         $assetName = Split-Path -Leaf $asset.Path
         Step "签名 $assetName"
         $assetSig = "$($asset.Path).sig"
-        & cargo @toolArgs sign --key $KeyPath --file $asset.Path --version $Version --pubkey $ConfiguredPubkey --out $assetSig
+        & $tool.Exe @toolArgs sign --key $KeyPath --file $asset.Path --version $Version --pubkey $ConfiguredPubkey --out $assetSig
         if ($LASTEXITCODE -ne 0) { Stop-WithError "签名 $assetName 失败。" }
         $extras += [pscustomobject]@{
             Key = [string]$asset.Key; Name = $assetName; Path = $asset.Path; Signature = $assetSig
@@ -282,18 +294,18 @@ function New-ReleaseArtifacts {
         $prefix = $extraFlagPrefix[$extra.Key]
         $manifestArgs += @("--$prefix-url", $extra.Url, "--$prefix-signature-file", $extra.Signature)
     }
-    & cargo @toolArgs @manifestArgs
+    & $tool.Exe @toolArgs @manifestArgs
     if ($LASTEXITCODE -ne 0) { Stop-WithError '生成 latest.json 失败。' }
 
     # 自检：按应用里验签的同一套代码，再验一遍成品。
     Step '自检：用 updater.json 的公钥验安装包 + 签名 + 版本绑定'
-    & cargo @toolArgs verify --pubkey $ConfiguredPubkey --file $Installer --signature-file $sigFile --version $Version
+    & $tool.Exe @toolArgs verify --pubkey $ConfiguredPubkey --file $Installer --signature-file $sigFile --version $Version
     if ($LASTEXITCODE -ne 0) { Stop-WithError '自检没通过，产物不能发布。' }
     $parsed = Get-Content -LiteralPath $latest -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($parsed.version -ne $Version -or $parsed.platforms.'windows-x86_64'.url -ne $url) { Stop-WithError 'latest.json 的内容与预期不符。' }
     if (-not $parsed.notes -or -not $parsed.notes_en) { Stop-WithError 'latest.json 里缺中文 notes 或英文 notes_en。' }
     foreach ($extra in $extras) {
-        & cargo @toolArgs verify --pubkey $ConfiguredPubkey --file $extra.Path --signature-file $extra.Signature --version $Version
+        & $tool.Exe @toolArgs verify --pubkey $ConfiguredPubkey --file $extra.Path --signature-file $extra.Signature --version $Version
         if ($LASTEXITCODE -ne 0) { Stop-WithError "自检没通过（$($extra.Name)），产物不能发布。" }
         $entry = $parsed.platforms.($extra.Key)
         if (-not $entry -or $entry.url -ne $extra.Url -or -not $entry.signature) { Stop-WithError "latest.json 里 $($extra.Key) 的内容与预期不符。" }

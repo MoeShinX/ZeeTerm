@@ -1,13 +1,16 @@
-# ZeeTerm 发版：推 v* tag 后在 GitHub 上编译、签名、发布 Release。
+# ZeeTerm 发版：推 v* tag 后取 main 上同一提交的 CI 产物，签名、发布 Release。
 #
-# 流程（11-07 起）：
+# 流程（11-10 起；之前的版本在发版里把同一个提交重新编译一遍，约 25 分钟）：
 #   verify   （ubuntu）校验 tag / 版本号 / 提交在 main 上 / 更新说明（中文 <版本>.md 加英文 <版本>.en.md 两份）/ 公钥 / Release 还不存在，
-#            并要求这个提交在 main 上的 CI（ci.yml，Windows + Linux + macOS 全套 fmt / clippy / test / 打包）已经通过。
-#            门禁不在这里重跑：发版前 main 上的 CI 已经对同一个提交跑过一遍。
-#   linux    （ubuntu-22.04）完整 release 编译出 deb + tar.gz，容器里装一遍，上传为 artifact。
-#   windows  （windows-latest）完整 release 编译出安装包和免安装版 zip，上传为 artifact。和 linux 并行。
-#   release  （windows-latest，release 环境）取回四个包 -> 用更新私钥签名并自检 -> latest.json /
-#            SHA256SUMS.txt / Release 正文 -> gh release create。只有这个任务拿得到私钥。
+#            再锁定这个提交在 main 上那一次 CI 运行（ci.yml、push 事件、main 分支、提交号一致、整次运行成功，只能有一次），
+#            并按名字找出它的三个产物（zeeterm-windows、zeeterm-linux、zeeterm-release-tool-windows），记下各自的 artifact ID，
+#            核对没过期、属于这次运行和这个提交。缺任何一个就失败，不会拿"最近一次成功的产物"凑数。
+#   release  （windows-latest，release 环境）按 run ID + artifact ID 取回四个包和签名工具 -> 核对文件清单、版本、平台 ->
+#            用更新私钥签名并自检 -> latest.json / SHA256SUMS.txt / Release 正文 -> gh release create。只有这个任务拿得到私钥。
+#   linux / windows：只在"受控重建"（手动触发并勾选 rebuild）时运行，从 tag 指向的提交重新编译，代替 CI 产物。
+#            用在 CI 产物已过期、原 CI 运行又超过 30 天不能重跑的时候；其余时候不跑。
+# CI 产物过期时：在 Actions 页对**原来那次** CI 运行点 Re-run（保留原提交和 ref），通过后再重跑发版。
+#   不要在 main 上另点 Run workflow：那会编当时最新的 main，不是这个提交。
 # 改版本号、写更新说明、打 tag 的步骤见 docs/RELEASING.md（先 scripts/bump-version.ps1，提交推 main，等 CI 通过，再推 tag）。
 #
 # 密钥：更新签名私钥和口令放在仓库的 `release` 环境（Settings -> Environments -> release）里，
@@ -15,6 +18,7 @@
 #   ZEETERM_UPDATER_KEY_PASSWORD   私钥口令
 # 只有本工作流的 release 这个 job 拿得到；而且只暴露给"写私钥文件"和"签名"两个步骤，编译、跑测试的步骤环境里没有它们。
 # 日志里不打印私钥和口令（GitHub 会对 Secret 打码，这里也不 echo，签名工具不开详细输出）。
+# 演练（dry_run）：前面全部照做，签名用现场生成的临时密钥，不碰正式私钥，也不创建 Release。
 #
 # 第三方 action 一律钉 commit SHA；能用 gh 做的事不引入新的 action。
 name: Release
@@ -22,31 +26,49 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # 重跑 / 补发：从 main 分支触发，输入已经存在的 tag（例如 v0.4.0）。该 tag 的 Release 必须还不存在。
+  # 重跑 / 补发 / 演练：从 main 分支触发。
   workflow_dispatch:
     inputs:
       tag:
-        description: "要发布的 tag（例如 v0.4.0；必须已经存在，且在 main 上）"
-        required: true
+        description: "要发布的 tag（例如 v0.4.0；必须已经存在，且在 main 上）。演练时可以改填下面的 commit"
+        required: false
         type: string
+      dry_run:
+        description: "演练：取产物、核对、用临时密钥签名，但不碰正式私钥、不创建 Release"
+        required: false
+        type: boolean
+        default: false
+      commit:
+        description: "只用于演练、且没填 tag 时：main 上的完整 40 位提交号"
+        required: false
+        type: string
+      rebuild:
+        description: "受控重建：CI 产物已过期且原 CI 运行超过 30 天不能重跑时，从 tag 指向的提交重新编译"
+        required: false
+        type: boolean
+        default: false
 
 # 默认什么权限都不给；各 job 按需声明（只有 release 要 contents: write）。
 permissions: {}
 
 # 同一个 tag 只跑一个；后来的排队等着，不取消正在进行的发版。
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release-${{ github.event_name == 'push' && github.ref_name || inputs.tag || inputs.commit }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
-  TAG: ${{ inputs.tag || github.ref_name }}
+  # 推 tag 触发时是那个 tag；手动触发时是输入的 tag（演练按提交跑时为空）。
+  TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
+  REBUILD: ${{ inputs.rebuild == true && 'true' || 'false' }}
+  INPUT_COMMIT: ${{ inputs.commit }}
 
 jobs:
-  # 早失败的校验，加上"main 上的 CI 已通过"这道闸。它失败，后面任何编译都不会开始。
+  # 早失败的校验，加上"main 上的 CI 已通过"这道闸，并锁定要用的 CI 运行和产物。它失败，后面什么都不做。
   verify:
-    name: 校验（tag、版本、CI）
+    name: 校验（tag、版本、CI 运行和产物）
     # 手动触发只接受从 main 触发：别的分支上的工作流文件可能被改过。
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -56,98 +78,150 @@ jobs:
       actions: read
     outputs:
       version: ${{ steps.check.outputs.version }}
+      commit: ${{ steps.check.outputs.commit }}
+      rebuild: ${{ steps.check.outputs.rebuild }}
+      ci_run_id: ${{ steps.check.outputs.ci_run_id }}
+      windows_artifact_id: ${{ steps.check.outputs.windows_artifact_id }}
+      linux_artifact_id: ${{ steps.check.outputs.linux_artifact_id }}
+      tool_artifact_id: ${{ steps.check.outputs.tool_artifact_id }}
 
     steps:
-      - name: 取代码（要完整历史，用来核对 tag 在 main 上）
+      - name: 取代码（要完整历史，用来核对提交在 main 上）
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ format('refs/tags/{0}', inputs.tag || github.ref_name) }}
+          ref: ${{ env.TAG != '' && format('refs/tags/{0}', env.TAG) || inputs.commit }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: 校验 tag、版本号、更新说明、公钥，以及 main 上的 CI
+      - name: 校验 tag、版本号、更新说明、公钥，锁定 main 上的 CI 运行和产物
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          re='^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?)$'
-          if [[ ! $TAG =~ $re ]]; then
-            echo "tag 要写成 vX.Y.Z（可带 -rc.1 这类后缀）：$TAG" >&2
-            exit 1
+          fail() { echo "$1" >&2; exit 1; }
+
+          # 1. 发布对象：推 tag / 手动给 tag 时是 tag 指向的提交；只有演练可以不给 tag、直接给提交号。
+          if [ -n "$TAG" ] && [ -n "$INPUT_COMMIT" ]; then fail "tag 和 commit 只能给一个。"; fi
+          head=$(git rev-parse HEAD)
+          if [ -n "$TAG" ]; then
+            re='^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?)$'
+            [[ $TAG =~ $re ]] || fail "tag 要写成 vX.Y.Z（可带 -rc.1 这类后缀）：$TAG"
+            tag_version=${BASH_REMATCH[1]}
+            tag_commit=$(git rev-parse "refs/tags/$TAG^{commit}")
+            [ "$head" = "$tag_commit" ] || fail "检出的提交 $head 不是 tag $TAG 指向的提交 $tag_commit。"
+          else
+            [ "$DRY_RUN" = true ] || fail "正式发布必须给 tag。"
+            [[ $INPUT_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail "演练不给 tag 时，commit 要填 main 上的完整 40 位提交号：$INPUT_COMMIT"
+            [ "$head" = "$INPUT_COMMIT" ] || fail "检出的提交 $head 不是输入的 $INPUT_COMMIT。"
           fi
-          version=${BASH_REMATCH[1]}
+          git merge-base --is-ancestor "$head" origin/main || fail "提交 $head 不在 main 上：先把它合进 main，再在 main 的提交上打 tag。"
+
+          # 2. 两个工作区的版本号一致；给了 tag 时还要等于 tag 去掉 v（程序里显示的版本、包的文件名都来自它）。
+          version=""
           for manifest in native/Cargo.toml Cargo.toml; do
             declared=$(awk '
               /^\[workspace\.package\]/ { in_section = 1; next }
               /^\[/ { in_section = 0 }
               in_section && /^[[:space:]]*version[[:space:]]*=/ { gsub(/^[^"]*"|"[^"]*$/, ""); print; exit }
             ' "$manifest")
-            if [ "$declared" != "$version" ]; then
-              echo "tag 是 $TAG，但 $manifest 的版本是 $declared。先用 scripts/bump-version.ps1 改版本号并提交。" >&2
-              exit 1
-            fi
+            [ -n "$declared" ] || fail "$manifest 里读不到 [workspace.package] 的 version。"
+            [ -z "$version" ] || [ "$declared" = "$version" ] || fail "两个工作区的版本号不一致：$declared / $version。"
+            version=$declared
           done
-          head=$(git rev-parse HEAD)
-          tag_commit=$(git rev-parse "refs/tags/$TAG^{commit}")
-          if [ "$head" != "$tag_commit" ]; then
-            echo "检出的提交 $head 不是 tag $TAG 指向的提交 $tag_commit。" >&2
-            exit 1
+          if [ -n "$TAG" ] && [ "$version" != "$tag_version" ]; then
+            fail "tag 是 $TAG，但 Cargo.toml 的版本是 $version。先用 scripts/bump-version.ps1 改版本号并提交。"
           fi
-          if ! git merge-base --is-ancestor "$head" origin/main; then
-            echo "tag $TAG 指向的提交不在 main 上：先把它合进 main，再在 main 的提交上打 tag。" >&2
-            exit 1
-          fi
-          # 每个版本两份更新说明：中文 <版本>.md（latest.json 的 notes，老客户端只认它）和英文 <版本>.en.md
-          # （GitHub Release 正文、latest.json 的 notes_en），缺哪份都在这里失败，什么都不编译。
+
+          # 3. 每个版本两份更新说明：中文 <版本>.md（latest.json 的 notes，老客户端只认它）和英文 <版本>.en.md
+          #    （GitHub Release 正文、latest.json 的 notes_en），缺哪份都在这里失败。
           notes="docs/release-notes/$version.md"
-          if [ ! -s "$notes" ] || [ -z "$(tr -d '[:space:]' < "$notes")" ]; then
-            echo "缺少或是空的：$notes。" >&2
-            exit 1
-          fi
+          if [ ! -s "$notes" ] || [ -z "$(tr -d '[:space:]' < "$notes")" ]; then fail "缺少或是空的：$notes。"; fi
           notes_en="docs/release-notes/$version.en.md"
           if [ ! -s "$notes_en" ] || [ -z "$(tr -d '[:space:]' < "$notes_en")" ]; then
-            echo "缺少或是空的英文更新说明：$notes_en。每次发版要准备两份更新说明：$version.md（中文）和 $version.en.md（英文），写法见 docs/release-notes/README.md。" >&2
-            exit 1
+            fail "缺少或是空的英文更新说明：$notes_en。每次发版要准备两份更新说明：$version.md（中文）和 $version.en.md（英文），写法见 docs/release-notes/README.md。"
           fi
           pubkey=$(sed -n 's/.*"pubkey"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' native/zssh-update/updater.json | head -1)
-          if [ -z "$pubkey" ] || [[ ${pubkey^^} == PLACEHOLDER* ]]; then
-            echo "native/zssh-update/updater.json 的 pubkey 还是占位值。" >&2
-            exit 1
+          if [ -z "$pubkey" ] || [[ ${pubkey^^} == PLACEHOLDER* ]]; then fail "native/zssh-update/updater.json 的 pubkey 还是占位值。"; fi
+          if [ -n "$TAG" ] && [ "$DRY_RUN" != true ] && gh release view "$TAG" > /dev/null 2>&1; then
+            fail "tag $TAG 的 Release 已经存在，不会覆盖。要重发请先删掉那个 Release（以及里面的附件）。"
           fi
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            echo "tag $TAG 的 Release 已经存在，不会覆盖。要重发请先删掉那个 Release（以及里面的附件）。" >&2
-            exit 1
-          fi
-          # main 上这个提交的 CI（push 到 main 触发的那次，或在 main 上手动触发的）必须有一次成功。
-          # 门禁不在发版里重跑，所以这道闸不能放松：没跑完、失败、被取消都不发。
-          conclusions=$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$head&branch=main&per_page=20" \
-            --jq '[.workflow_runs[] | "\(.status)/\(.conclusion // "none")"] | join(" ")')
-          echo "main 上提交 $head 的 CI：${conclusions:-（没有）}"
-          if [[ " $conclusions " != *" completed/success "* ]]; then
-            echo "这个提交在 main 上还没有一次通过的 CI（ci.yml）。等 CI 跑完并通过后再重跑发版（Actions 页 Re-run，或 Run workflow 输入 $TAG）。" >&2
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag $TAG，版本 $version，提交 $head：校验通过，main 上的 CI 已通过。"
 
-  # Linux 包在 ubuntu-22.04 上编（glibc 2.35 基线）。这个任务只读代码、不使用环境和密钥；它产出的两个文件由下面的
-  # release 任务取回后签名。任何一步失败，release 任务不会开始，也就不会发布任何东西。和 windows 任务并行。
+          # 4. 锁定 CI 运行：本仓库、ci.yml、push 事件、main 分支、提交号一致，而且只能有一次。门禁不在发版里重跑，
+          #    受控重建也要求它通过。不认手动触发（workflow_dispatch）的 CI：那种运行编的是触发时的 main。
+          runs=$(gh api -X GET "repos/$GH_REPO/actions/workflows/ci.yml/runs" -f head_sha="$head" -f branch=main -f event=push -f per_page=100)
+          matching=$(jq -c --arg sha "$head" --arg repo "$GH_REPO" '[.workflow_runs[]
+            | select(.head_sha == $sha and .event == "push" and .head_branch == "main"
+                     and .path == ".github/workflows/ci.yml"
+                     and .repository.full_name == $repo and .head_repository.full_name == $repo)]' <<<"$runs")
+          count=$(jq length <<<"$matching")
+          [ "$count" -gt 0 ] || fail "提交 $head 在 main 上没有推送触发的 CI 运行（ci.yml）。先把它推到 main，等 CI 跑完并通过。"
+          [ "$count" -eq 1 ] || fail "提交 $head 在 main 上有 $count 次推送触发的 CI 运行（$(jq -r 'map(.id | tostring) | join(", ")' <<<"$matching")），不知道该用哪一次，停下来人工确认。"
+          run=$(jq -c '.[0]' <<<"$matching")
+          run_id=$(jq -r .id <<<"$run")
+          run_url=$(jq -r .html_url <<<"$run")
+          run_attempt=$(jq -r .run_attempt <<<"$run")
+          status=$(jq -r .status <<<"$run")
+          conclusion=$(jq -r '.conclusion // "none"' <<<"$run")
+          created=$(jq -r .created_at <<<"$run")
+          echo "CI 运行：$run_url（第 $run_attempt 次尝试），$status/$conclusion，创建于 $created"
+          if [ "$status" != completed ] || [ "$conclusion" != success ]; then
+            fail "这次 CI 运行不是整次成功（$status/$conclusion）。没跑完就等它跑完；失败了先修好，或在 Actions 页对这次运行点 Re-run（保留原提交和 ref）。不要在 main 上另点 Run workflow：那会编当时最新的 main，不是这个提交。"
+          fi
+          age_days=$(( ( $(date -u +%s) - $(date -u -d "$created" +%s) ) / 86400 ))
+
+          # 5. 锁定产物：每个名字在这次运行里必须恰好有一个没过期、属于这次运行和这个提交的；不挑别的运行的产物凑数。
+          if [ "$REBUILD" = true ]; then
+            echo "受控重建：不用 CI 产物，下面的 linux / windows 任务从这个提交重新编译。"
+          else
+            arts=$(gh api -X GET "repos/$GH_REPO/actions/runs/$run_id/artifacts" -f per_page=100)
+            for pair in windows:zeeterm-windows linux:zeeterm-linux tool:zeeterm-release-tool-windows; do
+              key=${pair%%:*}; name=${pair#*:}
+              all=$(jq -c --arg n "$name" '[.artifacts[] | select(.name == $n)]' <<<"$arts")
+              live=$(jq -c --argjson id "$run_id" --arg sha "$head" '[.[]
+                | select(.expired == false and .workflow_run.id == $id and .workflow_run.head_sha == $sha and .size_in_bytes > 0)]' <<<"$all")
+              if [ "$(jq length <<<"$live")" -eq 1 ]; then
+                id=$(jq -r '.[0].id' <<<"$live")
+                echo "${key}_artifact_id=$id" >> "$GITHUB_OUTPUT"
+                echo "产物 $name：artifact $id（$(jq -r '.[0].size_in_bytes' <<<"$live") 字节，$(jq -r '.[0].expires_at' <<<"$live") 过期）"
+                continue
+              fi
+              [ "$(jq length <<<"$live")" -eq 0 ] || fail "CI 运行 $run_url 里有不止一个可用的产物 $name，停下来人工确认。"
+              if [ "$(jq length <<<"$all")" -eq 0 ]; then
+                fail "CI 运行 $run_url 里没有产物 $name：这次运行早于「CI 上传发版产物」的改动，重跑原运行也只会按当时的 ci.yml 来。改用受控重建：Run workflow，输入 $TAG，勾选 rebuild。"
+              fi
+              if [ "$age_days" -lt 30 ]; then
+                fail "产物 $name 已过期。在 Actions 页打开 $run_url，点 Re-run all jobs（保留原提交和 ref，重新生成产物），通过后再重跑这次发版。不要在 main 上另点 Run workflow：那会编另一个提交。"
+              fi
+              fail "产物 $name 已过期，原 CI 运行已经 $age_days 天，GitHub 不允许重跑超过 30 天的运行。改用受控重建：Run workflow，输入 $TAG，勾选 rebuild。"
+            done
+          fi
+
+          {
+            echo "version=$version"
+            echo "commit=$head"
+            echo "rebuild=$REBUILD"
+            echo "ci_run_id=$run_id"
+          } >> "$GITHUB_OUTPUT"
+          echo "版本 $version，提交 $head，CI 运行 $run_id：校验通过。"
+
+  # 受控重建用：Linux 包在 ubuntu-22.04 上编（glibc 2.35 基线）。这个任务只读代码、不使用环境和密钥；它产出的两个文件由下面的
+  # release 任务取回后签名。和 windows 任务并行。平时（用 CI 产物）不跑。
   linux:
-    name: 编译 Linux 包（ubuntu-22.04）
+    name: 受控重建 Linux 包（ubuntu-22.04）
     needs: verify
+    if: needs.verify.outputs.rebuild == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 150
     permissions:
       contents: read
 
     steps:
-      - name: 取代码（要完整历史，用来核对 tag 在 main 上）
+      - name: 取代码（verify 锁定的提交）
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ format('refs/tags/{0}', inputs.tag || github.ref_name) }}
-          fetch-depth: 0
+          ref: ${{ needs.verify.outputs.commit }}
           persist-credentials: false
 
       - name: 版本号
@@ -190,21 +264,23 @@ jobs:
             dist/linux/${{ env.VERSION }}/ZeeTerm-${{ env.VERSION }}-linux-x86_64.tar.gz
           if-no-files-found: error
           retention-days: 7
+          compression-level: 0
 
-  # Windows 安装包和免安装版 zip（build.ps1 一次打出两个）：完整 release 编译。只读代码、不在 release 环境里、拿不到私钥；和 linux 并行。
+  # 受控重建用：Windows 安装包和免安装版 zip（build.ps1 一次打出两个），再编签名工具。只读代码、拿不到私钥；和 linux 并行。
   windows:
-    name: 编译 Windows 安装包（windows-latest）
+    name: 受控重建 Windows 安装包（windows-latest）
     needs: verify
+    if: needs.verify.outputs.rebuild == 'true'
     runs-on: windows-latest
     timeout-minutes: 120
     permissions:
       contents: read
 
     steps:
-      - name: 取代码
+      - name: 取代码（verify 锁定的提交）
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ format('refs/tags/{0}', inputs.tag || github.ref_name) }}
+          ref: ${{ needs.verify.outputs.commit }}
           persist-credentials: false
 
       - name: 版本号
@@ -251,6 +327,9 @@ jobs:
           $portable = Join-Path $out "ZeeTerm-$env:VERSION-windows-x64-portable.zip"
           if (-not (Test-Path -LiteralPath $portable -PathType Leaf)) { throw "没有找到预期的免安装版：$portable" }
 
+      - name: 编签名工具（release_tool）
+        run: cargo build --manifest-path native/Cargo.toml --release --locked -p zssh-update --example release_tool
+
       - name: 上传安装包和免安装版（给 release 任务签名用）
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -260,144 +339,197 @@ jobs:
             dist/${{ env.VERSION }}/ZeeTerm-${{ env.VERSION }}-windows-x64-portable.zip
           if-no-files-found: error
           retention-days: 7
+          compression-level: 0
+
+      - name: 上传签名工具
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zeeterm-release-tool-rebuild
+          path: native/target/release/examples/release_tool.exe
+          if-no-files-found: error
+          retention-days: 7
 
   release:
     name: 签名、发布（windows-latest）
     needs: [verify, linux, windows]
     # 手动触发只接受从 main 触发：别的分支上的工作流文件可能被改过，不能让它碰到私钥。
-    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    # 平时 linux / windows 是跳过的（用 CI 产物），所以这里要显式写清什么时候运行；受控重建时要求两个编译任务都成功。
+    if: >-
+      !cancelled()
+      && (github.event_name == 'push' || github.ref == 'refs/heads/main')
+      && needs.verify.result == 'success'
+      && (needs.verify.outputs.rebuild != 'true'
+          || (needs.linux.result == 'success' && needs.windows.result == 'success'))
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
     environment: release
     permissions:
       contents: write
+      actions: read
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      COMMIT: ${{ needs.verify.outputs.commit }}
 
     steps:
-      - name: 取代码（要完整历史，用来核对 tag 在 main 上）
+      - name: 取代码（verify 锁定的提交，要完整历史来核对它在 main 上）
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ format('refs/tags/{0}', inputs.tag || github.ref_name) }}
+          ref: ${{ needs.verify.outputs.commit }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: 校验 tag、版本号和更新说明
+      # 拿到私钥的任务自己再核一遍，不只信 verify 的输出。
+      - name: 复核提交、版本号和更新说明
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:TAG -notmatch '^v(\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.]*)?)$') {
-            throw "tag 要写成 vX.Y.Z（可带 -rc.1 这类后缀）：$env:TAG"
-          }
-          $version = $Matches[1]
           . ./scripts/release-lib.ps1
-
-          # 1. tag 去掉 v 之后必须等于两个工作区的版本号（程序里显示的版本、安装包文件名都来自它）。
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:COMMIT) { throw "检出的提交 $head 不是 verify 锁定的 $env:COMMIT。" }
+          git merge-base --is-ancestor $head origin/main
+          if ($LASTEXITCODE -ne 0) { throw "提交 $head 不在 main 上。" }
+          if ($env:TAG) {
+            if ($env:TAG -ne "v$env:VERSION") { throw "tag 是 $env:TAG，但版本是 $env:VERSION。" }
+            $tagCommit = (git rev-parse "refs/tags/$($env:TAG)^{commit}").Trim()
+            if ($LASTEXITCODE -ne 0 -or $head -ne $tagCommit) { throw "tag $env:TAG 指向 $tagCommit，不是 $head。" }
+          }
           foreach ($manifest in @('native/Cargo.toml', 'Cargo.toml')) {
             $declared = Get-WorkspaceVersion (Join-Path $env:GITHUB_WORKSPACE $manifest)
-            if ($declared -ne $version) { throw "tag 是 $env:TAG，但 $manifest 的版本是 $declared。先用 scripts/bump-version.ps1 改版本号并提交。" }
+            if ($declared -ne $env:VERSION) { throw "$manifest 的版本是 $declared，不是 $env:VERSION。" }
           }
-
-          # 2. 检出的就是 tag 指向的提交，而且这个提交在 main 上（没合进 main 的提交不发版）。
-          $head = (git rev-parse HEAD).Trim()
-          $tagCommit = (git rev-parse "refs/tags/$($env:TAG)^{commit}").Trim()
-          if ($LASTEXITCODE -ne 0 -or $head -ne $tagCommit) { throw "检出的提交 $head 不是 tag $env:TAG 指向的提交 $tagCommit。" }
-          git merge-base --is-ancestor $head origin/main
-          if ($LASTEXITCODE -ne 0) { throw "tag $env:TAG 指向的提交不在 main 上：先把它合进 main，再在 main 的提交上打 tag。" }
-
-          # 3. 面向用户的更新说明（中文、英文两份）必须存在且不是空的。
-          $notes = "docs/release-notes/$version.md"
-          $notesPath = Join-Path $env:GITHUB_WORKSPACE $notes
-          if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) { throw "缺少 $notes。" }
-          if ((Read-Text $notesPath).Text.Trim() -eq '') { throw "$notes 是空的。" }
-          $notesEn = "docs/release-notes/$version.en.md"
-          $notesEnPath = Join-Path $env:GITHUB_WORKSPACE $notesEn
-          if (-not (Test-Path -LiteralPath $notesEnPath -PathType Leaf)) { throw "缺少英文更新说明 $notesEn。每次发版要准备两份更新说明：$version.md（中文）和 $version.en.md（英文）。" }
-          if ((Read-Text $notesEnPath).Text.Trim() -eq '') { throw "英文更新说明 $notesEn 是空的。" }
-
-          # 4. 公钥不能还是占位值（真正核对公钥和私钥是一对，在拿到私钥的签名那一步）。
+          foreach ($notes in @("docs/release-notes/$env:VERSION.md", "docs/release-notes/$env:VERSION.en.md")) {
+            $path = Join-Path $env:GITHUB_WORKSPACE $notes
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "缺少 $notes。" }
+            if ((Read-Text $path).Text.Trim() -eq '') { throw "$notes 是空的。" }
+          }
           $pubkey = Get-ConfiguredPubkey (Join-Path $env:GITHUB_WORKSPACE 'native/zssh-update/updater.json')
           if ($pubkey -eq '' -or $pubkey.ToUpperInvariant().StartsWith('PLACEHOLDER')) { throw 'native/zssh-update/updater.json 的 pubkey 还是占位值。' }
-
-          # 5. 这个 tag 的 Release 还不存在（早点失败，别等编译完才发现）。
-          gh release view $env:TAG *> $null
-          if ($LASTEXITCODE -eq 0) { throw "tag $env:TAG 的 Release 已经存在，不会覆盖。要重发请先删掉那个 Release（以及里面的附件）。" }
-
-          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "tag $env:TAG，版本 $version，提交 $head：校验通过。"
-          # 上面 `gh release view` 查不到 Release 时退出码是 1（正是我们要的结果），pwsh 步骤会把
-          # 最后一个原生命令的退出码当成整步的结果，所以这里明确以成功结束。
+          if ($env:DRY_RUN -ne 'true') {
+            gh release view $env:TAG *> $null
+            if ($LASTEXITCODE -eq 0) { throw "tag $env:TAG 的 Release 已经存在，不会覆盖。要重发请先删掉那个 Release（以及里面的附件）。" }
+          }
+          Write-Host "提交 $head，版本 $env:VERSION：复核通过。"
+          # `gh release view` 查不到时退出码是 1（正是我们要的结果），pwsh 会把最后一个原生命令的退出码当成整步结果。
           exit 0
 
-      # 版本由 rust-toolchain.toml 固定；无参数的 rustup toolchain install 就是按那个文件安装。
-      - name: 装 Rust（按 rust-toolchain.toml，MSVC）
-        shell: pwsh
-        run: |
-          rustup toolchain install
-          rustc --version
-          cargo clippy --version
-
-      - name: 缓存 cargo 的编译产物
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # 平时：按 verify 锁定的 run ID + artifact ID 取 CI 的产物（不是按名字找"最新的"）。
+      - name: 取回 Windows 包（CI 产物）
+        if: needs.verify.outputs.rebuild != 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          workspaces: |
-            . -> target
-            native -> target
-          key: release-sign
+          artifact-ids: ${{ needs.verify.outputs.windows_artifact_id }}
+          run-id: ${{ needs.verify.outputs.ci_run_id }}
+          github-token: ${{ github.token }}
+          path: windows-dist
 
-      # Windows 任务打好的安装包和免安装版 zip：同样在私钥写出来之前取回并核对。
-      - name: 取回 Windows 安装包
+      - name: 取回 Linux 包（CI 产物）
+        if: needs.verify.outputs.rebuild != 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.verify.outputs.linux_artifact_id }}
+          run-id: ${{ needs.verify.outputs.ci_run_id }}
+          github-token: ${{ github.token }}
+          path: linux-dist
+
+      - name: 取回签名工具（CI 产物）
+        if: needs.verify.outputs.rebuild != 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.verify.outputs.tool_artifact_id }}
+          run-id: ${{ needs.verify.outputs.ci_run_id }}
+          github-token: ${{ github.token }}
+          path: tool-dist
+
+      # 受控重建：取这次运行里 linux / windows 任务刚编好的。
+      - name: 取回 Windows 包（受控重建）
+        if: needs.verify.outputs.rebuild == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: zeeterm-windows-release
           path: windows-dist
 
-      - name: 核对 Windows 安装包和免安装版
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $expected = @("ZeeTerm-Setup-$env:VERSION.exe", "ZeeTerm-$env:VERSION-windows-x64-portable.zip")
-          $actual = @(Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'windows-dist') -Recurse -File)
-          $actualNames = @($actual | ForEach-Object { $_.Name }) | Sort-Object
-          if (($actualNames -join '|') -ne (($expected | Sort-Object) -join '|')) {
-            throw "Windows 包的文件清单不对：期望 [$($expected -join ', ')]，实际 [$($actualNames -join ', ')]。"
-          }
-          $dist = Join-Path $env:GITHUB_WORKSPACE "dist\$env:VERSION"
-          New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          foreach ($file in $actual) {
-            if ($file.Length -le 0) { throw "$($file.Name) 是空文件。" }
-            Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $dist $file.Name) -Force
-          }
-          Write-Host "已取回 Windows 包：$($expected -join '、')"
-
-      # Linux 任务打好的 deb 和 tar.gz：在私钥写出来之前取回并核对文件名，签名那一步一并签。
-      - name: 取回 Linux 包
+      - name: 取回 Linux 包（受控重建）
+        if: needs.verify.outputs.rebuild == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: zeeterm-linux-release
           path: linux-dist
 
-      - name: 核对 Linux 包
+      - name: 取回签名工具（受控重建）
+        if: needs.verify.outputs.rebuild == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: zeeterm-release-tool-rebuild
+          path: tool-dist
+
+      # 在私钥写出来之前核对：文件清单恰好是这个版本的四个包和一个签名工具，非空；文件名里的版本、
+      # tar.gz 顶层目录里的版本对得上；免安装版里的 ZeeTerm.exe 和签名工具是 x64 PE，tar.gz 里的 zeeterm 是 x86-64 ELF。
+      # （deb 在产出它的那次运行里已经在 debian:12 / ubuntu:22.04 容器里装过、跑过 zeeterm --version。）
+      - name: 核对取回的包和签名工具（清单、版本、平台）
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $linux = Join-Path $env:GITHUB_WORKSPACE 'linux-dist'
-          $dist = Join-Path $env:GITHUB_WORKSPACE "dist\$env:VERSION"
-          $expected = @("ZeeTerm-$env:VERSION-linux-x86_64.deb", "ZeeTerm-$env:VERSION-linux-x86_64.tar.gz")
-          $actual = @(Get-ChildItem -LiteralPath $linux -Recurse -File | ForEach-Object { $_.Name }) | Sort-Object
-          if (($actual -join '|') -ne (($expected | Sort-Object) -join '|')) {
-            throw "Linux 包的文件清单不对：期望 [$($expected -join ', ')]，实际 [$($actual -join ', ')]。"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          function Get-Files([string]$dir) { @(Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $dir) -Recurse -File) }
+          function Assert-Names([string]$what, [object[]]$files, [string[]]$expected) {
+            $actual = @($files | ForEach-Object { $_.Name } | Sort-Object)
+            if (($actual -join '|') -ne (($expected | Sort-Object) -join '|')) {
+              throw "$what 的文件清单不对：期望 [$($expected -join ', ')]，实际 [$($actual -join ', ')]。不会拿别的产物凑数。"
+            }
+            foreach ($f in $files) { if ($f.Length -le 0) { throw "$($f.Name) 是空文件。" } }
           }
-          foreach ($name in $expected) {
-            $file = Get-ChildItem -LiteralPath $linux -Recurse -File -Filter $name | Select-Object -First 1
-            if ($file.Length -le 0) { throw "$name 是空文件。" }
-            Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $dist $name) -Force
+          # PE 头里的机器类型：0x8664 = x64。
+          function Get-PeMachine([byte[]]$bytes) {
+            if ($bytes.Length -lt 64 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { return $null }
+            $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+            if ($pe -lt 0 -or $pe + 6 -gt $bytes.Length -or [BitConverter]::ToUInt32($bytes, $pe) -ne 0x00004550) { return $null }
+            return [BitConverter]::ToUInt16($bytes, $pe + 4)
           }
-          Write-Host "已取回 Linux 包：$($expected -join '、')"
+
+          $v = $env:VERSION
+          $win = Get-Files 'windows-dist'
+          Assert-Names 'Windows 包' $win @("ZeeTerm-Setup-$v.exe", "ZeeTerm-$v-windows-x64-portable.zip")
+          $linux = Get-Files 'linux-dist'
+          Assert-Names 'Linux 包' $linux @("ZeeTerm-$v-linux-x86_64.deb", "ZeeTerm-$v-linux-x86_64.tar.gz")
+          $tool = Get-Files 'tool-dist'
+          Assert-Names '签名工具' $tool @('release_tool.exe')
+
+          $zipFile = ($win | Where-Object Name -eq "ZeeTerm-$v-windows-x64-portable.zip").FullName
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($zipFile)
+          try {
+            $entry = $zip.Entries | Where-Object FullName -eq 'ZeeTerm.exe' | Select-Object -First 1
+            if (-not $entry) { throw '免安装版里没有 ZeeTerm.exe。' }
+            $stream = $entry.Open(); $ms = New-Object System.IO.MemoryStream
+            try { $stream.CopyTo($ms) } finally { $stream.Dispose() }
+            if ((Get-PeMachine $ms.ToArray()) -ne 0x8664) { throw '免安装版里的 ZeeTerm.exe 不是 x64 程序。' }
+          } finally { $zip.Dispose() }
+          if ((Get-PeMachine ([System.IO.File]::ReadAllBytes($tool[0].FullName))) -ne 0x8664) { throw '签名工具不是 x64 程序。' }
+
+          $tarFile = ($linux | Where-Object Name -eq "ZeeTerm-$v-linux-x86_64.tar.gz").FullName
+          $unpack = Join-Path $env:RUNNER_TEMP 'tar-check'
+          New-Item -ItemType Directory -Force -Path $unpack | Out-Null
+          tar -xzf $tarFile -C $unpack "ZeeTerm-$v-linux-x86_64/zeeterm"
+          if ($LASTEXITCODE -ne 0) { throw "tar.gz 里没有 ZeeTerm-$v-linux-x86_64/zeeterm（顶层目录的版本对不上，或包不完整）。" }
+          $elf = [System.IO.File]::ReadAllBytes((Join-Path $unpack "ZeeTerm-$v-linux-x86_64/zeeterm"))
+          # ELF 魔数 7F 'E' 'L' 'F'，64 位（EI_CLASS = 2），小端，e_machine（偏移 18）= 0x3E（x86-64）。
+          if ($elf.Length -lt 20 -or $elf[0] -ne 0x7F -or $elf[1] -ne 0x45 -or $elf[2] -ne 0x4C -or $elf[3] -ne 0x46 -or
+              $elf[4] -ne 2 -or [BitConverter]::ToUInt16($elf, 18) -ne 0x3E) { throw 'tar.gz 里的 zeeterm 不是 x86-64 ELF 程序。' }
+
+          $dist = Join-Path $env:GITHUB_WORKSPACE "dist\$v"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          foreach ($f in @($win) + @($linux)) { Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $dist $f.Name) -Force }
+          "ZEETERM_RELEASE_TOOL=$($tool[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          foreach ($f in @($win) + @($linux) + @($tool)) {
+            Write-Host ("{0}  {1}  {2} 字节" -f (Get-FileHash -Algorithm SHA256 -LiteralPath $f.FullName).Hash.ToLowerInvariant(), $f.Name, $f.Length)
+          }
+          Write-Host "核对通过：版本 $v 的四个包和签名工具。"
 
       # 私钥只在"写文件"到"清理"之间存在于磁盘，文件放在 runner 的临时目录；下面的清理步骤 always() 一定会删。
       - name: 写出更新私钥（临时文件）
+        if: env.DRY_RUN != 'true'
         shell: pwsh
         env:
           UPDATER_KEY: ${{ secrets.ZEETERM_UPDATER_KEY }}
@@ -410,6 +542,7 @@ jobs:
           [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
 
       - name: 签名并生成 latest.json、SHA256SUMS.txt、Release 正文（含免安装版和 Linux 包）
+        if: env.DRY_RUN != 'true'
         shell: pwsh
         env:
           ZEETERM_UPDATER_KEY_PASSWORD: ${{ secrets.ZEETERM_UPDATER_KEY_PASSWORD }}
@@ -426,17 +559,48 @@ jobs:
             -Repo $env:GITHUB_REPOSITORY
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # 演练：现场生成一把临时密钥（不加口令），配一份带它的公钥的 updater.json，走同一个签名脚本和自检。
+      - name: 演练：用临时密钥签名
+        if: env.DRY_RUN == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $keyDir = Join-Path $env:RUNNER_TEMP 'dryrun-key'
+          $out = & $env:ZEETERM_RELEASE_TOOL keygen --out-dir $keyDir
+          if ($LASTEXITCODE -ne 0) { throw '生成临时密钥失败。' }
+          $pub = (($out | Select-String '^PUBKEY=').Line -replace '^PUBKEY=', '').Trim()
+          if (-not $pub) { throw '没拿到临时公钥。' }
+          $updater = Join-Path $env:RUNNER_TEMP 'dryrun-updater.json'
+          $json = Get-Content -Raw -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'native/zssh-update/updater.json')
+          [System.IO.File]::WriteAllText($updater, ($json -replace '"pubkey"\s*:\s*"[^"]*"', ('"pubkey": "' + $pub + '"')), (New-Object System.Text.UTF8Encoding($false)))
+          $dist = Join-Path $env:GITHUB_WORKSPACE "dist\$env:VERSION"
+          ./scripts/release-sign.ps1 `
+            -Version $env:VERSION `
+            -InstallerPath (Join-Path $dist "ZeeTerm-Setup-$env:VERSION.exe") `
+            -PortablePath (Join-Path $dist "ZeeTerm-$env:VERSION-windows-x64-portable.zip") `
+            -KeyPath (Join-Path $keyDir 'updater.key') `
+            -LinuxDebPath (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.deb") `
+            -LinuxTarPath (Join-Path $dist "ZeeTerm-$env:VERSION-linux-x86_64.tar.gz") `
+            -UpdaterJson $updater `
+            -OutDir $dist `
+            -Repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem -LiteralPath $dist | ForEach-Object { Write-Host "$($_.Name)  $($_.Length) 字节" }
+          Write-Host '演练完成：签名、latest.json、SHA256SUMS.txt 都按正式流程生成并自检通过（用的是临时密钥），没有创建 Release。'
+
       - name: 删掉临时私钥文件
         if: always()
         shell: pwsh
         run: |
-          $path = Join-Path $env:RUNNER_TEMP 'zeeterm-updater.key'
-          if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
-          if (Test-Path -LiteralPath $path) { throw '临时私钥文件没删掉。' }
-          Write-Host '临时私钥文件已删除。'
+          foreach ($path in @((Join-Path $env:RUNNER_TEMP 'zeeterm-updater.key'), (Join-Path $env:RUNNER_TEMP 'dryrun-key'))) {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+            if (Test-Path -LiteralPath $path) { throw "临时私钥没删掉：$path" }
+          }
+          Write-Host '临时私钥已删除。'
 
       # gh release create 遇到同名 Release 会报错而不是覆盖；--verify-tag 要求 tag 已在远端。
       - name: 创建 Release
+        if: env.DRY_RUN != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

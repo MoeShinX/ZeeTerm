@@ -125,17 +125,35 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
-      - name: "原生 5/5 打安装包（只构建，不发布，不签名）"
+      - name: "原生 5/5 打安装包和免安装版（只构建，不发布，不签名）"
         shell: pwsh
         run: ./native/installer/build.ps1
 
-      - name: 上传安装包（构建产物，不是 Release）
+      # 发版工作流直接取 main 上这次运行的产物去签名（不再重编）：安装包、免安装版和签名工具都从这里来。
+      # 签名工具和应用的验签是同一套代码；在这里编好，签名任务就不用装 Rust。
+      - name: 编签名工具（release_tool，给发版工作流用）
+        run: cargo build --manifest-path native/Cargo.toml --release --locked -p zssh-update --example release_tool
+
+      # 保留 30 天：和 GitHub 允许重跑原运行的期限一致——产物过期时还能对这次运行 Re-run（保留原提交）重新生成。
+      # 安装包和 zip 本身已经压缩过，上传时不再压缩。
+      - name: 上传安装包和免安装版（构建产物，不是 Release）
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: zeeterm-setup
-          path: native/installer/out/ZeeTerm-Setup-*.exe
+          name: zeeterm-windows
+          path: |
+            native/installer/out/ZeeTerm-Setup-*.exe
+            native/installer/out/ZeeTerm-*-windows-x64-portable.zip
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
+          compression-level: 0
+
+      - name: 上传签名工具
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zeeterm-release-tool-windows
+          path: native/target/release/examples/release_tool.exe
+          if-no-files-found: error
+          retention-days: 30
 
   crates-linux:
     name: 核心库（ubuntu-22.04）
@@ -236,7 +254,9 @@ jobs:
             dist/linux/ZeeTerm-*-linux-x86_64.deb
             dist/linux/ZeeTerm-*-linux-x86_64.tar.gz
           if-no-files-found: error
-          retention-days: 14
+          # 发版工作流取的就是这份；保留期和不压缩的理由见 Windows 任务的上传步骤。
+          retention-days: 30
+          compression-level: 0
 
   crates-macos:
     name: 核心库（macos-latest）

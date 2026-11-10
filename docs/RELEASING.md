@@ -75,12 +75,15 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
    ```
 
    tag 必须叫 `v<版本>`，并且指向已经在 `main` 上的提交。
-5. **看 Actions 页**的 Release 工作流。四个任务：
-   0. **校验**（`verify`，ubuntu）：tag 去掉 `v` 等于两个 `Cargo.toml` 的版本；tag 指向的提交在 `main` 上；`docs/release-notes/<版本>.md`（中文）和 `docs/release-notes/<版本>.en.md`（英文）都存在且不空；`updater.json` 的公钥不是占位值；这个 tag 的 Release 还不存在；**这个提交在 `main` 上的 CI（`ci.yml`）有一次已经通过**。门禁不在发版里重跑——CI 已经在 Windows、Linux、macOS 上对同一个提交跑过 fmt / clippy / test / 打包，所以第 3 步说的"等 CI 通过再打 tag"是硬性要求：CI 没跑完或失败时，这里直接失败，什么都不编译。
-   1. **Linux 包**（`linux`，ubuntu-22.04，不接触私钥）和 **Windows 包**（`windows`，windows-latest，不接触私钥；`native/installer/build.ps1` 一次打出安装包和免安装版 zip）**并行**：各自做完整 release 编译；Linux 还在 `debian:12` 和 `ubuntu:22.04` 的干净容器里装一遍 deb；两边都上传为 artifact。详情见"Linux 包"和"Windows 免安装版"两节。
-   2. **签名、发布**（`release`，windows-latest，`release` 环境，只有它拿得到私钥）：再校验一遍 tag / 版本 / 更新说明（两份）/ 公钥 / Release 不存在 → 取回四个包（安装包、免安装版 zip、deb、tar.gz）并核对文件名、不是空文件 → 把 Secret 里的私钥写到 runner 临时目录，调 `scripts/release-sign.ps1`（带 `-PortablePath`、`-LinuxDebPath`、`-LinuxTarPath`）：核对 `updater.json` 的公钥与私钥是一对 → 用**同一把私钥**给四个包各签一份名（签名里带 `version:` 和文件名）→ 生成 `latest.json`（`windows-x86_64` 加上 `windows-x86_64-portable`、`linux-x86_64-deb`、`linux-x86_64-tar`）→ 用公钥按应用里的验签代码再验一遍 → 算 SHA-256，写 `SHA256SUMS.txt` 和 Release 正文 → **无论成败都删掉临时私钥文件** → `gh release create` 上传六个文件（四个包、`latest.json`、`SHA256SUMS.txt`；同名 Release 已存在时失败，不覆盖）。
+5. **看 Actions 页**的 Release 工作流。平时只有两个任务（发版**不再编译**，直接用 main 上同一个提交的 CI 产物）：
+   0. **校验**（`verify`，ubuntu）：tag 去掉 `v` 等于两个 `Cargo.toml` 的版本；tag 指向的提交在 `main` 上；`docs/release-notes/<版本>.md`（中文）和 `docs/release-notes/<版本>.en.md`（英文）都存在且不空；`updater.json` 的公钥不是占位值；这个 tag 的 Release 还不存在。然后**锁定那一次 CI 运行**：本仓库的 `ci.yml`、`push` 事件、`main` 分支、提交号和 tag 一致、整次运行成功，而且只能有一次（不认在 main 上手动触发的 CI——那种运行编的是触发时的 main）。再在这次运行里按名字找出三个产物 `zeeterm-windows`（安装包 + 免安装版 zip）、`zeeterm-linux`（deb + tar.gz）、`zeeterm-release-tool-windows`（签名工具），每个必须恰好有一个没过期、属于这次运行和这个提交，记下 artifact ID；缺任何一个就失败，**不会拿"最近一次成功的产物"凑数**。CI 已经在 Windows、Linux、macOS 上对同一个提交跑过 fmt / clippy / test / 完整 release 编译 / 打包（Linux 还在 `debian:12`、`ubuntu:22.04` 容器里装过 deb），所以第 3 步说的"等 CI 通过再打 tag"是硬性要求。
+   1. **签名、发布**（`release`，windows-latest，`release` 环境，只有它拿得到私钥）：自己再核一遍提交 / tag / 版本 / 更新说明（两份）/ 公钥 / Release 不存在 → 按 **run ID + artifact ID** 取回四个包和签名工具，核对：文件清单恰好是这个版本的四个包和 `release_tool.exe`、都不是空文件；免安装版里的 `ZeeTerm.exe` 和签名工具是 x64 PE，tar.gz 里的 `ZeeTerm-<版本>-linux-x86_64/zeeterm` 是 x86-64 ELF（目录名里的版本也对得上）→ 把 Secret 里的私钥写到 runner 临时目录，调 `scripts/release-sign.ps1`（`ZEETERM_RELEASE_TOOL` 指向取回的签名工具，不装 Rust、不编译）：核对 `updater.json` 的公钥与私钥是一对 → 用**同一把私钥**给四个包各签一份名（签名里带 `version:` 和文件名）→ 生成 `latest.json`（`windows-x86_64` 加上 `windows-x86_64-portable`、`linux-x86_64-deb`、`linux-x86_64-tar`）→ 用公钥按应用里的验签代码再验一遍 → 算 SHA-256，写 `SHA256SUMS.txt` 和 Release 正文 → **无论成败都删掉临时私钥文件** → `gh release create` 上传六个文件（四个包、`latest.json`、`SHA256SUMS.txt`；同名 Release 已存在时失败，不覆盖）。
 
-   以前（1.0.1 及之前）Linux 和 Windows 是串行的，而且各自重跑一遍门禁，一次发版约 1 小时 20 分钟；现在约 30–40 分钟，主要花在两边各自的完整 release 编译上。
+   另外两个任务 `linux` / `windows`（**受控重建**）平时跳过，只在手动触发时勾选 `rebuild` 才跑：从 tag 指向的提交重新做完整 release 编译和打包（和以前的发版一样，约 25 分钟），代替 CI 产物。CI 的门禁照样要求通过。
+
+   耗时：以前（1.0.1 及之前）串行加重跑门禁约 1 小时 20 分钟；1.0.2–1.0.4 在发版里重编约 20–30 分钟；改成取 CI 产物后目标是 5 分钟左右，以实际运行计时为准。从推 main 到发出 Release 的总时间主要是 main 上 CI 本身的时间。
+
+   **演练**：Run workflow（从 `main`）勾选 `dry_run`，输入 tag，或者不填 tag、改填 `commit`（main 上的完整 40 位提交号）。校验、锁定 CI 运行和产物、取回、核对、签名、生成 `latest.json` 和自检全部照做，但签名用现场生成的临时密钥（不碰正式私钥），也不创建 Release；给已经发布过的 tag 演练也可以。改了发版工作流或签名脚本之后先演练一次。
 6. **下载核对**：从 Release 页下载安装包，`Get-FileHash` 对一下 `SHA256SUMS.txt`（Linux 包用 `sha256sum -c SHA256SUMS.txt --ignore-missing`）；再用一个旧版本程序点「设置 → 关于 → 检查更新」，确认能发现、下载并校验通过（不必点安装）。
 
 `latest.json` 里的下载地址是 `https://github.com/MoeShinX/ZeeTerm/releases/download/v<版本>/<安装包文件名>`，所以 tag 必须叫 `v<版本>`、安装包文件名不能改。程序读的更新源是 `https://github.com/MoeShinX/ZeeTerm/releases/latest/download/latest.json`（`native/zssh-update/updater.json` 的 `endpoints`），即最新 Release 里的 `latest.json`。
@@ -89,8 +92,12 @@ gh secret set ZEETERM_UPDATER_KEY_PASSWORD --env release -R MoeShinX/ZeeTerm
 
 ### 失败了怎么办
 
-- **校验任务失败**：什么都没编译。最常见的是 main 上的 CI 还没跑完或没通过：等 CI 通过后 *Re-run*（或 *Run workflow* 输入这个 tag）；CI 失败就修好合进 main，发新的补丁版本。
-- **Linux 或 Windows 编译任务失败**：签名发布任务不会开始，什么都没发布。看日志里是编译、打包自检（lintian、appstreamcli、glibc 基线）还是容器检查；修好合进 main 发补丁版本，或不改代码的话 *Re-run* 即可。
+- **校验任务失败**：什么都没发布。日志最后一行说明原因：
+  - main 上的 CI 还没跑完或没通过：等 CI 通过后对这次发版 *Re-run*（或 *Run workflow* 输入这个 tag）；CI 失败就修好合进 main，发新的补丁版本。
+  - **CI 产物过期了**（CI 产物保留 30 天）：在 Actions 页打开校验日志里给出的**那一次** CI 运行，点 *Re-run all jobs*——重跑会保留原来的提交和 ref，重新生成产物；通过后再重跑发版。**不要在 main 上另点 CI 的 Run workflow**：那会编当时最新的 main，不是 tag 指向的提交（而且发版只认 push 触发的那次运行，手动触发的也用不上）。GitHub 只允许重跑 30 天内的运行。
+  - 原 CI 运行已经超过 30 天、不能重跑，或者那次运行早于"CI 上传发版产物"的改动（里面根本没有这些产物，重跑也只会按当时的 `ci.yml` 来）：用**受控重建**——*Run workflow*（从 `main`），输入 tag，勾选 `rebuild`。
+- **受控重建的 Linux 或 Windows 编译任务失败**：签名发布任务不会开始，什么都没发布。看日志里是编译、打包自检（lintian、appstreamcli、glibc 基线）还是容器检查；修好合进 main 发补丁版本，或不改代码的话 *Re-run* 即可。
+- **签名发布任务在"核对取回的包和签名工具"失败**：取回的文件清单、版本或平台不对，说明产物有问题，**不要绕过**；查清是哪次 CI 运行、哪个产物，必要时修好发补丁版本。
 - **工作流在"创建 Release"之前失败**：还没有发布任何东西。代码有问题就修好合进 main，**发新的补丁版本**（最稳，不用动 tag）；只是 runner 抽风、Secrets 没设好之类，不改代码的话，在 Actions 页对该次运行点 *Re-run*，或者 *Run workflow*（从 `main` 触发，输入已有的 tag，如 `v1.0.0`）。
 - **"创建 Release"失败或半途中断**：先到 Releases 页看有没有残留的 Release（含草稿）。有就整个删掉（附件一起），再重跑；没有就直接重跑。
 - **Release 已经发布了才发现有问题**：见下面"回滚与事故"，不要在同一版本号下替换附件，发新的补丁版本。
