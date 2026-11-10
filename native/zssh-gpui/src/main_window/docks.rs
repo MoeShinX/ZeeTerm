@@ -508,8 +508,24 @@ impl MainWindow {
                     self.panel_width_now(self.window_width)
                 } else {
                     0.0
-                },
+                }
+                // 服务器概览开着时先给它留出想要的宽度：概览盖在终端上、宽度上限要给终端
+                // 留 360，窗口不大时 AI / 文件面板不先让位，它就会被挤到最小宽度以下
+                // （圆环换成两列、文字截断）。概览关掉后这里归零，面板宽度原样恢复。
+                + f32::from(visible && self.overview_open(cx))
+                    * self.overview_desired(),
         })
+    }
+
+    /// 概览面板想要的宽度（设置里存的，或拖动中的临时值；上下限按概览自己的规则夹）。
+    /// 只用来给停靠面板算让位，不是最终宽度——最终宽度在 `overview_width_now` 里
+    /// 按面板实际让出的结果再夹一次。
+    fn overview_desired(&self) -> f32 {
+        let stored = self
+            .docks
+            .overview_live
+            .unwrap_or(self.store.bars().overview_width);
+        panel_width::clamp(PanelKind::Overview, stored, self.window_width, 0.0)
     }
 
     /// 两块都开、窗口又太窄：收起 AI 面板并提示一次（窗口变宽后不自动再展开）。
