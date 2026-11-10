@@ -3624,8 +3624,18 @@ impl TerminalWorkspace {
             return;
         }
 
-        // 双击链接：选中整个链接（打开链接走右键菜单的「打开链接」）。以前双击直接开浏览器，
-        // 想选中链接复制就只能拖，连点几次还会变成整行选区，复制出来带着提示符。
+        // Ctrl+左键点链接：交给系统默认浏览器（只放行 http/https，见 `open_link`）。
+        // 双击保留给「选中整段链接」，打开链接的快捷手势放在 Ctrl+单击上（和其他终端一致）。
+        if event.click_count == 1
+            && event.modifiers.control
+            && let Some(link) = self.link_at(event.position)
+        {
+            self.open_link(&link);
+            return;
+        }
+
+        // 双击链接：选中整个链接。以前双击直接开浏览器，想选中链接复制就只能拖，
+        // 连点几次还会变成整行选区，复制出来带着提示符。
         if event.click_count == 2
             && let Some((_, row, col)) = self.cell_at(event.position)
             && let Some(line) = self.pane().and_then(|pane| pane.snapshot.rows.get(row))
