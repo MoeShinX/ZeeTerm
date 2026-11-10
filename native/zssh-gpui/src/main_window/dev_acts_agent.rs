@@ -75,10 +75,16 @@ fn active_ai(
     this: &MainWindow,
     cx: &::gpui::App,
 ) -> Result<Entity<crate::agent_chat::AgentChatDemo>, String> {
-    let _ = cx;
+    // 活动标签自己的那条对话（每标签一条）。
+    let tab = this
+        .workspace
+        .read(cx)
+        .active_tab_id()
+        .ok_or_else(|| "AI 面板还没打开过".to_owned())?;
     this.docks
         .ai
-        .clone()
+        .get(&tab)
+        .cloned()
         .ok_or_else(|| "AI 面板还没打开过".to_owned())
 }
 

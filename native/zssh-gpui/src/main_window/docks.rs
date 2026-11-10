@@ -2,7 +2,8 @@
 //! 终端右侧的 AI 面板、文件（SFTP）停靠面板，以及 SFTP 主视图标签（0.2.14 `App.tsx` 的 `DockRow`、
 //! `SftpDockPanel.tsx`、`SftpTabView.tsx`）。
 //!
-//! - AI 面板：每个窗口一个对话（`Entity<AgentChatDemo>`，嵌在面板里的紧凑形态），在第一条消息发出时
+//! - AI 面板：**每个终端标签一条对话**（`Entity<AgentChatDemo>` 按 tab_id 存，嵌在面板里的紧凑形态），
+//!   面板画的是活动标签自己的对话；关标签对话跟着收（Drop 里 shutdown，历史已落盘可续接）
 //!   锚定到当时聚焦窗格的主机，切标签 / 切分屏焦点都不换对话、不改目标（规则在 `anchor`）；之前的对话在历史里。
 //! - 文件面板：跟随当前终端标签的主机，一台主机一个文件视图（`Entity<SftpDemo>`，停靠布局：远端在上、
 //!   本地在下）；开的时候复用终端那条已认证连接。「在新标签中打开」把同一个视图挪到主视图标签里
@@ -244,7 +245,8 @@ pub struct DockState {
     sftp_dock_tabs: HashSet<u64>,
     /// 面板里的对话：每个窗口一个，不随标签切换换对话（对话在第一条消息发出时锚定到当时的主机，
     /// 见 `anchor`）。第一次开面板时建，之后一直留着（面板关了、标签全关了对话也还在）。
-    pub ai: Option<Entity<AgentChatDemo>>,
+    /// 每个终端标签一条 AI 对话；键是终端标签 id（空白标签也有一条）。
+    pub ai: HashMap<u64, Entity<AgentChatDemo>>,
     /// 每台主机一个停靠用的文件视图（主机 id → 视图）。
     pub sftp: HashMap<i64, Entity<SftpDemo>>,
     pub sftp_tabs: Vec<SftpTab>,
@@ -281,7 +283,7 @@ impl Default for DockState {
         Self {
             ai_open: false,
             sftp_dock_tabs: HashSet::new(),
-            ai: None,
+            ai: HashMap::new(),
             sftp: HashMap::new(),
             sftp_tabs: Vec::new(),
             active_sftp: None,
@@ -720,9 +722,11 @@ impl MainWindow {
         }
 
         let live: HashSet<u64> = tab_hosts.iter().map(|(id, _)| *id).collect();
-        // AI：整个窗口一个对话，开着面板时补一个；不随标签切换、标签关了也留着（对话锚定在主机上，
-        // 绑定的主机没有打开的终端时对话失效，由用户决定，见 `anchor`）。
-        if self.docks.ai_open && self.docks.ai.is_none() {
+        // 标签关了 / 搬去别的窗口了：它的对话跟着收（历史已落盘，重新打开标签可从历史续接）。
+        self.docks.ai.retain(|tab, _| live.contains(tab));
+        // AI：每个终端标签一条对话。开着面板时给**活动标签**补一条；切标签时面板画的那条跟着换。
+        // 对话锚定在主机上（见 `anchor`），绑定主机没有打开的终端时对话失效，由用户决定。
+        if self.docks.ai_open && active_tab.is_some_and(|tab| !self.docks.ai.contains_key(&tab)) {
             let height = self.store.bars().ai_input_height;
             let chat = cx.new(|cx| AgentChatDemo::new_embedded(window, cx, height));
             // 面板里选了「全部放行」：确认框归主窗口弹（和别的确认框同一套），确认后再回写模式。
@@ -734,11 +738,15 @@ impl MainWindow {
                 },
             )
             .detach();
-            self.docks.ai = Some(chat);
+            if let Some(tab) = active_tab {
+                self.docks.ai.insert(tab, chat);
+            }
             // 面板实体是节拍里补的：不通知主窗口重画，它就一直是空白，直到别的什么触发重绘。
             cx.notify();
         }
-        if let Some(chat) = self.docks.ai.clone() {
+        // 上下文（打开的标签、焦点）只喂给活动标签那条：别的标签的对话不在画面里，等它成为活动标签
+        // 再喂；进行中的回合不依赖新上下文（绑定在启动时就锁定了）。
+        if let Some(chat) = active_tab.and_then(|tab| self.docks.ai.get(&tab).cloned()) {
             let ctx = self.ai_context(hosts.clone(), cx);
             chat.update(cx, |chat, cx| chat.set_context(ctx, cx));
         }
@@ -821,7 +829,8 @@ impl MainWindow {
 
     /// 确认框点了「全部放行」。
     pub(super) fn do_allow_all_commands(&mut self, cx: &mut Context<Self>) {
-        if let Some(chat) = self.docks.ai.clone() {
+        let active_tab = self.workspace.read(cx).active_tab_id();
+        if let Some(chat) = active_tab.and_then(|tab| self.docks.ai.get(&tab).cloned()) {
             chat.update(cx, |chat, cx| {
                 chat.set_mode_explicit(zssh_core::ai::bridge::ExecMode::Auto, cx);
             });
@@ -1293,7 +1302,7 @@ impl MainWindow {
 
     /// 窗口真正关闭：AI 会话、文件视图的连接都收尾。
     pub(super) fn shutdown_docks(&mut self, cx: &mut Context<Self>) {
-        self.docks.ai = None;
+        self.docks.ai.clear();
         for (_, view) in self.docks.sftp.drain() {
             view.update(cx, |view, _| view.shutdown_embedded());
         }
@@ -1317,8 +1326,12 @@ impl MainWindow {
         let layout = self.dock_layout_now(cx);
         if self.docks.ai_open && layout.ai_width > 0.0 {
             let close = cx.entity();
-            // 刚打开面板、对话实体还没建：下一个节拍会补上，这半秒里先把壳子（宽度）留着，布局不跳。
-            let chat = self.docks.ai.clone();
+            // 刚打开面板 / 刚切到没有对话的标签：下一个节拍会补上，这半秒里先把壳子（宽度）留着，布局不跳。
+            let chat = self
+                .workspace
+                .read(cx)
+                .active_tab_id()
+                .and_then(|tab| self.docks.ai.get(&tab).cloned());
             let narrow = layout.ai_width < AI_HEADER_NARROW_WIDTH;
             // 标题栏右侧（关闭按钮左边）：上下文用量指示器（V2-U15）。
             let actions: Vec<AnyElement> = chat

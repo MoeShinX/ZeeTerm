@@ -468,9 +468,11 @@ pub fn is_known(name: &str) -> bool {
 
 fn active_ai(
     this: &MainWindow,
-    _cx: &App,
+    cx: &App,
 ) -> Option<::gpui::Entity<crate::agent_chat::AgentChatDemo>> {
-    this.docks.ai.clone()
+    // 活动标签自己的那条对话（每标签一条）。
+    let tab = this.workspace.read(cx).active_tab_id()?;
+    this.docks.ai.get(&tab).cloned()
 }
 
 /// 文件视图：先看当前显示的 SFTP 标签，再看当前终端标签主机的停靠视图。

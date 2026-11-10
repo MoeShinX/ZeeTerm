@@ -653,7 +653,8 @@ impl MainWindow {
         }
         // 面板开着、选中的是浏览器授权的 Tokenway 令牌：打开面板时和一轮对话结束后取余额。
         if self.docks.ai_open
-            && let Some(chat) = self.docks.ai.clone()
+            && let Some(tab) = self.workspace.read(cx).active_tab_id()
+            && let Some(chat) = self.docks.ai.get(&tab)
             && let Some(id) = chat.read(cx).tokenway_endpoint()
         {
             tokenway::balance_poll(id);

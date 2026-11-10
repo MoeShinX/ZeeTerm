@@ -64,6 +64,15 @@ mod real {
         "aib_assert",
     ];
 
+    /// 活动标签自己的那条 AI 对话（每标签一条；面板没开 / 标签没建过就没有）。
+    fn active_tab_chat(
+        this: &MainWindow,
+        cx: &App,
+    ) -> Option<::gpui::Entity<crate::agent_chat::AgentChatDemo>> {
+        let tab = this.workspace.read(cx).active_tab_id()?;
+        this.docks.ai.get(&tab).cloned()
+    }
+
     pub fn is_known(name: &str) -> bool {
         KNOWN.contains(&name)
     }
@@ -353,11 +362,8 @@ mod real {
             "aib_panel" => panel_check(this, a, b, cx),
             // aib_agent:<接口名>：在 AI 面板的智能体下拉里点内置助手的这一项。
             "aib_agent" => {
-                let chat = this
-                    .docks
-                    .ai
-                    .clone()
-                    .ok_or_else(|| "AI 面板还没打开过".to_owned())?;
+                let chat =
+                    active_tab_chat(this, cx).ok_or_else(|| "AI 面板还没打开过".to_owned())?;
                 let target = if b.is_empty() {
                     a.to_owned()
                 } else {
@@ -380,11 +386,7 @@ mod real {
         value: &str,
         cx: &mut Context<MainWindow>,
     ) -> Result<Outcome, String> {
-        let chat = this
-            .docks
-            .ai
-            .clone()
-            .ok_or_else(|| "AI 面板还没打开过".to_owned())?;
+        let chat = active_tab_chat(this, cx).ok_or_else(|| "AI 面板还没打开过".to_owned())?;
         let ok = match what {
             "label" => chat.read_with(cx, |chat, _| chat.dev_agent_label()) == value,
             "menu" => {

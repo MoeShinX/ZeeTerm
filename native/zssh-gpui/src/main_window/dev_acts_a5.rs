@@ -46,6 +46,15 @@ mod real {
         "tw_balance",
     ];
 
+    /// 活动标签自己的那条 AI 对话（每标签一条；面板没开 / 标签没建过就没有）。
+    fn active_tab_chat(
+        this: &MainWindow,
+        cx: &App,
+    ) -> Option<::gpui::Entity<crate::agent_chat::AgentChatDemo>> {
+        let tab = this.workspace.read(cx).active_tab_id()?;
+        this.docks.ai.get(&tab).cloned()
+    }
+
     pub fn is_known(name: &str) -> bool {
         KNOWN.contains(&name)
     }
@@ -167,11 +176,8 @@ mod real {
             "tw_assert" => assert_what(this, a, b, false, cx),
             "tw_wait" => assert_what(this, a, b, true, cx),
             "tw_card" => {
-                let chat = this
-                    .docks
-                    .ai
-                    .clone()
-                    .ok_or_else(|| "AI 面板还没打开过".to_owned())?;
+                let chat =
+                    active_tab_chat(this, cx).ok_or_else(|| "AI 面板还没打开过".to_owned())?;
                 chat.update(cx, |chat, cx| chat.dev_click_card(a, cx))?;
                 Ok(Outcome::Done)
             }
@@ -362,11 +368,8 @@ mod real {
                 )
             }
             "panel_balance" => {
-                let chat = this
-                    .docks
-                    .ai
-                    .clone()
-                    .ok_or_else(|| "AI 面板还没打开过".to_owned())?;
+                let chat =
+                    active_tab_chat(this, cx).ok_or_else(|| "AI 面板还没打开过".to_owned())?;
                 let have = chat.read_with(cx, |chat, _| chat.dev_balance_label());
                 verdict(
                     have.as_deref().is_some_and(|label| label.contains(value)),
@@ -375,20 +378,14 @@ mod real {
                 )
             }
             "panel_balance_none" => {
-                let chat = this
-                    .docks
-                    .ai
-                    .clone()
-                    .ok_or_else(|| "AI 面板还没打开过".to_owned())?;
+                let chat =
+                    active_tab_chat(this, cx).ok_or_else(|| "AI 面板还没打开过".to_owned())?;
                 let have = chat.read_with(cx, |chat, _| chat.dev_balance_label());
                 verdict(have.is_none(), format!("标题栏余额是 {have:?}"), wait)
             }
             "panel_cards" => {
-                let chat = this
-                    .docks
-                    .ai
-                    .clone()
-                    .ok_or_else(|| "AI 面板还没打开过".to_owned())?;
+                let chat =
+                    active_tab_chat(this, cx).ok_or_else(|| "AI 面板还没打开过".to_owned())?;
                 let have = chat.read_with(cx, |chat, _| chat.dev_cards().join(","));
                 verdict(have == value, format!("提示卡：{have}"), wait)
             }
